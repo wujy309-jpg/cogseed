@@ -122,8 +122,8 @@ export const userLocalRoot  = (uid: string) => path.join(userRoot(uid), 'local')
 // Creator Mode control-plane data. Cloud stores user-authored drafts, immutable
 // versions, state pointers, and audit history; local is reserved for machine-
 // private simulation/verification artifacts. Keep every path construction here.
-export const userCreatorCloudDir = (uid: string) => path.join(userCloudRoot(uid), 'creator');
-export const userCreatorLocalDir = (uid: string) => path.join(userLocalRoot(uid), 'creator');
+export const userCreatorCloudDir = (uid: string) => path.join(userCloudRoot(assertCreatorPathSegment(uid, 'user id')), 'creator');
+export const userCreatorLocalDir = (uid: string) => path.join(userLocalRoot(assertCreatorPathSegment(uid, 'user id')), 'creator');
 export const userCreatorDraftsDir = (uid: string) => path.join(userCreatorCloudDir(uid), 'drafts');
 export const userCreatorPresetsDir = (uid: string) => path.join(userCreatorCloudDir(uid), 'presets');
 export const userCreatorAuditFile = (uid: string) => path.join(userCreatorCloudDir(uid), 'audit.jsonl');

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { validateCreatorPresetManifest } from '../../../../src/main/features/creator/schema';
+import {
+  sanitizeCreatorStructuredOutput,
+  validateCreatorPresetManifest,
+} from '../../../../src/main/features/creator/schema';
 import type { CreatorPresetManifestV1 } from '../../../../src/main/features/creator/types';
 
 function validManifest(): CreatorPresetManifestV1 {
@@ -74,6 +77,23 @@ describe('CreatorPresetManifestV1 schema', () => {
       expect(result.issues.map((issue) => issue.code)).toContain('creator_sparse_array');
       expect(result.issues.map((issue) => issue.path)).toContain('runtime.timeoutMs');
     }
+  });
+
+  it('bounds the total nested inspection budget for wide hostile graphs', () => {
+    const input: any = validManifest();
+    input.extra = Array.from({ length: 256 }, () => Array.from({ length: 256 }, () => ({ value: 'x' })));
+    const result = validateCreatorPresetManifest(input);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.issues.some((issue) => issue.code === 'creator_out_of_range')).toBe(true);
+  });
+
+  it('counts hostile object-key bytes in the global inspection budget', () => {
+    const input: any = validManifest();
+    input.extra = { ['k'.repeat(300_000)]: 'value' };
+    const result = validateCreatorPresetManifest(input);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.issues.some((issue) => issue.code === 'creator_out_of_range')).toBe(true);
+    expect(JSON.stringify(result.issues)).not.toContain('k'.repeat(300_000));
   });
 
   it('does not mutate or retain unknown properties', () => {
@@ -253,6 +273,8 @@ describe('CreatorPresetManifestV1 schema', () => {
     ['arbitrary-value assignment examples', 'foo=bar examples'],
     ['arbitrary-value assignment copular prose', 'mode=auto is illustrative'],
     ['arbitrary-value assignment predicate prose', 'format=json represents data'],
+    ['compact format-label prose', 'Format:JSON labels are useful.'],
+    ['backslash notation prose', 'Use \\alpha notation in formulas.'],
     ['boolean assignment with copular continuation', 'flag=true is illustrative'],
     ['automatic assignment with plural copular continuation', 'modes=auto are illustrative'],
     ['automatic assignment with meaning predicate', 'mode=auto means automatic selection'],
@@ -576,5 +598,118 @@ describe('CreatorPresetManifestV1 schema', () => {
         'agent.inputs.0.options.2.label',
       ]));
     }
+  });
+
+  it.each(['cyclic', 'BigInt'])('returns normal validation errors for nested %s defaults', (kind) => {
+    const input: any = validManifest();
+    const value: any = kind === 'cyclic' ? {} : 1n;
+    if (kind === 'cyclic') value.self = value;
+    input.agent = { inputs: [{ id: 'attachment', type: 'file', default: value }] };
+    expect(() => validateCreatorPresetManifest(input)).not.toThrow();
+    const result = validateCreatorPresetManifest(input);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.issues.length).toBeGreaterThan(0);
+  });
+
+  it('redacts untrusted object keys from exposed issue paths', () => {
+    const input: any = validManifest();
+    input.agent = {
+      ['ghp_abcdefghijklmnopqrstuvwxyz1234567890']: true,
+      ['ssh://private.internal/model']: true,
+      ['/opt/private/catalog-secret']: true,
+      ['x'.repeat(500)]: true,
+    };
+    const result = validateCreatorPresetManifest(input);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      const serialized = JSON.stringify(result.issues);
+      expect(serialized).not.toContain('ghp_abcdefghijklmnopqrstuvwxyz1234567890');
+      expect(serialized).not.toContain('ssh://private.internal/model');
+      expect(serialized).not.toContain('/opt/private/catalog-secret');
+      expect(serialized).not.toContain('x'.repeat(500));
+      expect(serialized).toContain('[untrusted-key]');
+    }
+  });
+
+  it('fails closed before traversing hostile arrays and throwing proxies', () => {
+    const huge: any = validManifest();
+    huge.capabilities = Array.from({ length: 100_000 }, () => ({ capabilityId: 'x', version: '1' }));
+    expect(() => validateCreatorPresetManifest(huge)).not.toThrow();
+    const hugeResult = validateCreatorPresetManifest(huge);
+    expect(hugeResult.ok).toBe(false);
+    if (!hugeResult.ok) expect(hugeResult.issues.map((issue) => issue.code)).toContain('creator_out_of_range');
+
+    const throwing = new Proxy([], {
+      get(target, property, receiver) {
+        if (property === 'length') throw new Error('/private/schema-trap');
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const hostile: any = validManifest();
+    hostile.capabilities = throwing;
+    expect(() => validateCreatorPresetManifest(hostile)).not.toThrow();
+    const hostileResult = validateCreatorPresetManifest(hostile);
+    expect(hostileResult.ok).toBe(false);
+    if (!hostileResult.ok) expect(JSON.stringify(hostileResult.issues)).not.toContain('/private/schema-trap');
+  });
+
+  it('bounds structured output strings, keys, and nested traversal before materialization', () => {
+    const secretKey = 'ghp_abcdefghijklmnopqrstuvwxyz1234567890';
+    const oversizedKey = 'k'.repeat(20_000);
+    const nested: Record<string, unknown> = { password: 'super-secret-value' };
+    for (let index = 0; index < 40; index += 1) nested[`node-${index}`] = nested;
+    const value = { [secretKey]: 'secret', [oversizedKey]: 'private', nested, ordinary: 'kept' };
+    const sanitized = sanitizeCreatorStructuredOutput(value);
+
+    expect(Buffer.byteLength(sanitized, 'utf8')).toBeLessThanOrEqual(8_003);
+    expect(sanitized).not.toContain(secretKey);
+    expect(sanitized).not.toContain(oversizedKey);
+    expect(sanitized).not.toContain('super-secret-value');
+    expect(sanitized).toContain('[REDACTED]');
+  });
+
+  it.each([
+    ['INFO {"token":"plain-secret"}', 'plain-secret'],
+    ['{"password":"password-secret"}\n{"path":"/private/output"}', 'password-secret'],
+    ['prefix {"credential":"credential-secret","url":"ssh://private.invalid"}', 'credential-secret'],
+    ['prefix {"headers.cookie":"session-secret","ok":"safe"}', 'session-secret'],
+    ['{"set-cookie":"set-cookie-secret"} {"sessionToken":"session-token-secret"}', 'set-cookie-secret'],
+  ])('redacts structured records embedded in %s', (value, secret) => {
+    const sanitized = sanitizeCreatorStructuredOutput(value);
+    expect(sanitized).not.toContain(secret);
+    expect(sanitized).not.toMatch(/ssh:\/\/private\.invalid|\/private\/output/);
+  });
+
+  it.each([
+    ['cookie=flat-session-secret', 'flat-session-secret'],
+    ['set-cookie: flat-set-cookie-secret', 'flat-set-cookie-secret'],
+    ['session_id=flat-session-id-secret', 'flat-session-id-secret'],
+    ['sid=flat-sid-secret', 'flat-sid-secret'],
+    ['csrf_token=flat-csrf-secret', 'flat-csrf-secret'],
+  ])('redacts credential assignments in flat output: %s', (value, secret) => {
+    const sanitized = sanitizeCreatorStructuredOutput(value);
+    expect(sanitized).not.toContain(secret);
+    expect(sanitized).toContain('[REDACTED]');
+  });
+
+  it('sanitizes multiple embedded JSON records on one line', () => {
+    const sanitized = sanitizeCreatorStructuredOutput(
+      'INFO {"token":"plain-secret","path":"/private/output"} {"ok":"safe"} [ {"password":"another-secret"} ]',
+    );
+    expect(sanitized).not.toMatch(/plain-secret|another-secret|\/private\/output/);
+    expect(sanitized).toContain('safe');
+  });
+
+  it('does not traverse inherited hostile keys while validating a proxy object', () => {
+    const prototype = Object.create(null) as Record<string, unknown>;
+    for (let index = 0; index < 100_000; index += 1) prototype[`inherited-${index}`] = true;
+    const input = Object.assign(Object.create(prototype), validManifest());
+    expect(validateCreatorPresetManifest(input)).toEqual(expect.objectContaining({ ok: false }));
+
+    const hostile = new Proxy(validManifest(), { ownKeys() { throw new Error('/private/schema token=secret'); } });
+    expect(() => validateCreatorPresetManifest(hostile)).not.toThrow();
+    const result = validateCreatorPresetManifest(hostile);
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).not.toMatch(/\/private\/schema|token=secret/);
   });
 });

@@ -1,5 +1,7 @@
 import * as fs from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import type { Dir } from 'node:fs';
+import type { FileHandle } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
 
 import {
@@ -12,16 +14,35 @@ import {
   userCreatorPresetVersionFile,
 } from '../../paths';
 import * as storage from '../../storage';
-import { fileEditLock } from '../../util/locks';
+import { getActiveUserId } from '../users';
+import { fileEditLock, sessionLock, type MutexInterface } from '../../util/locks';
 import { sanitizeLogTextForUpload } from '../../util/log-sanitize';
-import { validateCreatorPresetManifest } from './schema';
+import {
+  forEachOwnEnumerableCreatorKey,
+  isSensitiveCreatorKey,
+  sanitizeCreatorCatalogText,
+  validateCreatorCatalogText,
+  validateCreatorPresetManifest,
+} from './schema';
+import { creatorManifestDigest } from './verification-service';
 import type { CreatorPresetManifestV1 } from './types';
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/;
 const CANONICAL_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-const SENSITIVE_AUDIT_KEY = /api.?key|token|secret|password|private.?key|authorization|endpoint|base.?url|command|shell|import.?path/i;
 const MAX_REDACTION_DEPTH = 20;
+const MAX_AUDIT_METADATA_NODES = 512;
+const MAX_AUDIT_METADATA_ENTRIES = 128;
+const MAX_AUDIT_METADATA_BYTES = 16_384;
+const MAX_AUDIT_METADATA_STRING = 4_000;
+const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const OPERATION_CORRUPT = 'creator_operation_journal_corrupt';
+const RESERVED_AUDIT_EVENT_PREFIXES = ['creator.lifecycle.', 'creator.verification.', 'preset.', 'draft.saved'] as const;
+const MAX_JSONL_BYTES = 4 * 1024 * 1024;
+const MAX_JSONL_LINE_BYTES = 64 * 1024;
+const MAX_JSONL_RECORDS = 4_096;
+const MAX_PRESET_SUMMARIES = 256;
+const MAX_PRESET_VERSIONS = 256;
+const MAX_JSON_DOCUMENT_BYTES = 1 * 1024 * 1024;
 
 export interface CreatorPresetDraft {
   schemaVersion: 1;
@@ -89,6 +110,23 @@ function isEnoent(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
 }
 
+async function closeDirectory(directory: Dir): Promise<void> {
+  try {
+    await directory.close();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code !== 'ERR_DIR_CLOSED') throw error;
+  }
+}
+
+function assertCreatorUser(userId: unknown): asserts userId is string {
+  if (!storage.safeId(userId)) throw new Error('creator_user_not_active');
+  try {
+    if (getActiveUserId() !== userId) throw new Error('creator_user_not_active');
+  } catch {
+    throw new Error('creator_user_not_active');
+  }
+}
+
 function isIdentifier(value: unknown): value is string {
   return typeof value === 'string' && IDENTIFIER.test(value);
 }
@@ -115,21 +153,45 @@ function assertPlainObject(value: unknown, errorCode: string): asserts value is 
 
 function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
   const keys = new Set(allowed);
-  return Object.keys(value).every((key) => keys.has(key));
+  let valid = true;
+  const complete = forEachOwnEnumerableCreatorKey(value, allowed.length + 1, (key) => {
+    if (!keys.has(key)) valid = false;
+  });
+  return complete && valid;
 }
 
 async function readJsonStrict(filePath: string, corruptError: string): Promise<unknown | null> {
-  let text: string;
+  let handle: FileHandle | undefined;
   try {
-    text = await fs.readFile(filePath, 'utf8');
+    handle = await fs.open(filePath, 'r');
+    const initial = await handle.stat();
+    if (!Number.isSafeInteger(initial.size) || initial.size < 0 || initial.size > MAX_JSON_DOCUMENT_BYTES) {
+      throw new Error(corruptError.replace(/_corrupt$/, '_too_large'));
+    }
+    const bytes = Buffer.allocUnsafe(MAX_JSON_DOCUMENT_BYTES + 1);
+    let bytesRead = 0;
+    while (bytesRead < bytes.length) {
+      const result = await handle.read(bytes, bytesRead, bytes.length - bytesRead, bytesRead);
+      if (result.bytesRead === 0) break;
+      bytesRead += result.bytesRead;
+    }
+    const final = await handle.stat();
+    if (!Number.isSafeInteger(final.size) || final.size < 0
+      || final.size > MAX_JSON_DOCUMENT_BYTES || bytesRead > MAX_JSON_DOCUMENT_BYTES
+      || final.size !== initial.size) {
+      throw new Error(corruptError.replace(/_corrupt$/, '_too_large'));
+    }
+    const text = bytes.subarray(0, bytesRead).toString('utf8');
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      throw new Error(corruptError);
+    }
   } catch (error) {
     if (isEnoent(error)) return null;
     throw error;
-  }
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    throw new Error(corruptError);
+  } finally {
+    try { await handle?.close(); } catch { /* contain close races */ }
   }
 }
 
@@ -189,6 +251,10 @@ function validateAuditRecord(value: unknown, errorCode = 'creator_audit_corrupt'
   const presetId = value.presetId as string | undefined;
   const version = value.version as string | undefined;
   const draftId = value.draftId as string | undefined;
+  let safeMetadata: unknown;
+  if (Object.prototype.hasOwnProperty.call(value, 'metadata')) {
+    try { safeMetadata = redactAuditValue(value.metadata); } catch { throw new Error(errorCode); }
+  }
   return {
     schemaVersion: 1,
     auditId: value.auditId,
@@ -197,7 +263,7 @@ function validateAuditRecord(value: unknown, errorCode = 'creator_audit_corrupt'
     ...(presetId !== undefined ? { presetId } : {}),
     ...(version !== undefined ? { version } : {}),
     ...(draftId !== undefined ? { draftId } : {}),
-    ...(Object.prototype.hasOwnProperty.call(value, 'metadata') ? { metadata: value.metadata } : {}),
+    ...(Object.prototype.hasOwnProperty.call(value, 'metadata') ? { metadata: safeMetadata } : {}),
   };
 }
 
@@ -214,26 +280,67 @@ function validatePersistedManifest(
   return result.value;
 }
 
-function redactAuditValue(value: unknown, depth = 0, seen = new WeakSet<object>()): unknown {
-  if (depth > MAX_REDACTION_DEPTH) return '[REDACTED]';
-  if (value === null || typeof value === 'boolean') return value;
-  if (typeof value === 'string') return sanitizeLogTextForUpload(value);
-  if (typeof value === 'number') return Number.isFinite(value) ? value : String(value);
-  if (typeof value === 'bigint') return value.toString();
-  if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') return undefined;
-  const objectValue = value as object;
-  if (seen.has(objectValue)) return '[REDACTED]';
-  seen.add(objectValue);
-  if (Array.isArray(value)) return value.map((entry) => redactAuditValue(entry, depth + 1, seen));
-  const output: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value)) {
-    output[key] = SENSITIVE_AUDIT_KEY.test(key) ? '[REDACTED]' : redactAuditValue(entry, depth + 1, seen);
+function redactAuditValue(
+  value: unknown,
+  depth = 0,
+  seen = new WeakSet<object>(),
+  state = { nodes: 0, bytes: 0 },
+  key = '',
+): unknown {
+  if (++state.nodes > MAX_AUDIT_METADATA_NODES || depth > MAX_REDACTION_DEPTH) {
+    throw new Error('creator_audit_metadata_invalid');
   }
+  if (value === null || typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    if (value.length > MAX_AUDIT_METADATA_STRING) throw new Error('creator_audit_metadata_invalid');
+    state.bytes += Buffer.byteLength(value, 'utf8');
+    if (state.bytes > MAX_AUDIT_METADATA_BYTES) throw new Error('creator_audit_metadata_invalid');
+    return key === 'manifestDigest' && DIGEST.test(value)
+      ? value
+      : sanitizeLogTextForUpload(sanitizeCreatorCatalogText(value));
+  }
+  if (typeof value === 'number') return Number.isFinite(value) ? value : String(value);
+  if (typeof value === 'undefined') return undefined;
+  if (typeof value === 'bigint' || typeof value === 'function' || typeof value === 'symbol') {
+    throw new Error('creator_audit_metadata_invalid');
+  }
+  const objectValue = value as object;
+  if (seen.has(objectValue)) throw new Error('creator_audit_metadata_invalid');
+  seen.add(objectValue);
+  if (Array.isArray(value)) {
+    let length: number;
+    try { length = value.length; } catch { throw new Error('creator_audit_metadata_invalid'); }
+    if (!Number.isSafeInteger(length) || length > MAX_AUDIT_METADATA_ENTRIES) throw new Error('creator_audit_metadata_invalid');
+    const output: unknown[] = [];
+    for (let index = 0; index < length; index += 1) {
+      if (!Object.prototype.hasOwnProperty.call(value, index)) throw new Error('creator_audit_metadata_invalid');
+      output.push(redactAuditValue(value[index], depth + 1, seen, state));
+    }
+    return output;
+  }
+  const output: Record<string, unknown> = {};
+  let invalid = false;
+  const complete = forEachOwnEnumerableCreatorKey(objectValue, MAX_AUDIT_METADATA_ENTRIES, (key) => {
+    if (key.length > MAX_AUDIT_METADATA_STRING
+      || state.bytes + Buffer.byteLength(key, 'utf8') > MAX_AUDIT_METADATA_BYTES) {
+      invalid = true;
+      return;
+    }
+    state.bytes += Buffer.byteLength(key, 'utf8');
+    const safeKey = validateCreatorCatalogText(key) ? '[REDACTED]' : key;
+    output[safeKey] = isSensitiveCreatorKey(key)
+      ? '[REDACTED]'
+      : redactAuditValue((value as Record<string, unknown>)[key], depth + 1, seen, state, key);
+  });
+  if (!complete || invalid) throw new Error('creator_audit_metadata_invalid');
   return output;
 }
 
-function createAuditRecord(input: CreatorAuditInput): CreatorAuditRecord {
+function createAuditRecord(input: CreatorAuditInput, allowReserved = false): CreatorAuditRecord {
   if (!isIdentifier(input.event)) throw new Error('creator_invalid_audit_event');
+  if (!allowReserved && RESERVED_AUDIT_EVENT_PREFIXES.some((prefix) => input.event.startsWith(prefix))) {
+    throw new Error('creator_audit_event_reserved');
+  }
   if (input.presetId !== undefined) assertIdentifier(input.presetId, 'preset_id');
   if (input.version !== undefined) assertIdentifier(input.version, 'version');
   if (input.draftId !== undefined) assertIdentifier(input.draftId, 'draft_id');
@@ -318,44 +425,67 @@ function validateJournalRecord(value: unknown): CreatorOperationJournalRecord {
 }
 
 async function readJsonlRecords(filePath: string, corruptError: string): Promise<unknown[]> {
-  let bytes: Buffer;
+  let handle: FileHandle | undefined;
   try {
-    bytes = await fs.readFile(filePath);
+    handle = await fs.open(filePath, 'r');
+    const initial = await handle.stat();
+    if (!Number.isSafeInteger(initial.size) || initial.size < 0 || initial.size > MAX_JSONL_BYTES) {
+      throw new Error(corruptError.replace(/_corrupt$/, '_history_too_large'));
+    }
+    const buffer = Buffer.allocUnsafe(MAX_JSONL_BYTES + 1);
+    let bytesRead = 0;
+    while (bytesRead < buffer.length) {
+      const result = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead);
+      if (result.bytesRead === 0) break;
+      bytesRead += result.bytesRead;
+    }
+    const final = await handle.stat();
+    if (!Number.isSafeInteger(final.size) || final.size < 0
+      || final.size > MAX_JSONL_BYTES || bytesRead > MAX_JSONL_BYTES || final.size !== initial.size) {
+      throw new Error(corruptError.replace(/_corrupt$/, '_history_too_large'));
+    }
+    const bytes = buffer.subarray(0, bytesRead);
+    const records: unknown[] = [];
+    let lineStart = 0;
+    for (let index = 0; index < bytes.length; index += 1) {
+      if (bytes[index] !== 0x0a) continue;
+      if (index - lineStart > MAX_JSONL_LINE_BYTES) throw new Error(corruptError.replace(/_corrupt$/, '_record_too_large'));
+      const line = bytes.subarray(lineStart, index).toString('utf8');
+      if (!line.trim()) throw new Error(corruptError);
+      if (records.length >= MAX_JSONL_RECORDS) throw new Error(corruptError.replace(/_corrupt$/, '_history_too_large'));
+      try {
+        records.push(JSON.parse(line) as unknown);
+      } catch {
+        throw new Error(corruptError);
+      }
+      lineStart = index + 1;
+    }
+
+    if (lineStart < bytes.length) {
+      if (bytes.length - lineStart > MAX_JSONL_LINE_BYTES) throw new Error(corruptError.replace(/_corrupt$/, '_record_too_large'));
+      const fragment = bytes.subarray(lineStart).toString('utf8');
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(fragment) as unknown;
+      } catch {
+        // Only a non-newline-terminated final fragment is repairable. Every
+        // complete row above has already been parsed, so malformed middle rows
+        // can never be hidden by this truncation.
+        await fs.truncate(filePath, lineStart);
+        storage.invalidateLineCount(filePath);
+        return records;
+      }
+      if (records.length >= MAX_JSONL_RECORDS) throw new Error(corruptError.replace(/_corrupt$/, '_history_too_large'));
+      records.push(parsed);
+      await fs.appendFile(filePath, '\n', 'utf8');
+    }
+    return records;
   } catch (error) {
     if (isEnoent(error)) return [];
     throw error;
+  } finally {
+    try { await handle?.close(); } catch { /* contain close races */ }
   }
-  const records: unknown[] = [];
-  let lineStart = 0;
-  for (let index = 0; index < bytes.length; index += 1) {
-    if (bytes[index] !== 0x0a) continue;
-    const line = bytes.subarray(lineStart, index).toString('utf8');
-    if (!line.trim()) throw new Error(corruptError);
-    try {
-      records.push(JSON.parse(line) as unknown);
-    } catch {
-      throw new Error(corruptError);
-    }
-    lineStart = index + 1;
-  }
-
-  if (lineStart < bytes.length) {
-    const fragment = bytes.subarray(lineStart).toString('utf8');
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(fragment) as unknown;
-    } catch {
-      // Only a non-newline-terminated final fragment is repairable. Every
-      // complete row above has already been parsed, so malformed middle rows
-      // can never be hidden by this truncation.
-      await fs.truncate(filePath, lineStart);
-      storage.invalidateLineCount(filePath);
-      return records;
-    }
-    records.push(parsed);
-    await fs.appendFile(filePath, '\n', 'utf8');
-  }
-  return records;
 }
 
 async function readAuditInternal(userId: string): Promise<CreatorAuditRecord[]> {
@@ -373,14 +503,19 @@ async function repairFinalJsonlFragment(filePath: string): Promise<void> {
   }
   try {
     const { size } = await handle.stat();
+    if (!Number.isSafeInteger(size) || size < 0 || size > MAX_JSONL_BYTES) {
+      throw new Error('creator_audit_history_too_large');
+    }
     if (size === 0) return;
     const lastByte = Buffer.allocUnsafe(1);
     const lastRead = await handle.read(lastByte, 0, 1, size - 1);
     if (lastRead.bytesRead !== 1) throw new Error('creator_audit_io_error');
-    if (lastByte[0] === 0x0a) return;
+    const terminated = lastByte[0] === 0x0a;
+    const lineEnd = terminated ? size - 1 : size;
+    if (lineEnd === 0) return;
 
     const chunks: Buffer[] = [];
-    let cursor = size;
+    let cursor = lineEnd;
     let lineStart = 0;
     while (cursor > 0) {
       const blockStart = Math.max(0, cursor - 8_192);
@@ -401,9 +536,11 @@ async function repairFinalJsonlFragment(filePath: string): Promise<void> {
       }
       if (newline >= 0) {
         lineStart = blockStart + newline + 1;
+        if (lineEnd - lineStart > MAX_JSONL_LINE_BYTES) throw new Error('creator_audit_record_too_large');
         chunks.unshift(bytes.subarray(newline + 1));
         break;
       }
+      if (lineEnd - blockStart > MAX_JSONL_LINE_BYTES) throw new Error('creator_audit_record_too_large');
       chunks.unshift(bytes);
       cursor = blockStart;
     }
@@ -416,9 +553,12 @@ async function repairFinalJsonlFragment(filePath: string): Promise<void> {
       validFragment = false;
     }
     if (validFragment) {
-      const write = await handle.write(Buffer.from('\n'), 0, 1, size);
-      if (write.bytesWritten !== 1) throw new Error('creator_audit_io_error');
+      if (!terminated) {
+        const write = await handle.write(Buffer.from('\n'), 0, 1, size);
+        if (write.bytesWritten !== 1) throw new Error('creator_audit_io_error');
+      }
     } else {
+      if (terminated) throw new Error('creator_audit_corrupt');
       await handle.truncate(lineStart);
       storage.invalidateLineCount(filePath);
     }
@@ -427,11 +567,50 @@ async function repairFinalJsonlFragment(filePath: string): Promise<void> {
   }
 }
 
+/** Shared process-local gate for draft saves and lifecycle publication. */
+export function creatorLifecycleStoreLock(userId: string): MutexInterface {
+  return sessionLock(`creator-lifecycle-store:${userId}`);
+}
+
 async function appendAuditRecordFresh(userId: string, record: CreatorAuditRecord): Promise<CreatorAuditRecord> {
   const auditFile = userCreatorAuditFile(userId);
+  boundedJsonlLine(record, 'creator_audit_record_too_large');
+  await assertBoundedJsonlAppend(auditFile, record, 'creator_audit_record_too_large');
   await repairFinalJsonlFragment(auditFile);
-  await storage.appendJsonl(auditFile, record);
+  await appendBoundedJsonl(auditFile, record, 'creator_audit_record_too_large');
   return record;
+}
+
+function boundedJsonlLine(record: unknown, tooLargeError: string): string {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(record);
+  } catch {
+    throw new Error(tooLargeError.replace(/_too_large$/, '_invalid'));
+  }
+  if (Buffer.byteLength(serialized, 'utf8') > MAX_JSONL_LINE_BYTES) throw new Error(tooLargeError);
+  return `${serialized}\n`;
+}
+
+async function assertBoundedJsonlAppend(filePath: string, record: unknown, tooLargeError: string): Promise<void> {
+  const line = boundedJsonlLine(record, tooLargeError);
+  let size = 0;
+  try {
+    const stat = await fs.stat(filePath);
+    size = stat.size;
+  } catch (error) {
+    if (!isEnoent(error)) throw new Error(tooLargeError.replace(/_too_large$/, '_io_error'));
+  }
+  if (!Number.isSafeInteger(size) || size < 0 || size > MAX_JSONL_BYTES
+    || size + Buffer.byteLength(line, 'utf8') > MAX_JSONL_BYTES) {
+    throw new Error(tooLargeError.replace(/_record_too_large$/, '_history_too_large'));
+  }
+}
+
+async function appendBoundedJsonl(filePath: string, record: unknown, tooLargeError: string): Promise<void> {
+  boundedJsonlLine(record, tooLargeError);
+  await assertBoundedJsonlAppend(filePath, record, tooLargeError);
+  await storage.appendJsonl(filePath, record);
 }
 
 async function appendAuditRecordForRecovery(userId: string, record: CreatorAuditRecord): Promise<CreatorAuditRecord> {
@@ -443,7 +622,7 @@ async function appendAuditRecordForRecovery(userId: string, record: CreatorAudit
       if (!isDeepStrictEqual(existing, record)) throw new Error('creator_audit_corrupt');
       return existing;
     }
-    await storage.appendJsonl(auditFile, record);
+    await appendBoundedJsonl(auditFile, record, 'creator_audit_record_too_large');
     return record;
   });
 }
@@ -483,7 +662,11 @@ async function applyOperationMutation(userId: string, mutation: CreatorMutation)
 }
 
 async function appendJournalRecord(userId: string, record: CreatorOperationJournalRecord): Promise<void> {
-  await storage.appendJsonl(userCreatorOperationJournalFile(userId), record);
+  await appendBoundedJsonl(
+    userCreatorOperationJournalFile(userId),
+    record,
+    'creator_operation_journal_record_too_large',
+  );
 }
 
 async function replayOperation(userId: string, operation: CreatorOperation, recovering: boolean): Promise<void> {
@@ -537,7 +720,7 @@ function createOperation(mutation: CreatorMutation, auditInput: CreatorAuditInpu
     operationId: randomUUID(),
     createdAt,
     mutation,
-    audit: createAuditRecord(auditInput),
+    audit: createAuditRecord(auditInput, true),
   };
 }
 
@@ -555,21 +738,29 @@ async function withCreatorStoreLock<T>(userId: string, action: () => Promise<T>)
 }
 
 export async function recoverCreatorStoreOperations(userId: string): Promise<number> {
+  assertCreatorUser(userId);
   return fileEditLock(userCreatorOperationJournalFile(userId)).runExclusive(() => recoverOperationsUnlocked(userId));
 }
 
 export async function saveCreatorDraft(userId: string, draft: CreatorPresetDraft): Promise<CreatorPresetDraft> {
+  assertCreatorUser(userId);
   const validated = validateDraft(draft);
-  return withCreatorStoreLock(userId, async () => {
+  return creatorLifecycleStoreLock(userId).runExclusive(() => withCreatorStoreLock(userId, async () => {
     await commitOperationUnlocked(userId, createOperation(
       { kind: 'draft.save', draft: validated },
-      { event: 'draft.saved', draftId: validated.draftId, presetId: validated.manifest.presetId },
+      {
+        event: 'draft.saved',
+        draftId: validated.draftId,
+        presetId: validated.manifest.presetId,
+        metadata: { manifestDigest: creatorManifestDigest(validated.manifest) },
+      },
     ));
     return validated;
-  });
+  }));
 }
 
 export async function readCreatorDraft(userId: string, draftId: string): Promise<CreatorPresetDraft | null> {
+  assertCreatorUser(userId);
   assertIdentifier(draftId, 'draft_id');
   return withCreatorStoreLock(userId, () => readDraftInternal(userId, draftId));
 }
@@ -578,12 +769,19 @@ export async function publishCreatorPresetVersion(
   userId: string,
   draftId: string,
   version: string,
+  expectedDraftManifestDigest?: string,
+  options: { lifecycleLockHeld?: boolean } = {},
 ): Promise<CreatorPresetManifestV1> {
+  assertCreatorUser(userId);
   assertIdentifier(draftId, 'draft_id');
   assertIdentifier(version, 'version');
-  return withCreatorStoreLock(userId, async () => {
+  const action = () => withCreatorStoreLock(userId, async () => {
     const draft = await readDraftInternal(userId, draftId);
     if (!draft) throw new Error('creator_draft_not_found');
+    if (expectedDraftManifestDigest !== undefined
+      && creatorManifestDigest(draft.manifest) !== expectedDraftManifestDigest) {
+      throw new Error('creator_manifest_digest_mismatch');
+    }
     const candidate = { ...draft.manifest, version };
     const result = validateCreatorPresetManifest(candidate);
     if (!result.ok) throw new Error('creator_preset_version_invalid');
@@ -596,6 +794,7 @@ export async function publishCreatorPresetVersion(
     ));
     return result.value;
   });
+  return options.lifecycleLockHeld ? action() : creatorLifecycleStoreLock(userId).runExclusive(action);
 }
 
 export async function readCreatorPresetVersion(
@@ -603,12 +802,14 @@ export async function readCreatorPresetVersion(
   presetId: string,
   version: string,
 ): Promise<CreatorPresetManifestV1 | null> {
+  assertCreatorUser(userId);
   assertIdentifier(presetId, 'preset_id');
   assertIdentifier(version, 'version');
   return withCreatorStoreLock(userId, () => readPresetVersionInternal(userId, presetId, version));
 }
 
 export async function readCreatorPresetState(userId: string, presetId: string): Promise<CreatorPresetState> {
+  assertCreatorUser(userId);
   assertIdentifier(presetId, 'preset_id');
   return withCreatorStoreLock(userId, () => readPresetStateInternal(userId, presetId));
 }
@@ -616,32 +817,53 @@ export async function readCreatorPresetState(userId: string, presetId: string): 
 async function listPresetSummariesInternal(userId: string): Promise<CreatorPresetSummary[]> {
   let entries: Array<{ name: string; isDirectory(): boolean }>;
   try {
-    entries = await fs.readdir(userCreatorPresetsDir(userId), { withFileTypes: true });
+    const directory = await fs.opendir(userCreatorPresetsDir(userId));
+    entries = [];
+    try {
+      for await (const entry of directory) {
+        if (entries.length >= MAX_PRESET_SUMMARIES) throw new Error('creator_preset_summary_too_large');
+        entries.push(entry);
+      }
+    } finally {
+      await closeDirectory(directory);
+    }
   } catch (error) {
     if (isEnoent(error)) return [];
     throw error;
   }
-  const summaries = await Promise.all(entries
-    .filter((entry) => entry.isDirectory() && IDENTIFIER.test(entry.name))
-    .map(async (entry): Promise<CreatorPresetSummary | null> => {
+  const summaries: CreatorPresetSummary[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !IDENTIFIER.test(entry.name)) continue;
       const presetId = entry.name;
-      const state = await readPresetStateInternal(userId, presetId);
+      let state: CreatorPresetState;
+      try { state = await readPresetStateInternal(userId, presetId); }
+      catch { continue; }
       let versions: string[];
       try {
-        versions = (await fs.readdir(userCreatorPresetVersionsDir(userId, presetId)))
-          .filter((name) => name.endsWith('.json'))
-          .map((name) => name.slice(0, -5))
-          .filter((version) => IDENTIFIER.test(version))
+        const directory = await fs.opendir(userCreatorPresetVersionsDir(userId, presetId));
+        const versionEntries: string[] = [];
+        try {
+          for await (const entry of directory) {
+            if (versionEntries.length >= MAX_PRESET_VERSIONS) throw new Error('creator_preset_summary_too_large');
+            versionEntries.push(entry.name);
+          }
+        } finally {
+          await closeDirectory(directory);
+        }
+        versions = versionEntries.filter((name) => name.endsWith('.json'))
+          .map((name) => name.slice(0, -5)).filter((version) => IDENTIFIER.test(version))
           .sort((left, right) => right.localeCompare(left, undefined, { numeric: true }));
       } catch (error) {
-        if (isEnoent(error)) return null;
-        throw error;
+        if (error instanceof Error && error.message === 'creator_preset_summary_too_large') throw error;
+        continue;
       }
       const version = state.activeVersion ?? versions[0];
-      if (!version) return null;
-      const manifest = await readPresetVersionInternal(userId, presetId, version);
-      if (!manifest) return null;
-      return {
+      if (!version) continue;
+      let manifest: CreatorPresetManifestV1 | null;
+      try { manifest = await readPresetVersionInternal(userId, presetId, version); }
+      catch { continue; }
+      if (!manifest) continue;
+      summaries.push({
         presetId,
         version,
         ...(state.activeVersion ? { activeVersion: state.activeVersion } : {}),
@@ -650,14 +872,13 @@ async function listPresetSummariesInternal(userId: string): Promise<CreatorPrese
         description: manifest.description,
         presetType: manifest.presetType,
         ...(state.updatedAt ? { updatedAt: state.updatedAt } : {}),
-      };
-    }));
-  return summaries
-    .filter((summary): summary is CreatorPresetSummary => summary !== null)
-    .sort((left, right) => left.presetId.localeCompare(right.presetId));
+      });
+  }
+  return summaries.sort((left, right) => left.presetId.localeCompare(right.presetId));
 }
 
 export async function listCreatorPresetSummaries(userId: string): Promise<CreatorPresetSummary[]> {
+  assertCreatorUser(userId);
   return withCreatorStoreLock(userId, () => listPresetSummariesInternal(userId));
 }
 
@@ -666,6 +887,7 @@ export async function activateCreatorPresetVersion(
   presetId: string,
   version: string,
 ): Promise<CreatorPresetState> {
+  assertCreatorUser(userId);
   assertIdentifier(presetId, 'preset_id');
   assertIdentifier(version, 'version');
   return withCreatorStoreLock(userId, async () => {
@@ -693,6 +915,7 @@ export async function rollbackCreatorPreset(
   presetId: string,
   version: string,
 ): Promise<CreatorPresetState> {
+  assertCreatorUser(userId);
   assertIdentifier(presetId, 'preset_id');
   assertIdentifier(version, 'version');
   return withCreatorStoreLock(userId, async () => {
@@ -714,9 +937,17 @@ export async function rollbackCreatorPreset(
 }
 
 export async function appendCreatorAudit(userId: string, input: CreatorAuditInput): Promise<CreatorAuditRecord> {
+  assertCreatorUser(userId);
   return withCreatorStoreLock(userId, async () => appendAuditRecordFresh(userId, createAuditRecord(input)));
 }
 
+/** Lifecycle is the sole owner of reserved state-transition audit events. */
+export async function appendCreatorLifecycleAudit(userId: string, input: CreatorAuditInput): Promise<CreatorAuditRecord> {
+  assertCreatorUser(userId);
+  return withCreatorStoreLock(userId, async () => appendAuditRecordFresh(userId, createAuditRecord(input, true)));
+}
+
 export async function listCreatorAudit(userId: string): Promise<CreatorAuditRecord[]> {
+  assertCreatorUser(userId);
   return withCreatorStoreLock(userId, () => readAuditInternal(userId));
 }

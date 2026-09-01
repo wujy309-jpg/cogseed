@@ -1182,8 +1182,11 @@ function profileToView(id: string, p: StoredProfile): ProfileView {
  */
 export async function listProviders(): Promise<{ providers: ProviderEntry[] }> {
   let mod: CoreAgentModule | null = null;
-  try { mod = await ca(); } catch (e) {
-    log.warn('core-agent unavailable for listProviders; falling back to static catalog', { error: (e as Error).message });
+  try { mod = await ca(); } catch {
+    log.warn('core-agent unavailable for listProviders; falling back to static catalog', {
+      error_code: 'core_agent_unavailable',
+      fallback: 'static_catalog',
+    });
   }
   // OAuth capability source = pi-ai's runtime registry. Custom
   // providers (e.g. MiniMax Portal) are registered synchronously by

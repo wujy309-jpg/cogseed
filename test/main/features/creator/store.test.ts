@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as storage from '../../../../src/main/storage';
+import * as users from '../../../../src/main/features/users';
 
 import type { CreatorPresetManifestV1 } from '../../../../src/main/features/creator/types';
 import {
@@ -75,6 +76,7 @@ function draft(description = 'Bounded local research.'): CreatorPresetDraft {
 
 beforeEach(async () => {
   await fs.rm(path.join(workspaceRoot, userId), { recursive: true, force: true });
+  users.activateUser(userId);
 });
 
 afterEach(async () => {
@@ -179,6 +181,61 @@ describe('Creator preset store', () => {
     });
   });
 
+  it('rejects forged lifecycle audit events from the generic audit API', async () => {
+    for (const event of [
+      'draft.saved',
+      'creator.lifecycle.approved',
+      'creator.verification.recorded',
+      'preset.version_published',
+      'preset.activated',
+      'preset.rolled_back',
+    ]) {
+      await expect(appendCreatorAudit(userId, {
+        event,
+        draftId: 'draft-local-research',
+        presetId: 'local-research',
+        version: '1',
+        metadata: { status: 'passed', manifestDigest: `sha256:${'0'.repeat(64)}` },
+      })).rejects.toThrow('creator_audit_event_reserved');
+    }
+
+    const saved = await saveCreatorDraft(userId, draft('draft-local-research', 'legitimate internal save'));
+    expect((await listCreatorAudit(userId)).find((entry) => entry.draftId === saved.draftId)?.event).toBe('draft.saved');
+  });
+
+  it('rejects unbounded or sensitive generic audit metadata before persistence', async () => {
+    await expect(appendCreatorAudit(userId, {
+      event: 'test.metadata-bound',
+      metadata: { nested: { value: 'x'.repeat(20_000) } },
+    })).rejects.toThrow('creator_audit_metadata_invalid');
+
+    await expect(appendCreatorAudit(userId, {
+      event: 'test.metadata-sensitive',
+      metadata: { innocuous: 'https://private.invalid/path?token=secret' },
+    })).resolves.toMatchObject({ metadata: { innocuous: '[REDACTED]' } });
+  });
+
+  it('fails closed before materializing oversized audit history', async () => {
+    const auditFile = userCreatorAuditFile(userId);
+    await fs.mkdir(path.dirname(auditFile), { recursive: true });
+    const row = JSON.stringify({ schemaVersion: 1, auditId: 'audit-1', event: 'test.history', createdAt: '2026-08-21T06:00:00.000Z' });
+    await fs.writeFile(auditFile, `${Array.from({ length: 5_000 }, () => row).join('\n')}\n`, 'utf8');
+    await expect(listCreatorAudit(userId)).rejects.toThrow('creator_audit_history_too_large');
+  });
+
+  it('bounds preset summary directory enumeration', async () => {
+    const presetsDir = path.dirname(path.dirname(userCreatorPresetStateFile(userId, 'placeholder')));
+    await fs.mkdir(presetsDir, { recursive: true });
+    await Promise.all(Array.from({ length: 300 }, (_unused, index) =>
+      fs.mkdir(path.join(presetsDir, `preset-${index}`), { recursive: true })));
+    await expect(listCreatorPresetSummaries(userId)).rejects.toThrow('creator_preset_summary_too_large');
+  });
+
+  it('returns an array and skips incomplete preset directories', async () => {
+    await fs.mkdir(path.join(path.dirname(path.dirname(userCreatorPresetStateFile(userId, 'placeholder'))), 'incomplete'), { recursive: true });
+    await expect(listCreatorPresetSummaries(userId)).resolves.toEqual([]);
+  });
+
   it('returns stable errors for corrupt draft, version, state, and audit JSON', async () => {
     await fs.mkdir(path.dirname(userCreatorDraftFile(userId, 'draft-local-research')), { recursive: true });
     await fs.writeFile(userCreatorDraftFile(userId, 'draft-local-research'), '{broken', 'utf8');
@@ -193,6 +250,44 @@ describe('Creator preset store', () => {
 
     await fs.writeFile(userCreatorAuditFile(userId), '{broken\n', 'utf8');
     await expect(listCreatorAudit(userId)).rejects.toThrow('creator_audit_corrupt');
+  });
+
+  it('fails closed if a JSON document grows after its initial size check', async () => {
+    const draftFile = userCreatorDraftFile(userId, 'draft-local-research');
+    await fs.mkdir(path.dirname(draftFile), { recursive: true });
+    await fs.writeFile(draftFile, 'x'.repeat(1_100_000), 'utf8');
+    await expect(readCreatorDraft(userId, 'draft-local-research')).rejects.toThrow('creator_draft_too_large');
+  });
+
+  it('rejects an oversized prepared journal record before mutation and remains recoverable', async () => {
+    const oversized = draft('valid large prompt');
+    oversized.manifest.prompt.systemSections = Array.from({ length: 32 }, () => 'section '.repeat(300));
+
+    await expect(saveCreatorDraft(userId, oversized))
+      .rejects.toThrow('creator_operation_journal_record_too_large');
+    await expect(readCreatorDraft(userId, oversized.draftId)).resolves.toBeNull();
+    await expect(listCreatorAudit(userId)).resolves.toEqual([]);
+    await expect(recoverCreatorStoreOperations(userId)).resolves.toBe(0);
+
+    const recovered = await saveCreatorDraft(userId, draft('recovered after rejected oversized operation'));
+    expect(recovered.manifest.description).toBe('recovered after rejected oversized operation');
+    await expect(recoverCreatorStoreOperations(userId)).resolves.toBe(0);
+  });
+
+  it('rejects wrong-user and traversal-shaped ids before any Creator path is built', async () => {
+    const invalidUserIds = ['other-user', '../outside', 'nested/user', 'C:\\outside'];
+    for (const invalidUserId of invalidUserIds) {
+      await expect(listCreatorAudit(invalidUserId)).rejects.toThrow('creator_user_not_active');
+      await expect(recoverCreatorStoreOperations(invalidUserId)).rejects.toThrow('creator_user_not_active');
+      await expect(appendCreatorAudit(invalidUserId, { event: 'test.scope' })).rejects.toThrow('creator_user_not_active');
+      await expect(saveCreatorDraft(invalidUserId, draft())).rejects.toThrow('creator_user_not_active');
+      await expect(readCreatorDraft(invalidUserId, 'draft-local-research')).rejects.toThrow('creator_user_not_active');
+      await expect(readCreatorPresetVersion(invalidUserId, 'local-research', '1')).rejects.toThrow('creator_user_not_active');
+      await expect(readCreatorPresetState(invalidUserId, 'local-research')).rejects.toThrow('creator_user_not_active');
+      await expect(publishCreatorPresetVersion(invalidUserId, 'draft-local-research', '1')).rejects.toThrow('creator_user_not_active');
+      await expect(activateCreatorPresetVersion(invalidUserId, 'local-research', '1')).rejects.toThrow('creator_user_not_active');
+      await expect(rollbackCreatorPreset(invalidUserId, 'local-research', '1')).rejects.toThrow('creator_user_not_active');
+    }
   });
 
   it('maps valid-JSON structural corruption to file-specific errors', async () => {
@@ -301,6 +396,8 @@ describe('Creator preset store', () => {
     expect(journalText).toContain('"recordType":"prepared"');
 
     vi.resetModules();
+    const restartedUsers = await import('../../../../src/main/features/users');
+    restartedUsers.activateUser(userId);
     const restartedStore = await import('../../../../src/main/features/creator/store');
     await expect(restartedStore.recoverCreatorStoreOperations(userId)).resolves.toBe(1);
     await expect(restartedStore.recoverCreatorStoreOperations(userId)).resolves.toBe(0);
@@ -376,6 +473,8 @@ describe('Creator preset store', () => {
     await expect(saveCreatorDraft(userId, draft('torn audit'))).rejects.toThrow('injected_torn_audit');
     vi.restoreAllMocks();
     vi.resetModules();
+    const restartedUsers = await import('../../../../src/main/features/users');
+    restartedUsers.activateUser(userId);
     const restartedStore = await import('../../../../src/main/features/creator/store');
 
     await expect(restartedStore.recoverCreatorStoreOperations(userId)).resolves.toBe(1);
@@ -404,6 +503,8 @@ describe('Creator preset store', () => {
     await expect(saveCreatorDraft(userId, draft('torn completed'))).rejects.toThrow('injected_torn_completed');
     vi.restoreAllMocks();
     vi.resetModules();
+    const restartedUsers = await import('../../../../src/main/features/users');
+    restartedUsers.activateUser(userId);
     const restartedStore = await import('../../../../src/main/features/creator/store');
 
     await expect(restartedStore.recoverCreatorStoreOperations(userId)).resolves.toBe(1);
@@ -442,6 +543,19 @@ describe('Creator preset store', () => {
     await appendCreatorAudit(userId, { event: 'test.fresh' });
 
     expect((await listCreatorAudit(userId)).map((row) => row.event)).toEqual(['test.existing', 'test.fresh']);
+  });
+
+  it('rejects an oversized newline-terminated final audit record before append', async () => {
+    const auditFile = userCreatorAuditFile(userId);
+    await fs.mkdir(path.dirname(auditFile), { recursive: true });
+    await fs.writeFile(auditFile, `${JSON.stringify({
+      schemaVersion: 1,
+      auditId: 'oversized-final',
+      event: `test.${'x'.repeat(70_000)}`,
+      createdAt: '2026-08-21T06:00:00.000Z',
+    })}\n`, 'utf8');
+    await expect(appendCreatorAudit(userId, { event: 'test.fresh' }))
+      .rejects.toThrow('creator_audit_record_too_large');
   });
 
   it('appends a fresh audit record without reading complete audit history', async () => {

@@ -29,6 +29,7 @@ beforeEach(async () => {
 afterEach(() => {
   vi.doUnmock('@earendil-works/pi-ai/oauth');
   vi.doUnmock('#core-agent');
+  vi.doUnmock('../../../src/main/logger');
   process.env.COGSEED_WORKSPACE_ROOT = prevWs;
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
@@ -354,6 +355,24 @@ describe('auth › revealApiKey / updateApiKey', () => {
 });
 
 describe('auth › listProviders grouping', () => {
+  it('logs only stable metadata when the core-agent provider import fails', async () => {
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    vi.doMock('../../../src/main/logger', () => ({ createLogger: () => logger }));
+    vi.doMock('#core-agent', () => {
+      throw new Error('load failed /Users/private/provider.js ssh://private.internal ghp_abcdefghijklmnopqrstuvwxyz1234567890');
+    });
+    vi.doMock('@earendil-works/pi-ai/oauth', () => ({ getOAuthProviders: () => [] }));
+
+    const auth = await import('../../../src/main/features/auth');
+    await auth.listProviders();
+
+    const logs = JSON.stringify(logger.warn.mock.calls);
+    expect(logs).toContain('core_agent_unavailable');
+    expect(logs).not.toContain('/Users/private/provider.js');
+    expect(logs).not.toContain('ssh://private.internal');
+    expect(logs).not.toContain('ghp_abcdefghijklmnopqrstuvwxyz1234567890');
+  });
+
   it('returns providers in catalog order regardless of insertion order', async () => {
     const a = await import('../../../src/main/features/auth');
     // 插入顺序：anthropic → openai。CATALOG 顺序：openai 在 anthropic 之前。

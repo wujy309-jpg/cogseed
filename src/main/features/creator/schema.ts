@@ -23,6 +23,14 @@ const MAX_AGENT_INPUT_OPTIONS = 64;
 const MAX_INPUT_DEFAULT_ITEMS = 64;
 const MAX_NUMERIC_INPUT_VALUE = 1_000_000_000_000;
 const ACCEPT_LIST = /^(?:\.[A-Za-z0-9]+|[A-Za-z0-9.+-]+\/(?:[A-Za-z0-9.+-]+|\*))(?:,(?:\.[A-Za-z0-9]+|[A-Za-z0-9.+-]+\/(?:[A-Za-z0-9.+-]+|\*)))*$/;
+const SAFE_ISSUE_PATH_SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$/;
+const MAX_RECURSIVE_COLLECTION_ITEMS = 256;
+const MAX_RECURSIVE_NODES = 4_096;
+const MAX_RECURSIVE_BYTES = 262_144;
+const MAX_STRUCTURED_OUTPUT_NODES = 512;
+const MAX_STRUCTURED_OUTPUT_STRING = 8_000;
+const MAX_STRUCTURED_OUTPUT_KEY = 256;
+const SENSITIVE_OUTPUT_KEY = /(?:api[_-]?key|access[_-]?key|token|secret|password|passphrase|private[_-]?key|authorization|credential|endpoint|base[_-]?url|path|uri|url|cookie|set[_-]?cookie|headers?[_-]?cookie|session(?:[_-]?(?:id|token|key))?|^sid$|csrf(?:[_-]?token)?|refresh[_-]?token)/i;
 // Mirrors `validateAgentInputs` in features/agents.ts (INPUT_ID_RE): an id that
 // passes the manifest but fails this regex would be silently dropped at
 // materialization, so reject it here instead.
@@ -34,7 +42,11 @@ const AGENT_INPUT_ID_RE = /^[a-z_][a-z0-9_]{0,31}$/;
 const UNSAFE_CONTROL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
 const UNSAFE_URL = /(?:\b(?:https?|ftp|file|ssh|git|mailto|data):|\bwww\.)/i;
 const UNSAFE_ABSOLUTE_PATH = /(?:~\/|[A-Za-z]:[\\/]|\\\\[^\\/\s]+[\\/]|(?:^|[^A-Za-z0-9_])\/(?![\/\s]))/;
+const CATALOG_UNSAFE_CONTROL_CHARS = /[\u0000-\u001F\u007F-\u009F]/;
+const CATALOG_UNSAFE_URL = /(?:\b[A-Za-z][A-Za-z0-9+.-]*:(?:\/\/)?[^\s]|\bwww\.)/i;
+const CATALOG_UNSAFE_ABSOLUTE_PATH = /(?:~[\\/]|[A-Za-z]:[\\/]|\\\\[^\\/\s]+[\\/]|\/\/[^/\s]+\/|(?:^|[^A-Za-z0-9_])\/(?![\/\s])|(?:^|[\s("'`])\\(?![\\\s]))/;
 const UNSAFE_SECRET_ASSIGNMENT = /(?:api[_\s-]?key|access[_\s-]?key|token|secret|password|passphrase|private[_\s-]?key|authorization)\s*[:\uff1a=\uff1d]/i;
+const CATALOG_UNSAFE_SECRET_ASSIGNMENT = /(?:api[_\s-]?key|access[_\s-]?key|token|secret|password|passphrase|private[_\s-]?key|authorization|cookie|set[_\s-]?cookie|headers?[_\s-]?cookie|session(?:[_\s-]?(?:id|token|key))?|sid|csrf(?:[_\s-]?token)?|refresh[_\s-]?token)\s*[:\uff1a=\uff1d]/i;
 const COMMAND_SUBSTITUTION = /(?:`|\$\()/;
 const LINE_BOUNDARY = /\r\n?|\n|\u2028|\u2029/;
 const CLAUSE_DELIMITER = /\s*;\s*/;
@@ -79,8 +91,32 @@ const SCRIPT_RUNTIME_CLASSES = [
   { executable: /^(?:pwsh|powershell)$/i, operand: /\.ps1$/i },
 ] as const;
 const UNSAFE_RAW_CREDENTIAL = /(?:\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b|\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b|\bgh[pousr]_[A-Za-z0-9]{30,}\b|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bAIza[A-Za-z0-9_-]{30,}\b|\bxox[baprs]-[A-Za-z0-9-]{20,}\b|\bBearer\s+[A-Za-z0-9._~+/=-]{16,}\b|\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b|-----BEGIN [A-Z ]*PRIVATE KEY-----)/i;
+const CATALOG_UNSAFE_RAW_CREDENTIAL = /(?:\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b|\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b|\bgh[pousr]_[A-Za-z0-9]{30,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b|\bglpat-[A-Za-z0-9_-]{20,}\b|\bnpm_[A-Za-z0-9]{20,}\b|\bpypi-[A-Za-z0-9_-]{20,}\b|\bya29\.[A-Za-z0-9_-]{20,}\b|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bAIza[A-Za-z0-9_-]{30,}\b|\bxox[baprs]-[A-Za-z0-9-]{20,}\b|\bBearer\s+[A-Za-z0-9._~+/=-]{16,}\b|\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b|-----BEGIN [A-Z ]*PRIVATE KEY-----)/i;
 
-type UnsafeTextIssue = Pick<CreatorSchemaIssue, 'code' | 'message'>;
+export type CreatorUnsafeTextIssue = Pick<CreatorSchemaIssue, 'code' | 'message'>;
+
+/** Enumerate only own enumerable keys, with a scan cap that also bounds hostile prototypes. */
+export function forEachOwnEnumerableCreatorKey(
+  value: object,
+  limit: number,
+  visit: (key: string) => void,
+): boolean {
+  let scanned = 0;
+  try {
+    for (const key in value) {
+      if (++scanned > limit) return false;
+      if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+      visit(key);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function isSensitiveCreatorKey(value: string): boolean {
+  return SENSITIVE_OUTPUT_KEY.test(value.replace(/[^A-Za-z0-9]/g, '').toLowerCase());
+}
 
 type CommandShape = 'none' | 'weak' | 'strong';
 
@@ -360,25 +396,206 @@ function hasUnsafeCommandShape(value: string): boolean {
   return false;
 }
 
-/** Pure, shared safety policy for every string reachable from a manifest. */
-function validateSafeCreatorText(value: string): UnsafeTextIssue | null {
+function validateCreatorText(
+  value: string,
+  strictCatalogPolicy: boolean,
+): CreatorUnsafeTextIssue | null {
   const analyzed = value.normalize('NFKC');
-  if (UNSAFE_CONTROL_CHARS.test(analyzed)) {
+  const controlChars = strictCatalogPolicy ? CATALOG_UNSAFE_CONTROL_CHARS : UNSAFE_CONTROL_CHARS;
+  if (controlChars.test(analyzed)) {
     return { code: 'creator_invalid_value', message: 'control characters are forbidden' };
   }
-  if (UNSAFE_URL.test(analyzed)) {
+  const unsafeUrl = strictCatalogPolicy ? CATALOG_UNSAFE_URL : UNSAFE_URL;
+  if (unsafeUrl.test(analyzed)) {
     return { code: 'creator_invalid_reference', message: 'URLs are forbidden' };
   }
-  if (UNSAFE_ABSOLUTE_PATH.test(analyzed) || analyzed.split(/[\\/]/).includes('..')) {
+  const unsafePath = strictCatalogPolicy ? CATALOG_UNSAFE_ABSOLUTE_PATH : UNSAFE_ABSOLUTE_PATH;
+  if (unsafePath.test(analyzed) || analyzed.split(/[\\/]/).includes('..')) {
     return { code: 'creator_invalid_reference', message: 'absolute paths and traversal are forbidden' };
   }
-  if (UNSAFE_SECRET_ASSIGNMENT.test(analyzed) || UNSAFE_RAW_CREDENTIAL.test(analyzed)) {
+  const unsafeCredential = strictCatalogPolicy ? CATALOG_UNSAFE_RAW_CREDENTIAL : UNSAFE_RAW_CREDENTIAL;
+  if ((strictCatalogPolicy ? CATALOG_UNSAFE_SECRET_ASSIGNMENT : UNSAFE_SECRET_ASSIGNMENT).test(analyzed)
+    || unsafeCredential.test(analyzed)) {
     return { code: 'creator_secret_field', message: 'credentials and secret assignments are forbidden' };
   }
   if (hasUnsafeCommandShape(analyzed)) {
     return { code: 'creator_invalid_value', message: 'commands and shell operators are forbidden' };
   }
   return null;
+}
+
+/** Approved manifest-prose policy. Keep this default stable for Task 3 contracts. */
+export function validateSafeCreatorText(value: string): CreatorUnsafeTextIssue | null {
+  return validateCreatorText(value, false);
+}
+
+/** Preserve useful structural paths while never echoing untrusted object keys. */
+export function safeCreatorIssuePathSegment(value: string): string {
+  return SAFE_ISSUE_PATH_SEGMENT.test(value) && validateSafeCreatorText(value) === null
+    ? value
+    : '[untrusted-key]';
+}
+
+/** Strict policy for bounded provider-controlled strings projected by the catalog. */
+export function validateCreatorCatalogText(value: string): CreatorUnsafeTextIssue | null {
+  return validateCreatorText(value, true);
+}
+
+/** Redacts an arbitrary provider/host text value without returning unsafe bytes. */
+export function sanitizeCreatorCatalogText(value: string): string {
+  const normalized = value.replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ').replace(/\s+/g, ' ').trim();
+  return validateCreatorCatalogText(normalized) ? '[REDACTED]' : normalized;
+}
+
+function sanitizeStructuredOutputValue(
+  value: unknown,
+  depth: number,
+  state: { nodes: number; bytes: number; maxBytes: number },
+  sensitive = false,
+): unknown {
+  if (++state.nodes > MAX_STRUCTURED_OUTPUT_NODES || depth > 20) return '[REDACTED]';
+  if (sensitive) return '[REDACTED]';
+  if (typeof value === 'string') {
+    if (value.length > MAX_STRUCTURED_OUTPUT_STRING) return '[REDACTED]…';
+    const bytes = Buffer.byteLength(value, 'utf8');
+    if (state.bytes + bytes > state.maxBytes) return '[REDACTED]…';
+    state.bytes += bytes;
+    return sanitizeCreatorCatalogText(value);
+  }
+  if (value === null || typeof value === 'boolean' || typeof value === 'number') return value;
+  if (!value || typeof value !== 'object') return '[REDACTED]';
+  if (Array.isArray(value)) {
+    let length: number;
+    try { length = value.length; } catch { return '[REDACTED]'; }
+    if (!Number.isSafeInteger(length) || length > MAX_RECURSIVE_COLLECTION_ITEMS) return '[REDACTED]';
+    const output: unknown[] = [];
+    for (let index = 0; index < length; index += 1) {
+      if (!Object.prototype.hasOwnProperty.call(value, index)) return '[REDACTED]';
+      output.push(sanitizeStructuredOutputValue(value[index], depth + 1, state));
+    }
+    return output;
+  }
+  const output: Record<string, unknown> = {};
+  let invalid = false;
+  const complete = forEachOwnEnumerableCreatorKey(value, MAX_RECURSIVE_COLLECTION_ITEMS, (key) => {
+    if (key.length > MAX_STRUCTURED_OUTPUT_KEY || state.bytes + Buffer.byteLength(key, 'utf8') > state.maxBytes) {
+      invalid = true;
+      return;
+    }
+    state.bytes += Buffer.byteLength(key, 'utf8');
+    const entry = (value as Record<string, unknown>)[key];
+    const keyIsSensitive = isSensitiveCreatorKey(key);
+    const safeKey = keyIsSensitive || validateCreatorCatalogText(key) ? '[REDACTED]' : key;
+    output[safeKey] = sanitizeStructuredOutputValue(
+      entry,
+      depth + 1,
+      state,
+      keyIsSensitive,
+    );
+  });
+  return complete && !invalid ? output : '[REDACTED]';
+}
+
+function embeddedJsonEnd(text: string, start: number): number | undefined {
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === '{' || char === '[') {
+      stack.push(char === '{' ? '}' : ']');
+      continue;
+    }
+    if (char === '}' || char === ']') {
+      if (stack.pop() !== char) return undefined;
+      if (stack.length === 0) return index + 1;
+    }
+  }
+  return undefined;
+}
+
+function sanitizeEmbeddedJsonLine(
+  line: string,
+  state: { nodes: number; bytes: number; maxBytes: number },
+): string {
+  let cursor = 0;
+  let segmentStart = 0;
+  let output = '';
+  let found = false;
+  let fragments = 0;
+  while (cursor < line.length) {
+    if (line[cursor] !== '{' && line[cursor] !== '[') {
+      cursor += 1;
+      continue;
+    }
+    const end = embeddedJsonEnd(line, cursor);
+    if (end === undefined) {
+      cursor += 1;
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line.slice(cursor, end)) as unknown;
+    } catch {
+      cursor += 1;
+      continue;
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      cursor = end;
+      continue;
+    }
+    if (++fragments > MAX_RECURSIVE_COLLECTION_ITEMS) return '[REDACTED]';
+    const safe = JSON.stringify(sanitizeStructuredOutputValue(parsed, 0, state)) ?? '[REDACTED]';
+    output += sanitizeCreatorCatalogText(line.slice(segmentStart, cursor));
+    output += safe;
+    segmentStart = end;
+    cursor = end;
+    found = true;
+  }
+  return found
+    ? `${output}${sanitizeCreatorCatalogText(line.slice(segmentStart))}`
+    : sanitizeCreatorCatalogText(line);
+}
+
+/** Sanitize flat or JSON-structured host output without exposing sensitive fields. */
+export function sanitizeCreatorStructuredOutput(value: unknown, maxBytes = 8_000): string {
+  if (value === undefined) return '';
+  let text: string;
+  if (typeof value === 'string') {
+    if (value.length > MAX_STRUCTURED_OUTPUT_STRING || Buffer.byteLength(value, 'utf8') > maxBytes) return '[REDACTED]…';
+    const state = { nodes: 0, bytes: 0, maxBytes };
+    const lines = value.split(/\r\n?|\n/);
+    if (lines.length > MAX_RECURSIVE_COLLECTION_ITEMS) return '[REDACTED]';
+    text = lines.map((line) => sanitizeEmbeddedJsonLine(line, state)).join('\n');
+  }
+  else {
+    try {
+      text = JSON.stringify(sanitizeStructuredOutputValue(value, 0, { nodes: 0, bytes: 0, maxBytes })) ?? '';
+    } catch { return '[REDACTED]'; }
+  }
+  if (Buffer.byteLength(text, 'utf8') > maxBytes) return '[REDACTED]…';
+  let safe = sanitizeCreatorCatalogText(text);
+  if (typeof value === 'string') try {
+    const parsed = JSON.parse(text) as unknown;
+    if (parsed && typeof parsed === 'object') {
+      safe = JSON.stringify(sanitizeStructuredOutputValue(parsed, 0, { nodes: 0, bytes: 0, maxBytes })) ?? '[REDACTED]';
+    }
+  } catch {
+    // Plain text is already handled by the shared strict catalog policy.
+  }
+  const bytes = Buffer.from(safe, 'utf8');
+  if (bytes.length <= maxBytes) return safe;
+  return `${bytes.subarray(0, maxBytes).toString('utf8')}…`;
 }
 
 function isForbiddenFieldName(key: string): boolean {
@@ -393,8 +610,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null;
 }
 
-function hasDenseIndexes(value: unknown[]): boolean {
-  for (let index = 0; index < value.length; index += 1) {
+function hasDenseIndexes(value: unknown[], length: number): boolean {
+  for (let index = 0; index < length; index += 1) {
     if (!Object.prototype.hasOwnProperty.call(value, index)) return false;
   }
   return true;
@@ -414,15 +631,18 @@ class Validator {
       return null;
     }
     const allowed = new Set(keys);
-    for (const key of Object.keys(value)) {
-      const fieldPath = path ? `${path}.${key}` : key;
-      if (allowed.has(key)) continue;
+    const complete = forEachOwnEnumerableCreatorKey(value, MAX_RECURSIVE_COLLECTION_ITEMS, (key) => {
+      const fieldPath = path
+        ? `${path}.${safeCreatorIssuePathSegment(key)}`
+        : safeCreatorIssuePathSegment(key);
+      if (allowed.has(key)) return;
       if (isForbiddenFieldName(key)) {
         this.issue('creator_secret_field', fieldPath, 'secret, path, remote, network, command, or transport fields are forbidden');
       } else {
         this.issue('creator_unknown_field', fieldPath, 'unknown field');
       }
-    }
+    });
+    if (!complete) this.issue('creator_out_of_range', path, 'object contains too many fields or could not be inspected');
     return value;
   }
 
@@ -505,14 +725,24 @@ class Validator {
       this.issue('creator_invalid_type', path, 'expected an array');
       return null;
     }
-    if (!hasDenseIndexes(value)) {
+    let length: number;
+    try { length = value.length; } catch {
+      this.issue('creator_invalid_type', path, 'array could not be inspected');
+      return null;
+    }
+    if (!Number.isSafeInteger(length) || length < 0) {
+      this.issue('creator_invalid_type', path, 'array length is invalid');
+      return null;
+    }
+    if (length > max) {
+      this.issue('creator_out_of_range', path, `array may contain at most ${max} items`);
+      return null;
+    }
+    if (!hasDenseIndexes(value, length)) {
       this.issue('creator_sparse_array', path, 'sparse arrays are forbidden');
     }
-    if (value.length > max) {
-      this.issue('creator_out_of_range', path, `array may contain at most ${max} items`);
-    }
     const output: T[] = [];
-    for (let index = 0; index < value.length; index += 1) {
+    for (let index = 0; index < length; index += 1) {
       if (!Object.prototype.hasOwnProperty.call(value, index)) continue;
       const parsed = parse(value[index], `${path}.${index}`);
       if (parsed !== null) output.push(parsed);
@@ -527,14 +757,28 @@ function recursivelyRejectUnsafeValues(
   path = '',
   depth = 0,
   seen = new WeakSet<object>(),
+  budget = { nodes: 0, bytes: 0 },
 ): void {
+  if (++budget.nodes > MAX_RECURSIVE_NODES) {
+    v.issue('creator_out_of_range', path, 'manifest contains too many nested values');
+    return;
+  }
   if (depth > 20) {
     v.issue('creator_out_of_range', path, 'nested values may be at most 20 levels deep');
     return;
   }
   if (typeof value === 'string') {
+    budget.bytes += Buffer.byteLength(value, 'utf8');
+    if (budget.bytes > MAX_RECURSIVE_BYTES) {
+      v.issue('creator_out_of_range', path, 'manifest contains too much nested text');
+      return;
+    }
     const unsafe = validateSafeCreatorText(value);
     if (unsafe) v.issue(unsafe.code, path, unsafe.message);
+    return;
+  }
+  if (typeof value === 'bigint' || typeof value === 'function' || typeof value === 'symbol') {
+    v.issue('creator_invalid_type', path, 'value must be JSON-compatible');
     return;
   }
   if (!value || typeof value !== 'object') return;
@@ -544,19 +788,58 @@ function recursivelyRejectUnsafeValues(
   }
   seen.add(value);
   if (Array.isArray(value)) {
-    for (let index = 0; index < value.length; index += 1) {
+    let length: number;
+    try { length = value.length; } catch {
+      v.issue('creator_invalid_type', path, 'array could not be inspected');
+      return;
+    }
+    if (!Number.isSafeInteger(length) || length > MAX_RECURSIVE_COLLECTION_ITEMS) {
+      v.issue('creator_out_of_range', path, 'nested collections exceed the validation bound');
+      return;
+    }
+    for (let index = 0; index < length; index += 1) {
       if (!Object.prototype.hasOwnProperty.call(value, index)) continue;
-      recursivelyRejectUnsafeValues(v, value[index], `${path}.${index}`, depth + 1, seen);
+      recursivelyRejectUnsafeValues(v, value[index], `${path}.${index}`, depth + 1, seen, budget);
     }
     return;
   }
-  for (const [key, entry] of Object.entries(value)) {
-    const fieldPath = path ? `${path}.${key}` : key;
-    if (isForbiddenFieldName(key)) {
-      v.issue('creator_secret_field', fieldPath, 'secret, path, remote, network, command, or transport fields are forbidden');
-    }
-    recursivelyRejectUnsafeValues(v, entry, fieldPath, depth + 1, seen);
+  const complete = forEachOwnEnumerableCreatorKey(value, MAX_RECURSIVE_COLLECTION_ITEMS, (key) => {
+      budget.bytes += Buffer.byteLength(key, 'utf8');
+      if (budget.bytes > MAX_RECURSIVE_BYTES) {
+        v.issue('creator_out_of_range', path, 'manifest contains too much nested text');
+        return;
+      }
+      const entry = value[key];
+      const fieldPath = path
+        ? `${path}.${safeCreatorIssuePathSegment(key)}`
+        : safeCreatorIssuePathSegment(key);
+      if (isForbiddenFieldName(key)) {
+        v.issue('creator_secret_field', fieldPath, 'secret, path, remote, network, command, or transport fields are forbidden');
+      }
+      recursivelyRejectUnsafeValues(v, entry, fieldPath, depth + 1, seen, budget);
+  });
+  if (!complete) {
+    v.issue('creator_invalid_value', path, 'nested value could not be inspected');
   }
+}
+
+function safelyMatchesEmptyFileDefault(value: unknown, expected: unknown): boolean {
+  try {
+    if (expected === '') return value === '';
+    if (!Array.isArray(value) || !Array.isArray(expected) || value.length !== expected.length) return false;
+    for (let index = 0; index < expected.length; index += 1) {
+      if (!Object.prototype.hasOwnProperty.call(value, index) || value[index] !== expected[index]) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasOwnEnumerableKey(value: object): boolean {
+  let found = false;
+  forEachOwnEnumerableCreatorKey(value, 1, () => { found = true; });
+  return found;
 }
 
 /**
@@ -704,7 +987,7 @@ function parseAgentInput(
     defaultValue = parsed;
   } else if (type === 'file') {
     const expected = multiple === true ? [] : '';
-    if (raw.default !== undefined && JSON.stringify(raw.default) !== JSON.stringify(expected)) {
+    if (raw.default !== undefined && !safelyMatchesEmptyFileDefault(raw.default, expected)) {
       v.issue('creator_invalid_value', `${path}.default`, 'file defaults must be empty');
     }
     defaultValue = expected;
@@ -752,7 +1035,7 @@ function parseAgentInput(
 }
 
 /** Strictly validates and normalizes a Creator manifest without mutating input. */
-export function validateCreatorPresetManifest(input: unknown): CreatorSchemaResult {
+function validateCreatorPresetManifestInternal(input: unknown): CreatorSchemaResult {
   const v = new Validator();
   recursivelyRejectUnsafeValues(v, input);
   const root = v.object(input, '', [
@@ -777,7 +1060,7 @@ export function validateCreatorPresetManifest(input: unknown): CreatorSchemaResu
         'category', 'icon', 'color', 'interactive', 'description_zh', 'description_en',
         'knowhow', 'standards', 'inputs',
       ]);
-  if (agentRaw && Object.keys(agentRaw).length === 0) {
+  if (agentRaw && !hasOwnEnumerableKey(agentRaw)) {
     v.issue('creator_invalid_value', 'agent', 'agent section must not be empty');
   }
   const seenInputIds = new Set<string>();
@@ -915,4 +1198,15 @@ export function validateCreatorPresetManifest(input: unknown): CreatorSchemaResu
       },
     },
   };
+}
+
+export function validateCreatorPresetManifest(input: unknown): CreatorSchemaResult {
+  try {
+    return validateCreatorPresetManifestInternal(input);
+  } catch {
+    return {
+      ok: false,
+      issues: [{ code: 'creator_invalid_value', path: '', message: 'manifest could not be inspected' }],
+    };
+  }
 }
