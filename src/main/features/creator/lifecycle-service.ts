@@ -28,14 +28,13 @@ const MAX_VERIFICATION_EVIDENCE = 256;
 const MAX_VERIFICATION_EVIDENCE_LENGTH = 4_000;
 const MAX_VERIFICATION_SCALAR_LENGTH = 256;
 async function defaultMaterializationCheck(
-  _userId: string,
-  _presetId: string,
-  _version: string,
-  _manifestDigest: string,
+  userId: string,
+  presetId: string,
+  version: string,
+  manifestDigest: string,
 ): Promise<boolean> {
-  // Runtime materialization is owned by a later integration layer. Until that
-  // layer supplies an explicit verifier, lifecycle activation fails closed.
-  return false;
+  const { isCreatorPresetMaterializedForRuntime } = await import('./materializer');
+  return isCreatorPresetMaterializedForRuntime(userId, presetId, version, manifestDigest);
 }
 
 const VERIFICATION_CHECK_IDS = [

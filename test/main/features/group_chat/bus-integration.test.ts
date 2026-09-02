@@ -1567,7 +1567,11 @@ describe("group_chat bus integration › structured user recipient", () => {
     });
 
     const auth = await import("../../../../src/main/features/auth");
-    vi.spyOn(auth, "hasConfiguredModel").mockReturnValue({ configured: false });
+    const users = await import("../../../../src/main/features/users");
+    vi.spyOn(auth, "hasConfiguredModel").mockReturnValue({ configured: true });
+    vi.spyOn(auth, "hasConfiguredModelForUser").mockImplementation((userId) => (
+      userId === TEST_UID ? { configured: false } : { configured: true }
+    ));
     const registry = await import("../../../../src/main/features/local_agents/registry");
     vi.spyOn(registry, "detectAll").mockResolvedValue([
       {
@@ -1581,19 +1585,25 @@ describe("group_chat bus integration › structured user recipient", () => {
       },
     ] as Awaited<ReturnType<typeof registry.detectAll>>);
 
-    const groupChat = await import("../../../../src/main/features/group_chat");
-    const result = await groupChat.send({
-      userId: TEST_UID,
-      cid,
-      text: "在吗",
-      recipient_agent_id: gatewayAgentId,
-      recipient_origin: "cli_fallback",
-    });
+    try {
+      users.activateUser("group-fallback-other-user");
+      const groupChat = await import("../../../../src/main/features/group_chat");
+      const result = await groupChat.send({
+        userId: TEST_UID,
+        cid,
+        text: "在吗",
+        recipient_agent_id: gatewayAgentId,
+        recipient_origin: "cli_fallback",
+      });
 
-    expect(result).toMatchObject({
-      ok: true,
-      msg: { text: "在吗", to: [gatewayAgentId] },
-    });
+      expect(result).toMatchObject({
+        ok: true,
+        msg: { text: "在吗", to: [gatewayAgentId] },
+      });
+      expect(auth.hasConfiguredModelForUser).toHaveBeenCalledWith(TEST_UID);
+    } finally {
+      users.activateUser(TEST_UID);
+    }
   });
 
   it("refuses to launch the external Agent when the user denies the confirm dialog", async () => {

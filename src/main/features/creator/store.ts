@@ -295,7 +295,7 @@ function redactAuditValue(
     if (value.length > MAX_AUDIT_METADATA_STRING) throw new Error('creator_audit_metadata_invalid');
     state.bytes += Buffer.byteLength(value, 'utf8');
     if (state.bytes > MAX_AUDIT_METADATA_BYTES) throw new Error('creator_audit_metadata_invalid');
-    return key === 'manifestDigest' && DIGEST.test(value)
+    return (key === 'manifestDigest' || key === 'draftManifestDigest') && DIGEST.test(value)
       ? value
       : sanitizeLogTextForUpload(sanitizeCreatorCatalogText(value));
   }

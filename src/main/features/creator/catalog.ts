@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 
 import { AGENT_CAPABILITIES, type AgentCapability } from '../agent_execution/capability-catalog';
-import { listModels, listProviders, type ProviderEntry } from '../auth';
-import { listSkills, type SkillListing } from '../skills';
+import { listModelsForUser, listProvidersForUser, type ProviderEntry } from '../auth';
+import { listSkillsForUser, type SkillListing } from '../skills';
 import { getActiveUserId } from '../users';
 import { forEachOwnEnumerableCreatorKey, validateCreatorCatalogText } from './schema';
 
@@ -21,9 +21,9 @@ export interface CreatorCapabilityDescriptor {
 
 export interface CreatorCatalogDependencies {
   getActiveUserId?: () => string;
-  listProviders?: () => Promise<{ providers: ProviderEntry[] }>;
-  listModels?: (providerId: string) => Promise<{ models: { id: string; name: string }[] }>;
-  listSkills?: () => Promise<SkillListing[]>;
+  listProviders?: (userId: string) => Promise<{ providers: ProviderEntry[] }>;
+  listModels?: (userId: string, providerId: string) => Promise<{ models: { id: string; name: string }[] }>;
+  listSkills?: (userId: string) => Promise<SkillListing[]>;
   signal?: AbortSignal;
 }
 
@@ -349,7 +349,7 @@ export async function buildCreatorCapabilityCatalog(
     const activeUserId = (deps.getActiveUserId ?? getActiveUserId)();
     if (!userId || activeUserId !== userId) throw new CreatorCatalogError('creator_user_not_active');
 
-    const providerResult = await awaitCatalogOperation((deps.listProviders ?? listProviders)(), deps.signal);
+    const providerResult = await awaitCatalogOperation((deps.listProviders ?? listProvidersForUser)(userId), deps.signal);
     throwIfCatalogAborted(deps.signal);
     const configuredProviders: ProviderEntry[] = [];
     for (const provider of takeBounded(providerResult.providers, MAX_PROVIDER_INPUT_ITEMS)) {
@@ -364,7 +364,7 @@ export async function buildCreatorCapabilityCatalog(
       const batch = providers.slice(offset, offset + 4);
       const results = await Promise.all(batch.map(async (provider) => ({
         provider,
-        models: takeBounded((await awaitCatalogOperation((deps.listModels ?? listModels)(provider.id), deps.signal)).models, MAX_MODEL_INPUT_ITEMS)
+        models: takeBounded((await awaitCatalogOperation((deps.listModels ?? listModelsForUser)(userId, provider.id), deps.signal)).models, MAX_MODEL_INPUT_ITEMS)
           .filter((model): model is { id: string; name: string } => (
             !!model && typeof model === 'object'
             && typeof model.id === 'string' && typeof model.name === 'string'
@@ -387,7 +387,7 @@ export async function buildCreatorCapabilityCatalog(
       health: 'ready' as const,
     })))).slice(0, MAX_MODEL_ITEMS);
 
-    const listedSkills = await awaitCatalogOperation((deps.listSkills ?? listSkills)(), deps.signal);
+    const listedSkills = await awaitCatalogOperation((deps.listSkills ?? listSkillsForUser)(userId), deps.signal);
     throwIfCatalogAborted(deps.signal);
     if (!Array.isArray(listedSkills) || listedSkills.length > MAX_SKILL_INPUT_ITEMS) {
       throw new CreatorCatalogError('creator_catalog_dependency_failed');

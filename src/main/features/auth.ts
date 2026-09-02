@@ -89,7 +89,10 @@ import {
   assertModelProviderAllowed,
   isModelProviderAllowed,
 } from '../model/provider_policy';
-import { isCooledDown, getCooldown, clearCooldown } from '../model/core-agent/profile-cooldown';
+import {
+  isCooledDown, getCooldown, clearCooldown,
+  isCooledDownForUser, getCooldownForUser, clearCooldownForUser,
+} from '../model/core-agent/profile-cooldown';
 import type { KeyFailureKind } from '../model/core-agent/auth-error';
 import { createLogger } from '../logger';
 import { t } from '../i18n';
@@ -519,9 +522,13 @@ function loadProfilesForActiveUserOrEmpty(): ProfilesFile {
 }
 
 export function getProfilesStoreStatus(): ProfilesStoreStatus {
+  return getProfilesStoreStatusForUser(getActiveUserId());
+}
+
+export function getProfilesStoreStatusForUser(userId: string): ProfilesStoreStatus {
   let raw = '';
   try {
-    raw = fs.readFileSync(profilesFile(), 'utf-8');
+    raw = fs.readFileSync(profilesFile(userId), 'utf-8');
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       return { ok: true, exists: false, encrypted: false, recoverable: false, reason: 'missing', entries: 0, profiles: 0 };
@@ -534,8 +541,7 @@ export function getProfilesStoreStatus(): ProfilesStoreStatus {
 
   const encrypted = localSecrets.isEncryptedSecret(raw);
   try {
-    const uid = getActiveUserId();
-    const { json } = decryptProfilesPayload(raw, uid);
+    const { json } = decryptProfilesPayload(raw, userId);
     const data = JSON.parse(json) as Partial<ProfilesFile>;
     return {
       ok: true, exists: true, encrypted, recoverable: false,
@@ -554,19 +560,23 @@ export function getProfilesStoreStatus(): ProfilesStoreStatus {
 }
 
 export function resetProfilesStoreAfterDecryptFailure(): { ok: boolean; backupPath?: string; error?: string } {
-  const status = getProfilesStoreStatus();
+  return resetProfilesStoreAfterDecryptFailureForUser(getActiveUserId());
+}
+
+export function resetProfilesStoreAfterDecryptFailureForUser(userId: string): { ok: boolean; backupPath?: string; error?: string } {
+  const status = getProfilesStoreStatusForUser(userId);
   if (status.ok) return { ok: true };
   if (!status.recoverable) return { ok: false, error: status.error || 'profiles store is not recoverable' };
-  ensureAuthDir();
+  ensureAuthDir(userId);
   let backupPath = '';
   try {
-    const source = profilesFile();
+    const source = profilesFile(userId);
     if (fs.existsSync(source)) {
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
       backupPath = `${source}.unreadable-${stamp}.bak`;
       fs.copyFileSync(source, backupPath);
     }
-    saveProfiles(emptyProfilesStore());
+    saveProfilesForUser(userId, emptyProfilesStore());
     return { ok: true, ...(backupPath ? { backupPath } : {}) };
   } catch (err) {
     return { ok: false, ...(backupPath ? { backupPath } : {}), error: (err as Error).message };
@@ -1034,8 +1044,8 @@ export interface AuthConfig { provider: string; model: string }
  * LLM-driven feature should treat `configured === false` as "disabled
  * pending setup" and redirect the user to the settings page.
  */
-export function hasConfiguredModel(): { configured: boolean } {
-  const store = loadProfilesForActiveUserOrEmpty();
+export function hasConfiguredModelForUser(userId: string): { configured: boolean } {
+  const store = loadProfilesForUser(userId);
   if (store.entries.some((e) => isEntryAllowed(store, e))) return { configured: true };
   if (process.env.ANTHROPIC_API_KEY) return { configured: true };
   return { configured: false };
@@ -1056,16 +1066,32 @@ export function getConfiguredModelCooldown(): {
   kind: KeyFailureKind;
   reason: string;
 } | null {
-  const store = loadProfilesForActiveUserOrEmpty();
+  const store = loadProfilesForUser(userId);
   let best: { profileId: string; cooledUntil: number; kind: KeyFailureKind; reason: string } | null = null;
   for (const entry of store.entries) {
     if (!isEntryAllowed(store, entry)) continue;
-    const cooldown = getCooldown(entry.profileId);
+    const cooldown = getCooldownForUser(userId, entry.profileId);
     if (!cooldown) continue;
     const current = { profileId: entry.profileId, ...cooldown };
     if (!best || current.cooledUntil < best.cooledUntil) best = current;
   }
   return best;
+}
+
+export function getConfiguredModelCooldown(): ReturnType<typeof getConfiguredModelCooldownForUser> {
+  try {
+    const userId = getActiveUserId();
+    const scoped = getConfiguredModelCooldownForUser(userId);
+    if (scoped) return scoped;
+    const store = loadProfilesForActiveUserOrEmpty();
+    let best: ReturnType<typeof getConfiguredModelCooldownForUser> = null;
+    for (const entry of store.entries) {
+      const cooldown = getCooldown(entry.profileId);
+      if (cooldown && (!best || cooldown.cooledUntil < best.cooledUntil)) best = { profileId: entry.profileId, ...cooldown };
+    }
+    return best;
+  }
+  catch { return null; }
 }
 
 /**
@@ -1076,8 +1102,8 @@ export function getConfiguredModelCooldown(): {
  * refresh either succeeded (profile no longer counts as expired) or failed
  * (the expired profile is skipped and the user needs to reauthorize).
  */
-export function getConfiguredModelOAuthExpiredMessage(): string | null {
-  const store = loadProfilesForActiveUserOrEmpty();
+export function getConfiguredModelOAuthExpiredMessageForUser(userId: string): string | null {
+  const store = loadProfilesForUser(userId);
   for (const entry of store.entries) {
     if (!isEntryAllowed(store, entry)) continue;
     const profile = store.profiles[entry.profileId];
@@ -1088,11 +1114,20 @@ export function getConfiguredModelOAuthExpiredMessage(): string | null {
   return null;
 }
 
+export function getConfiguredModelOAuthExpiredMessage(): string | null {
+  try { return getConfiguredModelOAuthExpiredMessageForUser(getActiveUserId()); }
+  catch { return null; }
+}
+
 export async function getConfig(): Promise<AuthConfig> {
   // Default (provider, model) pair is `entries[0]` — the top of the priority
   // list. Credentials + model selection share one source of truth
   // (auth-profiles.json); there's no longer a fallback config.json.
-  const store = loadProfilesForActiveUserOrEmpty();
+  return getConfigForUser(getActiveUserId());
+}
+
+export async function getConfigForUser(userId: string): Promise<AuthConfig> {
+  const store = loadProfilesForUser(userId);
   const first = store.entries.find((e) => isEntryAllowed(store, e));
   if (first) return { provider: first.provider, model: first.model };
   return { provider: '', model: '' };
@@ -1180,7 +1215,7 @@ function profileToView(id: string, p: StoredProfile): ProfileView {
  * OAuth-only backends like `openai-codex` are hidden and reached via the
  * `oauthProvider` field on their API-key-facing sibling.
  */
-export async function listProviders(): Promise<{ providers: ProviderEntry[] }> {
+export async function listProvidersForUser(userId: string): Promise<{ providers: ProviderEntry[] }> {
   let mod: CoreAgentModule | null = null;
   try { mod = await ca(); } catch {
     log.warn('core-agent unavailable for listProviders; falling back to static catalog', {
@@ -1203,7 +1238,7 @@ export async function listProviders(): Promise<{ providers: ProviderEntry[] }> {
     oauthIds = new Set(OAUTH_PROVIDERS.map((p) => p.id));
   }
 
-  const store = loadProfiles();
+  const store = loadProfilesForUser(userId);
   const byProvider = new Map<string, ProfileView[]>();
   for (const [id, prof] of Object.entries(store.profiles)) {
     if (!isStoredProfileAllowed(prof)) continue;
@@ -1306,6 +1341,11 @@ export async function listProviders(): Promise<{ providers: ProviderEntry[] }> {
   return { providers };
 }
 
+/** Active-user compatibility wrapper. User-scoped callers must use the explicit API. */
+export async function listProviders(): Promise<{ providers: ProviderEntry[] }> {
+  return listProvidersForUser(getActiveUserId());
+}
+
 /**
  * Model list for a provider.
  *
@@ -1316,7 +1356,7 @@ export async function listProviders(): Promise<{ providers: ProviderEntry[] }> {
  *      minor) version bands from pi-ai's raw list. Only used for
  *      uncurated providers.
  */
-export async function listModels(providerId: string): Promise<{ models: { id: string; name: string; contextWindow?: number; vision?: boolean; reasoning?: boolean }[] }> {
+export async function listModelsForUser(userId: string, providerId: string): Promise<{ models: { id: string; name: string; contextWindow?: number; vision?: boolean; reasoning?: boolean }[] }> {
   const id = String(providerId || '').trim();
   if (!id) return { models: [] };
   if (isCustomProviderId(id)) {
@@ -1387,6 +1427,11 @@ export async function listModels(providerId: string): Promise<{ models: { id: st
   }
 }
 
+/** Active-user compatibility wrapper. User-scoped callers must use the explicit API. */
+export async function listModels(providerId: string): Promise<{ models: { id: string; name: string; contextWindow?: number; vision?: boolean; reasoning?: boolean }[] }> {
+  return listModelsForUser(getActiveUserId(), providerId);
+}
+
 function isOpenAICompatibleProvider(providerId: string): boolean {
   return String(providerId || '').trim() === 'openai-compatible';
 }
@@ -1430,6 +1475,20 @@ export async function addApiKey(
   label?: string,
   opts?: { baseUrl?: string; maxOutputTokens?: number },
 ): Promise<{ profileId: string }> {
+  const result = await addApiKeyForUser(getActiveUserId(), providerId, apiKey, label, opts);
+  // Preserve the legacy process-wide cooldown contract for callers that still
+  // use markCooldown(profileId), while the explicit-user path remains scoped.
+  clearCooldown(result.profileId);
+  return result;
+}
+
+export async function addApiKeyForUser(
+  userId: string,
+  providerId: string,
+  apiKey: string,
+  label?: string,
+  opts?: { baseUrl?: string; maxOutputTokens?: number },
+): Promise<{ profileId: string }> {
   const id = String(providerId || '').trim();
   const key = String(apiKey || '').trim();
   if (!id) throw new Error('provider required');
@@ -1438,7 +1497,7 @@ export async function addApiKey(
   const baseUrl = normalizeCustomBaseUrl(id, opts?.baseUrl);
   const maxOutputTokens = normalizeOpenAICompatibleMaxOutputTokens(id, opts?.maxOutputTokens);
 
-  const store = loadProfiles();
+  const store = loadProfilesForUser(userId);
   const chosenLabel = label ? sanitizeLabel(label) : autoLabel(store, id);
   const profileId = makeProfileId(id, chosenLabel);
   const now = Date.now();
@@ -1454,25 +1513,29 @@ export async function addApiKey(
     createdAt: existing?.createdAt ?? now,
     lastUsed: 0,
   };
-  saveProfiles(store);
+  saveProfilesForUser(userId, store);
   // User updated the key — their manual intervention overrides any auto
   // cooldown from a past failure. Clear it so the next chat request
   // actually tries this profile again instead of skipping it.
-  clearCooldown(profileId);
+  clearCooldownForUser(userId, profileId);
   invalidateCoreAgentRunner();
   return { profileId };
 }
 
 export async function removeCredential(profileId: string): Promise<{ removed: boolean }> {
+  return removeCredentialForUser(getActiveUserId(), profileId);
+}
+
+export async function removeCredentialForUser(userId: string, profileId: string): Promise<{ removed: boolean }> {
   const id = String(profileId || '').trim();
   if (!id) throw new Error('profileId required');
-  const store = loadProfiles();
+  const store = loadProfilesForUser(userId);
   if (!store.profiles[id]) return { removed: false };
   delete store.profiles[id];
   // Cascade: any entry referencing this profile is now dangling; drop those
   // entries too so the priority list doesn't silently skip a hole.
   store.entries = store.entries.filter((e) => e.profileId !== id);
-  saveProfiles(store);
+  saveProfilesForUser(userId, store);
   invalidateCoreAgentRunner();
   return { removed: true };
 }
@@ -1481,10 +1544,18 @@ export async function renameProfile(
   profileId: string,
   newLabel: string,
 ): Promise<{ profileId: string }> {
+  return renameProfileForUser(getActiveUserId(), profileId, newLabel);
+}
+
+export async function renameProfileForUser(
+  userId: string,
+  profileId: string,
+  newLabel: string,
+): Promise<{ profileId: string }> {
   const id = String(profileId || '').trim();
   const label = sanitizeLabel(newLabel);
   if (!id) throw new Error('profileId required');
-  const store = loadProfiles();
+  const store = loadProfilesForUser(userId);
   const prof = store.profiles[id];
   if (!prof) throw new Error('profile not found');
   const newId = makeProfileId(prof.provider, label);
@@ -1494,7 +1565,7 @@ export async function renameProfile(
   store.profiles[newId] = { ...prof, label };
   // Update any entries referencing the old profile id.
   store.entries = store.entries.map((e) => e.profileId === id ? { ...e, profileId: newId } : e);
-  saveProfiles(store);
+  saveProfilesForUser(userId, store);
   invalidateCoreAgentRunner();
   return { profileId: newId };
 }
@@ -1502,9 +1573,13 @@ export async function renameProfile(
 // Full API key is returned only on explicit reveal. Every other path keeps
 // renderer-facing payloads masked (`profileMasked` / `apiKeyMasked`).
 export async function revealApiKey(profileId: string): Promise<{ apiKey: string }> {
+  return revealApiKeyForUser(getActiveUserId(), profileId);
+}
+
+export async function revealApiKeyForUser(userId: string, profileId: string): Promise<{ apiKey: string }> {
   const id = String(profileId || '').trim();
   if (!id) throw new Error('profileId required');
-  const store = loadProfiles();
+  const store = loadProfilesForUser(userId);
   if (isCustomProviderId(id)) {
     const custom = customProviderForId(store, id);
     return { apiKey: custom?.apiKey || '' };
@@ -1518,17 +1593,25 @@ export async function updateApiKey(
   profileId: string,
   apiKey: string,
 ): Promise<{ profileId: string }> {
+  return updateApiKeyForUser(getActiveUserId(), profileId, apiKey);
+}
+
+export async function updateApiKeyForUser(
+  userId: string,
+  profileId: string,
+  apiKey: string,
+): Promise<{ profileId: string }> {
   const id = String(profileId || '').trim();
   const key = String(apiKey || '').trim();
   if (!id) throw new Error('profileId required');
   if (!key) throw new Error('api key required');
-  const store = loadProfiles();
+  const store = loadProfilesForUser(userId);
   if (isCustomProviderId(id)) {
     const custom = customProviderForId(store, id);
     if (!custom) throw new Error('custom provider not found');
     custom.apiKey = key;
     custom.updatedAt = Date.now();
-    saveProfiles(store);
+    saveProfilesForUser(userId, store);
     invalidateCoreAgentRunner();
     return { profileId: id };
   }
@@ -1536,10 +1619,10 @@ export async function updateApiKey(
   if (!prof) throw new Error('profile not found');
   if (prof.type !== 'api_key') throw new Error('profile is not an api key profile');
   store.profiles[id] = { ...prof, key };
-  saveProfiles(store);
+  saveProfilesForUser(userId, store);
   // User updated the key — mirror addApiKey: drop any failure cooldown so the
   // next request actually tries this profile again.
-  clearCooldown(id);
+  clearCooldownForUser(userId, id);
   invalidateCoreAgentRunner();
   return { profileId: id };
 }
@@ -1643,10 +1726,11 @@ export interface ListEntriesOptions {
   includeUnavailable?: boolean;
 }
 
-export async function listEntries(
+export async function listEntriesForUser(
+  userId: string,
   options: ListEntriesOptions = {},
 ): Promise<{ entries: EntryView[] }> {
-  const store = loadProfiles();
+  const store = loadProfilesForUser(userId);
   const lookup = await buildModelNameLookup();
   const includeUnavailable = options.includeUnavailable === true;
   return {
@@ -1660,7 +1744,17 @@ export async function listEntries(
   };
 }
 
-export async function addEntry({
+export async function listEntries(options: ListEntriesOptions = {}): Promise<{ entries: EntryView[] }> {
+  return listEntriesForUser(getActiveUserId(), options);
+}
+
+export async function addEntry(args: {
+  provider: string; model: string; profileId: string; position?: 'front' | 'back';
+}): Promise<{ entryId: string }> {
+  return addEntryForUser(getActiveUserId(), args);
+}
+
+export async function addEntryForUser(userId: string, {
   provider,
   model,
   profileId,
@@ -1675,7 +1769,7 @@ export async function addEntry({
   const m = String(model || '').trim();
   const pid = String(profileId || '').trim();
   if (!p || !m || !pid) throw new Error('provider / model / profileId required');
-  const store = loadProfiles();
+  const store = loadProfilesForUser(userId);
   const custom = customProviderForId(store, p);
   if (custom) {
     if (pid !== p) throw new Error('custom provider profile mismatch');
@@ -1705,16 +1799,20 @@ export async function addEntry({
   };
   if (position === 'back') store.entries.push(entry);
   else store.entries.unshift(entry);
-  saveProfiles(store);
+  saveProfilesForUser(userId, store);
   invalidateCoreAgentRunner();
   return { entryId };
 }
 
 export async function updateEntryModel(entryId: string, model: string): Promise<{ entryId: string; model: string }> {
+  return updateEntryModelForUser(getActiveUserId(), entryId, model);
+}
+
+export async function updateEntryModelForUser(userId: string, entryId: string, model: string): Promise<{ entryId: string; model: string }> {
   const id = String(entryId || '').trim();
   const m = String(model || '').trim();
   if (!id || !m) throw new Error('entryId and model required');
-  const store = loadProfiles();
+  const store = loadProfilesForUser(userId);
   const target = store.entries.find((e) => e.entryId === id);
   if (!target) throw new Error('entry not found');
   const custom = customProviderForId(store, target.provider);
@@ -1730,26 +1828,34 @@ export async function updateEntryModel(entryId: string, model: string): Promise<
   );
   if (collision) throw new Error('same (provider, model, profile) entry already exists');
   target.model = m;
-  saveProfiles(store);
+  saveProfilesForUser(userId, store);
   invalidateCoreAgentRunner();
   return { entryId: id, model: m };
 }
 
 export async function removeEntry(entryId: string): Promise<{ removed: boolean }> {
+  return removeEntryForUser(getActiveUserId(), entryId);
+}
+
+export async function removeEntryForUser(userId: string, entryId: string): Promise<{ removed: boolean }> {
   const id = String(entryId || '').trim();
   if (!id) throw new Error('entryId required');
-  const store = loadProfiles();
+  const store = loadProfilesForUser(userId);
   const before = store.entries.length;
   store.entries = store.entries.filter((e) => e.entryId !== id);
   if (store.entries.length === before) return { removed: false };
-  saveProfiles(store);
+  saveProfilesForUser(userId, store);
   invalidateCoreAgentRunner();
   return { removed: true };
 }
 
 export async function reorderEntries(orderedIds: string[]): Promise<{ entries: EntryView[] }> {
+  return reorderEntriesForUser(getActiveUserId(), orderedIds);
+}
+
+export async function reorderEntriesForUser(userId: string, orderedIds: string[]): Promise<{ entries: EntryView[] }> {
   if (!Array.isArray(orderedIds)) throw new Error('orderedIds must be an array');
-  const store = loadProfiles();
+  const store = loadProfilesForUser(userId);
   const byId = new Map(store.entries.map((e) => [e.entryId, e]));
   const reordered: Entry[] = [];
   for (const id of orderedIds) {
@@ -1761,7 +1867,7 @@ export async function reorderEntries(orderedIds: string[]): Promise<{ entries: E
     if (byId.has(e.entryId)) reordered.push(e);
   }
   store.entries = reordered;
-  saveProfiles(store);
+  saveProfilesForUser(userId, store);
   invalidateCoreAgentRunner();
   const lookup = await buildModelNameLookup();
   return {
@@ -2214,6 +2320,7 @@ type FlowStatus =
 
 interface Flow {
   flowId: string;
+  ownerUserId: string;
   provider: string;
   label: string;
   status: FlowStatus;
@@ -2224,10 +2331,18 @@ interface Flow {
    *  paste the code, whichever they prefer. */
   manualInputResolver?: (value: string) => void;
   abortController: AbortController;
+  cancelled: boolean;
 }
 
 const flows = new Map<string, Flow>();
 let _flowCounter = 0;
+const OAUTH_FLOW_RETENTION_MS = 5_000;
+
+function scheduleOAuthFlowCleanup(flow: Flow): void {
+  setTimeout(() => {
+    if (flows.get(flow.flowId) === flow) flows.delete(flow.flowId);
+  }, OAUTH_FLOW_RETENTION_MS);
+}
 
 function nextFlowId(): string {
   _flowCounter = (_flowCounter + 1) % 100000;
@@ -2294,9 +2409,11 @@ export function openExternalUrl(url: string): { ok: boolean; error?: string } {
 }
 
 export async function startOAuth(
+  userId: string,
   providerId: string,
   label?: string,
 ): Promise<{ flowId: string; status: FlowStatus }> {
+  const ownerUserId = assertAuthUserId(userId);
   const id = String(providerId || '').trim();
   if (!id) throw new Error('provider required');
   const oauth = await piOauth();
@@ -2309,16 +2426,18 @@ export async function startOAuth(
   }
 
   const flowId = nextFlowId();
-  const chosenLabel = label ? sanitizeLabel(label) : autoLabel(loadProfiles(), id);
+  const chosenLabel = label ? sanitizeLabel(label) : autoLabel(loadProfilesForUser(ownerUserId), id);
   // Device-code style flows (MiniMax) don't bind a local port — the UI must
   // hide its "paste callback URL" input in that case.
   const usesCallbackServer = provider.usesCallbackServer !== false;
   const flow: Flow = {
     flowId,
+    ownerUserId,
     provider: id,
     label: chosenLabel,
     status: { kind: 'starting' },
     abortController: new AbortController(),
+    cancelled: false,
   };
   flows.set(flowId, flow);
 
@@ -2326,6 +2445,7 @@ export async function startOAuth(
     .login({
       signal: flow.abortController.signal,
       onAuth: (info) => {
+        if (flow.cancelled) return;
         flow.status = {
           kind: 'awaiting_auth',
           url: info.url,
@@ -2337,6 +2457,7 @@ export async function startOAuth(
         openExternalUrl(info.url);
       },
       onDeviceCode: (info) => {
+        if (flow.cancelled) return;
         const details = [`Code: ${info.userCode}`];
         if (info.expiresInSeconds) details.push(`Expires in ${info.expiresInSeconds} seconds.`);
         flow.status = {
@@ -2348,6 +2469,7 @@ export async function startOAuth(
         openExternalUrl(info.verificationUri);
       },
       onPrompt: async (prompt) => {
+        if (flow.cancelled) return '';
         flow.status = {
           kind: 'awaiting_input',
           prompt: {
@@ -2374,12 +2496,17 @@ export async function startOAuth(
       //      `finally { server.close() }` block, so port 1455 gets freed
       //      instead of leaking.
       onManualCodeInput: () => new Promise<string>((resolve) => {
+        if (flow.cancelled) {
+          resolve('');
+          return;
+        }
         flow.manualInputResolver = (val) => {
           flow.manualInputResolver = undefined;
           resolve(val);
         };
       }),
       onSelect: async (prompt) => {
+        if (flow.cancelled) return undefined;
         const selected = prompt.options[0];
         flow.status = {
           kind: 'progress',
@@ -2388,11 +2515,14 @@ export async function startOAuth(
         return selected?.id;
       },
       onProgress: (message) => {
+        if (flow.cancelled) return;
         flow.status = { kind: 'progress', message };
       },
     })
     .then((credentials) => {
-      const store = loadProfiles();
+      if (flow.cancelled) return;
+      const ownerUserId = flow.ownerUserId;
+      const store = loadProfilesForUser(ownerUserId);
       // Prefer a human-identifiable label from the token if the caller
       // didn't supply one — email local-part, then accountId prefix —
       // so multi-account rows don't all read "default".
@@ -2418,25 +2548,35 @@ export async function startOAuth(
           ),
         ),
       };
-      saveProfiles(store);
+      saveProfilesForUser(ownerUserId, store);
       invalidateCoreAgentRunner();
       flow.status = { kind: 'done', profileId: pid };
+      scheduleOAuthFlowCleanup(flow);
     })
     .catch((err: unknown) => {
+      if (flow.cancelled) return;
       flow.status = { kind: 'error', error: (err as Error)?.message || String(err) };
+      scheduleOAuthFlowCleanup(flow);
     });
 
   return { flowId, status: flow.status };
 }
 
-export function pollOAuthFlow(flowId: string): { status: FlowStatus } {
+function getOwnedOAuthFlow(userId: string, flowId: string): Flow | undefined {
+  const ownerUserId = assertAuthUserId(userId);
   const flow = flows.get(flowId);
+  if (!flow || flow.ownerUserId !== ownerUserId) return undefined;
+  return flow;
+}
+
+export function pollOAuthFlow(userId: string, flowId: string): { status: FlowStatus } {
+  const flow = getOwnedOAuthFlow(userId, flowId);
   if (!flow) return { status: { kind: 'error', error: 'unknown flow' } };
   return { status: flow.status };
 }
 
-export function submitOAuthInput(flowId: string, value: string): { ok: boolean } {
-  const flow = flows.get(flowId);
+export function submitOAuthInput(userId: string, flowId: string, value: string): { ok: boolean } {
+  const flow = getOwnedOAuthFlow(userId, flowId);
   if (!flow) return { ok: false };
   const val = String(value ?? '');
   // Prefer the late-stage `onPrompt` resolver if active (bind failed), else
@@ -2449,9 +2589,11 @@ export function submitOAuthInput(flowId: string, value: string): { ok: boolean }
   return { ok: true };
 }
 
-export function cancelOAuthFlow(flowId: string): { ok: boolean } {
-  const flow = flows.get(flowId);
+export function cancelOAuthFlow(userId: string, flowId: string): { ok: boolean } {
+  const flow = getOwnedOAuthFlow(userId, flowId);
   if (!flow) return { ok: false };
+  if (flow.cancelled || flow.status.kind === 'done' || flow.status.kind === 'error') return { ok: false };
+  flow.cancelled = true;
   try { flow.abortController.abort(); } catch { /* noop */ }
   // Resolve both resolvers with empty string so pi-ai's flow drains out,
   // hits its `finally { server.close() }` and releases port 1455. Without
@@ -2464,7 +2606,7 @@ export function cancelOAuthFlow(flowId: string): { ok: boolean } {
     try { flow.manualInputResolver(''); } catch { /* noop */ }
   }
   flow.status = { kind: 'error', error: 'cancelled' };
-  setTimeout(() => flows.delete(flowId), 5000);
+  scheduleOAuthFlowCleanup(flow);
   return { ok: true };
 }
 
@@ -2553,7 +2695,7 @@ export async function pickRuntimeChatEntryForUser(
     if (!isEntryAllowed(store, entry)) continue;
     const protocol = runtimeProtocolForEntry(store, entry);
     if (!protocol) continue;
-    const apiKey = await resolveEntryApiKey(store, entry);
+    const apiKey = await resolveEntryApiKey(uid, store, entry);
     if (!apiKey) continue;
     const profile = store.profiles[entry.profileId];
     const apiProfile = profile?.type === 'api_key' ? profile as ApiKeyProfile : undefined;
@@ -2603,7 +2745,7 @@ function groupEntries(entries: Entry[]): Entry[][] {
  * Resolve the usable `apiKey` for an entry (returns undefined if the
  * profile is gone, the OAuth token expired and refresh fails, etc.).
  */
-async function resolveEntryApiKey(store: ProfilesFile, entry: Entry): Promise<string | undefined> {
+async function resolveEntryApiKey(userId: string, store: ProfilesFile, entry: Entry): Promise<string | undefined> {
   const custom = customProviderForId(store, entry.provider);
   if (custom) return custom.apiKey || undefined;
   const prof = store.profiles[entry.profileId];
@@ -2611,7 +2753,7 @@ async function resolveEntryApiKey(store: ProfilesFile, entry: Entry): Promise<st
   if (prof.type === 'api_key') return prof.key;
   if (Date.now() < prof.expires) return prof.access;
   try {
-    return await refreshOAuthProfile(entry.profileId);
+    return await refreshOAuthProfileForUser(userId, entry.profileId);
   } catch (err) {
     log.warn(`OAuth refresh failed for ${entry.profileId}:`, (err as Error).message);
     return undefined;
@@ -2665,13 +2807,17 @@ export function listApiKeyEntries(): ApiKeyEntryChoice[] {
  * Bump `lastUsed` on a specific entry (re-reads the store to avoid
  * clobbering concurrent writes). Safe no-op if the entry disappeared.
  */
-export function bumpEntryLastUsed(entryId: string): void {
-  const fresh = loadProfiles();
+export function bumpEntryLastUsedForUser(userId: string, entryId: string): void {
+  const fresh = loadProfilesForUser(userId);
   const target = fresh.entries.find((e) => e.entryId === entryId);
   if (target) {
     target.lastUsed = Date.now();
-    saveProfiles(fresh);
+    saveProfilesForUser(userId, fresh);
   }
+}
+
+export function bumpEntryLastUsed(entryId: string): void {
+  bumpEntryLastUsedForUser(getActiveUserId(), entryId);
 }
 
 /**
@@ -2702,8 +2848,8 @@ export function bumpEntryLastUsed(entryId: string): void {
  * Does NOT bump `lastUsed` — that's the caller's job (rotating-provider
  * bumps the winning candidate via `onSuccess`).
  */
-export async function pickChatEntryGroup(): Promise<ChatEntryChoice[]> {
-  const store = loadProfilesForActiveUserOrEmpty();
+export async function pickChatEntryGroupForUser(userId: string): Promise<ChatEntryChoice[]> {
+  const store = loadProfilesForUser(userId);
   if (store.entries.length === 0) return [];
 
   // Flatten: preserve entries[] order across groups, but within a
@@ -2764,6 +2910,14 @@ export async function pickChatEntryGroup(): Promise<ChatEntryChoice[]> {
   return choices;
 }
 
+export async function pickChatEntryGroup(): Promise<ChatEntryChoice[]> {
+  try {
+    const group = await pickChatEntryGroupForUser(getActiveUserId());
+    return group.filter((choice) => !isCooledDown(choice.profileId));
+  }
+  catch { return []; }
+}
+
 /**
  * Resolve the chat entry group for an explicit per-task model override
  * (unified execution entry: user picked a specific provider+model for this
@@ -2777,16 +2931,23 @@ export async function pickChatEntryGroup(): Promise<ChatEntryChoice[]> {
  * no credentials, everything cooled down). Callers fall back to the
  * default group in that case so a stale override never hard-fails a turn.
  */
-export async function pickChatEntryGroupForModelOverride(
+export async function pickChatEntryGroupForModelOverrideForUser(
+  userId: string,
   override: { provider: string; model: string },
 ): Promise<ChatEntryChoice[] | null> {
   const providerId = String(override?.provider || '').trim();
   const modelId = String(override?.model || '').trim();
   if (!providerId || !modelId) return null;
-  const group = await pickChatEntryGroup();
+  const group = await pickChatEntryGroupForUser(userId);
   const matching = group.filter((c) => c.provider === providerId);
   if (!matching.length) return null;
   return matching.map((c) => ({ ...c, model: modelId }));
+}
+
+export async function pickChatEntryGroupForModelOverride(
+  override: { provider: string; model: string },
+): Promise<ChatEntryChoice[] | null> {
+  return pickChatEntryGroupForModelOverrideForUser(getActiveUserId(), override);
 }
 
 /**
@@ -2811,15 +2972,21 @@ export async function pickChatEntry(): Promise<ChatEntryChoice | null> {
 export async function pickRotationKey(providerId: string): Promise<{
   profileId: string; provider: string; label: string; apiKey: string; baseUrl?: string;
 } | null> {
+  return pickRotationKeyForUser(getActiveUserId(), providerId);
+}
+
+export async function pickRotationKeyForUser(userId: string, providerId: string): Promise<{
+  profileId: string; provider: string; label: string; apiKey: string; baseUrl?: string;
+} | null> {
   const id = String(providerId || '').trim();
   if (!id) return null;
   if (!isModelProviderAllowed(id)) return null;
-  const store = loadProfiles();
+  const store = loadProfilesForUser(userId);
   const candidates = Object.entries(store.profiles)
     .filter(([, p]) => p.provider === id)
     .sort(([, a], [, b]) => (a.lastUsed || 0) - (b.lastUsed || 0));
   for (const [pid, prof] of candidates) {
-    if (isCooledDown(pid)) {
+    if (isCooledDownForUser(userId, pid)) {
       log.info(`skipping cooled-down profile ${pid}`);
       continue;
     }
@@ -2827,11 +2994,11 @@ export async function pickRotationKey(providerId: string): Promise<{
     let baseUrl: string | undefined;
     if (prof.type === 'api_key') { apiKey = prof.key; baseUrl = prof.baseUrl; }
     else if (Date.now() < prof.expires) apiKey = prof.access;
-    else apiKey = await refreshOAuthProfile(pid).catch(() => undefined);
+    else apiKey = await refreshOAuthProfileForUser(userId, pid).catch(() => undefined);
     if (!apiKey) continue;
-    const fresh = loadProfiles();
+    const fresh = loadProfilesForUser(userId);
     const target = fresh.profiles[pid];
-    if (target) { target.lastUsed = Date.now(); saveProfiles(fresh); }
+    if (target) { target.lastUsed = Date.now(); saveProfilesForUser(userId, fresh); }
     return {
       profileId: pid,
       provider: id,
@@ -2844,7 +3011,11 @@ export async function pickRotationKey(providerId: string): Promise<{
 }
 
 async function refreshOAuthProfile(profileId: string): Promise<string | undefined> {
-  const store = loadProfiles();
+  return refreshOAuthProfileForUser(getActiveUserId(), profileId);
+}
+
+async function refreshOAuthProfileForUser(userId: string, profileId: string): Promise<string | undefined> {
+  const store = loadProfilesForUser(userId);
   const prof = store.profiles[profileId];
   if (!prof || prof.type !== 'oauth') return undefined;
 
@@ -2863,7 +3034,7 @@ async function refreshOAuthProfile(profileId: string): Promise<string | undefine
     ),
   };
   const newCreds = await provider.refreshToken(creds as any);
-  const fresh = loadProfiles();
+  const fresh = loadProfilesForUser(userId);
   const target = fresh.profiles[profileId];
   if (target && target.type === 'oauth') {
     target.access = newCreds.access;
@@ -2874,7 +3045,7 @@ async function refreshOAuthProfile(profileId: string): Promise<string | undefine
         (target as OAuthProfile)[k] = v;
       }
     }
-    saveProfiles(fresh);
+    saveProfilesForUser(userId, fresh);
   }
   return provider.getApiKey(newCreds);
 }
@@ -2995,6 +3166,15 @@ export async function testConnection(
   modelId?: string,
   profileId?: string,
 ): Promise<TestConnectionResult> {
+  return testConnectionForUser(getActiveUserId(), providerId, modelId, profileId);
+}
+
+export async function testConnectionForUser(
+  userId: string,
+  providerId: string,
+  modelId?: string,
+  profileId?: string,
+): Promise<TestConnectionResult> {
   const pid = String(providerId || '').trim();
   if (!pid) return { ok: false, error: 'provider required' };
   if (!isModelProviderAllowed(pid, modelId)) {
@@ -3007,14 +3187,14 @@ export async function testConnection(
   let baseUrl: string | undefined;
 
   if (chosenProfileId) {
-    const store = loadProfiles();
+    const store = loadProfilesForUser(userId);
     const prof = store.profiles[chosenProfileId];
     if (!prof || prof.provider !== pid) return { ok: false, error: 'profile not found' };
     if (prof.type === 'api_key') { apiKey = prof.key; baseUrl = prof.baseUrl; }
     else if (Date.now() < prof.expires) apiKey = prof.access;
-    else apiKey = await refreshOAuthProfile(chosenProfileId).catch(() => undefined);
+    else apiKey = await refreshOAuthProfileForUser(userId, chosenProfileId).catch(() => undefined);
   } else {
-    const choice = await pickRotationKey(pid);
+    const choice = await pickRotationKeyForUser(userId, pid);
     if (choice) { apiKey = choice.apiKey; baseUrl = choice.baseUrl; chosenProfileId = choice.profileId; }
   }
 
@@ -3059,7 +3239,7 @@ export async function testConnection(
         messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
         maxTokens: 1,
       });
-      if (chosenProfileId) clearCooldown(chosenProfileId);
+      if (chosenProfileId) clearCooldownForUser(userId, chosenProfileId);
       return { ok: true, durationMs: Date.now() - t0, model: msg.model || probeModel, profileId: chosenProfileId };
     } catch (err) {
       const errMsg = (err as Error).message || String(err);
@@ -3122,7 +3302,7 @@ export async function testConnection(
       messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
       maxTokens: 1,
     });
-    if (chosenProfileId) clearCooldown(chosenProfileId);
+    if (chosenProfileId) clearCooldownForUser(userId, chosenProfileId);
     return { ok: true, durationMs: Date.now() - t0, model: msg.model || '', profileId: chosenProfileId };
   } catch (err) {
     return {

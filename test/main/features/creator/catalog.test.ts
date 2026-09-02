@@ -136,7 +136,7 @@ describe('Creator capability catalog', () => {
     const catalog = await buildCreatorCapabilityCatalog('user-1', {
       getActiveUserId: () => 'user-1',
       listProviders: async () => ({ providers: Array.from({ length: 200 }, (_unused, index) => ({ id: `provider-${index}`, profiles: [{}] })) as never[] }),
-      listModels: async (providerId) => {
+      listModels: async (_userId, providerId) => {
         calls += 1;
         active += 1;
         peak = Math.max(peak, active);
@@ -423,7 +423,7 @@ describe('Creator capability catalog', () => {
         { id: 'a.b', label: 'First', profiles: [{}] },
         { id: 'a', label: 'Second', profiles: [{}] },
       ] as never[] }),
-      listModels: async (providerId) => ({ models: providerId === 'a.b'
+      listModels: async (_userId, providerId) => ({ models: providerId === 'a.b'
         ? [{ id: 'c', name: 'First model' }]
         : [{ id: 'b.c', name: 'Second model' }] }),
       listSkills: async () => [],
@@ -448,7 +448,7 @@ describe('Creator capability catalog', () => {
         { id: 'provider-main', profiles: [{}] },
         { id: secretProviderId, profiles: [{}] },
       ] as never[] }),
-      listModels: async (providerId) => ({ models: providerId === 'provider-main' ? [
+      listModels: async (_userId, providerId) => ({ models: providerId === 'provider-main' ? [
         { id: 'url-model', name: urlName },
         { id: secretId, name: oversizedName },
         { id: 'control-model', name: 'Clean\u0000Name' },
@@ -485,5 +485,48 @@ describe('Creator capability catalog', () => {
       listModels: async () => ({ models: [] }),
       listSkills: async () => [],
     })).rejects.toThrow('creator_user_not_active');
+  });
+
+  it('passes the requested user to skill listing after provider/model awaits switch the active user', async () => {
+    let activeUserId = 'user-1';
+    const catalog = await buildCreatorCapabilityCatalog('user-1', {
+      getActiveUserId: () => activeUserId,
+      listProviders: async () => ({ providers: [{ id: 'provider-main', profiles: [{}] }] }),
+      listModels: async () => {
+        await Promise.resolve();
+        activeUserId = 'user-2';
+        return { models: [{ id: 'model-a', name: 'Model A' }] };
+      },
+      listSkills: async (requestedUserId?: string) => {
+        expect(requestedUserId).toBe('user-1');
+        return [];
+      },
+    });
+
+    expect(catalog.some((entry) => entry.capabilityId === 'model.provider-main.model-a')).toBe(true);
+  });
+
+  it('passes the requested user to provider and model dependencies across awaited work', async () => {
+    let activeUserId = 'user-1';
+    const catalog = await buildCreatorCapabilityCatalog('user-1', {
+      getActiveUserId: () => activeUserId,
+      listProviders: async (requestedUserId?: string) => {
+        expect(requestedUserId).toBe('user-1');
+        await Promise.resolve();
+        activeUserId = 'user-2';
+        return { providers: [{ id: 'provider-main', profiles: [{}] }] };
+      },
+      listModels: async (requestedUserId?: string, providerId?: string) => {
+        expect(requestedUserId).toBe('user-1');
+        expect(providerId).toBe('provider-main');
+        return { models: [{ id: 'model-a', name: 'Model A' }] };
+      },
+      listSkills: async (requestedUserId?: string) => {
+        expect(requestedUserId).toBe('user-1');
+        return [];
+      },
+    });
+
+    expect(catalog.some((entry) => entry.capabilityId === 'model.provider-main.model-a')).toBe(true);
   });
 });
