@@ -11497,16 +11497,16 @@ const DISPATCHED_ASSET_ERRORS = Object.freeze({
 });
 
 /**
- * Validate an explicit cross-Agent asset grant before the live runtime gate.
+ * Validate an explicit cross-Agent asset grant against the current KSTAR
+ * lifecycle before the existing live runtime gate. An omitted or empty grant
+ * deliberately bypasses this lookup: delegated work without asset context is
+ * independent of whether the conversation has opened a governed task.
  *
- * 2026-09-18 放宽（模型自选 / 目录化）：不再要求"必须是已确认投影的子集"——
- * 资产只要存在、可读、过运行时准入门就能授予。模型现在能看全量目录
- * （search_ability_assets 目录模式），挑选权归模型；旧的子集限制会让
- * "目录里看得见、却派不出去"。版本按读取时刻的在用版写进回执（与既有
- * dispatched 回执同一口径）。
- *
- * 保留的不变量：形状、24 条上限、可读/授权、运行时准入门，以及"错误文案
- * 稳定且绝不回显任何 id"——Commander 不能把授权失败当资产枚举 oracle 用。
+ * The Projection is authoritative for membership and the stored version map
+ * is authoritative for freshness. Error text is intentionally stable and
+ * never includes a requested/allowed id, Projection contents, or live gate
+ * reasons; the Commander cannot use an authorization failure as an asset
+ * enumeration oracle.
  */
 async function resolveDispatchedAbilityAssets(
   uid: string,
