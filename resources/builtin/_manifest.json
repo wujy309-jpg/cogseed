@@ -15,7 +15,7 @@
     {
       "path": "marketplace/agents/287ce6012204/agent.json",
       "bytes": 6091,
-      "sha256": "df3f7cdf011cc9e0d91881a1c8bb2dbf1cdd79720a8a5f934b59902424a5a233"
+      "sha256": "c0986dfa61a3daf92d476ad9d082cc4a27d9d7c05d39adfb5424db52029c8e86"
     },
     {
       "path": "marketplace/agents/2a2d007ec7e2/agent.json",
@@ -6516,7 +6516,7 @@
         "version": "1.0.0",
         "icon": "sparkle",
         "color": "violet",
-        "updated_at": "2026-08-27T00:00:00",
+        "updated_at": "2026-09-04T00:00:00",
         "skill_list": [],
         "embedded_skills": []
       },
