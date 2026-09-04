@@ -8,3 +8,8 @@ export * from './proposal-service';
 export * from './simulation-service';
 export * from './verification-service';
 export * from './lifecycle-service';
+export * from './agent-binding-store';
+export * from './materializer';
+export * from './creator-agent-types';
+export * from './creator-agent-service';
+export * from './creator-agent-tools';
