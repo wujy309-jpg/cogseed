@@ -199,6 +199,7 @@ export const groupChatDir            = (uid: string, cid: string) => path.join(u
 export const groupChatMembersFile    = (uid: string, cid: string) => path.join(groupChatDir(uid, cid), 'members.json');
 export const groupChatStateFile      = (uid: string, cid: string) => path.join(groupChatDir(uid, cid), 'state.json');
 export const groupChatPlanFile       = (uid: string, cid: string) => path.join(groupChatDir(uid, cid), 'plan.json');
+export const groupChatBuilderFlowFile = (uid: string, cid: string) => path.join(groupChatDir(uid, cid), 'builder-flow.json');
 export const groupChatVisibilityDir  = (uid: string, cid: string) => path.join(groupChatDir(uid, cid), 'visibility');
 export const groupChatVisibilityFile = (uid: string, cid: string, actorId: string) =>
   path.join(groupChatVisibilityDir(uid, cid), `${actorId}.jsonl`);

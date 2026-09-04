@@ -148,6 +148,14 @@ import {
 } from "../../util/project-layout";
 import { cachedConversationSpace } from "../chat_attachments";
 import * as agentsFeat from "../agents";
+import {
+  AGENT_BUILDER_IDS,
+  applyAgentBuilderFields,
+} from "./agent-builder";
+import {
+  continueGovernedAgentBuilderFlow,
+  startGovernedAgentBuilderFlow,
+} from "./agent-builder-governed-flow";
 import * as commanderRuntimeStats from "../commander_runtime_stats";
 import { getThinkingLevel } from "../config";
 import {
@@ -5498,6 +5506,34 @@ async function runActorTurnBody(
 
   if (kstarExpectationPreface) messageText = `${kstarExpectationPreface}${messageText}`;
 
+  // A pending governed Agent Builder flow is host-owned. Handle the user's
+  // confirmation/cancellation before dispatching another model turn so plain
+  // text cannot bypass its lifecycle gates.
+  if (item.fromActorId === USER_ID && cid) {
+    const governed = await continueGovernedAgentBuilderFlow(
+      uid,
+      cid,
+      item.sourceMessageText ?? "",
+      w.abortController?.signal,
+    );
+    if (governed.handled) {
+      const reply = governed.message || "治理流程已处理当前消息。";
+      await markInFlight(uid, cid, actor.id, false);
+      await emitStateChanged(state);
+      await enqueue({
+        uid,
+        cid,
+        fromActorId: actor.id,
+        text: reply,
+        forceTo: [USER_ID],
+        turn_end: true,
+        turn_id: item.turnId,
+      });
+      await _syncStateStatus(state);
+      return { kind: "early" };
+    }
+  }
+
   if (isCommander && item.fromActorId === USER_ID) {
     const disabledSkill = await _findDisabledSkillUseRequest(
       uid,
@@ -7299,6 +7335,92 @@ async function runActorTurnBody(
         log.warn(
           `form ledger update/resume failed cid=${cid} actor=${actor.id}: ${(err as Error).message}`,
         );
+      }
+    }
+
+    // Agent 创建师 is an agent actor, so its structured creation containers
+    // are handled inside the normal agent post-processing branch.
+    if (AGENT_BUILDER_IDS.has(actor.id) && workingText && !aborted) {
+      const parsed = extractAgentFieldBlocks(workingText);
+      if (parsed.blocks.length) {
+        workingText = parsed.cleanText;
+        for (const fields of parsed.blocks) {
+          if (!Object.keys(fields).length) continue;
+          if (fields.mode === "governed") {
+            try {
+              const governed = await startGovernedAgentBuilderFlow({
+                userId: uid,
+                cid,
+                agentId: actor.id,
+                fields,
+                sourceSessionId: actorSessionId(cid, actor),
+                ...(turnProjectId ? { projectId: turnProjectId } : {}),
+              });
+              if (governed.message) workingText = `${workingText}\n\n${governed.message}`;
+              if (governed.stage === "failed") markTurnFailure("validation", "agent_mutation_rejected");
+            } catch (err) {
+              log.error(`governed-agent-builder failed cid=${cid}: ${(err as Error).message}`);
+              markTurnFailure("validation", "agent_mutation_rejected");
+              workingText = `${workingText}\n\n<span style="color:var(--danger)">治理创建失败：${escapeHtmlForBubble((err as Error).message)}</span>`;
+            }
+            continue;
+          }
+          const direct = await applyAgentBuilderFields({
+            uid,
+            cid,
+            ...(turnProjectId ? { turnProjectId } : {}),
+            ...(turnSpaceId ? { turnSpaceId } : {}),
+            agentId: actor.id,
+          }, fields);
+          if (direct.rejected.length) {
+            markTurnFailure("validation", "agent_mutation_rejected");
+            workingText = `${workingText}\n\n<span style="color:var(--danger)">${direct.rejected.join(" ")}</span>`;
+          }
+          for (const created of direct.created) {
+            createdAgents.push({ agent_id: created.agent_id, name: created.name, kind: "created" });
+          }
+        }
+      }
+    }
+  } else if (AGENT_BUILDER_IDS.has(actor.id) && workingText && !aborted) {
+    const parsed = extractAgentFieldBlocks(workingText);
+    if (parsed.blocks.length) {
+      workingText = parsed.cleanText;
+      for (const fields of parsed.blocks) {
+        if (!Object.keys(fields).length) continue;
+        if (fields.mode === "governed") {
+          try {
+            const governed = await startGovernedAgentBuilderFlow({
+              userId: uid,
+              cid,
+              agentId: actor.id,
+              fields,
+              sourceSessionId: actorSessionId(cid, actor),
+              ...(turnProjectId ? { projectId: turnProjectId } : {}),
+            });
+            if (governed.message) workingText = `${workingText}\n\n${governed.message}`;
+            if (governed.stage === "failed") markTurnFailure("validation", "agent_mutation_rejected");
+          } catch (err) {
+            log.error(`governed-agent-builder failed cid=${cid}: ${(err as Error).message}`);
+            markTurnFailure("validation", "agent_mutation_rejected");
+            workingText = `${workingText}\n\n<span style="color:var(--danger)">治理创建失败：${escapeHtmlForBubble((err as Error).message)}</span>`;
+          }
+          continue;
+        }
+        const direct = await applyAgentBuilderFields({
+          uid,
+          cid,
+          ...(turnProjectId ? { turnProjectId } : {}),
+          ...(turnSpaceId ? { turnSpaceId } : {}),
+          agentId: actor.id,
+        }, fields);
+        if (direct.rejected.length) {
+          markTurnFailure("validation", "agent_mutation_rejected");
+          workingText = `${workingText}\n\n<span style="color:var(--danger)">${direct.rejected.join(" ")}</span>`;
+        }
+        for (const created of direct.created) {
+          createdAgents.push({ agent_id: created.agent_id, name: created.name, kind: "created" });
+        }
       }
     }
   } else if (isCommander && workingText && !aborted) {

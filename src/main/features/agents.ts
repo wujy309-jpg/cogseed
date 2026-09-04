@@ -192,6 +192,8 @@ export interface AgentProfile {
   dispatch?: string;
   knowhow?: string[];
   standards?: string[];
+  /** Parsed from `<tools>` inside `<agent>`. Empty tag body -> explicit zero. */
+  tools?: string[];
   /** Legacy/read-only compatibility. New authoring must use top-level
    *  `workflow` markdown instead of profile.workflow. */
   workflow?: AgentProfileEntry[];
@@ -2777,6 +2779,8 @@ export interface ExtractedFields {
    *  JSON arrays and legacy `<profile>` remain accepted for compatibility. */
   knowhow?: string[];
   standards?: string[];
+  /** Parsed from `<tools>` inside `<agent>`. Empty tag body -> explicit zero. */
+  tools?: string[];
   /** Parsed from `<skills>` inside `<agent>`. Empty tag body → `[]` (explicit
    * zero). Absent tag → key omitted (leave `skill_list` untouched). */
   skill_list?: string[];
@@ -2882,6 +2886,13 @@ function _parseAgentBlock(inner: string): ExtractedFields {
     const standards = parseTextListBody(standardsM[1], 'standards');
     if (standards) fields.standards = standards;
     else if (standardsM[1].trim() === '' || standardsM[1].trim() === '[]') fields.standards = [];
+  }
+  const toolM = inner.match(AGENT_CHILD_RE('tools'));
+  if (toolM) {
+    fields.tools = toolM[1]
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0 && safeId(s));
   }
   const skM = inner.match(AGENT_CHILD_RE('skills'));
   if (skM) {
