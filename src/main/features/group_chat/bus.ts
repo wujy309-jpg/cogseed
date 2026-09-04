@@ -7382,47 +7382,6 @@ async function runActorTurnBody(
         }
       }
     }
-  } else if (AGENT_BUILDER_IDS.has(actor.id) && workingText && !aborted) {
-    const parsed = extractAgentFieldBlocks(workingText);
-    if (parsed.blocks.length) {
-      workingText = parsed.cleanText;
-      for (const fields of parsed.blocks) {
-        if (!Object.keys(fields).length) continue;
-        if (fields.mode === "governed") {
-          try {
-            const governed = await startGovernedAgentBuilderFlow({
-              userId: uid,
-              cid,
-              agentId: actor.id,
-              fields,
-              sourceSessionId: actorSessionId(cid, actor),
-              ...(turnProjectId ? { projectId: turnProjectId } : {}),
-            });
-            if (governed.message) workingText = `${workingText}\n\n${governed.message}`;
-            if (governed.stage === "failed") markTurnFailure("validation", "agent_mutation_rejected");
-          } catch (err) {
-            log.error(`governed-agent-builder failed cid=${cid}: ${(err as Error).message}`);
-            markTurnFailure("validation", "agent_mutation_rejected");
-            workingText = `${workingText}\n\n<span style="color:var(--danger)">治理创建失败：${escapeHtmlForBubble((err as Error).message)}</span>`;
-          }
-          continue;
-        }
-        const direct = await applyAgentBuilderFields({
-          uid,
-          cid,
-          ...(turnProjectId ? { turnProjectId } : {}),
-          ...(turnSpaceId ? { turnSpaceId } : {}),
-          agentId: actor.id,
-        }, fields);
-        if (direct.rejected.length) {
-          markTurnFailure("validation", "agent_mutation_rejected");
-          workingText = `${workingText}\n\n<span style="color:var(--danger)">${direct.rejected.join(" ")}</span>`;
-        }
-        for (const created of direct.created) {
-          createdAgents.push({ agent_id: created.agent_id, name: created.name, kind: "created" });
-        }
-      }
-    }
   } else if (isCommander && workingText && !aborted) {
     // `!aborted`: a user Stop is the single stop path — never apply container
     // mutations (create/overwrite agent, write+validate skill, CRUD auto-task)

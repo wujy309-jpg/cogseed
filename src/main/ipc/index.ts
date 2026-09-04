@@ -159,6 +159,7 @@ import { invokeHandlers as memoryHandlers } from './memory';
 import { invokeHandlers as cognitionHandlers } from './cognition';
 import { invokeHandlers as transcriptHandlers } from './transcript';
 import { invokeHandlers as updatesHandlers } from './updates';
+import { invokeHandlers as creatorHandlers } from './creator';
 import { genId12, readJsonl, safeId } from '../storage';
 import { createLogger, logFromRenderer } from '../logger';
 import {
