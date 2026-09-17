@@ -135,7 +135,7 @@ export interface KstarProjectionDecisionMarker {
 
 export interface KstarRoutingDecision {
   at: string;
-  kind: 'closing_intent' | 'trivial' | 'model_judged' | 'dispatch_auto';
+  kind: 'closing_intent' | 'trivial' | 'answer_confirmation' | 'model_judged' | 'dispatch_auto';
   isTask: boolean;
   continuation?: boolean;
   reason?: string;

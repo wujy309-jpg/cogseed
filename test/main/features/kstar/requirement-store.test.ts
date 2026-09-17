@@ -305,3 +305,56 @@ describe('KSTAR Phase 2 requirement/task store', () => {
   });
 
 });
+
+describe('routing decisions do not materialise task state on their own', () => {
+  const decision = (reason: string) => ({
+    at: '2026-09-18T00:00:00.000Z',
+    kind: 'answer_confirmation' as const,
+    isTask: false,
+    reason,
+  });
+
+  it('skips the write entirely when no conversation state exists yet', async () => {
+    const { store, paths } = await storeModules();
+    const statePath = paths.kstarConversationTaskStatePath('user-a', 'cid-quiet');
+    expect(fs.existsSync(statePath)).toBe(false);
+
+    const result = await store.recordKstarRoutingDecision('user-a', 'cid-quiet', decision('selection'), {
+      requireExistingState: true,
+    });
+
+    expect(result).toBeNull();
+    // A non-task message on a conversation that never engaged KStar must not
+    // create state: "no tracked task" is the absence of a record, not an
+    // empty one.
+    expect(fs.existsSync(statePath)).toBe(false);
+    await expect(store.readConversationTaskState('user-a', 'cid-quiet')).resolves.toBeNull();
+  });
+
+  it('still records the decision once the conversation has state', async () => {
+    const { store } = await storeModules();
+    await store.recordKstarRoutingDecision('user-a', 'cid-open', {
+      at: '2026-09-18T00:00:00.000Z',
+      kind: 'model_judged',
+      isTask: true,
+      continuation: false,
+      reason: 'opened',
+    });
+
+    const result = await store.recordKstarRoutingDecision('user-a', 'cid-open', decision('selection'), {
+      requireExistingState: true,
+    });
+
+    // The trace reads routingDecisions to label its `routing` nodes, so an
+    // answer-like confirmation mid-task must still be attributable.
+    expect(result?.routingDecisions).toHaveLength(2);
+    expect(result?.routingDecisions?.[1]).toMatchObject({ kind: 'answer_confirmation', isTask: false });
+  });
+
+  it('materialises by default, preserving the existing call contract', async () => {
+    const { store, paths } = await storeModules();
+    const result = await store.recordKstarRoutingDecision('user-a', 'cid-default', decision('selection'));
+    expect(result).not.toBeNull();
+    expect(fs.existsSync(paths.kstarConversationTaskStatePath('user-a', 'cid-default'))).toBe(true);
+  });
+});

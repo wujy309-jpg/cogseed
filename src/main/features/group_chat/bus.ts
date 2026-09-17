@@ -11333,9 +11333,14 @@ async function hostRouteTaskTurn(
   // (greetings/status/emoji) with zero model calls and zero KStar writes;
   // everything else goes to the model judgement which decides is_task AND
   // continuation in one call with full conversation context.
-  const { isObviouslyTrivial, isClosingIntent } = await import('../kstar/task-intent');
-  const recordRouting = async (decision: import('../kstar/requirement-types').KstarRoutingDecision): Promise<void> => {
-    await import('../kstar/requirement-store').then((store) => store.recordKstarRoutingDecision(uid, cid, decision)).catch(() => undefined);
+  const { isObviouslyTrivial, isClosingIntent, isAnswerLikeConfirmation } = await import('../kstar/task-intent');
+  const recordRouting = async (
+    decision: import('../kstar/requirement-types').KstarRoutingDecision,
+    options?: { requireExistingState?: boolean },
+  ): Promise<void> => {
+    await import('../kstar/requirement-store')
+      .then((store) => store.recordKstarRoutingDecision(uid, cid, decision, options))
+      .catch(() => undefined);
   };
   if (isClosingIntent(messageText)) {
     await recordRouting({ at: nowIso(), kind: 'closing_intent', isTask: true, continuation: true, reason: 'closing intent', ...(sourceMessageId ? { sourceMessageId } : {}) });
@@ -11383,6 +11388,31 @@ async function hostRouteTaskTurn(
     return { openedTask: false };
   }
   if (isObviouslyTrivial(messageText)) {
+    return { openedTask: false };
+  }
+  // Answer-like confirmations ("1"、"第一个和第三个"、"是的"、"需要") answer a
+  // question the assistant just asked. They cannot start or switch a task, so
+  // the model round trip only re-derives "no task write". Suppressing them
+  // here also cannot disturb an open task: nothing below runs, so the task
+  // stays exactly as it was — the projection for this turn is resolved
+  // independently further down (committedProjectionId reads the lifecycle
+  // directly), so an open task still gets its recall context injected.
+  //
+  // The decision is recorded only when this conversation already has task
+  // state. A non-task message must not be what brings KStar state into
+  // existence; mid-task it still lands in the log so the trace can attribute
+  // which gate decided.
+  if (isAnswerLikeConfirmation(messageText)) {
+    await recordRouting(
+      {
+        at: nowIso(),
+        kind: 'answer_confirmation',
+        isTask: false,
+        reason: 'answer-like confirmation (selection/ack); no task write',
+        ...(sourceMessageId ? { sourceMessageId } : {}),
+      },
+      { requireExistingState: true },
+    );
     return { openedTask: false };
   }
   try {

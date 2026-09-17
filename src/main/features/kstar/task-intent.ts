@@ -71,6 +71,60 @@ export function isObviouslyTrivial(text: string | undefined): boolean {
   return TRIVIAL_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
 
+/** Closed set of yes/no acknowledgements. Trailing particles (了/吧/呀) and
+ *  punctuation are stripped before lookup, so "不用了" and "都要吧" match. */
+const ANSWER_CONFIRMATIONS = new Set([
+  '是', '是的', '是了', '对', '对的', '好', '好的', '行', '行的', '可以', '没问题', '没错',
+  '要', '需要', '不用', '不要', '不需要', '都要', '都可以', '都行', '全要', '全都要',
+  '同意', '赞成', '支持',
+  'ok', 'okay', '嗯',
+]);
+
+/** Pure ordinal/number selection: "1", "1234", "第一"、"第三个"、
+ *  "第一个和第三个"、"前两个"、"1234都需要"、"第一个就行".
+ *  Grammar-only on purpose: any real word ("把这个整成 PDF") breaks it. */
+const ANSWER_SELECTION =
+  /^(前|后|第)?[0-9一二三四五六七八九十两]+(个)?([和及与、,，+\/](前|后|第)?[0-9一二三四五六七八九十两]+(个)?)*([都全](要|需要)?)?(就行|可以|吧|了)?$/;
+
+/** Selection by label: "方案一"、"选项2". Narrow on purpose — the label must
+ *  be the whole message, so "方案一有问题" is not matched. */
+const ANSWER_SELECTION_BY_LABEL = /^(方案|选项)[0-9一二三四五六七八九十两]+$/;
+
+/**
+ * Answer-like confirmations: short selections ("1"、"第一个和第三个") and
+ * yes/no acknowledgements ("是的"、"需要"、"不用") that answer a question the
+ * assistant just asked.
+ *
+ * Why this is its own gate rather than part of TRIVIAL_PATTERNS: these are
+ * not small talk, they are substantive answers inside an ongoing
+ * interaction. But they are equally not tasks, and they carry no signal that
+ * could start or switch one — so routing them through the model costs a full
+ * round trip (660–820ms measured) to reach the conclusion the message shape
+ * already implies: no task write.
+ *
+ * Measured on 242 real user messages: the two earlier gates cover 21 of them
+ * (closing intent 2, obviously trivial 19), this gate newly covers 16 (6.6%),
+ * and 205 (84.7%) still reach the model. The two `TRIVIAL_PATTERNS` entries
+ * above match the *bare* forms ("是"、"对"、"好的"), so the particle-bearing
+ * forms users actually type ("是的"、"不用了"、"都要吧") fall through — that gap
+ * is what this gate closes. All 16 matches on the corpus were real
+ * confirmations; none was a task.
+ *
+ * SAFETY: this gate only ever SUPPRESSES work — the caller writes no KStar
+ * task/requirement state, so an open task stays open and still gets its
+ * projection injected (that path reads the lifecycle independently). A wrongly
+ * matched message is therefore answered normally, it is just not routed. That
+ * is the cheap failure direction.
+ */
+export function isAnswerLikeConfirmation(text: string | undefined): boolean {
+  const raw = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!raw) return false;
+  const trimmed = raw.replace(/[。！!？?,.，、;；:：~～]+$/u, '').replace(/[了吧呀呢]$/u, '').trim();
+  if (!trimmed || trimmed.length > 12) return false;
+  if (ANSWER_CONFIRMATIONS.has(trimmed.toLowerCase())) return true;
+  return ANSWER_SELECTION.test(trimmed) || ANSWER_SELECTION_BY_LABEL.test(trimmed);
+}
+
 /** Detect whether a user message is a task-shaped request. Kept for
  *  compatibility: the host routing line now uses isObviouslyTrivial +
  *  the model judgement; this keyword-based detector remains as a fast

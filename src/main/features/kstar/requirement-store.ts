@@ -121,7 +121,10 @@ function normalizeRoutingDecisions(value: unknown): KstarRoutingDecision[] {
   if (!Array.isArray(value)) return [];
   return value.filter((raw): raw is KstarRoutingDecision => {
     if (!isPlainRecord(raw) || typeof raw.at !== 'string' || typeof raw.kind !== 'string' || typeof raw.isTask !== 'boolean') return false;
-    return ['closing_intent', 'trivial', 'model_judged', 'dispatch_auto'].includes(raw.kind)
+    // Every kind the type allows must be listed here: this filter runs on both
+    // write and read, so a kind missing from the list is dropped on the way to
+    // disk and never reaches the trace.
+    return ['closing_intent', 'trivial', 'answer_confirmation', 'model_judged', 'dispatch_auto'].includes(raw.kind)
       && (raw.continuation === undefined || typeof raw.continuation === 'boolean')
       && (raw.reason === undefined || typeof raw.reason === 'string')
       && (raw.sourceMessageId === undefined || (typeof raw.sourceMessageId === 'string' && safeId(raw.sourceMessageId)));
@@ -349,13 +352,28 @@ export async function replaceConversationTaskState(userId: string, record: Kstar
   return replaceKstarJsonRecord(userId, 'task-states', validateState(userId, record as unknown as Record<string, unknown>, record.conversationId));
 }
 
+/**
+ * Append a routing decision to the conversation's task state.
+ *
+ * `requireExistingState` is for decisions that are *about* a non-task message
+ * (an answer-like confirmation). Those must never bring KStar state into
+ * existence: for a conversation that never engaged KStar, "no tracked task" is
+ * the absence of a record, not an empty one. When the conversation already has
+ * state — the interesting case, a confirmation sent mid-task — the decision is
+ * still appended, so the trace can label which gate decided.
+ *
+ * Returns null when the write was skipped.
+ */
 export async function recordKstarRoutingDecision(
   userId: string,
   conversationId: string,
   decision: KstarRoutingDecision,
-): Promise<KstarConversationTaskStateRecord> {
+  options: { requireExistingState?: boolean } = {},
+): Promise<KstarConversationTaskStateRecord | null> {
   if (!safeId(userId) || !safeId(conversationId)) throw new Error('invalid kstar routing reference');
-  const state = await readConversationTaskState(userId, conversationId) || createInitialConversationTaskState(userId, conversationId);
+  const existing = await readConversationTaskState(userId, conversationId);
+  if (!existing && options.requireExistingState) return null;
+  const state = existing || createInitialConversationTaskState(userId, conversationId);
   const routingDecisions = [...(state.routingDecisions || []), decision].slice(-MAX_ROUTING_DECISIONS);
   return replaceConversationTaskState(userId, { ...state, routingDecisions, updatedAt: nowIso() });
 }
