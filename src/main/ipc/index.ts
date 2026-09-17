@@ -199,6 +199,8 @@ import { logErrorRef } from '../util/log-redact';
 import { chatMediaLocalPathFromUrl } from '../util/chat-media-url';
 import { macosTccSensitivePath } from '../util/macos-tcc';
 import { normalizeAppError } from '../util/app-error';
+import { throttleLog } from '../util/log-throttle';
+import { isTerminalHubAuthCode } from '../features/hub_account/auth-flow';
 import {
   isTrustedIpcSender,
   parseInvokeEnvelope,
@@ -7867,6 +7869,21 @@ export function register(): void {
           : (typeof rawCode === 'string' && rawCode ? rawCode : normalized.code));
       if (channel.startsWith('stt.')) {
         log.error(`invoke ${channel} failed`, { stage: 'invoke', code });
+      } else if (typeof code === 'string' && isTerminalHubAuthCode(code)) {
+        // A dead Hub session is discovered by several parallel calls at once (the
+        // settings page fans out), so the same failure repeats within the same
+        // second. Key on the code, not the channel: folding every hub channel into
+        // one line is the point. Warn rather than error — this needs a re-login,
+        // it is not a broken invariant.
+        const { emit, suppressed } = throttleLog(`invoke-terminal-auth:${code}`, 60_000);
+        if (emit) {
+          log.warn('hub invoke failed: session is terminal, further hub failures folded into this line', {
+            channel,
+            error: normalized.error,
+            code,
+            suppressed,
+          });
+        }
       } else {
         log.error(`invoke ${channel} failed`, { error: normalized.error, code });
       }

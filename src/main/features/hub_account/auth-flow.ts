@@ -115,7 +115,7 @@ export async function completeLogin(
     device_name: _deviceName(),
     device_os: _deviceOs(),
   });
-  saveHubSession(userId, result.session);
+  _persistSession(userId, result.session);
   writeHubAccountState(userId, {
     account_id: result.account.account_id,
     auth_provider: result.account.auth_provider,
@@ -171,20 +171,111 @@ export async function bindLocalIdentity(
 
 // ── Session refresh + authorized calls ───────────────────────────────────
 
-/** Refresh the Hub session now; throws `HubApiError` when the refresh token is gone/revoked. */
+/**
+ * Refresh failures the server will not recover from on its own.
+ *
+ * Only codes that explicitly name the refresh token count as terminal. Anything
+ * else (network failure, 5xx, unknown code) stays retryable, because a transient
+ * blip must not lock the user out of silent refresh for the rest of the process.
+ */
+const TERMINAL_HUB_AUTH_CODES = new Set([
+  'AUTH_REFRESH_TOKEN_REVOKED',
+  'AUTH_REFRESH_TOKEN_EXPIRED',
+  'AUTH_INVALID_TOKEN',
+]);
+
+/**
+ * Does this Hub error code mean the stored refresh token is dead?
+ *
+ * Also used by the IPC layer, which folds the resulting log burst into one line.
+ */
+export function isTerminalHubAuthCode(code: string): boolean {
+  return TERMINAL_HUB_AUTH_CODES.has(code);
+}
+
+/** In-flight refresh per user — concurrent callers share a single request. */
+const _refreshInFlight = new Map<string, Promise<HubSession>>();
+/** Terminal auth failure per user — suppresses further silent refreshes. */
+const _refreshTerminal = new Map<string, HubApiError>();
+
+/**
+ * Drop cached refresh coordination for one user. Called whenever the stored
+ * session changes, because the marker describes a specific credential pair.
+ */
+function _resetRefreshCoordination(userId: string): void {
+  _refreshInFlight.delete(userId);
+  _refreshTerminal.delete(userId);
+}
+
+/** Test-only: module state would otherwise leak across test cases. */
+export function _resetHubAuthStateForTest(): void {
+  _refreshInFlight.clear();
+  _refreshTerminal.clear();
+}
+
+/** Persist a session and re-arm silent refresh (sign-in, or a rotation). */
+function _persistSession(userId: string, session: HubSession): void {
+  saveHubSession(userId, session);
+  _resetRefreshCoordination(userId);
+}
+
+/** Drop the session and any terminal marker (sign-out, account deletion). */
+function _discardSession(userId: string): void {
+  clearHubSession(userId);
+  _resetRefreshCoordination(userId);
+}
+
+/**
+ * Refresh the Hub session now; throws `HubApiError` when the refresh token is gone/revoked.
+ *
+ * Concurrent callers share one request, and a terminal failure is remembered so
+ * the burst of parallel calls the settings page fires collapses into a single
+ * round trip instead of one doomed request each.
+ */
 export async function refreshSession(userId: string, client: HubClient = hubClient()): Promise<HubSession> {
-  const session = loadHubSession(userId);
-  if (!session) throw new HubApiError('AUTH_REQUIRED', '未登录', 401);
-  const refreshed = await client.refresh(session.refresh_token);
-  const next: HubSession = {
-    session_id: session.session_id, // server keeps the same session family across rotation
-    access_token: refreshed.access_token,
-    refresh_token: refreshed.refresh_token,
-    access_expires_at: refreshed.access_expires_at,
-    refresh_expires_at: refreshed.refresh_expires_at,
-  };
-  saveHubSession(userId, next);
-  return next;
+  const terminal = _refreshTerminal.get(userId);
+  if (terminal) throw new HubApiError(terminal.code, terminal.message, terminal.status, terminal.details);
+
+  const inFlight = _refreshInFlight.get(userId);
+  if (inFlight) return inFlight;
+
+  const task = (async (): Promise<HubSession> => {
+    const session = loadHubSession(userId);
+    if (!session) throw new HubApiError('AUTH_REQUIRED', '未登录', 401);
+
+    let refreshed;
+    try {
+      refreshed = await client.refresh(session.refresh_token);
+    } catch (err) {
+      if (err instanceof HubApiError && isTerminalHubAuthCode(err.code)) {
+        _refreshTerminal.set(userId, err);
+        log.warn('hub session can no longer be refreshed; re-login required', {
+          code: err.code,
+          status: err.status,
+        });
+      }
+      throw err;
+    }
+
+    const next: HubSession = {
+      session_id: session.session_id, // server keeps the same session family across rotation
+      access_token: refreshed.access_token,
+      refresh_token: refreshed.refresh_token,
+      access_expires_at: refreshed.access_expires_at,
+      refresh_expires_at: refreshed.refresh_expires_at,
+    };
+    // Persist directly: clearing coordination here would drop the shared
+    // in-flight promise that concurrent callers are still awaiting.
+    saveHubSession(userId, next);
+    return next;
+  })();
+
+  _refreshInFlight.set(userId, task);
+  try {
+    return await task;
+  } finally {
+    if (_refreshInFlight.get(userId) === task) _refreshInFlight.delete(userId);
+  }
 }
 
 /** Ensure a non-expired session exists (silent refresh when needed). */
@@ -255,7 +346,7 @@ export async function deleteHubAccount(
   payload: import('./types').HubDeleteAccountRequest,
 ): Promise<import('./types').HubDeletionResult> {
   const result = await withAuthRetry(userId, (token, client) => client.deleteAccount(token, payload));
-  clearHubSession(userId);
+  _discardSession(userId);
   writeHubAccountState(userId, {
     bound: false,
     account_id: undefined,
@@ -296,7 +387,7 @@ export async function logout(userId: string, client: HubClient = hubClient()): P
       log.warn('hub logout request failed; clearing local session anyway', { error: (err as Error).message });
     }
   }
-  clearHubSession(userId);
+  _discardSession(userId);
   writeHubAccountState(userId, {
     bound: false,
     account_id: undefined,
