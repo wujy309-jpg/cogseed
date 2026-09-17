@@ -1763,6 +1763,29 @@ export async function hasKnownDefaultInstallWork(uid: string): Promise<boolean> 
   }
 }
 
+/**
+ * Whether a marketplace default-install failure is worth retrying.
+ *
+ * Default installs previously retried every failure on a fixed
+ * `[3s, 3s, 3s]` schedule, including permanent client errors — a `403` from
+ * the server burned ~9s of pointless requests and dozens of log lines on
+ * every launch. Classify by HTTP status instead:
+ *
+ *   408 / 429  → transient by definition, retry
+ *   5xx        → server-side, retry
+ *   other 4xx  → permanent (auth/forbidden/not-found), stop
+ *   no status  → unknown (network/DNS/TLS), retry as before
+ */
+export function isRetryableMarketplaceError(message: string): boolean {
+  const status = /\b(\d{3})\b/.exec(String(message || ''))?.[1];
+  if (!status) return true;
+  const code = Number(status);
+  if (code === 408 || code === 429) return true;
+  if (code >= 500) return true;
+  if (code >= 400) return false;
+  return true;
+}
+
 export async function ensureDefaultInstalls(
   uid: string,
   opts: { shouldContinue?: () => boolean; minIntervalMs?: number; force?: boolean } = {},

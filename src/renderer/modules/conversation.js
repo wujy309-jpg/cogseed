@@ -3278,6 +3278,7 @@ async function _syncPendingActorsFromRuntime(cid, opts = {}) {
     _observeConversationRunFromPlanAction(cid, {
       attachExisting: true,
       allowWithController: true,
+      source: 'sync_pending_actors_with_controller',
     });
   }
   if (!hasLiveController) {
@@ -3286,7 +3287,7 @@ async function _syncPendingActorsFromRuntime(cid, opts = {}) {
     // stale controller state, or reconnect), attach the group event stream
     // so plan-triggered agents keep streaming instead of only appearing
     // after the final history poll.
-    _observeConversationRunFromPlanAction(cid, { attachExisting: true });
+    _observeConversationRunFromPlanAction(cid, { attachExisting: true, source: 'sync_pending_actors' });
   }
   if (!inFlight.length && !activeTurns.length) return false;
 
@@ -6362,7 +6363,6 @@ async function _saveConversationTitle(cid, raw, opts = {}) {
     renderConversationList();
     _refreshChatHeader();
     if (typeof renderProjectsSection === 'function') renderProjectsSection();
-    if (typeof _renderProjectAllTasks === 'function') _renderProjectAllTasks();
     if (window.ConversationInfo && typeof window.ConversationInfo.refresh === 'function') {
       window.ConversationInfo.refresh(cid, { silent: true });
     }
@@ -8868,7 +8868,7 @@ async function loadConversationHistory(cid, opts = {}) {
       // Opening/reloading into an already-running plan still needs the
       // group event stream; runtime polling can recover placeholders, but
       // it cannot replay live text deltas.
-      _observeConversationRunFromPlanAction(cid, { attachExisting: true });
+      _observeConversationRunFromPlanAction(cid, { attachExisting: true, source: 'load_history_running' });
       _startRuntimeActorRecovery(cid);
       _updateConvSendUI(cid);
     } else if (isConvPending(cid)) {
@@ -8910,7 +8910,7 @@ async function loadConversationHistory(cid, opts = {}) {
         // Same recovery path for a detached pending state: reconnect to the
         // live group event stream so the bubble streams instead of waiting
         // for the final history reconcile.
-        _observeConversationRunFromPlanAction(cid, { attachExisting: true });
+        _observeConversationRunFromPlanAction(cid, { attachExisting: true, source: 'load_history_pending' });
         _startRuntimeActorRecovery(cid);
       }
       state.needsIndicator = false;
@@ -10775,7 +10775,7 @@ async function _resolveWakeRequest(card, request, cid, decision) {
   card.dataset.busy = '1';
   for (const button of card.querySelectorAll('button')) button.disabled = true;
   const observer = decision === 'approve'
-    ? _observeConversationRunFromPlanAction(cid, { attachExisting: true, allowWithController: true })
+    ? _observeConversationRunFromPlanAction(cid, { attachExisting: true, allowWithController: true, source: 'wake_request_approve' })
     : null;
   try {
     const res = await apiFetch(`/api/conversations/${encodeURIComponent(cid)}/wake-requests/${encodeURIComponent(request.id)}/decision`, {
@@ -14350,6 +14350,18 @@ function _observeConversationRunFromPlanAction(cid, opts = {}) {
   if (allowWithController && _groupObserverCtrls.has(cid)) return null;
   if (!attachExisting && (pendingConvs.has(cid) || isGroupConversationBusy(cid))) return null;
 
+  // The observer opens a second `groupChat.events` subscription for this cid,
+  // which runs alongside the primary `conversations.sendStream` and relays the
+  // same event volume. We could not tell from the logs which code path starts
+  // it in the common send flow (the 2s `_scheduleBackendRunRediscovery` debounce
+  // did not match the observed 229ms gap), so record the caller here.
+  _convLog.info('conversation run observer started', {
+    cid,
+    source: String(opts.source || 'unspecified'),
+    attach_existing: attachExisting,
+    allow_with_controller: allowWithController,
+  });
+
   const controller = new AbortController();
   let msgEl = null;
   let sawActivity = attachExisting;
@@ -15568,7 +15580,7 @@ async function _rediscoverBackendRun(cid) {
   // Re-establish the run: pending state, streaming placeholder, group event
   // observer (untilIdle — ends when the Backend task's terminal projection
   // clears backendTurns and the bus goes quiescent) and history polling.
-  _observeConversationRunFromPlanAction(cid, { attachExisting: true, allowWithController: true });
+  _observeConversationRunFromPlanAction(cid, { attachExisting: true, allowWithController: true, source: 'rediscover_backend_run' });
 }
 
 // Scroll the given message to the top of the visible chat area.
@@ -16889,9 +16901,9 @@ function _handleGroupBusEvent(cid, streamingMsg, evData, { archive = false } = {
     // 主进程叠加整树遍历（每次消息 → 一次全量快照），还会反复闪加载态。
     // 180ms 合并一次 + silent 刷新，数据到达延迟不可感知，行为不变。
     _scheduleConversationInfoFileRefresh(cid);
-    // Mark commander as "in chat" the moment it speaks here, so the
-    // sidebar/header badges add the commander avatar without waiting for
-    // the next `listConversations` to re-derive it from <cid>.jsonl.
+    // Mark commander as "in chat" the moment it speaks here, so the chat
+    // header adds the commander avatar without waiting for the next
+    // `listConversations` to re-derive it from <cid>.jsonl.
     if (evData.msg.from === 'commander' && Array.isArray(conversations)) {
       const conv = conversations.find((x) => x && x.conversation_id === cid);
       if (conv && !conv.commander_in_chat) {
@@ -17526,14 +17538,55 @@ function _stripDashboardBlocksForStream(buf) {
 // `_streamingSetFinal` is still called at the terminal `final` event to
 // guarantee a clean final render.
 //
-// Render throttling: every delta accumulates into `dataset.streamBuf`
-// synchronously, but the actual `renderMarkdownFull` + DOM swap only runs
-// once per animation frame (via `requestAnimationFrame`). Each delta in
-// the wild is ~2-4 chars and they can arrive ~50/sec; without throttling
-// we'd run renderMarkdown × 500 in one event loop turn (each O(n) on the
-// growing buffer = O(n²) total ≈ multi-second sync stall) and the user
-// would see nothing until the stall ended. With rAF throttling the
-// reader loop stays cheap and the browser paints between frames.
+// Render throttling: deltas accumulate into `dataset.streamBuf`
+// synchronously; only the `renderMarkdownFull` + DOM swap is gated.
+//
+// Each delta used to schedule a full `renderMarkdownFull` + subtree replace on
+// the next animation frame. A 3.4k-char reply arrives as ~1.4k deltas, i.e.
+// ~260 full pipeline runs over a growing buffer (O(n²) overall) on the main
+// thread — competing with the delta reader loop for the same frames.
+//
+// Two rules keep the text live without the churn:
+//   - a newline (paragraph / list / fence edge) paints on the next frame
+//   - anything else waits out STREAM_PAINT_MIN_INTERVAL_MS, with a trailing
+//     timer so a tail that stops mid-line still gets painted
+//
+// The terminal `final` event still calls `_streamingSetFinal`, which performs
+// a clean full render, so the settled frame is always exact.
+const STREAM_PAINT_MIN_INTERVAL_MS = 80;
+
+function _flushStreamingFinalPaint(msg, finalEl) {
+  msg._streamRafScheduled = false;
+  msg._streamRafHandle = null;
+  msg._streamLastPaintAt = Date.now();
+  const buf = msg.dataset.streamBuf || '';
+  const display = _stripSkillCreateBlocksForStream(
+    _stripAgentCreateBlocksForStream(
+      _stripAutoTaskBlocksForStream(
+        _stripAgentFormBlockForStream(
+          _stripExpenseCardBlockForStream(
+            _stripDashboardBlocksForStream(
+              _stripSkillFileBlocksForStream(buf),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+  msg.dataset.streamDisplay = display;
+  _paintStreamingFinalMarkdown(msg, finalEl, display, { stickBottom: true });
+}
+
+function _scheduleStreamingFinalPaint(msg, finalEl) {
+  if (msg._streamRafScheduled) return;
+  msg._streamRafScheduled = true;
+  if (typeof requestAnimationFrame === 'function') {
+    msg._streamRafHandle = requestAnimationFrame(() => _flushStreamingFinalPaint(msg, finalEl));
+  } else {
+    setTimeout(() => _flushStreamingFinalPaint(msg, finalEl), 0);
+  }
+}
+
 function _streamingAppendFinalDelta(msg, piece) {
   if (!piece) return;
   const finalEl = msg.querySelector('[data-role="final"]');
@@ -17543,33 +17596,24 @@ function _streamingAppendFinalDelta(msg, piece) {
   msg.dataset.streamBuf = next;
   msg.dataset.finalText = next;
   if (finalEl.style.display === 'none') finalEl.style.display = '';
-  if (msg._streamRafScheduled) return;
-  msg._streamRafScheduled = true;
-  const flush = () => {
-    msg._streamRafScheduled = false;
-    msg._streamRafHandle = null;
-    const buf = msg.dataset.streamBuf || '';
-    const display = _stripSkillCreateBlocksForStream(
-      _stripAgentCreateBlocksForStream(
-        _stripAutoTaskBlocksForStream(
-          _stripAgentFormBlockForStream(
-            _stripExpenseCardBlockForStream(
-              _stripDashboardBlocksForStream(
-                _stripSkillFileBlocksForStream(buf),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-    msg.dataset.streamDisplay = display;
-    _paintStreamingFinalMarkdown(msg, finalEl, display, { stickBottom: true });
-  };
-  if (typeof requestAnimationFrame === 'function') {
-    msg._streamRafHandle = requestAnimationFrame(flush);
-  } else {
-    setTimeout(flush, 0);
+
+  const sinceLastPaint = Date.now() - (msg._streamLastPaintAt || 0);
+  const atBoundary = piece.indexOf('\n') >= 0;
+  if (!atBoundary && sinceLastPaint < STREAM_PAINT_MIN_INTERVAL_MS) {
+    if (!msg._streamTrailTimer) {
+      msg._streamTrailTimer = setTimeout(() => {
+        msg._streamTrailTimer = null;
+        if (msg.isConnected === false) return;
+        _scheduleStreamingFinalPaint(msg, finalEl);
+      }, Math.max(16, STREAM_PAINT_MIN_INTERVAL_MS - sinceLastPaint));
+    }
+    return;
   }
+  if (msg._streamTrailTimer) {
+    clearTimeout(msg._streamTrailTimer);
+    msg._streamTrailTimer = null;
+  }
+  _scheduleStreamingFinalPaint(msg, finalEl);
 }
 
 // Format a raw openclaw event into one process-pane line. Returns null for

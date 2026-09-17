@@ -1104,7 +1104,18 @@ async function runMarketplaceInstallReconcile(reason: string): Promise<void> {
       });
       if (seeded.failed) {
         clearDefaultSeedStatus();
-        scheduleMarketplaceDefaultsRetry(runKey, uid, seeded.error || 'unknown error');
+        const seedError = seeded.error || 'unknown error';
+        if (mp.isRetryableMarketplaceError(seedError)) {
+          scheduleMarketplaceDefaultsRetry(runKey, uid, seedError);
+        } else {
+          // Permanent failure (e.g. HTTP 403): the fixed [3s,3s,3s] schedule
+          // would burn three more requests and dozens of log lines on every
+          // launch for an error that cannot succeed by retrying.
+          marketplaceBootLog.warn('marketplace default installs not retried (permanent error)', {
+            error: seedError,
+          });
+          clearMarketplaceDefaultsRetry(runKey);
+        }
       } else {
         clearMarketplaceDefaultsRetry(runKey);
       }

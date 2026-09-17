@@ -11245,12 +11245,25 @@ async function judgeModelRouting(
   if (_hostRoutingJudgeForTest) {
     return _hostRoutingJudgeForTest(newMessage, openRequirement);
   }
+  // A0 instrumentation: the judge sits on the critical path (the main turn
+  // cannot start until the verdict lands), yet it previously logged only a
+  // total. Split it so the cost model is measurable before optimising:
+  //   auth   — dynamic import + configured-model check
+  //   build  — buildRunner (module load, session, skill block, tool assembly)
+  //   run    — the provider round trip
+  const startedAt = Date.now();
+  let authMs = 0;
+  let buildMs = 0;
+  let runMs = 0;
   try {
+    const authStartedAt = Date.now();
     const { hasConfiguredModel } = await import('../auth');
     if (!hasConfiguredModel().configured) {
       log.warn('kstar model routing skipped: no configured model', { cid: maskId(cid) });
       return null;
     }
+    authMs = Date.now() - authStartedAt;
+    const buildStartedAt = Date.now();
     const { buildRunner } = await import('../../model/core-agent/runner');
     const { runner } = await buildRunner({
       sessionId: `kstar-routing-${cid}`,
@@ -11260,6 +11273,8 @@ async function judgeModelRouting(
       ephemeralSession: true,
       skillList: [],
     });
+    buildMs = Date.now() - buildStartedAt;
+    const runStartedAt = Date.now();
     const task = await Promise.race([
       runner.run({
         message: JSON.stringify({
@@ -11271,8 +11286,17 @@ async function judgeModelRouting(
       }),
       new Promise<null>((resolve) => setTimeout(() => resolve(null), CONTINUATION_JUDGE_TIMEOUT_MS)),
     ]);
+    runMs = Date.now() - runStartedAt;
     if (!task || task.meta.aborted || task.meta.error) {
-      log.warn('kstar model routing runner failed', { cid: maskId(cid), aborted: task?.meta.aborted, error: task?.meta.error });
+      log.warn('kstar model routing runner failed', {
+        cid: maskId(cid),
+        aborted: task?.meta.aborted,
+        error: task?.meta.error,
+        auth_ms: authMs,
+        build_ms: buildMs,
+        run_ms: runMs,
+        total_ms: Date.now() - startedAt,
+      });
       return null;
     }
     const verdict = parseContinuationJudgement(task.text);
@@ -11286,6 +11310,10 @@ async function judgeModelRouting(
       continuation: verdict.continuation,
       hasOpenRequirement: !!openRequirement,
       messagePreview: String(newMessage || '').replace(/\s+/g, ' ').slice(0, 80),
+      auth_ms: authMs,
+      build_ms: buildMs,
+      run_ms: runMs,
+      total_ms: Date.now() - startedAt,
     });
     return verdict;
   } catch (error) {

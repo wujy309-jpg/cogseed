@@ -361,7 +361,6 @@ function _skillsSecuritySummaryHtml(skills) {
 // right locale via `_renderSkillSections`.
 window.addEventListener('i18n-change', () => {
   refreshChatUseChips();
-  _renderCognitionPageHeader();
   if (_skillsCache) renderSkillsGrid(_skillsCache);
   if (_selectedSkill?.id && _selectedSkill?.source) {
     // Re-read the same file the user was viewing; null nodeEl preserves
