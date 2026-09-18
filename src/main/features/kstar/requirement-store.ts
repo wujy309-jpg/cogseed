@@ -15,6 +15,7 @@ import type {
 } from './requirement-types';
 import type { KstarControlErrorCode, KstarControlOperation, KstarControlReceipt, KstarControlResult } from './control-types';
 import type { KstarProjectionDecisionMarker, KstarRoutingDecision } from './requirement-types';
+import { KSTAR_ROUTING_KINDS } from './requirement-types';
 
 const MAX_TITLE = 200;
 const MAX_GOAL = 4_000;
@@ -117,14 +118,17 @@ function normalizeProjectionDecisions(value: unknown, conversationId: string): K
   return out.slice(-MAX_PROJECTION_DECISIONS);
 }
 
+/** Membership test for the one kind list, so this file cannot drift from the type. */
+const ROUTING_KIND_SET: ReadonlySet<string> = new Set(KSTAR_ROUTING_KINDS);
+
 function normalizeRoutingDecisions(value: unknown): KstarRoutingDecision[] {
   if (!Array.isArray(value)) return [];
   return value.filter((raw): raw is KstarRoutingDecision => {
     if (!isPlainRecord(raw) || typeof raw.at !== 'string' || typeof raw.kind !== 'string' || typeof raw.isTask !== 'boolean') return false;
-    // Every kind the type allows must be listed here: this filter runs on both
-    // write and read, so a kind missing from the list is dropped on the way to
-    // disk and never reaches the trace.
-    return ['closing_intent', 'trivial', 'answer_confirmation', 'model_judged', 'dispatch_auto'].includes(raw.kind)
+    // This filter runs on both write and read: a kind absent from
+    // KSTAR_ROUTING_KINDS is dropped on the way to disk and never reaches the
+    // trace. Deriving the check from that array keeps the two in step.
+    return ROUTING_KIND_SET.has(raw.kind)
       && (raw.continuation === undefined || typeof raw.continuation === 'boolean')
       && (raw.reason === undefined || typeof raw.reason === 'string')
       && (raw.sourceMessageId === undefined || (typeof raw.sourceMessageId === 'string' && safeId(raw.sourceMessageId)));

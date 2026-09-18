@@ -11229,21 +11229,38 @@ const ROUTING_JUDGE_PROMPT = [
 ].join('\n');
 
 /**
+ * Why the routing judge produced no verdict.
+ *
+ * `unavailable` is a by-design state (no model configured): routing simply is
+ * not possible, and it is not an anomaly.
+ * `failed` is an anomaly — a timeout, runner error, unparsable output, or a
+ * throw on the way in. The caller must not treat it as "not a task": the
+ * message may well have been one, and swallowing that silently is how a task
+ * loses its governance with nothing recorded.
+ */
+type ModelRoutingJudgeOutcome =
+  | { status: 'verdict'; verdict: ModelRoutingVerdict }
+  | { status: 'unavailable' }
+  | { status: 'failed'; reason: 'timeout' | 'runner_error' | 'unparsable' | 'exception' };
+
+/**
  * Model-judged routing (mixed deterministic + model): for any non-trivial
  * user message, a dedicated runner (NOT the busy commander turn — a bus
  * enqueue would deadlock because the current turn holds the queue) judges
  * whether the message is a task and, when one is open, whether it continues
- * it. Returns the verdict, or null on model failure (caller applies the safe
- * default). Bounded by CONTINUATION_JUDGE_TIMEOUT_MS.
+ * it. Returns a discriminated outcome so the caller can tell "the model said
+ * no" apart from "we never got an answer". Bounded by
+ * CONTINUATION_JUDGE_TIMEOUT_MS.
  */
 async function judgeModelRouting(
   uid: string,
   cid: string,
   newMessage: string,
   openRequirement?: { requirementId: string; goalText: string },
-): Promise<ModelRoutingVerdict | null> {
+): Promise<ModelRoutingJudgeOutcome> {
   if (_hostRoutingJudgeForTest) {
-    return _hostRoutingJudgeForTest(newMessage, openRequirement);
+    const verdict = await _hostRoutingJudgeForTest(newMessage, openRequirement);
+    return verdict ? { status: 'verdict', verdict } : { status: 'failed', reason: 'runner_error' };
   }
   // A0 instrumentation: the judge sits on the critical path (the main turn
   // cannot start until the verdict lands), yet it previously logged only a
@@ -11260,7 +11277,7 @@ async function judgeModelRouting(
     const { hasConfiguredModel } = await import('../auth');
     if (!hasConfiguredModel().configured) {
       log.warn('kstar model routing skipped: no configured model', { cid: maskId(cid) });
-      return null;
+      return { status: 'unavailable' };
     }
     authMs = Date.now() - authStartedAt;
     const buildStartedAt = Date.now();
@@ -11292,17 +11309,18 @@ async function judgeModelRouting(
         cid: maskId(cid),
         aborted: task?.meta.aborted,
         error: task?.meta.error,
+        timed_out: !task,
         auth_ms: authMs,
         build_ms: buildMs,
         run_ms: runMs,
         total_ms: Date.now() - startedAt,
       });
-      return null;
+      return { status: 'failed', reason: task ? 'runner_error' : 'timeout' };
     }
     const verdict = parseContinuationJudgement(task.text);
     if (!verdict) {
       log.warn('kstar model routing judge output unparsable', { cid: maskId(cid), text: String(task.text || '').slice(0, 200) });
-      return null;
+      return { status: 'failed', reason: 'unparsable' };
     }
     log.info('kstar model routing verdict', {
       cid: maskId(cid),
@@ -11315,10 +11333,10 @@ async function judgeModelRouting(
       run_ms: runMs,
       total_ms: Date.now() - startedAt,
     });
-    return verdict;
+    return { status: 'verdict', verdict };
   } catch (error) {
     log.warn(`kstar model routing degraded cid=${cid}: ${(error as Error).message}`);
-    return null;
+    return { status: 'failed', reason: 'exception' };
   }
 }
 
@@ -11421,8 +11439,34 @@ async function hostRouteTaskTurn(
     const openRequirement = lifecycle.requirement && lifecycle.requirement.status === 'open'
       ? { requirementId: lifecycle.requirement.id, goalText: lifecycle.requirement.goalText }
       : undefined;
-    const verdict = await judgeModelRouting(uid, cid, messageText, openRequirement);
-    if (!verdict) return { openedTask: false }; // timeout/enqueue failure → no routing decision (safe no-op)
+    const outcome = await judgeModelRouting(uid, cid, messageText, openRequirement);
+    if (outcome.status === 'unavailable') {
+      // No configured model: routing is simply not possible. This is a normal
+      // configuration state, not an anomaly, so it is not recorded as a failure.
+      return { openedTask: false };
+    }
+    if (outcome.status === 'failed') {
+      // The judge never answered, so we cannot tell a task from small talk.
+      // Returning quietly is how a task lost its governance with no trace: the
+      // message is answered, but it opens no task, gets no projection and never
+      // enters the learning loop. Record it so the gap is visible, and keep the
+      // safe default of opening nothing (guessing "task" could strand a task
+      // that the user never asked for).
+      await recordRouting({
+        at: nowIso(),
+        kind: 'routing_failed',
+        isTask: false,
+        reason: `routing judge unavailable (${outcome.reason})`,
+        ...(sourceMessageId ? { sourceMessageId } : {}),
+      });
+      log.warn('kstar model routing produced no verdict; this turn runs ungoverned', {
+        cid: maskId(cid),
+        reason: outcome.reason,
+        hadOpenRequirement: !!openRequirement,
+      });
+      return { openedTask: false };
+    }
+    const verdict = outcome.verdict;
     if (!verdict.isTask) return { openedTask: false }; // model says not a task → zero KStar writes
     await recordRouting({ at: nowIso(), kind: 'model_judged', isTask: true, continuation: verdict.continuation, reason: 'model routing verdict', ...(sourceMessageId ? { sourceMessageId } : {}) });
 

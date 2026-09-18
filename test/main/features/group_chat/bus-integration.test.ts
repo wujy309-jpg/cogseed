@@ -6915,6 +6915,35 @@ describe("group_chat bus integration › deterministic host routing (task turn)"
     const taskState = await store.readConversationTaskState(TEST_UID, cid);
     expect(taskState?.currentTaskId).toBeFalsy();
   }, BUS_TEST_TIMEOUT_MS);
+
+
+  it("records a judge failure instead of dropping the turn's governance silently", async () => {
+    process.env.COGSEED_KSTAR_HOST_ROUTING = "1";
+    const cid = newCid();
+    const state = await import("../../../../src/main/features/group_chat/state");
+    const bus = await import("../../../../src/main/features/group_chat/bus");
+
+    // The judge never answers (runner error / timeout). This used to return
+    // `openedTask:false` with nothing recorded, so a task-shaped message lost
+    // its governance with no trace anywhere.
+    bus._setHostRoutingJudgeForTest(async () => null);
+
+    _setScript(state.buildGconvSessionId(cid), [
+      { type: "final", text: "Answered anyway." },
+    ]);
+    await bus.enqueue({ uid: TEST_UID, cid, fromActorId: "user", text: "审查一下 bus.ts 的守卫实现" });
+    await waitForQuiescent(TEST_UID, cid, 6000);
+
+    const store = await import("../../../../src/main/features/kstar/requirement-store");
+    const taskState = await store.readConversationTaskState(TEST_UID, cid);
+
+    // No task is opened — guessing "task" could strand a task the user never
+    // asked for — but the gap is now visible to the trace.
+    expect(taskState?.currentTaskId).toBeFalsy();
+    const failed = (taskState?.routingDecisions ?? []).filter((decision) => decision.kind === "routing_failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0].reason).toContain("routing judge unavailable");
+  }, BUS_TEST_TIMEOUT_MS);
 });
 
 describe("group_chat bus integration › KStar privileged dispatch approval", () => {

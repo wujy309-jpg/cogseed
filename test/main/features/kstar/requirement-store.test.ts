@@ -20,11 +20,12 @@ afterEach(() => {
 });
 
 async function storeModules() {
-  const [store, paths] = await Promise.all([
+  const [store, paths, types] = await Promise.all([
     import('../../../../src/main/features/kstar/requirement-store'),
     import('../../../../src/main/features/kstar/paths'),
+    import('../../../../src/main/features/kstar/requirement-types'),
   ]);
-  return { store, paths };
+  return { store, paths, types };
 }
 
 async function writeRawRequirement(
@@ -356,5 +357,32 @@ describe('routing decisions do not materialise task state on their own', () => {
     const result = await store.recordKstarRoutingDecision('user-a', 'cid-default', decision('selection'));
     expect(result).not.toBeNull();
     expect(fs.existsSync(paths.kstarConversationTaskStatePath('user-a', 'cid-default'))).toBe(true);
+  });
+
+  it('keeps every kind the type allows, including a judge failure', async () => {
+    const { store, types } = await storeModules();
+    // The allowlist is derived from KSTAR_ROUTING_KINDS. If the two ever drift,
+    // the kind is stripped on the way to disk and the trace can never show it —
+    // which is exactly what happened to `answer_confirmation`.
+    const result = await store.recordKstarRoutingDecision('user-a', 'cid-failed', {
+      at: '2026-09-18T00:00:00.000Z',
+      kind: 'routing_failed',
+      isTask: false,
+      reason: 'routing judge unavailable (timeout)',
+    });
+    expect(result?.routingDecisions).toHaveLength(1);
+    expect(result?.routingDecisions?.[0]).toMatchObject({ kind: 'routing_failed', reason: 'routing judge unavailable (timeout)' });
+    expect(types.KSTAR_ROUTING_KINDS).toContain('routing_failed');
+  });
+
+  it('drops a kind that is not in the type, so the list stays the source of truth', async () => {
+    const { store } = await storeModules();
+    const initial = store.createInitialConversationTaskState('user-a', 'cid-bogus');
+    await store.writeConversationTaskState('user-a', {
+      ...initial,
+      routingDecisions: [{ at: '2026-09-18T00:00:00.000Z', kind: 'not_a_kind', isTask: false } as never],
+    });
+    const read = await store.readConversationTaskState('user-a', 'cid-bogus');
+    expect(read?.routingDecisions ?? []).toHaveLength(0);
   });
 });

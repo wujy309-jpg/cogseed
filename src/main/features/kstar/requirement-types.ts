@@ -133,9 +133,31 @@ export interface KstarProjectionDecisionMarker {
   createdAt: string;
 }
 
+/**
+ * Routing-decision kinds — the single source of truth.
+ *
+ * The type below is derived from this array and `normalizeRoutingDecisions`
+ * filters against it, so a kind can no longer exist in the type while being
+ * dropped by the store. That divergence is exactly how `answer_confirmation`
+ * silently failed to persist when it was added: the array is checked on both
+ * write and read.
+ *
+ * `trivial` and `dispatch_auto` were removed rather than kept as legacy: no
+ * commit in this repository's history ever wrote them, so no persisted record
+ * can contain them.
+ */
+export const KSTAR_ROUTING_KINDS = [
+  'closing_intent',
+  'answer_confirmation',
+  'model_judged',
+  'routing_failed',
+] as const;
+
+export type KstarRoutingKind = (typeof KSTAR_ROUTING_KINDS)[number];
+
 export interface KstarRoutingDecision {
   at: string;
-  kind: 'closing_intent' | 'trivial' | 'answer_confirmation' | 'model_judged' | 'dispatch_auto';
+  kind: KstarRoutingKind;
   isTask: boolean;
   continuation?: boolean;
   reason?: string;
