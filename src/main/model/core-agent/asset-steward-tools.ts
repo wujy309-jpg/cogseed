@@ -11,7 +11,20 @@
 
 import type { AgentTool } from '#core-agent';
 import { createLogger } from '../../logger';
-import { listAbilityAssets, readAbilityAsset } from '../../features/recall/asset-service';
+import { t } from '../../i18n';
+import {
+  archiveAbilityAsset,
+  classifyAbilityAssetWriteFailure,
+  deleteAbilityAsset,
+  listAbilityAssets,
+  mergeAbilityAssets,
+  readAbilityAsset,
+  restoreAbilityAsset,
+  rollbackAbilityAsset,
+  updateAbilityAsset,
+  type AbilityAssetFailureCategory,
+  type UpdateAbilityAssetInput,
+} from '../../features/recall/asset-service';
 import type { RecallAbilityAssetRecord } from '../../features/recall/candidate-service';
 import { evaluateRecallAssetRuntimeEligibility } from '../../features/recall/prompt-injection';
 import { safeId } from '../../storage';
@@ -294,8 +307,332 @@ function createReadAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
   };
 }
 
-/** 资产管家工具面（US-401 的两个读工具；US-402 的 6 个写工具在本文件后续扩展）。
+// ── 写工具（US-402） ──────────────────────────────────────────────────────
+//
+// 全部落到既有 `asset-service.ts` 写函数，不新建第二套写通道；`actor` 一律 `'ai'`，
+// 依据写进台账的 `reason`（FR-004）。**被拦截的操作不得计为成功**：失败回执带
+// `isError`、写明拦截规则与归因分类。
+
+/** 归因分类 → 人话（回执给模型看，模型再向用户解释）。 */
+const FAILURE_CATEGORY_LABELS: Record<AbilityAssetFailureCategory, string> = {
+  product: '产品规则',
+  model: '模型侧',
+  prompt: '提示词',
+  data: '数据缺失/不存在',
+  tool: '工具执行',
+  permission: '权限或敏感级拦截',
+  workflow: '并发/流程冲突',
+  schema: '入参或记录形状不合法',
+  governance: '治理状态拦截',
+  evidence: '证据不足',
+  unknown: '未归类',
+};
+
+/** 「AI 自主提出的实质变化」不得直接生效（specs/008 分级②）。
  *
+ *  实质变化 = 方法正文 / 事实判断 / 适用范围：
+ *    - `statement`：正文即"这条资产主张什么"；
+ *    - `scope` 与 `applicableWhen`/`forbiddenWhen`：它从此会进出哪一批任务；
+ *    - `sensitivity`：能去的地方变多就是扩权——拍板表没单列它，但既有系统
+ *      自己就把「敏感级升高」当扩权（inbox 的 `sensitivity_escalated` 是
+ *      confirm 档）。归入实质变化是**更保护**的方向，代价只是偶发一张卡。
+ *  命名/标题不在此列（分级③允许自动处理）。 */
+const SUBSTANTIAL_FIELDS = ['statement', 'scope', 'applicableWhen', 'forbiddenWhen', 'sensitivity'] as const;
+
+function writeReceipt(action: string, asset: RecallAbilityAssetRecord, extra: string[] = []): string {
+  return [
+    `已${action}：[asset:${asset.id}] ${asset.title || '(无标题)'}`,
+    metaLine(asset),
+    ...extra,
+  ].join('\n');
+}
+
+function writeFailure(
+  action: string,
+  assetId: string,
+  error: unknown,
+  hint?: string,
+): { content: string; isError: true } {
+  const category = classifyAbilityAssetWriteFailure(error);
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    content: [
+      `未能${action}：[asset:${assetId}]`,
+      `拦截规则：${message}`,
+      `归因：${category}（${FAILURE_CATEGORY_LABELS[category]}）`,
+      ...(hint ? [hint] : []),
+    ].join('\n'),
+    isError: true,
+  };
+}
+
+function requireReason(value: unknown): string | { error: string } {
+  const reason = typeof value === 'string' ? value.trim() : '';
+  if (!reason) return { error: 'reason 必填：这次改动依据的是用户的哪句话/哪条证据？（它会被写进台账的「依据」）' };
+  if (reason.length > 1_000) return { error: 'reason 太长（上限 1000 字）' };
+  return reason;
+}
+
+function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
+  const userId = opts.userId;
+  return {
+    name: 'edit_ability_asset',
+    description: [
+      '改一条认知资产的内容：标题、正文、适用范围、适用/禁用场景、敏感级。**必须**说明依据（reason）。',
+      '**分级（很重要）**：用户明确要求的改动（"把这条改清楚点"）直接执行；**你自己**想到的正文/适用范围/敏感级实质变化不要直接改——那类改动会改掉这条资产主张什么、或者它从此会进出哪一批任务，必须由用户点头（本工具会拒绝并说明）。',
+      '读到的版本号（metaLine 里的「在用版」）请通过 expectedVersion 带回来：如果这条资产在你读取之后被改过（用户正在手动编辑），工具会拒绝而不是覆盖——重新读一次再决定。',
+      '改动会写进台账（谁改的/时间/前后值/依据），并且随时可回滚（rollback_ability_asset）。',
+      '标签与归类字段目前没有（标签系统尚未落地）：不要传 tags/category，传了会被拒绝。',
+    ].join(''),
+    inputSchema: {
+      type: 'object',
+      properties: {
+        assetId: { type: 'string', description: '要改的资产 id（aa- 开头）。' },
+        fields: {
+          type: 'object',
+          description: '要改的字段，至少给一个；没给的字段不动。',
+          properties: {
+            title: { type: 'string', description: '标题（命名规范化；上限 120 字）。' },
+            statement: { type: 'string', description: '正文（上限 4000 字）。' },
+            scope: { type: 'string', description: '适用范围。' },
+            applicableWhen: { type: 'array', items: { type: 'string' }, description: '适用场景（整体替换；传空数组=清空）。' },
+            forbiddenWhen: { type: 'array', items: { type: 'string' }, description: '禁用场景（整体替换；传空数组=清空）。' },
+            sensitivity: { type: 'string', description: '敏感级：L0 / L1 / L2。' },
+          },
+          additionalProperties: false,
+        },
+        reason: { type: 'string', description: '改动依据：用户的原话或具体证据（必填，写进台账）。' },
+        expectedVersion: { type: 'string', description: '你读到这条时的版本号；给了就要求与当前一致，不一致则拒绝（不静默覆盖）。' },
+        origin: {
+          type: 'string',
+          description: '这次改动的来源：user_instruction=用户明确要求的；ai_initiated=你自己提出要改的（缺省）。AI 自主的实质变化会被拒绝并要求走用户确认。',
+        },
+      },
+      required: ['assetId', 'fields', 'reason'],
+      additionalProperties: false,
+    },
+    async execute(input: Record<string, unknown>): Promise<{ content: string; isError?: boolean }> {
+      const assetId = typeof input.assetId === 'string' ? input.assetId.trim() : '';
+      if (!safeId(assetId)) return { content: `不是合法的资产 id：${assetId || '(空)'}`, isError: true };
+      const reasonOrError = requireReason(input.reason);
+      if (typeof reasonOrError !== 'string') return { content: reasonOrError.error, isError: true };
+      const reason = reasonOrError;
+      const fields = (input.fields && typeof input.fields === 'object' && !Array.isArray(input.fields))
+        ? input.fields as Record<string, unknown>
+        : {};
+      const touched = Object.keys(fields).filter((key) => fields[key] !== undefined);
+      if (!touched.length) return { content: 'fields 里至少要给一个要改的字段。', isError: true };
+      // 标签/归类字段尚未落地（Epic 2 US-201）。**如实拒绝，不静默丢弃**：
+      // 静默丢弃会让模型以为改成功了（最坏的一种"成功"）；也不映射到
+      // `type`（资产数据形态、与 payload.kind 绑定）或 `familyName`（系统自动的
+      // 同源血缘，不是分类）。Epic 2 落地后二者统一并入标签字段。
+      const unavailableFields = ['tags', 'category'].filter((key) => fields[key] !== undefined);
+      if (unavailableFields.length) {
+        return {
+          content: [
+            `未能改动：[asset:${assetId}]`,
+            `拦截规则：字段未就位（待 Epic 2 US-201 标签系统）：${unavailableFields.join(' / ')}`,
+            '归因：data（数据缺失/不存在）',
+            '这条资产目前没有标签/归类字段，所以这两个入参现在没有落点。请只带 title / statement / scope / applicableWhen / forbiddenWhen / sensitivity 重试。',
+          ].join('\n'),
+          isError: true,
+        };
+      }
+      // 系统边界：模型给的值先在这里收口。上限与 IPC/服务层同口径（条件 ≤32 条），
+      // 不指望下游兜——下游抛的是英文不变量消息，对模型不够可读。
+      if (fields.sensitivity !== undefined && !['L0', 'L1', 'L2'].includes(String(fields.sensitivity))) {
+        return { content: `sensitivity 只能是 L0 / L1 / L2，收到：${String(fields.sensitivity)}`, isError: true };
+      }
+      for (const key of ['applicableWhen', 'forbiddenWhen'] as const) {
+        const value = fields[key];
+        if (value === undefined) continue;
+        if (!Array.isArray(value) || value.length > 32) {
+          return { content: `${key} 要是字符串数组、且不超过 32 条。`, isError: true };
+        }
+      }
+      const origin = input.origin === 'user_instruction' ? 'user_instruction' : 'ai_initiated';
+
+      let asset: RecallAbilityAssetRecord;
+      try {
+        asset = await readAbilityAsset(userId, assetId);
+      } catch {
+        return { content: `[asset:${assetId}] 这条资产不存在，或不属于当前用户。`, isError: true };
+      }
+
+      // 分级②：AI 自主提出的实质变化不直接生效。Phase 6 会在这一步之前建提议并
+      // 发审批卡片；这里保留"绝不静默生效"这道底线——提议建不出来时也宁可拒绝。
+      const substantial = touched.filter((key) => (SUBSTANTIAL_FIELDS as readonly string[]).includes(key));
+      if (origin !== 'user_instruction' && substantial.length) {
+        return {
+          content: [
+            `[asset:${assetId}] ${asset.title || '(无标题)'}：这次改动涉及实质内容（${substantial.join(' / ')}），不能由我直接生效。`,
+            '原因：正文/适用范围/敏感级变了，意味着这条资产主张的内容、或者它以后会进出哪一批任务变了，必须由用户确认。',
+            '请把改动意图告诉用户，等用户明确要求后再改；或等审批卡片机制接手（本 feature 的后续阶段）。',
+            origin === 'ai_initiated' && input.origin === undefined
+              ? '（你没有声明 origin，按更保守的"AI 自主"处理；如果是用户明确要求的，带上 origin=user_instruction 与用户原话重试。）'
+              : '',
+          ].filter(Boolean).join('\n'),
+          isError: true,
+        };
+      }
+
+      const update: UpdateAbilityAssetInput = {
+        reason,
+        actor: 'ai',
+        ...(typeof input.expectedVersion === 'string' && input.expectedVersion.trim()
+          ? { expectedVersion: input.expectedVersion.trim() }
+          : {}),
+        ...(typeof fields.title === 'string' ? { title: fields.title } : {}),
+        ...(typeof fields.statement === 'string' ? { statement: fields.statement } : {}),
+        ...(typeof fields.scope === 'string' ? { scope: fields.scope } : {}),
+        ...(Array.isArray(fields.applicableWhen) ? { applicableWhen: fields.applicableWhen.map(String) } : {}),
+        ...(Array.isArray(fields.forbiddenWhen) ? { forbiddenWhen: fields.forbiddenWhen.map(String) } : {}),
+        ...(typeof fields.sensitivity === 'string' ? { sensitivity: fields.sensitivity as 'L0' | 'L1' | 'L2' } : {}),
+      };
+      try {
+        const updated = await updateAbilityAsset(userId, assetId, update);
+        return {
+          content: writeReceipt('改动', updated, [
+            `改了什么：${touched.join(' / ')}`,
+            `依据：${reason}`,
+            '台账已记（actor=ai）；要撤销这次改动用 rollback_ability_asset。',
+          ]),
+        };
+      } catch (err) {
+        log.warn('steward edit failed', { userId: maskId(userId), assetId, error: logErrorRef(err as Error) });
+        const conflicted = err instanceof Error && err.message.includes('version conflict');
+        return writeFailure('改动', assetId, err, conflicted
+          ? '这条资产在你读取之后被改过（可能是用户正在手动编辑）。重新读一次，确认用户想要的改动后再决定要不要改。'
+          : undefined);
+      }
+    },
+  };
+}
+
+/** 四个"状态治理"写工具共用一张表：动作名 → 落到哪个既有函数 + 回执里补什么。 */
+function createStatusActionTool(
+  opts: AssetStewardToolsOpts,
+  spec: {
+    name: string;
+    description: string;
+    actionLabel: string;
+    run: (userId: string, assetId: string, reason: string) => Promise<RecallAbilityAssetRecord>;
+    extra?: (asset: RecallAbilityAssetRecord) => string[];
+  },
+): AgentTool {
+  const userId = opts.userId;
+  return {
+    name: spec.name,
+    description: spec.description,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        assetId: { type: 'string', description: '资产 id（aa- 开头）。' },
+        reason: { type: 'string', description: '依据：用户的原话或具体理由（必填，写进台账）。' },
+      },
+      required: ['assetId', 'reason'],
+      additionalProperties: false,
+    },
+    async execute(input: Record<string, unknown>): Promise<{ content: string; isError?: boolean }> {
+      const assetId = typeof input.assetId === 'string' ? input.assetId.trim() : '';
+      if (!safeId(assetId)) return { content: `不是合法的资产 id：${assetId || '(空)'}`, isError: true };
+      const reasonOrError = requireReason(input.reason);
+      if (typeof reasonOrError !== 'string') return { content: reasonOrError.error, isError: true };
+      try {
+        const asset = await spec.run(userId, assetId, reasonOrError);
+        return { content: writeReceipt(spec.actionLabel, asset, spec.extra ? spec.extra(asset) : []) };
+      } catch (err) {
+        log.warn(`steward ${spec.name} failed`, { userId: maskId(userId), assetId, error: logErrorRef(err as Error) });
+        return writeFailure(spec.actionLabel, assetId, err);
+      }
+    },
+  };
+}
+
+function createMergeAbilityAssetsTool(opts: AssetStewardToolsOpts): AgentTool {
+  const userId = opts.userId;
+  return {
+    name: 'merge_ability_assets',
+    description: [
+      '把一条重复资产并进另一条：source 的版本链并入 target（同一版本组），source 随即归档并记下归并去向，历史引用仍指向原条目可读。',
+      '两条必须同类型；source 不能已经被并过。判断"重复"要谨慎——拿不准就先问用户，别把两条不同主张的资产并掉。',
+      '并进之后 source 的正文不再作为在用内容；要撤销只能靠回滚各自版本，不能"反归并"。',
+    ].join(''),
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sourceAssetId: { type: 'string', description: '被并入的资产（会归档）。' },
+        targetAssetId: { type: 'string', description: '保留下来的资产（版本链接收方）。' },
+        reason: { type: 'string', description: '依据：为什么判定这两条重复（必填，写进台账）。' },
+      },
+      required: ['sourceAssetId', 'targetAssetId', 'reason'],
+      additionalProperties: false,
+    },
+    async execute(input: Record<string, unknown>): Promise<{ content: string; isError?: boolean }> {
+      const sourceAssetId = typeof input.sourceAssetId === 'string' ? input.sourceAssetId.trim() : '';
+      const targetAssetId = typeof input.targetAssetId === 'string' ? input.targetAssetId.trim() : '';
+      if (!safeId(sourceAssetId) || !safeId(targetAssetId)) return { content: 'sourceAssetId / targetAssetId 不是合法的资产 id。', isError: true };
+      const reasonOrError = requireReason(input.reason);
+      if (typeof reasonOrError !== 'string') return { content: reasonOrError.error, isError: true };
+      try {
+        const merged = await mergeAbilityAssets(userId, sourceAssetId, targetAssetId, { actor: 'ai', reason: reasonOrError });
+        return {
+          content: writeReceipt('归并', merged, [
+            `被并入的条目：${sourceAssetId}（已归档，历史引用仍指向它）`,
+            '台账已记（两条各一条：merged_from / merged_into）。',
+          ]),
+        };
+      } catch (err) {
+        log.warn('steward merge failed', { userId: maskId(userId), error: logErrorRef(err as Error) });
+        return writeFailure('归并', targetAssetId, err);
+      }
+    },
+  };
+}
+
+function createRollbackAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
+  const userId = opts.userId;
+  return {
+    name: 'rollback_ability_asset',
+    description: [
+      '把一条资产回滚到某个历史版本：用那一版的内容**生成一个新版本**，历史版本号不回退（已经引用过旧版的任务不受影响）。',
+      '回滚本身也进台账（actor=ai + 依据），所以"改错了再改回来"这条链是完整的。',
+      '先用 read_ability_asset 或版本列表确认目标版本号；回滚不改治理状态（暂停过的不会因为回滚变回在用）。',
+    ].join(''),
+    inputSchema: {
+      type: 'object',
+      properties: {
+        assetId: { type: 'string', description: '资产 id（aa- 开头）。' },
+        toVersion: { type: 'string', description: '要回滚到的版本号（纯数字字符串，如 "2"）。' },
+        reason: { type: 'string', description: '依据（必填，写进台账）。' },
+      },
+      required: ['assetId', 'toVersion', 'reason'],
+      additionalProperties: false,
+    },
+    async execute(input: Record<string, unknown>): Promise<{ content: string; isError?: boolean }> {
+      const assetId = typeof input.assetId === 'string' ? input.assetId.trim() : '';
+      const toVersion = typeof input.toVersion === 'string' ? input.toVersion.trim() : String(input.toVersion ?? '').trim();
+      if (!safeId(assetId)) return { content: `不是合法的资产 id：${assetId || '(空)'}`, isError: true };
+      if (!/^[0-9]{1,9}$/.test(toVersion)) return { content: `toVersion 要是纯数字版本号，收到：${toVersion || '(空)'}`, isError: true };
+      const reasonOrError = requireReason(input.reason);
+      if (typeof reasonOrError !== 'string') return { content: reasonOrError.error, isError: true };
+      try {
+        const asset = await rollbackAbilityAsset(userId, assetId, toVersion, { actor: 'ai', reason: reasonOrError });
+        return {
+          content: writeReceipt('回滚', asset, [
+            `回滚到 v${toVersion}（已作为新版本 v${asset.version} 落地，历史不回退）`,
+            '台账已记（rolled_back + 前后值）。',
+          ]),
+        };
+      } catch (err) {
+        log.warn('steward rollback failed', { userId: maskId(userId), assetId, error: logErrorRef(err as Error) });
+        return writeFailure('回滚', assetId, err);
+      }
+    },
+  };
+}
+
+/** 资产管家工具面（US-401 的两个读工具；US-402 的 6 个写工具在本文件后续扩展）。
  *  只读会话不变量：这些工具**都不进** `runner.ts` 的闭合只读白名单——该白名单是
  *  「无副作用 actor 的最小工具集」，而资产库是用户私有全量数据，开给从属 actor
  *  属权限扩张。由 `test/main/model/core-agent/asset-steward-tools.test.ts` 钉住。 */
@@ -303,5 +640,37 @@ export function createAssetStewardTools(opts: AssetStewardToolsOpts): AgentTool[
   return [
     createListAbilityAssetsTool(opts),
     createReadAbilityAssetTool(opts),
+    createEditAbilityAssetTool(opts),
+    createMergeAbilityAssetsTool(opts),
+    createStatusActionTool(opts, {
+      name: 'archive_ability_asset',
+      actionLabel: '归档',
+      description: [
+        '归档一条资产：从日常列表与推荐里移出，内容、证据与历史都保留，随时可恢复（restore_ability_asset）。',
+        '适合"这条现在用不上但别删"的情况。删除（delete_ability_asset）会进保留期，比归档更重。',
+      ].join(''),
+      run: (userId, assetId, reason) => archiveAbilityAsset(userId, assetId, { actor: 'ai', reason }),
+    }),
+    createStatusActionTool(opts, {
+      name: 'delete_ability_asset',
+      actionLabel: '删除',
+      description: [
+        '删除一条资产：进入 30 天保留期（保留期内可恢复），到期系统自动彻底删除、不可恢复。',
+        '**只在用户明确要求删除时用**。拿不准就用归档——归档没有不可逆的一天。',
+      ].join(''),
+      run: (userId, assetId, reason) => deleteAbilityAsset(userId, assetId, { actor: 'ai', reason }),
+      // 保留期口径必须随回执一起给：用户此刻要知道"这东西什么时候会真的没了"。
+      extra: () => [t('recall.asset.delete_confirm_rules')],
+    }),
+    createStatusActionTool(opts, {
+      name: 'restore_ability_asset',
+      actionLabel: '恢复',
+      description: [
+        '把一条资产放回在用：已归档的、以及已删除但仍在保留期内的都可以恢复。',
+        '保留期已过或已彻底清除的会被拒绝并说明原因——那是终态，恢复不成立。',
+      ].join(''),
+      run: (userId, assetId, reason) => restoreAbilityAsset(userId, assetId, { actor: 'ai', reason }),
+    }),
+    createRollbackAbilityAssetTool(opts),
   ];
 }

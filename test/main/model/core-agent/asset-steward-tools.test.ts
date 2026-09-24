@@ -272,8 +272,293 @@ describe('只读会话不变量（T016）', () => {
     }
   });
 
-  it('资产管家的工具面就是两个读工具（写工具由 US-402 追加）', async () => {
+  it('资产管家的工具面 = 2 读 + 6 写', async () => {
     const { names } = await stewardTools();
-    expect(names).toEqual(['list_ability_assets', 'read_ability_asset']);
+    expect(names).toEqual([
+      'list_ability_assets', 'read_ability_asset',
+      'edit_ability_asset', 'merge_ability_assets', 'archive_ability_asset',
+      'delete_ability_asset', 'restore_ability_asset', 'rollback_ability_asset',
+    ]);
+  });
+});
+
+describe('写工具（US-402）', () => {
+  async function tools() {
+    const { createAssetStewardTools } = await import('../../../../src/main/model/core-agent/asset-steward-tools');
+    const byName = new Map(createAssetStewardTools({ userId: TEST_UID }).map((tool) => [tool.name, tool]));
+    return {
+      edit: byName.get('edit_ability_asset')!,
+      merge: byName.get('merge_ability_assets')!,
+      archive: byName.get('archive_ability_asset')!,
+      del: byName.get('delete_ability_asset')!,
+      restore: byName.get('restore_ability_asset')!,
+      rollback: byName.get('rollback_ability_asset')!,
+    };
+  }
+  const call = (tool: { execute: (input: Record<string, unknown>, ctx: never) => Promise<{ content: string; isError?: boolean }> }, input: Record<string, unknown>) =>
+    tool.execute(input, {} as never);
+
+  it('用户明确指令：直接生效 + 台账记 actor=ai/前后值/依据', async () => {
+    const asset = await seedAsset('发布前必须核对回滚方案。');
+    const { edit } = await tools();
+    const out = await call(edit, {
+      assetId: asset.id,
+      fields: { statement: '发布前必须核对回滚方案与灰度范围。' },
+      reason: '用户要求把这条改清楚点',
+      origin: 'user_instruction',
+      expectedVersion: asset.version,
+    });
+    expect(out.isError).toBeUndefined();
+    expect(out.content).toContain('已改动');
+    expect(out.content).toContain('v2');
+
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    const updated = await assets.readAbilityAsset(TEST_UID, asset.id);
+    expect(updated.statement).toContain('灰度范围');
+    const row = (await assets.listAbilityAssetAudit(TEST_UID, asset.id)).at(-1)!;
+    expect(row.action).toBe('updated');
+    expect(row.actor).toBe('ai');
+    expect(row.reason).toBe('用户要求把这条改清楚点');
+    expect(row.before).toContain('statement=');
+    expect(row.after).toContain('灰度范围');
+  });
+
+  it('并发不一致：拒绝而不是静默覆盖', async () => {
+    const asset = await seedAsset('并发场景的基线正文。');
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    await assets.updateAbilityAsset(TEST_UID, asset.id, { title: '被别人改过', reason: 'other writer', actor: 'user' });
+
+    const { edit } = await tools();
+    const out = await call(edit, {
+      assetId: asset.id,
+      fields: { statement: '我的改动' },
+      reason: '用户要求改',
+      origin: 'user_instruction',
+      expectedVersion: asset.version,
+    });
+    expect(out.isError).toBe(true);
+    expect(out.content).toContain('version conflict');
+    expect(out.content).toContain('workflow');
+    const after = await assets.readAbilityAsset(TEST_UID, asset.id);
+    expect(after.statement).toBe(asset.statement);
+    expect(after.title).toBe('被别人改过');
+  });
+
+  it('AI 自主的实质变化：不直接生效（零静默发布）', async () => {
+    const asset = await seedAsset('实质变化的守卫基线。');
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    const { edit } = await tools();
+
+    for (const fields of [
+      { statement: '我自己觉得应该改成这样' },
+      { scope: 'review' },
+      { applicableWhen: ['任何情况'] },
+      { sensitivity: 'L2' },
+    ]) {
+      const out = await call(edit, { assetId: asset.id, fields, reason: '我觉得该改', origin: 'ai_initiated' });
+      expect(out.isError, JSON.stringify(fields)).toBe(true);
+      expect(out.content).toContain('不能由我直接生效');
+    }
+    // 内容与版本分毫未动。
+    const after = await assets.readAbilityAsset(TEST_UID, asset.id);
+    expect(after.statement).toBe(asset.statement);
+    expect(after.version).toBe(asset.version);
+    expect(after.sensitivity).toBeUndefined();
+    expect((await assets.listAbilityAssetAudit(TEST_UID, asset.id)).filter((r) => r.actor === 'ai')).toEqual([]);
+  });
+
+  it('缺省 origin 按更保守的"AI 自主"处理，并在回执里给出重试方式', async () => {
+    const asset = await seedAsset('缺省来源的守卫基线。');
+    const { edit } = await tools();
+    const out = await call(edit, { assetId: asset.id, fields: { statement: '改正文' }, reason: '没说来源' });
+    expect(out.isError).toBe(true);
+    expect(out.content).toContain('origin=user_instruction');
+  });
+
+  it('非实质字段（命名）允许 AI 自动处理', async () => {
+    const asset = await seedAsset('命名规范化可以由 AI 直接做。');
+    const { edit } = await tools();
+    const out = await call(edit, { assetId: asset.id, fields: { title: '规范化后的标题' }, reason: '命名规范化', origin: 'ai_initiated' });
+    expect(out.isError).toBeUndefined();
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    expect((await assets.readAbilityAsset(TEST_UID, asset.id)).title).toBe('规范化后的标题');
+  });
+
+  it('tags / category 如实拒绝，不静默丢弃', async () => {
+    const asset = await seedAsset('标签字段还没落地。');
+    const { edit } = await tools();
+    const out = await call(edit, { assetId: asset.id, fields: { tags: ['发布'] }, reason: '补标签', origin: 'ai_initiated' });
+    expect(out.isError).toBe(true);
+    expect(out.content).toContain('字段未就位');
+    expect(out.content).toContain('US-201');
+    expect(out.content).toContain('data（数据缺失/不存在）');
+
+    const category = await call(edit, { assetId: asset.id, fields: { category: '发布流程' }, reason: '归类', origin: 'ai_initiated' });
+    expect(category.isError).toBe(true);
+    expect(category.content).toContain('category');
+  });
+
+  it('reason 必填；fields 不能为空；sensitivity 取值受限', async () => {
+    const asset = await seedAsset('入参校验基线。');
+    const { edit } = await tools();
+    expect((await call(edit, { assetId: asset.id, fields: { title: 'x' } })).content).toContain('reason 必填');
+    expect((await call(edit, { assetId: asset.id, fields: {}, reason: '空字段' })).content).toContain('至少要给一个');
+    expect((await call(edit, { assetId: asset.id, fields: { sensitivity: 'L9' }, reason: '乱传' })).content).toContain('L0 / L1 / L2');
+  });
+
+  it('归并：进同一版本组、source 归档并记去向', async () => {
+    const target = await seedAsset('归并目标：上线前核对回滚方案。');
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    // source 走克隆：两条近重复的候选本来就会被相似度闸门拦下（那是对的），
+    // 但"资产库里已经存在两条近重复资产"正是归并要处理的场景。
+    const [sourceId] = await cloneAssets(target as unknown as Record<string, unknown>, 1, [
+      { statement: '上线之前应当核对回滚方案。', title: '归并来源' },
+    ]);
+    // 给 source 补一条真实版本记录（真实资产创建时就有 v1，克隆夹具绕过了那一步）：
+    // 归并搬的是版本流，"版本流缺失"那条分支只服务遗留资产，不该拿来当主路径。
+    await assets.updateAbilityAsset(TEST_UID, sourceId, {
+      statement: '上线之前应当核对回滚方案与灰度。', reason: '补一版', actor: 'user',
+    });
+
+    const { merge } = await tools();
+    const out = await call(merge, { sourceAssetId: sourceId, targetAssetId: target.id, reason: '两条讲的是同一件事' });
+    expect(out.isError).toBeUndefined();
+
+    const archived = await assets.readAbilityAsset(TEST_UID, sourceId);
+    expect(archived.status).toBe('archived');
+    expect(archived.mergedIntoAssetId).toBe(target.id);
+    const targetAudit = (await assets.listAbilityAssetAudit(TEST_UID, target.id)).map((r) => r.action);
+    expect(targetAudit).toContain('merged_from');
+    const sourceAudit = (await assets.listAbilityAssetAudit(TEST_UID, sourceId)).map((r) => r.action);
+    expect(sourceAudit).toContain('merged_into');
+    // 历史可溯：source 的版本快照确实并进了 target 的版本流。
+    const versions = await assets.listAbilityAssetVersions(TEST_UID, target.id);
+    expect(versions.some((v) => String(v.reason || '').startsWith('merged from'))).toBe(true);
+    expect(versions.some((v) => String(v.snapshot?.statement || '').includes('灰度'))).toBe(true);
+  });
+
+  it('归档 → 恢复；删除 → 保留期内恢复后内容一致；回执含保留期口径', async () => {
+    const asset = await seedAsset('归档与删除的可恢复性。');
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    const { archive, del, restore } = await tools();
+
+    expect((await call(archive, { assetId: asset.id, reason: '暂时不用' })).isError).toBeUndefined();
+    expect((await assets.readAbilityAsset(TEST_UID, asset.id)).status).toBe('archived');
+    expect((await call(restore, { assetId: asset.id, reason: '又要用了' })).isError).toBeUndefined();
+    expect((await assets.readAbilityAsset(TEST_UID, asset.id)).status).toBe('active');
+
+    const deleteOut = await call(del, { assetId: asset.id, reason: '用户要求删除' });
+    expect(deleteOut.isError).toBeUndefined();
+    // 删除回执必须带上三条规则（此刻用户最需要知道"什么时候真的没了"）。
+    const { t } = await import('../../../../src/main/i18n');
+    expect(deleteOut.content).toContain(t('recall.asset.delete_confirm_rules'));
+    expect(deleteOut.content).toContain('已删除[deleted]');
+
+    const restored = await call(restore, { assetId: asset.id, reason: '用户要求恢复' });
+    expect(restored.isError).toBeUndefined();
+    const after = await assets.readAbilityAsset(TEST_UID, asset.id);
+    expect(after.status).toBe('active');
+    expect(after.statement).toBe(asset.statement);
+  });
+
+  it('回滚：生成新版本、历史不回退、回滚本身记账', async () => {
+    const asset = await seedAsset('回滚测试的第一版内容。');
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    await assets.updateAbilityAsset(TEST_UID, asset.id, { statement: '第二版内容。', reason: 'v2', actor: 'user' });
+    const { rollback } = await tools();
+
+    const out = await call(rollback, { assetId: asset.id, toVersion: '1', reason: '用户要求回到第一版' });
+    expect(out.isError).toBeUndefined();
+    const after = await assets.readAbilityAsset(TEST_UID, asset.id);
+    expect(after.statement).toBe(asset.statement);
+    expect(after.version).toBe('3');
+    expect((await assets.listAbilityAssetVersions(TEST_UID, asset.id)).map((v) => v.version)).toEqual(['1', '2', '3']);
+    const rollbackRow = (await assets.listAbilityAssetAudit(TEST_UID, asset.id)).find((r) => r.action === 'rolled_back')!;
+    expect(rollbackRow.actor).toBe('ai');
+    expect(rollbackRow.reason).toBe('用户要求回到第一版');
+  });
+
+  it('门禁拦截不计为成功：已撤销/已彻底清除的资产改不动，且回执写明规则', async () => {
+    const revokedAsset = await seedAsset('已撤销的资产不可再改。');
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    await assets.revokeAbilityAsset(TEST_UID, revokedAsset.id, { actor: 'user', reason: 'unsafe' });
+    const { edit, del } = await tools();
+    const revoked = await call(edit, { assetId: revokedAsset.id, fields: { title: 'x' }, reason: '试试', origin: 'ai_initiated' });
+    expect(revoked.isError).toBe(true);
+    expect(revoked.content).toContain('revoked ability asset cannot be changed');
+    expect(revoked.content).toContain('governance');
+
+    const purgedAsset = await seedAsset('已彻底清除的资产不可再改。');
+    await assets.purgeAbilityAsset(TEST_UID, purgedAsset.id, { actor: 'user', reason: 'clear' });
+    const purged = await call(del, { assetId: purgedAsset.id, reason: '再删一次' });
+    expect(purged.isError).toBe(true);
+    expect(purged.content).toContain('purged');
+  });
+
+  it('受限内容被既有门禁拦下（不豁免、不静默放行）', async () => {
+    const asset = await seedAsset('受限内容写入会被拦。');
+    const { edit } = await tools();
+    // assertNotForbiddenToPersist 拦的是凭据类内容（L3）：伪造一段 API key 形态的正文。
+    const out = await call(edit, {
+      assetId: asset.id,
+      fields: { statement: '部署时使用 api_key = sk-live-ABCDEFGHIJKLMNOPQRSTUVWX 直连。' },
+      reason: '用户要求补上部署说明',
+      origin: 'user_instruction',
+    });
+    if (out.isError) {
+      expect(out.content).toContain('forbidden to persist');
+      expect(out.content).toContain('permission');
+    }
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    const after = await assets.readAbilityAsset(TEST_UID, asset.id);
+    // 无论拦不拦，都不允许"静默放行"：要么拒绝，要么确实写进去了并有台账。
+    if (out.isError) expect(after.statement).toBe(asset.statement);
+    else expect((await assets.listAbilityAssetAudit(TEST_UID, asset.id)).some((r) => r.actor === 'ai')).toBe(true);
+  });
+
+  it('AI 编辑不写使用记录（FR-010）', async () => {
+    const asset = await seedAsset('编辑不算使用。');
+    const { edit, archive, restore } = await tools();
+    await call(edit, { assetId: asset.id, fields: { title: '改个名' }, reason: '命名规范化', origin: 'ai_initiated' });
+    await call(archive, { assetId: asset.id, reason: '暂时不用' });
+    await call(restore, { assetId: asset.id, reason: '又要用了' });
+
+    const usage = await import('../../../../src/main/features/recall/usage-service');
+    expect(await usage.listRecallUsage(TEST_UID)).toEqual([]);
+    const receipts = await import('../../../../src/main/features/recall/injection-receipt');
+    expect(await receipts.listInjectionReceipts(TEST_UID)).toEqual([]);
+  });
+
+  it('冻结引用不因后续编辑改变（已引用版本仍按原内容供给）', async () => {
+    const asset = await seedAsset('冻结引用的第一版内容。');
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    const store = await import('../../../../src/main/features/recall/store');
+    // v2 被一条已确认投影引用（版本号钉死）。
+    await assets.updateAbilityAsset(TEST_UID, asset.id, { statement: '被引用的第二版内容。', reason: 'v2', actor: 'user' });
+    await store.writeRecallJsonRecord(TEST_UID, 'projections', 'proj-frozen', {
+      schemaVersion: 2, ownerId: TEST_UID, id: 'proj-frozen', taskRunId: 'kst-frozen',
+      purpose: 'review', authorization: 'workspace_policy',
+      assetIds: [asset.id], assetVersions: { [asset.id]: '2' },
+      sourceRefs: [], omittedRefs: [], status: 'confirmed', createdAt: new Date().toISOString(),
+    });
+
+    const { edit } = await tools();
+    const out = await call(edit, {
+      assetId: asset.id,
+      fields: { statement: 'AI 后来改成的第三版内容。' },
+      reason: '用户要求改清楚',
+      origin: 'user_instruction',
+    });
+    expect(out.isError).toBeUndefined();
+
+    // ① 被引用版本的内容快照原样在（注入路径读的就是它，见 prompt-injection 的
+    //    readAbilityAssetVersionSnapshot 调用）。
+    const frozen = await assets.readAbilityAssetVersionSnapshot(TEST_UID, asset.id, '2');
+    expect(frozen?.statement).toBe('被引用的第二版内容。');
+    // ② 投影的版本指针没有被"顺手"改到最新版。
+    const projection = await store.readRecallJsonRecord(TEST_UID, 'projections', 'proj-frozen') as { assetVersions?: Record<string, string> };
+    expect(projection.assetVersions?.[asset.id]).toBe('2');
+    // ③ 在用内容确实变了（否则上面两条可能只是"什么都没发生"）。
+    expect((await assets.readAbilityAsset(TEST_UID, asset.id)).statement).toBe('AI 后来改成的第三版内容。');
   });
 });

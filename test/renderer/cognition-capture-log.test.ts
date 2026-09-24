@@ -82,6 +82,11 @@ function ensureModule(): { cogAssets: Record<string, unknown>; domRoot: { innerH
     uiEmptyState,
   };
   globalScope.document = { getElementById: () => domRoot };
+  // ui-status.js 是 IIFE，把 uiTag 等共享标签组件挂到 window：真机由 index.html
+  // 在 lazy 加载 cognition-assets 之前先加载它（views.js 的版本行读 window.uiTag）。
+  // 夹具的 window 必须和真机一样有这一层，否则测试环境比真机少东西。
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  require('../../src/renderer/modules/ui-status.js');
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   require('../../src/renderer/modules/cognition-assets/vocabulary.js');
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -1297,6 +1302,11 @@ describe('资产详情（使用记录并入）', () => {
     expect(html).toContain('被否定 1 次');
     // 空版本标记（2026-09-16）：v3 与 v2 一字不差 → 标"内容未变"。
     expect(html).toContain('内容未变（系统迁移/搬运）');
+    // 「已有更新的版本」提示（US-402 AC6）：被引用过（有使用回执）的历史版本
+    // 明说它已经不是最新——引用它的任务仍按当时冻结的内容执行，所以这不是
+    // 错误状态。只给被引用过的 v1，没被引用过的 v3 不打扰。
+    expect((html.match(/已有更新的版本/g) || []).length).toBe(1);
+    expect(html).toContain('ui-tag');
   });
 
   it('版本行点开详情与真删入口（2026-09-17）：全文/逐项信息/删除按钮/在用版提示', () => {

@@ -94,6 +94,11 @@ export interface UpdateAbilityAssetInput {
   sensitivity?: RecallAbilityAssetRecord['sensitivity'];
   reason: string;
   actor: AbilityAssetActor;
+  /** 乐观并发：调用方读到的版本号。给了就要求与当前版本一致，不一致直接拒绝
+   *  （**不静默覆盖**）。比对放在 `updateRecallJsonRecord` 的锁内做——放到调用方
+   *  先读后写就会留下 TOCTOU 窗口，"比对通过"与"真的没被改过"变成两件事。
+   *  资产管家工具在"用户可能正在手动编辑同一条"的场景下必须传它。 */
+  expectedVersion?: string;
   acknowledgeRecommendation?: boolean;
   reviewDecisionId?: string;
   sourceCandidateId?: string;
@@ -350,7 +355,9 @@ export function summarizeAuditValue(field: string, value: unknown, sensitivity?:
     if (sensitivity && sensitivity !== 'L0') return size;
     const flat = text.replace(/\s+/g, ' ').trim();
     const prefix = flat.slice(0, AUDIT_BODY_PREFIX_CHARS);
-    return prefix.length < flat.length ? `${size}·「${prefix}…」` : size;
+    // 短正文整段就是"前缀"——这时不给前缀等于台账什么都没说（用户看不出改了
+    // 什么），而它本来也没超出前缀预算，没有多泄露任何东西。
+    return prefix.length < flat.length ? `${size}·「${prefix}…」` : `${size}·「${prefix}」`;
   }
   if (Array.isArray(value)) return `${value.length} 项`;
   return clipAuditText(String(value), AUDIT_VALUE_MAX_CHARS);
@@ -396,7 +403,6 @@ export function diffAbilityAssetsForAudit(
 }
 
 const AUDIT_SENSITIVITY_RANK: Record<string, number> = { L0: 0, L1: 1, L2: 2, L3: 3 };
-
 /** 台账摘要按**变更前后更严的那一档**处理：降密不该让旧正文的前缀漏进台账。 */
 function strictestSensitivity(values: Array<string | undefined>): string | undefined {
   let top: string | undefined;
@@ -407,8 +413,31 @@ function strictestSensitivity(values: Array<string | undefined>): string | undef
   return top;
 }
 
-export interface AbilityAssetAuditMetadata {
-  note?: string;
+/**
+ * 写路径的失败归因（specs/008 T032 · plan 的 AI Product Addendum 分类表）。
+ *
+ * 只影响"回执与台账怎么写归因"，**不改判定**：所有失败一律不得计为成功。
+ * 认的是各写函数抛出的稳定英文消息（它们是不变量的一部分，不是展示文案），
+ * 认不出的落 `unknown`——宁可归因不准，也不要假装知道原因。
+ */
+export function classifyAbilityAssetWriteFailure(error: unknown): AbilityAssetFailureCategory {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes('version conflict')) return 'workflow';
+  if (message.includes('forbidden to persist')) return 'permission';
+  if (
+    message.includes('cannot be changed')
+    || message.includes('has been purged')
+    || message.includes('not restorable')
+    || message.includes('retention window')
+    || message.includes('review handoff')
+  ) return 'governance';
+  if (message.includes('not found')) return 'data';
+  if (message.includes('evidence is required')) return 'evidence';
+  if (message.includes('identity is immutable') || message.includes('invalid ') || message.includes('malformed ')) return 'schema';
+  return 'unknown';
+}
+
+export interface AbilityAssetAuditMetadata {  note?: string;
   reason?: string;
   actor?: AbilityAssetActor;
   before?: string;
@@ -595,6 +624,11 @@ export async function updateAbilityAsset(userId: string, assetId: string, input:
     // 仍可被 update 改内容并 bump 版本——与 select/rollback/merge 同口径。
     assertMutableAbilityAsset(current);
     if (reviewDecisionId && current.appliedReviewDecisionIds?.includes(reviewDecisionId)) return current;
+    if (input.expectedVersion !== undefined && current.version !== input.expectedVersion) {
+      throw new Error(
+        `ability asset version conflict: expected v${input.expectedVersion}, current v${current.version}`,
+      );
+    }
     changed = true;
     beforeAsset = current;
     clearedRecommendation = Boolean(current.recommendedAction && input.acknowledgeRecommendation);

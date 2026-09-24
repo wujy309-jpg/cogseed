@@ -951,9 +951,15 @@
         const statement = String((v.snapshot && v.snapshot.statement) || '').replace(/\s+/g, ' ').trim();
         const statementPreview = statement.length > 80 ? `${statement.slice(0, 80)}…` : statement;
         const meta = [statementPreview, fmtDate(v.at), versionSourceLabel(v), unchangedAfter.has(String(v.version)) ? T('cognition.asset_version_unchanged', '内容未变（系统迁移/搬运）') : '', usageText].filter(Boolean).join(' · ');
+        // 已被任务引用过（有使用回执）的历史版本：明说「已有更新的版本」。引用它的
+        // 任务仍按当时冻结的内容执行（服务端按副本供给），所以这不是错误状态，
+        // 只是"你看的这一版已经不是最新的"——用户据此决定切回还是接受新版。
+        // 文案复用既有的 `asset_version_latest_note`（2026-09-17 头部提示移除后
+        // 留下的孤儿键，四语已齐）：概念一字不差，不再造一个近义键。
+        const superseded = !isActive && !!usage && (usage.total || 0) > 0;
         const side = isActive
           ? chip(T('cognition.asset_version_active', '在用'), 'green')
-          : btn(T('cognition.asset_version_select', '切回此版'), 'select-asset-version', { id: asset.id, data: { version: String(v.version) }, small: true });
+          : `${superseded ? window.uiTag({ label: T('cognition.asset_version_latest_note', '已有更新的版本'), variant: 'version' }) : ''}${btn(T('cognition.asset_version_select', '切回此版'), 'select-asset-version', { id: asset.id, data: { version: String(v.version) }, small: true })}`;
         // 行可点开（2026-09-17）：点行就地展开该版本全文详情；再点收起。
         const open = String(S.route.assetVersionId || '') === String(v.version);
         return `<div class="row is-flat is-clickable" data-act="open-asset-version" data-version="${esc(String(v.version))}" ${roleBtn()}>
