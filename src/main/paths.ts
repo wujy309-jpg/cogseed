@@ -135,7 +135,6 @@ export const cogseedAgentWorkerStateDir = (uid: string) => path.join(cogseedAgen
 export const cogseedAgentRecoveryStateFile = (uid: string) => path.join(cogseedAgentWorkerStateDir(uid), 'last-recovery.json');
 export const cogseedAgentCoordinationsDir = (uid: string) => path.join(cogseedAgentCloudRoot(uid), 'coordinations');
 export const cogseedAgentReviewDecisionsDir = (uid: string) => path.join(cogseedAgentCloudRoot(uid), 'review-decisions');
-export const cogseedAgentCostTelemetryDir = (uid: string) => path.join(cogseedAgentLocalRoot(uid), 'cost-telemetry');
 export const cogseedAgentSkillLifecycleDir = (uid: string) => path.join(cogseedAgentCloudRoot(uid), 'skill-lifecycle');
 // ── 转写纠错词表 / 清理产物（transcript glossary & correction runs）──────
 // 词表 = 用户可复核的私人资产 → cloud 域（账号体系落地后可同步）。
