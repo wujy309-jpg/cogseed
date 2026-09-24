@@ -21,6 +21,11 @@ import {
 } from '../recall/candidate-service';
 import { listAssetChangeProposals } from '../recall/asset-approval-service';
 import { decideAssetChangeProposal } from '../recall/asset-approval-service';
+import {
+  decideCleanupUncertainItem,
+  listCleanupReports,
+  pendingCleanupUncertainItems,
+} from '../recall/cleanup-report-service';
 import { listFormalAssets } from '../recall/formal-assets';
 import { buildCognitionInbox, type CognitionInboxItem } from '../recall/formal-assets/inbox';
 import { latestAssetVersionDiff, type AssetVersionDiff } from '../recall/formal-assets/version-diff';
@@ -57,7 +62,7 @@ export type CognitionInboxResolveErrorCode =
 export interface CognitionInboxResolveResult {
   ok: true;
   /** 实际被动到的对象类型与状态，供前端原地更新。 */
-  target: 'recall_candidate' | 'asset_change_proposal';
+  target: 'recall_candidate' | 'asset_change_proposal' | 'cleanup_uncertain';
   status: string;
 }
 
@@ -133,6 +138,25 @@ export async function resolveCognitionInboxItem(
     return { ok: true, target: 'asset_change_proposal', status: result.state };
   }
 
+  // 大扫除拿不准项（specs/008 US-403 / T046）：处置 = 给个意见，不是执行某个动作。
+  // 「不管它」= reject（从清单移走、报告留档）；「回头再看」= defer。
+  // accept 没有对应动作：当初就是因为我拿不准才没动手，凭空"接受"等于让我瞎猜。
+  if (id.startsWith('cleanup:')) {
+    const [, reportId, assetId] = id.split(':');
+    if (!safeId(reportId) || !safeId(assetId)) throw inboxResolveError('invalid_item_id', `待办 id 不合法：${id}`);
+    if (action === 'accept') {
+      throw inboxResolveError(
+        'unsupported_action',
+        '这条待办没有可执行的建议动作——当初就是因为拿不准才没动手。请到资产详情里直接改，或选「拒绝」把它从清单移走。',
+      );
+    }
+    if (action !== 'reject' && action !== 'defer') {
+      throw inboxResolveError('unsupported_action', `大扫除拿不准项支持 reject / defer，收到 ${action || '(空)'}`);
+    }
+    await decideCleanupUncertainItem(userId, reportId, assetId, action === 'reject' ? 'dismissed' : 'deferred');
+    return { ok: true, target: 'cleanup_uncertain', status: action === 'reject' ? 'dismissed' : 'deferred' };
+  }
+
   if (ASSET_ITEM_PREFIXES.some((prefix) => id.startsWith(prefix))) {
     throw inboxResolveError(
       'unsupported_item_kind',
@@ -155,6 +179,13 @@ export async function listCognitionInbox(userId: string): Promise<CognitionInbox
       })))
     .catch((error) => {
       log.warn('inbox asset change read degraded', { userId, error: (error as Error).message });
+      return [];
+    });
+
+  const pendingCleanupItems = await listCleanupReports(userId)
+    .then((reports) => pendingCleanupUncertainItems(reports))
+    .catch((error) => {
+      log.warn('inbox cleanup read degraded', { userId, error: (error as Error).message });
       return [];
     });
 
@@ -257,6 +288,7 @@ export async function listCognitionInbox(userId: string): Promise<CognitionInbox
     unavailableSourceIds,
     latestDiffs,
     pendingAssetChanges,
+    pendingCleanupItems,
     skillStateUnknownAssetIds,
     skillUpgradeCurrentAssetIds,
     skillUpgradeRejectedAssetIds,

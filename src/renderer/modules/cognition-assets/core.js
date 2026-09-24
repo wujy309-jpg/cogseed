@@ -356,6 +356,23 @@
     NS.notify();
   };
 
+  /** 整理报告按需拉取（specs/008 US-403）。按次缓存；失败降级为空列表——
+   *  报告读不到不该让整页报"部分数据读取失败"，它只是整理页的一块。 */
+  NS.loadCleanupReports = async function loadCleanupReports() {
+    if (store.cleanupReports && !store.cleanupReports.stale) return;
+    store.cleanupReports = { loading: true, reports: (store.cleanupReports && store.cleanupReports.reports) || [] };
+    NS.notify();
+    let reports = [];
+    try {
+      const result = await api.call('recall.cleanup.list', { limit: 20 });
+      reports = (result && result.reports) || [];
+    } catch (error) {
+      reports = [];
+    }
+    store.cleanupReports = { loading: false, reports };
+    NS.notify();
+  };
+
   /** 资产详情按需拉版本链（版本组 2026-09-16）。按资产缓存；失败降级为
    *  空列表（版本链区静默不渲染）。 */
   NS.loadAssetVersions = async function loadAssetVersions(assetId) {
@@ -793,6 +810,40 @@
       await api.call('recall.assets.versions.select', { assetId, version });
       toast(T('cognition.asset_version_selected', '已选用 v{n}', { n: String(version) }));
       store.assetVersions = null;
+      await NS.reload();
+    },
+    /** 发起一轮大扫除（specs/008 US-403）：只做不改变含义的整理，拿不准的进清单。 */
+    async runCleanup() {
+      store.cleanupReports = { loading: true, reports: (store.cleanupReports && store.cleanupReports.reports) || [] };
+      NS.notify();
+      try {
+        const result = await api.call('recall.cleanup.run', { trigger: 'user' });
+        const report = (result && result.report) || null;
+        toast(T('cognition.cleanup_done', '整理完成：执行 {applied} 项，拿不准 {uncertain} 项', {
+          applied: String(((report && report.items) || []).filter((item) => item.status === 'applied').length),
+          uncertain: String(((report && report.uncertain) || []).length),
+        }));
+        store.cleanupReports = { loading: false, stale: true, reports: [] };
+      } catch (error) {
+        store.cleanupReports = { loading: false, stale: true, reports: [] };
+        throw error;
+      }
+      await NS.reload();
+    },
+    /** 逐项回滚：报告项自带的锚点就是回滚入口（US-404 已建的机制，不另造一套）。 */
+    async rollbackCleanupItem(assetId, version) {
+      await api.call('recall.assets.rollback', { assetId, version });
+      toast(T('cognition.cleanup_rolled_back', '已回滚到整理前的内容（生成新版本）'));
+      store.cleanupReports = { loading: false, stale: true, reports: (store.cleanupReports && store.cleanupReports.reports) || [] };
+      await NS.reload();
+    },
+    /** 拿不准项的处置：只给意见，不执行动作（当初就是因为拿不准才没动手）。 */
+    async decideCleanupItem(reportId, assetId, decision) {
+      await api.call('cognition.inbox.resolve', { id: `cleanup:${reportId}:${assetId}`, action: decision });
+      toast(decision === 'reject'
+        ? T('cognition.cleanup_decided_dismissed', '已标记不管，从清单移走')
+        : T('cognition.cleanup_decided_deferred', '已放到回头再看'));
+      store.cleanupReports = { loading: false, stale: true, reports: (store.cleanupReports && store.cleanupReports.reports) || [] };
       await NS.reload();
     },
     /** 一步回滚到某次改动前（specs/008 US-404 T030）：拿旧版内容生成**新版本**，

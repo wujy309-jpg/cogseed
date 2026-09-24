@@ -57,6 +57,7 @@ import * as recallCandidates from '../features/recall/candidate-service';
 import { withRecallCandidateCapabilities } from '../features/recall/candidate-capabilities';
 import * as recallAssets from '../features/recall/asset-service';
 import * as recallAssetApproval from '../features/recall/asset-approval-service';
+import * as recallCleanup from '../features/recall/cleanup-report-service';
 import * as recallProfileSync from '../features/recall/personal-profile-sync';
 import * as recallSkillDrafts from '../features/recall/skill-draft-service';
 import * as recallWorkspaceRefs from '../features/recall/workspace-refs';
@@ -2667,6 +2668,31 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true, ...(await recallAssetApproval.decideAssetChangeProposal(ctx.userId, proposalId, decision, {
       ...(payload !== undefined ? { payload: payload as Record<string, unknown> } : {}),
     })) };
+  },
+
+  // 大扫除与整理报告（specs/008 US-403）。run 是用户发起的批量整理；
+  // report/list 是读口——报告要能被逐项核对，所以读口与实体同批落地。
+  'recall.cleanup.run': async ({ trigger, scope } = {}, ctx) => {
+    if (trigger !== undefined && trigger !== 'user' && trigger !== 'inspection') throw new Error('invalid cleanup trigger');
+    if (scope !== undefined) {
+      if (!scope || typeof scope !== 'object' || Array.isArray(scope)) throw new Error('invalid cleanup scope');
+      if (scope.spaceId !== undefined && !safeId(scope.spaceId)) throw new Error('invalid cleanup scope space');
+      if (scope.assetType !== undefined && typeof scope.assetType !== 'string') throw new Error('invalid cleanup scope type');
+    }
+    return { ok: true, report: await recallCleanup.runAssetCleanup(ctx.userId, {
+      ...(trigger !== undefined ? { trigger } : {}),
+      ...(scope !== undefined ? { scope: scope as { spaceId?: string; assetType?: string } } : {}),
+    }) };
+  },
+  'recall.cleanup.list': async ({ limit } = {}, ctx) => {
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 100)) throw new Error('invalid cleanup limit');
+    return { ok: true, reports: await recallCleanup.listCleanupReports(ctx.userId, limit ?? 20) };
+  },
+  'recall.cleanup.report': async ({ batchId } = {}, ctx) => {
+    if (!safeId(batchId)) throw new Error('invalid cleanup report id');
+    const report = await recallCleanup.readCleanupReport(ctx.userId, batchId);
+    if (!report) throw new Error('cleanup report not found');
+    return { ok: true, report };
   },
 
   // 资产侧 KSTAR 溯源（2026-09-17）：证据区 kse 引用的批量摘要与单条复盘

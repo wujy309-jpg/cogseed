@@ -1804,6 +1804,104 @@
    * 整理方式」三处合并为一。一行 = 一个会话 × 它的整理任务（含无留存内容
    * 的静默记录）；策略收成页首抽屉；分桶筛选与批量入口保留。 */
 
+  /** 整理报告（specs/008 US-403）：大扫除逐项产出、逐项可回滚。
+   *
+   *  报告存在的意义是"用户能自己核对"——所以每一项都显示改了什么、为什么、
+   *  以及一个回滚入口；拿不准的项单列，等用户给个处置意见（不擅自处置）。 */
+  function viewCleanup(route) {
+    const state = S.cleanupReports;
+    const reports = state && Array.isArray(state.reports) ? state.reports : [];
+    const selectedId = String(route.cleanupReportId || '');
+    const report = reports.find((row) => String(row.id) === selectedId) || reports[0] || null;
+    const loading = Boolean(state && state.loading);
+    // 页头走共享 uiPageHeader（契约是紧凑单行 + 最多三个次要操作，没有副标题位）；
+    // 说明放正文里的 note，不塞进页头。
+    const header = window.uiPageHeader({
+      title: T('cognition.cleanup_title', '大扫除与整理报告'),
+      actions: [{
+        label: loading ? T('cognition.cleanup_running', '正在整理…') : T('cognition.cleanup_run', '发起大扫除'),
+        loading,
+        disabled: loading,
+        attrs: { 'data-act': 'run-cleanup' },
+      }],
+    });
+    const hint = `<p class="note">${esc(T('cognition.cleanup_run_hint', '只做不改变含义的整理（标题标点规范化、正文一字不差的重复归并）；拿不准的列出来等你决定，不擅自处置。'))}</p>`;
+    if (!report) {
+      return `<div class="ca-page">${header}${hint}${empty(
+        T('cognition.cleanup_empty', '还没有整理报告'),
+        T('cognition.cleanup_empty_hint', '发起一次大扫除：整理完会产出一份逐项清单，改了哪几条、为什么、怎么回滚都在上面。'),
+      )}</div>`;
+    }
+
+    const KIND_LABELS = {
+      title_normalized: T('cognition.cleanup_kind_title_normalized', '标题规范化'),
+      merged_duplicate: T('cognition.cleanup_kind_merged_duplicate', '重复归并'),
+    };
+    const STATUS_LABELS = {
+      applied: T('cognition.cleanup_status_applied', '已执行'),
+      failed: T('cognition.cleanup_status_failed', '失败'),
+      uncertain: T('cognition.cleanup_status_uncertain', '拿不准'),
+      skipped: T('cognition.cleanup_status_skipped', '已跳过'),
+    };
+    const items = Array.isArray(report.items) ? report.items : [];
+    const uncertain = Array.isArray(report.uncertain) ? report.uncertain : [];
+    const appliedCount = items.filter((item) => item.status === 'applied').length;
+    // 认不出的枚举一律走人话兜底，**不裸出机器码**（本模块的既有约定，
+    // 有守护测试盯着）；资产名从快照解析，解析不到也给一句话，不裸出内部 id。
+    const unknownLabel = (table, key, fallback) => table[key] || fallback;
+    const assetTitle = (assetId) => {
+      const found = (Array.isArray(S.assets) ? S.assets : []).find((row) => String(row.id) === String(assetId));
+      return found && found.title ? String(found.title) : T('cognition.cleanup_item_asset', '这条资产');
+    };
+    const reportRows = reports.map((row) => `<div class="row is-flat is-clickable ${String(row.id) === String(report.id) ? 'is-selected' : ''}" data-act="open-cleanup-report" data-report="${esc(String(row.id))}" ${roleBtn()}>
+      <div class="tw"><div class="tt">${esc(fmtDate(row.createdAt))}</div><div class="mm">${esc(T('cognition.cleanup_row_summary', '执行 {applied} 项 · 拿不准 {uncertain} 项', {
+        applied: String((row.items || []).filter((item) => item.status === 'applied').length),
+        uncertain: String((row.uncertain || []).length),
+      }))}</div></div>
+      <div class="sd">${row.interrupted ? window.uiTag({ label: T('cognition.cleanup_status_interrupted', '中断过'), variant: 'outline' }) : ''}</div>
+    </div>`).join('');
+    const itemRows = items.length ? items.map((item) => `<div class="row is-flat">
+      <div class="tw">
+        <div class="tt">${esc(unknownLabel(KIND_LABELS, item.kind, T('cognition.cleanup_kind_unknown', '整理动作')))} · <a href="#" data-go-asset="${esc(String(item.assetId))}">${esc(assetTitle(item.assetId))}</a></div>
+        <div class="mm">${esc(String(item.before || '—'))} → ${esc(String(item.after || '—'))}</div>
+        <div class="mm">${esc(String(item.reason || ''))}${item.note ? ` · ${esc(String(item.note))}` : ''}</div>
+      </div>
+      <div class="sd">
+        ${window.uiTag({ label: unknownLabel(STATUS_LABELS, item.status, T('cognition.cleanup_status_unknown', '状态未知')), variant: item.status === 'applied' ? 'success' : 'outline' })}
+        ${item.status === 'applied' && item.rollbackAnchor ? btn(T('cognition.cleanup_rollback', '回滚这一项'), 'rollback-cleanup-item', {
+          small: true,
+          data: { id: String(item.assetId), version: String(item.rollbackAnchor) },
+        }) : ''}
+      </div>
+    </div>`).join('') : `<p class="note">${esc(T('cognition.cleanup_no_items', '这一轮没有需要改动的地方。'))}</p>`;
+    const uncertainRows = uncertain.map((entry) => `<div class="row is-flat">
+      <div class="tw">
+        <div class="tt">${esc(String(entry.title || assetTitle(entry.assetId)))}</div>
+        <div class="mm">${esc(String(entry.question || ''))}</div>
+        <div class="mm">${esc(String(entry.reason || ''))}</div>
+      </div>
+      <div class="sd">${entry.decision
+        ? window.uiTag({
+          label: entry.decision === 'dismissed' ? T('cognition.cleanup_decided_dismissed', '已标记不管') : T('cognition.cleanup_decided_deferred', '已放到回头再看'),
+          variant: 'outline',
+        })
+        : `${btn(T('cognition.cleanup_dismiss', '不管它'), 'cleanup-uncertain-dismiss', { small: true, data: { id: String(entry.assetId), report: String(report.id) } })}${btn(T('cognition.cleanup_defer', '回头再看'), 'cleanup-uncertain-defer', { small: true, data: { id: String(entry.assetId), report: String(report.id) } })}`}
+      </div>
+    </div>`).join('');
+    return `<div class="ca-page">${header}${hint}
+      ${report.interrupted ? `<div class="sect-block"><p class="note">${esc(T('cognition.cleanup_interrupted', '这轮中断过：已执行项仍然有效、可逐项回滚；未执行的保持原状。'))}</p></div>` : ''}
+      <div class="sect-block"><div class="tt">${esc(T('cognition.cleanup_summary', '扫描 {scanned} 条 · 执行 {applied} 项 · 拿不准 {uncertain} 项', {
+        scanned: String(report.scanned || 0), applied: String(appliedCount), uncertain: String(uncertain.length),
+      }))}</div>
+      ${Array.isArray(report.skippedSteps) && report.skippedSteps.length
+        ? `<p class="note">${esc(T('cognition.cleanup_skipped', '本轮跳过：{steps}', { steps: report.skippedSteps.join('；') }))}</p>`
+        : ''}</div>
+      <div class="sect-block"><div class="tt">${esc(T('cognition.cleanup_items', '逐项改动'))}</div>${itemRows}</div>
+      ${uncertain.length ? `<div class="sect-block"><div class="tt">${esc(T('cognition.cleanup_uncertain_section', '拿不准的（未改动）'))}</div>${uncertainRows}</div>` : ''}
+      ${reports.length > 1 ? `<div class="sect-block"><div class="tt">${esc(T('cognition.cleanup_reports', '历史报告'))}</div>${reportRows}</div>` : ''}
+    </div>`;
+  }
+
   function viewOrganizeTasks(route) {
     const vocab = NS.vocabulary;
 
@@ -1950,7 +2048,9 @@
     return `${heroRow(
       T('cognition.tab_organize', '整理'),
       T('cognition.capture_manual_note', '整理会使用模型额度，随时可以取消'),
-      btn(T('cognition.organize_settings_title', '沉淀设置'), 'go-organize-settings', { className: 'o', icon: 'settings' }),
+      // 大扫除入口（specs/008 US-403）：与「沉淀设置」并列——一个是会话沉淀的
+      // 设置，一个是资产库的批量整理，都是整理页的动作。
+      `${btn(T('cognition.cleanup_entry', '大扫除'), 'open-cleanup', { className: 'o', icon: 'list' })}${btn(T('cognition.organize_settings_title', '沉淀设置'), 'go-organize-settings', { className: 'o', icon: 'settings' })}`,
     )}
     ${!S.captureSettings || S.captureSettings.enabled === false ? `<div class="warn">${esc(T('cognition.capture_disabled_note', '整理功能已关闭：不再开始新的整理；已创建任务和「我的认知」资产不受影响。'))}</div>` : ''}
     ${S.captureSettings && S.captureSettings.enabled !== false && retryableIds.length ? `<div class="toolbar"><div class="toolbar-right">${retryableIds.length ? btn(T('cognition.capture_batch_retry', '重试失败（{n}）', { n: String(retryableIds.length) }), 'capture-batch', { data: { batch: 'retry' }, small: true, className: 'o' }) : ''}</div></div>` : ''}
@@ -2259,6 +2359,7 @@
     else if (route.name === 'ontology') body = viewOntology(route);
     else if (route.name === 'review') body = viewReview(route);
     else if (route.name === 'organize') body = route.captureId ? viewCaptureDetail(route) : viewOrganizeTasks(route);
+    else if (route.name === 'cleanup') body = viewCleanup(route);
     else if (route.name === 'organize-settings') body = viewOrganizeSettingsPage();
     else body = viewOverview(route);
     const errorBanner = S.errors.length && S.loaded

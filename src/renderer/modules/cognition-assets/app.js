@@ -19,7 +19,8 @@
   /** 写操作集合：点击后按钮进入 pending（禁用+变淡），完成或重画后还原。 */
   const WRITE_ACTIONS = new Set([
     'refresh', 'cand-adopt-with-form', 'cand-decide',
-    'asset-action', 'asset-recommend-ack', 'select-asset-version', 'rollback-asset', 'delete-asset-version', 'asset-edit-save', 'family-rename', 'family-rename-save', 'family-rename-cancel', 'edit-from-version', 'merge-asset-version', 'merge-asset', 'source-action', 'capture-action', 'organize-conv',
+    'asset-action', 'asset-recommend-ack', 'select-asset-version', 'rollback-asset', 'delete-asset-version',
+    'run-cleanup', 'rollback-cleanup-item', 'cleanup-uncertain-dismiss', 'cleanup-uncertain-defer', 'asset-edit-save', 'family-rename', 'family-rename-save', 'family-rename-cancel', 'edit-from-version', 'merge-asset-version', 'merge-asset', 'source-action', 'capture-action', 'organize-conv',
     'capture-toggle', 'capture-review-toggle', 'proof-rate',
     'capture-batch',
   ]);
@@ -177,6 +178,12 @@
           case 'asset-recommend-ack': await A.acknowledgeAssetRecommendation(id); break;
           case 'select-asset-version': await A.selectAssetVersion(id, el.dataset.version || ''); break;
           case 'rollback-asset': await A.rollbackAsset(id, el.dataset.version || ''); break;
+          case 'run-cleanup': await A.runCleanup(); break;
+          case 'open-cleanup': router.go({ name: 'cleanup', cleanupReportId: '' }, { replace: true }); break;
+          case 'open-cleanup-report': router.go({ name: 'cleanup', cleanupReportId: String(el.dataset.report || '') }, { replace: true }); break;
+          case 'rollback-cleanup-item': await A.rollbackCleanupItem(id, el.dataset.version || ''); break;
+          case 'cleanup-uncertain-dismiss': await A.decideCleanupItem(String(el.dataset.report || ''), id, 'reject'); break;
+          case 'cleanup-uncertain-defer': await A.decideCleanupItem(String(el.dataset.report || ''), id, 'defer'); break;
           case 'delete-asset-version': await A.deleteAssetVersion(id, el.dataset.version || ''); break;
           case 'edit-asset': {
             // 进入/退出编辑态（纯路由切换，不压返回栈）。
@@ -522,6 +529,8 @@
       void NS.loadAssetVersions(assetId);
     }
     if (assetId) void NS.loadKstarEpisodeSummaries(assetId);
+    // 整理报告：进整理相关页签就补拉一次（内部有缓存判重）。
+    if (String(S.route.name || '') === 'cleanup') void NS.loadCleanupReports();
     // 候选详情的 kse 证据 chip 也要真实目标摘要（此前只覆盖资产详情，
     // 候选页 chip 一直显示兜底"一次任务"，2026-09-17 子安实测抓出）。
     const candidateId = String(S.route.candidateId || '');

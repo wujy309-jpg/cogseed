@@ -57,7 +57,12 @@ export type CognitionInboxKind =
    * AI 自主提出的实质变化（specs/008 US-406）：待处理或用户选了「稍后处理」。
    * 与候选分开：候选是"还没成为资产的东西"，这条是"资产已经在、改动等拍板"。
    */
-  | 'asset_change_pending';
+  | 'asset_change_pending'
+  /**
+   * 大扫除里拿不准的项（specs/008 US-403）：疑似重复但正文不同之类。
+   * 当初就是因为"要判断含义"才没动手，所以这里只等用户给个处置意见。
+   */
+  | 'cleanup_uncertain';
 
 /**
  * `confirm` = 需要用户明确点头才继续；`low_disturbance` = 列出来即可，
@@ -123,6 +128,8 @@ export interface CognitionInboxInput {
   skillUpgradeRejectedAssetIds?: ReadonlySet<string>;
   /** AI 提议的实质变化里还没拍板的那些（pending / deferred）。 */
   pendingAssetChanges?: ReadonlyArray<{ proposalId: string; assetId: string; title?: string; reason?: string }>;
+  /** 大扫除里还没处置的拿不准项。 */
+  pendingCleanupItems?: ReadonlyArray<{ reportId: string; assetId: string; title?: string; question: string }>;
 }
 
 const URGENCY: Record<CognitionInboxKind, CognitionInboxUrgency> = {
@@ -140,6 +147,7 @@ const URGENCY: Record<CognitionInboxKind, CognitionInboxUrgency> = {
   sensitivity_unclassified: 'confirm',
   candidate_pending_review: 'low_disturbance',
   asset_change_pending: 'confirm',
+  cleanup_uncertain: 'low_disturbance',
 };
 
 /** 排序权重：先要人点头的，再低打扰的；同级按 kind 稳定排序。 */
@@ -155,6 +163,7 @@ const KIND_ORDER: CognitionInboxKind[] = [
   'template_updated',
   'evidence_insufficient',
   'asset_change_pending',
+  'cleanup_uncertain',
   'candidate_pending_review',
 ];
 
@@ -372,6 +381,14 @@ export function buildCognitionInbox(input: CognitionInboxInput): CognitionInboxI
     items.push(item('asset_change_pending', `proposal:${change.proposalId}`, change.title || change.assetId, {
       assetId: change.assetId,
       ...(change.reason ? { detail: change.reason } : {}),
+    }));
+  }
+
+  // 大扫除拿不准项：低打扰列出（列出来就够，不打断），等用户给个处置意见。
+  for (const pending of input.pendingCleanupItems || []) {
+    items.push(item('cleanup_uncertain', `cleanup:${pending.reportId}:${pending.assetId}`, pending.title || pending.assetId, {
+      assetId: pending.assetId,
+      detail: pending.question,
     }));
   }
 

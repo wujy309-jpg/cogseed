@@ -87,6 +87,9 @@ function ensureModule(): { cogAssets: Record<string, unknown>; domRoot: { innerH
   // 夹具的 window 必须和真机一样有这一层，否则测试环境比真机少东西。
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   require('../../src/renderer/modules/ui-status.js');
+  // ui-page-header.js 同样是 index.html 里的静态共享层（整理报告页头用它）。
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  require('../../src/renderer/modules/ui-page-header.js');
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   require('../../src/renderer/modules/cognition-assets/vocabulary.js');
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -1307,6 +1310,51 @@ describe('资产详情（使用记录并入）', () => {
     // 错误状态。只给被引用过的 v1，没被引用过的 v3 不打扰。
     expect((html.match(/已有更新的版本/g) || []).length).toBe(1);
     expect(html).toContain('ui-tag');
+  });
+
+  it('整理报告（2026-09-25 US-403）：逐项改动 + 每项回滚入口 + 拿不准项就地处置 + 跳过如实标注', () => {
+    const report = {
+      id: 'cr-1', trigger: 'user', createdAt: '2026-09-25T01:00:00.000Z', finishedAt: '2026-09-25T01:00:05.000Z',
+      scanned: 12,
+      skippedSteps: ['补标签（标签系统尚未落地，待 Epic 2 / 012）'],
+      items: [
+        { assetId: 'aa-1', kind: 'title_normalized', status: 'applied', before: '旧标题。', after: '旧标题', reason: '标题只有结尾标点不规范', ledgerRef: 'aa-1-updated-x', rollbackAnchor: '1' },
+        { assetId: 'aa-2', kind: 'merged_duplicate', status: 'failed', before: '独立条目', after: '并入 aa-1', reason: '正文完全相同', note: 'revoked ability asset cannot be changed' },
+      ],
+      uncertain: [
+        { assetId: 'aa-3', title: '很像的一条', question: '这条和「另一条」看字面很像（88%），要不要合并？', reason: '正文不同但高度重叠：是不是同一个意思需要人来判。' },
+        { assetId: 'aa-4', title: '已处置的一条', question: '要不要合并？', reason: '需要人来判。', decision: 'dismissed' },
+      ],
+    };
+    const html = renderPage('cleanup', { cleanupReports: { loading: false, reports: [report] } }, { cleanupReportId: 'cr-1' });
+    // 这个夹具的断言一律落在渲染产出的 HTML 上（本文件既有约定，没有 visibleText 助手）。
+    const text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    // 概要 + 跳过如实标注（不假装做过补标签）。
+    expect(text).toContain('扫描 12 条');
+    expect(text).toContain('执行 1 项');
+    expect(text).toContain('拿不准 2 项');
+    expect(text).toContain('补标签');
+    expect(text).toContain('Epic 2');
+    // 逐项改动：改了什么 / 为什么 / 失败原因如实显示。
+    expect(text).toContain('标题规范化');
+    expect(text).toContain('旧标题。');
+    expect(text).toContain('旧标题');
+    expect(text).toContain('重复归并');
+    expect(text).toContain('失败');
+    expect(text).toContain('revoked ability asset cannot be changed');
+    // 每项的回滚入口（报告项自带锚点，不另造一套）。
+    expect(html).toContain('data-act="rollback-cleanup-item" data-id="aa-1" data-version="1"');
+    // 拿不准项：未处置的给两个处置按钮，已处置的显示结论、不再给按钮。
+    expect(html).toContain('data-act="cleanup-uncertain-dismiss" data-id="aa-3" data-report="cr-1"');
+    expect(html).toContain('data-act="cleanup-uncertain-defer" data-id="aa-3" data-report="cr-1"');
+    expect(text).toContain('已标记不管');
+    expect(html).not.toContain('data-act="cleanup-uncertain-dismiss" data-id="aa-4"');
+  });
+
+  it('整理报告空态：没有报告时给入口而不是空白页', () => {
+    const html = renderPage('cleanup', { cleanupReports: { loading: false, reports: [] } });
+    expect(html).toContain('还没有整理报告');
+    expect(html).toContain('data-act="run-cleanup"');
   });
 
   it('版本行点开详情与真删入口（2026-09-17）：全文/逐项信息/删除按钮/在用版提示', () => {
