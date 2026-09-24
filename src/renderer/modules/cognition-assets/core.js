@@ -795,6 +795,16 @@
       store.assetVersions = null;
       await NS.reload();
     },
+    /** 一步回滚到某次改动前（specs/008 US-404 T030）：拿旧版内容生成**新版本**，
+     *  历史不回退（已引用旧版的任务不受影响），回滚本身也进台账。
+     *  与「切回此版」的分工：那是切在用指针、不产生新版本；这是留一次改动痕迹，
+     *  所以"改动 → 回滚"在履历里成对出现，看得出发生过什么。 */
+    async rollbackAsset(assetId, version) {
+      await api.call('recall.assets.rollback', { assetId, version });
+      toast(T('cognition.asset_rollback_done', '已回滚到 v{n} 的内容（生成新版本）', { n: String(version) }));
+      store.assetVersions = null;
+      await NS.reload();
+    },
     /** 真删单个版本（2026-09-17）：物理移除该版本记录；引用它的已确认注入
      *  在服务端冻结内容副本后继续可用。危险操作，双按钮确认。 */
     async deleteAssetVersion(assetId, version) {

@@ -19,7 +19,7 @@
   /** 写操作集合：点击后按钮进入 pending（禁用+变淡），完成或重画后还原。 */
   const WRITE_ACTIONS = new Set([
     'refresh', 'cand-adopt-with-form', 'cand-decide',
-    'asset-action', 'asset-recommend-ack', 'select-asset-version', 'delete-asset-version', 'asset-edit-save', 'family-rename', 'family-rename-save', 'family-rename-cancel', 'edit-from-version', 'merge-asset-version', 'merge-asset', 'source-action', 'capture-action', 'organize-conv',
+    'asset-action', 'asset-recommend-ack', 'select-asset-version', 'rollback-asset', 'delete-asset-version', 'asset-edit-save', 'family-rename', 'family-rename-save', 'family-rename-cancel', 'edit-from-version', 'merge-asset-version', 'merge-asset', 'source-action', 'capture-action', 'organize-conv',
     'capture-toggle', 'capture-review-toggle', 'proof-rate',
     'capture-batch',
   ]);
@@ -176,6 +176,7 @@
           case 'asset-action': await A.assetAction(id, el.dataset.action); break;
           case 'asset-recommend-ack': await A.acknowledgeAssetRecommendation(id); break;
           case 'select-asset-version': await A.selectAssetVersion(id, el.dataset.version || ''); break;
+          case 'rollback-asset': await A.rollbackAsset(id, el.dataset.version || ''); break;
           case 'delete-asset-version': await A.deleteAssetVersion(id, el.dataset.version || ''); break;
           case 'edit-asset': {
             // 进入/退出编辑态（纯路由切换，不压返回栈）。

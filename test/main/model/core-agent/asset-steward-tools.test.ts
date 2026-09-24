@@ -53,10 +53,16 @@ async function seedAsset(
 
 /** 克隆一条合法记录成 N 条：晋升一次就够，避免 35 条种子把用例拖成分钟级。
  *  形状仍由真实记录派生，不是手写的"看起来对"的对象。 */
-async function cloneAssets(base: Record<string, unknown>, count: number, overrides: Array<Record<string, unknown>> = []) {
+async function cloneAssets(
+  base: Record<string, unknown>,
+  count: number,
+  overrides: Array<Record<string, unknown>> = [],
+  startIndex = 0,
+) {
   const store = await import('../../../../src/main/features/recall/store');
   const ids: string[] = [];
-  for (let index = 0; index < count; index += 1) {
+  for (let offset = 0; offset < count; offset += 1) {
+    const index = startIndex + offset;
     const id = `aa-fixture${String(index).padStart(3, '0')}`;
     await store.writeRecallJsonRecord(TEST_UID, 'ability-assets', id, {
       ...base,
@@ -560,5 +566,264 @@ describe('写工具（US-402）', () => {
     expect(projection.assetVersions?.[asset.id]).toBe('2');
     // ③ 在用内容确实变了（否则上面两条可能只是"什么都没发生"）。
     expect((await assets.readAbilityAsset(TEST_UID, asset.id)).statement).toBe('AI 后来改成的第三版内容。');
+  });
+});
+
+describe('危险操作的安全网（US-404 / T027–T031）', () => {
+  const CID = 'conv-steward';
+  const TURN = 'turn-steward';
+  const call = (tool: { execute: (input: Record<string, unknown>, ctx: never) => Promise<{ content: string; isError?: boolean }> }, input: Record<string, unknown>) =>
+    tool.execute(input, {} as never);
+
+  async function dangerTools() {
+    const { createAssetStewardTools } = await import('../../../../src/main/model/core-agent/asset-steward-tools');
+    const byName = new Map(createAssetStewardTools({ userId: TEST_UID, cid: CID, turnId: TURN }).map((t) => [t.name, t]));
+    return {
+      edit: byName.get('edit_ability_asset')!,
+      del: byName.get('delete_ability_asset')!,
+    };
+  }
+  /** 应答下一条交互请求（模拟用户在确认卡上点）。decision=null 表示不应答。 */
+  async function answerNext(decision: 'allow' | 'deny' | null) {
+    const hub = await import('../../../../src/main/features/chat_events/interaction-hub');
+    const seen: string[] = [];
+    hub._setBroadcastForTest((_uid, event) => {
+      const ev = event as { type?: string; interactionId?: string };
+      if (ev.type !== 'chat.interaction.requested' || !ev.interactionId) return;
+      seen.push(ev.interactionId);
+      if (decision) hub.respondInteraction(ev.interactionId, { decision });
+    });
+    return { hub, seen };
+  }
+
+  it('判定表：单条不危险；批量→batch_delete；覆盖全库→clear_all；动 scopePolicy→cross_scope_widen', async () => {
+    const { assessDeleteDanger, assessScopeWidenDanger } = await import('../../../../src/main/model/core-agent/asset-steward-tools');
+    expect(assessDeleteDanger(['aa-a'], 10)).toMatchObject({ dangerous: false });
+    expect(assessDeleteDanger(['aa-a', 'aa-b'], 10)).toMatchObject({ dangerous: true, kind: 'batch_delete' });
+    expect(assessDeleteDanger(['aa-a', 'aa-b'], 2)).toMatchObject({ dangerous: true, kind: 'clear_all' });
+    expect(assessScopeWidenDanger({ title: 'x' })).toMatchObject({ dangerous: false });
+    expect(assessScopeWidenDanger({ scopePolicy: { workspaceIds: ['sp-a'] } }))
+      .toMatchObject({ dangerous: true, kind: 'cross_scope_widen' });
+  });
+
+  it('单条删除不是危险操作：不弹确认、不留快照', async () => {
+    const asset = await seedAsset('单条删除是普通治理动作。');
+    const { del } = await dangerTools();
+    const { seen } = await answerNext(null);
+    const out = await call(del, { assetId: asset.id, reason: '用户要求删掉这条' });
+    expect(out.isError).toBeUndefined();
+    expect(seen).toEqual([]);
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    const actions = (await assets.listAbilityAssetAudit(TEST_UID, asset.id)).map((r) => r.action);
+    expect(actions).not.toContain('danger_snapshot');
+    expect(actions).toContain('deleted');
+  });
+
+  it('批量删除：执行前逐条留快照 + 单次确认通过后执行', async () => {
+    const base = await seedAsset('批量删除的第一条。');
+    const ids = await cloneAssets(base as unknown as Record<string, unknown>, 3);
+    // 库外还有资产：这样才是"批量删除"而不是"清空"。
+    await cloneAssets(base as unknown as Record<string, unknown>, 2, [{ status: 'paused' }], 90);
+    const allIds = [base.id, ...ids];
+    const { del } = await dangerTools();
+    const { seen } = await answerNext('allow');
+    const out = await call(del, { assetIds: allIds, reason: '用户要求清掉这批重复的' });
+
+    expect(out.isError).toBeUndefined();
+    expect(out.content).toContain('已删除 4/4 条');
+    expect(out.content).toContain('批量删除');
+    expect(seen).toHaveLength(1);
+
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    for (const id of allIds) {
+      const rows = await assets.listAbilityAssetAudit(TEST_UID, id);
+      const snapshot = rows.find((r) => r.action === 'danger_snapshot');
+      expect(snapshot, id).toBeTruthy();
+      // 快照锚点 = 当时的在用版：事后能一步回滚到操作前。
+      expect(snapshot!.rollbackAnchor).toBeTruthy();
+      expect(rows.some((r) => r.action === 'danger_confirmed')).toBe(true);
+      expect((await assets.readAbilityAsset(TEST_UID, id)).status).toBe('deleted');
+    }
+  });
+
+  it('确认被拒 → 零执行 + 如实回执 + 留痕（不得计为成功）', async () => {
+    const base = await seedAsset('确认被拒的批量删除。');
+    const ids = await cloneAssets(base as unknown as Record<string, unknown>, 2);
+    // 库里还有别的资产 → 这是"批量删除"而不是"清空"（两者都危险，但告诉用户的是两件事）。
+    await cloneAssets(base as unknown as Record<string, unknown>, 2, [
+      { status: 'paused' }, { status: 'archived' },
+    ], 90);
+    const allIds = [base.id, ...ids];
+    const { del } = await dangerTools();
+    await answerNext('deny');
+    const out = await call(del, { assetIds: allIds, reason: '用户要求批量删掉' });
+
+    expect(out.isError).toBe(true);
+    expect(out.content).toContain('未能执行批量删除');
+    expect(out.content).toContain('未获确认');
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    for (const id of allIds) {
+      expect((await assets.readAbilityAsset(TEST_UID, id)).status).toBe('active');
+      const rows = await assets.listAbilityAssetAudit(TEST_UID, id);
+      expect(rows.some((r) => r.action === 'danger_denied')).toBe(true);
+      expect(rows.some((r) => r.action === 'deleted')).toBe(false);
+      expect(rows.find((r) => r.action === 'danger_denied')!.failureCategory).toBe('permission');
+      // 快照照留：它是"执行前"的事实，与用户同不同意无关。
+      expect(rows.some((r) => r.action === 'danger_snapshot')).toBe(true);
+    }
+  });
+
+  it('确认悬停被回合取消 → 按 deny 处理：不执行', async () => {
+    const base = await seedAsset('确认被取消的批量删除。');
+    const ids = await cloneAssets(base as unknown as Record<string, unknown>, 2);
+    const allIds = [base.id, ...ids];
+    const { del } = await dangerTools();
+    const { hub } = await answerNext(null);
+    const pending = call(del, { assetIds: allIds, reason: '用户要求批量删掉' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(hub.pendingInteractionCount()).toBe(1);
+    hub.cancelInteractionsForTurn(TURN);
+    const out = await pending;
+    expect(out.isError).toBe(true);
+    expect(out.content).toContain('turnCancelled');
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    for (const id of allIds) {
+      expect((await assets.readAbilityAsset(TEST_UID, id)).status).toBe('active');
+      expect((await assets.listAbilityAssetAudit(TEST_UID, id)).some((r) => r.action === 'danger_denied')).toBe(true);
+    }
+  });
+
+  it('无法发起确认（非会话上下文）时不执行——问不到人不等于默认同意', async () => {
+    const base = await seedAsset('没有会话上下文的批量删除。');
+    const ids = await cloneAssets(base as unknown as Record<string, unknown>, 2);
+    const { createAssetStewardTools } = await import('../../../../src/main/model/core-agent/asset-steward-tools');
+    const del = createAssetStewardTools({ userId: TEST_UID }).find((t) => t.name === 'delete_ability_asset')!;
+    const out = await call(del, { assetIds: [base.id, ...ids], reason: '批量删' });
+    expect(out.isError).toBe(true);
+    expect(out.content).toContain('无法发起单次确认');
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    expect((await assets.readAbilityAsset(TEST_UID, base.id)).status).toBe('active');
+  });
+
+  it('批量里有一条不存在：快照凑不齐 → 整批不执行', async () => {
+    const asset = await seedAsset('混了坏 id 的批量删除。');
+    const { del } = await dangerTools();
+    await answerNext('allow');
+    const out = await call(del, { assetIds: [asset.id, 'aa-nonexistent'], reason: '批量删' });
+    expect(out.isError).toBe(true);
+    expect(out.content).toContain('没能留下执行前快照');
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    expect((await assets.readAbilityAsset(TEST_UID, asset.id)).status).toBe('active');
+  });
+
+  it('跨作用域扩大（改 scopePolicy）：先快照 + 单次确认；拒绝则一个字都不改', async () => {
+    const asset = await seedAsset('作用域授权的改动要走确认。');
+    const { edit } = await dangerTools();
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    await answerNext('deny');
+    const denied = await call(edit, {
+      assetId: asset.id,
+      fields: { scopePolicy: { workspaceIds: ['sp-other'] } },
+      reason: '用户要求让它在这个空间也能用',
+      origin: 'user_instruction',
+    });
+    expect(denied.isError).toBe(true);
+    expect(denied.content).toContain('未能执行跨作用域扩大');
+    expect((await assets.readAbilityAsset(TEST_UID, asset.id)).scopePolicy).toBeUndefined();
+
+    await answerNext('allow');
+    const allowed = await call(edit, {
+      assetId: asset.id,
+      fields: { scopePolicy: { workspaceIds: ['sp-other'] } },
+      reason: '用户要求让它在这个空间也能用',
+      origin: 'user_instruction',
+    });
+    expect(allowed.isError).toBeUndefined();
+    expect((await assets.readAbilityAsset(TEST_UID, asset.id)).scopePolicy).toMatchObject({ workspaceIds: ['sp-other'] });
+    expect((await assets.listAbilityAssetAudit(TEST_UID, asset.id)).some((r) => r.action === 'danger_confirmed')).toBe(true);
+  });
+
+  it('被拦下的尝试留痕（attempt_blocked + 归因），不是只在成功路径上记账', async () => {
+    const asset = await seedAsset('被拦下的尝试也要留痕。');
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    await assets.revokeAbilityAsset(TEST_UID, asset.id, { actor: 'user', reason: 'unsafe' });
+    const { createAssetStewardTools } = await import('../../../../src/main/model/core-agent/asset-steward-tools');
+    const edit = createAssetStewardTools({ userId: TEST_UID }).find((t) => t.name === 'edit_ability_asset')!;
+    const out = await call(edit, { assetId: asset.id, fields: { title: 'x' }, reason: '试试', origin: 'ai_initiated' });
+    expect(out.isError).toBe(true);
+
+    const blocked = (await assets.listAbilityAssetAudit(TEST_UID, asset.id)).find((r) => r.action === 'attempt_blocked');
+    expect(blocked).toBeTruthy();
+    expect(blocked!.actor).toBe('ai');
+    expect(blocked!.failureCategory).toBe('governance');
+    expect(String(blocked!.note)).toContain('revoked ability asset cannot be changed');
+  });
+});
+
+describe('安全网的量化口径（T031）', () => {
+  it('台账覆盖率 100%：每一次 AI 写操作都有 actor=ai 且四项齐全的记录', async () => {
+    const asset = await seedAsset('台账覆盖率的抽查对象。');
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    const { createAssetStewardTools } = await import('../../../../src/main/model/core-agent/asset-steward-tools');
+    const tools = new Map(createAssetStewardTools({ userId: TEST_UID }).map((t) => [t.name, t]));
+    const call = (name: string, input: Record<string, unknown>) => tools.get(name)!.execute(input, {} as never);
+
+    await call('edit_ability_asset', { assetId: asset.id, fields: { title: '改名' }, reason: '命名规范化', origin: 'ai_initiated' });
+    await call('archive_ability_asset', { assetId: asset.id, reason: '暂时不用' });
+    await call('restore_ability_asset', { assetId: asset.id, reason: '又要用了' });
+    await call('delete_ability_asset', { assetId: asset.id, reason: '用户要求删除' });
+    await call('restore_ability_asset', { assetId: asset.id, reason: '用户要求恢复' });
+    await call('rollback_ability_asset', { assetId: asset.id, toVersion: '1', reason: '回到第一版' });
+
+    const aiRows = (await assets.listAbilityAssetAudit(TEST_UID, asset.id)).filter((r) => r.actor === 'ai');
+    expect(aiRows.length).toBeGreaterThanOrEqual(6);
+    for (const row of aiRows) {
+      expect(Number.isNaN(Date.parse(row.at)), `${row.action} 缺时间`).toBe(false);
+      expect(row.reason, `${row.action} 缺依据`).toBeTruthy();
+      expect(row.before, `${row.action} 缺前值`).toBeTruthy();
+      expect(row.after, `${row.action} 缺后值`).toBeTruthy();
+    }
+  });
+
+  it('回滚一致性 100%：拿台账里的锚点回滚，内容与改动前逐字一致', async () => {
+    const asset = await seedAsset('回滚一致性的原始内容。');
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    const { createAssetStewardTools } = await import('../../../../src/main/model/core-agent/asset-steward-tools');
+    const tools = new Map(createAssetStewardTools({ userId: TEST_UID }).map((t) => [t.name, t]));
+    const call = (name: string, input: Record<string, unknown>) => tools.get(name)!.execute(input, {} as never);
+
+    // 内容路径：台账锚点 → 一步回滚 → 逐字回到改动前。
+    const contentSteps: Array<[string, Record<string, unknown>]> = [
+      ['edit_ability_asset', { fields: { statement: '第一次改动后的内容。' }, reason: '用户要求改', origin: 'user_instruction' }],
+      ['edit_ability_asset', { fields: { title: '第二次改动的标题' }, reason: '命名规范化', origin: 'ai_initiated' }],
+    ];
+    for (const [name, extra] of contentSteps) {
+      const before = await assets.readAbilityAsset(TEST_UID, asset.id);
+      await call(name, { assetId: asset.id, reason: '步骤', ...extra });
+      const anchor = (await assets.listAbilityAssetAudit(TEST_UID, asset.id)).at(-1)!.rollbackAnchor;
+      expect(anchor, `${name} 应当留下回滚锚点`).toBeTruthy();
+      await assets.rollbackAbilityAsset(TEST_UID, asset.id, anchor!, { actor: 'user', reason: '一步回滚' });
+      const after = await assets.readAbilityAsset(TEST_UID, asset.id);
+      expect(after.statement, name).toBe(before.statement);
+      expect(after.title, name).toBe(before.title);
+    }
+
+    // 状态路径：归档/删除**不**留回滚锚点（它们不 bump 版本，锚点=当前版，
+    // 回滚必然报"already at that version"）；它们的"回退"是 restore，内容同样逐字一致。
+    for (const [name, extra] of [
+      ['archive_ability_asset', {}],
+      ['delete_ability_asset', {}],
+    ] as Array<[string, Record<string, unknown>]>) {
+      const before = await assets.readAbilityAsset(TEST_UID, asset.id);
+      await call(name, { assetId: asset.id, reason: '步骤', ...extra });
+      const row = (await assets.listAbilityAssetAudit(TEST_UID, asset.id)).at(-1)!;
+      expect(row.rollbackAnchor, `${name} 不该留回滚锚点`).toBeUndefined();
+      expect(row.before, `${name} 仍要有前后值`).toBeTruthy();
+      await assets.restoreAbilityAsset(TEST_UID, asset.id, { actor: 'user', reason: '恢复' });
+      const after = await assets.readAbilityAsset(TEST_UID, asset.id);
+      expect(after.status, name).toBe('active');
+      expect(after.statement, name).toBe(before.statement);
+      expect(after.title, name).toBe(before.title);
+    }
   });
 });

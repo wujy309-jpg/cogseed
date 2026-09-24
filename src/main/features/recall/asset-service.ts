@@ -59,7 +59,14 @@ export interface AbilityAssetAuditRecord extends RecallJsonRecord {
     | 'maturity_advanced'
     // 修正归档错误，**不是**靠证据挣来的升档。审计里要分得开，否则日后
     // 回看会以为这条资产做过 transfer proof。
-    | 'maturity_corrected';
+    | 'maturity_corrected'
+    // 资产管家安全网（specs/008 US-404）：
+    //   - danger_snapshot：危险操作**执行前**留的快照锚点（内容在版本流里，
+    //     这里记"当时在用哪一版"，回滚就滚到它）；
+    //   - danger_confirmed / danger_denied：单次确认的结果（含超时/取消=deny）；
+    //   - attempt_blocked：被门禁拦下的写尝试——**失败也要留痕**，否则"零静默
+    //     放行"只在成功路径上成立，拦下的那些事无从审计。
+    | 'danger_snapshot' | 'danger_confirmed' | 'danger_denied' | 'attempt_blocked';
   at: string;
   actor?: AbilityAssetActor;
   note?: string;
@@ -75,6 +82,9 @@ export interface AbilityAssetAuditRecord extends RecallJsonRecord {
   /** 失败/被拦截的归因。成功的记录不带——「被拦截不得计为成功」靠这个字段
    *  与 `ok:false` 回执共同表达（specs/008 T032）。 */
   failureCategory?: AbilityAssetFailureCategory;
+  /** 这一步之前的在用版本（回滚锚点）。渲染层「回滚到改动前」直接拿它调
+   *  rollback，不必从 `before` 摘要里反解。 */
+  rollbackAnchor?: string;
 }
 
 export interface UpdateAbilityAssetInput {
@@ -437,12 +447,17 @@ export function classifyAbilityAssetWriteFailure(error: unknown): AbilityAssetFa
   return 'unknown';
 }
 
-export interface AbilityAssetAuditMetadata {  note?: string;
+export interface AbilityAssetAuditMetadata {
+  note?: string;
   reason?: string;
   actor?: AbilityAssetActor;
   before?: string;
   after?: string;
   failureCategory?: AbilityAssetFailureCategory;
+  /** 这一步改动**之前**在用哪一版：回滚锚点。写路径自己填，渲染层的
+   *  「回滚到改动前」直接拿它调 rollback——从 `before` 摘要里反解版本号是
+   *  解析展示文本，迟早随文案改动而错。 */
+  rollbackAnchor?: string;
 }
 
 async function appendAudit(userId: string, assetId: string, action: AbilityAssetAuditRecord['action'], metadata: AbilityAssetAuditMetadata = {}): Promise<void> {
@@ -464,7 +479,40 @@ async function appendAudit(userId: string, assetId: string, action: AbilityAsset
     ...(metadata.before ? { before: metadata.before } : {}),
     ...(metadata.after ? { after: metadata.after } : {}),
     ...(metadata.failureCategory ? { failureCategory: metadata.failureCategory } : {}),
+    ...(metadata.rollbackAnchor ? { rollbackAnchor: metadata.rollbackAnchor } : {}),
   } satisfies AbilityAssetAuditRecord);
+}
+
+/** 台账写入的公开口（specs/008 US-404）。
+ *
+ *  写路径自己记账的那几条（updated/deleted/…）不走这里；这个口给**工具层**用：
+ *  危险操作的执行前快照与确认结果、以及被门禁拦下的写尝试——它们不产生版本
+ *  变更，但必须留痕，否则"危险操作 100% 有执行前快照""零静默放行"两条承诺
+ *  在失败路径上无从取证。
+ *
+ *  **不校验业务状态**（记录的是"发生过什么"，不是"资产现在是什么"）：调用方
+ *  自己保证语义，就像 appendAudit 的既有调用点一样。 */
+export async function recordAbilityAssetAudit(
+  userId: string,
+  assetId: string,
+  action: AbilityAssetAuditRecord['action'],
+  metadata: AbilityAssetAuditMetadata = {},
+): Promise<void> {
+  if (!safeId(assetId)) throw new Error('invalid ability asset id');
+  await appendAudit(userId, assetId, action, metadata);
+}
+
+/** 当前在用版（回滚锚点取它）：select 切过旧版时 activeVersion 才是内容来源。 */
+function activeVersionOf(asset: RecallAbilityAssetRecord): string {
+  return String(asset.activeVersion || asset.version || '1');
+}
+
+/** 对外暴露同一个规则：工具层与渲染层都要回答"这条现在的在用版是几"，
+ *  各自写一遍迟早会分叉（select 之后 activeVersion 才是内容来源）。 */
+export function abilityAssetActiveVersion(
+  asset: Pick<RecallAbilityAssetRecord, 'activeVersion' | 'version'>,
+): string {
+  return activeVersionOf(asset as RecallAbilityAssetRecord);
 }
 
 export async function initializeAbilityAsset(userId: string, asset: RecallAbilityAssetRecord, metadata: { reason?: string; actor?: AbilityAssetActor } = {}): Promise<void> {
@@ -676,6 +724,7 @@ export async function updateAbilityAsset(userId: string, assetId: string, input:
       reason: action.reason,
       actor: action.actor,
       ...(summary ? { before: summary.before, after: summary.after } : {}),
+      ...(beforeAsset ? { rollbackAnchor: activeVersionOf(beforeAsset) } : {}),
     });
     if (clearedRecommendation) await appendAudit(userId, asset.id, 'recommendation_cleared', { note: action.reason, actor: action.actor });
   }
@@ -831,6 +880,9 @@ async function setStatus(
       reason: action.reason,
       actor: action.actor,
       ...(summary ? { before: summary.before, after: summary.after } : {}),
+      // 状态改动**不**留回滚锚点：它不 bump 版本，"回滚到改动前那一版"等于回滚到
+      // 当前版（服务层会正当拒绝）。状态的回退走 restore，不是内容回滚——把锚点
+      // 写上去只会让界面给出一个点了必然报错的按钮。
     });
     if (clearedRecommendation) await appendAudit(userId, asset.id, 'recommendation_cleared', { note: action.reason, actor: action.actor });
   }
@@ -1206,6 +1258,7 @@ export async function rollbackAbilityAsset(
     reason: action.reason,
     actor: action.actor,
     ...(rollbackSummary ? { before: rollbackSummary.before, after: rollbackSummary.after } : {}),
+    ...(beforeAsset ? { rollbackAnchor: activeVersionOf(beforeAsset) } : {}),
   });
   return asset;
 }
@@ -1462,11 +1515,13 @@ export async function mergeAbilityAssets(
     reason: `${action.reason || 'merge'} (from ${sourceAssetId})`,
     actor: action.actor,
     ...(targetSummary ? { before: targetSummary.before, after: targetSummary.after } : {}),
+    ...(beforeTarget ? { rollbackAnchor: activeVersionOf(beforeTarget) } : {}),
   });
   await appendAudit(userId, sourceAssetId, 'merged_into', {
     reason: `${action.reason || 'merge'} (into ${targetAssetId})`,
     actor: action.actor,
     ...(sourceSummary ? { before: sourceSummary.before, after: sourceSummary.after } : {}),
+    ...(beforeSource ? { rollbackAnchor: activeVersionOf(beforeSource) } : {}),
   });
   return merged;
 }

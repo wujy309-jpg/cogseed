@@ -447,6 +447,38 @@ describe('skills renderer frontmatter parsing', () => {
     expect(visibleText(html)).not.toContain('仅显示最近 12 条');
   });
 
+  it('shows the ledger four (actor / time / before-after / reason) and the one-step rollback entry', () => {
+    const html = renderCognition(
+      { name: 'overview', assetId: 'asset-rule' },
+      {
+        assets: [cognitionAsset({
+          audit: [
+            {
+              action: 'updated',
+              at: '2026-09-25T01:00:00.000Z',
+              actor: 'ai',
+              reason: '用户要求把这条改清楚点',
+              before: 'statement=20 字；version=2',
+              after: 'statement=31 字；version=3',
+              rollbackAnchor: '2',
+            },
+            { action: 'danger_snapshot', at: '2026-09-25T00:50:00.000Z', actor: 'ai', note: '批量删除前的执行前快照' },
+          ],
+        })],
+      },
+    );
+    const text = visibleText(html);
+    // 谁改的 / 何时 / 前后值 / 依据 —— 四项都要看得见（只给一句"更新内容"等于没账）。
+    expect(text).toContain('AI');
+    expect(text).toContain('用户要求把这条改清楚点');
+    expect(text).toContain('statement=20 字；version=2');
+    expect(text).toContain('statement=31 字；version=3');
+    // 危险操作的安全网记录也在履历里（危险操作前留档）。
+    expect(text).toContain('危险操作前留档');
+    // 一步回滚入口：服务端给了锚点才出现，且带上要回滚到的版本号。
+    expect(html).toContain('data-act="rollback-asset" data-id="asset-rule" data-version="2"');
+  });
+
   it('filters the integrated asset list by the selected tree category', () => {
     const html = renderCognition(
       { name: 'overview', category: 'rule' },

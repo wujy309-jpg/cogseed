@@ -13,12 +13,14 @@ import type { AgentTool } from '#core-agent';
 import { createLogger } from '../../logger';
 import { t } from '../../i18n';
 import {
+  abilityAssetActiveVersion,
   archiveAbilityAsset,
   classifyAbilityAssetWriteFailure,
   deleteAbilityAsset,
   listAbilityAssets,
   mergeAbilityAssets,
   readAbilityAsset,
+  recordAbilityAssetAudit,
   restoreAbilityAsset,
   rollbackAbilityAsset,
   updateAbilityAsset,
@@ -26,7 +28,9 @@ import {
   type UpdateAbilityAssetInput,
 } from '../../features/recall/asset-service';
 import type { RecallAbilityAssetRecord } from '../../features/recall/candidate-service';
+import type { RecallAbilityAssetScopePolicy } from '../../features/recall/scope-policy';
 import { evaluateRecallAssetRuntimeEligibility } from '../../features/recall/prompt-injection';
+import { requestInteraction } from '../../features/chat_events/interaction-hub';
 import { safeId } from '../../storage';
 import { logErrorRef, maskId } from '../../util/log-redact';
 
@@ -307,6 +311,158 @@ function createReadAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
   };
 }
 
+// ── 危险操作的安全网（US-404 / T027–T028） ────────────────────────────────
+//
+// 危险操作 = **批量删除 / 清空 / 跨作用域扩大**（2026-09-23 定稿，与 Backlog
+// v2.6 US-404 一致）。不新增工具：由既有工具在批量或跨作用域形态下**自动升级**。
+// 执行链：执行前快照 → 经 InteractionHub 单次确认（approval 类，**超时 deny**）
+// → 确认结果与快照一并记账。未获确认 → 不执行 + 如实回执（不得计为成功）。
+//
+// A3 权限位：这是「AI 自主实质变化」之外唯一设具名人类确认点的地方；A4（无人工
+// 介入的破坏性动作）禁用。
+
+export type DangerKind = 'batch_delete' | 'clear_all' | 'cross_scope_widen';
+
+export const DANGER_KIND_LABELS: Record<DangerKind, string> = {
+  batch_delete: '批量删除',
+  clear_all: '清空资产库',
+  cross_scope_widen: '跨作用域扩大',
+};
+
+export interface DangerAssessment {
+  dangerous: boolean;
+  kind?: DangerKind;
+  /** 给用户看的确认文案：必须具体到"要动几条、动什么"，一句"危险操作"等于没确认。 */
+  detail?: string;
+}
+
+/** 删除形态判定：单条不是危险操作（用户明确要求删一条就是一次正常治理），
+ *  批量才是；批量覆盖到全库就是"清空"——两者都危险，但告诉用户的是两件事。 */
+export function assessDeleteDanger(assetIds: readonly string[], librarySize: number): DangerAssessment {
+  if (assetIds.length < 2) return { dangerous: false };
+  if (librarySize > 0 && assetIds.length >= librarySize) {
+    return {
+      dangerous: true,
+      kind: 'clear_all',
+      detail: `要删除的 ${assetIds.length} 条覆盖了资产库里全部 ${librarySize} 条`,
+    };
+  }
+  return { dangerous: true, kind: 'batch_delete', detail: `一次删除 ${assetIds.length} 条资产` };
+}
+
+/** 作用域判定：动 `scopePolicy` 就是动"这条资产能进出哪些空间"，属跨作用域扩大。 */
+export function assessScopeWidenDanger(fields: Record<string, unknown>): DangerAssessment {
+  if (fields.scopePolicy === undefined) return { dangerous: false };
+  return {
+    dangerous: true,
+    kind: 'cross_scope_widen',
+    detail: '这次改动会改写这条资产的作用域授权——它能进出的空间从此不同',
+  };
+}
+
+interface DangerGuardOutcome {
+  allowed: boolean;
+  /** 未获放行时的如实回执；放行时为 undefined。 */
+  blockedReceipt?: string;
+}
+
+/** 执行前快照：每条受影响的资产记一条 `danger_snapshot`，锚点是"当时在用哪一版"
+ *  ——内容本身就在版本流里，不另抄一份（另抄一份就是第二份正文副本，与"台账只存
+ *  摘要"冲突）。回滚锚点让"事后回滚到操作前"有确定落点。 */
+async function recordDangerSnapshots(
+  opts: AssetStewardToolsOpts,
+  assetIds: readonly string[],
+  kind: DangerKind,
+  reason: string,
+): Promise<string[]> {
+  const recorded: string[] = [];
+  for (const assetId of assetIds) {
+    try {
+      const asset = await readAbilityAsset(opts.userId, assetId);
+      await recordAbilityAssetAudit(opts.userId, assetId, 'danger_snapshot', {
+        actor: 'ai',
+        reason: `${DANGER_KIND_LABELS[kind]}前的执行前快照：${reason}`,
+        before: `${statusText(asset.status)}；在用版=v${abilityAssetActiveVersion(asset)}`,
+        rollbackAnchor: abilityAssetActiveVersion(asset),
+      });
+      recorded.push(assetId);
+    } catch (err) {
+      // 快照记不下来的资产**不进**这次危险操作：没有执行前快照就没有兜底。
+      log.warn('danger snapshot failed', { assetId, error: logErrorRef(err as Error) });
+    }
+  }
+  return recorded;
+}
+
+/**
+ * 危险操作的执行链。返回 `allowed: false` 时调用方**必须零执行**。
+ *
+ * 无法发起确认（缺 cid/turnId，例如非会话上下文）时同样不放行：确认是这类操作
+ * 的合法性来源，"问不到人"不等于"默认同意"。
+ */
+async function runDangerGuard(
+  opts: AssetStewardToolsOpts,
+  params: { kind: DangerKind; detail: string; assetIds: readonly string[]; reason: string },
+): Promise<DangerGuardOutcome> {
+  const { kind, detail, reason } = params;
+  const label = DANGER_KIND_LABELS[kind];
+  const snapshotted = await recordDangerSnapshots(opts, params.assetIds, kind, reason);
+  const unrecorded = params.assetIds.filter((id) => !snapshotted.includes(id));
+  if (unrecorded.length) {
+    return {
+      allowed: false,
+      blockedReceipt: [
+        `未能执行${label}：这些资产没能留下执行前快照，因此不执行（${unrecorded.join('、')}）。`,
+        '归因：data（数据缺失/不存在）',
+      ].join('\n'),
+    };
+  }
+  if (!opts.cid || !opts.turnId) {
+    return {
+      allowed: false,
+      blockedReceipt: [
+        `未能执行${label}：当前上下文无法发起单次确认（缺会话/回合信息），危险操作不执行。`,
+        '危险操作必须有用户的一次确认；"问不到人"不等于默认同意。',
+        '归因：workflow（并发/流程冲突）',
+      ].join('\n'),
+    };
+  }
+
+  const resolved = await requestInteraction({
+    uid: opts.userId,
+    cid: opts.cid,
+    turnId: opts.turnId,
+    kind: 'approval',
+    prompt: `资产管家请求执行危险操作：${label}`,
+    detail: `${detail}；依据：${reason}`,
+  });
+  const decision = resolved.decision ?? 'deny';
+  const allowed = decision === 'allow' || decision === 'allowAlways';
+  const outcomeNote = allowed
+    ? `用户已确认（${decision}）`
+    : `未获确认（${resolved.reason}${resolved.decision ? `/${resolved.decision}` : ''}）`;
+  for (const assetId of params.assetIds) {
+    await recordAbilityAssetAudit(opts.userId, assetId, allowed ? 'danger_confirmed' : 'danger_denied', {
+      actor: 'ai',
+      reason: `${label}：${reason}`,
+      note: outcomeNote,
+      ...(allowed ? {} : { failureCategory: 'permission' as AbilityAssetFailureCategory }),
+    });
+  }
+  if (allowed) return { allowed: true };
+  return {
+    allowed: false,
+    blockedReceipt: [
+      `未能执行${label}：${outcomeNote}，所以什么都没做。`,
+      `本次请求：${detail}`,
+      '归因：permission（权限或敏感级拦截）',
+      resolved.reason === 'timeout'
+        ? '确认超时按拒绝处理（不悬停）。要执行请重新发起并留意确认卡。'
+        : '用户没有同意这次操作。如果确实需要，请先说明要动哪些资产、为什么。',
+    ].join('\n'),
+  };
+}
+
 // ── 写工具（US-402） ──────────────────────────────────────────────────────
 //
 // 全部落到既有 `asset-service.ts` 写函数，不新建第二套写通道；`actor` 一律 `'ai'`，
@@ -347,14 +503,37 @@ function writeReceipt(action: string, asset: RecallAbilityAssetRecord, extra: st
   ].join('\n');
 }
 
-function writeFailure(
+/**
+ * 失败回执 + 台账留痕（T032）：**被拦下的尝试也要留一条 `attempt_blocked`**。
+ * 否则「零静默放行」只在成功路径上成立——拦下的那些事事后无从审计，也就无法
+ * 回答"AI 到底试过什么、被什么规则挡住了"。
+ *
+ * `assetExists=false`（资产不存在）时无处可挂：台账按 assetId 分流，为一个不存在
+ * 的 id 建流只会污染目录，所以只回执不留痕。
+ */
+async function blockedWriteReceipt(
+  opts: AssetStewardToolsOpts,
   action: string,
   assetId: string,
   error: unknown,
   hint?: string,
-): { content: string; isError: true } {
+  assetExists = true,
+): Promise<{ content: string; isError: true }> {
   const category = classifyAbilityAssetWriteFailure(error);
   const message = error instanceof Error ? error.message : String(error);
+  if (assetExists) {
+    try {
+      await recordAbilityAssetAudit(opts.userId, assetId, 'attempt_blocked', {
+        actor: 'ai',
+        reason: `尝试${action}被拦下`,
+        note: message,
+        failureCategory: category,
+      });
+    } catch (err) {
+      // 留痕失败不影响回执：模型该知道的拦截原因优先。
+      log.warn('attempt_blocked audit failed', { assetId, error: logErrorRef(err as Error) });
+    }
+  }
   return {
     content: [
       `未能${action}：[asset:${assetId}]`,
@@ -398,6 +577,11 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
             applicableWhen: { type: 'array', items: { type: 'string' }, description: '适用场景（整体替换；传空数组=清空）。' },
             forbiddenWhen: { type: 'array', items: { type: 'string' }, description: '禁用场景（整体替换；传空数组=清空）。' },
             sensitivity: { type: 'string', description: '敏感级：L0 / L1 / L2。' },
+            scopePolicy: {
+              type: 'object',
+              description: '作用域授权（这条资产能进出哪些空间/项目/Agent）。**改它属危险操作**：会先留执行前快照、再请用户单次确认。字段值都是字符串数组：purposeTags / agentIds / roleIds / projectIds / workspaceIds / conversationKinds / fileKinds。',
+              additionalProperties: { type: 'array', items: { type: 'string' } },
+            },
           },
           additionalProperties: false,
         },
@@ -450,6 +634,10 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
           return { content: `${key} 要是字符串数组、且不超过 32 条。`, isError: true };
         }
       }
+      if (fields.scopePolicy !== undefined
+        && (!fields.scopePolicy || typeof fields.scopePolicy !== 'object' || Array.isArray(fields.scopePolicy))) {
+        return { content: 'scopePolicy 要是一个对象（字段值都是字符串数组）。', isError: true };
+      }
       const origin = input.origin === 'user_instruction' ? 'user_instruction' : 'ai_initiated';
 
       let asset: RecallAbilityAssetRecord;
@@ -476,6 +664,17 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
         };
       }
 
+      // 危险操作：改 scopePolicy = 改写"这条资产能进出哪些空间"（跨作用域扩大）。
+      // 与分级②（实质变化）是两条独立的闸：那是"要不要用户拍板内容"，这是
+      // "要不要用户确认一次危险动作"。
+      const scopeDanger = assessScopeWidenDanger(fields);
+      if (scopeDanger.dangerous && scopeDanger.kind) {
+        const guard = await runDangerGuard(opts, {
+          kind: scopeDanger.kind, detail: scopeDanger.detail || '', assetIds: [assetId], reason,
+        });
+        if (!guard.allowed) return { content: guard.blockedReceipt || '未获确认，危险操作未执行。', isError: true };
+      }
+
       const update: UpdateAbilityAssetInput = {
         reason,
         actor: 'ai',
@@ -488,6 +687,9 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
         ...(Array.isArray(fields.applicableWhen) ? { applicableWhen: fields.applicableWhen.map(String) } : {}),
         ...(Array.isArray(fields.forbiddenWhen) ? { forbiddenWhen: fields.forbiddenWhen.map(String) } : {}),
         ...(typeof fields.sensitivity === 'string' ? { sensitivity: fields.sensitivity as 'L0' | 'L1' | 'L2' } : {}),
+        ...(fields.scopePolicy !== undefined
+          ? { scopePolicy: fields.scopePolicy as RecallAbilityAssetScopePolicy }
+          : {}),
       };
       try {
         const updated = await updateAbilityAsset(userId, assetId, update);
@@ -501,7 +703,7 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
       } catch (err) {
         log.warn('steward edit failed', { userId: maskId(userId), assetId, error: logErrorRef(err as Error) });
         const conflicted = err instanceof Error && err.message.includes('version conflict');
-        return writeFailure('改动', assetId, err, conflicted
+        return blockedWriteReceipt(opts, '改动', assetId, err, conflicted
           ? '这条资产在你读取之后被改过（可能是用户正在手动编辑）。重新读一次，确认用户想要的改动后再决定要不要改。'
           : undefined);
       }
@@ -543,8 +745,89 @@ function createStatusActionTool(
         return { content: writeReceipt(spec.actionLabel, asset, spec.extra ? spec.extra(asset) : []) };
       } catch (err) {
         log.warn(`steward ${spec.name} failed`, { userId: maskId(userId), assetId, error: logErrorRef(err as Error) });
-        return writeFailure(spec.actionLabel, assetId, err);
+        return blockedWriteReceipt(opts, spec.actionLabel, assetId, err);
       }
+    },
+  };
+}
+
+function createDeleteAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
+  const userId = opts.userId;
+  return {
+    name: 'delete_ability_asset',
+    description: [
+      '删除资产：进入 30 天保留期（保留期内可恢复），到期系统自动彻底删除、不可恢复。',
+      '单条删除（assetId）是普通治理动作；**批量删除（assetIds，≥2 条）或清空整个资产库属危险操作**——会先留执行前快照、再请用户单次确认，用户不确认就什么都不做。',
+      '**只在用户明确要求删除时用**。拿不准就用归档——归档没有不可逆的一天。',
+      '要清空整个库时不要绕开这条规则分批删：那正是"批量删除"要防的事，且会绕过用户的确认。',
+    ].join(''),
+    inputSchema: {
+      type: 'object',
+      properties: {
+        assetId: { type: 'string', description: '要删除的单条资产 id（与 assetIds 二选一）。' },
+        assetIds: { type: 'array', items: { type: 'string' }, description: '批量删除的资产 id 列表（≥2 条按危险操作处理，需用户单次确认）。' },
+        reason: { type: 'string', description: '依据：用户的原话或具体理由（必填，写进台账）。' },
+      },
+      required: ['reason'],
+      additionalProperties: false,
+    },
+    async execute(input: Record<string, unknown>): Promise<{ content: string; isError?: boolean }> {
+      const reasonOrError = requireReason(input.reason);
+      if (typeof reasonOrError !== 'string') return { content: reasonOrError.error, isError: true };
+      const reason = reasonOrError;
+      const rawIds = [
+        ...(typeof input.assetId === 'string' && input.assetId.trim() ? [input.assetId.trim()] : []),
+        ...(Array.isArray(input.assetIds) ? input.assetIds.map((value) => String(value ?? '').trim()).filter(Boolean) : []),
+      ];
+      const ids = [...new Set(rawIds)];
+      if (!ids.length) return { content: '要给 assetId 或 assetIds。', isError: true };
+      if (ids.length > 200) return { content: `一次最多删 200 条（收到 ${ids.length} 条）。`, isError: true };
+      const invalid = ids.filter((id) => !safeId(id));
+      if (invalid.length) return { content: `不是合法的资产 id：${invalid.join('、')}`, isError: true };
+
+      let librarySize = 0;
+      try {
+        librarySize = (await listAbilityAssets(userId)).filter((asset) => asset.status !== 'purged').length;
+      } catch (err) {
+        log.warn('steward delete list failed', { userId: maskId(userId), error: logErrorRef(err as Error) });
+      }
+      const danger = assessDeleteDanger(ids, librarySize);
+      if (danger.dangerous && danger.kind) {
+        const guard = await runDangerGuard(opts, {
+          kind: danger.kind, detail: danger.detail || '', assetIds: ids, reason,
+        });
+        if (!guard.allowed) return { content: guard.blockedReceipt || '未获确认，危险操作未执行。', isError: true };
+      }
+
+      const deleted: string[] = [];
+      const failures: string[] = [];
+      for (const assetId of ids) {
+        try {
+          await deleteAbilityAsset(userId, assetId, { actor: 'ai', reason });
+          deleted.push(assetId);
+        } catch (err) {
+          log.warn('steward delete failed', { userId: maskId(userId), assetId, error: logErrorRef(err as Error) });
+          // 失败原因必须**回给模型**（同时留一条 attempt_blocked 台账）：只写台账
+          // 不回执，模型就不知道是"这条已经没了"还是"权限不够"，只会重试。
+          const receipt = await blockedWriteReceipt(opts, '删除', assetId, err);
+          failures.push(receipt.content);
+        }
+      }
+      const lines = [
+        deleted.length
+          ? `已删除 ${deleted.length}/${ids.length} 条（状态=${statusText('deleted')}，保留期内可恢复）：${deleted.join('、')}`
+          : `已删除 0/${ids.length} 条：一条都没删掉`,
+        ...(danger.dangerous ? [`本次按「${DANGER_KIND_LABELS[danger.kind!]}」处理，已留执行前快照并经用户确认。`] : []),
+        ...(failures.length ? ['', ...failures] : []),
+        // 保留期口径必须随回执一起给：用户此刻要知道"这东西什么时候会真的没了"。
+        ...(deleted.length ? [t('recall.asset.delete_confirm_rules')] : []),
+      ];
+      // isError 只在整批都没删掉时置位（部分成功要让模型看见两边）——false 时不
+      // 发这个键，免得下游拿"存在但为 false"当第三种状态。
+      return {
+        content: lines.join('\n'),
+        ...(deleted.length === 0 ? { isError: true as const } : {}),
+      };
     },
   };
 }
@@ -584,7 +867,7 @@ function createMergeAbilityAssetsTool(opts: AssetStewardToolsOpts): AgentTool {
         };
       } catch (err) {
         log.warn('steward merge failed', { userId: maskId(userId), error: logErrorRef(err as Error) });
-        return writeFailure('归并', targetAssetId, err);
+        return blockedWriteReceipt(opts, '归并', targetAssetId, err, undefined, true);
       }
     },
   };
@@ -626,7 +909,7 @@ function createRollbackAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool 
         };
       } catch (err) {
         log.warn('steward rollback failed', { userId: maskId(userId), assetId, error: logErrorRef(err as Error) });
-        return writeFailure('回滚', assetId, err);
+        return blockedWriteReceipt(opts, '回滚', assetId, err);
       }
     },
   };
@@ -651,17 +934,7 @@ export function createAssetStewardTools(opts: AssetStewardToolsOpts): AgentTool[
       ].join(''),
       run: (userId, assetId, reason) => archiveAbilityAsset(userId, assetId, { actor: 'ai', reason }),
     }),
-    createStatusActionTool(opts, {
-      name: 'delete_ability_asset',
-      actionLabel: '删除',
-      description: [
-        '删除一条资产：进入 30 天保留期（保留期内可恢复），到期系统自动彻底删除、不可恢复。',
-        '**只在用户明确要求删除时用**。拿不准就用归档——归档没有不可逆的一天。',
-      ].join(''),
-      run: (userId, assetId, reason) => deleteAbilityAsset(userId, assetId, { actor: 'ai', reason }),
-      // 保留期口径必须随回执一起给：用户此刻要知道"这东西什么时候会真的没了"。
-      extra: () => [t('recall.asset.delete_confirm_rules')],
-    }),
+    createDeleteAbilityAssetTool(opts),
     createStatusActionTool(opts, {
       name: 'restore_ability_asset',
       actionLabel: '恢复',

@@ -1110,14 +1110,45 @@
           recommendation_cleared: T('cognition.audit_recommendation_cleared', '推荐已确认'),
           cross_scope_confirmed: T('cognition.audit_cross_scope_confirmed', '跨范围确认'),
           cross_scope_withdrawn: T('cognition.audit_cross_scope_withdrawn', '跨范围撤回'),
+          // 资产管家安全网（specs/008 US-404）。
+          danger_snapshot: T('cognition.audit_danger_snapshot', '危险操作前留档'),
+          danger_confirmed: T('cognition.audit_danger_confirmed', '危险操作已确认'),
+          danger_denied: T('cognition.audit_danger_denied', '危险操作未确认'),
+          attempt_blocked: T('cognition.audit_attempt_blocked', '操作被拦下'),
+        };
+        /* 台账四项（specs/008 US-404 T029）：谁（actor）/ 何时（at）/ 前后值 / 依据，
+         * 四项都要在界面上看得见——只给一句"更新内容"等于没账。 */
+        const AUDIT_ACTOR_LABELS = {
+          user: T('cognition.audit_actor_user', '你'),
+          ai: T('cognition.audit_actor_ai', 'AI'),
+          system: T('cognition.audit_actor_system', '系统'),
         };
         const auditRows = Array.isArray(asset.audit) ? asset.audit : [];
         const rows = auditRows.slice(0, 12);
         if (!rows.length) return '';
         const items = rows.map(function (row) {
           const label = AUDIT_ACTION_LABELS[String(row.action)] || String(row.action);
-          const note = row.note ? ' · ' + esc(row.note) : '';
-          return '<div class="proc-row"><span class="when">' + esc(row.at || '') + '</span><span style="flex:1"><b>' + esc(label) + '</b>' + note + '</span></div>';
+          const actor = AUDIT_ACTOR_LABELS[String(row.actor || '')] || '';
+          // 依据取 `reason`（权威字段）优先、`note` 兜底：写入时两者同源，但只认
+          // note 会让"有 reason 没有 note"的记录在界面上丢掉依据。
+          const basis = row.reason || row.note;
+          const note = basis ? ' · ' + esc(String(basis)) : '';
+          const head = (actor ? esc(actor) + ' · ' : '') + '<b>' + esc(label) + '</b>' + note;
+          // 前后值摘要（台账四项之一）：正文类字段在服务端已截成"字数·前缀"，
+          // 这里只负责显示，不做二次加工。
+          const change = (row.before || row.after)
+            ? '<div class="sub">' + esc(String(row.before || '—')) + ' → ' + esc(String(row.after || '—')) + '</div>'
+            : '';
+          // 一步回滚入口（US-404 T030）：服务端给了回滚锚点才给按钮——从 before
+          // 摘要里反解版本号是解析展示文本，迟早会错。
+          const canRollback = !!row.rollbackAnchor
+            && !['archived', 'deleted', 'purged', 'revoked'].includes(String(asset.status || 'active'));
+          const rollback = canRollback
+            ? '<div class="sub">' + btn(T('cognition.audit_rollback_to_before', '回滚到这次改动前'),
+              'rollback-asset', { id: asset.id, data: { version: String(row.rollbackAnchor) }, small: true }) + '</div>'
+            : '';
+          return '<div class="proc-row"><span class="when">' + esc(row.at || '') + '</span>'
+            + '<span style="flex:1">' + head + change + rollback + '</span></div>';
         }).join('');
         const tip = auditRows.length > 12
           ? '<div class="note" style="margin-top:6px">' + esc(T('cognition.audit_truncated', '仅显示最近 12 条；真实环境由审计流提供完整履历。')) + '</div>'
