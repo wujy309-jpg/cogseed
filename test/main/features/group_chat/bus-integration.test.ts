@@ -6949,6 +6949,27 @@ describe("group_chat bus integration › deterministic host routing (task turn)"
     expect(after?.currentTaskId).toBe(opened?.currentTaskId);
   }, BUS_TEST_TIMEOUT_MS);
 
+  it("still governs a task-shaped request that merely mentions progress", async () => {
+    process.env.COGSEED_KSTAR_HOST_ROUTING = "1";
+    const cid = newCid();
+    const state = await import("../../../../src/main/features/group_chat/state");
+    const bus = await import("../../../../src/main/features/group_chat/bus");
+
+    // The status pattern is unanchored, so "进度" matched anywhere in the
+    // message and this request was filtered as obvious trivia: no model call,
+    // no governed task, no requirement. It carries a goal verb, so it has to
+    // reach the judge.
+    _setScript(state.buildGconvSessionId(cid), [{ type: "final", text: "I will compile it." }]);
+    await bus.enqueue({ uid: TEST_UID, cid, fromActorId: "user", text: "整理一下这个季度的进度报告" });
+    await waitForQuiescent(TEST_UID, cid);
+
+    const store = await import("../../../../src/main/features/kstar/requirement-store");
+    const taskState = await store.readConversationTaskState(TEST_UID, cid);
+    expect(taskState?.currentTaskId).toBeTruthy();
+    const kinds = (taskState?.routingDecisions ?? []).map((decision) => decision.kind);
+    expect(kinds).not.toContain("obviously_trivial");
+  }, BUS_TEST_TIMEOUT_MS);
+
   it("records an unavailable judge mid-task instead of leaving the skipped turn invisible", async () => {
     const prevKey = process.env.ANTHROPIC_API_KEY;
     // `hasConfiguredModel()` also counts an ambient key, so the test pins the

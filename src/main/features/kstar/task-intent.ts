@@ -69,7 +69,13 @@ export function isClosingIntent(text: string | undefined): boolean {
 export function isObviouslyTrivial(text: string | undefined): boolean {
   const trimmed = String(text || '').replace(/\s+/g, ' ').trim();
   if (!trimmed) return true;
-  return TRIVIAL_PATTERNS.some((pattern) => pattern.test(trimmed));
+  if (!TRIVIAL_PATTERNS.some((pattern) => pattern.test(trimmed))) return false;
+  // The status-query pattern is unanchored, so "进度" / "还差" / "多久" match
+  // ANYWHERE — including inside a real request ("整理一下这个季度的进度报告",
+  // "分析一下竞品的进度报告怎么写"). A message carrying a goal verb or a
+  // deliverable noun is never OBVIOUSLY trivial: one extra judge round trip
+  // is cheap, silently dropping the task's governance is not.
+  return !TASK_SIGNALS.some((pattern) => pattern.test(trimmed));
 }
 
 /** Closed set of yes/no acknowledgements. Trailing particles (了/吧/呀) and
@@ -129,13 +135,14 @@ export function isAnswerLikeConfirmation(text: string | undefined): boolean {
 /** Detect whether a user message is a task-shaped request. Kept for
  *  compatibility: the host routing line now uses isObviouslyTrivial +
  *  the model judgement; this keyword-based detector remains as a fast
- *  pre-check helper (and for tests / non-model contexts). */
+ *  pre-check helper (and for tests / non-model contexts).
+ *
+ *  It shares `isObviouslyTrivial` rather than re-testing TRIVIAL_PATTERNS:
+ *  the two must agree on what counts as trivia, or the hint line would call a
+ *  message task-shaped while the gate filtered it as a greeting. */
 export function detectTaskIntent(text: string | undefined): TaskIntentResult {
   const trimmed = String(text || '').replace(/\s+/g, ' ').trim();
-  if (!trimmed) return { isTask: false };
-  if (TRIVIAL_PATTERNS.some((pattern) => pattern.test(trimmed))) {
-    return { isTask: false };
-  }
+  if (isObviouslyTrivial(trimmed)) return { isTask: false };
   const signal = TASK_SIGNALS.find((pattern) => pattern.test(trimmed));
   if (!signal) return { isTask: false };
   if (trimmed.length < MIN_TASK_TEXT) return { isTask: false };

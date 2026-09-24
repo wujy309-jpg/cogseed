@@ -54,6 +54,23 @@ describe('KStar host task-intent detection (layer 1)', () => {
     expect(isObviouslyTrivial('审查一下 bus.ts 的守卫实现')).toBe(false);
   });
 
+  it('does not let the unanchored status pattern swallow a task-shaped request', () => {
+    const { isObviouslyTrivial } = require('../../../../src/main/features/kstar/task-intent');
+    // "进度" / "还差" / "多久" match ANYWHERE in the message, so a request that
+    // merely mentions one of them used to be filtered as obvious trivia: no
+    // model call, no governed task, no requirement, no learning-loop entry.
+    expect(isObviouslyTrivial('整理一下这个季度的进度报告')).toBe(false);
+    expect(isObviouslyTrivial('分析一下竞品的进度报告怎么写')).toBe(false);
+    expect(isObviouslyTrivial('写一份周报，说明当前进度')).toBe(false);
+    // Bare status queries stay on the fast path.
+    expect(isObviouslyTrivial('现在到哪了')).toBe(true);
+    expect(isObviouslyTrivial('还差什么')).toBe(true);
+    // The hint detector shares the predicate, so the two agree on the same
+    // input instead of one calling it a task while the gate calls it a
+    // greeting.
+    expect(detectTaskIntent('整理一下这个季度的进度报告').isTask).toBe(true);
+  });
+
   it('isClosingIntent flags explicit task-completion messages', () => {
     expect(isClosingIntent('完成')).toBe(true);
     expect(isClosingIntent('完成了')).toBe(true);
