@@ -502,6 +502,32 @@ export async function recordAbilityAssetAudit(
   await appendAudit(userId, assetId, action, metadata);
 }
 
+/**
+ * 回滚/选用旧版时必须**显式清掉**的可选内容字段。
+ *
+ * `...content` 展开只能带上快照里**存在**的键：快照里缺席的可选字段会静默保留
+ * 当前值——"改回去"于是只改了一半（回滚到没有 scopePolicy / 条件 / 定级的那一版，
+ * 这些字段会原样留下）。这与 `updateAbilityAsset` 的条件清空是同一族缺陷，
+ * 那处已修，这里（rollback 与 select 两条兄弟路径）一并清。
+ *
+ * 治理状态与成熟度**不在其列**：按设计不随内容回滚（暂停过的不该因回滚变回在用）。
+ */
+const VERSION_REVERT_CLEARABLE_FIELDS = [
+  'scopePolicy', 'applicableWhen', 'forbiddenWhen', 'sensitivity',
+  'ontologyRefs', 'relations', 'derivedFrom', 'learningSignal',
+  'learningProvenance', 'sourceSessionIds',
+] as const;
+
+/** 把旧版快照里缺席的可选内容字段从目标记录上摘掉（见上）。 */
+function clearFieldsAbsentFromSnapshot(
+  target: Record<string, unknown>,
+  snapshot: Record<string, unknown>,
+): void {
+  for (const field of VERSION_REVERT_CLEARABLE_FIELDS) {
+    if (!(field in snapshot)) delete target[field];
+  }
+}
+
 /** 当前在用版（回滚锚点取它）：select 切过旧版时 activeVersion 才是内容来源。 */
 function activeVersionOf(asset: RecallAbilityAssetRecord): string {
   return String(asset.activeVersion || asset.version || '1');
@@ -1236,7 +1262,7 @@ export async function rollbackAbilityAsset(
     const scope = isRecallScopeTerm(String(rbScope || ''))
       ? String(rbScope)
       : (normalizeAssetScopeValue(String(rbScope || '')) || current.scope);
-    return {
+    const reverted: Record<string, unknown> = {
       ...current,
       // 只回滚内容，不回滚治理状态与成熟度：暂停过的资产不该因为回滚就自己
       // 变回 active，验证过的成熟度也不该被一次内容回滚抹掉。
@@ -1246,6 +1272,8 @@ export async function rollbackAbilityAsset(
       activeVersion: nextVersion(current.version),
       updatedAt: new Date().toISOString(),
     };
+    clearFieldsAbsentFromSnapshot(reverted, target.snapshot as unknown as Record<string, unknown>);
+    return reverted as RecallAbilityAssetRecord;
   });
   const asset = asAsset(updated);
   await appendVersion(userId, asset, { reason: action.reason, actor: action.actor });
@@ -1297,13 +1325,15 @@ export async function selectAbilityAssetVersion(
     const scope = isRecallScopeTerm(String(snapshotScope || ''))
       ? String(snapshotScope)
       : (normalizeAssetScopeValue(String(snapshotScope || '')) || current.scope);
-    return {
+    const selected: Record<string, unknown> = {
       ...current,
       ...content,
       scope,
       activeVersion: toVersion,
       updatedAt: new Date().toISOString(),
     };
+    clearFieldsAbsentFromSnapshot(selected, target.snapshot as unknown as Record<string, unknown>);
+    return selected as RecallAbilityAssetRecord;
   });
   const asset = asAsset(updated);
   await appendAudit(userId, asset.id, 'version_selected', { note: `${action.reason || 'select'} (v${toVersion})`, actor: action.actor });

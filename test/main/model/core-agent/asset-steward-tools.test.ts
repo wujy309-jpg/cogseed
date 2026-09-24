@@ -716,6 +716,21 @@ describe('危险操作的安全网（US-404 / T027–T031）', () => {
     expect((await assets.readAbilityAsset(TEST_UID, asset.id)).status).toBe('active');
   });
 
+  it('任何 scopePolicy 写入都要确认——收窄方向也一样（刻意偏保守，测试钉住）', async () => {
+    const { assessScopeWidenDanger, describeScopePolicyChange } = await import('../../../../src/main/model/core-agent/asset-steward-tools');
+    // 刻意选择：多一次确认 < 漏一次扩权；按方向区分免确认会引入新的误判边界。
+    expect(assessScopeWidenDanger({ scopePolicy: {} })).toMatchObject({ dangerous: true });
+    expect(assessScopeWidenDanger({ scopePolicy: { workspaceIds: ['sp-a'] } }, { workspaceIds: ['sp-a', 'sp-b'] }))
+      .toMatchObject({ dangerous: true, kind: 'cross_scope_widen' });
+    // 确认文案必须给出方向与范围，否则用户看不懂自己在批什么。
+    const detail = describeScopePolicyChange({ workspaceIds: ['sp-a'] }, { workspaceIds: ['sp-a', 'sp-b'], agentIds: ['ag-1'] });
+    expect(detail).toContain('空间：sp-a → sp-a、sp-b');
+    expect(detail).toContain('Agent：(无) → ag-1');
+    expect(detail).not.toContain('项目'); // 没变的维度不进文案
+    // 取值没变也要如实说"没有实际变化"，而不是编一句差异出来。
+    expect(describeScopePolicyChange({ workspaceIds: ['sp-a'] }, { workspaceIds: ['sp-a'] })).toContain('没有实际变化');
+  });
+
   it('跨作用域扩大（改 scopePolicy）：先快照 + 单次确认；拒绝则一个字都不改', async () => {
     const asset = await seedAsset('作用域授权的改动要走确认。');
     const { edit } = await dangerTools();
@@ -741,6 +756,55 @@ describe('危险操作的安全网（US-404 / T027–T031）', () => {
     expect(allowed.isError).toBeUndefined();
     expect((await assets.readAbilityAsset(TEST_UID, asset.id)).scopePolicy).toMatchObject({ workspaceIds: ['sp-other'] });
     expect((await assets.listAbilityAssetAudit(TEST_UID, asset.id)).some((r) => r.action === 'danger_confirmed')).toBe(true);
+  });
+
+  it('放宽 scopePolicy 不绕过准入独立判断：暂停/范围不符的资产照旧不进消费路径', async () => {
+    const asset = await seedAsset('放宽授权不等于放行准入。');
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    const { evaluateRecallAssetRuntimeEligibility } = await import('../../../../src/main/features/recall/prompt-injection');
+    const { createAssetStewardTools } = await import('../../../../src/main/model/core-agent/asset-steward-tools');
+    const edit = createAssetStewardTools({ userId: TEST_UID, cid: CID, turnId: TURN }).find((t) => t.name === 'edit_ability_asset')!;
+    await answerNext('allow');
+    const widened = await call(edit, {
+      assetId: asset.id,
+      fields: { scopePolicy: { workspaceIds: ['sp-other'] } },
+      reason: '用户要求扩大可用空间',
+      origin: 'user_instruction',
+    });
+    expect(widened.isError).toBeUndefined();
+
+    // scopePolicy 变大只等于"可被选中"；是否真进消费路径仍由唯一闸门独立判。
+    await assets.pauseAbilityAsset(TEST_UID, asset.id, { actor: 'user', reason: '先暂停' });
+    const paused = await evaluateRecallAssetRuntimeEligibility(
+      TEST_UID,
+      await assets.readAbilityAsset(TEST_UID, asset.id),
+      { scope: 'sp-other', purpose: 'agent_read', silentDefaultInjection: true },
+    );
+    expect(paused.eligible).toBe(false);
+    expect(paused.reasons).toContain('status_not_active');
+  });
+
+  it('回滚能回退 scopePolicy：扩权确认执行后，一步回滚把授权恢复原样', async () => {
+    const asset = await seedAsset('扩权也要能回退。');
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    const { createAssetStewardTools } = await import('../../../../src/main/model/core-agent/asset-steward-tools');
+    const edit = createAssetStewardTools({ userId: TEST_UID, cid: CID, turnId: TURN }).find((t) => t.name === 'edit_ability_asset')!;
+    await answerNext('allow');
+    await call(edit, {
+      assetId: asset.id,
+      fields: { scopePolicy: { workspaceIds: ['sp-other'] } },
+      reason: '用户要求扩大可用空间',
+      origin: 'user_instruction',
+    });
+    expect((await assets.readAbilityAsset(TEST_UID, asset.id)).scopePolicy).toMatchObject({ workspaceIds: ['sp-other'] });
+
+    const rows = await assets.listAbilityAssetAudit(TEST_UID, asset.id);
+    // 危险操作的快照锚点确实写了——否则"事后能回滚"是句空话。
+    const snapshot = rows.find((r) => r.action === 'danger_snapshot')!;
+    expect(snapshot.rollbackAnchor).toBeTruthy();
+    await assets.rollbackAbilityAsset(TEST_UID, asset.id, snapshot.rollbackAnchor!, { actor: 'user', reason: '回退扩权' });
+    // 版本快照含 scopePolicy，所以既有 rollback 就能恢复旧授权。
+    expect((await assets.readAbilityAsset(TEST_UID, asset.id)).scopePolicy).toBeUndefined();
   });
 
   it('被拦下的尝试留痕（attempt_blocked + 归因），不是只在成功路径上记账', async () => {

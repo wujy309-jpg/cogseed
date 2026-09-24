@@ -350,13 +350,54 @@ export function assessDeleteDanger(assetIds: readonly string[], librarySize: num
   return { dangerous: true, kind: 'batch_delete', detail: `一次删除 ${assetIds.length} 条资产` };
 }
 
-/** 作用域判定：动 `scopePolicy` 就是动"这条资产能进出哪些空间"，属跨作用域扩大。 */
-export function assessScopeWidenDanger(fields: Record<string, unknown>): DangerAssessment {
+/** 作用域维度的中文标签（确认文案里要逐维列出差异）。 */
+const SCOPE_POLICY_DIMENSION_LABELS: Array<[keyof RecallAbilityAssetScopePolicy, string]> = [
+  ['workspaceIds', '空间'],
+  ['projectIds', '项目'],
+  ['agentIds', 'Agent'],
+  ['roleIds', '角色'],
+  ['purposeTags', '用途'],
+  ['conversationKinds', '会话类型'],
+  ['fileKinds', '文件类型'],
+];
+
+function scopeValuesText(values: readonly string[] | undefined): string {
+  return values && values.length ? [...values].sort().join('、') : '(无)';
+}
+
+/** 作用域授权的**方向与范围**（逐维 旧 → 新）。确认文案必须给出这个：
+ *  只说"它能进出的空间从此不同"，用户看不懂自己在批什么，确认就退化成点一下。 */
+export function describeScopePolicyChange(
+  current: RecallAbilityAssetScopePolicy | undefined,
+  next: RecallAbilityAssetScopePolicy,
+): string {
+  const changed = SCOPE_POLICY_DIMENSION_LABELS
+    .filter(([key]) => scopeValuesText(current?.[key]) !== scopeValuesText(next[key]))
+    .map(([key, label]) => `${label}：${scopeValuesText(current?.[key])} → ${scopeValuesText(next[key])}`);
+  if (!changed.length) {
+    return '作用域授权的取值没有实际变化（仍按危险操作处理：任何 scopePolicy 写入都要用户确认一次）';
+  }
+  const text = changed.join('；');
+  return text.length > 300 ? `${text.slice(0, 300)}…` : text;
+}
+
+/**
+ * 作用域判定：动 `scopePolicy` 就是动"这条资产能进出哪些空间"，属跨作用域扩大。
+ *
+ * **任何 `scopePolicy` 写入都计危险，收窄方向也一样**——这是**刻意选择**，不是漏判：
+ * 收窄也可能是"改错了把可用空间收没了"，而"多一次确认"永远比"漏一次扩权"便宜；
+ * 而且一旦允许按方向免确认，判定就得先算出"这次算扩还是算收"，那条边界本身就是
+ * 新的误判来源。由测试钉住（steward 的「任何 scopePolicy 写入都要确认」用例）。
+ */
+export function assessScopeWidenDanger(
+  fields: Record<string, unknown>,
+  current?: RecallAbilityAssetScopePolicy,
+): DangerAssessment {
   if (fields.scopePolicy === undefined) return { dangerous: false };
   return {
     dangerous: true,
     kind: 'cross_scope_widen',
-    detail: '这次改动会改写这条资产的作用域授权——它能进出的空间从此不同',
+    detail: describeScopePolicyChange(current, fields.scopePolicy as RecallAbilityAssetScopePolicy),
   };
 }
 
@@ -667,7 +708,7 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
       // 危险操作：改 scopePolicy = 改写"这条资产能进出哪些空间"（跨作用域扩大）。
       // 与分级②（实质变化）是两条独立的闸：那是"要不要用户拍板内容"，这是
       // "要不要用户确认一次危险动作"。
-      const scopeDanger = assessScopeWidenDanger(fields);
+      const scopeDanger = assessScopeWidenDanger(fields, asset.scopePolicy);
       if (scopeDanger.dangerous && scopeDanger.kind) {
         const guard = await runDangerGuard(opts, {
           kind: scopeDanger.kind, detail: scopeDanger.detail || '', assetIds: [assetId], reason,
