@@ -134,6 +134,20 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: 'personal_ontology_fields', group: 'recall', summary: 'List the fillable fields of the user\'s installed role templates (个人本体挖空表单), so a candidate can be routed to a concrete field by opaque field_ref.' },
   { name: 'search_ability_assets', group: 'recall', summary: 'Semantic search over the user\'s ability asset pool (沉淀的可复用经验/规则/模板/方法；全量只读，含所有空间与全局资产).' },
 
+  // 资产管家（specs/008 US-401/402）：把既有的资产读写能力暴露给模型。
+  // 归属标注——读工具属 US-401、写工具属 US-402；**没有 localExec**（读写都经
+  // asset-service 的写函数与 <uid> 数据域，不碰 shell/文件系统），也不受
+  // ownerAgent 限：主会话与 group_chat 各 actor 都能用（与 search_ability_assets 同）。
+  // 顺序按"最常用优先"：先看全貌、再取正文，然后才是改动类动作。
+  { name: 'list_ability_assets', group: 'recall', summary: 'Page through EVERY ability asset the user owns (title/type/status/tags + total), with optional type/status/space filters — deliberately not capped by the UI catalog page size.' },
+  { name: 'read_ability_asset', group: 'recall', summary: 'Read one ability asset by id in ≤2000-character chunks (use `chunk` to continue); reports deleted/paused/blocked state honestly instead of pretending it is missing.' },
+  { name: 'edit_ability_asset', group: 'recall', summary: 'Edit an ability asset (title/body/scope/boundaries) on the user\'s explicit instruction, writing an audit record; AI-initiated substantial changes to method body / facts / applicability must go through an approval card instead of taking effect.' },
+  { name: 'merge_ability_assets', group: 'recall', summary: 'Merge a duplicate ability asset into a target asset: both share one version group, the source is archived with a pointer, history stays traceable.' },
+  { name: 'archive_ability_asset', group: 'recall', summary: 'Archive an ability asset: removed from daily lists and recommendations, content + evidence + history kept, restorable.' },
+  { name: 'delete_ability_asset', group: 'recall', summary: 'Delete an ability asset into the 30-day recovery window; restorable within it, then permanently purged (content and records erased).' },
+  { name: 'restore_ability_asset', group: 'recall', summary: 'Restore an archived asset, or a deleted asset still within its retention window, back to active.' },
+  { name: 'rollback_ability_asset', group: 'recall', summary: 'Roll an ability asset back to a historical version by publishing that snapshot as a new version (history never rewinds); the rollback itself is audited.' },
+
   // Conversation history
   { name: 'chat_search',   group: 'chat', summary: 'Search prior messages for missing continuity context; project conversations default to same-project history.' },
   { name: 'chat_read',     group: 'chat', summary: 'Read nearby messages from a chat_search hit, or the latest messages from a known conversation.' },

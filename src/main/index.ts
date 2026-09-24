@@ -1711,6 +1711,14 @@ if (!gotLock) {
       const { recoverValidationApplications } = await import('./features/recall/validation-service');
       await recoverValidationApplications(uid);
     }, 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
+    // 保留期到期清理（specs/008 T005）：启动后跑一轮，此后低频自续期。
+    // 「到期自动彻底删除」的级联清理链见 features/recall/asset-retention-service。
+    registerDeferred('recall:retention-sweep', async () => {
+      const uid = users.getActiveUserId();
+      if (!uid) return;
+      const { startAbilityAssetRetentionLoop } = await import('./features/recall/asset-retention-service');
+      startAbilityAssetRetentionLoop(uid);
+    }, 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
 
 
 

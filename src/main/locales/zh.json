@@ -273,6 +273,7 @@
   "touchpoints.feishu.review_mate": "回到 Mate 查看并处理",
   "touchpoints.feishu.approve_mate": "请在卡片中审批，或回到 Mate 调整任务",
   "touchpoints.feishu.briefing_mate": "回到 Mate 调整今日计划",
+  "recall.asset.delete_confirm_rules": "删除后 30 天内可恢复；保留期内可在「已删除」列表立即彻底删除；到期彻底删除、不可恢复（内容与记录一并清除）。",
   "recall.projection.forecast_failed": "世界模型预测失败，任务尚未开始。",
   "recall.projection.retry_forecast": "重试预测",
   "touchpoints.card.button.approve": "批准",

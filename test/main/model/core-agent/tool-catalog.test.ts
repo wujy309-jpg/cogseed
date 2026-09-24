@@ -202,6 +202,25 @@ describe('tool-catalog', () => {
     expect(names.length).toBe(new Set(names).size);
   });
 
+  it('declares the ability-asset steward surface in the recall group with no extra gate', () => {
+    // 资产管家的 6 个写工具 + 2 个读工具（specs/008 US-401/402）。这些工具读写的
+    // 是 <uid> 数据域里的资产记录，不碰 shell / 文件系统，所以**不该**挂
+    // localExec；也不按 agent 限定——主会话与 group_chat 各 actor 共用同一面。
+    // 少了 / 多了一层权限门，会直接改变"模型能不能动手"的产品口径。
+    const stewardTools = [
+      'list_ability_assets', 'read_ability_asset',
+      'edit_ability_asset', 'merge_ability_assets', 'archive_ability_asset',
+      'delete_ability_asset', 'restore_ability_asset', 'rollback_ability_asset',
+    ];
+    for (const name of stewardTools) {
+      const entry = TOOL_CATALOG.find((e) => e.name === name);
+      expect(entry, `missing catalog row: ${name}`).toBeTruthy();
+      expect(entry!.group, name).toBe('recall');
+      expect(entry!.permission, `${name} must not require localExec`).toBeUndefined();
+      expect(entry!.ownerAgent, `${name} must not be owner-scoped`).toBeUndefined();
+    }
+  });
+
   it('provider tool definitions preserve descriptions without a hard length cap', () => {
     const lost: string[] = [];
     for (const tool of enumerateAllInjectedTools()) {

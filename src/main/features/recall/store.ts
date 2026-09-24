@@ -171,16 +171,30 @@ export async function removeRecallJsonlStream(
  * 从 JSONL 流中物理移除记录（真删，2026-09-17 版本删除）。与 append 共享
  * 同一把行锁，整文件临时写+原子改名回写；全部记录被移除时直接删掉流文件。
  * 与 removeRecallJsonlStream 的分工：那是删整条流（彻底清除资产），这是按
- * 记录粒度删（删除单个版本），除此之外没有别的调用理由。
+ * 记录粒度删（删除单个版本、清理链按 assetId 摘除引用）。
+ *
+ * 流不存在视为已达成目标（与 removeRecallJsonlStream 同口径）：清理链要可
+ * 重入——一条从未产生过使用记录的新资产被彻底清除时，"这里本来就没有东西"
+ * 不该让整次清除失败。返回保留/移除条数供调用方观测。
  */
 export async function removeRecallJsonlRecords(
   userId: string,
   collection: string,
   stream: string,
   keep: (record: RecallJsonRecord) => boolean,
-): Promise<void> {
+): Promise<{ kept: number; removed: number }> {
   const streamPath = recallJsonlPath(userId, collection, stream);
-  await removeJsonlRecords(streamPath, keep);
+  if (!(await fileExists(streamPath))) return { kept: 0, removed: 0 };
+  return removeJsonlRecords(streamPath, keep);
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function listRecallJsonlRecords(

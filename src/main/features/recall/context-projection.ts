@@ -913,6 +913,68 @@ export async function listAllConfirmedProjections(userId: string): Promise<Conte
   return confirmed;
 }
 
+/** 彻底清除的级联段（specs/008 T005）：把一条资产从**全部**投影里摘掉。
+ *
+ *  为什么必须做：`assetVersionSnapshots` 是「版本真删」时为已确认注入冻结的
+ *  **内容副本**（`deleteAbilityAssetVersion` 写入），正文就在里面。只清主记录
+ *  和版本流，副本仍留在投影文件里——那不算「内容与记录一并清除」。
+ *  `assetVersions`（版本指针）与 `assetMatches`（匹配元信息）一并摘除：
+ *  留着只会继续产出指向空墓的引用。
+ *
+ *  读时 gate（prompt-injection 的 `evaluateRecallAssetRuntimeEligibility`）是
+ *  第二道防线：它保证"不给模型"，但盘上有没有，得靠这里。
+ *
+ *  幂等：不引用该资产的投影原样不动、不写回；返回清理过的投影数。
+ */
+export async function clearAssetFromAllProjections(userId: string, assetId: string): Promise<number> {
+  if (!safeId(assetId)) throw new Error('invalid ability asset id');
+  let names: string[];
+  try {
+    names = await fs.readdir(projectionsDirectory(userId));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    throw error;
+  }
+  let cleared = 0;
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue;
+    const recordId = name.slice(0, -5);
+    const raw = await readRecallJsonRecord(userId, 'projections', recordId);
+    if (!raw) continue;
+    let projection: ContextProjectionRecord;
+    try {
+      projection = asProjection(raw);
+    } catch {
+      // 读不回来的投影本来就不会参与注入；不在清理链里改它。
+      continue;
+    }
+    const referenced = projection.assetIds.includes(assetId)
+      || projection.assetVersions?.[assetId] !== undefined
+      || projection.assetVersionSnapshots?.[assetId] !== undefined
+      || projection.modelSelectedAssetIds?.includes(assetId) === true
+      || (projection.assetMatches || []).some((match) => match.assetId === assetId);
+    if (!referenced) continue;
+    await updateRecallJsonRecord(userId, 'projections', recordId, (current) => {
+      if (!current) throw new Error('context projection not found');
+      const live = asProjection(current);
+      const { [assetId]: _droppedSnapshot, ...snapshots } = live.assetVersionSnapshots || {};
+      const { [assetId]: _droppedVersion, ...versions } = live.assetVersions || {};
+      return {
+        ...live,
+        assetIds: live.assetIds.filter((id) => id !== assetId),
+        assetVersions: Object.keys(versions).length ? versions : undefined,
+        assetVersionSnapshots: Object.keys(snapshots).length ? snapshots : undefined,
+        assetMatches: (live.assetMatches || []).filter((match) => match.assetId !== assetId),
+        ...(live.modelSelectedAssetIds
+          ? { modelSelectedAssetIds: live.modelSelectedAssetIds.filter((id) => id !== assetId) }
+          : {}),
+      };
+    });
+    cleared += 1;
+  }
+  return cleared;
+}
+
 export async function refreshCommittedProjectionAssetVersion(
   userId: string,
   assetId: string,

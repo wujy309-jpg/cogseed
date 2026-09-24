@@ -49,6 +49,7 @@ import {
   recordReviewDecisionOutcome,
   writeReviewDecision,
   type ReviewDecision,
+  type ReviewDecisionActor,
 } from '../cognition/review-decision';
 import {
   cognitionSourceRefKey,
@@ -274,7 +275,10 @@ interface StoredRecallAssetHandoffReceipt extends RecallJsonRecord, RecallAssetH
 export type RecallPromotionProvenance = 'capture' | 'kstar';
 
 export interface PromoteRecallCandidateOptions extends AbilityAssetSemantics {
-  actor?: AbilityAssetActor;
+  /** 评审决定的 actor：只有人与自动线两种。资产管家的 AI 工具**不能**晋升候选
+   *  ——记忆的出生必须来自人确认或自动抽取线，所以这里不接受 'ai'
+   *  （与 ReviewDecisionActor 同域，specs/008 未开这个口子）。 */
+  actor?: ReviewDecisionActor;
   /** 仅在 actor === 'system' 时有意义；缺省按会话自动抽取线处理。 */
   provenance?: RecallPromotionProvenance;
   ontologyRefs?: AbilityAssetOntologyRef[];
@@ -1286,7 +1290,7 @@ async function decideWithoutAsset(
   decisionType: 'defer' | 'reject' | 'ignore' | 'keep_current',
   status: 'deferred' | 'rejected' | 'ignored',
   note?: string,
-  actor: AbilityAssetActor = 'user',
+  actor: ReviewDecisionActor = 'user',
 ): Promise<RecallCandidateRecord> {
   const decisionNote = boundedText(note, 'decision note', 1_000);
   const updated = await updateRecallJsonRecord(userId, 'candidates', candidateId, async (current) => {

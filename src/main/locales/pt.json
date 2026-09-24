@@ -172,6 +172,7 @@
   "process.skill.metadata_updated": "▶ Metadados de habilidades atualizados",
   "provider.kimi_coding.note_subscription": "Apenas assinatura mensal do Kimi Coding Plan – usa o endpoint do protocolo Anthropic, separado da chave da API Moonshot pré-paga",
   "provider.moonshot.note_paygo": "Chave de API de plataforma aberta pré-paga – cobrada separadamente da assinatura do Kimi Coding Plan; as duas chaves não são intercambiáveis",
+  "recall.asset.delete_confirm_rules": "Restaurável por 30 dias após a exclusão; dentro desse prazo é possível excluir definitivamente pela lista «Excluídos»; ao fim do prazo a exclusão é definitiva — conteúdo e registros são apagados juntos e não há recuperação.",
   "skills.errors.builtin_conflict": "O nome da habilidade \"{name}\" entra em conflito com uma habilidade do Marketplace. Por favor escolha outro nome.",
   "skills.errors.container_empty": "Container `<skill>` vazio — nada para escrever",
   "skills.errors.copy_failed": "Falha ao copiar arquivos: {message}",

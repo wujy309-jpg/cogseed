@@ -2629,6 +2629,27 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true, asset: await recallAssets.mergeAbilityAssets(ctx.userId, sourceAssetId, targetAssetId, { actor: 'user', reason: note ?? 'user merge' }) };
   },
 
+  // 「已删除」列表（specs/008 US-306 交付项，验收归 specs/010）。保留期剩余天数
+  // 与"能不能恢复/能不能立即彻底删除"三个判断全在 feature 层现算，IPC 只分页。
+  'recall.assets.deleted.list': async ({ offset, limit } = {}, ctx) => {
+    if (offset !== undefined && (!Number.isInteger(offset) || offset < 0)) throw new Error('invalid recall deleted offset');
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 200)) throw new Error('invalid recall deleted limit');
+    const deleted = (await recallAssets.listAbilityAssets(ctx.userId)).filter((asset) => asset.status === 'deleted');
+    const start = offset ?? 0;
+    const page = deleted.slice(start, start + (limit ?? 50));
+    return { ok: true, items: page.map((asset) => recallAssets.describeDeletedAbilityAsset(asset)), total: deleted.length };
+  },
+  // 保留期内的「立即彻底删除」（入口只在「已删除」列表）。这里只认 status=deleted：
+  // 通道名字就是它的边界，用它在别处清一条 active 资产会是个意外——那条路走
+  // `recall.assets.purge`（既有，界面「更多操作」里的彻底清除）。
+  'recall.assets.deleted.purgeNow': async ({ assetId } = {}, ctx) => {
+    if (!safeId(assetId)) throw new Error('invalid recall asset id');
+    const asset = await recallAssets.readAbilityAsset(ctx.userId, assetId);
+    if (asset.status === 'purged') throw new Error('ability asset has already been purged');
+    if (asset.status !== 'deleted') throw new Error('only a deleted ability asset can be purged from the deleted list');
+    return { ok: true, asset: await recallAssets.purgeAbilityAsset(ctx.userId, assetId, { actor: 'user', reason: 'user purged from the deleted list' }) };
+  },
+
   // 资产侧 KSTAR 溯源（2026-09-17）：证据区 kse 引用的批量摘要与单条复盘
   // 详情——此前 KSTAR 血统只在候选卡可见，确认后沉回数据层。
   'recall.kstar.episodes.summaries': async ({ ids } = {}, ctx) => {
@@ -3003,6 +3024,16 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     // 记住哪个口有 total、哪个没有。
     const items = await cognition.listCognitionInbox(ctx.userId);
     return { ok: true, items, total: items.length };
+  },
+
+  // 待办处置通道（specs/008 T007）：入参 id 就是 `cognition.inbox.list` 返回的
+  // items[].id。分发与"哪些类没有一键动作"的判断在 features/cognition/inbox-adapter，
+  // 这里只校验形状。没有动作可做的类别回 ok:false + code，**不计为成功**。
+  'cognition.inbox.resolve': async ({ id, action, note } = {}, ctx) => {
+    if (typeof id !== 'string' || !id) throw new Error('invalid cognition inbox item id');
+    if (typeof action !== 'string' || !action) throw new Error('invalid cognition inbox action');
+    if (note !== undefined && (typeof note !== 'string' || note.length > 1_000)) throw new Error('invalid cognition inbox note');
+    return cognition.resolveCognitionInboxItem(ctx.userId, { id, action, note });
   },
 
   // 「已处理历史」：跨全部候选列出真实落账的审查决定，按处理时间倒序。

@@ -273,6 +273,7 @@
   "touchpoints.feishu.review_mate": "Open Mate to review and handle this item",
   "touchpoints.feishu.approve_mate": "Approve in the card or open Mate to adjust the task",
   "touchpoints.feishu.briefing_mate": "Open Mate to adjust today’s plan",
+  "recall.asset.delete_confirm_rules": "Restorable for 30 days after deletion; during that window you can purge it right away from the Deleted list; once the window ends it is deleted for good — content and records are erased together and it cannot be recovered.",
   "recall.projection.forecast_failed": "Forecast failed; task has not started.",
   "recall.projection.retry_forecast": "Retry forecast",
   "touchpoints.card.button.approve": "Approve",

@@ -9,8 +9,16 @@
  */
 
 import { createLogger } from '../../logger';
+import { safeId } from '../../storage';
 import { listAbilityAssetVersions } from '../recall/asset-service';
-import { listRecallCandidates, recallCandidateConflictingTypes } from '../recall/candidate-service';
+import {
+  deferRecallCandidate,
+  ignoreRecallCandidate,
+  listRecallCandidates,
+  promoteRecallCandidate,
+  recallCandidateConflictingTypes,
+  rejectRecallCandidate,
+} from '../recall/candidate-service';
 import { listFormalAssets } from '../recall/formal-assets';
 import { buildCognitionInbox, type CognitionInboxItem } from '../recall/formal-assets/inbox';
 import { latestAssetVersionDiff, type AssetVersionDiff } from '../recall/formal-assets/version-diff';
@@ -22,6 +30,101 @@ const log = createLogger('cognition.inbox');
 
 /** 来源目录里"已经用不了"的两档。pending/processing 只是还没好，不是坏了。 */
 const UNAVAILABLE_SOURCE_STATUSES = new Set(['failed', 'paused']);
+
+/** 待办条目的 id 前缀 → 它背后真正的对象。前缀由 formal-assets/inbox.ts 的
+ *  `item()` 调用点决定，是**稳定契约**（同样的事实必须算出同样的 id，否则前端
+ *  列表会闪）——所以这里按前缀分发，而不是重新算一遍"这条待办是什么"。 */
+const CANDIDATE_ITEM_PREFIXES = ['candidate:', 'conflict:', 'ineligible:', 'evidence:'] as const;
+/** 资产类待办：它们指向一条资产，但**没有**一键处置动作（缺边界要补条件、
+ *  来源失效要换证据、敏感级要重新定级——都是编辑，不是开关）。 */
+const ASSET_ITEM_PREFIXES = [
+  'skill:', 'skill-upgrade:', 'sensitivity-up:', 'rule-scope:',
+  'template:', 'rule-boundary:', 'sensitivity:', 'source:',
+] as const;
+
+export type CognitionInboxResolveAction = 'accept' | 'reject' | 'defer' | 'ignore';
+
+export type CognitionInboxResolveErrorCode =
+  /** id 形状就不对。 */
+  | 'invalid_item_id'
+  /** 这类待办今天没有一键处置动作（回执里写明该去哪里处理）。 */
+  | 'unsupported_item_kind'
+  /** 对象对，但这个动作不适用。 */
+  | 'unsupported_action';
+
+export interface CognitionInboxResolveResult {
+  ok: true;
+  /** 实际被动到的对象类型与状态，供前端原地更新。 */
+  target: 'recall_candidate';
+  status: string;
+}
+
+/** 与 `recallCandidateError` 同约定：错误码挂在 Error 上，由 IPC 包装层透出成
+ *  `{ ok:false, error, code }`——全仓统一一种错误形状，渲染层不必按通道分支。 */
+function inboxResolveError(code: CognitionInboxResolveErrorCode, message: string): Error & { code: CognitionInboxResolveErrorCode } {
+  const error = new Error(message) as Error & { code: CognitionInboxResolveErrorCode };
+  error.code = code;
+  return error;
+}
+
+/**
+ * 待确认清单的处置通道（specs/008 T007；语义随 T046 扩展）。
+ *
+ * 分发原则：**只有真正落到了某个对象上的处置才算成功**。没有动作可做的类别
+ * 抛 `unsupported_item_kind` 并指出该去哪里处理——被拦截的操作不得计为成功，
+ * 假装成功比拒绝更糟（用户会以为事情办完了）。
+ *
+ * 尚未接线的两类（Phase 6/7 补分支，形态与候选类一致）：
+ *   - 审批卡片「稍后处理」项（US-406 提议实体）
+ *   - 大扫除拿不准项（US-403 整理报告 uncertain[]）
+ */
+export async function resolveCognitionInboxItem(
+  userId: string,
+  input: { id?: unknown; action?: unknown; note?: unknown },
+): Promise<CognitionInboxResolveResult> {
+  const id = typeof input.id === 'string' ? input.id : '';
+  const action = typeof input.action === 'string' ? input.action : '';
+  const note = typeof input.note === 'string' && input.note.trim() ? input.note.trim() : undefined;
+  if (!id) throw inboxResolveError('invalid_item_id', '待办 id 不能为空');
+
+  const candidatePrefix = CANDIDATE_ITEM_PREFIXES.find((prefix) => id.startsWith(prefix));
+  if (candidatePrefix) {
+    const candidateId = id.slice(candidatePrefix.length);
+    if (!safeId(candidateId)) {
+      throw inboxResolveError('invalid_item_id', `待办 id 里的候选编号不合法：${candidateId}`);
+    }
+    if (action === 'accept') {
+      // 晋升闸门（证据/风险/相似）照旧生效：它拒绝的原因就是回执，不在这里复述一遍。
+      await promoteRecallCandidate(userId, candidateId, { actor: 'user', ...(note ? { decisionReason: note } : {}) });
+      return { ok: true, target: 'recall_candidate', status: 'promoted' };
+    }
+    if (action === 'reject') {
+      await rejectRecallCandidate(userId, candidateId, note);
+      return { ok: true, target: 'recall_candidate', status: 'rejected' };
+    }
+    if (action === 'defer') {
+      await deferRecallCandidate(userId, candidateId, note);
+      return { ok: true, target: 'recall_candidate', status: 'deferred' };
+    }
+    if (action === 'ignore') {
+      await ignoreRecallCandidate(userId, candidateId, note);
+      return { ok: true, target: 'recall_candidate', status: 'ignored' };
+    }
+    throw inboxResolveError(
+      'unsupported_action',
+      `候选类待办只支持 accept / reject / defer / ignore，收到 ${action || '(空)'}`,
+    );
+  }
+
+  if (ASSET_ITEM_PREFIXES.some((prefix) => id.startsWith(prefix))) {
+    throw inboxResolveError(
+      'unsupported_item_kind',
+      '这类待办要改的是资产内容本身（补条件 / 换证据 / 重新定级），没有一键处置动作——请到资产详情里处理。',
+    );
+  }
+
+  throw inboxResolveError('unsupported_item_kind', `没有处置动作能对应这个待办 id：${id}`);
+}
 
 export async function listCognitionInbox(userId: string): Promise<CognitionInboxItem[]> {
   const [assets, candidates, sourceGroups] = await Promise.all([
