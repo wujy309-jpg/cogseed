@@ -64,7 +64,8 @@ export function isClosingIntent(text: string | undefined): boolean {
  *  politeness, pure confirmation, status query, punctuation/emoji)? Only
  *  these are filtered without a model call — everything else goes to the
  *  model judgement so boundary task-shaped requests are never missed.
- *  Zero KStar writes either way (a trivial message simply never routes). */
+ *  The predicate itself writes nothing; the caller records the decision (and
+ *  only once the conversation already has KStar state). */
 export function isObviouslyTrivial(text: string | undefined): boolean {
   const trimmed = String(text || '').replace(/\s+/g, ' ').trim();
   if (!trimmed) return true;

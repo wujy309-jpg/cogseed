@@ -11410,6 +11410,23 @@ async function hostRouteTaskTurn(
     return { openedTask: false };
   }
   if (isObviouslyTrivial(messageText)) {
+    // This gate used to short-circuit with no record and no log, so its hit
+    // count could not be measured at all — the cheapest gate was the only
+    // invisible one. Same rule as the answer-like gate below: a non-task
+    // message must never be what brings KStar state into existence, so the
+    // record lands only once the conversation already has state. The log
+    // covers the stateless case, where there is no open task to disturb.
+    await recordRouting(
+      {
+        at: nowIso(),
+        kind: 'obviously_trivial',
+        isTask: false,
+        reason: 'obviously trivial (greeting/status/emoji); no model call',
+        ...(sourceMessageId ? { sourceMessageId } : {}),
+      },
+      { requireExistingState: true },
+    );
+    log.info('kstar routing filtered an obviously trivial message', { cid: maskId(cid) });
     return { openedTask: false };
   }
   // Answer-like confirmations ("1"、"第一个和第三个"、"是的"、"需要") answer a
@@ -11446,7 +11463,21 @@ async function hostRouteTaskTurn(
     const outcome = await judgeModelRouting(uid, cid, messageText, openRequirement);
     if (outcome.status === 'unavailable') {
       // No configured model: routing is simply not possible. This is a normal
-      // configuration state, not an anomaly, so it is not recorded as a failure.
+      // configuration state, not an anomaly, so it is still not recorded as a
+      // failure — but it is now recorded at all. Otherwise a turn that skipped
+      // routing for lack of a model was indistinguishable in the trace from
+      // one that was actually judged, and the gate distribution was blind to
+      // the whole configuration.
+      await recordRouting(
+        {
+          at: nowIso(),
+          kind: 'routing_unavailable',
+          isTask: false,
+          reason: 'no configured model; routing not possible',
+          ...(sourceMessageId ? { sourceMessageId } : {}),
+        },
+        { requireExistingState: true },
+      );
       return { openedTask: false };
     }
     if (outcome.status === 'failed') {

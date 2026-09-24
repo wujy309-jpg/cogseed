@@ -137,13 +137,21 @@ export interface KstarProjectionDecisionMarker {
  *
  * `trivial` and `dispatch_auto` were removed rather than kept as legacy: no
  * commit in this repository's history ever wrote them, so no persisted record
- * can contain them.
+ * can contain them. (`obviously_trivial` below is the live gate, named after
+ * `isObviouslyTrivial`; it is not a revival of that dead `trivial` string.)
+ *
+ * The two silent gates were added last: `obviously_trivial` short-circuited
+ * with no record and no log at all, and `routing_unavailable` (no configured
+ * model) was logged but never persisted. Without them the gate distribution
+ * was not countable — only the gates that happened to log could be seen.
  */
 export const KSTAR_ROUTING_KINDS = [
   'closing_intent',
+  'obviously_trivial',
   'answer_confirmation',
   'model_judged',
   'routing_failed',
+  'routing_unavailable',
 ] as const;
 
 export type KstarRoutingKind = (typeof KSTAR_ROUTING_KINDS)[number];

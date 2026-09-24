@@ -375,6 +375,39 @@ describe('routing decisions do not materialise task state on their own', () => {
     expect(types.KSTAR_ROUTING_KINDS).toContain('routing_failed');
   });
 
+  it('keeps the two formerly silent gates, so the distribution is countable', async () => {
+    const { store, types } = await storeModules();
+    // `obviously_trivial` short-circuited with no record and no log at all,
+    // and `routing_unavailable` was logged but never persisted — so the gate
+    // distribution could not be counted. Both now go through the same
+    // allowlist, which is why the store must keep them.
+    await store.recordKstarRoutingDecision('user-a', 'cid-gates', {
+      at: '2026-09-18T00:00:00.000Z',
+      kind: 'model_judged',
+      isTask: true,
+      continuation: false,
+      reason: 'opened',
+    });
+    const afterTrivial = await store.recordKstarRoutingDecision('user-a', 'cid-gates', {
+      at: '2026-09-18T00:00:01.000Z',
+      kind: 'obviously_trivial',
+      isTask: false,
+      reason: 'obviously trivial (greeting/status/emoji); no model call',
+    }, { requireExistingState: true });
+    const afterUnavailable = await store.recordKstarRoutingDecision('user-a', 'cid-gates', {
+      at: '2026-09-18T00:00:02.000Z',
+      kind: 'routing_unavailable',
+      isTask: false,
+      reason: 'no configured model; routing not possible',
+    }, { requireExistingState: true });
+
+    expect(afterTrivial?.routingDecisions).toHaveLength(2);
+    expect(afterUnavailable?.routingDecisions?.map((decision) => decision.kind))
+      .toEqual(['model_judged', 'obviously_trivial', 'routing_unavailable']);
+    expect(types.KSTAR_ROUTING_KINDS).toContain('obviously_trivial');
+    expect(types.KSTAR_ROUTING_KINDS).toContain('routing_unavailable');
+  });
+
   it('drops a kind that is not in the type, so the list stays the source of truth', async () => {
     const { store } = await storeModules();
     const initial = store.createInitialConversationTaskState('user-a', 'cid-bogus');
