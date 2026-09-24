@@ -26,6 +26,12 @@ import {
   listCleanupReports,
   pendingCleanupUncertainItems,
 } from '../recall/cleanup-report-service';
+import {
+  decideInspectionFinding,
+  listInspectionRuns,
+  pendingInspectionFindings,
+  readInspectionSettings,
+} from '../recall/asset-inspection-service';
 import { listFormalAssets } from '../recall/formal-assets';
 import { buildCognitionInbox, type CognitionInboxItem } from '../recall/formal-assets/inbox';
 import { latestAssetVersionDiff, type AssetVersionDiff } from '../recall/formal-assets/version-diff';
@@ -62,7 +68,7 @@ export type CognitionInboxResolveErrorCode =
 export interface CognitionInboxResolveResult {
   ok: true;
   /** 实际被动到的对象类型与状态，供前端原地更新。 */
-  target: 'recall_candidate' | 'asset_change_proposal' | 'cleanup_uncertain';
+  target: 'recall_candidate' | 'asset_change_proposal' | 'cleanup_uncertain' | 'inspection_finding';
   status: string;
 }
 
@@ -157,6 +163,24 @@ export async function resolveCognitionInboxItem(
     return { ok: true, target: 'cleanup_uncertain', status: action === 'reject' ? 'dismissed' : 'deferred' };
   }
 
+  // 后台巡检的发现（specs/008 US-405）：处置的是"要不要继续提醒"，不是"这条资产
+  // 怎么办"——巡检本身不改资产，用户要去资产详情里处理。
+  if (id.startsWith('inspection:')) {
+    const key = id.slice('inspection:'.length);
+    if (!key) throw inboxResolveError('invalid_item_id', `待办 id 不合法：${id}`);
+    if (action === 'accept') {
+      throw inboxResolveError(
+        'unsupported_action',
+        '这条是巡检的建议，没有可执行的动作（巡检不改资产）。请到资产详情里处理，或选「不管它」让它不再提醒。',
+      );
+    }
+    if (action !== 'reject' && action !== 'defer') {
+      throw inboxResolveError('unsupported_action', `巡检发现支持 reject / defer，收到 ${action || '(空)'}`);
+    }
+    await decideInspectionFinding(userId, key, action === 'reject' ? 'dismissed' : 'deferred');
+    return { ok: true, target: 'inspection_finding', status: action === 'reject' ? 'dismissed' : 'deferred' };
+  }
+
   if (ASSET_ITEM_PREFIXES.some((prefix) => id.startsWith(prefix))) {
     throw inboxResolveError(
       'unsupported_item_kind',
@@ -186,6 +210,16 @@ export async function listCognitionInbox(userId: string): Promise<CognitionInbox
     .then((reports) => pendingCleanupUncertainItems(reports))
     .catch((error) => {
       log.warn('inbox cleanup read degraded', { userId, error: (error as Error).message });
+      return [];
+    });
+
+  const pendingInspectionItems = await Promise.all([
+    listInspectionRuns(userId, 1),
+    readInspectionSettings(userId),
+  ])
+    .then(([runs, settings]) => pendingInspectionFindings(runs, settings.dismissedFindingKeys, settings.deferredFindingKeys))
+    .catch((error) => {
+      log.warn('inbox inspection read degraded', { userId, error: (error as Error).message });
       return [];
     });
 
@@ -289,6 +323,7 @@ export async function listCognitionInbox(userId: string): Promise<CognitionInbox
     latestDiffs,
     pendingAssetChanges,
     pendingCleanupItems,
+    pendingInspectionFindings: pendingInspectionItems,
     skillStateUnknownAssetIds,
     skillUpgradeCurrentAssetIds,
     skillUpgradeRejectedAssetIds,

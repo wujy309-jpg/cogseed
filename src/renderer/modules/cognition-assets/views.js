@@ -1826,11 +1826,34 @@
       }],
     });
     const hint = `<p class="note">${esc(T('cognition.cleanup_run_hint', '只做不改变含义的整理（标题标点规范化、正文一字不差的重复归并）；拿不准的列出来等你决定，不擅自处置。'))}</p>`;
+    // 后台巡检（US-405）：只报不改——发现进「待我处理」，改不改由你去资产详情做。
+    const inspection = S.inspection || null;
+    const inspectionOn = Boolean(inspection && inspection.settings && inspection.settings.enabled);
+    const latestRun = inspection && inspection.latestRun ? inspection.latestRun : null;
+    const inspectionCard = `<div class="card ca-setcard">
+      <div class="rowline">
+        <div>
+          <div class="tt">${esc(T('cognition.inspection_title', '后台巡检'))}</div>
+          <div class="sub">${esc(T('cognition.inspection_hint', '定期扫一遍资产库，发现重复 / 过时 / 冲突就列进「待我处理」。只报不改：巡检不会动你的资产。'))}</div>
+          ${latestRun ? `<div class="sub">${esc(T('cognition.inspection_last_run', '最近一轮：{when} · 发现 {n} 条', {
+            when: fmtDate(latestRun.startedAt), n: String(((latestRun.findings || [])).length),
+          }))}</div>` : ''}
+        </div>
+        <div class="right">
+          ${window.uiSwitch({
+            label: T('cognition.inspection_title', '后台巡检'),
+            checked: inspectionOn,
+            attrs: { 'data-act': 'inspection-toggle' },
+          })}
+          ${btn(T('cognition.inspection_run_now', '立即巡检一次'), 'run-inspection', { small: true, className: 'o' })}
+        </div>
+      </div>
+    </div>`;
     if (!report) {
       return `<div class="ca-page">${header}${hint}${empty(
         T('cognition.cleanup_empty', '还没有整理报告'),
         T('cognition.cleanup_empty_hint', '发起一次大扫除：整理完会产出一份逐项清单，改了哪几条、为什么、怎么回滚都在上面。'),
-      )}</div>`;
+      )}${inspectionCard}</div>`;
     }
 
     const KIND_LABELS = {
@@ -1899,6 +1922,7 @@
       <div class="sect-block"><div class="tt">${esc(T('cognition.cleanup_items', '逐项改动'))}</div>${itemRows}</div>
       ${uncertain.length ? `<div class="sect-block"><div class="tt">${esc(T('cognition.cleanup_uncertain_section', '拿不准的（未改动）'))}</div>${uncertainRows}</div>` : ''}
       ${reports.length > 1 ? `<div class="sect-block"><div class="tt">${esc(T('cognition.cleanup_reports', '历史报告'))}</div>${reportRows}</div>` : ''}
+      ${inspectionCard}
     </div>`;
   }
 

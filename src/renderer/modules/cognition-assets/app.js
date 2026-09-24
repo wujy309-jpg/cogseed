@@ -20,7 +20,8 @@
   const WRITE_ACTIONS = new Set([
     'refresh', 'cand-adopt-with-form', 'cand-decide',
     'asset-action', 'asset-recommend-ack', 'select-asset-version', 'rollback-asset', 'delete-asset-version',
-    'run-cleanup', 'rollback-cleanup-item', 'cleanup-uncertain-dismiss', 'cleanup-uncertain-defer', 'asset-edit-save', 'family-rename', 'family-rename-save', 'family-rename-cancel', 'edit-from-version', 'merge-asset-version', 'merge-asset', 'source-action', 'capture-action', 'organize-conv',
+    'run-cleanup', 'rollback-cleanup-item', 'cleanup-uncertain-dismiss', 'cleanup-uncertain-defer',
+    'inspection-toggle', 'run-inspection', 'asset-edit-save', 'family-rename', 'family-rename-save', 'family-rename-cancel', 'edit-from-version', 'merge-asset-version', 'merge-asset', 'source-action', 'capture-action', 'organize-conv',
     'capture-toggle', 'capture-review-toggle', 'proof-rate',
     'capture-batch',
   ]);
@@ -179,6 +180,8 @@
           case 'select-asset-version': await A.selectAssetVersion(id, el.dataset.version || ''); break;
           case 'rollback-asset': await A.rollbackAsset(id, el.dataset.version || ''); break;
           case 'run-cleanup': await A.runCleanup(); break;
+          case 'inspection-toggle': await A.setInspectionEnabled(!(S.inspection && S.inspection.settings && S.inspection.settings.enabled)); break;
+          case 'run-inspection': await A.runInspection(); break;
           case 'open-cleanup': router.go({ name: 'cleanup', cleanupReportId: '' }, { replace: true }); break;
           case 'open-cleanup-report': router.go({ name: 'cleanup', cleanupReportId: String(el.dataset.report || '') }, { replace: true }); break;
           case 'rollback-cleanup-item': await A.rollbackCleanupItem(id, el.dataset.version || ''); break;
@@ -530,7 +533,10 @@
     }
     if (assetId) void NS.loadKstarEpisodeSummaries(assetId);
     // 整理报告：进整理相关页签就补拉一次（内部有缓存判重）。
-    if (String(S.route.name || '') === 'cleanup') void NS.loadCleanupReports();
+    if (String(S.route.name || '') === 'cleanup') {
+      void NS.loadCleanupReports();
+      void NS.loadInspection();
+    }
     // 候选详情的 kse 证据 chip 也要真实目标摘要（此前只覆盖资产详情，
     // 候选页 chip 一直显示兜底"一次任务"，2026-09-17 子安实测抓出）。
     const candidateId = String(S.route.candidateId || '');

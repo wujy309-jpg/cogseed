@@ -1719,6 +1719,13 @@ if (!gotLock) {
       const { startAbilityAssetRetentionLoop } = await import('./features/recall/asset-retention-service');
       startAbilityAssetRetentionLoop(uid);
     }, 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
+    // 后台巡检（specs/008 US-405）：低频自续期，**只报不改**；开关关掉后不再自动跑。
+    registerDeferred('recall:asset-inspection', async () => {
+      const uid = users.getActiveUserId();
+      if (!uid) return;
+      const { startAssetInspectionLoop } = await import('./features/recall/asset-inspection-service');
+      startAssetInspectionLoop(uid);
+    }, 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
 
 
 

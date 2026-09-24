@@ -62,7 +62,13 @@ export type CognitionInboxKind =
    * 大扫除里拿不准的项（specs/008 US-403）：疑似重复但正文不同之类。
    * 当初就是因为"要判断含义"才没动手，所以这里只等用户给个处置意见。
    */
-  | 'cleanup_uncertain';
+  | 'cleanup_uncertain'
+  /**
+   * 后台巡检的发现（specs/008 US-405）：重复 / 过时 / 冲突。
+   * **只是建议**——巡检不改任何资产，用户自己去处理或标"不管它"。
+   * 呈现分组待 specs/010 落地，这里只带发现类别。
+   */
+  | 'inspection_finding';
 
 /**
  * `confirm` = 需要用户明确点头才继续；`low_disturbance` = 列出来即可，
@@ -130,6 +136,15 @@ export interface CognitionInboxInput {
   pendingAssetChanges?: ReadonlyArray<{ proposalId: string; assetId: string; title?: string; reason?: string }>;
   /** 大扫除里还没处置的拿不准项。 */
   pendingCleanupItems?: ReadonlyArray<{ reportId: string; assetId: string; title?: string; question: string }>;
+  /** 后台巡检的发现（最新一轮、未被"不管它"的）。 */
+  pendingInspectionFindings?: ReadonlyArray<{
+    key: string;
+    category: string;
+    assetIds: readonly string[];
+    title?: string;
+    detail?: string;
+    deferred?: boolean;
+  }>;
 }
 
 const URGENCY: Record<CognitionInboxKind, CognitionInboxUrgency> = {
@@ -148,6 +163,7 @@ const URGENCY: Record<CognitionInboxKind, CognitionInboxUrgency> = {
   candidate_pending_review: 'low_disturbance',
   asset_change_pending: 'confirm',
   cleanup_uncertain: 'low_disturbance',
+  inspection_finding: 'low_disturbance',
 };
 
 /** 排序权重：先要人点头的，再低打扰的；同级按 kind 稳定排序。 */
@@ -164,6 +180,7 @@ const KIND_ORDER: CognitionInboxKind[] = [
   'evidence_insufficient',
   'asset_change_pending',
   'cleanup_uncertain',
+  'inspection_finding',
   'candidate_pending_review',
 ];
 
@@ -389,6 +406,15 @@ export function buildCognitionInbox(input: CognitionInboxInput): CognitionInboxI
     items.push(item('cleanup_uncertain', `cleanup:${pending.reportId}:${pending.assetId}`, pending.title || pending.assetId, {
       assetId: pending.assetId,
       detail: pending.question,
+    }));
+  }
+
+  // 后台巡检的发现：低打扰列出（列出来就够，不打断）。**只是建议**，
+  // 处置动作是"要不要继续提醒"，不是"这条资产怎么办"。
+  for (const finding of input.pendingInspectionFindings || []) {
+    items.push(item('inspection_finding', `inspection:${finding.key}`, finding.title || finding.assetIds.join(' / '), {
+      ...(finding.assetIds[0] ? { assetId: finding.assetIds[0] } : {}),
+      ...(finding.detail ? { detail: finding.detail } : {}),
     }));
   }
 

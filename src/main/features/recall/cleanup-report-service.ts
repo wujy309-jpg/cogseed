@@ -156,8 +156,9 @@ function comparableStatement(statement: string): string {
 }
 
 /** 近重复判据：同类型、正文不同但字面高度重叠。**只用来提醒**（进 uncertain），
- *  不用来自动合并——"看起来像"不是"就是一个意思"，那需要人来判。 */
-function nearDuplicateScore(left: string, right: string): number {
+ *  不用来自动合并——"看起来像"不是"就是一个意思"，那需要人来判。
+ *  导出给后台巡检复用：同一件事只该有一套判据（两处各写一份迟早给出不同答案）。 */
+export function nearDuplicateScore(left: string, right: string): number {
   const bigrams = (text: string): Set<string> => {
     const flat = comparableStatement(text).toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
     const out = new Set<string>();

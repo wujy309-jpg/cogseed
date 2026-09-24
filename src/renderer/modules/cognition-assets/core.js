@@ -356,6 +356,29 @@
     NS.notify();
   };
 
+  /** 后台巡检状态（specs/008 US-405）：开关 + 最近一轮的概要。
+   *  失败降级为空——巡检读不到不该让整理页报"部分数据读取失败"。 */
+  NS.loadInspection = async function loadInspection() {
+    if (store.inspection && !store.inspection.stale) return;
+    store.inspection = { loading: true, settings: (store.inspection && store.inspection.settings) || null, latestRun: (store.inspection && store.inspection.latestRun) || null };
+    NS.notify();
+    let settings = null;
+    let latestRun = null;
+    try {
+      const [settingsResult, runsResult] = await Promise.all([
+        api.call('recall.inspection.settings', {}),
+        api.call('recall.inspection.list', { limit: 1 }),
+      ]);
+      settings = (settingsResult && settingsResult.settings) || null;
+      latestRun = ((runsResult && runsResult.runs) || [])[0] || null;
+    } catch (error) {
+      settings = null;
+      latestRun = null;
+    }
+    store.inspection = { loading: false, settings, latestRun };
+    NS.notify();
+  };
+
   /** 整理报告按需拉取（specs/008 US-403）。按次缓存；失败降级为空列表——
    *  报告读不到不该让整页报"部分数据读取失败"，它只是整理页的一块。 */
   NS.loadCleanupReports = async function loadCleanupReports() {
@@ -828,6 +851,25 @@
         store.cleanupReports = { loading: false, stale: true, reports: [] };
         throw error;
       }
+      await NS.reload();
+    },
+    /** 巡检开关（specs/008 US-405 T049）：关掉之后不再自动运行；
+     *  手动触发不受影响（那是用户自己要的）。 */
+    async setInspectionEnabled(enabled) {
+      await api.call('recall.inspection.settings.set', { enabled: Boolean(enabled) });
+      toast(enabled
+        ? T('cognition.inspection_switch_on_toast', '已开启后台巡检')
+        : T('cognition.inspection_switch_off_toast', '已关闭后台巡检：不再自动巡检'));
+      store.inspection = { loading: false, stale: true, settings: (store.inspection && store.inspection.settings) || null, latestRun: (store.inspection && store.inspection.latestRun) || null };
+      await NS.reload();
+    },
+    /** 手动跑一轮巡检（与开关无关）。 */
+    async runInspection() {
+      await api.call('recall.inspection.run', {});
+      const result = await api.call('recall.inspection.list', { limit: 1 });
+      const run = ((result && result.runs) || [])[0] || null;
+      toast(T('cognition.inspection_done', '巡检完成：发现 {n} 条待处理', { n: String(((run && run.findings) || []).length) }));
+      store.inspection = { loading: false, stale: true, settings: (store.inspection && store.inspection.settings) || null, latestRun: run };
       await NS.reload();
     },
     /** 逐项回滚：报告项自带的锚点就是回滚入口（US-404 已建的机制，不另造一套）。 */

@@ -58,6 +58,7 @@ import { withRecallCandidateCapabilities } from '../features/recall/candidate-ca
 import * as recallAssets from '../features/recall/asset-service';
 import * as recallAssetApproval from '../features/recall/asset-approval-service';
 import * as recallCleanup from '../features/recall/cleanup-report-service';
+import * as recallInspection from '../features/recall/asset-inspection-service';
 import * as recallProfileSync from '../features/recall/personal-profile-sync';
 import * as recallSkillDrafts from '../features/recall/skill-draft-service';
 import * as recallWorkspaceRefs from '../features/recall/workspace-refs';
@@ -2693,6 +2694,25 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     const report = await recallCleanup.readCleanupReport(ctx.userId, batchId);
     if (!report) throw new Error('cleanup report not found');
     return { ok: true, report };
+  },
+
+  // 后台巡检（specs/008 US-405）：只报不改。run 是手动触发（用户自己要的，
+  // 与开关无关）；settings 承载开关，关掉之后只是不再自动运行。
+  'recall.inspection.run': async (_args, ctx) => ({
+    ok: true,
+    run: await recallInspection.runAssetInspection(ctx.userId, { trigger: 'manual' }),
+  }),
+  'recall.inspection.list': async ({ limit } = {}, ctx) => {
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 100)) throw new Error('invalid inspection limit');
+    return { ok: true, runs: await recallInspection.listInspectionRuns(ctx.userId, limit ?? 20) };
+  },
+  'recall.inspection.settings': async (_args, ctx) => ({
+    ok: true,
+    settings: await recallInspection.readInspectionSettings(ctx.userId),
+  }),
+  'recall.inspection.settings.set': async ({ enabled } = {}, ctx) => {
+    if (typeof enabled !== 'boolean') throw new Error('invalid inspection enabled flag');
+    return { ok: true, settings: await recallInspection.setInspectionEnabled(ctx.userId, enabled) };
   },
 
   // 资产侧 KSTAR 溯源（2026-09-17）：证据区 kse 引用的批量摘要与单条复盘
