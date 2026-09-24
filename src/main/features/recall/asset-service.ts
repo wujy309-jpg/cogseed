@@ -150,11 +150,11 @@ const ABILITY_ASSET_MATURITIES = new Set<RecallAbilityAssetRecord['maturity']>([
 /**
  * 删除保留期长度（天）。
  *
- * 规范 22.1 只写了「进入保留期」「保留期内可恢复」，没有给出具体天数，所以这里
- * 是占位值，等产品确认后只改这一个常量。记录里存的是 `deletedAt` 这个事实而不是
- * 算好的到期时间，因此改动此常量不需要迁移任何已有数据。
- *
- * TODO(产品确认): 保留期天数，以及到期后是自动 purge 还是仅停止恢复入口。
+ * 口径（2026-09-24 定稿，不再是占位值）：删除后 30 天内可恢复；保留期内可在
+ * 「已删除」列表对单条「立即彻底删除」；**到期系统自动彻底删除**（内容与记录
+ * 一并清除、不可恢复）。到期清理见 `asset-retention-service.ts`。
+ * 记录里存的是 `deletedAt` 这个事实而不是算好的到期时间，所以改动此常量不需要
+ * 迁移任何已有数据。
  */
 export const ABILITY_ASSET_DELETION_RETENTION_DAYS = 30;
 

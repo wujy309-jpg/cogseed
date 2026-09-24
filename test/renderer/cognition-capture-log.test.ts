@@ -1357,6 +1357,58 @@ describe('资产详情（使用记录并入）', () => {
     expect(html).toContain('data-act="run-cleanup"');
   });
 
+  it('「已删除」列表（2026-09-25 US-306/T051）：保留期剩余天数 + 唯一的「立即彻底删除」入口', () => {
+    const html = renderPage('overview', {
+      assets: [{ ...asset, id: 'aa-del', title: '删掉的那条', status: 'deleted', deletedAt: '2026-09-20T00:00:00.000Z' }],
+      deletedAssets: {
+        loading: false, total: 1,
+        items: [{ id: 'aa-del', title: '删掉的那条', type: 'rule', scope: 'general', status: 'deleted', retentionDaysLeft: 25, restorable: true, retentionUnknown: false, purgeable: true }],
+      },
+    }, { category: 'deleted' });
+    // 保留期剩余天数（由服务端现算，界面只显示）。
+    expect(html).toContain('保留期还剩 25 天');
+    // 单条「立即彻底删除」——入口只在这里。
+    expect(html).toContain('data-act="purge-deleted-asset" data-id="aa-del"');
+    // 行本身不能挂 data-go-asset（委托层先判它，会把按钮点击吃成跳转）；
+    // 点击区只在标题上。
+    expect(html).toContain('<a href="#" data-go-asset="aa-del">删掉的那条</a>');
+    expect(html).not.toContain('class="row" data-go-asset="aa-del"');
+  });
+
+  it('「已删除」列表：时间戳不可用时如实说明，不冒充"还能恢复"', () => {
+    const html = renderPage('overview', {
+      assets: [{ ...asset, id: 'aa-del2', title: '时间坏了', status: 'deleted' }],
+      deletedAssets: {
+        loading: false, total: 1,
+        items: [{ id: 'aa-del2', title: '时间坏了', type: 'rule', scope: 'general', status: 'deleted', retentionDaysLeft: null, restorable: false, retentionUnknown: true, purgeable: true }],
+      },
+    }, { category: 'deleted' });
+    expect(html).toContain('删除时间不可用');
+    expect(html).not.toContain('保留期还剩');
+  });
+
+  it('待确认清单（2026-09-25 T051 重上）：动作由读模型给出，没有一键动作的给落点', () => {
+    const html = renderPage('review', {
+      inbox: [
+        { id: 'candidate:cand-1', kind: 'candidate_pending_review', urgency: 'low_disturbance', title: '一条待确认候选', actions: ['accept', 'reject', 'defer'] },
+        { id: 'sensitivity:aa-x', kind: 'sensitivity_unclassified', urgency: 'confirm', title: '还没分级的资产', assetId: 'aa-x', actions: [] },
+        { id: 'inspection:outdated:aa-y', kind: 'inspection_finding', urgency: 'low_disturbance', title: '过时的资产', detail: '超过 180 天没有更新过', actions: ['reject', 'defer'] },
+      ],
+    });
+    expect(html).toContain('待确认清单');
+    // 候选类：三态按钮。
+    expect(html).toContain('data-act="inbox-resolve" data-id="candidate:cand-1" data-action="accept"');
+    expect(html).toContain('data-act="inbox-resolve" data-id="candidate:cand-1" data-action="reject"');
+    expect(html).toContain('data-act="inbox-resolve" data-id="candidate:cand-1" data-action="defer"');
+    // 巡检发现：不管它 / 回头再看（没有"确认"——巡检不改资产）。
+    expect(html).toContain('data-id="inspection:outdated:aa-y" data-action="reject"');
+    expect(html).toContain('data-id="inspection:outdated:aa-y" data-action="defer"');
+    expect(html).not.toContain('data-id="inspection:outdated:aa-y" data-action="accept"');
+    // 资产类没有一键动作：给"去资产详情处理"的落点，而不是只报警。
+    expect(html).toContain('data-act="go-inbox-asset" data-id="aa-x"');
+    expect(html).not.toContain('data-id="sensitivity:aa-x" data-action=');
+  });
+
   it('版本行点开详情与真删入口（2026-09-17）：全文/逐项信息/删除按钮/在用版提示', () => {
     const multi = { ...asset, version: '3', activeVersion: '2', title: 'Renamed in v2', statement: '新内容' };
     const versions = {

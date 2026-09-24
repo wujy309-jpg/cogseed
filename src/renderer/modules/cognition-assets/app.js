@@ -21,7 +21,7 @@
     'refresh', 'cand-adopt-with-form', 'cand-decide',
     'asset-action', 'asset-recommend-ack', 'select-asset-version', 'rollback-asset', 'delete-asset-version',
     'run-cleanup', 'rollback-cleanup-item', 'cleanup-uncertain-dismiss', 'cleanup-uncertain-defer',
-    'inspection-toggle', 'run-inspection', 'asset-edit-save', 'family-rename', 'family-rename-save', 'family-rename-cancel', 'edit-from-version', 'merge-asset-version', 'merge-asset', 'source-action', 'capture-action', 'organize-conv',
+    'inspection-toggle', 'run-inspection', 'purge-deleted-asset', 'inbox-resolve', 'asset-edit-save', 'family-rename', 'family-rename-save', 'family-rename-cancel', 'edit-from-version', 'merge-asset-version', 'merge-asset', 'source-action', 'capture-action', 'organize-conv',
     'capture-toggle', 'capture-review-toggle', 'proof-rate',
     'capture-batch',
   ]);
@@ -182,6 +182,13 @@
           case 'run-cleanup': await A.runCleanup(); break;
           case 'inspection-toggle': await A.setInspectionEnabled(!(S.inspection && S.inspection.settings && S.inspection.settings.enabled)); break;
           case 'run-inspection': await A.runInspection(); break;
+          case 'purge-deleted-asset': {
+            const ok = await confirmUser(T('cognition.deleted_purge_confirm', '彻底删除后内容与记录一并清除、不可恢复。确认删除？'), true);
+            if (ok) await A.purgeDeletedAsset(id);
+            break;
+          }
+          case 'inbox-resolve': await A.resolveInboxItem(id, el.dataset.action || ''); break;
+          case 'go-inbox-asset': router.go({ name: 'overview', assetId: id }); break;
           case 'open-cleanup': router.go({ name: 'cleanup', cleanupReportId: '' }, { replace: true }); break;
           case 'open-cleanup-report': router.go({ name: 'cleanup', cleanupReportId: String(el.dataset.report || '') }, { replace: true }); break;
           case 'rollback-cleanup-item': await A.rollbackCleanupItem(id, el.dataset.version || ''); break;
@@ -533,6 +540,8 @@
     }
     if (assetId) void NS.loadKstarEpisodeSummaries(assetId);
     // 整理报告：进整理相关页签就补拉一次（内部有缓存判重）。
+    // 「已删除」页签：保留期剩余天数由服务端现算，进这个页签时补拉一次。
+    if (String(S.route.category || '') === 'deleted') void NS.loadDeletedAssets();
     if (String(S.route.name || '') === 'cleanup') {
       void NS.loadCleanupReports();
       void NS.loadInspection();

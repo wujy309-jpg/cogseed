@@ -1388,9 +1388,37 @@
           </div>
           <div class="sd">${NS.isKstarAsset(asset) ? chip(T('cognition.asset_kstar_badge', 'KSTAR'), 'blue') : ''}${assetStatusChip(asset)}<span class="chev" aria-hidden="true">›</span></div>
         </div>`;
+    // 「已删除」行（specs/008 US-306/T051）：保留期剩余天数由服务端现算
+    // （recall.assets.deleted.list），并给出**唯一**的「立即彻底删除」入口。
+    // 注意：行上不能挂 data-go-asset——委托层先判 data-go-asset 再判 data-act，
+    // 嵌在里面的按钮会被行跳转吃掉。所以点击区只在标题上。
+    const deletedState = S.deletedAssets || null;
+    const deletedById = new Map(((deletedState && deletedState.items) || []).map((item) => [String(item.id), item]));
+    const deletedRow = (asset) => {
+      const info = deletedById.get(String(asset.id)) || null;
+      const retention = !info
+        ? ''
+        : info.retentionUnknown
+          ? T('cognition.deleted_retention_unknown', '删除时间不可用：既不能恢复，也不会自动到期，请联系支持')
+          : T('cognition.deleted_retention_left', '保留期还剩 {n} 天', { n: String(info.retentionDaysLeft ?? 0) });
+      return `<div class="row">
+        <div class="tw">
+          <div class="tt"><a href="#" data-go-asset="${esc(String(asset.id))}">${esc(asset.title || asset.id)}</a></div>
+          <div class="mm">${esc(categoryLabel(asset.type))} · v${esc(String(asset.activeVersion || asset.version || '1'))}${retention ? ` · ${esc(retention)}` : ''}</div>
+        </div>
+        <div class="sd">${assetStatusChip(asset)}${btn(T('cognition.deleted_purge_now', '立即彻底删除'), 'purge-deleted-asset', { small: true, danger: true, data: { id: String(asset.id) } })}</div>
+      </div>`;
+    };
     const catalogView = String(route.assetView || '') === 'catalog';
     let listHtml = filtered.length
-      ? filtered.map((asset) => (catalogView ? catalogRow(asset) : plainRow(asset))).join('')
+      ? filtered.map((asset) => (route.category === 'deleted'
+        ? deletedRow(asset)
+        : catalogView ? catalogRow(asset) : plainRow(asset))).join('')
+      : route.category === 'deleted'
+        ? empty(
+          T('cognition.deleted_empty', '没有已删除的资产'),
+          T('cognition.deleted_empty_hint', '删除的资产会在这里保留 30 天：期内可恢复，也可以在这里立即彻底删除。'),
+        )
       : empty(
         T('cognition.tree_empty', '还没有正式资产'),
         T('cognition.tree_empty_hint', '候选被确认为正式资产后会出现在这里；当前还没有已确认的资产。'),
@@ -1401,7 +1429,9 @@
         } : null,
       );
     // 默认列表视图按大类分组渲染（目录视图=模型视角保持平铺）。
-    if (filtered.length && !catalogView) {
+    // 「已删除」列表**不分组**：那里要的是保留期剩余天数与彻底删除入口，
+    // 按族分组只会把"还剩几天"埋进分组标题下面。
+    if (filtered.length && !catalogView && route.category !== 'deleted') {
       const groups = familyGroupsOf(filtered);
       listHtml = groups.map((group) => {
         const renaming = String(route.familyRename || '') === group.anchorId && group.anchorId;
@@ -1571,6 +1601,51 @@
     if (stats.failedTasks) {
       // 落点（2026-09-15）：重试按钮在「整理」页的任务流里。
       attention.push(`<div class="notice-row" data-act="go-organize" ${roleBtn()}><span class="notice-text">${esc(T('cognition.overview_failed_tasks', '{count} 个整理任务需要重试', { count: String(stats.failedTasks) }))}</span><span class="sp"></span>${btn(T('common.handle', '处理'), 'go-organize', { small: true, className: 'o' })}</div>`);
+    }
+    // 治理待办 / 待确认清单（2026-09-25 重上，specs/008 T051；验收归 specs/010 US-301）：
+    // 当初撤下是因为"报了警却无处处理"。现在每类都有落点——动作由读模型给出
+    // （`item.actions`），没有一键动作的（未分级 / 缺边界 / 来源失效）落到资产详情
+    // 的编辑入口，不再只是报警。渲染层只渲染，不自己判"哪些动作可用"。
+    const inboxItems = Array.isArray(S.inbox) ? S.inbox : [];
+    const INBOX_ACTION_LABELS = {
+      accept: T('cognition.inbox_action_accept', '确认'),
+      reject: T('cognition.inbox_action_reject', '拒绝'),
+      defer: T('cognition.inbox_action_defer', '稍后处理'),
+      ignore: T('cognition.inbox_action_ignore', '忽略'),
+    };
+    const PROPOSAL_ACTION_LABELS = {
+      accept: T('cognition.inbox_action_accept_update', '确认更新'),
+      defer: T('cognition.inbox_action_defer_later', '稍后处理'),
+      reject: T('cognition.inbox_action_reject_proposal', '拒绝'),
+    };
+    const FINDING_ACTION_LABELS = {
+      reject: T('cognition.inbox_action_dismiss', '不管它'),
+      defer: T('cognition.inbox_action_look_later', '回头再看'),
+    };
+    const actionLabelsFor = (kind) => (kind === 'asset_change_pending'
+      ? PROPOSAL_ACTION_LABELS
+      : kind === 'cleanup_uncertain' || kind === 'inspection_finding' ? FINDING_ACTION_LABELS : INBOX_ACTION_LABELS);
+    const inboxRows = inboxItems.map((row) => {
+      const actions = Array.isArray(row.actions) ? row.actions : [];
+      const labels = actionLabelsFor(String(row.kind || ''));
+      const buttons = actions.map((action) => btn(labels[action] || String(action), 'inbox-resolve', {
+        small: true, className: 'o', data: { id: String(row.id || ''), action: String(action) },
+      })).join('');
+      // 没有一键动作的：给落点（资产详情里的编辑入口），而不是只报警。
+      const fallback = actions.length || !row.assetId
+        ? ''
+        : btn(T('cognition.inbox_go_asset', '去资产详情处理'), 'go-inbox-asset', { small: true, className: 'o', data: { id: String(row.assetId) } });
+      return `<div class="notice-row">
+        <span class="notice-text">${esc(String(row.title || ''))}${row.detail ? ` · ${esc(String(row.detail))}` : ''}</span>
+        <span class="sp"></span>${fallback}${buttons}
+      </div>`;
+    }).join('');
+    if (inboxItems.length) {
+      attention.push(`<div class="sect-block"><div class="tt">${esc(T('cognition.inbox_section', '待确认清单'))}<span class="note">${esc(String(inboxItems.length))}</span></div>${inboxRows}</div>`);
+    } else {
+      // 空态也要说出来（AI Product Addendum 的五态要求）："没有待确认事项"
+      // 和"读不到待办"是两件事，但静默什么都不显示会让用户分不清。
+      attention.push(`<div class="sect-block"><div class="tt">${esc(T('cognition.inbox_section', '待确认清单'))}</div><p class="note">${esc(T('cognition.inbox_empty', '没有需要你确认的事项。'))}</p></div>`);
     }
     return `${hero(
       T('cognition.review_title', '待我处理'),

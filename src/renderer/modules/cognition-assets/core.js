@@ -287,8 +287,13 @@
       // recall.teaching.list 的拉取在 2026-09-14 撤下——治理待办在新 UI 尚无
       // 处理出口（分级/边界编辑入口），报了也无处处理；等动作入口恢复后
       // 连同动作指引一起重上。渠道契约本身未变，随时可接回。
-      const [assets, candidates, captures, settings, sources] = await Promise.all([
+      // 治理待办（2026-09-25 重上，specs/008 US-403/T051）：当初撤下是因为
+      // "报了警却无处处理"；现在每类都有落点——候选/提议/拿不准项/巡检发现
+      // 有处置动作，资产类（未分级/缺边界/来源失效）落到资产详情的编辑入口。
+      // 可用动作由读模型给出（`item.actions`），渲染层只渲染、不自己判。
+      const [assets, candidates, captures, settings, sources, inbox] = await Promise.all([
         api.soft('recall.assets.list', {}, {}),
+        api.soft('cognition.inbox.list', {}, {}),
         api.soft('recall.candidates.list', {}, {}),
         // scope:'all'：整理页要展示完整历史（含系统判定无留存内容的静默
         // 记录）。后端保证静默记录零候选读取，这里多拉的记录不产生模型开销。
@@ -304,6 +309,7 @@
       store.captureCounts = (captures && captures.counts) || {};
       store.captureSettings = (settings && settings.settings) || settings || null;
       store.sources = toArr(sources, ['groups', 'sources']);
+      store.inbox = toArr(inbox, ['items']);
       // 证明链服务资产详情内的使用记录区与成熟度展示，失败不阻塞主快照。
       // 通道是语义化的时间线（recall.timeline.list）：每条事件带 refs
       // （assetId / transferProofId / usageReceiptId / version）。
@@ -851,6 +857,38 @@
         store.cleanupReports = { loading: false, stale: true, reports: [] };
         throw error;
       }
+      await NS.reload();
+    },
+    /** 待办处置（specs/008 T051）：动作由读模型给出，这里只转发。
+     *  没有一键动作的类别不在这里——渲染层也不给按钮。 */
+    async resolveInboxItem(id, action) {
+      await api.call('cognition.inbox.resolve', { id: String(id || ''), action: String(action || '') });
+      toast(T('cognition.inbox_resolved', '已处理'));
+      await NS.reload();
+    },
+    /** 「已删除」列表按需拉（specs/008 US-306/T051）：保留期剩余天数由服务端现算。 */
+    async loadDeletedAssets() {
+      if (store.deletedAssets && !store.deletedAssets.stale) return;
+      store.deletedAssets = { loading: true, items: (store.deletedAssets && store.deletedAssets.items) || [], total: (store.deletedAssets && store.deletedAssets.total) || 0 };
+      NS.notify();
+      let items = [];
+      let total = 0;
+      try {
+        const result = await api.call('recall.assets.deleted.list', { limit: 200 });
+        items = (result && result.items) || [];
+        total = Number(result && result.total) || items.length;
+      } catch (error) {
+        items = [];
+        total = 0;
+      }
+      store.deletedAssets = { loading: false, items, total };
+      NS.notify();
+    },
+    /** 保留期内的「立即彻底删除」（入口只在这里，specs/008 US-306 口径）。 */
+    async purgeDeletedAsset(assetId) {
+      await api.call('recall.assets.deleted.purgeNow', { assetId: String(assetId || '') });
+      toast(T('cognition.deleted_purged', '已彻底删除：内容与记录一并清除，不可恢复'));
+      store.deletedAssets = { loading: false, stale: true, items: (store.deletedAssets && store.deletedAssets.items) || [], total: (store.deletedAssets && store.deletedAssets.total) || 0 };
       await NS.reload();
     },
     /** 巡检开关（specs/008 US-405 T049）：关掉之后不再自动运行；

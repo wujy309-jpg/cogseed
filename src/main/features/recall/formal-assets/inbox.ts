@@ -76,6 +76,16 @@ export type CognitionInboxKind =
  */
 export type CognitionInboxUrgency = 'confirm' | 'low_disturbance';
 
+/**
+ * 这条待办**能做什么**（不是"该怎么显示"）。
+ *
+ * 由读模型给出而不是让渲染层各判一次：处置的分发在
+ * `cognition/inbox-adapter.ts::resolveCognitionInboxItem`，两处各写一份
+ * "哪些动作可用"就是下一个分叉源——渲染层只负责把动作渲染成按钮。
+ * 空数组 = 没有一键动作（资产类待办要用户去资产详情里改）。
+ */
+export type CognitionInboxAction = 'accept' | 'reject' | 'defer' | 'ignore';
+
 export interface CognitionInboxItem {
   /** 稳定 id：同一件事重复计算要得到同一个 id，否则前端列表会闪。 */
   id: string;
@@ -87,6 +97,8 @@ export interface CognitionInboxItem {
   candidateId?: string;
   /** 补充说明，已是用户能读懂的话，渲染层不再翻译。 */
   detail?: string;
+  /** 可用动作；缺省/空数组 = 没有一键动作，只给"去资产详情"的落点。 */
+  actions?: readonly CognitionInboxAction[];
 }
 
 /**
@@ -147,6 +159,32 @@ export interface CognitionInboxInput {
   }>;
 }
 
+/**
+ * 每类待办可用的动作（**唯一处**）。与 `inbox-adapter` 的分发分支一一对应：
+ *   - 候选类走既有 4 个处置函数（confirm/reject/defer/ignore）；
+ *   - 审批提议走三态（确认更新 / 稍后处理 / 拒绝）；
+ *   - 大扫除拿不准项与巡检发现只有"要不要继续提醒"（不管它 / 回头再看）；
+ *   - 资产类（未分级 / 缺边界 / 来源失效…）**没有一键动作**——要改的是资产内容
+ *     本身，落点是资产详情里的编辑入口。
+ */
+const INBOX_ACTIONS: Record<CognitionInboxKind, readonly CognitionInboxAction[]> = {
+  skill_creation_suggested: [],
+  skill_upgrade_suggested: [],
+  rule_scope_changed: [],
+  template_updated: [],
+  sensitivity_escalated: [],
+  rule_boundary_missing: [],
+  classification_conflict: ['accept', 'reject', 'defer'],
+  evidence_insufficient: ['reject', 'defer'],
+  candidate_ineligible: ['reject', 'defer'],
+  source_unavailable: [],
+  sensitivity_unclassified: [],
+  candidate_pending_review: ['accept', 'reject', 'defer'],
+  asset_change_pending: ['accept', 'defer', 'reject'],
+  cleanup_uncertain: ['reject', 'defer'],
+  inspection_finding: ['reject', 'defer'],
+};
+
 const URGENCY: Record<CognitionInboxKind, CognitionInboxUrgency> = {
   skill_creation_suggested: 'confirm',
   skill_upgrade_suggested: 'confirm',
@@ -195,7 +233,7 @@ function item(
   title: string,
   extra: Omit<CognitionInboxItem, 'id' | 'kind' | 'urgency' | 'title'> = {},
 ): CognitionInboxItem {
-  return { id, kind, urgency: URGENCY[kind], title, ...extra };
+  return { id, kind, urgency: URGENCY[kind], title, actions: INBOX_ACTIONS[kind], ...extra };
 }
 
 /**
