@@ -11211,9 +11211,6 @@ function unwrapRoutingJudgement(parsed: Record<string, unknown>): { is_task?: un
   return null;
 }
 
-/** Default ceiling for the model-judged routing question. */
-export const CONTINUATION_JUDGE_TIMEOUT_MS = 20_000;
-
 export interface ModelRoutingVerdict {
   isTask: boolean;
   continuation: boolean;
@@ -11249,8 +11246,17 @@ type ModelRoutingJudgeOutcome =
  * enqueue would deadlock because the current turn holds the queue) judges
  * whether the message is a task and, when one is open, whether it continues
  * it. Returns a discriminated outcome so the caller can tell "the model said
- * no" apart from "we never got an answer". Bounded by
- * CONTINUATION_JUDGE_TIMEOUT_MS.
+ * no" apart from "we never got an answer".
+ *
+ * No wall-clock ceiling here, deliberately: the two real guards on an LLM call
+ * are the model-call idle watchdog (`client.ts`, 1800s with no event) and the
+ * SDK timeout, and AGENTS.md forbids adding a separate total wall-clock
+ * timeout. A 20s cap used to sit on this call, which was both inconsistent
+ * (the main turn has none) and harmful in the direction that matters: a slow
+ * provider failed the judge while the turn it was gating would have
+ * succeeded, costing that message its governance. The judge passes no external
+ * abort signal, so an `error.kind === 'timeout'` on its result can only be the
+ * idle watchdog.
  */
 async function judgeModelRouting(
   uid: string,
@@ -11292,30 +11298,28 @@ async function judgeModelRouting(
     });
     buildMs = Date.now() - buildStartedAt;
     const runStartedAt = Date.now();
-    const task = await Promise.race([
-      runner.run({
-        message: JSON.stringify({
-          newMessage: String(newMessage || '').slice(0, 2_000),
-          ...(openRequirement ? { openTaskGoal: String(openRequirement.goalText).slice(0, 1_000) } : {}),
-        }),
-        thinkingLevel: 'off',
-        cacheRetention: 'none',
+    const task = await runner.run({
+      message: JSON.stringify({
+        newMessage: String(newMessage || '').slice(0, 2_000),
+        ...(openRequirement ? { openTaskGoal: String(openRequirement.goalText).slice(0, 1_000) } : {}),
       }),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), CONTINUATION_JUDGE_TIMEOUT_MS)),
-    ]);
+      thinkingLevel: 'off',
+      cacheRetention: 'none',
+    });
     runMs = Date.now() - runStartedAt;
     if (!task || task.meta.aborted || task.meta.error) {
+      const errorKind = task?.meta.error?.kind;
       log.warn('kstar model routing runner failed', {
         cid: maskId(cid),
         aborted: task?.meta.aborted,
-        error: task?.meta.error,
-        timed_out: !task,
+        error: task?.meta.error?.message,
+        error_kind: errorKind,
         auth_ms: authMs,
         build_ms: buildMs,
         run_ms: runMs,
         total_ms: Date.now() - startedAt,
       });
-      return { status: 'failed', reason: task ? 'runner_error' : 'timeout' };
+      return { status: 'failed', reason: errorKind === 'timeout' ? 'timeout' : 'runner_error' };
     }
     const verdict = parseContinuationJudgement(task.text);
     if (!verdict) {
