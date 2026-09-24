@@ -40,6 +40,17 @@ function loadConversationRenderer() {
     groupBusyConvs,
     isGroupConversationBusy: (cid: string) => groupBusyConvs.has(cid),
     isConvPending: (cid: string) => pendingConvs.has(cid) || groupBusyConvs.has(cid),
+    // state.js 提供的全局 seam（生产里由 index.html 先加载）。
+    setGroupConversationBusy: (cid: string, busy: boolean) => {
+      if (busy) groupBusyConvs.set(cid, true);
+      else groupBusyConvs.delete(cid);
+    },
+    // 轮询控制同样由其它渲染脚本提供（生产里 index.html 先加载）；本用例只验
+    // 状态→指示器的映射，不验轮询本身。
+    startPolling: () => {},
+    stopPolling: () => {},
+    // 队列排空由 queue-draft.js 提供（同上，生产里先加载）。
+    _dispatchNextQueued: () => {},
     createLogger: () => ({ warn() {}, info() {}, error() {}, debug() {} }),
     escapeHtml,
     t: (key: string, params: any = {}) => ({
@@ -54,6 +65,7 @@ function loadConversationRenderer() {
       'project.menu.more_actions': 'More actions',
       'auto.title': 'Automation',
       'chat.status.running': 'Running',
+      'chat.status.waiting_approval': 'Waiting for your approval',
       'agents.use_label': `Agent: ${params?.agent || ''}`,
       'skills.use_label': `Skill: ${params?.skill || ''}`,
       'chat.stream.compaction_tokens': `Context compressed: ${params?.before} -> ${params?.after} tokens`,
@@ -100,7 +112,9 @@ function loadConversationRenderer() {
   vm.createContext(context);
   const uiButtonSource = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/ui-button.js'), 'utf8');
   const uiFormSource = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/ui-form.js'), 'utf8');
-  vm.runInContext(`${uiButtonSource}\n${uiFormSource}\nthis.uiButton = window.uiButton; this.uiIconButton = window.uiIconButton; this.uiInput = window.uiInput;`, context);
+  // 侧栏的「等待批准」指示器用共享状态组件（ui-status.js），与生产加载顺序一致。
+  const uiStatusSource = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/ui-status.js'), 'utf8');
+  vm.runInContext(`${uiButtonSource}\n${uiFormSource}\n${uiStatusSource}\nthis.uiButton = window.uiButton; this.uiIconButton = window.uiIconButton; this.uiInput = window.uiInput; this.uiStatusPill = window.uiStatusPill;`, context);
   const source = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/conversation.js'), 'utf8');
   vm.runInContext(source, context);
   return context;
@@ -561,6 +575,95 @@ describe('conversation sidebar task row actions', () => {
     expect(html).toContain('aria-label="Running"');
     expect(html.indexOf('conv-task-indicator')).toBeLessThan(html.indexOf('class="conv-item-title"'));
     expect(html).not.toContain('conv-task-line');
+  });
+
+  it('renders a runtime waiting_approval response as the shared status pill, not a spinner', async () => {
+    // 真机症状：外部智能体派发在等用户点批准，run 停在 running、actor 停在 pending
+    // （bus 不收口、wake 不过期），侧栏却一直转圈。现在 main 如实报
+    // waiting_approval，侧栏据此显示状态而不是转圈。
+    const context = loadConversationRenderer();
+    vm.runInContext('pendingConvs.set("waiting-1", { aborted: false })', context);
+    vm.runInContext(
+      '_readConversationRuntime = async () => ({ ok: true, processing: false, in_flight: [], active_turns: [], backend_active: false, waiting_approval: true })',
+      context,
+    );
+    expect(await context._syncPendingActorsFromRuntime('waiting-1')).toBe(true);
+
+    const html = context._renderConversationSidebarItem({
+      conversation_id: 'waiting-1',
+      title: 'Waiting task',
+    });
+
+    expect(html).toContain('ui-status-pill');
+    expect(html).toContain('Waiting for your approval');
+    expect(html).not.toContain('conv-task-indicator');
+    expect(html.indexOf('ui-status-pill')).toBeLessThan(html.indexOf('class="conv-item-title"'));
+  });
+
+  it('labels a stale conversation straight from the list payload (never polled)', () => {
+    // 闲置会话不会被 runtime 轮询，它的「等批准」只能靠列表下发。
+    const context = loadConversationRenderer();
+    context._applyWaitingApprovalFromRows([
+      { conversation_id: 'stale-1', waiting_approval: true },
+      { conversation_id: 'fresh-1', waiting_approval: false },
+    ]);
+
+    const stale = context._renderConversationSidebarItem({ conversation_id: 'stale-1', title: 'Stale' });
+    expect(stale).toContain('ui-status-pill');
+    expect(stale).toContain('Waiting for your approval');
+    expect(stale).not.toContain('conv-task-indicator');
+
+    const fresh = context._renderConversationSidebarItem({ conversation_id: 'fresh-1', title: 'Fresh' });
+    expect(fresh).not.toContain('ui-status-pill');
+
+    // 批准/拒绝后列表再下发 false → 标记必须消失。
+    context._applyWaitingApprovalFromRows([{ conversation_id: 'stale-1', waiting_approval: false }]);
+    expect(context._renderConversationSidebarItem({ conversation_id: 'stale-1', title: 'Stale' })).not.toContain('ui-status-pill');
+  });
+
+  it('clears the pill when the index no longer flags the row (用户批准/中止后)', async () => {
+    const context = loadConversationRenderer();
+    context._applyWaitingApprovalFromRows([{ conversation_id: 'gone-1', waiting_approval: true }]);
+    expect(context._renderConversationSidebarItem({ conversation_id: 'gone-1', title: 'Gone' })).toContain('ui-status-pill');
+
+    // main 的索引现在为空（用户已批准/已中止）→ 绝对同步必须把标记删掉，而不是只增不减。
+    vm.runInContext('conversations = [{ conversation_id: "gone-1" }]', context);
+    vm.runInContext('window.cogseed = { invoke: async () => ({ ok: true, conversations: [] }) }', context);
+    await context._syncWaitingApprovalFlags();
+    expect(context._renderConversationSidebarItem({ conversation_id: 'gone-1', title: 'Gone' })).not.toContain('ui-status-pill');
+  });
+
+  it('keeps exactly one indicator: live work wins over a pending approval', () => {
+    const context = loadConversationRenderer();
+    vm.runInContext('_latestInFlight.set("both-1", ["commander"]); _latestWaitingApproval.set("both-1", true)', context);
+
+    const html = context._renderConversationSidebarItem({ conversation_id: 'both-1', title: 'Both' });
+
+    expect(html).toContain('conv-task-indicator');
+    expect(html).not.toContain('ui-status-pill');
+  });
+
+  it('drops the approval pill once the runtime stops reporting it', async () => {
+    const context = loadConversationRenderer();
+    vm.runInContext('pendingConvs.set("cleared-1", { aborted: false })', context);
+    vm.runInContext(
+      '_readConversationRuntime = async () => ({ ok: true, processing: false, in_flight: [], active_turns: [], waiting_approval: true })',
+      context,
+    );
+    await context._syncPendingActorsFromRuntime('cleared-1');
+    expect(context._renderConversationSidebarItem({ conversation_id: 'cleared-1', title: 'T' })).toContain('ui-status-pill');
+
+    // 第一次同步的收尾会把该会话从 pending 集合摘掉（真实行为）；重新进入
+    // pending 才代表渲染层又为这个会话读了一次 runtime。
+    vm.runInContext('pendingConvs.set("cleared-1", { aborted: false })', context);
+    vm.runInContext(
+      '_readConversationRuntime = async () => ({ ok: true, processing: false, in_flight: [], active_turns: [] })',
+      context,
+    );
+    expect(await context._syncPendingActorsFromRuntime('cleared-1')).toBe(true);
+    const html = context._renderConversationSidebarItem({ conversation_id: 'cleared-1', title: 'T' });
+    expect(html).not.toContain('ui-status-pill');
+    expect(html).not.toContain('conv-task-indicator');
   });
 
   it('renders an inline title input while renaming a row', () => {

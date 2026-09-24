@@ -2850,6 +2850,9 @@ function _forgetCidRecipient(cid) {
   if (_agentStatusPopoverCid === cid) _closeAgentStatusPopover();
   setGroupConversationBusy(cid, false);
   _latestInFlight.delete(cid);
+  // 会话被丢弃时要连"等批准"标记一起清：否则该 cid 的标签会留在内存里，
+  // 一旦同一 cid 再次进入列表就会顶着一个过期状态。
+  _latestWaitingApproval.delete(cid);
   _clearBackgroundGroupEvents(cid);
   const infoTimer = _conversationInfoFileRefreshTimers.get(cid);
   if (infoTimer) clearTimeout(infoTimer);
@@ -2870,6 +2873,10 @@ function _forgetCidRecipient(cid) {
 // state_changed events coalesce.
 const _autoEvalInflight = new Set(); // cid set
 const _latestInFlight = new Map();   // cid → string[] (mirrors state_changed.state.in_flight)
+// cid → true 当且仅当 main 的 /runtime 报 waiting_approval：该会话只剩「等用户点
+// 批准」这一件事（run 停在 running、actor 停在 pending，bus 不会收口，wake 也不会
+// 过期）。这时它不是"在跑"，不该转圈；侧栏改用共享状态标签如实说明在等谁。
+const _latestWaitingApproval = new Map(); // cid → boolean
 const _runtimeRecoveryTimers = new Map(); // cid → timeout id
 const _lastGroupWorkEventAt = new Map(); // cid → ms timestamp of process/artifact/assistant message
 const _groupObserverCtrls = new Map();   // cid → recovery observer controller
@@ -3151,6 +3158,8 @@ async function _syncPendingActorsFromRuntime(cid, opts = {}) {
   const hasActiveTurnsField = Array.isArray(data.active_turns);
   const activeTurns = _normaliseActiveTurns(data.active_turns);
   const processing = _conversationRuntimeIsActive(data);
+  // 等批准与"在跑"互斥：真在跑就转圈，只有等用户决定时才显示状态标签。
+  _setConvWaitingApproval(cid, data.waiting_approval === true && !processing);
   if (window.ConversationInfo) {
     try { window.ConversationInfo.refreshFiles(cid, { silent: true }); } catch (_) {}
   }
@@ -5843,6 +5852,8 @@ async function loadConversations(options = {}) {
       if (data.ok) {
         if (requestGeneration !== _conversationListLocalGeneration) return;
         conversations = data.conversations || [];
+        _applyWaitingApprovalFromRows(conversations);
+        _initWaitingApprovalSync();
         _conversationDeferredBuckets = startup
           ? { last30: Number(data.deferred_unprojected?.last30) || 0, older: Number(data.deferred_unprojected?.older) || 0 }
           : { last30: 0, older: 0 };
@@ -6157,14 +6168,99 @@ function _renderConversationSidebarItem(c, opts = {}) {
   `;
 }
 
-// SidebarTasks：只把真实 running > 0 显示成紧邻标题的旋转指示器。
-// 排队与计划数据仍保留在各自状态源中，不挤占紧凑的侧栏任务行。
+// SidebarTasks：三态互斥——真在跑 → 转圈；只剩「等用户批准」→ 共享状态标签
+// （uiStatusPill，见 ui-status.js）；其余 → 什么都不显示。排队与计划数据仍保留在
+// 各自状态源中，不挤占紧凑的侧栏任务行。
+// 列表/单条 hydrate 返回的 `waiting_approval` 直接落进映射：**陈旧会话不会被
+// 轮询**（闲置的会话没有 runtime 同步），它的"等批准"只能靠这条路标出来。
+// 只处理本次返回里出现的行，不动其它 cid。
+function _applyWaitingApprovalFromRows(rows) {
+  if (!Array.isArray(rows)) return;
+  for (const row of rows) {
+    const cid = row && row.conversation_id;
+    if (!cid) continue;
+    _setConvWaitingApproval(cid, row.waiting_approval === true);
+  }
+}
+
+// 绝对同步：以 main 的索引为准，对**全部已知行**增/删标记。只增不减会让标签在
+// 用户批准/中止之后一直挂着（真机反馈）。兜底轮询 60s 一次，且只在窗口可见时。
+let _waitingApprovalSyncTimer = null;
+async function _syncWaitingApprovalFlags() {
+  try {
+    const api = window.cogseed;
+    if (!api || typeof api.invoke !== 'function') return;
+    const res = await api.invoke('conversations.waitingApproval', {});
+    if (!res || res.ok === false) return;
+    const flagged = new Set(
+      (Array.isArray(res.conversations) ? res.conversations : []).map(String).filter(Boolean),
+    );
+    const known = new Set();
+    for (const conv of (Array.isArray(conversations) ? conversations : [])) {
+      if (conv && conv.conversation_id) known.add(String(conv.conversation_id));
+    }
+    if (currentCid) known.add(String(currentCid));
+    const changed = [];
+    for (const cid of known) {
+      const before = _latestWaitingApproval.has(cid);
+      _setConvWaitingApproval(cid, flagged.has(cid));
+      if (before !== _latestWaitingApproval.has(cid)) changed.push(cid);
+    }
+    for (const cid of [..._latestWaitingApproval.keys()]) {
+      if (!known.has(cid)) { _latestWaitingApproval.delete(cid); changed.push(cid); }
+    }
+    // 只增量刷新受影响的行：整树重绘会牵动分页/懒加载流程（测试与真机都验证过）。
+    for (const cid of changed) {
+      if (typeof _refreshConvTaskLine === 'function') _refreshConvTaskLine(cid);
+    }
+  } catch (_) { /* 同步失败不影响渲染 */ }
+}
+
+let _waitingApprovalSyncWired = false;
+function _initWaitingApprovalSync() {
+  if (!_waitingApprovalSyncWired) {
+    _waitingApprovalSyncWired = true;
+    // 控制中心批准/拒绝唤醒后广播：侧栏立刻重算，不等下一次列表拉取。
+    if (typeof window.addEventListener === 'function') {
+      window.addEventListener('wake-approval-change', () => { void _syncWaitingApprovalFlags(); });
+    }
+  }
+  if (_waitingApprovalSyncTimer) return;
+  // 宿主可能没有 setInterval（隔离渲染夹具就是这样，见
+  // "renders the list without throwing in a host that has no setInterval"）。
+  if (typeof setInterval !== 'function') return;
+  _waitingApprovalSyncTimer = setInterval(() => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    void _syncWaitingApprovalFlags();
+  }, 60_000);
+}
+
+function _setConvWaitingApproval(cid, waiting) {
+  if (!cid) return;
+  if (waiting) _latestWaitingApproval.set(cid, true);
+  else _latestWaitingApproval.delete(cid);
+}
+
 function _convTaskStatusLine(cid) {
   if (!cid) return '';
   const inFlight = (_latestInFlight.get(cid) || []).filter(Boolean).length;
-  if (inFlight <= 0) return '';
-  const runningLabel = escapeHtml(t('chat.status.running'));
-  return `<span class="conv-task-indicator" role="img" aria-label="${runningLabel}" title="${runningLabel}"></span>`;
+  if (inFlight > 0) {
+    const runningLabel = escapeHtml(t('chat.status.running'));
+    return `<span class="conv-task-indicator" role="img" aria-label="${runningLabel}" title="${runningLabel}"></span>`;
+  }
+  if (_latestWaitingApproval.get(cid)) {
+    const label = t('chat.status.waiting_approval');
+    // 共享状态组件（禁止页面自造状态样式）；ui-status 未加载时降级为不显示，
+    // 也不能退回字面 DOM。
+    if (typeof uiStatusPill !== 'function') return '';
+    return uiStatusPill({
+      label,
+      tone: 'attention',
+      className: 'conv-task-pill',
+      attrs: { title: label },
+    });
+  }
+  return '';
 }
 
 // state_changed 后只替换该行的运行指示器，不重绘任务树。
@@ -6172,7 +6268,9 @@ function _refreshConvTaskLine(cid) {
   if (!cid) return;
   const item = document.querySelector(`.conv-item[data-cid="${cid}"]`);
   if (!item) return;
+  // 转圈与「等批准」标签互斥：换状态前两者都要摘掉，避免同时出现两个指示器。
   item.querySelector('.conv-task-indicator')?.remove();
+  item.querySelector('.conv-task-pill')?.remove();
   const indicator = _convTaskStatusLine(cid);
   if (!indicator) return;
   const title = item.querySelector('.conv-item-title, .conv-item-title-input');
@@ -18208,6 +18306,8 @@ function _renderConvDisabledBanner(cid) {
 
 function _refreshTaskSurfacesAfterAbort(cid) {
   if (!cid) return;
+  // 用户中止 → 该 run 的 pending 唤醒会被判死/执行，标记必须立刻重算。
+  void _syncWaitingApprovalFlags();
   try {
     if (window.ConversationInfo) window.ConversationInfo.refreshFiles(cid, { silent: true });
   } catch (_) {}

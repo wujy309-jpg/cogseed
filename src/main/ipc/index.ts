@@ -967,11 +967,19 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     // persisted fields stay authoritative, the join is display-only.
     const annotate = async <T extends { conversation_id: string; channel_platform?: string }>(rows: readonly T[]): Promise<T[]> => {
       if (!rows.length) return [...rows];
-      const [bindings, instances] = await Promise.all([
+      const [bindings, instances, waitingApproval] = await Promise.all([
         messagingBindings.listBindings(ctx.userId).catch(() => []),
         messagingRegistry.listInstances(ctx.userId).catch(() => []),
+        // 唤醒状态只读索引（TTL 缓存）：侧栏据此给**每一行**打"等待你批准"标记。
+        // 必须随列表下发——陈旧会话不会被轮询，光靠 /runtime 永远标不出来。
+        import('../features/p3394/wake-store')
+          .then((module) => module.pendingApprovalIndex(ctx.userId))
+          .catch(() => ({ conversations: new Set<string>(), runs: new Set<string>() })),
       ]);
-      return annotateChannelConversations(rows, bindings, instances);
+      return annotateChannelConversations(rows, bindings, instances).map((row) => ({
+        ...row,
+        waiting_approval: waitingApproval.conversations.has(row.conversation_id),
+      }));
     };
     if (mode === 'startup') {
       const expandedProjectIds = String(expanded_projects || '')
@@ -1022,6 +1030,15 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { counts: await chats.countAutoTaskConversations(ctx.userId, ids) };
   },
 
+  'conversations.waitingApproval': async (_args, ctx) => {
+    // 只回会话 id 列表（一次索引读，文件戳失效）：渲染层据此对**全部已知行**做
+    // 绝对同步——只增不减的话，用户批准/中止之后标签会一直挂在那儿。
+    const index = await import('../features/p3394/wake-store')
+      .then((module) => module.pendingApprovalIndex(ctx.userId))
+      .catch(() => ({ conversations: new Set<string>(), runs: new Set<string>() }));
+    return { conversations: [...index.conversations].sort() };
+  },
+
   'conversations.get': async (args, ctx) => {
     const { cid } = args;
     if (!safeId(cid)) throw new Error('invalid cid');
@@ -1029,20 +1046,27 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (!conv) throw new Error('conversation not found');
     // Same channel annotation as the list endpoints — a freshly hydrated
     // sidebar row (e.g. external inbound to a brand-new conversation) must
-    // land in its channel group immediately.
+    // land in its channel group immediately. 单条也要带 waiting_approval：
+    // 渲染层按行打标时若这里缺字段，刚 hydrate 的那行标记会被误清。
+    const withApproval = async <T extends { conversation_id: string }>(row: T): Promise<T & { waiting_approval: boolean }> => {
+      const index = await import('../features/p3394/wake-store')
+        .then((module) => module.pendingApprovalIndex(ctx.userId))
+        .catch(() => ({ conversations: new Set<string>(), runs: new Set<string>() }));
+      return { ...row, waiting_approval: index.conversations.has(row.conversation_id) };
+    };
     if (!conv.channel_platform) {
       const [bindings, instances] = await Promise.all([
         messagingBindings.listBindings(ctx.userId).catch(() => []),
         messagingRegistry.listInstances(ctx.userId).catch(() => []),
       ]);
       const [annotated] = annotateChannelConversations([conv], bindings, instances);
-      return { conversation: annotated || conv };
+      return { conversation: await withApproval(annotated || conv) };
     }
     const [instances] = await Promise.all([
       messagingRegistry.listInstances(ctx.userId).catch(() => []),
     ]);
     const [annotated] = annotateChannelConversations([conv], [], instances);
-    return { conversation: annotated || conv };
+    return { conversation: await withApproval(annotated || conv) };
   },
 
   'conversations.setPermissionMode': async (args, ctx) => {

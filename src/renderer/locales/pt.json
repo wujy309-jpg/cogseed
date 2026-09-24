@@ -655,6 +655,7 @@
   "chat.result_block.receipt": "Recibo",
   "chat.task_plan_label": "Plano {done}/{total}",
   "chat.status.running": "Em execução",
+  "chat.status.waiting_approval": "Aguardando sua aprovação",
   "chat.status.replying_short": "Respondendo",
   "chat.stop_reply": "Parar de responder",
   "chat.stream.approval": "Aguardando confirmação",

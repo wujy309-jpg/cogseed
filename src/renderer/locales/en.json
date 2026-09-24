@@ -767,6 +767,7 @@
   "chat.result_block.receipt": "Receipt",
   "chat.task_plan_label": "Plan {done}/{total}",
   "chat.status.running": "Running",
+  "chat.status.waiting_approval": "Waiting for your approval",
   "chat.status.replying_short": "Replying",
   "chat.stop_reply": "Stop reply",
   "chat.stream.approval": "Awaiting confirmation",
