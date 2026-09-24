@@ -16,6 +16,9 @@ import {
   abilityAssetActiveVersion,
   archiveAbilityAsset,
   classifyAbilityAssetWriteFailure,
+  diffAbilityAssetsForAudit,
+  strictestSensitivity,
+  summarizeAuditChange,
   deleteAbilityAsset,
   listAbilityAssets,
   mergeAbilityAssets,
@@ -31,6 +34,11 @@ import type { RecallAbilityAssetRecord } from '../../features/recall/candidate-s
 import type { RecallAbilityAssetScopePolicy } from '../../features/recall/scope-policy';
 import { evaluateRecallAssetRuntimeEligibility } from '../../features/recall/prompt-injection';
 import { requestInteraction } from '../../features/chat_events/interaction-hub';
+import {
+  createAssetChangeProposal,
+  type AssetChangeProposal,
+} from '../../features/recall/asset-approval-service';
+import { busAssetApprovalCardPort, postAssetChangeApprovalCard } from '../../features/recall/asset-approval-card';
 import { safeId } from '../../storage';
 import { logErrorRef, maskId } from '../../util/log-redact';
 
@@ -534,7 +542,7 @@ const FAILURE_CATEGORY_LABELS: Record<AbilityAssetFailureCategory, string> = {
  *      自己就把「敏感级升高」当扩权（inbox 的 `sensitivity_escalated` 是
  *      confirm 档）。归入实质变化是**更保护**的方向，代价只是偶发一张卡。
  *  命名/标题不在此列（分级③允许自动处理）。 */
-const SUBSTANTIAL_FIELDS = ['statement', 'scope', 'applicableWhen', 'forbiddenWhen', 'sensitivity'] as const;
+export const SUBSTANTIAL_FIELDS = ['statement', 'scope', 'applicableWhen', 'forbiddenWhen', 'sensitivity'] as const;
 
 function writeReceipt(action: string, asset: RecallAbilityAssetRecord, extra: string[] = []): string {
   return [
@@ -584,6 +592,95 @@ async function blockedWriteReceipt(
     ].join('\n'),
     isError: true,
   };
+}
+
+/**
+ * 分级②的落地：AI 自主的实质变化 → 建提议 + 发审批卡片，**内容不生效**。
+ *
+ * 卡片发不出去（没有会话上下文、或下发失败）时**退回拒绝兜底**：提议照留（用户
+ * 仍能在待确认清单里看到），但回执必须说清"没有生效"——这条兜底与建卡路径各有
+ * 测试，不许被建卡路径取代（提议建不出来时它是唯一的保证）。
+ */
+async function proposeSubstantialChange(
+  opts: AssetStewardToolsOpts,
+  params: {
+    asset: RecallAbilityAssetRecord;
+    assetId: string;
+    payload: Record<string, unknown>;
+    fields: readonly string[];
+    reason: string;
+    originDeclared: boolean;
+  },
+): Promise<{ content: string; isError?: boolean }> {
+  const { asset, assetId, payload, fields, reason } = params;
+  const summary = summarizeAuditChange(
+    diffAbilityAssetsForAudit(asset, { ...asset, ...payload }),
+    strictestSensitivity([asset.sensitivity, typeof payload.sensitivity === 'string' ? payload.sensitivity : undefined]),
+  );
+  const { proposal, created } = await createAssetChangeProposal(opts.userId, {
+    assetId,
+    baselineVersion: abilityAssetActiveVersion(asset),
+    fields: [...fields],
+    payload,
+    before: summary?.before || '',
+    after: summary?.after || '',
+    reason,
+  });
+  // approval_proposed 的台账由 createAssetChangeProposal 自己写（实体创建即留痕，
+  // 不依赖调用方记得写）；这里只在**下发失败**时补一句"卡片没发出去"。
+
+  const cannotApply = [
+    `[asset:${assetId}] ${asset.title || '(无标题)'}：这次改动涉及实质内容（${fields.join(' / ')}），我没有直接生效。`,
+    '原因：正文/适用范围/敏感级变了，意味着这条资产主张的内容、或者它以后会进出哪一批任务变了，必须由用户确认。',
+  ];
+  const originHint = params.originDeclared
+    ? ''
+    : '（你没有声明 origin，按更保守的"AI 自主"处理；如果这是用户明确要求的，带上 origin=user_instruction 与用户原话重试。）';
+
+  const dispatched = await dispatchApprovalCard(opts, proposal, asset.title || '');
+  if (dispatched.ok !== true) {
+    const why = dispatched.reason === 'no_conversation'
+      ? '当前上下文发不出审批卡片（缺会话信息），所以这次改动没有生效，也不会自动生效。'
+      : `审批卡片下发失败（${dispatched.reason}），所以这次改动没有生效。`;
+    return {
+      content: [
+        ...cannotApply,
+        why,
+        `提议已留档（proposal=${proposal.id}），用户在待确认清单里仍能看到。`,
+        originHint,
+      ].filter(Boolean).join('\n'),
+      isError: true,
+    };
+  }
+  return {
+    content: [
+      `**内容尚未生效**：[asset:${assetId}] ${asset.title || '(无标题)'} 的实质变化已转成审批卡片，等用户决定。`,
+      `涉及：${fields.join(' / ')}`,
+      `依据：${reason}`,
+      `提议：${proposal.id}；卡片已发到当前对话。`,
+      '用户三选一：确认更新（当场生效）/ 稍后处理（进待确认清单）/ 拒绝（留档、不再重复提）。',
+      '现在**不要**告诉用户"已经改好了"——生效与否由用户在卡片上决定。',
+      originHint,
+    ].filter(Boolean).join('\n'),
+  };
+}
+
+/** 下发卡片；失败时给出可归因的原因（回执里要如实说为什么没生效）。 */
+async function dispatchApprovalCard(
+  opts: AssetStewardToolsOpts,
+  proposal: AssetChangeProposal,
+  assetTitle: string,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  if (!opts.cid) return { ok: false, reason: 'no_conversation' };
+  try {
+    const { attachAssetChangeProposalCard } = await import('../../features/recall/asset-approval-service');
+    const posted = await postAssetChangeApprovalCard(opts.userId, opts.cid, proposal, assetTitle, busAssetApprovalCardPort());
+    await attachAssetChangeProposalCard(opts.userId, proposal.id, posted.msg.id);
+    return { ok: true };
+  } catch (err) {
+    log.warn('approval card dispatch failed', { proposalId: proposal.id, error: logErrorRef(err as Error) });
+    return { ok: false, reason: (err as Error).message || 'unknown' };
+  }
 }
 
 function requireReason(value: unknown): string | { error: string } {
@@ -692,17 +789,17 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
       // 发审批卡片；这里保留"绝不静默生效"这道底线——提议建不出来时也宁可拒绝。
       const substantial = touched.filter((key) => (SUBSTANTIAL_FIELDS as readonly string[]).includes(key));
       if (origin !== 'user_instruction' && substantial.length) {
-        return {
-          content: [
-            `[asset:${assetId}] ${asset.title || '(无标题)'}：这次改动涉及实质内容（${substantial.join(' / ')}），不能由我直接生效。`,
-            '原因：正文/适用范围/敏感级变了，意味着这条资产主张的内容、或者它以后会进出哪一批任务变了，必须由用户确认。',
-            '请把改动意图告诉用户，等用户明确要求后再改；或等审批卡片机制接手（本 feature 的后续阶段）。',
-            origin === 'ai_initiated' && input.origin === undefined
-              ? '（你没有声明 origin，按更保守的"AI 自主"处理；如果是用户明确要求的，带上 origin=user_instruction 与用户原话重试。）'
-              : '',
-          ].filter(Boolean).join('\n'),
-          isError: true,
-        };
+        // 只把**这次真正要改的**字段带进提议：提议的 payload 就是"确认后要写什么"。
+        const proposalPayload: Record<string, unknown> = {};
+        for (const key of substantial) proposalPayload[key] = fields[key];
+        return proposeSubstantialChange(opts, {
+          asset,
+          assetId,
+          payload: proposalPayload,
+          fields: substantial,
+          reason,
+          originDeclared: input.origin !== undefined,
+        });
       }
 
       // 危险操作：改 scopePolicy = 改写"这条资产能进出哪些空间"（跨作用域扩大）。

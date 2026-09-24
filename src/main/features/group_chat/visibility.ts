@@ -137,6 +137,7 @@ export interface GroupMessage {
   recall_citations?: RecallMessageCitation[];
   /** KSTAR lightweight review confirmation card; raw evidence stays in main storage. */
   kstar_review_card?: { kind: 'kstar_review_card'; episodeId: string; reviewId: string; expectedResult?: string; actualResult?: string };
+  asset_change_approval_card?: { kind: 'asset_change_approval'; proposalId: string; assetId: string; assetTitle: string; baselineVersion: string; diff: { before: string; after: string; fields: string[] }; reason: string; actions: Array<'confirm' | 'defer' | 'reject'> };
   /** Plain `@token` list (raw text mentions). */
   mentions?: string[];
   /** 多 Agent 提交快照（PRD FR-016）：当次提交的会话成员、本条点名对象与按来源的

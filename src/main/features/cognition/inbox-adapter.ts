@@ -19,6 +19,8 @@ import {
   recallCandidateConflictingTypes,
   rejectRecallCandidate,
 } from '../recall/candidate-service';
+import { listAssetChangeProposals } from '../recall/asset-approval-service';
+import { decideAssetChangeProposal } from '../recall/asset-approval-service';
 import { listFormalAssets } from '../recall/formal-assets';
 import { buildCognitionInbox, type CognitionInboxItem } from '../recall/formal-assets/inbox';
 import { latestAssetVersionDiff, type AssetVersionDiff } from '../recall/formal-assets/version-diff';
@@ -55,7 +57,7 @@ export type CognitionInboxResolveErrorCode =
 export interface CognitionInboxResolveResult {
   ok: true;
   /** 实际被动到的对象类型与状态，供前端原地更新。 */
-  target: 'recall_candidate';
+  target: 'recall_candidate' | 'asset_change_proposal';
   status: string;
 }
 
@@ -116,6 +118,21 @@ export async function resolveCognitionInboxItem(
     );
   }
 
+  // AI 提议的实质变化（specs/008 US-406 / T046）：清单里的「稍后处理」项在这里处置。
+  if (id.startsWith('proposal:')) {
+    const proposalId = id.slice('proposal:'.length);
+    if (!safeId(proposalId)) throw inboxResolveError('invalid_item_id', `待办 id 里的提议编号不合法：${proposalId}`);
+    if (action !== 'accept' && action !== 'reject' && action !== 'defer') {
+      throw inboxResolveError('unsupported_action', `提议类待办支持 accept / reject / defer，收到 ${action || '(空)'}`);
+    }
+    const result = await decideAssetChangeProposal(
+      userId,
+      proposalId,
+      action === 'accept' ? 'confirm' : action === 'reject' ? 'reject' : 'defer',
+    );
+    return { ok: true, target: 'asset_change_proposal', status: result.state };
+  }
+
   if (ASSET_ITEM_PREFIXES.some((prefix) => id.startsWith(prefix))) {
     throw inboxResolveError(
       'unsupported_item_kind',
@@ -127,6 +144,20 @@ export async function resolveCognitionInboxItem(
 }
 
 export async function listCognitionInbox(userId: string): Promise<CognitionInboxItem[]> {
+  // AI 提议的实质变化：待处理与"稍后处理"都进清单（"稍后不丢"就靠这条）。
+  const pendingAssetChanges = await listAssetChangeProposals(userId)
+    .then((proposals) => proposals
+      .filter((proposal) => proposal.state === 'pending' || proposal.state === 'deferred')
+      .map((proposal) => ({
+        proposalId: proposal.id,
+        assetId: proposal.assetId,
+        ...(proposal.reason ? { reason: proposal.reason } : {}),
+      })))
+    .catch((error) => {
+      log.warn('inbox asset change read degraded', { userId, error: (error as Error).message });
+      return [];
+    });
+
   const [assets, candidates, sourceGroups] = await Promise.all([
     listFormalAssets(userId),
     listRecallCandidates(userId).catch((error) => {
@@ -225,6 +256,7 @@ export async function listCognitionInbox(userId: string): Promise<CognitionInbox
     })),
     unavailableSourceIds,
     latestDiffs,
+    pendingAssetChanges,
     skillStateUnknownAssetIds,
     skillUpgradeCurrentAssetIds,
     skillUpgradeRejectedAssetIds,

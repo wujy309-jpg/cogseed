@@ -350,9 +350,10 @@ describe('写工具（US-402）', () => {
     expect(after.title).toBe('被别人改过');
   });
 
-  it('AI 自主的实质变化：不直接生效（零静默发布）', async () => {
+  it('AI 自主的实质变化：不直接生效（零静默发布），改走审批提议', async () => {
     const asset = await seedAsset('实质变化的守卫基线。');
     const assets = await import('../../../../src/main/features/recall/asset-service');
+    const approval = await import('../../../../src/main/features/recall/asset-approval-service');
     const { edit } = await tools();
 
     for (const fields of [
@@ -362,15 +363,37 @@ describe('写工具（US-402）', () => {
       { sensitivity: 'L2' },
     ]) {
       const out = await call(edit, { assetId: asset.id, fields, reason: '我觉得该改', origin: 'ai_initiated' });
+      // 没有会话上下文 → 卡片发不出去 → **拒绝兜底**（这条分支与建卡路径各有测试，
+      // 提议建不出来时它是"绝不直接生效"的唯一保证）。
       expect(out.isError, JSON.stringify(fields)).toBe(true);
-      expect(out.content).toContain('不能由我直接生效');
+      expect(out.content).toContain('没有生效');
     }
     // 内容与版本分毫未动。
     const after = await assets.readAbilityAsset(TEST_UID, asset.id);
     expect(after.statement).toBe(asset.statement);
     expect(after.version).toBe(asset.version);
     expect(after.sensitivity).toBeUndefined();
-    expect((await assets.listAbilityAssetAudit(TEST_UID, asset.id)).filter((r) => r.actor === 'ai')).toEqual([]);
+    // **没有任何一次内容写入**（actor=ai 的 updated 行不存在）——提议行不算写入。
+    const rows = await assets.listAbilityAssetAudit(TEST_UID, asset.id);
+    expect(rows.filter((r) => r.action === 'updated' && r.actor === 'ai')).toEqual([]);
+    // 但每一次实质变化都留下了提议（4 条）与对应的台账行。
+    const proposals = await approval.listAssetChangeProposals(TEST_UID, { assetId: asset.id });
+    expect(proposals).toHaveLength(4);
+    expect(proposals.every((row) => row.state === 'pending')).toBe(true);
+    expect(rows.filter((r) => r.action === 'approval_proposed' && r.actor === 'ai')).toHaveLength(4);
+  });
+
+  it('实质变化提议去重：同一变更重复提交只留一条', async () => {
+    const asset = await seedAsset('提议去重的基线。');
+    const approval = await import('../../../../src/main/features/recall/asset-approval-service');
+    const { edit } = await tools();
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await call(edit, { assetId: asset.id, fields: { statement: '同一个想法' }, reason: '我觉得该改', origin: 'ai_initiated' });
+    }
+    const proposals = await approval.listAssetChangeProposals(TEST_UID, { assetId: asset.id });
+    expect(proposals).toHaveLength(1);
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    expect((await assets.listAbilityAssetAudit(TEST_UID, asset.id)).filter((r) => r.action === 'approval_proposed')).toHaveLength(1);
   });
 
   it('缺省 origin 按更保守的"AI 自主"处理，并在回执里给出重试方式', async () => {

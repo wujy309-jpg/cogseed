@@ -17,3 +17,36 @@ describe('conversation Recall citations', () => {
     expect(source).toContain('recall.usage.feedback');
   });
 });
+describe('conversation asset approval card (specs/008 US-406)', () => {
+  it('mounts the card in both history and live paths, with a dedupe guard', () => {
+    // 卡片挂载点与透传：历史重载与实时渲染两条路都要挂（只挂一条会让刷新后卡片消失）。
+    expect(source).toContain('asset_change_approval_card');
+    expect(source).toContain('_mountAssetApprovalCard');
+    expect(source).toContain('_renderAssetApprovalCard');
+    expect(source).toContain('_resolveAssetApprovalCard');
+    // 已挂则不再挂（消息重渲染时不重复插入）。
+    expect(source).toContain("if (gm.asset_change_approval_card && !el.querySelector('.chat-asset-approval')) return false;");
+  });
+
+  it('wires the three decisions and re-checks the version on confirm', () => {
+    // 三态按钮名与已定口径一致（确认更新 / 稍后处理 / 拒绝）。
+    expect(source).toContain("'data-asset-approval-action': 'confirm'");
+    expect(source).toContain("'data-asset-approval-action': 'defer'");
+    expect(source).toContain("'data-asset-approval-action': 'reject'");
+    expect(source).toContain("recall.assets.approval.decide");
+    // 历史重载要查一次状态，否则已处置的卡片会又变回"待处理"。
+    expect(source).toContain("recall.assets.approval.read");
+    // 版本重检不一致：卡片保持待处理 + 如实说明，不静默套用。
+    expect(source).toContain('result?.versionConflict');
+    expect(source).toContain("state: 'pending'");
+    // 拟生效内容可编辑，编辑后的值随确认一起回传。
+    expect(source).toContain("'data-asset-approval-field'");
+  });
+
+  it('uses the shared component seams instead of page-local controls', () => {
+    // 新卡片不许自绘按钮/文本域（shared-ui-adoption-guard 的同一要求）。
+    expect(source).toContain('uiButton({ label: t(\'recall.asset_approval.confirm\'');
+    expect(source).toContain('uiTextarea({');
+    expect(source).not.toContain('<button data-asset-approval');
+  });
+});

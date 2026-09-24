@@ -21851,6 +21851,30 @@ body:has(#panel-settings.active) .main-top-actions {
 .chat-kstar-experience { padding-top: 8px; border-top: 1px solid var(--border); font-size: 12px; }
 .chat-kstar-review[data-busy="1"] { opacity: .72; }
 
+/* 资产审批卡片（specs/008 US-406）：与复盘卡同一套排版语言，只多一层字段编辑区。 */
+.chat-asset-approval {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2, var(--surface));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.chat-asset-approval-title { font-weight: 650; }
+.chat-asset-approval-asset,
+.chat-asset-approval-diff,
+.chat-asset-approval-reason { font-size: 12px; color: var(--muted); }
+.chat-asset-approval-hint,
+.chat-asset-approval-note { font-size: 12px; color: var(--muted); }
+.chat-asset-approval-row { display: flex; flex-direction: column; gap: 4px; }
+.chat-asset-approval-label { font-size: 12px; color: var(--muted); }
+.chat-asset-approval-value { font-size: 13px; white-space: pre-wrap; }
+.chat-asset-approval-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.chat-asset-approval-state { font-size: 12px; color: var(--muted); }
+.chat-asset-approval[data-busy="1"] { opacity: .72; }
+
 
 .chat-collaboration-status {
   margin: 10px 12px 12px;

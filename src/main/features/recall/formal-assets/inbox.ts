@@ -52,7 +52,12 @@ export type CognitionInboxKind =
   /** 没有分过敏感级。缺失不等于 L0，所以这是待办而不是默认放行。 */
   | 'sensitivity_unclassified'
   /** 普通待确认候选。 */
-  | 'candidate_pending_review';
+  | 'candidate_pending_review'
+  /**
+   * AI 自主提出的实质变化（specs/008 US-406）：待处理或用户选了「稍后处理」。
+   * 与候选分开：候选是"还没成为资产的东西"，这条是"资产已经在、改动等拍板"。
+   */
+  | 'asset_change_pending';
 
 /**
  * `confirm` = 需要用户明确点头才继续；`low_disturbance` = 列出来即可，
@@ -116,6 +121,8 @@ export interface CognitionInboxInput {
   skillUpgradeCurrentAssetIds?: ReadonlySet<string>;
   /** 用户已明确拒绝当前资产版本的升级，不应重复打扰。 */
   skillUpgradeRejectedAssetIds?: ReadonlySet<string>;
+  /** AI 提议的实质变化里还没拍板的那些（pending / deferred）。 */
+  pendingAssetChanges?: ReadonlyArray<{ proposalId: string; assetId: string; title?: string; reason?: string }>;
 }
 
 const URGENCY: Record<CognitionInboxKind, CognitionInboxUrgency> = {
@@ -132,6 +139,7 @@ const URGENCY: Record<CognitionInboxKind, CognitionInboxUrgency> = {
   source_unavailable: 'confirm',
   sensitivity_unclassified: 'confirm',
   candidate_pending_review: 'low_disturbance',
+  asset_change_pending: 'confirm',
 };
 
 /** 排序权重：先要人点头的，再低打扰的；同级按 kind 稳定排序。 */
@@ -146,6 +154,7 @@ const KIND_ORDER: CognitionInboxKind[] = [
   'rule_boundary_missing',
   'template_updated',
   'evidence_insufficient',
+  'asset_change_pending',
   'candidate_pending_review',
 ];
 
@@ -354,6 +363,15 @@ export function buildCognitionInbox(input: CognitionInboxInput): CognitionInboxI
     if (tryGetRecallCandidateCapabilities(candidate)?.disabledReason !== 'candidate_evidence_insufficient') continue;
     items.push(item('evidence_insufficient', `evidence:${candidate.id}`, candidate.judgment || candidate.id, {
       candidateId: candidate.id,
+    }));
+  }
+
+  // AI 提议的实质变化：还没拍板的都进清单（"稍后处理"不丢，就靠这条）。
+  // 与候选不同，它不依赖任何能力判据——提议已经是既成事实，只等用户点一下。
+  for (const change of input.pendingAssetChanges || []) {
+    items.push(item('asset_change_pending', `proposal:${change.proposalId}`, change.title || change.assetId, {
+      assetId: change.assetId,
+      ...(change.reason ? { detail: change.reason } : {}),
     }));
   }
 

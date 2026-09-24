@@ -4130,6 +4130,7 @@ function _groupMsgToLegacy(gm) {
     ...(Array.isArray(gm.marketplace_requests) && gm.marketplace_requests.length ? { marketplace_requests: gm.marketplace_requests } : {}),
     ...(Array.isArray(gm.wake_requests) && gm.wake_requests.length ? { wake_requests: gm.wake_requests } : {}),
     ...(gm.kstar_review_card ? { kstar_review_card: gm.kstar_review_card } : {}),
+    ...(gm.asset_change_approval_card ? { asset_change_approval_card: gm.asset_change_approval_card } : {}),
     ...(gm.recall_projection_card ? { recall_projection_card: gm.recall_projection_card } : {}),
     ...(gm.projection_receipt ? { projection_receipt: gm.projection_receipt } : {}),
     ...(typeof gm.welcome_carry === 'string' && gm.welcome_carry ? { welcome_carry: gm.welcome_carry } : {}),
@@ -8934,6 +8935,7 @@ function _messageRecordHasMountedSidecars(gm, el, opts = {}) {
   if (Array.isArray(gm.teaching_receipts) && gm.teaching_receipts.length && !el.querySelector('.chat-teaching-receipts')) return false;
   if (Array.isArray(gm.marketplace_requests) && gm.marketplace_requests.length && !el.querySelector('.chat-marketplace-request')) return false;
   if (gm.kstar_review_card && !el.querySelector('.chat-kstar-result-review')) return false;
+  if (gm.asset_change_approval_card && !el.querySelector('.chat-asset-approval')) return false;
   if (gm.recall_projection_card && !el.querySelector('.chat-recall-projection-card')) return false;
   // conv-core：过程显示已由 chat-stream 面板（.cs-flow）接管，老 details
   // 折叠卡（.stream-process）退役。两者任一在挂即算已挂载——只认老卡会让
@@ -10138,6 +10140,10 @@ function appendChatMessage(message, autoScroll = true, opts = {}) {
     const bubble = msgDiv.querySelector('.chat-bubble');
     if (bubble) _mountKstarResultReviewCard(bubble, message.kstar_review_card);
   }
+  if (role === 'assistant' && message.asset_change_approval_card) {
+    const bubble = msgDiv.querySelector('.chat-bubble');
+    if (bubble) _mountAssetApprovalCard(bubble, message.asset_change_approval_card);
+  }
 
   // 预载卡片已按产品决策移除（2026-08-17）：引用资产走自动注入 + LLM 主动
   // 检索工具（search_ability_assets），不再展示可交互的预载确认卡片。
@@ -10505,6 +10511,145 @@ async function _resolveKstarResultReview(card, review, action) {
     card.querySelectorAll('button').forEach((button) => { button.disabled = false; });
     if (typeof uiAlert === 'function') await uiAlert((error && error.message) || String(error));
   }
+}
+
+/* ── 资产审批卡片（specs/008 US-406）──────────────────────────────────────
+ * AI 自主提出的实质变化以卡片呈现：目标资产 / 变更前后 / 依据；拟生效的内容可以
+ * 直接编辑，改完三选一：确认更新 / 稍后处理 / 拒绝。
+ * 卡片是提议不是锁：待处理期间这条资产照常可用。 */
+const _ASSET_APPROVAL_FIELD_LABELS = {
+  statement: ['cognition.asset_version_diff_statement', '正文'],
+  title: ['cognition.asset_version_diff_title_field', '标题'],
+  scope: ['cognition.asset_version_diff_scope', '适用范围'],
+  applicableWhen: ['cognition.asset_edit_field_applicable', '适用场景'],
+  forbiddenWhen: ['cognition.asset_edit_field_forbidden', '禁用场景'],
+  sensitivity: ['recall.asset_approval.field_sensitivity', '敏感级'],
+};
+function _assetApprovalFieldLabel(key) {
+  const entry = _ASSET_APPROVAL_FIELD_LABELS[key];
+  return entry ? t(entry[0], entry[1]) : String(key);
+}
+/** 可编辑的字段：字符串与字符串数组；`sensitivity` 是枚举，只读展示。 */
+function _assetApprovalEditableKeys(payload) {
+  return Object.keys(payload || {}).filter((key) => {
+    if (key === 'sensitivity') return false;
+    const value = payload[key];
+    return typeof value === 'string' || (Array.isArray(value) && value.every((item) => typeof item === 'string'));
+  });
+}
+function _assetApprovalValueToText(value) {
+  return Array.isArray(value) ? value.join('\n') : String(value == null ? '' : value);
+}
+/** 数组字段按行/顿号/分号切回数组：用户怎么分都行，别逼他用某一种分隔符。 */
+function _assetApprovalTextToValue(original, text) {
+  if (!Array.isArray(original)) return String(text == null ? '' : text);
+  return String(text || '').split(/[\n、；;]+/).map((part) => part.trim()).filter(Boolean);
+}
+
+function _renderAssetApprovalCard(card, payload, view = {}) {
+  if (!card || !payload) return;
+  const state = String(view.state || 'pending');
+  const pending = state === 'pending';
+  card.dataset.status = state;
+  card.className = `chat-asset-approval is-${state}`;
+  card.dataset.proposalId = String(payload.proposalId || '');
+  const diff = payload.diff || {};
+  const rows = (Array.isArray(diff.fields) ? diff.fields : []).map((key) => {
+    const editable = pending && _assetApprovalEditableKeys(payload.payload || {}).includes(key);
+    const original = (payload.payload || {})[key];
+    const control = editable
+      ? uiTextarea({
+        value: _assetApprovalValueToText(original),
+        rows: key === 'statement' ? 3 : 2,
+        attrs: { 'data-asset-approval-field': key },
+      })
+      : `<div class="chat-asset-approval-value">${escapeHtml(_assetApprovalValueToText(original))}</div>`;
+    return `<div class="chat-asset-approval-row"><div class="chat-asset-approval-label">${escapeHtml(_assetApprovalFieldLabel(key))}</div>${control}</div>`;
+  }).join('');
+  const actions = pending
+    ? `<div class="chat-asset-approval-actions">
+        ${uiButton({ label: t('recall.asset_approval.confirm', '确认更新'), role: 'primary', size: 'sm', attrs: { 'data-asset-approval-action': 'confirm' } })}
+        ${uiButton({ label: t('recall.asset_approval.defer', '稍后处理'), size: 'sm', attrs: { 'data-asset-approval-action': 'defer' } })}
+        ${uiButton({ label: t('recall.asset_approval.reject', '拒绝'), size: 'sm', attrs: { 'data-asset-approval-action': 'reject' } })}
+      </div>`
+    : `<div class="chat-asset-approval-state">${escapeHtml(_assetApprovalStateText(state, view))}</div>`;
+  card.innerHTML = `
+    <div class="chat-asset-approval-title">${escapeHtml(t('recall.asset_approval.card_title', 'AI 想改这条资产，请你定'))}</div>
+    <div class="chat-asset-approval-asset"><strong>${escapeHtml(t('recall.asset_approval.asset_label', '目标资产'))}</strong> ${escapeHtml(String(payload.assetTitle || payload.assetId || ''))}</div>
+    <div class="chat-asset-approval-diff"><strong>${escapeHtml(t('recall.asset_approval.diff_label', '变更前后'))}</strong> ${escapeHtml(String(diff.before || '—'))} → ${escapeHtml(String(diff.after || '—'))}</div>
+    <div class="chat-asset-approval-reason"><strong>${escapeHtml(t('recall.asset_approval.reason_label', '依据'))}</strong> ${escapeHtml(String(payload.reason || ''))}</div>
+    ${pending && rows ? `<div class="chat-asset-approval-hint">${escapeHtml(t('recall.asset_approval.edit_hint', '下面拟生效的内容可以直接改，改完再确认'))}</div>${rows}` : rows}
+    ${pending ? `<div class="chat-asset-approval-note">${escapeHtml(t('recall.asset_approval.pending_note', '卡片是提议不是锁：还没决定期间，这条资产照常可用。'))}</div>` : ''}
+    ${actions}`;
+  for (const button of card.querySelectorAll('[data-asset-approval-action]')) {
+    button.addEventListener('click', () => _resolveAssetApprovalCard(card, payload, button.dataset.assetApprovalAction));
+  }
+}
+
+function _assetApprovalStateText(state, view = {}) {
+  if (state === 'confirmed') {
+    return view.appliedVersion
+      ? t('recall.asset_approval.applied_version', '已按你确认的内容生效（v{n}）', { n: String(view.appliedVersion) })
+      : t('recall.asset_approval.state_confirmed', '已确认更新');
+  }
+  if (state === 'deferred') return t('recall.asset_approval.state_deferred', '已稍后处理（在待确认清单里）');
+  if (state === 'rejected') return t('recall.asset_approval.state_rejected', '已拒绝');
+  return '';
+}
+
+async function _resolveAssetApprovalCard(card, payload, action) {
+  if (!card || card.dataset.busy === '1') return;
+  card.dataset.busy = '1';
+  card.querySelectorAll('button').forEach((button) => { button.disabled = true; });
+  try {
+    const body = { proposalId: String(payload.proposalId || ''), decision: String(action || '') };
+    if (action === 'confirm') {
+      const edited = {};
+      for (const control of card.querySelectorAll('[data-asset-approval-field]')) {
+        const key = control.dataset.assetApprovalField;
+        edited[key] = _assetApprovalTextToValue((payload.payload || {})[key], control.value);
+      }
+      if (Object.keys(edited).length) body.payload = edited;
+    }
+    const result = await window.cogseed.invoke('recall.assets.approval.decide', body);
+    if (!result?.ok) {
+      // 版本重检不一致：卡片**保持待处理**，如实说明为什么没生效（不静默覆盖）。
+      if (result?.versionConflict) {
+        card.dataset.busy = '';
+        _renderAssetApprovalCard(card, payload, { state: 'pending' });
+        if (typeof uiAlert === 'function') {
+          await uiAlert(t('recall.asset_approval.version_conflict',
+            '这条资产在你看卡片之后被改过（v{a} → v{b}），这次没有生效。请重新看一眼内容再决定。',
+            { a: String(result.versionConflict.baselineVersion || ''), b: String(result.versionConflict.currentVersion || '') }));
+        }
+        return;
+      }
+      throw new Error(result?.error || t('recall.asset_approval.decide_failed', '处置失败：{message}', { message: '' }));
+    }
+    card.dataset.busy = '';
+    const state = String(result.state || (action === 'confirm' ? 'confirmed' : action === 'defer' ? 'deferred' : 'rejected'));
+    _renderAssetApprovalCard(card, payload, { state, ...(result.appliedVersion ? { appliedVersion: result.appliedVersion } : {}) });
+  } catch (error) {
+    card.dataset.busy = '';
+    card.querySelectorAll('button').forEach((button) => { button.disabled = false; });
+    if (typeof uiAlert === 'function') {
+      await uiAlert(t('recall.asset_approval.decide_failed', '处置失败：{message}', { message: (error && error.message) || String(error) }));
+    }
+  }
+}
+
+function _mountAssetApprovalCard(host, payload) {
+  if (!host || !payload?.proposalId) return;
+  const selector = `.chat-asset-approval[data-proposal-id="${CSS.escape(String(payload.proposalId))}"]`;
+  if (host.querySelector(selector)) return;
+  const card = document.createElement('div');
+  host.appendChild(card);
+  _renderAssetApprovalCard(card, payload, { state: 'pending' });
+  // 历史重载时卡片消息是静态载荷：不查一次状态，已处置的卡片会又变回"待处理"。
+  window.cogseed.invoke('recall.assets.approval.read', { proposalId: payload.proposalId }).then((result) => {
+    const state = result?.proposal?.state;
+    if (state && state !== 'pending') _renderAssetApprovalCard(card, payload, { state });
+  }).catch(() => {});
 }
 
 function _mountKstarResultReviewCard(host, review) {
@@ -16691,6 +16836,11 @@ function _finalizeActorPlaceholder(ph, gm, cid, archive) {
   if (gm.kstar_review_card) {
     const bubble = ph.querySelector('.chat-bubble');
     if (bubble) _mountKstarResultReviewCard(bubble, gm.kstar_review_card);
+  }
+
+  if (gm.asset_change_approval_card) {
+    const bubble = ph.querySelector('.chat-bubble');
+    if (bubble) _mountAssetApprovalCard(bubble, gm.asset_change_approval_card);
   }
 
   // Interactive web-app artifacts (chat-app:// iframe). Idempotent — skips

@@ -66,7 +66,10 @@ export interface AbilityAssetAuditRecord extends RecallJsonRecord {
     //   - danger_confirmed / danger_denied：单次确认的结果（含超时/取消=deny）；
     //   - attempt_blocked：被门禁拦下的写尝试——**失败也要留痕**，否则"零静默
     //     放行"只在成功路径上成立，拦下的那些事无从审计。
-    | 'danger_snapshot' | 'danger_confirmed' | 'danger_denied' | 'attempt_blocked';
+    | 'danger_snapshot' | 'danger_confirmed' | 'danger_denied' | 'attempt_blocked'
+    // 审批提议（specs/008 US-406）：AI 提出、用户三态处置、以及用户编辑卡片内容。
+    // 提议本身不改资产，但它必须与"谁在什么时候做了什么决定"绑在同一条履历上。
+    | 'approval_proposed' | 'approval_confirmed' | 'approval_rejected' | 'approval_deferred' | 'approval_edited';
   at: string;
   actor?: AbilityAssetActor;
   note?: string;
@@ -414,7 +417,7 @@ export function diffAbilityAssetsForAudit(
 
 const AUDIT_SENSITIVITY_RANK: Record<string, number> = { L0: 0, L1: 1, L2: 2, L3: 3 };
 /** 台账摘要按**变更前后更严的那一档**处理：降密不该让旧正文的前缀漏进台账。 */
-function strictestSensitivity(values: Array<string | undefined>): string | undefined {
+export function strictestSensitivity(values: Array<string | undefined>): string | undefined {
   let top: string | undefined;
   for (const value of values) {
     if (value === undefined) continue;

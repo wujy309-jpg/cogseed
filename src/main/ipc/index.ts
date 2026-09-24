@@ -56,6 +56,7 @@ import * as cognition from '../features/cognition';
 import * as recallCandidates from '../features/recall/candidate-service';
 import { withRecallCandidateCapabilities } from '../features/recall/candidate-capabilities';
 import * as recallAssets from '../features/recall/asset-service';
+import * as recallAssetApproval from '../features/recall/asset-approval-service';
 import * as recallProfileSync from '../features/recall/personal-profile-sync';
 import * as recallSkillDrafts from '../features/recall/skill-draft-service';
 import * as recallWorkspaceRefs from '../features/recall/workspace-refs';
@@ -2648,6 +2649,24 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (asset.status === 'purged') throw new Error('ability asset has already been purged');
     if (asset.status !== 'deleted') throw new Error('only a deleted ability asset can be purged from the deleted list');
     return { ok: true, asset: await recallAssets.purgeAbilityAsset(ctx.userId, assetId, { actor: 'user', reason: 'user purged from the deleted list' }) };
+  },
+
+  // 审批提议（specs/008 US-406）：读状态 + 三态处置。
+  // 读状态是必须的——卡片消息在历史里是静态载荷，不查一次的话重载后
+  // 已处置的卡片会又变回"待处理"，让用户以为自己没点过。
+  'recall.assets.approval.read': async ({ proposalId } = {}, ctx) => {
+    if (!safeId(proposalId)) throw new Error('invalid asset change proposal id');
+    const proposal = await recallAssetApproval.readAssetChangeProposal(ctx.userId, proposalId);
+    if (!proposal) throw new Error('asset change proposal not found');
+    return { ok: true, proposal };
+  },
+  'recall.assets.approval.decide': async ({ proposalId, decision, payload } = {}, ctx) => {
+    if (!safeId(proposalId)) throw new Error('invalid asset change proposal id');
+    if (!['confirm', 'defer', 'reject'].includes(String(decision))) throw new Error('invalid asset approval decision');
+    if (payload !== undefined && (!payload || typeof payload !== 'object' || Array.isArray(payload))) throw new Error('invalid asset approval payload');
+    return { ok: true, ...(await recallAssetApproval.decideAssetChangeProposal(ctx.userId, proposalId, decision, {
+      ...(payload !== undefined ? { payload: payload as Record<string, unknown> } : {}),
+    })) };
   },
 
   // 资产侧 KSTAR 溯源（2026-09-17）：证据区 kse 引用的批量摘要与单条复盘

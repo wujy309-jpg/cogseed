@@ -2679,6 +2679,7 @@ export interface EnqueueParams {
   projection_receipt?: { projectionId: string; authorization: string };
   recall_citations?: RecallMessageCitation[];
   kstar_review_card?: { kind: 'kstar_review_card'; episodeId: string; reviewId: string; expectedResult?: string; actualResult?: string };
+  asset_change_approval_card?: { kind: 'asset_change_approval'; proposalId: string; assetId: string; assetTitle: string; baselineVersion: string; diff: { before: string; after: string; fields: string[] }; reason: string; actions: Array<'confirm' | 'defer' | 'reject'> };
   produced?: string[];
   form?: ChatFormPayload;
   created_agents?: Array<{
@@ -3552,6 +3553,7 @@ async function _enqueueBody(
       ? { recall_citations: params.recall_citations }
       : {}),
     ...(params.kstar_review_card ? { kstar_review_card: params.kstar_review_card } : {}),
+    ...(params.asset_change_approval_card ? { asset_change_approval_card: params.asset_change_approval_card } : {}),
     ...(params.produced && params.produced.length
       ? { produced: params.produced }
       : {}),
