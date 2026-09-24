@@ -19,6 +19,9 @@ import { createCrossSessionMemoryTool } from '../../../../src/core-agent/src/too
 import { createMetacognitionTool } from '../../../../src/core-agent/src/tools/metacognition-tool';
 import { createLocalTools, createFileTools } from '../../../../src/main/model/core-agent/local-tools';
 import { createKbTools } from '../../../../src/main/model/core-agent/kb-tools';
+import { createRecallTools } from '../../../../src/main/model/core-agent/recall-tools';
+import { createAssetStewardTools } from '../../../../src/main/model/core-agent/asset-steward-tools';
+import { createPersonalOntologyTools } from '../../../../src/main/model/core-agent/personal-ontology-tools';
 import { createChatHistoryTools } from '../../../../src/main/model/core-agent/chat-history-tools';
 import { createMessagingTools } from '../../../../src/main/model/core-agent/messaging-tools';
 import { createImageGenTool } from '../../../../src/main/model/core-agent/image-gen-tool';
@@ -105,6 +108,12 @@ function enumerateAllInjectedTools(): AgentTool[] {
   }));
   tools.push(...createFileTools({ userId: 'testuid', cid: 'testcid' }));
   tools.push(...createKbTools({ userId: 'testuid' }));
+  // recall 组的三个工厂都要枚举到，否则这一组工具整体漏在反漂移之外
+  // （2026-09-25 补：此前 createRecallTools / createAssetStewardTools /
+  //  createPersonalOntologyTools 都没被调用，catalog 少一行也不会变红）。
+  tools.push(...createRecallTools({ userId: 'testuid' }));
+  tools.push(...createAssetStewardTools({ userId: 'testuid' }));
+  tools.push(...createPersonalOntologyTools({ userId: 'testuid' }));
   tools.push(...createChatHistoryTools({ userId: 'testuid' }));
   tools.push(...createMessagingTools({ userId: 'testuid', cid: 'testcid' }));
   tools.push(createImageGenTool({ userId: 'testuid', cid: 'testcid' }));
@@ -192,6 +201,14 @@ function toolByName(name: string): AgentTool {
 describe('tool-catalog', () => {
   it('TOOL_CATALOG covers every tool name injected by runner (anti-drift)', () => {
     const injected = enumerateAllInjectedToolNames();
+    // 枚举本身也要覆盖到 recall 组：工厂没被调用时这一组会整体隐身，
+    // 反漂移就成了一句空话（2026-09-25 补的洞）。
+    for (const name of [
+      'search_ability_assets', 'personal_ontology_fields',
+      'list_ability_assets', 'read_ability_asset',
+    ]) {
+      expect(injected.has(name), `enumerateAllInjectedTools 漏了 ${name}`).toBe(true);
+    }
     const catalog = new Set(TOOL_CATALOG.map((e) => e.name));
     const missing = [...injected].filter((n) => !catalog.has(n));
     expect(missing, `Injected tools missing from TOOL_CATALOG: ${missing.join(', ')}`).toEqual([]);
@@ -276,6 +293,8 @@ describe('tool-catalog', () => {
       create_pptx: ['slides', 'shapes', 'images', 'path'],
       cross_session_memory: ['remember', 'agent', 'shared', 'user', 'routing', 'language', 'proper nouns', 'add', 'replace', 'remove', 'list'],
       metacognition: ['competence', 'strategies', 'content limits', 'rejected', 'condense', 'read', 'write'],
+      list_ability_assets: ['全量', 'offset', '总数', '已删除'],
+      read_ability_asset: ['chunk', '2000', '不可用'],
     };
 
     const missing: string[] = [];

@@ -60,6 +60,7 @@ import { createOfficeTools } from './office-tools';
 import { officeCliAvailable } from '../../features/office/office_engine';
 import { createKbTools } from './kb-tools';
 import { createRecallTools } from './recall-tools';
+import { createAssetStewardTools } from './asset-steward-tools';
 import { createPersonalOntologyTools } from './personal-ontology-tools';
 import { createChatHistoryTools } from './chat-history-tools';
 import { createMessagingTools } from './messaging-tools';
@@ -411,6 +412,30 @@ function splitCommanderOrchestrationBlock(prompt: string): { stable: string; orc
 
 /** Exported for unit tests — see runner.test.ts. */
 export const _splitCommanderOrchestrationBlock = splitCommanderOrchestrationBlock;
+
+/**
+ * 只读会话（`toolAccess: 'read-only'`）的**闭合**工具允许集。
+ *
+ * 语义是「**无副作用 actor 的最小工具集**」，不是「所有读操作」：
+ *   - 这里每一个工具都只读本机文件/网络/库，不写用户数据；
+ *   - **资产工具一律不在其中（读与写都不进）**——资产库是用户私有全量数据，
+ *     开给从属 actor 属权限扩张；而且资产读取本身就会写注入回执与使用流水
+ *     （见 recall-tools 的 agent_read 留痕），根本不是无副作用的。
+ *     从属 actor 需要资产时走「任务装配时注入允许切片」，不开全库工具。
+ *
+ * 导出是为了让不变量可被测试钉住（`asset-steward-tools.test.ts`），不是给
+ * 调用方拼装——要加工具请改这里并同步那条测试的判据。
+ */
+export const READ_ONLY_TOOL_ALLOWLIST: ReadonlySet<string> = new Set([
+  'read_file', 'stat_file', 'search_files', 'grep_files', 'list_files',
+  'web_search', 'web_fetch', 'kb_list', 'kb_search', 'kb_read',
+  'tool_result_search', 'tool_result_read_chunk',
+]);
+
+/** 只读会话下保留的 core-agent 内建工具（同样是闭合集）。 */
+export const READ_ONLY_BUILTIN_ALLOWLIST: ReadonlySet<string> = new Set([
+  'read_file', 'list_files', 'web_fetch', 'web_search',
+]);
 
 export async function buildRunner(params: BuildRunnerParams): Promise<{
   runner: AgentRunnerInstance;
@@ -819,6 +844,18 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     ...(params.userMessage ? { taskText: params.userMessage } : {}),
   }) : [];
 
+  // 资产管家工具（specs/008 US-401/402）：全量浏览、读全文、按用户指令改动。
+  // 与 search_ability_assets 分开：那是任务执行期的取用（写 agent_read 回执与
+  // 使用流水），这是管理视角（看全貌、改内容），读也不该记成"任务用了它"。
+  // 同样注入给主会话与 group_chat 各 actor，且**不进只读白名单**（见下）。
+  const assetStewardTools = uid && !params.disableTools ? createAssetStewardTools({
+    userId: uid,
+    ...(params.turnId ? { turnId: params.turnId } : {}),
+    ...(params.cid ? { cid: params.cid } : {}),
+    ...(params.spaceId ? { spaceId: params.spaceId } : {}),
+    ...(params.userMessage ? { taskText: params.userMessage } : {}),
+  }) : [];
+
   // Personal Ontology read-only tools (personal_ontology_fields). Gives skills
   // the installed role-template field list through the PO contract instead of
   // shelling out to read groups.md / <template_id>.md by hand.
@@ -971,6 +1008,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     ...fileTools,
     ...kbTools,
     ...recallTools,
+    ...assetStewardTools,
     ...personalOntologyTools,
     ...chatHistoryTools,
     ...messagingTools,
@@ -995,20 +1033,12 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     ? []
     : allTools.filter((tool) => isToolVisibleToAgent(tool.name, agentId));
   if (!params.disableTools && params.toolAccess === 'read-only') {
-    const readOnlyAllowlist = new Set([
-      'read_file', 'stat_file', 'search_files', 'grep_files', 'list_files',
-      'web_search', 'web_fetch', 'kb_list', 'kb_search', 'kb_read',
-      'tool_result_search', 'tool_result_read_chunk',
-    ]);
-    visibleTools = visibleTools.filter((tool) => readOnlyAllowlist.has(tool.name));
+    visibleTools = visibleTools.filter((tool) => READ_ONLY_TOOL_ALLOWLIST.has(tool.name));
   }
   const visibleToolNameSet = new Set(visibleTools.map((tool) => tool.name));
   let builtinTools = params.disableTools ? [] : mod.getBuiltinTools();
   if (!params.disableTools && params.toolAccess === 'read-only') {
-    const readOnlyBuiltinAllowlist = new Set([
-      'read_file', 'list_files', 'web_fetch', 'web_search',
-    ]);
-    builtinTools = builtinTools.filter((t) => readOnlyBuiltinAllowlist.has(t.name));
+    builtinTools = builtinTools.filter((t) => READ_ONLY_BUILTIN_ALLOWLIST.has(t.name));
   }
 
   // Apply one simple 8K per-result policy at AgentRunner's FINAL result
