@@ -259,16 +259,6 @@ function validateState(userId: string, raw: Record<string, unknown>, conversatio
     (raw.lastRoutedUserMessageId !== undefined && (typeof raw.lastRoutedUserMessageId !== 'string' || !safeId(raw.lastRoutedUserMessageId))) ||
     typeof raw.createdAt !== 'string' || typeof raw.updatedAt !== 'string'
   ) throw new Error('malformed kstar conversation task state');
-  if (raw.pendingTaskStart !== undefined) {
-    const pending = raw.pendingTaskStart as Record<string, unknown>;
-    if (
-      typeof pending !== 'object' || pending === null ||
-      typeof pending.userMessageId !== 'string' || !safeId(pending.userMessageId) ||
-      typeof pending.text !== 'string' || !pending.text.trim() || pending.text.length > MAX_GOAL ||
-      (pending.workspaceId !== undefined && (typeof pending.workspaceId !== 'string' || !safeId(pending.workspaceId))) ||
-      pending.reason !== 'topic_switch'
-    ) throw new Error('malformed kstar pending task start');
-  }
   const projectionDecisions = raw.projectionDecisions === undefined
     ? undefined
     : normalizeProjectionDecisions(raw.projectionDecisions, conversationId);

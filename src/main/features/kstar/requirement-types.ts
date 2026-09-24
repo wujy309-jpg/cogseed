@@ -59,13 +59,6 @@ export interface KstarRequirementPrmReview {
   evidenceRefs: CognitionSourceRef[];
 }
 
-export interface KstarPendingTaskStart {
-  userMessageId: string;
-  text: string;
-  workspaceId?: string;
-  reason: 'topic_switch';
-}
-
 export interface KstarTaskRecord extends KstarJsonRecord {
   schemaVersion: 1;
   conversationId: string;
@@ -171,7 +164,6 @@ export interface KstarConversationTaskStateRecord extends KstarJsonRecord {
   currentRequirementId?: string;
   requirementJustClosed?: string;
   taskComplete: boolean;
-  pendingTaskStart?: KstarPendingTaskStart;
   /** ISO timestamp of the scheduled auto-close (静默窗口到期)。任务终态后
    *  写入；用户新消息到达即清除；重启后由 recoverPendingAutoClosures 恢复。 */
   pendingAutoCloseAt?: string;
