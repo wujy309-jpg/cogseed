@@ -9134,5 +9134,17 @@
   "cognition.inbox_batch_partial": "Classified {applied}, {failed} failed — the failures stay in the list",
   "cognition.asset_edit_field_sensitivity": "Sensitivity (unclassified is not L0; leave unselected to keep as-is)",
   "cognition.asset_sensitivity_label": "Sensitivity",
-  "cognition.asset_sensitivity_unclassified": "Unclassified"
+  "cognition.asset_sensitivity_unclassified": "Unclassified",
+  "personalOntology.dialog_close": "Close",
+  "personalOntology.value_edit_field_label": "Value",
+  "personalOntology.value_edit_asof_label": "Information as of (optional)",
+  "personalOntology.value_edit_asof_hint": "Format YYYY-MM; save while empty = remove the timestamp; leave untouched = keep",
+  "personalOntology.value_edit_save": "Save",
+  "personalOntology.asof_invalid_error": "Time must look like YYYY-MM (e.g. 2026-09); nothing was saved",
+  "personalOntology.conflict_dialog_title": "Possible conflict with an existing value",
+  "personalOntology.conflict_dialog_body": "Field \"{field}\" already has a semantically similar value. Please double-check before writing — this is a heads-up, not a verdict.",
+  "personalOntology.conflict_dialog_keep": "Write anyway",
+  "personalOntology.conflict_dialog_restricted": "(the other value is restricted; its text is not shown)",
+  "personalOntology.use_conflict_notice": "Heads-up: field \"{field}\" has two possibly conflicting entries ({a} vs {b}). Weigh both; do not trust only one side.",
+  "personalOntology.use_conflict_notice_restricted": "Heads-up: field \"{field}\" has two possibly conflicting entries (one is restricted and not shown). Weigh both."
 }

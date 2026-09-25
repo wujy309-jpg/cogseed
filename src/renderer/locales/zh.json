@@ -9134,5 +9134,17 @@
   "cognition.inbox_batch_partial": "分级 {applied} 条，{failed} 条没成功——失败的留在待办里",
   "cognition.asset_edit_field_sensitivity": "敏感级（未分级不等于 L0；不选＝维持现状）",
   "cognition.asset_sensitivity_label": "敏感级",
-  "cognition.asset_sensitivity_unclassified": "未分级"
+  "cognition.asset_sensitivity_unclassified": "未分级",
+  "personalOntology.dialog_close": "关闭",
+  "personalOntology.value_edit_field_label": "值",
+  "personalOntology.value_edit_asof_label": "信息截至时间（可选）",
+  "personalOntology.value_edit_asof_hint": "格式 YYYY-MM；清空并保存 = 删除时间标注；不动 = 保留",
+  "personalOntology.value_edit_save": "保存",
+  "personalOntology.asof_invalid_error": "时间格式应为 YYYY-MM（如 2026-09），未保存",
+  "personalOntology.conflict_dialog_title": "可能与现有值矛盾",
+  "personalOntology.conflict_dialog_body": "字段「{field}」里已有语义相近的值。写入前请确认——这不是判定，只是提醒。",
+  "personalOntology.conflict_dialog_keep": "仍然写入",
+  "personalOntology.conflict_dialog_restricted": "（另一条值已标记受限，内容不显示）",
+  "personalOntology.use_conflict_notice": "提醒：字段「{field}」存在两条可能矛盾的信息（其一：{a}；其二：{b}），请综合判断，不要只采信一边。",
+  "personalOntology.use_conflict_notice_restricted": "提醒：字段「{field}」存在两条可能矛盾的信息（其中一条受限不显示），请综合判断。"
 }

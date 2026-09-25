@@ -1300,25 +1300,78 @@
     await _pocReloadBoxData();
   }
 
-  /** US-101 条目级编辑：uiPrompt 预填原值；空值/纯空白、与原值相同都就地短路
-   * 且不发请求；只送 value/oldValue——source/asOf 等六标记由主进程原样保留（T016）。 */
-  async function _pocEditValuePrompt(fieldName, value, gid) {
+  /** US-101 条目级编辑 + US-901 时间锚录入口（specs/014 T009）：共享弹层
+   *  （uiModal + uiField）双字段——值（必填，预填原值）+「信息截至时间」
+   *  （可选，预填既有 asOf）。B1① 的分开表达：时间栏没动 = 保留（不发 asOf）；
+   *  清空 = 显式删除（clearAsOf:true）；改了 = 设置。非法格式就地提示、不发
+   *  请求；空值/与原值相同仍走 009 的既有短路口径。 */
+  async function _pocEditValuePrompt(fieldName, value, gid, currentAsOf) {
     if (!gid) return;
     const oldValue = String(value || '');
-    const next = (typeof uiPrompt === 'function')
-      ? await uiPrompt(_t('personalOntology.value_edit_tip', '编辑这条值'), oldValue)
-      : null;
-    if (next === null) return; // 用户取消不是失败，不报错（与 append/remove 同口径）
-    const trimmed = String(next || '').trim();
+    const existingAsOf = String(currentAsOf || '');
+    if (typeof window.uiModal !== 'function') {
+      // 极简上下文（无弹层原语）退回 009 的单字段形态——能力降级，不是死路。
+      const next = (typeof uiPrompt === 'function')
+        ? await uiPrompt(_t('personalOntology.value_edit_tip', '编辑这条值'), oldValue)
+        : null;
+      if (next === null) return; // 用户取消不是失败，不报错（与 append/remove 同口径）
+      const trimmed = String(next || '').trim();
+      if (!trimmed) {
+        _pocToast('personalOntology.value_empty_error', '值不能为空，未保存', 'error');
+        return;
+      }
+      if (trimmed === oldValue) {
+        _pocToast('personalOntology.value_unchanged_hint', '内容没有变化', 'info');
+        return;
+      }
+      if (await _pocGroupAction('personalOntology.groups.fields.setValue', { groupId: gid, fieldName, value: trimmed, oldValue })) {
+        _pocToast('personalOntology.field_value_updated', '已更新');
+        await _pocReloadBoxData();
+      }
+      return;
+    }
+    const valueId = `poc-edit-value-${gid}`;
+    const asOfId = `poc-edit-asof-${gid}`;
+    const fieldHtml = (id, label, inputValue, hint) => (typeof window.uiField === 'function'
+      ? window.uiField({ id, label, ...(hint ? { hint } : {}), control: { id, value: inputValue, ...(id === asOfId ? { placeholder: 'YYYY-MM' } : {}) } })
+      : `<label class="field"><span>${escapeHtml(label)}</span>${_input({ id, value: inputValue, ...(id === asOfId ? { attrs: { placeholder: 'YYYY-MM' } } : {}) })}</label>`);
+    const dialog = await window.uiModal({
+      title: _t('personalOntology.value_edit_tip', '编辑这条值'),
+      closeLabel: _t('personalOntology.dialog_close', '关闭'),
+      bodyHtml: `<div class="personal-onto-edit-fields">
+        ${fieldHtml(valueId, _t('personalOntology.value_edit_field_label', '值'), oldValue)}
+        ${fieldHtml(asOfId, _t('personalOntology.value_edit_asof_label', '信息截至时间（可选）'), existingAsOf, _t('personalOntology.value_edit_asof_hint', '格式 YYYY-MM；清空并保存 = 删除时间标注；不动 = 保留'))}
+      </div>`,
+      actions: [
+        { label: _t('common.cancel', '取消'), id: 'cancel', role: 'secondary' },
+        { label: _t('personalOntology.value_edit_save', '保存'), id: 'save', role: 'primary' },
+      ],
+    });
+    if (!dialog || dialog.value !== 'save') return; // 取消不是失败，不报错
+    const valueEl = document.getElementById(valueId);
+    const asOfEl = document.getElementById(asOfId);
+    const trimmed = String((valueEl && valueEl.value) || '').trim();
+    const nextAsOf = String((asOfEl && asOfEl.value) || '').trim();
     if (!trimmed) {
       _pocToast('personalOntology.value_empty_error', '值不能为空，未保存', 'error');
       return;
     }
-    if (trimmed === oldValue) {
+    if (trimmed === oldValue && nextAsOf === existingAsOf) {
       _pocToast('personalOntology.value_unchanged_hint', '内容没有变化', 'info');
       return;
     }
-    if (await _pocGroupAction('personalOntology.groups.fields.setValue', { groupId: gid, fieldName, value: trimmed, oldValue })) {
+    // 提交前格式预校验（M11 口径）：非法就地提示，不发请求。
+    if (nextAsOf && !/^((?:19|20)\d{2})-(0[1-9]|1[0-2])$/.test(nextAsOf)) {
+      _pocToast('personalOntology.asof_invalid_error', '时间格式应为 YYYY-MM（如 2026-09），未保存', 'error');
+      return;
+    }
+    // B1① 分开表达：没动时间栏 = 不发 asOf/clearAsOf；清空 = clearAsOf；改了 = asOf。
+    const payload = { groupId: gid, fieldName, value: trimmed, oldValue };
+    if (nextAsOf !== existingAsOf) {
+      if (nextAsOf) payload.asOf = nextAsOf;
+      else payload.clearAsOf = true;
+    }
+    if (await _pocGroupAction('personalOntology.groups.fields.setValue', payload)) {
       _pocToast('personalOntology.field_value_updated', '已更新');
       await _pocReloadBoxData();
     }
@@ -1611,7 +1664,7 @@
         const field = el.getAttribute('data-poc-field');
         const value = el.getAttribute('data-poc-value');
         if (op === 'append-value') await _pocAppendValuePrompt(field, gid);
-        else if (op === 'edit-value') await _pocEditValuePrompt(field, value, gid);
+        else if (op === 'edit-value') await _pocEditValuePrompt(field, value, gid, el.getAttribute('data-poc-asof') || '');
         else if (op === 'remove-value') await _pocRemoveValue(field, value, gid);
         else if (op === 'verify-value') await _pocToggleValueVerified(el, field, value, gid);
         else if (op === 'cycle-rulekind') await _pocCycleRuleKind(el, field, value, gid);

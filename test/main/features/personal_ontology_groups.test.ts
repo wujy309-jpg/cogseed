@@ -911,3 +911,77 @@ describe('projection-knowledge › restricted values stay out of ontology facts'
     // ——该断言钉住数据层字段确实携带标记（注入侧过滤已由代码路径覆盖）。
   });
 });
+
+/* ═══════════ 时间锚三态（specs/014 T005 / US-901 / M11 / M12）═══════════ */
+
+describe('personal_ontology_groups › asOf 三态（specs/014 T005）', () => {
+  it('T008① 不传 asOfControl 的落盘与旧路径逐字相同（SC-001 / I-1）', async () => {
+    const groups = await loadModule();
+    const created = await groups.createGroup(UID, '三态组');
+    const gid = created.group!.group_id;
+    await groups.appendFieldValue(UID, gid, '居住地', '常住北京', '手动', 'p1', '2026-09');
+    const before = fs.readFileSync(path.join(groupsDir(), `${gid}.md`), 'utf8');
+
+    const res = await groups.setFieldValue(UID, gid, '居住地', '常住北京', '常住北京朝阳');
+    expect(res.ok).toBe(true);
+    const after = fs.readFileSync(path.join(groupsDir(), `${gid}.md`), 'utf8');
+    // 缺省三态：只改 value，其余标记（source/project/asOf）逐字保留（M12 / I-2）。
+    expect(after).toBe(before.replace('常住北京', '常住北京朝阳'));
+    const fields = await groups.listGroupFields(UID, gid);
+    expect(fields.fields?.[0].values[0])
+      .toMatchObject({ value: '常住北京朝阳', source: '手动', project: 'p1', asOf: '2026-09' });
+  });
+
+  it('T008② 过去的合法日期可写入并按既有规则标超龄（M11 修正半句 / I-4）', async () => {
+    const groups = await loadModule();
+    const created = await groups.createGroup(UID, '三态组过去');
+    const gid = created.group!.group_id;
+    const res = await groups.setFieldValue(UID, gid, '毕业时间', '2020 年本科毕业', 'x', undefined, undefined, { asOf: '1999-01' });
+    // 先造值行
+    expect(res.error).toBe('field value not found');
+    await groups.appendFieldValue(UID, gid, '毕业时间', '2020 年本科毕业', '手动', undefined, undefined, { asOf: '1999-01' });
+    const fields = await groups.listGroupFields(UID, gid);
+    expect(fields.fields?.[0].values[0].asOf).toBe('1999-01');
+    expect(groups.isStaleAsOf(fields.fields?.[0].values[0].asOf)).toBe(true);
+  });
+
+  it('T008③ 非法 asOf 报错且内容未变（M11 格式半句 / I-3）', async () => {
+    const groups = await loadModule();
+    const created = await groups.createGroup(UID, '三态组非法');
+    const gid = created.group!.group_id;
+    await groups.appendFieldValue(UID, gid, '居住地', '常住北京', '手动');
+    const before = fs.readFileSync(path.join(groupsDir(), `${gid}.md`), 'utf8');
+    for (const bad of ['2100-01', '2026-13', '2026-9', 'abcd-ef']) {
+      const res = await groups.setFieldValue(UID, gid, '居住地', '常住北京', '常住上海', { asOf: bad });
+      expect(res).toEqual({ ok: false, error: 'invalid asof' });
+      const append = await groups.appendFieldValue(UID, gid, '备用', 'x', '手动', undefined, undefined, { asOf: bad });
+      expect(append).toEqual({ ok: false, error: 'invalid asof' });
+    }
+    expect(fs.readFileSync(path.join(groupsDir(), `${gid}.md`), 'utf8')).toBe(before);
+  });
+
+  it('T008④ asOf 与 clearAsOf 同时出现报冲突，内容未变', async () => {
+    const groups = await loadModule();
+    const created = await groups.createGroup(UID, '三态组冲突');
+    const gid = created.group!.group_id;
+    await groups.appendFieldValue(UID, gid, '居住地', '常住北京', '手动', 'p1', '2026-09');
+    const before = fs.readFileSync(path.join(groupsDir(), `${gid}.md`), 'utf8');
+    const res = await groups.setFieldValue(UID, gid, '居住地', '常住北京', '常住上海', { asOf: '2026-01', clearAsOf: true });
+    expect(res).toEqual({ ok: false, error: 'conflicting asof params' });
+    expect(fs.readFileSync(path.join(groupsDir(), `${gid}.md`), 'utf8')).toBe(before);
+  });
+
+  it('T008⑤ clearAsOf 只删时间锚，其余标记逐字不变（I-5）', async () => {
+    const groups = await loadModule();
+    const created = await groups.createGroup(UID, '三态组清除');
+    const gid = created.group!.group_id;
+    await groups.appendFieldValue(UID, gid, '居住地', '常住北京', '手动', 'p1', '2026-09');
+    await groups.setFieldValueVerified(UID, gid, '居住地', '常住北京', true);
+    const res = await groups.setFieldValue(UID, gid, '居住地', '常住北京', '常住北京', { clearAsOf: true });
+    expect(res.ok).toBe(true);
+    const fields = await groups.listGroupFields(UID, gid);
+    expect(fields.fields?.[0].values[0])
+      .toMatchObject({ value: '常住北京', source: '手动', project: 'p1', verified: true });
+    expect(fields.fields?.[0].values[0].asOf).toBeUndefined();
+  });
+});

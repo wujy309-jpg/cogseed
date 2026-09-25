@@ -134,6 +134,37 @@ export function isStaleAsOf(asOf: string | undefined, now: Date = new Date()): b
   return monthsSince > ASOF_STALE_MONTHS;
 }
 
+/* ── 时间锚三态（specs/014 T005 / US-901，B1① 的「分开表达」）──────────────
+ * 表单语义：时间栏预填现有值；用户没动 = 保留（缺省）；清空 = 显式删除
+ * （clearAsOf）；填了新值 = 设置（asOf）。区分靠表单 dirty 检测，不靠猜。
+ * M11：只校验格式（1900-2099 + 01-12），过去的合法日期**不拒收**——超龄
+ * 是标记不是判死（isStaleAsOf 同一哲学）。 */
+
+export interface AsOfControl {
+  asOf?: string;
+  clearAsOf?: boolean;
+}
+
+export type AsOfControlResolution =
+  | { ok: true; mode: 'keep' | 'set' | 'clear'; asOf?: string }
+  | { ok: false; error: 'invalid asof' | 'conflicting asof params' };
+
+/** 三态裁决唯一处：格式复用 `ASOF_MARKER_RE` 的语义（`asof:` 前缀形式），
+ *  不新写第二份正则口径。同时给 asOf + clearAsOf → 报错。 */
+export function resolveAsOfControl(control: AsOfControl): AsOfControlResolution {
+  const hasSet = control.asOf !== undefined;
+  const hasClear = control.clearAsOf === true;
+  if (hasSet && hasClear) return { ok: false, error: 'conflicting asof params' };
+  if (hasSet) {
+    const candidate = String(control.asOf ?? '').trim();
+    if (!candidate) return { ok: false, error: 'invalid asof' };
+    if (!ASOF_MARKER_RE.test(`asof:${candidate}`)) return { ok: false, error: 'invalid asof' };
+    return { ok: true, mode: 'set', asOf: candidate };
+  }
+  if (hasClear) return { ok: true, mode: 'clear' };
+  return { ok: true, mode: 'keep' };
+}
+
 /** 组内容文件的结构化视图：字段区（多值）+ 流水区（条目数组）。 */
 export interface GroupContent {
   fields: Record<string, FieldValue[]>;
@@ -988,6 +1019,9 @@ export async function appendFieldValue(
   /** 信息截至年月（YYYY-MM，落 `@asof:`）。候选确认等智能写入自动带当前月
    *  ——蓝图 R26：确认时刻认为正确，就该有时间锚。用户手写不带，不强制。 */
   asOf?: string,
+  /** 时间锚三态（specs/014 T005 / US-901）：`asOf` 设置、`clearAsOf` 显式清除、
+   *  都缺省 = 不改动。与上面的位置参数互斥语义由 `resolveAsOfControl` 收口。 */
+  asOfControl?: AsOfControl,
 ): Promise<SimpleResult> {
   if (!safeId(uid)) return { ok: false, error: 'invalid uid' };
   const name = String(fieldName || '').trim();
@@ -996,7 +1030,15 @@ export async function appendFieldValue(
   if (!val) return { ok: false, error: 'empty value' };
   const src = normalizeSource(source);
   const proj = project ? String(project).trim() : undefined;
-  const validAsOf = asOf && /^((?:19|20)\d{2})-(0[1-9]|1[0-2])$/.test(asOf) ? asOf : undefined;
+  // 三态裁决唯一处（specs/014）：用户线非法要**报错不写**（M11/I-3）；
+  // 智能线（既有位置参数）维持「非法静默忽略」的容错口径（A5 保护面，不改）。
+  if (asOfControl) {
+    const resolved = resolveAsOfControl(asOfControl);
+    if (!resolved.ok) return resolved;
+  }
+  const validAsOf = asOfControl
+    ? (asOfControl.asOf !== undefined ? asOfControl.asOf : undefined)
+    : (asOf && ASOF_MARKER_RE.test(`asof:${asOf}`) ? asOf : undefined);
 
   let existingSnapshot: string[] = [];
   let appended = false;
@@ -1028,12 +1070,19 @@ export async function setFieldValue(
   fieldName: string,
   oldValue: string,
   newValue: string,
+  /** 时间锚三态（specs/014 T005 / M12）：缺省 = 保留既有 asOf（009 的承诺，
+   *  展开语义天然满足）；`asOf` = 设置；`clearAsOf` = 显式清除。 */
+  asOfControl?: AsOfControl,
 ): Promise<SimpleResult> {
   if (!safeId(uid)) return { ok: false, error: 'invalid uid' };
   const name = String(fieldName || '').trim();
   const next = String(newValue ?? '').trim();
   if (!name) return { ok: false, error: 'field name required' };
   if (!next) return { ok: false, error: 'empty value' };
+  if (asOfControl) {
+    const resolved = resolveAsOfControl(asOfControl);
+    if (!resolved.ok) return resolved;
+  }
 
   return mutateGroupContent(uid, groupId, (content) => {
     const values = content.fields[name];
@@ -1042,7 +1091,15 @@ export async function setFieldValue(
     if (idx === -1) return { ok: false, error: 'field value not found' };
     // D12：value_edit 的前后摘要（受限行编辑后仍受限，before/after 都脱敏）。
     const beforeSummary = summarizeFieldValue(values[idx]);
-    values[idx] = { ...values[idx], value: next };
+    // 三态落盘（specs/014 T005）：set/clear 只动 asOf 键，其余标记逐字保留。
+    if (asOfControl?.asOf !== undefined) {
+      values[idx] = { ...values[idx], value: next, asOf: asOfControl.asOf };
+    } else if (asOfControl?.clearAsOf === true) {
+      const { asOf: _drop, ...rest } = values[idx];
+      values[idx] = { ...rest, value: next };
+    } else {
+      values[idx] = { ...values[idx], value: next };
+    }
     return { changed: true, beforeSummary, afterSummary: summarizeFieldValue(values[idx]) };
   }, { action: 'value_edit', field: name });
 }

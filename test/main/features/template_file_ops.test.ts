@@ -539,3 +539,41 @@ describe('template_file_ops › D5 变更前留档（模板分节写路径快照
     expect(readHistorySnapshots(groupId)).toHaveLength(1);
   });
 });
+
+/* ═══════════ 时间锚三态 · 模板分节同款（specs/014 T006）═══════════ */
+
+describe('template_file_ops › asOf 三态透传（specs/014 T006）', () => {
+  it('分节字段：set 清除/设置/缺省三态与普通组一致；非法报错不写', async () => {
+    const m = await loadMod();
+    await m.installTemplateFile(UID, 'student');
+    const groups = await m.readGroups(UID);
+    const row = groups.find((g) => g.template_id === 'student')!;
+    const ref = m.buildContentRef(row.group_id, '学习背景');
+    await m.appendFieldValueToRef(UID, ref, '教育阶段', '本科在读', '手动', undefined, '2026-01');
+
+    // 缺省：只改值，保留 asOf（M12）。
+    expect((await m.setFieldValueToRef(UID, ref, '教育阶段', '本科在读', '本科四年级')).ok).toBe(true);
+    let fields = await m.listFieldsByRef(UID, ref);
+    expect(fields.fields?.find((f) => f.name === '教育阶段')?.values[0])
+      .toMatchObject({ value: '本科四年级', asOf: '2026-01' });
+
+    // set：换锚。
+    expect((await m.setFieldValueToRef(UID, ref, '教育阶段', '本科四年级', '本科四年级', { asOf: '2026-05' })).ok).toBe(true);
+    fields = await m.listFieldsByRef(UID, ref);
+    expect(fields.fields?.find((f) => f.name === '教育阶段')?.values[0].asOf).toBe('2026-05');
+
+    // clear：只删锚。
+    expect((await m.setFieldValueToRef(UID, ref, '教育阶段', '本科四年级', '本科四年级', { clearAsOf: true })).ok).toBe(true);
+    fields = await m.listFieldsByRef(UID, ref);
+    expect(fields.fields?.find((f) => f.name === '教育阶段')?.values[0].asOf).toBeUndefined();
+
+    // 非法：报错且文件未变。
+    const before = readFile('student.md');
+    expect(await m.setFieldValueToRef(UID, ref, '教育阶段', '本科四年级', '本科四年级', { asOf: '2026-13' }))
+      .toEqual({ ok: false, error: 'invalid asof' });
+    expect(readFile('student.md')).toBe(before);
+    // 用户线 append 的非法同样报错。
+    expect(await m.appendFieldValueToRef(UID, ref, '教育阶段', '硕士在读', '手动', undefined, undefined, { asOf: '2026-9' }))
+      .toEqual({ ok: false, error: 'invalid asof' });
+  });
+});

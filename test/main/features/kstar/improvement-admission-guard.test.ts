@@ -60,6 +60,7 @@ const F = {
   approvalService: 'src/main/features/recall/asset-approval-service.ts',
   profileSync: 'src/main/features/recall/personal-profile-sync.ts',
   cleanupReport: 'src/main/features/recall/cleanup-report-service.ts',
+  classification: 'src/main/features/recall/asset-classification-service.ts',
 } as const;
 
 function rel(abs: string): string {
@@ -372,6 +373,10 @@ describe('T046 ② 不存在第二处「采用判定」', () => {
     {
       file: F.cleanupReport,
       why: '**另一个域**的状态枚举：大扫除条目的处置结果 `CleanupItemStatus`，与「资产被采用」无关。',
+    },
+    {
+      file: F.classification,
+      why: '**另一个域**的返回体字段（specs/010 US-305）：批量**敏感级分级**的成功清单名恰好叫 applied（applied/failed/skipped），判定的是「这条资产定级写成功没有」，与「资产被任务采用」无关。',
     },
   ];
 

@@ -7017,5 +7017,17 @@
   "cognition.inbox_batch_partial": "{applied} 件を分類、{failed} 件は失敗——失敗した項目はリストに残ります",
   "cognition.asset_edit_field_sensitivity": "センシティビティ（未分類は L0 ではありません。未選択＝現状維持）",
   "cognition.asset_sensitivity_label": "センシティビティ",
-  "cognition.asset_sensitivity_unclassified": "未分類"
+  "cognition.asset_sensitivity_unclassified": "未分類",
+  "personalOntology.dialog_close": "閉じる",
+  "personalOntology.value_edit_field_label": "値",
+  "personalOntology.value_edit_asof_label": "情報の基準時点（任意）",
+  "personalOntology.value_edit_asof_hint": "形式 YYYY-MM。空のまま保存 = 時刻表記を削除。触らない = そのまま保持",
+  "personalOntology.value_edit_save": "保存",
+  "personalOntology.asof_invalid_error": "時刻は YYYY-MM 形式（例: 2026-09）にしてください。保存されていません",
+  "personalOntology.conflict_dialog_title": "既存の値と矛盾する可能性",
+  "personalOntology.conflict_dialog_body": "フィールド「{field}」に意味の近い値が既にあります。書き込む前に確認してください——判定ではなく注意喚起です。",
+  "personalOntology.conflict_dialog_keep": "それでも書き込む",
+  "personalOntology.conflict_dialog_restricted": "（もう一方の値は制限付きのため本文は表示しません）",
+  "personalOntology.use_conflict_notice": "注意：フィールド「{field}」に矛盾する可能性のある 2 つの情報があります（{a} と {b}）。両方を総合的に判断してください。",
+  "personalOntology.use_conflict_notice_restricted": "注意：フィールド「{field}」に矛盾する可能性のある 2 つの情報があります（一方は制限付きで非表示）。総合的に判断してください。"
 }

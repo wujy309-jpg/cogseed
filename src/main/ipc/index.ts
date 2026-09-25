@@ -4158,17 +4158,31 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (!groupId || typeof groupId !== 'string') throw new Error('missing groupId');
     return personalOntologyTemplateFiles.listFieldsByRef(ctx.userId, groupId);
   },
-  'personalOntology.groups.fields.append': async ({ groupId, fieldName, value, source }, ctx) => {
+  'personalOntology.groups.fields.append': async ({ groupId, fieldName, value, source, asOf, clearAsOf }, ctx) => {
     if (!groupId || typeof groupId !== 'string') throw new Error('missing groupId');
     if (!fieldName || typeof fieldName !== 'string') throw new Error('missing fieldName');
     if (typeof value !== 'string') throw new Error('missing value');
-    return personalOntologyTemplateFiles.appendFieldValueToRef(ctx.userId, groupId, fieldName, value, typeof source === 'string' ? source : '手动');
+    // 时间锚三态（specs/014 T007）：只做类型校验，语义校验在 features 的
+    // resolveAsOfControl 唯一处（错误码原样回渲染层）。
+    if (asOf !== undefined && typeof asOf !== 'string') throw new Error('invalid asOf');
+    if (clearAsOf !== undefined && typeof clearAsOf !== 'boolean') throw new Error('invalid clearAsOf');
+    return personalOntologyTemplateFiles.appendFieldValueToRef(
+      ctx.userId, groupId, fieldName, value, typeof source === 'string' ? source : '手动',
+      undefined,
+      undefined,
+      asOf === undefined && clearAsOf === undefined ? undefined : { asOf, clearAsOf },
+    );
   },
-  'personalOntology.groups.fields.setValue': async ({ groupId, fieldName, value, oldValue }, ctx) => {
+  'personalOntology.groups.fields.setValue': async ({ groupId, fieldName, value, oldValue, asOf, clearAsOf }, ctx) => {
     if (!groupId || typeof groupId !== 'string') throw new Error('missing groupId');
     if (!fieldName || typeof fieldName !== 'string') throw new Error('missing fieldName');
     if (typeof value !== 'string') throw new Error('invalid value');
-    return personalOntologyTemplateFiles.setFieldValueToRef(ctx.userId, groupId, fieldName, String(oldValue ?? ''), value);
+    if (asOf !== undefined && typeof asOf !== 'string') throw new Error('invalid asOf');
+    if (clearAsOf !== undefined && typeof clearAsOf !== 'boolean') throw new Error('invalid clearAsOf');
+    return personalOntologyTemplateFiles.setFieldValueToRef(
+      ctx.userId, groupId, fieldName, String(oldValue ?? ''), value,
+      asOf === undefined && clearAsOf === undefined ? undefined : { asOf, clearAsOf },
+    );
   },
   // 断言核实档（2026-09-20；spec 007 升两档）：标记/取消一条值的核实状态。
   // verified: false 取消 / true 有来源支持 / 'independent' 独立核实过。

@@ -47,6 +47,8 @@ import {
   type FieldValue,
   type GroupMeta,
   type GroupFieldInfo,
+  type AsOfControl,
+  resolveAsOfControl,
 } from './personal_ontology_groups';
 import { createLogger } from '../logger';
 import { registerDeferred } from '../util/boot_init';
@@ -730,10 +732,12 @@ export async function appendFieldValueToRef(
   project?: string,
   /** 信息截至年月（YYYY-MM，落 `@asof:`），普通组路径透传给 appendFieldValue。 */
   asOf?: string,
+  /** 时间锚三态（specs/014 T006）：用户线的 set/clear，与普通组同款。 */
+  asOfControl?: AsOfControl,
 ): Promise<{ ok: boolean; error?: string }> {
   if (!safeId(uid)) return { ok: false, error: 'invalid uid' };
   const { groupId, section } = splitContentRef(ref);
-  if (!section) return appendFieldValue(uid, groupId, fieldName, value, source, project, asOf);
+  if (!section) return appendFieldValue(uid, groupId, fieldName, value, source, project, asOf, asOfControl);
 
   const name = String(fieldName || '').trim();
   const val = String(value ?? '').trim();
@@ -741,7 +745,14 @@ export async function appendFieldValueToRef(
   if (!val) return { ok: false, error: 'empty value' };
   const src = normalizeSource(source);
   const proj = project ? String(project).trim() : undefined;
-  const validAsOf = asOf && /^((?:19|20)\d{2})-(0[1-9]|1[0-2])$/.test(asOf) ? asOf : undefined;
+  // 用户线非法报错不写（M11）；智能线维持位置参数的容错口径。
+  if (asOfControl) {
+    const resolved = resolveAsOfControl(asOfControl);
+    if (!resolved.ok) return resolved;
+  }
+  const validAsOf = asOfControl
+    ? (asOfControl.asOf !== undefined ? asOfControl.asOf : undefined)
+    : (asOf && /^asof:((?:19|20)\d{2})-(0[1-9]|1[0-2])$/.test(`asof:${asOf}`) ? asOf : undefined);
 
   const meta = findTemplateMeta(uid, groupId);
   if (!meta) return { ok: false, error: 'template group not found' };
@@ -890,15 +901,21 @@ export async function setFieldValueToRef(
   fieldName: string,
   oldValue: string,
   newValue: string,
+  /** 时间锚三态（specs/014 T006）：与普通组 setFieldValue 同款，透传。 */
+  asOfControl?: AsOfControl,
 ): Promise<{ ok: boolean; error?: string }> {
   if (!safeId(uid)) return { ok: false, error: 'invalid uid' };
   const name = String(fieldName || '').trim();
   const next = String(newValue ?? '').trim();
   if (!name) return { ok: false, error: 'field name required' };
   if (!next) return { ok: false, error: 'empty value' };
+  if (asOfControl) {
+    const resolved = resolveAsOfControl(asOfControl);
+    if (!resolved.ok) return resolved;
+  }
 
   const { groupId, section } = splitContentRef(ref);
-  if (!section) return setFieldValue(uid, groupId, name, String(oldValue ?? ''), next);
+  if (!section) return setFieldValue(uid, groupId, name, String(oldValue ?? ''), next, asOfControl);
 
   const meta = findTemplateMeta(uid, groupId);
   if (!meta) return { ok: false, error: 'template group not found' };
@@ -910,7 +927,15 @@ export async function setFieldValueToRef(
     if (!values) return { ok: false, error: 'field value not found' };
     const idx = values.findIndex((fv) => fv.value === oldValue);
     if (idx === -1) return { ok: false, error: 'field value not found' };
-    values[idx] = { ...values[idx], value: next };
+    // 三态落盘（specs/014 T006）：与普通组同一语义——set/clear 只动 asOf 键。
+    if (asOfControl?.asOf !== undefined) {
+      values[idx] = { ...values[idx], value: next, asOf: asOfControl.asOf };
+    } else if (asOfControl?.clearAsOf === true) {
+      const { asOf: _drop, ...rest } = values[idx];
+      values[idx] = { ...rest, value: next };
+    } else {
+      values[idx] = { ...values[idx], value: next };
+    }
     return { changed: true };
   });
 }

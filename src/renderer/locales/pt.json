@@ -7017,5 +7017,17 @@
   "cognition.inbox_batch_partial": "Classificados {applied}, {failed} falharam — as falhas ficam na lista",
   "cognition.asset_edit_field_sensitivity": "Sensibilidade (não classificado não é L0; não selecionar = manter como está)",
   "cognition.asset_sensitivity_label": "Sensibilidade",
-  "cognition.asset_sensitivity_unclassified": "Não classificado"
+  "cognition.asset_sensitivity_unclassified": "Não classificado",
+  "personalOntology.dialog_close": "Fechar",
+  "personalOntology.value_edit_field_label": "Valor",
+  "personalOntology.value_edit_asof_label": "Informação em (opcional)",
+  "personalOntology.value_edit_asof_hint": "Formato YYYY-MM; salvar vazio = remover a marcação de tempo; não mexer = manter",
+  "personalOntology.value_edit_save": "Salvar",
+  "personalOntology.asof_invalid_error": "O tempo deve estar em YYYY-MM (ex.: 2026-09); nada foi salvo",
+  "personalOntology.conflict_dialog_title": "Possível conflito com um valor existente",
+  "personalOntology.conflict_dialog_body": "O campo \"{field}\" já tem um valor semanticamente parecido. Confira antes de gravar — é um aviso, não um veredito.",
+  "personalOntology.conflict_dialog_keep": "Gravar mesmo assim",
+  "personalOntology.conflict_dialog_restricted": "(o outro valor é restrito; o texto não é exibido)",
+  "personalOntology.use_conflict_notice": "Aviso: o campo \"{field}\" tem duas informações possivelmente conflitantes ({a} vs {b}). Pese as duas; não confie apenas em uma.",
+  "personalOntology.use_conflict_notice_restricted": "Aviso: o campo \"{field}\" tem duas informações possivelmente conflitantes (uma é restrita e não aparece). Pese as duas."
 }

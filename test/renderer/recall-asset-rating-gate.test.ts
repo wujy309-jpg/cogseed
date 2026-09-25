@@ -24,7 +24,9 @@ const zh: Record<string, string> = JSON.parse(
 );
 
 function installSharedUi(context: vm.Context) {
-  for (const file of ['icons.js', 'ui-button.js', 'ui-form.js', 'ui-empty.js', 'ui-segmented-control.js']) {
+  // ui-status.js（uiTag 等）与 ui-segmented-control.js 同为 index.html 静态共享层——
+  // 夹具必须与真机同构（specs/010 T026 起详情页有档位章，缺它整页渲染抛错）。
+  for (const file of ['icons.js', 'ui-button.js', 'ui-form.js', 'ui-empty.js', 'ui-status.js', 'ui-segmented-control.js']) {
     vm.runInContext(fs.readFileSync(path.join(root, 'src/renderer/modules', file), 'utf8'), context, { filename: file });
   }
 }
