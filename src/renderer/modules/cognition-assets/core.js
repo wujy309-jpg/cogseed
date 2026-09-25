@@ -247,6 +247,11 @@
         // 具体规则标识（US-604 AC1）：界面据此说明"哪条规则拦的"，
         // 而不是把主进程的英文原文甩给用户。
         error.blockRule = result.blockRule || '';
+        // 结构化业务返回体不能被这一层吞掉（specs/015 US-702 T022）：版本冲突
+        // 是"被拒绝的一次确认"，不是普通失败——渲染层要靠 versionConflict 里
+        // 的版本号才能如实提示并按当前在用版重新展示差异。只搬运字段，不做判定。
+        if (result.versionConflict) error.versionConflict = result.versionConflict;
+        if (result.state) error.state = result.state;
         throw error;
       }
       return result == null ? {} : result;
@@ -276,6 +281,13 @@
     captureSettings: null,
     /** 资产详情按需拉的版本链（版本组 2026-09-16）：{assetId, versions}。 */
     assetVersions: null,
+    /** 确认更新撞版本冲突的就地状态（specs/015 US-702 T022，2026-09-25）：
+     *  {candidateId, baselineVersion, currentVersion, targetVersionUsed,
+     *   currentStatement, versionsLoading, versionsFailed} 或 null。
+     *  只表达一个事实——"这次确认没有生效，资产在你确认前被改过"，并给冲突块
+     *  提供**当前在用版正文**（重展示差异的数据源）。候选仍是待处理；这里不存
+     *  任何"已完成"语义，处置（重锚/稍后/拒绝）后立即清空。 */
+    candidateVersionConflict: null,
     /** KSTAR 溯源（2026-09-17）：{[episodeId]: {goal,status,at}} 摘要缓存；
      *  kstarEpisode 为点开中的单条详情 {episodeId, episode, review}。 */
     kstarSummaries: null,
@@ -487,10 +499,11 @@
   };
 
   /** 资产详情按需拉版本链（版本组 2026-09-16）。按资产缓存；失败降级为
-   *  空列表（版本链区静默不渲染）。 */
-  NS.loadAssetVersions = async function loadAssetVersions(assetId) {
+   *  空列表（版本链区静默不渲染）。`force`（specs/015 T022）：版本冲突后必须
+   *  重拉——缓存里的链正是冲突前那一份，拿它重展示差异等于拿旧差异糊弄用户。 */
+  NS.loadAssetVersions = async function loadAssetVersions(assetId, force) {
     const id = String(assetId || '');
-    if (!id || (store.assetVersions && store.assetVersions.assetId === id)) return;
+    if (!id || (!force && store.assetVersions && store.assetVersions.assetId === id)) return;
     store.assetVersions = { assetId: id, loading: true };
     NS.notify();
     let versions = [];
@@ -940,11 +953,70 @@
   // originKindOf 已随出身收敛退役（2026-09-20）：「模型记的=已确定」，
   // 出身三值不再是显示或行为维度；出身章与转正动作一并移除。
 
+  /* ── 确认更新撞版本冲突的就地处置（specs/015 US-702 T022）────────────────
+   * 确认时主进程在 `updateAbilityAsset` **锁内**比对"候选锚定的版本"与"当前
+   * 在用版"；不一致就返回结构化冲突（资产零改动、候选不落终态）。渲染层在这
+   * 里做三件事：
+   *  ① 把冲突摆成页面状态（视图据此如实说"这次没有生效"）——决不静默覆盖、
+   *     决不当成成功、**决不自动重试**；
+   *  ② 重取资产与**版本链**（缓存里那份正是冲突前的旧链，拿它展示差异等于拿
+   *     旧差异糊弄用户），从中取当前在用版正文喂给冲突块；
+   *  ③ 等用户看过"对当前版差异"后点「按当前版本重新确认」——那一次点击才带
+   *     `confirmBaselineVersion`（见 actions.decideCandidate 的 rebase 分支）。
+   * 候选在此之后仍是待处理（`recall.candidates.read` 的真实状态），本函数不写
+   * 任何终态、不改候选。 */
+  async function openCandidateVersionConflict(candidate, conflict) {
+    const candidateId = String(candidate.id || '');
+    const targetAssetId = String(candidate.targetAssetId || '');
+    store.candidateVersionConflict = {
+      candidateId,
+      baselineVersion: String((conflict && conflict.baselineVersion) || ''),
+      currentVersion: String((conflict && conflict.currentVersion) || ''),
+      targetVersionUsed: String((conflict && conflict.targetVersionUsed) || ''),
+      currentStatement: '',
+      /** 当前在用版的快照（versions.list 里那一版）：冲突块按它逐字段重摆
+       *  「当前 → 拟生效」的差异。读不到就是 null——界面据此如实说读不到。 */
+      currentSnapshot: null,
+      versionsLoading: !!targetAssetId,
+      versionsFailed: false,
+    };
+    NS.notify();
+    if (targetAssetId) store.assetVersions = null;
+    // 资产列表与版本链都重取：正文与在用版号要一致（冲突正是"它们变了"）。
+    await NS.reload();
+    if (!targetAssetId) return;
+    await NS.loadAssetVersions(targetAssetId, true);
+    const state = store.candidateVersionConflict;
+    if (!state || state.candidateId !== candidateId) return;
+    const versions = (store.assetVersions && String(store.assetVersions.assetId || '') === targetAssetId)
+      ? store.assetVersions.versions
+      : [];
+    const row = (versions || []).find((v) => String(v.version) === String(state.currentVersion));
+    const snapshot = (row && row.snapshot) || null;
+    const statement = String((snapshot && snapshot.statement) || '').trim();
+    // 读不到正文（版本链没拉到/当前版号在链里找不到）如实记为失败：冲突块说
+    // "没能读到当前版本正文"，不拿空的或旧的正文冒充。
+    store.candidateVersionConflict = {
+      ...state, currentSnapshot: snapshot, currentStatement: statement, versionsLoading: false, versionsFailed: !statement,
+    };
+    NS.notify();
+  }
+
   const actions = {
     /** 采纳：可选携带编辑后的字段（adjust=true 时从表单读取）。 */
     async adoptCandidate(candidateId, formValues) {
       const candidate = store.candidates.find((c) => c.id === candidateId);
       if (!candidate) return;
+      // 版本冲突后的**再次确认**（specs/015 T022③）：冲突状态还挂在这个候选上
+      // 时，用户这次点击就是"我已看过对当前在用版的差异，再确认一次"——把
+      // `confirmBaselineVersion = 冲突返回的当前在用版` 带下去，主进程在资产锁内
+      // 再校验一次。这只是把用户这一次点击的意图传下去，**不是自动重试**：撞了
+      // 冲突就停下（见下面的 catch），没有任何代码会替用户重发。
+      const conflictState = store.candidateVersionConflict
+        && String(store.candidateVersionConflict.candidateId) === String(candidateId)
+        ? store.candidateVersionConflict
+        : null;
+      const confirmBaselineVersion = String((conflictState && conflictState.currentVersion) || '');
       if (candidate.risk === 'high') {
         const ok = await confirmUser(T('cognition.candidate_high_risk_confirm', '这是高风险资产变更。确认继续保存吗？'));
         if (!ok) return;
@@ -971,11 +1043,25 @@
       }
       // 版本组防分裂（2026-09-16）：create 候选与现有资产语义高度相似时后端
       // 拦下并返回专用错误码——问用户"仍存新条目"还是回来改为更新。
-      const promote = (force) => api.call('recall.candidates.promote', { candidateId, forceCreateSimilar: force, ...(candidate.risk === 'high' ? { riskAcknowledged: true } : {}) });
+      // 重锚声明只挂在"主确认"这一次调用上：相似资产的二次选择（`promote(true)`）
+      // 是另一条分流，主进程对 create 落点也没有版本比对面。
+      const promote = (force, baseline) => api.call('recall.candidates.promote', {
+        candidateId,
+        forceCreateSimilar: force,
+        ...(candidate.risk === 'high' ? { riskAcknowledged: true } : {}),
+        ...(baseline ? { confirmBaselineVersion: baseline } : {}),
+      });
       let result;
       try {
-        result = await promote(false);
+        result = await promote(false, confirmBaselineVersion);
       } catch (error) {
+        // 版本冲突（specs/015 US-702）：这条资产在确认前被改过——**这次没有
+        // 生效**（不是部分生效、更不是静默覆盖）。把结构化冲突摆到页面上，按
+        // 当前在用版重新展示差异并等用户显式重新确认；不自动重试。
+        if (error && error.versionConflict) {
+          await openCandidateVersionConflict(candidate, error.versionConflict);
+          return;
+        }
         if (error && error.code === 'recall_candidate_similar_asset') {
           const info = String(error.message || '').replace(/^similar asset [^ ]+ /, '').replace(/ \(score [\d.]+\)$/, '');
           // 相似确认改双选（2026-09-17 报告建议 F）：此前用「确认=新条目 /
@@ -1026,6 +1112,14 @@
           throw error;
         }
       }
+      // 存量候选没有记录任务当时的版本（`versionCheckSkipped`）：主进程没有可
+      // 核对的对象，这次确认照常生效——但必须如实说清"无法核对改进对象"，绝不
+      // 假装核过（T022⑤）。这条只出现在确认成功的返回体上。
+      if (result && result.versionCheckSkipped === true) {
+        toast(T('cognition.candidate_version_check_skipped', '这条候选没有记录任务当时的版本，无法核对改进对象；本次确认按当前内容生效。'), 'warning');
+      }
+      // 确认已落地：冲突状态不再成立（重锚成功也走这里）。
+      store.candidateVersionConflict = null;
       // 晋升可能改变个人画像投影：异步刷新本体，失败只提醒不阻断（资产已落库）。
       void (async () => {
         if (typeof window.refreshPersonalOntology !== 'function') return;
@@ -1050,6 +1144,10 @@
       const channel = CANDIDATE_CHANNELS[action];
       if (!channel) return;
       await api.call(channel, { candidateId });
+      // 已处置（稍后/拒绝/忽略）：冲突提示不再成立——候选已离开待确认。
+      if (store.candidateVersionConflict && String(store.candidateVersionConflict.candidateId) === String(candidateId)) {
+        store.candidateVersionConflict = null;
+      }
       if (action === 'defer') {
         // 「稍后处理」的提示与导航随语境分流（2026-09-16 子安口径）：
         // 整理页=内容被送进待我处理，提示去向；待我处理页内=人已在此，

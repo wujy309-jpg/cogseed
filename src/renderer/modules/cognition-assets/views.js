@@ -533,12 +533,28 @@
       : T('cognition.chain_adoption_empty', '没有查到这条方法的实际采用记录。'))}</p>`;
   }
 
+  /** 这条候选正在展示的"版本冲突"状态（core.openCandidateVersionConflict 写入）。
+   *  冲突后依据链必须按**当前在用版**说话：正文与在用版号都以冲突返回体为准
+   *  （资产列表即使没刷新成功，也不许拿旧版号/旧正文冒充当前版）。 */
+  function candidateConflictState(candidate) {
+    const state = S.candidateVersionConflict;
+    if (!state || String(state.candidateId) !== String((candidate || {}).id)) return null;
+    return state;
+  }
+
   function improvementChainBlock(candidate) {
     const mutating = ['update', 'limit_scope'].includes(String(candidate.suggestedAction || ''));
     if (!mutating || !candidate.targetAssetId) return '';
     const target = S.assets.find((a) => String(a.id) === String(candidate.targetAssetId));
     if (!target) return '';
-    const activeVersion = String(target.activeVersion || target.version || '1');
+    const conflict = candidateConflictState(candidate);
+    const activeVersion = String((conflict && conflict.currentVersion) || target.activeVersion || target.version || '1');
+    // 冲突态下正文只认冲突返回体那一份（core 刚强制重拉的当前在用版快照）：
+    // 读不到就说读不到，**不退回资产列表里的旧正文**——拿旧正文当"当前版"
+    // 正是这一步要消灭的假象。
+    const activeStatement = (conflict
+      ? String(conflict.currentStatement || '')
+      : String(target.statement || '')).trim();
     const usedVersion = String(candidate.targetVersionUsed || '');
     // 既有版本核对预提示原样保留（展示期口径；确认期冲突是另一回事）。
     const mismatch = usedVersion && usedVersion !== activeVersion
@@ -615,10 +631,18 @@
     // ⑦ 改动点：当前在用版正文（长值折叠）+ 拟生效内容的位置提示。
     //    拟生效的正文就在紧跟本块的编辑区/正文里：这里再复制一份，用户改了控件
     //    上面的摘要还是旧文本（"显示 A 实际 B"）——所以只指位置，不复制内容。
-    const changedField = field(
-      T('cognition.chain_changed_label', '改动点'),
-      `${foldValue(`${T('cognition.candidate_current_version', '当前版本（v{n}）', { n: activeVersion })}：${String(target.statement || '').trim()}`)}<p class="note">${esc(T('cognition.chain_proposed_hint', '这条候选拟生效的内容在下面，可对照当前版本核对。'))}</p>`,
-    );
+    //    正处版本冲突时按冲突块的口径说话（当前在用版正文 / 确定性读不到）。
+    const changedField = conflict
+      ? field(
+        T('cognition.chain_changed_label', '改动点'),
+        activeStatement
+          ? foldValue(`${T('cognition.candidate_current_version', '当前版本（v{n}）', { n: activeVersion })}：${activeStatement}`)
+          : `<p class="note">${esc(T('cognition.candidate_version_conflict_body_missing', '没能读到当前在用版的正文，无法核对改进对象——先刷新页面再试；也可以先稍后处理或拒绝。'))}</p>`,
+      )
+      : field(
+        T('cognition.chain_changed_label', '改动点'),
+        `${foldValue(`${T('cognition.candidate_current_version', '当前版本（v{n}）', { n: activeVersion })}：${activeStatement}`)}<p class="note">${esc(T('cognition.chain_proposed_hint', '这条候选拟生效的内容在下面，可对照当前版本核对。'))}</p>`,
+      );
 
     return `<div class="sect-block ca-chain">
       ${mismatch}
@@ -633,6 +657,79 @@
       ${fusionNote}
     </div>`;
   }
+
+  /* ────────────── 确认更新撞版本冲突（specs/015 US-702 T022，2026-09-25）──────
+   * 确认时主进程在资产锁内判定"候选锚定的版本 ≠ 当前在用版"：这次**没有生效**
+   * （资产零改动、候选仍待处理）。这里做四件事：
+   *  ① 如实说清"没生效、也没覆盖"（不静默覆盖，更不假装成功）；
+   *  ② 按**当前在用版**重新摆一次差异——正文取 versions.list 的当前在用版快照
+   *     （core 已强制重拉，不是候选生成时那份旧差异）；
+   *  ③ 给「按当前版本重新确认」——只有用户点它才会重发这次确认（core.adoptCandidate
+   *     在该候选仍有冲突状态时随这次点击带 `confirmBaselineVersion = 当前在用版`），
+   *     绝不自动重试；
+   *  ④ 拿不到当前在用版正文时如实说"无法核对改进对象"，且**不给**重锚按钮
+   *     （用户没看过最新差异就重锚 = 又一次盲确认，正是本流程要消灭的东西；
+   *     稍后处理/拒绝仍在，不至于死锁）。存量候选没有版本锚点（versionCheckSkipped）
+   *     走的是依据链既有的"无法核对改进对象"表述，同样没有重锚按钮。 */
+  function candidateVersionConflictBlock(candidate, canPromote) {
+    const state = candidateConflictState(candidate);
+    if (!state) return '';
+    const used = String(state.targetVersionUsed || '');
+    const baseline = String(state.baselineVersion || used || '');
+    const current = String(state.currentVersion || '');
+    const field = (text, inner) => `<div class="field"><span>${esc(text)}</span>${inner}</div>`;
+    // ① 不静默覆盖：事实优先，版本号读不全时退回不给数字的表述（不编版本号）。
+    const notApplied = baseline && current
+      ? T('cognition.candidate_version_conflict_not_applied', '这条方法在你确认之前被改过（v{baseline} → v{current}），这次确认没有生效，也没有覆盖现在的版本。', { baseline, current })
+      : T('cognition.candidate_version_conflict_not_applied_plain', '这条方法在你确认之前被改过，这次确认没有生效，也没有覆盖现在的版本。');
+    const head = `<div class="warn">${esc(notApplied)}</div>
+      <div class="tt">${esc(T('cognition.candidate_version_conflict_title', '按当前在用版重新核对'))}</div>`;
+
+    // 读不到当前在用版正文：如实说，不给重锚按钮（见文件头 ④）。
+    if (state.versionsLoading) {
+      return `<div class="sect-block ca-version-conflict" data-version-conflict="${esc(String(candidate.id || ''))}">
+        ${head}<p class="note">${esc(T('cognition.candidate_version_conflict_loading', '正在读取当前在用版的正文…'))}</p>
+      </div>`;
+    }
+    const snapshot = state.currentSnapshot || null;
+    const currentStatement = String(((snapshot || {}).statement) || '').trim();
+    if (state.versionsFailed || !currentStatement) {
+      return `<div class="sect-block ca-version-conflict" data-version-conflict="${esc(String(candidate.id || ''))}">
+        ${head}<p class="note">${esc(T('cognition.candidate_version_conflict_body_missing', '没能读到当前在用版的正文，无法核对改进对象——先刷新页面再试；也可以先稍后处理或拒绝。'))}</p>
+      </div>`;
+    }
+
+    // ② 按当前在用版重新摆差异：短字段逐项「当前 → 拟生效」，正文两份摊开。
+    //    只列真的不同的项（对齐资产侧版本对比的呈现口径），全同则明说一致。
+    const text = (value) => (Array.isArray(value) ? value.join('、') : String(value || '')).trim() || '—';
+    const rows = [
+      [T('cognition.asset_version_diff_title_field', '标题'), text(snapshot.title), text(candidate.summary)],
+      [T('cognition.asset_edit_field_applicable', '适用场景'), text(snapshot.applicableWhen), text(candidate.applicableWhen)],
+      [T('cognition.asset_edit_field_forbidden', '禁用场景'), text(snapshot.forbiddenWhen), text(candidate.forbiddenWhen)],
+      [T('cognition.asset_version_diff_scope', '适用范围'), text(snapshot.scope), text(candidate.suggestedScope)],
+    ].filter((row) => row[1] !== row[2]);
+    const fieldDiffRows = rows.length
+      ? rows.map(([name, from, to]) => `<div class="meta-item"><span class="meta-k">${esc(name)}</span><span class="meta-v">${esc(from)} → ${esc(to)}</span></div>`).join('')
+      : `<p class="note">${esc(T('cognition.asset_version_diff_same', '两版内容一致。'))}</p>`;
+    const bodyFields = [
+      field(T('cognition.candidate_version_conflict_current_body', '当前在用（v{n}）的正文', { n: current }), foldValue(currentStatement)),
+      field(T('cognition.candidate_version_conflict_proposed_body', '这条候选拟生效的内容'), foldValue(String(candidate.judgment || ''))),
+    ].join('');
+    // ③ 再次确认：只有用户点它才重发确认（act 与「确认更新」同一个写入通道，
+    //    区别由 core 侧的冲突状态承载——附带 confirmBaselineVersion = 当前在用版），
+    //    绝不自动重试。重锚按钮只在能摆出差异时给（见文件头 ④）。
+    const rebase = canPromote && current
+      ? `<div class="actions actions-right">${btn(T('cognition.candidate_version_conflict_rebase', '按当前版本重新确认'), 'cand-adopt-with-form', { id: candidate.id, data: { rebase: '1' }, primary: true })}</div>`
+      : '';
+    return `<div class="sect-block ca-version-conflict" data-version-conflict="${esc(String(candidate.id || ''))}">
+      ${head}
+      ${fieldDiffRows}
+      ${bodyFields}
+      <div class="note">${esc(T('cognition.candidate_fusion_note', '确认后会把这段内容与下面的当前版本融合成一个新版本（旧内容保留、可随时切回），不是覆盖。'))}</div>
+      ${rebase}
+    </div>`;
+  }
+
   /** 待确认口径（2026-09-16 B1 统一）：需要用户判断且未被"稍后处理"静音。
    *  统计卡与全局 stats 共用这一份（单一事实源），杜绝 7/5/0 三数分叉；
    *  deferred 行仍在列表可见（子安口径：与待确认同形态），只是不占
@@ -651,6 +748,32 @@
     }
     return T('cognition.candidate_untitled', '未命名候选');
   };
+
+  /* ── 决策三态与按钮名（specs/015 US-702 T023，2026-09-25）──────────────
+   * 判据只有一个：**改的是已存在的那条方法**才说「确认更新」——即
+   * `suggestedAction ∈ {update, limit_scope}` **且**带 `targetAssetId`。
+   *  - 没有目标方法的候选（`create`，或 `update` 却缺 `targetAssetId`）一律按
+   *    新建型渲染：对不存在的旧版说"更新"是假话；
+   *  - `pause` 提案（主进程走 pauseAbilityAsset，没有版本比对面）也保持既有
+   *    措辞：它既不是"更新成新版"，也没有可重锚的差异面；
+   *  - 「稍后处理 / 拒绝」的**更新型**文案与 008 审批卡片共用同一批词条：
+   *    产品口径是"两边三态与按钮名统一"（spec.md L40），共用键从源头杜绝
+   *    两处各写一套后漂移；新建型的「保存并使用 / 不保存」保持既有措辞。 */
+  const candidateUpdateType = (candidate) => {
+    const action = String((candidate || {}).suggestedAction || '');
+    return (action === 'update' || action === 'limit_scope') && !!String((candidate || {}).targetAssetId || '');
+  };
+  const candidateDecisionLabels = (candidate) => (candidateUpdateType(candidate)
+    ? {
+      promote: T('recall.asset_approval.confirm', '确认更新'),
+      defer: T('recall.asset_approval.defer', '稍后处理'),
+      reject: T('recall.asset_approval.reject', '拒绝'),
+    }
+    : {
+      promote: T('cognition.candidate_save_and_use', '保存并使用'),
+      defer: T('cognition.candidate_defer_action', '稍后处理'),
+      reject: T('cognition.candidate_reject', '不保存'),
+    });
 
   /* 整理任务行内动作（整理记录行与整理详情共用）：主按钮按优先级取一个，
    * 暂停/取消作次级；导航类动作（去确认/配置模型）在 app.js 分流，控制类走
@@ -2199,21 +2322,28 @@
     // 改动点，见 improvementChainBlock）。更新型候选的预期→实际由依据链呈现，
     // 不再叠加一份「复盘依据」，避免同屏两处同内容。
     const chainHtml = improvementChainBlock(candidate);
+    // 确认时撞版本冲突的处置块（specs/015 T022）：就地说明"没生效"、按当前在用版
+    // 重摆差异、给「按当前版本重新确认」。它只描述这一次确认的事实，不改变候选的
+    // 待处理性质（候选仍可稍后处理/拒绝）。
+    const conflictHtml = candidateVersionConflictBlock(candidate, canPromote);
     // 决策动作同样按 capability 收敛（2026-09-20 修）：终态候选（confirmed /
     // rejected / ignored）的映射是 canDefer=false、canReject=false、isTerminal=true，
     // 此前这两个按钮**无条件**渲染，用户点下去必然被后端状态机拒绝——旧 skills.js
     // 模块有一条 "never renders decision actions for terminal candidates" 的用例守着，
     // 2026-09-15 #266 重写时没带过来。口径见函数开头：缺失 capabilities 即只读。
+    // 按钮名按型分支（specs/015 T023）：更新型说「确认更新」，新建型说「保存并使用」。
+    const decisionLabels = candidateDecisionLabels(candidate);
     const actionsHtml = `<div class="actions actions-right">
-        ${canPromote ? btn(T('cognition.candidate_save_and_use', '保存并使用'), 'cand-adopt-with-form', { id: candidate.id, primary: true }) : ''}
-        ${canDefer ? btn(T('cognition.candidate_defer_action', '稍后处理'), 'cand-decide', { id: candidate.id, data: { action: 'defer' }, className: 'o' }) : ''}
-        ${canReject ? btn(T('cognition.candidate_reject', '拒绝'), 'cand-decide', { id: candidate.id, data: { action: 'reject' }, danger: true }) : ''}
+        ${canPromote ? btn(decisionLabels.promote, 'cand-adopt-with-form', { id: candidate.id, primary: true }) : ''}
+        ${canDefer ? btn(decisionLabels.defer, 'cand-decide', { id: candidate.id, data: { action: 'defer' }, className: 'o' }) : ''}
+        ${canReject ? btn(decisionLabels.reject, 'cand-decide', { id: candidate.id, data: { action: 'reject' }, danger: true }) : ''}
       </div>`;
     return `
       ${broken ? `<div class="warn">${esc(T('cognition.candidate_evidence_all_unavailable', '这条候选的大部分来源记录已被删除，无法核对证据。建议补充新证据后保存，或选择不保存。'))}</div>` : ''}
       ${candidate.mergedIntoAssetId ? `<div class="note">${esc(T('cognition.candidate_merged_into', '这条与已有资产相似：确认后会并入那条资产（融合出新版本），不会另开一条。'))}</div>` : ''}
       ${chainHtml ? '' : reviewSignalBlock(candidate)}
       ${chainHtml}
+      ${conflictHtml}
       ${edit ? `
         ${field(T('cognition.type', '类型'), `<div class="chips">${CATEGORIES.map(([id, key, fb]) => { const on = String(candidate.suggestedType || '') === id; return `<span class="ca-chip ca-chip-opt${on ? ' is-green' : ''}" data-act="cand-type" data-id="${esc(id)}" ${roleBtn(`aria-pressed="${on ? 'true' : 'false'}"`)}>${esc(T(key, fb))}</span>`; }).join('')}</div>`)}
         ${field(T('cognition.judgment', '具体内容'), window.uiTextarea({ id: `ca-cand-judgment-${esc(candidate.id)}`, value: candidate.judgment || '', attrs: { 'data-f': 'judgment' } }))}
