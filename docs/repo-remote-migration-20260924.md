@@ -4,7 +4,10 @@
 - 发布对象：所有在本地持有 CogSeed 仓库的开发/测试人员
 - 维护者：（仓库负责人待填） · 生效条件：§0 第 1 条的管理员口径确认后生效
 - 适用：所有在本地持有 CogSeed 仓库的开发/测试人员
-- 私仓：`git@github.com:bonc-ai/cogseed-internal.git`（**SSH**，不要用 HTTPS，见 §2.1）
+- 私仓（SSH，二选一，见 §2.1）：
+  - 首选（22 端口被网络策略挡住时也能用）：`ssh://git@ssh.github.com:443/bonc-ai/cogseed-internal.git`
+  - 常规：`git@github.com:bonc-ai/cogseed-internal.git`
+  - **不要用 HTTPS**（实测 `Empty reply from server`）
 - 公仓（原仓，保留只读）：`git@github.com:bonc-ai/cogseed.git`
 - 目标：日常开发、提交、PR 全部走私仓 `develop`；`cicd` 只做集成验证/构建/打包/发布
 
@@ -21,8 +24,11 @@
    → 因此：**任何基于公仓历史的本地分支都不许直接推到私仓**（会产生无关历史；日后合并需要 `--allow-unrelated-histories`，等于把整条公仓历史灌进私仓）。
    → 既有工作一律**按补丁搬运**（§5）。私仓与公仓的最终关系（全新起点 / 后续导入公仓历史）**以仓库管理员口径为准**，未确认前不要做历史对接动作。
 
-2. **本机 HTTPS 不通，SSH 通。**
-   实测 `https://github.com/bonc-ai/cogseed-internal` → `Empty reply from server`；`git@github.com:bonc-ai/cogseed-internal` → 可列出 refs（有读权限）。**统一用 SSH 地址。**
+2. **本机 HTTPS 不通，SSH 通；SSH 建议用 443 端点。**
+   实测：`https://github.com/bonc-ai/cogseed-internal` → `Empty reply from server`；
+   `git@github.com:bonc-ai/cogseed-internal`（22 端口）可列出 refs；
+   `ssh://git@ssh.github.com:443/...`（SSH over 443）同样可用，且在 22 被挡的网络里更稳。
+   **统一用 SSH；若 `git fetch` 报连接超时/拒绝，先换成 443 端点再试。**
 
 3. **远端改名会影响面比想象大。**
    远端配置是**每个仓库**（`.git/config`）的，不是每个工作树。若你有多个工作树（`git worktree list` 会显示，本机有一个 `.worktrees/perf-response-output`），改远端、`fetch --prune` 会同时影响它们；另外 `git fetch --prune` 之后，所有跟踪旧 `origin/*` 的本地分支会显示 upstream `gone`——**这是正常的，不代表分支坏了**。
@@ -62,7 +68,8 @@ git remote get-url origin
 
 # 公仓改名为 public（保留历史对比/查阅能力），私仓作为新的 origin
 git remote rename origin public
-git remote add origin git@github.com:bonc-ai/cogseed-internal.git
+git remote add origin ssh://git@ssh.github.com:443/bonc-ai/cogseed-internal.git
+# 22 端口可用时也可写成：git remote add origin git@github.com:bonc-ai/cogseed-internal.git
 
 # 校验：origin 的 fetch/push 都指向私仓；public 指向公仓
 git remote -v
@@ -80,7 +87,7 @@ git branch -r            # 应能看到 origin/develop、origin/cicd（以及 de
 
 ### 2.3 常见错误（务必避免）
 
-- ✗ 用通知里的 HTTPS 地址（本机不通）。
+- ✗ 用通知里的 HTTPS 地址（本机不通）；SSH 连不上时不要退回 HTTPS，改用 443 端点。
 - ✗ `git fetch --prune` 之后看到一堆 `gone` 就惊慌去"修复"——那只是旧公仓跟踪引用被清理。
 - ✗ 直接把本地老分支 `push` 到私仓（见 §0.1）。
 - ✗ `git push --mirror`、任何形式的 force push。
@@ -225,7 +232,8 @@ git fetch origin --prune 是否成功：是 / 否（失败请附报错）
 | --- | --- |
 | 本机路径 | `/Users/sudai/Documents/CogSeed`（另有工作树 `.worktrees/perf-response-output`） |
 | 原远端 | `git@github.com:bonc-ai/cogseed.git`（SSH，fetch+push） |
-| 私仓可达性 | SSH ✓（有读权限）；HTTPS ✗ `Empty reply from server` |
+| 私仓可达性 | SSH ✓（22 与 443 端点均可读）；HTTPS ✗ `Empty reply from server` |
+| 实际生效的 origin | `ssh://git@ssh.github.com:443/bonc-ai/cogseed-internal.git`（public 保留为公仓只读） |
 | 私仓 refs | `develop = e9c20582…`、`cicd = 7539f726…`（本地均无此对象） |
 | 本地 develop | `db12b253`，相对公仓 `origin/develop` 落后 211 / 领先 13 |
 | 本地分支/工作树/stash | 14 个分支、2 个工作树、9 条 stash |
