@@ -842,6 +842,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     ...(params.turnId ? { turnId: params.turnId } : {}),
     ...(params.cid ? { cid: params.cid } : {}),
     ...(params.spaceId ? { spaceId: params.spaceId } : {}),
+    ...(params.projectId ? { projectId: params.projectId } : {}),
     ...(params.userMessage ? { taskText: params.userMessage } : {}),
   }) : [];
 
