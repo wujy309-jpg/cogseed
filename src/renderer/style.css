@@ -21839,7 +21839,7 @@ body:has(#panel-settings.active) .main-top-actions {
   padding: 12px;
   border: 1px solid color-mix(in srgb, var(--success) 32%, var(--border));
   border-radius: 10px;
-  background: color-mix(in srgb, var(--success) 6%, var(--panel));
+  background: color-mix(in srgb, var(--success) 6%, var(--surface));
   display: flex;
   flex-direction: column;
   gap: 7px;
@@ -21851,27 +21851,80 @@ body:has(#panel-settings.active) .main-top-actions {
 .chat-kstar-experience { padding-top: 8px; border-top: 1px solid var(--border); font-size: 12px; }
 .chat-kstar-review[data-busy="1"] { opacity: .72; }
 
-/* 资产审批卡片（specs/008 US-406）：与复盘卡同一套排版语言，只多一层字段编辑区。 */
+/* 资产审批卡片（specs/008 US-406）：与复盘卡同一套排版语言。层次是
+   「标题 + 状态 → 目标资产 → 一行摘要 → 依据 → 逐字段内容 → 三选一」；
+   长正文一律折叠，资产正文动辄上千字，整段铺在对话里没法看。 */
 .chat-asset-approval {
-  margin-top: 10px;
+  margin-top: 12px;
   padding: 12px;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--primary) 26%, var(--border));
   border-radius: 10px;
-  background: var(--surface-2, var(--surface));
+  background: color-mix(in srgb, var(--primary) 4%, var(--surface));
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
+.chat-asset-approval.is-confirmed {
+  border-color: color-mix(in srgb, var(--success) 30%, var(--border));
+  background: color-mix(in srgb, var(--success) 5%, var(--surface));
+}
+.chat-asset-approval.is-rejected,
+.chat-asset-approval.is-deferred { border-color: var(--border); background: var(--surface); }
+.chat-asset-approval-head { display: flex; align-items: center; gap: 8px; }
 .chat-asset-approval-title { font-weight: 650; }
-.chat-asset-approval-asset,
+.chat-asset-approval-head .ui-tag { flex: 0 0 auto; }
+.chat-asset-approval-asset { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+.chat-asset-approval-asset-label,
+.chat-asset-approval-diff-label,
+.chat-asset-approval-reason-label { color: var(--muted); flex: 0 0 auto; }
+.chat-asset-approval-asset-name { color: var(--text); font-weight: 600; }
+.chat-asset-approval-baseline { color: var(--muted); font-variant-numeric: tabular-nums; }
 .chat-asset-approval-diff,
-.chat-asset-approval-reason { font-size: 12px; color: var(--muted); }
+.chat-asset-approval-reason {
+  font-size: 12px;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+.chat-asset-approval-reason { -webkit-line-clamp: 5; }
 .chat-asset-approval-hint,
-.chat-asset-approval-note { font-size: 12px; color: var(--muted); }
-.chat-asset-approval-row { display: flex; flex-direction: column; gap: 4px; }
-.chat-asset-approval-label { font-size: 12px; color: var(--muted); }
-.chat-asset-approval-value { font-size: 13px; white-space: pre-wrap; }
-.chat-asset-approval-prev { font-size: 12px; color: var(--muted); white-space: pre-wrap; }
+.chat-asset-approval-note,
+.chat-asset-approval-read-failed { font-size: 12px; color: var(--muted); }
+.chat-asset-approval-read-failed { color: color-mix(in srgb, var(--danger) 72%, var(--text)); }
+.chat-asset-approval-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2, var(--surface));
+}
+.chat-asset-approval-row { display: flex; flex-direction: column; gap: 6px; }
+.chat-asset-approval-row + .chat-asset-approval-row {
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.chat-asset-approval-row-head { display: flex; align-items: center; gap: 6px; }
+.chat-asset-approval-label { font-size: 12px; font-weight: 600; color: var(--text-2); }
+.chat-asset-approval-edit-tag { flex: 0 0 auto; }
+.chat-asset-approval-prev { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.chat-asset-approval-prev-label { flex: 0 0 auto; }
+.chat-asset-approval-prev-text,
+.chat-asset-approval-value { white-space: pre-wrap; }
+.chat-asset-approval-value { font-size: 13px; }
+.chat-asset-approval-prev-text.is-clamped,
+.chat-asset-approval-value.is-clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+.chat-asset-approval-toggle { display: flex; }
+.chat-asset-approval-toggle-btn { height: auto; padding: 0; font-size: 12px; }
+.chat-asset-approval-input { width: 100%; font-size: 13px; line-height: 1.55; resize: vertical; }
 .chat-asset-approval-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .chat-asset-approval-state { font-size: 12px; color: var(--muted); }
 .chat-asset-approval[data-busy="1"] { opacity: .72; }
@@ -21882,7 +21935,7 @@ body:has(#panel-settings.active) .main-top-actions {
   padding: 12px;
   border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
   border-radius: 12px;
-  background: color-mix(in srgb, var(--accent) 6%, var(--panel));
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
   display: flex;
   flex-direction: column;
   gap: 7px;

@@ -1898,6 +1898,9 @@
        conversation.js 与 agents.js 之前——两者在初始化时直接读 window.composerMembers。 -->
   <script src="./modules/composer-members.js"></script>
   <script src="./modules/member-work-state.js"></script>
+  <!-- 资产审批卡片（specs/008 US-406）：conversation.js 的两个挂载点按名字调用
+       window.ChatAssetApproval，须在其之前加载。 -->
+  <script src="./modules/chat-asset-approval.js"></script>
   <script src="./modules/conversation.js"></script>
   <script src="./modules/kb-glossary-manager.js"></script>
   <script src="./modules/kb-transcript-correct.js"></script>
