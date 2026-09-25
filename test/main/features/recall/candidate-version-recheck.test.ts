@@ -623,14 +623,16 @@ describe('promote 通道的显式重锚 IPC 契约（T027 / contracts/ipc.md §�
       targetVersionUsed: '1',
     });
 
-    // 非法形状（非数字串 / 超长 / 不是字符串）→ 抛 invalid，且零落盘：
+    // 非法形状（非数字串 / 超长 / 不是字符串）→ invalid，且零落盘：
     // 候选没动、资产没动、连一条审查决定都没写（校验在落盘之前）。
+    // （协议分发层把 handler 的 throw 统一转成 {ok:false, code:'E_UNKNOWN'}，
+    // 与全库 ipc 断言风格一致用 resolves 断言，见 test/main/ipc/recall.test.ts 先例。）
     await expect(call('recall.candidates.promote', { candidateId: update.id, confirmBaselineVersion: 'v2' }))
-      .rejects.toThrow(/invalid/i);
+      .resolves.toMatchObject({ ok: false, error: 'invalid confirm baseline version' });
     await expect(call('recall.candidates.promote', { candidateId: update.id, confirmBaselineVersion: '1'.repeat(10) }))
-      .rejects.toThrow(/invalid/i);
+      .resolves.toMatchObject({ ok: false, error: 'invalid confirm baseline version' });
     await expect(call('recall.candidates.promote', { candidateId: update.id, confirmBaselineVersion: 2 }))
-      .rejects.toThrow(/invalid/i);
+      .resolves.toMatchObject({ ok: false, error: 'invalid confirm baseline version' });
     expect((await candidates.readRecallCandidate(uid, update.id)).status).toBe('pending_review');
     expect((await assets.readAbilityAsset(uid, asset.id)).version).toBe('1');
     expect(await reviewDecisions.listReviewDecisions(uid, `recall_candidate:${update.id}`)).toEqual([]);
