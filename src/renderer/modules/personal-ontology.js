@@ -889,6 +889,8 @@
     // encode 而非 NUL 分隔：HTML 属性会吞控制字符，读回的 key 将与 Set 不一致
     const key = encodeURIComponent(`${gid}\u0001${field.name}\u0001${fv.value}`);
     const expanded = _pocExpandedValues.has(key);
+    // M5 预留位（specs/014 时间锚）：asOf 时间控件将挂在本详情操作区「编辑这条值」
+    // 旁——009 本期只登记挂载位不实现（contracts/renderer-seams.md R1b），不得占用。
     const detail = expanded ? `<div class="personal-onto-value-detail">
         <div class="personal-onto-value-detail-chips">
           ${fv.asOf ? `<span class="ca-chip">${escapeHtml(_tv('personalOntology.asof_chip', { m: fv.asOf }, '截至 {m}'))}</span>` : ''}
@@ -902,6 +904,7 @@
           ${_button({ label: fv.verified === 'independent' ? _t('personalOntology.unverify_tip', '取消核实') : fv.verified === true ? _t('personalOntology.verify_up_tip', '升级为独立核实') : _t('personalOntology.verify_tip', '标记为已核实'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'verify-value', 'data-poc-gid': gid, 'data-poc-field': field.name, 'data-poc-value': String(fv.value || ''), 'data-poc-verified': fv.verified === 'independent' ? '0' : fv.verified === true ? 'independent' : '1' } })}
           ${/→|->/.test(String(fv.value || '')) ? _button({ label: _t('personalOntology.rulekind_cycle_tip', '切换规则分类'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'cycle-rulekind', 'data-poc-gid': gid, 'data-poc-field': field.name, 'data-poc-value': String(fv.value || '') } }) : ''}
           ${_button({ label: fv.sensitivity === 'restricted' ? _t('personalOntology.unrestrict_tip', '取消受限') : _t('personalOntology.restrict_tip', '设为受限（不自动注入）'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'toggle-restricted', 'data-poc-gid': gid, 'data-poc-field': field.name, 'data-poc-value': String(fv.value || ''), 'data-poc-restricted': fv.sensitivity === 'restricted' ? '0' : '1' } })}
+          ${_button({ label: _t('personalOntology.value_edit_tip', '编辑这条值'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'edit-value', 'data-poc-gid': gid, 'data-poc-field': field.name, 'data-poc-value': String(fv.value || '') } })}
           ${_button({ label: _t('personalOntology.value_remove_tip', '删除这条值'), size: 'sm', className: 'personal-onto-group-action is-danger', attrs: { 'data-poc-group-op': 'remove-value', 'data-poc-gid': gid, 'data-poc-field': field.name, 'data-poc-value': String(fv.value || '') } })}
         </div>
       </div>` : '';
@@ -1169,6 +1172,30 @@
     await _pocReloadBoxData();
   }
 
+  /** US-101 条目级编辑：uiPrompt 预填原值；空值/纯空白、与原值相同都就地短路
+   * 且不发请求；只送 value/oldValue——source/asOf 等六标记由主进程原样保留（T016）。 */
+  async function _pocEditValuePrompt(fieldName, value, gid) {
+    if (!gid) return;
+    const oldValue = String(value || '');
+    const next = (typeof uiPrompt === 'function')
+      ? await uiPrompt(_t('personalOntology.value_edit_tip', '编辑这条值'), oldValue)
+      : null;
+    if (next === null) return; // 用户取消不是失败，不报错（与 append/remove 同口径）
+    const trimmed = String(next || '').trim();
+    if (!trimmed) {
+      _pocToast('personalOntology.value_empty_error', '值不能为空，未保存', 'error');
+      return;
+    }
+    if (trimmed === oldValue) {
+      _pocToast('personalOntology.value_unchanged_hint', '内容没有变化', 'info');
+      return;
+    }
+    if (await _pocGroupAction('personalOntology.groups.fields.setValue', { groupId: gid, fieldName, value: trimmed, oldValue })) {
+      _pocToast('personalOntology.field_value_updated', '已更新');
+      await _pocReloadBoxData();
+    }
+  }
+
   async function _pocRemoveValue(fieldName, value, gid) {
     if (!gid) return;
     const res = await _pocInvoke('personalOntology.groups.fields.removeValue', {
@@ -1413,6 +1440,7 @@
         const field = el.getAttribute('data-poc-field');
         const value = el.getAttribute('data-poc-value');
         if (op === 'append-value') await _pocAppendValuePrompt(field, gid);
+        else if (op === 'edit-value') await _pocEditValuePrompt(field, value, gid);
         else if (op === 'remove-value') await _pocRemoveValue(field, value, gid);
         else if (op === 'verify-value') await _pocToggleValueVerified(el, field, value, gid);
         else if (op === 'cycle-rulekind') await _pocCycleRuleKind(el, field, value, gid);

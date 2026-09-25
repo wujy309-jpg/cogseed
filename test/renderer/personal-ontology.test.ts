@@ -15,7 +15,7 @@ const skills = readFileSync(resolve(root, 'src/renderer/modules/skills.js'), 'ut
 const cognitionCore = readFileSync(resolve(root, 'src/renderer/modules/cognition-assets/core.js'), 'utf8');
 const cognitionViews = readFileSync(resolve(root, 'src/renderer/modules/cognition-assets/views.js'), 'utf8');
 
-function loadPersonalOntology(invoke: any) {
+function loadPersonalOntology(invoke: any, overrides: Record<string, unknown> = {}) {
   const element = () => ({
     innerHTML: '',
     style: {},
@@ -49,6 +49,8 @@ function loadPersonalOntology(invoke: any) {
   };
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;
+  // 编辑动作依赖 uiPrompt / uiAlert（沙箱默认不装）：按用例注入。
+  Object.assign(sandbox, overrides);
   vm.createContext(sandbox);
   for (const file of ['modules/icons.js', 'modules/ui-button.js', 'modules/ui-form.js', 'modules/ui-empty.js']) {
     vm.runInContext(readFileSync(resolve(root, 'src/renderer', file), 'utf8'), sandbox, { filename: file });
@@ -580,5 +582,199 @@ describe('personal ontology renderer integration', () => {
 
     expect(invoke).not.toHaveBeenCalledWith('personalOntology.profile.syncRecall', expect.anything());
     expect(uiToast).not.toHaveBeenCalled();
+  });
+
+  // ── US-101 条目级编辑（specs/009 Phase 3：T013/T014/T017/T018）─────────────
+  function boxInvokeMock(extra: Record<string, (payload?: any) => any> = {}) {
+    return vi.fn(async (channel: string, payload?: any) => {
+      const override = extra[channel];
+      if (override) return override(payload);
+      if (channel === 'personalOntology.templates.list') return { ok: true, templates: [] };
+      if (channel === 'recall.assets.list') return { ok: true, assets: [] };
+      if (channel === 'personalOntology.groups.list') {
+        return { ok: true, groups: [{ group_id: 'grp-e1', title: '基本情况', rel_path: 'g.md', created_at: '', updated_at: '' }] };
+      }
+      if (channel === 'personalOntology.groups.fields.list' && payload && payload.groupId === 'grp-e1') {
+        return { ok: true, fields: [{ name: '居住地', values: [{ value: '常住北京', source: '手动' }] }] };
+      }
+      if (channel === 'personalOntology.groups.read') return { ok: true, content: '# 基本情况' };
+      if (channel === 'personalOntology.candidates.list') return { ok: true, candidates: [] };
+      if (channel === 'personalOntology.conflicts.list') return { ok: true, conflicts: [] };
+      if (channel === 'projects.list') return { ok: true, projects: [] };
+      return { ok: true };
+    });
+  }
+
+  it('shows the edit action only on ontology-owned rows; asset rows stay read-only with the source hint', async () => {
+    const invoke = boxInvokeMock({
+      // 画像资产行（「来自资产」）：编辑按钮不得出现在这里
+      'recall.assets.list': () => ({
+        ok: true,
+        assets: [{
+          id: 'aa-1', type: 'personal', status: 'active',
+          lifecycleStatus: 'user_confirmed_unverified',
+          statement: '用户是一名拥有 10 年经验的程序员。',
+          updatedAt: new Date().toISOString(),
+        }],
+      }),
+    });
+    const { sandbox, elements } = loadPersonalOntology(invoke);
+    const bodyEl = elements.get('personal-onto-main-body') as any;
+
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+
+    // ①（收起态前置）操作都收在展开区：默认渲染里没有编辑按钮
+    let body = elements.get('personal-onto-main-body')?.innerHTML || '';
+    expect(body).not.toContain('data-poc-group-op="edit-value"');
+
+    // ④ 「来自资产」画像分节行：无任何组操作入口（只读口径），且带「我的认知」提示
+    const secStart = body.indexOf('data-poc-ontology-section=');
+    const grpStart = body.indexOf('personal-onto-abox-group');
+    expect(secStart).toBeGreaterThan(0);
+    expect(grpStart).toBeGreaterThan(secStart);
+    const profileZone = body.slice(secStart, grpStart);
+    expect(profileZone).toContain('用户是一名拥有 10 年经验的程序员。');
+    expect(profileZone).not.toContain('data-poc-group-op');
+    expect(profileZone).not.toContain('data-poc-group-op="edit-value"');
+    expect(profileZone).toContain('可在「我的认知」查看全文与来源'); // abox_asset_src_hint 兜底文案
+
+    // ① 本体自有值行展开后 → 编辑按钮与删除并列出现
+    const lineRow: any = {
+      getAttribute: (name: string) => name === 'data-poc-line-key' ? encodeURIComponent('grp-e1\u0001居住地\u0001常住北京') : null,
+      addEventListener(event: string, handler: (...args: any[]) => any) { this.listeners.set(event, handler); },
+      listeners: new Map<string, (...args: any[]) => any>(),
+    };
+    bodyEl.querySelectorAll = (selector: string) => selector === '[data-poc-line-key]' ? [lineRow] : [];
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+    const clickLine = lineRow.listeners.get('click');
+    expect(clickLine).toBeTypeOf('function');
+    await clickLine({ stopPropagation() {} });
+    await settleBackgroundWork();
+    body = elements.get('personal-onto-main-body')?.innerHTML || '';
+    expect(body).toContain('data-poc-group-op="edit-value"');
+    expect(body).toContain('编辑这条值');
+    expect(body).toContain('data-poc-group-op="remove-value"');
+    // 编辑按钮带全量定位属性（gid/field/value）
+    const btnStart = body.indexOf('data-poc-group-op="edit-value"');
+    const btnTag = body.slice(Math.max(0, btnStart - 40), btnStart + 220);
+    expect(btnTag).toContain('data-poc-gid="grp-e1"');
+    expect(btnTag).toContain('data-poc-field="居住地"');
+    expect(btnTag).toContain('data-poc-value="常住北京"');
+  });
+
+  it('rejects empty or unchanged edits locally without ever calling setValue', async () => {
+    const invoke = boxInvokeMock();
+    const answers = ['   ', '常住北京'];
+    const uiPrompt = vi.fn(async () => answers.shift());
+    const { sandbox, elements, uiToast } = loadPersonalOntology(invoke, { uiPrompt });
+    const bodyEl = elements.get('personal-onto-main-body') as any;
+
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+
+    const editBtn: any = {
+      getAttribute: (name: string) => (name === 'data-poc-group-op' ? 'edit-value'
+        : name === 'data-poc-gid' ? 'grp-e1'
+          : name === 'data-poc-field' ? '居住地'
+            : name === 'data-poc-value' ? '常住北京' : null),
+      addEventListener(event: string, handler: (...args: any[]) => any) { this.listeners.set(event, handler); },
+      listeners: new Map<string, (...args: any[]) => any>(),
+    };
+    bodyEl.querySelectorAll = (selector: string) => selector === '[data-poc-group-op]' ? [editBtn] : [];
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+    const click = editBtn.listeners.get('click');
+    expect(click).toBeTypeOf('function');
+
+    // ② 空值/纯空白 → 明确报错文案，且未发任何 setValue 请求
+    await click({ stopPropagation() {} });
+    await settleBackgroundWork();
+    expect(uiPrompt).toHaveBeenCalledWith('编辑这条值', '常住北京');
+    expect(uiToast).toHaveBeenCalledWith('值不能为空，未保存', { variant: 'error' });
+    expect(invoke).not.toHaveBeenCalledWith('personalOntology.groups.fields.setValue', expect.anything());
+
+    // 与原值相同 → 提示内容没有变化，仍不提交
+    await click({ stopPropagation() {} });
+    await settleBackgroundWork();
+    expect(uiToast).toHaveBeenCalledWith('内容没有变化', { variant: 'info' });
+    expect(invoke).not.toHaveBeenCalledWith('personalOntology.groups.fields.setValue', expect.anything());
+  });
+
+  it('saves a changed value via setValue and immediately re-reads the group', async () => {
+    let edited = false;
+    const invoke = boxInvokeMock({
+      'personalOntology.groups.fields.setValue': () => { edited = true; return { ok: true }; },
+      'personalOntology.groups.fields.list': () => ({
+        ok: true,
+        fields: [{ name: '居住地', values: [{ value: edited ? '常住杭州' : '常住北京', source: '手动' }] }],
+      }),
+    });
+    const uiPrompt = vi.fn(async () => ' 常住杭州 ');
+    const { sandbox, elements, uiToast } = loadPersonalOntology(invoke, { uiPrompt });
+    const bodyEl = elements.get('personal-onto-main-body') as any;
+
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+    const readsBefore = invoke.mock.calls.filter(([c]) => c === 'personalOntology.groups.read').length;
+
+    const editBtn: any = {
+      getAttribute: (name: string) => (name === 'data-poc-group-op' ? 'edit-value'
+        : name === 'data-poc-gid' ? 'grp-e1'
+          : name === 'data-poc-field' ? '居住地'
+            : name === 'data-poc-value' ? '常住北京' : null),
+      addEventListener(event: string, handler: (...args: any[]) => any) { this.listeners.set(event, handler); },
+      listeners: new Map<string, (...args: any[]) => any>(),
+    };
+    bodyEl.querySelectorAll = (selector: string) => selector === '[data-poc-group-op]' ? [editBtn] : [];
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+    await editBtn.listeners.get('click')({ stopPropagation() {} });
+    await settleBackgroundWork();
+
+    // ③ 保存成功：trim 后经 setValue 写入，payload 与既有通道形态一致
+    expect(invoke).toHaveBeenCalledWith('personalOntology.groups.fields.setValue', {
+      groupId: 'grp-e1', fieldName: '居住地', value: '常住杭州', oldValue: '常住北京',
+    });
+    expect(uiToast).toHaveBeenCalledWith('已更新', { variant: 'success' });
+    // 即时刷新：groups.read 被重新拉取，值行直接显示新值（无需整页刷新）
+    const readsAfter = invoke.mock.calls.filter(([c]) => c === 'personalOntology.groups.read').length;
+    expect(readsAfter).toBeGreaterThan(readsBefore);
+    expect(elements.get('personal-onto-main-body')?.innerHTML).toContain('常住杭州');
+  });
+
+  it('surfaces a failed edit via the existing failure path instead of failing silently', async () => {
+    const invoke = boxInvokeMock({
+      'personalOntology.groups.fields.setValue': () => ({ ok: false, error: 'locked' }),
+    });
+    const uiPrompt = vi.fn(async () => '常住杭州');
+    const uiAlert = vi.fn();
+    const { sandbox, elements, uiToast } = loadPersonalOntology(invoke, { uiPrompt, uiAlert });
+    const bodyEl = elements.get('personal-onto-main-body') as any;
+
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+    const readsBefore = invoke.mock.calls.filter(([c]) => c === 'personalOntology.groups.read').length;
+
+    const editBtn: any = {
+      getAttribute: (name: string) => (name === 'data-poc-group-op' ? 'edit-value'
+        : name === 'data-poc-gid' ? 'grp-e1'
+          : name === 'data-poc-field' ? '居住地'
+            : name === 'data-poc-value' ? '常住北京' : null),
+      addEventListener(event: string, handler: (...args: any[]) => any) { this.listeners.set(event, handler); },
+      listeners: new Map<string, (...args: any[]) => any>(),
+    };
+    bodyEl.querySelectorAll = (selector: string) => selector === '[data-poc-group-op]' ? [editBtn] : [];
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+    await editBtn.listeners.get('click')({ stopPropagation() {} });
+    await settleBackgroundWork();
+
+    // 失败可见（_pocGroupAction → _notifyFail），不算成功、不触发重载
+    expect(uiAlert).toHaveBeenCalledWith('操作失败: locked');
+    expect(uiToast).not.toHaveBeenCalledWith('已更新', expect.anything());
+    const readsAfter = invoke.mock.calls.filter(([c]) => c === 'personalOntology.groups.read').length;
+    expect(readsAfter).toBe(readsBefore);
   });
 });
