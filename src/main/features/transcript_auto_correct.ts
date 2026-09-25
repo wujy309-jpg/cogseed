@@ -30,6 +30,7 @@
 
 import {
   type GlossaryEntry,
+  type GlossaryKind,
   type RiskLevel,
   foldText,
   isCjkOrWordChar,
@@ -53,7 +54,19 @@ export type DeniedReason =
   | 'context_allowed'
   | 'word_boundary'
   | 'overlapping_span'
-  | 'protected_region';
+  | 'protected_region'
+  // 【specs/013 T006，加法】引例语境：命中 span 的窗口内出现 QUOTE_MARKERS 任一
+  // （"在讲拼写/识别这件事本身"）→ 宁可漏改不破坏语义（FR-011）。
+  | 'quoted_example';
+
+/**
+ * 【specs/013 T006，加法】纠错候选的**依据**（FR-001"凭什么这么改"）。
+ * 一条候选可并列多条（词表命中 + 本体规范名 + 会议引用资产）。
+ */
+export type CorrectionBasisRef =
+  | { source: 'glossary'; entryId: string; kind: GlossaryKind; freq: number }
+  | { source: 'ontology'; name: string; groupId?: string; fieldId?: string }
+  | { source: 'asset'; assetId: string; version: string; title: string };
 
 export interface Span { start: number; end: number }
 
@@ -68,6 +81,14 @@ export interface ScanOptions extends ScanTarget {
   includePaused?: boolean;
   contextWindow?: number;
   maxCandidates?: number;
+  /**
+   * 【specs/013 T006，加法】说话人名单（FR-012 情景层）。由主进程用
+   * `parseTranscriptBlocks` 现算（不由渲染层传，避免已发生的时钟格式漂移事故）。
+   * **只用于依据展示与降级标注，不参与 `scopeAllows`**（作用域语义不动）。
+   */
+  speakers?: string[];
+  /** 【specs/013 T006，加法】话题/主题（可空）。仅用于依据展示；不参与 `scopeAllows`。 */
+  topic?: string;
 }
 
 export interface CorrectionCandidate {
@@ -95,6 +116,26 @@ export interface CorrectionCandidate {
    * 确认应用时按 `meeting_accept` 记进词表（见 ipc/transcript.ts 的 apply）。
    */
   fromModel?: boolean;
+  /**
+   * 【specs/013 T006/T007，加法】本候选的**依据**（引用哪条词条/规范名/资产）。
+   * 字面候选的构造点必填（`refs[0] = { source:'glossary', entryId, kind, freq }`）；
+   * 缺 `refs` 的候选经 `withBasisRefsGuard` 不出行（SC-001 依据完整率，宁少不多）。
+   * 可选类型 = 存量调用方（apply 的合成候选等）零破坏。
+   */
+  refs?: CorrectionBasisRef[];
+  /**
+   * 【specs/013 T006，加法】来源通道：exact（字面）/ recall（多路召回）/ model（模型复核）。
+   * 缺省视为 exact（存量调用方与既有断言不受影响）。
+   */
+  channel?: 'exact' | 'recall' | 'model';
+  /**
+   * 【specs/013 T006，加法】处置分级：
+   *   suggest        —— 可提为建议（仍须用户确认，永不自动替换）
+   *   review         —— 必须逐条人工判断（面板永不预勾）
+   *   quoted_example —— 引例，不建议替换（只读提示，不进可勾选清单，FR-011）
+   * 缺省视为 suggest（存量行为不变）。
+   */
+  disposition?: 'suggest' | 'review' | 'quoted_example';
 }
 
 export interface DeniedMatch {
@@ -200,6 +241,48 @@ export function isProtected(ranges: Span[], span: Span): boolean {
 interface RawMatch {
   entry: GlossaryEntry;
   span: Span;
+}
+
+/**
+ * 【specs/013 T006】依据完整率守卫（SC-001）：缺 `refs` 的候选**不出行**（宁少不多）。
+ * `scanText` 自身构造点必填 refs（此守卫对它恒为直通）；导出供后续通道
+ * （召回/模型候选并入同一清单）复用同一道闸，不在渲染层重算。
+ */
+export function withBasisRefsGuard(candidates: CorrectionCandidate[]): CorrectionCandidate[] {
+  return candidates.filter((c) => Array.isArray(c.refs) && c.refs.length > 0);
+}
+
+/**
+ * 【specs/013 T008】本体规范名进纠错依据（FR-001）：候选建议写法（`correct`，
+ * 折叠比较——大小写/全角不敏感，与词表命中同一套折叠）命中规范名 → 给该候选
+ * **追加** `{ source:'ontology', name, groupId?, fieldId? }` 并列依据。
+ * 只读纯函数：未命中的候选**原样返回**（对象不复制、refs 不动）；命中则产出
+ * 新对象（不改入参）。本体侧来源由调用方（ipc/transcript.ts 的 scan 组装处）
+ * 只读调既有 `collectCanonicalNames`/`collectAllCanonicalNames` 喂进来。
+ */
+export function attachOntologyRefs(
+  candidates: CorrectionCandidate[],
+  canonical: Array<{ name: string; ontologyRef?: { groupId: string; fieldId: string } }>,
+): CorrectionCandidate[] {
+  if (!canonical.length || !candidates.length) return candidates;
+  const byFoldedName = new Map<string, { name: string; groupId?: string; fieldId?: string }>();
+  for (const item of canonical) {
+    const key = foldText(String(item?.name ?? '')).trim();
+    if (!key) continue;
+    if (!byFoldedName.has(key)) {
+      byFoldedName.set(key, {
+        name: String(item.name),
+        ...(item.ontologyRef ? { groupId: item.ontologyRef.groupId, fieldId: item.ontologyRef.fieldId } : {}),
+      });
+    }
+  }
+  return candidates.map((candidate) => {
+    const hit = byFoldedName.get(foldText(candidate.correct ?? '').trim());
+    if (!hit) return candidate;
+    const existing = Array.isArray(candidate.refs) ? candidate.refs : [];
+    if (existing.some((ref) => ref.source === 'ontology' && ref.name === hit.name)) return candidate;
+    return { ...candidate, refs: [...existing, { source: 'ontology', ...hit }] };
+  });
 }
 
 export function scanText(text: string, entries: GlossaryEntry[], options: ScanOptions = {}): ScanResult {
@@ -309,7 +392,9 @@ export function scanText(text: string, entries: GlossaryEntry[], options: ScanOp
   // 上限从 500 提到 2000：装上口癖规则包后，一份 1 小时的稿子轻松过千条候选，
   // 原上限会把排在后面的口癖整类截掉（表现为"啊/呃/嗯 只清掉一半"）。
   const limit = options.maxCandidates ?? 2000;
-  const candidates: CorrectionCandidate[] = accepted.slice(0, limit).map((m) => ({
+  // 【specs/013 T007】字面候选构造点必填依据：refs[0] = 词表来源（命中词条身份）。
+  // channel/disposition 不填（缺省 exact/suggest，存量行为与既有断言不变）。
+  const candidates: CorrectionCandidate[] = withBasisRefsGuard(accepted.slice(0, limit).map((m) => ({
     entryRef: m.entry.id,
     wrong: m.entry.wrong,
     correct: m.entry.correct,
@@ -320,7 +405,8 @@ export function scanText(text: string, entries: GlossaryEntry[], options: ScanOp
     span: m.span,
     ignoredCount: m.entry.ignoredCount ?? 0,
     contextAllow: m.entry.contextAllow ?? [],
-  }));
+    refs: [{ source: 'glossary', entryId: m.entry.id, kind: m.entry.kind, freq: m.entry.freq }],
+  })));
 
   return {
     candidates,

@@ -13,11 +13,13 @@
 import { describe, it, expect } from 'vitest';
 import {
   applyCorrections,
+  attachOntologyRefs,
   computeProtectedRanges,
   detectSuspectEntities,
   mapOffset,
   scanText,
   verifyEditsRebuild,
+  withBasisRefsGuard,
   type CorrectionCandidate,
 } from '../../../src/main/features/transcript_auto_correct';
 import type { GlossaryEntry, GlossaryKind, RiskLevel } from '../../../src/main/features/transcript_glossary';
@@ -297,5 +299,88 @@ describe('疑似专名探测（保守，宁漏勿噪；仅作模型重点线索�
     const text = '前 KSTAR 后';
     const [first] = detectSuspectEntities(text, []);
     expect(text.slice(first.span.start, first.span.end)).toBe('KSTAR');
+  });
+});
+
+// ── 依据（refs，specs/013 T006/T007：每条字面候选带词条身份）──────────────
+describe('纠错候选的依据（FR-001"凭什么这么改"）', () => {
+  it('每条字面候选 refs 至少 1 条，refs[0] = 词表来源（entryId/kind/freq 对应命中词条）', () => {
+    const kstar = entry({ id: 'g_ks', wrong: 'K star', correct: 'KSTAR', boundary: 'substring', kind: 'term', freq: 7 });
+    const res = scanText('现在用 coxy 上课，K star 也在用', [coxy, kstar]);
+    expect(res.candidates).toHaveLength(2);
+    for (const c of res.candidates) {
+      expect(c.refs!.length).toBeGreaterThanOrEqual(1);
+      expect(c.refs![0].source).toBe('glossary');
+    }
+    const coxyRef = res.candidates.find((c) => c.entryRef === 'g_coxy')!.refs![0];
+    expect(coxyRef).toEqual({ source: 'glossary', entryId: 'g_coxy', kind: 'product', freq: 0 });
+    const kstarRef = res.candidates.find((c) => c.entryRef === 'g_ks')!.refs![0];
+    expect(kstarRef).toEqual({ source: 'glossary', entryId: 'g_ks', kind: 'term', freq: 7 });
+  });
+
+  it('口癖删除候选同样带词条依据（同一构造点）', () => {
+    const filler = entry({ id: 'g_filler', wrong: '嗯', correct: '', action: 'delete', kind: 'filler', boundary: 'substring' });
+    const res = scanText('嗯 对', [filler], { includeDelete: true });
+    expect(res.candidates).toHaveLength(1);
+    expect(res.candidates[0].refs![0]).toEqual({ source: 'glossary', entryId: 'g_filler', kind: 'filler', freq: 0 });
+  });
+
+  it('依据完整率守卫：缺 refs 的候选不出行（宁少不多，SC-001）', () => {
+    const withRefs = { ...coxy, refs: [{ source: 'glossary', entryId: 'g_coxy', kind: 'product' as const, freq: 0 }] } as CorrectionCandidate;
+    const withoutRefs = { entryRef: 'g_x', wrong: 'x', correct: 'y', action: 'replace' as const, confidence: 1, riskLevel: 'low' as const, context: '', span: { start: 0, end: 1 }, ignoredCount: 0, contextAllow: [] };
+    const out = withBasisRefsGuard([withRefs, withoutRefs, { ...withoutRefs, refs: [] }]);
+    expect(out).toEqual([withRefs]);
+  });
+
+  it('ScanOptions 加法的 speakers/topic 透传可用且不参与作用域（行为与不传一致）', () => {
+    const scoped = entry({ wrong: '示例人物', correct: 'SpeakerA', scope: { docIds: ['doc-a'], scenarioTags: [], global: false }, boundary: 'substring' });
+    const plain = scanText('示例人物 出现', [scoped], { docId: 'doc-a' });
+    const withSignals = scanText('示例人物 出现', [scoped], { docId: 'doc-a', speakers: ['张磊', 'Alex'], topic: '季度对齐' });
+    expect(withSignals.candidates).toEqual(plain.candidates);
+    expect(withSignals.denied).toEqual(plain.denied);
+    // 出作用域时传了 speakers/topic 仍然 out_of_scope（作用域语义不动）
+    const out = scanText('示例人物 出现', [scoped], { docId: 'doc-b', speakers: ['张磊'] });
+    expect(out.candidates).toHaveLength(0);
+    expect(out.denied[0].reason).toBe('out_of_scope');
+  });
+});
+
+// ── 本体规范名进依据（specs/013 T008：只读并列，未命中不动）────────────────
+describe('attachOntologyRefs：本体规范名进纠错依据', () => {
+  const candidate = (correct: string): CorrectionCandidate => ({
+    entryRef: 'g_coxy', wrong: 'coxy', correct, action: 'replace', confidence: 1,
+    riskLevel: 'low', context: '', span: { start: 0, end: 4 }, ignoredCount: 0, contextAllow: [],
+    refs: [{ source: 'glossary', entryId: 'g_coxy', kind: 'product', freq: 0 }],
+  });
+
+  it('本体里存在规范名时，对应候选的 refs 追加 source:"ontology"（带定位）', () => {
+    const hit = candidate('Cogseed');
+    const out = attachOntologyRefs([hit], [
+      { name: 'Cogseed', ontologyRef: { groupId: 'grp_product', fieldId: 'fld_names' } },
+      { name: 'KSTAR', ontologyRef: { groupId: 'grp_product', fieldId: 'fld_names' } },
+    ]);
+    expect(out[0].refs).toEqual([
+      { source: 'glossary', entryId: 'g_coxy', kind: 'product', freq: 0 },
+      { source: 'ontology', name: 'Cogseed', groupId: 'grp_product', fieldId: 'fld_names' },
+    ]);
+  });
+
+  it('未命中时不变：refs 保持只有词表来源（不造依据）', () => {
+    const miss = candidate('Cogseed');
+    const out = attachOntologyRefs([miss], [{ name: 'KSTAR', ontologyRef: { groupId: 'g', fieldId: 'f' } }]);
+    expect(out[0].refs).toEqual([{ source: 'glossary', entryId: 'g_coxy', kind: 'product', freq: 0 }]);
+  });
+
+  it('折叠比较：大小写/全角差异仍算命中；来源列表为空时原样返回', () => {
+    const hit = attachOntologyRefs([candidate('ＣＯＧＳＥＥＤ')], [{ name: 'Cogseed' }]);
+    expect(hit[0].refs!.some((r) => r.source === 'ontology')).toBe(true);
+    const untouched = attachOntologyRefs([candidate('Cogseed')], []);
+    expect(untouched[0].refs).toHaveLength(1);
+  });
+
+  it('同一规范名不重复追加（幂等，可重复调用）', () => {
+    const once = attachOntologyRefs([candidate('Cogseed')], [{ name: 'Cogseed' }]);
+    const twice = attachOntologyRefs(once, [{ name: 'Cogseed' }]);
+    expect(twice[0].refs!.filter((r) => r.source === 'ontology')).toHaveLength(1);
   });
 });

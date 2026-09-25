@@ -403,7 +403,15 @@ export const invokeHandlers = {
       ...(scenarioTags ? { scenarioTags } : {}),
       includeDelete: payload?.includeDelete === true,
     });
-    if (payload?.includeReview !== true) return { ...scan, review: null };
+    // 【specs/013 T008】本体规范名进纠错依据（FR-001）：只读调既有
+    // transcriptOntology.collectCanonicalNames，把规范名喂进依据（追加
+    // { source:'ontology', name, groupId?, fieldId? } 并列依据）；未命中的候选
+    // 原样保留。下方 includeReview 分支的 allow 名单构造零改动（各用各的读）。
+    const candidates = transcriptAutoCorrect.attachOntologyRefs(
+      scan.candidates,
+      transcriptOntology.collectCanonicalNames(ctx.userId),
+    );
+    if (payload?.includeReview !== true) return { ...scan, candidates, review: null };
 
     // 优先参考名单 = 词表正确写法 + 记忆分组字段值（不含投影里的结构标签）
     const known = new Set<string>();
@@ -441,10 +449,10 @@ export const invokeHandlers = {
     }));
     return {
       ...scan,
-      candidates: [...scan.candidates, ...modelCandidates],
+      candidates: [...candidates, ...modelCandidates],
       stats: {
         ...scan.stats,
-        candidates: scan.candidates.length + modelCandidates.length,
+        candidates: candidates.length + modelCandidates.length,
       },
       review: {
         modelCandidates: modelCandidates.length,
