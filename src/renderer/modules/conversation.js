@@ -10474,24 +10474,64 @@ function _renderMarketplaceInstallCard(card, req, cid, msgId) {
   _hydrateMarketplaceRequestMeta(card, { ...req, kind }, cid, msgId);
 }
 
+/* ── 复盘卡（specs/015 US-704 / contracts/renderer-seams.md §一）─────────────
+ * 三档措辞按主进程**始终下发**的 `expectedSource`（`user` / `inferred` / `none`）
+ * 分档，不按"有没有 expectedResult"猜档：`none` 档省掉的是字段，而字段还在的档位
+ * 不能被读成"用户做过预测"。把系统推断的预期说成用户自述，是这张卡最要命的失真。
+ *
+ * 这两个函数保持**自包含**（不借本文件里的其它函数/常量）：`kstar-review-card.test.ts`
+ * 把它们从源码里切出来、单独喂进一个只有 t/escapeHtml/uiButton 的沙箱里真跑，
+ * 引用外部名字会当场 ReferenceError——而那两条断言是锁定的，不许改。 */
 function _renderKstarResultReviewCard(card, review) {
   if (!card || !review) return;
+  const declaredSource = String(review.expectedSource || '');
+  const expectedText = String(review.expectedResult || '').trim();
+  // 判据：只认下发值。三档之外的取值说明这是本次扩展前落库的历史消息（当年没有这个
+  // 字段），按旧版行为呈现：有正文就当预期行照常显示，没有就不摆。
+  const source = (declaredSource === 'user' || declaredSource === 'inferred' || declaredSource === 'none')
+    ? declaredSource
+    : (expectedText ? 'user' : 'none');
+  // 有来源声明却没有正文（主进程不会这么发）时只省掉预期行、**不改档位**：
+  // 没有内容可核对，就别摆一行空的"预期"。
+  const hasExpected = source !== 'none' && Boolean(expectedText);
+  const status = String(review.status || 'pending');
+  const disposed = status !== 'pending';
   card.dataset.busy = '';
-  card.dataset.status = String(review.status || 'pending');
-  card.className = `chat-kstar-review chat-kstar-result-review is-${card.dataset.status}`;
+  card.dataset.status = status;
+  card.dataset.expectedSource = source;
+  card.className = `chat-kstar-review chat-kstar-result-review is-${status}`;
   card.dataset.kstarReviewId = String(review.reviewId || '');
-  const expected = review.expectedResult
-    ? `<div class="chat-kstar-status"><strong>${escapeHtml(t('kstar.review.expected'))}</strong> ${escapeHtml(review.expectedResult)}</div>` : '';
+  // user：预期行照常；inferred：标签就写明"系统推断的预期"，不与用户自述同形；none：不摆预期行。
+  const expected = hasExpected
+    ? `<div class="chat-kstar-status"><strong>${escapeHtml(source === 'inferred' ? t('kstar.review.expected_inferred_label') : t('kstar.review.expected'))}</strong> ${escapeHtml(expectedText)}</div>`
+    : '';
+  const expectedNote = source === 'inferred'
+    ? `<div class="chat-kstar-status">${escapeHtml(t('kstar.review.expected_inferred_note'))}</div>`
+    : source === 'none'
+      ? `<div class="chat-kstar-status">${escapeHtml(t('kstar.review.expected_none_note'))}</div>`
+      : '';
   const actual = review.actualResult
     ? `<div class="chat-kstar-status"><strong>${escapeHtml(t('kstar.review.actual'))}</strong> ${escapeHtml(review.actualResult)}</div>` : '';
-  const evaluation = `<div class="chat-kstar-status"><strong>${escapeHtml(t('kstar.review.agent_eval', 'Agent 评估'))}</strong> ${escapeHtml(t('kstar.review.agent_eval_hint', '系统已根据预期与实际自动判定差异；你只需确认事实是否准确。'))}</div>`;
-  const actions = card.dataset.status === 'pending'
+  // 没有预期可比时不摆"Agent 评估"（`none` 档，或声明了来源却没有正文）：
+  // 这时"系统已根据预期与实际判定差异"这句本身就是空话（契约 §一：只显示实际结果 + 处置）。
+  const evaluation = hasExpected
+    ? `<div class="chat-kstar-status"><strong>${escapeHtml(t('kstar.review.agent_eval', 'Agent 评估'))}</strong> ${escapeHtml(t('kstar.review.agent_eval_hint', '系统已根据预期与实际自动判定差异；你只需确认事实是否准确。'))}</div>`
+    : '';
+  // 已处置态：控件留在原位但**禁用**（不是消失，用户回看时看得见自己处置过什么），
+  // 并写明已记录。刷新/历史重放走同一条渲染路径（见 _mountKstarResultReviewCard）。
+  const actions = disposed
     ? `<div class="chat-kstar-actions">
+        ${uiButton({ label: t('kstar.review.confirm'), role: 'primary', size: 'sm', disabled: true, attrs: { 'data-kstar-result-action': 'confirm' } })}
+        ${uiButton({ label: t('kstar.review.correct'), size: 'sm', disabled: true, attrs: { 'data-kstar-result-action': 'correct' } })}
+      </div>
+      <div class="chat-kstar-status">${escapeHtml(t('kstar.review.confirmed'))}</div>`
+    : `<div class="chat-kstar-actions">
         ${uiButton({ label: t('kstar.review.confirm'), role: 'primary', size: 'sm', attrs: { 'data-kstar-result-action': 'confirm' } })}
         ${uiButton({ label: t('kstar.review.correct'), size: 'sm', attrs: { 'data-kstar-result-action': 'correct' } })}
-      </div>`
-    : `<div class="chat-kstar-status">${escapeHtml(t('kstar.review.confirmed'))}</div>`;
-  card.innerHTML = `<div class="chat-kstar-title">${escapeHtml(t('kstar.review.card_title'))}</div>${evaluation}${expected}${actual}${actions}`;
+      </div>`;
+  card.innerHTML = `<div class="chat-kstar-title">${escapeHtml(t('kstar.review.card_title'))}</div>${evaluation}${expected}${expectedNote}${actual}${actions}`;
+  // 已处置的卡不再绑处置回调：按钮已 disabled，绑上也只是死按钮。
+  if (disposed) return;
   for (const button of card.querySelectorAll('[data-kstar-result-action]')) {
     button.addEventListener('click', () => _resolveKstarResultReview(card, review, button.dataset.kstarResultAction));
   }
@@ -10505,6 +10545,7 @@ async function _resolveKstarResultReview(card, review, action) {
     const verdict = action === 'correct' ? 'skip' : 'met';
     const result = await window.cogseed.invoke('kstar.review.confirm', { episodeId: review.episodeId, verdict });
     if (!result?.ok) throw new Error(result?.error || 'kstar review confirmation failed');
+    // 落终态后按「已处置」重绘：控件进禁用态 + 显示已记录（失败则回到可点，见 catch）。
     _renderKstarResultReviewCard(card, { ...review, status: 'confirmed' });
   } catch (error) {
     card.dataset.busy = '';
@@ -10528,12 +10569,19 @@ function _mountAssetApprovalCard(host, payload) {
 function _mountKstarResultReviewCard(host, review) {
   if (!host || !review?.reviewId || !review?.episodeId) return;
   const selector = `.chat-kstar-result-review[data-kstar-review-id="${CSS.escape(String(review.reviewId))}"]`;
+  // 一 reviewId 一卡：重复消息/重复渲染不挂第二张（与 :8937 的已挂守卫同一口径）。
   if (host.querySelector(selector)) return;
   const card = document.createElement('div');
   host.appendChild(card);
   _renderKstarResultReviewCard(card, review);
+  // 消息载荷里没有处置状态，只有 review 记录里有：刷新/历史重放时补读一次，
+  // 已处置的卡要**保持**已处置态（否则刷新一次就又能重复处置）。`confirmed`= 点了
+  // 确认事实；`unknown`= 点了纠正说明（skip 落 unknown，见 task-closure.ts 的
+  // confirmationReviewInput）——两者都已处置。正忙时不插手，免得把处置中的卡
+  // 还原成可点。
   window.cogseed.invoke('kstar.review.read', { episodeId: review.episodeId }).then((result) => {
     const state = result?.review?.reviewState;
+    if (card.dataset.busy === '1' || card.dataset.status !== 'pending') return;
     if (state === 'confirmed' || state === 'unknown') {
       _renderKstarResultReviewCard(card, { ...review, status: 'confirmed' });
     }

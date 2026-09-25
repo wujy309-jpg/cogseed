@@ -1340,7 +1340,7 @@ describe('KSTAR group terminal subscriber', () => {
 
 
 
-  it('never posts a review confirmation card — self-evolution is agent-implemented', async () => {
+  it('posts exactly one review confirmation card per closure (idempotent by reviewId)', async () => {
     const closure = await import('../../../../src/main/features/kstar/task-closure');
     let listener: ((event: any) => void) | undefined;
     const published: any[] = [];
@@ -1355,12 +1355,19 @@ describe('KSTAR group terminal subscriber', () => {
       } as any),
       publishReviewCard: async (userId, conversationId, review) => { published.push({ userId, conversationId, review }); },
     });
-    listener?.({ run_id: 'run-review-card', user_id: 'group-user', conversation_id: 'cid-review', status: 'completed', started_at_ms: 0, finished_at_ms: 1 });
+    const event = { run_id: 'run-review-card', user_id: 'group-user', conversation_id: 'cid-review', status: 'completed', started_at_ms: 0, finished_at_ms: 1 };
+    listener?.(event);
+    listener?.(event);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    // The user cannot verify the expected-vs-actual comparison (they made no
-    // prediction and do not observe execution internals) — no card is posted.
-    expect(published).toEqual([]);
+    // US-704 定案「恢复发送」（D11）：收口后卡片必须到达用户（预期 / 实际 +
+    // 处置入口），且同一 review 只发一次——重复终态不产生第二张卡。
+    expect(published).toHaveLength(1);
+    expect(published[0]).toMatchObject({
+      userId: 'group-user',
+      conversationId: 'cid-review',
+      review: { id: 'ksr-kse-run-review-card', episodeId: 'kse-run-review-card' },
+    });
     stop();
   });
 
@@ -1382,6 +1389,9 @@ describe('KSTAR group terminal subscriber', () => {
     listener?.({ run_id: 'run-waiting', user_id: 'group-user', conversation_id: 'cid-wait', status: 'waiting_input', started_at_ms: 0, finished_at_ms: 1 });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
+    // US-704 T031 触发条件收口：`waiting_input` 是非终态收口（任务还在等用户
+    // 输入，不是复盘对象），不满足「终态 + 需确认」就不发卡——这与"从不发卡"
+    // 无关：终态收口的卡由上面的用例钉住。
     expect(published).toEqual([]);
     stop();
   });

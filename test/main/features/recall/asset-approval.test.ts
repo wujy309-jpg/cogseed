@@ -361,3 +361,176 @@ describe('卡片载荷与下发（T034 / T038）', () => {
     expect((await approval.readAssetChangeProposal(uid, proposal.id))!.cardMessageId).toBe('msg-9');
   });
 });
+
+/**
+ * 与 008 的口径一致性（specs/015 · US-702 · T027）：本 feature 只**复用** 008
+ * 的产物（写通道 / 版本语义 / 审批卡三态），所以两条线必须长得一样——
+ *   · 版本冲突结构字段名一致（候选侧只多一个本链路的 targetVersionUsed）；
+ *   · 处置三态用同一套状态词（confirmed / deferred / rejected）；
+ *   · 「拒绝 = 保持原版 + 留档」两侧一致；
+ *   · 008 路径的重检行为不回退，且两条线共用**同一处**锁内比对。
+ */
+describe('与 008 口径一致性（specs/015 T027）', () => {
+  it('版本冲突结构字段名一致：候选侧 = 008 侧 + targetVersionUsed', async () => {
+    const uid = 'user-parity-conflict';
+    const { assets, approval, candidates } = await modules();
+    const asset = await seedAsset(uid, '冲突口径的基线正文。');
+
+    // 008 侧：提议基于 v1 → 资产被他处改到 v2 → 确认 → 结构化冲突。
+    const { proposal } = await proposeStatementChange(uid, asset.id, asset.version, 'AI 想改成的正文。');
+    await assets.updateAbilityAsset(uid, asset.id, { statement: '他处改过的正文一。', reason: 'elsewhere', actor: 'user' });
+    const eight = await approval.decideAssetChangeProposal(uid, proposal.id, 'confirm');
+    expect(eight.ok).toBe(false);
+    expect(eight.versionConflict).toEqual({ baselineVersion: '1', currentVersion: '2' });
+
+    // 候选侧：更新型候选锚定 v2 → 资产再被改到 v3 → 确认 → 结构化冲突。
+    const candidate = await candidates.saveRecallCandidate(uid, {
+      judgment: '候选想改成的新正文。',
+      suggestedType: 'rule',
+      ...RULE_BOUNDARY,
+      suggestedScope: 'architecture',
+      suggestedAction: 'limit_scope',
+      targetAssetId: asset.id,
+      targetVersionUsed: '2',
+      sourceRefs: [{ kind: 'execution_evaluation', id: 'run-parity-conflict' }],
+    });
+    await assets.updateAbilityAsset(uid, asset.id, { statement: '他处改过的正文二。', reason: 'elsewhere again', actor: 'user' });
+    let candidateConflict: { versionConflict?: Record<string, unknown> } | undefined;
+    try {
+      await candidates.promoteRecallCandidate(uid, candidate.id, { actor: 'user' });
+      throw new Error('expected a structured version conflict');
+    } catch (error) {
+      candidateConflict = error as { versionConflict?: Record<string, unknown> };
+    }
+    expect(candidateConflict!.versionConflict).toEqual({ baselineVersion: '2', currentVersion: '3', targetVersionUsed: '2' });
+
+    // 字段名一致：008 侧的键从**真实返回体**里取，候选侧只多一个 targetVersionUsed。
+    const eightConflict = eight.versionConflict as Record<string, unknown>;
+    const eightKeys = Object.keys(eightConflict);
+    expect(Object.keys(candidateConflict!.versionConflict!)).toEqual([...eightKeys, 'targetVersionUsed']);
+    // 共享字段连类型也一致（都是版本号字符串）。
+    for (const key of eightKeys) {
+      expect(typeof eightConflict[key], `008 ${key}`).toBe('string');
+      expect(typeof candidateConflict!.versionConflict![key], `候选 ${key}`).toBe('string');
+    }
+    // 两侧冲突后都还能再决定：008 提议保持待处理，候选保持待处理（非终态）。
+    expect((await approval.readAssetChangeProposal(uid, proposal.id))!.state).toBe('pending');
+    expect((await candidates.readRecallCandidate(uid, candidate.id)).status).toBe('pending_review');
+    expect((await assets.readAbilityAsset(uid, asset.id)).statement).toBe('他处改过的正文二。');
+  });
+
+  it('三态名一致：两条线都落在同一套状态词（confirmed / deferred / rejected）', async () => {
+    const uid = 'user-parity-tri-state';
+    const { approval, candidates } = await modules();
+    const asset = await seedAsset(uid, '三态口径的基线正文。');
+
+    // 008 侧：同一条资产上的三次提议（正文各不相同，避免被去重合并）。
+    const eightStates: string[] = [];
+    for (const [decision, statement] of [
+      ['confirm', '008 确认态正文。'],
+      ['defer', '008 稍后态正文。'],
+      ['reject', '008 拒绝态正文。'],
+    ] as const) {
+      const { proposal } = await proposeStatementChange(uid, asset.id, asset.version, statement);
+      const result = await approval.decideAssetChangeProposal(uid, proposal.id, decision);
+      expect(result.ok, decision).toBe(true);
+      eightStates.push(String(result.state));
+    }
+
+    // 候选侧：同一条资产上的三条候选（一条确认、一条稍后、一条拒绝）。
+    const saveCandidate = (judgment: string, sourceId: string) => candidates.saveRecallCandidate(uid, {
+      judgment,
+      suggestedType: 'rule',
+      ...RULE_BOUNDARY,
+      suggestedScope: 'architecture',
+      suggestedAction: 'limit_scope',
+      targetAssetId: asset.id,
+      sourceRefs: [{ kind: 'execution_evaluation', id: sourceId }],
+    });
+    const confirmed = await saveCandidate('候选确认态正文。', 'run-parity-confirm');
+    const deferred = await saveCandidate('候选稍后态正文。', 'run-parity-defer');
+    const rejected = await saveCandidate('候选拒绝态正文。', 'run-parity-reject');
+    const candidateStates = [
+      (await candidates.promoteRecallCandidate(uid, confirmed.id, { actor: 'user' })).candidate.status,
+      (await candidates.deferRecallCandidate(uid, deferred.id)).status,
+      (await candidates.rejectRecallCandidate(uid, rejected.id)).status,
+    ];
+
+    // 同一套状态词：不是"008 说 deferred、候选线说 scheduled"。
+    expect(candidateStates).toEqual(['confirmed', 'deferred', 'rejected']);
+    expect(candidateStates).toEqual(eightStates);
+  });
+
+  it('「拒绝 = 保持原版 + 留档」两侧一致', async () => {
+    const uid = 'user-parity-keep-original';
+    const { assets, approval, candidates } = await modules();
+    const decisions = await import('../../../../src/main/features/cognition/review-decision');
+    const asset = await seedAsset(uid, '拒绝口径的基线正文。');
+
+    // 008 侧：拒绝 → 内容/版本不动，提议留档，审计有 approval_rejected。
+    const { proposal } = await proposeStatementChange(uid, asset.id, asset.version, '不该生效的正文（008）。');
+    const eight = await approval.decideAssetChangeProposal(uid, proposal.id, 'reject');
+    expect(eight.state).toBe('rejected');
+    expect((await assets.readAbilityAsset(uid, asset.id))).toMatchObject({ version: asset.version, statement: asset.statement });
+    expect((await assets.listAbilityAssetAudit(uid, asset.id)).some((row) => row.action === 'approval_rejected')).toBe(true);
+    expect((await approval.readAssetChangeProposal(uid, proposal.id))!.state).toBe('rejected');
+
+    // 候选侧：拒绝 → 同一个含义（保持原版）+ 留档（决定账本）。
+    const candidate = await candidates.saveRecallCandidate(uid, {
+      judgment: '不该生效的正文（候选）。',
+      suggestedType: 'rule',
+      ...RULE_BOUNDARY,
+      suggestedScope: 'architecture',
+      suggestedAction: 'limit_scope',
+      targetAssetId: asset.id,
+      sourceRefs: [{ kind: 'execution_evaluation', id: 'run-parity-reject' }],
+    });
+    const kept = await candidates.rejectRecallCandidate(uid, candidate.id, '保持原版');
+    expect(kept.status).toBe('rejected');
+    expect((await assets.readAbilityAsset(uid, asset.id))).toMatchObject({ version: asset.version, statement: asset.statement });
+    const ledger = await decisions.listReviewDecisions(uid, `recall_candidate:${candidate.id}`);
+    expect(ledger.find((row) => row.decision_type === 'reject')!.reason).toBe('保持原版');
+    expect((await candidates.readRecallCandidate(uid, candidate.id)).status).toBe('rejected');
+  });
+
+  it('008 重检不回退，且两条线共用同一处锁内比对：同一资产的并发确认只有一个生效', async () => {
+    const uid = 'user-parity-one-lock';
+    const { assets, approval, candidates } = await modules();
+    const asset = await seedAsset(uid, '并发口径的基线正文。');
+    const { proposal } = await proposeStatementChange(uid, asset.id, asset.version, '008 并发想改成的正文。');
+    const candidate = await candidates.saveRecallCandidate(uid, {
+      judgment: '候选并发想改成的正文。',
+      suggestedType: 'rule',
+      ...RULE_BOUNDARY,
+      suggestedScope: 'architecture',
+      suggestedAction: 'limit_scope',
+      targetAssetId: asset.id,
+      targetVersionUsed: asset.version,
+      sourceRefs: [{ kind: 'execution_evaluation', id: 'run-parity-one-lock' }],
+    });
+
+    const [eight, six] = await Promise.allSettled([
+      approval.decideAssetChangeProposal(uid, proposal.id, 'confirm'),
+      candidates.promoteRecallCandidate(uid, candidate.id, { actor: 'user' }),
+    ]);
+
+    const applied: string[] = [];
+    if (eight.status === 'fulfilled' && (eight.value as { ok: boolean }).ok) applied.push('008');
+    if (six.status === 'fulfilled') applied.push('candidate');
+    // 只有一条线真的写进去了（比对在 updateAbilityAsset 锁内，后到的那条必然撞版本）。
+    expect(applied).toHaveLength(1);
+    expect((await assets.readAbilityAsset(uid, asset.id)).version).toBe('2');
+    expect((await assets.listAbilityAssetVersions(uid, asset.id)).map((row) => row.version)).toEqual(['1', '2']);
+    // 输的那条是**结构化**冲突（不是被吞掉），字段名与赢家无关、两条线一致。
+    const loserConflict = applied[0] === '008'
+      ? (six as PromiseRejectedResult).reason.versionConflict
+      : (eight as PromiseFulfilledResult<{ versionConflict?: unknown }>).value.versionConflict;
+    expect(loserConflict).toMatchObject({ baselineVersion: '1', currentVersion: '2' });
+    // 输的那条留在可再决定的状态：不静默覆盖、不落终态。
+    if (applied[0] === '008') {
+      expect((await candidates.readRecallCandidate(uid, candidate.id)).status).toBe('pending_review');
+    } else {
+      expect((await approval.readAssetChangeProposal(uid, proposal.id))!.state).toBe('pending');
+    }
+  });
+});

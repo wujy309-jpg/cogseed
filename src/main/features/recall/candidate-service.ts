@@ -8,7 +8,7 @@ import { createLogger } from '../../logger';
 import { evaluatePromotionPolicy } from './promotion-policy';
 
 import { describePromotionBlock, validatePromotionByAssetType, type PromotionBlockReason } from './formal-assets/promotion';
-import { genId12, safeId } from '../../storage';
+import { appendJsonlAtomic, genId12, nowIso, safeId } from '../../storage';
 import { assertNotForbiddenToPersist } from '../../util/cognition-sensitivity';
 import { fileEditLock } from '../../util/locks';
 import { recallJsonRecordPath } from './paths';
@@ -47,6 +47,7 @@ import { isCognitionSourceEnabled } from './source-control';
 import {
   readReviewDecision,
   recordReviewDecisionOutcome,
+  reviewDecisionLogPath,
   writeReviewDecision,
   type ReviewDecision,
   type ReviewDecisionActor,
@@ -261,6 +262,140 @@ export interface RecallCandidatePromotionResult {
   receipt: RecallAssetHandoffReceipt;
   /** Projection is best-effort and only present for Personal assets. */
   profileProjection?: PersonalProfileSyncResult;
+  /** 版本重检口径（specs/015 D6/D7）：本次确认**没能**核对"改进对象版本"
+   *  ——存量候选没有 `targetVersionUsed` 可核对。缺省不出现（=核对过，或
+   *  本来就是新建型，没有可核对的版本）。渲染层据此如实提示"无法核对改进
+   *  对象"，而不是假装核对过。 */
+  versionCheckSkipped?: true;
+  /** 显式重锚的留痕（`contracts/ipc.md` §二「实现期补充」）：本次确认把比对
+   *  基线从候选原锚（= 这个字段的值，即原 `targetVersionUsed`）换到了用户看
+   *  过差异后的当前在用版。只在**确实换了**（原锚存在且与传入的
+   *  `confirmBaselineVersion` 不同）且这次确认**已生效**时出现——冲突路径
+   *  不带它（没生效就谈不上重锚）。 */
+  rebasedFrom?: string;
+}
+
+/** 版本重检不一致的结构化冲突（specs/015 D6~D9）。
+ *
+ *  字段名与 specs/008 的 `asset-approval-service.ts` 的 `versionConflict`
+ *  逐字一致（`baselineVersion` / `currentVersion`），只多一个本链路的
+ *  `targetVersionUsed`（= 候选锚定的版本，渲染层要能说清"拿哪一版比"）。
+ *
+ *  比对本身**只有一处**：`updateAbilityAsset` 的锁内（`asset-service.ts` 的
+ *  `expectedVersion` 分支）。这里只承接它的结论，绝不重算——两份判定迟早
+ *  会漂成两个口径。 */
+export interface RecallCandidateVersionConflict {
+  /** 候选基于的版本（= 候选的 `targetVersionUsed`）。 */
+  baselineVersion: string;
+  /** 锁内比到的当前在用版。 */
+  currentVersion: string;
+  /** 期望候选基于的版本。 */
+  targetVersionUsed: string;
+}
+
+export const RECALL_CANDIDATE_VERSION_CONFLICT_CODE = 'recall_candidate_version_conflict';
+
+/** 版本重检冲突（抛出型）：候选**不落终态**、资产零改动，由 IPC 层转成
+ *  `contracts/ipc.md` §二 的返回体。 */
+export class RecallCandidateVersionConflictError extends Error {
+  readonly code = RECALL_CANDIDATE_VERSION_CONFLICT_CODE;
+  readonly versionConflict: RecallCandidateVersionConflict;
+  constructor(versionConflict: RecallCandidateVersionConflict) {
+    super(`ability asset version conflict: expected v${versionConflict.baselineVersion}, current v${versionConflict.currentVersion}`);
+    this.name = 'RecallCandidateVersionConflictError';
+    this.versionConflict = versionConflict;
+  }
+}
+
+/** 从任意抛出物里取版本冲突（IPC 用）。
+ *  按 `code` + 形状判而不是 `instanceof`：错误会跨模块实例/序列化边界传递，
+ *  认类名会把"同一件事"判成两件事。 */
+export function recallCandidateVersionConflictOf(error: unknown): RecallCandidateVersionConflict | undefined {
+  const record = error as { code?: unknown; versionConflict?: unknown } | null | undefined;
+  if (!record || record.code !== RECALL_CANDIDATE_VERSION_CONFLICT_CODE) return undefined;
+  const conflict = record.versionConflict as Partial<RecallCandidateVersionConflict> | undefined;
+  if (!conflict || typeof conflict !== 'object') return undefined;
+  return {
+    baselineVersion: String(conflict.baselineVersion ?? ''),
+    currentVersion: String(conflict.currentVersion ?? ''),
+    targetVersionUsed: String(conflict.targetVersionUsed ?? ''),
+  };
+}
+
+/** 版本重检的传参口径（specs/015 D6/D7；显式重锚见 `contracts/ipc.md` §二
+ *  「实现期补充」）：
+ *  - 只有**更新型**候选（`update` / `limit_scope`）有"改进对象版本"可核对；
+ *  - 默认比 `targetVersionUsed`（候选生成时的锚，是可核对面本身，不被改写）；
+ *  - 传了 `confirmBaselineVersion`（用户看过"对当前版差异"后确认）时以它为准：
+ *    它才是这次要核的基线。比对仍然**只有一处**——`updateAbilityAsset` 的锁内
+ *    （本文件不重算）；
+ *  - `targetVersionUsed` 缺省（存量候选）且没有显式重锚 → 不重检，如实标
+ *    `versionCheckSkipped`；
+ *  - 重锚留痕只在"换了一个基线"时产生：原锚存在且与显式值不同，才把原锚作为
+ *    `rebasedFrom` 交给决定账本（重锚可以生效，但不许静默改基线）。
+ *  `create` 没有可核对的对象，`pause` 走 `pauseAbilityAsset`（没有版本比对面）
+ *  ——两者都不谎报"已重检"，也不借这个旗标说"无法核对改进对象"；显式重锚在
+ *  这两种落点上同样没有比对面，故不参与判定。 */
+function candidateVersionRecheckPlan(
+  action: RecallCandidateAction,
+  targetVersionUsed: string | undefined,
+  confirmBaselineVersion?: string,
+): { expectedVersion?: string; versionCheckSkipped: boolean; rebasedFrom?: string } {
+  const updateType = action === 'update' || action === 'limit_scope';
+  const target = updateType ? targetVersionUsed : undefined;
+  const explicit = updateType ? confirmBaselineVersion : undefined;
+  const expectedVersion = explicit || target;
+  return {
+    ...(expectedVersion ? { expectedVersion } : {}),
+    versionCheckSkipped: updateType && !expectedVersion,
+    ...(explicit && target && explicit !== target ? { rebasedFrom: target } : {}),
+  };
+}
+
+/** 把 `updateAbilityAsset` 抛出的版本冲突转成结构化冲突；其它错误返回 undefined。
+ *  冲突文案由 `asset-service` 单点产生，这里只读同一个事实（解析方式与
+ *  specs/008 的 `asset-approval-service.ts` 同款），不另算一遍。
+ *
+ *  `expectedVersion` = 本次实际送去比对的版本（没有比对面就不可能产生结构化
+ *  冲突）；`baselineVersion` = 报告给渲染层的"候选基于的版本"（= 候选原锚）。
+ *  两者只在**显式重锚**时不同：那时 `expectedVersion` 是用户新选中的基线，但
+ *  冲突里该说清的仍是"候选基于哪一版"——字段含义不因重锚而变形，渲染层按
+ *  同一套字段名处理第二次冲突。 */
+function abilityAssetVersionConflict(
+  error: unknown,
+  expectedVersion: string | undefined,
+  baselineVersion: string | undefined = expectedVersion,
+): RecallCandidateVersionConflict | undefined {
+  if (!expectedVersion) return undefined;
+  const message = error instanceof Error ? error.message : String(error);
+  if (!message.includes('version conflict')) return undefined;
+  const currentVersion = message.match(/current v(\d+)/)?.[1] || '';
+  const baseline = baselineVersion || expectedVersion;
+  return { baselineVersion: baseline, currentVersion, targetVersionUsed: baseline };
+}
+
+/** 重锚留痕（`contracts/ipc.md` §二「实现期补充」）：显式把候选的比对基线换到
+ *  当前在用版时，候选审查决定账本必须留下原锚——重锚可以生效，但不许静默改
+ *  基线，用户和审计都要能看出"这条资产从哪一版开始被改"。
+ *
+ *  写法沿用账本自身的 append-only 口径（`recordReviewDecisionOutcome` 同款：
+ *  同一 `decision_id` 以最后一条为准），所以这里**追加**一条带 `rebasedFrom`
+ *  的记录来承接已落账的终态，而不是回头改写已写下的那条：账本只增不改。
+ *  `ReviewDecision` 契约里没有这个字段，所以用交叉类型标注它，避免为一个
+ *  审计附加信息去改账本的公共类型（那会让所有读口都多一个可选字段）。 */
+async function recordRebasedDecisionTrace(
+  userId: string,
+  targetRef: string,
+  decision: ReviewDecision,
+  rebasedFrom: string,
+): Promise<ReviewDecision> {
+  const traced: ReviewDecision & { rebasedFrom: string } = {
+    ...decision,
+    rebasedFrom,
+    timestamp: nowIso(),
+  };
+  await appendJsonlAtomic(reviewDecisionLogPath(userId, targetRef), traced);
+  return traced;
 }
 
 interface StoredRecallAssetHandoffReceipt extends RecallJsonRecord, RecallAssetHandoffReceipt {
@@ -294,6 +429,18 @@ export interface PromoteRecallCandidateOptions extends AbilityAssetSemantics {
   causalRule?: CausalRule;
   /** Optional explicit personal-template destination selected during review. */
   profileTarget?: PersonalProfileTarget;
+  /** 版本冲突后的**显式重锚**（specs/015 US-702，`contracts/ipc.md` §二
+   *  「实现期补充」）：调用方声明"我已看过候选判断**对版本 X 的差异**，按它
+   *  重新确认"。与 `targetVersionUsed`（候选生成时冻下的锚，只读）不同，这个
+   *  值来自用户看过差异之后，代表他这次认可哪一版。
+   *
+   *  主进程在 `updateAbilityAsset` **锁内**再核一次 `X === 当前在用版`（唯一
+   *  一处比对）：不成立仍按结构化冲突返回（零改动），成立才用**当前正文**重新
+   *  融合落库，并在决定账本记 `rebasedFrom`（原锚，与 X 不同才记）。
+   *  缺省 = 老行为（比 `targetVersionUsed`），存量候选的语义一个字不变。
+   *  只对更新型候选（`update` / `limit_scope`）有意义（见
+   *  `candidateVersionRecheckPlan`）。 */
+  confirmBaselineVersion?: string;
 }
 
 const log = createLogger('recall.candidates');
@@ -1959,6 +2106,10 @@ export async function promoteRecallCandidate(
 
   let decision: ReviewDecision | undefined;
   let receipt: RecallAssetHandoffReceipt | undefined;
+  // 本次确认有没有核对到"改进对象版本"（specs/015 T021）：随结果回给渲染层。
+  let versionCheckSkipped = false;
+  // 显式重锚的原锚（specs/015 US-702 再确认路径）：只有真的换了基线才回传。
+  let rebasedFrom: string | undefined;
   let updated: RecallJsonRecord;
   try {
     updated = await updateRecallJsonRecord(userId, 'candidates', candidateId, async (current) => {
@@ -2046,6 +2197,17 @@ export async function promoteRecallCandidate(
     const now = new Date().toISOString();
     let stored: RecallAbilityAssetRecord;
     const handoffReason = `review_decision:${decision.decision_id}`;
+    // 版本重检计划在这里定：更新型候选把"要核的版本"传进 `updateAbilityAsset`
+    // （比对在它的锁内，唯一一处）；用户显式重锚（confirmBaselineVersion）时
+    // 以他看过的当前在用版为准，缺省仍是候选原锚。存量候选缺这个字段又没重锚
+    // 就如实标 versionCheckSkipped，不假装核对过。
+    const versionPlan = candidateVersionRecheckPlan(
+      candidate.suggestedAction,
+      candidate.targetVersionUsed,
+      options.confirmBaselineVersion,
+    );
+    versionCheckSkipped = versionPlan.versionCheckSkipped;
+    rebasedFrom = versionPlan.rebasedFrom;
     const alreadyApplied = await readAppliedHandoffAsset(userId, candidate, decision.decision_id);
     if (alreadyApplied) {
       receipt = await readRecallAssetHandoffReceipt(userId, candidate.id, decision.decision_id)
@@ -2146,26 +2308,39 @@ export async function promoteRecallCandidate(
         // 融合而非覆盖（2026-09-19 刀二）：update 的正文 = 旧正文为主体 +
         // 候选判断按句级三档融入（重述留更长/改写新替旧/增量追加）。选择
         // "融合错了可回退"兜底而不是放弃融合——版本快照保证旧版随时可切回。
+        // 主体取的是**刚才读到的当前正文**（`target` 在候选记录的锁内读、紧接着
+        // 交给资产锁比对）：显式重锚时融合的就是用户看过的那一版正文，绝不拿
+        // 候选原锚版本的旧正文去糊当前版。若正文在两次读之间又变了，资产锁内
+        // 的版本比对会拦住（零改动），不会把旧内容套上去。
         // limit_scope（范围收窄）不融合：它的判断文本通常是对范围的完整重写。
         const fused = candidate.suggestedAction === 'update' && String(target.statement || '').trim()
           ? fuseStatements(String(target.statement), String(candidate.judgment || ''))
           : null;
-        stored = await updateAbilityAsset(userId, target.id, {
-          title: candidate.summary || candidate.judgment.slice(0, 120),
-          statement: fused ? fused.statement : candidate.judgment,
-          scope: candidate.suggestedScope,
-          // An update adds evidence to the chain; it must not erase the
-          // evidence already supporting the target asset.
-          evidenceRefs: mergeSourceRefs(target.evidenceRefs, candidate.evidenceRefs),
-          ...(ontologyRefs?.length ? { ontologyRefs } : {}),
-          ...relationContract,
-          ...semantics,
-          ...(scopePolicy ? { scopePolicy } : {}),
-          actor: handoffActor,
-          reason: fused ? `${handoffReason};semantic-fusion` : handoffReason,
-          reviewDecisionId: decision.decision_id,
-          sourceCandidateId: candidate.id,
-        });
+        try {
+          stored = await updateAbilityAsset(userId, target.id, {
+            title: candidate.summary || candidate.judgment.slice(0, 120),
+            statement: fused ? fused.statement : candidate.judgment,
+            scope: candidate.suggestedScope,
+            // An update adds evidence to the chain; it must not erase the
+            // evidence already supporting the target asset.
+            evidenceRefs: mergeSourceRefs(target.evidenceRefs, candidate.evidenceRefs),
+            ...(ontologyRefs?.length ? { ontologyRefs } : {}),
+            ...relationContract,
+            ...semantics,
+            ...(scopePolicy ? { scopePolicy } : {}),
+            // 版本重检（specs/015 D6/D7）：要核的版本（候选原锚，或用户显式
+            // 重锚后的当前在用版）交给资产服务，在它的锁内与当前在用版比对
+            // ——不在本文件写第二处比对。
+            ...(versionPlan.expectedVersion ? { expectedVersion: versionPlan.expectedVersion } : {}),
+            actor: handoffActor,
+            reason: fused ? `${handoffReason};semantic-fusion` : handoffReason,
+            reviewDecisionId: decision.decision_id,
+            sourceCandidateId: candidate.id,
+          });
+        } catch (error) {
+          const conflict = abilityAssetVersionConflict(error, versionPlan.expectedVersion, candidate.targetVersionUsed);
+          throw conflict ? new RecallCandidateVersionConflictError(conflict) : error;
+        }
       } else {
         throw new Error('candidate action does not create or change an asset');
       }
@@ -2200,6 +2375,17 @@ export async function promoteRecallCandidate(
       decision.decision_id,
       { assetId: stored.id },
     );
+    // 重锚留痕（`contracts/ipc.md` §二）：确认**已生效**之后才补记原锚，未生效
+    // 的尝试不写（那是"没发生的事"）。承接在上面那条终态记录之后追加，账本仍是
+    // 只增不改；同一 decision_id 以最后一条为准，所以读口看到的是带原锚的终态。
+    if (rebasedFrom) {
+      decision = await recordRebasedDecisionTrace(
+        userId,
+        `recall_candidate:${candidate.id}`,
+        decision,
+        rebasedFrom,
+      );
+    }
     return {
       ...candidate,
       status: 'confirmed',
@@ -2213,13 +2399,19 @@ export async function promoteRecallCandidate(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    // 版本重检不一致（specs/015 D6/D9）：候选**不落终态**——用户没做错什么，
+    // 只是资产在他看候选的时候被改过；资产零改动（比对在 updateAbilityAsset
+    // 锁内，不通过就没写）。台账只记一次"未生效的确认尝试"，与 specs/008 的
+    // approval_confirmed「未生效」行同口径；不写 failed，也不改资产。
+    const versionConflict = recallCandidateVersionConflictOf(error);
     if (decision) {
       await recordReviewDecisionOutcome(
         userId,
         `recall_candidate:${candidateId}`,
         decision.decision_id,
-        { failureCode: 'asset_write_failed' },
+        { failureCode: versionConflict ? 'version_conflict' : 'asset_write_failed' },
       ).catch(() => undefined);
+      if (versionConflict) throw error;
       await updateRecallJsonRecord(userId, 'candidates', candidateId, (current) => {
         if (!current) throw error;
         const candidate = asCandidate(current);
@@ -2311,5 +2503,13 @@ export async function promoteRecallCandidate(
       });
     }
   }
-  return { candidate, asset, decision, receipt, ...(profileProjection ? { profileProjection } : {}) };
+  return {
+    candidate,
+    asset,
+    decision,
+    receipt,
+    ...(versionCheckSkipped ? { versionCheckSkipped: true as const } : {}),
+    ...(rebasedFrom ? { rebasedFrom } : {}),
+    ...(profileProjection ? { profileProjection } : {}),
+  };
 }

@@ -7,7 +7,7 @@ import {
   listAssetUsageReceipts,
   type AssetUsageEvidenceKind,
 } from '../recall/asset-usage-receipt';
-import { subscribeTaskTerminals, type TaskTerminalEvent, type TaskTerminalListener } from '../group_chat/bus';
+import { subscribeTaskTerminals, type TaskTerminalEvent, type TaskTerminalListener, type TaskTerminalStatus } from '../group_chat/bus';
 import type { RuntimeEventEnvelope, RuntimeRunRequest } from '../cogseed_runtime/protocol';
 import type { RecallCandidateRecord } from '../recall/candidate-service';
 import {
@@ -614,7 +614,13 @@ export function runtimeKstarCaptureInput(
 
 
 export type GroupKstarTerminalSubscribe = (listener: TaskTerminalListener) => () => void;
-export type GroupKstarMessageLoader = (userId: string, conversationId: string, limit: number) => Promise<GroupKstarMessageInput[]>;
+/** 会话消息形态：episode 构建用的窄输入 + 复盘卡标识。发卡幂等必须能按
+ *  `reviewId` 在消息里查重，而 `GroupKstarMessageInput` 不含卡片字段——默认
+ *  loader 从真实消息映射它；测试注入的 loader 不带该字段即视为"历史里没有卡"。 */
+export interface GroupKstarMessageWithReviewCard extends GroupKstarMessageInput {
+  kstar_review_card?: { kind?: string; reviewId?: string };
+}
+export type GroupKstarMessageLoader = (userId: string, conversationId: string, limit: number) => Promise<GroupKstarMessageWithReviewCard[]>;
 export type GroupKstarReviewCardPublisher = (userId: string, conversationId: string, review: KstarReviewRecord) => Promise<void>;
 
 export interface GroupKstarClosureRuntime {
@@ -642,10 +648,67 @@ async function defaultReviewCardPublisher(userId: string, conversationId: string
   });
 }
 
-async function defaultGroupMessageLoader(userId: string, conversationId: string, limit: number): Promise<GroupKstarMessageInput[]> {
+/** 发卡幂等的进程内占位（键 = userId:conversationId:reviewId）。两层各有分工：
+ *  消息里查重覆盖重启/历史重放；这张表覆盖"并发触发都在对方落盘之前通过查重"
+ *  的窗口——占位在第一个 await 之前完成，所以同一 review 只有一条路径能到发送。 */
+const reviewCardClaims = new Set<string>();
+
+function reviewCardClaimKey(userId: string, conversationId: string, reviewId: string): string {
+  return `${userId}:${conversationId}:${reviewId}`;
+}
+
+/** 触发条件收口：只在**终态收口**（waiting_input 是非终态，不发）且 review
+ *  明确需要用户确认时发卡；其余路径零发卡。 */
+function shouldPublishReviewCard(status: TaskTerminalStatus, review: KstarReviewRecord | undefined): review is KstarReviewRecord {
+  if (status !== 'completed' && status !== 'failed' && status !== 'cancelled') return false;
+  return Boolean(review && review.needsConfirmation === true);
+}
+
+/** 在 capture 完成、review 落盘之后发卡（一 review 一卡）。发卡失败只记
+ *  KstarFailureRecord(stage='control_receipt') + 日志：任务与 review 状态不变、
+ *  不重试风暴，也不把异常抛回 capture 重试链（那会重跑整个 capture）。 */
+async function publishReviewCardOnce(
+  userId: string,
+  conversationId: string,
+  review: KstarReviewRecord,
+  loadMessages: GroupKstarMessageLoader,
+  publish: GroupKstarReviewCardPublisher,
+): Promise<void> {
+  const reviewId = typeof review.id === 'string' ? review.id.trim() : '';
+  if (!reviewId) return;
+  const claim = reviewCardClaimKey(userId, conversationId, reviewId);
+  if (reviewCardClaims.has(claim)) return;
+  reviewCardClaims.add(claim);
+  try {
+    // 消息里已有同 reviewId 的卡 → 已经发过（重启、历史重放、并发触发）。
+    const messages = await loadMessages(userId, conversationId, 500);
+    if (messages.some((message) => message.kstar_review_card?.reviewId === reviewId)) return;
+    await publish(userId, conversationId, review);
+  } catch (error) {
+    // 失败不占位：本路径不重试（不给重试风暴），但后续独立的终态触发可以再试一次。
+    reviewCardClaims.delete(claim);
+    log.warn('kstar review card publish degraded', {
+      userId,
+      conversationId,
+      reviewId,
+      errorCode: 'review_card_publish_failed',
+      error: (error as Error).message,
+    });
+    await recordKstarFailure(userId, {
+      stage: 'control_receipt', errorCode: 'review_card_publish_failed',
+      errorMessage: 'KSTAR review card publish failed; task closure and review state were preserved.',
+      operationKey: `review-card-${reviewId}`.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 100),
+      conversationId,
+      ...(safeId(review.episodeId) ? { episodeId: review.episodeId } : {}),
+    }).catch(() => undefined);
+  }
+}
+
+async function defaultGroupMessageLoader(userId: string, conversationId: string, limit: number): Promise<GroupKstarMessageWithReviewCard[]> {
   const groupChat = await import('../group_chat');
   const messages = await groupChat.readMessages(userId, conversationId, limit);
-  return messages.map((message) => ({
+  return messages.map((message) => {
+    const base: GroupKstarMessageWithReviewCard = {
     id: message.id,
     ts: message.ts,
     from: message.from,
@@ -667,7 +730,10 @@ async function defaultGroupMessageLoader(userId: string, conversationId: string,
       projection_id: citation.projection_id,
       ...(citation.forecast_id ? { forecast_id: citation.forecast_id } : {}),
     })) } : {}),
-  }));
+    };
+    // 发卡幂等按 reviewId 查重需要看到历史卡片（卡片正文不进 episode 构建输入）。
+    return message.kstar_review_card ? { ...base, kstar_review_card: message.kstar_review_card } : base;
+  });
 }
 
 /** Subscribe to content-free group terminal events and capture details asynchronously. */
@@ -675,6 +741,7 @@ export function startGroupKstarClosure(runtime: GroupKstarClosureRuntime = {}): 
   const subscribe = runtime.subscribe || subscribeTaskTerminals;
   const loadMessages = runtime.readMessages || defaultGroupMessageLoader;
   const capture = runtime.capture || captureGroupKstarClosure;
+  const publishReviewCard = runtime.publishReviewCard || defaultReviewCardPublisher;
   const seen = new Set<string>();
   const inFlight = new Set<string>();
   const listener: TaskTerminalListener = (event: TaskTerminalEvent) => {
@@ -708,11 +775,12 @@ export function startGroupKstarClosure(runtime: GroupKstarClosureRuntime = {}): 
           ...(event.projection_id ? { projectionId: event.projection_id } : {}),
           ...(event.forecast_id ? { forecastId: event.forecast_id } : {}),
         });
-        // Self-evolution is Agent-implemented: the review is automatically
-        // precipitated (direct ability-asset line) without asking the user to
-        // confirm the expected-vs-actual comparison — the user neither made
-        // the prediction nor observes the execution internals, so they cannot
-        // verify it. No review card is posted.
+        // 复盘卡恢复发送（US-704，D11）：capture 完成、review 落盘之后发卡。
+        // 只发一次（reviewId 幂等）、只在终态收口且 review 需要确认时发；
+        // 发卡失败不改任务/review 状态（见 publishReviewCardOnce）。
+        if (shouldPublishReviewCard(event.status, result?.review)) {
+          await publishReviewCardOnce(event.user_id, event.conversation_id, result.review, loadMessages, publishReviewCard);
+        }
         inFlight.delete(key);
         seen.add(key);
       } catch {

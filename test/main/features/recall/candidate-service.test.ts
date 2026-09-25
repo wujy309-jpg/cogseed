@@ -1609,3 +1609,117 @@ describe('Recall candidate/asset › 空间归属（spaceId）管线', () => {
     })).rejects.toThrow(/suspicious content/);
   });
 });
+
+describe('「保持原版 / 稍后处理 / 系统保持当前」的落点（specs/015 T024）', () => {
+  /** 一条 v1 资产 + 一条想改它的更新型候选。
+   *  `captureKey` 就是 spec 说的 `dedupeKey`（同一变更的幂等提交键）。 */
+  async function seedUpdateProposal(
+    uid: string,
+    texts: { asset: string; proposal: string },
+    ids: { source: string; run: string; dedupeKey: string },
+  ) {
+    const candidates = await service();
+    const seed = await candidates.saveRecallCandidate(uid, {
+      judgment: texts.asset,
+      suggestedType: 'rule',
+      suggestedScope: 'project',
+      sourceRefs: [{ kind: 'execution', id: ids.source }],
+    });
+    const asset = (await candidates.promoteRecallCandidate(uid, seed.id, { actor: 'user' })).asset;
+    const input = {
+      judgment: texts.proposal,
+      suggestedType: 'rule' as const,
+      suggestedScope: 'project',
+      suggestedAction: 'update' as const,
+      targetAssetId: asset.id,
+      targetVersionUsed: '1',
+      captureKey: ids.dedupeKey,
+      sourceRefs: [{ kind: 'execution_evaluation', id: ids.run }],
+    };
+    return { asset, input, proposal: await candidates.saveRecallCandidate(uid, input) };
+  }
+
+  it('拒绝 = 保持原版：候选留档 + 同 dedupeKey 不再重复提交 + 目标资产仍 v1', async () => {
+    const uid = 'user-keep-original';
+    const candidates = await service();
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    const decisions = await import('../../../../src/main/features/cognition/review-decision');
+    const { asset, input, proposal } = await seedUpdateProposal(uid, {
+      asset: '发布前必须核对回滚方案。',
+      proposal: '发布前必须核对回滚方案与演练记录。',
+    }, { source: 'exec-keep-original', run: 'run-keep-original', dedupeKey: 'kstar-improve-keep-original' });
+
+    const rejected = await candidates.rejectRecallCandidate(uid, proposal.id, '保持原版');
+
+    expect(rejected.status).toBe('rejected');
+    // 留档：决定账本里有这次拒绝（带理由），候选记录本身也还在（不是删掉）。
+    const ledger = await decisions.listReviewDecisions(uid, `recall_candidate:${proposal.id}`);
+    const rejectRow = ledger.find((row) => row.decision_type === 'reject')!;
+    expect(rejectRow.reason).toBe('保持原版');
+    expect((await candidates.readRecallCandidate(uid, proposal.id)).status).toBe('rejected');
+    // 同 dedupeKey 再来一次：拿到的是同一条已拒绝候选，不再生成新待办。
+    const resubmitted = await candidates.saveRecallCandidate(uid, input);
+    expect(resubmitted.id).toBe(proposal.id);
+    expect(resubmitted.status).toBe('rejected');
+    expect((await candidates.listRecallCandidates(uid)).filter((row) => row.status === 'pending_review')).toHaveLength(0);
+    // 拒绝 = 保持原版：正文与版本都没动，版本流里只有 v1。
+    const after = await assets.readAbilityAsset(uid, asset.id);
+    expect(after.version).toBe('1');
+    expect(after.statement).toBe(asset.statement);
+    expect((await assets.listAbilityAssetVersions(uid, asset.id)).map((row) => row.version)).toEqual(['1']);
+    // 已拒绝是终态：确认也不会越过"保持原版"的决定。
+    await expect(candidates.promoteRecallCandidate(uid, proposal.id, { actor: 'user' }))
+      .rejects.toThrow(/terminal/i);
+    expect((await assets.readAbilityAsset(uid, asset.id)).version).toBe('1');
+  });
+
+  it('稍后处理 = deferred：不丢、可再次处置，处置前后目标资产都还是 v1', async () => {
+    const uid = 'user-defer-later';
+    const candidates = await service();
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    const { asset, proposal } = await seedUpdateProposal(uid, {
+      asset: '结论先写，理由随后。',
+      proposal: '结论先写，理由随后，最后给可执行动作。',
+    }, { source: 'exec-defer-later', run: 'run-defer-later', dedupeKey: 'kstar-improve-defer-later' });
+
+    const deferred = await candidates.deferRecallCandidate(uid, proposal.id, '稍后处理');
+
+    expect(deferred.status).toBe('deferred');
+    expect(deferred.cooldownUntil).toBeTruthy();
+    // 不丢：还在池子里（非终态），且能再次处置。
+    expect((await candidates.listRecallCandidates(uid)).map((row) => row.id)).toContain(proposal.id);
+    expect((await candidates.resumeRecallCandidate(uid, proposal.id)).status).toBe('pending_review');
+    // 稍后处理本身不改资产。
+    expect((await assets.readAbilityAsset(uid, asset.id)).version).toBe('1');
+    // 真的可以再处置：这次确认生效为 v2（重检通过，因为资产还是 v1）。
+    const promoted = await candidates.promoteRecallCandidate(uid, proposal.id, { actor: 'user' });
+    expect(promoted.asset).toMatchObject({ id: asset.id, version: '2' });
+    expect(promoted.asset.statement).toContain('可执行动作');
+  });
+
+  it('系统建议「保持当前」→ ignored：与用户「拒绝」分开记（措辞不同、状态不同）', async () => {
+    const uid = 'user-keep-current';
+    const candidates = await service();
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    const decisions = await import('../../../../src/main/features/cognition/review-decision');
+    const { asset, proposal } = await seedUpdateProposal(uid, {
+      asset: '只在正式评审里走这套清单。',
+      proposal: '只在正式评审与上线评审里走这套清单。',
+    }, { source: 'exec-keep-current', run: 'run-keep-current', dedupeKey: 'kstar-improve-keep-current' });
+
+    const kept = await candidates.keepCurrentRecallCandidate(uid, proposal.id);
+
+    expect(kept.status).toBe('ignored');
+    // 与用户拒绝分开记：decision_type 是 keep_current（不是 reject），
+    // 状态是 ignored（不是 rejected）——"系统建议保持当前"不等于"用户拒绝"。
+    const ledger = await decisions.listReviewDecisions(uid, `recall_candidate:${proposal.id}`);
+    expect(ledger.map((row) => row.decision_type)).toContain('keep_current');
+    expect(ledger.map((row) => row.decision_type)).not.toContain('reject');
+    // 两条都是终态，但只有用户拒绝那条在候选状态上写 rejected。
+    expect((await candidates.readRecallCandidate(uid, proposal.id)).status).not.toBe('rejected');
+    // 系统建议同样不改资产。
+    const after = await assets.readAbilityAsset(uid, asset.id);
+    expect(after.version).toBe('1');
+    expect(after.statement).toBe(asset.statement);
+  });
+});

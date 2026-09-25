@@ -73,6 +73,7 @@ import * as kstarReviewService from '../features/kstar/review-service';
 import * as kstarTrace from '../features/kstar/trace';
 import { listKstarEpisodes, readKstarEpisode } from '../features/kstar/episode-store';
 import * as kstarFailures from '../features/kstar/failure-service';
+import { listKstarImprovementOutcomes, KSTAR_IMPROVEMENT_CONCLUSIONS, type KstarImprovementConclusion } from '../features/kstar/improvement-outcome';
 import * as kstarRunEvidence from '../features/kstar/run-evidence';
 import * as recallProofs from '../features/recall/proof-service';
 import * as recallTree from '../features/recall/tree-service';
@@ -2540,10 +2541,18 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true, ...(await recallCandidates.batchPromoteRecallCandidates(ctx.userId, candidateIds)) };
   },
 
-  'recall.candidates.promote': async ({ candidateId, riskAcknowledged, profileTarget, forceCreateSimilar } = {}, ctx) => {
+  'recall.candidates.promote': async ({ candidateId, riskAcknowledged, profileTarget, forceCreateSimilar, confirmBaselineVersion } = {}, ctx) => {
     if (!safeId(candidateId)) throw new Error('invalid recall candidate id');
     if (riskAcknowledged !== undefined && typeof riskAcknowledged !== 'boolean') throw new Error('invalid risk acknowledgment');
     if (forceCreateSimilar !== undefined && typeof forceCreateSimilar !== 'boolean') throw new Error('invalid force-create flag');
+    // 版本冲突后的显式重锚（specs/015 US-702，`contracts/ipc.md` §二
+    // 「实现期补充」）：形状与 `recall.candidates.save` 的 targetVersionUsed
+    // 同一口径（/^[0-9]{1,9}$/）。这里只校验形状与长度——"这个版本是不是当前
+    // 在用版"由主进程在 updateAbilityAsset **锁内**判，IPC 层不重判版本。
+    if (confirmBaselineVersion !== undefined
+      && (typeof confirmBaselineVersion !== 'string' || !/^[0-9]{1,9}$/.test(confirmBaselineVersion))) {
+      throw new Error('invalid confirm baseline version');
+    }
     // 落点只有一个 opaque fieldRef（PO contract 生成）。IPC 层只做形状与长度
     // 校验，语义判定（模板存在/已安装/分节/字段/T-box）留给 PO 写入口——
     // 收归前这里逐字段校验 groupId+section+fieldName，等于在 IPC 层复述一遍
@@ -2556,16 +2565,38 @@ const invokeHandlers: Record<string, InvokeHandler> = {
         throw new Error('invalid personal profile target');
       }
     }
-    const promoted = await recallCaptures.promoteRecallCaptureCandidate(ctx.userId, candidateId, {
-      riskAcknowledged: riskAcknowledged === true,
-      ...(forceCreateSimilar === true ? { forceCreateSimilar: true } : {}),
-      ...(profileTarget ? { profileTarget: { fieldRef: profileTarget.fieldRef } } : {}),
-    });
-    return {
-      ok: true,
-      ...promoted,
-      ...(promoted.candidate ? { candidate: withRecallCandidateCapabilities(promoted.candidate) } : {}),
-    };
+    // 版本重检不一致（specs/015 D6~D9，`contracts/ipc.md` §二）：候选确认时
+    // 资产已被改动 → 返回结构化冲突，**候选不落终态、资产零改动**（比对发生在
+    // `updateAbilityAsset` 锁内，这里只转形状，不做任何版本判定）。
+    // 用户看过"对当前版差异"后带 `confirmBaselineVersion` 再确认 = 显式重锚：
+    // 成不成同样由锁内那次比对说了算，成功时结果体带 `rebasedFrom`（原锚）。
+    // 成功路径的 `versionCheckSkipped`（存量候选没有 targetVersionUsed 可核对）
+    // 由 candidate-service 放在结果体里，随下面的展开一起回传。
+    try {
+      const promoted = await recallCaptures.promoteRecallCaptureCandidate(ctx.userId, candidateId, {
+        riskAcknowledged: riskAcknowledged === true,
+        ...(forceCreateSimilar === true ? { forceCreateSimilar: true } : {}),
+        ...(profileTarget ? { profileTarget: { fieldRef: profileTarget.fieldRef } } : {}),
+        ...(confirmBaselineVersion ? { confirmBaselineVersion } : {}),
+      });
+      return {
+        ok: true,
+        ...promoted,
+        ...(promoted.candidate ? { candidate: withRecallCandidateCapabilities(promoted.candidate) } : {}),
+      };
+    } catch (error) {
+      // `?.` 是为测试替身留的：vi.mock 的假模块可能没有这个 helper，
+      // 那时按原样抛（错误面与改动前一致），绝不把真错误吞成成功。
+      const versionConflict = recallCandidates.recallCandidateVersionConflictOf?.(error);
+      if (!versionConflict) throw error;
+      return {
+        ok: false,
+        // 与 specs/008 的审批卡同一状态名（待处理），不是候选内部状态名。
+        state: 'pending',
+        versionConflict,
+        message: `这条资产在你确认之前被改过（候选基于 v${versionConflict.baselineVersion}，现在是用 v${versionConflict.currentVersion}），所以这次没有生效。请按最新在用版重新看一眼差异再确认。`,
+      };
+    }
   },
 
   // 资产读口统一走 canonical layer：出去的每一条必然是四类正式资产，
@@ -2896,6 +2927,25 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (conversationId !== undefined && !safeId(conversationId)) return { ok: false, error: 'invalid kstar failure conversation id' };
     try {
       return { ok: true, failures: await kstarFailures.listKstarFailures(ctx.userId, conversationId !== undefined ? { conversationId } : {}) };
+    } catch (error) {
+      return { ok: false, error: (error as Error).message };
+    }
+  },
+  'kstar.improvement.outcomes.list': async ({ limit, conclusion } = {}, ctx) => {
+    if (limit !== undefined) {
+      const n = Number(limit);
+      if (!Number.isInteger(n) || n < 1 || n > 100) return { ok: false, error: 'invalid kstar improvement outcome limit' };
+    }
+    const conclusionValue = conclusion === undefined ? undefined : String(conclusion) as KstarImprovementConclusion;
+    if (conclusionValue !== undefined && !KSTAR_IMPROVEMENT_CONCLUSIONS.includes(conclusionValue)) {
+      return { ok: false, error: 'invalid kstar improvement outcome conclusion' };
+    }
+    try {
+      const outcomes = await listKstarImprovementOutcomes(ctx.userId, {
+        limit: limit === undefined ? 50 : Number(limit),
+        conclusion: conclusionValue,
+      });
+      return { ok: true, outcomes };
     } catch (error) {
       return { ok: false, error: (error as Error).message };
     }
