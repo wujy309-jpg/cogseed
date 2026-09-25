@@ -533,6 +533,9 @@
       store.captureSettings = (settings && settings.settings) || settings || null;
       store.sources = toArr(sources, ['groups', 'sources']);
       store.inbox = toArr(inbox, ['items']);
+      // 治理分组（specs/010 T013）：**顺带**从同一返回体取 groups，不新增 loader
+      // 条目（解构顺序断言是既有锚点）。缺失/非数组 = null → 渲染层退回扁平清单。
+      store.inboxGroups = inbox && Array.isArray(inbox.groups) ? inbox.groups : null;
       // 证明链服务资产详情内的使用记录区与成熟度展示，失败不阻塞主快照。
       // 通道是语义化的时间线（recall.timeline.list）：每条事件带 refs
       // （assetId / transferProofId / usageReceiptId / version）。
@@ -1250,6 +1253,14 @@
     if (code.startsWith('projection_') || (result && result.blockRule)) {
       return T('cognition.action_not_applied', '这次操作没有生效：{reason}', { reason: blockReasonText(result) });
     }
+    // 治理处置的稳定错误码（specs/010 T021/T030）：补条件未过门禁（没落库）、
+    // 版本冲突（别的改动先落了）。都如实说"这次没有生效"，不甩原文。
+    if (code === 'invalid_boundary') {
+      return T('cognition.inbox_error_boundary_invalid', '条件没有通过规则门禁——没有保存，请补齐后再试。');
+    }
+    if (code === 'version_conflict') {
+      return T('cognition.inbox_error_version_conflict', '这条资产刚被别的改动更新过（版本冲突），请重试。');
+    }
     if (code === 'promotion_blocked') {
       const reasons = Array.isArray(result && result.promotionReasons) ? result.promotionReasons : [];
       const lines = reasons
@@ -1560,12 +1571,35 @@
       }
       await NS.reload();
     },
-    /** 待办处置（specs/008 T051）：动作由读模型给出，这里只转发。
-     *  没有一键动作的类别不在这里——渲染层也不给按钮。 */
-    async resolveInboxItem(id, action) {
-      await api.call('cognition.inbox.resolve', { id: String(id || ''), action: String(action || '') });
+    /** 待办处置（specs/008 T051；specs/010 扩展可选参数）：动作由读模型给出，
+     *  这里只转发。没有一键动作的类别不在这里——渲染层也不给按钮。
+     *  `params`（specs/010）：classify 带 `level`；set_boundary 带
+     *  `applicableWhen`/`forbiddenWhen`；keep/merge 带 `targetAssetId`。 */
+    async resolveInboxItem(id, action, params) {
+      const payload = { id: String(id || ''), action: String(action || '') };
+      if (params && params.level) payload.level = String(params.level);
+      if (params && Array.isArray(params.applicableWhen)) payload.applicableWhen = params.applicableWhen.map(String);
+      if (params && Array.isArray(params.forbiddenWhen)) payload.forbiddenWhen = params.forbiddenWhen.map(String);
+      if (params && params.targetAssetId) payload.targetAssetId = String(params.targetAssetId);
+      await api.call('cognition.inbox.resolve', payload);
       toast(T('cognition.inbox_resolved', '已处理'));
       await NS.reload();
+    },
+    /** 聚合条目批量定级（specs/010 T023/T025）：逐条结果如实上屏——部分失败
+     *  不是整体失败，也不谎报全绿。返回结果供调用方做行内明细呈现。 */
+    async classifyAssetsBatch(assetIds, level) {
+      const ids = (Array.isArray(assetIds) ? assetIds : []).map(String).filter(Boolean);
+      const result = await api.call('recall.assets.sensitivity.batch', { assetIds: ids, level: String(level || '') });
+      const applied = Array.isArray(result && result.applied) ? result.applied.length : 0;
+      const failed = Array.isArray(result && result.failed) ? result.failed : [];
+      const skipped = Array.isArray(result && result.skipped) ? result.skipped.length : 0;
+      if (!failed.length) {
+        toast(T('cognition.inbox_batch_done', '已分级 {applied} 条（跳过 {skipped} 条）', { applied: String(applied), skipped: String(skipped) }));
+      } else {
+        toast(T('cognition.inbox_batch_partial', '分级 {applied} 条，{failed} 条没成功——失败的留在待办里', { applied: String(applied), failed: String(failed.length) }));
+      }
+      await NS.reload();
+      return { applied, failed, skipped };
     },
     /** 「已删除」列表按需拉（specs/008 US-306/T051）：保留期剩余天数由服务端现算。 */
     async loadDeletedAssets() {
@@ -1732,11 +1766,18 @@
           ...(visibleSpaces.length ? { workspaceIds: visibleSpaces } : {}),
         };
       }
+      // 敏感级（specs/010 T026）：分段控件只在用户点选后才带 data-level——
+      // 没点＝维持现状（未分级不预设 L0）；点了且与现值不同才随保存提交。
+      const sensitivityEl = card.querySelector('[data-f="sensitivity"]');
+      const pickedLevel = sensitivityEl ? String(sensitivityEl.getAttribute('data-level') || '') : '';
+      const sensitivityChanged = Boolean(pickedLevel) && pickedLevel !== String(asset.sensitivity || '');
+      if (sensitivityChanged) payload.sensitivity = pickedLevel;
       const unchanged = payload.title === String(asset.title || '')
         && payload.statement === String(asset.statement || '')
         && JSON.stringify(payload.applicableWhen) === JSON.stringify((asset.applicableWhen || []))
         && JSON.stringify(payload.forbiddenWhen) === JSON.stringify((asset.forbiddenWhen || []))
-        && !visibilityChanged;
+        && !visibilityChanged
+        && !sensitivityChanged;
       const exitEdit = () => router.go({ name: 'overview', assetId, assetEdit: '' }, { replace: true });
       if (unchanged) {
         toast(T('cognition.asset_edit_unchanged', '内容没有变化，未保存'));

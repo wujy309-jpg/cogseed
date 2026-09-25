@@ -87,6 +87,10 @@ function ensureModule(): { cogAssets: Record<string, unknown>; domRoot: { innerH
   // 夹具的 window 必须和真机一样有这一层，否则测试环境比真机少东西。
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   require('../../src/renderer/modules/ui-status.js');
+  // ui-segmented-control.js 同为 index.html 静态共享层（资产编辑表单的敏感级
+  // 三档控件用它，specs/010 T026）——夹具的 window 必须和真机一样有这一层。
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  require('../../src/renderer/modules/ui-segmented-control.js');
   // ui-page-header.js 同样是 index.html 里的静态共享层（整理报告页头用它）。
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   require('../../src/renderer/modules/ui-page-header.js');

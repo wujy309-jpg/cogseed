@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildCognitionInbox, type CognitionInboxInput } from '../../../../src/main/features/recall/formal-assets/inbox';
+import { buildCognitionInbox, groupCognitionInbox, type CognitionInboxInput } from '../../../../src/main/features/recall/formal-assets/inbox';
 import type { AssetVersionDiff } from '../../../../src/main/features/recall/formal-assets/version-diff';
 import type { FormalAbilityAsset } from '../../../../src/main/features/recall/formal-assets/types';
 
@@ -294,5 +294,131 @@ describe('cognition inbox read model', () => {
     for (const kind of ['rule_scope_changed', 'template_updated', 'skill_upgrade_suggested', 'sensitivity_escalated']) {
       expect(items.map((entry) => entry.kind)).not.toContain(kind);
     }
+  });
+});
+
+/* ═════════════ 治理分组与载荷透传（specs/010 T004/T005/T006） ═════════════ */
+
+/** 合成一条最小待办条目（分组是纯函数，不依赖 build 的事实来源）。 */
+function inboxItem(overrides: Partial<import('../../../../src/main/features/recall/formal-assets/inbox').CognitionInboxItem> = {}) {
+  return {
+    id: 'syn:1', kind: 'candidate_pending_review' as const, urgency: 'low_disturbance' as const,
+    title: '合成条目',
+    ...overrides,
+  };
+}
+
+describe('cognition inbox governance grouping (specs/010)', () => {
+  /** 15 种 kind 各一条，外加按 findingCategory 细分的巡检三类。 */
+  const ALL_KINDS = [
+    'skill_creation_suggested', 'skill_upgrade_suggested', 'rule_scope_changed', 'template_updated',
+    'sensitivity_escalated', 'rule_boundary_missing', 'classification_conflict', 'evidence_insufficient',
+    'candidate_ineligible', 'source_unavailable', 'sensitivity_unclassified', 'candidate_pending_review',
+    'asset_change_pending', 'cleanup_uncertain', 'inspection_finding',
+  ] as const;
+
+  function kitchenSink() {
+    const items = ALL_KINDS.map((kind, index) => inboxItem({ id: `syn-${kind}`, kind }));
+    // 巡检三类细分：conflict / duplicate / outdated 各一条（id 不与上面那条撞）。
+    items.push(
+      inboxItem({ id: 'syn-insp-conflict', kind: 'inspection_finding', findingCategory: 'conflict', assetIds: ['A-1', 'A-2'], assetId: 'A-1' }),
+      inboxItem({ id: 'syn-insp-duplicate', kind: 'inspection_finding', findingCategory: 'duplicate', assetIds: ['A-1', 'A-3'], assetId: 'A-1' }),
+      inboxItem({ id: 'syn-insp-outdated', kind: 'inspection_finding', findingCategory: 'outdated', assetIds: ['A-4'], assetId: 'A-4' }),
+    );
+    return items;
+  }
+
+  it('assigns all 15 kinds to a governance group — nothing dropped, nothing invented', () => {
+    const items = kitchenSink();
+    const groups = groupCognitionInbox(items);
+    // 全部 15 种 kind 都有归属（无漏项）：逐条都能在某组里找到自己。
+    const flatIds = new Set(groups.flatMap((group) => group.items.map((entry) => entry.id)));
+    for (const entry of items) expect(flatIds.has(entry.id)).toBe(true);
+    expect(groups.flatMap((group) => group.items).length).toBe(items.length);
+    // 组数 = 出现过的分区数，无空组。
+    expect(groups.map((group) => group.items.length > 0)).not.toContain(false);
+  });
+
+  it('keeps conflict on top in the fixed order and splits inspection findings by category', () => {
+    const groups = groupCognitionInbox(kitchenSink());
+    expect(groups.map((group) => group.category))
+      .toEqual(['conflict', 'escalation', 'boundary', 'unclassified', 'other']);
+    expect(groups[0].category).toBe('conflict');
+    // 冲突组 = 分类冲突 + 巡检 conflict/duplicate；outdated 不进。
+    const conflictIds = groups[0].items.map((entry) => entry.id);
+    expect(conflictIds).toContain('syn-classification_conflict');
+    expect(conflictIds).toContain('syn-insp-conflict');
+    expect(conflictIds).toContain('syn-insp-duplicate');
+    expect(conflictIds).not.toContain('syn-insp-outdated');
+    expect(groups[4].items.map((entry) => entry.id)).toContain('syn-insp-outdated');
+    // 一条巡检 pair 涉及两个资产 → 组 total 按对象数计。
+    const pairTotal = groups[0].items
+      .filter((entry) => entry.id === 'syn-insp-conflict')[0];
+    expect(pairTotal.assetIds).toEqual(['A-1', 'A-2']);
+  });
+
+  it('carries the payload fields through the real build: pair assetIds, findingCategory, structured level, boundary prefill', () => {
+    const items = buildCognitionInbox(input({
+      assets: [
+        asset({ assetId: 'A-rule-nb', applicableWhen: [], forbiddenWhen: [] }),
+        asset({ assetId: 'A-esc', sensitivity: 'L2', maturity: 'transfer_validated' }),
+      ],
+      latestDiffs: new Map([['A-esc', diff({
+        assetId: 'A-esc', kinds: ['sensitivity_escalated'],
+        changes: [{ kind: 'sensitivity_escalated', field: 'sensitivity', before: 'L1', after: 'L2' }],
+      })]]),
+      pendingInspectionFindings: [
+        { key: 'f-conflict', category: 'conflict', assetIds: ['A-esc', 'A-rule-nb'] },
+        { key: 'f-out', category: 'outdated', assetIds: ['A-esc'] },
+      ],
+    }));
+    const finding = items.find((entry) => entry.kind === 'inspection_finding' && entry.findingCategory === 'conflict');
+    expect(finding?.assetIds).toEqual(['A-esc', 'A-rule-nb']);
+    expect(finding?.actions).toEqual(['keep', 'merge', 'reject', 'defer']);
+    const outdated = items.find((entry) => entry.kind === 'inspection_finding' && entry.findingCategory === 'outdated');
+    expect(outdated?.actions).toEqual(['reject', 'defer']);
+    const escalation = items.find((entry) => entry.kind === 'sensitivity_escalated');
+    expect(escalation?.level).toEqual({ before: 'L1', after: 'L2' });
+    expect(escalation?.actions).toEqual(['accept', 'reject']);
+    const boundary = items.find((entry) => entry.kind === 'rule_boundary_missing');
+    expect(boundary?.boundary).toEqual({ applicableWhen: [], forbiddenWhen: [] });
+    expect(boundary?.actions).toEqual(['set_boundary']);
+  });
+
+  it('folds unclassified items into one deterministic aggregate only when there are several', () => {
+    const unclassified = ['A-1', 'A-2', 'A-3'].map((assetId) => inboxItem({
+      id: `sensitivity:${assetId}`, kind: 'sensitivity_unclassified', assetId, actions: ['classify'],
+    }));
+    const groups = groupCognitionInbox(unclassified);
+    const group = groups.find((entry) => entry.category === 'unclassified')!;
+    expect(group.items).toHaveLength(1);
+    const aggregate = group.items[0];
+    expect(aggregate.aggregate?.count).toBe(3);
+    expect([...aggregate.aggregate!.assetIds].sort()).toEqual(['A-1', 'A-2', 'A-3']);
+    expect(group.count).toBe(1);
+    expect(group.total).toBe(3);
+    // 确定性：同集合两次调用得同一 id。
+    expect(groupCognitionInbox(unclassified).find((entry) => entry.category === 'unclassified')!.items[0].id)
+      .toBe(aggregate.id);
+    expect(aggregate.id.startsWith('sensitivity-batch:')).toBe(true);
+    // 集合变化必得新 id（幂等重算不会产生漂移的旧待办）。
+    const shifted = groupCognitionInbox(unclassified.slice(0, 2));
+    expect(shifted.find((entry) => entry.category === 'unclassified')!.items[0].id).not.toBe(aggregate.id);
+
+    // 单条不折叠：1 条也聚合等于把"没有噪声问题"做成了噪声。
+    const single = groupCognitionInbox(unclassified.slice(0, 1));
+    const singleGroup = single.find((entry) => entry.category === 'unclassified')!;
+    expect(singleGroup.items[0].id).toBe('sensitivity:A-1');
+    expect(singleGroup.items[0].aggregate).toBeUndefined();
+    expect(singleGroup.count).toBe(1);
+    expect(singleGroup.total).toBe(1);
+  });
+
+  it('emits no empty groups and never mutates the input list', () => {
+    expect(groupCognitionInbox([])).toEqual([]);
+    const items = kitchenSink();
+    const before = JSON.stringify(items);
+    groupCognitionInbox(items);
+    expect(JSON.stringify(items)).toBe(before);
   });
 });

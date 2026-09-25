@@ -83,8 +83,21 @@ export type CognitionInboxUrgency = 'confirm' | 'low_disturbance';
  * `cognition/inbox-adapter.ts::resolveCognitionInboxItem`，两处各写一份
  * "哪些动作可用"就是下一个分叉源——渲染层只负责把动作渲染成按钮。
  * 空数组 = 没有一键动作（资产类待办要用户去资产详情里改）。
+ *
+ * specs/010 新增的四个动作：`claim`（候选分类冲突选边保留本边）、
+ * `classify`（敏感级定级，单条与聚合批量共用）、`set_boundary`（规则就地补
+ * 边界条件）、`keep` / `merge`（巡检冲突/重复的选边归档与合并）。
  */
-export type CognitionInboxAction = 'accept' | 'reject' | 'defer' | 'ignore';
+export type CognitionInboxAction =
+  | 'accept'
+  | 'reject'
+  | 'defer'
+  | 'ignore'
+  | 'claim'
+  | 'classify'
+  | 'set_boundary'
+  | 'keep'
+  | 'merge';
 
 export interface CognitionInboxItem {
   /** 稳定 id：同一件事重复计算要得到同一个 id，否则前端列表会闪。 */
@@ -99,6 +112,19 @@ export interface CognitionInboxItem {
   detail?: string;
   /** 可用动作；缺省/空数组 = 没有一键动作，只给"去资产详情"的落点。 */
   actions?: readonly CognitionInboxAction[];
+  /**
+   * 本条待办涉及的**全部**资产 id（specs/010 T006）。巡检的冲突/重复发现
+   * 涉及一对资产——只带 `assetIds[0]` 会让"合并/选边"拿不到另一方。
+   */
+  assetIds?: readonly string[];
+  /** 巡检发现的类别（仅 `inspection_finding` 带；分组映射的唯一输入）。 */
+  findingCategory?: 'duplicate' | 'outdated' | 'conflict';
+  /** 扩权项的结构化档位（仅 `sensitivity_escalated` 带）。展示串不可解析。 */
+  level?: { before?: string; after?: string };
+  /** 缺边界规则**当前**的条件（仅 `rule_boundary_missing` 带，供就地表单预填）。 */
+  boundary?: { applicableWhen: readonly string[]; forbiddenWhen: readonly string[] };
+  /** 仅分组层产出的聚合条目（`sensitivity_unclassified` 折叠，specs/010 T005）。 */
+  aggregate?: { count: number; assetIds: readonly string[] };
 }
 
 /**
@@ -157,6 +183,12 @@ export interface CognitionInboxInput {
     detail?: string;
     deferred?: boolean;
   }>;
+  /**
+   * 已确认的扩权键集合（specs/010 T019）：元素形如 `assetId@toVersion`。
+   * 同一 `assetId@toVersion` 已被用户确认过 → 不再产 `sensitivity_escalated`；
+   * **新的提级（新 toVersion）是新键 → 必然重报**（US-303 Edge Case）。
+   */
+  acknowledgedEscalations?: ReadonlySet<string>;
 }
 
 /**
@@ -164,26 +196,34 @@ export interface CognitionInboxInput {
  *   - 候选类走既有 4 个处置函数（confirm/reject/defer/ignore）；
  *   - 审批提议走三态（确认更新 / 稍后处理 / 拒绝）；
  *   - 大扫除拿不准项与巡检发现只有"要不要继续提醒"（不管它 / 回头再看）；
- *   - 资产类（未分级 / 缺边界 / 来源失效…）**没有一键动作**——要改的是资产内容
- *     本身，落点是资产详情里的编辑入口。
+ *   - 巡检的冲突/重复发现另有选边与合并（specs/010 US-302，见 `itemActions`）；
+ *   - 扩权可确认或驳回（US-303）、缺边界可就地补条件（US-304）、未分级可
+ *     定级（US-305）——资产编辑动作第一次拥有待办内的一键入口。
  */
 const INBOX_ACTIONS: Record<CognitionInboxKind, readonly CognitionInboxAction[]> = {
   skill_creation_suggested: [],
   skill_upgrade_suggested: [],
   rule_scope_changed: [],
   template_updated: [],
-  sensitivity_escalated: [],
-  rule_boundary_missing: [],
-  classification_conflict: ['accept', 'reject', 'defer'],
+  sensitivity_escalated: ['accept', 'reject'],
+  rule_boundary_missing: ['set_boundary'],
+  classification_conflict: ['claim', 'reject', 'defer'],
   evidence_insufficient: ['reject', 'defer'],
   candidate_ineligible: ['reject', 'defer'],
   source_unavailable: [],
-  sensitivity_unclassified: [],
+  sensitivity_unclassified: ['classify'],
   candidate_pending_review: ['accept', 'reject', 'defer'],
   asset_change_pending: ['accept', 'defer', 'reject'],
   cleanup_uncertain: ['reject', 'defer'],
   inspection_finding: ['reject', 'defer'],
 };
+
+/**
+ * 巡检发现的"过时"没有合并/选边语义（两条不是同一件事，只是旧了），维持
+ * 只读建议；冲突与重复才有「保留这一条，归档另一条 / 合并到这一条」。
+ * 动作判定仍收口在本文件——渲染层不自行判断。
+ */
+const INSPECTION_PAIR_ACTIONS: readonly CognitionInboxAction[] = ['keep', 'merge', 'reject', 'defer'];
 
 const URGENCY: Record<CognitionInboxKind, CognitionInboxUrgency> = {
   skill_creation_suggested: 'confirm',
@@ -268,12 +308,18 @@ export function buildCognitionInbox(input: CognitionInboxInput): CognitionInboxI
     const systemChanged = diff !== undefined && diff.actor !== 'user';
 
     if (diff && systemChanged) {
-      if (diff.kinds.includes('sensitivity_escalated')) {
+      if (diff.kinds.includes('sensitivity_escalated')
+        // 已确认的同一提级不再打扰（specs/010 T019）：键 = assetId@toVersion，
+        // 新提级是新键、必然重报——ack 的记忆在 escalation-ack-service。
+        && !input.acknowledgedEscalations?.has(`${asset.assetId}@${diff.toVersion}`)) {
         const escalation = diff.changes.find((change) => change.kind === 'sensitivity_escalated');
         items.push(item('sensitivity_escalated', `sensitivity-up:${asset.assetId}`, asset.title, {
           assetType: asset.assetType,
           assetId: asset.assetId,
           ...(escalation ? { detail: `${escalation.before} → ${escalation.after}` } : {}),
+          // 结构化档位（specs/010 T006）：驳回要在主进程恢复 before，展示串
+          // `"L1 → L2"` 是给人看的，不是数据——禁止任何人回头解析它。
+          ...(escalation ? { level: { before: escalation.before, after: escalation.after } } : {}),
         }));
       }
       if (asset.assetType === 'rule'
@@ -324,6 +370,12 @@ export function buildCognitionInbox(input: CognitionInboxInput): CognitionInboxI
         items.push(item('rule_boundary_missing', `rule-boundary:${asset.assetId}`, asset.title, {
           assetType: asset.assetType,
           assetId: asset.assetId,
+          // 当前条件随行（specs/010 T006）：用户点开就地表单时要看到现状，
+          // 而不是一张空表单——空表单会让人以为条件从来没填过。
+          boundary: {
+            applicableWhen: asset.applicableWhen || [],
+            forbiddenWhen: asset.forbiddenWhen || [],
+          },
         }));
       }
     }
@@ -448,14 +500,145 @@ export function buildCognitionInbox(input: CognitionInboxInput): CognitionInboxI
   }
 
   // 后台巡检的发现：低打扰列出（列出来就够，不打断）。**只是建议**，
-  // 处置动作是"要不要继续提醒"，不是"这条资产怎么办"。
+  // 处置动作是"要不要继续提醒"，不是"这条资产怎么办"——冲突/重复除外
+  // （specs/010 US-302：那一类的处置恰恰是"这两条资产怎么办"）。
   for (const finding of input.pendingInspectionFindings || []) {
-    items.push(item('inspection_finding', `inspection:${finding.key}`, finding.title || finding.assetIds.join(' / '), {
+    const category = finding.category === 'duplicate' || finding.category === 'outdated' || finding.category === 'conflict'
+      ? finding.category
+      : undefined;
+    const pair = category === 'conflict' || category === 'duplicate';
+    const entry = item('inspection_finding', `inspection:${finding.key}`, finding.title || finding.assetIds.join(' / '), {
       ...(finding.assetIds[0] ? { assetId: finding.assetIds[0] } : {}),
+      // 整对带上（T006）：合并与选边都需要"另一方"，只带 [0] 会把 id 丢掉。
+      ...(finding.assetIds.length ? { assetIds: finding.assetIds } : {}),
+      ...(category ? { findingCategory: category } : {}),
       ...(finding.detail ? { detail: finding.detail } : {}),
-    }));
+    });
+    if (pair) entry.actions = INSPECTION_PAIR_ACTIONS;
+    items.push(entry);
   }
 
   return items.sort((left, right) => KIND_ORDER.indexOf(left.kind) - KIND_ORDER.indexOf(right.kind)
     || left.id.localeCompare(right.id));
+}
+
+/* ══════════════════════════ 治理分组（specs/010 US-301 / US-305） ══════════════════════════
+ * 分组是**纯函数视图**：不落盘、不改 `buildCognitionInbox` 的输出语义，
+ * 只把已排好序的扁平清单多对一地归到五个治理分区里。判定收口在这里——
+ * 渲染层只遍历，不在页面里再写一份 kind→类别映射（反漂移守卫钉着）。 */
+
+/** 治理分区：冲突 / 扩权 / 缺边界 / 未分级 / 其他（收纳位，不是新类别）。 */
+export type CognitionInboxGovernanceCategory =
+  | 'conflict'
+  | 'escalation'
+  | 'boundary'
+  | 'unclassified'
+  | 'other';
+
+export interface CognitionInboxGroup {
+  category: CognitionInboxGovernanceCategory;
+  /** 分区标题的 i18n 键（渲染层内联取词）。 */
+  titleKey: string;
+  /** 组内条目（已按入参顺序；未分级组在折叠时只含聚合条目）。 */
+  items: CognitionInboxItem[];
+  /** 组内条目数（聚合条目算 1）。 */
+  count: number;
+  /** 组内涉及的资产/对象总数（未分级组 = 被折叠的 N 条）。 */
+  total: number;
+}
+
+/** 分区顺序恒定：冲突置顶（SC-001 的机械判据），其余按治理优先级。 */
+const GROUP_ORDER: readonly CognitionInboxGovernanceCategory[] = [
+  'conflict', 'escalation', 'boundary', 'unclassified', 'other',
+];
+
+const GROUP_TITLE_KEYS: Record<CognitionInboxGovernanceCategory, string> = {
+  conflict: 'cognition.inbox_group_conflict',
+  escalation: 'cognition.inbox_group_escalation',
+  boundary: 'cognition.inbox_group_boundary',
+  unclassified: 'cognition.inbox_group_unclassified',
+  other: 'cognition.inbox_group_other',
+};
+
+/**
+ * kind → 治理分区（唯一映射处）。
+ * 巡检发现按 `findingCategory` 细分：conflict/duplicate 归「冲突」（它们的
+ * 处置就是选边/合并）；outdated 归「其他」（没有合并语义，只是旧了）。
+ */
+function governanceCategory(entry: CognitionInboxItem): CognitionInboxGovernanceCategory {
+  if (entry.kind === 'classification_conflict') return 'conflict';
+  if (entry.kind === 'inspection_finding'
+    && (entry.findingCategory === 'conflict' || entry.findingCategory === 'duplicate')) return 'conflict';
+  if (entry.kind === 'sensitivity_escalated') return 'escalation';
+  if (entry.kind === 'rule_boundary_missing') return 'boundary';
+  if (entry.kind === 'sensitivity_unclassified') return 'unclassified';
+  return 'other';
+}
+
+/**
+ * 聚合条目 id 的确定性派生：对**排序后**的资产 id 集合做 FNV-1a，同集合必得
+ * 同 id（稳定契约：前端列表不闪、幂等重算不产生新待办）。不得用时间戳/随机数。
+ */
+function sensitivityBatchId(assetIds: readonly string[]): string {
+  let hash = 0x811c9dc5;
+  for (const id of [...assetIds].sort()) {
+    for (let i = 0; i < id.length; i += 1) {
+      hash ^= id.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    // 分隔符也进哈希：避免 "ab"+"c" 与 "a"+"bc" 撞出同一个 id。
+    hash ^= 0x1f;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `sensitivity-batch:${hash.toString(36)}`;
+}
+
+/**
+ * 纯函数：把扁平待办清单归成治理分区（specs/010 T004/T005）。
+ *
+ * - 组序恒为 conflict → escalation → boundary → unclassified → other，空组不出；
+ * - `groups.flatMap(g => g.items)` 与入参集合相等，**唯一例外**是未分级的
+ *   聚合条目（N>1 时折叠为 1 条，N 条的 id 全部在 `aggregate.assetIds`）；
+ * - 单条未分级**不折叠**——1 条也聚合等于把"没有噪声问题"做成了噪声。
+ */
+export function groupCognitionInbox(items: readonly CognitionInboxItem[]): CognitionInboxGroup[] {
+  const buckets = new Map<CognitionInboxGovernanceCategory, CognitionInboxItem[]>(
+    GROUP_ORDER.map((category) => [category, []]),
+  );
+  for (const entry of items) {
+    buckets.get(governanceCategory(entry))!.push(entry);
+  }
+
+  const unclassified = buckets.get('unclassified')!;
+  if (unclassified.length > 1) {
+    // 折叠成一条聚合条目：保留全部 id（用户要能看到名单再决定批量范围）。
+    const assetIds = unclassified.map((entry) => entry.assetId || entry.id);
+    const aggregate: CognitionInboxItem = {
+      id: sensitivityBatchId(assetIds),
+      kind: 'sensitivity_unclassified',
+      urgency: 'confirm',
+      title: `${unclassified.length} 条资产还没有分级`,
+      detail: '未分级不等于 L0：分级前它们不会被带往声明了敏感上限的目的地。',
+      actions: ['classify'],
+      aggregate: { count: unclassified.length, assetIds },
+    };
+    buckets.set('unclassified', [aggregate]);
+  }
+
+  return GROUP_ORDER
+    .map((category) => {
+      const groupItems = buckets.get(category)!;
+      const total = groupItems.reduce(
+        (sum, entry) => sum + (entry.aggregate ? entry.aggregate.count : entry.assetIds && entry.assetIds.length > 1 ? entry.assetIds.length : 1),
+        0,
+      );
+      return {
+        category,
+        titleKey: GROUP_TITLE_KEYS[category],
+        items: groupItems,
+        count: groupItems.length,
+        total,
+      };
+    })
+    .filter((group) => group.items.length > 0);
 }

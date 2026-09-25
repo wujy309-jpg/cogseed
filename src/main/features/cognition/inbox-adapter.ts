@@ -10,7 +10,15 @@
 
 import { createLogger } from '../../logger';
 import { safeId } from '../../storage';
-import { listAbilityAssetVersions } from '../recall/asset-service';
+import {
+  archiveAbilityAsset,
+  listAbilityAssetVersions,
+  mergeAbilityAssets,
+  readAbilityAsset,
+  recordSensitivityEscalationConfirmed,
+  updateAbilityAsset,
+} from '../recall/asset-service';
+import { classifyAbilityAssets, isSensitivityLevel } from '../recall/asset-classification-service';
 import {
   deferRecallCandidate,
   ignoreRecallCandidate,
@@ -19,6 +27,7 @@ import {
   recallCandidateConflictingTypes,
   rejectRecallCandidate,
 } from '../recall/candidate-service';
+import { acknowledgeEscalation, readEscalationAcks } from '../recall/escalation-ack-service';
 import { listAssetChangeProposals } from '../recall/asset-approval-service';
 import { decideAssetChangeProposal } from '../recall/asset-approval-service';
 import {
@@ -33,11 +42,16 @@ import {
   readInspectionSettings,
 } from '../recall/asset-inspection-service';
 import { listFormalAssets } from '../recall/formal-assets';
-import { buildCognitionInbox, type CognitionInboxItem } from '../recall/formal-assets/inbox';
+import { buildCognitionInbox, groupCognitionInbox, type CognitionInboxItem } from '../recall/formal-assets/inbox';
+import { validatePromotionByAssetType } from '../recall/formal-assets/promotion';
 import { latestAssetVersionDiff, type AssetVersionDiff } from '../recall/formal-assets/version-diff';
 import { readInstalledSkillForAsset } from '../recall/skill-draft-service';
 import { bindingHasDecision, bindingIsStale, readSkillBinding } from '../recall/skill-binding-service';
 import { listCognitionSources } from '../recall/source-catalog';
+
+// 治理分组（specs/010 T012）从本桶透出：IPC 层经 cognition.* 统一取件，
+// 不再开第二条 import 路径。
+export { groupCognitionInbox };
 
 const log = createLogger('cognition.inbox');
 
@@ -48,14 +62,32 @@ const UNAVAILABLE_SOURCE_STATUSES = new Set(['failed', 'paused']);
  *  `item()` 调用点决定，是**稳定契约**（同样的事实必须算出同样的 id，否则前端
  *  列表会闪）——所以这里按前缀分发，而不是重新算一遍"这条待办是什么"。 */
 const CANDIDATE_ITEM_PREFIXES = ['candidate:', 'conflict:', 'ineligible:', 'evidence:'] as const;
-/** 资产类待办：它们指向一条资产，但**没有**一键处置动作（缺边界要补条件、
- *  来源失效要换证据、敏感级要重新定级——都是编辑，不是开关）。 */
+/** 资产类待办：specs/010 之前一律"没有一键动作"（要改的是资产内容本身）。
+ *  010 起其中四类有了**就地处断**（扩权确认/驳回、单条定级、聚合批量定级、
+ *  补边界条件）；其余（skill / skill-upgrade / rule-scope / template / source）
+ *  仍是编辑，落点在资产详情。 */
 const ASSET_ITEM_PREFIXES = [
   'skill:', 'skill-upgrade:', 'sensitivity-up:', 'rule-scope:',
-  'template:', 'rule-boundary:', 'sensitivity:', 'source:',
+  'template:', 'rule-boundary:', 'sensitivity:', 'sensitivity-batch:', 'source:',
 ] as const;
 
-export type CognitionInboxResolveAction = 'accept' | 'reject' | 'defer' | 'ignore';
+export interface CognitionInboxResolveInput {
+  id?: unknown;
+  action?: unknown;
+  note?: unknown;
+  /** `classify` 的档位（specs/010 T022/T023）；IPC 层已校验枚举。 */
+  level?: unknown;
+  /** `set_boundary` 的条件（specs/010 T028）；IPC 层已校验数组形状。 */
+  applicableWhen?: unknown;
+  forbiddenWhen?: unknown;
+  /** `keep`/`merge` 的保留/合并目标（specs/010 T032）。 */
+  targetAssetId?: unknown;
+  /** `sensitivity-batch:` 的聚合名单（specs/010 T023；渲染层主路走专用通道）。 */
+  assetIds?: unknown;
+}
+
+export type CognitionInboxResolveAction = 'accept' | 'reject' | 'defer' | 'ignore'
+  | 'claim' | 'classify' | 'set_boundary' | 'keep' | 'merge';
 
 export type CognitionInboxResolveErrorCode =
   /** id 形状就不对。 */
@@ -63,12 +95,16 @@ export type CognitionInboxResolveErrorCode =
   /** 这类待办今天没有一键处置动作（回执里写明该去哪里处理）。 */
   | 'unsupported_item_kind'
   /** 对象对，但这个动作不适用。 */
-  | 'unsupported_action';
+  | 'unsupported_action'
+  /** 补条件未过门禁（specs/010 T028）——**且不落库**。 */
+  | 'invalid_boundary'
+  /** 锁内 expectedVersion 重检不一致（specs/010 T021/T030）——不静默覆盖。 */
+  | 'version_conflict';
 
 export interface CognitionInboxResolveResult {
   ok: true;
   /** 实际被动到的对象类型与状态，供前端原地更新。 */
-  target: 'recall_candidate' | 'asset_change_proposal' | 'cleanup_uncertain' | 'inspection_finding';
+  target: 'recall_candidate' | 'asset_change_proposal' | 'cleanup_uncertain' | 'inspection_finding' | 'asset' | 'asset_sensitivity_batch';
   status: string;
 }
 
@@ -81,19 +117,44 @@ function inboxResolveError(code: CognitionInboxResolveErrorCode, message: string
 }
 
 /**
- * 待确认清单的处置通道（specs/008 T007；语义随 T046 扩展）。
+ * 写路径错误的稳定化翻译（specs/010 T021/T030）：乐观版本撞车 → `version_conflict`
+ * （不静默覆盖、不落终态）；找不到对象 → `unsupported_item_kind`；其余原样透出
+ * （不吞原因——晋升闸门自己的码表由渲染层翻译）。
+ */
+async function settle<T>(work: () => Promise<T>): Promise<T> {
+  try {
+    return await work();
+  } catch (error) {
+    const message = String((error as Error)?.message || error);
+    if (/version conflict/i.test(message)) {
+      throw inboxResolveError('version_conflict', '这条资产刚被别的改动更新过（版本冲突），请重试');
+    }
+    if (/not found/i.test(message)) {
+      throw inboxResolveError('unsupported_item_kind', '这条待办指向的对象已经不存在了（可能刚被删除或合并）。');
+    }
+    throw error;
+  }
+}
+
+/** 读一条可写的资产；终态（purged/revoked/deleted）如实拒绝，不给"看起来能处理"的假动作。 */
+async function readMutableAssetOrReject(userId: string, assetId: string) {
+  const asset = await settle(() => readAbilityAsset(userId, assetId));
+  if (['purged', 'revoked', 'deleted', 'archived'].includes(String(asset.status))) {
+    throw inboxResolveError('unsupported_item_kind', `这条资产已是终态（${asset.status}），不能再在这里处置。`);
+  }
+  return asset;
+}
+
+/**
+ * 待确认清单的处置通道（specs/008 T007；语义随 T046 扩展；specs/010 就地处断）。
  *
  * 分发原则：**只有真正落到了某个对象上的处置才算成功**。没有动作可做的类别
  * 抛 `unsupported_item_kind` 并指出该去哪里处理——被拦截的操作不得计为成功，
  * 假装成功比拒绝更糟（用户会以为事情办完了）。
- *
- * 尚未接线的两类（Phase 6/7 补分支，形态与候选类一致）：
- *   - 审批卡片「稍后处理」项（US-406 提议实体）
- *   - 大扫除拿不准项（US-403 整理报告 uncertain[]）
  */
 export async function resolveCognitionInboxItem(
   userId: string,
-  input: { id?: unknown; action?: unknown; note?: unknown },
+  input: CognitionInboxResolveInput,
 ): Promise<CognitionInboxResolveResult> {
   const id = typeof input.id === 'string' ? input.id : '';
   const action = typeof input.action === 'string' ? input.action : '';
@@ -105,6 +166,34 @@ export async function resolveCognitionInboxItem(
     const candidateId = id.slice(candidatePrefix.length);
     if (!safeId(candidateId)) {
       throw inboxResolveError('invalid_item_id', `待办 id 里的候选编号不合法：${candidateId}`);
+    }
+    // 冲突选边（specs/010 T031 / US-302）：claim = 保留本边。另一边**不由客户端
+    // 提供**——主进程用同一套冲突口径重算同组候选并逐一 reject，避免客户端
+    // 缓存与闸门分叉。顺序必须**先拒其余、再晋升**：晋升闸门会把"同判断已存在
+    // 另一类型"拦下（假审批的根源），选边的语义就是先让另一边出局。
+    if (action === 'claim' && candidatePrefix === 'conflict:') {
+      const candidates = await listRecallCandidates(userId);
+      const conflicting = recallCandidateConflictingTypes(candidates);
+      const mine = candidates.find((candidate) => candidate.id === candidateId);
+      if (!mine) throw inboxResolveError('unsupported_item_kind', '这条冲突待办指向的候选已经不存在了。');
+      const reason = note || `与候选 ${candidateId} 冲突，裁定保留后者`;
+      const others = candidates.filter((candidate) => {
+        if (candidate.id === candidateId) return false;
+        // 冲突表记的是「与它不同类型的那些类型」——非空即在同一冲突组。
+        const conflictTypes = conflicting.get(candidate.id) || [];
+        return conflictTypes.length > 0 && String(candidate.judgment || '').replace(/\s+/g, ' ').trim().toLocaleLowerCase()
+          === String(mine.judgment || '').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
+      });
+      for (const other of others) {
+        await rejectRecallCandidate(userId, other.id, reason).catch((error) => {
+          log.warn('inbox conflict claim: sibling reject degraded', {
+            userId, candidateId: other.id, error: (error as Error).message,
+          });
+        });
+      }
+      // 晋升闸门（证据/风险/相似）照旧生效：它拒绝的原因就是回执，不吞。
+      await promoteRecallCandidate(userId, candidateId, { actor: 'user', ...(note ? { decisionReason: note } : {}) });
+      return { ok: true, target: 'recall_candidate', status: 'claimed' };
     }
     if (action === 'accept') {
       // 晋升闸门（证据/风险/相似）照旧生效：它拒绝的原因就是回执，不在这里复述一遍。
@@ -125,7 +214,7 @@ export async function resolveCognitionInboxItem(
     }
     throw inboxResolveError(
       'unsupported_action',
-      `候选类待办只支持 accept / reject / defer / ignore，收到 ${action || '(空)'}`,
+      `候选类待办只支持 accept / reject / defer / ignore${candidatePrefix === 'conflict:' ? ' / claim' : ''}，收到 ${action || '(空)'}`,
     );
   }
 
@@ -163,11 +252,50 @@ export async function resolveCognitionInboxItem(
     return { ok: true, target: 'cleanup_uncertain', status: action === 'reject' ? 'dismissed' : 'deferred' };
   }
 
-  // 后台巡检的发现（specs/008 US-405）：处置的是"要不要继续提醒"，不是"这条资产
-  // 怎么办"——巡检本身不改资产，用户要去资产详情里处理。
+  // 后台巡检的发现（specs/008 US-405；specs/010 T032 扩就地处断）：默认处置的是
+  // "要不要继续提醒"；冲突/重复类多一条"这两条资产怎么办"——选边归档或合并，
+  // 处置完把 finding.key 记入 dismissedFindingKeys（**当轮即从清单消失**，不等
+  // 下一轮巡检）。名单由主进程从自己的巡检记录重算，不信任客户端。
   if (id.startsWith('inspection:')) {
     const key = id.slice('inspection:'.length);
     if (!key) throw inboxResolveError('invalid_item_id', `待办 id 不合法：${id}`);
+    if (action === 'keep' || action === 'merge') {
+      const targetAssetId = typeof input.targetAssetId === 'string' ? input.targetAssetId : '';
+      if (!safeId(targetAssetId)) throw inboxResolveError('invalid_item_id', `选边/合并需要合法的目标资产编号，收到：${targetAssetId || '(空)'}`);
+      const [runs, settings] = await Promise.all([listInspectionRuns(userId, 1), readInspectionSettings(userId)]);
+      const finding = pendingInspectionFindings(runs, settings.dismissedFindingKeys, settings.deferredFindingKeys)
+        .find((entry) => entry.key === key);
+      if (!finding) throw inboxResolveError('unsupported_item_kind', '这条巡检发现已经不在最新一轮里了（可能刚被处置或刷新）。');
+      if (!finding.assetIds.includes(targetAssetId)) {
+        throw inboxResolveError('invalid_item_id', `目标资产不在本条发现的名单里：${targetAssetId}`);
+      }
+      const others = finding.assetIds.filter((assetId) => assetId !== targetAssetId);
+      if (action === 'merge') {
+        for (const other of others) {
+          await settle(() => mergeAbilityAssets(userId, other, targetAssetId, {
+            actor: 'user',
+            reason: note || `治理待办：合并疑似重复（保留 ${targetAssetId}）`,
+          })).catch((error) => {
+            // 不同类型合并被既有闸门拒——如实转成 unsupported_action，不偷偷改类型。
+            const message = String((error as Error)?.message || error);
+            if (/same type/i.test(message)) {
+              throw inboxResolveError('unsupported_action', '两条资产的类型不同，不能合并——请先到资产详情对齐类型，或改用「保留这一条」。');
+            }
+            throw error;
+          });
+        }
+        await decideInspectionFinding(userId, key, 'dismissed');
+        return { ok: true, target: 'inspection_finding', status: 'merged' };
+      }
+      for (const other of others) {
+        await settle(() => archiveAbilityAsset(userId, other, {
+          actor: 'user',
+          reason: note || `与 ${targetAssetId} 冲突，选边保留`,
+        }));
+      }
+      await decideInspectionFinding(userId, key, 'dismissed');
+      return { ok: true, target: 'inspection_finding', status: 'kept' };
+    }
     if (action === 'accept') {
       throw inboxResolveError(
         'unsupported_action',
@@ -175,16 +303,124 @@ export async function resolveCognitionInboxItem(
       );
     }
     if (action !== 'reject' && action !== 'defer') {
-      throw inboxResolveError('unsupported_action', `巡检发现支持 reject / defer，收到 ${action || '(空)'}`);
+      throw inboxResolveError('unsupported_action', `巡检发现支持 keep / merge / reject / defer，收到 ${action || '(空)'}`);
     }
     await decideInspectionFinding(userId, key, action === 'reject' ? 'dismissed' : 'deferred');
     return { ok: true, target: 'inspection_finding', status: action === 'reject' ? 'dismissed' : 'deferred' };
   }
 
+  // ── 扩权（specs/010 US-303 / T017~T018）──────────────────────────────────
+  if (id.startsWith('sensitivity-up:')) {
+    const assetId = id.slice('sensitivity-up:'.length);
+    if (!safeId(assetId)) throw inboxResolveError('invalid_item_id', `待办 id 不合法：${id}`);
+    if (action !== 'accept' && action !== 'reject') {
+      throw inboxResolveError('unsupported_action', `扩权待办支持 accept / reject，收到 ${action || '(空)'}`);
+    }
+    const asset = await readMutableAssetOrReject(userId, assetId);
+    const diff = latestAssetVersionDiff(assetId, await listAbilityAssetVersions(userId, assetId));
+    const escalation = diff?.changes.find((change) => change.kind === 'sensitivity_escalated');
+    if (!diff || !escalation) {
+      throw inboxResolveError('unsupported_item_kind', '这条扩权待办已不成立（最近的版本变更不再是系统提级）。');
+    }
+    if (action === 'accept') {
+      // 确认：只写 ack + 台账，**不 bump 版本、不改内容**——内容没变就没有版本，
+      // 退场只能靠 ack 键（assetId@toVersion）；新提级 = 新键 = 必然重报。
+      await acknowledgeEscalation(userId, assetId, diff.toVersion, String(escalation.after || ''));
+      await recordSensitivityEscalationConfirmed(userId, assetId, {
+        before: escalation.before !== undefined ? String(escalation.before) : undefined,
+        after: escalation.after !== undefined ? String(escalation.after) : undefined,
+        toVersion: diff.toVersion,
+      });
+      return { ok: true, target: 'asset', status: 'escalation_confirmed' };
+    }
+    // 驳回：恢复 before 档位。before 一律由主进程**现读版本 diff** 得出——
+    // 展示串（"L1 → L2"）是给人看的，禁止任何人回头解析它。
+    await settle(() => updateAbilityAsset(userId, assetId, {
+      sensitivity: String(escalation.before || '') as never,
+      expectedVersion: asset.version,
+      reason: note || '扩权驳回：维持原档位',
+      actor: 'user',
+    }));
+    return { ok: true, target: 'asset', status: 'restored' };
+  }
+
+  // ── 未分级：单条定级（specs/010 T022）───────────────────────────────────
+  if (id.startsWith('sensitivity:')) {
+    const assetId = id.slice('sensitivity:'.length);
+    if (!safeId(assetId)) throw inboxResolveError('invalid_item_id', `待办 id 不合法：${id}`);
+    if (action !== 'classify') {
+      throw inboxResolveError('unsupported_action', `未分级待办支持 classify，收到 ${action || '(空)'}`);
+    }
+    const level = typeof input.level === 'string' ? input.level : '';
+    if (!isSensitivityLevel(level)) throw inboxResolveError('invalid_item_id', `定级需要 L0 / L1 / L2 之一，收到：${level || '(空)'}`);
+    const asset = await readMutableAssetOrReject(userId, assetId);
+    await settle(() => updateAbilityAsset(userId, assetId, {
+      sensitivity: level,
+      expectedVersion: asset.version,
+      reason: note || '治理待办：补充敏感级分级',
+      actor: 'user',
+    }));
+    return { ok: true, target: 'asset', status: 'classified' };
+  }
+
+  // ── 未分级：聚合批量定级（specs/010 T023）。渲染层主路走专用通道
+  //    recall.assets.sensitivity.batch；这条分支保持通道契约完整（同一服务）。
+  if (id.startsWith('sensitivity-batch:')) {
+    if (action !== 'classify') {
+      throw inboxResolveError('unsupported_action', `聚合定级待办支持 classify，收到 ${action || '(空)'}`);
+    }
+    const level = typeof input.level === 'string' ? input.level : '';
+    if (!isSensitivityLevel(level)) throw inboxResolveError('invalid_item_id', `定级需要 L0 / L1 / L2 之一，收到：${level || '(空)'}`);
+    const assetIds = Array.isArray(input.assetIds)
+      ? input.assetIds.filter((value): value is string => typeof value === 'string')
+      : [];
+    if (!assetIds.length) throw inboxResolveError('invalid_item_id', '聚合定级需要 assetIds 名单（非空）。');
+    await classifyAbilityAssets(userId, [...new Set(assetIds)].slice(0, 200), level, note);
+    return { ok: true, target: 'asset_sensitivity_batch', status: 'batch_done' };
+  }
+
+  // ── 缺边界：就地补条件（specs/010 T028 / US-304）─────────────────────────
+  // 通过判据 = 产生待办的**同一道闸门**（validatePromotionByAssetType，system
+  // 档）：不通过就拒绝且**不落库**——不允许"先存进来再说"的坏规则。
+  if (id.startsWith('rule-boundary:')) {
+    const assetId = id.slice('rule-boundary:'.length);
+    if (!safeId(assetId)) throw inboxResolveError('invalid_item_id', `待办 id 不合法：${id}`);
+    if (action !== 'set_boundary') {
+      throw inboxResolveError('unsupported_action', `缺边界待办支持 set_boundary，收到 ${action || '(空)'}`);
+    }
+    const applicableWhen = Array.isArray(input.applicableWhen)
+      ? input.applicableWhen.filter((value) => typeof value === 'string' && value.trim()).map((value) => String(value).trim())
+      : [];
+    const forbiddenWhen = Array.isArray(input.forbiddenWhen)
+      ? input.forbiddenWhen.filter((value) => typeof value === 'string' && value.trim()).map((value) => String(value).trim())
+      : [];
+    // 「合不合法」不在这里另立标准——空条件留给下面的同一道闸门判
+    //（validatePromotionByAssetType 是"什么叫有边界"的唯一判据，D6/N-03）。
+    const asset = await readMutableAssetOrReject(userId, assetId);
+    const validation = validatePromotionByAssetType({
+      judgment: asset.statement,
+      suggestedType: 'rule',
+      suggestedScope: asset.scope,
+      applicableWhen,
+      forbiddenWhen,
+    }, { actor: 'system' });
+    if (validation.reasons.includes('rule_boundary_required')) {
+      throw inboxResolveError('invalid_boundary', '条件仍未通过规则门禁：规则的适用与禁用范围需要补齐。');
+    }
+    await settle(() => updateAbilityAsset(userId, assetId, {
+      applicableWhen,
+      forbiddenWhen,
+      expectedVersion: asset.version,
+      reason: note || '治理待办：补齐规则边界',
+      actor: 'user',
+    }));
+    return { ok: true, target: 'asset', status: 'boundary_set' };
+  }
+
   if (ASSET_ITEM_PREFIXES.some((prefix) => id.startsWith(prefix))) {
     throw inboxResolveError(
       'unsupported_item_kind',
-      '这类待办要改的是资产内容本身（补条件 / 换证据 / 重新定级），没有一键处置动作——请到资产详情里处理。',
+      '这类待办要改的是资产内容本身（换证据 / 重新生成 Skill / 改范围），没有一键处置动作——请到资产详情里处理。',
     );
   }
 
@@ -293,6 +529,14 @@ export async function listCognitionInbox(userId: string): Promise<CognitionInbox
   // 同文本被分成两类的冲突表。跨候选判断，单条算不出来，能力判据要靠它才能
   // 得出与晋升闸门一致的 eligibility——`promoteRecallCandidate` 也是这么算的。
   const conflictingTypes = recallCandidateConflictingTypes(candidates);
+  // 已确认的扩权键（specs/010 T019）：同一 assetId@toVersion 不再产待办；
+  // 读失败按"没有 ack"处理（宁可多报一次确认，也不静默吞掉新提级）。
+  const acknowledgedEscalations = await readEscalationAcks(userId)
+    .then((settings) => new Set(settings.acknowledged.map((ack) => ack.key)))
+    .catch((error) => {
+      log.warn('inbox escalation ack read degraded', { userId, error: (error as Error).message });
+      return new Set<string>();
+    });
   return buildCognitionInbox({
     assets: withSkillState,
     candidates: candidates.map((candidate) => ({
@@ -327,5 +571,6 @@ export async function listCognitionInbox(userId: string): Promise<CognitionInbox
     skillStateUnknownAssetIds,
     skillUpgradeCurrentAssetIds,
     skillUpgradeRejectedAssetIds,
+    acknowledgedEscalations,
   });
 }

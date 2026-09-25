@@ -1550,11 +1550,19 @@
   /** 资产编辑表单（2026-09-17 报告建议 A）：预填在用版现值；保存产生新
    *  版本（core.editAsset 先比对，无实际修改不提交——后端相同内容也会
    *  bump 出空版本）。类型与范围不在此改：类型变更走候选线重审，范围
-   *  自由文本会再触发 scope 迁移。 */
+   *  自由文本会再触发 scope 迁移。
+   *  敏感级（specs/010 T026）：三档分段控件随表单走——未分级时三档都不
+   *  选中、不预设 L0；用户点了哪档保存时才带 sensitivity，没点就不改。 */
   function assetEditForm(asset) {
     const fieldHtml = (label, inner) => `<label class="field"><span>${esc(label)}</span>${inner}</label>`;
     const joinList = (list) => (Array.isArray(list) ? list.join('、') : '');
     const fid = (name) => `ca-asset-edit-${name}-${esc(asset.id)}`;
+    const sensitivityControl = window.uiSegmentedControl({
+      ariaLabel: T('cognition.inbox_ask_classify', '补充敏感级分类'),
+      items: ['L0', 'L1', 'L2'].map((level) => ({ label: level, value: level, attrs: { 'data-level': level } })),
+      value: asset.sensitivity,
+      attrs: { 'data-act': 'inbox-classify-level', 'data-key': `ca-asset-edit-sensitivity-${esc(asset.id)}`, 'data-f': 'sensitivity' },
+    });
     return `<div class="sect-block ca-asset-edit">
       <div class="tt">${esc(T('cognition.asset_edit_title', '编辑资产'))}</div>
       <p class="note">${esc(T('cognition.asset_edit_hint', '保存后会产生一个新版本；当前内容仍完整保留在版本记录里。'))}</p>
@@ -1562,6 +1570,7 @@
       ${fieldHtml(T('cognition.asset_edit_field_statement', '正文'), window.uiTextarea({ id: fid('statement'), value: String(asset.statement || ''), attrs: { 'data-f': 'statement' } }))}
       ${fieldHtml(T('cognition.asset_edit_field_applicable', '适用场景（多条用顿号分隔）'), window.uiInput({ id: fid('applicable'), value: joinList(asset.applicableWhen), attrs: { 'data-f': 'applicable' } }))}
       ${fieldHtml(T('cognition.asset_edit_field_forbidden', '禁用场景（多条用顿号分隔）'), window.uiInput({ id: fid('forbidden'), value: joinList(asset.forbiddenWhen), attrs: { 'data-f': 'forbidden' } }))}
+      ${fieldHtml(T('cognition.asset_edit_field_sensitivity', '敏感级（未分级不等于 L0；不选＝维持现状）'), sensitivityControl)}
       ${fieldHtml(T('cognition.asset_edit_field_visible_agents', '谁能看见·Agent（id 用顿号分隔，留空＝不限制）'), window.uiInput({ id: fid('visible-agents'), value: joinList(asset.scopePolicy && asset.scopePolicy.agentIds), attrs: { 'data-f': 'visible-agents' } }))}
       ${fieldHtml(T('cognition.asset_edit_field_visible_spaces', '谁能看见·空间（id 用顿号分隔，留空＝不限制）'), window.uiInput({ id: fid('visible-spaces'), value: joinList(asset.scopePolicy && asset.scopePolicy.workspaceIds), attrs: { 'data-f': 'visible-spaces' } }))}
       <div class="actions actions-right">
@@ -1618,6 +1627,16 @@
         <div class="right">${switchable ? switchEl : detailStatusChip(asset)}${['active'].includes(String(asset.status || 'active')) ? btn(T('cognition.asset_use_in_chat', '用到当前对话'), 'asset-use-in-chat', { id: asset.id, small: true }) : ''}</div>
       </div>
       ${editing ? assetEditForm(asset) : `<p class="content-text">${esc(asset.statement || '')}</p>`}
+      ${(() => {
+        /* 敏感级档位（specs/010 T026）：只读区如实呈现——分了级挂档位章，
+         * 未分级明说「未分级」，不预设 L0（档位语义在待办分组区有整句解释）。 */
+        if (!['active', 'paused'].includes(String(asset.status || 'active'))) return '';
+        const level = asset.sensitivity ? String(asset.sensitivity) : '';
+        const tag = level
+          ? window.uiTag({ label: level, variant: 'version' })
+          : window.uiTag({ label: T('cognition.asset_sensitivity_unclassified', '未分级'), variant: 'outline' });
+        return `<div class="sub">${esc(T('cognition.asset_sensitivity_label', '敏感级'))} ${tag}</div>`;
+      })()}
       ${assetTagsSection(asset)}
       ${topControl}
       ${(() => {
@@ -2921,11 +2940,13 @@
       // 落点（2026-09-15）：重试按钮在「整理」页的任务流里。
       attention.push(`<div class="notice-row" data-act="go-organize" ${roleBtn()}><span class="notice-text">${esc(T('cognition.overview_failed_tasks', '{count} 个整理任务需要重试', { count: String(stats.failedTasks) }))}</span><span class="sp"></span>${btn(T('common.handle', '处理'), 'go-organize', { small: true, className: 'o' })}</div>`);
     }
-    // 治理待办 / 待确认清单（2026-09-25 重上，specs/008 T051；验收归 specs/010 US-301）：
-    // 当初撤下是因为"报了警却无处处理"。现在每类都有落点——动作由读模型给出
-    // （`item.actions`），没有一键动作的（未分级 / 缺边界 / 来源失效）落到资产详情
-    // 的编辑入口，不再只是报警。渲染层只渲染，不自己判"哪些动作可用"。
+    // 治理待办 / 待确认清单（2026-09-25 重上，specs/008 T051；2026-09-26 分组呈现，
+    // specs/010 T014~T016 / US-301）：分组可用时按「治理待办」分区呈现（顺序由主进程
+    // groupCognitionInbox 唯一给出：冲突 → 扩权 → 缺边界 → 未分级 → 其他）；拿不到
+    // groups（旧主进程 / 读失败）时**逐字退回**既有扁平清单。渲染层只渲染读模型给的
+    // 动作（`item.actions`），不自己判"哪些动作可用"；取词一律内联 T()。
     const inboxItems = Array.isArray(S.inbox) ? S.inbox : [];
+    const inboxGroups = Array.isArray(S.inboxGroups) ? S.inboxGroups : null;
     const INBOX_ACTION_LABELS = {
       accept: T('cognition.inbox_action_accept', '确认'),
       reject: T('cognition.inbox_action_reject', '拒绝'),
@@ -2944,7 +2965,8 @@
     const actionLabelsFor = (kind) => (kind === 'asset_change_pending'
       ? PROPOSAL_ACTION_LABELS
       : kind === 'cleanup_uncertain' || kind === 'inspection_finding' ? FINDING_ACTION_LABELS : INBOX_ACTION_LABELS);
-    const inboxRows = inboxItems.map((row) => {
+    // 既有扁平行的渲染（降级路径与「其他」组共用，语义不变）。
+    const flatInboxRow = (row) => {
       const actions = Array.isArray(row.actions) ? row.actions : [];
       const labels = actionLabelsFor(String(row.kind || ''));
       const buttons = actions.map((action) => btn(labels[action] || String(action), 'inbox-resolve', {
@@ -2958,17 +2980,105 @@
         <span class="notice-text">${esc(String(row.title || ''))}${row.detail ? ` · ${esc(String(row.detail))}` : ''}</span>
         <span class="sp"></span>${fallback}${buttons}
       </div>`;
-    }).join('');
-    if (inboxItems.length) {
+    };
+    // ── 治理分区的取词（内联，i18n 门禁扫得到；不信任主进程下发的 titleKey）──
+    const GROUP_TITLES = {
+      conflict: T('cognition.inbox_group_conflict', '冲突与重复'),
+      escalation: T('cognition.inbox_group_escalation', '敏感级扩权'),
+      boundary: T('cognition.inbox_group_boundary', '缺少作用边界'),
+      unclassified: T('cognition.inbox_group_unclassified', '尚未分级'),
+      other: T('cognition.inbox_group_other', '其他待处理'),
+    };
+    const GROUP_HINTS = {
+      conflict: T('cognition.inbox_classification_conflict_hint', '同一句话被归到两个类型，两边都不会晋升，需要你裁定。'),
+      escalation: T('cognition.inbox_sensitivity_escalated_hint', '这条资产能带往的目的地变多了，请确认这次扩权。'),
+      boundary: T('cognition.inbox_rule_boundary_hint', '没有作用边界的规则不会被自动带入任何任务，补齐后才会生效。'),
+      unclassified: T('cognition.inbox_sensitivity_unclassified_hint', '未分级不等于 L0：分级前不会被带往声明了敏感上限的目的地。'),
+    };
+    // ── 敏感级三档控件（specs/010 T011）：未分级时三档都不选中 ──
+    const levelControl = (key, current) => window.uiSegmentedControl({
+      ariaLabel: T('cognition.inbox_ask_classify', '补充敏感级分类'),
+      items: ['L0', 'L1', 'L2'].map((level) => ({ label: level, value: level, attrs: { 'data-level': level } })),
+      value: current,
+      attrs: { 'data-act': 'inbox-classify-level', 'data-key': String(key) },
+    });
+    // ── 各分区的行渲染器（动作仍以 item.actions 为准，渲染层不自判）──
+    const governanceRow = (row) => {
+      const actions = Array.isArray(row.actions) ? row.actions : [];
+      const has = (action) => actions.includes(action);
+      const id = String(row.id || '');
+      const head = `<span class="notice-text">${esc(String(row.title || ''))}${row.detail ? ` · ${esc(String(row.detail))}` : ''}</span>`;
+      if (row.kind === 'sensitivity_escalated') {
+        return `<div class="notice-row">${head}<span class="sp"></span>${has('accept') ? btn(T('cognition.inbox_action_escalation_accept', '确认扩权'), 'inbox-escalation-accept', { small: true, data: { id } }) : ''}${has('reject') ? btn(T('cognition.inbox_action_escalation_reject', '驳回，维持原级'), 'inbox-escalation-reject', { small: true, danger: true, data: { id } }) : ''}</div>`;
+      }
+      if (row.kind === 'rule_boundary_missing' && has('set_boundary')) {
+        // 就地补条件表单（specs/010 T029）：预填当前条件，保存前主进程过同一道闸门。
+        const formId = `inbox-bnd-${String(row.assetId || id).replace(/[^A-Za-z0-9_-]/g, '')}`;
+        const boundary = row.boundary || {};
+        return `<div class="notice-row inbox-governance-form" data-inbox-boundary-form>
+          ${head}
+          <div class="inbox-inline-fields">
+            ${window.uiInput({ id: `${formId}-applicable`, value: (boundary.applicableWhen || []).join('、'), attrs: { 'data-f': 'applicableWhen', placeholder: T('cognition.inbox_ask_boundary', '为这条规则补充适用边界') } })}
+            ${window.uiInput({ id: `${formId}-forbidden`, value: (boundary.forbiddenWhen || []).join('、'), attrs: { 'data-f': 'forbiddenWhen', placeholder: T('cognition.inbox_ask_boundary', '为这条规则补充适用边界') } })}
+            ${btn(T('cognition.inbox_action_set_boundary', '保存条件'), 'inbox-boundary-save', { small: true, data: { id } })}
+          </div>
+        </div>`;
+      }
+      if (row.kind === 'sensitivity_unclassified' && has('classify')) {
+        const aggregate = row.aggregate;
+        if (aggregate && Array.isArray(aggregate.assetIds) && aggregate.count > 1) {
+          // 聚合条目（specs/010 T025）：名单可见 + 批量定级；失败逐条留在待办。
+          return `<div class="notice-row inbox-governance-form">
+            ${head}
+            <details class="details inbox-batch-names"><summary>${esc(T('cognition.inbox_group_unclassified', '尚未分级'))} · ${esc(String(aggregate.count))}</summary>
+              <div class="dbody"><ul>${aggregate.assetIds.map((assetId) => `<li>${esc(String(assetId))}</li>`).join('')}</ul></div>
+            </details>
+            <div class="inbox-inline-fields">${levelControl(id, undefined)}
+              ${btn(T('cognition.inbox_action_classify_batch', '批量定级'), 'inbox-classify-batch', { small: true, data: { id, ids: aggregate.assetIds.join(',') } })}
+            </div>
+          </div>`;
+        }
+        return `<div class="notice-row inbox-governance-form">
+          ${head}<span class="sp"></span>
+          <div class="inbox-inline-fields">${levelControl(id, undefined)}
+            ${btn(T('cognition.inbox_action_classify', '保存分级'), 'inbox-classify-apply', { small: true, data: { id } })}
+          </div>
+        </div>`;
+      }
+      if (row.kind === 'classification_conflict' && has('claim')) {
+        return `<div class="notice-row">${head}<span class="sp"></span>${btn(T('cognition.inbox_action_claim', '保留这一条'), 'inbox-conflict-claim', { small: true, data: { id } })}${has('reject') ? btn(INBOX_ACTION_LABELS.reject, 'inbox-resolve', { small: true, className: 'o', data: { id, action: 'reject' } }) : ''}${has('defer') ? btn(INBOX_ACTION_LABELS.defer, 'inbox-resolve', { small: true, className: 'o', data: { id, action: 'defer' } }) : ''}</div>`;
+      }
+      if (row.kind === 'inspection_finding' && (has('keep') || has('merge'))) {
+        // 巡检冲突/重复（specs/010 T033）：选边归档或合并。目标 = 本行锚定的
+        // 资产（data-anchor）；data-target 携带另一方 id（展示与测试锚点）。
+        const anchor = String(row.assetId || '');
+        const other = String((row.assetIds || []).find((assetId) => String(assetId) !== anchor) || '');
+        return `<div class="notice-row">${head}<span class="sp"></span>${has('keep') ? btn(T('cognition.inbox_action_keep', '保留这一条，归档另一条'), 'inbox-inspection-keep', { small: true, data: { id, anchor, target: other } }) : ''}${has('merge') ? btn(T('cognition.inbox_action_merge_pair', '合并到这一条'), 'inbox-inspection-merge', { small: true, data: { id, anchor, target: other } }) : ''}${has('reject') ? btn(FINDING_ACTION_LABELS.reject, 'inbox-resolve', { small: true, className: 'o', data: { id, action: 'reject' } }) : ''}${has('defer') ? btn(FINDING_ACTION_LABELS.defer, 'inbox-resolve', { small: true, className: 'o', data: { id, action: 'defer' } }) : ''}</div>`;
+      }
+      // 其余（含没有就地处断动作的）沿用既有扁平行（落点按钮同现状）。
+      return flatInboxRow(row);
+    };
+    if (inboxGroups && inboxGroups.length) {
+      for (const group of inboxGroups) {
+        if (!group || !Array.isArray(group.items) || !group.items.length) continue;
+        const title = GROUP_TITLES[group.category] || GROUP_TITLES.other;
+        const hint = GROUP_HINTS[group.category];
+        const rows = group.items.map((row) => (group.category === 'other' ? flatInboxRow(row) : governanceRow(row))).join('');
+        // 计数口径（T016）：未分级显示 total（被折叠的总数），其余显示条目数。
+        const shown = group.category === 'unclassified' ? Number(group.total || group.items.length) : Number(group.count || group.items.length);
+        attention.push(`<div class="sect-block"><div class="tt">${esc(title)}<span class="note">${esc(String(shown))}</span></div>${hint ? `<p class="note">${esc(hint)}</p>` : ''}${rows}</div>`);
+      }
+    } else if (inboxItems.length) {
+      const inboxRows = inboxItems.map(flatInboxRow).join('');
       attention.push(`<div class="sect-block"><div class="tt">${esc(T('cognition.inbox_section', '待确认清单'))}<span class="note">${esc(String(inboxItems.length))}</span></div>${inboxRows}</div>`);
     } else {
       // 空态也要说出来（AI Product Addendum 的五态要求）："没有待确认事项"
       // 和"读不到待办"是两件事，但静默什么都不显示会让用户分不清。
-      attention.push(`<div class="sect-block"><div class="tt">${esc(T('cognition.inbox_section', '待确认清单'))}</div><p class="note">${esc(T('cognition.inbox_empty', '没有需要你确认的事项。'))}</p></div>`);
+      attention.push(`<div class="sect-block"><div class="tt">${esc(T('cognition.inbox_section', '待确认清单'))}</div><p class="note">${esc(T('cognition.inbox_empty', '没有需要你确认的事项。'))}</p><p class="note">${esc(T('cognition.inbox_empty_hint', '需要你决定的事项会出现在这里；系统整理进度在「沉淀与入库」里查看。'))}</p></div>`);
     }
     return `${hero(
       T('cognition.review_title', '待我处理'),
-      T('cognition.inbox_page_hint', '每条只需要一个决定：保存、不保存，或稍后处理。'),
+      T('cognition.inbox_page_hint', '治理问题就地处断：冲突选边、扩权确认、补齐边界、未分级批量定级；其余每条一个决定。'),
       statsRow([
         [ready.length, T('cognition.review_stat_wait', '等待确认'), 'a'],
         [broken.length, T('cognition.review_stat_evidence', '来源已删')],

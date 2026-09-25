@@ -61,6 +61,7 @@ import * as recallExperienceMigration from '../features/recall/experience-migrat
 import * as recallExperienceReference from '../features/recall/experience-reference';
 import { cognitionSourceRefMetadataOnly } from '../features/recall/source-service';
 import * as recallAssetApproval from '../features/recall/asset-approval-service';
+import * as recallAssetClassification from '../features/recall/asset-classification-service';
 import * as recallCleanup from '../features/recall/cleanup-report-service';
 import * as recallInspection from '../features/recall/asset-inspection-service';
 import * as recallProfileSync from '../features/recall/personal-profile-sync';
@@ -3482,17 +3483,61 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     // 让「items + total」在认知资产各读口上是同一个契约，渲染层不必按页
     // 记住哪个口有 total、哪个没有。
     const items = await cognition.listCognitionInbox(ctx.userId);
-    return { ok: true, items, total: items.length };
+    // 治理分组（specs/010 T012）：加法返回。旧渲染层/读失败侧拿不到 groups
+    // 时按 items 平铺——降级路径在渲染层有测试钉着。
+    return { ok: true, items, total: items.length, groups: cognition.groupCognitionInbox(items) };
   },
 
-  // 待办处置通道（specs/008 T007）：入参 id 就是 `cognition.inbox.list` 返回的
-  // items[].id。分发与"哪些类没有一键动作"的判断在 features/cognition/inbox-adapter，
-  // 这里只校验形状。没有动作可做的类别回 ok:false + code，**不计为成功**。
-  'cognition.inbox.resolve': async ({ id, action, note } = {}, ctx) => {
+  // 待办处置通道（specs/008 T007；specs/010 入参加法扩展）：入参 id 就是
+  // `cognition.inbox.list` 返回的 items[].id。分发与"哪些类没有一键动作"的判断在
+  // features/cognition/inbox-adapter，这里只校验形状。没有动作可做的类别回
+  // ok:false + code，**不计为成功**。
+  'cognition.inbox.resolve': async ({ id, action, note, level, applicableWhen, forbiddenWhen, targetAssetId, assetIds } = {}, ctx) => {
     if (typeof id !== 'string' || !id) throw new Error('invalid cognition inbox item id');
     if (typeof action !== 'string' || !action) throw new Error('invalid cognition inbox action');
     if (note !== undefined && (typeof note !== 'string' || note.length > 1_000)) throw new Error('invalid cognition inbox note');
-    return cognition.resolveCognitionInboxItem(ctx.userId, { id, action, note });
+    // specs/010 的新参数全部可选：不传时既有行为逐字不变。
+    if (level !== undefined && !['L0', 'L1', 'L2'].includes(String(level))) throw new Error('invalid sensitivity level');
+    const asConditionList = (value: unknown, label: string): string[] | undefined => {
+      if (value === undefined) return undefined;
+      if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) throw new Error(`invalid ${label}`);
+      if (value.length > 32) throw new Error(`invalid ${label}`);
+      return value as string[];
+    };
+    const applicable = asConditionList(applicableWhen, 'applicableWhen');
+    const forbidden = asConditionList(forbiddenWhen, 'forbiddenWhen');
+    if (targetAssetId !== undefined && (typeof targetAssetId !== 'string' || !safeId(targetAssetId))) throw new Error('invalid target asset id');
+    let batchIds: string[] | undefined;
+    if (assetIds !== undefined) {
+      if (!Array.isArray(assetIds) || assetIds.some((entry) => typeof entry !== 'string' || !safeId(entry))) {
+        throw new Error('invalid recall asset ids');
+      }
+      const unique = [...new Set(assetIds as string[])];
+      if (!unique.length || unique.length > 200) throw new Error('invalid recall asset ids');
+      batchIds = unique;
+    }
+    return cognition.resolveCognitionInboxItem(ctx.userId, {
+      id, action,
+      ...(note !== undefined ? { note } : {}),
+      ...(level !== undefined ? { level: String(level) } : {}),
+      ...(applicable !== undefined ? { applicableWhen: applicable } : {}),
+      ...(forbidden !== undefined ? { forbiddenWhen: forbidden } : {}),
+      ...(targetAssetId !== undefined ? { targetAssetId } : {}),
+      ...(batchIds !== undefined ? { assetIds: batchIds } : {}),
+    });
+  },
+
+  // 聚合条目批量定级（specs/010 T024 / US-305）：只校验形状 + 转调 features
+  // （asset-classification-service 逐条走既有写通道，部分失败逐条如实返回）。
+  'recall.assets.sensitivity.batch': async ({ assetIds, level, note } = {}, ctx) => {
+    if (!Array.isArray(assetIds) || assetIds.some((entry) => typeof entry !== 'string' || !safeId(entry))) {
+      throw new Error('invalid recall asset ids');
+    }
+    const unique = [...new Set(assetIds as string[])];
+    if (!unique.length || unique.length > 200) throw new Error('invalid recall asset ids');
+    if (level !== 'L0' && level !== 'L1' && level !== 'L2') throw new Error('invalid sensitivity level');
+    if (note !== undefined && (typeof note !== 'string' || note.length > 1_000)) throw new Error('invalid note');
+    return recallAssetClassification.classifyAbilityAssets(ctx.userId, unique, level, typeof note === 'string' ? note : undefined);
   },
 
   // 「已处理历史」：跨全部候选列出真实落账的审查决定，按处理时间倒序。

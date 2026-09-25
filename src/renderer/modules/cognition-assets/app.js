@@ -22,6 +22,12 @@
     'asset-action', 'asset-recommend-ack', 'select-asset-version', 'rollback-asset', 'delete-asset-version',
     'run-cleanup', 'rollback-cleanup-item', 'cleanup-uncertain-dismiss', 'cleanup-uncertain-defer',
     'inspection-toggle', 'run-inspection', 'purge-deleted-asset', 'inbox-resolve', 'asset-edit-save', 'family-rename', 'family-rename-save', 'family-rename-cancel', 'edit-from-version', 'merge-asset-version', 'merge-asset', 'source-action', 'capture-action', 'organize-conv',
+    // 治理待办就地处断（specs/010 T010）：扩权确认/驳回、冲突选边、巡检
+    // 选边/合并、单条与批量定级、补边界保存。全部经 cognition.inbox.resolve
+    // 或 recall.assets.sensitivity.batch（core.actions 转发，不在渲染层写）。
+    'inbox-escalation-accept', 'inbox-escalation-reject', 'inbox-conflict-claim',
+    'inbox-inspection-keep', 'inbox-inspection-merge',
+    'inbox-classify-apply', 'inbox-classify-batch', 'inbox-boundary-save',
     'capture-toggle', 'capture-review-toggle', 'proof-rate',
     'capture-batch',
     // 经验目录管理（specs/016 US-803）：四个管理动作 + 迁移执行；preview/status
@@ -197,6 +203,57 @@
             break;
           }
           case 'inbox-resolve': await A.resolveInboxItem(id, el.dataset.action || ''); break;
+          /* ── 治理待办就地处断（specs/010 T010 / contracts/renderer-seams §3）─────────
+           *  档位选择只改 DOM 暂存值（不写库）；其余动作全部经 core.actions 走
+           *  cognition.inbox.resolve / recall.assets.sensitivity.batch。 */
+          case 'inbox-classify-level': {
+            // 仅本地选择状态：切选中档、把暂存值记在容器上（契约 §4：不进 store）。
+            const pressed = event.target.closest('[data-level]');
+            if (!pressed) break;
+            el.dataset.level = String(pressed.dataset.level || '');
+            el.querySelectorAll('[data-level]').forEach((option) => {
+              option.setAttribute('aria-pressed', String(option === pressed));
+            });
+            break;
+          }
+          case 'inbox-classify-apply': {
+            const control = root.querySelector(`[data-act="inbox-classify-level"][data-key="${CSS.escape(String(id))}"]`);
+            const level = control ? String(control.dataset.level || '') : '';
+            if (!level) {
+              await NS.alertUser(T('cognition.inbox_ask_classify', '补充敏感级分类'));
+              break;
+            }
+            await A.resolveInboxItem(id, 'classify', { level });
+            break;
+          }
+          case 'inbox-classify-batch': {
+            const control = root.querySelector(`[data-act="inbox-classify-level"][data-key="${CSS.escape(String(id))}"]`);
+            const level = control ? String(control.dataset.level || '') : '';
+            if (!level) {
+              await NS.alertUser(T('cognition.inbox_ask_classify', '补充敏感级分类'));
+              break;
+            }
+            const assetIds = String(el.dataset.ids || '').split(',').map((value) => value.trim()).filter(Boolean);
+            await A.classifyAssetsBatch(assetIds, level);
+            break;
+          }
+          case 'inbox-boundary-save': {
+            // 就地读 [data-f]（契约 §4）：多值按顿号/逗号分隔，与资产编辑同口径。
+            const form = el.closest('[data-inbox-boundary-form]');
+            if (!form) break;
+            const readList = (field) => String((form.querySelector(`[data-f="${field}"]`) || {}).value || '')
+              .split(/[、,，]/).map((value) => value.trim()).filter(Boolean);
+            await A.resolveInboxItem(id, 'set_boundary', {
+              applicableWhen: readList('applicableWhen'),
+              forbiddenWhen: readList('forbiddenWhen'),
+            });
+            break;
+          }
+          case 'inbox-escalation-accept': await A.resolveInboxItem(id, 'accept'); break;
+          case 'inbox-escalation-reject': await A.resolveInboxItem(id, 'reject'); break;
+          case 'inbox-conflict-claim': await A.resolveInboxItem(id, 'claim'); break;
+          case 'inbox-inspection-keep': await A.resolveInboxItem(id, 'keep', { targetAssetId: el.dataset.anchor || '' }); break;
+          case 'inbox-inspection-merge': await A.resolveInboxItem(id, 'merge', { targetAssetId: el.dataset.anchor || '' }); break;
           case 'go-inbox-asset': router.go({ name: 'overview', assetId: id }); break;
           case 'open-cleanup': router.go({ name: 'cleanup', cleanupReportId: '' }, { replace: true }); break;
           case 'open-cleanup-report': router.go({ name: 'cleanup', cleanupReportId: String(el.dataset.report || '') }, { replace: true }); break;

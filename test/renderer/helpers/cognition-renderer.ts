@@ -65,7 +65,7 @@ function loadModule(
   context.globalThis = context;
   vm.createContext(context);
 
-  for (const file of ['ui-button.js', 'ui-form.js', 'ui-empty.js']) {
+  for (const file of ['ui-button.js', 'ui-form.js', 'ui-empty.js', 'ui-status.js', 'ui-segmented-control.js']) {
     vm.runInContext(
       fs.readFileSync(path.join(rendererRoot, 'modules', file), 'utf8'),
       context,

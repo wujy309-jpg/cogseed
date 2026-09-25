@@ -70,7 +70,10 @@ export interface AbilityAssetAuditRecord extends RecallJsonRecord {
     | 'danger_snapshot' | 'danger_confirmed' | 'danger_denied' | 'attempt_blocked'
     // 审批提议（specs/008 US-406）：AI 提出、用户三态处置、以及用户编辑卡片内容。
     // 提议本身不改资产，但它必须与"谁在什么时候做了什么决定"绑在同一条履历上。
-    | 'approval_proposed' | 'approval_confirmed' | 'approval_rejected' | 'approval_deferred' | 'approval_edited';
+    | 'approval_proposed' | 'approval_confirmed' | 'approval_rejected' | 'approval_deferred' | 'approval_edited'
+    // 扩权确认（specs/010 US-303 / T018）：只台账 + ack，**不 bump 版本、不改内容**
+    // ——确认类动作没有内容变化，靠版本永远退不了场，退场靠 ack 键。
+    | 'escalation_confirmed';
   at: string;
   actor?: AbilityAssetActor;
   note?: string;
@@ -1191,6 +1194,25 @@ export async function recommendAbilityAssetAction(userId: string, assetId: strin
   const asset = asAsset(updated);
   if (appended) await appendAudit(userId, asset.id, input.action === 'pause' ? 'pause_recommended' : 'rework_recommended', { note: reason, actor });
   return asset;
+}
+
+/**
+ * 扩权确认的台账落点（specs/010 US-303 / T018）：只记一行 `escalation_confirmed`
+ * （before/after 档位 + 依据），**不 bump 版本、不改内容**——ack 键在
+ * escalation-ack-service 里，两处合起来才是"确认后退场、新提级重报"的完整事实。
+ */
+export async function recordSensitivityEscalationConfirmed(
+  userId: string,
+  assetId: string,
+  metadata: { before?: string; after?: string; toVersion?: string } = {},
+): Promise<void> {
+  await appendAudit(userId, assetId, 'escalation_confirmed', {
+    actor: 'user',
+    reason: '扩权确认：新档位生效，同一提级不再重复提醒',
+    ...(metadata.before !== undefined ? { before: `sensitivity ${metadata.before}` } : {}),
+    ...(metadata.after !== undefined ? { after: `sensitivity ${metadata.after}` } : {}),
+    ...(metadata.toVersion !== undefined ? { note: `confirmed at v${metadata.toVersion}` } : {}),
+  });
 }
 
 /** 归档：从日常列表移出、不参与推荐，历史与 Evidence 保留，可恢复（规范 22.1）。 */
