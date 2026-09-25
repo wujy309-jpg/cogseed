@@ -85,6 +85,9 @@ export interface RequirementLevelPrecipitationResult {
   proposals: KstarCandidateProposal[];
   createdAssetIds: string[];
   candidateIds: string[];
+  /** 经验条目（specs/016 T014）：聚合线 create 型提案分流写入 experiences
+   *  集合的产出（mutating 线仍走 candidateIds，两数组互斥按动作分流）。 */
+  experienceIds: string[];
   mergedIntoIds: string[];
   updateCandidateIds: string[];
   failureIds: string[];
@@ -109,8 +112,13 @@ async function updateExtractionRuns(
       schemaVersion: 1 as const, ownerId: userId, id, episodeId: episode.id,
       reviewId: review?.id || `ksr-${episode.id}`, candidateIds: result.candidateIds,
       createdAssetIds: result.createdAssetIds, mergedIntoIds: result.mergedIntoIds,
+      // 经验产出也驻留 run 记录（specs/016 T014：旧记录无此字段不受影响，
+      // 新记录带上后「这次沉淀产出了哪些经验」可从 run 直接追溯）。
+      experienceIds: result.experienceIds,
       updateCandidateIds: result.updateCandidateIds, failureIds: result.failureIds,
-      status: result.failureIds.length && !result.candidateIds.length
+      // 「有产出」= 候选或经验任一存在（分流后 create 线只产经验）：全部
+      // 失败且零产出才 failed，部分成功的部分失败不冒充整体失败。
+      status: result.failureIds.length && !result.candidateIds.length && !result.experienceIds.length
         ? 'failed' as const
         : provenanceDegraded
           ? 'degraded' as const
@@ -342,7 +350,7 @@ export async function precipitateRequirementLevel(
     // 采用证据的查询范围，准入与结论都无从谈起——保持既有空返回（best-effort，
     // 不抛错、不为不存在的 episode 造结论）。聚合线本就无提案，personal 线
     // 的提案 sourceRefs 也为空（写入侧跳过）。
-    const empty: RequirementLevelPrecipitationResult = { proposals: [], createdAssetIds: [], candidateIds: [], mergedIntoIds: [], updateCandidateIds: [], failureIds: [] };
+    const empty: RequirementLevelPrecipitationResult = { proposals: [], createdAssetIds: [], candidateIds: [], experienceIds: [], mergedIntoIds: [], updateCandidateIds: [], failureIds: [] };
     await updateExtractionRuns(userId, requirement, episodes, empty);
     return empty;
   }
@@ -357,7 +365,7 @@ export async function precipitateRequirementLevel(
     // `no_update`（T012）；这里**不是**失败路径，失败各有 analysis_failed /
     // submit_failed，不许退化成"无需更新"。
     await recordKstarNoUpdateOutcome(userId, admission);
-    const empty: RequirementLevelPrecipitationResult = { proposals: [], createdAssetIds: [], candidateIds: [], mergedIntoIds: [], updateCandidateIds: [], failureIds: [] };
+    const empty: RequirementLevelPrecipitationResult = { proposals: [], createdAssetIds: [], candidateIds: [], experienceIds: [], mergedIntoIds: [], updateCandidateIds: [], failureIds: [] };
     await updateExtractionRuns(userId, requirement, episodes, empty);
     return empty;
   }
@@ -366,20 +374,28 @@ export async function precipitateRequirementLevel(
 
   let createdAssetIds: string[] = [];
   let candidateIds: string[] = [];
+  let experienceIds: string[] = [];
   let mergedIntoIds: string[] = [];
   let updateCandidateIds: string[] = [];
   let failureIds: string[] = [];
   try {
     // 唯一提交出口：准入在 `precipitateDirectExperienceFromSource` 里、
-    // `saveRecallCandidate` 之前执行（放行的提案才落候选）。
+    // `saveRecallCandidate` 之前执行（放行的提案才落候选）；create 型提案
+    // 在同一出口内分流写经验（specs/016 T014——聚合线与直通线共用同一
+    // 分流规则，不各写一套）。
     const direct = await precipitateDirectExperienceFromSource(userId, {
       id: requirement.id,
       conversationId: requirement.conversationId,
       requirementId: requirement.id,
       ...(workspaceId ? { workspaceId } : {}),
-    }, allProposals, admission);
+    }, allProposals, admission, {
+      // 经验条目 source 的任务口径：聚合层的任务目标 + 锚 episode 终态。
+      taskGoal: requirement.goalText || requirement.title,
+      taskStatus: anchorEpisode.r.status,
+    });
     createdAssetIds = direct.createdAssetIds;
     candidateIds = direct.candidateIds;
+    experienceIds = direct.experienceIds;
     mergedIntoIds = direct.mergedIntoIds;
     updateCandidateIds = direct.updateCandidateIds;
     failureIds = direct.failureIds;
@@ -394,7 +410,7 @@ export async function precipitateRequirementLevel(
     // （T013）；best-effort 语义不变：收口照旧继续。
     await recordKstarSubmitFailedOutcome(userId, admission, { error });
   }
-  const result = { proposals: allProposals, createdAssetIds, candidateIds, mergedIntoIds, updateCandidateIds, failureIds };
+  const result = { proposals: allProposals, createdAssetIds, candidateIds, experienceIds, mergedIntoIds, updateCandidateIds, failureIds };
   await updateExtractionRuns(userId, requirement, episodes, result);
   return result;
 }

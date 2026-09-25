@@ -631,7 +631,8 @@ describe('US-701 四态反馈与幂等（T018）', () => {
     expect(blockedRecord?.conclusion).toBe('insufficient_evidence');
     expect(blockedRecord?.conclusion).not.toBe('no_update');
 
-    // 新建型提案不受采用门影响（门只管"改既有对象"），照常落候选。
+    // 新建型提案不受采用门影响（门只管"改既有对象"）——specs/016 分流后
+    // 等价表达为：照常产出沉淀物（经验条目），且不进候选池。
     const created = await direct.precipitateDirectExperienceAssets(USER, episode, [{
       judgment: 'Write the section outline before drafting the report body.',
       summary: '报告先列大纲',
@@ -639,6 +640,7 @@ describe('US-701 四态反馈与幂等（T018）', () => {
       suggestedScope: 'report',
       sourceRefs: [{ kind: 'execution', id: EPISODE }],
     }]);
-    expect(created.candidateIds).toHaveLength(1);
+    expect(created.candidateIds).toEqual([]);
+    expect(created.experienceIds).toHaveLength(1);
   });
 });

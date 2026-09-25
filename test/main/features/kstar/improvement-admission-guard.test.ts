@@ -39,6 +39,7 @@ import { describe, expect, it } from 'vitest';
 import { createAssetStewardTools } from '../../../../src/main/model/core-agent/asset-steward-tools';
 import { createPersonalOntologyTools } from '../../../../src/main/model/core-agent/personal-ontology-tools';
 import { createRecallTools } from '../../../../src/main/model/core-agent/recall-tools';
+import { createExperienceTools } from '../../../../src/main/model/core-agent/experience-tools';
 import { TOOL_CATALOG } from '../../../../src/main/model/core-agent/tool-catalog';
 
 const repoRoot = path.resolve(__dirname, '../../../..');
@@ -504,13 +505,18 @@ describe('T046 ③ 不存在第二处版本比对', () => {
 
 describe('T046 ④ tool-catalog 未新增 recall 组工具', () => {
   /**
-   * 冻结基线（= 现状：2 个既有 + 资产管家 9 个）。口径与 `asset-steward-tools.test.ts`
-   * 的「3 读 + 6 写」一致（那一份按工厂名清单钉死，这里钉 catalog 的 recall 组面）。
-   * 新增/删除任何一项都必须先与 owner 确认，再改这里。
+   * 冻结基线（= 2 个既有 + 资产管家 9 个 + 经验目录 2 个只读）。口径与
+   * `asset-steward-tools.test.ts` 的「3 读 + 6 写」一致（那一份按工厂名清单钉死，
+   * 这里钉 catalog 的 recall 组面）。新增/删除任何一项都必须先与 owner 确认，再改这里。
+   * 2026-09-25 +2：specs/016 T024 的 list_task_experiences / read_task_experience
+   * （2 读 0 写、⊄只读白名单，另有 experience-tools.test.ts 钉行为）——Backlog
+   * Epic 8 规格内的合法扩张，非口径漂移。
    */
   const RECALL_GROUP_BASELINE = [
     'personal_ontology_fields',
     'search_ability_assets',
+    'list_task_experiences',
+    'read_task_experience',
     'list_ability_assets',
     'read_ability_asset',
     'list_asset_change_proposals',
@@ -528,6 +534,7 @@ describe('T046 ④ tool-catalog 未新增 recall 组工具', () => {
       ...createRecallTools({ userId: 'admission-guard' }),
       ...createAssetStewardTools({ userId: 'admission-guard' }),
       ...createPersonalOntologyTools({ userId: 'admission-guard' }),
+      ...createExperienceTools({ userId: 'admission-guard' }),
     ].map((tool) => tool.name);
 
     expect([...catalogRecall].sort(), 'recall 组新增/删除了工具——「不新增模型工具」是 specs/015 D15 的硬约束，确要变更先找 owner')
