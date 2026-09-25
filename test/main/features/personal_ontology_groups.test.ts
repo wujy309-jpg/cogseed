@@ -677,6 +677,118 @@ describe('personal_ontology_groups › snapshot id & savedAt compatibility (T007
   });
 });
 
+describe('personal_ontology_groups › delete fallback (T020/T021: 删除前留档兜底)', () => {
+  /** 读某组历史里指定快照的落盘原文——「逐字一致」断言必须对着文件本体做
+   *  （listGroupHistory 只给 80 字 preview，证不了逐字）。 */
+  function readSnapshotText(gid: string, snapshotId: string): string {
+    return fs.readFileSync(path.join(groupsDir(), '.history', gid, `${snapshotId}.md`), 'utf8');
+  }
+
+  it('T020+T024(main): removing a value snapshots the whole pre-delete text verbatim; restore round-trips exactly', async () => {
+    const groups = await loadModule();
+    const created = await groups.createGroup(UID, '删值兜底组');
+    const gid = created.group!.group_id;
+    await groups.appendFieldValue(UID, gid, '称呼', '子安', '手动');
+    await groups.appendFieldValue(UID, gid, '称呼', '牛保康', '手动');
+    await groups.appendFieldValue(UID, gid, '居住地', '北京', '手动', 'p1', '2026-09'); // 带来源标记的值
+
+    // 删除前的整组原文与结构化视图（恢复等价性的基准）
+    const beforeContent = (await groups.readGroupContent(UID, gid)).content!;
+    const beforeFields = await groups.listGroupFields(UID, gid);
+
+    const res = await groups.removeFieldValue(UID, gid, '称呼', '子安');
+    expect(res.ok).toBe(true);
+
+    // 历史最新一版（新→旧排序的 [0]）== 删除前整组原文，逐字一致
+    const history = groups.listGroupHistory(UID, gid);
+    expect(history.length).toBe(3); // append×2 留档 + 删值留档（首次写入不留）
+    const snapText = readSnapshotText(gid, history[0].id);
+    expect(snapText).toBe(beforeContent);
+    expect(snapText).toContain('- 子安 [手动]'); // 删除前快照逐字含被删值
+
+    // 恢复往返（T024 主进程侧）：恢复后 readGroupContent 与删除前逐字相等
+    const restored = await groups.restoreGroupSnapshot(UID, gid, history[0].id);
+    expect(restored.ok).toBe(true);
+    expect((await groups.readGroupContent(UID, gid)).content).toBe(beforeContent);
+
+    // 恢复后 listGroupFields 与删除前深度相等（值顺序与来源标记不变）
+    const afterFields = await groups.listGroupFields(UID, gid);
+    expect(afterFields).toEqual(beforeFields);
+    const nameField = afterFields.fields?.find((f) => f.name === '称呼');
+    expect(nameField?.values.map((v) => v.value)).toEqual(['子安', '牛保康']);
+    const city = afterFields.fields?.find((f) => f.name === '居住地')?.values[0];
+    expect(city).toMatchObject({ value: '北京', project: 'p1', asOf: '2026-09' });
+  });
+
+  it('T020: removing a field / removing an entry also snapshot the pre-delete text verbatim', async () => {
+    const groups = await loadModule();
+    const created = await groups.createGroup(UID, '删字段删流水兜底组');
+    const gid = created.group!.group_id;
+    await groups.appendFieldValue(UID, gid, '称呼', '子安', '手动');
+    await groups.appendFieldValue(UID, gid, '居住地', '北京', '手动');
+    await groups.appendToGroup(UID, gid, '回复用简短中文');
+
+    // 删字段：历史最新一版 == 删除前整组原文
+    let before = (await groups.readGroupContent(UID, gid)).content!;
+    expect((await groups.removeField(UID, gid, '称呼')).ok).toBe(true);
+    let latest = groups.listGroupHistory(UID, gid)[0];
+    expect(readSnapshotText(gid, latest.id)).toBe(before);
+
+    // 删流水：同款断言
+    before = (await groups.readGroupContent(UID, gid)).content!;
+    expect((await groups.removeEntry(UID, gid, '回复用简短中文')).ok).toBe(true);
+    latest = groups.listGroupHistory(UID, gid)[0];
+    expect(readSnapshotText(gid, latest.id)).toBe(before);
+  });
+
+  it('T021: deleting a never-snapshotted group leaves its pre-delete version in .history + a group_delete ledger line; template groups still refused', async () => {
+    const groups = await loadModule();
+    const created = await groups.createGroup(UID, '从未留档的删除组');
+    const gid = created.group!.group_id;
+    // 首次写字段：原文为空不留快照——内容有了、历史仍为空，正是 T021 兜底的形态
+    await groups.appendFieldValue(UID, gid, '称呼', '子安', '手动');
+    expect(groups.listGroupHistory(UID, gid)).toEqual([]);
+    const beforeDelete = (await groups.readGroupContent(UID, gid)).content!;
+
+    const del = await groups.deleteGroup(UID, gid);
+    expect(del.ok).toBe(true);
+
+    // 删除前那一版出现在历史目录，内容与删除前原文逐字一致
+    const history = groups.listGroupHistory(UID, gid);
+    expect(history.length).toBe(1);
+    expect(readSnapshotText(gid, history[0].id)).toBe(beforeDelete);
+    // 台账有 group_delete 行（Phase 2 已接通，这里核验仍在）
+    const audit = groups.readGroupAudit(UID, gid);
+    expect(audit.filter((l) => l.action === 'group_delete')).toHaveLength(1);
+    // 组确实已删（内容文件移除、台账列表清空）
+    expect(fs.existsSync(path.join(groupsDir(), `${gid}.md`))).toBe(false);
+    expect((await groups.listGroups(UID)).map((g) => g.group_id)).not.toContain(gid);
+
+    // 模板组仍被拒（role_template_group 语义不变），文件不动、不写台账
+    const tplId = 'tplgrp001';
+    fs.mkdirSync(groupsDir(), { recursive: true });
+    fs.writeFileSync(path.join(groupsDir(), 'groups.md'), [
+      '# 记忆分组',
+      '',
+      `### ${tplId}`,
+      '- 标题: 模板组',
+      `- 文件: .personal_ontology_groups/${tplId}.md`,
+      '- 创建时间: 2026-09-25T00:00:00.000Z',
+      '- 更新时间: 2026-09-25T00:00:00.000Z',
+      '- 模板: student@0.2.0',
+      '',
+    ].join('\n'), 'utf8');
+    fs.writeFileSync(path.join(groupsDir(), `${tplId}.md`), '> 模板: student@0.2.0\n', 'utf8');
+
+    const refused = await groups.deleteGroup(UID, tplId);
+    expect(refused.ok).toBe(false);
+    expect(refused.error).toBe('role_template_group');
+    expect(fs.existsSync(path.join(groupsDir(), `${tplId}.md`))).toBe(true);
+    expect(groups.readGroupAudit(UID, tplId)).toEqual([]); // 被拦截的操作不计成功、不写台账
+    expect(groups.listGroupHistory(UID, tplId)).toEqual([]); // 也不留快照
+  });
+});
+
 describe('projection-knowledge › restricted values stay out of ontology facts', () => {
   it('restricted field values never enter the world-model fact list', async () => {
     const users = await import('../../../src/main/features/users');
