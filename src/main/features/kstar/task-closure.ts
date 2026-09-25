@@ -1,5 +1,6 @@
 import { createLogger } from '../../logger';
 import { safeId, nowIso } from '../../storage';
+import { cidFromProjectSessionId } from '../../util/project-layout';
 import { normalizeCognitionSourceRefs, type CognitionSourceRef } from '../recall/source-service';
 import { listInjectionReceipts, type InjectionReceipt } from '../recall/injection-receipt';
 import {
@@ -22,9 +23,11 @@ import { saveKstarCandidateProposals } from './recall-bridge';
 import { createInitialKstarReview, readKstarReview, saveKstarReview, saveKstarReviewRecord } from './review-service';
 import { inferKstarReview, type KstarReviewInferenceOptions, type KstarReviewInferenceResult } from './review-inference';
 import { postKstarReviewCard } from './review-card';
+import { recordKstarImprovementOutcome } from './improvement-outcome';
 import type { KstarEpisodeRecord, KstarExtractionRunRecord, KstarReviewRecord } from './types';
 import type { WorldModelForecast } from '../recall/world-model-types';
-import { readConversationTaskState, readKstarRequirement } from './requirement-store';
+import type { KstarRequirementRecord } from './requirement-types';
+import { listKstarRequirementsForTask, readConversationTaskState, readKstarRequirement } from './requirement-store';
 import { recordKstarFailure } from './failure-service';
 
 const log = createLogger('kstar.task-closure');
@@ -394,6 +397,119 @@ function confirmationReviewInput(
   };
 }
 
+/**
+ * T035（US-704）：复盘确认后，这条 review 首次落**用户确认的终态**——沿
+ * **同一条**改进分析链路继续，即需求级沉淀入口 `precipitateRequirementLevel`
+ * （`task-level-precipitation.ts`；US-701 的采用门与四类结论都收口在那条链上）。
+ *
+ * 为什么不在确认里另起分析：finish / abandon / 任务切换 / 静默自动闭环全部走
+ * 这一个入口（`control-service.ts` 的三处 + `runAutoClose`），确认只是让分析
+ * 依据（review 的终态）变了，所以复用同一入口重跑；提交出口、采用门、结论
+ * 幂等都由既有链路保证，不新增管线，也不绕开任何门。
+ *
+ * best-effort：链路异常只记日志与结论，**不回抛**——review 的终态在调用本函数
+ * 之前已经落盘（`saveKstarReview`），确认失败不阻断终态，也不静默。
+ */
+async function requirementForConfirmedReview(
+  userId: string,
+  episode: KstarEpisodeRecord,
+): Promise<KstarRequirementRecord | null> {
+  if (episode.requirementId && safeId(episode.requirementId)) {
+    const requirement = await readKstarRequirement(userId, episode.requirementId);
+    if (requirement) return requirement;
+  }
+  // 没带 requirementId 的 episode：按任务成员表找回（`episodeIds` 是权威归属）。
+  if (episode.taskId && safeId(episode.taskId)) {
+    const member = (await listKstarRequirementsForTask(userId, episode.taskId))
+      .find((requirement) => requirement.episodeIds.includes(episode.id));
+    if (member) return member;
+  }
+  // 存量 episode（连 taskId 都没有）：只剩会话这条线索。需求必须真的把这条
+  // episode 记进 `episodeIds` 才认——否则宁可不分析，也不挂到无关需求上。
+  const conversationId = cidFromProjectSessionId(userId, episode.sessionId || '');
+  if (!conversationId) return null;
+  const state = await readConversationTaskState(userId, conversationId);
+  const currentRequirementId = state?.currentRequirementId;
+  if (!currentRequirementId || !safeId(currentRequirementId)) return null;
+  const requirement = await readKstarRequirement(userId, currentRequirementId);
+  return requirement && requirement.episodeIds.includes(episode.id) ? requirement : null;
+}
+
+async function continueImprovementAnalysisAfterConfirm(
+  userId: string,
+  episode: KstarEpisodeRecord,
+  review: KstarReviewRecord,
+  verdict: KstarReviewVerdict,
+): Promise<void> {
+  const recordConclusion = async (
+    conclusion: 'insufficient_evidence' | 'analysis_failed',
+    reason: string,
+    options: { requirementId?: string; failureCategory?: 'unknown' } = {},
+  ): Promise<void> => {
+    try {
+      await recordKstarImprovementOutcome(userId, {
+        episodeId: episode.id,
+        reviewId: review.id,
+        conclusion,
+        reason,
+        ...(options.requirementId ? { requirementId: options.requirementId } : {}),
+        ...(options.failureCategory ? { failureCategory: options.failureCategory } : {}),
+        evidenceRefs: [{ kind: 'execution', id: episode.id }],
+      });
+    } catch (error) {
+      log.warn('kstar confirm improvement conclusion degraded', {
+        userId,
+        episodeId: episode.id,
+        error: (error as Error).message,
+      });
+    }
+  };
+  // 「需要修正」= 复盘结论未定（复盘卡两态里的第二态，research D8）：不放行任何
+  // 候选，也不重跑聚合线——聚合线覆盖其他 episode 与偏好线，不该由一次"未确认"
+  // 的处置触发；只如实留痕一条结论。
+  if (verdict === 'skip') {
+    await recordConclusion(
+      'insufficient_evidence',
+      '复盘被标记为需要修正，结论未定，本次没有产出改进候选；修正后可再次确认，由改进分析链路重新分析。',
+    );
+    return;
+  }
+  let requirement: KstarRequirementRecord | null = null;
+  try {
+    requirement = await requirementForConfirmedReview(userId, episode);
+  } catch (error) {
+    log.warn('kstar confirm requirement lookup degraded', {
+      userId,
+      episodeId: episode.id,
+      error: (error as Error).message,
+    });
+  }
+  if (!requirement) {
+    // 缺必需上下文（没有归属的任务需求）：如实落一条结论，不静默什么都不做。
+    await recordConclusion(
+      'insufficient_evidence',
+      '这条复盘没有归属到任务需求，改进分析链路没有可分析的范围，本次没有产出候选；补上任务归属后可再次确认。',
+    );
+    return;
+  }
+  try {
+    const { precipitateRequirementLevel } = await import('./task-level-precipitation');
+    await precipitateRequirementLevel(userId, requirement);
+  } catch (error) {
+    log.warn('kstar confirm improvement analysis degraded', {
+      userId,
+      episodeId: episode.id,
+      requirementId: requirement.id,
+      error: (error as Error).message,
+    });
+    await recordConclusion(
+      'analysis_failed',
+      '改进分析链路执行失败（归因：unknown），本次没有产出候选。',
+      { requirementId: requirement.id, failureCategory: 'unknown' },
+    );
+  }
+}
+
 export async function confirmKstarReview(
   userId: string,
   episodeId: string,
@@ -406,7 +522,11 @@ export async function confirmKstarReview(
     const current = await readKstarReview(userId, episodeId);
     if (!current) throw new Error('kstar review not found');
     const review = await saveKstarReview(userId, episode, confirmationReviewInput(episode, current, input));
-    return reconcileKstarExtraction(userId, episode, review);
+    const result = await reconcileKstarExtraction(userId, episode, review);
+    // review 已落终态（上面一行）→ 再沿同一改进分析链路继续（T035）。顺序有意
+    // 如此：即使链路慢/失败，用户确认的终态也已经持久化，不会被链路拖累。
+    await continueImprovementAnalysisAfterConfirm(userId, episode, review, input.verdict);
+    return result;
   });
 }
 
