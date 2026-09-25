@@ -44,6 +44,9 @@ export interface RecallToolsOpts {
   cid?: string;
   /** 空间 id：作为运行时准入的作用域上下文。 */
   spaceId?: string;
+  /** 会话的项目归属（specs/012 T018）：目录模式 scene 因子用（与提示词常驻
+   *  目录同序的前提：同一份场景输入）；缺省时该维度不参与。 */
+  projectId?: string;
   /** 当前用户消息文本：适用/禁用场景匹配用。 */
   taskText?: string;
 }
@@ -205,6 +208,50 @@ async function recordAgentReads(
 function createSearchAbilityAssetsTool(opts: RecallToolsOpts): AgentTool {
   const userId = opts.userId;
 
+  /** 目录模式的推荐排序（specs/012 T018）：与提示词常驻目录（asset-catalog-hint）
+   *  共调 asset-ranking.rankAssets 的**同一份推荐分**——同一次会话里模型在提示词
+   *  与工具目录里看到同一顺序。输入同源：relevance（当轮任务文本余弦，opts.taskText）、
+   *  adoption（applied 回执，loadAssetAdoptionStatsCached）、scene（会话项目/空间）、
+   *  权重（getRankingWeights，每次构建读一次）。
+   *  任何一步拿不到都**保持原序**（目录可用性优先于排序）；检索模式（runSearch）
+   *  不经这里——用户问的是"哪条最相关"，保持纯余弦。 */
+  const rankCatalogPool = async (
+    pool: RecallAbilityAssetRecord[],
+  ): Promise<RecallAbilityAssetRecord[]> => {
+    try {
+      const [{ rankAssets }, { getRankingWeights, DEFAULT_RANKING_WEIGHTS }, { catalogRelevanceScores, loadAssetAdoptionStatsCached }] = await Promise.all([
+        import('../../features/recall/asset-ranking'),
+        import('../../features/recall/catalog-ranking-weights'),
+        import('../../features/recall/asset-catalog'),
+      ]);
+      const weights = await getRankingWeights(userId)
+        .catch(() => ({ weights: { ...DEFAULT_RANKING_WEIGHTS }, source: 'default' as const }));
+      const relevance = opts.taskText ? await catalogRelevanceScores(userId, opts.taskText, pool) : new Map<string, number>();
+      const adoption = await loadAssetAdoptionStatsCached(userId).catch(() => new Map<string, never>());
+      const byId = new Map(pool.map((asset) => [asset.id, asset] as const));
+      return rankAssets({
+        assets: pool.map((asset) => ({
+          id: asset.id,
+          maturity: asset.maturity,
+          updatedAt: asset.updatedAt,
+          ...(asset.spaceId ? { spaceId: asset.spaceId } : {}),
+          ...(asset.scopePolicy ? { scopePolicy: asset.scopePolicy } : {}),
+        })),
+        relevance,
+        adoptionStats: adoption,
+        scene: {
+          ...(opts.projectId ? { turnProjectId: opts.projectId } : {}),
+          ...(opts.spaceId ? { turnSpaceId: opts.spaceId } : {}),
+        },
+        weights: weights.weights,
+        weightsSource: weights.source,
+      }).map((row) => byId.get(row.assetId)).filter((asset): asset is RecallAbilityAssetRecord => Boolean(asset));
+    } catch (err) {
+      log.warn('asset catalog ranking failed; keeping existing order', { userId: maskId(userId), error: logErrorRef(err as Error) });
+      return pool;
+    }
+  };
+
   /** 目录模式：全量在用资产，一行一条，可过滤分页。 */
   const runCatalog = async (input: Record<string, unknown>): Promise<string> => {
     const k = Math.min(CATALOG_PAGE_MAX, Math.max(1, Math.floor(Number(input.k) || CATALOG_PAGE_DEFAULT)));
@@ -232,7 +279,10 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts): AgentTool {
     if (!pool.length) {
       return `认知资产目录为空（共 0 条${filterNote ? `；过滤条件：${filterNote}` : ''}）。`;
     }
-    const page = pool.slice(offset, offset + k);
+    // 过滤（准入/筛选）先于排序、排序先于分页（T018）：过滤后的集合整段按同一
+    // 推荐分排（只排不裁——顺序变化，条目一条不少），再切页。
+    const ordered = await rankCatalogPool(pool);
+    const page = ordered.slice(offset, offset + k);
     if (!page.length) {
       // offset 越界：给"已到末尾 + 总数"的明确语义，而不是一个空页（模型据此
       // 停止翻页，而不是以为目录坏了）。
