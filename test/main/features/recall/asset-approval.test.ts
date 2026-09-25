@@ -302,6 +302,37 @@ describe('卡片载荷与下发（T034 / T038）', () => {
     expect(payload.actions).toEqual(['confirm', 'defer', 'reject']);
   });
 
+  it('提议带上「当前值」：卡片要能让用户对比"当前 → 拟生效"（2026-09-25 真机抓出的缺口）', async () => {
+    const uid = 'user-card-current';
+    const { approval, assets } = await modules();
+    const asset = await seedAsset(uid, '当前的正文内容。');
+    // 与工具层同款：把要改的字段**当前值**一并带上。
+    const { proposal } = await approval.createAssetChangeProposal(uid, {
+      assetId: asset.id,
+      baselineVersion: asset.version,
+      fields: ['statement'],
+      payload: { statement: '拟生效的新正文。' },
+      beforeValues: { statement: asset.statement },
+      before: 'statement=7 字',
+      after: 'statement=8 字',
+      reason: 'AI 依据：句子可以更具体',
+    });
+    const stored = await approval.readAssetChangeProposal(uid, proposal.id);
+    expect(stored!.beforeValues).toEqual({ statement: '当前的正文内容。' });
+    expect(stored!.payload).toEqual({ statement: '拟生效的新正文。' });
+    // 提议仍然不动资产。
+    expect((await assets.readAbilityAsset(uid, asset.id)).statement).toBe('当前的正文内容。');
+    // 老提议（没有 beforeValues）也读得出来——卡片对这类如实降级。
+    const legacy = await approval.createAssetChangeProposal(uid, {
+      assetId: asset.id,
+      baselineVersion: asset.version,
+      fields: ['scope'],
+      payload: { scope: 'review' },
+      before: 'x', after: 'y', reason: '演示老提议',
+    });
+    expect((await approval.readAssetChangeProposal(uid, legacy.proposal.id))!.beforeValues).toBeUndefined();
+  });
+
   it('下发走注入的 port，文案带资产名与依据', async () => {
     const uid = 'user-card-port';
     const { approval, card } = await modules();

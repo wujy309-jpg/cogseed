@@ -10554,17 +10554,30 @@ function _renderAssetApprovalCard(card, payload, view = {}) {
   card.className = `chat-asset-approval is-${state}`;
   card.dataset.proposalId = String(payload.proposalId || '');
   const diff = payload.diff || {};
+  // 字段值来自**提议记录**（view.proposed / view.current），不是消息载荷里的摘要：
+  // 摘要只有"字数 + 60 字前缀"，用户据此判断不了要不要批（2026-09-25 真机抓出）。
+  // 老提议没有 beforeValues 时如实说"当前值不可用"，不假装有。
+  const proposed = (view.proposed && typeof view.proposed === 'object') ? view.proposed : null;
+  const current = (view.current && typeof view.current === 'object') ? view.current : null;
+  // 挂在元素上：确认时要把 textarea 的文本按**原值类型**切回数组/字符串，
+  // 只靠 DOM 里的文本分不出"适用场景"是数组还是字符串。
+  card._assetApprovalProposed = proposed;
+  const editableKeys = pending && proposed ? _assetApprovalEditableKeys(proposed) : [];
   const rows = (Array.isArray(diff.fields) ? diff.fields : []).map((key) => {
-    const editable = pending && _assetApprovalEditableKeys(payload.payload || {}).includes(key);
-    const original = (payload.payload || {})[key];
+    const next = proposed ? proposed[key] : undefined;
+    const prev = current ? current[key] : undefined;
+    const editable = editableKeys.includes(key);
     const control = editable
       ? uiTextarea({
-        value: _assetApprovalValueToText(original),
-        rows: key === 'statement' ? 3 : 2,
+        value: _assetApprovalValueToText(next),
+        rows: key === 'statement' ? 4 : 2,
         attrs: { 'data-asset-approval-field': key },
       })
-      : `<div class="chat-asset-approval-value">${escapeHtml(_assetApprovalValueToText(original))}</div>`;
-    return `<div class="chat-asset-approval-row"><div class="chat-asset-approval-label">${escapeHtml(_assetApprovalFieldLabel(key))}</div>${control}</div>`;
+      : `<div class="chat-asset-approval-value">${escapeHtml(proposed ? _assetApprovalValueToText(next) : '—')}</div>`;
+    const previous = current
+      ? `<div class="chat-asset-approval-prev">${escapeHtml(t('recall.asset_approval.current_label', '当前'))}: ${escapeHtml(_assetApprovalValueToText(prev) || '—')}</div>`
+      : '';
+    return `<div class="chat-asset-approval-row"><div class="chat-asset-approval-label">${escapeHtml(_assetApprovalFieldLabel(key))}${editable ? ` · ${escapeHtml(t('recall.asset_approval.editable_hint', '可改'))}` : ''}</div>${previous}${control}</div>`;
   }).join('');
   const actions = pending
     ? `<div class="chat-asset-approval-actions">
@@ -10605,9 +10618,10 @@ async function _resolveAssetApprovalCard(card, payload, action) {
     const body = { proposalId: String(payload.proposalId || ''), decision: String(action || '') };
     if (action === 'confirm') {
       const edited = {};
+      const proposedValues = card._assetApprovalProposed || {};
       for (const control of card.querySelectorAll('[data-asset-approval-field]')) {
         const key = control.dataset.assetApprovalField;
-        edited[key] = _assetApprovalTextToValue((payload.payload || {})[key], control.value);
+        edited[key] = _assetApprovalTextToValue(proposedValues[key], control.value);
       }
       if (Object.keys(edited).length) body.payload = edited;
     }
@@ -10645,10 +10659,16 @@ function _mountAssetApprovalCard(host, payload) {
   const card = document.createElement('div');
   host.appendChild(card);
   _renderAssetApprovalCard(card, payload, { state: 'pending' });
-  // 历史重载时卡片消息是静态载荷：不查一次状态，已处置的卡片会又变回"待处理"。
+  // 历史重载时卡片消息是静态载荷：查一次真实状态与拟生效内容——不查状态则已处置的
+  // 卡片会又变回"待处理"；不查内容则"可编辑"只是一句空话（载荷里只有摘要）。
   window.cogseed.invoke('recall.assets.approval.read', { proposalId: payload.proposalId }).then((result) => {
-    const state = result?.proposal?.state;
-    if (state && state !== 'pending') _renderAssetApprovalCard(card, payload, { state });
+    const proposal = result && result.proposal ? result.proposal : null;
+    if (!proposal) return;
+    _renderAssetApprovalCard(card, payload, {
+      state: String(proposal.state || 'pending'),
+      ...(proposal.payload ? { proposed: proposal.payload } : {}),
+      ...(proposal.beforeValues ? { current: proposal.beforeValues } : {}),
+    });
   }).catch(() => {});
 }
 

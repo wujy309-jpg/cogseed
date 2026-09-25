@@ -41,6 +41,15 @@ describe('conversation asset approval card (specs/008 US-406)', () => {
     expect(source).toContain("state: 'pending'");
     // 拟生效内容可编辑，编辑后的值随确认一起回传。
     expect(source).toContain("'data-asset-approval-field'");
+    // 字段值来自**提议记录**（消息载荷里只有摘要）：不查内容"可编辑"就是空话
+    // ——2026-09-25 真机抓到卡片上「正文」下面是空的。
+    expect(source).toContain("recall.assets.approval.read");
+    expect(source).toContain('proposal.beforeValues');
+    expect(source).toContain('proposal.payload');
+    // 切回数组要按**原值类型**（只靠 textarea 文本分不出数组还是字符串）。
+    expect(source).toContain('card._assetApprovalProposed');
+    // 当前值与拟生效值都显示出来，用户才判断得了要不要批。
+    expect(source).toContain('recall.asset_approval.current_label');
   });
 
   it('uses the shared component seams instead of page-local controls', () => {

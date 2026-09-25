@@ -41,6 +41,10 @@ export interface AssetChangeProposal extends RecallJsonRecord {
   fields: string[];
   /** 拟生效的字段值。用户可在卡片上编辑——编辑后的值走同一条生效路径。 */
   payload: Record<string, unknown>;
+  /** 提出时这几个字段**当前**的值。卡片要能让用户对比"当前 → 拟生效"，
+   *  只给摘要（字数 + 前缀）用户没法判断要不要批——审批卡的用处就在这。
+   *  老提议可能没有这个字段（实现期补），卡片如实降级为"当前值不可用"。 */
+  beforeValues?: Record<string, unknown>;
   /** AI 的依据。 */
   reason: string;
   state: AssetApprovalState;
@@ -59,6 +63,7 @@ export interface CreateAssetChangeProposalInput {
   baselineVersion: string;
   fields: string[];
   payload: Record<string, unknown>;
+  beforeValues?: Record<string, unknown>;
   before: string;
   after: string;
   reason: string;
@@ -181,6 +186,7 @@ export async function createAssetChangeProposal(
     after: input.after,
     fields: [...input.fields],
     payload: input.payload,
+    ...(input.beforeValues ? { beforeValues: input.beforeValues } : {}),
     reason: input.reason,
     state: 'pending',
     dedupeKey,

@@ -1123,7 +1123,13 @@
           ai: T('cognition.audit_actor_ai', 'AI'),
           system: T('cognition.audit_actor_system', '系统'),
         };
-        const auditRows = Array.isArray(asset.audit) ? asset.audit : [];
+        // 台账来自版本链读口（同一个资产、同一次拉取）。此前只认 asset.audit，
+        // 而那个字段从来没有被赋过值——这一整块审计区是死的（2026-09-25 真机抓出）。
+        const auditRows = Array.isArray(asset.audit) && asset.audit.length
+          ? asset.audit
+          : (S.assetVersions && String(S.assetVersions.assetId) === String(asset.id) && Array.isArray(S.assetVersions.audit)
+            ? S.assetVersions.audit
+            : []);
         const rows = auditRows.slice(0, 12);
         if (!rows.length) return '';
         const items = rows.map(function (row) {

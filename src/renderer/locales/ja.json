@@ -3449,6 +3449,8 @@
   "recall.asset_approval.diff_label": "変更前後",
   "recall.asset_approval.reason_label": "根拠",
   "recall.asset_approval.edit_hint": "下の反映予定の内容は直接編集できます",
+  "recall.asset_approval.current_label": "現在",
+  "recall.asset_approval.editable_hint": "編集可",
   "recall.asset_approval.confirm": "更新を確認",
   "recall.asset_approval.defer": "後で処理",
   "recall.asset_approval.reject": "拒否",

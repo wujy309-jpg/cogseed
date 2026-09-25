@@ -21871,6 +21871,7 @@ body:has(#panel-settings.active) .main-top-actions {
 .chat-asset-approval-row { display: flex; flex-direction: column; gap: 4px; }
 .chat-asset-approval-label { font-size: 12px; color: var(--muted); }
 .chat-asset-approval-value { font-size: 13px; white-space: pre-wrap; }
+.chat-asset-approval-prev { font-size: 12px; color: var(--muted); white-space: pre-wrap; }
 .chat-asset-approval-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .chat-asset-approval-state { font-size: 12px; color: var(--muted); }
 .chat-asset-approval[data-busy="1"] { opacity: .72; }

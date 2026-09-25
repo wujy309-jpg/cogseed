@@ -2611,7 +2611,13 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // 「在用」指针（内容同步、不 bump——与 rollback 的生成新版语义互补）。
   'recall.assets.versions.list': async ({ assetId } = {}, ctx) => {
     if (!safeId(assetId)) throw new Error('invalid recall asset id');
-    return { ok: true, ...(await recallAssets.listAbilityAssetVersionsWithUsage(ctx.userId, assetId)) };
+    // 一并带上 audit：资产详情的「生命周期记录」读的就是它（2026-09-25 真机发现
+    // 这个口只回了 versions+usage，渲染层拿不到台账，整块审计区是死的）。
+    const [chain, audit] = await Promise.all([
+      recallAssets.listAbilityAssetVersionsWithUsage(ctx.userId, assetId),
+      recallAssets.listAbilityAssetAudit(ctx.userId, assetId),
+    ]);
+    return { ok: true, ...chain, audit };
   },
   'recall.assets.versions.select': async ({ assetId, version, note } = {}, ctx) => {
     if (!safeId(assetId) || typeof version !== 'string' || !/^[0-9]{1,9}$/.test(version) || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall asset version selection');

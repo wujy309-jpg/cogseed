@@ -3635,6 +3635,8 @@
   "recall.asset_approval.diff_label": "Before → after",
   "recall.asset_approval.reason_label": "Basis",
   "recall.asset_approval.edit_hint": "You can edit the proposed content below before confirming",
+  "recall.asset_approval.current_label": "Current",
+  "recall.asset_approval.editable_hint": "editable",
   "recall.asset_approval.confirm": "Confirm update",
   "recall.asset_approval.defer": "Decide later",
   "recall.asset_approval.reject": "Reject",

@@ -3449,6 +3449,8 @@
   "recall.asset_approval.diff_label": "Antes → depois",
   "recall.asset_approval.reason_label": "Fundamento",
   "recall.asset_approval.edit_hint": "Você pode editar o conteúdo proposto abaixo antes de confirmar",
+  "recall.asset_approval.current_label": "Atual",
+  "recall.asset_approval.editable_hint": "editável",
   "recall.asset_approval.confirm": "Confirmar atualização",
   "recall.asset_approval.defer": "Decidir depois",
   "recall.asset_approval.reject": "Rejeitar",

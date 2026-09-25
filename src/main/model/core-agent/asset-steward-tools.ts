@@ -170,8 +170,9 @@ function createListAbilityAssetsTool(opts: AssetStewardToolsOpts): AgentTool {
     async execute(input: Record<string, unknown>): Promise<{ content: string; isError?: boolean }> {
       const offset = Math.max(0, Math.floor(Number(input.offset) || 0));
       const limit = Math.min(LIST_PAGE_MAX, Math.max(1, Math.floor(Number(input.limit) || LIST_PAGE_DEFAULT)));
-      const filter = (input.filter && typeof input.filter === 'object' && !Array.isArray(input.filter))
-        ? input.filter as Record<string, unknown>
+      const rawFilter = parseStructuredInput(input.filter);
+      const filter = (rawFilter && typeof rawFilter === 'object' && !Array.isArray(rawFilter))
+        ? rawFilter as Record<string, unknown>
         : {};
       const assetType = typeof filter.assetType === 'string' && filter.assetType.trim() ? filter.assetType.trim() : undefined;
       const status = typeof filter.status === 'string' && filter.status.trim() ? filter.status.trim() : undefined;
@@ -617,11 +618,15 @@ async function proposeSubstantialChange(
     diffAbilityAssetsForAudit(asset, { ...asset, ...payload }),
     strictestSensitivity([asset.sensitivity, typeof payload.sensitivity === 'string' ? payload.sensitivity : undefined]),
   );
+  // 带上这几个字段**当前**的值：卡片要能显示"当前 → 拟生效"，用户才判断得了。
+  const beforeValues: Record<string, unknown> = {};
+  for (const key of fields) beforeValues[key] = (asset as unknown as Record<string, unknown>)[key];
   const { proposal, created } = await createAssetChangeProposal(opts.userId, {
     assetId,
     baselineVersion: abilityAssetActiveVersion(asset),
     fields: [...fields],
     payload,
+    beforeValues,
     before: summary?.before || '',
     after: summary?.after || '',
     reason,
@@ -683,6 +688,29 @@ async function dispatchApprovalCard(
   }
 }
 
+/**
+ * 模型常把嵌套对象/数组当 **JSON 字符串**传。真机实测（2026-09-25，deepseek）：
+ * 模型把 `fields` 发成 `"{\"body\":\"…\"}"`，连续 6 次编辑全部落在"fields 至少要给
+ * 一个要改的字段"上，旗舰编辑路径整轮不可用。字符串能解析成对象/数组就解析，
+ * 否则原样返回交给下游校验（不静默当成空）。
+ */
+function parseStructuredInput(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const text = value.trim();
+  if (!text || (text[0] !== '{' && text[0] !== '[')) return value;
+  try { return JSON.parse(text); } catch { return value; }
+}
+
+/** `fields` 的字段名别名：契约（`contracts/model-tools.md`）写的是 `body`，
+ *  底层字段叫 `statement`；模型按契约说 `body` 是对的，两个都收。 */
+const EDIT_FIELD_ALIASES: Record<string, string> = { body: 'statement' };
+
+/** 编辑允许的字段名（含别名）。**认不出的键要显式拒绝**——静默丢弃会让回执说
+ *  "已改动"而实际一字未动（比报错更糟）。 */
+const EDIT_ACCEPTED_FIELDS = new Set([
+  'title', 'statement', 'body', 'scope', 'applicableWhen', 'forbiddenWhen', 'sensitivity', 'scopePolicy',
+]);
+
 function requireReason(value: unknown): string | { error: string } {
   const reason = typeof value === 'string' ? value.trim() : '';
   if (!reason) return { error: 'reason 必填：这次改动依据的是用户的哪句话/哪条证据？（它会被写进台账的「依据」）' };
@@ -707,7 +735,7 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
         assetId: { type: 'string', description: '要改的资产 id（aa- 开头）。' },
         fields: {
           type: 'object',
-          description: '要改的字段，至少给一个；没给的字段不动。',
+          description: '要改的字段对象，至少给一个；没给的字段不动。必须传**对象**（例如 {"statement":"新正文"}），不要传 JSON 字符串。正文的键名是 statement（别名 body）。',
           properties: {
             title: { type: 'string', description: '标题（命名规范化；上限 120 字）。' },
             statement: { type: 'string', description: '正文（上限 4000 字）。' },
@@ -739,10 +767,29 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
       const reasonOrError = requireReason(input.reason);
       if (typeof reasonOrError !== 'string') return { content: reasonOrError.error, isError: true };
       const reason = reasonOrError;
-      const fields = (input.fields && typeof input.fields === 'object' && !Array.isArray(input.fields))
-        ? input.fields as Record<string, unknown>
+      const rawFields = parseStructuredInput(input.fields);
+      const fieldsIn = (rawFields && typeof rawFields === 'object' && !Array.isArray(rawFields))
+        ? rawFields as Record<string, unknown>
         : {};
+      // 别名归一：body → statement（契约名 → 底层字段名）。
+      const fields: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(fieldsIn)) {
+        fields[EDIT_FIELD_ALIASES[key] || key] = value;
+      }
       const touched = Object.keys(fields).filter((key) => fields[key] !== undefined);
+      const unknownFields = touched.filter((key) => !EDIT_ACCEPTED_FIELDS.has(key) && key !== 'tags' && key !== 'category');
+      if (unknownFields.length) {
+        return {
+          content: [
+            `未能改动：[asset:${assetId}]`,
+            `拦截规则：不认识的字段名：${unknownFields.join(' / ')}`,
+            '归因：schema（入参或记录形状不合法）',
+            '可用的字段：title / statement（别名 body）/ scope / applicableWhen / forbiddenWhen / sensitivity / scopePolicy。',
+            '注意：fields 要传**对象**（不要传 JSON 字符串），例如 {"statement":"新正文"}。',
+          ].join('\n'),
+          isError: true,
+        };
+      }
       if (!touched.length) return { content: 'fields 里至少要给一个要改的字段。', isError: true };
       // 标签/归类字段尚未落地（Epic 2 US-201）。**如实拒绝，不静默丢弃**：
       // 静默丢弃会让模型以为改成功了（最坏的一种"成功"）；也不映射到
@@ -766,15 +813,18 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
         return { content: `sensitivity 只能是 L0 / L1 / L2，收到：${String(fields.sensitivity)}`, isError: true };
       }
       for (const key of ['applicableWhen', 'forbiddenWhen'] as const) {
+        fields[key] = parseStructuredInput(fields[key]);
         const value = fields[key];
         if (value === undefined) continue;
         if (!Array.isArray(value) || value.length > 32) {
           return { content: `${key} 要是字符串数组、且不超过 32 条。`, isError: true };
         }
       }
-      if (fields.scopePolicy !== undefined
-        && (!fields.scopePolicy || typeof fields.scopePolicy !== 'object' || Array.isArray(fields.scopePolicy))) {
-        return { content: 'scopePolicy 要是一个对象（字段值都是字符串数组）。', isError: true };
+      if (fields.scopePolicy !== undefined) {
+        fields.scopePolicy = parseStructuredInput(fields.scopePolicy);
+        if (!fields.scopePolicy || typeof fields.scopePolicy !== 'object' || Array.isArray(fields.scopePolicy)) {
+          return { content: 'scopePolicy 要是一个对象（字段值都是字符串数组），不要传 JSON 字符串。', isError: true };
+        }
       }
       const origin = input.origin === 'user_instruction' ? 'user_instruction' : 'ai_initiated';
 
@@ -915,7 +965,9 @@ function createDeleteAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
       const reason = reasonOrError;
       const rawIds = [
         ...(typeof input.assetId === 'string' && input.assetId.trim() ? [input.assetId.trim()] : []),
-        ...(Array.isArray(input.assetIds) ? input.assetIds.map((value) => String(value ?? '').trim()).filter(Boolean) : []),
+        ...(Array.isArray(parseStructuredInput(input.assetIds))
+          ? (parseStructuredInput(input.assetIds) as unknown[]).map((value) => String(value ?? '').trim()).filter(Boolean)
+          : []),
       ];
       const ids = [...new Set(rawIds)];
       if (!ids.length) return { content: '要给 assetId 或 assetIds。', isError: true };

@@ -287,13 +287,11 @@
       // recall.teaching.list 的拉取在 2026-09-14 撤下——治理待办在新 UI 尚无
       // 处理出口（分级/边界编辑入口），报了也无处处理；等动作入口恢复后
       // 连同动作指引一起重上。渠道契约本身未变，随时可接回。
-      // 治理待办（2026-09-25 重上，specs/008 US-403/T051）：当初撤下是因为
-      // "报了警却无处处理"；现在每类都有落点——候选/提议/拿不准项/巡检发现
-      // 有处置动作，资产类（未分级/缺边界/来源失效）落到资产详情的编辑入口。
-      // 可用动作由读模型给出（`item.actions`），渲染层只渲染、不自己判。
+      // 解构顺序必须与数组顺序**逐项对齐**：多插一个请求就要同步插名字，
+      // 否则 assets 之后的每一项都串位（真机抓出过一次：待办显示空态而 IPC
+      // 实际有 39 条，候选/任务/来源也全错）。
       const [assets, candidates, captures, settings, sources, inbox] = await Promise.all([
         api.soft('recall.assets.list', {}, {}),
-        api.soft('cognition.inbox.list', {}, {}),
         api.soft('recall.candidates.list', {}, {}),
         // scope:'all'：整理页要展示完整历史（含系统判定无留存内容的静默
         // 记录）。后端保证静默记录零候选读取，这里多拉的记录不产生模型开销。
@@ -302,6 +300,11 @@
         // limit:100=IPC 上限（审计 C1 修复，2026-09-16）：此前不传 limit 走
         // 后端默认 25，会话超 25 个后整理页静默丢行。满 100 时视图侧另有提示。
         api.soft('recall.sources.list', { limit: 100 }, {}),
+        // 治理待办（2026-09-25 重上，specs/008 T051）：当初撤下是因为"报了警却
+        // 无处处理"；现在每类都有落点——候选/提议/拿不准项/巡检发现有处置动作，
+        // 资产类（未分级/缺边界/来源失效）落到资产详情的编辑入口。可用动作由读
+        // 模型给出（`item.actions`），渲染层只渲染、不自己判。
+        api.soft('cognition.inbox.list', {}, {}),
       ]);
       store.assets = toArr(assets, ['assets', 'items']);
       store.candidates = toArr(candidates, ['candidates', 'items']);
@@ -411,16 +414,19 @@
     NS.notify();
     let versions = [];
     let usage = [];
+    let audit = [];
     try {
       const result = await api.call('recall.assets.versions.list', { assetId: id });
       versions = (result && result.versions) || [];
       usage = (result && result.usage) || [];
+      audit = (result && result.audit) || [];
     } catch (error) {
       versions = [];
       usage = [];
+      audit = [];
     }
     if (!store.assetVersions || store.assetVersions.assetId !== id) return;
-    store.assetVersions = { assetId: id, versions, usage };
+    store.assetVersions = { assetId: id, versions, usage, audit };
     NS.notify();
   };
 

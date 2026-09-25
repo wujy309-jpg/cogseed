@@ -3638,6 +3638,8 @@
   "recall.asset_approval.diff_label": "变更前后",
   "recall.asset_approval.reason_label": "依据",
   "recall.asset_approval.edit_hint": "下面拟生效的内容可以直接改，改完再确认",
+  "recall.asset_approval.current_label": "当前",
+  "recall.asset_approval.editable_hint": "可改",
   "recall.asset_approval.confirm": "确认更新",
   "recall.asset_approval.defer": "稍后处理",
   "recall.asset_approval.reject": "拒绝",

@@ -1409,6 +1409,47 @@ describe('资产详情（使用记录并入）', () => {
     expect(html).not.toContain('data-id="sensitivity:aa-x" data-action=');
   });
 
+  it('LOADERS.snapshot 的请求顺序与解构名字逐项对齐（真机抓出过的串位）', () => {
+    // 真机事故（2026-09-25）：往 Promise.all 里插了一个新请求但没同步插解构名字，
+    // 于是 assets 之后的每一项都串位——待办显示空态而 IPC 实际有 39 条，候选/
+    // 整理任务/来源也全错。夹具直接塞 store，这类错它抓不到，只有这条不变量能拦。
+    const start = coreSource.indexOf('const [assets, candidates');
+    expect(start, '找不到 snapshot 的解构块').toBeGreaterThan(-1);
+    const block = coreSource.slice(start, coreSource.indexOf(']);', start));
+    const names = (block.match(/const \[([^\]]+)\] = await Promise\.all\(\[/) || [])[1]
+      .split(',').map((name) => name.trim());
+    const channels = [...block.matchAll(/api\.soft\('([^']+)'/g)].map((m) => m[1]);
+    expect(channels.length).toBe(names.length);
+    // 期望名字 = 通道的倒数第二段（recall.assets.list→assets、
+    // recall.captures.settings.get→settings、cognition.inbox.list→inbox）。
+    const expected = channels.map((channel) => channel.split('.').slice(-2)[0]);
+    expect(names).toEqual(expected);
+  });
+
+  it('生命周期记录走版本链读口（2026-09-25 真机修）：audit 由 assetVersions 提供时也要渲染', () => {
+    // 此前只认 asset.audit，而那个字段从未被赋值——整块审计区是死的（真机抓出）。
+    const html = renderPage('overview', {
+      assets: [asset],
+      assetVersions: {
+        assetId: 'aa-1',
+        versions: [],
+        usage: [],
+        audit: [
+          { action: 'updated', at: '2026-09-25T01:47:12.562Z', actor: 'ai', reason: '用户原话：「把标题改成临时标题」', before: 'title=原名；version=1', after: 'title=临时标题；version=2' },
+          { action: 'rolled_back', at: '2026-09-25T01:48:26.914Z', actor: 'user', reason: '取证后回滚', before: 'title=临时标题；version=2', after: 'title=原名；version=3', rollbackAnchor: '2' },
+        ],
+      },
+    }, { assetId: 'aa-1' });
+    const text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    expect(text).toContain('生命周期记录');
+    expect(text).toContain('AI · 更新内容');
+    expect(text).toContain('用户原话');
+    expect(text).toContain('你 · 版本回滚');
+    expect(text).toContain('title=原名；version=1');
+    expect(text).toContain('title=临时标题；version=2');
+    expect(html).toContain('data-act="rollback-asset" data-id="aa-1" data-version="2"');
+  });
+
   it('版本行点开详情与真删入口（2026-09-17）：全文/逐项信息/删除按钮/在用版提示', () => {
     const multi = { ...asset, version: '3', activeVersion: '2', title: 'Renamed in v2', statement: '新内容' };
     const versions = {
