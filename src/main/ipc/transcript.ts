@@ -31,6 +31,8 @@ import * as transcriptQuery from '../features/transcript_query_rewrite';
 import * as transcriptPack from '../features/transcript_contribution_pack';
 import * as transcriptMetrics from '../features/transcript_metrics';
 import * as transcriptDocTags from '../features/transcript_doc_tags';
+import * as transcriptRecall from '../features/transcript_recall';
+import * as meetingDoc from '../features/meeting_doc';
 import { cogseedKbManager } from '../features/cogseed_backend/cogseed-kb-store';
 
 interface IpcContext {
@@ -70,6 +72,25 @@ function riskLevels(value: unknown): Array<'low' | 'medium' | 'high'> | undefine
   const list = stringList(value, 3);
   if (!list) return undefined;
   return list.filter((v): v is 'low' | 'medium' | 'high' => v === 'low' || v === 'medium' || v === 'high');
+}
+
+/**
+ * 【specs/013 T021】scan 返回体的降级如实标注（与 `MeetingDocRef.degraded` 同口径）：
+ * 只记"缺什么"（无说话人 / 无场景标签 / 没跑过纠错 run），不编造定位——
+ * 界面文案（渲染层后续任务）按码出"缺失说明"，不得猜说话人或位置。
+ */
+function scanDegraded(
+  userId: string,
+  info: { speakers?: string[]; scenarioTags?: string[]; docId?: string },
+): string[] {
+  const degraded: string[] = [];
+  if (!info.speakers?.length) degraded.push('no_speakers');
+  if (!info.scenarioTags?.length) degraded.push('no_scenario_tags');
+  // 没有 docId 时无从关联任何 run，与"没跑过 run"同按缺失如实记。
+  if (!info.docId || transcriptRuns.listRuns(userId, { docId: info.docId }).length === 0) {
+    degraded.push('no_transcript_run');
+  }
+  return degraded;
 }
 
 export const invokeHandlers = {
@@ -397,21 +418,112 @@ export const invokeHandlers = {
     const text = requireText(payload?.text, 'text', MAX_TRANSCRIPT_CHARS);
     const docId = optionalId(payload?.docId, 'docId');
     const scenarioTags = stringList(payload?.scenarioTags, 20);
+    // 【specs/013 T020】情景信号进扫描：说话人由主进程用 parseTranscriptBlocks 现算
+    // （meeting_doc.computeSpeakers：去重保序 ≤50；不由渲染层传，防已发生的时钟格式
+    // 漂移事故）；topic 由调用方透传。两者只进 ScanOptions 的展示位，
+    // **不参与 scopeAllows**（作用域语义不动）。
+    const speakers = meetingDoc.computeSpeakers(text);
+    const topic = optionalText(payload?.topic, 'topic', 200);
     const entries = transcriptGlossary.listEntries(ctx.userId, { status: 'active' });
     const scan = transcriptAutoCorrect.scanText(text, entries, {
       ...(docId ? { docId } : {}),
       ...(scenarioTags ? { scenarioTags } : {}),
+      ...(speakers ? { speakers } : {}),
+      ...(topic ? { topic } : {}),
       includeDelete: payload?.includeDelete === true,
     });
     // 【specs/013 T008】本体规范名进纠错依据（FR-001）：只读调既有
     // transcriptOntology.collectCanonicalNames，把规范名喂进依据（追加
     // { source:'ontology', name, groupId?, fieldId? } 并列依据）；未命中的候选
     // 原样保留。下方 includeReview 分支的 allow 名单构造零改动（各用各的读）。
-    const candidates = transcriptAutoCorrect.attachOntologyRefs(
-      scan.candidates,
-      transcriptOntology.collectCanonicalNames(ctx.userId),
-    );
-    if (payload?.includeReview !== true) return { ...scan, candidates, review: null };
+    const canonical = transcriptOntology.collectCanonicalNames(ctx.userId);
+    // 【specs/013 T016】字面行显式标 channel:'exact'（类型缺省同值；面板要能直接
+    // 读通道来源，合并去重与 byChannel 统计也以此口径为准）。
+    let candidates: transcriptAutoCorrect.CorrectionCandidate[] = transcriptAutoCorrect
+      .attachOntologyRefs(scan.candidates, canonical)
+      .map((c) => ({ ...c, channel: 'exact' as const }));
+
+    // 【specs/013 T015】召回通道并入扫描（FR-012 前半）：`includeRecall` 缺省 false，
+    // 不传时一次 recallCandidates 都不调（照 includeReview 的"不点不花钱"先例）。
+    // 召回候选转成同构 CorrectionCandidate（channel:'recall'、原样 confidence 与
+    // disposition；confidence 恒 < 1 由 MAX_RECALL_CONFIDENCE = 0.99 结构性保证），
+    // 经 mergeRecallCandidates（T016）与字面命中合并去重后**追加在同一清单**——
+    // 不新开面板、不新增第二条状态线。
+    let recallRows = 0;
+    let recallSummary: {
+      candidates: number;
+      byChannel: Record<transcriptRecall.RecallChannel, number>;
+      abandoned: Array<{ surface: string; count: number }>;
+      merged: number;
+    } | undefined;
+    if (payload?.includeRecall === true) {
+      const recall = transcriptRecall.recallCandidates(text, entries, {
+        ...(docId ? { docId } : {}),
+        ...(scenarioTags ? { scenarioTags } : {}),
+        // 域内概念 = 本体规范名（suggest 升级的既有判据；脱域一律 review）
+        domainTerms: canonical.map((item) => item.name),
+      });
+      const entryById = new Map(entries.map((e) => [e.id, e] as const));
+      const recallCandidatesList: transcriptAutoCorrect.CorrectionCandidate[] = recall.candidates.map((r) => ({
+        entryRef: r.entryRef,
+        wrong: r.wrong,
+        correct: r.correct,
+        action: 'replace' as const,
+        confidence: r.confidence,
+        riskLevel: r.riskLevel,
+        context: r.context,
+        span: r.span,
+        ignoredCount: entryById.get(r.entryRef)?.ignoredCount ?? 0,
+        contextAllow: entryById.get(r.entryRef)?.contextAllow ?? [],
+        channel: 'recall' as const,
+        disposition: r.disposition,
+        refs: [{
+          source: 'glossary' as const,
+          entryId: r.entryRef,
+          kind: r.kind,
+          freq: entryById.get(r.entryRef)?.freq ?? 0,
+        }],
+      }));
+      // 【specs/013 T016】合并去重（D5）：同 span 已在字面命中 → 召回条目不出行、
+      // 只把词条依据并入该行 refs（并列依据）；其余重叠复用既有消解规则
+      // （通道优先 → 长 span → freq → 靠前），IPC 层不重算。
+      const merged = transcriptAutoCorrect.mergeRecallCandidates(candidates, recallCandidatesList);
+      candidates = merged.candidates;
+      recallRows = merged.candidates.filter((c) => c.channel === 'recall').length;
+      // 【specs/013 T017】召回统计如实透出：byChannel 四键（recall 内部消解后计数）、
+      // abandoned = 兜不住的孤立形态（residual，只报形态不给映射）；merged = 并入
+      // 既有行 refs 未出行的条数。truncated 沿用既有语义（字面候选打满上限即 true）。
+      recallSummary = {
+        candidates: recallRows,
+        byChannel: recall.stats.byChannel,
+        abandoned: recall.stats.residual,
+        merged: merged.merged,
+      };
+    }
+
+    // 【specs/013 T019】引例降级的可解释只读提示行（FR-011）：把 scanText 记下的
+    // denied:quoted_example 转成 candidates 里 disposition:'quoted_example' 的只读
+    // 条目（带命中标记词 quotedBy），追加在清单尾部——不是候选，不进 stats.candidates。
+    const quotedRows = transcriptAutoCorrect.quotedExampleRows(text, scan.denied, entries);
+    // 【specs/013 T021】降级如实标注（无说话人/无场景标签/没跑过 run）。
+    const degraded = scanDegraded(ctx.userId, { speakers, scenarioTags, docId });
+
+    if (payload?.includeReview !== true) {
+      return {
+        ...scan,
+        candidates: [...candidates, ...quotedRows],
+        stats: {
+          ...scan.stats,
+          // 口径：可替换候选数（字面 + 召回；不含引例只读行——它是提示不是候选）
+          candidates: candidates.length,
+          byChannel: { exact: scan.candidates.length, recall: recallRows, model: 0 },
+          quotedExample: quotedRows.length,
+        },
+        ...(recallSummary ? { recall: recallSummary } : {}),
+        degraded,
+        review: null,
+      };
+    }
 
     // 优先参考名单 = 词表正确写法 + 记忆分组字段值（不含投影里的结构标签）
     const known = new Set<string>();
@@ -419,7 +531,6 @@ export const invokeHandlers = {
       known.add(entry.wrong);
       known.add(entry.correct);
     }
-    const canonical = transcriptOntology.collectCanonicalNames(ctx.userId);
     for (const name of canonical) known.add(name.name);
     const allowed = [
       ...entries.filter((e) => e.action !== 'delete').map((e) => e.correct),
@@ -447,13 +558,18 @@ export const invokeHandlers = {
       contextAllow: [],
       fromModel: true,
     }));
+    const finalCandidates = [...candidates, ...modelCandidates];
     return {
       ...scan,
-      candidates: [...candidates, ...modelCandidates],
+      candidates: [...finalCandidates, ...quotedRows],
       stats: {
         ...scan.stats,
-        candidates: candidates.length + modelCandidates.length,
+        candidates: finalCandidates.length,
+        byChannel: { exact: scan.candidates.length, recall: recallRows, model: modelCandidates.length },
+        quotedExample: quotedRows.length,
       },
+      ...(recallSummary ? { recall: recallSummary } : {}),
+      degraded,
       review: {
         modelCandidates: modelCandidates.length,
         chunksScanned: review.chunksScanned,
@@ -592,13 +708,24 @@ export const invokeHandlers = {
         };
       })
       .filter((item): item is transcriptAutoCorrect.CorrectionCandidate => item !== null);
-    const droppedModels = modelInputs.length - modelCandidates.length;
+    // 【specs/013 T022】apply 侧引例闸（缺省 true，默认最安全的一侧）：模型建议落在
+    // 引例位（span 窗口内命中 QUOTE_MARKERS）→ 一律不接受，只有**显式**
+    // excludeQuoted:false 才放行。判据与 scanText 的 T018 同一处（isQuotedExampleSpan），
+    // 两侧不会"这里提示是引例、那里又照样替换"。词条路径无需再滤：scanText 的
+    // 引例闸是硬闸（引例位根本不进 scan.candidates，与 excludeQuoted 取值无关）；
+    // merge/heading 是结构编辑（删块头/插标题），不改引例错形本身。
+    const excludeQuoted = payload?.excludeQuoted !== false;
+    const quotedBlockedModels = excludeQuoted
+      ? modelCandidates.filter((candidate) => transcriptAutoCorrect.isQuotedExampleSpan(text, candidate.span))
+      : [];
+    const applyableModels = modelCandidates.filter((candidate) => !quotedBlockedModels.includes(candidate));
+    const droppedModels = modelInputs.length - modelCandidates.length + quotedBlockedModels.length;
 
-    const allCandidates = [...scan.candidates, ...mergeCandidates, ...headingCandidates, ...modelCandidates];
+    const allCandidates = [...scan.candidates, ...mergeCandidates, ...headingCandidates, ...applyableModels];
     const syntheticRefs = [...mergeCandidates, ...headingCandidates].map((c) => c.entryRef);
     const acceptedAll = syntheticRefs.length
       ? [...(acceptedIds ?? []), ...syntheticRefs]
-      : (acceptedIds ?? (modelCandidates.length ? [] : undefined));
+      : (acceptedIds ?? (applyableModels.length ? [] : undefined));
     const applied0 = transcriptAutoCorrect.applyCorrections(text, allCandidates, {
       ...(acceptedAll ? { acceptedIds: acceptedAll } : {}),
       ...(riskLevels(payload?.acceptRiskLevels) ? { acceptRiskLevels: riskLevels(payload?.acceptRiskLevels)! } : {}),
@@ -630,8 +757,9 @@ export const invokeHandlers = {
     // 「勾选并应用 = 确认」：把**真的被应用**的模型建议记进词表（source: meeting_accept，
     // 作用域收窄到本文档）。只认 result.applied——勾了但被护栏挡掉的不算确认。
     // 词表命中的候选（g_*）本来就在表里，这里的 ref 只筛 model_*。
+    // （T022：被引例闸挡掉的模型建议同样不算确认——用 applyableModels 为准。）
     const appliedModelRefs = new Set(result.applied.map((a) => a.entryRef));
-    const confirmedPairs = modelCandidates
+    const confirmedPairs = applyableModels
       .filter((candidate) => appliedModelRefs.has(candidate.entryRef))
       .map((candidate) => ({ wrong: candidate.wrong, correct: candidate.correct }));
     const glossaryWrites = transcriptGlossary.rememberConfirmedPairs(ctx.userId, confirmedPairs, { docId });

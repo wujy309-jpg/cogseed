@@ -123,6 +123,22 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+/**
+ * 【specs/013 T021】降级如实标注：三种可判定缺失各自记名，不编造定位——
+ *   no_speakers      —— 算不出说话人名单（无块头/正文不是转写块格式）
+ *   no_scenario_tags —— 没有场景标签（"仅本场景"作用域无从谈起）
+ *   no_transcript_run —— 该文档还没有任何纠错 run 锚点
+ * 三者都齐 → 字段缺省（空数组不落盘）。只记"缺什么"，不猜"缺在哪/为什么缺"
+ * （界面文案按码出"缺失说明"，不得编造说话人或定位）。
+ */
+export function degradedFlagsOf(doc: Pick<MeetingDocRef, 'speakers' | 'scenarioTags' | 'transcript'>): Array<'no_speakers' | 'no_scenario_tags' | 'no_transcript_run'> {
+  const degraded: Array<'no_speakers' | 'no_scenario_tags' | 'no_transcript_run'> = [];
+  if (!doc.speakers?.length) degraded.push('no_speakers');
+  if (!doc.scenarioTags?.length) degraded.push('no_scenario_tags');
+  if (!doc.transcript) degraded.push('no_transcript_run');
+  return degraded;
+}
+
 function bounded(value: unknown, max: number): string | undefined {
   if (typeof value !== 'string') return undefined;
   const text = value.trim();
@@ -146,8 +162,7 @@ export function computeSpeakers(text: string): string[] | undefined {
   return out.length ? out : undefined;
 }
 
-function readDoc(uid: string, docId: string): MeetingDocRef | null {
-  const file = meetingDocFile(uid, docKeyForDocId(docId));
+function readDoc(uid: string, docId: string): MeetingDocRef | null {  const file = meetingDocFile(uid, docKeyForDocId(docId));
   try {
     const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<MeetingDocRef>;
     if (!raw || typeof raw !== 'object' || raw.docId !== docId) return null;
@@ -218,6 +233,10 @@ export function getMeetingDoc(uid: string, docId: string, input: MeetingDocInput
       if (tags.length) next.scenarioTags = tags;
       else delete next.scenarioTags;
     }
+    // 【specs/013 T021】刷新时按最终字段重算降级标注（写前一刻的状态，如实）。
+    const degradedRefresh = degradedFlagsOf(next);
+    if (degradedRefresh.length) next.degraded = degradedRefresh;
+    else delete next.degraded;
     writeDoc(uid, next);
     return next;
   }
@@ -249,6 +268,9 @@ export function getMeetingDoc(uid: string, docId: string, input: MeetingDocInput
     const tags = [...new Set(input.scenarioTags.map((t) => bounded(t, 64)).filter((t): t is string => !!t))].slice(0, MAX_SCENARIO_TAGS);
     if (tags.length) created.scenarioTags = tags;
   }
+  // 【specs/013 T021】创建时同样落降级标注（缺失要在界面上有说明，不静默）。
+  const degradedCreated = degradedFlagsOf(created);
+  if (degradedCreated.length) created.degraded = degradedCreated;
   writeDoc(uid, created);
   return created;
 }

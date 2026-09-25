@@ -16,7 +16,10 @@ import {
   attachOntologyRefs,
   computeProtectedRanges,
   detectSuspectEntities,
+  isQuotedExampleSpan,
   mapOffset,
+  mergeRecallCandidates,
+  quotedExampleRows,
   scanText,
   verifyEditsRebuild,
   withBasisRefsGuard,
@@ -382,5 +385,100 @@ describe('attachOntologyRefs：本体规范名进纠错依据', () => {
     const once = attachOntologyRefs([candidate('Cogseed')], [{ name: 'Cogseed' }]);
     const twice = attachOntologyRefs(once, [{ name: 'Cogseed' }]);
     expect(twice[0].refs!.filter((r) => r.source === 'ontology')).toHaveLength(1);
+  });
+});
+
+// ── 引例闸（specs/013 T018/T019：FR-011，唯一"修已知事故"的改动）──────────
+//
+// 事故原文（2026-09-16 实测，transcript_rewrite.ts:54）：「一会儿叫 coxy」被改成
+// 「一会儿叫 Cogseed」——发言人在**讲拼写这件事本身**，其中的错写形态是例子，
+// 必须原样保留。人工清理版规则："引例保留、实际指称纠正"。
+describe('引例闸（T018）：窗口内命中 QUOTE_MARKERS → 不进候选，记 denied:quoted_example', () => {
+  // 事故句（marker「一会儿叫」在 coxy 的 20 字窗口内）
+  const ACCIDENT = '一会儿叫 coxy，一会儿叫别的';
+
+  it('① 事故原句 + 词条 coxy→Cogseed ⇒ 零可勾选候选 + 一条 denied:quoted_example（带命中词）', () => {
+    const res = scanText(ACCIDENT, [coxy]);
+    expect(res.candidates).toHaveLength(0);
+    expect(res.denied).toHaveLength(1);
+    expect(res.denied[0].reason).toBe('quoted_example');
+    expect(res.denied[0].deniedBy).toBe('一会儿叫');
+    expect(res.denied[0].span.start).toBe(ACCIDENT.indexOf('coxy'));
+  });
+
+  it('② 同一段另有非引例真实错形 ⇒ 该处照常出候选（引例保护不误伤，各 span 各取窗口）', () => {
+    // 注意窗口是 span 前后各 20 字：真实错形必须离任何 marker 都超过 20 字，
+    // 中间用不含 marker 的过渡句隔开（这也正是"引例保护"的真实边界）。
+    const text = '一会儿叫 coxy，一会儿叫别的。'
+      + '说完这个例子之后，课程继续往下推进了好几个小节的内容。'
+      + '其中 coxy 被正常提到了两次。';
+    const res = scanText(text, [coxy]);
+    // 引例位（第一处）被闸挡；真实错形（第二处，距最近的 marker > 20 字）照常出行
+    expect(res.candidates).toHaveLength(1);
+    expect(res.candidates[0].span.start).toBe(text.lastIndexOf('coxy'));
+    expect(res.denied.some((d) => d.reason === 'quoted_example')).toBe(true);
+    // 替换结果：只有真实错形被改，引例原样保留
+    const applied = applyCorrections(text, res.candidates);
+    expect(applied.text).toContain('一会儿叫 coxy');
+    expect(applied.text).toContain('其中 Cogseed 被正常提到');
+  });
+
+  it('③ 无 marker 的普通错形行为与改动前一致（回归：由本文件既有全部用例钉住，此处再钉一条对照）', () => {
+    const res = scanText('现在用 coxy 上课', [coxy]);
+    expect(res.candidates).toHaveLength(1);
+    expect(res.denied).toHaveLength(0);
+  });
+
+  it('判据引用唯一 QUOTE_MARKERS：多种标记词（写成/拼写/纠错/词汇表…）各自生效', () => {
+    for (const marker of ['写成', '拼写', '纠错', '词汇表', '叫错']) {
+      const text = `他总把名字${marker} coxy 的样子`;
+      const res = scanText(text, [entry({ id: 'g_m', wrong: 'coxy', correct: 'Cogseed' })]);
+      expect(res.candidates, marker).toHaveLength(0);
+      expect(res.denied[0].reason, marker).toBe('quoted_example');
+      expect(res.denied[0].deniedBy, marker).toBe(marker);
+    }
+  });
+
+  it('substring 边界词条同样受引例闸保护（marker 优先于边界判定）', () => {
+    const loose = entry({ id: 'g_loose', wrong: 'coxy', correct: 'Cogseed', boundary: 'substring' });
+    const res = scanText('一会儿叫coxy这样的错法', [loose]);
+    expect(res.candidates).toHaveLength(0);
+    expect(res.denied[0].reason).toBe('quoted_example');
+  });
+});
+
+// ── 引例只读提示行（specs/013 T019：FR-011 可解释）──────────────────────────
+describe('quotedExampleRows（T019）：denied:quoted_example → 只读提示行', () => {
+  const text = '一会儿叫 coxy，一会儿叫别的';
+
+  it('该位置产出 disposition:"quoted_example" 的只读条目，能读出命中词与词条依据', () => {
+    const res = scanText(text, [coxy]);
+    const rows = quotedExampleRows(text, res.denied, [coxy]);
+    expect(rows).toHaveLength(1);
+    const row = rows[0];
+    expect(row.disposition).toBe('quoted_example');
+    expect(row.quotedBy).toBe('一会儿叫');
+    expect(row.confidence).toBe(0);
+    expect(row.refs![0]).toEqual({ source: 'glossary', entryId: 'g_coxy', kind: 'product', freq: 0 });
+    expect(row.span.start).toBe(text.indexOf('coxy'));
+    expect(row.context).toContain('一会儿叫');
+  });
+
+  it('非引例 denied 不产只读行；词条不可考时不造依据、不出行（宁少不多）', () => {
+    const fuping = entry({ wrong: 'fuping', correct: '傅平', kind: 'people', contextDeny: ['扶贫'] });
+    const denied = scanText('我们在扶贫办 fuping 对接', [fuping]).denied;
+    expect(quotedExampleRows('我们在扶贫办 fuping 对接', denied, [fuping])).toHaveLength(0);
+    const res = scanText(text, [coxy]);
+    expect(quotedExampleRows(text, res.denied, [])).toHaveLength(0);
+  });
+});
+
+// ── apply 侧引例闸的共用判据（specs/013 T022）──────────────────────────────
+describe('isQuotedExampleSpan（T022）：scan 与 apply 用同一处判据', () => {
+  it('引例位 → true；普通位 → false；窗口与扫描闸同一默认值（20）', () => {
+    const accident = '一会儿叫 coxy，一会儿叫别的';
+    expect(isQuotedExampleSpan(accident, { start: accident.indexOf('coxy'), end: accident.indexOf('coxy') + 4 })).toBe(true);
+    const plain = '现在用 coxy 上课';
+    expect(isQuotedExampleSpan(plain, { start: plain.indexOf('coxy'), end: plain.indexOf('coxy') + 4 })).toBe(false);
   });
 });

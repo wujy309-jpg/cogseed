@@ -15,6 +15,7 @@ import {
   MAX_SCENARIO_TAGS,
   MAX_SPEAKERS,
   computeSpeakers,
+  degradedFlagsOf,
   docKeyForDocId,
   getMeetingDoc,
   listMeetingDocs,
@@ -192,5 +193,50 @@ describe('会议侧存储路径（specs/013 T009：3 个 cloud 目录 + 1 个 lo
     expect(path.basename(file)).toBe('meeting-metrics.jsonl');
     expect(file).not.toBe(userTranscriptMetricsFile(uid));
     expect(path.dirname(file)).toBe(path.dirname(userTranscriptMetricsFile(uid)));
+  });
+});
+
+// ── 降级如实标注（specs/013 T021：三种可判定缺失各自记名，不编造定位）─────────
+describe('degraded（T021）：no_speakers / no_scenario_tags / no_transcript_run', () => {
+  it('三种缺失各自出现：算不出说话人 + 没传场景标签 + 没有 run 锚点', () => {
+    const doc = getMeetingDoc(uid, 'kb/bare.md', { text: '这是没有块头的平文。' });
+    expect(doc.degraded).toEqual(['no_speakers', 'no_scenario_tags', 'no_transcript_run']);
+    // 读盘可见（界面文案按码出"缺失说明"，本任务只落数据）
+    const raw = JSON.parse(fs.readFileSync(meetingDocFile(uid, docKeyForDocId('kb/bare.md')), 'utf8'));
+    expect(raw.degraded).toEqual(['no_speakers', 'no_scenario_tags', 'no_transcript_run']);
+  });
+
+  it('部分缺失只记缺的那几种（有说话人但仍无标签、无 run）', () => {
+    const doc = getMeetingDoc(uid, 'kb/partial.md', {
+      text: '张磊 00:01:00\n说了一句\n',
+    });
+    expect(doc.speakers).toEqual(['张磊']);
+    expect(doc.degraded).toEqual(['no_scenario_tags', 'no_transcript_run']);
+  });
+
+  it('三样齐备 → degraded 缺省（不落空数组）', () => {
+    const doc = getMeetingDoc(uid, 'kb/full.md', {
+      text: '张磊 00:01:00\n说了一句\n',
+      scenarioTags: ['组会'],
+      transcript: { runId: 'run_1', beforeSha1: 'abc' },
+    });
+    expect(doc.degraded).toBeUndefined();
+  });
+
+  it('刷新后补齐 → degraded 随之消失（按写前一刻的状态重算）', () => {
+    getMeetingDoc(uid, 'kb/heal.md', { text: '平文' });
+    const healed = getMeetingDoc(uid, 'kb/heal.md', {
+      text: '张磊 00:01:00\n说了一句\n',
+      scenarioTags: ['组会'],
+      transcript: { runId: 'run_2', beforeSha1: 'def' },
+    });
+    expect(healed.degraded).toBeUndefined();
+  });
+
+  it('degradedFlagsOf 是纯判定（不碰盘）：三缺一各记各的', () => {
+    expect(degradedFlagsOf({})).toEqual(['no_speakers', 'no_scenario_tags', 'no_transcript_run']);
+    expect(degradedFlagsOf({ speakers: ['张磊'] })).toEqual(['no_scenario_tags', 'no_transcript_run']);
+    expect(degradedFlagsOf({ speakers: ['张磊'], scenarioTags: ['组会'] })).toEqual(['no_transcript_run']);
+    expect(degradedFlagsOf({ speakers: ['张磊'], scenarioTags: ['组会'], transcript: { runId: 'r', beforeSha1: 's', at: '' } })).toEqual([]);
   });
 });

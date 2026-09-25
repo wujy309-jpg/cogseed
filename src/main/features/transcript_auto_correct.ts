@@ -41,6 +41,10 @@ import {
   fillerRuleFor,
   type FillerRule,
 } from './transcript_filler_rules';
+// 【specs/013 T018】引例判据**唯一来源**是 transcript_rewrite.QUOTE_MARKERS（T005 导出）。
+// 这里只引用、绝不复制第二份词表（T059 反漂移断言①）。运行时只在函数体内使用，
+// 与 rewrite→recall→auto_correct 的既有 import 方向不构成顶层求值环。
+import { QUOTE_MARKERS } from './transcript_rewrite';
 
 /** 清理版字符保留率低于此值即判"疑似过度改写"（方案 v0.2 §8.2）。 */
 export const OVER_REWRITE_THRESHOLD = 0.55;
@@ -136,6 +140,12 @@ export interface CorrectionCandidate {
    * 缺省视为 suggest（存量行为不变）。
    */
   disposition?: 'suggest' | 'review' | 'quoted_example';
+  /**
+   * 【specs/013 T019，加法】`disposition:'quoted_example'` 的只读提示行里，
+   * 命中的引例标记词（QUOTE_MARKERS 之一，如「一会儿叫」）——供文案
+   * 解释"为什么降级"（FR-011 可解释）。其余候选不携带。
+   */
+  quotedBy?: string;
 }
 
 export interface DeniedMatch {
@@ -253,6 +263,127 @@ export function withBasisRefsGuard(candidates: CorrectionCandidate[]): Correctio
 }
 
 /**
+ * 【specs/013 T018/T022】引例闸的**唯一判定**（引用唯一 QUOTE_MARKERS，不复制词表）：
+ * 命中 span 的前后 `window`（缺省 DEFAULT_CONTEXT_WINDOW=20）窗口内出现任一
+ * 引例标记词（"在讲拼写/识别这件事本身"）→ 该 span 是**引例位**。
+ *
+ * `scanText` 用它拒绝引例位（记 `denied:quoted_example`，FR-011 宁可漏改）；
+ * apply 侧（ipc/transcript.ts 的 `excludeQuoted`，缺省 true）用同一判定挡住
+ * 落在引例位的模型建议——两侧必须同判据，否则会出现"这里提示是引例、
+ * 那里又照样替换"的自相矛盾（与 `isProtected` 导出复用同一理由）。
+ */
+export function isQuotedExampleSpan(
+  text: string,
+  span: Span,
+  window = DEFAULT_CONTEXT_WINDOW,
+): boolean {
+  return findDeniedContext(foldText(text), span, QUOTE_MARKERS, window) !== null;
+}
+
+/**
+ * 【specs/013 T019】引例降级的**可解释只读提示行**（FR-011）：把 `scanText`
+ * 记下的 `denied:quoted_example` 转成 `candidates` 里 `disposition:'quoted_example'`
+ * 的只读条目——不进可勾选清单、不参与替换，只说明"这里是引例，为什么不建议改"
+ * （`quotedBy` = 命中的标记词）。词条已不可考时不造依据、不出行（SC-001 宁少不多）。
+ */
+export function quotedExampleRows(
+  text: string,
+  denied: DeniedMatch[],
+  entries: GlossaryEntry[],
+): CorrectionCandidate[] {
+  if (!denied.length) return [];
+  const byId = new Map(entries.map((e) => [e.id, e] as const));
+  const rows: CorrectionCandidate[] = [];
+  for (const d of denied) {
+    if (d.reason !== 'quoted_example') continue;
+    if (d.span.start < 0 || d.span.end <= d.span.start) continue;
+    const entry = byId.get(d.entryRef);
+    if (!entry) continue;
+    rows.push({
+      entryRef: d.entryRef,
+      wrong: d.wrong,
+      correct: d.correct,
+      action: entry.action,
+      // 只读提示不是替换建议：confidence 0，永不进可接受集
+      confidence: 0,
+      riskLevel: entry.riskLevel,
+      context: contextAround(text, d.span, 40),
+      span: d.span,
+      ignoredCount: entry.ignoredCount ?? 0,
+      contextAllow: entry.contextAllow ?? [],
+      channel: 'exact',
+      disposition: 'quoted_example',
+      refs: [{ source: 'glossary', entryId: entry.id, kind: entry.kind, freq: entry.freq }],
+      ...(d.deniedBy ? { quotedBy: d.deniedBy } : {}),
+    });
+  }
+  return rows;
+}
+
+/** 【specs/013 T016】召回并入扫描清单的合并结果（统计如实透出，T017）。 */
+export interface MergedChannelResult {
+  candidates: CorrectionCandidate[];
+  /** 同 span 双命中 → 并入既有行 `refs`（并列依据）、未出行的召回条数。 */
+  merged: number;
+  /** 仅与字面命中**重叠**（非同 span）→ 被既有重叠规则消解掉的召回条数。 */
+  overlapsSuppressed: number;
+}
+
+/**
+ * 【specs/013 T016】合并去重（D5）：召回条目与字面命中**追加进同一清单**前，
+ * 在 features 层消解——
+ *   - 同 span 已在字面命中 → 召回条目**不出行**，只把它的词条依据并入该行
+ *     `refs`（并列依据；同一词条不重复追加，幂等）；
+ *   - 其余重叠复用既有规则（通道优先级第一——精确命中必须压过模糊命中，
+ *     与 `transcript_recall` 内部消解同一理由——再按长 span → freq → 靠前，
+ *     即 `scanText` 重叠消解的同一套键）；
+ *   - 不改入参（返回新数组）；IPC 层只调用、不重算。
+ */
+export function mergeRecallCandidates(
+  exact: CorrectionCandidate[],
+  recall: CorrectionCandidate[],
+): MergedChannelResult {
+  if (!recall.length) return { candidates: exact, merged: 0, overlapsSuppressed: 0 };
+  const channelRank = (c: CorrectionCandidate): number => (c.channel === 'recall' ? 1 : 0);
+  const freqOf = (c: CorrectionCandidate): number =>
+    c.refs?.[0]?.source === 'glossary' ? c.refs[0].freq : 0;
+  const pool: CorrectionCandidate[] = [...exact, ...recall].map((c) => ({ ...c }));
+  pool.sort((a, b) => {
+    if (channelRank(a) !== channelRank(b)) return channelRank(a) - channelRank(b);
+    const la = a.span.end - a.span.start;
+    const lb = b.span.end - b.span.start;
+    if (la !== lb) return lb - la;
+    if (freqOf(a) !== freqOf(b)) return freqOf(b) - freqOf(a);
+    return a.span.start - b.span.start;
+  });
+  const accepted: CorrectionCandidate[] = [];
+  let merged = 0;
+  let overlapsSuppressed = 0;
+  for (const c of pool) {
+    const clash = accepted.find((a) => c.span.start < a.span.end && c.span.end > a.span.start);
+    if (clash) {
+      const sameSpan = c.span.start === clash.span.start && c.span.end === clash.span.end;
+      if (c.channel === 'recall' && sameSpan) {
+        const ref = c.refs?.[0];
+        if (
+          ref && ref.source === 'glossary'
+          && !clash.refs?.some((r) => r.source === 'glossary' && r.entryId === ref.entryId)
+        ) {
+          clash.refs = [...(clash.refs ?? []), ref];
+        }
+        merged += 1;
+      } else {
+        overlapsSuppressed += 1;
+      }
+      continue;
+    }
+    accepted.push(c);
+  }
+  accepted.sort((a, b) => a.span.start - b.span.start || b.span.end - a.span.end);
+  return { candidates: accepted, merged, overlapsSuppressed };
+}
+
+/**
  * 【specs/013 T008】本体规范名进纠错依据（FR-001）：候选建议写法（`correct`，
  * 折叠比较——大小写/全角不敏感，与词表命中同一套折叠）命中规范名 → 给该候选
  * **追加** `{ source:'ontology', name, groupId?, fieldId? }` 并列依据。
@@ -323,6 +454,16 @@ export function scanText(text: string, entries: GlossaryEntry[], options: ScanOp
           denied.push({ entryRef: entry.id, wrong: entry.wrong, correct: entry.correct, reason: 'protected_region', span: match.span });
           continue;
         }
+        // 【specs/013 T018】引例闸：删除同样不得碰引例（"我把口癖念成嗯"是例子，
+        // 删掉就破坏了说话人在讲的例子本身）。判据与替换路径同一处（isQuotedExampleSpan）。
+        const quotedMarker = findDeniedContext(foldedText, match.span, QUOTE_MARKERS, window);
+        if (quotedMarker) {
+          denied.push({
+            entryRef: entry.id, wrong: entry.wrong, correct: entry.correct,
+            reason: 'quoted_example', span: match.span, deniedBy: quotedMarker,
+          });
+          continue;
+        }
         raw.push({ entry, span: match.span });
       }
       continue;
@@ -337,6 +478,20 @@ export function scanText(text: string, entries: GlossaryEntry[], options: ScanOp
 
       if (isProtected(protectedRanges, span)) {
         denied.push({ entryRef: entry.id, wrong: entry.wrong, correct: entry.correct, reason: 'protected_region', span });
+        continue;
+      }
+      // 【specs/013 T018】引例闸（FR-011，唯一"修已知事故"的改动，优先于边界与语境）：
+      // 命中窗口内出现 QUOTE_MARKERS 任一 → 该处是引例（"在讲拼写/识别这件事本身"），
+      // 不进 candidates、改记 denied:quoted_example（T019 再转只读提示行）。真实事故：
+      // 「一会儿叫 coxy」被改成「一会儿叫 Cogseed」，语义完全破坏——宁可漏改。
+      // 放在 boundaryOk 之前：引例位要给的是"可解释的引例降级"，而不是一条普通
+      // word_boundary 拒绝；同一句的非引例错形不受影响（各 span 各自取窗口）。
+      const quotedMarker = findDeniedContext(foldedText, span, QUOTE_MARKERS, window);
+      if (quotedMarker) {
+        denied.push({
+          entryRef: entry.id, wrong: entry.wrong, correct: entry.correct,
+          reason: 'quoted_example', span, deniedBy: quotedMarker,
+        });
         continue;
       }
       if (!boundaryOk(text, span, entry.boundary)) {
