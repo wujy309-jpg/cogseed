@@ -8,6 +8,10 @@
  * （title / statement / scope / applicableWhen / forbiddenWhen / sensitivity /
  * evidenceRefs …），所以这里不需要新增任何持久化，只做纯比对。
  *
+ * 标签（tags）是元数据，**不进版本 diff**：标签改动不 bump 内容版本
+ * （specs/012 data-model §3，对齐 familyName 先例），版本链只记内容；
+ * 快照本身也不含 tags（见 asset-service 的 snapshot()）。
+ *
  * 比对的粒度按「用户要为什么事负责」来分，不是按字段数量：
  *   - 作用边界变了，意味着这条资产从今往后会进入/退出一批任务；
  *   - 敏感级升了，意味着它能去的地方变了；

@@ -164,6 +164,15 @@ export interface RecallAbilityAssetRecord extends RecallJsonRecord {
   /** 大类名（2026-09-22 族可命名）：挂族时继承族内已有名，用户可改
    *  （recall.families.rename 批量写族内全部成员）；元数据，不 bump 内容版本。 */
   familyName?: string;
+  /** 主题标签（specs/012 US-201，data-model.md §3）：标签名数组，指向标签库
+   *  `ability-tags` 条目的 `name`（按名引用，不是 id）。
+   *  规则（写入侧收口于 ability-tag-service 的规范化唯一处，读侧不再校验）：
+   *  - 缺失 与 [] 都表示「未分类」（与 familyName/scopePolicy 的三态纪律故意不同）；
+   *  - ≤12 条、每条 trim 后非空且 ≤20 字、大小写不敏感去重（保留首现原样）；
+   *  - 单一字符串必须拒绝，不自动包成数组；
+   *  - 元数据：不 bump 内容版本（对齐 familyName 先例）、不进 version-diff、
+   *    不参与推荐分（标签只影响筛选，不影响排序）。 */
+  tags?: string[];
   derivedFrom?: string[];
   /** 适用/禁用条件。缺失=没记录过，**不是**「无限制」。 */
   applicableWhen?: string[];

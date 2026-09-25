@@ -11,6 +11,7 @@ import {
 import type { RecallJsonRecord } from './types';
 import { normalizeAbilityAssetOntologyRefs } from './ontology-refs';
 import type { RecallAbilityAssetRecord, RecallAbilityAssetLifecycleStatus } from './candidate-service';
+import { ensureAbilityTags, normalizeAbilityTagList } from './ability-tag-service';
 import { readAbilityAssetRelationContract } from './asset-relations';
 import { readAbilityAssetSemantics } from './asset-semantics';
 import { normalizeAbilityAssetScopePolicy, resolveScopeForAsset, normalizeAssetScopeValue, isRecallScopeTerm, type RecallAbilityAssetScopePolicy } from './scope-policy';
@@ -105,6 +106,11 @@ export interface UpdateAbilityAssetInput {
   applicableWhen?: RecallAbilityAssetRecord['applicableWhen'];
   forbiddenWhen?: RecallAbilityAssetRecord['forbiddenWhen'];
   sensitivity?: RecallAbilityAssetRecord['sensitivity'];
+  /** 主题标签（specs/012 T004）：整组替换语义。规范化/去重/≤12 条由
+   *  ability-tag-service 的规范化唯一处收口，超限**抛错不截断**；缺失的库条目
+   *  自动补建。元数据：**不 bump 内容版本**（对齐 family.ts:232 的 familyName
+   *  直写先例）。**缺失 = 不改标签**（省略≠清空；清空请显式传 `[]`）。 */
+  tags?: string[];
   reason: string;
   actor: AbilityAssetActor;
   /** 乐观并发：调用方读到的版本号。给了就要求与当前版本一致，不一致直接拒绝
@@ -661,11 +667,36 @@ export async function listAbilityAssetsForSpace(userId: string, spaceId: string)
   return all.filter((asset) => asset.spaceId === spaceId && asset.status !== 'revoked');
 }
 
+/** tags-only 更新判定（specs/012 T004）：除 tags/reason/actor/expectedVersion 外
+ *  没有别的字段 = 纯标签元数据更新，走不 bump 版本的路径；任何内容字段在场
+ *  都走既有内容路径（版本照常 bump，标签随同写入但不进版本快照）。 */
+const TAGS_ONLY_METADATA_KEYS = new Set(['tags', 'reason', 'actor', 'expectedVersion']);
+
+function isTagsOnlyUpdate(input: UpdateAbilityAssetInput): boolean {
+  return Object.keys(input).every((key) => TAGS_ONLY_METADATA_KEYS.has(key));
+}
+
+function sameTagList(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((name, index) => name === right[index]);
+}
+
+/** 台账里的标签变更注记：只存标签名（元数据，非正文），形如「标签：a、b → c」。 */
+function formatTagNames(names: readonly string[]): string {
+  return names.length ? names.join('、') : '（无）';
+}
+
 export async function updateAbilityAsset(userId: string, assetId: string, input: UpdateAbilityAssetInput): Promise<RecallAbilityAssetRecord> {
   if ('id' in input || 'ownerId' in input) throw new Error('ability asset identity is immutable');
   // 刀一（2026-09-19）：scope 写入点归一——词条放行、场景描述句兜底 general。
   if (input.scope !== undefined) input = { ...input, scope: resolveScopeForAsset(input.scope) };
   const action = requireAssetAction(input);
+  // 标签规范化唯一处在 ability-tag-service（specs/012 反漂移 II4），这里不另写。
+  // 缺失的库条目**先补建**再写资产（createdFrom 按调用来源：模型打标 = ai），
+  // 保证"资产引用的每个名字都有 active 条目"不被写路径自己打破。
+  const tagsInput = input.tags === undefined ? undefined : normalizeAbilityTagList(input.tags);
+  if (tagsInput !== undefined) {
+    await ensureAbilityTags(userId, tagsInput, action.actor === 'ai' ? 'ai' : 'user');
+  }
   const evidenceRefs = input.evidenceRefs === undefined
     ? undefined
     : await resolveExecutionEvidenceRefs(userId, normalizeCognitionSourceRefs(input.evidenceRefs));
@@ -690,9 +721,12 @@ export async function updateAbilityAsset(userId: string, assetId: string, input:
     // 不过闸就等于给凭证留了一条只换字段名的旁路。
     ...(semantics.applicableWhen || []),
     ...(semantics.forbiddenWhen || []),
+    // 标签同上：会进筛选提示的自由文本（specs/012）。
+    ...(tagsInput || []),
   ]);
   let clearedRecommendation = false;
   let changed = false;
+  let tagsChanged = false;
   let beforeAsset: RecallAbilityAssetRecord | undefined;
   const updated = await updateRecallJsonRecord(userId, 'ability-assets', assetId, (raw) => {
     if (!raw) throw new Error('recall ability asset not found');
@@ -705,6 +739,25 @@ export async function updateAbilityAsset(userId: string, assetId: string, input:
       throw new Error(
         `ability asset version conflict: expected v${input.expectedVersion}, current v${current.version}`,
       );
+    }
+    // 标签元数据路径（specs/012 T004）：tags-only 更新**不 bump 内容版本**——
+    // 标签是元数据不是内容（对齐 family.ts:232 的 familyName 直写先例）；
+    // 版本快照不含 tags（见 snapshot()），version-diff 因此永远不出现标签项。
+    // 规范化后无变化 = 不写不记账（幂等：同名打标不产生第二条台账）。
+    // 清空的盘上形态是键缺席（与 applicableWhen 的显式清空同款），缺失与 []
+    // 都表示「未分类」。
+    if (isTagsOnlyUpdate(input)) {
+      if (tagsInput === undefined || sameTagList(current.tags || [], tagsInput)) return current;
+      changed = false;
+      tagsChanged = true;
+      beforeAsset = current;
+      const tagOnly: RecallAbilityAssetRecord = {
+        ...current,
+        ...(tagsInput.length ? { tags: tagsInput } : {}),
+        updatedAt: new Date().toISOString(),
+      };
+      if (!tagsInput.length) delete tagOnly.tags;
+      return tagOnly;
     }
     changed = true;
     beforeAsset = current;
@@ -727,8 +780,12 @@ export async function updateAbilityAsset(userId: string, assetId: string, input:
         sourceCandidateIds: [...new Set([...(current.sourceCandidateIds || [current.candidateId]), sourceCandidateId!])],
         reviewDecisionId,
       } : {}),
+      // 标签随内容路径整组替换（快照不含 tags：元数据不进版本链）。
+      ...(tagsInput?.length ? { tags: tagsInput } : {}),
       updatedAt: new Date().toISOString(),
     };
+    if (tagsInput !== undefined && !tagsInput.length) delete next.tags;
+    if (tagsInput !== undefined && !sameTagList(current.tags || [], tagsInput)) tagsChanged = true;
     if (clearedRecommendation) {
       delete next.recommendedAction;
       delete next.recommendationReason;
@@ -742,20 +799,29 @@ export async function updateAbilityAsset(userId: string, assetId: string, input:
     return next;
   });
   const asset = asAsset(updated);
-  if (changed) {
-    await appendVersion(userId, asset, { reason: action.reason, actor: action.actor });
+  if (changed || tagsChanged) {
+    // 标签是元数据：tags-only 改动不进版本流（不 appendVersion）、不 bump
+    // version/activeVersion，只进台账；内容路径照旧进版本流。
+    if (changed) {
+      await appendVersion(userId, asset, { reason: action.reason, actor: action.actor });
+    }
     // 改前的定级也要看：降密不该让旧正文的前缀漏进台账。
     const summary = summarizeAuditChange(
       diffAbilityAssetsForAudit(beforeAsset ?? asset, asset),
       strictestSensitivity([beforeAsset?.sensitivity, asset.sensitivity]),
     );
+    // 台账 reason 必含「标签：旧 → 新」（specs/012 data-model §3 台账纪律）——
+    // 只存标签名（元数据，非正文）。
+    const tagNote = tagsChanged && beforeAsset
+      ? `标签：${formatTagNames(beforeAsset.tags || [])} → ${formatTagNames(asset.tags || [])}`
+      : undefined;
     await appendAudit(userId, asset.id, 'updated', {
-      reason: action.reason,
+      reason: tagNote ? `${action.reason}｜${tagNote}` : action.reason,
       actor: action.actor,
       ...(summary ? { before: summary.before, after: summary.after } : {}),
       ...(beforeAsset ? { rollbackAnchor: activeVersionOf(beforeAsset) } : {}),
     });
-    if (clearedRecommendation) await appendAudit(userId, asset.id, 'recommendation_cleared', { note: action.reason, actor: action.actor });
+    if (changed && clearedRecommendation) await appendAudit(userId, asset.id, 'recommendation_cleared', { note: action.reason, actor: action.actor });
   }
   return asset;
 }
