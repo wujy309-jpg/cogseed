@@ -2,7 +2,7 @@
 
 - 日期：2026-09-24
 - 发布对象：所有在本地持有 CogSeed 仓库的开发/测试人员
-- 维护者：（仓库负责人待填） · 生效条件：§0 第 1 条的管理员口径确认后生效
+- 维护者：（仓库负责人待填）
 - 适用：所有在本地持有 CogSeed 仓库的开发/测试人员
 - 私仓（SSH，二选一，见 §2.1）：
   - 首选（22 端口被网络策略挡住时也能用）：`ssh://git@ssh.github.com:443/bonc-ai/cogseed-internal.git`
@@ -15,14 +15,24 @@
 
 ## 0. 三条必须先读的事实（与原始通知的差异）
 
-> **前置状态**：私仓与公仓的历史关系（全新起点 / 后续导入公仓历史）**尚未由仓库管理员确认**。
-> 在确认之前：§1（盘点）与 §2（换远端）可以执行；§3 之后一律按"新分支起自私仓 develop"处理，
-> 既有工作只允许用 §5 的**补丁搬运**方式进入私仓。
+> **同源已核实（2026-09-24）**：私仓与公仓同一条历史——根提交相同（`7af5136c`），
+> `merge-base(public/develop, origin/develop) = 2831bdb1`（= 公仓 develop 当时的值），
+> 私仓 `develop` **领先公仓 4 个提交、落后 0**。因此**基于公仓历史的本地分支可以正常推私仓**
+> （走分支 + PR），§5 的补丁搬运只是备选。
 
-1. **私仓与公仓不是同一段历史。**
-   2026-09-24 实测：私仓 `develop = e9c2058268a4b59864b8738eeef5386a052f8381`、`cicd = 7539f7265707e0660f83438faa72fe2f0bb1dc49`，这两个提交在本地（公仓历史）**不存在**。
-   → 因此：**任何基于公仓历史的本地分支都不许直接推到私仓**（会产生无关历史；日后合并需要 `--allow-unrelated-histories`，等于把整条公仓历史灌进私仓）。
-   → 既有工作一律**按补丁搬运**（§5）。私仓与公仓的最终关系（全新起点 / 后续导入公仓历史）**以仓库管理员口径为准**，未确认前不要做历史对接动作。
+1. **私仓与公仓同源，私仓略领先。**
+   2026-09-24 实测：两者根提交相同（`7af5136c chore(release): establish clean release baseline`）；
+   `merge-base(public/develop, origin/develop) = 2831bdb1`（= 当时公仓 `develop`）；
+   私仓 `develop`（`125c79af`）**领先公仓 4 个提交、落后 0**，多出的 4 个是私仓侧自有内容
+   （例如 `ci: add manual test release workflow`、#381 的合并）。
+   → 结论：**基于公仓历史的本地分支可以正常推私仓**（普通分支 + PR，无需 `--allow-unrelated-histories`）；
+      §5 的补丁搬运是**备选**手段（分支推不上去、或只想要部分改动时用）。
+   → 私仓另有 `sync/from-public-develop-20260925` 之类的同步分支，说明存在公仓→私仓的同步流程；
+      遇到同步分支冲突/分叉，找仓库管理员，不要自行强推。
+
+   > 取证教训（留档）：**不要用"某个 SHA 在我本地对象库里不存在"判断两仓不同源**——
+   > 没 fetch 时远端新提交本来就不在本地。判据要用 `git fetch` 之后的
+   > `git merge-base <a> <b>` 与 `git rev-list --count a..b / b..a`。本次首轮结论就是踩了这个坑。
 
 2. **本机 HTTPS 不通，SSH 通；SSH 建议用 443 端点。**
    实测：`https://github.com/bonc-ai/cogseed-internal` → `Empty reply from server`；
@@ -96,7 +106,17 @@ git branch -r            # 应能看到 origin/develop、origin/cicd（以及 de
 
 ## 3. 日常开发绑定私仓 develop
 
-**不要**把现有本地 `develop` 直接绑到私仓 `origin/develop`：本机实测本地 `develop` 落后公仓 `origin/develop` 211、领先 13，私仓 `develop` 又是另一段历史——绑上去只会得到"无共同祖先"的 diverged 状态（这正是原始通知的步骤五在本机不适用的原因）。
+绑定的**技术前提已满足**（同源）。但在本机要先处理一个历史问题：本地 `develop = db12b253` 相对公仓 `origin/develop` **落后 211、领先 13**——那 13 个是**只存在于本机、从未推到任何远端**的真实提交，直接切过去会一起带进来。
+
+先决定这 13 个提交怎么办（二选一，都要先备份）：
+
+```bash
+git branch backup/develop-$(date +%Y%m%d) develop   # 先留一份，任何方案前都做
+# A) 想保留：把本地 develop 推到私仓（需团队同意）或先搬到你自己的 work 分支走 PR
+# B) 不要：git switch develop && git fetch origin --prune && git reset --hard origin/develop
+```
+
+确认本地 `develop` 干净、且与私仓基线一致后，再绑定：
 
 正确做法是**从私仓 develop 起新分支**：
 
@@ -132,9 +152,18 @@ git switch work/<你的主题>                   # 看完立刻切回开发分�
 
 ---
 
-## 5. 既有工作怎么搬进私仓（补丁法）
+## 5. 既有工作怎么进私仓（首选：直接推分支；备选：补丁搬运）
 
-适用于：基于公仓历史、已验证但尚未进入私仓的改动（本机当前就有这样一批）。
+**首选**（同源已核实，推荐）：把当前分支直接推到私仓并开 PR——
+
+```bash
+git fetch origin --prune
+git push -u origin <你的分支>        # origin 已是私仓
+```
+
+**备选**（分支不便推送、或只想搬部分改动时）：按下述补丁法。本机已于 2026-09-24 用当日改动
+**演练通过**（在临时工作树里从私仓 `develop` 起分支 am 两个补丁：零冲突、`typecheck` 0、
+4 个聚焦测试文件 126 通过；演练用的临时工作树与分支已清理）。
 
 ```bash
 # 1) 在公仓历史的分支上先本地提交（不推送）
@@ -212,6 +241,7 @@ git worktree list
 git fetch origin --prune 是否成功：是 / 否（失败请附报错）
 私仓 origin/develop SHA：
 私仓 origin/cicd SHA：
+origin/develop 相对 public/develop 领先/落后：领先 N / 落后 M（`git rev-list --count` 两个方向）
 本地 develop 是否跟踪 origin/develop：是 / 否（若不跟踪请说明原因，如基线不一致待管理员确认）
 本地 cicd 是否跟踪 origin/cicd：是 / 否 / 本地无该分支
 是否存在未提交改动：是（已跟踪 N / 未跟踪 M）
@@ -234,7 +264,7 @@ git fetch origin --prune 是否成功：是 / 否（失败请附报错）
 | 原远端 | `git@github.com:bonc-ai/cogseed.git`（SSH，fetch+push） |
 | 私仓可达性 | SSH ✓（22 与 443 端点均可读）；HTTPS ✗ `Empty reply from server` |
 | 实际生效的 origin | `ssh://git@ssh.github.com:443/bonc-ai/cogseed-internal.git`（public 保留为公仓只读） |
-| 私仓 refs | `develop = e9c20582…`、`cicd = 7539f726…`（本地均无此对象） |
+| 私仓 refs | `develop = 125c79af`（领先公仓 4、落后 0）、`cicd = ecf77c7e`；两者与公仓**同源**（根提交 `7af5136c`） |
 | 本地 develop | `db12b253`，相对公仓 `origin/develop` 落后 211 / 领先 13 |
 | 本地分支/工作树/stash | 14 个分支、2 个工作树、9 条 stash |
 | 未提交 | 16 个已跟踪改动 + 16 个未跟踪（其中 5 个是当日已验证的修复，11 个为历史遗留） |
