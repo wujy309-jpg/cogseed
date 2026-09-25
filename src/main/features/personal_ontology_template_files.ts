@@ -757,13 +757,13 @@ export async function appendFieldValueToRef(
   const meta = findTemplateMeta(uid, groupId);
   if (!meta) return { ok: false, error: 'template group not found' };
 
-  let existingSnapshot: string[] = [];
+  let existingSnapshot: Array<{ value: string; restricted: boolean }> = [];
   let appended = false;
   const result = await mutateTemplateFile(uid, groupId, meta.template_id, (content) => {
     const sec = findSection(content, section);
     if (!sec) return { ok: false, error: 'section not found' };
     const values = sec.fields[name] || (sec.fields[name] = []);
-    existingSnapshot = values.map((fv) => fv.value);
+    existingSnapshot = values.map((fv) => ({ value: fv.value, restricted: fv.sensitivity === 'restricted' }));
     if (values.some((fv) => fv.value === val && fv.source === src && (fv.project ?? undefined) === proj)) {
       return { changed: false }; // 同值同源同项目去重
     }

@@ -46,6 +46,7 @@ export const AUTO_FORECAST_PROMPT = [
   '- Candidates must differ meaningfully (e.g. direct approach vs delegation vs tool-heavy verification).',
   '- Use the projected ability assets when they fit; do not invent asset names.',
   '- Treat ontologyFacts as user-scoped context, ontologyRules as constraints, and ontologyTaxonomy as vocabulary. Do not expose or reproduce storage paths.',
+  '- A fact whose conflictedWith is non-empty is disputed: that field has two clashing entries. Do not treat it as a single settled fact; weigh both sides or ask.',
 ].join('\n');
 
 /** Tolerant parser: accepts the tagged array, a bare JSON array, prose

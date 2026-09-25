@@ -4121,12 +4121,18 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     const data = await personalOntologyCandidates.listCandidates(ctx.userId);
     return { ok: true, candidates: data.candidate_updates || [] };
   },
-  'personalOntology.candidates.confirm': async ({ candidateId, dest } = {}, ctx) => {
+  'personalOntology.candidates.confirm': async ({ candidateId, dest, acknowledgeConflict } = {}, ctx) => {
     if (!candidateId || typeof candidateId !== 'string') throw new Error('missing candidateId');
+    // 冲突门越过标记（specs/014 T014）：布尔校验后透传；命中冲突时返回体带
+    // conflicts[]（渲染层弹「仍然写入」对话用）。
+    if (acknowledgeConflict !== undefined && typeof acknowledgeConflict !== 'boolean') {
+      throw new Error('invalid acknowledgeConflict');
+    }
     return personalOntologyCandidates.confirmCandidate(
       ctx.userId,
       candidateId,
       dest && typeof dest === 'object' ? dest : {},
+      acknowledgeConflict === true ? { acknowledgeConflict: true } : {},
     );
   },
   'personalOntology.candidates.reject': async ({ candidateId, reason } = {}, ctx) => {

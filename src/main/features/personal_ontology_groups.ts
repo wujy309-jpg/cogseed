@@ -1040,11 +1040,11 @@ export async function appendFieldValue(
     ? (asOfControl.asOf !== undefined ? asOfControl.asOf : undefined)
     : (asOf && ASOF_MARKER_RE.test(`asof:${asOf}`) ? asOf : undefined);
 
-  let existingSnapshot: string[] = [];
+  let existingSnapshot: Array<{ value: string; restricted: boolean }> = [];
   let appended = false;
   const result = await mutateGroupContent(uid, groupId, (content) => {
     const values = content.fields[name] || (content.fields[name] = []);
-    existingSnapshot = values.map((fv) => fv.value);
+    existingSnapshot = values.map((fv) => ({ value: fv.value, restricted: fv.sensitivity === 'restricted' }));
     if (values.some((fv) => fv.value === val && fv.source === src && (fv.project ?? undefined) === proj)) {
       return { changed: false }; // 完全匹配去重
     }

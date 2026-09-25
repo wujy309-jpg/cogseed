@@ -1550,6 +1550,48 @@
         candidateId,
         dest: { toGlobalMemory: false, toGroupIds: [gid] },
       });
+      if (res && res.ok === false && res.error === 'conflict_detected') {
+        // 写入前冲突门（specs/014 US-902 / T016）：可能矛盾 → 对话确认，
+        // 不静默写入。「仍然写入」带 acknowledgeConflict:true 重发（主进程
+        // 会以写入时刻重新预检）。受限对端没有正文可显示，用替代文案。
+        const conflicts = Array.isArray(res.conflicts) ? res.conflicts : [];
+        const shown = conflicts.length
+          ? conflicts[0].existingValue
+            ? _tv('personalOntology.conflict_dialog_body_with_values', { field: String(conflicts[0].field || ''), existing: String(conflicts[0].existingValue || '') }, '字段「{field}」里已有语义相近的值（{existing}）。写入前请确认——这不是判定，只是提醒。')
+            : _t('personalOntology.conflict_dialog_body_restricted_pair', '字段里已有语义相近的值（另一条已标记受限，内容不显示）。写入前请确认。')
+          : _t('personalOntology.conflict_dialog_body_generic', '这条候选可能与组里已有的值语义相近，写入前请确认。');
+        if (typeof window.uiModal !== 'function') {
+          // 无弹层原语的极简上下文：退回普通 toast 提示且不写入（宁可多一步，
+          // 不静默）。
+          _pocToast('personalOntology.conflict_dialog_title', '可能与现有值矛盾', 'error');
+          return;
+        }
+        const dialog = await window.uiModal({
+          title: _t('personalOntology.conflict_dialog_title', '可能与现有值矛盾'),
+          closeLabel: _t('personalOntology.dialog_close', '关闭'),
+          description: shown,
+          actions: [
+            { label: _t('common.cancel', '取消'), id: 'cancel', role: 'secondary' },
+            { label: _t('personalOntology.conflict_dialog_keep', '仍然写入'), id: 'keep', role: 'primary' },
+          ],
+        });
+        if (!dialog || dialog.value !== 'keep') return; // 取消：不发第二次请求
+        const retry = await _pocInvoke('personalOntology.candidates.confirm', {
+          candidateId,
+          dest: { toGlobalMemory: false, toGroupIds: [gid] },
+          acknowledgeConflict: true,
+        });
+        if (!retry || retry.ok === false) {
+          _pocToast('personalOntology.op_failed', (retry && retry.error) || '操作失败', 'error');
+          return;
+        }
+        _pocToast('personalOntology.backflow_confirmed', '已写入所选分组（流水区，可升格为字段值）', 'success');
+        await _pocLoadPendingCandidates();
+        await _pocReloadBoxData();
+        _pocRenderNav();
+        _pocBindNav();
+        return;
+      }
       if (!res || res.ok === false) {
         _pocToast('personalOntology.op_failed', (res && res.error) || '操作失败', 'error');
         return;

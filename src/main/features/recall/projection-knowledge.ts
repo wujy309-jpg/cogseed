@@ -7,6 +7,7 @@ import { loadOntologyTaxonomy } from './ontology-taxonomy';
 import { normalizeCognitionSourceRefs } from './source-service';
 import { readAbilityAsset } from './asset-service';
 import { readGroups, listGroupFields, isStaleAsOf } from '../personal_ontology_groups';
+import { readLiveConflicts } from './ontology-conflicts';
 import { splitScopeTerms } from './scope-policy';
 import {
   readContextProjection,
@@ -43,7 +44,9 @@ export interface CommittedProjectionKnowledge {
   ontologyRules: Awaited<ReturnType<typeof loadOntologyRules>>['rules'];
 }
 
-async function loadOntologyFacts(
+/** 导出作测试缝（specs/014 T019）：世界模型侧矛盾标记的直接用例入口；
+ *  生产调用方仍是 loadCommittedProjectionKnowledge 一处。 */
+export async function loadOntologyFacts(
   userId: string,
   context: { workspaceId?: string; taskText?: string } = {},
 ): Promise<import('./world-model-types').WorldModelOntologyFact[]> {
@@ -88,6 +91,31 @@ async function loadOntologyFacts(
       if (facts.length >= MAX_ONTOLOGY_FACT_CANDIDATES) break;
     }
     if (facts.length >= MAX_ONTOLOGY_FACT_CANDIDATES) break;
+  }
+  // 矛盾标记（specs/014 US-903 / T018）：一次读只读索引（readLiveConflicts
+  // 不写盘、不触发自愈），命中 (组标题, 字段) 的事实挂 disputed + 非受限对端
+  // （≤2 条、每条截 MAX_ONTOLOGY_FACT_VALUE）；对端受限只置位不带文本。
+  // 无矛盾时不挂任何键（下游产物深度相等，零差异承诺 I-9）。
+  let liveConflicts: Array<{ groupId: string; field: string; valueA: string; valueB: string; aRestricted: boolean; bRestricted: boolean }> = [];
+  try {
+    liveConflicts = await readLiveConflicts(userId);
+  } catch {
+    liveConflicts = [];
+  }
+  if (liveConflicts.length) {
+    const titleByGroupId = new Map(groups.map((group) => [group.group_id, String(group.title || group.group_id)]));
+    const byKey = new Map(liveConflicts.map((pair) => [`${titleByGroupId.get(pair.groupId) || pair.groupId}\0${pair.field}`, pair]));
+    for (const fact of facts) {
+      const pair = byKey.get(`${fact.groupTitle}\0${fact.field}`);
+      if (!pair) continue;
+      const others = [pair.aRestricted ? null : pair.valueA, pair.bRestricted ? null : pair.valueB]
+        .filter((value): value is string => Boolean(value) && value !== fact.value)
+        .map((value) => value.replace(/\s+/g, ' ').trim().slice(0, MAX_ONTOLOGY_FACT_VALUE))
+        .filter(Boolean)
+        .slice(0, 2);
+      fact.disputed = true;
+      if (others.length) fact.conflictedWith = others;
+    }
   }
   const taskTokens = splitScopeTerms(context.taskText || '').map((token) => token.toLocaleLowerCase());
   return facts

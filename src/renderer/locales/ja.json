@@ -7028,6 +7028,9 @@
   "personalOntology.conflict_dialog_body": "フィールド「{field}」に意味の近い値が既にあります。書き込む前に確認してください——判定ではなく注意喚起です。",
   "personalOntology.conflict_dialog_keep": "それでも書き込む",
   "personalOntology.conflict_dialog_restricted": "（もう一方の値は制限付きのため本文は表示しません）",
-  "personalOntology.use_conflict_notice": "注意：フィールド「{field}」に矛盾する可能性のある 2 つの情報があります（{a} と {b}）。両方を総合的に判断してください。",
-  "personalOntology.use_conflict_notice_restricted": "注意：フィールド「{field}」に矛盾する可能性のある 2 つの情報があります（一方は制限付きで非表示）。総合的に判断してください。"
+  "personalOntology.use_conflict_notice": "注意：フィールド「{field}」に矛盾する可能性のある 2 つの情報があります。総合的に判断してください。",
+  "personalOntology.use_conflict_notice_restricted": "注意：フィールド「{field}」に矛盾する可能性のある 2 つの情報があります（一方は制限付きで非表示）。総合的に判断してください。",
+  "personalOntology.conflict_dialog_body_with_values": "フィールド「{field}」に意味の近い値（{existing}）が既にあります。書き込む前に確認してください——判定ではなく注意喚起です。",
+  "personalOntology.conflict_dialog_body_restricted_pair": "意味の近い値が既にあります（もう一方は制限付きのため本文は表示しません）。書き込む前に確認してください。",
+  "personalOntology.conflict_dialog_body_generic": "この候補はグループ内の既存の値と意味が近い可能性があります。書き込む前に確認してください。"
 }

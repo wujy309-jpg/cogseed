@@ -9145,6 +9145,9 @@
   "personalOntology.conflict_dialog_body": "Field \"{field}\" already has a semantically similar value. Please double-check before writing — this is a heads-up, not a verdict.",
   "personalOntology.conflict_dialog_keep": "Write anyway",
   "personalOntology.conflict_dialog_restricted": "(the other value is restricted; its text is not shown)",
-  "personalOntology.use_conflict_notice": "Heads-up: field \"{field}\" has two possibly conflicting entries ({a} vs {b}). Weigh both; do not trust only one side.",
-  "personalOntology.use_conflict_notice_restricted": "Heads-up: field \"{field}\" has two possibly conflicting entries (one is restricted and not shown). Weigh both."
+  "personalOntology.use_conflict_notice": "Heads-up: field \"{field}\" has two possibly conflicting entries. Weigh both; do not trust only one side.",
+  "personalOntology.use_conflict_notice_restricted": "Heads-up: field \"{field}\" has two possibly conflicting entries (one is restricted and not shown). Weigh both.",
+  "personalOntology.conflict_dialog_body_with_values": "Field \"{field}\" already has a semantically similar value ({existing}). Double-check before writing — this is a heads-up, not a verdict.",
+  "personalOntology.conflict_dialog_body_restricted_pair": "A semantically similar value already exists (the other one is restricted; its text is not shown). Double-check before writing.",
+  "personalOntology.conflict_dialog_body_generic": "This candidate may be semantically close to an existing value in the group. Double-check before writing."
 }

@@ -7028,6 +7028,9 @@
   "personalOntology.conflict_dialog_body": "O campo \"{field}\" já tem um valor semanticamente parecido. Confira antes de gravar — é um aviso, não um veredito.",
   "personalOntology.conflict_dialog_keep": "Gravar mesmo assim",
   "personalOntology.conflict_dialog_restricted": "(o outro valor é restrito; o texto não é exibido)",
-  "personalOntology.use_conflict_notice": "Aviso: o campo \"{field}\" tem duas informações possivelmente conflitantes ({a} vs {b}). Pese as duas; não confie apenas em uma.",
-  "personalOntology.use_conflict_notice_restricted": "Aviso: o campo \"{field}\" tem duas informações possivelmente conflitantes (uma é restrita e não aparece). Pese as duas."
+  "personalOntology.use_conflict_notice": "Aviso: o campo \"{field}\" tem duas informações possivelmente conflitantes. Pese as duas.",
+  "personalOntology.use_conflict_notice_restricted": "Aviso: o campo \"{field}\" tem duas informações possivelmente conflitantes (uma é restrita e não aparece). Pese as duas.",
+  "personalOntology.conflict_dialog_body_with_values": "O campo \"{field}\" já tem um valor semanticamente parecido ({existing}). Confira antes de gravar — é um aviso, não um veredito.",
+  "personalOntology.conflict_dialog_body_restricted_pair": "Já existe um valor semanticamente parecido (o outro é restrito; o texto não é exibido). Confira antes de gravar.",
+  "personalOntology.conflict_dialog_body_generic": "Este candidato pode estar semanticamente próximo de um valor existente no grupo. Confira antes de gravar."
 }

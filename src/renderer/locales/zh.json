@@ -9145,6 +9145,9 @@
   "personalOntology.conflict_dialog_body": "字段「{field}」里已有语义相近的值。写入前请确认——这不是判定，只是提醒。",
   "personalOntology.conflict_dialog_keep": "仍然写入",
   "personalOntology.conflict_dialog_restricted": "（另一条值已标记受限，内容不显示）",
-  "personalOntology.use_conflict_notice": "提醒：字段「{field}」存在两条可能矛盾的信息（其一：{a}；其二：{b}），请综合判断，不要只采信一边。",
-  "personalOntology.use_conflict_notice_restricted": "提醒：字段「{field}」存在两条可能矛盾的信息（其中一条受限不显示），请综合判断。"
+  "personalOntology.use_conflict_notice": "提醒：字段「{field}」存在两条可能矛盾的信息，请综合判断，不要只采信一边。",
+  "personalOntology.use_conflict_notice_restricted": "提醒：字段「{field}」存在两条可能矛盾的信息（其中一条受限不显示），请综合判断。",
+  "personalOntology.conflict_dialog_body_with_values": "字段「{field}」里已有语义相近的值（{existing}）。写入前请确认——这不是判定，只是提醒。",
+  "personalOntology.conflict_dialog_body_restricted_pair": "字段里已有语义相近的值（另一条已标记受限，内容不显示）。写入前请确认。",
+  "personalOntology.conflict_dialog_body_generic": "这条候选可能与组里已有的值语义相近，写入前请确认。"
 }
