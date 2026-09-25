@@ -683,6 +683,8 @@
 
   function destroyCorrection() {
     try { activeCorrection?.destroy?.(); } catch (_) { /* 关闭失败不阻塞 */ }
+    // 会议引用伴生面板（specs/013）：与纠错面板同生命周期，一并销毁。
+    try { root.KbMeetingRefs?.destroy?.(); } catch (_) { /* 同上 */ }
     activeCorrection = null;
     correctionOpen = false;
     const panel = element('[data-anchor-view-correct]');
@@ -758,6 +760,14 @@
         ...(degradedNotes.length ? { degradedNotes } : {}),
       });
       correctionOpen = true;
+      // 会议引用伴生面板（specs/013）：同一文档上下文，挂在纠错面板同容器内；
+      // 模块缺失（旧构建）时静默跳过，不阻塞纠错主功能。
+      try {
+        root.KbMeetingRefs?.mount?.(panel, {
+          docId: String(activeAnchor?.path || activeResult?.displayPath || 'transcript'),
+          displayPath: String(activeResult?.displayPath || activeAnchor?.path || ''),
+        });
+      } catch (_) { /* 伴生面板失败不影响纠错 */ }
       element('.anchored-source-viewer')?.classList.add('is-correct-open');
     const splitter = element('[data-anchor-view-split]');
     if (splitter) splitter.hidden = false;
