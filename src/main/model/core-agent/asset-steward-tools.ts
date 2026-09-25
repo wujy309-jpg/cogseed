@@ -36,6 +36,7 @@ import { evaluateRecallAssetRuntimeEligibility } from '../../features/recall/pro
 import { requestInteraction } from '../../features/chat_events/interaction-hub';
 import {
   createAssetChangeProposal,
+  listAssetChangeProposals,
   type AssetChangeProposal,
 } from '../../features/recall/asset-approval-service';
 import { busAssetApprovalCardPort, postAssetChangeApprovalCard } from '../../features/recall/asset-approval-card';
@@ -137,6 +138,76 @@ async function runtimeBlockReasons(
   return eligibility.reasons.filter((reason) => reason !== 'not_applicable_context');
 }
 
+// ── 待审批提议（US-406）：管理视角的可见性 ────────────────────────────────
+//
+// 模型此前**看不到**自己提过什么（2026-09-25 子安："在对话中让他管理整个资产库，
+// 他拿不到待审批的内容"）。看不见的代价不只是答不上"有哪些待办"：某条资产挂着
+// 一张没定的卡片时，它会一遍遍重提同一个变更，然后被去重挡住、却不知道为什么。
+// 这一段只做**读**——处置权在用户手里，模型不许代拍（也没有代拍的通道）。
+const PROPOSAL_STATE_LABELS: Record<string, string> = {
+  pending: '等用户定夺',
+  deferred: '用户已「稍后处理」（还在待确认清单）',
+  confirmed: '已确认生效',
+  rejected: '已拒绝',
+};
+
+/** 提议里单字段值的展示上限：够模型判读，又不至于把一份清单撑成一本书。 */
+const PROPOSAL_VALUE_CHARS = 1_200;
+
+function proposalStateLabel(state: string): string {
+  return PROPOSAL_STATE_LABELS[state] || state;
+}
+
+/** 还在等用户点头的提议（pending / deferred 都算：deferred 只是被推后，没被处置）。 */
+async function listOpenProposals(userId: string): Promise<AssetChangeProposal[]> {
+  try {
+    const all = await listAssetChangeProposals(userId);
+    return all.filter((proposal) => proposal.state === 'pending' || proposal.state === 'deferred');
+  } catch (err) {
+    log.warn('steward proposal list failed', { userId: maskId(userId), error: logErrorRef(err as Error) });
+    return [];
+  }
+}
+
+function proposalHeadline(proposal: AssetChangeProposal, assetTitle?: string): string {
+  return [
+    `[proposal:${proposal.id}] ${proposalStateLabel(proposal.state)}`,
+    assetTitle ? `目标资产 ${assetTitle}` : `目标资产 [asset:${proposal.assetId}]`,
+    `涉及 ${proposal.fields.join(' / ')}`,
+    `基于 v${proposal.baselineVersion}`,
+    `提出于 ${proposal.createdAt}`,
+  ].join(' | ');
+}
+
+function cappedValue(text: string): string {
+  const body = String(text || '');
+  if (body.length <= PROPOSAL_VALUE_CHARS) return body;
+  return `${body.slice(0, PROPOSAL_VALUE_CHARS)}……（已截断，全文共 ${body.length} 字；完整内容在用户的审批卡片上）`;
+}
+
+function proposalDetailLines(proposal: AssetChangeProposal): string[] {
+  const lines: string[] = [];
+  lines.push(`依据：${proposal.reason}`);
+  lines.push('拟生效内容（改动后）：');
+  for (const key of proposal.fields) {
+    if (!(key in proposal.payload)) continue;
+    const next = proposal.payload[key];
+    const rendered = Array.isArray(next) ? next.map((item) => String(item)).join('；') : String(next ?? '');
+    lines.push(`  ${key}（${Array.isArray(next) ? `${next.length} 项` : `${rendered.length} 字`}）：${cappedValue(rendered)}`);
+  }
+  if (proposal.beforeValues && Object.keys(proposal.beforeValues).length) {
+    lines.push('当前值（改动前）：');
+    for (const key of proposal.fields) {
+      if (!(key in proposal.beforeValues)) continue;
+      const before = proposal.beforeValues[key];
+      const rendered = Array.isArray(before) ? before.map((item) => String(item)).join('；') : String(before ?? '');
+      lines.push(`  ${key}：${cappedValue(rendered) || '(空)'}`);
+    }
+  }
+  lines.push('处置：用户在对话里的卡片上三选一（确认更新 / 稍后处理 / 拒绝）。你**不能**替他决定。');
+  return lines;
+}
+
 function createListAbilityAssetsTool(opts: AssetStewardToolsOpts): AgentTool {
   const userId = opts.userId;
   return {
@@ -223,15 +294,29 @@ function createListAbilityAssetsTool(opts: AssetStewardToolsOpts): AgentTool {
         };
       }
       const more = pool.length - (offset + page.length);
+      // 挂着待审批提议的条目要标出来：不标，模型会重提同一个变更、然后被去重挡住，
+      // 却不知道自己提过（2026-09-25 子安："他拿不到待审批的内容"）。
+      const openProposals = await listOpenProposals(userId);
+      const openByAsset = new Map<string, number>();
+      for (const proposal of openProposals) {
+        openByAsset.set(proposal.assetId, (openByAsset.get(proposal.assetId) || 0) + 1);
+      }
+      const pageLines = page.map((asset) => {
+        const pending = openByAsset.get(asset.id) || 0;
+        return pending ? `${listLine(asset)} | 待审批=${pending}` : listLine(asset);
+      });
       return {
         content: [
           `认知资产清单：共 ${all.length} 条（${countNote}）${filterNote ? `；过滤：${filterNote} → ${pool.length} 条` : ''}`,
           `本页 ${offset + 1}-${offset + page.length} 条：`,
           '',
-          ...page.map(listLine),
+          ...pageLines,
           '',
           more > 0 ? `还有 ${more} 条：用 offset=${offset + page.length} 继续翻页。` : '这是最后一页。',
           '看某条全文用 read_ability_asset（传 assetId）。',
+          ...(openProposals.length
+            ? [`有 ${openProposals.length} 条提议还在等用户点头（上面标了「待审批」的资产）：用 list_asset_change_proposals 看内容；**处置权在用户**，你只能看和转达。`]
+            : []),
         ].join('\n'),
       };
     },
@@ -248,6 +333,7 @@ function createReadAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
       '这是管理视角的全文读取，不受"一次 6 条、每条 2000 字"的目录取用限制；适合改动前先看清内容、核对某条到底写了什么。',
       '资产**不可用时不会返回正文**，而是如实说明原因（已删除/已暂停/来源被撤权/范围不符/命中禁用场景/敏感级过高/未分级等）——这不是"找不到"，别当成资产不存在，也别试图绕过。',
       '已删除的资产在保留期内仍然存在，但正文已不可用；要恢复它用 restore_ability_asset。',
+      '这条资产若挂着**待审批提议**（AI 提过改动、用户还没定），返回里会点明：那类改动**不重复提交**，先把卡片的事告诉用户。',
     ].join(''),
     inputSchema: {
       type: 'object',
@@ -302,6 +388,9 @@ function createReadAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
       const nextHint = chunk + 1 < totalChunks
         ? `还有 ${totalChunks - chunk - 1} 批：用 chunk=${chunk + 1} 继续。`
         : '这是最后一批，正文已读完。';
+      // 「这条有没有没定的卡片」是管理这条资产的第一手信息：不点明，模型会重提
+      // 同一个变更（被去重挡住）、或者把"改不动"当成工具坏了。
+      const openProposals = (await listOpenProposals(userId)).filter((proposal) => proposal.assetId === assetId);
       return {
         content: [
           `[asset:${assetId}] ${asset.title || '(无标题)'}`,
@@ -314,6 +403,123 @@ function createReadAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
           body,
           '',
           nextHint,
+          ...(openProposals.length
+            ? [
+              '',
+              `待审批提议（${openProposals.length} 条，**处置权在用户**）：`,
+              ...openProposals.flatMap((proposal) => [
+                `- ${proposalHeadline(proposal)}`,
+                `  依据：${proposal.reason}`,
+              ]),
+              '不要重复提交同一个变更（会被去重挡住）；把卡片的事告诉用户，内容看 list_asset_change_proposals。',
+            ]
+            : []),
+        ].join('\n'),
+      };
+    },
+  };
+}
+
+// ── 待审批提议清单（US-406 读侧） ─────────────────────────────────────────
+//
+// 只读：处置权在用户手里，这里不提供任何"代拍"的形状。做这个工具的直接原因见
+// 上面 `listOpenProposals` 的注释（子安真机反馈"拿不到待审批的内容"）。
+const PROPOSAL_PAGE_DEFAULT = 20;
+const PROPOSAL_PAGE_MAX = 50;
+const PROPOSAL_STATES = ['pending', 'deferred', 'rejected', 'confirmed', 'all'] as const;
+
+function createListAssetChangeProposalsTool(opts: AssetStewardToolsOpts): AgentTool {
+  const userId = opts.userId;
+  return {
+    name: 'list_asset_change_proposals',
+    executionMode: 'parallel',
+    description: [
+      '列出**AI 提过、等用户点头**的资产改动（对话里那张审批卡片），含拟生效内容、当前值、依据与状态。',
+      '什么时候用：① 用户问"有哪些待审批/待确认"；② 盘点整个资产库、要交代"哪些需要你点头"；③ 改某条资产前先看它有没有挂着卡片（清单与 read_ability_asset 也会标）。',
+      '**处置权在用户**：你只能看、只能把内容转达给用户；没有让你替用户确认/拒绝的通道，也不要重复提交同一个变更（会被去重挡住并说明）。',
+      '默认只看等用户定夺的（pending）；"稍后处理"的用 state=deferred，看全部用 state=all。',
+    ].join(''),
+    inputSchema: {
+      type: 'object',
+      properties: {
+        assetId: { type: 'string', description: '只看某条资产的提议（aa- 开头）。不给就列全部。' },
+        state: { type: 'string', description: `提议状态：pending（默认，等用户定夺）/ deferred（用户已稍后处理）/ rejected / confirmed / all。` },
+        offset: { type: 'number', description: '从第几条开始（默认 0）。' },
+        limit: { type: 'number', description: `一页条数：默认 ${PROPOSAL_PAGE_DEFAULT}、最大 ${PROPOSAL_PAGE_MAX}。` },
+      },
+      additionalProperties: false,
+    },
+    async execute(input: Record<string, unknown>): Promise<{ content: string; isError?: boolean }> {
+      const stateInput = typeof input.state === 'string' && input.state.trim() ? input.state.trim() : 'pending';
+      if (!(PROPOSAL_STATES as readonly string[]).includes(stateInput)) {
+        return { content: `state 不认识：${stateInput}（可用：${PROPOSAL_STATES.join(' / ')}）`, isError: true };
+      }
+      const assetId = typeof input.assetId === 'string' && input.assetId.trim() ? input.assetId.trim() : '';
+      if (assetId && !safeId(assetId)) return { content: `不是合法的资产 id：${assetId}`, isError: true };
+      const offset = Math.max(0, Math.floor(Number(input.offset) || 0));
+      const limit = Math.min(PROPOSAL_PAGE_MAX, Math.max(1, Math.floor(Number(input.limit) || PROPOSAL_PAGE_DEFAULT)));
+
+      let all: AssetChangeProposal[];
+      try {
+        all = await listAssetChangeProposals(userId, assetId ? { assetId } : {});
+      } catch (err) {
+        log.warn('steward proposal list failed', { userId: maskId(userId), error: logErrorRef(err as Error) });
+        return { content: '读取待审批提议失败（详见应用日志）。', isError: true };
+      }
+      const filtered = stateInput === 'all' ? all : all.filter((proposal) => proposal.state === stateInput);
+      if (!filtered.length) {
+        // 「没有待审批」不等于「没有待办」：稍后处理的那批还在等用户，别让模型答成"啥也没有"。
+        const deferred = all.filter((proposal) => proposal.state === 'deferred').length;
+        if (stateInput === 'pending' && deferred) {
+          return {
+            content: `没有正等着用户现下点头的提议；但有 ${deferred} 条是"稍后处理"（state=deferred），仍在待确认清单里、还没被处置。用 state=deferred 或 state=all 看。`,
+          };
+        }
+        return {
+          content: stateInput === 'pending'
+            ? '当前没有等用户点头的资产改动：没有待审批提议。'
+            : `没有状态为 ${stateInput} 的提议${assetId ? `（资产 ${assetId}）` : ''}。`,
+        };
+      }
+      const page = filtered.slice(offset, offset + limit);
+      // 提议内容也是资产内容：正文该拦的，提议里也不能放行（同 runtimeBlockReasons）。
+      const blocks: string[] = [];
+      for (const proposal of page) {
+        let asset: RecallAbilityAssetRecord;
+        try {
+          asset = await readAbilityAsset(userId, proposal.assetId);
+        } catch (err) {
+          log.warn('steward proposal asset read failed', { userId: maskId(userId), assetId: proposal.assetId, error: logErrorRef(err as Error) });
+          blocks.push([
+            `- ${proposalHeadline(proposal)}`,
+            '  目标资产读不到（可能已被彻底清除）：提议仍留档，处置权在用户。',
+          ].join('\n'));
+          continue;
+        }
+        const reasons = await runtimeBlockReasons(opts, asset);
+        if (reasons.length) {
+          blocks.push([
+            `- ${proposalHeadline(proposal, `[asset:${proposal.assetId}] ${asset.title || '(无标题)'}`)}`,
+            `  提议内容暂不展示：这条资产当前对运行时不可读（${blockReasonText(reasons)}）。`,
+            '  这不是"提议不存在"——卡片照旧在用户的对话里，处置权在他手里。',
+          ].join('\n'));
+          continue;
+        }
+        blocks.push([
+          `- ${proposalHeadline(proposal, `[asset:${proposal.assetId}] ${asset.title || '(无标题)'}`)}`,
+          ...proposalDetailLines(proposal).map((line) => `  ${line}`),
+        ].join('\n'));
+      }
+      const more = filtered.length - (offset + page.length);
+      return {
+        content: [
+          `待审批提议：共 ${filtered.length} 条（state=${stateInput}${assetId ? `，资产=${assetId}` : ''}）`,
+          `本页 ${offset + 1}-${offset + page.length} 条：`,
+          '',
+          ...blocks,
+          '',
+          more > 0 ? `还有 ${more} 条：用 offset=${offset + page.length} 继续翻页。` : '这是最后一页。',
+          '处置权在用户：你可以转达内容、按用户要求安排后续动作，但不能替他确认/拒绝。',
         ].join('\n'),
       };
     },
@@ -1113,6 +1319,7 @@ export function createAssetStewardTools(opts: AssetStewardToolsOpts): AgentTool[
   return [
     createListAbilityAssetsTool(opts),
     createReadAbilityAssetTool(opts),
+    createListAssetChangeProposalsTool(opts),
     createEditAbilityAssetTool(opts),
     createMergeAbilityAssetsTool(opts),
     createStatusActionTool(opts, {

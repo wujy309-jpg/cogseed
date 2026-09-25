@@ -141,6 +141,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   // 顺序按"最常用优先"：先看全貌、再取正文，然后才是改动类动作。
   { name: 'list_ability_assets', group: 'recall', summary: 'Page through EVERY ability asset the user owns (title/type/status/tags + total), with optional type/status/space filters — deliberately not capped by the UI catalog page size.' },
   { name: 'read_ability_asset', group: 'recall', summary: 'Read one ability asset by id in ≤2000-character chunks (use `chunk` to continue); reports deleted/paused/blocked state honestly instead of pretending it is missing.' },
+  { name: 'list_asset_change_proposals', group: 'recall', summary: 'List AI-proposed asset changes still awaiting the user (approval cards): proposed values, current values, reason, state — read-only, because only the user may confirm/reject.' },
   { name: 'edit_ability_asset', group: 'recall', summary: 'Edit an ability asset (title/body/scope/boundaries) on the user\'s explicit instruction, writing an audit record; AI-initiated substantial changes to method body / facts / applicability must go through an approval card instead of taking effect.' },
   { name: 'merge_ability_assets', group: 'recall', summary: 'Merge a duplicate ability asset into a target asset: both share one version group, the source is archived with a pointer, history stays traceable.' },
   { name: 'archive_ability_asset', group: 'recall', summary: 'Archive an ability asset: removed from daily lists and recommendations, content + evidence + history kept, restorable.' },

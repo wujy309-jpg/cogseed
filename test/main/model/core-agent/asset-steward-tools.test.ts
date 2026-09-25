@@ -86,7 +86,7 @@ async function stewardTools() {
   const { createAssetStewardTools } = await import('../../../../src/main/model/core-agent/asset-steward-tools');
   const tools = createAssetStewardTools({ userId: TEST_UID });
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
-  return { list: byName.get('list_ability_assets')!, read: byName.get('read_ability_asset')!, names: tools.map((t) => t.name) };
+  return { list: byName.get('list_ability_assets')!, read: byName.get('read_ability_asset')!, proposals: byName.get('list_asset_change_proposals')!, names: tools.map((t) => t.name) };
 }
 
 function text(result: { content: string }): string {
@@ -263,6 +263,102 @@ describe('read_ability_asset', () => {
   });
 });
 
+describe('待审批提议的可见性（US-406；2026-09-25 真机反馈"他拿不到待审批的内容"）', () => {
+  async function propose(assetId: string) {
+    const approvals = await import('../../../../src/main/features/recall/asset-approval-service');
+    return approvals.createAssetChangeProposal(TEST_UID, {
+      assetId,
+      baselineVersion: '1',
+      fields: ['statement', 'applicableWhen'],
+      payload: { statement: '改后的正文：开头先给结论。', applicableWhen: ['写并行批次工具时'] },
+      beforeValues: { statement: '改前的正文全挤在一段。', applicableWhen: ['写工具时'] },
+      before: 'statement=11 字:改前的正文…',
+      after: 'statement=14 字:改后的正文…',
+      reason: 'AI 自主判断：开头没有可扫读的结论。',
+    });
+  }
+
+  it('read_ability_asset 点明这条资产挂着待审批提议', async () => {
+    const base = await seedAsset('正文组织：开头先给结论。');
+    const assetId = (await cloneAssets(base as unknown as Record<string, unknown>, 1))[0];
+    await propose(assetId);
+    const { read } = await stewardTools();
+
+    const out = text(await read.execute({ assetId }, {} as never));
+    expect(out).toContain('待审批提议（1 条');
+    expect(out).toContain('[proposal:ap-');
+    expect(out).toContain('处置权在用户');
+    expect(out).toContain('AI 自主判断：开头没有可扫读的结论。');
+    expect(out).toContain('list_asset_change_proposals');
+    // 点明它是**提议不是锁**：正文照旧读得出来，别把"有卡片"当成"读不到"。
+    expect(out).toContain('正文（第 1/1 批');
+  });
+
+  it('list_ability_assets 给挂着卡片的条目标「待审批=1」并给出指引', async () => {
+    const base = await seedAsset('清单里的待审批标记。');
+    const assetId = (await cloneAssets(base as unknown as Record<string, unknown>, 1))[0];
+    await propose(assetId);
+    const { list } = await stewardTools();
+
+    const out = text(await list.execute({}, {} as never));
+    expect(out).toContain('待审批=1');
+    expect(out).toContain('list_asset_change_proposals');
+  });
+
+  it('list_asset_change_proposals 交出拟生效内容与当前值', async () => {
+    const base = await seedAsset('提议内容要被看到。');
+    const assetId = (await cloneAssets(base as unknown as Record<string, unknown>, 1))[0];
+    await propose(assetId);
+    const { proposals } = await stewardTools();
+
+    const out = text(await proposals.execute({}, {} as never));
+    expect(out).toContain('待审批提议：共 1 条（state=pending');
+    expect(out).toContain('等用户定夺');
+    expect(out).toContain('拟生效内容（改动后）');
+    expect(out).toContain('改后的正文：开头先给结论。');
+    expect(out).toContain('当前值（改动前）');
+    expect(out).toContain('改前的正文全挤在一段。');
+    expect(out).toContain('AI 自主判断：开头没有可扫读的结论。');
+    expect(out).toContain('不能替他确认/拒绝');
+  });
+
+  it('「稍后处理」不在默认结果里，但仍是待办（state=deferred 能查到）', async () => {
+    const base = await seedAsset('稍后处理的提议仍待办。');
+    const assetId = (await cloneAssets(base as unknown as Record<string, unknown>, 1))[0];
+    const { proposal } = await propose(assetId);
+    const approvals = await import('../../../../src/main/features/recall/asset-approval-service');
+    await approvals.decideAssetChangeProposal(TEST_UID, proposal.id, 'defer');
+    const { proposals } = await stewardTools();
+
+    const pending = text(await proposals.execute({}, {} as never));
+    expect(pending).toContain('没有正等着用户现下点头的提议');
+    expect(pending).toContain('state=deferred');
+    const deferred = text(await proposals.execute({ state: 'deferred' }, {} as never));
+    expect(deferred).toContain('用户已「稍后处理」');
+    expect(deferred).toContain('改后的正文：开头先给结论。');
+  });
+
+  it('资产被暂停：提议在，但内容不交出去（与正文同一道运行时门禁，不走后门）', async () => {
+    const base = await seedAsset('门禁对提议内容同样生效。');
+    const assetId = (await cloneAssets(base as unknown as Record<string, unknown>, 1, [{ status: 'paused' }]))[0];
+    await propose(assetId);
+    const { proposals } = await stewardTools();
+
+    const out = text(await proposals.execute({}, {} as never));
+    expect(out).toContain('提议内容暂不展示');
+    expect(out).toContain('status_not_active');
+    expect(out).not.toContain('改后的正文：开头先给结论。');
+    expect(out).toContain('处置权在他手里');
+  });
+
+  it('空态与非法入参如实回应', async () => {
+    const { proposals } = await stewardTools();
+    expect(text(await proposals.execute({}, {} as never))).toContain('没有待审批提议');
+    expect(await proposals.execute({ state: 'wat' }, {} as never)).toMatchObject({ isError: true });
+    expect(await proposals.execute({ assetId: '../etc/passwd' }, {} as never)).toMatchObject({ isError: true });
+  });
+});
+
 describe('只读会话不变量（T016）', () => {
   it('任何 recall 组工具都不得进入闭合只读白名单', async () => {
     const [{ TOOL_CATALOG }, { READ_ONLY_TOOL_ALLOWLIST, READ_ONLY_BUILTIN_ALLOWLIST }] = await Promise.all([
@@ -280,10 +376,12 @@ describe('只读会话不变量（T016）', () => {
     }
   });
 
-  it('资产管家的工具面 = 2 读 + 6 写', async () => {
+  it('资产管家的工具面 = 3 读 + 6 写', async () => {
+    // 第 3 个读工具（list_asset_change_proposals）是 2026-09-25 真机反馈"模型拿不到
+    // 待审批的内容"补的：读侧不提供任何代拍的形状（处置权在用户）。
     const { names } = await stewardTools();
     expect(names).toEqual([
-      'list_ability_assets', 'read_ability_asset',
+      'list_ability_assets', 'read_ability_asset', 'list_asset_change_proposals',
       'edit_ability_asset', 'merge_ability_assets', 'archive_ability_asset',
       'delete_ability_asset', 'restore_ability_asset', 'rollback_ability_asset',
     ]);

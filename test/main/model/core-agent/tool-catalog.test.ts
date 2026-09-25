@@ -220,12 +220,13 @@ describe('tool-catalog', () => {
   });
 
   it('declares the ability-asset steward surface in the recall group with no extra gate', () => {
-    // 资产管家的 6 个写工具 + 2 个读工具（specs/008 US-401/402）。这些工具读写的
+    // 资产管家的 6 个写工具 + 3 个读工具（specs/008 US-401/402；第 3 个读工具是
+    // 待审批提议清单，2026-09-25 因"模型拿不到待审批的内容"补的）。这些工具读写的
     // 是 <uid> 数据域里的资产记录，不碰 shell / 文件系统，所以**不该**挂
     // localExec；也不按 agent 限定——主会话与 group_chat 各 actor 共用同一面。
     // 少了 / 多了一层权限门，会直接改变"模型能不能动手"的产品口径。
     const stewardTools = [
-      'list_ability_assets', 'read_ability_asset',
+      'list_ability_assets', 'read_ability_asset', 'list_asset_change_proposals',
       'edit_ability_asset', 'merge_ability_assets', 'archive_ability_asset',
       'delete_ability_asset', 'restore_ability_asset', 'rollback_ability_asset',
     ];
@@ -295,6 +296,7 @@ describe('tool-catalog', () => {
       metacognition: ['competence', 'strategies', 'content limits', 'rejected', 'condense', 'read', 'write'],
       list_ability_assets: ['全量', 'offset', '总数', '已删除'],
       read_ability_asset: ['chunk', '2000', '不可用'],
+      list_asset_change_proposals: ['待审批', '处置权在用户', 'state'],
     };
 
     const missing: string[] = [];
