@@ -56,6 +56,8 @@ import * as cognition from '../features/cognition';
 import * as recallCandidates from '../features/recall/candidate-service';
 import { withRecallCandidateCapabilities } from '../features/recall/candidate-capabilities';
 import * as recallAssets from '../features/recall/asset-service';
+import * as recallExperiences from '../features/recall/experience-service';
+import { cognitionSourceRefMetadataOnly } from '../features/recall/source-service';
 import * as recallAssetApproval from '../features/recall/asset-approval-service';
 import * as recallCleanup from '../features/recall/cleanup-report-service';
 import * as recallInspection from '../features/recall/asset-inspection-service';
@@ -829,6 +831,52 @@ function batchRecallCaptures(
 
 function _isRecipientOrigin(value: unknown): value is 'user_selection' | 'cli_fallback' | 'active_floor' {
   return value === 'user_selection' || value === 'cli_fallback' || value === 'active_floor';
+}
+
+// ── 经验目录通道的载荷投影（specs/016 契约 E1~E6）──────────────────────────
+// 列表行是目录行：**不含 body、不含 evidenceRefs 明细**（受限正文边界）；
+// 排序不在这里做——listExperiences 已按 updatedAt 倒序给出。
+function recallExperienceListItem(exp: recallExperiences.ExperienceRecord) {
+  return {
+    id: exp.id,
+    title: exp.title,
+    experienceType: exp.experienceType,
+    taskType: exp.source.taskType,
+    scope: exp.scope,
+    outcome: exp.verification.outcome,
+    verificationState: exp.verification.state,
+    status: exp.status,
+    // goal 截 200：与 kstar.episodes.summaries 的既有口径一致。
+    sourceTask: {
+      episodeId: exp.source.episodeId,
+      goal: String(exp.source.taskGoal || '').slice(0, 200),
+      taskStatus: exp.source.taskStatus,
+    },
+    updatedAt: exp.updatedAt,
+  };
+}
+
+// 详情侧（E2）：正文给（单条 ≤4000 在写入侧已硬校验），证据只回 kind/id/title
+// 且过滤绝对路径标题（可读名解析是渲染层 resolveSourceRef 的职责）；mergedFrom
+// 只回 id/title/mergedAt——source/evidenceRefs 快照留在主进程，不随详情外溢。
+function recallExperienceDetail(exp: recallExperiences.ExperienceRecord) {
+  return {
+    ...recallExperienceListItem(exp),
+    body: exp.body,
+    ...(exp.expected !== undefined ? { expected: exp.expected } : {}),
+    ...(exp.actual !== undefined ? { actual: exp.actual } : {}),
+    ...(exp.applicableWhen !== undefined ? { applicableWhen: exp.applicableWhen } : {}),
+    ...(exp.forbiddenWhen !== undefined ? { forbiddenWhen: exp.forbiddenWhen } : {}),
+    verification: exp.verification,
+    evidenceRefs: exp.evidenceRefs.map((ref) => {
+      const meta = cognitionSourceRefMetadataOnly(ref);
+      return { kind: meta.kind, id: meta.id, ...(meta.title ? { title: meta.title } : {}) };
+    }),
+    mergedIntoExperienceId: exp.mergedIntoExperienceId ?? null,
+    mergedFrom: (exp.mergedFrom || []).map((entry) => ({ id: entry.id, title: entry.title, mergedAt: entry.mergedAt })),
+    history: exp.history || [],
+    createdAt: exp.createdAt,
+  };
 }
 
 const invokeHandlers: Record<string, InvokeHandler> = {
@@ -2719,6 +2767,72 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true, ...(await recallAssetApproval.decideAssetChangeProposal(ctx.userId, proposalId, decision, {
       ...(payload !== undefined ? { payload: payload as Record<string, unknown> } : {}),
     })) };
+  },
+
+  // ── 经验目录（specs/016 契约 E1~E6）：与 recall.assets.* 平级的独立段，
+  // 但**零调用**任何资产写函数（隔离边界）——读写全走 experience-service。
+  // E1 · 列表（只读）：目录行不含正文/证据；status 缺省 active（归档/合并后
+  // 自然零出现），'all' 才给全量；limit 上限 200、offset 只做分页不影响 total。
+  'recall.experiences.list': async ({ type, taskType, status, offset, limit } = {}, ctx) => {
+    if (type !== undefined && !['lesson', 'workflow', 'gap', 'uncategorized'].includes(type)) throw new Error('invalid recall experience type');
+    if (taskType !== undefined && !['report', 'code', 'review', 'product', 'general'].includes(taskType)) throw new Error('invalid recall experience task type');
+    if (status !== undefined && !['active', 'paused', 'archived', 'merged', 'all'].includes(status)) throw new Error('invalid recall experience status');
+    if (offset !== undefined && (!Number.isInteger(offset) || offset < 0)) throw new Error('invalid recall experience offset');
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 200)) throw new Error('invalid recall experience limit');
+    const all = await recallExperiences.listExperiences(ctx.userId);
+    const wanted = status === 'all' ? status : (status || 'active');
+    const filtered = all.filter((exp) => (
+      (wanted === 'all' || exp.status === wanted)
+      && (type === undefined || exp.experienceType === type)
+      && (taskType === undefined || exp.source.taskType === taskType)
+    ));
+    const start = offset ?? 0;
+    const page = filtered.slice(start, start + (limit ?? 50));
+    return { ok: true, total: filtered.length, experiences: page.map(recallExperienceListItem) };
+  },
+  // E2 · 详情（只读）：不存在 → ok:false 带 not found 语义（不返回空壳）。
+  'recall.experiences.read': async ({ experienceId } = {}, ctx) => {
+    if (typeof experienceId !== 'string' || !safeId(experienceId) || !experienceId.startsWith('exp-')) throw new Error('invalid recall experience id');
+    const exp = await recallExperiences.readExperience(ctx.userId, experienceId);
+    if (!exp) throw new Error('experience not found');
+    return { ok: true, experience: recallExperienceDetail(exp) };
+  },
+  // E3 · 开关（写）：pause/resume + 台账；终态拒绝在 feature 层（错误即语义）。
+  'recall.experiences.setStatus': async ({ experienceId, action, note } = {}, ctx) => {
+    if (typeof experienceId !== 'string' || !safeId(experienceId) || !experienceId.startsWith('exp-')
+      || (action !== 'pause' && action !== 'resume')
+      || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall experience status action');
+    return { ok: true, experience: recallExperienceListItem(await recallExperiences.setExperienceStatus(ctx.userId, experienceId, action, note)) };
+  },
+  // E4 · 类型调整（写）：uncategorized 是合法目标；台账留 from/to。
+  'recall.experiences.setType': async ({ experienceId, experienceType, note } = {}, ctx) => {
+    if (typeof experienceId !== 'string' || !safeId(experienceId) || !experienceId.startsWith('exp-')
+      || !['lesson', 'workflow', 'gap', 'uncategorized'].includes(experienceType)
+      || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall experience type');
+    return { ok: true, experience: recallExperienceListItem(await recallExperiences.setExperienceType(ctx.userId, experienceId, experienceType, note)) };
+  },
+  // E5 · 同类合并（写）：同类型拒绝跨并、source 置 merged 不删；回 target
+  // （含 mergedFrom——合并后来源可见）与 source 的 {id, status}。
+  'recall.experiences.merge': async ({ sourceExperienceId, targetExperienceId, note } = {}, ctx) => {
+    for (const id of [sourceExperienceId, targetExperienceId]) {
+      if (typeof id !== 'string' || !safeId(id) || !id.startsWith('exp-')) throw new Error('invalid recall experience merge');
+    }
+    if (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000)) throw new Error('invalid recall experience merge');
+    const merged = await recallExperiences.mergeExperiences(ctx.userId, sourceExperienceId, targetExperienceId, note);
+    return {
+      ok: true,
+      experience: {
+        ...recallExperienceListItem(merged.target),
+        mergedFrom: (merged.target.mergedFrom || []).map((entry) => ({ id: entry.id, title: entry.title, mergedAt: entry.mergedAt })),
+      },
+      source: { id: merged.source.id, status: merged.source.status },
+    };
+  },
+  // E6 · 归档（写）：reason 必填（≤1000 字）——「清理=有口径可追溯」，不是删数据。
+  'recall.experiences.archive': async ({ experienceId, reason } = {}, ctx) => {
+    if (typeof experienceId !== 'string' || !safeId(experienceId) || !experienceId.startsWith('exp-')
+      || typeof reason !== 'string' || !reason.trim() || reason.length > 1_000) throw new Error('invalid recall experience archive');
+    return { ok: true, experience: recallExperienceListItem(await recallExperiences.archiveExperience(ctx.userId, experienceId, reason)) };
   },
 
   // 大扫除与整理报告（specs/008 US-403）。run 是用户发起的批量整理；

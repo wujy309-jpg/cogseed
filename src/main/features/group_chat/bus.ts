@@ -5874,6 +5874,19 @@ async function runActorTurnBody(
         // 目录块拿不到不影响回合。
       }
 
+      // 任务经验目录（specs/016 T025 / US-802）：与上面的资产目录**并列**追加、
+      // 不合并成一段——两套集合与过滤口径互不污染（合并正是"经验稀释资产"的
+      // 老毛病，spec 背景点名要修的）。清单只给单行条目，正文模型用
+      // read_task_experience 自取（拍板 C-7：能看见、不硬注入）；拿不到同样
+      // 不影响回合。
+      try {
+        const { experienceCatalogForPrompt } = await import('../recall/experience-catalog-hint');
+        const experienceCatalog = await experienceCatalogForPrompt(uid, cid, Date.now(), String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000));
+        if (experienceCatalog) systemPrompt = `${systemPrompt}\n\n${experienceCatalog}`;
+      } catch {
+        // 经验清单拿不到不影响回合。
+      }
+
       // Layer 1 routing uplift: deterministic task-intent detection adds an
       // advisory hint so an ordinary user request is not silently skipped.
       // Advisory only — no state writes. The world model owns governance

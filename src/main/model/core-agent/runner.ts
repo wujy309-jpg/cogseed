@@ -61,6 +61,7 @@ import { officeCliAvailable } from '../../features/office/office_engine';
 import { createKbTools } from './kb-tools';
 import { createRecallTools } from './recall-tools';
 import { createAssetStewardTools } from './asset-steward-tools';
+import { createExperienceTools } from './experience-tools';
 import { createPersonalOntologyTools } from './personal-ontology-tools';
 import { createChatHistoryTools } from './chat-history-tools';
 import { createMessagingTools } from './messaging-tools';
@@ -856,6 +857,19 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     ...(params.userMessage ? { taskText: params.userMessage } : {}),
   }) : [];
 
+  // 任务经验目录工具（specs/016 T024 / US-802）：list_task_experiences +
+  // read_task_experience，2 读 0 写、无 localExec。与上面两族（资产取用/资产
+  // 管家）分属两套集合（exp- vs aa-，完全隔离），但注入条件同源：主会话与
+  // group_chat 各 actor 都拿到，读正文写 agent_read 回执与使用流水（turnId）、
+  // 以当前消息做准入匹配（taskText）。同样**不进只读白名单**（见上）。
+  const experienceTools = uid && !params.disableTools ? createExperienceTools({
+    userId: uid,
+    ...(params.turnId ? { turnId: params.turnId } : {}),
+    ...(params.cid ? { cid: params.cid } : {}),
+    ...(params.spaceId ? { spaceId: params.spaceId } : {}),
+    ...(params.userMessage ? { taskText: params.userMessage } : {}),
+  }) : [];
+
   // Personal Ontology read-only tools (personal_ontology_fields). Gives skills
   // the installed role-template field list through the PO contract instead of
   // shelling out to read groups.md / <template_id>.md by hand.
@@ -1009,6 +1023,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     ...kbTools,
     ...recallTools,
     ...assetStewardTools,
+    ...experienceTools,
     ...personalOntologyTools,
     ...chatHistoryTools,
     ...messagingTools,

@@ -18,8 +18,11 @@ export interface InjectionReceipt extends RecallJsonRecord {
    *  catalog_hint=目录标了★提示相关但本回合未被使用（漏取审计，2026-09-19）
    *  （2026-09-18：模型主动读进上下文也算一次真实带入，否则自选资产
    *  永远进不了使用统计与升档链）。
+   *  experience=经验目录（specs/016，2026-09-25）：经验清单构建时对「已挂载
+   *  但本轮被准入拦下」的经验记 omitted 留痕（与资产隔离，只借回执载体：
+   *  assetId 字段存 exp-… 条目 id，reason 存准入理由码）。
    *  缺省视为 projection（存量收据与新正式资产收据一致）。 */
-  channel?: 'projection' | 'profile_memory' | 'agent_read' | 'catalog_hint';
+  channel?: 'projection' | 'profile_memory' | 'agent_read' | 'catalog_hint' | 'experience';
   messageId?: string;
   /** 被拦原因（2026-09-25 验收修复 US-604 AC4/AC7）：status='omitted' 时带上
    *  `formal-assets/runtime.ts::assetRuntimeBlockRule` 的稳定规则标识，界面据此
@@ -31,7 +34,7 @@ export interface InjectionReceipt extends RecallJsonRecord {
 
 const INJECTION_BOUNDARIES = new Set<InjectionReceipt['boundary']>(['real', 'degraded', 'test-double']);
 const INJECTION_STATUSES = new Set<InjectionReceipt['status']>(['injected', 'dispatched', 'omitted', 'failed']);
-const INJECTION_CHANNELS = new Set<InjectionReceipt['channel']>(['projection', 'profile_memory', 'agent_read', 'catalog_hint']);
+const INJECTION_CHANNELS = new Set<InjectionReceipt['channel']>(['projection', 'profile_memory', 'agent_read', 'catalog_hint', 'experience']);
 
 function asInjectionReceipt(userId: string, value: RecallJsonRecord): InjectionReceipt {
   if (

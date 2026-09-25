@@ -11596,3 +11596,71 @@ describe("group_chat bus integration › model-selected asset attachment (2026-0
       .rejects.toThrow("not model-selected");
   }, 20_000);
 });
+
+describe("group_chat bus integration › experience catalog hint (specs/016 T025)", () => {
+  it("并列注入资产与经验两段目录，且互不污染：资产块零经验条目、经验块零资产条目、正文不硬注入", async () => {
+    const cid = newCid();
+    const state = await import("../../../../src/main/features/group_chat/state");
+    const bus = await import("../../../../src/main/features/group_chat/bus");
+    // 一条在用资产（资产目录可见）+ 一条同类型经验（"报告"命中消息文本的任务类型）。
+    const candidates = await import("../../../../src/main/features/recall/candidate-service");
+    const candidate = await candidates.saveRecallCandidate(TEST_UID, {
+      judgment: "Report asset: lead with the conclusion, then evidence.",
+      summary: "report-first rule",
+      suggestedType: "rule",
+      suggestedScope: "review",
+      sourceRefs: [{ kind: "execution", id: "exec-exp-catalog" }],
+    });
+    await candidates.promoteRecallCandidate(TEST_UID, candidate.id, { actor: "user" });
+    const experienceService = await import("../../../../src/main/features/recall/experience-service");
+    const now = new Date().toISOString();
+    await experienceService.createExperience(TEST_UID, {
+      id: "exp-bus-catalog1",
+      source: {
+        episodeId: "kse-exp-bus-catalog1",
+        taskGoal: "写竞品调研报告",
+        taskType: "report",
+        taskStatus: "confirmed",
+      },
+      experienceType: "lesson",
+      title: "报告先给结论再给依据",
+      body: "报告类经验正文：经验正文只应经 read_task_experience 自取，不得硬注入提示词。",
+      scope: "report",
+      verification: { state: "confirmed", outcome: "better_than_expected", deltaR: 0.3, confidence: 0.8 },
+      evidenceRefs: [{ kind: "conversation", id: "conv-exp-bus-1" }],
+      learningProvenance: {
+        projectionId: "prj-exp-bus-1",
+        episodeId: "kse-exp-bus-catalog1",
+        ruleRefs: [],
+        attribution: "execution_gap",
+      },
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    _setScript(state.buildGconvSessionId(cid), [{ type: "final", text: "done" }]);
+    await bus.enqueue({ uid: TEST_UID, cid, fromActorId: "user", text: "写一份竞品调研报告" });
+    await waitForQuiescent(TEST_UID, cid, 6000);
+
+    const commanderCall = [..._recordedCalls].reverse().find((c) => c.sid === state.buildGconvSessionId(cid));
+    expect(commanderCall).toBeTruthy();
+    const prompt = String(commanderCall!.systemPrompt || "");
+    // 两段目录都在、并列追加（资产块在前，经验块在后）。
+    const assetIdx = prompt.indexOf("Asset catalog");
+    const expIdx = prompt.indexOf("Experience catalog");
+    expect(assetIdx).toBeGreaterThan(-1);
+    expect(expIdx).toBeGreaterThan(assetIdx);
+    // 互不污染：资产块里零经验条目、经验块里零资产条目（各自只含自家引用前缀）。
+    const assetBlock = prompt.slice(assetIdx, expIdx);
+    const expBlock = prompt.slice(expIdx);
+    expect(assetBlock).not.toContain("[exp:");
+    expect(expBlock).not.toContain("[asset:");
+    // 模型能看见经验清单（单行条目），但正文仍需自取（拍板 C-7）。
+    expect(expBlock).toContain("[exp:exp-bus-catalog1]");
+    expect(expBlock).toContain("read_task_experience");
+    expect(prompt).not.toContain("报告类经验正文：经验正文只应经");
+    // 资产那条仍在资产块里（资产目录不受经验接入影响）。
+    expect(assetBlock).toContain("[asset:");
+  }, BUS_TEST_TIMEOUT_MS);
+});

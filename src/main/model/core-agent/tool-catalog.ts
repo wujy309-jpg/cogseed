@@ -134,6 +134,13 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: 'personal_ontology_fields', group: 'recall', summary: 'List the fillable fields of the user\'s installed role templates (个人本体挖空表单), so a candidate can be routed to a concrete field by opaque field_ref.' },
   { name: 'search_ability_assets', group: 'recall', summary: 'Semantic search over the user\'s ability asset pool (沉淀的可复用经验/规则/模板/方法；全量只读，含所有空间与全局资产).' },
 
+  // 任务经验（specs/016 T024 / US-802）：与资产**完全隔离**的第二套集合（exp- 前缀）。
+  // 2 读 + 0 写、无 localExec（读写都在 <uid> 数据域内，不碰 shell/文件系统），
+  // 不按 agent 收窄（与 search_ability_assets 同一面）；同样**不进只读会话白名单**
+  // ——读正文会写 agent_read 回执与流水，不是无副作用（runner.ts:417-434 口径）。
+  { name: 'list_task_experiences', group: 'recall', summary: 'List the user\'s task experiences (lessons/workflows/gaps precipitated from finished tasks — a collection separate from ability assets) as one-line entries filtered by task type; no body text.' },
+  { name: 'read_task_experience', group: 'recall', summary: 'Read one task experience body by id in ≤2000-character chunks (use `chunk` to continue); enforces the same runtime gate and reports blocked state honestly instead of pretending it is missing.' },
+
   // 资产管家（specs/008 US-401/402）：把既有的资产读写能力暴露给模型。
   // 归属标注——读工具属 US-401、写工具属 US-402；**没有 localExec**（读写都经
   // asset-service 的写函数与 <uid> 数据域，不碰 shell/文件系统），也不受

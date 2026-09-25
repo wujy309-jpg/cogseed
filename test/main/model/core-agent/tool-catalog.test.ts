@@ -22,6 +22,7 @@ import { createKbTools } from '../../../../src/main/model/core-agent/kb-tools';
 import { createRecallTools } from '../../../../src/main/model/core-agent/recall-tools';
 import { createAssetStewardTools } from '../../../../src/main/model/core-agent/asset-steward-tools';
 import { createPersonalOntologyTools } from '../../../../src/main/model/core-agent/personal-ontology-tools';
+import { createExperienceTools } from '../../../../src/main/model/core-agent/experience-tools';
 import { createChatHistoryTools } from '../../../../src/main/model/core-agent/chat-history-tools';
 import { createMessagingTools } from '../../../../src/main/model/core-agent/messaging-tools';
 import { createImageGenTool } from '../../../../src/main/model/core-agent/image-gen-tool';
@@ -114,6 +115,8 @@ function enumerateAllInjectedTools(): AgentTool[] {
   tools.push(...createRecallTools({ userId: 'testuid' }));
   tools.push(...createAssetStewardTools({ userId: 'testuid' }));
   tools.push(...createPersonalOntologyTools({ userId: 'testuid' }));
+  // 经验目录工厂（specs/016 T024）：同样必须枚举，漏了它 catalog 少两行也不会红。
+  tools.push(...createExperienceTools({ userId: 'testuid' }));
   tools.push(...createChatHistoryTools({ userId: 'testuid' }));
   tools.push(...createMessagingTools({ userId: 'testuid', cid: 'testcid' }));
   tools.push(createImageGenTool({ userId: 'testuid', cid: 'testcid' }));
