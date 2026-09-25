@@ -61,7 +61,9 @@ function loadPersonalOntology(invoke: any, overrides: Record<string, unknown> = 
   // 编辑动作依赖 uiPrompt / uiAlert（沙箱默认不装）：按用例注入。
   Object.assign(sandbox, overrides);
   vm.createContext(sandbox);
-  for (const file of ['modules/icons.js', 'modules/ui-button.js', 'modules/ui-form.js', 'modules/ui-empty.js']) {
+  // T040/T041 收敛后 _tag/_statusPill/_statusDot 与 _button 同口径强依赖共享原语
+  // （缺则抛错）：沙箱补载真实 ui-status.js（index.html 全局加载的同一份），不再降级。
+  for (const file of ['modules/icons.js', 'modules/ui-button.js', 'modules/ui-form.js', 'modules/ui-empty.js', 'modules/ui-status.js']) {
     vm.runInContext(readFileSync(resolve(root, 'src/renderer', file), 'utf8'), sandbox, { filename: file });
   }
   vm.runInContext(ontology, sandbox, { filename: 'personal-ontology.js' });
@@ -586,7 +588,7 @@ describe('personal ontology renderer integration', () => {
     expect(body).toContain('基本情况');
     expect(body).toContain('居住地'); // 字段小节名
     expect(body).toContain('常住北京');
-    expect(body).toContain('personal-onto-status-dot'); // 状态点在（矛盾红）
+    expect(body).toContain('ui-status-dot--critical'); // 状态点在（矛盾红）——随 T041 迁移精确化（原锁旧类名 personal-onto-status-dot，总控已批）
     // 标记与操作不在默认渲染里（收进展开）
     expect(body).not.toContain('与同字段另一条值矛盾');
     expect(body).not.toContain('data-poc-group-op="remove-value"');
@@ -1312,5 +1314,80 @@ describe('personal ontology delete-recover roundtrip (US-102 renderer)', () => {
         expect(table[key], `missing ${key}`).toBeTruthy();
       }
     }
+  });
+});
+
+describe('personal ontology shared-control convergence (US-105 T040/T041)', () => {
+  it('T040/T041 源内零残留：ca-chip 与私产状态点类名不再出现，标记全走共享 seam', () => {
+    // 验收口径：grep ca-chip / personal-onto-status-dot 于 personal-ontology.js 无输出
+    expect(ontology).not.toContain('ca-chip');
+    expect(ontology).not.toContain('personal-onto-status-dot');
+    // 不新增裸控件：三类标记均经共享 ui-status.js 的 <span> 工厂
+    expect(ontology).toContain('window.uiTag');
+    expect(ontology).toContain('window.uiStatusPill');
+    expect(ontology).toContain('window.uiStatusDot');
+  });
+
+  it('T040/T041 状态语义不丢：值行状态点与展开标记的色调映射仍可辨（绿/琥珀/红）', async () => {
+    const invoke = vi.fn(async (channel: string, payload?: any) => {
+      if (channel === 'personalOntology.templates.list') return { ok: true, templates: [] };
+      if (channel === 'recall.assets.list') return { ok: true, assets: [] };
+      if (channel === 'personalOntology.groups.list') {
+        return { ok: true, groups: [{ group_id: 'grp-c', title: '基本情况', rel_path: 'g.md', created_at: '', updated_at: '' }] };
+      }
+      if (channel === 'personalOntology.candidates.list') return { ok: true, candidates: [] };
+      if (channel === 'personalOntology.groups.fields.list' && payload && payload.groupId === 'grp-c') {
+        return {
+          ok: true,
+          fields: [{
+            name: '居住地',
+            values: [
+              { value: '常住北京', source: '手动', verified: false },            // 命中冲突 → 红
+              { value: '常住上海', source: '手动', sensitivity: 'restricted' },  // 受限 → 琥珀
+              { value: '常用邮箱', source: '手动', verified: true },             // 已核实 → 绿
+            ],
+          }],
+        };
+      }
+      if (channel === 'personalOntology.groups.read') {
+        return { ok: true, content: '# 基本情况\n\n## 字段区\n\n### 居住地\n\n- 常用邮箱 [手动]\n' };
+      }
+      if (channel === 'personalOntology.conflicts.list') {
+        return { ok: true, conflicts: [{ conflict_id: 'oc-c1', group_id: 'grp-c', field: '居住地', value_a: '常住北京', value_b: '外地', detected_at: '', status: 'open' }] };
+      }
+      return { ok: true };
+    });
+    const { sandbox, elements } = loadPersonalOntology(invoke);
+
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+
+    // 默认值行：共享状态点三色调并存（冲突 critical > 受限 attention > 核实 success），旧类名零残留
+    const body = elements.get('personal-onto-main-body')?.innerHTML || '';
+    expect(body).toContain('ui-status-dot--critical');
+    expect(body).toContain('ui-status-dot--attention');
+    expect(body).toContain('ui-status-dot--success');
+    expect(body).not.toContain('personal-onto-status-dot');
+    expect(body).not.toContain('ca-chip');
+
+    // 展开受限值与已核实值：胶囊/标记的色调语义不丢（琥珀胶囊、绿 tag）
+    const bodyEl = elements.get('personal-onto-main-body') as any;
+    const rowFor = (value: string) => ({
+      getAttribute: (name: string) => (name === 'data-poc-line-key' ? encodeURIComponent(`grp-c\u0001居住地\u0001${value}`) : null),
+      addEventListener(event: string, handler: (...args: any[]) => any) { (this as any).listeners.set(event, handler); },
+      listeners: new Map<string, (...args: any[]) => any>(),
+    });
+    const restrictedRow = rowFor('常住上海');
+    const verifiedRow = rowFor('常用邮箱');
+    bodyEl.querySelectorAll = (selector: string) => (selector === '[data-poc-line-key]' ? [restrictedRow, verifiedRow] : []);
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+    await (restrictedRow.listeners.get('click') as any)({ stopPropagation() {} });
+    await (verifiedRow.listeners.get('click') as any)({ stopPropagation() {} });
+    await settleBackgroundWork();
+    const expanded = elements.get('personal-onto-main-body')?.innerHTML || '';
+    expect(expanded).toContain('ui-status-pill--attention'); // 受限·不自动注入 → 琥珀胶囊
+    expect(expanded).toContain('ui-tag--success');           // 有来源支持 → 绿 tag
+    expect(expanded).not.toContain('ca-chip');
   });
 });

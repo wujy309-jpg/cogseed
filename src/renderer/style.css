@@ -24679,13 +24679,9 @@ body:has(#panel-settings.active) .main-top-actions {
 .personal-onto-value-line.is-expanded { background: var(--surface-2); }
 .personal-onto-value-line.is-conflicted { border-left: 3px solid var(--danger); }
 .personal-onto-value-src { font-size: 12px; flex-shrink: 0; }
-.personal-onto-status-dot {
-  width: 8px; height: 8px; border-radius: 999px;
-  align-self: center; flex-shrink: 0;
-}
-.personal-onto-status-dot.is-red { background: var(--danger); }
-.personal-onto-status-dot.is-amber { background: var(--color-warning); }
-.personal-onto-status-dot.is-green { background: var(--success); }
+/* T041 状态点已收敛到共享 uiStatusDot：这里只保留值行（baseline 行）内的
+   垂直居中与防压缩适配，色点样式由 ui-components.css 的 .ui-status-dot* 提供。 */
+.personal-onto-value-line .ui-status-dot { align-self: center; flex-shrink: 0; }
 .personal-onto-value-detail {
   padding: 8px 10px 10px 14px;
   border-left: 2px solid var(--border);

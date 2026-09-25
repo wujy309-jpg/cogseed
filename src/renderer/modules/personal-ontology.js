@@ -40,17 +40,29 @@
     return '';
   }
 
-  /** 非交互元数据标记（US-102 T023）：共享 uiTag 优先，ca-chip 兜底
-   *  （uiTag 来自 ui-status.js，index.html 全局加载；沙箱降级保证可测）。 */
-  function _tag(label, className) {
+  /** 非交互元数据标记（US-102 T023；US-105 T040 收敛）：统一走共享 uiTag
+   *  （ui-status.js，index.html 全局加载）；中性缺省 solid，语义成功用 success。 */
+  function _tag(label, variant) {
     const text = String(label == null ? '' : label);
     if (!text) return '';
-    try {
-      if (typeof window !== 'undefined' && typeof window.uiTag === 'function') {
-        return window.uiTag({ label: text, className: className || undefined });
-      }
-    } catch (_) {}
-    return `<span class="ca-chip${className ? ` ${escapeHtml(className)}` : ''}">${escapeHtml(text)}</span>`;
+    if (typeof window.uiTag !== 'function') throw new Error('personal ontology requires uiTag');
+    return window.uiTag({ label: text, variant: variant || undefined });
+  }
+
+  /** 状态胶囊（US-105 T040）：琥珀=需要注意（可能过时/受限），红=矛盾。
+   *  与中性 _tag 分流——警示语义走共享 uiStatusPill，仍可辨。 */
+  function _statusPill(label, tone) {
+    const text = String(label == null ? '' : label);
+    if (!text) return '';
+    if (typeof window.uiStatusPill !== 'function') throw new Error('personal ontology requires uiStatusPill');
+    return window.uiStatusPill({ label: text, tone: tone || 'neutral' });
+  }
+
+  /** 状态点（US-105 T041）：值行唯一可见的状态指示，共享 uiStatusDot（无文字纯色点）。 */
+  function _statusDot(tone) {
+    if (!tone) return '';
+    if (typeof window.uiStatusDot !== 'function') throw new Error('personal ontology requires uiStatusDot');
+    return window.uiStatusDot({ tone });
   }
 
   function _button(options) {
@@ -891,19 +903,19 @@
       && c.field === field && (c.value_a === value || c.value_b === value));
   }
 
-  /** 状态点（值行唯一可见的状态指示）：冲突红 > 受限/超龄琥珀 > 核实绿。 */
-  function _pocStatusDotClass(fv, conflicted) {
-    if (conflicted) return 'is-red';
-    if (fv.sensitivity === 'restricted') return 'is-amber';
-    if (fv.asOf && _pocIsStaleAsOf(fv.asOf)) return 'is-amber';
-    if (fv.verified) return 'is-green';
+  /** 状态点色调（US-105 T041 收敛到共享 uiStatusDot 的 tone）：冲突红 > 受限/超龄琥珀 > 核实绿。 */
+  function _pocStatusDotTone(fv, conflicted) {
+    if (conflicted) return 'critical';
+    if (fv.sensitivity === 'restricted') return 'attention';
+    if (fv.asOf && _pocIsStaleAsOf(fv.asOf)) return 'attention';
+    if (fv.verified) return 'success';
     return '';
   }
 
   /** 极简值行 + 点击展开操作区（盒子化重构：标记与操作不糊脸）。 */
   function _pocValueRowHtml(gid, field, fv) {
     const conflicted = _pocConflictFor(gid, field.name, fv.value);
-    const dot = _pocStatusDotClass(fv, conflicted);
+    const dotTone = _pocStatusDotTone(fv, conflicted);
     // encode 而非 NUL 分隔：HTML 属性会吞控制字符，读回的 key 将与 Set 不一致
     const key = encodeURIComponent(`${gid}\u0001${field.name}\u0001${fv.value}`);
     const expanded = _pocExpandedValues.has(key);
@@ -911,12 +923,12 @@
     // 旁——009 本期只登记挂载位不实现（contracts/renderer-seams.md R1b），不得占用。
     const detail = expanded ? `<div class="personal-onto-value-detail">
         <div class="personal-onto-value-detail-chips">
-          ${fv.asOf ? `<span class="ca-chip">${escapeHtml(_tv('personalOntology.asof_chip', { m: fv.asOf }, '截至 {m}'))}</span>` : ''}
-          ${fv.asOf && _pocIsStaleAsOf(fv.asOf) ? `<span class="ca-chip is-amber">${escapeHtml(_t('personalOntology.stale_chip', '可能过时'))}</span>` : ''}
-          ${fv.verified === 'independent' ? `<span class="ca-chip is-green">${escapeHtml(_t('personalOntology.verified_independent_chip', '独立核实过'))}</span>` : fv.verified === true ? `<span class="ca-chip is-green">${escapeHtml(_t('personalOntology.verified_chip', '有来源支持'))}</span>` : ''}
-          ${fv.ruleKind === 'operation' ? `<span class="ca-chip">${escapeHtml(_t('personalOntology.rulekind_operation', '操作规则'))}</span>` : fv.ruleKind === 'preference' ? `<span class="ca-chip">${escapeHtml(_t('personalOntology.rulekind_preference', '偏好'))}</span>` : fv.ruleKind === 'constraint' ? `<span class="ca-chip">${escapeHtml(_t('personalOntology.rulekind_constraint', '约束'))}</span>` : ''}
-          ${fv.sensitivity === 'restricted' ? `<span class="ca-chip is-amber">${escapeHtml(_t('personalOntology.restricted_chip', '受限·不自动注入'))}</span>` : ''}
-          ${conflicted ? `<span class="ca-chip is-red">${escapeHtml(_t('personalOntology.conflict_chip', '与同字段另一条值矛盾'))}</span>` : ''}
+          ${fv.asOf ? _tag(_tv('personalOntology.asof_chip', { m: fv.asOf }, '截至 {m}')) : ''}
+          ${fv.asOf && _pocIsStaleAsOf(fv.asOf) ? _statusPill(_t('personalOntology.stale_chip', '可能过时'), 'attention') : ''}
+          ${fv.verified === 'independent' ? _tag(_t('personalOntology.verified_independent_chip', '独立核实过'), 'success') : fv.verified === true ? _tag(_t('personalOntology.verified_chip', '有来源支持'), 'success') : ''}
+          ${fv.ruleKind === 'operation' ? _tag(_t('personalOntology.rulekind_operation', '操作规则')) : fv.ruleKind === 'preference' ? _tag(_t('personalOntology.rulekind_preference', '偏好')) : fv.ruleKind === 'constraint' ? _tag(_t('personalOntology.rulekind_constraint', '约束')) : ''}
+          ${fv.sensitivity === 'restricted' ? _statusPill(_t('personalOntology.restricted_chip', '受限·不自动注入'), 'attention') : ''}
+          ${conflicted ? _statusPill(_t('personalOntology.conflict_chip', '与同字段另一条值矛盾'), 'critical') : ''}
         </div>
         <div class="personal-onto-value-detail-actions">
           ${_button({ label: fv.verified === 'independent' ? _t('personalOntology.unverify_tip', '取消核实') : fv.verified === true ? _t('personalOntology.verify_up_tip', '升级为独立核实') : _t('personalOntology.verify_tip', '标记为已核实'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'verify-value', 'data-poc-gid': gid, 'data-poc-field': field.name, 'data-poc-value': String(fv.value || ''), 'data-poc-verified': fv.verified === 'independent' ? '0' : fv.verified === true ? 'independent' : '1' } })}
@@ -929,7 +941,7 @@
     return `<div class="personal-onto-value-line${expanded ? ' is-expanded' : ''}${conflicted ? ' is-conflicted' : ''}" data-poc-line-key="${escapeHtml(key)}" role="button" tabindex="0">
         <span class="personal-onto-value-text">${escapeHtml(String(fv.value || ''))}</span>
         <span class="muted personal-onto-value-src">${escapeHtml(String(fv.source || '手动'))}</span>
-        ${dot ? `<span class="personal-onto-status-dot ${dot}" aria-hidden="true"></span>` : ''}
+        ${dotTone ? _statusDot(dotTone) : ''}
       </div>${detail}`;
   }
 
@@ -1061,7 +1073,7 @@
         </div>
         ${(g.fields || []).map((f) => `<div class="personal-onto-tbox-field">
           <span>${escapeHtml(f.name)}</span>
-          ${f.isRelation ? `<span class="ca-chip">${escapeHtml(_t('personalOntology.tbox_relation_flag', '关系字段'))}</span>` : ''}
+          ${f.isRelation ? _tag(_t('personalOntology.tbox_relation_flag', '关系字段')) : ''}
           ${f.description ? `<span class="muted personal-onto-field-desc">${escapeHtml(String(f.description))}</span>` : ''}
         </div>`).join('') || `<div class="muted personal-onto-value-empty">${escapeHtml(_t('personalOntology.field_no_values', '尚无值'))}</div>`}
       </div>`).join('');
@@ -1099,7 +1111,7 @@
       if (!text) return '';
       const id = String(c.candidate_id || '');
       return `<div class="personal-onto-backflow-row" data-poc-candidate-id="${escapeHtml(id)}">
-        <span class="ca-chip">${escapeHtml(_t('personalOntology.backflow_chip', '回流候选'))}</span>
+        ${_tag(_t('personalOntology.backflow_chip', '回流候选'))}
         <span class="personal-onto-backflow-text">${escapeHtml(text)}</span>
         <span class="personal-onto-backflow-actions">
           ${_pocBoxData.groups.map((g) => _button({ label: _tv('personalOntology.backflow_to', { g: g.title }, '写入：{g}'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-candidate-op': 'confirm', 'data-poc-candidate-id': id, 'data-poc-gid': g.gid } })).join('')}
