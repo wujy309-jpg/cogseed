@@ -789,6 +789,101 @@ describe('personal_ontology_groups › delete fallback (T020/T021: 删除前留�
   });
 });
 
+describe('personal_ontology_groups › deleted groups (D5b / T025 / T028)', () => {
+  /** 读某组历史里指定快照的落盘原文（与 delete fallback 组同款：逐字断言对文件本体做）。 */
+  function readSnapshotText(gid: string, snapshotId: string): string {
+    return fs.readFileSync(path.join(groupsDir(), '.history', gid, `${snapshotId}.md`), 'utf8');
+  }
+
+  it('T028 删除 → listDeletedGroups 可见（标题/时间/快照数）→ 恢复 → 内容逐字一致、组回列表', async () => {
+    const groups = await loadModule();
+    const created = await groups.createGroup(UID, '台账标题');
+    const gid = created.group!.group_id;
+    // 先经字段写路径造两版历史（该路径 parse→serialize 重建文本，不保留一级标题）
+    await groups.appendFieldValue(UID, gid, '称呼', '子安', '手动');
+    await groups.appendFieldValue(UID, gid, '居住地', '北京', '手动');
+    // 最后整文件覆写（原样落盘）：终态带一级标题——钉住「title 取快照首个 # 标题」
+    const content = ['# 已删除恢复组', '', '## 字段区', '', '### 称呼', '', '- 子安 [手动]', '', '### 居住地', '', '- 北京 [手动]', '', '---', '', '## 流水区', ''].join('\n');
+    await groups.writeGroupContent(UID, gid, content);
+    const beforeHistory = groups.listGroupHistory(UID, gid);
+    const beforeDelete = (await groups.readGroupContent(UID, gid)).content!;
+
+    expect((await groups.deleteGroup(UID, gid)).ok).toBe(true);
+
+    // 已删除分组可见：groupId / title（快照首个 # 标题）/ deletedAt / snapshotCount
+    const deleted = groups.listDeletedGroups(UID);
+    expect(deleted).toHaveLength(1);
+    expect(deleted[0].groupId).toBe(gid);
+    expect(deleted[0].title).toBe('已删除恢复组');
+    // 删前留档（T021）比删除前的历史多一版；deletedAt = 最新一版（删前那版）的 savedAt
+    const afterDeleteHistory = groups.listGroupHistory(UID, gid);
+    expect(deleted[0].snapshotCount).toBe(beforeHistory.length + 1);
+    expect(afterDeleteHistory).toHaveLength(deleted[0].snapshotCount);
+    expect(deleted[0].deletedAt).toBe(afterDeleteHistory[0].savedAt);
+    expect(deleted[0].deletedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+
+    // 恢复最新一版（= 删除前最后一版）→ 组回到台账、内容与删除前逐字一致
+    const newestId = afterDeleteHistory[0].id;
+    expect(readSnapshotText(gid, newestId)).toBe(beforeDelete);
+    const restored = await groups.restoreGroupSnapshot(UID, gid, newestId);
+    expect(restored.ok).toBe(true);
+    const listed = await groups.listGroups(UID);
+    expect(listed.map((g) => g.group_id)).toContain(gid);
+    expect((await groups.readGroupContent(UID, gid)).content).toBe(beforeDelete);
+    // 恢复后不再列在已删除分组；台账补了 snapshot_restore 行（D12）
+    expect(groups.listDeletedGroups(UID)).toEqual([]);
+    expect(groups.readGroupAudit(UID, gid).some((l) => l.action === 'snapshot_restore')).toBe(true);
+  });
+
+  it('T028 同名 group_id 的内容文件已存在 → 拒绝（group already exists）且不覆盖盘上文件', async () => {
+    const groups = await loadModule();
+    const created = await groups.createGroup(UID, '同名冲突组');
+    const gid = created.group!.group_id;
+    await groups.appendFieldValue(UID, gid, '称呼', '子安', '手动');
+    await groups.deleteGroup(UID, gid);
+    // 构造冲突态：meta 已删、快照在，但同名内容文件又在盘上（删除时 rm 失败 / 导入残留）
+    const orphan = '盘上已有的孤儿内容（不在任何快照里）';
+    fs.writeFileSync(path.join(groupsDir(), `${gid}.md`), orphan, 'utf8');
+
+    const history = groups.listGroupHistory(UID, gid);
+    const res = await groups.restoreGroupSnapshot(UID, gid, history[0].id);
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe('group already exists'); // 唯一新增错误码（contracts/ipc.md §2 失败分支③）
+    // 盘上文件未被覆盖、组未回台账（被拦截的操作不计成功）
+    expect(fs.readFileSync(path.join(groupsDir(), `${gid}.md`), 'utf8')).toBe(orphan);
+    expect((await groups.listGroups(UID)).map((g) => g.group_id)).not.toContain(gid);
+    // 仍在已删除列表里（可再次尝试）
+    expect(groups.listDeletedGroups(UID).map((d) => d.groupId)).toEqual([gid]);
+  });
+
+  it('T028 无快照目录 / 只有台账文件 / 活组 / 非法目录名 / 非法 uid → 空列表或不列入，不报错', async () => {
+    const groups = await loadModule();
+    // .history 目录尚不存在 → 空列表（contracts/ipc.md §2 失败分支①）
+    expect(groups.listDeletedGroups(UID)).toEqual([]);
+    // 只有 audit.jsonl、没有 .md 快照的目录：无从恢复，不列（audit.jsonl 也不参与标题派生）
+    fs.mkdirSync(path.join(groupsDir(), '.history', 'auditonlygrp1'), { recursive: true });
+    fs.appendFileSync(
+      path.join(groupsDir(), '.history', 'auditonlygrp1', 'audit.jsonl'),
+      `${JSON.stringify({ at: new Date().toISOString(), actor: 'user', action: 'group_delete', groupId: 'auditonlygrp1' })}\n`,
+      'utf8',
+    );
+    expect(groups.listDeletedGroups(UID)).toEqual([]);
+    // 非法目录名（不过 safeId，防目录名注入）不列入
+    fs.mkdirSync(path.join(groupsDir(), '.history', 'bad..name'), { recursive: true });
+    fs.writeFileSync(path.join(groupsDir(), '.history', 'bad..name', '2026-09-25T07-12-33-412Z-00.md'), 'x', 'utf8');
+    expect(groups.listDeletedGroups(UID)).toEqual([]);
+    // 活组（有快照、仍在台账）不列入
+    const created = await groups.createGroup(UID, '活组');
+    const gid = created.group!.group_id;
+    await groups.appendFieldValue(UID, gid, '称呼', '子安', '手动');
+    await groups.appendFieldValue(UID, gid, '称呼', '牛保康', '手动');
+    expect(groups.listGroupHistory(UID, gid).length).toBeGreaterThan(0);
+    expect(groups.listDeletedGroups(UID)).toEqual([]);
+    // 非法 uid → 空数组
+    expect(groups.listDeletedGroups('../evil')).toEqual([]);
+  });
+});
+
 describe('projection-knowledge › restricted values stay out of ontology facts', () => {
   it('restricted field values never enter the world-model fact list', async () => {
     const users = await import('../../../src/main/features/users');

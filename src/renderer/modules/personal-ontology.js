@@ -105,6 +105,9 @@
   let _pocSelected = { kind: 'abox', id: 'abox' };
   // 模板文件编辑器 { groupId, templateId, sections, content, view:'form'|'raw' }
   let _pocGroupEditor = null;
+  /** D5b（spec 009 T027）：「已删除分组」折叠块。懒加载——首次展开才拉
+   *  deleted.list（IPC 纪律 contracts/ipc.md §5.4：不给每次渲染加调用）。 */
+  let _pocDeletedGroups = { open: false, loaded: false, loadError: '', list: [] };
 
   // PersonalOntology is stored as durable profile statements. Keep the
   // storage contract flat, but present those statements as a small ontology
@@ -1017,6 +1020,32 @@
     </section>`;
   }
 
+  /** D5b：「已删除分组」折叠块（T 盒组管理区）。收起 = 一个入口按钮；展开 =
+   *  每组一行（标题 / 删除时刻 / 快照数 + 恢复按钮）或空态（_emptyState）。 */
+  function _pocRenderDeletedGroupsHtml() {
+    const dg = _pocDeletedGroups;
+    const toggle = _button({
+      label: _t('personalOntology.group_deleted_list', '已删除分组'),
+      icon: 'archive',
+      iconEnd: dg.open ? 'chevron-down' : 'chevron-right',
+      size: 'sm',
+      className: 'personal-onto-deleted-toggle',
+      attrs: { 'data-poc-deleted-op': 'toggle' },
+    });
+    if (!dg.open) return `<div class="personal-onto-deleted-zone">${toggle}</div>`;
+    const rows = (dg.list || []).map((g) => `<div class="personal-onto-deleted-row">
+        <span class="personal-onto-deleted-title">${escapeHtml(String((g && g.title) || (g && g.groupId) || ''))}</span>
+        <span class="muted personal-onto-deleted-meta">${escapeHtml(String((g && g.deletedAt) || ''))} · ${Number((g && g.snapshotCount) || 0)}</span>
+        ${_button({ label: _t('personalOntology.group_deleted_restore', '恢复这个分组'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-deleted-op': 'restore', 'data-poc-gid': String((g && g.groupId) || '') } })}
+      </div>`).join('');
+    const body = dg.loadError
+      ? `<div class="muted" role="alert">${escapeHtml(dg.loadError)}</div>`
+      : rows || _emptyState({ kind: 'quiet', title: _t('personalOntology.group_deleted_empty', '没有已删除的分组') });
+    return `<div class="personal-onto-deleted-zone is-open">${toggle}
+      <div class="personal-onto-deleted-body">${body}</div>
+    </div>`;
+  }
+
   /** T 盒（词汇）：组词汇卡（字段名+描述+组操作）+ 角色模板 + 模板库。 */
   function _pocRenderTBoxView() {
     const installedTmpls = _pocTemplates.filter((t) => t.installed);
@@ -1041,6 +1070,7 @@
       <div class="personal-onto-zone-head">${escapeHtml(_t('personalOntology.tbox_groups', '分组词汇'))} <span class="muted">${_pocBoxData.groups.length}</span></div>
       ${_button({ label: _t('personalOntology.group_new', '新建分组'), size: 'sm', className: 'personal-onto-group-new-btn', attrs: { 'data-poc-nav': 'new-group' } })}
       ${cards || `<div class="muted personal-onto-value-empty">${escapeHtml(_t('personalOntology.groups_empty', '还没有分组'))}</div>`}
+      ${_pocRenderDeletedGroupsHtml()}
       <div class="personal-onto-zone-head">${escapeHtml(_t('personalOntology.nav_templates', '角色模板'))} <span class="muted">${installedTmpls.length}</span></div>
       ${installedTmpls.map((tmpl) => `<div class="personal-onto-nav-template-row">
           <button type="button" class="personal-onto-nav-row is-file" data-poc-nav="template" data-poc-id="${escapeHtml(tmpl.group_id || '')}">
@@ -1123,9 +1153,9 @@
 
   async function _pocDeleteGroupConfirm(gid) {
     if (!gid) return;
-    // US-102 T022：文案与 FR-003 对齐——如实说明后果（分组文件删除）与恢复路径
-    //（删前快照已留档在本机，Phase 4 T021 保证），不再写「不可恢复」式假承诺。
-    const confirmMsg = _t('personalOntology.group_delete_confirm', '删除后分组文件（含全部字段与流水）将被删除；删除前的历史快照保留在本机，可用于恢复。');
+    // US-102 T022 + T027（D5b）：如实说明后果（分组文件删除）与恢复路径
+    //（删前快照留档在本机，T021 保证），并指向「已删除分组」恢复入口。
+    const confirmMsg = _t('personalOntology.group_delete_confirm', '删除后分组文件（含全部字段与流水）将被删除；删除前的历史快照保留在本机，可在词汇盒「已删除分组」入口恢复。');
     const ok = (typeof uiConfirmDanger === 'function')
       ? await uiConfirmDanger({
         title: _t('personalOntology.group_delete', '删除分组'),
@@ -1139,8 +1169,76 @@
       _pocToast('personalOntology.op_failed', (res && res.error) || '操作失败', 'error');
       return;
     }
+    // 组已从台账消失：分组列表缓存必须失效重读，否则已删的组卡残留（幽灵卡）。
+    _pocGroups = { list: [], loaded: false, loadError: '' };
     await _pocReloadBoxData();
     renderPersonalOntology();
+  }
+
+  // ── 已删除分组（D5b / spec 009 T027）：折叠入口 + 恢复 ──────────────────
+  // 数据来源是 deleteGroup 刻意保留的 .history/<groupId>/（删前快照 + 台账）；
+  // 恢复复用既有 history.restore 通道——主进程在 meta 缺失分支重建组（T025）。
+
+  /** 拉「已删除分组」列表（展开时 / 恢复后刷新）。失败可见：loadError 在
+   *  打开态里呈现，不静默吞（禁 .catch(() => {}) 式静默）。 */
+  async function _pocLoadDeletedGroups() {
+    const res = await _pocInvoke('personalOntology.groups.deleted.list', {});
+    if (!res || res.ok === false || !Array.isArray(res.deleted)) {
+      _pocDeletedGroups = {
+        open: true,
+        loaded: true,
+        loadError: (res && res.error) || _t('personalOntology.load_error', '加载失败'),
+        list: [],
+      };
+      return false;
+    }
+    _pocDeletedGroups = { open: true, loaded: true, loadError: '', list: res.deleted };
+    return true;
+  }
+
+  /** 折叠开关：收起就地；展开用已拉到的列表，首次展开才发请求。 */
+  async function _pocToggleDeletedGroups() {
+    if (_pocDeletedGroups.open) {
+      _pocDeletedGroups = { ..._pocDeletedGroups, open: false };
+    } else if (_pocDeletedGroups.loaded) {
+      _pocDeletedGroups = { ..._pocDeletedGroups, open: true };
+    } else {
+      await _pocLoadDeletedGroups();
+    }
+    _pocRenderMain();
+  }
+
+  /** 恢复一个已删除分组：history.list 取最新一版（= 删除前最后一版）的
+   *  snapshotId → 复用 history.restore（主进程重建 meta 后写回快照）。
+   *  成功的反馈就是分组卡回到列表、该行从已删除列表消失；失败必须可见。 */
+  async function _pocRestoreDeletedGroup(el, gid) {
+    if (!gid) return;
+    await _pocRunOnce(`deleted-restore:${gid}`, el, async () => {
+      const histRes = await _pocInvoke('personalOntology.groups.history.list', { groupId: gid });
+      const newest = histRes && Array.isArray(histRes.history) && histRes.history.length
+        ? histRes.history[0] // 新→旧排序：[0] 即删除前最后一版
+        : null;
+      if (!newest || !newest.id) {
+        _pocToast('personalOntology.op_failed', '操作失败', 'error');
+        return;
+      }
+      const res = await _pocInvoke('personalOntology.groups.history.restore', {
+        groupId: gid, snapshotId: String(newest.id),
+      });
+      if (!res || res.ok === false) {
+        // 失败按码可见（同名冲突 = 唯一新增码 group already exists，走同一
+        // 条 op_failed 通道；文案四语预算只给 D5b 三键，不另立词条）。
+        _pocToast('personalOntology.op_failed', (res && res.error) || '操作失败', 'error');
+        return;
+      }
+      // 组回到台账：分组列表缓存必须失效重读，否则恢复的组不出现（幽灵反向）。
+      _pocGroups = { list: [], loaded: false, loadError: '' };
+      await _pocReloadBoxData();
+      await _pocLoadDeletedGroups(); // 已删除列表刷新（该组已不在其中）
+      _pocRenderNav();
+      _pocBindNav();
+      _pocRenderMain(); // 折叠块已换新列表，主区要跟着重渲染一次
+    });
   }
 
   async function _pocAppendValuePrompt(fieldName, gid) {
@@ -1512,6 +1610,16 @@
         else if (op === 'show-history') await _pocShowGroupHistory(gid);
         else if (op === 'restore-snapshot') await _pocRestoreSnapshot(el, gid);
         else if (op === 'append-entry') await _pocAppendEntryNote(gid);
+      });
+    });
+    // D5b「已删除分组」折叠与恢复（spec 009 T027）
+    bodyEl.querySelectorAll('[data-poc-deleted-op]').forEach((el) => {
+      el.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const op = el.getAttribute('data-poc-deleted-op');
+        const gid = el.getAttribute('data-poc-gid');
+        if (op === 'toggle') await _pocToggleDeletedGroups();
+        else if (op === 'restore' && gid) await _pocRestoreDeletedGroup(el, gid);
       });
     });
     // 回流候选（confirm 带目标组）

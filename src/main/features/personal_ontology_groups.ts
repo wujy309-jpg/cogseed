@@ -556,7 +556,71 @@ export function listGroupHistory(uid: string, groupId: string): GroupHistoryEntr
   }
 }
 
-/** 恢复某版快照：当前文本先快照（可再回滚回来），再写回快照内容。 */
+// ── 已删除分组（spec 009 D5b / T025，待总控确认第 7 条·选项②）─────────────
+//
+// deleteGroup 只删 groups.md 行 + 内容文件，.history/<groupId>/ 目录（快照与
+// 台账）刻意保留——这就是「已删除分组」的数据来源：历史目录还在、台账行已
+// 没有的组。恢复复用 restoreGroupSnapshot 的「meta 缺失」分支（见其注释）。
+
+/** D5b：「已删除分组」列表项（contracts/ipc.md §2）。 */
+export interface DeletedGroupSummary {
+  groupId: string;
+  /** 最新一版快照的首个 `# 标题`；取不到 = 目录名（= groupId）。audit.jsonl 不是快照、不参与派生。 */
+  title: string;
+  /** 最新一版快照的 savedAt（近似删除时刻；正式删除时刻在台账 group_delete 行里）。 */
+  deletedAt: string;
+  /** 快照版数（只数 .md；台账文件不计入）。 */
+  snapshotCount: number;
+}
+
+/** 从快照正文派生组标题：首个一级标题 `# xxx` 的文本；没有（普通组正文只有
+ *  `## 字段区`/`## 流水区`，无一级标题）→ fallback。`## ` 不会误匹配
+ *  （`^#\s` 只吃一个井号）。 */
+function titleFromSnapshotText(text: string, fallback: string): string {
+  const match = String(text ?? '').match(/^#[ \t]+(\S.*)$/m);
+  const title = match ? match[1].trim() : '';
+  return title || fallback;
+}
+
+/**
+ * 「已删除分组」列表：.history/ 子目录名里、groups.md 台账已没有对应行的组。
+ * 只列还有 `.md` 快照可恢复的（只剩 audit.jsonl 的目录无从恢复，不列）；
+ * 仍在台账里的组是活组，也不列。无 .history 目录 / uid 非法 → 空数组，
+ * 绝不 throw（contracts/ipc.md §2 失败分支①：`{ ok:true, deleted: [] }`）。
+ */
+export function listDeletedGroups(uid: string): DeletedGroupSummary[] {
+  if (!safeId(uid)) return [];
+  try {
+    const root = path.join(userOntologyGroupsDir(uid), HISTORY_DIR);
+    if (!fs.existsSync(root)) return [];
+    const liveIds = new Set(readGroups(uid).map((g) => g.group_id));
+    const out: DeletedGroupSummary[] = [];
+    for (const name of fs.readdirSync(root)) {
+      // groupId 一律经 safeId：目录名可能被外部写入，未过校验的名字不进
+      // 列表（恢复入口也不接受它——restoreGroupSnapshot 入口同一道闸）。
+      if (!safeId(name)) continue;
+      if (liveIds.has(name)) continue;
+      const history = listGroupHistory(uid, name);
+      if (!history.length) continue;
+      const newest = history[0];
+      const newestText = fs.readFileSync(path.join(groupHistoryDir(uid, name), `${newest.id}.md`), 'utf8');
+      out.push({
+        groupId: name,
+        title: titleFromSnapshotText(newestText, name),
+        deletedAt: newest.savedAt,
+        snapshotCount: history.length,
+      });
+    }
+    // 最近删除的排前面（deletedAt 新 → 旧）；同刻按 groupId 稳定排序。
+    out.sort((a, b) => (a.deletedAt < b.deletedAt ? 1 : a.deletedAt > b.deletedAt ? -1 : a.groupId.localeCompare(b.groupId)));
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/** 恢复某版快照：当前文本先快照（可再回滚回来），再写回快照内容。
+ *  meta 缺失 = 已删除组（D5b）→ 重建 meta 后写回，组回到台账列表。 */
 export async function restoreGroupSnapshot(uid: string, groupId: string, snapshotId: string): Promise<SimpleResult> {
   if (!safeId(uid) || !safeId(groupId)) return { ok: false, error: 'invalid uid or groupId' };
   // T007：形状放宽到契约形态 `^[0-9TZ-]{20,}(?:-\d{2})?$`（contracts/ipc.md
@@ -570,7 +634,39 @@ export async function restoreGroupSnapshot(uid: string, groupId: string, snapsho
     .then(async () => {
       const groups = readGroups(uid);
       const meta = groups.find((g) => g.group_id === groupId);
-      if (!meta) return { ok: false, error: 'group not found' };
+      if (!meta) {
+        // D5b（spec 009 T025）：meta 缺失 = 已删除组（.history/<groupId>/ 快照
+        // 还在、groups.md 行已删）——不再直接失败，而是重建 meta（group_id
+        // 沿用历史目录名、title 取快照首个 `# 标题`、rel_path 走既有规则）
+        // → 写回快照内容 → 组回到台账列表。成功语义不变（仍是 { ok:true }）。
+        const snapText = fs.readFileSync(snapPath, 'utf8');
+        const abs = resolveGroupFileAbsPath(uid, groupId); // safeId + 防穿越（防御纵深）
+        // 同名冲突（唯一新增错误码，contracts/ipc.md §2 失败分支③）：磁盘上
+        // 同名 group_id 的内容文件还在（删除时 rm 失败 / 导入留下的孤儿文件）
+        // ——它的内容不在任何快照里，恢复路径直接覆盖它等于无声数据损失，
+        // 拒绝并把决定权交回用户（先处理那个文件，再恢复）。
+        if (fs.existsSync(abs)) return { ok: false, error: 'group already exists' };
+        const now = nowIso();
+        const rebuilt: GroupMeta = {
+          group_id: groupId,
+          title: titleFromSnapshotText(snapText, groupId),
+          rel_path: groupFileRelPathFromContextsRoot(groupId),
+          created_at: now,
+          updated_at: now,
+        };
+        try {
+          fs.mkdirSync(path.dirname(abs), { recursive: true });
+          writeTextAtomicSync(abs, snapText);
+        } catch (err) {
+          return { ok: false, error: (err as Error).message };
+        }
+        groups.push(rebuilt);
+        writeGroups(uid, groups);
+        notifyGroupUpserted(uid, rebuilt.rel_path);
+        // D12：恢复动作记台账（reason = 恢复到哪版快照；零正文，同既有分支）。
+        appendOntologyAudit(uid, groupId, 'snapshot_restore', { reason: snapshotId });
+        return { ok: true };
+      }
       const abs = resolveGroupFileAbsPathFromMeta(uid, meta);
       snapshotGroupHistory(uid, groupId, readTextSafe(abs)); // 当前版留档
       writeTextAtomicSync(abs, fs.readFileSync(snapPath, 'utf8'));

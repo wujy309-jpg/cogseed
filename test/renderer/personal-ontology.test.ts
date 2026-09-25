@@ -835,6 +835,219 @@ describe('personal ontology renderer integration', () => {
 });
 
 // ── US-102 删除/恢复闭环渲染段（specs/009 Phase 4：T022/T023/T024）──────────
+describe('personal ontology deleted-groups fold (US-102 D5b renderer / T027-T028)', () => {
+  /** 可点击控件 mock：含 _pocRunOnce 忙态路径需要的 setAttribute/removeAttribute。 */
+  function ctrl(attrs: Record<string, string>) {
+    return {
+      disabled: false,
+      getAttribute: (name: string) => (name in attrs ? attrs[name] : null),
+      setAttribute() {},
+      removeAttribute() {},
+      listeners: new Map<string, (...args: any[]) => any>(),
+      addEventListener(event: string, handler: (...args: any[]) => any) {
+        this.listeners.set(event, handler);
+      },
+    };
+  }
+
+  /** 有状态 invoke：真实模拟「删组进已删除列表 → 恢复回列表」的主进程行为。 */
+  function makeDeletedGroupsWorld() {
+    const BEFORE = '# 基本情况\n\n## 字段区\n\n### 居住地\n\n- 常住北京 [手动]\n';
+    const world = {
+      BEFORE,
+      groups: [{ group_id: 'grp-d1', title: '基本情况', rel_path: '.personal_ontology_groups/grp-d1.md', created_at: '', updated_at: '' }],
+      deleted: [] as any[],
+      history: [] as any[],
+      content: BEFORE,
+      reads: [] as string[],
+      restoreCalls: [] as any[],
+    };
+    const invoke = vi.fn(async (channel: string, payload?: any) => {
+      if (channel === 'personalOntology.templates.list') return { ok: true, templates: [] };
+      if (channel === 'recall.assets.list') return { ok: true, assets: [] };
+      if (channel === 'personalOntology.groups.list') return { ok: true, groups: world.groups };
+      if (channel === 'personalOntology.candidates.list') return { ok: true, candidates: [] };
+      if (channel === 'personalOntology.conflicts.list') return { ok: true, conflicts: [] };
+      if (channel === 'personalOntology.groups.fields.list') {
+        const hasValue = world.content.includes('常住北京');
+        return { ok: true, fields: hasValue ? [{ name: '居住地', values: [{ value: '常住北京', source: '手动' }] }] : [] };
+      }
+      if (channel === 'personalOntology.groups.read') {
+        world.reads.push(world.content);
+        return { ok: true, content: world.content };
+      }
+      if (channel === 'personalOntology.groups.delete') {
+        // 主进程 T021 口径：rm 前留档（= 删除前最后一版）→ 删台账行
+        world.history.unshift({ id: 'snap-del', savedAt: '2026-09-25T10:00:00.000Z', bytes: BEFORE.length, preview: BEFORE.replace(/\s+/g, ' ').slice(0, 80) });
+        world.groups = [];
+        world.deleted = [{ groupId: 'grp-d1', title: '基本情况', deletedAt: '2026-09-25T10:00:00.000Z', snapshotCount: 1 }];
+        return { ok: true };
+      }
+      if (channel === 'personalOntology.groups.deleted.list') return { ok: true, deleted: world.deleted };
+      if (channel === 'personalOntology.groups.history.list') return { ok: true, history: world.history };
+      if (channel === 'personalOntology.groups.history.restore') {
+        world.restoreCalls.push(payload);
+        // 主进程 T025 口径：meta 缺失 → 重建 meta + 写回快照 → 组回台账
+        world.content = BEFORE;
+        world.groups = [{ group_id: 'grp-d1', title: '基本情况', rel_path: '.personal_ontology_groups/grp-d1.md', created_at: '', updated_at: '' }];
+        world.deleted = [];
+        return { ok: true };
+      }
+      return { ok: true };
+    });
+    return { world, invoke };
+  }
+
+  async function openTBox(sandbox: any, elements: any) {
+    const nav = elements.get('personal-onto-nav') as any;
+    const tboxRow = ctrl({ 'data-poc-nav': 'tbox', 'data-poc-id': 'tbox' });
+    nav.querySelectorAll = (selector: string) => (selector === '[data-poc-nav]' ? [tboxRow] : []);
+    // nav mock 装好后重渲染一次，_pocBindNav 才会把点击监听绑到 mock 行上
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+    await tboxRow.listeners.get('click')({ stopPropagation() {} });
+    await settleBackgroundWork();
+  }
+
+  it('T028 删除测试分组 → 「已删除分组」可见（标题/时间/快照数）→ 恢复 → 分组回到列表且内容逐字一致', async () => {
+    const { world, invoke } = makeDeletedGroupsWorld();
+    const { sandbox, elements } = loadPersonalOntology(invoke, { uiConfirmDanger: async () => true });
+    const bodyEl = elements.get('personal-onto-main-body') as any;
+
+    // ① T 盒：组卡在；折叠入口在但未展开，且展开前不拉已删除列表（懒加载/IPC 纪律）
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+    await openTBox(sandbox, elements);
+    let body = elements.get('personal-onto-main-body')?.innerHTML || '';
+    expect(body).toContain('基本情况');
+    expect(body).toContain('data-poc-deleted-op="toggle"');
+    expect(body).toContain('已删除分组');
+    expect(body).not.toContain('data-poc-deleted-op="restore"');
+    expect(invoke).not.toHaveBeenCalledWith('personalOntology.groups.deleted.list', expect.anything());
+
+    // ② 删除分组（确认直过）→ 组卡消失
+    const deleteBtn = ctrl({ 'data-poc-group-op': 'delete-group', 'data-poc-gid': 'grp-d1' });
+    bodyEl.querySelectorAll = (selector: string) => (selector === '[data-poc-group-op]' ? [deleteBtn] : []);
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+    await deleteBtn.listeners.get('click')({ stopPropagation() {} });
+    await settleBackgroundWork();
+    expect(invoke).toHaveBeenCalledWith('personalOntology.groups.delete', { groupId: 'grp-d1' });
+    body = elements.get('personal-onto-main-body')?.innerHTML || '';
+    expect(body).not.toContain('data-poc-group-op="delete-group"');
+
+    // ③ 展开「已删除分组」：标题 / 删除时刻 / 快照数 / 恢复按钮都可见
+    const toggleBtn = ctrl({ 'data-poc-deleted-op': 'toggle' });
+    bodyEl.querySelectorAll = (selector: string) => (selector === '[data-poc-deleted-op]' ? [toggleBtn] : []);
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+    await toggleBtn.listeners.get('click')({ stopPropagation() {} });
+    await settleBackgroundWork();
+    expect(invoke).toHaveBeenCalledWith('personalOntology.groups.deleted.list', {});
+    body = elements.get('personal-onto-main-body')?.innerHTML || '';
+    expect(body).toContain('基本情况');
+    expect(body).toContain('2026-09-25T10:00:00.000Z');
+    expect(body).toMatch(/·\s*1</); // 快照数
+    expect(body).toContain('data-poc-deleted-op="restore"');
+    expect(body).toContain('data-poc-gid="grp-d1"');
+    expect(body).toContain('恢复这个分组');
+
+    // ④ 恢复 → 复用 history.restore（最新一版）→ 分组卡回到列表、内容与删除前逐字一致
+    const restoreBtn = ctrl({ 'data-poc-deleted-op': 'restore', 'data-poc-gid': 'grp-d1' });
+    bodyEl.querySelectorAll = (selector: string) => (selector === '[data-poc-deleted-op]' ? [restoreBtn] : []);
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+    await restoreBtn.listeners.get('click')({ stopPropagation() {} });
+    await settleBackgroundWork();
+    expect(world.restoreCalls).toEqual([{ groupId: 'grp-d1', snapshotId: 'snap-del' }]);
+    body = elements.get('personal-onto-main-body')?.innerHTML || '';
+    expect(body).toContain('基本情况'); // 组卡回到列表（T 盒显示组卡与字段名）
+    expect(body).toContain('居住地'); // 重读后的字段也回来了
+    expect(body).not.toContain('data-poc-deleted-op="restore"'); // 已删除列表里没有它了
+    expect(body).toContain('没有已删除的分组'); // 空态（恢复后列表刷新为空）
+    expect(world.reads[world.reads.length - 1]).toBe(world.BEFORE); // groups.read 内容逐字一致
+  });
+
+  it('T028 空态：没有已删除的分组时展开可读、不报错（_emptyState 呈现）', async () => {
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === 'personalOntology.templates.list') return { ok: true, templates: [] };
+      if (channel === 'recall.assets.list') return { ok: true, assets: [] };
+      if (channel === 'personalOntology.groups.list') return { ok: true, groups: [] };
+      if (channel === 'personalOntology.candidates.list') return { ok: true, candidates: [] };
+      if (channel === 'personalOntology.groups.deleted.list') return { ok: true, deleted: [] };
+      return { ok: true };
+    });
+    const { sandbox, elements } = loadPersonalOntology(invoke);
+    const bodyEl = elements.get('personal-onto-main-body') as any;
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+    await openTBox(sandbox, elements);
+
+    const toggleBtn = ctrl({ 'data-poc-deleted-op': 'toggle' });
+    bodyEl.querySelectorAll = (selector: string) => (selector === '[data-poc-deleted-op]' ? [toggleBtn] : []);
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+    await toggleBtn.listeners.get('click')({ stopPropagation() {} });
+    await settleBackgroundWork();
+
+    const body = elements.get('personal-onto-main-body')?.innerHTML || '';
+    expect(body).toContain('没有已删除的分组');
+    expect(body).toContain('ui-empty-state'); // 走共享空态原语
+    expect(body).not.toContain('data-poc-deleted-op="restore"');
+  });
+
+  it('T028 同名组已存在 → 恢复被拒绝且提示可见，分组不回列表', async () => {
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === 'personalOntology.templates.list') return { ok: true, templates: [] };
+      if (channel === 'recall.assets.list') return { ok: true, assets: [] };
+      if (channel === 'personalOntology.groups.list') return { ok: true, groups: [] };
+      if (channel === 'personalOntology.candidates.list') return { ok: true, candidates: [] };
+      if (channel === 'personalOntology.conflicts.list') return { ok: true, conflicts: [] };
+      if (channel === 'personalOntology.groups.fields.list') return { ok: true, fields: [] };
+      if (channel === 'personalOntology.groups.deleted.list') {
+        return { ok: true, deleted: [{ groupId: 'grp-dup', title: '同名组', deletedAt: '2026-09-25T10:00:00.000Z', snapshotCount: 2 }] };
+      }
+      if (channel === 'personalOntology.groups.history.list') {
+        return { ok: true, history: [{ id: 'snap-dup', savedAt: '2026-09-25T10:00:00.000Z' }] };
+      }
+      if (channel === 'personalOntology.groups.history.restore') {
+        // 主进程 T025 唯一新增错误码：同名 group_id 已存在
+        return { ok: false, error: 'group already exists' };
+      }
+      return { ok: true };
+    });
+    const { sandbox, elements, uiToast } = loadPersonalOntology(invoke);
+    const bodyEl = elements.get('personal-onto-main-body') as any;
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+    await openTBox(sandbox, elements);
+
+    const toggleBtn = ctrl({ 'data-poc-deleted-op': 'toggle' });
+    const restoreBtn = ctrl({ 'data-poc-deleted-op': 'restore', 'data-poc-gid': 'grp-dup' });
+    bodyEl.querySelectorAll = (selector: string) => (selector === '[data-poc-deleted-op]' ? [toggleBtn] : []);
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+    await toggleBtn.listeners.get('click')({ stopPropagation() {} });
+    await settleBackgroundWork();
+    let body = elements.get('personal-onto-main-body')?.innerHTML || '';
+    expect(body).toContain('同名组');
+
+    bodyEl.querySelectorAll = (selector: string) => (selector === '[data-poc-deleted-op]' ? [restoreBtn] : []);
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+    await restoreBtn.listeners.get('click')({ stopPropagation() {} });
+    await settleBackgroundWork();
+
+    expect(invoke).toHaveBeenCalledWith('personalOntology.groups.history.restore', { groupId: 'grp-dup', snapshotId: 'snap-dup' });
+    // 拒绝必须可见：失败 toast 带错误码（沙箱 t(key)=key → 兜底串 = 错误码本身）
+    expect(uiToast).toHaveBeenCalledWith('group already exists', { variant: 'error' });
+    // 分组没有回来、行仍在已删除列表（可重试）
+    body = elements.get('personal-onto-main-body')?.innerHTML || '';
+    expect(body).toContain('同名组');
+    expect(body).toContain('data-poc-deleted-op="restore"');
+  });
+});
+
 describe('personal ontology delete-recover roundtrip (US-102 renderer)', () => {
   /** 可点击控件 mock：含 _pocRunOnce 忙态路径需要的 setAttribute/removeAttribute。 */
   function ctrl(attrs: Record<string, string>) {

@@ -23283,34 +23283,46 @@ body:has(#panel-settings.active) .main-top-actions {
   .ew-service-callout .btn { width: 100%; }
 }
 
-/* Recall 引用反馈（「提供给本次回答的记忆」+ 有帮助/需改进）——合并时被远端
-   style.css 覆盖丢失，已恢复。 */
+/* Recall 引用反馈（「提供给本次回答的记忆」+ 有帮助/需改进）。
+   它与「你引用了 N 条认知资产」回执卡（.chat-recall-projection-card）同属
+   "本轮带入了什么" 这一个家族，所以两卡共用同一套壳与头部语言：同一组
+   token（--border / --surface / --radius-field）、同样的「图标 + 标题 + 右侧
+   状态」头部节奏、动作行统一走共享 uiButton。
+   2026-09-25 收口：这里原先自带一套硬编码品牌绿（4 处 rgba(14,159,110,·) +
+   2 处 #0b7a4f）和 99px 药丸按钮样式，与回执卡并排时被认成两种卡片样式；
+   硬编码值已全部收进 token，药丸变体删除（共享按钮已覆盖 hover/disabled/focus）。 */
 .chat-recall-citations {
-  margin: 10px 0 8px;
-  padding: 10px 12px;
-  border: 1px solid rgba(14, 159, 110, 0.22);
-  border-radius: 8px;
-  background: rgba(14, 159, 110, 0.04);
+  margin: 6px 0;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-field);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--font-size-caption);
+  line-height: 1.45;
 }
 .chat-recall-citations-head {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  align-items: flex-start;
+  gap: 8px;
   margin-bottom: 8px;
 }
 .chat-recall-citations-head > span:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  color: #0b7a4f;
-  font-size: 12px;
-  font-weight: 600;
+  color: var(--text);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
 }
-.chat-recall-citations-head .ui-icon { width: 15px; height: 15px; }
+.chat-recall-citations-head .ui-icon { width: 14px; height: 14px; color: var(--primary); }
 .chat-recall-feedback-status {
-  color: var(--text-secondary, #6b7280);
-  font-size: 11px;
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--muted);
+  font-size: var(--font-size-1);
 }
 .chat-recall-citation-list {
   display: grid;
@@ -23321,7 +23333,7 @@ body:has(#panel-settings.active) .main-top-actions {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--font-size-2);
   line-height: 1.45;
 }
 .chat-recall-citation strong {
@@ -23332,31 +23344,16 @@ body:has(#panel-settings.active) .main-top-actions {
 }
 .chat-recall-citation span {
   flex: none;
-  color: var(--text-secondary, #6b7280);
-  font-size: 11px;
+  color: var(--muted);
+  font-size: var(--font-size-1);
 }
 .chat-recall-feedback-actions {
   display: flex;
-  gap: 8px;
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid rgba(14, 159, 110, 0.15);
+  gap: 6px;
+  margin-top: 7px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
 }
-.chat-recall-feedback-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 10px;
-  border: 1px solid rgba(14, 159, 110, 0.3);
-  border-radius: 99px;
-  color: #0b7a4f;
-  background: var(--color-surface);
-  font-size: 11px;
-  cursor: pointer;
-}
-.chat-recall-feedback-btn .ui-icon { width: 13px; height: 13px; }
-.chat-recall-feedback-btn:hover { background: rgba(14, 159, 110, 0.08); }
-.chat-recall-feedback-btn:disabled { opacity: 0.55; cursor: default; }
 .chat-recall-citations.is-feedback-sent .chat-recall-feedback-btn { opacity: 0.55; pointer-events: none; }
 
 .chat-teaching-receipts {
@@ -33300,6 +33297,15 @@ section.kb-wb-right { display: flex; flex-direction: column; min-width: 0; min-h
   align-items: flex-start;
   gap: 8px;
 }
+/* 头部图标：与「提供给本次回答的记忆」卡同一条头部语言（图标 + 标题 + 右侧
+   状态）。图标只从 icons.js 出（uiIconHtml），原语缺席时 JS 侧渲染空串。 */
+.chat-recall-projection-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  margin-top: 1px;
+  color: var(--primary);
+}
+.chat-recall-projection-icon .ui-icon { width: 14px; height: 14px; }
 .chat-recall-projection-title {
   flex: 1 1 auto;
   min-width: 0;

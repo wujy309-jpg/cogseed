@@ -4020,6 +4020,11 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (!snapshotId || typeof snapshotId !== 'string') throw new Error('missing snapshotId');
     return personalOntologyGroups.restoreGroupSnapshot(ctx.userId, groupId, snapshotId);
   },
+  // 已删除分组列表（spec 009 D5b / T026，待总控确认第 7 条·选项②）：无参，
+  // 只校验转调 features（Constitution II）；恢复复用上面的 history.restore。
+  'personalOntology.groups.deleted.list': async (_payload, ctx) => {
+    return { ok: true, deleted: personalOntologyGroups.listDeletedGroups(ctx.userId) };
+  },
   // 敏感性（spec 007 T302）：restricted 不进任务自动注入与世界模型。
   'personalOntology.groups.fields.sensitivity': async ({ groupId, fieldName, value, restricted }, ctx) => {
     if (!groupId || typeof groupId !== 'string') throw new Error('missing groupId');
