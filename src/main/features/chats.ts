@@ -188,7 +188,7 @@ export interface Conversation {
 
 /** 空间任务引用项（持久化在会话记录上，任务级作用域）。 */
 export interface TaskReference {
-  kind: 'artifact' | 'asset';
+  kind: 'artifact' | 'asset' | 'experience_set';
   /** 展示名（产物 = 文件名；资产 = 标题）。 */
   name: string;
   /** 产物：源会话 + 附件名（走现成跨任务引用链路，LLM 可读文件内容）。 */
@@ -201,6 +201,14 @@ export interface TaskReference {
   asset_id?: string;
   asset_type?: string;
   summary?: string;
+  /** 经验集（specs/016 §6）：@ 历史任务带入的经验快照。只经主进程
+   *  attachToTask 过准入写入（taskRefs.add 白名单刻意不含该 kind，
+   *  渲染层不能绕闸直塞）；读路径透传字段但正文快照按单条上限截断。 */
+  episode_id?: string;
+  requirement_id?: string;
+  experienceIds?: string[];
+  snapshots?: Record<string, { version?: string; title?: string; body?: string; experienceType?: string; taskType?: string }>;
+  addedAt?: string;
 }
 
 /** Persisted record on `<cid>.jsonl`. Aliased for legacy callers; the new
@@ -324,7 +332,9 @@ function _normaliseConversation(raw: any, fallbackCid = ''): Conversation | null
   if (raw.needs_welcome === true) out.needs_welcome = true;
   if (Array.isArray(raw.task_references)) {
     const refs = raw.task_references
-      .filter((r: any) => r && typeof r === 'object' && (r.kind === 'artifact' || r.kind === 'asset') && typeof r.name === 'string' && r.name)
+      // experience_set 与既有两 kind 同列透传（specs/016 §6）：写入口唯一
+      // （attachToTask 已过准入并截断），这里只防形状异常与条数上限。
+      .filter((r: any) => r && typeof r === 'object' && (r.kind === 'artifact' || r.kind === 'asset' || r.kind === 'experience_set') && typeof r.name === 'string' && r.name)
       .map((r: any) => ({
         kind: r.kind,
         name: String(r.name).slice(0, 200),
@@ -336,6 +346,21 @@ function _normaliseConversation(raw: any, fallbackCid = ''): Conversation | null
         ...(typeof r.asset_id === 'string' && r.asset_id ? { asset_id: r.asset_id } : {}),
         ...(typeof r.asset_type === 'string' && r.asset_type ? { asset_type: r.asset_type.slice(0, 60) } : {}),
         ...(typeof r.summary === 'string' && r.summary ? { summary: r.summary.slice(0, 400) } : {}),
+        ...(r.kind === 'experience_set' ? {
+          ...(typeof r.episode_id === 'string' && r.episode_id ? { episode_id: r.episode_id } : {}),
+          ...(typeof r.requirement_id === 'string' && r.requirement_id ? { requirement_id: r.requirement_id } : {}),
+          ...(Array.isArray(r.experienceIds) ? { experienceIds: r.experienceIds.map((id: any) => String(id)).slice(0, 20) } : {}),
+          ...(r.snapshots && typeof r.snapshots === 'object' ? {
+            snapshots: Object.fromEntries(Object.entries(r.snapshots).slice(0, 20).map(([id, snap]: [string, any]) => [id, {
+              ...(typeof snap?.version === 'string' ? { version: snap.version } : {}),
+              ...(typeof snap?.title === 'string' ? { title: snap.title.slice(0, 200) } : {}),
+              ...(typeof snap?.body === 'string' ? { body: snap.body.slice(0, 2000) } : {}),
+              ...(typeof snap?.experienceType === 'string' ? { experienceType: snap.experienceType } : {}),
+              ...(typeof snap?.taskType === 'string' ? { taskType: snap.taskType } : {}),
+            }])),
+          } : {}),
+          ...(typeof r.addedAt === 'string' && r.addedAt ? { addedAt: r.addedAt } : {}),
+        } : {}),
       }))
       .slice(0, 20);
     if (refs.length) out.task_references = refs;

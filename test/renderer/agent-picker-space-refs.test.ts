@@ -3,13 +3,17 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vm from 'node:vm';
 
-// @ 选择器空间化改造（任务④）+ 普通会话资产引用（2026-09-25 验收修复 US-601）：
-//   - tab 集合：空间会话 = 智能体/技能/产物/资产；普通会话与新建普通任务 =
-//     智能体/技能/资产（「产物」仍限空间会话）；自动任务弹窗恒为 智能体/技能
-//     （它没有引用落地通道，放开只会造出"选了没反应"的静默失败）；
+// @ 选择器空间化改造（任务④）+ 普通会话资产引用（2026-09-25 验收修复 US-601）
+// + 任务页签（specs/016 T027 / US-802 AC2：@ 历史任务带入其经验集）：
+//   - tab 集合：空间会话 = 智能体/技能/产物/资产/任务；普通会话与新建普通
+//     任务 = 智能体/技能/资产/任务（「产物」仍限空间会话；「任务」与资产同
+//     口径——经验集来自全局经验目录，与空间无关）；自动任务弹窗恒为
+//     智能体/技能（它没有引用落地通道，放开只会造出"选了没反应"的静默失败）；
 //   - 连接器/资料库/本体 tab 已删；
 //   - 产物选中 → 任务引用（task_references）写入 + composer chips；
-//   - 资产选中 → 投影通道挂载（版本冻结 + 回执卡 + 可撤销），**不写** task_references。
+//   - 资产选中 → 投影通道挂载（版本冻结 + 回执卡 + 可撤销），**不写** task_references；
+//   - 任务选中 → recall.experiences.attachToTask（主进程过准入 + 冻结快照），
+//     被拦逐条报规则名（经 CogAssets.reportBlocked），**不走** taskRefs.add。
 
 class FakeClassList {
   classes = new Set<string>();
@@ -84,6 +88,16 @@ function loadAgentPicker() {
       'agent_picker.tab_skills': '技能',
       'agent_picker.tab_artifacts': '产物',
       'agent_picker.tab_assets': '资产',
+      'agent_picker.tab_tasks': '任务',
+      'agent_picker.tasks_group': '有经验的历史任务',
+      'agent_picker.tasks_empty': '还没有沉淀过经验的历史任务',
+      'agent_picker.tasks_no_match': '没有匹配的任务',
+      'agent_picker.task_unnamed': '未命名任务',
+      'agent_picker.task_experience_count': '{count} 条经验',
+      'agent_picker.task_experience_count_active': '{count} 条经验（{active} 条生效）',
+      'agent_picker.ref_task': '任务',
+      'agent_picker.task_attached': '已带入《{title}》的 {count} 条经验',
+      'agent_picker.task_attach_blocked': '这份经验集当前不可带入',
       'agent_picker.artifacts_empty': '该空间暂无产物',
       'agent_picker.artifacts_group': '空间产物',
       'agent_picker.assets_empty': '暂无沉淀资产',
@@ -150,27 +164,28 @@ describe('agent picker space refs (@ 空间化改造)', () => {
   it('determines visible tabs by whether the anchor session is space-bound', () => {
     const { context } = loadAgentPicker();
 
-    // 普通会话（主对话框默认工作区，无空间）→ 智能体/技能/资产
-    //（US-601 AC1：普通任务是最高频入口，@ 引用资产不该缺席；「产物」仍限空间会话）
+    // 普通会话（主对话框默认工作区，无空间）→ 智能体/技能/资产/任务
+    //（US-601 AC1：普通任务是最高频入口，@ 引用资产不该缺席；「产物」仍限空间会话；
+    //  specs/016 T027：「任务」= 经验集带入，普通任务恰是主场景）
     setCurrentConv({ context, el: () => new FakeElement() }, { conversation_id: 'c1' });
     expect(vm.runInContext('_agentPickerVisibleTabs("chat-recipient-chip")', context))
-      .toEqual(['agents', 'skills', 'assets']);
+      .toEqual(['agents', 'skills', 'assets', 'tasks']);
 
-    // 空间会话 → 智能体/技能/产物/资产
+    // 空间会话 → 智能体/技能/产物/资产/任务
     setCurrentConv({ context, el: () => new FakeElement() }, { conversation_id: 'c1', space_id: 'spc-a' });
     expect(vm.runInContext('_agentPickerVisibleTabs("chat-recipient-chip")', context))
-      .toEqual(['agents', 'skills', 'artifacts', 'assets']);
+      .toEqual(['agents', 'skills', 'artifacts', 'assets', 'tasks']);
 
-    // new-chat：chip 选空间 → 空间集合；未选 → 智能体/技能/资产
+    // new-chat：chip 选空间 → 空间集合；未选 → 智能体/技能/资产/任务
     context.window.getNewChatSpaceId = () => 'spc-a';
     expect(vm.runInContext('_agentPickerVisibleTabs("new-chat-recipient-chip")', context))
-      .toEqual(['agents', 'skills', 'artifacts', 'assets']);
+      .toEqual(['agents', 'skills', 'artifacts', 'assets', 'tasks']);
     context.window.getNewChatSpaceId = () => '';
     expect(vm.runInContext('_agentPickerVisibleTabs("new-chat-recipient-chip")', context))
-      .toEqual(['agents', 'skills', 'assets']);
+      .toEqual(['agents', 'skills', 'assets', 'tasks']);
 
-    // Auto 恒为智能体/技能：自动任务没有资产引用落地通道（2026-09-25 Owner 拍板
-    // 不放开；见 spec.md 非目标与实施约束）。
+    // Auto 恒为智能体/技能：自动任务没有资产/经验集引用落地通道（2026-09-25
+    // Owner 拍板不放开；见 spec.md 非目标与实施约束）。
     expect(vm.runInContext('_agentPickerVisibleTabs("auto-recipient-chip")', context))
       .toEqual(['agents', 'skills']);
   });
@@ -557,8 +572,147 @@ describe('agent picker space refs (@ 空间化改造)', () => {
     expect(vm.runInContext('_pendingNewChatRefs.length', context)).toBe(0);
   });
 
-  it('splitComposerAgentCandidates：外接 Agent 恒在候选，内部 Agent 按空间拆分', () => {
-    const { context } = loadAgentPicker();
+  // ── 任务页签（specs/016 T027 / US-802 AC2：@ 历史任务带入经验集）────────────
+
+  it('renders task rows from sourceTasks with experience counts', () => {
+    const loaded = loadAgentPicker();
+    const { context, el } = loaded;
+    setCurrentConv(loaded, { conversation_id: 'c1' });
+    vm.runInContext(`
+      _pickerTaskRows = [
+        { episodeId: 'kse-1', goal: '修复登录超时', taskType: 'code', taskStatus: 'confirmed', experienceCount: 2, activeCount: 2, updatedAt: '2026-09-25T00:00:00Z' },
+        { episodeId: 'kse-2', goal: '写季度总结报告', taskType: 'report', taskStatus: 'confirmed', experienceCount: 3, activeCount: 1, updatedAt: '2026-09-24T00:00:00Z' }
+      ];
+      _renderTasksPickerList(document.getElementById('agent-picker-list'), '', 'chat-recipient-chip');
+    `, context);
+
+    const html = el('agent-picker-list').innerHTML;
+    expect(html).toContain('有经验的历史任务');
+    expect(html).toContain('修复登录超时');
+    expect(html).toContain('data-kind="task"');
+    expect(html).toContain('data-episode-id="kse-1"');
+    // 经验条数副文案：全生效与部分生效两种形态。
+    expect(html).toContain('2 条经验');
+    expect(html).toContain('3 条经验（1 条生效）');
+    // 可见文本里不出现内部 episode id（属性里有，供点击取值）。
+    expect(html.replace(/<[^>]+>/g, ' ')).not.toContain('kse-1');
+  });
+
+  it('attaches an @-selected task experience set via attachToTask with the recipient agent', async () => {
+    const loaded = loadAgentPicker();
+    const { context } = loaded;
+    const calls: Array<{ channel: string; payload: any }> = [];
+    context.window.cogseed.invoke = async (channel: string, payload: any) => {
+      calls.push({ channel, payload });
+      if (channel === 'recall.experiences.attachToTask') {
+        return { ok: true, attached: { referenceKey: 'experience_set:kse-1', experienceIds: ['exp-1'], available: ['exp-1'], blocked: [] } };
+      }
+      if (channel === 'conversations.taskRefs.list') return { references: [] };
+      return {};
+    };
+    setCurrentConv(loaded, { conversation_id: 'c1' });
+    context.getChatRecipient = () => ({ kind: 'agent', id: 'agent-7', name: 'Agent Seven' });
+    const toasts: Array<[string, string]> = [];
+    context.uiToast = (message: string, opts: any) => { toasts.push([String(message), String(opts?.variant || '')]); };
+
+    await context._triggerPickerItem('task', 'kse-1', '修复登录超时', 'chat-recipient-chip', {
+      episodeId: 'kse-1',
+    });
+
+    // 经验集挂载走主进程准入通道，**不**写 taskRefs.add（渲染层直塞会绕过闸门）。
+    expect(calls.some((c) => c.channel === 'conversations.taskRefs.add')).toBe(false);
+    const attach = calls.find((c) => c.channel === 'recall.experiences.attachToTask');
+    expect(attach).toBeTruthy();
+    expect(attach!.payload).toMatchObject({ conversationId: 'c1', episodeId: 'kse-1', agentId: 'agent-7' });
+    expect(toasts.some(([text]) => text.includes('修复登录超时') && text.includes('1 条经验'))).toBe(true);
+  });
+
+  it('reports each blocked experience with its rule name and leaves no chip behind', async () => {
+    const loaded = loadAgentPicker();
+    const { context, el } = loaded;
+    const reported: Array<[any, string]> = [];
+    context.window.CogAssets = {
+      reportBlocked: async (error: any, title: string) => { reported.push([error, String(title)]); },
+    };
+    context.window.cogseed.invoke = async (channel: string) => {
+      if (channel === 'recall.experiences.attachToTask') {
+        // 全被拦：主进程回稳定码 + 逐条 {experienceId, title, code, rule}。
+        return {
+          ok: false,
+          code: 'experience_attach_blocked',
+          blocked: [
+            { experienceId: 'exp-a', title: '经验A', code: 'status_not_active', rule: 'paused' },
+            { experienceId: 'exp-b', title: '经验B', code: 'status_not_active', rule: 'paused' },
+          ],
+        };
+      }
+      if (channel === 'conversations.taskRefs.list') return { references: [] };
+      return {};
+    };
+    setCurrentConv(loaded, { conversation_id: 'c1' });
+
+    await context._triggerPickerItem('task', 'kse-9', '已全暂停的任务', 'chat-recipient-chip', { episodeId: 'kse-9' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // 逐条回报（不静默）；只给标题与规则标识，主进程原文与内部 id 不上屏。
+    expect(reported).toHaveLength(2);
+    expect(reported[0][0]).toMatchObject({ blockRule: 'paused', code: 'status_not_active' });
+    expect(reported[0][1]).toBe('经验A');
+    expect(reported[1][1]).toBe('经验B');
+    expect(el('chat-taskrefs').innerHTML).not.toContain('已全暂停的任务');
+  });
+
+  it('holds a new-chat task pick as pending and attaches it via attachToTask once the conversation exists', async () => {
+    const loaded = loadAgentPicker();
+    const { context } = loaded;
+    const calls: Array<{ channel: string; payload: any }> = [];
+    context.window.getNewChatSpaceId = () => '';
+    context.window.cogseed.invoke = async (channel: string, payload: any) => {
+      calls.push({ channel, payload });
+      if (channel === 'recall.experiences.attachToTask') {
+        return { ok: true, attached: { experienceIds: ['exp-1'], blocked: [] } };
+      }
+      return { ok: true, items: [], references: [] };
+    };
+
+    await context._triggerPickerItem('task', 'kse-1', '修复登录超时', 'new-chat-recipient-chip', {
+      episodeId: 'kse-1',
+    });
+
+    // 会话还没建：不挂载（attach 需要 cid），进 pending。
+    expect(calls.some((c) => c.channel === 'recall.experiences.attachToTask')).toBe(false);
+    expect(calls.some((c) => c.channel === 'conversations.taskRefs.add')).toBe(false);
+    expect(vm.runInContext('_pendingNewChatRefs.length', context)).toBe(1);
+
+    await context.commitNewChatTaskRefs('new-cid');
+
+    const attach = calls.find((c) => c.channel === 'recall.experiences.attachToTask');
+    expect(attach).toBeTruthy();
+    expect(attach!.payload).toMatchObject({ conversationId: 'new-cid', episodeId: 'kse-1' });
+    expect(calls.some((c) => c.channel === 'conversations.taskRefs.add')).toBe(false);
+    expect(vm.runInContext('_pendingNewChatRefs.length', context)).toBe(0);
+  });
+
+  it('renders experience_set chips with the task label and remove button', () => {
+    const loaded = loadAgentPicker();
+    const { context, el } = loaded;
+    vm.runInContext(`
+      _pendingNewChatRefs = [
+        { kind: 'experience_set', name: '修复登录超时', episode_id: 'kse-1' }
+      ];
+      renderChatTaskRefChips();
+    `, context);
+
+    const chips = el('new-chat-taskrefs');
+    expect(chips.style.display).not.toBe('none');
+    expect(chips.innerHTML).toContain('任务');
+    expect(chips.innerHTML).toContain('修复登录超时');
+    expect(chips.innerHTML).toContain('chat-taskref-remove');
+    // 可见文本不裸出 episode id（属性里有，供撤销定位）。
+    expect(chips.innerHTML.replace(/<[^>]+>/g, ' ')).not.toContain('kse-1');
+  });
+
+  it('splitComposerAgentCandidates：外接 Agent 恒在候选，内部 Agent 按空间拆分', () => {    const { context } = loadAgentPicker();
     const split = vm.runInContext('window.splitComposerAgentCandidates', context);
     const list = [
       { agent_id: 'cli-codex', name: 'Codex', runtime: { kind: 'cli', cli: 'codex' } },

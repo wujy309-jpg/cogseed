@@ -41,7 +41,9 @@ export function resetExperienceCatalogHintCacheForTest(): void {
 
 /** 本轮已挂载的经验集（@ 带入 / 引用）：taskRunId 是 omitted 回执的归属轮次。 */
 export interface ExperienceCatalogMounted {
-  taskRunId: string;
+  /** 关联轮次；bus 装配点拿不到稳定 runId 时可省（omitted 回执
+   *  的 taskRunId 字段随之省略，84 行调用处已按可选消费）。 */
+  taskRunId?: string;
   experienceIds: readonly string[];
 }
 

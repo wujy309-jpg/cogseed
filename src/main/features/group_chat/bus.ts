@@ -5867,7 +5867,14 @@ async function runActorTurnBody(
         const { assetCatalogForPromptWithRelevance } = await import('../recall/asset-catalog-hint');
         // 目录带当轮相关度（★标记+排序，2026-09-22 砍注入后的算法落点）：
         // 复用上面 recallContext 同源的当轮任务文本。
-        const catalog = await assetCatalogForPromptWithRelevance(uid, cid, Date.now(), String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000));
+        // 场景因子（specs/012 T017）：会话的项目/空间归属（回合顶部解析、会话级
+        // 冻结）传进目录排序——命中 spaceId===turnSpaceId 或
+        // scopePolicy.{projectIds,workspaceIds} 的资产给正分；两者都缺省时该因子
+        // 整体缺席（≠0 分），排序行为接近现状。
+        const catalog = await assetCatalogForPromptWithRelevance(uid, cid, Date.now(), String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000), {
+          ...(turnProjectId ? { turnProjectId } : {}),
+          ...(turnSpaceId ? { turnSpaceId } : {}),
+        });
         if (catalog.text) systemPrompt = `${systemPrompt}\n\n${catalog.text}`;
         catalogRelevantIds = catalog.relevantIds;
       } catch {
@@ -5881,7 +5888,19 @@ async function runActorTurnBody(
       // 不影响回合。
       try {
         const { experienceCatalogForPrompt } = await import('../recall/experience-catalog-hint');
-        const experienceCatalog = await experienceCatalogForPrompt(uid, cid, Date.now(), String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000));
+        // 挂载集（@ 带入的经验集引用）作为第 5 参传入：清单据此对「已挂载但
+        // 本轮被拦」的经验各写一条 omitted 回执（E10 的数据源），不传则该路
+        // 径静默缺失——读取失败不阻塞回合，与清单本身同一条降级线。
+        let experienceMounted: { taskRunId?: string; experienceIds: string[] } | undefined;
+        try {
+          const { listExperienceSetReferences } = await import('../recall/experience-reference');
+          const refs = await listExperienceSetReferences(uid, cid);
+          const mountedIds = [...new Set(refs.flatMap((ref) => ref.experienceIds ?? []))];
+          if (mountedIds.length) experienceMounted = { experienceIds: mountedIds };
+        } catch {
+          // 挂载集读不到只影响 omitted 回执，不影响清单。
+        }
+        const experienceCatalog = await experienceCatalogForPrompt(uid, cid, Date.now(), String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000), experienceMounted);
         if (experienceCatalog) systemPrompt = `${systemPrompt}\n\n${experienceCatalog}`;
       } catch {
         // 经验清单拿不到不影响回合。

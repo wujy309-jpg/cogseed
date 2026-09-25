@@ -58,6 +58,7 @@ import { withRecallCandidateCapabilities } from '../features/recall/candidate-ca
 import * as recallAssets from '../features/recall/asset-service';
 import * as recallExperiences from '../features/recall/experience-service';
 import * as recallExperienceMigration from '../features/recall/experience-migration';
+import * as recallExperienceReference from '../features/recall/experience-reference';
 import { cognitionSourceRefMetadataOnly } from '../features/recall/source-service';
 import * as recallAssetApproval from '../features/recall/asset-approval-service';
 import * as recallCleanup from '../features/recall/cleanup-report-service';
@@ -2857,6 +2858,43 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // E8 · status（只读）：最近一次迁移的结果与失败明细；从未跑过 → migrationId:null。
   'recall.experiences.migration.status': async (_payload, ctx) => {
     return { ok: true, ...(await recallExperienceMigration.latestExperienceMigrationStatus(ctx.userId)) };
+  },
+
+  // ── 经验集引用（specs/016 契约 E9~E10 / US-802 AC2）：@ 历史任务带入其经验集。
+  // 通道只做入参校验与转调；准入、快照冻结、防双注入的保证全部在
+  // experience-reference.ts，这里不复制任何判定。撤销复用既有
+  // conversations.taskRefs.remove，不新增撤销通道。
+  // E9 · sourceTasks（只读）：episode 维度聚合（只列有经验的来源任务，非全部
+  // 会话）；载荷不含正文；limit ≤100、缺省 50。
+  'recall.experiences.sourceTasks': async ({ query, limit } = {}, ctx) => {
+    if (query !== undefined && (typeof query !== 'string' || query.length > 200)) throw new Error('invalid recall experience source task query');
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > recallExperienceReference.EXPERIENCE_SOURCE_TASKS_LIMIT_MAX)) {
+      throw new Error('invalid recall experience source task limit');
+    }
+    return { ok: true, ...(await recallExperienceReference.listExperienceSourceTasks(ctx.userId, {
+      ...(query !== undefined ? { query } : {}),
+      ...(limit !== undefined ? { limit } : {}),
+    })) };
+  },
+  // E9 · attachToTask（写）：准入在主进程跑；通过者写 task_references
+  // （kind:'experience_set'，含快照）；全被拦 → ok:false + 稳定码 + 逐条规则名。
+  // agentId 可选（接收方已知时一并送进准入，目标 Agent 白名单当场生效）。
+  'recall.experiences.attachToTask': async ({ conversationId, episodeId, agentId } = {}, ctx) => {
+    if (typeof conversationId !== 'string' || !safeId(conversationId)) throw new Error('invalid cid');
+    if (typeof episodeId !== 'string' || !safeId(episodeId) || !episodeId.startsWith('kse-')) throw new Error('invalid recall experience episode');
+    if (agentId !== undefined && (typeof agentId !== 'string' || !safeId(agentId))) throw new Error('invalid recall experience attach agent');
+    return recallExperienceReference.attachExperienceSetToTask(ctx.userId, conversationId, episodeId, {
+      ...(agentId ? { agentId } : {}),
+    });
+  },
+  // E10 · omissions（只读）：已挂载但最近一轮被准入拦下的经验——只回标题与
+  // 规则码（无正文）；未挂载经验集的会话返回空数组。
+  'recall.experiences.omissions': async ({ cid, limit } = {}, ctx) => {
+    if (typeof cid !== 'string' || !safeId(cid)) throw new Error('invalid cid');
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > recallExperienceReference.EXPERIENCE_OMISSIONS_LIMIT_MAX)) {
+      throw new Error('invalid recall experience omission limit');
+    }
+    return { ok: true, omissions: await recallExperienceReference.listExperienceOmissions(ctx.userId, cid, limit ?? recallExperienceReference.EXPERIENCE_OMISSIONS_LIMIT_DEFAULT) };
   },
 
   // 大扫除与整理报告（specs/008 US-403）。run 是用户发起的批量整理；

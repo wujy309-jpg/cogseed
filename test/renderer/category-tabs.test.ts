@@ -636,10 +636,11 @@ describe('agent and skill category tabs', () => {
       setChatSkill = (target, id, name) => { pickedSkillCalls.push([target, id, name]); };
     `, context);
 
-    // Commander: no space selected → agents/skills/assets tabs (connectors /
-    // library / ontology removed; artifacts stay space-only — US-601 AC1).
+    // Commander: no space selected → agents/skills/assets/tasks tabs (connectors /
+    // library / ontology removed; artifacts stay space-only — US-601 AC1;
+    // tasks = 经验集带入页签，specs/016 T027).
     expect(vm.runInContext('_agentPickerVisibleTabs("new-chat-recipient-chip")', context))
-      .toEqual(['agents', 'skills', 'assets']);
+      .toEqual(['agents', 'skills', 'assets', 'tasks']);
     await context._triggerPickerItem('skill', 'global-helper', 'Global Helper', 'new-chat-recipient-chip');
     expect(context.pickedSkillCalls).toEqual([['new-chat', 'global-helper', 'Global Helper']]);
 
@@ -648,22 +649,22 @@ describe('agent and skill category tabs', () => {
     context.pickedSkillCalls = [];
     context.getChatRecipient = () => ({ kind: 'agent', id: 'agent-1', name: 'Agent One' });
     expect(vm.runInContext('_agentPickerVisibleTabs("new-chat-recipient-chip")', context))
-      .toEqual(['agents', 'skills', 'assets']);
+      .toEqual(['agents', 'skills', 'assets', 'tasks']);
     await context._triggerPickerItem('skill', 'trusted', 'Trusted Skill', 'new-chat-recipient-chip');
     expect(context.pickedSkillCalls).toEqual([['new-chat', 'trusted', 'Trusted Skill']]);
   });
 
-  it('shows artifacts/assets tabs for a space-scoped picker anchor', () => {
+  it('shows artifacts/assets/tasks tabs for a space-scoped picker anchor', () => {
     const { context } = loadCategoryRenderers();
-    // new-chat chip 选中空间 → 空间会话 tab 集合（智能体/技能/产物/资产）
+    // new-chat chip 选中空间 → 空间会话 tab 集合（智能体/技能/产物/资产/任务）
     context.window.getNewChatSpaceId = () => 'spc-test-1';
     expect(vm.runInContext('_agentPickerVisibleTabs("new-chat-recipient-chip")', context))
-      .toEqual(['agents', 'skills', 'artifacts', 'assets']);
-    // 普通新建任务（无空间）→ 智能体/技能/资产（US-601 AC1；产物仍限空间会话）
+      .toEqual(['agents', 'skills', 'artifacts', 'assets', 'tasks']);
+    // 普通新建任务（无空间）→ 智能体/技能/资产/任务（US-601 AC1；产物仍限空间会话）
     context.window.getNewChatSpaceId = () => '';
     expect(vm.runInContext('_agentPickerVisibleTabs("new-chat-recipient-chip")', context))
-      .toEqual(['agents', 'skills', 'assets']);
-    // Auto 恒为智能体/技能（自动任务无资产引用落地通道，2026-09-25 Owner 拍板不放开）
+      .toEqual(['agents', 'skills', 'assets', 'tasks']);
+    // Auto 恒为智能体/技能（自动任务无资产/经验集引用落地通道，2026-09-25 Owner 拍板不放开）
     expect(vm.runInContext('_agentPickerVisibleTabs("auto-recipient-chip")', context))
       .toEqual(['agents', 'skills']);
   });

@@ -273,6 +273,34 @@ describe('experience catalog hint (T008)', () => {
     expect(fresh).toContain('exp-cache-2');
   });
 
+  // specs/016 T023 ①：清单**接入提示词后**无关任务类型零出现。build 层的口径
+  // 已由上一条 describe 钉住，这里补 hint 层（提示词文本最终形态）的回归钉——
+  // 防的是 hint 追加/截断逻辑日后把被过滤的条目重新带进提示词。
+  it('keeps unrelated task types out of the assembled prompt text (FR-003)', async () => {
+    const service = await setup();
+    await injectEmbeddings([
+      [TASK_TEXT, [1, 0]],
+      ['先写回归测试再修复登录函数。BODY-SECRET-PROMPT-CODE', [0.95, 0.31]],
+      ['季度报告要带数据附录。BODY-SECRET-PROMPT-RPT', [0.95, 0.31]],
+    ]);
+    const hint = await import('../../../../src/main/features/recall/experience-catalog-hint');
+
+    await service.createExperience(UID, seedInput({
+      id: 'exp-prompt-code-1', taskType: 'code', taskGoal: '修复登录超时',
+      body: '先写回归测试再修复登录函数。BODY-SECRET-PROMPT-CODE',
+    }));
+    await service.createExperience(UID, seedInput({
+      id: 'exp-prompt-rpt-1', taskType: 'report', taskGoal: '季度报告撰写',
+      body: '季度报告要带数据附录。BODY-SECRET-PROMPT-RPT',
+    }));
+
+    const text = await hint.experienceCatalogForPrompt(UID, 'cid-prompt-filter', 1_000, TASK_TEXT);
+    // 同类型条目进提示词；无关类型（report）即使相关度达标也零出现；正文不进提示词。
+    expect(text).toContain('exp-prompt-code-1');
+    expect(text).not.toContain('exp-prompt-rpt-1');
+    expect(text).not.toContain('BODY-SECRET');
+  });
+
   it('caps inline entries and points to the paging tool beyond the cap', async () => {
     const service = await setup();
     const sharedBody = '同类型经验正文样本。';
