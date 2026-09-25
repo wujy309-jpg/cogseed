@@ -73,7 +73,9 @@ async function cloneAssets(
       version: '1',
       activeVersion: '1',
       updatedAt: new Date(Date.now() - index * 1_000).toISOString(),
-      ...(overrides[index] || {}),
+      // overrides 按**本次循环的偏移**取：startIndex≠0 时用绝对序号会取不到
+      // （夹具自身踩过一次：带 startIndex 的克隆全部落回默认值）。
+      ...(overrides[offset] || {}),
     });
     ids.push(id);
   }
@@ -425,6 +427,59 @@ describe('写工具（US-402）', () => {
     const category = await call(edit, { assetId: asset.id, fields: { category: '发布流程' }, reason: '归类', origin: 'ai_initiated' });
     expect(category.isError).toBe(true);
     expect(category.content).toContain('category');
+  });
+
+  it('fields 传 JSON 字符串也认（真机实测：模型就这么传，6 次编辑全废）', async () => {
+    const asset = await seedAsset('真机 payload 形态的回归。');
+    const { edit } = await tools();
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    // 真机抓到的原样形态：fields 是字符串化的对象。
+    const out = await call(edit, {
+      assetId: asset.id,
+      fields: JSON.stringify({ body: '真机形态：正文改成这句。' }),
+      origin: 'user_instruction',
+      reason: '用户要求改正文',
+    });
+    expect(out.isError).toBeUndefined();
+    expect((await assets.readAbilityAsset(TEST_UID, asset.id)).statement).toBe('真机形态：正文改成这句。');
+  });
+
+  it('body 是 statement 的契约别名，两个都收', async () => {
+    const asset = await seedAsset('契约别名：body。');
+    const { edit } = await tools();
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    await call(edit, { assetId: asset.id, fields: { body: '用 body 改的正文。' }, origin: 'user_instruction', reason: '用户要求改' });
+    expect((await assets.readAbilityAsset(TEST_UID, asset.id)).statement).toBe('用 body 改的正文。');
+    await call(edit, { assetId: asset.id, fields: { statement: '用 statement 改的正文。' }, origin: 'user_instruction', reason: '用户要求改' });
+    expect((await assets.readAbilityAsset(TEST_UID, asset.id)).statement).toBe('用 statement 改的正文。');
+  });
+
+  it('不认识的字段名显式拒绝，不静默丢弃（回执说"已改动"而一字未动更糟）', async () => {
+    const asset = await seedAsset('未知字段名的守卫。');
+    const { edit } = await tools();
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    const before = await assets.readAbilityAsset(TEST_UID, asset.id);
+    const out = await call(edit, {
+      assetId: asset.id,
+      fields: { content: '这条不会被写进去', titel: '拼错的键' },
+      origin: 'user_instruction',
+      reason: '用户要求改',
+    });
+    expect(out.isError).toBe(true);
+    expect(out.content).toContain('不认识的字段名');
+    expect(out.content).toContain('content');
+    expect(out.content).toContain('titel');
+    // 一字未动（没有静默 no-op 被报成成功）。
+    expect((await assets.readAbilityAsset(TEST_UID, asset.id)).statement).toBe(before.statement);
+    expect((await assets.listAbilityAssetAudit(TEST_UID, asset.id)).filter((r) => r.action === 'updated')).toEqual([]);
+  });
+
+  it('list 的 filter 传 JSON 字符串也认（否则过滤被静默忽略、当成"没过滤"）', async () => {
+    const base = await seedAsset('过滤形态的回归。');
+    await cloneAssets(base as unknown as Record<string, unknown>, 2, [{ status: 'paused' }, { status: 'archived' }], 70);
+    const { list } = await stewardTools();
+    const out = text(await list.execute({ filter: JSON.stringify({ status: 'paused' }) }, {} as never));
+    expect(out).toContain('过滤：状态=paused → 1 条');
   });
 
   it('reason 必填；fields 不能为空；sensitivity 取值受限', async () => {
