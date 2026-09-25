@@ -36,11 +36,20 @@ function loadPersonalOntology(invoke: any, overrides: Record<string, unknown> = 
     ['personal-onto-nav', element()],
     ['personal-onto-main-header', element()],
     ['personal-onto-main-body', element()],
+    // US-102 历史弹层：_pocShowGroupHistory 经这两个节点渲染（只加不删，
+    // 既有用例不触达该路径，零影响）。
+    ['personal-onto-modal', element()],
+    ['personal-onto-modal-body', element()],
   ]);
   const uiToast = vi.fn();
   const sandbox: any = {
     console: { log() {}, warn() {}, error() {} },
-    document: { getElementById: (id: string) => elements.get(id) || null },
+    document: {
+      getElementById: (id: string) => elements.get(id) || null,
+      querySelector: (sel: string) => (sel === '.personal-onto-modal-body'
+        ? elements.get('personal-onto-modal-body') || null
+        : null),
+    },
     t: (key: string) => key === 'personalOntology.profile_sync_warning'
       ? 'profile sync warning'
       : key,
@@ -822,5 +831,273 @@ describe('personal ontology renderer integration', () => {
     expect(uiToast).not.toHaveBeenCalledWith('已更新', expect.anything());
     const readsAfter = invoke.mock.calls.filter(([c]) => c === 'personalOntology.groups.read').length;
     expect(readsAfter).toBe(readsBefore);
+  });
+});
+
+// ── US-102 删除/恢复闭环渲染段（specs/009 Phase 4：T022/T023/T024）──────────
+describe('personal ontology delete-recover roundtrip (US-102 renderer)', () => {
+  /** 可点击控件 mock：含 _pocRunOnce 忙态路径需要的 setAttribute/removeAttribute。 */
+  function ctrl(attrs: Record<string, string>) {
+    return {
+      disabled: false,
+      getAttribute: (name: string) => (name in attrs ? attrs[name] : null),
+      setAttribute() {},
+      removeAttribute() {},
+      listeners: new Map<string, (...args: any[]) => any>(),
+      addEventListener(event: string, handler: (...args: any[]) => any) {
+        this.listeners.set(event, handler);
+      },
+    };
+  }
+
+  it('T024 删值 → 历史入口找到删除前那版（带 T023 台账摘要）→ 恢复 → 内容逐字一致', async () => {
+    const BEFORE = '# 基本情况\n\n## 字段区\n\n### 居住地\n\n- 常住北京 [手动]\n';
+    const AFTER = '# 基本情况\n\n## 字段区\n\n### 居住地\n\n';
+    let content = BEFORE;
+    let restored = false;
+    const history: any[] = [];
+    const reads: string[] = [];
+    const invoke = vi.fn(async (channel: string, payload?: any) => {
+      if (channel === 'personalOntology.templates.list') return { ok: true, templates: [] };
+      if (channel === 'recall.assets.list') return { ok: true, assets: [] };
+      if (channel === 'personalOntology.groups.list') {
+        return { ok: true, groups: [{ group_id: 'grp-d1', title: '基本情况', rel_path: 'g.md', created_at: '', updated_at: '' }] };
+      }
+      if (channel === 'personalOntology.candidates.list') return { ok: true, candidates: [] };
+      if (channel === 'personalOntology.conflicts.list') return { ok: true, conflicts: [] };
+      if (channel === 'personalOntology.groups.fields.list') {
+        const hasValue = content.includes('常住北京');
+        return { ok: true, fields: [{ name: '居住地', values: hasValue ? [{ value: '常住北京', source: '手动' }] : [] }] };
+      }
+      if (channel === 'personalOntology.groups.read') {
+        reads.push(content);
+        return { ok: true, content };
+      }
+      // 主进程 T020/T021 口径：写前留档——删除前整组原文进历史并配台账。
+      if (channel === 'personalOntology.groups.fields.removeValue') {
+        history.unshift({
+          id: 'snap-1', savedAt: '2026-09-25T10:00:00.000Z', bytes: BEFORE.length,
+          preview: BEFORE.replace(/\s+/g, ' ').slice(0, 80),
+          audit: { action: 'value_remove', field: '居住地', at: '2026-09-25T10:00:00.001Z' },
+        });
+        content = AFTER;
+        return { ok: true };
+      }
+      // snap-0：更早的一版，无台账（audit 键缺席）——T023 验收「不留空行」。
+      if (channel === 'personalOntology.groups.history.list') {
+        return { ok: true, history: history.concat([{ id: 'snap-0', savedAt: '2026-09-24T09:00:00.000Z', bytes: 4, preview: '# 基本情况' }]) };
+      }
+      if (channel === 'personalOntology.groups.history.restore') {
+        if (payload && payload.snapshotId === 'snap-1' && !restored) {
+          restored = true;
+          content = BEFORE;
+        }
+        return { ok: true };
+      }
+      return { ok: true };
+    });
+    const { sandbox, elements } = loadPersonalOntology(invoke);
+    const bodyEl = elements.get('personal-onto-main-body') as any;
+    const modalBody = elements.get('personal-onto-modal-body') as any;
+    const modal = elements.get('personal-onto-modal') as any;
+
+    // ① 初始：A 盒显示这条值
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+    expect(elements.get('personal-onto-main-body')?.innerHTML).toContain('常住北京');
+
+    // ② 展开值行 → 删除这条值
+    const lineRow = ctrl({ 'data-poc-line-key': encodeURIComponent('grp-d1\u0001居住地\u0001常住北京') });
+    bodyEl.querySelectorAll = (selector: string) => (selector === '[data-poc-line-key]' ? [lineRow] : []);
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+    await lineRow.listeners.get('click')({ stopPropagation() {} });
+    await settleBackgroundWork();
+
+    const removeBtn = ctrl({
+      'data-poc-group-op': 'remove-value', 'data-poc-gid': 'grp-d1',
+      'data-poc-field': '居住地', 'data-poc-value': '常住北京',
+    });
+    bodyEl.querySelectorAll = (selector: string) => (selector === '[data-poc-group-op]' ? [removeBtn] : []);
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+    await removeBtn.listeners.get('click')({ stopPropagation() {} });
+    await settleBackgroundWork();
+
+    expect(invoke).toHaveBeenCalledWith('personalOntology.groups.fields.removeValue', {
+      groupId: 'grp-d1', fieldName: '居住地', value: '常住北京',
+    });
+    expect(elements.get('personal-onto-main-body')?.innerHTML).not.toContain('常住北京');
+
+    // ③ 「历史」入口：删除前那版可见，带台账摘要行
+    const historyBtn = ctrl({ 'data-poc-group-op': 'show-history', 'data-poc-gid': 'grp-d1' });
+    const restoreBtn = ctrl({ 'data-poc-group-op': 'restore-snapshot', 'data-poc-snapshot': 'snap-1' });
+    bodyEl.querySelectorAll = (selector: string) => (selector === '[data-poc-group-op]' ? [historyBtn] : []);
+    modalBody.querySelectorAll = (selector: string) => (selector === '[data-poc-group-op="restore-snapshot"]' ? [restoreBtn] : []);
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+    await historyBtn.listeners.get('click')({ stopPropagation() {} });
+    await settleBackgroundWork();
+
+    const modalHtml = modalBody.innerHTML || '';
+    expect(modal.style.display).toBe('flex');
+    expect(invoke).toHaveBeenCalledWith('personalOntology.groups.history.list', { groupId: 'grp-d1' });
+    // 既有字段零改动：时间 / 预览 / 恢复按钮照旧，两版都在
+    expect(modalHtml).toContain('data-poc-snapshot="snap-1"');
+    expect(modalHtml).toContain('data-poc-snapshot="snap-0"');
+    expect(modalHtml).toContain('恢复这版');
+    // T023：有台账的版本显示「谁·何时·改的哪个字段」摘要（可读化动作 + 字段 + 操作者）
+    expect(modalHtml).toContain('用户');
+    expect(modalHtml).toContain('删除值');
+    expect(modalHtml).toContain('居住地');
+    expect(modalHtml).not.toContain('value_remove'); // 枚举原词不外露
+    expect(modalHtml).toContain('2026-09-25T10:00:00.001Z'); // 台账时间
+    // 无台账的版本不留空行：audit 摘要行数量 == 带台账的版本数（仅 snap-1）
+    expect(modalHtml.match(/personal-onto-history-audit"/g)).toHaveLength(1);
+
+    // ④ 恢复删除前那版 → 内容逐字一致
+    await restoreBtn.listeners.get('click')({ stopPropagation() {} });
+    await settleBackgroundWork();
+    expect(invoke).toHaveBeenCalledWith('personalOntology.groups.history.restore', {
+      groupId: 'grp-d1', snapshotId: 'snap-1',
+    });
+    expect(modal.style.display).toBe('none');
+    expect(elements.get('personal-onto-main-body')?.innerHTML).toContain('常住北京');
+    expect(reads[reads.length - 1]).toBe(BEFORE); // groups.read 返回值与删除前逐字相等
+  });
+
+  it('T024 既有 field_value_delete_confirm 确认流未被绕过（模板编辑器删值先确认）', async () => {
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === 'personalOntology.templates.list') {
+        return {
+          ok: true,
+          templates: [{
+            template_id: 'student', group_id: 'group-1', name: '学生', installed: true,
+            sections: [{ title: '身份', fields: [{ name: '称呼', values: [{ value: '子安', source: '手动' }] }] }],
+          }],
+        };
+      }
+      if (channel === 'recall.assets.list') return { ok: true, assets: [] };
+      if (channel === 'personalOntology.groups.list') return { ok: true, groups: [] };
+      if (channel === 'personalOntology.candidates.list') return { ok: true, candidates: [] };
+      if (channel === 'personalOntology.groups.read') return { ok: true, content: '# 学生\n\n## 身份\n\n### 称呼\n\n- 子安 [手动]\n' };
+      if (channel === 'projects.list') return { ok: true, projects: [] };
+      return { ok: true };
+    });
+    let confirmed = false;
+    const uiConfirm = vi.fn(async () => confirmed);
+    const { sandbox, elements, uiToast } = loadPersonalOntology(invoke, { uiConfirm });
+    const nav = elements.get('personal-onto-nav') as any;
+    const bodyEl = elements.get('personal-onto-main-body') as any;
+    const templateRow = ctrl({ 'data-poc-nav': 'template', 'data-poc-id': 'group-1' });
+    nav.querySelectorAll = (selector: string) => (selector === '[data-poc-nav]' ? [templateRow] : []);
+    const removeBtn = ctrl({
+      'data-poc-group-action': 'field-remove-value', 'data-poc-ref': 'group-1::身份',
+      'data-poc-field': '称呼', 'data-poc-value': '子安',
+    });
+    bodyEl.querySelectorAll = (selector: string) => (selector === '[data-poc-group-action]' ? [removeBtn] : []);
+
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+    await templateRow.listeners.get('click')({ stopPropagation() {} });
+    await settleBackgroundWork();
+    expect(elements.get('personal-onto-main-body')?.innerHTML).toContain('子安');
+
+    // 确认拒绝 → 不发 removeValue
+    const click = removeBtn.listeners.get('click');
+    expect(click).toBeTypeOf('function');
+    await click();
+    await settleBackgroundWork();
+    expect(uiConfirm).toHaveBeenCalledWith({ message: '删除字段值「子安」？' });
+    expect(invoke).not.toHaveBeenCalledWith('personalOntology.groups.fields.removeValue', expect.anything());
+
+    // 确认同意 → 才发 removeValue（确认在前，未被绕过）
+    confirmed = true;
+    await click();
+    await settleBackgroundWork();
+    expect(invoke).toHaveBeenCalledWith('personalOntology.groups.fields.removeValue', {
+      groupId: 'group-1::身份', fieldName: '称呼', value: '子安',
+    });
+    expect(uiToast).toHaveBeenCalledWith('已删除', { variant: 'success' });
+  });
+
+  it('T022 模板组在组管理区没有删除入口（_pocLoadGroups 过滤 template_id，删除按钮只属于普通组）', async () => {
+    const invoke = vi.fn(async (channel: string, payload?: any) => {
+      if (channel === 'personalOntology.templates.list') return { ok: true, templates: [] };
+      if (channel === 'recall.assets.list') return { ok: true, assets: [] };
+      if (channel === 'personalOntology.groups.list') {
+        return {
+          ok: true,
+          groups: [
+            { group_id: 'grp-n', title: '普通组', rel_path: 'n.md', created_at: '', updated_at: '' },
+            // 模板组：meta 带 template_id——主进程 deleteGroup 对它返回 role_template_group
+            { group_id: 'grp-tpl', title: '学生模板组', template_id: 'student', rel_path: 't.md', created_at: '', updated_at: '' },
+          ],
+        };
+      }
+      if (channel === 'personalOntology.candidates.list') return { ok: true, candidates: [] };
+      if (channel === 'personalOntology.conflicts.list') return { ok: true, conflicts: [] };
+      if (channel === 'personalOntology.groups.fields.list') return { ok: true, fields: [] };
+      if (channel === 'personalOntology.groups.read') return { ok: true, content: '' };
+      return { ok: true };
+    });
+    const { sandbox, elements } = loadPersonalOntology(invoke);
+    const nav = elements.get('personal-onto-nav') as any;
+    const tboxRow = ctrl({ 'data-poc-nav': 'tbox', 'data-poc-id': 'tbox' });
+    nav.querySelectorAll = (selector: string) => (selector === '[data-poc-nav]' ? [tboxRow] : []);
+
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+    await tboxRow.listeners.get('click')({ stopPropagation() {} });
+    await settleBackgroundWork();
+
+    const body = elements.get('personal-onto-main-body')?.innerHTML || '';
+    // 普通组：组卡与删除入口在
+    expect(body).toContain('普通组');
+    expect(body).toContain('data-poc-group-op="delete-group"');
+    expect(body).toContain('data-poc-gid="grp-n"');
+    // 模板组：整个组管理区不出现（无组卡、无删除按钮）——提前禁用的最强形式
+    // 是「没有入口」，主进程 role_template_group 只是兜底。
+    expect(body).not.toContain('grp-tpl');
+    expect(body).not.toContain('学生模板组');
+    // 过滤机制钉住（防止后续重构把 template_id 组放回组卡区）
+    expect(ontology).toContain('!g.template_id');
+  });
+
+  it('T022 删除确认文案四语如实：后果 + 恢复路径，不再出现「不可恢复」式假承诺', () => {
+    const tables = ['zh', 'en', 'ja', 'pt'].map((name) => JSON.parse(
+      readFileSync(resolve(root, `src/renderer/locales/${name}.json`), 'utf8'),
+    ) as Record<string, string>);
+    const KEY = 'personalOntology.group_delete_confirm';
+    for (const table of tables) {
+      const message = table[KEY];
+      expect(typeof message).toBe('string');
+      // 旧假承诺词形（四语）一律不得再出现
+      expect(message).not.toMatch(/不可恢复|permanently|復元できません|permanentemente/i);
+      // 恢复路径要如实指向本机保留的历史快照
+      expect(message.length).toBeGreaterThan(20);
+    }
+    expect(tables[0][KEY]).toContain('历史快照保留在本机');
+    expect(tables[1][KEY]).toContain('snapshots stay on this device');
+    expect(tables[2][KEY]).toContain('この端末に残り');
+    expect(tables[3][KEY]).toContain('permanecem neste dispositivo');
+
+    // T023 台账词条四语齐全（动态拼键扫不到 i18n 覆盖门禁，这里自己钉住）
+    const auditKeys = [
+      'personalOntology.history_audit_actor_user',
+      'personalOntology.history_audit_action_value_add',
+      'personalOntology.history_audit_action_value_edit',
+      'personalOntology.history_audit_action_value_remove',
+      'personalOntology.history_audit_action_field_remove',
+      'personalOntology.history_audit_action_entry_promote',
+      'personalOntology.history_audit_action_group_rename',
+      'personalOntology.history_audit_action_group_delete',
+      'personalOntology.history_audit_action_snapshot_restore',
+    ];
+    for (const table of tables) {
+      for (const key of auditKeys) {
+        expect(table[key], `missing ${key}`).toBeTruthy();
+      }
+    }
   });
 });

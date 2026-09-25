@@ -40,6 +40,19 @@
     return '';
   }
 
+  /** 非交互元数据标记（US-102 T023）：共享 uiTag 优先，ca-chip 兜底
+   *  （uiTag 来自 ui-status.js，index.html 全局加载；沙箱降级保证可测）。 */
+  function _tag(label, className) {
+    const text = String(label == null ? '' : label);
+    if (!text) return '';
+    try {
+      if (typeof window !== 'undefined' && typeof window.uiTag === 'function') {
+        return window.uiTag({ label: text, className: className || undefined });
+      }
+    } catch (_) {}
+    return `<span class="ca-chip${className ? ` ${escapeHtml(className)}` : ''}">${escapeHtml(text)}</span>`;
+  }
+
   function _button(options) {
     if (typeof window.uiButton !== 'function') throw new Error('personal ontology requires uiButton');
     return window.uiButton(options);
@@ -1110,13 +1123,16 @@
 
   async function _pocDeleteGroupConfirm(gid) {
     if (!gid) return;
+    // US-102 T022：文案与 FR-003 对齐——如实说明后果（分组文件删除）与恢复路径
+    //（删前快照已留档在本机，Phase 4 T021 保证），不再写「不可恢复」式假承诺。
+    const confirmMsg = _t('personalOntology.group_delete_confirm', '删除后分组文件（含全部字段与流水）将被删除；删除前的历史快照保留在本机，可用于恢复。');
     const ok = (typeof uiConfirmDanger === 'function')
       ? await uiConfirmDanger({
         title: _t('personalOntology.group_delete', '删除分组'),
-        message: _t('personalOntology.group_delete_confirm', '删除后分组文件（含全部字段与流水）不可恢复。'),
+        message: confirmMsg,
         dangerLabel: _t('personalOntology.group_delete', '删除分组'),
       })
-      : (typeof uiConfirm === 'function' ? await uiConfirm({ message: _t('personalOntology.group_delete_confirm', '删除后分组文件（含全部字段与流水）不可恢复。') }) : true);
+      : (typeof uiConfirm === 'function' ? await uiConfirm({ message: confirmMsg }) : true);
     if (!ok) return;
     const res = await _pocInvoke('personalOntology.groups.delete', { groupId: gid });
     if (!res || res.ok === false) {
@@ -1211,6 +1227,40 @@
     await _pocReloadBoxData();
   }
 
+  /** 台账动作可读化（US-102 T023）：已知枚举走四语词条（内联「键+中文兜底」
+   *  写法让 i18n 覆盖门禁可扫）；未知 action 原样显示（如实呈现，不臆造标签）。
+   *  枚举对齐主进程 appendOntologyAudit 调用集。 */
+  const _POC_AUDIT_ACTIONS = {
+    value_add: ['personalOntology.history_audit_action_value_add', '添加值'],
+    value_edit: ['personalOntology.history_audit_action_value_edit', '编辑值'],
+    value_remove: ['personalOntology.history_audit_action_value_remove', '删除值'],
+    field_remove: ['personalOntology.history_audit_action_field_remove', '删除字段'],
+    entry_promote: ['personalOntology.history_audit_action_entry_promote', '流水升格'],
+    group_rename: ['personalOntology.history_audit_action_group_rename', '重命名分组'],
+    group_delete: ['personalOntology.history_audit_action_group_delete', '删除分组'],
+    snapshot_restore: ['personalOntology.history_audit_action_snapshot_restore', '恢复快照'],
+  };
+
+  /** 历史版旁的台账摘要行（US-102 T023）：「谁 · 何时 · 改的哪个字段」。
+   *  audit 是 history.list 的可选附加字段（取不到不带键）——没有台账的
+   *  版本返回空串，**不渲染空行**；history[] 既有字段零改动。 */
+  function _pocHistoryAuditHtml(audit) {
+    if (!audit || typeof audit !== 'object') return '';
+    const mapped = _POC_AUDIT_ACTIONS[audit.action];
+    const actionLabel = mapped ? _t(mapped[0], mapped[1]) : String(audit.action || '');
+    if (!actionLabel) return '';
+    // 台账 actor 恒为 'user'（本地单用户，主进程写死）——audit 摘要里不重复
+    // 携带该字段，展示层固定「用户」标签。
+    const field = audit.field ? String(audit.field) : '';
+    const at = audit.at ? String(audit.at) : '';
+    return `<div class="personal-onto-value-detail-chips personal-onto-history-audit">
+      ${_tag(_t('personalOntology.history_audit_actor_user', '用户'))}
+      ${_tag(actionLabel)}
+      ${field ? _tag(field) : ''}
+      ${at ? `<span class="muted personal-onto-history-audit-at">${escapeHtml(at)}</span>` : ''}
+    </div>`;
+  }
+
   /** 组变更历史（spec 007 T304）：列表 + 恢复（当前版自动留档可再回滚）。 */
   async function _pocShowGroupHistory(gid) {
     if (!gid) return;
@@ -1221,7 +1271,8 @@
         <span class="personal-onto-history-time">${escapeHtml(String(h.savedAt || h.id))}</span>
         <span class="personal-onto-history-preview muted">${escapeHtml(String(h.preview || ''))}</span>
         ${_button({ label: _t('personalOntology.group_restore', '恢复这版'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'restore-snapshot', 'data-poc-snapshot': String(h.id) } })}
-      </div>`).join('')
+      </div>
+      ${_pocHistoryAuditHtml(h.audit)}`).join('')
       : `<div class="muted">${escapeHtml(_t('personalOntology.group_history_empty', '还没有历史版本——修改分组内容后自动留档'))}</div>`;
     // 复用模板库弹层骨架：独立简易 modal
     const overlay = document.getElementById('personal-onto-modal');
@@ -1232,7 +1283,15 @@
       ${rows}
     </div>`;
     overlay.style.display = 'flex';
-    _pocBindGroupDetail(body);
+    // 恢复按钮绑定：此处原调用 _pocBindGroupDetail——盒子化重构后该函数已
+    // 不存在（死引用），modal 显示了但「恢复这版」从未绑上点击（US-102 T024
+    // 修复：按既有组操作口径就地绑定，闭包携带 gid）。
+    body.querySelectorAll('[data-poc-group-op="restore-snapshot"]').forEach((el) => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        void _pocRestoreSnapshot(el, gid);
+      });
+    });
   }
 
   async function _pocRestoreSnapshot(el, gid) {
