@@ -15,11 +15,14 @@ import * as path from 'node:path';
 
 import { readAbilityAsset } from '../../../src/main/features/recall/asset-service';
 import type { RecallAbilityAssetRecord } from '../../../src/main/features/recall/candidate-service';
+import type { CorrectionCandidate } from '../../../src/main/features/transcript_auto_correct';
 import {
   MAX_MEETING_ASSET_REFS,
   MeetingRefError,
+  attachAssetRefs,
   attachMeetingAsset,
   detachMeetingAsset,
+  listMeetingAssetCanonicalNames,
   listMeetingAssetRefs,
   readMeetingAssetPack,
 } from '../../../src/main/features/meeting_refs';
@@ -176,5 +179,76 @@ describe('detach / list（幂等与只读）', () => {
     expect(dir).toContain(path.join('cloud', 'cogseed', 'transcript'));
     expect(dir.endsWith('meeting-refs')).toBe(true);
     expect(fs.readdirSync(dir)).toHaveLength(1);
+  });
+});
+
+// ── T027：资产规范名进纠错依据（specs/013 FR-001）──────────────────────────────
+describe('T027：资产规范名清单（冻结版）与依据追加', () => {
+  /** 最小候选（CorrectionCandidate 关键字段），供 attachAssetRefs 纯函数用例。 */
+  function candidate(over: Partial<CorrectionCandidate>): CorrectionCandidate {
+    return {
+      entryRef: 'g_1', wrong: 'coxy', correct: 'Cogseed', action: 'replace',
+      confidence: 1, riskLevel: 'low', context: '', span: { start: 0, end: 4 },
+      ignoredCount: 0, contextAllow: [], ...over,
+    };
+  }
+
+  it('清单：version/title 用挂载时的冻结版（不是当前版）；name 读时取 statement‖title', async () => {
+    // 挂载时 v3、无 statement；挂载后资产升版 + 补了 statement
+    assets.set('ast_term', assetRecord({ id: 'ast_term', title: '术语资产', version: '3', statement: '' }));
+    await attachMeetingAsset(uid, 'kb/m.md', 'ast_term');
+    assets.set('ast_term', assetRecord({
+      id: 'ast_term', title: '术语资产（新版）', version: '3', activeVersion: '9',
+      statement: 'Cogseed 是产品名',
+    }));
+    const names = await listMeetingAssetCanonicalNames(uid, 'kb/m.md');
+    expect(names).toEqual([{
+      name: 'Cogseed 是产品名',   // 规范名读时取（引用包不存正文）
+      assetId: 'ast_term',
+      version: '3',               // 冻结版：挂载时的版本，不是当前 activeVersion '9'
+      title: '术语资产',           // 冻结标题快照，不是新标题
+    }]);
+    // 记录读盘再钉一次：清单不落盘、引用包不因读取而变
+    const pack = fs.readFileSync(path.join(userMeetingRefsDir(uid), `${docKeyForDocId('kb/m.md')}.json`), 'utf8');
+    expect(pack).toContain('"version": "3"');
+    expect(pack).not.toContain('Cogseed 是产品名');   // 规范名（资产正文）不进引用包
+  });
+
+  it('清单：资产已删除 → 如实跳过；非 active → 跳过（停用资产不作依据）；无挂载 → 空数组', async () => {
+    expect(await listMeetingAssetCanonicalNames(uid, 'kb/none.md')).toEqual([]);
+    assets.set('ast_gone', assetRecord({ id: 'ast_gone', title: 'G', version: '1' }));
+    await attachMeetingAsset(uid, 'kb/m2.md', 'ast_gone');
+    await attachMeetingAsset(uid, 'kb/m2.md', 'ast_cogseed');
+    // ast_gone 彻底删除（读不到）→ 跳过；ast_cogseed 归档（非 active）→ 跳过
+    assets.delete('ast_gone');
+    assets.set('ast_cogseed', assetRecord({ id: 'ast_cogseed', status: 'archived' }));
+    expect(await listMeetingAssetCanonicalNames(uid, 'kb/m2.md')).toEqual([]);
+  });
+
+  it('attachAssetRefs：候选 correct 折叠命中规范名 → 追加 {source:"asset",…}（version=冻结版）', () => {
+    const names = [{ name: 'Cogseed', assetId: 'ast_term', version: '3', title: '术语资产' }];
+    const hit = attachAssetRefs([candidate({})], names);
+    expect(hit[0].refs).toEqual([{ source: 'asset', assetId: 'ast_term', version: '3', title: '术语资产' }]);
+    // 大小写折叠命中（与 attachOntologyRefs 同一套折叠）
+    const folded = attachAssetRefs([candidate({ correct: 'cogseed' })], names);
+    expect(folded[0].refs?.[0]).toMatchObject({ source: 'asset', assetId: 'ast_term' });
+  });
+
+  it('attachAssetRefs：未命中原样返回（同一引用，refs 不动）；同一 assetId 幂等；并列不覆盖既有依据', () => {
+    const names = [{ name: 'Cogseed', assetId: 'ast_term', version: '3', title: '术语资产' }];
+    const miss = candidate({ correct: '别的写法', refs: [{ source: 'glossary', entryId: 'g_1', kind: 'term', freq: 2 }] });
+    expect(attachAssetRefs([miss], names)[0]).toBe(miss);      // 未命中：同一对象原样返回
+    const withGlossary = candidate({
+      refs: [{ source: 'glossary', entryId: 'g_1', kind: 'term', freq: 2 }],
+    });
+    const appended = attachAssetRefs([withGlossary], names)[0];
+    expect(appended.refs).toHaveLength(2);                      // 追加为并列依据，不覆盖
+    expect(attachAssetRefs([appended], names)[0]).toBe(appended); // 同 assetId 已在 → 幂等原样
+  });
+
+  it('attachAssetRefs：空清单/空候选 → 零行为', () => {
+    const c = candidate({});
+    expect(attachAssetRefs([c], [])).toEqual([c]);
+    expect(attachAssetRefs([], [{ name: 'x', assetId: 'a', version: '1', title: 't' }])).toEqual([]);
   });
 });

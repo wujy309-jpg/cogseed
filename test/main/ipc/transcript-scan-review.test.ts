@@ -314,3 +314,204 @@ describe('情景信号进扫描与降级如实标注', () => {
     expect(healed.degraded).toEqual([]);
   });
 });
+
+// ── 资产规范名进纠错依据（specs/013 T027，FR-001）──────────────────────────────
+describe('资产规范名进纠错依据（T027 端到端）', () => {
+  /** mock 资产库（meeting_refs 与 scan 组装处都经 readAbilityAsset 读它）。 */
+  function mockAssetStore() {
+    const assets = new Map<string, Record<string, unknown>>();
+    vi.doMock('../../../src/main/features/recall/asset-service', async () => ({
+      readAbilityAsset: vi.fn(async (_uid: string, assetId: string) => {
+        const record = assets.get(assetId);
+        if (!record) throw new Error('recall ability asset not found');
+        return record;
+      }),
+    }));
+    return assets;
+  }
+
+  /** active + 过准入的最小资产（形态照 meeting_refs.test 的 assetRecord）。 */
+  function activeAsset(id: string, over: Record<string, unknown> = {}) {
+    return {
+      maturity: 'effectiveness_validated',
+      lifecycleStatus: 'user_confirmed_unverified',
+      status: 'active',
+      scope: 'personal',
+      type: 'personal',
+      title: '术语资产',
+      version: '3',
+      id,
+      ...over,
+    };
+  }
+
+  it('挂载后重扫：候选 refs 含 source:"asset" 且 version 等于挂载时的冻结版（不是当前版）', async () => {
+    const assets = mockAssetStore();
+    const { invokeHandlers } = await import('../../../src/main/ipc/transcript');
+    const meetingRefs = await import('../../../src/main/features/meeting_refs');
+    assets.set('ast_term', activeAsset('ast_term', { statement: 'Cogseed' }));
+    await meetingRefs.attachMeetingAsset(TEST_UID, 'kb/m.md', 'ast_term');
+    // 会议后资产升版到 v9：引用包冻结的仍是 v3
+    assets.set('ast_term', activeAsset('ast_term', { statement: 'Cogseed', activeVersion: '9', title: '术语资产（新）' }));
+    const scan = await (invokeHandlers['transcript.correct.scan'] as any)({ text: TEXT, docId: 'kb/m.md' }, ctx());
+    expect(scan.candidates).toHaveLength(1);
+    const refs = scan.candidates[0].refs;
+    expect(refs[0]).toMatchObject({ source: 'glossary', entryId: scan.candidates[0].entryRef });
+    expect(refs).toContainEqual({ source: 'asset', assetId: 'ast_term', version: '3', title: '术语资产' });
+  });
+
+  it('未挂载的文档：refs 不含 asset 来源（既有行为零变化）', async () => {
+    mockAssetStore();
+    const { invokeHandlers } = await import('../../../src/main/ipc/transcript');
+    const scan = await (invokeHandlers['transcript.correct.scan'] as any)({ text: TEXT, docId: 'd1' }, ctx());
+    expect(scan.candidates).toHaveLength(1);
+    expect(scan.candidates[0].refs.some((r: any) => r.source === 'asset')).toBe(false);
+  });
+
+  it('挂载的资产被删除后重扫：该 asset 依据如实消失（宁少不多，不造依据）', async () => {
+    const assets = mockAssetStore();
+    const { invokeHandlers } = await import('../../../src/main/ipc/transcript');
+    const meetingRefs = await import('../../../src/main/features/meeting_refs');
+    assets.set('ast_term', activeAsset('ast_term', { statement: 'Cogseed' }));
+    await meetingRefs.attachMeetingAsset(TEST_UID, 'kb/m.md', 'ast_term');
+    assets.delete('ast_term'); // 彻底删除
+    const scan = await (invokeHandlers['transcript.correct.scan'] as any)({ text: TEXT, docId: 'kb/m.md' }, ctx());
+    expect(scan.candidates[0].refs.some((r: any) => r.source === 'asset')).toBe(false);
+  });
+});
+
+// ── 拒绝回执 / 不再重复建议 / 可撤销（specs/013 T028/T029/T032，FR-001）────────
+describe('拒绝回执与不再重复建议（T028/T029/T032 端到端）', () => {
+  /** 被测词条（beforeEach 建的 coxy→Cogseed）的 entryRef。 */
+  async function coxyEntryId(): Promise<string> {
+    const glossary = await import('../../../src/main/features/transcript_glossary');
+    const entry = glossary.listEntries(TEST_UID, { status: 'active' }).find((e: any) => e.wrong === 'coxy');
+    if (!entry) throw new Error('coxy entry missing');
+    return entry.id;
+  }
+
+  async function decisionsOf(targetRef: string) {
+    const { listReviewDecisions } = await import('../../../src/main/features/cognition/review-decision');
+    return listReviewDecisions(TEST_UID, targetRef);
+  }
+
+  it('T028：拒绝后账本恰一条 reject（idempotencyKey 含 runId）；被拒形态不被替换；不存在的 id 不写账', async () => {
+    const { invokeHandlers } = await import('../../../src/main/ipc/transcript');
+    const entryId = await coxyEntryId();
+    const applied = await (invokeHandlers['transcript.correct.apply'] as any)({
+      text: TEXT, docId: 'kb/r.md', acceptedIds: [], rejectedIds: [entryId, 'g_no_such'],
+    }, ctx());
+    expect(applied.result.text).toBe(TEXT);            // 被拒的不替换（coxy 原样）
+    expect(applied.result.applied).toHaveLength(0);
+    expect(applied.receipts).toHaveLength(1);           // 不存在的 id 不写账
+    const targetRef = `meeting:kb/r.md:${entryId}`;
+    const decisions = await decisionsOf(targetRef);
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({ decision_type: 'reject', target_ref: targetRef, actor: 'user' });
+    expect(decisions[0].idempotency_key).toContain(applied.run.runId);   // 幂等键含 runId
+    // 账本文件真实落盘（验收原文口径：账本文件出现一条）
+    const { reviewDecisionLogPath } = await import('../../../src/main/features/cognition/review-decision');
+    const { readJsonl } = await import('../../../src/main/storage');
+    const onDisk = await readJsonl<any>(reviewDecisionLogPath(TEST_UID, targetRef), 100);
+    expect(onDisk).toHaveLength(1);
+    expect(onDisk[0].decision_type).toBe('reject');
+  });
+
+  it('T028：重试同动作（receiptRunId 复用原 run）不产生第二条；不同 run 的再次拒绝是新的一条', async () => {
+    const { invokeHandlers } = await import('../../../src/main/ipc/transcript');
+    const entryId = await coxyEntryId();
+    const first = await (invokeHandlers['transcript.correct.apply'] as any)({
+      text: TEXT, docId: 'kb/r.md', acceptedIds: [], rejectedIds: [entryId],
+    }, ctx());
+    const targetRef = `meeting:kb/r.md:${entryId}`;
+    // 重试同一动作：传原 run 的 runId ⇒ 幂等命中，返回同一 decisionId
+    const retry = await (invokeHandlers['transcript.correct.apply'] as any)({
+      text: TEXT, docId: 'kb/r.md', acceptedIds: [], rejectedIds: [entryId], receiptRunId: first.run.runId,
+    }, ctx());
+    expect(retry.receipts[0].decisionId).toBe(first.receipts[0].decisionId);
+    expect(await decisionsOf(targetRef)).toHaveLength(1);            // 仍只有一条
+    // 不同 run（不同文本）的再次拒绝 = 新动作 ⇒ 追加一条（T032④ 的前提）
+    await (invokeHandlers['transcript.correct.apply'] as any)({
+      text: `${TEXT} `, docId: 'kb/r.md', acceptedIds: [], rejectedIds: [entryId],
+    }, ctx());
+    expect(await decisionsOf(targetRef)).toHaveLength(2);
+  });
+
+  it('T029：拒绝后重扫同一文本该形态不再出现（stats.suppressed 如实）；跨进程重启仍生效（账本落盘）；其他文档不受影响', async () => {
+    const { invokeHandlers } = await import('../../../src/main/ipc/transcript');
+    const entryId = await coxyEntryId();
+    await (invokeHandlers['transcript.correct.apply'] as any)({
+      text: TEXT, docId: 'kb/r.md', acceptedIds: [], rejectedIds: [entryId],
+    }, ctx());
+    const scan = await (invokeHandlers['transcript.correct.scan'] as any)({ text: TEXT, docId: 'kb/r.md' }, ctx());
+    expect(scan.candidates.filter((c: any) => c.wrong === 'coxy')).toHaveLength(0);
+    expect(scan.stats.suppressed).toBeGreaterThanOrEqual(1);
+    // 跨"进程重启"：重置模块后重新加载（词表与账本都落盘在 workspace）
+    vi.resetModules();
+    const users = await import('../../../src/main/features/users');
+    users.activateUser(TEST_UID);
+    const { invokeHandlers: handlers2 } = await import('../../../src/main/ipc/transcript');
+    const rescanned = await (handlers2['transcript.correct.scan'] as any)({ text: TEXT, docId: 'kb/r.md' }, ctx());
+    expect(rescanned.candidates.filter((c: any) => c.wrong === 'coxy')).toHaveLength(0);
+    // 抑制的 target_ref 绑定会议文档：别的文档同形态照常建议
+    const otherDoc = await (handlers2['transcript.correct.scan'] as any)({ text: TEXT, docId: 'kb/other.md' }, ctx());
+    expect(otherDoc.candidates.filter((c: any) => c.wrong === 'coxy')).toHaveLength(1);
+  });
+
+  it('T029：新决定覆盖（既有末条判定口径）⇒ 重新出现——不新写第二套判据', async () => {
+    const { invokeHandlers } = await import('../../../src/main/ipc/transcript');
+    const { writeReviewDecision } = await import('../../../src/main/features/cognition/review-decision');
+    const entryId = await coxyEntryId();
+    await (invokeHandlers['transcript.correct.apply'] as any)({
+      text: TEXT, docId: 'kb/r.md', acceptedIds: [], rejectedIds: [entryId],
+    }, ctx());
+    // 既有口径：末条决定为 accept ⇒ 不再抑制（与 isCandidateSuppressed 同一处判据）
+    await writeReviewDecision(TEST_UID, {
+      targetRef: `meeting:kb/r.md:${entryId}`, decisionType: 'accept', decision: 'new evidence',
+    });
+    const scan = await (invokeHandlers['transcript.correct.scan'] as any)({ text: TEXT, docId: 'kb/r.md' }, ctx());
+    expect(scan.candidates.filter((c: any) => c.wrong === 'coxy')).toHaveLength(1);
+  });
+
+  it('T032：撤销 ⇒ 重扫重新出现；撤销追加一条回执（append-only、不新增决定类型）；重复撤销幂等；撤销后再次拒绝仍生效', async () => {
+    const { invokeHandlers } = await import('../../../src/main/ipc/transcript');
+    const entryId = await coxyEntryId();
+    const targetRef = `meeting:kb/r.md:${entryId}`;
+    await (invokeHandlers['transcript.correct.apply'] as any)({
+      text: TEXT, docId: 'kb/r.md', acceptedIds: [], rejectedIds: [entryId],
+    }, ctx());
+    // 拒绝 ⇒ 重扫不出（T032①）
+    const suppressedScan = await (invokeHandlers['transcript.correct.scan'] as any)({ text: TEXT, docId: 'kb/r.md' }, ctx());
+    expect(suppressedScan.candidates.filter((c: any) => c.wrong === 'coxy')).toHaveLength(0);
+
+    // 撤销（对齐词表侧 setIgnored 的可逆口径）⇒ 追加一条 accept 回执（T032②③）
+    const before = await decisionsOf(targetRef);
+    const undone = await (invokeHandlers['transcript.correct.unreject'] as any)({
+      docId: 'kb/r.md', ids: [entryId],
+    }, ctx());
+    expect(undone.undone).toHaveLength(1);
+    const after = await decisionsOf(targetRef);
+    expect(after).toHaveLength(before.length + 1);       // append-only：只增不减
+    const undoDecision = after[after.length - 1];
+    expect(undoDecision.decision_type).toBe('accept');   // 既有 7 值之一，不新增决定类型
+    expect(undoDecision.decision).toBe('unreject');
+    expect(undoDecision.supersedes_ref).toBe(before[before.length - 1].decision_id);
+    // 撤销 ⇒ 重扫重新出现（T032②）
+    const recoveredScan = await (invokeHandlers['transcript.correct.scan'] as any)({ text: TEXT, docId: 'kb/r.md' }, ctx());
+    expect(recoveredScan.candidates.filter((c: any) => c.wrong === 'coxy')).toHaveLength(1);
+
+    // 重复撤销：末条已非抑制态 ⇒ 幂等跳过（对齐 setIgnored 重复调用无操作），账本不增
+    const again = await (invokeHandlers['transcript.correct.unreject'] as any)({
+      docId: 'kb/r.md', ids: [entryId],
+    }, ctx());
+    expect(again.undone).toEqual([]);
+    expect(await decisionsOf(targetRef)).toHaveLength(after.length);
+
+    // 撤销后再次拒绝仍生效（T032④）：新 run 的新拒绝 ⇒ 末条回到 reject ⇒ 又被抑制
+    await (invokeHandlers['transcript.correct.apply'] as any)({
+      text: `${TEXT} `, docId: 'kb/r.md', acceptedIds: [], rejectedIds: [entryId],
+    }, ctx());
+    const finalScan = await (invokeHandlers['transcript.correct.scan'] as any)({ text: TEXT, docId: 'kb/r.md' }, ctx());
+    expect(finalScan.candidates.filter((c: any) => c.wrong === 'coxy')).toHaveLength(0);
+  });
+});

@@ -29,6 +29,8 @@ import { createLogger } from '../logger';
 import { safeId } from '../storage';
 import { userMeetingRefsDir } from '../paths';
 import { docKeyForDocId, MAX_DOC_ID_CHARS, MeetingDocError } from './meeting_doc';
+import { foldText } from './transcript_glossary';
+import type { CorrectionCandidate } from './transcript_auto_correct';
 import { readAbilityAsset } from './recall/asset-service';
 import {
   assetRuntimeBlockRule,
@@ -276,6 +278,92 @@ export async function listMeetingAssetRefs(uid: string, docId: string): Promise<
 export async function readMeetingAssetPack(uid: string, docId: string): Promise<MeetingAssetPack> {
   const id = requireDocId(docId);
   return readPack(uid, id) ?? emptyPack(id);
+}
+
+// ── T027：资产规范名进纠错依据（specs/013 FR-001 后半的依据来源）─────────────
+
+/**
+ * 本会议挂载资产的"规范名"清单条目（specs/013 T027）。
+ *
+ * `name` = 资产 statement 的规范形态（退 title；取值表达式与候选服务的既有
+ * 资产文本形态一致 `String(asset.statement || asset.title || '')`，不新写一套）。
+ * `version`/`title` 一律取**引用包里的冻结值**——不是资产的当前版（SC-004：
+ * 依据标注的是"开会当时引用的那一版"，资产事后升版不改变当时的依据）。
+ */
+export interface MeetingAssetCanonicalName {
+  /** 资产规范名（statement ‖ title，主进程内存内匹配用；不进引用包、不进候选 refs）。 */
+  name: string;
+  assetId: string;
+  /** 挂载时的**冻结版**（非当前版）。 */
+  version: string;
+  /** 挂载时的标题快照（≤120）。 */
+  title: string;
+}
+
+/**
+ * 本会议的资产规范名清单（只读派生，specs/013 T027）。
+ *
+ * - `version`/`title` 取引用包冻结值；`name` **读时**从资产现记录取
+ *   （引用包不存正文，隐私边界 D20——规范名只在主进程内存里做匹配，
+ *   不落引用包、不进候选 refs）；
+ * - 资产已彻底删除（读不到）或已非 `active` → 该条**如实跳过**（宁少不多，
+ *   不造依据）：停用资产的规范名不再作为纠错依据；引用本身的 stale/available
+ *   呈现是 T037 的活，这里只管"参不参与匹配"这道闸。
+ */
+export async function listMeetingAssetCanonicalNames(
+  uid: string,
+  docId: string,
+): Promise<MeetingAssetCanonicalName[]> {
+  const id = requireDocId(docId);
+  const pack = readPack(uid, id);
+  if (!pack || !pack.assetRefs.length) return [];
+  const out: MeetingAssetCanonicalName[] = [];
+  for (const ref of pack.assetRefs) {
+    let asset: RecallAbilityAssetRecord;
+    try {
+      asset = await readAbilityAsset(uid, ref.assetId);
+    } catch {
+      continue; // 资产已删/不可读：如实跳过，不造依据
+    }
+    if (asset.status !== 'active') continue;
+    const name = String(asset.statement || asset.title || '').trim();
+    if (!name) continue;
+    out.push({ name, assetId: ref.assetId, version: ref.version, title: ref.title });
+  }
+  return out;
+}
+
+/**
+ * 把资产规范名追加进候选依据（specs/013 T027）：候选建议写法（`correct`，
+ * 折叠比较——与 `attachOntologyRefs` 同一套折叠与命中判据）命中规范名 →
+ * 给该候选**追加** `{ source:'asset', assetId, version, title }` 并列依据，
+ * `version` 用清单带来的冻结值。
+ *
+ * 只读纯函数（形态逐字对齐 `attachOntologyRefs`）：未命中的候选**原样返回**
+ * （对象不复制、refs 不动）；命中则产出新对象（不改入参）；同一 assetId
+ * 不重复追加（幂等）。
+ */
+export function attachAssetRefs(
+  candidates: CorrectionCandidate[],
+  names: MeetingAssetCanonicalName[],
+): CorrectionCandidate[] {
+  if (!names.length || !candidates.length) return candidates;
+  const byFoldedName = new Map<string, MeetingAssetCanonicalName>();
+  for (const item of names) {
+    const key = foldText(String(item?.name ?? '')).trim();
+    if (!key || byFoldedName.has(key)) continue;
+    byFoldedName.set(key, item);
+  }
+  return candidates.map((candidate) => {
+    const hit = byFoldedName.get(foldText(candidate.correct ?? '').trim());
+    if (!hit) return candidate;
+    const existing = Array.isArray(candidate.refs) ? candidate.refs : [];
+    if (existing.some((ref) => ref.source === 'asset' && ref.assetId === hit.assetId)) return candidate;
+    return {
+      ...candidate,
+      refs: [...existing, { source: 'asset', assetId: hit.assetId, version: hit.version, title: hit.title }],
+    };
+  });
 }
 
 // re-export：IPC 层（T013）与 meeting_conclusions（T035）共用同一套 docId 校验语义。
