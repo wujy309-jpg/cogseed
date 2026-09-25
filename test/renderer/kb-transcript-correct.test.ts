@@ -1346,3 +1346,191 @@ describe('会议引用层：渲染契约补充（specs/013）', () => {
     expect(panelSrc).not.toContain("t('kb.meetingRef.reject_button'");
   });
 });
+
+// ── specs/013 T047：「提出为候选」面板入口（页面级）─────────────────────────
+
+describe('会议引用层：提出为候选面板入口（T047）', () => {
+  function recElement(): any {
+    const el: any = {
+      _text: '', children: [], innerHTML: '', hidden: false, value: '', checked: false,
+      dataset: {}, style: {}, title: '',
+      classList: { add: () => {}, remove: () => {}, contains: () => false, toggle: () => false },
+      appendChild: (child: any) => { el.children.push(child); return child; },
+      append: (...kids: any[]) => { kids.forEach((k) => el.children.push(k)); },
+      addEventListener: () => {}, removeEventListener: () => {},
+      querySelector: () => null, querySelectorAll: () => [], closest: () => null,
+      setAttribute: () => {}, getAttribute: () => null, removeAttribute: () => {},
+      insertBefore: () => {}, insertAdjacentHTML: () => {},
+      focus: () => {}, remove: () => {}, replaceWith: () => {},
+    };
+    Object.defineProperty(el, 'textContent', {
+      get: () => el._text,
+      set: (v: any) => { el._text = String(v ?? ''); el.children = []; el.innerHTML = ''; },
+      configurable: true,
+    });
+    return el;
+  }
+
+  const descendants = (el: any): any[] => {
+    const out: any[] = [];
+    const walk = (node: any) => {
+      for (const child of node?.children || []) { out.push(child); walk(child); }
+    };
+    walk(el);
+    return out;
+  };
+  const markupOf = (el: any): string => {
+    let out = `${el._text ?? ''}${el.innerHTML ?? ''}`;
+    for (const child of el.children || []) out += markupOf(child);
+    return out;
+  };
+  const attrEl = (attrs: Record<string, string>) => ({
+    getAttribute: (n: string) => (n in attrs ? attrs[n] : null),
+  });
+
+  const scanResult = () => ({
+    candidates: [
+      {
+        entryRef: 'g_low', wrong: 'coxy', correct: 'Cogseed', action: 'replace', riskLevel: 'low',
+        confidence: 1, context: '', span: { start: 0, end: 4 }, ignoredCount: 0, contextAllow: [],
+        channel: 'exact',
+        refs: [{ source: 'glossary', entryId: 'g_low', kind: 'product', freq: 3 }],
+      },
+      {
+        entryRef: 'g_model', wrong: 'coxyx', correct: 'Cogseed', action: 'replace', riskLevel: 'medium',
+        confidence: 0.6, context: '模型理由', span: { start: 20, end: 25 }, ignoredCount: 0, contextAllow: [],
+        fromModel: true,
+      },
+      {
+        // 有依据（过 T026 的 withBasisOnly）但依据里没有词条来源：runPropose 拿不到
+        // 词条 kind，应如实提示无法提出、不发起调用（不猜 kind）。
+        entryRef: 'g_nokind', wrong: '无类词', correct: '目标词', action: 'replace', riskLevel: 'low',
+        confidence: 1, context: '', span: { start: 30, end: 36 }, ignoredCount: 0, contextAllow: [],
+        channel: 'exact',
+        refs: [{ source: 'ontology', name: '目标词' }],
+      },
+    ],
+    denied: [],
+    stats: { entriesScanned: 2, candidates: 3, denied: 0, truncated: false, byChannel: { exact: 2, recall: 0, model: 1 }, quotedExample: 0, suppressed: 0 },
+    degraded: [],
+    recall: undefined,
+    review: null,
+  });
+
+  /** 带 proposeCandidate 分支的挂载 harness（其余照页面级 describe 的同款形态）。 */
+  function mountProposePanel(proposeResult: Record<string, unknown>) {
+    const nodes = new Map<string, any>();
+    const clickHandlers: Array<(ev: unknown) => void> = [];
+    const container = recElement();
+    container.querySelector = (selector: string) => {
+      if (!nodes.has(selector)) nodes.set(selector, recElement());
+      return nodes.get(selector);
+    };
+    container.addEventListener = (name: string, fn: (ev: unknown) => void) => {
+      if (name === 'click') clickHandlers.push(fn);
+    };
+    const calls: Array<{ channel: string; payload: any }> = [];
+    const context: any = {
+      console, setTimeout, clearTimeout, Map, Set, Array, Object, String, Number, JSON, Boolean, Promise,
+      document: { createElement: () => recElement(), body: recElement(), addEventListener: () => {}, removeEventListener: () => {} },
+      cogseed: {
+        invoke: async (channel: string, payload: any) => {
+          calls.push({ channel, payload });
+          if (channel === 'transcript.correct.scan') return scanResult();
+          if (channel === 'transcript.correct.proposeCandidate') return proposeResult;
+          return {};
+        },
+      },
+      addEventListener: () => {}, removeEventListener: () => {},
+      t: () => '',
+      uiButton: (o: any) => '<button type="button" class="ui-button" '
+        + Object.entries(o?.attrs || {}).map(([k, v]) => `${k}="${v}"`).join(' ')
+        + `>${String(o?.label || '')}</button>`,
+      uiCheckbox: (o: any) => `<input type="checkbox" aria-label="${String(o?.label || '')}">`,
+      uiEmptyState: (o: any) => `<div class="ui-empty-state">${String(o?.title || '')}</div>`,
+    };
+    context.window = context;
+    context.globalThis = context;
+    vm.createContext(context);
+    vm.runInContext(panelSrc, context, { filename: 'kb-transcript-correct.js' });
+    context.KbTranscriptCorrect.mount(container, {
+      text: '甲 2026-09-05 19:31:32\n一会儿叫 coxy。',
+      docId: 'doc-propose',
+      displayPath: '1/9.15站会.txt',
+    });
+    const fire = (matches: Record<string, ReturnType<typeof attrEl>>) => {
+      const target = { closest: (sel: string) => matches[sel] || null };
+      for (const fn of [...clickHandlers]) fn({ target });
+    };
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const rowMenuMarkup = (entryRef: string): string => {
+      const rowEl = descendants(nodes.get('[data-atc-body]')).find((el) => el.dataset && el.dataset.atcRow === entryRef);
+      return rowEl ? markupOf(rowEl) : '';
+    };
+    return { nodes, fire, flush, calls, rowMenuMarkup };
+  }
+
+  it('词表行的行菜单含「提出为候选」按钮；模型建议行不提供该入口', async () => {
+    const env = mountProposePanel({ candidateId: 'cand_1', created: true });
+    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
+    await env.flush();
+    env.fire({ '[data-atc-rowmenu]': attrEl({ 'data-atc-rowmenu': 'g_low' }) });
+    await env.flush();
+    const menu = env.rowMenuMarkup('g_low');
+    expect(menu).toContain('data-atc-propose="g_low"');
+    expect(menu).toContain('提出为候选');
+    // 模型行（model_*，非词表词条）不出现该按钮
+    env.fire({ '[data-atc-rowmenu]': attrEl({ 'data-atc-rowmenu': 'g_model' }) });
+    await env.flush();
+    expect(env.rowMenuMarkup('g_model')).not.toContain('data-atc-propose');
+  });
+
+  it('点击 ⇒ 调 transcript.correct.proposeCandidate（entryId + 词条 kind + 当前面板 docId）', async () => {
+    const env = mountProposePanel({ candidateId: 'cand_1', created: true });
+    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
+    await env.flush();
+    env.fire({ '[data-atc-rowmenu]': attrEl({ 'data-atc-rowmenu': 'g_low' }) });
+    await env.flush();
+    env.fire({ '[data-atc-propose]': attrEl({ 'data-atc-propose': 'g_low' }) });
+    await env.flush();
+    const call = env.calls.find((c) => c.channel === 'transcript.correct.proposeCandidate');
+    expect(call).toBeTruthy();
+    expect(call?.payload).toMatchObject({ entryId: 'g_low', entryKind: 'product', docId: 'doc-propose' });
+    expect(env.nodes.get('[data-atc-status]')._text).toContain('已提出为候选');
+    expect(env.nodes.get('[data-atc-status]')._text).toContain('coxy');
+  });
+
+  it('幂等提示：created:false ⇒ 说明已在候选池（不再说"已提出"）', async () => {
+    const env = mountProposePanel({ candidateId: 'cand_1', created: false });
+    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
+    await env.flush();
+    env.fire({ '[data-atc-rowmenu]': attrEl({ 'data-atc-rowmenu': 'g_low' }) });
+    await env.flush();
+    env.fire({ '[data-atc-propose]': attrEl({ 'data-atc-propose': 'g_low' }) });
+    await env.flush();
+    expect(env.calls.filter((c) => c.channel === 'transcript.correct.proposeCandidate')).toHaveLength(1);
+    const status = env.nodes.get('[data-atc-status]')._text;
+    expect(status).toContain('已在候选池');
+    expect(status).not.toContain('已提出为候选');
+  });
+
+  it('缺词条 kind 的行不发起调用（不猜 kind），如实提示无法提出', async () => {
+    const env = mountProposePanel({ candidateId: 'cand_1', created: true });
+    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
+    await env.flush();
+    env.fire({ '[data-atc-rowmenu]': attrEl({ 'data-atc-rowmenu': 'g_nokind' }) });
+    await env.flush();
+    expect(env.rowMenuMarkup('g_nokind')).toContain('data-atc-propose="g_nokind"');
+    env.fire({ '[data-atc-propose]': attrEl({ 'data-atc-propose': 'g_nokind' }) });
+    await env.flush();
+    expect(env.calls.filter((c) => c.channel === 'transcript.correct.proposeCandidate')).toHaveLength(0);
+    expect(env.nodes.get('[data-atc-status]')._text).toContain('无法提出为候选');
+  });
+
+  it('源码契约：按钮文案走 kb.meetingRef.propose_* 四语键（对齐前缀，不新造命名空间）', () => {
+    expect(panelSrc).toContain("t('kb.meetingRef.propose_candidate', '提出为候选')");
+    expect(panelSrc).toContain("t('kb.meetingRef.propose_exists'");
+    expect(panelSrc).toContain("t('kb.meetingRef.propose_done'");
+    expect(panelSrc).toContain("t('kb.meetingRef.propose_failed'");
+  });
+});

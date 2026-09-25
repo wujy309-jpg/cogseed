@@ -37,6 +37,9 @@ import * as transcriptDocTags from '../features/transcript_doc_tags';
 import * as transcriptRecall from '../features/transcript_recall';
 import * as meetingDoc from '../features/meeting_doc';
 import * as meetingRefs from '../features/meeting_refs';
+import { cognitionContextFileSourceId } from '../features/recall/source-catalog';
+import { listRecallCandidates, saveRecallCandidate } from '../features/recall/candidate-service';
+import { safeId } from '../storage';
 import {
   isCandidateSuppressed,
   listReviewDecisions,
@@ -915,6 +918,111 @@ export const invokeHandlers = {
       undone.push({ entryRef, decisionId: decision.decision_id });
     }
     return { undone };
+  },
+
+  /**
+   * 【specs/013 T047】从纠错面板把词条「提出为候选」（FR-013 / US-504 AC3）。
+   *
+   * - 落点是 **recall/candidate-service 的候选池**（`recall/records/candidates`），
+   *   不是既有回流 `contributeCandidates` 打到的个人本体候选池
+   *   （`transcript_ontology_bridge.ts` 的 addCandidate——那是另一个池子）；
+   * - 词条身份 + 哪次 run：`captureKey = glossary-<entryId>`（幂等键）、
+   *   `evidenceRefs[].title = '<wrong>→<correct>'`、`excerpt = '<runId>'`（台账
+   *   replacedIn 最近一条；没有就不写，不编造）；`sourceRefs` 记哪份文档
+   *   （面板可选传 docId，缺省回落台账里的 docId；都没有 ⇒ 如实留空，候选落
+   *   weak_observation——既有 reviewReady 闸不放宽）；
+   * - **不新增 source kind**（C-002，已裁定选项①：复用 captureKey+refs 组合）；
+   * - 幂等：先查既有 captureKey，命中 ⇒ `{ created:false }` 返回既有 id，不新增；
+   * - tags/category（012 边界）：收到 ⇒ `field_not_available` 拒绝（同
+   *   meeting.conclusions.precipitate 的 T048 口径；标签在晋升为正式资产后经
+   *   资产管家打标，不映射、不静默丢弃）。
+   */
+  'transcript.correct.proposeCandidate': async (payload: Payload, ctx: IpcContext) => {
+    const entryId = typeof payload?.entryId === 'string' ? payload.entryId.trim() : '';
+    if (!entryId || entryId.length > 128 || !safeId(entryId)) {
+      const error = new Error('transcript propose: invalid entry id');
+      (error as { code?: string }).code = 'invalid_item_id';
+      throw error;
+    }
+    const entryKind = payload?.entryKind;
+    const GLOSSARY_KINDS: transcriptGlossary.GlossaryKind[] = ['product', 'people', 'org', 'term', 'venue', 'course', 'filler'];
+    if (typeof entryKind !== 'string' || !GLOSSARY_KINDS.includes(entryKind as transcriptGlossary.GlossaryKind)) {
+      const error = new Error('transcript propose: invalid entry kind');
+      (error as { code?: string }).code = 'invalid_input';
+      throw error;
+    }
+    for (const field of ['tags', 'category'] as const) {
+      if (payload && typeof payload === 'object'
+        && Object.prototype.hasOwnProperty.call(payload, field)
+        && payload[field] !== undefined) {
+        const error = new Error(
+          `${field} is not available on glossary propose; tag the promoted asset via the asset steward (update_ability_asset fields.tags) instead`,
+        );
+        (error as { code?: string }).code = 'field_not_available';
+        throw error;
+      }
+    }
+    const entry = transcriptGlossary.listEntries(ctx.userId, {})
+      .find((item) => item && item.id === entryId);
+    if (!entry) {
+      const error = new Error('transcript propose: glossary entry not found');
+      (error as { code?: string }).code = 'item_missing';
+      throw error;
+    }
+
+    const captureKey = `glossary-${entryId}`;
+    const existing = (await listRecallCandidates(ctx.userId)).find((c) => c.captureKey === captureKey);
+    if (existing) return { candidateId: existing.id, created: false };
+
+    // 「哪份文档 / 哪次 run」：面板上下文优先（用户此刻在这份文档里提出），
+    // 缺省回落台账 replacedIn 最近一条（真实替换记录）；都没有 ⇒ 留空（如实）。
+    const panelDocId = optionalId(payload?.docId, 'docId');
+    const ledger = Array.isArray(entry.replacedIn) && entry.replacedIn.length
+      ? entry.replacedIn[entry.replacedIn.length - 1]
+      : undefined;
+    const docId = panelDocId || (ledger ? String(ledger.docId || '') : '');
+    const runId = ledger ? String(ledger.runId || '') : '';
+    const docTitle = docId.split(/[\\/]/).filter(Boolean).pop() || docId;
+    const contextRef = docId
+      ? [{
+          kind: 'artifact_file' as const,
+          subtype: 'context_file' as const,
+          scope: 'personal' as const,
+          id: cognitionContextFileSourceId(docId),
+          title: docTitle,
+        }]
+      : [];
+    const pair = entry.action === 'delete'
+      ? `${entry.wrong}→（删除）`
+      : `${entry.wrong}→${entry.correct}`;
+    const candidate = await saveRecallCandidate(ctx.userId, {
+      judgment: (typeof payload?.judgment === 'string' && payload.judgment.trim())
+        ? payload.judgment.trim()
+        : `纠错词条「${pair}」（${entryKind}）`,
+      ...(typeof payload?.value === 'string' && payload.value.trim() ? { value: payload.value.trim() } : {}),
+      suggestedType: 'personal',
+      suggestedScope: 'personal',
+      suggestedAction: 'create',
+      sourceRefs: contextRef,
+      evidenceRefs: docId
+        ? [
+            // 词条身份 + 哪次 run。title 前缀是契约钉死的 '<wrong>→<correct>'；
+            // runId 同时并入 title 后缀——既有写口 normalizeCognitionSourceRefsForWrite
+            // 会剥 excerpt（写侧只存来源元数据的既有纪律，一行不改），不并进 title
+            // 的话「哪次 run」在落盘候选里永远读不回来。excerpt 仍按契约带上
+            // （SaveRecallCandidateInput 输入侧），落盘侧以 title 为可读载体。
+            {
+              ...contextRef[0],
+              title: runId ? `${pair} · ${runId}` : pair,
+              ...(runId ? { excerpt: runId } : {}),
+            },
+            // 文档行（data-model §1.6「再加文档一条」）。
+            { ...contextRef[0], title: `词条来源文档 ${docTitle}` },
+          ]
+        : [],
+      captureKey,
+    });
+    return { candidateId: candidate.id, created: true };
   },
 
   // ── 产物 ──────────────────────────────────────────────────────────────

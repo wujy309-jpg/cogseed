@@ -828,7 +828,17 @@
           'data-atc-reject': row.entryRef,
           'data-atc-rejected': state.rejected.has(row.entryRef) ? '1' : '0',
         },
-      }) + (isIgnoredRow ? button({
+      }) + (row.fromModel === true ? '' : button({
+        // 【specs/013 T047】「提出为候选」：把这条词条确定性沉淀进 recall 候选池
+        // （captureKey=glossary-<entryId> 幂等；不是个人本体回流那条池子）。
+        // 模型建议行（model_*）不是词表词条，不提供此入口。
+        label: t('kb.meetingRef.propose_candidate', '提出为候选'),
+        role: 'ghost',
+        size: 'sm',
+        className: 'kb-atc__btn',
+        disabled: state.busy,
+        attrs: { 'data-atc-propose': row.entryRef },
+      })) + (isIgnoredRow ? button({
         label: t('kb.transcriptCorrect.reopen_row', '重新审视'),
         role: 'ghost',
         size: 'sm',
@@ -2130,6 +2140,43 @@
       }
     }
 
+    /**
+     * 【specs/013 T047】提出为候选：把词表词条沉淀进 recall 候选池
+     * （`transcript.correct.proposeCandidate`；captureKey=glossary-<entryId>
+     * 幂等——created:false = 已在候选池，不重复建账，界面如实提示）。
+     * 词条 kind 从依据里的 glossary ref 读（扫描时主进程已带上）；读不到
+     * （旧载荷）就不发起，不猜。
+     */
+    async function runPropose(entryRef) {
+      if (state.busy) return;
+      const row = state.rows.find((item) => item.entryRef === entryRef);
+      const glossaryRef = (Array.isArray(row?.refs) ? row.refs : [])
+        .find((ref) => ref && typeof ref === 'object' && ref.source === 'glossary');
+      const entryKind = glossaryRef ? String(glossaryRef.kind || '') : '';
+      if (!entryKind) {
+        setStatus(t('kb.meetingRef.propose_no_kind', '这条记录缺少词条类别，无法提出为候选。'), 'warning');
+        return;
+      }
+      try {
+        const result = await root.cogseed.invoke('transcript.correct.proposeCandidate', {
+          entryId: entryRef,
+          entryKind,
+          // 面板上下文：用户此刻在这份文档里提出（主进程据此填 sourceRefs）。
+          ...(ctx.docId ? { docId: ctx.docId } : {}),
+        });
+        if (result && result.created === false) {
+          setStatus(t('kb.meetingRef.propose_exists', '「{wrong}」已在候选池，不重复建账。', { wrong: row?.wrong || '' }), '');
+        } else {
+          setStatus(t('kb.meetingRef.propose_done', '已提出为候选：「{wrong}」（确认后才会进入资产库）', { wrong: row?.wrong || '' }), '');
+        }
+      } catch (error) {
+        log?.warn('propose candidate failed', { error: error?.message || String(error) });
+        setStatus(t('kb.meetingRef.propose_failed', '提出为候选失败，请稍后重试。'), 'warning');
+      } finally {
+        render();
+      }
+    }
+
     /** 加白：把用户填的上下文词加入白名单，之后该语境静默（需重扫生效）。 */
     async function runAddAllow(entryRef) {
       if (state.busy) return;
@@ -2297,6 +2344,12 @@
           setStatus(t('kb.meetingRef.reject_marked', '已标记拒绝：{wrong}（生成清理版时记入回执，此后不再重复建议）', { wrong: row?.wrong || '' }), '');
         }
         render();
+        return;
+      }
+      // 【specs/013 T047】提出为候选（幂等：created:false 时提示已在候选池）。
+      const propose = event.target.closest('[data-atc-propose]');
+      if (propose) {
+        void runPropose(propose.getAttribute('data-atc-propose'));
         return;
       }
       const allowRemove = event.target.closest('[data-atc-allow-remove]');

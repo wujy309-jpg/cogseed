@@ -163,3 +163,226 @@ describe('kb-meeting-refs 源码与 i18n 契约', () => {
     expect(drift).toEqual([]);
   });
 });
+
+// ── T038 / T039 / T043：面板数据接线（双引用 + 冻结版对比 + 草稿待办）─────────
+
+/** 引用清单（MeetingAssetRefView 形态：a_1 漂移、a_2 已彻底删除）。 */
+const REF_VIEWS = [
+  {
+    assetId: 'a_1', version: '2', title: '发布检查单', type: 'rule', via: 'attach', at: '2026-09-01T00:00:00.000Z',
+    currentVersion: '3', currentTitle: '发布检查单', stale: true, available: true,
+  },
+  {
+    assetId: 'a_2', version: '1', title: '旧版资产', type: 'fact', via: 'conclusion', at: '2026-09-01T00:00:00.000Z',
+    currentVersion: '', currentTitle: '', stale: false, available: false,
+  },
+];
+
+const CONCLUSIONS = [
+  {
+    id: 'mc_1', docId: 'meetings/9.15站会.txt', summary: '发布前要过一遍检查单',
+    transcriptRefs: [{ utteranceId: 'U0003', blockIndex: 2, from: 4, to: 9 }],
+    assetRefs: [{ assetId: 'a_1', version: '2', title: '发布检查单', type: 'rule' }],
+    status: 'draft', createdAt: '', updatedAt: '',
+  },
+  {
+    id: 'mc_2', docId: 'meetings/9.15站会.txt', summary: '早期结论（旧记录）',
+    transcriptRefs: [], assetRefs: [],
+    unlinkable: 'legacy_record', status: 'draft', createdAt: '', updatedAt: '',
+  },
+];
+
+const DRAFTS = [
+  {
+    id: 'ma_1', docId: 'meetings/9.15站会.txt', summary: '周一前补上检查单的 v3 变更',
+    owner: { speaker: '子安', anchor: { utteranceId: 'U0005', blockIndex: 4, from: 0, to: 6 } },
+    transcriptRefs: [{ utteranceId: 'U0005', blockIndex: 4, from: 0, to: 6 }],
+    assetRefs: [{ assetId: 'a_1', version: '2', title: '发布检查单', type: 'rule' }],
+    status: 'draft', createdAt: '', updatedAt: '',
+  },
+];
+
+/**
+ * 带数据的 mount：mock invoke 按 channel 分发；uiButton/uiTag 走共享原语 mock
+ * （渲染层纪律：按钮必经 uiButton、状态章必经 uiTag——这里同样不裸写控件）。
+ */
+function mountPanelWithData(invokeImpl?: (channel: string, payload: any) => Promise<any>) {
+  const nodes = new Map<string, any>();
+  const container = fakeElement();
+  container.querySelector = (selector: string) => {
+    if (!nodes.has(selector)) nodes.set(selector, fakeElement());
+    return nodes.get(selector);
+  };
+  const clicks: Array<(event: unknown) => void> = [];
+  container.addEventListener = (name: string, fn: (event: unknown) => void) => {
+    if (name === 'click') clicks.push(fn);
+  };
+  container.removeEventListener = () => {};
+  const defaultInvoke = async (channel: string) => {
+    if (channel === 'meeting.assets.list') return { ok: true, refs: REF_VIEWS };
+    if (channel === 'meeting.conclusions.list') return { ok: true, conclusions: CONCLUSIONS };
+    if (channel === 'meeting.actions.list') return { ok: true, drafts: DRAFTS };
+    return {};
+  };
+  const loaded = loadModule({
+    cogseed: { invoke: invokeImpl || defaultInvoke },
+    uiButton: (o: any) => `<button type="button" class="ui-button" data-act="${o?.attrs?.['data-act'] || ''}" data-mrf-id="${o?.attrs?.['data-mrf-id'] || ''}">${String(o?.label || '')}</button>`,
+    uiTag: (o: any) => `<span class="ui-tag">${String(o?.label || '')}</span>`,
+  });
+  const instance = loaded.windowMock.KbMeetingRefs.mount(container, {
+    docId: 'meetings/9.15站会.txt',
+    displayPath: 'meetings/9.15站会.txt',
+  });
+  const fireClick = async (act: string, id = '') => {
+    for (const handler of clicks) {
+      handler({
+        target: {
+          closest: () => ({
+            getAttribute: (key: string) => (key === 'data-act' ? act : key === 'data-mrf-id' ? id : ''),
+          }),
+        },
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  const sectionBody = (index: number) =>
+    nodes.get('[data-mrf-sections]').children[index].children[1].innerHTML as string;
+  return { instance, nodes, container, fireClick, sectionBody, ...loaded };
+}
+
+describe('T038 双引用展开与冻结版对比', () => {
+  it('① 纪要条目渲染：转写锚点与资产引用都在（不含转写/资产正文）', async () => {
+    const { instance, sectionBody } = mountPanelWithData();
+    await instance.ready;
+    const html = sectionBody(1);
+    // 锚点定位（U 体系 + 段序 + 偏移——锚点不是正文）
+    expect(html).toContain('data-mrf-conclusion-anchors');
+    expect(html).toContain('U0003');
+    expect(html).toContain('段 2');
+    // 资产引用（标题 · 冻结版 vN）
+    expect(html).toContain('data-mrf-conclusion-assets');
+    expect(html).toContain('发布检查单 · v2');
+    // 旧记录如实标注不可关联（不报错、不猜位置）
+    expect(html).toContain('不可关联');
+    instance.destroy();
+  });
+
+  it('② stale 时两个版本号同时可见：对比现状展开后 冻结版 v2 + 现状 v3 + stale 标记', async () => {
+    const { instance, sectionBody, fireClick } = mountPanelWithData();
+    await instance.ready;
+    await fireClick('meeting-ref-compare', 'a_1');
+    const refsHtml = sectionBody(0);
+    expect(refsHtml).toContain('data-mrf-ref-compare');
+    expect(refsHtml).toContain('冻结版 v2');
+    expect(refsHtml).toContain('现状 v3');
+    expect(refsHtml).toContain('data-mrf-ref-stale');
+    // 纪要条目里的同一资产共享同一份展开（同一 assetId 一份数据）
+    const conclusionHtml = sectionBody(1);
+    expect(conclusionHtml).toContain('冻结版 v2');
+    expect(conclusionHtml).toContain('现状 v3');
+    instance.destroy();
+  });
+
+  it('③ 控件全走共享原语：按钮来自 uiButton、无裸控件（基线未上调由 guard 看守）', async () => {
+    const { instance, sectionBody } = mountPanelWithData();
+    await instance.ready;
+    const html = [sectionBody(0), sectionBody(1), sectionBody(2)].join('');
+    // 源码级「零裸控件」由上方既有断言看守；这里钉渲染产物也经共享原语
+    expect(html).toContain('ui-button');
+    expect(html).not.toMatch(/<button(?![^>]*ui-button)/);
+    instance.destroy();
+  });
+});
+
+describe('T039 版本真删的如实呈现', () => {
+  it('available:false ⇒ 「被引用版本已不存在」，不显示假的现状版本', async () => {
+    const { instance, sectionBody } = mountPanelWithData();
+    await instance.ready;
+    const html = sectionBody(0);
+    expect(html).toContain('data-mrf-ref-missing');
+    expect(html).toContain('被引用版本已不存在');
+    // 不假装读到了那一版：现状未知就不给现状行
+    expect(html).not.toContain('现状 v');
+    // 现状未知（彻底删除）也无对比按钮：无对比可言
+    expect((html.match(/meeting-ref-compare/g) || []).length).toBe(1);
+    instance.destroy();
+  });
+});
+
+describe('T043 草稿待办视图', () => {
+  it('①② 草稿章可见；来源/资产引用/三动作齐；无裸英文动作名', async () => {
+    const { instance, sectionBody } = mountPanelWithData();
+    await instance.ready;
+    const html = sectionBody(2);
+    // 状态章（草稿，经 uiTag）
+    expect(html).toContain('data-mrf-action-status');
+    expect(html).toContain('ui-tag');
+    expect(html).toContain('草稿');
+    // 来源：说话人 + 段落锚点（T043 的「谁说的/哪段」）
+    expect(html).toContain('data-mrf-action-source');
+    expect(html).toContain('来源：子安 · 转写锚点 U0005');
+    // 资产引用（标题 + 冻结版）
+    expect(html).toContain('data-mrf-action-assets');
+    expect(html).toContain('发布检查单 · v2');
+    // 三个动作（按钮名按语境复用 recall.asset_approval.* 既有三键）
+    expect(html).toContain('meeting-action-confirm');
+    expect(html).toContain('meeting-action-defer');
+    expect(html).toContain('meeting-action-discard');
+    expect(html).toContain('确认更新');
+    expect(html).toContain('稍后处理');
+    expect(html).toContain('拒绝');
+    // 不出现裸英文动作名（可见文本层；data-act 属性不算上屏文本）
+    expect(html).not.toMatch(/>(?:confirm|defer|discard|reject)</i);
+    instance.destroy();
+  });
+
+  it('③ 空态恰一处：有数据的分区无空态，无数据的分区恰一条', async () => {
+    const { instance, sectionBody } = mountPanelWithData();
+    await instance.ready;
+    expect(sectionBody(2)).not.toContain('ui-empty-state');
+    expect(sectionBody(1)).not.toContain('ui-empty-state');
+    expect(sectionBody(0)).not.toContain('ui-empty-state');
+    expect((sectionBody(3).match(/ui-empty-state/g) || []).length).toBe(1);
+    expect((sectionBody(4).match(/ui-empty-state/g) || []).length).toBe(1);
+    instance.destroy();
+  });
+
+  it('动作接线：确认/丢弃走 meeting.actions.*，「稍后处理」不动数据（SC-003）', async () => {
+    const calls: Array<{ channel: string; payload: any }> = [];
+    const { instance, fireClick } = mountPanelWithData(async (channel, payload) => {
+      calls.push({ channel, payload });
+      if (channel === 'meeting.assets.list') return { ok: true, refs: [] };
+      if (channel === 'meeting.conclusions.list') return { ok: true, conclusions: [] };
+      if (channel === 'meeting.actions.list') return { ok: true, drafts: DRAFTS };
+      return { ok: true };
+    });
+    await instance.ready;
+    calls.length = 0;
+    // 稍后处理 = 不动数据：零通道调用、草稿保留
+    await fireClick('meeting-action-defer', 'ma_1');
+    expect(calls.filter((c) => c.channel.startsWith('meeting.actions'))).toHaveLength(0);
+    await fireClick('meeting-action-confirm', 'ma_1');
+    expect(calls.some((c) => c.channel === 'meeting.actions.confirm' && c.payload?.draftId === 'ma_1')).toBe(true);
+    await fireClick('meeting-action-discard', 'ma_1');
+    expect(calls.some((c) => c.channel === 'meeting.actions.discard' && c.payload?.draftId === 'ma_1')).toBe(true);
+    instance.destroy();
+  });
+});
+
+describe('meeting.* 通道降级（renderer-seams §5）', () => {
+  it('通道返回 ok:false ⇒ 分区渲染一条带原因的空态（不静默空白、不弹错）', async () => {
+    const { instance, sectionBody } = mountPanelWithData(async (channel) => {
+      if (channel === 'meeting.assets.list') return { ok: false, code: 'invalid_doc_id' };
+      if (channel === 'meeting.conclusions.list') return { ok: true, conclusions: CONCLUSIONS };
+      if (channel === 'meeting.actions.list') return { ok: true, drafts: [] };
+      return {};
+    });
+    await instance.ready;
+    const html = sectionBody(0);
+    expect((html.match(/ui-empty-state/g) || []).length).toBe(1);
+    expect(html).toContain('会议文档标识不合法');
+    // 其它分区不受拖累
+    expect(sectionBody(1)).toContain('发布检查单 · v2');
+    instance.destroy();
+  });
+});
