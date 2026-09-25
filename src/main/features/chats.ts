@@ -2023,6 +2023,53 @@ export async function getConversation(
   return target.find((c) => c.conversation_id === cid) || null;
 }
 
+/** 批量会话标题上限：来源解析按批取名，超出直接拒绝（不做隐式截断——
+ *  截断会让"查不到"与"没问"混为一谈，界面就会误报「来源记录不可用」）。 */
+const CONVERSATION_TITLE_BATCH_LIMIT = 50;
+
+/** 批量取会话标题（2026-09-25 验收修复 US-603）：证据来源要把 cid 翻成用户
+ *  看得懂的标题，且五处展示必须同名，因此需要一个按 id 批量取名的窄口——
+ *  `conversations.list` 是分页 + 频道标注重口，不适合逐条解析。
+ *  只返回 `{cid,title}`：不带消息正文、不带附件、不带项目/成员信息。
+ *  查无的 cid **不出现在结果里**（调用方据此判来源失效）；查到但标题为空的
+ *  仍返回空串（会话存在，只是还没起名——由界面给泛称，不谎称失效）。 */
+export async function listConversationTitles(
+  userId: string,
+  cids: readonly string[],
+): Promise<Array<{ cid: string; title: string }>> {
+  if (!Array.isArray(cids)) throw new Error('invalid conversation title batch');
+  const wanted: string[] = [];
+  const seen = new Set<string>();
+  for (const cid of cids) {
+    if (typeof cid !== 'string' || !safeId(cid)) throw new Error('invalid conversation title batch');
+    if (seen.has(cid)) continue;
+    seen.add(cid);
+    wanted.push(cid);
+  }
+  if (wanted.length > CONVERSATION_TITLE_BATCH_LIMIT) throw new Error('invalid conversation title batch');
+  if (!wanted.length) return [];
+
+  const titles = new Map<string, string>();
+  // 侧栏刚加载过时整份列表已在内存缓存里，一次命中即可；只为漏网的 cid 逐条读。
+  const cached = _conversationListCache.get(userId);
+  const missing: string[] = [];
+  if (cached && cached.expiresAt > Date.now()) {
+    const byId = new Map(cached.items.map((c) => [c.conversation_id, c]));
+    for (const cid of wanted) {
+      const found = byId.get(cid);
+      if (found) titles.set(cid, String(found.title || ''));
+      else missing.push(cid);
+    }
+  } else {
+    missing.push(...wanted);
+  }
+  for (const cid of missing) {
+    const conversation = await getConversation(userId, cid);
+    if (conversation) titles.set(cid, String(conversation.title || ''));
+  }
+  return wanted.filter((cid) => titles.has(cid)).map((cid) => ({ cid, title: titles.get(cid) as string }));
+}
+
 export type CogSeedConversationDeliveryBinding =
   | { state: 'missing' }
   | { state: 'deleted'; generation?: string }

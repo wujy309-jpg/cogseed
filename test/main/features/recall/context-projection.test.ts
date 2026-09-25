@@ -1167,8 +1167,70 @@ describe('撤销在时间线里可见（2026-09-18）', () => {
   });
 });
 
-describe('注入体量对比（2026-09-18，可用高效）：模型自选的增量必须远小于整块上限', () => {
-  it('带一条会话投影时的提示词块，比不带多出的是"这几条资产的正文"，且整块仍 ≤ 14000', async () => {
+describe('用户 @ 钉住投影的撤销（2026-09-25 验收修复 US-601 AC3 / US-602 AC3）', () => {
+  async function pinAsset(purposeTaskRun: string) {
+    const { projection } = await modules();
+    const promoted = await createAsset();
+    const pinned = await projection.previewContextProjection('user-a', {
+      taskRunId: purposeTaskRun,
+      purpose: 'user_pinned',
+      authorization: 'user_confirmed',
+      conversationId: 'conv-pin-1',
+      confirm: true,
+      explicitAssetIds: [promoted.asset.id],
+    });
+    return { projection, pinned, assetId: promoted.asset.id };
+  }
+
+  it('user_pinned 可撤且幂等；与模型自选线、语义确认线互不越界', async () => {
+    const { projection, pinned } = await pinAsset('user-attach-pin-a');
+    expect(pinned.status).toBe('confirmed');
+
+    // 引用回执必须可撤销（US-601 AC3）：否则"我挂上去的就下不来"。
+    const first = await projection.revokeUserPinnedProjection('user-a', pinned.id);
+    expect(first.status).toBe('revoked');
+    // 幂等：重复撤销返回同一终态，不报错、不产生第二份状态。
+    const second = await projection.revokeUserPinnedProjection('user-a', pinned.id);
+    expect(second.status).toBe('revoked');
+
+    // 用户确认过的**语义**投影（conversation_reply）不在这条一键撤销线上。
+    const semantic = await projection.previewContextProjection('user-a', {
+      taskRunId: 'turn-pin-semantic', purpose: 'conversation_reply', authorization: 'user_confirmed', confirm: true,
+    });
+    await expect(projection.revokeUserPinnedProjection('user-a', semantic.id))
+      .rejects.toThrow('not user-pinned');
+
+    // 反向也不越界：user_pinned 不能从模型自选口撤销（两条线各自可审计）。
+    const { pinned: another } = await pinAsset('user-attach-pin-b');
+    await expect(projection.revokeModelSelectedProjection('user-a', another.id))
+      .rejects.toThrow('not model-selected');
+
+    await expect(projection.revokeUserPinnedProjection('user-a', 'proj-doesnotexist01'))
+      .rejects.toThrow('not found');
+  });
+
+  it('撤销后进时间线：关联原会话与原投影，重复撤销不产生第二条事件', async () => {
+    const { projection, pinned, assetId } = await pinAsset('user-attach-pin-c');
+    const timeline = await import('../../../../src/main/features/recall/timeline-service');
+
+    const before = await timeline.listAbilityAssetTimeline('user-a', assetId);
+    expect(before.some((item) => item.kind === 'projection_confirmed' && item.refs.projectionId === pinned.id)).toBe(true);
+
+    await projection.revokeUserPinnedProjection('user-a', pinned.id);
+    const after = await timeline.listAbilityAssetTimeline('user-a', assetId);
+    const revoked = after.filter((item) => item.kind === 'projection_revoked' && item.refs.projectionId === pinned.id);
+    expect(revoked).toHaveLength(1);
+    // 关联原会话（AC3「关联原会话/原投影」）：cid 从投影记录带进事件 refs。
+    expect(revoked[0]?.refs.conversationId).toBe('conv-pin-1');
+
+    // 幂等 + 历史保留：再撤一次不产生第二条撤销事件。
+    await projection.revokeUserPinnedProjection('user-a', pinned.id);
+    const again = await timeline.listAbilityAssetTimeline('user-a', assetId);
+    expect(again.filter((item) => item.kind === 'projection_revoked' && item.refs.projectionId === pinned.id)).toHaveLength(1);
+  });
+});
+
+describe('注入体量对比（2026-09-18，可用高效）：模型自选的增量必须远小于整块上限', () => {  it('带一条会话投影时的提示词块，比不带多出的是"这几条资产的正文"，且整块仍 ≤ 14000', async () => {
     const promptInjection = await import('../../../../src/main/features/recall/prompt-injection');
     const projection = await import('../../../../src/main/features/recall/context-projection');
     const candidates = await import('../../../../src/main/features/recall/candidate-service');

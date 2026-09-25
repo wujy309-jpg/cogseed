@@ -24,6 +24,7 @@ import { normalizeCognitionSourceRefs, type CognitionSourceRef } from './source-
 import { isCognitionSourceEnabled } from './source-control';
 import {
   evaluateAssetRuntimeEligibility,
+  assetRuntimeBlockRule,
   type AssetRuntimeBlockReason,
 } from './formal-assets/runtime';
 
@@ -149,6 +150,9 @@ export interface ProjectionInput {
    *  ——绕过语义选择（用户已经挑好了），但仍过状态硬门（必须 active）并
    *  钉住当前在用版。与 taskText 语义选互斥，显式优先。 */
   explicitAssetIds?: string[];
+  /** 接收者 Agent（2026-09-25 验收修复）：显式挂载时若已知接收者，目标 Agent
+   *  白名单与作用域判定当场生效；未知则留给每轮注入闸门（那里一定知道）。 */
+  agentId?: string;
   /** Auto-confirm on creation (workspace_policy line): the projection is
    *  written as confirmed immediately, skipping the user confirmation card. */
   confirm?: boolean;
@@ -658,16 +662,92 @@ export async function buildRecallView(userId: string, input: ProjectionInput, op
   };
 }
 
-/** 显式资产视图（2026-09-19 用户主动使用）：绕过语义选择，逐条校验存在且
- *  active、钉住当前在用版——用户指定即是意图，语义门不该再筛一遍。 */
-async function buildExplicitAssetView(userId: string, assetIds: string[]) {
+/** 显式挂载时「与目的地无关」的阻断原因：不依赖 taskText / 目的地敏感级 /
+ *  接收者 Agent，attach 当场就能定论，必须立刻拦下并给出规则码（US-604 AC1）。
+ *  依赖目的地上下文的维度（scope_mismatch / target_agent_not_allowed /
+ *  not_applicable_context / sensitivity_above_destination）在接收者未知时推迟到
+ *  每轮注入闸门判定——那里知道真实 agentId 与任务文本，且被拦会留 omitted
+ *  回执供界面说明，不会静默（US-604 AC4/AC5）。 */
+const ATTACH_BLOCKING_REASONS: ReadonlySet<AssetRuntimeBlockReason> = new Set([
+  'status_not_active',
+  'source_unavailable',
+  'maturity_below_default_use',
+]);
+
+function explicitAttachError(
+  code: ProjectionKnowledgeErrorCode,
+  message: string,
+  blockRule?: string,
+): Error & { code: ProjectionKnowledgeErrorCode; blockRule?: string } {
+  return Object.assign(new Error(message), { code, ...(blockRule ? { blockRule } : {}) });
+}
+
+/** 具体规则标识：`code` 只够分类（inactive / ineligible / source_unavailable），
+ *  用户要的是"到底哪条规则拦的我"（US-604 AC1、SC-004）。映射收敛在
+ *  `formal-assets/runtime.ts::assetRuntimeBlockRule`，与每轮注入的 omitted 留痕
+ *  共用同一份——两处说法才不会打架。 */
+function explicitBlockError(
+  reasons: readonly AssetRuntimeBlockReason[],
+  assetId: string,
+  assetStatus: string,
+) {
+  const rule = assetRuntimeBlockRule(assetStatus, reasons);
+  if (rule === 'inactive' || ['paused', 'archived', 'revoked', 'deleted', 'purged'].includes(rule)) {
+    return explicitAttachError('projection_asset_inactive', `explicit projection asset is not active: ${assetId}`, rule);
+  }
+  if (rule === 'source_unavailable') {
+    return explicitAttachError('projection_source_unavailable', `explicit projection source is unavailable: ${assetId}`, rule);
+  }
+  return explicitAttachError('projection_asset_ineligible', `explicit projection asset is not eligible: ${assetId}`, rule);
+}
+
+/** 显式资产视图（2026-09-19 用户主动使用）：绕过语义选择、钉住当前在用版
+ *  ——用户指定即是意图，语义门不该再筛一遍。但**权限与状态门照过**
+ *  （2026-09-25 验收修复 US-601 AC4 / US-604 AC1）：此前只查 active，
+ *  作用域、目标 Agent、敏感级、来源撤权全都不拦，且失败只抛英文原文，
+ *  界面无法说明是哪条规则。失败一律码化（`ProjectionKnowledgeErrorCode`），
+ *  渲染层按码翻四语规则名，不上屏原文、不泄露正文。 */
+async function buildExplicitAssetView(userId: string, assetIds: string[], agentId?: string) {
   const ids = [...new Set(assetIds)].slice(0, 12);
   if (!ids.length) throw new Error('explicit projection requires at least one asset');
   const { readAbilityAsset } = await import('./asset-service');
   const assets = [];
   for (const id of ids) {
-    const asset = await readAbilityAsset(userId, id);
-    if (asset.status !== 'active') throw new Error(`explicit projection asset is not active: ${id}`);
+    let asset: Awaited<ReturnType<typeof readAbilityAsset>>;
+    try {
+      asset = await readAbilityAsset(userId, id);
+    } catch (err) {
+      // 保留原消息（既有断言与日志口径），只补码与规则标识：界面据此说「资产
+      // 不存在或已彻底删除」，而不是把英文原文甩给用户。
+      throw explicitAttachError(
+        'projection_asset_missing',
+        (err as Error)?.message || `recall ability asset not found: ${id}`,
+        'missing',
+      );
+    }
+    if (asset.status !== 'active') {
+      throw explicitBlockError(['status_not_active'], id, asset.status);
+    }
+    const gate = evaluateAssetRuntimeEligibility({
+      status: asset.status,
+      maturity: asset.maturity,
+      lifecycleStatus: asset.lifecycleStatus,
+      scope: asset.scope,
+      ...(asset.crossScopeConfirmedAt ? { crossScopeConfirmedAt: asset.crossScopeConfirmedAt } : {}),
+      ...(asset.scopePolicy ? { scopePolicy: asset.scopePolicy } : {}),
+      ...(asset.applicableWhen ? { applicableWhen: asset.applicableWhen } : {}),
+      ...(asset.forbiddenWhen ? { forbiddenWhen: asset.forbiddenWhen } : {}),
+      ...(asset.sensitivity ? { sensitivity: asset.sensitivity } : {}),
+    }, {
+      // 用户主动挑选，不是静默默认注入：成熟度与适用条件不作硬门槛。
+      silentDefaultInjection: false,
+      sourceAvailable: await hasEnabledAutomaticSources(userId, asset),
+      ...(agentId ? { agentId } : {}),
+    });
+    const blocking = agentId
+      ? gate.reasons
+      : gate.reasons.filter((reason) => ATTACH_BLOCKING_REASONS.has(reason));
+    if (!gate.eligible && blocking.length) throw explicitBlockError(blocking, id, asset.status);
     assets.push(asset);
   }
   return {
@@ -690,7 +770,7 @@ export async function previewContextProjection(userId: string, input: Projection
   if (authorization !== 'user_confirmed' && authorization !== 'workspace_policy' && authorization !== 'not_required' && authorization !== 'model_selected') throw new Error('invalid projection authorization');
   if (input.expiresAt !== undefined && Number.isNaN(Date.parse(input.expiresAt))) throw new Error('invalid projection expiry');
   const view = input.explicitAssetIds?.length
-    ? await buildExplicitAssetView(userId, input.explicitAssetIds)
+    ? await buildExplicitAssetView(userId, input.explicitAssetIds, input.agentId)
     : await buildRecallView(userId, { taskRunId, purpose, ...(workspaceId ? { workspaceId } : {}), ...(taskText ? { taskText } : {}) }, options);
   const now = projectionNowIso();
   const confirmedAt = input.confirm ? now : undefined;
@@ -1182,26 +1262,138 @@ export async function appendAssetsToModelSelectedProjection(
   });
 }
 
-/** 撤销一条投影（2026-09-18，模型自选线）：把 confirmed 置为 revoked——
- *  注入查找只认 confirmed，所以撤销后本会话后续回合不再带入这批资产；
- *  已发生的注入/使用记录保留（历史不可改写）。只允许撤销"模型自选"的投影：
- *  用户自己确认过的投影走既有的人工流程（避免一键撤销掉用户明确的决定）。 */
-export async function revokeModelSelectedProjection(
+/** 某会话里用户引用被拦的留痕（2026-09-25 验收修复 US-604 AC4/AC7）：发送前重检
+ *  不再静默丢弃——界面据此在回执卡上说明"最近一轮为什么没带上、是哪条规则"。
+ *  只认该会话 `user_confirmed` + `user_pinned` 投影的 omitted 回执，按时间倒序；
+ *  只返回标题 + 规则标识 + 轮次，**不含正文**（宪法 III / FR-007 AC3）。 */
+export async function listConversationOmissions(
+  userId: string,
+  conversationId: string,
+  limit = 20,
+): Promise<Array<{ assetId: string; title: string; reason: string; taskRunId: string; createdAt: string }>> {
+  if (!safeId(userId) || !safeId(conversationId)) throw new Error('invalid conversation omission query');
+  const pinnedIds = new Set((await listContextProjections(userId, { conversationId }))
+    .filter((projection) => projection.authorization === 'user_confirmed' && projection.purpose === 'user_pinned')
+    .map((projection) => projection.id));
+  if (!pinnedIds.size) return [];
+  const bounded = Number.isFinite(limit) ? Math.max(1, Math.min(20, Math.floor(limit))) : 20;
+  const { listInjectionReceipts } = await import('./injection-receipt');
+  const omissions = (await listInjectionReceipts(userId))
+    .map((receipt, index) => ({ receipt, index }))
+    .filter(({ receipt }) => receipt.status === 'omitted'
+      && (receipt.channel === undefined || receipt.channel === 'projection')
+      && receipt.projectionId !== undefined
+      && pinnedIds.has(receipt.projectionId))
+    // 时间倒序；同一毫秒写入的按 JSONL 追加顺序倒序（写入序才是真正的"更晚"）。
+    .sort((left, right) => {
+      const byTime = String(right.receipt.createdAt || '').localeCompare(String(left.receipt.createdAt || ''));
+      return byTime !== 0 ? byTime : right.index - left.index;
+    })
+    .slice(0, bounded)
+    .map(({ receipt }) => receipt);
+  const out: Array<{ assetId: string; title: string; reason: string; taskRunId: string; createdAt: string }> = [];
+  for (const omission of omissions) {
+    let title = '';
+    try {
+      title = String((await readAbilityAsset(userId, omission.assetId)).title || '');
+    } catch {
+      // 资产已删/读不到：标题留空，由界面给泛称——绝不回落内部 id。
+      title = '';
+    }
+    out.push({
+      assetId: omission.assetId,
+      title,
+      reason: String(omission.reason || ''),
+      taskRunId: String(omission.taskRunId || ''),
+      createdAt: String(omission.createdAt || ''),
+    });
+  }
+  return out;
+}
+
+/** 会话里用户 @ 钉住的资产（2026-09-25 验收修复 US-601）：composer 引用条要显示
+ *  「名称 · vN」并支持撤销，但 `listContextProjections` 只给 id 与版本号——渲染层
+ *  不得上屏内部 id，所以标题必须在主进程解析好再给。
+ *  只认 `user_confirmed` + purpose `user_pinned` 的 confirmed 投影；只返回
+ *  `{projectionId, assetId, title, version}`，**不含正文**（宪法 III / FR-007 AC3）。 */
+export async function listUserPinnedAssets(
+  userId: string,
+  conversationId: string,
+): Promise<Array<{ projectionId: string; assetId: string; title: string; version: string }>> {
+  if (!safeId(userId) || !safeId(conversationId)) throw new Error('invalid user pinned asset query');
+  const projections = await listContextProjections(userId, { conversationId, status: 'confirmed' });
+  const out: Array<{ projectionId: string; assetId: string; title: string; version: string }> = [];
+  for (const projection of projections) {
+    if (projection.authorization !== 'user_confirmed' || projection.purpose !== 'user_pinned') continue;
+    for (const assetId of projection.assetIds) {
+      let title = '';
+      try {
+        title = String((await readAbilityAsset(userId, assetId)).title || '');
+      } catch {
+        // 资产已删/读不到：标题留空，由界面给泛称——绝不回落内部 id。
+        title = '';
+      }
+      out.push({
+        projectionId: projection.id,
+        assetId,
+        title,
+        version: String(projection.assetVersions?.[assetId] || ''),
+      });
+    }
+  }
+  return out;
+}
+
+/** 撤销一条投影的共用实现（2026-09-18 模型自选线 / 2026-09-25 用户钉住线）：
+ *  把 confirmed 置为 revoked——注入查找只认 confirmed，所以撤销后本会话后续
+ *  回合不再带入这批资产；已发生的注入/使用记录保留（历史不可改写），重复撤销
+ *  幂等。哪一类授权可走撤销线由 `isRevocable` 决定，拒绝消息由调用方给出。 */
+async function revokeConfirmedProjection(
   userId: string,
   projectionId: string,
+  isRevocable: (projection: ContextProjectionRecord) => boolean,
+  rejectionMessage: string,
 ): Promise<ContextProjectionRecord> {
   if (!safeId(userId) || !safeId(projectionId)) throw new Error('invalid projection revoke input');
   const updated = await updateRecallJsonRecord(userId, 'projections', projectionId, (raw) => {
     if (!raw) throw new Error('context projection not found');
     const current = asProjection(raw);
-    if (current.authorization !== 'model_selected') {
-      throw new Error('context projection is not model-selected');
-    }
+    if (!isRevocable(current)) throw new Error(rejectionMessage);
     if (current.status === 'revoked') return current;
     if (current.status !== 'confirmed') throw new Error('context projection is not revocable');
     return { ...current, status: 'revoked' as const, decidedAt: new Date().toISOString() };
   });
   return asProjection(updated);
+}
+
+/** 撤销"模型自选"的投影：用户自己确认过的语义投影走既有人工流程（避免一键
+ *  撤销掉用户明确的决定）。 */
+export async function revokeModelSelectedProjection(
+  userId: string,
+  projectionId: string,
+): Promise<ContextProjectionRecord> {
+  return revokeConfirmedProjection(
+    userId,
+    projectionId,
+    (projection) => projection.authorization === 'model_selected',
+    'context projection is not model-selected',
+  );
+}
+
+/** 撤销用户自己 @ 钉住的资产（2026-09-25 验收修复 US-601 AC3）：引用回执必须
+ *  可撤销，否则"我挂上去的就下不来"。只认 `user_confirmed` + purpose
+ *  `user_pinned`（@ 引用与「用到当前对话」写的就是这一类）；用户确认过的语义
+ *  投影（`conversation_reply` 等）仍不在这条一键撤销线上，边界与模型自选线一致。 */
+export async function revokeUserPinnedProjection(
+  userId: string,
+  projectionId: string,
+): Promise<ContextProjectionRecord> {
+  return revokeConfirmedProjection(
+    userId,
+    projectionId,
+    (projection) => projection.authorization === 'user_confirmed' && projection.purpose === 'user_pinned',
+    'context projection is not user-pinned',
+  );
 }
 
 export async function confirmAndApproveWake(

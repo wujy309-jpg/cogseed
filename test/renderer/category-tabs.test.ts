@@ -636,10 +636,10 @@ describe('agent and skill category tabs', () => {
       setChatSkill = (target, id, name) => { pickedSkillCalls.push([target, id, name]); };
     `, context);
 
-    // Commander: no space selected → only agents/skills tabs (connectors /
-    // library / ontology removed); global open-tier skill selectable.
+    // Commander: no space selected → agents/skills/assets tabs (connectors /
+    // library / ontology removed; artifacts stay space-only — US-601 AC1).
     expect(vm.runInContext('_agentPickerVisibleTabs("new-chat-recipient-chip")', context))
-      .toEqual(['agents', 'skills']);
+      .toEqual(['agents', 'skills', 'assets']);
     await context._triggerPickerItem('skill', 'global-helper', 'Global Helper', 'new-chat-recipient-chip');
     expect(context.pickedSkillCalls).toEqual([['new-chat', 'global-helper', 'Global Helper']]);
 
@@ -648,7 +648,7 @@ describe('agent and skill category tabs', () => {
     context.pickedSkillCalls = [];
     context.getChatRecipient = () => ({ kind: 'agent', id: 'agent-1', name: 'Agent One' });
     expect(vm.runInContext('_agentPickerVisibleTabs("new-chat-recipient-chip")', context))
-      .toEqual(['agents', 'skills']);
+      .toEqual(['agents', 'skills', 'assets']);
     await context._triggerPickerItem('skill', 'trusted', 'Trusted Skill', 'new-chat-recipient-chip');
     expect(context.pickedSkillCalls).toEqual([['new-chat', 'trusted', 'Trusted Skill']]);
   });
@@ -659,11 +659,11 @@ describe('agent and skill category tabs', () => {
     context.window.getNewChatSpaceId = () => 'spc-test-1';
     expect(vm.runInContext('_agentPickerVisibleTabs("new-chat-recipient-chip")', context))
       .toEqual(['agents', 'skills', 'artifacts', 'assets']);
-    // 无空间 → 仅智能体/技能
+    // 普通新建任务（无空间）→ 智能体/技能/资产（US-601 AC1；产物仍限空间会话）
     context.window.getNewChatSpaceId = () => '';
     expect(vm.runInContext('_agentPickerVisibleTabs("new-chat-recipient-chip")', context))
-      .toEqual(['agents', 'skills']);
-    // Auto 恒为智能体/技能
+      .toEqual(['agents', 'skills', 'assets']);
+    // Auto 恒为智能体/技能（自动任务无资产引用落地通道，2026-09-25 Owner 拍板不放开）
     expect(vm.runInContext('_agentPickerVisibleTabs("auto-recipient-chip")', context))
       .toEqual(['agents', 'skills']);
   });

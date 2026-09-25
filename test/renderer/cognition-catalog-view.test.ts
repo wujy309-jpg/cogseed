@@ -25,7 +25,13 @@ describe('资产目录视图', () => {
       { name: 'overview', assetView: 'catalog' },
       {
         assets: [asset],
-        proofs: [{ kind: 'usage_recorded', occurredAt: '2026-09-18T01:00:00.000Z', refs: { assetId: 'aa-cat0001' } }],
+        // 2026-09-25 US-602：目录行的次数与列表/详情同口径（「被带入任务」）——
+        // 一次带入在数据层是 projection_confirmed + 同投影 usage 两条记录，按投影
+        // 去重后算 1 次（没有投影关联的 usage 行不重复计数）。
+        proofs: [
+          { kind: 'projection_confirmed', occurredAt: '2026-09-18T01:00:00.000Z', refs: { assetId: 'aa-cat0001', projectionId: 'proj-cat' } },
+          { kind: 'usage_recorded', occurredAt: '2026-09-18T01:00:00.000Z', refs: { assetId: 'aa-cat0001', projectionId: 'proj-cat' } },
+        ],
       },
     );
     expect(html).toContain('资产目录（模型视角）');
@@ -33,20 +39,20 @@ describe('资产目录视图', () => {
     // 一句话 = 正文首句（不是全文，全文点进去看）
     expect(html).toContain('性能类提问需用真实日志做分层归因，先给链路再给瓶颈');
     expect(html).not.toContain('后半句是看不到的正文');
-    // 元信息：类型白话 + 范围白话 + 在用版 + 使用次数
+    // 元信息：类型白话 + 范围白话 + 在用版 + 被带入次数
     expect(html).toContain('规则与偏好');
     expect(html).toContain('所有对话');
     expect(html).toContain('v2');
-    expect(html).toContain('用过 1 次');
+    expect(html).toContain('被带入任务 1 次');
     // 切换回列表视图
     expect(html).toContain('列表视图');
     // 行仍可点进详情
     expect(html).toContain('data-go-asset="aa-cat0001"');
   });
 
-  it('从来没被用过的资产如实标"还没用过"', () => {
+  it('从来没被带入过的资产如实标"还没被带入过"', () => {
     const html = renderCognition({ name: 'overview', assetView: 'catalog' }, { assets: [asset], proofs: [] });
-    expect(html).toContain('还没用过');
+    expect(html).toContain('还没被带入过');
   });
 
   it('默认仍是列表视图（目录是切换项，不是默认）', () => {

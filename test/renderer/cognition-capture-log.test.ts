@@ -92,7 +92,9 @@ function ensureModule(): { cogAssets: Record<string, unknown>; domRoot: { innerH
 function renderPage(routeName: string, storePatch: Record<string, unknown>, routePatch: Record<string, unknown> = {}): string {
   const { cogAssets: NS, domRoot: rootEl } = ensureModule();
   const store = NS.store as Record<string, unknown>;
-  Object.assign(store, storePatch);
+  // 「真实使用」白名单由主进程随 recall.timeline.list 下发（2026-09-25 US-602）：
+  // 这里给与真实载荷一致的默认值；用例要考「缺失时 fail-closed」就显式传 []。
+  Object.assign(store, { realUsageKinds: ['usage_recorded', 'projection_confirmed'] }, storePatch);
   store.route = { name: routeName, category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', ...routePatch };
   rootEl.innerHTML = '';
   (NS.render as () => void)();
@@ -1237,7 +1239,7 @@ describe('资产详情（使用记录并入）', () => {
       { assetId: 'aa-1', proofEventId: 'ev-1' },
     );
     expect(html).toContain('使用记录');
-    expect(html).toContain('被实际使用');
+    expect(html).toContain('被带入任务');
     expect(html).toContain('对话《Saying hello》里');
     expect(html).toContain('data-act="proof-toggle" data-id="ev-1"');
     expect(html).toContain('data-feedback="positive"');
@@ -1252,13 +1254,13 @@ describe('资产详情（使用记录并入）', () => {
       { id: 'ev-5', kind: 'asset_archived', occurredAt: '2026-09-16T03:00:00.000Z', refs: { assetId: 'aa-1' } },
     ];
     const html = renderPage('overview', { assets: [asset], proofs: noisy, sources: conversationSources }, { assetId: 'aa-1' });
-    expect(html).toContain('被实际使用');
     expect(html).toContain('被带入任务');
     expect(html).not.toContain('保存了新版本');
     expect(html).not.toContain('选用 v2 为在用版本');
-    // 噪音事件不进计数摘要。
-    expect(html).toContain('被实际使用 1 次');
+    // 噪音事件不进计数摘要；且口径已改（2026-09-25 US-602 AC4）：宿主注入过一律
+    // 归「被带入任务」，不再宣称「被实际使用」——是否采用只看实际采用记录。
     expect(html).toContain('被带入任务 1 次');
+    expect(html).not.toContain('被实际使用');
   });
 
   it('版本链（2026-09-16 版本组）：V1 归入同条目可展开，非在用版可「选用此版」', () => {

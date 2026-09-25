@@ -185,15 +185,68 @@
   };
   NS.confirmUser = confirmUser;
 
+  /* ────── 拦截原因可读化（2026-09-25 验收修复 US-601 AC4 / US-604 AC1）──────
+   * 主进程的准入判定给两样东西：code（分类）与 blockRule（具体规则标识）。
+   * 此前渲染层把 Error.message 原文甩给用户——英文 + 内部 id，等于"被拦了但
+   * 不知道被什么拦"（验收问题⑤）。现在一律按 blockRule 翻四语规则名，code 只
+   * 作兜底；任何分支都不上屏原文，未知规则走兜底文案（如实说"当前不可引用"，
+   * 不替主进程编一条规则）。 */
+  function blockReasonText(error) {
+    const rule = String((error && error.blockRule) || '');
+    if (rule === 'paused') return T('cognition.block_reason_paused', '这条内容已被你暂停，当前不能引用');
+    if (rule === 'archived') return T('cognition.block_reason_archived', '这条内容已归档，当前不能引用');
+    if (rule === 'revoked') return T('cognition.block_reason_revoked', '这条内容已撤回使用，当前不能引用');
+    if (rule === 'deleted') return T('cognition.block_reason_deleted', '这条内容已删除（保留期内可恢复），当前不能引用');
+    if (rule === 'purged') return T('cognition.block_reason_purged', '这条内容已被彻底删除，不能引用');
+    if (rule === 'inactive') return T('cognition.block_reason_inactive', '这条内容当前不在生效状态，不能引用');
+    if (rule === 'missing') return T('cognition.block_reason_missing', '这条内容不存在，或已被彻底删除');
+    if (rule === 'source_unavailable') return T('cognition.block_reason_source_unavailable', '来源授权已撤回或来源记录已失效，不能继续引用');
+    if (rule === 'agent') return T('cognition.block_reason_agent', '接收方不在这条内容允许的 Agent 范围内');
+    if (rule === 'scope') return T('cognition.block_reason_scope', '这条内容声明的作用范围不包含当前场景');
+    if (rule === 'sensitivity_high') return T('cognition.block_reason_sensitivity_high', '这条内容的敏感级高于本次允许的上限');
+    if (rule === 'sensitivity_unknown') return T('cognition.block_reason_sensitivity_unknown', '这条内容还没分过敏感级，不敢默认放行');
+    if (rule === 'maturity') return T('cognition.block_reason_maturity', '这条内容的使用契约不允许这样带入');
+    if (rule === 'forbidden_context') return T('cognition.block_reason_forbidden_context', '当前任务命中了这条内容声明的禁用场景');
+    if (rule === 'not_applicable_context') return T('cognition.block_reason_not_applicable_context', '当前任务与这条内容声明的适用场景不匹配');
+    if (rule === 'version_changed') return T('cognition.block_reason_version_changed', '引用的版本已经变化，请重新选择');
+    if (rule === 'versions_missing') return T('cognition.block_reason_versions_missing', '引用版本的内容快照缺失，本次无法带入');
+    if (rule === 'expired') return T('cognition.block_reason_expired', '这次引用已过期，请重新引用');
+    if (rule === 'not_committed') return T('cognition.block_reason_not_committed', '这次引用还没确认，尚未生效');
+    // 兜底：没有具体规则标识时退回分类码，仍不给用户看英文原文。
+    const code = String((error && error.code) || '');
+    if (code === 'projection_asset_inactive') return T('cognition.block_reason_inactive', '这条内容当前不在生效状态，不能引用');
+    if (code === 'projection_source_unavailable') return T('cognition.block_reason_source_unavailable', '来源授权已撤回或来源记录已失效，不能继续引用');
+    if (code === 'projection_asset_missing') return T('cognition.block_reason_missing', '这条内容不存在，或已被彻底删除');
+    if (code === 'projection_asset_ineligible') return T('cognition.block_reason_ineligible', '权限范围不允许这样用（作用域、适用条件或可用 Agent 不匹配）');
+    return T('cognition.block_reason_unknown', '这条内容当前不可引用');
+  }
+  NS.blockReasonText = blockReasonText;
+
+  /** 引用被拦/失败的统一出口：资产标题 + 规则名。只给标题（不给内部 id、
+   *  不给正文——受限资产正文不得进界面，US-604 AC3）。 */
+  async function reportBlocked(error, title) {
+    const reason = blockReasonText(error);
+    const name = String(title || '').trim();
+    const message = name
+      ? T('cognition.attach_blocked_named', '《{title}》没有被引用：{reason}', { title: name, reason })
+      : T('cognition.attach_blocked_unnamed', '引用未生效：{reason}', { reason });
+    if (typeof window.uiAlert === 'function') { await alertUser(message); return; }
+    toast(message, 'warning');
+  }
+  NS.reportBlocked = reportBlocked;
+
   /* ────────────────────────── API 客户端 ────────────────────────── */
 
   const api = {
-    /** 唯一 IPC 出口。错误统一抛 Error（带 code），调用方 try/catch 兜底。 */
+    /** 唯一 IPC 出口。错误统一抛 Error（带 code 与 blockRule），调用方 try/catch 兜底。 */
     async call(channel, payload) {
       const result = await window.cogseed.invoke(channel, payload || {});
       if (result && result.ok === false) {
         const error = new Error(result.error || result.message || `ipc failed: ${channel}`);
         error.code = result.code || '';
+        // 具体规则标识（US-604 AC1）：界面据此说明"哪条规则拦的"，
+        // 而不是把主进程的英文原文甩给用户。
+        error.blockRule = result.blockRule || '';
         throw error;
       }
       return result == null ? {} : result;
@@ -231,6 +284,13 @@
      *  止住缺失 id 永远进不了缓存、每次 notify 重发同一次 IPC 的循环。 */
     kstarSummariesSettled: [],
     kstarEpisode: null,
+    /** 会话标题缓存（2026-09-25 验收修复 US-603）：{[cid]: title}。证据来源里
+     *  的 cid 要翻成用户看得懂的会话名，且候选/资产/版本/使用记录/KSTAR 五处
+     *  必须同名。来源目录只有 100 条窗口，窗口外的会话此前一律退化成「一段
+     *  对话」；conversationTitlesSettled 记「已请求且确认查无」的 cid——查无
+     *  即来源失效，界面如实显示「来源记录不可用」，不是裸 id。 */
+    conversationTitles: {},
+    conversationTitlesSettled: [],
     /** 正被"模型自选"挂着的资产 id（2026-09-18）：面板目录视图据此标"模型挂着"，
      *  用户不必翻会话才知道模型给哪个任务挂了东西。 */
     modelSelectedAssetIds: [],
@@ -239,6 +299,13 @@
     sources: [],
     tree: null,
     proofs: [],
+    /** 「真实使用」白名单（2026-09-25 US-602）：由主进程单一定义、随
+     *  `recall.timeline.list` 载荷下发；列表侧「最近使用」与详情侧使用记录共用它。
+     *  缺失时按空集处理（fail-closed）——绝不回落成"不过滤"（那正是缺陷本体）。 */
+    realUsageKinds: [],
+    /** 资产详情的采用回执（2026-09-25 US-602 AC5/AC6）：{assetId, items, loading}。
+     *  「实际采用」只认这里（回执 applied），usage_recorded 一律归「被带入任务」。 */
+    adoptionReceipts: null,
     /** 整理详情页的「对话上下文」（2026-09-15 详情页改造）：{captureId, data}
      *  按任务缓存；data 为 null 表示上下文不可用（详情页降级渲染）。 */
     captureContext: null,
@@ -309,6 +376,10 @@
       // （assetId / transferProofId / usageReceiptId / version）。
       const proofs = await api.soft('recall.timeline.list', { limit: 500 }, {});
       store.proofs = toArr(proofs, ['items', 'events']);
+      // 白名单随载荷走（US-602 FR-004/FR-011）：主进程是唯一定义处，渲染层只消费。
+      store.realUsageKinds = Array.isArray(proofs && proofs.realUsageKinds)
+        ? proofs.realUsageKinds.map((kind) => String(kind || '')).filter(Boolean)
+        : [];
       store.loaded = true;
     },
     async tree() {
@@ -378,6 +449,26 @@
     NS.notify();
   };
 
+  /** 资产详情按需拉采用回执（2026-09-25 US-602 AC5/AC6）。按资产缓存；失败降级
+   *  为空列表——「实际采用」区静默不渲染，但使用记录区仍如实显示"证据不足"口径
+   *  （宁可少显示，也不把没证据的事说成已采用）。 */
+  NS.loadAdoptionReceipts = async function loadAdoptionReceipts(assetId) {
+    const id = String(assetId || '');
+    if (!id || (store.adoptionReceipts && store.adoptionReceipts.assetId === id)) return;
+    store.adoptionReceipts = { assetId: id, items: [], loading: true };
+    NS.notify();
+    let items = [];
+    try {
+      const result = await api.call('recall.assets.adoptionReceipts', { assetId: id });
+      items = (result && result.receipts) || [];
+    } catch (error) {
+      items = [];
+    }
+    if (!store.adoptionReceipts || store.adoptionReceipts.assetId !== id) return;
+    store.adoptionReceipts = { assetId: id, items };
+    NS.notify();
+  };
+
   /** 批量补 kse 摘要（2026-09-18 抽共用入口）：结果并入缓存；本次请求里
    *  响应没有的 id 记进 settled——没有就是没有，chip 据此如实显示「来源
    *  记录不可用」；失败不记（读不到 ≠ 不存在，保持兜底文案）。 */
@@ -420,6 +511,78 @@
       }
     }
     await fetchKstarEpisodeSummaries(refs.map((ref) => String(ref.id || '')));
+  };
+
+  /** 批量补会话标题（2026-09-25 验收修复 US-603）：与 kse 摘要同一套防循环
+   *  模式——已命中的不再请求，响应里没有的 cid 记进 settled（查无 = 来源已
+   *  失效，界面据此显示「来源记录不可用」）；请求失败不记 settled（读不到 ≠
+   *  不存在，下次渲染再试）。只有真的拿到新数据才 notify，避免失败时无限重渲染。 */
+  async function fetchConversationTitles(rawIds) {
+    const wanted = [...new Set((rawIds || []).map((id) => String(id || '').trim()).filter(Boolean))];
+    if (!wanted.length) return;
+    const have = store.conversationTitles || {};
+    const settled = store.conversationTitlesSettled || [];
+    const missing = wanted.filter((id) => !Object.prototype.hasOwnProperty.call(have, id) && !settled.includes(id));
+    if (!missing.length) return;
+    let changed = false;
+    // IPC 单次上限 50（contracts/ipc.md C7）：分批取满，不做隐式截断——截断会
+    // 让"没问到"与"查无此会话"混为一谈，界面就会误报来源失效。
+    for (let start = 0; start < missing.length; start += 50) {
+      const batch = missing.slice(start, start + 50);
+      try {
+        const result = await api.call('conversations.titles', { cids: batch });
+        const titles = (result && result.titles) || [];
+        const returned = new Set(titles.map((row) => String(row.cid)));
+        store.conversationTitles = {
+          ...(store.conversationTitles || {}),
+          ...Object.fromEntries(titles.map((row) => [String(row.cid), String(row.title || '')])),
+        };
+        const absent = batch.filter((id) => !returned.has(id));
+        if (absent.length) {
+          store.conversationTitlesSettled = [...new Set([...(store.conversationTitlesSettled || []), ...absent])];
+        }
+        changed = true;
+      } catch (error) {
+        // 标题缺席只影响来源文案（退回泛称或「来源记录不可用」），不阻断详情。
+      }
+    }
+    if (changed) NS.notify();
+  }
+
+  /** 资产详情的会话类证据 + 使用记录事件的 cid 一起补标题（使用记录要「可定位
+   *  会话」，US-602 AC2）。版本快照里的证据一并纳入——与 kse 摘要同一处坑：
+   *  历史版本的引用此前从没拉过。 */
+  NS.loadConversationTitles = async function loadConversationTitles(assetId) {
+    const id = String(assetId || '');
+    const ids = [];
+    const asset = store.assets.find((a) => String(a.id) === id);
+    if (asset) {
+      for (const ref of asset.evidenceRefs || []) {
+        if (String(ref && ref.kind || '') === 'conversation') ids.push(String(ref.id || ''));
+      }
+    }
+    if (store.assetVersions && String(store.assetVersions.assetId || '') === id) {
+      for (const version of store.assetVersions.versions || []) {
+        for (const ref of (version.snapshot && version.snapshot.evidenceRefs) || []) {
+          if (String(ref && ref.kind || '') === 'conversation') ids.push(String(ref.id || ''));
+        }
+      }
+    }
+    for (const proof of store.proofs || []) {
+      const refs = (proof && proof.refs) || {};
+      if (id && String(refs.assetId || '') !== id) continue;
+      if (refs.conversationId) ids.push(String(refs.conversationId));
+    }
+    await fetchConversationTitles(ids);
+  };
+
+  /** 按 id 批量补（候选详情/整理页用，与 loadKstarEpisodeSummariesByIds 同形）：
+   *  只收会话类引用，其余 kind 由解析器各自处理。 */
+  NS.loadConversationTitlesByIds = async function loadConversationTitlesByIds(refs) {
+    const ids = (refs || [])
+      .filter((ref) => String((ref && ref.kind) || '') === 'conversation')
+      .map((ref) => String((ref && ref.id) || ''));
+    await fetchConversationTitles(ids);
   };
 
   /** 模型自选挂载的资产（2026-09-18）：confirmed 的 model_selected 投影里
@@ -585,9 +748,14 @@
     return entry ? T(entry[0], entry[1]) : '';
   };
 
-  /** 把 IPC 失败体（{code, error, promotionReasons}）翻成给用户看的话。 */
+  /** 把 IPC 失败体（{code, error, blockRule, promotionReasons}）翻成给用户看的话。 */
   NS.recallErrorText = function recallErrorText(result) {
     const code = String((result && result.code) || '');
+    // 资产准入/挂载类失败（2026-09-25 US-604 AC1/AC7）：走规则名映射，并如实说明
+    // 「这次操作没有生效」——绝不把主进程的英文原文与内部 id 甩给用户。
+    if (code.startsWith('projection_') || (result && result.blockRule)) {
+      return T('cognition.action_not_applied', '这次操作没有生效：{reason}', { reason: blockReasonText(result) });
+    }
     if (code === 'promotion_blocked') {
       const reasons = Array.isArray(result && result.promotionReasons) ? result.promotionReasons : [];
       const lines = reasons
@@ -848,9 +1016,16 @@
         toast(T('cognition.asset_use_in_chat_no_chat', '还没有可用的对话——先在任意会话里说一句话，再回来钉它。'));
         return;
       }
-      const result = await api.call('recall.projections.attachToConversation', { assetId, conversationId: cid });
-      if (result && result.ok) {
-        toast(T('cognition.asset_use_in_chat_done', '已挂到当前对话：下一轮起生效，会话里的卡片可随时撤销。'));
+      const asset = store.assets.find((a) => String(a.id) === String(assetId));
+      try {
+        const result = await api.call('recall.projections.attachToConversation', { assetId, conversationId: cid });
+        if (result && result.ok) {
+          toast(T('cognition.asset_use_in_chat_done', '已挂到当前对话：下一轮起生效，会话里的卡片可随时撤销。'));
+        }
+      } catch (error) {
+        // 拦截必须可见并说明规则（US-604 AC1）：此前这里没有 try/catch，失败
+        // 只落 logger，用户看到的是"点了没反应"——静默忽略正是验收问题⑤。
+        await NS.reportBlocked(error, asset && asset.title);
       }
     },
     // confirmAssetOrigin（转正）已随出身收敛退役（2026-09-20）：模型记的=已

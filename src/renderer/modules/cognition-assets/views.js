@@ -150,7 +150,7 @@
     return chip(label, tone);
   };
 
-  /** 来源目录索引：证据 chip 的解析与"多数不可用"判断共用这一份。 */
+  /** 来源目录索引：证据解析与"多数不可用"判断共用这一份。 */
   function sourceIndex() {
     const index = new Map();
     for (const group of S.sources) {
@@ -160,20 +160,100 @@
     }
     return index;
   }
+
+  /* ────────── 来源解析：唯一解析器 + 唯一呈现出口（2026-09-25 US-603）──────────
+   * 修复前：候选与版本证据走 evidenceChip，资产详情的证据引用块却绕过它直接
+   * esc(refId) 上屏，内部 id（immediate-* / kse-* / turn-*）就这么露给用户；
+   * 来源异常行还有 `title || id` 的裸 id 兜底。现在解析规则收敛成
+   * resolveSourceRef 一份、呈现收敛成 evidenceChip 一份，五处（候选 / 资产 /
+   * 版本 / 使用记录 / KSTAR）共用 → 同一来源必然同名（AC1）。
+   * 铁律：任何状态下都不得把 rawId 当显示名（AC3）。
+   * 状态语义（诚实优先，且对"查无"一律 fail-closed）：
+   *   available    解析出可读名（会话标题 / 复盘目标 / 文件名；含"存在但未起名"
+   *                的会话，此时 name 为空由呈现层给泛称）
+   *   immediate    对话中当场记（合成 id，本就没有独立出处）
+   *   processing   来源整理中（目录里有，标题还没生成）
+   *   unavailable  查无此来源（已删 / 无处核对 / 类型可辨但无从核对）
+   *                →「来源记录不可用」，绝不回落裸 id */
+  function resolveSourceRef(ref) {
+    const raw = (ref && typeof ref === 'object') ? ref : {};
+    const rawId = String(raw.id || raw.conversationId || raw.ref || '').trim();
+    const kind = String(raw.kind || '').trim();
+    const view = { kind, rawId, name: '', state: 'unavailable', openRoute: 'none', openTarget: '' };
+    const asConversation = () => {
+      if (!rawId || rawId.startsWith('immediate-')) return;
+      view.openRoute = 'conversation';
+      view.openTarget = rawId;
+    };
+    const inlineTitle = String(raw.title || raw.conversationTitle || raw.name || '').trim();
+    // KSTAR 复盘优先于来源自带 title：ref 上那个 title 是写入时的机器串
+    // （"KSTAR requirement episode"），用户要看的是这次任务的目标摘要。
+    // degraded（写入时就解析不到）或已结算仍无摘要 = 确实没有这条，如实说不可用
+    // 且不给可点假入口；"还没拉到"不在此列（读不到 ≠ 不存在）——维持可点与泛称。
+    if (rawId.startsWith('kse-')) {
+      const settled = (S.kstarSummariesSettled || []).includes(rawId);
+      const summary = (S.kstarSummaries && S.kstarSummaries[rawId]) || null;
+      if (raw.degraded || (settled && !summary)) return view;
+      view.state = 'available';
+      view.name = summary && summary.goal ? String(summary.goal).slice(0, 24) : '';
+      view.openRoute = 'kstar';
+      view.openTarget = rawId;
+      return view;
+    }
+    // 写入时已带可读标题的来源（数据层已解析过）。
+    if (inlineTitle) {
+      view.name = inlineTitle;
+      view.state = 'available';
+      if (kind === 'conversation') asConversation();
+      return view;
+    }
+    if (!rawId) return view;
+    // 「对话中当场记」：合成 id，没有独立出处——不是被删，诚实标注。
+    if (rawId.startsWith('immediate-')) { view.state = 'immediate'; return view; }
+    const item = sourceIndex().get(rawId);
+    if (item) {
+      const itemTitle = String(item.title || '').trim();
+      if (itemTitle) {
+        view.name = itemTitle;
+        view.state = 'available';
+        // 目录项自带 kind 时以它为准（ref 上的 kind 可能是遗留词）。刻意先取
+        // 独立变量再比较，不写成内联短路取值：cognition-chain-view 的源码守护
+        // 按裸源码扫描（连注释一起），那种形状会被判成"机器码可能漏进展示文案"。
+        const itemKind = String((item && item.kind) || '');
+        if (kind === 'conversation' || itemKind === 'conversation') asConversation();
+        return view;
+      }
+      if (['pending', 'processing'].includes(String(item.status || ''))) { view.state = 'processing'; return view; }
+    }
+    if (kind === 'conversation') {
+      // 批量标题口（conversations.titles）补目录 100 条窗口外的会话；命中即有名。
+      const titles = S.conversationTitles || {};
+      if (Object.prototype.hasOwnProperty.call(titles, rawId)) {
+        view.name = String(titles[rawId] || '').trim();
+        view.state = 'available';
+        asConversation();
+        return view;
+      }
+      // 目录与标题口都查无 → 来源确实失效。**fail-closed，不软化**：宁可如实说
+      // 「来源记录不可用」，也不给一个听起来正常却无从核对的泛称（既有契约，
+      // 由 test/renderer/recall-source-display.test.ts 守住）。
+      return view;
+    }
+    // 其余 kind 拿不到名字（如 turn-* 执行记录）：同样按不可用呈现——存在但
+    // 无从核对，与"已删除"给用户的信息量一样，都不该退化成裸 id。
+    return view;
+  }
+
   // 来源三态（2026-09-20 修复「来源已删」误判）：available=目录命中/整理中；
   // immediate=对话中当场记（无独立会话出处——不是被删，诚实标注不计弱证据）；
-  // unavailable=目录查无（引用的会话已不存在或无处核对）。
+  // unavailable=查无（引用的会话已不存在或无处核对）。
+  // 2026-09-25 起判据统一由 resolveSourceRef 给出，本函数只做三态收敛——
+  // 「待我处理」的断链口径与修复前完全一致（available/processing 算在，其余算
+  // 不可用），不随呈现层一起漂。
   function sourceRefKind(ref) {
-    if (!ref) return 'unavailable';
-    const title = String(ref.title || ref.conversationTitle || ref.name || '').trim();
-    if (title) return 'available';
-    const id = String(ref.id || ref.conversationId || ref.ref || '').trim();
-    if (!id) return 'unavailable';
-    if (id.startsWith('immediate-')) return 'immediate'; // 存量合成 id（渲染兼容）
-    const item = sourceIndex().get(id);
-    if (item && String(item.title || '').trim()) return 'available';
-    if (item && (item.status === 'pending' || item.status === 'processing')) return 'available';
-    return 'unavailable';
+    const view = resolveSourceRef(ref);
+    if (view.state === 'immediate') return 'immediate';
+    return (view.state === 'available' || view.state === 'processing') ? 'available' : 'unavailable';
   }
   // 「对话中记」候选身份：captureKey `immediate-` 前缀（新）或引用 id 的
   // `immediate-` 前缀（存量）——两个信号源同前缀。
@@ -205,49 +285,36 @@
     if (!total) return false;
     return unavailable * 2 > total;
   }
+  /** 证据条目的**唯一**呈现出口（2026-09-17 子安"看不懂"口径：每类带类型前缀；
+   *  2026-09-25 US-603：一律经 resolveSourceRef，任何分支都不上屏裸 id）。
+   *  可解析的来源给回看入口（会话跳转 / 复盘展开），其余只显名。 */
   const evidenceChip = (ref) => {
-    // 证据条目按类型说人话（2026-09-17，子安"看不懂"口径）：此前裸问句
-    // （任务目标摘要）、裸会话名、以及两条「来源记录不可用」并排——没有
-    // 一条说得出自己是什么。现在每类带类型前缀；"不可用"只在补不出任何
-    // 类型时兜底。
-    // 来源诚实状态（2026-09-17 审查补回）：详情页证据区此前把"来源已
-    // 删/整理中"吞成泛化 chip——不可读就明说不可读（防裸 id 的底线之上
-    // 还要可诊断），整理中如实说整理中。
-    const refId = String(ref.id || '');
-    const refKind = sourceRefKind(ref);
-    if (refKind === 'immediate') return chip(T('cognition.evidence_immediate_note', '对话中当场记（无独立会话出处）'), 'line');
-    if (refKind === 'unavailable') return chip(T('cognition.source_unavailable_label', '来源记录不可用'), 'line');
-    const catalogItem = sourceIndex().get(refId);
-    if (catalogItem && !String(catalogItem.title || '').trim()
-      && ['pending', 'processing'].includes(String(catalogItem.status || ''))) {
-      return chip(T('cognition.evidence_source_processing', '来源整理中'), 'line');
-    }
-    const kind = String(ref.kind || '');
-    if (refId.startsWith('kse-')) {
-      // 来源诚实状态（2026-09-18 补 kse 支）：复盘记录已不存在时明说不可用，
-      // 不给可点的假入口——两种来源：写入时解析不到被标 degraded（数据层
-      // 口径），或摘要请求回来确实没有这条（历史脏数据）。「还没拉到」不在
-      // 此列：读不到 ≠ 不存在。
-      const settled = (S.kstarSummariesSettled || []).includes(refId);
-      const summary = (S.kstarSummaries && S.kstarSummaries[refId]) || null;
-      if (ref.degraded || (settled && !summary)) return chip(T('cognition.source_unavailable_label', '来源记录不可用'), 'line');
-      const goal = summary && summary.goal ? String(summary.goal).slice(0, 24) : '';
+    const view = resolveSourceRef(ref);
+    if (view.state === 'immediate') return chip(T('cognition.evidence_immediate_note', '对话中当场记（无独立会话出处）'), 'line');
+    if (view.state === 'unavailable') return chip(T('cognition.source_unavailable_label', '来源记录不可用'), 'line');
+    if (view.state === 'processing') return chip(T('cognition.evidence_source_processing', '来源整理中'), 'line');
+    if (view.openRoute === 'kstar') {
       const label = T('cognition.evidence_task_review', '任务复盘：{title}', {
-        title: goal || T('cognition.evidence_task_review_generic', '一次任务'),
+        title: view.name || T('cognition.evidence_task_review_generic', '一次任务'),
       });
-      return `<span class="tag blue chip-link" data-act="open-kstar-episode" data-id="${esc(refId)}" ${roleBtn()} title="${esc(T('cognition.kstar_episode_open_hint', '查看这次任务的复盘'))}">${esc(label)}</span>`;
+      return `<span class="tag blue chip-link" data-act="open-kstar-episode" data-id="${esc(view.rawId)}" ${roleBtn()} title="${esc(T('cognition.kstar_episode_open_hint', '查看这次任务的复盘'))}">${esc(label)}</span>`;
     }
-    if (kind === 'user_teaching_signal') return chip(T('cognition.evidence_teaching', '你的一次明确表态'), 'line');
-    if (kind === 'conversation') {
-      if (String(ref.subtype || '') === 'message') return chip(T('cognition.evidence_message', '对话里的一条消息'), 'line');
-      const name = String(ref.title || ref.conversationTitle || sourceIndex().get(refId)?.title || '').trim()
-        || String(conversationNames().get(refId) || '');
-      return chip(name
-        ? T('cognition.evidence_conversation_named', '对话：《{name}》', { name })
-        : T('cognition.evidence_conversation_generic', '一段对话'), 'line');
+    if (view.kind === 'user_teaching_signal') return chip(T('cognition.evidence_teaching', '你的一次明确表态'), 'line');
+    if (view.kind === 'conversation') {
+      if (String((ref && ref.subtype) || '') === 'message') return chip(T('cognition.evidence_message', '对话里的一条消息'), 'line');
+      const label = view.name
+        ? T('cognition.evidence_conversation_named', '对话：《{name}》', { name: view.name })
+        : T('cognition.evidence_conversation_generic', '一段对话');
+      // 可解析到会话就给回看入口（US-603 AC2）：点回原对话核对证据。
+      if (view.openRoute === 'conversation' && view.openTarget) {
+        return `<span class="tag gray chip-link" data-act="open-conversation" data-id="${esc(view.openTarget)}" ${roleBtn()} title="${esc(T('cognition.evidence_conversation_open_hint', '回到这段对话'))}">${esc(label)}</span>`;
+      }
+      return chip(label, 'line');
     }
-    const loose = String(ref.title || ref.conversationTitle || ref.name || sourceIndex().get(refId)?.title || '').trim();
-    return chip(loose || T('cognition.evidence_fallback', '来源记录'), 'line');
+    if (view.name) return chip(view.name, 'line');
+    // 类型可辨但拿不到名字（如 turn-* 执行记录）：给中性泛称，不编造名字、
+    // 也不回落裸 id。
+    return chip(T('cognition.evidence_fallback', '来源记录'), 'line');
   };
   const isKstarEvidenceRef = (ref) => String(ref.kind || '') === 'execution' && String(ref.id || '').startsWith('kse-');
   /** 血统判据只认"还活着"的证据（2026-09-18 乙档）：被标 degraded 的复盘
@@ -677,6 +744,13 @@
         if (item.kind === 'conversation' && item.id) names.set(String(item.id), String(item.title || ''));
       }
     }
+    // 目录只有 100 条窗口，窗口外的会话此前一律退化成「一次对话里」（US-602
+    // AC2「可定位会话」不成立）。批量标题口是权威，覆盖目录里的同名旧值。
+    const titles = S.conversationTitles || {};
+    for (const cid of Object.keys(titles)) {
+      const title = String(titles[cid] || '').trim();
+      if (title) names.set(String(cid), title);
+    }
     return names;
   }
   function proofWherePhrase(names, conversationId) {
@@ -702,7 +776,23 @@
       : '';
     const kind = String(proof.kind || '');
     if (kind === 'usage_recorded') {
-      return T('cognition.proof_sentence_usage', '{when}，在{where}被实际使用{version}', { when, where, version });
+      // 按 outcome 说清"怎么用到的"（2026-09-25 US-602 AC4/AC5）：宿主注入、
+      // 模型自读、派发授予一律不宣称"被实际采用"——是否采用只看「实际采用记录」
+      // （有据回执）。旧记录没有 outcome，按中性"带进上下文"表述。
+      const outcome = String(refs.usageOutcome || '');
+      if (outcome === 'agent_read') {
+        return T('cognition.proof_sentence_agent_read', '{when}，{where}的模型读取了这条内容{version}', { when, where, version });
+      }
+      if (outcome === 'dispatched') {
+        return T('cognition.proof_sentence_dispatched', '{when}，这条内容被派发给执行者{version}', { when, version });
+      }
+      if (outcome === 'succeeded' || outcome === 'degraded' || outcome === 'rejected') {
+        return T('cognition.proof_sentence_transfer', '{when}，{where}的这次使用已核对结果{version}', { when, where, version });
+      }
+      if (outcome === 'feedback_positive' || outcome === 'feedback_negative') {
+        return T('cognition.proof_sentence_feedback', '{when}，你对这次使用给了评价{version}', { when, version });
+      }
+      return T('cognition.proof_sentence_brought_in', '{when}，{where}的这次任务把这条内容带进了上下文{version}', { when, where, version });
     }
     if (kind === 'projection_confirmed') {
       return T('cognition.proof_sentence_projected', '{when}，在{where}被带入任务{version}', { when, where, version });
@@ -724,14 +814,39 @@
     return T('cognition.proof_sentence_unknown', '{when}，{title}', { when, title: proofEventTitle(proof) });
   }
 
+  /** 「被带入任务」计数（唯一公式，列表行 / 目录行 / 详情摘要共用）：
+   *  白名单事件（来自主进程）+ 防重复——一次带入在数据层会产生两条记录
+   *  （projection_confirmed 与同投影的 usage_recorded/injected），必须按投影去重，
+   *  否则一次带入被数成两次。没有投影关联的 usage 行只在明确是"另一条路线"
+   *  （模型自读 / 派发 / 迁移核对 / 你的评价）时才另计；否则视作该投影自身的记录，
+   *  **宁可少算不多算**。撤销事件单列不计。 */
+  function broughtInCountFor(assetId) {
+    const realKinds = new Set(Array.isArray(S.realUsageKinds) ? S.realUsageKinds : []);
+    const items = S.proofs.filter((proof) => realKinds.has(String(proof.kind || ''))
+      && String((proof.refs || {}).assetId || '') === String(assetId));
+    const confirmedProjectionIds = new Set(items
+      .filter((p) => String(p.kind || '') === 'projection_confirmed')
+      .map((p) => String((p.refs || {}).projectionId || ''))
+      .filter(Boolean));
+    const separateRoutes = new Set(['agent_read', 'dispatched', 'succeeded', 'degraded', 'rejected', 'feedback_positive', 'feedback_negative']);
+    return items.filter((p) => String(p.kind || '') === 'projection_confirmed').length
+      + items.filter((p) => {
+        if (String(p.kind || '') !== 'usage_recorded') return false;
+        const refs = p.refs || {};
+        const projectionId = String(refs.projectionId || '');
+        if (projectionId) return !confirmedProjectionIds.has(projectionId);
+        return separateRoutes.has(String(refs.usageOutcome || ''));
+      }).length;
+  }
+
   /** 资产详情的使用记录区（原独立「使用记录」页的按资产切片）。 */
   function assetUsageSection(asset, route) {
+    const realKinds = new Set(Array.isArray(S.realUsageKinds) ? S.realUsageKinds : []);
     const items = S.proofs
       .filter((p) => String((p.refs || {}).assetId || '') === String(asset.id))
-      // 只认「真实引用」事件（2026-09-17 子安口径）：什么时候在哪个对话被
-      // 带入任务/被实际使用。版本保存、选用切换、治理与迁移证明这类系统
-      // 操作不是使用，不进使用记录。
-      .filter((p) => ['usage_recorded', 'projection_confirmed'].includes(String(p.kind || '')))
+      // 真实使用事件（白名单来自主进程，与列表侧同一份）+ 撤销事件：撤销要看得见
+      //（AC3），但不计入任何次数。版本保存、选用切换、治理操作都不是使用。
+      .filter((p) => realKinds.has(String(p.kind || '')) || String(p.kind || '') === 'projection_revoked')
       .sort((left, right) => String(right.occurredAt || '').localeCompare(String(left.occurredAt || '')));
     if (!items.length) {
       return `<div class="sect-block"><div class="sub">${esc(T('cognition.asset_no_proofs_section', '还没有被真实使用过。资产在任务中被真正使用、并留下可核对的记录后，会出现在这里。'))}</div></div>`;
@@ -745,11 +860,23 @@
       knownVersions.add(String(asset.activeVersion || ''));
       for (const v of S.assetVersions.versions) knownVersions.add(String(v.version));
     }
-    const usedCount = items.filter((p) => p.kind === 'usage_recorded').length;
-    const projectedCount = items.filter((p) => p.kind === 'projection_confirmed').length;
+    // 「被带入任务」计数走唯一公式（与目录行、列表侧同口径）。
+    const broughtInCount = broughtInCountFor(asset.id);
+    // 「实际采用」只认有据回执（AC5/AC6）：applied 才算采用，contradicted 单列，
+    // 其余（usage_unknown / considered_not_applicable / available_no_opportunity）
+    // 如实显示为「证据不足」——不夸大成全部采用，也不谎称失败。
+    const receipts = (S.adoptionReceipts && String(S.adoptionReceipts.assetId || '') === String(asset.id)
+      && Array.isArray(S.adoptionReceipts.items))
+      ? S.adoptionReceipts.items
+      : [];
+    const appliedCount = receipts.filter((r) => String(r.status || '') === 'applied').length;
+    const contradictedCount = receipts.filter((r) => String(r.status || '') === 'contradicted').length;
+    const unknownCount = receipts.filter((r) => !['applied', 'contradicted'].includes(String(r.status || ''))).length;
     const summaryLine = [
-      usedCount ? T('cognition.proof_used_times', '被实际使用 {n} 次', { n: String(usedCount) }) : '',
-      projectedCount ? T('cognition.proof_projected_times', '被带入任务 {n} 次', { n: String(projectedCount) }) : '',
+      broughtInCount ? T('cognition.proof_projected_times', '被带入任务 {n} 次', { n: String(broughtInCount) }) : '',
+      appliedCount ? T('cognition.adoption_applied_times', '实际采用 {n} 次', { n: String(appliedCount) }) : '',
+      contradictedCount ? T('cognition.adoption_contradicted_times', '被否定 {n} 次', { n: String(contradictedCount) }) : '',
+      unknownCount ? T('cognition.adoption_unknown_times', '证据不足 {n} 次', { n: String(unknownCount) }) : '',
     ].filter(Boolean).join(' · ');
     const rows = items.slice(0, 20).map((proof) => {
       const refs = proof.refs || {};
@@ -784,6 +911,66 @@
       ${sectionHead(T('cognition.asset_usage_section', '使用记录'), summaryLine)}
       <div class="ca-proof-list">${rows}</div>
       ${items.length > 20 ? `<div class="sub">${esc(T('cognition.asset_usage_more', '仅显示最近 {n} 条', { n: '20' }))}</div>` : ''}
+    </div>`;
+  }
+
+  /** 实际采用记录（2026-09-25 US-602 AC5/AC6）：唯一权威 = usage 回执 applied。
+   *  每条给出同次任务（时间）、具体版本、执行事件类型与产物位置（证据来源名走统一
+   *  解析器，不裸 id）；contradicted 单列；其余如实标「证据不足 · 未知」——不夸大
+   *  成全部采用，也不谎称失败。没有回执时说明"还没有可核对的采用证据"。 */
+  function assetAdoptionSection(asset) {
+    const state = S.adoptionReceipts;
+    const items = (state && String(state.assetId || '') === String(asset.id) && Array.isArray(state.items))
+      ? state.items
+      : [];
+    if (!items.length) {
+      return `<div class="sect-block">${sectionHead(T('cognition.adoption_section', '实际采用记录'))}
+        <div class="sub">${esc(T('cognition.adoption_empty', '还没有可核对的采用证据。任务里真正用到、并留下可核对痕迹的记录才会出现在这里。'))}</div></div>`;
+    }
+    const statusLabel = (status) => {
+      if (status === 'applied') return T('cognition.adoption_status_applied', '已实际采用');
+      if (status === 'contradicted') return T('cognition.adoption_status_contradicted', '被否定');
+      if (status === 'considered_not_applicable') return T('cognition.adoption_status_not_applicable', '这次不适用');
+      if (status === 'available_no_opportunity') return T('cognition.adoption_status_no_opportunity', '没有使用机会');
+      return T('cognition.adoption_status_unknown', '证据不足 · 未知');
+    };
+    const evidenceKindLabel = (kind) => {
+      if (kind === 'tool_call') return T('cognition.adoption_evidence_tool_call', '工具调用');
+      if (kind === 'agent_action') return T('cognition.adoption_evidence_agent_action', '执行动作');
+      if (kind === 'artifact') return T('cognition.adoption_evidence_artifact', '产物');
+      if (kind === 'final_output') return T('cognition.adoption_evidence_final_output', '最终输出');
+      return '';
+    };
+    const rows = items.map((receipt) => {
+      const version = String(receipt.assetVersion || '');
+      const kindLabel = evidenceKindLabel(String(receipt.evidenceKind || ''));
+      const names = (Array.isArray(receipt.evidence) ? receipt.evidence : [])
+        .map((ref) => resolveSourceRef(ref))
+        .map((view) => view.name)
+        .filter(Boolean);
+      const meta = [version ? `v${version}` : '', fmtDate(receipt.createdAt), kindLabel].filter(Boolean).join(' · ');
+      const evidenceLine = names.length
+        ? `<div class="sub">${esc(T('cognition.adoption_evidence_line', '证据：{names}', { names: names.join('、') }))}</div>`
+        : '';
+      return `<div class="ca-proof-row">
+        <div class="ca-proof-body">
+          <strong class="ca-proof-sentence">${esc(statusLabel(String(receipt.status || '')))}</strong>
+          ${meta ? `<span class="note">${esc(meta)}</span>` : ''}
+        </div>
+        ${evidenceLine}
+      </div>`;
+    }).join('');
+    const applied = items.filter((r) => String(r.status || '') === 'applied').length;
+    const contradicted = items.filter((r) => String(r.status || '') === 'contradicted').length;
+    const unknown = items.length - applied - contradicted;
+    const note = [
+      T('cognition.adoption_applied_times', '实际采用 {n} 次', { n: String(applied) }),
+      contradicted ? T('cognition.adoption_contradicted_times', '被否定 {n} 次', { n: String(contradicted) }) : '',
+      unknown ? T('cognition.adoption_unknown_times', '证据不足 {n} 次', { n: String(unknown) }) : '',
+    ].filter(Boolean).join(' · ');
+    return `<div class="sect-block">
+      ${sectionHead(T('cognition.adoption_section', '实际采用记录'), note)}
+      <div class="ca-proof-list">${rows}</div>
     </div>`;
   }
 
@@ -1060,23 +1247,20 @@
           ${btnHtml}</div>`;
       })()}
       ${(() => {
-        /* 证据引用块：evidenceRefs 列表，KSTAR 前缀蓝标、其余灰标 */
-        const refs = (asset.evidenceRefs || []).map((ref) => {
-          if (ref && typeof ref === 'object') return String(ref.id || ref.ref || '');
-          return String(ref || '');
-        }).filter(Boolean);
+        /* 证据引用块：一律走唯一解析器 + 唯一呈现出口（evidenceChip）。
+         * 2026-09-25 US-603 修复：此前这里直接 esc(refId) 上屏，immediate-* /
+         * kse-* / turn-* 这些内部 id 就是这么露给用户的；KSTAR 名与会话名也
+         * 因此与其它四处不同步。legacy 字符串形态的来源先归一成 {id} 再解析。 */
+        const refs = (asset.evidenceRefs || [])
+          .map((ref) => ((ref && typeof ref === 'object') ? ref : { id: String(ref || '') }))
+          .filter((ref) => String(ref.id || '').trim());
         if (!refs.length) return '';
-        const rows = refs.map(function (refId) {
-          const isKstar = refId.startsWith('kse-');
-          const tag = isKstar
-            ? '<span class="tag blue">KSTAR</span>'
-            : '<span class="tag gray">来源</span>';
-          return '<div class="evrow">' + tag + '<span style="flex:1">' + esc(refId) + '</span></div>';
-        }).join('');
+        const rows = refs.map((ref) => '<div class="evrow">' + evidenceChip(ref) + '</div>').join('');
         return '<div class="sect-block"><div class="sub"><strong>' + esc(T('cognition.asset_evidence_section', '证据引用')) + '</strong><span class="note">' + String(refs.length) + '</span></div>' + rows + '</div>';
       })()}
       ${assetVersionsSection(asset)}
       ${assetUsageSection(asset, route)}
+      ${assetAdoptionSection(asset)}
       ${(() => {
         /* 审计履历块：auditRows.slice(0,12) + 超限提示。动作标签显式列全
          * （与 asset-service.ts::AbilityAssetAuditRecord 的 action 联合类型
@@ -1267,8 +1451,14 @@
     for (const [id] of CATEGORIES) counts[id] = S.assets.filter((a) => a.type === id && !['archived', 'deleted', 'purged', 'revoked'].includes(String(a.status || 'active'))).length;
     // 每个资产的最近使用时间（时间线里 occurredAt 的最大值）：列表行此前
     // 硬编码「最近无使用记录」，被真实复用过的资产也这么显示（终审修）。
+    // 每个资产的最近使用时间（**只算「真实使用」**）：白名单由主进程单一定义、
+    // 随载荷下发（2026-09-25 US-602 FR-004），列表与详情共用同一份。
+    // 修复前这里对全部事件取 occurredAt 最大值——创建、保存版本、治理操作都会
+    // 把「最近使用」刷新成今天，与详情侧口径打架（缺陷本体）。
+    const realKinds = new Set(Array.isArray(S.realUsageKinds) ? S.realUsageKinds : []);
     const lastUseByAsset = new Map();
     for (const proof of S.proofs) {
+      if (!realKinds.has(String(proof.kind || ''))) continue;
       const assetId = String((proof.refs || {}).assetId || '');
       const at = String(proof.occurredAt || '');
       if (!assetId || !at) continue;
@@ -1323,13 +1513,14 @@
     const catalogRow = (asset) => {
       const statement = String(asset.statement || '').replace(/\s+/g, ' ').trim();
       const oneLine = statement.split(/[。！？!?]/)[0] || statement;
-      const used = S.proofs.filter((proof) => proof.kind === 'usage_recorded'
-        && String((proof.refs || {}).assetId || '') === String(asset.id)).length;
+      const used = broughtInCountFor(asset.id);
       const meta = [
         categoryLabel(asset.type),
         scopeLabelText(asset.scope),
         `v${String(asset.activeVersion || asset.version || '1')}`,
-        used ? T('cognition.catalog_used_times', '用过 {n} 次', { n: String(used) }) : T('cognition.catalog_never_used', '还没用过'),
+        // 目录行与列表/详情同口径（2026-09-25 US-602）：只算「被带入任务」，
+        // 不把宿主注入说成"用过"，更不说成"实际采用"。
+        used ? T('cognition.catalog_used_times', '被带入任务 {n} 次', { n: String(used) }) : T('cognition.catalog_never_used', '还没被带入过'),
       ].join(' · ');
       return `<div class="row" data-go-asset="${esc(asset.id)}" role="button" tabindex="0">
         <div class="tw">
@@ -1399,10 +1590,17 @@
     const refs = evidenceRefs(candidate);
     const refsHtml = refs.length
       ? `<div class="c4">${esc(T('cognition.candidate_source', '来源'))}：${refs.slice(0, 4).map((ref) => {
-        const refKind = sourceRefKind(ref);
-        if (refKind === 'immediate') return esc(T('cognition.evidence_immediate_note', '对话中当场记（无独立会话出处）'));
-        if (refKind === 'unavailable') return esc(T('cognition.source_unavailable_label', '来源记录不可用'));
-        return esc(String(ref.title || ref.conversationTitle || '').trim() || T('cognition.source_resolved', '会话记录'));
+        // 2026-09-25 US-603：候选卡的来源名也走唯一解析器——此前它自带一套兜底
+        // （ref.title || '会话记录'），目录窗口外的会话在这里显示不出名字，与
+        // 资产详情/版本/使用记录/KSTAR 四处不同名。
+        const view = resolveSourceRef(ref);
+        if (view.state === 'immediate') return esc(T('cognition.evidence_immediate_note', '对话中当场记（无独立会话出处）'));
+        if (view.state === 'processing') return esc(T('cognition.evidence_source_processing', '来源整理中'));
+        if (view.state === 'unavailable') return esc(T('cognition.source_unavailable_label', '来源记录不可用'));
+        if (view.name) return esc(view.name);
+        return esc(view.kind === 'conversation'
+          ? T('cognition.evidence_conversation_generic', '一段对话')
+          : T('cognition.evidence_fallback', '来源记录'));
       }).join(' · ')}</div>`
       : '';
     const warnHtml = broken
@@ -1454,7 +1652,7 @@
           : '';
       return `<div class="row is-flat">
         <div class="tw">
-          <div class="tt">${esc(item.title || item.id)}</div>
+          <div class="tt">${esc(String(item.title || '').trim() || T('cognition.evidence_fallback', '来源记录'))}</div>
           <div class="mm">${esc(vocab ? vocab.kindLabel(item.kind) : T('cognition.source_kind_other', '其他来源'))}${reasonText ? ` · ${esc(reasonText)}` : ''}</div>
         </div>
         <div class="sd">${action}</div>
@@ -2295,5 +2493,7 @@
   // 共享渲染件（2026-09-20 本体界面重构）：个人本体页复用资产页同一套
   // 章/行形态。只有 IIFE 顶层的件可导出——plainRow/catalogRow 定义在
   // render 内部（闭包捕获每帧状态），不在此列。
-  NS.ui = { chip, assetStatusChip };
+  // resolveSourceRef 一并导出（2026-09-25 US-603）：五处来源展示与用例都
+  // 认这一份解析结果，避免测试各自复制一套判据。
+  NS.ui = { chip, assetStatusChip, resolveSourceRef, evidenceChip };
 })();

@@ -14,6 +14,7 @@ import { isCognitionSourceEnabled } from './source-control';
 import { loadCommittedProjectionKnowledge } from './projection-knowledge';
 import {
   evaluateAssetRuntimeEligibility,
+  assetRuntimeBlockRule,
   type AssetRuntimeContext,
   type AssetRuntimeEligibility,
 } from './formal-assets/runtime';
@@ -166,10 +167,23 @@ function projectionRuntimeContext(
   };
 }
 
+/** 用户显式引用的资产在本轮被拦 → 留一条 omitted 回执（US-604 AC4/AC7）。
+ *  实现落在 `projection-omission.ts`（独立边界，便于按真实形态测试）。 */
+async function noteProjectionOmission(
+  userId: string,
+  projection: ContextProjectionRecord,
+  asset: Awaited<ReturnType<typeof readAbilityAsset>>,
+  reason: string,
+  turnTaskRunId?: string,
+): Promise<void> {
+  const { recordProjectionOmission } = await import('./projection-omission');
+  await recordProjectionOmission(userId, projection, asset, reason, turnTaskRunId);
+}
+
 async function buildPromptContextForProjections(
   userId: string,
   projections: ProjectionForPrompt[],
-  runtimeContext: AssetRuntimeContext = {},
+  runtimeContext: AssetRuntimeContext & { taskRunId?: string } = {},
   excludeAssetIds: ReadonlySet<string> = new Set(),
 ): Promise<RecallTurnPromptContext> {
   const records: Array<Record<string, unknown>> = [];
@@ -207,6 +221,9 @@ async function buildPromptContextForProjections(
                   assetId,
                   confirmedVersion,
                 });
+                // 用户显式引用的资产缺席要留痕（US-604 AC4/AC7）：界面据此说明
+                // "本轮未带入 + 哪条规则"，而不是让引用悄悄消失。
+                await noteProjectionOmission(userId, projection, liveAsset, 'versions_missing', runtimeContext.taskRunId);
                 continue;
               }
             }
@@ -221,7 +238,12 @@ async function buildPromptContextForProjections(
           liveAsset,
           projectionRuntimeContext(projection, runtimeContext, matchMethod === 'semantic'),
         );
-        if (!gate.eligible) continue;
+        if (!gate.eligible) {
+          // 发送前重检被拦**不再静默**（2026-09-25 US-604 AC4/AC7）：写一条
+          // omitted 留痕（带规则标识），界面在回执卡上说明本轮为什么没带上。
+          await noteProjectionOmission(userId, projection, liveAsset, assetRuntimeBlockRule(liveAsset.status, gate.reasons), runtimeContext.taskRunId);
+          continue;
+        }
         const evidenceRefs = liveAsset.evidenceRefs;
         const title = snapshot?.title ?? liveAsset.title;
         const type = snapshot?.type ?? liveAsset.type;

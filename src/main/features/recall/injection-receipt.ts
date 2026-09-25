@@ -21,6 +21,11 @@ export interface InjectionReceipt extends RecallJsonRecord {
    *  缺省视为 projection（存量收据与新正式资产收据一致）。 */
   channel?: 'projection' | 'profile_memory' | 'agent_read' | 'catalog_hint';
   messageId?: string;
+  /** 被拦原因（2026-09-25 验收修复 US-604 AC4/AC7）：status='omitted' 时带上
+   *  `formal-assets/runtime.ts::assetRuntimeBlockRule` 的稳定规则标识，界面据此
+   *  说明"本轮未带入 + 哪条规则"。只存标识——不存原因码原文、不存资产正文。
+   *  旧回执没有该字段，读取侧按「原因未知」呈现，不编造。 */
+  reason?: string;
   createdAt: string;
 }
 
@@ -42,6 +47,7 @@ function asInjectionReceipt(userId: string, value: RecallJsonRecord): InjectionR
     || !INJECTION_STATUSES.has(value.status as InjectionReceipt['status'])
     || (value.channel !== undefined && !INJECTION_CHANNELS.has(value.channel as InjectionReceipt['channel']))
     || (value.messageId !== undefined && !safeId(value.messageId))
+    || (value.reason !== undefined && typeof value.reason !== 'string')
     || typeof value.createdAt !== 'string'
   ) throw new Error('malformed injection receipt');
   return value as InjectionReceipt;
@@ -53,6 +59,8 @@ export async function recordInjectionReceipt(
     taskRunId: string; projectionId?: string; assetId: string; assetVersion: string;
     boundary: InjectionReceipt['boundary']; status: InjectionReceipt['status']; messageId?: string;
     channel?: InjectionReceipt['channel'];
+    /** 被拦原因标识（status='omitted' 时用）：规则标识，不是原因码原文。 */
+    reason?: string;
   },
 ): Promise<InjectionReceipt> {
   if (
@@ -66,7 +74,9 @@ export async function recordInjectionReceipt(
     || !INJECTION_STATUSES.has(input.status)
     || (input.channel !== undefined && !INJECTION_CHANNELS.has(input.channel))
     || (input.messageId !== undefined && !safeId(input.messageId))
+    || (input.reason !== undefined && typeof input.reason !== 'string')
   ) throw new Error('invalid injection receipt reference');
+  // reason 刻意不进幂等键：同一轮同一资产被拦多次仍是同一条留痕。
   const key = `${input.taskRunId}:${input.assetId}:${input.assetVersion}:${input.status}:${input.messageId || ''}`;
   const record: InjectionReceipt = {
     schemaVersion: 1, ownerId: userId,
@@ -76,6 +86,7 @@ export async function recordInjectionReceipt(
     status: input.status,
     ...(input.channel ? { channel: input.channel } : {}),
     ...(input.messageId ? { messageId: input.messageId } : {}),
+    ...(input.reason ? { reason: input.reason } : {}),
     createdAt: new Date().toISOString(),
   };
   const existing = (await listInjectionReceipts(userId))

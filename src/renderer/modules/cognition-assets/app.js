@@ -521,14 +521,21 @@
       void NS.loadAssetVersions(assetId);
     }
     if (assetId) void NS.loadKstarEpisodeSummaries(assetId);
+    // 采用回执（2026-09-25 US-602）：详情「实际采用记录」区的唯一数据源。
+    if (assetId) void NS.loadAdoptionReceipts(assetId);
+    // 会话标题同理（2026-09-25 US-603）：证据来源与使用记录里的 cid 要翻成
+    // 会话名，五处展示同名；来源目录 100 条窗口外的会话靠这个批量口补齐。
+    if (assetId) void NS.loadConversationTitles(assetId);
     // 候选详情的 kse 证据 chip 也要真实目标摘要（此前只覆盖资产详情，
     // 候选页 chip 一直显示兜底"一次任务"，2026-09-17 子安实测抓出）。
     const candidateId = String(S.route.candidateId || '');
     if (candidateId) {
       const cand = S.candidates.find((c) => String(c.id) === candidateId);
       if (cand) {
-        const ids = [...(cand.sourceRefs || []), ...(cand.evidenceRefs || [])].map((r) => String(r.id || ''));
+        const candRefs = [...(cand.sourceRefs || []), ...(cand.evidenceRefs || [])];
+        const ids = candRefs.map((r) => String(r.id || ''));
         void NS.loadKstarEpisodeSummariesByIds(ids);
+        void NS.loadConversationTitlesByIds(candRefs);
       }
     }
     // KSTAR 复盘折叠区（2026-09-17 二次定调）：复盘历史随「我的认知」页
