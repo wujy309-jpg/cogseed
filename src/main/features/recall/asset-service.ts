@@ -1569,7 +1569,11 @@ export async function listAbilityAssetVersions(userId: string, assetId: string):
 export async function listAbilityAssetVersionsWithUsage(
   userId: string,
   assetId: string,
-): Promise<{ versions: AbilityAssetVersionRecord[]; usage: Array<{ version: string; applied: number; contradicted: number; total: number }> }> {
+): Promise<{
+  versions: AbilityAssetVersionRecord[];
+  usage: Array<{ version: string; applied: number; contradicted: number; total: number }>;
+  frozen: Array<{ version: string; count: number }>;
+}> {
   const versions = await listAbilityAssetVersions(userId, assetId);
   const { listAssetUsageReceipts } = await import('./asset-usage-receipt');
   const counts = new Map<string, { applied: number; contradicted: number; total: number }>();
@@ -1587,7 +1591,27 @@ export async function listAbilityAssetVersionsWithUsage(
   } catch {
     // 回执读取失败只丢效果列，不阻断版本链。
   }
-  return { versions, usage: [...counts.entries()].map(([version, c]) => ({ version, ...c })) };
+  // 冻结引用按版本计数（specs/008 US-402 AC6 / T023「被引用过的历史版本」）：
+  // 权威判据是已确认投影的 assetVersions 映射——与 deleteAbilityAssetVersion 的
+  // 冻结段同一判据。**不能拿 KSTAR 采用回执（上面的 usage）顶替**：那记录的是
+  // "这一版被判为实际采用/被否定"，与"这一版被某个任务引用过"是两件事，回执为空
+  // 时提示永不出现（2026-09-25 合并态走查抓出：v1 被 8 条投影冻结，界面无标记）。
+  const frozenCounts = new Map<string, number>();
+  try {
+    const { listAllConfirmedProjections } = await import('./context-projection');
+    for (const projection of await listAllConfirmedProjections(userId)) {
+      const version = String(projection.assetVersions?.[assetId] || '');
+      if (!version) continue;
+      frozenCounts.set(version, (frozenCounts.get(version) || 0) + 1);
+    }
+  } catch {
+    // 投影读取失败只丢「已有更新的版本」标记，不阻断版本链。
+  }
+  return {
+    versions,
+    usage: [...counts.entries()].map(([version, c]) => ({ version, ...c })),
+    frozen: [...frozenCounts.entries()].map(([version, count]) => ({ version, count })),
+  };
 }
 
 /** Read the immutable content snapshot of a specific asset version, or null

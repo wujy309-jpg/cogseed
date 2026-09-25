@@ -1450,6 +1450,44 @@ describe('资产详情（使用记录并入）', () => {
     expect(text).toContain('title=原名；version=1');
     expect(text).toContain('title=临时标题；version=2');
     expect(html).toContain('data-act="rollback-asset" data-id="aa-1" data-version="2"');
+    // 台账时间必须走统一格式化（2026-09-25 合并态走查修）：此前原样打印存储里的
+    // ISO UTC 串（`2026-09-25T01:47:12.562Z`），与同页版本记录的本地时间差 8 小时。
+    // 判据取台账块内的 `.when` 单元格：值必须等于本文件装配的 fmtDate 出口输出
+    // （harness 固定值），而不是任何原始 ISO 串。
+    const ledger = html.slice(html.indexOf('生命周期记录'));
+    const whens = [...ledger.matchAll(/<span class="when">([^<]*)<\/span>/g)].map((m) => m[1]);
+    expect(whens).toEqual(['2026/09/15 10:00', '2026/09/15 10:00']);
+    expect(ledger).not.toContain('2026-09-25T01:47:12.562Z');
+    expect(ledger).not.toContain('2026-09-25T01:48:26.914Z');
+  });
+
+  it('「已有更新的版本」认冻结引用、不认采用回执（2026-09-25 合并态走查修）', () => {
+    // 真机现状：v1 被 8 条已确认投影冻结，界面却没有标记——旧判据读 KSTAR 采用
+    // 回执（usage），而回执库里根本没有这条资产的记录，条件恒假。
+    const multi = { ...asset, version: '2', activeVersion: '2', title: 'Renamed in v2', statement: '新内容' };
+    const html = renderPage('overview', {
+      assets: [multi],
+      proofs: [],
+      sources: [],
+      assetVersions: {
+        assetId: 'aa-1',
+        usage: [],
+        frozen: [{ version: '1', count: 8 }],
+        versions: [
+          { assetId: 'aa-1', version: '1', at: '2026-09-10T01:00:00.000Z', snapshot: { title: '旧标题', statement: '旧内容', type: 'rule', evidenceRefs: [], status: 'active', maturity: 'seed', version: '1' } },
+          { assetId: 'aa-1', version: '2', at: '2026-09-15T01:00:00.000Z', reason: 'Rename for v2.', snapshot: { title: 'Renamed in v2', statement: '新内容', type: 'rule', evidenceRefs: [], status: 'active', maturity: 'seed', version: '2' } },
+        ],
+      },
+    }, { assetId: 'aa-1' });
+    // 零采用回执 + 有冻结引用 → 恰好一处标记，且落在被冻结的 v1 行上。
+    expect((html.match(/已有更新的版本/g) || []).length).toBe(1);
+    const rows = html.split('data-act="open-asset-version"').slice(1);
+    const v1Row = rows.find((r) => r.includes('data-version="1"')) || '';
+    const v2Row = rows.find((r) => r.includes('data-version="2"')) || '';
+    expect(v1Row).toContain('已有更新的版本');
+    expect(v2Row).not.toContain('已有更新的版本');
+    // 在用版（v2）不给「选用此版」。
+    expect(html).not.toContain('data-act="select-asset-version" data-id="aa-1" data-version="2"');
   });
 
   it('版本行点开详情与真删入口（2026-09-17）：全文/逐项信息/删除按钮/在用版提示', () => {

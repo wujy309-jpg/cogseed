@@ -2624,6 +2624,8 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (!safeId(assetId)) throw new Error('invalid recall asset id');
     // 一并带上 audit：资产详情的「生命周期记录」读的就是它（2026-09-25 真机发现
     // 这个口只回了 versions+usage，渲染层拿不到台账，整块审计区是死的）。
+    // chain 里的 frozen（按版本的冻结引用计数）同时透传：它是「已有更新的版本」
+    // 标记的唯一判据（`...chain` 展开，勿在此重命名）。
     const [chain, audit] = await Promise.all([
       recallAssets.listAbilityAssetVersionsWithUsage(ctx.userId, assetId),
       recallAssets.listAbilityAssetAudit(ctx.userId, assetId),

@@ -767,6 +767,41 @@ describe('治理动作', () => {
     expect(byVersion['2']).toMatchObject({ applied: 1 });
   });
 
+  it('版本链带按版本的冻结引用计数（2026-09-25 合并态走查修复）：判据是已确认投影的 assetVersions', async () => {
+    // 背景：界面「已有更新的版本」标记原本认 KSTAR 采用回执（usage），与"这一版被
+    // 某个任务引用过"是两件事——真机上 v1 被 8 条投影冻结却没有任何标记，因为回执
+    // 库里没有该资产的记录。冻结引用的权威判据是已确认投影的 assetVersions 映射。
+    const { candidates, assets } = await modules();
+    const store = await import('../../../../src/main/features/recall/store');
+    const uid = 'user-frozen-ref';
+    const cCand = await candidates.saveRecallCandidate(uid, {
+      judgment: 'Frozen reference rule.', summary: 'Frozen rule', suggestedType: 'rule',
+      suggestedScope: 'general', sourceRefs: [{ kind: 'conversation', id: 'conv-fr' }],
+    });
+    const promoted = await candidates.promoteRecallCandidate(uid, cCand.id, { actor: 'user', forceCreateSimilar: true });
+    const assetId = promoted.asset.id;
+    // 改一版：v1 退成历史版本（v2 在用）。
+    await assets.updateAbilityAsset(uid, assetId, { statement: 'Frozen reference rule v2.', reason: 'bump', actor: 'user' });
+    const projection = (id: string, version: string, status: string) => ({
+      schemaVersion: 2, ownerId: uid, id, status, purpose: 'task_execution',
+      authorization: 'user_confirmed', assetIds: [assetId], assetVersions: { [assetId]: version },
+      sourceRefs: [], taskRunId: `run-${id}`, omittedRefs: [],
+      createdAt: new Date().toISOString(), confirmedAt: new Date().toISOString(),
+      decidedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    });
+    await store.writeRecallJsonRecord(uid, 'projections', 'proj-frozen-a', projection('proj-frozen-a', '1', 'confirmed'));
+    await store.writeRecallJsonRecord(uid, 'projections', 'proj-frozen-b', projection('proj-frozen-b', '1', 'confirmed'));
+    // 未确认的投影不算冻结引用（"引用它的任务"= 真按副本注入的那一批）。
+    await store.writeRecallJsonRecord(uid, 'projections', 'proj-frozen-preview', projection('proj-frozen-preview', '1', 'preview'));
+
+    const summary = await assets.listAbilityAssetVersionsWithUsage(uid, assetId);
+    const frozenByVersion = Object.fromEntries((summary.frozen || []).map((f) => [f.version, f.count]));
+    expect(frozenByVersion['1']).toBe(2);
+    expect(frozenByVersion['2']).toBeUndefined();
+    // 零采用回执时 frozen 仍成立——旧判据（拿 usage 顶替）在这种数据下恒假。
+    expect(summary.usage).toEqual([]);
+  });
+
   it('归并的检修回归（2026-09-16 审查）：版本号一致性/旧版在用/幂等/revoked 守卫', async () => {
     const { assets } = await modules();
     const U = 'user-mrg-x';

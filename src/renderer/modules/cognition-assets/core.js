@@ -486,18 +486,21 @@
     let versions = [];
     let usage = [];
     let audit = [];
+    let frozen = [];
     try {
       const result = await api.call('recall.assets.versions.list', { assetId: id });
       versions = (result && result.versions) || [];
       usage = (result && result.usage) || [];
       audit = (result && result.audit) || [];
+      frozen = (result && result.frozen) || [];
     } catch (error) {
       versions = [];
       usage = [];
       audit = [];
+      frozen = [];
     }
     if (!store.assetVersions || store.assetVersions.assetId !== id) return;
-    store.assetVersions = { assetId: id, versions, usage, audit };
+    store.assetVersions = { assetId: id, versions, usage, audit, frozen };
     NS.notify();
   };
 
