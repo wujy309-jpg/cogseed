@@ -7032,5 +7032,7 @@
   "personalOntology.use_conflict_notice_restricted": "Aviso: o campo \"{field}\" tem duas informações possivelmente conflitantes (uma é restrita e não aparece). Pese as duas.",
   "personalOntology.conflict_dialog_body_with_values": "O campo \"{field}\" já tem um valor semanticamente parecido ({existing}). Confira antes de gravar — é um aviso, não um veredito.",
   "personalOntology.conflict_dialog_body_restricted_pair": "Já existe um valor semanticamente parecido (o outro é restrito; o texto não é exibido). Confira antes de gravar.",
-  "personalOntology.conflict_dialog_body_generic": "Este candidato pode estar semanticamente próximo de um valor existente no grupo. Confira antes de gravar."
+  "personalOntology.conflict_dialog_body_generic": "Este candidato pode estar semanticamente próximo de um valor existente no grupo. Confira antes de gravar.",
+  "cognition.candidate_scope_domain": "Domínio",
+  "cognition.overview_task_failed": "{count} execuções de tarefa falharam (sem resposta)"
 }

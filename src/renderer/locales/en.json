@@ -9149,5 +9149,7 @@
   "personalOntology.use_conflict_notice_restricted": "Heads-up: field \"{field}\" has two possibly conflicting entries (one is restricted and not shown). Weigh both.",
   "personalOntology.conflict_dialog_body_with_values": "Field \"{field}\" already has a semantically similar value ({existing}). Double-check before writing — this is a heads-up, not a verdict.",
   "personalOntology.conflict_dialog_body_restricted_pair": "A semantically similar value already exists (the other one is restricted; its text is not shown). Double-check before writing.",
-  "personalOntology.conflict_dialog_body_generic": "This candidate may be semantically close to an existing value in the group. Double-check before writing."
+  "personalOntology.conflict_dialog_body_generic": "This candidate may be semantically close to an existing value in the group. Double-check before writing.",
+  "cognition.candidate_scope_domain": "Domain",
+  "cognition.overview_task_failed": "{count} task runs failed (no reply)"
 }

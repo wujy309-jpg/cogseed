@@ -493,9 +493,18 @@
         && (item.status === 'failed'
           || (item.status === 'paused' && String(item.statusReason || '') !== 'source_paused'))).length;
     const failedTasks = Number(s.captureCounts && s.captureCounts.failed || 0);
+    // 任务执行失败（承接表 01 / G1，2026-09-26 补落点）：会话最后一回合没
+    // 得到回复且没有整理记录——那是**任务**失败了（不是整理失败），反馈要与
+    // 「整理任务需要重试」分开说。
+    const captureConvIds = new Set((Array.isArray(s.captures) ? s.captures : [])
+      .map((capture) => String((capture || {}).conversationId || '')).filter(Boolean));
+    const taskFailed = (Array.isArray(s.sources) ? s.sources : [])
+      .flatMap((group) => (Array.isArray(group && group.items) ? group.items : []))
+      .filter((item) => item && item.lastTurnFailed === true
+        && !captureConvIds.has(String(item.id || ''))).length;
     const coveredAssets = new Set(s.proofs.map((p) => String((p.refs || {}).assetId || '')).filter(Boolean)).size;
     const attention = s.assets.filter((a) => String(a.status || 'active') === 'paused' || String(a.status || '') === 'archived').length;
-    return { confirmed, pending, validated, transferOk, sourceIssues, failedTasks, coveredAssets, proofCount: s.proofs.length, attention };
+    return { confirmed, pending, validated, transferOk, sourceIssues, failedTasks, taskFailed, coveredAssets, proofCount: s.proofs.length, attention };
   };
 
   /* ────────────────────────── 数据加载 ────────────────────────── */

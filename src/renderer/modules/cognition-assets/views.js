@@ -2940,6 +2940,11 @@
       // 落点（2026-09-15）：重试按钮在「整理」页的任务流里。
       attention.push(`<div class="notice-row" data-act="go-organize" ${roleBtn()}><span class="notice-text">${esc(T('cognition.overview_failed_tasks', '{count} 个整理任务需要重试', { count: String(stats.failedTasks) }))}</span><span class="sp"></span>${btn(T('common.handle', '处理'), 'go-organize', { small: true, className: 'o' })}</div>`);
     }
+    if (stats.taskFailed) {
+      // 任务执行失败（承接表 01 / G1）：与整理失败**分别反馈**——这是任务没跑
+      // 出结果（未得到回复），重跑入口在会话本身，不是整理重试。
+      attention.push(`<div class="notice-row" data-act="go-organize" ${roleBtn()}><span class="notice-text">${esc(T('cognition.overview_task_failed', '{count} 个任务执行失败（未得到回复）', { count: String(stats.taskFailed) }))}</span><span class="sp"></span>${btn(T('common.handle', '处理'), 'go-organize', { small: true, className: 'o' })}</div>`);
+    }
     // 治理待办 / 待确认清单（2026-09-25 重上，specs/008 T051；2026-09-26 分组呈现，
     // specs/010 T014~T016 / US-301）：分组可用时按「治理待办」分区呈现（顺序由主进程
     // groupCognitionInbox 唯一给出：冲突 → 扩权 → 缺边界 → 未分级 → 其他）；拿不到
@@ -3110,6 +3115,26 @@
    *    标识——cand-type 与 readCandidateForm 靠它就近定位）；
    *  - candidateFormCard：带卡壳与标题行的完整卡（候选详情页用）。
    *  控件 id 带候选 id 后缀：一页多卡时全局 id 不重复（读取靠 [data-f]）。 */
+  /** 候选卡的适用范围（承接表 02 / G2，2026-09-26 补落点）：新建型候选此前
+   *  只显正文与来源，用户看不到它将来在什么范围生效。作用域 + 适用/禁用
+   *  场景三行；一个都没有时如实说「没有限定」，不编造默认。更新型候选的
+   *  适用范围已由依据链（improvementChainBlock ⑥）呈现，不重复。 */
+  function candidateScopeField(candidate) {
+    const field = (label, inner) => `<label class="field"><span>${esc(label)}</span>${inner}</label>`;
+    const scope = String(candidate.suggestedScope || '').trim();
+    const applicable = (Array.isArray(candidate.applicableWhen) ? candidate.applicableWhen : []).map(String).filter(Boolean);
+    const forbidden = (Array.isArray(candidate.forbiddenWhen) ? candidate.forbiddenWhen : []).map(String).filter(Boolean);
+    const lines = [
+      scope ? foldValue(`${T('cognition.candidate_scope_domain', '作用域')}：${scope}`) : '',
+      applicable.length ? foldValue(`${T('cognition.asset_version_applicable', '适用场景')}：${applicable.join('；')}`) : '',
+      forbidden.length ? foldValue(`${T('cognition.asset_version_forbidden', '禁用场景')}：${forbidden.join('；')}`) : '',
+    ].filter(Boolean).join('');
+    return `<div class="sect-block">${field(
+      T('cognition.asset_scope_label', '适用范围'),
+      lines || `<p class="note">${esc(T('cognition.chain_scope_missing', '这条候选没有限定适用范围。'))}</p>`,
+    )}</div>`;
+  }
+
   function candidateFormBody(candidate) {
     const refs = evidenceRefs(candidate);
     const broken = evidenceMostlyUnavailable(candidate);
@@ -3154,6 +3179,7 @@
       ${candidate.mergedIntoAssetId ? `<div class="note">${esc(T('cognition.candidate_merged_into', '这条与已有资产相似：确认后会并入那条资产（融合出新版本），不会另开一条。'))}</div>` : ''}
       ${chainHtml ? '' : reviewSignalBlock(candidate)}
       ${chainHtml}
+      ${chainHtml ? '' : candidateScopeField(candidate)}
       ${conflictHtml}
       ${edit ? `
         ${field(T('cognition.type', '类型'), `<div class="chips">${CATEGORIES.map(([id, key, fb]) => { const on = String(candidate.suggestedType || '') === id; return `<span class="ca-chip ca-chip-opt${on ? ' is-green' : ''}" data-act="cand-type" data-id="${esc(id)}" ${roleBtn(`aria-pressed="${on ? 'true' : 'false'}"`)}>${esc(T(key, fb))}</span>`; }).join('')}</div>`)}

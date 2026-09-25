@@ -49,9 +49,16 @@ function ensureModule(): { cogAssets: Record<string, unknown>; domRoot: { innerH
           && (item.status === 'failed'
             || (item.status === 'paused' && String(item.statusReason || '') !== 'source_paused'))).length;
       const failedTasks = Number(((store.captureCounts as { failed?: number } | undefined) || {}).failed || 0);
+      // G1（承接表 01）：与 core.js 的 stats 同口径——任务执行失败单独计数。
+      const captureConvIds = new Set(((store.captures as Array<{ conversationId?: string }> | undefined) || [])
+        .map((capture) => String(capture.conversationId || '')).filter(Boolean));
+      const taskFailed = ((store.sources as Array<{ items?: Array<{ id?: string; lastTurnFailed?: boolean }> }> | undefined) || [])
+        .flatMap((group) => (Array.isArray(group.items) ? group.items : []))
+        .filter((item) => item && item.lastTurnFailed === true
+          && !captureConvIds.has(String(item.id || ''))).length;
       return {
         confirmed: 0, pending: 0, validated: 0, transferOk: 0,
-        sourceIssues, failedTasks, coveredAssets: 0, proofCount: 0, attention: 0,
+        sourceIssues, failedTasks, taskFailed, coveredAssets: 0, proofCount: 0, attention: 0,
       };
     },
     store: {
@@ -1756,5 +1763,60 @@ describe('引导层（app.js / core.js）', () => {
     expect(appSource).toContain("activateSettingsTab('configuration', { anchor: 'models' })");
     expect(appSource).toContain("S.route.name === 'organize'");
     expect(appSource).toContain("capture.bucket === 'active'");
+  });
+});
+
+/* ═══════════ G1/G2 补落点（承接表 01/02，2026-09-26 B 阶段复核）═══════════ */
+
+describe('G1 任务执行失败与整理失败分别反馈（承接表 01）', () => {
+  it('任务失败与整理失败各出一行、文案分开、互不吞并', () => {
+    const html = renderPage('review', {
+      loaded: true, loading: false,
+      inbox: [], inboxGroups: null,
+      captureCounts: { failed: 2 },
+      sources: [{ items: [{ id: 'conv-task-fail', lastTurnFailed: true }, { id: 'conv-ok' }] }],
+      captures: [{ id: 'cap-1', conversationId: 'conv-ok', actions: [] }],
+    });
+    expect(html).toContain('2 个整理任务需要重试');
+    expect(html).toContain('1 个任务执行失败（未得到回复）');
+    // 两行都在（分别反馈，不是二选一）。
+    expect(html.indexOf('整理任务需要重试')).toBeGreaterThan(-1);
+    expect(html.indexOf('任务执行失败')).toBeGreaterThan(-1);
+  });
+
+  it('已有整理记录的失败会话不重复计任务失败；无失败时不出该行', () => {
+    const withCapture = renderPage('review', {
+      loaded: true, loading: false, inbox: [], inboxGroups: null,
+      sources: [{ items: [{ id: 'conv-task-fail', lastTurnFailed: true }] }],
+      captures: [{ id: 'cap-1', conversationId: 'conv-task-fail', actions: [] }],
+    });
+    expect(withCapture).not.toContain('任务执行失败');
+    const quiet = renderPage('review', { loaded: true, loading: false, inbox: [], inboxGroups: null, sources: [{ items: [{ id: 'conv-ok' }] }] });
+    expect(quiet).not.toContain('任务执行失败');
+  });
+});
+
+describe('G2 候选卡补适用范围呈现（承接表 02）', () => {
+  const scopeCandidate = {
+    id: 'cand-scope', summary: '带范围的候选', suggestedType: 'rule',
+    suggestedScope: 'architecture',
+    applicableWhen: ['发布窗口内'], forbiddenWhen: ['紧急回滚时'],
+    capabilities: { canPromote: true, canDefer: true, canReject: true, canEdit: false },
+  };
+  it('新建型候选卡显示作用域与适用/禁用场景', () => {
+    const html = renderPage('review', { candidates: [scopeCandidate] }, { candidateId: 'cand-scope', name: 'review' });
+    // 详情卡（route.candidateId 命中时）——断言取详情面。
+    const detail = renderPage('overview', { loaded: true, loading: false, candidates: [scopeCandidate], assets: [], inbox: [], inboxGroups: null }, { name: 'review', candidateId: 'cand-scope' });
+    void html;
+    expect(detail).toContain('适用范围');
+    expect(detail).toContain('作用域：architecture');
+    expect(detail).toContain('适用场景：发布窗口内');
+    expect(detail).toContain('禁用场景：紧急回滚时');
+  });
+
+  it('没有限定时如实说没有，不编造默认范围', () => {
+    const bare = { id: 'cand-bare', summary: '无范围候选', suggestedType: 'fact', capabilities: { canPromote: true } };
+    const detail = renderPage('overview', { loaded: true, loading: false, candidates: [bare], assets: [], inbox: [], inboxGroups: null }, { name: 'review', candidateId: 'cand-bare' });
+    expect(detail).toContain('这条候选没有限定适用范围');
   });
 });
