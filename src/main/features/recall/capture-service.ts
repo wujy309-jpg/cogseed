@@ -294,6 +294,11 @@ export interface RecallCaptureCandidatePromotion {
   decision: ReviewDecision;
   receipt: RecallAssetHandoffReceipt;
   profileProjection?: PersonalProfileSyncResult;
+  /** specs/015 US-702 原样透传的版本重检口径（本层不判定版本）：
+   *  `versionCheckSkipped`（复盘候选缺 targetVersionUsed，没能核对改进对象）
+   *  与显式重锚成功后的 `rebasedFrom`（原锚）。 */
+  versionCheckSkipped?: true;
+  rebasedFrom?: string;
 }
 
 export type RecallCaptureQueryStatus = RecallCaptureStatus | RecallCaptureDisplayStatus | 'completed';
@@ -2975,14 +2980,18 @@ export function startHistoricalRecallCapture(
 export async function promoteRecallCaptureCandidate(
   userId: string,
   candidateId: string,
-  options: { riskAcknowledged?: boolean; profileTarget?: PersonalProfileTarget; forceCreateSimilar?: boolean } = {},
+  options: { riskAcknowledged?: boolean; profileTarget?: PersonalProfileTarget; forceCreateSimilar?: boolean; confirmBaselineVersion?: string } = {},
 ): Promise<RecallCaptureCandidatePromotion> {
   if (!safeId(candidateId)) throw new Error('invalid recall candidate id');
   const similarRetry = options.forceCreateSimilar === true ? { forceCreateSimilar: true } : {};
+  // 版本冲突后的显式重锚（specs/015 US-702，`contracts/ipc.md` §二）：本层只是
+  // 把调用方声明的基线转发下去，不做任何版本判定——判定在
+  // `updateAbilityAsset` 的锁内（唯一一处）。
+  const rebase = options.confirmBaselineVersion ? { confirmBaselineVersion: options.confirmBaselineVersion } : {};
   const capture = (await listAllRecallCaptures(userId)).find((item) => item.candidateIds.includes(candidateId));
   if (!capture) {
     // 用户确认提升 → actor 必须为 user（promoteRecallCandidate 强制校验；此前漏传导致 IPC 提升一直失败）
-    const promoted = await promoteRecallCandidate(userId, candidateId, { actor: 'user', riskAcknowledged: options.riskAcknowledged, ...similarRetry, ...(options.profileTarget ? { profileTarget: options.profileTarget } : {}) });
+    const promoted = await promoteRecallCandidate(userId, candidateId, { actor: 'user', riskAcknowledged: options.riskAcknowledged, ...similarRetry, ...rebase, ...(options.profileTarget ? { profileTarget: options.profileTarget } : {}) });
     await prepareSkillDraftForPromotedAsset(userId, promoted);
     return promoted;
   }
@@ -3004,7 +3013,7 @@ export async function promoteRecallCaptureCandidate(
   });
 
   try {
-    const promoted = await promoteRecallCandidate(userId, candidateId, { actor: 'user', riskAcknowledged: options.riskAcknowledged, ...similarRetry, ...(options.profileTarget ? { profileTarget: options.profileTarget } : {}) });
+    const promoted = await promoteRecallCandidate(userId, candidateId, { actor: 'user', riskAcknowledged: options.riskAcknowledged, ...similarRetry, ...rebase, ...(options.profileTarget ? { profileTarget: options.profileTarget } : {}) });
     await prepareSkillDraftForPromotedAsset(userId, promoted);
     await updateCapture(userId, capture.id, (current) => (
       current.status === 'writing' && current.writingCandidateId === candidateId

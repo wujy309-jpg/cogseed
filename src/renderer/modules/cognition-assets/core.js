@@ -296,6 +296,13 @@
     modelSelectedAssetIds: [],
     /** KSTAR 任务复盘列表（kstar-episodes tab）：kstar.episodes.list 的记录。 */
     kstarEpisodes: null,
+    /** 改进分析结论（specs/015 US-701 AC3 / T016）：{items, loading, failed, stale}，
+     *  null = 还没拉过。数据源 = 只读通道 `kstar.improvement.outcomes.list`（倒序）。
+     *  只读分区用；结论不是待办，不参与任何计数。 */
+    improvementOutcomes: null,
+    /** 失败面（`kstar.failures.list`，specs/015 T016 接上）：{items, loading, failed}，
+     *  null = 还没拉过。只有真的存在失败类结论时才拉（整集合读取，不给无失败的用户白付）。 */
+    kstarFailures: null,
     sources: [],
     tree: null,
     proofs: [],
@@ -389,6 +396,9 @@
       store.realUsageKinds = Array.isArray(proofs && proofs.realUsageKinds)
         ? proofs.realUsageKinds.map((kind) => String(kind || '')).filter(Boolean)
         : [];
+      // 改进分析结论不在主快照里（只读、按需拉）：动作后的 reload 把它标 stale，
+      // 下次进「待我处理」页签时重拉——复盘确认/沉淀都会改结论，不能一直吃旧值。
+      if (store.improvementOutcomes) store.improvementOutcomes = { ...store.improvementOutcomes, stale: true };
       store.loaded = true;
     },
     async tree() {
@@ -704,6 +714,80 @@
     }
     NS.notify();
   };
+
+  /* ────────── 改进分析（specs/015 US-701 AC3 / T016）与依据链数据装载 ──────────
+   * 两个只读通道都不进主快照：结论是「进待我处理页签才需要」，失败面更是整集合
+   * 读取——只有真的存在失败类结论时才拉，不给没有失败的用户白付这份开销。
+   * 路由副作用放在 core（与 app.js 的 onChange 编排同一套模式；本批只动
+   * views/core 两个文件，见 specs/015 T016）。 */
+
+  /** 改进分析结论（`kstar.improvement.outcomes.list`，倒序，只读）。
+   *  失败记 `failed`（读不到 ≠ 没有：空态与读取失败必须分开呈现）；`force` 重拉。 */
+  NS.loadImprovementOutcomes = async function loadImprovementOutcomes(force) {
+    if (store.improvementOutcomes && !force && !store.improvementOutcomes.stale) return;
+    store.improvementOutcomes = { items: [], loading: true, failed: false, stale: false };
+    NS.notify();
+    let items = [];
+    let failed = false;
+    try {
+      const result = await api.call('kstar.improvement.outcomes.list', { limit: 50 });
+      items = (result && result.outcomes) || [];
+    } catch (error) {
+      failed = true;
+    }
+    store.improvementOutcomes = { items, loading: false, failed, stale: false };
+    NS.notify();
+  };
+
+  /** 失败面（`kstar.failures.list`，只读）：失败类结论的就地详情数据源。 */
+  NS.loadKstarFailures = async function loadKstarFailures(force) {
+    if (store.kstarFailures && !force && !store.kstarFailures.failed) return;
+    store.kstarFailures = { items: [], loading: true, failed: false };
+    NS.notify();
+    let items = [];
+    let failed = false;
+    try {
+      const result = await api.call('kstar.failures.list', {});
+      items = (result && result.failures) || [];
+    } catch (error) {
+      failed = true;
+    }
+    store.kstarFailures = { items, loading: false, failed };
+    NS.notify();
+  };
+
+  const IMPROVEMENT_FAILURE_CONCLUSIONS = new Set(['analysis_failed', 'submit_failed']);
+
+  /** 进「待我处理」页签：补拉结论；有失败类结论时补拉失败面；顺手补复盘摘要
+   *  （来源任务 chip 要显示任务目标，而不是兜底"一次任务"）。各 loader 自带
+   *  缓存/在途守卫，这里只做"什么时候该拉"的判断。 */
+  NS.onChange(() => {
+    if (String((store.route && store.route.name) || '') !== 'review') return;
+    const state = store.improvementOutcomes;
+    if (!state || state.failed || state.stale) { void NS.loadImprovementOutcomes(); return; }
+    if (state.loading) return;
+    const items = Array.isArray(state.items) ? state.items : [];
+    void NS.loadKstarEpisodeSummariesByIds(items.map((row) => String(row.episodeId || '')));
+    if (!store.kstarFailures || store.kstarFailures.failed) {
+      if (items.some((row) => IMPROVEMENT_FAILURE_CONCLUSIONS.has(String(row.conclusion || '')))) {
+        void NS.loadKstarFailures();
+      }
+    }
+  });
+
+  /** 进候选详情：依据链的采用证据按目标方法补拉（`recall.assets.adoptionReceipts`，
+   *  与资产详情「实际采用记录」同一个只读口、同一份缓存）；同次任务的复盘摘要
+   *  可能不在候选的引用里（在 learningProvenance.episodeId 上），这里补上。 */
+  NS.onChange(() => {
+    const candidateId = String((store.route && store.route.candidateId) || '');
+    if (!candidateId) return;
+    const candidate = store.candidates.find((c) => String(c.id) === candidateId);
+    if (!candidate) return;
+    const targetAssetId = String(candidate.targetAssetId || '');
+    if (targetAssetId) void NS.loadAdoptionReceipts(targetAssetId);
+    const episodeId = String((candidate.learningProvenance && candidate.learningProvenance.episodeId) || '');
+    if (episodeId) void NS.loadKstarEpisodeSummariesByIds([episodeId]);
+  });
 
   /* ────────────────────────── 路由 ────────────────────────── */
 

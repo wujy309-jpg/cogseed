@@ -365,6 +365,18 @@
       .replace(/\s+/g, ' ')
       .trim();
   }
+  /** 长值折叠（specs/015 依据链复用件）：短值直出，超长/多行值套既有折叠样式
+   *  （ca-tl-body/ca-tl-text，与整理详情的消息体同款）——不新造控件、不加 CSS。
+   *  原生 <details> 自带三角标记，展开/收起无需 JS。 */
+  function foldValue(text, limit) {
+    const raw = String(text || '').trim();
+    if (!raw) return '';
+    const max = Number.isFinite(limit) ? Number(limit) : 160;
+    const oneLine = raw.replace(/\s+/g, ' ').trim();
+    if (raw.length <= max && !raw.includes('\n')) return `<p class="note">${esc(raw)}</p>`;
+    return `<details class="ca-tl-body"><summary>${esc(oneLine.slice(0, max))}…</summary><div class="ca-tl-text">${esc(raw)}</div></details>`;
+  }
+
   /** 归因枚举 → 人话（2026-09-17）：此前直接透传 execution_gap/unclear 这类
    *  内部枚举，用户看不懂"为什么"。 */
   const ATTRIBUTION_LABELS = {
@@ -430,18 +442,24 @@
     if (isImmediateCandidate(candidate)) return chip(T('cognition.source_immediate', '对话中记'));
     return chip(T('cognition.source_capture', '会话整理'));
   }
-  /** KSTAR 候选的复盘依据块（2026-09-16）：预期/实际/结果四行——知道"这条
-   *  是从哪次成败学来的"，确认保存才心里有底。 */
-  function reviewSignalBlock(candidate) {
-    const signal = candidate.learningSignal;
-    const provenance = candidate.learningProvenance;
-    if (!signal && !provenance) return '';
-    const outcomeText = {
+  /** 复盘结果枚举 → 人话（三处共用：任务经过 / 复盘依据 / 依据链）。 */
+  function reviewOutcomeText(value) {
+    return {
       better_than_expected: T('cognition.review_outcome_better', '比预期好'),
       met_expected: T('cognition.review_outcome_met', '符合预期'),
       worse_than_expected: T('cognition.review_outcome_worse', '比预期差'),
       unclear: T('cognition.review_outcome_unclear', '结果不明'),
-    }[String(signal && signal.outcome || '')] || String(signal && signal.outcome || '');
+    }[String(value || '')] || '';
+  }
+
+  /** KSTAR 候选的复盘依据块（2026-09-16）：预期/实际/结果四行——知道"这条
+   *  是从哪次成败学来的"，确认保存才心里有底。
+   *  更新型候选不再走这里（依据链已含预期→实际段，避免同屏两份）。 */
+  function reviewSignalBlock(candidate) {
+    const signal = candidate.learningSignal;
+    const provenance = candidate.learningProvenance;
+    if (!signal && !provenance) return '';
+    const outcomeText = reviewOutcomeText(signal && signal.outcome);
     const row = (label, value) => value ? `<div class="meta-item"><span class="meta-k">${esc(label)}</span><span class="meta-v">${esc(String(value).slice(0, 200))}</span></div>` : '';
     return `<div class="sect-block">
       <div class="tt">${esc(T('cognition.review_signal_title', '复盘依据'))}</div>
@@ -451,6 +469,168 @@
         ${row(T('cognition.review_signal_outcome', '结果'), outcomeText)}
         ${row(T('cognition.review_signal_attribution', '为什么'), attributionLabel(provenance && provenance.attribution))}
       </div>
+    </div>`;
+  }
+
+  /* ────────────── 依据链（specs/015 US-701 AC1/AC2，2026-09-25）──────────────
+   * 更新型候选（update / limit_scope 且带目标方法）把「凭什么改这条方法」摊开：
+   * 原方法与版本 / 同次任务 / 预期→实际 / 采用证据 / 为什么改 / 适用范围 / 改动点。
+   * 口径：
+   *  - 来源名一律走唯一解析器 resolveSourceRef（铁律：任何状态都不上屏 rawId）；
+   *  - 长值复用既有折叠样式（foldValue），不新造控件、不加 CSS；
+   *  - 只渲染候选自己的字段与已核对的回执摘要，**不整条 dump 记录**——受限正文
+   *    不进界面；学习信号里的机器码评分（内部字段）一概不上屏；
+   *  - 存量候选没有 targetVersionUsed 时如实说"无法核对改进对象"，不伪造版本；
+   *  - 新建型没有"原方法"可回指，返回空串（措辞仍是「保存并使用」）。 */
+
+  /** 结论 reason 是主进程写的人话短句，但句子里嵌了内部 id（「aa-…」/「ksf-…」）——
+   *  US-603 铁律：rawId 不上屏。已知资产换标题、其余换泛称，句子其余部分照原样。
+   *  只认主进程真的会写进结论的那几种前缀（aa/aur/kio/kse/ksf/ksr/ksp/rcand/rcap/
+   *  immediate）：宁可漏掉没见过的前缀，也不拿通用规则去改人话里的连字符词。 */
+  const INTERNAL_ID_RE = /\b(?:aa|aur|kio|kse|ksf|ksr|ksp|rcand|rcap|immediate)-[A-Za-z0-9-]{2,}\b/g;
+  function stripInternalIds(text) {
+    return String(text || '').replace(INTERNAL_ID_RE, (id) => {
+      const asset = S.assets.find((row) => String(row.id) === id);
+      if (asset) return String(asset.title || '').trim() || T('cognition.improvement_ref_asset_generic', '这条方法');
+      return T('cognition.improvement_ref_generic', '相关记录');
+    });
+  }
+
+  /** 采用证据段（依据链第④段）：唯一权威 = usage 回执 `applied`（只读通道
+   *  `recall.assets.adoptionReceipts` 按目标方法拉，见 core.loadAdoptionReceipts）。
+   *  候选记录了 taskRunId（同次任务）时只认那一次：对不上就如实说这次任务里没有，
+   *  不拿别的任务的采用记录凑数；存量候选没有 taskRunId 时才展示该方法的采用记录。 */
+  function adoptionEvidenceHtml(candidate, target) {
+    const state = (S.adoptionReceipts && String(S.adoptionReceipts.assetId || '') === String(target.id))
+      ? S.adoptionReceipts
+      : null;
+    const items = (state && Array.isArray(state.items)) ? state.items : [];
+    const applied = items.filter((receipt) => String(receipt.status || '') === 'applied');
+    const taskRunId = String(candidate.taskRunId || '');
+    const scoped = taskRunId ? applied.filter((receipt) => String(receipt.taskRunId || '') === taskRunId) : [];
+    const picked = taskRunId ? scoped : applied;
+    if (picked.length) {
+      const first = picked[0];
+      const version = String(first.assetVersion || '');
+      const names = (Array.isArray(first.evidence) ? first.evidence : [])
+        .map((ref) => resolveSourceRef(ref))
+        .map((view) => view.name)
+        .filter(Boolean);
+      return [
+        `<p class="note">${esc(version
+          ? T('cognition.chain_adoption_line', '任务里实际采用了 v{version}', { version })
+          : T('cognition.chain_adoption_line_bare', '任务里实际采用了这条方法'))}</p>`,
+        names.length ? `<p class="note">${esc(T('cognition.adoption_evidence_line', '证据：{names}', { names: names.join('、') }))}</p>` : '',
+        picked.length > 1 ? `<p class="note">${esc(T('cognition.chain_adoption_more', '另有 {n} 条采用记录', { n: String(picked.length - 1) }))}</p>` : '',
+      ].filter(Boolean).join('');
+    }
+    // 还没读到（或正在读）：说"正在读"，不说"没有"——读不到 ≠ 没有。
+    if (!state || state.loading) {
+      return `<p class="note">${esc(T('cognition.chain_adoption_loading', '正在读取采用证据…'))}</p>`;
+    }
+    return `<p class="note">${esc(taskRunId
+      ? T('cognition.chain_adoption_task_missing', '这次任务里没有查到实际采用的记录（只被带入不算采用）。')
+      : T('cognition.chain_adoption_empty', '没有查到这条方法的实际采用记录。'))}</p>`;
+  }
+
+  function improvementChainBlock(candidate) {
+    const mutating = ['update', 'limit_scope'].includes(String(candidate.suggestedAction || ''));
+    if (!mutating || !candidate.targetAssetId) return '';
+    const target = S.assets.find((a) => String(a.id) === String(candidate.targetAssetId));
+    if (!target) return '';
+    const activeVersion = String(target.activeVersion || target.version || '1');
+    const usedVersion = String(candidate.targetVersionUsed || '');
+    // 既有版本核对预提示原样保留（展示期口径；确认期冲突是另一回事）。
+    const mismatch = usedVersion && usedVersion !== activeVersion
+      ? `<div class="warn">${esc(T('cognition.candidate_version_mismatch', '核对改进对象：任务当时使用的是 v{used}，该资产当前在用 v{active}——确认这次更新应作用在当前在用版上。', { used: usedVersion, active: activeVersion }))}</div>`
+      : '';
+    const fusionNote = `<div class="note">${esc(T('cognition.candidate_fusion_note', '确认后会把这段内容与下面的当前版本融合成一个新版本（旧内容保留、可随时切回），不是覆盖。'))}</div>`;
+    const field = (label, inner) => `<div class="field"><span>${esc(label)}</span>${inner}</div>`;
+
+    // ① 原方法与版本：方法名 + 「任务当时用 v{n} / 当前在用 v{m}」。
+    const targetName = String(target.title || '').trim() || T('cognition.candidate_untitled', '未命名候选');
+    const targetField = field(
+      T('cognition.chain_target_label', '这条改进针对的方法'),
+      `<p class="note">${esc(targetName)}</p><p class="note">${esc(usedVersion
+        ? T('cognition.chain_target_versions', '任务当时用 v{used}，当前在用 v{active}', { used: usedVersion, active: activeVersion })
+        : T('cognition.chain_target_no_version', '这条候选没有记录任务当时的版本（存量数据），无法核对改进对象。'))}</p>`,
+    );
+
+    // ② 同次任务：优先 learningProvenance.episodeId，退回候选自带的 KSTAR 复盘证据引用；
+    //    来源名走唯一解析器（点 chip 就地展开这次任务的经过）。
+    const provenanceEpisodeId = String((candidate.learningProvenance && candidate.learningProvenance.episodeId) || '');
+    const evidenceEpisodeId = String((evidenceRefs(candidate).find(isKstarEvidenceRef) || {}).id || '');
+    const episodeId = provenanceEpisodeId || evidenceEpisodeId;
+    const taskField = field(
+      T('cognition.chain_task_label', '同次任务'),
+      episodeId
+        ? `<div class="chips">${evidenceChip({ kind: 'execution', id: episodeId })}</div>`
+        : `<p class="note">${esc(T('cognition.chain_task_missing', '这条改进没有关联到具体的任务复盘，无法回看当时的经过。'))}</p>`,
+    );
+
+    // ③ 预期 → 实际（learningSignal）：期望 / 实际 / 结果，长值折叠。
+    const signal = candidate.learningSignal || {};
+    const expected = stripMarkdown(signal.expectedResult);
+    const actual = stripMarkdown(signal.actualResult);
+    const outcomeText = reviewOutcomeText(signal.outcome);
+    const signalLines = [
+      expected ? foldValue(`${T('cognition.review_signal_expected', '期望的结果')}：${expected}`) : '',
+      actual ? foldValue(`${T('cognition.review_signal_actual', '实际发生')}：${actual}`) : '',
+      outcomeText ? `<div class="chips">${chip(outcomeText, 'line')}</div>` : '',
+    ].filter(Boolean).join('');
+    const signalField = field(
+      T('cognition.chain_signal_label', '预期 → 实际'),
+      signalLines || `<p class="note">${esc(T('cognition.chain_signal_missing', '这次改进没有记录预期与实际结果。'))}</p>`,
+    );
+
+    // ④ 采用证据
+    const adoptionField = field(T('cognition.chain_adoption_label', '采用证据'), adoptionEvidenceHtml(candidate, target));
+
+    // ⑤ 为什么改：不确定的地方 + 带来的价值（候选既有字段）。
+    const reasonLines = [
+      String(candidate.uncertainty || '').trim()
+        ? foldValue(`${T('cognition.chain_uncertainty_label', '还不确定的地方')}：${String(candidate.uncertainty).trim()}`)
+        : '',
+      String(candidate.value || '').trim()
+        ? foldValue(`${T('cognition.chain_value_label', '带来的价值')}：${String(candidate.value).trim()}`)
+        : '',
+    ].filter(Boolean).join('');
+    const reasonField = field(
+      T('cognition.chain_reason_label', '为什么改'),
+      reasonLines || `<p class="note">${esc(T('cognition.chain_reason_missing', '这条候选没有记录改动原因。'))}</p>`,
+    );
+
+    // ⑥ 适用范围（沿用资产侧的既有措辞）。
+    const applicable = (Array.isArray(candidate.applicableWhen) ? candidate.applicableWhen : []).map(String).filter(Boolean);
+    const forbidden = (Array.isArray(candidate.forbiddenWhen) ? candidate.forbiddenWhen : []).map(String).filter(Boolean);
+    const scopeLines = [
+      applicable.length ? foldValue(`${T('cognition.asset_version_applicable', '适用场景')}：${applicable.join('；')}`) : '',
+      forbidden.length ? foldValue(`${T('cognition.asset_version_forbidden', '禁用场景')}：${forbidden.join('；')}`) : '',
+    ].filter(Boolean).join('');
+    const scopeField = field(
+      T('cognition.asset_scope_label', '适用范围'),
+      scopeLines || `<p class="note">${esc(T('cognition.chain_scope_missing', '这条候选没有限定适用范围。'))}</p>`,
+    );
+
+    // ⑦ 改动点：当前在用版正文（长值折叠）+ 拟生效内容的位置提示。
+    //    拟生效的正文就在紧跟本块的编辑区/正文里：这里再复制一份，用户改了控件
+    //    上面的摘要还是旧文本（"显示 A 实际 B"）——所以只指位置，不复制内容。
+    const changedField = field(
+      T('cognition.chain_changed_label', '改动点'),
+      `${foldValue(`${T('cognition.candidate_current_version', '当前版本（v{n}）', { n: activeVersion })}：${String(target.statement || '').trim()}`)}<p class="note">${esc(T('cognition.chain_proposed_hint', '这条候选拟生效的内容在下面，可对照当前版本核对。'))}</p>`,
+    );
+
+    return `<div class="sect-block ca-chain">
+      ${mismatch}
+      <div class="tt">${esc(T('cognition.improvement_chain_title', '改进依据'))}</div>
+      ${targetField}
+      ${taskField}
+      ${signalField}
+      ${adoptionField}
+      ${reasonField}
+      ${scopeField}
+      ${changedField}
+      ${fusionNote}
     </div>`;
   }
   /** 待确认口径（2026-09-16 B1 统一）：需要用户判断且未被"稍后处理"静音。
@@ -1775,6 +1955,109 @@
     </details>`;
   }
 
+  /* ────────── 改进分析（只读分区，specs/015 US-701 AC3 / T016）──────────────
+   * 分析过但**没形成候选**的结论如实列出：结论标签 + 人话原因 + 来源任务 + 时间。
+   * 这里只读、**不进待办**（结论是终态快照，不是要用户决定的事）；失败类结论给一个
+   * 就地展开的「看失败详情」，数据来自既有失败面 `kstar.failures.list`。
+   * 隐私口径：只渲染契约里明列的字段（结论/原因/来源任务/时间 + 失败环节），
+   * **不整条 dump 记录**——受限正文不进界面；`errorMessage` 原文也不上屏。 */
+  const IMPROVEMENT_CONCLUSIONS = {
+    no_update: ['cognition.improvement_conclusion_no_update', '无需更新', 'line'],
+    insufficient_evidence: ['cognition.improvement_conclusion_insufficient_evidence', '证据不足', 'amber'],
+    analysis_failed: ['cognition.improvement_conclusion_analysis_failed', '分析失败', 'red'],
+    submit_failed: ['cognition.improvement_conclusion_submit_failed', '提交失败', 'red'],
+  };
+  const IMPROVEMENT_FAILURE_CONCLUSIONS = new Set(['analysis_failed', 'submit_failed']);
+  const IMPROVEMENT_FAILURE_STAGES = {
+    capture: ['cognition.improvement_failure_stage_capture', '沉淀'],
+    review_inference: ['cognition.improvement_failure_stage_review_inference', '复盘分析'],
+    precipitation: ['cognition.improvement_failure_stage_precipitation', '沉淀落库'],
+    control_receipt: ['cognition.improvement_failure_stage_control_receipt', '回执下发'],
+  };
+
+  /** 失败详情（就地展开，只读）：环节 + 时间 + 失败标识——够用户/支持去失败面核对，
+   *  又不把内部错误原文（可能是内部措辞或夹带正文）搬上屏。 */
+  function improvementFailureDetail(outcome) {
+    const state = S.kstarFailures;
+    const episodeId = String(outcome.episodeId || '');
+    const items = (state && Array.isArray(state.items))
+      ? state.items.filter((failure) => String(failure.episodeId || '') === episodeId)
+      : [];
+    const rows = items.slice(0, 5).map((failure) => {
+      const stageEntry = IMPROVEMENT_FAILURE_STAGES[String(failure.stage || '')];
+      const stage = stageEntry
+        ? T(stageEntry[0], stageEntry[1])
+        : T('cognition.improvement_failure_stage_other', '未知环节');
+      const at = String(failure.at || '');
+      const code = String(failure.errorCode || '');
+      return `<div class="rowline">
+        <span class="note">${esc(stage)}${at ? ` · ${esc(fmtDate(at))}` : ''}</span>
+        ${code ? `<span class="note">${esc(T('cognition.improvement_failure_code', '失败标识：{code}', { code }))}</span>` : ''}
+      </div>`;
+    }).join('');
+    const body = !state || state.loading
+      ? `<p class="note">${esc(T('cognition.improvement_failure_loading', '正在读取失败详情…'))}</p>`
+      : rows || `<p class="note">${esc(T('cognition.improvement_failure_empty', '失败记录里暂时没有查到这条的详情。'))}</p>`;
+    return `<details class="details"><summary>${esc(T('cognition.improvement_failure_detail', '看失败详情'))}</summary><div class="dbody">${body}</div></details>`;
+  }
+
+  function improvementOutcomeRow(outcome, route) {
+    const conclusion = String(outcome.conclusion || '');
+    // 认不出的结论给中性标签，不编造"无需更新"这类具体结论（不冒充）。
+    const entry = IMPROVEMENT_CONCLUSIONS[conclusion]
+      || ['cognition.improvement_conclusion_other', '分析结论', 'line'];
+    const episodeId = String(outcome.episodeId || '');
+    const at = String(outcome.updatedAt || outcome.createdAt || '');
+    const reason = stripInternalIds(String(outcome.reason || '').trim());
+    const isOpen = String(route.kstarEpisodeId || '') === episodeId;
+    return `<div class="row is-flat">
+      <div class="tw">
+        <div class="tt">${chip(T(entry[0], entry[1]), entry[2])}</div>
+        <div class="mm">${episodeId
+          ? evidenceChip({ kind: 'execution', id: episodeId })
+          : esc(T('cognition.improvement_task_missing', '这次分析没有关联到具体的任务复盘。'))}${at ? ` · ${esc(fmtDate(at))}` : ''}</div>
+        ${reason ? foldValue(reason) : ''}
+        ${IMPROVEMENT_FAILURE_CONCLUSIONS.has(conclusion) ? improvementFailureDetail(outcome) : ''}
+      </div>
+    </div>${isOpen ? kstarEpisodeSection(route) : ''}`;
+  }
+
+  function improvementAnalysisSection(route) {
+    const state = S.improvementOutcomes;
+    const items = (state && Array.isArray(state.items)) ? state.items : [];
+    const title = T('cognition.improvement_section', '改进分析');
+    // 收敛语义（data-model §2 的「实现期最简」）：同一 episode 已经产出候选时，
+    // 不再摆该 episode 的「无需更新」——"无需更新"与"这里有更新提议"同屏自相矛盾。
+    // 只隐藏这一种组合，其余结论照旧（隐藏依据是已加载的候选，不猜）。
+    const candidateEpisodes = new Set(S.candidates
+      .map((row) => String((row.learningProvenance && row.learningProvenance.episodeId) || ''))
+      .filter(Boolean));
+    const visible = items.filter((row) => !(
+      String(row.conclusion || '') === 'no_update'
+      && candidateEpisodes.has(String(row.episodeId || ''))
+    ));
+    if (state && !state.loading && !state.failed && visible.length) {
+      // 有结论时收进折叠区（默认收起）：它是记录，不与上面的待办抢注意力。
+      return `<details class="details fold ca-improvement">
+        <summary>${esc(title)}<span class="n">${visible.length}</span></summary>
+        <div class="dbody">
+          <div class="note">${esc(T('cognition.improvement_section_hint', '分析过但没有形成候选的结论：只作记录，不需要你处理。'))}</div>
+          ${visible.map((outcome) => improvementOutcomeRow(outcome, route)).join('')}
+        </div>
+      </details>`;
+    }
+    // 读取中 / 读取失败 / 空态三态分开（五态要求：读不到 ≠ 没有）。
+    const body = !state || state.loading
+      ? `<p class="note">${esc(T('cognition.improvement_loading', '正在读取改进分析结论…'))}</p>`
+      : state.failed
+        ? `<div class="rowline"><span class="note">${esc(T('cognition.improvement_read_failed', '改进分析结论暂时读不到。'))}</span>${btn(T('common.retry', '重试'), 'refresh', { small: true, className: 'o' })}</div>`
+        : empty(
+          T('cognition.improvement_empty', '还没有改进分析结论'),
+          T('cognition.improvement_empty_hint', '任务复盘后如果分析出要改进的方法，结论会出现在这里；形成候选的会进「等待你确认」。'),
+        );
+    return `<div class="sect-block ca-improvement-empty">${sectionHead(title)}${body}</div>`;
+  }
+
   function viewReview(route) {
     if (route.candidateId) return viewCandidate(route);
     const stats = NS.stats();
@@ -1881,7 +2164,8 @@
       <div class="vrow">
         <div class="vt"><div class="v1">${esc(candidateTitle(c))}</div>
         <div class="v2">${esc(fmtDate(c.updatedAt || c.createdAt))} · ${esc(processedLabel(c))}</div></div>
-      </div>`).join('')}</div></details>` : ''}`;
+      </div>`).join('')}</div></details>` : ''}
+    ${improvementAnalysisSection(route)}`;
   }
 
   /* ────────────────────────── 视图：候选详情 ────────────────────────── */
@@ -1910,21 +2194,11 @@
     const field = (label, inner) => `<label class="field"><span>${esc(label)}</span>${inner}</label>`;
     // 更新候选的差异确认卡（2026-09-16 版本组）：旧版全文对照 + 版本核对
     // 提示——任务所用版与当前在用版不一致时，确认前先核对改进对象。
-    const updateDiff = (() => {
-      const mutating = ['update', 'limit_scope'].includes(String(candidate.suggestedAction || ''));
-      if (!mutating || !candidate.targetAssetId) return '';
-      const target = S.assets.find((a) => String(a.id) === String(candidate.targetAssetId));
-      if (!target) return '';
-      const activeVersion = String(target.activeVersion || target.version || '1');
-      const usedVersion = String(candidate.targetVersionUsed || '');
-      const mismatch = usedVersion && usedVersion !== activeVersion
-        ? `<div class="warn">${esc(T('cognition.candidate_version_mismatch', '核对改进对象：任务当时使用的是 v{used}，该资产当前在用 v{active}——确认这次更新应作用在当前在用版上。', { used: usedVersion, active: activeVersion }))}</div>`
-        : '';
-      // 融合语义说明（2026-09-22 刀二）：确认后新旧内容融合出新版本，旧版
-      // 保留可切回——不让用户误以为"新内容会覆盖旧内容"。
-      const fusionNote = `<div class="note">${esc(T('cognition.candidate_fusion_note', '确认后会把这段内容与下面的当前版本融合成一个新版本（旧内容保留、可随时切回），不是覆盖。'))}</div>`;
-      return `${mismatch}${fusionNote}<div class="field"><span>${esc(T('cognition.candidate_current_version', '当前版本（v{n}）', { n: activeVersion }))}</span><p class="note">${esc(target.statement || '')}</p></div>`;
-    })();
+    // 2026-09-25（specs/015 T014）：原「当前版本」差异区扩为**依据链**区块
+    // （原方法与版本 / 同次任务 / 预期→实际 / 采用证据 / 为什么改 / 适用范围 /
+    // 改动点，见 improvementChainBlock）。更新型候选的预期→实际由依据链呈现，
+    // 不再叠加一份「复盘依据」，避免同屏两处同内容。
+    const chainHtml = improvementChainBlock(candidate);
     // 决策动作同样按 capability 收敛（2026-09-20 修）：终态候选（confirmed /
     // rejected / ignored）的映射是 canDefer=false、canReject=false、isTerminal=true，
     // 此前这两个按钮**无条件**渲染，用户点下去必然被后端状态机拒绝——旧 skills.js
@@ -1938,8 +2212,8 @@
     return `
       ${broken ? `<div class="warn">${esc(T('cognition.candidate_evidence_all_unavailable', '这条候选的大部分来源记录已被删除，无法核对证据。建议补充新证据后保存，或选择不保存。'))}</div>` : ''}
       ${candidate.mergedIntoAssetId ? `<div class="note">${esc(T('cognition.candidate_merged_into', '这条与已有资产相似：确认后会并入那条资产（融合出新版本），不会另开一条。'))}</div>` : ''}
-      ${reviewSignalBlock(candidate)}
-      ${updateDiff}
+      ${chainHtml ? '' : reviewSignalBlock(candidate)}
+      ${chainHtml}
       ${edit ? `
         ${field(T('cognition.type', '类型'), `<div class="chips">${CATEGORIES.map(([id, key, fb]) => { const on = String(candidate.suggestedType || '') === id; return `<span class="ca-chip ca-chip-opt${on ? ' is-green' : ''}" data-act="cand-type" data-id="${esc(id)}" ${roleBtn(`aria-pressed="${on ? 'true' : 'false'}"`)}>${esc(T(key, fb))}</span>`; }).join('')}</div>`)}
         ${field(T('cognition.judgment', '具体内容'), window.uiTextarea({ id: `ca-cand-judgment-${esc(candidate.id)}`, value: candidate.judgment || '', attrs: { 'data-f': 'judgment' } }))}
