@@ -185,6 +185,17 @@
   };
   NS.confirmUser = confirmUser;
 
+  /** 文本输入弹窗（specs/016 经验归档的必填原因）：返回输入串，取消返回 null。
+   *  与 confirmUser 同一来源（dialogs.js 的 uiPrompt），不引入新的弹窗形态；
+   *  取不到共享弹窗时返回 null（fail-closed：宁可不做，不绕道 window.prompt）。 */
+  const promptUser = async (message) => {
+    if (typeof window.uiPrompt === 'function') {
+      try { return await window.uiPrompt(message); } catch (_) { return null; }
+    }
+    return null;
+  };
+  NS.promptUser = promptUser;
+
   /* ────── 拦截原因可读化（2026-09-25 验收修复 US-601 AC4 / US-604 AC1）──────
    * 主进程的准入判定给两样东西：code（分类）与 blockRule（具体规则标识）。
    * 此前渲染层把 Error.message 原文甩给用户——英文 + 内部 id，等于"被拦了但
@@ -221,6 +232,96 @@
     return T('cognition.block_reason_unknown', '这条内容当前不可引用');
   }
   NS.blockReasonText = blockReasonText;
+
+  /* ────── 经验目录枚举 → 人话（specs/016 R6：纯函数导出，用例直测）──────
+   *  口径与主进程对齐：分组措辞沿用 task-level-precipitation 的既有中文
+   *  （lesson=可复用经验 / workflow=已验证的工作流程 / gap=待修正经验），
+   *  任务类型对齐 userScopeLabel（SCOPE_LABELS）。未知值一律中性兜底，
+   *  不裸出内部枚举、不编造结论。 */
+  const EXPERIENCE_TYPE_TEXTS = {
+    lesson: ['cognition.experience_group_lesson', '可复用经验'],
+    workflow: ['cognition.experience_group_workflow', '已验证的工作流程'],
+    gap: ['cognition.experience_group_gap', '待修正经验'],
+    uncategorized: ['cognition.experience_group_uncategorized', '未分类经验'],
+  };
+  function experienceTypeLabel(value) {
+    const entry = EXPERIENCE_TYPE_TEXTS[String(value || '')];
+    return entry ? T(entry[0], entry[1]) : T('cognition.experience_group_uncategorized', '未分类经验');
+  }
+  /** 分组键：未知/缺失类型兜底到 uncategorized 组（Edge Case「判不出→未分类」）。 */
+  function experienceGroupKey(value) {
+    return EXPERIENCE_TYPE_TEXTS[String(value || '')] ? String(value) : 'uncategorized';
+  }
+  const EXPERIENCE_TASK_TYPE_TEXTS = {
+    report: ['cognition.experience_task_type_report', '报告类任务'],
+    code: ['cognition.experience_task_type_code', '代码类任务'],
+    review: ['cognition.experience_task_type_review', '审查类任务'],
+    product: ['cognition.experience_task_type_product', '产品类任务'],
+    general: ['cognition.experience_task_type_general', '通用'],
+  };
+  function experienceTaskTypeLabel(value) {
+    const entry = EXPERIENCE_TASK_TYPE_TEXTS[String(value || '')];
+    return entry ? T(entry[0], entry[1]) : T('cognition.experience_task_type_unknown', '未知任务类型');
+  }
+  const EXPERIENCE_VERIFICATION_TEXTS = {
+    inferred: ['cognition.experience_verification_inferred', '推断的（未经确认）'],
+    needs_confirmation: ['cognition.experience_verification_needs_confirmation', '待确认'],
+    confirmed: ['cognition.experience_verification_confirmed', '已确认'],
+    unknown: ['cognition.experience_verification_unknown', '验证状态未知'],
+  };
+  function experienceVerificationLabel(value) {
+    const entry = EXPERIENCE_VERIFICATION_TEXTS[String(value || '')];
+    return entry ? T(entry[0], entry[1]) : T('cognition.experience_verification_unknown', '验证状态未知');
+  }
+  /** 迁移跳过/失败理由码 → 人话（E7/E8 稳定码逐条；未知码中性兜底，
+   *  不上屏主进程 message 原文）。 */
+  const EXPERIENCE_MIGRATION_REASON_TEXTS = {
+    no_kstar_provenance: ['cognition.experience_migration_skip_no_kstar_provenance', '无 KSTAR 沉淀标记（不是任务复盘沉淀的）'],
+    capture_line: ['cognition.experience_migration_skip_capture_line', '会话整理线产出（不属于任务经验）'],
+    preference_scan_line: ['cognition.experience_migration_skip_preference_scan_line', '偏好扫描线产出（不属于任务经验）'],
+    ok: ['cognition.experience_migration_reason_ok', '已迁入'],
+    already_migrated: ['cognition.experience_migration_reason_already_migrated', '此前已迁移过'],
+    asset_not_found: ['cognition.experience_migration_reason_asset_not_found', '资产记录已不存在'],
+    freeze_failed: ['cognition.experience_migration_reason_freeze_failed', '冻结历史引用失败（资产保持原状）'],
+    experience_write_failed: ['cognition.experience_migration_reason_experience_write_failed', '写入经验失败（资产保持原状）'],
+    asset_removal_failed: ['cognition.experience_migration_reason_asset_removal_failed', '迁出资产记录失败（经验已写入，可重试）'],
+  };
+  function experienceMigrationReasonText(value) {
+    const entry = EXPERIENCE_MIGRATION_REASON_TEXTS[String(value || '')];
+    return entry ? T(entry[0], entry[1]) : T('cognition.experience_migration_skip_unknown', '不符合迁移条件');
+  }
+  /** 状态章（经验自己的四态，与资产章分开——两域状态机不同，文案各自演进）。 */
+  const EXPERIENCE_STATUS_TEXTS = {
+    active: ['cognition.experience_status_active', '生效中'],
+    paused: ['cognition.experience_status_paused', '已暂停'],
+    archived: ['cognition.experience_status_archived', '已归档'],
+    merged: ['cognition.experience_status_merged', '已并入'],
+  };
+  function experienceStatusLabel(value) {
+    const entry = EXPERIENCE_STATUS_TEXTS[String(value || '')];
+    return entry ? T(entry[0], entry[1]) : T('cognition.experience_status_unknown', '状态未知');
+  }
+  NS.experience = {
+    typeLabel: experienceTypeLabel,
+    groupKey: experienceGroupKey,
+    taskTypeLabel: experienceTaskTypeLabel,
+    verificationLabel: experienceVerificationLabel,
+    migrationReasonText: experienceMigrationReasonText,
+    statusLabel: experienceStatusLabel,
+  };
+
+  /** 经验管理动作的失败文案（E3~E6 的错误是英文 message、无 code）：按已知
+   *  message 片段翻四语，认不出原样透出（与候选码表同一条纪律——宁可露出
+   *  英文也不吞失败）。跨类型合并给专门文案（R5 键表）。 */
+  function experienceActionErrorText(error) {
+    const raw = String((error && error.message) || error || '');
+    if (raw.includes('requires the same experienceType')) return T('cognition.experience_merge_same_type_required', '只能合并同类型的经验');
+    if (raw.includes('is terminal and cannot be modified') || raw.includes('has already been merged')) return T('cognition.experience_error_terminal', '这条经验已是终态（已归档或已并入），不能再修改');
+    if (raw.includes('experience not found')) return T('cognition.experience_error_not_found', '这条经验已经不在了，可能已被归档或并入');
+    if (raw.includes('invalid') && raw.includes('experience')) return T('cognition.experience_error_invalid', '这次操作没有生效：参数不合法');
+    return raw || T('cognition.experience_error_generic', '这次操作没有完成，请稍后重试。');
+  }
+  NS.experienceActionErrorText = experienceActionErrorText;
 
   /** 引用被拦/失败的统一出口：资产标题 + 规则名。只给标题（不给内部 id、
    *  不给正文——受限资产正文不得进界面，US-604 AC3）。 */
@@ -315,6 +416,17 @@
     /** 失败面（`kstar.failures.list`，specs/015 T016 接上）：{items, loading, failed}，
      *  null = 还没拉过。只有真的存在失败类结论时才拉（整集合读取，不给无失败的用户白付）。 */
     kstarFailures: null,
+    /** 经验目录（specs/016 US-801，「经验」页签）：{items, loading, failed, stale}，
+     *  null = 还没拉过。items 是 E1 列表行（目录行，天然不含 body）；拉全量
+     *  （status:'all'）再由视图过滤——列表只摆 active/paused，归档/并入的终态
+     *  条目留在 store 里供详情深链与合并目标比对用。 */
+    experiences: null,
+    /** 经验详情（E2 按需拉）：{experienceId, experience, loading, failed}。 */
+    experienceDetail: null,
+    /** 存量迁移（E7/E8）：{preview, previewLoading, previewFailed, lastRun}。
+     *  preview 是只读扫描结果；lastRun 是最近一次 run/status 的回执（可核对
+     *  「已迁/未迁/原因」，不满足于一枚 toast）。 */
+    experienceMigration: null,
     sources: [],
     tree: null,
     proofs: [],
@@ -331,7 +443,7 @@
     /** 整理页：会话列表是否展开全部（默认收拢 5 条）。 */
     organizeListExpanded: false,
     /** 路由：{name, category, assetId, candidateId, proofEventId, captureBucket, captureId, sourceIssueOpen} */
-    route: { name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', ontologyBox: '' },
+    route: { name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', ontologyBox: '', experienceId: '' },
     backStack: [],
     /** 上一帧的路由名：渲染层据此判断「离开 ontology 页」需要先归还本体 section。 */
     prevRouteName: 'tree',
@@ -411,6 +523,10 @@
       // 改进分析结论不在主快照里（只读、按需拉）：动作后的 reload 把它标 stale，
       // 下次进「待我处理」页签时重拉——复盘确认/沉淀都会改结论，不能一直吃旧值。
       if (store.improvementOutcomes) store.improvementOutcomes = { ...store.improvementOutcomes, stale: true };
+      // 经验目录同理（specs/016）：主快照不带经验（隔离边界——经验通道不进
+      // 资产快照的请求集合），但任何 reload 都可能伴随经验变化（沉淀改道后
+      // 资产侧动作间接影响不了经验，这里纯粹是「跨页签动作后回来别吃旧值」）。
+      if (store.experiences) store.experiences = { ...store.experiences, stale: true };
       store.loaded = true;
     },
     async tree() {
@@ -728,6 +844,88 @@
     NS.notify();
   };
 
+  /* ────────── 经验目录数据装载（specs/016 US-801，通道 E1/E2/E7/E8）───────────
+   *  与改进分析同一套按需模式：不进主快照（经验通道与资产快照隔离），进
+   *  「经验」页签才拉；失败记 failed（读不到 ≠ 没有，空态与失败分开呈现）。
+   *  所有通道只读，动作（暂停/类型/合并/归档/迁移）在 actions 层。 */
+
+  /** 经验列表（E1）：status:'all' 一次拉全（≤200，E1 上限），视图侧过滤
+   *  active/paused——避免为两个非终态各发一次请求；stale 由 snapshot 打、
+   *  动作后 force 重拉。 */
+  NS.loadExperiences = async function loadExperiences(force) {
+    if (store.experiences && !force && !store.experiences.stale && !store.experiences.failed) return;
+    store.experiences = { items: store.experiences && store.experiences.items || [], loading: true, failed: false, stale: false };
+    NS.notify();
+    let items = [];
+    let failed = false;
+    try {
+      const result = await api.call('recall.experiences.list', { status: 'all', limit: 200 });
+      items = (result && result.experiences) || [];
+    } catch (error) {
+      failed = true;
+    }
+    store.experiences = { items, loading: false, failed, stale: false };
+    NS.notify();
+  };
+
+  /** 经验详情（E2）：按条缓存；不存在（已归档仍可读，物理删除后查无）如实
+   *  记 failed——详情页给「读不到」文案，不冒充空条目。 */
+  NS.loadExperienceDetail = async function loadExperienceDetail(experienceId, force) {
+    const id = String(experienceId || '');
+    if (!id) return;
+    if (!force && store.experienceDetail && store.experienceDetail.experienceId === id && !store.experienceDetail.failed) return;
+    store.experienceDetail = { experienceId: id, loading: true, failed: false };
+    NS.notify();
+    let experience = null;
+    let failed = false;
+    try {
+      const result = await api.call('recall.experiences.read', { experienceId: id });
+      experience = (result && result.experience) || null;
+      if (!experience) failed = true;
+    } catch (error) {
+      failed = true;
+    }
+    if (!store.experienceDetail || String(store.experienceDetail.experienceId) !== id) return;
+    store.experienceDetail = { experienceId: id, experience, loading: false, failed };
+    NS.notify();
+  };
+
+  /** 迁移预览（E7 只读）：扫描结果进 store，界面据此逐条核对后显式发起。 */
+  NS.loadExperienceMigrationPreview = async function loadExperienceMigrationPreview(force) {
+    const state = store.experienceMigration;
+    if (!force && state && state.preview && !state.previewFailed) return;
+    store.experienceMigration = { preview: state && state.preview, previewLoading: true, previewFailed: false, lastRun: state && state.lastRun };
+    NS.notify();
+    let preview = null;
+    let previewFailed = false;
+    try {
+      preview = await api.call('recall.experiences.migration.preview', {});
+    } catch (error) {
+      previewFailed = true;
+    }
+    const current = store.experienceMigration;
+    store.experienceMigration = { preview, previewLoading: false, previewFailed, lastRun: current && current.lastRun };
+    NS.notify();
+  };
+
+  /** 迁移状态（E8 只读）：最近一次 run 的回执；从未跑过时 migrationId 为
+   *  null——界面如实说「还没执行过」，不把空态误报成失败。 */
+  NS.loadExperienceMigrationStatus = async function loadExperienceMigrationStatus() {
+    const state = store.experienceMigration;
+    store.experienceMigration = { preview: state && state.preview, previewLoading: false, previewFailed: state && state.previewFailed || false, lastRun: null, statusLoading: true };
+    NS.notify();
+    let lastRun = null;
+    try {
+      const result = await api.call('recall.experiences.migration.status', {});
+      lastRun = result && result.migrationId ? result : null;
+    } catch (error) {
+      lastRun = null;
+    }
+    const current = store.experienceMigration;
+    store.experienceMigration = { preview: current && current.preview, previewLoading: false, previewFailed: current && current.previewFailed || false, lastRun, statusLoading: false };
+    NS.notify();
+  };
+
   /* ────────── 改进分析（specs/015 US-701 AC3 / T016）与依据链数据装载 ──────────
    * 两个只读通道都不进主快照：结论是「进待我处理页签才需要」，失败面更是整集合
    * 读取——只有真的存在失败类结论时才拉，不给没有失败的用户白付这份开销。
@@ -813,6 +1011,11 @@
     { id: 'tree', titleKey: 'cognition.tab_tree', title: '认知树' },
     { id: 'ontology', titleKey: 'cognition.tab_ontology', title: '个人本体' },
     { id: 'overview', titleKey: 'cognition.tab_overview', title: '我的认知' },
+    // 经验页签（specs/016 US-801 AC3）：任务收口沉淀的经验与正式资产完全
+    // 隔离——独立页签、独立通道（recall.experiences.*）、不进资产列表。
+    // 位置定在「我的认知」之后「待我处理」之前：经验是从任务里学到的
+    // 认知沉淀，紧挨资产域，但排在待办之前（待办是时效性入口）。
+    { id: 'experiences', titleKey: 'cognition.tab_experiences', title: '经验' },
     { id: 'review', titleKey: 'cognition.tab_review', title: '待我处理' },
     { id: 'organize', titleKey: 'cognition.tab_organize', title: '整理' },
   ];
@@ -826,7 +1029,7 @@
       const current = store.route;
       // 先把 next 归一到同一形状再比（部分键字面量 vs 全键展开的序列化恒不等，
       // 连点同一 tab 会堆积重复栈项——2026-09-14 终审修）。
-      const merged = Object.assign({ name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', ontologyBox: '' }, next);
+      const merged = Object.assign({ name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', ontologyBox: '', experienceId: '' }, next);
       const same = JSON.stringify(current) === JSON.stringify(merged);
       if (!opts.replace && !same) store.backStack.push(Object.assign({}, current));
       store.route = merged;
@@ -1462,6 +1665,112 @@
       store.assetVersions = null;
       router.go({ name: 'overview', assetId: targetAssetId });
       await NS.reload();
+    },
+    /* ── 经验目录管理（specs/016 US-803，契约 E3~E6）──────────────────────
+     *  四个动作全走经验专属通道（与 recall.assets.* 零调用——隔离边界）；
+     *  危险动作（归档/合并）二次确认，归档原因必填（uiPrompt 收集，进台账）。 */
+    /** 动作后的统一刷新：列表 force 重拉；仍停在这条详情上时详情也重拉。 */
+    async refreshExperience(experienceId) {
+      await NS.loadExperiences(true);
+      if (experienceId && String(store.route.experienceId || '') === String(experienceId)) {
+        await NS.loadExperienceDetail(experienceId, true);
+      }
+    },
+    async experienceStatusToggle(experienceId, action) {
+      if (action !== 'pause' && action !== 'resume') return;
+      try {
+        await api.call('recall.experiences.setStatus', { experienceId, action });
+      } catch (error) { throw new Error(experienceActionErrorText(error)); }
+      toast(action === 'pause'
+        ? T('cognition.experience_paused_toast', '已暂停：新任务的清单不再带入这条经验')
+        : T('cognition.experience_resumed_toast', '已恢复：下一轮清单重新带入'));
+      await this.refreshExperience(experienceId);
+    },
+    async experienceSetType(experienceId, type) {
+      if (!['lesson', 'workflow', 'gap', 'uncategorized'].includes(String(type || ''))) return;
+      try {
+        await api.call('recall.experiences.setType', { experienceId, experienceType: type });
+      } catch (error) { throw new Error(experienceActionErrorText(error)); }
+      toast(T('cognition.experience_type_changed_toast', '已调整为「{type}」', { type: experienceTypeLabel(type) }));
+      await this.refreshExperience(experienceId);
+    },
+    async experienceMerge(sourceExperienceId, targetExperienceId) {
+      const target = ((store.experiences && store.experiences.items) || [])
+        .find((row) => String(row.id) === String(targetExperienceId));
+      // 危险动作二次确认（R1 seam 契约）：合并把 source 的来源与证据并入目标、
+      // source 转「已并入」不再单独显示——影响的条目名必须出现在确认文案里。
+      const ok = await confirmUser(T('cognition.experience_merge_confirm', '将把本条的全部来源与证据并入「{title}」，本条转为「已并入」不再单独显示。确认合并？', { title: (target && target.title) || T('cognition.experience_merge_pick_target', '所选目标') }), true);
+      if (!ok) return;
+      try {
+        await api.call('recall.experiences.merge', { sourceExperienceId, targetExperienceId });
+      } catch (error) { throw new Error(experienceActionErrorText(error)); }
+      toast(T('cognition.experience_merge_done', '已合并：来源与历史并入目标条目'));
+      // 合并后看目标条目（同 mergeAssets 的落点：结果在哪，人就被带到哪）。
+      if (String(store.route.experienceId || '') === String(sourceExperienceId)) {
+        router.go({ name: 'experiences', experienceId: targetExperienceId });
+      }
+      await NS.loadExperiences(true);
+      await NS.loadExperienceDetail(targetExperienceId, true);
+    },
+    async experienceArchive(experienceId) {
+      // 归档原因必填（E6 契约）：先收原因——这一步本身就是一次显式确认；
+      // 再走危险确认，与资产删除的二次确认口径一致。
+      const reason = await promptUser(T('cognition.experience_archive_reason_prompt', '填写这条经验过期或失效的清理原因（必填，会记录进台账）'));
+      if (reason == null) return; // 取消 = 不动
+      if (!String(reason).trim()) {
+        toast(T('cognition.experience_archive_reason_required', '清理原因必填：没有原因的归档不会被接受。'), 'warning');
+        return;
+      }
+      const ok = await confirmUser(T('cognition.experience_archive_confirm', '归档后这条经验不再进入任何清单；历史与已冻结的引用仍可读。确认归档？'), true);
+      if (!ok) return;
+      try {
+        await api.call('recall.experiences.archive', { experienceId, reason: String(reason).trim() });
+      } catch (error) { throw new Error(experienceActionErrorText(error)); }
+      toast(T('cognition.experience_archive_done', '已归档：已记录原因与时间'));
+      // 归档后回列表（详情对象已终态，继续停在详情没有管理出口）。
+      if (String(store.route.experienceId || '') === String(experienceId)) {
+        router.go({ name: 'experiences', experienceId: '' }, { replace: true });
+      }
+      await this.refreshExperience(experienceId);
+    },
+    /* ── 存量迁移（specs/016 US-801，契约 E7/E8）────────────────────────── */
+    async experienceMigrationPreview() {
+      await NS.loadExperienceMigrationPreview(true);
+    },
+    async experienceMigrationRun(assetIds) {
+      const ids = [...new Set((assetIds || []).map((id) => String(id || '').trim()).filter(Boolean))];
+      if (!ids.length) return;
+      const ok = await confirmUser(T('cognition.experience_migration_run_confirm', '将迁移以上 {n} 条经验类资产：先冻结历史引用，再写入经验目录并从资产库迁出；跳过与失败会如实列出。确认执行？', { n: String(ids.length) }), true);
+      if (!ok) return;
+      let result;
+      try {
+        result = await api.call('recall.experiences.migration.run', { assetIds: ids });
+      } catch (error) { throw new Error(experienceActionErrorText(error)); }
+      const migrated = (result && result.migrated) || 0;
+      const skipped = (result && result.skipped) || 0;
+      const failed = (result && result.failed) || 0;
+      // 结果走 uiAlert 可核对（R1：toast 一句话了事不满足「可核对」），
+      // 随后重拉预览与列表——预览清单必须反映迁出后的真实存量。
+      await alertUser(T('cognition.experience_migration_result', '迁移完成：已迁 {migrated} 条，跳过 {skipped} 条，失败 {failed} 条', { migrated: String(migrated), skipped: String(skipped), failed: String(failed) }));
+      // 结果同时摆进折叠区（lastRun 可核对），并重拉预览与列表——预览清单
+      // 必须反映迁出后的真实存量。
+      store.experienceMigration = { preview: null, previewLoading: false, previewFailed: false, lastRun: result || null };
+      NS.notify();
+      await NS.loadExperiences(true);
+      void NS.loadExperienceMigrationPreview(true);
+      return result;
+    },
+    async experienceMigrationStatus() {
+      await NS.loadExperienceMigrationStatus();
+      const lastRun = store.experienceMigration && store.experienceMigration.lastRun;
+      if (!lastRun) {
+        toast(T('cognition.experience_migration_none_run', '还没有执行过迁移'), 'warning');
+        return;
+      }
+      const migrated = lastRun.migrated || 0;
+      const skipped = lastRun.skipped || 0;
+      const failed = lastRun.failed || 0;
+      toast(T('cognition.experience_migration_last_run', '上次迁移：已迁 {migrated} 条，跳过 {skipped} 条，失败 {failed} 条', { migrated: String(migrated), skipped: String(skipped), failed: String(failed) }));
     },
     async sourceAction(kind, sourceId, action) {
       const channels = {

@@ -165,13 +165,16 @@ describe('信息架构：3 tab 收敛', () => {
     expect(coreSource).toContain("{ id: 'organize', titleKey: 'cognition.tab_organize'");
     // 两线不拆 tab（2026-09-17 二次定调）：TABS 回三 tab，KSTAR 以徽章+筛选档出现。
     expect(coreSource).not.toContain("id: 'kstar-assets'");
-    expect(coreSource.match(/id: '(evidence|experiences|organize-history|capture-log|manage)'/g)).toBeNull();
-    for (const gone of ['function viewManage', 'function viewSourcesOverview', 'function viewSourceDetail', 'function viewExperiences', 'function viewOrganizeHistory', 'function viewCaptureLog', 'function organizeSettingsDrawer']) {
+    // 墓碑只拦 2026-09-15 删掉的旧六视图；specs/016 T018 重新引入了**新版**
+    // 「经验」页签（id 'experiences' / viewExperiences，数据走 recall.experiences.*
+    // 独立通道），同名但不是复活旧视图——从禁入名单里摘出（2026-09-25）。
+    expect(coreSource.match(/id: '(evidence|organize-history|capture-log|manage)'/g)).toBeNull();
+    for (const gone of ['function viewManage', 'function viewSourcesOverview', 'function viewSourceDetail', 'function viewOrganizeHistory', 'function viewCaptureLog', 'function organizeSettingsDrawer']) {
       expect(viewsSource, gone).not.toContain(gone);
     }
     expect(viewsSource).toContain('function viewOrganizeTasks');
     expect(viewsSource).toContain('function viewOrganizeSettingsPage');
-    expect(viewsSource).toContain('function sourceIssuesSection');
+    expect(viewsSource).toContain('sourceIssuesSection');
   });
 
   it('旧路由/委托 case 已收敛，齿轮入口与设置页分流存在', () => {

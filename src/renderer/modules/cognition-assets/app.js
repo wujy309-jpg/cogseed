@@ -24,6 +24,9 @@
     'inspection-toggle', 'run-inspection', 'purge-deleted-asset', 'inbox-resolve', 'asset-edit-save', 'family-rename', 'family-rename-save', 'family-rename-cancel', 'edit-from-version', 'merge-asset-version', 'merge-asset', 'source-action', 'capture-action', 'organize-conv',
     'capture-toggle', 'capture-review-toggle', 'proof-rate',
     'capture-batch',
+    // 经验目录管理（specs/016 US-803）：四个管理动作 + 迁移执行；preview/status
+    // 是只读扫描，不进 pending 集（与 refresh 的口径不同：它们有各自的载入态）。
+    'experience-status-toggle', 'experience-set-type', 'experience-merge', 'experience-archive', 'experience-migration-run',
   ]);
 
   /* ────────────────────────── 事件委托 ────────────────────────── */
@@ -72,8 +75,9 @@
             // 跳转前的深层页而不是列表，与按钮文案不符。按详情类型归位到
             // 对应列表根（资产详情保留分类筛选）；仍压栈，需要时可再进详情。
             const name = S.route.candidateId ? 'review'
-              : (S.route.captureId || S.route.name === 'organize' || S.route.name === 'organize-settings') ? 'organize'
-                : 'overview';
+              : S.route.experienceId ? 'experiences'
+                : (S.route.captureId || S.route.name === 'organize' || S.route.name === 'organize-settings') ? 'organize'
+                  : 'overview';
             router.go({ name, category: name === 'overview' ? String(S.route.category || '') : '' });
             break;
           }
@@ -233,7 +237,7 @@
             // 再点同一 chip 或点「收起」（id 空）即收起；展开时拉详情。
             // 就地展开不动宿主页（2026-09-17 修，子安实测抓出跳回"我的
             // 认知"）：保持当前 name 与全部详情上下文（候选/资产/采集/
-            // 版本键），只切 kstarEpisodeId——此前 name 硬编码 overview，
+            // 版本/经验键），只切 kstarEpisodeId——此前 name 硬编码 overview，
             // 在候选详情点复盘 chip 会整页跳走。
             const prev = String(S.route.kstarEpisodeId || '');
             const next = String(el.dataset.id || '');
@@ -245,12 +249,29 @@
               captureId: String(S.route.captureId || ''),
               assetVersionId: String(S.route.assetVersionId || ''),
               assetVersionDiff: String(S.route.assetVersionDiff || ''),
+              experienceId: String(S.route.experienceId || ''),
               kstarEpisodeId: open,
             }, { replace: true });
             if (open) void NS.loadKstarEpisode(open);
             break;
           }
           case 'merge-asset': await A.mergeAssets(id, el.dataset.target || ''); break;
+          /* ── 经验目录（specs/016 US-801/803）──────────────────────────── */
+          case 'open-experience': router.go({ name: 'experiences', experienceId: id }); break;
+          case 'experience-status-toggle': await A.experienceStatusToggle(id, el.dataset.action || 'pause'); break;
+          case 'experience-set-type': await A.experienceSetType(id, el.dataset.type || ''); break;
+          case 'experience-merge': await A.experienceMerge(id, el.dataset.target || ''); break;
+          case 'experience-archive': await A.experienceArchive(id); break;
+          case 'experience-migration-preview': await A.experienceMigrationPreview(); break;
+          case 'experience-migration-run': {
+            // run 必须显式带 assetIds（E7 契约，禁止隐式批量）：单条走
+            // data-asset、批量走 data-assets（逗号分隔，来自可见的预览清单）。
+            const ids = String(el.dataset.assets || el.dataset.asset || '')
+              .split(',').map((value) => value.trim()).filter(Boolean);
+            await A.experienceMigrationRun(ids);
+            break;
+          }
+          case 'experience-migration-status': await A.experienceMigrationStatus(); break;
           case 'source-action': await A.sourceAction(el.dataset.kind || '', id, el.dataset.action); break;
           case 'capture-action': await A.captureAction(id, el.dataset.action); break;
           case 'organize-conv': await A.organizeConversation(id); break;
@@ -333,7 +354,7 @@
       }
     });
     document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape' && S.route.assetId) router.back();
+      if (event.key === 'Escape' && (S.route.assetId || S.route.experienceId)) router.back();
     });
     // 树光斑悬停提示（原型 #tip 行为）：.spot 自带 data-title/data-sub，
     // 鼠标进出示一条跟随光标的黑底提示——树上节点密度高，常显标签会糊。
@@ -529,6 +550,7 @@
   // 分流，这里按当前路由补拉（loadCaptureContext 内部有缓存判重）。
   NS.onChange(() => {
     const captureId = String(S.route.captureId || '');
+    const experienceRouteId = String(S.route.experienceId || '');
     if (captureId && (!S.captureContext || S.captureContext.captureId !== captureId)) {
       void NS.loadCaptureContext(captureId);
     }
@@ -568,6 +590,21 @@
     if (String(S.route.name || '') === 'overview') void NS.loadKstarEpisodes();
     // 模型自选标记随「我的认知」一起刷新（2026-09-18）：目录视图据此标"模型挂着"。
     if (String(S.route.name || '') === 'overview') void NS.loadModelSelectedAssets();
+    // 经验目录（specs/016）：进「经验」页签才拉（与资产快照隔离）；详情深链
+    // 补拉 E2；详情证据里的 kse 摘要与会话标题同时候补——chip 要显示任务目标
+    // 与会话名，与资产详情同一套批量口（loaders 自带缓存/在途守卫）。
+    if (String(S.route.name || '') === 'experiences') {
+      void NS.loadExperiences();
+      if (experienceRouteId) {
+        void NS.loadExperienceDetail(experienceRouteId);
+        const loaded = S.experienceDetail;
+        if (loaded && !loaded.loading && loaded.experience) {
+          const refs = loaded.experience.evidenceRefs || [];
+          void NS.loadKstarEpisodeSummariesByIds(refs.map((ref) => String((ref && ref.id) || '')));
+          void NS.loadConversationTitlesByIds(refs);
+        }
+      }
+    }
   });
 
   /** 静默刷新指示：同页 reload（操作后/轮询）期间顶部走一条细进度条。

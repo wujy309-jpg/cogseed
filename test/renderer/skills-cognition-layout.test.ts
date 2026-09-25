@@ -162,11 +162,12 @@ describe('Recall cognition workspace layout', () => {
   // 任务视图回答"用户来这里要做什么"；来源是输入配置、沉淀活动是后台加工
   // 进度，两者都不是任务，降为页头辅助入口。它们打开的仍是同一批 page body。
   it('keeps sources and capture activity out of the task tabs', () => {
-    // 2026-09-21 五页签:来源仍异常驱动、只在「待我处理」出现;沉淀活动仍在
-    // 「整理」tab;认知树与个人本体是独立视图,不与任务页混排。
+    // 2026-09-21 五页签 → 2026-09-25 六页签（specs/016 T018）：经验页签插在
+    // overview 与 review 之间。来源仍异常驱动、只在「待我处理」出现;沉淀活动
+    // 仍在「整理」tab;认知树与个人本体是独立视图,不与任务页混排。
     const core = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/core.js'), 'utf-8');
     const tabIds = [...core.matchAll(/\{ id: '([a-z]+)', titleKey: 'cognition\.tab_/g)].map((m) => m[1]);
-    expect(tabIds).toEqual(['tree', 'ontology', 'overview', 'review', 'organize']);
+    expect(tabIds).toEqual(['tree', 'ontology', 'overview', 'experiences', 'review', 'organize']);
     expect(core).toContain('sourceIssueOpen');
     // 来源健康入口只出现在待我处理（review）页。
     const views = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/views.js'), 'utf-8');
