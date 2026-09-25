@@ -77,6 +77,8 @@ import * as kstarRunEvidence from '../features/kstar/run-evidence';
 import * as recallProofs from '../features/recall/proof-service';
 import * as recallTree from '../features/recall/tree-service';
 import * as formalAssets from '../features/recall/formal-assets';
+import { REAL_USAGE_KINDS } from '../features/recall/timeline-service';
+import { listAssetUsageReceiptViews } from '../features/recall/asset-usage-receipt';
 import * as recallUsage from '../features/recall/usage-service';
 import * as recallUsageFeedback from '../features/recall/usage-feedback-service';
 import * as effectivenessFeedback from '../features/recall/effectiveness-feedback';
@@ -973,6 +975,15 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { counts: await chats.countAutoTaskConversations(ctx.userId, ids) };
   },
 
+  // 批量取会话标题（2026-09-25 验收修复 US-603）：证据来源解析要把 cid 翻成
+  // 可读标题。只返回 title——不带正文、不带项目/成员信息；查无的 cid 不返回
+  // 条目（渲染层据此显示「来源记录不可用」，而不是裸 id）。
+  'conversations.titles': async ({ cids } = {}, ctx) => {
+    if (!Array.isArray(cids) || cids.length > 50 || cids.some((cid) => typeof cid !== 'string' || !safeId(cid))) {
+      throw new Error('invalid conversation title batch');
+    }
+    return { ok: true, titles: await chats.listConversationTitles(ctx.userId, cids) };
+  },
   'conversations.get': async (args, ctx) => {
     const { cid } = args;
     if (!safeId(cid)) throw new Error('invalid cid');
@@ -2823,6 +2834,28 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   'recall.projections.retryForecast': async ({ projectionId, cid } = {}, ctx) => { if (!safeId(projectionId) || !safeId(cid)) throw new Error('invalid projection retry'); return { ok: true, ...(await kstarProjectionDecision.retryProjectionInCommander(ctx.userId, { projectionId, cid })) }; },
   'recall.projections.revise': async ({ projectionId, purpose, addAssetIds, removeAssetIds, decisionNote } = {}, ctx) => { if (!safeId(projectionId) || (purpose !== undefined && typeof purpose !== 'string') || (addAssetIds !== undefined && (!Array.isArray(addAssetIds) || addAssetIds.length > 100 || addAssetIds.some((id) => !safeId(id)))) || (removeAssetIds !== undefined && (!Array.isArray(removeAssetIds) || removeAssetIds.length > 100 || removeAssetIds.some((id) => !safeId(id)))) || (decisionNote !== undefined && typeof decisionNote !== 'string')) throw new Error('invalid projection revision'); return { ok: true, projection: await recallProjection.reviseContextProjection(ctx.userId, projectionId, { ...(purpose !== undefined ? { purpose } : {}), ...(addAssetIds !== undefined ? { addAssetIds } : {}), ...(removeAssetIds !== undefined ? { removeAssetIds } : {}), ...(decisionNote !== undefined ? { decisionNote } : {}) }) }; },
   'recall.projections.revoke': async ({ projectionId } = {}, ctx) => { if (!safeId(projectionId)) throw new Error('invalid projection id'); return { ok: true, projection: await recallProjection.revokeModelSelectedProjection(ctx.userId, projectionId) }; },
+  // 用户 @ 钉住的资产走独立撤销口（US-601 AC3：引用回执可撤销）。与模型自选线
+  // 分开是为了两条授权语义各自可审计，且既有"用户确认的语义投影不可一键撤销"
+  // 的边界不被放宽。
+  'recall.projections.revokePinned': async ({ projectionId } = {}, ctx) => { if (!safeId(projectionId)) throw new Error('invalid projection id'); return { ok: true, projection: await recallProjection.revokeUserPinnedProjection(ctx.userId, projectionId) }; },
+  // 用户 @ 钉住的资产（2026-09-25 US-601）：composer 引用条据此显示「名称 · vN」
+  // 并支持撤销。只返回 projectionId/assetId/title/version，不含正文。
+  'recall.projections.pinnedAssets': async ({ cid } = {}, ctx) => {
+    if (!safeId(cid)) throw new Error('invalid conversation id');
+    return { ok: true, items: await recallProjection.listUserPinnedAssets(ctx.userId, cid) };
+  },
+  // 用户引用被拦的留痕（2026-09-25 US-604 AC4/AC7）：发送前重检不再静默——回执卡
+  // 据此说明"最近一轮为什么没带上、是哪条规则"。只返回标题 + 规则标识，不含正文。
+  'recall.injections.omissions': async ({ cid, limit } = {}, ctx) => {
+    if (!safeId(cid)) throw new Error('invalid conversation id');
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 20)) {
+      throw new Error('invalid omission limit');
+    }
+    return {
+      ok: true,
+      omissions: await recallProjection.listConversationOmissions(ctx.userId, cid, limit === undefined ? 20 : limit),
+    };
+  },
   'recall.projections.availableAssets': async ({ projectionId } = {}, ctx) => { if (!safeId(projectionId)) throw new Error('invalid projection id'); return { ok: true, assets: await recallProjection.listAvailableProjectionAssets(ctx.userId, projectionId) }; },
   'recall.projections.confirmAndApproveWake': async ({ cid, projectionId, wakeRequestId } = {}, ctx) => { if (!safeId(cid) || !safeId(projectionId) || !safeId(wakeRequestId)) throw new Error('invalid projection wake confirmation'); return recallProjection.confirmAndApproveWake(ctx.userId, { cid, projectionId, wakeRequestId }); },
   'recall.projections.defer': async ({ projectionId, note } = {}, ctx) => { if (!safeId(projectionId) || (note !== undefined && (typeof note !== 'string' || note.length > 1_000))) throw new Error('invalid projection id'); return { ok: true, projection: await recallProjection.deferContextProjection(ctx.userId, projectionId, note) }; },
@@ -2913,8 +2946,9 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // 用户主动使用（2026-09-19）：把用户钉住的资产以 confirmed 投影挂到指定会话
   //  并发投影卡——下一轮起注入命中，卡上可撤销。显式资产模式（绕语义门、
   //  过状态硬门），authorization=user_confirmed（IPC 白名单内）。
-  'recall.projections.attachToConversation': async ({ assetId, conversationId } = {}, ctx) => {
+  'recall.projections.attachToConversation': async ({ assetId, conversationId, agentId } = {}, ctx) => {
     if (!safeId(assetId) || !safeId(conversationId)) throw new Error('invalid recall projection attach');
+    if (agentId !== undefined && !safeId(agentId)) throw new Error('invalid recall projection attach agent');
     const projection = await recallProjection.previewContextProjection(ctx.userId, {
       taskRunId: `user-attach-${assetId}-${conversationId}`.slice(0, 160),
       purpose: 'user_pinned',
@@ -2922,10 +2956,18 @@ const invokeHandlers: Record<string, InvokeHandler> = {
       conversationId,
       confirm: true,
       explicitAssetIds: [assetId],
+      ...(agentId ? { agentId } : {}),
     });
     return {
       ok: true,
-      projection: { id: projection.id, assetIds: projection.assetIds, status: projection.status },
+      // assetVersions = 本次挂载冻结的在用版（US-601 AC2/AC3：引用 chip 与回执
+      // 要显示"名称 · vN"，且界面所见即注入所用）。
+      projection: {
+        id: projection.id,
+        assetIds: projection.assetIds,
+        status: projection.status,
+        ...(projection.assetVersions ? { assetVersions: projection.assetVersions } : {}),
+      },
       ...(await recallProjectionMessage.postProjectionCardMessage(ctx.userId, { cid: conversationId, projectionId: projection.id }, { send: async (payload) => ({ id: (await groupChat.sendCommanderMessage({ userId: ctx.userId, cid: conversationId, text: String(payload.text || ''), recall_projection_card: { projectionId: payload.card.projectionId, authorization: payload.card.authorization, presentation: 'sidecar' } })).msg?.id || '' }) })),
     };
   },
@@ -2994,16 +3036,39 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // 治理事件聚合成一条事实链，但此前没有 IPC 暴露，渲染层拿不到。
   'recall.timeline.forAsset': async ({ assetId } = {}, ctx) => {
     if (!safeId(assetId)) throw new Error('invalid recall asset id');
-    return { ok: true, items: await formalAssets.listFormalAssetTimeline(ctx.userId, assetId) };
+    return {
+      ok: true,
+      items: await formalAssets.listFormalAssetTimeline(ctx.userId, assetId),
+      // 单一白名单随载荷下发（2026-09-25 US-602 FR-004/FR-011）：列表与详情共用
+      // 同一份定义，下游也引用它——不在渲染层再写一份（那正是缺陷本体）。
+      realUsageKinds: [...REAL_USAGE_KINDS],
+    };
   },
   'recall.timeline.list': async ({ limit } = {}, ctx) => {
     const bounded = limit === undefined ? undefined : Number(limit);
     if (bounded !== undefined && (!Number.isFinite(bounded) || bounded <= 0 || bounded > 2_000)) {
       throw new Error('invalid recall timeline limit');
     }
-    return { ok: true, items: await formalAssets.listFormalAssetTimeline(ctx.userId, undefined, bounded) };
+    return {
+      ok: true,
+      items: await formalAssets.listFormalAssetTimeline(ctx.userId, undefined, bounded),
+      realUsageKinds: [...REAL_USAGE_KINDS],
+    };
   },
 
+  // 采用回执明细（2026-09-25 US-602 AC5/AC6）：「实际采用」的唯一权威来源。
+  // 只返回版本 / 同次任务 / 证据类型 / 证据 ref（kind·id·title）——不含正文，
+  // 可读名由渲染层唯一解析器负责。
+  'recall.assets.adoptionReceipts': async ({ assetId, limit } = {}, ctx) => {
+    if (!safeId(assetId)) throw new Error('invalid recall asset id');
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 200)) {
+      throw new Error('invalid adoption receipt limit');
+    }
+    return {
+      ok: true,
+      receipts: await listAssetUsageReceiptViews(ctx.userId, assetId, limit === undefined ? 50 : limit),
+    };
+  },
   'recall.usage.feedback': async ({ cid, messageId, feedback } = {}, ctx) => {
     if (!safeId(cid) || !safeId(messageId) || (feedback !== 'positive' && feedback !== 'negative')) {
       throw new Error('invalid Recall usage feedback');
@@ -7121,6 +7186,7 @@ export function register(): void {
         marketplaceCurrentAppVersion?: string;
         qualityReport?: unknown;
         promotionReasons?: string[];
+        blockRule?: string;
         securityBlocked?: boolean;
         securityUnavailable?: boolean;
         securityOverridable?: boolean;
@@ -7139,6 +7205,10 @@ export function register(): void {
       if (Array.isArray(promotionReasons) && promotionReasons.every((reason) => typeof reason === 'string')) {
         out.promotionReasons = promotionReasons as string[];
       }
+      // 资产准入的具体规则标识（2026-09-25 验收修复 US-604 AC1）：code 只够分类，
+      // 界面要能说出"到底哪条规则拦的"。只透传标识串，不透传原因码原文与正文。
+      const blockRule = (err as { blockRule?: unknown }).blockRule;
+      if (typeof blockRule === 'string' && blockRule) out.blockRule = blockRule;
       const installInfo = marketplace.getMarketplaceInstallErrorInfo(err);
       if (installInfo.kind) {
         out.marketplaceKind = installInfo.kind;

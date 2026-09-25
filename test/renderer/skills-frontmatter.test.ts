@@ -343,10 +343,11 @@ describe('skills renderer frontmatter parsing', () => {
     );
 
     expect(visibleText(html)).toContain('Scoped review rule');
-    // 2026-09-17 下沉改：「用过几次」随详细信息归版本展开块；顶部使用
-    // 汇总在使用记录区（被实际使用/被带入任务）。
-    expect(visibleText(html)).toContain('被实际使用 1 次');
+    // 2026-09-17 下沉改：「用过几次」随详细信息归版本展开块；顶部汇总在使用记录区。
+    // 2026-09-25 US-602 口径改：宿主注入过一律归「被带入任务」（不再说"被实际使用"），
+    // 「实际采用」只认有据回执、单列在实际采用记录区。
     expect(visibleText(html)).toContain('被带入任务 1 次');
+    expect(visibleText(html)).not.toContain('被实际使用');
     expect(html).toContain('data-act="proof-toggle" data-id="proof-1"');
   });
 
@@ -441,8 +442,14 @@ describe('skills renderer frontmatter parsing', () => {
       },
     );
 
-    expect(visibleText(html)).toContain('kse-episode-1');
-    expect(visibleText(html)).toContain('conversation-1');
+    // 2026-09-25 US-603 放行修改：来源不裸 id——解析不出名字时按类型给泛称
+    // （kse 复盘）或「来源记录不可用」（查无的会话），内部 id 一律不上屏。
+    // 原意图不变：结构化 evidenceRefs 要被归一化（不出 [object Object]），
+    // 且只有更长的审计历史才标「仅显示最近 N 条」。
+    expect(visibleText(html)).not.toContain('kse-episode-1');
+    expect(visibleText(html)).not.toContain('conversation-1');
+    expect(visibleText(html)).toContain('任务复盘：一次任务');
+    expect(visibleText(html)).toContain('来源记录不可用');
     expect(visibleText(html)).not.toContain('[object Object]');
     expect(visibleText(html)).not.toContain('仅显示最近 12 条');
   });

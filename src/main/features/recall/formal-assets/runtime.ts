@@ -43,6 +43,38 @@ export type AssetRuntimeBlockReason =
   | 'sensitivity_unclassified'
   | 'source_unavailable';
 
+/** 稳定规则标识（2026-09-25 验收修复 US-604 AC1 / SC-004）：把资产状态与运行时
+ *  阻断原因收敛成一个不随界面语言变的标识，界面据此说清"到底哪条规则拦的"。
+ *  顺序即优先级：状态最具体，作用域最笼统。**只给标识——不给原因码原文、不含正文。**
+ *  挂载时（explicit attach）与每轮注入（prompt injection）共用同一份映射，两处
+ *  说法才不会打架。 */
+export type AssetRuntimeBlockRule =
+  | 'paused' | 'archived' | 'revoked' | 'deleted' | 'purged' | 'inactive'
+  | 'missing' | 'source_unavailable' | 'agent' | 'scope'
+  | 'sensitivity_high' | 'sensitivity_unknown' | 'maturity'
+  | 'forbidden_context' | 'not_applicable_context'
+  | 'version_changed' | 'versions_missing' | 'unknown';
+
+export function assetRuntimeBlockRule(
+  assetStatus: string,
+  reasons: readonly AssetRuntimeBlockReason[],
+): AssetRuntimeBlockRule {
+  if (reasons.includes('status_not_active')) {
+    return ['paused', 'archived', 'revoked', 'deleted', 'purged'].includes(assetStatus)
+      ? assetStatus as AssetRuntimeBlockRule
+      : 'inactive';
+  }
+  if (reasons.includes('source_unavailable')) return 'source_unavailable';
+  if (reasons.includes('target_agent_not_allowed')) return 'agent';
+  if (reasons.includes('sensitivity_above_destination')) return 'sensitivity_high';
+  if (reasons.includes('sensitivity_unclassified')) return 'sensitivity_unknown';
+  if (reasons.includes('maturity_below_default_use')) return 'maturity';
+  if (reasons.includes('forbidden_context')) return 'forbidden_context';
+  if (reasons.includes('not_applicable_context')) return 'not_applicable_context';
+  if (reasons.includes('scope_mismatch')) return 'scope';
+  return 'unknown';
+}
+
 export interface AssetRuntimeCandidate extends AssetPolicyInput {
   scope: string;
   scopePolicy?: RecallAbilityAssetScopePolicy;

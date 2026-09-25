@@ -189,3 +189,46 @@ export async function listAssetUsageReceipts(userId: string, taskRunId?: string)
   for (const record of records) latest.set(record.id, record);
   return [...latest.values()].filter((record) => taskRunId === undefined || record.taskRunId === taskRunId);
 }
+
+/** 采用回执的**视图投影**（2026-09-25 验收修复 US-602 AC5/AC6）：资产详情要显示
+ *  「实际采用」的逐条记录——同次任务、具体版本、执行事件类型、产物位置。回执本身
+ *  只按 taskRunId 过滤，这里按 assetId 取（与 `listAbilityAssetVersionsWithUsage`
+ *  同一读法：全量读后过滤，量级相同）。**只透传 ref 的 kind/id/title**，不含
+ *  excerpt、不含绝对路径、不含资产正文——可读名由渲染层唯一解析器负责。 */
+export interface AssetUsageReceiptView {
+  id: string;
+  assetVersion: string;
+  taskRunId: string;
+  status: AssetUsageStatus;
+  evidenceKind: AssetUsageEvidenceKind;
+  evidence: Array<{ kind: string; id: string; title?: string }>;
+  boundary: AssetUsageBoundary;
+  createdAt: string;
+}
+
+export async function listAssetUsageReceiptViews(
+  userId: string,
+  assetId: string,
+  limit = 50,
+): Promise<AssetUsageReceiptView[]> {
+  if (!safeId(userId) || !safeId(assetId)) throw new Error('invalid asset usage receipt query');
+  const bounded = Number.isFinite(limit) ? Math.max(1, Math.min(200, Math.floor(limit))) : 50;
+  return (await listAssetUsageReceipts(userId))
+    .filter((receipt) => String(receipt.assetId || '') === assetId)
+    .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
+    .slice(0, bounded)
+    .map((receipt) => ({
+      id: receipt.id,
+      assetVersion: String(receipt.assetVersion || ''),
+      taskRunId: String(receipt.taskRunId || ''),
+      status: receipt.status,
+      evidenceKind: receipt.evidenceKind,
+      evidence: (receipt.evidenceRefs || []).slice(0, 5).map((ref) => ({
+        kind: String(ref.kind || ''),
+        id: String(ref.id || ''),
+        ...(ref.title ? { title: String(ref.title) } : {}),
+      })),
+      boundary: receipt.boundary,
+      createdAt: String(receipt.createdAt || ''),
+    }));
+}

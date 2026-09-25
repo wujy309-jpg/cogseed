@@ -50,8 +50,46 @@
     return String(action || '');
   }
 
-  function _statusLabel(status) {
-    if (status === 'revoked') return _label('recall.projection.status.revoked', 'Revoked');
+  /** 被拦规则标识 → 规则名（US-604 AC1）：与资产页/选择器共用同一套
+   *  `cognition.block_reason_*` 文案，三处说法一致。只翻标识，不上屏原文。 */
+  function _omissionReasonLabel(rule) {
+    const key = String(rule || '');
+    if (key === 'paused') return _label('cognition.block_reason_paused', 'Paused by you');
+    if (key === 'archived') return _label('cognition.block_reason_archived', 'Archived');
+    if (key === 'revoked') return _label('cognition.block_reason_revoked', 'Use revoked');
+    if (key === 'deleted') return _label('cognition.block_reason_deleted', 'Deleted (recoverable)');
+    if (key === 'purged') return _label('cognition.block_reason_purged', 'Permanently deleted');
+    if (key === 'inactive') return _label('cognition.block_reason_inactive', 'Not in an active state');
+    if (key === 'missing') return _label('cognition.block_reason_missing', 'No longer exists');
+    if (key === 'source_unavailable') return _label('cognition.block_reason_source_unavailable', 'Source no longer available');
+    if (key === 'agent') return _label('cognition.block_reason_agent', 'Recipient not allowed');
+    if (key === 'scope') return _label('cognition.block_reason_scope', 'Scope not allowed');
+    if (key === 'sensitivity_high') return _label('cognition.block_reason_sensitivity_high', 'Sensitivity above the limit');
+    if (key === 'sensitivity_unknown') return _label('cognition.block_reason_sensitivity_unknown', 'Sensitivity not classified');
+    if (key === 'maturity') return _label('cognition.block_reason_maturity', 'Use contract does not allow it');
+    if (key === 'forbidden_context') return _label('cognition.block_reason_forbidden_context', 'Forbidden context');
+    if (key === 'not_applicable_context') return _label('cognition.block_reason_not_applicable_context', 'Not applicable here');
+    if (key === 'version_changed') return _label('cognition.block_reason_version_changed', 'Version changed');
+    if (key === 'versions_missing') return _label('cognition.block_reason_versions_missing', 'Version snapshot missing');
+    return _label('cognition.block_reason_unknown', 'Blocked');
+  }
+
+  /** 「本轮未带入」行（US-604 AC4/AC7）：发送前重检被拦不再静默——卡片上说明是哪条
+   *  内容、被哪条规则拦下。只给标题与规则名，不含正文、不含内部 id。 */
+  function _omissionRowsHtml(omissions) {
+    const rows = (Array.isArray(omissions) ? omissions : []).map((item) => {
+      const title = String(item?.title || '').trim() || _label('recall.projection.asset_untitled', 'Untitled asset');
+      const reason = _omissionReasonLabel(String(item?.reason || ''));
+      return `<div class="chat-recall-projection-omitted-row">${_escape(_label(
+        'recall.projection.omitted_this_turn',
+        'Not carried this turn: {title} ({reason})',
+        { title, reason },
+      ))}</div>`;
+    }).join('');
+    return rows ? `<div class="chat-recall-projection-omitted">${rows}</div>` : '';
+  }
+
+  function _statusLabel(status) {    if (status === 'revoked') return _label('recall.projection.status.revoked', 'Revoked');
     if (status === 'confirmed') return _label('recall.projection.status.confirmed', 'Confirmed');
     if (status === 'preview') return _label('recall.projection.status.preview', 'Preview');
     if (status === 'deferred') return _label('recall.projection.status.deferred', 'Deferred');
@@ -60,7 +98,7 @@
     return String(status || '');
   }
 
-  function _renderModelSelectedReceipt(host, card) {
+  function _renderModelSelectedReceipt(host, card, userPinned, omissions) {
     // Only a transport sidecar owns fallback prose. A receipt mounted on the
     // final reply must never hide that reply's markdown body.
     if (host.dataset.recallProjectionTransport === 'sidecar') {
@@ -73,21 +111,31 @@
     const revoked = card?.status === 'revoked';
     const status = _statusLabel(card?.status);
     const primaryNote = revoked
-      ? _label('recall.projection.revoked_note', 'Revoked: later turns no longer carry these assets.')
-      : _label('recall.projection.model_selected_locked', 'The model picked these for the current task; later turns keep carrying them until you revoke.');
+      ? (userPinned
+        // US-604 AC8：撤销要如实说明已生效范围——已经发出去的那一轮收不回来。
+        ? _label('recall.projection.user_pinned_revoked_note', 'Revoked. What was already sent this turn cannot be recalled; later turns will not carry it.')
+        : _label('recall.projection.revoked_note', 'Revoked: later turns no longer carry these assets.'))
+      : userPinned
+        // 用户自己 @ 钉的（2026-09-25 US-601）：说的是"你引用的"，且明确可撤销。
+        ? _label('recall.projection.user_pinned_locked', 'You referenced these for this conversation; later turns keep carrying them until you revoke.')
+        : _label('recall.projection.model_selected_locked', 'The model picked these for the current task; later turns keep carrying them until you revoke.');
     const modelIds = Array.isArray(card?.modelSelectedAssetIds) ? card.modelSelectedAssetIds : null;
     const hasModelLedger = Boolean(modelIds);
     const modelIdSet = new Set(modelIds || []);
     const modelAssets = hasModelLedger ? assets.filter((asset) => modelIdSet.has(String(asset?.assetId || asset?.id || ''))) : assets;
     const baselineAssets = hasModelLedger ? assets.filter((asset) => !modelIdSet.has(String(asset?.assetId || asset?.id || ''))) : [];
-    const summary = hasModelLedger
-      ? _label('recall.projection.model_selected_summary_precise', 'Model attached {count} cognition assets · {total} in projection', {
-          count: Number(card?.modelSelectedCount ?? modelIds?.length ?? 0),
-          total: Number(card?.totalAssetCount ?? assets.length),
+    const summary = userPinned
+      ? _label('recall.projection.user_pinned_summary', 'You referenced {count} cognition assets', {
+          count: Number(card?.totalAssetCount ?? assets.length),
         })
-      : _label('recall.projection.model_selected_summary_legacy', 'Model-selected projection · {total} cognition assets', {
-          total: Number(card?.totalAssetCount ?? assets.length),
-        });
+      : hasModelLedger
+        ? _label('recall.projection.model_selected_summary_precise', 'Model attached {count} cognition assets · {total} in projection', {
+            count: Number(card?.modelSelectedCount ?? modelIds?.length ?? 0),
+            total: Number(card?.totalAssetCount ?? assets.length),
+          })
+        : _label('recall.projection.model_selected_summary_legacy', 'Model-selected projection · {total} cognition assets', {
+            total: Number(card?.totalAssetCount ?? assets.length),
+          });
     const assetRows = (rows, emptyLabel) => rows.length
       ? rows.map((asset) => _assetRow(asset, false)).join('')
       : `<div class="chat-recall-projection-empty">${_escape(emptyLabel)}</div>`;
@@ -95,14 +143,16 @@
       ? `<div class="chat-recall-projection-section"><div class="chat-recall-projection-section-title">${_escape(_label('recall.projection.model_selected_assets', 'Model-selected assets'))}</div>${assetRows(modelAssets, _label('recall.projection.no_included_assets', 'No preloaded assets selected.'))}</div>
           ${baselineAssets.length ? `<div class="chat-recall-projection-section"><div class="chat-recall-projection-section-title">${_escape(_label('recall.projection.semantic_baseline_assets', 'Semantic baseline assets'))}</div>${assetRows(baselineAssets, _label('recall.projection.no_included_assets', 'No preloaded assets selected.'))}</div>` : ''}`
       : `<div class="chat-recall-projection-section"><div class="chat-recall-projection-section-title">${_escape(_label('recall.projection.included_assets', 'Preloaded assets'))}</div>${assetRows(assets, _label('recall.projection.no_included_assets', 'No preloaded assets selected.'))}</div>`;
-    host.className = `chat-recall-projection-card is-model-selected is-${revoked ? 'revoked' : String(card?.status || 'unknown')}`;
+    host.className = `chat-recall-projection-card ${userPinned ? 'is-user-pinned' : 'is-model-selected'} is-${revoked ? 'revoked' : String(card?.status || 'unknown')}`;
     host.dataset.projectionId = String(card?.projectionId || '');
     host.innerHTML = `<div class="chat-recall-projection-head">
         <div class="chat-recall-projection-title">
           <strong>${_escape(summary)}</strong>
           <small>${_escape(primaryNote)}</small>
         </div>
-        <span class="chat-recall-projection-badge">${_escape(_label('recall.projection.model_selected_badge', 'Model-picked'))}</span>
+        <span class="chat-recall-projection-badge">${_escape(userPinned
+          ? _label('recall.projection.user_pinned_badge', 'You referenced')
+          : _label('recall.projection.model_selected_badge', 'Model-picked'))}</span>
         <span class="chat-recall-projection-status">${_escape(status)}</span>
       </div>
       <div class="chat-recall-projection-summary-actions">
@@ -114,7 +164,8 @@
           ${detailSections}
           ${omitted.length ? `<div class="chat-recall-projection-omitted">${_escape(_label('recall.projection.omitted_count', '{count} assets hidden', { count: omitted.length }))}</div>` : ''}
         </div>
-      </details>`;
+      </details>
+      ${_omissionRowsHtml(omissions)}`;
   }
 
   function _assetRow(asset, editable) {
@@ -146,13 +197,17 @@
     return `<div class="chat-recall-projection-available"><div><strong>${_escape(title)}</strong>${meta ? `<small>${_escape(meta)}</small>` : ''}</div><button type="button" class="btn btn-sm" data-recall-projection-add="${_escape(id)}">${_escape(_label('recall.projection.add_task_asset', 'Add asset'))}</button></div>`;
   }
 
-  function _render(host, card, available, opts, forecastFailure) {
-    host.__recallProjectionRenderState = { card, available, opts, forecastFailure };
+  function _render(host, card, available, opts, forecastFailure, omissions) {
+    host.__recallProjectionRenderState = { card, available, opts, forecastFailure, omissions };
     // 模型自选（2026-09-18）：卡片是"模型为这个任务挑的资产"，不是等用户
     // 确认的预载草稿——所以文案与动作都不同（confirmed + 一键撤销）。
+    // 用户 @ 钉住（2026-09-25 US-601）：同一张回执卡，只是"谁做的决定"不同，
+    // 撤销口也不同（revokePinned）——引用回执必须可撤销，否则挂上去就下不来。
     const modelSelected = card?.authorization === 'model_selected';
-    if (opts?.onlyModelSelected && !modelSelected) {
-      // 只挂模型自选的卡：其它授权（用户确认/工作区策略）保持"不挂卡"的现状。
+    const userPinned = card?.authorization === 'user_confirmed' && card?.purpose === 'user_pinned';
+    if (opts?.onlyModelSelected && !modelSelected && !userPinned) {
+      // 只挂"模型自选"与"用户 @ 钉住"两类回执：其它授权（工作区策略/预载草稿）
+      // 保持"不挂卡"的现状。
       host.className = '';
       host.innerHTML = '';
       delete host.dataset.projectionId;
@@ -166,8 +221,8 @@
       : editable
         ? `<div class="chat-recall-projection-empty">${_escape(_label('recall.projection.no_available_assets', 'No more assets to add.'))}</div>`
         : '';
-    if (modelSelected) {
-      _renderModelSelectedReceipt(host, card);
+    if (modelSelected || userPinned) {
+      _renderModelSelectedReceipt(host, card, userPinned, omissions);
       return;
     }
     host.className = 'chat-recall-projection-card';
@@ -219,7 +274,18 @@
       try {
         const card = await _loadCard(projectionId);
         const available = await _loadAvailable(projectionId, card.status === 'preview');
-        _render(host, card, available, { ...opts, projectionId }, forecastFailure);
+        // 用户引用的资产被拦留痕（US-604 AC4/AC7）：只有用户钉住的卡需要显示
+        // 「本轮未带入」，模型自选/其它授权不查这个口。
+        let omissions = [];
+        if (cid && card?.authorization === 'user_confirmed' && card?.purpose === 'user_pinned') {
+          try {
+            const result = await window.cogseed.invoke('recall.injections.omissions', { cid });
+            omissions = (result && result.ok && Array.isArray(result.omissions)) ? result.omissions : [];
+          } catch (_) {
+            omissions = [];
+          }
+        }
+        _render(host, card, available, { ...opts, projectionId }, forecastFailure, omissions);
       } catch (error) {
         host.className = 'chat-recall-projection-card is-error';
         host.innerHTML = _escape((error && error.message) || String(error));
@@ -246,7 +312,15 @@
             : retry
               ? await window.cogseed.invoke('recall.projections.retryForecast', { projectionId, ...(cid ? { cid } : {}) })
               : revoke
-                ? await window.cogseed.invoke('recall.projections.revoke', { projectionId })
+                // 撤销口按授权分流（US-601 AC3）：用户 @ 钉住的走 revokePinned，
+                // 模型自选仍走原口——两条线的授权语义不同，各自可审计。
+                ? await window.cogseed.invoke(
+                    (host.__recallProjectionRenderState?.card?.authorization === 'user_confirmed'
+                      && host.__recallProjectionRenderState?.card?.purpose === 'user_pinned')
+                      ? 'recall.projections.revokePinned'
+                      : 'recall.projections.revoke',
+                    { projectionId },
+                  )
                 : await window.cogseed.invoke('recall.projections.revise', remove
                   ? { projectionId, removeAssetIds: [assetId] }
                   : { projectionId, addAssetIds: [assetId] });
@@ -272,7 +346,7 @@
   if (typeof window.addEventListener === 'function') window.addEventListener('i18n-change', () => {
     document.querySelectorAll('.chat-recall-projection-card').forEach((host) => {
       const state = host.__recallProjectionRenderState;
-      if (state) _render(host, state.card, state.available, state.opts, state.forecastFailure);
+      if (state) _render(host, state.card, state.available, state.opts, state.forecastFailure, state.omissions);
     });
   });
 })();

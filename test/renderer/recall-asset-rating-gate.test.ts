@@ -79,6 +79,9 @@ function renderAssets(route: Record<string, unknown>, patch: (store: any) => voi
   context.document.getElementById = (id: string) => (id === 'ca-root' ? host : null);
   NS.store.assets = [ASSET];
   NS.store.proofs = [];
+  // 白名单与真实载荷同默认（2026-09-25 US-602）：没有它使用记录区会被 fail-closed
+  // 过滤空，评价入口自然测不到。
+  NS.store.realUsageKinds = ['usage_recorded', 'projection_confirmed'];
   NS.store.candidates = [];
   NS.store.loaded = true;
   NS.store.loading = false;
