@@ -32,6 +32,7 @@ import * as transcriptHeadings from '../features/transcript_headings';
 import * as transcriptQuery from '../features/transcript_query_rewrite';
 import * as transcriptPack from '../features/transcript_contribution_pack';
 import * as transcriptMetrics from '../features/transcript_metrics';
+import * as meetingMetrics from '../features/meeting_metrics';
 import * as transcriptDocTags from '../features/transcript_doc_tags';
 import * as transcriptRecall from '../features/transcript_recall';
 import * as meetingDoc from '../features/meeting_doc';
@@ -597,6 +598,20 @@ export const invokeHandlers = {
       hints,
       sessionKey: docId,
     });
+    // 【specs/013 T056】token 采集落点（FR-009）：模型复核返回 usage 时落
+    // meeting_model_usage 事件（新文件 meeting-metrics.jsonl，不混既有 metrics.jsonl）。
+    // no_model / model_failed 时 generateReviewCandidates 不带 usage 字段 ⇒ 这里
+    // 一条都不写（不写 0 假装测到）；写入失败在 meeting_metrics 内部吞掉，不炸扫描。
+    if (review.usage) {
+      meetingMetrics.recordMeetingMetric(ctx.userId, {
+        kind: 'meeting_model_usage',
+        docId: docId ?? '',
+        operation: 'review',
+        ...(review.usage.inputTokens !== undefined ? { inputTokens: review.usage.inputTokens } : {}),
+        ...(review.usage.outputTokens !== undefined ? { outputTokens: review.usage.outputTokens } : {}),
+        ...(review.usage.totalTokens !== undefined ? { totalTokens: review.usage.totalTokens } : {}),
+      });
+    }
     const modelCandidates: transcriptAutoCorrect.CorrectionCandidate[] = review.candidates.map((candidate, index) => ({
       entryRef: `model_${index}`,
       wrong: candidate.wrong,
