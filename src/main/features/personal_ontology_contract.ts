@@ -63,7 +63,7 @@ const log = createLogger('personal-ontology-contract');
  *  都不会以此开头，所以前缀足以把 contract ref 与历史 id 区分开。 */
 const REF_PREFIX = 'po1';
 
-/** 普通记忆分组（非模板）。分组没有模板那样的稳定业务 id，只能用 group_id。 */
+/** 普通本体分组（非模板）。分组没有模板那样的稳定业务 id，只能用 group_id。 */
 interface PlainGroupRef {
   k: 'g';
   /** 台账 group_id。 */
@@ -387,7 +387,7 @@ export interface OntologyEntryRef {
 }
 
 /**
- * 可 @ 引用的本体条目：普通记忆分组（平铺）+ 已安装模板的每个分节
+ * 可 @ 引用的本体条目：普通本体分组（平铺）+ 已安装模板的每个分节
  * （带 parentId/parentLabel 供渲染层折叠与搜索）。
  * 顺序：普通分组在前（台账顺序），模板分节在后（模板目录顺序 × 文件分节顺序）。
  */

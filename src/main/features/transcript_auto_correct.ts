@@ -504,7 +504,7 @@ export function mapOffset(offsetMap: OffsetSegment[], inputOffset: number): numb
 
 // ── 疑似专名探测（模型复核的重点线索）────────────────────────────────────
 //
-// `detectSuspectEntities`：**保守**地找出"疑似专名但词表/记忆分组都没有"的拉丁串。
+// `detectSuspectEntities`：**保守**地找出"疑似专名但词表/本体分组都没有"的拉丁串。
 // 保守的含义是"宁漏勿噪"——只认长度 ≥4 且（含内部大写 或 全大写）的串：
 // `KSTAR`/`NoteBookLM` 会被认出，`Hello`/`OK`/`API` 不会。
 //
@@ -523,7 +523,7 @@ export interface SuspectEntity {
 const SUSPECT_RE = /[A-Za-z][A-Za-z0-9]*(?:[A-Z][A-Za-z0-9]+)+|[A-Z]{4,}/g;
 
 /**
- * 找"疑似专名"。`known` = 词表（wrong/correct）与记忆分组里的规范名，
+ * 找"疑似专名"。`known` = 词表（wrong/correct）与本体分组里的规范名，
  * 折叠后比对：已知的词不会进待核（它不是"未知实体"）。
  */
 export function detectSuspectEntities(

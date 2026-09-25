@@ -272,7 +272,7 @@ export function parseReviewResponse(
 }
 
 export interface GenerateReviewOptions {
-  /** 优先参考名单（词表正确写法 + 记忆分组字段值）。 */
+  /** 优先参考名单（词表正确写法 + 本体分组字段值）。 */
   knownTargets?: string[];
   /** 词形判据找出的可疑位置：只作为提示。 */
   hints?: SuspectHint[];
