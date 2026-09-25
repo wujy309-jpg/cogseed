@@ -9166,5 +9166,13 @@
   "cognition.ranking_weights_save": "Save",
   "cognition.ranking_weights_saved_toast": "Saved; takes effect from the next turn",
   "cognition.ranking_weights_invalid_value": "Weights must be numbers between 0 and 10 and cannot all be zero",
-  "cognition.ranking_source_default_note": "Default weights are in use"
+  "cognition.ranking_source_default_note": "Default weights are in use",
+  "cognition.ranking_loading": "Fetching this turn's ranking breakdown…",
+  "cognition.ranking_load_failed": "The ranking breakdown is unavailable right now (read failed); try again later.",
+  "cognition.ranking_relevance_absent_note": "This turn had no task text to compare against, so relevance is not scored",
+  "cognition.ranking_total": "Weighted score {score}",
+  "cognition.ranking_why_hint": "Weights can be adjusted under Organize → Capture settings; changes take effect on the next conversation turn.",
+  "cognition.ranking_weights_hint": "Controls the recommendation order of the asset catalog. Saved weights take effect on the next conversation turn (no code changes needed); all-zero or values outside 0–10 are rejected and previous values stay.",
+  "cognition.ranking_weights_load_failed": "Weight settings could not be read (read failed), so editing is disabled here for now.",
+  "cognition.ranking_weights_loading": "Loading weight settings…"
 }

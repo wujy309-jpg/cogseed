@@ -29,6 +29,9 @@
     'experience-status-toggle', 'experience-set-type', 'experience-merge', 'experience-archive', 'experience-migration-run',
     // 标签系统（specs/012 US-201）：单打标/移除/批量执行/管理三动作都是写通道。
     'tag-add', 'tag-remove', 'tag-batch-run', 'tag-rename-save', 'tag-merge-confirm', 'tag-delete',
+    // 推荐排序权重（specs/012 US-202 AC6）：保存走唯一写通道（恢复默认只在
+    // 本地回填输入框，不落盘，不进 pending 集）。
+    'ranking-weights-save',
   ]);
 
   /* ────────────────────────── 事件委托 ────────────────────────── */
@@ -402,6 +405,47 @@
           case 'source-action': await A.sourceAction(el.dataset.kind || '', id, el.dataset.action); break;
           case 'capture-action': await A.captureAction(id, el.dataset.action); break;
           case 'organize-conv': await A.organizeConversation(id); break;
+          case 'ranking-weights-reset': {
+            // 恢复默认只回填输入框（DOM 就地），不落盘——落盘要点「保存」。
+            const card = el.closest('[data-ranking-weights]');
+            const defaults = (NS.rankingWeights && NS.rankingWeights.defaults) || {};
+            if (card) {
+              for (const input of Array.from(card.querySelectorAll('[data-w]'))) {
+                const key = String(input.dataset.w || '');
+                if (defaults[key] !== undefined) input.value = String(defaults[key]);
+              }
+              showWeightsError(card, '');
+            }
+            break;
+          }
+          case 'ranking-weights-save': {
+            // 客户端先挡形状（0~10、不全零），再走唯一写通道；失败就地报错
+            // 并保持输入值（不整卡重画），成功才 toast「下一轮生效」+ 重拉。
+            const card = el.closest('[data-ranking-weights]');
+            if (!card) break;
+            const keys = ['relevance', 'adoption', 'scene', 'maturity'];
+            const weights = {};
+            let invalid = false;
+            for (const key of keys) {
+              const input = card.querySelector(`[data-w="${key}"]`);
+              const value = Number(input ? input.value : Number.NaN);
+              if (!Number.isFinite(value) || value < 0 || value > 10) invalid = true;
+              weights[key] = value;
+            }
+            if (invalid || keys.every((key) => Number(weights[key]) === 0)) {
+              showWeightsError(card, T('cognition.ranking_weights_invalid_value', '权重需要是 0~10 的数字，且不能全为 0'));
+              break;
+            }
+            try {
+              await NS.api.call('recall.catalog.weights.set', { weights });
+              showWeightsError(card, '');
+              NS.toast(T('cognition.ranking_weights_saved_toast', '已保存，下一轮对话生效'), 'success');
+              await loadRankingWeights(true);
+            } catch (error) {
+              showWeightsError(card, String((error && error.message) || error));
+            }
+            break;
+          }
           case 'capture-toggle': {
             const enabled = !(S.captureSettings && S.captureSettings.enabled !== false);
             if (!enabled) {
@@ -732,6 +776,12 @@
     }
     // 采用回执（2026-09-25 US-602）：详情「实际采用记录」区的唯一数据源。
     if (assetId) void NS.loadAdoptionReceipts(assetId);
+    // 排序依据（specs/012 T020 / US-202 AC4）：详情「为什么这一轮排在前面」
+    // 小节的数据源（recall.catalog.ranking 只读；app 层装载，见文件底部的
+    // 排序依据/权重装载器——core 不动）。
+    if (assetId) void loadRankingWhy(assetId);
+    // 权重配置（US-202 AC6）：进沉淀设置页才拉一次（契约：既有设置位）。
+    if (String(S.route.name || '') === 'organize-settings') void loadRankingWeights();
     // 会话标题同理（2026-09-25 US-603）：证据来源与使用记录里的 cid 要翻成
     // 会话名，五处展示同名；来源目录 100 条窗口外的会话靠这个批量口补齐。
     if (assetId) void NS.loadConversationTitles(assetId);
@@ -777,6 +827,86 @@
     app.classList.toggle('is-refreshing', Boolean(S.loading && S.loaded));
   }
   NS.onChange(() => { requestAnimationFrame(syncRefreshIndicator); });
+
+  /* ────────────────── 排序依据 / 权重装载器（specs/012 T020） ──────────────────
+   * 状态挂在模块闭包 + NS 命名空间（NS.rankingWhy / NS.rankingWeights）：
+   * core.js 的 store 不动（本轮白名单只开 views/app），视图按 NS 读——与
+   * NS.api / NS.reportBlocked 的既有跨层发布同一模式。 */
+
+  /** 该资产最近一次真实使用的回合 id：使用记录时间线（refs.taskRunId）优先，
+   *  采用回执兜底；都没有 = ''（视图按「这一轮没有进入目录」如实呈现）。 */
+  function latestTurnForAsset(assetId) {
+    const id = String(assetId || '');
+    const fromProofs = (Array.isArray(S.proofs) ? S.proofs : [])
+      .filter((p) => String(((p && p.refs) || {}).assetId || '') === id && String(((p && p.refs) || {}).taskRunId || ''))
+      .sort((a, b) => String(b.occurredAt || '').localeCompare(String(a.occurredAt || '')));
+    if (fromProofs.length) return String(fromProofs[0].refs.taskRunId || '');
+    const adoptions = (S.adoptionReceipts && String(S.adoptionReceipts.assetId || '') === id
+      && Array.isArray(S.adoptionReceipts.items)) ? S.adoptionReceipts.items : [];
+    const newest = [...adoptions].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))[0];
+    return newest ? String(newest.taskRunId || '') : '';
+  }
+
+  let rankingWhyLast = { assetId: '', turnId: null };
+  /** 详情「为什么这一轮排在前面」：先定位回合，再查该回合该资产的回执拆解。
+   *  同资产同回合只拉一次；换回合（新一轮使用记录落进时间线）会自动重拉。 */
+  async function loadRankingWhy(assetId) {
+    const id = String(assetId || '');
+    if (!id) return;
+    const turnId = latestTurnForAsset(id);
+    if (rankingWhyLast.assetId === id && rankingWhyLast.turnId === turnId) return;
+    rankingWhyLast = { assetId: id, turnId };
+    NS.rankingWhy = { assetId: id, loading: true };
+    NS.render();
+    let next;
+    try {
+      let item = null;
+      if (turnId) {
+        const result = await NS.api.call('recall.catalog.ranking', { taskRunId: turnId, assetId: id, limit: 1 });
+        item = (Array.isArray(result.items) ? result.items : [])[0] || null;
+      }
+      next = { assetId: id, ...(turnId ? { turnId } : {}), ...(item ? { item } : {}) };
+    } catch (error) {
+      next = { assetId: id, ...(turnId ? { turnId } : {}), failed: true, error: String((error && error.message) || error) };
+    }
+    // 回执到达前用户已切走/换资产：这帧作废（不把 A 资产的拆解画给 B 资产）。
+    if (rankingWhyLast.assetId !== id) return;
+    NS.rankingWhy = next;
+    NS.render();
+  }
+
+  let rankingWeightsLoaded = false;
+  /** 沉淀设置页的权重卡数据（recall.catalog.weights.get，只读）。失败如实
+   *  呈现（卡片禁编辑），不摆假数字。 */
+  async function loadRankingWeights(force) {
+    if (!force && rankingWeightsLoaded) return;
+    rankingWeightsLoaded = true;
+    NS.rankingWeights = { loading: true };
+    NS.render();
+    let next;
+    try {
+      const result = await NS.api.call('recall.catalog.weights.get');
+      next = {
+        weights: (result && result.weights) || {},
+        defaults: (result && result.defaults) || {},
+        source: String((result && result.source) || 'default'),
+      };
+    } catch (error) {
+      rankingWeightsLoaded = false; // 读失败允许下次进页重试。
+      next = { failed: true, error: String((error && error.message) || error) };
+    }
+    NS.rankingWeights = next;
+    NS.render();
+  }
+
+  /** 权重卡的就地报错：只写错误行，不整卡重画（重画会吃掉刚输入的数值）。 */
+  function showWeightsError(card, message) {
+    const errEl = card && card.querySelector('[data-ranking-weights-error]');
+    if (!errEl) return;
+    errEl.textContent = message || '';
+    if (message) errEl.removeAttribute('hidden');
+    else errEl.setAttribute('hidden', 'hidden');
+  }
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', scheduleBoot, { once: true });

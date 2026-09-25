@@ -7049,5 +7049,13 @@
   "cognition.ranking_weights_save": "Salvar",
   "cognition.ranking_weights_saved_toast": "Salvo; vale a partir da próxima rodada",
   "cognition.ranking_weights_invalid_value": "Os pesos devem ser números de 0 a 10 e não podem ser todos zero",
-  "cognition.ranking_source_default_note": "Pesos padrão em uso"
+  "cognition.ranking_source_default_note": "Pesos padrão em uso",
+  "cognition.ranking_loading": "Buscando os critérios de ordenação desta rodada…",
+  "cognition.ranking_load_failed": "Os critérios de ordenação estão indisponíveis no momento (falha de leitura); tente novamente mais tarde.",
+  "cognition.ranking_relevance_absent_note": "Esta rodada não tinha texto de tarefa para comparar, então a relevância não pontua",
+  "cognition.ranking_total": "Pontuação ponderada {score}",
+  "cognition.ranking_why_hint": "Os pesos podem ser ajustados em Organizar → Configurações de captura; a alteração vale a partir da próxima rodada.",
+  "cognition.ranking_weights_hint": "Afeta a ordem de recomendação do catálogo de ativos. Após salvar, vale na próxima rodada de conversa (sem alterar código); tudo zero ou fora de 0–10 é recusado e os valores anteriores permanecem.",
+  "cognition.ranking_weights_load_failed": "Não foi possível ler as configurações de pesos (falha de leitura); a edição fica desativada aqui por enquanto.",
+  "cognition.ranking_weights_loading": "Carregando as configurações de pesos…"
 }

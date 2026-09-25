@@ -95,6 +95,8 @@
     { "act": "tag-rename-save", "module": "cognition-assets", "ipc": "recall.tags.rename", "write": true, "pending": true, "phase": 11 },
     { "act": "tag-merge-confirm", "module": "cognition-assets", "ipc": "recall.tags.merge", "write": true, "pending": true, "phase": 11 },
     { "act": "tag-delete", "module": "cognition-assets", "ipc": "recall.tags.delete", "write": true, "pending": true, "phase": 11 },
+    { "act": "ranking-weights-save", "module": "cognition-assets", "ipc": "recall.catalog.weights.set", "write": true, "pending": true, "phase": 11 },
+    { "act": "ranking-weights-reset", "module": "cognition-assets", "ipc": null, "write": false, "pending": false, "phase": 11 },
     { "act": "personalOntology.groups.fields.verify", "module": "personal-ontology", "ipc": "personalOntology.groups.fields.verify", "write": true, "pending": false, "phase": 8 },
     { "act": "personalOntology.groups.fields.cycleRuleKind", "module": "personal-ontology", "ipc": "personalOntology.groups.fields.cycleRuleKind", "write": true, "pending": false, "phase": 8 },
     { "act": "personalOntology.groups.fields.sensitivity", "module": "personal-ontology", "ipc": "personalOntology.groups.fields.sensitivity", "write": true, "pending": false, "phase": 8 },

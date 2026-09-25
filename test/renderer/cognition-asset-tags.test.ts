@@ -498,3 +498,124 @@ describe('族话术降级（T008）与隐私红线', () => {
     expect(appSource).toContain("event.key !== 'Enter' || event.isComposing || event.keyCode === 229");
   });
 });
+
+describe('排序依据小节与权重入口（T020 / US-202 AC4+AC6）', () => {
+  /** 资产详情路由（aa-tag-1 = active，排序小节按状态渲染）。 */
+  const detail = (state: Record<string, unknown> = {}) => loadCognition({ route: { assetId: 'aa-tag-1' }, ...state });
+
+  it('explainable：只显示在场因子（缺的不显示 0）+ 总分 + 缺席说明 + 默认权重说明', () => {
+    const loaded = detail();
+    loaded.ns.rankingWhy = {
+      assetId: 'aa-tag-1', turnId: 'turn-rk-1',
+      item: {
+        taskRunId: 'turn-rk-1', assetId: 'aa-tag-1', assetVersion: '1', channel: 'projection',
+        explainable: true, score: 0.63,
+        factors: [
+          { name: 'relevance', raw: 0.62, weight: 1, contribution: 0.62 },
+          { name: 'adoption', raw: 0.85, weight: 1, contribution: 0.85 },
+          { name: 'maturity', raw: 0.5, weight: 0.4, contribution: 0.2 },
+        ],
+        excluded: ['scene'], weightsSource: 'default',
+      },
+    };
+    const html = loaded.render();
+    expect(html).toContain(zh['cognition.ranking_why_title']);
+    expect(html).toContain('ca-rank-row');
+    expect(html).toContain(zh['cognition.ranking_factor_relevance']);
+    expect(html).toContain(zh['cognition.ranking_factor_adoption']);
+    expect(html).toContain(zh['cognition.ranking_factor_maturity']);
+    // 缺的因子不显示（不是显示 0）：因子行恰好 3 行、没有「场景」行；
+    // 缺席说明里出现「场景」一词是说明文案，不是因子行。
+    expect((html.match(/class="ca-rank-row"/g) || []).length).toBe(3);
+    expect(html).not.toContain(`ca-rank-name">${zh['cognition.ranking_factor_scene']}`);
+    expect(html).toContain(zh['cognition.ranking_scene_absent_note']);
+    expect(html).toContain(zh['cognition.ranking_total'].replace('{score}', '0.63'));
+    expect(html).toContain(zh['cognition.ranking_source_default_note']);
+    // 拆解只渲染因子名与数值，不落内部回合 id。
+    expect(html).not.toContain('turn-rk-1');
+  });
+
+  it('旧回执 explainable:false → 如实说「没有记录」，不编造因子行', () => {
+    const loaded = detail();
+    loaded.ns.rankingWhy = { assetId: 'aa-tag-1', turnId: 'turn-rk-old', item: { taskRunId: 'turn-rk-old', assetId: 'aa-tag-1', explainable: false } };
+    const html = loaded.render();
+    expect(html).toContain(zh['cognition.ranking_why_title']);
+    expect(html).toContain(zh['cognition.ranking_no_record']);
+    expect(html).not.toContain('ca-rank-row');
+  });
+
+  it('使用记录里没有回合 → 「这一轮没有进入目录」；读取失败 → 如实说取不到', () => {
+    const noTurn = detail();
+    noTurn.ns.rankingWhy = { assetId: 'aa-tag-1' };
+    const noTurnHtml = noTurn.render();
+    expect(noTurnHtml).toContain(zh['cognition.ranking_not_in_catalog']);
+
+    const failed = detail();
+    failed.ns.rankingWhy = { assetId: 'aa-tag-1', failed: true, error: 'boom' };
+    expect(failed.render()).toContain(zh['cognition.ranking_load_failed']);
+  });
+
+  it('weightsSource=invalid-fallback → 醒目提示「你的权重配置没生效」', () => {
+    const loaded = detail();
+    loaded.ns.rankingWhy = {
+      assetId: 'aa-tag-1', turnId: 'turn-rk-2',
+      item: {
+        taskRunId: 'turn-rk-2', assetId: 'aa-tag-1', explainable: true, score: 0.5,
+        factors: [{ name: 'adoption', raw: 0.5, weight: 1, contribution: 0.5 }],
+        excluded: ['relevance', 'scene'], weightsSource: 'invalid-fallback',
+      },
+    };
+    const html = loaded.render();
+    expect(html).toContain(zh['cognition.ranking_weights_invalid_note']);
+    expect(html).toContain('ca-rank-warn');
+    // relevance 缺席同样给一句人话（不是显示 0）。
+    expect(html).toContain(zh['cognition.ranking_relevance_absent_note']);
+  });
+
+  it('权重卡（沉淀设置页）：4 个数值 uiInput + 恢复默认 + 保存 + 来源说明；读失败如实禁编辑', () => {
+    const loaded = loadCognition({
+      route: { name: 'organize-settings' },
+    });
+    loaded.ns.rankingWeights = {
+      weights: { relevance: 1, adoption: 3, scene: 0.8, maturity: 0.4 },
+      defaults: { relevance: 1, adoption: 1, scene: 0.8, maturity: 0.4 },
+      source: 'configured',
+    };
+    const html = loaded.render();
+    expect(html).toContain(zh['cognition.ranking_weights_title']);
+    expect(html).toContain(zh['cognition.ranking_weights_hint']);
+    for (const factor of ['relevance', 'adoption', 'scene', 'maturity']) {
+      expect(html).toContain(`data-w="${factor}"`);
+    }
+    expect(html).toContain('type="number"');
+    expect(html).toContain(`data-act="ranking-weights-reset"`);
+    expect(html).toContain(`data-act="ranking-weights-save"`);
+    expect(html).toContain('data-ranking-weights-error');
+    // configured 不再叠「默认权重」说明（避免噪音）。
+    expect(html).not.toContain(zh['cognition.ranking_source_default_note']);
+
+    const failed = loadCognition({ route: { name: 'organize-settings' } });
+    failed.ns.rankingWeights = { failed: true, error: 'no handler' };
+    const failedHtml = failed.render();
+    expect(failedHtml).toContain(zh['cognition.ranking_weights_load_failed']);
+    expect(failedHtml).not.toContain('data-w="relevance"');
+  });
+
+  it('源码级：app.js 装载/保存接线——ranking 只读当前回合该资产；weights.set 保存；非法就地报错不整卡重画；toast 如实说下一轮生效', () => {
+    // 详情装载：只查「该资产最近一次回合」的一条（limit 1，带 assetId）。
+    expect(appSource).toContain("'recall.catalog.ranking'");
+    expect(appSource).toContain('taskRunId: turnId, assetId: id, limit: 1');
+    // 保存走唯一写通道；校验失败就地报错（不整卡重画，保住已输入值）。
+    expect(appSource).toContain("'ranking-weights-save'");
+    expect(appSource).toContain("'recall.catalog.weights.set'");
+    expect(appSource).toContain('showWeightsError(card');
+    expect(appSource).toContain("'ranking-weights-save',");
+    // 生效口径：提示「下一轮」，不谎称立即生效。
+    expect(appSource).toContain("T('cognition.ranking_weights_saved_toast'");
+    expect(zh['cognition.ranking_weights_saved_toast']).toContain('下一轮');
+    // 恢复默认只回填输入框（不落盘）——没有 reset 的写通道调用。
+    const resetCase = appSource.slice(appSource.indexOf("case 'ranking-weights-reset'"), appSource.indexOf("case 'ranking-weights-save'"));
+    expect(resetCase).not.toContain('invoke');
+    expect(resetCase).not.toContain('api.call');
+  });
+});

@@ -1,6 +1,6 @@
 import { createLogger } from '../../logger';
 import { logErrorRef, maskId } from '../../util/log-redact';
-import { rankAssets, type RankingSceneContext, type RankingWeights } from './asset-ranking';
+import { rankAssets, type RankedAsset, type RankingSceneContext, type RankingWeights } from './asset-ranking';
 import {
   catalogRelevanceScores,
   formatCatalogEntries,
@@ -39,8 +39,31 @@ interface CatalogPromptCache {
 }
 let cache: CatalogPromptCache | null = null;
 
+/** 当轮 ranked 视图（specs/012 T019）：buildCatalogPrompt 里 rankAssets 的
+ *  那一份拆解，按目录缓存的**同键**（userId + cid）记住最近一次构建——
+ *  注入回执写侧（bus.ts 的 projection 通道 / recall-tools 的 agent_read
+ *  通道）从这里查当轮拆解，**不在写侧重算**（排序唯一处 II2 的自然推论：
+ *  解释也只出自那一次构建，两处同序才可对账）。会话归属对不上（没建过
+ *  目录 / 别的会话）→ 空 Map，写侧省略 ranking，读取侧按 explainable:false
+ *  如实说「没有记录」。 */
+interface CatalogRankedView {
+  userId: string;
+  cid: string;
+  byId: ReadonlyMap<string, RankedAsset>;
+}
+let lastRanked: CatalogRankedView | null = null;
+
 export function resetAssetCatalogHintCacheForTest(): void {
   cache = null;
+  lastRanked = null;
+}
+
+/** 当轮 ranked 视图访问器（T019）：键与目录文本缓存一致（userId + cid，
+ *  会话级）；每个会话目录构建都刷新它，所以「最近一次」就是当轮 commander
+ *  建目录的那一次。查不到返回空 Map（写侧据此不带 ranking，不编造）。 */
+export function lastCatalogRankedForTurn(userId: string, cid: string): ReadonlyMap<string, RankedAsset> {
+  if (!lastRanked || lastRanked.userId !== userId || lastRanked.cid !== cid) return new Map();
+  return lastRanked.byId;
 }
 
 /**
@@ -149,6 +172,8 @@ async function buildCatalogPrompt(
     weights: weightsSnapshot.weights,
     weightsSource: weightsSnapshot.source,
   });
+  // 当轮 ranked 视图记档（T019）：同键同时刻，供回执写侧查表（只透出不重算）。
+  lastRanked = { userId, cid, byId: new Map(ranked.map((row) => [row.assetId, row] as const)) };
   const sorted = ranked
     .map((row) => byId.get(row.assetId))
     .filter((asset): asset is (typeof active)[number] => Boolean(asset));

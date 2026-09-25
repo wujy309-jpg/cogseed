@@ -9166,5 +9166,13 @@
   "cognition.ranking_weights_save": "保存",
   "cognition.ranking_weights_saved_toast": "已保存，下一轮对话生效",
   "cognition.ranking_weights_invalid_value": "权重需要是 0~10 的数字，且不能全为 0",
-  "cognition.ranking_source_default_note": "当前使用默认权重"
+  "cognition.ranking_source_default_note": "当前使用默认权重",
+  "cognition.ranking_loading": "正在取这一轮的排序依据…",
+  "cognition.ranking_load_failed": "排序依据暂时取不到（读取失败），可以稍后再试。",
+  "cognition.ranking_relevance_absent_note": "这一轮没有可比对的任务文本，内容相关不计分",
+  "cognition.ranking_total": "加权总分 {score}",
+  "cognition.ranking_why_hint": "权重可在「整理 → 沉淀设置」里调整；改完下一轮对话生效。",
+  "cognition.ranking_weights_hint": "影响认知资产目录的推荐排序。保存后下一轮对话生效（不用改代码）；四个都填 0 或超出 0~10 会被拒绝，原值保持。",
+  "cognition.ranking_weights_load_failed": "权重设置暂时读不到（读取失败），所以这里暂时不能编辑。",
+  "cognition.ranking_weights_loading": "正在读取权重设置…"
 }

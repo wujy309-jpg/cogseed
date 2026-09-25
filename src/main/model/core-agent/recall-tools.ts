@@ -175,12 +175,21 @@ async function recordAgentReads(
     return;
   }
   try {
+    // 「为什么排前」拆解随回执留痕（specs/012 T019，与 bus.ts 写侧同款）：
+    // 只查 asset-catalog-hint 当轮 ranked 视图（userId+cid 同键），不在记账
+    // 路径重算（排序唯一处）；没建过目录 / 会话对不上 → 空 Map，不带
+    // ranking（读取侧 explainable:false，如实说「没有记录」）。
+    const { lastCatalogRankedForTurn } = await import('../../features/recall/asset-catalog-hint');
+    const { explainRanking } = await import('../../features/recall/asset-ranking');
+    const rankedThisTurn: ReadonlyMap<string, import('../../features/recall/asset-ranking').RankedAsset>
+      = opts.cid ? lastCatalogRankedForTurn(opts.userId, opts.cid) : new Map();
     const seenThisTurn = new Set(
       (await listInjectionReceipts(opts.userId, turnId))
         .filter((row) => String(row.channel || '') === 'agent_read')
         .map((row) => String(row.assetId || '')),
     );
     for (const entry of entries) {
+      const rankedRow = rankedThisTurn.get(entry.assetId);
       await recordInjectionReceipt(opts.userId, {
         taskRunId: turnId,
         assetId: entry.assetId,
@@ -188,6 +197,7 @@ async function recordAgentReads(
         boundary: 'real',
         status: 'injected',
         channel: 'agent_read',
+        ...(rankedRow ? { ranking: explainRanking(rankedRow) } : {}),
       });
       if (seenThisTurn.has(entry.assetId)) continue;
       seenThisTurn.add(entry.assetId);

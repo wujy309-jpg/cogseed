@@ -7049,5 +7049,13 @@
   "cognition.ranking_weights_save": "保存",
   "cognition.ranking_weights_saved_toast": "保存しました。次のターンから有効です",
   "cognition.ranking_weights_invalid_value": "重みは 0〜10 の数値で、すべて 0 にはできません",
-  "cognition.ranking_source_default_note": "現在は既定の重みを使用中です"
+  "cognition.ranking_source_default_note": "現在は既定の重みを使用中です",
+  "cognition.ranking_loading": "このターンの並べ替え根拠を取得しています…",
+  "cognition.ranking_load_failed": "並べ替え根拠を一時的に取得できません（読み取り失敗）。後でもう一度お試しください。",
+  "cognition.ranking_relevance_absent_note": "このターンは照合できるタスク本文がないため、内容の関連度は採点されません",
+  "cognition.ranking_total": "加重合計 {score}",
+  "cognition.ranking_why_hint": "重みは「整理 → 整理設定」で調整できます。変更は次のターンから有効になります。",
+  "cognition.ranking_weights_hint": "認知資産カタログの推薦並べ替えに影響します。保存すると次のターンから有効です（コード変更不要）。4 つすべて 0、または 0～10 の範囲外は拒否され、元の値が保持されます。",
+  "cognition.ranking_weights_load_failed": "重み設定を読み取れなかったため（読み取り失敗）、ここでは今しばらく編集できません。",
+  "cognition.ranking_weights_loading": "重み設定を読み込んでいます…"
 }

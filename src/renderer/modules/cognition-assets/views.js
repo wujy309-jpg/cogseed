@@ -1279,6 +1279,74 @@
     </div>`;
   }
 
+  /** 资产详情「为什么这一轮排在前面」（specs/012 T020 / US-202 AC4）：使用
+   *  记录区里的折叠小节，解释这条资产最近一轮在目录里的推荐排序依据。
+   *  数据 = recall.catalog.ranking（注入回执的 ranking 拆解，只读）——由
+   *  app.js 按详情页资产异步取回后挂在 NS.rankingWhy（本文件不改 core）。
+   *  呈现纪律：缺的因子不显示（不是 0）；缺席给一句人话；旧回执没有
+   *  ranking → 如实说「没有记录」，不编造；weightsSource=invalid-fallback
+   *  → 醒目提示「你的权重配置没生效」。 */
+  function assetRankingWhySection(asset) {
+    if (!['active', 'paused'].includes(String(asset.status || 'active'))) return '';
+    const state = NS.rankingWhy;
+    const mine = state && String(state.assetId || '') === String(asset.id) ? state : null;
+    let body;
+    if (!mine || mine.loading) {
+      body = `<div class="sub">${esc(T('cognition.ranking_loading', '正在取这一轮的排序依据…'))}</div>`;
+    } else if (mine.failed) {
+      body = `<div class="sub">${esc(T('cognition.ranking_load_failed', '排序依据暂时取不到（读取失败），可以稍后再试。'))}</div>`;
+    } else if (!mine.turnId) {
+      // 使用记录里找不到这条资产的任何回合 → 它没进过当轮目录（空态契约）。
+      body = `<div class="sub">${esc(T('cognition.ranking_not_in_catalog', '这一轮没有进入目录'))}</div>`;
+    } else if (!mine.item || mine.item.explainable === false) {
+      body = `<div class="sub">${esc(T('cognition.ranking_no_record', '这一轮没有记录排序依据'))}</div>`;
+    } else {
+      const FACTOR_LABELS = {
+        relevance: T('cognition.ranking_factor_relevance', '内容相关'),
+        adoption: T('cognition.ranking_factor_adoption', '实际采用'),
+        scene: T('cognition.ranking_factor_scene', '场景'),
+        maturity: T('cognition.ranking_factor_maturity', '成熟度'),
+      };
+      const num = (value) => Number(value || 0).toFixed(2);
+      const rows = (Array.isArray(mine.item.factors) ? mine.item.factors : []).map((factor) => `
+        <div class="ca-rank-row">
+          <span class="ca-rank-name">${esc(FACTOR_LABELS[factor.name] || String(factor.name || ''))}</span>
+          <span class="ca-rank-raw">${esc(num(factor.raw))}</span>
+          <span class="ca-rank-weight">× ${esc(Number(factor.weight || 0).toFixed(1))}</span>
+          <span class="ca-rank-contrib">= ${esc(num(factor.contribution))}</span>
+        </div>`).join('');
+      // 缺席因子 = 不进分子也不进分母：给一句人话说明（scene/relevance 之外
+      // 的因子在场恒定，不会缺席——出现未知缺席名时不编理由，只如实不显示）。
+      const ABSENT_NOTES = {
+        scene: T('cognition.ranking_scene_absent_note', '这一轮会话没有项目归属，所以场景不计分'),
+        relevance: T('cognition.ranking_relevance_absent_note', '这一轮没有可比对的任务文本，内容相关不计分'),
+      };
+      const absent = (Array.isArray(mine.item.excluded) ? mine.item.excluded : [])
+        .map((name) => ABSENT_NOTES[name] || '')
+        .filter(Boolean)
+        .map((note) => `<p class="note">${esc(note)}</p>`)
+        .join('');
+      const source = String(mine.item.weightsSource || '');
+      const sourceNote = source === 'invalid-fallback'
+        ? `<p class="note ca-rank-warn">${esc(T('cognition.ranking_weights_invalid_note', '你的权重配置没生效（配置不合法），当前用的是默认权重'))}</p>`
+        : source === 'default'
+          ? `<p class="note">${esc(T('cognition.ranking_source_default_note', '当前使用默认权重'))}</p>`
+          : '';
+      body = `
+        <div class="ca-rank-rows">${rows}</div>
+        <div class="sub"><strong>${esc(T('cognition.ranking_total', '加权总分 {score}', { score: num(mine.item.score) }))}</strong></div>
+        ${absent}
+        ${sourceNote}
+        <p class="note">${esc(T('cognition.ranking_why_hint', '权重可在「整理 → 沉淀设置」里调整；改完下一轮对话生效。'))}</p>`;
+    }
+    return `<div class="sect-block ca-rank-why" data-ranking-why>
+      <details class="details">
+        <summary>${esc(T('cognition.ranking_why_title', '为什么这一轮排在前面'))}</summary>
+        <div class="dbody">${body}</div>
+      </details>
+    </div>`;
+  }
+
   /** 版本来源标签（2026-09-17 报告建议 E）：reason 是审计字段（多为机器
    *  生成），直接透传用户读不懂；先归一成来源种类，标签走 locale，原文
    *  收进展开块"变更说明"。reason 归一只认数据层的固定英文前缀（core 写
@@ -1580,6 +1648,7 @@
       })()}
       ${assetVersionsSection(asset)}
       ${assetUsageSection(asset, route)}
+      ${assetRankingWhySection(asset)}
       ${assetAdoptionSection(asset)}
       ${(() => {
         /* 审计履历块：auditRows.slice(0,12) + 超限提示。动作标签显式列全
@@ -3083,6 +3152,58 @@
    * 开始时间；开启时联动「先问我」——产出的候选进「待我处理」等批准/调整
    *（而非自动采纳）。原抽屉的整理功能开关与候选确认方式也收在 this 页。 */
 
+  /** 推荐排序权重卡（specs/012 T020 / US-202 AC6，契约 renderer-seams §七）：
+   *  4 个数值 uiInput（0~10、步进 0.1）+ 恢复默认 + 保存；保存/校验失败
+   *  **就地报错**（不整页重画——重画会吃掉刚输入的值）；读不到权重时如实
+   *  说明并禁编辑，不摆假数字。生效口径：下一轮目录构建（提示语不谎称立即）。 */
+  function rankingWeightsCard() {
+    const state = NS.rankingWeights;
+    const title = T('cognition.ranking_weights_title', '推荐排序权重');
+    const FACTORS = [
+      ['relevance', T('cognition.ranking_weights_factor_relevance', '内容相关权重')],
+      ['adoption', T('cognition.ranking_weights_factor_adoption', '实际采用权重')],
+      ['scene', T('cognition.ranking_weights_factor_scene', '场景权重')],
+      ['maturity', T('cognition.ranking_weights_factor_maturity', '成熟度权重')],
+    ];
+    const field = (label, inner) => `<label class="field"><span>${esc(label)}</span>${inner}</label>`;
+    const sourceNote = (src) => (src === 'invalid-fallback'
+      ? `<p class="note ca-rank-warn">${esc(T('cognition.ranking_weights_invalid_note', '你的权重配置没生效（配置不合法），当前用的是默认权重'))}</p>`
+      : src === 'default' ? `<p class="note">${esc(T('cognition.ranking_source_default_note', '当前使用默认权重'))}</p>` : '');
+    if (!state || state.loading) {
+      return `<div class="card ca-setcard">
+        <div class="tt">${esc(title)}</div>
+        <p class="note">${esc(T('cognition.ranking_weights_loading', '正在读取权重设置…'))}</p>
+      </div>`;
+    }
+    if (state.failed) {
+      return `<div class="card ca-setcard" data-ranking-weights>
+        <div class="tt">${esc(title)}</div>
+        <p class="note">${esc(T('cognition.ranking_weights_load_failed', '权重设置暂时读不到（读取失败），所以这里暂时不能编辑。'))}</p>
+      </div>`;
+    }
+    const weights = state.weights || {};
+    const inputs = FACTORS.map(([key, label]) => field(label, window.uiInput({
+      id: `ca-rank-w-${key}`,
+      type: 'number',
+      className: 'ca-rank-w-input',
+      value: String(weights[key] != null ? weights[key] : ''),
+      attrs: { min: '0', max: '10', step: '0.1', 'data-w': key },
+    }))).join('');
+    return `<div class="card ca-setcard" data-ranking-weights>
+      <div class="rowline">
+        <div><div class="tt">${esc(title)}</div>
+        <div class="sub">${esc(T('cognition.ranking_weights_hint', '影响认知资产目录的推荐排序。保存后下一轮对话生效（不用改代码）；四个都填 0 或超出 0~10 会被拒绝，原值保持。'))}</div></div>
+      </div>
+      ${sourceNote(String(state.source || ''))}
+      <div class="ca-rank-w-form">${inputs}</div>
+      <p class="note ca-w-error" data-ranking-weights-error hidden></p>
+      <div class="actions actions-right">
+        ${btn(T('cognition.ranking_weights_reset', '恢复默认'), 'ranking-weights-reset', { small: true, className: 'o' })}
+        ${btn(T('cognition.ranking_weights_save', '保存'), 'ranking-weights-save', { small: true, primary: true })}
+      </div>
+    </div>`;
+  }
+
   function viewOrganizeSettingsPage() {
     const settings = S.captureSettings || {};
     const enabled = settings.enabled !== false;
@@ -3119,7 +3240,8 @@
         ${btn(T('cognition.capture_review_manual', '先问我'), 'capture-review-toggle', { id: 'manual', className: `chip${!reviewAuto ? ' is-on' : ''}` })}
       </div>
       <p class="note">${esc(T(reviewAuto ? 'cognition.capture_review_auto_note' : 'cognition.capture_review_manual_note', reviewAuto ? '符合条件的候选会自动采纳（不再询问）' : '候选先进入待确认，由你决定'))}</p>
-    </div>`;
+    </div>
+    ${rankingWeightsCard()}`;
   }
 
   /* ────────────────────────── 视图：整理（任务流 + 策略） ──────────────────────────

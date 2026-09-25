@@ -83,6 +83,7 @@ import * as recallProofs from '../features/recall/proof-service';
 import * as recallTree from '../features/recall/tree-service';
 import * as formalAssets from '../features/recall/formal-assets';
 import * as abilityTags from '../features/recall/ability-tag-service';
+import * as rankingWeights from '../features/recall/catalog-ranking-weights';
 import { listInjectionReceipts } from '../features/recall/injection-receipt';
 import { REAL_USAGE_KINDS } from '../features/recall/timeline-service';
 import { listAssetUsageReceiptViews } from '../features/recall/asset-usage-receipt';
@@ -2781,6 +2782,16 @@ const invokeHandlers: Record<string, InvokeHandler> = {
         } : {}),
       })),
     };
+  },
+
+  // 排序权重（specs/012 T020）：读侧带 source/invalidReason/defaults（盘上非法时
+  // 如实告知"你的配置没生效"），写侧校验全部在服务层（非法抛错、原值保持）。
+  'recall.catalog.weights.get': async (_payload, ctx) => {
+    return { ok: true, ...(await rankingWeights.getRankingWeights(ctx.userId)) };
+  },
+  'recall.catalog.weights.set': async ({ weights } = {}, ctx) => {
+    await rankingWeights.setRankingWeights(ctx.userId, weights || {});
+    return { ok: true, ...(await rankingWeights.getRankingWeights(ctx.userId)) };
   },
 
   // 版本组（2026-09-16）：versions.list 供资产详情版本链；versions.select 切

@@ -7900,16 +7900,29 @@ async function runActorTurnBody(
         log.warn(`Recall usage persistence partially failed cid=${cid} failed=${failedUsageWrites.length}`);
       }
       const { recordInjectionReceipt } = await import('../recall/injection-receipt');
-      await Promise.allSettled(persistedRecallCitations.map((citation) => recordInjectionReceipt(uid, {
-        assetId: citation.asset_id,
-        assetVersion: citation.version,
-        taskRunId: item.turnId,
-        projectionId: citation.projection_id,
-        messageId: persistedMsg.id,
-        boundary: 'real',
-        status: 'injected',
-        channel: 'projection',
-      })));
+      // 「为什么排前」拆解随回执留痕（specs/012 T019）：拆解只出自当轮目录
+      // 构建的那一次 rankAssets（asset-catalog-hint 按 userId+cid 记住的
+      // ranked 视图，见上方 catalog 调用同键）——这里查表透传，不在写侧
+      // 重算（排序唯一处）。资产不在当轮 ranked 视图里时不带 ranking，
+      // 读取侧（recall.catalog.ranking）按 explainable:false 如实说
+      // 「没有记录」，不编造。
+      const { lastCatalogRankedForTurn } = await import('../recall/asset-catalog-hint');
+      const { explainRanking } = await import('../recall/asset-ranking');
+      const rankedThisTurn = lastCatalogRankedForTurn(uid, cid);
+      await Promise.allSettled(persistedRecallCitations.map((citation) => {
+        const rankedRow = rankedThisTurn.get(String(citation.asset_id || ''));
+        return recordInjectionReceipt(uid, {
+          assetId: citation.asset_id,
+          assetVersion: citation.version,
+          taskRunId: item.turnId,
+          projectionId: citation.projection_id,
+          messageId: persistedMsg.id,
+          boundary: 'real',
+          status: 'injected',
+          channel: 'projection',
+          ...(rankedRow ? { ranking: explainRanking(rankedRow) } : {}),
+        });
+      }));
     }
     // 画像通道收据（2026-09-13）：只落 InjectionReceipt（channel 区分），
     // 不写 usage-records——usage 流水按「资产被使用」记账，画像不是资产，
