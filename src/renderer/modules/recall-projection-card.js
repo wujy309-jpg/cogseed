@@ -37,6 +37,17 @@
     return window.uiButton({ label, size: 'sm', attrs });
   }
 
+  /**
+   * 头部图标：与「提供给本次回答的记忆」卡（conversation.js 的 citations）同一条
+   * 头部语言——图标 + 标题 + 右侧状态，两张"本轮带入了什么"的卡才像一家人。
+   * 图标只从 icons.js 这条唯一出口来；原语缺席（极简渲染上下文）时返回空串，
+   * 不在这里自造 SVG。
+   */
+  function _headIcon(name) {
+    if (typeof window.uiIconHtml !== 'function') return '';
+    return `<span class="chat-recall-projection-icon">${window.uiIconHtml(name, 'ui-icon')}</span>`;
+  }
+
   function _assetStatusLabel(status) {
     if (status === 'active') return _label('recall.asset.status.active', 'Active');
     if (status === 'paused') return _label('recall.asset.status.paused', 'Paused');
@@ -146,6 +157,7 @@
     host.className = `chat-recall-projection-card ${userPinned ? 'is-user-pinned' : 'is-model-selected'} is-${revoked ? 'revoked' : String(card?.status || 'unknown')}`;
     host.dataset.projectionId = String(card?.projectionId || '');
     host.innerHTML = `<div class="chat-recall-projection-head">
+        ${_headIcon('book-open')}
         <div class="chat-recall-projection-title">
           <strong>${_escape(summary)}</strong>
           <small>${_escape(primaryNote)}</small>
@@ -243,7 +255,7 @@
       : modelSelected
         ? _label('recall.projection.model_selected_locked', 'The model picked these for the current task; later turns keep carrying them until you revoke.')
         : _label('recall.projection.locked', 'These preloaded assets are locked.');
-    host.innerHTML = `<div class="chat-recall-projection-head"><div><strong>${_escape(title)}</strong>${modelSelected ? `<span class="chat-recall-projection-badge">${_escape(_label('recall.projection.model_selected_badge', 'Model-picked'))}</span>` : ''}<small>${_escape(card?.purpose || '')}</small></div><span class="chat-recall-projection-status">${_escape(_statusLabel(card?.status))}</span></div>
+    host.innerHTML = `<div class="chat-recall-projection-head">${_headIcon('book-open')}<div><strong>${_escape(title)}</strong>${modelSelected ? `<span class="chat-recall-projection-badge">${_escape(_label('recall.projection.model_selected_badge', 'Model-picked'))}</span>` : ''}<small>${_escape(card?.purpose || '')}</small></div><span class="chat-recall-projection-status">${_escape(_statusLabel(card?.status))}</span></div>
       <div class="chat-recall-projection-summary">${_escape(_label('recall.projection.summary', '{count} preloaded assets.', { count: assets.length }))}</div>
       <div class="chat-recall-projection-section"><div class="chat-recall-projection-section-title">${_escape(_label('recall.projection.included_assets', 'Preloaded assets'))}</div>${assets.length ? assets.map((asset) => _assetRow(asset, editable)).join('') : `<div class="chat-recall-projection-empty">${_escape(_label('recall.projection.no_included_assets', 'No preloaded assets selected.'))}</div>`}</div>
       ${editable ? `<div class="chat-recall-projection-section"><div class="chat-recall-projection-section-title">${_escape(_label('recall.projection.add_assets', 'Add asset'))}</div>${availableRows}</div>` : `<div class="chat-recall-projection-locked">${_escape(lockedNote)}</div>`}
