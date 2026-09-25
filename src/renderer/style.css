@@ -23875,6 +23875,28 @@ body:has(#panel-settings.active) .main-top-actions {
 
 }
 
+/* US-103 三盒导航副标题：文字位竖排（名称 + 副标题各单行省略）。T 盒模板行
+   复用 .personal-onto-nav-row-text（单行），故竖排用 is-stacked 修饰类限定。 */
+.personal-onto-nav-row-text.is-stacked {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  white-space: normal;
+}
+
+.personal-onto-nav-row-name,
+.personal-onto-nav-row-sub {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personal-onto-nav-row-sub {
+  font-size: 11px;
+  color: var(--personal-onto-muted);
+}
+
 .personal-onto-nav-row.is-file {
  padding-left: 14px;
 }

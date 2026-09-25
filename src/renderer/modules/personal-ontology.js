@@ -771,18 +771,20 @@
     const counts = _pocBoxCounts();
     const factCount = counts.abox;
     const ruleCount = counts.rbox;
-    const row = (kind, icon, labelKey, fallback, count) => {
+    // US-103 导航副标题：文字位改为竖排容器（名称 + 副标题），角标仍是
+    // 同层 flex 子项（位置不变），点击行为走既有 _pocBindNav 分支（零变化）。
+    const row = (kind, icon, labelKey, fallback, count, subKey, subFallback) => {
       const active = _pocSelected.kind === kind;
       return `<button type="button" class="personal-onto-nav-row${active ? ' is-active' : ''}" data-poc-nav="${kind}" data-poc-id="${kind}">
         <span class="personal-onto-nav-file-icon">${_icon(icon, 'ui-icon')}</span>
-        <span class="personal-onto-nav-row-text">${escapeHtml(_t(labelKey, fallback))}</span>
+        <span class="personal-onto-nav-row-text is-stacked"><span class="personal-onto-nav-row-name">${escapeHtml(_t(labelKey, fallback))}</span><span class="personal-onto-nav-row-sub">${escapeHtml(_t(subKey, subFallback))}</span></span>
         ${count !== undefined ? `<span class="muted">${count}</span>` : ''}
       </button>`;
     };
     nav.innerHTML = `<div class="personal-onto-nav-section">
-      ${row('tbox', 'type', 'personalOntology.nav_tbox', '词汇', counts.tbox)}
-      ${row('abox', 'user', 'personalOntology.nav_abox', '事实', factCount)}
-      ${row('rbox', 'terminal', 'personalOntology.nav_rbox', '规则', ruleCount)}
+      ${row('tbox', 'type', 'personalOntology.nav_tbox', '词汇', counts.tbox, 'personalOntology.nav_tbox_sub', '术语与称谓')}
+      ${row('abox', 'user', 'personalOntology.nav_abox', '事实', factCount, 'personalOntology.nav_abox_sub', '关于你的陈述')}
+      ${row('rbox', 'terminal', 'personalOntology.nav_rbox', '规则', ruleCount, 'personalOntology.nav_rbox_sub', 'AI 应遵守的做法与边界')}
       ${_pocPendingCandidates.length ? `<div class="personal-onto-backflow-badge" style="padding:2px 10px 8px">${escapeHtml(_tv('personalOntology.backflow_badge', { n: _pocPendingCandidates.length }, '回流 {n}'))}</div>` : ''}
     </div>
     <div class="personal-onto-nav-section">

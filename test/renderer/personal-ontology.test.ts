@@ -166,6 +166,52 @@ describe('personal ontology renderer integration', () => {
     expect(nav4).not.toContain('记忆分组');
   });
 
+  it('renders one-line subtitles on the three box nav rows without moving badges or clicks', async () => {
+    // US-103：三盒导航行带副标题（竖排文字位），角标仍是文字位之后的同层
+    // flex 子项（DOM 顺序不变），点击行为走既有 _pocBindNav 分支（口径同
+    // 「点 rbox 行 → 主区切到规则盒」的既有用例）。
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === 'personalOntology.templates.list') return { ok: true, templates: [] };
+      if (channel === 'recall.assets.list') return { ok: true, assets: [] };
+      if (channel === 'personalOntology.groups.list') return { ok: true, groups: [] };
+      if (channel === 'personalOntology.candidates.list') return { ok: true, candidates: [] };
+      return { ok: true };
+    });
+    const { sandbox, elements } = loadPersonalOntology(invoke);
+    const nav = elements.get('personal-onto-nav') as any;
+    const tboxRow: any = {
+      getAttribute: (name: string) => (name === 'data-poc-nav' || name === 'data-poc-id') ? 'tbox' : null,
+      addEventListener(event: string, handler: (...args: any[]) => any) { this.listeners.set(event, handler); },
+      listeners: new Map<string, (...args: any[]) => any>(),
+    };
+    nav.querySelectorAll = (selector: string) => selector === '[data-poc-nav]' ? [tboxRow] : [];
+
+    await sandbox.window.renderPersonalOntology();
+    await settleBackgroundWork();
+
+    const navHtml = nav.innerHTML || '';
+    // T029/T030：三行副标题齐全（沙箱 t(key)=key → _t 回退中文兜底文案）。
+    for (const sub of ['术语与称谓', '关于你的陈述', 'AI 应遵守的做法与边界']) {
+      expect(navHtml).toContain(sub);
+    }
+    expect(navHtml.match(/personal-onto-nav-row-sub/g)).toHaveLength(3);
+    // 角标仍在文字位之后的同层（每行最后一个是 muted 角标，DOM 顺序不变）。
+    const rowHtmls = navHtml.match(/<button[^>]*class="personal-onto-nav-row[^"]*"[^>]*>[\s\S]*?<\/button>/g) || [];
+    expect(rowHtmls).toHaveLength(3);
+    for (const rowHtml of rowHtmls) {
+      expect(rowHtml).toContain('<span class="muted">');
+      expect(rowHtml.lastIndexOf('<span class="muted">')).toBeGreaterThan(rowHtml.lastIndexOf('personal-onto-nav-row-sub'));
+    }
+    // M4 命名治理后的新口径：分组在盒内管理，「本体分组」同样不是导航入口。
+    expect(navHtml).not.toContain('本体分组');
+    // 点击行为零变化：点 T 盒行仍切换盒（主区出现词汇盒内容）。
+    const click = tboxRow.listeners.get('click');
+    expect(click).toBeTypeOf('function');
+    await click({ stopPropagation() {} });
+    await settleBackgroundWork();
+    expect(elements.get('personal-onto-main-body')?.innerHTML).toContain('角色模板');
+  });
+
   it('shows personal assets from the library as the default personal profile', async () => {
     const invoke = vi.fn(async (channel: string) => {
       if (channel === 'personalOntology.templates.list') {
