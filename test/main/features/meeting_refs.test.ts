@@ -24,6 +24,7 @@ import {
   detachMeetingAsset,
   listMeetingAssetCanonicalNames,
   listMeetingAssetRefs,
+  listMeetingAssetRefViews,
   readMeetingAssetPack,
 } from '../../../src/main/features/meeting_refs';
 import { docKeyForDocId } from '../../../src/main/features/meeting_doc';
@@ -250,5 +251,70 @@ describe('T027：资产规范名清单（冻结版）与依据追加', () => {
     const c = candidate({});
     expect(attachAssetRefs([c], [])).toEqual([c]);
     expect(attachAssetRefs([], [{ name: 'x', assetId: 'a', version: '1', title: 't' }])).toEqual([]);
+  });
+});
+
+// ── T037：读时派生视图 MeetingAssetRefView（specs/013 FR-004「可与现状对比」）──────
+describe('T037：MeetingAssetRefView 读时派生（currentVersion/currentTitle/stale/available）', () => {
+  it('改资产后 stale===true 且冻结 version/title 逐字未变；currentVersion 与投影同一表达式', async () => {
+    await attachMeetingAsset(uid, 'kb/s.md', 'ast_cogseed');      // 挂载时冻结 v3 + 旧标题
+    const file = path.join(userMeetingRefsDir(uid), `${docKeyForDocId('kb/s.md')}.json`);
+    const before = fs.readFileSync(file, 'utf8');
+    // 会后：资产升版（activeVersion 优先）+ 改名
+    assets.set('ast_cogseed', assetRecord({ id: 'ast_cogseed', title: 'Cogseed 术语表（改名）', version: '3', activeVersion: '7' }));
+    const views = await listMeetingAssetRefViews(uid, 'kb/s.md');
+    expect(views).toHaveLength(1);
+    const view = views[0];
+    expect(view.version).toBe('3');                       // 冻结版逐字未变
+    expect(view.title).toBe('Cogseed 术语表');             // 标题快照不变味
+    expect(view.currentVersion).toBe('7');                // activeVersion 优先（context-projection.ts:767 同一表达式）
+    expect(view.currentTitle).toBe('Cogseed 术语表（改名）');
+    expect(view.stale).toBe(true);                        // currentVersion !== version（projection-card.ts:26 同名同义）
+    expect(view.available).toBe(true);
+    // 读时派生不落库：引用包在盘上逐字节未变
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  it('版本一致 ⇒ stale===false；activeVersion 缺失回退 version（同一表达式）', async () => {
+    assets.set('ast_v5', assetRecord({ id: 'ast_v5', version: '5', activeVersion: undefined }));
+    await attachMeetingAsset(uid, 'kb/s2.md', 'ast_v5');
+    const [view] = await listMeetingAssetRefViews(uid, 'kb/s2.md');
+    expect(view.version).toBe('5');
+    expect(view.currentVersion).toBe('5');
+    expect(view.stale).toBe(false);
+    expect(view.available).toBe(true);
+  });
+
+  it('available===false 出现在归档/暂停/删除三态（冻结版不受影响）', async () => {
+    // 三态都是**挂载后才发生**的（挂载准入要求 active，T011 ②）——
+    // 挂载时冻结 v3，会后资产各自转入归档/暂停/删除。
+    assets.set('ast_arch', assetRecord({ id: 'ast_arch' }));
+    assets.set('ast_pause', assetRecord({ id: 'ast_pause' }));
+    assets.set('ast_del', assetRecord({ id: 'ast_del' }));
+    for (const id of ['ast_arch', 'ast_pause', 'ast_del']) {
+      await attachMeetingAsset(uid, 'kb/s3.md', id);
+    }
+    assets.set('ast_arch', assetRecord({ id: 'ast_arch', status: 'archived' }));
+    assets.set('ast_pause', assetRecord({ id: 'ast_pause', status: 'paused' }));
+    assets.set('ast_del', assetRecord({ id: 'ast_del', status: 'deleted' }));
+    const views = await listMeetingAssetRefViews(uid, 'kb/s3.md');
+    const byId = new Map(views.map((v) => [v.assetId, v]));
+    expect(byId.get('ast_arch')?.available).toBe(false);
+    expect(byId.get('ast_pause')?.available).toBe(false);
+    expect(byId.get('ast_del')?.available).toBe(false);
+    expect(views.every((v) => v.version === '3')).toBe(true);     // 冻结版不被三态改写
+  });
+
+  it('资产彻底删除（读不到）⇒ available:false、currentVersion 空串（不假装读到了那一版）', async () => {
+    assets.set('ast_gone2', assetRecord({ id: 'ast_gone2', title: '已删资产', version: '2' }));
+    await attachMeetingAsset(uid, 'kb/s4.md', 'ast_gone2');
+    assets.delete('ast_gone2');                                    // 彻底删除：readAbilityAsset 抛错
+    const [view] = await listMeetingAssetRefViews(uid, 'kb/s4.md');
+    expect(view.available).toBe(false);
+    expect(view.currentVersion).toBe('');                          // 现状未知，不猜一版
+    expect(view.currentTitle).toBe('');
+    expect(view.stale).toBe(false);                                 // 无漂移证据（不宣称漂移）
+    expect(view.version).toBe('2');                                 // 冻结版仍在
+    expect(view.title).toBe('已删资产');
   });
 });

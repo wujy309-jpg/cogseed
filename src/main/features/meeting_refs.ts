@@ -368,3 +368,71 @@ export function attachAssetRefs(
 
 // re-export：IPC 层（T013）与 meeting_conclusions（T035）共用同一套 docId 校验语义。
 export { MeetingDocError };
+
+// ── T037：读时派生视图 `MeetingAssetRefView`（specs/013 FR-004「可与现状对比」）───
+
+/**
+ * 引用条目的**读时派生**视图（不落库——冻结版永不回写，对比永远是现算）：
+ *
+ * | 字段 | 计算 | 语义对齐 |
+ * |---|---|---|
+ * | `currentVersion` | `String(asset.activeVersion \|\| asset.version \|\| '1')` | 与投影同一表达式（`context-projection.ts:767`，逐字） |
+ * | `currentTitle`   | 资产当前标题（≤120） | 供「冻结版 vs 现状」对比展示 |
+ * | `stale`          | `currentVersion !== version` | **逐字对齐** `projection-card.ts:26`/`:111`：「钉住的版本 ≠ 资产当前版本」 |
+ * | `available`      | 资产当前 `status === 'active'` | 归档/暂停/删除/彻底不可读 ⇒ false（「被引用版本已不存在」由文案如实呈现，T039） |
+ *
+ * 资产**彻底不可读**（已物理删除等）时：`available:false` + `currentVersion:''` +
+ * `currentTitle:''` + `stale:false`——**不假装读到了那一版**（'' = 现状未知，
+ * 不是猜出来的一版）；`stale:false` 只表示「无漂移证据」，不表示「没漂移」。
+ */
+export interface MeetingAssetRefView extends MeetingAssetRef {
+  /** 现状版本（读时派生）；资产不可读时为 `''`（现状未知，不猜）。 */
+  currentVersion: string;
+  /** 现状标题（读时派生，≤120）；资产不可读时为 `''`。 */
+  currentTitle: string;
+  /** `currentVersion !== version`（语义与 `projection-card.ts:26` 同名同义）。 */
+  stale: boolean;
+  /** 资产当前 `status === 'active'`；归档/暂停/删除/不可读 ⇒ `false`。 */
+  available: boolean;
+}
+
+/** 单条视图派生（纯函数；`asset === null` = 资产已彻底删除/不可读）。 */
+export function deriveMeetingAssetRefView(
+  ref: MeetingAssetRef,
+  asset: RecallAbilityAssetRecord | null,
+): MeetingAssetRefView {
+  if (!asset) {
+    return { ...ref, currentVersion: '', currentTitle: '', stale: false, available: false };
+  }
+  // 与投影逐字同一表达式（文件头纪律 1；不写第二套版本取值）。
+  const currentVersion = String(asset.activeVersion || asset.version || '1');
+  return {
+    ...ref,
+    currentVersion,
+    currentTitle: String(asset.title ?? '').slice(0, MAX_TITLE_CHARS),
+    // 逐字对齐 projection-card.ts:111：「钉住的版本 !== 当前版本」才算漂移。
+    stale: currentVersion !== ref.version,
+    available: asset.status === 'active',
+  };
+}
+
+/**
+ * 该文档引用清单的**现状对比视图**（只读派生，绝不回写引用包）。
+ * 单条资产读失败只影响该条（如实 `available:false`），不拖垮整张清单。
+ */
+export async function listMeetingAssetRefViews(uid: string, docId: string): Promise<MeetingAssetRefView[]> {
+  const id = requireDocId(docId);
+  const pack = readPack(uid, id);
+  if (!pack || !pack.assetRefs.length) return [];
+  const views: MeetingAssetRefView[] = [];
+  for (const ref of pack.assetRefs) {
+    let asset: RecallAbilityAssetRecord | null = null;
+    try {
+      asset = await readAbilityAsset(uid, ref.assetId);
+    } catch {
+      asset = null; // 已彻底删除等：如实呈现，不抛错、不假装读到
+    }
+    views.push(deriveMeetingAssetRefView(ref, asset));
+  }
+  return views;
+}
