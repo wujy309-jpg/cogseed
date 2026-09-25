@@ -7,8 +7,9 @@
  *   ① **只做不改变含义的整理**。改标题的空白/标点、把正文一字不差的同类型资产
  *      并成一条——这些不需要理解语义。凡是需要判断"这两条是不是一个意思""这条
  *      该归到哪类"的，一律进 `uncertain[]` 转待确认，**不擅自处置**。
- *   ② **补标签/归类在 Epic 2（012）落地前跳过并如实标注**：资产没有标签字段，
- *      跳过就是跳过，不在报告里假装做过，也不映射到 `assetType` 或 `familyName`。
+ *   ② **补标签已接线（specs/012 T025）**：同源组内绝大多数已有同名标签的机械
+ *      判定直接写入（`kind='tag_added'`）；够不上判据的含义判断进 `uncertain[]`。
+ *      不映射到 `assetType` 或 `familyName`，`skippedSteps` 不再有"待 Epic 2 / 012"。
  *   ③ **`items[]` 与台账一一对应、每项可单独回滚**：每项带 `ledgerRef`（台账行）
  *      与 `rollbackAnchor`（回滚到哪一版），沿用 US-404 已建的锚点机制。
  *
@@ -35,7 +36,7 @@ import type { RecallAbilityAssetRecord } from './candidate-service';
 
 const log = createLogger('recall.asset-cleanup');
 
-export type CleanupItemKind = 'title_normalized' | 'merged_duplicate';
+export type CleanupItemKind = 'title_normalized' | 'merged_duplicate' | 'tag_added';
 export type CleanupItemStatus = 'applied' | 'skipped' | 'uncertain' | 'failed';
 
 export interface CleanupReportItem {
@@ -71,7 +72,7 @@ export interface CleanupReport extends RecallJsonRecord {
   scope: { spaceId?: string; assetType?: string };
   items: CleanupReportItem[];
   uncertain: CleanupUncertainItem[];
-  /** 本轮明确跳过的步骤（如 Epic 2 未落地时的补标签/归类）。 */
+  /** 本轮明确跳过的步骤。补标签已接线（specs/012 T025），不再因"字段未落地"跳过。 */
   skippedSteps: string[];
   createdAt: string;
   finishedAt?: string;
@@ -177,6 +178,11 @@ export function nearDuplicateScore(left: string, right: string): number {
 const NEAR_DUPLICATE_THRESHOLD = 0.8;
 /** 单轮参与两两比对的资产上限：超过就只做逐条规范化，不硬算（宁可少报）。 */
 const NEAR_DUPLICATE_SCAN_LIMIT = 200;
+/** 同源组多数标签的传播门槛（quickstart S1.4"机械可判定"）：组内除本条外
+ *  ≥ 这么多比例、且 ≥2 条已有同名标签，才算"绝大多数"——单一成员的标签可能
+ *  是它独有的，不构成共识。够不上就转 `uncertain[]`，不擅自打。 */
+const TAG_CONSENSUS_RATIO = 2 / 3;
+const TAG_CONSENSUS_MIN_SIBLINGS = 2;
 
 export interface RunCleanupOptions {
   trigger?: 'user' | 'inspection';
@@ -191,16 +197,15 @@ export async function runAssetCleanup(userId: string, options: RunCleanupOptions
   const scope = options.scope || {};
   const reportId = `cr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const createdAt = new Date().toISOString();
-  const skippedSteps: string[] = [];
   const all = await listAbilityAssets(userId);
   let pool = all.filter((asset) => asset.status !== 'purged');
   if (scope.spaceId) pool = pool.filter((asset) => asset.spaceId === scope.spaceId);
   if (scope.assetType) pool = pool.filter((asset) => asset.type === scope.assetType);
 
-  // 补标签与归类都以 Epic 2（012）的标签字段为前提：未先行时**跳过并如实标注**，
-  // 不映射到 assetType / familyName（那是另一套语义），也不静默当做过。
-  skippedSteps.push('补标签（标签系统尚未落地，待 Epic 2 / 012）');
-  skippedSteps.push('归类（同上：归类依赖标签字段）');
+  // 补标签已接线（specs/012 T025，见下方步骤 ④）：不再有"待 Epic 2 / 012"的
+  // 跳过标注——机械可判定的直接写入，含义判断进 uncertain[]。字段保留给将来
+  // 真正需要"本轮明确跳过"的步骤。
+  const skippedSteps: string[] = [];
 
   await writeRecallJsonRecord(userId, 'cleanup-reports', reportId, {
     schemaVersion: 1,
@@ -329,6 +334,96 @@ export async function runAssetCleanup(userId: string, options: RunCleanupOptions
           const entry = uncertain[uncertain.length - 1];
           await patchReport(userId, reportId, (report) => ({ uncertain: [...report.uncertain, entry] }));
         }
+      }
+    }
+
+    // ④ 补标签（specs/012 T025，接上 008 时代的跳过）：
+    //    · 机械可判定 = 同源组（familyName 相同）内**绝大多数**已有同名标签 →
+    //      传播的是既有事实，不需要理解语义，直接写入并进 `items[]`（写路径唯一
+    //      走 `updateAbilityAsset` 的 tags 元数据路径：不 bump 版本、台账记
+    //      「标签：旧 → 新」、带既有 rollbackAnchor）。
+    //    · 够不上判据的一律是含义判断 → `uncertain[]` 转待确认（spec AC5），
+    //      资产零改动；但库里还没有任何标签时不问——没有参考系，硬问等于让用户
+    //      从零设计分类体系，那是标签管理（specs/012 US-201）的事。
+    //    · 不映射到 assetType / familyName（另一套语义），不静默当做过。
+    const uncertainAssetIds = new Set(uncertain.map((entry) => entry.assetId));
+    const siblingsByFamily = new Map<string, RecallAbilityAssetRecord[]>();
+    for (const member of pool) {
+      if (!member.familyName) continue;
+      const group = siblingsByFamily.get(member.familyName) || [];
+      group.push(member);
+      siblingsByFamily.set(member.familyName, group);
+    }
+    const libraryHasTags = all.some((member) => member.tags && member.tags.length);
+    for (const asset of pool) {
+      if (asset.status !== 'active' || mergedIds.has(asset.id)) continue;
+      if (asset.tags && asset.tags.length) continue;
+      const siblings = (siblingsByFamily.get(asset.familyName || '') || [])
+        .filter((member) => member.id !== asset.id);
+      const counts = new Map<string, { count: number; name: string }>();
+      for (const sibling of siblings) {
+        for (const rawName of sibling.tags || []) {
+          const name = String(rawName).trim();
+          if (!name) continue;
+          const key = name.toLocaleLowerCase();
+          const entry = counts.get(key) || { count: 0, name };
+          entry.count += 1;
+          counts.set(key, entry);
+        }
+      }
+      const consensus = [...counts.values()]
+        .filter((entry) => entry.count >= TAG_CONSENSUS_MIN_SIBLINGS
+          && entry.count >= Math.ceil(siblings.length * TAG_CONSENSUS_RATIO))
+        .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name));
+      if (consensus.length) {
+        const names = consensus.map((entry) => entry.name);
+        const anchor = abilityAssetActiveVersion(asset);
+        const strongest = consensus[0];
+        try {
+          await updateAbilityAsset(userId, asset.id, {
+            tags: names,
+            reason: `大扫除：同源组「${asset.familyName}」多数已有同名标签，机械补标（${reportId}）`,
+            actor: 'user',
+          });
+          const ledgerRef = await lastAuditId(userId, asset.id);
+          const item: CleanupReportItem = {
+            assetId: asset.id,
+            kind: 'tag_added',
+            status: 'applied',
+            before: '（未分类）',
+            after: names.join('、'),
+            reason: `同源组「${asset.familyName}」内 ${strongest.count}/${siblings.length} 条已有同名标签（机械判定，不涉及语义）`,
+            ...(ledgerRef ? { ledgerRef } : {}),
+            rollbackAnchor: anchor,
+          };
+          items.push(item);
+          await patchReport(userId, reportId, (report) => ({ items: [...report.items, item] }));
+        } catch (error) {
+          const failed: CleanupReportItem = {
+            assetId: asset.id,
+            kind: 'tag_added',
+            status: 'failed',
+            before: '（未分类）',
+            after: names.join('、'),
+            reason: '同源组多数标签补标',
+            note: (error as Error).message,
+          };
+          items.push(failed);
+          await patchReport(userId, reportId, (report) => ({ items: [...report.items, failed] }));
+          log.warn('cleanup tag propagation failed', { assetId: asset.id, error: (error as Error).message });
+        }
+        continue;
+      }
+      if (libraryHasTags && !uncertainAssetIds.has(asset.id)) {
+        const entry: CleanupUncertainItem = {
+          assetId: asset.id,
+          ...(asset.title ? { title: asset.title } : {}),
+          question: '这条还没有主题标签，该归到哪类？',
+          reason: '打什么标签是含义判断：系统只机械传播同源组里的多数标签，这一条够不上判据，不擅自打，交给你决定。',
+        };
+        uncertain.push(entry);
+        uncertainAssetIds.add(asset.id);
+        await patchReport(userId, reportId, (report) => ({ uncertain: [...report.uncertain, entry] }));
       }
     }
 

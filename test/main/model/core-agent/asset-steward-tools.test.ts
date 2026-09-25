@@ -171,6 +171,45 @@ describe('list_ability_assets', () => {
     expect(await list.execute({ filter: { status: 'shredded' } }, {} as never)).toMatchObject({ isError: true });
     expect(await list.execute({ filter: { spaceId: '../bad' } }, {} as never)).toMatchObject({ isError: true });
   });
+
+  it('标签元信息与过滤（specs/012 T023）：metaLine 带标签行、filter.tags 支持 any/all、描述不再说没有标签字段', async () => {
+    const base = await seedAsset('标签过滤的基线正文。');
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    await assets.updateAbilityAsset(TEST_UID, base.id, { tags: ['发布', '周报'], reason: '布置夹具', actor: 'user' });
+    await cloneAssets(base as unknown as Record<string, unknown>, 2, [
+      { tags: ['发布'] },
+      // base 已打标，第三条要显式去掉（undefined 在落盘时丢键 = 无标签）。
+      { tags: undefined },
+    ]);
+    const { list } = await stewardTools();
+
+    const out = text(await list.execute({}, {} as never));
+    expect(out).toContain('标签=发布/周报');
+    expect(out).toContain('标签=发布');
+    // 没标签的那条不显示标签段（缺省 = 未分类，不伪造空值）。
+    expect(out).not.toContain('标签= |');
+    expect(out).not.toContain('标签=)');
+
+    // any（默认，并集）：带其中任一个就算。
+    const anyHit = text(await list.execute({ filter: { tags: ['周报'] } }, {} as never));
+    expect(anyHit).toContain('标签=周报(tagsMode=any)');
+    expect(anyHit).toContain('→ 1 条');
+    const unionHit = text(await list.execute({ filter: { tags: ['发布', '周报'] } }, {} as never));
+    expect(unionHit).toContain('→ 2 条');
+    // all（交集）：同时具备才算。
+    const allHit = text(await list.execute({ filter: { tags: ['发布', '周报'], tagsMode: 'all' } }, {} as never));
+    expect(allHit).toContain('tagsMode=all');
+    expect(allHit).toContain('→ 1 条');
+
+    // 描述解禁：不再宣称"没有主题标签字段"，改说可过滤、可打标、族名不是标签。
+    expect(list.description).not.toContain('没有主题标签字段');
+    expect(list.description).toContain('filter.tags');
+    expect(list.description).toContain('**不是**标签');
+
+    // 非法形态如实拒绝。
+    expect(await list.execute({ filter: { tags: [] } }, {} as never)).toMatchObject({ isError: true });
+    expect(await list.execute({ filter: { tagsMode: 'both' } }, {} as never)).toMatchObject({ isError: true });
+  });
 });
 
 describe('read_ability_asset', () => {
@@ -513,18 +552,101 @@ describe('写工具（US-402）', () => {
     expect((await assets.readAbilityAsset(TEST_UID, asset.id)).title).toBe('规范化后的标题');
   });
 
-  it('tags / category 如实拒绝，不静默丢弃', async () => {
-    const asset = await seedAsset('标签字段还没落地。');
+  it('标签可写：tags 落地、category 收编为单标签、形状错归因 schema、不映射 assetType/familyName（specs/012 T022 解禁）', async () => {
+    const asset = await seedAsset('标签解禁后的契约基线。');
     const { edit } = await tools();
-    const out = await call(edit, { assetId: asset.id, fields: { tags: ['发布'] }, reason: '补标签', origin: 'ai_initiated' });
-    expect(out.isError).toBe(true);
-    expect(out.content).toContain('字段未就位');
-    expect(out.content).toContain('US-201');
-    expect(out.content).toContain('data（数据缺失/不存在）');
+    const assets = await import('../../../../src/main/features/recall/asset-service');
 
-    const category = await call(edit, { assetId: asset.id, fields: { category: '发布流程' }, reason: '归类', origin: 'ai_initiated' });
-    expect(category.isError).toBe(true);
-    expect(category.content).toContain('category');
+    // ① 用户明确指令打标：直接生效；标签是元数据，不 bump 内容版本。
+    const before = await assets.readAbilityAsset(TEST_UID, asset.id);
+    const out = await call(edit, { assetId: asset.id, fields: { tags: ['发布'] }, reason: '用户要求打标', origin: 'user_instruction' });
+    expect(out.isError).toBeUndefined();
+    expect(out.content).toContain('已改动');
+    const tagged = await assets.readAbilityAsset(TEST_UID, asset.id);
+    expect(tagged.tags).toEqual(['发布']);
+    expect(tagged.version).toBe(before.version);
+    // 台账记「标签：旧 → 新」（标签名是元数据，可进台账）。
+    const auditRows = await assets.listAbilityAssetAudit(TEST_UID, asset.id);
+    expect(auditRows.some((row) => String(row.reason || '').includes('标签：'))).toBe(true);
+
+    // ② category 收编：不落任何字段，只体现为 tags（与本次 fields.tags 合并去重；
+    //    tags 语义是整体替换，所以只传 category = tags 变成这一条）。
+    const category = await call(edit, { assetId: asset.id, fields: { category: '发布流程' }, reason: '用户要求归类', origin: 'user_instruction' });
+    expect(category.isError).toBeUndefined();
+    const collected = await assets.readAbilityAsset(TEST_UID, asset.id);
+    expect(collected.tags).toEqual(['发布流程']);
+    expect((collected as unknown as Record<string, unknown>).category).toBeUndefined();
+
+    // ③ 形状错误：isError + 归因 schema（不再是 data），可读提示，不静默丢弃。
+    const badShape = await call(edit, { assetId: asset.id, fields: { tags: '发布流程' }, reason: '字符串形态', origin: 'user_instruction' });
+    expect(badShape.isError).toBe(true);
+    expect(badShape.content).toContain('schema（入参或记录形状不合法）');
+    expect(badShape.content).not.toContain('data（数据缺失/不存在）');
+    expect(badShape.content).toContain('字符串数组');
+    expect((await assets.readAbilityAsset(TEST_UID, asset.id)).tags).toEqual(['发布流程']);
+
+    // ④ 不映射 assetType / familyName：类型与族名保持原值（那是另一套语义）。
+    expect(collected.type).toBe(asset.type);
+    expect(collected.familyName).toBe(asset.familyName);
+  });
+
+  it('标签形状上限：13 条 / 21 字名拒绝且不截断，资产保持原标签', async () => {
+    const asset = await seedAsset('标签形状上限的守卫基线。');
+    const { edit } = await tools();
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    await assets.updateAbilityAsset(TEST_UID, asset.id, { tags: ['原有'], reason: '布置夹具', actor: 'user' });
+
+    const tooMany = await call(edit, {
+      assetId: asset.id,
+      fields: { tags: Array.from({ length: 13 }, (_, index) => `标签${index}`) },
+      reason: '塞 13 条', origin: 'user_instruction',
+    });
+    expect(tooMany.isError).toBe(true);
+    expect(tooMany.content).toContain('12');
+    expect(tooMany.content).toContain('schema');
+
+    const tooLong = await call(edit, { assetId: asset.id, fields: { tags: ['这是一条用来测试超过二十个字上限的超长标签名字'] }, reason: '超长名', origin: 'user_instruction' });
+    expect(tooLong.isError).toBe(true);
+    expect(tooLong.content).toContain('20 字');
+
+    const longCategory = await call(edit, { assetId: asset.id, fields: { category: '这是一条用来测试超过二十个字上限的超长分类名字' }, reason: '超长分类', origin: 'user_instruction' });
+    expect(longCategory.isError).toBe(true);
+
+    // 被拒的三次都没有截断写入：资产还是原来的标签。
+    expect((await assets.readAbilityAsset(TEST_UID, asset.id)).tags).toEqual(['原有']);
+  });
+
+  it('AI 自主打标 = 实质变化：资产零变化、回执明说没有生效（category 也逃不过这道闸）', async () => {
+    const asset = await seedAsset('AI 自主打标的闸门基线。');
+    const approval = await import('../../../../src/main/features/recall/asset-approval-service');
+    const { edit } = await tools();
+
+    for (const fields of [{ tags: ['发布'] }, { category: '发布流程' }]) {
+      // 没有会话上下文 → 卡片发不出去 → 拒绝兜底：改动没有生效（这条分支与
+      // 建卡路径各有测试，是"绝不直接生效"的保底）。
+      const out = await call(edit, { assetId: asset.id, fields, reason: '我觉得该有标签', origin: 'ai_initiated' });
+      expect(out.isError, JSON.stringify(fields)).toBe(true);
+      expect(out.content).toContain('没有生效');
+    }
+
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    const after = await assets.readAbilityAsset(TEST_UID, asset.id);
+    expect(after.tags).toBeUndefined();
+    // 两次尝试各留一条提议（处置权在用户手里）。
+    const proposals = await approval.listAssetChangeProposals(TEST_UID, { assetId: asset.id });
+    expect(proposals).toHaveLength(2);
+  });
+
+  it('用户确认审批卡片后标签提议生效（confirm 走 updateAbilityAsset 的 tags 路径）', async () => {
+    const asset = await seedAsset('审批确认后标签生效的基线。');
+    const approval = await import('../../../../src/main/features/recall/asset-approval-service');
+    const { edit } = await tools();
+    await call(edit, { assetId: asset.id, fields: { tags: ['发布'] }, reason: '建议打标', origin: 'ai_initiated' });
+    const [proposal] = await approval.listAssetChangeProposals(TEST_UID, { assetId: asset.id });
+
+    await approval.decideAssetChangeProposal(TEST_UID, proposal.id, 'confirm');
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    expect((await assets.readAbilityAsset(TEST_UID, asset.id)).tags).toEqual(['发布']);
   });
 
   it('fields 传 JSON 字符串也认（真机实测：模型就这么传，6 次编辑全废）', async () => {

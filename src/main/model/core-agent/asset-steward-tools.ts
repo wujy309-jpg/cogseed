@@ -31,6 +31,7 @@ import {
   type UpdateAbilityAssetInput,
 } from '../../features/recall/asset-service';
 import type { RecallAbilityAssetRecord } from '../../features/recall/candidate-service';
+import { normalizeAbilityTagList } from '../../features/recall/ability-tag-service';
 import type { RecallAbilityAssetScopePolicy } from '../../features/recall/scope-policy';
 import { evaluateRecallAssetRuntimeEligibility } from '../../features/recall/prompt-injection';
 import { requestInteraction } from '../../features/chat_events/interaction-hub';
@@ -106,6 +107,8 @@ function metaLine(asset: RecallAbilityAssetRecord): string {
     `在用版=v${version}`,
     ...(asset.activeVersion && asset.activeVersion !== asset.version ? [`最新版=v${asset.version}`] : []),
     ...(asset.spaceId ? [`空间=${asset.spaceId}`] : []),
+    // 标签 = 主题分类（specs/012）；缺失不显示（缺省就是「未分类」，不伪造空值）。
+    ...(asset.tags && asset.tags.length ? [`标签=${asset.tags.join('/')}`] : []),
     // 族名是用户手写的**同源血缘**分组名，不是主题标签（标签字段尚未落地）：
     // 显示它才能让归并判断有依据，但必须标清是什么，免得和"标签"混为一谈。
     ...(asset.familyName ? [`族名(同源血缘)=${asset.familyName}`] : []),
@@ -214,11 +217,11 @@ function createListAbilityAssetsTool(opts: AssetStewardToolsOpts): AgentTool {
     name: 'list_ability_assets',
     executionMode: 'parallel',
     description: [
-      '列出这位用户的**全部**认知资产（经验/规则/模板/方法/偏好），含标题、类型、状态、范围、成熟度、在用版本、所属空间。',
-      '与 search_ability_assets 的区别：那是按相关度找"这次任务能用上什么"，这个是**管理视角的全量清单**——要看全、要按状态/类型/空间筛、要交给后面的整理动作时用它。',
+      '列出这位用户的**全部**认知资产（经验/规则/模板/方法/偏好），含标题、类型、状态、范围、成熟度、在用版本、所属空间、标签。',
+      '与 search_ability_assets 的区别：那是按相关度找"这次任务能用上什么"，这个是**管理视角的全量清单**——要看全、要按状态/类型/空间/标签筛、要交给后面的整理动作时用它。',
       '默认一页 30 条、最多 50 条，用 offset 翻页；返回里带总数与各状态的条数，翻完就能确认"一共多少条"。',
       '**已彻底清除的资产不在清单里**（规范要求搜索不可见）；已删除的会如实标成"已删除"，不会被藏起来，但它的正文读不出来（见 read_ability_asset）。',
-      '资产目前**没有主题标签字段**（标签系统尚未落地）：不要按标签过滤，也不要试图写标签，返回里出现的"族名(同源血缘)"是另一个东西（系统自动的同源分组）。',
+      '可按 `filter.tags` 过滤（配 `filter.tagsMode` 选"任一/同时具备"），可用 `edit_ability_asset` 打标；返回里出现的"族名(同源血缘)"是系统自动的同源分组、**不是**标签。',
     ].join(''),
     inputSchema: {
       type: 'object',
@@ -227,11 +230,13 @@ function createListAbilityAssetsTool(opts: AssetStewardToolsOpts): AgentTool {
         limit: { type: 'number', description: `一页条数：默认 ${LIST_PAGE_DEFAULT}、最大 ${LIST_PAGE_MAX}。` },
         filter: {
           type: 'object',
-          description: '可选过滤：三者可同时给。',
+          description: '可选过滤：可同时给（各条件之间叠加，AND）。',
           properties: {
             assetType: { type: 'string', description: '资产类型：rule / template / skill_method / fact / personal。' },
             status: { type: 'string', description: '治理状态：active / paused / archived / deleted / revoked。' },
             spaceId: { type: 'string', description: '只看某个空间沉淀的资产（sp_ 开头）。' },
+            tags: { type: 'array', items: { type: 'string' }, description: '只看带这些主题标签的资产（名字大小写不敏感）。' },
+            tagsMode: { type: 'string', enum: ['any', 'all'], description: 'tags 的组合方式：any=带其中任一个（默认）；all=同时具备全部。' },
           },
           additionalProperties: false,
         },
@@ -248,6 +253,20 @@ function createListAbilityAssetsTool(opts: AssetStewardToolsOpts): AgentTool {
       const assetType = typeof filter.assetType === 'string' && filter.assetType.trim() ? filter.assetType.trim() : undefined;
       const status = typeof filter.status === 'string' && filter.status.trim() ? filter.status.trim() : undefined;
       const spaceId = typeof filter.spaceId === 'string' && filter.spaceId.trim() ? filter.spaceId.trim() : undefined;
+      // 标签过滤（specs/012 T023）：与类型/状态/空间叠加（AND）；匹配与标签
+      // 规范化同一口径（大小写不敏感），不给渲染层之外的第二套判断。
+      const rawTagsFilter = parseStructuredInput(filter.tags);
+      const tagsFilter = Array.isArray(rawTagsFilter)
+        ? rawTagsFilter.map((value) => String(value ?? '').trim()).filter(Boolean)
+        : undefined;
+      if (filter.tags !== undefined && !tagsFilter?.length) {
+        return { content: 'filter.tags 要是非空字符串数组（每个一个标签名）。', isError: true };
+      }
+      const tagsModeInput = filter.tagsMode === undefined ? undefined : String(filter.tagsMode);
+      if (tagsModeInput !== undefined && tagsModeInput !== 'any' && tagsModeInput !== 'all') {
+        return { content: `filter.tagsMode 只能是 any / all，收到：${tagsModeInput}`, isError: true };
+      }
+      const tagsMode = tagsModeInput === 'all' ? 'all' : 'any';
       if (status && !LISTABLE_STATUSES.includes(status as typeof LISTABLE_STATUSES[number])) {
         return { content: `status 过滤值不认识：${status}（可用：${LISTABLE_STATUSES.join(' / ')}）`, isError: true };
       }
@@ -270,11 +289,21 @@ function createListAbilityAssetsTool(opts: AssetStewardToolsOpts): AgentTool {
       if (assetType) pool = pool.filter((asset) => asset.type === assetType);
       if (status) pool = pool.filter((asset) => asset.status === status);
       if (spaceId) pool = pool.filter((asset) => asset.spaceId === spaceId);
+      if (tagsFilter?.length) {
+        const wanted = tagsFilter.map((name) => name.toLocaleLowerCase());
+        pool = pool.filter((asset) => {
+          const owned = new Set((asset.tags || []).map((name) => name.toLocaleLowerCase()));
+          return tagsMode === 'all'
+            ? wanted.every((key) => owned.has(key))
+            : wanted.some((key) => owned.has(key));
+        });
+      }
 
       const filterNote = [
         assetType ? `类型=${assetType}` : '',
         status ? `状态=${status}` : '',
         spaceId ? `空间=${spaceId}` : '',
+        tagsFilter?.length ? `标签=${tagsFilter.join('/')}(tagsMode=${tagsMode})` : '',
       ].filter(Boolean).join('，');
       const countNote = LISTABLE_STATUSES
         .filter((key) => counts.get(key))
@@ -742,14 +771,16 @@ const FAILURE_CATEGORY_LABELS: Record<AbilityAssetFailureCategory, string> = {
 
 /** 「AI 自主提出的实质变化」不得直接生效（specs/008 分级②）。
  *
- *  实质变化 = 方法正文 / 事实判断 / 适用范围：
+ *  实质变化 = 方法正文 / 事实判断 / 适用范围 / 主题标签：
  *    - `statement`：正文即"这条资产主张什么"；
  *    - `scope` 与 `applicableWhen`/`forbiddenWhen`：它从此会进出哪一批任务；
  *    - `sensitivity`：能去的地方变多就是扩权——拍板表没单列它，但既有系统
  *      自己就把「敏感级升高」当扩权（inbox 的 `sensitivity_escalated` 是
  *      confirm 档）。归入实质变化是**更保护**的方向，代价只是偶发一张卡。
+ *    - `tags`（specs/012）：打什么标签是含义判断，"这条该归哪类"必须由
+ *      用户拍板（spec AC5：从"劝说"升级为"闸门"）；用户明确指令则直接执行。
  *  命名/标题不在此列（分级③允许自动处理）。 */
-export const SUBSTANTIAL_FIELDS = ['statement', 'scope', 'applicableWhen', 'forbiddenWhen', 'sensitivity'] as const;
+export const SUBSTANTIAL_FIELDS = ['statement', 'scope', 'applicableWhen', 'forbiddenWhen', 'sensitivity', 'tags'] as const;
 
 function writeReceipt(action: string, asset: RecallAbilityAssetRecord, extra: string[] = []): string {
   return [
@@ -912,9 +943,10 @@ function parseStructuredInput(value: unknown): unknown {
 const EDIT_FIELD_ALIASES: Record<string, string> = { body: 'statement' };
 
 /** 编辑允许的字段名（含别名）。**认不出的键要显式拒绝**——静默丢弃会让回执说
- *  "已改动"而实际一字未动（比报错更糟）。 */
+ *  "已改动"而实际一字未动（比报错更糟）。`tags`/`category` 已解禁（specs/012
+ *  T022）：category 不落字段，收编为一条标签并入 tags。 */
 const EDIT_ACCEPTED_FIELDS = new Set([
-  'title', 'statement', 'body', 'scope', 'applicableWhen', 'forbiddenWhen', 'sensitivity', 'scopePolicy',
+  'title', 'statement', 'body', 'scope', 'applicableWhen', 'forbiddenWhen', 'sensitivity', 'scopePolicy', 'tags', 'category',
 ]);
 
 function requireReason(value: unknown): string | { error: string } {
@@ -924,16 +956,39 @@ function requireReason(value: unknown): string | { error: string } {
   return reason;
 }
 
+/** 标签形状不合法的回执（specs/012 T022）：归因固定为 **schema**（入参形状问题，
+ *  不是数据缺失）；拒绝而不是截断/丢弃——静默截断会让模型以为打标成功。 */
+function tagShapeReceipt(assetId: string, problem: string): { content: string; isError: true } {
+  return {
+    content: [
+      `未能改动：[asset:${assetId}]`,
+      `拦截规则：${problem}`,
+      '归因：schema（入参或记录形状不合法）',
+      '标签规则：tags 是字符串数组（整体替换），每条 trim 后非空且 ≤20 字、去重后 ≤12 条（超限拒绝不截断）；category 是单个字符串，会收编为一条标签并入 tags。',
+    ].join('\n'),
+    isError: true,
+  };
+}
+
+/** 把唯一规范化处抛出的稳定英文不变量消息翻成模型可读的中文（只翻译，不改判定）。 */
+function tagShapeExplanation(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes('exceeds 12')) return '标签去重后超过 12 条：请只保留最关键的（拒绝而不截断，不会替你挑）。';
+  if (message.includes('exceeds 20')) return '单个标签名超过 20 字：标签是短名，不是句子。';
+  if (message.includes('tags entry')) return '标签列表里混了非字符串或空白项：每条必须是 trim 后非空的字符串。';
+  return 'tags 必须是字符串数组（整体替换），每条一个标签名。';
+}
+
 function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
   const userId = opts.userId;
   return {
     name: 'edit_ability_asset',
     description: [
-      '改一条认知资产的内容：标题、正文、适用范围、适用/禁用场景、敏感级。**必须**说明依据（reason）。',
-      '**分级（很重要）**：用户明确要求的改动（"把这条改清楚点"）直接执行；**你自己**想到的正文/适用范围/敏感级实质变化不要直接改——那类改动会改掉这条资产主张什么、或者它从此会进出哪一批任务，必须由用户点头（本工具会拒绝并说明）。',
+      '改一条认知资产的内容：标题、正文、适用范围、适用/禁用场景、敏感级、主题标签。**必须**说明依据（reason）。',
+      '**分级（很重要）**：用户明确要求的改动（"把这条改清楚点"）直接执行；**你自己**想到的正文/适用范围/敏感级/标签实质变化不要直接改——那类改动会改掉这条资产主张什么、它从此会进出哪一批任务、或它属于哪个主题，必须由用户点头（本工具会拒绝并说明）。',
       '读到的版本号（metaLine 里的「在用版」）请通过 expectedVersion 带回来：如果这条资产在你读取之后被改过（用户正在手动编辑），工具会拒绝而不是覆盖——重新读一次再决定。',
       '改动会写进台账（谁改的/时间/前后值/依据），并且随时可回滚（rollback_ability_asset）。',
-      '标签与归类字段目前没有（标签系统尚未落地）：不要传 tags/category，传了会被拒绝。',
+      '主题标签：fields.tags 传字符串数组（整体替换；每条 trim 后非空且 ≤20 字、去重后 ≤12 条，超限拒绝不截断）；category 是旧入参，会**收编为一条标签**与 tags 合并去重（不再单独存在）。标签改动不 bump 内容版本，台账记「标签：旧 → 新」。',
     ].join(''),
     inputSchema: {
       type: 'object',
@@ -949,6 +1004,8 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
             applicableWhen: { type: 'array', items: { type: 'string' }, description: '适用场景（整体替换；传空数组=清空）。' },
             forbiddenWhen: { type: 'array', items: { type: 'string' }, description: '禁用场景（整体替换；传空数组=清空）。' },
             sensitivity: { type: 'string', description: '敏感级：L0 / L1 / L2。' },
+            tags: { type: 'array', items: { type: 'string' }, description: '主题标签（整体替换）：字符串数组，每条 ≤20 字、去重后 ≤12 条；传空数组=清空标签。' },
+            category: { type: 'string', description: '分类（收编）：单个字符串，会作为一条标签并入 tags 合并去重，不单独存在。' },
             scopePolicy: {
               type: 'object',
               description: '作用域授权（这条资产能进出哪些空间/项目/Agent）。**改它属危险操作**：会先留执行前快照、再请用户单次确认。字段值都是字符串数组：purposeTags / agentIds / roleIds / projectIds / workspaceIds / conversationKinds / fileKinds。',
@@ -982,37 +1039,55 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
       for (const [key, value] of Object.entries(fieldsIn)) {
         fields[EDIT_FIELD_ALIASES[key] || key] = value;
       }
-      const touched = Object.keys(fields).filter((key) => fields[key] !== undefined);
-      const unknownFields = touched.filter((key) => !EDIT_ACCEPTED_FIELDS.has(key) && key !== 'tags' && key !== 'category');
+      const unknownFields = Object.keys(fields).filter((key) => fields[key] !== undefined && !EDIT_ACCEPTED_FIELDS.has(key));
       if (unknownFields.length) {
         return {
           content: [
             `未能改动：[asset:${assetId}]`,
             `拦截规则：不认识的字段名：${unknownFields.join(' / ')}`,
             '归因：schema（入参或记录形状不合法）',
-            '可用的字段：title / statement（别名 body）/ scope / applicableWhen / forbiddenWhen / sensitivity / scopePolicy。',
+            '可用的字段：title / statement（别名 body）/ scope / applicableWhen / forbiddenWhen / sensitivity / tags / category / scopePolicy。',
             '注意：fields 要传**对象**（不要传 JSON 字符串），例如 {"statement":"新正文"}。',
           ].join('\n'),
           isError: true,
         };
       }
-      if (!touched.length) return { content: 'fields 里至少要给一个要改的字段。', isError: true };
-      // 标签/归类字段尚未落地（Epic 2 US-201）。**如实拒绝，不静默丢弃**：
-      // 静默丢弃会让模型以为改成功了（最坏的一种"成功"）；也不映射到
-      // `type`（资产数据形态、与 payload.kind 绑定）或 `familyName`（系统自动的
-      // 同源血缘，不是分类）。Epic 2 落地后二者统一并入标签字段。
-      const unavailableFields = ['tags', 'category'].filter((key) => fields[key] !== undefined);
-      if (unavailableFields.length) {
-        return {
-          content: [
-            `未能改动：[asset:${assetId}]`,
-            `拦截规则：字段未就位（待 Epic 2 US-201 标签系统）：${unavailableFields.join(' / ')}`,
-            '归因：data（数据缺失/不存在）',
-            '这条资产目前没有标签/归类字段，所以这两个入参现在没有落点。请只带 title / statement / scope / applicableWhen / forbiddenWhen / sensitivity 重试。',
-          ].join('\n'),
-          isError: true,
-        };
+      if (!Object.keys(fields).length) return { content: 'fields 里至少要给一个要改的字段。', isError: true };
+      // 标签解禁（specs/012 T022，本 Epic 的核心一步）：tags / category 统一并入
+      // 标签字段——category 不落任何字段，**收编为一条标签**与 tags 合并去重后
+      // 从 tags 写入（写路径唯一走 updateAbilityAsset 的元数据路径：不 bump 版本、
+      // 台账记「标签：旧 → 新」）。禁映射到 `assetType`（资产数据形态）或
+      // `familyName`（系统自动的同源血缘，不是分类）；禁静默丢弃：形状不对就拒绝，
+      // 归因 schema。trim / ≤20 字 / 去重 / ≤12 条只走 ability-tag-service 的
+      // 唯一规范化，这里不另写一份判定。
+      let tagsToWrite: string[] | undefined;
+      if (fields.tags !== undefined || fields.category !== undefined) {
+        const rawTags = parseStructuredInput(fields.tags);
+        const names: unknown[] = [];
+        if (fields.tags !== undefined) {
+          if (!Array.isArray(rawTags)) {
+            return tagShapeReceipt(assetId, 'tags 必须是字符串数组（整体替换，每条一个标签名），不要传单个字符串。');
+          }
+          names.push(...rawTags);
+        }
+        if (fields.category !== undefined) {
+          if (typeof fields.category !== 'string') {
+            return tagShapeReceipt(assetId, 'category 必须是单个字符串（它会被收编为一条标签，与 tags 合并去重，不单独存在）。');
+          }
+          names.push(fields.category);
+        }
+        try {
+          tagsToWrite = normalizeAbilityTagList(names);
+        } catch (error) {
+          return tagShapeReceipt(assetId, tagShapeExplanation(error));
+        }
+        // tags 是唯一落点；category 作为字段名从这里消失（不落任何字段）。
+        fields.tags = tagsToWrite;
+        delete fields.category;
       }
+      // touched 在收编**之后**算：category 已并入 tags，闸门与回执都按 tags 口径
+      // （AI 自主传 category 打标同样算实质变化，不能从别名绕开审批）。
+      const touched = Object.keys(fields).filter((key) => fields[key] !== undefined);
       // 系统边界：模型给的值先在这里收口。上限与 IPC/服务层同口径（条件 ≤32 条），
       // 不指望下游兜——下游抛的是英文不变量消息，对模型不够可读。
       if (fields.sensitivity !== undefined && !['L0', 'L1', 'L2'].includes(String(fields.sensitivity))) {
@@ -1081,6 +1156,7 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
         ...(Array.isArray(fields.applicableWhen) ? { applicableWhen: fields.applicableWhen.map(String) } : {}),
         ...(Array.isArray(fields.forbiddenWhen) ? { forbiddenWhen: fields.forbiddenWhen.map(String) } : {}),
         ...(typeof fields.sensitivity === 'string' ? { sensitivity: fields.sensitivity as 'L0' | 'L1' | 'L2' } : {}),
+        ...(tagsToWrite !== undefined ? { tags: tagsToWrite } : {}),
         ...(fields.scopePolicy !== undefined
           ? { scopePolicy: fields.scopePolicy as RecallAbilityAssetScopePolicy }
           : {}),

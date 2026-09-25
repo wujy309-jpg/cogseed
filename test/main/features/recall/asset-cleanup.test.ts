@@ -4,7 +4,8 @@
  * 守四条：
  *   ① 报告与台账**一一对应**（每项都有 ledgerRef 与回滚锚点），逐项可单独回滚；
  *   ② 只做**不改变含义**的整理：近重复（正文不同）不自动合并，进 `uncertain[]` 且**不动它**；
- *   ③ 补标签/归类在 Epic 2 落地前**跳过并如实标注**（不在报告里假装做过）；
+ *   ③ 补标签已接线（specs/012 T025）：同源组多数标签机械传播直接写入，含义判断
+ *      进 `uncertain[]`；`skippedSteps` 不再有"待 Epic 2 / 012"；
  *   ④ 中断/失败后：已执行项全部有台账、可逐项回滚，失败项如实记录，未执行项保持原状。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -120,16 +121,73 @@ describe('整理报告与执行链（T041 / T042）', () => {
     expect((await assets.readAbilityAsset(uid, keep.id)).status).toBe('active');
   });
 
-  it('补标签与归类：Epic 2 未先行 → 跳过并如实标注，不假装做过', async () => {
-    const uid = 'user-clean-skip';
-    const { cleanup } = await modules();
+  it('补标签已接线：机械可判定（同源组绝大多数同名标签）直接写入并进 items[]，不再有"待 Epic 2 / 012"跳过', async () => {
+    const uid = 'user-clean-tags';
+    const { assets, cleanup, store } = await modules();
+    // 同源组：三条同族；两条已有同名标签「发布」→ 第三条机械可补（传播既有
+    // 事实，不需要理解语义）。familyName 用 store 直写布置（族引擎不在此范围）。
+    // 标题不带结尾句读：否则标题规范化先 bump 版本，"补标不 bump"就测不干净。
+    const taggedA = await seedAsset(uid, '上线前必须核对回滚方案与灰度范围');
+    const taggedB = await seedAsset(uid, '数据导出一律带生成时间戳与负责人');
+    const untagged = await seedAsset(uid, '会议纪要当场记录结论与待办归属');
+    for (const asset of [taggedA, taggedB, untagged]) {
+      await store.updateRecallJsonRecord(uid, 'ability-assets', asset.id, (raw) => ({ ...raw!, familyName: '发布纪律' }));
+    }
+    await assets.updateAbilityAsset(uid, taggedA.id, { tags: ['发布'], reason: '夹具', actor: 'user' });
+    await assets.updateAbilityAsset(uid, taggedB.id, { tags: ['发布'], reason: '夹具', actor: 'user' });
+
+    const report = await cleanup.runAssetCleanup(uid);
+    // 跳过项归零：不再出现"待 Epic 2 / 012"的措辞。
+    expect(report.skippedSteps).toEqual([]);
+    // 机械补标成为真实动作：进 items[]、带 before/after、台账引用与回滚锚点。
+    const tagged = report.items.filter((item) => item.kind === 'tag_added' && item.status === 'applied');
+    expect(tagged).toHaveLength(1);
+    expect(tagged[0]).toMatchObject({ assetId: untagged.id, before: '（未分类）', after: '发布' });
+    expect(tagged[0].ledgerRef).toBeTruthy();
+    expect(tagged[0].rollbackAnchor).toBeTruthy();
+    // 标签写入走元数据路径：资产 tags 更新、内容版本不动。
+    const after = await assets.readAbilityAsset(uid, untagged.id);
+    expect(after.tags).toEqual(['发布']);
+    expect(after.version).toBe(untagged.version);
+    // 台账记「标签：旧 → 新」且逐项可核（ledgerRef 指向真实台账行）。
+    const audit = await assets.listAbilityAssetAudit(uid, untagged.id);
+    expect(audit.some((row) => row.id === tagged[0].ledgerRef && String(row.reason || '').includes('标签：'))).toBe(true);
+    // 已有标签的两条不被重复打，内容版本也不动（对照：同样没被 bump）。
+    expect((await assets.readAbilityAsset(uid, taggedA.id)).tags).toEqual(['发布']);
+    expect((await assets.readAbilityAsset(uid, taggedB.id)).version).toBe(taggedB.version);
+  });
+
+  it('补标签的含义判断转待确认：库里已有标签但够不上机械判据的资产零改动', async () => {
+    const uid = 'user-clean-uncertain-tag';
+    const { assets, cleanup } = await modules();
+    // 库里已有标签体系（这条有标签、且自成一组没有同源组多数可言）。
+    // 标题不带结尾句读：不让标题规范化插进来干扰"零改动"断言。
+    const tagged = await seedAsset(uid, '发布前必须核对回滚方案与灰度范围');
+    await assets.updateAbilityAsset(uid, tagged.id, { tags: ['发布'], reason: '夹具', actor: 'user' });
+    // 无标签、无同源组：机械判据不成立 → 含义判断，进 uncertain[] 待确认。
+    const lone = await seedAsset(uid, '竞品调研先明确可比维度再收集证据');
+
+    const report = await cleanup.runAssetCleanup(uid);
+    expect(report.skippedSteps).toEqual([]);
+    expect(report.items.filter((item) => item.kind === 'tag_added')).toEqual([]);
+    const entry = report.uncertain.find((row) => row.assetId === lone.id);
+    expect(entry).toBeTruthy();
+    expect(entry!.reason).toContain('含义判断');
+    // uncertain 项资产零改动：tags 仍缺省、内容与版本都不动。
+    const after = await assets.readAbilityAsset(uid, lone.id);
+    expect(after.tags).toBeUndefined();
+    expect(after.statement).toBe(lone.statement);
+    expect(after.version).toBe(lone.version);
+  });
+
+  it('库里还没有任何标签时不硬问（没有参考系，不推 uncertain、不擅自打）', async () => {
+    const uid = 'user-clean-no-tags';
+    const { assets, cleanup } = await modules();
     await seedAsset(uid, '命名规范：动词开头、限定范围。');
     const report = await cleanup.runAssetCleanup(uid);
-    expect(report.skippedSteps.join('；')).toContain('补标签');
-    expect(report.skippedSteps.join('；')).toContain('归类');
-    expect(report.skippedSteps.join('；')).toContain('Epic 2');
-    // 没有任何一项声称打过标签或改过归类。
+    expect(report.skippedSteps).toEqual([]);
     expect(report.items.every((item) => item.kind === 'title_normalized' || item.kind === 'merged_duplicate')).toBe(true);
+    expect(report.uncertain.filter((row) => row.reason.includes('含义判断'))).toEqual([]);
   });
 });
 
