@@ -27,6 +27,8 @@
     // 经验目录管理（specs/016 US-803）：四个管理动作 + 迁移执行；preview/status
     // 是只读扫描，不进 pending 集（与 refresh 的口径不同：它们有各自的载入态）。
     'experience-status-toggle', 'experience-set-type', 'experience-merge', 'experience-archive', 'experience-migration-run',
+    // 标签系统（specs/012 US-201）：单打标/移除/批量执行/管理三动作都是写通道。
+    'tag-add', 'tag-remove', 'tag-batch-run', 'tag-rename-save', 'tag-merge-confirm', 'tag-delete',
   ]);
 
   /* ────────────────────────── 事件委托 ────────────────────────── */
@@ -206,6 +208,131 @@
           }
           case 'asset-edit-save': await A.editAsset(id); break;
           case 'asset-use-in-chat': await A.attachAssetToConversation(id); break;
+          /* ── 标签系统（specs/012 US-201，T010~T013）──────────────────────────
+           *  路由类（筛选/多选/弹层开合/行内编辑态）走 router.go 或 store；
+           *  写类转调 core.actions 的标签动作（recall.assets.tags.* / recall.tags.*）。 */
+          case 'filter-tag': {
+            // 标签 chip 多选（默认并集）：点名切换，独立于类型筛选（AND 叠加）。
+            const state = NS.parseTagFilterRoute(S.route);
+            const key = (value) => String(value || '').trim().toLocaleLowerCase();
+            const names = state.names.some((entry) => key(entry) === key(id))
+              ? state.names.filter((entry) => key(entry) !== key(id))
+              : [...state.names, id];
+            router.go({ name: 'overview', category: String(S.route.category || ''), assetView: String(S.route.assetView || ''), tagFilter: NS.joinTagFilter(names), tagMode: state.mode === 'all' ? 'all' : '', tagUntagged: String(S.route.tagUntagged || '') === '1' ? '1' : '', tagSelect: String(S.route.tagSelect || '') === '1' ? '1' : '' });
+            break;
+          }
+          case 'filter-tag-mode': {
+            const next = el.dataset.mode === 'all' ? 'all' : '';
+            router.go({ name: 'overview', category: String(S.route.category || ''), assetView: String(S.route.assetView || ''), tagFilter: String(S.route.tagFilter || ''), tagMode: next, tagUntagged: String(S.route.tagUntagged || '') === '1' ? '1' : '', tagSelect: String(S.route.tagSelect || '') === '1' ? '1' : '' });
+            break;
+          }
+          case 'filter-untagged': {
+            // 「未分类」筛选生效时顺手进入多选态（renderer-seams §1：批量补标入口）；
+            // 取消「未分类」时保持用户原有的多选态，不强行退出。
+            const on = String(S.route.tagUntagged || '') === '1';
+            const keepSelect = String(S.route.tagSelect || '') === '1' ? '1' : '';
+            router.go({ name: 'overview', category: String(S.route.category || ''), assetView: String(S.route.assetView || ''), tagFilter: String(S.route.tagFilter || ''), tagMode: String(S.route.tagMode || '') === 'all' ? 'all' : '', tagUntagged: on ? '' : '1', tagSelect: on ? keepSelect : '1' });
+            break;
+          }
+          case 'tag-more': {
+            router.go({ name: 'overview', category: String(S.route.category || ''), assetView: String(S.route.assetView || ''), tagFilter: String(S.route.tagFilter || ''), tagMode: String(S.route.tagMode || '') === 'all' ? 'all' : '', tagUntagged: String(S.route.tagUntagged || '') === '1' ? '1' : '', tagSelect: String(S.route.tagSelect || '') === '1' ? '1' : '', tagOverlay: 'more' });
+            break;
+          }
+          case 'tag-manage': {
+            router.go({ name: 'overview', category: String(S.route.category || ''), assetView: String(S.route.assetView || ''), tagFilter: String(S.route.tagFilter || ''), tagMode: String(S.route.tagMode || '') === 'all' ? 'all' : '', tagUntagged: String(S.route.tagUntagged || '') === '1' ? '1' : '', tagSelect: String(S.route.tagSelect || '') === '1' ? '1' : '', tagOverlay: 'manage' });
+            break;
+          }
+          case 'tag-overlay-close': {
+            router.go({ name: 'overview', category: String(S.route.category || ''), assetView: String(S.route.assetView || ''), tagFilter: String(S.route.tagFilter || ''), tagMode: String(S.route.tagMode || '') === 'all' ? 'all' : '', tagUntagged: String(S.route.tagUntagged || '') === '1' ? '1' : '', tagSelect: String(S.route.tagSelect || '') === '1' ? '1' : '', tagOverlay: '' }, { replace: true });
+            break;
+          }
+          case 'tag-add': {
+            // 预设候选（点已有标签 chip）优先；否则读输入框当前值。
+            const preset = el.dataset.preset === '1' ? String(el.dataset.name || '') : '';
+            const input = preset ? null : root.querySelector(`[data-tag-input][data-asset-id="${CSS.escape(String(id))}"]`);
+            const name = preset || (input ? String(input.value || '') : '');
+            await A.addAssetTag(id, name);
+            if (input) input.value = '';
+            break;
+          }
+          case 'tag-remove': await A.removeAssetTag(id, el.dataset.name || ''); break;
+          case 'tag-select-mode': {
+            // 进入/退出多选：退出时清选择（下次进入从零开始）。
+            const entering = String(S.route.tagSelect || '') !== '1';
+            if (!entering) S.tagSelectIds = [];
+            router.go({ name: 'overview', category: String(S.route.category || ''), assetView: String(S.route.assetView || ''), tagFilter: String(S.route.tagFilter || ''), tagMode: String(S.route.tagMode || '') === 'all' ? 'all' : '', tagUntagged: String(S.route.tagUntagged || '') === '1' ? '1' : '', tagSelect: entering ? '1' : '' }, { replace: true });
+            NS.notify();
+            break;
+          }
+          case 'tag-select-toggle': {
+            const selected = new Set((S.tagSelectIds || []).map(String));
+            if (selected.has(String(id))) selected.delete(String(id));
+            else selected.add(String(id));
+            S.tagSelectIds = [...selected];
+            NS.notify();
+            break;
+          }
+          case 'tag-select-all': {
+            // 全选本页 = 当前筛选（类型 + 标签）后的可见列表；kstar 档按归边
+            // 判定取（与 viewOverview 的 filtered 同一口径）。
+            const hidden = ['archived', 'deleted', 'purged', 'revoked'];
+            const state = NS.parseTagFilterRoute(S.route);
+            const tagActive = Boolean(state.names.length || state.untagged);
+            S.tagSelectIds = (S.assets || [])
+              .filter((a) => !hidden.includes(String(a.status || 'active')))
+              .filter((a) => {
+                if (String(S.route.category || '') === 'kstar') return NS.isKstarAsset(a);
+                if (S.route.category) return a.type === S.route.category;
+                return true;
+              })
+              .filter((a) => (tagActive ? NS.matchesTagFilter(a, state.names, state.untagged, state.mode) : true))
+              .map((a) => String(a.id));
+            NS.notify();
+            break;
+          }
+          case 'tag-select-clear': S.tagSelectIds = []; NS.notify(); break;
+          case 'tag-batch-op': {
+            const op = ['add', 'remove', 'replace'].includes(String(el.dataset.op || '')) ? String(el.dataset.op) : 'add';
+            S.tagBatchOp = op;
+            NS.notify();
+            break;
+          }
+          case 'tag-batch-run': {
+            const input = root.querySelector('[data-tag-batch-input]');
+            const names = String(input ? input.value || '' : '')
+              .split(/[、;；,，\n]/).map((value) => value.trim()).filter(Boolean);
+            await A.batchTags(names);
+            if (input && !(S.tagBatch && S.tagBatch.failed && S.tagBatch.failed.length)) input.value = '';
+            break;
+          }
+          case 'tag-batch-dismiss': S.tagBatch = null; NS.notify(); break;
+          case 'tag-rename': S.tagManageEdit = String(id || ''); S.tagManageMerge = null; NS.notify(); break;
+          case 'tag-rename-save': await A.renameTag(id); break;
+          case 'tag-rename-cancel': S.tagManageEdit = ''; NS.notify(); break;
+          case 'tag-merge': S.tagManageMerge = { sourceId: String(id || ''), targetName: '' }; S.tagManageEdit = ''; NS.notify(); break;
+          case 'tag-merge-target': {
+            if (!S.tagManageMerge || String(S.tagManageMerge.sourceId) !== String(id)) break;
+            S.tagManageMerge = { ...S.tagManageMerge, targetName: String(el.dataset.name || '') };
+            NS.notify();
+            break;
+          }
+          case 'tag-merge-confirm': {
+            const state = S.tagManageMerge;
+            if (!state || String(state.sourceId) !== String(id)) break;
+            await A.mergeTag(state.sourceId, state.targetName);
+            break;
+          }
+          case 'tag-merge-cancel': S.tagManageMerge = null; NS.notify(); break;
+          case 'tag-delete': await A.deleteTag(id); break;
+          case 'tag-suggestion-merge': {
+            // 建议直达（只建议不合并）：预选好目标，进入该源的合并确认态。
+            const source = ((S.tags && S.tags.items) || []).find((tag) => String(tag.name) === String(id) && tag.state === 'active');
+            if (!source) break;
+            S.tagManageMerge = { sourceId: String(source.id), targetName: String(el.dataset.target || '') };
+            S.tagManageEdit = '';
+            NS.notify();
+            break;
+          }
           case 'family-rename': await A.enterFamilyRename(id); break;
           case 'family-rename-save': await A.renameFamily(id); break;
           case 'family-rename-cancel': await A.exitFamilyRename(); break;
@@ -407,6 +534,28 @@
           : (idx + (event.key === 'ArrowRight' ? 1 : -1) + items.length) % items.length;
       if (items[next] && typeof items[next].focus === 'function') items[next].focus();
     });
+    // 标签输入的回车提交（specs/012 T010，Constitution IV 快捷键纪律）：
+    // IME 组合中（isComposing / keyCode 229）不触发——中文输入法选字回车
+    // 是「确认候选」不是「提交表单」。输入法兜底同款判断。
+    root.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229) return;
+      const input = event.target.closest && event.target.closest('[data-tag-input]');
+      if (!input) return;
+      event.preventDefault();
+      const assetId = String(input.dataset.assetId || '');
+      if (!assetId) return;
+      void (async () => {
+        try {
+          await A.addAssetTag(assetId, String(input.value || ''));
+          input.value = '';
+        } catch (error) {
+          const message = error && error.code && NS.recallErrorText
+            ? NS.recallErrorText(error)
+            : String((error && error.message) || error);
+          await NS.alertUser(message);
+        }
+      })();
+    });
     // 表单类控件的 change 委托（time input 等）：与 click 同一套 data-act 语义。
     root.addEventListener('change', async (event) => {
       const el = event.target.closest && event.target.closest('[data-act="nightly-time"]');
@@ -545,6 +694,19 @@
 
   // 每次重画后排一次轮询检查（条件不满足时 tick 自行退出）。
   NS.onChange(() => { scheduleCapturePoll(); });
+
+  // 标签系统（specs/012）：列表页按需拉标签库；管理弹层再带 retired + 同义
+  // 建议。弹层接线（uiModalController）在 views.render 尾部调用
+  // core.wireTagOverlay——onChange 监听器先于 boot 的渲染监听器注册，放这里
+  // 会接到上一帧的 DOM。
+  NS.onChange(() => {
+    if (String(S.route.name || '') !== 'overview') return;
+    void NS.loadTags();
+    if (String(S.route.tagOverlay || '') === 'manage') {
+      void NS.loadTags({ includeRetired: true });
+      void NS.loadTagSuggestions();
+    }
+  });
 
   // 详情页兜底加载上下文：返回栈回退/深链进入时没有经过 open-capture-detail
   // 分流，这里按当前路由补拉（loadCaptureContext 内部有缓存判重）。

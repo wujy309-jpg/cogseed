@@ -427,6 +427,28 @@
      *  preview 是只读扫描结果；lastRun 是最近一次 run/status 的回执（可核对
      *  「已迁/未迁/原因」，不满足于一枚 toast）。 */
     experienceMigration: null,
+    /** 标签库（specs/012 US-201，T012/T013 数据源）：{items, loading, failed,
+     *  stale}；items 是 recall.tags.list 的 TagView——排序口径（assetCount DESC
+     *  常用置顶）在主进程定死，渲染层不重排。null = 还没拉过。 */
+    tags: null,
+    /** 列表批量打标（specs/012 T011）：{running, done, total, updated,
+     *  unchanged, failed}；failed 是逐项失败清单（**不截断**），中断后已完成
+     *  项保留、可重跑（幂等）。null = 不在批量流程中。 */
+    tagBatch: null,
+    /** 多选态选中的资产 id（T011）：只在 route.tagSelect 多选态消费；
+     *  批量结束后保留（重跑同一批），退出多选才清空。 */
+    tagSelectIds: [],
+    /** 批量三选一语义：'add' | 'remove' | 'replace'（replace 与 add/remove
+     *  不同时给——三语义不混，contracts/ipc.md §2.2）。 */
+    tagBatchOp: 'add',
+    /** 标签管理弹层的行内编辑态：正在重命名的 tagId（空 = 无）。 */
+    tagManageEdit: '',
+    /** 标签管理弹层的合并态：{sourceId, sourceName, targetName}（null = 无）。
+     *  确认前必须先显示影响面（T013）。 */
+    tagManageMerge: null,
+    /** 「可能重复的标签」建议（T013，只读）：[{sourceName, targetName, reason}]；
+     *  null = 还没拉过；[] = 没有建议（如实呈现空态）。 */
+    tagSuggestions: null,
     sources: [],
     tree: null,
     proofs: [],
@@ -443,7 +465,7 @@
     /** 整理页：会话列表是否展开全部（默认收拢 5 条）。 */
     organizeListExpanded: false,
     /** 路由：{name, category, assetId, candidateId, proofEventId, captureBucket, captureId, sourceIssueOpen} */
-    route: { name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', ontologyBox: '', experienceId: '' },
+    route: { name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', ontologyBox: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '' },
     backStack: [],
     /** 上一帧的路由名：渲染层据此判断「离开 ontology 页」需要先归还本体 section。 */
     prevRouteName: 'tree',
@@ -527,6 +549,9 @@
       // 资产快照的请求集合），但任何 reload 都可能伴随经验变化（沉淀改道后
       // 资产侧动作间接影响不了经验，这里纯粹是「跨页签动作后回来别吃旧值」）。
       if (store.experiences) store.experiences = { ...store.experiences, stale: true };
+      // 标签库（specs/012）：打标/重命名/合并/删除都改计数，任何 reload 后都
+      // 让标签列表按需重拉（loadTags 的 stale 守卫会跳过没拉过的场景）。
+      if (store.tags) store.tags = { ...store.tags, stale: true };
       store.loaded = true;
     },
     async tree() {
@@ -572,6 +597,120 @@
     if (!store.captureContext || store.captureContext.captureId !== id) return;
     store.captureContext = { captureId: id, data };
     NS.notify();
+  };
+
+  /** 标签库（specs/012 T012/T013 数据源）：只拉 active（筛选条/打标候选/
+   *  管理弹层的主清单）；已停用/已合并在管理弹层打开时按需带 retired 重拉。
+   *  失败记 failed（读不到 ≠ 没有标签：筛选条静默不渲染，不吓人）。 */
+  NS.loadTags = async function loadTags(options) {
+    const opts = options || {};
+    const state = store.tags;
+    if (!opts.force && !opts.includeRetired && state && !state.stale && !state.failed) return;
+    if (!opts.force && opts.includeRetired && state && state.includeRetired && !state.stale && !state.failed) return;
+    store.tags = {
+      items: (state && state.items) || [],
+      loading: true,
+      failed: false,
+      stale: false,
+      includeRetired: Boolean(opts.includeRetired),
+    };
+    NS.notify();
+    let items = [];
+    let failed = false;
+    try {
+      const result = await api.call('recall.tags.list', opts.includeRetired ? { includeRetired: true } : {});
+      items = (result && Array.isArray(result.tags)) ? result.tags : [];
+    } catch (error) {
+      failed = true;
+    }
+    store.tags = { items, loading: false, failed, stale: false, includeRetired: Boolean(opts.includeRetired) };
+    NS.notify();
+  };
+
+  /** 「可能重复的标签」建议（T013，只读；只建议不合并）。管理弹层打开时拉。 */
+  NS.loadTagSuggestions = async function loadTagSuggestions(force) {
+    if (!force && Array.isArray(store.tagSuggestions)) return;
+    let suggestions = [];
+    try {
+      const result = await api.call('recall.tags.suggestions', {});
+      suggestions = (result && Array.isArray(result.suggestions)) ? result.suggestions : [];
+    } catch (error) {
+      suggestions = [];
+    }
+    store.tagSuggestions = suggestions;
+    NS.notify();
+  };
+
+  /** 标签筛选的纯判定件（views 与用例共用同一份口径，T012）：
+   *  「未分类」= !tags || length===0；并集(any)=命中任一；交集(all)=全部命中。
+   *  三种组合的空集语义（契约 renderer-seams §一）：
+   *  - 仅「未分类」→ 只看未打标；
+   *  - 「未分类」+ 名单(any) → 命中任一 **或** 未打标（未分类 = 并集里的一项）；
+   *  - 「未分类」+ 名单(all) → 恒空集（一条资产不可能既有标签又没有）。 */
+  NS.matchesTagFilter = function matchesTagFilter(asset, names, untagged, mode) {
+    const tags = (Array.isArray(asset.tags) ? asset.tags : []).map((entry) => String(entry || '').trim().toLocaleLowerCase());
+    const wanted = (Array.isArray(names) ? names : []).map((name) => String(name || '').trim().toLocaleLowerCase()).filter(Boolean);
+    const isUntagged = tags.length === 0;
+    if (!wanted.length) return untagged ? isUntagged : true;
+    const hit = mode === 'all'
+      ? wanted.every((name) => tags.includes(name))
+      : wanted.some((name) => tags.includes(name));
+    if (!untagged) return hit;
+    return mode === 'all' ? false : (hit || isUntagged);
+  };
+
+  /** 路由里的标签筛选解析：tagFilter 用 \u001f 连接（标签名可含逗号，不能用
+   *  逗号做分隔）；tagMode ''/'all'（缺省 = 并集 any）。 */
+  NS.parseTagFilterRoute = function parseTagFilterRoute(route) {
+    const joined = String((route && route.tagFilter) || '');
+    const names = joined.split('\u001f').map((name) => name.trim()).filter(Boolean);
+    return {
+      names,
+      untagged: String((route && route.tagUntagged) || '') === '1',
+      mode: String((route && route.tagMode) || '') === 'all' ? 'all' : 'any',
+    };
+  };
+  NS.joinTagFilter = function joinTagFilter(names) {
+    return names.filter(Boolean).join('\u001f');
+  };
+
+  /** 标签管理/更多 弹层的接线（T012「更多」/T013 管理）：弹层 markup 由
+   *  views 放进持久壳的槽位（#ca-tag-overlay-slot），这里把它过
+   *  uiModalController（焦点圈/Escape/滚动锁共享件），每次渲染按槽位当前
+   *  DOM 重建控制器——槽位不随内容区重渲染被拔掉，控制器在弹层打开期间
+   *  保持同一实例，焦点不乱跳。 */
+  let tagOverlayController = null;
+  NS.wireTagOverlay = function wireTagOverlay() {
+    if (typeof document === 'undefined' || typeof window.uiModalController !== 'function') return;
+    const slot = document.getElementById('ca-tag-overlay-slot');
+    const overlay = slot ? slot.querySelector(':scope > [data-tag-overlay]') : null;
+    if (!overlay) {
+      // 弹层已关（路由切走/槽位清空）：把还开着的控制器收掉（解锁 body 滚动）。
+      if (tagOverlayController && tagOverlayController.isOpen()) {
+        tagOverlayController.close('unmounted', { restoreFocus: false });
+      }
+      tagOverlayController = null;
+      return;
+    }
+    if (tagOverlayController && tagOverlayController.overlay === overlay && tagOverlayController.isOpen()) return;
+    const dialog = overlay.querySelector('[role="dialog"]');
+    if (!dialog) return;
+    tagOverlayController = window.uiModalController({
+      overlay,
+      dialog,
+      onRequestClose: () => {
+        router.go({
+          name: String(store.route.name || 'overview'),
+          category: String(store.route.category || ''),
+          tagFilter: String(store.route.tagFilter || ''),
+          tagMode: String(store.route.tagMode || '') === 'all' ? 'all' : '',
+          tagUntagged: String(store.route.tagUntagged || '') === '1' ? '1' : '',
+          tagSelect: String(store.route.tagSelect || '') === '1' ? '1' : '',
+          tagOverlay: '',
+        }, { replace: true });
+      },
+    });
+    tagOverlayController.open();
   };
 
   /** 后台巡检状态（specs/008 US-405）：开关 + 最近一轮的概要。
@@ -1029,7 +1168,7 @@
       const current = store.route;
       // 先把 next 归一到同一形状再比（部分键字面量 vs 全键展开的序列化恒不等，
       // 连点同一 tab 会堆积重复栈项——2026-09-14 终审修）。
-      const merged = Object.assign({ name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', ontologyBox: '', experienceId: '' }, next);
+      const merged = Object.assign({ name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', ontologyBox: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '' }, next);
       const same = JSON.stringify(current) === JSON.stringify(merged);
       if (!opts.replace && !same) store.backStack.push(Object.assign({}, current));
       store.route = merged;
@@ -1771,6 +1910,145 @@
       const skipped = lastRun.skipped || 0;
       const failed = lastRun.failed || 0;
       toast(T('cognition.experience_migration_last_run', '上次迁移：已迁 {migrated} 条，跳过 {skipped} 条，失败 {failed} 条', { migrated: String(migrated), skipped: String(skipped), failed: String(failed) }));
+    },
+    /* ── 标签系统（specs/012 US-201，T010 单打标 / T011 批量 / T013 管理）───
+     *  写路径全走 recall.assets.tags.set|batch 与 recall.tags.rename|merge|delete
+     *  （主进程侧唯一写路径 updateAbilityAsset）；批量按 ≤200/批循环，进度与
+     *  逐项失败清单进 store.tagBatch（中断后已完成项保留、可重跑：同名标签
+     *  不会重复加）。 */
+    async refreshTags(includeRetired) {
+      await NS.reload();
+      await NS.loadTags({ force: true, includeRetired: Boolean(includeRetired) });
+    },
+    /** 单条打标（T010，整组替换语义）。 */
+    async setAssetTags(assetId, tags) {
+      await api.call('recall.assets.tags.set', { assetId, tags });
+      toast(T('cognition.tag_added_toast', '已打标'));
+      await this.refreshTags();
+    },
+    async addAssetTag(assetId, name) {
+      const asset = (store.assets || []).find((row) => String(row.id) === String(assetId));
+      if (!asset) return;
+      const raw = String(name || '').trim();
+      if (!raw) return;
+      const key = (value) => String(value || '').trim().toLocaleLowerCase();
+      const current = Array.isArray(asset.tags) ? asset.tags : [];
+      // 同名（大小写不敏感）不新增第二枚（renderer-seams §2.1）。
+      if (current.some((entry) => key(entry) === key(raw))) {
+        toast(T('cognition.tag_duplicate_hint', '已有同名标签（不区分大小写），不再重复添加'), 'warning');
+        return;
+      }
+      await this.setAssetTags(assetId, [...current, raw]);
+    },
+    async removeAssetTag(assetId, name) {
+      const asset = (store.assets || []).find((row) => String(row.id) === String(assetId));
+      if (!asset) return;
+      const key = (value) => String(value || '').trim().toLocaleLowerCase();
+      const current = Array.isArray(asset.tags) ? asset.tags : [];
+      const next = current.filter((entry) => key(entry) !== key(name));
+      if (next.length === current.length) return;
+      await api.call('recall.assets.tags.set', { assetId, tags: next });
+      toast(T('cognition.tag_removed_toast', '已移除「{name}」', { name: String(name || '') }));
+      await this.refreshTags();
+    },
+    /** 列表批量打标（T011）：三选一语义（replace 与 add/remove 不混）；
+     *  整批 IPC 拒绝时按本地名单逐项记失败，失败清单不截断。 */
+    async batchTags(names, opOverride) {
+      const op = opOverride || store.tagBatchOp || 'add';
+      const ids = [...store.tagSelectIds];
+      if (!ids.length) { toast(T('cognition.tag_batch_none_selected', '先勾选要打标的资产'), 'warning'); return; }
+      const key = (value) => String(value || '').trim().toLocaleLowerCase();
+      const wanted = (Array.isArray(names) ? names : [names]).map((value) => String(value || '').trim()).filter(Boolean);
+      if (!wanted.length) { toast(T('cognition.tag_batch_no_tags', '先填标签名'), 'warning'); return; }
+      const seen = new Set();
+      const unique = wanted.filter((value) => {
+        if (seen.has(key(value))) return false;
+        seen.add(key(value));
+        return true;
+      });
+      const opPayload = op === 'replace' ? { replace: unique } : op === 'remove' ? { remove: unique } : { add: unique };
+      store.tagBatch = { running: true, done: 0, total: ids.length, updated: 0, unchanged: 0, failed: [] };
+      NS.notify();
+      let updated = 0;
+      let unchanged = 0;
+      const failed = [];
+      const CHUNK = 200;
+      for (let at = 0; at < ids.length; at += CHUNK) {
+        const chunk = ids.slice(at, at + CHUNK);
+        try {
+          const result = await api.call('recall.assets.tags.batch', { assetIds: chunk, op: opPayload });
+          const report = (result && result.report) || { updated: 0, unchanged: 0, items: [] };
+          updated += Number(report.updated || 0);
+          unchanged += Number(report.unchanged || 0);
+          failed.push(...(report.items || []).filter((item) => String(item.status || '') === 'failed'));
+        } catch (error) {
+          failed.push(...chunk.map((assetId) => ({
+            assetId,
+            title: ((store.assets || []).find((row) => String(row.id) === String(assetId)) || {}).title || '',
+            note: String((error && error.message) || error),
+            status: 'failed',
+          })));
+        }
+        store.tagBatch = { running: true, done: Math.min(at + CHUNK, ids.length), total: ids.length, updated, unchanged, failed };
+        NS.notify();
+      }
+      store.tagBatch = { running: false, done: ids.length, total: ids.length, updated, unchanged, failed };
+      NS.notify();
+      toast(T('cognition.tag_batch_done', '批量完成：改 {updated} 条，未变 {unchanged} 条，失败 {failed} 条', { updated: String(updated), unchanged: String(unchanged), failed: String(failed.length) }), failed.length ? 'warning' : 'success');
+      await this.refreshTags(String(store.route.tagOverlay || '') === 'manage');
+    },
+    /** 管理三动作（T013）。合并前必须显示影响面；删除确认语含「只摘除标签，
+     *  资产本身不受影响」；完成 toast 的数字与实际一致（0 条不显示数字）。 */
+    async renameTag(tagId) {
+      const input = document.querySelector('[data-tag-rename-input]');
+      const name = input ? String(input.value || '').trim() : '';
+      if (!name) return;
+      const key = (value) => String(value || '').trim().toLocaleLowerCase();
+      const tag = ((store.tags && store.tags.items) || []).find((row) => String(row.id) === String(tagId));
+      const old = String((tag && tag.name) || '');
+      if (key(name) === key(old)) { store.tagManageEdit = ''; NS.notify(); return; }
+      const ok = await confirmUser(T('cognition.tag_rename_confirm', '改名后，引用旧名「{old}」的 {n} 条资产会一并改为「{name}」。确认改名？', { old, name, n: String(Number((tag && tag.assetCount) || 0)) }));
+      if (!ok) return;
+      const result = await api.call('recall.tags.rename', { tagId, name });
+      const updated = Number((result && result.report && result.report.updated) || 0);
+      toast(updated
+        ? T('cognition.tag_renamed_toast', '已改名，{n} 条资产同步更新', { n: String(updated) })
+        : T('cognition.tag_renamed_toast_zero', '已改名'));
+      store.tagManageEdit = '';
+      await this.refreshTags(true);
+    },
+    async mergeTag(sourceId, targetName) {
+      const key = (value) => String(value || '').trim().toLocaleLowerCase();
+      const items = (store.tags && store.tags.items) || [];
+      const source = items.find((row) => String(row.id) === String(sourceId));
+      const target = items.find((row) => row.state === 'active'
+        && String(row.id) !== String(sourceId)
+        && key(row.name) === key(targetName));
+      if (!source || !target) {
+        toast(T('cognition.tag_merge_need_target', '先选择要并入的目标标签'), 'warning');
+        return;
+      }
+      const ok = await confirmUser(T('cognition.tag_merge_impact', '将把 {n} 条资产的「{source}」改为「{target}」，源标签将停用。确认合并？', { n: String(Number(source.assetCount || 0)), source: source.name, target: target.name }), true);
+      if (!ok) return;
+      const result = await api.call('recall.tags.merge', { sourceTagId: source.id, targetTagId: target.id });
+      const updated = Number((result && result.report && result.report.updated) || 0);
+      toast(updated
+        ? T('cognition.tag_merged_toast', '合并完成，{n} 条资产同步更新', { n: String(updated) })
+        : T('cognition.tag_merged_toast_zero', '合并完成'));
+      store.tagManageMerge = null;
+      await this.refreshTags(true);
+    },
+    async deleteTag(tagId) {
+      const tag = ((store.tags && store.tags.items) || []).find((row) => String(row.id) === String(tagId));
+      if (!tag) return;
+      const ok = await confirmUser(T('cognition.tag_delete_confirm', '只摘除标签，资产本身不受影响。确认停用「{name}」？', { name: String(tag.name || '') }), true);
+      if (!ok) return;
+      const result = await api.call('recall.tags.delete', { tagId });
+      const updated = Number((result && result.report && result.report.updated) || 0);
+      toast(updated
+        ? T('cognition.tag_deleted_toast', '已停用，{n} 条资产同步更新', { n: String(updated) })
+        : T('cognition.tag_deleted_toast_zero', '已停用'));
+      await this.refreshTags(true);
     },
     async sourceAction(kind, sourceId, action) {
       const channels = {

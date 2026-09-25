@@ -808,7 +808,9 @@
      径向渐变光斑、锥形树干；SVG viewBox 自适应，无需手动 resize 重绘。 */
 
   /** 叶片方向派生 + 同方向合并计数。返回 [[方向名, n], ...]（按量降序）。
-   *  取名口径与原型一致：优先族名，其次标题冒号/箭头前的头段。 */
+   *  取名口径与原型一致：优先族名，其次标题冒号/箭头前的头段。
+   *  （specs/012 T016 定调：族名 = **同源血缘**，不是主题分类——主题分类
+   *  见资产的 `tags`；这里只是拿血缘名当叶片的默认方向名，逻辑不动。） */
   function branchDirections(assets) {
     const map = new Map();
     for (const a of assets) {
@@ -1548,6 +1550,7 @@
         <div class="right">${switchable ? switchEl : detailStatusChip(asset)}${['active'].includes(String(asset.status || 'active')) ? btn(T('cognition.asset_use_in_chat', '用到当前对话'), 'asset-use-in-chat', { id: asset.id, small: true }) : ''}</div>
       </div>
       ${editing ? assetEditForm(asset) : `<p class="content-text">${esc(asset.statement || '')}</p>`}
+      ${assetTagsSection(asset)}
       ${topControl}
       ${(() => {
         /* 推荐卡：recommendedAction 数据存在时渲染（系统建议暂停/返工 + 知道了） */
@@ -1691,9 +1694,11 @@
   /* ────────────────────────── 视图：我的认知 ────────────────────────── */
 
   /** 大类分组（2026-09-22 清单 #2·面板侧）：按 same_family 关系做连通分量，
- *  一组＝一个大类；组名默认取组内最近更新的资产标题（族命名功能挂本体分组，
- *  后续轮接）；无族关系的资产归入「未归类」组。视图与筛选都保留原行为——
- *  分组只改变排列，不改变可见性。 */
+   *  一组＝一个大类；组名默认取组内最近更新的资产标题（族命名功能挂本体分组，
+   *  后续轮接）；无族关系的资产归入无血缘组。视图与筛选都保留原行为——
+   *  分组只改变排列，不改变可见性。
+   *  （specs/012 T008：族名 = 同源血缘，**不是**主题分类（主题分类见 tags）；
+   *  呈现话术已降级——组头计数/无组文案在 i18n 改值，本函数逻辑零改动。） */
   function familyGroupsOf(assets) {
     const parent = new Map(assets.map((asset) => [String(asset.id), String(asset.id)]));
     const find = (id) => { let root = id; while (parent.get(root) !== root) root = parent.get(root); return root; };
@@ -1796,6 +1801,286 @@
     return '<div id="ca-ontology-mount" class="ca-ontology-mount"></div>';
   }
 
+  /* ────────────────────────── 标签系统（specs/012 US-201，T010~T013）──────────────────────────
+   * 全部走共享控件（uiTag/uiInput/uiCheckbox/uiSegmentedControl/uiProgressBar/
+   * uiModalController），零裸控件；可见文案一律 T() 内联（i18n 门禁扫得到）；
+   * 渲染层只按主进程给的标签顺序消费（assetCount 常用置顶），不重排。 */
+
+  /** 标签库快照的 active 子集（T012：筛选条只显示 assetCount>0 的 active）。 */
+  const activeTagsWithAssets = () => ((S.tags && Array.isArray(S.tags.items)) ? S.tags.items : [])
+    .filter((tag) => tag && String(tag.state || 'active') === 'active' && Number(tag.assetCount || 0) > 0);
+
+  /** 标签筛选路由解析的取用件：真机恒走 core.parseTagFilterRoute（唯一处）；
+   *  极简测试夹具（只装 views 不装 core 的 NS 桩）按同一口径就地兜底，标签
+   *  筛选在桩里自然退化为「未启用」。 */
+  const tagRouteState = (route) => {
+    if (typeof NS.parseTagFilterRoute === 'function') return NS.parseTagFilterRoute(route);
+    return {
+      names: [],
+      untagged: String((route && route.tagUntagged) || '') === '1',
+      mode: String((route && route.tagMode) || '') === 'all' ? 'all' : 'any',
+    };
+  };
+
+  /** 资产详情「标签」section（T010）：已有标签 uiTag + 移除；uiInput + 候选
+   *  下拉（<details>+chips）+「添加」；回车提交在 app.js 委托层带 IME 守卫。
+   *  空态 = 「未分类」+ 一句引导。提交走整组替换（core.setAssetTags）。 */
+  function assetTagsSection(asset) {
+    if (!['active', 'paused'].includes(String(asset.status || 'active'))) return '';
+    const tags = Array.isArray(asset.tags) ? asset.tags : [];
+    const key = (value) => String(value || '').trim().toLocaleLowerCase();
+    const existingKeys = new Set(tags.map((entry) => key(entry)));
+    const candidates = activeTagsWithAssets()
+      .filter((tag) => !existingKeys.has(key(tag.name)))
+      .slice(0, 8);
+    const chipsHtml = tags.map((name) => `
+      <span class="ca-tag-item">
+        ${window.uiTag({ label: String(name), variant: 'outline', className: 'ca-tag-chip' })}
+        ${btn(T('cognition.tag_remove', '移除'), 'tag-remove', { id: asset.id, data: { name: String(name) }, small: true, className: 'rnm' })}
+      </span>`).join('');
+    const inputId = `ca-tag-add-${esc(String(asset.id))}`;
+    return `
+      <div class="sect-block" data-asset-tags>
+        <div class="sub"><strong>${esc(T('cognition.tag_section', '标签'))}</strong>${tags.length ? `<span class="note">${String(tags.length)}</span>` : ''}</div>
+        ${tags.length
+          ? `<div class="chips ca-tags-row">${chipsHtml}</div>`
+          : `<p class="note">${esc(T('cognition.tag_empty', '未分类'))} · ${esc(T('cognition.tag_empty_hint', '打标签后可在列表里按主题筛选'))}</p>`}
+        <div class="chips ca-tags-row">
+          ${window.uiInput({
+            id: inputId,
+            placeholder: T('cognition.tag_add_placeholder', '新标签，回车或点「添加」'),
+            className: 'litxt ca-tag-input',
+            attrs: { 'data-tag-input': '1', 'data-asset-id': String(asset.id), maxlength: '20' },
+          })}
+          ${btn(T('cognition.tag_add', '添加'), 'tag-add', { id: asset.id, small: true })}
+          ${candidates.length ? `
+            <details class="details ca-tag-candidates">
+              <summary>${esc(T('cognition.tag_candidates', '选择已有标签'))}</summary>
+              <div class="chips">${candidates.map((tag) => btn(String(tag.name), 'tag-add', { id: asset.id, data: { name: String(tag.name), preset: '1' }, className: 'chip' })).join('')}</div>
+            </details>` : ''}
+        </div>
+      </div>`;
+  }
+
+  /** 标签筛选行（T012）：类型 chips 旁的另一根轴；只显示 assetCount>0 的
+   *  active + 「未分类」chip（计数按其它筛选生效后算）+ 交/并集切换 +
+   *  「更多」弹层 + 「管理标签」入口。空库（无任何可显示 chip）不渲染该行。 */
+  function tagFilterBar(route, baseAssets) {
+    if (String(route.category || '') === 'deleted') return '';
+    const tagState = tagRouteState(route);
+    const tags = activeTagsWithAssets();
+    // 空库（无任何可显示标签）→ 整行不显示：库为空时「未分类 = 全量」，
+    // 摆一个只会筛出全量的 chip 只会误导（spec Edge：筛选不误伤）。
+    if (!tags.length) return '';
+    const untaggedCount = baseAssets.filter((asset) => (Array.isArray(asset.tags) ? asset.tags : []).length === 0).length;
+    const visible = tags.slice(0, 12);
+    const hiddenCount = Math.max(0, tags.length - visible.length);
+    const key = (value) => String(value || '').trim().toLocaleLowerCase();
+    const chipOf = (name, count) => {
+      const on = tagState.names.some((entry) => key(entry) === key(name));
+      return btn(`${name} ${count}`, 'filter-tag', { id: name, className: `chip${on ? ' on' : ''}` });
+    };
+    const countOf = (name) => baseAssets.filter((asset) => (Array.isArray(asset.tags) ? asset.tags : [])
+      .some((entry) => key(entry) === key(name))).length;
+    const chips = visible
+      .filter((tag) => countOf(tag.name) > 0 || tagState.names.some((entry) => key(entry) === key(tag.name)))
+      .map((tag) => chipOf(tag.name, countOf(tag.name)));
+    const untaggedChip = untaggedCount > 0 || tagState.untagged
+      ? btn(`${T('cognition.tag_untagged', '未分类')} ${untaggedCount}`, 'filter-untagged', { className: `chip${tagState.untagged ? ' on' : ''}` })
+      : '';
+    const modeToggle = window.uiSegmentedControl({
+      ariaLabel: T('cognition.tag_filter_label', '标签'),
+      value: tagState.mode,
+      items: [
+        { label: T('cognition.tag_filter_any', '任一标签'), value: 'any', attrs: { 'data-act': 'filter-tag-mode', 'data-mode': 'any' } },
+        { label: T('cognition.tag_filter_all', '同时具备'), value: 'all', attrs: { 'data-act': 'filter-tag-mode', 'data-mode': 'all' } },
+      ],
+    });
+    const active = tagState.names.length > 0 || tagState.untagged;
+    return `
+      <div class="pillbox ca-tag-filter${active ? ' is-on' : ''}">
+        <div class="chips">
+          ${chips.join('')}
+          ${untaggedChip}
+          ${hiddenCount ? btn(T('cognition.tag_more', '更多'), 'tag-more', { className: 'chip' }) : ''}
+        </div>
+        ${modeToggle}
+        ${btn(T('cognition.tag_manage', '管理标签'), 'tag-manage', { small: true, className: 'o' })}
+      </div>`;
+  }
+
+  /** 「未分类」+「同时具备」= 永远空集：给明确空态说明（T012 Edge）。 */
+  const tagFilterContradiction = (route) => {
+    const state = tagRouteState(route);
+    return state.untagged && state.mode === 'all' && state.names.length > 0;
+  };
+
+  /** 多选态批量条（T011）：已选 N / 全选本页 / 清空 + 三选一语义 + 标签输入
+   *  + 执行 + 可见进度（uiProgressBar）+ 逐项失败清单（不截断）。 */
+  function tagBatchBar(route, pageAssets) {
+    const selected = new Set((S.tagSelectIds || []).map(String));
+    const op = String(S.tagBatchOp || 'add');
+    const batch = S.tagBatch || null;
+    const seg = window.uiSegmentedControl({
+      ariaLabel: T('cognition.tag_batch_op_aria', '批量操作语义'),
+      value: op,
+      items: [
+        { label: T('cognition.tag_batch_op_add', '打标'), value: 'add', attrs: { 'data-act': 'tag-batch-op', 'data-op': 'add' } },
+        { label: T('cognition.tag_batch_op_remove', '去标'), value: 'remove', attrs: { 'data-act': 'tag-batch-op', 'data-op': 'remove' } },
+        { label: T('cognition.tag_batch_op_replace', '替换为'), value: 'replace', attrs: { 'data-act': 'tag-batch-op', 'data-op': 'replace' } },
+      ],
+    });
+    const progress = batch
+      ? `
+        <div class="ca-tag-progress">
+          ${window.uiProgressBar({
+            ariaLabel: T('cognition.tag_batch_progress', '批量打标中 {done}/{total}', { done: String(batch.done), total: String(batch.total) }),
+            value: batch.done,
+            max: Math.max(1, batch.total),
+          })}
+          <span class="note">${esc(T('cognition.tag_batch_progress', '批量打标中 {done}/{total}', { done: String(batch.done), total: String(batch.total) }))}</span>
+        </div>
+        ${batch.failed && batch.failed.length ? `
+          <div class="ca-tag-failures">
+            <p class="note"><strong>${esc(T('cognition.tag_batch_failed_title', '有 {n} 条没成功：', { n: String(batch.failed.length) }))}</strong></p>
+            ${batch.failed.map((item) => `<p class="note">· ${esc(item.title || item.assetId)}${item.note ? ` — ${esc(item.note)}` : ''}</p>`).join('')}
+            <p class="note">${esc(T('cognition.tag_batch_failed_note', '可重跑：已完成的项不会重复改。'))}</p>
+            ${btn(T('cognition.tag_batch_dismiss', '收起失败清单'), 'tag-batch-dismiss', { small: true, className: 'rnm' })}
+          </div>` : ''}`
+      : '';
+    return `
+      <div class="ca-batch-bar" data-tag-batch-bar>
+        <span class="sub">${esc(T('cognition.tag_selected_count', '已选 {n} 条', { n: String(selected.size) }))}</span>
+        ${btn(T('cognition.tag_select_all', '全选本页'), 'tag-select-all', { small: true, className: 'rnm' })}
+        ${btn(T('cognition.tag_select_clear', '清空'), 'tag-select-clear', { small: true, className: 'rnm' })}
+        ${btn(T('cognition.tag_select_exit', '退出多选'), 'tag-select-mode', { small: true, className: 'rnm' })}
+        <span class="sp"></span>
+        ${seg}
+        ${window.uiInput({
+          id: 'ca-tag-batch-input',
+          placeholder: T('cognition.tag_batch_tags_label', '标签（多个用顿号分隔）'),
+          className: 'litxt ca-tag-input',
+          attrs: { 'data-tag-batch-input': '1' },
+        })}
+        ${btn(T('cognition.tag_batch_run', '执行'), 'tag-batch-run', { small: true, primary: true, disabled: Boolean(batch && batch.running) })}
+        ${progress}
+      </div>`;
+  }
+
+  /** 管理弹层 / 「更多」弹层（T013/T012「更多」）：markup 落进持久壳槽位
+   *  （#ca-tag-overlay-slot，render() 维护），由 core.wireTagOverlay 过
+   *  uiModalController。不新建页面。 */
+  function tagOverlayHtml(route) {
+    const mode = String(route.tagOverlay || '');
+    if (mode !== 'more' && mode !== 'manage') return '';
+    const allItems = (S.tags && Array.isArray(S.tags.items)) ? S.tags.items : [];
+    const active = allItems.filter((tag) => String(tag.state || 'active') === 'active');
+    const retired = allItems.filter((tag) => String(tag.state || '') === 'merged' || String(tag.state || '') === 'archived');
+    const busy = Boolean(S.tagBatch && S.tagBatch.running);
+    if (mode === 'more') {
+      const state = tagRouteState(route);
+      const key = (value) => String(value || '').trim().toLocaleLowerCase();
+      const rows = active.filter((tag) => Number(tag.assetCount || 0) > 0).map((tag) => btn(
+        `${tag.name} ${tag.assetCount}`,
+        'filter-tag',
+        { id: String(tag.name), className: `chip${state.names.some((entry) => key(entry) === key(tag.name)) ? ' on' : ''}` },
+      )).join('');
+      return `
+        <div class="ui-modal-overlay" data-tag-overlay="more" hidden>
+          <section class="ui-modal ui-modal--sm" role="dialog" aria-modal="true" aria-labelledby="ca-tag-more-title">
+            <header class="ui-modal__header"><h2 class="ui-modal__title" id="ca-tag-more-title">${esc(T('cognition.tag_more_title', '全部标签'))}</h2></header>
+            <div class="ui-modal__body"><div class="chips">${rows || `<p class="note">${esc(T('cognition.tag_manage_empty', '还没有标签——先在资产上打一个。'))}</p>`}</div></div>
+          </section>
+        </div>`;
+    }
+    // manage：三动作 + 同义建议（只建议）+ 已停用/已合并折叠区 + 批量进度。
+    const suggestions = Array.isArray(S.tagSuggestions) ? S.tagSuggestions : [];
+    const editId = String(S.tagManageEdit || '');
+    const mergeState = S.tagManageMerge || null;
+    const rowOf = (tag) => {
+      if (String(tag.id) === editId) {
+        return `
+          <div class="row is-flat">
+            <div class="tw"><div class="tt">${esc(tag.name)}</div>
+              ${window.uiInput({ id: `ca-tag-rename-${esc(tag.id)}`, value: String(tag.name), className: 'litxt', attrs: { 'data-tag-rename-input': '1', maxlength: '20' } })}</div>
+            <div class="sd">${btn(T('common.save', '保存'), 'tag-rename-save', { id: tag.id, small: true, primary: true })}${btn(T('common.cancel', '取消'), 'tag-rename-cancel', { small: true, className: 'rnm' })}</div>
+          </div>`;
+      }
+      if (mergeState && String(mergeState.sourceId) === String(tag.id)) {
+        const key = (value) => String(value || '').trim().toLocaleLowerCase();
+        const targets = active.filter((other) => other.id !== tag.id).slice(0, 12);
+        const targetSet = mergeState.targetName
+          ? `<p class="note">${esc(T('cognition.tag_merge_target_set', '并入「{name}」', { name: mergeState.targetName }))}</p>`
+          : `<p class="note">${esc(T('cognition.tag_merge_need_target', '先选择要并入的目标标签'))}</p>`;
+        return `
+          <div class="row is-flat">
+            <div class="tw"><div class="tt">${esc(tag.name)} → ?</div>
+              <p class="note">${esc(T('cognition.tag_merge_pick_target', '选择要并入的目标标签：'))}</p>
+              <div class="chips">${targets.map((other) => btn(String(other.name), 'tag-merge-target', { id: tag.id, data: { name: String(other.name) }, className: `chip${mergeState.targetName && key(mergeState.targetName) === key(other.name) ? ' on' : ''}` })).join('')}</div>
+              ${targetSet}</div>
+            <div class="sd">${btn(T('cognition.tag_merge_confirm', '确认合并'), 'tag-merge-confirm', { id: tag.id, small: true, primary: true, disabled: busy })}${btn(T('common.cancel', '取消'), 'tag-merge-cancel', { small: true, className: 'rnm' })}</div>
+          </div>`;
+      }
+      return `
+        <div class="row is-flat">
+          <div class="tw"><div class="tt">${esc(tag.name)}</div>
+            <div class="mm">${esc(T('cognition.tag_asset_count', '{n} 条资产', { n: String(Number(tag.assetCount || 0)) }))}</div></div>
+          <div class="sd">
+            ${btn(T('cognition.tag_rename', '重命名'), 'tag-rename', { id: tag.id, small: true, className: 'rnm' })}
+            ${btn(T('cognition.tag_merge', '合并'), 'tag-merge', { id: tag.id, small: true, className: 'rnm' })}
+            ${btn(T('cognition.tag_delete', '停用'), 'tag-delete', { id: tag.id, small: true, danger: true })}
+          </div>
+        </div>`;
+    };
+    const suggestionHtml = suggestions.length ? `
+      <div class="sect-block">
+        <div class="sub"><strong>${esc(T('cognition.tag_suggestions', '可能重复的标签'))}</strong><span class="note">${esc(T('cognition.tag_suggestions_hint', '只是建议，不会自动合并'))}</span></div>
+        ${suggestions.map((item) => `
+          <div class="row is-flat">
+            <div class="tw"><div class="tt">${esc(item.sourceName)} → ${esc(item.targetName)}</div>
+              <div class="mm">${esc(item.reason === 'alias'
+                ? T('cognition.tag_suggestion_reason_alias', '别名命中')
+                : T('cognition.tag_suggestion_reason_similar', '名字相似'))}</div></div>
+            <div class="sd">${btn(T('cognition.tag_suggestion_merge', '合并这组'), 'tag-suggestion-merge', { id: String(item.sourceName), data: { target: String(item.targetName) }, small: true })}</div>
+          </div>`).join('')}
+      </div>` : '';
+    const retiredHtml = retired.length ? `
+      <details class="details">
+        <summary>${esc(T('cognition.tag_retired_section', '已停用 / 已合并的标签'))}</summary>
+        <div class="dbody">
+          ${retired.map((tag) => `
+            <div class="row is-flat">
+              <div class="tw"><div class="tt">${esc(tag.name)}</div>
+                <div class="mm">${esc(String(tag.state) === 'merged'
+                  ? T('cognition.tag_retired_state_merged', '已合并')
+                  : T('cognition.tag_retired_state_archived', '已停用'))}${(tag.formerNames || []).length ? ` · ${esc(T('cognition.tag_retired_former', '曾用名：{names}', { names: tag.formerNames.join('、') }))}` : ''}${(tag.aliases || []).length ? ` · ${esc(T('cognition.tag_retired_aliases', '别名：{names}', { names: tag.aliases.join('、') }))}` : ''}</div></div>
+            </div>`).join('')}
+        </div>
+      </details>` : '';
+    const progress = S.tagBatch ? `
+      <div class="ca-tag-progress">
+        ${window.uiProgressBar({
+          ariaLabel: T('cognition.tag_batch_progress', '批量打标中 {done}/{total}', { done: String(S.tagBatch.done), total: String(S.tagBatch.total) }),
+          value: S.tagBatch.done,
+          max: Math.max(1, S.tagBatch.total),
+        })}
+        <span class="note">${esc(T('cognition.tag_batch_progress', '批量打标中 {done}/{total}', { done: String(S.tagBatch.done), total: String(S.tagBatch.total) }))}</span>
+      </div>` : '';
+    return `
+      <div class="ui-modal-overlay" data-tag-overlay="manage" hidden>
+        <section class="ui-modal ui-modal--lg" role="dialog" aria-modal="true" aria-labelledby="ca-tag-manage-title">
+          <header class="ui-modal__header"><h2 class="ui-modal__title" id="ca-tag-manage-title">${esc(T('cognition.tag_manage_title', '管理标签'))}</h2></header>
+          <div class="ui-modal__body">
+            ${active.length ? active.map(rowOf).join('') : `<p class="note">${esc(T('cognition.tag_manage_empty', '还没有标签——先在资产上打一个。'))}</p>`}
+            ${suggestionHtml}
+            ${retiredHtml}
+            ${progress}
+          </div>
+          <footer class="ui-modal__footer">${btn(T('common.close', '关闭'), 'tag-overlay-close', {})}</footer>
+        </section>
+      </div>`;
+  }
+
   function viewOverview(route) {
     const stats = NS.stats();
     // 两线不拆列表（2026-09-17 二次定调）：全量列表+每条 KSTAR 资产打徽章
@@ -1851,12 +2136,22 @@
     const HIDDEN_STATUS = ['archived', 'deleted', 'purged', 'revoked'];
     const deletedCount = S.assets.filter((a) => String(a.status || 'active') === 'deleted').length;
     const kstarCount = S.assets.filter((a) => !HIDDEN_STATUS.includes(String(a.status || 'active')) && NS.isKstarAsset(a)).length;
-    const filtered = route.category === 'deleted'
+    const filteredByType = route.category === 'deleted'
       ? S.assets.filter((a) => String(a.status || 'active') === 'deleted')
       : route.category === 'kstar'
         ? S.assets.filter((a) => !HIDDEN_STATUS.includes(String(a.status || 'active')) && NS.isKstarAsset(a))
         : S.assets.filter((a) => !HIDDEN_STATUS.includes(String(a.status || 'active'))
           && (!route.category || a.type === route.category));
+    // 标签筛选（specs/012 T012）：与类型筛选 AND 叠加、各自独立可清空；
+    // Array.filter 保序——筛完仍按主进程给的顺序，渲染层不重排。
+    const tagFilterState = tagRouteState(route);
+    const tagFilterActive = Boolean(tagFilterState.names.length || tagFilterState.untagged)
+      && typeof NS.matchesTagFilter === 'function';
+    const filtered = tagFilterActive && route.category !== 'deleted'
+      ? filteredByType.filter((a) => NS.matchesTagFilter(a, tagFilterState.names, tagFilterState.untagged, tagFilterState.mode))
+      : filteredByType;
+    // 「未分类」+「同时具备」恒为空集：明确说，不给一屏空白。
+    const tagContradiction = route.category !== 'deleted' && tagFilterContradiction(route);
     const chips = [['', T('common.all', '全部'), S.assets.filter((a) => !HIDDEN_STATUS.includes(String(a.status || 'active'))).length]]
       .concat(CATEGORIES.map(([id, key, fallback]) => [id, T(key, fallback), counts[id]]))
       .concat(kstarCount ? [['kstar', T('cognition.assets_kstar_tab', 'KSTAR'), kstarCount]] : [])
@@ -1885,7 +2180,13 @@
         <div class="sd">${(S.modelSelectedAssetIds || []).includes(String(asset.id)) ? chip(T('cognition.catalog_model_attached', '模型挂着'), 'blue') : ''}${assetStatusChip(asset)}<span class="chev" aria-hidden="true">›</span></div>
       </div>`;
     };
-    const plainRow = (asset) => `
+    const catalogView = String(route.assetView || '') === 'catalog';
+    // 多选态（specs/012 T011）：仅列表视图（目录/已删除档不给批量打标）；
+    // 行左侧 uiCheckbox、行点击变成勾选（不再挂 data-go-asset 跳详情）。
+    const tagSelectOn = String(route.tagSelect || '') === '1' && !catalogView && route.category !== 'deleted';
+    const tagSelectedIds = new Set((S.tagSelectIds || []).map(String));
+    const plainRow = (asset) => {
+      if (!tagSelectOn) return `
         <div class="row" data-go-asset="${esc(asset.id)}" role="button" tabindex="0">
           <div class="tw">
             <div class="tt">${esc(asset.title || asset.id)}</div>
@@ -1896,6 +2197,21 @@
           </div>
           <div class="sd">${NS.isKstarAsset(asset) ? chip(T('cognition.asset_kstar_badge', 'KSTAR'), 'blue') : ''}${assetStatusChip(asset)}<span class="chev" aria-hidden="true">›</span></div>
         </div>`;
+      const tags = Array.isArray(asset.tags) ? asset.tags : [];
+      return `
+        <div class="row">
+          <div class="tw">
+            <div class="tt">${window.uiCheckbox({
+              id: `ca-tag-sel-${esc(String(asset.id))}`,
+              label: String(asset.title || asset.id),
+              checked: tagSelectedIds.has(String(asset.id)),
+              attrs: { 'data-act': 'tag-select-toggle', 'data-id': String(asset.id) },
+            })}<span>${esc(asset.title || asset.id)}</span></div>
+            <div class="mm">${esc(categoryLabel(asset.type))} · v${esc(String(asset.activeVersion || asset.version || '1'))}${tags.length ? ` · ${esc(tags.join('、'))}` : ` · ${esc(T('cognition.tag_untagged', '未分类'))}`}</div>
+          </div>
+          <div class="sd">${NS.isKstarAsset(asset) ? chip(T('cognition.asset_kstar_badge', 'KSTAR'), 'blue') : ''}${assetStatusChip(asset)}</div>
+        </div>`;
+    };
     // 「已删除」行（specs/008 US-306/T051）：保留期剩余天数由服务端现算
     // （recall.assets.deleted.list），并给出**唯一**的「立即彻底删除」入口。
     // 注意：行上不能挂 data-go-asset——委托层先判 data-go-asset 再判 data-act，
@@ -1917,7 +2233,6 @@
         <div class="sd">${assetStatusChip(asset)}${btn(T('cognition.deleted_purge_now', '立即彻底删除'), 'purge-deleted-asset', { small: true, danger: true, data: { id: String(asset.id) } })}</div>
       </div>`;
     };
-    const catalogView = String(route.assetView || '') === 'catalog';
     let listHtml = filtered.length
       ? filtered.map((asset) => (route.category === 'deleted'
         ? deletedRow(asset)
@@ -1927,15 +2242,19 @@
           T('cognition.deleted_empty', '没有已删除的资产'),
           T('cognition.deleted_empty_hint', '删除的资产会在这里保留 30 天：期内可恢复，也可以在这里立即彻底删除。'),
         )
-      : empty(
-        T('cognition.tree_empty', '还没有正式资产'),
-        T('cognition.tree_empty_hint', '候选被确认为正式资产后会出现在这里；当前还没有已确认的资产。'),
-        // 条件与按钮数字同口径（stats.pending），避免出现「查看 0 条」。
-        stats.pending ? {
-          label: T('cognition.tree_view_buds', '查看 {n} 条待确认候选', { n: String(stats.pending) }),
-          attrs: { 'data-act': 'go-review' },
-        } : null,
-      );
+      : tagContradiction
+        // 「未分类」∩「同时具备」恒空集（T012 Edge）：明确说清原因与出路，
+        // 不给一屏无解释的空白。
+        ? `<div class="note list-caption">${esc(T('cognition.tag_filter_empty_all', '「未分类」和「同时具备」一起选时，没有资产能两边都满足。切回「任一标签」，或取消「未分类」。'))}</div>`
+        : empty(
+          T('cognition.tree_empty', '还没有正式资产'),
+          T('cognition.tree_empty_hint', '候选被确认为正式资产后会出现在这里；当前还没有已确认的资产。'),
+          // 条件与按钮数字同口径（stats.pending），避免出现「查看 0 条」。
+          stats.pending ? {
+            label: T('cognition.tree_view_buds', '查看 {n} 条待确认候选', { n: String(stats.pending) }),
+            attrs: { 'data-act': 'go-review' },
+          } : null,
+        );
     // 默认列表视图按大类分组渲染（目录视图=模型视角保持平铺）。
     // 「已删除」列表**不分组**：那里要的是保留期剩余天数与彻底删除入口，
     // 按族分组只会把"还剩几天"埋进分组标题下面。
@@ -1948,8 +2267,8 @@
           <span class="nm">${renaming
             ? `${window.uiInput({ id: `ca-family-name-${esc(group.anchorId)}`, value: group.title || '', attrs: { 'data-family-name': '1', maxlength: '40' }, className: 'litxt' })}${btn(T('common.save', '保存'), 'family-rename-save', { id: group.anchorId, className: 'rnm' })}${btn(T('common.cancel', '取消'), 'family-rename-cancel', { className: 'rnm is-muted' })}`
             : group.title
-              ? `${esc(group.title)} <span class="n">${esc(T('cognition.family_group_count', '{n} 条同类', { n: String(group.assets.length) }))}</span>${group.anchorId ? btn(group.named ? T('cognition.family_rename_done', '改名') : T('cognition.family_rename', '命名'), 'family-rename', { id: group.anchorId, className: 'rnm' }) : ''}`
-              : `<span class="n">${esc(T('cognition.family_unsorted', '未归类'))}</span>`}</span>
+              ? `${esc(group.title)} <span class="n">${esc(T('cognition.family_group_count', '{n} 条同源', { n: String(group.assets.length) }))}</span>${group.anchorId ? btn(group.named ? T('cognition.family_rename_done', '改血缘名') : T('cognition.family_rename', '命名同源血缘'), 'family-rename', { id: group.anchorId, className: 'rnm' }) : ''}`
+              : `<span class="n">${esc(T('cognition.family_unsorted', '无同源血缘'))}</span>`}</span>
           <span class="sp"></span>
         </div>
         ${group.assets.map((asset) => plainRow(asset)).join('')}
@@ -1960,10 +2279,12 @@
       ${sectionHead(
         catalogView ? T('cognition.catalog_view_title', '资产目录（模型视角）') : T('cognition.overview_list_title', '资产明细'),
         String(filtered.length),
-        `${btn(catalogView ? T('cognition.catalog_view_back', '列表视图') : T('cognition.catalog_view_toggle', '目录视图'), 'asset-view', { id: catalogView ? '' : 'catalog', small: true, className: 'o' })}`,
+        `${!catalogView && route.category !== 'deleted' ? btn(T('cognition.tag_batch_entry', '批量打标'), 'tag-select-mode', { small: true, className: 'o' }) : ''}${btn(catalogView ? T('cognition.catalog_view_back', '列表视图') : T('cognition.catalog_view_toggle', '目录视图'), 'asset-view', { id: catalogView ? '' : 'catalog', small: true, className: 'o' })}`,
       )}
       ${catalogView ? `<div class="note list-caption">${esc(T('cognition.catalog_view_hint', '这就是模型挑资产时看的那份目录：一行一条；要看全文点进去。'))}</div>` : ''}
       <div class="pillbox">${chips.map(([id, label, count]) => btn(`${label} ${count}`, 'filter-cat', { id, className: `chip${String(route.category || '') === id ? ' on' : ''}` })).join('')}</div>
+      ${tagFilterBar(route, filteredByType)}
+      ${tagSelectOn ? tagBatchBar(route, filtered) : ''}
       ${listHtml}
       ${kstarEpisodesSection(route)}`;
   }
@@ -3423,11 +3744,16 @@
     // 列表页/详情页统一收进原型 .wrap（居中 780px 阅读栏）——整屏铺满的
     // 列表行在宽窗里读起来很散，原型就是按阅读栏做的。
     if (!stageScroll) body = `<div class="wrap">${body}</div>`;
+    // 标签弹层槽位（specs/012 T012「更多」/T013 管理）：放在持久壳层（不随
+    // 内容区 innerHTML 重渲染被拔掉），内容由 render 按 route.tagOverlay 维护；
+    // 接线（焦点圈/Escape/滚动锁）在 core.wireTagOverlay，由 app.js 渲染后调用。
+    const tagOverlaySlotHtml = tagOverlayHtml(route);
     if (options.rebuild || !tabsNav || !bannerSlot || !main) {
       root.innerHTML = `
         <div class="ca-app">
           <nav class="ca-tabs" id="ca-tabs-nav">${tabsInner}</nav>
           <div class="ca-banner-slot" id="ca-banner-slot">${errorBanner}</div>
+          <div class="ca-tag-overlay-slot" id="ca-tag-overlay-slot">${tagOverlaySlotHtml}</div>
           <div class="ca-scroll${stageScroll ? ' is-stage' : ''}" id="ca-scroll">${body}</div>
         </div>`;
     } else {
@@ -3437,6 +3763,11 @@
       // 取不到就跳过切类，与上面的「退回整串写入」同一条守则。
       if (main.classList) main.classList.toggle('is-stage', stageScroll);
       main.innerHTML = body;
+      // 弹层只在内容变化时重写（字符串比对），保住打开中的 overlay 节点与焦点。
+      // slot !== root 是测试沙箱防呆：简化夹具的 getElementById 对任何 id 都返回
+      // 根节点，真机槽位是根的子孙、永不相等——不相等才允许写。
+      const slot = document.getElementById('ca-tag-overlay-slot');
+      if (slot && slot !== root && slot.innerHTML !== tagOverlaySlotHtml) slot.innerHTML = tagOverlaySlotHtml;
     }
     const scrollRoot = main || document.getElementById('ca-scroll');
     if (scrollRoot && restoreScroll) scrollRoot.scrollTop = restoreScroll;
@@ -3456,6 +3787,9 @@
     if (route.name === 'ontology' && typeof NS.mountPersonalOntology === 'function') {
       void NS.mountPersonalOntology();
     }
+    // 标签弹层接线（specs/012 T012/T013）：DOM 刚写完，就地过 uiModalController
+    //（onChange 监听器注册顺序早于 boot 的渲染监听，不能放 app.js 的 notify 里）。
+    if (typeof NS.wireTagOverlay === 'function') NS.wireTagOverlay();
   }
   NS.render = render;
   // 共享渲染件（2026-09-20 本体界面重构）：个人本体页复用资产页同一套

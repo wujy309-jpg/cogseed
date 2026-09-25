@@ -82,6 +82,8 @@ import * as kstarRunEvidence from '../features/kstar/run-evidence';
 import * as recallProofs from '../features/recall/proof-service';
 import * as recallTree from '../features/recall/tree-service';
 import * as formalAssets from '../features/recall/formal-assets';
+import * as abilityTags from '../features/recall/ability-tag-service';
+import { listInjectionReceipts } from '../features/recall/injection-receipt';
 import { REAL_USAGE_KINDS } from '../features/recall/timeline-service';
 import { listAssetUsageReceiptViews } from '../features/recall/asset-usage-receipt';
 import * as recallUsage from '../features/recall/usage-service';
@@ -2669,7 +2671,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (!asset) throw new Error('recall ability asset not found');
     return { ok: true, asset: asset.record };
   },
-  'recall.assets.update': async ({ assetId, title, statement, scope, scopePolicy, type, evidenceRefs, ontologyRefs, relations, derivedFrom, applicableWhen, forbiddenWhen, sensitivity, reason, acknowledgeRecommendation } = {}, ctx) => {
+  'recall.assets.update': async ({ assetId, title, statement, scope, scopePolicy, type, evidenceRefs, ontologyRefs, relations, derivedFrom, applicableWhen, forbiddenWhen, sensitivity, reason, acknowledgeRecommendation, tags } = {}, ctx) => {
     if (!safeId(assetId)) throw new Error('invalid recall asset id');
     const note = boundedText(reason, 'recall asset update reason', 1_000);
     if (title !== undefined && (typeof title !== 'string' || title.length > 120)) throw new Error('invalid recall asset title');
@@ -2685,7 +2687,11 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (forbiddenWhen !== undefined && (!Array.isArray(forbiddenWhen) || forbiddenWhen.length > 32)) throw new Error('invalid recall asset forbidden range');
     if (sensitivity !== undefined && !['L0', 'L1', 'L2'].includes(sensitivity)) throw new Error('invalid recall asset sensitivity');
     if (acknowledgeRecommendation !== undefined && typeof acknowledgeRecommendation !== 'boolean') throw new Error('invalid recall asset recommendation acknowledgment');
-    return { ok: true, asset: await recallAssets.updateAbilityAsset(ctx.userId, assetId, { ...(title !== undefined ? { title } : {}), ...(statement !== undefined ? { statement } : {}), ...(scope !== undefined ? { scope } : {}), ...(scopePolicy !== undefined ? { scopePolicy } : {}), ...(type !== undefined ? { type } : {}), ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(ontologyRefs !== undefined ? { ontologyRefs } : {}), ...(relations !== undefined ? { relations } : {}), ...(derivedFrom !== undefined ? { derivedFrom } : {}), ...(applicableWhen !== undefined ? { applicableWhen } : {}), ...(forbiddenWhen !== undefined ? { forbiddenWhen } : {}), ...(sensitivity !== undefined ? { sensitivity } : {}), reason: note, actor: 'user', ...(acknowledgeRecommendation !== undefined ? { acknowledgeRecommendation } : {}) }) };
+    // 标签（specs/012 T009，contracts/ipc.md §四）：只做形状闸（数组 + 每条
+    // 字符串 + ≤12 条），逐条 trim/长度/去重由 ability-tag-service 的规范化
+    // 唯一处判定；不传 = 不改标签（省略不是清空）。
+    if (tags !== undefined && (!Array.isArray(tags) || tags.some((entry) => typeof entry !== 'string') || tags.length > abilityTags.ABILITY_ASSET_TAGS_MAX)) throw new Error('invalid recall asset tags');
+    return { ok: true, asset: await recallAssets.updateAbilityAsset(ctx.userId, assetId, { ...(title !== undefined ? { title } : {}), ...(statement !== undefined ? { statement } : {}), ...(scope !== undefined ? { scope } : {}), ...(scopePolicy !== undefined ? { scopePolicy } : {}), ...(type !== undefined ? { type } : {}), ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(ontologyRefs !== undefined ? { ontologyRefs } : {}), ...(relations !== undefined ? { relations } : {}), ...(derivedFrom !== undefined ? { derivedFrom } : {}), ...(applicableWhen !== undefined ? { applicableWhen } : {}), ...(forbiddenWhen !== undefined ? { forbiddenWhen } : {}), ...(sensitivity !== undefined ? { sensitivity } : {}), ...(tags !== undefined ? { tags } : {}), reason: note, actor: 'user', ...(acknowledgeRecommendation !== undefined ? { acknowledgeRecommendation } : {}) }) };
   },
   'recall.assets.pause': async ({ assetId, note } = {}, ctx) => { if (!safeId(assetId) || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall asset pause'); return { ok: true, asset: await recallAssets.pauseAbilityAsset(ctx.userId, assetId, { actor: 'user', reason: note ?? 'user pause' }) }; },
   'recall.assets.resume': async ({ assetId, note } = {}, ctx) => { if (!safeId(assetId) || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall asset resume'); return { ok: true, asset: await recallAssets.resumeAbilityAsset(ctx.userId, assetId, { actor: 'user', reason: note ?? 'user resume' }) }; },
@@ -2699,6 +2705,83 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   'recall.assets.purge': async ({ assetId, note } = {}, ctx) => { if (!safeId(assetId) || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall asset purge'); return { ok: true, asset: await recallAssets.purgeAbilityAsset(ctx.userId, assetId, { actor: 'user', reason: note ?? 'user purge' }) }; },
   'recall.assets.restore': async ({ assetId, note } = {}, ctx) => { if (!safeId(assetId) || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall asset restore'); return { ok: true, asset: await recallAssets.restoreAbilityAsset(ctx.userId, assetId, { actor: 'user', reason: note ?? 'user restore' }) }; },
   'recall.assets.rollback': async ({ assetId, version, note } = {}, ctx) => { if (!safeId(assetId) || typeof version !== 'string' || !/^[0-9]{1,9}$/.test(version) || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall asset rollback'); return { ok: true, asset: await recallAssets.rollbackAbilityAsset(ctx.userId, assetId, version, { actor: 'user', reason: note ?? `user rollback to v${version}` }) }; },
+
+  // ── 标签系统（specs/012 US-201，T009）────────────────────────────────────
+  // IPC 只校验形状并转调 ability-tag-service（唯一业务判定处）；返回体只含
+  // 标签名/id/计数/时间与逐项报告（标题），不含资产正文。批量上限在服务层
+  // 收口（≤200/次），这里先挡形状。
+  'recall.tags.list': async ({ includeRetired } = {}, ctx) => {
+    if (includeRetired !== undefined && typeof includeRetired !== 'boolean') throw new Error('invalid recall tags includeRetired');
+    return { ok: true, tags: await abilityTags.listTags(ctx.userId, { includeRetired: includeRetired === true }) };
+  },
+  'recall.tags.create': async ({ name } = {}, ctx) => {
+    if (typeof name !== 'string') throw new Error('invalid recall tag name');
+    return { ok: true, ...(await abilityTags.createTag(ctx.userId, name)) };
+  },
+  'recall.tags.rename': async ({ tagId, name } = {}, ctx) => {
+    if (!safeId(tagId) || typeof name !== 'string') throw new Error('invalid recall tag rename');
+    return { ok: true, ...(await abilityTags.renameTag(ctx.userId, tagId, name)) };
+  },
+  'recall.tags.merge': async ({ sourceTagId, targetTagId } = {}, ctx) => {
+    if (!safeId(sourceTagId) || !safeId(targetTagId) || sourceTagId === targetTagId) throw new Error('invalid recall tag merge');
+    return { ok: true, ...(await abilityTags.mergeTag(ctx.userId, sourceTagId, targetTagId)) };
+  },
+  'recall.tags.delete': async ({ tagId } = {}, ctx) => {
+    if (!safeId(tagId)) throw new Error('invalid recall tag delete');
+    return { ok: true, ...(await abilityTags.deleteTag(ctx.userId, tagId)) };
+  },
+  // 同义合并建议（只读；只建议不合并）。
+  'recall.tags.suggestions': async (_args, ctx) => ({ ok: true, suggestions: await abilityTags.suggestMerges(ctx.userId) }),
+  // 单条打标/清空（整组替换语义；[] = 清空回到「未分类」）。走服务层的
+  // setAssetTags → updateAbilityAsset（唯一写路径，不 bump 内容版本）。
+  'recall.assets.tags.set': async ({ assetId, tags } = {}, ctx) => {
+    if (!safeId(assetId)) throw new Error('invalid recall asset id');
+    if (!Array.isArray(tags)) throw new Error('invalid recall asset tags');
+    return { ok: true, asset: await abilityTags.setAssetTags(ctx.userId, assetId, tags) };
+  },
+  // 列表批量 / 「未分类」批量补标。三选一语义（replace 与 add/remove 互斥）
+  // 在 IPC 层先挡，服务层再全量校验（≤200 条、每条标签名规则）。
+  'recall.assets.tags.batch': async ({ assetIds, op } = {}, ctx) => {
+    if (!Array.isArray(assetIds) || !assetIds.length || assetIds.some((id) => !safeId(id))) throw new Error('invalid recall asset tag batch asset ids');
+    if (assetIds.length > abilityTags.ABILITY_TAG_BATCH_MAX_ASSETS) {
+      throw new Error(`invalid recall asset tag batch: exceeds ${abilityTags.ABILITY_TAG_BATCH_MAX_ASSETS} assets, split into smaller batches`);
+    }
+    if (!op || typeof op !== 'object' || Array.isArray(op)) throw new Error('invalid recall asset tag batch op');
+    const hasReplace = op.replace !== undefined;
+    const hasAddRemove = op.add !== undefined || op.remove !== undefined;
+    if (hasReplace && hasAddRemove) throw new Error('invalid recall asset tag batch op: replace cannot combine with add/remove');
+    if (!hasReplace && !hasAddRemove) throw new Error('invalid recall asset tag batch op requires at least one action');
+    for (const key of ['replace', 'add', 'remove'] as const) {
+      if (op[key] !== undefined && !Array.isArray(op[key])) throw new Error(`invalid recall asset tag batch ${key}`);
+    }
+    return { ok: true, report: await abilityTags.batchAssetTags(ctx.userId, assetIds, op) };
+  },
+  // 「为什么排前」只读口（specs/012 T019，contracts/ipc.md §3.3）：读注入回执
+  // 的 ranking 字段；旧回执没有该字段 → explainable:false（如实说，不编造）。
+  'recall.catalog.ranking': async ({ taskRunId, assetId, limit } = {}, ctx) => {
+    if (!safeId(taskRunId)) throw new Error('invalid catalog ranking task run id');
+    if (assetId !== undefined && !safeId(assetId)) throw new Error('invalid catalog ranking asset id');
+    const size = limit === undefined ? 20 : (Number.isInteger(limit) && Number(limit) >= 1 && Number(limit) <= 50 ? Number(limit) : null);
+    if (size === null) throw new Error('invalid catalog ranking limit');
+    const receipts = await listInjectionReceipts(ctx.userId, taskRunId);
+    const scoped = receipts.filter((receipt) => (assetId ? receipt.assetId === assetId : true)).slice(0, size);
+    return {
+      ok: true,
+      items: scoped.map((receipt) => ({
+        taskRunId: receipt.taskRunId,
+        assetId: receipt.assetId,
+        assetVersion: receipt.assetVersion,
+        channel: receipt.channel || 'projection',
+        explainable: Boolean(receipt.ranking),
+        ...(receipt.ranking ? {
+          score: receipt.ranking.score,
+          factors: receipt.ranking.factors,
+          excluded: receipt.ranking.excluded,
+          weightsSource: receipt.ranking.weightsSource || 'default',
+        } : {}),
+      })),
+    };
+  },
 
   // 版本组（2026-09-16）：versions.list 供资产详情版本链；versions.select 切
   // 「在用」指针（内容同步、不 bump——与 rollback 的生成新版语义互补）。

@@ -116,7 +116,8 @@ describe('资产目录视图', () => {
   });
 
 // 大类分组视图（2026-09-22 清单 #2）：same_family 连通分量成组、组头带计数、
-// 未归类合并；目录视图（模型视角）保持平铺。
+// 无血缘合并；目录视图（模型视角）保持平铺。组头话术 2026-09-25 随 specs/012
+// T008 降级为「同源」口径（族名 = 同源血缘，不是主题分类；分组行为不变）。
 describe('family-grouped asset list', () => {
   it('groups same_family assets under one head with a count, others under unsorted', async () => {
     const { renderCognition } = await import('./helpers/cognition-renderer');
@@ -129,8 +130,11 @@ describe('family-grouped asset list', () => {
     });
     expect(html).toContain('fam-hd');
     expect(html).toContain('标识符括号解释'); // 组名取组内最新
-    expect(html).toContain('2 条同类');
-    expect(html).toContain('未归类');
+    expect(html).toContain('2 条同源');
+    expect(html).toContain('无同源血缘');
+    // 旧话术不再指称族（与标签的「未分类」撞车，specs/012 T008）。
+    expect(html).not.toContain('条同类');
+    expect(html).not.toContain('未归类');
   });
 
   it('catalog view stays flat (model perspective)', async () => {

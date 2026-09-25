@@ -29,12 +29,43 @@ export interface InjectionReceipt extends RecallJsonRecord {
    *  说明"本轮未带入 + 哪条规则"。只存标识——不存原因码原文、不存资产正文。
    *  旧回执没有该字段，读取侧按「原因未知」呈现，不编造。 */
   reason?: string;
+  /** 「为什么排前」因子拆解（specs/012 T019，contracts/ipc.md §3.3）：
+   *  只存因子名 + 数值 + 总分与权重来源，**不含**资产正文/任务文本/路径。
+   *  幂等键不变（不进 recordInjectionReceipt 的 key）；旧回执没有该字段 →
+   *  读取侧（IPC `recall.catalog.ranking`）回 explainable:false，如实说
+   *  「没有记录」，不编造。 */
+  ranking?: {
+    score: number;
+    factors: Array<{ name: 'relevance' | 'adoption' | 'scene' | 'maturity'; raw: number; weight: number; contribution: number }>;
+    excluded: Array<'relevance' | 'adoption' | 'scene' | 'maturity'>;
+    weightsSource?: 'configured' | 'default' | 'invalid-fallback';
+  };
   createdAt: string;
 }
 
 const INJECTION_BOUNDARIES = new Set<InjectionReceipt['boundary']>(['real', 'degraded', 'test-double']);
 const INJECTION_STATUSES = new Set<InjectionReceipt['status']>(['injected', 'dispatched', 'omitted', 'failed']);
 const INJECTION_CHANNELS = new Set<InjectionReceipt['channel']>(['projection', 'profile_memory', 'agent_read', 'catalog_hint', 'experience']);
+const RANKING_FACTORS: ReadonlySet<NonNullable<InjectionReceipt['ranking']>['factors'][number]['name']>
+  = new Set(['relevance', 'adoption', 'scene', 'maturity']);
+const RANKING_WEIGHTS_SOURCES = new Set<NonNullable<InjectionReceipt['ranking']>['weightsSource']>(['configured', 'default', 'invalid-fallback']);
+
+/** ranking 拆解的形状校验（只认因子名闭集与有限数；**不存任何正文**）。 */
+function isValidRanking(value: unknown): value is NonNullable<InjectionReceipt['ranking']> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const ranking = value as NonNullable<InjectionReceipt['ranking']>;
+  if (typeof ranking.score !== 'number' || !Number.isFinite(ranking.score)) return false;
+  if (!Array.isArray(ranking.factors) || !ranking.factors.every((factor) => (
+    factor && typeof factor === 'object'
+    && RANKING_FACTORS.has(factor.name)
+    && typeof factor.raw === 'number' && Number.isFinite(factor.raw)
+    && typeof factor.weight === 'number' && Number.isFinite(factor.weight)
+    && typeof factor.contribution === 'number' && Number.isFinite(factor.contribution)
+  ))) return false;
+  if (!Array.isArray(ranking.excluded) || !ranking.excluded.every((name) => RANKING_FACTORS.has(name))) return false;
+  if (ranking.weightsSource !== undefined && !RANKING_WEIGHTS_SOURCES.has(ranking.weightsSource)) return false;
+  return true;
+}
 
 function asInjectionReceipt(userId: string, value: RecallJsonRecord): InjectionReceipt {
   if (
@@ -51,6 +82,7 @@ function asInjectionReceipt(userId: string, value: RecallJsonRecord): InjectionR
     || (value.channel !== undefined && !INJECTION_CHANNELS.has(value.channel as InjectionReceipt['channel']))
     || (value.messageId !== undefined && !safeId(value.messageId))
     || (value.reason !== undefined && typeof value.reason !== 'string')
+    || (value.ranking !== undefined && !isValidRanking(value.ranking))
     || typeof value.createdAt !== 'string'
   ) throw new Error('malformed injection receipt');
   return value as InjectionReceipt;
@@ -64,6 +96,8 @@ export async function recordInjectionReceipt(
     channel?: InjectionReceipt['channel'];
     /** 被拦原因标识（status='omitted' 时用）：规则标识，不是原因码原文。 */
     reason?: string;
+    /** 「为什么排前」拆解（specs/012 T019）：因子名 + 数值；不进幂等键。 */
+    ranking?: InjectionReceipt['ranking'];
   },
 ): Promise<InjectionReceipt> {
   if (
@@ -78,8 +112,10 @@ export async function recordInjectionReceipt(
     || (input.channel !== undefined && !INJECTION_CHANNELS.has(input.channel))
     || (input.messageId !== undefined && !safeId(input.messageId))
     || (input.reason !== undefined && typeof input.reason !== 'string')
+    || (input.ranking !== undefined && !isValidRanking(input.ranking))
   ) throw new Error('invalid injection receipt reference');
-  // reason 刻意不进幂等键：同一轮同一资产被拦多次仍是同一条留痕。
+  // reason / ranking 刻意不进幂等键：同一轮同一资产被拦多次仍是同一条留痕，
+  // 排序拆解也只随首条落形（重写不产生第二条回执）。
   const key = `${input.taskRunId}:${input.assetId}:${input.assetVersion}:${input.status}:${input.messageId || ''}`;
   const record: InjectionReceipt = {
     schemaVersion: 1, ownerId: userId,
@@ -90,6 +126,7 @@ export async function recordInjectionReceipt(
     ...(input.channel ? { channel: input.channel } : {}),
     ...(input.messageId ? { messageId: input.messageId } : {}),
     ...(input.reason ? { reason: input.reason } : {}),
+    ...(input.ranking ? { ranking: input.ranking } : {}),
     createdAt: new Date().toISOString(),
   };
   const existing = (await listInjectionReceipts(userId))
