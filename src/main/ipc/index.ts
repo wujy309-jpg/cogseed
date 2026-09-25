@@ -57,6 +57,7 @@ import * as recallCandidates from '../features/recall/candidate-service';
 import { withRecallCandidateCapabilities } from '../features/recall/candidate-capabilities';
 import * as recallAssets from '../features/recall/asset-service';
 import * as recallExperiences from '../features/recall/experience-service';
+import * as recallExperienceMigration from '../features/recall/experience-migration';
 import { cognitionSourceRefMetadataOnly } from '../features/recall/source-service';
 import * as recallAssetApproval from '../features/recall/asset-approval-service';
 import * as recallCleanup from '../features/recall/cleanup-report-service';
@@ -2833,6 +2834,29 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (typeof experienceId !== 'string' || !safeId(experienceId) || !experienceId.startsWith('exp-')
       || typeof reason !== 'string' || !reason.trim() || reason.length > 1_000) throw new Error('invalid recall experience archive');
     return { ok: true, experience: recallExperienceListItem(await recallExperiences.archiveExperience(ctx.userId, experienceId, reason)) };
+  },
+
+  // ── 存量迁移（specs/016 契约 E7/E8）：存量 KSTAR 经验类资产迁入经验目录。
+  // run 必须显式传 assetIds（≤200）——禁止隐式「一键全迁」：迁移是用户数据
+  // 形态变化，批量和范围都由用户在预览清单上逐条勾选后显式给出。
+  // 通道本身只做入参校验与转调（宪法 II）；顺序保证（冻结→写经验→迁出→
+  // 台账）全部在 experience-migration.ts，这里不复制任何迁移逻辑。
+  // E7 · preview（只读）：稳定跳过理由码（界面按码翻人话），不改盘。
+  'recall.experiences.migration.preview': async (_payload, ctx) => {
+    return { ok: true, ...(await recallExperienceMigration.previewExperienceMigration(ctx.userId)) };
+  },
+  // E7 · run（写）：显式 assetIds、≤200、逐条 safeId；不传/空/超限一律 invalid。
+  'recall.experiences.migration.run': async ({ assetIds } = {}, ctx) => {
+    if (!Array.isArray(assetIds) || assetIds.length === 0
+      || assetIds.length > recallExperienceMigration.EXPERIENCE_MIGRATION_MAX_ASSETS
+      || assetIds.some((id) => typeof id !== 'string' || !safeId(id))) {
+      throw new Error('invalid recall experience migration asset ids');
+    }
+    return { ok: true, ...(await recallExperienceMigration.runExperienceMigration(ctx.userId, assetIds)) };
+  },
+  // E8 · status（只读）：最近一次迁移的结果与失败明细；从未跑过 → migrationId:null。
+  'recall.experiences.migration.status': async (_payload, ctx) => {
+    return { ok: true, ...(await recallExperienceMigration.latestExperienceMigrationStatus(ctx.userId)) };
   },
 
   // 大扫除与整理报告（specs/008 US-403）。run 是用户发起的批量整理；

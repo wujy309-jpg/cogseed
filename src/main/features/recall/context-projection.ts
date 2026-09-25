@@ -103,6 +103,12 @@ export interface ModelSelectionEvent {
   addedAt: string;
 }
 
+/** 投影冻结的内容副本形态：资产版本快照 + **可选** `evidenceRefs`
+ *  （specs/016 data-model §4 / T015 加法式）：存量迁移冻结时补写——live
+ *  记录迁出后证据引用只能随副本走。历史删除冻结的旧副本可能缺该字段，
+ *  读侧（prompt-injection）一律按可选处理，不假定存在。 */
+export type FrozenAssetVersionSnapshot = AbilityAssetVersionRecord['snapshot'] & { evidenceRefs?: CognitionSourceRef[] };
+
 export interface ContextProjectionRecord extends RecallJsonRecord {
   taskRunId: string;
   conversationId?: string;
@@ -113,8 +119,12 @@ export interface ContextProjectionRecord extends RecallJsonRecord {
   assetVersions?: Record<string, string>;
   /** 版本真删前冻结进投影的内容副本（2026-09-17）：已确认注入引用的版本被
    *  物理删除时，把该版本快照抄进这里；之后注入优先按副本供给，效果与
-   *  删除前一致。仅为删除时的兜底缓存，不是投影本体的必填结构。 */
-  assetVersionSnapshots?: Record<string, { version: string; snapshot: AbilityAssetVersionRecord['snapshot'] }>;
+   *  删除前一致。仅为删除时的兜底缓存，不是投影本体的必填结构。
+   *  证据引用（specs/016 T015 加法式可选字段）：存量迁移把经验类资产迁出
+   *  资产库时，会在冻结副本里一并写入 `evidenceRefs`——live 记录删除后，
+   *  证据引用只能随副本走（否则迁移后来源不可追）。历史删除冻结的旧副本
+   *  可能缺该字段，读侧一律按可选处理。 */
+  assetVersionSnapshots?: Record<string, { version: string; snapshot: FrozenAssetVersionSnapshot }>;
   assetMatches?: RecallAssetMatch[];
   /** Cumulative assets added because the model explicitly named them. */
   modelSelectedAssetIds?: string[];
@@ -274,19 +284,21 @@ function validateAssetVersions(value: unknown): Record<string, string> | undefin
 }
 
 /** 快照缓存是删除时的兜底字段：形状不对就整字段剥离（回退版本流读取），
- *  不让它有权力把整条投影判成畸形。 */
+ *  不让它有权力把整条投影判成畸形。快照本体（含迁移冻结写入的可选
+ *  `evidenceRefs`）原样透传，不在此处重算——冻结的意义就是"当年什么样
+ *  就读回什么样"。 */
 function validateAssetVersionSnapshots(
   value: unknown,
-): Record<string, { version: string; snapshot: AbilityAssetVersionRecord['snapshot'] }> | undefined {
+): Record<string, { version: string; snapshot: FrozenAssetVersionSnapshot }> | undefined {
   if (value === undefined) return undefined;
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const out: Record<string, { version: string; snapshot: AbilityAssetVersionRecord['snapshot'] }> = {};
+  const out: Record<string, { version: string; snapshot: FrozenAssetVersionSnapshot }> = {};
   for (const [assetId, entry] of Object.entries(value as Record<string, unknown>)) {
     if (!safeId(assetId) || !entry || typeof entry !== 'object' || Array.isArray(entry)) return undefined;
     const record = entry as Record<string, unknown>;
     if (typeof record.version !== 'string' || !record.version.trim()
       || !record.snapshot || typeof record.snapshot !== 'object' || Array.isArray(record.snapshot)) return undefined;
-    out[assetId] = { version: record.version, snapshot: record.snapshot as AbilityAssetVersionRecord['snapshot'] };
+    out[assetId] = { version: record.version, snapshot: record.snapshot as FrozenAssetVersionSnapshot };
   }
   return Object.keys(out).length ? out : undefined;
 }

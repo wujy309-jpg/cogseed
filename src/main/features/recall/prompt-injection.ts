@@ -197,7 +197,72 @@ async function buildPromptContextForProjections(
       if (seenAssets.has(assetId) || excludeAssetIds.has(assetId) || records.length >= MAX_ASSETS) continue;
       try {
         const confirmedVersion = projection.assetVersions?.[assetId];
-        const liveAsset = await readAbilityAsset(userId, assetId);
+        const cached = projection.assetVersionSnapshots?.[assetId];
+        // live 读取改为「可失败」（specs/016 T016）：存量迁移把经验类资产迁出
+        // 资产库后记录不存在，readAbilityAsset 会抛错——旧实现无条件读取并
+        // 直接抛进外层 catch 被吞成 warn，冻结引用**静默缺席**（= 断链）。
+        let liveAsset: Awaited<ReturnType<typeof readAbilityAsset>> | null = null;
+        let liveError: unknown = null;
+        try {
+          liveAsset = await readAbilityAsset(userId, assetId);
+        } catch (error) {
+          liveError = error;
+        }
+        // 冻结读分支：确认版本与冻结副本一致，且 live 记录缺失（已迁出资产库）
+        // 或已带迁出去向标记 → 内容字段与证据引用**全取副本**，不重判活体治理
+        // （迁移时点已判过一次），但必须如实标注「来源已迁入经验目录」。
+        const frozenVersionHit = Boolean(cached && confirmedVersion && cached.version === confirmedVersion);
+        const liveMigratedOut = liveAsset !== null
+          && (liveAsset as { migratedToExperienceId?: unknown }).migratedToExperienceId !== undefined;
+        if (frozenVersionHit && (liveAsset === null || liveMigratedOut)) {
+          const snap = cached!.snapshot;
+          // 副本 evidenceRefs 是迁移冻结写入的加法式可选字段（T015 写、此处读）；
+          // 缺失时证据引用为空——如实，不回落 live（live 已不存在）。
+          const evidenceRefs = snap.evidenceRefs || [];
+          const title = String(snap.title || '');
+          const type = snap.type;
+          const scope = String(snap.scope || '');
+          const version = confirmedVersion!;
+          seenAssets.add(assetId);
+          const match = matches.get(assetId);
+          const citationMatchMethod = matchMethod === 'manual'
+            ? 'manual' as const
+            : match?.matchMethod || matchMethod;
+          records.push({
+            projection_id: projection.id,
+            task_run_id: safePromptText(projection.taskRunId, 160),
+            purpose: safePromptText(projection.purpose, 120),
+            asset_id: assetId,
+            title: safePromptText(title, 160),
+            type,
+            // 治理档位带快照冻结值（如实）；lifecycle_status 快照里没有，省略
+            // 不编造——「不重判」的同时必须「不撒谎」。
+            maturity: snap.maturity,
+            scope: safePromptText(scope, 500),
+            version: safePromptText(version, 40),
+            statement: safePromptText(snap.statement, MAX_STATEMENT_LENGTH),
+            ...(snap.applicableWhen?.length ? { applicable_when: snap.applicableWhen.slice(0, 5).map((value) => safePromptText(value, 300)) } : {}),
+            ...(snap.forbiddenWhen?.length ? { forbidden_when: snap.forbiddenWhen.slice(0, 5).map((value) => safePromptText(value, 300)) } : {}),
+            source_refs: evidenceRefs.slice(0, 20).map((ref) => ({ kind: ref.kind, id: ref.id })),
+            source_migrated: 'experience_catalog',
+          });
+          citations.push({
+            assetId,
+            title: safePromptText(title, 160),
+            type,
+            version: safePromptText(version, 40),
+            scope: safePromptText(scope, 500),
+            projectionId: projection.id,
+            ...(citationMatchMethod !== 'manual' && match ? { matchScore: match.matchScore } : {}),
+            matchMethod: citationMatchMethod,
+          });
+          continue;
+        }
+        if (!liveAsset) {
+          // 无冻结副本（或版本对不上）的 live 缺失：维持既有行为——抛错进
+          // 外层 catch 记 warn 后缺席。这条路径的行为**完全不变**。
+          throw liveError ?? new Error('recall ability asset not found');
+        }
         let snapshot: Awaited<ReturnType<typeof readAbilityAssetVersionSnapshot>> | null = null;
         if (confirmedVersion) {
           // The user confirmed this exact version. Prefer its immutable
@@ -207,9 +272,9 @@ async function buildPromptContextForProjections(
           // 版本真删兜底（2026-09-17）：删除前系统把该版本快照冻结进了
           // projection.assetVersionSnapshots——版本记录已物理删除时按副本
           // 继续供给，注入效果与删除前一致。
-          const cached = projection.assetVersionSnapshots?.[assetId];
-          if (cached && cached.version === confirmedVersion) {
-            snapshot = cached.snapshot;
+          const cachedFrozen = projection.assetVersionSnapshots?.[assetId];
+          if (cachedFrozen && cachedFrozen.version === confirmedVersion) {
+            snapshot = cachedFrozen.snapshot;
           } else {
             snapshot = await readAbilityAssetVersionSnapshot(userId, assetId, confirmedVersion);
             if (!snapshot) {
