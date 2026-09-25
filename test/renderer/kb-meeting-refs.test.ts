@@ -385,4 +385,146 @@ describe('meeting.* 通道降级（renderer-seams §5）', () => {
     expect(sectionBody(1)).toContain('发布检查单 · v2');
     instance.destroy();
   });
+
+  it('meeting.refs.related 失败 ⇒ 关联分区一条带原因空态（不拖垮其它分区）', async () => {
+    const { instance, sectionBody } = mountPanelWithData(async (channel) => {
+      if (channel === 'meeting.assets.list') return { ok: true, refs: REF_VIEWS };
+      if (channel === 'meeting.conclusions.list') return { ok: true, conclusions: CONCLUSIONS };
+      if (channel === 'meeting.actions.list') return { ok: true, drafts: DRAFTS };
+      if (channel === 'meeting.refs.related') return { ok: false, code: 'invalid_asset_id' };
+      return {};
+    });
+    await instance.ready;
+    const html = sectionBody(3);
+    expect((html.match(/ui-empty-state/g) || []).length).toBe(1);
+    expect(html).toContain('资产标识不合法');
+    expect(sectionBody(0)).toContain('发布检查单 · v2');
+    instance.destroy();
+  });
+});
+
+// ── T051：关联建议 + 点了才建立（specs/013 · US-505）──────────────────────────
+
+/** 关联建议清单（contracts/ipc.md §1.5 返回体形态：只有标识与摘要，无正文）。 */
+const RELATED = [
+  {
+    docId: 'meetings/9.01周会.txt', title: '9.01周会.txt', conclusionId: 'mc_901',
+    summary: '发布流程要先过检查单', assetIds: ['a_1'], matchedBy: 'asset',
+  },
+  {
+    docId: 'meetings/9.08周会.txt', title: '9.08周会.txt', conclusionId: 'mc_908',
+    summary: '术语统一叫 Cogseed', assetIds: ['a_3'], matchedBy: 'term',
+  },
+];
+
+/** 带关联建议的面板（记录全部通道调用，供「点了才建立」断言）。 */
+function mountPanelWithRelated() {
+  const calls: Array<{ channel: string; payload: any }> = [];
+  const env = mountPanelWithData(async (channel, payload) => {
+    calls.push({ channel, payload });
+    if (channel === 'meeting.assets.list') return { ok: true, refs: REF_VIEWS };
+    if (channel === 'meeting.conclusions.list') return { ok: true, conclusions: CONCLUSIONS };
+    if (channel === 'meeting.actions.list') return { ok: true, drafts: DRAFTS };
+    if (channel === 'meeting.refs.related') return { ok: true, related: RELATED };
+    return { ok: true };
+  });
+  return { ...env, calls };
+}
+
+describe('T051 关联建议：列表渲染 + 点了才建立', () => {
+  it('① 列表渲染：哪场会/哪条结论/相关资产/命中方式；查询输入只用本会议已挂载引用', async () => {
+    const { instance, sectionBody, calls } = mountPanelWithRelated();
+    await instance.ready;
+    // 查询 payload：docId + 本会议挂载资产的 assetIds 与标题快照 terms（确定性，无语义抽取）
+    const relatedCall = calls.find((c) => c.channel === 'meeting.refs.related');
+    expect(relatedCall.payload).toMatchObject({ docId: 'meetings/9.15站会.txt' });
+    expect(relatedCall.payload.assetIds).toEqual(['a_1', 'a_2']);
+    expect(relatedCall.payload.terms).toEqual(['发布检查单', '旧版资产']);
+    // 列表内容（只有标识与摘要，不含资产正文）
+    const html = sectionBody(3);
+    expect((html.match(/data-mrf-related=/g) || []).length).toBe(2);
+    expect(html).toContain('data-mrf-related-summary');
+    expect(html).toContain('发布流程要先过检查单');
+    expect(html).toContain('会议：9.01周会.txt');
+    expect(html).toContain('相关资产：a_1');
+    expect(html).toContain('按资产命中');
+    expect(html).toContain('按术语命中');
+    expect(html).toContain('引用到本会议');
+    expect(html).not.toContain('ui-empty-state');
+    instance.destroy();
+  });
+
+  it('② 不点按钮时零写入：全程无 meeting.assets.attach / meeting.conclusions.save 调用', async () => {
+    const { instance, calls } = mountPanelWithRelated();
+    await instance.ready;
+    // 「上次提到」只呈现建议：加载与渲染阶段零写通道（引用包零变化）
+    const writes = calls.filter((c) =>
+      c.channel === 'meeting.assets.attach' || c.channel === 'meeting.conclusions.save');
+    expect(writes).toHaveLength(0);
+    instance.destroy();
+  });
+
+  it('③ 点了才建立：先 attach 每项相关资产，再把结论存进本会议（既有通道，不新建写口）', async () => {
+    const { instance, fireClick, calls } = mountPanelWithRelated();
+    await instance.ready;
+    calls.length = 0;
+    await fireClick('meeting-related-cite', 'meetings/9.01周会.txt::mc_901');
+    const attaches = calls.filter((c) => c.channel === 'meeting.assets.attach');
+    expect(attaches.map((c) => c.payload)).toEqual([
+      { docId: 'meetings/9.15站会.txt', assetId: 'a_1', via: 'attach' },
+    ]);
+    const save = calls.find((c) => c.channel === 'meeting.conclusions.save');
+    expect(save.payload.docId).toBe('meetings/9.15站会.txt');
+    expect(save.payload.conclusion).toMatchObject({
+      summary: '发布流程要先过检查单',
+      assetRefs: ['a_1'],
+    });
+    instance.destroy();
+  });
+
+  it('④ 建立失败按码翻四语（不弹错误框、不静默）', async () => {
+    const nodes = new Map<string, any>();
+    const container = fakeElement();
+    container.querySelector = (selector: string) => {
+      if (!nodes.has(selector)) nodes.set(selector, fakeElement());
+      return nodes.get(selector);
+    };
+    const clicks: Array<(event: unknown) => void> = [];
+    container.addEventListener = (name: string, fn: (event: unknown) => void) => {
+      if (name === 'click') clicks.push(fn);
+    };
+    container.removeEventListener = () => {};
+    const loaded = loadModule({
+      cogseed: {
+        invoke: async (channel: string) => {
+          if (channel === 'meeting.assets.list') return { ok: true, refs: REF_VIEWS };
+          if (channel === 'meeting.conclusions.list') return { ok: true, conclusions: [] };
+          if (channel === 'meeting.actions.list') return { ok: true, drafts: [] };
+          if (channel === 'meeting.refs.related') return { ok: true, related: RELATED };
+          if (channel === 'meeting.assets.attach') return { ok: false, code: 'asset_inactive' };
+          return { ok: true };
+        },
+      },
+      uiButton: (o: any) => `<button type="button" class="ui-button" data-act="${o?.attrs?.['data-act'] || ''}" data-mrf-id="${o?.attrs?.['data-mrf-id'] || ''}">${String(o?.label || '')}</button>`,
+      uiTag: (o: any) => `<span class="ui-tag">${String(o?.label || '')}</span>`,
+    });
+    const instance = loaded.windowMock.KbMeetingRefs.mount(container, {
+      docId: 'meetings/9.15站会.txt',
+      displayPath: 'meetings/9.15站会.txt',
+    });
+    await instance.ready;
+    for (const handler of clicks) {
+      handler({
+        target: {
+          closest: () => ({
+            getAttribute: (key: string) => (key === 'data-act' ? 'meeting-related-cite' : key === 'data-mrf-id' ? 'meetings/9.01周会.txt::mc_901' : ''),
+          }),
+        },
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const status = nodes.get('[data-mrf-status]');
+    expect(status._text).toContain('该资产已归档或暂停');
+    instance.destroy();
+  });
 });

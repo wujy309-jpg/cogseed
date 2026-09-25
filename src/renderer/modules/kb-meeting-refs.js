@@ -13,7 +13,11 @@
  *     按语境复用 recall.asset_approval.{confirm,defer,reject} 既有三键——
  *     草稿动作语义：确认 = meeting.actions.confirm、拒绝 = .discard、
  *     稍后处理 = 不动数据，草稿保留可续办）。
- *   - 关联建议（T051）/ 回执列表（后续任务）仍为空态骨架，不提前造数据。
+ *   - T051 关联建议（US-505）：「上次提到」列表（哪场会/哪条结论/相关资产 +
+ *     命中方式章）——只呈现**建议**；「引用到本会议」按钮**点了才建立**（调
+ *     既有 meeting.assets.attach + meeting.conclusions.save，不新建写通道），
+ *     不点时引用包零变化；
+ *   - 回执列表仍为空态骨架，不提前造数据。
  *
  * 设计边界（与 specs/013 契约对齐）：
  *   - 引用链只有 id/版本/标题/摘要/锚点——**不读资产正文、不读转写正文**
@@ -153,6 +157,8 @@
       conclusionsError: '',
       actions: [],
       actionsError: '',
+      related: [],
+      relatedError: '',
       // 「对比现状」的展开状态（assetId → true）。refs 分区与纪要条目的资产行
       // 共享同一份（同一个 assetId 的冻结版对比只有一份数据）。
       expanded: {},
@@ -241,8 +247,40 @@
       }
     }
 
+    /**
+     * 加载「上次提到」关联建议（T051）。查询输入**只用本会议已挂载的引用**
+     * （meeting.assets.list 的结果）：assetIds = 挂载资产 id；terms = 挂载资产
+     * 的标题快照（确定性字符串——不做任何语义抽取）。通道只读、只给建议；
+     * 不点「引用到本会议」本会议的引用包零变化。
+     */
+    async function loadRelated() {
+      try {
+        const assetIds = state.refs
+          .map((ref) => String(ref?.assetId || '').trim())
+          .filter(Boolean)
+          .slice(0, 50);
+        const terms = [...new Set(state.refs
+          .map((ref) => String(ref?.title || '').trim())
+          .filter(Boolean))]
+          .slice(0, 20)
+          .map((term) => term.slice(0, 60));
+        const result = await callMeeting('meeting.refs.related', {
+          docId: ctx.docId,
+          ...(assetIds.length ? { assetIds } : {}),
+          ...(terms.length ? { terms } : {}),
+        });
+        state.related = Array.isArray(result?.related) ? result.related : [];
+        state.relatedError = '';
+      } catch (error) {
+        log?.warn('meeting related load failed', { error: error?.message || String(error) });
+        state.related = [];
+        state.relatedError = String(error?.code || '');
+      }
+    }
+
     async function loadAll() {
       await Promise.all([loadRefs(), loadConclusions(), loadActions()]);
+      await loadRelated(); // 关联查询要等本会议引用清单（assetIds/terms 的来源）
       render();
     }
 
@@ -403,6 +441,60 @@
       ].join('');
     }
 
+    /** 命中方式章（T051，共享 uiTag；原语缺失退化为纯文本 span，非交互控件）。 */
+    function matchedTagHtml(matchedBy) {
+      const label = matchedBy === 'term'
+        ? t('kb.meetingRef.related_match_term', '按术语命中')
+        : t('kb.meetingRef.related_match_asset', '按资产命中');
+      return typeof root.uiTag === 'function'
+        ? root.uiTag({ label, variant: 'accent' })
+        : `<span class="kb-mrf__tag">${escapeHtml(label)}</span>`;
+    }
+
+    /** 一条关联建议的唯一键（docId + conclusionId 定位「哪场会·哪条结论」）。 */
+    function relatedKey(entry) {
+      return `${String(entry?.docId || '')}::${String(entry?.conclusionId || '')}`;
+    }
+
+    /**
+     * 关联建议行（T051）：哪场会（标题 + docId 尾段）/ 哪条结论（摘要）/
+     * 相关资产标识（只有 id，契约 §1.5——不含资产正文）/ 命中方式章 +
+     * 「引用到本会议」按钮（**点了才建立**；不点时引用包零变化）。
+     */
+    function relatedRowHtml(entry) {
+      const key = relatedKey(entry);
+      const summary = String(entry?.summary || '');
+      const meetingTitle = String(entry?.title || '').trim()
+        || (String(entry?.docId || '').split(/[\\/]/).filter(Boolean).pop() || String(entry?.docId || ''));
+      const assetIds = (Array.isArray(entry?.assetIds) ? entry.assetIds : [])
+        .map((id) => String(id || '').trim())
+        .filter(Boolean);
+      const meetingLine = t('kb.meetingRef.related_meeting', '会议：{title}', { title: meetingTitle });
+      const assetsLine = assetIds.length
+        ? t('kb.meetingRef.related_assets', '相关资产：{ids}', { ids: assetIds.join('、') })
+        : '';
+      const citeButton = typeof root.uiButton === 'function'
+        ? root.uiButton({
+          label: t('kb.meetingRef.related_cite', '引用到本会议'),
+          role: 'primary',
+          size: 'sm',
+          attrs: { 'data-act': 'meeting-related-cite', 'data-mrf-id': key },
+        })
+        : '';
+      const parts = [
+        `<div class="kb-mrf__item" data-mrf-related="${escapeHtml(key)}">`,
+        `<div class="kb-mrf__item-summary" data-mrf-related-summary>${escapeHtml(summary)}</div>`,
+        `<div class="kb-mrf__item-meta" data-mrf-related-meeting>${escapeHtml(meetingLine)}</div>`,
+      ];
+      if (assetsLine) {
+        parts.push(`<div class="kb-mrf__item-assets" data-mrf-related-assets>${escapeHtml(assetsLine)}</div>`);
+      }
+      parts.push(`<div class="kb-mrf__item-status" data-mrf-related-match>${matchedTagHtml(entry?.matchedBy)}</div>`);
+      parts.push(`<div class="kb-mrf__item-actions" data-mrf-related-actions>${citeButton}</div>`);
+      parts.push('</div>');
+      return parts.join('');
+    }
+
     /** 待办草稿行（T043）：来源 / 资产引用（冻结版）/ 状态章 / 三动作。 */
     function actionRowHtml(draft) {
       const id = String(draft?.id || '');
@@ -449,7 +541,12 @@
         if (!state.actions.length) return { html: emptyHtml(text.empty), empty: true };
         return { html: state.actions.map((d) => actionRowHtml(d)).join(''), empty: false };
       }
-      // related（T051）/ receipts（后续任务）：空态骨架，不提前造数据。
+      if (key === 'related') {
+        if (state.relatedError) return { html: emptyHtml(errorText(state.relatedError)), empty: true };
+        if (!state.related.length) return { html: emptyHtml(text.empty), empty: true };
+        return { html: state.related.map((r) => relatedRowHtml(r)).join(''), empty: false };
+      }
+      // receipts（后续任务）：空态骨架，不提前造数据。
       return { html: emptyHtml(text.empty), empty: true };
     }
 
@@ -522,6 +619,39 @@
       setStatus(t('kb.meetingRef.action_deferred_note', '已稍后处理：草稿保留，可随时回来确认'), '');
     }
 
+    /**
+     * 「引用到本会议」（T051）：**点击才建立**——把该条建议的相关资产挂到本
+     * 会议（既有 `meeting.assets.attach`，准入/冻结版语义全在主进程），再把
+     * 历史结论存为本会议的结论草稿（既有 `meeting.conclusions.save`；其
+     * assetRefs 快照从本会议引用包取——所以先 attach 后 save）。**不新建写
+     * 通道**；失败按码翻四语（部分成功时已建立的不回滚——引用是幂等可撤的）。
+     */
+    async function citeRelated(key) {
+      const entry = state.related.find((r) => relatedKey(r) === key);
+      if (!entry) return;
+      const assetIds = (Array.isArray(entry.assetIds) ? entry.assetIds : [])
+        .map((id) => String(id || '').trim())
+        .filter(Boolean);
+      try {
+        for (const assetId of assetIds) {
+          await callMeeting('meeting.assets.attach', { docId: ctx.docId, assetId, via: 'attach' });
+        }
+        await callMeeting('meeting.conclusions.save', {
+          docId: ctx.docId,
+          conclusion: {
+            summary: String(entry.summary || ''),
+            ...(assetIds.length ? { assetRefs: assetIds } : {}),
+          },
+        });
+        setStatus(t('kb.meetingRef.related_cite_done', '已引用到本会议：挂载 {count} 项资产并保存结论草稿', { count: String(assetIds.length) }), '');
+        await loadAll();
+      } catch (error) {
+        log?.warn('meeting related cite failed', { error: error?.message || String(error) });
+        setStatus(errorText(error?.code), 'warning');
+        render();
+      }
+    }
+
     function onClick(event) {
       const target = event && event.target;
       const holder = target && typeof target.closest === 'function' ? target.closest('[data-act]') : null;
@@ -532,6 +662,7 @@
       else if (act === 'meeting-action-confirm' && id) void runAction('confirm', id);
       else if (act === 'meeting-action-defer') deferAction();
       else if (act === 'meeting-action-discard' && id) void runAction('discard', id);
+      else if (act === 'meeting-related-cite' && id) void citeRelated(id);
     }
     container.addEventListener('click', onClick);
 

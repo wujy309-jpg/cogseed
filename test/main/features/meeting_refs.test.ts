@@ -26,7 +26,14 @@ import {
   listMeetingAssetRefs,
   listMeetingAssetRefViews,
   readMeetingAssetPack,
+  relatedMeetingRefs,
 } from '../../../src/main/features/meeting_refs';
+// 历史会议夹具用真实写口落盘（saveMeetingConclusion 与引用包同文件、同冻结；
+// meetingConclusionIdFor 断言「哪条结论」的确定性 id）——只调用，不修改。
+import {
+  meetingConclusionIdFor,
+  saveMeetingConclusion,
+} from '../../../src/main/features/meeting_conclusions';
 import { docKeyForDocId } from '../../../src/main/features/meeting_doc';
 import { userMeetingRefsDir } from '../../../src/main/paths';
 
@@ -316,5 +323,195 @@ describe('T037：MeetingAssetRefView 读时派生（currentVersion/currentTitle/
     expect(view.stale).toBe(false);                                 // 无漂移证据（不宣称漂移）
     expect(view.version).toBe('2');                                 // 冻结版仍在
     expect(view.title).toBe('已删资产');
+  });
+});
+
+// ── T050：relatedMeetingRefs 确定性跨会议关联（specs/013 · US-505 / FR-007）──────
+
+/**
+ * 历史会议夹具：真实写口落盘（attach 冻结版 + save 结论带锚点与资产引用）——
+ * 读侧（relatedMeetingRefs）面对的就是生产形态的文件。
+ */
+async function seedHistoricalMeeting(
+  docId: string,
+  assetIds: string[],
+  summary: string,
+): Promise<void> {
+  for (const assetId of assetIds) {
+    await attachMeetingAsset(uid, docId, assetId, 'conclusion');
+  }
+  saveMeetingConclusion(uid, docId, {
+    summary,
+    transcriptRefs: [{ utteranceId: 'U0001', blockIndex: 0, from: 0, to: 6 }],
+    assetRefs: assetIds,
+  });
+}
+
+describe('T050：relatedMeetingRefs（确定性、零语义、零模型）', () => {
+  it('① 同输入两次结果逐条一致（确定性）', async () => {
+    assets.set('ast_term', assetRecord({
+      id: 'ast_term', title: '术语资产', version: '3', statement: 'Cogseed 是产品名',
+    }));
+    await seedHistoricalMeeting('meetings/9.01周会.txt', ['ast_cogseed'], '发布流程要先过术语表');
+    await seedHistoricalMeeting('meetings/9.08周会.txt', ['ast_term'], '术语统一叫 Cogseed');
+    const options = { assetIds: ['ast_cogseed'], terms: ['Cogseed 是产品名'] };
+    const first = await relatedMeetingRefs(uid, options);
+    const second = await relatedMeetingRefs(uid, options);
+    expect(second).toEqual(first);
+    expect(first.length).toBeGreaterThan(0);
+  });
+
+  it('② assetIds 反查：命中历史结论，带哪场会/哪条结论/相关资产标识，matchedBy=asset', async () => {
+    await seedHistoricalMeeting('meetings/9.01周会.txt', ['ast_cogseed'], '发布流程要先过术语表');
+    const related = await relatedMeetingRefs(uid, { assetIds: ['ast_cogseed'] });
+    expect(related).toHaveLength(1);
+    expect(related[0]).toMatchObject({
+      docId: 'meetings/9.01周会.txt',
+      conclusionId: meetingConclusionIdFor('meetings/9.01周会.txt', {
+        summary: '发布流程要先过术语表',
+        transcriptRefs: [{ utteranceId: 'U0001', blockIndex: 0, from: 0, to: 6 }],
+      }),
+      summary: '发布流程要先过术语表',
+      assetIds: ['ast_cogseed'],
+      matchedBy: 'asset',
+    });
+    // title 是展示名（文档模型缺失时回退文件名段，与 buildConclusionCandidateInput 同一表达式）
+    expect(related[0].title).toBe('9.01周会.txt');
+    // 只读：查询不写任何文件（引用包前后逐字节一致）
+    const file = path.join(userMeetingRefsDir(uid), `${docKeyForDocId('meetings/9.01周会.txt')}.json`);
+    const before = fs.readFileSync(file, 'utf8');
+    await relatedMeetingRefs(uid, { assetIds: ['ast_cogseed'] });
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  it('③ 空输入：两路都空（缺省/空数组）⇒ 空数组，不抛错', async () => {
+    await seedHistoricalMeeting('meetings/9.01周会.txt', ['ast_cogseed'], '发布流程要先过术语表');
+    await expect(relatedMeetingRefs(uid, {})).resolves.toEqual([]);
+    await expect(relatedMeetingRefs(uid, { assetIds: [], terms: [] })).resolves.toEqual([]);
+    await expect(relatedMeetingRefs(uid, { assetIds: [''] , terms: ['  '] })).resolves.toEqual([]);
+  });
+
+  it('④ terms 折叠等值命中挂载资产的规范名（大小写折叠；matchedBy=term）', async () => {
+    // ast_term 挂载后补了 statement（规范名读时取，引用包不存正文——T027 口径）
+    assets.set('ast_term', assetRecord({
+      id: 'ast_term', title: '术语资产', version: '3',
+      statement: 'Cogseed 是产品名',
+    }));
+    await seedHistoricalMeeting('meetings/9.08周会.txt', ['ast_term'], '术语统一叫 Cogseed');
+    // 大小写折叠命中（foldText 等值，与 attachAssetRefs/attachOntologyRefs 同一套判据）
+    const related = await relatedMeetingRefs(uid, { terms: ['cogseed 是产品名'] });
+    expect(related).toHaveLength(1);
+    expect(related[0]).toMatchObject({ docId: 'meetings/9.08周会.txt', assetIds: ['ast_term'], matchedBy: 'term' });
+  });
+
+  it('⑤ 词条/规范名之外的形态（纯英文无关词）不被误命中', async () => {
+    assets.set('ast_term', assetRecord({
+      id: 'ast_term', title: '术语资产', version: '3',
+      statement: 'Cogseed 是产品名',
+    }));
+    await seedHistoricalMeeting('meetings/9.08周会.txt', ['ast_term'], '术语统一叫 Cogseed');
+    // 无关词折叠后与任何规范名都不相等 ⇒ 零命中（不做子串/语义匹配）
+    await expect(relatedMeetingRefs(uid, { terms: ['zzz totally unrelated word'] })).resolves.toEqual([]);
+    await expect(relatedMeetingRefs(uid, { assetIds: ['ast_not_referenced_anywhere'] })).resolves.toEqual([]);
+  });
+
+  it('⑥ 自身会议不进「上次提到」（docId 自排除）；双路命中同一结论只出一条且 matchedBy=asset', async () => {
+    assets.set('ast_term', assetRecord({
+      id: 'ast_term', title: '术语资产', version: '3',
+      statement: 'Cogseed 是产品名',
+    }));
+    await seedHistoricalMeeting('meetings/9.15站会.txt', ['ast_cogseed'], '当前会议自己的结论');
+    await seedHistoricalMeeting('meetings/9.01周会.txt', ['ast_cogseed'], '上次的结论');
+    const related = await relatedMeetingRefs(uid, {
+      docId: 'meetings/9.15站会.txt',
+      assetIds: ['ast_cogseed'],
+      terms: ['Cogseed 是产品名'],
+    });
+    expect(related).toHaveLength(1);
+    expect(related[0].docId).toBe('meetings/9.01周会.txt');           // 自身被排除
+    expect(related[0].matchedBy).toBe('asset');                        // 资产命中是更强的信号
+  });
+
+  it('⑦ 零语义模型调用：源码级断言（无 embedding/llm 引入）', () => {
+    const source = fs.readFileSync(
+      path.resolve(__dirname, '../../../src/main/features/meeting_refs.ts'),
+      'utf8',
+    ).toLowerCase();
+    expect(source).not.toContain('embedding');
+    expect(source).not.toContain('llm');
+    expect(source).not.toContain('openai');
+  });
+});
+
+// ── T052：历史缺结构化引用降级（Edge Case：不进结果、不报错、不猜）──────────────
+
+describe('T052：历史缺结构化引用 ⇒ 不进关联结果、不报错', () => {
+  /** 直接落盘一条旧形态会议引用文件（绕过写口，模拟历史存量）。 */
+  function writeLegacyRefsFile(docId: string, conclusions: unknown[]): void {
+    const dir = userMeetingRefsDir(uid);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${docKeyForDocId(docId)}.json`), JSON.stringify({
+      schemaVersion: 1,
+      docId,
+      assetRefs: [{
+        assetId: 'ast_cogseed', version: '3', title: 'Cogseed 术语表',
+        type: 'personal', via: 'conclusion', at: '2026-01-01T00:00:00.000Z',
+      }],
+      conclusions,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    }, null, 2));
+  }
+
+  it('旧形态记录（无锚点字段 / 有锚点但无 assetRefs / 断链旧记录）都不进结果，且无异常', async () => {
+    writeLegacyRefsFile('meetings/legacy1.txt', [
+      // 旧形态①：无 transcriptRefs 字段（legacy_record 形态），assetRefs 恰好命中查询资产
+      {
+        id: 'mc_legacy_noanchor', docId: 'meetings/legacy1.txt', summary: '旧记录：无锚点',
+        assetRefs: [{ assetId: 'ast_cogseed', version: '3', title: 'Cogseed 术语表', type: 'personal' }],
+        status: 'draft', createdAt: '', updatedAt: '',
+      },
+    ]);
+    writeLegacyRefsFile('meetings/legacy2.txt', [
+      // 旧形态②：有锚点但无 assetRefs（没有可反查的结构化引用）
+      {
+        id: 'mc_legacy_noassets', docId: 'meetings/legacy2.txt', summary: '旧记录：无资产引用',
+        transcriptRefs: [{ utteranceId: 'U0002', blockIndex: 1, from: 0, to: 4 }],
+        status: 'draft', createdAt: '', updatedAt: '',
+      },
+    ]);
+    // 阳性对照：同域一条结构化记录照常命中（排除是因为门，不是扫描坏了）
+    await seedHistoricalMeeting('meetings/9.01周会.txt', ['ast_cogseed'], '结构化的上次结论');
+
+    const related = await relatedMeetingRefs(uid, { assetIds: ['ast_cogseed'] });
+    expect(related).toHaveLength(1);
+    expect(related.map((r) => r.docId)).toEqual(['meetings/9.01周会.txt']);
+    expect(related.map((r) => r.conclusionId)).not.toContain('mc_legacy_noanchor');
+    expect(related.map((r) => r.conclusionId)).not.toContain('mc_legacy_noassets');
+  });
+
+  it('坏文件/未知 schemaVersion/超长 docId：跳过不拖垮清单（无异常、不猜关联）', async () => {
+    const dir = userMeetingRefsDir(uid);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${docKeyForDocId('meetings/broken.txt')}.json`), '{ not json');
+    fs.writeFileSync(path.join(dir, `${docKeyForDocId('meetings/future.txt')}.json`), JSON.stringify({
+      schemaVersion: 99, docId: 'meetings/future.txt', assetRefs: [], conclusions: [],
+    }));
+    fs.writeFileSync(path.join(dir, 'x'.repeat(60) + '.json'), JSON.stringify({
+      schemaVersion: 1, docId: 'y'.repeat(1001), assetRefs: [], conclusions: [],
+    }));
+    await seedHistoricalMeeting('meetings/9.01周会.txt', ['ast_cogseed'], '结构化的上次结论');
+    const related = await relatedMeetingRefs(uid, { assetIds: ['ast_cogseed'] });
+    expect(related).toHaveLength(1);                                  // 只有结构化记录命中
+    expect(related[0].docId).toBe('meetings/9.01周会.txt');
+  });
+
+  it('术语路对已删除/非 active 资产不造名字：规范名清单如实跳过（宁少不多）', async () => {
+    assets.set('ast_gone3', assetRecord({
+      id: 'ast_gone3', title: '已删术语资产', version: '1', statement: '已删资产的规范名',
+    }));
+    await seedHistoricalMeeting('meetings/9.02周会.txt', ['ast_gone3'], '引用过后来删掉的资产');
+    assets.delete('ast_gone3');                                       // 彻底删除：读不到规范名
+    await expect(relatedMeetingRefs(uid, { terms: ['已删资产的规范名'] })).resolves.toEqual([]);
   });
 });

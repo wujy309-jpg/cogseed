@@ -28,9 +28,10 @@ import * as path from 'node:path';
 import { createLogger } from '../logger';
 import { safeId } from '../storage';
 import { userMeetingRefsDir } from '../paths';
-import { docKeyForDocId, MAX_DOC_ID_CHARS, MeetingDocError } from './meeting_doc';
+import { docKeyForDocId, getMeetingDoc, MAX_DOC_ID_CHARS, MeetingDocError } from './meeting_doc';
 import { foldText } from './transcript_glossary';
 import type { CorrectionCandidate } from './transcript_auto_correct';
+import type { MeetingConclusion, MeetingConclusionAssetRef } from './meeting_conclusions';
 import { readAbilityAsset } from './recall/asset-service';
 import {
   assetRuntimeBlockRule,
@@ -435,4 +436,192 @@ export async function listMeetingAssetRefViews(uid: string, docId: string): Prom
     views.push(deriveMeetingAssetRefView(ref, asset));
   }
   return views;
+}
+
+// ── T050/T052：确定性跨会议关联（specs/013 · US-505 / FR-007）───────────────
+
+/** 命中方式：按 assetId 反查（asset）或按术语对规范名的折叠等值命中（term）。 */
+export type MeetingRelatedMatchedBy = 'asset' | 'term';
+
+/**
+ * 一条「上次提到」关联建议（contracts/ipc.md §1.5 返回体）：
+ * 哪场会（docId/title）· 哪条结论（conclusionId/summary）· 相关资产标识
+ * （assetIds，只有 id——不含资产正文，隐私边界 D20）· 怎么命中的（matchedBy）。
+ */
+export interface RelatedMeetingRef {
+  docId: string;
+  title: string;
+  conclusionId: string;
+  summary: string;
+  assetIds: string[];
+  matchedBy: MeetingRelatedMatchedBy;
+}
+
+export interface RelatedMeetingRefsOptions {
+  /** 本次查询的会议（**自身不进结果**——自己引用自己不是「上次提到」）。 */
+  docId?: string;
+  /** 反查用资产 id 清单（contracts/ipc.md §1.5：每项 safeId、≤50）。 */
+  assetIds?: string[];
+  /** 术语清单（每项 ≤60、≤20；对规范名做折叠等值命中）。 */
+  terms?: string[];
+}
+
+/** 域扫描的最小条目（conclusions 是 meeting_conclusions 落进同一文件的段；只取关联要用的字段）。 */
+interface MeetingRefsDomainEntry {
+  docId: string;
+  updatedAt: string;
+  conclusions: Array<Partial<MeetingConclusion>>;
+}
+
+/**
+ * 遍历用户 meeting-refs 域（`meeting-refs/*.json`，data-model §4 的既定口径：
+ * 单用户量级直扫、无索引）。坏文件/未知 schemaVersion/无 docId 的文件**跳过**
+ * 不报错（对齐 `listMeetingDocs` 的容错）；输出按 `updatedAt` 倒序、同刻按
+ * `docId` 升序——**纯文件内容派生的全序**，同输入两次扫描结果逐字节一致。
+ */
+function scanMeetingRefsDomain(uid: string): MeetingRefsDomainEntry[] {
+  const dir = userMeetingRefsDir(uid);
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return []; // 域不存在（该用户还没有任何会议引用）：空域，不报错
+  }
+  const out: MeetingRefsDomainEntry[] = [];
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue;
+    let raw: Partial<MeetingAssetPack> & { conclusions?: unknown; updatedAt?: unknown };
+    try {
+      raw = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'));
+    } catch {
+      continue; // 单文件损坏不拖垮清单（对齐 listMeetingDocs 的容错口径）
+    }
+    if (!raw || typeof raw !== 'object' || typeof raw.docId !== 'string' || !raw.docId) continue;
+    if (raw.docId.length > MAX_DOC_ID_CHARS) continue; // 脏长度会让下游 requireDocId 抛错：跳过
+    if (raw.schemaVersion !== MEETING_REF_SCHEMA_VERSION) continue; // 不认识的版本：不猜字段（data-model §3）
+    out.push({
+      docId: raw.docId,
+      updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : '',
+      conclusions: Array.isArray(raw.conclusions)
+        ? raw.conclusions.filter((c): c is Partial<MeetingConclusion> => !!c && typeof c === 'object')
+        : [],
+    });
+  }
+  return out.sort((a, b) =>
+    String(b.updatedAt).localeCompare(String(a.updatedAt)) || (a.docId < b.docId ? -1 : 1));
+}
+
+/** 关联建议里的会议展示名：文档模型标题（只读探测），缺失回退文件名段（与 buildConclusionCandidateInput 同一表达式）。 */
+function meetingDisplayTitle(uid: string, docId: string): string {
+  try {
+    const doc = getMeetingDoc(uid, docId, { create: false });
+    if (doc?.title) return String(doc.title).slice(0, MAX_TITLE_CHARS);
+  } catch {
+    // docId 超界等形状问题：回退文件名段，不让一条脏记录拖垮整张清单
+  }
+  return docId.split(/[\\/]/).filter(Boolean).pop() || docId;
+}
+
+/**
+ * 【T050】确定性跨会议关联（只读；零语义、零模型调用）。
+ *
+ * 口径（research.md D13 / contracts/ipc.md §1.5）：
+ *   - **assetIds 路**：反查历史会议结论条目的 `assetRefs[].assetId` 精确成员
+ *     命中——会议引用包/结论里只有 id/版本/标题快照，成员判断就是全部判据；
+ *   - **terms 路**：对历史会议**挂载资产的规范名**做字符串命中——规范名取
+ *     既有读函数 `listMeetingAssetCanonicalNames`（statement‖title，T027），
+ *     命中判据复用 `attachAssetRefs` 的折叠等值（`foldText(a).trim() ===
+ *     foldText(b).trim()`，与 `attachOntologyRefs` 同一套，不新写第二套判据）；
+ *     词条/规范名之外的形态（无关词）折叠后不相等 ⇒ 不命中，无误报；
+ *   - `assetIds` 与 `terms` 都空 ⇒ 空数组（不报错）；
+ *   - 同一条结论被两路同时命中 ⇒ 只出一条，`matchedBy:'asset'`（资产命中是
+ *     更强的信号；不重复列）；
+ *   - 结果条目 = 历史会议的**一条结论**（conclusion 级）：只有真正引用过命中
+ *     资产的结论才算「上次提到」（宁少不多，不造关联）。
+ *
+ * 【T052】历史缺结构化引用降级（Edge Case）：结论无锚点（无 `transcriptRefs`
+ * 字段/为空，含 legacy_record、no_transcript_ref 旧形态）或无 `assetRefs` ⇒
+ * 该条**不进关联结果、不报错**——没有任何「猜测性」关联。
+ *
+ * 不变量（tasks.md 反漂移表）：**只给建议，不自动建立引用**——本函数纯只读，
+ * 不写任何文件；「点了才落库」是面板按钮 + `attachMeetingAsset` 的事（T051）。
+ */
+export async function relatedMeetingRefs(
+  uid: string,
+  options: RelatedMeetingRefsOptions = {},
+): Promise<RelatedMeetingRef[]> {
+  const selfDocId = typeof options?.docId === 'string' ? options.docId.trim() : '';
+  const assetIdSet = new Set(
+    (Array.isArray(options?.assetIds) ? options.assetIds : [])
+      .filter((id): id is string => typeof id === 'string')
+      .map((id) => id.trim())
+      .filter(Boolean),
+  );
+  const foldedTerms = new Set(
+    (Array.isArray(options?.terms) ? options.terms : [])
+      .filter((term): term is string => typeof term === 'string')
+      .map((term) => foldText(term).trim())
+      .filter(Boolean),
+  );
+  if (!assetIdSet.size && !foldedTerms.size) return []; // 两路都空 ⇒ 空数组，不报错
+
+  const out: RelatedMeetingRef[] = [];
+  for (const entry of scanMeetingRefsDomain(uid)) {
+    if (selfDocId && entry.docId === selfDocId) continue; // 自身会议不进「上次提到」
+    // terms 路的规范名清单：既有读函数（T027）——资产已删/非 active 的条目
+    // 它自己会如实跳过（不造名字）；terms 路没开就不读（不多花一次盘）。
+    const canonicalNames = foldedTerms.size
+      ? await listMeetingAssetCanonicalNames(uid, entry.docId)
+      : [];
+    for (const conclusion of entry.conclusions) {
+      // T052：无锚点（旧形态/无转写引用）或无 assetRefs ⇒ 不进结果、不报错。
+      if (!Array.isArray(conclusion.transcriptRefs) || !conclusion.transcriptRefs.length) continue;
+      const refs = Array.isArray(conclusion.assetRefs)
+        ? conclusion.assetRefs.filter((r): r is MeetingConclusionAssetRef =>
+            !!r && typeof r === 'object' && typeof r.assetId === 'string' && !!r.assetId)
+        : [];
+      if (!refs.length) continue;
+
+      const byAsset = dedupeStrings(refs.filter((r) => assetIdSet.has(r.assetId)).map((r) => r.assetId));
+      let matchedBy: MeetingRelatedMatchedBy | null = null;
+      let matchedIds: string[] = [];
+      if (byAsset.length) {
+        matchedBy = 'asset';
+        matchedIds = byAsset;
+      } else if (foldedTerms.size) {
+        // 折叠等值命中（attachAssetRefs 的同一判据）：规范名折叠后与术语折叠后相等。
+        const byTerm: string[] = [];
+        for (const ref of refs) {
+          const canonical = canonicalNames.find((item) => item.assetId === ref.assetId);
+          if (!canonical) continue;
+          if (foldedTerms.has(foldText(canonical.name).trim())) byTerm.push(ref.assetId);
+        }
+        if (byTerm.length) {
+          matchedBy = 'term';
+          matchedIds = dedupeStrings(byTerm);
+        }
+      }
+      if (!matchedBy) continue;
+      out.push({
+        docId: entry.docId,
+        title: meetingDisplayTitle(uid, entry.docId),
+        conclusionId: typeof conclusion.id === 'string' ? conclusion.id : '',
+        summary: typeof conclusion.summary === 'string' ? conclusion.summary : '',
+        assetIds: matchedIds,
+        matchedBy,
+      });
+    }
+  }
+  return out;
+}
+
+function dedupeStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    if (seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
 }

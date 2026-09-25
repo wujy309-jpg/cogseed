@@ -16,7 +16,8 @@
  *                                      不到资产；tags/category ⇒ field_not_available）
  *   meeting.actions.list / confirm / discard —— 待办草稿（T040~T042；confirm 是
  *   唯一落点入口，内部过外发闸 assertActionDraftSendable；save 属后续任务）
- *   ⏳ meeting.refs.related     —— 跨会议关联（T050，只给建议不自动建立）
+ *   meeting.refs.related       —— 跨会议关联（T050，只读只给建议，不自动建立；
+ *                                 历史缺结构化引用 ⇒ 该条不进结果不报错，T052）
  *   meeting.receipts.list    —— 回执汇总（T053，读既有 review-decision 账本过滤）
  *   meeting.metrics.summary  —— 会议指标（T054/T055，独立文件 meeting-metrics.jsonl）
  *
@@ -100,6 +101,33 @@ function optionalLimit(value: unknown): number | undefined {
     throw new meetingDoc.MeetingDocError('invalid meeting receipts limit', 'invalid_input');
   }
   return limit;
+}
+
+/**
+ * `assetIds` 清单（契约 §1.5：每项过 `safeId`、整表 ≤50）。给出但形状不合法 ⇒
+ * 按形状拒绝（invalid_asset_id 族）；缺省 ⇒ undefined（features 按「空路」处理）。
+ */
+function optionalAssetIds(value: unknown): string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value) || value.length > 50) {
+    throw new meetingDoc.MeetingDocError('invalid meeting related assetIds', 'invalid_input');
+  }
+  return value.map((item) => requireAssetId(item));
+}
+
+/** `terms` 清单（契约 §1.5：每项非空 ≤60、整表 ≤20；越界按形状拒绝）。 */
+function optionalTerms(value: unknown): string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value) || value.length > 20) {
+    throw new meetingDoc.MeetingDocError('invalid meeting related terms', 'invalid_input');
+  }
+  return value.map((item) => {
+    const term = typeof item === 'string' ? item.trim() : '';
+    if (!term || term.length > 60) {
+      throw new meetingDoc.MeetingDocError('invalid meeting related term', 'invalid_input');
+    }
+    return term;
+  });
 }
 
 export const invokeHandlers = {
@@ -249,6 +277,28 @@ export const invokeHandlers = {
   'meeting.actions.discard': async (payload: Payload, ctx: IpcContext) => {
     const docId = requireDocId(payload?.docId);
     return { draft: meetingActionDrafts.discardActionDraft(ctx.userId, docId, requireDraftId(payload?.draftId)) };
+  },
+
+  // ── 跨会议关联（US-505 / T050+T052：只读建议，不自动建立引用）────────────
+  /**
+   * `meeting.refs.related`（contracts/ipc.md §1.5）：确定性「上次提到」检索——
+   * 按 `assetIds` 反查历史结论的 assetRefs + 按 `terms` 对挂载资产规范名做
+   * 折叠等值命中（判据全在 meeting_refs，IPC 只收敛参数）；**不走语义、不走
+   * 模型**。两路都空 ⇒ 空数组（不报错）；历史缺结构化引用的条目不进结果
+   * （T052 降级）。只给建议——建立引用只能走面板点按 `meeting.assets.attach`
+   * / `meeting.conclusions.save`（T051，不新建写通道）。
+   */
+  'meeting.refs.related': async (payload: Payload, ctx: IpcContext) => {
+    const docId = requireDocId(payload?.docId);
+    const assetIds = optionalAssetIds(payload?.assetIds);
+    const terms = optionalTerms(payload?.terms);
+    return {
+      related: await meetingRefs.relatedMeetingRefs(ctx.userId, {
+        docId,
+        ...(assetIds !== undefined ? { assetIds } : {}),
+        ...(terms !== undefined ? { terms } : {}),
+      }),
+    };
   },
 
   // ── 回执与指标（US-506：读既有账本过滤 + 独立读口，不混流）──────────────
