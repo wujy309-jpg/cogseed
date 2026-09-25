@@ -444,6 +444,47 @@ describe('personal_ontology_groups › @verified field value marker', () => {
     expect(fields2.fields?.[0].values[0].sensitivity).toBeUndefined();
   });
 
+  it('setFieldValue edits only the value — all six provenance markers stay byte-identical (spec 009 T016 / I-8 / I-9)', async () => {
+    const groups = await loadModule();
+    const created = await groups.createGroup('test-user-groups', '编辑保标记组');
+    const gid = created.group!.group_id;
+    // 造一条六标记齐全的值：写整文件，行由 serializeFieldValueLine 生成（不手拼标记）。
+    const markedLine = groups.serializeFieldValueLine({
+      value: '阿康', source: '导入', project: 'p1', asOf: '2026-09',
+      verified: 'independent', ruleKind: 'preference', sensitivity: 'restricted',
+    });
+    await groups.writeGroupContent('test-user-groups', gid,
+      ['## 字段区', '### 称呼', markedLine, '', '## 流水区', ''].join('\n'));
+
+    const res = await groups.setFieldValue('test-user-groups', gid, '称呼', '阿康', '子安');
+    expect(res.ok).toBe(true);
+
+    const fields = await groups.listGroupFields('test-user-groups', gid);
+    const fv = fields.fields?.[0].values[0]!;
+    expect(fv.value).toBe('子安');
+    // 六标记逐个逐字断言（I-8），时间锚 asOf 原样保留（I-9 / M12，对 specs/014 的承诺）。
+    expect(fv.source).toBe('导入');
+    expect(fv.project).toBe('p1');
+    expect(fv.asOf).toBe('2026-09');
+    expect(fv.verified).toBe('independent');
+    expect(fv.ruleKind).toBe('preference');
+    expect(fv.sensitivity).toBe('restricted');
+  });
+
+  it('setFieldValue rejects an empty newValue with nothing written (spec 009 T016 / I-10)', async () => {
+    const groups = await loadModule();
+    const created = await groups.createGroup('test-user-groups', '空值拒绝组');
+    const gid = created.group!.group_id;
+    await groups.appendFieldValue('test-user-groups', gid, '称呼', '阿康', '手动');
+
+    const res = await groups.setFieldValue('test-user-groups', gid, '称呼', '阿康', '   ');
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe('empty value');
+
+    const fields = await groups.listGroupFields('test-user-groups', gid);
+    expect(fields.fields?.[0].values[0].value).toBe('阿康');
+  });
+
   it('keeps rolling snapshots and restores a previous version verbatim', async () => {
     const groups = await loadModule();
     const created = await groups.createGroup('test-user-groups', '回滚验证组');

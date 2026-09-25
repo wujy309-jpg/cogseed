@@ -1,5 +1,5 @@
 /**
- * Personal Ontology Groups — “记忆分组”存储层。
+ * Personal Ontology Groups — “本体分组”存储层。
  *
  * 一个分组 = 一个独立的 markdown 文件，物理存放在 Library 树下的隐藏子目录
  * `<uid>/cloud/contexts/.personal_ontology_groups/`（复用 contexts.ts 的
@@ -347,7 +347,7 @@ const TEMPLATE_REF_RE = /^([a-z0-9_-]+)@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/;
  *
  * 写入前必须过这一关：非法版本会让整行匹配不上 TEMPLATE_REF_RE，
  * 于是该行**整体失效**——group_id 与文件都还在，但它不再被当作模板行，
- * 模板静默退化成一个普通记忆分组。判据从同一个正则派生，不另立一份。
+ * 模板静默退化成一个普通本体分组。判据从同一个正则派生，不另立一份。
  */
 export function isValidTemplateVersion(version: string): boolean {
   return TEMPLATE_REF_RE.test(`x@${String(version ?? '')}`);
@@ -799,6 +799,10 @@ export async function deleteGroup(uid: string, groupId: string): Promise<SimpleR
   writeGroups(uid, groups);
   try {
     const abs = resolveGroupFileAbsPathFromMeta(uid, removed);
+    // 删前留档（spec 009 T021）：从未产生过快照的组（刚建/只整体覆写过）
+    // .history 为空，不先拍下最后一版就 rm，误删后无从恢复。必须在
+    // rmSync **之前**（内容为空时 snapshotGroupHistory 自己跳过，语义不变）。
+    snapshotGroupHistory(uid, groupId, readTextSafe(abs));
     fs.rmSync(abs, { force: true });
   } catch (err) {
     log.warn('failed to remove group content file', { uid, groupId, error: (err as Error).message });
