@@ -914,3 +914,435 @@ describe('语言切换（i18n-change）', () => {
     expect(title.textContent).toBe('Transcript correction');
   });
 });
+
+/**
+ * specs/013 会议引用层（US-501 渲染段）：召回通道展示（T024）、引例提示行与
+ * 降级说明（T025）、依据上屏（T026）、回执区（T030）、空间库如实提示（T023）。
+ */
+describe('会议引用层：召回候选与预勾规则（T024）', () => {
+  const mk = (over: Record<string, unknown> = {}) => ({
+    entryRef: 'g_1', wrong: 'coxy', correct: 'Cogseed', action: 'replace', riskLevel: 'low',
+    confidence: 1, context: '', span: { start: 0, end: 4 }, ...over,
+  });
+
+  it('groupCandidates 保留 channel/disposition：召回行、review 行、引例行各自成行', () => {
+    const rows = panel.groupCandidates([
+      mk({ entryRef: 'g_a', channel: 'exact', refs: [{ source: 'glossary', entryId: 'g_a', kind: 'product', freq: 1 }] }),
+      mk({ entryRef: 'g_b', channel: 'recall', refs: [{ source: 'glossary', entryId: 'g_b', kind: 'term', freq: 1 }] }),
+      mk({ entryRef: 'g_c', channel: 'recall', disposition: 'review', refs: [{ source: 'glossary', entryId: 'g_c', kind: 'term', freq: 1 }] }),
+      mk({ entryRef: 'g_d', disposition: 'quoted_example', quotedBy: '一会儿叫', refs: [{ source: 'glossary', entryId: 'g_d', kind: 'term', freq: 1 }] }),
+    ]);
+    const byRef = Object.fromEntries(rows.map((r: any) => [r.entryRef, r]));
+    expect(byRef.g_a.channel).toBe('exact');
+    expect(byRef.g_a.disposition).toBe('suggest');
+    expect(byRef.g_b.channel).toBe('recall');
+    expect(byRef.g_c.disposition).toBe('review');
+    expect(byRef.g_d.disposition).toBe('quoted_example');
+    expect(byRef.g_d.quotedBy).toBe('一会儿叫');
+  });
+
+  it('同词条一处引例、一处真实错形：分开聚合，互不沾染（引例行不得带候选语义）', () => {
+    const rows = panel.groupCandidates([
+      mk({ entryRef: 'g_x', channel: 'exact', refs: [{ source: 'glossary', entryId: 'g_x', kind: 'product', freq: 5 }] }),
+      mk({ entryRef: 'g_x', disposition: 'quoted_example', quotedBy: '一会儿叫', refs: [{ source: 'glossary', entryId: 'g_x', kind: 'product', freq: 5 }] }),
+    ]);
+    expect(rows).toHaveLength(2);
+    const quoted = rows.find((r: any) => r.disposition === 'quoted_example');
+    const real = rows.find((r: any) => r.disposition !== 'quoted_example');
+    expect(quoted.quotedBy).toBe('一会儿叫');
+    expect(real.quotedBy).toBe('');
+    expect(real.channel).toBe('exact');
+  });
+
+  it('同 span 召回并入后的并列依据跨 span 合并且去重', () => {
+    const rows = panel.groupCandidates([
+      mk({ entryRef: 'g_a', refs: [{ source: 'glossary', entryId: 'g_a', kind: 'product', freq: 2 }] }),
+      mk({ entryRef: 'g_a', span: { start: 9, end: 13 }, refs: [
+        { source: 'glossary', entryId: 'g_a', kind: 'product', freq: 2 },
+        { source: 'ontology', name: 'Cogseed' },
+      ] }),
+    ]);
+    expect(rows[0].refs).toHaveLength(2);
+    expect(rows[0].refs.map((r: any) => r.source)).toEqual(['glossary', 'ontology']);
+  });
+
+  it('预勾规则不放宽：recall / review / quoted / fromModel 一律不进默认勾选集', () => {
+    const rows = [
+      { entryRef: 'g_low', riskLevel: 'low', ignoredCount: 0 },
+      { entryRef: 'g_recall', riskLevel: 'low', ignoredCount: 0, channel: 'recall' },
+      { entryRef: 'g_review', riskLevel: 'low', ignoredCount: 0, disposition: 'review' },
+      { entryRef: 'g_quoted', riskLevel: 'low', ignoredCount: 0, disposition: 'quoted_example' },
+      { entryRef: 'model_0', riskLevel: 'low', ignoredCount: 0, fromModel: true },
+      { entryRef: 'g_high', riskLevel: 'high', ignoredCount: 0 },
+    ];
+    expect(panel.defaultAcceptedIds(rows)).toEqual(['g_low']);
+  });
+
+  it('引例只读行不计入候选汇总（与主进程 stats.candidates 同口径）', () => {
+    const rows = [
+      { entryRef: 'g_a', riskLevel: 'low', count: 2 },
+      { entryRef: 'g_q', riskLevel: 'low', count: 1, disposition: 'quoted_example' },
+    ];
+    expect(panel.summarizeRows(rows, ['g_a'])).toEqual({ total: 1, selected: 1, spans: 2, pendingHigh: 0 });
+  });
+
+  it('无依据的候选不出行（前端不兜底造依据）；模型建议不受此口径影响', () => {
+    const kept = panel.withBasisOnly([
+      mk({ entryRef: 'g_ok', refs: [{ source: 'glossary', entryId: 'g_ok', kind: 'term', freq: 1 }] }),
+      mk({ entryRef: 'g_norefs' }),
+      mk({ entryRef: 'model_0', fromModel: true }),
+    ]);
+    expect(kept.map((c: any) => c.entryRef)).toEqual(['g_ok', 'model_0']);
+  });
+
+  it('通道来源走四语文案，不上屏裸通道名英文', () => {
+    expect(panelSrc).toContain("t('kb.meetingRef.channel_recall', '召回建议')");
+    // 徽标文本只经 t() 产出：通道名本身不允许成为 textContent 字面量
+    expect(panelSrc).not.toMatch(/textContent = ['"]recall['"]/);
+    expect(panelSrc).not.toMatch(/textContent = `recall/);
+  });
+});
+
+describe('会议引用层：依据文案与降级文案（T025/T026 纯函数）', () => {
+  it('三类依据各一条展示路径：词条（wrong→correct + freq）/ 本体规范名 / 资产（标题 + 冻结版 + id）', () => {
+    const row = { wrong: 'coxy', correct: 'Cogseed', action: 'replace' };
+    expect(panel.basisRefText({ source: 'glossary', entryId: 'g_1', kind: 'product', freq: 3 }, row))
+      .toBe('词条「coxy → Cogseed」· 累计纠正 3 次');
+    expect(panel.basisRefText({ source: 'ontology', name: 'KSTAR', groupId: 'grp' }, row))
+      .toBe('本体规范名「KSTAR」');
+    expect(panel.basisRefText({ source: 'asset', assetId: 'a_9', version: '2', title: '周报模板' }, row))
+      .toBe('资产「周报模板」· 冻结版 v2 · a_9');
+  });
+
+  it('依据上屏只读已知字段：混进 refs 的正文字段读不上屏', () => {
+    const text = panel.basisRefText({
+      source: 'asset', assetId: 'a_9', version: '2', title: '周报模板',
+      body: '资产正文不应上屏', statement: 'statement 也不应上屏',
+    } as any, {});
+    expect(text).toContain('周报模板');
+    expect(text).not.toContain('资产正文不应上屏');
+    expect(text).not.toContain('statement 也不应上屏');
+  });
+
+  it('未知来源的依据如实说不可用，不造依据', () => {
+    expect(panel.basisRefText({ source: 'whatever' } as any, {})).toBe('依据不可用（旧记录）');
+    expect(panel.basisRefText(null, {})).toBe('依据不可用（旧记录）');
+  });
+
+  it('降级说明四码各有文案，未知码不给字（不编造定位）', () => {
+    expect(panel.degradedNoteText('no_speakers')).toContain('说话人');
+    expect(panel.degradedNoteText('no_scenario_tags')).toContain('场景标签');
+    expect(panel.degradedNoteText('no_transcript_run')).toContain('run');
+    expect(panel.degradedNoteText('space_doc')).toBe('暂不支持空间库文档纠错，已按可读片段扫描');
+    expect(panel.degradedNoteText('something_else')).toBe('');
+  });
+});
+
+/**
+ * 页面级用例（specs/013 T025/T026/T030 验收）：用可记录子节点的最小 DOM 假体
+ * 真挂一次面板、真跑一次 scan/apply（mock IPC），断言引例行无勾选框、依据
+ * 三类渲染、回执区渲染与空态恰一处、降级说明恰一处。
+ */
+describe('会议引用层：面板页面级（T025/T026/T030）', () => {
+  function recElement(): any {
+    const el: any = {
+      _text: '', children: [], innerHTML: '', hidden: false, value: '', checked: false,
+      dataset: {}, style: {}, title: '',
+      classList: { add: () => {}, remove: () => {}, contains: () => false, toggle: () => false },
+      appendChild: (child: any) => { el.children.push(child); return child; },
+      append: (...kids: any[]) => { kids.forEach((k) => el.children.push(k)); },
+      addEventListener: () => {}, removeEventListener: () => {},
+      querySelector: () => null, querySelectorAll: () => [], closest: () => null,
+      setAttribute: () => {}, getAttribute: () => null, removeAttribute: () => {},
+      insertBefore: () => {}, insertAdjacentHTML: () => {},
+      focus: () => {}, remove: () => {}, replaceWith: () => {},
+    };
+    Object.defineProperty(el, 'textContent', {
+      get: () => el._text,
+      // 真 DOM 语义：写 textContent 会替换全部子节点（innerHTML 一并清空）
+      set: (v: any) => { el._text = String(v ?? ''); el.children = []; el.innerHTML = ''; },
+      configurable: true,
+    });
+    return el;
+  }
+
+  const descendants = (el: any): any[] => {
+    const out: any[] = [];
+    const walk = (node: any) => {
+      for (const child of node?.children || []) { out.push(child); walk(child); }
+    };
+    walk(el);
+    return out;
+  };
+  const markupOf = (el: any): string => {
+    let out = `${el._text ?? ''}${el.innerHTML ?? ''}`;
+    for (const child of el.children || []) out += markupOf(child);
+    return out;
+  };
+  const attrEl = (attrs: Record<string, string>) => ({
+    getAttribute: (n: string) => (n in attrs ? attrs[n] : null),
+  });
+
+  const scanResult = () => ({
+    candidates: [
+      {
+        entryRef: 'g_low', wrong: 'coxy', correct: 'Cogseed', action: 'replace', riskLevel: 'low',
+        confidence: 1, context: '', span: { start: 0, end: 4 }, ignoredCount: 0, contextAllow: [],
+        channel: 'exact',
+        refs: [
+          { source: 'glossary', entryId: 'g_low', kind: 'product', freq: 3 },
+          { source: 'ontology', name: 'KSTAR', groupId: 'grp_1' },
+          { source: 'asset', assetId: 'a_9', version: '2', title: '周报模板' },
+        ],
+      },
+      {
+        entryRef: 'g_recall', wrong: 'K 星', correct: 'KSTAR', action: 'replace', riskLevel: 'low',
+        confidence: 0.8, context: '', span: { start: 8, end: 11 }, ignoredCount: 0, contextAllow: [],
+        channel: 'recall', refs: [{ source: 'glossary', entryId: 'g_recall', kind: 'term', freq: 1 }],
+      },
+      {
+        entryRef: 'g_review', wrong: '付平', correct: '傅平', action: 'replace', riskLevel: 'low',
+        confidence: 0.7, context: '', span: { start: 12, end: 14 }, ignoredCount: 0, contextAllow: [],
+        channel: 'recall', disposition: 'review', refs: [{ source: 'glossary', entryId: 'g_review', kind: 'people', freq: 1 }],
+      },
+      {
+        entryRef: 'g_model', wrong: 'coxyx', correct: 'Cogseed', action: 'replace', riskLevel: 'medium',
+        confidence: 0.6, context: '模型理由', span: { start: 20, end: 25 }, ignoredCount: 0, contextAllow: [],
+        fromModel: true,
+      },
+      {
+        entryRef: 'g_quoted', wrong: 'coxy', correct: 'Cogseed', action: 'replace', riskLevel: 'low',
+        confidence: 0, context: '', span: { start: 30, end: 34 }, ignoredCount: 0, contextAllow: [],
+        channel: 'exact', disposition: 'quoted_example', quotedBy: '一会儿叫',
+        refs: [{ source: 'glossary', entryId: 'g_quoted', kind: 'product', freq: 1 }],
+      },
+      // 无 refs 且非模型：不出行（T026）
+      { entryRef: 'g_dirty', wrong: 'x', correct: 'y', action: 'replace', riskLevel: 'low' },
+    ],
+    denied: [
+      { entryRef: 'g_wb', wrong: 'a', correct: 'b', reason: 'word_boundary', span: { start: 0, end: 1 } },
+      { entryRef: 'g_quoted', wrong: 'coxy', correct: 'Cogseed', reason: 'quoted_example', span: { start: 30, end: 34 } },
+    ],
+    stats: { entriesScanned: 3, candidates: 4, denied: 2, truncated: false, byChannel: { exact: 1, recall: 2, model: 1 }, quotedExample: 1, suppressed: 2 },
+    degraded: ['no_speakers'],
+    recall: { candidates: 2, byChannel: {}, abandoned: [], merged: 0 },
+    review: null,
+  });
+
+  const applyResult = () => ({
+    run: { runId: 'run_1', mergedBlocks: 0 },
+    result: { text: '清理版正文不应出现在回执区', applied: [], retention: 1, status: 'applied' },
+    denied: [],
+    glossaryWrites: { created: 0, updated: 0 },
+    droppedModels: 0,
+    receipts: [{ entryRef: 'g_review', decisionId: 'dec_7' }],
+  });
+
+  function mountMeetingPanel() {
+    const nodes = new Map<string, any>();
+    const clickHandlers: Array<(ev: unknown) => void> = [];
+    const container = recElement();
+    container.querySelector = (selector: string) => {
+      if (!nodes.has(selector)) nodes.set(selector, recElement());
+      return nodes.get(selector);
+    };
+    container.addEventListener = (name: string, fn: (ev: unknown) => void) => {
+      if (name === 'click') clickHandlers.push(fn);
+    };
+    const calls: Array<{ channel: string; payload: any }> = [];
+    const context: any = {
+      console, setTimeout, clearTimeout, Map, Set, Array, Object, String, Number, JSON, Boolean, Promise,
+      document: { createElement: () => recElement(), body: recElement(), addEventListener: () => {}, removeEventListener: () => {} },
+      cogseed: {
+        invoke: async (channel: string, payload: any) => {
+          calls.push({ channel, payload });
+          if (channel === 'transcript.correct.scan') return scanResult();
+          if (channel === 'transcript.correct.apply') return applyResult();
+          return {};
+        },
+      },
+      addEventListener: () => {}, removeEventListener: () => {},
+      t: () => '',
+      uiButton: (o: any) => '<button type="button" class="ui-button" '
+        + Object.entries(o?.attrs || {}).map(([k, v]) => `${k}="${v}"`).join(' ')
+        + `>${String(o?.label || '')}</button>`,
+      uiCheckbox: (o: any) => `<input type="checkbox" aria-label="${String(o?.label || '')}">`,
+      uiEmptyState: (o: any) => `<div class="ui-empty-state">${String(o?.title || '')}</div>`,
+    };
+    context.window = context;
+    context.globalThis = context;
+    vm.createContext(context);
+    vm.runInContext(panelSrc, context, { filename: 'kb-transcript-correct.js' });
+    const instance = context.KbTranscriptCorrect.mount(container, {
+      text: '甲 2026-09-05 19:31:32\n一会儿叫 coxy。\n乙 2026-09-05 19:31:34\n付平来了。',
+      docId: 'doc-1',
+      displayPath: '1/9.15站会.txt',
+      degradedNotes: ['space_doc'],
+    });
+    const fire = (matches: Record<string, ReturnType<typeof attrEl>>) => {
+      const target = { closest: (sel: string) => matches[sel] || null };
+      for (const fn of [...clickHandlers]) fn({ target });
+    };
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const rowElements = () => descendants(nodes.get('[data-atc-body]'))
+      .filter((el) => el.dataset && el.dataset.atcRow);
+    return { instance, nodes, fire, flush, calls, rowElements };
+  }
+
+  it('扫描后：召回行带四语徽标、无依据脏行不出行、引例行只读（T024/T025/T026）', async () => {
+    const env = mountMeetingPanel();
+    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
+    await env.flush();
+    await env.flush();
+
+    const rows = env.rowElements();
+    const byRef = Object.fromEntries(rows.map((el: any) => [el.dataset.atcRow, el]));
+    expect(Object.keys(byRef).sort()).toEqual(['g_low', 'g_model', 'g_quoted', 'g_recall', 'g_review']);
+
+    // 召回徽标：四语文案，不是裸 'recall'
+    expect(markupOf(byRef.g_recall)).toContain('召回建议');
+    expect(markupOf(byRef.g_recall)).not.toContain('>recall<');
+    // 模型徽标仍在（既有行为）
+    expect(markupOf(byRef.g_model)).toContain('模型建议');
+
+    // 引例行：只读——无接受/忽略按钮、无勾选框，带命中标记词的可解释说明
+    const quoted = byRef.g_quoted;
+    expect(quoted.dataset.quoted).toBe('1');
+    expect(markupOf(quoted)).toContain('引例');
+    expect(markupOf(quoted)).toContain('一会儿叫');
+    expect(markupOf(quoted)).not.toContain('data-atc-accept');
+    expect(markupOf(quoted)).not.toContain('data-atc-ignore');
+    expect(markupOf(quoted)).not.toMatch(/type="checkbox"/);
+
+    // 无依据脏行不出行（前端不兜底造依据）
+    expect(byRef.g_dirty).toBeUndefined();
+
+    // scan 请求带 includeRecall（召回并入同一清单）
+    const scanCall = env.calls.find((c) => c.channel === 'transcript.correct.scan');
+    expect(scanCall?.payload.includeRecall).toBe(true);
+    env.instance.destroy();
+  });
+
+  it('降级说明恰一处：空间库（挂载方）+ 无说话人（scan）合并去重呈现（T025）', async () => {
+    const env = mountMeetingPanel();
+    // 扫描前：挂载方带来的空间库提示已可见
+    const degraded = env.nodes.get('[data-atc-degraded]');
+    expect(degraded._text).toContain('暂不支持空间库文档纠错');
+    expect(degraded._text.split('暂不支持空间库文档纠错').length - 1).toBe(1);
+
+    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
+    await env.flush();
+    await env.flush();
+    // 扫描后并入 scan 的 degraded：两条都在、各恰一次（不重复叠加）
+    expect(degraded._text.split('暂不支持空间库文档纠错').length - 1).toBe(1);
+    expect(degraded._text.split('未识别到说话人名单').length - 1).toBe(1);
+    env.instance.destroy();
+  });
+
+  it('依据展开区：三类依据各自渲染，含 id/版本、不含资产正文（T026）', async () => {
+    const env = mountMeetingPanel();
+    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
+    await env.flush();
+    await env.flush();
+    env.fire({ '[data-atc-rowmenu]': attrEl({ 'data-atc-rowmenu': 'g_low' }) });
+    env.fire({ '[data-atc-basis-open]': attrEl({ 'data-atc-basis-open': 'g_low' }) });
+
+    const row = env.rowElements().find((el: any) => el.dataset.atcRow === 'g_low');
+    const box = descendants(row).find((el: any) => el.dataset && el.dataset.basis === 'g_low');
+    expect(box, '依据展开区必须渲染').toBeTruthy();
+    const lines = box.children.map((c: any) => c._text);
+    expect(lines.some((t: string) => t === '词条「coxy → Cogseed」· 累计纠正 3 次')).toBe(true);
+    expect(lines.some((t: string) => t === '本体规范名「KSTAR」')).toBe(true);
+    expect(lines.some((t: string) => t === '资产「周报模板」· 冻结版 v2 · a_9')).toBe(true);
+    expect(markupOf(box)).not.toContain('正文');
+    env.instance.destroy();
+  });
+
+  it('回执区：空态恰一处；拒绝后 apply 落回执、行含会议/条目/依据/id 且不含正文（T030）', async () => {
+    const env = mountMeetingPanel();
+    const receiptsBody = env.nodes.get('[data-atc-receipts-body]');
+    // 空态恰一处
+    expect((receiptsBody.innerHTML.match(/暂无回执/g) || []).length).toBe(1);
+
+    // 拒绝 g_review（review 行本就不预勾），再生成清理版
+    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
+    await env.flush();
+    await env.flush();
+    env.fire({ '[data-atc-rowmenu]': attrEl({ 'data-atc-rowmenu': 'g_review' }) });
+    env.fire({ '[data-atc-reject]': attrEl({ 'data-atc-reject': 'g_review' }) });
+    // 拒绝徽标上屏
+    const reviewRow = env.rowElements().find((el: any) => el.dataset.atcRow === 'g_review');
+    expect(markupOf(reviewRow)).toContain('已拒绝');
+
+    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'apply' }) });
+    await env.flush();
+    await env.flush();
+
+    // apply 请求携带 rejectedIds（主进程据此写回执账本）
+    const applyCall = env.calls.find((c) => c.channel === 'transcript.correct.apply');
+    expect(applyCall?.payload.rejectedIds).toEqual(['g_review']);
+
+    // 回执行：结果 + 会议 + 条目 + 依据标识 + 回执 id；空态消失；不含正文
+    expect((markupOf(receiptsBody).match(/暂无回执/g) || []).length).toBe(0);
+    const text = markupOf(receiptsBody);
+    expect(text).toContain('已拒绝');
+    expect(text).toContain('9.15站会.txt');
+    expect(text).toContain('付平 → 傅平');
+    expect(text).toContain('词条「付平 → 傅平」· 累计纠正 1 次');
+    expect(text).toContain('dec_7');
+    expect(text).not.toContain('清理版正文不应出现在回执区');
+    env.instance.destroy();
+  });
+});
+
+describe('会议引用层：空间库文档如实提示（T023，查看器侧）', () => {
+  const viewer = readSrc('renderer/modules/anchored-source-view.js');
+
+  it('resolveCorrectionText 在 truncated+spaceId 时返回带降级原因的结果（不再静默 inline）', () => {
+    expect(viewer).toMatch(/async function resolveCorrectionText\(\)[\s\S]{0,1200}degradedReason: 'space_doc'/);
+    // 空间库分支由 spaceId 判定，不新增 contexts.read 调用点
+    expect(viewer).toMatch(/if \(spaceId\) \{[\s\S]{0,200}degradedReason: 'space_doc'/);
+  });
+
+  it('个人库（无 spaceId）同条件不出现该提示：读全文失败也只回退 inline、不带原因', () => {
+    expect(viewer).toMatch(/if \(path && !spaceId\) \{[\s\S]{0,900}return \{ text: inline, degradedReason: '' \};/);
+  });
+
+  it('toggleCorrection 依降级原因出四语提示，并把原因传给面板降级说明区', () => {
+    expect(viewer).toContain("t('kb.meetingRef.space_doc_notice', '暂不支持空间库文档纠错，已按可读片段扫描')");
+    expect(viewer).toMatch(/degradedNotes\.length \? \{ degradedNotes \} : \{\}/);
+  });
+
+  it('contexts.read 调用点未新增空间库分支（仍恰 1 处调用）', () => {
+    expect((viewer.match(/invoke\('contexts\.read'/g) || []).length).toBe(1);
+  });
+
+  it('四语 locale 都有空间库提示键（zh 与代码回退逐字一致）', () => {
+    const zhText = fs.readFileSync(path.join(root, 'src/renderer/locales/zh.json'), 'utf8');
+    expect(zhText).toContain('"kb.meetingRef.space_doc_notice": "暂不支持空间库文档纠错，已按可读片段扫描"');
+    for (const lang of ['en', 'ja', 'pt']) {
+      const dict = JSON.parse(readSrc(`renderer/locales/${lang}.json`));
+      expect(dict['kb.meetingRef.space_doc_notice'], `${lang} 缺空间库提示键`).toBeTruthy();
+    }
+  });
+});
+
+describe('会议引用层：渲染契约补充（specs/013）', () => {
+  it('引例行由独立的只读渲染函数产出（不进 splitByRisk 的候选分组）', () => {
+    expect(panelSrc).toContain('function quotedRowElement(row)');
+    expect(panelSrc).toMatch(/splitByRisk\(state\.rows\.filter\(\(row\) => row\.disposition !== 'quoted_example'\)\)/);
+  });
+
+  it('被拒抑制的行数如实透出：扫描完成文案带 suppressed 说明（候选变少要有解释）', () => {
+    expect(panelSrc).toContain("t('kb.meetingRef.suppressed_note'");
+  });
+
+  it('denied 列表不重复展示引例（已作为只读行呈现，且不露出未翻译的 reason 码）', () => {
+    expect(panelSrc).toMatch(/filter\(\(item\) => item\?\.reason !== 'quoted_example'\)/);
+  });
+
+  it('拒绝按钮复用既有三键之一（recall.asset_approval.reject），不新造按钮名', () => {
+    expect(panelSrc).toContain("t('recall.asset_approval.reject', '拒绝')");
+    expect(panelSrc).not.toContain("t('kb.meetingRef.reject_button'");
+  });
+});
