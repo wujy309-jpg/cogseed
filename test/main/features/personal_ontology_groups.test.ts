@@ -485,6 +485,157 @@ describe('personal_ontology_groups › @verified field value marker', () => {
   });
 });
 
+describe('personal_ontology_groups › snapshot history (C-008: same-millisecond writes)', () => {
+  it('two writes in the same millisecond produce two distinct snapshots, restore is verbatim', async () => {
+    const groups = await loadModule();
+    const created = await groups.createGroup(UID, '同毫秒快照组');
+    const gid = created.group!.group_id;
+
+    // 假时钟冻结在同一毫秒：修复前 v1/v2 的快照会落进同一个文件互相覆盖
+    // （C-008），这里不依赖真实负载抖动，确定性复现"同毫秒两次写入"。
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-25T07:12:33.412Z'));
+    try {
+      // 首次写入（原文为空）不留快照；之后每次写入前留一版 —— 三次全部同毫秒。
+      await groups.appendFieldValue(UID, gid, '版本', '第一版内容', '手动');
+      await groups.appendFieldValue(UID, gid, '版本', '第二版内容', '手动');
+      await groups.appendFieldValue(UID, gid, '版本', '第三版内容', '手动');
+
+      const history = groups.listGroupHistory(UID, gid);
+      expect(history.length).toBe(2); // 修复前：v1 的快照被 v2 覆盖，只剩 1 条
+      expect(new Set(history.map((h) => h.id)).size).toBe(2); // 两个不同文件名
+      expect(history.some((h) => h.preview.includes('第一版内容'))).toBe(true);
+      expect(history.some((h) => h.preview.includes('第二版内容'))).toBe(true);
+      // 同毫秒的 savedAt 反解自文件名前 24 字符，两版一致且合法
+      expect(history[0].savedAt).toBe('2026-09-25T07:12:33.412Z');
+      expect(history[1].savedAt).toBe('2026-09-25T07:12:33.412Z');
+
+      // 恢复「第一版」那条快照后，当前文件与快照原文逐字一致
+      const v1 = history.find((h) => h.preview.includes('第一版内容'))!;
+      const snapText = fs.readFileSync(path.join(groupsDir(), '.history', gid, `${v1.id}.md`), 'utf8');
+      const restored = await groups.restoreGroupSnapshot(UID, gid, v1.id);
+      expect(restored.ok).toBe(true);
+      expect((await groups.readGroupContent(UID, gid)).content).toBe(snapText);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('personal_ontology_groups › snapshot rolling cap (字典序 = 时间序)', () => {
+  it('keeps at most 50 per group and evicts the oldest', async () => {
+    const groups = await loadModule();
+    const created = await groups.createGroup(UID, '滚动上限组');
+    const gid = created.group!.group_id;
+    for (let i = 1; i <= 55; i++) {
+      groups.snapshotGroupHistory(UID, gid, `第${String(i).padStart(2, '0')}版正文`);
+    }
+    const history = groups.listGroupHistory(UID, gid);
+    expect(history.length).toBe(50);
+    // 文件名字典序 = 写入时间序（定宽 ISO 前缀 + 定宽两位序号保证）：
+    // 最新的（第 55 版）排最前，最旧的幸存者是第 6 版，第 1~5 版被淘汰。
+    expect(history[0].preview).toContain('第55版正文');
+    expect(history[history.length - 1].preview).toContain('第06版正文');
+    expect(history.some((h) => h.preview.includes('第05版正文'))).toBe(false);
+  });
+
+  it('same-millisecond consecutive versions never overwrite or evict each other', async () => {
+    const groups = await loadModule();
+    const created = await groups.createGroup(UID, '同毫秒多版组');
+    const gid = created.group!.group_id;
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-25T07:12:33.412Z'));
+    try {
+      for (let i = 1; i <= 5; i++) {
+        groups.snapshotGroupHistory(UID, gid, `同毫秒第${i}版`);
+      }
+      const history = groups.listGroupHistory(UID, gid);
+      expect(history.length).toBe(5); // 远低于上限，谁也不淘汰谁
+      expect(new Set(history.map((h) => h.savedAt)).size).toBe(1); // 确实同毫秒
+      for (let i = 1; i <= 5; i++) {
+        expect(history.some((h) => h.preview === `同毫秒第${i}版`)).toBe(true); // 互不覆盖
+      }
+      // 同毫秒内按序号排序：后写入的（-04）排更"新"
+      expect(history.map((h) => h.id)).toEqual([
+        '2026-09-25T07-12-33-412Z-04',
+        '2026-09-25T07-12-33-412Z-03',
+        '2026-09-25T07-12-33-412Z-02',
+        '2026-09-25T07-12-33-412Z-01',
+        '2026-09-25T07-12-33-412Z-00',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('personal_ontology_groups › snapshot id & savedAt compatibility (T007)', () => {
+  it('lists legacy pure-ISO names alongside new suffixed names; savedAt stays ISO', async () => {
+    const groups = await loadModule();
+    const created = await groups.createGroup(UID, '新旧共存组');
+    const gid = created.group!.group_id;
+
+    // 手工放置一个旧版代码写的纯 ISO 文件名快照（不迁移存量，必须继续可读）
+    const histDir = path.join(groupsDir(), '.history', gid);
+    fs.mkdirSync(histDir, { recursive: true });
+    fs.writeFileSync(path.join(histDir, '2020-01-01T00-00-00-000Z.md'), '旧格式快照正文', 'utf8');
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-25T07:12:33.412Z'));
+    try {
+      groups.snapshotGroupHistory(UID, gid, '新格式甲');
+      groups.snapshotGroupHistory(UID, gid, '新格式乙');
+      const history = groups.listGroupHistory(UID, gid);
+      expect(history.length).toBe(3);
+      for (const entry of history) {
+        // 新旧两种文件名形态的 savedAt 都满足同一 ISO 正则（A7 断言同款）
+        expect(entry.savedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+      }
+      expect(history[0].savedAt).toBe('2026-09-25T07:12:33.412Z');
+      expect(history[2].savedAt).toBe('2020-01-01T00:00:00.000Z');
+      // 同毫秒内序号决定先后：乙（-01）比甲（-00）新
+      expect(history[0].preview).toBe('新格式乙');
+      expect(history[1].preview).toBe('新格式甲');
+      expect(history[2].preview).toBe('旧格式快照正文');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects snapshot ids with traversal / separators / dots / spaces / short shape', async () => {
+    const groups = await loadModule();
+    const created = await groups.createGroup(UID, '安全边界组');
+    const gid = created.group!.group_id;
+    for (const bad of [
+      '../../etc/passwd',              // 路径穿越
+      'a/b',                           // 正斜杠
+      'a\\b',                          // 反斜杠
+      '..',                            // 纯穿越段
+      '2026-09-25T07-12-33-412Z.md',   // 带 .md 后缀（含点号）
+      'has space',                     // 空格
+      '2026-09-25T07',                 // 长度不足 20
+    ]) {
+      const res = await groups.restoreGroupSnapshot(UID, gid, bad);
+      expect(res.ok).toBe(false);
+      expect(res.error).toBe('invalid snapshot id');
+    }
+  });
+
+  it('accepts a new-form suffixed snapshot id for restore', async () => {
+    const groups = await loadModule();
+    const created = await groups.createGroup(UID, '新形态恢复组');
+    const gid = created.group!.group_id;
+    await groups.appendFieldValue(UID, gid, '版本', '第一版内容', '手动');
+    await groups.appendFieldValue(UID, gid, '版本', '第二版内容', '手动');
+    const history = groups.listGroupHistory(UID, gid);
+    expect(history.length).toBe(1);
+    // 新形态 id：24 字符 ISO 时间戳 + -NN 序号
+    expect(history[0].id).toMatch(/^[0-9TZ-]{24}-\d{2}$/);
+    const restored = await groups.restoreGroupSnapshot(UID, gid, history[0].id);
+    expect(restored.ok).toBe(true);
+  });
+});
+
 describe('projection-knowledge › restricted values stay out of ontology facts', () => {
   it('restricted field values never enter the world-model fact list', async () => {
     const users = await import('../../../src/main/features/users');

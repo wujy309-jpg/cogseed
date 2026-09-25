@@ -28,6 +28,7 @@ import {
   normalizeSource,
   readGroups,
   writeGroups,
+  snapshotGroupHistory,
   notifyGroupUpserted,
   notifyGroupDeleted,
   appendFieldValue,
@@ -643,7 +644,8 @@ async function mutateTemplateFile(
 ): Promise<{ ok: boolean; error?: string }> {
   const abs = templateFileAbsPath(uid, templateId);
   return fileEditLock(abs).runExclusive(async () => {
-    const content = parseTemplateContent(readTemplateFileText(uid, templateId));
+    const previousText = readTemplateFileText(uid, templateId);
+    const content = parseTemplateContent(previousText);
     const outcome = mutator(content);
     if (outcome.error || outcome.ok === false) return { ok: false, error: outcome.error || 'failed' };
 
@@ -651,6 +653,15 @@ async function mutateTemplateFile(
     const bytes = Buffer.byteLength(next, 'utf8');
     if (bytes > MAX_FILE_BYTES) {
       return { ok: false, error: `file exceeds ${Math.round(MAX_FILE_BYTES / 1024 / 1024)}MB limit` };
+    }
+
+    // D5（specs/009 T011）：模板分节的改值/删值/删字段/流水升格此前没有变更前
+    // 快照。与 mutateGroupContent 同款：内容确有变化时，在实际写盘**之前**把原文
+    // 快照进 .history/<groupId>/（text 为空时 snapshotGroupHistory 内部自跳过；
+    // 快照异常也在其内部被吞，不阻塞主写路径）。放在 mutator 拒绝与字节上限两道
+    // 检查之后 = 「没走到要写」的分支不留档。
+    if (next !== previousText) {
+      snapshotGroupHistory(uid, groupId, previousText);
     }
 
     try {

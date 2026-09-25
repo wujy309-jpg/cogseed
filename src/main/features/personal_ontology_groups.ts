@@ -445,7 +445,15 @@ export { notifyGroupUpserted, notifyGroupDeleted };
 
 // ── 共享的“读改写”骨架：字段/流水操作统一走 parse → mutate → serialize → 原子写 ──
 
-type Mutator = (content: GroupContent) => { changed?: boolean; ok?: boolean; error?: string };
+/** mutator 除变更语义外，可带回本次操作的 before/after 摘要（D12 台账用；
+ *  摘要须已脱敏——受限值用 summarizeFieldValue。可选字段，既有 mutator 零破坏。 */
+type Mutator = (content: GroupContent) => {
+  changed?: boolean;
+  ok?: boolean;
+  error?: string;
+  beforeSummary?: string;
+  afterSummary?: string;
+};
 
 const HISTORY_DIR = '.history';
 const HISTORY_MAX_PER_GROUP = 50;
@@ -454,13 +462,25 @@ function groupHistoryDir(uid: string, groupId: string): string {
   return path.join(userOntologyGroupsDir(uid), HISTORY_DIR, groupId);
 }
 
-function snapshotGroupHistory(uid: string, groupId: string, text: string): void {
+export function snapshotGroupHistory(uid: string, groupId: string, text: string): void {
   try {
     if (!text.trim()) return; // 首次创建（原文为空）不留快照
     const dir = groupHistoryDir(uid, groupId);
     fs.mkdirSync(dir, { recursive: true });
+    // C-008（spec 009 T005）：ISO 只到毫秒，同毫秒两次写入会落进同一个文件
+    // 互相覆盖，静默丢一版快照。补定宽序号后缀 `-NN`：同毫秒递增、两位零
+    // 填充——00~99 定宽保证「文件名字典序 = 写入时间序」（滚动淘汰按字典
+    // 序删最旧因此依然正确）；同一毫秒超过 100 版时按自然位数继续增长
+    // （-100、-101…），优先不丢数据。旧代码写的纯 ISO 文件名不迁移、继续
+    // 可读（listGroupHistory 反解只看前 24 字符，见 T007）。
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    fs.writeFileSync(path.join(dir, `${stamp}.md`), text, 'utf8');
+    let seq = 0;
+    let fileName = `${stamp}-${String(seq).padStart(2, '0')}.md`;
+    while (fs.existsSync(path.join(dir, fileName))) {
+      seq += 1;
+      fileName = `${stamp}-${String(seq).padStart(2, '0')}.md`;
+    }
+    fs.writeFileSync(path.join(dir, fileName), text, 'utf8');
     const files = fs.readdirSync(dir).filter((f) => f.endsWith('.md')).sort();
     while (files.length > HISTORY_MAX_PER_GROUP) {
       fs.rmSync(path.join(dir, files.shift() as string));
@@ -470,25 +490,65 @@ function snapshotGroupHistory(uid: string, groupId: string, text: string): void 
   }
 }
 
-/** 组变更历史（新→旧）：[{ id, savedAt, bytes, preview }]。 */
-export function listGroupHistory(uid: string, groupId: string): Array<{ id: string; savedAt: string; bytes: number; preview: string }> {
+/** 组变更历史（新→旧）：[{ id, savedAt, bytes, preview, audit? }]。
+ *  audit（spec 009 D12）是可选附加字段：这版快照对应那次写动作的台账摘要，
+ *  取不到（无台账 / 时间配不上）就不带该键——旧消费方零破坏。 */
+export interface GroupHistoryEntry {
+  id: string;
+  savedAt: string;
+  bytes: number;
+  preview: string;
+  audit?: { action: string; field?: string; beforeSummary?: string; afterSummary?: string; at: string };
+}
+
+export function listGroupHistory(uid: string, groupId: string): GroupHistoryEntry[] {
   if (!safeId(uid) || !safeId(groupId)) return [];
   try {
     const dir = groupHistoryDir(uid, groupId);
+    // 台账配对（D12）：快照是「写前留档」、台账行在写成功后追加，两者出自
+    // 同一次写函数的前后脚（同毫秒或相邻毫秒），按 |Δt| 最小配对；同一组
+    // 连续两次写操作的间隔（一次完整写盘）必然大于函数内快照→台账的间隔，
+    // 所以最近邻配对稳定。配不上（阈值 2s）就不带 audit 字段。
+    const auditPoints = readGroupAudit(uid, groupId)
+      .map((line) => ({ line, ms: Date.parse(line.at) }))
+      .filter((p) => !Number.isNaN(p.ms));
     return fs.readdirSync(dir)
       .filter((f) => f.endsWith('.md'))
       .sort()
       .reverse()
       .map((f) => {
         const text = fs.readFileSync(path.join(dir, f), 'utf8');
+        // T007：只取文件名前 24 字符（= 定长 ISO 时间戳）反解，同毫秒序号
+        // 后缀（-NN）与旧纯 ISO 文件名都不参与；还原按位置：4/7 是日期
+        // 分隔，13/16 是时:分与分:秒的冒号，19 是毫秒点。此前 13↔19 写反，
+        // 还原出 `T12.34:56:789Z` 这类无效时间，前端 new Date() 得 NaN。
+        const savedAt = f.slice(0, 24).replace(/-/g, (m, i) => (i === 4 || i === 7 ? '-' : i === 13 || i === 16 ? ':' : i === 19 ? '.' : m));
+        let audit: GroupHistoryEntry['audit'];
+        const savedMs = Date.parse(savedAt);
+        if (!Number.isNaN(savedMs)) {
+          let best: GroupHistoryEntry['audit'] | undefined;
+          let bestAbs = Number.POSITIVE_INFINITY;
+          for (const p of auditPoints) {
+            const abs = Math.abs(p.ms - savedMs);
+            if (abs < bestAbs) {
+              bestAbs = abs;
+              best = {
+                action: p.line.action,
+                field: p.line.field,
+                beforeSummary: p.line.beforeSummary,
+                afterSummary: p.line.afterSummary,
+                at: p.line.at,
+              };
+            }
+          }
+          if (best && bestAbs <= 2000) audit = best;
+        }
         return {
           id: f.slice(0, -3),
-          // 文件名把 ISO 的 `[:.]` 全换成 `-`；反解按位置还原：4/7 是日期
-          // 分隔，13/16 是时:分与分:秒的冒号，19 是毫秒点。此前 13↔19 写反，
-          // 还原出 `T12.34:56:789Z` 这类无效时间，前端 new Date() 得 NaN。
-          savedAt: f.slice(0, -3).replace(/-/g, (m, i) => (i === 4 || i === 7 ? '-' : i === 13 || i === 16 ? ':' : i === 19 ? '.' : m)),
+          savedAt,
           bytes: Buffer.byteLength(text, 'utf8'),
           preview: text.replace(/\s+/g, ' ').slice(0, 80),
+          ...(audit ? { audit } : {}),
         };
       });
   } catch {
@@ -499,7 +559,11 @@ export function listGroupHistory(uid: string, groupId: string): Array<{ id: stri
 /** 恢复某版快照：当前文本先快照（可再回滚回来），再写回快照内容。 */
 export async function restoreGroupSnapshot(uid: string, groupId: string, snapshotId: string): Promise<SimpleResult> {
   if (!safeId(uid) || !safeId(groupId)) return { ok: false, error: 'invalid uid or groupId' };
-  if (!/^[0-9TZ-]+$/.test(snapshotId)) return { ok: false, error: 'invalid snapshot id' };
+  // T007：形状放宽到契约形态 `^[0-9TZ-]{20,}(?:-\d{2})?$`（contracts/ipc.md
+  // §3）——旧纯 ISO 名（24 字符）与同毫秒序号新名（…-NN）都放行；字符集
+  // [0-9TZ-] 天然排除 `/` `\` `.` 空格与任何路径分隔符：**形状放宽、路径
+  // 穿越不放宽**。
+  if (!/^[0-9TZ-]{20,}(?:-\d{2})?$/.test(snapshotId)) return { ok: false, error: 'invalid snapshot id' };
   const snapPath = path.join(groupHistoryDir(uid, groupId), `${snapshotId}.md`);
   if (!fs.existsSync(snapPath)) return { ok: false, error: 'snapshot not found' };
   return mutateGroupContent(uid, groupId, () => ({ changed: false })) // 走常规校验取 abs
@@ -513,6 +577,9 @@ export async function restoreGroupSnapshot(uid: string, groupId: string, snapsho
       groups[idxOf(groups, groupId)] = { ...groups[idxOf(groups, groupId)], updated_at: nowIso() };
       writeGroups(uid, groups);
       notifyGroupUpserted(uid, meta.rel_path);
+      // 摘要台账（D12）：恢复动作的「依据」= 恢复到哪版快照。刻意不带正文
+      // 摘要——快照内容可能含受限值，台账行零正文即零泄漏面。
+      appendOntologyAudit(uid, groupId, 'snapshot_restore', { reason: snapshotId });
       return { ok: true };
     });
 }
@@ -521,7 +588,93 @@ function idxOf(groups: GroupMeta[], groupId: string): number {
   return groups.findIndex((g) => g.group_id === groupId);
 }
 
-async function mutateGroupContent(uid: string, groupId: string, mutator: Mutator): Promise<SimpleResult> {
+// ── 摘要台账（spec 009 D12 / SC-005）：.history/<groupId>/audit.jsonl ──────
+//
+// 追加式 JSONL，一行 = 一次成功写操作（changed:false / 失败分支不写，I-5）。
+// 只存摘要（≤200 字）：正文永远只活在组内容文件与快照里。受限值
+// （sensitivity === 'restricted'）只记 `[受限]` + 长度——脱敏由调用方在传入
+// 前完成（summarizeFieldValue），本 helper 只负责截断（I-6）。写入尽力而为
+// （try/catch 不阻塞主写路径，I-7）；快照滚动淘汰只数 .md，本文件不会被删。
+// 不开放写 IPC（前端不可篡改）；读取仅作为 history.list 的可选附加字段。
+
+const AUDIT_FILE_NAME = 'audit.jsonl';
+const AUDIT_SUMMARY_MAX_CHARS = 200;
+
+export interface OntologyAuditLine {
+  at: string;
+  actor: 'user';
+  action: string;
+  groupId: string;
+  field?: string;
+  beforeSummary?: string;
+  afterSummary?: string;
+  reason?: string;
+}
+
+export interface OntologyAuditOpts {
+  field?: string;
+  beforeSummary?: string;
+  afterSummary?: string;
+  reason?: string;
+}
+
+/** 受限值摘要：只记 `[受限]` + 长度，正文绝不进台账（I-6）。 */
+function summarizeFieldValue(fv: FieldValue): string {
+  return fv.sensitivity === 'restricted' ? `[受限] ${fv.value.length}` : fv.value;
+}
+
+/** 追加一行摘要台账（尽力而为：任何失败都被吞，绝不阻塞主写路径）。
+ *  action 枚举（spec 009）：value_edit / value_remove / field_remove /
+ *  value_add / entry_promote / group_rename / group_delete / snapshot_restore。 */
+export function appendOntologyAudit(uid: string, groupId: string, action: string, opts?: OntologyAuditOpts): void {
+  try {
+    if (!safeId(uid) || !safeId(groupId)) return;
+    const clip = (s?: string): string | undefined =>
+      typeof s === 'string' ? s.slice(0, AUDIT_SUMMARY_MAX_CHARS) : undefined;
+    const line: OntologyAuditLine = { at: new Date().toISOString(), actor: 'user', action, groupId };
+    if (opts?.field) line.field = opts.field;
+    const before = clip(opts?.beforeSummary);
+    if (before !== undefined) line.beforeSummary = before;
+    const after = clip(opts?.afterSummary);
+    if (after !== undefined) line.afterSummary = after;
+    const reason = clip(opts?.reason);
+    if (reason !== undefined && reason !== '') line.reason = reason;
+    const dir = groupHistoryDir(uid, groupId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(path.join(dir, AUDIT_FILE_NAME), `${JSON.stringify(line)}\n`, 'utf8');
+  } catch {
+    // 台账尽力而为：失败不阻塞主写路径（与快照层同款）。
+  }
+}
+
+/** 读取某组的台账行（无文件 / 坏行 / 任何失败 → 空数组，绝不 throw）。 */
+export function readGroupAudit(uid: string, groupId: string): OntologyAuditLine[] {
+  try {
+    if (!safeId(uid) || !safeId(groupId)) return [];
+    const text = readTextSafe(path.join(groupHistoryDir(uid, groupId), AUDIT_FILE_NAME));
+    const out: OntologyAuditLine[] = [];
+    for (const rawLine of text.split('\n')) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      try {
+        const parsed = JSON.parse(line) as OntologyAuditLine;
+        if (parsed && typeof parsed === 'object' && typeof parsed.action === 'string') out.push(parsed);
+      } catch { /* 坏行跳过，不毁整个读取 */ }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+async function mutateGroupContent(
+  uid: string,
+  groupId: string,
+  mutator: Mutator,
+  /** 传了 action 的调用方在实际写入成功后记一行摘要台账（D12）；不传
+   *  （如 restoreGroupSnapshot 只借道校验）就不记。可选参数，既有调用方零破坏。 */
+  audit?: { action: string; field?: string; reason?: string },
+): Promise<SimpleResult> {
   if (!safeId(uid)) return { ok: false, error: 'invalid uid' };
   const groups = readGroups(uid);
   const idx = groups.findIndex((g) => g.group_id === groupId);
@@ -557,6 +710,16 @@ async function mutateGroupContent(uid: string, groupId: string, mutator: Mutator
 
   groups[idx] = { ...groups[idx], updated_at: nowIso() };
   writeGroups(uid, groups);
+  if (audit && next !== previousText) {
+    // 摘要台账（spec 009 D12）：只在「真的写入了」时记一行——changed:false
+    // （无变化 / 幂等 no-op）与失败分支都不写（I-5）；尽力而为不阻塞返回。
+    appendOntologyAudit(uid, groupId, audit.action, {
+      field: audit.field,
+      beforeSummary: outcome.beforeSummary,
+      afterSummary: outcome.afterSummary,
+      reason: audit.reason,
+    });
+  }
   notifyGroupUpserted(uid, groups[idx].rel_path);
   return { ok: true };
 }
@@ -611,8 +774,11 @@ export async function renameGroup(uid: string, groupId: string, newTitle: string
   if (idx === -1) return { ok: false, error: 'group not found' };
   if (groups[idx].template_id) return { ok: false, error: 'role_template_group' };
 
+  const oldTitle = groups[idx].title;
   groups[idx] = { ...groups[idx], title: trimmedTitle, updated_at: nowIso() };
   writeGroups(uid, groups);
+  // D12：group_rename 记前后标题（标题不是字段值，无敏感性维度）。
+  appendOntologyAudit(uid, groupId, 'group_rename', { beforeSummary: oldTitle, afterSummary: trimmedTitle });
   return { ok: true };
 }
 
@@ -638,6 +804,8 @@ export async function deleteGroup(uid: string, groupId: string): Promise<SimpleR
     log.warn('failed to remove group content file', { uid, groupId, error: (err as Error).message });
   }
   notifyGroupDeleted(uid, removed.rel_path);
+  // D12：group_delete 记被删组的标题（.history/<groupId>/ 目录保留，台账仍可查）。
+  appendOntologyAudit(uid, groupId, 'group_delete', { beforeSummary: removed.title });
   log.info('ontology group deleted', { uid, groupId });
   return { ok: true };
 }
@@ -738,10 +906,11 @@ export async function appendFieldValue(
     if (values.some((fv) => fv.value === val && fv.source === src && (fv.project ?? undefined) === proj)) {
       return { changed: false }; // 完全匹配去重
     }
-    values.push({ value: val, source: src, ...(proj ? { project: proj } : {}), ...(validAsOf ? { asOf: validAsOf } : {}) });
+    const added: FieldValue = { value: val, source: src, ...(proj ? { project: proj } : {}), ...(validAsOf ? { asOf: validAsOf } : {}) };
+    values.push(added);
     appended = true;
-    return { changed: true };
-  });
+    return { changed: true, afterSummary: summarizeFieldValue(added) }; // D12：value_add 的 after 摘要
+  }, { action: 'value_add', field: name });
   // 写后矛盾检查（蓝图 R32）：保存与检查互相独立——fire-and-forget，保存
   // 的「成功」从不承诺「查过没问题」，检查结论只报忧不报喜（台账+界面标记）。
   if (result.ok && appended && existingSnapshot.length) {
@@ -771,9 +940,11 @@ export async function setFieldValue(
     if (!values) return { ok: false, error: 'field value not found' };
     const idx = values.findIndex((fv) => fv.value === oldValue);
     if (idx === -1) return { ok: false, error: 'field value not found' };
+    // D12：value_edit 的前后摘要（受限行编辑后仍受限，before/after 都脱敏）。
+    const beforeSummary = summarizeFieldValue(values[idx]);
     values[idx] = { ...values[idx], value: next };
-    return { changed: true };
-  });
+    return { changed: true, beforeSummary, afterSummary: summarizeFieldValue(values[idx]) };
+  }, { action: 'value_edit', field: name });
 }
 
 /** 字段值核实档 toggle（2026-09-20 断言核实维度；spec 007 升两档）：
@@ -887,12 +1058,14 @@ export async function removeFieldValue(
   return mutateGroupContent(uid, groupId, (content) => {
     const values = content.fields[name];
     if (!values) return { ok: true, changed: false };
+    const removedFv = values.find((fv) => fv.value === value);
     const kept = values.filter((fv) => fv.value !== value);
     if (kept.length === values.length) return { ok: true, changed: false };
     if (kept.length) content.fields[name] = kept;
     else delete content.fields[name];
-    return { changed: true };
-  });
+    // D12：value_remove 记被删那条的摘要（受限行只记 [受限]+长度）。
+    return { changed: true, beforeSummary: removedFv ? summarizeFieldValue(removedFv) : undefined };
+  }, { action: 'value_remove', field: name });
 }
 
 /** 字段区：删整个字段小节（含全部值）。字段不存在视为 no-op ok。 */
@@ -903,9 +1076,11 @@ export async function removeField(uid: string, groupId: string, fieldName: strin
 
   return mutateGroupContent(uid, groupId, (content) => {
     if (!(name in content.fields)) return { ok: true, changed: false };
+    // D12：field_remove 记整个被删小节的值摘要（逐条脱敏后合并，helper 截断）。
+    const beforeSummary = (content.fields[name] || []).map(summarizeFieldValue).join('、');
     delete content.fields[name];
-    return { changed: true };
-  });
+    return { changed: true, beforeSummary };
+  }, { action: 'field_remove', field: name });
 }
 
 /** 流水区：按文本完全匹配删除一条，其余保留。 */
@@ -918,8 +1093,9 @@ export async function removeEntry(uid: string, groupId: string, entryText: strin
     const idx = content.entries.findIndex((e) => e === target);
     if (idx === -1) return { ok: false, error: 'entry not found' };
     content.entries.splice(idx, 1);
-    return { changed: true };
-  });
+    // D12：entry_remove 记被删流水条目的摘要（流水条目无受限标记，helper 截断）。
+    return { changed: true, beforeSummary: target };
+  }, { action: 'entry_remove' });
 }
 
 /**
@@ -944,8 +1120,8 @@ export async function promoteEntryToField(
     content.entries.splice(idx, 1);
     const values = content.fields[name] || (content.fields[name] = []);
     values.push({ value: target, source: '手动' });
-    return { changed: true };
-  });
+    return { changed: true, afterSummary: target }; // D12：entry_promote 记升格的条目
+  }, { action: 'entry_promote', field: name });
 }
 
 export interface GroupFieldInfo {

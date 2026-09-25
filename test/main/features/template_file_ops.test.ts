@@ -442,3 +442,100 @@ describe('template_file_ops › uninstall / archive / reinstall-restore', () => 
     expect(m.templateHasMemoryArchive(UID, 'student')).toBe(false);
   });
 });
+
+// ── D5（specs/009 T012）：模板分节写路径的变更前留档 ────────────────────────
+// 模板分节的写操作走 mutateTemplateFile，此前在 writeTextAtomicSync 之前没有
+// snapshotGroupHistory——改值/删值/删字段/流水升格四条路径全都没有变更前快照
+// （普通组走 mutateGroupContent 有写前留档）。以下断言修复前会失败（D5 举证）。
+
+describe('template_file_ops › D5 变更前留档（模板分节写路径快照）', () => {
+  /** 读该组历史目录下全部快照全文（不依赖文件名格式，只挑 .md）。 */
+  function readHistorySnapshots(groupId: string): string[] {
+    const dir = path.join(groupsDir(), '.history', groupId);
+    if (!fs.existsSync(dir)) return [];
+    return fs.readdirSync(dir)
+      .filter((f) => f.endsWith('.md'))
+      .sort()
+      .map((f) => fs.readFileSync(path.join(dir, f), 'utf8'));
+  }
+
+  async function setup(): Promise<{ m: Awaited<ReturnType<typeof loadMod>>; groupId: string; ref: string }> {
+    const m = await loadMod();
+    await m.installTemplateFile(UID, 'student');
+    const row = m.readGroups(UID).find((g) => g.template_id === 'student')!;
+    return { m, groupId: row.group_id, ref: m.buildContentRef(row.group_id, '学习背景') };
+  }
+
+  it('分节字段改值：历史里能找到改前那版（含旧值，逐字）', async () => {
+    const { m, groupId, ref } = await setup();
+    await m.appendFieldValueToRef(UID, ref, '教育阶段', '本科', '手动');
+    const before = readFile('student.md');
+
+    const res = await m.setFieldValueToRef(UID, ref, '教育阶段', '本科', '硕士');
+    expect(res.ok).toBe(true);
+
+    const snaps = readHistorySnapshots(groupId);
+    expect(snaps.length).toBeGreaterThan(0);
+    expect(snaps).toContain(before); // 改前那版逐字在历史里
+    expect(before).toContain('- 本科 [手动]');
+    expect(readFile('student.md')).toContain('- 硕士 [手动]');
+  });
+
+  it('分节字段删值：历史里有删前那版且内容逐字一致', async () => {
+    const { m, groupId, ref } = await setup();
+    await m.appendFieldValueToRef(UID, ref, '教育阶段', '本科', '手动');
+    await m.appendFieldValueToRef(UID, ref, '教育阶段', '辅修心理学', '手动');
+    const before = readFile('student.md');
+
+    const res = await m.removeFieldValueToRef(UID, ref, '教育阶段', '本科');
+    expect(res.ok).toBe(true);
+
+    const snaps = readHistorySnapshots(groupId);
+    expect(snaps).toContain(before); // 删前那版逐字一致
+    expect(before).toContain('- 本科 [手动]');
+    const after = readFile('student.md');
+    expect(after).not.toContain('- 本科 [手动]');
+    expect(after).toContain('- 辅修心理学 [手动]');
+    expect(after).toContain('### 教育阶段'); // 空坑保留（小节不删）
+  });
+
+  it('恢复快照后分节结构（## 分节 / ### 流水）与值顺序不变', async () => {
+    const { m, groupId, ref } = await setup();
+    const groups = await import('../../../src/main/features/personal_ontology_groups');
+    await m.appendFieldValueToRef(UID, ref, '教育阶段', '值一', '手动');
+    await m.appendFieldValueToRef(UID, ref, '教育阶段', '值二', '手动');
+    const before = readFile('student.md');
+    // 再写一笔，让「最后一次写之前」的状态（= before）成为最新快照
+    await m.appendFieldValueToRef(UID, ref, '教育阶段', '值三', '手动');
+
+    const hist = groups.listGroupHistory(UID, groupId);
+    expect(hist.length).toBeGreaterThan(0);
+    const res = await groups.restoreGroupSnapshot(UID, groupId, hist[0].id);
+    expect(res.ok).toBe(true);
+
+    const restored = readFile('student.md');
+    expect(restored).toBe(before); // 逐字一致（最强断言）
+    // 显式断言任务验收点：分节结构 + 值顺序
+    expect(restored).toContain('## 学习背景');
+    expect(restored).toMatch(/### 教育阶段\n- 值一 \[手动\]\n- 值二 \[手动\]/);
+    expect(restored).toContain('### 流水');
+    expect(restored).not.toContain('值三');
+  });
+
+  it('「没走到要写」与「内容未变」的分支不产生快照（T011 顺序验收）', async () => {
+    const { m, groupId, ref } = await setup();
+    await m.appendFieldValueToRef(UID, ref, '教育阶段', '本科', '手动');
+    // 首次写入：留了安装时的那版，恰好一版
+    expect(readHistorySnapshots(groupId)).toHaveLength(1);
+
+    // ① 同值同源去重（changed:false，序列化后内容未变）→ 不新增快照
+    const dup = await m.appendFieldValueToRef(UID, ref, '教育阶段', '本科', '手动');
+    expect(dup.ok).toBe(true);
+    expect(readHistorySnapshots(groupId)).toHaveLength(1);
+
+    // ② mutator 拒绝（旧值不存在，没走到要写）→ 不留档
+    const miss = await m.setFieldValueToRef(UID, ref, '教育阶段', '不存在的旧值', '新值');
+    expect(miss.ok).toBe(false);
+    expect(readHistorySnapshots(groupId)).toHaveLength(1);
+  });
+});
