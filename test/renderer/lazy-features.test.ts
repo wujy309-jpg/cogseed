@@ -78,6 +78,7 @@ describe('renderer lazy feature loader', () => {
       './modules/recall-information-architecture.js',
       './modules/import-check-modal.js',
       './modules/skills.js',
+      './modules/hub-contributions.js',
       './modules/skills-bindings.js',
     ]);
   });

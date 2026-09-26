@@ -675,6 +675,12 @@ function renderSkillsGrid(skills) {
       disabled: !usable,
       attrs: { 'data-skill-use': true, title: thisUseTitle, 'aria-label': thisUseTitle },
     });
+    const contributeBtn = _skillSource(s?.source) === 'custom'
+      ? _skillUiButton({
+        label: t('skills.contribute'), role: 'secondary', size: 'sm', className: 'skill-card-contribute',
+        attrs: { 'data-skill-contribute': true, title: t('skills.contribute_hint'), 'aria-label': t('skills.contribute_hint') },
+      })
+      : '';
     return `
       <div class="skill-card ui-resource-card${enabled ? '' : ' is-disabled'}${withheld ? ' is-withheld' : ''}" data-id="${escapeHtml(s.id)}" data-source="${escapeHtml(s.source || '')}">
         <div class="skill-card-header">
@@ -685,6 +691,7 @@ function renderSkillsGrid(skills) {
         <div class="${descClass}">${escapeHtml(descText)}</div>
         <div class="skill-card-actions">
           ${cardChips}
+          ${contributeBtn}
           ${useBtn}
         </div>
       </div>
@@ -755,6 +762,12 @@ function renderSkillsGrid(skills) {
     const id = card.dataset.id;
     const source = card.dataset.source;
     card.addEventListener('click', (e) => {
+      if (e.target.closest('[data-skill-contribute]')) {
+        e.stopPropagation();
+        const skill = _skillsCache?.find(s => s.id === id && s.source === source);
+        if (typeof window.startSkillContribution === 'function') window.startSkillContribution(id, skill?.name || id);
+        return;
+      }
       if (e.target.closest('[data-skill-use]')) {
         e.stopPropagation();
         if (!card.classList.contains('is-disabled') && !card.classList.contains('is-withheld')) {
@@ -3577,3 +3590,9 @@ function _renderSkillEnabledButton(skill) {
     finally { btn.disabled = false; }
   });
 }
+
+// Read-only bridge for the Hub contribution page composition. It exposes only
+// the minimum identity needed to choose a local custom Skill for a new version.
+window.getCustomContributionSkills = () => (_skillsCache || [])
+  .filter((skill) => !skill.ownerAgent && _skillSource(skill?.source) === 'custom')
+  .map((skill) => ({ id: skill.id, name: skill.name || skill.id }));
