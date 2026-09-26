@@ -1201,3 +1201,8 @@
 /* 去向提示（T014）：确认后回到本页的一条成功色横条。 */
 #ca-root .ca-promoted-note .notice-row { border: 1px solid var(--green-line); }
 #ca-root .ca-promoted-note .notice-title { color: var(--green-t); font-weight: 600; }
+
+/* 资产详情三段式（specs/018 T040）：状态章行与「用过吗」汇总行。 */
+#ca-root .ca-detail-facts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+#ca-root .ca-fact { display: inline-flex; align-items: center; gap: 6px; }
+#ca-root .ca-used-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }

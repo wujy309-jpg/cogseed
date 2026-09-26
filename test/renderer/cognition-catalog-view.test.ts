@@ -59,7 +59,11 @@ describe('资产目录视图', () => {
     const html = renderCognition({ name: 'overview' }, { assets: [asset], proofs: [] });
     expect(html).toContain('资产明细');
     expect(html).not.toContain('资产目录（模型视角）');
-    expect(html).toContain('目录视图');
+    // specs/018 T031：目录视图收进「管理」模式——默认视图只有管理小切换入口。
+    expect(html).toContain('管理');
+    expect(html).not.toContain('data-go-asset="aa-cat0001" data-act="asset-view"');
+    const managed = renderCognition({ name: 'overview', manage: '1' }, { assets: [asset], proofs: [] });
+    expect(managed).toContain('目录视图');
   });
 
   it('模型挂着标记（2026-09-18）：被模型自选的资产在目录行上可辨认', () => {
@@ -121,7 +125,8 @@ describe('资产目录视图', () => {
 describe('family-grouped asset list', () => {
   it('groups same_family assets under one head with a count, others under unsorted', async () => {
     const { renderCognition } = await import('./helpers/cognition-renderer');
-    const html = renderCognition({ name: 'overview' }, {
+    // specs/018 T031：同源血缘分组只在「管理」模式出现。
+    const html = renderCognition({ name: 'overview', manage: '1' }, {
       assets: [
         { id: 'aa-1', type: 'personal', title: '不用比喻', statement: '内容一。', status: 'active', version: '1', updatedAt: '2026-09-22T01:00:00Z', relations: [{ kind: 'same_family', assetId: 'aa-2' }] },
         { id: 'aa-2', type: 'personal', title: '标识符括号解释', statement: '内容二。', status: 'active', version: '1', updatedAt: '2026-09-22T02:00:00Z', relations: [{ kind: 'same_family', assetId: 'aa-1' }] },

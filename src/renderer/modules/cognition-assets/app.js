@@ -119,6 +119,12 @@
           // 目录视图切换（2026-09-18）：同一个列表页换一种行形态（模型视角），
           // 不新增 tab。assetView 必须进 router.go 的归一化白名单，否则被丢弃。
           case 'asset-view': router.go(id === 'tree' ? { name: 'tree' } : { name: 'overview', assetView: id === 'catalog' ? 'catalog' : '' }); break;
+          // 「管理」模式（specs/018 T031）：目录视图/批量打标/多选默认不可见，
+          // 小切换入口收在这里——普通用户默认视图永远只见列表。
+          case 'overview-manage-toggle': router.go(Object.assign({}, S.route, {
+            name: 'overview',
+            manage: String(S.route.manage || '') === '1' ? '' : '1',
+          })); break;
           case 'go-review': router.go({ name: 'review' }); break;
           // 导语可点数字（specs/018 T010）：滚动到本页对应分区（纯呈现，
           // 不动路由栈——这是页内锚点跳转，不是导航）。

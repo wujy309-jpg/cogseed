@@ -944,10 +944,11 @@
 
     /* 树冠：八圆聚成一顶有轮廓的冠（userSpaceOnUse 渐变让它读成一个
        连续形体，而不是三个椭圆的叠影），左上一道高光；中央白底药丸
-       承载「已验证 N」（与枝牌同一视觉语言），整冠可点=已验证资产。 */
-    const crownTitle = T('cognition.tree_crown_validated', '已验证 {n}', { n: String(validated) });
+       承载「被真用过 N」（与枝牌同一视觉语言），整冠可点=已验证资产，
+       落点「我的认知」默认按最近真实使用排（018 T021）。 */
+    const crownTitle = T('cognition.tree_crown_validated', '被真用过 {n}', { n: String(validated) });
     const pillY = crownCy - 20;
-    g += `<g class="spot" ${roleBtn(`data-act="open-overview" data-title="${esc(crownTitle)}" data-sub="${esc(T('cognition.tree_crown_sub', '点击进入已验证资产'))}" aria-label="${esc(crownTitle)}"`)}>
+    g += `<g class="spot" ${roleBtn(`data-act="open-overview" data-title="${esc(crownTitle)}" data-sub="${esc(T('cognition.tree_crown_sub', '被真用过的都在树冠——点开按最近真实使用排'))}" aria-label="${esc(crownTitle)}"`)}>
       <circle cx="${cx}" cy="${crownCy}" r="118" fill="url(#ca-crown-grad)"/>
       <circle cx="${cx - 150}" cy="${crownCy + 30}" r="80" fill="url(#ca-crown-grad)"/>
       <circle cx="${cx + 150}" cy="${crownCy + 30}" r="80" fill="url(#ca-crown-grad)"/>
@@ -960,7 +961,7 @@
       <rect x="${cx - 85}" y="${pillY}" width="170" height="40" rx="20" class="branch-plate"/>
       <circle cx="${cx - 55}" cy="${pillY + 20}" r="5" class="crown-dot"/>
       <text x="${cx + 8}" y="${pillY + 26}" text-anchor="middle" class="branch-plate-name">${esc(crownTitle)}</text>
-      <text x="${cx}" y="${pillY + 66}" text-anchor="middle" class="crown-sub">${esc(T('cognition.tree_crown_sub', '点击进入已验证资产'))}</text>
+      <text x="${cx}" y="${pillY + 66}" text-anchor="middle" class="crown-sub">${esc(T('cognition.tree_crown_sub', '被真用过的都在树冠——点开按最近真实使用排'))}</text>
     </g>`;
 
     /* 树干：有机锥形 + 竖排「个人本体」（点开=本体独立页）。 */
@@ -1062,14 +1063,14 @@
       <path d="M ${cx + 5} ${groundY - 30} C ${cx + 30} ${groundY - 16}, ${cx + 52} ${groundY - 10}, ${cx + 74} ${groundY + 2}"/>
       <path d="M ${cx} ${groundY - 24} C ${cx - 4} ${groundY - 12}, ${cx + 4} ${groundY - 6}, ${cx} ${groundY + 4}"/></g>
       <rect x="${cx - 7}" y="${groundY - 40}" width="14" height="42" class="root-collar"/>
-      ${spotSvg({ kind: 'root', x: cx, y: groundY - 52, r: 12, color: 'var(--amber-dot)', glow: true, act: 'go-review', title: pending ? T('cognition.tree_root_pending', '待确认 {n}', { n: String(pending) }) : T('cognition.tree_root_empty', '暂无待确认'), labelId: 'ca-root-n', tx: cx, ty: groundY - 72 })}
+      ${spotSvg({ kind: 'root', x: cx, y: groundY - 52, r: 12, color: 'var(--amber-dot)', glow: true, act: 'go-review', title: pending ? T('cognition.tree_root_pending', '{n} 条新芽等你确认', { n: String(pending) }) : T('cognition.tree_root_empty', '暂无待确认'), sub: T('cognition.tree_root_go', '点开去拍板'), labelId: 'ca-root-n', tx: cx, ty: groundY - 72 })}
       <rect x="${cx - 7}" y="${groundY - 24}" width="14" height="26" class="root-collar"/>`;
 
-    /* 土壤：会话与采集记录的来源层（点开=整理页）。 */
-    g += `<g class="spot" ${roleBtn(`data-act="go-organize" aria-label="${esc(T('cognition.tree_soil_label', '土壤 · 来源 {s} · 采集 {c}', { s: String(Number(info.sources || 0)), c: String(Number(info.captures || 0)) }))}"`)}>
+    /* 土壤：会话与采集记录的来源层（点开=系统活动的时间流，018 T021）。 */
+    g += `<g class="spot" ${roleBtn(`data-act="go-organize" data-title="${esc(T('cognition.tree_soil_title', '系统活动：会话整理、夜间沉淀都在这里'))}" data-sub="${esc(T('cognition.tree_soil_hint', '会话与记录在这里生根'))}" aria-label="${esc(T('cognition.tree_soil_label', '土壤 · 记录 {s} · 整理 {c}', { s: String(Number(info.sources || 0)), c: String(Number(info.captures || 0)) }))}"`)}>
       <rect x="${cx - 330}" y="${groundY + 2}" width="660" height="58" rx="12" class="soil-band"/>
-      <text x="${cx}" y="${groundY + 27}" text-anchor="middle" class="soil-title">${esc(T('cognition.tree_soil_label', '土壤 · 来源 {s} · 采集 {c}', { s: String(Number(info.sources || 0)), c: String(Number(info.captures || 0)) }))}</text>
-      <text x="${cx}" y="${groundY + 46}" text-anchor="middle" class="soil-sub">${esc(T('cognition.tree_soil_hint', '会话与采集记录在这里生根；来源异常会出现在「待我处理」'))}</text>
+      <text x="${cx}" y="${groundY + 27}" text-anchor="middle" class="soil-title">${esc(T('cognition.tree_soil_label', '土壤 · 记录 {s} · 整理 {c}', { s: String(Number(info.sources || 0)), c: String(Number(info.captures || 0)) }))}</text>
+      <text x="${cx}" y="${groundY + 46}" text-anchor="middle" class="soil-sub">${esc(T('cognition.tree_soil_hint', '会话与记录在这里生根'))}</text>
     </g>`;
 
     return `<svg id="ca-tree-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="${esc(T('cognition.tree_panel_title', '我的认知树'))}">${g}</svg>`;
@@ -1655,9 +1656,91 @@
         <div class="ca-more-copy"><strong>${esc(label)}</strong><span>${esc(hint)}</span></div>
         ${btn(label, 'asset-action', { id: asset.id, data: { action }, danger: true, small: true })}
       </div>`;
+    /* 三段式重构（specs/018 T040~T042）：首屏固定三段——是什么 / 来历 /
+     * 用过吗；版本历史、使用明细、实际采用记录、排序依据、标签、台账、归并
+     * 收进「详情与历史」折叠区（T041，默认收起，内容不丢）。 */
+    /* 来历（T040②）：来源会话 chip、那次任务的复盘 chip——可点回。解析一律
+     * 走唯一解析器 + 唯一呈现出口（evidenceChip，2026-09-25 US-603 口径）；
+     * legacy 字符串形态的来源先归一成 {id} 再解析。 */
+    const refs = (asset.evidenceRefs || [])
+      .map((ref) => ((ref && typeof ref === 'object') ? ref : { id: String(ref || '') }))
+      .filter((ref) => String(ref.id || '').trim());
+    const originSection = `<div class="sect-block">
+      <div class="sub"><strong>${esc(T('cognition.asset_origin_section', '来历'))}</strong>${refs.length ? `<span class="note">${String(refs.length)}</span>` : ''}</div>
+      ${refs.length ? evidenceGroupsHtml(refs) : `<div class="sub">${esc(T('cognition.asset_origin_empty', '没有可追溯的来源记录。'))}</div>`}
+    </div>`;
+    /* 用过吗（T040③/T042）：实际采用 N 次 · 最近一次 {when}（可点回那次会话
+     * 或任务）· 被带入 N 次。口径零改动：实际采用=applied 回执（钉死口径），
+     * 被带入走 broughtInCountFor 唯一公式；逐条明细在「详情与历史」折叠区。 */
+    const realKinds = new Set(Array.isArray(S.realUsageKinds) ? S.realUsageKinds : []);
+    const realProofs = S.proofs
+      .filter((p) => realKinds.has(String(p.kind || '')) && String((p.refs || {}).assetId || '') === String(asset.id))
+      .sort((left, right) => String(right.occurredAt || '').localeCompare(String(left.occurredAt || '')));
+    const lastProof = realProofs[0] || null;
+    const receipts = (S.adoptionReceipts && String(S.adoptionReceipts.assetId || '') === String(asset.id)
+      && Array.isArray(S.adoptionReceipts.items)) ? S.adoptionReceipts.items : [];
+    const appliedCount = receipts.filter((r) => String(r.status || '') === 'applied').length;
+    const broughtIn = broughtInCountFor(asset.id);
+    const usedSummary = [
+      appliedCount ? T('cognition.adoption_applied_times', '实际采用 {n} 次', { n: String(appliedCount) }) : '',
+      lastProof ? T('cognition.asset_last_used_at', '最近真用过 {when}', { when: fmtDate(lastProof.occurredAt) }) : '',
+      broughtIn ? T('cognition.proof_projected_times', '被带入任务 {n} 次', { n: String(broughtIn) }) : '',
+    ].filter(Boolean).join(' · ');
+    const lastRef = lastProof
+      ? ((lastProof.refs || {}).conversationId
+        ? { kind: 'conversation', id: String(lastProof.refs.conversationId) }
+        : String((lastProof.refs || {}).episodeId || '').startsWith('kse-') ? { kind: 'execution', id: String(lastProof.refs.episodeId) } : null)
+      : null;
+    const usedSection = `<div class="sect-block">
+      <div class="sub"><strong>${esc(T('cognition.asset_used_section', '用过吗'))}</strong></div>
+      ${usedSummary
+        ? `<div class="chips ca-used-line"><span class="note">${esc(usedSummary)}</span>${lastRef ? evidenceChip(lastRef) : ''}</div>`
+        : `<div class="sub">${esc(T('cognition.asset_no_proofs_section', '还没有被真实使用过。资产在任务中被真正使用、并留下可核对的记录后，会出现在这里。'))}</div>`}
+    </div>`;
+    /* 状态章三件（T040①）：类型 / 生效中（正常态也出章，018 覆盖 2026-09-17
+     * 「正常不摆章」的减噪决策）/ 敏感档位（术语表脚注语义由待办分组区承担）。 */
+    const sensitivityTag = (() => {
+      if (!['active', 'paused'].includes(String(asset.status || 'active'))) return '';
+      const level = asset.sensitivity ? String(asset.sensitivity) : '';
+      const tag = level
+        ? window.uiTag({ label: level, variant: 'version' })
+        : window.uiTag({ label: T('cognition.asset_sensitivity_unclassified', '未分级'), variant: 'outline' });
+      return `<span class="ca-fact"><span class="note">${esc(term('sensitivity'))}</span> ${tag}</span>`;
+    })();
+    const factsLine = `<div class="sub ca-detail-facts">
+      ${chip(categoryLabel(asset.type))}
+      ${assetStatusChip(asset)}
+      ${sensitivityTag}
+    </div>`;
+    /* 「详情与历史」折叠区（T041）：版本历史 / 使用明细 / 实际采用记录 /
+     * 排序依据 / 标签 / 归并收这里，默认收起、内容不丢。台账（生命周期
+     * 记录）紧随其后自成一行折叠，同为默认收起——同为「按需展开」层。 */
+    const historyFold = foldBlock(
+      T('cognition.asset_history_fold', '详情与历史'),
+      null,
+      T('cognition.asset_history_fold_hint', '版本历史、使用明细、实际采用记录、标签、台账与归并都在这里，内容一样全。'),
+      `${assetTagsSection(asset)}${assetVersionsSection(asset)}${assetUsageSection(asset, route)}${assetRankingWhySection(asset)}${assetAdoptionSection(asset)}${assetMergeSection(asset)}`,
+      'ca-detail-history',
+    );
+    const recommendWarn = (() => {
+      /* 推荐卡（告警位，紧贴页头）：recommendedAction 数据存在时渲染。 */
+      const ra = asset.recommendedAction;
+      if (!ra || !['active', 'paused'].includes(String(asset.status || ''))) return '';
+      const label = ra === 'pause'
+        ? T('cognition.asset_recommend_pause', '系统建议暂停使用这条资产')
+        : T('cognition.asset_recommend_rework', '系统建议返工这条资产');
+      const reason = asset.recommendationReason || '';
+      const btnHtml = btn(T('cognition.asset_recommend_ack', '知道了'), 'asset-recommend-ack', { id: asset.id, small: true });
+      return `<div class="warn" style="display:flex;align-items:flex-start;gap:9px">
+          <div style="flex:1"><b>${esc(label)}</b>
+            <div class="note" style="margin-top:3px">${esc(T('cognition.asset_recommend_reason', '原因'))}：${esc(reason)}</div></div>
+          ${btnHtml}</div>`;
+    })();
     return `
     ${btn(T('cognition.asset_back', '← 返回列表'), 'go-back', { className: 'backlink' })}
     <div class="card ca-asset-detail">
+      ${topControl}
+      ${recommendWarn}
       <div class="rowline">
         <div>
           <h1>${esc(asset.title || asset.id)}</h1>
@@ -1666,48 +1749,10 @@
         <div class="right">${switchable ? switchEl : detailStatusChip(asset)}${['active'].includes(String(asset.status || 'active')) ? btn(T('cognition.asset_use_in_chat', '用到当前对话'), 'asset-use-in-chat', { id: asset.id, small: true }) : ''}</div>
       </div>
       ${editing ? assetEditForm(asset) : `<p class="content-text">${esc(asset.statement || '')}</p>`}
-      ${(() => {
-        /* 敏感级档位（specs/010 T026）：只读区如实呈现——分了级挂档位章，
-         * 未分级明说「未分级」，不预设 L0（档位语义在待办分组区有整句解释）。 */
-        if (!['active', 'paused'].includes(String(asset.status || 'active'))) return '';
-        const level = asset.sensitivity ? String(asset.sensitivity) : '';
-        const tag = level
-          ? window.uiTag({ label: level, variant: 'version' })
-          : window.uiTag({ label: T('cognition.asset_sensitivity_unclassified', '未分级'), variant: 'outline' });
-        return `<div class="sub">${esc(T('cognition.asset_sensitivity_label', '敏感级'))} ${tag}</div>`;
-      })()}
-      ${assetTagsSection(asset)}
-      ${topControl}
-      ${(() => {
-        /* 推荐卡：recommendedAction 数据存在时渲染（系统建议暂停/返工 + 知道了） */
-        const ra = asset.recommendedAction;
-        if (!ra || !['active', 'paused'].includes(String(asset.status || ''))) return '';
-        const label = ra === 'pause'
-          ? T('cognition.asset_recommend_pause', '系统建议暂停使用这条资产')
-          : T('cognition.asset_recommend_rework', '系统建议返工这条资产');
-        const reason = asset.recommendationReason || '';
-        const btnHtml = btn(T('cognition.asset_recommend_ack', '知道了'), 'asset-recommend-ack', { id: asset.id, small: true });
-        return `<div class="warn" style="display:flex;align-items:flex-start;gap:9px">
-          <div style="flex:1"><b>${esc(label)}</b>
-            <div class="note" style="margin-top:3px">${esc(T('cognition.asset_recommend_reason', '原因'))}：${esc(reason)}</div></div>
-          ${btnHtml}</div>`;
-      })()}
-      ${(() => {
-        /* 证据引用块：一律走唯一解析器 + 唯一呈现出口（evidenceChip）。
-         * 2026-09-25 US-603 修复：此前这里直接 esc(refId) 上屏，immediate-* /
-         * kse-* / turn-* 这些内部 id 就是这么露给用户的；KSTAR 名与会话名也
-         * 因此与其它四处不同步。legacy 字符串形态的来源先归一成 {id} 再解析。 */
-        const refs = (asset.evidenceRefs || [])
-          .map((ref) => ((ref && typeof ref === 'object') ? ref : { id: String(ref || '') }))
-          .filter((ref) => String(ref.id || '').trim());
-        if (!refs.length) return '';
-        const rows = refs.map((ref) => '<div class="evrow">' + evidenceChip(ref) + '</div>').join('');
-        return '<div class="sect-block"><div class="sub"><strong>' + esc(T('cognition.asset_evidence_section', '证据引用')) + '</strong><span class="note">' + String(refs.length) + '</span></div>' + rows + '</div>';
-      })()}
-      ${assetVersionsSection(asset)}
-      ${assetUsageSection(asset, route)}
-      ${assetRankingWhySection(asset)}
-      ${assetAdoptionSection(asset)}
+      ${factsLine}
+      ${originSection}
+      ${usedSection}
+      ${historyFold}
       ${(() => {
         /* 审计履历块：auditRows.slice(0,12) + 超限提示。动作标签显式列全
          * （与 asset-service.ts::AbilityAssetAuditRecord 的 action 联合类型
@@ -1794,7 +1839,6 @@
           ${moreRow(T('cognition.asset_purge', '彻底清除'), T('cognition.asset_purge_hint', '删除全部历史与证据，不可恢复'), 'purge')}
         </div>
       </div>
-      ${assetMergeSection(asset)}
     </div>`;
   }
 
@@ -1898,21 +1942,23 @@
       if (assets.some((a) => NS.isKstarAsset && NS.isKstarAsset(a))) directions.kstar.push(branch.id);
     }
     /* 原型 v7 树页：整页一棵树 + 顶部一条读法提示 + 底部图例，
-       没有页头卡片（树的读法靠图例自解释）。 */
+       没有页头卡片。018 T020：读法提示升级为页头导语（一页一问：
+       「我的认知长什么样、有什么新变化」），旧 read_hint 与图例重复，
+       就此退场（T023）。 */
     return `
       <div class="tree-stage${S.loading && !S.loaded ? ' is-loading' : ''}">
         <div class="fl-top">
           <div class="ft ft-title">${esc(T('cognition.tree_panel_title', '我的认知树'))}</div>
-          <div class="ft">${esc(T('cognition.tree_read_hint', '土壤 → 根芽 → 枝上大方向 → 树冠已验证 · 枝端光斑看分类，叶片看细分方向'))}</div>
-          <div class="ft">${btn(T('cognition.catalog_view_back', '列表视图'), 'asset-view', { id: '', small: true, className: 'o' })}${btn(T('cognition.catalog_view_toggle', '目录视图'), 'asset-view', { id: 'catalog', small: true, className: 'o' })}</div>
+          <div class="ft">${esc(T('cognition.tree_page_hint', '这棵树是你的认知全景：土壤是记录与来源，根部是待确认的候选，枝上是正式资产，树冠是被真实复用验证过的。'))}</div>
+          <div class="ft">${btn(T('cognition.catalog_view_back', '列表视图'), 'asset-view', { id: '', small: true, className: 'o' })}</div>
         </div>
         ${treeFigure({ counts, pending: stats.pending, validated, sources: sourceCount, captures: captureCount }, directions)}
         <div class="fl-bottom">
           <div class="legend">
-            <span class="k"><span class="dt" style="background:var(--green)"></span>${esc(T('cognition.tree_legend_validated', '已验证'))}</span>
+            <span class="k"><span class="dt" style="background:var(--green)"></span>${esc(T('cognition.tree_legend_validated', '被真用过'))}</span>
             <span class="k"><span class="dt" style="background:var(--green-line)"></span>${esc(T('cognition.tree_legend_asset', '资产'))}</span>
-            <span class="k"><span class="dt" style="background:var(--blue)"></span>KSTAR</span>
-            <span class="k"><span class="dt" style="background:var(--amber-dot)"></span>${esc(T('cognition.tree_legend_pending', '待处理（根）'))}</span>
+            <span class="k"><span class="dt" style="background:var(--blue)"></span>${esc(T('cognition.tree_legend_kstar', '任务复盘学的'))}</span>
+            <span class="k"><span class="dt" style="background:var(--amber-dot)"></span>${esc(T('cognition.tree_legend_pending', '新芽（待确认）'))}</span>
             <span class="legend-hint">${esc(T('cognition.tree_legend_hint', '枝端光斑 = 大方向 · 叶片 = 细分方向 · 悬停看详情'))}</span>
           </div>
         </div>
@@ -2236,21 +2282,18 @@
     const lastUseText = (assetId) => {
       const at = lastUseByAsset.get(String(assetId));
       return at
-        ? T('cognition.asset_last_used_at', '最近使用 {when}', { when: fmtDate(at) })
-        : T('cognition.asset_last_use', '最近无使用记录');
+        ? T('cognition.asset_last_used_at', '最近真用过 {when}', { when: fmtDate(at) })
+        : T('cognition.asset_last_use', '还没被用过');
     };
-    /* 「当前任务选用」卡已撤（2026-09-21 子安决策）：modelSelectedAssetIds
-       是最近确认投影的并集，撑不起「当前任务」的语义；模型挂载的可见性
-       由对话侧投影回执卡（带完整控制）与目录视图的「模型挂着」标记承担。 */
+    /* 导语（specs/018 T030）：hero 统计条并入导语两个可点数字——
+     * {n} 条认知（点开滚到列表）· {m} 条等你确认（去「待我处理」）。
+     * 「当前任务选用」卡仍撤（2026-09-21 口径不变）。 */
+    const leadNum = (value, anchor) => `<span class="chip-link ca-jump-num" data-act="review-jump" data-id="${esc(anchor)}" ${roleBtn()}>${esc(String(value))}</span>`;
+    const heroLead = `<div class="sub">${leadNum(stats.confirmed, 'ca-asset-list')} ${esc(T('cognition.overview_lead_assets', '条认知'))} · <span class="chip-link ca-jump-num" data-act="go-review" ${roleBtn()}>${esc(String(stats.pending))}</span> ${esc(T('cognition.overview_lead_pending', '条等你确认'))}</div>`;
     const heroHtml = hero(
       T('cognition.overview_title', '我的认知资产'),
-      T('cognition.tree_page_hint', '这棵树是你的认知全景：土壤是记录与来源，根部是待确认的候选，枝上是正式资产，树冠是被真实复用验证过的。'),
-      `${statsRow([
-        [stats.confirmed, T('cognition.overview_stat_confirmed', '已确认资产'), 'g'],
-        [stats.pending, T('cognition.overview_stat_pending', '待确认候选'), 'a'],
-        [stats.transferOk, T('cognition.overview_stat_validated', '已验证'), 'b'],
-        [stats.attention, T('cognition.overview_stat_attention', '需要关注')],
-      ])}`,
+      '',
+      heroLead,
     );
     if (route.assetId) {
       const asset = S.assets.find((a) => String(a.id) === String(route.assetId));
@@ -2326,19 +2369,27 @@
       </div>`;
     };
     const catalogView = String(route.assetView || '') === 'catalog';
+    /* 「管理」模式（specs/018 T031）：目录视图 / 批量打标 / 多选 / 同源分组
+     * 默认不可见，收进这个小切换；普通用户默认视图永远只见列表。
+     * 深链兜底：assetView=catalog 视同进入管理（旧深链不死链）。 */
+    const manageMode = String(route.manage || '') === '1' || catalogView;
     // 多选态（specs/012 T011）：仅列表视图（目录/已删除档不给批量打标）；
     // 行左侧 uiCheckbox、行点击变成勾选（不再挂 data-go-asset 跳详情）。
     const tagSelectOn = String(route.tagSelect || '') === '1' && !catalogView && route.category !== 'deleted';
     const tagSelectedIds = new Set((S.tagSelectIds || []).map(String));
     const plainRow = (asset) => {
+      // 行三事实（specs/018 T032）：类型 / 最近真用过（或「还没被用过」）/
+      // 被带入 N 次。版本号收进详情（行上不再是第四件事）。
+      const used = broughtInCountFor(asset.id);
       if (!tagSelectOn) return `
         <div class="row" data-go-asset="${esc(asset.id)}" role="button" tabindex="0">
           <div class="tw">
             <div class="tt">${esc(asset.title || asset.id)}</div>
-            <!-- 行上版本号显示在用版（2026-09-17 子安实测抓出）：version 是
-                 只增游标（真删不回退，防历史引用错位），删掉高版本后游标
-                 停在旧值（如 v5）——用户看到的是"这条资产现在用第几版"。 -->
-            <div class="mm">${esc(categoryLabel(asset.type))} · v${esc(String(asset.activeVersion || asset.version || '1'))} · ${esc(lastUseText(asset.id))}</div>
+            <div class="mm">${esc([
+              categoryLabel(asset.type),
+              lastUseText(asset.id),
+              used ? T('cognition.catalog_used_times', '被带入任务 {n} 次', { n: String(used) }) : T('cognition.catalog_never_used', '还没被带入过'),
+            ].join(' · '))}</div>
           </div>
           <div class="sd">${NS.isKstarAsset(asset) ? chip(T('cognition.asset_kstar_badge', 'KSTAR'), 'blue') : ''}${assetStatusChip(asset)}<span class="chev" aria-hidden="true">›</span></div>
         </div>`;
@@ -2378,8 +2429,14 @@
         <div class="sd">${assetStatusChip(asset)}${btn(T('cognition.deleted_purge_now', '立即彻底删除'), 'purge-deleted-asset', { small: true, danger: true, data: { id: String(asset.id) } })}</div>
       </div>`;
     };
-    let listHtml = filtered.length
-      ? filtered.map((asset) => (route.category === 'deleted'
+    /* 默认排序（specs/018 T032）：按最近真实使用排（口径＝US-602 白名单，
+     * 不是推荐分——「列表不按推荐分排序」的钉死口径不变）；没用过的排后面。
+     * 管理模式保持主进程顺序 + 同源血缘分组（管理视角，默认不可见）。 */
+    const lastUseAt = (asset) => String(lastUseByAsset.get(String(asset.id)) || '');
+    const orderedAssets = manageMode ? filtered
+      : [...filtered].sort((a, b) => lastUseAt(b).localeCompare(lastUseAt(a)));
+    let listHtml = orderedAssets.length
+      ? orderedAssets.map((asset) => (route.category === 'deleted'
         ? deletedRow(asset)
         : catalogView ? catalogRow(asset) : plainRow(asset))).join('')
       : route.category === 'deleted'
@@ -2393,18 +2450,15 @@
         ? `<div class="note list-caption">${esc(T('cognition.tag_filter_empty_all', '「未分类」和「同时具备」一起选时，没有资产能两边都满足。切回「任一标签」，或取消「未分类」。'))}</div>`
         : empty(
           T('cognition.tree_empty', '还没有正式资产'),
-          T('cognition.tree_empty_hint', '候选被确认为正式资产后会出现在这里；当前还没有已确认的资产。'),
-          // 条件与按钮数字同口径（stats.pending），避免出现「查看 0 条」。
-          stats.pending ? {
-            label: T('cognition.tree_view_buds', '查看 {n} 条待确认候选', { n: String(stats.pending) }),
-            attrs: { 'data-act': 'go-review' },
-          } : null,
+          T('cognition.tree_empty_hint', '你在「待我处理」点过「确认」的事，会出现在这里。'),
+          // 空态引导（specs/018 T033）：下一步去哪写死——去待我处理。
+          { label: T('cognition.overview_empty_go_review', '去待我处理'), attrs: { 'data-act': 'go-review' } },
         );
-    // 默认列表视图按大类分组渲染（目录视图=模型视角保持平铺）。
-    // 「已删除」列表**不分组**：那里要的是保留期剩余天数与彻底删除入口，
-    // 按族分组只会把"还剩几天"埋进分组标题下面。
-    if (filtered.length && !catalogView && route.category !== 'deleted') {
-      const groups = familyGroupsOf(filtered);
+    // 同源血缘分组只在「管理」模式出现（specs/018 T031）；目录视图=模型视角
+    // 保持平铺。「已删除」列表**不分组**：那里要的是保留期剩余天数与彻底
+    // 删除入口，按族分组只会把"还剩几天"埋进分组标题下面。
+    if (orderedAssets.length && manageMode && !catalogView && route.category !== 'deleted') {
+      const groups = familyGroupsOf(orderedAssets);
       listHtml = groups.map((group) => {
         const renaming = String(route.familyRename || '') === group.anchorId && group.anchorId;
         return `
@@ -2420,17 +2474,26 @@
       `;
       }).join('');
     }
+    /* 工具入口（specs/018 T031）：默认只有「树视图」+「管理」小切换；
+     * 管理模式下才出现 批量打标 / 目录视图（多选条随 tagSelect 出）。
+     * 「已删除」档不出现批量与目录入口（保留期语义优先）。 */
+    const toolButtons = `${route.category !== 'deleted' ? btn(T('cognition.tree_view_toggle', '树视图'), 'asset-view', { id: 'tree', small: true, className: 'o' }) : ''}${manageMode
+      ? `${route.category !== 'deleted' ? btn(T('cognition.tag_batch_entry', '批量打标'), 'tag-select-mode', { small: true, className: 'o' }) : ''}${btn(catalogView ? T('cognition.catalog_view_back', '列表视图') : T('cognition.catalog_view_toggle', '目录视图'), 'asset-view', { id: catalogView ? '' : 'catalog', small: true, className: 'o' })}${btn(T('cognition.overview_manage_exit', '退出管理'), 'overview-manage-toggle', { small: true, className: 'o' })}`
+      : btn(T('cognition.overview_manage_entry', '管理'), 'overview-manage-toggle', { small: true, className: 'o' })}`;
     return `${heroHtml}
+      <div id="ca-asset-list">
       ${sectionHead(
         catalogView ? T('cognition.catalog_view_title', '资产目录（模型视角）') : T('cognition.overview_list_title', '资产明细'),
         String(filtered.length),
-        `${!catalogView && route.category !== 'deleted' ? btn(T('cognition.tag_batch_entry', '批量打标'), 'tag-select-mode', { small: true, className: 'o' }) : ''}${!catalogView ? btn(T('cognition.tree_view_toggle', '树视图'), 'asset-view', { id: 'tree', small: true, className: 'o' }) : ''}${btn(catalogView ? T('cognition.catalog_view_back', '列表视图') : T('cognition.catalog_view_toggle', '目录视图'), 'asset-view', { id: catalogView ? '' : 'catalog', small: true, className: 'o' })}`,
+        toolButtons,
       )}
       ${catalogView ? `<div class="note list-caption">${esc(T('cognition.catalog_view_hint', '这就是模型挑资产时看的那份目录：一行一条；要看全文点进去。'))}</div>` : ''}
+      ${!catalogView && route.category !== 'deleted' && !manageMode ? `<div class="note list-caption">${esc(T('cognition.overview_sort_note', '按最近真实使用排在前；类型 / 最近真用过 / 被带入次数写在每行上。'))}</div>` : ''}
       ${pillboxHtml}
       ${tagFilterBar(route, filteredByType)}
       ${tagSelectOn ? tagBatchBar(route, filtered) : ''}
       ${listHtml}
+      </div>
       ${kstarEpisodesSection(route)}`;
   }
 

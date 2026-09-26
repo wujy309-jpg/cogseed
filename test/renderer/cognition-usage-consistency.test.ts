@@ -43,7 +43,7 @@ describe('列表与详情同口径（US-602 AC1/AC2/AC4）', () => {
       { id: 'p-3', kind: 'asset_version_selected', occurredAt: '2026-09-18T03:00:00.000Z', refs: { assetId: ASSET.id, version: '2' } },
     ];
 
-    expect(visibleText(list({ proofs }))).toContain('最近无使用记录');
+    expect(visibleText(list({ proofs }))).toContain('还没被用过');
     const detailHtml = visibleText(detail({ proofs }));
     expect(detailHtml).toContain('还没有被真实使用过');
     expect(detailHtml).not.toContain('被带入任务 1 次');
@@ -61,7 +61,7 @@ describe('列表与详情同口径（US-602 AC1/AC2/AC4）', () => {
       sources: [{ kind: 'conversation', items: [{ id: 'conv-a', kind: 'conversation', title: '季度复盘', status: 'ready' }] }],
     };
 
-    expect(visibleText(list(state))).toContain('最近使用');
+    expect(visibleText(list(state))).toContain('最近真用过');
     const detailHtml = visibleText(detail(state));
     expect(detailHtml).toContain('被带入任务 1 次');
     expect(detailHtml).toContain('对话《季度复盘》里');
@@ -82,7 +82,7 @@ describe('列表与详情同口径（US-602 AC1/AC2/AC4）', () => {
     const detailHtml = visibleText(detail({ proofs }));
     expect(detailHtml).toContain('撤销');
     // 撤销不是使用：不抬高最近使用，也不进任何计数。
-    expect(visibleText(list({ proofs }))).toContain('最近使用');
+    expect(visibleText(list({ proofs }))).toContain('最近真用过');
     expect(detailHtml).toContain('被带入任务 1 次');
     expect(detailHtml).not.toContain('被带入任务 2 次');
   });
@@ -92,7 +92,7 @@ describe('列表与详情同口径（US-602 AC1/AC2/AC4）', () => {
       { id: 'p-1', kind: 'asset_version', occurredAt: '2026-09-18T02:00:00.000Z', refs: { assetId: ASSET.id, version: '3' } },
     ];
 
-    expect(visibleText(list({ proofs, realUsageKinds: [] }))).toContain('最近无使用记录');
+    expect(visibleText(list({ proofs, realUsageKinds: [] }))).toContain('还没被用过');
     expect(visibleText(detail({ proofs, realUsageKinds: [] }))).toContain('还没有被真实使用过');
   });
 });

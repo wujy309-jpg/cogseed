@@ -249,8 +249,9 @@ describe('整理页（任务流 + 策略抽屉）', () => {
     const html = renderPage('tree', { assets: [], sources: [], proofs: [], candidates: [] });
     expect(viewsSource).not.toContain('ca-tree-wip');
     // 2026-09-21 原型 v7 移植：教学位改成原型的底部图例（枝端光斑/叶片口径）。
+    // specs/018 §4：图例词同步人话（待处理（根）→ 新芽（待确认））。
     expect(html).toContain('枝端光斑');
-    expect(html).toContain('待处理（根）');
+    expect(html).toContain('新芽（待确认）');
   });
 
   it('沉淀设置页：夜间自动沉淀条状卡（左说明/中时间/右开关）+ 候选确认 + 大扫除 section', () => {
@@ -993,12 +994,19 @@ describe('整理详情页', () => {
     expect(legacy).toContain('对话沉淀资产');
   });
 
-  it('列表行版本号显示在用版（2026-09-17 子安实测）：删掉 v3-v5 后游标停在 v5，行上该显示在用的 v2', () => {
-    const html = renderPage('overview', {
-      assets: [{ id: 'aa-v', title: '版本号显示', type: 'rule', status: 'active', version: '5', activeVersion: '2', updatedAt: '2026-09-16T00:00:00.000Z' }], proofs: [], sources: [], kstarEpisodes: [],
+  it('版本号显示在用版（2026-09-17 子安实测）：删掉 v3-v5 后游标停在 v5，界面上该显示在用的 v2', () => {
+    // specs/018 T032：默认列表行不再摆版本号（行三事实=类型/最近真用过/被带入），
+    // 版本号在目录视图行与详情里核对——游标口径断言转移到这两处。
+    const asset = { id: 'aa-v', title: '版本号显示', type: 'rule', status: 'active', version: '5', activeVersion: '2', updatedAt: '2026-09-16T00:00:00.000Z' };
+    const catalog = renderPage('overview', {
+      assets: [asset], proofs: [], sources: [], kstarEpisodes: [],
+    }, { assetView: 'catalog' });
+    expect(catalog).toContain('v2 ·');
+    expect(catalog).not.toContain('v5 ·');
+    const detail = renderPage('overview', {
+      assets: [asset], proofs: [], sources: [], kstarEpisodes: [], assetId: 'aa-v',
     });
-    expect(html).toContain('v2 ·');
-    expect(html).not.toContain('v5 ·');
+    expect(detail).not.toContain('v5 ·');
   });
 
   it('KSTAR 任务复盘折叠区（我的认知页底部）：行带目标可点开，空态不裸白', () => {

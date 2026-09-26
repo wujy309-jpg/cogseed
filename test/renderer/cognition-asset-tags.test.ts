@@ -456,6 +456,8 @@ describe('标签管理弹层（T013）', () => {
 describe('族话术降级（T008）与隐私红线', () => {
   it('组头计数/无组文案已降级，不再出现「未归类」指族', () => {
     const { render } = loadCognition({
+      // specs/018 T031：同源血缘分组只在「管理」模式出现——话术断言在管理态下核对。
+      route: { manage: '1' },
       state: {
         assets: [
           { id: 'aa-fam-1', type: 'personal', title: '同源甲', statement: '正文甲。', status: 'active', version: '1', updatedAt: '2026-09-24T01:00:00Z', relations: [{ kind: 'same_family', assetId: 'aa-fam-2' }] },
