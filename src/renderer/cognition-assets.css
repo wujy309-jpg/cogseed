@@ -754,15 +754,29 @@
   vertical-align: -1px; animation: ca-spin .7s linear infinite;
 }
 
-/* 待处理提醒行（来源异常 / 整理失败）：一条卡 + 右侧处理入口 */
+/* 待处理提醒行（来源异常 / 整理失败 / 治理待办）：一条卡 + 右侧处理入口。
+   specs/017 整改二：正文回正文字色（此前整句刷 amber，被真机截图定性为
+   "满页黄字读不懂"）；颜色只留给短状态章。标题=问题是什么，detail=补充，
+   组级 hint/effect=为什么需要你、做了会怎样。 */
 #ca-root .notice-stack { margin-bottom: 16px; }
 #ca-root .notice-row {
   display: flex; align-items: center; gap: 10px; background: var(--color-white);
   border: 1px solid var(--line); border-radius: var(--rm); box-shadow: var(--s1);
   padding: 11px 15px; margin-bottom: 8px;
 }
-#ca-root .notice-text { font-size: var(--font-size-caption); color: var(--amber-t); font-weight: 600; }
+#ca-root .notice-copy { flex: 1; min-width: 0; }
+#ca-root .notice-title { font-size: var(--font-size-3); color: var(--ink); font-weight: 600; }
+#ca-root .notice-detail { font-size: var(--font-size-2); color: var(--ink2); margin-top: 2px; }
 #ca-root .notice-row .sp { flex: 1; }
+/* 内联表单行（补边界 / 定级）：字段换行排在问题下方，标签走既有 .field 网格。 */
+#ca-root .inbox-governance-form { flex-wrap: wrap; align-items: flex-start; }
+#ca-root .inbox-inline-fields { flex: 1 1 100%; display: grid; gap: 8px; margin-top: 10px; }
+#ca-root .inbox-inline-fields .field { margin-bottom: 0; }
+#ca-root .inbox-field-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+#ca-root .inbox-effect-note { margin: 0; }
+#ca-root .inbox-group-effect { margin: -6px 0 10px; }
+#ca-root .inbox-batch-names { margin: 0; }
+#ca-root .inbox-batch-names .dbody ul { margin: 6px 0; padding-left: 18px; max-height: 160px; overflow-y: auto; }
 #ca-root .sect-note { margin: -4px 0 10px; }
 #ca-root .hero-row { display: flex; align-items: flex-start; gap: 12px; }
 #ca-root .hero-row .hero-main { flex: 1; min-width: 0; }
