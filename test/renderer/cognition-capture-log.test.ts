@@ -505,6 +505,68 @@ describe('整理页（任务流 + 策略抽屉）', () => {
     expect(none).not.toContain('已确认 · 它长在树上了');
   });
 
+  it('导语分段拼装（specs/018 迭代轮 1）：拍板数为 0 时不出现「0 件事等你拍板 · 预计…分钟」，锚点分区随之在', () => {
+    const mk = (id: string) => ({
+      id, status: 'pending_review', suggestedType: 'rule',
+      judgment: '一条足够长的候选判断正文内容。', summary: `标题-${id}`,
+      capabilities: { canEdit: true, canPromote: true, countsAsPending: true },
+    });
+    // 只有证据异常（displayState=weak_evidence），拍板数为 0。
+    const weak = renderPage('review', {
+      candidates: [Object.assign(mk('w1'), { capabilities: { canEdit: true, canPromote: true, countsAsPending: true, displayState: 'weak_evidence' } })],
+    });
+    expect(weak).not.toContain('件事等你拍板');
+    expect(weak).not.toContain('预计');
+    expect(weak).toContain('条证据要补');
+    expect(weak).toContain('id="ca-review-evidence"');
+    // 拍板数 >0：拍板锚点元素与数字都在。
+    const deciding = renderPage('review', { candidates: [mk('p1')] });
+    expect(deciding).toContain('件事等你拍板');
+    expect(deciding).toMatch(/data-act="review-jump" data-id="ca-review-decide"/);
+    expect(deciding).toContain('id="ca-review-decide"');
+  });
+
+  it('系统活动时间流（specs/018 T060 迭代核）：夜间沉淀句、大扫除与体检事件并入，分桶筛选激活时事件不出现', () => {
+    const nightly = {
+      id: 'rcap-nightly', conversationId: 'conv-1', conversationTitle: '夜间整理的会话',
+      status: 'no_candidate', displayStatus: 'completed', displayReason: 'no_candidate',
+      bucket: 'done', executionPolicy: 'nightly', updatedAt: '2026-09-26T02:00:00.000Z',
+      actions: [], reviewSummary: { pending: 2, total: 2 },
+    };
+    const html = renderPage('activity', {
+      ...baseStore,
+      captures: [nightly],
+      cleanupReports: { loading: false, reports: [{ id: 'rep-1', createdAt: '2026-09-25T10:11:00.000Z', items: [{ status: 'applied' }, { status: 'applied' }], uncertain: [] }] },
+      inspection: { loading: false, settings: { enabled: true }, latestRun: { startedAt: '2026-09-26T13:00:00.000Z', findings: [{ id: 'f1' }], scanned: 20, trigger: 'manual' } },
+    });
+    expect(html).toContain('夜间沉淀跑完 → 2 条新候选');
+    expect(html).toContain('大扫除归并 2 条重复');
+    expect(html).toContain('后台体检发现 1 处疑点');
+    expect(html).toContain('data-act="open-cleanup-report"');
+    // 分桶筛选激活：大扫除/体检不属于任何分桶，不出现。
+    const filtered = renderPage('activity', {
+      ...baseStore,
+      captures: [nightly],
+      cleanupReports: { loading: false, reports: [{ id: 'rep-1', createdAt: '2026-09-25T10:11:00.000Z', items: [{ status: 'applied' }], uncertain: [] }] },
+      inspection: { loading: false, settings: { enabled: true }, latestRun: { startedAt: '2026-09-26T13:00:00.000Z', findings: [], scanned: 20, trigger: 'manual' } },
+    }, { captureBucket: 'done' });
+    expect(filtered).not.toContain('大扫除归并');
+    expect(filtered).not.toContain('后台体检发现');
+  });
+
+  it('管理模式退出（specs/018 T031 迭代轮 1）：退出按有效管理态判定，并清目录视图与多选态（app.js 委托源码契约）', () => {
+    // 渲染面：目录深链视同进入管理，出得去（退出管理入口在）。
+    const deepLink = renderPage('overview', { assets: [], proofs: [], sources: [] }, { assetView: 'catalog' });
+    expect(deepLink).toContain('退出管理');
+    // 委托面：退出判定必须看「manage=1 或 catalog 或 tagSelect」的有效组合
+    // （只看 manage 旗标会把目录深链态误判成「进入管理」——真机抓出）；
+    // 退出时一并清 assetView/tagSelect。
+    expect(appSource).toContain("case 'overview-manage-toggle'");
+    expect(appSource).toContain("const inManage = String(S.route.manage || '') === '1'");
+    expect(appSource).toContain("assetView: inManage ? '' :");
+    expect(appSource).toContain("tagSelect: inManage ? '' :");
+  });
+
   it('「等待确认」口径统一（2026-09-16 B1）：deferred 可见但不占数，带「已稍后处理」标注', () => {
     // 审计 B1：三套口径曾同时给出 7/5/0。统一为「需要判断且未被稍后处理
     // 静音」——统计卡/全局 stats 同函数；deferred 行留在列表（子安口径）。
@@ -892,7 +954,7 @@ describe('整理详情页', () => {
     // 列表行带「KSTAR 复盘」徽章；详情展开复盘信号块。
     const kstar = mk({ learningSignal: { deltaR: -1, deltaA: 'unknown', outcome: 'worse_than_expected', confidence: 0.95, source: 'review', expectedResult: '给出技术结论', actualResult: '模型调用失败' } });
     const listHtml = review([kstar]);
-    expect(listHtml).toContain('KSTAR 复盘');
+    expect(listHtml).toContain('任务复盘');
     const detailHtml = renderPage('review', { sources: [conversationSources[0]], candidates: [kstar] }, { candidateId: 'rcand-k' });
     expect(detailHtml).toContain('复盘依据');
     expect(detailHtml).toContain('给出技术结论');
@@ -900,7 +962,7 @@ describe('整理详情页', () => {
     expect(detailHtml).toContain('比预期差');
     // 偏好扫描候选：徽章「KSTAR 偏好」。
     const pref = mk({ suggestedType: 'personal', learningSignal: { deltaR: 'unknown', deltaA: 'unknown', outcome: 'met_expected', confidence: 0.9, source: 'preference_scan' } });
-    expect(review([pref])).toContain('KSTAR 偏好');
+    expect(review([pref])).toContain('偏好扫描');
     // capture 候选：徽章「会话整理」。
     expect(review([mk({})])).toContain('会话整理');
   });
@@ -919,10 +981,10 @@ describe('整理详情页', () => {
     };
     // 有 provenance 的 v1 展开：来源行在版本块内。
     const open = renderPage('overview', { assets: [asset], proofs: [], sources: [], assetVersions: versions }, { assetId: 'aa-src', assetVersionId: '1' });
-    expect(open).toContain('来自 KSTAR 复盘');
+    expect(open).toContain('来自那次任务的复盘');
     // 无信号快照（v2）展开：不出该行。
     const plain = renderPage('overview', { assets: [asset], proofs: [], sources: [], assetVersions: versions }, { assetId: 'aa-src', assetVersionId: '2' });
-    expect(plain).not.toContain('来自 KSTAR 复盘');
+    expect(plain).not.toContain('来自那次任务的复盘');
   });
 
   it('KSTAR 证据与来源按版本显示（2026-09-17 下沉）：版本展开块内出证据 chips、KSTAR 来源行，点开「这次任务的经过」', () => {
@@ -945,7 +1007,7 @@ describe('整理详情页', () => {
       kstarSummaries: { 'kse-abc123': { id: 'kse-abc123', goal: '我想知道你的认知资产是怎么存的？', status: 'completed', at: '' } },
     }, { assetId: 'aa-k1', assetVersionId: '1' });
     expect(open).not.toContain('详细信息');
-    expect(open).toContain('来自 KSTAR 偏好');
+    expect(open).toContain('来自偏好扫描');
     expect(open).toContain('data-act="open-kstar-episode" data-id="kse-abc123"');
     expect(open).toContain('任务复盘：我想知道你的认知资产是怎么存的');
     // ② 点开态（route.kstarEpisodeId）：「这次任务的经过」就地出现在版本块内，
@@ -1032,7 +1094,7 @@ describe('整理详情页', () => {
         { id: 'kse-3', t: {}, createdAt: '2026-09-16T08:00:00.000Z' },
       ],
     });
-    expect(rows).toContain('KSTAR 任务复盘');
+    expect(rows).toContain('任务复盘');
     expect(rows).toContain('查认知资产是怎么存的');
     expect(rows).toContain('命中既有候选是怎么一个逻辑');
     expect(rows).toContain('data-act="open-kstar-episode" data-id="kse-1"');
@@ -1047,7 +1109,7 @@ describe('整理详情页', () => {
     }, { kstarEpisodeId: 'kse-1' });
     expect(opened).toContain('class="details ca-kstar-episodes" open');
     const empty = renderPage('overview', { assets: [], proofs: [], sources: [], kstarEpisodes: [] });
-    expect(empty).toContain('还没有被 KSTAR 复盘过的任务');
+    expect(empty).toContain('还没有被复盘过的任务');
   });
 
   it('证据分组（2026-09-17 B 档）：版本块内 KSTAR 任务复盘 / 对话与表态 两组分开带说明', () => {
@@ -1067,7 +1129,7 @@ describe('整理详情页', () => {
       },
     }, { assetId: 'aa-mix', assetVersionId: '2' });
     expect(html).toContain('evgroup');
-    expect(html).toContain('KSTAR 任务复盘');
+    expect(html).toContain('任务复盘');
     expect(html).toContain('对话与你的表态');
     // bug1：scope=personal 不再裸英文。
     expect(html).toContain('个人对话');

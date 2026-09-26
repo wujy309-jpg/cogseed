@@ -390,7 +390,7 @@
           <div class="chips">${list.map(evidenceChip).join('')}</div>
         </div>`
       : '';
-    return group('cognition.evidence_group_kstar', 'KSTAR 任务复盘', 'cognition.evidence_group_kstar_hint', '任务完结后 KSTAR 复盘学到的', kstar)
+    return group('cognition.evidence_group_kstar', '任务复盘', 'cognition.evidence_group_kstar_hint', '任务完结后系统复盘学到的', kstar)
       + group('cognition.evidence_group_chat', '对话与你的表态', 'cognition.evidence_group_chat_hint', '日常对话里总结出来的', chat);
   };
 
@@ -475,9 +475,9 @@
   function candidateSourceBadge(candidate) {
     const signal = candidate.learningSignal;
     if (signal && String(signal.source || '') === 'preference_scan') {
-      return chip(T('cognition.source_pref_scan', 'KSTAR 偏好'));
+      return chip(T('cognition.source_pref_scan', '偏好扫描'));
     }
-    if (signal || candidate.learningProvenance) return chip(T('cognition.source_kstar_review', 'KSTAR 复盘'));
+    if (signal || candidate.learningProvenance) return chip(T('cognition.source_kstar_review', '任务复盘'));
     if (isImmediateCandidate(candidate)) return chip(T('cognition.source_immediate', '对话中记'));
     return chip(T('cognition.source_capture', '会话整理'));
   }
@@ -1466,8 +1466,8 @@
       : signal && ['review', 'preference_scan'].includes(String(signal.source || '')) ? String(signal.source) : '';
     if (!source) return '';
     return source === 'preference_scan'
-      ? T('cognition.asset_origin_pref_scan', '来自 KSTAR 偏好')
-      : T('cognition.asset_origin_kstar', '来自 KSTAR 复盘');
+      ? T('cognition.asset_origin_pref_scan', '来自偏好扫描')
+      : T('cognition.asset_origin_kstar', '来自那次任务的复盘');
   }
 
   function assetVersionDetailBlock(asset, v, isActive, usage) {
@@ -1693,6 +1693,7 @@
       : null;
     const usedSection = `<div class="sect-block">
       <div class="sub"><strong>${esc(T('cognition.asset_used_section', '用过吗'))}</strong></div>
+      ${termFootnote(['receipt'])}
       ${usedSummary
         ? `<div class="chips ca-used-line"><span class="note">${esc(usedSummary)}</span>${lastRef ? evidenceChip(lastRef) : ''}</div>`
         : `<div class="sub">${esc(T('cognition.asset_no_proofs_section', '还没有被真实使用过。资产在任务中被真正使用、并留下可核对的记录后，会出现在这里。'))}</div>`}
@@ -2723,7 +2724,7 @@
     const preview = state && state.preview;
     const lastRun = state && state.lastRun;
     const previewItems = (preview && preview.items) || [];
-    let body = `<p class="note">${esc(T('cognition.experience_migration_hint', '扫描资产库中带 KSTAR 沉淀标记的经验类资产，逐条确认后迁入经验目录；迁移会先冻结历史引用，再迁出资产记录。'))}</p>`;
+    let body = `<p class="note">${esc(T('cognition.experience_migration_hint', '扫描资产库中带任务复盘沉淀标记的经验类资产，逐条确认后迁入经验目录；迁移会先冻结历史引用，再迁出资产记录。'))}</p>`;
     if (state && state.previewLoading) {
       body += `<p class="note">${esc(T('cognition.experience_migration_scanning', '正在扫描可迁移的存量…'))}</p>`;
     } else if (state && state.previewFailed) {
@@ -2752,7 +2753,7 @@
         </div>`).join('');
         body += `<div class="actions">${btn(T('cognition.experience_migration_run_all', '迁移以上 {n} 条', { n: String(previewItems.length) }), 'experience-migration-run', { data: { assets: previewItems.map((item) => String(item.assetId || '')).filter(Boolean).join(',') }, primary: true, small: true })}</div>`;
       } else {
-        body += `<p class="note">${esc(T('cognition.experience_migration_nothing', '没有可迁移的存量：资产库里没有带 KSTAR 沉淀标记的经验类资产。'))}</p>`;
+        body += `<p class="note">${esc(T('cognition.experience_migration_nothing', '没有可迁移的存量：资产库里没有带任务复盘沉淀标记的经验类资产。'))}</p>`;
       }
     } else {
       body += `<div class="actions">${btn(T('cognition.experience_migration_scan', '扫描可迁移的存量'), 'experience-migration-preview', { small: true })}</div>`;
@@ -2924,9 +2925,9 @@
       ? `<div class="card">${empty(T('cognition.kstar_episodes_loading', '正在读取任务复盘列表…'))}</div>`
       : episodes.length
         ? `<div class="card">${rows}</div>`
-        : `<div class="card">${empty(T('cognition.kstar_episodes_empty', '还没有被 KSTAR 复盘过的任务'))}</div>`;
+        : `<div class="card">${empty(T('cognition.kstar_episodes_empty', '还没有被复盘过的任务'))}</div>`;
     return `<details class="details ca-kstar-episodes"${openId ? ' open' : ''}>
-      <summary>${esc(T('cognition.evidence_group_kstar', 'KSTAR 任务复盘'))}<span class="note">${esc(T('cognition.kstar_episodes_hint', '每场任务完结后 KSTAR 自动复盘：当时的任务、实际发生、为什么、学到的经验。点开看完整复盘。'))}</span></summary>
+      <summary>${esc(T('cognition.evidence_group_kstar', '任务复盘'))}<span class="note">${esc(T('cognition.kstar_episodes_hint', '任务完结后系统自动复盘：当时的任务、实际发生、为什么、学到的经验。点开看完整复盘。'))}</span></summary>
       ${body}
     </details>`;
   }
@@ -3147,8 +3148,8 @@
     };
     const GROUP_HINTS = {
       conflict: T('cognition.inbox_classification_conflict_hint', '同一句话被归到两个类型，两边都不会晋升，需要你裁定。'),
-      escalation: T('cognition.inbox_sensitivity_escalated_hint', '这条资产能带往的目的地变多了，请确认这次扩权。'),
-      boundary: T('cognition.inbox_rule_boundary_hint', '没有作用边界的规则不会被自动带入任何任务，补齐后才会生效。'),
+      escalation: T('cognition.inbox_sensitivity_escalated_hint', '这条资产能带去的目的地变多了，需要你确认这次放宽。'),
+      boundary: T('cognition.inbox_rule_boundary_hint', '没写适用范围的规矩不会被自动带入任务；补齐后才会生效。'),
       unclassified: T('cognition.inbox_sensitivity_unclassified_hint', '未分级不等于 L0：分级前不会被带往声明了敏感上限的目的地。'),
     };
     // ── 敏感级三档控件（specs/010 T011）：未分级时三档都不选中 ──
@@ -3167,7 +3168,7 @@
       const detail = row.aggregate ? '' : row.detail;
       const head = `<div class="notice-copy">${rowTitle(row)}${detail ? `<div class="notice-detail">${esc(String(detail))}</div>` : ''}</div>`;
       if (row.kind === 'sensitivity_escalated') {
-        return `<div class="notice-row">${head}<span class="sp"></span>${has('accept') ? btn(T('cognition.inbox_action_escalation_accept', '确认扩权'), 'inbox-escalation-accept', { small: true, primary: true, data: { id } }) : ''}${otherActions(has('reject') ? btn(T('cognition.inbox_action_escalation_reject', '驳回，维持原级'), 'inbox-escalation-reject', { small: true, danger: true, data: { id } }) : '')}</div>`;
+        return `<div class="notice-row">${head}<span class="sp"></span>${has('accept') ? btn(T('cognition.inbox_action_escalation_accept', '确认这次放宽'), 'inbox-escalation-accept', { small: true, primary: true, data: { id } }) : ''}${otherActions(has('reject') ? btn(T('cognition.inbox_action_escalation_reject', '驳回，维持原级'), 'inbox-escalation-reject', { small: true, danger: true, data: { id } }) : '')}</div>`;
       }
       if (row.kind === 'rule_boundary_missing' && has('set_boundary')) {
         // 就地补条件表单（specs/010 T029；specs/017 整改二：字段说明 + 保存
@@ -3269,8 +3270,15 @@
      * 统计条与分组计数的重复就此砍掉。预计分钟 = 每条约一分钟的经验值。 */
     const leadNum = (value, anchor) => `<span class="chip-link ca-jump-num" data-act="review-jump" data-id="${esc(anchor)}" ${roleBtn()}>${esc(String(value))}</span>`;
     const minutes = Math.max(decideCount, 1);
-    const leadHtml = decideCount || evidenceCount
-      ? `<div class="sub">${leadNum(decideCount, 'ca-review-decide')} ${esc(T('cognition.review_lead_decide', '件事等你拍板'))} · ${esc(T('cognition.review_lead_minutes', '预计 {m} 分钟（每条约一分钟）', { m: String(minutes) }))}${evidenceCount ? ` · ${leadNum(evidenceCount, 'ca-review-evidence')} ${esc(T('cognition.review_lead_evidence', '条证据要补'))}` : ''}${lowTotal ? ` · ${esc(T('cognition.review_lead_low', '{n} 条不急，先收着', { n: String(lowTotal) }))}` : ''}</div>`
+    /* 分段拼导语（迭代轮 1 修）：拍板数为 0 时不再写「0 件事等你拍板 ·
+     * 预计 1 分钟」（自相矛盾）——拍板段只在 >0 时出现，锚点也随之恒在。 */
+    const decidePart = decideCount
+      ? `${leadNum(decideCount, 'ca-review-decide')} ${esc(T('cognition.review_lead_decide', '件事等你拍板'))} · ${esc(T('cognition.review_lead_minutes', '预计 {m} 分钟（每条约一分钟）', { m: String(minutes) }))}`
+      : '';
+    const evidencePart = evidenceCount ? `${leadNum(evidenceCount, 'ca-review-evidence')} ${esc(T('cognition.review_lead_evidence', '条证据要补'))}` : '';
+    const lowPart = lowTotal ? esc(T('cognition.review_lead_low', '{n} 条不急，先收着', { n: String(lowTotal) })) : '';
+    const leadHtml = [decidePart, evidencePart, lowPart].filter(Boolean).length
+      ? `<div class="sub">${[decidePart, evidencePart, lowPart].filter(Boolean).join(' · ')}</div>`
       : '';
     /* 去向提示（specs/018 T014）：确认后两分钟内回到本页，行内提示
      * 「已确认 · 它长在树上了（去看）」。纯呈现状态——core 只存标题与时间，

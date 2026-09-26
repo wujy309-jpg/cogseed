@@ -1209,3 +1209,7 @@
 
 /* 设置页尾回链（specs/018 T070）：一句白话 + 去系统活动。 */
 #ca-root .ca-settings-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+
+/* 时间流行标题截断（迭代轮 1）：与 .row .tt 同款省略号——超长会话名
+   不再把 cap-row 撑成多行（.row .tt 早有，.cap-row .tt 漏了）。 */
+#ca-root .cap-row .tt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

@@ -159,7 +159,7 @@ describe('治理待办分组区（specs/010 T014~T016/T011/T025）', () => {
     const html = renderPage('review', { inbox: [ESCALATION_ITEM], inboxGroups: groupsFixture([ESCALATION_ITEM]) });
     expect(html).toContain('data-act="inbox-escalation-accept" data-id="sensitivity-up:aa-1"');
     expect(html).toContain('data-act="inbox-escalation-reject" data-id="sensitivity-up:aa-1"');
-    expect(html).toContain('确认扩权');
+    expect(html).toContain('确认这次放宽');
     expect(html).toContain('驳回，维持原级');
   });
 
