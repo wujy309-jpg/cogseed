@@ -1735,16 +1735,20 @@ const ConversationInfo = (() => {
     '</div>';
   }
 
-  /** 四类资产 tab · 本会话认知沉淀区（提取中 / 待确认 / 已沉淀 / 空态）。 */
-  function _renderSessionCognitionHtml(cid, candidates, assets, extracting) {
+  /** 本会话认知计数（specs/019 会话侧衔接）：头部衔接行与「四类资产」tab 共用
+   *  同一份口径，同屏数字永不打架——pending = pending_review + deferred（与
+   *  「待我处理」页签角标的已知差异：deferred 计入，写进 spec）；settled =
+   *  confirmed 候选 + relationRefs 指向本会话且未被候选区覆盖的正式资产。 */
+  function _sessionCognitionCounts(cid, candidates, assets) {
     var pending = [];
     var confirmed = [];
     (Array.isArray(candidates) ? candidates : []).forEach(function (c) {
+      if (!c || !Array.isArray(c.sourceRefs)) return;
+      var mine = c.sourceRefs.some(function (r) { return r && r.kind === 'conversation' && r.id === cid; });
+      if (!mine) return;
       if (c.status === 'pending_review' || c.status === 'deferred') pending.push(c);
       else if (c.status === 'confirmed') confirmed.push(c);
     });
-    var assetsById = {};
-    (Array.isArray(assets) ? assets : []).forEach(function (a) { if (a && a.id) assetsById[a.id] = a; });
     var confirmedById = {};
     confirmed.forEach(function (c) { confirmedById[c.id] = true; });
     // 本会话正式资产：relationRefs（字段是 type，不是 kind）指向本会话；
@@ -1756,6 +1760,17 @@ const ConversationInfo = (() => {
       var linkedCandidate = a.candidateRefs && a.candidateRefs[0];
       return !(linkedCandidate && confirmedById[linkedCandidate]);
     });
+    return { pending: pending, confirmed: confirmed, extraAssets: extraAssets };
+  }
+
+  /** 四类资产 tab · 本会话认知沉淀区（提取中 / 待确认 / 已沉淀 / 空态）。 */
+  function _renderSessionCognitionHtml(cid, candidates, assets, extracting) {
+    var counts = _sessionCognitionCounts(cid, candidates, assets);
+    var pending = counts.pending;
+    var confirmed = counts.confirmed;
+    var extraAssets = counts.extraAssets;
+    var assetsById = {};
+    (Array.isArray(assets) ? assets : []).forEach(function (a) { if (a && a.id) assetsById[a.id] = a; });
 
     // 四格计数框（本会话视角）：关于我 / 规则与偏好 / 模板与范例 / 技能与方法。
     // 始终显示——没确认或没沉淀出东西就是 0，确认入库后对应分类 +1，用户能
@@ -1796,6 +1811,70 @@ const ConversationInfo = (() => {
     return html;
   }
 
+  /** 会话头部认知衔接行（specs/019）：「这段对话沉淀过 N 条认知 · 待确认 M 条 → 去看」。
+   *  三条硬口径：①未确认候选不得说成「沉淀过」（分段措辞）；②N=M=0（含未加载/
+   *  加载失败）整行不出现；③「去看」→ openAndSetTab('assets')（本会话视角的
+   *  四类资产 tab，既有面，无死链）。 */
+  /** 衔接行的后台数据（specs/019）：只拉候选与资产两条既有只读通道，按本会话
+   *  过滤后预填进 _snapshot（抽屉打开时的全量 refresh 会覆盖，不会陈旧外泄）。
+   *  失败静默——衔接行保持隐藏，不给会话头部报错。 */
+  let _cognitionStripSeq = 0;
+  async function _loadCognitionStripData(cid) {
+    const seq = ++_cognitionStripSeq;
+    try {
+      const [candidatesResult, assetsResult] = await Promise.all([
+        _invokeOrDefault('recall.candidates.list', {}, { ok: false }),
+        _invokeOrDefault('cognition.assets.list', { limit: 500 }, { ok: false }),
+      ]);
+      if (seq !== _cognitionStripSeq || cid !== _cid) return;
+      const candidates = candidatesResult && candidatesResult.ok && Array.isArray(candidatesResult.candidates)
+        ? candidatesResult.candidates.filter((c) => c && Array.isArray(c.sourceRefs)
+            && c.sourceRefs.some((ref) => ref && ref.kind === 'conversation' && ref.id === cid))
+        : [];
+      const assets = assetsResult && assetsResult.ok && Array.isArray(assetsResult.assets) ? assetsResult.assets : [];
+      _snapshot = { ..._snapshot, candidates, assets };
+      _renderCognitionStrip();
+    } catch (_) {
+      /* 静默：行不出现 */
+    }
+  }
+
+  function _renderCognitionStrip() {
+    const el = document.getElementById('chat-cognition-strip');
+    if (!el) return;
+    const cid = _cid;
+    if (!cid) { el.hidden = true; el.innerHTML = ''; return; }
+    // 可见性只取决于衔接行自己的数据（两条通道是否给出计数）——不与抽屉的
+    // loading/error 态连坐：抽屉其它源（历史/文件）失败不该把这行藏掉
+    //（真机抓出：伪会话历史 404 → error → 行被误藏）。数据未到＝键缺失＝隐藏。
+    const counts = _sessionCognitionCounts(cid, _snapshot.candidates, _snapshot.assets);
+    const settled = counts.confirmed.length + counts.extraAssets.length;
+    const pending = counts.pending.length;
+    if (!settled && !pending) { el.hidden = true; el.innerHTML = ''; return; }
+    const settledPart = settled
+      ? _label('conversation_info.cognition_strip_settled', '这段对话沉淀过 {n} 条认知', { n: String(settled) })
+      : '';
+    const pendingPart = pending
+      ? _label(settled ? 'conversation_info.cognition_strip_pending' : 'conversation_info.cognition_strip_pending_only',
+        settled ? '待确认 {n} 条' : '这段对话还有 {n} 条认知待确认', { n: String(pending) })
+      : '';
+    const summary = [settledPart, pendingPart].filter(Boolean).join(' · ');
+    el.innerHTML =
+      '<div class="chat-cognition-strip-inner" role="status">' +
+        '<span data-ui-icon="git-branch" data-ui-icon-class="ui-icon chat-cognition-strip-icon"></span>' +
+        '<span class="chat-cognition-strip-label">' + escapeHtml(summary) + '</span>' +
+        _button({
+          label: _label('conversation_info.cognition_strip_goto', '去看'),
+          role: 'ghost',
+          size: 'sm',
+          className: 'chat-cognition-strip-goto',
+          attrs: { 'data-cognition-strip-goto': '1' },
+        }) +
+      '</div>';
+    el.hidden = false;
+    if (typeof window.hydrateUiIcons === 'function') window.hydrateUiIcons(el);
+  }
+
   function _renderBody() {
     _closeFileMenu();
     const body = document.getElementById('conversation-info-body');
@@ -1820,6 +1899,7 @@ const ConversationInfo = (() => {
     if (typeof window !== 'undefined' && typeof window.hydrateUiIcons === 'function') {
       window.hydrateUiIcons(body);
     }
+    _renderCognitionStrip();
   }
 
   function _syncChrome() {
@@ -1994,6 +2074,11 @@ const ConversationInfo = (() => {
     _attachmentSeq++;
     _syncChrome();
     _renderBody();
+    // 019 会话侧衔接：抽屉未打开时 refresh() 以 _open 为闸不拉数据，但头部
+    // 衔接行不依赖抽屉开合——bind 即后台拉「按会话的认知计数」（仅两条既有
+    // 只读通道），到货后只更新衔接行，不渲染抽屉体（抽屉打开时本就有全量
+    // refresh 兜底，预填数据会被覆盖，不会陈旧外泄）。
+    if (_cid) void _loadCognitionStripData(_cid);
     if (_open && _cid) refresh(_cid);
   }
 
@@ -2314,6 +2399,17 @@ const ConversationInfo = (() => {
     if (close && close.dataset.bound !== '1') {
       close.dataset.bound = '1';
       close.addEventListener('click', () => _setOpen(false));
+    }
+    // 会话头部认知衔接行（specs/019）：「去看」→ 抽屉「四类资产」tab（本会话视角）。
+    const cogStrip = document.getElementById('chat-cognition-strip');
+    if (cogStrip && cogStrip.dataset.bound !== '1') {
+      cogStrip.dataset.bound = '1';
+      cogStrip.addEventListener('click', (ev) => {
+        if (!ev.target.closest('[data-cognition-strip-goto]')) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        openAndSetTab('assets');
+      });
     }
     if (body && body.dataset.bound !== '1') {
       body.dataset.bound = '1';

@@ -179,6 +179,10 @@ function renderFilesResult(snapshot: {
           urls,
           focusCalls,
           panelHidden: getEl('conversation-info-panel').hidden === true,
+          cognitionStrip: {
+            html: getEl('chat-cognition-strip').innerHTML,
+            hidden: getEl('chat-cognition-strip').hidden === true,
+          },
         }), reject);
         resolve({
           html: getEl('conversation-info-body').innerHTML,
@@ -191,6 +195,10 @@ function renderFilesResult(snapshot: {
           urls,
           focusCalls,
           panelHidden: getEl('conversation-info-panel').hidden === true,
+          cognitionStrip: {
+            html: getEl('chat-cognition-strip').innerHTML,
+            hidden: getEl('chat-cognition-strip').hidden === true,
+          },
         });
       } catch (err) {
         reject(err);
@@ -1174,6 +1182,102 @@ describe('ConversationInfo files tab', () => {
       expect(container.innerHTML).toContain('src-9');
       expect(container.innerHTML).toContain('asset-a · asset-b');
       expect(container.innerHTML).toContain('只读');
+    });
+  });
+
+  // ── specs/019 会话侧衔接：头部认知衔接行 ─────────────────────────────
+  describe('chat cognition strip (specs/019)', () => {
+    const baseFiles = { root: '/tmp/workspace', rootExists: true, truncated: false, count: 0, items: [] };
+
+    it('有沉淀与待确认：行出现、分段措辞（未确认不说成沉淀过）、带「去看」落点', async () => {
+      const result = await renderFilesResult({
+        history: [],
+        files: baseFiles,
+        attachments: [],
+        candidates: [
+          { id: 'cand-ok', status: 'confirmed', judgment: '已确认的一条', suggestedType: 'personal', sourceRefs: [{ kind: 'conversation', id: 'c1' }] },
+          { id: 'cand-wait', status: 'pending_review', judgment: '待确认的一条', suggestedType: 'rule', sourceRefs: [{ kind: 'conversation', id: 'c1' }] },
+          { id: 'cand-other', status: 'pending_review', judgment: '别的会话', suggestedType: 'rule', sourceRefs: [{ kind: 'conversation', id: 'c2' }] },
+        ],
+        assets: [],
+      } as any);
+      expect(result.cognitionStrip.hidden).toBe(false);
+      expect(result.cognitionStrip.html).toContain('这段对话沉淀过 1 条认知');
+      expect(result.cognitionStrip.html).toContain('待确认 1 条');
+      // 未确认候选不得说成「沉淀过」：待确认数字独立分段。
+      expect(result.cognitionStrip.html).not.toContain('沉淀过 2');
+      expect(result.cognitionStrip.html).toContain('data-cognition-strip-goto');
+    });
+
+    it('relationRefs 关联的正式资产计入沉淀；与抽屉 tab 同一计数（同屏一致）', async () => {
+      const result = await renderFilesResult({
+        history: [],
+        files: baseFiles,
+        attachments: [],
+        candidates: [],
+        assets: [
+          { id: 'aa-1', category: 'rule', title: '从本会话沉淀的资产', relationRefs: [{ type: 'conversation', id: 'c1' }] },
+          { id: 'aa-2', category: 'rule', title: '别的会话的资产', relationRefs: [{ type: 'conversation', id: 'c2' }] },
+        ],
+      } as any);
+      expect(result.cognitionStrip.html).toContain('这段对话沉淀过 1 条认知');
+      expect(result.cognitionStrip.html).not.toContain('aa-2');
+      // 抽屉「四类资产」段的已沉淀计数 = 同一个函数算出（1）。
+      expect(result.html).toContain('已沉淀资产');
+    });
+
+    it('N=M=0：整行不出现（硬口径 2）', async () => {
+      const result = await renderFilesResult({
+        history: [],
+        files: baseFiles,
+        attachments: [],
+        candidates: [
+          { id: 'cand-rej', status: 'rejected', judgment: '被拒的一条', suggestedType: 'rule', sourceRefs: [{ kind: 'conversation', id: 'c1' }] },
+        ],
+        assets: [],
+      } as any);
+      expect(result.cognitionStrip.hidden).toBe(true);
+      expect(result.cognitionStrip.html).toBe('');
+    });
+
+    it('只有待确认：用 pending_only 措辞，不出现「沉淀过」', async () => {
+      const result = await renderFilesResult({
+        history: [],
+        files: baseFiles,
+        attachments: [],
+        candidates: [
+          { id: 'cand-only', status: 'deferred', judgment: '稍后的一条', suggestedType: 'rule', sourceRefs: [{ kind: 'conversation', id: 'c1' }] },
+        ],
+        assets: [],
+      } as any);
+      expect(result.cognitionStrip.hidden).toBe(false);
+      expect(result.cognitionStrip.html).toContain('这段对话还有 1 条认知待确认');
+      expect(result.cognitionStrip.html).not.toContain('沉淀过');
+    });
+
+    it('「去看」→ 打开抽屉并激活 assets tab（硬口径 3：落点可达）', async () => {
+      const result = await renderFilesResult({
+        history: [],
+        files: baseFiles,
+        attachments: [],
+        candidates: [
+          { id: 'cand-w2', status: 'pending_review', judgment: '待确认', suggestedType: 'rule', sourceRefs: [{ kind: 'conversation', id: 'c1' }] },
+        ],
+        assets: [],
+      } as any, async (context: any) => {
+        const strip = context.document.getElementById('chat-cognition-strip');
+        // 等衔接行真渲染出来（数据加载完成）再点，避免点在 Loading 态上。
+        for (let i = 0; i < 50 && !strip.innerHTML; i += 1) await new Promise((r) => setTimeout(r, 20));
+        strip.onclick({
+          target: { closest: (sel: string) => (String(sel).includes('cognition-strip-goto') ? {} : null) },
+          preventDefault() {},
+          stopPropagation() {},
+        });
+        await new Promise((r) => setTimeout(r, 30));
+      });
+      expect(result.panelHidden).toBe(false);
+      expect(result.html).toContain('data-run-context-tab="assets"');
+      expect(result.html.match(/is-active[^>]*data-run-context-tab="assets"|data-run-context-tab="assets"[^>]*is-active/)).toBeTruthy();
     });
   });
 });
