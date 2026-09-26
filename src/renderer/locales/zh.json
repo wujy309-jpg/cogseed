@@ -8210,6 +8210,8 @@
   "cognition.activity_event_inspection_go": "去看看",
   "cognition.settings_back_to_activity_hint": "这里改的一切，效果都在「系统活动」的时间线上看得到。",
   "cognition.settings_back_to_activity": "去系统活动",
+  "cognition.tree_crown_empty": "还没有被真用过的",
+  "cognition.activity_event_cleanup_empty": "大扫除跑完，没有要归并的",
   "personalOntology.nav_groups": "本体分组",
   "personalOntology.groups_title": "本体分组",
   "personalOntology.dest_no_groups": "暂无本体分组"

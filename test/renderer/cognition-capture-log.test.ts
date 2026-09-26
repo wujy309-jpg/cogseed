@@ -567,6 +567,33 @@ describe('整理页（任务流 + 策略抽屉）', () => {
     expect(appSource).toContain("tagSelect: inManage ? '' :");
   });
 
+  it('0 值分段不出现（specs/018 迭代轮 2 猎区 1）：空库导语让位空态，树冠与大扫除给空态专用句', () => {
+    // P3 导语：0 条认知 · 0 条等你确认 → 数字段全隐，空态引导承接。
+    const emptyOverview = renderPage('overview', { assets: [], proofs: [], sources: [], candidates: [] });
+    expect(emptyOverview).not.toContain('条认知');
+    expect(emptyOverview).not.toContain('条等你确认');
+    expect(emptyOverview).toContain('还没有正式资产');
+    // 有认知、无待确认：只出资产段。
+    const noPending = renderPage('overview', {
+      assets: [{ id: 'aa-x', title: '一条', type: 'rule', status: 'active', version: '1', updatedAt: '2026-09-26T00:00:00.000Z' }],
+      proofs: [], sources: [], candidates: [],
+    });
+    expect(noPending).toContain('1');
+    expect(noPending).toContain('条认知');
+    expect(noPending).not.toContain('条等你确认');
+    // 树冠：0 已验证 → 空态专用句，不出「被真用过 0」。
+    const tree = renderPage('tree', { assets: [], proofs: [], sources: [], candidates: [] });
+    expect(tree).toContain('还没有被真用过的');
+    expect(tree).not.toContain('被真用过 0');
+    // 大扫除事件：跑了但 0 归并 → 空态专用句。
+    const cleanupZero = renderPage('activity', {
+      ...baseStore,
+      cleanupReports: { loading: false, reports: [{ id: 'rep-0', createdAt: '2026-09-25T10:11:00.000Z', items: [{ status: 'skipped' }], uncertain: [] }] },
+    });
+    expect(cleanupZero).toContain('大扫除跑完，没有要归并的');
+    expect(cleanupZero).not.toContain('归并 0 条');
+  });
+
   it('「等待确认」口径统一（2026-09-16 B1）：deferred 可见但不占数，带「已稍后处理」标注', () => {
     // 审计 B1：三套口径曾同时给出 7/5/0。统一为「需要判断且未被稍后处理
     // 静音」——统计卡/全局 stats 同函数；deferred 行留在列表（子安口径）。

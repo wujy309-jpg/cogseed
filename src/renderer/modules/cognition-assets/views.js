@@ -946,7 +946,9 @@
        连续形体，而不是三个椭圆的叠影），左上一道高光；中央白底药丸
        承载「被真用过 N」（与枝牌同一视觉语言），整冠可点=已验证资产，
        落点「我的认知」默认按最近真实使用排（018 T021）。 */
-    const crownTitle = T('cognition.tree_crown_validated', '被真用过 {n}', { n: String(validated) });
+    const crownTitle = validated
+      ? T('cognition.tree_crown_validated', '被真用过 {n}', { n: String(validated) })
+      : T('cognition.tree_crown_empty', '还没有被真用过的');
     const pillY = crownCy - 20;
     g += `<g class="spot" ${roleBtn(`data-act="open-overview" data-title="${esc(crownTitle)}" data-sub="${esc(T('cognition.tree_crown_sub', '被真用过的都在树冠——点开按最近真实使用排'))}" aria-label="${esc(crownTitle)}"`)}>
       <circle cx="${cx}" cy="${crownCy}" r="118" fill="url(#ca-crown-grad)"/>
@@ -2290,10 +2292,20 @@
      * {n} 条认知（点开滚到列表）· {m} 条等你确认（去「待我处理」）。
      * n 与默认列表同口径（排除已删除/归档等隐藏态——stats.confirmed 口径
      * 更宽，真机上出现过 18 vs 16 的两个数字打架）。
+     * 0 值分段不出现（迭代轮 2 猎区 1：空库时「0 条认知 · 0 条等你确认」
+     * 与下方空态重复且无信息量，导语让位给空态的引导文案）。
      * 「当前任务选用」卡仍撤（2026-09-21 口径不变）。 */
     const visibleAssetCount = S.assets.filter((a) => !['archived', 'deleted', 'purged', 'revoked'].includes(String(a.status || 'active'))).length;
     const leadNum = (value, anchor) => `<span class="chip-link ca-jump-num" data-act="review-jump" data-id="${esc(anchor)}" ${roleBtn()}>${esc(String(value))}</span>`;
-    const heroLead = `<div class="sub">${leadNum(visibleAssetCount, 'ca-asset-list')} ${esc(T('cognition.overview_lead_assets', '条认知'))} · <span class="chip-link ca-jump-num" data-act="go-review" ${roleBtn()}>${esc(String(stats.pending))}</span> ${esc(T('cognition.overview_lead_pending', '条等你确认'))}</div>`;
+    const assetsPart = visibleAssetCount
+      ? `${leadNum(visibleAssetCount, 'ca-asset-list')} ${esc(T('cognition.overview_lead_assets', '条认知'))}`
+      : '';
+    const pendingPart = stats.pending
+      ? `<span class="chip-link ca-jump-num" data-act="go-review" ${roleBtn()}>${esc(String(stats.pending))}</span> ${esc(T('cognition.overview_lead_pending', '条等你确认'))}`
+      : '';
+    const heroLead = [assetsPart, pendingPart].filter(Boolean).length
+      ? `<div class="sub">${[assetsPart, pendingPart].join(' · ')}</div>`
+      : '';
     const heroHtml = hero(
       T('cognition.overview_title', '我的认知资产'),
       '',
@@ -3945,14 +3957,21 @@
      * （它们不属于任何整理分桶）。发起入口在「设置」页（不重复摆卡）。 */
     const cleanupEvents = ((S.cleanupReports && Array.isArray(S.cleanupReports.reports)) ? S.cleanupReports.reports : [])
       .slice(0, 3)
-      .map((report) => ({
-        at: String(report.createdAt || ''),
-        html: `<div class="cap-row">
-          <div class="tw"><div class="tt">${esc(T('cognition.activity_event_cleanup', '大扫除归并 {n} 条重复', { n: String((report.items || []).filter((item) => item.status === 'applied').length) }))}</div>
+      .map((report) => {
+        // 0 归并是合法结果（跑了但没找到可归并的）——给空态专用句，
+        // 不写「归并 0 条重复」（迭代轮 2 猎区 1）。
+        const merged = (report.items || []).filter((item) => item.status === 'applied').length;
+        return {
+          at: String(report.createdAt || ''),
+          html: `<div class="cap-row">
+          <div class="tw"><div class="tt">${esc(merged
+            ? T('cognition.activity_event_cleanup', '大扫除归并 {n} 条重复', { n: String(merged) })
+            : T('cognition.activity_event_cleanup_empty', '大扫除跑完，没有要归并的'))}</div>
           <div class="mm"><span>${esc(fmtDate(report.createdAt))}</span></div></div>
           <div class="sd">${btn(T('cognition.activity_event_see_report', '看报告'), 'open-cleanup-report', { small: true, className: 'o', data: { report: String(report.id) } })}</div>
         </div>`,
-      }));
+        };
+      });
     const inspectionEvents = [];
     if (S.inspection && S.inspection.latestRun) {
       const run = S.inspection.latestRun;
