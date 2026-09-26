@@ -99,3 +99,15 @@ describe('认知资产动作契约', () => {
     expect(core).toContain('acknowledgeAssetRecommendation');
   });
 });
+
+/* ═══════════ 真机修复守卫（2026-09-26 T035 取证抓出）═══════════
+ * app.js 曾在 purge 按钮的委托分支裸调 confirmUser（helper 实际经
+ * NS.confirmUser 暴露）→ 真机点击直接 ReferenceError，「立即彻底删除」
+ * 按钮一直是死的。源码级钉住：app.js 内不得再出现裸引用。 */
+describe('app.js 委托层的 helper 引用（真机修复守卫）', () => {
+  it('confirmUser 一律经 NS.confirmUser——裸引用即红', () => {
+    const bare = [...app.matchAll(/(?<!NS\.)\bconfirmUser\s*\(/g)];
+    expect(bare.map((m) => m[0]), `app.js 存在裸 confirmUser 调用（真机会 ReferenceError）：${bare.length} 处`).toHaveLength(0);
+    expect(app).toContain('NS.confirmUser');
+  });
+});

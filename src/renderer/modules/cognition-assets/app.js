@@ -198,7 +198,11 @@
           case 'inspection-toggle': await A.setInspectionEnabled(!(S.inspection && S.inspection.settings && S.inspection.settings.enabled)); break;
           case 'run-inspection': await A.runInspection(); break;
           case 'purge-deleted-asset': {
-            const ok = await confirmUser(T('cognition.deleted_purge_confirm', '彻底删除后内容与记录一并清除、不可恢复。确认删除？'), true);
+            // 真机修复（2026-09-26 T035 取证抓出）：此处曾裸调 confirmUser ——
+            // helper 定义在 core.js 闭包、经 NS.confirmUser 暴露，裸引用直接
+            // ReferenceError，「立即彻底删除」按钮在真机上一直点不动（测试只打
+            // core 动作层， delegation 层的裸引用漏网）。
+            const ok = await NS.confirmUser(T('cognition.deleted_purge_confirm', '彻底删除后内容与记录一并清除、不可恢复。确认删除？'), true);
             if (ok) await A.purgeDeletedAsset(id);
             break;
           }
