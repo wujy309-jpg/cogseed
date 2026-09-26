@@ -53,8 +53,8 @@ describe('经验入口：「我的认知」下的分类档（specs/017 整改一
   it('顶层页签是五个（无「经验」），经验收编为「我的认知」分类档；旧深链 name:experiences 归一化', () => {
     const html = renderCognition({ name: 'experiences' }, { experiences: loadedExperiences([]) });
     const ids = [...html.matchAll(/class="ca-tab[^"]*" data-act="tab" data-id="([a-z-]+)"/g)].map((m) => m[1]);
-    // specs/018:五页签=待我处理/我的认知/个人本体/系统活动/设置。
-    expect(ids).toEqual(['review', 'overview', 'ontology', 'activity', 'settings']);
+    // specs/018 + 树恢复:六页签=认知树/个人本体/我的认知/待我处理/系统活动/设置。
+    expect(ids).toEqual(['tree', 'ontology', 'overview', 'review', 'activity', 'settings']);
     expect(html).not.toContain('data-act="tab" data-id="experiences"');
     // 旧深链 { name: 'experiences' } 归一到「我的认知」：经验档选中、目录在页面内。
     expect(html).toContain('data-act="filter-cat" data-id="experiences"');

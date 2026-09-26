@@ -130,17 +130,25 @@ function groupsFixture(_items: Array<Record<string, unknown>>) {
 }
 
 describe('治理待办分组区（specs/010 T014~T016/T011/T025）', () => {
-  it('分组标题按固定顺序呈现、未分级显示总数而非条数、空组不出标题', () => {
+  it('urgency 分区内分组保持主进程定序、未分级显示总数、空组不出标题', () => {
+    // specs/018 v2（2026-09-26 真机重做）：分区按后端 urgency（要你拍板 /
+    // 低打扰），组名降为区内小节；主进程组序在区内保持。
     const items = [CONFLICT_ITEM, ESCALATION_ITEM, BOUNDARY_ITEM, ...UNCLASSIFIED_ITEMS, PAIR_FINDING, OTHER_ITEM];
     const html = renderPage('review', { inbox: items, inboxGroups: groupsFixture(items) });
-    const order = [
-      html.indexOf('冲突与重复'), html.indexOf('敏感级扩权'), html.indexOf('缺少作用边界'),
-      html.indexOf('尚未分级'), html.indexOf('其他待处理'),
-    ];
-    for (const at of order) expect(at).toBeGreaterThan(-1);
-    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    const at = (label: string) => html.indexOf(label);
+    for (const label of ['冲突与重复', '敏感级扩权', '缺少作用边界', '尚未分级', '其他待处理']) {
+      expect(at(label)).toBeGreaterThan(-1);
+    }
+    // 「要你拍板」区（urgency=confirm）：冲突 → 扩权 → 未分级 保持组序。
+    expect(at('要你拍板')).toBeGreaterThan(-1);
+    expect(at('冲突与重复')).toBeLessThan(at('敏感级扩权'));
+    expect(at('敏感级扩权')).toBeLessThan(at('尚未分级'));
+    // 「低打扰」折叠区在拍板区之后：缺边界（low）与「其他」落在里面。
+    const lowAt = html.indexOf('fold-low');
+    expect(lowAt).toBeGreaterThan(at('尚未分级'));
+    expect(html.indexOf('缺少作用边界', lowAt)).toBeLessThan(html.indexOf('其他待处理', lowAt));
     // 未分级组显示 total（2）而非 count（1）。
-    const unclassifiedBlock = html.slice(html.indexOf('尚未分级'), html.indexOf('其他待处理'));
+    const unclassifiedBlock = html.slice(at('尚未分级'), at('缺少作用边界'));
     expect(unclassifiedBlock).toContain('>2<');
   });
 

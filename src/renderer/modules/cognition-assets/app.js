@@ -118,7 +118,7 @@
           case 'filter-cat': router.go({ name: 'overview', category: id }); break;
           // 目录视图切换（2026-09-18）：同一个列表页换一种行形态（模型视角），
           // 不新增 tab。assetView 必须进 router.go 的归一化白名单，否则被丢弃。
-          case 'asset-view': router.go({ name: 'overview', assetView: id === 'catalog' ? 'catalog' : id === 'tree' ? 'tree' : '' }); break;
+          case 'asset-view': router.go(id === 'tree' ? { name: 'tree' } : { name: 'overview', assetView: id === 'catalog' ? 'catalog' : '' }); break;
           case 'go-review': router.go({ name: 'review' }); break;
           case 'go-organize': router.go({ name: 'activity' }); break;
           case 'go-configure-model': {
@@ -528,6 +528,14 @@
             }
             break;
           }
+          case 'inbox-form-toggle': {
+            // 补边界表单展开/收起（specs/018 v2）：纯前端态，不触发重画
+            //（重画会丢同页其他未保存输入）。
+            const row = el.closest('.inbox-governance-form');
+            const body = row ? row.querySelector('[data-inbox-boundary-body]') : null;
+            if (body) body.hidden = !body.hidden;
+            break;
+          }
           case 'toggle-organize-list': {
             S.organizeListExpanded = !S.organizeListExpanded;
             NS.notify();
@@ -746,7 +754,7 @@
     let treeResizeFrame = 0;
     let lastTreeWidth = 0;
     window.addEventListener('resize', () => {
-      if (!(S.route.name === 'overview' && S.route.assetView === 'tree')) return;
+      if (S.route.name !== 'tree') return;
       const svg = document.getElementById('ca-tree-svg');
       const width = svg ? svg.clientWidth : 0;
       if (!width || width === lastTreeWidth) return;
@@ -757,8 +765,8 @@
     window.addEventListener('resize', () => requestAnimationFrame(fitTabs));
     NS.render();
     await NS.reload();
-    // 树是「我的认知」的一种投影(specs/018):进 overview 就补一次树数据。
-    if (!treeRequested && S.route.name === 'overview') { treeRequested = true; await NS.reload({ tree: true }); }
+    // 认知树是默认落地页:快照落地后按需补一次树(overview 页也保留补树)。
+    if (!treeRequested && (S.route.name === 'tree' || S.route.name === 'overview')) { treeRequested = true; await NS.reload({ tree: true }); }
     NS.notify();
   }
 
@@ -775,7 +783,7 @@
 
   // 数据变化时：树页/概览页没树就补树。
   NS.onChange(() => {
-    if (S.route.name === 'overview' && !treeRequested && S.loaded) {
+    if ((S.route.name === 'tree' || S.route.name === 'overview') && !treeRequested && S.loaded) {
       treeRequested = true;
       void NS.reload({ tree: true });
     }

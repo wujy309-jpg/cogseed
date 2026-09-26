@@ -69,9 +69,10 @@ describe('Recall cognition workspace layout', () => {
     // 我的认知(资产与经验,含树·目录投影) / 个人本体(独立模块) / 系统活动
     // (原「整理」:任务流+报告+巡检) / 设置(原「沉淀设置」升级)。
     const core = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/core.js'), 'utf-8');
-    expect(core).toContain("{ id: 'review', titleKey: 'cognition.tab_review'");
-    expect(core).toContain("{ id: 'overview', titleKey: 'cognition.tab_overview'");
+    expect(core).toContain("{ id: 'tree', titleKey: 'cognition.tab_tree'");
     expect(core).toContain("{ id: 'ontology', titleKey: 'cognition.tab_ontology'");
+    expect(core).toContain("{ id: 'overview', titleKey: 'cognition.tab_overview'");
+    expect(core).toContain("{ id: 'review', titleKey: 'cognition.tab_review'");
     expect(core).toContain("{ id: 'activity', titleKey: 'cognition.tab_activity'");
     expect(core).toContain("{ id: 'settings', titleKey: 'cognition.tab_settings'");
     // tab 由 views.js 渲染进 #ca-root 的 .ca-tabs，数据驱动（data-act="tab"）。
@@ -170,7 +171,7 @@ describe('Recall cognition workspace layout', () => {
     // 个人本体是独立模块挂载。
     const core = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/core.js'), 'utf-8');
     const tabIds = [...core.matchAll(/\{ id: '([a-z]+)', titleKey: 'cognition\.tab_/g)].map((m) => m[1]);
-    expect(tabIds).toEqual(['review', 'overview', 'ontology', 'activity', 'settings']);
+    expect(tabIds).toEqual(['tree', 'ontology', 'overview', 'review', 'activity', 'settings']);
     expect(core).toContain('sourceIssueOpen');
     // 来源健康入口只出现在待我处理（review）页。
     const views = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/views.js'), 'utf-8');
@@ -237,7 +238,7 @@ describe('Recall cognition workspace layout', () => {
     expect(views).toContain('T(tab.titleKey, tab.title)');
     // tab 标题 key 来自 core.js TABS 定义。
     const core = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/core.js'), 'utf-8');
-    for (const key of ['cognition.tab_review', 'cognition.tab_overview', 'cognition.tab_ontology', 'cognition.tab_activity', 'cognition.tab_settings']) {
+    for (const key of ['cognition.tab_tree', 'cognition.tab_ontology', 'cognition.tab_overview', 'cognition.tab_review', 'cognition.tab_activity', 'cognition.tab_settings']) {
       expect(core).toContain(key);
     }
     const app = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/app.js'), 'utf-8');
@@ -353,12 +354,12 @@ describe('Recall cognition workspace layout', () => {
    * 这条用例因此从"只跳一次"翻转为"一次都不跳"。原断言编码的是被取消的行为，
    * 不是回归。
    */
-  it('lands on the review queue without auto-redirecting away', () => {
-    // specs/018:路由默认 review（待我处理）——有待办先办事，不因待办为空
-    // 自动跳页;空态给结论与显式入口,跳不跳由用户决定。
+  it('lands on the cognition tree without auto-redirecting away', () => {
+    // 2026-09-26 子安真机否决树降级:默认落地恢复认知树;不因待办为空
+    // 自动跳页;空态给显式入口,跳不跳由用户决定。
     const core = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/core.js'), 'utf-8');
-    expect(core).toContain("route: { name: 'review'");
-    expect(core).toContain("Object.assign({ name: 'review'");
+    expect(core).toContain("route: { name: 'tree'");
+    expect(core).toContain("Object.assign({ name: 'tree'");
     // 没有 switchSkillsCognitionPage 这类强制跳转残留。
     const skills = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/skills.js'), 'utf-8');
     expect(skills).not.toContain('switchSkillsCognitionPage');

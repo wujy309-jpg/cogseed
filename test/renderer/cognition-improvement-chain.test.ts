@@ -376,11 +376,11 @@ describe('「改进分析」只读分区（T016 / US-701 AC3）', () => {
     expect(tail).toContain(T('cognition.evidence_task_review', '', { title: '第一次复盘任务' }));
     expect(tail).toMatch(/\d{4}\/\d{1,2}\/\d{1,2}/);
     expect(tail).not.toContain(OUTCOME_ISO);
-    // 只读：没有决定按钮，也不进待办（待确认计数仍是 0）。
+    // 只读：没有决定按钮，也不进待办（「要你拍板」计数仍是 0；specs/018 v2 统计卡口径）。
     expect(tail).not.toContain('<button');
     expect(tail).not.toContain('data-act="cand-');
     expect(tail).not.toContain('data-act="inbox-resolve"');
-    expect(html).toContain('<div class="v a">0</div><div class="l">等待确认</div>');
+    expect(html).toContain('<div class="v a">0</div><div class="l">要你拍板</div>');
   });
 
   it('结论原因里的内部 id 不上屏：换成资产名或泛称', () => {

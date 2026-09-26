@@ -507,10 +507,12 @@ describe('整理页（任务流 + 策略抽屉）', () => {
       sources: [conversationSources[0]],
       candidates: [mk('p1', 'pending_review', false), mk('d1', 'deferred', true)],
     });
-    expect(html).toContain('class="v a">1</div><div class="l">等待确认');
+    // specs/018 v2：统计卡改「要你拍板/低打扰/证据异常」三口径；deferred
+    // 仍可见但不占「要你拍板」数（1 而非 2）。
+    expect(html).toContain('class="v a">1</div><div class="l">要你拍板');
     expect(html).toContain('标题-d1');
     expect(html).toContain('已稍后处理');
-    expect(html).not.toContain('<b>2</b><span>等待确认');
+    expect(html).not.toContain('class="v a">2</div><div class="l">要你拍板');
   });
 
   it('批量入口只留重试失败;批量「立即整理」不迁移(2026-09-21 原型 v7 定调)', () => {

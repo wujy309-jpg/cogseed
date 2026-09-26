@@ -2982,6 +2982,13 @@
     const actionLabelsFor = (kind) => (kind === 'asset_change_pending'
       ? PROPOSAL_ACTION_LABELS
       : kind === 'cleanup_uncertain' || kind === 'inspection_finding' ? FINDING_ACTION_LABELS : INBOX_ACTION_LABELS);
+    // 标题一行截断（2026-09-26 真机取证）：inbox 的 title 可能是资产正文全文，
+    // 五行大标题把整页压垮；全文进 title 悬浮，行上只给一句能扫的。
+    const rowTitle = (row) => {
+      const raw = String(row.title || '');
+      const cut = raw.length > 60 ? `${raw.slice(0, 60)}…` : raw;
+      return `<div class="notice-title" title="${esc(raw)}">${esc(cut)}</div>`;
+    };
     // 既有扁平行的渲染（降级路径与「其他」组共用，语义不变）。
     const flatInboxRow = (row) => {
       const actions = Array.isArray(row.actions) ? row.actions : [];
@@ -2994,7 +3001,7 @@
         ? ''
         : btn(T('cognition.inbox_go_asset', '去资产详情处理'), 'go-inbox-asset', { small: true, className: 'o', data: { id: String(row.assetId) } });
       return `<div class="notice-row">
-        <div class="notice-copy"><div class="notice-title">${esc(String(row.title || ''))}</div>${row.detail ? `<div class="notice-detail">${esc(String(row.detail))}</div>` : ''}</div>
+        <div class="notice-copy">${rowTitle(row)}${row.detail ? `<div class="notice-detail">${esc(String(row.detail))}</div>` : ''}</div>
         <span class="sp"></span>${fallback}${buttons}
       </div>`;
     };
@@ -3012,15 +3019,6 @@
       boundary: T('cognition.inbox_rule_boundary_hint', '没有作用边界的规则不会被自动带入任何任务，补齐后才会生效。'),
       unclassified: T('cognition.inbox_sensitivity_unclassified_hint', '未分级不等于 L0：分级前不会被带往声明了敏感上限的目的地。'),
     };
-    // 组级「你能做什么 + 一句话后果」（specs/017 整改二）：hint 讲为什么需要
-    // 你，effect 讲处理与不处理各会发生什么——每条待办三件事讲齐。
-    const GROUP_EFFECTS = {
-      conflict: T('cognition.inbox_group_conflict_effect', '选边保留或合并其中一条；不处理，两条会一直互相挡住晋升。'),
-      escalation: T('cognition.inbox_group_escalation_effect', '确认后扩权生效，驳回则维持原级。'),
-      boundary: T('cognition.inbox_group_boundary_effect', '补齐条件并保存后，这条规则才会自动带入匹配的任务。'),
-      unclassified: T('cognition.inbox_group_unclassified_effect', '选好档位保存后立即生效；分级前它不会被带往声明了敏感上限的目的地。'),
-      other: T('cognition.inbox_group_other_effect', '逐条给出决定：确认、拒绝或稍后处理。'),
-    };
     // ── 敏感级三档控件（specs/010 T011）：未分级时三档都不选中 ──
     const levelControl = (key, current) => window.uiSegmentedControl({
       ariaLabel: T('cognition.inbox_ask_classify', '补充敏感级分类'),
@@ -3033,7 +3031,9 @@
       const actions = Array.isArray(row.actions) ? row.actions : [];
       const has = (action) => actions.includes(action);
       const id = String(row.id || '');
-      const head = `<div class="notice-copy"><div class="notice-title">${esc(String(row.title || ''))}</div>${row.detail ? `<div class="notice-detail">${esc(String(row.detail))}</div>` : ''}</div>`;
+      // 聚合行的 detail 与组 hint 同文（真机截图取证）：不重复摆第二遍。
+      const detail = row.aggregate ? '' : row.detail;
+      const head = `<div class="notice-copy">${rowTitle(row)}${detail ? `<div class="notice-detail">${esc(String(detail))}</div>` : ''}</div>`;
       if (row.kind === 'sensitivity_escalated') {
         return `<div class="notice-row">${head}<span class="sp"></span>${has('accept') ? btn(T('cognition.inbox_action_escalation_accept', '确认扩权'), 'inbox-escalation-accept', { small: true, data: { id } }) : ''}${has('reject') ? btn(T('cognition.inbox_action_escalation_reject', '驳回，维持原级'), 'inbox-escalation-reject', { small: true, danger: true, data: { id } }) : ''}</div>`;
       }
@@ -3042,9 +3042,12 @@
         // 后果）：预填当前条件，保存前主进程过同一道闸门。
         const formId = `inbox-bnd-${String(row.assetId || id).replace(/[^A-Za-z0-9_-]/g, '')}`;
         const boundary = row.boundary || {};
+        // 表单默认收起（真机取证：38 条待办每条摊开两个空输入框=一屏墙）；
+        // 「补条件」一键展开，展开后才是要填的字段与保存后果。
         return `<div class="notice-row inbox-governance-form" data-inbox-boundary-form>
           ${head}
-          <div class="inbox-inline-fields">
+          <div class="sd">${btn(T('cognition.inbox_form_open', '补条件'), 'inbox-form-toggle', { small: true, className: 'o', data: { id } })}</div>
+          <div class="inbox-inline-fields" data-inbox-boundary-body hidden>
             <label class="field"><span>${esc(T('cognition.inbox_boundary_field_applicable', '适用情形'))}</span>${window.uiInput({ id: `${formId}-applicable`, value: (boundary.applicableWhen || []).join('、'), attrs: { 'data-f': 'applicableWhen' } })}</label>
             <label class="field"><span>${esc(T('cognition.inbox_boundary_field_forbidden', '禁用情形'))}</span>${window.uiInput({ id: `${formId}-forbidden`, value: (boundary.forbiddenWhen || []).join('、'), attrs: { 'data-f': 'forbiddenWhen' } })}</label>
             <p class="note inbox-effect-note">${esc(T('cognition.inbox_boundary_save_effect', '保存后：主进程重新校验，通过后这条规则恢复自动带入；不通过会把原因留在这里。'))}</p>
@@ -3089,53 +3092,66 @@
       // 其余（含没有就地处断动作的）沿用既有扁平行（落点按钮同现状）。
       return flatInboxRow(row);
     };
+    // ── 决策队列（specs/018 v2 · 2026-09-26 真机重做）：后端 urgency
+    //（confirm/low_disturbance）决定分区；组名只作区内小节；计数三口径
+    // 统一成「要你拍板 / 低打扰 / 证据异常」，与页签角标同一来源。
+    const isConfirm = (row) => String(row.urgency || '') === 'confirm';
+    const groupBlock = (group, items) => {
+      const title = GROUP_TITLES[group.category] || GROUP_TITLES.other;
+      const hint = GROUP_HINTS[group.category];
+      const rows = items.map((row) => (group.category === 'other' ? flatInboxRow(row) : governanceRow(row))).join('');
+      // 计数口径（T016）：未分级显示 total（被折叠的总数），其余显示条目数；
+      // 按 urgency 拆开后，仅当本拆分区持有全组条目时才取 total。
+      const shown = group.category === 'unclassified' && items.length === group.items.length
+        ? Number(group.total || items.length) : items.length;
+      return `<div class="sect-block"><div class="tt">${esc(title)}<span class="note">${esc(String(shown))}</span></div>${hint ? `<p class="note">${esc(hint)}</p>` : ''}${rows}</div>`;
+    };
+    const confirmBlocks = [];
+    const lowBlocks = [];
+    let confirmCount = 0;
+    let lowCount = 0;
     if (inboxGroups && inboxGroups.length) {
-      // 治理区总标题（specs/017 整改二·层级）：概览计数之后、候选区之前，
-      // 分区顺序由主进程 groupCognitionInbox 唯一给出。
-      const governanceTotal = inboxGroups.reduce((sum, group) => sum + (group && Array.isArray(group.items) ? group.items.length : 0), 0);
-      attention.push(sectionHead(T('cognition.review_governance_title', '治理待办'), String(governanceTotal)));
-      attention.push(`<div class="note sect-note">${esc(T('cognition.review_governance_hint', '系统自查出的问题：每一条都卡在「需要你拍板」，处理一条少一条。'))}</div>`);
       for (const group of inboxGroups) {
         if (!group || !Array.isArray(group.items) || !group.items.length) continue;
-        const title = GROUP_TITLES[group.category] || GROUP_TITLES.other;
-        const hint = GROUP_HINTS[group.category];
-        const effect = GROUP_EFFECTS[group.category] || GROUP_EFFECTS.other;
-        const rows = group.items.map((row) => (group.category === 'other' ? flatInboxRow(row) : governanceRow(row))).join('');
-        // 计数口径（T016）：未分级显示 total（被折叠的总数），其余显示条目数。
-        const shown = group.category === 'unclassified' ? Number(group.total || group.items.length) : Number(group.count || group.items.length);
-        attention.push(`<div class="sect-block"><div class="tt">${esc(title)}<span class="note">${esc(String(shown))}</span></div>${hint ? `<p class="note">${esc(hint)}</p>` : ''}<p class="note inbox-group-effect">${esc(effect)}</p>${rows}</div>`);
+        const confirmItems = group.items.filter(isConfirm);
+        const lowItems = group.items.filter((row) => !isConfirm(row));
+        if (confirmItems.length) { confirmCount += confirmItems.length; confirmBlocks.push(groupBlock(group, confirmItems)); }
+        if (lowItems.length) { lowCount += lowItems.length; lowBlocks.push(groupBlock(group, lowItems)); }
       }
     } else if (inboxItems.length) {
+      // 降级路径：拿不到 groups（旧主进程/读失败）逐字退回既有扁平清单。
       const inboxRows = inboxItems.map(flatInboxRow).join('');
-      attention.push(`<div class="sect-block"><div class="tt">${esc(T('cognition.inbox_section', '待确认清单'))}<span class="note">${esc(String(inboxItems.length))}</span></div>${inboxRows}</div>`);
-    } else {
-      // 空态也要说出来（AI Product Addendum 的五态要求）："没有待确认事项"
-      // 和"读不到待办"是两件事。全清时给一句结论式说明（specs/017 整改二：
-      // 不留空壳），走共享 uiEmptyState。
-      const allQuiet = !attention.length && !pending.length && !terminal.length && !processed.length;
-      attention.push(`<div class="sect-block">${empty(
-        T('cognition.inbox_empty', '没有需要你确认的事项。'),
-        allQuiet
-          ? T('cognition.review_all_quiet_hint', '治理待办、候选与来源异常都清空了——系统安静运行中；有新待办时会回到这里。')
-          : T('cognition.inbox_empty_hint', '需要你决定的事项会出现在这里；系统整理进度在「沉淀与入库」里查看。'),
-      )}</div>`);
+      confirmBlocks.push(`<div class="sect-block"><div class="tt">${esc(T('cognition.inbox_section', '待确认清单'))}<span class="note">${esc(String(inboxItems.length))}</span></div>${inboxRows}</div>`);
+      confirmCount += inboxItems.length;
     }
+    const decideCount = confirmCount + ready.length;
+    const lowTotal = lowCount + snoozed.length;
+    const evidenceCount = broken.length + weak.length;
+    const allQuiet = !attention.length && !confirmCount && !lowCount && !pending.length && !terminal.length && !processed.length;
+    const decideHtml = decideCount ? `${sectionHead(T('cognition.review_queue_decide', '要你拍板'), String(decideCount))}
+      <div class="note sect-note">${esc(T('cognition.review_queue_decide_hint', '每条都卡在这里等你：动作与后果写在条上，处理一条少一条。'))}</div>
+      ${confirmBlocks.join('')}
+      ${ready.length ? `${sectionHead(T('cognition.review_group_wait', '等待你确认'), String(ready.length))}<div class="note sect-note">${esc(T('cognition.review_group_wait_note', '确认后会创建 v1，并保留来源与撤销入口'))}</div>${ready.map((c) => candidateCard(c, false)).join('')}` : ''}` : '';
+    const lowHtml = lowTotal ? `<details class="details fold fold-low"><summary>${esc(T('cognition.review_queue_low', '低打扰'))}<span class="n">${lowTotal}</span></summary><div class="dbody"><div class="note">${esc(T('cognition.review_queue_low_hint', '不急，但不会自己消失：有空时逐条处理。'))}</div>${lowBlocks.join('')}</div></details>` : '';
     return `${hero(
       T('cognition.review_title', '待我处理'),
       T('cognition.inbox_page_hint', '治理问题就地处断：冲突选边、扩权确认、补齐边界、未分级批量定级；其余每条一个决定。'),
       statsRow([
-        [ready.length, T('cognition.review_stat_wait', '等待确认'), 'a'],
-        [broken.length, T('cognition.review_stat_evidence', '来源已删')],
-        [weak.length, T('cognition.review_stat_weak', '证据不足')],
+        [decideCount, T('cognition.review_stat_decide', '要你拍板'), 'a'],
+        [lowTotal, T('cognition.review_stat_low', '低打扰')],
+        [evidenceCount, T('cognition.review_stat_evidence_bad', '证据异常')],
       ]),
     )}
     ${attention.length ? `<div class="notice-stack">${attention.join('')}</div>` : ''}
     ${sourceIssuesSection(route)}
-    ${sectionHead(T('cognition.review_group_wait', '等待你确认'), String(ready.length))}
-    <div class="note sect-note">${esc(T('cognition.review_group_wait_note', '确认后会创建 v1，并保留来源与撤销入口'))}</div>
-    ${ready.length ? ready.map((c) => candidateCard(c, false)).join('') : empty(T('cognition.review_empty_wait', '当前没有等待确认的候选'), T('cognition.review_empty_wait_hint', '会话整理出候选、来源异常或整理失败时会出现在这里。'), { label: T('cognition.go_organize', '去整理会话'), attrs: { 'data-act': 'go-organize' } })}
+    ${allQuiet ? `<div class="sect-block">${empty(
+      T('cognition.inbox_empty', '没有需要你确认的事项。'),
+      T('cognition.review_all_quiet_hint', '治理待办、候选与来源异常都清空了——系统安静运行中；有新待办时会回到这里。'),
+      { label: T('cognition.go_organize', '去整理会话'), attrs: { 'data-act': 'go-organize' } },
+    )}</div>` : `${decideHtml}
     ${broken.length ? `${sectionHead(T('cognition.review_group_evidence', '来源已删除的候选'), String(broken.length))}<div class="note sect-note">${esc(T('cognition.review_group_evidence_note', '这些候选的原始出处已被删除；可以点开确认后仍要保存，或选择不保存'))}</div>${broken.map((c) => candidateCard(c, true)).join('')}` : ''}
     ${weak.length ? `${sectionHead(T('cognition.review_group_weak', '证据不足（先补证据）'), String(weak.length))}<div class="note sect-note">${esc(T('cognition.review_group_weak_note', '可以修改内容并补上证据后保存，或先稍后处理'))}</div>${weak.map((c) => candidateCard(c, false)).join('')}` : ''}
+    ${lowHtml}`}
     ${snoozed.length ? `<details class="details fold fold-snoozed"><summary>${esc(T('cognition.review_group_snoozed', '已稍后处理'))}<span class="n">${snoozed.length}</span></summary><div class="dbody"><div class="note">${esc(T('cognition.review_group_snoozed_note', '静音中，不计入待确认'))}</div>${snoozed.map((c) => candidateCard(c, false)).join('')}</div></details>` : ''}
     ${terminal.length ? `<details class="details fold fold-terminal"><summary>${esc(T('cognition.review_group_terminal', '已失效的候选'))}<span class="n">${terminal.length}</span></summary><div class="dbody"><div class="note">${esc(T('cognition.review_group_terminal_note', '已过期或被取代，仅保留记录'))}</div>${terminal.map((c) => candidateCard(c, false)).join('')}</div></details>` : ''}
     ${processed.length ? `<details class="details fold fold-processed"><summary>${esc(T('cognition.inbox_processed_badge', '处理记录'))}<span class="n">${processed.length}</span></summary><div class="dbody"><div class="note">${esc(T('cognition.inbox_processed_hint', '按处理时间倒序，只显示已处理的决定'))}</div>${processed.map((c) => `
@@ -3998,8 +4014,7 @@
     // 旧深链归一化（specs/018；experiences/kstar 档为 specs/017）：router.go 已在
     // 入栈前归一，这里兜住直接写 store 的路径（持久化恢复/测试装配）。只归一
     // 渲染视角、不回写 store。
-    if (route.name === 'tree') route = Object.assign({}, route, { name: 'overview', assetView: 'tree' });
-    else if (route.name === 'organize') route = Object.assign({}, route, { name: 'activity' });
+    if (route.name === 'organize') route = Object.assign({}, route, { name: 'activity' });
     else if (route.name === 'organize-settings') route = Object.assign({}, route, { name: 'settings' });
     else if (route.name === 'experiences') route = Object.assign({}, route, { name: 'overview', category: route.category || 'experiences' });
     if (route.category === 'kstar') route = Object.assign({}, route, { category: '' });
@@ -4014,7 +4029,8 @@
     const activeTab = route.name === 'review' || route.candidateId ? 'review'
       : route.name === 'activity' || route.name === 'cleanup' || route.captureId ? 'activity'
         : route.name === 'settings' ? 'settings'
-          : route.name === 'ontology' ? 'ontology' : 'overview';
+          : route.name === 'ontology' ? 'ontology'
+            : route.name === 'tree' ? 'tree' : 'overview';
     const pendingCount = Number(NS.stats().pending || 0);
     const tabsInner = NS.TABS.map((tab) => {
       const active = activeTab === tab.id;
@@ -4035,7 +4051,8 @@
     else if (route.name === 'activity') body = route.captureId ? viewCaptureDetail(route) : viewOrganizeTasks(route);
     else if (route.name === 'cleanup') body = viewCleanup(route);
     else if (route.name === 'settings') body = viewOrganizeSettingsPage();
-    else body = route.assetView === 'tree' ? viewTree(route) : viewOverview(route);
+    else if (route.name === 'tree') body = viewTree(route);
+    else body = viewOverview(route);
     const errorBanner = S.errors.length && S.loaded
       ? `<div class="ca-banner">${esc(T('cognition.partial_load', '部分数据读取失败，页面已用可用数据渲染。'))}${btn(T('common.retry', '重试'), 'refresh', { small: true })}</div>`
       : '';
@@ -4065,7 +4082,7 @@
     const main = document.getElementById('ca-scroll');
     // 树页/本体页是「整页高度」型：滚动容器不收滚动、改由页面自己占满
     //（原型 .tree-stage/.onto-page 都是整屏高度，不随内容滚）。
-    const stageScroll = route.assetView === 'tree' || route.name === 'ontology';
+    const stageScroll = route.name === 'tree' || route.name === 'ontology';
     // 列表页/详情页统一收进原型 .wrap（居中 780px 阅读栏）——整屏铺满的
     // 列表行在宽窗里读起来很散，原型就是按阅读栏做的。
     if (!stageScroll) body = `<div class="wrap">${body}</div>`;
@@ -4099,7 +4116,7 @@
     // 树的出图尺寸按容器实测像素定（见 treeViewport）：首帧容器里还没有
     // svg，只知占位尺寸；挂载后量真值，不一致就重画一次收敛（最多两跳，
     // 防抖动循环）。横幅出现/消失改变内容区高度时也靠这一步跟上。
-    if (route.assetView === 'tree' && treeSettlePass < 2 && typeof requestAnimationFrame === 'function') {
+    if (route.name === 'tree' && treeSettlePass < 2 && typeof requestAnimationFrame === 'function') {
       requestAnimationFrame(() => {
         const svg = document.getElementById('ca-tree-svg');
         if (!svg || !svg.clientWidth) return;

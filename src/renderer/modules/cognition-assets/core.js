@@ -465,7 +465,7 @@
     /** 整理页：会话列表是否展开全部（默认收拢 5 条）。 */
     organizeListExpanded: false,
     /** 路由：{name, category, assetId, candidateId, proofEventId, captureBucket, captureId, sourceIssueOpen} */
-    route: { name: 'review', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', ontologyBox: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '' },
+    route: { name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', ontologyBox: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '' },
     backStack: [],
     /** 上一帧的路由名：渲染层据此判断「离开 ontology 页」需要先归还本体 section。 */
     prevRouteName: 'tree',
@@ -1160,9 +1160,12 @@
    * 投影（overview + assetView='tree'）。旧路由名在 router.go 与
    * views.render 两级归一化，深链与历史栈不断。 */
   const TABS = [
-    { id: 'review', titleKey: 'cognition.tab_review', title: '待我处理' },
-    { id: 'overview', titleKey: 'cognition.tab_overview', title: '我的认知' },
+    // 认知树恢复为顶级页签（2026-09-26 子安真机否决降级方案）：树是全景
+    // 第一眼，保留独立入口与默认落地；「我的认知」内仍留树视图按钮互通。
+    { id: 'tree', titleKey: 'cognition.tab_tree', title: '认知树' },
     { id: 'ontology', titleKey: 'cognition.tab_ontology', title: '个人本体' },
+    { id: 'overview', titleKey: 'cognition.tab_overview', title: '我的认知' },
+    { id: 'review', titleKey: 'cognition.tab_review', title: '待我处理' },
     { id: 'activity', titleKey: 'cognition.tab_activity', title: '系统活动' },
     { id: 'settings', titleKey: 'cognition.tab_settings', title: '设置' },
   ];
@@ -1179,14 +1182,13 @@
       // 在入栈/落 store 前归一，app.js 的 onChange 钩子读到的恒为新名。
       let target = next || {};
       const legacyName = String(target.name || '');
-      if (legacyName === 'tree') target = Object.assign({}, target, { name: 'overview', assetView: 'tree' });
-      else if (legacyName === 'organize') target = Object.assign({}, target, { name: 'activity' });
+      if (legacyName === 'organize') target = Object.assign({}, target, { name: 'activity' });
       else if (legacyName === 'organize-settings') target = Object.assign({}, target, { name: 'settings' });
       else if (legacyName === 'experiences') target = Object.assign({}, target, { name: 'overview', category: target.category || 'experiences' });
       if (target.category === 'kstar') target = Object.assign({}, target, { category: '' });
       // 先把 next 归一到同一形状再比（部分键字面量 vs 全键展开的序列化恒不等，
       // 连点同一 tab 会堆积重复栈项——2026-09-14 终审修）。
-      const merged = Object.assign({ name: 'review', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', ontologyBox: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '' }, target);
+      const merged = Object.assign({ name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', ontologyBox: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '' }, target);
       const same = JSON.stringify(current) === JSON.stringify(merged);
       if (!opts.replace && !same) store.backStack.push(Object.assign({}, current));
       store.route = merged;
@@ -2263,6 +2265,6 @@
   };
 
   NS.closePersonalOntology = function closePersonalOntology() {
-    NS.router.go({ name: 'overview' });
+    NS.router.go({ name: 'tree' });
   };
 })();
