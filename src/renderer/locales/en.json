@@ -5073,6 +5073,7 @@
   "conversation_info.run_context.view_all_runs": "View all runs",
   "conversation_info.run_context.subsection_proof": "Run Evidence",
   "conversation_info.run_context.subsection_collab": "Participants",
+  "conversation_info.run_context.assets_read_failed": "Cognition data is temporarily unreadable — try again later.",
   "personalOntology.profile_empty": "Personal information captured from completed conversations will appear here",
   "recall.asset.status.active": "Active",
   "recall.asset.status.paused": "Paused",

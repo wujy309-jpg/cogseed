@@ -282,6 +282,23 @@ const ConversationInfo = (() => {
     }
   }
 
+  /** 认知两通道的读取包一层「失败可辨」：_invokeOrDefault 把异常吞成
+   *  {ok:false}，下游无法区分「读不到」与「读到了但没有」——四类资产段
+   *  曾因此在读取失败时谎报「还没有沉淀认知」（迭代轮 5：读不到 ≠ 没有）。
+   *  无 IPC 环境沿用既有降级语义（当空、不算失败）。 */
+  async function _invokeCognition(channel, payload) {
+    const invoke = window && window.cogseed && typeof window.cogseed.invoke === 'function'
+      ? window.cogseed.invoke.bind(window.cogseed)
+      : null;
+    if (!invoke) return { data: null, failed: false };
+    try {
+      const result = await invoke(channel, payload);
+      return { data: result || null, failed: false };
+    } catch (_) {
+      return { data: null, failed: true };
+    }
+  }
+
   async function _load(cid) {
     const enc = encodeURIComponent(cid);
     const [historyData, filesData, attachmentData, syncEnabled, activity, wakeData, protocolData, executionsData, assetsData, extractionData, candidatesData, kstarTraceData] = await Promise.all([
@@ -308,22 +325,25 @@ const ConversationInfo = (() => {
           : []
       )).catch(() => []),
       // 四类能力资产（cognition.assets.list）：跨会话的个人能力资产，右侧「四类资产」段展示。
-      _invokeOrDefault('cognition.assets.list', { limit: 500 }, { ok: false }).then((data) => (
-        data && data.ok && Array.isArray(data.assets) ? data.assets : []
-      )).catch(() => []),
+      // 读取失败可辨（迭代轮 5）：失败置 cognitionFailed，段内如实说「读不到」。
+      _invokeCognition('cognition.assets.list', { limit: 500 }).then((outcome) => ({
+        list: outcome.data && outcome.data.ok && Array.isArray(outcome.data.assets) ? outcome.data.assets : [],
+        failed: outcome.failed,
+      })),
       // 导入会话的后台提炼状态：pending 时四类资产段显示「正在提炼」，
       // 完成后（sessionImport.events → extraction_done）由 conversation.js 触发刷新。
       _invokeOrDefault('sessionImport.extractionStatus', { cid }, { ok: false }).then((data) => (
         data && data.ok && data.status ? data.status : null
       )).catch(() => null),
       // 本会话相关的认知候选：候选带 sourceRefs（kind:'conversation', id:cid），
-      // 导入提取与沉淀活动产出的候选都指向它们来源的会话。
-      _invokeOrDefault('recall.candidates.list', {}, { ok: false }).then((data) => (
-        data && data.ok && Array.isArray(data.candidates)
-          ? data.candidates.filter((c) => c && Array.isArray(c.sourceRefs)
+      // 导入提取与沉淀活动产出的候选都指向它们来源的会话。读取失败可辨（迭代轮 5）。
+      _invokeCognition('recall.candidates.list', {}).then((outcome) => ({
+        list: outcome.data && outcome.data.ok && Array.isArray(outcome.data.candidates)
+          ? outcome.data.candidates.filter((c) => c && Array.isArray(c.sourceRefs)
               && c.sourceRefs.some((ref) => ref && ref.kind === 'conversation' && ref.id === cid))
-          : []
-      )).catch(() => []),
+          : [],
+        failed: outcome.failed,
+      })),
       _invokeOrDefault('kstar.trace.read', { conversationId: cid }, { ok: false }).then((data) => (
         data && data.ok && data.trace && Array.isArray(data.trace.nodes) ? data.trace : null
       )).catch(() => null),
@@ -346,9 +366,10 @@ const ConversationInfo = (() => {
       protocolEvents: Array.isArray(protocolData.events) ? protocolData.events : (Array.isArray(protocolData.protocol_events) ? protocolData.protocol_events : []),
       protocolError: protocolData.error ? String(protocolData.error) : '',
       executions: Array.isArray(executionsData) ? executionsData : [],
-      assets: Array.isArray(assetsData) ? assetsData : [],
+      assets: assetsData && Array.isArray(assetsData.list) ? assetsData.list : [],
       extraction: extractionData || null,
-      candidates: Array.isArray(candidatesData) ? candidatesData : [],
+      candidates: candidatesData && Array.isArray(candidatesData.list) ? candidatesData.list : [],
+      cognitionFailed: !!(assetsData && assetsData.failed) || !!(candidatesData && candidatesData.failed),
       kstarTrace: kstarTraceData || null,
     };
   }
@@ -1624,7 +1645,7 @@ const ConversationInfo = (() => {
     var assetsData = Array.isArray(_snapshot.assets) ? _snapshot.assets : [];
     var extraction = _snapshot.extraction || null;
     var extracting = !!(extraction && extraction.status === 'pending');
-    var sessionCognitionHtml = _renderSessionCognitionHtml(_cid, _snapshot.candidates, assetsData, extracting);
+    var sessionCognitionHtml = _renderSessionCognitionHtml(_cid, _snapshot.candidates, assetsData, extracting, _snapshot.cognitionFailed === true);
 
     var runTab = _activeRunContextTab || 'runs';
     var tabBtn = function (key, label) {
@@ -1764,7 +1785,7 @@ const ConversationInfo = (() => {
   }
 
   /** 四类资产 tab · 本会话认知沉淀区（提取中 / 待确认 / 已沉淀 / 空态）。 */
-  function _renderSessionCognitionHtml(cid, candidates, assets, extracting) {
+  function _renderSessionCognitionHtml(cid, candidates, assets, extracting, failed) {
     var counts = _sessionCognitionCounts(cid, candidates, assets);
     var pending = counts.pending;
     var confirmed = counts.confirmed;
@@ -1804,9 +1825,12 @@ const ConversationInfo = (() => {
       html += extraAssets.map(_settledAssetHtml).join('');
     }
     // 空态只在「没有在提取且确实没有内容」时显示——提取中由转圈提示代替。
+    // 读取失败是第三态：如实说「读不到」，不谎报「还没有」（迭代轮 5）。
     if (!extracting && !pending.length && !confirmed.length && !extraAssets.length) {
-      html += '<div class="conversation-info-empty is-small">' +
-        escapeHtml(_label('conversation_info.run_context.assets_empty', '这个会话还没有沉淀认知。导入的会话会在后台自动提炼，提炼出的候选确认后沉淀为正式资产。')) + '</div>';
+      var emptyCopy = failed
+        ? _label('conversation_info.run_context.assets_read_failed', '认知数据暂时读不到，稍后再试。')
+        : _label('conversation_info.run_context.assets_empty', '这个会话还没有沉淀认知。导入的会话会在后台自动提炼，提炼出的候选确认后沉淀为正式资产。');
+      html += '<div class="conversation-info-empty is-small">' + escapeHtml(emptyCopy) + '</div>';
     }
     return html;
   }

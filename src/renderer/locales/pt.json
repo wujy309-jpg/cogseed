@@ -4308,6 +4308,7 @@
   "conversation_info.cognition_strip_pending": "{n} aguardando confirmação",
   "conversation_info.cognition_strip_pending_only": "Esta conversa tem {n} itens de cognição aguardando confirmação",
   "conversation_info.cognition_strip_goto": "Ver",
+  "conversation_info.run_context.assets_read_failed": "Os dados de cognição estão temporariamente ilegíveis — tente novamente mais tarde.",
   "common.id_masked": "…",
   "agent_modal.ext_cli_scanning": "A verificar CLIs locais…",
   "p3394.slow.title": "Agente externo respondendo lentamente",

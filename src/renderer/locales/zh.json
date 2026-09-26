@@ -5073,6 +5073,7 @@
   "conversation_info.run_context.view_all_runs": "查看全部运行",
   "conversation_info.run_context.subsection_proof": "运行证明",
   "conversation_info.run_context.subsection_collab": "协作参与者",
+  "conversation_info.run_context.assets_read_failed": "认知数据暂时读不到，稍后再试。",
   "personalOntology.profile_empty": "完成会话沉淀后，个人信息会显示在这里",
   "recall.asset.status.active": "已启用",
   "recall.asset.status.paused": "已暂停",

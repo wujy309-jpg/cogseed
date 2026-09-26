@@ -130,6 +130,7 @@ function renderFilesResult(snapshot: {
             return receipt ? { ok: true, receipt } : { ok: false, error: 'not found' };
           }
           if (channel === 'cognition.assets.list') {
+            if ((snapshot as any).cognitionAssetsFail) throw new Error('ipc down');
             return { ok: true, assets: snapshot.assets || [] };
           }
           if (channel === 'sessionImport.extractionStatus') {
@@ -1253,6 +1254,20 @@ describe('ConversationInfo files tab', () => {
       expect(result.cognitionStrip.hidden).toBe(false);
       expect(result.cognitionStrip.html).toContain('这段对话还有 1 条认知待确认');
       expect(result.cognitionStrip.html).not.toContain('沉淀过');
+    });
+
+    it('读取失败不谎报空态：四类资产段说「读不到」，衔接行不出现（迭代轮 5 三态）', async () => {
+      const result = await renderFilesResult({
+        history: [],
+        files: baseFiles,
+        attachments: [],
+        candidates: [],
+        assets: [],
+        cognitionAssetsFail: true,
+      } as any);
+      expect(result.html).toContain('认知数据暂时读不到');
+      expect(result.html).not.toContain('还没有沉淀认知');
+      expect(result.cognitionStrip.hidden).toBe(true);
     });
 
     it('不开抽屉也有行：bind 的后台轻量加载独立于 _open（019 实现期缺陷的钉子）', async () => {

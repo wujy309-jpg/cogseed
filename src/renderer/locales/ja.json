@@ -4308,6 +4308,7 @@
   "conversation_info.cognition_strip_pending": "未確認 {n} 件",
   "conversation_info.cognition_strip_pending_only": "この会話には未確認の認知が {n} 件あります",
   "conversation_info.cognition_strip_goto": "見る",
+  "conversation_info.run_context.assets_read_failed": "認知データを一時的に読み取れません。後でもう一度お試しください。",
   "common.id_masked": "…",
   "agent_modal.ext_cli_scanning": "ローカル CLI をスキャン中…",
   "p3394.slow.title": "外部エージェントの応答が遅いです",
