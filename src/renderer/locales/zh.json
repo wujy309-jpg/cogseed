@@ -8216,6 +8216,8 @@
   "cognition.settings_back_to_activity": "去系统活动",
   "cognition.tree_crown_empty": "还没有被真用过的",
   "cognition.activity_event_cleanup_empty": "大扫除跑完，没有要归并的",
+  "cognition.review_lead_jump_aria": "跳到「{where}」",
+  "cognition.overview_lead_pending_aria": "去「待我处理」看 {n} 条",
   "personalOntology.nav_groups": "本体分组",
   "personalOntology.groups_title": "本体分组",
   "personalOntology.dest_no_groups": "暂无本体分组"

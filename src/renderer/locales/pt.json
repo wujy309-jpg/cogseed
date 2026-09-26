@@ -6118,6 +6118,8 @@
   "cognition.settings_back_to_activity": "Ir para Atividade do sistema",
   "cognition.tree_crown_empty": "nenhum realmente usado ainda",
   "cognition.activity_event_cleanup_empty": "limpeza profunda concluída, nada a fundir",
+  "cognition.review_lead_jump_aria": "ir para “{where}”",
+  "cognition.overview_lead_pending_aria": "ver {n} itens na fila de tratamento",
   "personalOntology.nav_groups": "Grupos de ontologia",
   "personalOntology.groups_title": "Grupos de ontologia",
   "personalOntology.dest_no_groups": "Nenhum grupo de ontologia"

@@ -8216,6 +8216,8 @@
   "cognition.settings_back_to_activity": "Go to System Activity",
   "cognition.tree_crown_empty": "none truly used yet",
   "cognition.activity_event_cleanup_empty": "deep clean finished, nothing to merge",
+  "cognition.review_lead_jump_aria": "jump to “{where}”",
+  "cognition.overview_lead_pending_aria": "go to the review queue for {n} items",
   "personalOntology.nav_groups": "Ontology groups",
   "personalOntology.groups_title": "Ontology groups",
   "personalOntology.dest_no_groups": "No ontology groups yet"

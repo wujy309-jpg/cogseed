@@ -2296,12 +2296,12 @@
      * 与下方空态重复且无信息量，导语让位给空态的引导文案）。
      * 「当前任务选用」卡仍撤（2026-09-21 口径不变）。 */
     const visibleAssetCount = S.assets.filter((a) => !['archived', 'deleted', 'purged', 'revoked'].includes(String(a.status || 'active'))).length;
-    const leadNum = (value, anchor) => `<span class="chip-link ca-jump-num" data-act="review-jump" data-id="${esc(anchor)}" ${roleBtn()}>${esc(String(value))}</span>`;
+    const leadNum = (value, anchor) => `<span class="chip-link ca-jump-num" data-act="review-jump" data-id="${esc(anchor)}" aria-label="${esc(T('cognition.review_lead_jump_aria', '跳到「{where}」', { where: anchor === 'ca-review-decide' ? T('cognition.review_queue_decide', '要你拍板') : anchor === 'ca-review-evidence' ? T('cognition.review_lead_evidence', '条证据要补') : T('cognition.overview_list_title', '资产明细') }))}" ${roleBtn()}>${esc(String(value))}</span>`;
     const assetsPart = visibleAssetCount
       ? `${leadNum(visibleAssetCount, 'ca-asset-list')} ${esc(T('cognition.overview_lead_assets', '条认知'))}`
       : '';
     const pendingPart = stats.pending
-      ? `<span class="chip-link ca-jump-num" data-act="go-review" ${roleBtn()}>${esc(String(stats.pending))}</span> ${esc(T('cognition.overview_lead_pending', '条等你确认'))}`
+      ? `<span class="chip-link ca-jump-num" data-act="go-review" aria-label="${esc(T('cognition.overview_lead_pending_aria', '去「待我处理」看 {n} 条', { n: String(stats.pending) }))}" ${roleBtn()}>${esc(String(stats.pending))}</span> ${esc(T('cognition.overview_lead_pending', '条等你确认'))}`
       : '';
     const heroLead = [assetsPart, pendingPart].filter(Boolean).length
       ? `<div class="sub">${[assetsPart, pendingPart].join(' · ')}</div>`
@@ -3280,7 +3280,7 @@
     /* 导语（specs/018 T010）：一句话回答「现在要我拍板什么」。概览计数收成
      * 导语里两个可点数字（拍板数 / 证据异常数），点数字滚到对应分区——
      * 统计条与分组计数的重复就此砍掉。预计分钟 = 每条约一分钟的经验值。 */
-    const leadNum = (value, anchor) => `<span class="chip-link ca-jump-num" data-act="review-jump" data-id="${esc(anchor)}" ${roleBtn()}>${esc(String(value))}</span>`;
+    const leadNum = (value, anchor) => `<span class="chip-link ca-jump-num" data-act="review-jump" data-id="${esc(anchor)}" aria-label="${esc(T('cognition.review_lead_jump_aria', '跳到「{where}」', { where: anchor === 'ca-review-decide' ? T('cognition.review_queue_decide', '要你拍板') : anchor === 'ca-review-evidence' ? T('cognition.review_lead_evidence', '条证据要补') : T('cognition.overview_list_title', '资产明细') }))}" ${roleBtn()}>${esc(String(value))}</span>`;
     const minutes = Math.max(decideCount, 1);
     /* 分段拼导语（迭代轮 1 修）：拍板数为 0 时不再写「0 件事等你拍板 ·
      * 预计 1 分钟」（自相矛盾）——拍板段只在 >0 时出现，锚点也随之恒在。 */

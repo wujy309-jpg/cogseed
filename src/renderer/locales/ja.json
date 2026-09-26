@@ -6118,6 +6118,8 @@
   "cognition.settings_back_to_activity": "システム活動へ",
   "cognition.tree_crown_empty": "まだ実際に使われたものはありません",
   "cognition.activity_event_cleanup_empty": "大掃除が完了。統合するものはありませんでした",
+  "cognition.review_lead_jump_aria": "「{where}」へ移動",
+  "cognition.overview_lead_pending_aria": "「対応待ち」で {n} 件を見る",
   "personalOntology.nav_groups": "オントロジーグループ",
   "personalOntology.groups_title": "オントロジーグループ",
   "personalOntology.dest_no_groups": "オントロジーグループなし"
