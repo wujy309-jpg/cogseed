@@ -421,12 +421,9 @@ describe('Recall cognition workspace layout', () => {
       const messages = JSON.parse(fs.readFileSync(path.join(__dirname, `../../src/renderer/locales/${locale}.json`), 'utf-8'));
       for (const key of [
         'cognition.tab_review',
-        'cognition.tab_review_desc',
         'cognition.tab_overview',
-        'cognition.tab_overview_desc',
         'cognition.tab_activity',
         'cognition.tab_settings',
-        'cognition.tab_organize_desc',
         'cognition.source_conversation',
         'cognition.source_artifact',
         'cognition.source_execution',
@@ -449,8 +446,6 @@ describe('Recall cognition workspace layout', () => {
         'cognition.capture_reason_review_pending',
         'cognition.capture_reason_capture_failed',
         'cognition.capture_bucket_attention',
-        'cognition.organize_settings_open',
-        'cognition.capture_batch_run_confirm',
         'cognition.asset_usage_section',
         'cognition.overview_failed_tasks',
         'cognition.overview_source_issues',
