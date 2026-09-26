@@ -2287,9 +2287,12 @@
     };
     /* 导语（specs/018 T030）：hero 统计条并入导语两个可点数字——
      * {n} 条认知（点开滚到列表）· {m} 条等你确认（去「待我处理」）。
+     * n 与默认列表同口径（排除已删除/归档等隐藏态——stats.confirmed 口径
+     * 更宽，真机上出现过 18 vs 16 的两个数字打架）。
      * 「当前任务选用」卡仍撤（2026-09-21 口径不变）。 */
+    const visibleAssetCount = S.assets.filter((a) => !['archived', 'deleted', 'purged', 'revoked'].includes(String(a.status || 'active'))).length;
     const leadNum = (value, anchor) => `<span class="chip-link ca-jump-num" data-act="review-jump" data-id="${esc(anchor)}" ${roleBtn()}>${esc(String(value))}</span>`;
-    const heroLead = `<div class="sub">${leadNum(stats.confirmed, 'ca-asset-list')} ${esc(T('cognition.overview_lead_assets', '条认知'))} · <span class="chip-link ca-jump-num" data-act="go-review" ${roleBtn()}>${esc(String(stats.pending))}</span> ${esc(T('cognition.overview_lead_pending', '条等你确认'))}</div>`;
+    const heroLead = `<div class="sub">${leadNum(visibleAssetCount, 'ca-asset-list')} ${esc(T('cognition.overview_lead_assets', '条认知'))} · <span class="chip-link ca-jump-num" data-act="go-review" ${roleBtn()}>${esc(String(stats.pending))}</span> ${esc(T('cognition.overview_lead_pending', '条等你确认'))}</div>`;
     const heroHtml = hero(
       T('cognition.overview_title', '我的认知资产'),
       '',

@@ -494,6 +494,17 @@ describe('整理页（任务流 + 策略抽屉）', () => {
     expect(partial).not.toContain('仅显示最近 100 个会话');
   });
 
+  it('去向提示（specs/018 T014）：确认后两分钟内回到「待我处理」提示「长在树上了」，过期不提示', () => {
+    const fresh = renderPage('review', { lastPromoted: { title: '刚确认的一条', at: Date.now() - 10_000 } });
+    expect(fresh).toContain('已确认 · 它长在树上了');
+    expect(fresh).toContain('data-act="asset-view" data-id="tree"');
+    expect(fresh).toContain('刚确认的一条');
+    const stale = renderPage('review', { lastPromoted: { title: '很久以前确认的', at: Date.now() - 10 * 60_000 } });
+    expect(stale).not.toContain('已确认 · 它长在树上了');
+    const none = renderPage('review', {});
+    expect(none).not.toContain('已确认 · 它长在树上了');
+  });
+
   it('「等待确认」口径统一（2026-09-16 B1）：deferred 可见但不占数，带「已稍后处理」标注', () => {
     // 审计 B1：三套口径曾同时给出 7/5/0。统一为「需要判断且未被稍后处理
     // 静音」——统计卡/全局 stats 同函数；deferred 行留在列表（子安口径）。
