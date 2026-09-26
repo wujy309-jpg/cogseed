@@ -1865,6 +1865,7 @@
         <div class="fl-top">
           <div class="ft ft-title">${esc(T('cognition.tree_panel_title', '我的认知树'))}</div>
           <div class="ft">${esc(T('cognition.tree_read_hint', '土壤 → 根芽 → 枝上大方向 → 树冠已验证 · 枝端光斑看分类，叶片看细分方向'))}</div>
+          <div class="ft">${btn(T('cognition.catalog_view_back', '列表视图'), 'asset-view', { id: '', small: true, className: 'o' })}${btn(T('cognition.catalog_view_toggle', '目录视图'), 'asset-view', { id: 'catalog', small: true, className: 'o' })}</div>
         </div>
         ${treeFigure({ counts, pending: stats.pending, validated, sources: sourceCount, captures: captureCount }, directions)}
         <div class="fl-bottom">
@@ -2384,7 +2385,7 @@
       ${sectionHead(
         catalogView ? T('cognition.catalog_view_title', '资产目录（模型视角）') : T('cognition.overview_list_title', '资产明细'),
         String(filtered.length),
-        `${!catalogView && route.category !== 'deleted' ? btn(T('cognition.tag_batch_entry', '批量打标'), 'tag-select-mode', { small: true, className: 'o' }) : ''}${btn(catalogView ? T('cognition.catalog_view_back', '列表视图') : T('cognition.catalog_view_toggle', '目录视图'), 'asset-view', { id: catalogView ? '' : 'catalog', small: true, className: 'o' })}`,
+        `${!catalogView && route.category !== 'deleted' ? btn(T('cognition.tag_batch_entry', '批量打标'), 'tag-select-mode', { small: true, className: 'o' }) : ''}${!catalogView ? btn(T('cognition.tree_view_toggle', '树视图'), 'asset-view', { id: 'tree', small: true, className: 'o' }) : ''}${btn(catalogView ? T('cognition.catalog_view_back', '列表视图') : T('cognition.catalog_view_toggle', '目录视图'), 'asset-view', { id: catalogView ? '' : 'catalog', small: true, className: 'o' })}`,
       )}
       ${catalogView ? `<div class="note list-caption">${esc(T('cognition.catalog_view_hint', '这就是模型挑资产时看的那份目录：一行一条；要看全文点进去。'))}</div>` : ''}
       ${pillboxHtml}
@@ -3416,8 +3417,7 @@
     const nightlyOn = String(settings.executionPolicy || 'manual') === 'nightly';
     const reviewAuto = String(settings.reviewPolicy || 'auto') === 'auto';
     const nightlyStart = String(settings.nightlyStart || '02:00');
-    return `${btn(`← ${T('cognition.tab_organize', '整理')}`, 'go-back', { className: 'backlink' })}
-    ${hero(
+    return `${hero(
       T('cognition.organize_settings_title', '沉淀设置'),
       T('cognition.organize_settings_hint', '决定系统什么时候自动沉淀、沉淀出的内容要不要先经过你。'),
     )}
@@ -3714,7 +3714,7 @@
     // 「沉淀设置」文字按钮（tbtn），我们走共享 uiButton + icons.js 的
     // settings 图标（团队规范：图标不手写 SVG）。
     return `${heroRow(
-      T('cognition.tab_organize', '整理'),
+      T('cognition.tab_activity', '系统活动'),
       T('cognition.capture_manual_note', '整理会使用模型额度，随时可以取消'),
       // 大扫除入口已收进沉淀设置页（specs/017 整改三）：页首不再并列两颗按钮。
       `${btn(T('cognition.organize_settings_title', '沉淀设置'), 'go-organize-settings', { className: 'o', icon: 'settings' })}`,
@@ -3995,27 +3995,30 @@
     const root = document.getElementById('ca-root');
     if (!root) return;
     let route = S.route;
-    // 旧深链归一化（specs/017 整改一）：experiences 页签已并入「我的认知」
-    // 经验档；KSTAR 筛选档已退役（出身信息保留在行/详情徽章）。只归一渲染
-    // 视角、不回写 store——下一次 router.go 自然落到新形状。
-    if (route.name === 'experiences') route = Object.assign({}, route, { name: 'overview', category: route.category || 'experiences' });
+    // 旧深链归一化（specs/018；experiences/kstar 档为 specs/017）：router.go 已在
+    // 入栈前归一，这里兜住直接写 store 的路径（持久化恢复/测试装配）。只归一
+    // 渲染视角、不回写 store。
+    if (route.name === 'tree') route = Object.assign({}, route, { name: 'overview', assetView: 'tree' });
+    else if (route.name === 'organize') route = Object.assign({}, route, { name: 'activity' });
+    else if (route.name === 'organize-settings') route = Object.assign({}, route, { name: 'settings' });
+    else if (route.name === 'experiences') route = Object.assign({}, route, { name: 'overview', category: route.category || 'experiences' });
     if (route.category === 'kstar') route = Object.assign({}, route, { category: '' });
     const key = routeKey(route);
     const previousScroll = document.getElementById('ca-scroll');
     const restoreScroll = lastRenderKey === key && previousScroll ? previousScroll.scrollTop : 0;
     lastRenderKey = key;
-    // 候选详情归「待我处理」、整理详情归「整理」；interactive-tour 靠
-    // data-cognition-page-link="assets"/"captures" 定位 tab，随重构迁移。
-    // 五页签（2026-09-26 specs/017 整改一）：tree / ontology 是独立路由；详情深链
-    // 仍归并到对应列表页签（经验详情归 overview，overview 默认兜底）。
+    // 候选详情归「待我处理」、整理详情与大扫除报告归「系统活动」；
+    // interactive-tour 靠 data-cognition-page-link="assets"/"captures" 定位 tab。
+    // 五页签（specs/018）：review / overview（含树·目录投影与经验档）/ ontology /
+    // activity（captureId、cleanup 报告深链归并）/ settings；overview 默认兜底。
     const activeTab = route.name === 'review' || route.candidateId ? 'review'
-      : route.name === 'organize' || route.name === 'organize-settings' || route.captureId ? 'organize'
-        : route.name === 'ontology' ? 'ontology'
-          : route.name === 'tree' ? 'tree' : 'overview';
+      : route.name === 'activity' || route.name === 'cleanup' || route.captureId ? 'activity'
+        : route.name === 'settings' ? 'settings'
+          : route.name === 'ontology' ? 'ontology' : 'overview';
     const pendingCount = Number(NS.stats().pending || 0);
     const tabsInner = NS.TABS.map((tab) => {
       const active = activeTab === tab.id;
-      const extra = tab.id === 'overview' ? ' data-cognition-page-link="assets"' : (tab.id === 'organize' ? ' data-cognition-page-link="captures"' : '');
+      const extra = tab.id === 'overview' ? ' data-cognition-page-link="assets"' : (tab.id === 'activity' ? ' data-cognition-page-link="captures"' : '');
       // 2026-09-15 子安要求：tab 只留标题，描述小字与 title 悬浮注释删除。
       // 待确认计数走原型 .bdg 角标（原型只在「待我处理」上挂）。
       const badge = tab.id === 'review' && pendingCount ? `<span class="bdg">${pendingCount}</span>` : '';
@@ -4027,13 +4030,12 @@
     if (S.loading && !S.loaded) {
       // 首载骨架：结构化的三行占位（shimmer 由 CSS 驱动），比纯文字更快有页面感。
       body = `<div class="ca-loading"><div class="ca-skel-row"></div><div class="ca-skel-row"></div><div class="ca-skel-row"></div></div>`;
-    } else if (route.name === 'tree') body = viewTree(route);
-    else if (route.name === 'ontology') body = viewOntology(route);
+    } else if (route.name === 'ontology') body = viewOntology(route);
     else if (route.name === 'review') body = viewReview(route);
-    else if (route.name === 'organize') body = route.captureId ? viewCaptureDetail(route) : viewOrganizeTasks(route);
+    else if (route.name === 'activity') body = route.captureId ? viewCaptureDetail(route) : viewOrganizeTasks(route);
     else if (route.name === 'cleanup') body = viewCleanup(route);
-    else if (route.name === 'organize-settings') body = viewOrganizeSettingsPage();
-    else body = viewOverview(route);
+    else if (route.name === 'settings') body = viewOrganizeSettingsPage();
+    else body = route.assetView === 'tree' ? viewTree(route) : viewOverview(route);
     const errorBanner = S.errors.length && S.loaded
       ? `<div class="ca-banner">${esc(T('cognition.partial_load', '部分数据读取失败，页面已用可用数据渲染。'))}${btn(T('common.retry', '重试'), 'refresh', { small: true })}</div>`
       : '';
@@ -4063,7 +4065,7 @@
     const main = document.getElementById('ca-scroll');
     // 树页/本体页是「整页高度」型：滚动容器不收滚动、改由页面自己占满
     //（原型 .tree-stage/.onto-page 都是整屏高度，不随内容滚）。
-    const stageScroll = route.name === 'tree' || route.name === 'ontology';
+    const stageScroll = route.assetView === 'tree' || route.name === 'ontology';
     // 列表页/详情页统一收进原型 .wrap（居中 780px 阅读栏）——整屏铺满的
     // 列表行在宽窗里读起来很散，原型就是按阅读栏做的。
     if (!stageScroll) body = `<div class="wrap">${body}</div>`;
@@ -4097,7 +4099,7 @@
     // 树的出图尺寸按容器实测像素定（见 treeViewport）：首帧容器里还没有
     // svg，只知占位尺寸；挂载后量真值，不一致就重画一次收敛（最多两跳，
     // 防抖动循环）。横幅出现/消失改变内容区高度时也靠这一步跟上。
-    if (route.name === 'tree' && treeSettlePass < 2 && typeof requestAnimationFrame === 'function') {
+    if (route.assetView === 'tree' && treeSettlePass < 2 && typeof requestAnimationFrame === 'function') {
       requestAnimationFrame(() => {
         const svg = document.getElementById('ca-tree-svg');
         if (!svg || !svg.clientWidth) return;

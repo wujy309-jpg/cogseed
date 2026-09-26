@@ -86,7 +86,7 @@
             // 跳转前的深层页而不是列表，与按钮文案不符。按详情类型归位到
             // 对应列表根（资产详情保留分类筛选）；仍压栈，需要时可再进详情。
             const name = S.route.candidateId ? 'review'
-              : (S.route.captureId || S.route.name === 'organize' || S.route.name === 'organize-settings') ? 'organize'
+              : (S.route.captureId || S.route.name === 'activity' || S.route.name === 'settings') ? 'activity'
                 : 'overview';
             // 经验详情返回落「我的认知」经验档（specs/017 整改一：经验页签已收编）。
             const category = name === 'overview'
@@ -118,9 +118,9 @@
           case 'filter-cat': router.go({ name: 'overview', category: id }); break;
           // 目录视图切换（2026-09-18）：同一个列表页换一种行形态（模型视角），
           // 不新增 tab。assetView 必须进 router.go 的归一化白名单，否则被丢弃。
-          case 'asset-view': router.go({ name: 'overview', assetView: id === 'catalog' ? 'catalog' : '' }); break;
+          case 'asset-view': router.go({ name: 'overview', assetView: id === 'catalog' ? 'catalog' : id === 'tree' ? 'tree' : '' }); break;
           case 'go-review': router.go({ name: 'review' }); break;
-          case 'go-organize': router.go({ name: 'organize' }); break;
+          case 'go-organize': router.go({ name: 'activity' }); break;
           case 'go-configure-model': {
             // configuration_required 的处理出口：模型配置在应用设置页
             // 「设置 → 配置」的模型区。与 model-chip.js / kb-workbench.js 同一条缝：
@@ -141,7 +141,7 @@
             });
             break;
           }
-          case 'go-organize-settings': router.go({ name: 'organize-settings' }); break;
+          case 'go-organize-settings': router.go({ name: 'settings' }); break;
           case 'nightly-toggle': {
             // 夜间自动沉淀开关：开 = nightly（并联动「先问我」——产出进
             // 「待我处理」等批准，而非自动采纳）；关 = 回到纯手动。
@@ -166,9 +166,9 @@
             }
             break;
           }
-          case 'capture-filter': router.go({ name: 'organize', captureBucket: id }); break;
+          case 'capture-filter': router.go({ name: 'activity', captureBucket: id }); break;
           case 'open-capture-detail': {
-            router.go({ name: 'organize', captureId: id });
+            router.go({ name: 'activity', captureId: id });
             void NS.loadCaptureContext(id);
             break;
           }
@@ -676,7 +676,7 @@
   async function capturePollTick() {
     capturePollTimer = null;
     if (!booted || !panelVisible()) return;
-    const onLivePage = S.route.name === 'organize';
+    const onLivePage = S.route.name === 'activity';
     const hasActive = (S.captures || []).some((capture) => capture && capture.bucket === 'active');
     if (!onLivePage || !hasActive) return;
     await NS.reload();
@@ -746,7 +746,7 @@
     let treeResizeFrame = 0;
     let lastTreeWidth = 0;
     window.addEventListener('resize', () => {
-      if (S.route.name !== 'tree') return;
+      if (!(S.route.name === 'overview' && S.route.assetView === 'tree')) return;
       const svg = document.getElementById('ca-tree-svg');
       const width = svg ? svg.clientWidth : 0;
       if (!width || width === lastTreeWidth) return;
@@ -757,8 +757,8 @@
     window.addEventListener('resize', () => requestAnimationFrame(fitTabs));
     NS.render();
     await NS.reload();
-    // 认知树是默认落地页:快照落地后按需补一次树(overview 页也保留补树)。
-    if (!treeRequested && (S.route.name === 'tree' || S.route.name === 'overview')) { treeRequested = true; await NS.reload({ tree: true }); }
+    // 树是「我的认知」的一种投影(specs/018):进 overview 就补一次树数据。
+    if (!treeRequested && S.route.name === 'overview') { treeRequested = true; await NS.reload({ tree: true }); }
     NS.notify();
   }
 
@@ -775,7 +775,7 @@
 
   // 数据变化时：树页/概览页没树就补树。
   NS.onChange(() => {
-    if ((S.route.name === 'tree' || S.route.name === 'overview') && !treeRequested && S.loaded) {
+    if (S.route.name === 'overview' && !treeRequested && S.loaded) {
       treeRequested = true;
       void NS.reload({ tree: true });
     }
@@ -816,7 +816,7 @@
     // 大扫除 section（specs/017 整改三）也要最近报告摘要，一并补拉。
     // 「已删除」页签：保留期剩余天数由服务端现算，进这个页签时补拉一次。
     if (String(S.route.category || '') === 'deleted') void NS.loadDeletedAssets();
-    if (['cleanup', 'organize-settings'].includes(String(S.route.name || ''))) {
+    if (['cleanup', 'settings'].includes(String(S.route.name || ''))) {
       void NS.loadCleanupReports();
     }
     if (String(S.route.name || '') === 'cleanup') {
@@ -829,7 +829,7 @@
     // 排序依据/权重装载器——core 不动）。
     if (assetId) void loadRankingWhy(assetId);
     // 权重配置（US-202 AC6）：进沉淀设置页才拉一次（契约：既有设置位）。
-    if (String(S.route.name || '') === 'organize-settings') void loadRankingWeights();
+    if (String(S.route.name || '') === 'settings') void loadRankingWeights();
     // 会话标题同理（2026-09-25 US-603）：证据来源与使用记录里的 cid 要翻成
     // 会话名，五处展示同名；来源目录 100 条窗口外的会话靠这个批量口补齐。
     if (assetId) void NS.loadConversationTitles(assetId);

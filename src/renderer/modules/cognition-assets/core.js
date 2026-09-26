@@ -465,7 +465,7 @@
     /** 整理页：会话列表是否展开全部（默认收拢 5 条）。 */
     organizeListExpanded: false,
     /** 路由：{name, category, assetId, candidateId, proofEventId, captureBucket, captureId, sourceIssueOpen} */
-    route: { name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', ontologyBox: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '' },
+    route: { name: 'review', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', ontologyBox: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '' },
     backStack: [],
     /** 上一帧的路由名：渲染层据此判断「离开 ontology 页」需要先归还本体 section。 */
     prevRouteName: 'tree',
@@ -1153,21 +1153,18 @@
 
   /* ────────────────────────── 路由 ────────────────────────── */
 
-  /* 2026-09-15 全模块重构：按最小闭环收敛为三个 tab;使用记录并入资产详情、
-   * 经验(KSTAR)与来源健康常态页砍除(来源改为异常驱动,只在待我处理出现)。 */
-  /* 2026-09-21 HTML 原型 v7 迁移：三页签扩成五页签——认知树 / 个人本体 /
-   * 我的认知 / 待我处理 / 整理。默认落地认知树(原型的信息架构：树是第一眼)。
-   * 「我的认知」不再承载树图主界面,树拆成独立全屏页(Phase 3)。 */
+  /* 2026-09-26 specs/018 后端驱动重构：页签对应用户的四件事+本体——
+   * 待我处理（拍板，默认落地）/ 我的认知（列表·树·目录三投影）/ 个人本体
+   *（独立模块）/ 系统活动（原「整理」：任务流+报告+巡检）/ 设置（原
+   * 「沉淀设置」子页升级）。认知树不再是独立页签：它是资产数据的另一种
+   * 投影（overview + assetView='tree'）。旧路由名在 router.go 与
+   * views.render 两级归一化，深链与历史栈不断。 */
   const TABS = [
-    { id: 'tree', titleKey: 'cognition.tab_tree', title: '认知树' },
-    { id: 'ontology', titleKey: 'cognition.tab_ontology', title: '个人本体' },
-    { id: 'overview', titleKey: 'cognition.tab_overview', title: '我的认知' },
-    // 2026-09-26 specs/017 整改一：经验不再单独成页签——收编为「我的认知」
-    // 分类档（category='experiences'）。数据通道不变（recall.experiences.*，
-    // SC-001 隔离照旧），变的只是入口：深链 name:'experiences' 由
-    // views.render 归一化到 overview+category。
     { id: 'review', titleKey: 'cognition.tab_review', title: '待我处理' },
-    { id: 'organize', titleKey: 'cognition.tab_organize', title: '整理' },
+    { id: 'overview', titleKey: 'cognition.tab_overview', title: '我的认知' },
+    { id: 'ontology', titleKey: 'cognition.tab_ontology', title: '个人本体' },
+    { id: 'activity', titleKey: 'cognition.tab_activity', title: '系统活动' },
+    { id: 'settings', titleKey: 'cognition.tab_settings', title: '设置' },
   ];
   NS.TABS = TABS;
   // 归边判定 NS.isKstarAsset / NS.isKstarCandidate 由 views.js 定义
@@ -1177,9 +1174,19 @@
     go(next, options) {
       const opts = options || {};
       const current = store.route;
+      // 旧路由名归一（specs/018）：tree→我的认知·树视图、organize→系统活动、
+      // organize-settings→设置、experiences→我的认知·经验档（specs/017）。
+      // 在入栈/落 store 前归一，app.js 的 onChange 钩子读到的恒为新名。
+      let target = next || {};
+      const legacyName = String(target.name || '');
+      if (legacyName === 'tree') target = Object.assign({}, target, { name: 'overview', assetView: 'tree' });
+      else if (legacyName === 'organize') target = Object.assign({}, target, { name: 'activity' });
+      else if (legacyName === 'organize-settings') target = Object.assign({}, target, { name: 'settings' });
+      else if (legacyName === 'experiences') target = Object.assign({}, target, { name: 'overview', category: target.category || 'experiences' });
+      if (target.category === 'kstar') target = Object.assign({}, target, { category: '' });
       // 先把 next 归一到同一形状再比（部分键字面量 vs 全键展开的序列化恒不等，
       // 连点同一 tab 会堆积重复栈项——2026-09-14 终审修）。
-      const merged = Object.assign({ name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', ontologyBox: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '' }, next);
+      const merged = Object.assign({ name: 'review', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', ontologyBox: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '' }, target);
       const same = JSON.stringify(current) === JSON.stringify(merged);
       if (!opts.replace && !same) store.backStack.push(Object.assign({}, current));
       store.route = merged;
@@ -2256,6 +2263,6 @@
   };
 
   NS.closePersonalOntology = function closePersonalOntology() {
-    NS.router.go({ name: 'tree' });
+    NS.router.go({ name: 'overview' });
   };
 })();

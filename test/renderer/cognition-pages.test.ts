@@ -272,32 +272,36 @@ describe('cognition-assets 五页签结构(迁移终态)', () => {
     return tabs;
   }
 
-  it('TABS 是五页签且顺序固定:认知树 / 个人本体 / 我的认知 / 待我处理 / 整理', () => {
-    // specs/017 整改一(改写自 specs/016 US-801 AC3 的六页签断言):经验不再
-    // 单独成页签——收编为「我的认知」分类档(category='experiences'),
-    // 数据隔离(SC-001)不变。
+  it('TABS 是五页签且顺序固定:待我处理 / 我的认知 / 个人本体 / 系统活动 / 设置', () => {
+    // specs/018 后端驱动重构(改写自 specs/016/017 的页签断言):页签对应用户
+    // 四件事+本体;经验是「我的认知」分类档;认知树是「我的认知」的视图投影。
     const tabs = parseTabs(core2);
-    expect(tabs.map((t) => t.id)).toEqual(['tree', 'ontology', 'overview', 'review', 'organize']);
+    expect(tabs.map((t) => t.id)).toEqual(['review', 'overview', 'ontology', 'activity', 'settings']);
     expect(tabs.map((t) => t.titleKey)).toEqual([
-      'cognition.tab_tree', 'cognition.tab_ontology', 'cognition.tab_overview',
-      'cognition.tab_review', 'cognition.tab_organize',
+      'cognition.tab_review', 'cognition.tab_overview', 'cognition.tab_ontology',
+      'cognition.tab_activity', 'cognition.tab_settings',
     ]);
   });
 
-  it('默认路由是认知树,深链归一化键保留', () => {
-    expect(core2).toContain("route: { name: 'tree'");
-    expect(core2).toContain("Object.assign({ name: 'tree'");
+  it('默认路由是待我处理,深链归一化键保留', () => {
+    // specs/018:有待办先办事——默认落地决策队列;全清时页面本身就是结论。
+    expect(core2).toContain("route: { name: 'review'");
+    expect(core2).toContain("Object.assign({ name: 'review'");
     // 深链兼容:既有详情路由键一个都不能少(资产/候选/整理/版本/KSTAR)。
     for (const key of ['assetId', 'candidateId', 'captureId', 'assetVersionId', 'kstarEpisodeId', 'assetEdit']) {
       expect(core2).toContain(`${key}: ''`);
     }
+    // 旧路由名在 router.go 入栈前归一(tree/organize/organize-settings/experiences)。
+    expect(core2).toContain("legacyName === 'tree'");
+    expect(core2).toContain("legacyName === 'organize-settings'");
   });
 
-  it('认知树与我的认知拆分为独立页面,overview 不再承载树图主界面', () => {
+  it('认知树是「我的认知」的视图投影,overview 列表不内嵌树图', () => {
     expect(views2).toContain('function viewTree(');
-    expect(views2).toContain("route.name === 'tree'");
+    // 树由 assetView 分派(旧 name:'tree' 深链归一化到 overview+assetView)。
+    expect(views2).toContain("route.assetView === 'tree' ? viewTree(route)");
     expect(views2).toContain('function viewOntology(');
-    // viewOverview 函数体内不再调用 treeBlocks——树整卡搬去了独立页。
+    // viewOverview 函数体内不调用 treeBlocks——树是另一种投影,不混进列表。
     const start = views2.indexOf('function viewOverview');
     const end = views2.indexOf('\n  function ', start + 10);
     const overviewBlock = views2.slice(start, end);
@@ -316,7 +320,7 @@ describe('cognition-assets 五页签结构(迁移终态)', () => {
   it('五页签标题四语齐全', () => {
     for (const locale of ['zh', 'en', 'ja', 'pt'] as const) {
       const table = JSON.parse(readFileSync(resolve(__dirname, `../../src/renderer/locales/${locale}.json`), 'utf8'));
-      for (const key of ['cognition.tab_tree', 'cognition.tab_ontology', 'cognition.tab_overview', 'cognition.tab_review', 'cognition.tab_organize']) {
+      for (const key of ['cognition.tab_review', 'cognition.tab_overview', 'cognition.tab_ontology', 'cognition.tab_activity', 'cognition.tab_settings']) {
         expect(table[key], `${locale}:${key}`).toBeTruthy();
       }
     }

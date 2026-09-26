@@ -65,13 +65,15 @@ describe('Recall cognition workspace layout', () => {
    * switchSkillsCognitionPage 归一化到 inbox，页面上不再有它的 tab / pane。
    */
   it('keeps Recall navigation focused on the five user views', () => {
-    // 2026-09-21 原型 v7 迁移:三 tab 扩成五页签——认知树 / 个人本体 / 我的认知 / 待我处理 / 整理。
+    // specs/018 后端驱动重构:五页签对应用户四件事+本体——待我处理(拍板) /
+    // 我的认知(资产与经验,含树·目录投影) / 个人本体(独立模块) / 系统活动
+    // (原「整理」:任务流+报告+巡检) / 设置(原「沉淀设置」升级)。
     const core = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/core.js'), 'utf-8');
-    expect(core).toContain("{ id: 'tree', titleKey: 'cognition.tab_tree'");
-    expect(core).toContain("{ id: 'ontology', titleKey: 'cognition.tab_ontology'");
-    expect(core).toContain("{ id: 'overview', titleKey: 'cognition.tab_overview'");
     expect(core).toContain("{ id: 'review', titleKey: 'cognition.tab_review'");
-    expect(core).toContain("{ id: 'organize', titleKey: 'cognition.tab_organize'");
+    expect(core).toContain("{ id: 'overview', titleKey: 'cognition.tab_overview'");
+    expect(core).toContain("{ id: 'ontology', titleKey: 'cognition.tab_ontology'");
+    expect(core).toContain("{ id: 'activity', titleKey: 'cognition.tab_activity'");
+    expect(core).toContain("{ id: 'settings', titleKey: 'cognition.tab_settings'");
     // tab 由 views.js 渲染进 #ca-root 的 .ca-tabs，数据驱动（data-act="tab"）。
     const views = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/views.js'), 'utf-8');
     expect(views).toContain('<nav class="ca-tabs" id="ca-tabs-nav">');
@@ -147,7 +149,7 @@ describe('Recall cognition workspace layout', () => {
     expect(core).toContain("NS.router = router");
     expect(core).toContain("router.go({ name: 'overview'");
     expect(core).toContain("router.go({ name: 'review' })");
-    expect(core).toContain("{ id: 'organize', titleKey: 'cognition.tab_organize'");
+    expect(core).toContain("{ id: 'activity', titleKey: 'cognition.tab_activity'");
     // 旧页面函数全部删除，没有并行数据路径。
     const skills = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/skills.js'), 'utf-8');
     for (const fn of ['renderSkillsCognitionInbox', 'renderSkillsCognitionAssets', 'renderSkillsCognitionProofs', 'renderSkillsCognitionGovernance', '_renderCognitionTaskHero']) {
@@ -162,13 +164,13 @@ describe('Recall cognition workspace layout', () => {
   // 任务视图回答"用户来这里要做什么"；来源是输入配置、沉淀活动是后台加工
   // 进度，两者都不是任务，降为页头辅助入口。它们打开的仍是同一批 page body。
   it('keeps sources and capture activity out of the task tabs', () => {
-    // 2026-09-21 五页签 → 2026-09-25 六页签（specs/016 T018）→ 2026-09-26
-    // 回五页签（specs/017 整改一）：经验收编为「我的认知」分类档，不再是
-    // 顶层页签。来源仍异常驱动、只在「待我处理」出现;沉淀活动仍在「整理」
-    // tab;认知树与个人本体是独立视图,不与任务页混排。
+    // specs/018 后端驱动重构:五页签=待我处理/我的认知/个人本体/系统活动/设置。
+    // 经验是「我的认知」分类档(specs/017);来源仍异常驱动、只在「待我处理」
+    // 出现;沉淀任务流在「系统活动」;认知树是「我的认知」的视图投影,
+    // 个人本体是独立模块挂载。
     const core = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/core.js'), 'utf-8');
     const tabIds = [...core.matchAll(/\{ id: '([a-z]+)', titleKey: 'cognition\.tab_/g)].map((m) => m[1]);
-    expect(tabIds).toEqual(['tree', 'ontology', 'overview', 'review', 'organize']);
+    expect(tabIds).toEqual(['review', 'overview', 'ontology', 'activity', 'settings']);
     expect(core).toContain('sourceIssueOpen');
     // 来源健康入口只出现在待我处理（review）页。
     const views = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/views.js'), 'utf-8');
@@ -235,7 +237,7 @@ describe('Recall cognition workspace layout', () => {
     expect(views).toContain('T(tab.titleKey, tab.title)');
     // tab 标题 key 来自 core.js TABS 定义。
     const core = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/core.js'), 'utf-8');
-    for (const key of ['cognition.tab_tree', 'cognition.tab_ontology', 'cognition.tab_overview', 'cognition.tab_review', 'cognition.tab_organize']) {
+    for (const key of ['cognition.tab_review', 'cognition.tab_overview', 'cognition.tab_ontology', 'cognition.tab_activity', 'cognition.tab_settings']) {
       expect(core).toContain(key);
     }
     const app = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/app.js'), 'utf-8');
@@ -351,12 +353,12 @@ describe('Recall cognition workspace layout', () => {
    * 这条用例因此从"只跳一次"翻转为"一次都不跳"。原断言编码的是被取消的行为，
    * 不是回归。
    */
-  it('lands on the cognition tree without auto-redirecting away', () => {
-    // 2026-09-21 五页签迁移:路由默认 tree(认知树,原型的信息架构),不因
-    // 待办为空自动跳页;空态给显式入口,跳不跳由用户决定。
+  it('lands on the review queue without auto-redirecting away', () => {
+    // specs/018:路由默认 review（待我处理）——有待办先办事，不因待办为空
+    // 自动跳页;空态给结论与显式入口,跳不跳由用户决定。
     const core = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/core.js'), 'utf-8');
-    expect(core).toContain("route: { name: 'tree'");
-    expect(core).toContain("Object.assign({ name: 'tree'");
+    expect(core).toContain("route: { name: 'review'");
+    expect(core).toContain("Object.assign({ name: 'review'");
     // 没有 switchSkillsCognitionPage 这类强制跳转残留。
     const skills = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/skills.js'), 'utf-8');
     expect(skills).not.toContain('switchSkillsCognitionPage');
@@ -421,7 +423,8 @@ describe('Recall cognition workspace layout', () => {
         'cognition.tab_review_desc',
         'cognition.tab_overview',
         'cognition.tab_overview_desc',
-        'cognition.tab_organize',
+        'cognition.tab_activity',
+        'cognition.tab_settings',
         'cognition.tab_organize_desc',
         'cognition.source_conversation',
         'cognition.source_artifact',

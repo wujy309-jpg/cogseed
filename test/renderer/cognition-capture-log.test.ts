@@ -173,12 +173,12 @@ const detailCapture = {
 
 describe('信息架构：3 tab 收敛', () => {
   it('旧六视图已删净，新视图 + 设置页 + 异常下钻组件存在', () => {
-    expect(coreSource).toContain("{ id: 'organize', titleKey: 'cognition.tab_organize'");
-    // 两线不拆 tab（2026-09-17 二次定调）：TABS 回三 tab，KSTAR 以徽章+筛选档出现。
+    // specs/018:整理页改名系统活动、沉淀设置升级为设置页签。
+    expect(coreSource).toContain("{ id: 'activity', titleKey: 'cognition.tab_activity'");
+    expect(coreSource).toContain("{ id: 'settings', titleKey: 'cognition.tab_settings'");
+    // 两线不拆 tab（2026-09-17 二次定调）：KSTAR 以徽章出现，不设独立页签。
     expect(coreSource).not.toContain("id: 'kstar-assets'");
-    // 墓碑只拦 2026-09-15 删掉的旧六视图；specs/016 T018 重新引入了**新版**
-    // 「经验」页签（id 'experiences' / viewExperiences，数据走 recall.experiences.*
-    // 独立通道），同名但不是复活旧视图——从禁入名单里摘出（2026-09-25）。
+    // 墓碑只拦 2026-09-15 删掉的旧六视图。
     expect(coreSource.match(/id: '(evidence|organize-history|capture-log|manage)'/g)).toBeNull();
     for (const gone of ['function viewManage', 'function viewSourcesOverview', 'function viewSourceDetail', 'function viewOrganizeHistory', 'function viewCaptureLog', 'function organizeSettingsDrawer']) {
       expect(viewsSource, gone).not.toContain(gone);
@@ -194,8 +194,9 @@ describe('信息架构：3 tab 收敛', () => {
     expect(appSource).not.toContain("case 'open-evidence'");
     expect(appSource).not.toContain("case 'toggle-organize-settings'");
     expect(appSource).toContain("case 'toggle-source-issues'");
+    // data-act 名保留（go-organize-settings），落点改新路由名 settings（specs/018）。
     expect(appSource).toContain("case 'go-organize-settings'");
-    expect(appSource).toContain("router.go({ name: 'organize-settings' })");
+    expect(appSource).toContain("router.go({ name: 'settings' })");
     expect(viewsSource).toContain('data-cognition-page-link="captures"');
   });
 
@@ -1779,13 +1780,14 @@ describe('引导层（app.js / core.js）', () => {
     expect(coreSource).toContain('recall.timeline.list');
   });
 
-  it('configure_model 的处理出口是应用设置页的模型区；整理进行中轮询限定整理页', () => {
+  it('configure_model 的处理出口是应用设置页的模型区；整理进行中轮询限定系统活动页', () => {
     expect(appSource).toContain("case 'go-configure-model'");
     // 设置页懒加载：tab 与锚点必须挂在 setView 上，否则配置页加载完后停在默认的
     // 「数据」tab（与知识库「去设置管理模型」同一类真机故障）。
     expect(appSource).toContain("{ settingsTab: 'configuration', settingsAnchor: 'models' }");
     expect(appSource).toContain("activateSettingsTab('configuration', { anchor: 'models' })");
-    expect(appSource).toContain("S.route.name === 'organize'");
+    // specs/018:整理页更名系统活动（route name 'activity'），轮询限定跟着走。
+    expect(appSource).toContain("S.route.name === 'activity'");
     expect(appSource).toContain("capture.bucket === 'active'");
   });
 });

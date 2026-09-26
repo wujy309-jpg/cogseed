@@ -62,21 +62,27 @@ describe('cognition-assets snapshot and routing', () => {
   });
 
   it('routes the five views through one router', () => {
-    // 2026-09-21 五页签迁移:认知树/个人本体是独立路由,默认落地认知树。
-    expect(core).toContain("route: { name: 'tree'");
+    // specs/018 后端驱动重构:五页签=待我处理/我的认知/个人本体/系统活动/设置,
+    // 默认落地待我处理;认知树是 overview 的视图投影(assetView='tree')。
+    // 旧路由名(tree/organize/organize-settings/experiences)在 router.go 归一。
+    expect(core).toContain("route: { name: 'review'");
     expect(core).toContain("router.go({ name: 'review' })");
-    expect(core).toContain("{ id: 'tree', titleKey: 'cognition.tab_tree'");
+    expect(core).toContain("{ id: 'review', titleKey: 'cognition.tab_review'");
     expect(core).toContain("{ id: 'ontology', titleKey: 'cognition.tab_ontology'");
-    expect(core).toContain("{ id: 'organize', titleKey: 'cognition.tab_organize'");
-    // organize / tree 路由由 views.js 的 tab 分派驱动（route.name === 'organize'）。
-    expect(views).toContain("route.name === 'organize'");
-    expect(views).toContain("route.name === 'tree'");
+    expect(core).toContain("{ id: 'activity', titleKey: 'cognition.tab_activity'");
+    expect(core).toContain("{ id: 'settings', titleKey: 'cognition.tab_settings'");
+    // 旧名归一在入栈前完成(store 里恒为新名,onChange 钩子不做双名判断)。
+    expect(core).toContain("legacyName === 'organize'");
+    expect(core).toContain("legacyName === 'tree'");
+    // activity / 树投影由 views.js 的分派驱动。
+    expect(views).toContain("route.name === 'activity'");
+    expect(views).toContain("route.assetView === 'tree' ? viewTree(route)");
     expect(core).toContain('store.backStack.push');
     expect(core).toContain('back()');
   });
 
-  it('lands on the cognition tree without auto-redirecting when the inbox is empty', () => {
-    expect(core).toContain("Object.assign({ name: 'tree'");
+  it('lands on the review queue without auto-redirecting when the inbox is empty', () => {
+    expect(core).toContain("Object.assign({ name: 'review'");
     expect(core).not.toContain('switchSkillsCognitionPage');
   });
 
