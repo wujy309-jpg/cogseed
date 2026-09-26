@@ -3158,8 +3158,7 @@
       <div class="vrow">
         <div class="vt"><div class="v1">${esc(candidateTitle(c))}</div>
         <div class="v2">${esc(fmtDate(c.updatedAt || c.createdAt))} · ${esc(processedLabel(c))}</div></div>
-      </div>`).join('')}</div></details>` : ''}
-    ${improvementAnalysisSection(route)}`;
+      </div>`).join('')}</div></details>` : ''}`;
   }
 
   /* ────────────────────────── 视图：候选详情 ────────────────────────── */
@@ -3430,6 +3429,7 @@
     // 且关闭是破坏性动作；后端 enabled 字段与契约保留，整理页的「已关闭」
     // warn 路径也保留（只是 UI 上不再可达）。
     const settings = S.captureSettings || {};
+    const model = S.captureModel || null;
     const nightlyOn = String(settings.executionPolicy || 'manual') === 'nightly';
     const reviewAuto = String(settings.reviewPolicy || 'auto') === 'auto';
     const nightlyStart = String(settings.nightlyStart || '02:00');
@@ -3437,6 +3437,17 @@
       T('cognition.organize_settings_title', '沉淀设置'),
       T('cognition.organize_settings_hint', '决定系统什么时候自动沉淀、沉淀出的内容要不要先经过你。'),
     )}
+    <div class="card ca-setcard">
+      <div class="rowline">
+        <div><div class="tt">${esc(T('cognition.model_state_title', '模型状态'))}</div>
+        <div class="sub">${esc(model && model.configured
+          ? (model.authorizationRequired
+            ? T('cognition.model_state_auth', '模型已配置但授权未完成：整理会在需要模型时停住，先去完成授权。')
+            : T('cognition.model_state_ok', '模型已配置，自动整理可用。'))
+          : T('cognition.model_state_missing', '还没配置模型：自动整理与候选提炼都跑不起来。'))}</div></div>
+        <div class="right">${btn(T('cognition.model_state_open', '去应用设置'), 'go-configure-model', { small: true, className: 'o' })}</div>
+      </div>
+    </div>
     <div class="card ca-setting-row">
       <div class="ca-setting-copy">
         <div class="tt">${esc(T('cognition.nightly_capture_title', '夜间自动沉淀'))}</div>
@@ -3456,7 +3467,8 @@
       <p class="note">${esc(T(reviewAuto ? 'cognition.capture_review_auto_note' : 'cognition.capture_review_manual_note', reviewAuto ? '符合条件的候选会自动采纳（不再询问）' : '候选先进入待确认，由你决定'))}</p>
     </div>
     ${rankingWeightsCard()}
-    ${cleanupSettingsSection()}`;
+    ${cleanupSettingsSection()}
+    ${inspectionSettingsCard()}`;
   }
 
   /* ────────────────────────── 视图：整理（任务流 + 策略） ──────────────────────────
@@ -3468,29 +3480,13 @@
    *
    *  报告存在的意义是"用户能自己核对"——所以每一项都显示改了什么、为什么、
    *  以及一个回滚入口；拿不准的项单列，等用户给个处置意见（不擅自处置）。 */
-  function viewCleanup(route) {
-    const state = S.cleanupReports;
-    const reports = state && Array.isArray(state.reports) ? state.reports : [];
-    const selectedId = String(route.cleanupReportId || '');
-    const report = reports.find((row) => String(row.id) === selectedId) || reports[0] || null;
-    const loading = Boolean(state && state.loading);
-    // 页头走共享 uiPageHeader（契约是紧凑单行 + 最多三个次要操作，没有副标题位）；
-    // 说明放正文里的 note，不塞进页头。
-    const header = window.uiPageHeader({
-      title: T('cognition.cleanup_title', '大扫除与整理报告'),
-      actions: [{
-        label: loading ? T('cognition.cleanup_running', '正在整理…') : T('cognition.cleanup_run', '发起大扫除'),
-        loading,
-        disabled: loading,
-        attrs: { 'data-act': 'run-cleanup' },
-      }],
-    });
-    const hint = `<p class="note">${esc(T('cognition.cleanup_run_hint', '只做不改变含义的整理（标题标点规范化、正文一字不差的重复归并）；拿不准的列出来等你决定，不擅自处置。'))}</p>`;
-    // 后台巡检（US-405）：只报不改——发现进「待我处理」，改不改由你去资产详情做。
+  /** 后台巡检卡（specs/018 Step 4/5）：开关与手动触发收进设置页；
+   *  系统活动页只留只读轮次摘要（inspectionRoundCard）。只报不改的口径不变。 */
+  function inspectionSettingsCard() {
     const inspection = S.inspection || null;
     const inspectionOn = Boolean(inspection && inspection.settings && inspection.settings.enabled);
     const latestRun = inspection && inspection.latestRun ? inspection.latestRun : null;
-    const inspectionCard = `<div class="card ca-setcard">
+    return `<div class="card ca-setcard">
       <div class="rowline">
         <div>
           <div class="tt">${esc(T('cognition.inspection_title', '后台巡检'))}</div>
@@ -3509,11 +3505,43 @@
         </div>
       </div>
     </div>`;
+  }
+
+  /** 巡检轮次摘要（系统活动页只读记录）：扫了多少、怎么触发、发现去了哪。 */
+  function inspectionRoundCard() {
+    const inspection = S.inspection || null;
+    const latestRun = inspection && inspection.latestRun ? inspection.latestRun : null;
+    if (!latestRun) return '';
+    return `${sectionHead(T('cognition.inspection_title', '后台巡检'), String((latestRun.findings || []).length))}
+    <div class="card ca-setcard"><div class="rowline"><div>
+      <div class="sub">${esc(T('cognition.inspection_last_run', '最近一轮：{when} · 发现 {n} 条', { when: fmtDate(latestRun.startedAt), n: String((latestRun.findings || []).length) }))}</div>
+      <div class="sub">${esc(T('cognition.inspection_round_meta', '扫描 {scanned} 条 · 触发：{trigger} · 发现进「待我处理」，只报不改', { scanned: String(latestRun.scanned || 0), trigger: String(latestRun.trigger || '') === 'manual' ? T('cognition.inspection_trigger_manual', '手动') : T('cognition.inspection_trigger_scheduled', '定时') }))}</div>
+    </div></div></div>`;
+  }
+
+  function viewCleanup(route) {
+    const state = S.cleanupReports;
+    const reports = state && Array.isArray(state.reports) ? state.reports : [];
+    const selectedId = String(route.cleanupReportId || '');
+    const report = reports.find((row) => String(row.id) === selectedId) || reports[0] || null;
+    const loading = Boolean(state && state.loading);
+    // 页头走共享 uiPageHeader（契约是紧凑单行 + 最多三个次要操作，没有副标题位）；
+    // 说明放正文里的 note，不塞进页头。
+    const header = window.uiPageHeader({
+      title: T('cognition.cleanup_title', '大扫除与整理报告'),
+      actions: [{
+        label: loading ? T('cognition.cleanup_running', '正在整理…') : T('cognition.cleanup_run', '发起大扫除'),
+        loading,
+        disabled: loading,
+        attrs: { 'data-act': 'run-cleanup' },
+      }],
+    });
+    const hint = `<p class="note">${esc(T('cognition.cleanup_run_hint', '只做不改变含义的整理（标题标点规范化、正文一字不差的重复归并）；拿不准的列出来等你决定，不擅自处置。'))}</p>`;
     if (!report) {
       return `<div class="ca-page">${header}${hint}${empty(
         T('cognition.cleanup_empty', '还没有整理报告'),
         T('cognition.cleanup_empty_hint', '发起一次大扫除：整理完会产出一份逐项清单，改了哪几条、为什么、怎么回滚都在上面。'),
-      )}${inspectionCard}</div>`;
+      )}</div>`;
     }
 
     const KIND_LABELS = {
@@ -3582,7 +3610,7 @@
       <div class="sect-block"><div class="tt">${esc(T('cognition.cleanup_items', '逐项改动'))}</div>${itemRows}</div>
       ${uncertain.length ? `<div class="sect-block"><div class="tt">${esc(T('cognition.cleanup_uncertain_section', '拿不准的（未改动）'))}</div>${uncertainRows}</div>` : ''}
       ${reports.length > 1 ? `<div class="sect-block"><div class="tt">${esc(T('cognition.cleanup_reports', '历史报告'))}</div>${reportRows}</div>` : ''}
-      ${inspectionCard}
+      
     </div>`;
   }
 
@@ -3744,7 +3772,10 @@
     ${filtered.length > 5 ? `<div class="list-more">${btn(S.organizeListExpanded
       ? T('cognition.capture_list_collapse', '收起')
       : T('cognition.capture_list_expand', '查看全部 {n} 个会话', { n: String(filtered.length) }), 'toggle-organize-list', { small: true, className: 'o' })}</div>` : ''}
-    <div class="note footnote">${esc(T('cognition.capture_bucket_scope_note', '口径说明：分桶按每个会话最相关的一次整理任务计算；「需要我处理」包括待确认与被暂停的记录，比「待我处理」页只数失败的口径宽；「无需沉淀」是寒暄会话或最近一轮失败且无任务的会话。'))}</div>`;
+    <div class="note footnote">${esc(T('cognition.capture_bucket_scope_note', '口径说明：分桶按每个会话最相关的一次整理任务计算；「需要我处理」包括待确认与被暂停的记录，比「待我处理」页只数失败的口径宽；「无需沉淀」是寒暄会话或最近一轮失败且无任务的会话。'))}</div>
+    ${cleanupSettingsSection()}
+    ${inspectionRoundCard()}
+    ${improvementAnalysisSection(route)}`;
   }
 
   /* 整理详情（2026-09-15 新增）：一条整理任务的完整执行情况——状态与当前

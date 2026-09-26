@@ -824,10 +824,10 @@
     // 大扫除 section（specs/017 整改三）也要最近报告摘要，一并补拉。
     // 「已删除」页签：保留期剩余天数由服务端现算，进这个页签时补拉一次。
     if (String(S.route.category || '') === 'deleted') void NS.loadDeletedAssets();
-    if (['cleanup', 'settings'].includes(String(S.route.name || ''))) {
+    if (['cleanup', 'settings', 'activity'].includes(String(S.route.name || ''))) {
       void NS.loadCleanupReports();
     }
-    if (String(S.route.name || '') === 'cleanup') {
+    if (['cleanup', 'activity'].includes(String(S.route.name || ''))) {
       void NS.loadInspection();
     }
     // 采用回执（2026-09-25 US-602）：详情「实际采用记录」区的唯一数据源。

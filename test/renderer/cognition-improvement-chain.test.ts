@@ -70,7 +70,7 @@ function ensureModule(): { cogAssets: Record<string, unknown>; domRoot: { innerH
         sourceIssues: 0, failedTasks: 0, coveredAssets: 0, proofCount: 0, attention: 0,
       };
     },
-    store: { loaded: true, loading: false, errors: [], route: { name: 'review' } },
+    store: { loaded: true, loading: false, errors: [], route: { name: 'activity' } },
   };
   domRoot = { innerHTML: '' };
   /* eslint-disable @typescript-eslint/no-require-imports */
@@ -346,7 +346,7 @@ const FOUR_OUTCOMES = [
 
 describe('「改进分析」只读分区（T016 / US-701 AC3）', () => {
   it('空态走共享 EmptyState，不是空白块', () => {
-    const html = renderPage('review', { improvementOutcomes: { items: [], loading: false, failed: false } });
+    const html = renderPage('activity', { improvementOutcomes: { items: [], loading: false, failed: false } });
     expect(html).toContain(zh['cognition.improvement_section']);
     expect(html).toContain(zh['cognition.improvement_empty']);
     expect(html).toContain(zh['cognition.improvement_empty_hint']);
@@ -354,7 +354,7 @@ describe('「改进分析」只读分区（T016 / US-701 AC3）', () => {
   });
 
   it('四类结论各有可见措辞 + 人话原因 + 来源任务 + 时间；只读、不进待办', () => {
-    const html = renderPage('review', {
+    const html = renderPage('activity', {
       assets: [targetAsset],
       improvementOutcomes: { items: FOUR_OUTCOMES, loading: false, failed: false },
       ...kstarStore,
@@ -380,11 +380,15 @@ describe('「改进分析」只读分区（T016 / US-701 AC3）', () => {
     expect(tail).not.toContain('<button');
     expect(tail).not.toContain('data-act="cand-');
     expect(tail).not.toContain('data-act="inbox-resolve"');
-    expect(html).toContain('<div class="v a">0</div><div class="l">要你拍板</div>');
+    // 「不进待办」在待我处理页核对：改进结论不占「要你拍板」计数。
+    const reviewHtml = renderPage('review', {
+      improvementOutcomes: { items: FOUR_OUTCOMES, loading: false, failed: false },
+    });
+    expect(reviewHtml).toContain('<div class="v a">0</div><div class="l">要你拍板</div>');
   });
 
   it('结论原因里的内部 id 不上屏：换成资产名或泛称', () => {
-    const html = renderPage('review', {
+    const html = renderPage('activity', {
       assets: [targetAsset],
       improvementOutcomes: {
         items: [outcomeFixture({
@@ -403,7 +407,7 @@ describe('「改进分析」只读分区（T016 / US-701 AC3）', () => {
   });
 
   it('失败类结论给就地失败详情：环节 / 时间 / 失败标识，不显示错误原文', () => {
-    const html = renderPage('review', {
+    const html = renderPage('activity', {
       improvementOutcomes: { items: [FOUR_OUTCOMES[2], FOUR_OUTCOMES[3]], loading: false, failed: false },
       kstarFailures: {
         items: [
@@ -428,7 +432,7 @@ describe('「改进分析」只读分区（T016 / US-701 AC3）', () => {
   });
 
   it('同一 episode 已产出候选：不再摆该 episode 的「无需更新」（收敛语义，不自相矛盾）', () => {
-    const html = renderPage('review', {
+    const html = renderPage('activity', {
       assets: [targetAsset],
       candidates: [updateCandidate()],
       improvementOutcomes: {
@@ -449,12 +453,12 @@ describe('「改进分析」只读分区（T016 / US-701 AC3）', () => {
   });
 
   it('读取失败与空态分开：说读不到并给重试（既有 refresh 动作，不是新动作）', () => {
-    const failed = renderPage('review', { improvementOutcomes: { items: [], loading: false, failed: true } });
+    const failed = renderPage('activity', { improvementOutcomes: { items: [], loading: false, failed: true } });
     expect(failed).toContain(zh['cognition.improvement_read_failed']);
     expect(failed).toContain('data-act="refresh"');
     expect(failed).not.toContain(zh['cognition.improvement_empty']);
 
-    const loading = renderPage('review', { improvementOutcomes: null });
+    const loading = renderPage('activity', { improvementOutcomes: null });
     expect(loading).toContain(zh['cognition.improvement_loading']);
     expect(loading).not.toContain(zh['cognition.improvement_empty']);
   });
@@ -498,7 +502,7 @@ describe('受限正文不进界面（T019 验收点）', () => {
     expect(detail).not.toContain(RESTRICTED_BODY);
 
     // 待我处理列表页：结论与失败记录上的非契约字段。
-    const list = renderPage('review', {
+    const list = renderPage('activity', {
       assets: [targetAsset],
       candidates: [updateCandidate({ restrictedBody: RESTRICTED_BODY })],
       improvementOutcomes: {

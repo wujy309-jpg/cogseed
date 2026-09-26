@@ -540,6 +540,9 @@
       store.captures = toArr(captures, ['items', 'captures', 'tasks']);
       store.captureCounts = (captures && captures.counts) || {};
       store.captureSettings = (settings && settings.settings) || settings || null;
+      // 模型配置态（specs/018 Step 5）：此前 settings.get 的 model 部分被直接
+      // 丢弃——模型没配置时用户看不到原因。设置页据此诚实披露。
+      store.captureModel = (settings && settings.model) || null;
       store.sources = toArr(sources, ['groups', 'sources']);
       store.inbox = toArr(inbox, ['items']);
       // 治理分组（specs/010 T013）：**顺带**从同一返回体取 groups，不新增 loader
@@ -1124,7 +1127,7 @@
    *  （来源任务 chip 要显示任务目标，而不是兜底"一次任务"）。各 loader 自带
    *  缓存/在途守卫，这里只做"什么时候该拉"的判断。 */
   NS.onChange(() => {
-    if (String((store.route && store.route.name) || '') !== 'review') return;
+    if (String((store.route && store.route.name) || '') !== 'activity') return;
     const state = store.improvementOutcomes;
     if (!state || state.failed || state.stale) { void NS.loadImprovementOutcomes(); return; }
     if (state.loading) return;
