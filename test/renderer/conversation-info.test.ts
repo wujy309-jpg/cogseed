@@ -1255,6 +1255,22 @@ describe('ConversationInfo files tab', () => {
       expect(result.cognitionStrip.html).not.toContain('沉淀过');
     });
 
+    it('不开抽屉也有行：bind 的后台轻量加载独立于 _open（019 实现期缺陷的钉子）', async () => {
+      const result = await renderFilesResult({
+        history: [],
+        files: baseFiles,
+        attachments: [],
+        candidates: [
+          { id: 'cand-x', status: 'confirmed', judgment: '已确认的一条', suggestedType: 'personal', sourceRefs: [{ kind: 'conversation', id: 'c1' }] },
+        ],
+        assets: [],
+        panelClosed: true,
+      } as any);
+      // panelClosed=true 会点掉抽屉，但衔接行的数据来自 bind 的后台通道。
+      expect(result.cognitionStrip.hidden).toBe(false);
+      expect(result.cognitionStrip.html).toContain('这段对话沉淀过 1 条认知');
+    });
+
     it('「去看」→ 打开抽屉并激活 assets tab（硬口径 3：落点可达）', async () => {
       const result = await renderFilesResult({
         history: [],

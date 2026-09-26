@@ -140,11 +140,11 @@
           count: Number(card?.totalAssetCount ?? assets.length),
         })
       : hasModelLedger
-        ? _label('recall.projection.model_selected_summary_precise', 'Model attached {count} cognition assets · {total} in projection', {
+        ? _label('recall.projection.model_selected_summary_precise', 'Model attached {count} cognition assets · {total} carried in', {
             count: Number(card?.modelSelectedCount ?? modelIds?.length ?? 0),
             total: Number(card?.totalAssetCount ?? assets.length),
           })
-        : _label('recall.projection.model_selected_summary_legacy', 'Model-selected projection · {total} cognition assets', {
+        : _label('recall.projection.model_selected_summary_legacy', 'Model-picked · {total} cognition assets carried in', {
             total: Number(card?.totalAssetCount ?? assets.length),
           });
     const assetRows = (rows, emptyLabel) => rows.length

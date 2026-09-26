@@ -317,7 +317,7 @@ describe('projection card surfaces a drifted confirmed version', () => {
     });
 
     await context.window.mountRecallProjectionCard(host, { projectionId: 'proj-a' }, { cid: 'cid-a', onlyModelSelected: true });
-    expect(host.innerHTML).toContain('Model-selected projection · 1 cognition assets');
+    expect(host.innerHTML).toContain('Model-picked · 1 cognition assets');
     expect(host.innerHTML).toContain('Model-picked');
     expect(host.innerHTML).toContain('Revoke');
     // confirmed 态不发确认按钮（它已经生效了，只给撤销）。
@@ -359,7 +359,7 @@ describe('projection card surfaces a drifted confirmed version', () => {
 
     await context.window.mountRecallProjectionCard(host, { projectionId: 'proj-a' }, { cid: 'cid-a', onlyModelSelected: true });
 
-    expect(host.innerHTML).toContain('Model attached 1 cognition assets · 2 in projection');
+    expect(host.innerHTML).toContain('Model attached 1 cognition assets · 2 carried in');
     expect(host.innerHTML).toContain('Model-selected assets');
     expect(host.innerHTML).toContain('Semantic baseline assets');
     expect(host.innerHTML).toContain('Model rule');
@@ -389,7 +389,7 @@ describe('projection card surfaces a drifted confirmed version', () => {
 
     await context.window.mountRecallProjectionCard(host, { projectionId: 'proj-a' }, { cid: 'cid-a', onlyModelSelected: true });
 
-    expect(host.innerHTML).toContain('Model-selected projection · 2 cognition assets');
+    expect(host.innerHTML).toContain('Model-picked · 2 cognition assets carried in');
     expect(host.innerHTML).not.toContain('Model-selected assets');
     expect(host.innerHTML).toContain('Old A');
   });
@@ -426,7 +426,7 @@ describe('projection card surfaces a drifted confirmed version', () => {
 
     expect(prose.hidden).toBe(false);
     expect(host.className).toContain('is-model-selected');
-    expect(host.innerHTML).toContain('Model-selected projection · 8 cognition assets');
+    expect(host.innerHTML).toContain('Model-picked · 8 cognition assets carried in');
     expect(host.innerHTML).toContain('View details');
     expect(host.innerHTML).toContain('Revoke');
     expect(host.innerHTML).toContain('<details class="chat-recall-projection-details"');

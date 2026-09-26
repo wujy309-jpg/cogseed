@@ -1442,7 +1442,7 @@ const ConversationInfo = (() => {
     if (contextIds.length) contextRows.push([_label('conversation_info.carried.context_id', 'Context ID'), contextIds.join(' · ')]);
     const contextHtml = contextRows.length
       ? `<dl class="conversation-info-carried-rows">${contextRows.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd></div>`).join('')}</dl>`
-      : `<div class="conversation-info-empty is-small">${escapeHtml(_label('conversation_info.carried.context_empty', '本会话暂无 Context 投影记录；接续不会凭空生成正式资产。'))}</div>`;
+      : `<div class="conversation-info-empty is-small">${escapeHtml(_label('conversation_info.carried.context_empty', '本会话暂无 Context 带入记录；接续不会凭空生成正式资产。'))}</div>`;
 
     // 来源与边界：会话来源 + 最近一次执行的执行方 / 边界 / 真实权限模式。
     const latestRun = sorted[0] || null;
@@ -1456,7 +1456,7 @@ const ConversationInfo = (() => {
     const boundaryHtml = `<dl class="conversation-info-carried-rows">${boundaryRows.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd></div>`).join('')}</dl>`;
     const permissionNote = latestRun && latestRun.permissionMode
       ? _label('conversation_info.carried.permission_note', '本会话最近一次执行的权限模式：{mode}', { mode: _carriedPermissionLabel(latestRun.permissionMode) })
-      : _label('conversation_info.carried.permission', '只读 · 仅本次任务；外发、删除、扩权或正式资产变更会单独确认。');
+      : _label('conversation_info.carried.permission', '只读 · 仅本次任务；外发、删除、放宽范围或正式资产变更会单独确认。');
 
     return `<div class="conversation-info-carried">
       ${resumeHtml}
@@ -1606,10 +1606,10 @@ const ConversationInfo = (() => {
     }
     var permissionDetailHtml = permissionRows.length
       ? '<dl class="conversation-info-carried-rows">' + permissionRows.map(function (r) { return '<div><dt>' + escapeHtml(r[0]) + '</dt><dd>' + escapeHtml(r[1]) + '</dd></div>'; }).join('') + '</dl>'
-      : '<div class="conversation-info-empty is-small">' + escapeHtml(_label('conversation_info.carried.permission', '只读 · 仅本次任务；外发、删除、扩权或正式资产变更会单独确认。')) + '</div>';
+      : '<div class="conversation-info-empty is-small">' + escapeHtml(_label('conversation_info.carried.permission', '只读 · 仅本次任务；外发、删除、放宽范围或正式资产变更会单独确认。')) + '</div>';
     var permissionNote = latestRun && latestRun.permissionMode
       ? _label('conversation_info.carried.permission_note', '本会话最近一次执行的权限模式：{mode}', { mode: _carriedPermissionLabel(latestRun.permissionMode) })
-      : _label('conversation_info.carried.permission', '只读 · 仅本次任务；外发、删除、扩权或正式资产变更会单独确认。');
+      : _label('conversation_info.carried.permission', '只读 · 仅本次任务；外发、删除、放宽范围或正式资产变更会单独确认。');
 
     // --- 段 3 运行与协作：运行证明 + 协作参与者 ---
     var proofSummary = _label('conversation_info.run_context.protocol_count', '{count} 个协议事件', { count: protocolEvents.length });
@@ -1882,16 +1882,19 @@ const ConversationInfo = (() => {
     if (!_cid) {
       body.innerHTML = `<div class="conversation-info-empty">${escapeHtml(_label('conversation_info.no_conversation', 'Open a conversation to see details'))}</div>`;
       _refreshTabCounts();
+      _renderCognitionStrip();
       return;
     }
     if (_loading) {
       body.innerHTML = `<div class="conversation-info-empty">${escapeHtml(_label('common.loading', 'Loading…'))}</div>`;
       _refreshTabCounts();
+      _renderCognitionStrip();
       return;
     }
     if (_error) {
       body.innerHTML = `<div class="conversation-info-empty is-error">${escapeHtml(_label('conversation_info.load_failed', 'Could not load conversation info', { reason: _error }))}</div>`;
       _refreshTabCounts();
+      _renderCognitionStrip();
       return;
     }
     body.innerHTML = _renderRunContext();
