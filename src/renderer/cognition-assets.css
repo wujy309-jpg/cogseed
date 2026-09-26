@@ -1178,3 +1178,26 @@
     animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important;
   }
 }
+
+/* ───────────── 用户旅程雕刻（specs/018）新增呈现层 ───────────── */
+
+/* 「其他处理」折叠（T002/T011）：行内轻量入口，把次级动作从主按钮旁收走。
+   覆写 .details 的卡壳样式（同为 #ca-root + 单类，靠文件顺序取胜）。 */
+#ca-root .ca-other-actions { display: inline-block; border: 0; background: none; margin: 0; vertical-align: middle; }
+#ca-root .ca-other-actions > summary { list-style: none; cursor: pointer; padding: 3px 8px; font-size: var(--font-size-caption); font-weight: 500; color: var(--ink3); display: inline-flex; align-items: center; gap: 4px; border-radius: var(--rm); }
+#ca-root .ca-other-actions > summary::before { content: '⋯'; }
+#ca-root .ca-other-actions > summary::-webkit-details-marker { display: none; }
+#ca-root .ca-other-actions[open] > summary { background: var(--color-ca-hover); }
+#ca-root .ca-other-actions .dbody { border: 0; padding: 8px 0 0; }
+#ca-root .ca-other-actions .actions { justify-content: flex-start; }
+
+/* 候选卡动作行（T011）：主按钮左、其他处理靠右。 */
+#ca-root .ca-card-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+#ca-root .ca-card-actions .ca-other-actions { margin-left: auto; }
+
+/* 导语可点数字（T010）：句中数字即锚点，chip-link 提供虚线下划线。 */
+#ca-root .ca-jump-num { font-weight: 700; }
+
+/* 去向提示（T014）：确认后回到本页的一条成功色横条。 */
+#ca-root .ca-promoted-note .notice-row { border: 1px solid var(--green-line); }
+#ca-root .ca-promoted-note .notice-title { color: var(--green-t); font-weight: 600; }

@@ -1506,9 +1506,19 @@
         toast(T('cognition.candidate_promoted', '已成为正式资产'), 'success');
         // 检修剪：update 候选确认会 bump 目标资产版本——曾缓存的版本链失效。
         if (candidate && candidate.targetAssetId) store.assetVersions = null;
+        // 去向提示（specs/018 T014）：回到「待我处理」时行内提示「长在树上了」。
+        // 只存标题与时间，展示层按新鲜度决定是否出提示，不新增任何动作。
+        store.lastPromoted = {
+          title: String(candidate.summary || candidate.judgment || ''),
+          at: Date.now(),
+        };
         router.go({ name: 'overview', assetId: result.assetId });
       } else {
         toast(T('cognition.candidate_promoted', '已成为正式资产'), 'success');
+        store.lastPromoted = {
+          title: String(candidate.summary || candidate.judgment || ''),
+          at: Date.now(),
+        };
         router.go({ name: 'review' });
       }
       await NS.reload();

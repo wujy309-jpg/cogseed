@@ -120,6 +120,13 @@
           // 不新增 tab。assetView 必须进 router.go 的归一化白名单，否则被丢弃。
           case 'asset-view': router.go(id === 'tree' ? { name: 'tree' } : { name: 'overview', assetView: id === 'catalog' ? 'catalog' : '' }); break;
           case 'go-review': router.go({ name: 'review' }); break;
+          // 导语可点数字（specs/018 T010）：滚动到本页对应分区（纯呈现，
+          // 不动路由栈——这是页内锚点跳转，不是导航）。
+          case 'review-jump': {
+            const target = document.getElementById(id);
+            if (target && typeof target.scrollIntoView === 'function') target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            break;
+          }
           case 'go-organize': router.go({ name: 'activity' }); break;
           case 'go-configure-model': {
             // configuration_required 的处理出口：模型配置在应用设置页

@@ -380,11 +380,14 @@ describe('「改进分析」只读分区（T016 / US-701 AC3）', () => {
     expect(tail).not.toContain('<button');
     expect(tail).not.toContain('data-act="cand-');
     expect(tail).not.toContain('data-act="inbox-resolve"');
-    // 「不进待办」在待我处理页核对：改进结论不占「要你拍板」计数。
+    // 「不进待办」在待我处理页核对：改进结论不占「要你拍板」——页首导语的
+    // 拍板数保持 0（specs/018 T010 统计条收进导语后的新形状：没有待办时
+    // 直接落全清空态，而不是把改进结论数进拍板数）。
     const reviewHtml = renderPage('review', {
       improvementOutcomes: { items: FOUR_OUTCOMES, loading: false, failed: false },
     });
-    expect(reviewHtml).toContain('<div class="v a">0</div><div class="l">要你拍板</div>');
+    expect(reviewHtml).toContain('没有需要你确认的事项。');
+    expect(reviewHtml).not.toMatch(/data-act="review-jump" data-id="ca-review-decide"[^>]*>[1-9]/);
   });
 
   it('结论原因里的内部 id 不上屏：换成资产名或泛称', () => {

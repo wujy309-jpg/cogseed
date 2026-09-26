@@ -136,19 +136,22 @@ describe('治理待办分组区（specs/010 T014~T016/T011/T025）', () => {
     const items = [CONFLICT_ITEM, ESCALATION_ITEM, BOUNDARY_ITEM, ...UNCLASSIFIED_ITEMS, PAIR_FINDING, OTHER_ITEM];
     const html = renderPage('review', { inbox: items, inboxGroups: groupsFixture(items) });
     const at = (label: string) => html.indexOf(label);
-    for (const label of ['冲突与重复', '敏感级扩权', '缺少作用边界', '尚未分级', '其他待处理']) {
+    // specs/018 §4：组名走人话术语表（扩权 →「能去的地方变多了」、
+    // 缺边界 →「什么时候用、什么时候别用（还没写）」、尚未分级 →「还没定敏感档位」）。
+    for (const label of ['冲突与重复', '能去的地方变多了', '什么时候用、什么时候别用（还没写）', '还没定敏感档位', '其他待处理']) {
       expect(at(label)).toBeGreaterThan(-1);
     }
     // 「要你拍板」区（urgency=confirm）：冲突 → 扩权 → 未分级 保持组序。
     expect(at('要你拍板')).toBeGreaterThan(-1);
-    expect(at('冲突与重复')).toBeLessThan(at('敏感级扩权'));
-    expect(at('敏感级扩权')).toBeLessThan(at('尚未分级'));
+    expect(at('冲突与重复')).toBeLessThan(at('能去的地方变多了'));
+    expect(at('能去的地方变多了')).toBeLessThan(at('还没定敏感档位'));
     // 「低打扰」折叠区在拍板区之后：缺边界（low）与「其他」落在里面。
     const lowAt = html.indexOf('fold-low');
-    expect(lowAt).toBeGreaterThan(at('尚未分级'));
-    expect(html.indexOf('缺少作用边界', lowAt)).toBeLessThan(html.indexOf('其他待处理', lowAt));
-    // 未分级组显示 total（2）而非 count（1）。
-    const unclassifiedBlock = html.slice(at('尚未分级'), at('缺少作用边界'));
+    expect(lowAt).toBeGreaterThan(at('还没定敏感档位'));
+    expect(html.indexOf('什么时候用、什么时候别用（还没写）', lowAt)).toBeLessThan(html.indexOf('其他待处理', lowAt));
+    // 未分级组显示 total（2）而非 count（1）：拍板区里未分级组之后就是
+    // 「等待你确认」候选区或低打扰折叠，切片到 fold-low 之前。
+    const unclassifiedBlock = html.slice(at('还没定敏感档位'), lowAt);
     expect(unclassifiedBlock).toContain('>2<');
   });
 

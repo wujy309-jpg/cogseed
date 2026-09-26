@@ -103,6 +103,45 @@
   const sectionHead = (title, note, right) => `
     <div class="sect"><strong class="sect-t">${esc(title)}</strong>${note ? `<span class="n">${esc(note)}</span>` : ''}<span class="sp"></span>${right || ''}</div>`;
 
+  /* ────────────── 人话术语表 + 三层披露共享件（specs/018 T001/T002）──────────────
+   * 病根之二：界面词是工程词（候选/作用边界/扩权/回执），用户没有这些概念。
+   * 术语表在展示层统一翻译，数据层口径一个不动；钉死口径（「实际采用」「被带入」
+   * 「保留期 30 天」）只加脚注、不改写。TERM_TABLE 形态 = [词条键, 界面词,
+   * 脚注键, 脚注]，相邻字符串字面量让 i18n 覆盖扫描（literalPattern）扫得到，
+   * 四语缺一门即红。 */
+  const TERM_TABLE = {
+    candidate: ['cognition.term_candidate', '系统注意到的一件事', 'cognition.term_candidate_note', '等你点头才记入你的认知'],
+    kstar: ['cognition.term_kstar', '那次任务的复盘', 'cognition.term_kstar_note', '任务收口后系统总结的得失'],
+    boundary: ['cognition.term_boundary', '什么时候用、什么时候别用', 'cognition.term_boundary_note', '没写适用范围的规矩不会被自动带入任务'],
+    sensitivity: ['cognition.term_sensitivity', '敏感档位', 'cognition.term_sensitivity_note', '决定这条能被带去哪些任务'],
+    escalation: ['cognition.term_escalation', '能去的地方变多了', 'cognition.term_escalation_note', '需要你确认这次放宽'],
+    receipt: ['cognition.term_receipt', '使用记录', 'cognition.term_receipt_note', '只记真实用过（实际采用），仅被带入不算'],
+    family: ['cognition.term_family', '同一来源的一组', '', ''],
+    projection: ['cognition.term_projection', '带进对话的内容', '', ''],
+    inspection: ['cognition.term_inspection', '后台体检', 'cognition.term_inspection_note', '只报不改，发现的问题进「待我处理」'],
+  };
+  const term = (id) => {
+    const row = TERM_TABLE[id];
+    return row ? T(row[0], row[1]) : '';
+  };
+  const termNote = (id) => {
+    const row = TERM_TABLE[id];
+    return row && row[2] ? T(row[2], row[3]) : '';
+  };
+  /** 首次出现脚注：一行 note（分号连接），没有脚注的术语自动跳过。 */
+  const termFootnote = (ids) => {
+    const notes = (ids || []).map(termNote).filter(Boolean);
+    return notes.length ? `<p class="note term-footnote">${esc(notes.join('；'))}</p>` : '';
+  };
+
+  /** 折叠区统一用法（T002）：技术细节与低频记录默认收起，内容不丢。 */
+  const foldBlock = (title, count, hint, body, cls) => `<details class="details fold${cls ? ` ${cls}` : ''}"><summary>${esc(title)}${count != null ? `<span class="n">${esc(String(count))}</span>` : ''}${hint ? `<span class="note">${esc(hint)}</span>` : ''}</summary><div class="dbody">${body}</div></details>`;
+
+  /** 「其他处理」折叠（T002 三件套）：主按钮留给推荐动作，其余动作收这里。 */
+  const otherActions = (buttonsHtml) => (buttonsHtml
+    ? `<details class="details ca-other-actions"><summary>${esc(T('cognition.other_actions', '其他处理'))}</summary><div class="dbody"><div class="actions actions-right">${buttonsHtml}</div></div></details>`
+    : '');
+
   const CATEGORIES = [
     ['personal', 'cognition.asset_category_personal', '关于我'],
     ['rule', 'cognition.asset_category_rule', '规则与偏好'],
@@ -2721,14 +2760,31 @@
     const warnHtml = broken
       ? `<div class="warn">${esc(T('cognition.candidate_evidence_all_unavailable', '这条候选的大部分来源记录已被删除，无法核对证据。建议补充新证据后保存，或选择不保存。'))}</div>`
       : '';
-    // 决策动作（保存/不保存/调整）统一收在详情页：卡片整体即入口，不再放
-    // 行内按钮——按钮与「点卡片进详情」的落点相冲突（用户实测反馈）。
+    /* 三件套（specs/018 T011）：主按钮 = 推荐动作（确认），其余动作收「其他处理」。
+     * 直接确认沿既有 cand-adopt-with-form 通道：卡片不在 .ca-candidate-detail 里，
+     * readCandidateForm 就近找不到表单 → 按未携带编辑确认（内容原样保存）。
+     * 卡片整体不再是点击区——标题行与「看内容与证据」进详情，避免行内按钮
+     * 与卡片跳转抢点击（2026-09-26 旅程雕刻前的老问题，这次一并解掉）。 */
+    const caps = candidate.capabilities || {};
+    const labels = candidateDecisionLabels(candidate);
+    const primaryLabel = candidateUpdateType(candidate)
+      ? T('recall.asset_approval.confirm', '确认更新')
+      : T('cognition.review_card_confirm', '确认');
+    const primaryBtn = caps.canPromote
+      ? btn(primaryLabel, 'cand-adopt-with-form', { id: candidate.id, small: true, primary: true })
+      : '';
+    const othersHtml = otherActions([
+      caps.canDefer ? btn(labels.defer, 'cand-decide', { id: candidate.id, data: { action: 'defer' }, small: true, className: 'o' }) : '',
+      caps.canReject ? btn(labels.reject, 'cand-decide', { id: candidate.id, data: { action: 'reject' }, small: true, className: 'o' }) : '',
+      btn(T('cognition.review_card_open_detail', '看内容与证据'), 'open-candidate', { id: candidate.id, small: true, className: 'o' }),
+    ].join(''));
     return `
-    <div class="cand${broken ? ' is-broken' : ''}" data-act="open-candidate" data-id="${esc(candidate.id)}" role="button" tabindex="0">
-      <div class="c1">${esc(candidateTitle(candidate))}<span class="chev" aria-hidden="true">›</span></div>
+    <div class="cand${broken ? ' is-broken' : ''}">
+      <div class="c1" data-act="open-candidate" data-id="${esc(candidate.id)}" role="button" tabindex="0">${esc(candidateTitle(candidate))}<span class="chev" aria-hidden="true">›</span></div>
       <div class="c2">${chip(categoryLabel(candidate.suggestedType))}${candidateSourceBadge(candidate)}${(candidate.capabilities && candidate.capabilities.isSnoozed) ? chip(T('cognition.candidate_snoozed', '已稍后处理'), 'amber') : ''}${broken ? chip(T('cognition.candidate_evidence_weak', '来源已删'), 'amber') : chip(T('cognition.candidate_evidence_ok', '证据充足'), 'green')}</div>
       <div class="c3">${esc(String(candidate.judgment || candidate.value || '').slice(0, 220))}</div>
       ${refsHtml}${warnHtml}
+      ${(primaryBtn || othersHtml) ? `<div class="c5 ca-card-actions">${primaryBtn}${othersHtml}</div>` : ''}
     </div>`;
   }
 
@@ -2990,27 +3046,37 @@
       return `<div class="notice-title" title="${esc(raw)}">${esc(cut)}</div>`;
     };
     // 既有扁平行的渲染（降级路径与「其他」组共用，语义不变）。
+    // 三件套（specs/018 T011）：首个动作 = 推荐动作（primary 视觉），
+    // 其余收「其他处理」折叠；没有一键动作的仍给资产详情落点。
     const flatInboxRow = (row) => {
       const actions = Array.isArray(row.actions) ? row.actions : [];
       const labels = actionLabelsFor(String(row.kind || ''));
-      const buttons = actions.map((action) => btn(labels[action] || String(action), 'inbox-resolve', {
+      const [recommended, ...rest] = actions;
+      const primaryBtn = recommended
+        ? btn(labels[recommended] || String(recommended), 'inbox-resolve', {
+          small: true, primary: true, data: { id: String(row.id || ''), action: String(recommended) },
+        })
+        : '';
+      const restBtns = otherActions(rest.map((action) => btn(labels[action] || String(action), 'inbox-resolve', {
         small: true, className: 'o', data: { id: String(row.id || ''), action: String(action) },
-      })).join('');
+      })).join(''));
       // 没有一键动作的：给落点（资产详情里的编辑入口），而不是只报警。
       const fallback = actions.length || !row.assetId
         ? ''
         : btn(T('cognition.inbox_go_asset', '去资产详情处理'), 'go-inbox-asset', { small: true, className: 'o', data: { id: String(row.assetId) } });
       return `<div class="notice-row">
         <div class="notice-copy">${rowTitle(row)}${row.detail ? `<div class="notice-detail">${esc(String(row.detail))}</div>` : ''}</div>
-        <span class="sp"></span>${fallback}${buttons}
+        <span class="sp"></span>${fallback}${primaryBtn}${restBtns}
       </div>`;
     };
     // ── 治理分区的取词（内联，i18n 门禁扫得到；不信任主进程下发的 titleKey）──
+    // 组名走人话术语表（specs/018 §4）：扩权/作用边界/分级都是工程词，
+    // 界面词换成用户视角的说法；组内 hint 承担首次出现的白话脚注。
     const GROUP_TITLES = {
       conflict: T('cognition.inbox_group_conflict', '冲突与重复'),
-      escalation: T('cognition.inbox_group_escalation', '敏感级扩权'),
-      boundary: T('cognition.inbox_group_boundary', '缺少作用边界'),
-      unclassified: T('cognition.inbox_group_unclassified', '尚未分级'),
+      escalation: term('escalation'),
+      boundary: `${term('boundary')}${T('cognition.inbox_group_not_written', '（还没写）')}`,
+      unclassified: T('cognition.inbox_group_sensitivity_unset', '还没定{level}', { level: term('sensitivity') }),
       other: T('cognition.inbox_group_other', '其他待处理'),
     };
     const GROUP_HINTS = {
@@ -3035,7 +3101,7 @@
       const detail = row.aggregate ? '' : row.detail;
       const head = `<div class="notice-copy">${rowTitle(row)}${detail ? `<div class="notice-detail">${esc(String(detail))}</div>` : ''}</div>`;
       if (row.kind === 'sensitivity_escalated') {
-        return `<div class="notice-row">${head}<span class="sp"></span>${has('accept') ? btn(T('cognition.inbox_action_escalation_accept', '确认扩权'), 'inbox-escalation-accept', { small: true, data: { id } }) : ''}${has('reject') ? btn(T('cognition.inbox_action_escalation_reject', '驳回，维持原级'), 'inbox-escalation-reject', { small: true, danger: true, data: { id } }) : ''}</div>`;
+        return `<div class="notice-row">${head}<span class="sp"></span>${has('accept') ? btn(T('cognition.inbox_action_escalation_accept', '确认扩权'), 'inbox-escalation-accept', { small: true, primary: true, data: { id } }) : ''}${otherActions(has('reject') ? btn(T('cognition.inbox_action_escalation_reject', '驳回，维持原级'), 'inbox-escalation-reject', { small: true, danger: true, data: { id } }) : '')}</div>`;
       }
       if (row.kind === 'rule_boundary_missing' && has('set_boundary')) {
         // 就地补条件表单（specs/010 T029；specs/017 整改二：字段说明 + 保存
@@ -3046,7 +3112,7 @@
         // 「补条件」一键展开，展开后才是要填的字段与保存后果。
         return `<div class="notice-row inbox-governance-form" data-inbox-boundary-form>
           ${head}
-          <div class="sd">${btn(T('cognition.inbox_form_open', '补条件'), 'inbox-form-toggle', { small: true, className: 'o', data: { id } })}</div>
+          <div class="sd">${btn(T('cognition.inbox_form_open', '补条件'), 'inbox-form-toggle', { small: true, primary: true, data: { id } })}</div>
           <div class="inbox-inline-fields" data-inbox-boundary-body hidden>
             <label class="field"><span>${esc(T('cognition.inbox_boundary_field_applicable', '适用情形'))}</span>${window.uiInput({ id: `${formId}-applicable`, value: (boundary.applicableWhen || []).join('、'), attrs: { 'data-f': 'applicableWhen' } })}</label>
             <label class="field"><span>${esc(T('cognition.inbox_boundary_field_forbidden', '禁用情形'))}</span>${window.uiInput({ id: `${formId}-forbidden`, value: (boundary.forbiddenWhen || []).join('、'), attrs: { 'data-f': 'forbiddenWhen' } })}</label>
@@ -3058,36 +3124,40 @@
       if (row.kind === 'sensitivity_unclassified' && has('classify')) {
         const aggregate = row.aggregate;
         if (aggregate && Array.isArray(aggregate.assetIds) && aggregate.count > 1) {
-          // 聚合条目（specs/010 T025）：名单可见 + 批量定级；失败逐条留在待办。
+          // 聚合条目（specs/010 T025 → 018 T012 折叠收口）：默认一行
+          // 「{n} 条没定敏感档 · 一次搞定」，展开才见名单与批量控件；
+          // 失败逐条留在待办。分桶 chips 降级为筛选项（specs/018 T061）
+          // 之外，这是「概览计数与分组计数重复」的另一半收口。
           return `<div class="notice-row inbox-governance-form">
             ${head}
-            <details class="details inbox-batch-names"><summary>${esc(T('cognition.inbox_group_unclassified', '尚未分级'))} · ${esc(String(aggregate.count))}</summary>
-              <div class="dbody"><ul>${aggregate.assetIds.map((assetId) => `<li>${esc(String(assetId))}</li>`).join('')}</ul></div>
-            </details>
-            <div class="inbox-inline-fields">
-              <p class="note inbox-effect-note">${esc(T('cognition.inbox_classify_batch_hint', '选好档位点「批量定级」：名单里的资产立即生效；个别失败的会留在待办里单独处理。'))}</p>
-              <div class="inbox-field-actions">${levelControl(id, undefined)}
-                ${btn(T('cognition.inbox_action_classify_batch', '批量定级'), 'inbox-classify-batch', { small: true, data: { id, ids: aggregate.assetIds.join(',') } })}
+            <details class="details inbox-batch-names">
+              <summary><span class="n">${esc(String(aggregate.count))}</span>${esc(T('cognition.inbox_batch_summary', '条没定敏感档'))} · ${esc(T('cognition.inbox_batch_fix', '一次搞定'))}</summary>
+              <div class="dbody">
+                <ul class="inbox-batch-list">${aggregate.assetIds.map((assetId) => `<li>${esc(String(assetId))}</li>`).join('')}</ul>
+                <p class="note inbox-effect-note">${esc(T('cognition.inbox_classify_batch_hint', '选好档位点「批量定级」：名单里的资产立即生效；个别失败的会留在待办里单独处理。'))}</p>
+                <div class="inbox-field-actions">${levelControl(id, undefined)}
+                  ${btn(T('cognition.inbox_action_classify_batch', '批量定级'), 'inbox-classify-batch', { small: true, primary: true, data: { id, ids: aggregate.assetIds.join(',') } })}
+                </div>
               </div>
-            </div>
+            </details>
           </div>`;
         }
         return `<div class="notice-row inbox-governance-form">
           ${head}<span class="sp"></span>
           <div class="inbox-inline-fields"><div class="inbox-field-actions">${levelControl(id, undefined)}
-            ${btn(T('cognition.inbox_action_classify', '保存分级'), 'inbox-classify-apply', { small: true, data: { id } })}
+            ${btn(T('cognition.inbox_action_classify', '保存分级'), 'inbox-classify-apply', { small: true, primary: true, data: { id } })}
           </div></div>
         </div>`;
       }
       if (row.kind === 'classification_conflict' && has('claim')) {
-        return `<div class="notice-row">${head}<span class="sp"></span>${btn(T('cognition.inbox_action_claim', '保留这一条'), 'inbox-conflict-claim', { small: true, data: { id } })}${has('reject') ? btn(INBOX_ACTION_LABELS.reject, 'inbox-resolve', { small: true, className: 'o', data: { id, action: 'reject' } }) : ''}${has('defer') ? btn(INBOX_ACTION_LABELS.defer, 'inbox-resolve', { small: true, className: 'o', data: { id, action: 'defer' } }) : ''}</div>`;
+        return `<div class="notice-row">${head}<span class="sp"></span>${btn(T('cognition.inbox_action_claim', '保留这一条'), 'inbox-conflict-claim', { small: true, primary: true, data: { id } })}${otherActions([has('reject') ? btn(INBOX_ACTION_LABELS.reject, 'inbox-resolve', { small: true, className: 'o', data: { id, action: 'reject' } }) : '', has('defer') ? btn(INBOX_ACTION_LABELS.defer, 'inbox-resolve', { small: true, className: 'o', data: { id, action: 'defer' } }) : ''].join(''))}</div>`;
       }
       if (row.kind === 'inspection_finding' && (has('keep') || has('merge'))) {
         // 巡检冲突/重复（specs/010 T033）：选边归档或合并。目标 = 本行锚定的
         // 资产（data-anchor）；data-target 携带另一方 id（展示与测试锚点）。
         const anchor = String(row.assetId || '');
         const other = String((row.assetIds || []).find((assetId) => String(assetId) !== anchor) || '');
-        return `<div class="notice-row">${head}<span class="sp"></span>${has('keep') ? btn(T('cognition.inbox_action_keep', '保留这一条，归档另一条'), 'inbox-inspection-keep', { small: true, data: { id, anchor, target: other } }) : ''}${has('merge') ? btn(T('cognition.inbox_action_merge_pair', '合并到这一条'), 'inbox-inspection-merge', { small: true, data: { id, anchor, target: other } }) : ''}${has('reject') ? btn(FINDING_ACTION_LABELS.reject, 'inbox-resolve', { small: true, className: 'o', data: { id, action: 'reject' } }) : ''}${has('defer') ? btn(FINDING_ACTION_LABELS.defer, 'inbox-resolve', { small: true, className: 'o', data: { id, action: 'defer' } }) : ''}</div>`;
+        return `<div class="notice-row">${head}<span class="sp"></span>${has('keep') ? btn(T('cognition.inbox_action_keep', '保留这一条，归档另一条'), 'inbox-inspection-keep', { small: true, primary: true, data: { id, anchor, target: other } }) : ''}${otherActions([has('merge') ? btn(T('cognition.inbox_action_merge_pair', '合并到这一条'), 'inbox-inspection-merge', { small: true, className: 'o', data: { id, anchor, target: other } }) : '', has('reject') ? btn(FINDING_ACTION_LABELS.reject, 'inbox-resolve', { small: true, className: 'o', data: { id, action: 'reject' } }) : '', has('defer') ? btn(FINDING_ACTION_LABELS.defer, 'inbox-resolve', { small: true, className: 'o', data: { id, action: 'defer' } }) : ''].join(''))}</div>`;
       }
       // 其余（含没有就地处断动作的）沿用既有扁平行（落点按钮同现状）。
       return flatInboxRow(row);
@@ -3128,37 +3198,57 @@
     const lowTotal = lowCount + snoozed.length;
     const evidenceCount = broken.length + weak.length;
     const allQuiet = !attention.length && !confirmCount && !lowCount && !pending.length && !terminal.length && !processed.length;
-    const decideHtml = decideCount ? `${sectionHead(T('cognition.review_queue_decide', '要你拍板'), String(decideCount))}
+    /* 导语（specs/018 T010）：一句话回答「现在要我拍板什么」。概览计数收成
+     * 导语里两个可点数字（拍板数 / 证据异常数），点数字滚到对应分区——
+     * 统计条与分组计数的重复就此砍掉。预计分钟 = 每条约一分钟的经验值。 */
+    const leadNum = (value, anchor) => `<span class="chip-link ca-jump-num" data-act="review-jump" data-id="${esc(anchor)}" ${roleBtn()}>${esc(String(value))}</span>`;
+    const minutes = Math.max(decideCount, 1);
+    const leadHtml = decideCount || evidenceCount
+      ? `<div class="sub">${leadNum(decideCount, 'ca-review-decide')} ${esc(T('cognition.review_lead_decide', '件事等你拍板'))} · ${esc(T('cognition.review_lead_minutes', '预计 {m} 分钟（每条约一分钟）', { m: String(minutes) }))}${evidenceCount ? ` · ${leadNum(evidenceCount, 'ca-review-evidence')} ${esc(T('cognition.review_lead_evidence', '条证据要补'))}` : ''}${lowTotal ? ` · ${esc(T('cognition.review_lead_low', '{n} 条不急，先收着', { n: String(lowTotal) }))}` : ''}</div>`
+      : '';
+    /* 去向提示（specs/018 T014）：确认后两分钟内回到本页，行内提示
+     * 「已确认 · 它长在树上了（去看）」。纯呈现状态——core 只存标题与时间，
+     * 到期自然消失，不新增任何动作；「去看」走既有 asset-view=tree 导航。 */
+    const promoted = S.lastPromoted && (Date.now() - Number(S.lastPromoted.at || 0) < 120000)
+      ? S.lastPromoted
+      : null;
+    const truncate = (text, limit) => (NS.truncateText ? NS.truncateText(text, limit) : String(text || '').slice(0, limit));
+    const promotedHtml = promoted ? `<div class="notice-stack ca-promoted-note"><div class="notice-row">
+      <div class="notice-copy"><div class="notice-title">${esc(T('cognition.review_promoted_title', '已确认 · 它长在树上了'))}</div>
+      ${promoted.title ? `<div class="notice-detail">${esc(truncate(promoted.title, 60))}</div>` : ''}</div>
+      <span class="sp"></span>${btn(T('cognition.review_promoted_go', '去看'), 'asset-view', { id: 'tree', small: true, primary: true })}
+    </div></div>` : '';
+    const decideHtml = decideCount ? `<div id="ca-review-decide">${sectionHead(T('cognition.review_queue_decide', '要你拍板'), String(decideCount))}
       <div class="note sect-note">${esc(T('cognition.review_queue_decide_hint', '每条都卡在这里等你：动作与后果写在条上，处理一条少一条。'))}</div>
       ${confirmBlocks.join('')}
-      ${ready.length ? `${sectionHead(T('cognition.review_group_wait', '等待你确认'), String(ready.length))}<div class="note sect-note">${esc(T('cognition.review_group_wait_note', '确认后会创建 v1，并保留来源与撤销入口'))}</div>${ready.map((c) => candidateCard(c, false)).join('')}` : ''}` : '';
+      ${ready.length ? `${sectionHead(T('cognition.review_group_wait', '等待你确认'), String(ready.length))}<div class="note sect-note">${esc(T('cognition.review_group_wait_note', '确认后会创建 v1，并保留来源与撤销入口'))} · ${esc(termNote('candidate'))}</div>${ready.map((c) => candidateCard(c, false)).join('')}` : ''}</div>` : '';
     const lowHtml = lowTotal ? `<details class="details fold fold-low"><summary>${esc(T('cognition.review_queue_low', '低打扰'))}<span class="n">${lowTotal}</span></summary><div class="dbody"><div class="note">${esc(T('cognition.review_queue_low_hint', '不急，但不会自己消失：有空时逐条处理。'))}</div>${lowBlocks.join('')}</div></details>` : '';
-    return `${hero(
-      T('cognition.review_title', '待我处理'),
-      T('cognition.inbox_page_hint', '治理问题就地处断：冲突选边、扩权确认、补齐边界、未分级批量定级；其余每条一个决定。'),
-      statsRow([
-        [decideCount, T('cognition.review_stat_decide', '要你拍板'), 'a'],
-        [lowTotal, T('cognition.review_stat_low', '低打扰')],
-        [evidenceCount, T('cognition.review_stat_evidence_bad', '证据异常')],
-      ]),
-    )}
-    ${attention.length ? `<div class="notice-stack">${attention.join('')}</div>` : ''}
-    ${sourceIssuesSection(route)}
+    /* 「其他异常」组（specs/018 T013）：整理失败 / 任务执行失败 / 来源异常
+     * 不再混在治理区——它们不是拍板事项，归页尾折叠；展开态跟随
+     * route.sourceIssueOpen，点「处理」不会把刚展开的名单又折回去。 */
+    const attentionHtml = attention.length
+      ? `<details class="details fold fold-attention"${String(route.sourceIssueOpen || '') === 'open' ? ' open' : ''}><summary>${esc(T('cognition.review_other_issues', '其他异常'))}<span class="n">${attention.length}</span></summary><div class="dbody"><div class="note">${esc(T('cognition.review_other_issues_hint', '不是等你拍板的事：整理没跑成、任务没得到回复、来源读取异常；处理入口在「系统活动」。'))}</div>${attention.join('')}${sourceIssuesSection(route)}</div></details>`
+      : '';
+    return `${hero(T('cognition.review_title', '待我处理'), '', leadHtml)}
+    ${promotedHtml}
     ${allQuiet ? `<div class="sect-block">${empty(
       T('cognition.inbox_empty', '没有需要你确认的事项。'),
-      T('cognition.review_all_quiet_hint', '治理待办、候选与来源异常都清空了——系统安静运行中；有新待办时会回到这里。'),
-      { label: T('cognition.go_organize', '去整理会话'), attrs: { 'data-act': 'go-organize' } },
+      T('cognition.review_all_quiet_hint', '现在没有要你决定的，系统继续在后台沉淀；有新待办时会回到这里。'),
+      { label: T('cognition.review_empty_go_activity', '去看看系统在忙什么'), attrs: { 'data-act': 'go-organize' } },
     )}</div>` : `${decideHtml}
+    ${broken.length || weak.length ? `<div id="ca-review-evidence">
     ${broken.length ? `${sectionHead(T('cognition.review_group_evidence', '来源已删除的候选'), String(broken.length))}<div class="note sect-note">${esc(T('cognition.review_group_evidence_note', '这些候选的原始出处已被删除；可以点开确认后仍要保存，或选择不保存'))}</div>${broken.map((c) => candidateCard(c, true)).join('')}` : ''}
     ${weak.length ? `${sectionHead(T('cognition.review_group_weak', '证据不足（先补证据）'), String(weak.length))}<div class="note sect-note">${esc(T('cognition.review_group_weak_note', '可以修改内容并补上证据后保存，或先稍后处理'))}</div>${weak.map((c) => candidateCard(c, false)).join('')}` : ''}
+    </div>` : ''}
     ${lowHtml}`}
     ${snoozed.length ? `<details class="details fold fold-snoozed"><summary>${esc(T('cognition.review_group_snoozed', '已稍后处理'))}<span class="n">${snoozed.length}</span></summary><div class="dbody"><div class="note">${esc(T('cognition.review_group_snoozed_note', '静音中，不计入待确认'))}</div>${snoozed.map((c) => candidateCard(c, false)).join('')}</div></details>` : ''}
     ${terminal.length ? `<details class="details fold fold-terminal"><summary>${esc(T('cognition.review_group_terminal', '已失效的候选'))}<span class="n">${terminal.length}</span></summary><div class="dbody"><div class="note">${esc(T('cognition.review_group_terminal_note', '已过期或被取代，仅保留记录'))}</div>${terminal.map((c) => candidateCard(c, false)).join('')}</div></details>` : ''}
     ${processed.length ? `<details class="details fold fold-processed"><summary>${esc(T('cognition.inbox_processed_badge', '处理记录'))}<span class="n">${processed.length}</span></summary><div class="dbody"><div class="note">${esc(T('cognition.inbox_processed_hint', '按处理时间倒序，只显示已处理的决定'))}</div>${processed.map((c) => `
       <div class="vrow">
-        <div class="vt"><div class="v1">${esc(candidateTitle(c))}</div>
+        <div class="vt"><div class="v1">${esc(candidateTitle(c))}${String(c.status || '') === 'confirmed' ? ` <span class="chip-link" data-act="asset-view" data-id="tree" ${roleBtn()}>${esc(T('cognition.review_promoted_go_tree', '长在树上了，去看'))}</span>` : ''}</div>
         <div class="v2">${esc(fmtDate(c.updatedAt || c.createdAt))} · ${esc(processedLabel(c))}</div></div>
-      </div>`).join('')}</div></details>` : ''}`;
+      </div>`).join('')}</div></details>` : ''}
+    ${attentionHtml}`;
   }
 
   /* ────────────────────────── 视图：候选详情 ────────────────────────── */
