@@ -162,9 +162,9 @@
     {
       id: 'environment',
       titleKey: 'personalOntology.ontology_environment',
-      title: '关系与环境',
+      title: '我在哪些项目与关系里',
       descriptionKey: 'personalOntology.ontology_environment_hint',
-      description: '与你协作的人、项目和使用环境',
+      description: '和你协作的人、项目与使用环境',
       keywords: ['同事', '家人', '客户', '朋友', '项目', '协作', '合作', '环境', '设备', '地点', '时区', '关系', 'team', 'project', 'collaboration', 'environment', 'device', 'location'],
     },
     {
@@ -810,9 +810,9 @@
       </button>`;
     };
     nav.innerHTML = `<div class="personal-onto-nav-section">
-      ${row('tbox', 'type', 'personalOntology.nav_tbox', '词汇', counts.tbox, 'personalOntology.nav_tbox_sub', '术语与称谓')}
-      ${row('abox', 'user', 'personalOntology.nav_abox', '事实', factCount, 'personalOntology.nav_abox_sub', '关于你的陈述')}
-      ${row('rbox', 'terminal', 'personalOntology.nav_rbox', '规则', ruleCount, 'personalOntology.nav_rbox_sub', 'AI 应遵守的做法与边界')}
+      ${row('tbox', 'type', 'personalOntology.nav_tbox', '统一词表', counts.tbox, 'personalOntology.nav_tbox_sub', '系统描述你时的一致用词')}
+      ${row('abox', 'user', 'personalOntology.nav_abox', '我是谁', factCount, 'personalOntology.nav_abox_sub', '身份、角色与项目关系')}
+      ${row('rbox', 'terminal', 'personalOntology.nav_rbox', '我偏好什么', ruleCount, 'personalOntology.nav_rbox_sub', 'AI 该怎么配合你做事')}
       ${_pocPendingCandidates.length ? `<div class="personal-onto-backflow-badge" style="padding:2px 10px 8px">${escapeHtml(_tv('personalOntology.backflow_badge', { n: _pocPendingCandidates.length }, '回流 {n}'))}</div>` : ''}
     </div>
     <div class="personal-onto-nav-section">
@@ -1629,9 +1629,9 @@
          词汇/事实/规则全靠猜（2026-09-21 子安真机反馈「看不懂」）。 */
       const counts = _pocBoxCounts();
       const boxInfo = {
-        tbox: { title: _t('personalOntology.nav_tbox', '词汇'), n: counts.tbox, unit: '项', def: _t('personalOntology.box_tbox_def', '资产字段的词表：资产里用到的字段与规范取值') },
-        abox: { title: _t('personalOntology.nav_abox', '事实'), n: counts.abox, unit: '条', def: _t('personalOntology.box_abox_def', '关于你的稳定事实：AI 在任务里会长期使用的你的信息') },
-        rbox: { title: _t('personalOntology.nav_rbox', '规则'), n: counts.rbox, unit: '条', def: _t('personalOntology.box_rbox_def', '带条件的行为规则：AI 应当遵守的做事方式与边界') },
+        tbox: { title: _t('personalOntology.nav_tbox', '统一词表'), n: counts.tbox, unit: '项', def: _t('personalOntology.box_tbox_def', '系统描述你时用的一致用词，避免同一个意思多种叫法') },
+        abox: { title: _t('personalOntology.nav_abox', '我是谁'), n: counts.abox, unit: '条', def: _t('personalOntology.box_abox_def', '关于你的稳定事实——身份、角色、项目与关系，AI 在任务里会长期使用') },
+        rbox: { title: _t('personalOntology.nav_rbox', '我偏好什么'), n: counts.rbox, unit: '条', def: _t('personalOntology.box_rbox_def', '带条件的行为规则——AI 该怎么配合你做事、什么别做') },
       }[_pocSelected.kind];
       headerEl.innerHTML = `<span class="personal-onto-main-title">${escapeHtml(boxInfo.title)}</span>` +
         `<div class="sub">${escapeHtml(boxInfo.def)} · ${boxInfo.n} ${boxInfo.unit}</div>`;

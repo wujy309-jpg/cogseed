@@ -3621,7 +3621,11 @@
     </div>
     ${rankingWeightsCard()}
     ${cleanupSettingsSection()}
-    ${inspectionSettingsCard()}`;
+    ${inspectionSettingsCard()}
+    <div class="ca-settings-foot">
+      <span class="note">${esc(T('cognition.settings_back_to_activity_hint', '这里改的一切，效果都在「系统活动」的时间线上看得到。'))}</span>
+      ${btn(T('cognition.settings_back_to_activity', '去系统活动'), 'go-organize', { small: true, className: 'o' })}
+    </div>`;
   }
 
   /* ────────────────────────── 视图：整理（任务流 + 策略） ──────────────────────────
@@ -3865,21 +3869,36 @@
       const detailLink = `data-act="open-capture-detail" data-id="${esc(capture.id)}"`;
       const titleHtml = `<div class="tt is-link" ${detailLink} ${roleBtn()} title="${esc(T('cognition.capture_detail_open_hint', '查看整理情况'))}">${esc(vocab ? vocab.recordTitle(capture) : String(capture.conversationTitle || conv.title || T('cognition.capture_untitled_record', '未命名会话的整理')))}</div>`;
       const pending = Number(capture.reviewSummary && capture.reviewSummary.pending) || 0;
-      const metaText = [
-        vocab ? vocab.captureReasonText(capture.displayReason) : T('cognition.capture_display_reason_other', '原因未记录'),
-        pending ? T('cognition.capture_review_count', '{n} 条待确认', { n: String(pending) }) : '',
-        convTime,
-      ].filter(Boolean).join(' · ');
+      /* 事件句（specs/018 T060）：一行 = 一句人话 + 时间 + 落点。四型——
+       * 整理了会话→产出候选 / 夜间沉淀跑完 / 大扫除 / 后台体检（后两类在
+       * 时间流另行并入）；等待与失败类沿用原因白话（vocabulary 唯一出口）。 */
+      const nightly = String(capture.executionPolicy || '') === 'nightly';
+      const eventLine = isRunning(capture)
+        ? T('cognition.activity_event_running', '正在整理这段会话…')
+        : nightly && pending
+          ? T('cognition.activity_event_nightly', '夜间沉淀跑完 → {n} 条新候选', { n: String(pending) })
+          : nightly
+            ? T('cognition.activity_event_nightly_empty', '夜间沉淀跑完，没有值得记下的内容')
+            : pending
+              ? T('cognition.activity_event_session', '整理了这段会话 → 产出 {n} 条候选', { n: String(pending) })
+              : '';
+      const reasonText = vocab ? vocab.captureReasonText(capture.displayReason) : T('cognition.capture_display_reason_other', '原因未记录');
+      const metaText = [eventLine || reasonText, convTime].filter(Boolean).join(' · ');
       // 用 isRunning 判定「整理中」（仅排队/提炼/写入）：等待类显示原因
       // chip；等待手动开始的行直接给「立即整理」按钮（不必进详情页）。
       /* 低价值行（纯寒暄/未回复）不给「立即整理」——行上同时摆「纯寒暄」
          和「立即整理」是自相矛盾的口径（2026-09-21 子安抓出「界面混乱」）；
          与无任务的低价值行同款「无需整理」提示，点标题可回看内容。 */
-      const primaryAction = !excluded && !isRunning(capture) && (capture.actions || []).includes('run_now')
+      /* 落点按钮（018 T060）：产出候选 →「去处理」（go-review）；
+       * 等待手动 →「立即整理」；运行中不给按钮（正在跑）。 */
+      const actions = Array.isArray(capture.actions) ? capture.actions : [];
+      const primaryAction = !excluded && !isRunning(capture) && actions.includes('run_now')
         ? btn(T('cognition.capture_action_run_now', '立即整理'), 'capture-action', { id: capture.id, data: { action: 'run_now' }, small: true, primary: true })
-        : excluded && !isRunning(capture)
-          ? chip(T('cognition.capture_excluded_action_hint', '无需整理'), 'amber')
-          : '';
+        : !excluded && !isRunning(capture) && pending && actions.includes('review_candidates')
+          ? btn(vocab ? vocab.captureActionText('review_candidates') : T('cognition.capture_action_review_candidates', '去确认'), 'go-review', { small: true, primary: true })
+          : excluded && !isRunning(capture)
+            ? chip(T('cognition.capture_excluded_action_hint', '无需整理'), 'amber')
+            : '';
       const sideHtml = isRunning(capture)
         ? btn(T('cognition.organize_active_label', '整理中'), '', { small: true, primary: true, disabled: true })
         : `${excludedTag}${chip(
@@ -3910,24 +3929,60 @@
     // 页首右侧只留一个设置入口（2026-09-15 子安标注）：原型是一枚
     // 「沉淀设置」文字按钮（tbtn），我们走共享 uiButton + icons.js 的
     // settings 图标（团队规范：图标不手写 SVG）。
+    /* 系统事件并入时间流（specs/018 T060）：大扫除报告与后台体检作为
+     * 时间线事件呈现（一句人话 + 时间 + 落点）；仅在未选分桶筛选时出现
+     * （它们不属于任何整理分桶）。发起入口在「设置」页（不重复摆卡）。 */
+    const cleanupEvents = ((S.cleanupReports && Array.isArray(S.cleanupReports.reports)) ? S.cleanupReports.reports : [])
+      .slice(0, 3)
+      .map((report) => ({
+        at: String(report.createdAt || ''),
+        html: `<div class="cap-row">
+          <div class="tw"><div class="tt">${esc(T('cognition.activity_event_cleanup', '大扫除归并 {n} 条重复', { n: String((report.items || []).filter((item) => item.status === 'applied').length) }))}</div>
+          <div class="mm"><span>${esc(fmtDate(report.createdAt))}</span></div></div>
+          <div class="sd">${btn(T('cognition.activity_event_see_report', '看报告'), 'open-cleanup-report', { small: true, className: 'o', data: { report: String(report.id) } })}</div>
+        </div>`,
+      }));
+    const inspectionEvents = [];
+    if (S.inspection && S.inspection.latestRun) {
+      const run = S.inspection.latestRun;
+      const found = (run.findings || []).length;
+      inspectionEvents.push({
+        at: String(run.startedAt || ''),
+        html: `<div class="cap-row">
+          <div class="tw"><div class="tt">${esc(found
+            ? T('cognition.activity_event_inspection', '后台体检发现 {n} 处疑点', { n: String(found) })
+            : T('cognition.activity_event_inspection_clean', '后台体检跑完，没发现问题'))}</div>
+          <div class="mm"><span>${esc(fmtDate(run.startedAt))}</span></div></div>
+          <div class="sd">${btn(T('cognition.activity_event_inspection_go', '去看看'), 'go-review', { small: true, primary: found > 0 })}</div>
+        </div>`,
+      });
+    }
+    const timelineEntries = [
+      ...visibleRows.map((row) => ({
+        at: String(row.conv.updatedAt || row.conv.createdAt || ''),
+        pinned: Boolean(row.capture && isRunning(row.capture)),
+        html: rowHtml(row),
+      })),
+      ...(route.captureBucket ? [] : [...cleanupEvents, ...inspectionEvents]),
+    ].sort((left, right) => (right.pinned ? 1 : 0) - (left.pinned ? 1 : 0)
+      || String(right.at).localeCompare(String(left.at)));
     return `${heroRow(
       T('cognition.tab_activity', '系统活动'),
-      T('cognition.capture_manual_note', '整理会使用模型额度，随时可以取消'),
-      // 大扫除入口已收进沉淀设置页（specs/017 整改三）：页首不再并列两颗按钮。
+      T('cognition.activity_lead', '系统替你干了什么：整理会话、夜间沉淀、大扫除、后台体检——做了什么、产出了什么、去哪看，按时间倒序排在这条线上。'),
+      // 大扫除入口已收进沉淀设置页（specs/017 整改三）；018 T060 起本页
+      // 只保留事件时间流，发起类入口都在设置页。
       `${btn(T('cognition.organize_settings_title', '沉淀设置'), 'go-organize-settings', { className: 'o', icon: 'settings' })}`,
     )}
     ${!S.captureSettings || S.captureSettings.enabled === false ? `<div class="warn">${esc(T('cognition.capture_disabled_note', '整理功能已关闭：不再开始新的整理；已创建任务和「我的认知」资产不受影响。'))}</div>` : ''}
     ${S.captureSettings && S.captureSettings.enabled !== false && retryableIds.length ? `<div class="toolbar"><div class="toolbar-right">${retryableIds.length ? btn(T('cognition.capture_batch_retry', '重试失败（{n}）', { n: String(retryableIds.length) }), 'capture-batch', { data: { batch: 'retry' }, small: true, className: 'o' }) : ''}</div></div>` : ''}
     ${(Array.isArray(S.captures) ? S.captures : []).some((c) => bucketOf(c) === 'active') ? `<div class="note toolbar-note">${esc(T('cognition.capture_running_note', '有任务正在跑：任务完成后这一页会自动更新，不用手动刷新。'))}</div>` : ''}
     <div class="pillbox"><div class="chips">${chips}</div></div>
-    ${visibleRows.length ? visibleRows.map(rowHtml).join('') : empty(T('cognition.capture_tasks_empty', '暂无整理任务'), T('cognition.capture_tasks_empty_hint', '一轮会话结束后，系统会在静默期结束后创建整理任务。'), { label: T('cognition.organize_settings_title', '沉淀设置'), attrs: { 'data-act': 'go-organize-settings' } })}
+    ${timelineEntries.length ? timelineEntries.map((entry) => entry.html).join('') : empty(T('cognition.capture_tasks_empty', '暂无整理任务'), T('cognition.capture_tasks_empty_hint', '一轮会话结束后，系统会在静默期结束后创建整理任务。'), { label: T('cognition.organize_settings_title', '沉淀设置'), attrs: { 'data-act': 'go-organize-settings' } })}
     ${conversationItems.length >= 100 ? `<div class="note">${esc(T('cognition.capture_sources_truncated', '仅显示最近 100 个会话（来源拉取上限）'))}</div>` : ''}
     ${filtered.length > 5 ? `<div class="list-more">${btn(S.organizeListExpanded
       ? T('cognition.capture_list_collapse', '收起')
       : T('cognition.capture_list_expand', '查看全部 {n} 个会话', { n: String(filtered.length) }), 'toggle-organize-list', { small: true, className: 'o' })}</div>` : ''}
     <div class="note footnote">${esc(T('cognition.capture_bucket_scope_note', '口径说明：分桶按每个会话最相关的一次整理任务计算；「需要我处理」包括待确认与被暂停的记录，比「待我处理」页只数失败的口径宽；「无需沉淀」是寒暄会话或最近一轮失败且无任务的会话。'))}</div>
-    ${cleanupSettingsSection()}
-    ${inspectionRoundCard()}
     ${improvementAnalysisSection(route)}`;
   }
 

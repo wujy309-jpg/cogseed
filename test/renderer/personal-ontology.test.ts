@@ -167,9 +167,9 @@ describe('personal ontology renderer integration', () => {
     await settleBackgroundWork();
 
     const nav4 = elements.get('personal-onto-nav')?.innerHTML || '';
-    expect(nav4).toContain('词汇');
-    expect(nav4).toContain('事实');
-    expect(nav4).toContain('规则');
+    expect(nav4).toContain('统一词表');
+    expect(nav4).toContain('我是谁');
+    expect(nav4).toContain('我偏好什么');
     expect(nav4).toContain('导出记忆');
     // 默认落在 A 盒（事实），画像空态在盒内呈现
     expect(elements.get('personal-onto-main-body')?.innerHTML).toContain('完成会话沉淀后');
@@ -202,7 +202,7 @@ describe('personal ontology renderer integration', () => {
 
     const navHtml = nav.innerHTML || '';
     // T029/T030：三行副标题齐全（沙箱 t(key)=key → _t 回退中文兜底文案）。
-    for (const sub of ['术语与称谓', '关于你的陈述', 'AI 应遵守的做法与边界']) {
+    for (const sub of ['系统描述你时的一致用词', '身份、角色与项目关系', 'AI 该怎么配合你做事']) {
       expect(navHtml).toContain(sub);
     }
     expect(navHtml.match(/personal-onto-nav-row-sub/g)).toHaveLength(3);
@@ -440,7 +440,7 @@ describe('personal ontology renderer integration', () => {
 
     // 盒子化：默认落在 A 盒（事实）——画像空态在盒内，不自动跳模板编辑器
     const nav11 = elements.get('personal-onto-nav')?.innerHTML || '';
-    expect(nav11).toContain('词汇');
+    expect(nav11).toContain('统一词表');
     expect(elements.get('personal-onto-main-body')?.innerHTML).toContain('完成会话沉淀后');
     expect(invoke).not.toHaveBeenCalledWith('personalOntology.groups.read', expect.anything());
   });

@@ -1206,3 +1206,6 @@
 #ca-root .ca-detail-facts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 #ca-root .ca-fact { display: inline-flex; align-items: center; gap: 6px; }
 #ca-root .ca-used-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+
+/* 设置页尾回链（specs/018 T070）：一句白话 + 去系统活动。 */
+#ca-root .ca-settings-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
