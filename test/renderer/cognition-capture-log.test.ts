@@ -227,6 +227,8 @@ describe('整理页（任务流 + 策略抽屉）', () => {
     expect(html).not.toContain('<svg width="18"');
     expect(html).not.toContain('ca-drawer');
     expect(html).not.toContain('toggle-organize-settings');
+    // 大扫除按钮已收进沉淀设置页（specs/017 整改三）：页首不再有第二颗按钮。
+    expect(html).not.toContain('data-act="open-cleanup"');
     // 位置：齿轮在 hero 区、位于筛选行之前。
     expect(html.indexOf('go-organize-settings')).toBeLessThan(html.indexOf('data-act="capture-filter"'));
   });
@@ -250,7 +252,7 @@ describe('整理页（任务流 + 策略抽屉）', () => {
     expect(html).toContain('待处理（根）');
   });
 
-  it('沉淀设置页：夜间自动沉淀条状卡（左说明/中时间/右开关）与迁入的设置卡', () => {
+  it('沉淀设置页：夜间自动沉淀条状卡（左说明/中时间/右开关）+ 候选确认 + 大扫除 section', () => {
     const off = renderPage('organize-settings', { captureSettings: { enabled: true, executionPolicy: 'manual', reviewPolicy: 'manual', nightlyStart: '02:00' } });
     expect(off).toContain('沉淀设置');
     expect(off).toContain('夜间自动沉淀');
@@ -266,9 +268,29 @@ describe('整理页（任务流 + 策略抽屉）', () => {
     expect(on).toContain('type="time"');
     expect(on).toContain('value="02:30"');
     expect(on).toContain('开始时间');
-    // 迁入的整理功能开关与候选确认方式。
-    expect(on).toContain('data-act="capture-toggle"');
+    // 「整理功能」总开关卡已撤（specs/017 整改三）：capture-toggle 退役，
+    // 候选确认方式保留。
+    expect(on).not.toContain('data-act="capture-toggle"');
     expect(on).toContain('data-act="capture-review-toggle"');
+    // 大扫除收进设置页：可直接发起；无报告时不给完整报告入口、如实说没跑过。
+    expect(on).toContain('大扫除');
+    expect(on).toContain('data-act="run-cleanup"');
+    expect(on).not.toContain('data-act="open-cleanup"');
+    expect(on).toContain('还没跑过大扫除');
+  });
+
+  it('沉淀设置页大扫除 section：有报告时给摘要与完整报告入口（specs/017 整改三）', () => {
+    const html = renderPage('organize-settings', {
+      captureSettings: { enabled: true, executionPolicy: 'manual', reviewPolicy: 'auto', nightlyStart: '02:00' },
+      cleanupReports: {
+        loading: false,
+        reports: [{ id: 'cl-1', createdAt: '2026-09-25T02:00:00.000Z', scanned: 30, items: [{ status: 'applied' }, { status: 'skipped' }], uncertain: [{ assetId: 'aa-1' }] }],
+      },
+    });
+    expect(html).toContain('最近一次');
+    expect(html).toContain('data-act="run-cleanup"');
+    expect(html).toContain('data-act="open-cleanup"');
+    expect(html).toContain('查看完整报告');
   });
 
   it('整理中的条目置顶、按钮变「整理中」且禁用；失败出状态 chip', () => {

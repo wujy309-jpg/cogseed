@@ -28,7 +28,7 @@
     'inbox-escalation-accept', 'inbox-escalation-reject', 'inbox-conflict-claim',
     'inbox-inspection-keep', 'inbox-inspection-merge',
     'inbox-classify-apply', 'inbox-classify-batch', 'inbox-boundary-save',
-    'capture-toggle', 'capture-review-toggle', 'proof-rate',
+    'capture-review-toggle', 'proof-rate',
     'capture-batch',
     // 经验目录管理（specs/016 US-803）：四个管理动作 + 迁移执行；preview/status
     // 是只读扫描，不进 pending 集（与 refresh 的口径不同：它们有各自的载入态）。
@@ -510,25 +510,6 @@
             }
             break;
           }
-          case 'capture-toggle': {
-            const enabled = !(S.captureSettings && S.captureSettings.enabled !== false);
-            if (!enabled) {
-              // 关闭自动整理是破坏性操作（新候选不再被发现）：确认+后果说明。
-              const ok = await NS.confirmUser(T('cognition.capture_disable_confirm', '关闭后新会话不再自动提炼候选，已有的资产与记录不受影响。确认关闭自动整理？'));
-              if (!ok) break;
-            }
-            const previousSettings = S.captureSettings;
-            S.captureSettings = Object.assign({}, previousSettings, { enabled });
-            NS.notify();
-            try {
-              await A.updateCaptureSettings({ enabled });
-            } catch (error) {
-              S.captureSettings = previousSettings;
-              NS.notify();
-              throw error;
-            }
-            break;
-          }
           case 'capture-review-toggle': {
             // 单选组按所点项设置；点已选中项不重复提交；同样乐观更新。
             const auto = String((S.captureSettings || {}).reviewPolicy || 'auto') === 'auto';
@@ -831,11 +812,14 @@
       void NS.loadAssetVersions(assetId);
     }
     if (assetId) void NS.loadKstarEpisodeSummaries(assetId);
-    // 整理报告：进整理相关页签就补拉一次（内部有缓存判重）。
+    // 整理报告：进整理相关页签就补拉一次（内部有缓存判重）。沉淀设置页的
+    // 大扫除 section（specs/017 整改三）也要最近报告摘要，一并补拉。
     // 「已删除」页签：保留期剩余天数由服务端现算，进这个页签时补拉一次。
     if (String(S.route.category || '') === 'deleted') void NS.loadDeletedAssets();
-    if (String(S.route.name || '') === 'cleanup') {
+    if (['cleanup', 'organize-settings'].includes(String(S.route.name || ''))) {
       void NS.loadCleanupReports();
+    }
+    if (String(S.route.name || '') === 'cleanup') {
       void NS.loadInspection();
     }
     // 采用回执（2026-09-25 US-602）：详情「实际采用记录」区的唯一数据源。

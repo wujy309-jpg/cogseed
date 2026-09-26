@@ -1146,7 +1146,9 @@
 #ca-root .ca-rank-raw, #ca-root .ca-rank-contrib { font-variant-numeric: tabular-nums; }
 #ca-root .ca-rank-weight { color: var(--ink3); }
 #ca-root .ca-rank-warn { color: var(--ca-amber-ink); font-weight: 600; }
-#ca-root .ca-rank-w-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-top: 10px; }
+/* 权重表单（specs/017 整改三）：固定两列——auto-fit 在宽卡下会把四个字段
+   拉成一排且末格留白，窄卡下又参差换行，真机截图里就是"空白/错位"。 */
+#ca-root .ca-rank-w-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
 #ca-root .ca-rank-w-input { width: 100%; }
 #ca-root .ca-w-error { color: var(--ca-red); }
 

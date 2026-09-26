@@ -3378,9 +3378,41 @@
     </div>`;
   }
 
+  /** 大扫除 section（specs/017 整改三）：入口从整理页头收进沉淀设置页——
+   *  可直接发起、显示最近一次报告摘要、给完整报告入口（报告页复用既有
+   *  viewCleanup 与 open-cleanup 路由，不重写报告逻辑）。 */
+  function cleanupSettingsSection() {
+    const state = S.cleanupReports;
+    const reports = state && Array.isArray(state.reports) ? state.reports : [];
+    const loading = Boolean(state && state.loading);
+    const latest = reports[0] || null;
+    const summary = latest
+      ? T('cognition.cleanup_latest', '最近一次：{when} · 执行 {applied} 项 · 拿不准 {uncertain} 项', {
+        when: fmtDate(latest.createdAt),
+        applied: String((latest.items || []).filter((item) => item.status === 'applied').length),
+        uncertain: String((latest.uncertain || []).length),
+      })
+      : T('cognition.cleanup_none_yet', '还没跑过大扫除：发起一次，跑完这里会出现逐项报告（改了什么、为什么、怎么回滚）。');
+    return `${sectionHead(T('cognition.cleanup_entry', '大扫除'), reports.length ? String(reports.length) : '')}
+    <div class="card ca-setcard">
+      <div class="rowline">
+        <div>
+          <div class="sub">${esc(T('cognition.cleanup_run_hint', '只做不改变含义的整理（标题标点规范化、正文一字不差的重复归并）；拿不准的列出来等你决定，不擅自处置。'))}</div>
+          <div class="sub">${esc(summary)}</div>
+        </div>
+        <div class="right">
+          ${btn(loading ? T('cognition.cleanup_running', '正在整理…') : T('cognition.cleanup_run', '发起大扫除'), 'run-cleanup', { small: true, primary: true, disabled: loading })}
+          ${latest ? btn(T('cognition.cleanup_open_report', '查看完整报告'), 'open-cleanup', { small: true, className: 'o' }) : ''}
+        </div>
+      </div>
+    </div>`;
+  }
+
   function viewOrganizeSettingsPage() {
+    // 「整理功能」总开关卡已撤（specs/017 整改三）：「已开启+关闭按钮」读不懂
+    // 且关闭是破坏性动作；后端 enabled 字段与契约保留，整理页的「已关闭」
+    // warn 路径也保留（只是 UI 上不再可达）。
     const settings = S.captureSettings || {};
-    const enabled = settings.enabled !== false;
     const nightlyOn = String(settings.executionPolicy || 'manual') === 'nightly';
     const reviewAuto = String(settings.reviewPolicy || 'auto') === 'auto';
     const nightlyStart = String(settings.nightlyStart || '02:00');
@@ -3399,14 +3431,6 @@
     </div>
     <div class="card ca-setcard">
       <div class="rowline">
-        <div><div class="tt">${esc(T('cognition.capture_switch_title', '整理功能'))}</div>
-        <div class="sub">${esc(T('cognition.capture_switch_hint', '在「整理」列表里挑选会话手动沉淀；只有需要你判断时才打扰你。'))}</div></div>
-        <div class="right">${chip(enabled ? T('cognition.capture_switch_on', '已开启') : T('cognition.capture_switch_off', '已关闭'), enabled ? 'green' : 'line')}
-          ${btn(enabled ? T('cognition.capture_toggle_off', '关闭') : T('cognition.capture_toggle_on', '开启'), 'capture-toggle', { small: true, danger: enabled, primary: !enabled })}</div>
-      </div>
-    </div>
-    <div class="card ca-setcard">
-      <div class="rowline">
         <div class="tt">${esc(T('cognition.capture_review_title', '候选怎么确认'))}</div>
       </div>
       <div class="ca-subnav">
@@ -3415,7 +3439,8 @@
       </div>
       <p class="note">${esc(T(reviewAuto ? 'cognition.capture_review_auto_note' : 'cognition.capture_review_manual_note', reviewAuto ? '符合条件的候选会自动采纳（不再询问）' : '候选先进入待确认，由你决定'))}</p>
     </div>
-    ${rankingWeightsCard()}`;
+    ${rankingWeightsCard()}
+    ${cleanupSettingsSection()}`;
   }
 
   /* ────────────────────────── 视图：整理（任务流 + 策略） ──────────────────────────
@@ -3691,9 +3716,8 @@
     return `${heroRow(
       T('cognition.tab_organize', '整理'),
       T('cognition.capture_manual_note', '整理会使用模型额度，随时可以取消'),
-      // 大扫除入口（specs/008 US-403）：与「沉淀设置」并列——一个是会话沉淀的
-      // 设置，一个是资产库的批量整理，都是整理页的动作。
-      `${btn(T('cognition.cleanup_entry', '大扫除'), 'open-cleanup', { className: 'o', icon: 'list' })}${btn(T('cognition.organize_settings_title', '沉淀设置'), 'go-organize-settings', { className: 'o', icon: 'settings' })}`,
+      // 大扫除入口已收进沉淀设置页（specs/017 整改三）：页首不再并列两颗按钮。
+      `${btn(T('cognition.organize_settings_title', '沉淀设置'), 'go-organize-settings', { className: 'o', icon: 'settings' })}`,
     )}
     ${!S.captureSettings || S.captureSettings.enabled === false ? `<div class="warn">${esc(T('cognition.capture_disabled_note', '整理功能已关闭：不再开始新的整理；已创建任务和「我的认知」资产不受影响。'))}</div>` : ''}
     ${S.captureSettings && S.captureSettings.enabled !== false && retryableIds.length ? `<div class="toolbar"><div class="toolbar-right">${retryableIds.length ? btn(T('cognition.capture_batch_retry', '重试失败（{n}）', { n: String(retryableIds.length) }), 'capture-batch', { data: { batch: 'retry' }, small: true, className: 'o' }) : ''}</div></div>` : ''}

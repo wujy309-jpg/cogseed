@@ -57,7 +57,6 @@
     { "act": "source-action", "module": "cognition-assets", "ipc": "recall.sources", "write": true, "pending": true, "phase": 7 },
     { "act": "capture-action", "module": "cognition-assets", "ipc": "recall.captures", "write": true, "pending": true, "phase": 7 },
     { "act": "capture-batch", "module": "cognition-assets", "ipc": "recall.captures.batchRetry", "write": true, "pending": true, "phase": 7 },
-    { "act": "capture-toggle", "module": "cognition-assets", "ipc": "recall.captures.settings.update", "write": true, "pending": true, "phase": 7 },
     { "act": "capture-review-toggle", "module": "cognition-assets", "ipc": "recall.captures.settings.update", "write": true, "pending": true, "phase": 7 },
     { "act": "nightly-toggle", "module": "cognition-assets", "ipc": "recall.captures.settings.update", "write": true, "pending": false, "phase": 7 },
     { "act": "nightly-time", "module": "cognition-assets", "ipc": "recall.captures.settings.update", "write": true, "pending": false, "phase": 7 },
