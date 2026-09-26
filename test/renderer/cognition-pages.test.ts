@@ -272,14 +272,15 @@ describe('cognition-assets 五页签结构(迁移终态)', () => {
     return tabs;
   }
 
-  it('TABS 是六页签且顺序固定:认知树 / 个人本体 / 我的认知 / 经验 / 待我处理 / 整理', () => {
-    // specs/016 US-801 AC3(允许改动断言清单第 1 组):experiences 插在
-    // overview 与 review 之间,经验与资产两域页签并立但数据隔离。
+  it('TABS 是五页签且顺序固定:认知树 / 个人本体 / 我的认知 / 待我处理 / 整理', () => {
+    // specs/017 整改一(改写自 specs/016 US-801 AC3 的六页签断言):经验不再
+    // 单独成页签——收编为「我的认知」分类档(category='experiences'),
+    // 数据隔离(SC-001)不变。
     const tabs = parseTabs(core2);
-    expect(tabs.map((t) => t.id)).toEqual(['tree', 'ontology', 'overview', 'experiences', 'review', 'organize']);
+    expect(tabs.map((t) => t.id)).toEqual(['tree', 'ontology', 'overview', 'review', 'organize']);
     expect(tabs.map((t) => t.titleKey)).toEqual([
       'cognition.tab_tree', 'cognition.tab_ontology', 'cognition.tab_overview',
-      'cognition.tab_experiences', 'cognition.tab_review', 'cognition.tab_organize',
+      'cognition.tab_review', 'cognition.tab_organize',
     ]);
   });
 

@@ -1162,11 +1162,10 @@
     { id: 'tree', titleKey: 'cognition.tab_tree', title: '认知树' },
     { id: 'ontology', titleKey: 'cognition.tab_ontology', title: '个人本体' },
     { id: 'overview', titleKey: 'cognition.tab_overview', title: '我的认知' },
-    // 经验页签（specs/016 US-801 AC3）：任务收口沉淀的经验与正式资产完全
-    // 隔离——独立页签、独立通道（recall.experiences.*）、不进资产列表。
-    // 位置定在「我的认知」之后「待我处理」之前：经验是从任务里学到的
-    // 认知沉淀，紧挨资产域，但排在待办之前（待办是时效性入口）。
-    { id: 'experiences', titleKey: 'cognition.tab_experiences', title: '经验' },
+    // 2026-09-26 specs/017 整改一：经验不再单独成页签——收编为「我的认知」
+    // 分类档（category='experiences'）。数据通道不变（recall.experiences.*，
+    // SC-001 隔离照旧），变的只是入口：深链 name:'experiences' 由
+    // views.render 归一化到 overview+category。
     { id: 'review', titleKey: 'cognition.tab_review', title: '待我处理' },
     { id: 'organize', titleKey: 'cognition.tab_organize', title: '整理' },
   ];
@@ -1896,7 +1895,7 @@
       toast(T('cognition.experience_merge_done', '已合并：来源与历史并入目标条目'));
       // 合并后看目标条目（同 mergeAssets 的落点：结果在哪，人就被带到哪）。
       if (String(store.route.experienceId || '') === String(sourceExperienceId)) {
-        router.go({ name: 'experiences', experienceId: targetExperienceId });
+        router.go({ name: 'overview', category: 'experiences', experienceId: targetExperienceId });
       }
       await NS.loadExperiences(true);
       await NS.loadExperienceDetail(targetExperienceId, true);
@@ -1918,7 +1917,7 @@
       toast(T('cognition.experience_archive_done', '已归档：已记录原因与时间'));
       // 归档后回列表（详情对象已终态，继续停在详情没有管理出口）。
       if (String(store.route.experienceId || '') === String(experienceId)) {
-        router.go({ name: 'experiences', experienceId: '' }, { replace: true });
+        router.go({ name: 'overview', category: 'experiences', experienceId: '' }, { replace: true });
       }
       await this.refreshExperience(experienceId);
     },

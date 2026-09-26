@@ -49,12 +49,18 @@ const loadedExperiences = (items: Array<Record<string, unknown>>) => ({
   stale: false,
 });
 
-describe('经验页签：列表与分组（T019）', () => {
-  it('页签条渲染第 6 项「经验」，位置在「我的认知」与「待我处理」之间', () => {
+describe('经验入口：「我的认知」下的分类档（specs/017 整改一，原 T019 页签断言改写）', () => {
+  it('顶层页签是五个（无「经验」），经验收编为「我的认知」分类档；旧深链 name:experiences 归一化', () => {
     const html = renderCognition({ name: 'experiences' }, { experiences: loadedExperiences([]) });
     const ids = [...html.matchAll(/class="ca-tab[^"]*" data-act="tab" data-id="([a-z-]+)"/g)].map((m) => m[1]);
-    expect(ids).toEqual(['tree', 'ontology', 'overview', 'experiences', 'review', 'organize']);
-    expect(html).toContain('data-act="tab" data-id="experiences"');
+    expect(ids).toEqual(['tree', 'ontology', 'overview', 'review', 'organize']);
+    expect(html).not.toContain('data-act="tab" data-id="experiences"');
+    // 旧深链 { name: 'experiences' } 归一到「我的认知」：经验档选中、目录在页面内。
+    expect(html).toContain('data-act="filter-cat" data-id="experiences"');
+    expect(html).toContain('经验目录');
+    // KSTAR 独立筛选档退役（出身徽章与「KSTAR 任务复盘」证据组保留，
+    // 见 cognition-capture-log.test.ts）。
+    expect(html).not.toContain('data-act="filter-cat" data-id="kstar"');
   });
 
   it('按经验类型分组：固定顺序、空组不摆、未知类型兜底进未分类', () => {

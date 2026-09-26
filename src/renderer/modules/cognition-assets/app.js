@@ -86,10 +86,13 @@
             // 跳转前的深层页而不是列表，与按钮文案不符。按详情类型归位到
             // 对应列表根（资产详情保留分类筛选）；仍压栈，需要时可再进详情。
             const name = S.route.candidateId ? 'review'
-              : S.route.experienceId ? 'experiences'
-                : (S.route.captureId || S.route.name === 'organize' || S.route.name === 'organize-settings') ? 'organize'
-                  : 'overview';
-            router.go({ name, category: name === 'overview' ? String(S.route.category || '') : '' });
+              : (S.route.captureId || S.route.name === 'organize' || S.route.name === 'organize-settings') ? 'organize'
+                : 'overview';
+            // 经验详情返回落「我的认知」经验档（specs/017 整改一：经验页签已收编）。
+            const category = name === 'overview'
+              ? (S.route.experienceId || String(S.route.category || '') === 'experiences' ? 'experiences' : String(S.route.category || ''))
+              : '';
+            router.go({ name, category });
             break;
           }
           case 'cand-type': {
@@ -448,7 +451,7 @@
           }
           case 'merge-asset': await A.mergeAssets(id, el.dataset.target || ''); break;
           /* ── 经验目录（specs/016 US-801/803）──────────────────────────── */
-          case 'open-experience': router.go({ name: 'experiences', experienceId: id }); break;
+          case 'open-experience': router.go({ name: 'overview', category: 'experiences', experienceId: id }); break;
           case 'experience-status-toggle': await A.experienceStatusToggle(id, el.dataset.action || 'pause'); break;
           case 'experience-set-type': await A.experienceSetType(id, el.dataset.type || ''); break;
           case 'experience-merge': await A.experienceMerge(id, el.dataset.target || ''); break;
@@ -863,10 +866,12 @@
     if (String(S.route.name || '') === 'overview') void NS.loadKstarEpisodes();
     // 模型自选标记随「我的认知」一起刷新（2026-09-18）：目录视图据此标"模型挂着"。
     if (String(S.route.name || '') === 'overview') void NS.loadModelSelectedAssets();
-    // 经验目录（specs/016）：进「经验」页签才拉（与资产快照隔离）；详情深链
-    // 补拉 E2；详情证据里的 kse 摘要与会话标题同时候补——chip 要显示任务目标
-    // 与会话名，与资产详情同一套批量口（loaders 自带缓存/在途守卫）。
-    if (String(S.route.name || '') === 'experiences') {
+    // 经验目录（specs/016；specs/017 整改一收编为「我的认知」经验档）：进
+    // overview（任何分类档）就拉一次——pillbox 经验档的计数要真实；旧深链
+    // name:'experiences' 同样兜住。详情深链补拉 E2；详情证据里的 kse 摘要与
+    // 会话标题同时候补——chip 要显示任务目标与会话名，与资产详情同一套批量口
+    //（loaders 自带缓存/在途守卫）。
+    if (['overview', 'experiences'].includes(String(S.route.name || ''))) {
       void NS.loadExperiences();
       if (experienceRouteId) {
         void NS.loadExperienceDetail(experienceRouteId);

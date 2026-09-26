@@ -2171,9 +2171,10 @@
 
   function viewOverview(route) {
     const stats = NS.stats();
-    // 两线不拆列表（2026-09-17 二次定调）：全量列表+每条 KSTAR 资产打徽章
-    //（子安口径：出身标记直接带 KSTAR 字样）+ chips 里给一个「KSTAR」筛选
-    // 档。已删除档保留全部（保留期恢复入口只有这一处）。
+    // 两线不拆列表（2026-09-17 二次定调；2026-09-26 specs/017 整改一收窄）：
+    // 全量列表+每条 KSTAR 资产打徽章（子安口径：出身标记直接带 KSTAR 字样）。
+    // KSTAR 独立筛选档已退役——原位置改放「经验」分类档；已删除档保留全部
+    //（保留期恢复入口只有这一处）。
     const counts = {};
     for (const [id] of CATEGORIES) counts[id] = S.assets.filter((a) => a.type === id && !['archived', 'deleted', 'purged', 'revoked'].includes(String(a.status || 'active'))).length;
     // 每个资产的最近使用时间（时间线里 occurredAt 的最大值）：列表行此前
@@ -2223,13 +2224,15 @@
     // purged/revoked 不单列（墓碑无内容/终态）。
     const HIDDEN_STATUS = ['archived', 'deleted', 'purged', 'revoked'];
     const deletedCount = S.assets.filter((a) => String(a.status || 'active') === 'deleted').length;
-    const kstarCount = S.assets.filter((a) => !HIDDEN_STATUS.includes(String(a.status || 'active')) && NS.isKstarAsset(a)).length;
+    // 经验档（specs/017 整改一）：经验不再单独成页签、KSTAR 不再单独成档——
+    // pillbox 在原 KSTAR 位置给一个「经验」分类档（计数=非终态经验条目），
+    // 档内渲染经验目录（SC-001 隔离照旧：只读 S.experiences，零资产混入）。
+    const experienceItems = (((S.experiences && S.experiences.items) || []))
+      .filter((item) => ['active', 'paused'].includes(String(item.status || 'active')));
     const filteredByType = route.category === 'deleted'
       ? S.assets.filter((a) => String(a.status || 'active') === 'deleted')
-      : route.category === 'kstar'
-        ? S.assets.filter((a) => !HIDDEN_STATUS.includes(String(a.status || 'active')) && NS.isKstarAsset(a))
-        : S.assets.filter((a) => !HIDDEN_STATUS.includes(String(a.status || 'active'))
-          && (!route.category || a.type === route.category));
+      : S.assets.filter((a) => !HIDDEN_STATUS.includes(String(a.status || 'active'))
+        && (!route.category || a.type === route.category));
     // 标签筛选（specs/012 T012）：与类型筛选 AND 叠加、各自独立可清空；
     // Array.filter 保序——筛完仍按主进程给的顺序，渲染层不重排。
     const tagFilterState = tagRouteState(route);
@@ -2242,8 +2245,22 @@
     const tagContradiction = route.category !== 'deleted' && tagFilterContradiction(route);
     const chips = [['', T('common.all', '全部'), S.assets.filter((a) => !HIDDEN_STATUS.includes(String(a.status || 'active'))).length]]
       .concat(CATEGORIES.map(([id, key, fallback]) => [id, T(key, fallback), counts[id]]))
-      .concat(kstarCount ? [['kstar', T('cognition.assets_kstar_tab', 'KSTAR'), kstarCount]] : [])
+      .concat([['experiences', T('cognition.assets_experiences_tab', '经验'), experienceItems.length]])
       .concat(deletedCount ? [['deleted', T('cognition.assets_deleted_tab', '已删除'), deletedCount]] : []);
+    const pillboxHtml = `<div class="pillbox">${chips.map(([id, label, count]) => btn(`${label} ${count}`, 'filter-cat', { id, className: `chip${String(route.category || '') === id ? ' on' : ''}` })).join('')}</div>`;
+    // 经验详情深链（experienceId）：仍归「我的认知」页；返回落点由 app.js
+    // go-back 归到经验档（category='experiences'）。
+    if (route.experienceId) return `${hero(T('cognition.overview_title', '我的认知资产'), '')}${viewExperienceDetail(route)}`;
+    // 「经验」档：页头 + 分类档条 + 经验目录 + 存量迁移区。资产专属工具
+    //（批量打标/目录视图/标签筛选/KSTAR 复盘折叠区）不进这个档（整改一第 3 条）。
+    if (route.category === 'experiences') {
+      return `${heroHtml}
+        ${sectionHead(T('cognition.experience_title', '经验目录'), String(experienceItems.length))}
+        ${pillboxHtml}
+        <div class="note list-caption">${esc(T('cognition.experience_subtitle', '任务收口后沉淀的经验：哪类任务怎么做成了、栽在哪。经验与正式资产分开管理，互不混入。'))}</div>
+        ${experienceDirectoryHtml()}
+        ${experienceMigrationSection()}`;
+    }
     /** 目录视图行（2026-09-18）：把"模型看到的那份目录"原样搬到面板上——
      *  标题 + 一句话 + 类型/范围/版本/用没用过。模型看目录挑资产、用户看同一份
      *  目录核对它的判断，两边看到的是同一件事。 */
@@ -2370,7 +2387,7 @@
         `${!catalogView && route.category !== 'deleted' ? btn(T('cognition.tag_batch_entry', '批量打标'), 'tag-select-mode', { small: true, className: 'o' }) : ''}${btn(catalogView ? T('cognition.catalog_view_back', '列表视图') : T('cognition.catalog_view_toggle', '目录视图'), 'asset-view', { id: catalogView ? '' : 'catalog', small: true, className: 'o' })}`,
       )}
       ${catalogView ? `<div class="note list-caption">${esc(T('cognition.catalog_view_hint', '这就是模型挑资产时看的那份目录：一行一条；要看全文点进去。'))}</div>` : ''}
-      <div class="pillbox">${chips.map(([id, label, count]) => btn(`${label} ${count}`, 'filter-cat', { id, className: `chip${String(route.category || '') === id ? ' on' : ''}` })).join('')}</div>
+      ${pillboxHtml}
       ${tagFilterBar(route, filteredByType)}
       ${tagSelectOn ? tagBatchBar(route, filtered) : ''}
       ${listHtml}
@@ -2653,39 +2670,32 @@
     </details>`;
   }
 
-  /** 「经验」页签：按经验类型分组（lesson → workflow → gap → uncategorized
-   *  固定顺序，只摆非空组）；列表只放非终态（active/paused——archived/merged
-   *  是终态，不再占目录；合并的来源在目标详情的「并入来源」里可见）。 */
-  function viewExperiences(route) {
-    if (route.experienceId) return viewExperienceDetail(route);
+  /** 经验目录本体（specs/017 整改一：由独立页签改嵌「我的认知」经验档）：
+   *  按经验类型分组（lesson → workflow → gap → uncategorized 固定顺序，只摆
+   *  非空组）；列表只放非终态（active/paused——archived/merged 是终态，不再
+   *  占目录；合并的来源在目标详情的「并入来源」里可见）。三态分开：
+   *  载入中 / 读取失败（给重试）/ 空态。 */
+  function experienceDirectoryHtml() {
     const state = S.experiences;
-    const heroHtml = hero(
-      T('cognition.experience_title', '经验目录'),
-      T('cognition.experience_subtitle', '任务收口后沉淀的经验：哪类任务怎么做成了、栽在哪。经验与正式资产分开管理，互不混入。'),
-    );
-    let listHtml;
     if (!state || state.loading) {
-      listHtml = `<div class="card">${empty(T('cognition.experience_loading', '正在读取经验目录…'))}</div>`;
-    } else if (state.failed) {
-      // 读不到 ≠ 没有（五态要求）：失败与空态分开，失败给重试出口。
-      listHtml = `<div class="card">${empty(T('cognition.experience_load_failed', '经验目录读取失败'))}${btn(T('common.retry', '重试'), 'refresh', { small: true })}</div>`;
-    } else {
-      const items = ((state.items) || []).filter((item) => ['active', 'paused'].includes(String(item.status || 'active')));
-      const groups = ['lesson', 'workflow', 'gap', 'uncategorized'].map((type) => ({
-        type,
-        rows: items.filter((item) => NS.experience.groupKey(item.experienceType) === type),
-      })).filter((group) => group.rows.length);
-      listHtml = groups.length
-        ? groups.map((group) => `${sectionHead(NS.experience.typeLabel(group.type), String(group.rows.length))}
-          <div class="card">${group.rows.map(experienceRow).join('')}</div>`).join('')
-        : `<div class="card">${empty(
-          T('cognition.experience_empty', '还没有沉淀下来的经验'),
-          T('cognition.experience_empty_hint', '任务完结、复盘沉淀出经验后会出现在这里；经验与正式资产分开管理。'),
-        )}</div>`;
+      return `<div class="card">${empty(T('cognition.experience_loading', '正在读取经验目录…'))}</div>`;
     }
-    return `${heroHtml}
-      ${listHtml}
-      ${experienceMigrationSection()}`;
+    if (state.failed) {
+      // 读不到 ≠ 没有（五态要求）：失败与空态分开，失败给重试出口。
+      return `<div class="card">${empty(T('cognition.experience_load_failed', '经验目录读取失败'))}${btn(T('common.retry', '重试'), 'refresh', { small: true })}</div>`;
+    }
+    const items = ((state.items) || []).filter((item) => ['active', 'paused'].includes(String(item.status || 'active')));
+    const groups = ['lesson', 'workflow', 'gap', 'uncategorized'].map((type) => ({
+      type,
+      rows: items.filter((item) => NS.experience.groupKey(item.experienceType) === type),
+    })).filter((group) => group.rows.length);
+    return groups.length
+      ? groups.map((group) => `${sectionHead(NS.experience.typeLabel(group.type), String(group.rows.length))}
+          <div class="card">${group.rows.map(experienceRow).join('')}</div>`).join('')
+      : `<div class="card">${empty(
+        T('cognition.experience_empty', '还没有沉淀下来的经验'),
+        T('cognition.experience_empty_hint', '任务完结、复盘沉淀出经验后会出现在这里；经验与正式资产分开管理。'),
+      )}</div>`;
   }
 
   /* ────────────────────────── 视图：待我处理 ────────────────────────── */
@@ -3932,20 +3942,24 @@
     const options = opts || {};
     const root = document.getElementById('ca-root');
     if (!root) return;
-    const route = S.route;
+    let route = S.route;
+    // 旧深链归一化（specs/017 整改一）：experiences 页签已并入「我的认知」
+    // 经验档；KSTAR 筛选档已退役（出身信息保留在行/详情徽章）。只归一渲染
+    // 视角、不回写 store——下一次 router.go 自然落到新形状。
+    if (route.name === 'experiences') route = Object.assign({}, route, { name: 'overview', category: route.category || 'experiences' });
+    if (route.category === 'kstar') route = Object.assign({}, route, { category: '' });
     const key = routeKey(route);
     const previousScroll = document.getElementById('ca-scroll');
     const restoreScroll = lastRenderKey === key && previousScroll ? previousScroll.scrollTop : 0;
     lastRenderKey = key;
-    // 候选详情归「待我处理」、整理详情归「整理」、经验详情归「经验」；interactive-tour 靠
+    // 候选详情归「待我处理」、整理详情归「整理」；interactive-tour 靠
     // data-cognition-page-link="assets"/"captures" 定位 tab，随重构迁移。
-    // 六页签（2026-09-25 specs/016）：tree / ontology 是独立路由；详情深链仍归并到
-    // 对应列表页签（overview 默认兜底）；experiences 插在 overview 与 review 之间。
+    // 五页签（2026-09-26 specs/017 整改一）：tree / ontology 是独立路由；详情深链
+    // 仍归并到对应列表页签（经验详情归 overview，overview 默认兜底）。
     const activeTab = route.name === 'review' || route.candidateId ? 'review'
       : route.name === 'organize' || route.name === 'organize-settings' || route.captureId ? 'organize'
-        : route.name === 'experiences' || route.experienceId ? 'experiences'
-          : route.name === 'ontology' ? 'ontology'
-            : route.name === 'tree' ? 'tree' : 'overview';
+        : route.name === 'ontology' ? 'ontology'
+          : route.name === 'tree' ? 'tree' : 'overview';
     const pendingCount = Number(NS.stats().pending || 0);
     const tabsInner = NS.TABS.map((tab) => {
       const active = activeTab === tab.id;
@@ -3964,7 +3978,6 @@
     } else if (route.name === 'tree') body = viewTree(route);
     else if (route.name === 'ontology') body = viewOntology(route);
     else if (route.name === 'review') body = viewReview(route);
-    else if (route.name === 'experiences') body = viewExperiences(route);
     else if (route.name === 'organize') body = route.captureId ? viewCaptureDetail(route) : viewOrganizeTasks(route);
     else if (route.name === 'cleanup') body = viewCleanup(route);
     else if (route.name === 'organize-settings') body = viewOrganizeSettingsPage();

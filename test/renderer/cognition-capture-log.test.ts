@@ -933,7 +933,7 @@ describe('整理详情页', () => {
     expect(openV2).not.toContain('来自 KSTAR');
   });
 
-  it('两线顶级分开（2026-09-17 B 档）：归边判定 + 源切换条 + KSTAR 侧独立 tab 与互斥列表', () => {
+  it('两线归边判定 + 出身徽章（specs/017 整改一改写：KSTAR 独立筛选档退役，原位改经验档）', () => {
     const { cogAssets: NS } = ensureModule();
     const isKstarAsset = NS.isKstarAsset as (a: Record<string, unknown>) => boolean;
     const isKstarCandidate = NS.isKstarCandidate as (c: Record<string, unknown>) => boolean;
@@ -957,12 +957,14 @@ describe('整理详情页', () => {
     expect(html).toContain('KSTAR 沉淀资产');
     // KSTAR 资产行带「KSTAR」徽章（子安口径：出身标记直接带 KSTAR 字样）。
     expect(html).toContain('>KSTAR</span>');
-    // chips 给「KSTAR」筛选档。
-    expect(html).toContain('data-act="filter-cat" data-id="kstar"');
-    // 筛选档只留 KSTAR 血统。
-    const only = renderPage('overview', { assets: [chatAsset, kstarAsset], proofs: [], sources: [], kstarEpisodes: [] }, { category: 'kstar' });
-    expect(only).toContain('KSTAR 沉淀资产');
-    expect(only).not.toContain('对话沉淀资产');
+    // specs/017 整改一：KSTAR 独立筛选档退役——出身只靠徽章；原位置改放
+    // 「经验」分类档（经验目录入口，数据走 recall.experiences.* 通道）。
+    expect(html).not.toContain('data-act="filter-cat" data-id="kstar"');
+    expect(html).toContain('data-act="filter-cat" data-id="experiences"');
+    // 旧 category:'kstar' 深链归一化到「全部」：两线同列，不再互斥过滤。
+    const legacy = renderPage('overview', { assets: [chatAsset, kstarAsset], proofs: [], sources: [], kstarEpisodes: [] }, { category: 'kstar' });
+    expect(legacy).toContain('KSTAR 沉淀资产');
+    expect(legacy).toContain('对话沉淀资产');
   });
 
   it('列表行版本号显示在用版（2026-09-17 子安实测）：删掉 v3-v5 后游标停在 v5，行上该显示在用的 v2', () => {
