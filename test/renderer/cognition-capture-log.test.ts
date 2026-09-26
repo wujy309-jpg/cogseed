@@ -1804,7 +1804,7 @@ describe('交互反馈与响应式（2026-09-15 全面优化）', () => {
 
   it('写操作按钮有旋转圈、首载有骨架、静默刷新有进度条', () => {
     expect(css).toContain('ca-spin');
-    expect(css).toContain('.ca-btn.is-pending::after');
+    expect(css).toContain('.btn.is-pending::after');
     expect(css).toContain('ca-skel-row');
     expect(css).toContain('ca-shimmer');
     expect(css).toContain('ca-refresh-slide');
@@ -1815,11 +1815,9 @@ describe('交互反馈与响应式（2026-09-15 全面优化）', () => {
     expect(loadingHtml).toContain('ca-skel-row');
   });
 
-  it('抽屉展开/收起走 grid 行高过渡，收起态不可聚焦', () => {
-    expect(css).toContain('.ca-drawer');
-    expect(css).toContain('grid-template-rows: 0fr');
-    expect(css).toContain('.ca-drawer.is-open');
-    expect(css).toContain('visibility: hidden');
+  it('策略抽屉已退役：ca-drawer 及 0fr 过渡零残留（R-C1 死账清理的钉子）', () => {
+    expect(css).not.toContain('.ca-drawer');
+    expect(css).not.toContain('grid-template-rows: 0fr');
   });
 
   it('同页重画保持滚动位置（轮询不再弹回顶部），切页仍归零', () => {

@@ -61,19 +61,15 @@
 /* 绘制边界隔离：面板内容整体是 innerHTML 全量重建，重绘瞬间曾出现旧帧
    残留（警告条与字段行视觉重叠——实测 DOM 几何无重叠，属合成残影）。
    contain 让容器内的重绘独立提交、内容不得画出边界，降低残影概率。 */
-.ca-scroll { contain: paint; }.ca-kv .ca-v { font-size: var(--font-size-3); margin-top: 2px; }.ca-btn.is-danger { color: var(--ca-red); border-color: var(--color-ca-red-line); }
-.ca-btn.is-danger:hover { background: var(--color-ca-red-bg); }/* 候选详情：决策按钮与「证据引用」同行（整组右端、垂直居中），不再独占
+.ca-scroll { contain: paint; }/* 候选详情：决策按钮与「证据引用」同行（整组右端、垂直居中），不再独占
    卡片底部一行。 */
 /* 候选确认表单收尾：证据整行、动作靠右独占一行（虚线分隔）——此前横排
    flex 让三个动作按钮浮在证据引用旁边（2026-09-21 子安真机抓出）。 */
 .ca-detail-foot { display: flex; flex-direction: column; gap: 12px; }
-.ca-detail-foot .ca-field { margin-bottom: 0; }
-.ca-detail-foot .ca-actions { margin: 2px 0 0; padding-top: 12px; border-top: 1px dashed var(--ca-line); }
 /* 复盘展开块在 ca-detail-foot 内整行独占（2026-09-17 修：横排 flex 的
    第三个项会横向撑破卡片、与证据字段叠字——截图实测块宽 1658 > 容器
    1242）；元信息行内允许换行，长"实际发生"文本不再把行撑出界。 */
 .ca-detail-foot .ca-episode-detail { flex: 1 1 100%; min-width: 0; }
-.ca-episode-detail .ca-meta-item { white-space: normal; }
 
 /* ── 标签片 ───────────────────────────────────────────────── */
 .ca-chip {
@@ -109,9 +105,7 @@
   padding: 10px 14px; color: var(--color-ca-amber-ink-3); font-size: var(--font-size-3);
 }
 /* 持久壳的横幅槽:无横幅时不占位(空 div 的 margin 折叠会留缝)。 */
-.ca-banner-slot:empty { display: none; }.ca-row.is-flat { border: 0; border-top: 1px solid var(--ca-line); border-radius: 0; padding: 10px 2px; cursor: default; }
-.ca-row.is-flat:first-child { border-top: 0; }
-.ca-row:hover:not(.is-flat) { border-color: var(--ca-green-line); }/* 个人本体挂载点:本体 section 借此撑满内容区(它自带双栏布局)。 */
+.ca-banner-slot:empty { display: none; }/* 个人本体挂载点:本体 section 借此撑满内容区(它自带双栏布局)。 */
 .ca-ontology-mount { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
 
 /* ── 认知树（原型 v7 移植）────────────────────────────────────
@@ -167,27 +161,11 @@
 .ca-more-copy { flex: 1 1 auto; min-width: 0; }
 .ca-more-copy strong { display: block; font-size: var(--font-size-3); font-weight: 600; }
 .ca-more-copy span { display: block; font-size: var(--font-size-2); color: var(--ca-ink3); margin-top: 1px; }
-/* 写操作进行中：按钮禁用+变淡+尾部旋转圈（重画后自然消失）。旋转圈用
-   ::after 注入，不改 uiButton 的 DOM 契约。 */
-.ca-btn.is-pending, .ca-more-toggle.is-pending { opacity: .55; pointer-events: none; }
-.ca-btn.is-pending::after {
-  content: ''; display: inline-block; width: 11px; height: 11px; margin-left: 7px;
-  border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%;
-  vertical-align: -1px; animation: ca-spin .7s linear infinite;
-}
+/
+.ca-more-toggle.is-pending { opacity: .55; pointer-events: none; }
 @keyframes ca-spin { to { transform: rotate(360deg); } }
-
-/* ── 候选 ─────────────────────────────────────────────────── */
-.ca-candidate .ca-content-text { color: var(--ca-ink2); }
 .ca-candidate.is-broken { border-color: var(--color-ca-amber-line); }
 .ca-src { color: var(--ca-ink3); font-size: var(--font-size-2); margin-top: 8px; }
-.ca-field { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 12px; align-items: start; margin-bottom: 11px; }
-/* 接缝补足：ca-warn / ca-line 只有上边距、ca-field 只有下边距，相邻时
-   两侧边距都为 0，警告条与「类型」行（无警告条时是标题行与「类型」行）
-   会贴在一起（实测反馈）。 */
-.ca-warn + .ca-field,
-.ca-line + .ca-field { margin-top: 10px; }
-.ca-field > span { color: var(--ca-ink2); font-size: var(--font-size-3); text-align: right; padding-top: 8px; }
 
 /* ── 证明 ─────────────────────────────────────────────────── */
 .ca-proof-list { margin-top: 6px; }
@@ -202,24 +180,9 @@
 .ca-proof-body strong { font-size: 13px; }
 .ca-rating { padding: 0 2px 14px 18px; }
 .ca-rating strong { font-size: var(--font-size-3); }
-.ca-note-zone { margin-top: 10px; }
 
 /* ── 设置与管理 ───────────────────────────────────────────── */
 .ca-subnav { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
-.ca-pill {
-  border: 1px solid var(--ca-line); background: var(--ca-card); border-radius: 999px;
-  padding: 6px 15px; font-size: var(--font-size-3); color: var(--ca-ink2); cursor: pointer; font-family: inherit;
-}
-.ca-pill:hover { border-color: var(--color-ca-green-line-2); }
-.ca-pill.is-on { background: var(--ca-green-bg); border-color: var(--ca-green-line); color: var(--color-ca-green-text-deep); font-weight: 600; }
-.ca-flow {
-  display: flex; align-items: center; justify-content: center; gap: 10px;
-  background: var(--color-ca-paper); border: 1px solid var(--ca-line); border-radius: 12px;
-  padding: 12px; color: var(--ca-ink2); font-size: var(--font-size-3); margin-bottom: 16px;
-}
-.ca-flow b { color: var(--ca-ink); font-weight: 600; }
-.ca-flow i { color: var(--color-ca-ink-faint); font-style: normal; }
-.ca-source-card .ca-line { align-items: center; }
 
 /* ── 空态与加载 ───────────────────────────────────────────── */
 .ca-steps { color: var(--ca-ink3); font-size: 12px; margin: 4px 0; }
@@ -332,26 +295,11 @@
   font-size: var(--font-size-2); padding: 3.5px 13px; font-weight: 500;
 }
 #ca-root .personal-onto-filter-row { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 12px; }
-
-/* 设置项卡片（整理方式页，2026-09-14 分区重构）：卡片头=设置名（可带右对齐
-   状态与操作），卡片内=选项行与选中说明。与「从历史会话整理」等卡片同族。 */
-.ca-setcard .ca-line { margin-bottom: 12px; }
 .ca-setcard .ca-subnav { margin-bottom: 8px; }
-.ca-setcard .ca-note { margin: 0; }
-.ca-line-center { justify-content: center; margin-top: 12px; }
 
 /* tab 行紧凑模式（窄窗口自适应）：标题折行时收紧 padding，由 app.js 测量后
    切换（2026-09-15 起副标题已删，只剩标题折行一种触发）。 */
 .ca-tabs.is-compact .ca-tab { padding: 8px 11px 9px; }
-
-/* ── 沉淀设置（2026-09-15 齿轮入口 + 独立设置页） ─────────────────── */
-/* 齿轮按钮（整理页 hero 右侧）：走共享 uiIconButton + icons.js('settings')，
-   此处仅做 ca 作用域的视觉对齐（边框圆角，不抢主操作）。 */
-.ca-app .ca-settings-btn {
-  width: 34px; height: 34px; border-radius: var(--radius-field);
-  border: 1px solid var(--ca-line); background: var(--ca-card); color: var(--ca-ink2);
-}
-.ca-app .ca-settings-btn:hover { color: var(--ca-ink); border-color: var(--ca-green-line); }
 
 /* 夜间自动沉淀条状卡：左说明 / 中时间 / 右开关。 */
 .ca-setting-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 14px 16px; }
@@ -361,23 +309,8 @@
   border: 1px solid var(--ca-line); border-radius: 8px; padding: 5px 8px;
   background: var(--ca-card); color: var(--ca-ink); font-family: inherit; font-size: var(--font-size-3);
 }
-
-/* ── 交互反馈与过渡（2026-09-15 全面交互优化） ────────────────── */
-
-/* 列表行/按钮/chip 的状态变化都给过渡：硬切换在轮询重画下会闪。 */
-.ca-row.is-flat { transition: background-color .15s ease; }
-.ca-row.is-flat:hover { background: var(--color-ca-hover); }
-/* 可点行（2026-09-17 版本行点开详情）：手型 + 键盘焦点可见。 */
-.ca-row.is-clickable { cursor: pointer; }
-.ca-row.is-clickable:focus-visible { outline: 2px solid var(--ca-green-line); outline-offset: -2px; }
 /* 版本展开详情块：嵌在版本链里，比列表行缩进一层。 */
 .ca-version-detail { margin: 2px 0 8px; }
-/* 可点 chip（2026-09-17 补样式）：类名此前在、样式缺失——可点 chip 和普通
-   chip 长得一样，用户不知道能点。下划虚线 + hover 反馈 + 键盘焦点。 */
-.ca-chip-link { cursor: pointer; border-bottom: 1px dashed currentColor; }
-.ca-chip-link:hover { background: var(--color-ca-hover); }
-.ca-chip-link:focus-visible { outline: 2px solid var(--ca-green-line); outline-offset: 2px; }
-.ca-btn { transition: background-color .15s ease, border-color .15s ease, color .15s ease, opacity .15s ease; }
 .ca-chip { transition: background-color .15s ease, color .15s ease; }
 
 /* 静默刷新指示条：同页 reload（操作后/4s 轮询）期间顶部 2px 进度流动，
@@ -403,20 +336,6 @@
 }
 @keyframes ca-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
-/* 策略抽屉：常驻 DOM、用 grid 行高做展开/收起过渡（0fr↔1fr 可对内容动画，
-   不需要拍一个魔法 max-height）。收起时 inner 隐藏，键盘不会聚焦进去。 */
-.ca-drawer { display: grid; grid-template-rows: 0fr; opacity: .35; transition: grid-template-rows .3s ease, opacity .22s ease; }
-.ca-drawer.is-open { grid-template-rows: 1fr; opacity: 1; }
-.ca-drawer > .ca-drawer-inner { overflow: hidden; min-height: 0; visibility: hidden; transition: visibility 0s .3s; }
-.ca-drawer.is-open > .ca-drawer-inner { visibility: visible; transition: visibility 0s 0s; }
-
-/* 整理页「调整/收起」就地切换文案不重画整页：按钮 label 直接改由 app.js 处理，
-   这里只保证切换瞬间的过渡。 */
-
-/* 整理页策略状态行（hero 右侧，2026-09-15 布局调整）：开关态 + 当前时机 +
-   调整入口；窄窗口随 hero 换行。 */
-.ca-organize-policy { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-
 /* ── 整理详情：对话上下文时间线（2026-09-15 详情页改造） ─────────────
    展示口径=本次整理实际读到的消息；user=绿点、assistant=灰点。 */
 .ca-tl { margin-top: 4px; }
@@ -433,7 +352,6 @@
 .ca-tl-body summary::after { content: ' ▾'; color: var(--ca-ink3); font-size: var(--font-size-1); }
 .ca-tl-body[open] summary { color: var(--ca-ink3); margin-bottom: 4px; }
 .ca-tl-body[open] summary::after { content: ' ▴'; }
-.ca-tl .ca-chips { margin-top: 6px; }
 /* 无候选时模型自述理由的引用块。 */
 .ca-quote { margin: 10px 0 0; padding: 8px 12px; border-left: 3px solid var(--ca-line); color: var(--ca-ink2); font-size: var(--font-size-3); white-space: pre-wrap; word-break: break-word; }
 .ca-participants { margin: 2px 0 6px; }
@@ -450,9 +368,6 @@
    动作按钮收进一行卡头，腾出的空间让待确认表单成为主体。 */
 .ca-capture-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
 .ca-capture-head > .ca-chip { flex: 0 0 auto; }
-.ca-meta-row { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; min-width: 0; flex: 1 1 auto; }
-.ca-meta-item { color: var(--ca-ink2); font-size: var(--font-size-2); white-space: nowrap; }
-.ca-meta-item i { font-style: normal; color: var(--ca-ink3); margin-right: 5px; }
 .ca-head-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ca-pending-embed { margin-top: 12px; }
 .ca-pending-block + .ca-pending-block { border-top: 1px dashed var(--ca-line); margin-top: 14px; padding-top: 14px; }
@@ -464,7 +379,6 @@
 .ca-deposit-item + .ca-deposit-item { margin-top: 8px; }
 .ca-deposit-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ca-deposit-head b { font-size: var(--font-size-3); }
-.ca-deposit-item .ca-content-text { margin-top: 6px; }
 .ca-deposit-foot { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
 
 /* 整理结果：未保存候选的完整内容块（2026-09-15——不保存后仍能看到
@@ -472,9 +386,6 @@
 .ca-result-item { border: 1px solid var(--ca-line); border-radius: var(--radius-item); background: var(--color-ca-paper); padding: 12px 14px; margin-top: 8px; }
 .ca-result-item + .ca-result-item { margin-top: 8px; }
 .ca-result-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.ca-result-head .ca-right { margin-left: auto; }
-.ca-result-item .ca-content-text { margin-top: 6px; }
-.ca-result-item .ca-chips { margin-top: 6px; }
 
 /* ── 响应式适配（2026-09-15）───────────────────────────────────
    模块此前无断点：窄窗口下 kv 三列互挤、工具栏与行内按钮溢出。
@@ -482,38 +393,23 @@
    980px —— 中等窗口：统计栅格 3→2 列、hero 统计换行；
    720px —— 窄窗口：kv 单列、工具栏纵向堆叠、行内按钮组换行、抽屉卡收紧。 */
 @media (max-width: 980px) {
-  .ca-kv { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ca-stats { flex-wrap: wrap; }
-  .ca-hero { flex-wrap: wrap; }
-  .ca-capture-toolbar { gap: 6px; }
 }
 @media (max-width: 720px) {
-  .ca-kv { grid-template-columns: minmax(0, 1fr); }
-  .ca-capture-toolbar { flex-direction: column; align-items: stretch; }
-  .ca-capture-toolbar .ca-right { margin-left: 0; }
   .ca-capture-head { align-items: flex-start; }
   .ca-head-actions { margin-left: 0; }
-  .ca-row.is-flat { flex-wrap: wrap; row-gap: 6px; }
-  .ca-row-side { margin-left: 0; flex-wrap: wrap; }
   .ca-setcard { padding: 12px 13px; }
   .ca-card { padding: 13px 14px; }
-  .ca-field { grid-template-columns: minmax(0, 1fr); gap: 6px; }
 }
 
 /* 尊重系统「减少动态效果」：动画是增强，不是功能。 */
 @media (prefers-reduced-motion: reduce) {
-  .ca-btn.is-pending::after, .ca-skel-row, .ca-app.is-refreshing::before { animation: none; }
-  .ca-drawer, .ca-drawer > .ca-drawer-inner, .ca-btn, .ca-chip, .ca-row.is-flat { transition: none; }
+  
+.ca-skel-row,
+.ca-app.is-refreshing::before { animation: none; }
+  
+.ca-chip { transition: none; }
 }
-
-/* 大类分组（2026-09-22 清单 #2）：组头轻量、不抢资产行的层级。 */
-.ca-family-group { margin-bottom: 14px; }
-.ca-family-head {
-  font-size: 12px; font-weight: 600; color: var(--ca-ink-soft);
-  padding: 4px 10px; border-left: 3px solid var(--ca-accent);
-  margin-bottom: 4px; background: color-mix(in srgb, var(--ca-accent) 6%, transparent); border-radius: 0 6px 6px 0;
-}
-.ca-family-count { font-weight: 400; opacity: 0.75; margin-left: 6px; }
 
 /* ── 认知资产面板 · 新增功能样式 ── */
 .ca-app {
@@ -529,34 +425,6 @@
   margin: 10px 0;
   font-size: var(--font-size-caption);
   color: var(--ca-amber-ink);
-}
-
-/* 证据引用行 */
-.ca-app .ca-evrow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--ca-ink2);
-  padding: 5px 0;
-  border-bottom: 1px solid var(--ca-hair);
-}
-.ca-app .ca-evrow:last-child { border-bottom: none; }
-
-/* 审计履历行 */
-.ca-app .ca-proc-row {
-  display: flex;
-  gap: 10px;
-  font-size: var(--font-size-caption);
-  padding: 6px 2px;
-  border-bottom: 1px solid var(--ca-hair);
-  align-items: baseline;
-}
-.ca-app .ca-proc-row:last-child { border-bottom: none; }
-.ca-app .ca-proc-when {
-  font-size: 11px;
-  color: var(--ca-ink3);
-  white-space: nowrap;
 }
 
 /* 资产详情标题（h1 语义层级） */
