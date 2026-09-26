@@ -6999,7 +6999,8 @@ body.is-sidebar-resizing iframe { pointer-events: none; }
   gap: 8px;
   font-size: 11px;
   line-height: 1.55;
-  color: var(--text-muted);
+  /* WCAG：--text-muted 于浅底 4.48 < 4.5，升一档次级文本 */
+  color: var(--text-secondary);
   background: var(--surface-2, #f7f8fa);
   border-radius: 8px;
   padding: 8px 10px;
@@ -23891,7 +23892,8 @@ body:has(#panel-settings.active) .main-top-actions {
 
 .personal-onto-nav-row-sub {
   font-size: 11px;
-  color: var(--personal-onto-muted);
+  /* WCAG：--personal-onto-muted 于白底 3.97 < 4.5，改走全局次级文本 token */
+  color: var(--color-ca-ink-2);
 }
 
 .personal-onto-nav-row.is-file {
