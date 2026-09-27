@@ -1555,15 +1555,17 @@ export async function createCustomSkill(
   // 2026-05-22 17:14 sync pass deleted_local=4).
   try { fs.utimesSync(skillMdPath, new Date(), new Date()); } catch { /* best effort */ }
   log.info(`created name=${name} category=${category || '(none)'}`);
-  _invalidateSkillListCacheForUser(userId);
+  _invalidateSkillListCache();
   invalidateCoreAgentSkills().catch(() => { /* runner may not be loaded yet */ });
-  return getCustomSkillForUser(userId, name);
+  return getCustomSkill(name);
 }
 
-export async function createCustomSkill(
-  name: string, description: string, category = '',
+/** [rebase 合并] B 线的显式用户入口：转发到现行实现（当前实现按活动用户定位目录）。 */
+export async function createCustomSkillForUser(
+  userId: string, name: string, description = '', category = '',
 ): Promise<CustomSkill | null> {
-  return createCustomSkillForUser(getActiveUserId(), name, description, category);
+  void userId;
+  return createCustomSkill(name, description, category);
 }
 
 export async function updateCustomSkillForUser(

@@ -1498,6 +1498,13 @@ async function buildRotatingProvider(
     const candMaxOutputTokens = rotatingCandidateMaxTokens(
       userId, candProviderId, candModelId, isExternal, resolvedModel, choice.maxOutputTokens,
     );
+    // [rebase 合并] B 线的输出上限意图：钳制私仓的轮换取值（不采用其旧表达式）。
+    const effectiveCandMaxOutputTokens = typeof candMaxOutputTokens === 'number'
+      && candMaxOutputTokens > 0
+      && typeof maxOutputTokensCeiling === 'number'
+      && maxOutputTokensCeiling > 0
+      ? Math.min(candMaxOutputTokens, maxOutputTokensCeiling)
+      : candMaxOutputTokens;
     return {
       profileId: choice.profileId,
       providerId: candProviderId,

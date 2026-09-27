@@ -3317,3 +3317,12 @@ export async function testConnectionForUser(
 // ── Legacy aliases ───────────────────────────────────────────────────────
 export const saveApiKey = (providerId: string, apiKey: string, label?: string, opts?: { baseUrl?: string; maxOutputTokens?: number }) =>
   addApiKey(providerId, apiKey, label, opts);
+
+/** [rebase 合并] B 线的显式用户入口：现行实现仍以活动用户为准（上游活动用户单例模型）。 */
+export function hasConfiguredModel(): { configured: boolean } {
+  try { return hasConfiguredModelForUser(getActiveUserId()); }
+  catch { return { configured: false }; }
+}
+export function getConfiguredModelCooldownForUser(_userId: string): ReturnType<typeof getConfiguredModelCooldown> {
+  return getConfiguredModelCooldown();
+}
