@@ -1400,11 +1400,32 @@ function _agentCatalogCacheFile(userId = getActiveUserId()): string {
 function _readPersistedAgentCatalog(userId: string, stamp: string): Agent[] | null {
   try {
     const raw = JSON.parse(fs.readFileSync(_agentCatalogCacheFile(userId), 'utf8'));
-    if (raw?.version !== AGENT_CATALOG_CACHE_VERSION || raw?.stamp !== stamp || !Array.isArray(raw.data)) return null;
+    if (raw?.version !== AGENT_CATALOG_CACHE_VERSION || !Array.isArray(raw.data)) return null;
+    if (raw.stamp !== stamp) {
+      // Keep the last known-good snapshot when a source file was only left
+      // malformed (the established cache contract); valid rewrites still
+      // invalidate because their files are parseable and carry a new stamp.
+      if (!_hasMalformedAgentSource(userId)) return null;
+    }
     return raw.data as Agent[];
   } catch {
     return null;
   }
+}
+
+function _hasMalformedAgentSource(userId: string): boolean {
+  for (const dir of [userAgentsDir(userId), userMarketplaceAgentsDir(userId)]) {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'));
+    } catch { continue; }
+    for (const entry of entries) {
+      try { JSON.parse(fs.readFileSync(path.join(dir, entry.name, 'agent.json'), 'utf8')); }
+      catch { return true; }
+    }
+  }
+  return false;
 }
 
 function _writePersistedAgentCatalog(userId: string, stamp: string, data: Agent[]): void {
@@ -1479,6 +1500,23 @@ function _agentDirStamp(userId = getActiveUserId()): string {
   for (const d of [userAgentsDir(userId), userMarketplaceAgentsDir(userId)]) {
     try { stamp += `${d}:${fs.statSync(d).mtimeMs};`; }
     catch { stamp += `${d}:0;`; }
+  }
+  return stamp;
+}
+
+function _persistedAgentCatalogStamp(userId = getActiveUserId()): string {
+  let stamp = _agentDirStamp(userId);
+  for (const d of [userAgentsDir(userId), userMarketplaceAgentsDir(userId)]) {
+    try {
+      const entries = fs.readdirSync(d, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      for (const entry of entries) {
+        const file = path.join(d, entry.name, 'agent.json');
+        try { stamp += `${entry.name}:${fs.statSync(file).mtimeMs};`; }
+        catch { stamp += `${entry.name}:0;`; }
+      }
+    } catch { /* missing source directory is represented by the base stamp */ }
   }
   return stamp;
 }
@@ -1563,7 +1601,7 @@ async function _listAgentSpecs(userId = getActiveUserId()): Promise<Agent[]> {  
   if (_agentListCache && _agentListCache.uid === userId && _agentListCache.stamp === stamp) {
     specs = _agentListCache.data;
   } else {
-    const persisted = _readPersistedAgentCatalog(userId, stamp);
+    const persisted = _readPersistedAgentCatalog(userId, _persistedAgentCatalogStamp(userId));
     if (persisted) {
       specs = persisted;
     } else {
@@ -1599,7 +1637,7 @@ async function _listAgentSpecs(userId = getActiveUserId()): Promise<Agent[]> {  
           specs.push(norm);
         }
       }
-      _writePersistedAgentCatalog(userId, stamp, specs);
+      _writePersistedAgentCatalog(userId, _persistedAgentCatalogStamp(userId), specs);
     }
     _agentListCache = { uid: userId, stamp, data: specs };
     _agentEnrichedCache = null;
