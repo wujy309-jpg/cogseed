@@ -1241,7 +1241,9 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
       ...(typeof model?.contextWindow === 'number' ? { contextWindow: model.contextWindow } : {}),
       ...(typeof model?.maxTokens === 'number' ? { maxTokens: model.maxTokens } : {}),
     });
-const entry = modelCatalogEntryFromModel(model, creatorExecution?.maxOutputTokens);
+    // B 的 Creator 输出上限要经同一个目录项生效；同时保留私仓 2026-09-14 的
+    // 预设覆盖结果（`overridden`），否则设置页改的窗口/输出在 pi-ai 目录路径上丢失。
+    const entry = modelCatalogEntryFromModel(overridden, creatorExecution?.maxOutputTokens);
     if (entry) modelCatalog[choice.model] = { provider: choice.provider, model: choice.model, ...entry };
   }
   // A development environment may use the SDK's environment-key fallback,

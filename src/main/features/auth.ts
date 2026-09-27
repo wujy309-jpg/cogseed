@@ -1051,16 +1051,7 @@ export function hasConfiguredModelForUser(userId: string): { configured: boolean
   return { configured: false };
 }
 
-/** Explicit-user probe for background work that must not depend on whichever
- * user happens to be active when the asynchronous task completes. */
-export function hasConfiguredModelForUser(userId: string): { configured: boolean } {
-  const store = loadProfilesForUser(userId);
-  if (store.entries.some((e) => isEntryAllowed(store, e))) return { configured: true };
-  if (process.env.ANTHROPIC_API_KEY) return { configured: true };
-  return { configured: false };
-}
-
-export function getConfiguredModelCooldown(): {
+export function getConfiguredModelCooldownForUser(userId: string): {
   profileId: string;
   cooledUntil: number;
   kind: KeyFailureKind;
@@ -1366,7 +1357,7 @@ export async function listModelsForUser(userId: string, providerId: string): Pro
     // deepseek 模型未配任何推理等级，前端却可切低/中/高）。声明后档位
     // 恢复，形成"配置驱动展示"的闭环。运行时的 reasoning_effort 透传
     // 判定（custom_provider_runtime）不变——展示链与执行链职责分离。
-    const custom = customProviderForId(loadProfiles(), id);
+    const custom = customProviderForId(loadProfilesForUser(userId), id);
     // 模型级开关关闭的不进选择器（S2：隐藏 + 阻止新绑定；详情卡用的是
     // customProviders.list 的全量清单，开关本身仍然可见可拨回）。
     const models = (custom?.models || []).filter((model) => model.enabled !== false);
@@ -1416,7 +1407,7 @@ export async function listModelsForUser(userId: string, providerId: string): Pro
   };
   // 本地覆盖（设置页「预设详情」）优先于预设：模型下拉/上下文分母读的就是这里，
   // 设置页改了窗口而列表还显示预设值会立刻造成"界面与运行时两套数"。
-  const curated = applyModelOverrides(id, curatedModelsFor(id));
+  const curated = applyModelOverrides(userId, id, curatedModelsFor(id));
   if (curated.length) return { models: await annotate(allowed(curated)) };
   try {
     const mod = await ca();
@@ -1647,11 +1638,10 @@ export interface EntryView {
 
 /** 用户本地覆盖（features/model_overrides）叠加到预设条目上，覆盖字段优先。 */
 function applyModelOverrides<T extends { id: string; contextWindow?: number; maxTokens?: number }>(
+  uid: string,
   providerId: string,
   models: T[],
 ): T[] {
-  let uid = '';
-  try { uid = getActiveUserId(); } catch { return models; }
   if (!uid) return models;
   return models.map((model) => {
     const override = resolveModelOverride(uid, providerId, model.id);
@@ -2873,13 +2863,20 @@ export async function pickChatEntryGroupForUser(userId: string): Promise<ChatEnt
   // block a fresh user turn. Healthy candidates still win, and a fallback that
   // fails again re-enters cooldown through the normal rotation path.
   const cooledFallback: ChatEntryChoice[] = [];
+  // Legacy cooldowns (written by the process-wide `markCooldown` when the failing caller had
+  // no explicit user scope, e.g. a rotating provider built without `userId`) carry no user
+  // identity. Honour them only when the requested user *is* the active user; an explicit-scope
+  // caller asking for someone else must not inherit another user's process-wide cooldown.
+  let activeUid = '';
+  try { activeUid = getActiveUserId(); } catch { /* no active user yet */ }
   for (const entry of ordered) {
     if (!isEntryAllowed(store, entry)) {
       log.info(`skipping disabled provider/model ${entry.provider}/${entry.model}`);
       continue;
     }
-    const cooled = isCooledDown(entry.profileId);
-    const apiKey = await resolveEntryApiKey(store, entry);
+    const cooled = isCooledDownForUser(userId, entry.profileId)
+      || (!!activeUid && userId === activeUid && isCooledDown(entry.profileId));
+    const apiKey = await resolveEntryApiKey(userId, store, entry);
     if (!apiKey) continue;
     const prof = store.profiles[entry.profileId];
     const apiProfile = prof?.type === 'api_key' ? prof as ApiKeyProfile : undefined;
@@ -2912,8 +2909,7 @@ export async function pickChatEntryGroupForUser(userId: string): Promise<ChatEnt
 
 export async function pickChatEntryGroup(): Promise<ChatEntryChoice[]> {
   try {
-    const group = await pickChatEntryGroupForUser(getActiveUserId());
-    return group.filter((choice) => !isCooledDown(choice.profileId));
+    return await pickChatEntryGroupForUser(getActiveUserId());
   }
   catch { return []; }
 }
@@ -3126,7 +3122,7 @@ export async function testAuthorizationDraft(
             apiKey,
             modelId: model,
             override: (() => {
-              try { return resolveModelOverride(getActiveUserId(), 'deepseek', model); } catch { return null; }
+              try { return resolveModelOverride(userId, 'deepseek', model); } catch { return null; }
             })(),
           });
         }
@@ -3220,7 +3216,7 @@ export async function testConnectionForUser(
           apiKey,
           modelId: probeModel,
           override: (() => {
-            try { return resolveModelOverride(getActiveUserId(), 'deepseek', probeModel); } catch { return null; }
+            try { return resolveModelOverride(userId, 'deepseek', probeModel); } catch { return null; }
           })(),
         });
       } else if (pid === 'doubao') {
@@ -3322,7 +3318,4 @@ export const saveApiKey = (providerId: string, apiKey: string, label?: string, o
 export function hasConfiguredModel(): { configured: boolean } {
   try { return hasConfiguredModelForUser(getActiveUserId()); }
   catch { return { configured: false }; }
-}
-export function getConfiguredModelCooldownForUser(_userId: string): ReturnType<typeof getConfiguredModelCooldown> {
-  return getConfiguredModelCooldown();
 }

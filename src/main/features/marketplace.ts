@@ -938,11 +938,11 @@ export async function getSkillDetailForUser(
   // The byte endpoint is no longer asked for JSON, and no object-storage URL is involved.
   const meta = await getSkillMetadata(skillId);
   if (!meta) throw new MarketplaceError('CONTENT_NOT_FOUND', `CONTENT_NOT_FOUND: ${skillId}`);
-  await _fetchAndCacheSkill(skillId, meta);
+  await _fetchAndCacheSkill(userId, skillId, meta);
   return {
     id: skillId, name: meta.name, version: meta.version, category: meta.category,
     published_at: meta.published_at, updated_at: meta.updated_at,
-    cache_dir: getSkillCacheDir(skillId), bundle_url: '', artifact: meta.artifact,
+    cache_dir: getSkillCacheDirForUser(userId, skillId), bundle_url: '', artifact: meta.artifact,
     create_uid: meta.create_uid, default_install: meta.default_install,
     is_open_source: meta.is_open_source, status: meta.status,
     ...(meta.min_app_version ? { min_app_version: meta.min_app_version } : {}),
@@ -958,10 +958,11 @@ export async function getSkillDetailForUser(
  * `artifact.sha256` + `size_bytes` before anything is unpacked (specs/010 FR-008～FR-012).
  */
 async function _fetchAndCacheSkill(
+  userId: string,
   skillId: string,
   meta: { version: string; published_at: number; updated_at?: number; artifact: SkillMetadata['artifact'] },
 ): Promise<void> {
-  const stagingRoot = marketplaceCacheSkillsDir(getActiveUserId());
+  const stagingRoot = marketplaceCacheSkillsDir(userId);
   await fsp.mkdir(stagingRoot, { recursive: true });
   const staging = path.join(stagingRoot, `.staging-${skillId}-${randomBytes(6).toString('hex')}.zip`);
   try {
@@ -971,7 +972,7 @@ async function _fetchAndCacheSkill(
     // The file on disk is already digest- and size-verified; reading it back is bounded by
     // the same compressed-size cap that governed the download.
     const zip = parseMarketplaceBundle(await fsp.readFile(staging));
-    await writeSkillCache(skillId, async (dir) => {
+    await writeSkillCacheForUser(userId, skillId, async (dir) => {
       extractBundleSafely(zip, dir);
     }, { version: meta.version, published_at: meta.published_at, updated_at: meta.updated_at });
   } finally {
@@ -1086,7 +1087,7 @@ async function _installMarketplaceAgentLocked(
           }
           depSkillName = meta.name || depSkillName;
           _assertApprovedDependencySkill(sid, depSkillName, { status: meta.status });
-          await installMarketplaceSkill(sid, {
+          await installMarketplaceSkillForUser(uid, sid, {
             version: meta.version,
             published_at: meta.published_at,
             ...(meta.updated_at !== undefined ? { updated_at: meta.updated_at } : {}),
@@ -1289,8 +1290,7 @@ async function _installMarketplaceSkillLocked(
       await fork.assertOfficialReinstallNameIsFree(skillName);
     }
 
-    const cacheDir = getSkillCacheDir(skillId);
-    const uid = getActiveUserId();
+    const cacheDir = getSkillCacheDirForUser(uid, skillId);
     const target = userMarketplaceSkillDir(uid, skillId);
 
     // ── FR-022 / PRD §7.4：本机已存在同 ID 内容（如随包种子）时，安装按 §7.5 的
@@ -1486,7 +1486,7 @@ async function _installMarketplaceSkillLocked(
           });
         }
       }
-      await touchCacheEntry('skill', skillId);
+      await touchCacheEntryForUser(uid, 'skill', skillId);
       invalidateCoreAgentSkills();
     } catch (err) {
       // Safety net: a refusal, an engine crash, or a killed process between
@@ -1979,7 +1979,7 @@ export async function uninstallMarketplaceSkillForUser(userId: string, skillId: 
     // 卸载后跑一轮保守回收（FR-052 的第二个触发点）。**不在这里删任何副本**——
     // 回收自己判断三条件，仍被钉固、仍是 current、或未过宽限期的一概保留；
     // 任何异常本轮删 0。回收失败不影响卸载本身已经完成的事实。
-    void runVersionGcAfterUninstall(uid);
+    void runVersionGcAfterUninstall(userId);
     return { ok: true, id: skillId };
   });
 }

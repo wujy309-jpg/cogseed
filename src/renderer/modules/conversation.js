@@ -15314,14 +15314,7 @@ function _activityStatusFromEvent(evt) {
 
   if (stream === 'assistant' && (data.text || data.delta)) return { key: 'generating' };
   if (stream === 'runtime' && phase === 'retrying') {
-    const attempt = Math.max(1, Math.round(Number(data.attempt) || 1));
-    if (typeof window.chatStreamSetRuntimeStatus === 'function') {
-      window.chatStreamSetRuntimeStatus(msg?.dataset?.cid, msg, { type: 'retry', attempt });
-    }
-    _streamingUpdateActivity(msg, attempt > 1
-      ? t('model.retrying_n', { attempt })
-      : t('model.retrying'));
-    return;
+    return { key: 'retrying', attempt: Math.max(1, Math.round(Number(data.attempt) || 1)) };
   }
   if (stream === 'plan') return { key: 'planning' };
   if (stream === 'approval') {
@@ -15424,6 +15417,11 @@ function _activityTextFromStatus(status) {
 
 function _streamingUpdateActivityFromEvent(msg, evt) {
   const status = _activityStatusFromEvent(evt);
+  // 运行时重试提示条（retry chip）需要真实 msg，只能在这里挂：状态机本身是纯函数，
+  // 事件分支里既没有 msg 也没有 window（此前直接写在那里，重试事件会抛 ReferenceError）。
+  if (msg && status && status.key === 'retrying' && typeof window.chatStreamSetRuntimeStatus === 'function') {
+    window.chatStreamSetRuntimeStatus(msg.dataset && msg.dataset.cid, msg, { type: 'retry', attempt: status.attempt });
+  }
   const previous = msg && msg._activitySummary;
   if (msg && status && status.key === 'tool_calling') {
     msg._activitySummary = { ...status };

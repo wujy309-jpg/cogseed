@@ -874,6 +874,10 @@ function _isRecipientOrigin(value: unknown): value is 'user_selection' | 'cli_fa
 }
 
 const invokeHandlers: Record<string, InvokeHandler> = {
+  // Creator（Agent 创建师）通道：rebase 时丢了这一行 spread，导致
+  // creator.agent.run / creator.draft.verify / creator.preset.activate 三个通道
+  // 变成 unknown channel（test 直接构造 handlers，所以单测看不出来）。
+  ...creatorHandlers,
   // conv-core M2：双向交互（审批/提问）的渲染层回复入口。晚到/未知 id
   // 由 hub 幂等吞掉（返回 handled:false，不抛错）。
   'chat.interaction.reply': async (payload, _ctx) => {

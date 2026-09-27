@@ -491,7 +491,6 @@ describe('group_chat bus › enqueue routing + persistence', () => {
     let calls = 0;
     const gate = vi.spyOn(agents, 'getAgentForChatDispatch').mockImplementation(async (uid, agentId) => {
       calls += 1;
-      if (calls > 1) return null;
       return original(uid, agentId);
     });
     const cid = 'cid-normal-agent-policy-gate';
@@ -504,6 +503,13 @@ describe('group_chat bus › enqueue routing + persistence', () => {
       fromActorId: 'user',
       forceTo: [AGENT_ID],
       text: 'NORMAL_AGENT_POLICY_GATE_TEST',
+    });
+    // The spec disappears after persistence but immediately before the queued turn runs —
+    // that is the race this test guards. Injecting it here (instead of failing the Nth call)
+    // keeps the enqueue-time classification honest and drives B's turn-time fail-closed check.
+    gate.mockImplementation(async () => {
+      calls += 1;
+      return null;
     });
     await waitForQuiescent(TEST_UID, cid);
 

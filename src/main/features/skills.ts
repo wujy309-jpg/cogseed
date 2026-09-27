@@ -1451,16 +1451,23 @@ async function _listSkillFilesAt(skillDir: string): Promise<SkillFileInfo[]> {
  * passes the same two gates. specs/010 FR-055 leans on this prohibition: it is what makes the
  * fork order ("uninstall the official copy first, then copy") a hard requirement.
  */
-export function assertCustomSkillIdAvailable(name: string): void {
-  if (fs.existsSync(customSkillDir(name))) throw new Error(t('skills.errors.skill_exists', { name }));
-  if (fs.existsSync(path.join(userMarketplaceSkillsDir(getActiveUserId()), name))) {
+/** Per-user form of {@link assertCustomSkillIdAvailable}. Explicit-scope callers (queued
+ * commander mutations, directory imports) can run after the active user changed, so they
+ * must gate against the directories of the user the work belongs to. */
+export function assertCustomSkillIdAvailableForUser(userId: string, name: string): void {
+  if (fs.existsSync(customSkillDirForUser(userId, name))) throw new Error(t('skills.errors.skill_exists', { name }));
+  if (fs.existsSync(path.join(userMarketplaceSkillsDir(userId), name))) {
     throw new Error(t('skills.errors.builtin_conflict', { name }));
   }
 }
 
+export function assertCustomSkillIdAvailable(name: string): void {
+  assertCustomSkillIdAvailableForUser(getActiveUserId(), name);
+}
+
 /** A free custom-skill id derived from `baseName`, using the existing import dedupe rule. */
-export function reserveFreeCustomSkillId(baseName: string): string {
-  return _dedupeImportName(baseName, new Set<string>());
+export function reserveFreeCustomSkillId(baseName: string, userId = getActiveUserId()): string {
+  return _dedupeImportName(userId, baseName, new Set<string>());
 }
 
 /**
@@ -1529,13 +1536,27 @@ export async function adoptCustomSkillFromStagedTree(opts: {
   return getCustomSkill(desiredId);
 }
 
+export async function createCustomSkillForUser(
+  userId: string, name: string, description = '', category = '',
+): Promise<CustomSkill | null> {
+  return _createCustomSkillIn(userId, name, description, category);
+}
+
 export async function createCustomSkill(
   name: string, description: string, category = '',
 ): Promise<CustomSkill | null> {
+  return _createCustomSkillIn(getActiveUserId(), name, description, category);
+}
+
+/** Shared create path: the explicit-scope wrapper and the active-user wrapper must not
+ *  diverge — every gate, sidecar write and cache invalidation is per-user. */
+async function _createCustomSkillIn(
+  userId: string, name: string, description: string, category: string,
+): Promise<CustomSkill | null> {
   const err = validateSkillName(name);
   if (err) throw new Error(err);
-  const d = customSkillDir(name);
-  assertCustomSkillIdAvailable(name);
+  const d = customSkillDirForUser(userId, name);
+  assertCustomSkillIdAvailableForUser(userId, name);
   fs.mkdirSync(d, { recursive: true });
   const skillMdPath = path.join(d, 'SKILL.md');
   writeTextAtomicSync(skillMdPath, skillMdContent(name, description, '', category, 'approved'));
@@ -1555,17 +1576,9 @@ export async function createCustomSkill(
   // 2026-05-22 17:14 sync pass deleted_local=4).
   try { fs.utimesSync(skillMdPath, new Date(), new Date()); } catch { /* best effort */ }
   log.info(`created name=${name} category=${category || '(none)'}`);
-  _invalidateSkillListCache();
+  _invalidateSkillListCacheForUser(userId);
   invalidateCoreAgentSkills().catch(() => { /* runner may not be loaded yet */ });
-  return getCustomSkill(name);
-}
-
-/** [rebase 合并] B 线的显式用户入口：转发到现行实现（当前实现按活动用户定位目录）。 */
-export async function createCustomSkillForUser(
-  userId: string, name: string, description = '', category = '',
-): Promise<CustomSkill | null> {
-  void userId;
-  return createCustomSkill(name, description, category);
+  return getCustomSkillForUser(userId, name);
 }
 
 export async function updateCustomSkillForUser(
