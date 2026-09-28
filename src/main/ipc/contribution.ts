@@ -50,9 +50,10 @@ import {
 import { buildPackage } from '../features/contribution/package';
 import {
   createSubmission, getSubmission, withdrawSubmission, listMine,
-  createWithdrawalRequest, listWithdrawalRequests, ContributionApiError,
+  createWithdrawalRequest, listWithdrawalRequests, clientAppVersion, ContributionApiError,
 } from '../features/contribution/hub-client';
 import { contributionTarget, localSkillUuid, mergeMine, readContributionStore, safeStoreView } from '../features/contribution/store';
+import { buildSubmissionUploadManifest, submissionMetadata } from '../features/contribution/upload-manifest';
 import { isHigherSemVer, parseSemVer } from '../features/contribution/version';
 
 const log = createLogger('ipc/contribution');
@@ -384,7 +385,9 @@ export const invokeHandlers = {
     if (identity.outcome !== 'ready' || !identity.accountId) return { ok: false, reason: identity.reason };
     const completion = inspectCompletion(session.staging);
     if (completion.missing.length || completion.conflicts.length) return { ok: false, reason: 'metadata_incomplete', completion };
-    const metadata = completion.present as { name: string; description: string; version: string };
+    // 只发契约白名单三键：`completion.present` 是**超集**（带 `security_manifest`），
+    // 整包发出去会被 Hub 按 UNEXPECTED_FIELD（`metadata.security_manifest`）拒绝。
+    const metadata = submissionMetadata(completion.present);
     const target = payload.target_content_id == null || payload.target_content_id === ''
       ? null : assertHubId(payload.target_content_id, 'target_content_id');
     if (!parseSemVer(metadata.version)) return { ok: false, reason: 'invalid_semver' };
@@ -407,21 +410,21 @@ export const invokeHandlers = {
       session.uploadController = uploadController;
       const result = await createSubmission(ctx.userId, {
         idempotencyKey: session.idempotencyKey,
-        manifest: {
-          content_type: 'skill',
-          local_skill_id: localSkillUuid(ctx.userId, identity.accountId, session.staging.sourceSkillId),
-          target_content_id: target,
-          package_digest: session.confirmedPackage.digest,
-          package_size: session.confirmedPackage.size,
-          file_list: session.confirmedPackage.fileList,
-          metadata,
+        manifest: buildSubmissionUploadManifest({
           declarations: session.declarations as unknown as Record<string, unknown>,
-          local_check: {
-            checker: { side: 'client', version: process.env.COGSEED_APP_VERSION || process.env.npm_package_version || '0.0.0' },
+          fileList: session.confirmedPackage.fileList,
+          localCheck: {
+            // 与 `X-CogSeed-Client-Version` 同源（C03 §1：客户端侧 checker.version = app 版本）
+            checker: { side: 'client', version: clientAppVersion() },
             blocking: [],
             warnings,
           },
-        },
+          localSkillId: localSkillUuid(ctx.userId, identity.accountId, session.staging.sourceSkillId),
+          packageDigest: session.confirmedPackage.digest,
+          packageSize: session.confirmedPackage.size,
+          present: completion.present,
+          targetContentId: target,
+        }),
         packageBytes: session.confirmedPackage.bytes,
         signal: uploadController.signal,
       });

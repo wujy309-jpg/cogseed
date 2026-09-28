@@ -75,7 +75,7 @@ describe('上行形态不得夹带命中原文', () => {
    * 跨端契约 C-03 规定上行 `Issue.message` 不得含命中原文、本机绝对路径、凭据、
    * 任务正文、Prompt 或私人实例 ID。原样上行等于把要拦的东西亲手发出去。
    */
-  it('丢弃 snippet，只保留规则 id / 相对路径 / 修复建议', () => {
+  it('丢弃 snippet，只保留规则 id / 级别 / 相对路径 / 修复建议', () => {
     const issue = toUploadableIssue({
       level: 'EXTREME',
       rule: 'no_credential_path_read',
@@ -85,10 +85,41 @@ describe('上行形态不得夹带命中原文', () => {
     });
     expect(issue).toEqual({
       rule_id: 'no_credential_path_read',
+      level: 'EXTREME',
       path: 'scripts/run.py',
       message: '移除硬编码凭据，改从环境变量读取。',
     });
     expect(JSON.stringify(issue)).not.toContain('AKIA');
+  });
+
+  /**
+   * 回归（2026-09-28 跨端联调发现）：`Issue.level` 是 C-03 §1 的必填字段。
+   *
+   * 缺陷形态：上行形态漏了 `level`，Hub 接收校验对每一条 issue 都要求它，于是本机
+   * **只要有一条非 `EXTREME` 命中**，整条提交就被 `INVALID_REQUEST`（`级别必填`）拒绝——
+   * 而契约要求的是「随提交记录为 warnings，不阻断」。
+   */
+  it('带 level，且进入 warnings 的级别落在 C-03 允许集合内', () => {
+    const warning = toUploadableIssue({
+      level: 'LOW',
+      original_level: 'MEDIUM',
+      rule: 'STRUCTURE_QUALITY_MEDIUM',
+      field: 'SKILL.md',
+      snippet: '',
+      suggested_fix: '补充使用示例。',
+    });
+    // 保留「被上下文降级前的级别」，与上行前的过滤判据同源
+    expect(warning.level).toBe('MEDIUM');
+    expect(['MEDIUM', 'LOW']).toContain(warning.level);
+
+    const blocking = toUploadableIssue({
+      level: 'EXTREME',
+      rule: 'CLIENT_LOCAL_ABSOLUTE_PATH',
+      field: 'scripts/run.py',
+      snippet: '',
+      suggested_fix: '改为包内相对路径。',
+    });
+    expect(blocking.level).toBe('EXTREME');
   });
 
   it('frontmatter 级问题不产出 path（它不是文件路径）', () => {

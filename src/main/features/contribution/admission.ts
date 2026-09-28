@@ -23,7 +23,7 @@
  * admit `scanner_absent` by simply not matching it」。贡献判据放在贡献模块里，
  * 新增 outcome 时两边各自 fail closed，不会有一边靠"没匹配上"默默放行。
  */
-import { validateSkillDir, type ValidationReport, type Violation } from '../../quality';
+import { validateSkillDir, type Level, type ValidationReport, type Violation } from '../../quality';
 import { scanSkillDir, type SentryScanResult, type ScanOutcome } from '../security/sentry-adapter';
 import { createLogger } from '../../logger';
 import { gateDeclaration, type DeclarationGateResult, type DeclarationBlockReason } from './declaration';
@@ -252,9 +252,16 @@ function _blockReasonForOutcome(outcome: ScanOutcome): ContributionBlockReason |
  * 命中原文。而跨端契约 C-03 明确规定上行 `Issue.message` 不得包含命中原文、本机绝对路径、
  * 凭据、任务正文、Prompt 或私人实例 ID。原样上行等于把要拦的东西亲手发出去。
  *
- * 所以上行只保留：规则 id、包内相对路径、脱敏后的修复建议。`snippet` **只留本机**。
+ * 所以上行只保留：规则 id、级别、包内相对路径、脱敏后的修复建议。`snippet` **只留本机**。
+ *
+ * **`level` 必须有**（C-03 §1 的 `Issue` 结构：`blocking[]` 恒 `EXTREME`、`warnings[]`
+ * 只能是 `MEDIUM` / `LOW`）。缺了它 Hub 会把整条提交按 `INVALID_REQUEST`（`级别必填`）拒绝——
+ * 也就是说本机只要有一条非 `EXTREME` 命中，贡献就发不出去。取 `original_level || level`
+ * 与上行前的过滤判据一致（`ipc/contribution.ts` 用同一表达式排除 original 为 `EXTREME` 的项），
+ * 因此进入 `warnings` 的条目必然是 `MEDIUM` / `LOW`；同时如实保留「被上下文降级前的级别」，
+ * 不让降级在展示与审计里消失。
  */
-export function toUploadableIssue(v: Violation): { rule_id: string; path?: string; message: string } {
+export function toUploadableIssue(v: Violation): { rule_id: string; level: Level; path?: string; message: string } {
   // `field` 形如 "<relpath>" / "<relpath>:<line>" / "frontmatter:<key>"。
   // 取相对路径部分；`frontmatter:` 前缀不是文件路径，按规则级问题处理（省略 path）。
   const field = String(v.field || '');
@@ -262,6 +269,7 @@ export function toUploadableIssue(v: Violation): { rule_id: string; path?: strin
   const relpath = isFrontmatter ? undefined : field.split(':')[0] || undefined;
   return {
     rule_id: v.rule,
+    level: v.original_level || v.level,
     ...(relpath ? { path: relpath } : {}),
     // 只用修复建议，不用 snippet。建议是写给人读的规则说明，不含命中内容。
     message: String(v.suggested_fix || v.rule).slice(0, 500),

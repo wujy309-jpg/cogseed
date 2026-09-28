@@ -1,14 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('electron', () => ({ app: { getVersion: () => '1.2.3' } }));
-vi.mock('../../../../src/main/system_info', () => ({ desktopPlatform: () => 'macos' }));
+// 真实取值：darwin 上 `desktopPlatform()` 返回 `mac`（**不是**契约值 `macos`），由
+// `platformWireValue()` 在线上边界换算。这里必须用真值，桩成 'macos' 会把换算缺陷掩盖掉。
+vi.mock('../../../../src/main/system_info', () => ({ desktopPlatform: () => 'mac' }));
 vi.mock('../../../../src/main/i18n', () => ({ getCurrentLang: () => 'zh-CN' }));
 vi.mock('../../../../src/main/features/marketplace', () => ({ apiBase: () => 'https://hub.example' }));
 vi.mock('../../../../src/main/features/hub_account', () => ({ ensureFreshSession: async () => ({ access_token: 'secret-token' }) }));
 
 import {
   ContributionApiError, createSubmission, createWithdrawalRequest, getSubmission,
-  listMine, listWithdrawalRequests, readTerms, withdrawSubmission,
+  clientAppVersion, listMine, listWithdrawalRequests, platformWireValue, readTerms, withdrawSubmission,
 } from '../../../../src/main/features/contribution/hub-client';
 
 const originalFetch = globalThis.fetch;
@@ -46,6 +48,29 @@ describe('current Hub contribution adapter', () => {
     }
     expect(JSON.parse(String(calls[3].init.body))).toEqual({ content_id: 'abcdef123456', reason: 'reason' });
     expect(JSON.parse(String(calls[3].init.body))).not.toHaveProperty('version');
+  });
+
+  /**
+   * 回归（2026-09-28 桌面端真机联调发现）：本机平台标识与契约词表不是同一个词表。
+   *
+   * 缺陷形态：请求头直接透传 `desktopPlatform()`，darwin 上发出 `mac`，而契约 C-00 与
+   * Hub 的接收校验只认 `macos` / `windows`；该闸门是**所有已登录贡献接口**的统一前置，
+   * 于是真实客户端上提交、我的贡献、撤回全部以 `INVALID_REQUEST` 失败。
+   */
+  /**
+   * 回归（2026-09-28 真机联调）：`local_check.checker.version` 必须与 `X-CogSeed-Client-Version`
+   * 同源。此前 IPC 层另读环境变量，源码运行下拿到空值 → 落库成 `0.0.0`，与同一请求的版本头
+   * （`app.getVersion()` = 1.2.3）不一致，运营在后台看到的是错的检查器版本。
+   */
+  it('app 版本可解析，且不回落成 0.0.0', () => {
+    expect(clientAppVersion()).toBe('1.2.3');
+  });
+
+  it('把本机平台标识换算成契约值（mac → macos），且不猜测未知平台', () => {
+    expect(platformWireValue('mac')).toBe('macos');
+    expect(platformWireValue('windows')).toBe('windows');
+    // 契约没有 pc/linux 取值：不猜、原样发出，由 Hub 拒绝比谎报平台诚实
+    expect(platformWireValue('pc')).toBe('pc');
   });
 
   it('sends manifest first, package second, and rejects unfrozen fields', async () => {

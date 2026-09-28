@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { app } from 'electron';
 
 import { createLogger } from '../../logger';
-import { desktopPlatform } from '../../system_info';
+import { desktopPlatform, type DesktopPlatform } from '../../system_info';
 import { getCurrentLang } from '../../i18n';
 import { apiBase } from '../marketplace';
 import { ensureFreshSession } from '../hub_account';
@@ -34,14 +34,40 @@ export class ContributionApiError extends Error {
 
 type JsonObject = Record<string, unknown>;
 
-function requestHeaders(token?: string, requestId = randomUUID()): Record<string, string> {
+/**
+ * 契约 C-00 的 `X-CogSeed-Platform` **只取** `macos` / `windows`（OpenAPI 的 enum 同）；
+ * 而本机平台标识来自 `system_info.desktopPlatform()`，词表是 `mac` / `windows` / `pc`。
+ * 两者不是同一个词表，必须在这个**上线边界**上显式换算——直接把 `mac` 透传出去会被 Hub
+ * 按 `INVALID_REQUEST`（`平台取值必须是 macos / windows`）拒绝，而且该闸门是**所有已登录
+ * 贡献接口**的统一前置（提交 / 状态回读 / 撤回 / 我的贡献 / 撤回申请都会失败）。
+ *
+ * `pc`（非 mac/win 的源码运行）在契约里没有对应值，这里**不做猜测性映射**：原样发出、
+ * 由 Hub 拒绝，比把一个平台说成另一个平台诚实。
+ */
+export function platformWireValue(platform: DesktopPlatform): string {
+  return platform === 'mac' ? 'macos' : platform;
+}
+
+/**
+ * 客户端 app 版本（`X-CogSeed-Client-Version` 与 `local_check.checker.version` 的**同一来源**）。
+ *
+ * C03 §1：`checker.version` 在客户端侧就是 app 版本。此前 `ipc/contribution.ts` 另读
+ * `process.env.COGSEED_APP_VERSION || npm_package_version`，源码运行下两者都没有，于是
+ * `local_check.checker` 落库成 `0.0.0`，而同一请求的版本头是 `app.getVersion()`（`1.2.0`）——
+ * 同一个请求里两个版本号不一致，运营在后台看到的检查器版本是错的。这里统一到一处。
+ */
+export function clientAppVersion(): string {
   let version = process.env.COGSEED_APP_VERSION || process.env.npm_package_version || '';
   try { version = app.getVersion() || version; } catch { /* tests/pre-ready */ }
+  return version || '0.0.0';
+}
+
+function requestHeaders(token?: string, requestId = randomUUID()): Record<string, string> {
   return {
     Accept: 'application/json',
     'Accept-Language': getCurrentLang() || 'en',
-    'X-CogSeed-Client-Version': version || '0.0.0',
-    'X-CogSeed-Platform': desktopPlatform(),
+    'X-CogSeed-Client-Version': clientAppVersion(),
+    'X-CogSeed-Platform': platformWireValue(desktopPlatform()),
     'X-CogSeed-Request-ID': requestId,
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
