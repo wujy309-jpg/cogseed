@@ -4,7 +4,7 @@
 
 > 本文是 `CONTRIBUTING.md` 的中文翻译。如中英文内容不一致，以英文版为准。
 
-感谢你有兴趣为 CogSeed 做贡献！本项目采用开放方式开发，欢迎提交 Bug
+感谢你有兴趣为 CogSeed 做贡献！公仓提供经过审核的发布快照，日常研发在私仓进行。欢迎提交 Bug
 报告、修复、新功能、文档、测试和示例。
 
 ## 行为准则
@@ -15,7 +15,7 @@
 ## 开始之前
 
 体验发布版源码，请按 [README](./README.zh-CN.md#从源码运行) 操作。
-以下步骤用于从最新 `develop` 开始贡献开发。
+以下步骤用于从最新公仓 `main` 开始贡献开发。
 
 CogSeed 主要面向 macOS 和 Windows 开发。在开始之前，请安装 Git、Node.js
 24.x 和 npm 11.11.0。平台要求和环境配置详见
@@ -39,10 +39,10 @@ CogSeed 主要面向 macOS 和 Windows 开发。在开始之前，请安装 Git�
    git config user.email "<github-user-id>+<username>@users.noreply.github.com"
    ```
 
-3. 从最新的 `develop` 创建一个短期分支：
+3. 从最新的公仓 `main` 创建一个短期分支：
 
    ```bash
-   git switch -c dev/<your-github-username> upstream/develop
+   git switch -c dev/<your-github-username> upstream/main
    ```
 
 4. 安装锁定版本的依赖。`npm ci` 还会准备原生模块并下载开发所需资源，
@@ -83,7 +83,7 @@ CogSeed 主要面向 macOS 和 Windows 开发。在开始之前，请安装 Git�
 ## 修改要求
 
 - 保持改动聚焦，优先提交规模较小、便于评审的 Pull Request。
-- 遵守 [AGENTS.md](./AGENTS.md) 中的仓库结构和工程边界。
+- 遵守 [开发指南](./docs/DEVELOPMENT.zh-CN.md#开发规则) 中的仓库结构和工程边界。
 - 对修改的行为补充或更新测试；适用时应覆盖失败和恢复路径。
 - 打开 Pull Request 前，运行 `npm run typecheck`、`npm run lint`、
   `npm test` 和 `npm run readme:check`。
@@ -100,7 +100,8 @@ CogSeed 主要面向 macOS 和 Windows 开发。在开始之前，请安装 Git�
 完整目录结构、校验命令、评审边界和候选状态见
 [社区 Skill 贡献指南](./community/skills/README.zh-CN.md)。
 
-合并到 `community/skills/` 只表示仓库已评审候选，不代表已验证导入、发布到 Hub、
+接受到 `community/skills/` 只表示仓库已评审候选并导入私仓，随后续快照公开；
+不代表已验证应用导入、发布到 Hub、
 随正式版本分发或获准用于生产环境。
 
 ## 开发者原创声明（DCO）
@@ -138,43 +139,30 @@ git commit --amend --no-edit --signoff
 
 ## Pull Request
 
-- 外部贡献应提交到 `develop`，不要提交到 `main` 或 `cicd`。
+- 外部贡献应提交到公仓的 `main` 分支。
 - 如有对应 Issue，请在 Pull Request 中引用。
 - 说明改动内容、修改原因和验证方式。
 - 不要在差异中混入生成产物或无关格式调整。
-- 及时响应评审意见，并保持分支与 `upstream/develop` 同步。
+- 及时响应评审意见，并保持分支与 `upstream/main` 同步。
 
 首次贡献者的工作流可能显示为等待维护者批准。这是来自 Fork 的 Pull Request
 的正常行为，并不表示检查失败。
 
-提交到 `develop` 的 Pull Request 必须通过：
+评审前请运行前述验证命令及本次修改相关的测试。公仓 CI 以实际配置的工作流
+和必需状态检查为准；文档不能证明检查已经执行或通过。请明确标注未验证的平台。
 
-- `check-commit-emails`：防止个人邮箱进入公开历史；
-- `static-gates`：运行类型检查、Lint、设计 Token、内置资源清单、README
-  链接和跳过测试策略检查；
-- `affected-tests`：根据 Pull Request 差异和模块依赖图选择相关测试。
+## 贡献回流
 
-Windows 测试分片也会运行。虽然它们目前不是必需的状态检查，但出现红灯时
-仍需调查。改动合入 `develop` 后会再次运行完整测试；从 `develop` 提升到
-`cicd` 时会执行完整的 macOS、Windows 和合规发布门禁。
+公仓 `main` 在发版时接收审核通过的源码快照。外部 PR 面向该分支评审；
+接受的补丁由维护者导入私仓开发分支，并保留公仓 PR 引用、作者署名和 DCO 签署。
+公仓 PR 以“已导入”说明关闭，不直接合并到公仓 `main`。
 
-## 分支与合并规则
+进入研发不等于已经发版。只有对应版本通过发布门禁，改动才会随之后的公开快照
+出现；维护者在版本可用时补充公开 Release 链接。内部评审记录及私仓提交历史
+不会复制到公仓。
 
-CogSeed 使用三个长期分支：
-
-- `main`：受保护的公开发布分支，应始终保持可发布状态。
-- `develop`：受保护的集成分支，也是功能开发和外部贡献 Pull Request 的
-  目标分支。
-- `cicd`：受保护的发布门禁；从 `develop` 提升后，会先通过完整验证和合规
-  流程，才允许创建发布标签。
-
-贡献者的短期分支默认使用 `dev/<your-github-username>`。发布维护者可以创建
-`release/vX.Y` 分支处理仅包含补丁的版本工作。
-
-合并前至少需要一名 CODEOWNER 批准，并通过所有必需状态检查。Pull Request
-作者不能批准自己的改动；只有具备写入权限的维护者才能在满足要求后合并。
-维护者通过 GitHub 合并时，必须启用 **Keep my email addresses private**，
-确保生成的合并提交也使用 noreply 地址。
+贡献者从 `upstream/main` 创建分支，并按公仓 PR 的反馈修改。不要自行向公仓
+合入私仓分支或推送发布快照。
 
 ### 提交消息
 

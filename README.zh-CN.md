@@ -252,7 +252,7 @@ CogSeed 是一个适合扩展的 Agent Workspace。按你想做的事选择入�
 
 | 方向 | 你能得到什么 | 从哪里开始 | 成熟度 |
 |---|---|---|---|
-| **Skill** | 提交可复用 Skill 候选 | [社区 Skill 最小试点](./community/skills/README.zh-CN.md)：目录模板、评测案例、提交流程 | 社区试点；仓库合并、应用导入与分发是独立环节 |
+| **Skill** | 提交可复用 Skill 候选 | [社区 Skill 最小试点](./community/skills/README.zh-CN.md)：目录模板、评测案例、提交流程 | 社区试点；贡献接受、应用导入与分发是独立环节 |
 | **Agent Adapter** | 接入一种新的本地 Agent | `src/main/features/local_agents/backends/` 下的现有实现 | 源码扩展 |
 | **MCP / 连接器** | 接入一个外部服务 | 应用内直接配置；源码扩展见 `src/main/features/connectors/` | 应用内接入 / 源码扩展 |
 | **产品贡献** | 修复功能或补足体验 | [`good first issue`](https://github.com/bonc-ai/cogseed/labels/good%20first%20issue) · [`help wanted`](https://github.com/bonc-ai/cogseed/labels/help%20wanted) · [`documentation`](https://github.com/bonc-ai/cogseed/labels/documentation) | 持续维护 |
@@ -270,15 +270,15 @@ npm ci
 ./run.sh        # macOS / Linux
 ```
 
-Windows 使用 `run.cmd`。环境要求（Node.js 24.x、npm 11.11.0）、开发命令和打包说明见[中文开发指南](./docs/DEVELOPMENT.zh-CN.md)，工程边界见 [AGENTS.md](./AGENTS.md)。
+Windows 使用 `run.cmd`。环境要求（Node.js 24.x、npm 11.11.0）、开发命令和打包说明见[中文开发指南](./docs/DEVELOPMENT.zh-CN.md)，其中也包含工程边界。
 
 开发契约：Renderer 只能通过允许列表中的 `window.cogseed` 桥接访问主进程；开发启动器把源码版状态隔离在 `.cogseed` 根目录下；经过校验的应用深链使用 `cogseed://` 协议。提交源码改动前请运行 `npm test`，完整边界与验证命令见[中文开发指南](./docs/DEVELOPMENT.zh-CN.md)。
 
 ### 提交贡献
 
-如需参与开发，请按[中文贡献指南](./CONTRIBUTING.zh-CN.md)从最新 `develop` 创建开发分支。
+如需参与开发，请按[中文贡献指南](./CONTRIBUTING.zh-CN.md)从最新公仓 `main` 创建开发分支。
 
-Pull Request 请提交到 `develop` 分支，使用 DCO 签署提交。详细流程、Git 身份要求和评审规则见[中文贡献指南](./CONTRIBUTING.zh-CN.md)；如中英文内容不一致，以英文版为准。
+Pull Request 请提交到公仓 `main` 分支，使用 DCO 签署提交。详细流程、Git 身份要求和评审规则见[中文贡献指南](./CONTRIBUTING.zh-CN.md)；如中英文内容不一致，以英文版为准。
 
 ---
 

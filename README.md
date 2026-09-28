@@ -252,7 +252,7 @@ CogSeed is an extensible Agent Workspace. Choose an entry point based on what yo
 
 | Direction | What you can do | Where to start | Maturity |
 |---|---|---|---|
-| **Skill** | Submit a reusable Skill candidate | [Community Skill pilot](./community/skills/README.md): directory template, evaluation cases, and submission process | Community pilot; repository merge, app import, and distribution are separate stages |
+| **Skill** | Submit a reusable Skill candidate | [Community Skill pilot](./community/skills/README.md): directory template, evaluation cases, and submission process | Community pilot; contribution acceptance, app import, and distribution are separate stages |
 | **Agent Adapter** | Connect a new local agent | Existing implementations in `src/main/features/local_agents/backends/` | Source extension |
 | **MCP / connector** | Connect an external service | Configure it in the app; source extensions start in `src/main/features/connectors/` | In-app integration / source extension |
 | **Product contribution** | Fix features or improve the experience | [`good first issue`](https://github.com/bonc-ai/cogseed/labels/good%20first%20issue) · [`help wanted`](https://github.com/bonc-ai/cogseed/labels/help%20wanted) · [`documentation`](https://github.com/bonc-ai/cogseed/labels/documentation) | Actively maintained |
@@ -270,7 +270,7 @@ npm ci
 ./run.sh        # macOS / Linux
 ```
 
-On Windows, use `run.cmd`. See the [Development Guide](./docs/DEVELOPMENT.md) for requirements (Node.js 24.x and npm 11.11.0), development commands, and packaging instructions, and [AGENTS.md](./AGENTS.md) for engineering boundaries.
+On Windows, use `run.cmd`. See the [Development Guide](./docs/DEVELOPMENT.md) for requirements (Node.js 24.x and npm 11.11.0), development commands, and packaging instructions, including its engineering boundaries.
 
 Developer contract: the renderer reaches main only through the allow-listed
 `window.cogseed` bridge, development launchers keep source-build state under an
@@ -281,9 +281,9 @@ verification commands.
 
 ### Contributing
 
-To contribute, follow the [Contribution Guide](./CONTRIBUTING.md) and create a development branch from the latest `develop`.
+To contribute, follow the [Contribution Guide](./CONTRIBUTING.md) and create a development branch from the latest public `main`.
 
-Submit pull requests to `develop` and sign off your commits under the DCO. See the [Contribution Guide](./CONTRIBUTING.md) for the workflow, Git identity requirements, and review rules. If the Chinese and English contribution guides differ, the English version takes precedence.
+Submit pull requests to the public `main` and sign off your commits under the DCO. See the [Contribution Guide](./CONTRIBUTING.md) for the workflow, Git identity requirements, and review rules. If the Chinese and English contribution guides differ, the English version takes precedence.
 
 ---
 

@@ -191,7 +191,7 @@ development commands.
 
 ### Install
 
-To try a release from source, use the version-specific commands in the [README](../README.md#run-from-source). For contribution development, clone your fork and create a branch from the latest `upstream/develop` as described in [CONTRIBUTING.md](../CONTRIBUTING.md), then run:
+To try a release from source, use the version-specific commands in the [README](../README.md#run-from-source). For contribution development, clone your fork and create a branch from the latest `upstream/main` as described in [CONTRIBUTING.md](../CONTRIBUTING.md), then run:
 
 ```bash
 npm ci
@@ -265,20 +265,37 @@ and resource suites reliably.
 
 ### Pull Request Verification
 
-Pull requests targeting `develop` run three required checks:
+Run `npm run typecheck`, `npm run lint`, `npm test`, and `npm run readme:check`,
+plus the checks relevant to your change. Describe results and unverified
+platforms in the PR. Public CI is governed by its actual repository settings;
+these instructions do not assert that a particular remote check is enabled.
 
-- `check-commit-emails` validates the complete commit record;
-- `static-gates` runs typecheck, lint, design-token, built-in manifest, README,
-  and skipped-test checks;
-- `affected-tests` selects relevant tests through the module dependency graph.
+Submit external PRs against public `main`. Reviewed patches are imported into
+private development, preserving author attribution and DCO sign-offs. The
+public PR is closed with the import result; accepted changes appear in a later
+release snapshot. See [Contributing](../CONTRIBUTING.md#contribution-integration).
 
-Windows test shards also run on the pull request. They currently report real
-failures without acting as required status checks, so investigate and explain
-any red shard before merge. After a change lands on `develop`, the nightly
-workflow runs the full suite for that exact branch tip. Promotion to `cicd`
-runs the complete release verification and compliance gates.
+The public test suite covers application and build-tool contracts. The private
+repository additionally runs its internal governance checks under `test/private/`;
+those checks and the internal records they verify are not part of public exports.
 
 ### Development Rules
+
+- Shared Renderer changes must reuse existing APIs; do not raise the raw-control baseline in `test/renderer/shared-ui-adoption-guard.test.ts` to bypass a regression.
+- Renderer layers use the named `--z-*` tokens; keyboard shortcuts must ignore IME composition.
+- Visible strings use locale files and `t(...)`; dynamic chrome updates on `i18n-change`.
+- File tools enforce path sandboxing, and tool results use the existing result caps.
+- New npm dependencies require maintainer discussion before they are added.
+
+- Shared Renderer APIs are grouped by role; extend these seams instead of adding page-local variants:
+  - Actions and forms: `uiButton(...)`, `uiIconButton(...)`, `uiInput(...)`, `uiCheckbox(...)`, `uiSwitch(...)`, `uiTextarea(...)`, `uiSelect(...)`, `uiDateRangePicker(...)`, `uiField(...)`, and `uiForm(...)`.
+  - Feedback and decisions: `uiEmptyState(...)`, `uiToast(...)`, `uiAlert(...)`, `uiConfirm(...)`, `uiConfirmDanger(...)`, `uiChoice(...)`, and `uiPrompt(...)`.
+  - Navigation and shell: `uiSegmentedControl(...)` for compact filters, `uiTabs(...)` plus `hydrateUiTabs(...)` for same-object views, `uiPageHeader(...)`, `uiSidebarTools(...)`, `uiUserMenuTrigger(...)`, and `uiUserMenuPanel(...)`.
+  - Data and status: `uiTag(...)` for non-interactive metadata, `uiChip(...)` for interactive filters, `uiBadge(...)` for compact counts or labels, `uiStatusPill(...)` and `uiStatusDot(...)` for state, `uiProgressBar(...)` for measurable work, and `uiSkeleton(...)` for unknown-duration content loading.
+  - Structure: `uiCard(...)` adopts business-owned card content into the shared shell, `uiResourceCard(...)` renders the standard titled resource card, and `uiResourceGrid(...)` owns the responsive card grid.
+  - Structured data: `uiDataTable(...)` for native tabular data, `uiAccordion(...)` for independent disclosure sections, and `uiTree(...)` plus `hydrateUiTrees(...)` for hierarchical navigation with shared keyboard behavior. Business-specific graph or mind-map canvases remain page-owned.
+  - Overlays: `uiModal(...)` for new decision dialogs and `uiModalController(...)` when adopting existing business-owned dialog DOM; `uiDrawer(...)` for new side panels and `uiDrawerController(...)` when adopting an existing business-owned drawer without changing its data or event wiring.
+  - Icons: `uiIconHtml(...)` for generated markup and `hydrateUiIcons(...)` for existing DOM placeholders.
 
 - Keep IPC handlers focused on validation and feature delegation.
 - Keep renderer code as classic scripts and register new files in `src/renderer/index.html`.
@@ -314,10 +331,10 @@ scripts/restart-cogseed.sh
 ### Release-oriented builds
 
 The repository exposes `npm run build:mac` and `npm run build:win` for
-platform build diagnostics. Official release artifacts are produced through
-the protected `cicd` and tag-triggered GitHub workflows, which enforce the
-required verification, signing, compliance, and release gates. Do not present
-a local build as signed, notarized, accepted, or released.
+platform build diagnostics. Official releases require maintainer-controlled
+source verification, platform builds, signing where applicable, and publication
+checks. These publishing workflows are not part of the public source export.
+Do not present a local build as signed, notarized, accepted, or released.
 
 ## Troubleshooting
 

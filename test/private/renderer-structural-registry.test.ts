@@ -12,10 +12,11 @@ describe('Renderer structural registry governance', () => {
   const registryPath = 'docs/renderer-structural-registry.md';
   const registry = read(registryPath);
 
-  it('keeps the registry referenced by injected rules, the component Skill and the PR template', () => {
+  it('keeps internal registry pointers and gives public contributors a self-contained guide', () => {
     expect(read('AGENTS.md')).toContain(registryPath);
     expect(read('.agents/skills/cogseed-component-change/SKILL.md')).toContain(registryPath);
-    expect(read('.github/PULL_REQUEST_TEMPLATE.md')).toContain(registryPath);
+    expect(read('.github/PULL_REQUEST_TEMPLATE.md')).toContain('docs/DEVELOPMENT.md');
+    expect(read('.github/PULL_REQUEST_TEMPLATE.md')).not.toContain(registryPath);
   });
 
   it('records authority, durable statuses and the initial KB decisions', () => {

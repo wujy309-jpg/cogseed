@@ -732,9 +732,6 @@ describe('connector detail view — Tencent Meeting (registry CONN-PV-001)', () 
     expect(source).toContain('uiCard({');
     expect(source).toContain('uiStatusPill({');
     expect(source).toContain("uiIconHtml('check-circle'");
-    // The detail view is registered as a proposal in the same change.
-    expect(readModule('docs/renderer-structural-registry.md')).toContain('`CONN-PV-001`');
-    expect(readModule('docs/renderer-structural-registry.md')).toContain('**Status**: `Proposed`');
   });
 
   it('relaxes the shared card width cap with enough specificity to survive stylesheet order', () => {

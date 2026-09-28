@@ -4,7 +4,6 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
-import { parse } from 'yaml';
 
 const require = createRequire(import.meta.url);
 const packageJson = require('../../package.json') as { scripts?: Record<string, string> };
@@ -23,19 +22,10 @@ const verifier = require('../../scripts/verify-packaged-stt-win.cjs') as {
 };
 
 describe('Windows packaged STT smoke', () => {
-  it('runs blocking packaged launch and fake-microphone verifiers before uploading the Windows artifact', () => {
+  it('exposes the packaged STT verifier through the package command', () => {
     const scriptPath = path.resolve('scripts/verify-packaged-stt-win.cjs');
-    const workflow = parse(fs.readFileSync(path.resolve('.github/workflows/ci.yml'), 'utf8'), { version: '1.2' });
-    const steps = workflow.jobs['verify-windows'].steps as Array<{ run?: string; continueOnError?: boolean }>;
-    const buildIndex = steps.findIndex((step) => step.run === 'npm run build:win');
-    const launchIndex = steps.findIndex((step) => step.run === 'npm run verify:package:launch');
-    const smokeIndex = steps.findIndex((step) => step.run === 'npm run verify:package:stt:win');
-
     expect(fs.existsSync(scriptPath)).toBe(true);
     expect(packageJson.scripts?.['verify:package:stt:win']).toBe('node scripts/verify-packaged-stt-win.cjs');
-    expect(launchIndex).toBe(buildIndex + 1);
-    expect(smokeIndex).toBe(launchIndex + 1);
-    expect(steps[smokeIndex].continueOnError).toBeUndefined();
   });
 
   it('pins the licensed Mandarin speech fixture used by Chromium fake capture', () => {
