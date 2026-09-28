@@ -24,10 +24,10 @@ const WEIGHTS_ID = 'weights';
 
 /** 内置默认权重（data-model §4；数值不做验收，人工走查为准）。 */
 export const DEFAULT_RANKING_WEIGHTS: Readonly<RankingWeights> = Object.freeze({
-  relevance: 1.0,
-  adoption: 1.0,
-  scene: 0.8,
-  maturity: 0.4,
+  relevance: 2.0,
+  adoption: 0.3,
+  scene: 0.5,
+  maturity: 0.2,
 });
 
 export type RankingWeightsSource = 'configured' | 'default' | 'invalid-fallback';

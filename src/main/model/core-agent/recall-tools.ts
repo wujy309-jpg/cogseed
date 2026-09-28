@@ -6,10 +6,8 @@
  *        （一行一条：id/标题/类型/范围/成熟度/版本/使用次数/适用与禁用场景），
  *        模型自己看着目录判断要用哪几条 —— "目录在手，按需取用"；
  *     ② 带 assetIds → **正文模式**：按目录里的 id 取正文（≤6 条/次，截 2000 字）；
- *     ③ 带 query → **语义检索**（原有行为，2026-08-17 设计）。
- *     正文真正进入模型上下文的资产（②的全部、③的命中结果）会写
- *     `agent_read` 渠道的注入回执 + 使用流水——模型主动取用也算一次真实
- *     带入，否则"模型自选"永远进不了使用统计与升档链。
+ *     ③ 带 query → **混合检索**。搜索结果只记展示；按 ID 读完整正文
+ *     才写 `agent_read` 注入回执与使用流水。
  *
  * 产品设计（2026-08-17）：引用（自动注入 / 预载投影）只显示本空间产生的
  * 资产；全局资产池（所有空间产生的 + 全局资产）的使用交给 LLM 的主动检索
@@ -18,8 +16,6 @@
 
 import type { AgentTool } from '#core-agent';
 import { createLogger } from '../../logger';
-import * as kbEmbed from '../../features/kb_embed';
-import { cosineScore } from '../../features/recall/similarity';
 import { listAbilityAssets, readAbilityAsset } from '../../features/recall/asset-service';
 import {
   evaluateRecallAssetAgentReadEligibility,
@@ -28,16 +24,19 @@ import {
   type RecallAgentReadContext,
 } from '../../features/recall/prompt-injection';
 import { recordInjectionReceipt, listInjectionReceipts } from '../../features/recall/injection-receipt';
-import { recordRecallUsage, listRecallUsage } from '../../features/recall/usage-service';
+import { recordRecallUsage } from '../../features/recall/usage-service';
 import { loadOntologyAssets } from '../../features/recall/projection-knowledge';
-import {
-  formatCatalogEntries,
-  loadAssetUsageStatsCached,
-  type AssetUsageStat,
-} from '../../features/recall/asset-catalog';
+import { formatCatalogEntries } from '../../features/recall/asset-catalog';
 import type { RecallAbilityAssetRecord } from '../../features/recall/candidate-service';
 import { safeId } from '../../storage';
 import { logErrorRef, maskId } from '../../util/log-redact';
+import { catalogMatches } from '../../features/recall/catalog-relevance';
+import {
+  catalogOrderedToolPool,
+  catalogSnapshot,
+  type CatalogContext,
+} from '../../features/recall/catalog-engine';
+import { recordCatalogObservations } from '../../features/recall/catalog-observation';
 
 const log = createLogger('recall-tools');
 
@@ -78,13 +77,6 @@ interface PoolEntry {
   spaceId?: string;
   /** 画像来源标记（user_profile / shared_memory）；正式资产为 undefined。 */
   profileSource?: string;
-}
-
-/** 参与语义匹配的文本：标题 + 正文（前 1200 字）+ 适用范围。 */
-function assetMatchText(asset: PoolEntry): string {
-  return [asset.title, asset.statement ? asset.statement.slice(0, 1_200) : '', asset.scope]
-    .filter(Boolean)
-    .join('\n');
 }
 
 /** 返回给 LLM 的单条资产格式（含引用标记 [asset:<id>]）。 */
@@ -209,7 +201,7 @@ async function recordAgentReads(
     const { lastCatalogRankedForTurn } = await import('../../features/recall/asset-catalog-hint');
     const { explainRanking } = await import('../../features/recall/asset-ranking');
     const rankedThisTurn: ReadonlyMap<string, import('../../features/recall/asset-ranking').RankedAsset>
-      = opts.cid ? lastCatalogRankedForTurn(opts.userId, opts.cid) : new Map();
+      = opts.cid ? lastCatalogRankedForTurn(opts.userId, opts.cid, opts.turnId) : new Map();
     const seenThisTurn = new Set(
       (await listInjectionReceipts(opts.userId, turnId))
         .filter((row) => String(row.channel || '') === 'agent_read')
@@ -245,47 +237,27 @@ async function recordAgentReads(
 function createSearchAbilityAssetsTool(opts: RecallToolsOpts): AgentTool {
   const userId = opts.userId;
 
-  /** 目录模式的推荐排序（specs/012 T018）：与提示词常驻目录（asset-catalog-hint）
-   *  共调 asset-ranking.rankAssets 的**同一份推荐分**——同一次会话里模型在提示词
-   *  与工具目录里看到同一顺序。输入同源：relevance（当轮任务文本余弦，opts.taskText）、
-   *  adoption（applied 回执，loadAssetAdoptionStatsCached）、scene（会话项目/空间）、
-   *  权重（getRankingWeights，每次构建读一次）。
-   *  任何一步拿不到都**保持原序**（目录可用性优先于排序）；检索模式（runSearch）
-   *  不经这里——用户问的是"哪条最相关"，保持纯余弦。 */
+  const catalogContext = (): CatalogContext => ({
+    ...(opts.cid ? { cid: opts.cid } : {}),
+    ...(opts.turnId ? { turnId: opts.turnId } : {}),
+    ...(opts.taskText ? { taskText: opts.taskText } : {}),
+    ...(opts.agentId ? { agentId: opts.agentId } : {}),
+    scene: {
+      ...(opts.projectId ? { turnProjectId: opts.projectId } : {}),
+      ...(opts.spaceId ? { turnSpaceId: opts.spaceId } : {}),
+    },
+  });
+
+  /** The prompt and tool catalog use the same turn snapshot. Live runtime
+   * admission is repeated before returning a tool page. */
   const rankCatalogPool = async (
     pool: RecallAbilityAssetRecord[],
   ): Promise<RecallAbilityAssetRecord[]> => {
     try {
-      const [{ rankAssets }, { getRankingWeights, DEFAULT_RANKING_WEIGHTS }, { catalogRelevanceScores, loadAssetAdoptionStatsCached }] = await Promise.all([
-        import('../../features/recall/asset-ranking'),
-        import('../../features/recall/catalog-ranking-weights'),
-        import('../../features/recall/asset-catalog'),
-      ]);
-      const weights = await getRankingWeights(userId)
-        .catch(() => ({ weights: { ...DEFAULT_RANKING_WEIGHTS }, source: 'default' as const }));
-      const relevance = opts.taskText ? await catalogRelevanceScores(userId, opts.taskText, pool) : new Map<string, number>();
-      const adoption = await loadAssetAdoptionStatsCached(userId).catch(() => new Map<string, never>());
-      const byId = new Map(pool.map((asset) => [asset.id, asset] as const));
-      return rankAssets({
-        assets: pool.map((asset) => ({
-          id: asset.id,
-          maturity: asset.maturity,
-          updatedAt: asset.updatedAt,
-          ...(asset.spaceId ? { spaceId: asset.spaceId } : {}),
-          ...(asset.scopePolicy ? { scopePolicy: asset.scopePolicy } : {}),
-        })),
-        relevance,
-        adoptionStats: adoption,
-        scene: {
-          ...(opts.projectId ? { turnProjectId: opts.projectId } : {}),
-          ...(opts.spaceId ? { turnSpaceId: opts.spaceId } : {}),
-        },
-        weights: weights.weights,
-        weightsSource: weights.source,
-      }).map((row) => byId.get(row.assetId)).filter((asset): asset is RecallAbilityAssetRecord => Boolean(asset));
+      return catalogOrderedToolPool(userId, catalogContext(), pool);
     } catch (err) {
-      log.warn('asset catalog ranking failed; keeping existing order', { userId: maskId(userId), error: logErrorRef(err as Error) });
-      return pool;
+      log.warn('asset catalog build failed', { userId: maskId(userId), error: logErrorRef(err as Error) });
+      return [];
     }
   };
 
@@ -320,16 +292,24 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts): AgentTool {
     // 过滤（准入/筛选）先于排序、排序先于分页（T018）：过滤后的集合整段按同一
     // 推荐分排（只排不裁——顺序变化，条目一条不少），再切页。
     const ordered = await rankCatalogPool(pool);
+    if (!ordered.length) {
+      return `当前条件下没有可用于本任务的认知资产${filterNote ? `（过滤条件：${filterNote}）` : ''}。`;
+    }
     const page = ordered.slice(offset, offset + k);
     if (!page.length) {
       // offset 越界：给"已到末尾 + 总数"的明确语义，而不是一个空页（模型据此
       // 停止翻页，而不是以为目录坏了）。
-      return `已到目录末尾（共 ${pool.length} 条${filterNote ? `；过滤条件：${filterNote}` : ''}，offset 从 0 开始）。用 offset=0 从头看，或去掉过滤条件。`;
+      return `已到目录末尾（共 ${ordered.length} 条${filterNote ? `；过滤条件：${filterNote}` : ''}，offset 从 0 开始）。用 offset=0 从头看，或去掉过滤条件。`;
     }
-    const stats = await loadAssetUsageStatsCached(userId);
-    const more = pool.length - (offset + page.length);
+    const snapshot = await catalogSnapshot(userId, catalogContext());
+    const stats = new Map([...snapshot.adoption].map(([id, stat]) => [id, { count: stat.appliedCount }]));
+    const more = ordered.length - (offset + page.length);
+    await recordCatalogObservations(userId, {
+      turnId: opts.turnId, cid: opts.cid, stage: 'tool_page_shown',
+      assets: page.map((asset) => ({ id: asset.id, version: String(asset.activeVersion || asset.version || '1') })),
+    });
     return [
-      `认知资产目录（当前可用 ${pool.length} 条${filterNote ? `，过滤：${filterNote}` : ''}；本页 ${offset + 1}-${offset + page.length} 条）：`,
+      `认知资产目录（当前可用 ${ordered.length} 条${filterNote ? `，过滤：${filterNote}` : ''}；本页 ${offset + 1}-${offset + page.length} 条；用N次=实际采用）：`,
       '',
       ...formatCatalogEntries(page, stats, offset + 1),
       '',
@@ -385,6 +365,10 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts): AgentTool {
       readEntries.push({ assetId: asset.id, assetVersion: version });
     }
     await recordAgentReads(opts, readEntries);
+    await recordCatalogObservations(userId, {
+      turnId: opts.turnId, cid: opts.cid, stage: 'body_read',
+      assets: readEntries.map((entry) => ({ id: entry.assetId, version: entry.assetVersion })),
+    });
     return {
       content: [
         `已取出 ${readEntries.length} 条资产正文${skipped > 0 ? `（单次最多 ${MAX_READ_IDS} 条，忽略了多余的 ${skipped} 条）` : ''}：`,
@@ -396,7 +380,7 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts): AgentTool {
     };
   };
 
-  /** 语义检索模式（原有行为）：query 必填，embedding 失败降级关键词。 */
+  /** 混合检索模式：query 必填；embedding 失败仍可词面和专名检索。 */
   const runSearch = async (input: Record<string, unknown>): Promise<{ content: string; isError?: boolean }> => {
     const query = String(input.query || '').trim();
     if (!query) return { content: 'search_ability_assets: `query` is required in search mode', isError: true };
@@ -438,43 +422,35 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts): AgentTool {
       return { content: `当前条件下没有可用于语义检索的认知资产（可能没有在用资产、筛选未命中，或当前任务不满足使用规则${profileEntries.length ? `；另有画像记忆 ${profileEntries.length} 条被过滤条件排除` : ''}）`, isError: false };
     }
 
-    let ranked: Array<{ asset: PoolEntry; score: number }>;
-    try {
-      const vectors = await kbEmbed.embedTexts([query, ...pool.map(assetMatchText)]);
-      const queryVector = vectors[0];
-      ranked = pool
-        .map((asset, index) => ({ asset, score: cosineScore(queryVector, vectors[index + 1]) }))
-        .sort((a, b) => b.score - a.score);
-    } catch (err) {
-      // embedding 不可用（模型未加载等）→ 关键词降级：标题/正文包含查询词者优先
-      log.warn('search_ability_assets embed failed; keyword fallback', { userId: maskId(userId), error: logErrorRef(err as Error) });
-      const needle = query.toLowerCase();
-      ranked = pool
-        .map((asset) => ({ asset, score: assetMatchText(asset).toLowerCase().includes(needle) ? 1 : 0 }))
-        .sort((a, b) => b.score - a.score);
-    }
+    const matches = await catalogMatches(userId, query, pool.map((asset) => ({
+      id: asset.id, title: asset.title, statement: asset.statement,
+    })));
+    const ranked = pool
+      .map((asset) => ({ asset, score: matches.get(asset.id)?.score || 0 }))
+      .sort((left, right) => right.score - left.score || left.asset.id.localeCompare(right.asset.id));
 
     const top = ranked.slice(0, k);
     const profileInPool = pool.filter((entry) => entry.profileSource).length;
-    await recordAgentReads(opts, top
-      .filter((item) => !item.asset.profileSource && item.asset.version)
-      .map((item) => ({ assetId: item.asset.id, assetVersion: String(item.asset.version) })));
+    await recordCatalogObservations(userId, {
+      turnId: opts.turnId, cid: opts.cid, stage: 'search_result_shown',
+      assets: top.filter((item) => !item.asset.profileSource && item.asset.version)
+        .map((item) => ({ id: item.asset.id, version: String(item.asset.version) })),
+    });
     return {
       content: [
-        `语义检索候选共 ${pool.length} 条（当前可用正式资产 ${pool.length - profileInPool}${profileInPool ? ` + 独立画像记忆 ${profileInPool}` : ''}${scopeFilter ? `，scope=${scopeFilter}` : ''}${spaceIdFilter ? `，spaceId=${spaceIdFilter}` : ''}），返回最相关的 ${top.length} 条：`,
+        `混合检索候选共 ${pool.length} 条（当前可用正式资产 ${pool.length - profileInPool}${profileInPool ? ` + 独立画像记忆 ${profileInPool}` : ''}${scopeFilter ? `，scope=${scopeFilter}` : ''}${spaceIdFilter ? `，spaceId=${spaceIdFilter}` : ''}），返回最相关的 ${top.length} 条：`,
         '',
         ...top.map((item, index) => `${index + 1}. ${formatAsset(item.asset, item.score)}`),
         '',
-        '引用格式：回答中引用经验时使用 [asset:<id>]，例如 [asset:aa-xxx]。',
-        '需要看某条的完整正文时，用 assetIds 传它的 id 再取一次（最多 6 条/次）。',
+        '搜索结果是线索；采用正式资产前用 assetIds 读取完整正文，并检查适用与禁用条件。',
+        '引用格式：[asset:<id>]，例如 [asset:aa-xxx]。',
       ].join('\n'),
     };
   };
 
   return {
     name: 'search_ability_assets',
-    // 并行安全：embedTexts 在进程级共享 embedder 单例上并发调用安全
-    // （与 kb_search 相同结论，见 kb-tools.ts 注释）。
+    // Catalog embedding calls are isolated from receipt accounting.
     executionMode: 'parallel',
     description: [
       '用户的认知资产目录：本 App 里沉淀下来的规则、模板、方法、偏好——用户自己的经验，不是通用知识。',
@@ -482,8 +458,8 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts): AgentTool {
       '目录摘要、语义检索和按 ID 取正文都会按当前 Agent、项目、空间、来源状态与使用规则做同一套准入检查；不可用于当前任务的正式资产不会出现在目录或检索结果中。',
       '三种用法：①不带参数 = 全量目录（一行一条，可带 type/scope/spaceId 过滤、offset 翻页）；',
       '②assetIds = 取某几条的完整正文（最多 6 条/次）——看到目录里有合适的，取正文再动手；',
-      '③query = 语义检索（覆盖当前可用正式资产 + 遗留用户画像记忆；遗留记忆会标注来源并仅供参考）。',
-      '目录很长或翻页找不动时，直接带 query 语义检索（比翻页快），命中再取正文。',
+      '③query = 语义、词面与专名混合检索（覆盖当前可用正式资产 + 遗留画像记忆；遗留记忆会标注来源并仅供参考）。',
+      '目录很长时带 query 检索；搜索摘要只是线索，采用前须用 assetIds 读完整正文。',
       '如果这次任务确实要长期用到某几条，用 attach_assets_to_task 把它们挂到本任务上（用户会看到一张可撤销的卡）。',
       '引用格式 [asset:<id>]，例如 [asset:aa-xxx]。',
     ].join(''),

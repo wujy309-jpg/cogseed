@@ -18,6 +18,10 @@ vi.mock('../../../../src/main/features/kb_embed', () => ({
     if (embedState.fail) throw new Error('embed unavailable');
     return texts.map(() => new Array(512).fill(0));
   },
+  embedQuery: async () => {
+    if (embedState.fail) throw new Error('embed unavailable');
+    return new Array(512).fill(0);
+  },
 }));
 
 beforeEach(async () => {
@@ -208,13 +212,18 @@ describe('recall search_ability_assets tool', () => {
     expect(await receipts.listInjectionReceipts(TEST_UID)).toHaveLength(6);
   });
 
-  it('语义检索模式同样记 agent_read（检索结果进了上下文就算带入）', async () => {
+  it('检索结果只记展示；按 ID 取正文后才记 agent_read', async () => {
     const asset = await seedAsset('竞品调研应先明确可比维度（范围/功能/定价/体验）再收集证据。', { scope: 'general' });
     const { createRecallTools } = await import('../../../../src/main/model/core-agent/recall-tools');
     const receipts = await import('../../../../src/main/features/recall/injection-receipt');
     const [tool] = createRecallTools({ userId: TEST_UID, turnId: 'turn-search001' });
     const result = await tool.execute({ query: '竞品调研' }, {} as never);
     expect(result.content).toContain('竞品调研');
+    expect(await receipts.listInjectionReceipts(TEST_UID, 'turn-search001')).toHaveLength(0);
+    const observationPath = path.join(tmpDir, TEST_UID, 'local', 'recall', 'catalog-observations', `${new Date().toISOString().slice(0, 7)}.jsonl`);
+    const events = fs.readFileSync(observationPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as { assetId: string; stage: string });
+    expect(events).toContainEqual(expect.objectContaining({ assetId: asset.id, stage: 'search_result_shown' }));
+    await tool.execute({ assetIds: [asset.id] }, {} as never);
     const rows = await receipts.listInjectionReceipts(TEST_UID, 'turn-search001');
     expect(rows.some((row) => row.assetId === asset.id && row.channel === 'agent_read')).toBe(true);
   });
@@ -280,7 +289,7 @@ describe('recall search_ability_assets tool', () => {
     expect(oneLine.length).toBeLessThanOrEqual(80);
   });
 
-  it('使用次数口径（O5）：目录"用N次"与流水一致；同回合重复取用只记一次，跨回合各记一次', async () => {
+  it('目录采用次数与带入流水分开；同回合重复正文读取只记一次', async () => {
     const asset = await seedAsset('口径核对：目录里的使用次数必须与使用流水一致。', { scope: 'general' });
     const { createRecallTools } = await import('../../../../src/main/model/core-agent/recall-tools');
     const usage = await import('../../../../src/main/features/recall/usage-service');
@@ -289,13 +298,13 @@ describe('recall search_ability_assets tool', () => {
     await tool.execute({ assetIds: [asset.id] }, {} as never);
     await tool.execute({ assetIds: [asset.id] }, {} as never);   // 同回合第二次取用
     const catalog1 = await tool.execute({ k: 30 }, {} as never);
-    expect(catalog1.content).toContain('用1次');
+    expect(catalog1.content).toContain('没用过');
     expect(await usage.listRecallUsage(TEST_UID, asset.id)).toHaveLength(1);
 
     const [nextTurn] = createRecallTools({ userId: TEST_UID, turnId: 'turn-count0002' });
     await nextTurn.execute({ assetIds: [asset.id] }, {} as never);
     const catalog2 = await nextTurn.execute({ k: 30 }, {} as never);
-    expect(catalog2.content).toContain('用2次');
+    expect(catalog2.content).toContain('没用过');
     expect(await usage.listRecallUsage(TEST_UID, asset.id)).toHaveLength(2);
   });
 
@@ -383,6 +392,17 @@ describe('recall search_ability_assets tool', () => {
     expect(rows.filter((row) => String(row.assetId).startsWith('onto-'))).toHaveLength(0);
   });
 
+  it('被准入拦下的 personal 资产不会通过 onto 虚拟条目绕回检索结果', async () => {
+    const asset = await seedAsset('秘密画像规则：只允许正式评审使用。', { scope: 'general' });
+    const { updateRecallJsonRecord } = await import('../../../../src/main/features/recall/store');
+    await updateRecallJsonRecord(TEST_UID, 'ability-assets', asset.id, (current) => ({ ...(current || {}), type: 'personal' } as never));
+    const { createRecallTools } = await import('../../../../src/main/model/core-agent/recall-tools');
+    const [tool] = createRecallTools({ userId: TEST_UID, taskText: '内部快速对齐' });
+    const result = await tool.execute({ query: '秘密画像规则' }, {} as never);
+    expect(result.content).not.toContain('秘密画像规则');
+    expect(result.content).not.toContain(`[asset:${asset.id}]`);
+  });
+
   it('归档/已删除资产不进目录，目录头计数与实际条目一致', async () => {
     const kept = await seedAsset('保留资产：会出现在目录里。', { scope: 'general' });
     const archived = await seedAsset('归档资产：不该出现在目录里。', { scope: 'general' });
@@ -420,27 +440,24 @@ describe('recall search_ability_assets tool', () => {
     expect(noTurn.get(asset.id)?.count).toBe(1);
   });
 
-  it('常驻目录超限（可扩展性）：>30 条时退回"一行提示 + 工具"，不再整份进提示词', async () => {
+  it('常驻目录按 token 预算截取，完整资产池仍可由工具分页访问', async () => {
     for (let index = 0; index < 31; index += 1) {
       await seedAsset(`超限用例第 ${index + 1} 条：库里很大时提示词不应被目录撑爆。`, { scope: 'general' });
     }
     const hint = await import('../../../../src/main/features/recall/asset-catalog-hint');
     hint.resetAssetCatalogHintCacheForTest();
     const block = await hint.assetCatalogForPrompt(TEST_UID);
-    expect(block).toContain('31 reusable assets');
-    // 大库也给一段目录（前 20 条内联）+ 一行"还有 N 条"的翻页提示；
-    // 只给一句"去调工具"的提示，真机样本证明模型多半不会去查。
+    expect(block).toContain('31 assets are available');
     const inline = block.split('\n').filter((line) => /^\d+\. \[asset:/.test(line));
-    expect(inline).toHaveLength(20);
-    expect(block).toContain('还有 11 条');
-    // 大库两跳策略（2026-09-22 快赢）：超限行提示 query 语义检索优先于翻页。
+    expect(inline.length).toBeGreaterThan(0);
+    expect(inline.length).toBeLessThanOrEqual(12);
     expect(block).toContain('query');
     expect(block).toContain('search_ability_assets');
-    // 预算：20 条 × ~110 + 头尾，仍远小于注入块上限。
+    // 模型看到索引而非整库正文。
     expect(block.length).toBeLessThanOrEqual(3000);
   });
 
-  it('常驻目录（可发现性）：小库给完整目录且 ≤ 30 条，超限退回一行提示，空池不给块；60 秒缓存', async () => {
+  it('常驻目录小库可发现，空池不产块，每次构建重新检查准入', async () => {
     const hint = await import('../../../../src/main/features/recall/asset-catalog-hint');
     hint.resetAssetCatalogHintCacheForTest();
     expect(await hint.assetCatalogForPrompt(TEST_UID)).toBe('');
@@ -450,18 +467,18 @@ describe('recall search_ability_assets tool', () => {
     }
     hint.resetAssetCatalogHintCacheForTest();
     const block = await hint.assetCatalogForPrompt(TEST_UID);
-    expect(block).toContain('Asset catalog (3 reusable assets');
+    expect(block).toContain('Asset catalog: 3 assets are available');
     expect(block).toContain('[asset:');
     expect(block.split('\n').filter((line) => /^\d+\. \[asset:/.test(line))).toHaveLength(3);
 
     // 预算：常驻目录不得把提示词撑爆（≤ 30 条 × ~110 字符 + 头尾 ≈ 3.6KB）。
     expect(block.length).toBeLessThanOrEqual(3600);
 
-    // 缓存：同一用户 60 秒内不重算（第二次调用不读盘也不改变结果）。
+    // 同样输入产生同样文本；准入不会复用旧文本。
     const cached = await hint.assetCatalogForPrompt(TEST_UID);
     expect(cached).toBe(block);
     const afterTtl = await hint.assetCatalogForPrompt(TEST_UID, Date.now() + 61_000);
-    expect(afterTtl).toBe(block);   // 内容一致，但走的是重算路径
+    expect(afterTtl).toBe(block);
   });
 
   it('目录体量与常用词（效率）：常驻目录复用同一份紧凑格式，不产生第二套写法', async () => {

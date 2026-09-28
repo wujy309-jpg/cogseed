@@ -120,21 +120,15 @@ describe('反漂移源码级断言（T026）', () => {
       if (rel === path.join('features/recall/injection-receipt.ts')) continue;
       expect(src).not.toContain('export const RANKING_FACTORS');
     }
-    // 两个消费方都调 rankAssets（同序的前提）。
+    // 排序只由目录引擎调用；提示词与工具共用回合快照。
     const hint = read('features/recall/asset-catalog-hint.ts');
     const tools = read('model/core-agent/recall-tools.ts');
-    expect(hint).toContain('rankAssets(');
-    expect(tools).toContain('rankAssets(');
-    // 消费方不得长出自己的目录排序：hint 的唯一 .sort 是复用提示按时间取
-    // 最新（recentAttachmentLine，排投影不排资产）；tools 的两处 .sort 都是
-    // 语义检索（runSearch 纯余弦，spec 明确不经推荐排序）。出现新的 sort
-    // 就得先来这里改基线并说明它不是第二套目录排序。
-    const hintSorts = [...hint.matchAll(/\.sort\(([^\n]{0,90})/g)].map((m) => m[1]);
-    expect(hintSorts).toHaveLength(1);
-    expect(hintSorts[0]).toContain('decidedAt'); // 复用提示取最新投影，不是资产目录排序
-    const toolSorts = [...tools.matchAll(/\.sort\(([^\n]{0,60})/g)].map((m) => m[1]);
-    expect(toolSorts).toHaveLength(2);
-    for (const sortSrc of toolSorts) expect(sortSrc).toContain('b.score - a.score'); // 余弦/关键词分，非推荐分
+    const engine = read('features/recall/catalog-engine.ts');
+    expect(engine).toContain('rankAssets(');
+    expect(hint).not.toContain('rankAssets(');
+    expect(tools).not.toContain('rankAssets(');
+    expect(hint).toContain('catalogSnapshot(');
+    expect(tools).toContain('catalogOrderedToolPool(');
     // bus.ts 的回执写侧只查表透传，不重算（不出现 rankAssets 调用）。
     const bus = read('features/group_chat/bus.ts');
     expect(bus).not.toContain('rankAssets(');
@@ -248,9 +242,9 @@ describe('回执 ranking 写侧（T019 行为级钉子）', () => {
     // 当轮目录构建（无任务文本 → relevance 缺席）。
     const hint = await import('../../../../src/main/features/recall/asset-catalog-hint');
     hint.resetAssetCatalogHintCacheForTest();
-    await hint.assetCatalogForPrompt(TEST_UID, 'conv-guard-1', Date.now(), '', { turnSpaceId: 'sp-guard-1' });
+    await hint.assetCatalogForPrompt(TEST_UID, 'conv-guard-1', Date.now(), '', { turnSpaceId: 'sp-guard-1' }, undefined, 'turn-guard-a');
     // ranked 视图访问器：同键可查，异会话为空（不串台）。
-    const view = hint.lastCatalogRankedForTurn(TEST_UID, 'conv-guard-1');
+    const view = hint.lastCatalogRankedForTurn(TEST_UID, 'conv-guard-1', 'turn-guard-a');
     expect(view.size).toBe(1);
     const rankedRow = view.get(asset.id)!;
     expect(rankedRow.factors.map((f) => f.name)).toEqual(['adoption', 'maturity']);

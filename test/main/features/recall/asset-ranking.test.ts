@@ -197,7 +197,7 @@ describe('asset-ranking（T006：排序唯一处）', () => {
     expect(rawOf.has('aa-none')).toBe(false);
   });
 
-  it('adoption：log 压长尾 + 7 天近度加成；0 次是在场的真实信号（非缺席）', async () => {
+  it('adoption：中性先验、饱和上限与平滑近度；零次仍是在场信号', async () => {
     const { rankAssets } = await import('../../../../src/main/features/recall/asset-ranking');
     const assets = [mk({ id: 'aa-0' }), mk({ id: 'aa-3' }), mk({ id: 'aa-8' }), mk({ id: 'aa-100' })];
     const stats = new Map([
@@ -207,16 +207,28 @@ describe('asset-ranking（T006：排序唯一处）', () => {
     ]);
     const ranked = rankAssets({ assets, weights: W, adoptionStats: stats, now: NOW });
     const rawOf = new Map(ranked.flatMap((row) => row.factors.filter((f) => f.name === 'adoption').map((f) => [row.assetId, f.raw])));
-    expect(rawOf.get('aa-0')).toBe(0);
-    // log2(1+3)/log2(9) = 2/3.16993 ≈ 0.63093（30 天前采用，无近度加成）。
-    expect(rawOf.get('aa-3')).toBeCloseTo(0.63093, 5);
-    // 8 次本已到 1.0，近度加成封顶仍是 1.0。
-    expect(rawOf.get('aa-8')).toBe(1);
-    expect(rawOf.get('aa-100')).toBe(1);
+    expect(rawOf.get('aa-0')).toBe(0.5);
+    expect(rawOf.get('aa-3')).toBeGreaterThan(0.8);
+    expect(rawOf.get('aa-8')).toBeGreaterThan(0.9);
+    expect(rawOf.get('aa-100')).toBe(0.9);
     // 零次资产 adoption 在场（factors 里有），不在 excluded 里。
     const zero = ranked.find((row) => row.assetId === 'aa-0')!;
     expect(zero.factors.some((f) => f.name === 'adoption')).toBe(true);
     expect(zero.excluded).not.toContain('adoption');
+  });
+
+  it('明确 contradicted 才降低质量分；负信号与采用次数分开计算且始终有限', async () => {
+    const { rankAssets } = await import('../../../../src/main/features/recall/asset-ranking');
+    const assets = [mk({ id: 'aa-new' }), mk({ id: 'aa-corrected' }), mk({ id: 'aa-used' })];
+    const stats = new Map([
+      ['aa-corrected', { appliedCount: 0, contradictedCount: 1, lastContradictedAt: new Date(NOW).toISOString() }],
+      ['aa-used', { appliedCount: 1, lastAppliedAt: new Date(NOW).toISOString() }],
+    ]);
+    const ranked = rankAssets({ assets, adoptionStats: stats, weights: W, now: NOW });
+    const raw = (id: string) => ranked.find((row) => row.assetId === id)!.factors.find((factor) => factor.name === 'adoption')!.raw;
+    expect(raw('aa-corrected')).toBeLessThan(raw('aa-new'));
+    expect(raw('aa-used')).toBeGreaterThan(raw('aa-new'));
+    expect(ranked.every((row) => Number.isFinite(row.score))).toBe(true);
   });
 
   it('maturity 分层：validated 1.0 / bud 0.5 / seed 0.3；relevance 缺席 = 因子缺席', async () => {
@@ -271,12 +283,12 @@ describe('catalog-ranking-weights（T007：权重模块）', () => {
     const weights = await import('../../../../src/main/features/recall/catalog-ranking-weights');
     const initial = await weights.getRankingWeights('user-w-default');
     expect(initial.source).toBe('default');
-    expect(initial.weights).toEqual({ relevance: 1, adoption: 1, scene: 0.8, maturity: 0.4 });
+    expect(initial.weights).toEqual({ relevance: 2, adoption: 0.3, scene: 0.5, maturity: 0.2 });
     await weights.setRankingWeights('user-w-default', { scene: 2 });
     const configured = await weights.getRankingWeights('user-w-default');
     expect(configured.source).toBe('configured');
     expect(configured.weights.scene).toBe(2);
-    expect(configured.weights.relevance).toBe(1);
+    expect(configured.weights.relevance).toBe(2);
     // 无进程内长缓存：改动立刻可读（下一轮构建即生效）。
     await weights.setRankingWeights('user-w-default', { scene: 3 });
     expect((await weights.getRankingWeights('user-w-default')).weights.scene).toBe(3);
@@ -310,7 +322,7 @@ describe('catalog-ranking-weights（T007：权重模块）', () => {
     } as never);
     const snapshot = await weights.getRankingWeights('user-w-corrupt');
     expect(snapshot.source).toBe('invalid-fallback');
-    expect(snapshot.weights).toEqual({ relevance: 1, adoption: 1, scene: 0.8, maturity: 0.4 });
+    expect(snapshot.weights).toEqual({ relevance: 2, adoption: 0.3, scene: 0.5, maturity: 0.2 });
     expect(snapshot.invalidReason).toBeTruthy();
     // 读取不修盘：坏配置仍在（"没生效"的证据不能被销毁）。
     const again = await weights.getRankingWeights('user-w-corrupt');
@@ -350,8 +362,9 @@ describe('排序接线不变量（T016/T017：真实链路）', () => {
     expect(stats.has('aa-hot')).toBe(false);
     const before = await catalogText('user-rank-adopt');
     expect(catalogIds(before)).toEqual(['aa-hot', 'aa-cold']);
-    // 目录行的「用N次」＝被带入口径（不动）：hot 显示用3次，但排序不吃它。
-    expect(before).toContain('用3次');
+    // 展示与排序都按实际采用记账，带入不显示成「用过」。
+    expect(before).not.toContain('用3次');
+    expect(before).toContain('没用过');
 
     // 一条 applied && boundary='real' 的 usage 回执 → cold 名次上升到第一。
     await recordUsageReceipt('user-rank-adopt', { taskRunId: 'turn-apply-1', assetId: 'aa-cold', status: 'applied' });
@@ -376,7 +389,7 @@ describe('排序接线不变量（T016/T017：真实链路）', () => {
     // 负反馈覆盖 append 同 id 第二行；读取取末条（contradicted）→ 不再计分。
     await recordUsageReceipt('user-rank-idem', { taskRunId: 'turn-idem-1', assetId: 'aa-twice', status: 'contradicted' });
     expect(jsonlLines('user-rank-idem', 'asset-usage-receipts')).toHaveLength(2);
-    expect((await catalog.loadAssetAdoptionStats('user-rank-idem')).has('aa-twice')).toBe(false);
+    expect((await catalog.loadAssetAdoptionStats('user-rank-idem')).get('aa-twice')).toMatchObject({ appliedCount: 0, contradictedCount: 1 });
     expect(catalogIds(await catalogText('user-rank-idem'))).toEqual(['aa-plain', 'aa-twice']);
   });
 

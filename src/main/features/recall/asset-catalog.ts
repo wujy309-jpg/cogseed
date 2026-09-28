@@ -4,7 +4,7 @@ import { listRecallUsage } from './usage-service';
 /**
  * 资产目录的**紧凑文本 + 使用统计**（2026-09-18 抽出共用）。
  *
- * 两个消费方共用同一份格式，避免"模型看到的目录"与"工具返回的目录"长得不一样：
+ * 两个消费方共用同一份行格式，避免"模型看到的目录"与"工具返回的目录"长得不一样：
  *   - `search_ability_assets` 目录模式（工具内返回）；
  *   - 回合提示词里的常驻目录（小库直接进上下文，省掉一次工具往返）。
  *
@@ -89,8 +89,7 @@ export function formatCatalogEntries(
   return assets.map((asset, index) => formatCatalogEntry(asset, stats.get(asset.id), startIndex + index, relevantIds?.has(asset.id) === true));
 }
 
-/** 每条的取用次数与最近时间（一次流水扫描）。消费方各自缓存（提示词侧 60 秒
- *  TTL），避免每回合重复扫流水。 */
+/** 旧的带入流水统计保留供资产履历使用；目录展示改为实际采用次数。 */
 export async function loadAssetUsageStats(userId: string): Promise<Map<string, AssetUsageStat>> {
   const stats = new Map<string, AssetUsageStat>();
   for (const row of await listRecallUsage(userId)) {
@@ -123,13 +122,9 @@ export async function loadAssetUsageStatsCached(userId: string, turnId?: string)
   return stats;
 }
 
-/** 「实际采用」统计（specs/012 US-2022，T016 换口径）：**只读派生，不落盘**。
- *  与上面的 AssetUsageStat（数 `usage-records` 流水 = 被带入，供目录行「用N次」
- *  呈现）是两套口径，不得混用：
- *  - 目录行「用${count}次」= 被带入（loadAssetUsageStats，既有，不动）；
- *  - 推荐排序的使用因子 = 实际采用（本函数）：`applied && boundary='real'` 的
- *    usage 回执计数；`injected`/`agent_read`/`dispatched` 只是「被带入」，
- *    **不计分**（specs/011 拍板，012 沿用）。
+/** 实际采用与明确纠错：只读派生，不落盘。
+ * `applied && boundary='real'` 是采用唯一口径；`contradicted && real`
+ * 单独记录质量纠错。展示、搜索命中、带入与「本轮没用」都不计作负反馈。
  *
  *  采用判定**只经 `listAppliedUsageReceipts`**（唯一处，反漂移 II3）：它要求
  *  非空 taskRunIds，所以先全量读一遍回执**收钥匙**（只收集 taskRunId 与时间戳，
@@ -139,6 +134,8 @@ export interface AssetAdoptionStat {
   appliedCount: number;
   /** 最近一条 applied 回执的时间（排序近度微调用；拿不到就缺省）。 */
   lastAppliedAt?: string;
+  contradictedCount?: number;
+  lastContradictedAt?: string;
 }
 
 export async function loadAssetAdoptionStats(userId: string): Promise<Map<string, AssetAdoptionStat>> {
@@ -148,7 +145,6 @@ export async function loadAssetAdoptionStats(userId: string): Promise<Map<string
   const taskRunIds = [...new Set(receipts.map((row) => String(row.taskRunId || '')).filter(Boolean))];
   if (!taskRunIds.length) return stats;
   const applied = await listAppliedUsageReceipts(userId, { taskRunIds });
-  if (!applied.length) return stats;
   const createdAtById = new Map(receipts.map((row) => [row.id, String(row.createdAt || '')]));
   for (const receipt of applied) {
     const id = String(receipt.assetId || '');
@@ -158,6 +154,15 @@ export async function loadAssetAdoptionStats(userId: string): Promise<Map<string
     const at = createdAtById.get(receipt.id) || '';
     if (at && (!current.lastAppliedAt || at > current.lastAppliedAt)) current.lastAppliedAt = at;
     stats.set(id, current);
+  }
+  for (const receipt of receipts) {
+    if (receipt.status !== 'contradicted' || receipt.boundary !== 'real') continue;
+    const current = stats.get(receipt.assetId) || { appliedCount: 0 };
+    current.contradictedCount = (current.contradictedCount || 0) + 1;
+    if (!current.lastContradictedAt || receipt.createdAt > current.lastContradictedAt) {
+      current.lastContradictedAt = receipt.createdAt;
+    }
+    stats.set(receipt.assetId, current);
   }
   return stats;
 }
@@ -178,25 +183,14 @@ export async function loadAssetAdoptionStatsCached(userId: string, turnId?: stri
   return stats;
 }
 
-/** 当轮相关度（2026-09-22 砍注入后的算法落点；2026-09-25 T018 起为提示词目录
- *  与工具目录**共用**——两处同序的前提是同一份输入，不允许第二份实现）：
- *  拿当轮任务文本与资产算余弦，相关 ≥0.40（阈值常量在 asset-catalog-hint，★
- *  标记是提示词侧的呈现）参与推荐分的 relevance 因子。
- *  embedding 不可用回退空 map（= 该因子整体缺席，目录按其余因子排）。 */
+/** 兼容旧调用方的相关度入口；实际召回由 catalog-relevance 唯一实现。
+ * embedding 不可用时仍有词面与专名通道。 */
 export async function catalogRelevanceScores(
   userId: string,
   taskText: string,
-  assets: Array<{ id: string; statement: string; title: string }>,
+  assets: Array<{ id: string; statement: string; title: string; type?: RecallAbilityAssetRecord['type']; applicableWhen?: string[]; forbiddenWhen?: string[] }>,
 ): Promise<Map<string, number>> {
-  const scores = new Map<string, number>();
-  try {
-    const { embedForDedup, cosineScore } = await import('./similarity');
-    const query = await embedForDedup(userId, taskText);
-    if (!query) return scores;
-    for (const asset of assets) {
-      const vector = await embedForDedup(userId, String(asset.statement || asset.title || ''));
-      if (vector) scores.set(asset.id, cosineScore(query, vector));
-    }
-  } catch { /* 相关度是增强：拿不到就按其余因子排 */ }
-  return scores;
+  const { catalogMatches } = await import('./catalog-relevance');
+  const matches = await catalogMatches(userId, taskText, assets);
+  return new Map([...matches].map(([id, match]) => [id, match.score]));
 }

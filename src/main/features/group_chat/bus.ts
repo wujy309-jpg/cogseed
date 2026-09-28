@@ -5878,8 +5878,12 @@ async function runActorTurnBody(
         const catalog = await assetCatalogForPromptWithRelevance(uid, cid, Date.now(), String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000), {
           ...(turnProjectId ? { turnProjectId } : {}),
           ...(turnSpaceId ? { turnSpaceId } : {}),
-        }, actor.id);
-        if (catalog.text) systemPrompt = `${systemPrompt}\n\n${catalog.text}`;
+        }, actor.id, item.turnId);
+        if (catalog.text) {
+          systemPrompt = `${systemPrompt}\n\n${catalog.text}`;
+          const { recordCatalogObservations } = await import('../recall/catalog-observation');
+          await recordCatalogObservations(uid, { turnId: item.turnId, cid, stage: 'prompt_included', assets: catalog.shown });
+        }
         catalogRelevantIds = catalog.relevantIds;
       } catch {
         // 目录块拿不到不影响回合。
@@ -7934,7 +7938,7 @@ async function runActorTurnBody(
       // 「没有记录」，不编造。
       const { lastCatalogRankedForTurn } = await import('../recall/asset-catalog-hint');
       const { explainRanking } = await import('../recall/asset-ranking');
-      const rankedThisTurn = lastCatalogRankedForTurn(uid, cid);
+      const rankedThisTurn = lastCatalogRankedForTurn(uid, cid, item.turnId);
       await Promise.allSettled(persistedRecallCitations.map((citation) => {
         const rankedRow = rankedThisTurn.get(String(citation.asset_id || ''));
         return recordInjectionReceipt(uid, {
