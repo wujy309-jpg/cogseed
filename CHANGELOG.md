@@ -22,6 +22,24 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   `缺少交付物: src/**` 拒绝提交（只有显式 `blockOnMissing:false` 才能绕过）。现在模式与
   文件路径两侧统一按 `/` 归一后再匹配。
 
+- **EduSeed 插件：文档标注"离线"的命令不再要求平台凭证** — `check-deliverables` /
+  `prepare-submission` 在 SKILL.md 里写明是离线本地检查，但 `loadConfig()` 先于免鉴权判断
+  执行，未配置的新装用户直接拿到 `ConfigError`，离线命令完全不可用。现在这两个命令以
+  离线模式加载配置；需要鉴权的命令行为不变（仍要求 `EDUSEED_SERVER_URL` / `API_KEY` /
+  `STUDENT_ID`）。
+
+- **EduSeed 插件：Windows 下也能定位到打包版的 `cogseed-pkg.cjs`** — 自动更新的可执行文件
+  探测此前只有 macOS 的 `/Applications/...` 兜底，Windows 打包版（NSIS，productName
+  `CogSeed`）在宿主未注入 `COGSEED_PC_DIR` 时找不到 CLI，只能退化到对内置包无效的
+  `git pull`。现在补充 `%LOCALAPPDATA%\Programs\CogSeed` 与 `%ProgramFiles%\CogSeed` 候选。
+
+- **EduSeed 插件：后台挑战缓存刷新不再可能闪出控制台窗口** — detached 子进程补齐
+  `windowsHide`。
+
+- **EduSeed 插件：版本口径与文档指针修正** — 运行时自报版本从 0.5.4 跟随到 0.5.5（否则
+  更新检查会把已装版本当成落后版本），`manifest.json` 的 known_issues 指针由不存在的
+  "README.md 第 8 节"改为实际存在的 `docs/troubleshooting.md`。
+
 ## [1.2.0] - 2026-09-23
 
 ### Changed

@@ -299,6 +299,37 @@ describe('builtin_packages › bundled EduSeed package', () => {
     }
   });
 
+  it('runs the documented-offline commands with no credentials at all', () => {
+    // SKILL.md marks check-deliverables and prepare-submission as 离线, but
+    // loadConfig ran before the license-exempt check, so a fresh install with no
+    // platform configuration could not use them: they died with ConfigError
+    // instead of returning the local report.
+    const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'eduseed-offline-'));
+    fs.mkdirSync(path.join(workdir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(workdir, 'README.md'), 'x\n');
+    fs.writeFileSync(path.join(workdir, 'src', 'index.js'), 'x\n');
+    const bare = { EDUSEED_MOCK: undefined, EDUSEED_STUDENT_ID: undefined, EDUSEED_ROLE: undefined };
+    try {
+      const checked = runRuntime('check-deliverables', {
+        workdir,
+        requiredDeliverables: 'README.md, src/**',
+      }, bare);
+      expect(checked.ok).toBe(true);
+      expect(checked.found).toEqual(['README.md', 'src/**']);
+
+      const prepared = runRuntime('prepare-submission', {
+        workdir,
+        requiredDeliverables: 'README.md',
+        challengeId: 'ch-mock-c03',
+        projectTitle: 'T',
+        githubRepoUrl: 'https://github.com/x/y',
+      }, bare);
+      expect(prepared.ok).toBe(true);
+    } finally {
+      fs.rmSync(workdir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   it('keeps manifest, package.json and the seed manifest on one version', () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(pkgDir, 'manifest.json'), 'utf8')) as { version: string };
     const pkg = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8')) as { version: string };
@@ -310,5 +341,9 @@ describe('builtin_packages › bundled EduSeed package', () => {
     // leaves existing installs on the old bundle.
     expect(entry?.source_version).toBe(manifest.version);
     expect(pkg.version).toBe(manifest.version);
+    // The bundle reports its own version for the update check; a constant that
+    // lags the manifest makes it re-offer an update that is already installed.
+    const version = runRuntime('plugin-version', {}, {});
+    expect(version.current_version).toBe(manifest.version);
   });
 });
