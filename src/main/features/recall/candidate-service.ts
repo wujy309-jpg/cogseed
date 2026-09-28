@@ -44,6 +44,7 @@ import {
 } from './asset-service';
 import { fuseStatements, makeDisplayTitle } from './statement-fusion';
 import { recallTitleIssue } from './title-policy';
+import { recallStatementIssues } from './statement-policy';
 import { evaluateCandidate, isCandidateBlocked } from '../cognition/gate';
 import { isCognitionSourceEnabled } from './source-control';
 import {
@@ -122,6 +123,8 @@ export interface RecallCandidateRecord extends RecallJsonRecord {
    *  capture 等系统提取的统称）；'manual'（「记一条」手动新建，2026-09-28：
    *  保存时显式落盘，读回校验与晋升豁免都靠它识别，不由前缀推导）。 */
   origin?: 'kstar' | 'teaching' | 'capture' | 'manual';
+  /** 正文规范警示（读时派生、不落盘，2026-09-29）：确认页展示，不拦截写入。 */
+  statementIssues?: Array<'empty' | 'too_long' | 'session_debris' | 'local_path'>;
   promotedAssetId?: string;
   reviewDecisionId?: string;
   decisionNote?: string;
@@ -1055,6 +1058,11 @@ function asCandidate(value: RecallJsonRecord): RecallCandidateRecord {
     ...(learningProvenance ? { learningProvenance } : {}),
     ...(scopePolicy ? { scopePolicy } : {}),
     ...(origin ? { origin } : {}),
+    // 正文规范警示（2026-09-29）：读时派生、不落盘——只给人看与治理轮圈选，
+    // 不拦截写入（正文是知识本体，把关权在人，设计定稿）。
+    ...(recallStatementIssues({ statement: value.judgment, type: value.suggestedType }).length
+      ? { statementIssues: recallStatementIssues({ statement: value.judgment, type: value.suggestedType }) }
+      : {}),
   } as RecallCandidateRecord;
 }
 
@@ -2566,15 +2574,15 @@ export async function promoteRecallCandidate(
       const assetId = createdAssetId(candidate.id, decision.decision_id);
       // 正文先行定稿：标题兜底的合规判定与 LLM 起标题都要拿**将落盘的最终
       // 正文**比对（与收口闸门同一份口径），不能拿候选 judgment 单独判。
-      const promotionStatement = [
-        candidate.judgment,
-        ...(candidate.value?.trim() && candidate.value !== candidate.judgment
-          ? [candidate.value.trim()]
-          : []),
-      ].join('\n').slice(0, 4_000);
+      // 新建路（2026-09-29 正文一等规范）：正文＝judgment 单一来源，value 不再
+      // 硬拼——「知识」与「为什么有用」是异质内容，拼接正是旧正文多行混排的
+      // 形态病根；value 仍是候选层评审辅助字段（确认页展示），不进资产正文。
+      // 更新/融合路（else 分支）维持旧拼装：value 参与融合是 KStar admission
+      // 链核对基线的既有语义，本轮规范只收新建路，不动它。
+      const createStatement = candidate.judgment.slice(0, 4_000);
       const promotionTitle = await resolvePromotionAssetTitle(userId, {
         preferredTitle: candidate.summary || '',
-        statement: promotionStatement,
+        statement: createStatement,
         type: candidate.suggestedType,
       });
       stored = await createAbilityAsset(userId, {
@@ -2590,7 +2598,7 @@ export async function promoteRecallCandidate(
         // matters / future value) when present — the value clause is the
         // reusable insight, and a bare conclusion sentence alone is too thin
         // to stand as a method/template asset body.
-        statement: promotionStatement,
+        statement: createStatement,
         evidenceRefs: candidate.evidenceRefs,
         // 手动候选（「记一条」）没有对话证据：资产侧空证据的合法性靠这个
         // origin 标记识别（asAsset 读回与展示徽章都用它，2026-09-28 拍板项）。

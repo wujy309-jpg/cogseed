@@ -3884,6 +3884,21 @@
     )}</div>`;
   }
 
+  /** 正文规范警示（2026-09-29 正文一等规范）：主进程读回时派生的
+   *  statementIssues 在此显示——只提醒不拦截（把关权在人）；编辑后以
+   *  表单当前值重算（前端不另立口径，仅按主进程下发的 issue 形态提示）。 */
+  const STATEMENT_ISSUE_LABELS = {
+    empty: '正文不能为空',
+    too_long: '正文超长（规则/偏好/事实建议 120 字内、硬限 200；方法/模板不限）',
+    session_debris: '正文带会话一次性标识（会话号/cid/turn 号），出处留在来历区',
+    local_path: '规则/偏好类正文带本机路径或源码文件名（事实类知识本身是该位置则合法）',
+  };
+  const statementWarningHtml = (candidate) => {
+    const issues = Array.isArray(candidate.statementIssues) ? candidate.statementIssues : [];
+    if (!issues.length) return '';
+    const lines = issues.map((issue) => STATEMENT_ISSUE_LABELS[issue] || String(issue)).join('；');
+    return `<div class="note ca-statement-warning">${esc(T('cognition.statement_warning_prefix', '正文建议调整（可改后保存）：'))}${esc(lines)}</div>`;
+  };
   function candidateFormBody(candidate) {
     const refs = evidenceRefs(candidate);
     const broken = evidenceMostlyUnavailable(candidate);
@@ -3939,6 +3954,7 @@
       ${edit ? `
         ${field(T('cognition.type', '类型'), `<div class="chips">${CATEGORIES.map(([id, key, fb]) => { const on = String(candidate.suggestedType || '') === id; return `<span class="ca-chip ca-chip-opt${on ? ' is-green' : ''}" data-act="cand-type" data-id="${esc(id)}" ${roleBtn(`aria-pressed="${on ? 'true' : 'false'}"`)}>${esc(T(key, fb))}</span>`; }).join('')}</div>`)}
         ${field(T('cognition.capture.summary', '可复用内容'), window.uiTextarea({ id: `ca-cand-judgment-${esc(candidate.id)}`, value: candidate.judgment || '', attrs: { 'data-f': 'judgment' } }))}
+        ${statementWarningHtml(candidate)}
         ${chainHtml ? '' : field(T('cognition.chain_value_label', '带来的价值'), window.uiTextarea({ id: `ca-cand-value-${esc(candidate.id)}`, value: candidate.value || '', attrs: { 'data-f': 'value' } }))}
         <details class="details">
           <summary>${esc(T('cognition.candidate_advanced', '高级选项（通常不用改）'))}</summary>
@@ -4284,6 +4300,7 @@
       // 标题重起轮（3.3 专项轮）的新 kind：词条四语由重起轮配套落，这里先按
       // 既有 cleanup_kind_* 命名引用——勿重蹈 tag_added 缺席、显示兜底的欠账。
       title_regen: T('cognition.cleanup_kind_title_regen', '标题重起'),
+      statement_regen: T('cognition.cleanup_kind_statement_regen', '正文改写'),
     };
     const STATUS_LABELS = {
       applied: T('cognition.cleanup_status_applied', '已执行'),

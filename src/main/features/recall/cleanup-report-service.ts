@@ -42,11 +42,12 @@ import {
 } from './asset-service';
 import type { RecallAbilityAssetRecord } from './candidate-service';
 import { recallTitleIssue } from './title-policy';
+import { recallStatementIssues } from './statement-policy';
 import type { AbilityAssetTitleIssue } from './title-policy';
 
 const log = createLogger('recall.asset-cleanup');
 
-export type CleanupItemKind = 'title_normalized' | 'merged_duplicate' | 'tag_added' | 'title_regen';
+export type CleanupItemKind = 'title_normalized' | 'merged_duplicate' | 'tag_added' | 'title_regen' | 'statement_regen';
 export type CleanupItemStatus = 'applied' | 'skipped' | 'uncertain' | 'failed';
 
 export interface CleanupReportItem {
@@ -82,7 +83,7 @@ export interface CleanupReport extends RecallJsonRecord {
   scope: { spaceId?: string; assetType?: string };
   /** 轮次（四病整改 3.3）：'rules'＝既有规则轮（含义不变的机械整理）；
    *  'title_regen'＝标题重起轮（LLM 含义生成）。旧报告无此字段＝规则轮。 */
-  round?: 'rules' | 'title_regen';
+  round?: 'rules' | 'title_regen' | 'statement_regen';
   /** 标题重起轮专用：写前整库备份目录（records/ 之外）。恢复走
    *  updateAbilityAsset 正门逐条改回，不做 raw 写回（见轮内注释）。 */
   backupDir?: string;
@@ -493,9 +494,9 @@ const TITLE_ISSUE_LABELS: Record<AbilityAssetTitleIssue, string> = {
  *  备份只作**恢复参考**：恢复走 `updateAbilityAsset` 正门逐条把标题改回（改前
  *  标题本就冻结在版本快照里、版本区可见），**不做 raw 写回**——绕版本链的
  *  raw 路径有终态/评审/快照分叉三重暗坑（深探 F10）。 */
-async function backupAbilityAssetsForTitleRegen(userId: string, createdAt: string): Promise<string> {
+async function backupAbilityAssetsForRegen(userId: string, createdAt: string, round: 'title_regen' | 'statement_regen'): Promise<string> {
   const records = path.join(recallRoot(userId), 'records', 'ability-assets');
-  const backupDir = path.join(recallRoot(userId), `backup-title-regen-${createdAt.replace(/[:.]/g, '')}`);
+  const backupDir = path.join(recallRoot(userId), `backup-${round}-${createdAt.replace(/[:.]/g, '')}`);
   const names = await fs.readdir(records);
   await fs.mkdir(backupDir, { recursive: true });
   for (const name of names) {
@@ -557,7 +558,7 @@ export async function runAssetTitleRegenCleanup(
     .filter((entry): entry is { asset: RecallAbilityAssetRecord; issue: AbilityAssetTitleIssue } => entry.issue !== undefined);
 
   // 写前备份先于报告落盘与一切写入（只有真要写才留备份目录，空轮不留垃圾）。
-  const backupDir = targets.length ? await backupAbilityAssetsForTitleRegen(userId, createdAt) : undefined;
+  const backupDir = targets.length ? await backupAbilityAssetsForRegen(userId, createdAt, 'title_regen') : undefined;
 
   await writeRecallJsonRecord(userId, 'cleanup-reports', reportId, {
     schemaVersion: 1,
@@ -689,3 +690,108 @@ export function pendingCleanupUncertainItems(
       question: entry.question,
     })));
 }
+
+/**
+ * 专项「正文改写」轮（2026-09-29 正文一等规范，子安拍板「全自动写入」）。
+ * 与标题重起轮同骨架：统一口径圈选（recallStatementIssues）→ 写前整库备份
+ * （records 之外）→ LLM 逐条改写（知识点不丢铁律）→ 正门写入（升版＋台账
+ * ＋投影刷新由收口闸门段负责）→ 逐项审计与中断如实。actor='ai'。
+ */
+export async function runAssetStatementRegenCleanup(
+  userId: string,
+  options: RunCleanupOptions = {},
+): Promise<CleanupReport> {
+  const { hasConfiguredModelForUser, getConfiguredModelOAuthExpiredMessage } = await import('../auth');
+  if (!hasConfiguredModelForUser(userId).configured) {
+    throw new Error('正文改写轮未执行：尚未配置可用模型（配置后重试）；不做静默跳过。');
+  }
+  const oauthExpired = getConfiguredModelOAuthExpiredMessage();
+  if (oauthExpired) throw new Error(`正文改写轮未执行：${oauthExpired}`);
+
+  const scope = options.scope || {};
+  const reportId = `cr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const createdAt = new Date().toISOString();
+  const all = await listAbilityAssets(userId);
+  let pool = all.filter((asset) => asset.status !== 'purged');
+  if (scope.spaceId) pool = pool.filter((asset) => asset.spaceId === scope.spaceId);
+  if (scope.assetType) pool = pool.filter((asset) => asset.type === scope.assetType);
+  const targets = pool
+    .map((asset) => ({ asset, issues: recallStatementIssues({ statement: asset.statement, type: asset.type }) }))
+    .filter((entry) => entry.issues.length > 0);
+
+  const backupDir = targets.length ? await backupAbilityAssetsForRegen(userId, createdAt, 'statement_regen') : undefined;
+
+  await writeRecallJsonRecord(userId, 'cleanup-reports', reportId, {
+    schemaVersion: 1,
+    ownerId: userId,
+    id: reportId,
+    trigger: options.trigger || 'user',
+    scope: { ...(scope.spaceId ? { spaceId: scope.spaceId } : {}), ...(scope.assetType ? { assetType: scope.assetType } : {}) },
+    round: 'statement_regen',
+    ...(backupDir ? { backupDir } : {}),
+    items: [],
+    uncertain: [],
+    skippedSteps: [],
+    createdAt,
+    scanned: pool.length,
+  } satisfies CleanupReport);
+
+  const items: CleanupReportItem[] = [];
+  try {
+    const { suggestAbilityAssetStatement } = await import('./asset-statement-rewrite');
+    for (const { asset, issues } of targets) {
+      if (asset.status === 'revoked' || asset.status === 'deleted') {
+        const skipped: CleanupReportItem = {
+          assetId: asset.id, kind: 'statement_regen', status: 'skipped',
+          before: (asset.statement || '').slice(0, 80), after: '',
+          reason: '正文改写', note: `${asset.status === 'revoked' ? '已撤销' : '已删除'}的资产不可修改，跳过改写`,
+        };
+        items.push(skipped);
+        await patchReport(userId, reportId, (report) => ({ items: [...report.items, skipped] }));
+        continue;
+      }
+      const anchor = abilityAssetActiveVersion(asset);
+      try {
+        const rewrite = await suggestAbilityAssetStatement(userId, {
+          statement: asset.statement || '',
+          type: asset.type,
+          title: asset.title,
+        });
+        await updateAbilityAsset(userId, asset.id, {
+          statement: rewrite.statement,
+          reason: `正文改写轮：${issues.join('、')}（${reportId}）`,
+          actor: 'ai',
+        });
+        const ledgerRef = await lastAuditId(userId, asset.id);
+        const item: CleanupReportItem = {
+          assetId: asset.id, kind: 'statement_regen', status: 'applied',
+          before: (asset.statement || '').slice(0, 80),
+          after: rewrite.statement.slice(0, 80),
+          reason: `正文问题：${issues.join('、')}，模型按规范改写（知识点不丢铁律）`,
+          ...(ledgerRef ? { ledgerRef } : {}),
+          rollbackAnchor: anchor,
+        };
+        items.push(item);
+        await patchReport(userId, reportId, (report) => ({ items: [...report.items, item] }));
+      } catch (error) {
+        const failed: CleanupReportItem = {
+          assetId: asset.id, kind: 'statement_regen', status: 'failed',
+          before: (asset.statement || '').slice(0, 80), after: '',
+          reason: '正文改写', note: (error as Error).message,
+        };
+        items.push(failed);
+        await patchReport(userId, reportId, (report) => ({ items: [...report.items, failed] }));
+        log.warn('cleanup statement regen failed', { assetId: asset.id, error: (error as Error).message });
+      }
+    }
+    return await patchReport(userId, reportId, () => ({ finishedAt: new Date().toISOString(), items }));
+  } catch (error) {
+    log.warn('cleanup statement regen interrupted', { reportId, error: (error as Error).message });
+    return await patchReport(userId, reportId, () => ({
+      items,
+      interrupted: true,
+      finishedAt: new Date().toISOString(),
+    }));
+  }
+}
+

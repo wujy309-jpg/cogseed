@@ -410,7 +410,7 @@ describe('标题重起轮（设计 3.3 专项轮：LLM 含义生成，与规则�
     const report = await cleanup.runAssetTitleRegenCleanup(uid);
     expect(report.backupDir).toBeTruthy();
     // 备份目录在 records 之外（落进 records/ 会被 readdir 当记录读入污染 collection）。
-    expect(path.basename(report.backupDir!)).toMatch(/^backup-title-regen-/);
+    expect(path.basename(report.backupDir!)).toMatch(/^backup-title_regen-/);
     expect(report.backupDir!.split(path.sep)).not.toContain('records');
     expect(fs.existsSync(report.backupDir!)).toBe(true);
     // 备份是**写前**快照：记录文件齐全，且标题还是改前的烂标题。
