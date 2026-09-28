@@ -2,8 +2,8 @@
 /**
  * Build a local public snapshot commit from a verified private export. This
  * never fetches, pushes, opens a PR, or changes the public checkout's HEAD.
- * Its only public ref is a deterministic branch based on the public parent and
- * exported tree. The source-to-public mapping remains outside every Git repo.
+ * Its only public ref is the fixed snapshot branch. The source-to-public
+ * mapping remains outside every Git repo.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -29,6 +29,7 @@ function help() {
   node scripts/opensource/sync.mjs --candidate <export-dir> --private-repo <checkout> --public-repo <checkout> --target-origin <GitHub URL> --expected-base <40-hex public SHA> --mapping-out <new private JSON file> --approval <JSON> --scan-report <JSON>
   node scripts/opensource/sync.mjs --candidate <export-dir> --private-repo <checkout> --public-repo <new absent directory> --target-origin <GitHub URL> --bootstrap --mapping-out <new private JSON file> --approval <JSON> --scan-report <JSON>
 
+  --commit-time <Unix seconds>  Optional fixed run time for reproducible retries across fresh checkouts; defaults to the current time. The commit is always at least one second newer than its public parent.
   --allow-review-required-local  Local rehearsal only: bypass reviewed, scan, and approval gates. Never authorizes publishing.
 
 The approval JSON binds sourceSha, exportSha256, policySha256 and referenceHintsSha256. Recurring sync requires authorizationMethod "workflow_dispatch", authorizedBy, and positive workflowRunId/workflowRunAttempt. Bootstrap accepts authorizationMethod "explicit_user_cutover" with a real private authorizationReference file, scope "public_heads_and_tags_only", preserveReleaseAssets:true, and acceptRetainedPullRefs:true. These local JSON files record authorization; they are not cryptographic identity credentials. No remote operations are performed.\n`;
@@ -36,7 +37,7 @@ The approval JSON binds sourceSha, exportSha256, policySha256 and referenceHints
 
 function args(argv) {
   if (argv.length === 1 && argv[0] === '--help') return { help: true };
-  const values = new Set(['candidate', 'private-repo', 'public-repo', 'target-origin', 'expected-base', 'mapping-out', 'approval', 'scan-report', 'policy', 'exporter']);
+  const values = new Set(['candidate', 'private-repo', 'public-repo', 'target-origin', 'expected-base', 'mapping-out', 'approval', 'scan-report', 'policy', 'exporter', 'commit-time']);
   const flags = new Set(['bootstrap', 'allow-review-required-local']);
   const out = {};
   for (let i = 0; i < argv.length; i++) {
@@ -52,6 +53,11 @@ function args(argv) {
   if (!validOrigin(out['target-origin'], TARGET_REPOSITORY)) fail('Target origin must identify the public repository');
   if (out.bootstrap ? out['expected-base'] : !SHA.test(out['expected-base'] || '')) {
     fail('Use --bootstrap for a new repository or supply --expected-base with a full public commit SHA');
+  }
+  if (out['commit-time'] !== undefined
+    && (!/^(?:0|[1-9][0-9]*)$/u.test(out['commit-time'])
+      || !Number.isSafeInteger(Number(out['commit-time'])))) {
+    fail('Commit time must be nonnegative Unix seconds');
   }
   if (!out['allow-review-required-local'] && (!out.approval || !out['scan-report'])) {
     fail('Reviewed synchronization requires --approval and --scan-report');
@@ -356,9 +362,25 @@ function writeSnapshot(options, root, manifest, content) {
     if (base && tree === git(root, ['rev-parse', `${base}^{tree}`]).toString().trim()) {
       return { status: 'unchanged', publicSha: base, branch: null, tree };
     }
-    const baseTime = base ? Number(git(root, ['show', '-s', '--format=%ct', base]).toString().trim()) : 946684800;
-    if (!Number.isSafeInteger(baseTime) || baseTime < 0) fail('Invalid public base timestamp');
-    const date = `${baseTime + 1} +0000`;
+    const baseTime = base ? Number(git(root, ['show', '-s', '--format=%ct', base]).toString().trim()) : -1;
+    if (!Number.isSafeInteger(baseTime) || (base && baseTime < 0)) fail('Invalid public base timestamp');
+    const branch = 'refs/heads/public-source-sync';
+    let existing;
+    try { existing = git(root, ['rev-parse', '--verify', branch]).toString().trim(); }
+    catch { existing = null; }
+    // Reuse an existing snapshot's date on retry. Recreating the complete
+    // commit below must yield the same OID, so a different branch tip cannot
+    // be mistaken for this candidate even if its date is valid.
+    let commitTime = options['commit-time'] === undefined
+      ? Math.floor(Date.now() / 1000) : Number(options['commit-time']);
+    if (existing) {
+      const dates = git(root, ['show', '-s', '--format=%at%n%ct', existing]).toString().trim().split('\n').map(Number);
+      if (dates.length !== 2 || dates.some((value) => !Number.isSafeInteger(value) || value < 0)
+        || dates[0] !== dates[1]) fail('Existing public snapshot branch has invalid dates');
+      commitTime = dates[0];
+    }
+    if (!Number.isSafeInteger(commitTime) || commitTime < 0) fail('Invalid public snapshot timestamp');
+    const date = `${Math.max(commitTime, baseTime + 1)} +0000`;
     const commitEnv = {
       GIT_AUTHOR_NAME: 'CogSeed Public Sync', GIT_AUTHOR_EMAIL: 'public-sync@users.noreply.github.com',
       GIT_COMMITTER_NAME: 'CogSeed Public Sync', GIT_COMMITTER_EMAIL: 'public-sync@users.noreply.github.com',
@@ -369,11 +391,7 @@ function writeSnapshot(options, root, manifest, content) {
     if (base) command.push('-p', base);
     const publicSha = git(root, command, message, commitEnv).toString().trim();
     if (!SHA.test(publicSha)) fail('Invalid public commit ID');
-    const branch = 'refs/heads/public-source-sync';
-    let existing;
-    try { existing = git(root, ['rev-parse', '--verify', branch]).toString().trim(); }
-    catch { existing = null; }
-    if (existing && existing !== publicSha) fail('Deterministic public branch already points to a different commit');
+    if (existing && existing !== publicSha) fail('Existing snapshot branch already points to a different commit');
     if (!existing) git(root, ['update-ref', branch, publicSha, ZERO]);
     const parents = git(root, ['rev-list', '--parents', '-n', '1', publicSha]).toString().trim().split(' ').slice(1);
     if (!same(parents, base ? [base] : [])) fail('Public commit has unexpected ancestry');

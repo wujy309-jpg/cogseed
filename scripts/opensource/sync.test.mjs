@@ -89,7 +89,9 @@ function fixture(t, { status = 'reviewed', reference = false, badHintReview = fa
 test('reviewed sync replaces the exact public tree, deletes old files, and keeps private ancestry out', (t) => {
   const f = fixture(t);
   const beforeHead = f.git(f.publicRepo, 'rev-parse', 'HEAD');
+  const beforeSeconds = Math.floor(Date.now() / 1000);
   const result = f.invoke(['--approval', f.approval, '--scan-report', f.scan]);
+  const afterSeconds = Math.floor(Date.now() / 1000);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.output.changed, true);
   assert.equal(result.output.branch, 'public-source-sync');
@@ -102,6 +104,12 @@ test('reviewed sync replaces the exact public tree, deletes old files, and keeps
   assert.equal(f.git(f.publicRepo, 'ls-tree', result.output.commitSha, 'bin/run.sh').slice(0, 6), '100755');
   assert.equal(f.git(f.publicRepo, 'show', `${result.output.commitSha}:src/app.js`), 'public v1');
   assert.doesNotMatch(f.git(f.publicRepo, 'log', '-1', '--format=%B', result.output.commitSha), new RegExp(f.sourceSha, 'u'));
+  const [authorTime, committerTime] = f.git(f.publicRepo, 'show', '-s', '--format=%at%n%ct', result.output.commitSha)
+    .split('\n').map(Number);
+  const parentTime = Number(f.git(f.publicRepo, 'show', '-s', '--format=%ct', f.publicBase));
+  assert.equal(authorTime, committerTime);
+  assert.ok(authorTime >= beforeSeconds && authorTime >= parentTime + 1);
+  assert.ok(authorTime <= Math.max(afterSeconds, parentTime + 1));
   const mapping = JSON.parse(fs.readFileSync(result.mapping));
   assert.equal(mapping.sourceSha, f.sourceSha);
   assert.equal(mapping.publicSha, result.output.commitSha);
@@ -110,20 +118,56 @@ test('reviewed sync replaces the exact public tree, deletes old files, and keeps
   assert.equal(fs.existsSync(path.join(f.publicRepo, 'secret.txt')), false);
 });
 
-test('same inputs create the same commit and fixed branch; matching base tree is a no-op', (t) => {
+test('fixed run time reproduces a commit across checkouts; retries reuse it and matching base tree is a no-op', (t) => {
   const f = fixture(t);
-  const gate = ['--approval', f.approval, '--scan-report', f.scan];
+  const fixedTime = Math.floor(Date.now() / 1000) + 5;
+  const gate = ['--approval', f.approval, '--scan-report', f.scan, '--commit-time', String(fixedTime)];
   const first = f.invoke(gate);
-  const again = f.invoke(gate);
+  const again = f.invoke(['--approval', f.approval, '--scan-report', f.scan,
+    '--commit-time', String(fixedTime + 60)]);
   assert.equal(first.status, 0, first.stderr);
   assert.equal(again.status, 0, again.stderr);
   assert.equal(again.output.commitSha, first.output.commitSha);
+  assert.equal(Number(f.git(f.publicRepo, 'show', '-s', '--format=%ct', first.output.commitSha)), fixedTime);
+  const secondCheckout = path.join(f.base, 'second-public');
+  command('git', ['clone', '-q', f.publicRepo, secondCheckout]);
+  f.git(secondCheckout, 'remote', 'set-url', 'origin', targetOrigin);
+  const replica = f.invoke(gate, { publicRepo: secondCheckout });
+  assert.equal(replica.status, 0, replica.stderr);
+  assert.equal(replica.output.commitSha, first.output.commitSha);
   f.git(f.publicRepo, 'checkout', '-q', 'public-source-sync');
   const noChange = f.invoke(gate, { expectedBase: first.output.commitSha });
   assert.equal(noChange.status, 0, noChange.stderr);
   assert.equal(noChange.output.changed, false);
   assert.equal(noChange.output.branch, null);
   assert.equal(noChange.output.commitSha, first.output.commitSha);
+});
+
+test('public parent timestamp is the lower bound even when fixed run time is earlier', (t) => {
+  const f = fixture(t);
+  const futureTime = Math.floor(Date.now() / 1000) + 3600;
+  f.put(f.publicRepo, 'obsolete.txt', 'future base\n');
+  f.git(f.publicRepo, 'add', 'obsolete.txt');
+  command('git', ['-C', f.publicRepo, 'commit', '-qm', 'future public base'], {
+    env: { ...process.env, GIT_AUTHOR_DATE: `${futureTime} +0000`, GIT_COMMITTER_DATE: `${futureTime} +0000` },
+  });
+  const futureBase = f.git(f.publicRepo, 'rev-parse', 'HEAD');
+  const result = f.invoke(['--approval', f.approval, '--scan-report', f.scan,
+    '--commit-time', String(futureTime - 100)], { expectedBase: futureBase });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(f.git(f.publicRepo, 'show', '-s', '--format=%at%n%ct', result.output.commitSha)
+    .split('\n').map(Number), [futureTime + 1, futureTime + 1]);
+});
+
+test('a different snapshot branch tip is never overwritten during retry', (t) => {
+  const f = fixture(t);
+  const gate = ['--approval', f.approval, '--scan-report', f.scan];
+  assert.equal(f.invoke(gate).status, 0);
+  f.git(f.publicRepo, 'update-ref', 'refs/heads/public-source-sync', f.publicBase);
+  const blocked = f.invoke(gate);
+  assert.equal(blocked.status, 1);
+  assert.match(blocked.stderr, /already points to a different commit/u);
+  assert.equal(f.git(f.publicRepo, 'rev-parse', 'public-source-sync'), f.publicBase);
 });
 
 test('draft or flagged export requires an explicit local-only override', (t) => {
@@ -233,11 +277,17 @@ test('bootstrap creates an orphan public root only in a new local repository', (
     authorizationReference: reference, scope: 'public_heads_and_tags_only',
     preserveReleaseAssets: true, acceptRetainedPullRefs: true,
   }));
+  const beforeSeconds = Math.floor(Date.now() / 1000);
   const result = bootstrap();
+  const afterSeconds = Math.floor(Date.now() / 1000);
   assert.equal(result.status, 0, result.stderr);
   const output = JSON.parse(result.stdout);
   assert.equal(output.changed, true);
   assert.equal(f.git(fresh, 'rev-list', '--parents', '-n', '1', output.commitSha), output.commitSha);
+  const [authorTime, committerTime] = f.git(fresh, 'show', '-s', '--format=%at%n%ct', output.commitSha)
+    .split('\n').map(Number);
+  assert.equal(authorTime, committerTime);
+  assert.ok(authorTime >= beforeSeconds && authorTime <= afterSeconds);
   assert.equal(f.git(fresh, 'remote', 'get-url', 'origin'), targetOrigin);
   assert.equal(JSON.parse(fs.readFileSync(mapping)).publicBaseSha, null);
   assert.equal(JSON.parse(fs.readFileSync(mapping)).authorizationMethod, 'explicit_user_cutover');
