@@ -212,3 +212,43 @@ describe('builtin_packages › seedBuiltinPackagesForUser', () => {
     expect(runPackageInstall).toHaveBeenCalledTimes(1);
   });
 });
+
+// The shipped package content itself, not the seeder logic: these read the real
+// resources/builtin-packages tree that a release bundles.
+describe('builtin_packages › bundled EduSeed package content', () => {
+  const pkgDir = path.join(__dirname, '../../../resources/builtin-packages/eduseed-course-client');
+  const skills = ['eduseed-student-aar', 'eduseed-student-review', 'eduseed-student-submit', 'eduseed-teacher-publish'];
+  const runtimeSources = () => skills.map((skill) => fs.readFileSync(
+    path.join(pkgDir, 'skills', skill, 'scripts', 'runtime.js'), 'utf8',
+  ));
+
+  it('ships one byte-identical runtime across the four skills', () => {
+    // All four skills run the same esbuild bundle; a partial rebuild would ship
+    // divergent runtimes for the same plugin version.
+    expect(new Set(runtimeSources()).size).toBe(1);
+  });
+
+  it('resolves the user home without depending on HOME being set', () => {
+    // Windows defines USERPROFILE, not HOME. The bundle used to build the KSTAR
+    // record directory from `process.env.HOME ?? ""`, which collapsed to a
+    // CWD-relative `.eduseed` path: records were written wherever the skill ran
+    // and became unreadable as soon as the working directory changed.
+    for (const source of runtimeSources()) {
+      expect(source).not.toContain('process.env.HOME ?? ""');
+      expect(source).toContain('function __eduseedHomeDir()');
+    }
+  });
+
+  it('keeps manifest, package.json and the seed manifest on one version', () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(pkgDir, 'manifest.json'), 'utf8')) as { version: string };
+    const pkg = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8')) as { version: string };
+    const builtin = JSON.parse(fs.readFileSync(
+      path.join(__dirname, '../../../resources/builtin-packages/_builtin.json'), 'utf8',
+    )) as { packages: Array<{ name: string; source_version: string }> };
+    const entry = builtin.packages.find((p) => p.name === 'eduseed-course-client');
+    // source_version drives re-seeding on upgrade, so a stale value silently
+    // leaves existing installs on the old bundle.
+    expect(entry?.source_version).toBe(manifest.version);
+    expect(pkg.version).toBe(manifest.version);
+  });
+});

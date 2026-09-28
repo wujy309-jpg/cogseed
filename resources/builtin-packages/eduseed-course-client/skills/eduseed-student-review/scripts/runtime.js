@@ -1,4 +1,19 @@
 "use strict";
+/**
+ * CogSeed local patch (2026-09-28) — Windows has no HOME.
+ *
+ * The bundled sources used a bare HOME lookup with an empty-string fallback, which on Windows (where
+ * only USERPROFILE / HOMEDRIVE+HOMEPATH exist) collapses to the empty string and
+ * turns the KSTAR episode directory into a CWD-relative `.eduseed` path: records
+ * were written wherever the skill happened to run and became unreadable as soon
+ * as the working directory changed. os.homedir() is correct on every platform
+ * and is already used elsewhere in this bundle for plugin-update state.
+ *
+ * Pending the same fix in upstream plugin-runtime.ts.
+ */
+function __eduseedHomeDir() {
+  return process.env.HOME || require("node:os").homedir();
+}
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -16206,7 +16221,7 @@ function recordLearningDelta(episode, score) {
 }
 function persistEpisode(episode, opts) {
   try {
-    const base = opts?.dir ?? path3.join(process.env.HOME ?? "", ".eduseed", "kstar", episode.S.student_id);
+    const base = opts?.dir ?? path3.join(__eduseedHomeDir(), ".eduseed", "kstar", episode.S.student_id);
     fs3.mkdirSync(base, { recursive: true });
     const file2 = path3.join(base, `${episode.episode_id}.json`);
     fs3.writeFileSync(file2, JSON.stringify(episode, null, 2), { mode: 384 });
@@ -16246,7 +16261,7 @@ var getEpisodeOutputSchema = {
 };
 function episodeDir(studentId, dir) {
   const safeId = /^[A-Za-z0-9_-]{1,64}$/.test(studentId) ? studentId : "invalid-id";
-  return dir ?? path4.join(process.env.HOME ?? "", ".eduseed", "kstar", safeId);
+  return dir ?? path4.join(__eduseedHomeDir(), ".eduseed", "kstar", safeId);
 }
 function loadAllEpisodes(studentId, dir) {
   const base = episodeDir(studentId, dir);
@@ -16891,7 +16906,7 @@ var fs5 = __toESM(require("node:fs"), 1);
 var path5 = __toESM(require("node:path"), 1);
 function writeDeltaRToEpisode(studentId, challengeId, delta, dir) {
   const safeId = /^[A-Za-z0-9_-]{1,64}$/.test(studentId) ? studentId : "invalid-id";
-  const base = dir ?? path5.join(process.env.HOME ?? "", ".eduseed", "kstar", safeId);
+  const base = dir ?? path5.join(__eduseedHomeDir(), ".eduseed", "kstar", safeId);
   let files;
   try {
     files = fs5.readdirSync(base).filter((f) => f.endsWith(".json"));
@@ -16950,7 +16965,7 @@ function recordTeacherReviewEpisode(input, opts) {
     ...input.aiScore !== void 0 ? { delta_r: { predicted: input.aiScore, actual: input.score, attribution: `\u6559\u5E08\u7EC8\u5BA1\u5224\u5B9A ${input.action}\uFF08\u4E0E AI \u5206\u5DEE ${input.score - input.aiScore}\uFF09` } } : {}
   };
   try {
-    const root = opts?.dir ?? path6.join(process.env.HOME ?? "", ".eduseed", "kstar");
+    const root = opts?.dir ?? path6.join(__eduseedHomeDir(), ".eduseed", "kstar");
     const base = path6.join(root, `teacher-${input.teacherId}`);
     fs6.mkdirSync(base, { recursive: true });
     const file2 = path6.join(base, `${episode.episode_id}.json`);

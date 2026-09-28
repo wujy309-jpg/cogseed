@@ -7,6 +7,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Windows 上 EduSeed 课程插件的学习记录不再落到"当前工作目录"** — 插件运行时用
+  `process.env.HOME` 拼 KSTAR 记录目录，而 Windows 只有 `USERPROFILE`，于是目录退化成
+  相对路径 `.eduseed/kstar/<学号>`：记录写进了当时的工作目录（用户项目里、或应用安装目录），
+  一旦工作目录变化就再也读不回来（`list-episodes`/ΔR/尝试链断链）。运行时改为
+  `process.env.HOME || os.homedir()`。内置包版本提升到 0.5.5 以触发存量用户重装。
+
 ## [1.2.0] - 2026-09-23
 
 ### Changed
