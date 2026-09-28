@@ -13,6 +13,14 @@ const sync = fileURLToPath(new URL('./sync.mjs', import.meta.url));
 const official = 'https://github.com/bonc-ai/cogseed.git';
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
+function captureOutput(run) {
+  const original = process.stdout.write;
+  let output = '';
+  process.stdout.write = (chunk) => { output += String(chunk); return true; };
+  try { return { result: run(), output: JSON.parse(output.trim()) }; }
+  finally { process.stdout.write = original; }
+}
+
 function fixture(t) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'cogseed-cutover-test-'));
   t.after(() => fs.rmSync(base, { recursive: true, force: true }));
@@ -109,13 +117,17 @@ function fixture(t) {
     policyPath, approval, scan, authorizationReference, transport, planPath, planOptions, applyOptions, refs };
 }
 
-test('plan probes a lease-bound atomic push; apply replaces only heads/tags with the orphan main', (t) => {
+test('plan probes a lease-bound atomic push; apply replaces only heads and retains both tag OIDs', (t) => {
   const f = fixture(t);
   const before = f.refs();
-  const planned = runCutover(f.planOptions(), f.transport);
-  assert.equal(planned.status, 0);
+  const planned = captureOutput(() => runCutover(f.planOptions(), f.transport));
+  assert.equal(planned.result.status, 0);
+  assert.equal(planned.output.deleteTags, 0);
   assert.deepEqual(f.refs(), before, 'dry-run must not change remote refs');
   const plan = JSON.parse(fs.readFileSync(f.planPath));
+  assert.equal(plan.schemaVersion, 2);
+  assert.equal(plan.kind, 'public-heads-only-cutover');
+  assert.ok(plan.retainedNamespaces.includes('refs/tags/*'));
   assert.equal(plan.expectedHeads, 3);
   assert.equal(plan.expectedTags, 2);
   assert.equal(plan.newRootSha, f.root);
@@ -123,8 +135,13 @@ test('plan probes a lease-bound atomic push; apply replaces only heads/tags with
     f.git(f.bare, 'rev-parse', 'refs/tags/v1.0.0'));
   assert.notEqual(plan.expectedRefs.find((x) => x.ref === 'refs/tags/v1.0.0').oid,
     f.git(f.bare, 'rev-parse', 'refs/tags/v1.0.0^{}'));
-  assert.equal(runCutover(f.applyOptions(), f.transport).status, 0);
-  assert.deepEqual(f.refs(), [`${f.root} refs/heads/main`]);
+  const applied = captureOutput(() => runCutover(f.applyOptions(), f.transport));
+  assert.equal(applied.result.status, 0);
+  assert.equal(applied.output.deletedTags, 0);
+  assert.deepEqual(f.refs(), [
+    `${f.root} refs/heads/main`,
+    ...before.filter((ref) => ref.includes(' refs/tags/')),
+  ]);
   assert.equal(f.git(f.bare, 'rev-parse', 'refs/pull/1/head'), f.main);
   assert.equal(f.git(f.bare, 'rev-list', '--parents', '-n', '1', 'refs/heads/main'), f.root);
 });
@@ -138,6 +155,14 @@ test('tampered plan, candidate bytes, or orphan mapping blocks apply before remo
   changedPlan.newRootSha = '0'.repeat(40);
   fs.writeFileSync(f.planPath, JSON.stringify(changedPlan));
   assert.throws(() => runCutover(f.applyOptions(), f.transport), /digest mismatch/u);
+  fs.writeFileSync(f.planPath, originalPlan);
+  const oldPlan = JSON.parse(originalPlan);
+  oldPlan.schemaVersion = 1;
+  oldPlan.kind = 'public-git-ref-cutover';
+  delete oldPlan.planSha256;
+  oldPlan.planSha256 = sha256(JSON.stringify(oldPlan));
+  fs.writeFileSync(f.planPath, JSON.stringify(oldPlan));
+  assert.throws(() => runCutover(f.applyOptions(), f.transport), /Obsolete or unsupported/u);
   fs.writeFileSync(f.planPath, originalPlan);
   const file = path.join(f.candidate, 'source/src/app.js');
   const bytes = fs.readFileSync(file);
@@ -173,32 +198,41 @@ test('apply rechecks approval, scan, policy, authorization file and extra source
   assert.deepEqual(f.refs(), before);
 });
 
-test('remote head or tag drift invalidates the reviewed plan', (t) => {
+test('remote head or retained tag drift invalidates the reviewed plan', (t) => {
   const f = fixture(t);
   assert.equal(runCutover(f.planOptions(), f.transport).status, 0);
   f.git(f.bare, 'update-ref', 'refs/heads/new-branch', f.main);
   assert.throws(() => runCutover(f.applyOptions(), f.transport), /Remote refs changed/u);
   assert.equal(f.git(f.bare, 'rev-parse', 'refs/heads/main'), f.main);
+  f.git(f.bare, 'update-ref', '-d', 'refs/heads/new-branch');
+  const originalTag = f.git(f.bare, 'rev-parse', 'refs/tags/v0.9.0');
+  f.git(f.bare, 'update-ref', 'refs/tags/v0.9.0', f.git(f.bare, 'rev-parse', 'refs/tags/v1.0.0'));
+  assert.throws(() => runCutover(f.applyOptions(), f.transport), /Remote refs changed/u);
+  assert.equal(f.git(f.bare, 'rev-parse', 'refs/heads/main'), f.main);
+  assert.notEqual(f.git(f.bare, 'rev-parse', 'refs/tags/v0.9.0'), originalTag);
 });
 
 test('a stale exact lease during atomic push leaves all intended refs untouched', (t) => {
   const f = fixture(t);
   assert.equal(runCutover(f.planOptions(), f.transport).status, 0);
+  f.git(f.seed, 'commit', '--allow-empty', '-qm', 'racing branch commit');
+  const racingHead = f.git(f.seed, 'rev-parse', 'HEAD');
   let injected = false;
   const racingTransport = (repo, command, input) => {
     if (command.includes('push') && !command.includes('--dry-run') && !injected) {
       injected = true;
-      f.git(f.bare, 'update-ref', 'refs/tags/v0.9.0', f.git(f.bare, 'rev-parse', 'refs/tags/v1.0.0'));
+      f.git(f.seed, 'push', '-q', 'test-remote', `+${racingHead}:refs/heads/feature-a`);
     }
     return f.transport(repo, command, input);
   };
   assert.throws(() => runCutover(f.applyOptions(), racingTransport));
   assert.equal(injected, true);
   assert.equal(f.git(f.bare, 'rev-parse', 'refs/heads/main'), f.main);
-  assert.equal(f.git(f.bare, 'rev-parse', 'refs/heads/feature-a'), f.main);
+  assert.equal(f.git(f.bare, 'rev-parse', 'refs/heads/feature-a'), racingHead);
+  assert.equal(f.git(f.bare, 'rev-parse', 'refs/heads/feature-b'), f.main);
   assert.equal(f.git(f.bare, 'rev-parse', 'refs/tags/v1.0.0'),
     JSON.parse(fs.readFileSync(f.planPath)).expectedRefs.find((x) => x.ref === 'refs/tags/v1.0.0').oid);
-  assert.equal(f.git(f.bare, 'rev-parse', 'refs/tags/v0.9.0'), f.git(f.bare, 'rev-parse', 'refs/tags/v1.0.0'));
+  assert.equal(f.git(f.bare, 'rev-parse', 'refs/tags/v0.9.0'), f.main);
 });
 
 test('wrong origin, expected counts, and server rejection cannot mutate remote refs', (t) => {

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
  * One-time public Git ref cutover. Plan first, then explicitly apply the exact
- * reviewed plan digest. Only heads and tags are in scope: GitHub Release
- * objects/assets and read-only refs/pull/* are neither edited nor deleted.
- * Every ref update is covered by an exact old-OID lease in one atomic push.
+ * reviewed plan digest. Only branch heads are changed. Existing tags, GitHub
+ * Release objects/assets and read-only refs/pull/* are never edited or deleted.
+ * Every branch update is covered by an exact old-OID lease in one atomic push.
  * No branch-protection or ruleset changes are performed here.
  */
 import fs from 'node:fs';
@@ -33,7 +33,7 @@ function help() {
   node scripts/opensource/cutover.mjs --private-repo <private checkout> --public-repo <bootstrap checkout> --candidate <export dir> --mapping <bootstrap mapping.json> --policy <reviewed policy.json> --approval <private approval.json> --scan-report <private scan.json> --expected-main <old public main SHA> --expected-heads <count> --expected-tags <count> --plan-out <new private JSON>
   node scripts/opensource/cutover.mjs --private-repo <private checkout> --public-repo <bootstrap checkout> --candidate <export dir> --mapping <bootstrap mapping.json> --policy <reviewed policy.json> --approval <private approval.json> --scan-report <private scan.json> --expected-main <old public main SHA> --expected-heads <count> --expected-tags <count> --apply --plan <reviewed plan.json> --plan-sha256 <64-hex digest>
 
-Planning is the default and probes the exact atomic push with --dry-run. It retains the plan and exits 2 if the server rejects the probe. Apply revalidates the plan, every remote head and tag, then probes and performs the same lease-bound atomic push. A protected-ref rejection stops; this tool never changes protection settings.\n`;
+Planning is the default and probes the exact atomic branch push with --dry-run. It retains the plan and exits 2 if the server rejects the probe. Apply revalidates the plan and every remote head and tag, then updates main and deletes other heads while retaining all tags. A protected-ref rejection stops; this tool never changes protection settings.\n`;
 }
 
 export function parseArgs(argv) {
@@ -226,7 +226,7 @@ function planCore(options, snapshot, refs) {
   const counts = expectedCounts(options, refs);
   if (snapshot.mapping.publicSha === options['expected-main']) fail('Orphan root is already public main');
   return {
-    schemaVersion: 1, kind: 'public-git-ref-cutover', targetRepository: TARGET,
+    schemaVersion: 2, kind: 'public-heads-only-cutover', targetRepository: TARGET,
     remote: 'origin', oldMainSha: options['expected-main'], newRootSha: snapshot.mapping.publicSha,
     newRootTreeSha: snapshot.mapping.publicTreeSha, sourceSha: snapshot.manifest.sourceSha,
     exportSha256: snapshot.manifest.exportSha256,
@@ -235,16 +235,20 @@ function planCore(options, snapshot, refs) {
     approvalSha256: hash(snapshot.approvalFile.bytes), scanReportSha256: hash(snapshot.scanFile.bytes),
     authorizationReferenceSha256: snapshot.authReference.sha256,
     expectedRefs: refs, expectedHeads: counts.heads, expectedTags: counts.tags,
-    retainedNamespaces: ['refs/pull/*', 'GitHub Releases and assets'],
+    retainedNamespaces: ['refs/tags/*', 'refs/pull/*', 'GitHub Releases and assets'],
   };
 }
 
 function pushArgs(plan, dryRun) {
   const args = ['-c', 'push.followTags=false', 'push', '--atomic', '--porcelain'];
   if (dryRun) args.push('--dry-run');
-  for (const { ref, oid } of plan.expectedRefs) args.push(`--force-with-lease=${ref}:${oid}`);
+  for (const { ref, oid } of plan.expectedRefs) {
+    if (ref.startsWith('refs/heads/')) args.push(`--force-with-lease=${ref}:${oid}`);
+  }
   args.push('origin', `+${plan.newRootSha}:refs/heads/main`);
-  for (const { ref } of plan.expectedRefs) if (ref !== 'refs/heads/main') args.push(`:${ref}`);
+  for (const { ref } of plan.expectedRefs) {
+    if (ref.startsWith('refs/heads/') && ref !== 'refs/heads/main') args.push(`:${ref}`);
+  }
   return args;
 }
 
@@ -266,6 +270,9 @@ export function runCutover(options, gitRunner = git) {
     catch { /* Standalone private plan storage. */ }
     if (enclosingPlan) fail('Reviewed plan must be outside every Git checkout');
     const plan = planFile.value;
+    if (plan.schemaVersion !== 2 || plan.kind !== 'public-heads-only-cutover') {
+      fail('Obsolete or unsupported cutover plan; create and review a new heads-only plan');
+    }
     const { planSha256, ...core } = plan;
     if (!SHA256.test(planSha256 || '') || planSha256 !== options['plan-sha256']
       || hash(JSON.stringify(core)) !== planSha256) fail('Reviewed plan digest mismatch');
@@ -273,15 +280,20 @@ export function runCutover(options, gitRunner = git) {
     const current = remoteRefs(snapshot.repo, gitRunner);
     if (!equal(current, plan.expectedRefs)) fail('Remote refs changed since the reviewed plan');
     if (!probe(snapshot.repo, plan, gitRunner)) fail('Atomic dry-run was rejected; no refs were changed');
-    // Close the gap after the probe; per-ref leases are the final race guard.
+    // Close the gap after the probe; exact leases guard changed branch refs.
+    // Tags are read again after the push and are never sent as push refspecs.
     if (!equal(remoteRefs(snapshot.repo, gitRunner), plan.expectedRefs)) fail('Remote refs changed after dry-run');
     gitRunner(snapshot.repo, pushArgs(plan, false));
     const after = remoteRefs(snapshot.repo, gitRunner);
-    if (!equal(after, [{ ref: 'refs/heads/main', oid: plan.newRootSha }])) {
-      fail('Atomic push returned but public heads/tags do not match the cutover target');
+    const expectedAfter = [
+      { ref: 'refs/heads/main', oid: plan.newRootSha },
+      ...plan.expectedRefs.filter(({ ref }) => ref.startsWith('refs/tags/')),
+    ];
+    if (!equal(after, expectedAfter)) {
+      fail('Atomic push returned but public heads or retained tags do not match the cutover target');
     }
     process.stdout.write(`${JSON.stringify({ applied: true, newMainSha: plan.newRootSha,
-      deletedHeads: plan.expectedHeads - 1, deletedTags: plan.expectedTags,
+      deletedHeads: plan.expectedHeads - 1, deletedTags: 0,
       releaseAssetsChanged: false, pullRefsChanged: false })}\n`);
     return { status: 0 };
   }
@@ -293,7 +305,7 @@ export function runCutover(options, gitRunner = git) {
   const accepted = probe(snapshot.repo, plan, gitRunner);
   process.stdout.write(`${JSON.stringify({ applied: false, plan: filename, planSha256: plan.planSha256,
     oldMainSha: plan.oldMainSha, newMainSha: plan.newRootSha,
-    deleteHeads: plan.expectedHeads - 1, deleteTags: plan.expectedTags,
+    deleteHeads: plan.expectedHeads - 1, deleteTags: 0,
     atomicDryRun: accepted ? 'passed' : 'rejected', releaseAssetsChanged: false,
     pullRefsChanged: false })}\n`);
   return { status: accepted ? 0 : 2 };
