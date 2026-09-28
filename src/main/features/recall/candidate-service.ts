@@ -2363,9 +2363,6 @@ export async function promoteRecallCandidate(
       : preflight.forbiddenWhen !== undefined
         ? { forbiddenWhen: preflight.forbiddenWhen }
         : targetSemantics.forbiddenWhen !== undefined ? { forbiddenWhen: targetSemantics.forbiddenWhen } : {}),
-    ...(optionSemantics.sensitivity !== undefined
-      ? { sensitivity: optionSemantics.sensitivity }
-      : targetSemantics.sensitivity !== undefined ? { sensitivity: targetSemantics.sensitivity } : {}),
   };
   // 条件是评审时新写下的自由文本，不一定走 saveRecallCandidate 那道闸，这里补上。
   assertNotForbiddenToPersist([

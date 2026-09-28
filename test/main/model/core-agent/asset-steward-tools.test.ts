@@ -504,7 +504,6 @@ describe('写工具（US-402）', () => {
       { statement: '我自己觉得应该改成这样' },
       { scope: 'review' },
       { applicableWhen: ['任何情况'] },
-      { sensitivity: 'L2' },
     ]) {
       const out = await call(edit, { assetId: asset.id, fields, reason: '我觉得该改', origin: 'ai_initiated' });
       // 没有会话上下文 → 卡片发不出去 → **拒绝兜底**（这条分支与建卡路径各有测试，
@@ -516,15 +515,14 @@ describe('写工具（US-402）', () => {
     const after = await assets.readAbilityAsset(TEST_UID, asset.id);
     expect(after.statement).toBe(asset.statement);
     expect(after.version).toBe(asset.version);
-    expect(after.sensitivity).toBeUndefined();
     // **没有任何一次内容写入**（actor=ai 的 updated 行不存在）——提议行不算写入。
     const rows = await assets.listAbilityAssetAudit(TEST_UID, asset.id);
     expect(rows.filter((r) => r.action === 'updated' && r.actor === 'ai')).toEqual([]);
-    // 但每一次实质变化都留下了提议（4 条）与对应的台账行。
+    // 但每一次实质变化都留下了提议（3 条）与对应的台账行。
     const proposals = await approval.listAssetChangeProposals(TEST_UID, { assetId: asset.id });
-    expect(proposals).toHaveLength(4);
+    expect(proposals).toHaveLength(3);
     expect(proposals.every((row) => row.state === 'pending')).toBe(true);
-    expect(rows.filter((r) => r.action === 'approval_proposed' && r.actor === 'ai')).toHaveLength(4);
+    expect(rows.filter((r) => r.action === 'approval_proposed' && r.actor === 'ai')).toHaveLength(3);
   });
 
   it('实质变化提议去重：同一变更重复提交只留一条', async () => {
@@ -748,12 +746,11 @@ describe('写工具（US-402）', () => {
     expect(out).toContain('过滤：状态=paused → 1 条');
   });
 
-  it('reason 必填；fields 不能为空；sensitivity 取值受限', async () => {
+  it('reason 必填；fields 不能为空', async () => {
     const asset = await seedAsset('入参校验基线。');
     const { edit } = await tools();
     expect((await call(edit, { assetId: asset.id, fields: { title: 'x' } })).content).toContain('reason 必填');
     expect((await call(edit, { assetId: asset.id, fields: {}, reason: '空字段' })).content).toContain('至少要给一个');
-    expect((await call(edit, { assetId: asset.id, fields: { sensitivity: 'L9' }, reason: '乱传' })).content).toContain('L0 / L1 / L2');
   });
 
   it('归并：进同一版本组、source 归档并记去向', async () => {

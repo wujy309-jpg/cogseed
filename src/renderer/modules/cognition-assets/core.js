@@ -214,8 +214,6 @@
     if (rule === 'source_unavailable') return T('cognition.block_reason_source_unavailable', '来源授权已撤回或来源记录已失效，不能继续引用');
     if (rule === 'agent') return T('cognition.block_reason_agent', '接收方不在这条内容允许的 Agent 范围内');
     if (rule === 'scope') return T('cognition.block_reason_scope', '这条内容声明的作用范围不包含当前场景');
-    if (rule === 'sensitivity_high') return T('cognition.block_reason_sensitivity_high', '这条内容的敏感级高于本次允许的上限');
-    if (rule === 'sensitivity_unknown') return T('cognition.block_reason_sensitivity_unknown', '这条内容还没分过敏感级，不敢默认放行');
     if (rule === 'maturity') return T('cognition.block_reason_maturity', '这条内容的使用契约不允许这样带入');
     if (rule === 'forbidden_context') return T('cognition.block_reason_forbidden_context', '当前任务命中了这条内容声明的禁用场景');
     if (rule === 'not_applicable_context') return T('cognition.block_reason_not_applicable_context', '当前任务与这条内容声明的适用场景不匹配');
@@ -1415,9 +1413,13 @@
     }
   });
 
-  /** 仅进入「待我处理」时读取旧记忆原文；启动和其他页签均不扫描。 */
+  /** 进入承载旧记忆迁移工具卡的页签时读取原文；启动和其他页签均不扫描。
+   *  两区已自「待我处理」页尾挪入设置页（2026-09-28 两页重整）——门控路由
+   *  清单随挪页扩入 settings（照 app.js 懒加载先例），review 保留兜底（返回
+   *  栈深链），不扩则设置页两区永久 loading 且该分支无任何按钮（深探 F23）。 */
   NS.onChange(() => {
-    if (String((store.route && store.route.name) || '') !== 'review' || String(store.route.candidateId || '')) return;
+    const routeName = String((store.route && store.route.name) || '');
+    if (!['review', 'settings'].includes(routeName) || String(store.route.candidateId || '')) return;
     if (!store.legacyMemoryMigration) void NS.loadLegacyMemoryMigrationPreview(false);
     if (!store.legacyScopedMemoryMigration) void NS.loadLegacyScopedMemoryMigrationPreview(false);
   });
@@ -1850,9 +1852,9 @@
         store.candidateVersionConflict = null;
       }
       if (action === 'defer') {
-        // 「稍后处理」的提示与导航随语境分流（2026-09-16 子安口径）：
-        // 整理页=内容被送进待我处理，提示去向；待我处理页内=人已在此，
-        // 当前页点「稍后处理」后回到列表；其他页面明确提示「已放入稍后处理」。
+        // 「稍后处理」的提示与导航随语境分流（2026-09-16 子安口径；整理详情
+        // 内嵌表单删除后（2026-09-28）「稍后处理」只剩待我处理侧入口，非
+        // review 路由的 toast 分支留作防御）：
         if (String(store.route && store.route.name || '') === 'review') {
           router.go({ name: 'review' });
         } else {
@@ -1921,33 +1923,17 @@
     },
     /** 待办处置（specs/008 T051；specs/010 扩展可选参数）：动作由读模型给出，
      *  这里只转发。没有一键动作的类别不在这里——渲染层也不给按钮。
-     *  `params`（specs/010）：classify 带 `level`；set_boundary 带
-     *  `applicableWhen`/`forbiddenWhen`；keep/merge 带 `targetAssetId`。 */
+     *  `params`（specs/010）：set_boundary 带 `applicableWhen`/`forbiddenWhen`
+     *  （其渲染入口已随两页重整删除，仅留通道语义）；keep/merge 带 `targetAssetId`。
+     *  classify 的 `level` 参数已随敏感级机制整体删除（2026-09-28）。 */
     async resolveInboxItem(id, action, params) {
       const payload = { id: String(id || ''), action: String(action || '') };
-      if (params && params.level) payload.level = String(params.level);
       if (params && Array.isArray(params.applicableWhen)) payload.applicableWhen = params.applicableWhen.map(String);
       if (params && Array.isArray(params.forbiddenWhen)) payload.forbiddenWhen = params.forbiddenWhen.map(String);
       if (params && params.targetAssetId) payload.targetAssetId = String(params.targetAssetId);
       await api.call('cognition.inbox.resolve', payload);
       toast(T('cognition.inbox_resolved', '已处理'));
       await NS.reload();
-    },
-    /** 聚合条目批量定级（specs/010 T023/T025）：逐条结果如实上屏——部分失败
-     *  不是整体失败，也不谎报全绿。返回结果供调用方做行内明细呈现。 */
-    async classifyAssetsBatch(assetIds, level) {
-      const ids = (Array.isArray(assetIds) ? assetIds : []).map(String).filter(Boolean);
-      const result = await api.call('recall.assets.sensitivity.batch', { assetIds: ids, level: String(level || '') });
-      const applied = Array.isArray(result && result.applied) ? result.applied.length : 0;
-      const failed = Array.isArray(result && result.failed) ? result.failed : [];
-      const skipped = Array.isArray(result && result.skipped) ? result.skipped.length : 0;
-      if (!failed.length) {
-        toast(T('cognition.inbox_batch_done', '已分级 {applied} 条（跳过 {skipped} 条）', { applied: String(applied), skipped: String(skipped) }));
-      } else {
-        toast(T('cognition.inbox_batch_partial', '分级 {applied} 条，{failed} 条没成功——失败的留在待办里', { applied: String(applied), failed: String(failed.length) }));
-      }
-      await NS.reload();
-      return { applied, failed, skipped };
     },
     /** 「已删除」列表按需拉（specs/008 US-306/T051）：保留期剩余天数由服务端现算。 */
     async loadDeletedAssets() {
@@ -2145,22 +2131,13 @@
         }
         if (visibilityChanged) payload.scopePolicy = nextPolicy;
       }
-      // 敏感级（specs/010 T026）：分段控件只在用户点选后才带 data-level——
-      // 没点＝维持现状（未分级不预设 L0）；点了且与现值不同才随保存提交。
-      // 重渲染后控件容器的 data-level 会丢（app 的点选处理器已同步写
-      // assetEditDrafts），这里回退读草稿，否则保存出的新版本静默丢分级
-      //（2026-09-28 修）。
-      const sensitivityEl = card.querySelector('[data-f="sensitivity"]');
-      const pickedLevel = (sensitivityEl ? String(sensitivityEl.getAttribute('data-level') || '') : '')
-        || String(editDraft.sensitivity || '');
-      const sensitivityChanged = Boolean(pickedLevel) && pickedLevel !== String(asset.sensitivity || '');
-      if (sensitivityChanged) payload.sensitivity = pickedLevel;
+      // 敏感级变更检测已随敏感级机制整体删除（2026-09-28）：表单不再有该控件，
+      // 保存负载也不携带 sensitivity。
       const unchanged = payload.title === String(asset.title || '')
         && payload.statement === String(asset.statement || '')
         && JSON.stringify(payload.applicableWhen) === JSON.stringify((asset.applicableWhen || []))
         && JSON.stringify(payload.forbiddenWhen) === JSON.stringify((asset.forbiddenWhen || []))
-        && !visibilityChanged
-        && !sensitivityChanged;
+        && !visibilityChanged;
       const exitEdit = () => {
         const drafts = Object.assign({}, store.assetEditDrafts || {});
         delete drafts[String(assetId)];

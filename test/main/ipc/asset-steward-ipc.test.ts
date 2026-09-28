@@ -177,8 +177,8 @@ describe('ipc › cognition.inbox.resolve', () => {
   });
 
   it('没有一键处置动作的类别回 ok:false 并说明去向，不计为成功', async () => {
-    // specs/010 起 sensitivity / rule-boundary 有了就地处断（classify / set_boundary），
-    // 对它们传**别的动作**回 unsupported_action；仍然没有一键动作的（来源失效 /
+    // specs/010 起 rule-boundary 有了就地处断（set_boundary），
+    // 对它传**别的动作**回 unsupported_action；仍然没有一键动作的（来源失效 /
     // 模板改写 / Skill 生成）维持 unsupported_item_kind + 指明去资产详情。
     for (const id of ['source:aa-3', 'template:aa-4', 'skill:aa-5', 'skill-upgrade:aa-6', 'rule-scope:aa-7']) {
       const res = await call('cognition.inbox.resolve', { id, action: 'accept' });
@@ -186,7 +186,7 @@ describe('ipc › cognition.inbox.resolve', () => {
       expect(res.code, id).toBe('unsupported_item_kind');
       expect(String(res.error), id).toContain('资产详情');
     }
-    for (const id of ['sensitivity:aa-1', 'rule-boundary:aa-2']) {
+    for (const id of ['rule-boundary:aa-2']) {
       const res = await call('cognition.inbox.resolve', { id, action: 'accept' });
       expect(res.ok, id).toBe(false);
       expect(res.code, id).toBe('unsupported_action');

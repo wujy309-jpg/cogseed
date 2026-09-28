@@ -21,8 +21,8 @@ import {
   filterRecallAssetsForAgentRead,
   type RecallAgentReadContext,
 } from './prompt-injection';
-import { makeDisplayTitle } from './statement-fusion';
 import { isAssetScopeAllowed, type RecallAbilityAssetScopePolicy } from './scope-policy';
+import { recallTitleIssue } from './title-policy';
 
 const log = createLogger('recall.cross-session-memory-assets');
 const LIST_MAX = 30;
@@ -159,7 +159,7 @@ async function matchingPersonalAssets(
     const assets = textMatches.filter((asset) => belongsToAuthorizedMemoryTarget(asset, context, effectiveTarget));
     // This is a correction/removal lookup after the runner has required an
     // explicit current user command. Runtime-use eligibility (active status,
-    // maturity, sensitivity, and source availability) must not make an
+    // maturity, and source availability) must not make an
     // owner's paused asset impossible to correct or remove. Keep the declared
     // memory-tier boundary: if the same text also exists outside this target,
     // block instead of falling through to a legacy write against the wrong item.
@@ -217,8 +217,16 @@ export async function replaceCrossSessionMemoryAsset(
   }
 
   try {
+    // 标题一等化（设计 3.2 六路径配套 / 深探 F1）：禁止 makeDisplayTitle 直写
+    // title（那正是「标题＝正文首句」的病源）。改为沿用旧标题——旧标题对新
+    // 正文仍合规就不动 title（update 不传即保留）；旧标题缺失或不合规时走
+    // LLM 起标题链，起不出来按明示失败口径落入 catch，本次修正不落盘。
+    const legacyTitle = String(match.asset.title || '');
+    const titleInput = recallTitleIssue(legacyTitle, text)
+      ? { title: (await (await import('./asset-title-suggestion')).suggestAbilityAssetTitle(userId, { statement: text, type: match.asset.type })).title }
+      : {};
     const updated = await updateAbilityAsset(userId, match.asset.id, {
-      title: makeDisplayTitle(text),
+      ...titleInput,
       statement: text,
       expectedVersion: match.asset.version,
       reason: 'User-requested cross-session memory correction.',

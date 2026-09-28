@@ -13,9 +13,9 @@ const PREVIEW = {
   ],
 };
 
-describe('待我处理里的旧记忆归属核对', () => {
+describe('设置页里的旧记忆归属核对（2026-09-28 两页重整：两区自「待我处理」页尾挪入设置页）', () => {
   it('在真实待办视图显示来源、完整原文、重复数量和默认未选状态', () => {
-    const html = renderCognition({ name: 'review' }, {
+    const html = renderCognition({ name: 'settings' }, {
       legacyMemoryMigration: {
         preview: PREVIEW,
         loading: false,
@@ -35,11 +35,13 @@ describe('待我处理里的旧记忆归属核对', () => {
     expect(html).toContain('data-act="legacy-memory-toggle"');
     expect(html).toContain('data-act="legacy-memory-run"');
     expect(html).toContain('disabled');
-    expect(html).not.toContain('checked');
+    // 默认未选：设置页还有「自动整理」等开关（aria-checked），断言只看迁移
+    // 复选框——uiCheckbox 的 checked 是布尔属性，跟在 type="checkbox" 之后。
+    expect(html).not.toMatch(/type="checkbox" checked[^>]*data-act="legacy-memory-toggle"/);
   });
 
   it('给同一来源下的每个旧记忆复选框独立的可访问名称', () => {
-    const html = renderCognition({ name: 'review' }, {
+    const html = renderCognition({ name: 'settings' }, {
       legacyMemoryMigration: {
         preview: PREVIEW,
         loading: false,
@@ -67,7 +69,7 @@ describe('待我处理里的旧记忆归属核对', () => {
         { kind: 'agent', id: 'agent-a', contentHash: 'f'.repeat(64), sourceKeys: ['agent:agent-a:canonical'], text: '第二条 Agent 记忆。', occurrences: 1, scopePolicy: { agentIds: ['agent-a'] } },
       ],
     };
-    const html = renderCognition({ name: 'review' }, {
+    const html = renderCognition({ name: 'settings' }, {
       legacyScopedMemoryMigration: {
         preview: scopedPreview,
         loading: false,
@@ -133,8 +135,46 @@ describe('待我处理里的旧记忆归属核对', () => {
     expect(loaded.store.legacyMemoryMigration.selectionKeys).toEqual([]);
   });
 
-  it('does not present an unreadable source as an empty source', () => {
+
+  it('进入设置页真实拉取两区预览（2026-09-28 挪页配套；不靠播种掩盖门控缺口）', async () => {
+    const calls: string[] = [];
+    const invoke = async (channel: string) => {
+      calls.push(channel);
+      if (channel === 'recall.memory.migrate') {
+        return { fingerprints: PREVIEW.fingerprints, sources: PREVIEW.sources, items: PREVIEW.items };
+      }
+      return {
+        fingerprints: ['agent:agent-a:canonical'],
+        sources: [],
+        items: [],
+      };
+    };
+    const loaded = loadCognitionAssets({ legacyMemoryMigration: null, legacyScopedMemoryMigration: null }, { name: 'tree' }, {
+      cogseed: { invoke },
+    });
+
+    loaded.ns.router.go({ name: 'settings' });
+
+    await vi.waitFor(() => {
+      expect(loaded.store.legacyMemoryMigration?.preview).toBeTruthy();
+      expect(loaded.store.legacyScopedMemoryMigration?.preview).toBeTruthy();
+    });
+    expect(calls).toContain('recall.memory.migrate');
+    expect(calls).toContain('recall.scopedMemoryMigration.preview');
+  });
+
+  it('「待我处理」页不再渲染迁移两区（本页零残留）', () => {
     const html = renderCognition({ name: 'review' }, {
+      legacyMemoryMigration: {
+        preview: PREVIEW, loading: false, failed: false, selectionKeys: [], running: false, lastRun: null,
+      },
+    });
+    expect(html).not.toContain('旧记忆归属与迁移');
+    expect(html).not.toContain('data-act="legacy-memory-run"');
+  });
+
+  it('does not present an unreadable source as an empty source', () => {
+    const html = renderCognition({ name: 'settings' }, {
       legacyMemoryMigration: {
         preview: {
           fingerprints: { user: 'a'.repeat(64), shared: 'b'.repeat(64) },

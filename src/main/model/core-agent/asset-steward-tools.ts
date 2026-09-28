@@ -17,7 +17,6 @@ import {
   archiveAbilityAsset,
   classifyAbilityAssetWriteFailure,
   diffAbilityAssetsForAudit,
-  strictestSensitivity,
   summarizeAuditChange,
   deleteAbilityAsset,
   listAbilityAssets,
@@ -88,8 +87,6 @@ const BLOCK_REASON_LABELS: Record<string, string> = {
   scope_mismatch: '作用范围与当前上下文不匹配',
   forbidden_context: '命中它自己声明的禁用场景',
   target_agent_not_allowed: '不允许用于当前 Agent',
-  sensitivity_unclassified: '敏感级未分级',
-  sensitivity_above_destination: '敏感级高于当前目的地上限',
   maturity_below_default_use: '置信度不足（未确认/未验证）',
 };
 
@@ -118,7 +115,6 @@ function metaLine(asset: RecallAbilityAssetRecord): string {
     // 族名是用户手写的**同源血缘**分组名，不是主题标签（标签字段尚未落地）：
     // 显示它才能让归并判断有依据，但必须标清是什么，免得和"标签"混为一谈。
     ...(asset.familyName ? [`族名(同源血缘)=${asset.familyName}`] : []),
-    ...(asset.sensitivity ? [`敏感级=${asset.sensitivity}`] : []),
   ].join(' | ');
 }
 
@@ -782,13 +778,10 @@ const FAILURE_CATEGORY_LABELS: Record<AbilityAssetFailureCategory, string> = {
  *  实质变化 = 方法正文 / 事实判断 / 适用范围 / 主题标签：
  *    - `statement`：正文即"这条资产主张什么"；
  *    - `scope` 与 `applicableWhen`/`forbiddenWhen`：它从此会进出哪一批任务；
- *    - `sensitivity`：能去的地方变多就是扩权——拍板表没单列它，但既有系统
- *      自己就把「敏感级升高」当扩权（inbox 的 `sensitivity_escalated` 是
- *      confirm 档）。归入实质变化是**更保护**的方向，代价只是偶发一张卡。
  *    - `tags`（specs/012）：打什么标签是含义判断，"这条该归哪类"必须由
  *      用户拍板（spec AC5：从"劝说"升级为"闸门"）；用户明确指令则直接执行。
  *  命名/标题不在此列（分级③允许自动处理）。 */
-export const SUBSTANTIAL_FIELDS = ['statement', 'scope', 'applicableWhen', 'forbiddenWhen', 'sensitivity', 'tags'] as const;
+export const SUBSTANTIAL_FIELDS = ['statement', 'scope', 'applicableWhen', 'forbiddenWhen', 'tags'] as const;
 
 function writeReceipt(action: string, asset: RecallAbilityAssetRecord, extra: string[] = []): string {
   return [
@@ -862,7 +855,6 @@ async function proposeSubstantialChange(
   const { asset, assetId, payload, fields, reason } = params;
   const summary = summarizeAuditChange(
     diffAbilityAssetsForAudit(asset, { ...asset, ...payload }),
-    strictestSensitivity([asset.sensitivity, typeof payload.sensitivity === 'string' ? payload.sensitivity : undefined]),
   );
   // 带上这几个字段**当前**的值：卡片要能显示"当前 → 拟生效"，用户才判断得了。
   const beforeValues: Record<string, unknown> = {};
@@ -882,7 +874,7 @@ async function proposeSubstantialChange(
 
   const cannotApply = [
     `[asset:${assetId}] ${asset.title || '(无标题)'}：这次改动涉及实质内容（${fields.join(' / ')}），我没有直接生效。`,
-    '原因：正文/适用范围/敏感级变了，意味着这条资产主张的内容、或者它以后会进出哪一批任务变了，必须由用户确认。',
+    '原因：正文/适用范围变了，意味着这条资产主张的内容、或者它以后会进出哪一批任务变了，必须由用户确认。',
   ];
   const originHint = params.claimedUserInstruction && !params.userInstructionVerified
     ? '当前用户原话无法验证这项直写授权；模型提供的来源标记不构成用户授权。内容保持待审，请勿声称已经生效。'
@@ -955,7 +947,7 @@ const EDIT_FIELD_ALIASES: Record<string, string> = { body: 'statement' };
  *  "已改动"而实际一字未动（比报错更糟）。`tags`/`category` 已解禁（specs/012
  *  T022）：category 不落字段，收编为一条标签并入 tags。 */
 const EDIT_ACCEPTED_FIELDS = new Set([
-  'title', 'statement', 'body', 'scope', 'applicableWhen', 'forbiddenWhen', 'sensitivity', 'scopePolicy', 'tags', 'category',
+  'title', 'statement', 'body', 'scope', 'applicableWhen', 'forbiddenWhen', 'scopePolicy', 'tags', 'category',
 ]);
 
 function requireReason(value: unknown): string | { error: string } {
@@ -993,8 +985,8 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
   return {
     name: 'edit_ability_asset',
     description: [
-      '改一条认知资产的内容：标题、正文、适用范围、适用/禁用场景、敏感级、主题标签。**必须**说明依据（reason）。',
-      '**分级（很重要）**：只有用户在当前消息里明确给出并逐字写出要改成的正文或单组标签值，主进程才允许直接改这项；含义由你补写、值来自旧上下文或用户指令不够具体时，不得把 origin 标成 user_instruction，必须走用户审批。你自己提出的正文/适用范围/敏感级/标签实质变化也必须审批。',
+      '改一条认知资产的内容：标题、正文、适用范围、适用/禁用场景、主题标签。**必须**说明依据（reason）。',
+      '**分级（很重要）**：只有用户在当前消息里明确给出并逐字写出要改成的正文或单组标签值，主进程才允许直接改这项；含义由你补写、值来自旧上下文或用户指令不够具体时，不得把 origin 标成 user_instruction，必须走用户审批。你自己提出的正文/适用范围/标签实质变化也必须审批。',
       '读到的版本号（metaLine 里的「在用版」）请通过 expectedVersion 带回来：如果这条资产在你读取之后被改过（用户正在手动编辑），工具会拒绝而不是覆盖——重新读一次再决定。',
       '改动会写进台账（谁改的/时间/前后值/依据），并且随时可回滚（rollback_ability_asset）。',
       '主题标签：fields.tags 传字符串数组（整体替换；每条 trim 后非空且 ≤20 字、去重后 ≤12 条，超限拒绝不截断）；category 是旧入参，会**收编为一条标签**与 tags 合并去重（不再单独存在）。标签改动不 bump 内容版本，台账记「标签：旧 → 新」。',
@@ -1012,7 +1004,6 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
             scope: { type: 'string', description: '适用范围。' },
             applicableWhen: { type: 'array', items: { type: 'string' }, description: '适用场景（整体替换；传空数组=清空）。' },
             forbiddenWhen: { type: 'array', items: { type: 'string' }, description: '禁用场景（整体替换；传空数组=清空）。' },
-            sensitivity: { type: 'string', description: '敏感级：L0 / L1 / L2。' },
             tags: { type: 'array', items: { type: 'string' }, description: '主题标签（整体替换）：字符串数组，每条 ≤20 字、去重后 ≤12 条；传空数组=清空标签。' },
             category: { type: 'string', description: '分类（收编）：单个字符串，会作为一条标签并入 tags 合并去重，不单独存在。' },
             scopePolicy: {
@@ -1055,7 +1046,7 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
             `未能改动：[asset:${assetId}]`,
             `拦截规则：不认识的字段名：${unknownFields.join(' / ')}`,
             '归因：schema（入参或记录形状不合法）',
-            '可用的字段：title / statement（别名 body）/ scope / applicableWhen / forbiddenWhen / sensitivity / tags / category / scopePolicy。',
+            '可用的字段：title / statement（别名 body）/ scope / applicableWhen / forbiddenWhen / tags / category / scopePolicy。',
             '注意：fields 要传**对象**（不要传 JSON 字符串），例如 {"statement":"新正文"}。',
           ].join('\n'),
           isError: true,
@@ -1099,9 +1090,6 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
       const touched = Object.keys(fields).filter((key) => fields[key] !== undefined);
       // 系统边界：模型给的值先在这里收口。上限与 IPC/服务层同口径（条件 ≤32 条），
       // 不指望下游兜——下游抛的是英文不变量消息，对模型不够可读。
-      if (fields.sensitivity !== undefined && !['L0', 'L1', 'L2'].includes(String(fields.sensitivity))) {
-        return { content: `sensitivity 只能是 L0 / L1 / L2，收到：${String(fields.sensitivity)}`, isError: true };
-      }
       for (const key of ['applicableWhen', 'forbiddenWhen'] as const) {
         fields[key] = parseStructuredInput(fields[key]);
         const value = fields[key];
@@ -1206,7 +1194,6 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
         ...(typeof fields.scope === 'string' ? { scope: fields.scope } : {}),
         ...(Array.isArray(fields.applicableWhen) ? { applicableWhen: fields.applicableWhen.map(String) } : {}),
         ...(Array.isArray(fields.forbiddenWhen) ? { forbiddenWhen: fields.forbiddenWhen.map(String) } : {}),
-        ...(typeof fields.sensitivity === 'string' ? { sensitivity: fields.sensitivity as 'L0' | 'L1' | 'L2' } : {}),
         ...(tagsToWrite !== undefined ? { tags: tagsToWrite } : {}),
         ...(fields.scopePolicy !== undefined
           ? { scopePolicy: fields.scopePolicy as RecallAbilityAssetScopePolicy }

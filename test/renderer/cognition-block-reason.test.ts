@@ -22,8 +22,6 @@ const RULES = [
   ['source_unavailable', '来源'],
   ['agent', '智能体'],
   ['scope', '作用范围'],
-  ['sensitivity_high', '敏感级'],
-  ['sensitivity_unknown', '敏感级'],
   ['maturity', '使用契约'],
   ['forbidden_context', '禁用场景'],
   ['not_applicable_context', '适用场景'],

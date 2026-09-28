@@ -1,10 +1,13 @@
 /**
- * 治理待办分组区（specs/010 T014~T016 / T011 / T025 渲染面）。
+ * 治理待办分组区（specs/010 T014~T016 渲染面；2026-09-28 敏感级/扩权整套删除
+ * ＋两页重整后收窄）。
  *
  * 页面级断言（与 cognition-capture-log.test.ts 同构的真实页面装配）：
- *   - 分组标题按 冲突 → 扩权 → 缺边界 → 未分级 → 其他 定序、空组不出标题；
- *   - 各分区的行渲染读模型给的动作（渲染层不自判）：扩权两钮、补条件就地表单
- *     （预填当前条件）、未分级聚合（共享分段控件 + 批量钮 + 名单）、冲突选边；
+ *   - 分组只剩 冲突 → 其他（扩权/缺边界/未分级三组已随机制与催办删除），
+ *     空组不出标题；
+ *   - 各分区的行渲染读模型给的动作（渲染层不自判）：冲突选边、巡检选边/合并；
+ *   - 主进程尚未同步收窄时，历史残留的敏感级/催办 kind 落 other 兜底标题与
+ *     扁平行——不出现定级控件、扩权钮、补条件表单（枚举收窄的双侧同步锚点）；
  *   - 降级路径逐字退回扁平清单；空态恰一处；不出现裸动作名。
  */
 import { describe, expect, it } from 'vitest';
@@ -68,7 +71,8 @@ function ensureModule(): { cogAssets: Record<string, unknown>; domRoot: { innerH
   require('../../src/renderer/modules/ui-status.js');
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   require('../../src/renderer/modules/ui-page-header.js');
-  // 分段控件是 index.html 的静态共享层（敏感级三档控件用它，specs/010 T011）。
+  // 分段控件是 index.html 的静态共享层（设置页「新建议如何保存」等仍用它；
+  // 敏感级三档控件已随机制删除，2026-09-28）。
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   require('../../src/renderer/modules/ui-segmented-control.js');
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -91,23 +95,15 @@ const CONFLICT_ITEM = {
   id: 'conflict:cand-1', kind: 'classification_conflict', urgency: 'confirm',
   title: '同一句话', candidateId: 'cand-1', detail: 'fact / rule', actions: ['claim', 'reject', 'defer'],
 };
-const ESCALATION_ITEM = {
-  id: 'sensitivity-up:aa-1', kind: 'sensitivity_escalated', urgency: 'confirm',
-  title: '被提级的资产', assetId: 'aa-1', detail: 'L1 → L2', level: { before: 'L1', after: 'L2' }, actions: ['accept', 'reject'],
-};
-const BOUNDARY_ITEM = {
-  id: 'rule-boundary:aa-2', kind: 'rule_boundary_missing', urgency: 'low_disturbance',
-  title: '缺边界的规则', assetId: 'aa-2', boundary: { applicableWhen: ['发布窗口内'], forbiddenWhen: [] }, actions: ['set_boundary'],
-};
-const UNCLASSIFIED_ITEMS = [
+// 2026-09-28 敏感级机制删除后，历史残留形态（主进程分组收窄前的旧数据）：
+// 用来钉「渲染层不再给这些 kind 专属控件，落 other 兜底与扁平行」。
+const STALE_SENSITIVITY_ITEMS = [
+  { id: 'sensitivity-up:aa-1', kind: 'sensitivity_escalated', urgency: 'confirm',
+    title: '被提级的资产', assetId: 'aa-1', detail: 'L1 → L2', actions: ['accept', 'reject'] },
   { id: 'sensitivity:aa-3', kind: 'sensitivity_unclassified', urgency: 'confirm', title: '资产三', assetId: 'aa-3', actions: ['classify'] },
-  { id: 'sensitivity:aa-4', kind: 'sensitivity_unclassified', urgency: 'confirm', title: '资产四', assetId: 'aa-4', actions: ['classify'] },
+  { id: 'rule-boundary:aa-2', kind: 'rule_boundary_missing', urgency: 'low_disturbance',
+    title: '缺边界的规则', assetId: 'aa-2', boundary: { applicableWhen: ['发布窗口内'], forbiddenWhen: [] }, actions: ['set_boundary'] },
 ];
-const AGGREGATE_ITEM = {
-  id: 'sensitivity-batch:xyz', kind: 'sensitivity_unclassified', urgency: 'confirm',
-  title: '2 条资产还没有分级', actions: ['classify'],
-  aggregate: { count: 2, assetIds: ['aa-3', 'aa-4'] },
-};
 const OTHER_ITEM = {
   id: 'candidate:cand-9', kind: 'candidate_pending_review', urgency: 'low_disturbance',
   title: '普通待确认候选', candidateId: 'cand-9', actions: ['accept', 'reject', 'defer'],
@@ -122,76 +118,35 @@ const PAIR_FINDING = {
 function groupsFixture(_items: Array<Record<string, unknown>>) {
   return [
     { category: 'conflict', titleKey: 'cognition.inbox_group_conflict', items: [CONFLICT_ITEM, PAIR_FINDING], count: 2, total: 3 },
-    { category: 'escalation', titleKey: 'cognition.inbox_group_escalation', items: [ESCALATION_ITEM], count: 1, total: 1 },
-    { category: 'boundary', titleKey: 'cognition.inbox_group_boundary', items: [BOUNDARY_ITEM], count: 1, total: 1 },
-    { category: 'unclassified', titleKey: 'cognition.inbox_group_unclassified', items: [AGGREGATE_ITEM], count: 1, total: 2 },
     { category: 'other', titleKey: 'cognition.inbox_group_other', items: [OTHER_ITEM], count: 1, total: 1 },
   ].filter((group) => group.items.length);
 }
 
-describe('治理待办分组区（specs/010 T014~T016/T011/T025）', () => {
-  it('urgency 分区内分组保持主进程定序、未分级显示总数、空组不出标题', () => {
+describe('治理待办分组区（specs/010 T014~T016；2026-09-28 收窄后）', () => {
+  it('urgency 分区内分组保持主进程定序（冲突 → 其他）、空组不出标题', () => {
     // specs/018 v2（2026-09-26 真机重做）：分区按后端 urgency（要你拍板 /
-    // 低打扰），组名降为区内小节；主进程组序在区内保持。
-    const items = [CONFLICT_ITEM, ESCALATION_ITEM, BOUNDARY_ITEM, ...UNCLASSIFIED_ITEMS, PAIR_FINDING, OTHER_ITEM];
+    // 低打扰），组名降为区内小节；主进程组序在区内保持。敏感级三组删除后
+    // 只剩冲突与其他。
+    const items = [CONFLICT_ITEM, PAIR_FINDING, OTHER_ITEM];
     const html = renderPage('review', { inbox: items, inboxGroups: groupsFixture(items) });
     const at = (label: string) => html.indexOf(label);
-    // specs/018 §4：组名走人话术语表（扩权 →「能去的地方变多了」、
-    // 缺边界 →「什么时候用、什么时候别用（还没写）」、尚未分级 →「还没定敏感档位」）。
-    for (const label of ['冲突与重复', '能去的地方变多了', '什么时候用、什么时候别用（还没写）', '还没定敏感档位', '其他待处理']) {
+    for (const label of ['冲突与重复', '其他待处理']) {
       expect(at(label)).toBeGreaterThan(-1);
     }
-    // 「要你拍板」区（urgency=confirm）：冲突 → 扩权 → 未分级 保持组序。
+    // 已删除的敏感级/催办组名不再出现。
+    for (const gone of ['能去的地方变多了', '什么时候用、什么时候别用（还没写）', '还没定敏感档位']) {
+      expect(at(gone)).toBe(-1);
+    }
+    // 「要你拍板」区在前，「低打扰」折叠区在后（其他组 low_disturbance 行落里面）。
     expect(at('要你拍板')).toBeGreaterThan(-1);
-    expect(at('冲突与重复')).toBeLessThan(at('能去的地方变多了'));
-    expect(at('能去的地方变多了')).toBeLessThan(at('还没定敏感档位'));
-    // 「低打扰」折叠区在拍板区之后：缺边界（low）与「其他」落在里面。
     const lowAt = html.indexOf('fold-low');
-    expect(lowAt).toBeGreaterThan(at('还没定敏感档位'));
-    expect(html.indexOf('什么时候用、什么时候别用（还没写）', lowAt)).toBeLessThan(html.indexOf('其他待处理', lowAt));
-    // 未分级组显示 total（2）而非 count（1）：拍板区里未分级组之后就是
-    // 「等待你确认」候选区或低打扰折叠，切片到 fold-low 之前。
-    const unclassifiedBlock = html.slice(at('还没定敏感档位'), lowAt);
-    expect(unclassifiedBlock).toContain('>2<');
-  });
-
-  it('扩权行：确认扩权 / 驳回维持原级两钮（驳回 danger）', () => {
-    const html = renderPage('review', { inbox: [ESCALATION_ITEM], inboxGroups: groupsFixture([ESCALATION_ITEM]) });
-    expect(html).toContain('data-act="inbox-escalation-accept" data-id="sensitivity-up:aa-1"');
-    expect(html).toContain('data-act="inbox-escalation-reject" data-id="sensitivity-up:aa-1"');
-    expect(html).toContain('确认这次放宽');
-    expect(html).toContain('驳回，维持原级');
-  });
-
-  it('缺边界行：就地表单预填当前条件（uiInput + data-f），保存钮在', () => {
-    const html = renderPage('review', { inbox: [BOUNDARY_ITEM], inboxGroups: groupsFixture([BOUNDARY_ITEM]) });
-    expect(html).toContain('data-inbox-boundary-form');
-    expect(html).toContain('data-f="applicableWhen"');
-    expect(html).toContain('data-f="forbiddenWhen"');
-    // 预填当前条件（发布窗口内），不是空表单。
-    expect(html).toContain('value="发布窗口内"');
-    expect(html).toContain('data-act="inbox-boundary-save" data-id="rule-boundary:aa-2"');
-  });
-
-  it('未分级聚合：共享分段控件（三档均未选中）+ 批量定级钮携带名单', () => {
-    const items = [...UNCLASSIFIED_ITEMS];
-    const html = renderPage('review', { inbox: items, inboxGroups: groupsFixture(items) });
-    expect(html).toContain('ui-segmented-control');
-    expect(html).toContain('aria-pressed="false"');
-    expect((html.match(/aria-pressed="false"/g) || []).length).toBeGreaterThanOrEqual(3);
-    expect(html).toContain('data-act="inbox-classify-level"');
-    expect(html).toContain('data-act="inbox-classify-batch" data-id="sensitivity-batch:xyz" data-ids="aa-3,aa-4"');
-    // 名单可见（聚合不丢条目）。
-    expect(html).toContain('aa-3');
-    expect(html).toContain('aa-4');
-  });
-
-  it('未分级单条（无聚合）：保存分级钮在', () => {
-    const single = UNCLASSIFIED_ITEMS[0];
-    const groups = [{ category: 'unclassified', titleKey: 'cognition.inbox_group_unclassified', items: [single], count: 1, total: 1 }];
-    const html = renderPage('review', { inbox: [single], inboxGroups: groups });
-    expect(html).toContain('data-act="inbox-classify-apply" data-id="sensitivity:aa-3"');
-    expect(html).not.toContain('inbox-classify-batch');
+    expect(lowAt).toBeGreaterThan(at('冲突与重复'));
+    expect(html.indexOf('其他待处理', lowAt)).toBeGreaterThan(lowAt);
+    // 分组计数 = 本拆分区条目数：confirm 区冲突组只有候选冲突 1 条（巡检
+    // pair 是 low_disturbance，落低打扰区的冲突组）——未分级组「显示 total」
+    // 的特判已随分级待办删除，组内不再引用 group.total。
+    expect(html).toMatch(/冲突与重复<span class="note">1<\/span>/);
+    expect(html.indexOf('冲突与重复', lowAt)).toBeGreaterThan(lowAt);
   });
 
   it('冲突行：候选侧 claim；巡检 pair 侧 keep/merge 携带 anchor 与另一方', () => {
@@ -202,8 +157,32 @@ describe('治理待办分组区（specs/010 T014~T016/T011/T025）', () => {
     expect(html).toContain('data-act="inbox-inspection-merge" data-id="inspection:dup:aa-5+aa-6" data-anchor="aa-5" data-target="aa-6"');
   });
 
+  it('敏感级残留 kind 落 other 兜底与扁平行：无定级控件、无扩权钮、无补条件表单', () => {
+    // 主进程分组枚举收窄前的历史残留（深探 F33：枚举收窄需双侧同步）——
+    // 渲染层对认不出的 category 落「其他待处理」标题，对已删除机制的 kind
+    // 走扁平行（有动作给动作钮，没有给资产详情落点），不再渲染任何专属控件。
+    const groups = [
+      { category: 'escalation', titleKey: 'cognition.inbox_group_escalation', items: [STALE_SENSITIVITY_ITEMS[0], STALE_SENSITIVITY_ITEMS[1]], count: 2, total: 2 },
+      { category: 'boundary', titleKey: 'cognition.inbox_group_boundary', items: [STALE_SENSITIVITY_ITEMS[2]], count: 1, total: 1 },
+    ];
+    const html = renderPage('review', { inbox: STALE_SENSITIVITY_ITEMS, inboxGroups: groups });
+    // 组标题兜底成「其他待处理」（旧组名键已从渲染层字典删除）。
+    expect((html.match(/其他待处理/g) || []).length).toBe(2);
+    expect(html).not.toContain('能去的地方变多了');
+    expect(html).not.toContain('什么时候用、什么时候别用（还没写）');
+    // 专属控件与动作全部不再渲染。
+    expect(html).not.toContain('data-act="inbox-classify-level"');
+    expect(html).not.toContain('data-act="inbox-classify-apply"');
+    expect(html).not.toContain('data-act="inbox-classify-batch"');
+    expect(html).not.toContain('data-act="inbox-escalation-accept"');
+    expect(html).not.toContain('data-act="inbox-escalation-reject"');
+    expect(html).not.toContain('data-inbox-boundary-form');
+    expect(html).not.toContain('ui-segmented-control');
+    expect(html).not.toContain('批量定级');
+  });
+
   it('不出现裸动作名（label 表全覆盖，labels[action]||action 的兜底不触发）', () => {
-    const items = [CONFLICT_ITEM, ESCALATION_ITEM, BOUNDARY_ITEM, ...UNCLASSIFIED_ITEMS, PAIR_FINDING, OTHER_ITEM];
+    const items = [CONFLICT_ITEM, PAIR_FINDING, OTHER_ITEM];
     const html = renderPage('review', { inbox: items, inboxGroups: groupsFixture(items) });
     for (const bare of ['>claim<', '>keep<', '>merge<', '>classify<', '>set_boundary<', '>accept<', '>reject<']) {
       expect(html).not.toContain(bare);

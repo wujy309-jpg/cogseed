@@ -1,6 +1,6 @@
 // 对话内资产审批卡片（specs/008 US-406 / FR-014）：AI 自主提出的实质变化不直接生效，
-// 转成这张卡片由用户三选一（确认更新 / 稍后处理 / 拒绝）。卡片是**提议不是锁**：
-// 没决定期间，这条资产照常可用。
+// 转成这张卡片由用户三选一（保存更新 / 稍后处理 / 拒绝；确认词根统一「保存」系，
+// 2026-09-28）。卡片是**提议不是锁**：没决定期间，这条资产照常可用。
 //
 // 单独成模块的原因：原先这套渲染挂在 conversation.js 里，只能用"源码里有这一行"的
 // 断言去测，于是 `uiTextarea` 少传 id（该组件强制要求 id、会抛错）没被任何测试挡住——
@@ -24,7 +24,6 @@
     scope: ['cognition.asset_version_diff_scope', '适用范围'],
     applicableWhen: ['cognition.asset_edit_field_applicable', '适用场景'],
     forbiddenWhen: ['cognition.asset_edit_field_forbidden', '禁用场景'],
-    sensitivity: ['recall.asset_approval.field_sensitivity', '敏感级'],
   };
 
   /** 取词：拿不到译文就用代码里的中文兜底；兜底也要补变量——
@@ -67,10 +66,10 @@
     return String(text || '').split(/[\n、；;]+/).map((part) => part.trim()).filter(Boolean);
   }
 
-  /** 可编辑字段：字符串与字符串数组。`sensitivity` 是枚举，只读展示（自由文本改枚举没有意义）。 */
+  /** 可编辑字段：字符串与字符串数组。（`sensitivity` 枚举字段已随敏感级机制
+   *  整体删除，2026-09-28——自由文本改枚举本就没有意义。） */
   function editableKeysOf(payload) {
     return Object.keys(payload || {}).filter((key) => {
-      if (key === 'sensitivity') return false;
       const value = payload[key];
       return typeof value === 'string' || (Array.isArray(value) && value.every((item) => typeof item === 'string'));
     });
@@ -162,7 +161,7 @@
     const baseline = String(source.baselineVersion || '').trim();
     const actions = pending
       ? `<div class="chat-asset-approval-actions">
-        ${root.uiButton({ label: tr('recall.asset_approval.confirm', '确认更新'), role: 'primary', size: 'sm', attrs: { 'data-asset-approval-action': 'confirm' } })}
+        ${root.uiButton({ label: tr('recall.asset_approval.confirm', '保存更新'), role: 'primary', size: 'sm', attrs: { 'data-asset-approval-action': 'confirm' } })}
         ${root.uiButton({ label: tr('recall.asset_approval.defer', '稍后处理'), size: 'sm', attrs: { 'data-asset-approval-action': 'defer' } })}
         ${root.uiButton({ label: tr('recall.asset_approval.reject', '拒绝'), size: 'sm', attrs: { 'data-asset-approval-action': 'reject' } })}
       </div>`
@@ -194,8 +193,8 @@
   function stateText(state, view) {
     if (state === 'confirmed') {
       return view.appliedVersion
-        ? tr('recall.asset_approval.applied_version', '已按你确认的内容生效（v{n}）', { n: String(view.appliedVersion) })
-        : tr('recall.asset_approval.state_confirmed', '已确认更新');
+        ? tr('recall.asset_approval.applied_version', '已按你保存的内容生效（v{n}）', { n: String(view.appliedVersion) })
+        : tr('recall.asset_approval.state_confirmed', '已保存更新');
     }
     if (state === 'deferred') return tr('recall.asset_approval.state_deferred', '已稍后处理（在待确认清单里）');
     if (state === 'rejected') return tr('recall.asset_approval.state_rejected', '已拒绝');

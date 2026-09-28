@@ -75,8 +75,6 @@
     if (key === 'source_unavailable') return _label('cognition.block_reason_source_unavailable', 'Source no longer available');
     if (key === 'agent') return _label('cognition.block_reason_agent', 'Recipient not allowed');
     if (key === 'scope') return _label('cognition.block_reason_scope', 'Scope not allowed');
-    if (key === 'sensitivity_high') return _label('cognition.block_reason_sensitivity_high', 'Sensitivity above the limit');
-    if (key === 'sensitivity_unknown') return _label('cognition.block_reason_sensitivity_unknown', 'Sensitivity not classified');
     if (key === 'maturity') return _label('cognition.block_reason_maturity', 'Use contract does not allow it');
     if (key === 'forbidden_context') return _label('cognition.block_reason_forbidden_context', 'Forbidden context');
     if (key === 'not_applicable_context') return _label('cognition.block_reason_not_applicable_context', 'Not applicable here');

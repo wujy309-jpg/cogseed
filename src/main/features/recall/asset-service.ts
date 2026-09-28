@@ -71,15 +71,12 @@ export interface AbilityAssetAuditRecord extends RecallJsonRecord {
     | 'danger_snapshot' | 'danger_confirmed' | 'danger_denied' | 'attempt_blocked'
     // 审批提议（specs/008 US-406）：AI 提出、用户三态处置、以及用户编辑卡片内容。
     // 提议本身不改资产，但它必须与"谁在什么时候做了什么决定"绑在同一条履历上。
-    | 'approval_proposed' | 'approval_confirmed' | 'approval_rejected' | 'approval_deferred' | 'approval_edited'
-    // 扩权确认（specs/010 US-303 / T018）：只台账 + ack，**不 bump 版本、不改内容**
-    // ——确认类动作没有内容变化，靠版本永远退不了场，退场靠 ack 键。
-    | 'escalation_confirmed';
+    | 'approval_proposed' | 'approval_confirmed' | 'approval_rejected' | 'approval_deferred' | 'approval_edited';
   at: string;
   actor?: AbilityAssetActor;
   note?: string;
   /** 变更前后的**摘要**（不是全文）。由 `summarizeAuditChange` 产出：正文类字段
-   *  只留字数，敏感级高于 L0 时连前缀都不留（specs/008 FR-012）。逐字对比看
+   *  只留字数（specs/008 FR-012）。逐字对比看
    *  版本流快照，台账不承担第二份正文副本的职责。 */
   before?: string;
   after?: string;
@@ -112,7 +109,6 @@ export interface UpdateAbilityAssetInput {
   derivedFrom?: RecallAbilityAssetRecord['derivedFrom'];
   applicableWhen?: RecallAbilityAssetRecord['applicableWhen'];
   forbiddenWhen?: RecallAbilityAssetRecord['forbiddenWhen'];
-  sensitivity?: RecallAbilityAssetRecord['sensitivity'];
   /** 主题标签（specs/012 T004）：整组替换语义。规范化/去重/≤12 条由
    *  ability-tag-service 的规范化唯一处收口，超限**抛错不截断**；缺失的库条目
    *  自动补建。元数据：**不 bump 内容版本**（对齐 family.ts:232 的 familyName
@@ -308,7 +304,6 @@ function snapshot(asset: RecallAbilityAssetRecord): AbilityAssetVersionRecord['s
     ...(asset.derivedFrom ? { derivedFrom: asset.derivedFrom } : {}),
     ...(asset.applicableWhen ? { applicableWhen: asset.applicableWhen } : {}),
     ...(asset.forbiddenWhen ? { forbiddenWhen: asset.forbiddenWhen } : {}),
-    ...(asset.sensitivity ? { sensitivity: asset.sensitivity } : {}),
     ...(asset.sourceSessionIds?.length ? { sourceSessionIds: asset.sourceSessionIds } : {}),
     status: asset.status,
     maturity: asset.maturity,
@@ -351,8 +346,7 @@ async function appendVersion(userId: string, asset: RecallAbilityAssetRecord, me
 
 /** 台账摘要的隐私边界（specs/008 FR-012 + data-model「before/after 只存摘要」）。
  *
- *  正文类字段**只留字数**：台账是给用户逐条读的账，不是第二份正文副本；
- *  敏感级高于 L0 时连前缀都不留——受限资产的正文一个字也不进台账。
+ *  正文类字段**只留字数**：台账是给用户逐条读的账，不是第二份正文副本。
  *  要逐字对比，版本流里有完整快照（版本对比视图读的就是它）。
  */
 const AUDIT_BODY_FIELDS: ReadonlySet<string> = new Set(['statement', 'applicableWhen', 'forbiddenWhen']);
@@ -364,7 +358,7 @@ const AUDIT_VALUE_MAX_CHARS = 80;
  *  （validationCount、recommendedAction 等）由各自的 audit action 表达。 */
 const AUDIT_DIFF_FIELDS = [
   'title', 'statement', 'type', 'scope', 'status', 'maturity', 'version',
-  'sensitivity', 'applicableWhen', 'forbiddenWhen', 'evidenceRefs', 'deletedAt',
+  'applicableWhen', 'forbiddenWhen', 'evidenceRefs', 'deletedAt',
 ] as const;
 
 function clipAuditText(text: string, max: number): string {
@@ -373,14 +367,11 @@ function clipAuditText(text: string, max: number): string {
 }
 
 /** 单个字段值 → 台账摘要文本。 */
-export function summarizeAuditValue(field: string, value: unknown, sensitivity?: string): string {
+export function summarizeAuditValue(field: string, value: unknown): string {
   if (value === undefined || value === null || value === '') return '—';
   if (AUDIT_BODY_FIELDS.has(field)) {
     const text = Array.isArray(value) ? value.map((entry) => String(entry)).join('；') : String(value);
     const size = Array.isArray(value) ? `${value.length} 条` : `${text.length} 字`;
-    // 未分级不等于 L0，但台账前缀只按「明确高于 L0 就不给」处理：
-    // 未分级资产的正文前缀对本人可见，与详情页一致，不构成越权泄露。
-    if (sensitivity && sensitivity !== 'L0') return size;
     const flat = text.replace(/\s+/g, ' ').trim();
     const prefix = flat.slice(0, AUDIT_BODY_PREFIX_CHARS);
     // 短正文整段就是"前缀"——这时不给前缀等于台账什么都没说（用户看不出改了
@@ -401,12 +392,11 @@ export interface AuditFieldChange {
  *  调用方据此不写这两个字段（无变化的记录不该带空摘要）。 */
 export function summarizeAuditChange(
   changes: readonly AuditFieldChange[],
-  sensitivity?: string,
 ): { before: string; after: string } | undefined {
   if (!changes.length) return undefined;
   const render = (pick: (change: AuditFieldChange) => unknown): string => {
     const joined = changes
-      .map((change) => `${change.field}=${summarizeAuditValue(change.field, pick(change), sensitivity)}`)
+      .map((change) => `${change.field}=${summarizeAuditValue(change.field, pick(change))}`)
       .join('；');
     return joined.length > AUDIT_SUMMARY_MAX_CHARS
       ? `${joined.slice(0, AUDIT_SUMMARY_MAX_CHARS)}…`
@@ -428,17 +418,6 @@ export function diffAbilityAssetsForAudit(
     changes.push({ field, before: left, after: right });
   }
   return changes;
-}
-
-const AUDIT_SENSITIVITY_RANK: Record<string, number> = { L0: 0, L1: 1, L2: 2, L3: 3 };
-/** 台账摘要按**变更前后更严的那一档**处理：降密不该让旧正文的前缀漏进台账。 */
-export function strictestSensitivity(values: Array<string | undefined>): string | undefined {
-  let top: string | undefined;
-  for (const value of values) {
-    if (value === undefined) continue;
-    if (top === undefined || (AUDIT_SENSITIVITY_RANK[value] ?? 0) > (AUDIT_SENSITIVITY_RANK[top] ?? 0)) top = value;
-  }
-  return top;
 }
 
 /**
@@ -531,7 +510,7 @@ export async function recordAbilityAssetAudit(
  * 治理状态与成熟度**不在其列**：按设计不随内容回滚（暂停过的不该因回滚变回在用）。
  */
 const VERSION_REVERT_CLEARABLE_FIELDS = [
-  'scopePolicy', 'applicableWhen', 'forbiddenWhen', 'sensitivity',
+  'scopePolicy', 'applicableWhen', 'forbiddenWhen',
   'ontologyRefs', 'relations', 'derivedFrom', 'learningSignal',
   'learningProvenance', 'sourceSessionIds',
 ] as const;
@@ -861,10 +840,8 @@ export async function updateAbilityAsset(userId: string, assetId: string, input:
     if (changed) {
       await appendVersion(userId, asset, { reason: action.reason, actor: action.actor });
     }
-    // 改前的定级也要看：降密不该让旧正文的前缀漏进台账。
     const summary = summarizeAuditChange(
       diffAbilityAssetsForAudit(beforeAsset ?? asset, asset),
-      strictestSensitivity([beforeAsset?.sensitivity, asset.sensitivity]),
     );
     // 台账 reason 必含「标签：旧 → 新」（specs/012 data-model §3 台账纪律）——
     // 只存标签名（元数据，非正文）。
@@ -1066,7 +1043,6 @@ async function setStatus(
   if (changed) {
     const summary = summarizeAuditChange(
       diffAbilityAssetsForAudit(beforeAsset ?? asset, asset),
-      strictestSensitivity([beforeAsset?.sensitivity, asset.sensitivity]),
     );
     await appendAudit(userId, asset.id, auditAction, {
       reason: action.reason,
@@ -1296,25 +1272,6 @@ export async function recommendAbilityAssetAction(userId: string, assetId: strin
   return asset;
 }
 
-/**
- * 扩权确认的台账落点（specs/010 US-303 / T018）：只记一行 `escalation_confirmed`
- * （before/after 档位 + 依据），**不 bump 版本、不改内容**——ack 键在
- * escalation-ack-service 里，两处合起来才是"确认后退场、新提级重报"的完整事实。
- */
-export async function recordSensitivityEscalationConfirmed(
-  userId: string,
-  assetId: string,
-  metadata: { before?: string; after?: string; toVersion?: string } = {},
-): Promise<void> {
-  await appendAudit(userId, assetId, 'escalation_confirmed', {
-    actor: 'user',
-    reason: '扩权确认：新档位生效，同一提级不再重复提醒',
-    ...(metadata.before !== undefined ? { before: `sensitivity ${metadata.before}` } : {}),
-    ...(metadata.after !== undefined ? { after: `sensitivity ${metadata.after}` } : {}),
-    ...(metadata.toVersion !== undefined ? { note: `confirmed at v${metadata.toVersion}` } : {}),
-  });
-}
-
 /** 归档：从日常列表移出、不参与推荐，历史与 Evidence 保留，可恢复（规范 22.1）。 */
 export function archiveAbilityAsset(userId: string, assetId: string, input: AbilityAssetUserActionInput): Promise<RecallAbilityAssetRecord> {
   return setStatus(userId, assetId, 'archived', input);
@@ -1359,11 +1316,9 @@ export async function purgeAbilityAsset(
     ontologyRefs: undefined,
     relations: undefined,
     derivedFrom: undefined,
-    // 适用/禁用条件是用户手写的自然语言，与正文同属可识别内容；
-    // sensitivity 是对已清除内容的定级，留着也只会指向一条空记录。
+    // 适用/禁用条件是用户手写的自然语言，与正文同属可识别内容。
     applicableWhen: undefined,
     forbiddenWhen: undefined,
-    sensitivity: undefined,
     // 跨域授权是对一条已经不存在的内容的授权，留着没有意义，也不该让墓碑
     // 继续携带一个「可以跨作用域使用」的许可。
     crossScopeConfirmedAt: undefined,
@@ -1494,7 +1449,6 @@ export async function rollbackAbilityAsset(
   // 回滚本身记账（FR-005）：前后值 + 依据齐全，回滚到哪一版写在 note/reason 里。
   const rollbackSummary = summarizeAuditChange(
     diffAbilityAssetsForAudit(beforeAsset ?? asset, asset),
-    strictestSensitivity([beforeAsset?.sensitivity, asset.sensitivity]),
   );
   await appendAudit(userId, asset.id, 'rolled_back', {
     reason: action.reason,
@@ -1766,11 +1720,9 @@ export async function mergeAbilityAssets(
   // 归并也要台账四项（FR-004）：target 记它自己的版本/关系变化，source 记归档与去向。
   const targetSummary = summarizeAuditChange(
     diffAbilityAssetsForAudit(beforeTarget ?? merged, merged),
-    strictestSensitivity([beforeTarget?.sensitivity, merged.sensitivity]),
   );
   const sourceSummary = summarizeAuditChange(
     diffAbilityAssetsForAudit(beforeSource ?? source, afterSource ?? source),
-    strictestSensitivity([beforeSource?.sensitivity, afterSource?.sensitivity]),
   );
   await appendAudit(userId, targetAssetId, 'merged_from', {
     reason: `${action.reason || 'merge'} (from ${sourceAssetId})`,

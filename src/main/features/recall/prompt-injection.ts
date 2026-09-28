@@ -145,7 +145,6 @@ export async function evaluateRecallAssetRuntimeEligibility(
     ...(asset.scopePolicy ? { scopePolicy: asset.scopePolicy } : {}),
     ...(asset.applicableWhen ? { applicableWhen: asset.applicableWhen } : {}),
     ...(asset.forbiddenWhen ? { forbiddenWhen: asset.forbiddenWhen } : {}),
-    ...(asset.sensitivity ? { sensitivity: asset.sensitivity } : {}),
   }, {
     ...context,
     sourceAvailable,

@@ -34,7 +34,8 @@ async function seedPinnedAsset(assetId: string, statement: string) {
   const asset = await assets.createAbilityAsset(UID, {
     schemaVersion: 2, ownerId: UID, id: assetId, candidateId: `cand-${assetId}`,
     sourceCandidateIds: [`cand-${assetId}`], reviewDecisionId: `rd_${assetId.slice(3)}padpadpad`,
-    type: 'personal', title: statement.slice(0, 8), statement,
+    // 标题闸门（设计 3.2）：正文前缀当标题过不了闸门，取正文尾部片段做合规种子。
+    type: 'personal', title: statement.slice(-8).replace(/[。，、；：！？…）)\]\]】》"'\s]+$/, '') || '钉住样本', statement,
     evidenceRefs: [{ kind: 'conversation', id: `conv-${assetId}`, taxonomyVersion: 2, subtype: 'session' }],
     scope: 'general', status: 'active',
     lifecycleStatus: 'user_confirmed_unverified', maturity: 'bud', version: '1',
@@ -139,8 +140,6 @@ describe('规则标识跨入口同一套说法（US-604 AC1/AC5 的机制面）'
     expect(runtime.assetRuntimeBlockRule('paused', ['status_not_active'])).toBe('paused');
     expect(runtime.assetRuntimeBlockRule('active', ['target_agent_not_allowed'])).toBe('agent');
     expect(runtime.assetRuntimeBlockRule('active', ['scope_mismatch'])).toBe('scope');
-    expect(runtime.assetRuntimeBlockRule('active', ['sensitivity_above_destination'])).toBe('sensitivity_high');
-    expect(runtime.assetRuntimeBlockRule('active', ['sensitivity_unclassified'])).toBe('sensitivity_unknown');
     expect(runtime.assetRuntimeBlockRule('active', ['maturity_below_default_use'])).toBe('maturity');
     expect(runtime.assetRuntimeBlockRule('active', ['forbidden_context'])).toBe('forbidden_context');
     expect(runtime.assetRuntimeBlockRule('active', ['not_applicable_context'])).toBe('not_applicable_context');

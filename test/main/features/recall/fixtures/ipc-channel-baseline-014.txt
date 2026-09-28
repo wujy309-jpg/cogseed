@@ -406,7 +406,6 @@ recall.assets.restore
 recall.assets.resume
 recall.assets.revoke
 recall.assets.rollback
-recall.assets.sensitivity.batch
 recall.assets.tags.batch
 recall.assets.tags.set
 recall.assets.update

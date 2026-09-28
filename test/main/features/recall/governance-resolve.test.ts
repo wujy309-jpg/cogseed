@@ -1,8 +1,8 @@
 /**
- * 治理待办就地处断（specs/010 T017~T019 / T022 / T023 / T028 / T031 / T032）。
+ * 治理待办就地处断（specs/010 T021 / T028 / T031 / T032）。
  *
  * 全部走**真实服务**（临时工作区），断言三件事：
- *   ① 处置真的落到了对象上（档位/边界/候选状态/归档/合并）；
+ *   ① 处置真的落到了对象上（边界/候选状态/归档/合并）；
  *   ② 待办真的退场（同一读口再读不再出现；巡检发现**当轮即消失**）；
  *   ③ 拒绝路径不落库（版本与内容分毫未动，读盘比对）。
  */
@@ -30,16 +30,14 @@ const UID = 'u-gov-resolve';
 const BOUNDARY = { applicableWhen: ['performing governed work'], forbiddenWhen: ['outside the governed scope'] };
 
 async function modules() {
-  const [adapter, candidates, assets, inspection, acks, store, inbox] = await Promise.all([
+  const [adapter, candidates, assets, inspection, store] = await Promise.all([
     import('../../../../src/main/features/cognition/inbox-adapter'),
     import('../../../../src/main/features/recall/candidate-service'),
     import('../../../../src/main/features/recall/asset-service'),
     import('../../../../src/main/features/recall/asset-inspection-service'),
-    import('../../../../src/main/features/recall/escalation-ack-service'),
     import('../../../../src/main/features/recall/store'),
-    import('../../../../src/main/features/recall/formal-assets/inbox'),
   ]);
-  return { adapter, candidates, assets, inspection, acks, store, inbox };
+  return { adapter, candidates, assets, inspection, store };
 }
 
 let seedSeq = 0;
@@ -51,19 +49,18 @@ const JUDGMENTS = [
   '跨团队依赖要在排期前书面确认接口归属。',
 ];
 
-async function seedRule(overrides: Record<string, unknown> = {}, sensitivity?: string) {
-  const { candidates, assets } = await modules();
+async function seedRule(overrides: Record<string, unknown> = {}) {
+  const { candidates } = await modules();
   seedSeq += 1;
   const candidate = await candidates.saveRecallCandidate(UID, {
     judgment: JUDGMENTS[seedSeq % JUDGMENTS.length],
+    // 标题闸门（设计 3.2）：无 summary 兜底＝正文首句，过不了闸门。
+    summary: `治理样本${seedSeq}`,
     suggestedType: 'rule', ...BOUNDARY, suggestedScope: 'architecture',
     sourceRefs: [{ kind: 'execution', id: `exec-gov-${seedSeq}` }],
     ...overrides,
   });
   const { asset } = await candidates.promoteRecallCandidate(UID, candidate.id, { actor: 'user' });
-  if (sensitivity) {
-    return assets.updateAbilityAsset(UID, asset.id, { sensitivity, actor: 'user', reason: 'test: set initial level' });
-  }
   return asset;
 }
 
@@ -81,113 +78,12 @@ function readRaw(assetId: string): string {
 }
 
 describe('governance resolve paths (specs/010)', () => {
-  it('T017 escalation reject restores the before level from the real version diff', async () => {
-    const { adapter, assets } = await modules();
-    const asset = await seedRule({}, 'L0');
-    expect(asset.sensitivity).toBe('L0');
-    // 系统线提级（ai actor 的版本变更是"非用户"变更，正是待办口径）。
-    await assets.updateAbilityAsset(UID, asset.id, { sensitivity: 'L2', actor: 'ai', reason: 'test escalation' });
-    const { found } = await findItem('sensitivity-up:');
-    // 展示串可以是任何话术；驳回只认版本 diff——这里故意断言与 detail 无关地恢复 L0。
-    const result = await adapter.resolveCognitionInboxItem(UID, { id: found.id, action: 'reject' });
-    expect(result).toEqual({ ok: true, target: 'asset', status: 'restored' });
-    const after = await assets.readAbilityAsset(UID, asset.id);
-    expect(after.sensitivity).toBe('L0');
-    // 驳回必产生用户版本（待办靠 latestDiff.actor='user' 退场）。
-    expect(Number(after.version)).toBeGreaterThan(Number(asset.version));
-    const items = await adapter.listCognitionInbox(UID);
-    expect(items.some((item) => item.id === found.id)).toBe(false);
-  });
-
-  it('T018/T019 escalation accept records ack + ledger without touching the asset; a new escalation re-reports', async () => {
-    const { adapter, assets, acks } = await modules();
-    const asset = await seedRule({}, 'L0');
-    await assets.updateAbilityAsset(UID, asset.id, { sensitivity: 'L1', actor: 'ai', reason: 'first escalation' });
-    const { found } = await findItem('sensitivity-up:');
-    const versionBefore = (await assets.readAbilityAsset(UID, asset.id)).version;
-    const rawBefore = readRaw(asset.id);
-
-    const result = await adapter.resolveCognitionInboxItem(UID, { id: found.id, action: 'accept' });
-    expect(result).toEqual({ ok: true, target: 'asset', status: 'escalation_confirmed' });
-    // 不 bump 版本、内容逐字不变。
-    const assetAfter = await assets.readAbilityAsset(UID, asset.id);
-    expect(assetAfter.version).toBe(versionBefore);
-    expect(readRaw(asset.id)).toBe(rawBefore);
-    // ack 落了、台账有行、待办不再产出。
-    const settings = await acks.readEscalationAcks(UID);
-    expect(settings.acknowledged.map((ack) => ack.key)).toContain(`${asset.id}@${versionBefore}`);
-    const ledger = fs.readFileSync(path.join(tmpDir, UID, 'cloud', 'recall', 'jsonl', 'ability-asset-audit', `${asset.id}.jsonl`), 'utf8');
-    expect(ledger).toContain('escalation_confirmed');
-    expect((await adapter.listCognitionInbox(UID)).some((item) => item.id === found.id)).toBe(false);
-
-    // 新提级（新 toVersion）必须重报——Edge Case。
-    await assets.updateAbilityAsset(UID, asset.id, { sensitivity: 'L2', actor: 'ai', reason: 'second escalation' });
-    const reItems = await adapter.listCognitionInbox(UID);
-    expect(reItems.some((item) => item.id.startsWith('sensitivity-up:'))).toBe(true);
-    // 撤销 ack → 恢复打扰。
-    await acks.revokeEscalationAck(UID, `${asset.id}@${versionBefore}`);
-  });
-
-  it('T022 classify writes the level as a user version and retires the item', async () => {
-    const { adapter, assets } = await modules();
-    // 未分级资产要真的会"自己走"（transfer_validated）才会报。
-    const candidate = await (await modules()).candidates.saveRecallCandidate(UID, {
-      judgment: '线上数据导出必须走审批工单并附脱敏说明。'.slice(0, 8) + '（定级样本）',
-      suggestedType: 'rule', ...BOUNDARY, suggestedScope: 'architecture',
-      sourceRefs: [{ kind: 'execution', id: 'exec-gov-classify' }],
-    });
-    const { asset } = await (await modules()).candidates.promoteRecallCandidate(UID, candidate.id, { actor: 'user' });
-    // 成熟度升到会静默注入的那一档（maturity 有专门通道；这里直接写记录，
-    // 与 asset-inspection.test.ts 的 updatedAt 直写同款做法）。
-    await (await modules()).store.updateRecallJsonRecord(UID, 'ability-assets', asset.id, (raw) => ({ ...raw!, maturity: 'transfer_validated' }));
-    const { found } = await findItem(`sensitivity:${asset.id}`);
-
-    const result = await adapter.resolveCognitionInboxItem(UID, { id: found.id, action: 'classify', level: 'L1' });
-    expect(result).toEqual({ ok: true, target: 'asset', status: 'classified' });
-    expect((await assets.readAbilityAsset(UID, asset.id)).sensitivity).toBe('L1');
-    expect((await adapter.listCognitionInbox(UID)).some((item) => item.id === found.id)).toBe(false);
-    // 畸形档位拒绝。
-    await expect(adapter.resolveCognitionInboxItem(UID, { id: `sensitivity:${asset.id}`, action: 'classify', level: 'L9' }))
-      .rejects.toMatchObject({ code: 'invalid_item_id' });
-  });
-
-  it('T023 aggregate batch classify goes through the same resolve contract', async () => {
-    const { adapter, assets, inbox } = await modules();
-    const ids: string[] = [];
-    for (let i = 0; i < 2; i += 1) {
-      const candidate = await (await modules()).candidates.saveRecallCandidate(UID, {
-        judgment: `批量聚合样本 ${i}：${['回滚方案要核对', '灰度范围要圈定', '值班表要提前排'][i]}`,
-        suggestedType: 'rule', ...BOUNDARY, suggestedScope: 'architecture',
-        sourceRefs: [{ kind: 'execution', id: `exec-gov-batch-${i}` }],
-      });
-      const { asset } = await (await modules()).candidates.promoteRecallCandidate(UID, candidate.id, { actor: 'user' });
-      await (await modules()).store.updateRecallJsonRecord(UID, 'ability-assets', asset.id, (raw) => ({ ...raw!, maturity: 'transfer_validated' }));
-      ids.push(asset.id);
-    }
-    const items = await adapter.listCognitionInbox(UID);
-    const groups = inbox.groupCognitionInbox(items);
-    const unclassified = groups.find((group) => group.category === 'unclassified')!;
-    expect(unclassified.items).toHaveLength(1);
-    const aggregate = unclassified.items[0];
-    expect(aggregate.aggregate?.count).toBe(2);
-
-    const result = await adapter.resolveCognitionInboxItem(UID, {
-      id: aggregate.id, action: 'classify', level: 'L0', assetIds: aggregate.aggregate!.assetIds,
-    });
-    expect(result).toEqual({ ok: true, target: 'asset_sensitivity_batch', status: 'batch_done' });
-    for (const id of ids) {
-      expect((await assets.readAbilityAsset(UID, id)).sensitivity).toBe('L0');
-    }
-    // 批量后未分级组整体退场。
-    const after = inbox.groupCognitionInbox(await adapter.listCognitionInbox(UID));
-    expect(after.some((group) => group.category === 'unclassified')).toBe(false);
-  });
-
   it('T028 set_boundary passes the same gate, retires the item, and refuses (untouched) on failure', async () => {
     const { adapter, assets, candidates } = await modules();
     // 无边界规则（user 线晋升允许缺边界，之后由待办补齐——正是这条链路）。
     const candidate = await candidates.saveRecallCandidate(UID, {
       judgment: '接口变更要先发公告再动实现，两者不得同一天。',
+      summary: '公告先行纪律',
       suggestedType: 'rule', suggestedScope: 'architecture',
       sourceRefs: [{ kind: 'execution', id: 'exec-gov-boundary' }],
     });
@@ -217,7 +113,7 @@ describe('governance resolve paths (specs/010)', () => {
     const { adapter, candidates } = await modules();
     const judgment = '同一句话被归成两类' + seedSeq;
     const base = {
-      judgment, suggestedScope: 'architecture',
+      judgment, summary: `归类冲突样本${seedSeq}`, suggestedScope: 'architecture',
       sourceRefs: [{ kind: 'execution', id: 'exec-gov-conflict' }],
       ...BOUNDARY,
     };
@@ -293,6 +189,7 @@ describe('governance resolve paths (specs/010)', () => {
     // 不同类型合并：既有闸门拒绝，如实转 unsupported_action（不偷偷改类型）。
     const factCandidate = await (await modules()).candidates.saveRecallCandidate(UID, {
       judgment: '值班表要在每月 25 号前排定下月轮值并抄送全员。',
+      summary: '轮值排定纪律',
       suggestedType: 'fact', suggestedScope: 'architecture',
       sourceRefs: [{ kind: 'execution', id: 'exec-gov-merge-x' }],
     });
@@ -308,8 +205,10 @@ describe('governance resolve paths (specs/010)', () => {
     // 模块对象的 updateAbilityAsset 打一次性 spy，验证 settle() 的翻译。
     const spy = vi.spyOn(assets, 'updateAbilityAsset')
       .mockRejectedValueOnce(new Error('ability asset version conflict: expected v2, current v3'));
-    await expect(adapter.resolveCognitionInboxItem(UID, { id: `sensitivity:${asset.id}`, action: 'classify', level: 'L1' }))
-      .rejects.toMatchObject({ code: 'version_conflict' });
+    await expect(adapter.resolveCognitionInboxItem(UID, {
+      id: `rule-boundary:${asset.id}`, action: 'set_boundary',
+      applicableWhen: ['发布窗口内做接口变更'], forbiddenWhen: ['紧急回滚时的直接修补'],
+    })).rejects.toMatchObject({ code: 'version_conflict' });
     expect(spy).toHaveBeenCalled();
     spy.mockRestore();
   });

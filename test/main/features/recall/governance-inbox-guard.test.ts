@@ -7,8 +7,9 @@
  *      渲染层（views/core/app）不允许出现第二份映射表；
  *   ② 补条件的门禁唯一处：inbox-adapter 里只有 validatePromotionByAssetType
  *      这一个「什么叫有边界」的判据调用（渲染层零调用）；
- *   ③ 无第二处「已处理标记位」：退场机制只有 ack（escalation-ack）+ 既有
- *      版本/候选/巡检三套，不新增 inboxRead/inboxProcessed 之类的标记文件；
+ *   ③ 无第二处「已处理标记位」：退场机制只有既有版本/候选/巡检三套，不新增
+ *      inboxRead/inboxProcessed 之类的标记文件（敏感级机制连同 escalation-ack
+ *      设置型记录已整套删除，2026-09-28 设计 6.1）；
  *   ④ 模型工具面未扩：tool-catalog 的 recall 组工具数不变（治理是用户的
  *      动作，不是模型工具）；
  *   ⑤ tags/category 不做映射：本 feature 的渲染层与主进程写路径不出现
@@ -34,7 +35,6 @@ describe('governance inbox anti-drift guards (specs/010 T038)', () => {
     // 渲染层三个文件里不允许出现 kind→category 的映射字面量（第二份映射表）。
     for (const [name, source] of [['views.js', viewsSource], ['core.js', coreSource], ['app.js', appSource]] as const) {
       expect(source, `${name} 不应有第二份 kind→category 映射`).not.toMatch(/classification_conflict['"]?\s*[:=]\s*['"]conflict/);
-      expect(source, `${name} 不应有第二份 kind→category 映射`).not.toMatch(/['"]sensitivity_escalated['"]\s*:\s*['"]escalation['"]/);
       expect(source, `${name} 不应有第二份 kind→category 映射`).not.toMatch(/['"]rule_boundary_missing['"]\s*:\s*['"]boundary['"]/);
     }
     // 渲染层按 category 字符串取词是消费（GROUP_TITLES 表），不是映射——
@@ -56,14 +56,15 @@ describe('governance inbox anti-drift guards (specs/010 T038)', () => {
     expect(viewsSource).not.toContain('rule_boundary_required');
   });
 
-  it('③ 无第二处「已处理标记位」：退场只有 ack + 既有三套机制', () => {
+  it('③ 无第二处「已处理标记位」：退场只有既有三套机制', () => {
     // 标记位形态的文件名（inbox-read / inbox-processed / inbox-seen）必须缺席。
     for (const source of [adapterSource, coreSource, viewsSource, appSource]) {
       expect(source).not.toMatch(/inbox[-_](read|processed|seen)[-_]?(state|mark|store)/i);
     }
-    // ack 是唯一的设置型记录（escalation-ack-service），且已接线到读模型。
-    expect(adapterSource).toContain('acknowledgedEscalations');
-    expect(read('src/main/features/recall/escalation-ack-service.ts')).toContain('sensitivity-escalation-settings');
+    // 敏感级机制（含 escalation-ack 这一设置型记录）已整套删除：服务文件必须
+    // 缺席，适配器不得再接线任何「已读/已确认」标记位。
+    expect(fs.existsSync(path.join(ROOT, 'src/main/features/recall/escalation-ack-service.ts'))).toBe(false);
+    expect(adapterSource).not.toContain('acknowledgedEscalations');
   });
 
   it('④ 模型工具面未扩：全量工具名集合保持 72，治理动作不是模型工具', async () => {

@@ -106,8 +106,6 @@ const BLOCK_REASON_LABELS: Record<string, string> = {
   forbidden_context: '命中它自己声明的禁用场景',
   not_applicable_context: '与它自己声明的适用场景不符',
   target_agent_not_allowed: '不允许注入给当前 Agent',
-  sensitivity_unclassified: '敏感级未分级',
-  sensitivity_above_destination: '敏感级高于当前目的地上限',
   maturity_below_default_use: '置信度不足（未确认/未验证）',
 };
 

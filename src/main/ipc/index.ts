@@ -61,7 +61,6 @@ import * as recallExperienceMigration from '../features/recall/experience-migrat
 import * as recallExperienceReference from '../features/recall/experience-reference';
 import { cognitionSourceRefMetadataOnly } from '../features/recall/source-service';
 import * as recallAssetApproval from '../features/recall/asset-approval-service';
-import * as recallAssetClassification from '../features/recall/asset-classification-service';
 import * as recallCleanup from '../features/recall/cleanup-report-service';
 import * as recallInspection from '../features/recall/asset-inspection-service';
 import * as recallProfileSync from '../features/recall/personal-profile-sync';
@@ -2697,7 +2696,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (!asset) throw new Error('recall ability asset not found');
     return { ok: true, asset: asset.record };
   },
-  'recall.assets.update': async ({ assetId, title, statement, scope, scopePolicy, type, evidenceRefs, ontologyRefs, relations, derivedFrom, applicableWhen, forbiddenWhen, sensitivity, reason, acknowledgeRecommendation, tags } = {}, ctx) => {
+  'recall.assets.update': async ({ assetId, title, statement, scope, scopePolicy, type, evidenceRefs, ontologyRefs, relations, derivedFrom, applicableWhen, forbiddenWhen, reason, acknowledgeRecommendation, tags } = {}, ctx) => {
     if (!safeId(assetId)) throw new Error('invalid recall asset id');
     const note = boundedText(reason, 'recall asset update reason', 1_000);
     if (title !== undefined && (typeof title !== 'string' || title.length > 120)) throw new Error('invalid recall asset title');
@@ -2711,13 +2710,12 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (derivedFrom !== undefined && !Array.isArray(derivedFrom)) throw new Error('invalid recall asset provenance');
     if (applicableWhen !== undefined && (!Array.isArray(applicableWhen) || applicableWhen.length > 32)) throw new Error('invalid recall asset applicable range');
     if (forbiddenWhen !== undefined && (!Array.isArray(forbiddenWhen) || forbiddenWhen.length > 32)) throw new Error('invalid recall asset forbidden range');
-    if (sensitivity !== undefined && !['L0', 'L1', 'L2'].includes(sensitivity)) throw new Error('invalid recall asset sensitivity');
     if (acknowledgeRecommendation !== undefined && typeof acknowledgeRecommendation !== 'boolean') throw new Error('invalid recall asset recommendation acknowledgment');
     // 标签（specs/012 T009，contracts/ipc.md §四）：只做形状闸（数组 + 每条
     // 字符串 + ≤12 条），逐条 trim/长度/去重由 ability-tag-service 的规范化
     // 唯一处判定；不传 = 不改标签（省略不是清空）。
     if (tags !== undefined && (!Array.isArray(tags) || tags.some((entry) => typeof entry !== 'string') || tags.length > abilityTags.ABILITY_ASSET_TAGS_MAX)) throw new Error('invalid recall asset tags');
-    return { ok: true, asset: await recallAssets.updateAbilityAsset(ctx.userId, assetId, { ...(title !== undefined ? { title } : {}), ...(statement !== undefined ? { statement } : {}), ...(scope !== undefined ? { scope } : {}), ...(scopePolicy !== undefined ? { scopePolicy } : {}), ...(type !== undefined ? { type } : {}), ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(ontologyRefs !== undefined ? { ontologyRefs } : {}), ...(relations !== undefined ? { relations } : {}), ...(derivedFrom !== undefined ? { derivedFrom } : {}), ...(applicableWhen !== undefined ? { applicableWhen } : {}), ...(forbiddenWhen !== undefined ? { forbiddenWhen } : {}), ...(sensitivity !== undefined ? { sensitivity } : {}), ...(tags !== undefined ? { tags } : {}), reason: note, actor: 'user', ...(acknowledgeRecommendation !== undefined ? { acknowledgeRecommendation } : {}) }) };
+    return { ok: true, asset: await recallAssets.updateAbilityAsset(ctx.userId, assetId, { ...(title !== undefined ? { title } : {}), ...(statement !== undefined ? { statement } : {}), ...(scope !== undefined ? { scope } : {}), ...(scopePolicy !== undefined ? { scopePolicy } : {}), ...(type !== undefined ? { type } : {}), ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(ontologyRefs !== undefined ? { ontologyRefs } : {}), ...(relations !== undefined ? { relations } : {}), ...(derivedFrom !== undefined ? { derivedFrom } : {}), ...(applicableWhen !== undefined ? { applicableWhen } : {}), ...(forbiddenWhen !== undefined ? { forbiddenWhen } : {}), ...(tags !== undefined ? { tags } : {}), reason: note, actor: 'user', ...(acknowledgeRecommendation !== undefined ? { acknowledgeRecommendation } : {}) }) };
   },
   'recall.assets.pause': async ({ assetId, note } = {}, ctx) => { if (!safeId(assetId) || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall asset pause'); return { ok: true, asset: await recallAssets.pauseAbilityAsset(ctx.userId, assetId, { actor: 'user', reason: note ?? 'user pause' }) }; },
   'recall.assets.resume': async ({ assetId, note } = {}, ctx) => { if (!safeId(assetId) || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall asset resume'); return { ok: true, asset: await recallAssets.resumeAbilityAsset(ctx.userId, assetId, { actor: 'user', reason: note ?? 'user resume' }) }; },
@@ -3517,12 +3515,11 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // `cognition.inbox.list` 返回的 items[].id。分发与"哪些类没有一键动作"的判断在
   // features/cognition/inbox-adapter，这里只校验形状。没有动作可做的类别回
   // ok:false + code，**不计为成功**。
-  'cognition.inbox.resolve': async ({ id, action, note, level, applicableWhen, forbiddenWhen, targetAssetId, assetIds } = {}, ctx) => {
+  'cognition.inbox.resolve': async ({ id, action, note, applicableWhen, forbiddenWhen, targetAssetId } = {}, ctx) => {
     if (typeof id !== 'string' || !id) throw new Error('invalid cognition inbox item id');
     if (typeof action !== 'string' || !action) throw new Error('invalid cognition inbox action');
     if (note !== undefined && (typeof note !== 'string' || note.length > 1_000)) throw new Error('invalid cognition inbox note');
     // specs/010 的新参数全部可选：不传时既有行为逐字不变。
-    if (level !== undefined && !['L0', 'L1', 'L2'].includes(String(level))) throw new Error('invalid sensitivity level');
     const asConditionList = (value: unknown, label: string): string[] | undefined => {
       if (value === undefined) return undefined;
       if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) throw new Error(`invalid ${label}`);
@@ -3532,37 +3529,13 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     const applicable = asConditionList(applicableWhen, 'applicableWhen');
     const forbidden = asConditionList(forbiddenWhen, 'forbiddenWhen');
     if (targetAssetId !== undefined && (typeof targetAssetId !== 'string' || !safeId(targetAssetId))) throw new Error('invalid target asset id');
-    let batchIds: string[] | undefined;
-    if (assetIds !== undefined) {
-      if (!Array.isArray(assetIds) || assetIds.some((entry) => typeof entry !== 'string' || !safeId(entry))) {
-        throw new Error('invalid recall asset ids');
-      }
-      const unique = [...new Set(assetIds as string[])];
-      if (!unique.length || unique.length > 200) throw new Error('invalid recall asset ids');
-      batchIds = unique;
-    }
     return cognition.resolveCognitionInboxItem(ctx.userId, {
       id, action,
       ...(note !== undefined ? { note } : {}),
-      ...(level !== undefined ? { level: String(level) } : {}),
       ...(applicable !== undefined ? { applicableWhen: applicable } : {}),
       ...(forbidden !== undefined ? { forbiddenWhen: forbidden } : {}),
       ...(targetAssetId !== undefined ? { targetAssetId } : {}),
-      ...(batchIds !== undefined ? { assetIds: batchIds } : {}),
     });
-  },
-
-  // 聚合条目批量定级（specs/010 T024 / US-305）：只校验形状 + 转调 features
-  // （asset-classification-service 逐条走既有写通道，部分失败逐条如实返回）。
-  'recall.assets.sensitivity.batch': async ({ assetIds, level, note } = {}, ctx) => {
-    if (!Array.isArray(assetIds) || assetIds.some((entry) => typeof entry !== 'string' || !safeId(entry))) {
-      throw new Error('invalid recall asset ids');
-    }
-    const unique = [...new Set(assetIds as string[])];
-    if (!unique.length || unique.length > 200) throw new Error('invalid recall asset ids');
-    if (level !== 'L0' && level !== 'L1' && level !== 'L2') throw new Error('invalid sensitivity level');
-    if (note !== undefined && (typeof note !== 'string' || note.length > 1_000)) throw new Error('invalid note');
-    return recallAssetClassification.classifyAbilityAssets(ctx.userId, unique, level, typeof note === 'string' ? note : undefined);
   },
 
   // 「已处理历史」：跨全部候选列出真实落账的审查决定，按处理时间倒序。

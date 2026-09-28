@@ -380,8 +380,9 @@ describe('系统活动与认知设置', () => {
 
   it('chip 计数与列表行同口径：同一会话多条整理记录只计 1 行（2026-09-16 修复）', () => {
     // 真实事故形态：会话被整理过多次（失败重试/夜间多轮），后端 buckets 按
-    // 记录数计数，列表却每会话只显示最相关一条——修复前 chip 显示「需要我
-    // 处理 4」而列表只有 2 行，数字与内容对不上。
+    // 记录数计数，列表却每会话只显示最相关一条——修复前 chip 显示「需要你看
+    // 一眼 4」而列表只有 2 行，数字与内容对不上。（桶名 2026-09-28 自「需要
+    // 我处理」改名，避免与「待我处理」页签同名异义。）
     const store = {
       sources: [{
         kind: 'conversation',
@@ -400,8 +401,9 @@ describe('系统活动与认知设置', () => {
     };
     const html = renderPage('organize', store);
     // 行口径：conv-a 三条记录去重成 1 行 + conv-b 1 行 = 2。
-    expect(html).toContain('需要我处理 2');
-    expect(html).not.toContain('需要我处理 4');
+    expect(html).toContain('需要你看一眼 2');
+    expect(html).not.toContain('需要你看一眼 4');
+    expect(html).not.toContain('需要我处理');
     // 「全部」数列表行数（含无任务行），不再是四桶记录之和。
     expect(html).toContain('全部 2');
     // 筛选后可见行数与 chip 一致。
@@ -759,7 +761,9 @@ describe('整理详情页', () => {
     expect(html).toContain('正在提炼候选');
     expect(html).toContain('模型提炼中');
     expect(html).toContain('1 分 5 秒');
-    expect(html).toContain('1234 tokens');
+    // 模型用量白话（2026-09-28 两页重整）：单位进标签，值只出数字。
+    expect(html).toContain('模型用量（token）');
+    expect(html).toContain('1234');
     expect(html).toContain('data-action="pause"');
     expect(html).toContain('data-act="open-conversation" data-id="conv-1"');
     expect(html).toContain('data-act="go-back"');
@@ -872,7 +876,7 @@ describe('整理详情页', () => {
     expect(html).not.toContain('接口变更要同步更新文档。');
   });
 
-  it('待确认候选内嵌完整确认表单：类型/判断编辑/证据/保存并使用，不必跳「待我处理」', () => {
+  it('待确认候选出「候选摘要 + 去待我处理」：确认动作收敛到待我处理，不在整理详情就地编辑（2026-09-28 两页重整）', () => {
     const pending = {
       id: 'rcand-2', status: 'pending_review',
       judgment: '发布前先跑一遍冒烟清单。', value: '', summary: '发布前冒烟',
@@ -885,39 +889,31 @@ describe('整理详情页', () => {
       sources: [], candidates: [pending],
       ...contextStore,
     }, { captureId: 'rcap-x' });
-    // 合并卡：表单块嵌在执行信息卡内部（ca-pending-embed），不是独立的卡。
-    expect(html).toContain('ca-pending-embed');
+    // 内嵌确认表单已删（审计 R1③）：不再有任何表单控件与就地确认动作。
+    expect(html).not.toContain('ca-pending-embed');
     expect(html).not.toContain('ca-card ca-candidate-detail');
-    expect(html).toContain('data-f="judgment"');
-    expect(html).toContain('data-act="cand-type"');
-    expect(html).toContain('data-act="cand-adopt-with-form" data-id="rcand-2"');
-    expect(html).toContain('data-act="cand-decide"');
-    expect(html).toContain('保存并使用');
-    // 控件 id 带候选后缀（一页多卡不撞 id）。
-    expect(html).toContain('ca-cand-judgment-rcand-2');
-    // 整合排版（2026-09-15 重排）：状态/元信息/动作收进一行卡头（ca-capture-head
-    // 内同层），表单作为主体在其下；不再是两块上下拼接。
+    expect(html).not.toContain('data-f="judgment"');
+    expect(html).not.toContain('data-act="cand-type"');
+    expect(html).not.toContain('data-act="cand-adopt-with-form" data-id="rcand-2"');
+    expect(html).not.toContain('data-act="cand-decide"');
+    expect(html).not.toContain('ca-cand-judgment-rcand-2');
+    // 整理结果区给一行候选摘要（数量 + 标题）与「去待我处理」出口。
+    expect(html).toContain('发现 1 条待确认内容');
+    expect(html).toContain('发布前冒烟');
+    expect(html).toContain('data-act="go-review"');
+    // 整合排版不变：状态/元信息/动作收进一行卡头（ca-capture-head 内同层）。
     const headAt = html.indexOf('ca-capture-head');
     expect(headAt).toBeGreaterThan(-1);
-    const headSection = html.slice(headAt, html.indexOf('ca-pending-embed'));
+    const headSection = html.slice(headAt, html.indexOf('ca-capture-head') + 2000);
     expect(headSection).toContain('模型用量');
     expect(headSection).toContain('data-act="open-conversation"');
     expect(headSection).toContain('meta-row');
     expect(headSection).toContain('ca-head-actions');
-    // 元信息流式呈现（标签+值同 span），不再用 kv 网格。
     expect(html).toContain('meta-item');
     expect(html).not.toContain('ca-kv');
-    // 表单仍在卡头下方。
-    expect(html.indexOf('ca-cand-judgment-rcand-2')).toBeGreaterThan(html.indexOf('模型用量'));
-    expect(html.indexOf('ca-cand-judgment-rcand-2')).toBeGreaterThan(html.indexOf('data-act="open-conversation"'));
-    // 去重：待确认候选不再在「整理结果」区重复列出，改为一行指引。
-    expect(html).toContain('发现 1 条待确认内容');
-    expect((html.match(/发布前先跑一遍冒烟清单。/g) || []).length).toBe(1);
-    // 内嵌后详情页动作行不再出「去确认」跳转。
-    expect(html).not.toContain('data-act="go-review"');
   });
 
-  it('混合候选：待确认出表单块、未保存出完整内容块，两卡控件 id 不重复', () => {
+  it('混合候选：待确认只出摘要行、未保存出完整内容块，页面无表单控件', () => {
     const pending = {
       id: 'rcand-2', status: 'pending_review',
       judgment: '发布前先跑一遍冒烟清单。', value: '', summary: '',
@@ -935,36 +931,14 @@ describe('整理详情页', () => {
       sources: [], candidates: [pending, rejected],
       ...contextStore,
     }, { captureId: 'rcap-x' });
-    expect(html).toContain('ca-cand-judgment-rcand-2');
     expect(html).toContain('发现 1 条待确认内容');
-    // 未保存候选：完整内容块（全文可见），没有第二份表单控件。
+    expect(html).toContain('data-act="go-review"');
+    // 未保存候选：完整内容块（全文可见）。
     expect(html).toContain('接口变更要同步更新文档。');
     expect(html).toContain('ca-result-item');
     expect(html).not.toContain('ca-cand-judgment-rcand-3');
-    expect((html.match(/data-f="judgment"/g) || []).length).toBe(1);
-  });
-
-  it('确认表单三枚动作：保存并使用 / 稍后处理 / 拒绝（2026-09-16 补 defer 入口）', () => {
-    // defer 链路（IPC/状态机/7 天冷却唤醒）早已存在，此前只缺表单按钮——
-    // 用户在整理详情页看到内容后无法选"稍后处理"。
-    const pending = {
-      id: 'rcand-d', status: 'pending_review',
-      judgment: '发布前先跑一遍冒烟清单。', value: '', summary: '发布前冒烟',
-      suggestedType: 'skill_method', suggestedScope: 'general',
-      capabilities: { canEdit: true, canPromote: true, canReject: true, canDefer: true, countsAsPending: true, isSnoozed: false },
-    };
-    const html = renderPage('organize', {
-      captures: [{ ...detailCapture, candidateIds: ['rcand-d'], status: 'review_ready', displayStatus: 'review_ready', displayReason: 'review_pending' }],
-      sources: [], candidates: [pending],
-      ...contextStore,
-    }, { captureId: 'rcap-x' });
-    expect(html).toContain('保存并使用');
-    expect(html).toContain('data-id="rcand-d" data-action="defer"');
-    expect(html).toContain('稍后处理');
-    expect(html).toContain('data-id="rcand-d" data-action="reject"');
-    // 顺序：保存在前、拒绝在后，稍后处理居中。
-    expect(html.indexOf('data-action="defer"')).toBeGreaterThan(html.indexOf('cand-adopt-with-form'));
-    expect(html.indexOf('data-action="reject"')).toBeGreaterThan(html.indexOf('data-action="defer"'));
+    // 内嵌表单删除后，整页没有任何候选编辑控件。
+    expect(html).not.toContain('data-f="judgment"');
   });
 
   it('候选卡标题优先用模型生成的 summary（2026-09-16：此前 judgment 截断优先，名字成了内容前缀）', () => {
@@ -1450,7 +1424,7 @@ describe('资产详情（使用记录并入）', () => {
       { assetId: 'aa-1', proofEventId: 'ev-1' },
     );
     expect(html).toContain('使用记录');
-    expect(html).toContain('被带入任务');
+    expect(html).toContain('被任务用过');
     expect(html).toContain('对话《Saying hello》里');
     expect(html).toContain('data-act="proof-toggle" data-id="ev-1"');
     expect(html).toContain('data-feedback="positive"');
@@ -1465,12 +1439,13 @@ describe('资产详情（使用记录并入）', () => {
       { id: 'ev-5', kind: 'asset_archived', occurredAt: '2026-09-16T03:00:00.000Z', refs: { assetId: 'aa-1' } },
     ];
     const html = renderPage('overview', { assets: [asset], proofs: noisy, sources: conversationSources }, { assetId: 'aa-1' });
-    expect(html).toContain('被带入任务');
+    expect(html).toContain('被任务用过');
     expect(html).not.toContain('保存了新版本');
     expect(html).not.toContain('选用 v2 为在用版本');
-    // 噪音事件不进计数摘要；且口径已改（2026-09-25 US-602 AC4）：宿主注入过一律
-    // 归「被带入任务」，不再宣称「被实际使用」——是否采用只看实际采用记录。
-    expect(html).toContain('被带入任务 1 次');
+    // 噪音事件不进计数摘要；且口径已改（2026-09-25 US-602 AC4；2026-09-28 词表
+    // 统一）：宿主注入过一律归「被任务用过」，不再宣称「被实际使用」——是否
+    // 采用只看「模型确认采用」。
+    expect(html).toContain('被任务用过 1 次');
     expect(html).not.toContain('被实际使用');
   });
 
@@ -1505,8 +1480,8 @@ describe('资产详情（使用记录并入）', () => {
     expect(html).toContain('data-act="select-asset-version" data-id="aa-1" data-version="1"');
     expect(html).not.toContain('data-act="select-asset-version" data-id="aa-1" data-version="2"');
     expect(html).toContain('在用');
-    // 按版本的使用效果列（M8）：v1 采用 3 次·被否定 1 次。
-    expect(html).toContain('实际采用 3 次');
+    // 按版本的使用效果列（M8）：v1 模型确认采用 3 次·被否定 1 次（词表统一）。
+    expect(html).toContain('模型确认采用 3 次');
     expect(html).toContain('被否定 1 次');
     // 空版本标记（2026-09-16）：v3 与 v2 一字不差 → 标"内容未变"。
     expect(html).toContain('内容未变（系统迁移/搬运）');
@@ -1742,7 +1717,7 @@ describe('资产详情（使用记录并入）', () => {
     expect(openHtml).toContain('做发版自查');
     expect(openHtml).toContain('临时草稿');
     expect(openHtml).toContain('来源记录');
-    expect(openHtml).toContain('实际采用 3 次');
+    expect(openHtml).toContain('模型确认采用 3 次');
     expect(openHtml).toContain('data-act="delete-asset-version" data-id="aa-1" data-version="1"');
     // 点开在用版 v2：无删除按钮，白话提示先切换再删。
     const activeHtml = renderPage('overview', { assets: [multi], proofs: [], sources: [], assetVersions: versions }, { assetId: 'aa-1', assetVersionId: '2' });
@@ -1800,7 +1775,6 @@ describe('资产详情（使用记录并入）', () => {
           statement: 'Draft statement',
           applicable: 'Draft applicable',
           forbidden: 'Draft forbidden',
-          sensitivity: 'L2',
           scopeSelection: { agentIds: ['agent-draft'], workspaceIds: ['space-draft'] },
         },
       },
@@ -1810,7 +1784,8 @@ describe('资产详情（使用记录并入）', () => {
     expect(draftEdit).toContain('>Draft statement</textarea>');
     expect(draftEdit).toContain('value="Draft applicable"');
     expect(draftEdit).toContain('value="Draft forbidden"');
-    expect(draftEdit).toContain('aria-pressed="true" data-level="L2"');
+    // 敏感级三档控件已随机制删除（2026-09-28）：编辑表单不再有任何档位控件。
+    expect(draftEdit).not.toContain('data-level');
     expect(draftEdit).toContain('Draft Agent');
     expect(draftEdit).toContain('Draft Space');
     expect(draftEdit).toMatch(/value="agent-draft" checked[^>]*data-scope-kind="agent"/);

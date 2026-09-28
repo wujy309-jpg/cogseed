@@ -3,7 +3,7 @@
  *
  * 守两条不变量：
  *   ① FR-004 —— 每次 AI 写操作有台账，四项（actor/时间/前后值/依据）齐全；
- *   ② FR-012 —— 台账只存**摘要**，受限正文一个字也不进台账文件。
+ *   ② FR-012 —— 台账只存**摘要**，正文全文不进台账文件。
  *
  * ② 的判据不是"看返回对象"，而是**把 JSONL 原文读出来找关键词**——摘要函数
  * 写错时返回对象仍然好看，只有盘上原文能证伪。
@@ -49,6 +49,8 @@ async function seed(uid: string) {
   const { candidates, assets } = await modules();
   const candidate = await candidates.saveRecallCandidate(uid, {
     judgment: 'Prefer append-only audit trails.',
+    // 标题闸门（设计 3.2）：无 summary 兜底＝正文首句，过不了闸门。
+    summary: 'Append-only audit habit',
     suggestedType: 'rule', ...RULE_BOUNDARY, suggestedScope: 'architecture',
     sourceRefs: [{ kind: 'execution', id: 'exec-audit' }],
   });
@@ -60,7 +62,7 @@ describe('台账扩展：actor=ai 与四项齐全（FR-004）', () => {
   it('AI 的写操作留下 actor=ai + 时间 + 前后值 + 依据', async () => {
     const { assets, asset } = await seed('user-ai');
     await assets.updateAbilityAsset('user-ai', asset.id, {
-      title: 'AI 改过的标题',
+      title: '由 AI 改过的标题',
       statement: 'AI 整理后的正文。',
       reason: '用户要求把这条改清楚点',
       actor: 'ai',
@@ -73,7 +75,7 @@ describe('台账扩展：actor=ai 与四项齐全（FR-004）', () => {
     expect(row.reason).toBe('用户要求把这条改清楚点');
     // before/after 是摘要串：至少写明改了哪几维。
     expect(row.before).toContain('title=');
-    expect(row.after).toContain('title=AI 改过的标题');
+    expect(row.after).toContain('title=由 AI 改过的标题');
     expect(row.before).toContain('statement=');
     // 成功记录不带失败归因。
     expect(row.failureCategory).toBeUndefined();
@@ -126,20 +128,7 @@ describe('台账摘要的隐私边界（FR-012）', () => {
   const TAIL_MARK = 'TAILMARK-NEVER-IN-LEDGER';
   const BODY = `${HEAD}${TAIL_MARK}`;
 
-  it('受限资产（L2）的正文一个字都不进台账文件', async () => {
-    const { assets, asset } = await seed('user-l2');
-    await assets.updateAbilityAsset('user-l2', asset.id, {
-      statement: BODY, sensitivity: 'L2', reason: '整理正文', actor: 'ai',
-    });
-
-    const raw = await auditFileText('user-l2', asset.id);
-    expect(raw).not.toContain(TAIL_MARK);
-    expect(raw).not.toContain('头'); // 连前缀都不给：受限正文一个字也不留
-    // 但"正文变过"这件事必须可查——只留字数。
-    expect(raw).toMatch(/statement=\d+ 字/);
-  });
-
-  it('未分级/L0 正文只留短前缀，全文与尾部都不落台账', async () => {
+  it('正文只留短前缀，全文与尾部都不落台账', async () => {
     const { assets, asset } = await seed('user-l0');
     await assets.updateAbilityAsset('user-l0', asset.id, {
       statement: BODY, reason: '整理正文', actor: 'ai',
@@ -150,33 +139,12 @@ describe('台账摘要的隐私边界（FR-012）', () => {
     expect(raw).toContain('头'); // 前缀允许：与详情页对本人可见的信息量一致
     expect(raw).toMatch(/statement=\d+ 字/);
   });
-
-  it('降密不会把改前的正文前缀漏进台账（按更严的那一档处理）', async () => {
-    const { assets, asset } = await seed('user-downgrade');
-    await assets.updateAbilityAsset('user-downgrade', asset.id, {
-      statement: BODY, sensitivity: 'L2', reason: '设为受限', actor: 'user',
-    });
-    // 同一次改动同时降密 + 改正文：before 侧仍是受限内容，不能因为 after 降级就放前缀。
-    await assets.updateAbilityAsset('user-downgrade', asset.id, {
-      statement: `${BODY}改`, sensitivity: 'L0', reason: '降密并修改', actor: 'ai',
-    });
-
-    const rows = (await auditFileText('user-downgrade', asset.id)).trim().split('\n')
-      .map((line) => JSON.parse(line) as { action: string; before?: string; after?: string });
-    const downgradeRow = rows.find((row) => String(row.after ?? '').includes('sensitivity=L0'));
-    expect(downgradeRow, '降密那一条台账应当带 sensitivity 前后值').toBeTruthy();
-    expect(downgradeRow!.before).toContain('sensitivity=L2');
-    expect(downgradeRow!.after).toContain('sensitivity=L0');
-    // 关键：before 侧定级是 L2，所以一个"头"字都不该出现。
-    expect(downgradeRow!.before).not.toContain('头');
-    expect(downgradeRow!.before).toMatch(/statement=\d+ 字/);
-  });
 });
 
 describe('摘要函数的边界（纯函数 fixtures）', () => {
   it('空变更集不产出空摘要', async () => {
     const { assets } = await modules();
-    expect(assets.summarizeAuditChange([], 'L0')).toBeUndefined();
+    expect(assets.summarizeAuditChange([])).toBeUndefined();
     expect(assets.diffAbilityAssetsForAudit({ title: 'same' }, { title: 'same' })).toEqual([]);
   });
 

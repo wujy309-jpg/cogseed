@@ -36,8 +36,6 @@ const RUNTIME_OMISSION_REASON: Partial<Record<AssetRuntimeBlockReason, OmittedAs
   not_applicable_context: 'not_applicable_context',
   forbidden_context: 'forbidden_context',
   target_agent_not_allowed: 'target_agent_not_allowed',
-  sensitivity_above_destination: 'sensitivity_blocked',
-  sensitivity_unclassified: 'sensitivity_blocked',
   scope_mismatch: 'scope_mismatch',
   source_unavailable: 'source_unavailable',
 };
@@ -79,7 +77,7 @@ export function projectionKnowledgeError(code: ProjectionKnowledgeErrorCode): Er
 
 export interface OmittedAssetRef {
   assetId: string;
-  reason: 'asset_paused' | 'asset_archived' | 'asset_deleted' | 'asset_purged' | 'asset_revoked' | 'workspace_not_referenced' | 'workspace_disabled' | 'scope_mismatch' | 'source_unavailable' | 'low_relevance' | 'maturity_requires_user_selection' | 'not_applicable_context' | 'forbidden_context' | 'target_agent_not_allowed' | 'sensitivity_blocked';
+  reason: 'asset_paused' | 'asset_archived' | 'asset_deleted' | 'asset_purged' | 'asset_revoked' | 'workspace_not_referenced' | 'workspace_disabled' | 'scope_mismatch' | 'source_unavailable' | 'low_relevance' | 'maturity_requires_user_selection' | 'not_applicable_context' | 'forbidden_context' | 'target_agent_not_allowed';
 }
 
 function inactiveAssetOmissionReason(
@@ -804,10 +802,10 @@ export async function buildRecallView(userId: string, input: ProjectionInput, op
   };
 }
 
-/** 显式挂载时「与目的地无关」的阻断原因：不依赖 taskText / 目的地敏感级 /
+/** 显式挂载时「与目的地无关」的阻断原因：不依赖 taskText /
  *  接收者 Agent，attach 当场就能定论，必须立刻拦下并给出规则码（US-604 AC1）。
  *  依赖目的地上下文的维度（scope_mismatch / target_agent_not_allowed /
- *  not_applicable_context / sensitivity_above_destination）在接收者未知时推迟到
+ *  not_applicable_context）在接收者未知时推迟到
  *  每轮注入闸门判定——那里知道真实 agentId 与任务文本，且被拦会留 omitted
  *  回执供界面说明，不会静默（US-604 AC4/AC5）。 */
 const ATTACH_BLOCKING_REASONS: ReadonlySet<AssetRuntimeBlockReason> = new Set([
@@ -883,7 +881,6 @@ async function buildExplicitAssetView(userId: string, assetIds: string[], contex
       } : {}),
       ...(asset.applicableWhen ? { applicableWhen: asset.applicableWhen } : {}),
       ...(asset.forbiddenWhen ? { forbiddenWhen: asset.forbiddenWhen } : {}),
-      ...(asset.sensitivity ? { sensitivity: asset.sensitivity } : {}),
     }, {
       ...context,
       // 用户主动挑选，不是静默默认注入：成熟度与适用条件不作硬门槛。
@@ -1045,7 +1042,6 @@ export async function createAutomaticContextProjection(
       ...(asset.scopePolicy ? { scopePolicy: asset.scopePolicy } : {}),
       ...(asset.applicableWhen ? { applicableWhen: asset.applicableWhen } : {}),
       ...(asset.forbiddenWhen ? { forbiddenWhen: asset.forbiddenWhen } : {}),
-      ...(asset.sensitivity ? { sensitivity: asset.sensitivity } : {}),
     }, {
       silentDefaultInjection: true,
       purpose: taskText,

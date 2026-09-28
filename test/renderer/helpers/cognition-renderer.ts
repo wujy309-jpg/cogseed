@@ -65,7 +65,9 @@ function loadModule(
   context.globalThis = context;
   vm.createContext(context);
 
-  for (const file of ['ui-button.js', 'ui-form.js', 'ui-empty.js', 'ui-status.js', 'ui-segmented-control.js']) {
+  // ui-structure.js 提供 uiAccordion：设置页（含 2026-09-28 挪入的旧记忆迁移
+  // 工具卡）的高级设置折叠用它。
+  for (const file of ['ui-button.js', 'ui-form.js', 'ui-empty.js', 'ui-status.js', 'ui-segmented-control.js', 'ui-structure.js']) {
     vm.runInContext(
       fs.readFileSync(path.join(rendererRoot, 'modules', file), 'utf8'),
       context,

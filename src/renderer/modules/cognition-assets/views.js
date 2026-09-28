@@ -110,18 +110,16 @@
     <div class="sect"><strong class="sect-t">${esc(title)}</strong>${note ? `<span class="n">${esc(note)}</span>` : ''}<span class="sp"></span>${right || ''}</div>`;
 
   /* ────────────── 人话术语表 + 三层披露共享件（specs/018 T001/T002）──────────────
-   * 病根之二：界面词是工程词（候选/作用边界/扩权/回执），用户没有这些概念。
-   * 术语表在展示层统一翻译，数据层口径一个不动；钉死口径（「实际采用」「被带入」
-   * 「保留期 30 天」）只加脚注、不改写。TERM_TABLE 形态 = [词条键, 界面词,
-   * 脚注键, 脚注]，相邻字符串字面量让 i18n 覆盖扫描（literalPattern）扫得到，
-   * 四语缺一门即红。 */
+   * 病根之二：界面词是工程词（候选/作用边界/回执），用户没有这些概念。
+   * 术语表在展示层统一翻译，数据层口径一个不动；钉死口径（「模型确认采用」
+   * 「被任务用过」「保留期 30 天」）只加脚注、不改写。TERM_TABLE 形态 = [词条键,
+   * 界面词, 脚注键, 脚注]，相邻字符串字面量让 i18n 覆盖扫描（literalPattern）
+   * 扫得到，四语缺一门即红。（敏感级/扩权两词条已随机制整体删除，2026-09-28。） */
   const TERM_TABLE = {
     candidate: ['cognition.term_candidate', '系统注意到的一件事', 'cognition.term_candidate_note', '等你点头才记入你的认知'],
     kstar: ['cognition.term_kstar', '那次任务的复盘', 'cognition.term_kstar_note', '任务收口后系统总结的得失'],
     boundary: ['cognition.term_boundary', '什么时候用、什么时候别用', 'cognition.term_boundary_note', '没写适用范围的规矩不会被自动带入任务'],
-    sensitivity: ['cognition.term_sensitivity', '敏感档位', 'cognition.term_sensitivity_note', '决定这条能被带去哪些任务'],
-    escalation: ['cognition.term_escalation', '能去的地方变多了', 'cognition.term_escalation_note', '需要你确认这次放宽'],
-    receipt: ['cognition.term_receipt', '使用记录', 'cognition.term_receipt_note', '只记真实用过（实际采用），仅被带入不算'],
+    receipt: ['cognition.term_receipt', '使用记录', 'cognition.term_receipt_note', '模型确认采用才算用过；只被带入不算'],
     family: ['cognition.term_family', '同一来源的一组', '', ''],
     projection: ['cognition.term_projection', '带进对话的内容', '', ''],
     inspection: ['cognition.term_inspection', '定期检查', 'cognition.term_inspection_note', '只报告问题，不修改资产；发现项进入「待我处理」'],
@@ -531,7 +529,7 @@
    *  - 只渲染候选自己的字段与已核对的回执摘要，**不整条 dump 记录**——受限正文
    *    不进界面；学习信号里的机器码评分（内部字段）一概不上屏；
    *  - 存量候选没有 targetVersionUsed 时如实说"无法核对改进对象"，不伪造版本；
-   *  - 新建型没有"原方法"可回指，返回空串（措辞仍是「保存并使用」）。 */
+   *  - 新建型没有"原方法"可回指，返回空串（措辞为「保存」）。 */
 
   /** 结论 reason 是主进程写的人话短句，但句子里嵌了内部 id（「aa-…」/「ksf-…」）——
    *  US-603 铁律：rawId 不上屏。已知资产换标题、其余换泛称，句子其余部分照原样。
@@ -808,19 +806,22 @@
    *    措辞：它既不是"更新成新版"，也没有可重锚的差异面；
    *  - 「稍后处理 / 拒绝」的**更新型**文案与 008 审批卡片共用同一批词条：
    *    产品口径是"两边三态与按钮名统一"（spec.md L40），共用键从源头杜绝
-   *    两处各写一套后漂移；新建型的「保存并使用 / 不保存」保持既有措辞。 */
+   *    两处各写一套后漂移。
+   *  - 确认词根统一「保存」系（2026-09-28 词表统一）：新建型「保存」（原
+   *    「保存并使用」，"并使用"的语义并入按钮下的一句说明）、更新型「保存更新」
+   *    （原「确认更新」，与对话内审批卡同键同步改）。 */
   const candidateUpdateType = (candidate) => {
     const action = String((candidate || {}).suggestedAction || '');
     return (action === 'update' || action === 'limit_scope') && !!String((candidate || {}).targetAssetId || '');
   };
   const candidateDecisionLabels = (candidate) => (candidateUpdateType(candidate)
     ? {
-      promote: T('recall.asset_approval.confirm', '确认更新'),
+      promote: T('recall.asset_approval.confirm', '保存更新'),
       defer: T('recall.asset_approval.defer', '稍后处理'),
       reject: T('recall.asset_approval.reject', '拒绝'),
     }
     : {
-      promote: T('cognition.candidate_save_and_use', '保存并使用'),
+      promote: T('cognition.candidate_save_and_use', '保存'),
       defer: T('cognition.candidate_defer_action', '稍后处理'),
       reject: T('cognition.candidate_reject', '不保存'),
     });
@@ -1156,7 +1157,7 @@
       return T('cognition.proof_sentence_brought_in', '{when}，{where}的这次任务把这条内容带进了上下文{version}', { when, where, version });
     }
     if (kind === 'projection_confirmed') {
-      return T('cognition.proof_sentence_projected', '{when}，在{where}被带入任务{version}', { when, where, version });
+      return T('cognition.proof_sentence_projected', '{when}，在{where}被任务带入{version}', { when, where, version });
     }
     if (kind === 'projection_revoked') {
       // 模型自选的撤销要在使用记录里看得见（2026-09-18）：否则"我撤过它"没有
@@ -1175,7 +1176,7 @@
     return T('cognition.proof_sentence_unknown', '{when}，{title}', { when, title: proofEventTitle(proof) });
   }
 
-  /** 「被带入任务」计数（唯一公式，列表行 / 目录行 / 详情摘要共用）：
+  /** 「被任务用过」计数（唯一公式，列表行 / 目录行 / 详情摘要共用；原「被带入任务」）：
    *  白名单事件（来自主进程）+ 防重复——一次带入在数据层会产生两条记录
    *  （projection_confirmed 与同投影的 usage_recorded/injected），必须按投影去重，
    *  否则一次带入被数成两次。没有投影关联的 usage 行只在明确是"另一条路线"
@@ -1229,7 +1230,7 @@
       knownVersions.add(String(asset.activeVersion || ''));
       for (const v of S.assetVersions.versions) knownVersions.add(String(v.version));
     }
-    // 「被带入任务」计数走唯一公式（与目录行、列表侧同口径）。
+    // 「被任务用过」计数走唯一公式（与目录行、列表侧同口径）。
     const broughtInCount = broughtInCountFor(asset.id, proofItems);
     // 「实际采用」只认有据回执（AC5/AC6）：applied 才算采用，contradicted 单列，
     // 其余（usage_unknown / considered_not_applicable / available_no_opportunity）
@@ -1242,8 +1243,8 @@
     const contradictedCount = receipts.filter((r) => String(r.status || '') === 'contradicted').length;
     const unknownCount = receipts.filter((r) => !['applied', 'contradicted'].includes(String(r.status || ''))).length;
     const summaryLine = [
-      broughtInCount ? T('cognition.proof_projected_times', '被带入任务 {n} 次', { n: String(broughtInCount) }) : '',
-      appliedCount ? T('cognition.adoption_applied_times', '实际采用 {n} 次', { n: String(appliedCount) }) : '',
+      broughtInCount ? T('cognition.proof_projected_times', '被任务用过 {n} 次', { n: String(broughtInCount) }) : '',
+      appliedCount ? T('cognition.adoption_applied_times', '其中模型确认采用 {n} 次', { n: String(appliedCount) }) : '',
       contradictedCount ? T('cognition.adoption_contradicted_times', '被否定 {n} 次', { n: String(contradictedCount) }) : '',
       unknownCount ? T('cognition.adoption_unknown_times', '证据不足 {n} 次', { n: String(unknownCount) }) : '',
     ].filter(Boolean).join(' · ');
@@ -1383,7 +1384,7 @@
     const contradicted = items.filter((r) => String(r.status || '') === 'contradicted').length;
     const unknown = items.length - applied - contradicted;
     const note = [
-      T('cognition.adoption_applied_times', '实际采用 {n} 次', { n: String(applied) }),
+      T('cognition.asset_usage_applied', '模型确认采用 {n} 次', { n: String(applied) }),
       contradicted ? T('cognition.adoption_contradicted_times', '被否定 {n} 次', { n: String(contradicted) }) : '',
       unknown ? T('cognition.adoption_unknown_times', '证据不足 {n} 次', { n: String(unknown) }) : '',
     ].filter(Boolean).join(' · ');
@@ -1552,7 +1553,7 @@
   function assetVersionDetailBlock(asset, v, isActive, usage) {
     const snap = v.snapshot || {};
     const usageText = usage
-      ? [usage.applied ? T('cognition.asset_usage_applied', '实际采用 {n} 次', { n: String(usage.applied) }) : '',
+      ? [usage.applied ? T('cognition.asset_usage_applied', '模型确认采用 {n} 次', { n: String(usage.applied) }) : '',
         usage.contradicted ? T('cognition.asset_usage_contradicted', '被否定 {n} 次', { n: String(usage.contradicted) }) : '']
         .filter(Boolean).join(' · ')
       : '';
@@ -1625,7 +1626,7 @@
         const title = String((v.snapshot && v.snapshot.title) || asset.title || '');
         const usage = usageByVersion.get(String(v.version));
         const usageText = usage
-          ? [usage.applied ? T('cognition.asset_usage_applied', '实际采用 {n} 次', { n: String(usage.applied) }) : '',
+          ? [usage.applied ? T('cognition.asset_usage_applied', '模型确认采用 {n} 次', { n: String(usage.applied) }) : '',
             usage.contradicted ? T('cognition.asset_usage_contradicted', '被否定 {n} 次', { n: String(usage.contradicted) }) : '']
             .filter(Boolean).join(' · ')
           : '';
@@ -1792,21 +1793,13 @@
   /** 资产编辑表单（2026-09-17 报告建议 A）：预填在用版现值；保存产生新
    *  版本（core.editAsset 先比对，无实际修改不提交——后端相同内容也会
    *  bump 出空版本）。类型变更走候选线重审；Agent/工作空间限制通过可读名称
-   *  多选，底层仍保存稳定 id。
-   *  敏感级（specs/010 T026）：三档分段控件随表单走——未分级时三档都不
-   *  选中、不预设 L0；用户点了哪档保存时才带 sensitivity，没点就不改。 */
+   *  多选，底层仍保存稳定 id。（敏感级三档控件已随机制整体删除，2026-09-28。） */
   function assetEditForm(asset) {
     const fieldHtml = (label, inner) => `<label class="field"><span>${esc(label)}</span>${inner}</label>`;
     const joinList = (list) => (Array.isArray(list) ? list.join('、') : '');
     const editDraft = (S.assetEditDrafts || {})[String(asset.id)] || {};
     const draftValue = (key, fallback) => Object.prototype.hasOwnProperty.call(editDraft, key) ? editDraft[key] : fallback;
     const fid = (name) => `ca-asset-edit-${name}-${esc(asset.id)}`;
-    const sensitivityControl = window.uiSegmentedControl({
-      ariaLabel: T('cognition.inbox_ask_classify', '补充敏感级分类'),
-      items: ['L0', 'L1', 'L2'].map((level) => ({ label: level, value: level, attrs: { 'data-level': level } })),
-      value: draftValue('sensitivity', asset.sensitivity),
-      attrs: { 'data-act': 'inbox-classify-level', 'data-key': `ca-asset-edit-sensitivity-${esc(asset.id)}`, 'data-f': 'sensitivity' },
-    });
     return `<div class="sect-block ca-asset-edit" data-asset-edit-id="${esc(asset.id)}">
       <div class="tt">${esc(T('cognition.asset_edit_title', '编辑资产'))}</div>
       <p class="note">${esc(T('cognition.asset_edit_hint', '修改内容或适用范围会生成新版本；来源和证据会保留，旧版本也可回滚。'))}</p>
@@ -1814,7 +1807,6 @@
       ${fieldHtml(T('cognition.asset_edit_field_statement', '正文'), window.uiTextarea({ id: fid('statement'), value: String(draftValue('statement', asset.statement || '') || ''), attrs: { 'data-f': 'statement' } }))}
       ${fieldHtml(T('cognition.asset_edit_field_applicable', '适用场景（多条用顿号分隔）'), window.uiInput({ id: fid('applicable'), value: String(draftValue('applicable', joinList(asset.applicableWhen)) || ''), attrs: { 'data-f': 'applicable' } }))}
       ${fieldHtml(T('cognition.asset_edit_field_forbidden', '禁用场景（多条用顿号分隔）'), window.uiInput({ id: fid('forbidden'), value: String(draftValue('forbidden', joinList(asset.forbiddenWhen)) || ''), attrs: { 'data-f': 'forbidden' } }))}
-      ${fieldHtml(T('cognition.asset_edit_field_sensitivity', '敏感级（未分级不等于 L0；不选＝维持现状）'), sensitivityControl)}
       ${assetScopeEditor(asset, editDraft)}
       <div class="actions actions-right">
         ${btn(T('common.cancel', '取消'), 'asset-edit-cancel', { id: asset.id })}
@@ -1872,9 +1864,10 @@
       <div class="sub"><strong>${esc(T('cognition.asset_origin_section', '来历'))}</strong>${refs.length ? `<span class="note">${String(refs.length)}</span>` : ''}</div>
       ${refs.length ? evidenceGroupsHtml(refs) : `<div class="sub">${esc(T('cognition.asset_origin_empty', '没有可追溯的来源记录。'))}</div>`}
     </div>`;
-    /* 用过吗（T040③/T042）：实际采用 N 次 · 最近一次 {when}（可点回那次会话
-     * 或任务）· 被带入 N 次。口径零改动：实际采用=applied 回执（钉死口径），
-     * 被带入走 broughtInCountFor 唯一公式；逐条明细在「详情与历史」折叠区。 */
+    /* 用过吗（T040③/T042；2026-09-28 词表统一）：被任务用过 N 次 · 其中模型
+     * 确认采用 M 次（无采用回执时省略后半句）· 最近一次 {when}。口径零改动：
+     * 被任务用过＝broughtInCountFor 唯一公式（原「被带入」），模型确认采用＝
+     * applied 回执（原「实际采用」）；逐条明细在「详情与历史」折叠区。 */
     const realKinds = new Set(Array.isArray(S.realUsageKinds) ? S.realUsageKinds : []);
     const detailProofs = assetProofItems(asset.id);
     const realProofs = detailProofs
@@ -1886,9 +1879,9 @@
     const appliedCount = receipts.filter((r) => String(r.status || '') === 'applied').length;
     const broughtIn = broughtInCountFor(asset.id, detailProofs);
     const usedSummary = [
-      appliedCount ? T('cognition.adoption_applied_times', '实际采用 {n} 次', { n: String(appliedCount) }) : '',
-      lastProof ? T('cognition.asset_last_used_at', '最近真用过 {when}', { when: fmtDate(lastProof.occurredAt) }) : '',
-      broughtIn ? T('cognition.proof_projected_times', '被带入任务 {n} 次', { n: String(broughtIn) }) : '',
+      broughtIn ? T('cognition.proof_projected_times', '被任务用过 {n} 次', { n: String(broughtIn) }) : '',
+      appliedCount ? T('cognition.adoption_applied_times', '其中模型确认采用 {n} 次', { n: String(appliedCount) }) : '',
+      lastProof ? T('cognition.asset_last_used_at', '最近一次 {when}', { when: fmtDate(lastProof.occurredAt) }) : '',
     ].filter(Boolean).join(' · ');
     const lastRef = lastProof
       ? ((lastProof.refs || {}).conversationId
@@ -1902,20 +1895,12 @@
         ? `<div class="chips ca-used-line"><span class="note">${esc(usedSummary)}</span>${lastRef ? evidenceChip(lastRef) : ''}</div>`
         : `<div class="sub">${esc(T('cognition.asset_no_proofs_section', '还没有被真实使用过。资产在任务中被真正使用、并留下可核对的记录后，会出现在这里。'))}</div>`}
     </div>`;
-    /* 状态章三件（T040①）：类型 / 生效中（正常态也出章，018 覆盖 2026-09-17
-     * 「正常不摆章」的减噪决策）/ 敏感档位（术语表脚注语义由待办分组区承担）。 */
-    const sensitivityTag = (() => {
-      if (!['active', 'paused'].includes(String(asset.status || 'active'))) return '';
-      const level = asset.sensitivity ? String(asset.sensitivity) : '';
-      const tag = level
-        ? window.uiTag({ label: level, variant: 'version' })
-        : window.uiTag({ label: T('cognition.asset_sensitivity_unclassified', '未分级'), variant: 'outline' });
-      return `<span class="ca-fact"><span class="note">${esc(term('sensitivity'))}</span> ${tag}</span>`;
-    })();
+    /* 状态章两件（T040①）：类型 / 生效中（正常态也出章，018 覆盖 2026-09-17
+     * 「正常不摆章」的减噪决策）。（「敏感档位/未分级」事实行已随敏感级机制
+     * 整体删除，2026-09-28。） */
     const factsLine = `<div class="sub ca-detail-facts">
       ${chip(categoryLabel(asset.type))}
       ${assetStatusChip(asset)}
-      ${sensitivityTag}
     </div>`;
     /* 「详情与历史」折叠区（T041）：版本历史 / 使用明细 / 实际采用记录 /
      * 排序依据 / 标签 / 归并收这里，默认收起、内容不丢。台账（生命周期
@@ -2502,8 +2487,8 @@
     const lastUseText = (assetId) => {
       const at = lastUseByAsset.get(String(assetId));
       return at
-        ? T('cognition.asset_last_used_at', '最近真用过 {when}', { when: fmtDate(at) })
-        : T('cognition.asset_last_use', '还没被用过');
+        ? T('cognition.asset_last_used_at', '最近一次 {when}', { when: fmtDate(at) })
+        : T('cognition.asset_last_use', '还没被任务用过');
     };
     /* 导语（specs/018 T030）：hero 统计条并入导语两个可点数字——
      * {n} 条认知（点开滚到列表）· {m} 条等你确认（去「待我处理」）。
@@ -2596,9 +2581,9 @@
         categoryLabel(asset.type),
         scopeLabelText(asset.scope),
         `v${String(asset.activeVersion || asset.version || '1')}`,
-        // 目录行与列表/详情同口径（2026-09-25 US-602）：只算「被带入任务」，
-        // 不把宿主注入说成"用过"，更不说成"实际采用"。
-        used ? T('cognition.catalog_used_times', '被带入任务 {n} 次', { n: String(used) }) : T('cognition.catalog_never_used', '还没被带入过'),
+        // 目录行与列表/详情同口径（2026-09-25 US-602；2026-09-28 词表统一）：
+        // 只算「被任务用过」（原「被带入任务」），不把宿主注入说成采用。
+        used ? T('cognition.catalog_used_times', '被任务用过 {n} 次', { n: String(used) }) : T('cognition.catalog_never_used', '还没被任务用过'),
       ].join(' · ');
       return `<div class="row" data-go-asset="${esc(asset.id)}" role="button" tabindex="0">
         <div class="tw">
@@ -2619,8 +2604,8 @@
     const tagSelectOn = String(route.tagSelect || '') === '1' && !catalogView && route.category !== 'deleted';
     const tagSelectedIds = new Set((S.tagSelectIds || []).map(String));
     const plainRow = (asset) => {
-      // 行三事实（specs/018 T032）：类型 / 最近真用过（或「还没被用过」）/
-      // 被带入 N 次。版本号收进详情（行上不再是第四件事）。
+      // 行三事实（specs/018 T032）：类型 / 最近一次（或「还没被任务用过」）/
+      // 被任务用过 N 次。版本号收进详情（行上不再是第四件事）。
       const used = broughtInCountFor(asset.id);
       if (!tagSelectOn) return `
         <div class="row" data-go-asset="${esc(asset.id)}" role="button" tabindex="0">
@@ -2629,7 +2614,7 @@
             <div class="mm">${esc([
               categoryLabel(asset.type),
               lastUseText(asset.id),
-              used ? T('cognition.catalog_used_times', '被带入任务 {n} 次', { n: String(used) }) : T('cognition.catalog_never_used', '还没被带入过'),
+              used ? T('cognition.catalog_used_times', '被任务用过 {n} 次', { n: String(used) }) : T('cognition.catalog_never_used', '还没被任务用过'),
             ].join(' · '))}</div>
           </div>
           <div class="sd">${NS.isKstarAsset(asset) ? chip(T('cognition.asset_kstar_badge', 'KSTAR'), 'blue') : ''}${assetStatusChip(asset)}<span class="chev" aria-hidden="true">›</span></div>
@@ -2729,7 +2714,7 @@
         toolButtons,
       )}
       ${catalogView ? `<div class="note list-caption">${esc(T('cognition.catalog_view_hint', '这就是模型挑资产时看的那份目录：一行一条；要看全文点进去。'))}</div>` : ''}
-      ${!catalogView && route.category !== 'deleted' && !manageMode ? `<div class="note list-caption">${esc(T('cognition.overview_sort_note', '按最近真实使用排在前；类型 / 最近真用过 / 被带入次数写在每行上。'))}</div>` : ''}
+      ${!catalogView && route.category !== 'deleted' && !manageMode ? `<div class="note list-caption">${esc(T('cognition.overview_sort_note', '按最近使用排在前；类型 / 最近一次 / 被任务用过次数写在每行上。'))}</div>` : ''}
       ${pillboxHtml}
       ${tagFilterBar(route, filteredByType)}
       ${tagSelectOn ? tagBatchBar(route, filtered) : ''}
@@ -3290,7 +3275,8 @@
     return [label, summary, shortHash].filter(Boolean).join('：');
   }
 
-  /** 旧记忆核对是一次性兼容入口，放在待办页尾并默认折叠，避免盖过日常拍板事项。 */
+  /** 旧记忆核对是一次性兼容入口（2026-09-28 两页重整自「待我处理」页尾挪入
+   *  设置页，与「大扫除」「巡检」同层工具卡）；默认折叠，不盖过日常事项。 */
   function legacyMemoryMigrationSection() {
     const state = S.legacyMemoryMigration;
     const preview = state && state.preview;
@@ -3564,19 +3550,19 @@
     }
     // 治理待办 / 待确认清单（2026-09-25 重上，specs/008 T051；2026-09-26 分组呈现，
     // specs/010 T014~T016 / US-301）：分组可用时按「治理待办」分区呈现（顺序由主进程
-    // groupCognitionInbox 唯一给出：冲突 → 扩权 → 缺边界 → 未分级 → 其他）；拿不到
+    // groupCognitionInbox 唯一给出：敏感级与催办三组删除后为 冲突 → 其他）；拿不到
     // groups（旧主进程 / 读失败）时**逐字退回**既有扁平清单。渲染层只渲染读模型给的
     // 动作（`item.actions`），不自己判"哪些动作可用"；取词一律内联 T()。
     const inboxItems = Array.isArray(S.inbox) ? S.inbox : [];
     const inboxGroups = Array.isArray(S.inboxGroups) ? S.inboxGroups : null;
     const INBOX_ACTION_LABELS = {
-      accept: T('cognition.inbox_action_accept', '确认'),
+      accept: T('cognition.inbox_action_accept', '保存'),
       reject: T('cognition.inbox_action_reject', '拒绝'),
       defer: T('cognition.inbox_action_defer', '稍后处理'),
       ignore: T('cognition.inbox_action_ignore', '忽略'),
     };
     const PROPOSAL_ACTION_LABELS = {
-      accept: T('cognition.inbox_action_accept_update', '确认更新'),
+      accept: T('cognition.inbox_action_accept_update', '保存更新'),
       defer: T('cognition.inbox_action_defer_later', '稍后处理'),
       reject: T('cognition.inbox_action_reject_proposal', '拒绝'),
     };
@@ -3619,28 +3605,17 @@
       </div>`;
     };
     // ── 治理分区的取词（内联，i18n 门禁扫得到；不信任主进程下发的 titleKey）──
-    // 组名走人话术语表（specs/018 §4）：扩权/作用边界/分级都是工程词，
-    // 界面词换成用户视角的说法；组内 hint 承担首次出现的白话脚注。
+    // 组名走人话（specs/018 §4）。敏感级「扩权/未分级」与「缺边界催办」三个
+    // 分组已随机制整体删除（2026-09-28 两页重整：待我处理只剩等你拍板的事；
+    // 边界的编辑入口保留在资产编辑表单）——主进程分组枚举收窄后这里只剩
+    // 冲突与其他；历史残留 category 落 other 兜底、行沿 flatInboxRow。
     const GROUP_TITLES = {
       conflict: T('cognition.inbox_group_conflict', '冲突与重复'),
-      escalation: term('escalation'),
-      boundary: `${term('boundary')}${T('cognition.inbox_group_not_written', '（还没写）')}`,
-      unclassified: T('cognition.inbox_group_sensitivity_unset', '还没定{level}', { level: term('sensitivity') }),
       other: T('cognition.inbox_group_other', '其他待处理'),
     };
     const GROUP_HINTS = {
       conflict: T('cognition.inbox_classification_conflict_hint', '同一句话被归到两个类型，两边都不会晋升，需要你裁定。'),
-      escalation: T('cognition.inbox_sensitivity_escalated_hint', '这条资产能带去的目的地变多了，需要你确认这次放宽。'),
-      boundary: T('cognition.inbox_rule_boundary_hint', '没写适用范围的规矩不会被自动带入任务；补齐后才会生效。'),
-      unclassified: T('cognition.inbox_sensitivity_unclassified_hint', '未分级不等于 L0：分级前不会被带往声明了敏感上限的目的地。'),
     };
-    // ── 敏感级三档控件（specs/010 T011）：未分级时三档都不选中 ──
-    const levelControl = (key, current) => window.uiSegmentedControl({
-      ariaLabel: T('cognition.inbox_ask_classify', '补充敏感级分类'),
-      items: ['L0', 'L1', 'L2'].map((level) => ({ label: level, value: level, attrs: { 'data-level': level } })),
-      value: current,
-      attrs: { 'data-act': 'inbox-classify-level', 'data-key': String(key) },
-    });
     // ── 各分区的行渲染器（动作仍以 item.actions 为准，渲染层不自判）──
     const governanceRow = (row) => {
       const actions = Array.isArray(row.actions) ? row.actions : [];
@@ -3649,55 +3624,6 @@
       // 聚合行的 detail 与组 hint 同文（真机截图取证）：不重复摆第二遍。
       const detail = row.aggregate ? '' : row.detail;
       const head = `<div class="notice-copy">${rowTitle(row)}${detail ? `<div class="notice-detail">${esc(String(detail))}</div>` : ''}</div>`;
-      if (row.kind === 'sensitivity_escalated') {
-        return `<div class="notice-row">${head}<span class="sp"></span>${has('accept') ? btn(T('cognition.inbox_action_escalation_accept', '确认这次放宽'), 'inbox-escalation-accept', { small: true, primary: true, data: { id } }) : ''}${otherActions(has('reject') ? btn(T('cognition.inbox_action_escalation_reject', '驳回，维持原级'), 'inbox-escalation-reject', { small: true, danger: true, data: { id } }) : '')}</div>`;
-      }
-      if (row.kind === 'rule_boundary_missing' && has('set_boundary')) {
-        // 就地补条件表单（specs/010 T029；specs/017 整改二：字段说明 + 保存
-        // 后果）：预填当前条件，保存前主进程过同一道闸门。
-        const formId = `inbox-bnd-${String(row.assetId || id).replace(/[^A-Za-z0-9_-]/g, '')}`;
-        const boundary = row.boundary || {};
-        // 表单默认收起（真机取证：38 条待办每条摊开两个空输入框=一屏墙）；
-        // 「补条件」一键展开，展开后才是要填的字段与保存后果。
-        return `<div class="notice-row inbox-governance-form" data-inbox-boundary-form>
-          ${head}
-          <div class="sd">${btn(T('cognition.inbox_form_open', '补条件'), 'inbox-form-toggle', { small: true, primary: true, data: { id } })}</div>
-          <div class="inbox-inline-fields" data-inbox-boundary-body hidden>
-            <label class="field"><span>${esc(T('cognition.inbox_boundary_field_applicable', '适用情形'))}</span>${window.uiInput({ id: `${formId}-applicable`, value: (boundary.applicableWhen || []).join('、'), attrs: { 'data-f': 'applicableWhen' } })}</label>
-            <label class="field"><span>${esc(T('cognition.inbox_boundary_field_forbidden', '禁用情形'))}</span>${window.uiInput({ id: `${formId}-forbidden`, value: (boundary.forbiddenWhen || []).join('、'), attrs: { 'data-f': 'forbiddenWhen' } })}</label>
-            <p class="note inbox-effect-note">${esc(T('cognition.inbox_boundary_save_effect', '保存后：主进程重新校验，通过后这条规则恢复自动带入；不通过会把原因留在这里。'))}</p>
-            <div class="inbox-field-actions">${btn(T('cognition.inbox_action_set_boundary', '保存条件'), 'inbox-boundary-save', { small: true, data: { id } })}</div>
-          </div>
-        </div>`;
-      }
-      if (row.kind === 'sensitivity_unclassified' && has('classify')) {
-        const aggregate = row.aggregate;
-        if (aggregate && Array.isArray(aggregate.assetIds) && aggregate.count > 1) {
-          // 聚合条目（specs/010 T025 → 018 T012 折叠收口）：默认一行
-          // 「{n} 条没定敏感档 · 一次搞定」，展开才见名单与批量控件；
-          // 失败逐条留在待办。分桶 chips 降级为筛选项（specs/018 T061）
-          // 之外，这是「概览计数与分组计数重复」的另一半收口。
-          return `<div class="notice-row inbox-governance-form">
-            ${head}
-            <details class="details inbox-batch-names">
-              <summary><span class="n">${esc(String(aggregate.count))}</span>${esc(T('cognition.inbox_batch_summary', '条没定敏感档'))} · ${esc(T('cognition.inbox_batch_fix', '一次搞定'))}</summary>
-              <div class="dbody">
-                <ul class="inbox-batch-list">${aggregate.assetIds.map((assetId) => `<li>${esc(String(assetId))}</li>`).join('')}</ul>
-                <p class="note inbox-effect-note">${esc(T('cognition.inbox_classify_batch_hint', '选好档位点「批量定级」：名单里的资产立即生效；个别失败的会留在待办里单独处理。'))}</p>
-                <div class="inbox-field-actions">${levelControl(id, undefined)}
-                  ${btn(T('cognition.inbox_action_classify_batch', '批量定级'), 'inbox-classify-batch', { small: true, primary: true, data: { id, ids: aggregate.assetIds.join(',') } })}
-                </div>
-              </div>
-            </details>
-          </div>`;
-        }
-        return `<div class="notice-row inbox-governance-form">
-          ${head}<span class="sp"></span>
-          <div class="inbox-inline-fields"><div class="inbox-field-actions">${levelControl(id, undefined)}
-            ${btn(T('cognition.inbox_action_classify', '保存分级'), 'inbox-classify-apply', { small: true, primary: true, data: { id } })}
-          </div></div>
-        </div>`;
-      }
       if (row.kind === 'classification_conflict' && has('claim')) {
         return `<div class="notice-row">${head}<span class="sp"></span>${btn(T('cognition.inbox_action_claim', '保留这一条'), 'inbox-conflict-claim', { small: true, primary: true, data: { id } })}${otherActions([has('reject') ? btn(INBOX_ACTION_LABELS.reject, 'inbox-resolve', { small: true, className: 'o', data: { id, action: 'reject' } }) : '', has('defer') ? btn(INBOX_ACTION_LABELS.defer, 'inbox-resolve', { small: true, className: 'o', data: { id, action: 'defer' } }) : ''].join(''))}</div>`;
       }
@@ -3719,11 +3645,9 @@
       const title = GROUP_TITLES[group.category] || GROUP_TITLES.other;
       const hint = GROUP_HINTS[group.category];
       const rows = items.map((row) => (group.category === 'other' ? flatInboxRow(row) : governanceRow(row))).join('');
-      // 计数口径（T016）：未分级显示 total（被折叠的总数），其余显示条目数；
-      // 按 urgency 拆开后，仅当本拆分区持有全组条目时才取 total。
-      const shown = group.category === 'unclassified' && items.length === group.items.length
-        ? Number(group.total || items.length) : items.length;
-      return `<div class="sect-block"><div class="tt">${esc(title)}<span class="note">${esc(String(shown))}</span></div>${hint ? `<p class="note">${esc(hint)}</p>` : ''}${rows}</div>`;
+      // 计数口径（T016）：显示本拆分区条目数（未分级组「显示 total」的特判
+      // 已随分级待办整体删除，2026-09-28）。
+      return `<div class="sect-block"><div class="tt">${esc(title)}<span class="note">${esc(String(items.length))}</span></div>${hint ? `<p class="note">${esc(hint)}</p>` : ''}${rows}</div>`;
     };
     const confirmBlocks = [];
     const lowBlocks = [];
@@ -3749,13 +3673,12 @@
     const allQuiet = !attention.length && !confirmCount && !lowCount && !pending.length && !terminal.length && !processed.length;
     /* 导语（specs/018 T010）：一句话回答「现在要我拍板什么」。概览计数收成
      * 导语里两个可点数字（拍板数 / 证据异常数），点数字滚到对应分区——
-     * 统计条与分组计数的重复就此砍掉。预计分钟 = 每条约一分钟的经验值。 */
+     * 统计条与分组计数的重复就此砍掉。「预计分钟数」是硬编码经验值（2026-09-28
+     * 两页重整删除）：数字看着像承诺，实际不是测量。 */
     const leadNum = (value, anchor) => `<span class="chip-link ca-jump-num" data-act="review-jump" data-id="${esc(anchor)}" aria-label="${esc(T('cognition.review_lead_jump_aria', '跳到「{where}」', { where: anchor === 'ca-review-decide' ? T('cognition.review_queue_decide', '要你拍板') : anchor === 'ca-review-evidence' ? T('cognition.review_lead_evidence', '条证据要补') : T('cognition.overview_list_title', '资产明细') }))}" ${roleBtn()}>${esc(String(value))}</span>`;
-    const minutes = Math.max(decideCount, 1);
-    /* 分段拼导语（迭代轮 1 修）：拍板数为 0 时不再写「0 件事等你拍板 ·
-     * 预计 1 分钟」（自相矛盾）——拍板段只在 >0 时出现，锚点也随之恒在。 */
+    /* 分段拼导语（迭代轮 1 修）：拍板段只在 >0 时出现，锚点也随之恒在。 */
     const decidePart = decideCount
-      ? `${leadNum(decideCount, 'ca-review-decide')} ${esc(T('cognition.review_lead_decide', '件事等你拍板'))} · ${esc(T('cognition.review_lead_minutes', '预计 {m} 分钟（每条约一分钟）', { m: String(minutes) }))}`
+      ? `${leadNum(decideCount, 'ca-review-decide')} ${esc(T('cognition.review_lead_decide', '件事等你拍板'))}`
       : '';
     const evidencePart = evidenceCount ? `${leadNum(evidenceCount, 'ca-review-evidence')} ${esc(T('cognition.review_lead_evidence', '条证据要补'))}` : '';
     const lowPart = lowTotal ? esc(T('cognition.review_lead_low', '{n} 条不急，先收着', { n: String(lowTotal) })) : '';
@@ -3776,7 +3699,7 @@
     const decideHtml = decideCount ? `<div id="ca-review-decide">${sectionHead(T('cognition.review_queue_decide', '要你拍板'), String(decideCount))}
       <div class="note sect-note">${esc(T('cognition.review_queue_decide_hint', '每条都卡在这里等你：动作与后果写在条上，处理一条少一条。'))}</div>
       ${confirmBlocks.join('')}
-      ${ready.length ? `${sectionHead(T('cognition.review_group_wait', '等待你确认'), String(ready.length))}<div class="note sect-note">${esc(T('cognition.review_group_wait_note', '确认后会创建 v1，并保留来源与撤销入口'))} · ${esc(termNote('candidate'))}</div>${ready.map((c) => candidateCard(c, false)).join('')}` : ''}</div>` : '';
+      ${ready.length ? `${sectionHead(T('cognition.review_group_wait', '等待你确认'), String(ready.length))}<div class="note sect-note">${esc(T('cognition.review_group_wait_note', '保存后生成第一版，来源与撤销入口都保留'))} · ${esc(termNote('candidate'))}</div>${ready.map((c) => candidateCard(c, false)).join('')}` : ''}</div>` : '';
     const lowHtml = lowTotal ? `<details class="details fold fold-low"><summary>${esc(T('cognition.review_queue_low', '低打扰'))}<span class="n">${lowTotal}</span></summary><div class="dbody"><div class="note">${esc(T('cognition.review_queue_low_hint', '不急，但不会自己消失：有空时逐条处理。'))}</div>${lowBlocks.join('')}</div></details>` : '';
     /* 「其他异常」组（specs/018 T013）：整理失败 / 任务执行失败 / 来源异常
      * 不再混在治理区——它们不是拍板事项，归页尾折叠；展开态跟随
@@ -3803,9 +3726,7 @@
         <div class="vt"><div class="v1">${esc(candidateTitle(c))}${String(c.status || '') === 'confirmed' && c.promotedAssetId ? ` <span class="chip-link" data-act="go-inbox-asset" data-id="${esc(String(c.promotedAssetId))}" ${roleBtn()}>${esc(T('cognition.review_promoted_go_tree', '查看这条资产'))}</span>` : ''}</div>
         <div class="v2">${esc(fmtDate(c.updatedAt || c.createdAt))} · ${esc(processedLabel(c))}</div></div>
       </div>`).join('')}</div></details>` : ''}
-    ${attentionHtml}
-    ${legacyMemoryMigrationSection()}
-    ${legacyScopedMemoryMigrationSection()}`;
+    ${attentionHtml}`;
   }
 
   /* ────────────────────────── 视图：候选详情 ────────────────────────── */
@@ -3915,7 +3836,7 @@
     // 此前这两个按钮**无条件**渲染，用户点下去必然被后端状态机拒绝——旧 skills.js
     // 模块有一条 "never renders decision actions for terminal candidates" 的用例守着，
     // 2026-09-15 #266 重写时没带过来。口径见函数开头：缺失 capabilities 即只读。
-    // 按钮名按型分支（specs/015 T023）：更新型说「确认更新」，新建型说「保存并使用」。
+    // 按钮名按型分支（specs/015 T023；2026-09-28 词表统一）：更新型「保存更新」，新建型「保存」。
     const decisionLabels = candidateDecisionLabels(candidate);
     const actionsHtml = `<div class="actions actions-right">
         ${canPromote ? btn(decisionLabels.promote, 'cand-adopt-with-form', { id: candidate.id, primary: true }) : ''}
@@ -3936,7 +3857,7 @@
         <details class="details">
           <summary>${esc(T('cognition.candidate_advanced', '高级选项（通常不用改）'))}</summary>
           ${field(T('cognition.candidate_scope_domain', '适用任务范围'), window.uiInput({ id: `ca-cand-scope-${esc(candidate.id)}`, value: candidate.suggestedScope || '', placeholder: T('cognition.candidate_scope_placeholder', '例如：仅产品工作空间'), attrs: { 'data-f': 'scope' } }))}
-          <div class="note">${esc(T('cognition.candidate_scope_hint', '建议用受控词：general=跨对话通用；report/code/review/product=任务类型。自由文本在自动投影中可能匹配不上任务。'))}</div>
+          <div class="note">${esc(T('cognition.candidate_scope_hint', '常用范围：跨对话通用（general）、报告（report）、编程（code）、审查（review）、产品（product）。其他写法可能匹配不上任务，建议从这里选一个。'))}</div>
           ${field(T('cognition.capture.name', '认知名称'), window.uiInput({ id: `ca-cand-summary-${esc(candidate.id)}`, value: candidate.summary || '', attrs: { maxlength: 60, 'data-f': 'summary' } }))}
           ${chainHtml ? '' : field(T('cognition.chain_uncertainty_label', '仍不确定的地方'), window.uiTextarea({ id: `ca-cand-uncertainty-${esc(candidate.id)}`, value: candidate.uncertainty || '', attrs: { 'data-f': 'uncertainty' } }))}
         </details>
@@ -3944,14 +3865,14 @@
           ${field(T('cognition.evidence_refs', '证据引用'), evidenceHtml)}
           ${kstarEpisodeSection(S.route)}
           ${(() => {
-            /* 保存并使用被能力门控关掉时必须说明原因——否则用户面前只有
+            /* 「保存」被能力门控关掉时必须说明原因——否则用户面前只有
                稍后/拒绝两个出口，不知道为什么不能确认（2026-09-21 真机抓出）。 */
             const capsAll = candidate.capabilities || {};
             const reasons = Array.isArray(capsAll.ineligibleReasons) ? capsAll.ineligibleReasons : [];
             if (canPromote || !reasons.length) return '';
             const lines = reasons.map((r) => NS.promotionBlockText ? NS.promotionBlockText(r) : '').filter(Boolean);
             if (!lines.length) return '';
-            return `<div class="note cand-block-note">${esc(T('cognition.candidate_error_promotion_blocked', '这条候选还不够格成为正式资产：'))}${lines.map((line) => `<br>· ${esc(line)}`).join('')}<br>${esc(T('cognition.candidate_block_hint', '修改内容或类型使其合格后，「保存并使用」会自动出现。'))}</div>`;
+            return `<div class="note cand-block-note">${esc(T('cognition.candidate_error_promotion_blocked', '这条候选还不够格成为正式资产：'))}${lines.map((line) => `<br>· ${esc(line)}`).join('')}<br>${esc(T('cognition.candidate_block_hint', '修改内容或类型使其合格后，「保存」会自动出现。'))}</div>`;
           })()}
           ${actionsHtml}
         </div>
@@ -4228,6 +4149,8 @@
     </div>
     ${cleanupSettingsRow()}
     ${inspectionSettingsCard()}
+    ${legacyMemoryMigrationSection()}
+    ${legacyScopedMemoryMigrationSection()}
     ${window.uiAccordion({
       items: [{
         title: T('cognition.organize_advanced_settings', '高级设置'),
@@ -4605,7 +4528,7 @@
     ${filtered.length > 5 ? `<div class="list-more">${btn(S.organizeListExpanded
       ? T('cognition.capture_list_collapse', '收起')
       : T('cognition.capture_list_expand', '查看全部 {n} 个会话', { n: String(filtered.length) }), 'toggle-organize-list', { small: true, className: 'o' })}</div>` : ''}
-    <div class="note footnote">${esc(T('cognition.capture_bucket_scope_note', '口径说明：按每个会话最近相关的整理任务分组；「需要我处理」包括待确认与被暂停的任务；「无需保存」包括纯寒暄与未得到回复的会话。'))}</div>
+    <div class="note footnote">${esc(T('cognition.capture_bucket_scope_note', '口径说明：按每个会话最近相关的整理任务分组；「需要你看一眼」包括待确认与被暂停的任务；「无需保存」包括纯寒暄与未得到回复的会话。'))}</div>
     ${improvementAnalysisSection(route)}`;
   }
 
@@ -4636,17 +4559,25 @@
       .map((id) => (Array.isArray(S.candidates) ? S.candidates : []).find((row) => String(row.id) === String(id)))
       .filter(Boolean);
     const running = ['queued', 'extracting', 'writing', 'waiting_quiet', 'waiting_completion', 'waiting_manual', 'scheduled'].includes(String(capture.status));
-    // 三分呈现（2026-09-15 子安口径）：
-    //  - 待确认候选 → 下方表单区（可编辑），结果区只给一行指引；
+    // 三分呈现（2026-09-15 子安口径；2026-09-28 两页重整改：内嵌确认表单删除，
+    //  待确认候选改为「候选摘要 + 去待我处理」——确认动作收敛到待我处理页，
+    //  不在整理详情就地编辑）：
+    //  - 待确认候选 → 结果区一行摘要（标题 · 数量）+「去待我处理」按钮；
     //  - 已保存候选 → 成果在「已沉淀资产」区（含完整 statement），结果区不重复；
     //  - 未保存候选（拒绝/忽略/过期）→ 结果区展示**完整内容块**（判断全文 +
     //    类型/作用域 + 证据映射 + 未保存标记）——"不保存之后也要看得到
     //    当时整理出的具体内容"，不再只剩一行截断标题。
-    const pendingEditable = candidates.filter((candidate) => candidatePending(candidate)
-      && candidate.capabilities && candidate.capabilities.canEdit);
-    const rejectedCandidates = candidates.filter((candidate) => !pendingEditable.includes(candidate)
+    const pendingCandidates = candidates.filter((candidate) => candidatePending(candidate));
+    const pendingSummaryHtml = pendingCandidates.length
+      ? `<div class="notice-row ca-pending-summary">
+          <div class="notice-copy"><div class="notice-title">${esc(T('cognition.capture_detail_pending_hint', '发现 {n} 条待确认内容', { n: String(pendingCandidates.length) }))}</div>
+          <div class="notice-detail">${esc(pendingCandidates.map((candidate) => candidateTitle(candidate)).join('；'))}</div></div>
+          <span class="sp"></span>${btn(T('cognition.overview_empty_go_review', '去待我处理'), 'go-review', { small: true, primary: true })}
+        </div>`
+      : '';
+    const rejectedCandidates = candidates.filter((candidate) => !pendingCandidates.includes(candidate)
       && candidate.status !== 'confirmed');
-    const savedCount = candidates.length - pendingEditable.length - rejectedCandidates.length;
+    const savedCount = candidates.length - pendingCandidates.length - rejectedCandidates.length;
     let body = '';
     if (candidates.length) {
       const cardHtml = rejectedCandidates.map((candidate) => {
@@ -4668,9 +4599,7 @@
           ${evidenceBits ? `<div class="chips">${evidenceBits}</div>` : ''}
         </div>`;
       }).join('');
-      body = `${pendingEditable.length
-        ? `<div class="note">${esc(T('cognition.capture_detail_pending_hint', '发现 {n} 条待确认内容，在下方卡片中查看和确认。', { n: String(pendingEditable.length) }))}</div>`
-        : ''}${cardHtml}${savedCount && !pendingEditable.length && !rejectedCandidates.length
+      body = `${pendingSummaryHtml}${cardHtml}${savedCount && !pendingCandidates.length && !rejectedCandidates.length
         ? `<div class="note">${esc(T('cognition.capture_detail_saved_hint', '这次整理出的内容已保存为认知资产，可在「我的认知」中查看和修改。'))}</div>`
         : ''}`;
     } else if (running) {
@@ -4767,15 +4696,6 @@
     const messageBySourceId = new Map(
       ((context && context.messages) || []).map((message) => [String(message.sourceId), message]),
     );
-    // 待确认候选的编辑表单块（2026-09-15 子安标注：与执行信息卡合并为一张
-    // 卡，在时间/用量/动作之下显示）。外层带 ca-candidate-detail 标识但不带
-    // card——cand-type 与 readCandidateForm 靠 closest 就近定位，多候选时
-    // 各块互不串值。
-    const pendingFormBlocks = (Array.isArray(capture.candidateIds) ? capture.candidateIds : [])
-      .map((id) => (Array.isArray(S.candidates) ? S.candidates : []).find((row) => String(row.id) === String(id)))
-      .filter((row) => row && candidatePending(row) && row.capabilities && row.capabilities.canEdit)
-      .map((candidate) => `<div class="ca-candidate-detail ca-pending-block" data-cand-id="${esc(candidate.id)}" data-cand-type="${esc(candidate.suggestedType || '')}">${candidateFormBody(candidate)}</div>`)
-      .join('');
     const summary = capture.reviewSummary || {};
     /** 卡头元信息项：浅色标签 + 墨色值，流式排（空值不占位）。 */
     const metaItem = (label, value) => (value
@@ -4824,8 +4744,9 @@
         <div class="ca-deposit-foot"><span class="note">v${esc(String(receipt.version || '1'))}</span>${btn(T('cognition.capture_action_view_assets', '查看资产'), 'open-asset', { id: receipt.assetId, small: true })}</div>
       </div>`;
     }).join('');
-    /* 整页版式（2026-09-28）：hero 与整合卡（含待确认表单，2026-09-15 定的
-     * 合并卡契约原样保留）全宽置顶；下方对称双栏 = 整理结果 | 对话时间线，
+    /* 整页版式（2026-09-28）：hero 与整合卡全宽置顶（2026-09-15 定的合并卡
+     * 契约中「待确认候选内嵌表单」已随两页重整删除——确认动作收敛到待我处理，
+     * 整理结果区给候选摘要与跳转）；下方对称双栏 = 整理结果 | 对话时间线，
      * 宽窗下两块并排、窄窗退化为单列。 */
     return `${backHtml}
     ${hero(
@@ -4845,7 +4766,7 @@
           ${metaItem(T('cognition.capture_detail_started', '开始时间'), fmtDate(capture.startedAt))}
           ${metaItem(T('cognition.capture_detail_finished', '结束时间'), fmtDate(capture.finishedAt))}
           ${metaItem(T('cognition.capture_detail_duration', '耗时'), durationText)}
-          ${metaItem(T('cognition.capture_detail_tokens', '模型用量'), tokens ? `${tokens} tokens` : '')}
+          ${metaItem(T('cognition.capture_detail_tokens', '模型用量（token）'), tokens ? String(tokens) : '')}
         </div>
         <div class="ca-head-actions">
           ${captureActionButtons({ ...capture, actions: (capture.actions || []).filter((action) => action !== 'review_candidates' && action !== 'view_assets') })}
@@ -4853,7 +4774,6 @@
         </div>
       </div>
       ${captureStageStepper(capture.stage)}
-      ${pendingFormBlocks ? `<div class="ca-pending-embed">${pendingFormBlocks}</div>` : ''}
       ${depositBlocks ? `<div class="ca-deposit">${sectionHead(T('cognition.capture_detail_assets', '已保存资产'))}${depositBlocks}</div>` : ''}
     </div>
     <div class="ca-detail-duo">

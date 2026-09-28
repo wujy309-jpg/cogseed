@@ -3,9 +3,8 @@
  *  本 spec 零新增 IPC 通道：当前通道名集合与开工基线（014 开工前提交
  *  660f82e8 的快照）做**集合比较**（顺序无关）——能抓住「偷偷加通道」。
  *  后续认知资产迁移为显式用户选择新增了两个登记通道；白名单只登记这两个，
- *  仍拒绝任何未登记的新增，同时继续检测基线通道删除；
- *  010 的 recall.assets.sensitivity.batch 是 014 之前已交付的显式登记通道，
- *  计入基线（fixture 由该提交直接生成）。
+ *  仍拒绝任何未登记的新增，同时继续检测基线通道删除（基线随通道退役同步，
+ *  如 2026-09-28 敏感级机制删除时下线的 recall.assets.sensitivity.batch）。
  */
 import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';

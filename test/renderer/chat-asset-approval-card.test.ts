@@ -161,7 +161,7 @@ describe('chat asset approval card — 渲染', () => {
     try {
       const el = fakeCard();
       card.render(el, payloadFixture(), viewFixture({ state: 'confirmed', appliedVersion: '9' }));
-      expect(el.innerHTML).toContain('已按你确认的内容生效（v9）');
+      expect(el.innerHTML).toContain('已按你保存的内容生效（v9）');
       expect(el.innerHTML).not.toContain('{n}');
     } finally {
       root.t = saved;

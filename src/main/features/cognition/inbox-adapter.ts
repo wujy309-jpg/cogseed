@@ -15,10 +15,8 @@ import {
   listAbilityAssetVersions,
   mergeAbilityAssets,
   readAbilityAsset,
-  recordSensitivityEscalationConfirmed,
   updateAbilityAsset,
 } from '../recall/asset-service';
-import { classifyAbilityAssets, isSensitivityLevel } from '../recall/asset-classification-service';
 import {
   deferRecallCandidate,
   ignoreRecallCandidate,
@@ -27,7 +25,6 @@ import {
   recallCandidateConflictingTypes,
   rejectRecallCandidate,
 } from '../recall/candidate-service';
-import { acknowledgeEscalation, readEscalationAcks } from '../recall/escalation-ack-service';
 import { listAssetChangeProposals } from '../recall/asset-approval-service';
 import { decideAssetChangeProposal } from '../recall/asset-approval-service';
 import {
@@ -63,31 +60,26 @@ const UNAVAILABLE_SOURCE_STATUSES = new Set(['failed', 'paused']);
  *  列表会闪）——所以这里按前缀分发，而不是重新算一遍"这条待办是什么"。 */
 const CANDIDATE_ITEM_PREFIXES = ['candidate:', 'conflict:', 'ineligible:', 'evidence:'] as const;
 /** 资产类待办：specs/010 之前一律"没有一键动作"（要改的是资产内容本身）。
- *  010 起其中四类有了**就地处断**（扩权确认/驳回、单条定级、聚合批量定级、
- *  补边界条件）；其余（skill / skill-upgrade / rule-scope / template / source）
- *  仍是编辑，落点在资产详情。 */
+ *  010 起其中缺边界类有了**就地处断**（补边界条件）；其余（skill / skill-upgrade /
+ *  rule-scope / template / source）仍是编辑，落点在资产详情。 */
 const ASSET_ITEM_PREFIXES = [
-  'skill:', 'skill-upgrade:', 'sensitivity-up:', 'rule-scope:',
-  'template:', 'rule-boundary:', 'sensitivity:', 'sensitivity-batch:', 'source:',
+  'skill:', 'skill-upgrade:', 'rule-scope:',
+  'template:', 'rule-boundary:', 'source:',
 ] as const;
 
 export interface CognitionInboxResolveInput {
   id?: unknown;
   action?: unknown;
   note?: unknown;
-  /** `classify` 的档位（specs/010 T022/T023）；IPC 层已校验枚举。 */
-  level?: unknown;
   /** `set_boundary` 的条件（specs/010 T028）；IPC 层已校验数组形状。 */
   applicableWhen?: unknown;
   forbiddenWhen?: unknown;
   /** `keep`/`merge` 的保留/合并目标（specs/010 T032）。 */
   targetAssetId?: unknown;
-  /** `sensitivity-batch:` 的聚合名单（specs/010 T023；渲染层主路走专用通道）。 */
-  assetIds?: unknown;
 }
 
 export type CognitionInboxResolveAction = 'accept' | 'reject' | 'defer' | 'ignore'
-  | 'claim' | 'classify' | 'set_boundary' | 'keep' | 'merge';
+  | 'claim' | 'set_boundary' | 'keep' | 'merge';
 
 export type CognitionInboxResolveErrorCode =
   /** id 形状就不对。 */
@@ -104,7 +96,7 @@ export type CognitionInboxResolveErrorCode =
 export interface CognitionInboxResolveResult {
   ok: true;
   /** 实际被动到的对象类型与状态，供前端原地更新。 */
-  target: 'recall_candidate' | 'asset_change_proposal' | 'cleanup_uncertain' | 'inspection_finding' | 'asset' | 'asset_sensitivity_batch';
+  target: 'recall_candidate' | 'asset_change_proposal' | 'cleanup_uncertain' | 'inspection_finding' | 'asset';
   status: string;
 }
 
@@ -309,76 +301,6 @@ export async function resolveCognitionInboxItem(
     return { ok: true, target: 'inspection_finding', status: action === 'reject' ? 'dismissed' : 'deferred' };
   }
 
-  // ── 扩权（specs/010 US-303 / T017~T018）──────────────────────────────────
-  if (id.startsWith('sensitivity-up:')) {
-    const assetId = id.slice('sensitivity-up:'.length);
-    if (!safeId(assetId)) throw inboxResolveError('invalid_item_id', `待办 id 不合法：${id}`);
-    if (action !== 'accept' && action !== 'reject') {
-      throw inboxResolveError('unsupported_action', `扩权待办支持 accept / reject，收到 ${action || '(空)'}`);
-    }
-    const asset = await readMutableAssetOrReject(userId, assetId);
-    const diff = latestAssetVersionDiff(assetId, await listAbilityAssetVersions(userId, assetId));
-    const escalation = diff?.changes.find((change) => change.kind === 'sensitivity_escalated');
-    if (!diff || !escalation) {
-      throw inboxResolveError('unsupported_item_kind', '这条扩权待办已不成立（最近的版本变更不再是系统提级）。');
-    }
-    if (action === 'accept') {
-      // 确认：只写 ack + 台账，**不 bump 版本、不改内容**——内容没变就没有版本，
-      // 退场只能靠 ack 键（assetId@toVersion）；新提级 = 新键 = 必然重报。
-      await acknowledgeEscalation(userId, assetId, diff.toVersion, String(escalation.after || ''));
-      await recordSensitivityEscalationConfirmed(userId, assetId, {
-        before: escalation.before !== undefined ? String(escalation.before) : undefined,
-        after: escalation.after !== undefined ? String(escalation.after) : undefined,
-        toVersion: diff.toVersion,
-      });
-      return { ok: true, target: 'asset', status: 'escalation_confirmed' };
-    }
-    // 驳回：恢复 before 档位。before 一律由主进程**现读版本 diff** 得出——
-    // 展示串（"L1 → L2"）是给人看的，禁止任何人回头解析它。
-    await settle(() => updateAbilityAsset(userId, assetId, {
-      sensitivity: String(escalation.before || '') as never,
-      expectedVersion: asset.version,
-      reason: note || '扩权驳回：维持原档位',
-      actor: 'user',
-    }));
-    return { ok: true, target: 'asset', status: 'restored' };
-  }
-
-  // ── 未分级：单条定级（specs/010 T022）───────────────────────────────────
-  if (id.startsWith('sensitivity:')) {
-    const assetId = id.slice('sensitivity:'.length);
-    if (!safeId(assetId)) throw inboxResolveError('invalid_item_id', `待办 id 不合法：${id}`);
-    if (action !== 'classify') {
-      throw inboxResolveError('unsupported_action', `未分级待办支持 classify，收到 ${action || '(空)'}`);
-    }
-    const level = typeof input.level === 'string' ? input.level : '';
-    if (!isSensitivityLevel(level)) throw inboxResolveError('invalid_item_id', `定级需要 L0 / L1 / L2 之一，收到：${level || '(空)'}`);
-    const asset = await readMutableAssetOrReject(userId, assetId);
-    await settle(() => updateAbilityAsset(userId, assetId, {
-      sensitivity: level,
-      expectedVersion: asset.version,
-      reason: note || '治理待办：补充敏感级分级',
-      actor: 'user',
-    }));
-    return { ok: true, target: 'asset', status: 'classified' };
-  }
-
-  // ── 未分级：聚合批量定级（specs/010 T023）。渲染层主路走专用通道
-  //    recall.assets.sensitivity.batch；这条分支保持通道契约完整（同一服务）。
-  if (id.startsWith('sensitivity-batch:')) {
-    if (action !== 'classify') {
-      throw inboxResolveError('unsupported_action', `聚合定级待办支持 classify，收到 ${action || '(空)'}`);
-    }
-    const level = typeof input.level === 'string' ? input.level : '';
-    if (!isSensitivityLevel(level)) throw inboxResolveError('invalid_item_id', `定级需要 L0 / L1 / L2 之一，收到：${level || '(空)'}`);
-    const assetIds = Array.isArray(input.assetIds)
-      ? input.assetIds.filter((value): value is string => typeof value === 'string')
-      : [];
-    if (!assetIds.length) throw inboxResolveError('invalid_item_id', '聚合定级需要 assetIds 名单（非空）。');
-    await classifyAbilityAssets(userId, [...new Set(assetIds)].slice(0, 200), level, note);
-    return { ok: true, target: 'asset_sensitivity_batch', status: 'batch_done' };
-  }
-
   // ── 缺边界：就地补条件（specs/010 T028 / US-304）─────────────────────────
   // 通过判据 = 产生待办的**同一道闸门**（validatePromotionByAssetType，system
   // 档）：不通过就拒绝且**不落库**——不允许"先存进来再说"的坏规则。
@@ -529,14 +451,6 @@ export async function listCognitionInbox(userId: string): Promise<CognitionInbox
   // 同文本被分成两类的冲突表。跨候选判断，单条算不出来，能力判据要靠它才能
   // 得出与晋升闸门一致的 eligibility——`promoteRecallCandidate` 也是这么算的。
   const conflictingTypes = recallCandidateConflictingTypes(candidates);
-  // 已确认的扩权键（specs/010 T019）：同一 assetId@toVersion 不再产待办；
-  // 读失败按"没有 ack"处理（宁可多报一次确认，也不静默吞掉新提级）。
-  const acknowledgedEscalations = await readEscalationAcks(userId)
-    .then((settings) => new Set(settings.acknowledged.map((ack) => ack.key)))
-    .catch((error) => {
-      log.warn('inbox escalation ack read degraded', { userId, error: (error as Error).message });
-      return new Set<string>();
-    });
   return buildCognitionInbox({
     assets: withSkillState,
     candidates: candidates.map((candidate) => ({
@@ -571,6 +485,5 @@ export async function listCognitionInbox(userId: string): Promise<CognitionInbox
     skillStateUnknownAssetIds,
     skillUpgradeCurrentAssetIds,
     skillUpgradeRejectedAssetIds,
-    acknowledgedEscalations,
   });
 }

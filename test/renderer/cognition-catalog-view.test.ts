@@ -1,5 +1,16 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { renderCognition } from './helpers/cognition-renderer';
+
+/* 计量词条（2026-09-28 词表统一）文本随 locale 同步更新——按 zh.json 派生，
+ * 断言钉「用了哪个键 + 数字」，词条改文前后都成立。 */
+const zh = JSON.parse(readFileSync(resolve(__dirname, '../../src/renderer/locales/zh.json'), 'utf8')) as Record<string, string>;
+const zhPhrase = (key: string, vars: Record<string, string> = {}) => {
+  let text = zh[key] ?? key;
+  for (const [name, value] of Object.entries(vars)) text = text.replace(`{${name}}`, value);
+  return text;
+};
 
 /**
  * 资产目录视图（2026-09-18）：面板上多一个"模型视角"的目录——模型挑资产时
@@ -45,16 +56,16 @@ describe('资产目录视图', () => {
     expect(html).toContain('规则与偏好');
     expect(html).toContain('所有对话');
     expect(html).toContain('v2');
-    expect(html).toContain('被带入任务 1 次');
+    expect(html).toContain(zhPhrase('cognition.catalog_used_times', { n: '1' }));
     // 切换回列表视图
     expect(html).toContain('列表视图');
     // 行仍可点进详情
     expect(html).toContain('data-go-asset="aa-cat0001"');
   });
 
-  it('从来没被带入过的资产如实标"还没被带入过"', () => {
+  it('从来没被任务用过的资产如实标注', () => {
     const html = renderCognition({ name: 'overview', assetView: 'catalog' }, { assets: [asset], proofs: [] });
-    expect(html).toContain('还没被带入过');
+    expect(html).toContain(zhPhrase('cognition.catalog_never_used'));
   });
 
   it('默认仍是列表视图（目录是切换项，不是默认）', () => {

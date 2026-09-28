@@ -5,9 +5,22 @@
  *  ② 「实际采用记录」只认有据回执：applied 才算采用，contradicted 单列，其余如实
  *     标「证据不足 · 未知」；宿主注入过的 usage_recorded 一律归「被带入任务」。
  */
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { renderCognition } from './helpers/cognition-renderer';
+
+/* 计量词表（2026-09-28 词表统一：被任务用过 / 其中模型确认采用 / 最近一次）
+ * 的词条文本随 locale 同步更新——断言按 zh.json 派生，代码只钉「用了哪个
+ * 键 + 数字」，词条改文前后都成立。 */
+const zh = JSON.parse(readFileSync(resolve(__dirname, '../../src/renderer/locales/zh.json'), 'utf8')) as Record<string, string>;
+const zhPhrase = (key: string, vars: Record<string, string> = {}) => {
+  let text = zh[key] ?? key;
+  for (const [name, value] of Object.entries(vars)) text = text.replace(`{${name}}`, value);
+  return text;
+};
+const LAST_USED_PREFIX = (zh['cognition.asset_last_used_at'] ?? '').split('{when}')[0];
 
 const ASSET = {
   id: 'aa-use',
@@ -115,10 +128,10 @@ describe('列表与详情同口径（US-602 AC1/AC2/AC4）', () => {
       { id: 'p-3', kind: 'asset_version_selected', occurredAt: '2026-09-18T03:00:00.000Z', refs: { assetId: ASSET.id, version: '2' } },
     ];
 
-    expect(visibleText(list({ proofs }))).toContain('还没被用过');
+    expect(visibleText(list({ proofs }))).toContain(zhPhrase('cognition.asset_last_use'));
     const detailHtml = visibleText(detail({ proofs }));
     expect(detailHtml).toContain('还没有被真实使用过');
-    expect(detailHtml).not.toContain('被带入任务 1 次');
+    expect(detailHtml).not.toContain(zhPhrase('cognition.proof_projected_times', { n: '1' }));
   });
 
   it('被带入后：列表显示最近使用，详情同一条事件可定位会话', () => {
@@ -133,9 +146,9 @@ describe('列表与详情同口径（US-602 AC1/AC2/AC4）', () => {
       sources: [{ kind: 'conversation', items: [{ id: 'conv-a', kind: 'conversation', title: '季度复盘', status: 'ready' }] }],
     };
 
-    expect(visibleText(list(state))).toContain('最近真用过');
+    expect(visibleText(list(state))).toContain(LAST_USED_PREFIX);
     const detailHtml = visibleText(detail(state));
-    expect(detailHtml).toContain('被带入任务 1 次');
+    expect(detailHtml).toContain(zhPhrase('cognition.proof_projected_times', { n: '1' }));
     expect(detailHtml).toContain('对话《季度复盘》里');
   });
 
@@ -154,9 +167,9 @@ describe('列表与详情同口径（US-602 AC1/AC2/AC4）', () => {
     const detailHtml = visibleText(detail({ proofs }));
     expect(detailHtml).toContain('撤销');
     // 撤销不是使用：不抬高最近使用，也不进任何计数。
-    expect(visibleText(list({ proofs }))).toContain('最近真用过');
-    expect(detailHtml).toContain('被带入任务 1 次');
-    expect(detailHtml).not.toContain('被带入任务 2 次');
+    expect(visibleText(list({ proofs }))).toContain(LAST_USED_PREFIX);
+    expect(detailHtml).toContain(zhPhrase('cognition.proof_projected_times', { n: '1' }));
+    expect(detailHtml).not.toContain(zhPhrase('cognition.proof_projected_times', { n: '2' }));
   });
 
   it('白名单缺失时 fail-closed（按空集处理，绝不回落成"不过滤"）', () => {
@@ -164,7 +177,7 @@ describe('列表与详情同口径（US-602 AC1/AC2/AC4）', () => {
       { id: 'p-1', kind: 'asset_version', occurredAt: '2026-09-18T02:00:00.000Z', refs: { assetId: ASSET.id, version: '3' } },
     ];
 
-    expect(visibleText(list({ proofs, realUsageKinds: [] }))).toContain('还没被用过');
+    expect(visibleText(list({ proofs, realUsageKinds: [] }))).toContain(zhPhrase('cognition.asset_last_use'));
     expect(visibleText(detail({ proofs, realUsageKinds: [] }))).toContain('还没有被真实使用过');
   });
 
@@ -234,7 +247,7 @@ describe('实际采用记录（US-602 AC5/AC6）', () => {
     expect(html).toContain('v3');
     expect(html).toContain('产物');
     expect(html).toContain('归因报告.html');
-    expect(html).toContain('实际采用 1 次');
+    expect(html).toContain(zhPhrase('cognition.asset_usage_applied', { n: '1' }));
     // 证据里的内部 id 不上屏。
     expect(html).not.toContain('art-1');
   });
@@ -250,7 +263,7 @@ describe('实际采用记录（US-602 AC5/AC6）', () => {
     expect(html).toContain('证据不足 · 未知');
     expect(html).toContain('证据不足 1 次');
     expect(html).not.toContain('已实际采用');
-    expect(html).not.toContain('实际采用 1 次');
+    expect(html).not.toContain(zhPhrase('cognition.asset_usage_applied', { n: '1' }));
   });
 
   it('contradicted 单列为被否定，不计入采用', () => {
