@@ -2670,6 +2670,9 @@
     if (!assetId) return false;
     showRecallPanel();
     router.go({ name: 'overview', category: '', assetId: String(assetId) });
+    // 面板可能早已开在内存里（对话侧写入无广播直达这里）：跳转时重拉一次，
+    // 防止详情按陈旧 store 判成「已不在待处理列表」的假空态（审计 B11/D1）。
+    void NS.reload();
     return true;
   };
 
@@ -2678,6 +2681,8 @@
     if (!candidateId) return false;
     showRecallPanel();
     router.go({ name: 'review', candidateId: String(candidateId) });
+    // 同上：对话里刚保存的候选不在陈旧 store 里，必须重取后才找得到（B11/D1）。
+    void NS.reload();
     return true;
   };
 
