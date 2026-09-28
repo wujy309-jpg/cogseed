@@ -5,7 +5,7 @@
 - 私仓 `v1.2.0` 产品基线：`bcdb3206016623d8fcc4eaa7c44f19dd21602241`。公开适配提交：`7c4be751935bbe648c17eefdc8ff20ec64196df7`，保存在私仓 `codex/public-v1.2.0-baseline`；产品源码、资源、bin、依赖和打包配置与原定版一致。
 - 公仓 `main` 已用无父提交 `8faf299d6e7a99ba8038cc4a7d81d7bfa24fa581` 替换；其它 80 个旧分支删除。公开 3,932 个文件，export digest 为 `df7db378490b89d68c3d1da9475dcb55b25f72c18b77a2873c4c78a4e088cc0f`。
 - 指定私有目录、根目录独立 skills、治理文档及私有自动化均未导出；updates-server 参考实现公开。121 个内部文件名引用提示已逐项复核；用户外部可选文件语义和代码注释保留。
-- 9 个正式 Release、1 个草稿、41 个附件的原 ID、文件大小和 digest 全部一致。两个公开发布页面和 37 个正式附件 URL 返回 HTTP 200；草稿保持私有状态。
+- 9 个正式 Release 和 37 个正式附件的原 ID、文件大小和 digest 一致；两个公开发布页面和 37 个正式附件 URL 返回 HTTP 200。标签恢复后的首次核验曾包含原草稿及其 4 个附件，但后续复核草稿 `mac-preview-1.0.2`（ID `386765459`）及附件 API 返回 404，原因待核实；不能声称当前仍完整保留 10 个发布记录及 41 个附件。
 - 三条 branch protection、两个临时调整的 ruleset、Actions 设置均已恢复并回读验证。
 - 本地 cogseed-source 已换成 `--no-tags --single-branch main` 的新检出，只有一个根提交，Git blobs 和文件模式逐项匹配 manifest；Windows 脚本按原 `.gitattributes` 转成 CRLF 工作树。原检出和完整 Git bundle 保存在仓库外私有备份中。
 
