@@ -1,68 +1,58 @@
-# 私仓公开源码导出演练
+# 私仓到公仓的源码同步
 
-状态：第一阶段本地工具，公开清单仍为 Draft。工具不连接公仓、不推送、不创建 tag/Release、不改写历史。
+RD 在 `bonc-ai/cogseed-internal` 开发；定版后从固定提交导出公开文件，在 `bonc-ai/cogseed` 创建快照 PR。公仓不接收私仓 Git 历史。首次历史重写是独立的一次性操作，后续同步不重写 main。
 
-## 日常只维护一份规则
+当前实施状态和首次切换证据见 [CUTOVER-PLAN.md](./CUTOVER-PLAN.md)。文件存在、离线测试通过、workflow 合并、凭据配置、真实运行成功是不同状态；只有成功的运行和公仓 PR 能证明自动化已启用。
 
-`policy.json` 是唯一导出配置：
+## 维护规则
 
-- `neverPublic`：禁止公开的目录或文件，优先级最高；与公开清单冲突会直接失败。
-- 用户已确认根目录 `skills/` 也不公开；此规则不匹配 `resources/builtin/` 中的应用内置技能。
-- 用户已确认公开 `updates-server/` 更新服务参考实现；当前 8 个文件逐项列入清单，后续新增文件仍须分类，不自动公开下载的安装包、证书或部署数据。
-- `publicFiles`：明确到文件的候选公开清单，不使用自动递归放行。现有候选按源码、运行资源、测试、构建工具和社区公共文档整理，仍需内容复核。
-- `privatePaths`：已归类为私有的其他目录或文件；例如 `docs/` 默认私有，其中两份开发指南通过 `publicFiles` 单独放行。
-- 未命中任何分类的已提交文件：不导出，列入待分类。未提交及未跟踪文件完全不作为导出输入。
+`policy.json` 是唯一文件边界配置：`neverPublic` 优先级最高，`publicFiles` 精确到文件，`privatePaths` 分类其余私有文件。新增文件默认不公开；未分类、应公开但缺失、危险路径、符号链接、子模块、LFS 指针均阻断正式同步。
 
-私仓 `.github/CODEOWNERS` 暂不原样导出。公仓的实际评审主体与保护规则在跨仓发布配置阶段核实设置，不能将私仓配置的存在当作公仓权限已生效。
+以下根目录和文件不公开：`.agents/`、`.claude/`、`.specify/`、`design/`、`specs/`、`skills/`、`AGENTS.md`、`CLAUDE.md`、私有导出工具及 `test/private/`。`resources/builtin/` 是公开产品资源。`docs/` 默认私有，只有两份 DEVELOPMENT 指南公开；社区公开材料按清单导出，PILOT_BACKLOG 保留私有。`updates-server/` 的 8 个参考实现文件已获准公开。
 
-RD 日常照常开发。新增文件准备公开时，在同一个私仓 PR 中修改清单并评审；文档直接在私仓维护，不在导出时临时改写。
-`status: reviewed` 只表示清单经人工评审，不代表内容安全、构建或发布审批已通过。此工具永远不将结果标成可发布。
+每次发版在私仓 PR 中审查新文件、公开内容和文档引用，更新清单；`reviewedReferenceHintsSha256` 绑定已复核的引用提示集合。正常的用户 AGENTS.md/CLAUDE.md 文件处理代码可以保留。不能为了扫描通过而放行整个测试目录；Gitleaks 配置只精确豁免已复核的合成样例，workflow 用两个随机阳性样例验证检测仍有效。
 
-## 本地操作
+清单 `reviewed` 表示边界和提示已复核，不替代测试、扫描或发布批准。导出报告永远不声称自行授权发布。私仓源 SHA、映射和审核报告不得写入公仓提交或 PR。
 
-需要 Git 和 Node.js 24；没有额外 npm 依赖。命令从私仓根目录运行。
+## 后续每次定版
+
+1. RD 按现有流程合入 cicd，选择完整 40 位提交 SHA，确认该 SHA 在 cicd 历史中，且该 SHA 最新的 cicd push CI 和 compliance 均成功。
+2. 确认私仓 develop 中的导出清单和引用提示复核值适用于该版本。发起 `Public source snapshot PR` workflow，只填 `source_sha`。
+3. workflow 使用发起时固定的 develop 工具版本和指定源码 SHA，执行分类、逐文件哈希校验、密钥扫描及同 SHA 门禁，再创建或更新公仓 `public-source-sync` → `main` PR。
+4. 维护者审阅公仓差异并按仓库规则合并。workflow 不合并 PR、不创建 Release、不修改 main 或旧标签。公开贡献先导入私仓，再随后续版本回流，避免下一次快照覆盖尚未导入的贡献。
+
+相同内容不生成重复提交；已有同步 PR 可按精确 lease 更新。main 在准备期间变化会停止运行。旧同步分支无对应 open PR 时停止，不覆盖来历不明的分支。
+
+## 首次启用配置
+
+先将本工具和 `.github/workflows/public-source-sync.yml` 经私仓 PR 合入默认分支 develop；初次历史切换完成并核验后，再配置以下仓库 Actions 项：
+
+| 类型 | 名称 | 值 |
+| --- | --- | --- |
+| Variable | PUBLIC_SOURCE_APP_ID | 专用 GitHub App ID |
+| Secret | PUBLIC_SOURCE_APP_PRIVATE_KEY | App 私钥，仅写入 GitHub Secret，不进入聊天、代码或报告 |
+| Variable | PUBLIC_SOURCE_BASELINE_SHA | 首次切换后公仓无父根提交完整 SHA |
+| Variable | PUBLIC_SOURCE_BASELINE_READY | `true`，仅在首次切换核验完成后设置 |
+
+App 只安装到公仓 `bonc-ai/cogseed`，授予 Contents: write、Pull requests: write（Metadata: read 为基础权限）。私仓 checkout/CI 查询使用本次 workflow 的只读 GITHUB_TOKEN。不要把个人 gh CLI token 作为永久自动化凭据。私仓当前套餐不支持强制 branch protection，因此不能声称已有平台强制的独立评审；需限制有权更改 develop、Secrets 和发起 workflow 的维护者。升级套餐后的环境审批可另行配置，不是当前运行前提。
+
+## 本地工具与证据
+
+工具无需新增 npm 依赖，需要 Git 和 Node.js 24：
 
 ```bash
 npm test --prefix scripts/opensource
-node scripts/opensource/export.mjs --source <完整40位提交SHA> --out <仓库外尚不存在的目录>
+node scripts/opensource/export.mjs --source <完整SHA> --out <仓库外新目录>
+node scripts/opensource/sync.mjs --help
+node scripts/opensource/cutover.mjs --help
 ```
 
-工具要求 `origin` 对应 `bonc-ai/cogseed-internal`，只读取本地已有 Git 对象。开发阶段可以针对固定 develop SHA 演练；正式候选必须来自经过测试和审批的 cicd SHA，身份与远端状态仍须在发布前重新验证。
-配置与导出器可以是当前工作区中待审查的修改，两者的 SHA-256 会记录到映射中；正式流程应从受保护的固定版本读取它们。
+导出目录包含 `source/`（公开候选）、`manifest.json` 和 `review.json`（私有证据）。导出器只读 Git blobs，逐文件记录路径、模式、大小、SHA-256；未提交内容不进入候选。source 安装依赖或测试后不能整目录发布，必须重新导出干净候选并核对摘要。
 
-比较上次候选：
+`sync.mjs` 再次对照源 Git 对象、清单、扫描和授权证据，建立只有公仓父提交的快照；`--bootstrap` 建立无父根提交。它本身不联网、不推送。`--allow-review-required-local` 仅供本地演练，其映射不得用于真实切换。
 
-```bash
-node scripts/opensource/export.mjs --source <完整40位提交SHA> --out <另一个新目录> --previous <上次目录>/manifest.json
-```
+首次用户授权记录采用本地明确批准方式，记录只重写公仓 heads/tags、保留 Release 资产和接受只读 PR refs 的范围，不伪造 workflow run。后续自动化只接受实际 workflow_dispatch 运行记录。这些 JSON 是私有审计记录，不是加密身份证明。
 
-输出目录必须位于所有 Git 检出之外，不能覆盖旧目录：
+`cutover.mjs` 默认生成私有计划并探测原子推送；apply 要求准确计划摘要，重新验证候选、证据和全部远端 heads/tags，以每个 ref 的精确旧 OID lease 执行一次 atomic push。任一 ref 漂移或保护拒绝即停止；工具不修改保护、Release、资产或 PR。保护的临时调整和恢复由维护窗口操作另行记录。备份恢复必须显式映射 heads/tags，禁止 mirror 推送备份命名空间。
 
-```text
-导出目录/
-  source/        只包含候选公开文件；没有 .git、报告或私仓提交元数据
-  manifest.json  私有映射：来源 SHA、规则/工具哈希、逐文件哈希、导出哈希
-  review.json    私有报告：排除文件、待分类、缺失文件、内部文档引用提示、前后差异
-```
-
-导出校验值是按路径排序的文件数组 `{path, mode, size, sha256}` 的紧凑 JSON 的 SHA-256，包含执行位；与 tar/zip 的时间戳无关。
-安装依赖或运行测试会在 source/ 中产生额外文件。验证目录不得整目录同步到公仓；验证后用相同 SHA、规则和导出器重新生成干净候选，并核对导出哈希一致。发布输入仍须逐项匹配 manifest，不能依赖 `.gitignore` 过滤。
-
-只读取 Git blob，避免工作区脏文件、换行转换或 archive 属性修改导出字节。符号链接、子模块、LFS 指针、跨平台危险路径、大小写冲突和过大文件直接阻断，不静默跳过。
-`source/` 是需要审查的本地候选，可能仍含不宜公开的内容；整份输出必须保存在受控位置。
-
-退出码：`0` 表示本地导出无已检测到的分类/引用问题；`2` 表示候选已生成、仍需复核；`1` 表示输入或导出失败。任何退出码都不授权公开发布。
-失败目录若出现 `INCOMPLETE`，不能复用或发布。
-
-## 第一阶段已知缺口
-
-- 清单是候选，不是安全审计结论；工具不执行导出内容中的脚本。
-- `review.json` 的引用提示是字面量和 Markdown 相对链接启发式检查，可能命中注释/测试夹具，也不能证明没有动态依赖。
-- README 与公共指南的内部链接已改为公开开发规范；内部规则、台账和 workflow 的检查移入 `test/private/`，仍由私仓默认测试命令发现并运行。公开产品断言不依赖这些文件。
-- 公共贡献文档已改为向公仓 main 提交、导入私仓后随版本公开；旧 workflows 仍按同仓发版设计，不能原样导入公仓。
-- 仍需内容安全扫描和独立复核，再在 source/ 中做独立安装、测试、构建及 macOS/Windows 安装验证；本地导出成功不能替代这些门禁。
-- 公仓 SHA、Release tag 当前均为 null。跨仓发布及资产映射、v1.2.0 来源核验、历史清理属于后续阶段，不在此工具中执行。
-
-## 验收此工具
-
-测试使用临时 Git 仓库验证固定 SHA、脏工作区隔离、精确清单、新文件默认不公开、私有规则优先、可复现哈希、差异计算、二进制/Unicode/执行位、符号链接/子模块/LFS/路径拒绝、目标目录保护和源仓身份。测试通过后，对真实固定 SHA 生成候选并复核 manifest 与磁盘文件一致。
+初次产品基线为私仓 `v1.2.0` 解引用提交 `bcdb3206016623d8fcc4eaa7c44f19dd21602241`。公开适配提交只调整文档、测试隔离和清单，不改产品 src、资源及打包配置。适配后的公开 tree 不等于旧发行产物的原始 tree；不因此发布新安装包或把旧 tag 重指向新根。
