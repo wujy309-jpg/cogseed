@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { seedConfirmedCognition, seedPendingCognition } from '../../helpers/cognition-store-fixture';
 
 // runner.ts dynamically imports core-agent when building a real runner, but
 // the auth gate fires BEFORE that import — so these tests can exercise the
@@ -413,28 +414,21 @@ describe('runner › cognition memory boundary', () => {
     const uid = 'runner-cognition';
     const users = await import('../../../src/main/features/users');
     users.activateUser(uid);
-    const cognition = await import('../../../src/main/features/cognition');
     const memory = await import('../../../src/main/features/memory');
-    const evidence = {
-      kind: 'conversation' as const,
-      summary: '用户在当前对话中验证了这个结论。',
-      sourceLabel: '当前对话',
-      conversationId: 'conv_runner_cognition',
-    };
-
-    const interrupted = await cognition.createCognitionAssetWithEvidence(uid, {
+    const interruptedSeed = {
+      id: 'cog_runner_interrupted',
       title: '中断的确认',
       summary: '这条机器记忆已写入，但认知确认尚未落盘。',
-      evidence,
-    });
-    expect(memory.ensureCognitionMemoryEntry(uid, interrupted.id, interrupted.summary).ok).toBe(true);
+    };
+    await seedPendingCognition(process.env.COGSEED_WORKSPACE_ROOT as string, uid, interruptedSeed);
+    expect(memory.ensureCognitionMemoryEntry(uid, interruptedSeed.id, interruptedSeed.summary).ok).toBe(true);
 
-    const confirmed = await cognition.createCognitionAssetWithEvidence(uid, {
+    const confirmedSeed = {
+      id: 'cog_runner_confirmed',
       title: '完成的确认',
       summary: '这条认知已经由用户明确确认。',
-      evidence,
-    });
-    await cognition.confirmCognitionAsset(uid, confirmed.id);
+    };
+    await seedConfirmedCognition(process.env.COGSEED_WORKSPACE_ROOT as string, uid, confirmedSeed);
     expect(memory.addEntry(uid, 'memory', '这是用户独立保存的长期记忆。').ok).toBe(true);
 
     const { buildRunner } = await loadRunner();
@@ -443,9 +437,9 @@ describe('runner › cognition memory boundary', () => {
       userId: uid,
     });
 
-    expect(result.resolvedSystemPrompt).toContain(confirmed.summary);
+    expect(result.resolvedSystemPrompt).toContain(confirmedSeed.summary);
     expect(result.resolvedSystemPrompt).toContain('这是用户独立保存的长期记忆。');
-    expect(result.resolvedSystemPrompt).not.toContain(interrupted.summary);
+    expect(result.resolvedSystemPrompt).not.toContain(interruptedSeed.summary);
   });
 });
 

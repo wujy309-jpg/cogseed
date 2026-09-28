@@ -6767,11 +6767,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // Evidence-backed cognition assets. Confirmation reuses the canonical
   // memory write path; these handlers own only longitudinal evidence, review,
   // reuse, and growth state.
-  //
-  // `cognition.assets.list` is registered above (ability-asset semantics from
-  // the recall surface); the legacy store-asset handler of the same name in
-  // ipc/cognition.ts must not shadow it, so it is excluded from the spread.
-  ...(({ 'cognition.assets.list': _legacyCognitionAssetsList, ...rest }) => rest)(cognitionHandlers),
+  ...(cognitionHandlers as Record<string, unknown>),
 
   // 转写纠错词表与清理产物（方案 v0.2 P0）。词表是用户确认过的
   // wrong→correct 纠错对；扫描只产候选，替换必须显式接受，原文永不就地改写
