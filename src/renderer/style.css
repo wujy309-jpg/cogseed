@@ -5978,7 +5978,7 @@ body.is-sidebar-resizing iframe { pointer-events: none; }
   border-top-color: var(--primary);
   animation: spin 0.8s linear infinite;
 }
-/* 四类资产 tab · 本会话认知沉淀：待确认候选与已沉淀资产 */
+/* 认知资产 tab · 本会话内容：待确认建议与已保存资产 */
 .run-context-cog-section-title {
   display: flex;
   align-items: baseline;
@@ -5996,7 +5996,7 @@ body.is-sidebar-resizing iframe { pointer-events: none; }
   font-weight: 600;
   color: var(--primary);
 }
-/* 四格计数框（本会话已沉淀资产数，未沉淀显示 0） */
+/* 本会话按资产类型计数（未保存显示 0） */
 .run-context-assets {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -23337,7 +23337,24 @@ body:has(#panel-settings.active) .main-top-actions {
   font-size: var(--font-size-2);
   line-height: 1.45;
 }
-.chat-recall-citation strong {
+.chat-recall-citation-open.ui-button {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--primary);
+  font-size: inherit;
+  font-weight: var(--font-weight-semibold);
+  text-align: left;
+}
+.chat-recall-citation-open.ui-button:hover {
+  background: transparent;
+  text-decoration: underline;
+}
+.chat-recall-citation-open .ui-button__label {
+  display: block;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -23357,13 +23374,15 @@ body:has(#panel-settings.active) .main-top-actions {
 }
 .chat-recall-citations.is-feedback-sent .chat-recall-feedback-btn { opacity: 0.55; pointer-events: none; }
 
-.chat-teaching-receipts {
+.chat-teaching-receipts,
+.chat-cognition-save-receipts {
   display: grid;
   gap: 8px;
   margin-top: 10px;
 }
 
-.chat-teaching-receipt {
+.chat-teaching-receipt,
+.chat-cognition-save-receipt {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -23374,18 +23393,22 @@ body:has(#panel-settings.active) .main-top-actions {
   background: var(--surface-secondary, rgba(127, 127, 127, 0.08));
 }
 
-.chat-teaching-receipt > div {
+.chat-teaching-receipt > div,
+.chat-cognition-save-receipt > div {
   min-width: 0;
   display: grid;
   gap: 3px;
 }
 
 .chat-teaching-receipt strong,
-.chat-teaching-receipt span {
+.chat-teaching-receipt span,
+.chat-cognition-save-receipt strong,
+.chat-cognition-save-receipt span {
   overflow-wrap: anywhere;
 }
 
-.chat-teaching-receipt span {
+.chat-teaching-receipt span,
+.chat-cognition-save-receipt span {
   color: var(--text-secondary, #6b7280);
   font-size: 12px;
 }
@@ -23777,26 +23800,6 @@ body:has(#panel-settings.active) .main-top-actions {
   font-size: 13px;
   font-weight: 700;
   color: var(--personal-onto-fg);
-}
-
-.personal-onto-back-btn {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
-  border: 1px solid var(--personal-onto-border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--personal-onto-muted);
-  font-size: 12px;
-  font-family: inherit;
-  cursor: pointer;
-}
-
-.personal-onto-back-btn:hover {
-  color: var(--personal-onto-fg);
-  background: rgba(14, 159, 110, 0.08);
 }
 
 .personal-onto-nav {
@@ -33393,6 +33396,27 @@ section.kb-wb-right { display: flex; flex-direction: column; min-width: 0; min-h
   color: var(--text);
   font-size: var(--font-size-2);
   font-weight: var(--font-weight-semibold);
+  overflow-wrap: anywhere;
+}
+.chat-recall-projection-open-asset.ui-button {
+  display: flex;
+  justify-content: flex-start;
+  max-width: 100%;
+  min-height: 0;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--primary);
+  font-size: var(--font-size-2);
+  font-weight: var(--font-weight-semibold);
+  text-align: left;
+}
+.chat-recall-projection-open-asset.ui-button:hover {
+  background: transparent;
+  text-decoration: underline;
+}
+.chat-recall-projection-open-asset .ui-button__label {
+  text-align: left;
   overflow-wrap: anywhere;
 }
 .chat-recall-projection-asset small,

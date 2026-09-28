@@ -110,14 +110,21 @@ function asAssetUsageReceipt(userId: string, value: RecallJsonRecord): AssetUsag
   if (
     value.schemaVersion !== 1
     || value.ownerId !== userId
-    || value.id !== receiptId(input)
+    // Historical schema-v1 receipts used a different deterministic key
+    // derivation. The id is an opaque event key, not an authorization input;
+    // keep old records readable while still requiring the current safe format.
+    || typeof value.id !== 'string'
+    || !/^aur-[a-f0-9]{24}$/.test(value.id)
     || !Array.isArray(value.evidenceRefs)
     || typeof value.createdAt !== 'string'
     || (value.reason !== undefined && typeof value.reason !== 'string')
   ) throw new Error('malformed asset usage receipt');
   const evidenceRefs = normalizeEvidence(input);
   if (evidenceRefs.length !== value.evidenceRefs.length) throw new Error('malformed asset usage receipt');
-  return { ...value, evidenceRefs } as AssetUsageReceipt;
+  // Normalize historical key derivations in memory. This lets a later
+  // contradicted receipt replace the same logical usage event and prevents
+  // old and current ids from being counted as two separate events.
+  return { ...value, id: receiptId(input), evidenceRefs } as AssetUsageReceipt;
 }
 
 export async function recordAssetUsageReceipt(

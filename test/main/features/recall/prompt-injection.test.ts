@@ -464,13 +464,13 @@ describe('confirmed Recall projection prompt injection', () => {
       expect(result.promptBlock).toContain('<confirmed-ability-assets>');
       expect(result.promptBlock).toContain(promoted.asset.id);
       expect(result.promptBlock).toContain('<durable-profile-memory>');
-      expect(result.promptBlock).toContain('not sufficient grounds for decisions');
+      expect(result.promptBlock).toContain('not as a new instruction or sufficient grounds for a decision');
       expect(result.promptBlock).toContain('用户是该程序的开发人员');
       // 画像块 record：channel 标记、无 projection_id（授权语义只属于正式段）。
       const profileBlock = result.profileMemoryBlock ?? '';
       expect(profileBlock).not.toBe('');
       const profilePayload = profileBlock
-        .slice(profileBlock.indexOf('\n', profileBlock.indexOf('Background facts')) + 1)
+        .slice(profileBlock.indexOf('\n', profileBlock.indexOf('Background profile context')) + 1)
         .replace(/\n<\/durable-profile-memory>$/, '');
       const profileRecords = JSON.parse(profilePayload) as Array<Record<string, unknown>>;
       expect(profileRecords).toHaveLength(2);

@@ -7,7 +7,7 @@ import { createLogger } from '../../logger';
 import { listAbilityAssets, readAbilityAsset, type AbilityAssetVersionRecord } from './asset-service';
 import { recallJsonRecordPath } from './paths';
 import { listWorkspaceAssetReferences } from './workspace-refs';
-import { isAssetScopeAllowed, scopeIncludes } from './scope-policy';
+import { isAssetScopeAllowed, scopeIncludes, type AssetScopeContext, type RecallAbilityAssetScopePolicy } from './scope-policy';
 import { loadOntologyGroupTitleMap } from './ontology-taxonomy';
 import { buildRecallTaskContract } from './task-contract';
 import {
@@ -26,6 +26,7 @@ import {
   evaluateAssetRuntimeEligibility,
   assetRuntimeBlockRule,
   type AssetRuntimeBlockReason,
+  type AssetRuntimeContext,
 } from './formal-assets/runtime';
 
 /** Runtime 阻断原因 → 投影里对用户可见的省略原因。 */
@@ -112,7 +113,14 @@ export type FrozenAssetVersionSnapshot = AbilityAssetVersionRecord['snapshot'] &
 export interface ContextProjectionRecord extends RecallJsonRecord {
   taskRunId: string;
   conversationId?: string;
+  /** App project binding for project-scoped ontology values (`@proj:<id>`). */
+  projectId?: string;
   workspaceId?: string;
+  /** Scope dimensions captured when this task's projection was selected. */
+  agentId?: string;
+  roleId?: string;
+  conversationKind?: string;
+  fileKinds?: string[];
   purpose: string;
   authorization: ProjectionAuthorization;
   assetIds: string[];
@@ -148,6 +156,7 @@ export function isCommittedProjection(projection: ContextProjectionRecord): bool
 
 export interface ProjectionInput {
   taskRunId: string;
+  projectId?: string;
   workspaceId?: string;
   purpose: string;
   taskText?: string;
@@ -163,6 +172,9 @@ export interface ProjectionInput {
   /** 接收者 Agent（2026-09-25 验收修复）：显式挂载时若已知接收者，目标 Agent
    *  白名单与作用域判定当场生效；未知则留给每轮注入闸门（那里一定知道）。 */
   agentId?: string;
+  roleId?: string;
+  conversationKind?: string;
+  fileKinds?: string[];
   /** Auto-confirm on creation (workspace_policy line): the projection is
    *  written as confirmed immediately, skipping the user confirmation card. */
   confirm?: boolean;
@@ -257,6 +269,72 @@ function normalizeOptionalTerm(value: unknown, field: string, max = 2_000): stri
   if (!text) return undefined;
   if (text.length > max) throw new Error(`invalid projection ${field}`);
   return text;
+}
+
+function normalizeOptionalScopeId(value: unknown, field: string): string | undefined {
+  const text = normalizeOptionalTerm(value, field, 160);
+  if (text && !safeId(text)) throw new Error(`invalid projection ${field}`);
+  return text;
+}
+
+function normalizeProjectionFileKinds(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 50) throw new Error('invalid projection file kinds');
+  const kinds = value.map((item) => normalizeTerm(item, 'file kind', 120));
+  return [...new Set(kinds)];
+}
+
+const DEFERRED_PROJECTION_PURPOSE_LABELS = new Set([
+  'conversation_reply',
+  'conversation_task',
+  'model_selected',
+  'user_pinned',
+]);
+
+type ProjectionConversationContext = Pick<AssetScopeContext, 'projectId' | 'workspaceId' | 'conversationKind'>;
+
+function projectionPurposeIsDeferred(
+  authorization: ProjectionAuthorization | undefined,
+  purpose: string,
+): boolean {
+  return authorization === 'not_required'
+    || authorization === 'model_selected'
+    || DEFERRED_PROJECTION_PURPOSE_LABELS.has(purpose.trim().toLocaleLowerCase());
+}
+
+function scopePolicyWithoutPurposeTags(
+  policy: RecallAbilityAssetScopePolicy | undefined,
+): RecallAbilityAssetScopePolicy | undefined {
+  if (!policy) return undefined;
+  // An explicit empty allow-list means "never"; keep that hard denial even
+  // while deferring non-empty purpose matching to the real task context.
+  if (policy.purposeTags?.length === 0) return policy;
+  const dimensions = { ...policy };
+  delete dimensions.purposeTags;
+  return Object.keys(dimensions).length ? dimensions : undefined;
+}
+
+async function resolveProjectionConversationContext(
+  userId: string,
+  conversationId?: string,
+): Promise<Partial<ProjectionConversationContext>> {
+  if (!conversationId) return {};
+  try {
+    const { getConversation } = await import('../chats');
+    const conversation = await getConversation(userId, conversationId);
+    if (!conversation) return {};
+    return {
+      // `conversation.agent_id` is only the starting-agent suggestion; group
+      // membership and the actual recipient are dynamic. Only a caller that
+      // knows the current target may bind an Agent scope to this projection.
+      ...(conversation.project_id && safeId(conversation.project_id) ? { projectId: conversation.project_id } : {}),
+      ...(conversation.space_id && safeId(conversation.space_id) ? { workspaceId: conversation.space_id } : {}),
+      ...(conversation.kind && safeId(conversation.kind) ? { conversationKind: conversation.kind } : {}),
+    };
+  } catch {
+    // Missing conversation metadata must not invent a permission context.
+    return {};
+  }
 }
 
 function validateAssetMatches(value: unknown): RecallAssetMatch[] | undefined {
@@ -414,26 +492,59 @@ function scopeAppliesToPurpose(scope: string, purpose: string): boolean {
   return scopeIncludes(scope, purpose);
 }
 
-async function isAssetEligibleForProjection(userId: string, asset: RecallAbilityAssetRecord, projection: Pick<ContextProjectionRecord, 'workspaceId' | 'purpose' | 'authorization'>): Promise<boolean> {
+async function isAssetEligibleForProjection(
+  userId: string,
+  asset: RecallAbilityAssetRecord,
+  projection: Pick<ContextProjectionRecord, 'projectId' | 'conversationId' | 'workspaceId' | 'agentId' | 'roleId' | 'conversationKind' | 'fileKinds' | 'purpose' | 'authorization'>,
+  runtimeScope: AssetScopeContext = {},
+): Promise<boolean> {
   if (asset.status !== 'active') throw new Error('context projection asset is not active');
-  if (!isAssetScopeAllowed(asset.scopePolicy, {
-    purpose: projection.purpose,
-    workspaceId: projection.workspaceId,
+  const needsConversationContext = (runtimeScope.projectId === undefined && projection.projectId === undefined)
+    || (runtimeScope.workspaceId === undefined && projection.workspaceId === undefined)
+    || (runtimeScope.conversationKind === undefined && projection.conversationKind === undefined);
+  const conversationContext = needsConversationContext
+    ? await resolveProjectionConversationContext(userId, projection.conversationId)
+    : {};
+  const projectId = runtimeScope.projectId ?? projection.projectId ?? conversationContext.projectId;
+  const workspaceId = runtimeScope.workspaceId ?? projection.workspaceId ?? conversationContext.workspaceId;
+  const conversationKind = runtimeScope.conversationKind ?? projection.conversationKind ?? conversationContext.conversationKind;
+  const agentId = runtimeScope.agentId ?? projection.agentId;
+  const roleId = runtimeScope.roleId ?? projection.roleId;
+  const fileKinds = runtimeScope.fileKinds ?? projection.fileKinds;
+  const purpose = runtimeScope.purpose ?? projection.purpose;
+  const deferPurposeGate = runtimeScope.purpose === undefined
+    && projectionPurposeIsDeferred(projection.authorization, projection.purpose);
+  // Purpose is task-time context. If durable validation only has a workflow
+  // label, defer purposeTags to the live runtime gate. Otherwise use the real
+  // task purpose; the other dimensions prefer current runtime values, then the
+  // projection snapshot, and fail closed when a declared scope is unknown.
+  const scopePolicy = deferPurposeGate
+    ? scopePolicyWithoutPurposeTags(asset.scopePolicy)
+    : asset.scopePolicy;
+  if (!isAssetScopeAllowed(scopePolicy, {
+    purpose,
+    projectId,
+    workspaceId,
+    ...(agentId ? { agentId } : {}),
+    ...(roleId ? { roleId } : {}),
+    ...(conversationKind ? { conversationKind } : {}),
+    ...(fileKinds !== undefined ? { fileKinds } : {}),
   })) return false;
-  // scope 词匹配（scope 词要出现在 purpose 文本里）是给宿主自动挑选兜底的启发式；
-  // 模型自选线不再重复这一道（2026-09-18）：模型在目录里看过这条资产声明的范围、
-  // 自己判断过适用性，且挂载时已过运行时准入门（含 scopePolicy）。其余检查一律保留。
-  const requireScopeWordMatch = projection.authorization !== 'model_selected';
+  // 自由文本 scope 是自动选择的启发式。模型自选和用户直接挂载都已有明确
+  // 选择意图，因此不重复词面否决；硬性 purposeTags 仍按实际任务上下文复核。
+  const requireScopeWordMatch = !deferPurposeGate
+    && projection.authorization !== 'model_selected'
+    && projection.purpose !== 'user_pinned';
   // 资产池全局共享：空间投影可引用整个池子（含其它空间资产与全局资产）。
   // workspace-ref 是可选收紧控制（显式停用 / scope 词），不是前置。
-  if (projection.workspaceId) {
+  if (workspaceId) {
     const refs = await listWorkspaceAssetReferences(userId);
-    const ref = refs.find((item) => item.assetId === asset.id && item.workspaceId === projection.workspaceId);
+    const ref = refs.find((item) => item.assetId === asset.id && item.workspaceId === workspaceId);
     if (ref && !ref.enabled) return false;
-    if (ref && requireScopeWordMatch && !scopeAppliesToPurpose(ref.scope, projection.purpose)) return false;
+    if (ref && requireScopeWordMatch && !scopeAppliesToPurpose(ref.scope, purpose)) return false;
     return true;
   }
-  return requireScopeWordMatch ? scopeAppliesToPurpose(asset.scope, projection.purpose) : true;
+  return requireScopeWordMatch ? scopeAppliesToPurpose(asset.scope, purpose) : true;
 }
 
 async function readEligibleProjectionAsset(userId: string, assetId: string, projection: ContextProjectionRecord): Promise<RecallAbilityAssetRecord> {
@@ -489,13 +600,21 @@ function validateModelSelectionEvents(value: unknown): ModelSelectionEvent[] | u
 
 function asProjection(value: RecallJsonRecord): ContextProjectionRecord {
   if (!Array.isArray(value.assetIds) || !Array.isArray(value.sourceRefs) || !Array.isArray(value.omittedRefs) || typeof value.taskRunId !== 'string' || typeof value.purpose !== 'string' || typeof value.authorization !== 'string' || typeof value.createdAt !== 'string') throw new Error('malformed context projection');
+  if (value.projectId !== undefined && !safeId(value.projectId)) throw new Error('malformed context projection project id');
+  if (value.workspaceId !== undefined && !safeId(value.workspaceId)) throw new Error('malformed context projection workspace id');
   if (value.selectionDegraded !== undefined && typeof value.selectionDegraded !== 'boolean') throw new Error('malformed context projection');
+  const agentId = normalizeOptionalScopeId(value.agentId, 'agent id');
+  const roleId = normalizeOptionalScopeId(value.roleId, 'role id');
+  const conversationKind = normalizeOptionalScopeId(value.conversationKind, 'conversation kind');
+  const fileKinds = normalizeProjectionFileKinds(value.fileKinds);
   const assetMatches = validateAssetMatches(value.assetMatches);
   const assetVersions = validateAssetVersions(value.assetVersions);
   const assetVersionSnapshots = validateAssetVersionSnapshots(value.assetVersionSnapshots);
   const modelSelectedAssetIds = validateModelSelectedAssetIds(value.modelSelectedAssetIds);
   const modelSelectionEvents = validateModelSelectionEvents(value.modelSelectionEvents);
   return { ...value, status: validateProjectionStatus(value.status), sourceRefs: normalizeCognitionSourceRefs(value.sourceRefs), ...(assetMatches ? { assetMatches } : {}), ...(assetVersions ? { assetVersions } : {}), ...(assetVersionSnapshots ? { assetVersionSnapshots } : {}),
+    ...(agentId ? { agentId } : {}), ...(roleId ? { roleId } : {}),
+    ...(conversationKind ? { conversationKind } : {}), ...(fileKinds !== undefined ? { fileKinds } : {}),
     ...(modelSelectedAssetIds ? { modelSelectedAssetIds } : {}),
     ...(modelSelectionEvents ? { modelSelectionEvents } : {}),
   } as ContextProjectionRecord;
@@ -535,6 +654,7 @@ async function applySemanticSelection(
   omittedRefs: OmittedAssetRef[],
   purposeText = '',
   workspaceId?: string,
+  projectId?: string,
 ): Promise<SemanticSelection> {
   const minScore = Number.isFinite(options.minScore)
     ? Math.max(0, Math.min(1, Number(options.minScore)))
@@ -550,6 +670,7 @@ async function applySemanticSelection(
   const contract = await buildRecallTaskContract(userId, {
     taskText: queryText,
     ...(purposeText ? { purpose: purposeText } : {}),
+    ...(projectId ? { projectId } : {}),
     ...(workspaceId ? { workspaceId } : {}),
   });
   const ontologyMatches = rankOntologyMatches(assets, contract);
@@ -624,6 +745,7 @@ async function applySemanticSelection(
 export async function buildRecallView(userId: string, input: ProjectionInput, options: ProjectionSemanticOptions = {}): Promise<BuildRecallViewResult> {
   const purpose = normalizeTerm(input.purpose, 'purpose', 120);
   const taskText = normalizeOptionalTerm(input.taskText, 'task text');
+  const purposeContext = [purpose, taskText].filter(Boolean).join('\n');
   const assets = await listAbilityAssets(userId);
   const refs = input.workspaceId ? await listWorkspaceAssetReferences(userId) : [];
   const refsByAsset = new Map(refs.filter((ref) => !input.workspaceId || ref.workspaceId === input.workspaceId).map((ref) => [ref.assetId, ref]));
@@ -632,7 +754,15 @@ export async function buildRecallView(userId: string, input: ProjectionInput, op
   for (const asset of assets) {
     const inactiveReason = inactiveAssetOmissionReason(asset.status);
     if (inactiveReason) { omittedRefs.push({ assetId: asset.id, reason: inactiveReason }); continue; }
-    if (!isAssetScopeAllowed(asset.scopePolicy, { purpose, workspaceId: input.workspaceId })) {
+    if (!isAssetScopeAllowed(asset.scopePolicy, {
+      purpose: purposeContext,
+      ...(input.agentId ? { agentId: input.agentId } : {}),
+      ...(input.roleId ? { roleId: input.roleId } : {}),
+      projectId: input.projectId,
+      workspaceId: input.workspaceId,
+      ...(input.conversationKind ? { conversationKind: input.conversationKind } : {}),
+      ...(input.fileKinds !== undefined ? { fileKinds: input.fileKinds } : {}),
+    })) {
       omittedRefs.push({ assetId: asset.id, reason: 'scope_mismatch' });
       continue;
     }
@@ -644,15 +774,15 @@ export async function buildRecallView(userId: string, input: ProjectionInput, op
     // 任务类型词闸门只约束"特定任务类型"的 scope（如 review/report）；
     // 'space'（空间适用）/ 'general'（通用）不按 purpose 过滤。
     if (ref && !ref.enabled) { omittedRefs.push({ assetId: asset.id, reason: 'workspace_disabled' }); continue; }
-    if (ref && !scopeAppliesToPurpose(ref.scope, purpose)) { omittedRefs.push({ assetId: asset.id, reason: 'scope_mismatch' }); continue; }
-    if (!ref && !scopeAppliesToPurpose(asset.scope, purpose)) { omittedRefs.push({ assetId: asset.id, reason: 'scope_mismatch' }); continue; }
+    if (ref && !scopeAppliesToPurpose(ref.scope, purposeContext)) { omittedRefs.push({ assetId: asset.id, reason: 'scope_mismatch' }); continue; }
+    if (!ref && !scopeAppliesToPurpose(asset.scope, purposeContext)) { omittedRefs.push({ assetId: asset.id, reason: 'scope_mismatch' }); continue; }
     includedAssets.push(asset);
   }
 
   // Ranking runs only on real task text: a short purpose label (e.g.
   // 'review') is not a meaningful query, and skipping the embed avoids
   // blocking calls when no task text exists.
-  const selection = await applySemanticSelection(userId, includedAssets, taskText, options, omittedRefs, purpose, input.workspaceId);
+  const selection = await applySemanticSelection(userId, includedAssets, taskText, options, omittedRefs, purpose, input.workspaceId, input.projectId);
   const orderedAssets = selection.assets;
   const assetMatches = selection.assetMatches;
 
@@ -719,7 +849,7 @@ function explicitBlockError(
  *  作用域、目标 Agent、敏感级、来源撤权全都不拦，且失败只抛英文原文，
  *  界面无法说明是哪条规则。失败一律码化（`ProjectionKnowledgeErrorCode`），
  *  渲染层按码翻四语规则名，不上屏原文、不泄露正文。 */
-async function buildExplicitAssetView(userId: string, assetIds: string[], agentId?: string) {
+async function buildExplicitAssetView(userId: string, assetIds: string[], context: AssetRuntimeContext) {
   const ids = [...new Set(assetIds)].slice(0, 12);
   if (!ids.length) throw new Error('explicit projection requires at least one asset');
   const { readAbilityAsset } = await import('./asset-service');
@@ -746,17 +876,21 @@ async function buildExplicitAssetView(userId: string, assetIds: string[], agentI
       lifecycleStatus: asset.lifecycleStatus,
       scope: asset.scope,
       ...(asset.crossScopeConfirmedAt ? { crossScopeConfirmedAt: asset.crossScopeConfirmedAt } : {}),
-      ...(asset.scopePolicy ? { scopePolicy: asset.scopePolicy } : {}),
+      ...(asset.scopePolicy ? {
+        scopePolicy: projectionPurposeIsDeferred(undefined, context.purpose || '')
+          ? scopePolicyWithoutPurposeTags(asset.scopePolicy)
+          : asset.scopePolicy,
+      } : {}),
       ...(asset.applicableWhen ? { applicableWhen: asset.applicableWhen } : {}),
       ...(asset.forbiddenWhen ? { forbiddenWhen: asset.forbiddenWhen } : {}),
       ...(asset.sensitivity ? { sensitivity: asset.sensitivity } : {}),
     }, {
+      ...context,
       // 用户主动挑选，不是静默默认注入：成熟度与适用条件不作硬门槛。
       silentDefaultInjection: false,
       sourceAvailable: await hasEnabledAutomaticSources(userId, asset),
-      ...(agentId ? { agentId } : {}),
     });
-    const blocking = agentId
+    const blocking = context.agentId
       ? gate.reasons
       : gate.reasons.filter((reason) => ATTACH_BLOCKING_REASONS.has(reason));
     if (!gate.eligible && blocking.length) throw explicitBlockError(blocking, id, asset.status);
@@ -774,21 +908,59 @@ async function buildExplicitAssetView(userId: string, assetIds: string[], agentI
 
 export async function previewContextProjection(userId: string, input: ProjectionInput, options: ProjectionSemanticOptions = {}): Promise<ContextProjectionRecord> {
   const taskRunId = normalizeTerm(input.taskRunId, 'task run id', 160);
-  const purpose = normalizeTerm(input.purpose, 'purpose', 120);
-  const workspaceId = input.workspaceId === undefined ? undefined : normalizeTerm(input.workspaceId, 'workspace id', 160);
-  const taskText = normalizeOptionalTerm(input.taskText, 'task text');
   const conversationId = input.conversationId === undefined ? undefined : normalizeTerm(input.conversationId, 'conversation id', 160);
+  const conversationContext = await resolveProjectionConversationContext(userId, conversationId);
+  const projectId = input.projectId === undefined
+    ? conversationContext.projectId
+    : normalizeTerm(input.projectId, 'project id', 160);
+  if (projectId && !safeId(projectId)) throw new Error('invalid projection project id');
+  const purpose = normalizeTerm(input.purpose, 'purpose', 120);
+  const workspaceId = input.workspaceId === undefined
+    ? conversationContext.workspaceId
+    : normalizeTerm(input.workspaceId, 'workspace id', 160);
+  if (workspaceId && !safeId(workspaceId)) throw new Error('invalid projection workspace id');
+  const agentId = input.agentId === undefined
+    ? undefined
+    : normalizeOptionalScopeId(input.agentId, 'agent id');
+  const roleId = normalizeOptionalScopeId(input.roleId, 'role id');
+  const conversationKind = input.conversationKind === undefined
+    ? conversationContext.conversationKind
+    : normalizeOptionalScopeId(input.conversationKind, 'conversation kind');
+  const fileKinds = normalizeProjectionFileKinds(input.fileKinds);
+  const taskText = normalizeOptionalTerm(input.taskText, 'task text');
   const authorization: ProjectionAuthorization = input.authorization || 'user_confirmed';
   if (authorization !== 'user_confirmed' && authorization !== 'workspace_policy' && authorization !== 'not_required' && authorization !== 'model_selected') throw new Error('invalid projection authorization');
   if (input.expiresAt !== undefined && Number.isNaN(Date.parse(input.expiresAt))) throw new Error('invalid projection expiry');
   const view = input.explicitAssetIds?.length
-    ? await buildExplicitAssetView(userId, input.explicitAssetIds, input.agentId)
-    : await buildRecallView(userId, { taskRunId, purpose, ...(workspaceId ? { workspaceId } : {}), ...(taskText ? { taskText } : {}) }, options);
+    ? await buildExplicitAssetView(userId, input.explicitAssetIds, {
+      purpose: [purpose, taskText].filter(Boolean).join('\n'),
+      ...(projectId ? { projectId } : {}),
+      ...(workspaceId ? { workspaceId } : {}),
+      ...(agentId ? { agentId } : {}),
+      ...(roleId ? { roleId } : {}),
+      ...(conversationKind ? { conversationKind } : {}),
+      ...(fileKinds !== undefined ? { fileKinds } : {}),
+      ...(taskText ? { taskText } : {}),
+    })
+    : await buildRecallView(userId, {
+      taskRunId, purpose,
+      ...(projectId ? { projectId } : {}),
+      ...(workspaceId ? { workspaceId } : {}),
+      ...(conversationId ? { conversationId } : {}),
+      ...(agentId ? { agentId } : {}),
+      ...(roleId ? { roleId } : {}),
+      ...(conversationKind ? { conversationKind } : {}),
+      ...(fileKinds !== undefined ? { fileKinds } : {}),
+      ...(taskText ? { taskText } : {}),
+    }, options);
   const now = projectionNowIso();
   const confirmedAt = input.confirm ? now : undefined;
   const record: ContextProjectionRecord = {
     schemaVersion: 2, ownerId: userId, id: `proj-${genId12()}`,
-    taskRunId, ...(workspaceId ? { workspaceId } : {}), ...(conversationId ? { conversationId } : {}), purpose, authorization,
+    taskRunId, ...(projectId ? { projectId } : {}), ...(workspaceId ? { workspaceId } : {}),
+    ...(agentId ? { agentId } : {}), ...(roleId ? { roleId } : {}),
+    ...(conversationKind ? { conversationKind } : {}), ...(fileKinds !== undefined ? { fileKinds } : {}),
+    ...(conversationId ? { conversationId } : {}), purpose, authorization,
     assetIds: view.assetIds, ...(view.assetVersions ? { assetVersions: view.assetVersions } : {}), ...(view.assetMatches ? { assetMatches: view.assetMatches } : {}), sourceRefs: view.sourceRefs, omittedRefs: view.omittedRefs,
     ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
     ...(view.degraded ? { selectionDegraded: true } : {}),
@@ -807,12 +979,26 @@ export async function createAutomaticContextProjection(
 ): Promise<ContextProjectionRecord | undefined> {
   const taskRunId = normalizeTerm(input.taskRunId, 'task run id', 160);
   const taskText = normalizeTerm(input.taskText, 'task text', 2_000);
-  const workspaceId = input.workspaceId === undefined
-    ? undefined
-    : normalizeTerm(input.workspaceId, 'workspace id', 160);
   const conversationId = input.conversationId === undefined
     ? undefined
     : normalizeTerm(input.conversationId, 'conversation id', 160);
+  const conversationContext = await resolveProjectionConversationContext(userId, conversationId);
+  const projectId = input.projectId === undefined
+    ? conversationContext.projectId
+    : normalizeTerm(input.projectId, 'project id', 160);
+  if (projectId && !safeId(projectId)) throw new Error('invalid projection project id');
+  const workspaceId = input.workspaceId === undefined
+    ? conversationContext.workspaceId
+    : normalizeTerm(input.workspaceId, 'workspace id', 160);
+  if (workspaceId && !safeId(workspaceId)) throw new Error('invalid projection workspace id');
+  const agentId = input.agentId === undefined
+    ? undefined
+    : normalizeOptionalScopeId(input.agentId, 'agent id');
+  const roleId = normalizeOptionalScopeId(input.roleId, 'role id');
+  const conversationKind = input.conversationKind === undefined
+    ? conversationContext.conversationKind
+    : normalizeOptionalScopeId(input.conversationKind, 'conversation kind');
+  const fileKinds = normalizeProjectionFileKinds(input.fileKinds);
   const id = automaticProjectionId(taskRunId, workspaceId);
   const existing = await readRecallJsonRecord(userId, 'projections', id);
   if (existing) {
@@ -864,12 +1050,12 @@ export async function createAutomaticContextProjection(
       silentDefaultInjection: true,
       purpose: taskText,
       ...(taskText ? { taskText } : {}),
-      ...(input.agentId ? { agentId: input.agentId } : {}),
-      ...(input.roleId ? { roleId: input.roleId } : {}),
-      ...(input.projectId ? { projectId: input.projectId } : {}),
+      ...(agentId ? { agentId } : {}),
+      ...(roleId ? { roleId } : {}),
+      ...(projectId ? { projectId } : {}),
       ...(workspaceId ? { workspaceId } : {}),
-      ...(input.conversationKind ? { conversationKind: input.conversationKind } : {}),
-      ...(input.fileKinds ? { fileKinds: input.fileKinds } : {}),
+      ...(conversationKind ? { conversationKind } : {}),
+      ...(fileKinds !== undefined ? { fileKinds } : {}),
     });
     if (!runtime.eligible) {
       omittedRefs.push({ assetId: asset.id, reason: RUNTIME_OMISSION_REASON[runtime.reasons[0]] || 'source_unavailable' });
@@ -887,7 +1073,7 @@ export async function createAutomaticContextProjection(
   const baselineTop = baselineTopEnv === undefined || baselineTopEnv.trim() === '' ? Number.NaN : Number(baselineTopEnv);
   const baselineEnabled = Number.isFinite(baselineTop) && baselineTop > 0;
   const selection = baselineEnabled
-    ? await applySemanticSelection(userId, eligibleAssets, taskText, options, [], input.taskText, workspaceId)
+    ? await applySemanticSelection(userId, eligibleAssets, taskText, options, [], input.taskText, workspaceId, projectId)
     : { assets: [] as RecallAbilityAssetRecord[], degraded: false };
   const selectedAssets = selection.assets;
   if (!selectedAssets.length) return undefined;
@@ -899,7 +1085,12 @@ export async function createAutomaticContextProjection(
     ownerId: userId,
     id,
     taskRunId,
+    ...(projectId ? { projectId } : {}),
     ...(workspaceId ? { workspaceId } : {}),
+    ...(agentId ? { agentId } : {}),
+    ...(roleId ? { roleId } : {}),
+    ...(conversationKind ? { conversationKind } : {}),
+    ...(fileKinds !== undefined ? { fileKinds } : {}),
     ...(conversationId ? { conversationId } : {}),
     ...(selection.degraded ? { selectionDegraded: true } : {}),
     purpose: 'conversation_reply',
@@ -922,6 +1113,7 @@ async function validateFrozenProjectionAssets(
   userId: string,
   projection: ContextProjectionRecord,
   requireCommitted: boolean,
+  runtimeScope: AssetScopeContext = {},
 ): Promise<Record<string, string>> {
   if (requireCommitted && !isCommittedProjection(projection)) {
     throw projectionKnowledgeError('projection_not_committed');
@@ -941,9 +1133,20 @@ async function validateFrozenProjectionAssets(
     } catch {
       throw projectionKnowledgeError('projection_asset_missing');
     }
-    if (asset.status !== 'active') throw projectionKnowledgeError('projection_asset_inactive');
+    if (asset.status !== 'active') {
+      // 已确认投影可能长期保留多条资产。用户暂停/归档其中一条时，只从后续
+      // 读取集合里排除这条；不让一个停用条目拖垮同一投影里的其他有效资产。
+      // 预览确认阶段仍拒绝非 active 条目，只有 committed 读取采用逐条收敛。
+      if (requireCommitted) continue;
+      throw projectionKnowledgeError('projection_asset_inactive');
+    }
     if (expected[assetId] !== asset.version) throw projectionKnowledgeError('projection_asset_version_changed');
-    if (!(await isAssetEligibleForProjection(userId, asset, projection))) {
+    if (!(await isAssetEligibleForProjection(userId, asset, projection, runtimeScope))) {
+      // A committed projection can be presented again from a different live
+      // project/space/task. Scope policy is evaluated against that runtime
+      // context, so omit the out-of-scope item while keeping other frozen
+      // assets usable. Preview/confirmation still reject an ineligible asset.
+      if (requireCommitted) continue;
       throw projectionKnowledgeError('projection_asset_ineligible');
     }
     for (const source of asset.evidenceRefs) {
@@ -967,8 +1170,10 @@ export function validateProjectionAssetVersions(
 export function validateCommittedProjectionAssetVersions(
   userId: string,
   projection: ContextProjectionRecord,
+  runtimeScope: AssetScopeContext = {},
 ): Promise<Record<string, string>> {
-  return validateFrozenProjectionAssets(userId, projection, true);
+  // 返回当前仍可读取的版本子集；非 active 是逐条停用，正文版本或权限漂移仍整组拒绝。
+  return validateFrozenProjectionAssets(userId, projection, true, runtimeScope);
 }
 
 /** 系统级版本递增（如 scope 词表迁移 bump version）后，同步刷新仍存活
@@ -1227,11 +1432,7 @@ export async function readContextProjection(userId: string, projectionId: string
   return asProjection(raw);
 }
 
-export async function listContextProjections(
-  userId: string,
-  query: ListContextProjectionsQuery = {},
-): Promise<ContextProjectionRecord[]> {
-  const limit = Math.max(1, Math.min(100, Math.floor(Number(query.limit) || 20)));
+async function readContextProjections(userId: string): Promise<ContextProjectionRecord[]> {
   let names: string[];
   try {
     names = await fs.readdir(projectionsDirectory(userId));
@@ -1257,11 +1458,22 @@ export async function listContextProjections(
       }
     })))
     .filter((projection): projection is ContextProjectionRecord => Boolean(projection))
-    .map((projection) => (
-      projection.status === 'preview' && projection.expiresAt && Date.parse(projection.expiresAt) <= now
-        ? { ...projection, status: 'expired' as const }
-        : projection
-    ))
+    .map((projection) => projection.status === 'preview' && projection.expiresAt && Date.parse(projection.expiresAt) <= now
+      ? { ...projection, status: 'expired' as const }
+      : projection)
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
+}
+
+export async function listAllContextProjections(userId: string): Promise<ContextProjectionRecord[]> {
+  return readContextProjections(userId);
+}
+
+export async function listContextProjections(
+  userId: string,
+  query: ListContextProjectionsQuery = {},
+): Promise<ContextProjectionRecord[]> {
+  const limit = Math.max(1, Math.min(100, Math.floor(Number(query.limit) || 20)));
+  return (await readContextProjections(userId))
     .filter((projection) => query.workspaceId === undefined || projection.workspaceId === query.workspaceId)
     .filter((projection) => query.taskRunId === undefined || projection.taskRunId === query.taskRunId)
     .filter((projection) => query.conversationId === undefined
@@ -1269,7 +1481,6 @@ export async function listContextProjections(
       || projection.sourceRefs.some((source) => source.kind === 'conversation' && source.id === query.conversationId))
     .filter((projection) => query.status === undefined || projection.status === query.status)
     .filter((projection) => query.includeExpired === true || projection.status !== 'expired')
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id))
     .slice(0, limit);
 }
 

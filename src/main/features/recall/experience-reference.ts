@@ -207,9 +207,10 @@ export async function attachExperienceSetToTask(
 
   // 准入：用户主动选择路径（非静默）——applicableWhen 声明不拦人工挑选，
   // 与 @ 资产挂载（attachToConversation）同一语义。agentId 已知就一并判，
-  // 目标 Agent 白名单当场生效，不等发送那一轮才静默丢。
+  // 目标 Agent 白名单当场生效；会话空间也用于限制仅空间可见的经验。
   const context: AssetRuntimeContext = {
     ...(options.agentId ? { agentId: options.agentId } : {}),
+    ...(conv.space_id ? { workspaceId: conv.space_id } : {}),
   };
   const available: ExperienceRecord[] = [];
   const blocked: ExperienceAttachBlocked[] = [];

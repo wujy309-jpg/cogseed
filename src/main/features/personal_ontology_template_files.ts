@@ -19,6 +19,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { userOntologyGroupsDir } from '../paths';
 import { writeTextAtomicSync, safeId, nowIso, genId12 } from '../storage';
+import { notifyCognitionWrite } from './recall/store-events';
 import { collectRoleTemplateMemoryEntries, removeRoleTemplateMemoryFromLive, restoreRoleTemplateMemoryEntries } from './memory';
 import { getRoleTemplate, listRoleTemplates, type PresetGroup } from './role_templates';
 import {
@@ -302,6 +303,7 @@ export async function installTemplateFile(
       const archived = readTemplateArchive(uid, templateId);
       if (archived != null) {
         writeTextAtomicSync(abs, archived); // 恢复旧数据（字段值/流水原样）
+        notifyCognitionWrite(uid, 'ontology-groups', 'update');
         restored_from_archive = true;
         // 复用唯一的模板 parser 读回真实版本；解析不出（归档缺/坏 meta 行）时
         // 退回当前 catalog version —— 台账的 `- 模板:` 行只在版本非空且是合法
@@ -325,6 +327,7 @@ export async function installTemplateFile(
         })),
       };
       writeTextAtomicSync(abs, serializeTemplateContent(content));
+      notifyCognitionWrite(uid, 'ontology-groups', 'update');
     }
     // 恢复随模板归档的全局记忆（.memory.md）—— 按实际成功数上报（B-3：空间满时
     // 部分恢复失败，不能按归档长度谎报）。
@@ -669,6 +672,7 @@ async function mutateTemplateFile(
     try {
       fs.mkdirSync(path.dirname(abs), { recursive: true });
       writeTextAtomicSync(abs, next);
+      notifyCognitionWrite(uid, 'ontology-groups', 'update');
     } catch (err) {
       return { ok: false, error: (err as Error).message };
     }
@@ -681,6 +685,59 @@ async function mutateTemplateFile(
     }
     notifyGroupUpserted(uid, `.personal_ontology_groups/${templateId}.md`);
     return { ok: true };
+  });
+}
+
+function assetProjectionSignatures(content: TemplateFileContent): string[] {
+  const signatures: string[] = [];
+  for (const section of content.sections) {
+    for (const [fieldName, values] of Object.entries(section.fields)) {
+      for (const value of values) {
+        if (!value.recallAssetId) continue;
+        signatures.push(JSON.stringify([
+          section.title,
+          fieldName,
+          serializeFieldValueLine(value),
+        ]));
+      }
+    }
+  }
+  return signatures.sort();
+}
+
+/** Full-template raw editor save. User-authored template values can be edited,
+ * but template metadata and the set/content/location of formal asset projections
+ * stay owned by their respective source services. */
+export async function writeTemplateFileContent(
+  uid: string,
+  groupId: string,
+  text: string,
+): Promise<{ ok: boolean; error?: string }> {
+  if (!safeId(uid)) return { ok: false, error: 'invalid uid' };
+  const meta = findTemplateMeta(uid, groupId);
+  if (!meta) return { ok: false, error: 'template group not found' };
+  const body = typeof text === 'string' ? text : '';
+  const bytes = Buffer.byteLength(body, 'utf8');
+  if (bytes > MAX_FILE_BYTES) {
+    return { ok: false, error: `file exceeds ${Math.round(MAX_FILE_BYTES / 1024 / 1024)}MB limit` };
+  }
+  const submitted = parseTemplateContent(body);
+
+  return mutateTemplateFile(uid, groupId, meta.template_id!, (current) => {
+    if (submitted.template_id !== current.template_id
+      || submitted.title !== current.title
+      || submitted.version !== current.version
+      || submitted.installed_at !== current.installed_at) {
+      return { ok: false, error: 'template_metadata_read_only' };
+    }
+    const previousProjections = assetProjectionSignatures(current);
+    const submittedProjections = assetProjectionSignatures(submitted);
+    if (previousProjections.length !== submittedProjections.length
+      || previousProjections.some((signature, index) => signature !== submittedProjections[index])) {
+      return { ok: false, error: 'asset_projection_read_only' };
+    }
+    current.sections = submitted.sections;
+    return { changed: true };
   });
 }
 
@@ -792,8 +849,10 @@ export async function appendExistingTemplateFieldValueToRef(
   value: string,
   source: string,
   project?: string,
+  recallAssetId?: string,
 ): Promise<{ ok: boolean; error?: string }> {
   if (!safeId(uid)) return { ok: false, error: 'invalid uid' };
+  if (recallAssetId !== undefined && !safeId(recallAssetId)) return { ok: false, error: 'invalid recall asset id' };
   const { groupId, section } = splitContentRef(ref);
   if (!section) return { ok: false, error: 'template section ref required' };
 
@@ -818,12 +877,68 @@ export async function appendExistingTemplateFieldValueToRef(
       return { ok: false, error: 'field not found' };
     }
     const values = sec.fields[name];
+    if (recallAssetId) {
+      const prior = values.filter((fv) => fv.recallAssetId === recallAssetId);
+      const kept = values.filter((fv) => fv.recallAssetId !== recallAssetId);
+      const exactPrior = prior.find((fv) => fv.value === val && fv.source === src && (fv.project ?? undefined) === proj);
+      if (exactPrior && prior.length === 1) return { changed: false };
+      // A legacy or manually written identical value has no ownership marker. Do not
+      // silently claim it for this asset; keep user-owned data intact and report the
+      // destination as needing an explicit cleanup/review.
+      if (kept.some((fv) => fv.value === val && fv.source === src && (fv.project ?? undefined) === proj)) {
+        return { ok: false, error: 'profile_value_untracked_duplicate' };
+      }
+      sec.fields[name] = [...kept, {
+        value: val,
+        source: src,
+        recallAssetId,
+        ...(proj ? { project: proj } : {}),
+      }];
+      return { changed: true };
+    }
     if (values.some((fv) => fv.value === val && fv.source === src && (fv.project ?? undefined) === proj)) {
       return { changed: false };
     }
     values.push({ value: val, source: src, ...(proj ? { project: proj } : {}) });
     return { changed: true };
   });
+}
+
+/** Remove only template values that carry an exact formal-asset ownership marker.
+ * User-authored, imported, and legacy unmarked values are left untouched. */
+export async function removeTemplateFieldValuesForRecallAsset(
+  uid: string,
+  recallAssetId: string,
+): Promise<{ ok: boolean; removed: number; error?: string }> {
+  if (!safeId(uid)) return { ok: false, removed: 0, error: 'invalid uid' };
+  if (!safeId(recallAssetId)) return { ok: false, removed: 0, error: 'invalid recall asset id' };
+
+  const templates = new Map<string, GroupMeta>();
+  for (const group of readGroups(uid)) {
+    if (group.template_id && !templates.has(group.template_id)) templates.set(group.template_id, group);
+  }
+
+  let removed = 0;
+  for (const [templateId, group] of templates) {
+    let removedInTemplate = 0;
+    const result = await mutateTemplateFile(uid, group.group_id, templateId, (content) => {
+      let changed = false;
+      for (const section of content.sections) {
+        for (const [fieldName, values] of Object.entries(section.fields)) {
+          const kept = values.filter((value) => value.recallAssetId !== recallAssetId);
+          removedInTemplate += values.length - kept.length;
+          if (kept.length !== values.length) {
+            section.fields[fieldName] = kept;
+            changed = true;
+          }
+        }
+      }
+      return { changed };
+    });
+    if (!result.ok) return { ok: false, removed, error: result.error || 'template projection cleanup failed' };
+    removed += removedInTemplate;
+  }
+  return { ok: true, removed };
 }
 
 /** 流水追加：复合 id → 分节流水；普通组 id → 转发 appendToGroup。 */
@@ -927,6 +1042,9 @@ export async function setFieldValueToRef(
     if (!values) return { ok: false, error: 'field value not found' };
     const idx = values.findIndex((fv) => fv.value === oldValue);
     if (idx === -1) return { ok: false, error: 'field value not found' };
+    // Formal assets own their projected template value. Editing this copy would
+    // create a second source of truth that the next profile sync could overwrite.
+    if (values[idx].recallAssetId) return { ok: false, error: 'asset_projection_read_only' };
     // 三态落盘（specs/014 T006）：与普通组同一语义——set/clear 只动 asOf 键。
     if (asOfControl?.asOf !== undefined) {
       values[idx] = { ...values[idx], value: next, asOf: asOfControl.asOf };
@@ -962,6 +1080,11 @@ export async function removeFieldValueToRef(
     if (!sec) return { ok: false, error: 'section not found' };
     const values = sec.fields[name];
     if (!values) return { ok: true, changed: false };
+    // Matching is by visible text for this legacy API. If any matching row is
+    // asset-owned, refuse the ambiguous delete instead of removing its projection.
+    if (values.some((fv) => fv.value === value && fv.recallAssetId)) {
+      return { ok: false, error: 'asset_projection_read_only' };
+    }
     const kept = values.filter((fv) => fv.value !== value);
     if (kept.length === values.length) return { ok: true, changed: false };
     sec.fields[name] = kept; // 空坑保留（小节不删）
@@ -989,6 +1112,9 @@ export async function removeFieldToRef(
     const sec = findSection(content, section);
     if (!sec) return { ok: false, error: 'section not found' };
     if (!(name in sec.fields)) return { ok: true, changed: false };
+    if (sec.fields[name].some((fv) => fv.recallAssetId)) {
+      return { ok: false, error: 'asset_projection_read_only' };
+    }
     delete sec.fields[name];
     return { changed: true };
   });
@@ -1208,6 +1334,7 @@ export async function migrateLegacyTemplateGroups(uid: string): Promise<MigrateL
     try {
       fs.mkdirSync(path.dirname(templateFileAbsPath(uid, templateId)), { recursive: true });
       writeTextAtomicSync(templateFileAbsPath(uid, templateId), serializeTemplateContent(content));
+      notifyCognitionWrite(uid, 'ontology-groups', 'update');
     } catch (err) {
       return { ok: false, migrated, groups_moved: groupsMoved, error: (err as Error).message };
     }

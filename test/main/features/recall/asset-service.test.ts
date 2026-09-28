@@ -5,6 +5,15 @@ import * as path from 'node:path';
 import type { KstarEpisodeRecord } from '../../../../src/main/features/kstar/types';
 import { KSTAR_EPISODE_MISSING } from '../../../../src/main/features/recall/evidence-resolution';
 
+vi.mock('../../../../src/main/features/kb_indexer', () => ({
+  enqueue: () => {},
+  kbEvents: { on: () => {}, off: () => {}, emit: () => {} },
+}));
+vi.mock('../../../../src/main/features/search', () => ({
+  upsertContext: () => {},
+  dropContext: () => {},
+}));
+
 let tmpDir: string;
 let previousRoot: string | undefined;
 const RULE_BOUNDARY = { applicableWhen: ['performing governed work'], forbiddenWhen: ['outside the governed scope'] };
@@ -20,6 +29,61 @@ async function modules() {
 }
 
 describe('Recall ability assets', () => {
+  it('updates and withdraws only the asset-owned role-template value', async () => {
+    const userId = 'user-profile-lifecycle';
+    const { candidates, assets } = await modules();
+    const templates = await import('../../../../src/main/features/personal_ontology_template_files');
+    const contract = await import('../../../../src/main/features/personal_ontology_contract');
+    await templates.installTemplateFile(userId, 'student');
+    const row = templates.readGroups(userId).find((group) => group.template_id === 'student')!;
+    const contentRef = templates.buildContentRef(row.group_id, '学习背景');
+    const fieldRef = (await contract.buildRoleTemplateFieldRef(userId, 'student', '学习背景', '教育阶段'))!;
+    await templates.appendFieldValueToRef(userId, contentRef, '教育阶段', '本科', '手动');
+
+    const candidate = await candidates.saveRecallCandidate(userId, {
+      judgment: '后续回答先给结论。',
+      value: '先给出明确结论，再补充解释。',
+      suggestedType: 'personal',
+      suggestedScope: 'personal',
+      suggestedAction: 'create',
+      sourceRefs: [{ kind: 'execution', id: 'exec-profile-lifecycle' }],
+      evidenceRefs: [{ kind: 'execution', id: 'exec-profile-lifecycle' }],
+    });
+    const { asset } = await candidates.promoteRecallCandidate(userId, candidate.id, {
+      actor: 'user',
+      profileTarget: { fieldRef },
+    });
+    const fieldValue = (statement: string) => statement.replace(/[\r\n]+/g, ' ').replace(/[\t ]+/g, ' ').trim();
+
+    let fields = await templates.listFieldsByRef(userId, contentRef);
+    expect(fields.fields?.find((field) => field.name === '教育阶段')?.values).toEqual([
+      { value: '本科', source: '手动' },
+      { value: fieldValue(asset.statement), source: '智能', recallAssetId: asset.id },
+    ]);
+    expect(await contract.getRoleProfileForRuntime(userId, ['student'])).toContain(asset.statement);
+
+    await assets.updateAbilityAsset(userId, asset.id, {
+      statement: '先给结论，再逐项解释依据。',
+      reason: '用户修订偏好表述。',
+      actor: 'user',
+    });
+    fields = await templates.listFieldsByRef(userId, contentRef);
+    expect(fields.fields?.find((field) => field.name === '教育阶段')?.values).toEqual([
+      { value: '本科', source: '手动' },
+      { value: fieldValue('先给结论，再逐项解释依据。'), source: '智能', recallAssetId: asset.id },
+    ]);
+    const updatedProfile = await contract.getRoleProfileForRuntime(userId, ['student']);
+    expect(updatedProfile).toContain('先给结论，再逐项解释依据。');
+    expect(updatedProfile).not.toContain(asset.statement);
+
+    await assets.pauseAbilityAsset(userId, asset.id, { actor: 'user', reason: '暂不使用。' });
+    fields = await templates.listFieldsByRef(userId, contentRef);
+    expect(fields.fields?.find((field) => field.name === '教育阶段')?.values).toEqual([
+      { value: '本科', source: '手动' },
+    ]);
+    expect(await contract.getRoleProfileForRuntime(userId, ['student'])).not.toContain('先给结论，再逐项解释依据。');
+  });
+
   it('updates immutable-id assets with append-only snapshots and lifecycle audit events', async () => {
     const { candidates, assets } = await modules();
     const candidate = await candidates.saveRecallCandidate('user-a', { judgment: 'Keep decision records with evidence.', suggestedType: 'rule', ...RULE_BOUNDARY, suggestedScope: 'architecture', sourceRefs: [{ kind: 'execution', id: 'exec-a' }] });
@@ -213,6 +277,14 @@ describe('Recall ability assets', () => {
     expect(updated.version).toBe('2');
     expect(updated.scopePolicy).toEqual({ purposeTags: ['architecture-review'], fileKinds: ['md'] });
 
+    const cleared = await assets.updateAbilityAsset('user-a', asset.id, {
+      scopePolicy: {},
+      reason: 'Remove every explicit scope restriction.',
+      actor: 'user',
+    } as never);
+    expect(cleared.version).toBe('3');
+    expect(cleared.scopePolicy).toBeUndefined();
+
     const versions = await assets.listAbilityAssetVersions('user-a', asset.id);
     expect(versions[0].snapshot.scopePolicy).toEqual({
       purposeTags: ['architecture', 'review'],
@@ -221,6 +293,7 @@ describe('Recall ability assets', () => {
     });
     expect(versions[1]).toMatchObject({ reason: 'Narrow reuse to architecture review markdown workflows.', actor: 'user' });
     expect(versions[1].snapshot.scopePolicy).toEqual({ purposeTags: ['architecture-review'], fileKinds: ['md'] });
+    expect(versions[2].snapshot.scopePolicy).toBeUndefined();
   });
 
   it('records advisory rework without mutating behavior and requires an explicit user revision to clear it', async () => {

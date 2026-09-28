@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 const rendererRoot = resolve(__dirname, '../../src/renderer');
 const source = readFileSync(resolve(rendererRoot, 'modules/personal-ontology.js'), 'utf8');
+const cognitionAssetsCss = readFileSync(resolve(rendererRoot, 'cognition-assets.css'), 'utf8');
 
 describe('personal ontology design-system integration', () => {
   it('routes ordinary actions and form controls through shared primitives', () => {
@@ -30,5 +31,12 @@ describe('personal ontology design-system integration', () => {
     expect(source).toContain("variant: 'danger', className: 'memory-icon-btn is-muted'");
     expect(source).toContain("variant: 'danger', className: 'personal-onto-library-uninstall'");
     expect(source).toContain("variant: 'danger', className: 'personal-onto-template-uninstall'");
+  });
+
+  it('keeps ontology navigation and category chips readable on hover, press, and selection', () => {
+    expect(cognitionAssetsCss).toContain('.personal-onto-hub-nav-item:hover');
+    expect(cognitionAssetsCss).toContain('.personal-onto-hub-nav-item:active');
+    expect(cognitionAssetsCss).toContain('.personal-onto-filter-chip:hover');
+    expect(cognitionAssetsCss).toContain('background: var(--color-brand-soft); color: var(--color-ink);');
   });
 });

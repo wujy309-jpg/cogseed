@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -7,6 +7,7 @@ let root: string;
 let previousRoot: string | undefined;
 
 beforeEach(() => {
+  vi.resetModules();
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'cogseed-asset-usage-receipt-'));
   previousRoot = process.env.COGSEED_WORKSPACE_ROOT;
   process.env.COGSEED_WORKSPACE_ROOT = root;
@@ -59,6 +60,42 @@ describe('asset usage receipts', () => {
 
     const jsonl = path.join(root, 'user-a', 'cloud', 'recall', 'jsonl', 'asset-usage-receipts', 'events.jsonl');
     expect(fs.readFileSync(jsonl, 'utf8').trim().split('\n')).toHaveLength(1);
+  });
+
+  it('normalizes historical receipt ids so later user feedback replaces the same event', async () => {
+    const injections = await import('../../../../src/main/features/recall/injection-receipt');
+    const usage = await import('../../../../src/main/features/recall/asset-usage-receipt');
+    const injection = await injections.recordInjectionReceipt('user-legacy-id', {
+      taskRunId: 'run-legacy-id', projectionId: 'proj-legacy-id', assetId: 'asset-legacy-id', assetVersion: '1',
+      boundary: 'real', status: 'injected', messageId: 'message-legacy-id',
+    });
+    const input = {
+      taskRunId: 'run-legacy-id', projectionId: 'proj-legacy-id', assetId: 'asset-legacy-id', assetVersion: '1',
+      injectionReceiptId: injection.id,
+      status: 'applied',
+      evidenceKind: 'tool_call',
+      evidenceRefs: [{ kind: 'execution_evaluation', id: 'eval-legacy-id' }],
+      boundary: 'real',
+    } as const;
+    const original = await usage.recordAssetUsageReceipt('user-legacy-id', input);
+
+    const jsonl = path.join(root, 'user-legacy-id', 'cloud', 'recall', 'jsonl', 'asset-usage-receipts', 'events.jsonl');
+    const stored = JSON.parse(fs.readFileSync(jsonl, 'utf8').trim());
+    stored.id = `aur-${'0'.repeat(24)}`;
+    fs.writeFileSync(jsonl, `${JSON.stringify(stored)}\n`);
+
+    await expect(usage.listAssetUsageReceipts('user-legacy-id')).resolves.toEqual([
+      expect.objectContaining({ id: original.id, status: 'applied', assetId: 'asset-legacy-id' }),
+    ]);
+    await expect(usage.recordAssetUsageReceipt('user-legacy-id', input)).resolves.toMatchObject({ id: original.id, status: 'applied' });
+    expect(fs.readFileSync(jsonl, 'utf8').trim().split('\n')).toHaveLength(1);
+
+    const contradicted = await usage.recordAssetUsageReceipt('user-legacy-id', { ...input, status: 'contradicted' });
+    expect(contradicted).toMatchObject({ id: original.id, status: 'contradicted' });
+    await expect(usage.listAssetUsageReceipts('user-legacy-id')).resolves.toEqual([
+      expect.objectContaining({ id: original.id, status: 'contradicted', assetId: 'asset-legacy-id' }),
+    ]);
+    expect(fs.readFileSync(jsonl, 'utf8').trim().split('\n')).toHaveLength(2);
   });
 
   it('negative feedback overrides an earlier applied receipt; reads return the latest per id (2026-09-14)', async () => {

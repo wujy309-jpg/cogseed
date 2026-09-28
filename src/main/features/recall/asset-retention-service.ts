@@ -77,7 +77,7 @@ export async function runAbilityAssetRetentionSweep(
     }
     if (isWithinDeletionRetention(asset, now)) continue;
     try {
-      await purgeAbilityAsset(userId, asset.id, { actor: 'system', reason: RETENTION_EXPIRY_REASON });
+      await purgeAbilityAsset(userId, asset.id, { actor: 'system', reason: RETENTION_EXPIRY_REASON }, { requireDeleted: true });
       result.purged.push(asset.id);
     } catch (err) {
       result.failed.push({ assetId: asset.id, error: (err as Error).message });

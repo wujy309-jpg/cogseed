@@ -643,6 +643,7 @@ export function experienceRuntimeCandidate(exp: ExperienceRecord): AssetRuntimeC
     status: exp.status === 'merged' ? 'archived' : exp.status,
     maturity: 'bud',
     scope: exp.scope,
+    ...(exp.spaceId ? { scopePolicy: { workspaceIds: [exp.spaceId] } } : {}),
     applicableWhen: exp.applicableWhen,
     forbiddenWhen: exp.forbiddenWhen,
     ...(exp.agentId ? { targetAgents: [exp.agentId] } : {}),
@@ -658,5 +659,11 @@ export function evaluateExperienceRuntimeEligibility(
   context: AssetRuntimeContext = {},
 ): AssetRuntimeEligibility {
   if (!safeId(userId) || exp.ownerId !== userId) throw new Error('experience owner mismatch');
-  return evaluateAssetRuntimeEligibility(experienceRuntimeCandidate(exp), context);
+  const candidate = experienceRuntimeCandidate(exp);
+  // Experience `general` means usable across task categories. The shared gate
+  // models cross-scope use explicitly; adapt this domain wildcard to the
+  // current destination so workspace, Agent, status, and condition checks stay
+  // in the same gate without inventing a persisted confirmation timestamp.
+  if (candidate.scope === 'general' && context.scope) candidate.scope = context.scope;
+  return evaluateAssetRuntimeEligibility(candidate, context);
 }

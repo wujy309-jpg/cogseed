@@ -38,6 +38,8 @@ export interface InjectionReceipt extends RecallJsonRecord {
     score: number;
     factors: Array<{ name: 'relevance' | 'adoption' | 'scene' | 'maturity'; raw: number; weight: number; contribution: number }>;
     excluded: Array<'relevance' | 'adoption' | 'scene' | 'maturity'>;
+    /** 场景缺席原因的无标识类别；不记录项目/空间 id。 */
+    sceneExcludedReason?: 'no_scene_context' | 'no_matching_association';
     weightsSource?: 'configured' | 'default' | 'invalid-fallback';
   };
   createdAt: string;
@@ -63,6 +65,10 @@ function isValidRanking(value: unknown): value is NonNullable<InjectionReceipt['
     && typeof factor.contribution === 'number' && Number.isFinite(factor.contribution)
   ))) return false;
   if (!Array.isArray(ranking.excluded) || !ranking.excluded.every((name) => RANKING_FACTORS.has(name))) return false;
+  if (ranking.sceneExcludedReason !== undefined && (
+    !['no_scene_context', 'no_matching_association'].includes(ranking.sceneExcludedReason)
+    || !ranking.excluded.includes('scene')
+  )) return false;
   if (ranking.weightsSource !== undefined && !RANKING_WEIGHTS_SOURCES.has(ranking.weightsSource)) return false;
   return true;
 }

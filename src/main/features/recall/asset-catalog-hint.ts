@@ -2,6 +2,12 @@ import { createLogger } from '../../logger';
 import { logErrorRef, maskId } from '../../util/log-redact';
 import { rankAssets, type RankedAsset, type RankingSceneContext, type RankingWeights } from './asset-ranking';
 import {
+  evaluateRecallAssetAgentReadEligibility,
+  filterRecallAssetsForAgentRead,
+  recallAssetAgentReadBlockReasons,
+  type RecallAgentReadContext,
+} from './prompt-injection';
+import {
   catalogRelevanceScores,
   formatCatalogEntries,
   loadAssetAdoptionStatsCached,
@@ -23,24 +29,14 @@ const log = createLogger('recall.catalog-hint');
  * 成本（小库）：8 条 ≈ 1KB，相对注入块 14,000 字上限可忽略；比"多一次工具往返"
  * 更便宜，也更可能真的被用上。库大了就退回一行提示 + 工具，避免提示词被目录撑爆。
  *
- * 缓存：目录文本与条数按用户 60 秒 TTL——内容变化不需要秒级反映，而每回合重扫
- * 资产目录 + 使用流水是纯浪费。
+ * 目录正文按当前回合上下文重新准入；不能复用缓存文本，否则来源撤权或作用域
+ * 改变后，过期目录仍可能把资产摘要交给模型。
  */
-const CACHE_TTL_MS = 60_000;
 /** 常驻提示词的目录上限：超过就只给一行提示（30 × ~110 字符 ≈ 3.3KB）。 */
 export const INLINE_CATALOG_MAX_ENTRIES = 30;
 
-interface CatalogPromptCache {
-  userId: string;
-  cid: string;
-  at: number;
-  count: number;
-  text: string;
-}
-let cache: CatalogPromptCache | null = null;
-
 /** 当轮 ranked 视图（specs/012 T019）：buildCatalogPrompt 里 rankAssets 的
- *  那一份拆解，按目录缓存的**同键**（userId + cid）记住最近一次构建——
+ *  那一份拆解，按目录构建的**同键**（userId + cid）记住最近一次构建——
  *  注入回执写侧（bus.ts 的 projection 通道 / recall-tools 的 agent_read
  *  通道）从这里查当轮拆解，**不在写侧重算**（排序唯一处 II2 的自然推论：
  *  解释也只出自那一次构建，两处同序才可对账）。会话归属对不上（没建过
@@ -54,7 +50,6 @@ interface CatalogRankedView {
 let lastRanked: CatalogRankedView | null = null;
 
 export function resetAssetCatalogHintCacheForTest(): void {
-  cache = null;
   lastRanked = null;
 }
 
@@ -71,7 +66,20 @@ export function lastCatalogRankedForTurn(userId: string, cid: string): ReadonlyM
  * 让宿主偷偷继承（会在无关会话里冒出你没要的资产），不如把"上次挂过这些"说给
  * 模型听，由它决定要不要再挂一次（挂上你依然会看到卡、随时可撤销）。
  */
-async function recentAttachmentLine(userId: string, cid: string): Promise<string> {
+function agentReadContext(taskText: string, scene?: RankingSceneContext, agentId?: string): RecallAgentReadContext {
+  return {
+    ...(agentId ? { agentId } : {}),
+    ...(scene?.turnProjectId ? { projectId: scene.turnProjectId } : {}),
+    ...(scene?.turnSpaceId ? { workspaceId: scene.turnSpaceId } : {}),
+    ...(taskText ? { taskText } : {}),
+  };
+}
+
+async function recentAttachmentLine(
+  userId: string,
+  cid: string,
+  context: RecallAgentReadContext,
+): Promise<string> {
   if (!cid) return '';
   try {
     const { listContextProjections } = await import('./context-projection');
@@ -86,7 +94,10 @@ async function recentAttachmentLine(userId: string, cid: string): Promise<string
       try {
         const { readAbilityAsset } = await import('./asset-service');
         const asset = await readAbilityAsset(userId, assetId);
-        if (asset) titles.push(String(asset.title || assetId).slice(0, 24));
+        if (!asset) continue;
+        const eligibility = await evaluateRecallAssetAgentReadEligibility(userId, asset, context);
+        if (recallAssetAgentReadBlockReasons(eligibility).length) continue;
+        titles.push(String(asset.title || assetId).slice(0, 24));
       } catch {
         // 读不到就跳过（只影响提示文案）。
       }
@@ -129,10 +140,15 @@ async function buildCatalogPrompt(
   cid: string,
   taskText = '',
   scene?: RankingSceneContext,
+  agentId?: string,
 ): Promise<{ count: number; text: string; relevantIds: Set<string> }> {
   const { listAbilityAssets } = await import('./asset-service');
   const assets = await listAbilityAssets(userId);
-  const active = assets.filter((asset) => asset.status === 'active');
+  const active = await filterRecallAssetsForAgentRead(
+    userId,
+    assets.filter((asset) => asset.status === 'active'),
+    agentReadContext(taskText, scene, agentId),
+  );
   if (!active.length) return { count: 0, text: '', relevantIds: new Set<string>() };
   let stats = new Map<string, AssetUsageStat>();
   try {
@@ -195,14 +211,19 @@ async function buildCatalogPrompt(
   };
 }
 
-/** 目录文本（带 60 秒 TTL 缓存）；读不到或没有资产时返回空串。
- *  taskText 非空时按当轮相关度排序＋★标记，**不落缓存**（任务文本每轮变，
- *  缓存住相关排序等于把上一轮的判断塞给下一轮）。
- *  scene（T017）＝会话的项目/空间归属：会话级冻结（项目成员在会话创建时定死，
- *  与缓存键 cid 一一对应），所以进 60 秒缓存是安全的；两者都缺省时该因子
- *  整体缺席（≠0 分，排序行为接近现状）。 */
-export async function assetCatalogForPrompt(userId: string, cid = '', now = Date.now(), taskText = '', scene?: RankingSceneContext): Promise<string> {
-  return (await assetCatalogForPromptWithRelevance(userId, cid, now, taskText, scene)).text;
+/** 目录文本读不到或没有当前可用资产时返回空串。
+ *  taskText 非空时按当轮相关度排序＋★标记；所有调用都重新做准入，避免复用
+ *  来源撤权或作用域变化前生成的目录文本。
+ *  scene（T017）＝会话的项目/空间归属；两者都缺省时该因子整体缺席（≠0 分）。 */
+export async function assetCatalogForPrompt(
+  userId: string,
+  cid = '',
+  now = Date.now(),
+  taskText = '',
+  scene?: RankingSceneContext,
+  agentId?: string,
+): Promise<string> {
+  return (await assetCatalogForPromptWithRelevance(userId, cid, now, taskText, scene, agentId)).text;
 }
 
 /** 带当轮★集合的目录构建（2026-09-19 漏取审计）：text 同上，relevantIds 供
@@ -210,15 +231,15 @@ export async function assetCatalogForPrompt(userId: string, cid = '', now = Date
  *  相关排序）。 */
 export async function assetCatalogForPromptWithRelevance(
   userId: string, cid = '', now = Date.now(), taskText = '', scene?: RankingSceneContext,
+  agentId?: string,
 ): Promise<{ text: string; relevantIds: Set<string> }> {
-  if (!taskText && cache && cache.userId === userId && cache.cid === cid && now - cache.at < CACHE_TTL_MS) {
-    return { text: cache.text, relevantIds: new Set<string>() };
-  }
+  const context = agentReadContext(taskText, scene, agentId);
+  // 保留 now 参数供历史调用方使用；授权敏感正文每次都重新列举、准入和格式化。
+  void now;
   try {
-    const built = await buildCatalogPrompt(userId, cid, taskText, scene);
-    const reuse = await recentAttachmentLine(userId, cid);
+    const built = await buildCatalogPrompt(userId, cid, taskText, scene, agentId);
+    const reuse = await recentAttachmentLine(userId, cid, context);
     const text = [built.text, reuse].filter(Boolean).join('\n\n');
-    if (!taskText) cache = { userId, cid, at: now, count: built.count, text };
     return { text, relevantIds: taskText ? built.relevantIds : new Set<string>() };
   } catch (error) {
     // 读不到就什么都不加（而不是加一句"0 条"——那会让模型以为用户没有资产）。

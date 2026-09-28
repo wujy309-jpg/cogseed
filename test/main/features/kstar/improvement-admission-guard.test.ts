@@ -427,9 +427,10 @@ describe('T046 ③ 不存在第二处版本比对', () => {
   const versionCompareAllowlist: Array<{ file: string; currentVersionHits: number; why: string }> = [
     {
       file: F.assetService,
-      currentVersionHits: 2,
+      currentVersionHits: 3,
       why: '资产版本链唯一 owner：① `updateAbilityAsset` 锁内 `expectedVersion` 重检（**唯一处**，specs/015 D9）；'
-        + '② `rollbackAbilityAsset` 的「已经在目标版」no-op 判定 `current.version === toVersion`（版本链内部操作，不对外做重检）。',
+        + '② `rollbackAbilityAsset` 的「已经在目标版」no-op 判定 `current.version === toVersion`（版本链内部操作，不对外做重检）；'
+        + '③ `setStatus` 锁内 `expectedVersion` 并发保护只约束暂停/恢复等状态操作，不重复准入重检。',
     },
   ];
 
@@ -476,13 +477,12 @@ describe('T046 ③ 不存在第二处版本比对', () => {
         .toBe(entry.currentVersionHits);
     }
 
-    // 「期望版本 vs 非 undefined/非类型字面量」的比较：有且只有锁内那一处。
+    // 内容更新准入与状态变更并发保护各有一处，二者都在 asset-service 的写锁内。
     const expectationHits = expectationCompareHits();
-    expect(expectationHits, `期望版本参与的比较必须只有一处（锁内重检）：\n${hitSummary(expectationHits)}`)
-      .toHaveLength(1);
-    expect(expectationHits[0].file).toBe(F.assetService);
-    expect(expectationHits[0].text, '这一处必须是「当前版 !== 期望版」的锁内判定本身')
-      .toContain('current.version !== input.expectedVersion');
+    expect(expectationHits, `期望版本比较只允许在资产服务内的内容更新和状态变更：\n${hitSummary(expectationHits)}`)
+      .toHaveLength(2);
+    expect(expectationHits.every((hit) => hit.file === F.assetService)).toBe(true);
+    expect(expectationHits.every((hit) => hit.text.includes('current.version !== input.expectedVersion'))).toBe(true);
   });
 
   it('唯一那处判定在 updateAbilityAsset 的锁内（检查与写入同一把锁）', () => {
@@ -494,6 +494,13 @@ describe('T046 ③ 不存在第二处版本比对', () => {
     expect(lockAt, 'updateAbilityAsset 必须走资产写锁').toBeGreaterThan(-1);
     expect(checkAt, '版本判定必须落在写锁回调**内部**（先锁后比，不存在比对与写入之间的窗口）')
       .toBeGreaterThan(lockAt);
+
+    const statusBody = sliceFunctionBody(code, 'setStatus');
+    expect(statusBody, '状态变更的乐观并发保护必须留在 setStatus 内').toContain('current.version !== input.expectedVersion');
+    const statusLockAt = statusBody.indexOf("updateRecallJsonRecord(userId, 'ability-assets', assetId,");
+    const statusCheckAt = statusBody.indexOf('current.version !== input.expectedVersion');
+    expect(statusLockAt, 'setStatus 必须走资产写锁').toBeGreaterThan(-1);
+    expect(statusCheckAt, '状态版本判定必须发生在写锁回调内部').toBeGreaterThan(statusLockAt);
 
     // 候选路径与审批路径只把基线交给这一个地方，自己不写第二处比对。
     const allExpectationHits = expectationCompareHits();
@@ -516,12 +523,16 @@ describe('T046 ④ tool-catalog 未新增 recall 组工具', () => {
    * 2026-09-25 +2：specs/016 T024 的 list_task_experiences / read_task_experience
    * （2 读 0 写、⊄只读白名单，另有 experience-tools.test.ts 钉行为）——Backlog
    * Epic 8 规格内的合法扩张，非口径漂移。
+   * 2026-09-28 +1：list_ontology_graph（本体图谱只读工具）——09-27 本体切片
+   * 已在工厂（personal-ontology-tools）与 catalog 双侧注册、行为测试在
+   * personal-ontology-tools.test.ts，本基线随树重算补登记。
    */
   const RECALL_GROUP_BASELINE = [
     'personal_ontology_fields',
     'search_ability_assets',
     'list_task_experiences',
     'read_task_experience',
+    'list_ontology_graph',
     'list_ability_assets',
     'read_ability_asset',
     'list_asset_change_proposals',

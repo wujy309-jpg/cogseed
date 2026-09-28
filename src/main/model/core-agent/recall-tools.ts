@@ -21,7 +21,12 @@ import { createLogger } from '../../logger';
 import * as kbEmbed from '../../features/kb_embed';
 import { cosineScore } from '../../features/recall/similarity';
 import { listAbilityAssets, readAbilityAsset } from '../../features/recall/asset-service';
-import { evaluateRecallAssetRuntimeEligibility } from '../../features/recall/prompt-injection';
+import {
+  evaluateRecallAssetAgentReadEligibility,
+  filterRecallAssetsForAgentRead,
+  recallAssetAgentReadBlockReasons,
+  type RecallAgentReadContext,
+} from '../../features/recall/prompt-injection';
 import { recordInjectionReceipt, listInjectionReceipts } from '../../features/recall/injection-receipt';
 import { recordRecallUsage, listRecallUsage } from '../../features/recall/usage-service';
 import { loadOntologyAssets } from '../../features/recall/projection-knowledge';
@@ -38,11 +43,13 @@ const log = createLogger('recall-tools');
 
 export interface RecallToolsOpts {
   userId: string;
+  /** 当前目标 Agent；用于资产 scopePolicy.agentIds 准入判断。 */
+  agentId?: string;
   /** 当前回合 id：写 agent_read 注入回执/使用流水用；缺省时只读不记账。 */
   turnId?: string;
   /** Conversation id（预留：回执/流水定位用）。 */
   cid?: string;
-  /** 空间 id：作为运行时准入的作用域上下文。 */
+  /** 当前会话空间；作为 runtime scopePolicy.workspaceIds 上下文。 */
   spaceId?: string;
   /** 会话的项目归属（specs/012 T018）：目录模式 scene 因子用（与提示词常驻
    *  目录同序的前提：同一份场景输入）；缺省时该维度不参与。 */
@@ -59,7 +66,7 @@ const READ_STATEMENT_LIMIT = 2_000;
 const CATALOG_PAGE_DEFAULT = 30;
 const CATALOG_PAGE_MAX = 50;
 
-/** 检索池条目：正式资产 or 画像记忆（onto-*，未确认、无投影授权）。 */
+/** 检索池条目：正式资产 or legacy profile memory（onto-*，无投影授权）。 */
 interface PoolEntry {
   title: string;
   statement: string;
@@ -90,7 +97,7 @@ function formatAsset(asset: PoolEntry, score: number): string {
     `成熟度:${asset.maturity || '?'}`,
     // 画像条目显式标注来源与等级：LLM 必须能区分「已沉淀的资产」与
     // 「背景记忆」，否则会把记忆当成经过验证的经验来引用。
-    ...(asset.profileSource ? [`来源:画像记忆(${asset.profileSource})，未经确认，仅供参考`] : []),
+    ...(asset.profileSource ? [`来源:遗留画像记忆(${asset.profileSource})，仅供参考`] : []),
   ].join(' | ');
   return [
     `[asset:${asset.id}] ${asset.title || '(无标题)'} (相关度 ${score.toFixed(2)})`,
@@ -117,6 +124,17 @@ function blockReasonText(reasons: readonly string[]): string {
   return labels.length ? labels.join('；') : '当前上下文不可使用';
 }
 
+/** 正文读取和语义检索必须用同一份运行时上下文，避免入口各自漏传边界字段。
+ *  `spaceId` 是目的地 workspace，不是资产内容用途 `scope`。 */
+function agentReadRuntimeContext(opts: RecallToolsOpts): RecallAgentReadContext {
+  return {
+    ...(opts.agentId ? { agentId: opts.agentId } : {}),
+    ...(opts.projectId ? { projectId: opts.projectId } : {}),
+    ...(opts.spaceId ? { workspaceId: opts.spaceId } : {}),
+    ...(opts.taskText ? { taskText: opts.taskText } : {}),
+  };
+}
+
 /** 正文模式的一条（含版本与范围，便于模型判断适用性）。 */
 function formatReadEntry(asset: RecallAbilityAssetRecord, version: string): string {
   const meta = [
@@ -139,9 +157,18 @@ function formatReadEntry(asset: RecallAbilityAssetRecord, version: string): stri
 
 /** 画像记忆 → 检索池条目（不参与 status/spaceId 过滤——没有这些治理态）。
  *  2026-09-22 起画像来源为资产库（loadOntologyAssets 已 async）。 */
-async function profilePoolEntries(userId: string): Promise<PoolEntry[]> {
+async function profilePoolEntries(
+  userId: string,
+  context: RecallAgentReadContext,
+  assets: RecallAbilityAssetRecord[],
+): Promise<PoolEntry[]> {
   try {
-    return (await loadOntologyAssets(userId)).map((asset) => ({
+    const personalAssets = assets.filter((asset) => asset.type === 'personal');
+    const readablePersonalAssets = await filterRecallAssetsForAgentRead(userId, personalAssets, context);
+    const formalStatements = new Set(readablePersonalAssets.map((asset) => asset.statement.trim()));
+    return (await loadOntologyAssets(userId, {
+      allowedPersonalAssetIds: new Set(readablePersonalAssets.map((asset) => asset.id)),
+    })).map((asset) => ({
       id: asset.id,
       title: asset.title,
       statement: asset.statement,
@@ -149,7 +176,7 @@ async function profilePoolEntries(userId: string): Promise<PoolEntry[]> {
       type: asset.type,
       maturity: asset.maturity,
       profileSource: asset.evidenceRefs[0]?.id || 'memory',
-    }));
+    })).filter((asset) => !formalStatements.has(asset.statement.trim()));
   } catch {
     // memory 文件缺失/损坏不阻断检索——资产池照常可搜。
     return [];
@@ -281,13 +308,14 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts): AgentTool {
     if (typeFilter) pool = pool.filter((asset) => asset.type === typeFilter);
     if (scopeFilter) pool = pool.filter((asset) => asset.scope === scopeFilter);
     if (spaceIdFilter) pool = pool.filter((asset) => asset.spaceId === spaceIdFilter);
+    pool = await filterRecallAssetsForAgentRead(userId, pool, agentReadRuntimeContext(opts));
     const filterNote = [
       typeFilter ? `type=${typeFilter}` : '',
       scopeFilter ? `scope=${scopeFilter}` : '',
       spaceIdFilter ? `spaceId=${spaceIdFilter}` : '',
     ].filter(Boolean).join('，');
     if (!pool.length) {
-      return `认知资产目录为空（共 0 条${filterNote ? `；过滤条件：${filterNote}` : ''}）。`;
+      return `当前条件下没有可用于本任务的认知资产（可能没有在用资产、筛选未命中，或当前任务不满足使用规则${filterNote ? `；过滤条件：${filterNote}` : ''}）。`;
     }
     // 过滤（准入/筛选）先于排序、排序先于分页（T018）：过滤后的集合整段按同一
     // 推荐分排（只排不裁——顺序变化，条目一条不少），再切页。
@@ -301,7 +329,7 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts): AgentTool {
     const stats = await loadAssetUsageStatsCached(userId);
     const more = pool.length - (offset + page.length);
     return [
-      `认知资产目录（在用 ${pool.length} 条${filterNote ? `，过滤：${filterNote}` : ''}；本页 ${offset + 1}-${offset + page.length} 条）：`,
+      `认知资产目录（当前可用 ${pool.length} 条${filterNote ? `，过滤：${filterNote}` : ''}；本页 ${offset + 1}-${offset + page.length} 条）：`,
       '',
       ...formatCatalogEntries(page, stats, offset + 1),
       '',
@@ -332,20 +360,24 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts): AgentTool {
       // 与注入/派单同一道运行时准入门；这里采用"适合度为准"的静默语义
       // （成熟度不进闸、靠返回的元信息标注诚实性），否则目录里能看到的
       // 未验证资产一取就被拒，目录本身就失真了。
-      const eligibility = await evaluateRecallAssetRuntimeEligibility(userId, asset, {
-        ...(opts.spaceId ? { scope: opts.spaceId } : {}),
-        ...(opts.taskText ? { taskText: opts.taskText } : {}),
-        purpose: 'agent_read',
-        silentDefaultInjection: true,
-      });
+      let eligibility: Awaited<ReturnType<typeof evaluateRecallAssetAgentReadEligibility>>;
+      try {
+        eligibility = await evaluateRecallAssetAgentReadEligibility(userId, asset, agentReadRuntimeContext(opts));
+      } catch (err) {
+        log.warn('asset runtime eligibility failed during id read', {
+          userId: maskId(userId), assetId: maskId(asset.id), error: logErrorRef(err as Error),
+        });
+        blocks.push(`- [asset:${id}] 当前不可使用（准入检查暂不可用）`);
+        continue;
+      }
       // 读取路径不拿"适用场景不符"当拒绝理由（2026-09-18 真机修正）：
       // applicableWhen 是软提示，模型在目录里看过它、已自行判断适用性——按
       // 用户消息做词面匹配来否掉模型的明确选择，会把这个功能废掉（真机实测：
       // 模型按目录取正文被拦）。硬闸照旧：状态 / 来源可用 / scopePolicy /
-      // 禁用场景 / 敏感度 / targetAgents。
-      const reasons = eligibility.reasons.filter((reason) => reason !== 'not_applicable_context');
+      // 禁用场景 / 敏感度 / Agent 与项目/空间白名单。
+      const reasons = recallAssetAgentReadBlockReasons(eligibility);
       if (reasons.length) {
-        blocks.push(`- [asset:${id}] ${asset.title || '(无标题)'}：当前不可使用（${blockReasonText(reasons)}）`);
+        blocks.push(`- [asset:${id}] 当前不可使用（${blockReasonText(reasons)}）`);
         continue;
       }
       const version = String(asset.activeVersion || asset.version || '1');
@@ -379,27 +411,31 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts): AgentTool {
       log.warn('search_ability_assets list failed', { userId: maskId(userId), error: logErrorRef(err as Error) });
       return { content: 'search_ability_assets: 读取认知资产失败', isError: true };
     }
-    // 池 = active 正式资产 + 画像记忆（onto-*，不落治理态：不受 status
-    // 过滤、无 spaceId）。画像参与语义排序与 scope 匹配，检索结果里
-    // 显式标注来源，防 LLM 把记忆当经验引用。
-    let pool: PoolEntry[] = assets
-      .filter((asset) => asset.status === 'active')
-      .map((asset) => ({
-        id: asset.id,
-        title: asset.title,
-        statement: asset.statement,
-        scope: asset.scope,
-        type: asset.type,
-        maturity: asset.maturity,
-        version: String(asset.activeVersion || asset.version || '1'),
-        ...(asset.spaceId ? { spaceId: asset.spaceId } : {}),
-      }));
-    const profileEntries = await profilePoolEntries(userId);
+    // 正式资产先过与按 ID 读取相同的运行时准入门，再交给 embedding 排序。
+    // 画像记忆是独立的背景记忆通道，保留既有显式标注语义。
+    const filteredAssets = assets.filter((asset) => (
+      asset.status === 'active'
+      && (!scopeFilter || asset.scope === scopeFilter)
+      && (!spaceIdFilter || asset.spaceId === spaceIdFilter)
+    ));
+    const eligibleFormalAssets = await filterRecallAssetsForAgentRead(userId, filteredAssets, agentReadRuntimeContext(opts));
+    const eligibleFormalPool: PoolEntry[] = eligibleFormalAssets.map((asset) => ({
+      id: asset.id,
+      title: asset.title,
+      statement: asset.statement,
+      scope: asset.scope,
+      type: asset.type,
+      maturity: asset.maturity,
+      version: String(asset.activeVersion || asset.version || '1'),
+      ...(asset.spaceId ? { spaceId: asset.spaceId } : {}),
+    }));
+    let pool: PoolEntry[] = eligibleFormalPool;
+    const profileEntries = await profilePoolEntries(userId, agentReadRuntimeContext(opts), assets);
     if (!spaceIdFilter) pool = [...pool, ...profileEntries];
     if (scopeFilter) pool = pool.filter((asset) => asset.scope === scopeFilter);
     if (spaceIdFilter) pool = pool.filter((asset) => asset.spaceId === spaceIdFilter);
     if (!pool.length) {
-      return { content: `认知资产池共 0 条（active 池为空或被过滤条件筛空${profileEntries.length ? `；另有画像记忆 ${profileEntries.length} 条被过滤条件排除` : ''}）`, isError: false };
+      return { content: `当前条件下没有可用于语义检索的认知资产（可能没有在用资产、筛选未命中，或当前任务不满足使用规则${profileEntries.length ? `；另有画像记忆 ${profileEntries.length} 条被过滤条件排除` : ''}）`, isError: false };
     }
 
     let ranked: Array<{ asset: PoolEntry; score: number }>;
@@ -425,7 +461,7 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts): AgentTool {
       .map((item) => ({ assetId: item.asset.id, assetVersion: String(item.asset.version) })));
     return {
       content: [
-        `认知资产池共 ${pool.length} 条（active 资产 ${pool.length - profileInPool}${profileInPool ? ` + 画像记忆 ${profileInPool}` : ''}${scopeFilter ? `，scope=${scopeFilter}` : ''}${spaceIdFilter ? `，spaceId=${spaceIdFilter}` : ''}），返回最相关的 ${top.length} 条：`,
+        `语义检索候选共 ${pool.length} 条（当前可用正式资产 ${pool.length - profileInPool}${profileInPool ? ` + 独立画像记忆 ${profileInPool}` : ''}${scopeFilter ? `，scope=${scopeFilter}` : ''}${spaceIdFilter ? `，spaceId=${spaceIdFilter}` : ''}），返回最相关的 ${top.length} 条：`,
         '',
         ...top.map((item, index) => `${index + 1}. ${formatAsset(item.asset, item.score)}`),
         '',
@@ -443,9 +479,10 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts): AgentTool {
     description: [
       '用户的认知资产目录：本 App 里沉淀下来的规则、模板、方法、偏好——用户自己的经验，不是通用知识。',
       '**任务一开始就先看一眼目录（不带任何参数调一次）**：里面常常有正好适用的模板或教训，照着它做比从零想更快，也更符合这位用户的既定习惯；目录很便宜（每条一行），不必省这一步。',
+      '目录摘要、语义检索和按 ID 取正文都会按当前 Agent、项目、空间、来源状态与使用规则做同一套准入检查；不可用于当前任务的正式资产不会出现在目录或检索结果中。',
       '三种用法：①不带参数 = 全量目录（一行一条，可带 type/scope/spaceId 过滤、offset 翻页）；',
       '②assetIds = 取某几条的完整正文（最多 6 条/次）——看到目录里有合适的，取正文再动手；',
-      '③query = 语义检索（覆盖所有空间资产 + 用户画像记忆，画像条目会标注"未经确认、仅供参考"）。',
+      '③query = 语义检索（覆盖当前可用正式资产 + 遗留用户画像记忆；遗留记忆会标注来源并仅供参考）。',
       '目录很长或翻页找不动时，直接带 query 语义检索（比翻页快），命中再取正文。',
       '如果这次任务确实要长期用到某几条，用 attach_assets_to_task 把它们挂到本任务上（用户会看到一张可撤销的卡）。',
       '引用格式 [asset:<id>]，例如 [asset:aa-xxx]。',

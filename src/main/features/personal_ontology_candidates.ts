@@ -22,6 +22,7 @@ import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import { userLocalRoot, userOntologyGroupsDir } from '../paths';
 import { writeTextAtomicSync, safeId, nowIso, readJsonSync } from '../storage';
+import { notifyCognitionWrite } from './recall/store-events';
 import { addEntry as addMemoryEntry, addRoleTemplateMemoryEntry } from './memory';
 import { listGroups } from './personal_ontology_groups';
 import { routeCandidateToField } from './personal_ontology_router';
@@ -378,6 +379,7 @@ function readCandidates(uid: string): CandidateUpdate[] {
 
 function writeCandidates(uid: string, candidates: CandidateUpdate[]): void {
   writeTextAtomicSync(candidatesMdPath(uid), serializeCandidatesMarkdown(candidates));
+  notifyCognitionWrite(uid, 'ontology-candidates', 'update');
 }
 
 function readBlockedItems(uid: string): BlockedItem[] {

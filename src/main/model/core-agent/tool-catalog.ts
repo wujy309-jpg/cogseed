@@ -132,6 +132,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
 
   // Recall ability assets
   { name: 'personal_ontology_fields', group: 'recall', summary: 'List the fillable fields of the user\'s installed role templates (个人本体挖空表单), so a candidate can be routed to a concrete field by opaque field_ref.' },
+  { name: 'list_ontology_graph', group: 'recall', summary: 'Read saved ontology categories, entities, properties, source references, and explicit relations; supports domain and keyword filters.' },
   { name: 'search_ability_assets', group: 'recall', summary: 'Semantic search over the user\'s ability asset pool (沉淀的可复用经验/规则/模板/方法；全量只读，含所有空间与全局资产).' },
 
   // 任务经验（specs/016 T024 / US-802）：与资产**完全隔离**的第二套集合（exp- 前缀）。

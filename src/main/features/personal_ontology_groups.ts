@@ -36,6 +36,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { userOntologyGroupsDir } from '../paths';
 import { writeTextAtomicSync, safeId, nowIso, genId12 } from '../storage';
+import { notifyCognitionWrite } from './recall/store-events';
 import { ENTRY_SEPARATOR } from './memory';
 import { getRoleTemplate, type PresetGroup } from './role_templates';
 import * as search from './search';
@@ -99,6 +100,8 @@ export interface GroupContentResult {
 export interface FieldValue {
   value: string;
   source: string;
+  /** 可选：由正式认知资产投影的值。仅用于运行时回查当前资产与授权；不作为独立事实。 */
+  recallAssetId?: string;
   /** 可选：来源项目 id（落盘 `@proj:<pid>`，展示层映射项目名）。缺省 = 全局/手动。 */
   project?: string;
   /** 可选：信息截至年月（落盘 `@asof:YYYY-MM`）。缺省 = 未标注（不参与时效判断）。 */
@@ -230,11 +233,11 @@ export function splitFlowEntries(text: string): string[] {
  *  无 `[来源]` 后缀的裸值行也解析（来源默认 `手动`，任务书 §2.1）。
  *  `@proj:` 前缀剥离存 pid；`asof:` 前缀合法年月存 asOf、写错忽略（笔误的
  *  时间不该落进 project 冒充项目 id）；其他形态宽容保留原样（原行为）。 */
-export function parseFieldValueLine(line: string): { value: string; source: string; project?: string; asOf?: string; verified?: boolean | 'independent'; ruleKind?: 'operation' | 'preference' | 'constraint'; sensitivity?: 'restricted' } | null {
+export function parseFieldValueLine(line: string): { value: string; source: string; project?: string; asOf?: string; verified?: boolean | 'independent'; ruleKind?: 'operation' | 'preference' | 'constraint'; sensitivity?: 'restricted'; recallAssetId?: string } | null {
   if (typeof line !== 'string') return null;
   const withSource = line.match(/^- (.+) \[(\S+)\]((?: @\S+)*)$/);
   if (withSource) {
-    const out: { value: string; source: string; project?: string; asOf?: string; verified?: boolean | 'independent'; ruleKind?: 'operation' | 'preference' | 'constraint'; sensitivity?: 'restricted' } = {
+    const out: { value: string; source: string; project?: string; asOf?: string; verified?: boolean | 'independent'; ruleKind?: 'operation' | 'preference' | 'constraint'; sensitivity?: 'restricted'; recallAssetId?: string } = {
       value: withSource[1].replace(/\\\[/g, '['),
       source: withSource[2],
     };
@@ -249,6 +252,9 @@ export function parseFieldValueLine(line: string): { value: string; source: stri
         out.project = marker.slice('proj:'.length);
       } else if (marker.startsWith('asof:')) {
         if (ASOF_MARKER_RE.test(marker)) out.asOf = marker.slice('asof:'.length);
+      } else if (marker.startsWith('asset:')) {
+        const assetId = marker.slice('asset:'.length);
+        if (/^[A-Za-z0-9_-]{1,128}$/.test(assetId)) out.recallAssetId = assetId;
       } else if (marker === 'kind:operation' || marker === 'kind:preference' || marker === 'kind:constraint') {
         out.ruleKind = marker.slice('kind:'.length) as 'operation' | 'preference' | 'constraint';
       } else if (marker === 'restricted') {
@@ -275,6 +281,7 @@ export function serializeFieldValueLine(fv: FieldValue): string {
   else if (fv.verified) withVerified = `${withVerified} @verified`;
   if (fv.ruleKind) withVerified = `${withVerified} @kind:${fv.ruleKind}`;
   if (fv.sensitivity === 'restricted') withVerified = `${withVerified} @restricted`;
+  if (fv.recallAssetId && /^[A-Za-z0-9_-]{1,128}$/.test(fv.recallAssetId)) withVerified = `${withVerified} @asset:${fv.recallAssetId}`;
   return withVerified;
 }
 
@@ -447,6 +454,7 @@ export { readGroups };
 
 function writeGroups(uid: string, groups: GroupMeta[]): void {
   writeTextAtomicSync(groupsMdPath(uid), serializeGroupsMarkdown(groups));
+  notifyCognitionWrite(uid, 'ontology-groups', 'update');
 }
 
 export { writeGroups };
@@ -806,6 +814,10 @@ async function mutateGroupContent(
   const groups = readGroups(uid);
   const idx = groups.findIndex((g) => g.group_id === groupId);
   if (idx === -1) return { ok: false, error: 'group not found' };
+  // Role templates use the section-aware template-file service. Sending a bare
+  // group id through ordinary group mutations would parse and rewrite the
+  // template Markdown as if it were a free-form group.
+  if (groups[idx].template_id) return { ok: false, error: 'template_section_required' };
 
   let abs: string;
   try { abs = resolveGroupFileAbsPathFromMeta(uid, groups[idx]); }
@@ -962,6 +974,13 @@ export async function writeGroupContent(uid: string, groupId: string, content: s
   if (idx === -1) return { ok: false, error: 'group not found' };
 
   const body = typeof content === 'string' ? content : '';
+  if (groups[idx].template_id) {
+    // The template editor's raw view shares the legacy groups.write IPC channel.
+    // Route its full-file save to the template parser/lock, which preserves the
+    // template schema and formal-asset projection ownership markers.
+    const templateFiles = await import('./personal_ontology_template_files');
+    return templateFiles.writeTemplateFileContent(uid, groupId, body);
+  }
   const bytes = Buffer.byteLength(body, 'utf8');
   if (bytes > MAX_FILE_BYTES) {
     return { ok: false, error: `file exceeds ${Math.round(MAX_FILE_BYTES / 1024 / 1024)}MB limit` };

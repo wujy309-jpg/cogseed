@@ -43,11 +43,14 @@ import {
 import { busAssetApprovalCardPort, postAssetChangeApprovalCard } from '../../features/recall/asset-approval-card';
 import { safeId } from '../../storage';
 import { logErrorRef, maskId } from '../../util/log-redact';
+import { classifyMemoryReplaceIntent } from '../../features/recall/memory-save-intent';
 
 const log = createLogger('asset-steward-tools');
 
 export interface AssetStewardToolsOpts {
   userId: string;
+  agentId?: string;
+  projectId?: string;
   /** 当前回合 id：Phase 5 的危险操作确认与台账定位用。 */
   turnId?: string;
   /** Conversation id：危险操作的单次确认要送回这条会话。 */
@@ -56,6 +59,8 @@ export interface AssetStewardToolsOpts {
   spaceId?: string;
   /** 当前用户消息文本：适用/禁用场景匹配用。 */
   taskText?: string;
+  /** 只有当前可见来源行确实由用户发出时，才能把原话当作直写授权。 */
+  sourceMessageFromUser?: boolean;
 }
 
 /** 列表分页默认与上限，对齐既有目录工具量级（一页 30、最多 50）。 */
@@ -133,9 +138,11 @@ async function runtimeBlockReasons(
   asset: RecallAbilityAssetRecord,
 ): Promise<string[]> {
   const eligibility = await evaluateRecallAssetRuntimeEligibility(opts.userId, asset, {
-    ...(opts.spaceId ? { scope: opts.spaceId } : {}),
+    ...(opts.agentId ? { agentId: opts.agentId } : {}),
+    ...(opts.projectId ? { projectId: opts.projectId } : {}),
+    ...(opts.spaceId ? { workspaceId: opts.spaceId } : {}),
     ...(opts.taskText ? { taskText: opts.taskText } : {}),
-    purpose: 'agent_read',
+    ...(opts.taskText ? { purpose: opts.taskText } : {}),
     silentDefaultInjection: true,
   });
   return eligibility.reasons.filter((reason) => reason !== 'not_applicable_context');
@@ -847,7 +854,8 @@ async function proposeSubstantialChange(
     payload: Record<string, unknown>;
     fields: readonly string[];
     reason: string;
-    originDeclared: boolean;
+    claimedUserInstruction: boolean;
+    userInstructionVerified: boolean;
   },
 ): Promise<{ content: string; isError?: boolean }> {
   const { asset, assetId, payload, fields, reason } = params;
@@ -875,9 +883,9 @@ async function proposeSubstantialChange(
     `[asset:${assetId}] ${asset.title || '(无标题)'}：这次改动涉及实质内容（${fields.join(' / ')}），我没有直接生效。`,
     '原因：正文/适用范围/敏感级变了，意味着这条资产主张的内容、或者它以后会进出哪一批任务变了，必须由用户确认。',
   ];
-  const originHint = params.originDeclared
-    ? ''
-    : '（你没有声明 origin，按更保守的"AI 自主"处理；如果这是用户明确要求的，带上 origin=user_instruction 与用户原话重试。）';
+  const originHint = params.claimedUserInstruction && !params.userInstructionVerified
+    ? '当前用户原话无法验证这项直写授权；模型提供的来源标记不构成用户授权。内容保持待审，请勿声称已经生效。'
+    : '';
 
   const dispatched = await dispatchApprovalCard(opts, proposal, asset.title || '');
   if (dispatched.ok !== true) {
@@ -985,7 +993,7 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
     name: 'edit_ability_asset',
     description: [
       '改一条认知资产的内容：标题、正文、适用范围、适用/禁用场景、敏感级、主题标签。**必须**说明依据（reason）。',
-      '**分级（很重要）**：用户明确要求的改动（"把这条改清楚点"）直接执行；**你自己**想到的正文/适用范围/敏感级/标签实质变化不要直接改——那类改动会改掉这条资产主张什么、它从此会进出哪一批任务、或它属于哪个主题，必须由用户点头（本工具会拒绝并说明）。',
+      '**分级（很重要）**：只有用户在当前消息里明确给出并逐字写出要改成的正文或单组标签值，主进程才允许直接改这项；含义由你补写、值来自旧上下文或用户指令不够具体时，不得把 origin 标成 user_instruction，必须走用户审批。你自己提出的正文/适用范围/敏感级/标签实质变化也必须审批。',
       '读到的版本号（metaLine 里的「在用版」）请通过 expectedVersion 带回来：如果这条资产在你读取之后被改过（用户正在手动编辑），工具会拒绝而不是覆盖——重新读一次再决定。',
       '改动会写进台账（谁改的/时间/前后值/依据），并且随时可回滚（rollback_ability_asset）。',
       '主题标签：fields.tags 传字符串数组（整体替换；每条 trim 后非空且 ≤20 字、去重后 ≤12 条，超限拒绝不截断）；category 是旧入参，会**收编为一条标签**与 tags 合并去重（不再单独存在）。标签改动不 bump 内容版本，台账记「标签：旧 → 新」。',
@@ -1018,7 +1026,7 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
         expectedVersion: { type: 'string', description: '你读到这条时的版本号；给了就要求与当前一致，不一致则拒绝（不静默覆盖）。' },
         origin: {
           type: 'string',
-          description: '这次改动的来源：user_instruction=用户明确要求的；ai_initiated=你自己提出要改的（缺省）。AI 自主的实质变化会被拒绝并要求走用户确认。',
+          description: '这只是你对来源的声明，不是授权凭据。主进程会核对当前用户消息；只有用户原话明确要求、且单项正文或标签改动值逐字匹配时，才允许直接改动。其他实质变化会进入用户审批。你自己提出的改动用 ai_initiated（缺省）。',
         },
       },
       required: ['assetId', 'fields', 'reason'],
@@ -1107,7 +1115,19 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
           return { content: 'scopePolicy 要是一个对象（字段值都是字符串数组），不要传 JSON 字符串。', isError: true };
         }
       }
-      const origin = input.origin === 'user_instruction' ? 'user_instruction' : 'ai_initiated';
+      // `origin` 是模型提供的字段，不能自己证明用户授权。直接改正文或单组标签，
+      // 必须同时满足：来源行由用户发出、只改这一项、改动值逐字来自该条用户消息，
+      // 且用户明确下达了修改命令。其余实质变化沿用 AI 提议 + 用户审批卡的流程。
+      const directFieldText = touched.length === 1 && touched[0] === 'statement'
+        ? fields.statement
+        : touched.length === 1 && touched[0] === 'tags' && Array.isArray(fields.tags)
+          ? fields.tags.join('、')
+          : undefined;
+      const directUserEdit = input.origin === 'user_instruction'
+        && opts.sourceMessageFromUser === true
+        && typeof directFieldText === 'string'
+        && classifyMemoryReplaceIntent(opts.taskText, directFieldText, true) === 'direct';
+      const origin = directUserEdit ? 'user_instruction' : 'ai_initiated';
 
       let asset: RecallAbilityAssetRecord;
       try {
@@ -1119,7 +1139,17 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
       // 分级②：AI 自主提出的实质变化不直接生效。Phase 6 会在这一步之前建提议并
       // 发审批卡片；这里保留"绝不静默生效"这道底线——提议建不出来时也宁可拒绝。
       const substantial = touched.filter((key) => (SUBSTANTIAL_FIELDS as readonly string[]).includes(key));
+      const fieldsOutsideProposal = touched.filter((key) => !(SUBSTANTIAL_FIELDS as readonly string[]).includes(key));
       if (origin !== 'user_instruction' && substantial.length) {
+        if (fieldsOutsideProposal.length) {
+          return blockedWriteReceipt(
+            opts,
+            '改动',
+            assetId,
+            new Error(`Mixed proposal fields are not supported: ${fieldsOutsideProposal.join(', ')}.`),
+            '这次请求同时包含待审批的实质变化和不属于审批卡片的字段。没有任何字段生效；请分开提交，避免部分修改被遗漏。',
+          );
+        }
         // 只把**这次真正要改的**字段带进提议：提议的 payload 就是"确认后要写什么"。
         const proposalPayload: Record<string, unknown> = {};
         for (const key of substantial) proposalPayload[key] = fields[key];
@@ -1129,7 +1159,8 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
           payload: proposalPayload,
           fields: substantial,
           reason,
-          originDeclared: input.origin !== undefined,
+          claimedUserInstruction: input.origin === 'user_instruction',
+          userInstructionVerified: directUserEdit,
         });
       }
 

@@ -35,6 +35,78 @@ const list = (state: Record<string, unknown>) => renderCognition(
   { assets: [ASSET], ...state },
 );
 
+describe('asset availability switch wording', () => {
+  it('explains that enabled assets are offered through a catalog and read on demand', () => {
+    const rendered = detail({});
+    const html = visibleText(rendered);
+
+    expect(rendered).toContain('aria-label="允许后续任务使用"');
+    expect(html).toContain('符合当前任务、范围和来源规则时');
+    expect(html).toContain('展示简短目录');
+    expect(html).toContain('按需读取正文');
+    expect(html).not.toContain('自动带入新任务');
+  });
+
+  it('explains that pausing removes an asset from future catalogs and reads', () => {
+    const html = visibleText(detail({ assets: [{ ...ASSET, status: 'paused' }] }));
+
+    expect(html).toContain('已暂停');
+    expect(html).toContain('不会出现在后续任务的目录中');
+    expect(html).toContain('也不能被读取');
+    expect(html).toContain('历史和使用记录仍保留');
+    expect(html).not.toContain('自动带入这条资产');
+  });
+});
+
+describe('asset correction entry', () => {
+  it('offers direct editing for active and paused assets above the collapsed history', () => {
+    const renderedDetails = [
+      detail({}),
+      detail({ assets: [{ ...ASSET, status: 'paused' }] }),
+    ];
+
+    for (const rendered of renderedDetails) {
+      const editActionIndex = rendered.indexOf('data-act="edit-asset"');
+      const historyIndex = rendered.indexOf('class="details fold ca-detail-history"');
+
+      expect(editActionIndex).toBeGreaterThanOrEqual(0);
+      expect(visibleText(rendered)).toContain('修改内容');
+      expect(historyIndex).toBeGreaterThan(editActionIndex);
+      expect(rendered.slice(historyIndex, rendered.indexOf('>', historyIndex))).not.toContain('open');
+    }
+  });
+
+  it('keeps the edit form save and cancel controls without a duplicate header action', () => {
+    const rendered = renderCognition(
+      { name: 'overview', assetId: ASSET.id, assetEdit: '1' },
+      { assets: [ASSET] },
+    );
+    const html = visibleText(rendered);
+
+    expect(rendered).not.toContain('data-act="edit-asset"');
+    expect(rendered).toContain('data-act="asset-edit-save"');
+    expect(rendered).toContain('data-act="asset-edit-cancel"');
+    expect(html).toContain('保存为新版本');
+  });
+});
+
+describe('cognition tree reuse count wording', () => {
+  it('counts verified assets, not use events, and names that unit', () => {
+    const html = visibleText(renderCognition({ name: 'tree' }, {
+      assets: [
+        { ...ASSET, id: 'aa-transfer', maturity: 'transfer_validated', status: 'active' },
+        { ...ASSET, id: 'aa-effective', maturity: 'effectiveness_validated', status: 'active' },
+        { ...ASSET, id: 'aa-unverified', maturity: 'bud', status: 'active' },
+        { ...ASSET, id: 'aa-paused', maturity: 'effectiveness_validated', status: 'paused' },
+      ],
+    }));
+
+    expect(html).toContain('有真实使用验证的资产 2 条');
+    expect(html).toContain('至少有一次真实任务使用记录的资产数');
+    expect(html).not.toContain('被真用过 2');
+  });
+});
+
 describe('列表与详情同口径（US-602 AC1/AC2/AC4）', () => {
   it('新建或只改过版本：两处都显示"最近无使用记录"，版本事件不进使用记录', () => {
     const proofs = [
@@ -94,6 +166,55 @@ describe('列表与详情同口径（US-602 AC1/AC2/AC4）', () => {
 
     expect(visibleText(list({ proofs, realUsageKinds: [] }))).toContain('还没被用过');
     expect(visibleText(detail({ proofs, realUsageKinds: [] }))).toContain('还没有被真实使用过');
+  });
+
+  it('资产详情提示仍固定在旧版的长期挂载，并可回到来源对话', () => {
+    const html = detail({
+      assetTimeline: {
+        assetId: ASSET.id,
+        loading: false,
+        failed: false,
+        items: [
+          {
+            id: 'pin-old', kind: 'projection_confirmed', occurredAt: '2026-09-20T05:00:00.000Z',
+            refs: {
+              assetId: ASSET.id, projectionId: 'proj-old', version: '2', conversationId: 'conv-a',
+              authorization: 'user_confirmed', purpose: 'user_pinned',
+            },
+          },
+          {
+            id: 'pin-expired', kind: 'projection_confirmed', occurredAt: '2026-09-21T05:00:00.000Z',
+            refs: {
+              assetId: ASSET.id, projectionId: 'proj-expired', version: '1', conversationId: 'conv-b',
+              authorization: 'user_confirmed', purpose: 'user_pinned', expiresAt: '2026-01-01T00:00:00.000Z',
+            },
+          },
+          {
+            id: 'pin-revoked', kind: 'projection_revoked', occurredAt: '2026-09-22T05:00:00.000Z',
+            refs: { assetId: ASSET.id, projectionId: 'proj-revoked', version: '1', authorization: 'user_confirmed', purpose: 'user_pinned' },
+          },
+          {
+            id: 'ordinary-confirmation', kind: 'projection_confirmed', occurredAt: '2026-09-23T05:00:00.000Z',
+            refs: { assetId: ASSET.id, projectionId: 'proj-task', version: '1', authorization: 'user_confirmed', purpose: 'conversation_reply' },
+          },
+        ],
+      },
+      sources: [{ kind: 'conversation', items: [{ id: 'conv-a', kind: 'conversation', title: '季度复盘', status: 'ready' }] }],
+    });
+
+    expect(visibleText(html)).toContain('有 1 处长期引用仍固定使用旧版');
+    expect(visibleText(html)).toContain('固定 v2 · 当前 v3');
+    expect(visibleText(html)).toContain('季度复盘');
+    expect(html).toContain('data-act="open-conversation" data-id="conv-a"');
+    expect(visibleText(html)).not.toContain('proj-old');
+  });
+
+  it('资产完整事实链读取失败时明确显示未能核对，而不是显示没有旧版挂载', () => {
+    const html = detail({
+      assetTimeline: { assetId: ASSET.id, loading: false, failed: true, items: [] },
+    });
+    expect(visibleText(html)).toContain('暂时无法核对这条资产在对话中的引用版本');
+    expect(html).toContain('data-act="asset-timeline-retry"');
   });
 });
 

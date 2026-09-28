@@ -428,9 +428,9 @@ describe('只读会话不变量（T016）', () => {
 });
 
 describe('写工具（US-402）', () => {
-  async function tools() {
+  async function tools(source?: { taskText: string; sourceMessageFromUser: boolean }) {
     const { createAssetStewardTools } = await import('../../../../src/main/model/core-agent/asset-steward-tools');
-    const byName = new Map(createAssetStewardTools({ userId: TEST_UID }).map((tool) => [tool.name, tool]));
+    const byName = new Map(createAssetStewardTools({ userId: TEST_UID, ...source }).map((tool) => [tool.name, tool]));
     return {
       edit: byName.get('edit_ability_asset')!,
       merge: byName.get('merge_ability_assets')!,
@@ -445,7 +445,10 @@ describe('写工具（US-402）', () => {
 
   it('用户明确指令：直接生效 + 台账记 actor=ai/前后值/依据', async () => {
     const asset = await seedAsset('发布前必须核对回滚方案。');
-    const { edit } = await tools();
+    const { edit } = await tools({
+      taskText: '请把这条改成：发布前必须核对回滚方案与灰度范围。',
+      sourceMessageFromUser: true,
+    });
     const out = await call(edit, {
       assetId: asset.id,
       fields: { statement: '发布前必须核对回滚方案与灰度范围。' },
@@ -473,7 +476,7 @@ describe('写工具（US-402）', () => {
     const assets = await import('../../../../src/main/features/recall/asset-service');
     await assets.updateAbilityAsset(TEST_UID, asset.id, { title: '被别人改过', reason: 'other writer', actor: 'user' });
 
-    const { edit } = await tools();
+    const { edit } = await tools({ taskText: '请把这条改成：我的改动。', sourceMessageFromUser: true });
     const out = await call(edit, {
       assetId: asset.id,
       fields: { statement: '我的改动' },
@@ -535,12 +538,12 @@ describe('写工具（US-402）', () => {
     expect((await assets.listAbilityAssetAudit(TEST_UID, asset.id)).filter((r) => r.action === 'approval_proposed')).toHaveLength(1);
   });
 
-  it('缺省 origin 按更保守的"AI 自主"处理，并在回执里给出重试方式', async () => {
+  it('缺省 origin 按更保守的"AI 自主"处理，不教模型伪造用户授权', async () => {
     const asset = await seedAsset('缺省来源的守卫基线。');
     const { edit } = await tools();
     const out = await call(edit, { assetId: asset.id, fields: { statement: '改正文' }, reason: '没说来源' });
     expect(out.isError).toBe(true);
-    expect(out.content).toContain('origin=user_instruction');
+    expect(out.content).toContain('没有生效');
   });
 
   it('非实质字段（命名）允许 AI 自动处理', async () => {
@@ -554,7 +557,7 @@ describe('写工具（US-402）', () => {
 
   it('标签可写：tags 落地、category 收编为单标签、形状错归因 schema、不映射 assetType/familyName（specs/012 T022 解禁）', async () => {
     const asset = await seedAsset('标签解禁后的契约基线。');
-    const { edit } = await tools();
+    let { edit } = await tools({ taskText: '请把标签改成：发布。', sourceMessageFromUser: true });
     const assets = await import('../../../../src/main/features/recall/asset-service');
 
     // ① 用户明确指令打标：直接生效；标签是元数据，不 bump 内容版本。
@@ -571,6 +574,7 @@ describe('写工具（US-402）', () => {
 
     // ② category 收编：不落任何字段，只体现为 tags（与本次 fields.tags 合并去重；
     //    tags 语义是整体替换，所以只传 category = tags 变成这一条）。
+    ({ edit } = await tools({ taskText: '请把标签改成：发布流程。', sourceMessageFromUser: true }));
     const category = await call(edit, { assetId: asset.id, fields: { category: '发布流程' }, reason: '用户要求归类', origin: 'user_instruction' });
     expect(category.isError).toBeUndefined();
     const collected = await assets.readAbilityAsset(TEST_UID, asset.id);
@@ -651,7 +655,10 @@ describe('写工具（US-402）', () => {
 
   it('fields 传 JSON 字符串也认（真机实测：模型就这么传，6 次编辑全废）', async () => {
     const asset = await seedAsset('真机 payload 形态的回归。');
-    const { edit } = await tools();
+    const { edit } = await tools({
+      taskText: '请把这条改成：真机形态：正文改成这句。',
+      sourceMessageFromUser: true,
+    });
     const assets = await import('../../../../src/main/features/recall/asset-service');
     // 真机抓到的原样形态：fields 是字符串化的对象。
     const out = await call(edit, {
@@ -666,10 +673,11 @@ describe('写工具（US-402）', () => {
 
   it('body 是 statement 的契约别名，两个都收', async () => {
     const asset = await seedAsset('契约别名：body。');
-    const { edit } = await tools();
+    let { edit } = await tools({ taskText: '请把这条改成：用 body 改的正文。', sourceMessageFromUser: true });
     const assets = await import('../../../../src/main/features/recall/asset-service');
     await call(edit, { assetId: asset.id, fields: { body: '用 body 改的正文。' }, origin: 'user_instruction', reason: '用户要求改' });
     expect((await assets.readAbilityAsset(TEST_UID, asset.id)).statement).toBe('用 body 改的正文。');
+    ({ edit } = await tools({ taskText: '请把这条改成：用 statement 改的正文。', sourceMessageFromUser: true }));
     await call(edit, { assetId: asset.id, fields: { statement: '用 statement 改的正文。' }, origin: 'user_instruction', reason: '用户要求改' });
     expect((await assets.readAbilityAsset(TEST_UID, asset.id)).statement).toBe('用 statement 改的正文。');
   });
@@ -801,7 +809,10 @@ describe('写工具（US-402）', () => {
 
   it('受限内容被既有门禁拦下（不豁免、不静默放行）', async () => {
     const asset = await seedAsset('受限内容写入会被拦。');
-    const { edit } = await tools();
+    const { edit } = await tools({
+      taskText: '请把这条改成：部署时使用 api_key = sk-live-ABCDEFGHIJKLMNOPQRSTUVWX 直连。',
+      sourceMessageFromUser: true,
+    });
     // assertNotForbiddenToPersist 拦的是凭据类内容（L3）：伪造一段 API key 形态的正文。
     const out = await call(edit, {
       assetId: asset.id,
@@ -846,7 +857,10 @@ describe('写工具（US-402）', () => {
       sourceRefs: [], omittedRefs: [], status: 'confirmed', createdAt: new Date().toISOString(),
     });
 
-    const { edit } = await tools();
+    const { edit } = await tools({
+      taskText: '请把这条改成：AI 后来改成的第三版内容。',
+      sourceMessageFromUser: true,
+    });
     const out = await call(edit, {
       assetId: asset.id,
       fields: { statement: 'AI 后来改成的第三版内容。' },
@@ -1151,7 +1165,11 @@ describe('安全网的量化口径（T031）', () => {
     const asset = await seedAsset('回滚一致性的原始内容。');
     const assets = await import('../../../../src/main/features/recall/asset-service');
     const { createAssetStewardTools } = await import('../../../../src/main/model/core-agent/asset-steward-tools');
-    const tools = new Map(createAssetStewardTools({ userId: TEST_UID }).map((t) => [t.name, t]));
+    const tools = new Map(createAssetStewardTools({
+      userId: TEST_UID,
+      taskText: '请把这条改成：第一次改动后的内容。',
+      sourceMessageFromUser: true,
+    }).map((t) => [t.name, t]));
     const call = (name: string, input: Record<string, unknown>) => tools.get(name)!.execute(input, {} as never);
 
     // 内容路径：台账锚点 → 一步回滚 → 逐字回到改动前。

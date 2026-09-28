@@ -65,7 +65,7 @@ export interface ExperienceCatalogResult {
 }
 
 export interface ExperienceCatalogOptions {
-  /** 透传给准入闸门的上下文（agentId/scope/space 归属等由装配点给）。 */
+  /** 透传给准入闸门的 Agent/workspace 上下文；task scope 由本目录从任务文本推导。 */
   runtimeContext?: AssetRuntimeContext;
   /** 本轮已挂载的经验 id（@ 带入 / 引用集）：被拦的在这里产出 omitted。 */
   mountedExperienceIds?: readonly string[];
@@ -152,6 +152,7 @@ export async function buildExperienceCatalog(
   // not_applicable_context），forbidden 命中同理。
   const gateContext: AssetRuntimeContext = {
     ...options.runtimeContext,
+    ...(taskText ? { scope: scopeForTask(taskText) } : {}),
     taskText: taskText || undefined,
     silentDefaultInjection: true,
   };

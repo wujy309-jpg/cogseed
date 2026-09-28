@@ -28,13 +28,26 @@ function sliceBlock(source: string, start: number): string {
   const bodyStart = source.indexOf('{', start);
   let depth = 0;
   let quote = '';
+  let lineComment = false;
+  let blockComment = false;
   for (let i = bodyStart; i < source.length; i += 1) {
     const char = source[i];
+    const next = source[i + 1];
+    if (lineComment) {
+      if (char === '\n') lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (char === '*' && next === '/') { blockComment = false; i += 1; }
+      continue;
+    }
     if (quote) {
       if (char === '\\') i += 1;
       else if (char === quote) quote = '';
       continue;
     }
+    if (char === '/' && next === '/') { lineComment = true; i += 1; continue; }
+    if (char === '/' && next === '*') { blockComment = true; i += 1; continue; }
     if (char === '"' || char === "'" || char === '`') { quote = char; continue; }
     if (char === '{') depth += 1;
     else if (char === '}' && --depth === 0) return source.slice(start, i + 1);
@@ -99,7 +112,7 @@ describe('candidate decisions', () => {
     expect(adopt).toContain("'recall.candidates.update'");
     expect(adopt).toContain("'recall.candidates.promote'");
     expect(adopt).toContain("alertUser(T('cognition.candidate_scope_required'");
-    expect(adopt).toContain("router.go({ name: 'overview', assetId: result.assetId })");
+    expect(adopt).toContain("router.go({ name: 'overview', assetId: promotedAssetId })");
     expect(adopt).toContain('await NS.reload()');
   });
 
@@ -263,7 +276,7 @@ describe('asset governance actions', () => {
   });
 });
 
-describe('app boot and polling', () => {
+describe('app boot and change notifications', () => {
   it('mounts into panel-recall > ca-root and renders on change', () => {
     expect(app).toContain("getElementById('ca-root')");
     // 2026-09-21 Phase 10:订阅体是带焦点保持的渲染包装(内部调 NS.render()),
@@ -273,8 +286,10 @@ describe('app boot and polling', () => {
     expect(app).toContain('NS.reload()');
   });
 
-  it('keeps the 4s capture poll bounded to the live page', () => {
-    expect(app).toContain('scheduleCapturePoll');
+  it('subscribes to changes and flushes deferred refreshes when the page becomes visible', () => {
+    expect(app).toContain('NS.setupChangeRail(panelVisible)');
+    expect(app).toContain('NS.flushPendingRefresh()');
     expect(app).toContain('panelVisible()');
+    expect(app).not.toContain('scheduleCapturePoll(');
   });
 });

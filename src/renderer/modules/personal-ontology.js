@@ -1,5 +1,5 @@
 // 个人本体工作区 — classic script (window.renderPersonalOntology)
-// 嵌入“认知资产 -> 记忆内容 -> 关于我”：左栏角色模板，右栏模板字段与原文。
+// 嵌入“认知资产 -> 本体”：总览路由下包含个人与事项浏览，个人区保留模板字段与原文。
 (function () {
   function escapeHtml(s) {
     return String(s == null ? '' : s)
@@ -20,6 +20,19 @@
       return String(fallback).replace(/\{(\w+)\}/g, (m, n) => (vars[n] != null ? String(vars[n]) : m));
     }
     return fallback;
+  }
+
+  function _pocOperationErrorText(error) {
+    if (error === 'asset_projection_read_only') {
+      return _t('personalOntology.asset_projection_read_only_error', '这条内容由正式认知资产维护，请从来源资产中修改或停用。');
+    }
+    if (error === 'template_metadata_read_only') {
+      return _t('personalOntology.template_metadata_read_only_error', '模板标识和版本信息由系统维护；请只编辑分节与字段内容。');
+    }
+    if (error === 'template_section_required') {
+      return _t('personalOntology.template_section_required_error', '模板值操作需要明确的分节。');
+    }
+    return error || _t('personalOntology.op_failed', '操作失败');
   }
 
   function _notifyFail(prefix, err) {
@@ -108,9 +121,16 @@
   let _pocPendingCandidates = [];
   /** 三盒数据（盒子化重构）：A/R/T 盒共用一次加载——资产 + 全组字段与
    *  流水 + 全量冲突台账。groups: [{gid,title,fields,entries}]。 */
-  let _pocBoxData = { loaded: false, loadError: '', groups: [], assets: [], conflicts: [] };
+  let _pocBoxData = {
+    loaded: false, loadError: '', groups: [], assets: [], sourceAssets: [], conflicts: [],
+    graph: { loaded: false, loadError: '', categories: [], entities: [], relations: [] },
+  };
   /** R 盒分类筛选：'all' | 'operation' | 'preference' | 'constraint' */
   let _pocTriBoxRuleFilter = 'all';
+  /** 本体工作区首层：总览、个人本体、事项本体、显式关系。 */
+  let _pocView = 'personal';
+  let _pocTaxonomyDomain = 'affairs';
+  let _pocDomainCategoryFilter = 'all';
   /** 值行展开状态：`gid\x00field\x00value` 集合（点击行 toggle）。 */
   const _pocExpandedValues = new Set();
   // 导航就是三个盒子（词汇 T / 事实 A / 规则 R）；模板编辑器是 T 盒的下钻。
@@ -247,6 +267,7 @@
         .sort((a, b) => tierOf(b) - tierOf(a)
           || String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
         .map((asset) => ({
+          assetId: String(asset.id || ''),
           text: String(asset.statement || '').trim(),
         }))
         .filter((e) => e.text),
@@ -323,10 +344,14 @@
               ? f.values.map((v) => `
                 <div class="memory-group-field-value">
                   <span class="memory-group-field-value-text">${escapeHtml(v.value)}</span>
-                  <span class="memory-group-field-source muted">${escapeHtml(_tv('memory.group_field_value_source', { value: '', source: v.source }))}</span>
+                  <span class="memory-group-field-source muted">${escapeHtml(v.recallAssetId
+                    ? _t('personalOntology.asset_projection_origin', '由正式认知资产维护')
+                    : _tv('memory.group_field_value_source', { value: '', source: v.source }))}</span>
                   ${v.project ? `<span class="memory-group-field-project">@${escapeHtml(_pocProjectNames ? (_pocProjectNames.get(v.project) || v.project) : v.project)}</span>` : ''}
-                  ${_iconButton({ label: _t('memory.edit', '编辑'), icon: 'edit-pencil', className: 'memory-icon-btn', attrs: { 'data-poc-group-action': 'field-edit-value', 'data-poc-ref': ref, 'data-poc-field': f.name, 'data-poc-value': v.value } })}
-                  ${_iconButton({ label: _t('memory.delete', '删除'), icon: 'x', variant: 'danger', className: 'memory-icon-btn is-muted', attrs: { 'data-poc-group-action': 'field-remove-value', 'data-poc-ref': ref, 'data-poc-field': f.name, 'data-poc-value': v.value } })}
+                  ${v.recallAssetId
+                    ? _button({ label: _t('personalOntology.asset_projection_open', '查看来源资产'), size: 'sm', attrs: { 'data-poc-group-action': 'open-formal-asset', 'data-poc-asset-id': v.recallAssetId } })
+                    : `${_iconButton({ label: _t('memory.edit', '编辑'), icon: 'edit-pencil', className: 'memory-icon-btn', attrs: { 'data-poc-group-action': 'field-edit-value', 'data-poc-ref': ref, 'data-poc-field': f.name, 'data-poc-value': v.value } })}
+                       ${_iconButton({ label: _t('memory.delete', '删除'), icon: 'x', variant: 'danger', className: 'memory-icon-btn is-muted', attrs: { 'data-poc-group-action': 'field-remove-value', 'data-poc-ref': ref, 'data-poc-field': f.name, 'data-poc-value': v.value } })}`}
                 </div>`).join('')
               : `<span class="memory-group-field-empty muted">${escapeHtml(_t('memory.group_field_empty', '暂无值'))}</span>`}
           </div>
@@ -374,10 +399,10 @@
     // 比对用裸文本：出身前缀是显示层的装饰，不参与「是否已匹配字段」判定。
     const pending = _pocProfile.entries.filter((entry) => !content.includes(entry.text));
     if (!pending.length) return '';
-    return `<section class="personal-onto-template-profile-bridge" aria-label="${escapeHtml(_t('personalOntology.template_profile_bridge_title', '会话沉淀'))}">
+    return `<section class="personal-onto-template-profile-bridge" aria-label="${escapeHtml(_t('personalOntology.template_profile_bridge_title', '已确认但未匹配到模板的信息'))}">
       <div class="personal-onto-template-profile-bridge-head">
         <div>
-          <div class="personal-onto-template-profile-bridge-title">${escapeHtml(_t('personalOntology.template_profile_bridge_title', '会话沉淀'))}</div>
+          <div class="personal-onto-template-profile-bridge-title">${escapeHtml(_t('personalOntology.template_profile_bridge_title', '已确认但未匹配到模板的信息'))}</div>
           <div class="personal-onto-template-profile-bridge-hint">${escapeHtml(_t('personalOntology.template_profile_bridge_hint', '这些信息已确认，但暂未匹配到当前角色模板字段；不会自动填入错误字段。'))}</div>
         </div>
         <span class="personal-onto-template-profile-bridge-count">${escapeHtml(String(pending.length))}</span>
@@ -386,6 +411,7 @@
         ${pending.map((entry) => `<div class="personal-onto-template-profile-bridge-entry">
           <span class="personal-onto-profile-entry-icon">${_icon('file-text', 'ui-icon')}</span>
           <span>${_pocProfileEntryHtml(entry)}</span>
+          ${entry.assetId ? _button({ label: _t('personalOntology.asset_projection_open', '查看来源资产'), size: 'sm', attrs: { 'data-poc-group-action': 'open-formal-asset', 'data-poc-asset-id': entry.assetId } }) : ''}
         </div>`).join('')}
       </div>
     </section>`;
@@ -442,6 +468,7 @@
   async function _pocOpenGroup(groupId) {
     const tmpl = _pocTemplates.find((t) => t.installed && t.group_id === groupId);
     if (!tmpl) return;
+    _pocView = 'personal';
     _pocSelected = { kind: 'template', id: groupId };
     const editor = {
       groupId,
@@ -492,7 +519,7 @@
   async function _pocGroupAction(action, payload) {
     const res = await _pocInvoke(action, payload);
     if (!res || res.ok === false) {
-      _notifyFail(_t('personalOntology.op_failed', '操作失败'), new Error((res && res.error) || ''));
+      _notifyFail(_t('personalOntology.op_failed', '操作失败'), new Error(_pocOperationErrorText((res && res.error) || '')));
       return false;
     }
     return true;
@@ -791,16 +818,216 @@
     };
   }
 
+  function _pocAffairAssets() {
+    return (_pocBoxData.assets || []).filter((asset) => asset && asset.type === 'fact');
+  }
+
+  function _pocTextSnippet(value, limit = 320) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    return text.length > limit ? `${text.slice(0, limit).trimEnd()}…` : text;
+  }
+
+  function _pocOntologyGraph() {
+    return _pocBoxData.graph || { loaded: false, loadError: '', categories: [], entities: [], relations: [] };
+  }
+
+  function _pocGraphCategories(domain) {
+    return (_pocOntologyGraph().categories || []).filter((category) => category && category.domain === domain);
+  }
+
+  function _pocGraphEntities(domain) {
+    return (_pocOntologyGraph().entities || []).filter((entity) => entity && (!domain || entity.domain === domain));
+  }
+
+  function _pocGraphCategoryLabel(category) {
+    if (!category) return _t('ontologyGraph.category_unavailable', '分类不可用');
+    return category.nameKey ? _t(category.nameKey, category.name) : String(category.name || '');
+  }
+
+  function _pocGraphFieldLabel(field) {
+    return field && field.nameKey ? _t(field.nameKey, field.name) : String((field && field.name) || '');
+  }
+
+  function _pocGraphDomainLabel(domain) {
+    const key = domain === 'affairs' ? 'ontologyGraph.domain_affairs'
+      : domain === 'resources' ? 'ontologyGraph.domain_resources'
+        : domain === 'concepts' ? 'ontologyGraph.domain_concepts' : 'ontologyGraph.domain_personal';
+    const fallback = domain === 'affairs' ? '事项本体'
+      : domain === 'resources' ? '对象与资源'
+        : domain === 'concepts' ? '概念本体' : '个人本体';
+    return _t(key, fallback);
+  }
+
+  function _pocGraphEntityLabel(entity) {
+    if (!entity) return _t('ontologyGraph.entity_unavailable', '实体当前不可见');
+    return String(entity.name || '');
+  }
+
+  function _pocGraphSourceLabel(sourceRef) {
+    if (!sourceRef) return '';
+    const id = String(sourceRef.id || '');
+    if (sourceRef.kind === 'asset') {
+      const asset = (_pocBoxData.sourceAssets || _pocBoxData.assets || []).find((item) => String(item.id || '') === id);
+      return asset
+        ? _pocTextSnippet(asset.title || asset.statement, 120) || _t('ontologyGraph.source_asset', '正式认知资产')
+        : _t('ontologyGraph.source_asset_unavailable', '正式认知资产（来源当前不可见）');
+    }
+    const candidate = (_pocPendingCandidates || []).find((item) => String(item.candidate_id || item.id || '') === id);
+    return candidate
+      ? _pocTextSnippet(candidate.summary, 120) || _t('ontologyGraph.source_candidate', '审核候选')
+      : _t('ontologyGraph.source_candidate_unavailable', '审核候选（来源当前不可见）');
+  }
+
+  function _pocRenderGraphSourceRefs(sourceRefs) {
+    const refs = Array.isArray(sourceRefs) ? sourceRefs : [];
+    if (!refs.length) return '';
+    return `<div class="personal-onto-graph-sources">
+      <span class="muted">${escapeHtml(_t('ontologyGraph.source_refs', '来源引用'))}：</span>
+      ${refs.map((sourceRef) => {
+        const kind = sourceRef.kind === 'asset' ? _t('ontologyGraph.source_asset_kind', '认知资产') : _t('ontologyGraph.source_candidate_kind', '审核候选');
+        const label = _pocGraphSourceLabel(sourceRef);
+        const openAttrs = sourceRef.kind === 'asset'
+          ? { 'data-poc-open-asset': String(sourceRef.id || '') }
+          : { 'data-poc-open-candidate': String(sourceRef.id || '') };
+        const openLabel = sourceRef.kind === 'asset'
+          ? _t('ontologyGraph.source_open_asset', '打开来源资产')
+          : _t('ontologyGraph.source_open_candidate', '打开来源候选');
+        return `<span class="personal-onto-graph-source-ref">${_tag(kind)}<span>${escapeHtml(label)}</span>${_button({ label: openLabel, size: 'sm', className: 'o', attrs: openAttrs })}</span>`;
+      }).join('')}
+    </div>`;
+  }
+
+  function _pocRelationRows() {
+    const rows = [];
+    const relationKinds = {
+      refines: ['personalOntology.relationship_kind_refines', '细化'],
+      depends_on: ['personalOntology.relationship_kind_depends_on', '依赖'],
+      replaces: ['personalOntology.relationship_kind_replaces', '替代'],
+      conflicts_with: ['personalOntology.relationship_kind_conflicts_with', '存在冲突'],
+      related_to: ['personalOntology.relationship_kind_related_to', '相关'],
+      same_family: ['personalOntology.relationship_kind_same_family', '同来源'],
+    };
+    const activeAssets = _pocBoxData.assets || [];
+    const assetsById = new Map(activeAssets.map((asset) => [String(asset.id || ''), asset]));
+
+    (_pocBoxData.groups || []).forEach((group) => {
+      (group.fields || []).forEach((field) => {
+        (field.values || []).forEach((fieldValue) => {
+          const value = String((fieldValue && fieldValue.value) || '').trim();
+          const match = value.match(/^(.+?)\s*(?:→|->)\s*(.+)$/);
+          if (!match) return;
+          rows.push({
+            from: match[1].trim(),
+            predicate: String(field.name || '').trim() || _t('personalOntology.relationship_default', '关联'),
+            to: match[2].trim(),
+            source: String(group.title || ''),
+            sourceKind: 'ontology',
+          });
+        });
+      });
+    });
+
+    activeAssets.forEach((asset) => {
+      (Array.isArray(asset.relations) ? asset.relations : []).forEach((relation) => {
+        if (!relation || !relation.assetId) return;
+        const target = assetsById.get(String(relation.assetId));
+        // same_family is stored in both directions. Show each group once in
+        // the relationship list so one source pair does not look like two
+        // independent business relationships.
+        if (relation.kind === 'same_family' && target
+            && String(asset.id || '').localeCompare(String(target.id || '')) > 0) return;
+        const kind = relationKinds[String(relation.kind || '')];
+        const from = _pocTextSnippet(asset.title || asset.statement, 180);
+        const to = target
+          ? _pocTextSnippet(target.title || target.statement, 180)
+          : _t('personalOntology.relationship_target_unavailable', '关联条目当前不可见');
+        if (!from || !to) return;
+        rows.push({
+          from,
+          predicate: kind ? _t(kind[0], kind[1]) : _t('personalOntology.relationship_default', '关联'),
+          to,
+          source: _t('personalOntology.relationship_source_assets', '正式认知资产'),
+          sourceKind: 'asset',
+          relationKind: String(relation.kind || ''),
+          assetId: String(asset.id || ''),
+          targetAssetId: target ? String(target.id || '') : '',
+          note: String(relation.note || ''),
+        });
+      });
+    });
+
+    const graph = _pocOntologyGraph();
+    const entitiesById = new Map((graph.entities || []).map((entity) => [String(entity.id || ''), entity]));
+    const endpointLabel = (endpoint) => endpoint && endpoint.kind === 'self'
+      ? _t('ontologyGraph.self_entity', '我')
+      : _pocGraphEntityLabel(endpoint && entitiesById.get(String(endpoint.id || '')));
+    (graph.relations || []).forEach((relation) => {
+      rows.push({
+        from: endpointLabel(relation.subject),
+        predicate: String(relation.predicate || ''),
+        to: endpointLabel(relation.object),
+        source: _t('ontologyGraph.source_graph', '本体图谱'),
+        sourceKind: 'graph',
+        relationId: String(relation.id || ''),
+        note: String(relation.note || ''),
+        sourceRefs: Array.isArray(relation.sourceRefs) ? relation.sourceRefs : [],
+      });
+    });
+    return rows;
+  }
+
+  function _pocNavigate(action) {
+    if (_pocSelected.kind === 'template') _pocSelected = { kind: 'abox', id: 'abox' };
+    if (action === 'ontology-home') {
+      _pocView = 'overview';
+      _pocGroupEditor = null;
+    } else if (action === 'personal-domain') {
+      _pocView = 'personal';
+      _pocSelected = { kind: 'abox', id: 'abox' };
+      _pocGroupEditor = null;
+    } else if (action === 'affairs-domain') {
+      _pocView = 'affairs';
+      _pocGroupEditor = null;
+      _pocDomainCategoryFilter = 'all';
+    } else if (action === 'resources-domain') {
+      _pocView = 'resources';
+      _pocGroupEditor = null;
+      _pocDomainCategoryFilter = 'all';
+    } else if (action === 'concepts-domain') {
+      _pocView = 'concepts';
+      _pocGroupEditor = null;
+      _pocDomainCategoryFilter = 'all';
+    } else if (action === 'taxonomy-domain') {
+      _pocView = 'taxonomy';
+      _pocGroupEditor = null;
+    } else if (action === 'relationships-domain') {
+      _pocView = 'relationships';
+      _pocGroupEditor = null;
+    } else if (action === 'tbox' || action === 'abox' || action === 'rbox') {
+      _pocView = 'personal';
+      _pocSelected = { kind: action, id: action };
+      _pocGroupEditor = null;
+    }
+    renderPersonalOntology();
+  }
+
+  function _pocNavButton(action, titleKey, fallback, icon, active) {
+    return _button({
+      label: _t(titleKey, fallback),
+      icon,
+      size: 'sm',
+      className: `personal-onto-hub-nav-item${active ? ' is-active' : ''}`,
+      attrs: {
+        'data-poc-nav': action,
+        ...(active ? { 'aria-current': 'page' } : {}),
+      },
+    });
+  }
+
   function _pocRenderNav() {
     const nav = document.getElementById('personal-onto-nav');
     if (!nav) return;
-    // 导航就是三个盒子（盒子化重构）：词汇 T / 事实 A / 规则 R——组与模板
-    // 不再是导航入口（组在 T 盒管理、模板在 T 盒下钻）。
     const counts = _pocBoxCounts();
-    const factCount = counts.abox;
-    const ruleCount = counts.rbox;
-    // US-103 导航副标题：文字位改为竖排容器（名称 + 副标题），角标仍是
-    // 同层 flex 子项（位置不变），点击行为走既有 _pocBindNav 分支（零变化）。
     const row = (kind, icon, labelKey, fallback, count, subKey, subFallback) => {
       const active = _pocSelected.kind === kind;
       return `<button type="button" class="personal-onto-nav-row${active ? ' is-active' : ''}" data-poc-nav="${kind}" data-poc-id="${kind}">
@@ -809,11 +1036,35 @@
         ${count !== undefined ? `<span class="muted">${count}</span>` : ''}
       </button>`;
     };
-    nav.innerHTML = `<div class="personal-onto-nav-section">
-      ${row('tbox', 'type', 'personalOntology.nav_tbox', '统一词表', counts.tbox, 'personalOntology.nav_tbox_sub', '系统描述你时的一致用词')}
-      ${row('abox', 'user', 'personalOntology.nav_abox', '我是谁', factCount, 'personalOntology.nav_abox_sub', '身份、角色与项目关系')}
-      ${row('rbox', 'terminal', 'personalOntology.nav_rbox', '我偏好什么', ruleCount, 'personalOntology.nav_rbox_sub', 'AI 该怎么配合你做事')}
-      ${_pocPendingCandidates.length ? `<div class="personal-onto-backflow-badge" style="padding:2px 10px 8px">${escapeHtml(_tv('personalOntology.backflow_badge', { n: _pocPendingCandidates.length }, '回流 {n}'))}</div>` : ''}
+    const personalActive = _pocView === 'personal';
+    const taxonomyActive = _pocView === 'taxonomy' || (_pocView === 'personal' && _pocSelected.kind === 'tbox');
+    const affairsActive = _pocView === 'affairs';
+    const resourcesActive = _pocView === 'resources';
+    const conceptsActive = _pocView === 'concepts';
+    const relationsActive = _pocView === 'relationships';
+    const homeActive = _pocView === 'overview';
+    const hubNav = `<div class="personal-onto-nav-section personal-onto-hub-nav-list">
+      ${_pocNavButton('ontology-home', 'personalOntology.nav_home', '本体总览', 'brain-circuit', homeActive)}
+      ${_pocNavButton('personal-domain', 'personalOntology.nav_personal_domain', '个人本体', 'user', personalActive)}
+      ${_pocNavButton('affairs-domain', 'personalOntology.nav_affairs_domain', '事项本体', 'file-text', affairsActive)}
+      ${_pocNavButton('resources-domain', 'personalOntology.nav_resources_domain', '对象与资源', 'folder', resourcesActive)}
+      ${_pocNavButton('concepts-domain', 'personalOntology.nav_concepts_domain', '概念本体', 'tag', conceptsActive)}
+      ${_pocNavButton('taxonomy-domain', 'personalOntology.nav_taxonomy_domain', '分类与字段', 'list', taxonomyActive)}
+      ${_pocNavButton('relationships-domain', 'personalOntology.nav_relationships_domain', '关系网络', 'link', relationsActive)}
+    </div>`;
+
+    if (_pocView !== 'personal') {
+      nav.innerHTML = hubNav;
+      return;
+    }
+
+    nav.innerHTML = `${hubNav}
+    <div class="personal-onto-nav-section personal-onto-personal-subnav">
+      <div class="personal-onto-nav-section-title">${escapeHtml(_t('personalOntology.personal_sections', '个人本体内容'))}</div>
+      ${row('tbox', 'type', 'personalOntology.nav_tbox', '分类与字段', counts.tbox, 'personalOntology.nav_tbox_sub', '本体分类、字段与角色模板')}
+      ${row('abox', 'user', 'personalOntology.nav_abox', '事实与条目', counts.abox, 'personalOntology.nav_abox_sub', '身份、角色、偏好与个人事实')}
+      ${row('rbox', 'terminal', 'personalOntology.nav_rbox', '关系与规则', counts.rbox, 'personalOntology.nav_rbox_sub', '明确关系与 AI 应遵循的规则')}
+      ${_pocPendingCandidates.length ? `<div class="personal-onto-backflow-badge" style="padding:2px 10px 8px">${escapeHtml(_tv('personalOntology.backflow_badge', { n: _pocPendingCandidates.length }, '待添加 {n}'))}</div>` : ''}
     </div>
     <div class="personal-onto-nav-section">
       <div class="personal-onto-group-io">
@@ -856,9 +1107,10 @@
  *  冲突台账（自带自愈）。三个盒视图共用这一份，避免重复拉取。 */
   async function _pocLoadBoxData() {
     const assetsRes = await _pocInvoke('recall.assets.list', {});
-    const assets = assetsRes && Array.isArray(assetsRes.assets)
-      ? assetsRes.assets.filter((a) => a && a.status === 'active')
+    const sourceAssets = assetsRes && Array.isArray(assetsRes.assets)
+      ? assetsRes.assets.filter((asset) => asset && asset.id)
       : [];
+    const assets = sourceAssets.filter((asset) => asset.status === 'active');
     const groupsWithFields = [];
     if (_pocGroups.loaded || await _pocLoadGroups()) {
       for (const g of _pocGroups.list) {
@@ -880,21 +1132,62 @@
         });
       }
     }
-    const conflictsRes = await _pocInvoke('personalOntology.conflicts.list', {});
+    const [conflictsRes, graphRes] = await Promise.all([
+      _pocInvoke('personalOntology.conflicts.list', {}),
+      _pocInvoke('ontology.graph.read', {}),
+    ]);
     _pocBoxData = {
       loaded: true,
       loadError: '',
       groups: groupsWithFields,
       assets,
+      sourceAssets,
       conflicts: conflictsRes && Array.isArray(conflictsRes.conflicts) ? conflictsRes.conflicts : [],
+      graph: graphRes && graphRes.ok !== false && graphRes.graph
+        ? {
+          loaded: true,
+          loadError: '',
+          categories: Array.isArray(graphRes.graph.categories) ? graphRes.graph.categories : [],
+          entities: Array.isArray(graphRes.graph.entities) ? graphRes.graph.entities : [],
+          relations: Array.isArray(graphRes.graph.relations) ? graphRes.graph.relations : [],
+        }
+        : { loaded: true, loadError: (graphRes && graphRes.error) || _t('ontologyGraph.load_error', '本体图谱读取失败'), categories: [], entities: [], relations: [] },
     };
     return true;
   }
 
   /** 盒数据变更后的统一重载（保持当前盒选中态）。 */
   async function _pocReloadBoxData() {
-    _pocBoxData = { loaded: false, loadError: '', groups: [], assets: [], conflicts: [] };
+    _pocBoxData = {
+      loaded: false, loadError: '', groups: [], assets: [], sourceAssets: [], conflicts: [],
+      graph: { loaded: false, loadError: '', categories: [], entities: [], relations: [] },
+    };
     await renderPersonalOntology();
+  }
+
+  async function refreshOntologyGraph() {
+    const route = window.CogAssets && window.CogAssets.store && window.CogAssets.store.route;
+    if (!_pocBoxData.loaded || (route && route.name !== 'ontology')) return;
+    const previous = _pocBoxData.graph || { categories: [], entities: [], relations: [] };
+    const result = await _pocInvoke('ontology.graph.read', {});
+    if (!result || result.ok === false || !result.graph) {
+      _pocBoxData.graph = { ...previous, loaded: true, loadError: (result && result.error) || _t('ontologyGraph.load_error', '本体图谱读取失败') };
+    } else {
+      _pocBoxData.graph = {
+        loaded: true,
+        loadError: '',
+        categories: Array.isArray(result.graph.categories) ? result.graph.categories : [],
+        entities: Array.isArray(result.graph.entities) ? result.graph.entities : [],
+        relations: Array.isArray(result.graph.relations) ? result.graph.relations : [],
+      };
+    }
+    const nav = document.getElementById('personal-onto-nav');
+    const body = document.getElementById('personal-onto-main-body');
+    if (nav && body) {
+      _pocRenderNav();
+      _pocBindNav();
+      _pocRenderMain();
+    }
   }
 
   /** 值冲突命中（按 gid+字段+值，冲突数据来自全量台账）。 */
@@ -910,6 +1203,18 @@
     if (fv.asOf && _pocIsStaleAsOf(fv.asOf)) return 'attention';
     if (fv.verified) return 'success';
     return '';
+  }
+
+  function _pocValueActionsHtml(gid, field, fv) {
+    if (fv.recallAssetId) {
+      return `<span class="muted">${escapeHtml(_t('personalOntology.asset_projection_read_only', '此值由正式认知资产维护。'))}</span>
+        ${_button({ label: _t('personalOntology.asset_projection_open', '查看来源资产'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'open-formal-asset', 'data-poc-asset-id': fv.recallAssetId } })}`;
+    }
+    return `${_button({ label: fv.verified === 'independent' ? _t('personalOntology.unverify_tip', '取消核实') : fv.verified === true ? _t('personalOntology.verify_up_tip', '升级为独立核实') : _t('personalOntology.verify_tip', '标记为已核实'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'verify-value', 'data-poc-gid': gid, 'data-poc-field': field.name, 'data-poc-value': String(fv.value || ''), 'data-poc-verified': fv.verified === 'independent' ? '0' : fv.verified === true ? 'independent' : '1' } })}
+      ${/→|->/.test(String(fv.value || '')) ? _button({ label: _t('personalOntology.rulekind_cycle_tip', '切换规则分类'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'cycle-rulekind', 'data-poc-gid': gid, 'data-poc-field': field.name, 'data-poc-value': String(fv.value || '') } }) : ''}
+      ${_button({ label: fv.sensitivity === 'restricted' ? _t('personalOntology.unrestrict_tip', '取消受限') : _t('personalOntology.restrict_tip', '设为受限（不自动注入）'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'toggle-restricted', 'data-poc-gid': gid, 'data-poc-field': field.name, 'data-poc-value': String(fv.value || ''), 'data-poc-restricted': fv.sensitivity === 'restricted' ? '0' : '1' } })}
+      ${_button({ label: _t('personalOntology.value_edit_tip', '编辑这条值'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'edit-value', 'data-poc-gid': gid, 'data-poc-field': field.name, 'data-poc-value': String(fv.value || ''), 'data-poc-asof': String(fv.asOf || '') } })}
+      ${_button({ label: _t('personalOntology.value_remove_tip', '删除这条值'), size: 'sm', className: 'personal-onto-group-action is-danger', attrs: { 'data-poc-group-op': 'remove-value', 'data-poc-gid': gid, 'data-poc-field': field.name, 'data-poc-value': String(fv.value || '') } })}`;
   }
 
   /** 极简值行 + 点击展开操作区（盒子化重构：标记与操作不糊脸）。 */
@@ -930,17 +1235,13 @@
           ${fv.sensitivity === 'restricted' ? _statusPill(_t('personalOntology.restricted_chip', '受限·不自动注入'), 'attention') : ''}
           ${conflicted ? _statusPill(_t('personalOntology.conflict_chip', '与同字段另一条值矛盾'), 'critical') : ''}
         </div>
-        <div class="personal-onto-value-detail-actions">
-          ${_button({ label: fv.verified === 'independent' ? _t('personalOntology.unverify_tip', '取消核实') : fv.verified === true ? _t('personalOntology.verify_up_tip', '升级为独立核实') : _t('personalOntology.verify_tip', '标记为已核实'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'verify-value', 'data-poc-gid': gid, 'data-poc-field': field.name, 'data-poc-value': String(fv.value || ''), 'data-poc-verified': fv.verified === 'independent' ? '0' : fv.verified === true ? 'independent' : '1' } })}
-          ${/→|->/.test(String(fv.value || '')) ? _button({ label: _t('personalOntology.rulekind_cycle_tip', '切换规则分类'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'cycle-rulekind', 'data-poc-gid': gid, 'data-poc-field': field.name, 'data-poc-value': String(fv.value || '') } }) : ''}
-          ${_button({ label: fv.sensitivity === 'restricted' ? _t('personalOntology.unrestrict_tip', '取消受限') : _t('personalOntology.restrict_tip', '设为受限（不自动注入）'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'toggle-restricted', 'data-poc-gid': gid, 'data-poc-field': field.name, 'data-poc-value': String(fv.value || ''), 'data-poc-restricted': fv.sensitivity === 'restricted' ? '0' : '1' } })}
-          ${_button({ label: _t('personalOntology.value_edit_tip', '编辑这条值'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'edit-value', 'data-poc-gid': gid, 'data-poc-field': field.name, 'data-poc-value': String(fv.value || '') } })}
-          ${_button({ label: _t('personalOntology.value_remove_tip', '删除这条值'), size: 'sm', className: 'personal-onto-group-action is-danger', attrs: { 'data-poc-group-op': 'remove-value', 'data-poc-gid': gid, 'data-poc-field': field.name, 'data-poc-value': String(fv.value || '') } })}
-        </div>
+        <div class="personal-onto-value-detail-actions">${_pocValueActionsHtml(gid, field, fv)}</div>
       </div>` : '';
     return `<div class="personal-onto-value-line${expanded ? ' is-expanded' : ''}${conflicted ? ' is-conflicted' : ''}" data-poc-line-key="${escapeHtml(key)}" role="button" tabindex="0">
         <span class="personal-onto-value-text">${escapeHtml(String(fv.value || ''))}</span>
-        <span class="muted personal-onto-value-src">${escapeHtml(String(fv.source || '手动'))}</span>
+        <span class="muted personal-onto-value-src">${escapeHtml(fv.recallAssetId
+          ? _t('personalOntology.asset_projection_origin', '由正式认知资产维护')
+          : String(fv.source || '手动'))}</span>
         ${dotTone ? _statusDot(dotTone) : ''}
       </div>${detail}`;
   }
@@ -954,9 +1255,9 @@
     const profileHtml = sections.length ? sections.map((section) => `
       <div class="personal-onto-abox-subsec" data-poc-ontology-section="${escapeHtml(section.id)}">
         <div class="muted">${escapeHtml(_t(section.titleKey, section.title))}</div>
-        ${section.entries.map((e) => `<div class="personal-onto-value-line"><details class="poc-entry"><summary><span class="poc-entry-clamp">${_pocProfileEntryHtml(e)}</span></summary><div class="poc-entry-full">${_pocProfileEntryHtml(e)}</div></details><span class="muted personal-onto-value-src" title="${escapeHtml(_t('personalOntology.abox_asset_src_hint', '这条内容来自正式资产，可在「我的认知」查看全文与来源'))}">${escapeHtml(_t('personalOntology.abox_asset_src', '来自资产'))}</span></div>`).join('')}
+        ${section.entries.map((e) => `<div class="personal-onto-value-line"><details class="poc-entry"><summary><span class="poc-entry-clamp">${_pocProfileEntryHtml(e)}</span></summary><div class="poc-entry-full">${_pocProfileEntryHtml(e)}</div></details><span class="muted personal-onto-value-src" title="${escapeHtml(_t('personalOntology.abox_asset_src_hint', '这条内容来自正式资产，可在「我的认知」查看全文与来源'))}">${escapeHtml(_t('personalOntology.abox_asset_src', '来自资产'))}</span>${e.assetId ? _button({ label: _t('personalOntology.asset_projection_open', '查看来源资产'), size: 'sm', attrs: { 'data-poc-group-op': 'open-formal-asset', 'data-poc-asset-id': e.assetId } }) : ''}</div>`).join('')}
       </div>`).join('')
-      : `<div class="muted personal-onto-value-empty">${escapeHtml(_t('personalOntology.profile_empty', '完成会话沉淀后，个人信息会显示在这里'))}</div>`;
+      : `<div class="muted personal-onto-value-empty">${escapeHtml(_t('personalOntology.profile_empty', '确认保存关于你的信息后，这里会按类别显示'))}</div>`;
 
     const groupHtml = _pocBoxData.groups.map((g) => {
       const fieldHtml = (g.fields || []).map((field) => {
@@ -982,7 +1283,7 @@
 
     return `<section class="personal-onto-box-view">
       ${_pocRenderBackflowCandidates()}
-      <div class="personal-onto-zone-head">${escapeHtml(_tv('personalOntology.abox_profile_group_n', { n: _pocProfile.entries.length }, '会话沉淀 · {n} 条'))}</div>
+      <div class="personal-onto-zone-head">${escapeHtml(_tv('personalOntology.abox_profile_group_n', { n: _pocProfile.entries.length }, '来自对话的个人信息 · {n} 条'))}</div>
       ${profileHtml}
       ${_pocBoxData.groups.length ? `<div class="personal-onto-zone-head">${escapeHtml(_t('personalOntology.abox_groups', '分组事实'))} <span class="muted">${_pocBoxData.groups.length}</span></div>${groupHtml}` : ''}
     </section>`;
@@ -1111,16 +1412,16 @@
       if (!text) return '';
       const id = String(c.candidate_id || '');
       return `<div class="personal-onto-backflow-row" data-poc-candidate-id="${escapeHtml(id)}">
-        ${_tag(_t('personalOntology.backflow_chip', '回流候选'))}
+        ${_tag(_t('personalOntology.backflow_chip', '待添加'))}
         <span class="personal-onto-backflow-text">${escapeHtml(text)}</span>
         <span class="personal-onto-backflow-actions">
-          ${_pocBoxData.groups.map((g) => _button({ label: _tv('personalOntology.backflow_to', { g: g.title }, '写入：{g}'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-candidate-op': 'confirm', 'data-poc-candidate-id': id, 'data-poc-gid': g.gid } })).join('')}
-          ${_button({ label: _t('personalOntology.backflow_reject', '不用了'), size: 'sm', className: 'personal-onto-group-action is-ghost', attrs: { 'data-poc-candidate-op': 'reject', 'data-poc-candidate-id': id } })}
+          ${_pocBoxData.groups.map((g) => _button({ label: _tv('personalOntology.backflow_to', { g: g.title }, '添加到分组：{g}'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-candidate-op': 'confirm', 'data-poc-candidate-id': id, 'data-poc-gid': g.gid } })).join('')}
+          ${_button({ label: _t('personalOntology.backflow_reject', '跳过此条'), size: 'sm', className: 'personal-onto-group-action is-ghost', attrs: { 'data-poc-candidate-op': 'reject', 'data-poc-candidate-id': id } })}
         </span>
       </div>`;
     }).join('');
-    return `<section class="personal-onto-backflow-zone" aria-label="${escapeHtml(_t('personalOntology.backflow_zone_title', '待确认回流'))}">
-      <div class="personal-onto-field-name">${escapeHtml(_t('personalOntology.backflow_zone_title', '待确认回流'))} <span class="muted">${_pocPendingCandidates.length}</span></div>
+    return `<section class="personal-onto-backflow-zone" aria-label="${escapeHtml(_t('personalOntology.backflow_zone_title', '待添加到个人本体'))}">
+      <div class="personal-onto-field-name">${escapeHtml(_t('personalOntology.backflow_zone_title', '待添加到个人本体'))} <span class="muted">${_pocPendingCandidates.length}</span></div>
       ${rows}
     </section>`;
   }
@@ -1265,7 +1566,7 @@
       groupId: gid, fieldName, value: trimmed, source: '手动',
     });
     if (!res || res.ok === false) {
-      _pocToast('personalOntology.op_failed', (res && res.error) || '操作失败', 'error');
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText((res && res.error) || ''), 'error');
       return;
     }
     // 关系值形状提示（spec 007 T103）：A → B 形状的值保存即成规则，读取侧
@@ -1529,12 +1830,18 @@
 
   async function _pocAppendEntryNote(gid) {
     if (!gid) return;
-    const input = document.getElementById('personal-onto-note-input');
-    const text = input ? String(input.value || '').trim() : '';
-    if (!text) return;
+    // 2026-09-28 修复：原实现读 #personal-onto-note-input——该输入框在重构中
+    // 已被移除，按钮点击后 text 恒空、静默返回（死按钮）。改用与新建分组/添加值
+    // 同款的 uiPrompt 弹窗收集文本。
+    const text = (typeof uiPrompt === 'function')
+      ? await uiPrompt(_t('personalOntology.note_append_prompt', '记点什么（追加到该分组流水区）'), '')
+      : null;
+    if (text === null) return;
+    const trimmed = String(text || '').trim();
+    if (!trimmed) return;
     const readRes = await _pocInvoke('personalOntology.groups.read', { groupId: gid });
     const base = String((readRes && readRes.content) || '');
-    const content = `${base.trimEnd()}\n§ ${text}\n`;
+    const content = `${base.trimEnd()}\n§ ${trimmed}\n`;
     const res = await _pocInvoke('personalOntology.groups.write', { groupId: gid, content });
     if (!res || res.ok === false) {
       _pocToast('personalOntology.op_failed', (res && res.error) || '操作失败', 'error');
@@ -1585,7 +1892,7 @@
           _pocToast('personalOntology.op_failed', (retry && retry.error) || '操作失败', 'error');
           return;
         }
-        _pocToast('personalOntology.backflow_confirmed', '已写入所选分组（流水区，可升格为字段值）', 'success');
+        _pocToast('personalOntology.backflow_confirmed', '已添加到所选分组的记录中；需要时可再整理成字段。', 'success');
         await _pocLoadPendingCandidates();
         await _pocReloadBoxData();
         _pocRenderNav();
@@ -1596,7 +1903,7 @@
         _pocToast('personalOntology.op_failed', (res && res.error) || '操作失败', 'error');
         return;
       }
-      _pocToast('personalOntology.backflow_confirmed', '已写入所选分组（流水区，可升格为字段值）', 'success');
+      _pocToast('personalOntology.backflow_confirmed', '已添加到所选分组的记录中；需要时可再整理成字段。', 'success');
       await _pocLoadPendingCandidates();
       await _pocReloadBoxData();
       _pocRenderNav();
@@ -1618,10 +1925,808 @@
     });
   }
 
+  function _pocGraphInputField(id, label, value, options = {}) {
+    return window.uiField({
+      id,
+      label,
+      required: Boolean(options.required),
+      hint: options.hint || '',
+      showRequirement: options.showRequirement,
+      control: {
+        kind: 'input',
+        type: options.type || 'text',
+        value: value == null ? '' : String(value),
+        placeholder: options.placeholder || '',
+      },
+    });
+  }
+
+  function _pocGraphTextareaField(id, label, value, options = {}) {
+    return window.uiField({
+      id,
+      label,
+      required: Boolean(options.required),
+      hint: options.hint || '',
+      showRequirement: options.showRequirement,
+      control: {
+        kind: 'textarea',
+        value: value == null ? '' : String(value),
+        placeholder: options.placeholder || '',
+        rows: options.rows || 3,
+      },
+    });
+  }
+
+  function _pocGraphSelectField(id, label, options, value, placeholder) {
+    return window.uiField({
+      id,
+      label,
+      control: {
+        kind: 'select',
+        value: value || '',
+        placeholder: placeholder || _t('ontologyGraph.select_placeholder', '请选择'),
+        options,
+        searchable: options.length > 8,
+        searchPlaceholder: _t('ontologyGraph.search_placeholder', '搜索'),
+      },
+    });
+  }
+
+  function _pocGraphSourcePickerHtml(existingRefs = []) {
+    const refs = Array.isArray(existingRefs) ? existingRefs : [];
+    const existingKeys = new Set(refs.map((ref) => `${ref.kind}:${ref.id}`));
+    const assets = (_pocBoxData.sourceAssets || []).slice(0, 48);
+    const candidates = (_pocPendingCandidates || []).slice(0, Math.max(0, 64 - assets.length));
+    const availableKeys = new Set([
+      ...assets.map((asset) => `asset:${asset.id}`),
+      ...candidates.map((candidate) => `candidate:${candidate.candidate_id || candidate.id}`),
+    ]);
+    const retainedMissing = refs.filter((ref) => !availableKeys.has(`${ref.kind}:${ref.id}`));
+    const choices = [
+      ...assets.map((asset) => {
+        const id = String(asset.id || '');
+        const title = _pocTextSnippet(asset.title || asset.statement, 100) || _t('ontologyGraph.source_asset', '正式认知资产');
+        return window.uiCheckbox({
+          id: `ontology-source-asset-${id}`,
+          label: `${_t('ontologyGraph.source_asset_kind', '认知资产')} · ${title}`,
+          checked: existingKeys.has(`asset:${id}`),
+          attrs: { 'data-ontology-source-kind': 'asset', 'data-ontology-source-id': id },
+        });
+      }),
+      ...candidates.map((candidate) => {
+        const id = String(candidate.candidate_id || candidate.id || '');
+        const title = _pocTextSnippet(candidate.summary, 100) || _t('ontologyGraph.source_candidate', '审核候选');
+        return window.uiCheckbox({
+          id: `ontology-source-candidate-${id}`,
+          label: `${_t('ontologyGraph.source_candidate_kind', '审核候选')} · ${title}`,
+          checked: existingKeys.has(`candidate:${id}`),
+          attrs: { 'data-ontology-source-kind': 'candidate', 'data-ontology-source-id': id },
+        });
+      }),
+      ...retainedMissing.map((sourceRef, index) => window.uiCheckbox({
+        id: `ontology-source-unavailable-${sourceRef.kind}-${index}`,
+        label: sourceRef.kind === 'asset'
+          ? _t('ontologyGraph.source_asset_unavailable_keep', '来源资产当前不可见（取消勾选可移除此引用）')
+          : _t('ontologyGraph.source_candidate_unavailable_keep', '来源候选当前不可见（取消勾选可移除此引用）'),
+        checked: true,
+        attrs: { 'data-ontology-source-kind': sourceRef.kind, 'data-ontology-source-id': sourceRef.id },
+      })),
+    ];
+    return `<section class="personal-onto-graph-source-picker">
+      <div class="personal-onto-graph-section-label">${escapeHtml(_t('ontologyGraph.source_refs', '来源引用'))}</div>
+      <p class="muted">${escapeHtml(_t('ontologyGraph.source_refs_hint', '只保存来源 ID；来源正文继续由原资产或候选管理。'))}</p>
+      <div class="personal-onto-graph-source-options">${choices.join('') || `<span class="muted">${escapeHtml(_t('ontologyGraph.no_sources', '当前没有可关联的来源条目'))}</span>`}</div>
+    </section>`;
+  }
+
+  async function _pocGraphFormModal(options) {
+    if (typeof window.uiModal !== 'function' || typeof window.uiForm !== 'function' || typeof window.uiField !== 'function') {
+      _pocToast('personalOntology.op_failed', _t('ontologyGraph.modal_unavailable', '编辑表单暂不可用'), 'error');
+      return null;
+    }
+    let selectedValues = Object.assign({}, options.selectDefaults || {});
+    let submitted = null;
+    const modal = window.uiModal({
+      title: options.title,
+      description: options.description || '',
+      closeLabel: _t('common.close', '关闭'),
+      size: 'lg',
+      bodyHtml: window.uiForm({ ariaLabel: options.title, fields: options.fields }),
+      actions: [
+        { id: 'cancel', label: _t('common.cancel', '取消'), role: 'secondary' },
+        { id: 'save', label: _t('common.save', '保存'), role: 'primary' },
+      ],
+    });
+    if (options.selectCallbacks && typeof window.hydrateUiFormSelects === 'function') {
+      window.hydrateUiFormSelects(modal.overlay, Object.fromEntries(Object.entries(options.selectCallbacks).map(([id, callback]) => [
+        id,
+        (value) => {
+          selectedValues[id] = value;
+          callback?.(value);
+        },
+      ])));
+    }
+    modal.overlay.addEventListener('submit', (event) => event.preventDefault());
+    modal.overlay.addEventListener('click', (event) => {
+      const action = event.target && event.target.closest && event.target.closest('[data-ui-modal-action="save"]');
+      if (!action) return;
+      const form = modal.overlay.querySelector('.ui-modal__body form');
+      if (form && !form.checkValidity()) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        form.reportValidity?.();
+        return;
+      }
+      try {
+        submitted = options.collect(modal.overlay, selectedValues);
+      } catch (error) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        _pocToast('personalOntology.op_failed', _pocGraphErrorText((error && error.message) || error), 'error');
+      }
+    }, true);
+    const result = await modal;
+    return result && result.value === 'save' ? submitted : null;
+  }
+
+  function _pocGraphErrorText(error) {
+    const key = {
+      'ontology category already exists': ['ontologyGraph.error_category_duplicate', '同级分类已存在'],
+      'ontology category contains entities': ['ontologyGraph.error_category_has_entities', '分类下还有实体，请先移动或删除这些实体'],
+      'ontology category contains child categories': ['ontologyGraph.error_category_has_children', '分类下还有子分类，请先调整分类层级'],
+      'ontology category field is used by entities': ['ontologyGraph.error_field_in_use', '字段仍被实体使用，不能删除或更名'],
+      'ontology entity has relationships': ['ontologyGraph.error_entity_has_relations', '实体仍有关联关系，请先删除相关关系'],
+      'ontology relation already exists': ['ontologyGraph.error_relation_duplicate', '这条关系已经存在'],
+      'ontology relation endpoint is archived': ['ontologyGraph.error_archived_endpoint', '已归档实体不能建立新关系'],
+      'ontology relation endpoint not found': ['ontologyGraph.error_endpoint_missing', '关系的一端已不存在'],
+      'ontology entity category is unavailable': ['ontologyGraph.error_category_missing', '所选分类不可用'],
+    }[String(error || '')];
+    return key ? _t(key[0], key[1]) : _t('ontologyGraph.error_generic', '保存失败，请检查填写内容后重试');
+  }
+
+  function _pocCollectSourceRefs(root, existingRefs = []) {
+    const choices = Array.from(root.querySelectorAll('[data-ontology-source-kind][data-ontology-source-id]'));
+    const available = new Set(choices.map((input) => `${input.getAttribute('data-ontology-source-kind')}:${input.getAttribute('data-ontology-source-id')}`));
+    const out = existingRefs.filter((ref) => !available.has(`${ref.kind}:${ref.id}`));
+    choices.forEach((input) => {
+      if (!input.checked) return;
+      out.push({ kind: input.getAttribute('data-ontology-source-kind'), id: input.getAttribute('data-ontology-source-id') });
+    });
+    const seen = new Set();
+    return out.filter((ref) => {
+      const key = `${ref.kind}:${ref.id}`;
+      if (!ref.kind || !ref.id || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  async function _pocGraphMutation(channel, payload, successKey, fallback) {
+    const result = await _pocInvoke(channel, payload);
+    if (!result || result.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocGraphErrorText((result && result.error) || ''), 'error');
+      return false;
+    }
+    await _pocReloadBoxData();
+    _pocToast(successKey || 'ontologyGraph.saved', fallback || _t('ontologyGraph.saved', '已保存'), 'success');
+    return true;
+  }
+
+  function _pocCategoryDescendants(categoryId, domain) {
+    const categories = _pocGraphCategories(domain);
+    const descendants = new Set([categoryId]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      categories.forEach((category) => {
+        if (category.parentId && descendants.has(category.parentId) && !descendants.has(category.id)) {
+          descendants.add(category.id);
+          changed = true;
+        }
+      });
+    }
+    return descendants;
+  }
+
+  async function _pocOpenGraphCategoryForm(domain, category) {
+    const existing = category || null;
+    const categories = _pocGraphCategories(domain).filter((item) => (
+      !existing || ! _pocCategoryDescendants(existing.id, domain).has(item.id)
+    ));
+    const parentId = existing ? (existing.parentId || '') : '';
+    const parentOptions = [
+      { value: '', label: _t('ontologyGraph.category_root', '顶层分类') },
+      ...categories.map((item) => ({ value: item.id, label: _pocGraphCategoryLabel(item) })),
+    ];
+    const fields = [
+      _pocGraphInputField('ontology-category-name', _t('ontologyGraph.category_name', '分类名称'), existing ? existing.name : '', { required: true }),
+      _pocGraphTextareaField('ontology-category-description', _t('ontologyGraph.category_description', '分类说明'), existing ? existing.description : ''),
+      _pocGraphSelectField('ontology-category-parent', _t('ontologyGraph.category_parent', '上级分类'), parentOptions, parentId, _t('ontologyGraph.category_root', '顶层分类')),
+      ...(existing ? existing.fields.map((field) => `<div class="personal-onto-category-field-edit-row">
+        ${_pocGraphInputField(`ontology-category-field-${field.id}`, _t('ontologyGraph.field_name', '字段名称'), field.name, { required: true })}
+        ${window.uiCheckbox({ id: `ontology-category-field-remove-${field.id}`, label: _t('ontologyGraph.field_remove', '删除此字段'), attrs: { 'data-ontology-category-field-remove': field.id } })}
+      </div>`) : []),
+      _pocGraphTextareaField('ontology-category-new-fields', _t('ontologyGraph.category_new_fields', '新增字段'), '', { hint: _t('ontologyGraph.category_new_fields_hint', '每行填写一个字段名称。') }),
+    ];
+    const parentState = { 'ontology-category-parent': parentId };
+    const submitted = await _pocGraphFormModal({
+      title: existing ? _t('ontologyGraph.category_edit', '编辑分类') : _t('ontologyGraph.category_new', '新建分类'),
+      description: _t('ontologyGraph.category_form_hint', '分类定义实体的类型和可填写字段；已有实体使用的字段不能直接删除。'),
+      fields,
+      selectDefaults: parentState,
+      selectCallbacks: { 'ontology-category-parent': (value) => { parentState['ontology-category-parent'] = value; } },
+      collect: (root) => {
+        const newFields = String(root.querySelector('#ontology-category-new-fields')?.value || '')
+          .split(/[\n,，]/).map((name) => name.trim()).filter(Boolean).map((name) => ({ name }));
+        const retainedFields = existing ? existing.fields.reduce((out, field) => {
+          const remove = root.querySelector(`[data-ontology-category-field-remove="${CSS.escape(field.id)}"]`);
+          if (remove && remove.checked) return out;
+          const input = root.querySelector(`#ontology-category-field-${CSS.escape(field.id)}`);
+          out.push({ id: field.id, name: String((input && input.value) || '').trim(), kind: field.kind });
+          return out;
+        }, []) : [];
+        return {
+          name: String(root.querySelector('#ontology-category-name')?.value || '').trim(),
+          description: String(root.querySelector('#ontology-category-description')?.value || '').trim(),
+          parentId: parentState['ontology-category-parent'] || '',
+          fields: [...retainedFields, ...newFields],
+        };
+      },
+    });
+    if (!submitted) return;
+    const channel = existing ? 'ontology.category.update' : 'ontology.category.create';
+    await _pocGraphMutation(channel, {
+      ...(existing ? { categoryId: existing.id } : { domain }),
+      ...submitted,
+    }, 'ontologyGraph.category_saved', _t('ontologyGraph.category_saved', '分类已保存'));
+  }
+
+  async function _pocDeleteGraphCategory(category) {
+    if (!category || category.builtIn) return;
+    const message = _t('ontologyGraph.category_delete_confirm', '删除分类不会删除实体；如果分类仍被实体或子分类使用，系统会阻止删除。');
+    const confirmed = typeof uiConfirmDanger === 'function'
+      ? await uiConfirmDanger({ title: _t('ontologyGraph.category_delete', '删除分类'), message, dangerLabel: _t('ontologyGraph.category_delete', '删除分类') })
+      : typeof uiConfirm === 'function' ? await uiConfirm({ message }) : false;
+    if (!confirmed) return;
+    await _pocGraphMutation('ontology.category.delete', { categoryId: category.id }, 'ontologyGraph.category_deleted', _t('ontologyGraph.category_deleted', '分类已删除'));
+  }
+
+  async function _pocOpenGraphEntityForm(domain, category, entity) {
+    const existing = entity || null;
+    const currentCategory = existing
+      ? _pocGraphCategories(existing.domain).find((item) => item.id === existing.categoryId)
+      : category;
+    if (!currentCategory) {
+      _pocToast('personalOntology.op_failed', _t('ontologyGraph.category_missing', '请先选择一个分类'), 'error');
+      return;
+    }
+    const fields = [
+      _pocGraphInputField('ontology-entity-name', _t('ontologyGraph.entity_name', '实体名称'), existing ? existing.name : '', { required: true }),
+      _pocGraphTextareaField('ontology-entity-description', _t('ontologyGraph.entity_description', '说明'), existing ? existing.description : ''),
+      `<div class="personal-onto-graph-selected-category">${_tag(_pocGraphCategoryLabel(currentCategory))}</div>`,
+      ...(currentCategory.fields || []).map((field) => _pocGraphInputField(
+        `ontology-entity-property-${field.id}`,
+        _pocGraphFieldLabel(field),
+        existing && existing.properties ? existing.properties[field.id] : '',
+        { type: field.kind },
+      )),
+      _pocGraphSourcePickerHtml(existing ? existing.sourceRefs : []),
+    ];
+    const submitted = await _pocGraphFormModal({
+      title: existing ? _t('ontologyGraph.entity_edit', '编辑实体') : _t('ontologyGraph.entity_new', '新建实体'),
+      description: _tv('ontologyGraph.entity_form_hint', { domain: _pocGraphDomainLabel(currentCategory.domain) }, '填写实体自己的信息；个人资料和正式认知资产只通过来源引用关联，不复制正文。'),
+      fields,
+      collect: (root) => {
+        const properties = {};
+        (currentCategory.fields || []).forEach((field) => {
+          const input = root.querySelector(`#ontology-entity-property-${CSS.escape(field.id)}`);
+          const value = String((input && input.value) || '').trim();
+          if (value) properties[field.id] = value;
+        });
+        return {
+          name: String(root.querySelector('#ontology-entity-name')?.value || '').trim(),
+          description: String(root.querySelector('#ontology-entity-description')?.value || '').trim(),
+          properties,
+          sourceRefs: _pocCollectSourceRefs(root, existing ? existing.sourceRefs : []),
+        };
+      },
+    });
+    if (!submitted) return;
+    await _pocGraphMutation(existing ? 'ontology.entity.update' : 'ontology.entity.create', {
+      ...(existing ? { entityId: existing.id } : { categoryId: currentCategory.id }),
+      ...submitted,
+    }, 'ontologyGraph.entity_saved', _t('ontologyGraph.entity_saved', '实体已保存'));
+  }
+
+  async function _pocDeleteGraphEntity(entity) {
+    if (!entity) return;
+    const message = _t('ontologyGraph.entity_delete_confirm', '删除实体前需先移除它参与的关系；来源资产和候选不会受影响。');
+    const confirmed = typeof uiConfirmDanger === 'function'
+      ? await uiConfirmDanger({ title: _t('ontologyGraph.entity_delete', '删除实体'), message, dangerLabel: _t('ontologyGraph.entity_delete', '删除实体') })
+      : typeof uiConfirm === 'function' ? await uiConfirm({ message }) : false;
+    if (!confirmed) return;
+    await _pocGraphMutation('ontology.entity.delete', { entityId: entity.id }, 'ontologyGraph.entity_deleted', _t('ontologyGraph.entity_deleted', '实体已删除'));
+  }
+
+  async function _pocToggleGraphEntityStatus(entity) {
+    if (!entity) return;
+    const status = entity.status === 'archived' ? 'active' : 'archived';
+    await _pocGraphMutation('ontology.entity.update', {
+      entityId: entity.id,
+      status,
+    }, 'ontologyGraph.entity_status_saved', status === 'archived' ? _t('ontologyGraph.entity_archived_toast', '实体已归档') : _t('ontologyGraph.entity_restored_toast', '实体已恢复'));
+  }
+
+  function _pocRelationSelectOptions(includeArchived = false) {
+    const entities = _pocGraphEntities().filter((entity) => includeArchived || entity.status === 'active');
+    return [
+      { value: 'self', label: _t('ontologyGraph.self_entity', '我') },
+      ...entities.map((entity) => {
+        const category = _pocGraphCategories(entity.domain).find((item) => item.id === entity.categoryId);
+        return { value: entity.id, label: `${_pocGraphDomainLabel(entity.domain)} · ${_pocGraphCategoryLabel(category)} · ${entity.name}${entity.status === 'archived' ? ` · ${_t('ontologyGraph.entity_archived', '已归档')}` : ''}` };
+      }),
+    ];
+  }
+
+  async function _pocOpenGraphRelationForm(relation, initialSubject) {
+    const existing = relation || null;
+    const options = _pocRelationSelectOptions(Boolean(existing));
+    const toSelectValue = (endpoint) => endpoint && endpoint.kind === 'entity' ? endpoint.id : 'self';
+    const defaultObject = initialSubject && initialSubject !== 'self'
+      ? 'self'
+      : (_pocGraphEntities().find((entity) => entity.status === 'active')?.id || 'self');
+    const selectState = {
+      'ontology-relation-subject': existing ? toSelectValue(existing.subject) : initialSubject || 'self',
+      'ontology-relation-object': existing ? toSelectValue(existing.object) : defaultObject,
+    };
+    const fields = [
+      _pocGraphSelectField('ontology-relation-subject', _t('ontologyGraph.relation_subject', '起点'), options, selectState['ontology-relation-subject']),
+      _pocGraphInputField('ontology-relation-predicate', _t('ontologyGraph.relation_predicate', '关系名称'), existing ? existing.predicate : '', { required: true, placeholder: _t('ontologyGraph.relation_predicate_placeholder', '例如：负责、包含、依赖') }),
+      _pocGraphSelectField('ontology-relation-object', _t('ontologyGraph.relation_object', '终点'), options, selectState['ontology-relation-object']),
+      _pocGraphTextareaField('ontology-relation-note', _t('ontologyGraph.relation_note', '关系说明'), existing ? existing.note : ''),
+      _pocGraphSourcePickerHtml(existing ? existing.sourceRefs : []),
+    ];
+    const submitted = await _pocGraphFormModal({
+      title: existing ? _t('ontologyGraph.relation_edit', '编辑关系') : _t('ontologyGraph.relation_new', '新建关系'),
+      description: _t('ontologyGraph.relation_form_hint', '选择关系两端并填写关系名称。引用只保存来源 ID，不复制个人资料或资产正文。'),
+      fields,
+      selectDefaults: selectState,
+      selectCallbacks: {
+        'ontology-relation-subject': (value) => { selectState['ontology-relation-subject'] = value; },
+        'ontology-relation-object': (value) => { selectState['ontology-relation-object'] = value; },
+      },
+      collect: (root, selected) => {
+        const toEndpoint = (value) => value === 'self' ? { kind: 'self' } : { kind: 'entity', id: String(value || '') };
+        return {
+          subject: toEndpoint(selected['ontology-relation-subject']),
+          predicate: String(root.querySelector('#ontology-relation-predicate')?.value || '').trim(),
+          object: toEndpoint(selected['ontology-relation-object']),
+          note: String(root.querySelector('#ontology-relation-note')?.value || '').trim(),
+          sourceRefs: _pocCollectSourceRefs(root, existing ? existing.sourceRefs : []),
+        };
+      },
+    });
+    if (!submitted) return;
+    await _pocGraphMutation(existing ? 'ontology.relation.update' : 'ontology.relation.create', {
+      ...(existing ? { relationId: existing.id } : {}),
+      ...submitted,
+    }, 'ontologyGraph.relation_saved', _t('ontologyGraph.relation_saved', '关系已保存'));
+  }
+
+  async function _pocDeleteGraphRelation(relationId) {
+    if (!relationId) return;
+    const message = _t('ontologyGraph.relation_delete_confirm', '只删除这条关系，不删除关系两端的实体或来源条目。');
+    const confirmed = typeof uiConfirmDanger === 'function'
+      ? await uiConfirmDanger({ title: _t('ontologyGraph.relation_delete', '删除关系'), message, dangerLabel: _t('ontologyGraph.relation_delete', '删除关系') })
+      : typeof uiConfirm === 'function' ? await uiConfirm({ message }) : false;
+    if (!confirmed) return;
+    await _pocGraphMutation('ontology.relation.delete', { relationId }, 'ontologyGraph.relation_deleted', _t('ontologyGraph.relation_deleted', '关系已删除'));
+  }
+
+  function _pocRenderOntologyOverview() {
+    const counts = _pocBoxCounts();
+    const facts = _pocAffairAssets();
+    const relations = _pocRelationRows();
+    const graph = _pocOntologyGraph();
+    const graphEntities = graph.entities || [];
+    const affairs = graphEntities.filter((entity) => entity.domain === 'affairs' && entity.status === 'active');
+    const resources = graphEntities.filter((entity) => entity.domain === 'resources' && entity.status === 'active');
+    const concepts = graphEntities.filter((entity) => entity.domain === 'concepts' && entity.status === 'active');
+    const graphFields = (graph.categories || []).reduce((count, category) => count + (category.fields || []).length, 0);
+    const personalFields = (_pocBoxData.groups || []).reduce((count, group) => count + (group.fields || []).length, 0);
+    const graphErrorStatus = graph.loadError ? _t('ontologyGraph.load_error_short', '读取失败') : '';
+    const explicitRelations = relations.filter((row) => row.relationKind !== 'same_family');
+    const sameSourceRelations = relations.filter((row) => row.relationKind === 'same_family');
+    if (typeof window.uiResourceGrid !== 'function' || typeof window.uiResourceCard !== 'function') {
+      throw new Error('personal ontology requires uiResourceGrid and uiResourceCard');
+    }
+    const card = (titleKey, title, descriptionKey, description, icon, count, unit, action, meta, statusOverride) => window.uiResourceCard({
+      title: _t(titleKey, title),
+      description: _t(descriptionKey, description),
+      icon,
+      status: statusOverride || _tv('personalOntology.overview_count', { n: count, unit }, `${count} ${unit}`),
+      className: 'personal-onto-domain-card',
+      bodyHtml: `<div class="personal-onto-domain-card-meta"><span>${escapeHtml(meta || _t('personalOntology.overview_data_source', '按当前已有数据展示'))}</span></div>`,
+      action: {
+        label: _t('personalOntology.overview_open', '进入查看'),
+        role: 'secondary',
+        size: 'sm',
+        attrs: { 'data-poc-domain-action': action },
+      },
+    });
+    const cards = [
+      card('personalOntology.nav_personal_domain', '个人本体', 'personalOntology.overview_personal_hint', '整理身份、偏好、方法与个人关系', '', counts.abox, _t('personalOntology.count_items', '条'), 'personal-domain'),
+      card('personalOntology.nav_affairs_domain', '事项本体', 'personalOntology.overview_affairs_hint', '浏览项目、任务、事件与相关事实', '', affairs.length + facts.length, _t('personalOntology.count_items', '条'), 'affairs-domain', _tv('ontologyGraph.overview_mix_counts', { entities: affairs.length, facts: facts.length }, `${affairs.length} 个事项 · ${facts.length} 条事实`), graphErrorStatus),
+      card('personalOntology.nav_resources_domain', '对象与资源', 'personalOntology.overview_resources_hint', '整理人物、组织、工具、产品与资料', '', resources.length, _t('personalOntology.count_entities', '个实体'), 'resources-domain', _t('personalOntology.overview_data_source', '按当前已有数据展示'), graphErrorStatus),
+      card('personalOntology.nav_concepts_domain', '概念本体', 'personalOntology.overview_concepts_hint', '整理术语、方法与规则等概念', '', concepts.length, _t('personalOntology.count_entities', '个实体'), 'concepts-domain', _t('personalOntology.overview_data_source', '按当前已有数据展示'), graphErrorStatus),
+      card('personalOntology.nav_taxonomy_domain', '分类与字段', 'personalOntology.overview_taxonomy_hint', '查看事项、资源、概念与个人本体分类', '', (graph.categories || []).length + _pocGroups.list.length, _t('personalOntology.count_categories', '个分类'), 'taxonomy-domain', _tv('personalOntology.overview_count', { n: graphFields + personalFields, unit: _t('personalOntology.count_fields', '个字段') }, `${graphFields + personalFields} 个字段`), graphErrorStatus),
+      card('personalOntology.nav_relationships_domain', '关系网络', 'personalOntology.overview_relationships_hint', '查看已保存的明确关系', '', explicitRelations.length, _t('personalOntology.count_relations', '条关系'), 'relationships-domain', _tv('personalOntology.overview_relationships_meta', { relations: explicitRelations.length, groups: sameSourceRelations.length }, `${explicitRelations.length} 条明确关系 · ${sameSourceRelations.length} 组同来源`), graphErrorStatus),
+    ];
+    const graphError = graph.loadError
+      ? `<p class="personal-onto-domain-error" role="alert">${escapeHtml(_t('ontologyGraph.load_error', '本体图谱读取失败'))}：${escapeHtml(_pocGraphErrorText(graph.loadError))}</p>`
+      : '';
+    return `<div class="personal-onto-overview">
+      <div class="personal-onto-overview-intro">${escapeHtml(_t('personalOntology.overview_hint', '本体把关于你、正在处理的事情、分类和它们之间的关系整理在同一个知识地图里。'))}</div>
+      ${window.uiResourceGrid({ className: 'personal-onto-domain-grid', bodyHtml: cards.join('') })}
+      ${graphError}
+      <p class="personal-onto-overview-note">${escapeHtml(_t('personalOntology.overview_truth_note', '条目数量来自当前已保存的数据；没有明确分类或关系的内容不会被系统猜测。'))}</p>
+    </div>`;
+  }
+
+  function _pocEntityRelationCount(entityId) {
+    return (_pocOntologyGraph().relations || []).filter((relation) => (
+      (relation.subject && relation.subject.kind === 'entity' && relation.subject.id === entityId)
+      || (relation.object && relation.object.kind === 'entity' && relation.object.id === entityId)
+    )).length;
+  }
+
+  function _pocRenderGraphEntityCard(entity) {
+    const graph = _pocOntologyGraph();
+    const category = (graph.categories || []).find((item) => item.id === entity.categoryId);
+    const fields = (category && Array.isArray(category.fields) ? category.fields : [])
+      .filter((field) => entity.properties && entity.properties[field.id])
+      .map((field) => `<div class="personal-onto-graph-property"><span>${escapeHtml(_pocGraphFieldLabel(field))}</span><strong>${escapeHtml(entity.properties[field.id])}</strong></div>`)
+      .join('');
+    const archived = entity.status === 'archived';
+    const statusAction = archived ? 'entity-reactivate' : 'entity-archive';
+    const statusLabel = archived
+      ? _t('ontologyGraph.entity_restore', '恢复')
+      : _t('ontologyGraph.entity_archive', '归档');
+    const bodyHtml = `<div class="personal-onto-graph-entity-head">
+        <div class="personal-onto-graph-entity-titles"><h3>${escapeHtml(entity.name)}</h3><div>${_tag(_pocGraphCategoryLabel(category))} ${archived ? _tag(_t('ontologyGraph.entity_archived', '已归档')) : ''}</div></div>
+        <span class="muted">${escapeHtml(_tv('ontologyGraph.entity_relation_count', { n: _pocEntityRelationCount(entity.id) }, `关联 ${_pocEntityRelationCount(entity.id)} 条`))}</span>
+      </div>
+      ${entity.description ? `<p class="personal-onto-affair-statement">${escapeHtml(entity.description)}</p>` : ''}
+      ${fields ? `<div class="personal-onto-graph-properties">${fields}</div>` : ''}
+      ${_pocRenderGraphSourceRefs(entity.sourceRefs)}
+      <div class="personal-onto-graph-entity-actions">
+        ${_button({ label: _t('ontologyGraph.entity_edit', '编辑'), size: 'sm', className: 'o', attrs: { 'data-poc-graph-op': 'entity-edit', 'data-entity-id': entity.id } })}
+        ${_button({ label: _t('ontologyGraph.relation_add', '添加关系'), size: 'sm', className: 'o', disabled: archived, attrs: { 'data-poc-graph-op': 'relation-create', 'data-subject-kind': 'entity', 'data-subject-id': entity.id } })}
+        ${_button({ label: statusLabel, size: 'sm', className: 'o', attrs: { 'data-poc-graph-op': statusAction, 'data-entity-id': entity.id } })}
+        ${_button({ label: _t('ontologyGraph.entity_delete', '删除'), size: 'sm', className: 'is-danger', attrs: { 'data-poc-graph-op': 'entity-delete', 'data-entity-id': entity.id } })}
+      </div>`;
+    return window.uiCard({ tag: 'article', className: 'personal-onto-graph-entity-card', bodyHtml });
+  }
+
+  function _pocRenderFormalFactsSection() {
+    const facts = _pocAffairAssets();
+    const rows = facts.map((asset) => {
+      const title = String(asset.title || '').trim() || _t('personalOntology.affairs_untitled', '未命名事实');
+      const statement = _pocTextSnippet(asset.statement, 480);
+      return `<article class="personal-onto-affair-row">
+        <div class="personal-onto-affair-heading"><h3>${escapeHtml(title)}</h3>${_tag(_t('personalOntology.affairs_fact_kind', '事实与知识'))}</div>
+        ${statement ? `<p class="personal-onto-affair-statement">${escapeHtml(statement)}</p>` : ''}
+        <div class="personal-onto-affair-footer">
+          <span class="muted">${escapeHtml(_t('personalOntology.affairs_active', '生效中'))} · ${escapeHtml(_t('personalOntology.affairs_source_asset', '来自正式认知资产'))}</span>
+          ${_button({ label: _t('personalOntology.affairs_open_asset', '查看来源条目'), size: 'sm', className: 'o', attrs: { 'data-poc-open-asset': String(asset.id || '') } })}
+        </div>
+      </article>`;
+    }).join('');
+    return `<section class="personal-onto-graph-formal-facts"><div class="personal-onto-zone-head">${escapeHtml(_t('personalOntology.affairs_fact_list', '事实与知识'))} <span class="muted">${facts.length}</span></div>
+      ${rows || `<div class="personal-onto-domain-empty">${_emptyState({ kind: 'quiet', title: _t('personalOntology.affairs_empty_title', '暂时没有事项类事实'), hint: _t('personalOntology.affairs_empty_hint', '确认保存的事实与知识资产会在这里显示；你仍可在「我的认知」中查看全部正式资产。') })}</div>`}
+    </section>`;
+  }
+
+  function _pocRenderOntologyDomain(domain) {
+    const graph = _pocOntologyGraph();
+    const categories = _pocGraphCategories(domain);
+    const entities = _pocGraphEntities(domain).filter((entity) => (
+      _pocDomainCategoryFilter === 'all' || entity.categoryId === _pocDomainCategoryFilter
+    ));
+    const allEntities = _pocGraphEntities(domain);
+    const entityCards = entities.map(_pocRenderGraphEntityCard).join('');
+    const defaultCategory = _pocDomainCategoryFilter === 'all'
+      ? categories[0]
+      : categories.find((category) => category.id === _pocDomainCategoryFilter);
+    const categoryFilters = [_button({
+      label: _t('ontologyGraph.category_all', '全部分类'),
+      size: 'sm',
+      className: `personal-onto-filter-chip${_pocDomainCategoryFilter === 'all' ? ' is-on' : ''}`,
+      attrs: { 'data-poc-graph-op': 'category-filter', 'data-domain': domain, 'data-category-id': 'all', 'aria-pressed': String(_pocDomainCategoryFilter === 'all') },
+    }), ...categories.map((category) => {
+      const count = allEntities.filter((entity) => entity.categoryId === category.id).length;
+      return _button({
+        label: `${_pocGraphCategoryLabel(category)} · ${count}`,
+        size: 'sm',
+        className: `personal-onto-filter-chip${_pocDomainCategoryFilter === category.id ? ' is-on' : ''}`,
+        attrs: { 'data-poc-graph-op': 'category-filter', 'data-domain': domain, 'data-category-id': category.id, 'aria-pressed': String(_pocDomainCategoryFilter === category.id) },
+      });
+    })].join('');
+    const error = graph.loadError
+      ? `<p class="personal-onto-domain-error" role="alert">${escapeHtml(_pocGraphErrorText(graph.loadError))}</p>`
+      : '';
+    const domainHint = domain === 'affairs' ? _t('ontologyGraph.domain_affairs_hint', '把项目、任务、事件、目标与决策组织成可关联的事项实体。')
+      : domain === 'resources' ? _t('ontologyGraph.domain_resources_hint', '把人物、组织、产品、工具、文档与地点组织成可关联的对象。')
+        : _t('ontologyGraph.domain_concepts_hint', '把术语、方法与规则整理成可复用的概念实体。');
+    const countLabel = _tv('ontologyGraph.domain_counts', { entities: allEntities.length, categories: categories.length }, `${allEntities.length} 个实体 · ${categories.length} 个分类`);
+    const topActions = `<section class="personal-onto-graph-management" aria-labelledby="personal-onto-entity-management-title">
+      <div class="personal-onto-graph-management-copy">
+        <h2 id="personal-onto-entity-management-title">${escapeHtml(_t('personalOntology.domain_manage_title', '实体与分类'))}</h2>
+        <p>${escapeHtml(_t('personalOntology.domain_manage_hint', '实体是具体的项目、人物或概念；分类定义实体可以填写哪些字段。'))}</p>
+      </div>
+      <div class="personal-onto-graph-toolbar">
+        ${_button({ label: _t('ontologyGraph.entity_new', '新建实体'), icon: 'plus', size: 'sm', attrs: { 'data-poc-graph-op': 'entity-create', 'data-domain': domain, 'data-category-id': (defaultCategory && defaultCategory.id) || '' } })}
+        ${_button({ label: _t('ontologyGraph.category_new', '新建分类'), size: 'sm', className: 'o', attrs: { 'data-poc-graph-op': 'category-create', 'data-domain': domain } })}
+        ${_button({ label: _t('ontologyGraph.open_taxonomy', '管理分类与字段'), size: 'sm', className: 'o', attrs: { 'data-poc-domain-action': 'taxonomy-domain', 'data-taxonomy-domain': domain } })}
+      </div>
+    </section>`;
+    const empty = !entityCards
+      ? `<div class="personal-onto-domain-empty">${_emptyState({
+        kind: 'actionable',
+        title: _pocDomainCategoryFilter === 'all' ? _t('ontologyGraph.entities_empty_title', '这里还没有实体') : _t('ontologyGraph.category_entities_empty_title', '这个分类里还没有实体'),
+        hint: _t('ontologyGraph.entities_empty_hint', '新建实体后，可以补充字段、关联来源，并与“我”或其他实体建立关系。'),
+        action: { label: _t('ontologyGraph.entity_new', '新建实体'), icon: 'plus', size: 'sm', attrs: { 'data-poc-graph-op': 'entity-create', 'data-domain': domain, 'data-category-id': (defaultCategory && defaultCategory.id) || '' } },
+      })}</div>`
+      : '';
+    return `<div class="personal-onto-domain-view">
+      <div class="personal-onto-domain-intro">${escapeHtml(domainHint)}</div>
+      ${error}
+      ${topActions}
+      <section class="personal-onto-graph-filter-panel" aria-labelledby="personal-onto-filter-title">
+        <div class="personal-onto-graph-filter-heading">
+          <h2 id="personal-onto-filter-title">${escapeHtml(_t('personalOntology.domain_filter_title', '按分类筛选实体'))}</h2>
+          <p>${escapeHtml(_t('personalOntology.domain_filter_hint', '筛选只改变当前列表，不会修改实体或分类。'))}</p>
+        </div>
+        <div class="personal-onto-graph-filters">${categoryFilters}</div>
+      </section>
+      <div class="personal-onto-zone-head"><span>${escapeHtml(_t('ontologyGraph.entities_heading', '实体'))}</span><span class="muted">${escapeHtml(countLabel)}</span></div>
+      <div class="personal-onto-graph-entity-grid">${entityCards || empty}</div>
+      ${domain === 'affairs' ? _pocRenderFormalFactsSection() : ''}
+    </div>`;
+  }
+
+  function _pocRenderAffairsView() { return _pocRenderOntologyDomain('affairs'); }
+  function _pocRenderResourcesView() { return _pocRenderOntologyDomain('resources'); }
+  function _pocRenderConceptsView() { return _pocRenderOntologyDomain('concepts'); }
+
+  function _pocRenderPersonalTaxonomy() {
+    const sections = _pocProfileSections();
+    const profile = sections.map((section) => `<article class="personal-onto-taxonomy-row">
+      <div class="personal-onto-affair-heading"><strong>${escapeHtml(_t(section.titleKey, section.title))}</strong><span class="muted">${section.entries.length}</span></div>
+      <p class="muted">${escapeHtml(_t(section.descriptionKey, section.description))}</p>
+    </article>`).join('');
+    const groups = (_pocBoxData.groups || []).map((group) => `<article class="personal-onto-taxonomy-row">
+      <div class="personal-onto-affair-heading"><strong>${escapeHtml(group.title)}</strong>${_tag(_t('ontologyGraph.personal_manual_group', '个人本体分组'))}</div>
+      <div class="personal-onto-taxonomy-fields">${(group.fields || []).map((field) => _tag(String(field.name || ''))).join('') || `<span class="muted">${escapeHtml(_t('ontologyGraph.no_fields', '还没有字段'))}</span>`}</div>
+    </article>`).join('');
+    return `<section class="personal-onto-taxonomy-personal">
+      <div class="personal-onto-zone-head">${escapeHtml(_t('ontologyGraph.personal_profile_categories', '个人信息分类'))}</div>
+      ${profile || `<p class="muted">${escapeHtml(_t('ontologyGraph.personal_categories_empty', '保存个人信息后，系统会在这里按现有分类展示。'))}</p>`}
+      <div class="personal-onto-zone-head">${escapeHtml(_t('ontologyGraph.personal_groups_categories', '个人本体分组与字段'))}</div>
+      ${groups || `<p class="muted">${escapeHtml(_t('ontologyGraph.personal_groups_empty', '还没有个人本体分组。'))}</p>`}
+      ${_button({ label: _t('ontologyGraph.manage_personal_categories', '打开个人本体分类管理'), size: 'sm', className: 'o', attrs: { 'data-poc-nav': 'tbox' } })}
+    </section>`;
+  }
+
+  function _pocRenderTaxonomyView() {
+    const graph = _pocOntologyGraph();
+    const domains = ['personal', 'affairs', 'resources', 'concepts'];
+    const tabs = domains.map((domain) => _button({
+      label: _pocGraphDomainLabel(domain),
+      size: 'sm',
+      className: `personal-onto-filter-chip${_pocTaxonomyDomain === domain ? ' is-on' : ''}`,
+      attrs: { 'data-poc-graph-op': 'taxonomy-domain', 'data-domain': domain, 'aria-pressed': String(_pocTaxonomyDomain === domain) },
+    })).join('');
+    if (_pocTaxonomyDomain === 'personal') {
+      return `<div class="personal-onto-domain-view"><div class="personal-onto-graph-filters">${tabs}</div>${_pocRenderPersonalTaxonomy()}</div>`;
+    }
+    const categories = _pocGraphCategories(_pocTaxonomyDomain);
+    const entities = _pocGraphEntities(_pocTaxonomyDomain);
+    const children = new Map();
+    categories.forEach((category) => {
+      const key = category.parentId || '';
+      if (!children.has(key)) children.set(key, []);
+      children.get(key).push(category);
+    });
+    const renderCategory = (category, depth = 0) => {
+      const used = entities.filter((entity) => entity.categoryId === category.id).length;
+      const childrenHtml = (children.get(category.id) || []).map((child) => renderCategory(child, depth + 1)).join('');
+      return `<article class="personal-onto-taxonomy-row personal-onto-taxonomy-depth-${Math.min(depth, 6)}${category.builtIn ? ' is-built-in' : ''}">
+        <div class="personal-onto-affair-heading"><strong>${escapeHtml(_pocGraphCategoryLabel(category))}</strong><span>${_tag(category.builtIn ? _t('ontologyGraph.category_builtin', '内置分类') : _t('ontologyGraph.category_custom', '自定义分类'))}<span class="muted">${used}</span></span></div>
+        ${category.description ? `<p class="muted">${escapeHtml(category.descriptionKey ? _t(category.descriptionKey, category.description) : category.description)}</p>` : ''}
+        <div class="personal-onto-taxonomy-fields">${(category.fields || []).map((field) => _tag(_pocGraphFieldLabel(field))).join('') || `<span class="muted">${escapeHtml(_t('ontologyGraph.no_fields', '还没有字段'))}</span>`}</div>
+        ${!category.builtIn ? `<div class="personal-onto-graph-entity-actions">
+          ${_button({ label: _t('ontologyGraph.category_edit', '编辑分类'), size: 'sm', className: 'o', attrs: { 'data-poc-graph-op': 'category-edit', 'data-category-id': category.id } })}
+          ${_button({ label: _t('ontologyGraph.category_delete', '删除分类'), size: 'sm', className: 'is-danger', attrs: { 'data-poc-graph-op': 'category-delete', 'data-category-id': category.id } })}
+        </div>` : ''}
+      </article>${childrenHtml}`;
+    };
+    const categoriesHtml = (children.get('') || []).map((category) => renderCategory(category)).join('');
+    const error = graph.loadError ? `<p class="personal-onto-domain-error" role="alert">${escapeHtml(_pocGraphErrorText(graph.loadError))}</p>` : '';
+    return `<div class="personal-onto-domain-view"><div class="personal-onto-graph-filters">${tabs}</div>${error}
+      <div class="personal-onto-graph-toolbar">${_button({ label: _t('ontologyGraph.category_new', '新建分类'), icon: 'plus', size: 'sm', attrs: { 'data-poc-graph-op': 'category-create', 'data-domain': _pocTaxonomyDomain } })}</div>
+      <div class="personal-onto-zone-head">${escapeHtml(_t('ontologyGraph.categories_heading', '分类'))} <span class="muted">${categories.length}</span></div>
+      ${categoriesHtml || `<div class="personal-onto-domain-empty">${_emptyState({ kind: 'quiet', title: _t('ontologyGraph.categories_empty_title', '暂无分类'), hint: _t('ontologyGraph.categories_empty_hint', '可以为这个领域创建自己的分类与字段。') })}</div>`}
+    </div>`;
+  }
+
+  function _pocRenderRelationshipsView() {
+    const rows = _pocRelationRows();
+    const explicitRows = rows.filter((row) => row.relationKind !== 'same_family');
+    const sameSourceRows = rows.filter((row) => row.relationKind === 'same_family');
+    const canCreateGraphRelation = _pocGraphEntities().some((entity) => entity.status === 'active');
+    const renderRelation = (row) => {
+      const isSameSource = row.relationKind === 'same_family';
+      return `<article class="personal-onto-relation-row">
+      <div class="personal-onto-relation-edge">
+        <span class="personal-onto-relation-node">${escapeHtml(row.from)}</span>
+        <span class="personal-onto-relation-predicate">${escapeHtml(row.predicate)}</span>
+        <span class="personal-onto-relation-node">${escapeHtml(row.to)}</span>
+      </div>
+      <div class="personal-onto-relation-footer">
+        ${!isSameSource ? `<span class="muted">${escapeHtml(_tv('personalOntology.relationship_source', { source: row.source }, `来源：${row.source}`))}</span>` : ''}
+        ${!isSameSource && row.note ? `<span class="muted">${escapeHtml(row.note)}</span>` : ''}
+        ${row.assetId ? _button({ label: _t('personalOntology.relationship_open_source', '打开来源条目'), size: 'sm', className: isSameSource ? 'o personal-onto-relation-source-action' : 'o', attrs: { 'data-poc-open-asset': row.assetId } }) : ''}
+        ${row.targetAssetId ? _button({ label: _t('personalOntology.relationship_open_target', '打开关联条目'), size: 'sm', className: isSameSource ? 'o personal-onto-relation-target-action' : 'o', attrs: { 'data-poc-open-asset': row.targetAssetId } }) : ''}
+        ${row.relationId ? _button({ label: _t('ontologyGraph.relation_edit', '编辑关系'), size: 'sm', className: 'o', attrs: { 'data-poc-graph-op': 'relation-edit', 'data-relation-id': row.relationId } }) : ''}
+        ${row.relationId ? _button({ label: _t('ontologyGraph.relation_delete', '删除关系'), size: 'sm', className: 'is-danger', attrs: { 'data-poc-graph-op': 'relation-delete', 'data-relation-id': row.relationId } }) : ''}
+      </div>
+      ${row.sourceRefs && row.sourceRefs.length ? _pocRenderGraphSourceRefs(row.sourceRefs) : ''}
+    </article>`;
+    };
+    const relationHtml = explicitRows.map(renderRelation).join('');
+    const sameSourceHtml = sameSourceRows.map(renderRelation).join('');
+    const graphError = _pocOntologyGraph().loadError
+      ? `<p class="personal-onto-domain-error" role="alert">${escapeHtml(_pocGraphErrorText(_pocOntologyGraph().loadError))}</p>`
+      : '';
+    return `<div class="personal-onto-domain-view">
+      <div class="personal-onto-domain-intro">${escapeHtml(_t('personalOntology.relationships_hint', '每条明确关系按“起点 → 关系 → 终点”读取；来源用于说明关系是从哪里保存的。'))}</div>
+      <div class="personal-onto-graph-toolbar">${_button({ label: _t('ontologyGraph.relation_new', '新建关系'), icon: 'plus', size: 'sm', disabled: !canCreateGraphRelation, attrs: { 'data-poc-graph-op': 'relation-create' } })}${!canCreateGraphRelation ? `<span class="muted">${escapeHtml(_t('ontologyGraph.relation_needs_entity', '先创建至少一个实体，再添加关系。'))}</span>` : ''}</div>
+      ${graphError}
+      <section class="personal-onto-relation-section" aria-labelledby="personal-onto-explicit-relations-title">
+        <div class="personal-onto-zone-head" id="personal-onto-explicit-relations-title">${escapeHtml(_t('personalOntology.relationships_explicit_title', '明确关系'))} <span class="muted">${explicitRows.length}</span></div>
+        <p class="personal-onto-relation-help">${escapeHtml(_t('personalOntology.relationships_explicit_hint', '这些关系明确记录了起点、关系名称和终点，例如“我 → 负责 → 项目”。'))}</p>
+        ${relationHtml || `<div class="personal-onto-domain-empty">${_emptyState({
+          kind: 'quiet',
+          title: _t('personalOntology.relationships_empty_title', '还没有明确保存的关系'),
+          hint: _t('personalOntology.relationships_empty_hint', '创建至少一个实体后，使用“新建关系”记录它与其他实体或“我”的关系。'),
+        })}</div>`}
+      </section>
+      ${sameSourceRows.length ? `<details class="details personal-onto-related-groups">
+        <summary>${escapeHtml(_tv('personalOntology.relationships_same_source_title', { n: sameSourceRows.length }, `同来源分组（系统整理）· ${sameSourceRows.length} 组`))}</summary>
+        <p class="personal-onto-relation-help">${escapeHtml(_t('personalOntology.relationships_same_source_hint', '这些资产来自相同来源，被系统归为一组；这不表示它们之间存在业务依赖关系。'))}</p>
+        ${sameSourceHtml}
+      </details>` : ''}
+      <p class="personal-onto-overview-note">${escapeHtml(_t('personalOntology.relationships_boundary_note', '关系图当前以清单呈现，避免把文本相似或模型猜测误显示成真实连接。'))}</p>
+    </div>`;
+  }
+
+  function _pocBindMainView(bodyEl) {
+    if (!bodyEl) return;
+    bodyEl.querySelectorAll('[data-poc-domain-action]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const action = el.getAttribute('data-poc-domain-action');
+        if (action === 'taxonomy-domain' && el.getAttribute('data-taxonomy-domain')) {
+          _pocTaxonomyDomain = el.getAttribute('data-taxonomy-domain');
+        }
+        _pocNavigate(action);
+      });
+    });
+    bodyEl.querySelectorAll('[data-poc-open-asset]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const assetId = el.getAttribute('data-poc-open-asset');
+        if (assetId && typeof window.openCognitionAssetById === 'function') window.openCognitionAssetById(assetId);
+      });
+    });
+    bodyEl.querySelectorAll('[data-poc-open-candidate]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const candidateId = el.getAttribute('data-poc-open-candidate');
+        if (candidateId && typeof window.openCognitionCandidateById === 'function') window.openCognitionCandidateById(candidateId);
+      });
+    });
+    bodyEl.querySelectorAll('[data-poc-graph-op]').forEach((el) => {
+      el.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        await _pocHandleGraphOperation(el);
+      });
+    });
+  }
+
+  async function _pocHandleGraphOperation(el) {
+    const op = String(el.getAttribute('data-poc-graph-op') || '');
+    if (op === 'category-filter') {
+      const domain = String(el.getAttribute('data-domain') || '');
+      _pocDomainCategoryFilter = String(el.getAttribute('data-category-id') || 'all');
+      if (_pocView === 'affairs' || _pocView === 'resources' || _pocView === 'concepts') {
+        if (domain !== _pocView) return;
+      }
+      _pocRenderMain();
+      return;
+    }
+    if (op === 'taxonomy-domain') {
+      const domain = String(el.getAttribute('data-domain') || 'affairs');
+      if (['personal', 'affairs', 'resources', 'concepts'].includes(domain)) {
+        _pocTaxonomyDomain = domain;
+        _pocRenderMain();
+      }
+      return;
+    }
+    const graph = _pocOntologyGraph();
+    const categoryId = String(el.getAttribute('data-category-id') || '');
+    const entityId = String(el.getAttribute('data-entity-id') || '');
+    const relationId = String(el.getAttribute('data-relation-id') || '');
+    const category = (graph.categories || []).find((item) => item.id === categoryId);
+    const entity = (graph.entities || []).find((item) => item.id === entityId);
+    const relation = (graph.relations || []).find((item) => item.id === relationId);
+    if (op === 'category-create') await _pocOpenGraphCategoryForm(String(el.getAttribute('data-domain') || 'affairs'));
+    else if (op === 'category-edit' && category) await _pocOpenGraphCategoryForm(category.domain, category);
+    else if (op === 'category-delete' && category) await _pocDeleteGraphCategory(category);
+    else if (op === 'entity-create') {
+      const domain = String(el.getAttribute('data-domain') || 'affairs');
+      const selectedCategory = category || _pocGraphCategories(domain)[0];
+      await _pocOpenGraphEntityForm(domain, selectedCategory);
+    } else if (op === 'entity-edit' && entity) await _pocOpenGraphEntityForm(entity.domain, undefined, entity);
+    else if (op === 'entity-delete' && entity) await _pocDeleteGraphEntity(entity);
+    else if ((op === 'entity-archive' || op === 'entity-reactivate') && entity) await _pocToggleGraphEntityStatus(entity);
+    else if (op === 'relation-create') {
+      const subjectId = String(el.getAttribute('data-subject-id') || '');
+      await _pocOpenGraphRelationForm(null, subjectId || 'self');
+    } else if (op === 'relation-edit' && relation) await _pocOpenGraphRelationForm(relation);
+    else if (op === 'relation-delete' && relationId) await _pocDeleteGraphRelation(relationId);
+  }
+
   function _pocRenderMain() {
     const headerEl = document.getElementById('personal-onto-main-header');
     const bodyEl = document.getElementById('personal-onto-main-body');
     if (!headerEl || !bodyEl) return;
+
+    if (['overview', 'affairs', 'resources', 'concepts', 'taxonomy', 'relationships'].includes(_pocView)) {
+      headerEl.classList.remove('is-profile');
+      if (_pocView === 'overview') {
+        headerEl.innerHTML = `<span class="personal-onto-main-title">${escapeHtml(_t('personalOntology.overview_title', '本体总览'))}</span>`
+          + `<div class="sub">${escapeHtml(_t('personalOntology.overview_subtitle', '从个人信息到项目事项，查看已保存的分类与关系。'))}</div>`;
+        bodyEl.innerHTML = _pocRenderOntologyOverview();
+      } else if (_pocView === 'affairs') {
+        const n = _pocGraphEntities('affairs').length + _pocAffairAssets().length;
+        headerEl.innerHTML = `<span class="personal-onto-main-title">${escapeHtml(_t('personalOntology.nav_affairs_domain', '事项本体'))}</span>`
+          + `<div class="sub">${escapeHtml(_tv('ontologyGraph.domain_counts', { entities: _pocGraphEntities('affairs').length, categories: _pocGraphCategories('affairs').length }, `${n} 个事项`))}</div>`;
+        bodyEl.innerHTML = _pocRenderAffairsView();
+      } else if (_pocView === 'resources') {
+        const entities = _pocGraphEntities('resources');
+        headerEl.innerHTML = `<span class="personal-onto-main-title">${escapeHtml(_t('personalOntology.nav_resources_domain', '对象与资源'))}</span>`
+          + `<div class="sub">${escapeHtml(_tv('ontologyGraph.domain_counts', { entities: entities.length, categories: _pocGraphCategories('resources').length }, `${entities.length} 个实体`))}</div>`;
+        bodyEl.innerHTML = _pocRenderResourcesView();
+      } else if (_pocView === 'concepts') {
+        const entities = _pocGraphEntities('concepts');
+        headerEl.innerHTML = `<span class="personal-onto-main-title">${escapeHtml(_t('personalOntology.nav_concepts_domain', '概念本体'))}</span>`
+          + `<div class="sub">${escapeHtml(_tv('ontologyGraph.domain_counts', { entities: entities.length, categories: _pocGraphCategories('concepts').length }, `${entities.length} 个实体`))}</div>`;
+        bodyEl.innerHTML = _pocRenderConceptsView();
+      } else if (_pocView === 'taxonomy') {
+        headerEl.innerHTML = `<span class="personal-onto-main-title">${escapeHtml(_t('personalOntology.nav_taxonomy_domain', '分类与字段'))}</span>`
+          + `<div class="sub">${escapeHtml(_t('ontologyGraph.taxonomy_hint', '跨领域浏览分类、层级和字段定义。'))}</div>`;
+        bodyEl.innerHTML = _pocRenderTaxonomyView();
+        if (_pocTaxonomyDomain === 'personal') _pocBindBoxView(bodyEl);
+      } else {
+        const rows = _pocRelationRows();
+        const explicitCount = rows.filter((row) => row.relationKind !== 'same_family').length;
+        const sameSourceCount = rows.filter((row) => row.relationKind === 'same_family').length;
+        headerEl.innerHTML = `<span class="personal-onto-main-title">${escapeHtml(_t('personalOntology.nav_relationships_domain', '关系网络'))}</span>`
+          + `<div class="sub">${escapeHtml(_tv('personalOntology.overview_relationships_meta', { relations: explicitCount, groups: sameSourceCount }, `${explicitCount} 条明确关系 · ${sameSourceCount} 组同来源`))}</div>`;
+        bodyEl.innerHTML = _pocRenderRelationshipsView();
+      }
+      _pocBindMainView(bodyEl);
+      return;
+    }
 
     if (_pocSelected.kind === 'tbox' || _pocSelected.kind === 'abox' || _pocSelected.kind === 'rbox') {
       headerEl.classList.remove('is-profile');
@@ -1629,9 +2734,9 @@
          词汇/事实/规则全靠猜（2026-09-21 子安真机反馈「看不懂」）。 */
       const counts = _pocBoxCounts();
       const boxInfo = {
-        tbox: { title: _t('personalOntology.nav_tbox', '统一词表'), n: counts.tbox, unit: '项', def: _t('personalOntology.box_tbox_def', '系统描述你时用的一致用词，避免同一个意思多种叫法') },
-        abox: { title: _t('personalOntology.nav_abox', '我是谁'), n: counts.abox, unit: '条', def: _t('personalOntology.box_abox_def', '关于你的稳定事实——身份、角色、项目与关系，AI 在任务里会长期使用') },
-        rbox: { title: _t('personalOntology.nav_rbox', '我偏好什么'), n: counts.rbox, unit: '条', def: _t('personalOntology.box_rbox_def', '带条件的行为规则——AI 该怎么配合你做事、什么别做') },
+        tbox: { title: _t('personalOntology.nav_tbox', '分类与字段'), n: counts.tbox, unit: '项', def: _t('personalOntology.box_tbox_def', '本体分类与字段说明有哪些条目类型，以及如何组织角色模板') },
+        abox: { title: _t('personalOntology.nav_abox', '事实与条目'), n: counts.abox, unit: '条', def: _t('personalOntology.box_abox_def', '个人稳定事实与条目——身份、角色、偏好、项目和关系') },
+        rbox: { title: _t('personalOntology.nav_rbox', '关系与规则'), n: counts.rbox, unit: '条', def: _t('personalOntology.box_rbox_def', '明确关系与 AI 应遵循的规则') },
       }[_pocSelected.kind];
       headerEl.innerHTML = `<span class="personal-onto-main-title">${escapeHtml(boxInfo.title)}</span>` +
         `<div class="sub">${escapeHtml(boxInfo.def)} · ${boxInfo.n} ${boxInfo.unit}</div>`;
@@ -1705,7 +2810,11 @@
         const gid = el.getAttribute('data-poc-gid');
         const field = el.getAttribute('data-poc-field');
         const value = el.getAttribute('data-poc-value');
-        if (op === 'append-value') await _pocAppendValuePrompt(field, gid);
+        if (op === 'open-formal-asset') {
+          const assetId = el.getAttribute('data-poc-asset-id');
+          if (assetId && typeof window.openCognitionAssetById === 'function') window.openCognitionAssetById(assetId);
+        }
+        else if (op === 'append-value') await _pocAppendValuePrompt(field, gid);
         else if (op === 'edit-value') await _pocEditValuePrompt(field, value, gid, el.getAttribute('data-poc-asof') || '');
         else if (op === 'remove-value') await _pocRemoveValue(field, value, gid);
         else if (op === 'verify-value') await _pocToggleValueVerified(el, field, value, gid);
@@ -1772,10 +2881,11 @@ function _pocBindNav() {
       el.addEventListener('click', async (e) => {
         const action = el.getAttribute('data-poc-nav');
         const id = el.getAttribute('data-poc-id');
-        if (action === 'tbox' || action === 'abox' || action === 'rbox') {
-          _pocSelected = { kind: action, id: action };
-          _pocGroupEditor = null;
-          renderPersonalOntology();
+        if (action === 'ontology-home' || action === 'personal-domain' || action === 'affairs-domain'
+          || action === 'resources-domain' || action === 'concepts-domain'
+          || action === 'taxonomy-domain' || action === 'relationships-domain'
+          || action === 'tbox' || action === 'abox' || action === 'rbox') {
+          _pocNavigate(action);
         }
         else if (action === 'new-group') {
           e.stopPropagation();
@@ -1828,6 +2938,11 @@ function _pocBindNav() {
         const action = el.getAttribute('data-poc-group-action');
         const ed = _pocGroupEditor;
         if (!ed) return;
+        if (action === 'open-formal-asset') {
+          const assetId = el.getAttribute('data-poc-asset-id');
+          if (assetId && typeof window.openCognitionAssetById === 'function') window.openCognitionAssetById(assetId);
+          return;
+        }
         // 模板分节操作使用复合 id（data-poc-ref），原文操作使用模板 group id。
         const groupId = el.getAttribute('data-poc-ref') || ed.groupId;
         const run = async () => {
@@ -1936,7 +3051,10 @@ function _pocBindNav() {
   }
 
   // ── 主渲染 ───────────────────────────────────────────────────────────────
-  async function renderPersonalOntology() {
+  async function renderPersonalOntology(options = {}) {
+    if (options && ['overview', 'personal', 'affairs', 'resources', 'concepts', 'taxonomy', 'relationships'].includes(options.view)) {
+      _pocView = options.view;
+    }
     const nav = document.getElementById('personal-onto-nav');
     const bodyEl = document.getElementById('personal-onto-main-body');
     if (!nav || !bodyEl) {
@@ -2023,8 +3141,13 @@ function _pocBindNav() {
     // 其他入口）后刷新不重读列表，nav 永远显示旧集合。
     _pocGroups = { list: [], loaded: false, loadError: '' };
     _pocCandidatesLoaded = false;
-    _pocBoxData = { loaded: false, loadError: '', groups: [], assets: [], conflicts: [] };
+    _pocBoxData = {
+      loaded: false, loadError: '', groups: [], assets: [], sourceAssets: [], conflicts: [],
+      graph: { loaded: false, loadError: '', categories: [], entities: [], relations: [] },
+    };
     _pocExpandedValues.clear();
+    const route = window.CogAssets && window.CogAssets.store && window.CogAssets.store.route;
+    if (options.deferWhenHidden && route && route.name !== 'ontology') return Promise.resolve();
     return renderPersonalOntology();
   }
 
@@ -2073,6 +3196,7 @@ function _pocBindNav() {
 
   window.renderPersonalOntology = renderPersonalOntology;
   window.refreshPersonalOntology = refreshPersonalOntology;
+  window.refreshOntologyGraph = refreshOntologyGraph;
   if (typeof window.addEventListener === 'function') {
     window.addEventListener('i18n-change', () => { void _pocRefreshForLanguage(); });
   }

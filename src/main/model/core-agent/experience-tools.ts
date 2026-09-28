@@ -33,6 +33,8 @@ import {
   type ExperienceTaskType,
   type ExperienceType,
 } from '../../features/recall/experience-service';
+import { scopeForTask } from '../../features/kstar/extraction-service';
+import type { AssetRuntimeContext } from '../../features/recall/formal-assets/runtime';
 import { recordInjectionReceipt, listInjectionReceipts } from '../../features/recall/injection-receipt';
 import { recordRecallUsage } from '../../features/recall/usage-service';
 import { safeId } from '../../storage';
@@ -42,11 +44,12 @@ const log = createLogger('experience-tools');
 
 export interface ExperienceToolsOpts {
   userId: string;
+  agentId?: string;
   /** 当前回合 id：写 agent_read 注入回执/使用流水用；缺省时只读不记账。 */
   turnId?: string;
   /** Conversation id（预留：回执/流水定位用）。 */
   cid?: string;
-  /** 空间 id：作为运行时准入的作用域上下文。 */
+  /** 当前空间 id：只用于空间归属准入，不是经验适用任务类型。 */
   spaceId?: string;
   /** 当前用户消息文本：模型不带 taskText 调清单时的兜底任务文本。 */
   taskText?: string;
@@ -127,6 +130,20 @@ function stringInput(value: unknown): string {
 function enumInput(value: unknown, allowed: Set<string>): string | undefined {
   const raw = stringInput(value);
   return raw && allowed.has(raw) ? raw : undefined;
+}
+
+function experienceRuntimeContext(
+  opts: ExperienceToolsOpts,
+  taskText = '',
+  taskScope?: string,
+): AssetRuntimeContext {
+  return {
+    ...(opts.agentId ? { agentId: opts.agentId } : {}),
+    ...(opts.spaceId ? { workspaceId: opts.spaceId } : {}),
+    ...((taskScope || taskText) ? { scope: taskScope || scopeForTask(taskText) } : {}),
+    ...(taskText ? { taskText } : {}),
+    silentDefaultInjection: true,
+  };
 }
 
 /**
@@ -234,16 +251,19 @@ function createListTaskExperiencesTool(opts: ExperienceToolsOpts): AgentTool {
       try {
         if (taskText && !taskTypeFilter) {
           const built = await buildExperienceCatalog(userId, taskText, {
-            ...(opts.spaceId ? { runtimeContext: { scope: opts.spaceId } } : {}),
+            runtimeContext: experienceRuntimeContext(opts, taskText),
           });
           entries = built.entries;
         } else {
-          // 浏览模式（显式 taskType 或无任务文本）：同 search_ability_assets 的
-          // 目录模式口径——只筛 active，运行时门禁在取正文时执行；listExperiences
-          // 已按近度（updatedAt 降序）排好。
+          // 浏览模式（显式 taskType 或无任务文本）：taskType 表示经验来自哪类
+          // 任务，不是本轮用途 scope。仍检查状态、Agent、workspace 和禁用场景；
+          // 缺少任务文本时不因 applicableWhen 无法判断而隐藏目录元数据。
           const all = await listExperiences(userId);
+          const runtimeContext = experienceRuntimeContext(opts, taskText);
           entries = all
             .filter((exp) => exp.status === 'active')
+            .filter((exp) => evaluateExperienceRuntimeEligibility(userId, exp, runtimeContext)
+              .reasons.every((reason) => reason === 'not_applicable_context'))
             .filter((exp) => !taskTypeFilter || exp.source.taskType === taskTypeFilter)
             .map(browseEntry);
         }
@@ -319,11 +339,11 @@ function createReadTaskExperienceTool(opts: ExperienceToolsOpts): AgentTool {
       // search_ability_assets 的读取口径：applicableWhen 是软提示不进硬闸——
       // 模型看过清单、已自行判断适用性，按词面匹配否掉模型的明确选择会把
       // 功能废掉。硬闸照旧：状态 / scope / 禁用场景 / 敏感度 / targetAgents。
-      const eligibility = evaluateExperienceRuntimeEligibility(userId, exp, {
-        ...(opts.spaceId ? { scope: opts.spaceId } : {}),
-        ...(opts.taskText ? { taskText: opts.taskText } : {}),
-        silentDefaultInjection: true,
-      });
+      const eligibility = evaluateExperienceRuntimeEligibility(
+        userId,
+        exp,
+        experienceRuntimeContext(opts, opts.taskText || ''),
+      );
       const reasons = eligibility.reasons.filter((reason) => reason !== 'not_applicable_context');
       if (reasons.length) {
         // 「被拦截不得计为成功」：isError 是平台自身的成功/失败信号，回执同时

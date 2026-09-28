@@ -237,6 +237,10 @@ vi.mock("../../../../src/main/model/client", () => ({
         await opts.onTeachingReceipt?.(ev.receipt);
         continue;
       }
+      if (ev?.type === "__emit_cognition_save_receipt__") {
+        await opts.onCognitionSaveReceipt?.(ev.receipt);
+        continue;
+      }
       if (ev?.type === "__capture_tool_definitions__") {
         _recordedToolDefinitions.push(
           ...(opts.extraTools || []).map((tool: any) => ({
@@ -1720,6 +1724,46 @@ describe("group_chat bus integration › teaching receipts", () => {
         status: "active",
         candidate_ids: ["cand-a"],
       }],
+    });
+  });
+
+  it("persists deduplicated host-owned cognition save receipts on the assistant message", async () => {
+    const cid = newCid();
+    const state = await import("../../../../src/main/features/group_chat/state");
+    const bus = await import("../../../../src/main/features/group_chat/bus");
+    const activeAsset = {
+      target: "asset",
+      id: "asset-save-a",
+      summary: "以后所有结论都附来源。",
+      outcome: "created",
+    };
+    const pendingCandidate = {
+      target: "candidate",
+      id: "cand-save-a",
+      summary: "The user prefers concise answers and one example.",
+      outcome: "pending-review",
+    };
+    _setScript(state.buildGconvSessionId(cid), [
+      { type: "__emit_cognition_save_receipt__", receipt: activeAsset },
+      { type: "__emit_cognition_save_receipt__", receipt: pendingCandidate },
+      { type: "__emit_cognition_save_receipt__", receipt: pendingCandidate },
+      { type: "final", text: "已保存，请查看回执。" },
+    ]);
+
+    await bus.enqueue({
+      uid: TEST_UID,
+      cid,
+      fromActorId: "user",
+      text: "请记住：以后所有结论都附来源。",
+    });
+    await waitForQuiescent(TEST_UID, cid);
+
+    const messages = await readConversationMessages(cid);
+    const reply = messages.find((message) =>
+      message.from === "commander" && Array.isArray(message.cognition_save_receipts));
+    expect(reply).toMatchObject({
+      text: "已保存，请查看回执。",
+      cognition_save_receipts: [activeAsset, pendingCandidate],
     });
   });
 });

@@ -309,6 +309,21 @@ describe('personal_ontology_groups › @asof field value marker', () => {
       .toEqual({ value: '值', source: '手动' });
   });
 
+  it('parses and round-trips a formal Recall asset reference without treating it as a project', async () => {
+    const groups = await loadModule();
+    const line = groups.serializeFieldValueLine({
+      value: '先讲结论',
+      source: '智能',
+      recallAssetId: 'asset-a1',
+    });
+    expect(line).toBe('- 先讲结论 [智能] @asset:asset-a1');
+    expect(groups.parseFieldValueLine(line)).toEqual({
+      value: '先讲结论',
+      source: '智能',
+      recallAssetId: 'asset-a1',
+    });
+  });
+
   it('malformed asof is ignored, never promoted to project', async () => {
     const groups = await loadModule();
     // 13 月 / 9 月补零缺失 / 非 asof 前缀杂项：前者忽略，后者保留原样（原行为）

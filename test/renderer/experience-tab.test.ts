@@ -53,8 +53,8 @@ describe('经验入口：「我的认知」下的分类档（specs/017 整改一
   it('顶层页签是五个（无「经验」），经验收编为「我的认知」分类档；旧深链 name:experiences 归一化', () => {
     const html = renderCognition({ name: 'experiences' }, { experiences: loadedExperiences([]) });
     const ids = [...html.matchAll(/class="ca-tab[^"]*" data-act="tab" data-id="([a-z-]+)"/g)].map((m) => m[1]);
-    // specs/018 + 树恢复:六页签=认知树/个人本体/我的认知/待我处理/系统活动/设置。
-    expect(ids).toEqual(['tree', 'ontology', 'overview', 'review', 'activity', 'settings']);
+    // specs/018 + 树恢复 + 2026-09-27 定序:六页签=认知树/我的认知/关于我/待我处理/系统活动/整理设置。
+    expect(ids).toEqual(['tree', 'overview', 'ontology', 'review', 'activity', 'settings']);
     expect(html).not.toContain('data-act="tab" data-id="experiences"');
     // 旧深链 { name: 'experiences' } 归一到「我的认知」：经验档选中、目录在页面内。
     expect(html).toContain('data-act="filter-cat" data-id="experiences"');
@@ -262,7 +262,7 @@ describe('存量迁移区（T020）', () => {
       experienceMigration: { preview, previewLoading: false, previewFailed: false, lastRun: null },
     });
     expect(html).toContain('扫描 120 条：可迁 2 条，跳过 118 条');
-    expect(html).toContain('无 KSTAR 沉淀标记');
+    expect(html).toContain('没有任务复盘来源标记');
     expect(html).toContain('× 108');
     expect(html).toContain('会话整理线产出');
     expect(html).toMatch(/data-act="experience-migration-run" data-asset="aa-mig0001"/);
@@ -307,7 +307,7 @@ describe('经验枚举纯函数（R6：未知值不崩、有兜底、不裸出�
     expect(ns.experience.verificationLabel('confirmed')).toBe('已确认');
     expect(ns.experience.verificationLabel('nope')).toBe('验证状态未知');
     expect(ns.experience.migrationReasonText('ok')).toBe('已迁入');
-    expect(ns.experience.migrationReasonText('no_kstar_provenance')).toBe('无 KSTAR 沉淀标记（不是任务复盘沉淀的）');
+    expect(ns.experience.migrationReasonText('no_kstar_provenance')).toBe('没有任务复盘来源标记（不是任务复盘形成的）');
     expect(ns.experience.migrationReasonText('weird_code')).toBe('不符合迁移条件');
     expect(ns.experience.statusLabel('merged')).toBe('已并入');
     expect(ns.experience.statusLabel('nope')).toBe('状态未知');

@@ -82,7 +82,7 @@ function loadCognition(options: {
   context.globalThis = context;
   vm.createContext(context);
   for (const file of [
-    'ui-button.js', 'ui-status.js', 'ui-form.js', 'ui-empty.js', 'ui-segmented-control.js',
+    'ui-button.js', 'ui-status.js', 'ui-form.js', 'ui-empty.js', 'ui-segmented-control.js', 'ui-structure.js',
     'cognition-assets/core.js', 'cognition-assets/views.js',
   ]) {
     vm.runInContext(fs.readFileSync(path.join(rendererRoot, 'modules', file), 'utf8'), context, { filename: file });
@@ -143,10 +143,12 @@ describe('标签筛选条（T012）', () => {
     expect(html).toContain(`data-act="tag-manage"`);
   });
 
-  it('空库不显示标签筛选行（「未分类 = 全量」，不误导）', () => {
+  it('空标签库保留管理入口，不显示无意义的筛选项', () => {
     const { render } = loadCognition({ state: { tags: { items: [], loading: false, failed: false, stale: false } } });
     const html = render();
-    expect(html).not.toContain('ca-tag-filter');
+    expect(html).toContain('data-act="tag-manage"');
+    expect(html).not.toContain('data-act="filter-tag-mode"');
+    expect(html).not.toContain('data-act="filter-tag-untagged"');
   });
 
   it('并集（默认）：命中任一标签即入选，且保持主进程顺序（渲染层不重排）', () => {
@@ -546,6 +548,30 @@ describe('排序依据小节与权重入口（T020 / US-202 AC4+AC6）', () => {
     expect(html).not.toContain('ca-rank-row');
   });
 
+  it('区分本轮没有场景归属和资产没有匹配当前项目/工作空间', () => {
+    const noContext = detail();
+    noContext.ns.rankingWhy = {
+      assetId: 'aa-tag-1', turnId: 'turn-rk-no-context',
+      item: {
+        taskRunId: 'turn-rk-no-context', assetId: 'aa-tag-1', explainable: true, score: 0.5,
+        factors: [{ name: 'adoption', raw: 0.5, weight: 1, contribution: 0.5 }],
+        excluded: ['scene'], sceneExcludedReason: 'no_scene_context',
+      },
+    };
+    expect(noContext.render()).toContain(zh['cognition.ranking_scene_no_context_note']);
+
+    const noMatch = detail();
+    noMatch.ns.rankingWhy = {
+      assetId: 'aa-tag-1', turnId: 'turn-rk-no-match',
+      item: {
+        taskRunId: 'turn-rk-no-match', assetId: 'aa-tag-1', explainable: true, score: 0.5,
+        factors: [{ name: 'adoption', raw: 0.5, weight: 1, contribution: 0.5 }],
+        excluded: ['scene'], sceneExcludedReason: 'no_matching_association',
+      },
+    };
+    expect(noMatch.render()).toContain(zh['cognition.ranking_scene_no_match_note']);
+  });
+
   it('使用记录里没有回合 → 「这一轮没有进入目录」；读取失败 → 如实说取不到', () => {
     const noTurn = detail();
     noTurn.ns.rankingWhy = { assetId: 'aa-tag-1' };
@@ -574,7 +600,7 @@ describe('排序依据小节与权重入口（T020 / US-202 AC4+AC6）', () => {
     expect(html).toContain(zh['cognition.ranking_relevance_absent_note']);
   });
 
-  it('权重卡（沉淀设置页）：4 个数值 uiInput + 恢复默认 + 保存 + 来源说明；读失败如实禁编辑', () => {
+  it('权重卡（整理设置页）：4 个数值 uiInput + 填入默认值 + 保存 + 来源说明；读失败如实禁编辑', () => {
     const loaded = loadCognition({
       route: { name: 'organize-settings' },
     });
@@ -615,7 +641,7 @@ describe('排序依据小节与权重入口（T020 / US-202 AC4+AC6）', () => {
     // 生效口径：提示「下一轮」，不谎称立即生效。
     expect(appSource).toContain("T('cognition.ranking_weights_saved_toast'");
     expect(zh['cognition.ranking_weights_saved_toast']).toContain('下一轮');
-    // 恢复默认只回填输入框（不落盘）——没有 reset 的写通道调用。
+    // 填入默认值只回填输入框（不落盘）——没有 reset 的写通道调用。
     const resetCase = appSource.slice(appSource.indexOf("case 'ranking-weights-reset'"), appSource.indexOf("case 'ranking-weights-save'"));
     expect(resetCase).not.toContain('invoke');
     expect(resetCase).not.toContain('api.call');

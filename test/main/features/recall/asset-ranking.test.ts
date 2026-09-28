@@ -161,7 +161,7 @@ describe('asset-ranking（T006：排序唯一处）', () => {
     expect([...RANKING_FACTORS]).toEqual(['relevance', 'adoption', 'scene', 'maturity']);
   });
 
-  it('缺席≠0 分：无项目归属 → excluded 含 scene，分数 ≠「scene 算 0 分」的分数；等价于 scene 权重置零（data-model §9.9）', async () => {
+  it('无显式场景关联时 scene 缺席：通用资产不会因项目会话被负向降权', async () => {
     const { rankAssets } = await import('../../../../src/main/features/recall/asset-ranking');
     const assets = [
       mk({ id: 'aa-hot', updatedAt: '2026-09-24T00:00:00Z' }),
@@ -170,25 +170,22 @@ describe('asset-ranking（T006：排序唯一处）', () => {
     // 会话无项目/空间归属 → scene 整体缺席。
     const absent = rankAssets({ assets, weights: W, scene: {}, now: NOW });
     expect(absent.every((row) => row.excluded.includes('scene'))).toBe(true);
+    expect(absent.every((row) => row.sceneExcludedReason === 'no_scene_context')).toBe(true);
     expect(absent.every((row) => !row.factors.some((factor) => factor.name === 'scene'))).toBe(true);
-    // 「把 scene 算 0 分」的误实现 = 场景在场但全资产命中 0（进分母稀释）。
-    const zeroScored = rankAssets({ assets, weights: W, scene: { turnSpaceId: 'sp-none' }, now: NOW });
-    expect(zeroScored.every((row) => row.factors.some((factor) => factor.name === 'scene' && factor.raw === 0))).toBe(true);
-    const absentScores = absent.map((row) => row.score);
-    const zeroScores = zeroScored.map((row) => row.score);
-    expect(absentScores).not.toEqual(zeroScores);
-    expect(absentScores.every((score, index) => score > zeroScores[index])).toBe(true);
-    // 「缺席」与「scene 权重置零」数学等价：分数与顺序都一致。
-    const weightZero = rankAssets({ assets, weights: { ...W, scene: 0 }, scene: { turnSpaceId: 'sp-none' }, now: NOW });
-    expect(weightZero.map((row) => [row.assetId, row.score])).toEqual(absent.map((row) => [row.assetId, row.score]));
+    // 项目/空间会话下，未记录场景关联的通用资产仍按其余因素排序。
+    const projectTurn = rankAssets({ assets, weights: W, scene: { turnSpaceId: 'sp-current' }, now: NOW });
+    expect(projectTurn.every((row) => row.excluded.includes('scene'))).toBe(true);
+    expect(projectTurn.every((row) => row.sceneExcludedReason === 'no_matching_association')).toBe(true);
+    expect(projectTurn.map((row) => [row.assetId, row.score])).toEqual(absent.map((row) => [row.assetId, row.score]));
   });
 
-  it('scene 命中分层：空间命中 1.0、项目/工作区命中 0.8、未命中 0', async () => {
+  it('scene 正向命中分层：空间命中 1.0、项目/工作区命中 0.8；未命中缺席', async () => {
     const { rankAssets } = await import('../../../../src/main/features/recall/asset-ranking');
     const assets = [
       mk({ id: 'aa-space', spaceId: 'sp-1' }),
       mk({ id: 'aa-proj', scopePolicy: { projectIds: ['pj-1'] } }),
       mk({ id: 'aa-ws', scopePolicy: { workspaceIds: ['sp-1'] } }),
+      mk({ id: 'aa-other', scopePolicy: { projectIds: ['pj-other'] } }),
       mk({ id: 'aa-none' }),
     ];
     const ranked = rankAssets({ assets, weights: W, scene: { turnProjectId: 'pj-1', turnSpaceId: 'sp-1' }, now: NOW });
@@ -196,7 +193,8 @@ describe('asset-ranking（T006：排序唯一处）', () => {
     expect(rawOf.get('aa-space')).toBe(1);
     expect(rawOf.get('aa-proj')).toBe(0.8);
     expect(rawOf.get('aa-ws')).toBe(0.8);
-    expect(rawOf.get('aa-none')).toBe(0);
+    expect(rawOf.has('aa-other')).toBe(false);
+    expect(rawOf.has('aa-none')).toBe(false);
   });
 
   it('adoption：log 压长尾 + 7 天近度加成；0 次是在场的真实信号（非缺席）', async () => {
@@ -409,7 +407,7 @@ describe('排序接线不变量（T016/T017：真实链路）', () => {
       .toBe(JSON.stringify(rankAssets({ assets: base, weights: W })));
   });
 
-  it('scene 接线（T017）：项目命中资产靠前、其余 100% 仍在目录；无归属时顺序不同（缺席≠0 分）', async () => {
+  it('scene 接线（T017）：项目命中资产靠前；未匹配场景时无关联资产按其他因子排序', async () => {
     await activate('user-rank-scene');
     const sameAt = '2026-09-10T00:00:00Z';
     await seedAsset('user-rank-scene', { id: 'aa-a-plain', updatedAt: sameAt });
@@ -420,14 +418,20 @@ describe('排序接线不变量（T016/T017：真实链路）', () => {
     const inProject = await catalogText('user-rank-scene', { turnProjectId: 'pj-alpha' });
     expect(catalogIds(inProject)).toEqual(['aa-b-scoped', 'aa-a-plain']);
     expect(new Set(catalogIds(inProject))).toEqual(new Set(['aa-a-plain', 'aa-b-scoped']));
-    // 无项目/空间归属：scene 整体缺席 → 同分兜底 id 字典序（顺序与项目会话不同）。
+    // 无项目归属：项目限制不满足，只有通用资产可用。
     const noScene = await catalogText('user-rank-scene');
-    expect(catalogIds(noScene)).toEqual(['aa-a-plain', 'aa-b-scoped']);
-    // 与"把 scene 算 0 分"的口径区分（纯函数已钉，这里补链路：给一个不相干
-    // 项目 = scene 在场但全 0 → 分母被稀释，顺序与缺席版可以一致但分数不同；
-    // 断言两个目录里 scoped 资产都不缺席、集合相等——排序层从不裁剪）。
+    expect(catalogIds(noScene)).toEqual(['aa-a-plain']);
+    // 项目 B 同样不可读取项目 A 限定的资产；通用资产仍可用。
     const otherProject = await catalogText('user-rank-scene', { turnProjectId: 'pj-other' });
-    expect(new Set(catalogIds(otherProject))).toEqual(new Set(['aa-a-plain', 'aa-b-scoped']));
+    expect(catalogIds(otherProject)).toEqual(['aa-a-plain']);
+
+    // 纯排序仍只处理给定集合：项目匹配只增加 scene 因子，不制造负分。
+    const { rankAssets } = await import('../../../../src/main/features/recall/asset-ranking');
+    expect(rankAssets({ assets: [
+      { id: 'aa-a-plain', maturity: 'bud', updatedAt: sameAt },
+      { id: 'aa-b-scoped', maturity: 'bud', updatedAt: sameAt, scopePolicy: { projectIds: ['pj-alpha'] } },
+    ], weights: { relevance: 1, adoption: 1, scene: 0.8, maturity: 0.4 } })
+      .map((item) => item.assetId)).toEqual(['aa-a-plain', 'aa-b-scoped']);
   });
 
   it('读盘原文（III1）：排序构建与因子拆解不把正文/任务文本/路径写进任何回执流', async () => {

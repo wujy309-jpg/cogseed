@@ -93,6 +93,20 @@ async function waitForQuiescent(bus: typeof import('../../../../src/main/feature
   throw new Error(`conversation did not quiesce: ${cid}`);
 }
 
+async function waitForForecast(store: typeof import('../../../../src/main/features/kstar/requirement-store'), requirementId: string) {
+  const deadline = Date.now() + 4_000;
+  let requirement = await store.readKstarRequirement('user-a', requirementId);
+  while (
+    !requirement?.forecastId
+    && !['failed', 'skipped'].includes(String(requirement?.forecastStatus || ''))
+    && Date.now() < deadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    requirement = await store.readKstarRequirement('user-a', requirementId);
+  }
+  return requirement;
+}
+
 function recordsIn(collection: string): string[] {
   const dir = path.join(tmpDir, 'user-a', 'cloud', 'kstar', collection);
   try { return fs.readdirSync(dir).filter((n) => n.endsWith('.json')); } catch { return []; }
@@ -166,7 +180,7 @@ describe('post-merge full-chain scenario (Commander-centric KStar on merged tree
     // 2. Host routing opened task + projection.
     const taskState = await store.readConversationTaskState('user-a', cid);
     expect(taskState?.currentTaskId).toMatch(/^kst-/);
-    const requirement = await store.readKstarRequirement('user-a', taskState!.currentRequirementId!);
+    const requirement = await waitForForecast(store, taskState!.currentRequirementId!);
     expect(requirement?.projectionId).toBeTruthy();
     // 3. World-model auto-forecast committed.
     expect(requirement?.forecastId).toMatch(/^wf-/);

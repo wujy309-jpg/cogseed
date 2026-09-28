@@ -61,6 +61,16 @@ export interface ChatAttachmentMetadata {
   attachmentTypes: string[];
 }
 
+/** Host-owned result of a cross-session cognition save. Persisted with the
+ * assistant message so the user sees the real status even if model narration
+ * omits or misstates it. */
+export interface CognitionSaveReceipt {
+  target: 'asset' | 'candidate';
+  id: string;
+  summary: string;
+  outcome: 'created' | 'already-confirmed' | 'pending-review' | 'merged' | 'fused-update-pending';
+}
+
 export interface ChatResolvedRuntime {
   providerId: string;
   modelId: string;
@@ -210,6 +220,7 @@ export interface ChatOptions {
     status: 'active' | 'revoked';
     candidateIds: string[];
   }) => void | Promise<void>;
+  onCognitionSaveReceipt?: (receipt: CognitionSaveReceipt) => void | Promise<void>;
   /** Host observation of the actual runtime candidate and final tool catalog. */
   onResolvedRuntime?: (runtime: ChatResolvedRuntime) => void;
   /** Project id of the conversation, when it belongs to one. Threaded

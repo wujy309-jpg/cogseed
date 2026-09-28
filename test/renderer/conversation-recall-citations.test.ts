@@ -1,8 +1,88 @@
 import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as vm from 'node:vm';
 
 const source = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/conversation.js'), 'utf8');
+
+function renderCitations(citations: unknown[]): string {
+  const start = source.indexOf('function _renderRecallCitationsHtml(');
+  const end = source.indexOf('\nfunction _hydrateRecallCitations', start);
+  if (start < 0 || end < 0) throw new Error('Recall citation renderer not found');
+  const escape = (value: unknown) => String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+  const context: any = {
+    escapeHtml: escape,
+    _uiIconHtml: () => '<svg aria-hidden="true"></svg>',
+    _recallCitationTypeLabel: (value: unknown) => String(value || ''),
+    _recallCitationScopeLabel: (value: unknown) => String(value || ''),
+    t: (key: string) => key,
+    uiButton: ({ label, attrs, className }: { label: string; attrs?: Record<string, string>; className?: string }) => {
+      const renderedAttrs = Object.entries(attrs || {}).map(([key, value]) => ` ${key}="${escape(value)}"`).join('');
+      return `<button type="button" class="ui-button ${escape(className || '')}"${renderedAttrs}>${escape(label)}</button>`;
+    },
+  };
+  vm.runInNewContext(`${source.slice(start, end)}\nthis.render = _renderRecallCitationsHtml;`, context);
+  return context.render(citations);
+}
+
+type AssetCitationClickRun = {
+  opened: string[];
+  loadedFeatures: string[];
+  finishFeatureLoad: () => Promise<void>;
+};
+
+function activateAssetCitation(assetId: string, options: { lazyOpener?: boolean } = {}): AssetCitationClickRun {
+  const start = source.indexOf("// [asset:<id>] 引用卡点击");
+  const end = source.indexOf('\n});', start);
+  if (start < 0 || end < 0) throw new Error('Recall citation click handler not found');
+  const opened: string[] = [];
+  const loadedFeatures: string[] = [];
+  let releaseFeatureLoad: () => void = () => {};
+  const featureLoad = new Promise<void>((resolve) => { releaseFeatureLoad = resolve; });
+  const mockWindow: any = {
+    loadRendererFeature: (name: string) => {
+      loadedFeatures.push(name);
+      return featureLoad.then(() => {
+        // recall feature 加载完成的副作用：cognition-assets/core.js 定义 asset opener。
+        mockWindow.openCognitionAssetById = (id: string) => { opened.push(id); };
+      });
+    },
+  };
+  if (!options.lazyOpener) mockWindow.openCognitionAssetById = (id: string) => { opened.push(id); };
+  let clickHandler: ((event: any) => void) | null = null;
+  const context: any = {
+    document: {
+      addEventListener(type: string, handler: (event: any) => void) {
+        if (type === 'click') clickHandler = handler;
+      },
+    },
+    window: mockWindow,
+  };
+  vm.runInNewContext(source.slice(start, end + '\n});'.length), context);
+  if (!clickHandler) throw new Error('Recall citation click handler was not registered');
+  clickHandler({
+    target: {
+      closest: (selector: string) => selector === '[data-asset-citation]'
+        ? { dataset: { assetCitation: assetId } }
+        : null,
+    },
+  });
+  return {
+    opened,
+    loadedFeatures,
+    // 放行懒加载后等 handler 的 .then(open) 微任务跑完（setTimeout 轮次前微任务队列已清空）。
+    finishFeatureLoad: async () => {
+      releaseFeatureLoad();
+      await featureLoad;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    },
+  };
+}
 
 describe('conversation Recall citations', () => {
   it('keeps recall_citations in the persisted message record and renders the feedback footer', () => {
@@ -15,6 +95,40 @@ describe('conversation Recall citations', () => {
     expect(source).toContain('chat-recall-citations');
     expect(source).toContain('data-recall-feedback');
     expect(source).toContain('recall.usage.feedback');
+  });
+
+  it('lets users open a cited asset from the answer memory card', () => {
+    const html = renderCitations([{ asset_id: 'asset-1', title: '项目复盘规则', type: 'rule', scope: 'project' }]);
+
+    expect(html).toContain('data-asset-citation="asset-1"');
+    expect(html).toContain('class="ui-button chat-recall-citation-open"');
+    expect(html).toContain('>项目复盘规则</button>');
+    expect(source).toContain("closest('[data-asset-citation]')");
+    expect(source).toContain('window.openCognitionAssetById(assetId)');
+  });
+
+  it('routes activation of the shared citation button to the existing asset detail opener', () => {
+    const run = activateAssetCitation('asset-1');
+    expect(run.opened).toEqual(['asset-1']);
+    // opener 已定义（用户进过认知资产页）：直接打开，不再触发懒加载。
+    expect(run.loadedFeatures).toEqual([]);
+  });
+
+  it('lazy-loads the recall feature when the asset opener is missing, then opens the exact asset', async () => {
+    const run = activateAssetCitation('asset-lazy-9', { lazyOpener: true });
+
+    // 点击时 opener 未定义：fallback 必须加载 recall feature（cognition-assets/core.js
+    // 定义 opener；旧的 skills feature 不包含它，加载完仍然打不开详情）。
+    expect(run.loadedFeatures).toEqual(['recall']);
+    expect(run.opened).toEqual([]);
+
+    await run.finishFeatureLoad();
+    expect(run.opened).toEqual(['asset-lazy-9']);
+    expect(run.loadedFeatures).toEqual(['recall']);
+  });
+
+  it('omits citations whose title is blank instead of rendering an empty action', () => {
+    expect(renderCitations([{ asset_id: 'asset-1', title: '  ' }])).toBe('');
   });
 });
 describe('conversation asset approval card (specs/008 US-406)', () => {

@@ -213,16 +213,10 @@
   background: linear-gradient(180deg, var(--color-ca-stage-top), var(--paper) 58%, var(--color-ca-stage-bottom));
 }
 #ca-root .personal-onto-sidebar {
-  width: 284px; flex-shrink: 0; border-right: 1px solid var(--line); background: var(--color-white);
+  width: clamp(220px, 16vw, 268px); flex: 0 0 clamp(220px, 16vw, 268px); border-right: 1px solid var(--line); background: var(--color-white);
   padding: 16px 14px 24px; overflow: auto;
 }
 #ca-root .personal-onto-sidebar-header { display: flex; flex-direction: column; gap: 8px; align-items: stretch; text-align: left; }
-#ca-root .personal-onto-back-btn {
-  width: 100%; display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line);
-  background: var(--color-white); color: var(--ink2); border-radius: var(--radius-field);
-  padding: 8px 10px; font-size: var(--font-size-caption); font-weight: 400; height: auto;
-}
-#ca-root .personal-onto-back-btn:hover { color: var(--green-t); border-color: var(--green-line); }
 #ca-root .personal-onto-sidebar-title { font-size: var(--font-size-5); font-weight: 700; letter-spacing: -0.2px; margin-top: 4px; text-align: left; }
 #ca-root .personal-onto-sidebar-actions { display: flex; flex-direction: column; gap: 7px; }
 #ca-root .personal-onto-nav { display: flex; flex-direction: column; gap: 7px; margin-top: 14px; }
@@ -235,6 +229,14 @@
 #ca-root .personal-onto-nav-row .personal-onto-nav-row-text { flex: 1; min-width: 0; }
 #ca-root .personal-onto-nav-row .muted { font-size: var(--font-size-1); color: var(--ink2); }
 #ca-root .personal-onto-nav-row.is-active { border-color: var(--green-line); background: var(--green-bg); color: var(--ink); font-weight: 650; }
+#ca-root .personal-onto-nav-row:hover,
+#ca-root .personal-onto-nav-row:active,
+#ca-root .personal-onto-nav-row:focus-visible {
+  border-color: var(--green-line); background: var(--color-brand-soft); color: var(--color-ink);
+}
+#ca-root .personal-onto-nav-row:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+#ca-root .personal-onto-nav-row.is-active:hover,
+#ca-root .personal-onto-nav-row.is-active:active { background: var(--color-brand-soft); color: var(--color-ink); }
 #ca-root .personal-onto-group-io { display: flex; flex-direction: column; gap: 7px; margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
 #ca-root .personal-onto-group-io-btn { width: 100%; }
 #ca-root .personal-onto-main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
@@ -498,11 +500,12 @@
       折行测量挂在 .ca-tabs/.ca-tab 上）───────────────────────────── */
 #ca-root .ca-tabs {
   height: 46px; gap: 2px; padding: 0 18px; margin-bottom: 0; border-bottom: 1px solid var(--line);
-  background: var(--color-white); align-items: stretch; flex-shrink: 0;
+  background: var(--color-white); align-items: stretch; flex-shrink: 0; min-width: 0;
+  flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin;
 }
 #ca-root .ca-tab {
   border: none; background: none; color: var(--ink2); padding: 0 14px; position: relative;
-  transition: color var(--duration-control); font-size: var(--font-size-ui-sm);
+  transition: color var(--duration-control); font-size: var(--font-size-ui-sm); flex: 0 0 auto; white-space: nowrap;
   display: inline-flex; align-items: center; gap: 0;
 }
 #ca-root .ca-tab:hover { color: var(--ink); }
@@ -880,9 +883,21 @@
 @media (max-width: 800px) {
   #ca-root button { min-height: 36px; }
 }
+@media (max-width: 720px) {
+  /* Small panes must let section titles keep their natural width and move
+     tools to the next row. Without this, flex-shrink squeezes Chinese titles
+     into one character per line beside the button cluster. */
+  #ca-root .sect { flex-wrap: wrap; align-items: flex-start; row-gap: 8px; }
+  #ca-root .sect-t { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+  #ca-root .sect .sp { display: none; }
+  #ca-root .sect > .btn { flex: 0 0 auto; }
+}
 @media (max-width: 620px) {
   #ca-root .stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  #ca-root .ca-tabs { padding: 0 10px; overflow-x: auto; }
+  /* Keep each label intact; the existing horizontal scroller handles all six
+     destinations instead of flex-shrinking them into vertical word stacks. */
+  #ca-root .ca-tabs { padding: 0 10px; overflow-x: auto; flex-wrap: nowrap; }
+  #ca-root .ca-tab { flex: 0 0 auto; white-space: nowrap; }
 }
 
 /* 尊重系统「减少动态效果」：动画是增强，不是功能。 */
@@ -926,3 +941,417 @@
 /* 时间流行标题截断（迭代轮 1）：与 .row .tt 同款省略号——超长会话名
    不再把 cap-row 撑成多行（.row .tt 早有，.cap-row .tt 漏了）。 */
 #ca-root .cap-row .tt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── 认知资产主视图：页面级空间分配 ───────────────────────────────
+   资产、待办、活动与设置是工作台视图，不受详情阅读栏 780px 上限约束。
+   通过 ca-scroll 的路由态区分各自排版；详情内容与既有操作保持原样。 */
+#ca-root .ca-scroll.ca-layout-overview > .wrap,
+#ca-root .ca-scroll.ca-layout-review > .wrap,
+#ca-root .ca-scroll.ca-layout-activity > .wrap,
+#ca-root .ca-scroll.ca-layout-settings > .wrap {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 24px clamp(20px, 2.5vw, 44px) 48px;
+}
+
+/* 我的认知：目录行改成贯穿内容区的资料清单，保留类型筛选与行内信息。 */
+#ca-root .ca-layout-overview #ca-asset-list { width: 100%; }
+#ca-root .ca-layout-overview #ca-asset-list > .row {
+  min-height: 62px;
+  margin: 0;
+  padding: 14px 16px;
+  border-right: 0;
+  border-left: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+#ca-root .ca-layout-overview #ca-asset-list > .row + .row {
+  border-top: 0;
+}
+#ca-root .ca-layout-overview > .wrap > .row.is-flat.is-clickable {
+  min-height: 62px;
+  margin: 0;
+  padding: 14px 16px;
+  border-right: 0;
+  border-left: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+#ca-root .ca-layout-overview #ca-asset-list .pillbox {
+  margin: 10px 0 14px;
+  padding: 10px 0;
+  border-top: 1px solid var(--ca-line);
+  border-bottom: 1px solid var(--ca-line);
+}
+
+/* 页面铺宽后，导语保持适合阅读的行长；数据区仍使用完整工作区。 */
+#ca-root .ca-layout-overview .hero .sub,
+#ca-root .ca-layout-review .hero .sub,
+#ca-root .ca-layout-activity .hero-row .hero-main .sub,
+#ca-root .ca-layout-settings .hero .sub {
+  max-width: var(--layout-resource-detail-width, 880px);
+}
+
+/* 关于我：保留画像侧栏与内容双栏，在大窗下增加主内容宽度和分组密度。 */
+#ca-root .ca-scroll.ca-layout-ontology #ca-ontology-mount,
+#ca-root .ca-layout-ontology .personal-onto-layout {
+  width: 100%;
+  min-width: 0;
+}
+#ca-root .ca-layout-ontology .personal-onto-sidebar {
+  width: clamp(220px, 16vw, 268px);
+  flex: 0 0 clamp(220px, 16vw, 268px);
+}
+#ca-root .ca-layout-ontology .personal-onto-main-body {
+  padding: 20px clamp(20px, 2.2vw, 36px) 32px;
+}
+#ca-root .ca-layout-ontology .personal-onto-profile-view {
+  width: 100%;
+}
+@media (min-width: 1440px) {
+  #ca-root .ca-layout-ontology .personal-onto-ontology-sections {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* 待我处理：决策顺序仍然纵向排列，候选表单和折叠历史使用完整工作区宽度。 */
+#ca-root .ca-layout-review #ca-review-decide,
+#ca-root .ca-layout-review #ca-review-evidence,
+#ca-root .ca-layout-review > .wrap > .fold,
+#ca-root .ca-layout-review .cand,
+#ca-root .ca-layout-review .ca-candidate-detail {
+  width: 100%;
+  max-width: none;
+}
+#ca-root .ca-layout-review #ca-review-decide > .sect,
+#ca-root .ca-layout-review #ca-review-evidence > .sect {
+  margin-top: 24px;
+}
+#ca-root .ca-layout-review #ca-review-decide .notice-row,
+#ca-root .ca-layout-review .fold-attention .notice-row {
+  margin: 0;
+  padding: 14px 16px;
+  border-right: 0;
+  border-left: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+#ca-root .ca-layout-review #ca-review-decide .notice-row + .notice-row,
+#ca-root .ca-layout-review .fold-attention .notice-row + .notice-row { border-top: 0; }
+
+/* 系统活动：把重复的小卡片收敛成横向事件行，长会话标题可自然换行。 */
+#ca-root .ca-layout-activity .cap-row {
+  min-width: 0;
+  margin: 0;
+  padding: 14px 16px;
+  border-right: 0;
+  border-left: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+#ca-root .ca-layout-activity .cap-row .tt {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+}
+#ca-root .ca-layout-activity .cap-row .sd { flex-wrap: wrap; justify-content: flex-end; }
+#ca-root .ca-layout-activity .cap-row + .cap-row { border-top: 0; }
+
+/* 整理设置：配置项按全宽设置行呈现，避免窄卡中长说明和开关争空间。 */
+#ca-root .ca-layout-settings > .wrap > .card.ca-setcard,
+#ca-root .ca-layout-settings > .wrap > .card.ca-setting-row {
+  min-width: 0;
+  margin: 0;
+  padding: 18px 4px;
+  border: 0;
+  border-bottom: 1px solid var(--ca-line);
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+#ca-root .ca-layout-settings > .wrap > .card.ca-setting-row { border-top: 1px solid var(--ca-line); }
+#ca-root .ca-layout-settings .ca-settings-foot {
+  padding: 16px 4px 4px;
+  border-top: 1px solid var(--ca-line);
+}
+
+@media (max-width: 900px) {
+  #ca-root .ca-layout-overview > .wrap,
+  #ca-root .ca-layout-review > .wrap,
+  #ca-root .ca-layout-activity > .wrap,
+  #ca-root .ca-layout-settings > .wrap {
+    padding: 18px 18px 40px;
+  }
+  #ca-root .ca-layout-ontology .personal-onto-main-body { padding: 20px 22px 32px; }
+}
+@media (max-width: 720px) {
+  #ca-root .ca-layout-overview > .wrap,
+  #ca-root .ca-layout-review > .wrap,
+  #ca-root .ca-layout-activity > .wrap,
+  #ca-root .ca-layout-settings > .wrap {
+    padding: 16px 14px 32px;
+  }
+  #ca-root .ca-layout-overview #ca-asset-list > .row { padding: 12px 8px; }
+  #ca-root .ca-layout-activity .cap-row { align-items: flex-start; padding: 12px 8px; }
+  #ca-root .ca-layout-activity .cap-row .sd { justify-content: flex-start; }
+  #ca-root .ca-layout-settings > .wrap > .card.ca-setcard,
+  #ca-root .ca-layout-settings > .wrap > .card.ca-setting-row { padding: 14px 2px; }
+  #ca-root .ca-layout-ontology .personal-onto-layout {
+    height: 100%;
+    min-height: 0;
+    flex-direction: column;
+  }
+  #ca-root .ca-layout-ontology .personal-onto-sidebar {
+    width: auto;
+    max-height: 210px;
+    flex: 0 0 210px;
+    border-right: 0;
+    border-bottom: 1px solid var(--ca-line);
+  }
+  #ca-root .ca-layout-ontology .personal-onto-main { min-height: 0; }
+  #ca-root .ca-layout-ontology .personal-onto-main-body { padding: 16px 14px 28px; }
+}
+
+/* 本体总览：领域入口与显式关系浏览（PO-PV-003 Proposed）。外层卡片复用
+   uiResourceGrid/uiResourceCard；以下只负责本体业务内容的排列与密度。 */
+#ca-root .personal-onto-hub-nav-list { padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+#ca-root .personal-onto-hub-nav-item {
+  width: 100%; min-height: 40px; height: auto; justify-content: flex-start; text-align: left;
+  padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--radius-popover);
+  background: var(--color-white); color: var(--color-ink-2); font-weight: 500;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+#ca-root .personal-onto-hub-nav-item:hover,
+#ca-root .personal-onto-hub-nav-item:active,
+#ca-root .personal-onto-hub-nav-item:focus-visible {
+  border-color: var(--green-line); background: var(--color-brand-soft); color: var(--color-ink);
+}
+#ca-root .personal-onto-hub-nav-item:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+#ca-root .personal-onto-hub-nav-item.is-active {
+  border-color: var(--green-line); background: var(--color-brand-soft); color: var(--color-ink); font-weight: 650;
+}
+#ca-root .personal-onto-hub-nav-item.is-active:hover,
+#ca-root .personal-onto-hub-nav-item.is-active:active { background: var(--color-brand-soft); color: var(--color-ink); }
+#ca-root .personal-onto-personal-subnav { padding-top: 7px; }
+#ca-root .personal-onto-nav-section-title {
+  padding: 2px 4px; color: var(--ink2); font-size: var(--font-size-caption); font-weight: 650;
+}
+#ca-root .personal-onto-overview { width: 100%; max-width: 1760px; margin: 0 auto; }
+#ca-root .personal-onto-overview-intro,
+#ca-root .personal-onto-domain-intro {
+  max-width: 900px; margin: 0 0 18px; color: var(--ink2); font-size: var(--font-size-ui-sm); line-height: 1.65;
+}
+#ca-root .personal-onto-domain-grid {
+  display: grid; width: 100%; max-width: none;
+  grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px;
+}
+#ca-root .personal-onto-domain-card {
+  min-width: 0; max-width: none; height: 100%; padding: var(--space-4);
+  display: flex; flex-direction: column;
+}
+#ca-root .personal-onto-domain-card .ui-resource-card__footer { gap: 12px; }
+#ca-root .personal-onto-domain-card .ui-resource-card__icon { display: none; }
+#ca-root .personal-onto-domain-card .ui-resource-card__header { min-height: 0; }
+#ca-root .personal-onto-domain-card .ui-resource-card__description { min-height: 0; }
+#ca-root .personal-onto-domain-card-meta { color: var(--ink2); font-size: var(--font-size-caption); }
+#ca-root .personal-onto-overview-note {
+  margin: 18px 0 0; padding: 10px 12px; border-left: 3px solid var(--green-line);
+  color: var(--ink2); background: var(--color-white-92); font-size: var(--font-size-caption); line-height: 1.6;
+}
+#ca-root .personal-onto-domain-view { width: 100%; max-width: 1680px; margin: 0 auto; }
+#ca-root .personal-onto-affair-row,
+#ca-root .personal-onto-relation-row {
+  min-width: 0; padding: 16px 0; border-bottom: 1px solid var(--line);
+}
+#ca-root .personal-onto-affair-heading,
+#ca-root .personal-onto-affair-footer,
+#ca-root .personal-onto-relation-footer {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+}
+#ca-root .personal-onto-affair-heading h3 {
+  min-width: 0; margin: 0; color: var(--ink); font-size: var(--font-size-ui); font-weight: 650; overflow-wrap: anywhere;
+}
+#ca-root .personal-onto-affair-statement {
+  max-width: 1000px; margin: 8px 0 12px; color: var(--ink2); font-size: var(--font-size-ui-sm);
+  line-height: 1.65; overflow-wrap: anywhere; white-space: pre-wrap;
+}
+#ca-root .personal-onto-affair-footer,
+#ca-root .personal-onto-relation-footer { justify-content: flex-start; }
+#ca-root .personal-onto-relation-edge {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(112px, auto) minmax(0, 1fr);
+  align-items: center; gap: 12px;
+}
+#ca-root .personal-onto-relation-node {
+  min-width: 0; padding: 11px 13px; border: 1px solid var(--line); border-radius: var(--radius-popover);
+  background: var(--color-white); color: var(--ink); font-size: var(--font-size-ui-sm); overflow-wrap: anywhere;
+}
+#ca-root .personal-onto-relation-predicate {
+  color: var(--green-t); font-size: var(--font-size-caption); font-weight: 650; text-align: center; overflow-wrap: anywhere;
+}
+#ca-root .personal-onto-relation-footer { margin-top: 9px; }
+#ca-root .personal-onto-domain-empty { padding: 14px 0; }
+#ca-root .personal-onto-domain-empty .ui-empty-state {
+  width: 100%; max-width: 760px; min-height: 0; align-items: flex-start; padding: 18px 20px;
+  border: 1px dashed var(--line-field); border-radius: var(--radius-card); background: var(--color-white-92);
+  text-align: left;
+}
+#ca-root .personal-onto-domain-empty .ui-empty-state__hint { max-width: 640px; }
+#ca-root .personal-onto-relation-section .personal-onto-domain-empty .ui-empty-state {
+  width: min(100%, 520px); max-width: 520px; padding: 10px 13px;
+  border: 0; border-left: 2px solid var(--green-line); border-radius: 0; background: transparent;
+}
+#ca-root .personal-onto-relation-section .personal-onto-domain-empty .ui-empty-state__hint { max-width: 460px; }
+#ca-root .personal-onto-graph-toolbar > .ui-button:disabled,
+#ca-root .personal-onto-graph-toolbar > .ui-button.is-disabled {
+  border-color: var(--line-field); background: var(--color-white-92); color: var(--color-ink-3, var(--ink2));
+  opacity: 1; filter: none; cursor: not-allowed;
+}
+#ca-root .personal-onto-graph-management {
+  display: flex; align-items: center; justify-content: space-between; gap: 18px; flex-wrap: wrap;
+  margin: 0 0 18px; padding: 14px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+}
+#ca-root .personal-onto-graph-management-copy { min-width: 220px; flex: 1 1 320px; }
+#ca-root .personal-onto-graph-management-copy h2,
+#ca-root .personal-onto-graph-filter-heading h2 { margin: 0; color: var(--color-ink); font-size: var(--font-size-ui); font-weight: 650; }
+#ca-root .personal-onto-graph-management-copy p,
+#ca-root .personal-onto-graph-filter-heading p,
+#ca-root .personal-onto-relation-help { margin: 4px 0 0; color: var(--color-ink-2); font-size: var(--font-size-caption); line-height: 1.55; }
+#ca-root .personal-onto-graph-toolbar,
+#ca-root .personal-onto-graph-management .personal-onto-graph-toolbar { margin: 0; }
+#ca-root .personal-onto-graph-filter-panel { margin: 0 0 18px; }
+#ca-root .personal-onto-graph-filter-heading { margin-bottom: 9px; }
+#ca-root .personal-onto-filter-chip {
+  min-height: 34px; border: 1px solid var(--line-field); border-radius: var(--radius-pill, 999px);
+  background: var(--color-white); color: var(--color-ink-2); font-weight: 500;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+#ca-root .personal-onto-filter-chip:hover,
+#ca-root .personal-onto-filter-chip:active,
+#ca-root .personal-onto-filter-chip:focus-visible {
+  border-color: var(--green-line); background: var(--color-brand-soft); color: var(--color-ink);
+}
+#ca-root .personal-onto-filter-chip.is-on { border-color: var(--green-line); background: var(--color-brand-soft); color: var(--color-ink); font-weight: 650; }
+#ca-root .personal-onto-filter-chip:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+#ca-root .personal-onto-relation-section { margin-top: 12px; }
+#ca-root .personal-onto-relation-section .personal-onto-zone-head { margin-bottom: 4px; }
+#ca-root .personal-onto-related-groups {
+  width: min(100%, 920px); box-sizing: border-box; margin: 26px auto 0; padding: 10px 0 0;
+  border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent;
+}
+#ca-root .personal-onto-related-groups > summary {
+  min-height: 34px; padding: 5px 2px; color: var(--color-ink); font-size: var(--font-size-ui-sm); font-weight: 650; cursor: pointer;
+}
+#ca-root .personal-onto-related-groups[open] > summary { margin-bottom: 0; }
+#ca-root .personal-onto-related-groups > .personal-onto-relation-help { max-width: 780px; margin: 2px 2px 14px; }
+#ca-root .personal-onto-related-groups .personal-onto-relation-row { padding: 15px 0; }
+#ca-root .personal-onto-related-groups .personal-onto-relation-edge,
+#ca-root .personal-onto-related-groups .personal-onto-relation-footer {
+  width: min(100%, 800px); margin-right: auto; margin-left: auto;
+}
+#ca-root .personal-onto-related-groups .personal-onto-relation-edge {
+  grid-template-columns: minmax(0, 1fr) minmax(88px, 112px) minmax(0, 1fr);
+  gap: 14px;
+}
+#ca-root .personal-onto-related-groups .personal-onto-relation-node {
+  min-height: 58px; display: flex; align-items: center; padding: 12px 15px;
+  border-color: var(--line); border-radius: var(--radius-card); background: var(--color-white-92);
+}
+#ca-root .personal-onto-related-groups .personal-onto-relation-predicate {
+  position: relative; padding: 4px 0; border: 0; border-radius: 0;
+  background: transparent; color: var(--green-t); font-size: var(--font-size-caption); font-weight: 500; white-space: nowrap;
+}
+#ca-root .personal-onto-related-groups .personal-onto-relation-predicate::before,
+#ca-root .personal-onto-related-groups .personal-onto-relation-predicate::after {
+  position: absolute; top: 50%; width: 14px; height: 1px; background: var(--green-line); content: '';
+}
+#ca-root .personal-onto-related-groups .personal-onto-relation-predicate::before { left: -14px; }
+#ca-root .personal-onto-related-groups .personal-onto-relation-predicate::after { right: -14px; }
+#ca-root .personal-onto-related-groups .personal-onto-relation-footer {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(88px, 112px) minmax(0, 1fr);
+  align-items: center; gap: 6px 14px; margin-top: 8px;
+}
+#ca-root .personal-onto-related-groups .personal-onto-relation-footer > .muted {
+  color: var(--color-ink-3, var(--ink2)); font-size: var(--font-size-caption);
+}
+#ca-root .personal-onto-related-groups .personal-onto-relation-footer > .ui-button {
+  min-width: 0; min-height: 28px; padding: 3px 8px; border-color: transparent; border-radius: var(--radius-pill, 999px);
+  background: transparent; color: var(--color-ink-2); font-size: var(--font-size-caption); font-weight: 500;
+}
+#ca-root .personal-onto-related-groups .personal-onto-relation-footer > .ui-button:hover {
+  border-color: transparent; background: var(--color-brand-soft); color: var(--color-ink);
+}
+#ca-root .personal-onto-related-groups .personal-onto-relation-footer > .ui-button:focus-visible {
+  outline: 2px solid var(--color-accent); outline-offset: 2px;
+}
+#ca-root .personal-onto-related-groups .personal-onto-relation-source-action { grid-column: 1; justify-self: start; }
+#ca-root .personal-onto-related-groups .personal-onto-relation-target-action { grid-column: 3; justify-self: end; }
+@media (max-width: 720px) {
+  #ca-root .personal-onto-domain-grid { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  #ca-root .personal-onto-relation-edge { grid-template-columns: minmax(0, 1fr); gap: 7px; }
+  #ca-root .personal-onto-relation-predicate { text-align: left; }
+  #ca-root .personal-onto-affair-row,
+  #ca-root .personal-onto-relation-row { padding: 13px 0; }
+  #ca-root .personal-onto-related-groups { padding: 10px 0 0; }
+  #ca-root .personal-onto-related-groups .personal-onto-relation-edge,
+  #ca-root .personal-onto-related-groups .personal-onto-relation-footer { width: 100%; }
+  #ca-root .personal-onto-related-groups .personal-onto-relation-footer { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  #ca-root .personal-onto-related-groups .personal-onto-relation-source-action,
+  #ca-root .personal-onto-related-groups .personal-onto-relation-target-action { grid-column: 1; justify-self: start; }
+  #ca-root .personal-onto-related-groups .personal-onto-relation-predicate { justify-self: start; }
+  #ca-root .personal-onto-related-groups .personal-onto-relation-predicate::before,
+  #ca-root .personal-onto-related-groups .personal-onto-relation-predicate::after { display: none; }
+}
+@media (min-width: 721px) and (max-width: 1160px) {
+  #ca-root .personal-onto-domain-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+#ca-root .personal-onto-graph-toolbar,
+#ca-root .personal-onto-graph-filters,
+#ca-root .personal-onto-graph-entity-actions,
+#ca-root .personal-onto-graph-sources,
+#ca-root .personal-onto-graph-source-ref,
+#ca-root .personal-onto-category-field-edit-row {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+#ca-root .personal-onto-graph-toolbar { margin: 0 0 14px; }
+#ca-root .personal-onto-graph-filters { margin: 0 0 16px; }
+#ca-root .personal-onto-graph-entity-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 12px; }
+#ca-root .personal-onto-graph-entity-card { min-width: 0; padding: 15px; border: 1px solid var(--line); border-radius: var(--radius-window); background: var(--color-white); }
+#ca-root .personal-onto-graph-entity-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+#ca-root .personal-onto-graph-entity-titles { min-width: 0; }
+#ca-root .personal-onto-graph-entity-titles h3 { margin: 0 0 7px; color: var(--ink); font-size: var(--font-size-ui); overflow-wrap: anywhere; }
+#ca-root .personal-onto-graph-properties { display: grid; gap: 6px; margin: 12px 0; }
+#ca-root .personal-onto-graph-property { display: grid; grid-template-columns: minmax(92px, 0.35fr) minmax(0, 1fr); gap: 10px; padding: 7px 0; border-top: 1px solid var(--line); font-size: var(--font-size-caption); }
+#ca-root .personal-onto-graph-property > span { color: var(--ink2); }
+#ca-root .personal-onto-graph-property > strong { min-width: 0; color: var(--ink); font-weight: 500; overflow-wrap: anywhere; white-space: pre-wrap; }
+#ca-root .personal-onto-graph-entity-actions { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+#ca-root .personal-onto-graph-sources { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+#ca-root .personal-onto-graph-source-ref { padding: 4px 0; }
+#ca-root .personal-onto-graph-source-ref > span:nth-child(2) { min-width: 0; color: var(--ink2); font-size: var(--font-size-caption); overflow-wrap: anywhere; }
+#ca-root .personal-onto-graph-source-picker { padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-popover); }
+#ca-root .personal-onto-graph-section-label { margin-bottom: 4px; color: var(--ink); font-size: var(--font-size-ui-sm); font-weight: 650; }
+#ca-root .personal-onto-graph-source-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 8px 14px; max-height: 220px; overflow: auto; }
+#ca-root .personal-onto-graph-source-options .ui-checkbox { min-width: 0; }
+#ca-root .personal-onto-taxonomy-row { margin: 8px 0; padding: 14px; border: 1px solid var(--line); border-radius: var(--radius-popover); background: var(--color-white); }
+#ca-root .personal-onto-taxonomy-depth-1 { margin-left: 18px; }
+#ca-root .personal-onto-taxonomy-depth-2 { margin-left: 36px; }
+#ca-root .personal-onto-taxonomy-depth-3 { margin-left: 54px; }
+#ca-root .personal-onto-taxonomy-depth-4 { margin-left: 72px; }
+#ca-root .personal-onto-taxonomy-depth-5 { margin-left: 90px; }
+#ca-root .personal-onto-taxonomy-depth-6 { margin-left: 108px; }
+#ca-root .personal-onto-taxonomy-fields { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+#ca-root .personal-onto-taxonomy-personal { max-width: 1040px; }
+#ca-root .personal-onto-taxonomy-personal .ui-button { margin-top: 12px; }
+#ca-root .personal-onto-domain-error { padding: 10px 12px; border-left: 3px solid var(--status-attention, #c58a23); color: var(--ink2); background: var(--color-white); }
+@media (max-width: 720px) {
+  #ca-root .personal-onto-graph-entity-grid { grid-template-columns: minmax(0, 1fr); }
+  #ca-root .personal-onto-taxonomy-depth-1 { margin-left: 8px; }
+  #ca-root .personal-onto-taxonomy-depth-2 { margin-left: 16px; }
+  #ca-root .personal-onto-taxonomy-depth-3 { margin-left: 24px; }
+  #ca-root .personal-onto-taxonomy-depth-4 { margin-left: 32px; }
+  #ca-root .personal-onto-taxonomy-depth-5 { margin-left: 40px; }
+  #ca-root .personal-onto-taxonomy-depth-6 { margin-left: 48px; }
+}

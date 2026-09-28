@@ -120,6 +120,8 @@ describe('对话内引用卡片家族（回执卡 + 记忆卡）', () => {
     await withIcons.context.window.mountRecallProjectionCard(withIcons.host, { projectionId: 'proj-a' }, { cid: 'cid-a', onlyModelSelected: true });
     expect(withIcons.host.innerHTML).toContain('class="chat-recall-projection-icon"');
     expect(withIcons.host.innerHTML).toContain('is-book-open');
+    expect(withIcons.host.innerHTML).toContain('data-asset-citation="asset-a"');
+    expect(withIcons.host.innerHTML).toContain('class="ui-button__label">被引用的资产</span>');
     // 头部顺序：图标在标题之前（与记忆卡同构）
     expect(withIcons.host.innerHTML.indexOf('chat-recall-projection-icon'))
       .toBeLessThan(withIcons.host.innerHTML.indexOf('chat-recall-projection-title'));
@@ -129,6 +131,7 @@ describe('对话内引用卡片家族（回执卡 + 记忆卡）', () => {
     expect(withoutIcons.host.innerHTML).not.toContain('chat-recall-projection-icon');
     // 降级不能顺手把卡也弄丢：标题与撤销口照旧
     expect(withoutIcons.host.innerHTML).toContain('被引用的资产');
+    expect(withoutIcons.host.innerHTML).toContain('data-asset-citation="asset-a"');
     expect(withoutIcons.host.innerHTML).toContain('data-recall-projection-revoke');
   });
 });

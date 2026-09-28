@@ -21,7 +21,7 @@
  */
 
 import type { AgentTool, HistoryResource } from "#core-agent";
-import type { ChatResolvedRuntime } from "../../model/client";
+import type { ChatResolvedRuntime, CognitionSaveReceipt } from "../../model/client";
 
 import { createLogger } from "../../logger";
 import { logErrorRef, logPathRef, maskId } from "../../util/log-redact";
@@ -2697,6 +2697,7 @@ export interface EnqueueParams {
    * interaction result back to it. */
   artifacts?: Array<{ id: string; title: string; agent_id: string }>;
   teaching_receipts?: GroupMessage["teaching_receipts"];
+  cognition_save_receipts?: GroupMessage["cognition_save_receipts"];
   marketplace_requests?: MarketplaceInstallRequest[];
   plan_announcement?: boolean;
   /** Override resolved recipients (commander emitting plan announcement
@@ -3569,6 +3570,9 @@ async function _enqueueBody(
       : {}),
     ...(params.teaching_receipts && params.teaching_receipts.length
       ? { teaching_receipts: params.teaching_receipts }
+      : {}),
+    ...(params.cognition_save_receipts && params.cognition_save_receipts.length
+      ? { cognition_save_receipts: params.cognition_save_receipts }
       : {}),
     ...(params.marketplace_requests && params.marketplace_requests.length
       ? { marketplace_requests: params.marketplace_requests }
@@ -5874,7 +5878,7 @@ async function runActorTurnBody(
         const catalog = await assetCatalogForPromptWithRelevance(uid, cid, Date.now(), String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000), {
           ...(turnProjectId ? { turnProjectId } : {}),
           ...(turnSpaceId ? { turnSpaceId } : {}),
-        });
+        }, actor.id);
         if (catalog.text) systemPrompt = `${systemPrompt}\n\n${catalog.text}`;
         catalogRelevantIds = catalog.relevantIds;
       } catch {
@@ -5900,7 +5904,17 @@ async function runActorTurnBody(
         } catch {
           // 挂载集读不到只影响 omitted 回执，不影响清单。
         }
-        const experienceCatalog = await experienceCatalogForPrompt(uid, cid, Date.now(), String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000), experienceMounted);
+        const experienceCatalog = await experienceCatalogForPrompt(
+          uid,
+          cid,
+          Date.now(),
+          String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000),
+          experienceMounted,
+          {
+            agentId: actor.id,
+            ...(turnSpaceId ? { workspaceId: turnSpaceId } : {}),
+          },
+        );
         if (experienceCatalog) systemPrompt = `${systemPrompt}\n\n${experienceCatalog}`;
       } catch {
         // 经验清单拿不到不影响回合。
@@ -6111,6 +6125,7 @@ async function runActorTurnBody(
   // the routing target for a user→artifact interaction result.
   const turnArtifacts: Array<{ id: string; title: string }> = [];
   const turnTeachingReceipts: NonNullable<GroupMessage["teaching_receipts"]> = [];
+  const turnCognitionSaveReceipts: NonNullable<GroupMessage["cognition_save_receipts"]> = [];
   const onArtifactCreated = (a: { id: string; title: string }) => {
     turnArtifacts.push(a);
     emit(state, {
@@ -6790,6 +6805,14 @@ async function runActorTurnBody(
             status: receipt.status,
             candidate_ids: receipt.candidateIds,
           });
+        },
+        onCognitionSaveReceipt: (receipt: CognitionSaveReceipt) => {
+          const existingIndex = turnCognitionSaveReceipts.findIndex((item) => item.target === receipt.target && item.id === receipt.id && item.outcome === receipt.outcome);
+          if (existingIndex >= 0) {
+            turnCognitionSaveReceipts[existingIndex] = { ...receipt };
+            return;
+          }
+          turnCognitionSaveReceipts.push({ ...receipt });
         },
         // Every in-process turn reports its resolved runtime (actual
         // provider/model after override / fallback). Commander keeps its
@@ -7848,6 +7871,9 @@ async function runActorTurnBody(
         : {}),
       ...(turnTeachingReceipts.length
         ? { teaching_receipts: turnTeachingReceipts }
+        : {}),
+      ...(turnCognitionSaveReceipts.length
+        ? { cognition_save_receipts: turnCognitionSaveReceipts }
         : {}),
       ...(turnMarketplaceRequests.length
         ? { marketplace_requests: turnMarketplaceRequests }
@@ -12178,10 +12204,12 @@ async function buildCommanderExtraTools(
         if (existing) {
           projection = await appendAssetsToModelSelectedProjection(uid, existing.id, granted, { taskRunId: turnId });
         } else {
+          const { fileKinds: scopeFileKinds, ...scopeWithoutFileKinds } = currentRecallScope;
           const base = await previewContextProjection(uid, {
             taskRunId: turnId,
             conversationId: cid,
-            ...(currentProjectId ? { workspaceId: currentProjectId } : {}),
+            ...scopeWithoutFileKinds,
+            ...(scopeFileKinds !== undefined ? { fileKinds: [...scopeFileKinds] } : {}),
             purpose: "model_selected",
             ...(reason ? { taskText: reason } : {}),
             authorization: "model_selected",

@@ -55,7 +55,7 @@ describe('loadAssetProfileEntries', () => {
     expect(entries.length).toBeLessThanOrEqual(profile.PROFILE_BLOCK_MAX_ENTRIES);
   });
 
-  it('memory block prefers asset entries and falls back to files when the pool is empty', async () => {
+  it('memory block keeps independent file entries during migration and falls back when assets are empty', async () => {
     const memory = await import('../../../../src/main/features/memory');
     const { userProfileFile } = await import('../../../../src/main/paths');
     fs.mkdirSync(path.dirname(userProfileFile(UID)), { recursive: true });
@@ -63,7 +63,7 @@ describe('loadAssetProfileEntries', () => {
 
     const fromAssets = memory.formatForSystemPrompt(UID, 'commander', undefined, undefined, new Set(), ['资产时代的画像条目。']);
     expect(fromAssets).toContain('资产时代的画像条目。');
-    expect(fromAssets).not.toContain('文件时代的画像条目。');
+    expect(fromAssets).toContain('文件时代的画像条目。');
 
     const fallback = memory.formatForSystemPrompt(UID, 'commander', undefined, undefined, new Set(), []);
     expect(fallback).toContain('文件时代的画像条目。');

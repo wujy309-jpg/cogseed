@@ -101,6 +101,7 @@ import * as personalOntologyTemplateFiles from '../features/personal_ontology_te
 import * as personalOntologyCandidates from '../features/personal_ontology_candidates';
 import type { GroupEvent } from '../features/group_chat/bus';
 import { setGroupChatMessageBroadcaster } from '../features/group_chat/bus';
+import { setCognitionChangeBroadcaster } from '../features/recall/store-events';
 import * as agents from '../features/agents';
 import * as autoTasks from '../features/auto_tasks';
 import { isAgentEnabled } from '../features/component_enabled';
@@ -168,6 +169,7 @@ import { invokeHandlers as touchpointHandlers } from './touchpoints';
 import { invokeHandlers as desktopWorkbenchHandlers } from './desktop-workbench';
 import { invokeHandlers as hubAccountHandlers } from './hub-account';
 import { invokeHandlers as memoryHandlers } from './memory';
+import { invokeHandlers as ontologyGraphHandlers } from './ontology-graph';
 import { invokeHandlers as cognitionHandlers } from './cognition';
 import { invokeHandlers as transcriptHandlers } from './transcript';
 import { invokeHandlers as meetingHandlers } from './meeting';
@@ -2484,8 +2486,8 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     };
   },
 
-  // 存量记忆迁移手动口（2026-09-19 清单 #6）：dryRun=盘点；否则立即迁移
-  //（备份→入库→按文件清空）。启动任务之外的可控触发（验收/补跑）。
+  // 存量记忆迁移：dryRun 只读盘点；真实迁移必须带用户逐条确认的内容 hash
+  // 与预览时源文件指纹。没有显式选择不执行；启动阶段不再自动迁移。
   // 族改名（2026-09-22 快赢·族可命名）：锚资产起按 same_family 连通分量批量写。
   'recall.families.rename': async ({ anchorAssetId, name } = {}, ctx) => {
     if (typeof anchorAssetId !== 'string' || !anchorAssetId.trim()) throw new Error('invalid family anchor asset id');
@@ -2493,9 +2495,28 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     const updated = await renameAssetFamily(ctx.userId, anchorAssetId.trim(), String(name ?? ''));
     return { ok: true, updated };
   },
-  'recall.memory.migrate': async ({ dryRun } = {}, ctx) => {
+  'recall.memory.migrate': async (payload = {}, ctx) => {
+    if (payload?.dryRun === true) {
+      const { previewLegacyMemoryMigration } = await import('../features/recall/memory-migration');
+      return previewLegacyMemoryMigration(ctx.userId);
+    }
+    const { selectedEntries, expectedFingerprints } = payload;
+    if (!Array.isArray(selectedEntries) || selectedEntries.length === 0) {
+      throw new Error('explicit migration selection is required');
+    }
     const { migrateLegacyMemoryToAssets } = await import('../features/recall/memory-migration');
-    return migrateLegacyMemoryToAssets(ctx.userId, { dryRun: dryRun === true });
+    return migrateLegacyMemoryToAssets(ctx.userId, { selectedEntries, expectedFingerprints });
+  },
+  'recall.scopedMemoryMigration.preview': async (_payload, ctx) => {
+    const { previewLegacyScopedMemoryMigration } = await import('../features/recall/scoped-memory-migration');
+    return previewLegacyScopedMemoryMigration(ctx.userId);
+  },
+  'recall.scopedMemoryMigration.run': async ({ selectedEntries, expectedFingerprints } = {}, ctx) => {
+    if (!Array.isArray(selectedEntries) || selectedEntries.length === 0) {
+      throw new Error('explicit scoped memory migration selection is required');
+    }
+    const { migrateLegacyScopedMemoryToAssets } = await import('../features/recall/scoped-memory-migration');
+    return migrateLegacyScopedMemoryToAssets(ctx.userId, { selectedEntries, expectedFingerprints });
   },
   'recall.captures.settings.get': async (_input, ctx) => {
     const [settings, model] = await Promise.all([
@@ -2528,7 +2549,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true, candidate: withRecallCandidateCapabilities(await recallCandidates.readRecallCandidate(ctx.userId, candidateId)) };
   },
 
-  'recall.candidates.save': async ({ judgment, value, summary, uncertainty, suggestedType, suggestedScope, suggestedAction, risk, sourceRefs, evidenceRefs, expiresAt, taskRunId, targetAssetId, targetVersionUsed, spaceId, applicableWhen, forbiddenWhen } = {}, ctx) => {
+  'recall.candidates.save': async ({ judgment, value, summary, uncertainty, suggestedType, suggestedScope, suggestedAction, risk, sourceRefs, evidenceRefs, expiresAt, taskRunId, targetAssetId, targetVersionUsed, spaceId, scopePolicy, applicableWhen, forbiddenWhen } = {}, ctx) => {
     if (typeof judgment !== 'string' || judgment.length > 4_000) throw new Error('invalid recall candidate judgment');
     if (summary !== undefined && (typeof summary !== 'string' || summary.length > 1_000)) throw new Error('invalid recall candidate summary');
     if (value !== undefined && (typeof value !== 'string' || value.length > 4_000)) throw new Error('invalid recall candidate value');
@@ -2537,6 +2558,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (typeof suggestedScope !== 'string' || suggestedScope.length > 500) throw new Error('invalid recall candidate scope');
     if (!Array.isArray(sourceRefs) || sourceRefs.length > 100) throw new Error('invalid recall candidate source refs');
     if (spaceId !== undefined && !safeId(spaceId)) throw new Error('invalid space id');
+    if (scopePolicy !== undefined && (!scopePolicy || typeof scopePolicy !== 'object' || Array.isArray(scopePolicy))) throw new Error('invalid recall candidate scope policy');
     if (evidenceRefs !== undefined && (!Array.isArray(evidenceRefs) || evidenceRefs.length > 100)) throw new Error('invalid recall candidate evidence refs');
     if (suggestedAction !== undefined && !['create', 'update', 'limit_scope', 'pause', 'keep_current', 'reject'].includes(suggestedAction)) throw new Error('invalid recall candidate action');
     if (targetVersionUsed !== undefined && (typeof targetVersionUsed !== 'string' || !/^[0-9]{1,9}$/.test(targetVersionUsed))) throw new Error('invalid recall candidate target version');
@@ -2546,12 +2568,14 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (targetAssetId !== undefined && !safeId(targetAssetId)) throw new Error('invalid recall candidate target asset id');
     if (applicableWhen !== undefined && (!Array.isArray(applicableWhen) || applicableWhen.length > 32)) throw new Error('invalid recall candidate applicable range');
     if (forbiddenWhen !== undefined && (!Array.isArray(forbiddenWhen) || forbiddenWhen.length > 32)) throw new Error('invalid recall candidate forbidden range');
-    return { ok: true, candidate: withRecallCandidateCapabilities(await recallCandidates.saveRecallCandidate(ctx.userId, { judgment, ...(value !== undefined ? { value } : {}), ...(summary !== undefined ? { summary } : {}), ...(uncertainty !== undefined ? { uncertainty } : {}), suggestedType, suggestedScope, ...(suggestedAction !== undefined ? { suggestedAction } : {}), ...(risk !== undefined ? { risk } : {}), sourceRefs, ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(expiresAt !== undefined ? { expiresAt } : {}), ...(taskRunId !== undefined ? { taskRunId } : {}), ...(targetAssetId !== undefined ? { targetAssetId } : {}), ...(targetVersionUsed !== undefined ? { targetVersionUsed } : {}), ...(spaceId ? { spaceId } : {}), ...(applicableWhen !== undefined ? { applicableWhen } : {}), ...(forbiddenWhen !== undefined ? { forbiddenWhen } : {}) })) };
+    return { ok: true, candidate: withRecallCandidateCapabilities(await recallCandidates.saveRecallCandidate(ctx.userId, { judgment, ...(value !== undefined ? { value } : {}), ...(summary !== undefined ? { summary } : {}), ...(uncertainty !== undefined ? { uncertainty } : {}), suggestedType, suggestedScope, ...(suggestedAction !== undefined ? { suggestedAction } : {}), ...(risk !== undefined ? { risk } : {}), sourceRefs, ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(expiresAt !== undefined ? { expiresAt } : {}), ...(taskRunId !== undefined ? { taskRunId } : {}), ...(targetAssetId !== undefined ? { targetAssetId } : {}), ...(targetVersionUsed !== undefined ? { targetVersionUsed } : {}), ...(spaceId ? { spaceId } : {}), ...(scopePolicy !== undefined ? { scopePolicy } : {}), ...(applicableWhen !== undefined ? { applicableWhen } : {}), ...(forbiddenWhen !== undefined ? { forbiddenWhen } : {}) })) };
   },
 
-  'recall.candidates.update': async ({ candidateId, judgment, value, summary, uncertainty, suggestedType, suggestedScope, suggestedAction, risk, sourceRefs, evidenceRefs, expiresAt, taskRunId, targetAssetId, applicableWhen, forbiddenWhen } = {}, ctx) => {
+  'recall.candidates.update': async ({ candidateId, judgment, value, evidenceSummary, summary, uncertainty, suggestedType, suggestedScope, suggestedAction, risk, sourceRefs, evidenceRefs, expiresAt, taskRunId, targetAssetId, scopePolicy, applicableWhen, forbiddenWhen } = {}, ctx) => {
     if (!safeId(candidateId) || typeof judgment !== 'string' || judgment.length > 4_000 || (value !== undefined && (typeof value !== 'string' || value.length > 4_000)) || (summary !== undefined && (typeof summary !== 'string' || summary.length > 1_000)) || (uncertainty !== undefined && (typeof uncertainty !== 'string' || uncertainty.length > 1_000)) || (suggestedType !== 'personal' && suggestedType !== 'rule' && suggestedType !== 'template' && suggestedType !== 'skill_method' && suggestedType !== 'fact') || typeof suggestedScope !== 'string' || suggestedScope.length > 500 || !Array.isArray(sourceRefs) || sourceRefs.length > 100) throw new Error('invalid recall candidate update');
     if (evidenceRefs !== undefined && (!Array.isArray(evidenceRefs) || evidenceRefs.length > 100)) throw new Error('invalid recall candidate evidence refs');
+    if (evidenceSummary !== undefined && (typeof evidenceSummary !== 'string' || evidenceSummary.length > 4_000)) throw new Error('invalid recall candidate evidence summary');
+    if (scopePolicy !== undefined && (!scopePolicy || typeof scopePolicy !== 'object' || Array.isArray(scopePolicy))) throw new Error('invalid recall candidate scope policy');
     if (suggestedAction !== undefined && !['create', 'update', 'limit_scope', 'pause', 'keep_current', 'reject'].includes(suggestedAction)) throw new Error('invalid recall candidate action');
     if (risk !== undefined && !['low', 'medium', 'high'].includes(risk)) throw new Error('invalid recall candidate risk');
     if (expiresAt !== undefined && (typeof expiresAt !== 'string' || !Number.isFinite(Date.parse(expiresAt)))) throw new Error('invalid recall candidate expiry');
@@ -2559,7 +2583,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (targetAssetId !== undefined && !safeId(targetAssetId)) throw new Error('invalid recall candidate target asset id');
     if (applicableWhen !== undefined && (!Array.isArray(applicableWhen) || applicableWhen.length > 32)) throw new Error('invalid recall candidate applicable range');
     if (forbiddenWhen !== undefined && (!Array.isArray(forbiddenWhen) || forbiddenWhen.length > 32)) throw new Error('invalid recall candidate forbidden range');
-    return { ok: true, candidate: withRecallCandidateCapabilities(await recallCandidates.updateRecallCandidate(ctx.userId, candidateId, { judgment, ...(value !== undefined ? { value } : {}), ...(summary !== undefined ? { summary } : {}), ...(uncertainty !== undefined ? { uncertainty } : {}), suggestedType, suggestedScope, ...(suggestedAction !== undefined ? { suggestedAction } : {}), ...(risk !== undefined ? { risk } : {}), sourceRefs, ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(expiresAt !== undefined ? { expiresAt } : {}), ...(taskRunId !== undefined ? { taskRunId } : {}), ...(targetAssetId !== undefined ? { targetAssetId } : {}), ...(applicableWhen !== undefined ? { applicableWhen } : {}), ...(forbiddenWhen !== undefined ? { forbiddenWhen } : {}) })) };
+    return { ok: true, candidate: withRecallCandidateCapabilities(await recallCandidates.updateRecallCandidate(ctx.userId, candidateId, { judgment, ...(value !== undefined ? { value } : {}), ...(evidenceSummary !== undefined ? { evidenceSummary } : {}), ...(summary !== undefined ? { summary } : {}), ...(uncertainty !== undefined ? { uncertainty } : {}), suggestedType, suggestedScope, ...(suggestedAction !== undefined ? { suggestedAction } : {}), ...(risk !== undefined ? { risk } : {}), sourceRefs, ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(expiresAt !== undefined ? { expiresAt } : {}), ...(taskRunId !== undefined ? { taskRunId } : {}), ...(targetAssetId !== undefined ? { targetAssetId } : {}), ...(scopePolicy !== undefined ? { scopePolicy } : {}), ...(applicableWhen !== undefined ? { applicableWhen } : {}), ...(forbiddenWhen !== undefined ? { forbiddenWhen } : {}) })) };
   },
 
   'recall.candidates.defer': async ({ candidateId, note } = {}, ctx) => {
@@ -2779,6 +2803,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
           score: receipt.ranking.score,
           factors: receipt.ranking.factors,
           excluded: receipt.ranking.excluded,
+          ...(receipt.ranking.sceneExcludedReason ? { sceneExcludedReason: receipt.ranking.sceneExcludedReason } : {}),
           weightsSource: receipt.ranking.weightsSource || 'default',
         } : {}),
       })),
@@ -3115,7 +3140,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   'recall.workspaceRefs.update': async ({ id, scope, enabled } = {}, ctx) => { if (!safeId(id) || (scope !== undefined && typeof scope !== 'string') || (enabled !== undefined && typeof enabled !== 'boolean')) throw new Error('invalid workspace reference'); return { ok: true, reference: await recallWorkspaceRefs.updateWorkspaceAssetReference(ctx.userId, id, { ...(scope !== undefined ? { scope } : {}), ...(enabled !== undefined ? { enabled } : {}) }) }; },
   'recall.workspaceRefs.remove': async ({ id } = {}, ctx) => { if (!safeId(id)) throw new Error('invalid workspace reference id'); await recallWorkspaceRefs.removeWorkspaceAssetReference(ctx.userId, id); return { ok: true }; },
 
-  'recall.projections.preview': async ({ taskRunId, workspaceId, purpose, taskText, authorization, expiresAt } = {}, ctx) => { if (!safeId(taskRunId) || (workspaceId !== undefined && !safeId(workspaceId)) || typeof purpose !== 'string' || (taskText !== undefined && (typeof taskText !== 'string' || taskText.length > 2_000)) || (authorization !== undefined && authorization !== 'user_confirmed' && authorization !== 'workspace_policy' && authorization !== 'not_required') || (expiresAt !== undefined && typeof expiresAt !== 'string')) throw new Error('invalid recall projection'); return { ok: true, projection: await recallProjection.previewContextProjection(ctx.userId, { taskRunId, ...(workspaceId !== undefined ? { workspaceId } : {}), purpose, ...(taskText !== undefined ? { taskText } : {}), ...(authorization !== undefined ? { authorization } : {}), ...(expiresAt !== undefined ? { expiresAt } : {}) }) }; },
+  'recall.projections.preview': async ({ taskRunId, projectId, workspaceId, purpose, taskText, authorization, expiresAt } = {}, ctx) => { if (!safeId(taskRunId) || (projectId !== undefined && !safeId(projectId)) || (workspaceId !== undefined && !safeId(workspaceId)) || typeof purpose !== 'string' || (taskText !== undefined && (typeof taskText !== 'string' || taskText.length > 2_000)) || (authorization !== undefined && authorization !== 'user_confirmed' && authorization !== 'workspace_policy' && authorization !== 'not_required') || (expiresAt !== undefined && typeof expiresAt !== 'string')) throw new Error('invalid recall projection'); return { ok: true, projection: await recallProjection.previewContextProjection(ctx.userId, { taskRunId, ...(projectId !== undefined ? { projectId } : {}), ...(workspaceId !== undefined ? { workspaceId } : {}), purpose, ...(taskText !== undefined ? { taskText } : {}), ...(authorization !== undefined ? { authorization } : {}), ...(expiresAt !== undefined ? { expiresAt } : {}) }) }; },
   'recall.projections.list': async ({ taskRunId, conversationId, workspaceId, status, includeExpired, limit } = {}, ctx) => {
     if (taskRunId !== undefined && !safeId(taskRunId)) throw new Error('invalid task run id');
     if (conversationId !== undefined && !safeId(conversationId)) throw new Error('invalid conversation id');
@@ -6735,6 +6760,10 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // Cross-session memory UI — view/edit/import/export over features/memory.ts.
   ...memoryHandlers,
 
+  // User-authored ontology categories, entities and relationships. Personal
+  // profile facts and formal assets remain in their existing source stores.
+  ...ontologyGraphHandlers,
+
   // Evidence-backed cognition assets. Confirmation reuses the canonical
   // memory write path; these handlers own only longitudinal evidence, review,
   // reuse, and growth state.
@@ -7538,6 +7567,16 @@ export function register(): void {
   // open conversation can refresh without a manual reload.
   setGroupChatMessageBroadcaster((info) => {
     broadcastToRenderer('conversations:updated', info);
+  });
+
+  // Cognition change rail (2026-09-27 rewrite): every cognition/recall store
+  // write broadcasts a lightweight {collection, generation} notice on
+  // `cognition:changed`; renderer panels subscribe and re-read only affected
+  // blocks (generation is diagnostic; debounce may coalesce sequence values).
+  // Replaces the 4s capture poll, the
+  // usage-receipt CustomEvent and the manual refresh button.
+  setCognitionChangeBroadcaster((notice) => {
+    broadcastToRenderer('cognition:changed', notice);
   });
 
   const handleInvoke = async (event, request: unknown) => {

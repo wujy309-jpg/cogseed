@@ -1,4 +1,5 @@
 {
+  "recall.projection.forecast_failed": "予測に失敗しました。タスクは開始されていません。",
   "agent.cli.project_dir.label": "プロジェクトディレクトリ",
   "agent.default_name": "無題のエージェント",
   "agent.run_failed": "⚠️ エージェントの実行に失敗しました: {message}",
@@ -267,7 +268,7 @@
   "messaging.wechat.rescan_required": "再スキャンが必要です",
   "messaging.approval.title_needed": "承認が必要です：{agent}",
   "messaging.candidate_card.confirmed": "✅ 確認済み",
-  "messaging.candidate_card.confirmed_detail": "✅ パーソナルオントロジーに追加",
+  "messaging.candidate_card.confirmed_detail": "✅ 認知資産（私について）に保存しました",
   "messaging.candidate_card.rejected": "❌ 拒否済み",
   "messaging.candidate_card.rejected_detail": "❌ 個人本体に登録しませんでした",
   "messaging.continuity.badge_commander": "コマンダー",

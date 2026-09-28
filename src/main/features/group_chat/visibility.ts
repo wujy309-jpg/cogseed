@@ -296,6 +296,13 @@ export interface GroupMessage {
     status: 'active' | 'revoked';
     candidate_ids: string[];
   }>;
+  /** Durable host-owned outcome of a cross-session cognition save. */
+  cognition_save_receipts?: Array<{
+    target: 'asset' | 'candidate';
+    id: string;
+    summary: string;
+    outcome: 'created' | 'already-confirmed' | 'pending-review' | 'merged' | 'fused-update-pending';
+  }>;
   /** Commander-requested marketplace installs. The model can search the
    * official marketplace and request a user decision, but the install only
    * happens after the human clicks the rendered card. */

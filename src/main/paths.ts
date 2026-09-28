@@ -285,6 +285,9 @@ export const userProfileFile = (uid: string) => path.join(userMemoryDir(uid), 'U
 // review state, evidence, reuse history, and its derived growth stage.
 export const userCognitionDir  = (uid: string) => path.join(userCloudRoot(uid), 'cognition');
 export const userCognitionFile = (uid: string) => path.join(userCognitionDir(uid), 'assets.json');
+/** User-authored ontology graph. Stored separately from formal cognition assets so
+ *  entity and relationship edits never copy or mutate the asset source of truth. */
+export const userOntologyGraphFile = (uid: string) => path.join(userCognitionDir(uid), 'ontology-graph.json');
 
 /** Guard an agent id used as a single path segment for agent-scoped memory.
  *  The id is bound by the runner to the calling agent (never model-supplied),

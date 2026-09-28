@@ -242,7 +242,7 @@ describe('experience catalog hint (T008)', () => {
     expect(again.filter((receipt) => receipt.channel === 'experience' && receipt.status === 'omitted')).toHaveLength(1);
   });
 
-  it('caches for 60s without task text and bypasses the cache when task text is present', async () => {
+  it('rebuilds without task text so current eligibility changes are reflected', async () => {
     const service = await setup();
     const hint = await import('../../../../src/main/features/recall/experience-catalog-hint');
     const REPORT_TASK = '写季度总结报告';
@@ -259,18 +259,18 @@ describe('experience catalog hint (T008)', () => {
     const first = await hint.experienceCatalogForPrompt(UID, 'cid-cache', 1_000);
     expect(first).toContain('exp-cache-1');
 
-    // TTL 窗口内新增条目：无 taskText 的调用命中缓存，看到的仍是旧快照。
+    // 新增条目后即刻刷新：资格可能随上下文变化，不能复用旧清单文本。
     await service.createExperience(UID, seedInput({
       id: 'exp-cache-2', taskType: 'general', taskGoal: '通用任务',
       body: '通用经验第二条。',
     }));
-    const cached = await hint.experienceCatalogForPrompt(UID, 'cid-cache', 11_000);
-    expect(cached).toBe(first);
-    expect(cached).not.toContain('exp-cache-2');
+    const refreshed = await hint.experienceCatalogForPrompt(UID, 'cid-cache', 11_000);
+    expect(refreshed).not.toBe(first);
+    expect(refreshed).toContain('exp-cache-2');
 
     // 带 taskText 的调用不落也不读缓存：能看到新条目。
-    const fresh = await hint.experienceCatalogForPrompt(UID, 'cid-cache', 12_000, REPORT_TASK);
-    expect(fresh).toContain('exp-cache-2');
+    const taskScoped = await hint.experienceCatalogForPrompt(UID, 'cid-cache', 12_000, REPORT_TASK);
+    expect(taskScoped).toContain('exp-cache-2');
   });
 
   // specs/016 T023 ①：清单**接入提示词后**无关任务类型零出现。build 层的口径

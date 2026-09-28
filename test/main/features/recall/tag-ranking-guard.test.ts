@@ -169,7 +169,7 @@ describe('反漂移源码级断言（T026）', () => {
     expect(combined).toBe(1);
   });
 
-  it('⑥ tool-catalog.ts 工具名字集合未变（对照 012 开工前 34b87ce8 的 71 个全量冻结基线）', async () => {
+  it('⑥ tool-catalog.ts 工具名字集合未变（对照 012 开工前 34b87ce8 的冻结基线，2026-09-28 随本体图谱切片 71→72）', async () => {
     const { TOOL_CATALOG } = await import('../../../../src/main/model/core-agent/tool-catalog');
     const frozen = [
       'add_custom_connector', 'archive_ability_asset', 'ask_materials', 'bash', 'briefing_get', 'briefing_schedule',
@@ -178,7 +178,7 @@ describe('反漂移源码级断言（T026）', () => {
       'expense_case_status', 'expense_configuration_status', 'expense_precheck_case', 'feishu_dashboard', 'generate_image',
       'grep_files', 'html_to_pdf', 'interactive_cli_close', 'interactive_cli_read', 'interactive_cli_send',
       'interactive_cli_start', 'kb_list', 'kb_read', 'kb_search', 'list_ability_assets', 'list_asset_change_proposals',
-      'list_connector_tools', 'list_files', 'list_task_experiences', 'manage_execution_plan', 'markdown_to_pdf',
+      'list_connector_tools', 'list_files', 'list_ontology_graph', 'list_task_experiences', 'manage_execution_plan', 'markdown_to_pdf',
       'material_list', 'material_search', 'merge_ability_assets', 'messaging_list_targets', 'messaging_send',
       'messaging_send_file', 'metacognition', 'ocr_file', 'office_read', 'office_render', 'p3394_peers',
       'p3394_send', 'p3394_sessions', 'personal_ontology_fields', 'project_instructions', 'publish_outputs',
@@ -222,7 +222,7 @@ afterEach(() => {
 async function seedOne() {
   const candidates = await import('../../../../src/main/features/recall/candidate-service');
   const promoted = await candidates.saveRecallCandidate(TEST_UID, {
-    judgment: '排序守卫用资产：空间不命中时 scene 原始分为 0（在场，不是缺席）。',
+    judgment: '排序守卫用资产：没有明确场景关联时 scene 因子缺席。',
     summary: '排序守卫用资产',
     suggestedType: 'rule',
     applicableWhen: ['守卫用例'],
@@ -243,8 +243,7 @@ function injectionLines(): string[] {
 describe('回执 ranking 写侧（T019 行为级钉子）', () => {
   it('agent_read 回执带当轮拆解：与目录构建那一次 rankAssets 的解释逐字一致，不在写侧重算', async () => {
     // 注：不给资产挂 spaceId——运行时准入对空间资产有 scope 闸（与本测试
-    // 无关）；scene 用「给了 turnSpaceId 但资产不命中」保持在场（raw=0，
-    // 真实信号），同样能钉「拆解 = 那一次构建的透传」。
+    // 无关）；scene 用「给了 turnSpaceId 但没有明确关联」保持缺席，钉住新口径。
     const asset = await seedOne();
     // 当轮目录构建（无任务文本 → relevance 缺席）。
     const hint = await import('../../../../src/main/features/recall/asset-catalog-hint');
@@ -254,9 +253,8 @@ describe('回执 ranking 写侧（T019 行为级钉子）', () => {
     const view = hint.lastCatalogRankedForTurn(TEST_UID, 'conv-guard-1');
     expect(view.size).toBe(1);
     const rankedRow = view.get(asset.id)!;
-    expect(rankedRow.factors.map((f) => f.name)).toEqual(['adoption', 'scene', 'maturity']);
-    expect(rankedRow.excluded).toEqual(['relevance']);
-    expect(rankedRow.factors.find((f) => f.name === 'scene')!.raw).toBe(0);
+    expect(rankedRow.factors.map((f) => f.name)).toEqual(['adoption', 'maturity']);
+    expect(rankedRow.excluded).toEqual(['relevance', 'scene']);
     expect(hint.lastCatalogRankedForTurn(TEST_UID, 'conv-other').size).toBe(0);
     // 模型自取（正文模式）→ agent_read 回执带上同一份拆解（查表透传）。
     const { createRecallTools } = await import('../../../../src/main/model/core-agent/recall-tools');
@@ -269,6 +267,7 @@ describe('回执 ranking 写侧（T019 行为级钉子）', () => {
     expect(read!.ranking).toBeTruthy();
     expect(read!.ranking!.factors).toEqual(rankedRow.factors);
     expect(read!.ranking!.excluded).toEqual(rankedRow.excluded);
+    expect(read!.ranking!.sceneExcludedReason).toBe('no_matching_association');
     expect(read!.ranking!.score).toBe(rankedRow.score);
     expect(read!.ranking!.weightsSource).toBe('default');
     // 隐私（III1 读盘原文）：ranking 只存因子名与数值——不含资产正文、任务文本、路径。

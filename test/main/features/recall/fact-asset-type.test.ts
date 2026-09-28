@@ -105,8 +105,10 @@ describe('fact ability asset type', () => {
 
   it('extraction prompts define fact as a durable factual category', () => {
     const source = fs.readFileSync(path.join(process.cwd(), 'src/main/features/recall/capture-service.ts'), 'utf8');
-    expect(source).toContain('- fact: "Is this a durable fact about a project or environment?"');
-    expect(source).toContain('templates, methods, or durable facts');
+    const contract = fs.readFileSync(path.join(process.cwd(), 'src/main/prompts/recall_candidate_contract.md'), 'utf8');
+    expect(source).toContain("prompts.load('recall_candidate_contract')");
+    expect(contract).toContain('`fact`: durable fact about a project, tool, organisation, workflow, or long-lived environment');
+    expect(contract).toContain('Exclude transient task state');
   });
 
   it('keeps the four existing asset types valid', async () => {

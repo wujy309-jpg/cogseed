@@ -148,7 +148,7 @@
             total: Number(card?.totalAssetCount ?? assets.length),
           });
     const assetRows = (rows, emptyLabel) => rows.length
-      ? rows.map((asset) => _assetRow(asset, false)).join('')
+      ? rows.map((asset) => _assetRow(asset, false, true)).join('')
       : `<div class="chat-recall-projection-empty">${_escape(emptyLabel)}</div>`;
     const detailSections = hasModelLedger
       ? `<div class="chat-recall-projection-section"><div class="chat-recall-projection-section-title">${_escape(_label('recall.projection.model_selected_assets', 'Model-selected assets'))}</div>${assetRows(modelAssets, _label('recall.projection.no_included_assets', 'No preloaded assets selected.'))}</div>
@@ -180,10 +180,19 @@
       ${_omissionRowsHtml(omissions)}`;
   }
 
-  function _assetRow(asset, editable) {
+  function _assetRow(asset, editable, openable = false) {
     const id = String(asset?.assetId || asset?.id || '');
     // 资产 id 是定位键，不是名字：解析不出标题时给语义占位。
     const title = String(asset?.title || '').trim() || _label('recall.projection.asset_untitled', 'Untitled asset');
+    const titleContent = openable && id && typeof window.uiButton === 'function'
+      ? window.uiButton({
+          label: title,
+          role: 'ghost',
+          size: 'sm',
+          className: 'chat-recall-projection-open-asset',
+          attrs: { 'data-asset-citation': id },
+        })
+      : `<strong>${_escape(title)}</strong>`;
     // 已确认投影注入的是确认时那一版，所以这里显示确认版本而不是 live 版本，
     // 否则用户会以为运行中用的是他刚改出来的新版。
     const shownVersion = asset?.confirmedVersion || asset?.version;
@@ -199,7 +208,7 @@
           { confirmed: asset?.confirmedVersion || '', current: asset?.version || '' },
         ))}</small>`
       : '';
-    return `<div class="chat-recall-projection-asset${asset?.stale ? ' is-stale' : ''}" data-recall-projection-asset="${_escape(id)}"><div><strong>${_escape(title)}</strong>${meta ? `<small>${_escape(meta)}</small>` : ''}${governance ? `<small class="chat-recall-projection-governance">${_escape(governance)}</small>` : ''}${stale}${reason}</div>${editable ? `<button type="button" class="btn btn-sm" data-recall-projection-remove="${_escape(id)}">${_escape(_label('recall.projection.remove_task_asset', 'Remove asset'))}</button>` : ''}</div>`;
+    return `<div class="chat-recall-projection-asset${asset?.stale ? ' is-stale' : ''}" data-recall-projection-asset="${_escape(id)}"><div>${titleContent}${meta ? `<small>${_escape(meta)}</small>` : ''}${governance ? `<small class="chat-recall-projection-governance">${_escape(governance)}</small>` : ''}${stale}${reason}</div>${editable ? `<button type="button" class="btn btn-sm" data-recall-projection-remove="${_escape(id)}">${_escape(_label('recall.projection.remove_task_asset', 'Remove asset'))}</button>` : ''}</div>`;
   }
 
   function _availableRow(asset) {

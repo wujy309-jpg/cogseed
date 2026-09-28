@@ -138,6 +138,59 @@ describe('Recall context projection scope policy', () => {
 
     expect(preview.assetIds).toEqual([asset.id]);
   });
+
+  it('applies project scope during preview and again when a confirmed projection is used', async () => {
+    const { assets, projection } = await modules();
+    const asset = (await createAssetWith({
+      judgment: 'Use the approved OAuth review checklist.',
+      summary: 'Project scoped OAuth review',
+      sourceId: 'project-scope-source',
+    })).asset;
+    await assets.updateAbilityAsset('user-a', asset.id, {
+      scopePolicy: { projectIds: ['project-a'], purposeTags: ['review'] },
+      reason: 'restrict to one project',
+      actor: 'user',
+    });
+
+    const allowedPreview = await projection.previewContextProjection('user-a', {
+      taskRunId: 'task-project-scope-a',
+      projectId: 'project-a',
+      purpose: 'review',
+    });
+    const deniedPreview = await projection.previewContextProjection('user-a', {
+      taskRunId: 'task-project-scope-b',
+      projectId: 'project-b',
+      purpose: 'review',
+    });
+
+    expect(allowedPreview.projectId).toBe('project-a');
+    expect(allowedPreview.assetIds).toContain(asset.id);
+    expect(deniedPreview.assetIds).not.toContain(asset.id);
+    expect(deniedPreview.omittedRefs).toContainEqual({ assetId: asset.id, reason: 'scope_mismatch' });
+
+    const confirmed = await projection.confirmContextProjection('user-a', allowedPreview.id);
+    expect(await projection.validateCommittedProjectionAssetVersions('user-a', confirmed))
+      .toHaveProperty(asset.id, confirmed.assetVersions?.[asset.id]);
+
+    const promptInjection = await import('../../../../src/main/features/recall/prompt-injection');
+    const allowedTurn = await promptInjection.buildRecallTurnPromptContext('user-a', {
+      cid: 'cid-project-scope-a',
+      taskRunId: 'turn-project-scope-a',
+      taskText: 'Prepare the formal OAuth review.',
+      projectId: 'project-a',
+      committedProjectionId: confirmed.id,
+    });
+    const deniedTurn = await promptInjection.buildRecallTurnPromptContext('user-a', {
+      cid: 'cid-project-scope-b',
+      taskRunId: 'turn-project-scope-b',
+      taskText: 'Prepare the formal OAuth review.',
+      projectId: 'project-b',
+      committedProjectionId: confirmed.id,
+    });
+
+    expect(allowedTurn.promptBlock).toContain(asset.statement);
+    expect(deniedTurn.promptBlock).not.toContain(asset.statement);
+  });
 });
 
 describe('RecallView and ContextProjection', () => {

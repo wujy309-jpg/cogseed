@@ -11,9 +11,8 @@
  *   影响筛选不影响排序（I2：仅改 tags → 排序逐位相同；输入类型故意不含
  *   tags 字段，编译期就进不了因子计算）。
  * - **因子缺席 = 不进分子也不进分母（≠ 0 分）**：score 是「在场因子的加权
- *   平均」Σ(w·f)/Σw。无项目归属 → scene 整体缺席，分数不会被压低，行为
- *   接近现状（spec US-202 AC3）；这与"scene 算 0 分"（进分母稀释其余因子）
- *   是两种结果。数学上"缺席"与"该因子权重为 0"等价（data-model §9.9）。
+ *   平均」Σ(w·f)/Σw。没有场景上下文或明确关联 → scene 因子缺席，不因缺少
+ *   关联记录给资产扣分。
  * - **只排不裁**（I6）：输入多少条输出多少条，条目集合不变；暂停/过期/无权/
  *   范围不符由消费准入独立判断，不在排序层降权（I7）。
  * - 使用因子 = **实际采用次数**（applied && boundary='real'，调用方经
@@ -27,6 +26,7 @@
 export const RANKING_FACTORS = ['relevance', 'adoption', 'scene', 'maturity'] as const;
 
 export type RankingFactor = (typeof RANKING_FACTORS)[number];
+export type SceneExcludedReason = 'no_scene_context' | 'no_matching_association';
 
 export type RankingWeights = Record<RankingFactor, number>;
 
@@ -67,8 +67,10 @@ export interface RankedAsset {
   score: number;
   /** 在场因子拆解（缺席的不出现——不是 0）。 */
   factors: RankingFactorBreakdown[];
-  /** 本条缺席的因子（如：会话无项目归属 → ['scene']）。 */
+  /** 本条缺席的因子（如：缺少场景上下文或匹配关联 → ['scene']）。 */
   excluded: RankingFactor[];
+  /** 场景因子缺席时的可解释原因；只保存类别，不保存项目或空间标识。 */
+  sceneExcludedReason?: SceneExcludedReason;
   weightsSource?: 'configured' | 'default' | 'invalid-fallback';
 }
 
@@ -91,6 +93,7 @@ export interface RankingExplanation {
   score: number;
   factors: RankingFactorBreakdown[];
   excluded: RankingFactor[];
+  sceneExcludedReason?: SceneExcludedReason;
   weightsSource?: 'configured' | 'default' | 'invalid-fallback';
 }
 
@@ -132,9 +135,9 @@ function adoptionRaw(stat: RankingAdoptionStat | undefined, now: number): number
   return base;
 }
 
-/** scene 原始分。返回 undefined = 因子缺席（会话无项目/空间归属）。
- *  空间比项目更具体给满分；项目/工作区命中 0.8；都没命中 = 0（真实信号，
- *  不是缺席——"这条资产与当前场景无关"本身就是排序信息）。 */
+/** scene 原始分。只把明确命中当作正向关联证据：空间命中 1.0，项目/工作区命中
+ *  0.8。没有命中不等于不相关——关联字段缺失或指向别处时，场景因子缺席；
+ *  是否允许当前任务读取/使用仍由运行时准入独立判断。 */
 function sceneRaw(
   asset: RankingAssetInput,
   scene: RankingSceneContext | undefined,
@@ -143,7 +146,7 @@ function sceneRaw(
   if (scene.turnSpaceId && asset.spaceId === scene.turnSpaceId) return 1.0;
   if (scene.turnProjectId && asset.scopePolicy?.projectIds?.includes(scene.turnProjectId)) return 0.8;
   if (scene.turnSpaceId && asset.scopePolicy?.workspaceIds?.includes(scene.turnSpaceId)) return 0.8;
-  return 0;
+  return undefined;
 }
 
 /** relevance 原始分。map 缺该 id 或值非有限数 = 因子缺席（降级口径同现状）。 */
@@ -188,12 +191,19 @@ export function rankAssets(input: RankAssetsInput): RankedAsset[] {
   const rows = input.assets.map((asset) => {
     const factors: RankingFactorBreakdown[] = [];
     const excluded: RankingFactor[] = [];
+    let sceneExcludedReason: SceneExcludedReason | undefined;
     const adoption = input.adoptionStats?.get(asset.id);
     let relevanceScore = -1;
     for (const factor of RANKING_FACTORS) {
       const raw = factorRaw(factor, asset, input, adoption, now);
       if (raw === undefined) {
         excluded.push(factor);
+        if (factor === 'scene') {
+          const scene = input.scene;
+          sceneExcludedReason = !scene || (!scene.turnProjectId && !scene.turnSpaceId)
+            ? 'no_scene_context'
+            : 'no_matching_association';
+        }
         continue;
       }
       if (factor === 'relevance') relevanceScore = raw;
@@ -211,6 +221,7 @@ export function rankAssets(input: RankAssetsInput): RankedAsset[] {
       score: denominator > 0 ? round6(numerator / denominator) : 0,
       factors,
       excluded,
+      ...(sceneExcludedReason ? { sceneExcludedReason } : {}),
       ...(input.weightsSource ? { weightsSource: input.weightsSource } : {}),
       // 确定性兜底序的比较键（data-model §5.3，不对外输出）。
       relevanceScore,
@@ -227,11 +238,12 @@ export function rankAssets(input: RankAssetsInput): RankedAsset[] {
     if (left.updatedAt !== right.updatedAt) return left.updatedAt < right.updatedAt ? 1 : -1;
     return left.assetId < right.assetId ? -1 : left.assetId > right.assetId ? 1 : 0;
   });
-  return rows.map(({ assetId, score, factors, excluded, weightsSource }) => ({
+  return rows.map(({ assetId, score, factors, excluded, sceneExcludedReason, weightsSource }) => ({
     assetId,
     score,
     factors,
     excluded,
+    ...(sceneExcludedReason ? { sceneExcludedReason } : {}),
     ...(weightsSource ? { weightsSource } : {}),
   }));
 }
@@ -243,6 +255,7 @@ export function explainRanking(ranked: RankedAsset): RankingExplanation {
     score: ranked.score,
     factors: ranked.factors,
     excluded: ranked.excluded,
+    ...(ranked.sceneExcludedReason ? { sceneExcludedReason: ranked.sceneExcludedReason } : {}),
     ...(ranked.weightsSource ? { weightsSource: ranked.weightsSource } : {}),
   };
 }

@@ -1658,16 +1658,9 @@ if (!gotLock) {
       const { migrateLegacyFreeTextScopes } = await import('./features/recall/asset-service');
       await migrateLegacyFreeTextScopes(users.getActiveUserId());
     }, 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
-    // 存量记忆迁移（2026-09-19 合并实施·清单 #6）：USER.md/MEMORY.md 条目过
-    // 第二段入库，迁移前自动备份，全部落库后按文件清空（幂等——文件空则零
-    // 副作用；单条失败保留文件等下次启动重跑）。
-    registerDeferred('recall:migrate-legacy-memory', async () => {
-      const { migrateLegacyMemoryToAssets } = await import('./features/recall/memory-migration');
-      const report = await migrateLegacyMemoryToAssets(users.getActiveUserId());
-      if (report.migrated > 0 || report.failed > 0) {
-        console.log(`[memory-migration] migrated=${report.migrated} failed=${report.failed} backup=${report.backupDir || 'none'}`);
-      }
-    }, 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
+    // 旧 USER.md / MEMORY.md 是用户数据，不在启动时自动归属迁移。用户须先
+    // 在记忆内容页查看来源和原文、逐条选择并确认；preview 是只读，只有确认
+    // 后才备份、尝试写入资产，并仅清理已成功入库且源文件未变化的条目。
     registerDeferred('boot:maintenance-sweeps', () => runBootMaintenanceSweeps(), 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
     registerDeferred('search:reconcile', (signal) => searchFeature.reconcileActive(signal), 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
     registerDeferred('kb:reconcile', async (signal) => {

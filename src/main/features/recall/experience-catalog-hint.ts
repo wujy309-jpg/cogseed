@@ -2,16 +2,13 @@
  * experience-catalog-hint.ts — 经验清单接入提示词（specs/016 T008 / research D7）。
  *
  * 形态平行于 asset-catalog-hint.ts（目录直接放进模型眼前，省一次工具往返；
- * 60 秒 TTL；大目录内联截断），但**与资产目录互不合并**——两段目录各自的
- * 过滤口径与集合边界不同，合并就是"经验稀释资产"的回归。资产那件不动，
- * 这里也不复用它的缓存（各自失效互不牵连）。
+ * 大目录内联截断），但**与资产目录互不合并**——两段目录各自的过滤口径与
+ * 集合边界不同，合并就是"经验稀释资产"的回归。每轮按运行上下文重建，避免
+ * 跨 Agent/workspace 复用过期目录。
  *
- * 与资产 hint 的两个刻意差异：
- *   - 带 mounted（@ 带入的经验集）时不读不写缓存：挂载集与回执按轮变化，
- *     缓存住等于把上一轮的判断塞给下一轮；
- *   - 构建时对「已挂载但本轮被准入拦下」的经验各写一条 omitted 回执
- *     （channel='experience'，reason=准入理由码）——被拦不静默（FR-005），
- *     回执只存 id/版本/理由码，正文与原因码原文都不落。
+ * 构建时对「已挂载但本轮被准入拦下」的经验各写一条 omitted 回执
+ *（channel='experience'，reason=准入理由码）——被拦不静默（FR-005），
+ *回执只存 id/版本/理由码，正文与原因码原文都不落。
  */
 
 import { createLogger } from '../../logger';
@@ -20,23 +17,13 @@ import { buildExperienceCatalog } from './experience-catalog';
 
 const log = createLogger('recall.experience-catalog-hint');
 
-/** 缓存口径同资产目录：内容变化不需要秒级反映，每轮重扫经验目录是纯浪费。 */
-const CACHE_TTL_MS = 60_000;
 /** 常驻提示词的清单上限（同资产量级：30 × 单行 ≈ 数 KB，超限截前 20 行）。 */
 export const INLINE_EXPERIENCE_CATALOG_MAX_ENTRIES = 30;
 /** 超限内联时的保留行数（资产 hint 同款：留一行"还有 N 条"引导翻页）。 */
 const INLINE_OVERFLOW_KEEP = 20;
 
-interface ExperienceCatalogPromptCache {
-  userId: string;
-  cid: string;
-  at: number;
-  text: string;
-}
-let cache: ExperienceCatalogPromptCache | null = null;
-
 export function resetExperienceCatalogHintCacheForTest(): void {
-  cache = null;
+  // Retained for compatibility; eligibility-sensitive text is not cached.
 }
 
 /** 本轮已挂载的经验集（@ 带入 / 引用）：taskRunId 是 omitted 回执的归属轮次。 */
@@ -48,25 +35,32 @@ export interface ExperienceCatalogMounted {
 }
 
 /**
- * 经验清单的提示词文本（带 60 秒 TTL 缓存）；读不到或没有可入清单的经验时
- * 返回空串——**不输出「0 条」**（那会让模型以为用户没有经验，资产 hint 同款
- * 口径）。taskText 非空时不落缓存（任务文本每轮变，缓存住相关排序等于把
- * 上一轮的判断塞给下一轮）。装配点（系统提示拼装处）由接线任务挂载，
+ * 经验清单的提示词文本；读不到或没有可入清单的经验时返回空串——**不输出
+ *「0 条」**（那会让模型以为用户没有经验，资产 hint 同款口径）。装配点
+ *（系统提示拼装处）由接线任务挂载，
  * 本函数只负责产出文本与被拦回执。
  */
+export interface ExperienceCatalogPromptContext {
+  agentId?: string;
+  workspaceId?: string;
+}
+
 export async function experienceCatalogForPrompt(
   userId: string,
   cid = '',
   now = Date.now(),
   taskText = '',
   mounted?: ExperienceCatalogMounted,
+  context: ExperienceCatalogPromptContext = {},
 ): Promise<string> {
-  const cacheable = !taskText && !mounted;
-  if (cacheable && cache && cache.userId === userId && cache.cid === cid && now - cache.at < CACHE_TTL_MS) {
-    return cache.text;
-  }
+  void cid;
+  void now;
   try {
     const built = await buildExperienceCatalog(userId, taskText, {
+      runtimeContext: {
+        ...(context.agentId ? { agentId: context.agentId } : {}),
+        ...(context.workspaceId ? { workspaceId: context.workspaceId } : {}),
+      },
       mountedExperienceIds: mounted?.experienceIds,
     });
     let text = built.text;
@@ -101,8 +95,6 @@ export async function experienceCatalogForPrompt(
         }
       }
     }
-
-    if (cacheable) cache = { userId, cid, at: now, text };
     return text;
   } catch (error) {
     // 读不到就什么都不加（与资产 hint 同口径：不编造「0 条」）。

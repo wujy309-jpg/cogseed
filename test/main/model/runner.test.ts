@@ -22,6 +22,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.doUnmock('@earendil-works/pi-ai/oauth');
+  vi.doUnmock('../../../src/main/features/recall/candidate-service');
   process.env.COGSEED_WORKSPACE_ROOT = prevWs;
   if (prevAnthropicKey === undefined) delete process.env.ANTHROPIC_API_KEY;
   else process.env.ANTHROPIC_API_KEY = prevAnthropicKey;
@@ -34,7 +35,131 @@ async function loadRunner() {
   return import('../../../src/main/model/core-agent/runner');
 }
 
+function mockImmediateKnowledgeIngest() {
+  const ingestImmediateKnowledge = vi.fn(async (_uid: string, input: { requireUserReview?: boolean }) => ({
+    mode: input.requireUserReview ? 'pending-review' as const : 'created' as const,
+    ...(input.requireUserReview ? {} : { assetId: 'asset-test' }),
+    candidateId: 'cand-test',
+  }));
+  vi.doMock('../../../src/main/features/recall/candidate-service', async () => {
+    const actual = await vi.importActual<typeof import('../../../src/main/features/recall/candidate-service')>(
+      '../../../src/main/features/recall/candidate-service',
+    );
+    return { ...actual, ingestImmediateKnowledge };
+  });
+  return ingestImmediateKnowledge;
+}
+
+async function addCrossSessionMemory(input: {
+  userId: string;
+  sessionId: string;
+  userMessage: string;
+  content: string;
+  onCognitionSaveReceipt?: (receipt: unknown) => void | Promise<void>;
+}) {
+  const users = await import('../../../src/main/features/users');
+  users.activateUser(input.userId);
+  const { buildRunner } = await loadRunner();
+  const built = await buildRunner({
+    sessionId: input.sessionId,
+    userId: input.userId,
+    sourceMessageFromUser: true,
+    userMessage: input.userMessage,
+    skillList: [],
+    ...(input.onCognitionSaveReceipt ? { onCognitionSaveReceipt: input.onCognitionSaveReceipt } : {}),
+  });
+  const memoryTool = (built.runner as any).tools.get('cross_session_memory');
+  return memoryTool.execute({ action: 'add', target: 'user', content: input.content }, { state: {} });
+}
+
 describe('runner › buildRunner auth gate', () => {
+  it('activates cross-session memory only for a direct, verbatim user save request', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test-placeholder';
+    const ingest = mockImmediateKnowledgeIngest();
+    const receipts: unknown[] = [];
+    const result = await addCrossSessionMemory({
+      userId: 'runner-memory-direct',
+      sessionId: 'gconv-memory-direct',
+      userMessage: '请记住：以后所有结论都附来源。',
+      content: '以后所有结论都附来源。',
+      onCognitionSaveReceipt: (receipt) => { receipts.push(receipt); },
+    });
+
+    expect(ingest).toHaveBeenCalledWith('runner-memory-direct', expect.objectContaining({
+      text: '以后所有结论都附来源。',
+      requireUserReview: false,
+    }));
+    expect(JSON.parse(result.content)).toMatchObject({
+      ok: true,
+      entries: [expect.stringContaining('Saved as active cognition asset')],
+    });
+    expect(receipts).toEqual([{
+      target: 'asset',
+      id: 'asset-test',
+      summary: '以后所有结论都附来源。',
+      outcome: 'created',
+    }]);
+  });
+
+  it('routes paraphrases and standalone confirmations to review', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test-placeholder';
+    const paraphraseIngest = mockImmediateKnowledgeIngest();
+    const receipts: unknown[] = [];
+    const paraphrase = await addCrossSessionMemory({
+      userId: 'runner-memory-paraphrase',
+      sessionId: 'gconv-memory-paraphrase',
+      userMessage: 'Please remember: I prefer concise answers with one example.',
+      content: 'The user prefers concise answers and one example.',
+      onCognitionSaveReceipt: (receipt) => { receipts.push(receipt); },
+    });
+    expect(paraphraseIngest).toHaveBeenCalledWith('runner-memory-paraphrase', expect.objectContaining({ requireUserReview: true }));
+    expect(JSON.parse(paraphrase.content)).toMatchObject({
+      ok: true,
+      entries: [expect.stringContaining('awaiting review')],
+    });
+    expect(receipts).toEqual([{
+      target: 'candidate',
+      id: 'cand-test',
+      summary: 'The user prefers concise answers and one example.',
+      outcome: 'pending-review',
+    }]);
+
+    vi.doUnmock('../../../src/main/features/recall/candidate-service');
+    vi.resetModules();
+    const confirmationIngest = mockImmediateKnowledgeIngest();
+    const confirmation = await addCrossSessionMemory({
+      userId: 'runner-memory-confirmation',
+      sessionId: 'gconv-memory-confirmation',
+      userMessage: '好的。',
+      content: 'I prefer concise answers.',
+    });
+    expect(confirmationIngest).toHaveBeenCalledWith('runner-memory-confirmation', expect.objectContaining({ requireUserReview: true }));
+    expect(JSON.parse(confirmation.content)).toMatchObject({
+      ok: true,
+      entries: [expect.stringContaining('awaiting review')],
+    });
+  });
+
+  it.each([
+    ['declarative wording', 'I remember that I prefer concise answers.'],
+    ['a negative request', '请不要记住：我偏好简洁回答。'],
+  ])('does not persist cross-session memory from %s', async (_label, userMessage) => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test-placeholder';
+    const ingest = mockImmediateKnowledgeIngest();
+    const result = await addCrossSessionMemory({
+      userId: `runner-memory-reject-${_label.replace(/\W+/g, '-')}`,
+      sessionId: `gconv-memory-reject-${_label.replace(/\W+/g, '-')}`,
+      userMessage,
+      content: 'I prefer concise answers.',
+    });
+
+    expect(ingest).not.toHaveBeenCalled();
+    expect(JSON.parse(result.content)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('Nothing was persisted'),
+    });
+  });
+
   it('rejects a management-only Agent before auth, Session, skills, memory, cognition, projects, or tools', async () => {
     const uid = 'runner-management';
     const users = await import('../../../src/main/features/users');
@@ -161,11 +286,12 @@ describe('runner › buildRunner auth gate', () => {
     );
   });
 
-  it('creates a teaching signal, pending candidate, and receipt only after a successful commander memory write', async () => {
+  it('returns the cognition save receipt for an exact user-authorized commander memory write', async () => {
     process.env.ANTHROPIC_API_KEY = 'sk-ant-test-placeholder';
     const users = await import('../../../src/main/features/users');
     users.activateUser('runner-teaching');
     const receipts: any[] = [];
+    const teachingReceipts: any[] = [];
     const { buildRunner } = await loadRunner();
     const built = await buildRunner({
       sessionId: 'gconv-teaching-success',
@@ -176,7 +302,8 @@ describe('runner › buildRunner auth gate', () => {
       sourceMessageFromUser: true,
       userMessage: '请记住：以后所有结论都附来源。',
       skillList: [],
-      onTeachingReceipt: (receipt) => { receipts.push(receipt); },
+      onCognitionSaveReceipt: (receipt) => { receipts.push(receipt); },
+      onTeachingReceipt: (receipt) => { teachingReceipts.push(receipt); },
     });
     const memoryTool = (built.runner as any).tools.get('cross_session_memory');
     expect(memoryTool).toBeTruthy();
@@ -189,20 +316,23 @@ describe('runner › buildRunner auth gate', () => {
 
     expect(JSON.parse(result.content)).toMatchObject({ ok: true });
     expect(receipts).toEqual([expect.objectContaining({
-      id: expect.stringMatching(/^teach-/),
+      id: expect.stringMatching(/^aa-/),
+      target: 'asset',
       summary: '以后所有结论都附来源。',
-      scope: 'project',
-      status: 'active',
-      candidateIds: [expect.stringMatching(/^cand-/)],
+      outcome: 'created',
     })]);
     const teaching = await import('../../../src/main/features/recall/teaching-service');
     const candidates = await import('../../../src/main/features/recall/candidate-service');
-    await expect(teaching.listUserTeachingSignals('runner-teaching')).resolves.toEqual([
-      expect.objectContaining({ id: receipts[0].id, status: 'active', scope: 'project' }),
-    ]);
+    await expect(teaching.listUserTeachingSignals('runner-teaching')).resolves.toEqual([]);
+    expect(teachingReceipts).toEqual([]);
     await expect(candidates.listRecallCandidates('runner-teaching')).resolves.toEqual([
-      expect.objectContaining({ status: 'pending_review', captureKey: `teaching-${receipts[0].id}` }),
+      expect.objectContaining({ status: 'confirmed', captureKey: expect.stringMatching(/^immediate-/) }),
     ]);
+    const assets = await import('../../../src/main/features/recall/asset-service');
+    await expect(assets.readAbilityAsset('runner-teaching', receipts[0].id)).resolves.toMatchObject({
+      statement: '以后所有结论都附来源。',
+      status: 'active',
+    });
   });
 
   it('does not create teaching state when the memory write is rejected', async () => {

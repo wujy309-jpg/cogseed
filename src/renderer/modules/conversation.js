@@ -336,16 +336,26 @@ function _renderMessageMarkdown(text) {
     assetRefIds.push(id);
     return `\x00ASSETREF${idx}\x00`;
   });
-  const html = renderMarkdownFull(protectedText);
+  // A saved candidate is already reviewable, but the old `[candidate:<id>]`
+  // marker was plain text. Protect it through markdown and turn it into an
+  // actionable button below, beside the existing asset citation handling.
+  const candidateRefIds = [];
+  const markdownInput = protectedText.replace(/\[candidate:([A-Za-z0-9_-]{1,64})\]/g, (m, id) => {
+    const idx = candidateRefIds.length;
+    candidateRefIds.push(id);
+    return `\x00CANDIDATEREF${idx}\x00`;
+  });
+  const html = renderMarkdownFull(markdownInput);
   const needsSkillRewrite = _htmlMayContainKnownSkillIdForDisplay(html, skills);
   // Mention highlighting requires DOM walking — do it on a detached
   // container, then return its innerHTML for the bubble to embed.
-  if (!html || (html.indexOf('@') < 0 && !needsSkillRewrite && !assetRefIds.length)) return html;
+  if (!html || (html.indexOf('@') < 0 && !needsSkillRewrite && !assetRefIds.length && !candidateRefIds.length)) return html;
   const tmp = document.createElement('div');
   tmp.innerHTML = html;
   if (needsSkillRewrite) _replaceKnownSkillIdsIn(tmp, skills);
   _highlightMentionsIn(tmp);
   if (assetRefIds.length) _replaceAssetCitationsIn(tmp, assetRefIds);
+  if (candidateRefIds.length) _replaceCandidateCitationsIn(tmp, candidateRefIds);
   return tmp.innerHTML;
 }
 
@@ -366,6 +376,20 @@ async function _ensureAbilityAssetTitles() {
     _abilityAssetTitleCache = new Map();
   } finally {
     _abilityAssetTitleLoading = false;
+    // 首次调用发生在渲染中（同步拿不到结果），那批引用卡当时只能显示原始 id；
+    // 缓存就绪后就地补上真实标题（2026-09-28 修，841 次真实使用的旧链首屏观感）。
+    // 前缀复用节点里已有的图钉 emoji（slice 到首个空格），不引入新的 emoji 字面量
+    //（shared-ui-adoption-guard 的 emoji-as-icon 基线不许抬高）。
+    if (_abilityAssetTitleCache) {
+      document.querySelectorAll('.chat-asset-citation').forEach((el) => {
+        const id = el.dataset.assetCitation;
+        const title = id ? _abilityAssetTitleCache.get(id) : '';
+        if (!title) return;
+        const spaceAt = el.textContent.indexOf(' ');
+        const icon = spaceAt >= 0 ? el.textContent.slice(0, spaceAt + 1) : '';
+        if (el.textContent !== `${icon}${title}`) el.textContent = `${icon}${title}`;
+      });
+    }
   }
 }
 
@@ -406,6 +430,49 @@ function _replaceAssetCitationsIn(container, ids) {
         frag.appendChild(document.createTextNode(`[asset:?]`));
       }
       last = m.index + m[0].length;
+    }
+    if (last < node.nodeValue.length) frag.appendChild(document.createTextNode(node.nodeValue.slice(last)));
+    node.parentNode.replaceChild(frag, node);
+  }
+}
+
+/** Replace `[candidate:<id>]` markers with a shared, accessible review button. */
+function _replaceCandidateCitationsIn(container, ids) {
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const p = node.parentElement;
+      return p && p.closest('pre, code') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const textNodes = [];
+  while (walker.nextNode()) textNodes.push(walker.currentNode);
+  for (const node of textNodes) {
+    const pattern = /\x00CANDIDATEREF(\d+)\x00/g;
+    if (!pattern.test(node.nodeValue)) continue;
+    pattern.lastIndex = 0;
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    let match;
+    while ((match = pattern.exec(node.nodeValue))) {
+      if (match.index > last) frag.appendChild(document.createTextNode(node.nodeValue.slice(last, match.index)));
+      const id = ids[Number(match[1])];
+      if (id) {
+        const key = 'chat.candidate_citation_open';
+        const translated = typeof t === 'function' ? t(key) : key;
+        const label = translated && translated !== key ? translated : 'Review suggestion';
+        const template = document.createElement('template');
+        template.innerHTML = uiButton({
+          label,
+          role: 'ghost',
+          size: 'sm',
+          className: 'chat-candidate-citation',
+          attrs: { 'data-candidate-citation': id },
+        });
+        frag.appendChild(template.content.cloneNode(true));
+      } else {
+        frag.appendChild(document.createTextNode('[candidate:?]'));
+      }
+      last = match.index + match[0].length;
     }
     if (last < node.nodeValue.length) frag.appendChild(document.createTextNode(node.nodeValue.slice(last)));
     node.parentNode.replaceChild(frag, node);
@@ -1408,7 +1475,7 @@ function _handleExtractionDone(event) {
   }
   if (typeof uiToast === 'function') {
     const total = cognitions
-      ? (cognitions.personal || 0) + (cognitions.rule || 0) + (cognitions.template || 0) + (cognitions.skill_method || 0)
+      ? (cognitions.personal || 0) + (cognitions.fact || 0) + (cognitions.rule || 0) + (cognitions.template || 0) + (cognitions.skill_method || 0)
       : 0;
     const msg = total > 0
       ? t('chat.welcome_extraction_done_with_count', '导入会话已完成提炼：{count} 条认知候选可到认知沉淀确认', { count: total })
@@ -2722,11 +2789,30 @@ document.addEventListener('click', (e) => {
     open();
     return;
   }
-  // skills feature（含 skills-bindings.js）未加载：先懒加载再跳转
+  // recall feature（cognition-assets/core.js 定义 opener）未加载：先懒加载再跳转
   const loader = typeof loadRendererFeature === 'function' ? loadRendererFeature : window.loadRendererFeature;
   if (typeof loader === 'function') {
-    loader('skills').then(open).catch(() => {});
+    loader('recall').then(open).catch(() => {});
   }
+});
+
+// [candidate:<id>] review action → open the exact pending item in cognition assets.
+document.addEventListener('click', (e) => {
+  const el = e.target && e.target.closest ? e.target.closest('[data-candidate-citation]') : null;
+  if (!el) return;
+  const candidateId = el.dataset.candidateCitation;
+  if (!candidateId) return;
+  const open = () => {
+    if (typeof window.openCognitionCandidateById !== 'function') return;
+    window.openCognitionCandidateById(candidateId);
+  };
+  if (typeof window.openCognitionCandidateById === 'function') {
+    open();
+    return;
+  }
+  // recall feature 未加载：先懒加载（同上 asset 引用卡的 fallback），再打开评审详情。
+  const loader = typeof loadRendererFeature === 'function' ? loadRendererFeature : window.loadRendererFeature;
+  if (typeof loader === 'function') loader('recall').then(open).catch(() => {});
 });
 
 async function _startSpaceBuilderConversation() {
@@ -4126,6 +4212,7 @@ function _groupMsgToLegacy(gm) {
     ...(_normalizeCreatedSkills(gm) ? { created_skills: _normalizeCreatedSkills(gm) } : {}),
     ...(Array.isArray(gm.artifacts) && gm.artifacts.length ? { artifacts: gm.artifacts } : {}),
     ...(Array.isArray(gm.teaching_receipts) && gm.teaching_receipts.length ? { teaching_receipts: gm.teaching_receipts } : {}),
+    ...(Array.isArray(gm.cognition_save_receipts) && gm.cognition_save_receipts.length ? { cognition_save_receipts: gm.cognition_save_receipts } : {}),
     ...(Array.isArray(gm.recall_citations) && gm.recall_citations.length ? { recall_citations: gm.recall_citations } : {}),
     ...(Array.isArray(gm.marketplace_requests) && gm.marketplace_requests.length ? { marketplace_requests: gm.marketplace_requests } : {}),
     ...(Array.isArray(gm.wake_requests) && gm.wake_requests.length ? { wake_requests: gm.wake_requests } : {}),
@@ -5251,6 +5338,49 @@ function _renderTeachingReceiptsHtml(receipts) {
   }).join('')}</div>`;
 }
 
+function _renderCognitionSaveReceiptsHtml(receipts) {
+  if (!Array.isArray(receipts) || !receipts.length) return '';
+  const copy = (key, fallback) => {
+    const value = typeof t === 'function' ? t(key) : key;
+    return value && value !== key ? value : fallback;
+  };
+  return `<div class="chat-cognition-save-receipts">${receipts.map((receipt) => {
+    const outcomeKey = receipt.outcome === 'created'
+      ? 'chat.cognition_save.state_active'
+      : receipt.outcome === 'already-confirmed'
+        ? 'chat.cognition_save.state_existing'
+      : receipt.outcome === 'fused-update-pending'
+        ? 'chat.cognition_save.state_update_pending'
+        : receipt.outcome === 'merged'
+          ? 'chat.cognition_save.state_merged'
+          : 'chat.cognition_save.state_pending';
+    const outcomeFallback = receipt.outcome === 'created'
+      ? 'Saved and active'
+      : receipt.outcome === 'already-confirmed'
+        ? 'Already confirmed · inspect current status'
+      : receipt.outcome === 'fused-update-pending'
+        ? 'Update awaiting review · current asset unchanged'
+        : receipt.outcome === 'merged'
+          ? 'Added to a suggestion awaiting review'
+          : 'Awaiting your review · not active yet';
+    const label = receipt.outcome === 'already-confirmed'
+      ? copy('chat.cognition_save.open_existing', 'View record')
+      : receipt.target === 'asset'
+        ? copy('chat.cognition_save.open_asset', 'View and edit')
+        : copy('chat.cognition_save.open_candidate', 'Review or edit');
+    const action = uiButton({
+      label,
+      role: 'ghost',
+      size: 'sm',
+      className: 'chat-cognition-save-open',
+      attrs: receipt.target === 'asset'
+        ? { 'data-asset-citation': receipt.id }
+        : { 'data-candidate-citation': receipt.id },
+    });
+    return `<section class="chat-cognition-save-receipt"><div><strong>${escapeHtml(receipt.summary || '')}</strong><span>${escapeHtml(copy(outcomeKey, outcomeFallback))}</span></div>${action}</section>`;
+  }).join('')}</div>`;
+}
+
 
 
 
@@ -5295,7 +5425,7 @@ function _recallCitationScopeLabel(scope) {
 function _renderRecallCitationsHtml(citations) {
   if (!Array.isArray(citations) || !citations.length) return '';
   const items = citations
-    .filter((citation) => citation && citation.asset_id && citation.title)
+    .filter((citation) => citation && citation.asset_id && String(citation.title || '').trim())
     .slice(0, 12);
   if (!items.length) return '';
   const titleKey = 'chat.recall.citations_title';
@@ -5311,7 +5441,15 @@ function _renderRecallCitationsHtml(citations) {
     const type = _recallCitationTypeLabel(citation.type);
     const scope = _recallCitationScopeLabel(citation.scope);
     const meta = [type, scope].filter(Boolean).join(' · ');
-    return `<div class="chat-recall-citation" data-recall-asset-id="${escapeHtml(citation.asset_id)}"><strong>${escapeHtml(citation.title)}</strong>${meta ? `<span>${escapeHtml(meta)}</span>` : ''}</div>`;
+    const assetTitle = String(citation.title || '').trim();
+    const assetLink = uiButton({
+      label: assetTitle,
+      role: 'ghost',
+      size: 'sm',
+      className: 'chat-recall-citation-open',
+      attrs: { 'data-asset-citation': citation.asset_id },
+    });
+    return `<div class="chat-recall-citation" data-recall-asset-id="${escapeHtml(citation.asset_id)}">${assetLink}${meta ? `<span>${escapeHtml(meta)}</span>` : ''}</div>`;
   }).join('')}</div><div class="chat-recall-feedback-actions">${uiButton({ label: helpful, role: 'ghost', size: 'sm', icon: 'thumbs-up', className: 'chat-recall-feedback-btn', attrs: { 'data-recall-feedback': 'positive', title: helpful } })}${uiButton({ label: improve, role: 'ghost', size: 'sm', icon: 'thumbs-down', className: 'chat-recall-feedback-btn', attrs: { 'data-recall-feedback': 'negative', title: improve } })}</div></section>`;
 }
 
@@ -5336,6 +5474,9 @@ function _hydrateRecallCitations(messageEl, cid, messageId) {
           feedback,
         });
         if (!result?.ok) throw new Error(result?.error || 'Recall feedback failed');
+        // 负反馈后认知资产面板的刷新不再走 window CustomEvent（2026-09-27
+        // 刷新机制重写）：主进程写回执时经 recall store 广播 cognition:changed
+        // （asset-usage-receipts → timeline 区块），面板订阅中枢自己重拉。
         host.dataset.feedbackSent = '1';
         host.dataset.feedback = feedback;
         host.classList.add('is-feedback-sent');
@@ -8933,6 +9074,7 @@ function _messageRecordHasMountedSidecars(gm, el, opts = {}) {
   if ((_normalizeCreatedAgents(gm) || _normalizeCreatedSkills(gm)) && !el.querySelector('.chat-msg-created-agent-chip')) return false;
   if (Array.isArray(gm.artifacts) && gm.artifacts.length && !el.querySelector('.chat-artifact-host')) return false;
   if (Array.isArray(gm.teaching_receipts) && gm.teaching_receipts.length && !el.querySelector('.chat-teaching-receipts')) return false;
+  if (Array.isArray(gm.cognition_save_receipts) && gm.cognition_save_receipts.length && !el.querySelector('.chat-cognition-save-receipts')) return false;
   if (Array.isArray(gm.marketplace_requests) && gm.marketplace_requests.length && !el.querySelector('.chat-marketplace-request')) return false;
   if (gm.kstar_review_card && !el.querySelector('.chat-kstar-result-review')) return false;
   if (gm.asset_change_approval_card && !el.querySelector('.chat-asset-approval')) return false;
@@ -9960,19 +10102,22 @@ function appendChatMessage(message, autoScroll = true, opts = {}) {
   const teachingReceiptsHtml = role === 'assistant'
     ? _renderTeachingReceiptsHtml(message.teaching_receipts)
     : '';
+  const cognitionSaveReceiptsHtml = role === 'assistant'
+    ? _renderCognitionSaveReceiptsHtml(message.cognition_save_receipts)
+    : '';
   // 9.1 统一框架 · 中间区「Evidence 结果块」（恢复自 e88275e1）：来源引用 +
   // 教学回执统一收进一个默认展开的「证据」块（数量角标 = 引用数 + 回执数），
   // 放在正文之前，与 Artifact / Receipt 同一视觉语言。
   const evidenceRefCount = Array.isArray(message.references) ? message.references.length : 0;
   const evidenceReceiptCount = role === 'assistant' && Array.isArray(message.teaching_receipts)
     ? message.teaching_receipts.length : 0;
-  const evidenceHtml = (referencesHtml || teachingReceiptsHtml)
+  const evidenceHtml = (referencesHtml || teachingReceiptsHtml || cognitionSaveReceiptsHtml)
     ? _compactResultBlockHtml({
         label: t('chat.result_block.evidence'),
         icon: 'link',
-        count: evidenceRefCount + evidenceReceiptCount,
+        count: evidenceRefCount + evidenceReceiptCount + (Array.isArray(message.cognition_save_receipts) ? message.cognition_save_receipts.length : 0),
         open: true,
-        bodyHtml: `${referencesHtml}${teachingReceiptsHtml}`,
+        bodyHtml: `${referencesHtml}${teachingReceiptsHtml}${cognitionSaveReceiptsHtml}`,
       })
     : '';
   const recallCitationsHtml = role === 'assistant' && !hasProjectionCard
@@ -15139,6 +15284,7 @@ function _isRedundantRoutingOnlyCommanderRecord(gm) {
       || _normalizeCreatedAgents(gm) || _normalizeCreatedSkills(gm)
       || (Array.isArray(gm.artifacts) && gm.artifacts.length)
       || (Array.isArray(gm.teaching_receipts) && gm.teaching_receipts.length)
+      || (Array.isArray(gm.cognition_save_receipts) && gm.cognition_save_receipts.length)
       || (Array.isArray(gm.marketplace_requests) && gm.marketplace_requests.length)) {
     return false;
   }
@@ -16595,6 +16741,36 @@ function _shouldDeferInterruptedHistoryRecord(cid, gm) {
   return false;
 }
 
+// Streaming placeholders do not pass through appendChatMessage's complete
+// HTML renderer. Build the same evidence block once the authoritative message
+// arrives so host-owned save receipts are visible immediately and on reload.
+function _mountFinalEvidenceBlock(ph, gm) {
+  const bubble = ph?.querySelector('.chat-bubble');
+  if (!bubble || bubble.querySelector('.chat-cognition-save-receipts')) return;
+  const referencesHtml = Array.isArray(gm.references) && gm.references.length
+    ? _renderMessageReferencesHtml(gm.references)
+    : '';
+  const teachingHtml = _renderTeachingReceiptsHtml(gm.teaching_receipts);
+  const cognitionHtml = _renderCognitionSaveReceiptsHtml(gm.cognition_save_receipts);
+  if (!referencesHtml && !teachingHtml && !cognitionHtml) return;
+  const referenceCount = Array.isArray(gm.references) ? gm.references.length : 0;
+  const teachingCount = Array.isArray(gm.teaching_receipts) ? gm.teaching_receipts.length : 0;
+  const cognitionCount = Array.isArray(gm.cognition_save_receipts) ? gm.cognition_save_receipts.length : 0;
+  const template = document.createElement('template');
+  template.innerHTML = _compactResultBlockHtml({
+    label: t('chat.result_block.evidence'),
+    icon: 'link',
+    count: referenceCount + teachingCount + cognitionCount,
+    open: true,
+    bodyHtml: `${referencesHtml}${teachingHtml}${cognitionHtml}`,
+  });
+  const block = template.content.firstElementChild;
+  if (!block) return;
+  const finalEl = bubble.querySelector('[data-role="final"]');
+  bubble.insertBefore(block, finalEl && finalEl.parentElement === bubble ? finalEl : bubble.firstChild);
+  if (typeof window.hydrateUiIcons === 'function') window.hydrateUiIcons(block);
+}
+
 // Transform a streaming placeholder bubble into its finalized form:
 // freeze the process rail (keep visible + collapsed by default),
 // render markdown into [data-role="final"], append produced-files chip /
@@ -16659,6 +16835,7 @@ function _finalizeActorPlaceholder(ph, gm, cid, archive) {
   const text = String(gm.text || '');
   const failedAssistant = _isFailedAssistantContent(text, gm);
   _streamingSetFinal(ph, text, { archive: archive && !failedAssistant });
+  _mountFinalEvidenceBlock(ph, gm);
   if (failedAssistant) {
     _attachFailedAssistantActions(ph, () => _messageTextForActions(ph, text));
     _handleModelOutputErrorForUi(cid, ph, _failedAssistantErrorText(ph) || text, {

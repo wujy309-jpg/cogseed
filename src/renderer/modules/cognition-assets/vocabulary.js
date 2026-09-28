@@ -98,7 +98,7 @@
     extracting: ['cognition.capture_reason_extracting', '正在提炼候选'],
     asset_write: ['cognition.capture_reason_asset_write', '正在写入资产'],
     review_pending: ['cognition.capture_reason_review_pending', '候选已就绪，等你确认'],
-    no_candidate: ['cognition.capture_reason_no_candidate', '整理过，没有发现值得留存的内容'],
+    no_candidate: ['cognition.capture_reason_no_candidate', '整理完成，没有发现需要保存的内容'],
     review_completed: ['cognition.capture_reason_review_completed', '候选已处理完'],
     model_not_configured: ['cognition.capture_reason_model_not_configured', '还没有配置可用模型'],
     model_auth_required: ['cognition.capture_reason_model_auth_required', '模型授权已失效，需要重新授权'],
@@ -110,7 +110,7 @@
 
   /** 行内动作（后端 captureActions 的九值全集）：按钮文案的唯一来源。 */
   const CAPTURE_ACTION = {
-    run_now: ['cognition.capture_action_run_now', '立即整理'],
+    run_now: ['cognition.capture_action_run_now', '立即开始'],
     pause: ['cognition.capture_action_pause', '暂停'],
     resume: ['cognition.capture_action_resume', '继续'],
     cancel: ['cognition.capture_action_cancel', '取消任务'],
@@ -163,7 +163,7 @@
     active: ['cognition.capture_bucket_active', '进行中'],
     silent: ['cognition.capture_bucket_silent', '无留存内容'],
     done: ['cognition.capture_bucket_done', '已完成'],
-    excluded: ['cognition.capture_bucket_excluded', '无需沉淀'],
+    excluded: ['cognition.capture_bucket_excluded', '无需保存'],
   };
 
   /** 未命中兜底：字典没有的枚举值绝不裸出原始字符串（机器码），统一落到

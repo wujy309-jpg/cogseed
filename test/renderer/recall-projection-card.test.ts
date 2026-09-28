@@ -63,6 +63,8 @@ describe('recall projection card renderer', () => {
     await context.window.mountRecallProjectionCard(host, { projectionId: 'proj-a' }, { cid: 'cid-a' });
 
     expect(host.innerHTML).toContain('Old asset');
+    // 未确认的投影草稿里只编辑本轮内容，不提供通往正式资产管理页的动作。
+    expect(host.innerHTML).not.toContain('data-asset-citation');
     expect(host.innerHTML).toContain('Remove asset');
     expect(host.innerHTML).toContain('Preloaded assets');
     expect(host.innerHTML).toContain('Add asset');

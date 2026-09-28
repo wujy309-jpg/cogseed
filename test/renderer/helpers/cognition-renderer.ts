@@ -102,13 +102,14 @@ export function loadCognitionAssets(
   state: Record<string, unknown> = {},
   route: Record<string, unknown> = {},
   windowStubs: Record<string, unknown> = {},
-): { ui: any; ns: any; store: any; window: any; render: () => string } {
+): { ui: any; ns: any; store: any; window: any; context: any; render: () => string } {
   const { cogAssets, root, context } = loadModule(route, state, windowStubs);
   return {
     ui: cogAssets.ui,
     ns: cogAssets,
     store: cogAssets.store,
     window: context.window,
+    context,
     render: () => {
       cogAssets.render();
       return root.innerHTML;

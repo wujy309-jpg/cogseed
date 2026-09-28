@@ -29,6 +29,7 @@ import * as path from 'node:path';
 import { createLogger } from '../../logger';
 import { userOntologyGroupsDir } from '../../paths';
 import { safeId, nowIso, genId12, writeTextAtomicSync } from '../../storage';
+import { notifyCognitionWrite } from './store-events';
 // groups 不反向依赖本模块（写值挂点用动态 import），这里静态单向依赖安全。
 import {
   collectTemplateFileFields,
@@ -113,6 +114,7 @@ function readConflicts(uid: string): OntologyConflictRecord[] {
 
 function writeConflicts(uid: string, records: OntologyConflictRecord[]): void {
   writeTextAtomicSync(conflictsMdPath(uid), serializeConflictsMd(records));
+  notifyCognitionWrite(uid, 'ontology-conflicts', 'update');
 }
 
 function dedupeKey(r: { group_id: string; field: string; value_a: string; value_b: string }): string {

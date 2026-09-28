@@ -391,7 +391,7 @@ describe('skills renderer frontmatter parsing', () => {
   it('renders ability assets with PRD categories and without marketplace skill promotion', () => {
     const html = renderCognition({ name: 'overview' }, { assets: [] });
 
-    for (const category of ['关于我', '规则与偏好', '模板与范例', '技能与方法']) {
+    for (const category of ['个人信息', '规则与偏好', '模板与范例', '技能与方法']) {
       expect(visibleText(html)).toContain(category);
     }
     expect(html).not.toContain('marketplace');

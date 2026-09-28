@@ -209,12 +209,13 @@ describe('recall candidate detail renders from capability', () => {
 
 describe('confirmed candidate exits into the formal asset version chain', () => {
   it('sends a confirmed candidate to its asset instead of reopening the candidate', () => {
-    expect(coreSource).toContain("router.go({ name: 'overview', assetId: result.assetId })");
+    expect(coreSource).toContain("router.go({ name: 'overview', assetId: promotedAssetId })");
   });
 
   it('offers no asset entry when the candidate never produced one', () => {
-    expect(coreSource).toContain('result.assetId');
-    expect(coreSource).toContain("router.go({ name: 'overview', assetId: result.assetId })");
+    expect(coreSource).toContain('(result && result.asset && result.asset.id) || (result && result.assetId)');
+    expect(coreSource).toContain("router.go({ name: 'overview', assetId: promotedAssetId })");
+    expect(coreSource).toContain("router.go({ name: 'review' })");
   });
 });
 

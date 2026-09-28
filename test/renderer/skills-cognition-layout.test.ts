@@ -67,7 +67,7 @@ describe('Recall cognition workspace layout', () => {
   it('keeps Recall navigation focused on the five user views', () => {
     // specs/018 后端驱动重构:五页签对应用户四件事+本体——待我处理(拍板) /
     // 我的认知(资产与经验,含树·目录投影) / 个人本体(独立模块) / 系统活动
-    // (原「整理」:任务流+报告+巡检) / 设置(原「沉淀设置」升级)。
+    // (原「整理」:任务流+报告+巡检) / 整理设置。
     const core = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/core.js'), 'utf-8');
     expect(core).toContain("{ id: 'tree', titleKey: 'cognition.tab_tree'");
     expect(core).toContain("{ id: 'ontology', titleKey: 'cognition.tab_ontology'");
@@ -171,7 +171,7 @@ describe('Recall cognition workspace layout', () => {
     // 个人本体是独立模块挂载。
     const core = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/core.js'), 'utf-8');
     const tabIds = [...core.matchAll(/\{ id: '([a-z]+)', titleKey: 'cognition\.tab_/g)].map((m) => m[1]);
-    expect(tabIds).toEqual(['tree', 'ontology', 'overview', 'review', 'activity', 'settings']);
+    expect(tabIds).toEqual(['tree', 'overview', 'ontology', 'review', 'activity', 'settings']);
     expect(core).toContain('sourceIssueOpen');
     // 来源健康入口只出现在待我处理（review）页。
     const views = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/views.js'), 'utf-8');

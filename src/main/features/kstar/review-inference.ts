@@ -18,6 +18,8 @@ import type {
 import type { AssetUsageReceipt } from '../recall/asset-usage-receipt';
 import type { InjectionReceipt } from '../recall/injection-receipt';
 import { readAbilityAsset } from '../recall/asset-service';
+import { filterRecallAssetsForCommittedProjection } from '../recall/prompt-injection';
+import { readContextProjection } from '../recall/context-projection';
 
 const log = createLogger('kstar.review-inference');
 const MAX_REVIEW_TEXT = 4_000;
@@ -257,24 +259,38 @@ async function defaultRunModel(
  *  重写导致新版丢失旧版仍然有效的信息。读取失败静默跳过（复盘不阻断）。 */
 async function referencedAssetsForReview(userId: string, episode: KstarEpisodeRecord) {
   const refs = [...new Set((episode.k.abilityAssetRefs || []))].slice(0, 5);
-  const assets: Array<{ id: string; title: string; statement: string; type: string; scope: string; version: string }> = [];
+  const assets: Awaited<ReturnType<typeof readAbilityAsset>>[] = [];
   for (const assetId of refs) {
     try {
       const asset = await readAbilityAsset(userId, assetId);
-      if (!asset || asset.status === 'purged') continue;
-      assets.push({
-        id: asset.id,
-        title: asset.title,
-        statement: asset.statement,
-        type: asset.type,
-        scope: asset.scope,
-        version: String(asset.activeVersion || asset.version || '1'),
-      });
+      if (asset) assets.push(asset);
     } catch {
       // 单条资产读取失败不影响其余引用的复盘上下文。
     }
   }
-  return assets;
+  let projection: Awaited<ReturnType<typeof readContextProjection>> | null = null;
+  if (episode.projectionId) {
+    try {
+      projection = await readContextProjection(userId, episode.projectionId);
+    } catch { /* old episodes may not retain a readable projection */ }
+  }
+  const taskText = String(episode.t.userGoal || '');
+  const readableAssets = await filterRecallAssetsForCommittedProjection(userId, assets, {
+    purpose: [projection?.purpose, taskText].filter(Boolean).join('\n'),
+    ...(projection?.projectId ? { projectId: projection.projectId } : {}),
+    ...((episode.s.workspaceId || projection?.workspaceId)
+      ? { workspaceId: episode.s.workspaceId || projection?.workspaceId }
+      : {}),
+    taskText,
+  });
+  return readableAssets.map((asset) => ({
+    id: asset.id,
+    title: asset.title,
+    statement: asset.statement,
+    type: asset.type,
+    scope: asset.scope,
+    version: String(asset.activeVersion || asset.version || '1'),
+  }));
 }
 
 export async function inferKstarReview(

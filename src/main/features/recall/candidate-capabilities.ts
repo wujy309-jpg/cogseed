@@ -360,6 +360,7 @@ export type RecallCandidateErrorCode =
   | 'recall_candidate_risk_gate'
   | 'recall_candidate_non_asset_decision'
   | 'recall_candidate_security_blocked'
+  | 'recall_candidate_scope_policy_mismatch'
   /** 编辑时新加的证据引用在来源目录里查不到——不接受用户自造的 id。 */
   | 'recall_candidate_unknown_source'
   /** 版本组防分裂（2026-09-16）：create 候选与现有资产语义高度相似，等用户
