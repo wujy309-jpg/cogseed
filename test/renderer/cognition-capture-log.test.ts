@@ -1648,7 +1648,8 @@ describe('资产详情（使用记录并入）', () => {
       },
     }, { assetId: 'aa-1' });
     const text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-    expect(text).toContain('生命周期记录');
+    // 2026-09-29 重构：台账并入侧栏「治理与历史」折叠体，不再自撑折叠标题。
+    expect(text).toContain('治理与历史');
     expect(text).toContain('AI · 更新内容');
     expect(text).toContain('用户原话');
     expect(text).toContain('你 · 版本回滚');
@@ -1662,7 +1663,7 @@ describe('资产详情（使用记录并入）', () => {
     // ISO UTC 串（`2026-09-25T01:47:12.562Z`），与同页版本记录的本地时间差 8 小时。
     // 判据取台账块内的 `.when` 单元格：值必须等于本文件装配的 fmtDate 出口输出
     // （harness 固定值），而不是任何原始 ISO 串。
-    const ledger = html.slice(html.indexOf('生命周期记录'));
+    const ledger = html.slice(html.indexOf('治理与历史'));
     const whens = [...ledger.matchAll(/<span class="when">([^<]*)<\/span>/g)].map((m) => m[1]);
     expect(whens).toEqual(['2026/09/15 10:00', '2026/09/15 10:00']);
     expect(ledger).not.toContain('2026-09-25T01:47:12.562Z');

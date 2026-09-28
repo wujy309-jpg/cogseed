@@ -348,9 +348,8 @@ describe('skills renderer frontmatter parsing', () => {
 
     expect(visibleText(html)).toContain('Scoped review rule');
     // 2026-09-17 下沉改：「用过几次」随详细信息归版本展开块；顶部汇总在使用记录区。
-    // 2026-09-25 US-602 口径改：宿主注入过一律归「被带入任务」（不再说"被实际使用"），
-    // 「实际采用」只认有据回执、单列在实际采用记录区。
-    expect(visibleText(html)).toContain('被带入任务 1 次');
+    // 2026-09-28 词表统一：计量统一为「被任务用过 N 次」（四语词条已同步）。
+    expect(visibleText(html)).toContain('被任务用过 1 次');
     expect(visibleText(html)).not.toContain('被实际使用');
     expect(html).toContain('data-act="proof-toggle" data-id="proof-1"');
   });
@@ -486,8 +485,9 @@ describe('skills renderer frontmatter parsing', () => {
     expect(text).toContain('statement=31 字；version=3');
     // 危险操作的安全网记录也在履历里（危险操作前留档）。
     expect(text).toContain('危险操作前留档');
-    // 一步回滚入口：服务端给了锚点才出现，且带上要回滚到的版本号。
-    expect(html).toContain('data-act="rollback-asset" data-id="asset-rule" data-version="2"');
+    // 台账行内一步回滚按钮已删（审计 R2，2026-09-28）：rollbackAnchor 数据
+    // 仍在（服务端字段），不再渲染按钮；回滚走版本区「切回此版」。
+    expect(html).not.toContain('data-act="rollback-asset"');
   });
 
   it('filters the integrated asset list by the selected tree category', () => {
@@ -527,7 +527,9 @@ describe('skills renderer frontmatter parsing', () => {
 
     for (const html of [active, paused, archived]) {
       expect(html).toContain('data-action="delete"');
-      expect(html).toContain('data-action="revoke"');
+      // 「撤回使用」已随界面按钮删除（审计 R3，2026-09-28：0 使用＋终态危险）；
+      // audit_revoked 台账标签与 status==='revoked' 过滤逻辑保留（历史展示）。
+      expect(html).not.toContain('data-action="revoke"');
       expect(html).toContain('data-action="purge"');
     }
   });

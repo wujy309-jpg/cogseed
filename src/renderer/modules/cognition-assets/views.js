@@ -330,35 +330,39 @@
   }
   /** 证据条目的**唯一**呈现出口（2026-09-17 子安"看不懂"口径：每类带类型前缀；
    *  2026-09-25 US-603：一律经 resolveSourceRef，任何分支都不上屏裸 id）。
-   *  可解析的来源给回看入口（会话跳转 / 复盘展开），其余只显名。 */
-  const evidenceChip = (ref) => {
+   *  可解析的来源给回看入口（会话跳转 / 复盘展开），其余只显名。
+   *  2026-09-29 详情重构：拆成 text+html 两半——详情页来历区要做同文去重
+   *  与"不可用"聚合（同句 chip 连排两枚=噪音），其他调用方仍拿单个 html。 */
+  const evidenceChipParts = (ref) => {
     const view = resolveSourceRef(ref);
-    if (view.state === 'immediate') return chip(T('cognition.evidence_immediate_note', '对话中当场记（无独立会话出处）'), 'line');
-    if (view.state === 'unavailable') return chip(T('cognition.source_unavailable_label', '来源记录不可用'), 'line');
-    if (view.state === 'processing') return chip(T('cognition.evidence_source_processing', '来源整理中'), 'line');
+    const linked = (cls, attrs, label) => ({ text: label, html: `<span class="tag ${cls} chip-link"${attrs} ${roleBtn()}>${esc(label)}</span>` });
+    if (view.state === 'immediate') return { text: T('cognition.evidence_immediate_note', '对话中当场记（无独立会话出处）'), html: chip(T('cognition.evidence_immediate_note', '对话中当场记（无独立会话出处）'), 'line') };
+    if (view.state === 'unavailable') return { text: T('cognition.source_unavailable_label', '来源记录不可用'), html: chip(T('cognition.source_unavailable_label', '来源记录不可用'), 'line') };
+    if (view.state === 'processing') return { text: T('cognition.evidence_source_processing', '来源整理中'), html: chip(T('cognition.evidence_source_processing', '来源整理中'), 'line') };
     if (view.openRoute === 'kstar') {
       const label = T('cognition.evidence_task_review', '任务复盘：{title}', {
         title: view.name || T('cognition.evidence_task_review_generic', '一次任务'),
       });
-      return `<span class="tag blue chip-link" data-act="open-kstar-episode" data-id="${esc(view.rawId)}" ${roleBtn()} title="${esc(T('cognition.kstar_episode_open_hint', '查看这次任务的复盘'))}">${esc(label)}</span>`;
+      return linked('blue', ` data-act="open-kstar-episode" data-id="${esc(view.rawId)}" title="${esc(T('cognition.kstar_episode_open_hint', '查看这次任务的复盘'))}"`, label);
     }
-    if (view.kind === 'user_teaching_signal') return chip(T('cognition.evidence_teaching', '你的一次明确表态'), 'line');
+    if (view.kind === 'user_teaching_signal') return { text: T('cognition.evidence_teaching', '你的一次明确表态'), html: chip(T('cognition.evidence_teaching', '你的一次明确表态'), 'line') };
     if (view.kind === 'conversation') {
-      if (String((ref && ref.subtype) || '') === 'message') return chip(T('cognition.evidence_message', '对话里的一条消息'), 'line');
+      if (String((ref && ref.subtype) || '') === 'message') return { text: T('cognition.evidence_message', '对话里的一条消息'), html: chip(T('cognition.evidence_message', '对话里的一条消息'), 'line') };
       const label = view.name
         ? T('cognition.evidence_conversation_named', '对话：《{name}》', { name: view.name })
         : T('cognition.evidence_conversation_generic', '一段对话');
       // 可解析到会话就给回看入口（US-603 AC2）：点回原对话核对证据。
       if (view.openRoute === 'conversation' && view.openTarget) {
-        return `<span class="tag gray chip-link" data-act="open-conversation" data-id="${esc(view.openTarget)}" ${roleBtn()} title="${esc(T('cognition.evidence_conversation_open_hint', '回到这段对话'))}">${esc(label)}</span>`;
+        return linked('gray', ` data-act="open-conversation" data-id="${esc(view.openTarget)}" title="${esc(T('cognition.evidence_conversation_open_hint', '回到这段对话'))}"`, label);
       }
-      return chip(label, 'line');
+      return { text: label, html: chip(label, 'line') };
     }
-    if (view.name) return chip(view.name, 'line');
+    if (view.name) return { text: view.name, html: chip(view.name, 'line') };
     // 类型可辨但拿不到名字（如 turn-* 执行记录）：给中性泛称，不编造名字、
     // 也不回落裸 id。
-    return chip(T('cognition.evidence_fallback', '来源记录'), 'line');
+    return { text: T('cognition.evidence_fallback', '来源记录'), html: chip(T('cognition.evidence_fallback', '来源记录'), 'line') };
   };
+  const evidenceChip = (ref) => evidenceChipParts(ref).html;
   const isKstarEvidenceRef = (ref) => String(ref.kind || '') === 'execution' && String(ref.id || '').startsWith('kse-');
   /** 血统判据只认"还活着"的证据（2026-09-18 乙档）：被标 degraded 的复盘
    *  证据（写入时解析不到对应记录）不算 KSTAR 血统——查无的引用不能当出身。
@@ -384,16 +388,39 @@
     return (candidate.sourceRefs || []).some((ref) => String(ref.id || '').startsWith('kse-') && ref.degraded !== true);
   };
   /** 证据分组（2026-09-17 B 档两线分开）：KSTAR 任务复盘一组、对话与表态
-   *  一组，各带一句来源说明——两线证据混排一排正是"杂揉"观感的来源。 */
+   *  一组，各带一句来源说明——两线证据混排一排正是"杂揉"观感的来源。
+   *  2026-09-29 详情重构：组内同文 chip 去重（同一来源被引用两次只出一枚，
+   *  ×N 计数）；"来源记录不可用"这类无信息量芯片聚合为一枚摘要——原始
+   *  引用清单仍在版本数据里，界面上不再逐枚刷灰。 */
   const evidenceGroupsHtml = (refs) => {
     const kstar = refs.filter(isKstarEvidenceRef);
     const chat = refs.filter((ref) => !isKstarEvidenceRef(ref));
-    const group = (titleKey, title, hintKey, hint, list) => list.length
-      ? `<div class="evgroup">
+    const group = (titleKey, title, hintKey, hint, list) => {
+      if (!list.length) return '';
+      const UNAVAILABLE_TEXT = T('cognition.source_unavailable_label', '来源记录不可用');
+      const byText = new Map();
+      let unavailable = 0;
+      for (const ref of list) {
+        const parts = evidenceChipParts(ref);
+        if (parts.text === UNAVAILABLE_TEXT) { unavailable += 1; continue; }
+        const hit = byText.get(parts.text);
+        if (hit) hit.count += 1;
+        else byText.set(parts.text, { ...parts, count: 1 });
+      }
+      const chips = [...byText.values()].map((entry) => entry.count > 1
+        ? entry.html.replace(/<\/span>$/, ` <b class="evdup">×${entry.count}</b></span>`)
+        : entry.html);
+      if (unavailable) {
+        const label = unavailable > 1
+          ? `${UNAVAILABLE_TEXT} ×${unavailable}`
+          : UNAVAILABLE_TEXT;
+        chips.push(chip(label, 'line'));
+      }
+      return `<div class="evgroup">
           <div class="evgroup-title">${esc(T(titleKey, title))}<span class="note">${esc(T(hintKey, hint))}</span></div>
-          <div class="chips">${list.map(evidenceChip).join('')}</div>
-        </div>`
-      : '';
+          <div class="chips">${chips.join('')}</div>
+        </div>`;
+    };
     return group('cognition.evidence_group_kstar', '任务复盘', 'cognition.evidence_group_kstar_hint', '任务完结后系统复盘学到的', kstar)
       + group('cognition.evidence_group_chat', '对话与你的表态', 'cognition.evidence_group_chat_hint', '日常对话里总结出来的', chat);
   };
@@ -1867,7 +1894,9 @@
     const refs = (asset.evidenceRefs || [])
       .map((ref) => ((ref && typeof ref === 'object') ? ref : { id: String(ref || '') }))
       .filter((ref) => String(ref.id || '').trim());
-    const originSection = `<div class="sect-block">
+    /* 来历独立成卡（2026-09-29 详情重构）：五区里"内容"和"从哪来"是两个区，
+     * 视觉边界要存在——正文卡只放正文，来源组卡随其后。 */
+    const originSection = `<div class="card ca-detail-origin">
       <div class="sub"><strong>${esc(T('cognition.asset_origin_section', '来历'))}</strong>${refs.length ? `<span class="note">${String(refs.length)}</span>` : ''}</div>
       ${refs.length ? evidenceGroupsHtml(refs) : `<div class="sub">${esc(T('cognition.asset_origin_empty', '没有可追溯的来源记录。'))}</div>`}
     </div>`;
@@ -1897,9 +1926,9 @@
       : null;
     const usedSection = `<div class="sect-block">
       <div class="sub"><strong>${esc(T('cognition.asset_used_section', '用过吗'))}</strong></div>
-      ${termFootnote(['receipt'])}
       ${usedSummary
-        ? `<div class="chips ca-used-line"><span class="note">${esc(usedSummary)}</span>${lastRef ? evidenceChip(lastRef) : ''}</div>`
+        ? `<div class="chips ca-used-line"><span class="note">${esc(usedSummary)}</span>${lastRef ? evidenceChip(lastRef) : ''}</div>
+           ${termFootnote(['receipt'])}`
         : `<div class="sub">${esc(T('cognition.asset_no_proofs_section', '还没有被真实使用过。资产在任务中被真正使用、并留下可核对的记录后，会出现在这里。'))}</div>`}
     </div>`;
     /* 状态章两件（T040①）：类型 / 生效中（正常态也出章，018 覆盖 2026-09-17
@@ -1914,9 +1943,9 @@
      * 标签与归并（管理操作）移⑤侧栏「更多操作」卡，台账（生命周期记录）随⑤。
      * 默认收起、内容不丢（T041 口径不变）。 */
     const historyFold = foldBlock(
-      T('cognition.asset_history_fold', '详情与历史'),
+      T('cognition.asset_history_fold', '使用与版本'),
       null,
-      T('cognition.asset_history_fold_hint', '使用明细、实际采用记录、排序依据与版本历史都在这里，内容一样全。'),
+      T('cognition.asset_history_fold_hint', '使用明细、采用记录、排序依据与版本历史都在这里，内容一样全。'),
       `${assetUsageSection(asset, route)}${assetRankingWhySection(asset)}${assetAdoptionSection(asset)}${assetVersionsSection(asset)}`,
       'ca-detail-history',
     );
@@ -2005,21 +2034,23 @@
         const tip = auditRows.length > 12
           ? '<div class="note" style="margin-top:6px">' + esc(T('cognition.audit_truncated', '仅显示最近 12 条；真实环境由审计流提供完整履历。')) + '</div>'
           : '';
-        return '<details class="details"><summary>' + esc(T('cognition.audit_section', '生命周期记录')) + '</summary><div class="dbody">' + items + tip + '</div></details>';
+        /* 2026-09-29 详情重构：台账不再自撑一个折叠——并入右栏「治理与历史」
+         * 折叠体（三处折叠收敛为两处：主栏「使用与版本」＋右栏「治理与历史」）。 */
+        return items + tip;
       })();
     /* 整页版式（2026-09-28）：页头带（标题 + 开关 + 操作 + 状态章）全宽；
      * 主栏 = 正文卡（含编辑态）+ ④明细折叠；侧栏 = 「用过吗」摘要与
      * ⑤「更多操作」（危险操作 + 治理折叠 + 台账）——宽窗不再是一根
      * 780px 面条，阅读与操作分区。 */
-    /* 五区骨架（2026-09-28 对照表逐条落地）：主栏 = ②内容（正文/编辑表单，
-     * 来历③随卡尾）＋④明细折叠（使用/采用/排序/版本——版本信息归④）；侧栏 =
-     * ④「用过吗」摘要 ＋ ⑤「更多操作」（危险操作行 ＋ 治理折叠[标签/归并] ＋
-     * 生命周期台账——「详情与历史」折叠与台账归宿⑤，均为默认收起）。 */
+    /* 五区骨架（2026-09-28 对照表逐条落地）：主栏 = ②内容卡（正文/编辑表单）
+     * ＋③来历卡＋④「使用与版本」明细折叠；侧栏 = ④「用过吗」摘要 ＋ ⑤「更多
+     * 操作」（危险操作行）＋⑤「治理与历史」折叠（标签/归并/生命周期台账）。
+     * 2026-09-29 重构：三处折叠收敛为两处、来历出正文卡、右栏随台账并入变实。 */
     const governanceFold = foldBlock(
       T('cognition.asset_governance_fold', '治理与历史'),
       null,
       T('cognition.asset_governance_fold_hint', '标签、与另一条合并、生命周期台账都在这里。'),
-      `${assetTagsSection(asset)}${assetMergeSection(asset)}`,
+      `${assetTagsSection(asset)}${assetMergeSection(asset)}${lifecycleBlock}`,
       'ca-detail-governance',
     );
     return `
@@ -2041,8 +2072,8 @@
           ${recommendWarn}
           ${assetPinnedVersionWarningSection(asset)}
           ${editing ? assetEditForm(asset) : `<p class="content-text">${esc(asset.statement || '')}</p>`}
-          ${originSection}
         </div>
+        ${originSection}
         ${historyFold}
       </div>
       <aside class="ca-detail-side">
@@ -2056,7 +2087,6 @@
             </div>
           </div>
           ${governanceFold}
-          ${lifecycleBlock}
         </div>
       </aside>
     </div>`;

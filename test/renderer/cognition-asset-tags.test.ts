@@ -659,7 +659,7 @@ describe('详情五区骨架（2026-09-28 设计五章对照表）', () => {
     },
   };
 
-  it('资产详情：版本信息归④「详情与历史」明细折叠；标签/归并/台账归⑤侧栏治理折叠', () => {
+  it('资产详情：版本信息归④「使用与版本」明细折叠；标签/归并/生命周期台账归⑤侧栏治理折叠（2026-09-29 重构：台账并入治理折叠体）', () => {
     const { render } = loadCognition({
       route: { assetId: 'aa-tag-1' },
       state: VERSION_STATE,
@@ -672,12 +672,13 @@ describe('详情五区骨架（2026-09-28 设计五章对照表）', () => {
     const governanceStart = html.indexOf('ca-detail-governance');
     expect(historyStart).toBeGreaterThan(-1);
     expect(governanceStart).toBeGreaterThan(-1);
-    // ⑤治理折叠：标签 + 归并；台账（生命周期记录）随后同卡。
+    // ⑤治理折叠：标签 + 归并 + 台账（生命周期记录不再自撑折叠，行并入折叠体）。
     // （「治理与历史」为新词条、四语由 locale 收尾批统一落，断言用代码内联回退文本。）
     expect(html).toContain('治理与历史');
     expect(html).toContain(zh['cognition.asset_merge_section']);
     expect(html.indexOf('data-act="tag-add"')).toBeGreaterThan(governanceStart);
-    expect(html.indexOf(zh['cognition.audit_section'])).toBeGreaterThan(governanceStart);
+    // 台账行（fixture 的 reason「手动保存」）在治理折叠体之后出现。
+    expect(html.indexOf('手动保存')).toBeGreaterThan(governanceStart);
   });
 
   it('资产编辑表单：治理类信息（适用/禁用场景、可见范围）收进「高级选项」折叠', () => {

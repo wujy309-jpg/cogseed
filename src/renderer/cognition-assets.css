@@ -1413,3 +1413,7 @@
   #ca-root .ca-detail-grid,
   #ca-root .ca-detail-duo { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* 详情重构（2026-09-29）：来历独立卡与组内去重的 ×N 计数标记。 */
+#ca-root .ca-detail-origin { margin-top: 0; }
+#ca-root .evdup { font-weight: 600; opacity: 0.75; margin-left: 3px; }
