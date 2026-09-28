@@ -1,8 +1,8 @@
 # 私仓到公仓的源码同步
 
-RD 在 `bonc-ai/cogseed-internal` 开发；定版后从固定提交导出公开文件，在 `bonc-ai/cogseed` 创建快照 PR。公仓不接收私仓 Git 历史。首次历史重写是独立的一次性操作，后续同步不重写 main。
+RD 在 `bonc-ai/cogseed-internal` 开发；定版后从固定提交导出公开文件，在 `bonc-ai/cogseed` 创建快照 PR。公仓不接收私仓 Git 历史。首次历史重写是独立的一次性操作，后续同步不重写 main。历史 Release 所需的 9 个原标签已保留；它们仍引用旧历史，不能宣称整个仓库历史已清除。
 
-当前实施状态和首次切换证据见 [CUTOVER-PLAN.md](./CUTOVER-PLAN.md)。文件存在、离线测试通过、workflow 合并、凭据配置、真实运行成功是不同状态；只有成功的运行和公仓 PR 能证明自动化已启用。
+当前实施结果见 [CUTOVER-RESULT.md](./CUTOVER-RESULT.md)。[CUTOVER-PLAN.md](./CUTOVER-PLAN.md)是历史计划，不得直接照其中删除标签的步骤执行。文件存在、离线测试通过、workflow 合并、凭据配置、真实运行成功是不同状态；只有成功的运行和公仓 PR 能证明自动化已启用。
 
 ## 维护规则
 
@@ -53,6 +53,6 @@ node scripts/opensource/cutover.mjs --help
 
 首次用户授权记录采用本地明确批准方式，记录只重写公仓 heads/tags、保留 Release 资产和接受只读 PR refs 的范围，不伪造 workflow run。后续自动化只接受实际 workflow_dispatch 运行记录。这些 JSON 是私有审计记录，不是加密身份证明。
 
-`cutover.mjs` 默认生成私有计划并探测原子推送；apply 要求准确计划摘要，重新验证候选、证据和全部远端 heads/tags，以每个 ref 的精确旧 OID lease 执行一次 atomic push。任一 ref 漂移或保护拒绝即停止；工具不修改保护、Release、资产或 PR。保护的临时调整和恢复由维护窗口操作另行记录。备份恢复必须显式映射 heads/tags，禁止 mirror 推送备份命名空间。
+`cutover.mjs` 默认生成私有计划并探测原子推送；apply 要求准确计划摘要，重新验证候选、证据和全部远端 heads/tags，以每个分支 ref 的精确旧 OID lease 执行一次 atomic push；既有 tags 原值保留。任一 ref 漂移或保护拒绝即停止；工具不修改保护、Release、资产或 PR。保护的临时调整和恢复由维护窗口操作另行记录。备份恢复必须显式映射 heads/tags，禁止 mirror 推送备份命名空间。
 
 初次产品基线为私仓 `v1.2.0` 解引用提交 `bcdb3206016623d8fcc4eaa7c44f19dd21602241`。公开适配提交只调整文档、测试隔离和清单，不改产品 src、资源及打包配置。适配后的公开 tree 不等于旧发行产物的原始 tree；不因此发布新安装包或把旧 tag 重指向新根。
