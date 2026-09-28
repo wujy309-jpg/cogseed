@@ -1131,8 +1131,6 @@
 .recall-asset-version-change b { color: var(--muted-fg, #6b7280); font-weight: 500; }
 .recall-asset-version-change span { overflow-wrap: anywhere; color: var(--fg, #374151); }
 .recall-asset-version-change i { color: var(--muted-fg, #6b7280); font-style: normal; }
-.recall-asset-version-change.is-sensitivity_escalated b,
-.recall-asset-version-change.is-sensitivity_escalated i { color: var(--danger, #b42318); }
 .recall-asset-version-change.is-boundary b { color: var(--warning, #92400e); }
 
 /* ── 使用与证明：每条使用记录原地展开 ──────────────────────────────── */

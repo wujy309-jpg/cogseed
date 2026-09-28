@@ -5314,7 +5314,7 @@
   "cognition.capture_batch_retry": "Retry failed ({n})",
   "cognition.capture_batch_retry_confirm": "Retry {n} failed organizing tasks?",
   "cognition.capture_bucket_active": "In progress",
-  "cognition.capture_bucket_attention": "Needs my attention",
+  "cognition.capture_bucket_attention": "Worth a look",
   "cognition.capture_bucket_done": "Done",
   "cognition.capture_bucket_excluded": "No need to save",
   "cognition.capture_sources_truncated": "Showing the latest 100 conversations only (source fetch limit)",

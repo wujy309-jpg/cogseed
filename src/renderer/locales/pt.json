@@ -3555,7 +3555,7 @@
   "cognition.capture_batch_retry": "Repetir falhas ({n})",
   "cognition.capture_batch_retry_confirm": "Repetir {n} tarefas de organização com falha?",
   "cognition.capture_bucket_active": "Em andamento",
-  "cognition.capture_bucket_attention": "Precisa da minha atenção",
+  "cognition.capture_bucket_attention": "Vale uma olhada",
   "cognition.capture_bucket_done": "Concluído",
   "cognition.capture_bucket_excluded": "Não precisa salvar",
   "cognition.capture_sources_truncated": "Mostrando apenas as últimas 100 conversas (limite de coleta)",

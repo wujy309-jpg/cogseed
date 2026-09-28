@@ -5314,7 +5314,7 @@
   "cognition.capture_batch_retry": "重试失败（{n}）",
   "cognition.capture_batch_retry_confirm": "确认重试 {n} 条失败的整理任务？",
   "cognition.capture_bucket_active": "进行中",
-  "cognition.capture_bucket_attention": "需要我处理",
+  "cognition.capture_bucket_attention": "需要你看一眼",
   "cognition.capture_bucket_done": "已完成",
   "cognition.capture_bucket_excluded": "无需保存",
   "cognition.capture_sources_truncated": "仅显示最近 100 个会话（来源拉取上限）",

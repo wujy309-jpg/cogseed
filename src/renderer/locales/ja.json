@@ -3555,7 +3555,7 @@
   "cognition.capture_batch_retry": "失敗を再試行（{n}）",
   "cognition.capture_batch_retry_confirm": "失敗した整理タスク {n} 件を再試行しますか？",
   "cognition.capture_bucket_active": "進行中",
-  "cognition.capture_bucket_attention": "要対応",
+  "cognition.capture_bucket_attention": "要チェック",
   "cognition.capture_bucket_done": "完了",
   "cognition.capture_bucket_excluded": "保存不要",
   "cognition.capture_sources_truncated": "最新100件の会話のみ表示（取得上限）",
