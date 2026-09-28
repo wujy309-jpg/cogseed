@@ -3019,12 +3019,27 @@ const invokeHandlers: Record<string, InvokeHandler> = {
 
   // 大扫除与整理报告（specs/008 US-403）。run 是用户发起的批量整理；
   // report/list 是读口——报告要能被逐项核对，所以读口与实体同批落地。
-  'recall.cleanup.run': async ({ trigger, scope } = {}, ctx) => {
+  'recall.cleanup.run': async ({ trigger, scope, round } = {}, ctx) => {
     if (trigger !== undefined && trigger !== 'user' && trigger !== 'inspection') throw new Error('invalid cleanup trigger');
+    // 专项治理轮（2026-09-29）：round 省略＝规则轮（既有语义）；'title_regen'
+    // /'statement_regen'＝标题重起/正文改写专项轮（LLM，写前自动备份）。
+    if (round !== undefined && round !== 'title_regen' && round !== 'statement_regen') throw new Error('invalid cleanup round');
     if (scope !== undefined) {
       if (!scope || typeof scope !== 'object' || Array.isArray(scope)) throw new Error('invalid cleanup scope');
       if (scope.spaceId !== undefined && !safeId(scope.spaceId)) throw new Error('invalid cleanup scope space');
       if (scope.assetType !== undefined && typeof scope.assetType !== 'string') throw new Error('invalid cleanup scope type');
+    }
+    if (round === 'title_regen') {
+      return { ok: true, report: await recallCleanup.runAssetTitleRegenCleanup(ctx.userId, {
+        ...(trigger !== undefined ? { trigger } : {}),
+        ...(scope !== undefined ? { scope: scope as { spaceId?: string; assetType?: string } } : {}),
+      }) };
+    }
+    if (round === 'statement_regen') {
+      return { ok: true, report: await recallCleanup.runAssetStatementRegenCleanup(ctx.userId, {
+        ...(trigger !== undefined ? { trigger } : {}),
+        ...(scope !== undefined ? { scope: scope as { spaceId?: string; assetType?: string } } : {}),
+      }) };
     }
     return { ok: true, report: await recallCleanup.runAssetCleanup(ctx.userId, {
       ...(trigger !== undefined ? { trigger } : {}),
