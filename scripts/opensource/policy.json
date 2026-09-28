@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "status": "draft",
+  "status": "reviewed",
   "sourceRepository": "bonc-ai/cogseed-internal",
   "targetRepository": "bonc-ai/cogseed",
-  "inventorySourceSha": "ead9af6690002c52384b7420a5a6f7b8a5933cb4",
+  "inventorySourceSha": "f579da5479858bc3e2c3b3842d433b30da949021",
   "neverPublic": [
     ".agents/",
     ".claude/",
@@ -3969,5 +3969,6 @@
     "updates-server/test/catalog.test.cjs",
     "updates-server/test/server.test.cjs",
     "vitest.config.ts"
-  ]
+  ],
+  "reviewedReferenceHintsSha256": "d4c64c5fc29a268b65f24f91520e47c5f00fe1301d97d3490ca7e23cbf32b726"
 }
