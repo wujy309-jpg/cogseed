@@ -156,6 +156,9 @@
 .ca-more-toggle.is-open::after { content: ' ▴'; }
 .ca-more-toggle:hover { color: var(--ca-ink); }
 .ca-more { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+/* display:flex 会盖过 UA 的 [hidden]{display:none}（ID 级特异性）——不补这条，
+   「更多操作」的危险操作面板默认就全展开（2026-09-28 真机走查抓出）。 */
+.ca-more[hidden] { display: none; }
 .ca-more-row { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border: 1px solid var(--ca-line); border-radius: 8px; background: var(--color-ca-paper); }
 .ca-more-copy { flex: 1 1 auto; min-width: 0; }
 .ca-more-copy strong { display: block; font-size: var(--font-size-3); font-weight: 600; }
@@ -948,7 +951,8 @@
 #ca-root .ca-scroll.ca-layout-overview > .wrap,
 #ca-root .ca-scroll.ca-layout-review > .wrap,
 #ca-root .ca-scroll.ca-layout-activity > .wrap,
-#ca-root .ca-scroll.ca-layout-settings > .wrap {
+#ca-root .ca-scroll.ca-layout-settings > .wrap,
+#ca-root .ca-scroll.ca-layout-detail > .wrap {
   width: 100%;
   max-width: none;
   margin: 0;
@@ -989,7 +993,8 @@
 #ca-root .ca-layout-overview .hero .sub,
 #ca-root .ca-layout-review .hero .sub,
 #ca-root .ca-layout-activity .hero-row .hero-main .sub,
-#ca-root .ca-layout-settings .hero .sub {
+#ca-root .ca-layout-settings .hero .sub,
+#ca-root .ca-layout-detail .hero .sub {
   max-width: var(--layout-resource-detail-width, 880px);
 }
 
@@ -1083,7 +1088,8 @@
   #ca-root .ca-layout-overview > .wrap,
   #ca-root .ca-layout-review > .wrap,
   #ca-root .ca-layout-activity > .wrap,
-  #ca-root .ca-layout-settings > .wrap {
+  #ca-root .ca-layout-settings > .wrap,
+  #ca-root .ca-layout-detail > .wrap {
     padding: 18px 18px 40px;
   }
   #ca-root .ca-layout-ontology .personal-onto-main-body { padding: 20px 22px 32px; }
@@ -1092,7 +1098,8 @@
   #ca-root .ca-layout-overview > .wrap,
   #ca-root .ca-layout-review > .wrap,
   #ca-root .ca-layout-activity > .wrap,
-  #ca-root .ca-layout-settings > .wrap {
+  #ca-root .ca-layout-settings > .wrap,
+  #ca-root .ca-layout-detail > .wrap {
     padding: 16px 14px 32px;
   }
   #ca-root .ca-layout-overview #ca-asset-list > .row { padding: 12px 8px; }
@@ -1354,4 +1361,55 @@
   #ca-root .personal-onto-taxonomy-depth-4 { margin-left: 32px; }
   #ca-root .personal-onto-taxonomy-depth-5 { margin-left: 40px; }
   #ca-root .personal-onto-taxonomy-depth-6 { margin-left: 48px; }
+}
+
+/* ── 详情子界面整页版式（2026-09-28）──────────────────────────────
+   资产/经验/整理详情与整理报告此前落在默认 .wrap（780px 居中阅读栏），
+   宽窗下左右大片留白。统一改为：页头带全宽 +「主栏阅读内容 / 侧栏元信息
+   与操作」内容网格 + 大数据区（折叠/台账）占满主栏；候选详情复用 review
+   工作台的全宽态。窄窗（≤1100px）网格退化为单列，侧栏内容随后。 */
+#ca-root .ca-detail-head { margin: 2px 0 14px; }
+#ca-root .ca-detail-head h1 {
+  font-size: var(--font-size-title); font-weight: 700; letter-spacing: -0.2px; margin: 0;
+  overflow-wrap: anywhere;
+}
+#ca-root .ca-detail-head .rowline { align-items: flex-start; }
+#ca-root .ca-detail-head .rowline > div:first-child { flex: 1 1 auto; min-width: 0; }
+#ca-root .ca-detail-head .rowline .right { flex: 0 0 auto; }
+#ca-root .ca-detail-head .ca-detail-facts { margin-top: 10px; }
+#ca-root .ca-detail-grid {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+  gap: 16px; align-items: start;
+}
+#ca-root .ca-detail-main,
+#ca-root .ca-detail-side { min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+/* 主栏长文与编辑表单限宽保可读；卡片本身仍占满主栏。 */
+#ca-root .ca-detail-main .content-text,
+#ca-root .ca-detail-main .ca-asset-edit { max-width: var(--layout-resource-detail-width, 880px); }
+/* 侧栏卡内分区不再叠加卡片外距（卡片 padding 已提供呼吸感）。 */
+#ca-root .ca-detail-side .card > .sect-block:first-child,
+#ca-root .ca-detail-side .card > .ca-deposit:first-child { margin-top: 0; }
+#ca-root .ca-detail-side .card > .sect-block:first-child .sect,
+#ca-root .ca-detail-side .card > .ca-deposit:first-child .sect { margin-top: 0; }
+/* 危险操作区入侧栏卡：说明独占一行，按钮掉到次行右端。 */
+#ca-root .ca-detail-side .ca-more-wrap { margin-top: 0; border-top: 0; padding-top: 0; }
+#ca-root .ca-detail-side .ca-more-row { flex-wrap: wrap; }
+#ca-root .ca-detail-side .ca-more-copy { flex: 1 1 100%; }
+#ca-root .ca-detail-side .ca-more-row .btn { margin-left: auto; }
+/* 整理详情：时间线正文限宽；结果/时间线对称双栏（整合卡之下的阅读区）。 */
+#ca-root .ca-detail-main .ca-tl-main { max-width: var(--layout-resource-detail-width, 880px); }
+#ca-root .ca-detail-duo {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px; align-items: start; margin-top: 16px;
+}
+#ca-root .ca-detail-duo > .card { min-width: 0; }
+/* 整理报告：列表行扁平化成通栏资料行（同列表工作台的语言）。 */
+#ca-root .ca-layout-detail .ca-page > .sect-block .row.is-flat {
+  min-height: 54px; margin: 0; padding: 13px 4px;
+  border-right: 0; border-left: 0; border-radius: 0; box-shadow: none; background: transparent;
+}
+#ca-root .ca-layout-detail .ca-page > .sect-block .row.is-flat + .row.is-flat { border-top: 0; }
+@media (max-width: 1100px) {
+  #ca-root .ca-detail-grid,
+  #ca-root .ca-detail-duo { grid-template-columns: minmax(0, 1fr); }
 }

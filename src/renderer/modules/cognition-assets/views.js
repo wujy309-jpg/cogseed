@@ -1941,28 +1941,10 @@
             <div class="note" style="margin-top:3px">${esc(T('cognition.asset_recommend_reason', '原因'))}：${esc(reason)}</div></div>
           ${btnHtml}</div>`;
     })();
-    return `
-    ${btn(T('cognition.asset_back', '← 返回列表'), 'go-back', { className: 'backlink' })}
-    <div class="card ca-asset-detail">
-      ${topControl}
-      ${recommendWarn}
-      ${assetPinnedVersionWarningSection(asset)}
-      <div class="rowline">
-        <div>
-          <h1>${esc(asset.title || asset.id)}</h1>
-          ${switchable ? `<div class="sub">${esc(switchHint)}</div>` : ''}
-        </div>
-        <div class="right">${switchable ? switchEl : detailStatusChip(asset)}${switchable && !editing ? btn(T('cognition.asset_edit_action', '修改内容'), 'edit-asset', { id: asset.id, small: true }) : ''}${statusKind === 'active' ? btn(T('cognition.asset_use_in_chat', '用到当前对话'), 'asset-use-in-chat', { id: asset.id, small: true }) : ''}</div>
-      </div>
-      ${editing ? assetEditForm(asset) : `<p class="content-text">${esc(asset.statement || '')}</p>`}
-      ${factsLine}
-      ${originSection}
-      ${usedSection}
-      ${historyFold}
-      ${(() => {
-        /* 审计履历块：auditRows.slice(0,12) + 超限提示。动作标签显式列全
-         * （与 asset-service.ts::AbilityAssetAuditRecord 的 action 联合类型
-         * 一一对应），i18n 覆盖门禁按 T() 调用点扫描，动态拼键扫不到。 */
+    const lifecycleBlock = (() => {
+      /* 审计履历块：auditRows.slice(0,12) + 超限提示。动作标签显式列全
+       * （与 asset-service.ts::AbilityAssetAuditRecord 的 action 联合类型
+       * 一一对应），i18n 覆盖门禁按 T() 调用点扫描，动态拼键扫不到。 */
         const AUDIT_ACTION_LABELS = {
           created: T('cognition.audit_created', '创建'),
           updated: T('cognition.audit_updated', '更新内容'),
@@ -2035,16 +2017,48 @@
         const tip = auditRows.length > 12
           ? '<div class="note" style="margin-top:6px">' + esc(T('cognition.audit_truncated', '仅显示最近 12 条；真实环境由审计流提供完整履历。')) + '</div>'
           : '';
-        return '<details class="details" style="margin-top:14px"><summary>' + esc(T('cognition.audit_section', '生命周期记录')) + '</summary><div class="dbody">' + items + tip + '</div></details>';
-      })()}
-      <div class="ca-more-wrap">
-        ${btn(T('cognition.asset_more', '更多操作'), 'toggle-asset-more', { className: 'ca-more-toggle' })}
-        <div class="ca-more" data-asset-more hidden>
-          ${moreRow(T('cognition.asset_delete', '删除'), T('cognition.asset_delete_hint', '从资产列表移除，历史记录保留'), 'delete')}
-          ${moreRow(T('cognition.asset_revoke', '撤回使用'), T('cognition.asset_revoke_hint', '只影响未来的任务'), 'revoke')}
-          ${moreRow(T('cognition.asset_purge', '彻底清除'), T('cognition.asset_purge_hint', '删除全部历史与证据，不可恢复'), 'purge')}
+        return '<details class="details"><summary>' + esc(T('cognition.audit_section', '生命周期记录')) + '</summary><div class="dbody">' + items + tip + '</div></details>';
+      })();
+    /* 整页版式（2026-09-28）：页头带（标题 + 开关 + 操作 + 状态章）全宽；
+     * 主栏 = 正文卡（含编辑态）+「详情与历史」+ 生命周期台账；侧栏 =
+     * 「用过吗」与危险操作——宽窗不再是一根 780px 面条，阅读与操作分区。 */
+    return `
+    ${btn(T('cognition.asset_back', '← 返回列表'), 'go-back', { className: 'backlink' })}
+    <div class="ca-detail-head">
+      <div class="rowline">
+        <div>
+          <h1>${esc(asset.title || asset.id)}</h1>
+          ${switchable ? `<div class="sub">${esc(switchHint)}</div>` : ''}
         </div>
+        <div class="right">${switchable ? switchEl : detailStatusChip(asset)}${switchable && !editing ? btn(T('cognition.asset_edit_action', '修改内容'), 'edit-asset', { id: asset.id, small: true }) : ''}${statusKind === 'active' ? btn(T('cognition.asset_use_in_chat', '用到当前对话'), 'asset-use-in-chat', { id: asset.id, small: true }) : ''}</div>
       </div>
+      ${factsLine}
+    </div>
+    <div class="ca-detail-grid">
+      <div class="ca-detail-main">
+        <div class="card ca-asset-detail">
+          ${topControl}
+          ${recommendWarn}
+          ${assetPinnedVersionWarningSection(asset)}
+          ${editing ? assetEditForm(asset) : `<p class="content-text">${esc(asset.statement || '')}</p>`}
+          ${originSection}
+        </div>
+        ${historyFold}
+        ${lifecycleBlock}
+      </div>
+      <aside class="ca-detail-side">
+        <div class="card">${usedSection}</div>
+        <div class="card">
+          <div class="ca-more-wrap">
+            ${btn(T('cognition.asset_more', '更多操作'), 'toggle-asset-more', { className: 'ca-more-toggle' })}
+            <div class="ca-more" data-asset-more hidden>
+              ${moreRow(T('cognition.asset_delete', '删除'), T('cognition.asset_delete_hint', '从资产列表移除，历史记录保留'), 'delete')}
+              ${moreRow(T('cognition.asset_revoke', '撤回使用'), T('cognition.asset_revoke_hint', '只影响未来的任务'), 'revoke')}
+              ${moreRow(T('cognition.asset_purge', '彻底清除'), T('cognition.asset_purge_hint', '删除全部历史与证据，不可恢复'), 'purge')}
+            </div>
+          </div>
+        </div>
+      </aside>
     </div>`;
   }
 
@@ -2821,8 +2835,10 @@
     const mergedFrom = exp.mergedFrom || [];
     const historyRows = (exp.history || []).slice(-12).reverse();
     const switchable = status === 'active' || status === 'paused';
+    /* 整页版式（2026-09-28）：页头带全宽；主栏 = 正文 + 复盘对照 + 归并治理
+     * + 管理台账；侧栏 = 信息 / 管理 / 并入来源 / 证据引用。 */
     return `${back}
-    <div class="card ca-experience-detail">
+    <div class="ca-detail-head">
       <div class="rowline">
         <div>
           <h1>${esc(exp.title || '')}</h1>
@@ -2834,90 +2850,99 @@
         </div>
         <div class="right">${chip(NS.experience.statusLabel(status), status === 'active' ? 'green' : status === 'paused' ? 'amber' : '')}</div>
       </div>
-      <p class="content-text">${esc(exp.body || '')}</p>
-      <div class="sect-block">
-        <div class="meta-row">
-          ${metaRow(T('cognition.experience_meta_type', '经验类型'), esc(NS.experience.typeLabel(exp.experienceType)))}
-          ${metaRow(T('cognition.experience_meta_task_type', '学自哪类任务'), esc(NS.experience.taskTypeLabel(exp.taskType)))}
-          ${metaRow(T('cognition.experience_meta_scope', '可用在哪类任务'), esc(NS.experience.taskTypeLabel(exp.scope)))}
-          ${metaRow(T('cognition.experience_meta_source', '来源任务'), experienceSourceChip(exp))}
-          ${metaRow(T('cognition.experience_meta_verification', '验证状态'), esc(verificationValue))}
-        </div>
+    </div>
+    <div class="ca-detail-grid">
+      <div class="ca-detail-main">
+        <div class="card"><p class="content-text">${esc(exp.body || '')}</p></div>
+        ${(() => {
+          // 预期/实际（来自复盘 review，可缺）：长值走既有折叠，不新造控件。
+          const expected = foldValue(exp.expected, 120);
+          const actual = foldValue(exp.actual, 120);
+          if (!expected && !actual) return '';
+          return `<div class="card"><div class="sect-block">
+            <div class="meta-row">
+              ${expected ? `<div class="meta-item"><span class="meta-k">${esc(T('cognition.experience_expected', '当时的预期'))}</span><span class="meta-v">${expected}</span></div>` : ''}
+              ${actual ? `<div class="meta-item"><span class="meta-k">${esc(T('cognition.experience_actual', '实际发生'))}</span><span class="meta-v">${actual}</span></div>` : ''}
+            </div>
+          </div></div>`;
+        })()}
+        ${(() => {
+          // 适用/禁用范围：缺失 = 没记录过（不是"无限制"，data-model §1）——
+          // 显式标注未记录，避免被读成"哪里都能用"。
+          const listHtml = (rows) => rows.map((row) => esc(String(row))).join('、');
+          return `<div class="card"><div class="sect-block">
+            <div class="meta-row">
+              <div class="meta-item"><span class="meta-k">${esc(T('cognition.experience_applicable', '适用范围'))}</span><span class="meta-v">${applicable.length ? listHtml(applicable) : esc(T('cognition.experience_applicable_missing', '没有记录过适用范围'))}</span></div>
+              <div class="meta-item"><span class="meta-k">${esc(T('cognition.experience_forbidden', '禁用范围'))}</span><span class="meta-v">${forbidden.length ? listHtml(forbidden) : esc(T('cognition.experience_forbidden_missing', '没有记录过禁用范围'))}</span></div>
+            </div>
+          </div></div>`;
+        })()}
+        ${experienceMergeSection(exp)}
+        ${historyRows.length ? `<details class="details">
+          <summary>${esc(T('cognition.experience_history_section', '管理台账'))}</summary>
+          <div class="dbody">${historyRows.map((row) => {
+            const actor = String(row.actor || '') === 'user' ? T('cognition.audit_actor_user', '你') : String(row.actor || '') === 'system' ? T('cognition.audit_actor_system', '系统') : '';
+            const change = (row.from || row.to)
+              ? `（${esc(String(row.from || '—'))} → ${esc(String(row.to || '—'))}）`
+              : '';
+            const reason = row.reason ? ` · ${esc(String(row.reason))}` : '';
+            return `<div class="proc-row"><span class="when">${esc(fmtDate(row.at))}</span><span style="flex:1">${actor ? `${esc(actor)} · ` : ''}<b>${esc(experienceHistoryLabel(row.action))}</b>${change}${reason}</span></div>`;
+          }).join('')}</div>
+        </details>` : ''}
       </div>
-      ${(() => {
-        // 预期/实际（来自复盘 review，可缺）：长值走既有折叠，不新造控件。
-        const expected = foldValue(exp.expected, 120);
-        const actual = foldValue(exp.actual, 120);
-        if (!expected && !actual) return '';
-        return `<div class="sect-block">
-          <div class="meta-row">
-            ${expected ? `<div class="meta-item"><span class="meta-k">${esc(T('cognition.experience_expected', '当时的预期'))}</span><span class="meta-v">${expected}</span></div>` : ''}
-            ${actual ? `<div class="meta-item"><span class="meta-k">${esc(T('cognition.experience_actual', '实际发生'))}</span><span class="meta-v">${actual}</span></div>` : ''}
+      <aside class="ca-detail-side">
+        <div class="card">
+          <div class="sect-block">
+            <div class="meta-row">
+              ${metaRow(T('cognition.experience_meta_type', '经验类型'), esc(NS.experience.typeLabel(exp.experienceType)))}
+              ${metaRow(T('cognition.experience_meta_task_type', '学自哪类任务'), esc(NS.experience.taskTypeLabel(exp.taskType)))}
+              ${metaRow(T('cognition.experience_meta_scope', '可用在哪类任务'), esc(NS.experience.taskTypeLabel(exp.scope)))}
+              ${metaRow(T('cognition.experience_meta_source', '来源任务'), experienceSourceChip(exp))}
+              ${metaRow(T('cognition.experience_meta_verification', '验证状态'), esc(verificationValue))}
+            </div>
           </div>
-        </div>`;
-      })()}
-      ${(() => {
-        // 适用/禁用范围：缺失 = 没记录过（不是"无限制"，data-model §1）——
-        // 显式标注未记录，避免被读成"哪里都能用"。
-        const listHtml = (rows) => rows.map((row) => esc(String(row))).join('、');
-        return `<div class="sect-block">
-          <div class="meta-row">
-            <div class="meta-item"><span class="meta-k">${esc(T('cognition.experience_applicable', '适用范围'))}</span><span class="meta-v">${applicable.length ? listHtml(applicable) : esc(T('cognition.experience_applicable_missing', '没有记录过适用范围'))}</span></div>
-            <div class="meta-item"><span class="meta-k">${esc(T('cognition.experience_forbidden', '禁用范围'))}</span><span class="meta-v">${forbidden.length ? listHtml(forbidden) : esc(T('cognition.experience_forbidden_missing', '没有记录过禁用范围'))}</span></div>
-          </div>
-        </div>`;
-      })()}
-      ${experienceMergedIntoBlock(exp)}
-      ${mergedFrom.length ? `<div class="sect-block">
-        <div class="sub"><strong>${esc(T('cognition.experience_merged_from_section', '并入来源'))}<span class="note">${String(mergedFrom.length)}</span></strong></div>
-        ${mergedFrom.map((entry) => `<div class="row is-flat is-clickable" data-act="open-experience" data-id="${esc(String(entry.id || ''))}" ${roleBtn()}>
-          <div class="tw"><div class="tt">${esc(entry.title || '')}</div>
-          <div class="mm">${esc(T('cognition.experience_merged_from_at', '并入于 {when}', { when: fmtDate(entry.mergedAt) }))}</div></div>
-        </div>`).join('')}
-      </div>` : ''}
-      ${(() => {
-        // 证据引用块：一律走唯一呈现出口 evidenceChip（内部 id 不上屏）。
-        if (!evidence.length) return '';
-        const rowsHtml = evidence.map((ref) => `<div class="evrow">${evidenceChip(ref)}</div>`).join('');
-        return `<div class="sect-block"><div class="sub"><strong>${esc(T('cognition.asset_evidence_section', '证据引用'))}<span class="note">${String(evidence.length)}</span></strong></div>${rowsHtml}</div>`;
-      })()}
-      ${(() => {
-        // 管理动作（T029）：终态（已归档/已并入）无管理出口，只说明现状。
-        if (!switchable) {
-          const note = status === 'merged'
-            ? T('cognition.experience_merged_into_note', '这条经验已并入另一条；来源与历史在并入目标上完整保留。')
-            : T('cognition.experience_archived_note', '这条经验已归档清理，不再进入任何清单；归档原因与时间记录在台账里。');
-          return `<div class="sect-block"><p class="note">${esc(note)}</p></div>`;
-        }
-        const otherTypes = ['lesson', 'workflow', 'gap', 'uncategorized']
-          .filter((type) => NS.experience.groupKey(type) !== NS.experience.groupKey(exp.experienceType));
-        return `<div class="sect-block ca-experience-actions">
-          <div class="sub"><strong>${esc(T('cognition.experience_manage_section', '管理'))}</strong></div>
-          <div class="chips">
-            ${btn(status === 'active'
-              ? T('cognition.experience_action_pause', '暂停带入')
-              : T('cognition.experience_action_resume', '恢复带入'),
-            'experience-status-toggle', { id: exp.id, data: { action: status === 'active' ? 'pause' : 'resume' }, small: true })}
-            ${otherTypes.map((type) => btn(NS.experience.typeLabel(type), 'experience-set-type', { id: exp.id, data: { type }, small: true, className: 'o', title: T('cognition.experience_action_set_type', '调整类型') })).join('')}
-            ${btn(T('cognition.experience_action_archive', '归档清理'), 'experience-archive', { id: exp.id, small: true, danger: true })}
-          </div>
-          <p class="note">${esc(status === 'active'
-            ? T('cognition.experience_action_pause_hint', '暂停后新任务的清单不再带入这条经验；历史与引用记录全部保留，随时可恢复。')
-            : T('cognition.experience_action_resume_hint', '已暂停：恢复后下一轮清单重新带入。'))}</p>
+          ${experienceMergedIntoBlock(exp)}
         </div>
-        ${experienceMergeSection(exp)}`;
-      })()}
-      ${historyRows.length ? `<details class="details" style="margin-top:14px">
-        <summary>${esc(T('cognition.experience_history_section', '管理台账'))}</summary>
-        <div class="dbody">${historyRows.map((row) => {
-          const actor = String(row.actor || '') === 'user' ? T('cognition.audit_actor_user', '你') : String(row.actor || '') === 'system' ? T('cognition.audit_actor_system', '系统') : '';
-          const change = (row.from || row.to)
-            ? `（${esc(String(row.from || '—'))} → ${esc(String(row.to || '—'))}）`
-            : '';
-          const reason = row.reason ? ` · ${esc(String(row.reason))}` : '';
-          return `<div class="proc-row"><span class="when">${esc(fmtDate(row.at))}</span><span style="flex:1">${actor ? `${esc(actor)} · ` : ''}<b>${esc(experienceHistoryLabel(row.action))}</b>${change}${reason}</span></div>`;
-        }).join('')}</div>
-      </details>` : ''}
+        <div class="card">
+          ${(() => {
+            // 管理动作（T029）：终态（已归档/已并入）无管理出口，只说明现状。
+            if (!switchable) {
+              const note = status === 'merged'
+                ? T('cognition.experience_merged_into_note', '这条经验已并入另一条；来源与历史在并入目标上完整保留。')
+                : T('cognition.experience_archived_note', '这条经验已归档清理，不再进入任何清单；归档原因与时间记录在台账里。');
+              return `<div class="sect-block"><p class="note">${esc(note)}</p></div>`;
+            }
+            const otherTypes = ['lesson', 'workflow', 'gap', 'uncategorized']
+              .filter((type) => NS.experience.groupKey(type) !== NS.experience.groupKey(exp.experienceType));
+            return `<div class="sect-block ca-experience-actions">
+              <div class="sub"><strong>${esc(T('cognition.experience_manage_section', '管理'))}</strong></div>
+              <div class="chips">
+                ${btn(status === 'active'
+                  ? T('cognition.experience_action_pause', '暂停带入')
+                  : T('cognition.experience_action_resume', '恢复带入'),
+                'experience-status-toggle', { id: exp.id, data: { action: status === 'active' ? 'pause' : 'resume' }, small: true })}
+                ${otherTypes.map((type) => btn(NS.experience.typeLabel(type), 'experience-set-type', { id: exp.id, data: { type }, small: true, className: 'o', title: T('cognition.experience_action_set_type', '调整类型') })).join('')}
+                ${btn(T('cognition.experience_action_archive', '归档清理'), 'experience-archive', { id: exp.id, small: true, danger: true })}
+              </div>
+              <p class="note">${esc(status === 'active'
+                ? T('cognition.experience_action_pause_hint', '暂停后新任务的清单不再带入这条经验；历史与引用记录全部保留，随时可恢复。')
+                : T('cognition.experience_action_resume_hint', '已暂停：恢复后下一轮清单重新带入。'))}</p>
+            </div>`;
+          })()}
+        </div>
+        ${mergedFrom.length ? `<div class="card"><div class="sect-block">
+          <div class="sub"><strong>${esc(T('cognition.experience_merged_from_section', '并入来源'))}<span class="note">${String(mergedFrom.length)}</span></strong></div>
+          ${mergedFrom.map((entry) => `<div class="row is-flat is-clickable" data-act="open-experience" data-id="${esc(String(entry.id || ''))}" ${roleBtn()}>
+            <div class="tw"><div class="tt">${esc(entry.title || '')}</div>
+            <div class="mm">${esc(T('cognition.experience_merged_from_at', '并入于 {when}', { when: fmtDate(entry.mergedAt) }))}</div></div>
+          </div>`).join('')}
+        </div></div>` : ''}
+        ${evidence.length ? `<div class="card">${(() => {
+          // 证据引用块：一律走唯一呈现出口 evidenceChip（内部 id 不上屏）。
+          const rowsHtml = evidence.map((ref) => `<div class="evrow">${evidenceChip(ref)}</div>`).join('');
+          return `<div class="sect-block"><div class="sub"><strong>${esc(T('cognition.asset_evidence_section', '证据引用'))}<span class="note">${String(evidence.length)}</span></strong></div>${rowsHtml}</div>`;
+        })()}</div>` : ''}
+      </aside>
     </div>`;
   }
 
@@ -4774,6 +4799,9 @@
         <div class="ca-deposit-foot"><span class="note">v${esc(String(receipt.version || '1'))}</span>${btn(T('cognition.capture_action_view_assets', '查看资产'), 'open-asset', { id: receipt.assetId, small: true })}</div>
       </div>`;
     }).join('');
+    /* 整页版式（2026-09-28）：hero 与整合卡（含待确认表单，2026-09-15 定的
+     * 合并卡契约原样保留）全宽置顶；下方对称双栏 = 整理结果 | 对话时间线，
+     * 宽窗下两块并排、窄窗退化为单列。 */
     return `${backHtml}
     ${hero(
       vocab ? vocab.recordTitle(capture) : String(capture.conversationTitle || T('cognition.capture_untitled_record', '未命名会话的整理')),
@@ -4784,8 +4812,6 @@
         [Number(capture.attempt) || 1, T('cognition.capture_detail_attempt', '尝试次数')],
       ]),
     )}
-    ${captureResultSection(capture, messageBySourceId)}
-    ${captureConversationSection(capture, contextHit ? (contextHit.loading ? { loading: true } : context) : null)}
     <div class="card ca-capture-panel">
       <div class="ca-capture-head">
         ${chip(headStatus.label, headStatus.tone)}
@@ -4804,6 +4830,10 @@
       ${captureStageStepper(capture.stage)}
       ${pendingFormBlocks ? `<div class="ca-pending-embed">${pendingFormBlocks}</div>` : ''}
       ${depositBlocks ? `<div class="ca-deposit">${sectionHead(T('cognition.capture_detail_assets', '已保存资产'))}${depositBlocks}</div>` : ''}
+    </div>
+    <div class="ca-detail-duo">
+      ${captureResultSection(capture, messageBySourceId)}
+      ${captureConversationSection(capture, contextHit ? (contextHit.loading ? { loading: true } : context) : null)}
     </div>`;
   }
 
@@ -4843,10 +4873,15 @@
         : route.name === 'settings' ? 'settings'
           : route.name === 'ontology' ? 'ontology'
             : route.name === 'tree' ? 'tree' : 'overview';
+    // 详情子界面（资产/经验/整理详情、整理报告）也走整页版式；候选详情
+    // 复用 review 工作台的全宽态（候选卡类名同一套）。
+    const isDetailRoute = Boolean(route.assetId || route.experienceId || route.candidateId
+      || (route.name === 'activity' && route.captureId) || route.name === 'cleanup');
     const layoutView = activeTab === 'ontology' || activeTab === 'settings' ? activeTab
       : activeTab === 'overview' && !route.assetId && !route.experienceId ? 'overview'
         : activeTab === 'review' && !route.candidateId ? 'review'
-          : activeTab === 'activity' && route.name === 'activity' && !route.captureId ? 'activity' : '';
+          : activeTab === 'activity' && route.name === 'activity' && !route.captureId ? 'activity'
+            : isDetailRoute ? 'detail' : '';
     const layoutClass = layoutView ? ` ca-layout-${layoutView}` : '';
     const pendingCount = Number(NS.stats().pending || 0);
     const tabsInner = NS.TABS.map((tab) => {
@@ -4924,7 +4959,7 @@
       // 取不到就跳过切类，与上面的「退回整串写入」同一条守则。
       if (main.classList) {
         main.classList.toggle('is-stage', stageScroll);
-        ['overview', 'ontology', 'review', 'activity', 'settings'].forEach((layout) => {
+        ['overview', 'ontology', 'review', 'activity', 'settings', 'detail'].forEach((layout) => {
           main.classList.toggle(`ca-layout-${layout}`, layoutView === layout);
         });
       }
