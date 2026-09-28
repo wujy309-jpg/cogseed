@@ -5437,7 +5437,7 @@ function _renderRecallCitationsHtml(citations) {
   const improveKey = 'chat.recall.feedback_improve';
   const improveValue = typeof t === 'function' ? t(improveKey) : improveKey;
   const improve = improveValue && improveValue !== improveKey ? improveValue : 'Needs improvement';
-  return `<section class="chat-recall-citations"><div class="chat-recall-citations-head"><span>${_uiIconHtml('brain-circuit', 'ui-icon')}<strong>${escapeHtml(title)}</strong></span><span class="chat-recall-feedback-status" data-recall-feedback-status aria-live="polite"></span></div><div class="chat-recall-citation-list">${items.map((citation) => {
+  return `<section class="chat-recall-citations"><div class="chat-recall-citations-head"><span class="chat-recall-citations-icon">${_uiIconHtml('brain-circuit', 'ui-icon')}</span><div class="chat-recall-citations-title"><strong>${escapeHtml(title)}</strong></div><span class="chat-recall-feedback-status" data-recall-feedback-status aria-live="polite"></span></div><div class="chat-recall-citation-list">${items.map((citation) => {
     const type = _recallCitationTypeLabel(citation.type);
     const scope = _recallCitationScopeLabel(citation.scope);
     const meta = [type, scope].filter(Boolean).join(' · ');

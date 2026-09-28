@@ -23286,45 +23286,12 @@ body:has(#panel-settings.active) .main-top-actions {
 
 /* Recall 引用反馈（「提供给本次回答的记忆」+ 有帮助/需改进）。
    它与「你引用了 N 条认知资产」回执卡（.chat-recall-projection-card）同属
-   "本轮带入了什么" 这一个家族，所以两卡共用同一套壳与头部语言：同一组
-   token（--border / --surface / --radius-field）、同样的「图标 + 标题 + 右侧
-   状态」头部节奏、动作行统一走共享 uiButton。
+   "本轮带入了什么" 这一个家族。2026-09-28 收口：两卡壳与头部是同一份分组
+   规则，唯一壳源在下方「Recall projection receipt」段——本段只准写记忆卡
+   独有的内容行（引用行、反馈行），不得再出现第二份壳/头部规则。
    2026-09-25 收口：这里原先自带一套硬编码品牌绿（4 处 rgba(14,159,110,·) +
    2 处 #0b7a4f）和 99px 药丸按钮样式，与回执卡并排时被认成两种卡片样式；
    硬编码值已全部收进 token，药丸变体删除（共享按钮已覆盖 hover/disabled/focus）。 */
-.chat-recall-citations {
-  margin: 6px 0;
-  padding: 9px 11px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-field);
-  background: var(--surface);
-  color: var(--text);
-  font-size: var(--font-size-caption);
-  line-height: 1.45;
-}
-.chat-recall-citations-head {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-.chat-recall-citations-head > span:first-child {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-}
-.chat-recall-citations-head .ui-icon { width: 14px; height: 14px; color: var(--primary); }
-.chat-recall-feedback-status {
-  flex: 0 0 auto;
-  margin-top: 1px;
-  color: var(--muted);
-  font-size: var(--font-size-1);
-}
 .chat-recall-citation-list {
   display: grid;
   gap: 6px;
@@ -33272,8 +33239,12 @@ section.kb-wb-right { display: flex; flex-direction: column; min-width: 0; min-h
 
 /* ── Recall projection receipt ───────────────────────────────────────────
    Model-selected assets are governance events, not assistant prose. Keep the
-   receipt compact in the chat timeline and disclose details progressively. */
-.chat-recall-projection-card {
+   receipt compact in the chat timeline and disclose details progressively.
+   引用卡片家族唯一壳源（2026-09-28）：回执卡与记忆卡（.chat-recall-citations，
+   见上方 Recall 引用反馈段）的壳与头部共用这组分组选择器——单一事实源，
+   两卡各自段落只写内容行；两卡要差异只能差在内容，不能差在壳。 */
+.chat-recall-projection-card,
+.chat-recall-citations {
   margin: 6px 0;
   padding: 9px 11px;
   border: 1px solid var(--border);
@@ -33290,28 +33261,31 @@ section.kb-wb-right { display: flex; flex-direction: column; min-width: 0; min-h
 .chat-message.is-coalesced {
   display: none !important;
 }
-.chat-recall-projection-card.is-model-selected {
-  max-width: 620px;
-}
-.chat-recall-projection-head {
+.chat-recall-projection-head,
+.chat-recall-citations-head {
   display: flex;
   align-items: flex-start;
   gap: 8px;
+  margin-bottom: 8px;
 }
-/* 头部图标：与「提供给本次回答的记忆」卡同一条头部语言（图标 + 标题 + 右侧
-   状态）。图标只从 icons.js 出（uiIconHtml），原语缺席时 JS 侧渲染空串。 */
-.chat-recall-projection-icon {
+/* 头部图标：两卡同一条头部语言（图标 + 标题 + 右侧状态）。图标只从 icons.js
+   出（uiIconHtml），原语缺席时 JS 侧渲染空串。 */
+.chat-recall-projection-icon,
+.chat-recall-citations-icon {
   flex: 0 0 auto;
   display: inline-flex;
   margin-top: 1px;
   color: var(--primary);
 }
-.chat-recall-projection-icon .ui-icon { width: 14px; height: 14px; }
-.chat-recall-projection-title {
+.chat-recall-projection-icon .ui-icon,
+.chat-recall-citations-icon .ui-icon { width: 14px; height: 14px; }
+.chat-recall-projection-title,
+.chat-recall-citations-title {
   flex: 1 1 auto;
   min-width: 0;
 }
-.chat-recall-projection-title strong {
+.chat-recall-projection-title strong,
+.chat-recall-citations-title strong {
   display: block;
   color: var(--text);
   font-size: var(--font-size-caption);
@@ -33324,12 +33298,16 @@ section.kb-wb-right { display: flex; flex-direction: column; min-width: 0; min-h
   color: var(--muted);
   font-size: var(--font-size-1);
 }
-.chat-recall-projection-badge,
-.chat-recall-projection-status {
+.chat-recall-projection-status,
+.chat-recall-feedback-status {
   flex: 0 0 auto;
   margin-top: 1px;
+  color: var(--muted);
+  font-size: var(--font-size-1);
 }
 .chat-recall-projection-badge {
+  flex: 0 0 auto;
+  margin-top: 1px;
   padding: 2px 6px;
   border-radius: 999px;
   background: color-mix(in srgb, var(--primary) 10%, transparent);
@@ -33337,15 +33315,10 @@ section.kb-wb-right { display: flex; flex-direction: column; min-width: 0; min-h
   font-size: var(--font-size-1);
   font-weight: var(--font-weight-semibold);
 }
-.chat-recall-projection-status {
-  color: var(--muted);
-  font-size: var(--font-size-1);
-}
 .chat-recall-projection-summary-actions {
   display: flex;
   justify-content: flex-end;
   gap: 6px;
-  margin-top: 6px;
 }
 .chat-recall-projection-details {
   margin-top: 7px;
