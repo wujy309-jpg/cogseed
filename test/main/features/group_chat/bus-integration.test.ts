@@ -233,10 +233,6 @@ vi.mock("../../../../src/main/model/client", () => ({
         _recordedSteers.push(opts.drainSteer?.() || []);
         continue;
       }
-      if (ev?.type === "__emit_teaching_receipt__") {
-        await opts.onTeachingReceipt?.(ev.receipt);
-        continue;
-      }
       if (ev?.type === "__emit_cognition_save_receipt__") {
         await opts.onCognitionSaveReceipt?.(ev.receipt);
         continue;
@@ -1685,20 +1681,22 @@ describe("group_chat bus integration › structured user recipient", () => {
 });
 
 describe("group_chat bus integration › teaching receipts", () => {
-  it("persists a deduplicated teaching receipt on the visible commander reply", async () => {
+  it("persists a deduplicated taught receipt on the visible commander reply (并入保存回执链)", async () => {
     const cid = newCid();
     const state = await import("../../../../src/main/features/group_chat/state");
     const bus = await import("../../../../src/main/features/group_chat/bus");
+    // 教学回执并入保存回执（2026-09-28 四病整改 7.0 修7 / F39）：runner 不再有
+    // onTeachingReceipt，教学信号以 candidate+taught-pending-review 走同一条
+    // 保存回执收集口径（渲染层不再有独立教学卡）。
     const receipt = {
-      id: "teach-a",
+      target: "candidate",
+      id: "cand-a",
       summary: "以后所有结论都附来源。",
-      scope: "project",
-      status: "active",
-      candidateIds: ["cand-a"],
+      outcome: "taught-pending-review",
     };
     _setScript(state.buildGconvSessionId(cid), [
-      { type: "__emit_teaching_receipt__", receipt },
-      { type: "__emit_teaching_receipt__", receipt },
+      { type: "__emit_cognition_save_receipt__", receipt },
+      { type: "__emit_cognition_save_receipt__", receipt },
       { type: "final", text: "已经记住。" },
     ]);
 
@@ -1712,17 +1710,16 @@ describe("group_chat bus integration › teaching receipts", () => {
 
     const messages = await readConversationMessages(cid);
     const reply = messages.find((message) =>
-      message.from === "commander" && Array.isArray(message.teaching_receipts));
+      message.from === "commander" && Array.isArray(message.cognition_save_receipts));
     expect(_recordedCalls.find((call) => call.sid === state.buildGconvSessionId(cid))?.sourceMessageText)
       .toBe("请记住：以后所有结论都附来源。");
     expect(reply).toMatchObject({
       text: "已经记住。",
-      teaching_receipts: [{
-        id: "teach-a",
+      cognition_save_receipts: [{
+        target: "candidate",
+        id: "cand-a",
         summary: "以后所有结论都附来源。",
-        scope: "project",
-        status: "active",
-        candidate_ids: ["cand-a"],
+        outcome: "taught-pending-review",
       }],
     });
   });

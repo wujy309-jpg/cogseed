@@ -386,9 +386,10 @@ describe('ConversationInfo Collaboration tab shell', () => {
     expect(result.html).toContain('提交前必须过 lint');
     // 只渲染本会话（c1）的候选，其他会话的候选被过滤掉。
     expect(result.html).not.toContain('另一个会话的候选');
-    // 确认 / 忽略按钮，以及规则边界。
+    // 确认入口与规则边界。「忽略」按钮已删（审计 R1④ 残余，拍板项 #4，
+    // 2026-09-28）：就地忽略与「待我处理」完全重叠且更弱——忽略走候选详情。
     expect(result.html).toContain('data-candidate-review="cand-1"');
-    expect(result.html).toContain('data-candidate-ignore="cand-2"');
+    expect(result.html).not.toContain('data-candidate-ignore');
     expect(result.html).toContain('提交代码前');
     expect(result.html).toContain('紧急热修');
   });
@@ -1289,7 +1290,8 @@ describe('ConversationInfo files tab', () => {
       expect(result.cognitionStrip.html).toContain('这段对话已保存 1 条认知');
     });
 
-    it('「查看本会话认知」→ 打开抽屉并激活认知资产 tab（落点可达）', async () => {
+    it('「去待我处理」→ 调 openCognitionReview 跳认知面板待我处理页（R4 拍板项 #6）', async () => {
+      let reviewCalls = 0;
       const result = await renderFilesResult({
         history: [],
         files: baseFiles,
@@ -1298,9 +1300,40 @@ describe('ConversationInfo files tab', () => {
           { id: 'cand-w2', status: 'pending_review', judgment: '待确认', suggestedType: 'rule', sourceRefs: [{ kind: 'conversation', id: 'c1' }] },
         ],
         assets: [],
+        panelClosed: true,
       } as any, async (context: any) => {
+        // 认知面板的跳转入口由 cognition-assets/core.js 暴露（真机在
+        // window.openCognitionReview）；此处注入替身验证接线。
+        context.window.openCognitionReview = () => { reviewCalls += 1; return true; };
         const strip = context.document.getElementById('chat-cognition-strip');
         // 等衔接行真渲染出来（数据加载完成）再点，避免点在 Loading 态上。
+        for (let i = 0; i < 50 && !strip.innerHTML; i += 1) await new Promise((r) => setTimeout(r, 20));
+        strip.onclick({
+          target: { closest: (sel: string) => (String(sel).includes('cognition-strip-goto') ? {} : null) },
+          preventDefault() {},
+          stopPropagation() {},
+        });
+        await new Promise((r) => setTimeout(r, 30));
+      });
+      expect(reviewCalls).toBe(1);
+      // 面板保持关闭：去向换成「待我处理」后，点击不再回退打开抽屉的
+      // 认知资产 tab（openAndSetTab 会 _setOpen(true)，若走了回退面板会被
+      // 重新打开——panelHidden=false 即回退被误触）。
+      expect(result.panelHidden).toBe(true);
+    });
+
+    it('认知面板入口不可用（加载失败）→ 回退旧落点：打开抽屉认知资产 tab', async () => {
+      const result = await renderFilesResult({
+        history: [],
+        files: baseFiles,
+        attachments: [],
+        candidates: [
+          { id: 'cand-w3', status: 'pending_review', judgment: '待确认', suggestedType: 'rule', sourceRefs: [{ kind: 'conversation', id: 'c1' }] },
+        ],
+        assets: [],
+        panelClosed: true,
+      } as any, async (context: any) => {
+        const strip = context.document.getElementById('chat-cognition-strip');
         for (let i = 0; i < 50 && !strip.innerHTML; i += 1) await new Promise((r) => setTimeout(r, 20));
         strip.onclick({
           target: { closest: (sel: string) => (String(sel).includes('cognition-strip-goto') ? {} : null) },

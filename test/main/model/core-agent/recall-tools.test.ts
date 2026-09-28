@@ -48,7 +48,9 @@ async function seedAsset(
   _seedSeq += 1;
   const candidate = await candidates.saveRecallCandidate(TEST_UID, {
     judgment,
-    summary: judgment.slice(0, 12),
+    // 标题闸门（设计 3.2）：judgment 前缀兜底命中「与正文开头重复」，
+    // 改为与正文首字不同的合规样本标题。
+    summary: `检索样本${_seedSeq}`,
     suggestedType: 'rule',
     applicableWhen: ['正式评审与架构决策时'],
     forbiddenWhen: ['内部快速对齐'],

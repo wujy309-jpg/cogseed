@@ -23332,6 +23332,16 @@ body:has(#panel-settings.active) .main-top-actions {
   color: var(--muted);
   font-size: var(--font-size-1);
 }
+/* 合并卡（拍板项 #8，2026-09-28）新增内容行：省略行灰显、带入行的版本钉住
+   说明整行换行（沿用引用行样式，不另起壳）。 */
+.chat-recall-citation.is-omitted {
+  color: var(--muted);
+}
+.chat-recall-citation .chat-recall-projection-stale {
+  flex: 1 0 100%;
+  color: var(--muted);
+  font-size: var(--font-size-1);
+}
 .chat-recall-feedback-actions {
   display: flex;
   gap: 6px;
@@ -23341,14 +23351,14 @@ body:has(#panel-settings.active) .main-top-actions {
 }
 .chat-recall-citations.is-feedback-sent .chat-recall-feedback-btn { opacity: 0.55; pointer-events: none; }
 
-.chat-teaching-receipts,
+/* 教学卡样式已删（2026-09-28 四病整改 7.0 修7）：教学回执并入保存回执卡
+   （.chat-cognition-save-receipts），独立教学卡不再渲染。 */
 .chat-cognition-save-receipts {
   display: grid;
   gap: 8px;
   margin-top: 10px;
 }
 
-.chat-teaching-receipt,
 .chat-cognition-save-receipt {
   display: flex;
   align-items: center;
@@ -23360,28 +23370,20 @@ body:has(#panel-settings.active) .main-top-actions {
   background: var(--surface-secondary, rgba(127, 127, 127, 0.08));
 }
 
-.chat-teaching-receipt > div,
 .chat-cognition-save-receipt > div {
   min-width: 0;
   display: grid;
   gap: 3px;
 }
 
-.chat-teaching-receipt strong,
-.chat-teaching-receipt span,
 .chat-cognition-save-receipt strong,
 .chat-cognition-save-receipt span {
   overflow-wrap: anywhere;
 }
 
-.chat-teaching-receipt span,
 .chat-cognition-save-receipt span {
   color: var(--text-secondary, #6b7280);
   font-size: 12px;
-}
-
-.chat-teaching-receipt.is-revoked {
-  opacity: 0.68;
 }
 
 /* ── merged from dev/zhangh: personal ontology + memory group styles ── */
@@ -33292,7 +33294,8 @@ section.kb-wb-right { display: flex; flex-direction: column; min-width: 0; min-h
   font-weight: var(--font-weight-semibold);
   line-height: 1.35;
 }
-.chat-recall-projection-title small {
+.chat-recall-projection-title small,
+.chat-recall-citations-title small {
   display: block;
   margin-top: 2px;
   color: var(--muted);

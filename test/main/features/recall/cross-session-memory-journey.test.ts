@@ -4,6 +4,24 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+// 标题闸门（设计 3.2）后晋升链对不合规 summary 走 LLM 起标题；本文件的候选
+// 由 KStar 抽取/即时直投内生生成（summary＝模板拼接或正文首句），单测无模型，
+// mock 出确定性合规标题（与 asset-title-suggestion.test.ts 同一边界口径）。
+vi.mock('../../../../src/main/features/recall/asset-title-suggestion', () => ({
+  suggestAbilityAssetTitle: async () => ({ title: '模型重起的样本标题' }),
+}));
+
+
+// 晋升链的语义复核（candidate-service autoApply → semantic-review →
+// runReflection）是一次真实 LLM 网络调用。单跑时占位 key 快速 403 走
+// 「复核失败不阻断」降级分支；全量并发下同一路外网往返会挂起，把本用例
+// 拖到 60s 测试超时（vitest.config testTimeout）。mock 成「复核通过、无
+// 发现」——对晋升链与 403 降级等价（findings 为空同样继续晋升），只是
+// 不再依赖网络，断言语义不变。与上面 asset-title-suggestion 同一口径。
+vi.mock('../../../../src/main/features/cognition/semantic-review', () => ({
+  reviewCandidateSemantically: async () => ({ ok: true, findings: [] }),
+}));
+
 vi.mock('../../../../src/main/features/kb_embed', () => ({
   closeEmbedder: vi.fn(),
   embedQuery: async (text: string) => {

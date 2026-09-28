@@ -71,7 +71,10 @@ export interface InspectionSettings extends RecallJsonRecord {
   updatedAt: string;
 }
 
-const DEFAULT_SETTINGS = Object.freeze({ enabled: true });
+// 默认关（2026-09-28 四病整改 G2 / 拍板项 #5）：巡检是低频增值能力，不该
+// 未经用户开启就后台自跑——真机 125 轮 findings 全零也说明默认开没有产出。
+// 用户在「页面整理 → 高级设置」里打开后才会写入 settings 记录（此后以记录为准）。
+const DEFAULT_SETTINGS = Object.freeze({ enabled: false });
 
 /** 巡检周期：一天两轮足够——重复/过时/冲突都不是分钟级变化的事，
  *  频率高只会多刷待办、不增加发现。 */
@@ -113,7 +116,9 @@ export async function readInspectionSettings(userId: string): Promise<Inspection
     : []);
   return {
     ...raw,
-    enabled: raw.enabled !== false,
+    // 容错方向与默认关一致（拍板项 #5）：缺 enabled 字段视为关——历史记录
+    // 若真缺过该字段，宁可不跑也不要"没说过要开却自己跑了"。
+    enabled: raw.enabled === true,
     dismissedFindingKeys: keysOf(raw.dismissedFindingKeys),
     deferredFindingKeys: keysOf(raw.deferredFindingKeys),
   } as InspectionSettings;

@@ -42,6 +42,7 @@ function renderReceipts(receipts: unknown[]): string {
     'chat.cognition_save.state_pending': 'Awaiting review',
     'chat.cognition_save.state_update_pending': 'Update awaiting review',
     'chat.cognition_save.state_merged': 'Merged into suggestion',
+    'chat.cognition_save.state_taught': '已记住 · 待审核',
     'chat.cognition_save.open_asset': 'View and edit',
     'chat.cognition_save.open_candidate': 'Review or edit',
   };
@@ -159,6 +160,9 @@ describe('conversation cognition save receipts', () => {
       { target: 'candidate', id: 'cand-a', summary: 'paraphrased preference', outcome: 'pending-review' },
       { target: 'candidate', id: 'cand-b', summary: 'replacement preference', outcome: 'fused-update-pending' },
       { target: 'candidate', id: 'cand-c', summary: 'duplicate suggestion', outcome: 'merged' },
+      // 教学回执并入保存回执（2026-09-28 四病整改 7.0 修7）：taught 态渲染
+      // 「已记住 · 待审核」，动作走候选入口。
+      { target: 'candidate', id: 'cand-taught', summary: '以后所有结论都附来源。', outcome: 'taught-pending-review' },
     ]);
 
     expect(html).toContain('&lt;remember&gt;附来源');
@@ -166,10 +170,12 @@ describe('conversation cognition save receipts', () => {
     expect(html).toContain('Awaiting review');
     expect(html).toContain('Update awaiting review');
     expect(html).toContain('Merged into suggestion');
+    expect(html).toContain('已记住 · 待审核');
     expect(html).toContain('data-asset-citation="asset-a"');
     expect(html).toContain('data-candidate-citation="cand-a"');
     expect(html).toContain('data-candidate-citation="cand-b"');
     expect(html).toContain('data-candidate-citation="cand-c"');
+    expect(html).toContain('data-candidate-citation="cand-taught"');
   });
 
   it('mounts the same receipt in the live evidence block and keeps its count', () => {
@@ -199,7 +205,6 @@ describe('conversation cognition save receipts', () => {
       window: { hydrateUiIcons: () => {} },
       t: (key: string) => key,
       _renderMessageReferencesHtml: () => '',
-      _renderTeachingReceiptsHtml: () => '',
       _renderCognitionSaveReceiptsHtml: (receipts: unknown[]) => `<receipt-count>${receipts.length}</receipt-count>`,
       _compactResultBlockHtml: (next: unknown) => { options = next; return '<details></details>'; },
     };
@@ -208,7 +213,6 @@ describe('conversation cognition save receipts', () => {
 
     context.mount({ querySelector: () => bubble }, {
       references: [],
-      teaching_receipts: [],
       cognition_save_receipts: [{ target: 'candidate', id: 'cand-live', summary: 's', outcome: 'pending-review' }],
     });
 
@@ -259,16 +263,23 @@ describe('conversation cognition save receipts', () => {
     if (end < 0) throw new Error('Candidate opener is unterminated');
     const routes: unknown[] = [];
     let shown = 0;
+    let reloads = 0;
     const context: any = {
       window: {},
       router: { go: (route: unknown) => { routes.push(route); } },
       showRecallPanel: () => { shown += 1; },
+      // opener 在 core.js 里闭包引用 NS（= window.CogAssets）；2026-09-28 起
+      // 路由后补 void NS.reload()（B11/D1，见 cognition-jump-reload.test.ts），
+      // 抽取执行的 harness 按既有模式把自由变量供进 VM 上下文。
+      NS: { reload: () => { reloads += 1; } },
     };
     vm.runInNewContext(`${cognitionCore.slice(start, end)};`, context);
 
     expect(context.window.openCognitionCandidateById('cand-review-1')).toBe(true);
     expect(shown).toBe(1);
     expect(routes).toEqual([{ name: 'review', candidateId: 'cand-review-1' }]);
+    // 跳转后必须重取一次：对话侧刚保存的候选不在陈旧 store 里（B11 假空态）。
+    expect(reloads).toBe(1);
   });
 
   it('protects candidate markers for rendering and mounts receipts on both persisted and live paths', () => {

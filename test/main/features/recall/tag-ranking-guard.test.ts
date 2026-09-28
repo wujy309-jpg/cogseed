@@ -217,7 +217,7 @@ async function seedOne() {
   const candidates = await import('../../../../src/main/features/recall/candidate-service');
   const promoted = await candidates.saveRecallCandidate(TEST_UID, {
     judgment: '排序守卫用资产：没有明确场景关联时 scene 因子缺席。',
-    summary: '排序守卫用资产',
+    summary: '守卫用排序资产',
     suggestedType: 'rule',
     applicableWhen: ['守卫用例'],
     forbiddenWhen: [],

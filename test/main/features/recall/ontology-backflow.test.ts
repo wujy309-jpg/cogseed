@@ -135,7 +135,7 @@ describe('ontology-backflow › wired into asset creation', () => {
   it('promoting a personal asset does not create a second ontology candidate', async () => {
     const cs = await import('../../../../src/main/features/recall/candidate-service');
     const saved = await cs.saveRecallCandidate(UID, {
-      judgment: '偏好用中文写周报。',
+      judgment: '偏好用中文写周报。', summary: '中文周报偏好',
       suggestedType: 'personal',
       suggestedScope: 'general',
       sourceRefs: [{ kind: 'memory', id: 'backflow-e2e' }],
@@ -150,7 +150,7 @@ describe('ontology-backflow › wired into asset creation', () => {
   it('skill_method promotion does not touch the pool', async () => {
     const cs = await import('../../../../src/main/features/recall/candidate-service');
     const saved = await cs.saveRecallCandidate(UID, {
-      judgment: '先跑测试再提交的做法。',
+      judgment: '先跑测试再提交的做法。', summary: '测试先行做法',
       suggestedType: 'skill_method',
       suggestedScope: 'general',
       sourceRefs: [{ kind: 'memory', id: 'backflow-skill' }],

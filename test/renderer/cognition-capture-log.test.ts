@@ -1654,7 +1654,10 @@ describe('资产详情（使用记录并入）', () => {
     expect(text).toContain('你 · 版本回滚');
     expect(text).toContain('title=原名；version=1');
     expect(text).toContain('title=临时标题；version=2');
-    expect(html).toContain('data-act="rollback-asset" data-id="aa-1" data-version="2"');
+    // 台账行内「回滚到这次改动前」按钮已删（审计 R2，2026-09-28）：与版本区
+    // 「切回此版」重叠且 0 使用；rollbackAnchor 数据仍在（服务端字段），只是
+    // 不再渲染按钮。回滚走版本区。
+    expect(html).not.toContain('data-act="rollback-asset"');
     // 台账时间必须走统一格式化（2026-09-25 合并态走查修）：此前原样打印存储里的
     // ISO UTC 串（`2026-09-25T01:47:12.562Z`），与同页版本记录的本地时间差 8 小时。
     // 判据取台账块内的 `.when` 单元格：值必须等于本文件装配的 fmtDate 出口输出

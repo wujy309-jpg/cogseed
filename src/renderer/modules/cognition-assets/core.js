@@ -476,7 +476,7 @@
     /** 整理页：会话列表是否展开全部（默认收拢 5 条）。 */
     organizeListExpanded: false,
     /** 路由：{name, category, assetId, candidateId, proofEventId, captureBucket, captureId, sourceIssueOpen} */
-    route: { name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', ontologyBox: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '', manage: '' },
+    route: { name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', candCreate: '', ontologyBox: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '', manage: '' },
     /** 资产详情异步补数会触发整页 render；编辑表单草稿留在 store，防止
      * 版本/回执/排序依据到达时替换 DOM 并丢掉用户尚未保存的输入。 */
     assetEditDrafts: {},
@@ -1474,7 +1474,7 @@
       if (target.category === 'kstar') target = Object.assign({}, target, { category: '' });
       // 先把 next 归一到同一形状再比（部分键字面量 vs 全键展开的序列化恒不等，
       // 连点同一 tab 会堆积重复栈项——2026-09-14 终审修）。
-      const merged = Object.assign({ name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', ontologyBox: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '', manage: '' }, target);
+      const merged = Object.assign({ name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', candCreate: '', ontologyBox: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '', manage: '' }, target);
       const same = JSON.stringify(current) === JSON.stringify(merged);
       if (!opts.replace && !same) store.backStack.push(Object.assign({}, current));
       store.route = merged;
@@ -1843,6 +1843,38 @@
       }
       await NS.reload();
     },
+    /** 「记一条」（设计 7.2，2026-09-28）：手动新建走 recall.candidates.save
+     *  产生**候选**（不直接入库），保存后跳「待我处理」确认——不破坏
+     *  "确认后才入库"一致性。标题（summary）与内容（judgment）渲染层先做
+     *  必填提示；正式标题闸门在晋升/入库收口（3.2）。
+     *  manual 标记（2026-09-28 拍板 A）：手动候选的"证据"就是用户本人的
+     *  直接输入——证据闸防的是自动提炼线编造来源，手动线不适用该威胁模型。
+     *  主进程按 manual=true + 空来源豁免"证据不足"降级，直接 pending_review
+     *  可确认；自动提炼线行为零变化。 */
+    async saveManualCandidate(form) {
+      const input = form || {};
+      const judgment = String(input.judgment || '').trim();
+      const summary = String(input.summary || '').trim();
+      if (!judgment || !summary) {
+        toast(T('cognition.cand_create_need_title', '标题和内容都要填，才能存成候选。'), 'warning');
+        return;
+      }
+      await api.call('recall.candidates.save', {
+        judgment,
+        summary,
+        suggestedType: String(input.suggestedType || 'personal'),
+        suggestedScope: String(input.suggestedScope || '').trim() || 'general',
+        suggestedAction: 'create',
+        manual: true,
+        sourceRefs: [],
+        ...(input.value ? { value: String(input.value) } : {}),
+        ...(input.uncertainty ? { uncertainty: String(input.uncertainty) } : {}),
+      });
+      toast(T('cognition.cand_create_done', '已存好。去「待我处理」确认后才会入库。'), 'success');
+      router.go({ name: 'overview', candCreate: '' }, { replace: true });
+      router.go({ name: 'review' });
+      await NS.reload();
+    },
     async decideCandidate(candidateId, action) {
       const channel = CANDIDATE_CHANNELS[action];
       if (!channel) return;
@@ -1871,8 +1903,12 @@
       await NS.reload();
     },
     async assetAction(assetId, action) {
+      // 'revoke'（撤回使用）已随界面按钮删除（审计 R3，2026-09-28：0 使用＋
+      // 终态危险）。保留物一条不删：audit_revoked 台账标签、block_reason_
+      // revoked 词条、各处 status==='revoked' 过滤逻辑——历史撤回记录仍要
+      // 如实展示；recall.assets.revoke 通道本体由 7.1 退役批判定。
       const channels = {
-        pause: 'recall.assets.pause', resume: 'recall.assets.resume', revoke: 'recall.assets.revoke',
+        pause: 'recall.assets.pause', resume: 'recall.assets.resume',
         archive: 'recall.assets.archive', restore: 'recall.assets.restore',
         delete: 'recall.assets.delete', purge: 'recall.assets.purge',
       };
@@ -1881,7 +1917,6 @@
       const dangerCopy = {
         delete: T('cognition.asset_delete_confirm', '删除会从资产列表移除该资产，但保留历史；确认删除？'),
         purge: T('cognition.asset_purge_confirm', '彻底清除会删除全部历史与证据，且不可恢复。确认清除？'),
-        revoke: T('cognition.asset_revoke_confirm', '撤回使用只影响未来的任务，历史记录保留。确认撤回？'),
       };
       if (dangerCopy[action]) {
         const ok = await confirmUser(dangerCopy[action], true);
@@ -1995,16 +2030,10 @@
       store.cleanupReports = { loading: false, stale: true, reports: (store.cleanupReports && store.cleanupReports.reports) || [] };
       await NS.reload();
     },
-    /** 一步回滚到某次改动前（specs/008 US-404 T030）：拿旧版内容生成**新版本**，
-     *  历史不回退（已引用旧版的任务不受影响），回滚本身也进台账。
-     *  与「切回此版」的分工：那是切在用指针、不产生新版本；这是留一次改动痕迹，
-     *  所以"改动 → 回滚"在履历里成对出现，看得出发生过什么。 */
-    async rollbackAsset(assetId, version) {
-      await api.call('recall.assets.rollback', { assetId, version });
-      toast(T('cognition.asset_rollback_done', '已回滚到 v{n} 的内容（生成新版本）', { n: String(version) }));
-      store.assetVersions = null;
-      await NS.reload();
-    },
+    /** 台账行内「一步回滚」（US-404 T030）已随渲染入口删除（审计 R2，
+     *  2026-09-28）：与版本区「切回此版」重叠。recall.assets.rollback 通道
+     *  保留——大扫除逐项回滚（rollbackCleanupItem）仍共用它，且大扫除属
+     *  红线不动。 */
     /** 真删单个版本（2026-09-17）：物理移除该版本记录；引用它的已确认注入
      *  在服务端冻结内容副本后继续可用。危险操作，双按钮确认。 */
     async deleteAssetVersion(assetId, version) {
@@ -2033,22 +2062,9 @@
       }
       router.go({ name: 'overview', assetId, assetVersionId: '', assetVersionDiff: '', assetEdit: '1' }, { replace: true });
     },
-    /** 族改名（2026-09-22 快赢）：组头内联输入 → recall.families.rename
-     *  批量写族内全部成员的 familyName；空名=恢复默认短名。 */
-    async renameFamily(anchorAssetId) {
-      const input = document.querySelector(`[data-family-name]`);
-      const name = input ? String(input.value || '').trim() : '';
-      await api.call('recall.families.rename', { anchorAssetId, name });
-      toast(name ? T('cognition.family_renamed', '已命名为「{name}」', { name }) : T('cognition.family_name_cleared', '已恢复默认名'));
-      router.go({ name: 'overview', familyRename: '' }, { replace: true });
-      await NS.reload();
-    },
-    async enterFamilyRename(anchorAssetId) {
-      router.go({ name: 'overview', familyRename: anchorAssetId }, { replace: true });
-    },
-    async exitFamilyRename() {
-      router.go({ name: 'overview', familyRename: '' }, { replace: true });
-    },
+    /** 族命名三入口（enterFamilyRename/renameFamily/exitFamilyRename）已随
+     *  界面按钮删除（审计 N2，2026-09-28：0 使用）。已有族名（familyName）
+     *  的分组展示保留；recall.families.rename 通道本体退役判定在 7.1 批。 */
     /** 用户主动使用（2026-09-19）：把这条资产钉到最近会话——confirmed 投影
      *  + 投影卡，下一轮起注入命中，卡上可撤销。lastConversationCid 由
      *  state.js 记录（切面板不清空）；还没进过任何对话时给出口径提示。 */
@@ -2579,11 +2595,9 @@
       toast(T('common.done', '已完成'));
       await NS.reload();
     },
-    async teachingRevoke(signalId) {
-      await api.call('recall.teaching.revoke', { signalId });
-      toast(T('cognition.teaching_revoke_done', '已撤销这条教学记录'));
-      await NS.reload();
-    },
+    // teachingRevoke（渲染层）已删（2026-09-28 四病整改 7.0 顺带清理）：教学
+    // 回执卡的撤销按钮走 conversation.js 直连 recall.teaching.revoke 通道
+    //（conversation.js:5507），本函数自 3841ef53 起零调用——深探 F39 坐实。
     async captureAction(captureId, action) {
       // 行内动作直接用后端语义 id（run_now / pause / resume / cancel / retry），
       // 与 vocabulary.CAPTURE_ACTION 的键一字不差；导航类动作（去确认 / 打开
@@ -2659,6 +2673,18 @@
     showRecallPanel();
     router.go({ name: 'review', candidateId: String(candidateId) });
     // 同上：对话里刚保存的候选不在陈旧 store 里，必须重取后才找得到（B11/D1）。
+    void NS.reload();
+    return true;
+  };
+
+  /** 跳到认知资产「待我处理」页（审计 R4 拍板项 #6，2026-09-28）：会话头
+   *  部的认知衔接行是本会话 N/M 计数行、无具体资产 id——跳资产详情不可
+   *  执行，统一去向＝「待我处理」（本会话的候选就在那排队）。
+   *  conversation-info.js 调用；不依赖调用方已在认知资产页。 */
+  window.openCognitionReview = function openCognitionReview() {
+    showRecallPanel();
+    router.go({ name: 'review', candidateId: '' });
+    // 同 openCognitionCandidateById：对话侧写入无广播直达这里，跳转后重拉。
     void NS.reload();
     return true;
   };

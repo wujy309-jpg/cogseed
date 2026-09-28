@@ -203,7 +203,11 @@ function asAsset(value: RecallJsonRecord): RecallAbilityAssetRecord {
     return { ...value, evidenceRefs: [] } as unknown as RecallAbilityAssetRecord;
   }
   const evidenceRefs = normalizeCognitionSourceRefs(value.evidenceRefs);
-  if (!evidenceRefs.length) throw new Error('malformed recall ability asset evidence');
+  // 手动新建资产（「记一条」晋升）没有对话证据，空证据合法——与 purged 的
+  // 空证据同款豁免口径，靠落盘的 origin='manual' 识别（2026-09-28 拍板项）。
+  if (!evidenceRefs.length && (value as { origin?: unknown }).origin !== 'manual') {
+    throw new Error('malformed recall ability asset evidence');
+  }
   const ontologyRefs = value.ontologyRefs === undefined ? undefined : normalizeAbilityAssetOntologyRefs(value.ontologyRefs);
   const relationContract = readAbilityAssetRelationContract(value, value.id);
   const scopePolicy = normalizeAbilityAssetScopePolicy(value.scopePolicy);

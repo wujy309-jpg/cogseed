@@ -48,6 +48,8 @@ async function seedAsset(uid: string, judgment: string) {
   seedSeq += 1;
   const candidate = await candidates.saveRecallCandidate(uid, {
     judgment,
+    // 标题闸门（设计 3.2）：无 summary 兜底＝正文首句，过不了闸门。
+    summary: '巡检基线样本',
     suggestedType: 'rule', ...RULE_BOUNDARY, suggestedScope: 'architecture',
     sourceRefs: [{ kind: 'execution', id: `exec-inspect-${seedSeq}` }],
   });
@@ -162,13 +164,22 @@ describe('建议保持待确认（T048 / T050）', () => {
 });
 
 describe('开关（T049）', () => {
-  it('默认开启；关掉之后定时那轮不再跑，手动触发仍可用', async () => {
+  it('默认关（四病整改 G2 / 拍板项 #5）；缺 enabled 字段的记录也视为关；打开后定时跑，关掉后不跑，手动触发仍可用', async () => {
     const uid = 'user-inspect-switch';
-    const { inspection } = await modules();
+    const { inspection, store } = await modules();
     await seedAsset(uid, '开关测试的基线资产。');
-    expect((await inspection.readInspectionSettings(uid)).enabled).toBe(true);
+    // 2026-09-28 G2 拍板项 #5：巡检默认关——未经用户开启不后台自跑。
+    expect((await inspection.readInspectionSettings(uid)).enabled).toBe(false);
+    const skippedByDefault = await inspection.runScheduledInspectionIfEnabled(uid);
+    expect(skippedByDefault).toBeUndefined();
 
-    // 开启时：定时那轮会留下运行记录。
+    // 容错方向同款：历史记录缺 enabled 字段视为关（不再是"缺字段视为开"）。
+    await store.writeRecallJsonRecord(uid, 'inspection-settings', 'settings', {
+      schemaVersion: 1, ownerId: uid, id: 'settings', updatedAt: new Date().toISOString(),
+    } as never);
+    expect((await inspection.readInspectionSettings(uid)).enabled).toBe(false);
+
+    await inspection.setInspectionEnabled(uid, true);
     const first = await inspection.runScheduledInspectionIfEnabled(uid);
     expect(first).toBeTruthy();
     expect(first!.trigger).toBe('scheduled');

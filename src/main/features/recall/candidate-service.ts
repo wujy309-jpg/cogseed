@@ -119,8 +119,9 @@ export interface RecallCandidateRecord extends RecallJsonRecord {
   /** 统一来源标记（2026-09-19 候选归一化）：读取时由 learningProvenance/
    *  captureKey 前缀/教学信号引用惰性推导，不再靠调用方拿前缀猜——
    *  'kstar'（KStar 沉淀）/ 'teaching'（用户教学）/ 'capture'（复盘·整理·
-   *  capture 等系统提取的统称）。 */
-  origin?: 'kstar' | 'teaching' | 'capture';
+   *  capture 等系统提取的统称）；'manual'（「记一条」手动新建，2026-09-28：
+   *  保存时显式落盘，读回校验与晋升豁免都靠它识别，不由前缀推导）。 */
+  origin?: 'kstar' | 'teaching' | 'capture' | 'manual';
   promotedAssetId?: string;
   reviewDecisionId?: string;
   decisionNote?: string;
@@ -164,6 +165,8 @@ export interface RecallAbilityAssetRecord extends RecallJsonRecord {
   title: string;
   statement: string;
   evidenceRefs: CognitionSourceRef[];
+  /** 手动新建资产的空证据豁免标记（「记一条」晋升时从候选透传，2026-09-28）。 */
+  origin?: 'manual';
   learningSignal?: KstarLearningSignal;
   learningProvenance?: KstarLearningProvenance;
   /** R-Box causal rule frozen from a delta_r lesson (world-model ontology). */
@@ -253,6 +256,12 @@ export interface SaveRecallCandidateInput {
   learningSignal?: KstarLearningSignal;
   learningProvenance?: KstarLearningProvenance;
   captureKey?: string;
+  /** 「记一条」手动新建标记（2026-09-28 拍板项豁免）：手动候选没有对话
+   *  来源，sourceRefs 只能为空——证据闸防的是自动提炼线编造来源，对用户
+   *  亲自输入不适用；manual=true 时跳过"空证据落 weak_observation"判定、
+   *  直接 pending_review，读回与晋升的同款放行靠落盘的 origin='manual'
+   *  识别。自动线（capture/teaching/KStar）行为零变化。 */
+  manual?: boolean;
   /** 空间归属（可选）：来源会话/任务的 space_id。 */
   spaceId?: string;
   /** 需原样保留到正式资产的读取范围限制。 */
@@ -999,7 +1008,8 @@ function asCandidate(value: RecallJsonRecord): RecallCandidateRecord {
   const evidenceRefs = Array.isArray(value.evidenceRefs)
     ? normalizeCognitionSourceRefs(value.evidenceRefs)
     : sourceRefs;
-  if ((!sourceRefs.length || !evidenceRefs.length) && status !== 'observed' && status !== 'weak_observation') {
+  if ((!sourceRefs.length || !evidenceRefs.length) && status !== 'observed' && status !== 'weak_observation'
+    && (value as { origin?: unknown }).origin !== 'manual') {
     throw new Error('malformed recall candidate evidence');
   }
   const learningSignal = normalizeLearningSignal(value.learningSignal);
@@ -1054,7 +1064,10 @@ function asCandidate(value: RecallJsonRecord): RecallCandidateRecord {
 function deriveCandidateOrigin(
   value: RecallJsonRecord,
   hasLearningProvenance: boolean,
-): 'kstar' | 'teaching' | 'capture' | undefined {
+): 'kstar' | 'teaching' | 'capture' | 'manual' | undefined {
+  // 手动标记优先于一切前缀推导：「记一条」候选落盘即带 origin='manual'，
+  // 读回时保住它（否则会被兜底推成 'capture'），豁免链全靠这个识别。
+  if ((value as { origin?: unknown }).origin === 'manual') return 'manual';
   if (hasLearningProvenance) return 'kstar';
   const captureKey = typeof value.captureKey === 'string' ? value.captureKey : '';
   if (captureKey.startsWith('kstar-')) return 'kstar';
@@ -1073,7 +1086,9 @@ function asAsset(value: RecallJsonRecord): RecallAbilityAssetRecord {
     typeof value.scope !== 'string' || typeof value.version !== 'string'
   ) throw new Error('malformed recall ability asset');
   const evidenceRefs = normalizeCognitionSourceRefs(value.evidenceRefs);
-  if (!evidenceRefs.length) throw new Error('malformed recall ability asset evidence');
+  if (!evidenceRefs.length && (value as { origin?: unknown }).origin !== 'manual') {
+    throw new Error('malformed recall ability asset evidence');
+  }
   const learningSignal = normalizeLearningSignal(value.learningSignal);
   const learningProvenance = normalizeLearningProvenance(value.learningProvenance);
   const causalRule = value.causalRule === undefined ? undefined : normalizeCausalRule(value.causalRule);
@@ -1306,14 +1321,16 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
   const captureKey = input.captureKey === undefined
     ? undefined
     : boundedText(input.captureKey, 'capture key', 160, true);
-  const persistedOrigin = deriveCandidateOrigin(
-    {
-      captureKey,
-      learningProvenance,
-      sourceRefs,
-    } as unknown as RecallJsonRecord,
-    learningProvenance !== undefined,
-  );
+  const persistedOrigin = input.manual === true
+    ? 'manual'
+    : deriveCandidateOrigin(
+      {
+        captureKey,
+        learningProvenance,
+        sourceRefs,
+      } as unknown as RecallJsonRecord,
+      learningProvenance !== undefined,
+    );
   if (captureKey && !safeId(captureKey)) throw new Error('invalid capture key');
   if (captureKey) {
     const captured = (await listRecallCandidates(userId)).find((candidate) => candidate.captureKey === captureKey);
@@ -1347,7 +1364,8 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
     ...(scopePolicy ? { scopePolicy } : {}),
   };
   const reviewReady = input.forceWeakObservation !== true
-    && Boolean(resolvedValue) && sourceRefs.length > 0 && evidenceRefs.length > 0
+    && Boolean(resolvedValue)
+    && (input.manual === true || (sourceRefs.length > 0 && evidenceRefs.length > 0))
     && Boolean(suggestedScope) && (hasExplicitAction || !hasExplicitValue)
     && (!candidateActionNeedsTarget(suggestedAction) || Boolean(targetAssetId));
   let existing = (await listRecallCandidates(userId)).find((candidate) => {
@@ -2184,7 +2202,8 @@ function asStoredHandoffReceipt(
     || typeof value.createdAt !== 'string'
   ) throw new Error('malformed recall asset handoff receipt');
   const sourceRefs = normalizeCognitionSourceRefs(value.sourceRefs);
-  if (!sourceRefs.length) throw new Error('malformed recall asset handoff receipt sources');
+  // 空 sourceRefs 的回执只可能来自手动候选（「记一条」豁免，2026-09-28）：
+  // 该豁免之前空证据根本晋升不到这一步，不存在历史脏数据需要拦截。
   return {
     ...value,
     candidateId,
@@ -2466,7 +2485,9 @@ export async function promoteRecallCandidate(
       userId,
       mergeSourceRefs(candidate.sourceRefs, candidate.evidenceRefs),
     );
-    if (unavailableSources.length || !candidate.evidenceRefs.length) {
+    // 手动候选（「记一条」）没有对话证据：空 evidenceRefs 是它的常态而非
+    // 失败——确认动作本身就是用户输入，无需来源可用性背书（2026-09-28）。
+    if ((unavailableSources.length || !candidate.evidenceRefs.length) && candidate.origin !== 'manual') {
       return {
         ...candidate,
         status: 'failed',
@@ -2571,6 +2592,9 @@ export async function promoteRecallCandidate(
         // to stand as a method/template asset body.
         statement: promotionStatement,
         evidenceRefs: candidate.evidenceRefs,
+        // 手动候选（「记一条」）没有对话证据：资产侧空证据的合法性靠这个
+        // origin 标记识别（asAsset 读回与展示徽章都用它，2026-09-28 拍板项）。
+        ...(candidate.origin === 'manual' ? { origin: 'manual' as const } : {}),
         ...(candidate.learningSignal ? { learningSignal: candidate.learningSignal } : {}),
         ...(candidate.learningProvenance ? { learningProvenance: candidate.learningProvenance } : {}),
         ...(causalRule ? { causalRule } : {}),

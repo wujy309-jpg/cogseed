@@ -34,7 +34,8 @@ async function seedActiveAsset(
   return assets.createAbilityAsset(UID, {
     schemaVersion: 2, ownerId: UID, id, candidateId: `cand-${id}`,
     sourceCandidateIds: [`cand-${id}`], reviewDecisionId: `rd_${id.slice(3)}padpadpad`,
-    type: 'personal', title: statement.slice(0, 8), statement,
+    // 标题闸门（设计 3.2）：正文前缀当标题过不了闸门，取尾部片段。
+    type: 'personal', title: statement.slice(-8).replace(/[。，、；：！？…）)\]\]】》"'\s]+$/, '') || '挂载样本', statement,
     evidenceRefs: [{ kind: 'conversation', id: `conv-${id}`, taxonomyVersion: 2, subtype: 'session' }],
     scope: 'general', status: 'active',
     lifecycleStatus: 'user_confirmed_unverified', maturity: 'bud', version: '1',

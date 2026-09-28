@@ -119,6 +119,7 @@ describe('Recall candidate capability — cross-entry consistency', () => {
     for (const n of [1, 2, 3]) {
       weak.push(await candidates.saveRecallCandidate(userId, {
         judgment: `弱证据判断 ${n}`,
+        summary: `证据弱样本${n}`,
         suggestedType: 'rule',
         suggestedScope: 'product',
         sourceRefs: [{ kind: 'memory', id: `mem-${n}` }],
@@ -136,6 +137,7 @@ describe('Recall candidate capability — cross-entry consistency', () => {
     for (const n of [4, 5]) {
       const saved = await candidates.saveRecallCandidate(userId, {
         judgment: `已处理判断 ${n}`,
+        summary: `处理过样本${n}`,
         suggestedType: 'rule',
         suggestedScope: 'product',
         sourceRefs: [{ kind: 'memory', id: `mem-${n}` }],

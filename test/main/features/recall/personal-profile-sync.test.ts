@@ -725,6 +725,7 @@ describe('personal profile projection is driven from the main process', () => {
     const candidates = await import('../../../../src/main/features/recall/candidate-service');
     const candidate = await candidates.saveRecallCandidate(UID, {
       judgment: '我偏好先看结论，再看实现细节。',
+      summary: '先看结论的偏好',
       value: '后续回答应优先给出明确结论。',
       suggestedType: 'personal',
       suggestedScope: 'personal',
@@ -755,6 +756,7 @@ describe('personal profile projection is driven from the main process', () => {
     const candidates = await import('../../../../src/main/features/recall/candidate-service');
     const candidate = await candidates.saveRecallCandidate(UID, {
       judgment: '我长期偏好先给整体结构，再补细节。',
+      summary: '结构优先的偏好',
       value: '后续任务可以直接按结构优先的方式组织输出。',
       suggestedType: 'personal',
       suggestedScope: 'personal',
@@ -784,6 +786,7 @@ describe('personal profile projection is driven from the main process', () => {
     const candidates = await import('../../../../src/main/features/recall/candidate-service');
     const candidate = await candidates.saveRecallCandidate(UID, {
       judgment: '正式评审必须先讲产品模型，再谈实现细节。',
+      summary: '评审次序纪律',
       value: '避免评审跑偏到实现细节上。',
       suggestedType: 'rule',
       suggestedScope: 'review',
@@ -816,6 +819,7 @@ describe('personal profile projection is driven from the main process', () => {
     const candidates = await import('../../../../src/main/features/recall/candidate-service');
     const candidate = await candidates.saveRecallCandidate(UID, {
       judgment: '我长期从事程序开发。',
+      summary: '程序开发背景',
       value: '后续可按技术工作者的背景理解我的需求。',
       suggestedType: 'personal',
       suggestedScope: 'personal',

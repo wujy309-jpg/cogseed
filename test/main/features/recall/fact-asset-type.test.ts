@@ -33,7 +33,7 @@ function factCandidate() {
   return {
     judgment: '团队长期使用自托管 Git 服务，MR 是主要协作入口。',
     value: '后续讨论代码协作、MR 流程和仓库归属时直接沿用这个环境事实。',
-    summary: '团队使用自托管 Git 服务',
+    summary: '自托管 Git 协作惯例',
     suggestedType: 'fact' as const,
     suggestedScope: 'code',
     suggestedAction: 'create' as const,

@@ -46,6 +46,8 @@ async function seedAsset(userId: string, statement = '并发种子。') {
   const { candidates, assets } = await modules();
   const candidate = await candidates.saveRecallCandidate(userId, {
     judgment: statement,
+    // 标题闸门（设计 3.2）：无 summary 兜底＝正文首句，过不了闸门。
+    summary: '压测种子样本',
     suggestedType: 'personal',
     suggestedScope: 'general',
     suggestedAction: 'create',

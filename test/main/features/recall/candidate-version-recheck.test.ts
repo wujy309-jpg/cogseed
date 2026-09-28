@@ -76,6 +76,8 @@ async function seedAsset(uid: string, judgment: string) {
   const { candidates } = await service();
   const candidate = await candidates.saveRecallCandidate(uid, {
     judgment,
+    // 标题闸门（设计 3.2）：无 summary 兜底＝正文首句，过不了闸门。
+    summary: '版本重检基线',
     suggestedType: 'rule',
     suggestedScope: 'project',
     sourceRefs: [{ kind: 'execution', id: `exec-${uid}` }],
@@ -87,11 +89,12 @@ async function seedAsset(uid: string, judgment: string) {
 async function saveUpdateCandidate(
   uid: string,
   target: { id: string; type: string },
-  input: { judgment: string; sourceId: string; targetVersionUsed?: string; action?: 'update' | 'limit_scope' },
+  input: { judgment: string; sourceId: string; targetVersionUsed?: string; action?: 'update' | 'limit_scope'; summary?: string },
 ) {
   const { candidates } = await service();
   return candidates.saveRecallCandidate(uid, {
     judgment: input.judgment,
+    summary: input.summary || '更新型候选样本',
     suggestedType: target.type as 'rule',
     suggestedScope: 'project',
     suggestedAction: input.action || 'update',
@@ -583,6 +586,9 @@ describe('版本冲突后的显式重锚（T027）', () => {
 
     const update = await saveUpdateCandidate(uid, asset, {
       judgment: '发布前必须核对灰度名单与演练记录。',
+      // 该用例钉「重锚不刷新已确认投影」：summary 与种子标题一致 → 晋升
+      // update 不改 title → 不触发「改 title 必刷新投影」（设计 3.3）。
+      summary: '版本重检基线',
       sourceId: 'run-rebase-refs',
       targetVersionUsed: '1',
     });

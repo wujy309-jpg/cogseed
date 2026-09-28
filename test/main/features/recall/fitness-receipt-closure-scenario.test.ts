@@ -187,7 +187,7 @@ describe('2026-08-17 修复集场景（边界单路径 + 回执并集 + 语言�
     const c1 = await candidates.saveRecallCandidate(UID, {
       judgment: '资产一：跨回合注入的第一条经验。',
       value: '资产一：跨回合注入的第一条经验。',
-      summary: '资产一',
+      summary: '跨回合经验一',
       suggestedType: 'rule',
       suggestedScope: 'general',
       suggestedAction: 'create',
@@ -199,7 +199,7 @@ describe('2026-08-17 修复集场景（边界单路径 + 回执并集 + 语言�
     const c2 = await candidates.saveRecallCandidate(UID, {
       judgment: '资产二：另一个回合注入的第二条经验。',
       value: '资产二：另一个回合注入的第二条经验。',
-      summary: '资产二',
+      summary: '跨回合经验二',
       suggestedType: 'rule',
       suggestedScope: 'general',
       suggestedAction: 'create',
@@ -314,7 +314,7 @@ describe('2026-08-17 修复集场景（边界单路径 + 回执并集 + 语言�
     const c1 = await candidates.saveRecallCandidate(UID, {
       judgment: '通用经验：写资料类任务应先收集数据再成文。',
       value: '通用经验：写资料类任务应先收集数据再成文。',
-      summary: '通用经验',
+      summary: '资料先行经验',
       suggestedType: 'rule',
       suggestedScope: 'general',
       suggestedAction: 'create',

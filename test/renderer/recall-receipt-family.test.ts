@@ -1,14 +1,10 @@
-// 对话里两张「本轮带入了什么」的卡必须是一家人（2026-09-25 收口）。
-//   A 回执卡：你引用了 N 条认知资产 —— modules/recall-projection-card.js
-//   B 记忆卡：提供给本次回答的记忆   —— modules/conversation.js 的 citations
-// 真机上两卡并排出现时被认成「两种引用卡片样式」：B 自带一套硬编码品牌绿
-// （4 处 rgba(14,159,110,·) + 2 处 #0b7a4f）和 99px 药丸按钮，A 走的是
-// --border/--surface/--radius-field + 共享 uiButton。这里钉住统一后的契约：
-// 同壳同 token、同一条「图标 + 标题 + 右侧状态」头部语言、动作行只用共享按钮，
-// 页面里不再留第二套变体。
-// 2026-09-28 二次收口：从「像一家人」收紧为「样式完全一致的一个」——壳与
-// 头部结构类在 style.css 里只准有一份分组选择器（两卡选择器同块），单卡壳
-// 覆写（620px 宽度上限）删除；两卡头部 DOM 同构（图标位 / 标题块 / 右侧状态）。
+// 对话里「本轮带入了什么」的卡只有一张（2026-09-28 拍板项 #8 合并后）。
+//   「本次使用的记忆」（.chat-recall-citations）—— modules/recall-projection-card.js
+// 引用卡（事后回执）与投影卡（事前面板）合并为一张：头部投影状态摘要、列表
+// 资产行（带入+已引用标记；省略灰显）、尾部反馈+投影操作。本文件钉住合并后
+// 的契约：壳与头部仍是一份分组规则（历史壳类 .chat-recall-projection-card
+// 保留给生产不可达的预载草稿分支）、动作行只用共享按钮、头部图标/标题/右侧
+// 状态同构、图标原语缺席时优雅降级。
 import { describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -23,7 +19,7 @@ const PROJECTION = '.chat-recall-projection-card';
 const CITATIONS = '.chat-recall-citations';
 
 /** 取某个顶层选择器的声明块；缺块直接红（样式被合并事故吃掉过一次）。
- *  2026-09-28 起家族共享规则写成分组选择器（A 卡, B 卡 { }），块可能以
+ *  家族共享规则写成分组选择器（A 卡, B 卡 { }），块可能以
  *  「selector,」开头，两种形态都要找得到。 */
 function cssBlock(selector: string): string {
   const own = styleSource.indexOf(`\n${selector} {`);
@@ -77,8 +73,8 @@ function loadCardModule(withIconPrimitive: boolean) {
   return { context, host };
 }
 
-describe('对话内引用卡片家族（回执卡 + 记忆卡）', () => {
-  it('两卡壳完全一致：一份分组共享块，禁止单卡壳覆写', () => {
+describe('对话内「本次使用的记忆」卡（引用卡＋投影卡合并后）', () => {
+  it('壳仍是一份分组共享块，禁止单卡壳覆写', () => {
     const sharedShell = [
       'margin: 6px 0;',
       'padding: 9px 11px;',
@@ -92,35 +88,29 @@ describe('对话内引用卡片家族（回执卡 + 记忆卡）', () => {
     ];
     const block = stripComments(cssBlock(PROJECTION));
     for (const rule of sharedShell) expect(block, `共享壳缺「${rule}」`).toContain(rule);
-    // 分组块必须同时点名两张卡：单一事实源，不是两份各写（防合并事故再次分叉）
+    // 分组块必须同时点名两个壳类：合并卡的壳是 .chat-recall-citations，历史
+    // 壳类 .chat-recall-projection-card 保留给生产不可达的预载草稿分支。
     expect(block).toContain(`\n${CITATIONS} {`);
-    // 单卡几何覆写已删：is-model-selected 的 620px 曾让回执卡比同气泡的记忆卡
-    // 窄一圈，又被认成两种样式（全文件其他 620px 与本家族无关，不做全局禁令）
     expect(styleSource).not.toMatch(/^\.chat-recall-projection-card\.is-model-selected \{/m);
-    // 记忆卡侧不得再留自己的壳块：`.chat-recall-citations {` 全文件只允许
-    // 出现一次（共享分组块的第二行）
+    // 合并卡的壳只能来自共享分组块：全文件只允许出现一次
     const shellBlocks = stripComments(styleSource).split(`\n${CITATIONS} {`).length - 1;
-    expect(shellBlocks, '记忆卡壳只能来自共享分组块').toBe(1);
+    expect(shellBlocks, '合并卡壳只能来自共享分组块').toBe(1);
   });
 
-  it('记忆卡不再自带硬编码品牌绿，页内药丸变体已删除', () => {
+  it('合并卡不再自带硬编码品牌绿，页内药丸变体已删除', () => {
     const block = stripComments(cssBlock(CITATIONS));
     expect(block).not.toContain('rgba(14, 159, 110');
     expect(block).not.toContain('#0b7a4f');
     expect(block).not.toContain('border-radius: 99px');
-    // 字号也收进 token（原先散着 12px / 11px 字面量）
     expect(block).not.toMatch(/font-size:\s*\d+px/);
-    // 反馈按钮不再被页内重绘成第二个变体：只留业务态（已反馈）这一条
     expect(styleSource).not.toMatch(/^\.chat-recall-feedback-btn \{$/m);
     expect(styleSource).toMatch(/^\.chat-recall-citations\.is-feedback-sent \.chat-recall-feedback-btn \{/m);
   });
 
-  it('头部同一份分组规则：head/icon/title/strong/status 两卡同块，图标同尺寸同色', () => {
-    // 记忆卡头部图标（既有）与回执卡头部图标（2026-09-25 补上）
-    expect(conversationSource).toContain("_uiIconHtml('brain-circuit', 'ui-icon')");
-    expect(cardSource).toContain("_headIcon('book-open')");
+  it('头部仍是同一份分组规则：head/icon/title/strong/small/status 同块', () => {
+    // 合并卡的头部图标与实现都住在 recall-projection-card.js
+    expect(cardSource).toContain("_headIconHtml('brain-circuit', 'chat-recall-citations-icon')");
     expect(cardSource).toContain('window.uiIconHtml');
-    // 结构类两两同块：分组块里必须能同时找到两卡的选择器
     for (const [projectionSel, citationsSel] of [
       ['.chat-recall-projection-head', '.chat-recall-citations-head'],
       ['.chat-recall-projection-icon', '.chat-recall-citations-icon'],
@@ -129,18 +119,20 @@ describe('对话内引用卡片家族（回执卡 + 记忆卡）', () => {
       const block = cssBlock(projectionSel);
       expect(block, `${projectionSel} 与 ${citationsSel} 必须同块`).toContain(`\n${citationsSel} {`);
     }
-    // 标题排版同一份：caption + semibold + 1.35
+    // 标题排版同一份：caption + semibold + 1.35；投影摘要行（small）也进分组
     const strong = cssBlock('.chat-recall-projection-title strong');
     expect(strong).toContain('.chat-recall-citations-title strong {');
     expect(strong).toContain('font-size: var(--font-size-caption);');
     expect(strong).toContain('font-weight: var(--font-weight-semibold);');
     expect(strong).toContain('line-height: 1.35;');
-    // 头部图标一律 14px + --primary（色在图标位上，两卡同源）
+    const small = cssBlock('.chat-recall-projection-title small');
+    expect(small).toContain('.chat-recall-citations-title small {');
+    // 头部图标一律 14px + --primary
     const icon = cssBlock('.chat-recall-projection-icon');
     expect(icon).toContain('.chat-recall-citations-icon {');
     expect(icon).toContain('color: var(--primary);');
     expect(cssBlock('.chat-recall-projection-icon .ui-icon')).toContain('width: 14px; height: 14px;');
-    // 右侧状态与徽标同一份让位规则：flex 不抢标题伸缩位 + 顶部对齐 1px
+    // 右侧状态与徽标同一份让位规则
     const badge = cssBlock('.chat-recall-projection-badge');
     expect(badge).toContain('flex: 0 0 auto;');
     expect(badge).toContain('margin-top: 1px;');
@@ -149,7 +141,6 @@ describe('对话内引用卡片家族（回执卡 + 记忆卡）', () => {
     expect(status).toContain('margin-top: 1px;');
     expect(status).toContain('color: var(--muted);');
     expect(status).toContain('font-size: var(--font-size-1);');
-    // 头部节奏一致（flex-start + 8px 间距 + 统一 8px 头部下间距）
     const head = stripComments(cssBlock('.chat-recall-projection-head'));
     expect(head).toContain('display: flex;');
     expect(head).toContain('align-items: flex-start;');
@@ -157,32 +148,33 @@ describe('对话内引用卡片家族（回执卡 + 记忆卡）', () => {
     expect(head).toContain('margin-bottom: 8px;');
   });
 
-  it('记忆卡头部 DOM 与回执卡同构：图标位 / 标题块分立，图标在标题之前', () => {
-    expect(conversationSource).toContain('class="chat-recall-citations-icon"');
-    expect(conversationSource).toContain('class="chat-recall-citations-title"');
-    // 与回执卡同一条头部顺序：图标位在标题块之前
-    expect(conversationSource.indexOf('chat-recall-citations-icon'))
-      .toBeLessThan(conversationSource.indexOf('chat-recall-citations-title'));
-    // 旧头部（图标+标题挤在同一个 span 的 `> span:first-child` 规则）不许回来
+  it('头部 DOM 同构：图标位在标题块之前（实现随合并收进卡模块）', () => {
+    expect(cardSource).toContain('chat-recall-citations-icon');
+    expect(cardSource).toContain('chat-recall-citations-title');
+    expect(cardSource.indexOf('chat-recall-citations-icon'))
+      .toBeLessThan(cardSource.indexOf('chat-recall-citations-title'));
+    // conversation.js 只留同步入口委托，不再自带渲染实现
+    expect(conversationSource).toContain('window.recallMemoryCardHtml(citations)');
+    expect(conversationSource).not.toContain('chat-recall-citations-icon');
     expect(styleSource).not.toContain('.chat-recall-citations-head > span:first-child');
   });
 
-  it('回执卡头部真的渲染图标；图标原语缺席时优雅降级', async () => {
+  it('合并卡头部真的渲染图标；图标原语缺席时优雅降级', async () => {
     const withIcons = loadCardModule(true);
     await withIcons.context.window.mountRecallProjectionCard(withIcons.host, { projectionId: 'proj-a' }, { cid: 'cid-a', onlyModelSelected: true });
-    expect(withIcons.host.innerHTML).toContain('class="chat-recall-projection-icon"');
-    expect(withIcons.host.innerHTML).toContain('is-book-open');
+    expect(withIcons.host.innerHTML).toContain('class="chat-recall-citations-icon"');
+    expect(withIcons.host.innerHTML).toContain('is-brain-circuit');
     expect(withIcons.host.innerHTML).toContain('data-asset-citation="asset-a"');
     expect(withIcons.host.innerHTML).toContain('class="ui-button__label">被引用的资产</span>');
-    // 头部顺序：图标在标题之前（与记忆卡同构）
-    expect(withIcons.host.innerHTML.indexOf('chat-recall-projection-icon'))
-      .toBeLessThan(withIcons.host.innerHTML.indexOf('chat-recall-projection-title'));
+    // 头部顺序：图标在标题之前
+    expect(withIcons.host.innerHTML.indexOf('chat-recall-citations-icon'))
+      .toBeLessThan(withIcons.host.innerHTML.indexOf('chat-recall-citations-title'));
 
     const withoutIcons = loadCardModule(false);
     await withoutIcons.context.window.mountRecallProjectionCard(withoutIcons.host, { projectionId: 'proj-a' }, { cid: 'cid-a', onlyModelSelected: true });
-    expect(withoutIcons.host.innerHTML).not.toContain('chat-recall-projection-icon');
-    // 降级不能顺手把卡也弄丢：标题与撤销口照旧
-    expect(withoutIcons.host.innerHTML).toContain('被引用的资产');
+    expect(withoutIcons.host.innerHTML).not.toContain('chat-recall-citations-icon');
+    // 降级不能顺手把卡也弄丢：标题、行与撤销口照旧
+    expect(withoutIcons.host.innerHTML).toContain('本次使用的记忆');
     expect(withoutIcons.host.innerHTML).toContain('data-asset-citation="asset-a"');
     expect(withoutIcons.host.innerHTML).toContain('data-recall-projection-revoke');
   });

@@ -4,11 +4,12 @@ import * as path from 'node:path';
 import * as vm from 'node:vm';
 
 const source = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/conversation.js'), 'utf8');
+const cardModuleSource = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/recall-projection-card.js'), 'utf8');
+const uiButtonSource = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/ui-button.js'), 'utf8');
 
 function renderCitations(citations: unknown[]): string {
-  const start = source.indexOf('function _renderRecallCitationsHtml(');
-  const end = source.indexOf('\nfunction _hydrateRecallCitations', start);
-  if (start < 0 || end < 0) throw new Error('Recall citation renderer not found');
+  // 合并卡（拍板项 #8）：引用行的渲染实现已随两卡合并迁入
+  // recall-projection-card.js（conversation.js 只留同步入口委托）。
   const escape = (value: unknown) => String(value ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -16,18 +17,20 @@ function renderCitations(citations: unknown[]): string {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
   const context: any = {
-    escapeHtml: escape,
-    _uiIconHtml: () => '<svg aria-hidden="true"></svg>',
-    _recallCitationTypeLabel: (value: unknown) => String(value || ''),
-    _recallCitationScopeLabel: (value: unknown) => String(value || ''),
     t: (key: string) => key,
-    uiButton: ({ label, attrs, className }: { label: string; attrs?: Record<string, string>; className?: string }) => {
-      const renderedAttrs = Object.entries(attrs || {}).map(([key, value]) => ` ${key}="${escape(value)}"`).join('');
-      return `<button type="button" class="ui-button ${escape(className || '')}"${renderedAttrs}>${escape(label)}</button>`;
+    escapeHtml: escape,
+    window: {
+      uiButton: ({ label, attrs, className }: { label: string; attrs?: Record<string, string>; className?: string }) => {
+        const renderedAttrs = Object.entries(attrs || {}).map(([key, value]) => ` ${key}="${escape(value)}"`).join('');
+        return `<button type="button" class="ui-button ${escape(className || '')}"${renderedAttrs}>${escape(label)}</button>`;
+      },
     },
+    document: {},
   };
-  vm.runInNewContext(`${source.slice(start, end)}\nthis.render = _renderRecallCitationsHtml;`, context);
-  return context.render(citations);
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(cardModuleSource, context, { filename: 'recall-projection-card.js' });
+  return context.window.recallMemoryCardHtml(citations);
 }
 
 type AssetCitationClickRun = {
@@ -86,23 +89,28 @@ function activateAssetCitation(assetId: string, options: { lazyOpener?: boolean 
 
 describe('conversation Recall citations', () => {
   it('keeps recall_citations in the persisted message record and renders the feedback footer', () => {
-    // 本地产品决定（保留版）：recall_citations 在消息透传 + 渲染「提供给本次回答的记忆」
-    // footer（有帮助/需改进反馈走 recall.usage.feedback）。远端曾按「后端可见即可」移除
-    // footer，合并时保留本地版（用户实际在使用该反馈 UI）。
+    // 本地产品决定（保留版）：recall_citations 在消息透传 + 渲染「本次使用的
+    // 记忆」（2026-09-28 拍板项 #8 起与投影卡合并为一张卡，标题统一）
+    // footer（有帮助/需改进反馈走 recall.usage.feedback）。远端曾按「后端可见
+    // 即可」移除 footer，合并时保留本地版（用户实际在使用该反馈 UI）。
     expect(source).toContain('recall_citations');
     expect(source).toContain('_renderRecallCitationsHtml');
     expect(source).toContain('_hydrateRecallCitations');
     expect(source).toContain('chat-recall-citations');
     expect(source).toContain('data-recall-feedback');
     expect(source).toContain('recall.usage.feedback');
+    // 渲染实现收在 recall-projection-card.js，conversation.js 只留委托入口。
+    expect(source).toContain('window.recallMemoryCardHtml(citations)');
   });
 
   it('lets users open a cited asset from the answer memory card', () => {
     const html = renderCitations([{ asset_id: 'asset-1', title: '项目复盘规则', type: 'rule', scope: 'project' }]);
 
     expect(html).toContain('data-asset-citation="asset-1"');
-    expect(html).toContain('class="ui-button chat-recall-citation-open"');
+    expect(html).toContain('chat-recall-citation-open');
     expect(html).toContain('>项目复盘规则</button>');
+    // 合并卡：被实际引用的行带「已引用」标记（带入未引用行没有）。
+    expect(html).toContain('已引用');
     expect(source).toContain("closest('[data-asset-citation]')");
     expect(source).toContain('window.openCognitionAssetById(assetId)');
   });

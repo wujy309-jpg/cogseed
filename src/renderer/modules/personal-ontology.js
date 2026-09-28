@@ -1079,6 +1079,8 @@
   // ── 本体分组子页数据加载 ─────────────────────────────────────────────
 
   /** asof 超龄（与主进程 isStaleAsOf 同口径：月差 > 12 标「可能过时」）。 */
+  // 超龄判定（M5 暂留）：「截至/可能过时」chip 与超龄琥珀点已隐藏（审计
+  // G5/D2），本函数当前无消费点；M5 时间锚控件落地时随展示一并恢复。
   function _pocIsStaleAsOf(asOf) {
     if (typeof asOf !== 'string') return false;
     const match = asOf.match(/^((?:19|20)\d{2})-(0[1-9]|1[0-2])$/);
@@ -1196,11 +1198,13 @@
       && c.field === field && (c.value_a === value || c.value_b === value));
   }
 
-  /** 状态点色调（US-105 T041 收敛到共享 uiStatusDot 的 tone）：冲突红 > 受限/超龄琥珀 > 核实绿。 */
+  /** 状态点色调（US-105 T041 收敛到共享 uiStatusDot 的 tone）：冲突红 > 受限琥珀 > 核实绿。
+   *  asOf 超龄琥珀已随「截至/可能过时」chip 一并隐藏（2026-09-28 审计 G5/D2
+   *  处置＝隐藏：解释文案撤下后留一颗说不清来由的琥珀点只会更糊涂；等 M5
+   *  时间锚控件落地时一并回来）。 */
   function _pocStatusDotTone(fv, conflicted) {
     if (conflicted) return 'critical';
     if (fv.sensitivity === 'restricted') return 'attention';
-    if (fv.asOf && _pocIsStaleAsOf(fv.asOf)) return 'attention';
     if (fv.verified) return 'success';
     return '';
   }
@@ -1226,10 +1230,11 @@
     const expanded = _pocExpandedValues.has(key);
     // M5 预留位（specs/014 时间锚）：asOf 时间控件将挂在本详情操作区「编辑这条值」
     // 旁——009 本期只登记挂载位不实现（contracts/renderer-seams.md R1b），不得占用。
+    // 2026-09-28 审计 G5/D2 处置＝隐藏：「截至 {m}/可能过时」chip 与超龄琥珀点
+    // 先行撤下（能显示不能管理的半成品），asOf 数据与编辑表单里的录入栏保留，
+    // M5 控件落地时一并恢复展示。
     const detail = expanded ? `<div class="personal-onto-value-detail">
         <div class="personal-onto-value-detail-chips">
-          ${fv.asOf ? _tag(_tv('personalOntology.asof_chip', { m: fv.asOf }, '截至 {m}')) : ''}
-          ${fv.asOf && _pocIsStaleAsOf(fv.asOf) ? _statusPill(_t('personalOntology.stale_chip', '可能过时'), 'attention') : ''}
           ${fv.verified === 'independent' ? _tag(_t('personalOntology.verified_independent_chip', '独立核实过'), 'success') : fv.verified === true ? _tag(_t('personalOntology.verified_chip', '有来源支持'), 'success') : ''}
           ${fv.ruleKind === 'operation' ? _tag(_t('personalOntology.rulekind_operation', '操作规则')) : fv.ruleKind === 'preference' ? _tag(_t('personalOntology.rulekind_preference', '偏好')) : fv.ruleKind === 'constraint' ? _tag(_t('personalOntology.rulekind_constraint', '约束')) : ''}
           ${fv.sensitivity === 'restricted' ? _statusPill(_t('personalOntology.restricted_chip', '受限·不自动注入'), 'attention') : ''}

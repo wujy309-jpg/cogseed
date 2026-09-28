@@ -66,6 +66,8 @@ async function seedVersionOne() {
   const { candidates } = await modules();
   const candidate = await candidates.saveRecallCandidate(UID, {
     judgment: V1_STATEMENT,
+    // 标题闸门（设计 3.2）：无 summary 兜底＝正文首句，过不了闸门。
+    summary: '语义基线样本',
     suggestedType: 'rule',
     suggestedScope: 'project',
     sourceRefs: [{ kind: 'execution', id: 'exec-version-semantics' }],
@@ -78,6 +80,9 @@ async function proposeUpdate(assetId: string, input: { judgment: string; sourceI
   const { candidates } = await modules();
   return candidates.saveRecallCandidate(UID, {
     judgment: input.judgment,
+    // 与种子标题同值：确认 update 不改 title，也就不触发「改 title 必刷新
+    // 已确认投影」（设计 3.3）——本组用例钉的是「历史引用不被顺手刷新」。
+    summary: '语义基线样本',
     suggestedType: 'rule',
     suggestedScope: 'project',
     suggestedAction: input.action || 'update',

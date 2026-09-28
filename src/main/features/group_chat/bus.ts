@@ -2696,7 +2696,6 @@ export interface EnqueueParams {
    * `agent_id` is the producing actor — the renderer routes a user→artifact
    * interaction result back to it. */
   artifacts?: Array<{ id: string; title: string; agent_id: string }>;
-  teaching_receipts?: GroupMessage["teaching_receipts"];
   cognition_save_receipts?: GroupMessage["cognition_save_receipts"];
   marketplace_requests?: MarketplaceInstallRequest[];
   plan_announcement?: boolean;
@@ -3567,9 +3566,6 @@ async function _enqueueBody(
       : {}),
     ...(params.artifacts && params.artifacts.length
       ? { artifacts: params.artifacts }
-      : {}),
-    ...(params.teaching_receipts && params.teaching_receipts.length
-      ? { teaching_receipts: params.teaching_receipts }
       : {}),
     ...(params.cognition_save_receipts && params.cognition_save_receipts.length
       ? { cognition_save_receipts: params.cognition_save_receipts }
@@ -6128,7 +6124,9 @@ async function runActorTurnBody(
   // one as a sandboxed `<iframe>` (`chat-app://`); `agent_id` = this actor,
   // the routing target for a user→artifact interaction result.
   const turnArtifacts: Array<{ id: string; title: string }> = [];
-  const turnTeachingReceipts: NonNullable<GroupMessage["teaching_receipts"]> = [];
+  // Teaching receipts were merged into cognition save receipts (2026-09-28
+  // 四病整改 7.0 修7): the runner emits candidate+taught-pending-review through
+  // onCognitionSaveReceipt, so this turn keeps no separate teaching collector.
   const turnCognitionSaveReceipts: NonNullable<GroupMessage["cognition_save_receipts"]> = [];
   const onArtifactCreated = (a: { id: string; title: string }) => {
     turnArtifacts.push(a);
@@ -6800,16 +6798,6 @@ async function runActorTurnBody(
         sourceMessageId: item.msgId,
         sourceMessageFromUser: item.fromActorId === USER_ID,
         ...(item.sourceMessageText ? { sourceMessageText: item.sourceMessageText } : {}),
-        onTeachingReceipt: (receipt) => {
-          if (turnTeachingReceipts.some((item) => item.id === receipt.id)) return;
-          turnTeachingReceipts.push({
-            id: receipt.id,
-            summary: receipt.summary,
-            scope: receipt.scope,
-            status: receipt.status,
-            candidate_ids: receipt.candidateIds,
-          });
-        },
         onCognitionSaveReceipt: (receipt: CognitionSaveReceipt) => {
           const existingIndex = turnCognitionSaveReceipts.findIndex((item) => item.target === receipt.target && item.id === receipt.id && item.outcome === receipt.outcome);
           if (existingIndex >= 0) {
@@ -7670,7 +7658,7 @@ async function runActorTurnBody(
   if (turnArtifacts.length > 0 && outcome.kind === "silent") {
     outcome = { kind: "persist", text: "" };
   }
-  if (turnTeachingReceipts.length > 0 && outcome.kind === "silent") {
+  if (turnCognitionSaveReceipts.length > 0 && outcome.kind === "silent") {
     outcome = { kind: "persist", text: "" };
   }
 
@@ -7688,7 +7676,7 @@ async function runActorTurnBody(
       (outcome.createdAgents && outcome.createdAgents.length) ||
       (outcome.createdSkills && outcome.createdSkills.length) ||
       turnArtifacts.length ||
-      turnTeachingReceipts.length ||
+      turnCognitionSaveReceipts.length ||
       turnMarketplaceRequests.length
     );
     outcome =
@@ -7872,9 +7860,6 @@ async function runActorTurnBody(
               agent_id: actor.id,
             })),
           }
-        : {}),
-      ...(turnTeachingReceipts.length
-        ? { teaching_receipts: turnTeachingReceipts }
         : {}),
       ...(turnCognitionSaveReceipts.length
         ? { cognition_save_receipts: turnCognitionSaveReceipts }

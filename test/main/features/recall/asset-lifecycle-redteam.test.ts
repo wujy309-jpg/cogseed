@@ -50,6 +50,8 @@ async function seedAsset(userId: string, statement = '先给结论再给解释�
   const { candidates, assets } = await modules();
   const candidate = await candidates.saveRecallCandidate(userId, {
     judgment: statement,
+    // 标题闸门（设计 3.2）：无 summary 兜底＝正文首句，过不了闸门。
+    summary: '红队基线样本',
     suggestedType: 'personal',
     suggestedScope: 'general',
     suggestedAction: 'create',
@@ -189,7 +191,9 @@ describe('红队：版本号与参数注入', () => {
 
   it('title 含换行/控制字符被折叠；emoji 与中日韩 roundtrip 不损（全角空格按空白折叠）', async () => {
     const { assets, asset } = await seedAsset('rt-emoji', 'emoji 与中文混排。');
-    const title = '标题👨‍👩‍👧‍👦含emoji';
+    // 标题闸门（设计 3.2）后含汉字标题 ≤16 字（UTF-16 计长，家庭组 emoji 占
+    // 11 码元超限被拒）——换单 emoji 与中日韩混排，仍覆盖 roundtrip 主题。
+    const title = '题👨含emoji';
     const updated = await assets.updateAbilityAsset('rt-emoji', asset.id, { title, reason: 'r', actor: 'user' });
     expect(updated.title).toBe(title);
     // \s+ 折叠：换行/制表/连续空格/全角空格统一为单半角空格（bounded 的设计行为）

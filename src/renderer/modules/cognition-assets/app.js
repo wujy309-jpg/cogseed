@@ -18,9 +18,9 @@
   /** 写操作集合：点击后按钮进入 pending（禁用+变淡），完成或重画后还原。 */
   const WRITE_ACTIONS = new Set([
     'refresh', 'cand-adopt-with-form', 'cand-decide',
-    'asset-action', 'asset-recommend-ack', 'select-asset-version', 'rollback-asset', 'delete-asset-version',
+    'asset-action', 'asset-recommend-ack', 'select-asset-version', 'delete-asset-version',
     'run-cleanup', 'rollback-cleanup-item', 'cleanup-uncertain-dismiss', 'cleanup-uncertain-defer',
-    'inspection-toggle', 'run-inspection', 'purge-deleted-asset', 'inbox-resolve', 'asset-edit-save', 'family-rename', 'family-rename-save', 'family-rename-cancel', 'edit-from-version', 'merge-asset-version', 'merge-asset', 'source-action', 'capture-action', 'organize-conv',
+    'inspection-toggle', 'run-inspection', 'purge-deleted-asset', 'inbox-resolve', 'asset-edit-save', 'edit-from-version', 'merge-asset-version', 'merge-asset', 'source-action', 'capture-action', 'organize-conv',
     // 治理待办就地处断（specs/010 T010）：冲突选边、巡检选边/合并。全部经
     // cognition.inbox.resolve（core.actions 转发，不在渲染层写）。扩权/定级
     // 两类动作已随敏感级机制整体删除（2026-09-28）；「补条件」就地表单已随
@@ -37,9 +37,9 @@
     'legacy-memory-run', 'legacy-scoped-memory-run',
     // 标签系统（specs/012 US-201）：单打标/移除/批量执行/管理三动作都是写通道。
     'tag-add', 'tag-remove', 'tag-batch-run', 'tag-rename-save', 'tag-merge-confirm', 'tag-delete',
-    // 推荐排序权重（specs/012 US-202 AC6）：保存走唯一写通道（恢复默认只在
-    // 本地回填输入框，不落盘，不进 pending 集）。
-    'ranking-weights-save',
+    // 「记一条」保存（设计 7.2）：走 recall.candidates.save 产生候选。
+    'cand-create-save',
+    // ranking-weights-save 已随权重卡彻底移除删除（G1 拍板项 #3，2026-09-28）。
   ]);
 
   /* ────────────────────────── 事件委托 ────────────────────────── */
@@ -219,6 +219,11 @@
             break;
           }
           case 'open-candidate': router.go({ name: 'review', candidateId: id }); break;
+          // 「记一条」（设计 7.2）：手动新建候选——列表页头/空态入口，表单卡
+          // 就地展开（candCreate 路由参数），保存走 recall.candidates.save。
+          case 'cand-create': router.go({ name: 'overview', candCreate: '1' }); break;
+          case 'cand-create-cancel': router.go({ name: 'overview', candCreate: '' }, { replace: true }); break;
+          case 'cand-create-save': await A.saveManualCandidate(readCandidateForm(el) || undefined); break;
           case 'open-ontology': await NS.openPersonalOntology(); break;
           case 'open-asset': router.go({ name: 'overview', assetId: id }); break;
           case 'open-overview': router.go({ name: 'overview' }); break;
@@ -227,7 +232,6 @@
           case 'asset-action': await A.assetAction(id, el.dataset.action); break;
           case 'asset-recommend-ack': await A.acknowledgeAssetRecommendation(id); break;
           case 'select-asset-version': await A.selectAssetVersion(id, el.dataset.version || ''); break;
-          case 'rollback-asset': await A.rollbackAsset(id, el.dataset.version || ''); break;
           case 'run-cleanup': await A.runCleanup(); break;
           case 'inspection-toggle': await A.setInspectionEnabled(!(S.inspection && S.inspection.settings && S.inspection.settings.enabled)); break;
           case 'run-inspection': await A.runInspection(); break;
@@ -405,9 +409,6 @@
             NS.notify();
             break;
           }
-          case 'family-rename': await A.enterFamilyRename(id); break;
-          case 'family-rename-save': await A.renameFamily(id); break;
-          case 'family-rename-cancel': await A.exitFamilyRename(); break;
           case 'asset-edit-cancel': {
             const drafts = Object.assign({}, S.assetEditDrafts || {});
             delete drafts[id];
@@ -502,47 +503,9 @@
           case 'source-action': await A.sourceAction(el.dataset.kind || '', id, el.dataset.action); break;
           case 'capture-action': await A.captureAction(id, el.dataset.action); break;
           case 'organize-conv': await A.organizeConversation(id); break;
-          case 'ranking-weights-reset': {
-            // 恢复默认只回填输入框（DOM 就地），不落盘——落盘要点「保存」。
-            const card = el.closest('[data-ranking-weights]');
-            const defaults = (NS.rankingWeights && NS.rankingWeights.defaults) || {};
-            if (card) {
-              for (const input of Array.from(card.querySelectorAll('[data-w]'))) {
-                const key = String(input.dataset.w || '');
-                if (defaults[key] !== undefined) input.value = String(defaults[key]);
-              }
-              showWeightsError(card, '');
-            }
-            break;
-          }
-          case 'ranking-weights-save': {
-            // 客户端先挡形状（0~10、不全零），再走唯一写通道；失败就地报错
-            // 并保持输入值（不整卡重画），成功才 toast「下一轮生效」+ 重拉。
-            const card = el.closest('[data-ranking-weights]');
-            if (!card) break;
-            const keys = ['relevance', 'adoption', 'scene', 'maturity'];
-            const weights = {};
-            let invalid = false;
-            for (const key of keys) {
-              const input = card.querySelector(`[data-w="${key}"]`);
-              const value = Number(input ? input.value : Number.NaN);
-              if (!Number.isFinite(value) || value < 0 || value > 10) invalid = true;
-              weights[key] = value;
-            }
-            if (invalid || keys.every((key) => Number(weights[key]) === 0)) {
-              showWeightsError(card, T('cognition.ranking_weights_invalid_value', '权重需要是 0~10 的数字，且不能全为 0'));
-              break;
-            }
-            try {
-              await NS.api.call('recall.catalog.weights.set', { weights });
-              showWeightsError(card, '');
-              NS.toast(T('cognition.ranking_weights_saved_toast', '已保存，下一轮对话生效'), 'success');
-              await loadRankingWeights(true);
-            } catch (error) {
-              showWeightsError(card, String((error && error.message) || error));
-            }
-            break;
-          }
+          // ranking-weights-reset / ranking-weights-save 两 case 已随权重卡
+          // 彻底移除删除（G1 拍板项 #3，2026-09-28）；recall.catalog.weights.*
+          // 读写通道后端保留。
           case 'capture-review-toggle': {
             // 单选组按所点项设置；点已选中项不重复提交；同样乐观更新。
             const auto = String((S.captureSettings || {}).reviewPolicy || 'auto') === 'auto';
@@ -946,8 +909,9 @@
     // 小节的数据源（recall.catalog.ranking 只读；app 层装载，见文件底部的
     // 排序依据/权重装载器——core 不动）。
     if (assetId) void loadRankingWhy(assetId);
-    // 权重配置（US-202 AC6）：进沉淀设置页才拉一次（契约：既有设置位）。
-    if (String(S.route.name || '') === 'settings') void loadRankingWeights();
+    // 权重卡数据装载已随权重卡彻底移除删除（G1 拍板项 #3，2026-09-28）；
+    // recall.catalog.weights.get 通道后端保留，详情「排序依据」解释仍读
+    // recall.catalog.ranking（loadRankingWhy，保留）。
     // 会话标题同理（2026-09-25 US-603）：证据来源与使用记录里的 cid 要翻成
     // 会话名，五处展示同名；来源目录 100 条窗口外的会话靠这个批量口补齐。
     if (assetId) void NS.loadConversationTitles(assetId);
@@ -996,10 +960,11 @@
   }
   NS.onChange(() => { requestAnimationFrame(syncRefreshIndicator); });
 
-  /* ────────────────── 排序依据 / 权重装载器（specs/012 T020） ──────────────────
-   * 状态挂在模块闭包 + NS 命名空间（NS.rankingWhy / NS.rankingWeights）：
-   * core.js 的 store 不动（本轮白名单只开 views/app），视图按 NS 读——与
-   * NS.api / NS.reportBlocked 的既有跨层发布同一模式。 */
+  /* ────────────────── 排序依据装载器（specs/012 T020） ──────────────────
+   * 状态挂在模块闭包 + NS 命名空间（NS.rankingWhy）：core.js 的 store 不动
+   * （本轮白名单只开 views/app），视图按 NS 读——与 NS.api / NS.reportBlocked
+   * 的既有跨层发布同一模式。权重配置装载器（NS.rankingWeights）已随权重卡
+   * 彻底移除删除（G1 拍板项 #3，2026-09-28）。 */
 
   /** 该资产最近一次真实使用的回合 id：使用记录时间线（refs.taskRunId）优先，
    *  采用回执兜底；都没有 = ''（视图按「这一轮没有进入目录」如实呈现）。 */
@@ -1041,39 +1006,6 @@
     if (rankingWhyLast.assetId !== id) return;
     NS.rankingWhy = next;
     NS.render();
-  }
-
-  let rankingWeightsLoaded = false;
-  /** 沉淀设置页的权重卡数据（recall.catalog.weights.get，只读）。失败如实
-   *  呈现（卡片禁编辑），不摆假数字。 */
-  async function loadRankingWeights(force) {
-    if (!force && rankingWeightsLoaded) return;
-    rankingWeightsLoaded = true;
-    NS.rankingWeights = { loading: true };
-    NS.render();
-    let next;
-    try {
-      const result = await NS.api.call('recall.catalog.weights.get');
-      next = {
-        weights: (result && result.weights) || {},
-        defaults: (result && result.defaults) || {},
-        source: String((result && result.source) || 'default'),
-      };
-    } catch (error) {
-      rankingWeightsLoaded = false; // 读失败允许下次进页重试。
-      next = { failed: true, error: String((error && error.message) || error) };
-    }
-    NS.rankingWeights = next;
-    NS.render();
-  }
-
-  /** 权重卡的就地报错：只写错误行，不整卡重画（重画会吃掉刚输入的数值）。 */
-  function showWeightsError(card, message) {
-    const errEl = card && card.querySelector('[data-ranking-weights-error]');
-    if (!errEl) return;
-    errEl.textContent = message || '';
-    if (message) errEl.removeAttribute('hidden');
-    else errEl.setAttribute('hidden', 'hidden');
   }
 
   if (document.readyState === 'loading') {

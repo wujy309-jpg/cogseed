@@ -4,6 +4,13 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { seedConfirmedCognition, seedPendingCognition } from '../../helpers/cognition-store-fixture';
 
+// 标题闸门（设计 3.2）后晋升链对不合规 summary 走 LLM 起标题；本文件走的是
+// 内生写入路径（summary＝正文首句/模板拼接），单测无模型，mock 出确定性
+// 合规标题（与 asset-title-suggestion.test.ts 同一边界口径）。
+vi.mock('../../../src/main/features/recall/asset-title-suggestion', () => ({
+  suggestAbilityAssetTitle: async () => ({ title: '模型重起的样本标题' }),
+}))
+
 // runner.ts dynamically imports core-agent when building a real runner, but
 // the auth gate fires BEFORE that import — so these tests can exercise the
 // missing-credential path without core-agent being resolvable/installed.
@@ -292,7 +299,6 @@ describe('runner › buildRunner auth gate', () => {
     const users = await import('../../../src/main/features/users');
     users.activateUser('runner-teaching');
     const receipts: any[] = [];
-    const teachingReceipts: any[] = [];
     const { buildRunner } = await loadRunner();
     const built = await buildRunner({
       sessionId: 'gconv-teaching-success',
@@ -304,7 +310,6 @@ describe('runner › buildRunner auth gate', () => {
       userMessage: '请记住：以后所有结论都附来源。',
       skillList: [],
       onCognitionSaveReceipt: (receipt) => { receipts.push(receipt); },
-      onTeachingReceipt: (receipt) => { teachingReceipts.push(receipt); },
     });
     const memoryTool = (built.runner as any).tools.get('cross_session_memory');
     expect(memoryTool).toBeTruthy();
@@ -325,7 +330,8 @@ describe('runner › buildRunner auth gate', () => {
     const teaching = await import('../../../src/main/features/recall/teaching-service');
     const candidates = await import('../../../src/main/features/recall/candidate-service');
     await expect(teaching.listUserTeachingSignals('runner-teaching')).resolves.toEqual([]);
-    expect(teachingReceipts).toEqual([]);
+    // 教学回执并入保存回执（2026-09-28 四病整改 7.0 修7）：直接保存成功的
+    // 走 created 资产回执，不再有独立教学回执回调。
     await expect(candidates.listRecallCandidates('runner-teaching')).resolves.toEqual([
       expect.objectContaining({ status: 'confirmed', captureKey: expect.stringMatching(/^immediate-/) }),
     ]);
@@ -351,7 +357,7 @@ describe('runner › buildRunner auth gate', () => {
       sourceMessageFromUser: true,
       userMessage: '请记住这段内容。',
       skillList: [],
-      onTeachingReceipt: (receipt) => { receipts.push(receipt); },
+      onCognitionSaveReceipt: (receipt) => { receipts.push(receipt); },
     });
     const memoryTool = (built.runner as any).tools.get('cross_session_memory');
     const result = await memoryTool.execute({

@@ -1731,7 +1731,6 @@ const ConversationInfo = (() => {
     }
     var actions = '<div class="run-context-cog-actions">' +
       _button({ label: _label('conversation_info.run_context.assets_review', '查看、确认或修改'), role: 'primary', size: 'sm', attrs: { 'data-candidate-review': c.id } }) +
-      _button({ label: _label('conversation_info.run_context.assets_ignore', '忽略'), size: 'sm', attrs: { 'data-candidate-ignore': c.id } }) +
     '</div>';
     return head + body + actions + '</div>';
   }
@@ -1888,7 +1887,8 @@ const ConversationInfo = (() => {
         '<span data-ui-icon="git-branch" data-ui-icon-class="ui-icon chat-cognition-strip-icon"></span>' +
         '<span class="chat-cognition-strip-label">' + escapeHtml(summary) + '</span>' +
         _button({
-          label: _label('conversation_info.cognition_strip_goto', '查看本会话认知'),
+          // 文案随去向改（审计 R4 拍板项 #6）：点击跳「待我处理」，不再开抽屉。
+          label: _label('conversation_info.cognition_strip_goto', '去待我处理'),
           role: 'ghost',
           size: 'sm',
           className: 'chat-cognition-strip-goto',
@@ -2427,7 +2427,10 @@ const ConversationInfo = (() => {
       close.dataset.bound = '1';
       close.addEventListener('click', () => _setOpen(false));
     }
-    // 会话头部认知衔接行（specs/019）：「去看」→ 抽屉「认知资产」tab（本会话视角）。
+    // 会话头部认知衔接行（specs/019）：「去待我处理」→ 认知面板「待我处理」页
+    // （审计 R4 拍板项 #6，2026-09-28：衔接行是本会话 N/M 计数行、无具体资产
+    // id，跳资产详情不可执行；本会话的候选在「待我处理」排队确认）。认知面板
+    // 入口不可用时回退旧落点（抽屉「认知资产」tab），加载器可用时先补载再跳。
     const cogStrip = document.getElementById('chat-cognition-strip');
     if (cogStrip && cogStrip.dataset.bound !== '1') {
       cogStrip.dataset.bound = '1';
@@ -2435,7 +2438,20 @@ const ConversationInfo = (() => {
         if (!ev.target.closest('[data-cognition-strip-goto]')) return;
         ev.preventDefault();
         ev.stopPropagation();
-        openAndSetTab('assets');
+        const openReview = () => {
+          if (typeof window.openCognitionReview === 'function' && window.openCognitionReview()) return;
+          openAndSetTab('assets');
+        };
+        if (typeof window.openCognitionReview === 'function') {
+          openReview();
+          return;
+        }
+        const loader = typeof loadRendererFeature === 'function' ? loadRendererFeature : window.loadRendererFeature;
+        if (typeof loader === 'function') {
+          loader('recall').then(openReview).catch(() => { openAndSetTab('assets'); });
+        } else {
+          openAndSetTab('assets');
+        }
       });
     }
     if (body && body.dataset.bound !== '1') {
@@ -2545,32 +2561,9 @@ const ConversationInfo = (() => {
           }
           return;
         }
-        // 认知资产 tab · 候选操作：忽略。
-        const candidateIgnore = ev.target.closest('[data-candidate-ignore]');
-        if (candidateIgnore) {
-          ev.preventDefault();
-          ev.stopPropagation();
-          const candidateId = candidateIgnore.dataset.candidateIgnore || '';
-          if (!candidateId) return;
-          const invoke = window && window.cogseed && typeof window.cogseed.invoke === 'function'
-            ? window.cogseed.invoke.bind(window.cogseed)
-            : null;
-          if (!invoke) return;
-          candidateIgnore.disabled = true;
-          invoke('recall.candidates.ignore', { candidateId })
-            .then((res) => {
-              if (res && res.ok) {
-                if (typeof uiToast === 'function') {
-                  uiToast(_label('conversation_info.run_context.assets_ignored_toast', '已忽略该候选'), { variant: 'info', timeoutMs: 4000 });
-                }
-                void refresh(_cid);
-              } else {
-                candidateIgnore.disabled = false;
-              }
-            })
-            .catch(() => { candidateIgnore.disabled = false; });
-          return;
-        }
+        // 「忽略」按钮已删（审计 R1④ 残余，拍板项 #4，2026-09-28）：就地忽略
+        // 只有 toast、与「待我处理」页完全重叠且更弱——想忽略走「查看、确认
+        // 或修改」进完整候选详情处置（ignore 动作在候选详情侧仍可用）。
         // 9.1 右侧「本次携带」：点击「查看回执」→ 读取该执行的
         // ContextReuseReceipt（IPC 已存在）并展开明细。
         const receiptToggle = ev.target.closest('[data-receipt-execution-id]');

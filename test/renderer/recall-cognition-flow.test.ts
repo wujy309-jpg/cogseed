@@ -271,8 +271,11 @@ describe('asset governance actions', () => {
   it('confirms destructive asset actions before sending', () => {
     expect(core).toContain("T('cognition.asset_delete_confirm'");
     expect(core).toContain("T('cognition.asset_purge_confirm'");
-    expect(core).toContain("T('cognition.asset_revoke_confirm'");
     expect(core).toContain('confirmUser(dangerCopy[action], true)');
+    // 「撤回使用」已随界面按钮删除（审计 R3，2026-09-28）：revoke 通道映射
+    // 与确认文案一并删；audit_revoked 标签与 revoked 过滤逻辑保留（历史展示）。
+    expect(core).not.toContain("'recall.assets.revoke'");
+    expect(core).not.toContain("T('cognition.asset_revoke_confirm'");
   });
 });
 

@@ -219,13 +219,6 @@ export interface BuildRunnerParams {
   userMessage?: string;
   sourceMessageId?: string;
   sourceMessageFromUser?: boolean;
-  onTeachingReceipt?: (receipt: {
-    id: string;
-    summary: string;
-    scope: UserTeachingScope;
-    status: 'active' | 'revoked';
-    candidateIds: string[];
-  }) => void | Promise<void>;
   onCognitionSaveReceipt?: (receipt: CognitionSaveReceipt) => void | Promise<void>;
   /** Project id of the conversation, when it belongs to one. Threaded
    *  through to local-tools / file-tools / image-gen-tool so workspace
@@ -665,14 +658,17 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
           memoryScope: scope,
           memoryRef: teachingMemoryRef(scope, content),
         });
-        if (signal) {
-          await params.onTeachingReceipt?.({
-            id: signal.id,
+        // 教学回执并入保存回执链（2026-09-28 四病整改 7.0 修7 / F39）：教学
+        // 信号落库时必建候选，回执以 candidate+taught-pending-review 走同一条
+        // onCognitionSaveReceipt 收集口径，渲染层不再有独立教学卡。
+        if (signal && signal.candidateIds.length > 0) {
+          const receipt: CognitionSaveReceipt = {
+            target: 'candidate',
+            id: signal.candidateIds[0],
             summary: signal.summary,
-            scope: signal.scope,
-            status: signal.status,
-            candidateIds: signal.candidateIds,
-          });
+            outcome: 'taught-pending-review',
+          };
+          await params.onCognitionSaveReceipt?.(receipt);
         }
       } catch (error) {
         log.warn('teaching signal persistence failed after memory write', {

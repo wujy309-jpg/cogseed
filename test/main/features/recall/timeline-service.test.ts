@@ -38,6 +38,8 @@ async function promoteAsset(userId: string, statement: string, scope = 'review')
   const { candidates } = await modules();
   const candidate = await candidates.saveRecallCandidate(userId, {
     judgment: statement,
+    // 标题闸门（设计 3.2）：无 summary 兜底＝正文首句，过不了闸门。
+    summary: '时间线基线样本',
     suggestedType: 'rule',
     ...RULE_BOUNDARY,
     suggestedScope: scope,

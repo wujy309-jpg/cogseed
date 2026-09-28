@@ -473,8 +473,26 @@ describe('族话术降级（T008）与隐私红线', () => {
     expect(html).toContain('无同源血缘');
     expect(html).not.toContain('条同类');
     expect(html).not.toContain('未归类');
-    expect(html).toContain(zh['cognition.family_rename']);
-    expect(zh['cognition.family_rename']).toBe('命名同源血缘');
+    // 族命名三按钮已删（审计 N2，2026-09-28：0 使用）：同源分组展示保留，
+    // 命名入口不再渲染；已有族名（familyName）仍作为组头标题显示。
+    expect(html).not.toContain('data-act="family-rename"');
+    expect(html).not.toContain('命名同源血缘');
+    expect(html).not.toContain('改血缘名');
+  });
+
+  it('已命名的族仍以族名作为组头展示（familyName 数据保留、展示保留）', () => {
+    const { render } = loadCognition({
+      route: { manage: '1' },
+      state: {
+        assets: [
+          { id: 'aa-fam-4', type: 'personal', title: '同源甲', statement: '正文甲。', status: 'active', version: '1', updatedAt: '2026-09-24T01:00:00Z', familyName: '我的命名族', relations: [{ kind: 'same_family', assetId: 'aa-fam-5' }] },
+          { id: 'aa-fam-5', type: 'personal', title: '同源乙', statement: '正文乙。', status: 'active', version: '1', updatedAt: '2026-09-24T02:00:00Z', relations: [{ kind: 'same_family', assetId: 'aa-fam-4' }] },
+        ],
+      },
+    });
+    const html = render();
+    expect(html).toContain('我的命名族');
+    expect(html).toContain('2 条同源');
   });
 
   it('批量失败清单与管理弹层不泄露资产正文（只名字/标题/计数）', () => {
@@ -600,7 +618,7 @@ describe('排序依据小节与权重入口（T020 / US-202 AC4+AC6）', () => {
     expect(html).toContain(zh['cognition.ranking_relevance_absent_note']);
   });
 
-  it('权重卡（整理设置页）：4 个数值 uiInput + 填入默认值 + 保存 + 来源说明；读失败如实禁编辑', () => {
+  it('权重卡已彻底移除（G1 拍板项 #3）：整理设置页不再渲染任何权重编辑入口', () => {
     const loaded = loadCognition({
       route: { name: 'organize-settings' },
     });
@@ -610,40 +628,155 @@ describe('排序依据小节与权重入口（T020 / US-202 AC4+AC6）', () => {
       source: 'configured',
     };
     const html = loaded.render();
-    expect(html).toContain(zh['cognition.ranking_weights_title']);
-    expect(html).toContain(zh['cognition.ranking_weights_hint']);
-    for (const factor of ['relevance', 'adoption', 'scene', 'maturity']) {
-      expect(html).toContain(`data-w="${factor}"`);
-    }
-    expect(html).toContain('type="number"');
-    expect(html).toContain(`data-act="ranking-weights-reset"`);
-    expect(html).toContain(`data-act="ranking-weights-save"`);
-    expect(html).toContain('data-ranking-weights-error');
-    // configured 不再叠「默认权重」说明（避免噪音）。
-    expect(html).not.toContain(zh['cognition.ranking_source_default_note']);
-
-    const failed = loadCognition({ route: { name: 'organize-settings' } });
-    failed.ns.rankingWeights = { failed: true, error: 'no handler' };
-    const failedHtml = failed.render();
-    expect(failedHtml).toContain(zh['cognition.ranking_weights_load_failed']);
-    expect(failedHtml).not.toContain('data-w="relevance"');
+    // 旧排序已换 v2 引擎（6f3ff075），权重卡是旧引擎遗物：卡壳、输入框、
+    // 保存/重置按钮全部不再渲染；「高级设置」折叠留给巡检卡（G2）。
+    expect(html).not.toContain('data-ranking-weights');
+    expect(html).not.toContain('data-w="relevance"');
+    expect(html).not.toContain(`data-act="ranking-weights-reset"`);
+    expect(html).not.toContain(`data-act="ranking-weights-save"`);
+    expect(zh['cognition.ranking_weights_title']).toBeUndefined(); // G1 终态：四语词条已随权重卡一并移除（过渡哨兵断言到期改写）
   });
 
-  it('源码级：app.js 装载/保存接线——ranking 只读当前回合该资产；weights.set 保存；非法就地报错不整卡重画；toast 如实说下一轮生效', () => {
+  it('源码级：app.js 只保留排序依据只读接线——ranking 按当前回合该资产取；权重保存接线已随权重卡删除', () => {
     // 详情装载：只查「该资产最近一次回合」的一条（limit 1，带 assetId）。
     expect(appSource).toContain("'recall.catalog.ranking'");
     expect(appSource).toContain('taskRunId: turnId, assetId: id, limit: 1');
-    // 保存走唯一写通道；校验失败就地报错（不整卡重画，保住已输入值）。
-    expect(appSource).toContain("'ranking-weights-save'");
-    expect(appSource).toContain("'recall.catalog.weights.set'");
-    expect(appSource).toContain('showWeightsError(card');
-    expect(appSource).toContain("'ranking-weights-save',");
-    // 生效口径：提示「下一轮」，不谎称立即生效。
-    expect(appSource).toContain("T('cognition.ranking_weights_saved_toast'");
-    expect(zh['cognition.ranking_weights_saved_toast']).toContain('下一轮');
-    // 填入默认值只回填输入框（不落盘）——没有 reset 的写通道调用。
-    const resetCase = appSource.slice(appSource.indexOf("case 'ranking-weights-reset'"), appSource.indexOf("case 'ranking-weights-save'"));
-    expect(resetCase).not.toContain('invoke');
-    expect(resetCase).not.toContain('api.call');
+    // 权重卡的保存/重置接线与数据装载已删（G1 拍板项 #3）；写通道本体后端保留。
+    expect(appSource).not.toContain("'ranking-weights-save'");
+    expect(appSource).not.toContain("'recall.catalog.weights.set'");
+    expect(appSource).not.toContain('showWeightsError');
+    expect(appSource).not.toContain('loadRankingWeights');
+  });
+});
+
+describe('详情五区骨架（2026-09-28 设计五章对照表）', () => {
+  const VERSION_STATE = {
+    assetVersions: {
+      assetId: 'aa-tag-1',
+      versions: [{ version: '1', snapshot: { title: '发布流程经验', statement: '正文一：走灰度发布。' }, reason: 'created' }],
+      usage: [],
+      audit: [{ action: 'created', at: '2026-09-24T01:00:00Z', actor: 'user', reason: '手动保存' }],
+    },
+  };
+
+  it('资产详情：版本信息归④「详情与历史」明细折叠；标签/归并/台账归⑤侧栏治理折叠', () => {
+    const { render } = loadCognition({
+      route: { assetId: 'aa-tag-1' },
+      state: VERSION_STATE,
+    });
+    const html = render();
+    // ④明细折叠（类名保留：usage-consistency 的「编辑入口在折叠之上」锚点）。
+    expect(html).toContain('ca-detail-history');
+    // 版本历史在④明细折叠内（版本信息归④），且治理折叠不含版本区。
+    const historyStart = html.indexOf('ca-detail-history');
+    const governanceStart = html.indexOf('ca-detail-governance');
+    expect(historyStart).toBeGreaterThan(-1);
+    expect(governanceStart).toBeGreaterThan(-1);
+    // ⑤治理折叠：标签 + 归并；台账（生命周期记录）随后同卡。
+    // （「治理与历史」为新词条、四语由 locale 收尾批统一落，断言用代码内联回退文本。）
+    expect(html).toContain('治理与历史');
+    expect(html).toContain(zh['cognition.asset_merge_section']);
+    expect(html.indexOf('data-act="tag-add"')).toBeGreaterThan(governanceStart);
+    expect(html.indexOf(zh['cognition.audit_section'])).toBeGreaterThan(governanceStart);
+  });
+
+  it('资产编辑表单：治理类信息（适用/禁用场景、可见范围）收进「高级选项」折叠', () => {
+    const { render } = loadCognition({
+      route: { assetId: 'aa-tag-1', assetEdit: '1' },
+      state: VERSION_STATE,
+    });
+    const html = render();
+    expect(html).toContain(zh['cognition.candidate_advanced']);
+    expect(html).toContain('data-f="applicable"');
+    expect(html).toContain('data-f="forbidden"');
+    // 治理字段必须在「高级选项」折叠内（其后），不再平铺在正文之后。
+    expect(html.indexOf('data-f="applicable"')).toBeGreaterThan(html.indexOf(zh['cognition.candidate_advanced']));
+  });
+
+  it('经验详情：预期/实际归②内容区；归并治理与管理台账收⑤侧栏管理卡折叠', () => {
+    const experience = {
+      id: 'exp-1', title: '灰度发布经验', status: 'active', experienceType: 'lesson',
+      taskType: 'code', scope: 'code', body: '先小流量再全量。', expected: '指标平稳',
+      actual: '回滚一次', applicableWhen: ['发布'], forbiddenWhen: [], evidenceRefs: [],
+      mergedFrom: [], history: [{ action: 'paused', at: '2026-09-24T01:00:00Z', actor: 'user' }],
+      verification: { state: 'unverified' }, updatedAt: '2026-09-24T01:00:00Z', createdAt: '2026-09-24T01:00:00Z',
+    };
+    const other = { ...experience, id: 'exp-2', title: '另一条同类经验' };
+    const { render } = loadCognition({
+      route: { experienceId: 'exp-1' },
+      state: {
+        experienceDetail: { experienceId: 'exp-1', loading: false, failed: false, experience },
+        experiences: { items: [experience, other], loading: false, failed: false, stale: false },
+      },
+    });
+    const html = render();
+    // ②内容区：预期/实际与正文同区（在主栏正文卡内，先于侧栏管理卡）。
+    expect(html).toContain(zh['cognition.experience_expected']);
+    expect(html).toContain(zh['cognition.experience_actual']);
+    // ⑤：归并治理与管理台账收进侧栏「管理」卡（在管理动作之后）。
+    const manageAt = html.indexOf(zh['cognition.experience_manage_section']);
+    expect(manageAt).toBeGreaterThan(-1);
+    expect(html.indexOf(zh['cognition.experience_merge_section'])).toBeGreaterThan(manageAt);
+    expect(html.indexOf(zh['cognition.experience_history_section'])).toBeGreaterThan(manageAt);
+  });
+});
+
+describe('「记一条」（设计 7.2：手动新建候选）', () => {
+  it('列表页头与空库空态都给「记一条」入口', () => {
+    const withAssets = loadCognition({});
+    const html = withAssets.render();
+    expect(html).toContain('data-act="cand-create"');
+
+    const emptyLib = loadCognition({ state: { assets: [] } });
+    const emptyHtml = emptyLib.render();
+    expect(emptyHtml).toContain('data-act="cand-create"');
+    // 空态原有引导（去待我处理）保留。
+    expect(emptyHtml).toContain(zh['cognition.overview_empty_go_review']);
+  });
+
+  it('candCreate=1 渲染表单卡：复用候选表单五字段与 cand-type/readCandidateForm 契约', () => {
+    const { render } = loadCognition({ route: { candCreate: '1' } });
+    const html = render();
+    expect(html).toContain('data-manual-candidate');
+    expect(html).toContain('data-cand-type="personal"');
+    // readCandidateForm 就近读取的五个 [data-f] 字段齐备（summary=标题，必填提示见保存动作）。
+    for (const field of ['summary', 'judgment', 'value', 'scope', 'uncertainty']) {
+      expect(html).toContain(`data-f="${field}"`);
+    }
+    // 类型 chips 复用 cand-type（就地切换，不重画、不丢输入）。
+    expect(html).toContain('data-act="cand-type"');
+    expect(html).toContain('data-act="cand-create-save"');
+    expect(html).toContain('data-act="cand-create-cancel"');
+  });
+
+  it('保存走 recall.candidates.save 产生候选（suggestedAction=create、空来源数组）并提示去待我处理', async () => {
+    const invoke = vi.fn(async () => ({ ok: true, candidate: { id: 'cand-new' } }));
+    const loaded = loadCognition({ invoke });
+    await loaded.ns.actions.saveManualCandidate({
+      summary: '发布走灰度', judgment: '发布前先小流量验证。', suggestedType: 'rule', suggestedScope: '',
+    });
+    const calls = callOf(invoke, 'recall.candidates.save');
+    expect(calls).toHaveLength(1);
+    const payload = calls[0][1];
+    expect(payload.summary).toBe('发布走灰度');
+    expect(payload.judgment).toBe('发布前先小流量验证。');
+    expect(payload.suggestedType).toBe('rule');
+    expect(payload.suggestedAction).toBe('create');
+    // 手动创建没有对话来源：来源与证据都为空；manual 标记让主进程豁免
+    // "证据不足"降级（拍板 A：手动候选的证据就是用户本人的直接输入），
+    // 直接 pending_review 可确认，不直接入库。
+    expect(payload.sourceRefs).toEqual([]);
+    expect(payload.manual).toBe(true);
+    // suggestedScope 兜底 general（通道要求字符串）。
+    expect(payload.suggestedScope).toBe('general');
+    expect(loaded.toasts.some((toast) => toast.message.includes('待我处理'))).toBe(true);
+  });
+
+  it('标题或内容缺一不提交，给必填提示（标题必填口径）', async () => {
+    const invoke = vi.fn(async () => ({ ok: true }));
+    const loaded = loadCognition({ invoke });
+    await loaded.ns.actions.saveManualCandidate({ summary: '', judgment: '', suggestedType: 'personal' });
+    expect(callOf(invoke, 'recall.candidates.save')).toHaveLength(0);
+    expect(loaded.toasts.some((toast) => toast.variant === 'warning')).toBe(true);
   });
 });

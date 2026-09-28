@@ -71,6 +71,8 @@ async function seedAsset(uid: string, marker: string) {
   const judgment = JUDGMENTS[marker] || `Record the lesson behind ${marker} before shipping.`;
   const candidate = await candidates.saveRecallCandidate(uid, {
     judgment,
+    // 标题闸门（设计 3.2）：无 summary 兜底＝正文首句，过不了闸门。
+    summary: 'Cascade fixture lesson',
     suggestedType: 'rule', ...RULE_BOUNDARY, suggestedScope: 'architecture',
     sourceRefs: [{ kind: 'execution', id: `exec-${marker}` }],
   });
