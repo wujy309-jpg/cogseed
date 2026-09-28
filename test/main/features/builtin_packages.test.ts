@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -214,13 +215,35 @@ describe('builtin_packages › seedBuiltinPackagesForUser', () => {
 });
 
 // The shipped package content itself, not the seeder logic: these read the real
-// resources/builtin-packages tree that a release bundles.
-describe('builtin_packages › bundled EduSeed package content', () => {
+// resources/builtin-packages tree that a release bundles, and run its runtime
+// bundles directly so a Windows regression is caught by the Windows CI job.
+describe('builtin_packages › bundled EduSeed package', () => {
   const pkgDir = path.join(__dirname, '../../../resources/builtin-packages/eduseed-course-client');
   const skills = ['eduseed-student-aar', 'eduseed-student-review', 'eduseed-student-submit', 'eduseed-teacher-publish'];
   const runtimeSources = () => skills.map((skill) => fs.readFileSync(
     path.join(pkgDir, 'skills', skill, 'scripts', 'runtime.js'), 'utf8',
   ));
+  const runtimePath = path.join(pkgDir, 'skills', 'eduseed-student-submit', 'scripts', 'runtime.js');
+
+  const runRuntime = (command: string, payload: unknown, env: Record<string, string | undefined> = {}): Record<string, unknown> => {
+    const childEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      EDUSEED_MOCK: '1',
+      EDUSEED_STUDENT_ID: 'S-PKG',
+      EDUSEED_ROLE: 'student',
+      ...env,
+    };
+    // `undefined` means "unset in the child". HOME matters: the test runner
+    // redirects it to a temp dir, while Windows never sets it at all.
+    for (const [key, value] of Object.entries(env)) if (value === undefined) delete childEnv[key];
+    const res = spawnSync(process.execPath, [runtimePath, command, JSON.stringify(payload)], {
+      encoding: 'utf8',
+      env: childEnv,
+    });
+    const line = (res.stdout ?? '').split('\n').find((l) => l.startsWith('{"ok"'));
+    expect(line, `runtime produced no JSON result (stderr: ${res.stderr})`).toBeTruthy();
+    return JSON.parse(line as string) as Record<string, unknown>;
+  };
 
   it('ships one byte-identical runtime across the four skills', () => {
     // All four skills run the same esbuild bundle; a partial rebuild would ship
@@ -228,14 +251,51 @@ describe('builtin_packages › bundled EduSeed package content', () => {
     expect(new Set(runtimeSources()).size).toBe(1);
   });
 
-  it('resolves the user home without depending on HOME being set', () => {
-    // Windows defines USERPROFILE, not HOME. The bundle used to build the KSTAR
-    // record directory from `process.env.HOME ?? ""`, which collapsed to a
-    // CWD-relative `.eduseed` path: records were written wherever the skill ran
-    // and became unreadable as soon as the working directory changed.
-    for (const source of runtimeSources()) {
-      expect(source).not.toContain('process.env.HOME ?? ""');
-      expect(source).toContain('function __eduseedHomeDir()');
+  it('keeps the KSTAR record directory on the platform home', () => {
+    // Windows defines USERPROFILE, not HOME. Building the record directory from
+    // `process.env.HOME ?? ""` collapsed it to a CWD-relative `.eduseed` path, so
+    // records landed wherever the skill ran and vanished when that directory
+    // changed. On Windows this test is the regression guard; elsewhere HOME is
+    // what both the old and new code read, so it only pins the contract.
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'eduseed-home-'));
+    const env: Record<string, string | undefined> = process.platform === 'win32'
+      ? { HOME: undefined, USERPROFILE: fakeHome }
+      : { HOME: fakeHome };
+    try {
+      const result = runRuntime('submit-and-track', {
+        challengeId: 'ch-mock-c03',
+        projectTitle: 'T',
+        githubRepoUrl: 'https://github.com/x/y',
+        aarText: 'a',
+        selfEvaluationText: 'self',
+      }, env);
+      expect(result.ok).toBe(true);
+      const episodes = path.join(fakeHome, '.eduseed', 'kstar', 'S-PKG');
+      const written = fs.existsSync(episodes) ? fs.readdirSync(episodes) : [];
+      expect(written.length).toBeGreaterThan(0);
+    } finally {
+      fs.rmSync(fakeHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it('matches required-deliverable path patterns with the platform separator', () => {
+    // path.relative() yields "src\index.js" on Windows while challenge
+    // required_deliverables are authored "src/**", so nothing containing a
+    // separator matched and submissions were blocked with "缺少交付物".
+    const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'eduseed-deliverables-'));
+    fs.mkdirSync(path.join(workdir, 'src', 'deep'), { recursive: true });
+    for (const file of ['README.md', 'reflection.md', path.join('src', 'index.js'), path.join('src', 'deep', 'helper.js')]) {
+      fs.writeFileSync(path.join(workdir, file), 'x\n');
+    }
+    try {
+      const report = runRuntime('check-deliverables', {
+        workdir,
+        requiredDeliverables: 'README.md, src/**, reflection.md',
+      }, {});
+      expect(report.missing).toEqual([]);
+      expect(report.found).toEqual(['README.md', 'src/**', 'reflection.md']);
+    } finally {
+      fs.rmSync(workdir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 

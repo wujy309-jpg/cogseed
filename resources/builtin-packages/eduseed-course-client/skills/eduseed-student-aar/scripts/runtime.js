@@ -15545,6 +15545,9 @@ function parsePatterns(raw) {
   return raw.split(/[,，、\n]/).map((p) => p.trim()).filter((p) => p.length > 0);
 }
 function patternToRegExp(pattern) {
+  // CogSeed local patch (2026-09-28): patterns are authored with "/" while
+  // Windows relative paths use "\", so normalise the pattern before matching.
+  pattern = String(pattern).replace(/\\/g, "/");
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
   const globbed = escaped.replace(/\*/g, ".*").replace(/\?/g, ".");
   return new RegExp(`^${globbed}$`, "i");
@@ -15568,7 +15571,7 @@ function listFilesRecursive(dir) {
       if (entry.isDirectory()) {
         stack.push(full);
       } else if (entry.isFile()) {
-        out.push(path.relative(dir, full));
+        out.push(path.relative(dir, full).split(path.sep).join("/")); // CogSeed local patch (2026-09-28): Windows "\" never matched "/" patterns
       }
     }
   }

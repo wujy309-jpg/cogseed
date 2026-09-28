@@ -15,6 +15,13 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   一旦工作目录变化就再也读不回来（`list-episodes`/ΔR/尝试链断链）。运行时改为
   `process.env.HOME || os.homedir()`。内置包版本提升到 0.5.5 以触发存量用户重装。
 
+- **Windows 上交付物校验不再误判"缺交付物"、提交不再被阻断** — 插件用 `path.relative()`
+  得到的反斜杠路径（`src\index.js`）去匹配按 `/` 书写的 `required_deliverables`
+  （如 `src/**`），Windows 上带路径的模式永不匹配：`check-deliverables` /
+  `prepare-submission` / `submit-and-track` 会把学生明明已有的交付物报成缺失，并以
+  `缺少交付物: src/**` 拒绝提交（只有显式 `blockOnMissing:false` 才能绕过）。现在模式与
+  文件路径两侧统一按 `/` 归一后再匹配。
+
 ## [1.2.0] - 2026-09-23
 
 ### Changed
