@@ -8,7 +8,8 @@ permissions:
 
 jobs:
   build-macos:
-    runs-on: macos-latest
+    if: github.repository == 'bonc-ai/cogseed-internal'
+    runs-on: [self-hosted, macOS, cogseed-internal]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

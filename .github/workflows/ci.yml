@@ -1,9 +1,6 @@
 name: CI
 
-# CI (verify + verify-windows) runs only on the cicd branch — the release gate.
-# Day-to-day development merges into develop via review only (no CI);
-# the full macOS and Windows verification runs once when a PR targets cicd,
-# and again on push to cicd, right before tagging a release.
+# 私仓 CI 只保留 Ubuntu 轻量门禁。Windows/macOS 验证在公开快照 PR 上执行。
 on:
   pull_request:
     branches:
@@ -17,7 +14,8 @@ permissions:
 
 jobs:
   verify:
-    runs-on: macos-latest
+    if: github.repository == 'bonc-ai/cogseed-internal'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,17 +28,13 @@ jobs:
       - run: npm run test:resources:setup
       - run: npm run typecheck
       - run: npm run lint
-      # 全量套件默认 maxWorkers=4，在 macos-latest（3 vCPU）上会过度抢占，
-      # 负载型时序用例（CLI 版本探测、boot 恢复投影等）因此偶发超时红单。
-      # 发布门禁优先稳定性：限制 2 个 worker，多花几分钟换可重复的绿。
+      # 限制 worker，避免 Ubuntu 免费额度被并发测试快速消耗。
       - run: node scripts/run-tests.mjs run --maxWorkers=2
       - run: npm run test:resources
       - run: npm run readme:check
       - run: npm run community:skills:check
       - run: npm run tokens:check
       - run: npm run builtin:manifest:check
-      - name: Packaged macOS launch smoke
-        run: npm run package:dev:mac && npm run verify:package:dev:mac
       - name: Email hygiene gate (release gate)
         if: github.event_name == 'push' || github.base_ref == 'cicd'
         run: |
@@ -69,38 +63,3 @@ jobs:
             exit 1
           fi
           echo "✅ Commit messages and Co-authored-by trailers are clean."
-
-  verify-windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm run test:resources:setup
-      - run: npm run lint
-      - name: P3394 Windows compatibility gate
-        run: npm run test:p3394:windows
-      - run: node scripts/run-tests.mjs run --maxWorkers=1
-      - run: npm run test:resources
-      - run: npm run test:platform-native
-      - name: P3394 gateway protocol smoke
-        run: node p3394-gateway/test/smoke.cjs
-      - run: node scripts/write-build-info.cjs --channel=ci
-      - run: npm run build:win
-      - name: Packaged launch smoke
-        run: npm run verify:package:launch
-      - name: Packaged STT smoke
-        run: npm run verify:package:stt:win
-      - name: Upload Windows test package
-        uses: actions/upload-artifact@v4
-        with:
-          name: cogseed-windows-x64-${{ github.sha }}
-          path: dist/CogSeed-*-win-x64.exe
-          if-no-files-found: error
-          retention-days: 14

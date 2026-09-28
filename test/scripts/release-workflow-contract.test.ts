@@ -34,29 +34,18 @@ describe('release workflow contract', () => {
     });
   });
 
-  it('keeps the CI job names exact and makes the Windows gate complete', () => {
+  it('keeps private CI lightweight and Ubuntu-only', () => {
     const workflow = load('ci.yml');
-    expect(Object.keys(workflow.jobs).sort()).toEqual(['verify', 'verify-windows']);
-    const windowsJob = workflow.jobs['verify-windows'];
-    const windows = commands(windowsJob);
-    for (const expected of [
-      'npm run lint',
-      'node scripts/run-tests.mjs run --maxWorkers=1',
-      'npm run test:resources',
-      'npm run test:platform-native',
-      'npm run test:p3394:windows',
-      'node p3394-gateway/test/smoke.cjs',
-      'npm run build:win',
-    ]) expect(windows).toContain(expected);
-    const p3394Index = steps(windowsJob).findIndex((step) => step.run === 'npm run test:p3394:windows');
-    const fullJsIndex = steps(windowsJob).findIndex((step) => step.run === 'node scripts/run-tests.mjs run --maxWorkers=1');
-    expect(p3394Index).toBeGreaterThanOrEqual(0);
-    expect(p3394Index).toBeLessThan(fullJsIndex);
+    expect(Object.keys(workflow.jobs)).toEqual(['verify']);
+    expect(workflow.jobs.verify['runs-on']).toBe('ubuntu-latest');
+    expect(commands(workflow.jobs.verify)).toContain('node scripts/run-tests.mjs run --maxWorkers=2');
+    expect(commands(workflow.jobs.verify)).not.toContain('package:dev:mac');
+    expect(JSON.stringify(workflow.jobs)).not.toContain('windows-latest');
   });
 
-  it('requires a real packaged macOS launch before the cicd gate is green', () => {
+  it('does not run packaged macOS launch in private CI', () => {
     const macos = commands(load('ci.yml').jobs.verify);
-    expect(macos).toContain('npm run package:dev:mac && npm run verify:package:dev:mac');
+    expect(macos).not.toContain('npm run package:dev:mac && npm run verify:package:dev:mac');
   });
 
   it('pins the Windows P3394 lane to the platform-native regression suites', () => {
