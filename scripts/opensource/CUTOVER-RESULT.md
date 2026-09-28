@@ -3,7 +3,7 @@
 ## 已完成
 
 - 私仓 `v1.2.0` 产品基线：`bcdb3206016623d8fcc4eaa7c44f19dd21602241`。公开适配提交：`7c4be751935bbe648c17eefdc8ff20ec64196df7`，保存在私仓 `codex/public-v1.2.0-baseline`；产品源码、资源、bin、依赖和打包配置与原定版一致。
-- 公仓 `main` 已用无父提交 `8faf299d6e7a99ba8038cc4a7d81d7bfa24fa581` 替换；其它 80 个旧分支删除。公开 3,932 个文件，export digest 为 `df7db378490b89d68c3d1da9475dcb55b25f72c18b77a2873c4c78a4e088cc0f`。
+- 公仓 `main` 已用无父提交 `b0718215316eaab5d3082150643b9ec8cf9b1841` 替换；其它 80 个旧分支删除。公开 3,932 个文件，export digest 为 `df7db378490b89d68c3d1da9475dcb55b25f72c18b77a2873c4c78a4e088cc0f`。
 - 指定私有目录、根目录独立 skills、治理文档及私有自动化均未导出；updates-server 参考实现公开。121 个内部文件名引用提示已逐项复核；用户外部可选文件语义和代码注释保留。
 - 9 个正式 Release 和 37 个正式附件的原 ID、文件大小和 digest 一致；两个公开发布页面和 37 个正式附件 URL 返回 HTTP 200。标签恢复后的首次核验曾包含原草稿及其 4 个附件，但后续复核草稿 `mac-preview-1.0.2`（ID `386765459`）及附件 API 返回 404，原因待核实；不能声称当前仍完整保留 10 个发布记录及 41 个附件。
 - 三条 branch protection、两个临时调整的 ruleset、Actions 设置均已恢复并回读验证。
@@ -31,3 +31,7 @@
 专用 GitHub App 5104750（installation 165683573）仅安装公仓，权限为 Contents/PR write 与 Metadata read。私钥已写私仓 Actions Secret；不进入 Git、报告或聊天。公仓基线 SHA 变量已配置。
 
 **自动化未启用验收。** PR 尚未合并；私仓 Actions 因组织付款/额度问题拒绝启动，7 项检查没有执行。用户暂时无法支付，不修改计费设置、不绕过 CI 门禁、不假报流水线成功。需待组织 Actions 恢复、检查通过并合并 PR 后再实际运行验收。
+
+## 提交日期修正
+
+原根提交 `8faf299d6e7a99ba8038cc4a7d81d7bfa24fa581` 由同步脚本错误使用 2000 年固定起点生成。按用户要求，2026-09-28 将 author/committer 时间修正为本次同步实际时间 `2026-09-28T07:27:58Z`（北京时间 15:27:58），新根提交为 `b0718215316eaab5d3082150643b9ec8cf9b1841`。两次提交 tree、作者身份、提交消息及无父提交结构一致；仅时间改变。公仓 main、本地 main 及私仓 `PUBLIC_SOURCE_BASELINE_SHA` 均更新，原历史标签和 Release/附件记录逐项确认未变，临时调整的 main 保护已恢复。原切换映射保留审计原值，日期修正以外部 `timestamp-correction.json` 追加记录为准。
