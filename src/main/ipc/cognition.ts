@@ -112,14 +112,6 @@ export const invokeHandlers = {
     }),
   }),
 
-  'cognition.assets.capture': async (payload: Payload, ctx: IpcContext) => ({
-    asset: await cognition.createCognitionAssetWithEvidence(ctx.userId, {
-      title: requireText(payload.title, 'title'),
-      summary: requireText(payload.summary, 'summary'),
-      evidence: evidenceInput(payload.evidence),
-    }),
-  }),
-
   'cognition.assets.evidence.add': async (payload: Payload, ctx: IpcContext) => ({
     asset: await cognition.addCognitionEvidence(ctx.userId, assetId(payload), evidenceInput(payload)),
   }),

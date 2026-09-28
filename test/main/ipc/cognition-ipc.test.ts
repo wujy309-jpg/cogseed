@@ -40,7 +40,6 @@ vi.mock('../../../src/main/features/cognition', () => ({
   })),
   getCognitionAsset: vi.fn(async (_uid: string, assetId: string) => ({ id: assetId, title: '认知', stage: 'seed' })),
   createCognitionAsset: vi.fn(async (_uid: string, input: { title: string; summary: string }) => ({ id: 'cog_new', ...input, stage: 'seed' })),
-  createCognitionAssetWithEvidence: vi.fn(async (_uid: string, input: { title: string; summary: string; evidence: Record<string, unknown> }) => ({ id: 'cog_capture', ...input, stage: 'sprout' })),
   addCognitionEvidence: vi.fn(async (_uid: string, assetId: string) => ({ id: assetId, title: '认知', stage: 'sprout' })),
   confirmCognitionAsset: vi.fn(async (_uid: string, assetId: string) => ({ id: assetId, title: '认知', stage: 'growing' })),
   deferCognitionAsset: vi.fn(async (_uid: string, assetId: string) => ({ id: assetId, title: '认知', stage: 'sprout' })),
@@ -151,9 +150,8 @@ describe('ipc cognition channels', () => {
     expect((await call('cognition.assets.list')).ok).toBe(true);
   });
 
-  it('从对话捕获要求完整证据且拒绝路径型 id', async () => {
-    expect((await call('cognition.assets.capture', { title: '认知', summary: '工作方式' })).ok).toBe(false);
-    const captured = await call('cognition.assets.capture', {
+  it('遗留 capture 通道已下线且 confirm 仍拒绝路径型 id', async () => {
+    expect((await call('cognition.assets.capture', {
       title: '先确认边界再执行',
       summary: '先明确验收标准。',
       evidence: {
@@ -162,9 +160,7 @@ describe('ipc cognition channels', () => {
         sourceLabel: '方案设计会话',
         conversationId: 'c_capture',
       },
-    });
-    expect(captured.ok).toBe(true);
-    expect((captured.asset as { id: string }).id).toBe('cog_capture');
+    })).ok).toBe(false);
     expect((await call('cognition.assets.confirm', { assetId: '../outside' })).ok).toBe(false);
   });
 
