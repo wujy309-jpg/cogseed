@@ -1556,6 +1556,36 @@ describe('资产详情（使用记录并入）', () => {
     expect(html).not.toContain('data-act="cleanup-uncertain-dismiss" data-id="aa-4"');
   });
 
+  it('标题重起轮（2026-09-28 标题一等化 3.3 专项轮）：新 kind 有人话标签，报告页/设置页导语按轮次区分', () => {
+    const regenReport = {
+      id: 'cr-regen', trigger: 'user', createdAt: '2026-09-28T01:00:00.000Z', finishedAt: '2026-09-28T01:00:05.000Z',
+      scanned: 18,
+      items: [
+        { assetId: 'aa-1', kind: 'title_regen', status: 'applied', before: '导出报表一律带上生成时间戳，导出前还需要人工确认口径与接收人名单。', after: '报表时间戳纪律', reason: '原标题照抄正文首句且超长，由模型重起' },
+      ],
+      uncertain: [],
+    };
+    const html = renderPage('cleanup', { cleanupReports: { loading: false, reports: [regenReport] } }, { cleanupReportId: 'cr-regen' });
+    const text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    // 新 kind 走专用词条「标题重起」，不落「整理动作」兜底（勿重蹈 tag_added 欠账）。
+    expect(text).toContain('标题重起');
+    expect(text).not.toContain('整理动作');
+    // 重起轮导语换新文案（不做合并、全自动写入、写前备份）；规则轮导语在这轮上是假话。
+    expect(text).toContain('由模型把不合格的标题重新拟一个简短的新标题');
+    expect(text).not.toContain('只自动规范标题、合并正文完全相同的重复项');
+    // 设置页：最近一次报告是重起轮时，导语同样按重起轮给。
+    const settings = renderPage('organize-settings', { cleanupReports: { loading: false, reports: [regenReport] } });
+    expect(settings).toContain('由模型把不合格的标题重新拟一个简短的新标题');
+    expect(settings).not.toContain('只自动规范标题、合并正文完全相同的重复项');
+    // 载体或以独立 trigger 值标记本轮（零项的重起报告也能分辨）——两种形态都认。
+    const triggerOnly = { ...regenReport, id: 'cr-regen2', trigger: 'title_regen', items: [] };
+    const triggerHtml = renderPage('cleanup', { cleanupReports: { loading: false, reports: [triggerOnly] } }, { cleanupReportId: 'cr-regen2' });
+    expect(triggerHtml).toContain('由模型把不合格的标题重新拟一个简短的新标题');
+    // 规则轮不受影响：导语保留原文案（无报告的空态页头「立即整理」跑的就是规则轮）。
+    const ruleHtml = renderPage('cleanup', { cleanupReports: { loading: false, reports: [] } });
+    expect(ruleHtml).toContain('只自动规范标题、合并正文完全相同的重复项');
+  });
+
   it('整理报告空态：没有报告时给入口而不是空白页', () => {
     const html = renderPage('cleanup', { cleanupReports: { loading: false, reports: [] } });
     expect(html).toContain('还没有整理报告');

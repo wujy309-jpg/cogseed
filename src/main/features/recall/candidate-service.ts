@@ -43,6 +43,7 @@ import {
   type AbilityAssetActor,
 } from './asset-service';
 import { fuseStatements, makeDisplayTitle } from './statement-fusion';
+import { recallTitleIssue } from './title-policy';
 import { evaluateCandidate, isCandidateBlocked } from '../cognition/gate';
 import { isCognitionSourceEnabled } from './source-control';
 import {
@@ -576,6 +577,30 @@ function boundedText(value: unknown, field: string, max: number, required = fals
 
 function fallbackCandidateTitle(judgment: string): string {
   return makeDisplayTitle(judgment, /\p{Script=Han}/u.test(judgment) ? 16 : 60);
+}
+
+/**
+ * 晋升线标题兜底（设计《认知资产-四病整改设计-20260928》3.2 六路径配套）：
+ * 保留「summary 优先」的原有逻辑；summary 缺失（旧记录/直写数据）或对**将落盘
+ * 的最终正文**不合规（首字与正文重复/超长/标点结尾——fallbackCandidateTitle
+ * ＝正文首句截断，天然命中前缀重复）时，晋升链调 `suggestAbilityAssetTitle`
+ * 让模型起一个过 3.1 判定的合规标题。老的 `judgment.slice(0, 120)` 机器截断
+ * 兜底已删——机器编标题正是四病整改要堵的写入形态。模型不可用或多次输出
+ * 不合规按设计口径**明示失败**（不静默降级），失败原样上抛，晋升不落半成品。
+ * 动态 import 避免 candidate-service ↔ 模型链的静态环。
+ */
+async function resolvePromotionAssetTitle(
+  userId: string,
+  input: { preferredTitle: string; statement: string; type: AbilityAssetType },
+): Promise<string> {
+  const statement = String(input.statement || '');
+  if (!recallTitleIssue(input.preferredTitle, statement)) return input.preferredTitle;
+  const { suggestAbilityAssetTitle } = await import('./asset-title-suggestion');
+  const suggested = await suggestAbilityAssetTitle(userId, {
+    statement,
+    type: input.type,
+  });
+  return suggested.title;
 }
 
 function requireAssetType(value: unknown): AbilityAssetType {
@@ -2521,6 +2546,19 @@ export async function promoteRecallCandidate(
     if (candidate.suggestedAction === 'create') {
       const sourceSessionIds = sourceSessionIdsFrom(candidate.sourceRefs);
       const assetId = createdAssetId(candidate.id, decision.decision_id);
+      // 正文先行定稿：标题兜底的合规判定与 LLM 起标题都要拿**将落盘的最终
+      // 正文**比对（与收口闸门同一份口径），不能拿候选 judgment 单独判。
+      const promotionStatement = [
+        candidate.judgment,
+        ...(candidate.value?.trim() && candidate.value !== candidate.judgment
+          ? [candidate.value.trim()]
+          : []),
+      ].join('\n').slice(0, 4_000);
+      const promotionTitle = await resolvePromotionAssetTitle(userId, {
+        preferredTitle: candidate.summary || '',
+        statement: promotionStatement,
+        type: candidate.suggestedType,
+      });
       stored = await createAbilityAsset(userId, {
         schemaVersion: 2,
         ownerId: userId,
@@ -2529,17 +2567,12 @@ export async function promoteRecallCandidate(
         sourceCandidateIds: [candidate.id],
         reviewDecisionId: decision.decision_id,
         type: candidate.suggestedType,
-        title: candidate.summary || candidate.judgment.slice(0, 120),
+        title: promotionTitle,
         // Substantive statement: judgment (what to retain) + value (why it
         // matters / future value) when present — the value clause is the
         // reusable insight, and a bare conclusion sentence alone is too thin
         // to stand as a method/template asset body.
-        statement: [
-          candidate.judgment,
-          ...(candidate.value?.trim() && candidate.value !== candidate.judgment
-            ? [candidate.value.trim()]
-            : []),
-        ].join('\n').slice(0, 4_000),
+        statement: promotionStatement,
         evidenceRefs: candidate.evidenceRefs,
         ...(candidate.learningSignal ? { learningSignal: candidate.learningSignal } : {}),
         ...(candidate.learningProvenance ? { learningProvenance: candidate.learningProvenance } : {}),
@@ -2604,10 +2637,18 @@ export async function promoteRecallCandidate(
         const fused = candidate.suggestedAction === 'update' && String(target.statement || '').trim()
           ? fuseStatements(String(target.statement), String(candidate.judgment || ''))
           : null;
+        const updateStatement = fused ? fused.statement : candidate.judgment;
+        // 与 create 分支同款：标题合规判定拿**写入后的最终正文**（融合结果）
+        // 比对；summary 不合规时走 LLM 起标题链（设计 3.2 晋升线口径）。
+        const updateTitle = await resolvePromotionAssetTitle(userId, {
+          preferredTitle: candidate.summary || '',
+          statement: updateStatement,
+          type: candidate.suggestedType,
+        });
         try {
           stored = await updateAbilityAsset(userId, target.id, {
-            title: candidate.summary || candidate.judgment.slice(0, 120),
-            statement: fused ? fused.statement : candidate.judgment,
+            title: updateTitle,
+            statement: updateStatement,
             scope: candidate.suggestedScope,
             // An update adds evidence to the chain; it must not erase the
             // evidence already supporting the target asset.

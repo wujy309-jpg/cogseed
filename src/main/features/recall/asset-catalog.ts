@@ -8,7 +8,9 @@ import { listRecallUsage } from './usage-service';
  *   - `search_ability_assets` 目录模式（工具内返回）；
  *   - 回合提示词里的常驻目录（小库直接进上下文，省掉一次工具往返）。
  *
- * 预算（有测试钉着）：每条 ≤ 110 字符；标题 14、一句话 22、适用 12、页眉页脚 ≤ 250。
+ * 预算（有测试钉着，口径＝标题行＋meta 行**两行合计、平均** ≤ 110 字符）：
+ * 标题不截断（2026-09-28 标题一等化后标题本身合法、≤16 字，闸门在 asset-service
+ * 收口处保证，目录行不再需要兜底截断）、一句话 22、适用 12、页眉页脚 ≤ 250。
  */
 
 export interface AssetUsageStat {
@@ -71,7 +73,9 @@ export function formatCatalogEntry(
   ].join('·');
   const applies = (asset.applicableWhen || [])[0];
   const oneLine = catalogOneLine(asset.statement);
-  const head = `${index}. ${relevant ? '★' : ''}[asset:${asset.id}] ${catalogTruncate(String(asset.title || '(无标题)'), 14)}`;
+  // 标题不截断（2026-09-28 标题一等化 3.4）：标题经 3.2 收口闸门保证合法
+  // （中文 ≤16 字），目录行原样给出；只有缺标题的记录才落「(无标题)」兜底。
+  const head = `${index}. ${relevant ? '★' : ''}[asset:${asset.id}] ${String(asset.title || '(无标题)')}`;
   return [
     oneLine ? `${head} — ${oneLine}` : head,
     ` ${meta}${applies ? `｜适用:${catalogTruncate(String(applies), 12)}` : ''}`,

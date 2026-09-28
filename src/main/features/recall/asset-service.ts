@@ -18,6 +18,7 @@ import { normalizeAbilityAssetScopePolicy, resolveScopeForAsset, normalizeAssetS
 import { assertNotForbiddenToPersist } from '../../util/cognition-sensitivity';
 import { normalizeCausalRule } from './world-model-types';
 import { resolveExecutionEvidenceRefs } from './evidence-resolution';
+import { assertCompliantAbilityAssetTitle, recallTitleIssue } from './title-policy';
 import { createLogger } from '../../logger';
 
 const log = createLogger('recall.assets');
@@ -574,6 +575,11 @@ export async function createAbilityAsset(
   if (metadata.actor !== 'user' && metadata.actor !== 'system') throw new Error('invalid ability asset creation actor');
   // 刀一（2026-09-19）：scope 写入点归一——词条放行、场景描述句兜底 general。
   if (input.scope !== undefined) input = { ...input, scope: resolveScopeForAsset(input.scope) };
+  // 标题一等化闸门（设计 3.2 / 深探 F4）：create 收口补与 update 对称的 bounded
+  // 归一（空白折叠、trim、≤120），随后过 3.1 判定。闸门放在收口处，任何调用方
+  // （晋升、跨会话记忆、AI 管家、审批卡确认、未来新增）都无法绕过。
+  input = { ...input, title: bounded(input.title, 'title', 120) };
+  assertCompliantAbilityAssetTitle(input.title, input.statement);
   bounded(metadata.reason, 'reason', 1_000);
   assertNotForbiddenToPersist([
     input.title,
@@ -842,6 +848,10 @@ export async function updateAbilityAsset(userId: string, assetId: string, input:
     // 没折出值的维度 = 显式清空（盘上形态：键缺席），把现值从记录上拿掉。
     if (input.applicableWhen !== undefined && !semantics.applicableWhen) delete next.applicableWhen;
     if (input.forbiddenWhen !== undefined && !semantics.forbiddenWhen) delete next.forbiddenWhen;
+    // 标题一等化闸门（设计 3.2 / 深探 F1）：title 在场即过 3.1 判定，比对用的
+    // 正文是写入后的最终值（本次未改正文 = 在用正文）。闸门拦的是**写入**：
+    // 存量遗留的不合规标题只要本次不写 title 就不受影响，不会被这里卡死。
+    if (input.title !== undefined) assertCompliantAbilityAssetTitle(next.title, next.statement);
     return next;
   });
   const asset = asAsset(updated);
@@ -870,6 +880,27 @@ export async function updateAbilityAsset(userId: string, assetId: string, input:
     if (changed && clearedRecommendation) await appendAudit(userId, asset.id, 'recommendation_cleared', { note: action.reason, actor: action.actor });
   }
   if (changed) await reconcilePersonalProfileProjection(userId, asset);
+  if (changed && beforeAsset && asset.title !== beforeAsset.title) {
+    // 标题一等化硬前提（设计 3.3 / 深探 F6）：改 title 走内容路径必然 bump
+    // version，而 committed 投影读取强校验「冻结版本 == 资产当前版本」，不匹配
+    // 即整组拒绝注入且无回退。一切改标题写入必须伴随投影版本刷新——与 scope
+    // 迁移（2026-09-14）同口径，动态 import 避开 asset-service ↔
+    // context-projection 静态循环依赖。资产写已落盘：刷新失败只记 error 不回滚
+    // （回滚救不回已 bump 的版本号），留给下次写入或迁移修复。
+    try {
+      const { refreshCommittedProjectionAssetVersion } = await import('./context-projection');
+      const refreshed = await refreshCommittedProjectionAssetVersion(userId, asset.id, String(asset.version));
+      if (refreshed > 0) {
+        log.info(`title change refreshed committed projections assetId=${asset.id} count=${refreshed}`);
+      }
+    } catch (error) {
+      log.error('committed projection refresh failed after title change', {
+        userId,
+        assetId: asset.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
   return asset;
 }
 
@@ -1425,6 +1456,10 @@ export async function rollbackAbilityAsset(
   const target = versions.find((record) => record.version === toVersion);
   if (!target) throw new Error('recall ability asset version not found');
   let beforeAsset: RecallAbilityAssetRecord | undefined;
+  // 标题闸门（设计 3.2 拍板项 #2 / 深探 F14）：历史快照冻结着大量不合规 title
+  // （版本流只追加、物理不动），回滚不能成为「把烂标题带回在用版」的通道。
+  // 目标快照标题不合规时保留在用标题，其余字段照常回滚；在锁内置位供台账注记。
+  let titleRetained = false;
   const updated = await updateRecallJsonRecord(userId, 'ability-assets', assetId, (raw) => {
     if (!raw) throw new Error('recall ability asset not found');
     const current = asAsset(raw);
@@ -1433,15 +1468,19 @@ export async function rollbackAbilityAsset(
     beforeAsset = current;
     // scope 单独摘出且不倒退（2026-09-17 对齐 select 的守卫）：旧快照可能带
     // 词表化前的自由文本 scope，原样写回会再触发 legacy 迁移垫空版本。
-    const { status: _snapshotStatus, maturity: _snapshotMaturity, version: _snapshotVersion, scope: rbScope, ...content } = target.snapshot;
+    const { status: _snapshotStatus, maturity: _snapshotMaturity, version: _snapshotVersion, scope: rbScope, title: rbTitle, ...content } = target.snapshot;
     const scope = isRecallScopeTerm(String(rbScope || ''))
       ? String(rbScope)
       : (normalizeAssetScopeValue(String(rbScope || '')) || current.scope);
+    // 判定用正文 = 目标快照自己的正文（回滚后的最终正文）；标题合规才随快照
+    // 回滚，不合规则留在用标题（...current 先铺，content 已不含 title）。
+    titleRetained = recallTitleIssue(String(rbTitle ?? ''), String(target.snapshot.statement ?? '')) !== undefined;
     const reverted: Record<string, unknown> = {
       ...current,
       // 只回滚内容，不回滚治理状态与成熟度：暂停过的资产不该因为回滚就自己
       // 变回 active，验证过的成熟度也不该被一次内容回滚抹掉。
       ...content,
+      ...(titleRetained ? {} : { title: String(rbTitle ?? '') }),
       scope,
       version: nextVersion(current.version),
       activeVersion: nextVersion(current.version),
@@ -1460,6 +1499,7 @@ export async function rollbackAbilityAsset(
   await appendAudit(userId, asset.id, 'rolled_back', {
     reason: action.reason,
     actor: action.actor,
+    ...(titleRetained ? { note: `${action.reason}｜目标版本标题不合规，保留在用标题（设计 3.2 拍板项 #2）` } : {}),
     ...(rollbackSummary ? { before: rollbackSummary.before, after: rollbackSummary.after } : {}),
     ...(beforeAsset ? { rollbackAnchor: activeVersionOf(beforeAsset) } : {}),
   });
@@ -1487,6 +1527,9 @@ export async function selectAbilityAssetVersion(
   const versions = await listAbilityAssetVersions(userId, assetId);
   const target = versions.find((record) => record.version === toVersion);
   if (!target) throw new Error('recall ability asset version not found');
+  // 标题闸门（设计 3.2 拍板项 #2 / 深探 F14，与 rollback 同口径）：选用标题
+  // 不合规的旧快照时保留在用标题，其余内容照常切换。
+  let titleRetained = false;
   const updated = await updateRecallJsonRecord(userId, 'ability-assets', assetId, (raw) => {
     if (!raw) throw new Error('recall ability asset not found');
     const current = asAsset(raw);
@@ -1497,13 +1540,16 @@ export async function selectAbilityAssetVersion(
     // 自由文本 scope——原样写回会让 legacy scope 迁移在下次启动时再 bump
     // 一个内容不变的新版本（实机 aa-34b688 连产 v4/v5）。选用旧版只回内容，
     // scope 保持词表值。
-    const { status: _snapshotStatus, maturity: _snapshotMaturity, version: _snapshotVersion, scope: snapshotScope, ...content } = target.snapshot;
+    const { status: _snapshotStatus, maturity: _snapshotMaturity, version: _snapshotVersion, scope: snapshotScope, title: selectedTitle, ...content } = target.snapshot;
     const scope = isRecallScopeTerm(String(snapshotScope || ''))
       ? String(snapshotScope)
       : (normalizeAssetScopeValue(String(snapshotScope || '')) || current.scope);
+    // 判定用正文 = 所选快照自己的正文（切换后的最终正文）。
+    titleRetained = recallTitleIssue(String(selectedTitle ?? ''), String(target.snapshot.statement ?? '')) !== undefined;
     const selected: Record<string, unknown> = {
       ...current,
       ...content,
+      ...(titleRetained ? {} : { title: String(selectedTitle ?? '') }),
       scope,
       activeVersion: toVersion,
       updatedAt: new Date().toISOString(),
@@ -1512,7 +1558,10 @@ export async function selectAbilityAssetVersion(
     return selected as RecallAbilityAssetRecord;
   });
   const asset = asAsset(updated);
-  await appendAudit(userId, asset.id, 'version_selected', { note: `${action.reason || 'select'} (v${toVersion})`, actor: action.actor });
+  await appendAudit(userId, asset.id, 'version_selected', {
+    note: `${action.reason || 'select'} (v${toVersion})${titleRetained ? '｜目标版本标题不合规，保留在用标题（设计 3.2 拍板项 #2）' : ''}`,
+    actor: action.actor,
+  });
   await reconcilePersonalProfileProjection(userId, asset);
   return asset;
 }
@@ -1681,13 +1730,18 @@ export async function mergeAbilityAssets(
     }
     // scope 单独摘出且不倒退（与 rollback/select 同款守卫）：旧快照可能带
     // 词表化前的自由文本 scope，原样铺上会再触发 legacy 迁移垫空版本。
-    const { status: _s, maturity: _m, version: _v, relations: _r, derivedFrom: _d, scope: snapshotScope, ...content } = sourceActiveSnapshot;
+    // 标题闸门（设计 3.2 / 深探 F15）：source 在用标题不合规时不铺到 target
+    // （保留 target 在用标题），其余内容照常并入——归并不走 updateAbilityAsset
+    // 收口，这里就是它的判定点。
+    const { status: _s, maturity: _m, version: _v, relations: _r, derivedFrom: _d, scope: snapshotScope, title: snapshotTitle, ...content } = sourceActiveSnapshot;
     const mergedScope = isRecallScopeTerm(String(snapshotScope || ''))
       ? String(snapshotScope)
       : (normalizeAssetScopeValue(String(snapshotScope || '')) || current.scope);
+    const sourceTitleCompliant = recallTitleIssue(String(snapshotTitle ?? ''), String(sourceActiveSnapshot.statement ?? '')) === undefined;
     return {
       ...current,
       ...content,
+      ...(sourceTitleCompliant ? { title: String(snapshotTitle ?? '') } : {}),
       scope: mergedScope,
       relations: mergedRelations,
       ...(mergedDerivedFrom.length ? { derivedFrom: mergedDerivedFrom } : {}),

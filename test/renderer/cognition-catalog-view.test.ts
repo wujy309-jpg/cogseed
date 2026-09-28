@@ -36,8 +36,10 @@ describe('资产目录视图', () => {
     );
     expect(html).toContain('资产目录（模型视角）');
     expect(html).toContain('性能归因规则');
-    // 一句话 = 正文首句（不是全文，全文点进去看）
-    expect(html).toContain('性能类提问需用真实日志做分层归因，先给链路再给瓶颈');
+    // 一句话 = 正文首句压到 22 字（2026-09-28 与主进程 catalogOneLine 同口径，
+    // 两边同一句；不是全文，全文点进去看）
+    expect(html).toContain('性能类提问需用真实日志做分层归因，先给链路再');
+    expect(html).not.toContain('再给瓶颈');
     expect(html).not.toContain('后半句是看不到的正文');
     // 元信息：类型白话 + 范围白话 + 在用版 + 被带入次数
     expect(html).toContain('规则与偏好');

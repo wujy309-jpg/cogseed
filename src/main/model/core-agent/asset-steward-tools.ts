@@ -33,6 +33,7 @@ import {
 import type { RecallAbilityAssetRecord } from '../../features/recall/candidate-service';
 import { normalizeAbilityTagList } from '../../features/recall/ability-tag-service';
 import type { RecallAbilityAssetScopePolicy } from '../../features/recall/scope-policy';
+import { assertCompliantAbilityAssetTitle } from '../../features/recall/title-policy';
 import { evaluateRecallAssetRuntimeEligibility } from '../../features/recall/prompt-injection';
 import { requestInteraction } from '../../features/chat_events/interaction-hub';
 import {
@@ -1006,7 +1007,7 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
           type: 'object',
           description: '要改的字段对象，至少给一个；没给的字段不动。必须传**对象**（例如 {"statement":"新正文"}），不要传 JSON 字符串。正文的键名是 statement（别名 body）。',
           properties: {
-            title: { type: 'string', description: '标题（命名规范化；上限 120 字）。' },
+            title: { type: 'string', description: '标题（命名规范化）：非空；含汉字时 ≤16 个字，其他语言 ≤60 字符；不得与正文开头重复（第一个字都不能与正文相同）；不以标点结尾。不合规会被拒绝。' },
             statement: { type: 'string', description: '正文（上限 4000 字）。' },
             scope: { type: 'string', description: '适用范围。' },
             applicableWhen: { type: 'array', items: { type: 'string' }, description: '适用场景（整体替换；传空数组=清空）。' },
@@ -1162,6 +1163,25 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
           claimedUserInstruction: input.origin === 'user_instruction',
           userInstructionVerified: directUserEdit,
         });
+      }
+
+      // 标题一等化（设计 3.2 / 深探 F2）：title 不在 SUBSTANTIAL_FIELDS（分级③
+      // 允许 AI 直接处理命名），但不合规标题一个字都不能落库——工具层先过 3.1
+      // 判定，不合规即拒绝并在回执里说明规范；asset-service 收口闸门是第二道
+      // 保险。判定用的正文是在用正文：能走到这里的 title 改动从不与 statement
+      // 同单（混合提交已在上面被拦下），写后正文＝在用正文。
+      if (typeof fields.title === 'string') {
+        try {
+          assertCompliantAbilityAssetTitle(fields.title, String(asset.statement || ''));
+        } catch (error) {
+          return blockedWriteReceipt(
+            opts,
+            '改动',
+            assetId,
+            error,
+            '标题规范（全模块统一）：非空；含汉字时不超过 16 个字，其他语言不超过 60 字符；不得与正文开头重复；不以标点结尾。',
+          );
+        }
       }
 
       // 危险操作：改 scopePolicy = 改写"这条资产能进出哪些空间"（跨作用域扩大）。

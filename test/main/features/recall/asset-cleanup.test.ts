@@ -1,12 +1,17 @@
 /**
- * 大扫除与整理报告（specs/008 US-403 / T041–T046）。
+ * 大扫除与整理报告（specs/008 US-403 / T041–T046；标题重起轮＝四病整改设计 3.3）。
  *
- * 守四条：
+ * 守五条：
  *   ① 报告与台账**一一对应**（每项都有 ledgerRef 与回滚锚点），逐项可单独回滚；
  *   ② 只做**不改变含义**的整理：近重复（正文不同）不自动合并，进 `uncertain[]` 且**不动它**；
  *   ③ 补标签已接线（specs/012 T025）：同源组多数标签机械传播直接写入，含义判断
  *      进 `uncertain[]`；`skippedSteps` 不再有"待 Epic 2 / 012"；
- *   ④ 中断/失败后：已执行项全部有台账、可逐项回滚，失败项如实记录，未执行项保持原状。
+ *   ④ 中断/失败后：已执行项全部有台账、可逐项回滚，失败项如实记录，未执行项保持原状；
+ *   ⑤ **标题重起轮（kind='title_regen'）＝含义生成，与 ② 分列**：只对统一口径
+ *      （title-policy 3.1 判定）不合规的资产让 LLM 重新拟题，actor='ai' 走
+ *      updateAbilityAsset 正门升版；模型不可用＝整轮失败上报（抛错、不落报告、
+ *      不写任何资产，绝不静默跳过）；写前整库备份到 records/ 之外；不提供逐项
+ *      回滚（拍板项 #7），报告项只留 before→after 与版本锚点。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
@@ -17,11 +22,56 @@ let tmpDir: string;
 let previousRoot: string | undefined;
 const RULE_BOUNDARY = { applicableWhen: ['performing governed work'], forbiddenWhen: ['outside the governed scope'] };
 
+// 标题重起轮的模型链 mock（与 asset-title-suggestion.test.ts 同款：mock auth
+// 预检 + runner 出题，走真实 suggestAbilityAssetTitle 链路）。outputs 按
+// 「正文片段 → 模型输出」配对，不依赖资产处理顺序。
+const titleRegenModel = vi.hoisted(() => ({
+  configured: true,
+  oauthExpired: null as string | null,
+  outputs: [] as Array<{ match: string; text: string }>,
+  runCalls: [] as Array<{ message: string }>,
+}));
+vi.mock('../../../../src/main/features/auth', () => ({
+  hasConfiguredModelForUser: () => ({ configured: titleRegenModel.configured }),
+  hasConfiguredModel: () => ({ configured: titleRegenModel.configured }),
+  getConfiguredModelOAuthExpiredMessage: () => titleRegenModel.oauthExpired,
+}));
+vi.mock('../../../../src/main/model/core-agent/runner', () => ({
+  buildRunner: vi.fn(async () => ({
+    providerId: 'anthropic',
+    modelId: 'claude-test',
+    turnEphemeral: '',
+    runner: {
+      run: async (runInput: { message: string }) => {
+        titleRegenModel.runCalls.push(runInput);
+        const hit = titleRegenModel.outputs.find((row) => runInput.message.includes(row.match));
+        return {
+          text: hit ? hit.text : '',
+          content: [],
+          meta: {
+            durationMs: 1,
+            model: 'claude-test',
+            provider: 'anthropic',
+            stopReason: 'end_turn',
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            toolLoops: 0,
+            compactionCount: 0,
+          },
+        };
+      },
+    },
+  })),
+}));
+
 beforeEach(() => {
   vi.resetModules();
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cogseed-cleanup-'));
   previousRoot = process.env.COGSEED_WORKSPACE_ROOT;
   process.env.COGSEED_WORKSPACE_ROOT = tmpDir;
+  titleRegenModel.configured = true;
+  titleRegenModel.oauthExpired = null;
+  titleRegenModel.outputs = [];
+  titleRegenModel.runCalls = [];
 });
 afterEach(() => {
   if (previousRoot === undefined) delete process.env.COGSEED_WORKSPACE_ROOT;
@@ -47,15 +97,19 @@ async function seedAsset(uid: string, judgment: string, title?: string) {
   seedSeq += 1;
   const candidate = await candidates.saveRecallCandidate(uid, {
     judgment,
+    // 标题闸门（设计 3.2）后晋升 title 必须合规：给一份与正文开头不同的合规
+    // summary，不再吃「正文首句」兜底；需要"不规范标题"夹具的用例用第三个
+    // 参数 raw 直写（闸门只拦收口写入，不拦测试布置的存量形态）。
+    summary: `整理样本${seedSeq}`,
     suggestedType: 'rule', ...RULE_BOUNDARY, suggestedScope: 'architecture',
     sourceRefs: [{ kind: 'execution', id: `exec-cleanup-${seedSeq}` }],
   });
   const asset = (await candidates.promoteRecallCandidate(uid, candidate.id, { actor: 'user' })).asset;
   if (title !== undefined) {
     await store.updateRecallJsonRecord(uid, 'ability-assets', asset.id, (raw) => ({ ...raw!, title }));
-    return { ...asset, title };
+    return { ...asset, title, seededTitle: asset.title };
   }
-  return asset;
+  return { ...asset, seededTitle: asset.title };
 }
 
 /** 克隆一条合法记录（绕开相似度闸门，用于造"重复资产"这类本来就该存在的状态）。 */
@@ -72,32 +126,39 @@ describe('整理报告与执行链（T041 / T042）', () => {
     const { assets, cleanup } = await modules();
     // 真机上能落盘的"标题不规范"主要是**结尾句读**：空白早被候选判断与资产写入口
     // 归一了（`boundedText` / `bounded` 都 collapse + trim），所以夹具用句点形态。
-    const asset = await seedAsset(uid, '导出报表一律带上生成时间戳。');
-    expect(asset.title).toBe('导出报表一律带上生成时间戳。');
+    // 标题闸门（设计 3.2）后夹具标题还须与正文开头不同字——「正文首句＋句号」
+    // 的老形态现在是收口闸门直接拒绝的写入，不再是规范化轮的处理对象。
+    const asset = await seedAsset(uid, '导出报表一律带上生成时间戳。', '报表时间戳纪律。');
+    expect(asset.title).toBe('报表时间戳纪律。');
     const report = await cleanup.runAssetCleanup(uid);
 
     expect(report.finishedAt).toBeTruthy();
     const applied = report.items.filter((item) => item.status === 'applied');
     expect(applied).toHaveLength(1);
-    expect(applied[0]).toMatchObject({ assetId: asset.id, kind: 'title_normalized', before: '导出报表一律带上生成时间戳。', after: '导出报表一律带上生成时间戳' });
+    expect(applied[0]).toMatchObject({ assetId: asset.id, kind: 'title_normalized', before: '报表时间戳纪律。', after: '报表时间戳纪律' });
     // 每项都带台账引用与回滚锚点（items[] 与台账一一对应、每项可单独回滚）。
     expect(applied[0].ledgerRef).toBeTruthy();
     expect(applied[0].rollbackAnchor).toBe('1');
     const audit = await assets.listAbilityAssetAudit(uid, asset.id);
     expect(audit.some((row) => row.id === applied[0].ledgerRef)).toBe(true);
-    expect((await assets.readAbilityAsset(uid, asset.id)).title).toBe('导出报表一律带上生成时间戳');
+    expect((await assets.readAbilityAsset(uid, asset.id)).title).toBe('报表时间戳纪律');
   });
 
   it('逐项回滚：拿报告项里的锚点回滚，内容与整理前一致', async () => {
     const uid = 'user-clean-rollback';
-    const { assets, cleanup } = await modules();
+    const { assets, cleanup, store } = await modules();
     const asset = await seedAsset(uid, '上线前核对回滚方案。');
+    // 布置一个结尾句点标题（raw 直写，模拟存量），规范化把它收干净。
+    await store.updateRecallJsonRecord(uid, 'ability-assets', asset.id, (raw) => ({ ...raw!, title: '回滚方案核对。' }));
     const report = await cleanup.runAssetCleanup(uid);
     const item = report.items.find((row) => row.status === 'applied')!;
 
     await assets.rollbackAbilityAsset(uid, item.assetId, item.rollbackAnchor!, { actor: 'user', reason: '逐项回滚' });
-    // 回滚锚点指向整理前的在用版，标题逐字回到带句点的形态。
-    expect((await assets.readAbilityAsset(uid, asset.id)).title).toBe('上线前核对回滚方案。');
+    // 回滚锚点指向整理前的在用版：内容逐字回到整理前，标题回到 v1 快照的
+    // 合规标题（闸门后带句点标题不再可能成为 v1 快照——拍板项 #2 保证回滚
+    // 不会把不合规标题带回在用版）。
+    expect((await assets.readAbilityAsset(uid, asset.id)).title).toBe(asset.seededTitle);
+    expect((await assets.readAbilityAsset(uid, asset.id)).statement).toBe(asset.statement);
     // 回滚本身记账（报告项仍指向原来那次改动，历史不被改写）。
     expect((await assets.listAbilityAssetAudit(uid, asset.id)).some((row) => row.action === 'rolled_back')).toBe(true);
   });
@@ -251,9 +312,9 @@ describe('中断与失败后的一致性（T043 / T045）', () => {
   it('单项失败如实记录、其余照常执行，已执行项仍可逐项回滚', async () => {
     const uid = 'user-clean-partial';
     const { assets, cleanup, store } = await modules();
-    const ok = await seedAsset(uid, '导出报表一律带上生成时间戳。');
+    const ok = await seedAsset(uid, '导出报表一律带上生成时间戳。', '报表时间戳纪律。');
     // 一条已撤销的资产：标题规范化会被"撤销不可变更"挡下——单项失败不中断整轮。
-    const revoked = await seedAsset(uid, '把长会议压成三条可执行结论。');
+    const revoked = await seedAsset(uid, '把长会议压成三条可执行结论。', '会议结论三条整。');
     await assets.revokeAbilityAsset(uid, revoked.id, { actor: 'user', reason: 'unsafe' });
     void store;
 
@@ -264,10 +325,10 @@ describe('中断与失败后的一致性（T043 / T045）', () => {
     expect(failed.map((item) => item.assetId)).toEqual([revoked.id]);
     expect(failed[0].note).toContain('revoked');
     // 失败项保持原状。
-    expect((await assets.readAbilityAsset(uid, revoked.id)).title).toBe('把长会议压成三条可执行结论。');
-    // 已执行项可逐项回滚。
+    expect((await assets.readAbilityAsset(uid, revoked.id)).title).toBe('会议结论三条整。');
+    // 已执行项可逐项回滚（标题回到 v1 快照的合规标题，见拍板项 #2）。
     await assets.rollbackAbilityAsset(uid, applied[0].assetId, applied[0].rollbackAnchor!, { actor: 'user', reason: '逐项回滚' });
-    expect((await assets.readAbilityAsset(uid, ok.id)).title).toBe('导出报表一律带上生成时间戳。');
+    expect((await assets.readAbilityAsset(uid, ok.id)).title).toBe(ok.seededTitle);
   });
 
   it('报告先落盘再逐项执行：中断时报告如实反映"做到哪了"', async () => {
@@ -287,13 +348,136 @@ describe('中断与失败后的一致性（T043 / T045）', () => {
   it('作用域过滤：只扫范围内的资产', async () => {
     const uid = 'user-clean-scope';
     const { assets, cleanup, store } = await modules();
-    const inSpace = await seedAsset(uid, '空间内的资产需要整理。');
+    const inSpace = await seedAsset(uid, '空间内的资产需要整理。', '范围外不动。');
     await store.updateRecallJsonRecord(uid, 'ability-assets', inSpace.id, (raw) => ({ ...raw!, spaceId: 'sp_a' }));
     const outside = await seedAsset(uid, '空间外的资产不该被动。');
 
     const report = await cleanup.runAssetCleanup(uid, { scope: { spaceId: 'sp_a' } });
     expect(report.scanned).toBe(1);
     expect(report.items.map((item) => item.assetId)).toEqual([inSpace.id]);
-    expect((await assets.readAbilityAsset(uid, outside.id)).title).toBe('空间外的资产不该被动。');
+    expect((await assets.readAbilityAsset(uid, outside.id)).title).toBe(outside.seededTitle);
+  });
+});
+
+describe('标题重起轮（设计 3.3 专项轮：LLM 含义生成，与规则轮"不改含义"口径分列）', () => {
+  it('只对统一口径不合规的资产重起：actor=ai 走正门升版，报告项带 before→after 与版本锚点；合规资产零动', async () => {
+    const uid = 'user-clean-title-regen';
+    const { assets, cleanup } = await modules();
+    titleRegenModel.outputs = [
+      { match: '导出报表一律带上生成时间戳', text: '{"title":"报表时间戳纪律"}' },
+    ];
+    // 存量不合规：raw 直写「正文原句」标题（前缀重复＋句读结尾）——闸门只拦
+    // 写入不拦存量形态，这正是重起轮的处理对象（规则轮的 normalize 对它无效）。
+    const bad = await seedAsset(uid, '导出报表一律带上生成时间戳。', '导出报表一律带上生成时间戳。');
+    const fine = await seedAsset(uid, '上线前必须核对回滚方案与灰度范围');
+    const fineBefore = await assets.readAbilityAsset(uid, fine.id);
+
+    const report = await cleanup.runAssetTitleRegenCleanup(uid);
+    expect(report.round).toBe('title_regen');
+    expect(report.finishedAt).toBeTruthy();
+    expect(report.items).toHaveLength(1);
+    expect(report.items[0]).toMatchObject({
+      assetId: bad.id,
+      kind: 'title_regen',
+      status: 'applied',
+      before: '导出报表一律带上生成时间戳。',
+      after: '报表时间戳纪律',
+    });
+    expect(report.items[0].ledgerRef).toBeTruthy();
+    expect(report.items[0].rollbackAnchor).toBe(bad.version);
+    // 写入走 updateAbilityAsset 正门：升版＋台账，模型产物记在 ai 名下（勿借
+    // 'user' 名义——那是规则轮"机械步骤由系统代执行"的口径，这一轮不成立）。
+    const after = await assets.readAbilityAsset(uid, bad.id);
+    expect(after.title).toBe('报表时间戳纪律');
+    expect(Number(after.version)).toBe(Number(bad.version) + 1);
+    const audit = await assets.listAbilityAssetAudit(uid, bad.id);
+    expect(audit.some((row) => row.id === report.items[0].ledgerRef && row.actor === 'ai')).toBe(true);
+    // 合规资产免动：不进报告、版本与标题都不动。
+    expect(report.items.some((row) => row.assetId === fine.id)).toBe(false);
+    const fineAfter = await assets.readAbilityAsset(uid, fine.id);
+    expect(fineAfter.title).toBe(fineBefore.title);
+    expect(fineAfter.version).toBe(fineBefore.version);
+  });
+
+  it('写前整库备份落在 records 之外：备份里是改前形态，不污染记录目录', async () => {
+    const uid = 'user-clean-title-regen-backup';
+    const { cleanup } = await modules();
+    titleRegenModel.outputs = [
+      { match: '把长会议压成三条可执行结论', text: '{"title":"会议结论三条整"}' },
+    ];
+    const bad = await seedAsset(uid, '把长会议压成三条可执行结论。', '把长会议压成三条可执行结论。');
+
+    const report = await cleanup.runAssetTitleRegenCleanup(uid);
+    expect(report.backupDir).toBeTruthy();
+    // 备份目录在 records 之外（落进 records/ 会被 readdir 当记录读入污染 collection）。
+    expect(path.basename(report.backupDir!)).toMatch(/^backup-title-regen-/);
+    expect(report.backupDir!.split(path.sep)).not.toContain('records');
+    expect(fs.existsSync(report.backupDir!)).toBe(true);
+    // 备份是**写前**快照：记录文件齐全，且标题还是改前的烂标题。
+    const files = fs.readdirSync(report.backupDir!);
+    expect(files).toContain(`${bad.id}.json`);
+    const backed = JSON.parse(fs.readFileSync(path.join(report.backupDir!, `${bad.id}.json`), 'utf8')) as { title: string };
+    expect(backed.title).toBe('把长会议压成三条可执行结论。');
+  });
+
+  it('模型不可用＝整轮失败上报：抛错、不落报告、不写任何资产（不静默跳过）', async () => {
+    const uid = 'user-clean-title-regen-nomodel';
+    const { assets, cleanup } = await modules();
+    titleRegenModel.configured = false;
+    const bad = await seedAsset(uid, '导出报表一律带上生成时间戳。', '导出报表一律带上生成时间戳。');
+
+    await expect(cleanup.runAssetTitleRegenCleanup(uid)).rejects.toThrow(/尚未配置可用模型/);
+    expect(await cleanup.listCleanupReports(uid)).toEqual([]);
+    expect((await assets.readAbilityAsset(uid, bad.id)).title).toBe('导出报表一律带上生成时间戳。');
+    expect(titleRegenModel.runCalls).toHaveLength(0);
+  });
+
+  it('失败隔离：单条模型失败记 failed＋note、其余照常执行；终态资产不烧模型调用记 skipped', async () => {
+    const uid = 'user-clean-title-regen-partial';
+    const { assets, cleanup } = await modules();
+    // 坏输出按正文片段配对：资产 a 三轮都拿到非 JSON（invalid_model_output），
+    // 资产 b 一次拿到合规标题——顺序无关。
+    titleRegenModel.outputs = [
+      { match: '导出报表一律带上生成时间戳', text: '不是 JSON' },
+      { match: '发布前必须核对回滚方案与灰度范围', text: '{"title":"灰度核对清单"}' },
+    ];
+    const a = await seedAsset(uid, '导出报表一律带上生成时间戳。', '导出报表一律带上生成时间戳。');
+    const b = await seedAsset(uid, '发布前必须核对回滚方案与灰度范围。', '发布前必须核对回滚方案与灰度范围。');
+    const revoked = await seedAsset(uid, '把长会议压成三条可执行结论。', '把长会议压成三条可执行结论。');
+    await assets.revokeAbilityAsset(uid, revoked.id, { actor: 'user', reason: '夹具' });
+
+    const report = await cleanup.runAssetTitleRegenCleanup(uid);
+    const failed = report.items.find((row) => row.assetId === a.id)!;
+    expect(failed.status).toBe('failed');
+    expect(failed.note).toBeTruthy();
+    expect((await assets.readAbilityAsset(uid, a.id)).title).toBe('导出报表一律带上生成时间戳。');
+    expect(report.items.find((row) => row.assetId === b.id)).toMatchObject({ status: 'applied', after: '灰度核对清单' });
+    expect((await assets.readAbilityAsset(uid, b.id)).title).toBe('灰度核对清单');
+    const skipped = report.items.find((row) => row.assetId === revoked.id)!;
+    expect(skipped.status).toBe('skipped');
+    expect(skipped.note).toContain('不可修改');
+    // 模型调用：a 三轮重试＋b 一轮＝4；revoked 零调用（skipped 不烧模型）。
+    expect(titleRegenModel.runCalls).toHaveLength(4);
+  });
+
+  it('没有不合规资产时是空轮：零项、零模型调用、不留备份目录', async () => {
+    const uid = 'user-clean-title-regen-empty';
+    const { cleanup } = await modules();
+    await seedAsset(uid, '命名规范：动词开头、限定范围。');
+    const report = await cleanup.runAssetTitleRegenCleanup(uid);
+    expect(report.round).toBe('title_regen');
+    expect(report.finishedAt).toBeTruthy();
+    expect(report.items).toEqual([]);
+    expect(report.backupDir).toBeUndefined();
+    expect(titleRegenModel.runCalls).toHaveLength(0);
+  });
+
+  it('规则轮与新轮分列：runAssetCleanup 报告 round=rules，语义互不复用', async () => {
+    const uid = 'user-clean-title-regen-rounds';
+    const { cleanup } = await modules();
+    await seedAsset(uid, '命名规范：动词开头、限定范围。');
+    const rules = await cleanup.runAssetCleanup(uid);
+    expect(rules.round).toBe('rules');
+    expect(rules.items.every((item) => item.kind !== 'title_regen')).toBe(true);
   });
 });

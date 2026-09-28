@@ -12,6 +12,14 @@
  *      不映射到 `assetType` 或 `familyName`，`skippedSteps` 不再有"待 Epic 2 / 012"。
  *   ③ **`items[]` 与台账一一对应、每项可单独回滚**：每项带 `ledgerRef`（台账行）
  *      与 `rollbackAnchor`（回滚到哪一版），沿用 US-404 已建的锚点机制。
+ *   ④ **标题重起轮（四病整改设计 3.3）＝含义生成，与 ① 分列**：
+ *      `runAssetTitleRegenCleanup` 是独立的专项轮——只对统一口径
+ *      （`title-policy` 的 3.1 判定）不合规的资产让 LLM 重新拟题并直接写入
+ *      （`kind='title_regen'`）。它与 ① "只做不改变含义的整理"是**两种语义**：
+ *      规则轮零模型、含义不动；重起轮改的正是标题含义。actor 用 'ai'（不用
+ *      'user'——规则轮借用户名义的正当性建立在"机械步骤由系统代执行"上，
+ *      模型产物不成立；'system' 会撞"自动线必须带评审交接"闸门）。开跑前
+ *      模型预检，不过整轮失败上报；写前整库备份；不提供逐项回滚（拍板项 #7）。
  *
  * 中断恢复：报告**先落盘再逐项执行**，每执行完一项就写回报告——中断时已执行项
  * 全部有台账、可逐项回滚，未执行项保持原状，不会产生"改了一半没记账"的半状态。
@@ -22,7 +30,7 @@ import * as path from 'node:path';
 
 import { createLogger } from '../../logger';
 import { safeId } from '../../storage';
-import { recallJsonRecordPath } from './paths';
+import { recallJsonRecordPath, recallRoot } from './paths';
 import { readRecallJsonRecord, updateRecallJsonRecord, writeRecallJsonRecord } from './store';
 import type { RecallJsonRecord } from './types';
 import {
@@ -33,10 +41,12 @@ import {
   updateAbilityAsset,
 } from './asset-service';
 import type { RecallAbilityAssetRecord } from './candidate-service';
+import { recallTitleIssue } from './title-policy';
+import type { AbilityAssetTitleIssue } from './title-policy';
 
 const log = createLogger('recall.asset-cleanup');
 
-export type CleanupItemKind = 'title_normalized' | 'merged_duplicate' | 'tag_added';
+export type CleanupItemKind = 'title_normalized' | 'merged_duplicate' | 'tag_added' | 'title_regen';
 export type CleanupItemStatus = 'applied' | 'skipped' | 'uncertain' | 'failed';
 
 export interface CleanupReportItem {
@@ -70,6 +80,12 @@ export interface CleanupReport extends RecallJsonRecord {
   id: string;
   trigger: 'user' | 'inspection';
   scope: { spaceId?: string; assetType?: string };
+  /** 轮次（四病整改 3.3）：'rules'＝既有规则轮（含义不变的机械整理）；
+   *  'title_regen'＝标题重起轮（LLM 含义生成）。旧报告无此字段＝规则轮。 */
+  round?: 'rules' | 'title_regen';
+  /** 标题重起轮专用：写前整库备份目录（records/ 之外）。恢复走
+   *  updateAbilityAsset 正门逐条改回，不做 raw 写回（见轮内注释）。 */
+  backupDir?: string;
   items: CleanupReportItem[];
   uncertain: CleanupUncertainItem[];
   /** 本轮明确跳过的步骤。补标签已接线（specs/012 T025），不再因"字段未落地"跳过。 */
@@ -213,6 +229,7 @@ export async function runAssetCleanup(userId: string, options: RunCleanupOptions
     id: reportId,
     trigger: options.trigger || 'user',
     scope: { ...(scope.spaceId ? { spaceId: scope.spaceId } : {}), ...(scope.assetType ? { assetType: scope.assetType } : {}) },
+    round: 'rules',
     items: [],
     uncertain: [],
     skippedSteps,
@@ -457,6 +474,176 @@ function compareAndMaybeUncertain(
     reason: '正文不同但高度重叠：是不是同一个意思需要人来判，系统不擅自合并。',
   });
   return true;
+}
+
+/** 不合规问题码 → 报告里的人话。判定口径本体在 `title-policy.recallTitleIssue`
+ *  （全模块唯一标准），这里只做展示文案，不另立判定。 */
+const TITLE_ISSUE_LABELS: Record<AbilityAssetTitleIssue, string> = {
+  empty: '标题为空',
+  too_long: '标题超长',
+  prefix_overlap: '标题与正文开头重复',
+  punctuation_suffix: '标题以标点结尾',
+};
+
+/** 标题重起轮的写前整库备份（设计 3.3 / 深探 F10/F13）：把 records/ability-assets
+ *  全量复制到 records 目录**之外**（…/recall/backup-title-regen-<时间戳>/）——
+ *  落进 records/ 会被 `listAbilityAssets` 的 readdir 当记录读入，污染 collection。
+ *  目录名的时间戳取报告 createdAt（同源可对账），冒号/点去掉保文件名友好。
+ *
+ *  备份只作**恢复参考**：恢复走 `updateAbilityAsset` 正门逐条把标题改回（改前
+ *  标题本就冻结在版本快照里、版本区可见），**不做 raw 写回**——绕版本链的
+ *  raw 路径有终态/评审/快照分叉三重暗坑（深探 F10）。 */
+async function backupAbilityAssetsForTitleRegen(userId: string, createdAt: string): Promise<string> {
+  const records = path.join(recallRoot(userId), 'records', 'ability-assets');
+  const backupDir = path.join(recallRoot(userId), `backup-title-regen-${createdAt.replace(/[:.]/g, '')}`);
+  const names = await fs.readdir(records);
+  await fs.mkdir(backupDir, { recursive: true });
+  for (const name of names) {
+    const from = path.join(records, name);
+    if ((await fs.stat(from)).isFile()) await fs.copyFile(from, path.join(backupDir, name));
+  }
+  return backupDir;
+}
+
+/**
+ * 专项「标题重起」轮（设计 3.3，深探 F5/F9/F10/F11/F12/F13）。与规则轮
+ * （`runAssetCleanup`）**分列**的硬口径（文件头 ④）：
+ *
+ * - **对象**：只对统一口径（`recallTitleIssue`）不合规的资产跑 LLM 重起
+ *   （`suggestAbilityAssetTitle`——capture 同款模型链，自带预检与失败重试）；
+ *   purged 墓碑随 pool 排除（不可改，深探 F7），合格资产免动。
+ * - **actor='ai'**：模型产物如实记在模型名下。不用 'user'（借用户名义让模型
+ *   改动绕过审计口径）；'system' 会撞"自动线必须带评审交接"闸门
+ *   （asset-service 的 system asset action requires an automatic review handoff）。
+ * - **模型预检**：开跑前 `hasConfiguredModelForUser`（含 OAuth 失效探测）——
+ *   模型配置在加密文件里无法离线确证（深探 F11）；不过则**整轮失败上报**
+ *   （直接抛错：不落报告、不备份、不写任何资产），绝不静默跳过。
+ * - **写入路径**：每条都走 `updateAbilityAsset` 升版正门（禁止任何 raw 直改
+ *   绕过版本链，深探 F10）；title 变更的 committed 投影刷新已由 asset-service
+ *   收口闸门段统一挂上（设计 3.3 硬前提 / 深探 F6），本层不重复做。
+ * - **分批与失败隔离**：逐项串行执行（每项＝一次 LLM 调用＋一次写入，独立
+ *   try/catch）——LLM 调用不并发；单项失败/模型拒绝记 `failed`＋note 如实
+ *   上报、不中断整轮；revoked/deleted 终态资产不烧模型调用，记 `skipped`＋
+ *   note。每执行完一项就写回报告（进度反馈，与规则轮同款中断恢复协议）。
+ *   串行写入期间每次 update 触及 3 个 collection（主记录/版本流/台账）的
+ *   `cognition:changed` 广播，50ms 合并窗口内各 collection 至多合并为 1 条
+ *   ——**渲染层的正确性来源是全量重拉**，后人不要按 recordId 做增量（深探 F13）。
+ * - **回滚**：不提供逐项回滚（拍板项 #7：对纯改标题无意义，且恰把烂标题带回
+ *   ——深探 F14）；报告项只留 before→after 对照＋版本锚点记录。个别不满意→
+ *   资产详情手动编辑（现成入口且过 3.2 闸门）；整体兜底＝写前备份。
+ */
+export async function runAssetTitleRegenCleanup(
+  userId: string,
+  options: RunCleanupOptions = {},
+): Promise<CleanupReport> {
+  // 模型链与预检都走动态 import：规则轮与巡检（nearDuplicateScore）复用本模块
+  // 时不必背上 runner 依赖图——candidate-service 起标题链同款先例。
+  const { hasConfiguredModelForUser, getConfiguredModelOAuthExpiredMessage } = await import('../auth');
+  if (!hasConfiguredModelForUser(userId).configured) {
+    throw new Error('标题重起轮未执行：尚未配置可用模型（配置后重试）；不做静默跳过。');
+  }
+  const oauthExpired = getConfiguredModelOAuthExpiredMessage();
+  if (oauthExpired) throw new Error(`标题重起轮未执行：${oauthExpired}`);
+
+  const scope = options.scope || {};
+  const reportId = `cr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const createdAt = new Date().toISOString();
+  const all = await listAbilityAssets(userId);
+  let pool = all.filter((asset) => asset.status !== 'purged');
+  if (scope.spaceId) pool = pool.filter((asset) => asset.spaceId === scope.spaceId);
+  if (scope.assetType) pool = pool.filter((asset) => asset.type === scope.assetType);
+  const targets = pool
+    .map((asset) => ({ asset, issue: recallTitleIssue(asset.title, asset.statement) }))
+    .filter((entry): entry is { asset: RecallAbilityAssetRecord; issue: AbilityAssetTitleIssue } => entry.issue !== undefined);
+
+  // 写前备份先于报告落盘与一切写入（只有真要写才留备份目录，空轮不留垃圾）。
+  const backupDir = targets.length ? await backupAbilityAssetsForTitleRegen(userId, createdAt) : undefined;
+
+  await writeRecallJsonRecord(userId, 'cleanup-reports', reportId, {
+    schemaVersion: 1,
+    ownerId: userId,
+    id: reportId,
+    trigger: options.trigger || 'user',
+    scope: { ...(scope.spaceId ? { spaceId: scope.spaceId } : {}), ...(scope.assetType ? { assetType: scope.assetType } : {}) },
+    round: 'title_regen',
+    ...(backupDir ? { backupDir } : {}),
+    items: [],
+    uncertain: [],
+    skippedSteps: [],
+    createdAt,
+    scanned: pool.length,
+  } satisfies CleanupReport);
+
+  const items: CleanupReportItem[] = [];
+  try {
+    const { suggestAbilityAssetTitle } = await import('./asset-title-suggestion');
+    for (const { asset, issue } of targets) {
+      // 终态资产（revoked/deleted）不可变更（assertMutableAbilityAsset 口径）：
+      // 不烧模型调用，如实记 skipped——与"静默跳过"的区别是报告里有账。
+      if (asset.status === 'revoked' || asset.status === 'deleted') {
+        const skipped: CleanupReportItem = {
+          assetId: asset.id,
+          kind: 'title_regen',
+          status: 'skipped',
+          before: asset.title,
+          after: '',
+          reason: '标题重起',
+          note: `${asset.status === 'revoked' ? '已撤销' : '已删除'}的资产不可修改，跳过重起`,
+        };
+        items.push(skipped);
+        await patchReport(userId, reportId, (report) => ({ items: [...report.items, skipped] }));
+        continue;
+      }
+      const anchor = abilityAssetActiveVersion(asset);
+      try {
+        const suggestion = await suggestAbilityAssetTitle(userId, {
+          statement: asset.statement,
+          type: asset.type,
+        });
+        // 正门写入：升版＋快照＋台账；title 变更的投影刷新由收口闸门段负责。
+        await updateAbilityAsset(userId, asset.id, {
+          title: suggestion.title,
+          reason: `标题重起轮：标题不合规（${TITLE_ISSUE_LABELS[issue]}），模型按正文重新拟题（${reportId}）`,
+          actor: 'ai',
+        });
+        const ledgerRef = await lastAuditId(userId, asset.id);
+        const item: CleanupReportItem = {
+          assetId: asset.id,
+          kind: 'title_regen',
+          status: 'applied',
+          before: asset.title,
+          after: suggestion.title,
+          reason: `标题不合规（${TITLE_ISSUE_LABELS[issue]}），由模型按正文重新拟题`,
+          ...(ledgerRef ? { ledgerRef } : {}),
+          rollbackAnchor: anchor,
+        };
+        items.push(item);
+        await patchReport(userId, reportId, (report) => ({ items: [...report.items, item] }));
+      } catch (error) {
+        const failed: CleanupReportItem = {
+          assetId: asset.id,
+          kind: 'title_regen',
+          status: 'failed',
+          before: asset.title,
+          after: '',
+          reason: '标题重起',
+          note: (error as Error).message,
+        };
+        items.push(failed);
+        await patchReport(userId, reportId, (report) => ({ items: [...report.items, failed] }));
+        log.warn('cleanup title regen failed', { assetId: asset.id, error: (error as Error).message });
+      }
+    }
+    return await patchReport(userId, reportId, () => ({ finishedAt: new Date().toISOString(), items }));
+  } catch (error) {
+    // 中断：报告如实反映已执行的部分（已执行项都有台账与版本锚点）。
+    log.warn('cleanup title regen interrupted', { reportId, error: (error as Error).message });
+    return await patchReport(userId, reportId, () => ({
+      items,
+      interrupted: true,
+      finishedAt: new Date().toISOString(),
+    }));
+  }
 }
 
 async function lastAuditId(userId: string, assetId: string): Promise<string | undefined> {

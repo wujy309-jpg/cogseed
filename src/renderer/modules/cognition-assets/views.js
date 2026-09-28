@@ -2579,10 +2579,18 @@
     }
     /** 目录视图行（2026-09-18）：把"模型看到的那份目录"原样搬到面板上——
      *  标题 + 一句话 + 类型/范围/版本/用没用过。模型看目录挑资产、用户看同一份
-     *  目录核对它的判断，两边看到的是同一件事。 */
+     *  目录核对它的判断，两边看到的是同一件事。
+     *  一句话的口径＝主进程 asset-catalog.ts 的 catalogOneLine（首句、22 字、砍
+     *  尾部连接符）——2026-09-28 起镜像同一实现，防两边各写一份慢慢分叉。 */
+    const catalogOneLineOf = (asset) => {
+      const text = String(asset.statement || '').replace(/\s+/g, ' ').trim();
+      if (!text) return '';
+      const first = (text.split(/[。！？!?]/)[0] || text).trim();
+      const cut = first.length > 22 ? first.slice(0, 22) : first;
+      return cut.replace(/[，、；：,;:\-—\s]+$/, '');
+    };
     const catalogRow = (asset) => {
-      const statement = String(asset.statement || '').replace(/\s+/g, ' ').trim();
-      const oneLine = statement.split(/[。！？!?]/)[0] || statement;
+      const oneLine = catalogOneLineOf(asset);
       const used = broughtInCountFor(asset.id);
       const meta = [
         categoryLabel(asset.type),
@@ -2595,7 +2603,7 @@
       return `<div class="row" data-go-asset="${esc(asset.id)}" role="button" tabindex="0">
         <div class="tw">
           <div class="tt">${esc(asset.title || asset.id)}</div>
-          ${oneLine ? `<div class="catline">${esc(oneLine.slice(0, 60))}</div>` : ''}
+          ${oneLine ? `<div class="catline">${esc(oneLine)}</div>` : ''}
           <div class="mm">${esc(meta)}</div>
         </div>
         <div class="sd">${(S.modelSelectedAssetIds || []).includes(String(asset.id)) ? chip(T('cognition.catalog_model_attached', '模型挂着'), 'blue') : ''}${assetStatusChip(asset)}<span class="chev" aria-hidden="true">›</span></div>
@@ -4131,6 +4139,14 @@
     </div>`;
   }
 
+  /** 标题重起轮判定（2026-09-28 标题一等化 3.3 专项轮）：重起轮的整理报告或以
+   *  独立 trigger 值标记本轮、或由 kind='title_regen' 的报告项可辨——两种载体
+   *  形态都认；导语、文案按它区分轮次（规则轮沿用原文案；LLM 重起轮上"只自动
+   *  规范标题、合并重复项"是假话——重起轮不做合并、按决策 #1 全自动写入）。 */
+  const isTitleRegenReport = (report) => Boolean(report)
+    && (String(report.trigger || '') === 'title_regen'
+      || (Array.isArray(report.items) && report.items.some((item) => String(item.kind || '') === 'title_regen')));
+
   /** 页面整理中的手动整理入口；报告页继续复用既有 viewCleanup 路由。 */
   function cleanupSettingsRow() {
     const state = S.cleanupReports;
@@ -4148,7 +4164,9 @@
       <div class="rowline">
         <div>
           <div class="tt">${esc(T('cognition.cleanup_entry', '整理已有内容'))}</div>
-          <div class="sub">${esc(T('cognition.cleanup_run_hint', '只自动规范标题、合并正文完全相同的重复项；不确定的内容不会改动，会留给你判断。'))}</div>
+          <div class="sub">${esc(isTitleRegenReport(latest)
+            ? T('cognition.cleanup_regen_hint', '由模型把不合格的标题重新拟一个简短的新标题，自动写入并逐条留档对照；写前有整库备份，不会合并内容或修改正文。')
+            : T('cognition.cleanup_run_hint', '只自动规范标题、合并正文完全相同的重复项；不确定的内容不会改动，会留给你判断。'))}</div>
           <div class="sub">${esc(summary)}</div>
         </div>
         <div class="right">
@@ -4283,7 +4301,11 @@
         attrs: { 'data-act': 'run-cleanup' },
       }],
     });
-    const hint = `<p class="note">${esc(T('cognition.cleanup_run_hint', '只自动规范标题、合并正文完全相同的重复项；不确定的内容不会改动，会留给你判断。'))}</p>`;
+    // 导语按轮次区分（isTitleRegenReport）：规则轮保留原文案；标题重起轮换
+    // 重起文案（LLM 改题不做合并、全自动直接写入——旧导语在这轮上是假话）。
+    const hint = `<p class="note">${esc(isTitleRegenReport(report)
+      ? T('cognition.cleanup_regen_hint', '由模型把不合格的标题重新拟一个简短的新标题，自动写入并逐条留档对照；写前有整库备份，不会合并内容或修改正文。')
+      : T('cognition.cleanup_run_hint', '只自动规范标题、合并正文完全相同的重复项；不确定的内容不会改动，会留给你判断。'))}</p>`;
     if (!report) {
       return `<div class="ca-page">${header}${hint}${empty(
         T('cognition.cleanup_empty', '还没有整理报告'),
@@ -4294,6 +4316,9 @@
     const KIND_LABELS = {
       title_normalized: T('cognition.cleanup_kind_title_normalized', '标题规范化'),
       merged_duplicate: T('cognition.cleanup_kind_merged_duplicate', '重复归并'),
+      // 标题重起轮（3.3 专项轮）的新 kind：词条四语由重起轮配套落，这里先按
+      // 既有 cleanup_kind_* 命名引用——勿重蹈 tag_added 缺席、显示兜底的欠账。
+      title_regen: T('cognition.cleanup_kind_title_regen', '标题重起'),
     };
     const STATUS_LABELS = {
       applied: T('cognition.cleanup_status_applied', '已执行'),

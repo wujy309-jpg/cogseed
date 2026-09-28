@@ -52,7 +52,8 @@ async function seedAsset(
   return assets.createAbilityAsset(UID, {
     schemaVersion: 2, ownerId: UID, id, candidateId: `cand-${id}`,
     sourceCandidateIds: [`cand-${id}`], reviewDecisionId: `rd_${id.slice(3)}padpadpad`,
-    type: 'personal', title: statement.slice(0, 8), statement,
+    // 标题不能是正文前缀（3.1 判定第 3 项）：取正文尾部片段做合规标题种子。
+    type: 'personal', title: statement.slice(-8).replace(/[。，、；：！？…）)\]】》"'\s]+$/, '') || `条目标题${id.slice(-4)}`, statement,
     evidenceRefs: [{ kind: 'conversation', id: `conv-${id}`, taxonomyVersion: 2, subtype: 'session' }],
     scope: 'general', status: 'active',
     lifecycleStatus: 'user_confirmed_unverified', maturity: 'bud', version: '1',

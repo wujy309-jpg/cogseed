@@ -42,7 +42,9 @@ async function seedAsset(
   _seedSeq += 1;
   const candidate = await candidates.saveRecallCandidate(TEST_UID, {
     judgment,
-    summary: judgment.slice(0, 12),
+    // 标题闸门（设计 3.2）后晋升 title 必须合规：judgment 前缀老兜底命中
+    // 「与正文开头重复」，改为与正文首字不同的合规样本标题。
+    summary: `管家样本${_seedSeq}`,
     suggestedType: (opts.type || 'rule') as 'rule',
     suggestedScope: opts.scope || 'general',
     ...(opts.spaceId ? { spaceId: opts.spaceId } : {}),
@@ -553,6 +555,42 @@ describe('写工具（US-402）', () => {
     expect(out.isError).toBeUndefined();
     const assets = await import('../../../../src/main/features/recall/asset-service');
     expect((await assets.readAbilityAsset(TEST_UID, asset.id)).title).toBe('规范化后的标题');
+  });
+
+  it('标题一等化（设计 3.2 / 深探 F2）：title 改动先过判定，不合规拒绝并在回执里说明规范', async () => {
+    const asset = await seedAsset('标题判定的守卫基线。');
+    const { edit } = await tools();
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+
+    // schema 描述写入 16 字规范（模型在出参前就能看到）。
+    const fieldsSchema = (edit.inputSchema as {
+      properties: { fields: { properties: Record<string, { description?: string }> } };
+    }).properties.fields;
+    expect(fieldsSchema.properties.title?.description).toContain('16');
+    expect(fieldsSchema.properties.title?.description).toContain('不得与正文开头重复');
+
+    // ①与正文开头重复 ②超 16 字：都拒绝，回执带拦截规则＋schema 归因＋规范说明。
+    const overlap = await call(edit, { assetId: asset.id, fields: { title: '标题判定的重写版' }, reason: '想改标题', origin: 'ai_initiated' });
+    expect(overlap.isError).toBe(true);
+    expect(overlap.content).toContain('invalid ability asset title');
+    expect(overlap.content).toContain('schema（入参或记录形状不合法）');
+    expect(overlap.content).toContain('16');
+
+    const tooLong = await call(edit, { assetId: asset.id, fields: { title: '这是一个超过十六个字的历史遗留超长标题' }, reason: '想改标题', origin: 'ai_initiated' });
+    expect(tooLong.isError).toBe(true);
+    expect(tooLong.content).toContain('invalid ability asset title');
+
+    // 资产零变化（标题/版本不动），被拦下的尝试照常留 attempt_blocked 台账。
+    const after = await assets.readAbilityAsset(TEST_UID, asset.id);
+    expect(after.title).toBe(asset.title);
+    expect(after.version).toBe(asset.version);
+    const rows = await assets.listAbilityAssetAudit(TEST_UID, asset.id);
+    expect(rows.some((row) => row.action === 'attempt_blocked' && String(row.note).includes('invalid ability asset title'))).toBe(true);
+
+    // 合规标题照常直写（分级③命名语义不变）。
+    const ok = await call(edit, { assetId: asset.id, fields: { title: '守卫基线的重命名' }, reason: '命名规范化', origin: 'ai_initiated' });
+    expect(ok.isError).toBeUndefined();
+    expect((await assets.readAbilityAsset(TEST_UID, asset.id)).title).toBe('守卫基线的重命名');
   });
 
   it('标签可写：tags 落地、category 收编为单标签、形状错归因 schema、不映射 assetType/familyName（specs/012 T022 解禁）', async () => {
