@@ -23345,10 +23345,22 @@ body:has(#panel-settings.active) .main-top-actions {
 .chat-recall-feedback-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-top: 7px;
-  padding-top: 6px;
+  gap: 4px;
+  margin-top: 5px;
+  padding-top: 4px;
   border-top: 1px solid var(--border);
+}
+/* 尾行视觉收紧（2026-09-29 三轮）：分隔留白与按钮各缩一档——页内 scoped 覆盖，
+   不动共享 sm 档（同 .chat-taskref-remove.ui-icon-button 的页内尺寸先例）。 */
+.chat-recall-feedback-actions .ui-button {
+  height: 24px;
+  padding-inline: var(--space-2);
+  font-size: var(--font-size-2);
+}
+.chat-recall-feedback-actions .ui-button .ui-button__icon,
+.chat-recall-feedback-actions .ui-button .ui-icon {
+  width: 12px;
+  height: 12px;
 }
 /* 尾行（2026-09-29 二轮）：状态说明句挪到撤销左侧、独占中段；反馈钮居左。 */
 .chat-recall-citations-note {
