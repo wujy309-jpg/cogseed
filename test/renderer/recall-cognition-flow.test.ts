@@ -64,11 +64,15 @@ function fnBlock(marker: string): string {
 
 describe('cognition-assets snapshot and routing', () => {
   it('loads the five snapshot channels in parallel with soft fallbacks', () => {
-    // 五个读口并行拉取，全部走 api.soft 容错——单个失败不拖垮整页。
+    // 五个读口并行拉取——四个走 api.soft 容错；候选清单例外（2026-09-29 A5）：
+    // 读失败进显式错误态（api.call+catch 置 store.candidatesError），不再把
+    // 「没读到」软降级成空数组伪装成「没有要你决定的」。
     for (const channel of [
-      'recall.assets.list', 'recall.candidates.list', 'recall.captures.list',
+      'recall.assets.list', 'recall.captures.list',
       'recall.captures.settings.get', 'recall.sources.list',
     ]) expect(core).toContain(`api.soft('${channel}'`);
+    expect(core).toContain("api.call('recall.candidates.list'");
+    expect(core).toContain('store.candidatesError');
     expect(core).toContain('Promise.all([');
     expect(core).toContain('async soft(channel, payload, fallback)');
     expect(core).toContain('return fallback;');

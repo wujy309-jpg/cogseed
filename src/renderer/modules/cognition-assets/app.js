@@ -21,6 +21,8 @@
     'asset-action', 'asset-recommend-ack', 'select-asset-version', 'delete-asset-version',
     'run-cleanup', 'rollback-cleanup-item', 'cleanup-uncertain-dismiss', 'cleanup-uncertain-defer',
     'inspection-toggle', 'run-inspection', 'purge-deleted-asset', 'inbox-resolve', 'asset-edit-save', 'edit-from-version', 'merge-asset-version', 'merge-asset', 'source-action', 'capture-action', 'organize-conv',
+    // A5（2026-09-29）：候选清单读失败的显式重试。
+    'retry-candidates',
     // 治理待办就地处断（specs/010 T010）：冲突选边、巡检选边/合并。全部经
     // cognition.inbox.resolve（core.actions 转发，不在渲染层写）。扩权/定级
     // 两类动作已随敏感级机制整体删除（2026-09-28）；「补条件」就地表单已随
@@ -178,6 +180,36 @@
             router.go({
               name: 'review',
               sourceIssueOpen: String(S.route.sourceIssueOpen || '') === 'open' ? '' : 'open',
+            });
+            break;
+          }
+          case 'toggle-task-failed': {
+            // 任务执行失败就地展开（A4，2026-09-29）：逐条列出并给「回到会话」
+            // 入口——不再跳系统活动页（那边是低价值排除行，处理不了）。
+            router.go({
+              name: 'review',
+              taskFailedOpen: String(S.route.taskFailedOpen || '') === 'open' ? '' : 'open',
+            });
+            break;
+          }
+          case 'retry-candidates': {
+            // A5（2026-09-29）：候选清单读失败后的显式重试入口。
+            await NS.reload();
+            break;
+          }
+          case 'inbox-boundary-save': {
+            // A1（2026-09-29）：缺边界规则的就地补条件表单（specs/010 T028 恢复）。
+            // 值就近读本行输入，多值按顿号/逗号拆；空数组也如实提交——后端用
+            // 同一道规则闸门判合法性，不通过会带着原因拒绝（不落库）。
+            const row = el.closest('.notice-row');
+            const readList = (fieldName) => {
+              const input = row ? row.querySelector(`[data-f="${fieldName}"]`) : null;
+              return String((input && input.value) || '')
+                .split(/[、,，;；]/).map((part) => part.trim()).filter(Boolean);
+            };
+            await A.resolveInboxItem(id, 'set_boundary', {
+              applicableWhen: readList('boundary-applicable'),
+              forbiddenWhen: readList('boundary-forbidden'),
             });
             break;
           }

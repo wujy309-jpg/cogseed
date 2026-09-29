@@ -170,20 +170,35 @@ describe('治理待办分组区（specs/010 T014~T016；2026-09-28 收窄后）'
     expect((html.match(/其他待处理/g) || []).length).toBe(2);
     expect(html).not.toContain('能去的地方变多了');
     expect(html).not.toContain('什么时候用、什么时候别用（还没写）');
-    // 专属控件与动作全部不再渲染。
+    // 专属控件与动作全部不再渲染。缺边界行例外（2026-09-29 A1 恢复）：
+    // specs/010 T028 的「就地补条件」表单回来了——后端处置链与 boundary
+    // 预填字段一直都在，此前只删了前端表单，按钮裸出工程词且点了必报错。
     expect(html).not.toContain('data-act="inbox-classify-level"');
     expect(html).not.toContain('data-act="inbox-classify-apply"');
     expect(html).not.toContain('data-act="inbox-classify-batch"');
     expect(html).not.toContain('data-act="inbox-escalation-accept"');
     expect(html).not.toContain('data-act="inbox-escalation-reject"');
-    expect(html).not.toContain('data-inbox-boundary-form');
+    expect(html).toContain('data-inbox-boundary-form');
+    // 表单三件：适用/禁用两个输入（预填当前条件）+ 保存边界按钮；按钮文案
+    // 是人话，不是裸动作名 set_boundary。
+    expect(html).toContain('data-f="boundary-applicable"');
+    expect(html).toContain('data-f="boundary-forbidden"');
+    expect(html).toContain('data-act="inbox-boundary-save" data-id="rule-boundary:aa-2"');
+    expect(html).toContain('发布窗口内');
+    expect(html).not.toContain('>set_boundary<');
     expect(html).not.toContain('ui-segmented-control');
     expect(html).not.toContain('批量定级');
   });
 
   it('不出现裸动作名（label 表全覆盖，labels[action]||action 的兜底不触发）', () => {
-    const items = [CONFLICT_ITEM, PAIR_FINDING, OTHER_ITEM];
-    const html = renderPage('review', { inbox: items, inboxGroups: groupsFixture(items) });
+    // 2026-09-29 D6：fixture 加入缺边界行——此前防线测试的 items 不含
+    // rule_boundary_missing，set_boundary 裸词按钮若回流不会被抓到。
+    const items = [CONFLICT_ITEM, PAIR_FINDING, OTHER_ITEM, STALE_SENSITIVITY_ITEMS[2]];
+    const groups = [
+      { category: 'conflict', titleKey: 'cognition.inbox_group_conflict', items: [CONFLICT_ITEM, PAIR_FINDING], count: 2, total: 3 },
+      { category: 'other', titleKey: 'cognition.inbox_group_other', items: [OTHER_ITEM, STALE_SENSITIVITY_ITEMS[2]], count: 2, total: 2 },
+    ];
+    const html = renderPage('review', { inbox: items, inboxGroups: groups });
     for (const bare of ['>claim<', '>keep<', '>merge<', '>classify<', '>set_boundary<', '>accept<', '>reject<']) {
       expect(html).not.toContain(bare);
     }

@@ -3172,12 +3172,16 @@
     const caps = candidate.capabilities || {};
     const labels = candidateDecisionLabels(candidate);
     const primaryLabel = candidateUpdateType(candidate)
-      ? T('recall.asset_approval.confirm', '确认更新')
-      : T('cognition.review_card_confirm', '确认');
+      ? T('recall.asset_approval.confirm', '保存更新')
+      : T('cognition.review_card_confirm', '保存');
     const primaryBtn = caps.canPromote
       ? btn(primaryLabel, 'cand-adopt-with-form', { id: candidate.id, small: true, primary: true })
       : '';
     const othersHtml = otherActions([
+      // A3（2026-09-29）：「已稍后处理」的候选可就地恢复回待确认——
+      // recall.candidates.resume 通道与 CANDIDATE_CHANNELS 映射早已就绪，
+      // 此前缺的就是这个入口，静音候选只能一直躺在折叠区。
+      caps.isSnoozed ? btn(T('cognition.candidate_resume', '恢复'), 'cand-decide', { id: candidate.id, data: { action: 'resume' }, small: true, className: 'o' }) : '',
       caps.canDefer ? btn(labels.defer, 'cand-decide', { id: candidate.id, data: { action: 'defer' }, small: true, className: 'o' }) : '',
       caps.canReject ? btn(labels.reject, 'cand-decide', { id: candidate.id, data: { action: 'reject' }, small: true, className: 'o' }) : '',
       btn(T('cognition.review_card_open_detail', '看内容与证据'), 'open-candidate', { id: candidate.id, small: true, className: 'o' }),
@@ -3236,6 +3240,30 @@
     return `<div class="card">${rows}
       ${issues.length > 20 ? `<div class="sub">${esc(T('cognition.source_issues_more', '仅显示前 {n} 条', { n: '20' }))}</div>` : ''}
     </div>`;
+  }
+
+  /** 任务执行失败展开区（A4，2026-09-29）：口径与 stats.taskFailed 同源——
+   *  sources 里 lastTurnFailed 且未被整理会话覆盖的条目（core.stats 里是
+   *  计数，这里是逐条；两边谓词必须同步改）。重跑入口=回到会话本身再说
+   *  一次，这里不造第二种重试。 */
+  function taskFailedSection(route) {
+    const open = String(route.taskFailedOpen || '') === 'open';
+    if (!open) return '';
+    const captureConvIds = new Set((Array.isArray(S.captures) ? S.captures : [])
+      .map((capture) => String((capture || {}).conversationId || '')).filter(Boolean));
+    const rows = (Array.isArray(S.sources) ? S.sources : [])
+      .flatMap((group) => (Array.isArray(group && group.items) ? group.items : []))
+      .filter((item) => item && item.lastTurnFailed === true
+        && !captureConvIds.has(String(item.id || '')))
+      .slice(0, 20)
+      .map((item) => `<div class="row is-flat">
+        <div class="tw">
+          <div class="tt">${esc(String(item.title || '').trim() || T('cognition.evidence_fallback', '来源记录'))}</div>
+          <div class="mm">${esc(T('cognition.review_task_failed_row_hint', '任务没有跑出结果；回到会话重新发起即可'))}</div>
+        </div>
+        <div class="sd">${btn(T('cognition.review_task_failed_go', '回到会话'), 'open-conversation', { id: String(item.id || ''), small: true, className: 'o' })}</div>
+      </div>`).join('');
+    return `<div class="card">${rows || `<div class="sub">${esc(T('cognition.review_task_failed_none', '刚才那几条已经不在了'))}</div>`}</div>`;
   }
 
   /* ───────────────── KSTAR 复盘历史区块（2026-09-17 二次定调） ─────────────────
@@ -3609,12 +3637,27 @@
 
   function viewReview(route) {
     if (route.candidateId) return viewCandidate(route);
+    // A5（2026-09-29）：候选清单读取失败进显式错误态——不再把「没读到」伪装
+    // 成「没有要你决定的」空态（此前 soft 降级空数组，用户会误以为清净了）。
+    if (S.candidatesError) {
+      return `${hero(T('cognition.review_title', '待我处理'), '')}
+      <div class="sect-block">${empty(
+        T('cognition.review_load_failed_title', '清单没能读取'),
+        T('cognition.review_load_failed_hint', '待确认内容的清单没有读到。可以稍后重试；重试仍失败时，重启应用通常能恢复。'),
+        { label: T('cognition.review_load_retry', '重试'), attrs: { 'data-act': 'retry-candidates' } },
+      )}</div>`;
+    }
     const stats = NS.stats();
     // 两线不拆（2026-09-17 二次定调）：KSTAR 提案与对话候选同池确认，
     // 候选卡自带来源徽章（KSTAR 复盘/KSTAR 偏好/会话整理）区分出身。
     // 分组顺序（2026-09-21 原型 v7 契约）：等待确认 → 来源已删 → 证据不足
     // → 已稍后处理 → 终态折叠 → 处理记录折叠——需要行动的组永远排在
-    // 低打扰组之前，分组依据全部来自后端 capabilities，不看本地 status 猜。
+    // 低打扰组之前。可操作组（等待/来源已删/证据不足/已稍后）的判定全部
+    // 来自后端 capabilities（displayState/isSnoozed），不看本地 status 猜；
+    // 终态折叠与处理记录两组读原始 status/displayState——capabilities 只
+    // 建模可操作状态（candidate-capabilities 的 displayState 表不含
+    // confirmed/rejected/expired 等终态），终态不可变、读原始字段无漂移
+    // 风险（2026-09-29 B5 复审校正口径）。
     const pending = S.candidates.filter(candidatePending);
     const displayState = (c) => String(((c || {}).capabilities || {}).displayState || '');
     const awaiting = pending.filter(candidateAwaiting);
@@ -3650,7 +3693,10 @@
     if (stats.taskFailed) {
       // 任务执行失败（承接表 01 / G1）：与整理失败**分别反馈**——这是任务没跑
       // 出结果（未得到回复），重跑入口在会话本身，不是整理重试。
-      attention.push(`<div class="notice-row" data-act="go-organize" ${roleBtn()}><div class="notice-copy"><div class="notice-title">${esc(T('cognition.overview_task_failed', '{count} 个任务执行失败（未得到回复）', { count: String(stats.taskFailed) }))}</div></div><span class="sp"></span>${btn(T('common.handle', '处理'), 'go-organize', { small: true, className: 'o' })}</div>`);
+      // A4（2026-09-29）：此前「处理」按钮跳系统活动页，但那类会话在那边
+      // 属低价值排除行、没有任何动作——按钮带你去一个处理不了的地方。
+      // 现在就地展开逐条列出，每条给「回到会话」入口（重跑=在会话里再说一次）。
+      attention.push(`<div class="notice-row" data-act="toggle-task-failed" ${roleBtn()}><div class="notice-copy"><div class="notice-title">${esc(T('cognition.overview_task_failed', '{count} 个任务执行失败（未得到回复）', { count: String(stats.taskFailed) }))}</div></div><span class="sp"></span>${btn(T('cognition.review_task_failed_open', '看是哪几次'), 'toggle-task-failed', { small: true, className: 'o' })}</div>`);
     }
     // 治理待办 / 待确认清单（2026-09-25 重上，specs/008 T051；2026-09-26 分组呈现，
     // specs/010 T014~T016 / US-301）：分组可用时按「治理待办」分区呈现（顺序由主进程
@@ -3687,7 +3733,30 @@
     // 既有扁平行的渲染（降级路径与「其他」组共用，语义不变）。
     // 三件套（specs/018 T011）：首个动作 = 推荐动作（primary 视觉），
     // 其余收「其他处理」折叠；没有一键动作的仍给资产详情落点。
+    // A1（2026-09-29）：缺边界规则恢复「就地补条件」表单（specs/010 T028
+    // 原口径）——后端处置链与 boundary 预填字段一直都在（inbox-adapter 的
+    // set_boundary 分支 + 同一道规则闸门），两页重整只删了前端表单，按钮
+    // 裸出工程词且点了必报错。表单按行内 data-f 就地读取，多值用顿号分隔。
+    const boundaryFormRow = (row) => {
+      const id = String(row.id || '');
+      const boundary = row.boundary && typeof row.boundary === 'object' ? row.boundary : {};
+      const joinList = (list) => (Array.isArray(list) ? list.map(String).filter(Boolean).join('、') : '');
+      const suffix = id.replace(/[^a-z0-9_-]/gi, '');
+      return `<div class="notice-row ca-inbox-boundary" data-inbox-boundary-form>
+        <div class="notice-copy">
+          ${rowTitle(row)}
+          <div class="notice-detail">${esc(T('cognition.inbox_rule_boundary_hint', '没写适用范围的规矩不会被自动带入任务；补齐后才会生效。'))}</div>
+          <div class="ca-inbox-boundary-form">
+            ${window.uiInput({ id: `inbox-boundary-applicable-${suffix}`, value: joinList(boundary.applicableWhen), attrs: { 'data-f': 'boundary-applicable', placeholder: T('cognition.inbox_boundary_field_applicable', '适用情形') } })}
+            ${window.uiInput({ id: `inbox-boundary-forbidden-${suffix}`, value: joinList(boundary.forbiddenWhen), attrs: { 'data-f': 'boundary-forbidden', placeholder: T('cognition.inbox_boundary_field_forbidden', '禁用情形') } })}
+            <div class="note">${esc(T('cognition.inbox_boundary_save_effect', '保存后：主进程重新校验，通过后这条规则恢复自动带入；不通过会把原因留在这里。'))}</div>
+          </div>
+        </div>
+        <span class="sp"></span>${btn(T('cognition.inbox_boundary_submit', '保存边界'), 'inbox-boundary-save', { small: true, primary: true, data: { id } })}
+      </div>`;
+    };
     const flatInboxRow = (row) => {
+      if (String(row.kind || '') === 'rule_boundary_missing') return boundaryFormRow(row);
       const actions = Array.isArray(row.actions) ? row.actions : [];
       const labels = actionLabelsFor(String(row.kind || ''));
       const [recommended, ...rest] = actions;
@@ -3809,7 +3878,7 @@
      * 不再混在治理区——它们不是拍板事项，归页尾折叠；展开态跟随
      * route.sourceIssueOpen，点「处理」不会把刚展开的名单又折回去。 */
     const attentionHtml = attention.length
-      ? `<details class="details fold fold-attention"${String(route.sourceIssueOpen || '') === 'open' ? ' open' : ''}><summary>${esc(T('cognition.review_other_issues', '其他异常'))}<span class="n">${attention.length}</span></summary><div class="dbody"><div class="note">${esc(T('cognition.review_other_issues_hint', '不是等你拍板的事：整理没跑成、任务没得到回复、来源读取异常；处理入口在「系统活动」。'))}</div>${attention.join('')}${sourceIssuesSection(route)}</div></details>`
+      ? `<details class="details fold fold-attention"${String(route.sourceIssueOpen || '') === 'open' ? ' open' : ''}><summary>${esc(T('cognition.review_other_issues', '其他异常'))}<span class="n">${attention.length}</span></summary><div class="dbody"><div class="note">${esc(T('cognition.review_other_issues_hint', '不是等你拍板的事：整理没跑成、任务没得到回复、来源读取异常；处理入口在「系统活动」。'))}</div>${attention.join('')}${sourceIssuesSection(route)}${taskFailedSection(route)}</div></details>`
       : '';
     return `${hero(T('cognition.review_title', '待我处理'), '', leadHtml)}
     ${promotedHtml}
@@ -3848,7 +3917,15 @@
   function candidateScopeField(candidate, opts = {}) {
     const field = (label, inner) => `<label class="field"><span>${esc(label)}</span>${inner}</label>`;
     const scope = String(candidate.suggestedScope || '').trim();
-    const scopeLabels = { general: '跨任务通用', report: '报告', code: '编程', review: '审查与评审', product: '产品工作' };
+    // A7（2026-09-29）：适用范围映射走四语词条（与整理表单同源
+    // cognition.capture.scope_*），不再硬编码中文——ja/pt 环境此前裸出中文。
+    const scopeLabels = {
+      general: T('cognition.capture.scope_general', '跨任务通用'),
+      report: T('cognition.capture.scope_report', '报告'),
+      code: T('cognition.capture.scope_code', '编程'),
+      review: T('cognition.capture.scope_review', '审查与评审'),
+      product: T('cognition.capture.scope_product', '产品工作'),
+    };
     const scopeDisplay = scope.split(',').map((value) => value.trim())
       .filter(Boolean).map((value) => scopeLabels[value.toLocaleLowerCase()] || value).join('、');
     const applicable = (Array.isArray(candidate.applicableWhen) ? candidate.applicableWhen : []).map(String).filter(Boolean);
@@ -3906,10 +3983,10 @@
    *  statementIssues 在此显示——只提醒不拦截（把关权在人）；编辑后以
    *  表单当前值重算（前端不另立口径，仅按主进程下发的 issue 形态提示）。 */
   const STATEMENT_ISSUE_LABELS = {
-    empty: '正文不能为空',
-    too_long: '正文超长（规则/偏好/事实建议 120 字内、硬限 200；方法/模板不限）',
-    session_debris: '正文带会话一次性标识（会话号/cid/turn 号），出处留在来历区',
-    local_path: '规则/偏好类正文带本机路径或源码文件名（事实类知识本身是该位置则合法）',
+    empty: T('cognition.statement_issue_empty', '正文不能为空'),
+    too_long: T('cognition.statement_issue_too_long', '正文超长（规则/偏好/事实建议 120 字内、硬限 200；方法/模板不限）'),
+    session_debris: T('cognition.statement_issue_session_debris', '正文带会话一次性标识（会话号/cid/turn 号），出处留在来历区'),
+    local_path: T('cognition.statement_issue_local_path', '规则/偏好类正文带本机路径或源码文件名（事实类知识本身是该位置则合法）'),
   };
   const statementWarningHtml = (candidate) => {
     const issues = Array.isArray(candidate.statementIssues) ? candidate.statementIssues : [];

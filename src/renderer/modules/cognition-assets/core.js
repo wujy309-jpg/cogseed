@@ -561,7 +561,10 @@
   NS.reload = async function reload(options) {
     const opts = options || {};
     if (opts.tree) { await LOADERS.tree(); listeners.forEach((fn) => fn()); return; }
-    if (store.loading) return;
+    // C4（2026-09-29）：loading 窗口内到达的 reload 不再静默丢弃——记一次
+    // pendingReload，本次读完后立刻补拉。此前连续两次操作时第二次的刷新会
+    // 直接落空，只能等写入广播自愈。
+    if (store.loading) { store.pendingReload = true; return; }
     store.loading = true;
     listeners.forEach((fn) => fn());
     try {
@@ -569,6 +572,10 @@
     } finally {
       store.loading = false;
       listeners.forEach((fn) => fn());
+      if (store.pendingReload) {
+        store.pendingReload = false;
+        void NS.reload();
+      }
     }
   };
   NS.notify = () => listeners.forEach((fn) => fn());
@@ -596,8 +603,17 @@
       store.assets = toArr(assets, ['assets', 'items']);
     },
     async candidates() {
-      const candidates = await api.soft('recall.candidates.list', {}, {});
-      store.candidates = toArr(candidates, ['candidates', 'items']);
+      // A5（2026-09-29）：候选清单读失败不再软降级成空数组——那会把「没读到」
+      // 伪装成「没有要你决定的」，用户据此误以为清净了。失败进显式错误态，
+      // 视图层给重试入口；成功后清掉错误标记。
+      try {
+        const candidates = await api.call('recall.candidates.list', {}, {});
+        store.candidates = toArr(candidates, ['candidates', 'items']);
+        store.candidatesError = '';
+      } catch (error) {
+        store.candidates = [];
+        store.candidatesError = String((error && error.message) || error || 'load_failed');
+      }
     },
     async captures() {
       // scope:'all'：整理页要展示完整历史（含系统判定无留存内容的静默记录）。
@@ -646,15 +662,19 @@
     'asset-usage-receipts': ['timeline'],
     'injection-receipts': ['timeline'],
     'transfer-proofs': ['timeline'],
-    'cleanup-reports': ['timeline'],
+    // C1（2026-09-29）：治理待办的数据源写入后，治理分区（inbox 区块）也要
+    // 重拉——此前全表无 inbox 映射，事件刷新永远轮不到它，只靠动作后全量
+    // reload 兜底。巡检 runs 不经 recall store 广播，其处置后的刷新由动作
+    // 响应路径补（第 3 批）。
+    'cleanup-reports': ['timeline', 'inbox'],
     'effectiveness-proofs': ['timeline'],
     'validation-records': ['timeline'],
-    'asset-approvals': ['assets', 'candidates'],
+    'asset-approvals': ['assets', 'candidates', 'inbox'],
     'asset-handoff-receipts': ['timeline'],
     'workspace-refs': ['assets'],
     'workspace-ref-history': ['assets'],
     'ontology-groups': ['ontology'],
-    'ontology-conflicts': ['ontology'],
+    'ontology-conflicts': ['ontology', 'inbox'],
     'ontology-graph': ['ontology'],
     'longterm-memory': ['legacy'],
     'experiences': ['experiences'],
@@ -1476,7 +1496,7 @@
       if (target.category === 'kstar') target = Object.assign({}, target, { category: '' });
       // 先把 next 归一到同一形状再比（部分键字面量 vs 全键展开的序列化恒不等，
       // 连点同一 tab 会堆积重复栈项——2026-09-14 终审修）。
-      const merged = Object.assign({ name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', candCreate: '', ontologyBox: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '', manage: '' }, target);
+      const merged = Object.assign({ name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', taskFailedOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', candCreate: '', ontologyBox: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '', manage: '' }, target);
       const same = JSON.stringify(current) === JSON.stringify(merged);
       if (!opts.replace && !same) store.backStack.push(Object.assign({}, current));
       store.route = merged;
@@ -1567,6 +1587,11 @@
     }
     if (code === 'version_conflict') {
       return T('cognition.inbox_error_version_conflict', '这条资产刚被别的改动更新过（版本冲突），请重试。');
+    }
+    if (code === 'promotion_gate_rejected') {
+      // 2026-09-29 第 2 批：冲突选边后半程——另一边已出局，保留侧没过晋升
+      // 闸门。主进程 message 已是人话（含原因与去向），这里只保证兜底文案。
+      return (result && result.error) || T('cognition.inbox_error_gate_rejected', '选边已生效，但保留的这一条还需要你到「待我处理」的候选详情里完成确认。');
     }
     if (code === 'promotion_blocked') {
       const reasons = Array.isArray(result && result.promotionReasons) ? result.promotionReasons : [];

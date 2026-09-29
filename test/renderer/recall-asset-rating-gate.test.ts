@@ -225,7 +225,11 @@ describe('认知资产 · 候选行的就地处理', () => {
       });
       expect([...html.matchAll(/<button[^>]*data-action="(defer|reject)"[^>]*>/g)].length).toBe(0);
       expect(html).not.toContain(zh['cognition.candidate_defer_action']);
-      expect(html).not.toContain(zh['cognition.candidate_save_and_use']);
+      // 2026-09-29 A6 词根统一后「保存」成为公共词根（新建主按钮「保存」/
+      // 更新「保存更新」、说明文案也含「保存」），子串断言不再能表达"没有
+      // 决策入口"——改按确认按钮的 act 通道断言（卡片与详情同走
+      // cand-adopt-with-form）。
+      expect(html).not.toContain('data-act="cand-adopt-with-form"');
     }
   });
 });

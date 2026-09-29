@@ -384,14 +384,16 @@ describe('候选三态与按钮名按型分支（T023 / US-702）', () => {
     return visibleText(renderDetail());
   };
 
-  it('更新型（update / limit_scope 且有目标方法）：「确认更新 / 稍后处理 / 拒绝」，与 008 卡片同一批词条', () => {
+  it('更新型（update / limit_scope 且有目标方法）：「保存更新 / 稍后处理 / 拒绝」，与 008 卡片同一批词条', () => {
     for (const action of ['update', 'limit_scope']) {
       const text = labelsOf(action);
       expect(text, action).toContain(zh['recall.asset_approval.confirm']);
       expect(text, action).toContain(zh['recall.asset_approval.defer']);
       expect(text, action).toContain(zh['recall.asset_approval.reject']);
-      // 更新型不再说"保存并使用"。
-      expect(text, action).not.toContain(zh['cognition.candidate_save_and_use']);
+      // 更新型不说新建型的旧文案「保存并使用」（2026-09-29 A6 词根统一后
+      // 新建=「保存」、更新=「保存更新」，同根不同缀——按完整旧词钉，不再
+      // 用子串断言：「保存更新」本身包含「保存」子串）。
+      expect(text, action).not.toContain('保存并使用');
     }
   });
 
