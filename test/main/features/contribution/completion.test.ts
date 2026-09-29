@@ -11,13 +11,15 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import YAML from 'yaml';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
-  inspectCompletion, applyCompletion, isSemver,
+  inspectCompletion, applyCompletion, applySecurityQuestionnaire, isSemver,
 } from '../../../../src/main/features/contribution/completion';
 import { parseSkillFrontmatter } from '../../../../src/main/features/skills';
+import { gateDeclaration } from '../../../../src/main/features/contribution/declaration';
 
 let tmp: string;
 const staging = () => ({ dir: tmp, sourceSkillId: 'demo', token: 'cafebabe' });
@@ -133,4 +135,70 @@ describe('补齐写进包内规范位置', () => {
     expect(() => applyCompletion(staging(), { security_manifest: '- list' })).toThrow('invalid_security_manifest_yaml');
     expect(fs.existsSync(path.join(tmp, 'references/security-manifest.yaml'))).toBe(false);
   });
+
+  it('把用户确认的简单安全选项生成声明与所需的技术文件', () => {
+    write('SKILL.md', '---\nname: demo\ndescription: Draft product requirements\n---\n\n# body');
+    write('_meta.json', JSON.stringify({ version: '1.2.3' }));
+
+    applySecurityQuestionnaire(staging(), {
+      network_access: 'restricted',
+      network_allowlist: 'api.example.com\nhttps://docs.example.com',
+      file_access: 'read_selected',
+      command_access: 'declared_tools',
+      external_tools: 'git\npython3',
+      sensitive_data: 'personal',
+    }, 'Test Contributor');
+
+    const manifest = YAML.parse(fs.readFileSync(path.join(tmp, 'references/security-manifest.yaml'), 'utf8'));
+    expect(manifest.skill).toMatchObject({ id: 'demo', name: 'demo', version: '1.2.3' });
+    expect(manifest.ownership.human_owner).toBe('Test Contributor');
+    expect(manifest.network).toMatchObject({
+      enabled: true,
+      allowlist: ['api.example.com', 'https://docs.example.com'],
+      allow_dynamic_download: false,
+    });
+    expect(manifest.data_security).toMatchObject({ pii_allowed: true, secrets_allowed: false });
+    expect(manifest.dependencies.external_tools).toEqual(['git', 'python3']);
+    expect(manifest.permissions.required.map((entry: { id: string }) => entry.id))
+      .toEqual(expect.arrayContaining(['network-egress', 'user-file-read', 'external-tool-execution']));
+    for (const rel of [
+      'artifact.yaml', 'schemas.json', 'references/business-ontology.yaml',
+      'references/validation-contract.yaml', 'evals/evals.json',
+    ]) expect(fs.existsSync(path.join(tmp, rel)), rel).toBe(true);
+  });
+
+  it('拒绝未明确选择的安全事实以及缺少详情的高权限选项', () => {
+    write('SKILL.md', '---\nname: demo\ndescription: d\n---\n');
+    write('_meta.json', JSON.stringify({ version: '1.0.0' }));
+    const base = {
+      network_access: 'none',
+      network_allowlist: '',
+      file_access: 'none',
+      command_access: 'none',
+      external_tools: '',
+      sensitive_data: 'none',
+    } as const;
+
+    expect(() => applySecurityQuestionnaire(staging(), { ...base, network_access: '' }, 'Owner'))
+      .toThrow('security_declaration_incomplete');
+    expect(() => applySecurityQuestionnaire(staging(), {
+      ...base, network_access: 'restricted', network_allowlist: '',
+    }, 'Owner')).toThrow('network_allowlist_required');
+    expect(() => applySecurityQuestionnaire(staging(), {
+      ...base, command_access: 'declared_tools', external_tools: '',
+    }, 'Owner')).toThrow('external_tools_required');
+    expect(fs.existsSync(path.join(tmp, 'references/security-manifest.yaml'))).toBe(false);
+  });
+
+  it('生成的纯文本安全说明可由真实 declaration-core 预检', async () => {
+    write('SKILL.md', '---\nname: demo\ndescription: Draft product requirements\n---\n\n# body');
+    write('_meta.json', JSON.stringify({ version: '1.0.0' }));
+    applySecurityQuestionnaire(staging(), {
+      network_access: 'none', network_allowlist: '', file_access: 'none',
+      command_access: 'none', external_tools: '', sensitive_data: 'none',
+    }, 'Test Contributor');
+
+    const result = await gateDeclaration(staging());
+    expect(['pass', 'pass_with_warnings']).toContain(result.outcome);
+  }, 30_000);
 });

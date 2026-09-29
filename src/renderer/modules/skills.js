@@ -675,7 +675,11 @@ function renderSkillsGrid(skills) {
       disabled: !usable,
       attrs: { 'data-skill-use': true, title: thisUseTitle, 'aria-label': thisUseTitle },
     });
-    const contributeBtn = _skillSource(s?.source) === 'custom'
+    const canContribute = !s.ownerAgent && s.category !== 'external'
+      && _skillSource(s?.source) === 'custom' && /^[A-Za-z0-9_-]+$/.test(String(s.id || ''));
+    const iconDataUrl = /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(String(s.icon_data_url || ''))
+      ? s.icon_data_url : '';
+    const contributeBtn = canContribute
       ? _skillUiButton({
         label: t('skills.contribute'), role: 'secondary', size: 'sm', className: 'skill-card-contribute',
         attrs: { 'data-skill-contribute': true, title: t('skills.contribute_hint'), 'aria-label': t('skills.contribute_hint') },
@@ -684,6 +688,7 @@ function renderSkillsGrid(skills) {
     return `
       <div class="skill-card ui-resource-card${enabled ? '' : ' is-disabled'}${withheld ? ' is-withheld' : ''}" data-id="${escapeHtml(s.id)}" data-source="${escapeHtml(s.source || '')}">
         <div class="skill-card-header">
+          <span class="skill-card-avatar" aria-hidden="true">${escapeHtml(Array.from(String(s.name || s.id || '?').trim())[0] || '?')}${iconDataUrl ? `<img class="skill-card-avatar-image" src="${escapeHtml(iconDataUrl)}" alt="">` : ''}</span>
           <span class="skill-card-name">${escapeHtml(s.name)}</span>
           ${_skillSecurityBadgeHtml(s)}
           ${moreBtn}
@@ -751,6 +756,9 @@ function renderSkillsGrid(skills) {
   _wireOpenSkillCards(gridEl);
   _wireSkillsSecurityRecheck(gridEl);
   _wireSkillSecurityPanels(gridEl);
+  gridEl.querySelectorAll('.skill-card-avatar-image').forEach((img) => {
+    img.addEventListener('error', () => img.remove());
+  });
 
   // Wire card / ▶ / ⋯ click handlers. (Enable/disable lives in the ⋯ menu now.)
   // Scope to editable-tier cards (`data-id`): open-tier cards (`data-open-id`,
@@ -3594,5 +3602,6 @@ function _renderSkillEnabledButton(skill) {
 // Read-only bridge for the Hub contribution page composition. It exposes only
 // the minimum identity needed to choose a local custom Skill for a new version.
 window.getCustomContributionSkills = () => (_skillsCache || [])
-  .filter((skill) => !skill.ownerAgent && _skillSource(skill?.source) === 'custom')
+  .filter((skill) => !skill.ownerAgent && skill.category !== 'external'
+    && _skillSource(skill?.source) === 'custom' && /^[A-Za-z0-9_-]+$/.test(String(skill.id || '')))
   .map((skill) => ({ id: skill.id, name: skill.name || skill.id }));

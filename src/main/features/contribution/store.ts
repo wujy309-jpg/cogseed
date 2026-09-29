@@ -52,8 +52,21 @@ export function mergeMine(userId: string, accountId: string, response: Record<st
   const items = Array.isArray(response.items) ? response.items : [];
   for (const item of items) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
-    const entryId = (item as Record<string, unknown>).entry_id;
-    if (typeof entryId === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(entryId)) current.items[entryId] = item;
+    const record = item as Record<string, unknown>;
+    const entryId = record.entry_id;
+    if (typeof entryId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(entryId)) continue;
+    const latest = record.latest_submission;
+    const submissionId = latest && typeof latest === 'object' && !Array.isArray(latest)
+      ? (latest as Record<string, unknown>).submission_id : null;
+    if (typeof submissionId === 'string') {
+      for (const [cachedEntryId, cachedItem] of Object.entries(current.items)) {
+        if (cachedEntryId === entryId || !cachedItem || typeof cachedItem !== 'object' || Array.isArray(cachedItem)) continue;
+        const cachedLatest = (cachedItem as Record<string, unknown>).latest_submission;
+        if (cachedLatest && typeof cachedLatest === 'object' && !Array.isArray(cachedLatest)
+          && (cachedLatest as Record<string, unknown>).submission_id === submissionId) delete current.items[cachedEntryId];
+      }
+    }
+    current.items[entryId] = item;
   }
   const retained = Object.entries(current.items)
     .sort(([, a], [, b]) => {

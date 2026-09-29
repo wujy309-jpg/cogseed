@@ -23,8 +23,9 @@ Real-page tests must cover logged-out resume/cancel, terms closed, missing data,
 
 Before implementation acceptance, locate and read the live component-product checklist (expected sibling was unavailable during planning), classify any contract changes, exercise component gallery states where shared behavior changes, then run Electron verification on both affected real pages.
 
-## Implementation classification (2026-09-25)
+## Implementation classification (updated 2026-09-29, shared-card correction)
 
-- The expected sibling component-product checkout was absent, so its live checklist could not be read. This remains an evidence gap, not inferred approval.
-- The current surface composes existing shared modal, form, decision, feedback, empty-state, card and grid APIs. It adds no shared-component API, raw control/modal shell, literal layer, or new page-local structural primitive.
-- Component-gallery changes and a structural-registry proposal are therefore not applicable to this diff. Static real-page adoption coverage is in `test/renderer/hub-contributions-shared-ui.test.ts`; interactive Electron evidence remains separate.
+- Rechecked on 2026-09-29: the sibling component-product checkout is available and the live UX work-package README plus `CogSeed_首版组件与预览页产品清单_v0.1_Draft.md` were read. The ResourceCard correction below is recorded as an explicit Draft contract delta rather than inferred from source code.
+- User review exposed that My Contributions reused only the card shell: semantic status and multiple actions were inserted into `bodyHtml`, the real footer stayed empty, and standard padding/layout existed only in gallery CSS. The authorized correction extends `uiResourceCard` with semantic status and shared multi-action footer support, omits an empty footer, and moves standard card layout into production component CSS. The live product Draft was updated with this explicit ResourceCard delta.
+- The contribution surface now composes existing shared modal, form/checkbox, decision, feedback, skeleton, status, data-table, accordion, empty-state, card and grid APIs. Server-provided contribution terms render through the canonical `renderMarkdown` seam. Contribution sequencing and read-only file content remain business-owned composition.
+- The page-local contribution action-group CSS was removed, so no structural-registry proposal is needed. Component-gallery coverage now includes the multi-action semantic-status state; static real-page adoption coverage remains in `test/renderer/hub-contributions-shared-ui.test.ts`, and interactive Electron evidence remains separate.

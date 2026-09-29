@@ -35,6 +35,42 @@ describe('account-partitioned contribution store', () => {
     expect(contributionTarget('uid', 'account', 'content')).toEqual({ currentVersion: '1.2.0', origin: { type: 'original' }, pendingSubmissionId: 'sub_1' });
   });
 
+  it('replaces a cached submission row when Hub promotes it to a content row', () => {
+    mergeMine('uid', 'account', {
+      generated_at: 'one',
+      items: [
+        {
+          entry_id: 'sub_accepted',
+          updated_at: '2026-09-29T03:40:00Z',
+          latest_submission: { submission_id: 'sub_accepted', status: 'PENDING_REVIEW' },
+        },
+        {
+          entry_id: 'sub_withdrawn',
+          updated_at: '2026-09-29T03:39:00Z',
+          latest_submission: { submission_id: 'sub_withdrawn', status: 'WITHDRAWN' },
+        },
+      ],
+    });
+
+    const store = mergeMine('uid', 'account', {
+      generated_at: 'two',
+      items: [{
+        entry_id: 'content_accepted',
+        content_id: 'content_accepted',
+        current_published_version: '1.0.0',
+        updated_at: '2026-09-29T03:45:00Z',
+        latest_submission: { submission_id: 'sub_accepted', status: 'ACCEPTED' },
+      }],
+    });
+
+    expect(store.items.sub_accepted).toBeUndefined();
+    expect(store.items.content_accepted).toMatchObject({
+      current_published_version: '1.0.0',
+      latest_submission: { submission_id: 'sub_accepted', status: 'ACCEPTED' },
+    });
+    expect(store.items.sub_withdrawn).toBeDefined();
+  });
+
   it('discards incompatible or corrupt cache files', () => {
     localSkillUuid('uid', 'account', 'skill');
     const dir = path.join(root, 'uid', 'local', 'hub-contributions');

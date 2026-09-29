@@ -35,7 +35,9 @@ import {
   createStaging, cleanupOrphanedStaging, type ContributionStaging,
 } from '../features/contribution/staging';
 import { admitContribution, toUploadableIssue } from '../features/contribution/admission';
-import { inspectCompletion, applyCompletion } from '../features/contribution/completion';
+import {
+  inspectCompletion, applyCompletion, applySecurityQuestionnaire, type SecurityQuestionnaire,
+} from '../features/contribution/completion';
 import { buildPreview, checkLimits } from '../features/contribution/preview';
 import { contributionComponents, componentsReady } from '../features/contribution/components';
 import { gateIdentity } from '../features/contribution/identity';
@@ -44,7 +46,7 @@ import {
 } from '../features/contribution/session';
 import { fetchTerms, type ContributionTerms } from '../features/contribution/terms';
 import {
-  declareOrigin, acceptTerms, confirmMaintenance, missingDeclarations, isOriginType,
+  declareOrigin, acceptTerms, confirmMaintenance, missingDeclarations, isOriginType, parseManualForkedFrom,
   prefillOrigin, termsStale,
 } from '../features/contribution/declarations';
 import { buildPackage } from '../features/contribution/package';
@@ -203,8 +205,6 @@ export const invokeHandlers = {
     const { admission, payload: out } = await evaluate(staging);
     session.admission = admission;
     log.info('contribution started', { token: session.token, outcome: admission.outcome });
-    // `originPrefill` 当前恒为「未预填」——派生来源自动预填受阻于
-    // `CC-HUB-OPEN1-US3-US6-FORKED-FROM-READ-001`，见 declarations.ts 模块文档。
     return {
       identity,
       token: session.token,
@@ -216,7 +216,10 @@ export const invokeHandlers = {
 
   /** 写入补齐值并**立即重检**。重检不交给渲染层调用——`C-FR-004c` 是机械要求。 */
   'contribution.complete': async (
-    payload: { token?: unknown; name?: unknown; description?: unknown; version?: unknown; security_manifest?: unknown },
+    payload: {
+      token?: unknown; name?: unknown; description?: unknown; version?: unknown;
+      security_manifest?: unknown; security_declaration?: unknown;
+    },
     ctx: { userId: string },
   ) => {
     const token = assertToken(payload?.token);
@@ -229,6 +232,17 @@ export const invokeHandlers = {
       ...(typeof payload.version === 'string' ? { version: payload.version } : {}),
       ...(typeof payload.security_manifest === 'string' ? { security_manifest: payload.security_manifest } : {}),
     });
+    if (payload.security_declaration !== undefined) {
+      if (!payload.security_declaration || typeof payload.security_declaration !== 'object'
+        || Array.isArray(payload.security_declaration)) throw new Error('invalid security_declaration');
+      const identity = await gateIdentity(ctx.userId);
+      if (identity.outcome !== 'ready' || !identity.displayName) throw new Error(identity.reason || 'identity unavailable');
+      applySecurityQuestionnaire(
+        session.staging,
+        payload.security_declaration as Partial<SecurityQuestionnaire>,
+        identity.displayName,
+      );
+    }
     invalidate(session);
 
     const { admission, payload: out } = await evaluate(session.staging);
@@ -299,7 +313,7 @@ export const invokeHandlers = {
    * （`C-FR-004b`：条款版本不可由 Skill 包或手工输入替代）。
    */
   'contribution.declare': async (
-    payload: { token?: unknown; kind?: unknown; origin_type?: unknown; note?: unknown },
+    payload: { token?: unknown; kind?: unknown; origin_type?: unknown; note?: unknown; forked_from?: unknown },
     ctx: { userId: string },
   ) => {
     const token = assertToken(payload?.token);
@@ -311,10 +325,14 @@ export const invokeHandlers = {
       if (!isOriginType(payload?.origin_type)) throw new Error('invalid origin_type');
       const locked = prefillOrigin(session.staging);
       if (locked.locked && payload.origin_type !== 'derived_from_hub') throw new Error('forked_from_locked');
+      let forkedFrom = locked.locked ? locked.forked_from : null;
+      if (!locked.locked && payload.origin_type === 'derived_from_hub') {
+        forkedFrom = parseManualForkedFrom(payload.forked_from);
+      }
       session.declarations.origin = declareOrigin(
         payload.origin_type,
         typeof payload?.note === 'string' ? payload.note : '',
-        locked.locked ? locked.forked_from : null,
+        forkedFrom,
       );
     } else if (kind === 'terms') {
       const state = await fetchTerms();

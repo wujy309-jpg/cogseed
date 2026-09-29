@@ -1,17 +1,11 @@
 /**
- * 三项声明：齐备判定、不可由渲染层伪造的字段、以及 forked_from 的阻塞状态。
- *
- * 最后一组是本文件存在的主要理由。`C-FR-006` 要求派生副本自动预填来源并锁死类型，
- * 而迭代一把 `forked_from` 实现为只写不读且明示「Client-only — it never travels to Hub」。
- * 在 `CC-HUB-OPEN1-US3-US6-FORKED-FROM-READ-001` 裁决前，预填必须保持关闭——
- * 这条断言是为了让"有人顺手把预填打开"这件事变红，而不是静悄悄把一个本机私有
- * 字段送上 Hub。
+ * 三项声明：齐备判定、不可由渲染层伪造的字段、派生来源格式与预填。
  */
 import { describe, expect, it } from 'vitest';
 
 import {
   emptyDeclarations, declareOrigin, acceptTerms, confirmMaintenance,
-  missingDeclarations, termsStale, isOriginType, prefillOrigin,
+  missingDeclarations, termsStale, isOriginType, prefillOrigin, parseManualForkedFrom,
 } from '../../../../src/main/features/contribution/declarations';
 
 const TERMS = { version: '1.0', effective_at: '2026-09-20T00:00:00Z', body_markdown: '# 条款' };
@@ -59,19 +53,17 @@ describe('来源声明', () => {
     expect(declareOrigin('derived_from_hub', '', { content_id: '8a4f01c29d7e', version: '1.0.0' }).forked_from)
       .toEqual({ content_id: '8a4f01c29d7e', version: '1.0.0' });
   });
+
+  it('手填派生关联只接受 Hub 稳定 ID 和 SemVer', () => {
+    expect(parseManualForkedFrom({ content_id: '8a4f01c29d7e', version: '1.0.0' }))
+      .toEqual({ content_id: '8a4f01c29d7e', version: '1.0.0' });
+    expect(() => parseManualForkedFrom({ content_id: '../secret', version: '1.0.0' })).toThrow('invalid_forked_from');
+    expect(() => parseManualForkedFrom({ content_id: '8a4f01c29d7e', version: 'latest' })).toThrow('invalid_forked_from');
+  });
 });
 
-describe('forked_from 预填保持关闭（受阻于未裁决的 CC）', () => {
-  /**
-   * 三处代码事实支撑这条断言：
-   * - `src/main` 全仓零 `forked_from` 读取点；
-   * - `marketplace/global-invariants.test.ts` 有一条全局不变量断言锁住；
-   * - 字段注释逐字「Client-only — it never travels to Hub」。
-   *
-   * 裁决通过后改 `prefillOrigin` 一个函数即可，本用例届时同步更新——
-   * 它变红正是提醒"这是个需要人类决定的开关"。
-   */
-  it('预填一律返回未预填、未锁定、无派生关联', () => {
+describe('forked_from 预填', () => {
+  it('没有提交副本时返回未预填、未锁定、无派生关联', () => {
     expect(prefillOrigin()).toEqual({ type: null, forked_from: null, locked: false });
   });
 });

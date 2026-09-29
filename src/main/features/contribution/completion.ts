@@ -39,6 +39,24 @@ export interface SubmissionMeta {
   security_manifest: string;
 }
 
+export type SecurityNetworkAccess = 'none' | 'restricted';
+export type SecurityFileAccess = 'none' | 'read_selected' | 'read_write_selected';
+export type SecurityCommandAccess = 'none' | 'declared_tools';
+export type SecuritySensitiveData = 'none' | 'personal' | 'credentials';
+
+/**
+ * 用户确认的是可理解的能力事实，不是 Security Manifest 的序列化格式。
+ * YAML 及声明引擎所需的技术引用由主进程生成，Renderer 无权拼装安全协议。
+ */
+export interface SecurityQuestionnaire {
+  network_access: SecurityNetworkAccess;
+  network_allowlist: string;
+  file_access: SecurityFileAccess;
+  command_access: SecurityCommandAccess;
+  external_tools: string;
+  sensitive_data: SecuritySensitiveData;
+}
+
 export type MissingField = 'name' | 'description' | 'version' | 'skill_md' | 'security_manifest';
 
 export interface FieldConflict {
@@ -61,6 +79,198 @@ const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 /** 标准 SemVer 校验。空串与非法形态都返回 false。 */
 export function isSemver(value: string): boolean {
   return SEMVER.test(String(value || '').trim());
+}
+
+const NETWORK_ACCESS = new Set<SecurityNetworkAccess>(['none', 'restricted']);
+const FILE_ACCESS = new Set<SecurityFileAccess>(['none', 'read_selected', 'read_write_selected']);
+const COMMAND_ACCESS = new Set<SecurityCommandAccess>(['none', 'declared_tools']);
+const SENSITIVE_DATA = new Set<SecuritySensitiveData>(['none', 'personal', 'credentials']);
+
+function _lines(value: unknown, max: number): string[] {
+  const rows = String(value || '').split(/\r?\n|,/).map((line) => line.trim()).filter(Boolean);
+  if (rows.length > max || rows.some((line) => line.length > 200)) throw new Error('security_declaration_value_invalid');
+  return [...new Set(rows)];
+}
+
+function _validNetworkEntry(value: string): boolean {
+  if (value.includes('*') || /\s/.test(value)) return false;
+  if (value.startsWith('https://')) {
+    try {
+      const parsed = new URL(value);
+      return parsed.protocol === 'https:' && !parsed.username && !parsed.password && Boolean(parsed.hostname);
+    } catch { return false; }
+  }
+  return /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(value);
+}
+
+function _writeGeneratedIfMissing(root: string, relativePath: string, content: string): void {
+  const target = path.join(root, relativePath);
+  if (fs.existsSync(target)) return;
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, content.endsWith('\n') ? content : `${content}\n`, 'utf8');
+}
+
+/**
+ * 把六个通俗答案生成声明引擎需要的技术文件。
+ *
+ * 所有文件只写进 contribution staging。四个权限事实都必须显式选择；受限网络和
+ * 外部工具还必须给出具体对象，不能把空值解释为“没有”。
+ */
+export function applySecurityQuestionnaire(
+  staging: ContributionStaging,
+  raw: Partial<SecurityQuestionnaire>,
+  contributorDisplayName: string,
+): void {
+  const networkAccess = raw.network_access;
+  const fileAccess = raw.file_access;
+  const commandAccess = raw.command_access;
+  const sensitiveData = raw.sensitive_data;
+  if (!NETWORK_ACCESS.has(networkAccess as SecurityNetworkAccess)
+    || !FILE_ACCESS.has(fileAccess as SecurityFileAccess)
+    || !COMMAND_ACCESS.has(commandAccess as SecurityCommandAccess)
+    || !SENSITIVE_DATA.has(sensitiveData as SecuritySensitiveData)) {
+    throw new Error('security_declaration_incomplete');
+  }
+  const owner = String(contributorDisplayName || '').trim();
+  if (!owner) throw new Error('security_declaration_owner_missing');
+
+  const allowlist = _lines(raw.network_allowlist, 30);
+  if (networkAccess === 'restricted' && allowlist.length === 0) throw new Error('network_allowlist_required');
+  if (networkAccess === 'none' && allowlist.length > 0) throw new Error('network_allowlist_conflict');
+  if (allowlist.some((entry) => !_validNetworkEntry(entry))) throw new Error('network_allowlist_invalid');
+
+  const externalTools = _lines(raw.external_tools, 30);
+  if (commandAccess === 'declared_tools' && externalTools.length === 0) throw new Error('external_tools_required');
+  if (commandAccess === 'none' && externalTools.length > 0) throw new Error('external_tools_conflict');
+  if (externalTools.some((tool) => !/^[A-Za-z0-9@._+-]{1,80}$/.test(tool))) throw new Error('external_tools_invalid');
+
+  const current = inspectCompletion(staging).present;
+  const skillId = String(staging.sourceSkillId || '').trim();
+  const name = String(current.name || '').trim();
+  const description = String(current.description || '').trim();
+  const version = String(current.version || '').trim();
+  if (!skillId || !name || !description || !isSemver(version)) throw new Error('security_declaration_metadata_incomplete');
+
+  const permissions: Array<Record<string, unknown>> = [];
+  const resources: Array<Record<string, unknown>> = [];
+  const actions: Array<Record<string, unknown>> = [];
+  const prohibitedPermissions: string[] = [];
+
+  if (networkAccess === 'restricted') {
+    permissions.push({ id: 'network-egress', actions: ['READ'], resource: 'network-allowlist' });
+    resources.push({ id: 'network-allowlist', type: 'network', values: allowlist });
+    actions.push({ id: 'network-request', permission_id: 'network-egress', external_network: true });
+  } else prohibitedPermissions.push('network.*');
+
+  if (fileAccess !== 'none') {
+    const writeAllowed = fileAccess === 'read_write_selected';
+    permissions.push({
+      id: writeAllowed ? 'user-file-read-write' : 'user-file-read',
+      actions: writeAllowed ? ['READ', 'WRITE'] : ['READ'],
+      resource: 'user-selected-files',
+    });
+    resources.push({ id: 'user-selected-files', type: 'file', scope: 'user_selected' });
+    actions.push({ id: 'read-user-selected-file', permission_id: writeAllowed ? 'user-file-read-write' : 'user-file-read' });
+    if (writeAllowed) actions.push({ id: 'write-user-selected-file', permission_id: 'user-file-read-write' });
+  } else prohibitedPermissions.push('filesystem.*');
+
+  if (commandAccess === 'declared_tools') {
+    permissions.push({ id: 'external-tool-execution', actions: ['EXECUTE'], resource: 'declared-tools' });
+    resources.push({ id: 'declared-tools', type: 'tool', values: externalTools });
+    actions.push({ id: 'execute-declared-tool', permission_id: 'external-tool-execution' });
+  } else prohibitedPermissions.push('command.*');
+
+  const personal = sensitiveData === 'personal' || sensitiveData === 'credentials';
+  const credentials = sensitiveData === 'credentials';
+  const classification = credentials ? 'RESTRICTED' : personal ? 'CONFIDENTIAL' : 'PUBLIC';
+  const manifest = {
+    manifest_version: '1.1.1',
+    security_ontology: { id: 'cogseed.security.skill', version: '1.1.1' },
+    skill: {
+      id: skillId, name, version, description, environment: 'development',
+      artifact_manifest_ref: 'artifact.yaml',
+      skill_spec_ref: 'SKILL.md',
+      business_ontology_ref: 'references/business-ontology.yaml',
+    },
+    ownership: { human_owner: owner, organization: 'Community', role: 'Contributor', technical_owner: null },
+    provenance: {
+      source_type: 'generated', source_uri: `cogseed://skill/${encodeURIComponent(skillId)}`,
+      author: owner, checksum: 'DEFERRED_UNTIL_FREEZE', signature: null,
+    },
+    permissions: { required: permissions, prohibited: prohibitedPermissions },
+    resources: { allowed: resources, denied: [] },
+    actions: { allowed: actions, prohibited: [] },
+    data_security: {
+      input_classification: [classification], output_classification: [classification],
+      external_transmission: networkAccess === 'restricted', pii_allowed: personal,
+      secrets_allowed: credentials, retention_days: 0,
+    },
+    network: {
+      enabled: networkAccess === 'restricted', allowlist,
+      deny_private_network: true, allow_dynamic_download: false,
+    },
+    runtime_boundary: {
+      runtime_contracts_ref: 'schemas.json#/runtime_contracts', direct_resource_access: false,
+      access_via_gateway_only: true, binding_resolved_by: 'agent_layer', audit_emitted_by: 'runtime',
+    },
+    risk: {
+      risk_level: null, trust_level: null, risk_reasons: [], maximum_impact: null,
+      calculated_risk_level: null, effective_risk_level: null, calculation_rule_version: null,
+      calculation_factors: null, triggered_rule_ids: [],
+    },
+    approval: { required: false, mode: 'none', required_for_actions: [], approver_roles: [] },
+    audit: {
+      enabled: true, events: commandAccess === 'declared_tools' ? ['tool_call', 'result'] : ['result'],
+      include_input: false, include_output: false,
+      include_tool_calls: commandAccess === 'declared_tools', include_policy_decision: false,
+      retention_days: 30,
+    },
+    rollback: {
+      supported: true, type: 'disable_skill', procedure: 'Disable the contributed Skill in Hub.',
+      maximum_recovery_time_minutes: 5,
+    },
+    dependencies: { packages: [], external_tools: externalTools },
+    tests: {
+      evals_ref: 'evals/evals.json',
+      validation_contract_ref: 'references/validation-contract.yaml', minimum_test_cases: 1,
+    },
+  };
+
+  const artifact = {
+    api_version: 'cogseed.security/v1', kind: 'SkillArtifact',
+    metadata: { id: skillId, name, version, description, owner },
+    spec: {
+      entrypoint: 'SKILL.md',
+      implementation: { language: 'markdown', scripts: [] },
+      security: { ontology: 'cogseed.security.skill@1.1.1', manifest_ref: 'references/security-manifest.yaml' },
+      contracts: {
+        schemas: 'schemas.json', skill_spec: 'SKILL.md',
+        validation_contract: 'references/validation-contract.yaml',
+      },
+      tests: { evals: 'evals/evals.json' },
+      lifecycle: { status: 'development', rollback_ref: null },
+    },
+  };
+  const boundary = { network_access: networkAccess, network_allowlist: allowlist, file_access: fileAccess,
+    command_access: commandAccess, external_tools: externalTools, sensitive_data: sensitiveData };
+
+  _writeGeneratedIfMissing(staging.dir, 'artifact.yaml', YAML.stringify(artifact, { lineWidth: 0 }));
+  _writeGeneratedIfMissing(staging.dir, 'schemas.json', `${JSON.stringify({ runtime_contracts: boundary }, null, 2)}\n`);
+  _writeGeneratedIfMissing(staging.dir, 'references/business-ontology.yaml', YAML.stringify({
+    id: `community.skill.${skillId}`, version, name, description,
+  }, { lineWidth: 0 }));
+  _writeGeneratedIfMissing(staging.dir, 'references/validation-contract.yaml', YAML.stringify({
+    kind: 'community-contribution-security-boundary', confirmed_by: owner, boundary,
+  }, { lineWidth: 0 }));
+  _writeGeneratedIfMissing(staging.dir, 'evals/evals.json', `${JSON.stringify({ cases: [{
+    id: 'contribution-security-boundary',
+    description: 'Verify the Skill stays within the contributor-confirmed security boundary.',
+    expected: boundary,
+  }] }, null, 2)}\n`);
+
+  const declarationDir = path.join(staging.dir, 'references');
+  fs.mkdirSync(declarationDir, { recursive: true });
+  fs.writeFileSync(path.join(declarationDir, 'security-manifest.yaml'), YAML.stringify(manifest, { lineWidth: 0 }), 'utf8');
 }
 
 function _readJson(file: string): Record<string, unknown> | null {

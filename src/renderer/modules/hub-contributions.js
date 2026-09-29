@@ -18,6 +18,35 @@
     return root.uiModal({ closeLabel: tr('common.close', 'Close'), ...options });
   }
 
+  function statusTone(status) {
+    const normalized = String(status || '').toUpperCase();
+    if (['ACCEPTED', 'PUBLISHED', 'WITHDRAWN', 'APPROVED'].includes(normalized)) return 'success';
+    if (['PENDING', 'PENDING_REVIEW', 'PENDING_WITHDRAWAL'].includes(normalized)) return 'attention';
+    if (['RETURNED', 'REJECTED', 'FAILED', 'DISABLED'].includes(normalized)) return 'critical';
+    return 'neutral';
+  }
+
+  function statusDescriptor(status, namespace = 'skills.contribute_status') {
+    const normalized = String(status || tr('skills.contribute_status_unknown', 'Unknown')).toUpperCase();
+    return {
+      label: tr(`${namespace}.${normalized}`, String(status || tr('skills.contribute_status_unknown', 'Unknown'))),
+      tone: statusTone(normalized),
+      check: ['ACCEPTED', 'PUBLISHED', 'WITHDRAWN', 'APPROVED'].includes(normalized),
+    };
+  }
+
+  function admissionDetails(state) {
+    const admission = state?.admission || {};
+    const issues = [
+      ...(Array.isArray(admission.issues) ? admission.issues.map((issue) =>
+        [issue.path || issue.file || issue.rule || issue.rule_id, issue.rule || issue.rule_id, issue.message].filter(Boolean).join(' · ')) : []),
+      ...(Array.isArray(admission.declaration?.findings) ? admission.declaration.findings.map((finding) =>
+        [finding.ruleId, finding.message].filter(Boolean).join(' · ')) : []),
+      ...(Array.isArray(admission.componentsBlocking) ? admission.componentsBlocking : []),
+    ].filter(Boolean);
+    return [tr(`skills.contribute_reason.${admission.reason}`, tr('skills.contribute_blocked', 'Local checks blocked contribution.')), ...issues].join('\n');
+  }
+
   async function ensureIdentity(name) {
     const preflight = await root.cogseed.invoke('contribution.preflight', {});
     if (preflight?.identity?.outcome === 'ready') return preflight;
@@ -54,29 +83,123 @@
     let current = result;
     while (current?.completion?.missing?.length || current?.completion?.conflicts?.length) {
       const present = current.completion.present || {};
+      const needsSecurity = (current.completion.missing || []).includes('security_manifest');
+      const fieldLabels = {
+        skill_md: tr('skills.contribute_skill_md', 'SKILL.md'),
+        name: tr('skills.contribute_meta_name', 'Name'),
+        description: tr('skills.contribute_meta_desc', 'Description'),
+        version: tr('skills.contribute_meta_version', 'Version'),
+        security_manifest: tr('skills.contribute_security_manifest', 'Security declaration'),
+      };
+      const issueRows = (current.completion.missing || []).map((field) => ({
+        field: fieldLabels[field] || field,
+        issue: tr('skills.contribute_required', 'Required'),
+      }));
+      issueRows.push(...(current.completion.conflicts || []).map((conflict) => {
+        const values = (conflict.values || []).map((item) => `${item.source}: ${item.value}`).join(' · ');
+        return {
+          field: fieldLabels[conflict.field] || conflict.field,
+          issue: tr('skills.contribute_conflicting_values', 'Conflicting values: {values}').replace('{values}', values),
+        };
+      }));
+      const issues = root.uiDataTable({
+        label: tr('skills.contribute_metadata_issues', 'Submission metadata issues'),
+        columns: [
+          { key: 'field', label: tr('skills.contribute_issue_field', 'Field'), primary: true },
+          { key: 'issue', label: tr('skills.contribute_issue_detail', 'Issue') },
+        ],
+        rows: issueRows,
+      });
+      const securityFields = needsSecurity ? [
+        { html: root.uiField({
+          id: 'contrib-network-access', label: tr('skills.contribute_security_network', 'External network access'), required: true,
+          hint: tr('skills.contribute_security_network_hint', 'Choose restricted access only when the Skill contacts specific services.'),
+          control: { kind: 'select', value: '', placeholder: tr('skills.contribute_security_choose', 'Choose one'), options: [
+            { value: 'none', label: tr('skills.contribute_security_network_none', 'Does not access external networks') },
+            { value: 'restricted', label: tr('skills.contribute_security_network_restricted', 'Accesses declared domains only') },
+          ] },
+        }) },
+        { html: root.uiField({
+          id: 'contrib-network-allowlist', label: tr('skills.contribute_security_network_allowlist', 'Allowed domains'),
+          hint: tr('skills.contribute_security_network_allowlist_hint', 'Required only for restricted network access. Enter one domain or HTTPS address per line.'),
+          control: { kind: 'textarea', value: '', attrs: { rows: 3, spellcheck: 'false' } },
+        }) },
+        { html: root.uiField({
+          id: 'contrib-file-access', label: tr('skills.contribute_security_files', 'Local file access'), required: true,
+          control: { kind: 'select', value: '', placeholder: tr('skills.contribute_security_choose', 'Choose one'), options: [
+            { value: 'none', label: tr('skills.contribute_security_files_none', 'Does not directly read or write local files') },
+            { value: 'read_selected', label: tr('skills.contribute_security_files_read', 'Reads only files selected by the user') },
+            { value: 'read_write_selected', label: tr('skills.contribute_security_files_write', 'Reads and writes only files selected by the user') },
+          ] },
+        }) },
+        { html: root.uiField({
+          id: 'contrib-command-access', label: tr('skills.contribute_security_commands', 'Commands and external tools'), required: true,
+          control: { kind: 'select', value: '', placeholder: tr('skills.contribute_security_choose', 'Choose one'), options: [
+            { value: 'none', label: tr('skills.contribute_security_commands_none', 'Does not execute commands or external tools') },
+            { value: 'declared_tools', label: tr('skills.contribute_security_commands_declared', 'Uses the tools listed below') },
+          ] },
+        }) },
+        { html: root.uiField({
+          id: 'contrib-external-tools', label: tr('skills.contribute_security_tool_names', 'Tool names'),
+          hint: tr('skills.contribute_security_tool_names_hint', 'Required only when tools are used. Enter executable or package names, one per line.'),
+          control: { kind: 'textarea', value: '', attrs: { rows: 3, spellcheck: 'false' } },
+        }) },
+        { html: root.uiField({
+          id: 'contrib-sensitive-data', label: tr('skills.contribute_security_data', 'Sensitive data'), required: true,
+          control: { kind: 'select', value: '', placeholder: tr('skills.contribute_security_choose', 'Choose one'), options: [
+            { value: 'none', label: tr('skills.contribute_security_data_none', 'Not intended to process personal information or credentials') },
+            { value: 'personal', label: tr('skills.contribute_security_data_personal', 'May process personal information') },
+            { value: 'credentials', label: tr('skills.contribute_security_data_credentials', 'May process credentials or secrets') },
+          ] },
+        }) },
+      ] : [];
       const form = root.uiForm({
         ariaLabel: tr('skills.contribute_metadata', 'Submission metadata'),
         fields: [
           { html: root.uiField({ id: 'contrib-name', label: tr('skills.contribute_meta_name', 'Name'), required: true, control: { kind: 'input', value: present.name || '' } }) },
           { html: root.uiField({ id: 'contrib-description', label: tr('skills.contribute_meta_desc', 'Description'), required: true, control: { kind: 'textarea', value: present.description || '', attrs: { rows: 4 } } }) },
           { html: root.uiField({ id: 'contrib-version', label: tr('skills.contribute_meta_version', 'Version'), required: true, control: { kind: 'input', value: present.version || '', placeholder: '1.0.0' } }) },
-          { html: root.uiField({ id: 'contrib-security-manifest', label: tr('skills.contribute_security_manifest', 'Security declaration'), required: true, control: { kind: 'textarea', value: present.security_manifest || '', attrs: { rows: 12, spellcheck: 'false' } } }) },
+          ...securityFields,
         ],
       });
       const dialog = modal({
         title: tr('skills.contribute_metadata', 'Submission metadata'),
         description: tr('skills.contribute_metadata_hint', 'Changes apply only to the submission copy.'),
-        bodyHtml: form,
+        bodyHtml: `<div class="contribution-metadata">${issues}${form}</div>`,
         actions: [{ id: 'cancel', label: tr('common.cancel', 'Cancel') }, { id: 'save', label: tr('common.continue', 'Continue'), role: 'primary' }],
       });
+      const securitySelects = needsSecurity && typeof root.hydrateUiFormSelects === 'function'
+        ? root.hydrateUiFormSelects(dialog.overlay)
+        : [];
       const answer = await dialog;
       if (answer.value !== 'save') return null;
+      const securityDeclaration = needsSecurity ? {
+        network_access: securitySelects[0]?.getValue?.() || '',
+        network_allowlist: dialog.overlay.querySelector('#contrib-network-allowlist')?.value || '',
+        file_access: securitySelects[1]?.getValue?.() || '',
+        command_access: securitySelects[2]?.getValue?.() || '',
+        external_tools: dialog.overlay.querySelector('#contrib-external-tools')?.value || '',
+        sensitive_data: securitySelects[3]?.getValue?.() || '',
+      } : null;
+      if (securityDeclaration && (!securityDeclaration.network_access || !securityDeclaration.file_access
+        || !securityDeclaration.command_access || !securityDeclaration.sensitive_data)) {
+        await root.uiAlert(tr('skills.contribute_security_required', 'Choose an answer for every security item.'));
+        continue;
+      }
+      if (securityDeclaration?.network_access === 'restricted' && !securityDeclaration.network_allowlist.trim()) {
+        await root.uiAlert(tr('skills.contribute_security_network_required', 'List at least one allowed domain.'));
+        continue;
+      }
+      if (securityDeclaration?.command_access === 'declared_tools' && !securityDeclaration.external_tools.trim()) {
+        await root.uiAlert(tr('skills.contribute_security_tools_required', 'List at least one command or external tool.'));
+        continue;
+      }
       const next = await root.cogseed.invoke('contribution.complete', {
         token,
         name: dialog.overlay.querySelector('#contrib-name')?.value || '',
         description: dialog.overlay.querySelector('#contrib-description')?.value || '',
         version: dialog.overlay.querySelector('#contrib-version')?.value || '',
-        security_manifest: dialog.overlay.querySelector('#contrib-security-manifest')?.value || '',
+        ...(securityDeclaration ? { security_declaration: securityDeclaration } : {}),
       });
       current = next;
       if (current?.admission?.outcome !== 'pass') return current;
@@ -84,48 +207,167 @@
     return current;
   }
 
-  async function confirmPreview(token, name, state, terms, previousOrigin) {
+  async function chooseOrigin(token, state, previousOrigin) {
+    if (state.originPrefill?.locked) {
+      const source = state.originPrefill.forked_from;
+      if (!source?.content_id || !source?.version) return null;
+      const note = await root.uiPrompt(tr('skills.contribute_origin_derived_note',
+        'Derived from Hub content {content_id} v{version}. Add an optional note.')
+        .replace('{content_id}', source.content_id).replace('{version}', source.version), '');
+      if (note === null) return null;
+      await root.cogseed.invoke('contribution.declare', {
+        token, kind: 'origin', origin_type: 'derived_from_hub', note,
+      });
+      state.originNote = note;
+      state.originForkedFrom = source;
+      return 'derived_from_hub';
+    }
+    const origin = await root.uiChoice({
+      title: tr('skills.contribute_origin_title', 'Origin declaration'),
+      message: previousOrigin?.type
+        ? tr('skills.contribute_origin_previous', 'Previous declaration: {origin}. Confirm or change it.').replace('{origin}', previousOrigin.type)
+        : tr('skills.contribute_origin_choose', 'Select the true origin.'),
+      choices: [
+        { id: 'original', label: tr('skills.contribute_origin.original', 'Original') },
+        { id: 'derived_from_hub', label: tr('skills.contribute_origin.derived_from_hub', 'Derived from Hub content') },
+        { id: 'third_party', label: tr('skills.contribute_origin.third_party', 'Third-party material') },
+      ].sort((a, b) => (a.id === previousOrigin?.type ? -1 : b.id === previousOrigin?.type ? 1 : 0)),
+    });
+    if (!origin) return null;
+    let note = '';
+    let forkedFrom = null;
+    if (origin === 'derived_from_hub') {
+      const contentId = await root.uiPrompt(tr('skills.contribute_origin_content_id', 'Enter the Hub content ID (12 lowercase hex characters).'),
+        previousOrigin?.forked_from?.content_id || '');
+      if (contentId === null) return null;
+      const version = await root.uiPrompt(tr('skills.contribute_origin_source_version', 'Enter the Hub source version (SemVer).'),
+        previousOrigin?.forked_from?.version || '');
+      if (version === null) return null;
+      if (!/^[0-9a-f]{12}$/.test(contentId.trim()) || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version.trim())) {
+        await root.uiAlert(tr('skills.contribute_origin_invalid_ref', 'Enter a valid Hub content ID and SemVer source version.'));
+        return null;
+      }
+      forkedFrom = { content_id: contentId.trim(), version: version.trim() };
+      const enteredNote = await root.uiPrompt(tr('skills.contribute_origin_derived_note',
+        'Derived from Hub content {content_id} v{version}. Add an optional note.')
+        .replace('{content_id}', forkedFrom.content_id).replace('{version}', forkedFrom.version),
+      previousOrigin?.type === 'derived_from_hub' ? String(previousOrigin.note || '') : '');
+      if (enteredNote === null) return null;
+      note = enteredNote;
+    }
+    if (origin === 'third_party') {
+      note = await root.uiPrompt(tr('skills.contribute_origin_note_ph', 'Describe the third-party source.'), previousOrigin?.type === 'third_party' ? String(previousOrigin.note || '') : '');
+      if (!note) return null;
+    }
+    await root.cogseed.invoke('contribution.declare', {
+      token, kind: 'origin', origin_type: origin, note,
+      ...(forkedFrom ? { forked_from: forkedFrom } : {}),
+    });
+    state.originNote = note;
+    state.originForkedFrom = forkedFrom;
+    return origin;
+  }
+
+  async function confirmPreview(token, name, state, terms, origin, displayName) {
     const preview = state.preview || { files: [] };
-    const fileRows = (preview.files || []).map((file) => `<li><code>${esc(file.path)}</code> · ${Number(file.size) || 0} B · <code>${esc(file.sha256)}</code></li>`).join('');
-    const choice = await modal({
+    const metadata = state.completion?.present || {};
+    const metadataTable = root.uiDataTable({
+      label: tr('skills.contribute_preview_metadata', 'Submission metadata'),
+      columns: [
+        { key: 'field', label: tr('skills.contribute_issue_field', 'Field'), primary: true },
+        { key: 'value', label: tr('skills.contribute_preview_value', 'Value') },
+      ],
+      rows: [
+        { field: tr('skills.contribute_meta_name', 'Name'), value: metadata.name || name || '' },
+        { field: tr('skills.contribute_meta_desc', 'Description'), value: metadata.description || '' },
+        { field: tr('skills.contribute_meta_version', 'Version'), value: metadata.version || '' },
+        { field: tr('skills.contribute_origin_title', 'Origin declaration'), value: tr(`skills.contribute_origin.${origin}`, origin) },
+        ...(state.originForkedFrom ? [{
+          field: tr('skills.contribute_origin_derived_from', 'Derived from Hub content'),
+          value: `${state.originForkedFrom.content_id} v${state.originForkedFrom.version}`,
+        }] : []),
+        ...(state.originNote ? [{ field: tr('skills.contribute_origin_note', 'Origin note'), value: state.originNote }] : []),
+        { field: tr('skills.contribute_terms_version', 'Terms version'), value: terms.version || '' },
+        { field: tr('skills.contribute_contributor', 'Contributor'), value: displayName || '' },
+      ],
+    });
+    const files = Array.isArray(preview.files) ? preview.files : [];
+    const filesAccordion = files.length ? root.uiAccordion({
+      defaultOpen: [],
+      items: files.map((file, index) => ({
+        title: file.path,
+        meta: `${Number(file.size) || 0} B`,
+        bodyHtml: `<div class="contribution-file-details">${[
+          `<code class="contribution-file-hash">${esc(file.sha256)}</code>`,
+          root.uiButton({
+            label: tr('skills.contribute_view_file', 'View file'),
+            size: 'sm',
+            attrs: { 'data-contribution-file-index': index },
+          }),
+          `<pre class="contribution-file-content" data-contribution-file-content="${index}" hidden></pre>`,
+        ].join('')}</div>`,
+      })),
+    }) : root.uiEmptyState({ title: tr('skills.contribute_preview_files_empty', 'No files in this submission') });
+    const choice = modal({
       title: tr('skills.contribute_preview_title', 'Submission preview').replace('{name}', name || ''),
       description: tr('skills.contribute_files_note', 'Only the listed files and metadata will be sent.'),
       size: 'lg',
-      bodyHtml: `<div class="contribution-preview" data-contribution-preview><p><strong>${esc(state.completion?.present?.name || name)}</strong> · ${esc(state.completion?.present?.version || '')}</p><ul>${fileRows}</ul></div>`,
+      bodyHtml: `<div class="contribution-preview" data-contribution-preview>${metadataTable}${filesAccordion}</div>`,
       actions: [{ id: 'cancel', label: tr('common.cancel', 'Cancel') }, { id: 'continue', label: tr('common.continue', 'Continue'), role: 'primary' }],
+    });
+    choice.overlay.addEventListener('click', async (event) => {
+      const button = event.target.closest('[data-contribution-file-index]');
+      if (!button) return;
+      const file = files[Number(button.dataset.contributionFileIndex)];
+      if (!file) return;
+      try {
+        const result = await root.cogseed.invoke('contribution.readFile', { token, path: file.path });
+        const content = choice.overlay.querySelector(`[data-contribution-file-content="${button.dataset.contributionFileIndex}"]`);
+        if (!content) return;
+        content.textContent = result.binary
+          ? tr('skills.contribute_binary_file', 'Binary file ({size} bytes)').replace('{size}', String(result.size || file.size))
+          : result.content || '';
+        content.hidden = false;
+      } catch (error) {
+        await root.uiAlert(tr('skills.contribute_file_read_failed', 'Could not read this file. Please restart the preview.'));
+      }
     });
     const previewResult = await choice;
     if (previewResult.value !== 'continue') return false;
 
-    if (!state.originPrefill?.locked) {
-      const origin = await root.uiChoice({
-        title: tr('skills.contribute_origin_title', 'Origin declaration'),
-        message: previousOrigin?.type
-          ? tr('skills.contribute_origin_previous', 'Previous declaration: {origin}. Confirm or change it.').replace('{origin}', previousOrigin.type)
-          : tr('skills.contribute_origin_choose', 'Select the true origin.'),
-        choices: [
-          { id: 'original', label: tr('skills.contribute_origin.original', 'Original') },
-          { id: 'third_party', label: tr('skills.contribute_origin.third_party', 'Third-party material') },
-        ].sort((a, b) => (a.id === previousOrigin?.type ? -1 : b.id === previousOrigin?.type ? 1 : 0)),
-      });
-      if (!origin) return false;
-      let note = '';
-      if (origin === 'third_party') {
-        note = await root.uiPrompt(tr('skills.contribute_origin_note_ph', 'Describe the third-party source.'), previousOrigin?.type === 'third_party' ? String(previousOrigin.note || '') : '');
-        if (!note) return false;
-      }
-      await root.cogseed.invoke('contribution.declare', { token, kind: 'origin', origin_type: origin, note });
-    }
-
-    const termsResult = await modal({
+    const declarationsForm = root.uiForm({
+      ariaLabel: tr('skills.contribute_declarations', 'Contribution declarations'),
+      fields: [
+        { html: root.uiField({
+          id: 'contribution-accept-terms',
+          label: tr('skills.contribute_terms_accept', 'I accept the contribution terms'),
+          required: true,
+          control: { kind: 'checkbox', accessibleLabel: tr('skills.contribute_terms_accept', 'I accept the contribution terms') },
+        }) },
+        { html: root.uiField({
+          id: 'contribution-confirm-maintenance',
+          label: tr('skills.contribute_maint_note', 'I confirm maintenance responsibility.'),
+          required: true,
+          control: { kind: 'checkbox', accessibleLabel: tr('skills.contribute_maint_note', 'I confirm maintenance responsibility.') },
+        }) },
+      ],
+    });
+    if (typeof renderMarkdown !== 'function') throw new Error('contribution requires renderMarkdown');
+    const termsHtml = renderMarkdown(terms.body_markdown);
+    const termsDialog = modal({
       title: tr('skills.contribute_terms_title', 'Community Contribution Terms'),
       description: `${tr('skills.contribute_terms_version', 'Version')} ${terms.version}`,
-      size: 'lg', bodyHtml: `<article class="markdown-body">${esc(terms.body_markdown).replace(/\n/g, '<br>')}</article>`,
-      actions: [{ id: 'cancel', label: tr('common.cancel', 'Cancel') }, { id: 'accept', label: tr('skills.contribute_terms_accept', 'I accept'), role: 'primary' }],
+      size: 'lg', bodyHtml: `<div class="contribution-declarations"><article class="markdown-body">${termsHtml}</article>${declarationsForm}</div>`,
+      actions: [{ id: 'cancel', label: tr('common.cancel', 'Cancel') }, { id: 'accept', label: tr('common.confirm', 'Confirm'), role: 'primary' }],
     });
-    if ((await termsResult).value !== 'accept') return false;
+    if ((await termsDialog).value !== 'accept') return false;
+    const acceptedTerms = termsDialog.overlay.querySelector('#contribution-accept-terms')?.checked === true;
+    const acceptedMaintenance = termsDialog.overlay.querySelector('#contribution-confirm-maintenance')?.checked === true;
+    if (!acceptedTerms || !acceptedMaintenance) {
+      await root.uiAlert(tr('skills.contribute_declarations_required', 'Accept the terms and confirm maintenance responsibility before continuing.'));
+      return false;
+    }
     await root.cogseed.invoke('contribution.declare', { token, kind: 'terms' });
-    if (!await root.uiConfirm({ message: tr('skills.contribute_maint_note', 'I confirm maintenance responsibility.'), okLabel: tr('common.confirm', 'Confirm') })) return false;
     await root.cogseed.invoke('contribution.declare', { token, kind: 'maintenance' });
     const confirmed = await root.cogseed.invoke('contribution.confirm', { token, digest: preview.digest });
     return confirmed?.confirmed === true;
@@ -134,7 +376,8 @@
   async function startSkillContribution(skillId, name, targetContentId, previousOrigin) {
     let token = null;
     try {
-      if (!await ensureIdentity(name)) return;
+      const preflight = await ensureIdentity(name);
+      if (!preflight) return;
       const termsResponse = await root.cogseed.invoke('contribution.terms', {});
       if (termsResponse?.state?.status !== 'open') {
         await root.uiAlert(termsResponse?.state?.status === 'closed'
@@ -153,7 +396,7 @@
         title: tr('skills.contribute_checking', 'Running local checks'),
         description: tr('skills.contribute_checking_hint', 'No package bytes are sent while local checks run.'),
         dismissible: false,
-        bodyHtml: root.uiProgressBar({ ariaLabel: tr('skills.contribute_checking', 'Running local checks'), value: 1, max: 1 }),
+        bodyHtml: root.uiSkeleton({ ariaLabel: tr('skills.contribute_checking', 'Running local checks'), lines: [54, 92, 78] }),
         actions: [{ id: 'cancel', label: tr('common.cancel', 'Cancel') }],
       });
       const check = root.cogseed.invoke('contribution.recheck', { token })
@@ -177,17 +420,20 @@
         }
       }
       if (!state || state?.admission?.outcome !== 'pass') {
-        if (state) await root.uiAlert(tr(`skills.contribute_reason.${state?.admission?.reason}`, tr('skills.contribute_blocked', 'Local checks blocked contribution.')));
+        if (state) await root.uiAlert(admissionDetails(state));
         return;
       }
-      if (!await confirmPreview(token, name, state, termsResponse.state.terms, previousOrigin)) return;
+      const origin = await chooseOrigin(token, state, previousOrigin);
+      if (!origin) return;
+      if (!await confirmPreview(token, name, state, termsResponse.state.terms, origin,
+        state.identity?.displayName || preflight.identity?.displayName)) return;
       let replaceConfirmed = false;
       for (;;) {
         const upload = modal({
           title: tr('skills.contribute_uploading', 'Uploading contribution'),
           description: tr('skills.contribute_uploading_hint', 'Keep this window open until Hub confirms receipt.'),
           dismissible: false,
-          bodyHtml: root.uiProgressBar({ ariaLabel: tr('skills.contribute_uploading', 'Uploading contribution'), value: 1, max: 1 }),
+          bodyHtml: root.uiSkeleton({ ariaLabel: tr('skills.contribute_uploading', 'Uploading contribution'), lines: [62, 88] }),
           actions: [{ id: 'cancel', label: tr('common.cancel', 'Cancel') }],
         });
         const submitAttempt = root.cogseed.invoke('contribution.submit', {
@@ -273,31 +519,40 @@
         const submissionId = String(latest.submission_id || item.submission_id || '');
         const contentStatus = String(item.content_status || '').toLowerCase();
         const lifecycleNote = ['disabled', 'withdrawn'].includes(contentStatus)
-          ? tr('skills.contribute_lifecycle_recovery_notice', 'This content is {status}. A higher-version submission can restore availability only after Hub review.')
-            .replace('{status}', contentStatus)
+          ? tr('skills.contribute_lifecycle_recovery_notice', 'This content is {status}. A higher-version submission still requires a governance role to restore availability after publication.')
+            .replace('{status}', tr(`skills.contribute_lifecycle.${contentStatus}`, contentStatus))
           : '';
         const actions = [
-          contentId ? root.uiButton({ label: tr('skills.contribute_new_version', 'Submit new version'), size: 'sm', attrs: { 'data-contribution-new-version': contentId, 'data-contribution-index': index } }) : '',
-          submissionId && ['pending', 'submitted', 'reviewing'].includes(status.toLowerCase())
-            ? root.uiButton({ label: tr('skills.contribute_withdraw_pending', 'Withdraw submission'), role: 'danger', size: 'sm', attrs: { 'data-contribution-withdraw-pending': submissionId } }) : '',
+          contentId ? { label: status.toUpperCase() === 'RETURNED'
+            ? tr('skills.contribute_resubmit', 'Revise and resubmit')
+            : tr('skills.contribute_new_version', 'Submit new version'), attrs: { 'data-contribution-new-version': contentId, 'data-contribution-index': index } } : null,
+          !contentId && status.toUpperCase() === 'RETURNED'
+            ? { label: tr('skills.contribute_resubmit', 'Revise and resubmit'), attrs: { 'data-contribution-resubmit': true } } : null,
+          submissionId && status.toUpperCase() === 'PENDING_REVIEW'
+            ? { label: tr('skills.contribute_withdraw_pending', 'Withdraw submission'), role: 'danger', attrs: { 'data-contribution-withdraw-pending': submissionId } } : null,
           contentId && contentStatus === 'published' && String(withdrawal.status || '').toUpperCase() !== 'PENDING'
-            ? root.uiButton({ label: tr('skills.contribute_request_withdrawal', 'Request withdrawal'), role: 'danger', size: 'sm', attrs: { 'data-contribution-request-withdrawal': contentId } }) : '',
-          contentId ? root.uiButton({ label: tr('skills.contribute_withdrawal_history', 'Withdrawal history'), size: 'sm', attrs: { 'data-contribution-withdrawal-history': contentId } }) : '',
-        ].filter(Boolean).join(' ');
+            ? { label: tr('skills.contribute_request_withdrawal', 'Request withdrawal'), role: 'danger', attrs: { 'data-contribution-request-withdrawal': contentId } } : null,
+          contentId ? { label: tr('skills.contribute_withdrawal_history', 'Withdrawal history'), attrs: { 'data-contribution-withdrawal-history': contentId } } : null,
+        ].filter(Boolean);
         return root.uiResourceCard({
           title,
           description: [
+            String(item.entry_id || contentId || submissionId || ''),
+            item.current_published_version ? `${tr('skills.contribute_published_version', 'Published version')}: ${String(item.current_published_version)}` : '',
+            withdrawal.status ? `${tr('skills.contribute_withdrawal_status', 'Withdrawal')}: ${tr(`skills.contribute_withdrawal_state.${String(withdrawal.status).toUpperCase()}`, String(withdrawal.status))}` : '',
             lifecycleNote,
             String(withdrawal.rejected_reason || latest.returned_reason || item.reason || item.review_reason || item.description || ''),
           ].filter(Boolean).join(' '),
-          status,
-          bodyHtml: `<div class="contribution-mine-actions">${actions}</div>`,
+          status: statusDescriptor(status),
+          actions,
         });
       }).join(''),
     }) : root.uiEmptyState({ title: tr('skills.contribute_mine_empty', 'No contributions yet') });
     const dialog = modal({
       title: tr('skills.contribute_mine', 'My contributions'),
-      description: response?.stale ? tr('skills.contribute_mine_stale', 'Showing the last saved result because Hub could not be refreshed.') : '',
+      description: response?.stale
+        ? `${tr('skills.contribute_mine_stale', 'Showing the last saved result because Hub could not be refreshed.')} ${String(response?.cache?.generated_at || '')}`.trim()
+        : '',
       size: 'lg', bodyHtml,
       actions: [
         { id: 'close', label: tr('common.close', 'Close') },
@@ -308,7 +563,13 @@
       const newVersion = event.target.closest('[data-contribution-new-version]');
       if (newVersion) {
         const item = items[Number(newVersion.dataset.contributionIndex)];
+        dialog.close('new-version', 'programmatic');
         return chooseLocalSkill(newVersion.dataset.contributionNewVersion, item?.latest_submission?.declarations_origin || null);
+      }
+      const resubmit = event.target.closest('[data-contribution-resubmit]');
+      if (resubmit) {
+        dialog.close('resubmit', 'programmatic');
+        return chooseLocalSkill();
       }
       const withdraw = event.target.closest('[data-contribution-withdraw-pending]');
       if (withdraw && await root.uiConfirmDanger({ message: tr('skills.contribute_withdraw_pending_confirm', 'Withdraw this pending submission?') })) {
@@ -338,9 +599,9 @@
         }
         const rows = Array.isArray(result.result?.items) ? result.result.items : [];
         const historyBody = rows.length ? rows.map((row) => root.uiResourceCard({
-          title: String(row.status || tr('skills.contribute_status_unknown', 'Unknown')),
-          description: String(row.rejected_reason || row.reason || ''),
-          status: String(row.requested_at || ''),
+          title: tr('skills.contribute_withdrawal_record', 'Withdrawal request'),
+          description: [String(row.requested_at || ''), String(row.rejected_reason || row.reason || '')].filter(Boolean).join(' · '),
+          status: statusDescriptor(row.status, 'skills.contribute_withdrawal_state'),
         })).join('') : root.uiEmptyState({ title: tr('skills.contribute_withdrawal_history_empty', 'No withdrawal requests') });
         await modal({
           title: tr('skills.contribute_withdrawal_history', 'Withdrawal history'),

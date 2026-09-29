@@ -12,20 +12,11 @@
  * 所以 `acceptTerms` 只收 Hub 返回的 `ContributionTerms`，时间由本机生成——
  * 让渲染层传 version 进来就等于让它能声称接受了一个别的版本。
  *
- * ## `forked_from` 为什么这里只读不写
+ * ## `forked_from` 来自提交副本
  *
  * `C-FR-006` 要求派生副本自动预填「派生自 Hub 内容 {content_id} v{version}」，
- * 类型固定且关联不可删。但迭代一把 `forked_from` 实现为**只写不读**：
- * `src/main` 全仓零读取点，三个测试文件从不同角度锁死（含一条全局不变量测试），
- * 且字段注释逐字「**Client-only — it never travels to Hub**」。
- *
- * 该冲突由 `CC-HUB-OPEN1-US3-US6-FORKED-FROM-READ-001`（`proposed`）裁决，
- * 且裁决范围比 CC 现有两条口径更大——CC 只讨论"能不能读"，没讨论"能不能外发"。
- *
- * 在裁决前，本模块**不读取** `forked_from`，派生来源走贡献者手填路径：
- * `origin.type` 仍可选 `derived_from_hub`，只是不自动预填、也不校验关联。
- * 这样 T034 是一个**单一可替换的接缝**——裁决下来只需在 `prefillOrigin` 里加读取，
- * 其余任何地方不改。
+ * 类型固定且关联不可删。贡献流程从冻结的提交副本读取 `_meta.json`，
+ * 把已有的派生关联放进来源声明；不改写本机 Skill。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -40,8 +31,7 @@ export interface OriginDeclaration {
   /** 贡献者补充说明。第三方材料须说明来源。 */
   note: string;
   /**
-   * 派生关联。**当前恒为 `null`** —— 见模块文档「`forked_from` 为什么这里只读不写」。
-   * 裁决通过后由 `prefillOrigin` 填充，届时须同时成为不可修改项。
+   * 派生关联；由提交副本预填后不可修改。
    */
   forked_from: { content_id: string; version: string } | null;
 }
@@ -76,15 +66,21 @@ export function isOriginType(value: unknown): value is OriginType {
   return typeof value === 'string' && ORIGIN_TYPES.has(value);
 }
 
+/** Contributor-supplied association for a derived Skill without a saved fork marker. */
+export function parseManualForkedFrom(value: unknown): { content_id: string; version: string } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('forked_from_required');
+  const source = value as Record<string, unknown>;
+  if (typeof source.content_id !== 'string' || !/^[0-9a-f]{12}$/.test(source.content_id)
+    || typeof source.version !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(source.version)) {
+    throw new Error('invalid_forked_from');
+  }
+  return { content_id: source.content_id, version: source.version };
+}
+
 /**
  * 预填来源声明。
  *
- * **当前是一个刻意留空的接缝。** `C-FR-006` 要求带 `forked_from` 的派生副本自动
- * 预填并锁死类型，但迭代一的 `forked_from` 只写不读且不外发（见模块文档）。
- * 裁决前一律返回"未预填"，由贡献者自行选择来源类型。
- *
- * 裁决通过后，此处读取副本 `_meta.json` 的 `forked_from` 并返回
- * `{ type: 'derived_from_hub', forked_from, locked: true }`——**改动只在这一个函数内**。
+ * 有有效 `forked_from` 时返回锁定的派生来源；普通 Skill 保持未预填。
  */
 export function prefillOrigin(staging?: ContributionStaging): {
   type: OriginType | null;
