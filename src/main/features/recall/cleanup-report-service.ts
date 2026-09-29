@@ -95,7 +95,7 @@ export interface CleanupReport extends RecallJsonRecord {
   backupDirs?: string[];
   /** 完整整理轮：某分轮整轮未执行的原因（如模型未配置）。规则轮成果不陪葬，
    *  但必须如实上报，不静默（各轮"整轮失败上报"硬口径在合并层的落点）。 */
-  roundErrors?: { title_regen?: string; statement_regen?: string };
+  roundErrors?: { title_regen?: string; statement_regen?: string; candidate_statement_regen?: string };
   /** 标题重起轮专用：写前整库备份目录（records/ 之外）。恢复走
    *  updateAbilityAsset 正门逐条改回，不做 raw 写回（见轮内注释）。 */
   backupDir?: string;
@@ -824,6 +824,10 @@ export async function runAssetFullCleanup(
   const rules = await runAssetCleanup(userId, options);
   let title: CleanupReport | undefined;
   let statement: CleanupReport | undefined;
+  // 候选正文改写轮（2026-09-29 根治收口）：full 必含——池里的超长候选正文
+  // 只有这一条存量出口（入池闸门只管新生成）；改的是候选不是资产，不属
+  // 「睡着时改资产」的范畴。
+  let candidateStatement: CleanupReport | undefined;
   try {
     title = await runAssetTitleRegenCleanup(userId, options);
   } catch (error) {
@@ -834,10 +838,15 @@ export async function runAssetFullCleanup(
   } catch (error) {
     roundErrors.statement_regen = (error as Error).message;
   }
-  const parts = [rules, title, statement].filter((report): report is CleanupReport => Boolean(report));
+  try {
+    candidateStatement = await runCandidateStatementRegenCleanup(userId, options);
+  } catch (error) {
+    roundErrors.candidate_statement_regen = (error as Error).message;
+  }
+  const parts = [rules, title, statement, candidateStatement].filter((report): report is CleanupReport => Boolean(report));
   const mergedId = `cr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const scope = options.scope || {};
-  const backupDirs = [title?.backupDir, statement?.backupDir].filter((dir): dir is string => Boolean(dir));
+  const backupDirs = [title?.backupDir, statement?.backupDir, candidateStatement?.backupDir].filter((dir): dir is string => Boolean(dir));
   const written = await writeRecallJsonRecord(userId, 'cleanup-reports', mergedId, {
     schemaVersion: 1,
     ownerId: userId,

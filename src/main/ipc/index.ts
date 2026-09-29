@@ -3081,13 +3081,14 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   }),
 
   // 集成维护入口（2026-09-29 子安拍板「合并成一个集成功能」）：一次跑全套
-  // = 检查资产库（只报告）+ 完整清理（规范标题/合并重复/补标签/重写啰嗦正文）。
-  // 两个动作各自落自己的报告（inspection runs / cleanup-reports），前端一个
-  // 按钮触发、分别展示结果；夜间是否也自动跑 cleanup 属"睡着时改资产"的
-  // 产品决定，未拍板前夜间线维持"整理对话+检查"不挂清理。
+  // = 检查资产库（只报告）+ 完整清理（规范标题/合并重复/补标签/重写啰嗦正文，
+  // 含候选池正文——full 轮 2026-09-29 补齐）。两个动作各自落自己的报告
+  // （inspection runs / cleanup-reports），前端一个按钮触发、分别展示结果；
+  // 夜间线维持「整理对话+检查+机械规则轮」，LLM 改写只在用户手动触发时跑
+  // （「睡着时改资产」未拍板）。
   'recall.maintenance.run': async (_args, ctx) => {
     const inspection = await recallInspection.runAssetInspection(ctx.userId, { trigger: 'manual' });
-    const cleanup = await recallCleanup.runAssetCleanup(ctx.userId, { trigger: 'user' });
+    const cleanup = await recallCleanup.runAssetFullCleanup(ctx.userId, { trigger: 'user' });
     return { ok: true, inspection, cleanup };
   },
   'recall.inspection.list': async ({ limit } = {}, ctx) => {

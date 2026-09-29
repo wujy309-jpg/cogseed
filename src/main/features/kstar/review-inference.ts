@@ -224,6 +224,9 @@ function inferenceSystemPrompt(): string {
     'Do not invent tests, files, feedback, or external outcomes. Mark needsConfirmation=true for subjective or ambiguous success.',
     'lesson is OPTIONAL but valuable: it captures a REUSABLE experience discovered DURING execution — a pattern, pitfall, or method the executor would apply differently next time. This is separate from deltaR: even a fully successful task (met_expected, deltaR 0) can yield a lesson, e.g. "merge-conflict type assertions (as X) hide runtime errors — prefer explicit discriminant checks".',
     'Only write a lesson when it is genuinely reusable and non-trivial (a specific pattern/pitfall/method, not "the task was completed"). Omit lesson when the execution was routine with nothing to carry forward.',
+    // 正文一等规范（2026-09-29 根治冗长）：lesson 直接成为资产正文，按正文
+    // 规范生成——知识本体两三句、不带会话细节；入池闸门仍机器把关兜底。
+    'Lesson body discipline: state the reusable knowledge itself in one to three sentences, at most 200 characters — no conversation ids, no local file paths, no step-by-step incident narrative of this one run (those belong in "reason").',
     'HARD RULE — language: write the lesson (and reason) in the SAME language as the task goal and conversation. A Chinese task MUST yield a Chinese lesson; an English task MUST yield an English lesson. A lesson in a different language is discarded entirely by a deterministic gate — never produce it. This keeps precipitated assets readable and retrievable for the user.',
     // 版本组（2026-09-16）：引用资产出问题（过时/冲突）时，lesson 必须是
     // 基于该资产当前内容的融合修订（保留仍有效信息），不是凭空重写。

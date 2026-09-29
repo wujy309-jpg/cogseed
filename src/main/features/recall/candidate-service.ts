@@ -12,6 +12,7 @@ import { appendJsonlAtomic, genId12, nowIso, safeId } from '../../storage';
 import { assertNotForbiddenToPersist } from '../../util/cognition-sensitivity';
 import { fileEditLock } from '../../util/locks';
 import { recallJsonRecordPath } from './paths';
+import { gateCandidateStatement } from './candidate-statement-gate';
 import { notifyCognitionWrite } from './store-events';
 import {
   readRecallJsonRecord,
@@ -265,6 +266,10 @@ export interface SaveRecallCandidateInput {
    *  直接 pending_review，读回与晋升的同款放行靠落盘的 origin='manual'
    *  识别。自动线（capture/teaching/KStar）行为零变化。 */
   manual?: boolean;
+  /** 忠实搬运豁免（2026-09-29 入池正文闸门）：文本是用户亲写或历史原文
+   *  （对话中当场记 / 旧记忆迁移 / 旧本体导入），跳过机器改写——调用方
+   *  显式声明；机器生成线不声明，默认过闸。manual（记一条）天然豁免。 */
+  rawStatement?: boolean;
   /** 空间归属（可选）：来源会话/任务的 space_id。 */
   spaceId?: string;
   /** 需原样保留到正式资产的读取范围限制。 */
@@ -730,6 +735,8 @@ export async function ingestImmediateKnowledge(
     .digest('hex').slice(0, 24)}`;
   const candidate = await saveRecallCandidate(userId, {
     judgment: text,
+    // 用户当场口述原文：豁免入池正文闸门（机器改写用户亲写=篡改）。
+    rawStatement: true,
     value: text,
     summary: makeDisplayTitle(text),
     suggestedType: 'personal',
@@ -841,6 +848,8 @@ export async function ingestLegacyMemoryKnowledge(
     : `legacy-memory-${input.scope}-${input.contentHash.slice(0, 32)}`;
   const candidate = await saveRecallCandidate(userId, {
     judgment: text,
+    // 旧记忆迁移=忠实搬运历史原文：豁免闸门，警示与治理轮兜底。
+    rawStatement: true,
     value: text,
     summary: makeDisplayTitle(text),
     suggestedType: 'personal',
@@ -1284,6 +1293,8 @@ export async function importPersonalOntologyCandidate(userId: string, legacyCand
   const suggestedType: AbilityAssetType = legacy.kind === 'preference' ? 'personal' : legacy.kind === 'rule' ? 'rule' : 'personal';
   return saveRecallCandidate(userId, {
     judgment: legacy.memory_text || legacy.summary,
+    // 旧本体候选导入=历史原文搬运：豁免闸门。
+    rawStatement: true,
     summary: legacy.summary,
     suggestedType,
     suggestedScope: legacy.memory_scope === 'user' ? 'global' : 'project',
@@ -1291,9 +1302,18 @@ export async function importPersonalOntologyCandidate(userId: string, legacyCand
   });
 }
 
-export function saveRecallCandidate(userId: string, input: SaveRecallCandidateInput): Promise<RecallCandidateRecord> {
+export async function saveRecallCandidate(userId: string, input: SaveRecallCandidateInput): Promise<RecallCandidateRecord> {
+  // 入池正文闸门（2026-09-29 根治冗长正文）：机器生成线的不合规正文先经
+  // suggestAbilityAssetStatement 改写（见 candidate-statement-gate.ts 头注）。
+  // 必须在文件锁外——改写是 LLM 调用，锁内跑模型会阻塞整池写入。
+  const gatedJudgment = await gateCandidateStatement(userId, {
+    judgment: input.judgment,
+    suggestedType: requireAssetType(input.suggestedType),
+    skip: input.rawStatement === true || input.manual === true,
+  });
+  const gatedInput = gatedJudgment === input.judgment ? input : { ...input, judgment: gatedJudgment };
   const lockPath = recallJsonRecordPath(userId, 'candidate-locks', 'save');
-  return fileEditLock(lockPath).runExclusive(() => saveRecallCandidateUnlocked(userId, input));
+  return fileEditLock(lockPath).runExclusive(() => saveRecallCandidateUnlocked(userId, gatedInput));
 }
 
 async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCandidateInput): Promise<RecallCandidateRecord> {

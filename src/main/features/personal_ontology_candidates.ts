@@ -672,6 +672,8 @@ async function writeCandidateToDestinations(
         const suggestedType = candidate.kind === 'rule' ? 'rule' : 'personal';
         const saved = await saveRecallCandidate(uid, {
           judgment: text,
+          // 本体回流=用户已确认的历史候选原文：豁免入池正文闸门。
+          rawStatement: true,
           value: text,
           // 标题一等化（设计 3.2）：本体候选自带 summary 时作为晋升标题优先
           // 传入；缺省则由晋升链的起标题兜底处理（不再吃正文首句兜底）。

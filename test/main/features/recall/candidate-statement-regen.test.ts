@@ -60,6 +60,9 @@ async function seedCandidate(id: string, overrides: Record<string, unknown> = {}
     suggestedAction: 'create',
     sourceRefs: [],
     evidenceRefs: [],
+    // 存量语义（2026-09-29 入池闸门上线后）：治理轮圈的是闸门前进池的
+    // 原样脏正文，造数须豁免闸门，否则夹具在 save 时就被改写、测不到轮。
+    rawStatement: true,
     ...overrides,
   } as never);
   return saved;
