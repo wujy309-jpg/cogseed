@@ -596,6 +596,8 @@
 #ca-root .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 #ca-root .actions-right { margin-left: auto; display: flex; gap: 8px; }
 #ca-root .content-text { font-size: var(--font-size-3); color: var(--ink2); line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+/* 迁移条目全文折叠三行（2026-09-29 子安「看不懂」整改）：悬浮 title 看全文。 */
+#ca-root .ca-mig-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; white-space: normal; cursor: default; }
 #ca-root .field { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 12px; align-items: start; margin-bottom: 11px; }
 #ca-root .field > span { color: var(--ink2); font-size: var(--font-size-3); text-align: right; padding-top: 8px; }
 #ca-root .meta-row { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; min-width: 0; }

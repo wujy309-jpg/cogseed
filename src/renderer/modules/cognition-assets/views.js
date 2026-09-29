@@ -2961,7 +2961,9 @@
       ${Number(report.cleanupFailedFiles || 0) ? `<p class="note">${esc(T('memory.legacy_migration_cleanup_failed', '内容已写入认知资产，但旧文件未能更新；原文仍保留，请重新检查。', { n: String(Number(report.cleanupFailedFiles)) }))}</p>` : ''}
     </div>` : '';
 
-    let body = `<p class="note">${esc(T('memory.legacy_migration_desc', '旧版个人记忆仍保存在 USER.md 和 MEMORY.md。先看原文并逐条选择；未勾选的内容不会迁移。'))}</p>`;
+    // 2026-09-29 子安「看不懂」整改：说明大段撤下（合并区顶部已有一句人话）；
+    // 条目全文折叠三行（悬浮看全文）。
+    let body = '';
     if (!state || state.loading) {
       body += `<p class="note">${esc(T('memory.legacy_migration_loading', '正在检查两份旧记忆文件…'))}</p>`;
     } else if (state.failed || !preview) {
@@ -2971,9 +2973,18 @@
       body += sourceWarning('user', userSource) + sourceWarning('shared', sharedSource);
       if (reportHtml) body += reportHtml;
       if (items.length) {
-        body += `<p class="note">${esc(T('memory.legacy_migration_selection_hint', '只列出确认由用户独立保存的旧记忆。另有 {templates} 条由角色模板管理、{assets} 条已关联认知资产、{orphan} 条来源关系不完整的记录；它们不会被此操作迁移。', {
-          templates: String(retainedTemplates), assets: String(retainedAssets), orphan: String(retainedNonIndependent),
-        }))}</p>`;
+        // 保留类说明只在非零时念（2026-09-29：满屏 0 条是噪音）。
+        const retainedBits = [
+          [retainedTemplates, T('memory.migration_retained_templates', '由角色模板管理')],
+          [retainedAssets, T('memory.migration_retained_assets', '已关联认知资产')],
+          [retainedNonIndependent, T('memory.migration_retained_orphan', '来源关系不完整')],
+        ].filter(([count]) => Number(count) > 0);
+        if (retainedBits.length) {
+          body += `<p class="note">${esc(T('memory.migration_retained_note', '另有 {n} 条不会由此迁移：{reasons}。', {
+            n: String(retainedBits.reduce((total, [count]) => total + Number(count), 0)),
+            reasons: retainedBits.map(([count, label]) => `${label} ${Number(count)} 条`).join('、'),
+          }))}</p>`;
+        }
         body += items.map((item) => {
           const scope = item.scope === 'shared' ? 'shared' : 'user';
           const hash = String(item.contentHash || '');
@@ -2993,7 +3004,7 @@
               ${chip(sourceLabel(scope), 'line')}
               ${Number(item.occurrences || 1) > 1 ? `<span class="note">${esc(T('memory.legacy_migration_duplicates', '相同内容 {n} 条', { n: String(Number(item.occurrences)) }))}</span>` : ''}
             </div>
-            <div class="content-text">${esc(String(item.text || ''))}</div>
+            <div class="content-text ca-mig-text" title="${esc(String(item.text || ''))}">${esc(String(item.text || ''))}</div>
           </div>`;
         }).join('');
         body += `<div class="actions">
@@ -3059,11 +3070,13 @@
         + Number(source.retainedAssetRecords || 0)
         + Number(source.retainedNonIndependentRecords || 0)
         + Number(source.retainedOversizedRecords || 0);
+      // 计数行只念有信息量的（2026-09-29：满屏 0 条是噪音）；retained 非零才补一句。
+      const recordsLine = Number(source.eligibleRecords || 0) > 0
+        ? T('memory.scoped_migration_source_counts_short', '可迁入 {records} 条。', { records: String(Number(source.eligibleRecords)) })
+        : T('memory.scoped_migration_source_counts_none', '没有可直接迁入的条目。');
       return `<div class="sect-block">
         <div class="rowline">${chip(kindLabel(source.kind), 'line')}<strong>${esc(sourceLabel(source))}</strong>${chip(statusLabel(source.status), source.status === 'ready' ? 'green' : source.status === 'blocked' || source.status === 'unavailable' ? 'amber' : 'line')}</div>
-        <p class="note">${esc(T('memory.scoped_migration_source_counts', '可选 {groups} 组 / {records} 条；保留 {retained} 条特殊记录。', {
-          groups: String(Number(source.eligibleEntries || 0)), records: String(Number(source.eligibleRecords || 0)), retained: String(retained),
-        }))}</p>
+        <p class="note">${esc(recordsLine)}${retained > 0 ? esc(T('memory.scoped_migration_source_retained', '另有 {n} 条特殊记录继续保留。', { n: String(retained) })) : ''}</p>
         ${visibility ? `<p class="note">${esc(visibility)}</p>` : ''}
         ${source.status === 'blocked' ? `<p class="note">${esc(T('memory.scoped_migration_blocked', '来源标记异常或正文校验失败；为防止归属错误，整份文件都不会迁移。'))}</p>` : ''}
         ${source.status === 'unavailable' ? `<p class="note">${esc(T('memory.scoped_migration_unavailable', '当前无法读取此文件；没有执行迁移，源内容仍保留。'))}</p>` : ''}
@@ -3088,7 +3101,8 @@
       return lines.length ? lines.join('；') : T('memory.scoped_migration_policy_unrestricted', '未声明额外对象范围');
     };
 
-    let body = `<p class="note">${esc(T('memory.scoped_migration_desc', '逐条检查 Agent、工作空间和旧项目记忆。迁入资产会保留原使用边界；未选择、来源异常、过长或迁入失败的内容继续留在原文件。'))}</p>`;
+    // 2026-09-29 子安「看不懂」整改：说明段撤下（合并区顶部已有一句）。
+    let body = '';
     if (!state || state.loading) {
       body += `<p class="note">${esc(T('memory.scoped_migration_loading', '正在扫描旧记忆来源…'))}</p>`;
     } else if (state.failed || !preview) {
@@ -3119,8 +3133,9 @@
         body += `<p class="note">${esc(T('memory.scoped_migration_no_sources', '没有找到 Agent、工作空间或旧项目记忆文件。'))}</p>`;
       }
       if (items.length) {
+        // 超长记录非零才念（2026-09-29）；「边界/组」术语换人话。
         const oversized = sources.reduce((count, source) => count + Number(source.retainedOversizedRecords || 0), 0);
-        body += `<p class="note">${esc(T('memory.scoped_migration_selection_hint', '勾选后会把同一边界下的同内容记录作为一组迁入。已关联资产、角色模板、来源关系不完整及超长记录不会由此迁移；本次发现超长记录 {oversized} 条。', { oversized: String(oversized) }))}</p>`;
+        body += `<p class="note">${esc(T('memory.scoped_migration_selection_hint_short', '同一条记忆在多个地方出现的会合并成一组，勾一次一起搬。'))}${oversized > 0 ? esc(T('memory.scoped_migration_oversized_note', '另有 {n} 条超长记录不会由此迁移。', { n: String(oversized) })) : ''}</p>`;
         body += items.map((item) => {
           const key = `${item.kind}:${item.id}:${item.contentHash}`;
           const checkboxId = `ca-scoped-memory-${item.kind}-${item.id}-${item.contentHash}`;
@@ -3136,12 +3151,10 @@
                 attrs: { 'data-act': 'legacy-scoped-memory-toggle', 'data-scope-kind': item.kind, 'data-scope-id': item.id, 'data-hash': item.contentHash },
               })}
               <label for="${esc(checkboxId)}" class="note">${esc(selectionLabel)}</label>
-              ${chip(kindLabel(item.kind), 'line')}
-              ${Number(item.occurrences || 1) > 1 ? `<span class="note">${esc(T('memory.scoped_migration_duplicates', '相同内容出现 {n} 次', { n: String(Number(item.occurrences)) }))}</span>` : ''}
+              ${refs.map((source) => chip(sourceLabel(source), 'line')).join('')}
             </div>
             <p class="note">${esc(policyText(item))}</p>
-            <div class="rowline">${refs.map((source) => chip(sourceLabel(source), 'line')).join('')}</div>
-            <div class="content-text">${esc(String(item.text || ''))}</div>
+            <div class="content-text ca-mig-text" title="${esc(String(item.text || ''))}">${esc(String(item.text || ''))}</div>
           </div>`;
         }).join('');
         body += `<div class="actions">
