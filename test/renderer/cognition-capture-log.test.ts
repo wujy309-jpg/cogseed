@@ -802,6 +802,15 @@ describe('整理详情页', () => {
     expect(html).not.toContain('ca-result-card');
     expect(html).toContain('整理结果');
     expect(html).toContain('对话上下文');
+    // 卡底一行（2026-09-29 子安拍板）：进度条从标题下方挪到卡底、靠左，
+    // 按钮靠右——顺序=分节之后先进度条、后按钮。
+    const stepsAt = html.indexOf('ca-steps-bar');
+    const footBtnAt = html.indexOf('data-act="open-conversation"');
+    expect(stepsAt).toBeGreaterThan(html.indexOf('整理结果'));
+    expect(footBtnAt).toBeGreaterThan(stepsAt);
+    // 标题正下方不再挂进度条（此前搞反的位置）。
+    const titleAt = html.indexOf('<h2 class="cand-title">');
+    expect(html.slice(titleAt, titleAt + 400)).not.toContain('ca-steps-bar');
   });
 
   it('整理过程五步进度条：stage 高亮当前步、已过步打勾', () => {

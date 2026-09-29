@@ -3947,19 +3947,21 @@
         </div>
       </div>
       <h2 class="cand-title">${esc(recordTitleText)}</h2>
-      ${captureStageStepper(capture.stage)}
       ${depositBlocks ? `<div class="ca-deposit">${sectionHead(T('cognition.capture_detail_assets', '已保存资产'))}${depositBlocks}</div>` : ''}
       <div class="ca-capture-sections">
         ${captureResultSection(capture, messageBySourceId)}
         ${captureConversationSection(capture, contextHit ? (contextHit.loading ? { loading: true } : context) : null)}
       </div>
-      ${captureActionButtonsHtml(capture)}
+      <div class="ca-capture-foot">
+        ${captureStageStepper(capture.stage)}
+        ${captureActionButtonsHtml(capture)}
+      </div>
     </div>`;
   }
 
-  /** 卡尾动作行（2026-09-29 子安拍板）：操作按钮与建议详情同款——沉到卡片
-   *  最底部右对齐（actions actions-right），不再卡头横排；状态信息（chip+
-   *  元信息）留在卡头，动线=先看状态与内容、最后做操作。 */
+  /** 卡底一行（2026-09-29 子安拍板）：五步进度条靠左、操作按钮靠右，同一行；
+   *  窄窗放不下时按钮换行到进度条下方、仍右对齐（actions-right 的 auto 边距）。
+   *  动线=先看状态与内容，最后是过程与操作。 */
   function captureActionButtonsHtml(capture) {
     return `<div class="actions actions-right">
       ${captureActionButtons({ ...capture, actions: (capture.actions || []).filter((action) => action !== 'review_candidates' && action !== 'view_assets') })}
