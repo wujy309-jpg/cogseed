@@ -4531,6 +4531,7 @@
   "cognition.candidate_ignored": "Ignorado",
   "cognition.candidate_promoted": "Salvo como ativo formal",
   "cognition.candidate_rejected": "Rejeitado",
+  "cognition.candidate_resumed": "Restaurado para aguardar confirmação",
   "cognition.candidate_scope_hint": "prefira termos controlados: general=todas as conversas; report/code/review/product=tipos de tarefa. Texto livre pode não corresponder à tarefa ao ser incluído automaticamente.",
   "cognition.capture_action_resume": "Retomar",
   "cognition.capture_action_retry": "Repetir",

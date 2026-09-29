@@ -4797,6 +4797,7 @@
   "cognition.candidate_ignored": "Ignored",
   "cognition.candidate_promoted": "Saved as a formal asset",
   "cognition.candidate_rejected": "Rejected",
+  "cognition.candidate_resumed": "Restored to awaiting confirmation",
   "cognition.candidate_scope_hint": "prefer controlled words: general=all conversations; report/code/review/product=task types. Free text may fail to match a task when auto-included.",
   "cognition.capture_action_resume": "Resume",
   "cognition.capture_action_retry": "Retry",

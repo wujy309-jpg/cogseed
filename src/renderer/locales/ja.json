@@ -4531,6 +4531,7 @@
   "cognition.candidate_ignored": "無視しました",
   "cognition.candidate_promoted": "正式な資産になりました",
   "cognition.candidate_rejected": "拒否しました",
+  "cognition.candidate_resumed": "復元しました。確認待ちに戻ります",
   "cognition.candidate_scope_hint": "制御語を推奨：general=会話横断、report/code/review/product=タスク種別。自由記述は自動投入時にタスクと一致しない場合があります。",
   "cognition.capture_action_resume": "再開",
   "cognition.capture_action_retry": "再試行",

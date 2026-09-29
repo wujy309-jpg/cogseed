@@ -308,6 +308,47 @@ describe('Recall candidate capability — normalize and persistence', () => {
   });
 });
 
+/* ───────────── review-queue 视图投影（2026-09-29 第 3 批·读写面收敛） ───────────── */
+describe('projectReviewQueueCandidates — review-queue 视图', () => {
+  const mk = (id: string, status: string, updatedAt: string, extra: Record<string, unknown> = {}) => ({
+    id, status, updatedAt, createdAt: updatedAt,
+    judgment: `j-${id}`, summary: `s-${id}`, value: 'v', suggestedType: 'personal',
+    suggestedScope: 'global', suggestedAction: 'create', risk: 'low',
+    sourceRefs: [], evidenceRefs: [],
+    contentFormatVersion: 1, taxonomyVersion: 2, spaceId: 'sp-1', userModifiedAt: updatedAt,
+    validationCount: 3, cooldownUntil: '2099-01-01T00:00:00.000Z',
+    capabilities: { canPromote: true, displayState: 'needs_review' },
+    ...extra,
+  });
+
+  it('可操作与静音全量、终态限量、零消费字段被裁', async () => {
+    const { projectReviewQueueCandidates } = await caps();
+    const pool = [
+      mk('p-1', 'pending_review', '2026-09-01T00:00:00.000Z'),
+      mk('p-2', 'weak_observation', '2026-09-02T00:00:00.000Z'),
+      mk('s-1', 'deferred', '2026-09-03T00:00:00.000Z', { capabilities: { isSnoozed: true, canPromote: false, displayState: 'deferred' } }),
+      ...Array.from({ length: 7 }, (_, i) => mk(`c-${i}`, 'confirmed', `2026-09-1${i}T00:00:00.000Z`)),
+      ...Array.from({ length: 9 }, (_, i) => mk(`e-${i}`, 'expired', `2026-09-2${i}T00:00:00.000Z`)),
+    ];
+    const view = projectReviewQueueCandidates(pool as never);
+    const ids = view.map((c) => c.id);
+    // 可操作（pending/weak）与静音全量保留。
+    for (const id of ['p-1', 'p-2', 's-1']) expect(ids).toContain(id);
+    // 终态限量：confirmed 只回最近 5 条（c-2..c-6）、expired 只回最近 8 条（e-1..e-8）。
+    expect(ids.filter((id) => id.startsWith('c-'))).toHaveLength(5);
+    expect(ids.filter((id) => id.startsWith('c-'))).not.toContain('c-0');
+    expect(ids.filter((id) => id.startsWith('e-'))).toHaveLength(8);
+    expect(ids.filter((id) => id.startsWith('e-'))).not.toContain('e-0');
+    // 零消费记录级字段不出视图；渲染层消费的字段保留；capabilities 整体保留。
+    for (const omitted of ['contentFormatVersion', 'taxonomyVersion', 'spaceId', 'userModifiedAt', 'validationCount', 'cooldownUntil']) {
+      expect(view.some((c) => omitted in c), omitted).toBe(false);
+    }
+    expect(view.every((c) => 'judgment' in c && 'summary' in c && c.capabilities !== undefined)).toBe(true);
+    // 全形状读口不受影响（投影是纯函数，原池未被改写）。
+    expect('contentFormatVersion' in pool[0]).toBe(true);
+  });
+});
+
 function findCandidateFile(root: string, candidateId: string): string {
   const stack = [root];
   while (stack.length) {

@@ -4800,6 +4800,7 @@
   "cognition.candidate_ignored": "已忽略",
   "cognition.candidate_promoted": "已成为正式资产",
   "cognition.candidate_rejected": "已拒绝",
+  "cognition.candidate_resumed": "已恢复，回到待确认",
   "cognition.candidate_scope_hint": "建议用受控词：general=跨对话通用；report/code/review/product=任务类型。自由文本可能在自动带入时匹配不上任务。",
   "cognition.capture_action_resume": "继续",
   "cognition.capture_action_retry": "重试",

@@ -204,6 +204,37 @@ describe('候选可确认性在真实 IPC 读口上闭环', () => {
     expect(promoted.promotionReasons).toContain('personal_is_project_fact');
   });
 
+  it('review-queue 视图：view 参数透传到服务端投影（2026-09-29 第 3 批）', async () => {
+    const candidates = await candidateService();
+    const pending = await candidates.saveRecallCandidate(UID, {
+      ...DURABLE_PREFERENCE, sourceRefs: REFS, evidenceRefs: REFS,
+    } as never);
+    const toConfirm = await candidates.saveRecallCandidate(UID, {
+      ...DURABLE_PREFERENCE,
+      judgment: '我长期偏好先写测试再写实现',
+      summary: '测试先行',
+      sourceRefs: REFS, evidenceRefs: REFS,
+    } as never);
+    await call('recall.candidates.promote', { candidateId: toConfirm.id });
+
+    const view = await call('recall.candidates.list', { view: 'review-queue' });
+    expect(view.ok).toBe(true);
+    const viewList = view.candidates as Array<Record<string, unknown>>;
+    // 待确认与已确认都在队列视图里（confirmed 进处理记录限量 5）。
+    expect(viewList.some((c) => c.id === pending.id)).toBe(true);
+    expect(viewList.some((c) => c.id === toConfirm.id)).toBe(true);
+    // 零消费记录级字段被视图裁掉；capabilities 保留。
+    const viewPending = viewList.find((c) => c.id === pending.id)!;
+    expect('contentFormatVersion' in viewPending).toBe(false);
+    expect('taxonomyVersion' in viewPending).toBe(false);
+    expect(viewPending.capabilities).toBeTruthy();
+
+    // 默认（不传 view）仍是全量全形状——会话抽屉等调用方不受影响。
+    const full = await listCandidates();
+    const fullPending = full.find((c) => c.id === pending.id)! as Record<string, unknown>;
+    expect('contentFormatVersion' in fullPending).toBe(true);
+  });
+
   it('Case C 跨候选冲突：list 真的跑了 recallCandidateConflictingTypes，不是只做单条投影', async () => {
     // 冲突是**跨候选**判断，单条候选算不出来——只有持有全量列表的读口能算。
     // handler 里少传 conflicts 的话，列表会说"能确认"，而晋升闸门按同一批

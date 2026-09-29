@@ -54,7 +54,7 @@ import * as executionLog from '../features/execution_log';
 import * as workbench from '../features/workbench';
 import * as cognition from '../features/cognition';
 import * as recallCandidates from '../features/recall/candidate-service';
-import { withRecallCandidateCapabilities } from '../features/recall/candidate-capabilities';
+import { withRecallCandidateCapabilities, projectReviewQueueCandidates } from '../features/recall/candidate-capabilities';
 import * as recallAssets from '../features/recall/asset-service';
 import * as recallExperiences from '../features/recall/experience-service';
 import * as recallExperienceMigration from '../features/recall/experience-migration';
@@ -2278,14 +2278,22 @@ const invokeHandlers: Record<string, InvokeHandler> = {
 
   // 候选出 IPC 一律带 capability：渲染层不再自己解释 raw status。能力是 DTO
   // 投影，不写回存储（落盘记录仍是纯候选记录）。
-  'recall.candidates.list': async (_args, ctx) => ({
+  // 2026-09-29 第 3 批·读写面收敛：`view:'review-queue'`（认知面板专用）——
+  // 服务端裁成待处理队列（可操作候选全量 + 已稍后处理全量 + 终态/处理记录
+  // 限量），并对记录做视图白名单投影（16 个零消费字段不出 IPC；capabilities
+  // 整体保留——会话抽屉等不传 view 的调用方仍是全量全形状）。粗滤口径只须
+  // 保证「渲染层要显示的都给了」：等待/来源已删/证据不足都出自可操作域，
+  // 细分（broken/weak/ready）仍由渲染层按 capabilities 做。
+  'recall.candidates.list': async ({ view } = {}, ctx) => ({
     ok: true,
     candidates: await (async () => {
       const all = await recallCandidates.listRecallCandidates(ctx.userId);
       // 冲突是跨候选判断，只有全量读口算得出来。不传的话列表会说"能确认"，
       // 而晋升闸门按同一批数据判冲突并拒绝——又是一次假审批。
       const conflicts = recallCandidates.recallCandidateConflictingTypes(all);
-      return all.map((candidate) => withRecallCandidateCapabilities(candidate, conflicts.get(candidate.id)));
+      const withCaps = all.map((candidate) => withRecallCandidateCapabilities(candidate, conflicts.get(candidate.id)));
+      if (view === 'review-queue') return projectReviewQueueCandidates(withCaps);
+      return withCaps;
     })(),
   }),
 

@@ -606,8 +606,10 @@
       // A5（2026-09-29）：候选清单读失败不再软降级成空数组——那会把「没读到」
       // 伪装成「没有要你决定的」，用户据此误以为清净了。失败进显式错误态，
       // 视图层给重试入口；成功后清掉错误标记。
+      // 第 3 批（2026-09-29）：改拉 review-queue 视图——服务端裁掉历史处理
+      // 记录（页面只显示最近 5 条）并做字段白名单投影；细分分组仍在本层做。
       try {
-        const candidates = await api.call('recall.candidates.list', {}, {});
+        const candidates = await api.call('recall.candidates.list', { view: 'review-queue' }, {});
         store.candidates = toArr(candidates, ['candidates', 'items']);
         store.candidatesError = '';
       } catch (error) {
@@ -1868,7 +1870,18 @@
         store.lastPromoted = null;
         router.go({ name: 'review' });
       }
-      await NS.reload();
+      // 第 3 批（2026-09-29）：晋升的就地消费——候选响应直接替换 store 条目
+      //（confirmed + promotedAssetId），资产/树/时间线由写入广播重拉（candidates /
+      //  ability-assets 两路 collection 都有映射）；不再整池 reload（此前与广播
+      // 同一秒拉两遍）。响应缺候选时退回全量重读，行为不劣化。
+      if (result && result.candidate && result.candidate.id) {
+        const index = store.candidates.findIndex((c) => String(c.id) === String(result.candidate.id));
+        if (index >= 0) store.candidates[index] = result.candidate;
+        else store.candidates.push(result.candidate);
+        NS.notify();
+      } else {
+        await NS.reload();
+      }
     },
     /** 「记一条」（设计 7.2，2026-09-28）：手动新建走 recall.candidates.save
      *  产生**候选**（不直接入库），保存后跳「待我处理」确认——不破坏
@@ -1905,10 +1918,24 @@
     async decideCandidate(candidateId, action) {
       const channel = CANDIDATE_CHANNELS[action];
       if (!channel) return;
-      await api.call(channel, { candidateId });
+      // 第 3 批（2026-09-29）：处置响应携带更新后的完整候选——就地替换 store
+      // 里的对应条目，不再整池重读（写入广播仍会在合并窗口后重拉 candidates
+      // 区块作兜底；此前是「显式 reload + 广播重拉」同一秒拉两遍）。
+      const result = await api.call(channel, { candidateId });
       // 已处置（稍后/拒绝/忽略）：冲突提示不再成立——候选已离开待确认。
+      // （清理放在响应分支前：无论响应是否携带候选，动作已成功即应清掉。）
       if (store.candidateVersionConflict && String(store.candidateVersionConflict.candidateId) === String(candidateId)) {
         store.candidateVersionConflict = null;
+      }
+      const updated = result && result.candidate;
+      if (updated && updated.id) {
+        const index = store.candidates.findIndex((c) => String(c.id) === String(updated.id));
+        if (index >= 0) store.candidates[index] = updated;
+        else store.candidates.push(updated);
+      } else {
+        // 响应没带候选（老后端/通道差异）：退回全量重读，行为不劣化。
+        await NS.reload();
+        return;
       }
       if (action === 'defer') {
         // 「稍后处理」的提示与导航随语境分流（2026-09-16 子安口径；整理详情
@@ -1920,9 +1947,9 @@
           toast(T('cognition.candidate_deferred', '已放入稍后处理'));
         }
       } else {
-        toast({ reject: T('cognition.candidate_rejected', '已拒绝'), ignore: T('cognition.candidate_ignored', '已忽略') }[action] || T('common.done', '已完成'));
+        toast({ reject: T('cognition.candidate_rejected', '已拒绝'), ignore: T('cognition.candidate_ignored', '已忽略'), resume: T('cognition.candidate_resumed', '已恢复，回到待确认') }[action] || T('common.done', '已完成'));
       }
-      await NS.reload();
+      NS.notify();
     },
     async rateProof(proofId, feedback, extra) {
       await api.call('recall.proofs.effectiveness.feedback', Object.assign({ transferProofId: proofId, feedback }, extra || {}));
@@ -1986,8 +2013,12 @@
     /** 待办处置（specs/008 T051；specs/010 扩展可选参数）：动作由读模型给出，
      *  这里只转发。没有一键动作的类别不在这里——渲染层也不给按钮。
      *  `params`（specs/010）：set_boundary 带 `applicableWhen`/`forbiddenWhen`
-     *  （其渲染入口已随两页重整删除，仅留通道语义）；keep/merge 带 `targetAssetId`。
-     *  classify 的 `level` 参数已随敏感级机制整体删除（2026-09-28）。 */
+     *  （2026-09-29 A1 恢复就地补条件表单）；keep/merge 带 `targetAssetId`。
+     *  第 3 批（2026-09-29）：处置成功后就地移除对应行——不再整池重读。
+     *  底层会广播的（proposal→asset-approvals、cleanup→cleanup-reports、
+     *  conflict→candidates/ontology-conflicts）由订阅中枢重拉兜底；巡检
+     *  runs 不经 recall store、没有广播，inspection: 前缀的处置在这里显式
+     *  重拉一次 inbox 区块。 */
     async resolveInboxItem(id, action, params) {
       const payload = { id: String(id || ''), action: String(action || '') };
       if (params && Array.isArray(params.applicableWhen)) payload.applicableWhen = params.applicableWhen.map(String);
@@ -1995,7 +2026,17 @@
       if (params && params.targetAssetId) payload.targetAssetId = String(params.targetAssetId);
       await api.call('cognition.inbox.resolve', payload);
       toast(T('cognition.inbox_resolved', '已处理'));
-      await NS.reload();
+      const rowId = String(id || '');
+      if (Array.isArray(store.inbox)) store.inbox = store.inbox.filter((row) => String((row && row.id) || '') !== rowId);
+      if (Array.isArray(store.inboxGroups)) {
+        store.inboxGroups = store.inboxGroups
+          .map((group) => group && Array.isArray(group.items)
+            ? { ...group, items: group.items.filter((row) => String((row && row.id) || '') !== rowId) }
+            : group)
+          .filter((group) => group && Array.isArray(group.items) && group.items.length);
+      }
+      if (rowId.startsWith('inspection:')) await BLOCK_FETCHERS.inbox();
+      NS.notify();
     },
     /** 「已删除」列表按需拉（specs/008 US-306/T051）：保留期剩余天数由服务端现算。 */
     async loadDeletedAssets() {
