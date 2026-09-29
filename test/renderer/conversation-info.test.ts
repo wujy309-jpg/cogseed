@@ -1207,10 +1207,10 @@ describe('ConversationInfo files tab', () => {
         assets: [],
       } as any);
       expect(result.cognitionStrip.hidden).toBe(false);
-      expect(result.cognitionStrip.html).toContain('这段对话已保存 1 条认知');
-      expect(result.cognitionStrip.html).toContain('本会话待处理 1 条（含稍后处理）');
+      expect(result.cognitionStrip.html).toContain('已沉淀 1 条认知');
+      expect(result.cognitionStrip.html).toContain('待处理 1 条');
       // 未确认候选不得说成「已保存」：两个状态分开说明。
-      expect(result.cognitionStrip.html).not.toContain('这段对话已保存 2');
+      expect(result.cognitionStrip.html).not.toContain('已沉淀 2');
       expect(result.cognitionStrip.html).toContain('data-cognition-strip-goto');
     });
 
@@ -1225,7 +1225,7 @@ describe('ConversationInfo files tab', () => {
           { id: 'aa-2', category: 'rule', title: '别的会话的资产', relationRefs: [{ type: 'conversation', id: 'c2' }] },
         ],
       } as any);
-      expect(result.cognitionStrip.html).toContain('这段对话已保存 1 条认知');
+      expect(result.cognitionStrip.html).toContain('已沉淀 1 条认知');
       expect(result.cognitionStrip.html).not.toContain('aa-2');
       // 抽屉「认知资产」段的已保存内容与头部计数使用同一结果。
       expect(result.html).toContain('已保存资产');
@@ -1256,8 +1256,8 @@ describe('ConversationInfo files tab', () => {
         assets: [],
       } as any);
       expect(result.cognitionStrip.hidden).toBe(false);
-      expect(result.cognitionStrip.html).toContain('本会话有 1 条认知待处理（含稍后处理）');
-      expect(result.cognitionStrip.html).not.toContain('这段对话已保存');
+      expect(result.cognitionStrip.html).toContain('待处理 1 条');
+      expect(result.cognitionStrip.html).not.toContain('已沉淀');
     });
 
     it('读取失败不谎报空态：认知资产段说「读不到」，衔接行不出现（迭代轮 5 三态）', async () => {
@@ -1287,7 +1287,7 @@ describe('ConversationInfo files tab', () => {
       } as any);
       // panelClosed=true 会点掉抽屉，但衔接行的数据来自 bind 的后台通道。
       expect(result.cognitionStrip.hidden).toBe(false);
-      expect(result.cognitionStrip.html).toContain('这段对话已保存 1 条认知');
+      expect(result.cognitionStrip.html).toContain('已沉淀 1 条认知');
     });
 
     it('「去待我处理」→ 调 openCognitionReview 跳认知面板待我处理页（R4 拍板项 #6）', async () => {
@@ -1345,6 +1345,41 @@ describe('ConversationInfo files tab', () => {
       expect(result.panelHidden).toBe(false);
       expect(result.html).toContain('data-run-context-tab="assets"');
       expect(result.html.match(/is-active[^>]*data-run-context-tab="assets"|data-run-context-tab="assets"[^>]*is-active/)).toBeTruthy();
+    });
+
+    it('点叉关闭：本会话不再显示，偏好记本机 localStorage（方案 A）', async () => {
+      const store = new Map<string, string>();
+      const result = await renderFilesResult({
+        history: [],
+        files: baseFiles,
+        attachments: [],
+        candidates: [
+          { id: 'cand-x', status: 'pending_review', judgment: '待确认', suggestedType: 'rule', sourceRefs: [{ kind: 'conversation', id: 'c1' }] },
+        ],
+        assets: [],
+      } as any, async (context: any) => {
+        // 注入 localStorage 替身：关闭实现按「本机偏好」读写（同真机语义）。
+        context.localStorage = {
+          getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+          setItem: (k: string, v: string) => { store.set(k, String(v)); },
+        };
+        const strip = context.document.getElementById('chat-cognition-strip');
+        // 等衔接行真渲染出来（数据加载完成）再点，避免点在 Loading 态上。
+        for (let i = 0; i < 50 && !strip.innerHTML; i += 1) await new Promise((r) => setTimeout(r, 20));
+        expect(strip.hidden).toBe(false);
+        strip.onclick({
+          target: { closest: (sel: string) => (String(sel).includes('cognition-strip-dismiss') ? {} : null) },
+          preventDefault() {},
+          stopPropagation() {},
+        });
+        await new Promise((r) => setTimeout(r, 30));
+      });
+      // 立即隐藏 + 偏好落盘（键按会话隔离，值='1'）。
+      expect(result.cognitionStrip.hidden).toBe(true);
+      expect(result.cognitionStrip.html).toBe('');
+      const dismissKeys = [...store.entries()].filter(([k, v]) => k.includes('cognition-strip.dismissed') && v === '1');
+      expect(dismissKeys).toHaveLength(1);
+      expect(dismissKeys[0][0]).toContain('c1');
     });
   });
 });

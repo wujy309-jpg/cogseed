@@ -1862,11 +1862,26 @@ const ConversationInfo = (() => {
     }
   }
 
+  /** 关闭偏好（方案 A，2026-09-29）：按会话记在本机 localStorage——纯前端视图
+   *  偏好，不进后端（同 anchored-source-view 分栏宽度的先例）；换会话互不影响。 */
+  function _cognitionStripDismissKey(cid) {
+    return 'cogseed.cognition-strip.dismissed.' + String(cid || '');
+  }
+  function _cognitionStripDismissed(cid) {
+    try {
+      const store = typeof localStorage !== 'undefined' ? localStorage : window.localStorage;
+      return store?.getItem?.(_cognitionStripDismissKey(cid)) === '1';
+    } catch (_) { return false; }
+  }
+
   function _renderCognitionStrip() {
     const el = document.getElementById('chat-cognition-strip');
     if (!el) return;
     const cid = _cid;
     if (!cid) { el.hidden = true; el.innerHTML = ''; return; }
+    // 用户点过叉（方案 A）：本会话不再显示——即便之后又有沉淀/待处理也保持
+    // 隐藏；全局聚合入口仍在「待我处理」页。
+    if (_cognitionStripDismissed(cid)) { el.hidden = true; el.innerHTML = ''; return; }
     // 可见性只取决于衔接行自己的数据（两条通道是否给出计数）——不与抽屉的
     // loading/error 态连坐：抽屉其它源（历史/文件）失败不该把这行藏掉
     //（真机抓出：伪会话历史 404 → error → 行被误藏）。数据未到＝键缺失＝隐藏。
@@ -1875,25 +1890,30 @@ const ConversationInfo = (() => {
     const pending = counts.pending.length;
     if (!settled && !pending) { el.hidden = true; el.innerHTML = ''; return; }
     const settledPart = settled
-      ? _label('conversation_info.cognition_strip_settled', '这段对话已保存 {n} 条认知', { n: String(settled) })
+      ? _label('conversation_info.cognition_strip_settled', '已沉淀 {n} 条认知', { n: String(settled) })
       : '';
     const pendingPart = pending
-      ? _label(settled ? 'conversation_info.cognition_strip_pending' : 'conversation_info.cognition_strip_pending_only',
-        settled ? '本会话待处理 {n} 条（含稍后处理）' : '本会话有 {n} 条认知待处理（含稍后处理）', { n: String(pending) })
+      ? _label('conversation_info.cognition_strip_pending', '待处理 {n} 条', { n: String(pending) })
       : '';
     const summary = [settledPart, pendingPart].filter(Boolean).join(' · ');
+    const dismissLabel = _label('conversation_info.cognition_strip_dismiss', '不再显示本会话的认知提示');
+    const dismissButton = typeof window.uiIconButton === 'function'
+      ? window.uiIconButton({
+          label: dismissLabel,
+          icon: 'x',
+          size: 'sm',
+          className: 'chat-cognition-strip-dismiss',
+          attrs: { 'data-cognition-strip-dismiss': '1' },
+        })
+      : '<button type="button" class="chat-cognition-strip-dismiss" data-cognition-strip-dismiss="1" aria-label="' + escapeHtml(dismissLabel) + '">×</button>';
     el.innerHTML =
       '<div class="chat-cognition-strip-inner" role="status">' +
         '<span data-ui-icon="git-branch" data-ui-icon-class="ui-icon chat-cognition-strip-icon"></span>' +
         '<span class="chat-cognition-strip-label">' + escapeHtml(summary) + '</span>' +
-        _button({
-          // 文案随去向改（审计 R4 拍板项 #6）：点击跳「待我处理」，不再开抽屉。
-          label: _label('conversation_info.cognition_strip_goto', '去待我处理'),
-          role: 'ghost',
-          size: 'sm',
-          className: 'chat-cognition-strip-goto',
-          attrs: { 'data-cognition-strip-goto': '1' },
-        }) +
+        '<button type="button" class="chat-cognition-strip-goto" data-cognition-strip-goto="1">' +
+          escapeHtml(_label('conversation_info.cognition_strip_goto', '去处理')) +
+        '</button>' +
+        dismissButton +
       '</div>';
     el.hidden = false;
     if (typeof window.hydrateUiIcons === 'function') window.hydrateUiIcons(el);
@@ -2435,6 +2455,19 @@ const ConversationInfo = (() => {
     if (cogStrip && cogStrip.dataset.bound !== '1') {
       cogStrip.dataset.bound = '1';
       cogStrip.addEventListener('click', (ev) => {
+        // 点叉关闭（方案 A）：本会话不再显示；偏好记本机 localStorage（跨重启），
+        // 写失败不影响本次隐藏。
+        if (ev.target.closest('[data-cognition-strip-dismiss]')) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          try {
+            const store = typeof localStorage !== 'undefined' ? localStorage : window.localStorage;
+            store?.setItem?.(_cognitionStripDismissKey(_cid), '1');
+          } catch (_) { /* 存偏好失败不影响本次隐藏 */ }
+          cogStrip.hidden = true;
+          cogStrip.innerHTML = '';
+          return;
+        }
         if (!ev.target.closest('[data-cognition-strip-goto]')) return;
         ev.preventDefault();
         ev.stopPropagation();

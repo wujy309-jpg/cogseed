@@ -33544,10 +33544,12 @@ section.kb-wb-right { display: flex; flex-direction: column; min-width: 0; min-h
 }
 
 
-/* ── 019 会话侧衔接：会话头部认知衔接行（仿 plan-strip 槽模式）── */
+/* ── 019 会话侧衔接：会话头部认知衔接行 ── 方案 A（2026-09-29）：去掉卡片壳，
+   降为与消息流同语言的 muted meta 行；「去处理」为链接字；叉 = 本会话关闭
+   （偏好存本机 localStorage，跨重启）。 */
 .chat-cognition-strip {
   flex: 0 0 auto;
-  padding: 10px 18px 0;
+  padding: 6px 18px 0;
 }
 .chat-cognition-strip[hidden] {
   display: none;
@@ -33556,18 +33558,15 @@ section.kb-wb-right { display: flex; flex-direction: column; min-width: 0; min-h
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-3);
-  font-size: 13px;
-  color: var(--text-secondary);
+  min-height: 20px;
+  font-size: var(--font-size-1);
+  color: var(--muted);
 }
 .chat-cognition-strip-icon {
   flex: 0 0 auto;
-  width: 14px;
-  height: 14px;
-  color: var(--text-secondary);
+  width: 13px;
+  height: 13px;
+  color: var(--muted);
 }
 .chat-cognition-strip-label {
   flex: 1 1 auto;
@@ -33575,8 +33574,21 @@ section.kb-wb-right { display: flex; flex-direction: column; min-width: 0; min-h
 }
 .chat-cognition-strip-goto {
   flex: 0 0 auto;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--primary);
+  font-size: var(--font-size-1);
+  cursor: pointer;
+}
+.chat-cognition-strip-goto:hover { text-decoration: underline; }
+.chat-cognition-strip .chat-cognition-strip-dismiss {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
 }
 @media (max-width: 640px) {
-  .chat-cognition-strip { padding: 8px 10px 0; }
+  .chat-cognition-strip { padding: 4px 10px 0; }
   .chat-cognition-strip-inner { flex-wrap: wrap; }
 }
