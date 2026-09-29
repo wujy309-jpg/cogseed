@@ -450,13 +450,23 @@ describe('template_file_ops › uninstall / archive / reinstall-restore', () => 
 
 describe('template_file_ops › D5 变更前留档（模板分节写路径快照）', () => {
   /** 读该组历史目录下全部快照全文（不依赖文件名格式，只挑 .md）。 */
-  function readHistorySnapshots(groupId: string): string[] {
-    const dir = path.join(groupsDir(), '.history', groupId);
+  // v2：历史快照是 po-history 下的 JSON（整组状态），渲染回模板方言文本后
+  // 与旧行为逐字对照——断言本体不变，只换了快照存储的读取方式。
+  let viewMod: Awaited<ReturnType<typeof loadView>> | undefined;
+  function loadView() {
+    return import('../../../src/main/features/po/view');
+  }
+  async function readHistorySnapshots(groupId: string): Promise<string[]> {
+    if (!viewMod) viewMod = await loadView();
+    const dir = path.join(tmpDir, UID, 'cloud', 'cognition', 'po-history', groupId);
     if (!fs.existsSync(dir)) return [];
     return fs.readdirSync(dir)
-      .filter((f) => f.endsWith('.md'))
+      .filter((f) => f.endsWith('.json'))
       .sort()
-      .map((f) => fs.readFileSync(path.join(dir, f), 'utf8'));
+      .map((f) => {
+        const parsed = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+        return viewMod!.renderTemplateGroupMarkdown(parsed.group);
+      });
   }
 
   async function setup(): Promise<{ m: Awaited<ReturnType<typeof loadMod>>; groupId: string; ref: string }> {
@@ -474,7 +484,7 @@ describe('template_file_ops › D5 变更前留档（模板分节写路径快照
     const res = await m.setFieldValueToRef(UID, ref, '教育阶段', '本科', '硕士');
     expect(res.ok).toBe(true);
 
-    const snaps = readHistorySnapshots(groupId);
+    const snaps = await readHistorySnapshots(groupId);
     expect(snaps.length).toBeGreaterThan(0);
     expect(snaps).toContain(before); // 改前那版逐字在历史里
     expect(before).toContain('- 本科 [手动]');
@@ -490,7 +500,7 @@ describe('template_file_ops › D5 变更前留档（模板分节写路径快照
     const res = await m.removeFieldValueToRef(UID, ref, '教育阶段', '本科');
     expect(res.ok).toBe(true);
 
-    const snaps = readHistorySnapshots(groupId);
+    const snaps = await readHistorySnapshots(groupId);
     expect(snaps).toContain(before); // 删前那版逐字一致
     expect(before).toContain('- 本科 [手动]');
     const after = readFile('student.md');
@@ -525,18 +535,18 @@ describe('template_file_ops › D5 变更前留档（模板分节写路径快照
   it('「没走到要写」与「内容未变」的分支不产生快照（T011 顺序验收）', async () => {
     const { m, groupId, ref } = await setup();
     await m.appendFieldValueToRef(UID, ref, '教育阶段', '本科', '手动');
-    // 首次写入：留了安装时的那版，恰好一版
-    expect(readHistorySnapshots(groupId)).toHaveLength(1);
+    // 首次内容写入：留一版改前状态（v2 口径：安装时为空组不留档）
+    expect(await readHistorySnapshots(groupId)).toHaveLength(1);
 
     // ① 同值同源去重（changed:false，序列化后内容未变）→ 不新增快照
     const dup = await m.appendFieldValueToRef(UID, ref, '教育阶段', '本科', '手动');
     expect(dup.ok).toBe(true);
-    expect(readHistorySnapshots(groupId)).toHaveLength(1);
+    expect(await readHistorySnapshots(groupId)).toHaveLength(1);
 
     // ② mutator 拒绝（旧值不存在，没走到要写）→ 不留档
     const miss = await m.setFieldValueToRef(UID, ref, '教育阶段', '不存在的旧值', '新值');
     expect(miss.ok).toBe(false);
-    expect(readHistorySnapshots(groupId)).toHaveLength(1);
+    expect(await readHistorySnapshots(groupId)).toHaveLength(1);
   });
 });
 

@@ -24,6 +24,35 @@ describe('014 anti-drift（specs/014 T024）', () => {
     const registeredPost014 = [
       'recall.scopedMemoryMigration.preview',
       'recall.scopedMemoryMigration.run',
+      // 2026-09-29 个人本体 v2 重构：po.* 干净通道（JSON 单文档存储上的
+      // 全 id 寻址业务 API，见 src/main/features/po/api.ts；旧通道保留）。
+      'po.snapshot',
+      'po.groups.create',
+      'po.groups.rename',
+      'po.groups.delete',
+      'po.groups.restore',
+      'po.deleted.list',
+      'po.fields.create',
+      'po.fields.rename',
+      'po.fields.delete',
+      'po.fields.setRelation',
+      'po.values.add',
+      'po.values.update',
+      'po.values.delete',
+      'po.entries.add',
+      'po.entries.delete',
+      'po.entries.promote',
+      'po.templates.status',
+      'po.templates.install',
+      'po.templates.uninstall',
+      'po.templates.archiveInfo',
+      'po.history.list',
+      'po.history.restore',
+      'po.candidates.confirm',
+      'po.candidates.reject',
+      'po.data.export',
+      'po.data.importPreview',
+      'po.data.importApply',
     ];
     expect(sneaked.sort(), '出现未登记的新通道').toEqual([...registeredPost014].sort());
     expect(removed, '014 期间不应删除通道').toEqual([]);

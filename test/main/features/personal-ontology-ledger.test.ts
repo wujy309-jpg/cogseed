@@ -43,7 +43,8 @@ async function loadModule() {
 }
 
 function groupHistoryDir(gid: string): string {
-  return path.join(tmpDir, UID, 'cloud', 'contexts', '.personal_ontology_groups', '.history', gid);
+  // v2：台账随历史迁到 cognition/po-history（行格式不变）
+  return path.join(tmpDir, UID, 'cloud', 'cognition', 'po-history', gid);
 }
 
 function auditPath(gid: string): string {
@@ -211,10 +212,14 @@ describe('ontology audit ledger › history.list optional audit attachment', () 
     const groups = await loadModule();
     const created = await groups.createGroup(UID, '台账附加组');
     const gid = created.group!.group_id;
-    // 无台账的孤立快照（手工放置，模拟旧存量）
+    // 无台账的孤立快照（手工放置 v2 JSON 快照，模拟旧存量）
     await groups.writeGroupContent(UID, gid, '种子内容');
     fs.mkdirSync(groupHistoryDir(gid), { recursive: true });
-    fs.writeFileSync(path.join(groupHistoryDir(gid), '2020-01-01T00-00-00-000Z.md'), '孤立快照', 'utf8');
+    const doc = JSON.parse(fs.readFileSync(path.join(tmpDir, UID, 'cloud', 'cognition', 'personal-ontology.json'), 'utf8'));
+    const live = doc.groups.find((g: any) => g.id === gid);
+    fs.writeFileSync(path.join(groupHistoryDir(gid), '2020-01-01T00-00-00-000Z.json'), JSON.stringify({
+      savedAt: '2020-01-01T00:00:00.000Z', group: live,
+    }), 'utf8');
 
     let history = groups.listGroupHistory(UID, gid);
     expect(history.length).toBe(1);

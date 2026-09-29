@@ -673,6 +673,9 @@ async function writeCandidateToDestinations(
         const saved = await saveRecallCandidate(uid, {
           judgment: text,
           value: text,
+          // 标题一等化（设计 3.2）：本体候选自带 summary 时作为晋升标题优先
+          // 传入；缺省则由晋升链的起标题兜底处理（不再吃正文首句兜底）。
+          ...(candidate.summary ? { summary: candidate.summary } : {}),
           suggestedType,
           suggestedScope: 'general',
           suggestedAction: 'create',

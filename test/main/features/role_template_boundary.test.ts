@@ -190,18 +190,20 @@ describe('role-template boundary › M3 三元组不再跨 renderer / IPC 往返
 });
 
 describe('role-template boundary › M7/M8 PO 内部规则收口', () => {
-  it('模板文件判据只有一份实现，template_files 只做别名', () => {
+  it('模板文件判据只有一份实现（po/dialect），PO 两模块只做转出', () => {
+    const dialect = read('src/main/features/po/dialect.ts');
     const groups = read('src/main/features/personal_ontology_groups.ts');
     const files = read('src/main/features/personal_ontology_template_files.ts');
-    expect(groups).toContain('export const TEMPLATE_FILE_META_RE');
-    expect(groups).toContain('export function isTemplateFileText');
-    // template_files 不再自带正则字面量，只 import 别名。别名惰性初始化
-    // （与 groups 存在间接循环依赖，模块顶层直接读导出绑定在特定加载顺序
-    // 下会触发 TDZ，见 personal_ontology_template_files.ts 内注释）。
-    expect(files).not.toMatch(/const TEMPLATE_META_RE = \//);
-    expect(files).toContain('templateMetaReCache ??= TEMPLATE_FILE_META_RE;');
-    expect(files).toContain('line.match(getTemplateMetaRe())');
-    expect(files).toContain('export { isTemplateFileText };');
+    // 2026-09-29 重构后唯一定义在 po/dialect.ts；groups/template_files 只转出。
+    expect(dialect).toContain('export const TEMPLATE_FILE_META_RE');
+    expect(dialect).toContain('export function isTemplateFileText');
+    expect(groups).toContain('TEMPLATE_FILE_META_RE,');
+    expect(groups).toContain('isTemplateFileText,');
+    expect(files).toContain('export { isTemplateFileText, parseTemplateContent, serializeSection, serializeTemplateContent };');
+    // 三处不得各自再写字面量正则。
+    for (const src of [groups, files]) {
+      expect(src).not.toMatch(/const TEMPLATE_FILE_META_RE = \//);
+    }
   });
 
   it('T-box 白名单只有 contract 一份，调用方不再自建', () => {
@@ -321,7 +323,9 @@ describe('role-template boundary › 显示名只有 PO 一个事实来源', () 
 
   it('台账 title 不能再被改写成第三套显示名', () => {
     const groups = read('src/main/features/personal_ontology_groups.ts');
-    expect(groups).toContain("if (groups[idx].template_id) return { ok: false, error: 'role_template_group' };");
+    // v2 存储上守卫语义不变：模板组改名/删除都拒绝（走模板自己的生命周期）。
+    expect(groups).toContain("if (group.kind === 'template') return ctx.fail('role_template_group');");
+    expect(groups).toContain("if (group.kind === 'template') return ctx.fail('role_template_group');");
   });
 });
 

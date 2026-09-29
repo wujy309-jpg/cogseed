@@ -134,12 +134,18 @@
   /** 值行展开状态：`gid\x00field\x00value` 集合（点击行 toggle）。 */
   const _pocExpandedValues = new Set();
   // 导航就是三个盒子（词汇 T / 事实 A / 规则 R）；模板编辑器是 T 盒的下钻。
-  let _pocSelected = { kind: 'abox', id: 'abox' };
+  let _pocSelected = { kind: 'facts', id: 'facts' };
   // 模板文件编辑器 { groupId, templateId, sections, content, view:'form'|'raw' }
   let _pocGroupEditor = null;
   /** D5b（spec 009 T027）：「已删除分组」折叠块。懒加载——首次展开才拉
    *  deleted.list（IPC 纪律 contracts/ipc.md §5.4：不给每次渲染加调用）。 */
   let _pocDeletedGroups = { open: false, loaded: false, loadError: '', list: [] };
+  /** po.snapshot（2026-09-29 v2 重构）：一次快照拿全分组/字段/值/流水/回收站。 */
+  let _pocPo = { snapshot: null, loaded: false, loadError: '' };
+  /** 事实页筛选：分组下拉 + 搜索词。 */
+  let _pocFactsFilter = { group: 'all', q: '' };
+  /** 规则页分类筛选：'all'|'operation'|'preference'|'constraint'|'none'。 */
+  let _pocRuleFilter = 'all';
 
   // PersonalOntology is stored as durable profile statements. Keep the
   // storage contract flat, but present those statements as a small ontology
@@ -806,18 +812,6 @@
 
   // ── 左栏导航渲染 ─────────────────────────────────────────────────────────
   /** 三个盒子的数量口径（nav 角标与主区页头共用，2026-09-21 抽出）。 */
-  function _pocBoxCounts() {
-    const installedCount = _pocTemplates.filter((x) => x.installed).length;
-    const loaded = _pocBoxData.loaded;
-    const nonRel = (g) => (g.fields || []).reduce((m, f) => m + (f.values || []).filter((v) => !/→|->/.test(String(v.value || ''))).length, 0);
-    const rel = (g) => (g.fields || []).reduce((m, f) => m + (f.values || []).filter((v) => /→|->/.test(String(v.value || ''))).length, 0);
-    return {
-      tbox: _pocGroups.list.length + installedCount,
-      abox: (loaded ? _pocBoxData.groups.reduce((n, g) => n + nonRel(g), 0) : 0) + _pocProfile.entries.length,
-      rbox: (loaded ? _pocBoxData.groups.reduce((n, g) => n + rel(g), 0) : 0) + (loaded ? _pocBoxData.assets.filter((a) => a.type === 'rule').length : 0),
-    };
-  }
-
   function _pocAffairAssets() {
     return (_pocBoxData.assets || []).filter((asset) => asset && asset.type === 'fact');
   }
@@ -977,13 +971,13 @@
   }
 
   function _pocNavigate(action) {
-    if (_pocSelected.kind === 'template') _pocSelected = { kind: 'abox', id: 'abox' };
+    if (_pocSelected.kind === 'template') _pocSelected = { kind: 'facts', id: 'facts' };
     if (action === 'ontology-home') {
       _pocView = 'overview';
       _pocGroupEditor = null;
     } else if (action === 'personal-domain') {
       _pocView = 'personal';
-      _pocSelected = { kind: 'abox', id: 'abox' };
+      _pocSelected = { kind: 'facts', id: 'facts' };
       _pocGroupEditor = null;
     } else if (action === 'affairs-domain') {
       _pocView = 'affairs';
@@ -1003,7 +997,7 @@
     } else if (action === 'relationships-domain') {
       _pocView = 'relationships';
       _pocGroupEditor = null;
-    } else if (action === 'tbox' || action === 'abox' || action === 'rbox') {
+    } else if (action === 'facts' || action === 'rules' || action === 'groups') {
       _pocView = 'personal';
       _pocSelected = { kind: action, id: action };
       _pocGroupEditor = null;
@@ -1061,9 +1055,9 @@
     nav.innerHTML = `${hubNav}
     <div class="personal-onto-nav-section personal-onto-personal-subnav">
       <div class="personal-onto-nav-section-title">${escapeHtml(_t('personalOntology.personal_sections', '个人本体内容'))}</div>
-      ${row('tbox', 'type', 'personalOntology.nav_tbox', '分类与字段', counts.tbox, 'personalOntology.nav_tbox_sub', '本体分类、字段与角色模板')}
-      ${row('abox', 'user', 'personalOntology.nav_abox', '事实与条目', counts.abox, 'personalOntology.nav_abox_sub', '身份、角色、偏好与个人事实')}
-      ${row('rbox', 'terminal', 'personalOntology.nav_rbox', '关系与规则', counts.rbox, 'personalOntology.nav_rbox_sub', '明确关系与 AI 应遵循的规则')}
+      ${row('facts', 'user', 'personalOntology.nav_abox', '事实与条目', counts.facts, 'personalOntology.nav_abox_sub', '身份、偏好、项目——AI 长期记住的「关于我」')}
+      ${row('rules', 'terminal', 'personalOntology.nav_rbox', '规则', counts.rules, 'personalOntology.nav_rbox_sub', 'AI 该怎么配合你做事、什么别做')}
+      ${row('groups', 'type', 'personalOntology.nav_groups', '分组与模板', counts.groups, 'personalOntology.nav_groups_sub', '管理分组与角色模板')}
       ${_pocPendingCandidates.length ? `<div class="personal-onto-backflow-badge" style="padding:2px 10px 8px">${escapeHtml(_tv('personalOntology.backflow_badge', { n: _pocPendingCandidates.length }, '待添加 {n}'))}</div>` : ''}
     </div>
     <div class="personal-onto-nav-section">
@@ -1089,15 +1083,14 @@
     return (now.getFullYear() - Number(match[1])) * 12 + (now.getMonth() + 1 - Number(match[2])) > 12;
   }
 
-  /** 普通分组列表（模板组归角色模板区管，这里只显示 template_id 缺席的）。 */
+  /** 普通分组列表（v2：从 po.snapshot 投影；模板组归「分组与模板」的角色模板区）。 */
   async function _pocLoadGroups() {
-    const res = await _pocInvoke('personalOntology.groups.list', {});
-    if (!res || res.ok === false || !Array.isArray(res.groups)) {
-      _pocGroups = { list: [], loaded: true, loadError: (res && res.error) || _t('personalOntology.load_error', '加载失败') };
+    if (!_pocPo.loaded && !(await _pocLoadPoSnapshot())) {
+      _pocGroups = { list: [], loaded: true, loadError: _pocPo.loadError || _t('personalOntology.load_error', '加载失败') };
       return false;
     }
     _pocGroups = {
-      list: res.groups.filter((g) => g && g.group_id && !g.template_id),
+      list: _pocPoGroups().filter((g) => g.kind === 'user').map((g) => ({ group_id: g.id, title: g.title })),
       loaded: true,
       loadError: '',
     };
@@ -1105,42 +1098,22 @@
   }
 
   /** 本体候选池（回流候选在这里确认）。 */
-  /** 三盒数据加载：资产库（A: personal / R: rule）+ 全组字段与流水 + 全量
- *  冲突台账（自带自愈）。三个盒视图共用这一份，避免重复拉取。 */
+  /** 三盒数据（v2）：一次 po.snapshot + 资产库 + 冲突台账 + 图谱，域页共用。 */
   async function _pocLoadBoxData() {
     const assetsRes = await _pocInvoke('recall.assets.list', {});
     const sourceAssets = assetsRes && Array.isArray(assetsRes.assets)
       ? assetsRes.assets.filter((asset) => asset && asset.id)
       : [];
     const assets = sourceAssets.filter((asset) => asset.status === 'active');
-    const groupsWithFields = [];
-    if (_pocGroups.loaded || await _pocLoadGroups()) {
-      for (const g of _pocGroups.list) {
-        const [fieldsRes, readRes] = await Promise.all([
-          _pocInvoke('personalOntology.groups.fields.list', { groupId: g.group_id }),
-          _pocInvoke('personalOntology.groups.read', { groupId: g.group_id }),
-        ]);
-        let entries = [];
-        try {
-          const raw = String((readRes && readRes.content) || '');
-          const flowZone = raw.split('## 流水区')[1] || '';
-          entries = flowZone.split('§').map((s) => s.trim()).filter(Boolean);
-        } catch { entries = []; }
-        groupsWithFields.push({
-          gid: g.group_id,
-          title: g.title || g.group_id,
-          fields: fieldsRes && Array.isArray(fieldsRes.fields) ? fieldsRes.fields : [],
-          entries,
-        });
-      }
-    }
+    const snapshotOk = _pocPo.loaded ? true : await _pocLoadPoSnapshot();
+    const groupsWithFields = snapshotOk ? _pocProjectBoxGroups(_pocPo.snapshot) : [];
     const [conflictsRes, graphRes] = await Promise.all([
       _pocInvoke('personalOntology.conflicts.list', {}),
       _pocInvoke('ontology.graph.read', {}),
     ]);
     _pocBoxData = {
       loaded: true,
-      loadError: '',
+      loadError: _pocPo.loadError || '',
       groups: groupsWithFields,
       assets,
       sourceAssets,
@@ -1198,736 +1171,1064 @@
       && c.field === field && (c.value_a === value || c.value_b === value));
   }
 
-  /** 状态点色调（US-105 T041 收敛到共享 uiStatusDot 的 tone）：冲突红 > 受限琥珀 > 核实绿。
-   *  asOf 超龄琥珀已随「截至/可能过时」chip 一并隐藏（2026-09-28 审计 G5/D2
-   *  处置＝隐藏：解释文案撤下后留一颗说不清来由的琥珀点只会更糊涂；等 M5
-   *  时间锚控件落地时一并回来）。 */
-  function _pocStatusDotTone(fv, conflicted) {
-    if (conflicted) return 'critical';
-    if (fv.sensitivity === 'restricted') return 'attention';
-    if (fv.verified) return 'success';
+  // ════════════════════════════════════════════════════════════════════════
+  // 个人本体 v2 视图（2026-09-29 重构）：po.snapshot 单次快照驱动三个页面
+  // （事实 / 规则 / 分组与模板）。全部按 id 寻址，规则分类是一等列——
+  // v1「筛选全空、不可编辑」两个痛点在这里根治。
+  // ════════════════════════════════════════════════════════════════════════
+
+  /** 加载 po.snapshot（一次调用拿全分组/字段/值/流水/计数/回收站）。 */
+  async function _pocLoadPoSnapshot() {
+    const res = await _pocInvoke('po.snapshot', {});
+    if (!res || !Array.isArray(res.groups)) {
+      _pocPo = { snapshot: null, loaded: true, loadError: (res && res.error) || _t('personalOntology.load_error', '加载失败') };
+      return false;
+    }
+    _pocPo = { snapshot: res, loaded: true, loadError: '' };
+    return true;
+  }
+
+  function _pocPoGroups() {
+    return (_pocPo.snapshot && _pocPo.snapshot.groups) || [];
+  }
+
+  function _pocPoGroupById(gid) {
+    return _pocPoGroups().find((g) => g.id === gid);
+  }
+
+  /** 规则形值判定（与主进程口径一致）：关系字段 / 带分类 / 文本含箭头。 */
+  function _pocRuleShaped(field, value) {
+    if (!value) return false;
+    if (field && field.isRelation) return true;
+    if (value.ruleKind) return true;
+    return /→|->/.test(String(value.text || ''));
+  }
+
+  /** 把 po.snapshot 投影成旧消费方（关系网络 / 分类页 / 总览）吃的
+   *  _pocBoxData.groups 形状：{gid,title,fields:[{name,isRelation,values[]}],entries}。 */
+  function _pocProjectBoxGroups(snapshot) {
+    return (snapshot.groups || []).map((g) => {
+      const valueById = new Map((g.values || []).map((v) => [v.id, v]));
+      return {
+        gid: g.id,
+        title: g.title,
+        kind: g.kind,
+        templateName: g.templateName,
+        fields: (g.fields || []).map((f) => ({
+          name: f.name,
+          isRelation: f.isRelation,
+          description: f.description,
+          sectionTitle: f.section,
+          status: f.status,
+          values: (f.valueIds || []).map((vid) => valueById.get(vid)).filter(Boolean).map((v) => ({
+            value: v.text,
+            source: v.source,
+            asOf: v.asOf,
+            verified: v.verified,
+            ruleKind: v.ruleKind,
+            sensitivity: v.restricted ? 'restricted' : undefined,
+            recallAssetId: v.assetId,
+            id: v.id,
+            fieldId: v.fieldId,
+          })),
+        })),
+        entries: (g.entries || []).filter((e) => !e.section).map((e) => e.text),
+      };
+    });
+  }
+
+  /** 兼容旧调用点（nav / 总览 / 域页）： po.snapshot 优先，未加载时给零值。 */
+  function _pocBoxCounts() {
+    const snapshot = _pocPo.snapshot;
+    if (!snapshot) {
+      return { tbox: 0, abox: 0, rbox: 0, facts: 0, rules: 0, groups: 0, pending: _pocPendingCandidates.length };
+    }
+    const fieldById = new Map();
+    for (const g of snapshot.groups) for (const f of g.fields) fieldById.set(f.id, f);
+    let facts = 0;
+    let rules = 0;
+    for (const g of snapshot.groups) {
+      for (const v of g.values) {
+        if (_pocRuleShaped(fieldById.get(v.fieldId), v)) rules += 1;
+        else facts += 1;
+      }
+    }
+    return {
+      tbox: snapshot.groups.length,
+      abox: facts + _pocProfile.entries.length,
+      rbox: rules + (_pocBoxData.assets || []).filter((a) => a.type === 'rule').length,
+      facts,
+      rules,
+      groups: snapshot.groups.length,
+      pending: _pocPendingCandidates.length,
+    };
+  }
+
+  /** 状态点（琥珀=需要注意，红=矛盾）。 */
+  function _pocStatusDotTone(value, conflicted) {
+    if (conflicted) return 'danger';
+    if (value && value.restricted) return 'warning';
     return '';
   }
 
-  function _pocValueActionsHtml(gid, field, fv) {
-    if (fv.recallAssetId) {
-      return `<span class="muted">${escapeHtml(_t('personalOntology.asset_projection_read_only', '此值由正式认知资产维护。'))}</span>
-        ${_button({ label: _t('personalOntology.asset_projection_open', '查看来源资产'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'open-formal-asset', 'data-poc-asset-id': fv.recallAssetId } })}`;
+  /** 值行元数据 chips。 */
+  function _pocValueMetaChips(gid, field, value) {
+    const chips = [];
+    if (value.restricted) chips.push(_statusPill(_t('personalOntology.po2_restricted', '仅自己可见'), 'warning'));
+    if (value.verified) chips.push(_tag(value.verified === 'independent'
+      ? _t('personalOntology.po2_verified_independent', '已独立核实')
+      : _t('personalOntology.po2_verified', '已核实')));
+    if (value.asOf) chips.push(_tag(_tv('personalOntology.po2_asof_chip', { asof: value.asOf }, '截至 {asof}')));
+    if (value.ruleKind) chips.push(_tag(_t(`personalOntology.rulekind_${value.ruleKind}`, '')));
+    if (conflictedStatus(gid, field, value)) chips.push(_statusPill(_t('personalOntology.po2_conflict', '存在矛盾'), 'danger'));
+    return chips.join('');
+    function conflictedStatus(g, f, v) {
+      return _pocConflictFor(g, f ? f.name : '', v.text);
     }
-    return `${_button({ label: fv.verified === 'independent' ? _t('personalOntology.unverify_tip', '取消核实') : fv.verified === true ? _t('personalOntology.verify_up_tip', '升级为独立核实') : _t('personalOntology.verify_tip', '标记为已核实'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'verify-value', 'data-poc-gid': gid, 'data-poc-field': field.name, 'data-poc-value': String(fv.value || ''), 'data-poc-verified': fv.verified === 'independent' ? '0' : fv.verified === true ? 'independent' : '1' } })}
-      ${/→|->/.test(String(fv.value || '')) ? _button({ label: _t('personalOntology.rulekind_cycle_tip', '切换规则分类'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'cycle-rulekind', 'data-poc-gid': gid, 'data-poc-field': field.name, 'data-poc-value': String(fv.value || '') } }) : ''}
-      ${_button({ label: fv.sensitivity === 'restricted' ? _t('personalOntology.unrestrict_tip', '取消受限') : _t('personalOntology.restrict_tip', '设为受限（不自动注入）'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'toggle-restricted', 'data-poc-gid': gid, 'data-poc-field': field.name, 'data-poc-value': String(fv.value || ''), 'data-poc-restricted': fv.sensitivity === 'restricted' ? '0' : '1' } })}
-      ${_button({ label: _t('personalOntology.value_edit_tip', '编辑这条值'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'edit-value', 'data-poc-gid': gid, 'data-poc-field': field.name, 'data-poc-value': String(fv.value || ''), 'data-poc-asof': String(fv.asOf || '') } })}
-      ${_button({ label: _t('personalOntology.value_remove_tip', '删除这条值'), size: 'sm', className: 'personal-onto-group-action is-danger', attrs: { 'data-poc-group-op': 'remove-value', 'data-poc-gid': gid, 'data-poc-field': field.name, 'data-poc-value': String(fv.value || '') } })}`;
   }
 
-  /** 极简值行 + 点击展开操作区（盒子化重构：标记与操作不糊脸）。 */
-  function _pocValueRowHtml(gid, field, fv) {
-    const conflicted = _pocConflictFor(gid, field.name, fv.value);
-    const dotTone = _pocStatusDotTone(fv, conflicted);
-    // encode 而非 NUL 分隔：HTML 属性会吞控制字符，读回的 key 将与 Set 不一致
-    const key = encodeURIComponent(`${gid}\u0001${field.name}\u0001${fv.value}`);
-    const expanded = _pocExpandedValues.has(key);
-    // M5 预留位（specs/014 时间锚）：asOf 时间控件将挂在本详情操作区「编辑这条值」
-    // 旁——009 本期只登记挂载位不实现（contracts/renderer-seams.md R1b），不得占用。
-    // 2026-09-28 审计 G5/D2 处置＝隐藏：「截至 {m}/可能过时」chip 与超龄琥珀点
-    // 先行撤下（能显示不能管理的半成品），asOf 数据与编辑表单里的录入栏保留，
-    // M5 控件落地时一并恢复展示。
-    const detail = expanded ? `<div class="personal-onto-value-detail">
-        <div class="personal-onto-value-detail-chips">
-          ${fv.verified === 'independent' ? _tag(_t('personalOntology.verified_independent_chip', '独立核实过'), 'success') : fv.verified === true ? _tag(_t('personalOntology.verified_chip', '有来源支持'), 'success') : ''}
-          ${fv.ruleKind === 'operation' ? _tag(_t('personalOntology.rulekind_operation', '操作规则')) : fv.ruleKind === 'preference' ? _tag(_t('personalOntology.rulekind_preference', '偏好')) : fv.ruleKind === 'constraint' ? _tag(_t('personalOntology.rulekind_constraint', '约束')) : ''}
-          ${fv.sensitivity === 'restricted' ? _statusPill(_t('personalOntology.restricted_chip', '受限·不自动注入'), 'attention') : ''}
-          ${conflicted ? _statusPill(_t('personalOntology.conflict_chip', '与同字段另一条值矛盾'), 'critical') : ''}
-        </div>
-        <div class="personal-onto-value-detail-actions">${_pocValueActionsHtml(gid, field, fv)}</div>
-      </div>` : '';
-    return `<div class="personal-onto-value-line${expanded ? ' is-expanded' : ''}${conflicted ? ' is-conflicted' : ''}" data-poc-line-key="${escapeHtml(key)}" role="button" tabindex="0">
-        <span class="personal-onto-value-text">${escapeHtml(String(fv.value || ''))}</span>
-        <span class="muted personal-onto-value-src">${escapeHtml(fv.recallAssetId
-          ? _t('personalOntology.asset_projection_origin', '由正式认知资产维护')
-          : String(fv.source || '手动'))}</span>
-        ${dotTone ? _statusDot(dotTone) : ''}
-      </div>${detail}`;
+  /** 值行「⋯」菜单（details 下拉；操作全部走 po.values.*）。 */
+  function _pocValueMenuHtml(gid, field, value) {
+    const item = (op, labelKey, fallback, opts = {}) =>
+      _button({ label: _t(labelKey, fallback), size: 'xs', className: `po2-menu-item${opts.danger ? ' is-danger' : ''}`, attrs: { 'data-poc-value-op': op, 'data-poc-gid': gid, 'data-poc-value-id': value.id } });
+    const kindItem = (kind, labelKey, fallback) =>
+      _button({ label: _t(labelKey, fallback), size: 'xs', className: `po2-menu-item${value.ruleKind === kind ? ' is-active' : ''}`, attrs: { 'data-poc-value-op': `kind:${kind}`, 'data-poc-gid': gid, 'data-poc-value-id': value.id } });
+    if (value.assetId) {
+      // 资产投影只读：唯一出口是回来源资产改。
+      return `<details class="po2-menu"><summary class="po2-menu-trigger" aria-label="menu">${_icon('more-horizontal', 'ui-icon')}</summary><div class="po2-menu-list">
+        ${_button({ label: _t('personalOntology.po2_open_source_asset', '查看来源资产'), size: 'xs', className: 'po2-menu-item', attrs: { 'data-poc-value-op': 'open-asset', 'data-poc-gid': gid, 'data-poc-asset-id': value.assetId } })}
+      </div></details>`;
+    }
+    return `<details class="po2-menu"><summary class="po2-menu-trigger" aria-label="menu">${_icon('more-horizontal', 'ui-icon')}</summary><div class="po2-menu-list">
+      ${item('edit', 'personalOntology.po2_edit', '编辑')}
+      ${_pocRuleShaped(field, value) ? `<div class="po2-menu-sep"></div>
+        <div class="po2-menu-title">${escapeHtml(_t('personalOntology.po2_rule_kind_title', '规则分类'))}</div>
+        ${kindItem('operation', 'personalOntology.rulekind_operation', '操作规则')}
+        ${kindItem('preference', 'personalOntology.rulekind_preference', '偏好')}
+        ${kindItem('constraint', 'personalOntology.rulekind_constraint', '约束')}
+        ${kindItem('none', 'personalOntology.po2_kind_none', '移除分类')}` : ''}
+      <div class="po2-menu-sep"></div>
+      ${item(value.restricted ? 'unrestrict' : 'restrict', value.restricted ? 'personalOntology.po2_make_standard' : 'personalOntology.po2_make_restricted', value.restricted ? '恢复可见' : '仅自己可见')}
+      ${item(value.verified === 'independent' ? 'unverify' : 'verify-independent', value.verified === 'independent' ? 'personalOntology.po2_unverify' : 'personalOntology.po2_verify_independent', value.verified === 'independent' ? '取消核实' : '标记独立核实')}
+      ${value.verified !== 'independent' ? item(value.verified ? 'unverify' : 'verify', value.verified ? 'personalOntology.po2_unverify' : 'personalOntology.po2_verify', value.verified ? '取消核实' : '标记已核实') : ''}
+      <div class="po2-menu-sep"></div>
+      ${item('delete', 'common.delete', '删除', { danger: true })}
+    </div></details>`;
   }
 
-  /** A 盒（事实）：回流候选 + 会话沉淀伪组（画像资产，六分节） + 各组普通值 + 流水。 */
-  function _pocRenderABoxView() {
-    if (!_pocBoxData.loaded) return `<div class="personal-onto-empty">${escapeHtml(_t('personalOntology.loading', '加载中...'))}</div>`;
-    const isRel = (v) => /→|->/.test(String(v || ''));
-    // 会话沉淀伪组：画像资产按六分节（复用既有分节器）
-    const sections = _pocProfileSections();
-    const profileHtml = sections.length ? sections.map((section) => `
-      <div class="personal-onto-abox-subsec" data-poc-ontology-section="${escapeHtml(section.id)}">
-        <div class="muted">${escapeHtml(_t(section.titleKey, section.title))}</div>
-        ${section.entries.map((e) => `<div class="personal-onto-value-line"><details class="poc-entry"><summary><span class="poc-entry-clamp">${_pocProfileEntryHtml(e)}</span></summary><div class="poc-entry-full">${_pocProfileEntryHtml(e)}</div></details><span class="muted personal-onto-value-src" title="${escapeHtml(_t('personalOntology.abox_asset_src_hint', '这条内容来自正式资产，可在「我的认知」查看全文与来源'))}">${escapeHtml(_t('personalOntology.abox_asset_src', '来自资产'))}</span>${e.assetId ? _button({ label: _t('personalOntology.asset_projection_open', '查看来源资产'), size: 'sm', attrs: { 'data-poc-group-op': 'open-formal-asset', 'data-poc-asset-id': e.assetId } }) : ''}</div>`).join('')}
-      </div>`).join('')
-      : `<div class="muted personal-onto-value-empty">${escapeHtml(_t('personalOntology.profile_empty', '确认保存关于你的信息后，这里会按类别显示'))}</div>`;
-
-    const groupHtml = _pocBoxData.groups.map((g) => {
-      const fieldHtml = (g.fields || []).map((field) => {
-        const rows = (field.values || []).filter((fv) => !isRel(fv.value));
-        return `<div class="personal-onto-abox-subsec">
-          <div class="personal-onto-abox-subsec-head">
-            <span class="muted">${escapeHtml(field.name)}</span>
-            ${_button({ label: `＋ ${_t('personalOntology.value_add', '添加值')}`, size: 'sm', className: 'personal-onto-value-add o', attrs: { 'data-poc-group-op': 'append-value', 'data-poc-gid': g.gid, 'data-poc-field': field.name } })}
-          </div>
-          ${rows.map((fv) => _pocValueRowHtml(g.gid, field, fv)).join('') || `<div class="muted personal-onto-value-empty">${escapeHtml(_t('personalOntology.field_no_values', '尚无值'))}</div>`}
-        </div>`;
-      }).join('');
-      return `<div class="personal-onto-abox-group">
-        <div class="personal-onto-abox-group-head">
-          <span class="personal-onto-field-name">${escapeHtml(g.title)}</span>
-          ${_button({ label: _t('personalOntology.note_append', '记一笔'), size: 'sm', className: 'personal-onto-group-action o', attrs: { 'data-poc-group-op': 'append-entry', 'data-poc-gid': g.gid } })}
-        </div>
-        ${fieldHtml}
-        ${g.entries.length ? `<div class="personal-onto-flow-zone"><div class="muted">${escapeHtml(_t('personalOntology.flow_zone', '流水区'))} <span class="muted">${g.entries.length}</span></div>
-          ${g.entries.map((entry) => `<div class="personal-onto-flow-row">${escapeHtml(entry)}</div>`).join('')}</div>` : ''}
-      </div>`;
-    }).join('');
-
-    return `<section class="personal-onto-box-view">
-      ${_pocRenderBackflowCandidates()}
-      <div class="personal-onto-zone-head">${escapeHtml(_tv('personalOntology.abox_profile_group_n', { n: _pocProfile.entries.length }, '来自对话的个人信息 · {n} 条'))}</div>
-      ${profileHtml}
-      ${_pocBoxData.groups.length ? `<div class="personal-onto-zone-head">${escapeHtml(_t('personalOntology.abox_groups', '分组事实'))} <span class="muted">${_pocBoxData.groups.length}</span></div>${groupHtml}` : ''}
-    </section>`;
-  }
-
-  /** R 盒（规则）：分类筛选 + 各组关系值 + 规则资产。 */
-  function _pocRenderRBoxView() {
-    if (!_pocBoxData.loaded) return `<div class="personal-onto-empty">${escapeHtml(_t('personalOntology.loading', '加载中...'))}</div>`;
-    const isRel = (v) => /→|->/.test(String(v || ''));
-    const filter = _pocTriBoxRuleFilter || 'all';
-    const KINDS = ['operation', 'preference', 'constraint'];
-    const kindLabel = (k) => (k === 'operation' ? _t('personalOntology.rulekind_operation', '操作规则')
-      : k === 'preference' ? _t('personalOntology.rulekind_preference', '偏好')
-      : _t('personalOntology.rulekind_constraint', '约束'));
-    const filterChips = ['all', ...KINDS].map((k) =>
-      _button({ label: k === 'all' ? _t('personalOntology.tribox_filter_all', '全部') : kindLabel(k), size: 'sm', className: `personal-onto-filter-chip${filter === k ? ' is-on' : ''}`, attrs: { 'data-poc-tri-filter': k } })).join('');
-
-    let total = 0;
-    const groupHtml = _pocBoxData.groups.map((g) => {
-      const rows = [];
-      for (const field of g.fields) {
-        for (const fv of (field.values || [])) {
-          if (!isRel(fv.value)) continue;
-          if (filter !== 'all' && fv.ruleKind !== filter) continue;
-          total += 1;
-          rows.push(_pocValueRowHtml(g.gid, field, fv));
-        }
-      }
-      if (!rows.length) return '';
-      return `<div class="personal-onto-abox-group">
-        <div class="personal-onto-abox-group-head"><span class="personal-onto-field-name">${escapeHtml(g.title)}</span></div>
-        ${rows.join('')}
-      </div>`;
-    }).join('');
-    const ruleAssets = (filter === 'all' ? _pocBoxData.assets.filter((a) => a.type === 'rule') : []);
-    total += ruleAssets.length;
-
-    return `<section class="personal-onto-box-view">
-      <div class="personal-onto-zone-head">${escapeHtml(_t('personalOntology.rbox_rules', '规则'))} <span class="muted">${total}</span></div>
-      <div class="personal-onto-filter-row">${filterChips}</div>
-      ${groupHtml || ''}
-      ${ruleAssets.length ? `<div class="personal-onto-abox-group">
-        <div class="personal-onto-abox-group-head"><span class="personal-onto-field-name">${escapeHtml(_t('personalOntology.rbox_from_assets', '资产沉淀的规则'))}</span></div>
-        ${ruleAssets.map((a) => `<div class="personal-onto-value-line"><span class="personal-onto-value-text">${escapeHtml(String(a.statement || ''))}</span><span class="muted personal-onto-value-src">${escapeHtml(_t('personalOntology.abox_asset_src', '资产'))}</span></div>`).join('')}
-      </div>` : ''}
-      ${!total ? `<div class="muted personal-onto-value-empty">${escapeHtml(_t('personalOntology.tribox_empty', '暂无内容'))}</div>` : ''}
-    </section>`;
-  }
-
-  /** D5b：「已删除分组」折叠块（T 盒组管理区）。收起 = 一个入口按钮；展开 =
-   *  每组一行（标题 / 删除时刻 / 快照数 + 恢复按钮）或空态（_emptyState）。 */
-  function _pocRenderDeletedGroupsHtml() {
-    const dg = _pocDeletedGroups;
-    const toggle = _button({
-      label: _t('personalOntology.group_deleted_list', '已删除分组'),
-      icon: 'archive',
-      iconEnd: dg.open ? 'chevron-down' : 'chevron-right',
-      size: 'sm',
-      className: 'personal-onto-deleted-toggle',
-      attrs: { 'data-poc-deleted-op': 'toggle' },
-    });
-    if (!dg.open) return `<div class="personal-onto-deleted-zone">${toggle}</div>`;
-    const rows = (dg.list || []).map((g) => `<div class="personal-onto-deleted-row">
-        <span class="personal-onto-deleted-title">${escapeHtml(String((g && g.title) || (g && g.groupId) || ''))}</span>
-        <span class="muted personal-onto-deleted-meta">${escapeHtml(String((g && g.deletedAt) || ''))} · ${Number((g && g.snapshotCount) || 0)}</span>
-        ${_button({ label: _t('personalOntology.group_deleted_restore', '恢复这个分组'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-deleted-op': 'restore', 'data-poc-gid': String((g && g.groupId) || '') } })}
-      </div>`).join('');
-    const body = dg.loadError
-      ? `<div class="muted" role="alert">${escapeHtml(dg.loadError)}</div>`
-      : rows || _emptyState({ kind: 'quiet', title: _t('personalOntology.group_deleted_empty', '没有已删除的分组') });
-    return `<div class="personal-onto-deleted-zone is-open">${toggle}
-      <div class="personal-onto-deleted-body">${body}</div>
+  /** 值行：文本 + chips + 菜单。 */
+  function _pocRenderValueRow(gid, field, value) {
+    const conflicted = _pocConflictFor(gid, field ? field.name : '', value.text);
+    const dot = _statusDot(_pocStatusDotTone(value, conflicted));
+    const assetBtn = value.assetId
+      ? `<span class="po2-value-src">${_tag(_t('personalOntology.abox_asset_src', '来自认知资产'))}${_button({ label: _t('personalOntology.po2_open_source_asset', '查看来源资产'), size: 'xs', className: 'o po2-link-btn', attrs: { 'data-poc-value-op': 'open-asset', 'data-poc-gid': gid, 'data-poc-asset-id': value.assetId } })}</span>`
+      : '';
+    return `<div class="po2-value-row${value.restricted ? ' is-restricted' : ''}${conflicted ? ' is-conflict' : ''}" data-poc-value-id="${escapeHtml(value.id)}">
+      <span class="po2-value-dot">${dot}</span>
+      <span class="po2-value-text">${escapeHtml(value.text)}</span>
+      <span class="po2-value-meta">${_pocValueMetaChips(gid, field, value)}</span>
+      ${assetBtn}
+      ${_pocValueMenuHtml(gid, field, value)}
     </div>`;
   }
 
-  /** T 盒（词汇）：组词汇卡（字段名+描述+组操作）+ 角色模板 + 模板库。 */
-  function _pocRenderTBoxView() {
-    const installedTmpls = _pocTemplates.filter((t) => t.installed);
-    const cards = _pocBoxData.groups.map((g) => `<div class="personal-onto-field-block">
-        <div class="personal-onto-abox-group-head">
-          <span class="personal-onto-field-name">${escapeHtml(g.title)}</span>
-          <span>
-            ${_button({ label: _t('personalOntology.field_add', '＋ 新字段'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'add-field', 'data-poc-gid': g.gid } })}
-            ${_button({ label: _t('personalOntology.group_rename', '重命名'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'rename-group', 'data-poc-gid': g.gid } })}
-            ${_button({ label: _t('personalOntology.group_history', '历史'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'show-history', 'data-poc-gid': g.gid } })}
-            ${_button({ label: _t('personalOntology.group_delete', '删除分组'), size: 'sm', className: 'personal-onto-group-action is-danger', attrs: { 'data-poc-group-op': 'delete-group', 'data-poc-gid': g.gid } })}
-          </span>
-        </div>
-        ${(g.fields || []).map((f) => `<div class="personal-onto-tbox-field">
-          <span>${escapeHtml(f.name)}</span>
-          ${f.isRelation ? _tag(_t('personalOntology.tbox_relation_flag', '关系字段')) : ''}
-          ${f.description ? `<span class="muted personal-onto-field-desc">${escapeHtml(String(f.description))}</span>` : ''}
-        </div>`).join('') || `<div class="muted personal-onto-value-empty">${escapeHtml(_t('personalOntology.field_no_values', '尚无值'))}</div>`}
-      </div>`).join('');
+  /** 字段块：字段头（名称/关系标记/操作）+ 值列表。 */
+  function _pocRenderFieldBlock(gid, group, field) {
+    const values = (field.valueIds || [])
+      .map((vid) => (group.values || []).find((v) => v.id === vid))
+      .filter(Boolean);
+    const editableField = group.kind !== 'template' || field.origin === 'user';
+    const fieldMenu = editableField
+      ? `<details class="po2-menu"><summary class="po2-menu-trigger po2-menu-trigger-plain" aria-label="menu">${_icon('more-horizontal', 'ui-icon')}</summary><div class="po2-menu-list">
+          ${_button({ label: _t('personalOntology.po2_rename_field', '重命名字段'), size: 'xs', className: 'po2-menu-item', attrs: { 'data-poc-field-op': 'rename', 'data-poc-gid': gid, 'data-poc-field-id': field.id } })}
+          ${_button({ label: field.isRelation ? _t('personalOntology.po2_unset_relation', '取消关系字段') : _t('personalOntology.po2_set_relation', '设为关系字段'), size: 'xs', className: `po2-menu-item${field.isRelation ? ' is-active' : ''}`, attrs: { 'data-poc-field-op': 'toggle-relation', 'data-poc-gid': gid, 'data-poc-field-id': field.id } })}
+          <div class="po2-menu-sep"></div>
+          ${_button({ label: _t('personalOntology.po2_delete_field', '删除字段'), size: 'xs', className: 'po2-menu-item is-danger', attrs: { 'data-poc-field-op': 'delete', 'data-poc-gid': gid, 'data-poc-field-id': field.id } })}
+        </div></details>`
+      : '';
+    const relTag = field.isRelation ? _tag(_t('personalOntology.po2_relation_tag', '关系')) : '';
+    const customTag = group.kind === 'template' && field.origin === 'user' ? _tag(_t('personalOntology.po2_custom_field_tag', '自定义')) : '';
+    const retiredTag = field.status === 'retired' ? _statusPill(_t('personalOntology.po2_retired_field_tag', '已下架'), 'warning') : '';
+    return `<div class="po2-field" data-poc-field-id="${escapeHtml(field.id)}">
+      <div class="po2-field-head">
+        <span class="po2-field-name">${escapeHtml(field.name)}</span>
+        ${relTag}${customTag}${retiredTag}
+        ${field.description ? `<span class="po2-field-desc" title="${escapeHtml(field.description)}">${_icon('info', 'ui-icon')}</span>` : ''}
+        <span class="po2-field-actions">
+          ${_button({ label: _t('personalOntology.po2_add_value', '加一条'), size: 'xs', className: 'o', attrs: { 'data-poc-field-op': 'add-value', 'data-poc-gid': gid, 'data-poc-field-id': field.id } })}
+          ${fieldMenu}
+        </span>
+      </div>
+      <div class="po2-field-values">
+        ${values.length ? values.map((v) => _pocRenderValueRow(gid, field, v)).join('') : `<div class="po2-value-empty muted">${escapeHtml(_t('personalOntology.po2_field_empty', '还没有内容'))}</div>`}
+      </div>
+    </div>`;
+  }
 
-    return `<section class="personal-onto-box-view">
-      <div class="personal-onto-zone-head">${escapeHtml(_t('personalOntology.tbox_groups', '分组词汇'))} <span class="muted">${_pocBoxData.groups.length}</span></div>
-      ${_button({ label: _t('personalOntology.group_new', '新建分组'), size: 'sm', className: 'personal-onto-group-new-btn', attrs: { 'data-poc-nav': 'new-group' } })}
-      ${cards || `<div class="muted personal-onto-value-empty">${escapeHtml(_t('personalOntology.groups_empty', '还没有分组'))}</div>`}
-      ${_pocRenderDeletedGroupsHtml()}
-      <div class="personal-onto-zone-head">${escapeHtml(_t('personalOntology.nav_templates', '角色模板'))} <span class="muted">${installedTmpls.length}</span></div>
-      ${installedTmpls.map((tmpl) => `<div class="personal-onto-nav-template-row">
-          <button type="button" class="personal-onto-nav-row is-file" data-poc-nav="template" data-poc-id="${escapeHtml(tmpl.group_id || '')}">
-            <span class="personal-onto-nav-file-icon">${_icon('file-text', 'ui-icon')}</span>
-            <span class="personal-onto-nav-row-text">${escapeHtml(tmpl.name)}</span>
-            <span class="memory-template-name-suffix">${escapeHtml(_t('memory.templates_suffix', '模板'))}</span>
-          </button>
-          ${_iconButton({ label: _t('personalOntology.template_uninstall_tip', '卸载（数据归档保留）'), icon: 'x', variant: 'danger', className: 'personal-onto-template-uninstall', attrs: { 'data-poc-nav': 'template-uninstall', 'data-poc-template-id': tmpl.template_id } })}
-        </div>`).join('') || `<div class="muted personal-onto-value-empty">${escapeHtml(_t('personalOntology.dest_no_roles', '尚未安装角色模板，可在「角色模板库」中安装'))}</div>`}
-      <button type="button" class="personal-onto-template-library-btn" data-poc-nav="template-library">
-        ${_icon('package', 'ui-icon personal-onto-template-library-icon')}
-        <span>${_t('personalOntology.template_library', '角色模板库')}</span>
-      </button>
+  /** 分组块（按分节组织；普通组无分节）。 */
+  function _pocRenderGroupBlock(group) {
+    const gid = group.id;
+    const isTemplate = group.kind === 'template';
+    const templateTag = isTemplate ? _tag(group.templateName || group.templateId || _t('personalOntology.po2_template_tag', '角色模板')) : '';
+    const sections = [];
+    const sectionOrder = [];
+    for (const f of group.fields || []) {
+      const s = f.section || '';
+      if (!sectionOrder.includes(s)) sectionOrder.push(s);
+    }
+    for (const e of group.entries || []) {
+      const s = e.section || '';
+      if (!sectionOrder.includes(s)) sectionOrder.push(s);
+    }
+    if (!sectionOrder.length) sectionOrder.push('');
+    const groupMenu = `<details class="po2-menu"><summary class="po2-menu-trigger po2-menu-trigger-plain" aria-label="menu">${_icon('more-horizontal', 'ui-icon')}</summary><div class="po2-menu-list">
+      ${isTemplate ? '' : _button({ label: _t('personalOntology.po2_add_field', '新字段'), size: 'xs', className: 'po2-menu-item', attrs: { 'data-poc-group-op': 'add-field', 'data-poc-gid': gid } })}
+      ${_button({ label: _t('personalOntology.po2_add_entry', '记一笔'), size: 'xs', className: 'po2-menu-item', attrs: { 'data-poc-group-op': 'add-entry', 'data-poc-gid': gid } })}
+      ${_button({ label: _t('personalOntology.po2_history', '历史版本'), size: 'xs', className: 'po2-menu-item', attrs: { 'data-poc-group-op': 'history', 'data-poc-gid': gid } })}
+      ${isTemplate ? '' : `<div class="po2-menu-sep"></div>
+        ${_button({ label: _t('personalOntology.po2_rename_group', '重命名分组'), size: 'xs', className: 'po2-menu-item', attrs: { 'data-poc-group-op': 'rename', 'data-poc-gid': gid } })}
+        ${_button({ label: _t('personalOntology.po2_delete_group', '删除分组'), size: 'xs', className: 'po2-menu-item is-danger', attrs: { 'data-poc-group-op': 'delete', 'data-poc-gid': gid } })}`}
+    </div></details>`;
+    for (const section of sectionOrder) {
+      const fields = (group.fields || []).filter((f) => (f.section || '') === section);
+      const entries = (group.entries || []).filter((e) => (e.section || '') === section);
+      const entryItems = entries.map((entry) => `<div class="po2-entry-row" data-poc-entry-id="${escapeHtml(entry.id)}">
+        <span class="po2-entry-text">${escapeHtml(entry.text)}</span>
+        <span class="po2-entry-actions">
+          ${_button({ label: _t('personalOntology.po2_entry_promote', '转正为字段'), size: 'xs', className: 'o po2-link-btn', attrs: { 'data-poc-entry-op': 'promote', 'data-poc-gid': gid, 'data-poc-entry-id': entry.id } })}
+          ${_button({ label: _t('common.delete', '删除'), size: 'xs', className: 'o po2-link-btn is-danger', attrs: { 'data-poc-entry-op': 'delete', 'data-poc-gid': gid, 'data-poc-entry-id': entry.id } })}
+        </span>
+      </div>`).join('');
+      sections.push(`<div class="po2-section">
+        ${section ? `<div class="po2-section-title">${escapeHtml(section)}</div>` : ''}
+        ${fields.map((f) => _pocRenderFieldBlock(gid, group, f)).join('')}
+        ${entryItems ? `<div class="po2-entries">${entryItems}</div>` : ''}
+      </div>`);
+    }
+    return `<section class="po2-group" data-poc-gid="${escapeHtml(gid)}">
+      <header class="po2-group-head">
+        <span class="po2-group-title">${escapeHtml(group.title)}</span>
+        ${templateTag}
+        <span class="po2-group-count muted">${escapeHtml(_tv('personalOntology.po2_group_count', { n: (group.values || []).length }, '{n} 条'))}</span>
+        <span class="po2-group-actions">
+          ${_button({ label: _t('personalOntology.po2_add_value', '加一条'), size: 'xs', className: 'o', attrs: { 'data-poc-group-op': 'add-entry', 'data-poc-gid': gid } })}
+          ${groupMenu}
+        </span>
+      </header>
+      <div class="po2-group-body">${sections.join('')}</div>
     </section>`;
   }
-  async function _pocLoadPendingCandidates() {    const res = await _pocInvoke('personalOntology.candidates.list', {});
-    _pocCandidatesLoaded = true;
-    _pocPendingCandidates = res && Array.isArray(res.candidates) ? res.candidates : [];
-    return true;
-  }  /** 回流候选确认区（组详情顶部）：确认=写入本组（toGlobalMemory=false），
-   *  消化=reject 移出池。回流内容源自资产，确认去向不该再进资产库。 */
-  function _pocRenderBackflowCandidates() {
+
+  /** 来自认知资产的画像条目（正式资产是事实来源，这里只读呈现 + 跳转）。
+   *  分节按关键词现算（与 profile 数据层解耦，条目本身不带 section）。 */
+  function _pocRenderProfileSection() {
+    const entries = _pocProfile.entries || [];
+    if (!entries.length) return '';
+    const sections = _pocProfileSections();
+    const item = (entry) => `<details class="poc-entry"><summary class="poc-entry-clamp">${escapeHtml(_pocTextSnippet(entry.text, 160))}</summary>
+      <div class="poc-entry-full">${escapeHtml(entry.text)}</div>
+      <div class="po2-entry-src">
+        ${_tag(_t('personalOntology.abox_asset_src', '来自认知资产'))}
+        ${_button({ label: _t('personalOntology.po2_open_source_asset', '查看来源资产'), size: 'xs', className: 'o po2-link-btn', attrs: { 'data-poc-value-op': 'open-asset', 'data-poc-gid': '', 'data-poc-asset-id': entry.assetId } })}
+      </div>
+    </details>`;
+    const sectionHtml = sections.map((section) => {
+      if (!section.entries || !section.entries.length) return '';
+      return `<div class="po2-profile-section">
+        <div class="po2-profile-title">${escapeHtml(_t(section.titleKey, section.title))}</div>
+        ${section.entries.map(item).join('')}
+      </div>`;
+    }).join('');
+    const classified = new Set(sections.flatMap((s) => s.entries || []).map((e) => e.assetId + '\u0000' + e.text));
+    const rest = entries.filter((entry) => !classified.has(entry.assetId + '\u0000' + entry.text));
+    return `<section class="po2-group po2-profile-group">
+      <header class="po2-group-head">
+        <span class="po2-group-title">${escapeHtml(_t('personalOntology.po2_profile_title', '来自对话的个人信息'))}</span>
+        <span class="po2-group-count muted">${escapeHtml(_tv('personalOntology.po2_group_count', { n: entries.length }, '{n} 条'))}</span>
+      </header>
+      <div class="po2-group-body">${sectionHtml}
+        ${rest.length ? `<div class="po2-profile-section"><div class="po2-profile-title">${escapeHtml(_t('personalOntology.ontology_other', '其他沉淀'))}</div>${rest.map(item).join('')}</div>` : ''}
+      </div>
+    </section>`;
+  }
+
+  /** 待确认候选横幅（AI 提议 → 用户拍板：收下时选去向）。 */
+  function _pocRenderCandidateBanner() {
     if (!_pocPendingCandidates.length) return '';
-    const rows = _pocPendingCandidates.map((c) => {
-      const text = String((c && c.memory_text) || (c && c.summary) || '').trim();
-      if (!text) return '';
-      const id = String(c.candidate_id || '');
-      return `<div class="personal-onto-backflow-row" data-poc-candidate-id="${escapeHtml(id)}">
-        ${_tag(_t('personalOntology.backflow_chip', '待添加'))}
-        <span class="personal-onto-backflow-text">${escapeHtml(text)}</span>
-        <span class="personal-onto-backflow-actions">
-          ${_pocBoxData.groups.map((g) => _button({ label: _tv('personalOntology.backflow_to', { g: g.title }, '添加到分组：{g}'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-candidate-op': 'confirm', 'data-poc-candidate-id': id, 'data-poc-gid': g.gid } })).join('')}
-          ${_button({ label: _t('personalOntology.backflow_reject', '跳过此条'), size: 'sm', className: 'personal-onto-group-action is-ghost', attrs: { 'data-poc-candidate-op': 'reject', 'data-poc-candidate-id': id } })}
+    const rows = _pocPendingCandidates.map((candidate) => {
+      if (!candidate || !candidate.candidate_id) return '';
+      const text = String(candidate.memory_text || candidate.summary || '').trim();
+      const kindTag = candidate.kind === 'rule' ? _tag(_t('personalOntology.po2_candidate_rule', '规则')) : '';
+      return `<div class="po2-candidate" data-poc-candidate-id="${escapeHtml(candidate.candidate_id)}">
+        <span class="po2-candidate-tag">${_statusPill(_t('personalOntology.po2_candidate_pending', '待确认'), 'warning')}</span>
+        <span class="po2-candidate-text">${escapeHtml(_pocTextSnippet(text || candidate.summary || '', 200))}</span>
+        ${kindTag}
+        <span class="po2-candidate-actions">
+          ${_button({ label: _t('personalOntology.po2_candidate_accept', '收下'), size: 'sm', attrs: { 'data-poc-candidate-op': 'confirm', 'data-poc-candidate-id': candidate.candidate_id } })}
+          ${_button({ label: _t('personalOntology.po2_candidate_skip', '跳过'), size: 'sm', className: 'o', attrs: { 'data-poc-candidate-op': 'reject', 'data-poc-candidate-id': candidate.candidate_id } })}
         </span>
       </div>`;
     }).join('');
-    return `<section class="personal-onto-backflow-zone" aria-label="${escapeHtml(_t('personalOntology.backflow_zone_title', '待添加到个人本体'))}">
-      <div class="personal-onto-field-name">${escapeHtml(_t('personalOntology.backflow_zone_title', '待添加到个人本体'))} <span class="muted">${_pocPendingCandidates.length}</span></div>
+    return `<section class="po2-candidates">
+      <div class="po2-candidates-title">${escapeHtml(_tv('personalOntology.po2_candidates_title', { n: _pocPendingCandidates.length }, 'AI 建议加入个人本体 · {n} 条'))}</div>
       ${rows}
     </section>`;
   }
 
+  // ── 页面一：事实与条目 ──────────────────────────────────────────────────
 
-  // ── 本体分组子页操作（IPC 全部复用既有通道，后端零改动）──────────────
-  async function _pocCreateGroupPrompt() {
-    const title = (typeof uiPrompt === 'function')
-      ? await uiPrompt(_t('personalOntology.group_new_prompt', '分组名称'), '')
-      : null;
-    if (title === null) return;
-    const trimmed = String(title || '').trim();
-    if (!trimmed) return;
-    const res = await _pocInvoke('personalOntology.groups.create', { title: trimmed });
-    if (!res || res.ok === false) {
-      _pocToast('personalOntology.op_failed', (res && res.error) || '操作失败', 'error');
-      return;
-    }
-    await _pocReloadBoxData();
-    _pocToast('personalOntology.group_created', '分组已创建，可在词汇盒维护字段', 'success');
+  function _pocRenderFactsView() {
+    const groups = _pocPoGroups();
+    const filter = _pocFactsFilter;
+    const q = String(filter.q || '').trim().toLowerCase();
+    const matchGroup = (group) => {
+      if (filter.group !== 'all' && group.id !== filter.group) return false;
+      if (!q) return true;
+      const inTitle = String(group.title || '').toLowerCase().includes(q);
+      const inValues = (group.values || []).some((v) => String(v.text || '').toLowerCase().includes(q));
+      const inEntries = (group.entries || []).some((e) => String(e.text || '').toLowerCase().includes(q));
+      return inTitle || inValues || inEntries;
+    };
+    const options = [`<option value="all"${filter.group === 'all' ? ' selected' : ''}>${escapeHtml(_t('personalOntology.po2_filter_all_groups', '全部分组'))}</option>`]
+      .concat(groups.map((g) => `<option value="${escapeHtml(g.id)}"${filter.group === g.id ? ' selected' : ''}>${escapeHtml(g.title)}</option>`));
+    const visible = groups.filter(matchGroup);
+    const groupBlocks = visible.map((g) => _pocRenderGroupBlock(g)).join('');
+    return `<div class="po2-view">
+      ${_pocRenderCandidateBanner()}
+      <div class="po2-toolbar">
+        <select class="po2-select" data-poc-facts-group-filter aria-label="filter">${options.join('')}</select>
+        <input type="search" class="po2-search po2-input" data-poc-facts-q value="${escapeHtml(filter.q || '')}" placeholder="${escapeHtml(_t('personalOntology.po2_search_placeholder', '搜索事实…'))}" aria-label="search">
+        ${_button({ label: _t('personalOntology.po2_compose_value', '记一条'), icon: 'plus', size: 'sm', attrs: { 'data-poc-op': 'compose-value' } })}
+      </div>
+      ${_pocRenderProfileSection()}
+      ${groupBlocks}
+      ${!visible.length ? `<div class="po2-empty">${_emptyState({
+        kind: 'actionable',
+        title: q || filter.group !== 'all'
+          ? _t('personalOntology.po2_filter_empty', '没有匹配的事实')
+          : _t('personalOntology.po2_facts_empty', '个人本体还是空的。点「记一条」写下第一件想让 AI 记住的事，或到「分组与模板」装一个角色模板开始。'),
+        icon: 'user',
+        action: (q || filter.group !== 'all') ? undefined : { label: _t('personalOntology.po2_compose_value', '记一条'), icon: 'plus', size: 'sm', attrs: { 'data-poc-op': 'compose-value' } },
+      })}</div>` : ''}
+    </div>`;
   }
 
-  async function _pocRenameGroupPrompt(gid) {
-    const meta = _pocGroups.list.find((g) => g.group_id === gid);
-    if (!meta) return;
-    const title = (typeof uiPrompt === 'function')
-      ? await uiPrompt(_t('personalOntology.group_new_prompt', '分组名称'), meta.title || gid)
-      : null;
-    if (title === null) return;
-    const trimmed = String(title || '').trim();
-    if (!trimmed) return;
-    const res = await _pocInvoke('personalOntology.groups.rename', { groupId: gid, title: trimmed });
-    if (!res || res.ok === false) {
-      _pocToast('personalOntology.op_failed', (res && res.error) || '操作失败', 'error');
-      return;
-    }
-    await _pocReloadBoxData();
-    _pocRenderNav();
-    _pocBindNav();
-    _pocRenderMain();
+  // ── 页面二：规则 ────────────────────────────────────────────────────────
+
+  /** 规则清单行。 */
+  function _pocRenderRuleRow(group, field, value) {
+    const kindLabels = { operation: 'rulekind_operation', preference: 'rulekind_preference', constraint: 'rulekind_constraint' };
+    const kindTag = value.ruleKind
+      ? _tag(_t(`personalOntology.${kindLabels[value.ruleKind]}`, ''))
+      : _statusPill(_t('personalOntology.po2_kind_none_short', '未分类'), 'warning');
+    const where = `${group.title} · ${field.name}`;
+    const restricted = value.restricted ? _statusPill(_t('personalOntology.po2_restricted', '仅自己可见'), 'warning') : '';
+    const assetBtn = value.assetId
+      ? _button({ label: _t('personalOntology.po2_open_source_asset', '查看来源资产'), size: 'xs', className: 'o po2-link-btn', attrs: { 'data-poc-value-op': 'open-asset', 'data-poc-gid': group.id, 'data-poc-asset-id': value.assetId } })
+      : _pocValueMenuHtml(group.id, field, value);
+    return `<div class="po2-rule-row" data-poc-value-id="${escapeHtml(value.id)}">
+      <span class="po2-rule-where">${escapeHtml(where)}</span>
+      <span class="po2-rule-text">${escapeHtml(value.text)}</span>
+      ${kindTag}${restricted}
+      ${assetBtn}
+    </div>`;
   }
 
-  async function _pocDeleteGroupConfirm(gid) {
-    if (!gid) return;
-    // US-102 T022 + T027（D5b）：如实说明后果（分组文件删除）与恢复路径
-    //（删前快照留档在本机，T021 保证），并指向「已删除分组」恢复入口。
-    const confirmMsg = _t('personalOntology.group_delete_confirm', '删除后分组文件（含全部字段与流水）将被删除；删除前的历史快照保留在本机，可在词汇盒「已删除分组」入口恢复。');
-    const ok = (typeof uiConfirmDanger === 'function')
-      ? await uiConfirmDanger({
-        title: _t('personalOntology.group_delete', '删除分组'),
-        message: confirmMsg,
-        dangerLabel: _t('personalOntology.group_delete', '删除分组'),
-      })
-      : (typeof uiConfirm === 'function' ? await uiConfirm({ message: confirmMsg }) : true);
-    if (!ok) return;
-    const res = await _pocInvoke('personalOntology.groups.delete', { groupId: gid });
-    if (!res || res.ok === false) {
-      _pocToast('personalOntology.op_failed', (res && res.error) || '操作失败', 'error');
-      return;
-    }
-    // 组已从台账消失：分组列表缓存必须失效重读，否则已删的组卡残留（幽灵卡）。
-    _pocGroups = { list: [], loaded: false, loadError: '' };
-    await _pocReloadBoxData();
-    renderPersonalOntology();
-  }
-
-  // ── 已删除分组（D5b / spec 009 T027）：折叠入口 + 恢复 ──────────────────
-  // 数据来源是 deleteGroup 刻意保留的 .history/<groupId>/（删前快照 + 台账）；
-  // 恢复复用既有 history.restore 通道——主进程在 meta 缺失分支重建组（T025）。
-
-  /** 拉「已删除分组」列表（展开时 / 恢复后刷新）。失败可见：loadError 在
-   *  打开态里呈现，不静默吞（禁 .catch(() => {}) 式静默）。 */
-  async function _pocLoadDeletedGroups() {
-    const res = await _pocInvoke('personalOntology.groups.deleted.list', {});
-    if (!res || res.ok === false || !Array.isArray(res.deleted)) {
-      _pocDeletedGroups = {
-        open: true,
-        loaded: true,
-        loadError: (res && res.error) || _t('personalOntology.load_error', '加载失败'),
-        list: [],
-      };
-      return false;
-    }
-    _pocDeletedGroups = { open: true, loaded: true, loadError: '', list: res.deleted };
-    return true;
-  }
-
-  /** 折叠开关：收起就地；展开用已拉到的列表，首次展开才发请求。 */
-  async function _pocToggleDeletedGroups() {
-    if (_pocDeletedGroups.open) {
-      _pocDeletedGroups = { ..._pocDeletedGroups, open: false };
-    } else if (_pocDeletedGroups.loaded) {
-      _pocDeletedGroups = { ..._pocDeletedGroups, open: true };
-    } else {
-      await _pocLoadDeletedGroups();
-    }
-    _pocRenderMain();
-  }
-
-  /** 恢复一个已删除分组：history.list 取最新一版（= 删除前最后一版）的
-   *  snapshotId → 复用 history.restore（主进程重建 meta 后写回快照）。
-   *  成功的反馈就是分组卡回到列表、该行从已删除列表消失；失败必须可见。 */
-  async function _pocRestoreDeletedGroup(el, gid) {
-    if (!gid) return;
-    await _pocRunOnce(`deleted-restore:${gid}`, el, async () => {
-      const histRes = await _pocInvoke('personalOntology.groups.history.list', { groupId: gid });
-      const newest = histRes && Array.isArray(histRes.history) && histRes.history.length
-        ? histRes.history[0] // 新→旧排序：[0] 即删除前最后一版
-        : null;
-      if (!newest || !newest.id) {
-        _pocToast('personalOntology.op_failed', '操作失败', 'error');
-        return;
+  function _pocRenderRulesView() {
+    const groups = _pocPoGroups();
+    const fieldById = new Map();
+    for (const g of groups) for (const f of g.fields) fieldById.set(f.id, f);
+    const rows = [];
+    for (const g of groups) {
+      for (const v of g.values || []) {
+        const field = fieldById.get(v.fieldId);
+        if (!_pocRuleShaped(field, v)) continue;
+        rows.push({ group: g, field, value: v });
       }
-      const res = await _pocInvoke('personalOntology.groups.history.restore', {
-        groupId: gid, snapshotId: String(newest.id),
-      });
-      if (!res || res.ok === false) {
-        // 失败按码可见（同名冲突 = 唯一新增码 group already exists，走同一
-        // 条 op_failed 通道；文案四语预算只给 D5b 三键，不另立词条）。
-        _pocToast('personalOntology.op_failed', (res && res.error) || '操作失败', 'error');
-        return;
-      }
-      // 组回到台账：分组列表缓存必须失效重读，否则恢复的组不出现（幽灵反向）。
-      _pocGroups = { list: [], loaded: false, loadError: '' };
-      await _pocReloadBoxData();
-      await _pocLoadDeletedGroups(); // 已删除列表刷新（该组已不在其中）
-      _pocRenderNav();
-      _pocBindNav();
-      _pocRenderMain(); // 折叠块已换新列表，主区要跟着重渲染一次
-    });
+    }
+    const filter = _pocRuleFilter;
+    const countBy = { all: rows.length, operation: 0, preference: 0, constraint: 0, none: 0 };
+    for (const row of rows) {
+      if (row.value.ruleKind) countBy[row.value.ruleKind] += 1;
+      else countBy.none += 1;
+    }
+    const chip = (key, labelKey, fallback, n) =>
+      _button({ label: `${_t(labelKey, fallback)} ${n}`, size: 'sm', className: `personal-onto-filter-chip${filter === key ? ' is-active' : ''}`, attrs: { 'data-poc-rule-filter': key, 'aria-pressed': String(filter === key) } });
+    const visible = rows.filter((row) => filter === 'all' || (filter === 'none' ? !row.value.ruleKind : row.value.ruleKind === filter));
+    const ruleAssets = (_pocBoxData.assets || []).filter((a) => a.type === 'rule');
+    return `<div class="po2-view">
+      <div class="po2-toolbar">
+        <div class="po2-chips">
+          ${chip('all', 'personalOntology.tribox_filter_all', '全部', countBy.all)}
+          ${chip('operation', 'personalOntology.rulekind_operation', '操作规则', countBy.operation)}
+          ${chip('preference', 'personalOntology.rulekind_preference', '偏好', countBy.preference)}
+          ${chip('constraint', 'personalOntology.rulekind_constraint', '约束', countBy.constraint)}
+          ${chip('none', 'personalOntology.po2_kind_none_short', '未分类', countBy.none)}
+        </div>
+        ${_button({ label: _t('personalOntology.po2_compose_rule', '加规则'), icon: 'plus', size: 'sm', attrs: { 'data-poc-op': 'compose-rule' } })}
+      </div>
+      ${visible.length ? visible.map((row) => _pocRenderRuleRow(row.group, row.field, row.value)).join('') : `<div class="po2-empty">${_emptyState({
+        kind: 'actionable',
+        title: rows.length
+          ? _t('personalOntology.po2_rules_filter_empty', '这个分类下还没有规则')
+          : _t('personalOntology.po2_rules_empty', '还没有规则。写一条「A → B」形状的规则（如「回复长任务 → 先给分段结论」），AI 会照着做。'),
+        icon: 'terminal',
+        action: rows.length ? undefined : { label: _t('personalOntology.po2_compose_rule', '加规则'), icon: 'plus', size: 'sm', attrs: { 'data-poc-op': 'compose-rule' } },
+      })}</div>`}
+      ${ruleAssets.length ? `<section class="po2-group po2-rule-assets">
+        <header class="po2-group-head"><span class="po2-group-title">${escapeHtml(_t('personalOntology.po2_rule_assets_title', '来自认知资产的规则'))}</span>
+          <span class="po2-group-count muted">${escapeHtml(_tv('personalOntology.po2_group_count', { n: ruleAssets.length }, '{n} 条'))}</span></header>
+        <div class="po2-group-body">
+          ${ruleAssets.map((asset) => `<div class="po2-rule-row">
+            <span class="po2-rule-text">${escapeHtml(_pocTextSnippet(asset.statement || asset.title || '', 220))}</span>
+            ${_button({ label: _t('personalOntology.po2_open_source_asset', '查看来源资产'), size: 'xs', className: 'o po2-link-btn', attrs: { 'data-poc-value-op': 'open-asset', 'data-poc-gid': '', 'data-poc-asset-id': asset.id } })}
+          </div>`).join('')}
+        </div>
+      </section>` : ''}
+    </div>`;
   }
 
-  async function _pocAppendValuePrompt(fieldName, gid) {
-    if (!gid) return;
-    const value = (typeof uiPrompt === 'function')
-      ? await uiPrompt(`${_t('personalOntology.value_add', '添加值')} · ${fieldName}`, '')
-      : null;
-    if (value === null) return;
-    const trimmed = String(value || '').trim();
-    if (!trimmed) return;
-    const res = await _pocInvoke('personalOntology.groups.fields.append', {
-      groupId: gid, fieldName, value: trimmed, source: '手动',
-    });
-    if (!res || res.ok === false) {
-      _pocToast('personalOntology.op_failed', _pocOperationErrorText((res && res.error) || ''), 'error');
-      return;
-    }
-    // 关系值形状提示（spec 007 T103）：A → B 形状的值保存即成规则，读取侧
-    // ontology-rules 自动解析进世界模型——用户第一次有 R 盒的界面入口。
-    if (/→|->/.test(trimmed)) {
-      _pocToast('personalOntology.rule_saved', '已按规则保存（A → B）：将作为规则进入世界模型', 'success');
-    }
-    await _pocReloadBoxData();
+  // ── 页面三：分组与模板 ──────────────────────────────────────────────────
+
+  function _pocRenderDeletedGroupsHtml() {
+    const deleted = (_pocPo.snapshot && _pocPo.snapshot.deleted) || [];
+    if (!deleted.length) return '';
+    const rows = deleted.map((d) => `<div class="po2-deleted-row">
+      <span class="po2-deleted-title">${escapeHtml(d.title)}</span>
+      <span class="muted">${escapeHtml(d.deletedAt || '')}</span>
+      ${_button({ label: _t('personalOntology.po2_restore_group', '恢复'), size: 'xs', className: 'o', attrs: { 'data-poc-deleted-op': 'restore', 'data-poc-gid': d.groupId } })}
+    </div>`).join('');
+    return `<details class="po2-deleted">
+      <summary class="po2-deleted-summary">${escapeHtml(_tv('personalOntology.po2_deleted_title', { n: deleted.length }, '已删除分组 · {n}'))}</summary>
+      <div class="po2-deleted-body">${rows}</div>
+    </details>`;
   }
 
-  async function _pocAddFieldPrompt(gid) {
-    if (!gid) return;
-    const fieldName = (typeof uiPrompt === 'function')
-      ? await uiPrompt(_t('personalOntology.field_name_prompt', '字段名（如：居住地 / 就读状态）· 值可写 A → B 成为规则'), '')
-      : null;
-    if (fieldName === null) return;
-    const trimmedName = String(fieldName || '').trim();
-    if (!trimmedName) return;
-    const value = (typeof uiPrompt === 'function')
-      ? await uiPrompt(_t('personalOntology.value_add', '添加值'), '')
-      : null;
-    if (value === null) return;
-    const trimmedValue = String(value || '').trim();
-    if (!trimmedValue) return;
-    const res = await _pocInvoke('personalOntology.groups.fields.append', {
-      groupId: gid, fieldName: trimmedName, value: trimmedValue, source: '手动',
-    });
-    if (!res || res.ok === false) {
-      _pocToast('personalOntology.op_failed', (res && res.error) || '操作失败', 'error');
-      return;
-    }
-    await _pocReloadBoxData();
+  function _pocRenderGroupsView() {
+    const groups = _pocPoGroups();
+    const userGroups = groups.filter((g) => g.kind === 'user');
+    const templates = _pocTemplates.filter((t) => t.installed && t.group_id);
+    const groupCards = userGroups.map((g) => {
+      const fieldCount = (g.fields || []).length;
+      const valueCount = (g.values || []).length;
+      return `<section class="po2-group-card" data-poc-gid="${escapeHtml(g.id)}">
+        <header class="po2-group-card-head">
+          <span class="po2-group-title">${escapeHtml(g.title)}</span>
+          <span class="muted">${escapeHtml(_tv('personalOntology.po2_group_card_meta', { fields: fieldCount, values: valueCount }, '{fields} 个字段 · {values} 条'))}</span>
+          <span class="po2-group-actions">
+            ${_button({ label: _t('personalOntology.po2_add_field', '新字段'), size: 'xs', className: 'o', attrs: { 'data-poc-group-op': 'add-field', 'data-poc-gid': g.id } })}
+            <details class="po2-menu"><summary class="po2-menu-trigger po2-menu-trigger-plain" aria-label="menu">${_icon('more-horizontal', 'ui-icon')}</summary><div class="po2-menu-list">
+              ${_button({ label: _t('personalOntology.po2_rename_group', '重命名分组'), size: 'xs', className: 'po2-menu-item', attrs: { 'data-poc-group-op': 'rename', 'data-poc-gid': g.id } })}
+              ${_button({ label: _t('personalOntology.po2_history', '历史版本'), size: 'xs', className: 'po2-menu-item', attrs: { 'data-poc-group-op': 'history', 'data-poc-gid': g.id } })}
+              <div class="po2-menu-sep"></div>
+              ${_button({ label: _t('personalOntology.po2_delete_group', '删除分组'), size: 'xs', className: 'po2-menu-item is-danger', attrs: { 'data-poc-group-op': 'delete', 'data-poc-gid': g.id } })}
+            </div></details>
+          </span>
+        </header>
+        <div class="po2-group-card-body">
+          ${(g.fields || []).length ? (g.fields || []).map((f) => `<div class="po2-field-line">
+            <span class="po2-field-name">${escapeHtml(f.name)}</span>
+            ${f.isRelation ? _tag(_t('personalOntology.po2_relation_tag', '关系')) : ''}
+            <span class="muted">${escapeHtml(_tv('personalOntology.po2_field_value_count', { n: (f.valueIds || []).length }, '{n} 条'))}</span>
+          </div>`).join('') : `<div class="po2-value-empty muted">${escapeHtml(_t('personalOntology.po2_group_no_fields', '还没有字段，点「新字段」创建'))}</div>`}
+        </div>
+      </section>`;
+    }).join('');
+    const templateRows = templates.map((t) => `<div class="po2-template-row" data-poc-template-id="${escapeHtml(t.template_id)}">
+      <button type="button" class="personal-onto-nav-row is-file" data-poc-nav="template" data-poc-id="${escapeHtml(t.group_id)}">
+        <span class="personal-onto-nav-file-icon">${_icon('package', 'ui-icon')}</span>
+        <span class="personal-onto-nav-row-text is-stacked"><span class="personal-onto-nav-row-name">${escapeHtml(t.name)}</span><span class="personal-onto-nav-row-sub">${escapeHtml(_tv('personalOntology.po2_template_version', { v: t.installed_version || t.version }, '版本 {v}'))}</span></span>
+      </button>
+      ${_iconButton({ icon: 'trash', label: _t('personalOntology.po2_uninstall_template', '卸载模板'), variant: 'danger', className: 'personal-onto-template-uninstall', size: 'sm', attrs: { 'data-poc-nav': 'template-uninstall', 'data-poc-template-id': t.template_id } })}
+    </div>`).join('');
+    return `<div class="po2-view">
+      <div class="po2-toolbar">
+        ${_button({ label: _t('personalOntology.po2_create_group', '新建分组'), icon: 'plus', size: 'sm', attrs: { 'data-poc-op': 'new-group' } })}
+        <span class="po2-toolbar-hint muted">${escapeHtml(_t('personalOntology.po2_groups_hint', '分组是事实的抽屉；角色模板是现成的表格。'))}</span>
+      </div>
+      ${groupCards}
+      ${!userGroups.length ? `<div class="po2-empty">${_emptyState({
+        kind: 'actionable',
+        title: _t('personalOntology.po2_groups_empty', '还没有自己的分组。新建一个，或从下面的模板库装一个现成表格。'),
+        icon: 'folder',
+        action: { label: _t('personalOntology.po2_create_group', '新建分组'), icon: 'plus', size: 'sm', attrs: { 'data-poc-op': 'new-group' } },
+      })}</div>` : ''}
+      ${_pocRenderDeletedGroupsHtml()}
+      <section class="po2-group po2-templates">
+        <header class="po2-group-head">
+          <span class="po2-group-title">${escapeHtml(_t('personalOntology.po2_templates_title', '角色模板'))}</span>
+          <span class="po2-group-actions">${_button({ label: _t('personalOntology.template_library', '角色模板库'), size: 'sm', className: 'o personal-onto-template-library-btn', attrs: { 'data-poc-op': 'template-library' } })}</span>
+        </header>
+        <div class="po2-group-body">
+          ${templateRows || `<div class="po2-value-empty muted">${escapeHtml(_t('personalOntology.dest_no_roles', '尚未安装角色模板，可在「角色模板库」中安装'))}</div>`}
+        </div>
+      </section>
+    </div>`;
   }
 
-  /** US-101 条目级编辑 + US-901 时间锚录入口（specs/014 T009）：共享弹层
-   *  （uiModal + uiField）双字段——值（必填，预填原值）+「信息截至时间」
-   *  （可选，预填既有 asOf）。B1① 的分开表达：时间栏没动 = 保留（不发 asOf）；
-   *  清空 = 显式删除（clearAsOf:true）；改了 = 设置。非法格式就地提示、不发
-   *  请求；空值/与原值相同仍走 009 的既有短路口径。 */
-  async function _pocEditValuePrompt(fieldName, value, gid, currentAsOf) {
-    if (!gid) return;
-    const oldValue = String(value || '');
-    const existingAsOf = String(currentAsOf || '');
-    if (typeof window.uiModal !== 'function') {
-      // 极简上下文（无弹层原语）退回 009 的单字段形态——能力降级，不是死路。
-      const next = (typeof uiPrompt === 'function')
-        ? await uiPrompt(_t('personalOntology.value_edit_tip', '编辑这条值'), oldValue)
-        : null;
-      if (next === null) return; // 用户取消不是失败，不报错（与 append/remove 同口径）
-      const trimmed = String(next || '').trim();
-      if (!trimmed) {
-        _pocToast('personalOntology.value_empty_error', '值不能为空，未保存', 'error');
-        return;
-      }
-      if (trimmed === oldValue) {
-        _pocToast('personalOntology.value_unchanged_hint', '内容没有变化', 'info');
-        return;
-      }
-      if (await _pocGroupAction('personalOntology.groups.fields.setValue', { groupId: gid, fieldName, value: trimmed, oldValue })) {
-        _pocToast('personalOntology.field_value_updated', '已更新');
-        await _pocReloadBoxData();
-      }
-      return;
-    }
-    const valueId = `poc-edit-value-${gid}`;
-    const asOfId = `poc-edit-asof-${gid}`;
-    const fieldHtml = (id, label, inputValue, hint) => (typeof window.uiField === 'function'
-      ? window.uiField({ id, label, ...(hint ? { hint } : {}), control: { id, value: inputValue, ...(id === asOfId ? { placeholder: 'YYYY-MM' } : {}) } })
-      : `<label class="field"><span>${escapeHtml(label)}</span>${_input({ id, value: inputValue, ...(id === asOfId ? { attrs: { placeholder: 'YYYY-MM' } } : {}) })}</label>`);
-    const dialog = await window.uiModal({
-      title: _t('personalOntology.value_edit_tip', '编辑这条值'),
+  // ── 候选池加载 ──────────────────────────────────────────────────────────
+
+  async function _pocLoadPendingCandidates() {
+    const res = await _pocInvoke('personalOntology.candidates.list', {});
+    _pocPendingCandidates = res && Array.isArray(res.candidate_updates) ? res.candidate_updates.filter((c) => c && c.candidate_id) : [];
+    _pocCandidatesLoaded = true;
+  }
+
+  // ── 弹层表单小助手（uiModal 契约：actions 返回 {value}，字段按 id 取值）──
+
+  async function _pocModalForm({ title, bodyHtml, actions, submitLabel }) {
+    if (typeof window.uiModal !== 'function') return null;
+    return window.uiModal({
+      title,
       closeLabel: _t('personalOntology.dialog_close', '关闭'),
-      bodyHtml: `<div class="personal-onto-edit-fields">
-        ${fieldHtml(valueId, _t('personalOntology.value_edit_field_label', '值'), oldValue)}
-        ${fieldHtml(asOfId, _t('personalOntology.value_edit_asof_label', '信息截至时间（可选）'), existingAsOf, _t('personalOntology.value_edit_asof_hint', '格式 YYYY-MM；清空并保存 = 删除时间标注；不动 = 保留'))}
-      </div>`,
-      actions: [
+      bodyHtml,
+      actions: actions || [
         { label: _t('common.cancel', '取消'), id: 'cancel', role: 'secondary' },
-        { label: _t('personalOntology.value_edit_save', '保存'), id: 'save', role: 'primary' },
+        { label: submitLabel || _t('common.confirm', '确定'), id: 'save', role: 'primary' },
       ],
     });
-    if (!dialog || dialog.value !== 'save') return; // 取消不是失败，不报错
-    const valueEl = document.getElementById(valueId);
-    const asOfEl = document.getElementById(asOfId);
-    const trimmed = String((valueEl && valueEl.value) || '').trim();
-    const nextAsOf = String((asOfEl && asOfEl.value) || '').trim();
-    if (!trimmed) {
-      _pocToast('personalOntology.value_empty_error', '值不能为空，未保存', 'error');
-      return;
-    }
-    if (trimmed === oldValue && nextAsOf === existingAsOf) {
-      _pocToast('personalOntology.value_unchanged_hint', '内容没有变化', 'info');
-      return;
-    }
-    // 提交前格式预校验（M11 口径）：非法就地提示，不发请求。
-    if (nextAsOf && !/^((?:19|20)\d{2})-(0[1-9]|1[0-2])$/.test(nextAsOf)) {
-      _pocToast('personalOntology.asof_invalid_error', '时间格式应为 YYYY-MM（如 2026-09），未保存', 'error');
-      return;
-    }
-    // B1① 分开表达：没动时间栏 = 不发 asOf/clearAsOf；清空 = clearAsOf；改了 = asOf。
-    const payload = { groupId: gid, fieldName, value: trimmed, oldValue };
-    if (nextAsOf !== existingAsOf) {
-      if (nextAsOf) payload.asOf = nextAsOf;
-      else payload.clearAsOf = true;
-    }
-    if (await _pocGroupAction('personalOntology.groups.fields.setValue', payload)) {
-      _pocToast('personalOntology.field_value_updated', '已更新');
-      await _pocReloadBoxData();
-    }
   }
 
-  async function _pocRemoveValue(fieldName, value, gid) {
-    if (!gid) return;
-    const res = await _pocInvoke('personalOntology.groups.fields.removeValue', {
-      groupId: gid, fieldName, value,
+  function _checkbox(options) {
+    if (typeof window.uiCheckbox === 'function') return window.uiCheckbox(options);
+    throw new Error('personal ontology requires uiCheckbox');
+  }
+
+  function _pocFieldText(id, label, value, opts = {}) {
+    if (typeof window.uiField === 'function') {
+      return window.uiField({ id, label, ...(opts.hint ? { hint: opts.hint } : {}), control: { id, value: value || '', ...(opts.placeholder ? { attrs: { placeholder: opts.placeholder } } : {}) } });
+    }
+    return `<label class="field"><span>${escapeHtml(label)}</span>${_input({ id, value: value || '', ...(opts.placeholder ? { attrs: { placeholder: opts.placeholder } } : {}) })}</label>`;
+  }
+
+  function _pocFieldTextarea(id, label, value, opts = {}) {
+    if (typeof window.uiField === 'function') {
+      return window.uiField({ id, label, ...(opts.hint ? { hint: opts.hint } : {}), control: { kind: 'textarea', id, value: value || '', rows: opts.rows || 3 } });
+    }
+    return `<label class="field"><span>${escapeHtml(label)}</span>${_textarea({ id, value: value || '', rows: opts.rows || 3 })}</label>`;
+  }
+
+  function _pocFieldSelect(id, label, options, value, opts = {}) {
+    const optionHtml = options.map((opt) => `<option value="${escapeHtml(opt.value)}"${opt.value === value ? ' selected' : ''}${opt.disabled ? ' disabled' : ''}>${escapeHtml(opt.label)}</option>`).join('');
+    return `<label class="field po2-field-wrap"><span>${escapeHtml(label)}</span><select id="${escapeHtml(id)}" class="po2-select">${optionHtml}</select>${opts.hint ? `<span class="po2-field-hint muted">${escapeHtml(opts.hint)}</span>` : ''}</label>`;
+  }
+
+  /** 变更后的统一刷新：重拉快照与盒数据（保持页面与选中态）。 */
+  async function _pocReloadPo() {
+    _pocPo = { snapshot: null, loaded: false, loadError: '' };
+    _pocBoxData = { loaded: false, loadError: '', groups: [], assets: [], sourceAssets: [], conflicts: [], graph: _pocBoxData.graph };
+    await renderPersonalOntology();
+  }
+
+  // ── 组操作 ──────────────────────────────────────────────────────────────
+
+  async function _pocCreateGroupPrompt() {
+    const id = 'po2-new-group-title';
+    const dialog = await _pocModalForm({
+      title: _t('personalOntology.po2_create_group', '新建分组'),
+      bodyHtml: _pocFieldText(id, _t('personalOntology.po2_group_name_label', '分组名'), '', { placeholder: _t('personalOntology.po2_group_name_placeholder', '如：工作偏好 / 项目 / 习惯') }),
     });
-    if (!res || res.ok === false) {
-      _pocToast('personalOntology.op_failed', (res && res.error) || '操作失败', 'error');
+    if (!dialog || dialog.value !== 'save') return;
+    const title = String((document.getElementById(id) || {}).value || '').trim();
+    if (!title) {
+      _pocToast('personalOntology.po2_name_required', '名称不能为空', 'error');
       return;
     }
-    // 矛盾台账自愈在下次读取发生；值删掉后红标随重载消失。
-    await _pocReloadBoxData();
+    const res = await _pocInvoke('po.groups.create', { title });
+    if (!res || res.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
+      return;
+    }
+    _pocToast('personalOntology.po2_group_created', '分组已创建', 'success');
+    await _pocReloadPo();
   }
 
-  /** 台账动作可读化（US-102 T023）：已知枚举走四语词条（内联「键+中文兜底」
-   *  写法让 i18n 覆盖门禁可扫）；未知 action 原样显示（如实呈现，不臆造标签）。
-   *  枚举对齐主进程 appendOntologyAudit 调用集。 */
-  const _POC_AUDIT_ACTIONS = {
-    value_add: ['personalOntology.history_audit_action_value_add', '添加值'],
-    value_edit: ['personalOntology.history_audit_action_value_edit', '编辑值'],
-    value_remove: ['personalOntology.history_audit_action_value_remove', '删除值'],
-    field_remove: ['personalOntology.history_audit_action_field_remove', '删除字段'],
-    entry_promote: ['personalOntology.history_audit_action_entry_promote', '流水升格'],
-    group_rename: ['personalOntology.history_audit_action_group_rename', '重命名分组'],
-    group_delete: ['personalOntology.history_audit_action_group_delete', '删除分组'],
-    snapshot_restore: ['personalOntology.history_audit_action_snapshot_restore', '恢复快照'],
-  };
+  async function _pocRenameGroupPromptV2(gid) {
+    const group = _pocPoGroupById(gid);
+    if (!group) return;
+    const id = 'po2-rename-group-title';
+    const dialog = await _pocModalForm({
+      title: _t('personalOntology.po2_rename_group', '重命名分组'),
+      bodyHtml: _pocFieldText(id, _t('personalOntology.po2_group_name_label', '分组名'), group.title),
+    });
+    if (!dialog || dialog.value !== 'save') return;
+    const title = String((document.getElementById(id) || {}).value || '').trim();
+    if (!title || title === group.title) return;
+    const res = await _pocInvoke('po.groups.rename', { groupId: gid, title });
+    if (!res || res.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
+      return;
+    }
+    await _pocReloadPo();
+  }
 
-  /** 历史版旁的台账摘要行（US-102 T023）：「谁 · 何时 · 改的哪个字段」。
-   *  audit 是 history.list 的可选附加字段（取不到不带键）——没有台账的
-   *  版本返回空串，**不渲染空行**；history[] 既有字段零改动。 */
+  async function _pocDeleteGroupConfirmV2(gid) {
+    const group = _pocPoGroupById(gid);
+    if (!group) return;
+    const confirmed = typeof uiConfirmDanger === 'function'
+      ? await uiConfirmDanger({
+        title: _t('personalOntology.po2_delete_group', '删除分组'),
+        message: _tv('personalOntology.po2_delete_group_confirm', { title: group.title }, `删除「${group.title}」？分组内全部字段与值会进「已删除分组」，可恢复。`),
+        dangerLabel: _t('common.delete', '删除'),
+      })
+      : typeof uiConfirm === 'function' ? await uiConfirm({ message: _t('personalOntology.po2_delete_group_confirm', '删除这个分组？') }) : false;
+    if (!confirmed) return;
+    const res = await _pocInvoke('po.groups.delete', { groupId: gid });
+    if (!res || res.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
+      return;
+    }
+    _pocToast('personalOntology.po2_group_deleted', '已删除（可恢复）', 'success');
+    await _pocReloadPo();
+  }
+
+  async function _pocRestoreDeletedGroupV2(el, gid) {
+    const res = await _pocRunOnce(`po-restore:${gid}`, el, () => _pocInvoke('po.groups.restore', { groupId: gid }));
+    if (!res || res.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
+      return;
+    }
+    _pocToast('personalOntology.po2_group_restored', '已恢复', 'success');
+    await _pocReloadPo();
+  }
+
+  // ── 字段操作 ────────────────────────────────────────────────────────────
+
+  async function _pocAddFieldPromptV2(gid, section) {
+    const group = _pocPoGroupById(gid);
+    if (!group) return;
+    const nameId = 'po2-add-field-name';
+    const relId = 'po2-add-field-relation';
+    const dialog = await _pocModalForm({
+      title: _t('personalOntology.po2_add_field', '新字段'),
+      bodyHtml: `${_pocFieldText(nameId, _t('personalOntology.po2_field_name_label', '字段名'), '', { placeholder: _t('personalOntology.po2_field_name_placeholder', '如：常用工具 / 汇报关系') })}
+        <label class="field po2-field-wrap"><span>${escapeHtml(_t('personalOntology.po2_relation_field_label', '关系字段'))}</span>${_checkbox({ id: relId, label: _t('personalOntology.po2_relation_field_label', '关系字段'), className: 'po2-checkbox' })}<span class="po2-field-hint muted">${escapeHtml(_t('personalOntology.po2_relation_field_hint', '值形如「A → B」，会按规则进入世界模型'))}</span></label>`,
+    });
+    if (!dialog || dialog.value !== 'save') return;
+    const name = String((document.getElementById(nameId) || {}).value || '').trim();
+    if (!name) {
+      _pocToast('personalOntology.po2_name_required', '名称不能为空', 'error');
+      return;
+    }
+    const isRelation = (document.getElementById(relId) || {}).checked === true;
+    const res = await _pocInvoke('po.fields.create', { groupId: gid, name, isRelation, ...(section ? { section } : {}) });
+    if (!res || res.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
+      return;
+    }
+    await _pocReloadPo();
+  }
+
+  async function _pocRenameFieldPromptV2(gid, fieldId) {
+    const group = _pocPoGroupById(gid);
+    const field = group && (group.fields || []).find((f) => f.id === fieldId);
+    if (!field) return;
+    const id = 'po2-rename-field-name';
+    const dialog = await _pocModalForm({
+      title: _t('personalOntology.po2_rename_field', '重命名字段'),
+      bodyHtml: _pocFieldText(id, _t('personalOntology.po2_field_name_label', '字段名'), field.name),
+    });
+    if (!dialog || dialog.value !== 'save') return;
+    const name = String((document.getElementById(id) || {}).value || '').trim();
+    if (!name || name === field.name) return;
+    const res = await _pocInvoke('po.fields.rename', { groupId: gid, fieldId, name });
+    if (!res || res.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
+      return;
+    }
+    await _pocReloadPo();
+  }
+
+  async function _pocToggleFieldRelationV2(gid, fieldId) {
+    const group = _pocPoGroupById(gid);
+    const field = group && (group.fields || []).find((f) => f.id === fieldId);
+    if (!field) return;
+    const res = await _pocInvoke('po.fields.setRelation', { groupId: gid, fieldId, isRelation: !field.isRelation });
+    if (!res || res.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
+      return;
+    }
+    await _pocReloadPo();
+  }
+
+  async function _pocDeleteFieldConfirmV2(gid, fieldId) {
+    const group = _pocPoGroupById(gid);
+    const field = group && (group.fields || []).find((f) => f.id === fieldId);
+    if (!field) return;
+    const confirmed = typeof uiConfirmDanger === 'function'
+      ? await uiConfirmDanger({
+        title: _t('personalOntology.po2_delete_field', '删除字段'),
+        message: _tv('personalOntology.po2_delete_field_confirm', { name: field.name }, `删除字段「${field.name}」及其全部值？`),
+        dangerLabel: _t('common.delete', '删除'),
+      })
+      : false;
+    if (!confirmed) return;
+    const res = await _pocInvoke('po.fields.delete', { groupId: gid, fieldId });
+    if (!res || res.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
+      return;
+    }
+    await _pocReloadPo();
+  }
+
+  // ── 值操作 ──────────────────────────────────────────────────────────────
+
+  /** 目标字段选择数据：分组下拉 → 字段下拉（联动用 data 属性静态联动，简单二列）。 */
+  function _pocDestinationOptions() {
+    const groups = _pocPoGroups();
+    return groups.map((g) => ({
+      value: g.id,
+      label: g.title,
+      fields: (g.fields || []).filter((f) => f.status !== 'retired').map((f) => ({ value: f.id, label: f.name + (f.section ? ` · ${f.section}` : '') })),
+    }));
+  }
+
+  /** 记一条（可选预选组/字段；规则走独立入口带分类）。 */
+  async function _pocComposeValuePrompt(presetGid, presetFieldId, presetKind) {
+    const dests = _pocDestinationOptions();
+    if (!dests.length) {
+      _pocToast('personalOntology.po2_need_group_first', '先到「分组与模板」建一个分组（或装一个角色模板）', 'error');
+      return;
+    }
+    const gid = presetGid || dests[0].value;
+    const dest = dests.find((d) => d.value === gid) || dests[0];
+    const groupSelectId = 'po2-compose-group';
+    const fieldSelectId = 'po2-compose-field';
+    const textId = 'po2-compose-text';
+    const asOfId = 'po2-compose-asof';
+    const kindId = 'po2-compose-kind';
+    const fieldOptions = [{ value: '', label: _t('personalOntology.po2_pick_field', '选择字段…'), disabled: true }].concat(dest.fields.map((f) => ({ value: f.value, label: f.label })));
+    const kindOptions = [
+      { value: '', label: _t('personalOntology.po2_kind_none_short', '未分类') },
+      { value: 'operation', label: _t('personalOntology.rulekind_operation', '操作规则') },
+      { value: 'preference', label: _t('personalOntology.rulekind_preference', '偏好') },
+      { value: 'constraint', label: _t('personalOntology.rulekind_constraint', '约束') },
+    ];
+    const dialog = await _pocModalForm({
+      title: presetKind ? _t('personalOntology.po2_compose_rule', '加规则') : _t('personalOntology.po2_compose_value', '记一条'),
+      bodyHtml: `
+        ${_pocFieldSelect(groupSelectId, _t('personalOntology.po2_dest_group', '写进哪个分组'), dests, gid)}
+        ${_pocFieldSelect(fieldSelectId, _t('personalOntology.po2_dest_field', '哪个字段'), fieldOptions, presetFieldId || '')}
+        ${_pocFieldTextarea(textId, _t('personalOntology.po2_value_label', presetKind ? '规则内容' : '内容'), '', { placeholder: presetKind ? _t('personalOntology.po2_rule_placeholder', '如：改完代码 → 必须先跑全量测试') : _t('personalOntology.po2_value_placeholder', '一件想让 AI 长期记住的事'), rows: 3 })}
+        ${presetKind ? _pocFieldSelect(kindId, _t('personalOntology.po2_rule_kind_title', '规则分类'), kindOptions, presetKind) : ''}
+        ${_pocFieldText(asOfId, _t('personalOntology.po2_asof_label', '信息截至时间（可选）'), '', { placeholder: 'YYYY-MM', hint: _t('personalOntology.po2_asof_hint', '让 AI 知道这条信息什么时候还可靠') })}`,
+    });
+    if (!dialog || dialog.value !== 'save') return;
+    const nextGid = String((document.getElementById(groupSelectId) || {}).value || '');
+    const fieldId = String((document.getElementById(fieldSelectId) || {}).value || '');
+    const text = String((document.getElementById(textId) || {}).value || '').trim();
+    const asOf = String((document.getElementById(asOfId) || {}).value || '').trim();
+    const kind = String((document.getElementById(kindId) || {}).value || '').trim();
+    if (!nextGid || !fieldId) {
+      _pocToast('personalOntology.po2_pick_field_first', '选一个分组和字段', 'error');
+      return;
+    }
+    if (!text) {
+      _pocToast('personalOntology.po2_value_empty_error', '内容不能为空', 'error');
+      return;
+    }
+    if (asOf && !/^((?:19|20)\d{2})-(0[1-9]|1[0-2])$/.test(asOf)) {
+      _pocToast('personalOntology.asof_invalid_error', '时间格式应为 YYYY-MM（如 2026-09）', 'error');
+      return;
+    }
+    const res = await _pocInvoke('po.values.add', { groupId: nextGid, fieldId, text, ...(asOf ? { asOf } : {}), ...(kind ? { ruleKind: kind } : {}) });
+    if (!res || res.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
+      return;
+    }
+    if (/→|->/.test(text)) {
+      _pocToast('personalOntology.rule_saved', '已按规则保存（A → B）：将作为规则进入世界模型', 'success');
+    } else {
+      _pocToast('personalOntology.po2_value_saved', '已记下', 'success');
+    }
+    await _pocReloadPo();
+  }
+
+  /** 编辑一条值：文本 + 时间锚三态 + 规则分类。 */
+  async function _pocEditValuePromptV2(gid, valueId) {
+    const group = _pocPoGroupById(gid);
+    const value = group && (group.values || []).find((v) => v.id === valueId);
+    if (!value) return;
+    const field = (group.fields || []).find((f) => f.id === value.fieldId);
+    const textId = 'po2-edit-text';
+    const asOfId = 'po2-edit-asof';
+    const kindId = 'po2-edit-kind';
+    const ruleShaped = _pocRuleShaped(field, value);
+    const kindOptions = [
+      { value: '', label: _t('personalOntology.po2_kind_none_short', '未分类') },
+      { value: 'operation', label: _t('personalOntology.rulekind_operation', '操作规则') },
+      { value: 'preference', label: _t('personalOntology.rulekind_preference', '偏好') },
+      { value: 'constraint', label: _t('personalOntology.rulekind_constraint', '约束') },
+    ];
+    const dialog = await _pocModalForm({
+      title: _t('personalOntology.po2_edit_value_title', '编辑这条内容'),
+      bodyHtml: `
+        ${_pocFieldTextarea(textId, _t('personalOntology.po2_value_label', '内容'), value.text, { rows: 3 })}
+        ${ruleShaped ? _pocFieldSelect(kindId, _t('personalOntology.po2_rule_kind_title', '规则分类'), kindOptions, value.ruleKind || '') : ''}
+        ${_pocFieldText(asOfId, _t('personalOntology.po2_asof_label', '信息截至时间（可选）'), value.asOf || '', { placeholder: 'YYYY-MM', hint: _t('personalOntology.po2_asof_edit_hint', '清空并保存 = 删除时间标注；不动 = 保留') })}`,
+    });
+    if (!dialog || dialog.value !== 'save') return;
+    const text = String((document.getElementById(textId) || {}).value || '').trim();
+    const asOf = String((document.getElementById(asOfId) || {}).value || '').trim();
+    const kind = String((document.getElementById(kindId) || {}).value || '').trim();
+    if (!text) {
+      _pocToast('personalOntology.po2_value_empty_error', '内容不能为空', 'error');
+      return;
+    }
+    if (asOf && !/^((?:19|20)\d{2})-(0[1-9]|1[0-2])$/.test(asOf)) {
+      _pocToast('personalOntology.asof_invalid_error', '时间格式应为 YYYY-MM（如 2026-09）', 'error');
+      return;
+    }
+    const patch = { text };
+    if (ruleShaped) patch.ruleKind = kind || null;
+    if (asOf !== (value.asOf || '')) {
+      if (asOf) patch.asOf = asOf;
+      else patch.clearAsOf = true;
+    }
+    const res = await _pocInvoke('po.values.update', { groupId: gid, valueId, patch });
+    if (!res || res.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
+      return;
+    }
+    _pocToast('personalOntology.field_value_updated', '已更新');
+    await _pocReloadPo();
+  }
+
+  async function _pocDeleteValueConfirmV2(gid, valueId) {
+    const confirmed = typeof uiConfirmDanger === 'function'
+      ? await uiConfirmDanger({
+        title: _t('common.delete', '删除'),
+        message: _t('personalOntology.po2_delete_value_confirm', '删除这条内容？'),
+        dangerLabel: _t('common.delete', '删除'),
+      })
+      : false;
+    if (!confirmed) return;
+    const res = await _pocInvoke('po.values.delete', { groupId: gid, valueId });
+    if (!res || res.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
+      return;
+    }
+    await _pocReloadPo();
+  }
+
+  async function _pocSetValueKindV2(gid, valueId, kind) {
+    const res = await _pocInvoke('po.values.update', { groupId: gid, valueId, patch: { ruleKind: kind === 'none' ? null : kind } });
+    if (!res || res.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
+      return;
+    }
+    await _pocReloadPo();
+  }
+
+  async function _pocToggleValueRestrictedV2(gid, valueId) {
+    const group = _pocPoGroupById(gid);
+    const value = group && (group.values || []).find((v) => v.id === valueId);
+    if (!value) return;
+    const res = await _pocInvoke('po.values.update', { groupId: gid, valueId, patch: { sensitivity: value.restricted ? 'standard' : 'restricted' } });
+    if (!res || res.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
+      return;
+    }
+    await _pocReloadPo();
+  }
+
+  async function _pocSetValueVerifiedV2(gid, valueId, level) {
+    const res = await _pocInvoke('po.values.update', { groupId: gid, valueId, patch: { verified: level } });
+    if (!res || res.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
+      return;
+    }
+    await _pocReloadPo();
+  }
+
+  // ── 流水操作 ────────────────────────────────────────────────────────────
+
+  async function _pocAddEntryPromptV2(gid, section) {
+    const id = 'po2-entry-text';
+    const dialog = await _pocModalForm({
+      title: _t('personalOntology.po2_add_entry', '记一笔'),
+      bodyHtml: _pocFieldTextarea(id, _t('personalOntology.po2_entry_label', '随手记'), '', { rows: 3, hint: _t('personalOntology.po2_entry_hint', '先记下来；之后可以「转正为字段」') }),
+    });
+    if (!dialog || dialog.value !== 'save') return;
+    const text = String((document.getElementById(id) || {}).value || '').trim();
+    if (!text) return;
+    const res = await _pocInvoke('po.entries.add', { groupId: gid, text, ...(section ? { section } : {}) });
+    if (!res || res.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
+      return;
+    }
+    await _pocReloadPo();
+  }
+
+  async function _pocDeleteEntryV2(gid, entryId) {
+    const res = await _pocInvoke('po.entries.delete', { groupId: gid, entryId });
+    if (!res || res.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
+      return;
+    }
+    await _pocReloadPo();
+  }
+
+  async function _pocPromoteEntryPromptV2(gid, entryId) {
+    const group = _pocPoGroupById(gid);
+    const entry = group && (group.entries || []).find((e) => e.id === entryId);
+    if (!entry) return;
+    const id = 'po2-promote-field';
+    const dialog = await _pocModalForm({
+      title: _t('personalOntology.po2_entry_promote', '转正为字段'),
+      bodyHtml: _pocFieldText(id, _t('personalOntology.po2_field_name_label', '字段名'), '', { placeholder: _t('personalOntology.po2_field_name_placeholder', '如：常用工具') }),
+    });
+    if (!dialog || dialog.value !== 'save') return;
+    const fieldName = String((document.getElementById(id) || {}).value || '').trim();
+    if (!fieldName) return;
+    const res = await _pocInvoke('po.entries.promote', { groupId: gid, entryId, fieldName });
+    if (!res || res.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
+      return;
+    }
+    _pocToast('personalOntology.po2_entry_promoted', '已转正为字段值', 'success');
+    await _pocReloadPo();
+  }
+
+  // ── 历史 / 恢复 ─────────────────────────────────────────────────────────
+
   function _pocHistoryAuditHtml(audit) {
-    if (!audit || typeof audit !== 'object') return '';
-    const mapped = _POC_AUDIT_ACTIONS[audit.action];
-    const actionLabel = mapped ? _t(mapped[0], mapped[1]) : String(audit.action || '');
-    if (!actionLabel) return '';
-    // 台账 actor 恒为 'user'（本地单用户，主进程写死）——audit 摘要里不重复
-    // 携带该字段，展示层固定「用户」标签。
-    const field = audit.field ? String(audit.field) : '';
-    const at = audit.at ? String(audit.at) : '';
-    return `<div class="personal-onto-value-detail-chips personal-onto-history-audit">
-      ${_tag(_t('personalOntology.history_audit_actor_user', '用户'))}
-      ${_tag(actionLabel)}
-      ${field ? _tag(field) : ''}
-      ${at ? `<span class="muted personal-onto-history-audit-at">${escapeHtml(at)}</span>` : ''}
-    </div>`;
+    if (!audit) return '';
+    const parts = [` ${_t('personalOntology.po2_audit_action', '动作')}: ${escapeHtml(audit.action)}`];
+    if (audit.field) parts.push(` · ${escapeHtml(audit.field)}`);
+    if (audit.beforeSummary) parts.push(` · ${escapeHtml(_pocTextSnippet(audit.beforeSummary, 40))} → ${escapeHtml(_pocTextSnippet(audit.afterSummary || '', 40))}`);
+    return `<div class="po2-history-audit muted">${parts.join('')}</div>`;
   }
 
-  /** 组变更历史（spec 007 T304）：列表 + 恢复（当前版自动留档可再回滚）。 */
-  async function _pocShowGroupHistory(gid) {
-    if (!gid) return;
-    const res = await _pocInvoke('personalOntology.groups.history.list', { groupId: gid });
+  async function _pocShowGroupHistoryV2(gid) {
+    const res = await _pocInvoke('po.history.list', { groupId: gid });
     const history = res && Array.isArray(res.history) ? res.history : [];
-    const rows = history.length ? history.map((h) => `
-      <div class="personal-onto-history-row">
-        <span class="personal-onto-history-time">${escapeHtml(String(h.savedAt || h.id))}</span>
-        <span class="personal-onto-history-preview muted">${escapeHtml(String(h.preview || ''))}</span>
-        ${_button({ label: _t('personalOntology.group_restore', '恢复这版'), size: 'sm', className: 'personal-onto-group-action', attrs: { 'data-poc-group-op': 'restore-snapshot', 'data-poc-snapshot': String(h.id) } })}
-      </div>
-      ${_pocHistoryAuditHtml(h.audit)}`).join('')
-      : `<div class="muted">${escapeHtml(_t('personalOntology.group_history_empty', '还没有历史版本——修改分组内容后自动留档'))}</div>`;
-    // 复用模板库弹层骨架：独立简易 modal
-    const overlay = document.getElementById('personal-onto-modal');
-    const body = document.querySelector('.personal-onto-modal-body');
-    if (!overlay || !body) return;
-    body.innerHTML = `<div class="personal-onto-history-list">
-      <div class="personal-onto-field-name">${escapeHtml(_t('personalOntology.group_history', '历史'))} <span class="muted">${history.length}</span></div>
-      ${rows}
-    </div>`;
-    overlay.style.display = 'flex';
-    // 恢复按钮绑定：此处原调用 _pocBindGroupDetail——盒子化重构后该函数已
-    // 不存在（死引用），modal 显示了但「恢复这版」从未绑上点击（US-102 T024
-    // 修复：按既有组操作口径就地绑定，闭包携带 gid）。
-    body.querySelectorAll('[data-poc-group-op="restore-snapshot"]').forEach((el) => {
-      el.addEventListener('click', (e) => {
-        e.stopPropagation();
-        void _pocRestoreSnapshot(el, gid);
-      });
-    });
-  }
-
-  async function _pocRestoreSnapshot(el, gid) {
-    if (!gid) return;
-    const snapshotId = el.getAttribute('data-poc-snapshot');
-    if (!snapshotId) return;
-    await _pocRunOnce(`restore:${snapshotId}`, el, async () => {
-      const res = await _pocInvoke('personalOntology.groups.history.restore', {
-        groupId: gid, snapshotId,
-      });
-      if (!res || res.ok === false) {
-        _pocToast('personalOntology.op_failed', (res && res.error) || '操作失败', 'error');
-        return;
-      }
-      _pocToast('personalOntology.group_restored', '已恢复到该版本（当前版已自动留档）', 'success');
-      const overlay = document.getElementById('personal-onto-modal');
-      if (overlay) overlay.style.display = 'none';
-      await _pocReloadBoxData();
-    });
-  }
-
-  /** 规则分类循环（spec 007 T301）：无 → 操作规则 → 偏好 → 约束 → 无。 */
-  async function _pocCycleRuleKind(el, fieldName, value, gid) {
-    if (!gid) return;
-    await _pocRunOnce(`rulekind:${fieldName}:${value}`, el, async () => {
-      const res = await _pocInvoke('personalOntology.groups.fields.cycleRuleKind', {
-        groupId: gid, fieldName, value,
-      });
-      if (!res || res.ok === false) {
-        _pocToast('personalOntology.op_failed', (res && res.error) || '操作失败', 'error');
-        return;
-      }
-      await _pocReloadBoxData();
-    });
-  }
-
-  /** 敏感性 toggle（spec 007 T302）：受限值不进任务自动注入与世界模型。 */
-  async function _pocToggleRestricted(el, fieldName, value, gid) {
-    if (!gid) return;
-    const next = el.getAttribute('data-poc-restricted') === '1';
-    await _pocRunOnce(`restricted:${fieldName}:${value}`, el, async () => {
-      const res = await _pocInvoke('personalOntology.groups.fields.sensitivity', {
-        groupId: gid, fieldName, value, restricted: next,
-      });
-      if (!res || res.ok === false) {
-        _pocToast('personalOntology.op_failed', (res && res.error) || '操作失败', 'error');
-        return;
-      }
-      _pocToast('personalOntology.restricted_' + (next ? 'on' : 'off'),
-        next ? '已设为受限：不再进入任务自动注入与世界模型' : '已取消受限', 'success');
-      await _pocReloadBoxData();
-    });
-  }
-
-  /** 核实档 toggle（2026-09-20 断言核实维度；spec 007 两档三态循环）：
-   *  未核实 → 有来源支持 → 独立核实 → 取消。章只由用户这一下产生。 */
-  async function _pocToggleValueVerified(el, fieldName, value, gid) {
-    if (!gid) return;
-    const raw = el.getAttribute('data-poc-verified');
-    const nextVerified = raw === 'independent' ? 'independent' : raw === '1';
-    await _pocRunOnce(`verify:${fieldName}:${value}`, el, async () => {
-      const res = await _pocInvoke('personalOntology.groups.fields.verify', {
-        groupId: gid, fieldName, value, verified: nextVerified,
-      });
-      if (!res || res.ok === false) {
-        _pocToast('personalOntology.op_failed', (res && res.error) || '操作失败', 'error');
-        return;
-      }
-      await _pocReloadBoxData();
-    });
-  }
-
-  async function _pocAppendEntryNote(gid) {
-    if (!gid) return;
-    // 2026-09-28 修复：原实现读 #personal-onto-note-input——该输入框在重构中
-    // 已被移除，按钮点击后 text 恒空、静默返回（死按钮）。改用与新建分组/添加值
-    // 同款的 uiPrompt 弹窗收集文本。
-    const text = (typeof uiPrompt === 'function')
-      ? await uiPrompt(_t('personalOntology.note_append_prompt', '记点什么（追加到该分组流水区）'), '')
-      : null;
-    if (text === null) return;
-    const trimmed = String(text || '').trim();
-    if (!trimmed) return;
-    const readRes = await _pocInvoke('personalOntology.groups.read', { groupId: gid });
-    const base = String((readRes && readRes.content) || '');
-    const content = `${base.trimEnd()}\n§ ${trimmed}\n`;
-    const res = await _pocInvoke('personalOntology.groups.write', { groupId: gid, content });
-    if (!res || res.ok === false) {
-      _pocToast('personalOntology.op_failed', (res && res.error) || '操作失败', 'error');
+    const group = _pocPoGroupById(gid);
+    if (!history.length) {
+      _pocToast('personalOntology.po2_history_empty', '这个分组还没有历史版本', 'info');
       return;
     }
-    await _pocReloadBoxData();
+    const rows = history.map((entry) => `<div class="po2-history-row">
+      <div class="po2-history-main">
+        <span class="po2-history-time">${escapeHtml(entry.savedAt)}</span>
+        <span class="muted">${escapeHtml(_tv('personalOntology.po2_history_bytes', { n: entry.bytes }, '{n} 字节'))}</span>
+        <span class="po2-history-preview muted">${escapeHtml(entry.preview || '')}</span>
+        ${_pocHistoryAuditHtml(entry.audit)}
+      </div>
+      ${_button({ label: _t('personalOntology.po2_history_restore', '恢复到这版'), size: 'xs', className: 'o', attrs: { 'data-poc-history-restore': entry.id, 'data-poc-gid': gid } })}
+    </div>`).join('');
+    const dialog = await _pocModalForm({
+      title: _tv('personalOntology.po2_history_title', { title: (group && group.title) || '' }, '「{title}」的历史版本'),
+      bodyHtml: `<div class="po2-history-list">${rows}</div>`,
+      actions: [{ label: _t('common.close', '关闭'), id: 'close', role: 'secondary' }],
+    });
+    void dialog;
   }
 
-  async function _pocConfirmBackflow(candidateId, gid, el) {
-    if (!gid) return;
-    await _pocRunOnce(`backflow-confirm:${candidateId}`, el, async () => {
-      const res = await _pocInvoke('personalOntology.candidates.confirm', {
-        candidateId,
-        dest: { toGlobalMemory: false, toGroupIds: [gid] },
-      });
-      if (res && res.ok === false && res.error === 'conflict_detected') {
-        // 写入前冲突门（specs/014 US-902 / T016）：可能矛盾 → 对话确认，
-        // 不静默写入。「仍然写入」带 acknowledgeConflict:true 重发（主进程
-        // 会以写入时刻重新预检）。受限对端没有正文可显示，用替代文案。
-        const conflicts = Array.isArray(res.conflicts) ? res.conflicts : [];
-        const shown = conflicts.length
-          ? conflicts[0].existingValue
-            ? _tv('personalOntology.conflict_dialog_body_with_values', { field: String(conflicts[0].field || ''), existing: String(conflicts[0].existingValue || '') }, '字段「{field}」里已有语义相近的值（{existing}）。写入前请确认——这不是判定，只是提醒。')
-            : _t('personalOntology.conflict_dialog_body_restricted_pair', '字段里已有语义相近的值（另一条已标记受限，内容不显示）。写入前请确认。')
-          : _t('personalOntology.conflict_dialog_body_generic', '这条候选可能与组里已有的值语义相近，写入前请确认。');
-        if (typeof window.uiModal !== 'function') {
-          // 无弹层原语的极简上下文：退回普通 toast 提示且不写入（宁可多一步，
-          // 不静默）。
-          _pocToast('personalOntology.conflict_dialog_title', '可能与现有值矛盾', 'error');
-          return;
+  async function _pocRestoreHistoryV2(el, gid, snapshotId) {
+    const res = await _pocRunOnce(`po-history-restore:${gid}:${snapshotId}`, el, () => _pocInvoke('po.history.restore', { groupId: gid, snapshotId }));
+    if (!res || res.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
+      return;
+    }
+    _pocToast('personalOntology.po2_history_restored', '已恢复到该版本', 'success');
+    await _pocReloadPo();
+  }
+
+  // ── 候选确认 / 跳过 ─────────────────────────────────────────────────────
+
+  async function _pocConfirmCandidateV2(candidateId) {
+    const candidate = _pocPendingCandidates.find((c) => c && c.candidate_id === candidateId);
+    if (!candidate) return;
+    const dests = _pocDestinationOptions();
+    if (!dests.length) {
+      _pocToast('personalOntology.po2_need_group_first', '先到「分组与模板」建一个分组', 'error');
+      return;
+    }
+    const gid = dests[0].value;
+    const groupSelectId = 'po2-candidate-group';
+    const dialog = await _pocModalForm({
+      title: _t('personalOntology.po2_candidate_accept', '收下这条建议'),
+      bodyHtml: `
+        <div class="po2-candidate-preview">${escapeHtml(_pocTextSnippet(candidate.memory_text || candidate.summary || '', 240))}</div>
+        ${_pocFieldSelect(groupSelectId, _t('personalOntology.po2_dest_group', '写进哪个分组'), dests, gid, { hint: _t('personalOntology.po2_candidate_dest_hint', 'AI 会按内容挑最合适的字段落位；落不进字段的先进流水') })}`,
+    });
+    if (!dialog || dialog.value !== 'save') return;
+    const nextGid = String((document.getElementById(groupSelectId) || {}).value || '');
+    if (!nextGid) return;
+    const res = await _pocInvoke('po.candidates.confirm', { candidateId, dest: { toGlobalMemory: false, toGroupIds: [nextGid] } });
+    if (!res || res.ok === false) {
+      if (res && res.error === 'conflict_detected') {
+        const ack = typeof uiConfirm === 'function' && await uiConfirm({ message: _t('personalOntology.po2_candidate_conflict', '这条内容与已有内容疑似矛盾。仍要写入吗？') });
+        if (ack) {
+          const retry = await _pocInvoke('po.candidates.confirm', { candidateId, dest: { toGlobalMemory: false, toGroupIds: [nextGid] }, acknowledgeConflict: true });
+          if (retry && retry.ok !== false) {
+            _pocToast('personalOntology.po2_candidate_accepted', '已收下', 'success');
+            await _pocReloadPo();
+          }
         }
-        const dialog = await window.uiModal({
-          title: _t('personalOntology.conflict_dialog_title', '可能与现有值矛盾'),
-          closeLabel: _t('personalOntology.dialog_close', '关闭'),
-          description: shown,
-          actions: [
-            { label: _t('common.cancel', '取消'), id: 'cancel', role: 'secondary' },
-            { label: _t('personalOntology.conflict_dialog_keep', '仍然写入'), id: 'keep', role: 'primary' },
-          ],
-        });
-        if (!dialog || dialog.value !== 'keep') return; // 取消：不发第二次请求
-        const retry = await _pocInvoke('personalOntology.candidates.confirm', {
-          candidateId,
-          dest: { toGlobalMemory: false, toGroupIds: [gid] },
-          acknowledgeConflict: true,
-        });
-        if (!retry || retry.ok === false) {
-          _pocToast('personalOntology.op_failed', (retry && retry.error) || '操作失败', 'error');
-          return;
-        }
-        _pocToast('personalOntology.backflow_confirmed', '已添加到所选分组的记录中；需要时可再整理成字段。', 'success');
-        await _pocLoadPendingCandidates();
-        await _pocReloadBoxData();
-        _pocRenderNav();
-        _pocBindNav();
         return;
       }
-      if (!res || res.ok === false) {
-        _pocToast('personalOntology.op_failed', (res && res.error) || '操作失败', 'error');
-        return;
-      }
-      _pocToast('personalOntology.backflow_confirmed', '已添加到所选分组的记录中；需要时可再整理成字段。', 'success');
-      await _pocLoadPendingCandidates();
-      await _pocReloadBoxData();
-      _pocRenderNav();
-      _pocBindNav();
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
+      return;
+    }
+    _pocToast('personalOntology.po2_candidate_accepted', '已收下', 'success');
+    await _pocReloadPo();
+  }
+
+  async function _pocRejectCandidateV2(candidateId, el) {
+    const res = await _pocRunOnce(`po-candidate-reject:${candidateId}`, el, () => _pocInvoke('po.candidates.reject', { candidateId }));
+    if (!res || res.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
+      return;
+    }
+    await _pocReloadPo();
+  }
+
+  // ── 导出 / 导入（个人本体自己的 markdown，可回灌）────────────────────────
+
+  async function _pocOpenExportModal() {
+    const res = await _pocInvoke('po.data.export', {});
+    const markdown = res && res.markdown ? String(res.markdown) : '';
+    const id = 'po2-export-text';
+    await _pocModalForm({
+      title: _t('personalOntology.po2_export_title', '导出个人本体'),
+      bodyHtml: `${_pocFieldTextarea(id, _t('personalOntology.po2_export_hint', '全文可复制保存；之后可原样导入回灌'), markdown, { rows: 12 })}`,
+      actions: [{ label: _t('common.close', '关闭'), id: 'close', role: 'secondary' }],
     });
   }
 
-  async function _pocRejectBackflow(candidateId, el) {
-    await _pocRunOnce(`backflow-reject:${candidateId}`, el, async () => {
-      const res = await _pocInvoke('personalOntology.candidates.reject', { candidateId });
-      if (!res || res.ok === false) {
-        _pocToast('personalOntology.op_failed', (res && res.error) || '操作失败', 'error');
-        return;
-      }
-      await _pocLoadPendingCandidates();
-      _pocRenderNav();
-      _pocBindNav();
-      _pocRenderMain();
+  async function _pocOpenImportModal() {
+    const id = 'po2-import-text';
+    const dialog = await _pocModalForm({
+      title: _t('personalOntology.po2_import_title', '导入个人本体'),
+      bodyHtml: `${_pocFieldTextarea(id, _t('personalOntology.po2_import_hint', '粘贴导出的文本（或「## 分组名」组织的任意清单）'), '', { rows: 10 })}`,
     });
+    if (!dialog || dialog.value !== 'save') return;
+    const text = String((document.getElementById(id) || {}).value || '');
+    if (!text.trim()) return;
+    const preview = await _pocInvoke('po.data.importPreview', { text });
+    if (!preview || !Array.isArray(preview.items) || !preview.items.length) {
+      _pocToast('personalOntology.po2_import_nothing', '没有解析出可导入的内容', 'error');
+      return;
+    }
+    const listHtml = preview.items.map((item) => `<div class="po2-import-item">
+      <strong>${escapeHtml(item.title)}</strong>
+      <span class="muted">${escapeHtml(_tv('personalOntology.po2_import_item_meta', { fields: (item.fields || []).length, values: (item.fields || []).reduce((n, f) => n + (f.values || []).length, 0), entries: (item.entries || []).length }, '{values} 条值 · {entries} 条流水'))}</span>
+      ${item.mergeIntoExisting ? _tag(_t('personalOntology.po2_import_merge', '并入同名分组')) : ''}
+    </div>`).join('');
+    const confirmDialog = await _pocModalForm({
+      title: _t('personalOntology.po2_import_preview_title', '确认导入'),
+      bodyHtml: `<div class="po2-import-list">${listHtml}</div>`,
+    });
+    if (!confirmDialog || confirmDialog.value !== 'save') return;
+    const applied = await _pocInvoke('po.data.importApply', { items: preview.items });
+    if (!applied || applied.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(applied && applied.error), 'error');
+      return;
+    }
+    _pocToast('personalOntology.po2_import_done', `已导入 ${applied.applied} 条`, 'success');
+    await _pocReloadPo();
   }
 
   function _pocGraphInputField(id, label, value, options = {}) {
@@ -2519,7 +2820,7 @@
       ${profile || `<p class="muted">${escapeHtml(_t('ontologyGraph.personal_categories_empty', '保存个人信息后，系统会在这里按现有分类展示。'))}</p>`}
       <div class="personal-onto-zone-head">${escapeHtml(_t('ontologyGraph.personal_groups_categories', '个人本体分组与字段'))}</div>
       ${groups || `<p class="muted">${escapeHtml(_t('ontologyGraph.personal_groups_empty', '还没有个人本体分组。'))}</p>`}
-      ${_button({ label: _t('ontologyGraph.manage_personal_categories', '打开个人本体分类管理'), size: 'sm', className: 'o', attrs: { 'data-poc-nav': 'tbox' } })}
+      ${_button({ label: _t('ontologyGraph.manage_personal_categories', '打开个人本体分类管理'), size: 'sm', className: 'o', attrs: { 'data-poc-nav': 'groups' } })}
     </section>`;
   }
 
@@ -2733,21 +3034,20 @@
       return;
     }
 
-    if (_pocSelected.kind === 'tbox' || _pocSelected.kind === 'abox' || _pocSelected.kind === 'rbox') {
+    if (_pocSelected.kind === 'facts' || _pocSelected.kind === 'rules' || _pocSelected.kind === 'groups') {
       headerEl.classList.remove('is-profile');
-      /* 三个盒子的页头此前是空字符串——整页没有一句「这里是干什么」，
-         词汇/事实/规则全靠猜（2026-09-21 子安真机反馈「看不懂」）。 */
+      /* 三页页头都带一句白话导语（v2）。 */
       const counts = _pocBoxCounts();
       const boxInfo = {
-        tbox: { title: _t('personalOntology.nav_tbox', '分类与字段'), n: counts.tbox, unit: '项', def: _t('personalOntology.box_tbox_def', '本体分类与字段说明有哪些条目类型，以及如何组织角色模板') },
-        abox: { title: _t('personalOntology.nav_abox', '事实与条目'), n: counts.abox, unit: '条', def: _t('personalOntology.box_abox_def', '个人稳定事实与条目——身份、角色、偏好、项目和关系') },
-        rbox: { title: _t('personalOntology.nav_rbox', '关系与规则'), n: counts.rbox, unit: '条', def: _t('personalOntology.box_rbox_def', '明确关系与 AI 应遵循的规则') },
+        facts: { title: _t('personalOntology.nav_abox', '事实与条目'), n: counts.facts, unit: _t('personalOntology.count_items', '条'), def: _t('personalOntology.po2_facts_def', 'AI 长期记住的「关于我」——身份、偏好、项目，一条一条可改可删') },
+        rules: { title: _t('personalOntology.nav_rbox', '规则'), n: counts.rules, unit: _t('personalOntology.count_items', '条'), def: _t('personalOntology.po2_rules_def', 'AI 该怎么配合你做事——按 操作规则 / 偏好 / 约束 分类') },
+        groups: { title: _t('personalOntology.nav_groups', '分组与模板'), n: counts.groups, unit: _t('personalOntology.count_categories', '个'), def: _t('personalOntology.po2_groups_def', '事实的抽屉与现成的表格') },
       }[_pocSelected.kind];
       headerEl.innerHTML = `<span class="personal-onto-main-title">${escapeHtml(boxInfo.title)}</span>` +
-        `<div class="sub">${escapeHtml(boxInfo.def)} · ${boxInfo.n} ${boxInfo.unit}</div>`;
-      bodyEl.innerHTML = _pocSelected.kind === 'tbox' ? _pocRenderTBoxView()
-        : _pocSelected.kind === 'abox' ? _pocRenderABoxView()
-        : _pocRenderRBoxView();
+        `<div class="sub">${escapeHtml(boxInfo.def)} · ${boxInfo.n} ${escapeHtml(boxInfo.unit)}</div>`;
+      bodyEl.innerHTML = _pocSelected.kind === 'facts' ? _pocRenderFactsView()
+        : _pocSelected.kind === 'rules' ? _pocRenderRulesView()
+        : _pocRenderGroupsView();
       _pocBindBoxView(bodyEl);
       return;
     }
@@ -2795,74 +3095,124 @@
     }
   }
 
-  // ── 事件绑定 ─────────────────────────────────────────────────────────────
+  // ── 事件绑定（v2：data-poc-*-op 属性驱动；菜单点完即重渲）──
   function _pocBindBoxView(bodyEl) {
     if (!bodyEl) return;
-    // 值行点击 → 展开/收起（标记与操作都在展开区）
-    bodyEl.querySelectorAll('[data-poc-line-key]').forEach((el) => {
-      el.addEventListener('click', () => {
-        const key = el.getAttribute('data-poc-line-key');
-        if (_pocExpandedValues.has(key)) _pocExpandedValues.delete(key);
-        else _pocExpandedValues.add(key);
-        _pocRenderMain();
+    bodyEl.querySelectorAll('[data-poc-value-op]').forEach((el) => {
+      el.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const menu = el.closest('details.po2-menu');
+        if (menu) menu.removeAttribute('open');
+        const op = el.getAttribute('data-poc-value-op');
+        const gid = el.getAttribute('data-poc-gid');
+        const valueId = el.getAttribute('data-poc-value-id');
+        if (op === 'open-asset') {
+          const assetId = el.getAttribute('data-poc-asset-id');
+          if (assetId && typeof window.openCognitionAssetById === 'function') window.openCognitionAssetById(assetId);
+        } else if (op === 'edit' && valueId) await _pocEditValuePromptV2(gid, valueId);
+        else if (op === 'delete' && valueId) await _pocDeleteValueConfirmV2(gid, valueId);
+        else if (op.startsWith('kind:') && valueId) await _pocSetValueKindV2(gid, valueId, op.slice('kind:'.length));
+        else if ((op === 'restrict' || op === 'unrestrict') && valueId) await _pocToggleValueRestrictedV2(gid, valueId);
+        else if (op === 'verify' && valueId) await _pocSetValueVerifiedV2(gid, valueId, true);
+        else if (op === 'verify-independent' && valueId) await _pocSetValueVerifiedV2(gid, valueId, 'independent');
+        else if (op === 'unverify' && valueId) await _pocSetValueVerifiedV2(gid, valueId, false);
       });
     });
-    // 组级操作（gid 从行内 data 属性取）
+    bodyEl.querySelectorAll('[data-poc-field-op]').forEach((el) => {
+      el.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const menu = el.closest('details.po2-menu');
+        if (menu) menu.removeAttribute('open');
+        const op = el.getAttribute('data-poc-field-op');
+        const gid = el.getAttribute('data-poc-gid');
+        const fieldId = el.getAttribute('data-poc-field-id');
+        if (op === 'add-value') await _pocComposeValuePrompt(gid, fieldId);
+        else if (op === 'rename' && fieldId) await _pocRenameFieldPromptV2(gid, fieldId);
+        else if (op === 'toggle-relation' && fieldId) await _pocToggleFieldRelationV2(gid, fieldId);
+        else if (op === 'delete' && fieldId) await _pocDeleteFieldConfirmV2(gid, fieldId);
+      });
+    });
     bodyEl.querySelectorAll('[data-poc-group-op]').forEach((el) => {
       el.addEventListener('click', async (e) => {
         e.stopPropagation();
+        const menu = el.closest('details.po2-menu');
+        if (menu) menu.removeAttribute('open');
         const op = el.getAttribute('data-poc-group-op');
         const gid = el.getAttribute('data-poc-gid');
-        const field = el.getAttribute('data-poc-field');
-        const value = el.getAttribute('data-poc-value');
-        if (op === 'open-formal-asset') {
-          const assetId = el.getAttribute('data-poc-asset-id');
-          if (assetId && typeof window.openCognitionAssetById === 'function') window.openCognitionAssetById(assetId);
-        }
-        else if (op === 'append-value') await _pocAppendValuePrompt(field, gid);
-        else if (op === 'edit-value') await _pocEditValuePrompt(field, value, gid, el.getAttribute('data-poc-asof') || '');
-        else if (op === 'remove-value') await _pocRemoveValue(field, value, gid);
-        else if (op === 'verify-value') await _pocToggleValueVerified(el, field, value, gid);
-        else if (op === 'cycle-rulekind') await _pocCycleRuleKind(el, field, value, gid);
-        else if (op === 'toggle-restricted') await _pocToggleRestricted(el, field, value, gid);
-        else if (op === 'add-field') await _pocAddFieldPrompt(gid);
-        else if (op === 'rename-group') await _pocRenameGroupPrompt(gid);
-        else if (op === 'delete-group') await _pocDeleteGroupConfirm(gid);
-        else if (op === 'show-history') await _pocShowGroupHistory(gid);
-        else if (op === 'restore-snapshot') await _pocRestoreSnapshot(el, gid);
-        else if (op === 'append-entry') await _pocAppendEntryNote(gid);
+        const group = _pocPoGroupById(gid);
+        if (op === 'add-field' && group) await _pocAddFieldPromptV2(gid);
+        else if (op === 'add-entry' && group) await _pocAddEntryPromptV2(gid);
+        else if (op === 'rename' && gid) await _pocRenameGroupPromptV2(gid);
+        else if (op === 'delete' && gid) await _pocDeleteGroupConfirmV2(gid);
+        else if (op === 'history' && gid) await _pocShowGroupHistoryV2(gid);
       });
     });
-    // D5b「已删除分组」折叠与恢复（spec 009 T027）
-    bodyEl.querySelectorAll('[data-poc-deleted-op]').forEach((el) => {
+    bodyEl.querySelectorAll('[data-poc-entry-op]').forEach((el) => {
       el.addEventListener('click', async (e) => {
         e.stopPropagation();
-        const op = el.getAttribute('data-poc-deleted-op');
+        const op = el.getAttribute('data-poc-entry-op');
         const gid = el.getAttribute('data-poc-gid');
-        if (op === 'toggle') await _pocToggleDeletedGroups();
-        else if (op === 'restore' && gid) await _pocRestoreDeletedGroup(el, gid);
+        const entryId = el.getAttribute('data-poc-entry-id');
+        if (op === 'promote' && entryId) await _pocPromoteEntryPromptV2(gid, entryId);
+        else if (op === 'delete' && entryId) await _pocDeleteEntryV2(gid, entryId);
       });
     });
-    // 回流候选（confirm 带目标组）
     bodyEl.querySelectorAll('[data-poc-candidate-op]').forEach((el) => {
       el.addEventListener('click', async (e) => {
         e.stopPropagation();
         const op = el.getAttribute('data-poc-candidate-op');
         const cid = el.getAttribute('data-poc-candidate-id');
-        const gid = el.getAttribute('data-poc-gid');
-        if (op === 'confirm' && cid && gid) await _pocConfirmBackflow(cid, gid, el);
-        else if (op === 'reject' && cid) await _pocRejectBackflow(cid, el);
+        if (op === 'confirm' && cid) await _pocConfirmCandidateV2(cid);
+        else if (op === 'reject' && cid) await _pocRejectCandidateV2(cid, el);
       });
     });
-    // R 盒分类筛选
-    bodyEl.querySelectorAll('[data-poc-tri-filter]').forEach((el) => {
+    bodyEl.querySelectorAll('[data-poc-rule-filter]').forEach((el) => {
       el.addEventListener('click', (e) => {
         e.stopPropagation();
-        _pocTriBoxRuleFilter = el.getAttribute('data-poc-tri-filter') || 'all';
+        _pocRuleFilter = el.getAttribute('data-poc-rule-filter') || 'all';
         _pocRenderMain();
       });
     });
-    // T 盒内嵌的导航行（模板行/模板库/卸载/新建分组）——与侧栏同一处理
+    const groupFilter = bodyEl.querySelector('[data-poc-facts-group-filter]');
+    if (groupFilter) {
+      groupFilter.addEventListener('change', () => {
+        _pocFactsFilter.group = groupFilter.value || 'all';
+        _pocRenderMain();
+      });
+    }
+    const searchInput = bodyEl.querySelector('[data-poc-facts-q]');
+    if (searchInput) {
+      searchInput.addEventListener('change', () => {
+        _pocFactsFilter.q = searchInput.value || '';
+        _pocRenderMain();
+      });
+    }
+    bodyEl.querySelectorAll('[data-poc-op]').forEach((el) => {
+      el.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const op = el.getAttribute('data-poc-op');
+        if (op === 'compose-value') await _pocComposeValuePrompt();
+        else if (op === 'compose-rule') await _pocComposeValuePrompt('', '', 'operation');
+        else if (op === 'new-group') await _pocCreateGroupPrompt();
+        else if (op === 'template-library') _pocOpenTemplateLibrary();
+      });
+    });
+    bodyEl.querySelectorAll('[data-poc-history-restore]').forEach((el) => {
+      el.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const snapshotId = el.getAttribute('data-poc-history-restore');
+        const gid = el.getAttribute('data-poc-gid');
+        if (snapshotId && gid) await _pocRestoreHistoryV2(el, gid, snapshotId);
+      });
+    });
+    bodyEl.querySelectorAll('[data-poc-deleted-op]').forEach((el) => {
+      el.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const op = el.getAttribute('data-poc-deleted-op');
+        const gid = el.getAttribute('data-poc-gid');
+        if (op === 'restore' && gid) await _pocRestoreDeletedGroupV2(el, gid);
+      });
+    });
     bodyEl.querySelectorAll('[data-poc-nav]').forEach((el) => {
       el.addEventListener('click', async (e) => {
         const action = el.getAttribute('data-poc-nav');
@@ -2874,7 +3224,6 @@
           const tid = el.getAttribute('data-poc-template-id');
           if (tid) await _pocRunOnce(`template-uninstall:${tid}`, el, () => _pocUninstallTemplate(tid));
         }
-        else if (action === 'new-group') { e.stopPropagation(); _pocCreateGroupPrompt(); }
       });
     });
   }
@@ -2889,7 +3238,7 @@ function _pocBindNav() {
         if (action === 'ontology-home' || action === 'personal-domain' || action === 'affairs-domain'
           || action === 'resources-domain' || action === 'concepts-domain'
           || action === 'taxonomy-domain' || action === 'relationships-domain'
-          || action === 'tbox' || action === 'abox' || action === 'rbox') {
+          || action === 'facts' || action === 'rules' || action === 'groups') {
           _pocNavigate(action);
         }
         else if (action === 'new-group') {
@@ -2898,12 +3247,9 @@ function _pocBindNav() {
         }
         else if (action === 'memory-export' || action === 'memory-import') {
           e.stopPropagation();
-          // 记忆页退役（2026-09-20）：导出/导入功能保留，工具实现在 memory.js
-          // （_memOpenExport/_memOpenImport），经 window.MemoryTools 暴露复用。
-          const tools = window.MemoryTools || {};
-          const fn = action === 'memory-export' ? tools.openExport : tools.openImport;
-          if (typeof fn === 'function') fn();
-          else _pocToast('personalOntology.op_failed', _t('personalOntology.io_unavailable', '导出/导入工具未就绪'), 'error');
+          // v2：导出/导入个人本体自己的 markdown（po.data.*），不再指向已退役的记忆文件。
+          if (action === 'memory-export') await _pocOpenExportModal();
+          else await _pocOpenImportModal();
         }
         else if (action === 'template') { _pocOpenGroup(id); }
         else if (action === 'template-library') {
@@ -3060,6 +3406,11 @@ function _pocBindNav() {
     if (options && ['overview', 'personal', 'affairs', 'resources', 'concepts', 'taxonomy', 'relationships'].includes(options.view)) {
       _pocView = options.view;
     }
+    // 深链直达个人本体某一页（facts / rules / groups）。
+    if (options && ['facts', 'rules', 'groups'].includes(options.box)) {
+      _pocView = 'personal';
+      _pocSelected = { kind: options.box, id: options.box };
+    }
     const nav = document.getElementById('personal-onto-nav');
     const bodyEl = document.getElementById('personal-onto-main-body');
     if (!nav || !bodyEl) {
@@ -3085,12 +3436,20 @@ function _pocBindNav() {
 
     try {
       const installed = _pocTemplates.filter((t) => t.installed && t.group_id);
-      // 三盒视图：数据自取（资产+全组+冲突一次拉齐）。
-      if (_pocSelected.kind === 'tbox' || _pocSelected.kind === 'abox' || _pocSelected.kind === 'rbox') {
-        if (!_pocBoxData.loaded) {
-          nav.innerHTML = '<div class="personal-onto-nav-empty muted">' + _t('personalOntology.loading', '加载中...') + '</div>';
-          bodyEl.innerHTML = '<div class="personal-onto-empty">' + _t('personalOntology.loading', '加载中...') + '</div>';
-          await _pocLoadBoxData();
+      // 模板编辑器只在个人视图下钻时进入。
+      if (_pocView === 'personal' && _pocSelected.kind === 'template') {
+        let selected = installed.find((t) => t.group_id === _pocSelected.id);
+        if (!selected && installed.length) {
+          selected = installed[0];
+          _pocSelected = { kind: 'template', id: selected.group_id };
+          _pocGroupEditor = null;
+        }
+        if (!selected) {
+          _pocSelected = { kind: 'template', id: null };
+          _pocGroupEditor = null;
+        } else if (!_pocGroupEditor || _pocGroupEditor.groupId !== selected.group_id) {
+          _pocOpenGroup(selected.group_id);
+          return;
         }
         _pocRenderNav();
         _pocBindNav();
@@ -3098,33 +3457,17 @@ function _pocBindNav() {
         return;
       }
 
-      // 盒子化重构：profile/group 已退役——非法选中态回 A 盒（事实）。
-      if (_pocSelected.kind !== 'template') {
-        _pocSelected = { kind: 'abox', id: 'abox' };
-        if (!_pocBoxData.loaded) {
-          nav.innerHTML = '<div class="personal-onto-nav-empty muted">' + _t('personalOntology.loading', '加载中...') + '</div>';
-          bodyEl.innerHTML = '<div class="personal-onto-empty">' + _t('personalOntology.loading', '加载中...') + '</div>';
-          await _pocLoadBoxData();
-        }
-        _pocRenderNav();
-        _pocBindNav();
-        _pocRenderMain();
-        return;
+      // 其余页面（个人三页 + 总览 + 各域页）：一次快照拉齐（v2 修复了域页
+      // 不装盒数据就渲染的隐患——关系网络/总览计数都吃这一份）。
+      if (!_pocBoxData.loaded) {
+        nav.innerHTML = '<div class="personal-onto-nav-empty muted">' + _t('personalOntology.loading', '加载中...') + '</div>';
+        bodyEl.innerHTML = '<div class="personal-onto-empty">' + _t('personalOntology.loading', '加载中...') + '</div>';
+        await _pocLoadBoxData();
       }
-      let selected = installed.find((t) => t.group_id === _pocSelected.id);
-      if (!selected && installed.length) {
-        selected = installed[0];
-        _pocSelected = { kind: 'template', id: selected.group_id };
-        _pocGroupEditor = null;
+      // 非法选中态回事实页。
+      if (_pocView === 'personal' && !['facts', 'rules', 'groups', 'template'].includes(_pocSelected.kind)) {
+        _pocSelected = { kind: 'facts', id: 'facts' };
       }
-      if (!selected) {
-        _pocSelected = { kind: 'template', id: null };
-        _pocGroupEditor = null;
-      } else if (!_pocGroupEditor || _pocGroupEditor.groupId !== selected.group_id) {
-        _pocOpenGroup(selected.group_id);
-        return;
-      }
-
       _pocRenderNav();
       _pocBindNav();
       _pocRenderMain();
@@ -3150,6 +3493,9 @@ function _pocBindNav() {
       loaded: false, loadError: '', groups: [], assets: [], sourceAssets: [], conflicts: [],
       graph: { loaded: false, loadError: '', categories: [], entities: [], relations: [] },
     };
+    _pocPo = { snapshot: null, loaded: false, loadError: '' };
+    _pocFactsFilter = { group: 'all', q: '' };
+    _pocRuleFilter = 'all';
     _pocExpandedValues.clear();
     const route = window.CogAssets && window.CogAssets.store && window.CogAssets.store.route;
     if (options.deferWhenHidden && route && route.name !== 'ontology') return Promise.resolve();

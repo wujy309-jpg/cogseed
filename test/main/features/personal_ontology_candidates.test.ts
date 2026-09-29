@@ -935,6 +935,8 @@ describe('personal_ontology_candidates › confirmCandidate asset track (dual-ra
     const cs = await import('../../../../src/main/features/recall/candidate-service');
     const saved = await cs.saveRecallCandidate(UID, {
       judgment: statement,
+      // 标题闸门（设计 3.2）：无 summary 兜底＝正文首句，过不了闸门。
+      summary: '画像种子样本',
       suggestedType: 'personal',
       suggestedScope: 'general',
       sourceRefs: [{ kind: 'memory', id: 'dual-rail-seed' }],
@@ -949,7 +951,7 @@ describe('personal_ontology_candidates › confirmCandidate asset track (dual-ra
       candidate_id: 'cand-dual-1',
       kind: 'preference',
       memory_scope: 'user',
-      summary: '偏好中文简洁',
+      summary: '中文简洁偏好',
       memory_text: '偏好中文简洁。',
     });
     const res = await poc.confirmCandidate(UID, 'cand-dual-1');
@@ -974,7 +976,7 @@ describe('personal_ontology_candidates › confirmCandidate asset track (dual-ra
       candidate_id: 'cand-dual-2',
       kind: 'rule',
       memory_scope: 'shared',
-      summary: '评审规则',
+      summary: '产品模型先行',
       memory_text: '评审必须先讲产品模型。',
     });
     const res = await poc.confirmCandidate(UID, 'cand-dual-2');
@@ -991,7 +993,7 @@ describe('personal_ontology_candidates › confirmCandidate asset track (dual-ra
       candidate_id: 'cand-dual-3',
       kind: 'preference',
       memory_scope: 'user',
-      summary: '重复偏好',
+      summary: '语义重复偏好',
       memory_text: '偏好中文简洁。',
     });
     const res = await poc.confirmCandidate(UID, 'cand-dual-3');

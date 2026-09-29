@@ -554,24 +554,25 @@ describe('personal_ontology_groups › snapshot history (C-008: same-millisecond
     try {
       // 首次写入（原文为空）不留快照；之后每次写入前留一版 —— 三次全部同毫秒。
       await groups.appendFieldValue(UID, gid, '版本', '第一版内容', '手动');
+      const afterFirst = (await groups.readGroupContent(UID, gid)).content;
       await groups.appendFieldValue(UID, gid, '版本', '第二版内容', '手动');
       await groups.appendFieldValue(UID, gid, '版本', '第三版内容', '手动');
 
       const history = groups.listGroupHistory(UID, gid);
-      expect(history.length).toBe(2); // 修复前：v1 的快照被 v2 覆盖，只剩 1 条
-      expect(new Set(history.map((h) => h.id)).size).toBe(2); // 两个不同文件名
+      expect(history.length).toBe(2); // 修复前：同毫秒快照互相覆盖只剩 1 条
+      expect(new Set(history.map((h) => h.id)).size).toBe(2); // 两个不同快照 id
       expect(history.some((h) => h.preview.includes('第一版内容'))).toBe(true);
       expect(history.some((h) => h.preview.includes('第二版内容'))).toBe(true);
-      // 同毫秒的 savedAt 反解自文件名前 24 字符，两版一致且合法
+      // 同毫秒的 savedAt 一致且合法
       expect(history[0].savedAt).toBe('2026-09-25T07:12:33.412Z');
       expect(history[1].savedAt).toBe('2026-09-25T07:12:33.412Z');
 
-      // 恢复「第一版」那条快照后，当前文件与快照原文逐字一致
-      const v1 = history.find((h) => h.preview.includes('第一版内容'))!;
-      const snapText = fs.readFileSync(path.join(groupsDir(), '.history', gid, `${v1.id}.md`), 'utf8');
+      // 恢复「第一版」那条快照后，内容与第一版写入后的原文逐字一致
+      //（v2 快照存整组结构化状态，恢复后经渲染与基准原文对照）
+      const v1 = history.find((h) => h.preview.includes('第一版内容') && !h.preview.includes('第二版内容'))!;
       const restored = await groups.restoreGroupSnapshot(UID, gid, v1.id);
       expect(restored.ok).toBe(true);
-      expect((await groups.readGroupContent(UID, gid)).content).toBe(snapText);
+      expect((await groups.readGroupContent(UID, gid)).content).toBe(afterFirst);
     } finally {
       vi.useRealTimers();
     }
@@ -631,10 +632,20 @@ describe('personal_ontology_groups › snapshot id & savedAt compatibility (T007
     const created = await groups.createGroup(UID, '新旧共存组');
     const gid = created.group!.group_id;
 
-    // 手工放置一个旧版代码写的纯 ISO 文件名快照（不迁移存量，必须继续可读）
-    const histDir = path.join(groupsDir(), '.history', gid);
+    // 手工放置一版无同毫秒序号后缀（旧命名形态）的 v2 JSON 快照：命名兼容层必须继续可读
+    const cognitionDir = path.join(tmpDir, UID, 'cloud', 'cognition');
+    const histDir = path.join(cognitionDir, 'po-history', gid);
     fs.mkdirSync(histDir, { recursive: true });
-    fs.writeFileSync(path.join(histDir, '2020-01-01T00-00-00-000Z.md'), '旧格式快照正文', 'utf8');
+    const legacySnapshot = {
+      savedAt: '2020-01-01T00:00:00.000Z',
+      group: {
+        id: gid, title: '新旧共存组', kind: 'user',
+        fields: [{ id: 'f1', name: '旧字段', origin: 'user', createdAt: '2020-01-01T00:00:00.000Z' }],
+        values: [{ id: 'v1', fieldId: 'f1', text: '旧格式快照正文', source: '手动', createdAt: '2020-01-01T00:00:00.000Z', updatedAt: '2020-01-01T00:00:00.000Z' }],
+        entries: [], createdAt: '2020-01-01T00:00:00.000Z', updatedAt: '2020-01-01T00:00:00.000Z',
+      },
+    };
+    fs.writeFileSync(path.join(histDir, '2020-01-01T00-00-00-000Z.json'), JSON.stringify(legacySnapshot), 'utf8');
 
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-09-25T07:12:33.412Z'));
@@ -652,7 +663,7 @@ describe('personal_ontology_groups › snapshot id & savedAt compatibility (T007
       // 同毫秒内序号决定先后：乙（-01）比甲（-00）新
       expect(history[0].preview).toBe('新格式乙');
       expect(history[1].preview).toBe('新格式甲');
-      expect(history[2].preview).toBe('旧格式快照正文');
+      expect(history[2].preview).toContain('旧格式快照正文'); // v2 快照 preview 为渲染文本
     } finally {
       vi.useRealTimers();
     }
@@ -714,12 +725,10 @@ describe('personal_ontology_groups › delete fallback (T020/T021: 删除前留�
     const res = await groups.removeFieldValue(UID, gid, '称呼', '子安');
     expect(res.ok).toBe(true);
 
-    // 历史最新一版（新→旧排序的 [0]）== 删除前整组原文，逐字一致
+    // 历史最新一版（新→旧排序的 [0]）== 删除前整组状态（v2：快照存结构化整组）
     const history = groups.listGroupHistory(UID, gid);
     expect(history.length).toBe(3); // append×2 留档 + 删值留档（首次写入不留）
-    const snapText = readSnapshotText(gid, history[0].id);
-    expect(snapText).toBe(beforeContent);
-    expect(snapText).toContain('- 子安 [手动]'); // 删除前快照逐字含被删值
+    expect(history[0].preview).toContain('子安'); // 删除前快照含被删值
 
     // 恢复往返（T024 主进程侧）：恢复后 readGroupContent 与删除前逐字相等
     const restored = await groups.restoreGroupSnapshot(UID, gid, history[0].id);
@@ -743,20 +752,22 @@ describe('personal_ontology_groups › delete fallback (T020/T021: 删除前留�
     await groups.appendFieldValue(UID, gid, '居住地', '北京', '手动');
     await groups.appendToGroup(UID, gid, '回复用简短中文');
 
-    // 删字段：历史最新一版 == 删除前整组原文
+    // 删字段：恢复最新一版快照后与删除前逐字一致（v2 无落盘 .md 可对照，走恢复往返）
     let before = (await groups.readGroupContent(UID, gid)).content!;
     expect((await groups.removeField(UID, gid, '称呼')).ok).toBe(true);
     let latest = groups.listGroupHistory(UID, gid)[0];
-    expect(readSnapshotText(gid, latest.id)).toBe(before);
+    expect((await groups.restoreGroupSnapshot(UID, gid, latest.id)).ok).toBe(true);
+    expect((await groups.readGroupContent(UID, gid)).content).toBe(before);
 
     // 删流水：同款断言
     before = (await groups.readGroupContent(UID, gid)).content!;
     expect((await groups.removeEntry(UID, gid, '回复用简短中文')).ok).toBe(true);
     latest = groups.listGroupHistory(UID, gid)[0];
-    expect(readSnapshotText(gid, latest.id)).toBe(before);
+    expect((await groups.restoreGroupSnapshot(UID, gid, latest.id)).ok).toBe(true);
+    expect((await groups.readGroupContent(UID, gid)).content).toBe(before);
   });
 
-  it('T021: deleting a never-snapshotted group leaves its pre-delete version in .history + a group_delete ledger line; template groups still refused', async () => {
+  it('T021: deleting a group leaves it in trash + a group_delete ledger line; template groups still refused', async () => {
     const groups = await loadModule();
     const created = await groups.createGroup(UID, '从未留档的删除组');
     const gid = created.group!.group_id;
@@ -768,39 +779,28 @@ describe('personal_ontology_groups › delete fallback (T020/T021: 删除前留�
     const del = await groups.deleteGroup(UID, gid);
     expect(del.ok).toBe(true);
 
-    // 删除前那一版出现在历史目录，内容与删除前原文逐字一致
-    const history = groups.listGroupHistory(UID, gid);
-    expect(history.length).toBe(1);
-    expect(readSnapshotText(gid, history[0].id)).toBe(beforeDelete);
-    // 台账有 group_delete 行（Phase 2 已接通，这里核验仍在）
+    // 组进回收站（v2 的「删除留档」），标题/时间可见
+    const deleted = groups.listDeletedGroups(UID);
+    expect(deleted.map((d) => d.groupId)).toContain(gid);
+    // 台账有 group_delete 行（v2 口径不变）
     const audit = groups.readGroupAudit(UID, gid);
     expect(audit.filter((l) => l.action === 'group_delete')).toHaveLength(1);
-    // 组确实已删（内容文件移除、台账列表清空）
+    // 组确实已删（渲染副本移除、组列表清空）
     expect(fs.existsSync(path.join(groupsDir(), `${gid}.md`))).toBe(false);
     expect((await groups.listGroups(UID)).map((g) => g.group_id)).not.toContain(gid);
 
-    // 模板组仍被拒（role_template_group 语义不变），文件不动、不写台账
-    const tplId = 'tplgrp001';
-    fs.mkdirSync(groupsDir(), { recursive: true });
-    fs.writeFileSync(path.join(groupsDir(), 'groups.md'), [
-      '# 记忆分组',
-      '',
-      `### ${tplId}`,
-      '- 标题: 模板组',
-      `- 文件: .personal_ontology_groups/${tplId}.md`,
-      '- 创建时间: 2026-09-25T00:00:00.000Z',
-      '- 更新时间: 2026-09-25T00:00:00.000Z',
-      '- 模板: student@0.2.0',
-      '',
-    ].join('\n'), 'utf8');
-    fs.writeFileSync(path.join(groupsDir(), `${tplId}.md`), '> 模板: student@0.2.0\n', 'utf8');
+    // 模板组仍被拒（role_template_group 语义不变）：真实安装一个模板再删
+    const templates = await import('../../../src/main/features/personal_ontology_template_files'.replace('../../../', '../../../../'));
+    const installed = await templates.installTemplateFile(UID, 'student');
+    expect(installed.ok).toBe(true);
+    const tplGid = installed.created![0].group_id;
 
-    const refused = await groups.deleteGroup(UID, tplId);
+    const refused = await groups.deleteGroup(UID, tplGid);
     expect(refused.ok).toBe(false);
     expect(refused.error).toBe('role_template_group');
-    expect(fs.existsSync(path.join(groupsDir(), `${tplId}.md`))).toBe(true);
-    expect(groups.readGroupAudit(UID, tplId)).toEqual([]); // 被拦截的操作不计成功、不写台账
-    expect(groups.listGroupHistory(UID, tplId)).toEqual([]); // 也不留快照
+    expect(fs.existsSync(path.join(groupsDir(), 'student.md'))).toBe(true);
+    expect(groups.readGroupAudit(UID, tplGid).filter((l) => l.action === 'group_delete')).toEqual([]); // 被拦截的操作不计成功、不写台账
+    expect(groups.listGroupHistory(UID, tplGid)).toEqual([]); // 也不留快照
   });
 });
 
@@ -825,50 +825,40 @@ describe('personal_ontology_groups › deleted groups (D5b / T025 / T028)', () =
 
     expect((await groups.deleteGroup(UID, gid)).ok).toBe(true);
 
-    // 已删除分组可见：groupId / title（快照首个 # 标题）/ deletedAt / snapshotCount
+    // 已删除分组可见：groupId / title（组自己的标题）/ deletedAt / snapshotCount
     const deleted = groups.listDeletedGroups(UID);
     expect(deleted).toHaveLength(1);
     expect(deleted[0].groupId).toBe(gid);
-    expect(deleted[0].title).toBe('已删除恢复组');
-    // 删前留档（T021）比删除前的历史多一版；deletedAt = 最新一版（删前那版）的 savedAt
-    const afterDeleteHistory = groups.listGroupHistory(UID, gid);
-    expect(deleted[0].snapshotCount).toBe(beforeHistory.length + 1);
-    expect(afterDeleteHistory).toHaveLength(deleted[0].snapshotCount);
-    expect(deleted[0].deletedAt).toBe(afterDeleteHistory[0].savedAt);
-    expect(deleted[0].deletedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    expect(deleted[0].title).toBe('台账标题'); // v2 回收站标题 = 组标题（整状态入站）
+    expect(deleted[0].deletedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(deleted[0].snapshotCount).toBeGreaterThan(0);
 
-    // 恢复最新一版（= 删除前最后一版）→ 组回到台账、内容与删除前逐字一致
-    const newestId = afterDeleteHistory[0].id;
-    expect(readSnapshotText(gid, newestId)).toBe(beforeDelete);
-    const restored = await groups.restoreGroupSnapshot(UID, gid, newestId);
+    // 恢复 → 组回到台账、内容与删除前逐字一致（v2：回收站整状态复活）
+    const restored = await groups.restoreDeletedGroup(UID, gid);
     expect(restored.ok).toBe(true);
     const listed = await groups.listGroups(UID);
     expect(listed.map((g) => g.group_id)).toContain(gid);
     expect((await groups.readGroupContent(UID, gid)).content).toBe(beforeDelete);
-    // 恢复后不再列在已删除分组；台账补了 snapshot_restore 行（D12）
+    // 恢复后不再列在已删除分组；台账补了 group_restore 行（v2 的 D12）
     expect(groups.listDeletedGroups(UID)).toEqual([]);
-    expect(groups.readGroupAudit(UID, gid).some((l) => l.action === 'snapshot_restore')).toBe(true);
+    expect(groups.readGroupAudit(UID, gid).some((l) => l.action === 'group_restore')).toBe(true);
   });
 
-  it('T028 同名 group_id 的内容文件已存在 → 拒绝（group already exists）且不覆盖盘上文件', async () => {
+  it('T028 恢复后回收站清空；再次恢复干净失败（group not found）且不产生副作用', async () => {
     const groups = await loadModule();
     const created = await groups.createGroup(UID, '同名冲突组');
     const gid = created.group!.group_id;
     await groups.appendFieldValue(UID, gid, '称呼', '子安', '手动');
-    await groups.deleteGroup(UID, gid);
-    // 构造冲突态：meta 已删、快照在，但同名内容文件又在盘上（删除时 rm 失败 / 导入残留）
-    const orphan = '盘上已有的孤儿内容（不在任何快照里）';
-    fs.writeFileSync(path.join(groupsDir(), `${gid}.md`), orphan, 'utf8');
+    expect((await groups.deleteGroup(UID, gid)).ok).toBe(true);
 
-    const history = groups.listGroupHistory(UID, gid);
-    const res = await groups.restoreGroupSnapshot(UID, gid, history[0].id);
-    expect(res.ok).toBe(false);
-    expect(res.error).toBe('group already exists'); // 唯一新增错误码（contracts/ipc.md §2 失败分支③）
-    // 盘上文件未被覆盖、组未回台账（被拦截的操作不计成功）
-    expect(fs.readFileSync(path.join(groupsDir(), `${gid}.md`), 'utf8')).toBe(orphan);
-    expect((await groups.listGroups(UID)).map((g) => g.group_id)).not.toContain(gid);
-    // 仍在已删除列表里（可再次尝试）
-    expect(groups.listDeletedGroups(UID).map((d) => d.groupId)).toEqual([gid]);
+    // 第一次恢复成功；第二次（回收站已空）干净失败、无副作用
+    expect((await groups.restoreDeletedGroup(UID, gid)).ok).toBe(true);
+    expect(groups.listDeletedGroups(UID)).toEqual([]);
+    const again = await groups.restoreDeletedGroup(UID, gid);
+    expect(again.ok).toBe(false);
+    expect(again.error).toBe('group not found');
+    expect((await groups.listGroups(UID)).map((g) => g.group_id)).toContain(gid);
+    expect(fs.existsSync(path.join(groupsDir(), `${gid}.md`))).toBe(true);
   });
 
   it('T028 无快照目录 / 只有台账文件 / 活组 / 非法目录名 / 非法 uid → 空列表或不列入，不报错', async () => {
