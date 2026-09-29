@@ -3784,7 +3784,10 @@
       ${filterText ? `<div class="note">${esc(T('cognition.capture_detail_filter_label', '筛选原因'))}：${esc(filterText)}</div>` : ''}
       ${modelReason ? `<blockquote class="ca-quote">${esc(modelReason)}</blockquote>` : ''}`;
     }
-    return `<div class="card ca-result-card">${sectionHead(T('cognition.capture_detail_result_title', '整理结果'))}${body}</div>`;
+    /* 单卡版式（2026-09-29 与建议详情统一）：分区不再各包一张 card 散在外面，
+     * 统一收进主体卡内做分节（分隔线区隔）——整页=页头 + 一张完整内容卡，
+     * 与建议详情同构。 */
+    return `<div class="ca-capture-sec">${sectionHead(T('cognition.capture_detail_result_title', '整理结果'))}${body}</div>`;
   }
 
   /* 对话上下文区：参与角色 + 消息时间线（展示口径 = 本次整理实际读到的消息，
@@ -3800,7 +3803,7 @@
       const hint = context && context.loading
         ? T('cognition.capture_detail_context_loading', '正在读取对话上下文…')
         : T('cognition.capture_detail_context_unavailable', '消息内容不可用（会话可能已被清理或迁移）。');
-      return `<div class="card">${sectionHead(T('cognition.capture_detail_context_title', '对话上下文'), '', signalChips)}<div class="note">${esc(hint)}</div></div>`;
+      return `<div class="ca-capture-sec">${sectionHead(T('cognition.capture_detail_context_title', '对话上下文'), '', signalChips)}<div class="note">${esc(hint)}</div></div>`;
     }
     const nameById = new Map((context.participants || []).map((p) => [String(p.id), p]));
     const actorName = (actorId) => {
@@ -3831,7 +3834,7 @@
     const participantsHtml = (context.participants || []).length
       ? `<div class="chips ca-participants">${(context.participants || []).map((p) => chip(actorName(p.id), p.kind === 'user' ? 'green' : '')).join(' ')}</div>`
       : '';
-    return `<div class="card">
+    return `<div class="ca-capture-sec">
       ${sectionHead(T('cognition.capture_detail_context_title', '对话上下文'), '', signalChips)}
       ${participantsHtml ? `${sectionHead(T('cognition.capture_detail_participants_title', '参与角色'))}${participantsHtml}` : ''}
       ${sectionHead(T('cognition.capture_detail_messages_title', '消息时间线'))}
@@ -3921,7 +3924,7 @@
      * 页头（仪表盘版式），与建议详情（固定标题 → 进卡片）两套观感。会话
      * 标题降为卡片内 h2（同建议详情的内容标题位）；统计卡撤掉——待确认数
      * 看下方整理结果区、已保存资产看沉淀区，尝试次数与触发原因进元信息行。
-     * 下方对称双栏 = 整理结果 | 对话时间线，宽窗并排、窄窗单列。 */
+     * 下方整理结果、对话上下文同为卡内分节（单卡文档式，不再散板双栏）。 */
     const recordTitleText = vocab
       ? vocab.recordTitle(capture)
       : String(capture.conversationTitle || T('cognition.capture_untitled_record', '未命名会话的整理'));
@@ -3950,10 +3953,10 @@
       <h2 class="cand-title">${esc(recordTitleText)}</h2>
       ${captureStageStepper(capture.stage)}
       ${depositBlocks ? `<div class="ca-deposit">${sectionHead(T('cognition.capture_detail_assets', '已保存资产'))}${depositBlocks}</div>` : ''}
-    </div>
-    <div class="ca-detail-duo">
-      ${captureResultSection(capture, messageBySourceId)}
-      ${captureConversationSection(capture, contextHit ? (contextHit.loading ? { loading: true } : context) : null)}
+      <div class="ca-capture-sections">
+        ${captureResultSection(capture, messageBySourceId)}
+        ${captureConversationSection(capture, contextHit ? (contextHit.loading ? { loading: true } : context) : null)}
+      </div>
     </div>`;
   }
 

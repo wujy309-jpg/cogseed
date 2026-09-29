@@ -795,6 +795,13 @@ describe('整理详情页', () => {
     expect(html).toContain('尝试次数');
     // 统计卡带不再出现在任务详情页（「待确认/已保存资产」计数看下方分区）。
     expect(html).not.toContain('class="stats"');
+    // 单卡文档式（2026-09-29 第二步，同建议详情）：整理结果/对话上下文是
+    // 主体卡内的分节（分隔线区隔），不再是散在外面的独立卡片。
+    expect(html).toContain('ca-capture-sections');
+    expect(html).not.toContain('ca-detail-duo');
+    expect(html).not.toContain('ca-result-card');
+    expect(html).toContain('整理结果');
+    expect(html).toContain('对话上下文');
   });
 
   it('整理过程五步进度条：stage 高亮当前步、已过步打勾', () => {
@@ -822,9 +829,9 @@ describe('整理详情页', () => {
     // 沉淀的具体内容直接展示（statement 内联），而非只有跳转按钮。
     expect(html).toContain('用真实日志分层归因，不允许拍脑袋给结论。');
     expect(html).toContain('data-act="open-asset" data-id="aa-1"');
-    // 合并：资产区随整合卡渲染，页面卡片数从 4 降为 3（结果/上下文/整合卡），
-    // 不再有独立的资产卡。
-    expect((html.match(/class="card[ ">]/g) || []).length).toBe(3);
+    // 合并：资产区随整合卡渲染，不再有独立的资产卡；2026-09-29 单卡统一后
+    // 结果/上下文也并入主体卡——整页只有 1 张内容卡（同建议详情）。
+    expect((html.match(/class="card[ ">]/g) || []).length).toBe(1);
     // 卡头不再出「查看资产」主按钮（明细已在卡内，与 review_candidates 同规则过滤）。
     expect(html).not.toContain('data-action="view_assets"');
   });

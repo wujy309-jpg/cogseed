@@ -1445,13 +1445,14 @@
 #ca-root .ca-detail-side .ca-more-row { flex-wrap: wrap; }
 #ca-root .ca-detail-side .ca-more-copy { flex: 1 1 100%; }
 #ca-root .ca-detail-side .ca-more-row .btn { margin-left: auto; }
-/* 整理详情：时间线正文限宽；结果/时间线对称双栏（整合卡之下的阅读区）。 */
+/* 整理详情：时间线正文限宽。结果/时间线并入主体卡内分节（2026-09-29 与
+   建议详情统一为单卡文档式，不再散板双栏）：节与节之间用分隔线区隔。 */
 #ca-root .ca-detail-main .ca-tl-main { max-width: var(--layout-resource-detail-width, 880px); }
-#ca-root .ca-detail-duo {
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px; align-items: start; margin-top: 16px;
+#ca-root .ca-capture-sections { margin-top: 4px; }
+#ca-root .ca-capture-sections > .ca-capture-sec {
+  min-width: 0; margin-top: 16px; padding-top: 16px;
+  border-top: 1px solid var(--ca-line);
 }
-#ca-root .ca-detail-duo > .card { min-width: 0; }
 /* 整理报告：列表行扁平化成通栏资料行（同列表工作台的语言）。 */
 #ca-root .ca-layout-detail .ca-page > .sect-block .row.is-flat {
   min-height: 54px; margin: 0; padding: 13px 4px;
@@ -1459,8 +1460,7 @@
 }
 #ca-root .ca-layout-detail .ca-page > .sect-block .row.is-flat + .row.is-flat { border-top: 0; }
 @media (max-width: 1100px) {
-  #ca-root .ca-detail-grid,
-  #ca-root .ca-detail-duo { grid-template-columns: minmax(0, 1fr); }
+  #ca-root .ca-detail-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* 详情重构（2026-09-29）：来历独立卡与组内去重的 ×N 计数标记。 */
