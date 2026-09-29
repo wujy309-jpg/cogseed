@@ -553,7 +553,7 @@ describe('projection card surfaces a drifted confirmed version', () => {
   });
 });
 
-describe('「本次使用的记忆」卡折叠 chip 与撤销贴右（2026-09-29）', () => {
+describe('「本次使用的记忆」卡折叠热区与默认收起（2026-09-29 二轮）', () => {
   const confirmedModelCard = {
     kind: 'recall_projection_card',
     projectionId: 'proj-fold',
@@ -564,62 +564,67 @@ describe('「本次使用的记忆」卡折叠 chip 与撤销贴右（2026-09-29
     assetSummaries: [{ assetId: 'asset-fold', title: '折叠测试资产', type: 'rule', status: 'active', scope: 'review', version: '1' }],
   };
 
-  function loadWithIconButton(invoke: (channel: string, payload?: unknown) => Promise<unknown>) {
-    const loaded = loadModule(invoke, {
-      uiIconButton: ({ label, className, attrs }: { label: string; className?: string; attrs?: Record<string, string> }) => {
-        const extra = Object.entries(attrs || {}).map(([key, value]) => ` ${key}="${String(value)}"`).join('');
-        return `<button type="button" class="ui-icon-button ${String(className || '')}"${extra} aria-label="${String(label)}">${String(label)}</button>`;
-      },
+  function loadWithIcons(invoke: (channel: string, payload?: unknown) => Promise<unknown>) {
+    return loadModule(invoke, {
+      uiIconHtml: (name: string, className: string) => `<svg class="${className} is-${name}" aria-hidden="true"></svg>`,
     });
-    return loaded;
   }
 
-  it('头部渲染折叠 chip：位于右侧状态之后、默认展开（aria-expanded=true）；原语缺席整颗降级', async () => {
-    const withChip = loadWithIconButton(async (channel) => {
+  it('默认收起：头部即热区（role=button + aria-expanded=false），计数内联标题右侧，提示句在尾行撤销左侧；箭头只是指示图标', async () => {
+    const loaded = loadWithIcons(async (channel) => {
       if (channel === 'recall.projections.card') return { ok: true, card: confirmedModelCard };
       return { ok: true };
     });
-    await withChip.context.window.mountRecallProjectionCard(withChip.host, { projectionId: 'proj-fold' }, { cid: 'c1', onlyModelSelected: true });
-    expect(withChip.host.innerHTML).toContain('data-recall-toggle="1"');
-    expect(withChip.host.innerHTML).toContain('aria-expanded="true"');
-    // chip 在头部最右：右侧状态/徽标自然让位左移。
-    expect(withChip.host.innerHTML.indexOf('chat-recall-toggle'))
-      .toBeGreaterThan(withChip.host.innerHTML.indexOf('chat-recall-projection-status'));
+    await loaded.context.window.mountRecallProjectionCard(loaded.host, { projectionId: 'proj-fold' }, { cid: 'c1', onlyModelSelected: true });
+    expect(loaded.host.className).toContain('is-collapsed');
+    expect(loaded.host.innerHTML).toContain('role="button" tabindex="0" aria-expanded="false"');
+    // 计数上移：标题右侧内联（不再是标题下的块级 small）。
+    expect(loaded.host.innerHTML).toContain('chat-recall-citations-count');
+    expect(loaded.host.innerHTML).toContain('带入 1 条');
+    expect(loaded.host.innerHTML).not.toContain('data-recall-projection-summary');
+    // 提示句挪到尾行、撤销左侧。
+    expect(loaded.host.innerHTML).toContain('chat-recall-citations-note');
+    expect(loaded.host.innerHTML.indexOf('chat-recall-citations-note'))
+      .toBeLessThan(loaded.host.innerHTML.indexOf('data-recall-projection-revoke'));
+    expect(loaded.host.innerHTML).not.toContain('data-recall-projection-note');
+    // 箭头是指示图标不是按钮。
+    expect(loaded.host.innerHTML).toContain('chat-recall-toggle');
+    expect(loaded.host.innerHTML).not.toContain('data-recall-toggle');
 
+    // 图标原语缺席：箭头整颗降级，卡照常（默认收起态不变）。
     const plain = loadModule(async (channel) => {
       if (channel === 'recall.projections.card') return { ok: true, card: confirmedModelCard };
       return { ok: true };
     });
     await plain.context.window.mountRecallProjectionCard(plain.host, { projectionId: 'proj-fold' }, { cid: 'c1', onlyModelSelected: true });
-    expect(plain.host.innerHTML).not.toContain('data-recall-toggle');
-    // 降级不能顺手把卡弄丢。
+    expect(plain.host.innerHTML).not.toContain('chat-recall-toggle');
     expect(plain.host.innerHTML).toContain('本次使用的记忆');
     expect(plain.host.innerHTML).toContain('data-recall-projection-revoke');
   });
 
-  it('翻转：is-collapsed + dataset 同步；整卡重画（撤销成功刷新）后折叠态保持', async () => {
-    const loaded = loadWithIconButton(async (channel) => {
+  it('翻转：默认收起→首次点击=展开；整卡重画（撤销成功刷新）后状态保持', async () => {
+    const loaded = loadWithIcons(async (channel) => {
       if (channel === 'recall.projections.card') return { ok: true, card: confirmedModelCard };
       return { ok: true };
     });
     await loaded.context.window.mountRecallProjectionCard(loaded.host, { projectionId: 'proj-fold' }, { cid: 'c1', onlyModelSelected: true });
-    expect(loaded.host.className).not.toContain('is-collapsed');
+    expect(loaded.host.dataset.recallCollapsed).toBeUndefined();
 
-    loaded.context.window.recallCardToggleCollapsed(loaded.host);
-    expect(loaded.host.className).toContain('is-collapsed');
-    expect(loaded.host.dataset.recallCollapsed).toBe('1');
-
-    // 撤销成功走 refresh 整卡重画：折叠态从 dataset 回读，不弹回展开。
-    await loaded.host.handler({ target: { closest: (selector: string) => (String(selector).includes('revoke') ? { disabled: false } : null) } });
-    expect(loaded.host.className).toContain('is-collapsed');
-    expect(loaded.host.innerHTML).toContain('aria-expanded="false"');
-
-    loaded.context.window.recallCardToggleCollapsed(loaded.host);
+    // 首次翻转 = 展开（默认收起）。
+    expect(loaded.context.window.recallCardToggleCollapsed(loaded.host)).toBe(false);
     expect(loaded.host.className).not.toContain('is-collapsed');
     expect(loaded.host.dataset.recallCollapsed).toBe('0');
+
+    // 撤销成功走 refresh 整卡重画：展开态从 dataset 回读，不弹回收起。
+    await loaded.host.handler({ target: { closest: (selector: string) => (String(selector).includes('revoke') ? { disabled: false } : null) } });
+    expect(loaded.host.className).not.toContain('is-collapsed');
+    expect(loaded.host.innerHTML).toContain('aria-expanded="true"');
+
+    expect(loaded.context.window.recallCardToggleCollapsed(loaded.host)).toBe(true);
+    expect(loaded.host.className).toContain('is-collapsed');
+    expect(loaded.host.dataset.recallCollapsed).toBe('1');
     // 返回值 = 翻转后的折叠态（vm 宿主 querySelector 是空桩，aria 属性的
     // 即时同步只在真实 DOM 生效；重画路径的 aria 已在上面断过）。
-    expect(loaded.context.window.recallCardToggleCollapsed(loaded.host)).toBe(true);
     expect(loaded.context.window.recallCardToggleCollapsed(loaded.host)).toBe(false);
   });
 });

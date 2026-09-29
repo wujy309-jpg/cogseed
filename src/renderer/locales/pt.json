@@ -3656,7 +3656,6 @@
   "chat.recall.memory_card_brought": "{n} levados",
   "chat.recall.memory_card_omitted": "{n} omitidos",
   "chat.recall.memory_card_model_picked": "O modelo escolheu {n} deles",
-  "chat.recall.memory_card_toggle": "Expandir ou recolher as memórias citadas",
   "chat.recall.scope_agent": "Agente",
   "chat.recall.scope_global": "Global",
   "chat.recall.scope_personal": "Pessoal",

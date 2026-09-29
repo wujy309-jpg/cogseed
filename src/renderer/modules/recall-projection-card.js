@@ -53,20 +53,13 @@
     return `<span class="${iconClass}">${window.uiIconHtml(name, 'ui-icon')}</span>`;
   }
 
-  /** 头部折叠箭头 chip（2026-09-29）：只画按钮，不翻状态——翻转统一走
-   *  recallCardToggleCollapsed（conversation.js 的 hydrate 委托认领点击后调它）。
-   *  展开时箭头朝上（点它收起），收起时朝下，换向由 CSS 按 .is-collapsed 旋转。
-   *  图标按钮原语缺席（极简渲染上下文）时整颗降级为空串，与 _sharedButton 同一
-   *  规矩，不在基线之外自造控件。 */
-  function _toggleButtonHtml(collapsed) {
-    if (typeof window.uiIconButton !== 'function') return '';
-    return window.uiIconButton({
-      label: _label('chat.recall.memory_card_toggle', 'Expand or collapse cited memories'),
-      icon: 'chevron-down',
-      size: 'sm',
-      className: 'chat-recall-toggle',
-      attrs: { 'data-recall-toggle': '1', 'aria-expanded': collapsed ? 'false' : 'true' },
-    });
+  /** 头部折叠箭头（2026-09-29 二轮）：只是指示图标，不是按钮——点击热区是整个
+   *  头部（.chat-recall-citations-head，点击/键盘都由 conversation.js 的 hydrate
+   *  委托认领）。展开时箭头朝上（点它收起），收起时朝下，换向由 CSS 按
+   *  .is-collapsed 旋转。图标原语缺席（极简渲染上下文）时整颗降级为空串。 */
+  function _toggleIconHtml() {
+    if (typeof window.uiIconHtml !== 'function') return '';
+    return `<span class="chat-recall-toggle" aria-hidden="true">${window.uiIconHtml('chevron-down', 'ui-icon')}</span>`;
   }
 
   function _assetStatusLabel(status) {
@@ -237,8 +230,10 @@
    * 投影数据是异步拉取的，补全靠整体替换 host.innerHTML——反馈与投影操作的
    * 事件因此全部走委托（mountRecallProjectionCard 与 conversation.js 的
    * _hydrateRecallCitations 各自委托一次），不怕整卡重画。
+   * 布局（2026-09-29 二轮）：计数内联在标题右侧；状态说明句挪到尾行、撤销左侧；
+   * 头部即折叠热区（role=button），默认收起。
    */
-  function _memoryCardInnerHtml(card, userPinned, omissions, citations, feedbackSent, collapsed = false) {
+  function _memoryCardInnerHtml(card, userPinned, omissions, citations, feedbackSent, collapsed = true) {
     const citedList = _validCitations(citations);
     const citedAssetIds = new Set(citedList.map((citation) => String(citation.asset_id)));
     const assets = card && Array.isArray(card.assetSummaries) ? card.assetSummaries : [];
@@ -299,21 +294,22 @@
       : '');
     const feedbackButtons = feedbackButton(helpful, 'thumbs-up', 'positive')
       + feedbackButton(improve, 'thumbs-down', 'negative');
-    return `<div class="chat-recall-citations-head">
+    const noteHtml = note
+      ? `<small class="chat-recall-citations-note">${_escape(note)}</small>`
+      : '';
+    return `<div class="chat-recall-citations-head" role="button" tabindex="0" aria-expanded="${collapsed ? 'false' : 'true'}">
         ${_headIconHtml('brain-circuit', 'chat-recall-citations-icon')}
         <div class="chat-recall-citations-title">
-          <strong>${_escape(_label('chat.recall.memory_card_title', '本次使用的记忆'))}</strong>
-          ${summaryLine ? `<small data-recall-projection-summary>${_escape(summaryLine)}</small>` : ''}
-          ${note ? `<small data-recall-projection-note>${_escape(note)}</small>` : ''}
+          <strong>${_escape(_label('chat.recall.memory_card_title', '本次使用的记忆'))}${summaryLine ? `<span class="chat-recall-citations-count">${_escape(summaryLine)}</span>` : ''}</strong>
         </div>
         ${badge ? `<span class="chat-recall-projection-badge">${_escape(badge)}</span>` : ''}
         ${statusLabel ? `<span class="chat-recall-projection-status">${_escape(statusLabel)}</span>` : ''}
         ${feedbackStatus}
-        ${_toggleButtonHtml(collapsed)}
+        ${_toggleIconHtml()}
       </div>
       ${rows.length ? `<div class="chat-recall-citation-list">${rows.join('')}</div>` : ''}
       ${omittedRows ? `<div class="chat-recall-projection-omitted">${omittedRows}</div>` : ''}
-      <div class="chat-recall-feedback-actions">${feedbackButtons}${projectionActions}</div>`;
+      <div class="chat-recall-feedback-actions">${feedbackButtons}${noteHtml}${projectionActions}</div>`;
   }
 
   /**
@@ -323,7 +319,7 @@
    */
   function recallMemoryCardHtml(citations) {
     if (!_validCitations(citations).length) return '';
-    return `<section class="chat-recall-citations">${_memoryCardInnerHtml(null, false, [], citations, false, false)}</section>`;
+    return `<section class="chat-recall-citations">${_memoryCardInnerHtml(null, false, [], citations, false, true)}</section>`;
   }
 
   // ── 旧预载草稿渲染分支（2026-08-17 起生产不可达：对话侧只挂模型自选与
@@ -431,9 +427,9 @@
         const prose = bubble && typeof bubble.querySelector === 'function' ? bubble.querySelector('.markdown-body') : null;
         if (prose) prose.hidden = true;
       }
-      // 折叠态记在 host dataset（不随 innerHTML 重画丢）：重建 className 时
-      // 回读，箭头 aria-expanded 与列表显隐都按同一份状态走。
-      const collapsed = host.dataset.recallCollapsed === '1';
+      // 折叠态记在 host dataset（不随 innerHTML 重画丢）：缺省=收起（2026-09-29
+      // 二轮拍板），只有显式 '0' 才是展开；重建 className 时回读。
+      const collapsed = host.dataset.recallCollapsed !== '0';
       host.className = `chat-recall-citations${card?.status === 'revoked' ? ' is-projection-revoked' : ''}${host.dataset.feedbackSent === '1' ? ' is-feedback-sent' : ''}${collapsed ? ' is-collapsed' : ''}`;
       host.dataset.projectionId = String(card?.projectionId || opts?.projectionId || '');
       host.innerHTML = _memoryCardInnerHtml(card, userPinned, omissions, opts?.citations, host.dataset.feedbackSent === '1', collapsed);
@@ -521,21 +517,23 @@
     await refresh();
   }
 
-  /** 折叠翻转的唯一实现（2026-09-29）：状态记在宿主 dataset、is-collapsed 挂在
-   *  宿主 className 上（与卡内其余 className 直写同一套路，vm 测试宿主也好替），
-   *  _render 整卡重画时回读不丢；返回翻转后的折叠态。conversation.js 的 hydrate
-   *  委托认领 [data-recall-toggle] 后调这里；mount 的动作委托不认 toggle——同一
-   *  颗 host 上两个委托监听，只由 hydrate 翻，避免翻两次回到原样。 */
+  /** 折叠翻转的唯一实现（2026-09-29）：状态记在宿主 dataset（缺省=收起）、
+   *  is-collapsed 挂在宿主 className 上（与卡内其余 className 直写同一套路，
+   *  vm 测试宿主也好替），_render 整卡重画时回读不丢；返回翻转后的折叠态。
+   *  点击/键盘由 conversation.js 的 hydrate 委托认领（热区=整个头部）后调这里；
+   *  mount 的动作委托不认头部点击——同一颗 host 上两个委托监听，只由 hydrate
+   *  翻，避免翻两次回到原样。 */
   function recallCardToggleCollapsed(host) {
     if (!host || !host.dataset) return undefined;
-    const collapsed = host.dataset.recallCollapsed !== '1';
-    host.dataset.recallCollapsed = collapsed ? '1' : '0';
+    const collapsed = host.dataset.recallCollapsed !== '0';
+    const next = !collapsed;
+    host.dataset.recallCollapsed = next ? '1' : '0';
     const classes = String(host.className || '').split(/\s+/).filter(Boolean).filter((name) => name !== 'is-collapsed');
-    if (collapsed) classes.push('is-collapsed');
+    if (next) classes.push('is-collapsed');
     host.className = classes.join(' ');
-    const toggle = typeof host.querySelector === 'function' ? host.querySelector('[data-recall-toggle]') : null;
-    if (toggle) toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-    return collapsed;
+    const head = typeof host.querySelector === 'function' ? host.querySelector('.chat-recall-citations-head') : null;
+    if (head) head.setAttribute('aria-expanded', next ? 'false' : 'true');
+    return next;
   }
 
   window.recallMemoryCardHtml = recallMemoryCardHtml;

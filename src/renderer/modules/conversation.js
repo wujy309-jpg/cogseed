@@ -5372,10 +5372,11 @@ function _hydrateRecallCitations(messageEl, cid, messageId) {
   // 替换 host.innerHTML），按按钮绑定会在重画后失效——事件挂在 host 上才稳。
   host.dataset.feedbackBound = '1';
   host.addEventListener('click', async (event) => {
-    // 折叠箭头（2026-09-29）：同一颗 host 上 hydrate 与 mount 两个委托都在听，
-    // toggle 只在这里认领翻转（实现收在卡模块 recallCardToggleCollapsed），
-    // mount 的动作委托不认它——否则翻两次等于没翻。
-    if (event.target?.closest?.('[data-recall-toggle]')) {
+    // 折叠热区 = 整个头部（2026-09-29 二轮）：箭头只是指示图标，点头部任意处
+    // 翻转。同一颗 host 上 hydrate 与 mount 两个委托都在听，翻转只在 hydrate
+    // 认领（实现收在卡模块 recallCardToggleCollapsed），mount 不认头部点击——
+    // 否则翻两次等于没翻。
+    if (event.target?.closest?.('.chat-recall-citations-head')) {
       if (typeof window.recallCardToggleCollapsed === 'function') window.recallCardToggleCollapsed(host);
       return;
     }
@@ -5409,6 +5410,14 @@ function _hydrateRecallCitations(messageEl, cid, messageId) {
     } finally {
       host.dataset.feedbackBusy = '0';
     }
+  });
+  // 头部带 role="button"：键盘等效入口（Enter/Space 翻转折叠），忽略 IME 组合期。
+  host.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    if (event.isComposing) return;
+    if (!event.target?.closest?.('.chat-recall-citations-head')) return;
+    event.preventDefault();
+    if (typeof window.recallCardToggleCollapsed === 'function') window.recallCardToggleCollapsed(host);
   });
 }
 

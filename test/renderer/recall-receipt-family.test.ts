@@ -179,27 +179,28 @@ describe('对话内「本次使用的记忆」卡（引用卡＋投影卡合并�
     expect(withoutIcons.host.innerHTML).toContain('data-recall-projection-revoke');
   });
 
-  it('折叠 affordance（2026-09-29）：chip 走共享原语，conversation 只认领不实现，样式钉在记忆卡段', () => {
-    // chip 是共享 uiIconButton 原语 + icons.js 的 chevron；翻转实现只在卡模块。
-    expect(cardSource).toContain('window.uiIconButton');
+  it('折叠 affordance（2026-09-29 二轮）：头部即热区，箭头只是指示图标，样式钉在记忆卡段', () => {
+    // 热区 = 头部元素（role=button + aria-expanded 在头部上）；箭头是纯图标。
+    expect(cardSource).toContain('chat-recall-citations-head" role="button" tabindex="0" aria-expanded=');
+    expect(cardSource).toContain('chat-recall-toggle');
     expect(cardSource).toContain("'chevron-down'");
-    expect(cardSource).toContain('data-recall-toggle');
+    expect(cardSource).not.toContain('data-recall-toggle');
+    expect(cardSource).not.toContain('window.uiIconButton');
     expect(cardSource).toContain('function recallCardToggleCollapsed');
-    // 点击认领在 hydrate 委托（唯一全路径必绑的监听），且在反馈分支之前短路。
-    expect(conversationSource).toContain('[data-recall-toggle]');
+    // 点击/键盘认领都在 hydrate 委托（唯一全路径必绑），翻转实现只在卡模块。
+    expect(conversationSource).toContain("closest?.('.chat-recall-citations-head')");
     expect(conversationSource).toContain('window.recallCardToggleCollapsed(host)');
-    expect(conversationSource.indexOf('[data-recall-toggle]'))
+    expect(conversationSource.indexOf("closest?.('.chat-recall-citations-head')"))
       .toBeLessThan(conversationSource.indexOf('[data-recall-feedback]'));
-    // 折叠只藏内容行（列表＋省略块），尾部反馈/撤销保持可见。
+    // 折叠只藏内容行（列表＋省略块），尾部反馈/提示句/撤销保持可见。
     const collapsed = cssBlock('.chat-recall-citations.is-collapsed .chat-recall-citation-list');
     expect(collapsed).toContain('.chat-recall-citations.is-collapsed .chat-recall-projection-omitted {');
     expect(collapsed).toContain('display: none;');
     expect(cssBlock('.chat-recall-feedback-actions')).toContain('align-items: center;');
-    expect(cssBlock('.chat-recall-feedback-actions .chat-recall-projection-summary-actions')).toContain('margin-left: auto;');
-    // icon-only 按钮的可访问名是它唯一文案：四语齐全。
-    for (const locale of ['zh', 'en', 'ja', 'pt']) {
-      const table = JSON.parse(fs.readFileSync(path.join(ROOT, `src/renderer/locales/${locale}.json`), 'utf8')) as Record<string, string>;
-      expect(table['chat.recall.memory_card_toggle'], `${locale} 缺 memory_card_toggle`).toBeTruthy();
-    }
+    // 提示句挪到撤销左侧（auto margin 独占中段）；计数上移内联在标题右侧。
+    expect(cssBlock('.chat-recall-citations-note')).toContain('margin-left: auto;');
+    expect(cssBlock('.chat-recall-citations-count')).toContain('margin-left: 6px;');
+    expect(cardSource).toContain('chat-recall-citations-count');
+    expect(cardSource).toContain('chat-recall-citations-note');
   });
 });

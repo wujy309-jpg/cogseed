@@ -3656,7 +3656,6 @@
   "chat.recall.memory_card_brought": "{n} 件持ち込み",
   "chat.recall.memory_card_omitted": "{n} 件省略",
   "chat.recall.memory_card_model_picked": "うちモデルが {n} 件を選択",
-  "chat.recall.memory_card_toggle": "参照明細の開閉",
   "chat.recall.scope_agent": "エージェント",
   "chat.recall.scope_global": "グローバル",
   "chat.recall.scope_personal": "個人",

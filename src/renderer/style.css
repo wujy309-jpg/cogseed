@@ -23350,17 +23350,35 @@ body:has(#panel-settings.active) .main-top-actions {
   padding-top: 6px;
   border-top: 1px solid var(--border);
 }
-/* 撤销口贴尾行最右（2026-09-29）：反馈钮居左，撤销独占右端。 */
-.chat-recall-feedback-actions .chat-recall-projection-summary-actions {
+/* 尾行（2026-09-29 二轮）：状态说明句挪到撤销左侧、独占中段；反馈钮居左。 */
+.chat-recall-citations-note {
   margin-left: auto;
+  padding-left: 12px;
+  color: var(--muted);
+  font-size: var(--font-size-1);
 }
 .chat-recall-citations.is-feedback-sent .chat-recall-feedback-btn { opacity: 0.55; pointer-events: none; }
 
-/* 折叠（2026-09-29）：头部箭头 chip 收起/展开引用明细（列表＋省略块），
-   尾部反馈与撤销保持可见。状态记在宿主 dataset，整卡重画不丢；展开时箭头
-   朝上（再点收起），收起时朝下。 */
-.chat-recall-citations .chat-recall-toggle { flex: none; margin-top: 0; }
+/* 折叠（2026-09-29 二轮）：头部即点击热区（cursor/悬停反馈在这层），箭头只是
+   指示图标（aria-hidden）；点击收起/展开引用明细（列表＋省略块），尾部反馈、
+   提示句与撤销保持可见。状态记在宿主 dataset，整卡重画不丢；展开时箭头朝上
+   （点它收起），收起时朝下。计数上移内联在标题右侧。 */
+.chat-recall-citations-head { cursor: pointer; user-select: none; }
+.chat-recall-citations .chat-recall-toggle {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  margin-top: 1px;
+  color: var(--muted);
+}
+.chat-recall-citations-head:hover .chat-recall-toggle { color: var(--primary); }
 .chat-recall-citations .chat-recall-toggle .ui-icon { transform: rotate(180deg); }
+.chat-recall-citations-count {
+  margin-left: 6px;
+  color: var(--muted);
+  font-size: var(--font-size-1);
+  font-weight: var(--font-weight-regular);
+}
 .chat-recall-citations.is-collapsed .chat-recall-citation-list,
 .chat-recall-citations.is-collapsed .chat-recall-projection-omitted {
   display: none;
