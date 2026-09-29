@@ -51,7 +51,9 @@ node scripts/opensource/cutover.mjs --help
 
 `sync.mjs` 再次对照源 Git 对象、清单、扫描和授权证据，建立只有公仓父提交的快照；`--bootstrap` 建立无父根提交。它本身不联网、不推送。`--allow-review-required-local` 仅供本地演练，其映射不得用于真实切换。
 
-首次用户授权记录采用本地明确批准方式，记录只重写公仓 heads/tags、保留 Release 资产和接受只读 PR refs 的范围，不伪造 workflow run。后续自动化只接受实际 workflow_dispatch 运行记录。这些 JSON 是私有审计记录，不是加密身份证明。
+首次用户授权记录采用本地明确批准方式，记录只重写公仓 heads/tags、保留 Release 资产和接受只读 PR refs 的范围，不伪造 workflow run。后续自动化只接受实际 workflow_dispatch 运行记录。
+
+额度停用期间的加急发版只允许一次 `explicit_user_emergency` 授权：授权必须绑定当前源 SHA、导出摘要、策略摘要和引用提示摘要，`scope` 固定为 `single_snapshot_pr`，并提供仓库外的私有授权记录文件。`expiresAt` 不得晚于 `2026-10-01T00:00:00+08:00`，且工具按本次提交时间拒绝已过期授权；不得携带 `workflowRunId` 或 `workflowRunAttempt`，也不能与 `--bootstrap` 同用。该方式仅用于 2026-09 加急发版，10 月 1 日后必须回到真实 `workflow_dispatch` 运行记录；它不改变 PR 审查、Gitleaks 扫描或公仓 CI 门禁。这些 JSON 是私有审计记录，不是加密身份证明。
 
 `cutover.mjs` 默认生成私有计划并探测原子推送；apply 要求准确计划摘要，重新验证候选、证据和全部远端 heads/tags，以每个分支 ref 的精确旧 OID lease 执行一次 atomic push；既有 tags 原值保留。任一 ref 漂移或保护拒绝即停止；工具不修改保护、Release、资产或 PR。保护的临时调整和恢复由维护窗口操作另行记录。备份恢复必须显式映射 heads/tags，禁止 mirror 推送备份命名空间。
 

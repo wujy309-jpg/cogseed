@@ -86,6 +86,24 @@ function fixture(t, { status = 'reviewed', reference = false, badHintReview = fa
     policyFile, candidate, manifest, review, approval, scan, invoke };
 }
 
+function emergencyApproval(f, overrides = {}) {
+  const reference = path.join(f.base, 'emergency-AUTHORIZATION.md');
+  fs.writeFileSync(reference, 'One-time authorization for a single public snapshot PR.\n');
+  const approval = JSON.parse(fs.readFileSync(f.approval));
+  delete approval.workflowRunId;
+  delete approval.workflowRunAttempt;
+  Object.assign(approval, {
+    authorizationMethod: 'explicit_user_emergency',
+    authorizedBy: 'windsgone',
+    authorizationReference: reference,
+    scope: 'single_snapshot_pr',
+    expiresAt: '2026-10-01T00:00:00+08:00',
+    ...overrides,
+  });
+  fs.writeFileSync(f.approval, JSON.stringify(approval));
+  return reference;
+}
+
 test('reviewed sync replaces the exact public tree, deletes old files, and keeps private ancestry out', (t) => {
   const f = fixture(t);
   const beforeHead = f.git(f.publicRepo, 'rev-parse', 'HEAD');
@@ -116,6 +134,57 @@ test('reviewed sync replaces the exact public tree, deletes old files, and keeps
   assert.equal(mapping.publicationApproved, false);
   assert.equal(fs.existsSync(path.join(f.publicRepo, 'manifest.json')), false);
   assert.equal(fs.existsSync(path.join(f.publicRepo, 'secret.txt')), false);
+});
+
+test('one-time emergency authorization creates a reviewed snapshot before its deadline', (t) => {
+  const f = fixture(t);
+  const reference = emergencyApproval(f);
+  const beforeExpiry = Math.floor(Date.parse('2026-09-29T12:00:00+08:00') / 1000);
+  const result = f.invoke(['--approval', f.approval, '--scan-report', f.scan, '--commit-time', String(beforeExpiry)]);
+  assert.equal(result.status, 0, result.stderr);
+  const mapping = JSON.parse(fs.readFileSync(result.mapping));
+  assert.equal(mapping.authorizationMethod, 'explicit_user_emergency');
+  assert.equal(mapping.authorizedBy, 'windsgone');
+  assert.equal(mapping.authorizationScope, 'single_snapshot_pr');
+  assert.equal(mapping.authorizationExpiresAt, '2026-10-01T00:00:00+08:00');
+  assert.equal(mapping.authorizationReference, fs.realpathSync(reference));
+  assert.equal(mapping.authorizationReferenceSha256, sha256(fs.readFileSync(reference)));
+});
+
+test('emergency authorization rejects malformed, expired, or workflow-backed approvals', (t) => {
+  const cases = [
+    ['missing scope', { scope: undefined }],
+    ['wrong scope', { scope: 'public_heads_and_tags_only' }],
+    ['missing expiry', { expiresAt: undefined }],
+    ['expiry after deadline', { expiresAt: '2026-10-01T00:00:01+08:00' }],
+    ['already expired', { expiresAt: '2026-09-29T00:00:00+08:00' }],
+    ['workflow run id present', { workflowRunId: 123 }],
+    ['workflow run attempt present', { workflowRunAttempt: 1 }],
+    ['missing authorization file', { authorizationReference: undefined }],
+  ];
+  for (const [label, overrides] of cases) {
+    const f = fixture(t);
+    emergencyApproval(f, overrides);
+    const commitTime = label === 'already expired'
+      ? Math.floor(Date.parse('2026-09-29T12:00:00+08:00') / 1000)
+      : Math.floor(Date.parse('2026-09-29T12:00:00+08:00') / 1000);
+    const result = f.invoke(['--approval', f.approval, '--scan-report', f.scan, '--commit-time', String(commitTime)]);
+    assert.equal(result.status, 1, label);
+    assert.equal(fs.existsSync(result.mapping), false, label);
+  }
+});
+
+test('emergency authorization cannot authorize bootstrap', (t) => {
+  const f = fixture(t);
+  emergencyApproval(f);
+  const fresh = path.join(f.base, 'fresh-public');
+  const mapping = path.join(f.base, 'bootstrap-emergency-map.json');
+  const result = spawnSync(process.execPath, [sync, '--candidate', f.candidate,
+    '--private-repo', f.privateRepo, '--public-repo', fresh, '--target-origin', targetOrigin,
+    '--bootstrap', '--mapping-out', mapping, '--policy', f.policyFile,
+    '--approval', f.approval, '--scan-report', f.scan], { encoding: 'utf8' });
+  assert.equal(result.status, 1);
+  assert.equal(fs.existsSync(mapping), false);
 });
 
 test('fixed run time reproduces a commit across checkouts; retries reuse it and matching base tree is a no-op', (t) => {

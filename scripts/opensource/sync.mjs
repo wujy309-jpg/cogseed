@@ -18,6 +18,8 @@ const TARGET_REPOSITORY = 'bonc-ai/cogseed';
 const SHA = /^[0-9a-f]{40}$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
 const ZERO = '0'.repeat(40);
+const EMERGENCY_EXPIRY = '2026-10-01T00:00:00+08:00';
+const EMERGENCY_EXPIRY_SECONDS = Date.parse(EMERGENCY_EXPIRY) / 1000;
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const gitOid = (bytes) => createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -32,7 +34,7 @@ function help() {
   --commit-time <Unix seconds>  Optional fixed run time for reproducible retries across fresh checkouts; defaults to the current time. The commit is always at least one second newer than its public parent.
   --allow-review-required-local  Local rehearsal only: bypass reviewed, scan, and approval gates. Never authorizes publishing.
 
-The approval JSON binds sourceSha, exportSha256, policySha256 and referenceHintsSha256. Recurring sync requires authorizationMethod "workflow_dispatch", authorizedBy, and positive workflowRunId/workflowRunAttempt. Bootstrap accepts authorizationMethod "explicit_user_cutover" with a real private authorizationReference file, scope "public_heads_and_tags_only", preserveReleaseAssets:true, and acceptRetainedPullRefs:true. These local JSON files record authorization; they are not cryptographic identity credentials. No remote operations are performed.\n`;
+The approval JSON binds sourceSha, exportSha256, policySha256 and referenceHintsSha256. Recurring sync requires authorizationMethod "workflow_dispatch", authorizedBy, and positive workflowRunId/workflowRunAttempt. The one-time emergency path accepts authorizationMethod "explicit_user_emergency", authorizedBy, scope "single_snapshot_pr", a private authorizationReference file, and expiresAt no later than ${EMERGENCY_EXPIRY}; it rejects workflowRunId/workflowRunAttempt and is refused at or after the expiry. Bootstrap accepts authorizationMethod "explicit_user_cutover" with a real private authorizationReference file, scope "public_heads_and_tags_only", preserveReleaseAssets:true, and acceptRetainedPullRefs:true. These local JSON files record authorization; they are not cryptographic identity credentials. No remote operations are performed.\n`;
 }
 
 function args(argv) {
@@ -106,15 +108,19 @@ function exactJsonFile(filename) {
   return JSON.parse(fs.readFileSync(filename, 'utf8'));
 }
 
-function authorizationReference(filename, candidate) {
-  if (typeof filename !== 'string' || !path.isAbsolute(filename)) fail('Bootstrap authorizationReference must be an absolute private file path');
+function authorizationReference(filename, roots, label = 'Authorization') {
+  if (typeof filename !== 'string' || !path.isAbsolute(filename)) fail(`${label} authorizationReference must be an absolute private file path`);
   const actual = path.resolve(filename);
   const stat = fs.lstatSync(actual);
   const real = fs.realpathSync(actual);
-  if (stat.isSymbolicLink() || !stat.isFile() || within(candidate, real)) {
-    fail('Bootstrap authorizationReference must be a private regular file outside the candidate');
+  if (stat.isSymbolicLink() || !stat.isFile() || roots.some((root) => within(root, real))) {
+    fail(`${label} authorizationReference must be a private regular file outside the repositories and candidate`);
   }
   return { path: real, sha256: hash(fs.readFileSync(real)) };
+}
+
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object, key);
 }
 
 function referenceHints(files, content, omitted) {
@@ -283,18 +289,38 @@ export function validateCandidate(options, privateRoot) {
           || approval.scope !== 'public_heads_and_tags_only'
           || approval.preserveReleaseAssets !== true || approval.acceptRetainedPullRefs !== true
           || approval.workflowRunId !== undefined || approval.workflowRunAttempt !== undefined
-        : approval.authorizationMethod !== 'workflow_dispatch'
-          || !Number.isSafeInteger(approval.workflowRunId) || approval.workflowRunId <= 0
-          || !Number.isSafeInteger(approval.workflowRunAttempt) || approval.workflowRunAttempt <= 0)) {
+        : approval.authorizationMethod === 'workflow_dispatch'
+          ? !Number.isSafeInteger(approval.workflowRunId) || approval.workflowRunId <= 0
+            || !Number.isSafeInteger(approval.workflowRunAttempt) || approval.workflowRunAttempt <= 0
+          : approval.authorizationMethod === 'explicit_user_emergency'
+            ? approval.scope !== 'single_snapshot_pr'
+              || typeof approval.expiresAt !== 'string'
+              || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?(?:Z|[+-]\d{2}:\d{2})$/u.test(approval.expiresAt)
+              || !Number.isFinite(Date.parse(approval.expiresAt))
+              || Date.parse(approval.expiresAt) / 1000 > EMERGENCY_EXPIRY_SECONDS
+              || (options['commit-time'] === undefined
+                ? Math.floor(Date.now() / 1000)
+                : Number(options['commit-time'])) >= Date.parse(approval.expiresAt) / 1000
+              || hasOwn(approval, 'workflowRunId') || hasOwn(approval, 'workflowRunAttempt')
+            : true)) {
       fail('Approval evidence is invalid or not bound to this export');
     }
     if (scan.sourceSha !== manifest.sourceSha || scan.exportSha256 !== manifest.exportSha256
       || scan.tool !== 'gitleaks' || scan.status !== 'passed') fail('Scan evidence is invalid or not bound to this export');
+    if (approval.authorizationMethod === 'explicit_user_emergency' && options.bootstrap) {
+      fail('Emergency authorization cannot be used with --bootstrap');
+    }
+    const reference = ['explicit_user_cutover', 'explicit_user_emergency'].includes(approval.authorizationMethod)
+      ? authorizationReference(approval.authorizationReference, [privateRoot, candidate],
+        approval.authorizationMethod === 'explicit_user_emergency' ? 'Emergency' : 'Bootstrap')
+      : null;
     authorization = options.bootstrap
-      ? { method: approval.authorizationMethod, authorizedBy: approval.authorizedBy,
-        reference: authorizationReference(approval.authorizationReference, candidate) }
-      : { method: approval.authorizationMethod, authorizedBy: approval.authorizedBy,
-        workflowRunId: approval.workflowRunId, workflowRunAttempt: approval.workflowRunAttempt };
+      ? { method: approval.authorizationMethod, authorizedBy: approval.authorizedBy, reference }
+      : approval.authorizationMethod === 'explicit_user_emergency'
+        ? { method: approval.authorizationMethod, authorizedBy: approval.authorizedBy, reference,
+          scope: approval.scope, expiresAt: approval.expiresAt }
+        : { method: approval.authorizationMethod, authorizedBy: approval.authorizedBy,
+          workflowRunId: approval.workflowRunId, workflowRunAttempt: approval.workflowRunAttempt };
   }
   return { candidate, manifest, content, policyStatus: policy.status,
     referenceHintsCount: review.privateReferenceHints.length, requiresReview, authorization };
@@ -435,6 +461,7 @@ function run(options) {
       policyStatus, referenceHintsCount, reviewRequired: Boolean(requiresReview), publicationApproved: false,
       localReviewOverride: Boolean(options['allow-review-required-local']),
       authorizationMethod: authorization?.method || null, authorizedBy: authorization?.authorizedBy || null,
+      authorizationScope: authorization?.scope || null, authorizationExpiresAt: authorization?.expiresAt || null,
       authorizationReference: authorization?.reference?.path || null,
       authorizationReferenceSha256: authorization?.reference?.sha256 || null,
     };
