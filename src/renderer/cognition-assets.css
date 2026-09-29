@@ -926,7 +926,13 @@
  * 撤下后四按钮平铺右侧同一行；无 flat 类的旧调用（若有）保持原布局。 */
 #ca-root .ca-card-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 #ca-root .ca-card-actions .ca-other-actions { margin-left: auto; }
-#ca-root .ca-card-actions.ca-card-actions-flat { justify-content: flex-end; margin-top: 6px; }
+#ca-root .ca-card-actions.ca-card-actions-flat { justify-content: flex-end; }
+/* 候选卡底部行（2026-09-29 子安标注）：来源（左）与动作按钮（右）同一行，
+ * 整体上提贴近正文。来源过长省略号截断、悬浮看全文；无来源/无动作的卡
+ * 退化为单侧行。 */
+#ca-root .cand .ca-card-footer { display: flex; align-items: center; gap: 14px; margin-top: 7px; }
+#ca-root .cand .ca-card-footer .c4 { margin-top: 0; flex-shrink: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#ca-root .cand .ca-card-footer .ca-card-actions { margin-top: 0; margin-left: auto; flex-wrap: nowrap; flex-shrink: 0; }
 /* 候选卡「来源已删」警示与标题同一行（2026-09-29 第三轮定稿）：标题左、
  * 警示条靠右（chevron 之前）；放不下省略号截断，悬浮 title 看全文。
  * 视觉降级（同日子安拍板整改①）：去边框、字号降一档、常规字重——退成

@@ -443,8 +443,7 @@
       <div class="c1">${esc(candidateTitle(candidate))}${warnHtml}<span class="chev" aria-hidden="true">›</span></div>
       <div class="c2">${chip(categoryLabel(candidate.suggestedType))}${candidateSourceBadge(candidate)}${candidateRiskBadge(candidate)}${(candidate.capabilities && candidate.capabilities.isSnoozed) ? chip(T('cognition.candidate_snoozed', '已稍后处理'), 'amber') : ''}${broken ? '' : chip(T('cognition.candidate_evidence_ok', '证据充足'), 'green')}</div>
       <div class="c3">${esc(String(candidate.judgment || candidate.value || '').slice(0, 800))}</div>
-      ${refsHtml}
-      ${actionsHtml}
+      ${(refsHtml || actionsHtml) ? `<div class="ca-card-footer">${refsHtml}${actionsHtml}</div>` : ''}
     </div>`;
   }
 
