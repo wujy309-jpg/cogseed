@@ -5395,6 +5395,7 @@ body.is-sidebar-resizing iframe { pointer-events: none; }
 
 /* ── Conversation header — Surface C top (PC/docs/design/PATTERNS.md). ── */
 .chat-header {
+  position: relative;
   flex: 0 0 auto;
   min-height: var(--layout-titlebar-height);
   display: flex;
@@ -23294,6 +23295,8 @@ body:has(#panel-settings.active) .main-top-actions {
    硬编码值已全部收进 token，药丸变体删除（共享按钮已覆盖 hover/disabled/focus）。 */
 .chat-recall-citation-list {
   display: grid;
+  /* 显式可收缩轨道：隐式 auto 轨在超长 nowrap 标题下会按 min-content 撑穿卡片。 */
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
 }
 .chat-recall-citation {
@@ -23315,6 +23318,9 @@ body:has(#panel-settings.active) .main-top-actions {
   font-size: inherit;
   font-weight: var(--font-weight-semibold);
   text-align: left;
+  /* 溢出修复（2026-09-30）：shared .btn 家族把按钮定成 center 对齐，超宽标题
+     居中向两侧逃逸（截图病：文字跑出卡片左缘）——改左对齐。 */
+  justify-content: flex-start;
 }
 .chat-recall-citation-open.ui-button:hover {
   background: transparent;
@@ -23326,6 +23332,9 @@ body:has(#panel-settings.active) .main-top-actions {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* 溢出修复（2026-09-30）：legacy .btn 家族给 label 钉了 flex-shrink:0，
+     超长标题永不收缩、直接撑穿卡片——这里显式放开收缩。 */
+  flex: 0 1 auto;
 }
 .chat-recall-citation span {
   flex: none;
@@ -33544,12 +33553,18 @@ section.kb-wb-right { display: flex; flex-direction: column; min-width: 0; min-h
 }
 
 
-/* ── 019 会话侧衔接：会话头部认知衔接行 ── 方案 A（2026-09-29）：去掉卡片壳，
-   降为与消息流同语言的 muted meta 行；「去处理」为链接字；叉 = 本会话关闭
-   （偏好存本机 localStorage，跨重启）。 */
+/* ── 019 会话侧衔接：认知衔接行 ── 方案 A 二迁（2026-09-30）：从会话头部独立
+   槽移入标题栏，绝对定位居中（与标题/右侧按钮并列，不挤占消息流）；去卡片壳，
+   muted meta 行；「去处理」为链接字；叉 = 本会话关闭（偏好存本机 localStorage，
+   跨重启）。label 超宽省略，不撑爆标题栏。 */
 .chat-cognition-strip {
-  flex: 0 0 auto;
-  padding: 6px 18px 0;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: max-content;
+  max-width: min(46%, 480px);
+  padding: 0;
 }
 .chat-cognition-strip[hidden] {
   display: none;
@@ -33558,7 +33573,7 @@ section.kb-wb-right { display: flex; flex-direction: column; min-width: 0; min-h
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 20px;
+  min-width: 0;
   font-size: var(--font-size-1);
   color: var(--muted);
 }
@@ -33569,8 +33584,11 @@ section.kb-wb-right { display: flex; flex-direction: column; min-width: 0; min-h
   color: var(--muted);
 }
 .chat-cognition-strip-label {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .chat-cognition-strip-goto {
   flex: 0 0 auto;
@@ -33587,8 +33605,4 @@ section.kb-wb-right { display: flex; flex-direction: column; min-width: 0; min-h
   width: 20px;
   height: 20px;
   padding: 0;
-}
-@media (max-width: 640px) {
-  .chat-cognition-strip { padding: 4px 10px 0; }
-  .chat-cognition-strip-inner { flex-wrap: wrap; }
 }

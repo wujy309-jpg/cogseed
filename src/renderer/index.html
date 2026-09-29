@@ -235,6 +235,11 @@
                   <span data-ui-icon="panel" data-ui-icon-class="chat-header-details-icon"></span>
                 </button>
               </div>
+              <!-- 019 会话侧衔接（方案 A 二迁，2026-09-30）：认知衔接行移入标题栏
+                   居中显示（绝对定位，与标题/右侧按钮并列）；有认知产出（沉淀过/
+                   待确认）时由 conversation-info.js 显示，点叉按会话关闭；N=M=0
+                   时保持隐藏。 -->
+              <div class="chat-cognition-strip" id="chat-cognition-strip" hidden></div>
             </div>
             <!-- Plan strip — permanent slot between chat header and history.
                  Restyled inline below; plan-rail.js writes into the same ids
@@ -258,10 +263,6 @@
                 <div class="plan-rail-body" id="plan-rail-body" hidden></div>
               </div>
             </div>
-            <!-- 019 会话侧衔接：会话头部常驻槽（仿 plan-strip 模式）。有认知产出
-                 （沉淀过/待确认）时由 conversation-info.js 显示一行并给出「去看」
-                 落点（运行上下文抽屉 · 四类资产 tab）；N=M=0 时保持隐藏。 -->
-            <div class="chat-cognition-strip" id="chat-cognition-strip" hidden></div>
             <div id="chat-history" class="chat-history">
               <div class="empty" data-i18n="chat.empty">No messages yet...</div>
             </div>
