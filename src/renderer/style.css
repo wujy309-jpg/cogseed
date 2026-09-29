@@ -210,7 +210,10 @@ body.is-sidebar-resizing iframe { pointer-events: none; }
 .is-macos .chat-header-actions,
 .is-macos .chat-header-title-input,
 .is-macos .chat-header-meta,
-.is-macos .chat-header-breadcrumb {
+.is-macos .chat-header-breadcrumb,
+/* 认知衔接行（2026-09-30 二迁）：搬进标题栏后必须显式豁免拖拽，否则真实
+   鼠标点击被窗口拖拽吞掉（程序化 click 走不到这层命中，真机上才暴露）。 */
+.is-macos .chat-cognition-strip {
   -webkit-app-region: no-drag;
 }
 /* 各视图顶部条（标题栏语义，与 .chat-header 同模式）：空白处拖窗口、
