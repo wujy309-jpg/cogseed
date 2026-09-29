@@ -156,11 +156,34 @@ describe('first-version renderer components', () => {
     const { uiCard, uiResourceCard, uiResourceGrid } = loadFactories();
 
     expect(uiCard({ className: 'business-card', bodyHtml: '<strong>内容</strong>' })).toContain('ui-resource-card business-card');
-    expect(uiResourceCard({ title: '<空间>', description: '说明', icon: 'folder', status: '刚刚更新', action: { label: '打开' } }))
-      .toContain('&lt;空间&gt;');
-    expect(uiResourceCard({ title: '行卡片', layout: 'row' })).toContain('ui-resource-card--row');
+    const singleAction = uiResourceCard({ title: '<空间>', description: '说明', icon: 'folder', status: '刚刚更新', action: { label: '打开' } });
+    expect(singleAction).toContain('&lt;空间&gt;');
+    expect(singleAction).toContain('ui-resource-card--standard');
+    expect(singleAction).toContain('ui-resource-card__actions');
+    expect(singleAction).toContain('ui-resource-card__footer');
+
+    const multiAction = uiResourceCard({
+      title: '社区贡献',
+      status: { label: '待审核', tone: 'attention' },
+      actions: [
+        { label: '提交新版本' },
+        { label: '撤回投稿', role: 'danger' },
+        { label: '撤回申请历史' },
+      ],
+    });
+    expect(multiAction).toContain('ui-status-pill--attention');
+    expect(multiAction.match(/class="btn ui-button/g)).toHaveLength(3);
+    expect(multiAction).toContain('ui-button--danger');
+
+    const withoutFooter = uiResourceCard({ title: '行卡片', layout: 'row' });
+    expect(withoutFooter).toContain('ui-resource-card--row');
+    expect(withoutFooter).not.toContain('ui-resource-card__footer');
     expect(uiResourceGrid({ className: 'business-grid', bodyHtml: '<article></article>' })).toContain('ui-resource-grid business-grid');
     expect(() => uiResourceCard({ description: '缺标题' })).toThrow(/requires a title/);
+    expect(() => uiResourceCard({ title: '冲突操作', action: { label: '打开' }, actions: [{ label: '查看' }] }))
+      .toThrow(/either action or actions/);
+    expect(uiResourceCard({ title: '操作换行', actions: [{ label: '一' }, { label: '二' }, { label: '三' }, { label: '四' }] })
+      .match(/class="btn ui-button/g)).toHaveLength(4);
   });
 
   it('renders native tables, disclosure sections and semantic trees', () => {

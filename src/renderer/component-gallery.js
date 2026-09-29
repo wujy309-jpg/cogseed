@@ -190,7 +190,21 @@
       { title: '需求证据整理', description: '把多来源反馈整理成可追溯的问题主题与证据账本。', icon: 'database', status: '已启用', action: '使用技能' },
       { title: 'GitHub', description: '查找和管理代码仓库、Issue、PR、文件与代码。', icon: 'globe', status: '未连接', action: '连接账户' },
       { title: '每天整理工作日报', description: '每天 18:30 · 这台 Mac · 汇总当日任务与交付。', icon: 'clock', status: '已启用 · 最近运行 18:30', action: '查看记录', layout: 'row' },
-    ].map((item) => uiResourceCard({ ...item, action: { label: item.action } })).join('');
+      {
+        title: '社区贡献',
+        description: '展示审核状态，并在共享底部操作区承载同一对象的多个操作。',
+        icon: 'upload',
+        status: { label: '待审核', tone: 'attention' },
+        actions: [
+          { label: '提交新版本' },
+          { label: '撤回投稿', role: 'danger' },
+          { label: '撤回申请历史' },
+        ],
+      },
+    ].map((item) => uiResourceCard({
+      ...item,
+      ...(item.action ? { action: { label: item.action } } : {}),
+    })).join('');
     hydrateUiIcons(byId('resource-card-specimens'));
   }
 
