@@ -250,10 +250,14 @@ test('wrong origin, expected counts, and server rejection cannot mutate remote r
   const wrongCounts = { ...f.planOptions(), 'expected-heads': '2' };
   assert.throws(() => runCutover(wrongCounts, f.transport), /Remote heads/u);
   assert.deepEqual(f.refs(), before);
-  const hook = path.join(f.bare, 'hooks/pre-receive');
-  fs.writeFileSync(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
   const planned = runCutover(f.planOptions(), f.transport);
   assert.ok([0, 2].includes(planned.status));
-  assert.throws(() => runCutover(f.applyOptions(), f.transport));
+  const rejectingTransport = (repo, command, input) => {
+    if (command.includes('push') && !command.includes('--dry-run')) {
+      throw new Error('remote rejected the atomic push');
+    }
+    return f.transport(repo, command, input);
+  };
+  assert.throws(() => runCutover(f.applyOptions(), rejectingTransport), /remote rejected/u);
   assert.deepEqual(f.refs(), before);
 });

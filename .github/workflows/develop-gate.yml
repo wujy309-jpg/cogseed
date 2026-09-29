@@ -19,17 +19,16 @@ name: Develop Gate
 # 门禁宁可多跑一次，也不能制造假红或假绿——一个会说谎的门禁会让人对红单脱敏。
 # 删掉 continue-on-error 之后，"红"必须是真实失败，"绿"必须真的跑过。
 #
-# 【为什么用 macos-latest 而不是 ubuntu】
-# 测试跑在 Electron 的 Node 运行时里（scripts/run-tests.mjs 里
-# ELECTRON_RUN_AS_NODE=1，所以不需要显示器）。但目前 macOS 和 Windows 上的
-# CI 都验证过，ubuntu 从未跑过，而 npm ci 的 postinstall 会拉原生依赖
-# （sqlite/pty ABI、sherpa-onnx、embedding model）。
-# 第一版优先保证「能跑」，稳定之后再评估是否把静态检查拆到 ubuntu 提速。
+# 方案 C：私仓只跑 Ubuntu 轻量门禁；Windows/macOS 验证在公开快照 PR 上执行。
+# npm ci 的原生依赖和平台敏感测试仍由公仓发版候选流程覆盖。
 
 on:
   pull_request:
     branches:
       - develop
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
 
 # 同一个 PR 连续 push 时，取消上一次未跑完的，省时间也省额度。
 concurrency:
@@ -41,7 +40,8 @@ permissions:
 
 jobs:
   static-gates:
-    runs-on: macos-latest
+    if: github.repository == 'bonc-ai/cogseed-internal'
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -75,7 +75,8 @@ jobs:
         run: node scripts/check-skipped-tests.mjs --strict
 
   affected-tests:
-    runs-on: macos-latest
+    if: github.repository == 'bonc-ai/cogseed-internal'
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -114,22 +115,3 @@ jobs:
         run: |
           echo "::warning::受影响测试未通过或筛选有漏。请注意：L1 只跑受影响的测试，"
           echo "::warning::漏网是预期内的 —— develop-nightly.yml 会在每天夜里跑全量兜底。"
-
-  windows-tests:
-    runs-on: windows-latest
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npm run test:resources:setup
-      - run: node scripts/run-tests.mjs run --maxWorkers=1 --shard=${{ matrix.shard }}/4
-      - if: ${{ !cancelled() && matrix.shard == 1 }}
-        run: npm run test:resources
