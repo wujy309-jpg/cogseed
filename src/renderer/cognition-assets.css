@@ -927,9 +927,14 @@
 #ca-root .ca-card-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 #ca-root .ca-card-actions .ca-other-actions { margin-left: auto; }
 #ca-root .ca-card-actions.ca-card-actions-flat { justify-content: flex-end; }
-/* 候选卡「来源已删」警示置顶（与标题行对齐）：卡片首行全宽横条，与标题
- * 同一左边距起点，下缘与标题行留固定间距。 */
-#ca-root .cand .ca-card-warn-top { margin: 0 0 10px; }
+/* 候选卡「来源已删」警示与标题同一行（2026-09-29 第三轮定稿）：标题左、
+ * 警示条靠右（chevron 之前）；放不下省略号截断，悬浮 title 看全文。 */
+#ca-root .cand .c1 .ca-card-warn-inline {
+  margin-left: auto; flex-shrink: 1; min-width: 0; max-width: 62%;
+  padding: 3px 10px; font-size: var(--font-size-caption); font-weight: 400;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#ca-root .cand .c1 .ca-card-warn-inline ~ .chev { margin-left: 0; }
 
 /* 导语可点数字（T010）：句中数字即锚点，chip-link 提供虚线下划线。 */
 #ca-root .ca-jump-num { font-weight: 700; }

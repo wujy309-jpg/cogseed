@@ -399,11 +399,11 @@
           : T('cognition.evidence_fallback', '来源记录'));
       }).join(' · ')}</div>`
       : '';
-    // 2026-09-29 子安标注整改（第二轮纠正定稿）：「来源已删」卡内黄警示
-    // **不删**，移到卡片**顶部、与标题行对齐**（信息在三处重复是真，但位置
-    // 才是他要的——警示置顶，正文/来源/动作随之收紧）。
+    // 2026-09-29 子安标注整改（第三轮定稿）：「来源已删」警示**与标题同一行**——
+    // 标题在左，警示条靠右（chevron 之前），不再独立成行压在标题上面；
+    // 行内放不下时省略号截断、悬浮 title 看全文。
     const warnHtml = broken
-      ? `<div class="warn ca-card-warn-top">${esc(T('cognition.candidate_evidence_all_unavailable', '这条候选的大部分来源记录已被删除，无法核对证据。建议补充新证据后保存，或选择不保存。'))}</div>`
+      ? `<span class="warn ca-card-warn-inline" title="${esc(T('cognition.candidate_evidence_all_unavailable', '这条候选的大部分来源记录已被删除，无法核对证据。建议补充新证据后保存，或选择不保存。'))}">${esc(T('cognition.candidate_evidence_all_unavailable', '这条候选的大部分来源记录已被删除，无法核对证据。建议补充新证据后保存，或选择不保存。'))}</span>`
       : '';
     /* 动作区（同轮标注）：「…其他处理」折叠开关撤下——保存/稍后处理/
      * 不保存/看内容与证据（稍后处理态另有「恢复」）**全部平铺、右侧、
@@ -436,8 +436,7 @@
       : '';
     return `
     <div class="cand${broken ? ' is-broken' : ''}">
-      ${warnHtml}
-      <div class="c1" data-act="open-candidate" data-id="${esc(candidate.id)}" role="button" tabindex="0">${esc(candidateTitle(candidate))}<span class="chev" aria-hidden="true">›</span></div>
+      <div class="c1" data-act="open-candidate" data-id="${esc(candidate.id)}" role="button" tabindex="0">${esc(candidateTitle(candidate))}${warnHtml}<span class="chev" aria-hidden="true">›</span></div>
       <div class="c2">${chip(categoryLabel(candidate.suggestedType))}${candidateSourceBadge(candidate)}${candidateRiskBadge(candidate)}${(candidate.capabilities && candidate.capabilities.isSnoozed) ? chip(T('cognition.candidate_snoozed', '已稍后处理'), 'amber') : ''}${broken ? chip(T('cognition.candidate_evidence_weak', '来源已删'), 'amber') : chip(T('cognition.candidate_evidence_ok', '证据充足'), 'green')}</div>
       <div class="c3">${esc(String(candidate.judgment || candidate.value || '').slice(0, 220))}</div>
       ${refsHtml}
