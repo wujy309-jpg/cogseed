@@ -174,7 +174,11 @@ describe('Recall cognition workspace layout', () => {
     expect(tabIds).toEqual(['tree', 'overview', 'ontology', 'review', 'activity', 'settings']);
     expect(core).toContain('sourceIssueOpen');
     // 来源健康入口只出现在待我处理（review）页。
-    const views = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/views.js'), 'utf-8');
+    // 2026-09-29 views.js 机械拆分：sourceIssueOpen 的消费方迁入 review-candidate.js /
+    // review-views.js，按加载顺序合并三源扫描（断言语义不变）。
+    const views = ['views.js', 'review-candidate.js', 'review-views.js']
+      .map((file) => fs.readFileSync(path.join(__dirname, `../../src/renderer/modules/cognition-assets/${file}`), 'utf-8'))
+      .join('\n');
     expect(views).toContain('sourceIssueOpen');
   });
 

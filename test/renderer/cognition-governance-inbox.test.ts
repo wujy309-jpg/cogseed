@@ -79,6 +79,10 @@ function ensureModule(): { cogAssets: Record<string, unknown>; domRoot: { innerH
   require('../../src/renderer/modules/cognition-assets/vocabulary.js');
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   require('../../src/renderer/modules/cognition-assets/views.js');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  require('../../src/renderer/modules/cognition-assets/review-candidate.js');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  require('../../src/renderer/modules/cognition-assets/review-views.js');
   return { cogAssets, domRoot };
 }
 

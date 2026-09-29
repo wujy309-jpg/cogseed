@@ -12,7 +12,11 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const rootDir = resolve(__dirname, '../..');
-const viewsSource = readFileSync(resolve(rootDir, 'src/renderer/modules/cognition-assets/views.js'), 'utf8');
+// 2026-09-29 views.js 机械拆分：sourceIssuesSection 等异常下钻组件随候选族迁入
+// review-candidate.js / review-views.js，源码断言按加载顺序合并三源扫描（断言语义不变）。
+const viewsSource = ['views.js', 'review-candidate.js', 'review-views.js']
+  .map((file) => readFileSync(resolve(rootDir, `src/renderer/modules/cognition-assets/${file}`), 'utf8'))
+  .join('\n');
 const appSource = readFileSync(resolve(rootDir, 'src/renderer/modules/cognition-assets/app.js'), 'utf8');
 const coreSource = readFileSync(resolve(rootDir, 'src/renderer/modules/cognition-assets/core.js'), 'utf8');
 
@@ -113,6 +117,10 @@ function ensureModule(): { cogAssets: Record<string, unknown>; domRoot: { innerH
   require('../../src/renderer/modules/cognition-assets/vocabulary.js');
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   require('../../src/renderer/modules/cognition-assets/views.js');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  require('../../src/renderer/modules/cognition-assets/review-candidate.js');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  require('../../src/renderer/modules/cognition-assets/review-views.js');
   return { cogAssets, domRoot };
 }
 

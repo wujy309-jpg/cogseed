@@ -22,7 +22,11 @@ import * as path from 'node:path';
 const root = path.join(__dirname, '../..');
 const read = (rel: string) => fs.readFileSync(path.join(root, rel), 'utf8');
 const core = read('src/renderer/modules/cognition-assets/core.js');
-const views = read('src/renderer/modules/cognition-assets/views.js');
+// 2026-09-29 views.js 机械拆分:候选族/待我处理动作随函数迁入 review-candidate.js /
+// review-views.js,动作扫描按加载顺序合并三源(断言语义不变)。
+const views = ['views.js', 'review-candidate.js', 'review-views.js']
+  .map((file) => read(`src/renderer/modules/cognition-assets/${file}`))
+  .join('\n');
 const app = read('src/renderer/modules/cognition-assets/app.js');
 const ontology = read('src/renderer/modules/personal-ontology.js');
 const fixture = JSON.parse(read('test/renderer/fixtures/cognition-actions.json')) as {

@@ -19,7 +19,11 @@ const CAPS = (status: string, risk?: 'low' | 'medium' | 'high') =>
 
 const root = path.join(__dirname, '../..');
 const core = fs.readFileSync(path.join(root, 'src/renderer/modules/cognition-assets/core.js'), 'utf-8');
-const views = fs.readFileSync(path.join(root, 'src/renderer/modules/cognition-assets/views.js'), 'utf-8');
+// 2026-09-29 views.js 机械拆分：候选族/待我处理函数迁入 review-candidate.js 与
+// review-views.js，按加载顺序合并三源扫描（断言语义不变）。
+const views = ['views.js', 'review-candidate.js', 'review-views.js']
+  .map((file) => fs.readFileSync(path.join(root, `src/renderer/modules/cognition-assets/${file}`), 'utf-8'))
+  .join('\n');
 const app = fs.readFileSync(path.join(root, 'src/renderer/modules/cognition-assets/app.js'), 'utf-8');
 const vocab = fs.readFileSync(path.join(root, 'src/renderer/modules/cognition-assets/vocabulary.js'), 'utf-8');
 

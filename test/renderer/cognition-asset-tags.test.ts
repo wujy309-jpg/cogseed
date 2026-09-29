@@ -84,6 +84,7 @@ function loadCognition(options: {
   for (const file of [
     'ui-button.js', 'ui-status.js', 'ui-form.js', 'ui-empty.js', 'ui-segmented-control.js', 'ui-structure.js',
     'cognition-assets/core.js', 'cognition-assets/views.js',
+    'cognition-assets/review-candidate.js', 'cognition-assets/review-views.js',
   ]) {
     vm.runInContext(fs.readFileSync(path.join(rendererRoot, 'modules', file), 'utf8'), context, { filename: file });
   }

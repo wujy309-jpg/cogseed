@@ -267,8 +267,12 @@ describe('候选决定的收尾', () => {
   });
 
   it('塞进自由文本也不会新增证据——那个输入口已经没有了', () => {
-    // 证据区只读：无自由文本证据输入（views.js 无 textarea 证据控件）。
-    const views = fs.readFileSync(path.join(root, 'src/renderer/modules/cognition-assets/views.js'), 'utf-8');
+    // 证据区只读：无自由文本证据输入（视图层无 textarea 证据控件）。
+    // 2026-09-29 views.js 机械拆分：evidenceRefs 渲染随候选族迁入 review-candidate.js /
+    // review-views.js，按加载顺序合并三源扫描（断言语义不变）。
+    const views = ['views.js', 'review-candidate.js', 'review-views.js']
+      .map((file) => fs.readFileSync(path.join(root, `src/renderer/modules/cognition-assets/${file}`), 'utf-8'))
+      .join('\n');
     expect(views).not.toContain('data-recall-edit-evidence');
     expect(views).toContain('evidenceRefs');
   });

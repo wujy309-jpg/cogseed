@@ -24,7 +24,11 @@ const read = (relative: string): string => fs.readFileSync(path.join(ROOT, relat
 
 const inboxSource = read('src/main/features/recall/formal-assets/inbox.ts');
 const adapterSource = read('src/main/features/cognition/inbox-adapter.ts');
-const viewsSource = read('src/renderer/modules/cognition-assets/views.js');
+// 2026-09-29 views.js 机械拆分：待我处理页（治理行渲染）迁入 review-candidate.js /
+// review-views.js，守卫按加载顺序合并三源扫描（断言语义不变）。
+const viewsSource = ['views.js', 'review-candidate.js', 'review-views.js']
+  .map((file) => read(`src/renderer/modules/cognition-assets/${file}`))
+  .join('\n');
 const coreSource = read('src/renderer/modules/cognition-assets/core.js');
 const appSource = read('src/renderer/modules/cognition-assets/app.js');
 

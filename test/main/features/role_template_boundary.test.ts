@@ -146,7 +146,9 @@ describe('role-template boundary › M3 三元组不再跨 renderer / IPC 往返
     expect(skills).not.toContain('target.fieldRef');
     expect(skills).not.toContain('groupId: template.group_id');
     expect(skills).not.toContain('encodeURIComponent(JSON.stringify({');
-    for (const file of ['core.js', 'views.js', 'app.js']) {
+    // 2026-09-29 views.js 机械拆分：候选族/待我处理函数迁入 review-candidate.js 与
+    // review-views.js，负向守卫覆盖 cognition-assets 全模块（断言语义不变）。
+    for (const file of ['core.js', 'views.js', 'review-candidate.js', 'review-views.js', 'app.js']) {
       const src = stripComments(read(`src/renderer/modules/cognition-assets/${file}`));
       expect(src, `${file} 不得序列化落点四元组`).not.toContain('fieldTargets');
       expect(src, `${file} 不得 JSON 序列化落点`).not.toContain('encodeURIComponent(JSON.stringify({');

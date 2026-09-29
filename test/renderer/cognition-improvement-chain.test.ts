@@ -16,7 +16,11 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const rootDir = resolve(__dirname, '../..');
-const viewsSource = readFileSync(resolve(rootDir, 'src/renderer/modules/cognition-assets/views.js'), 'utf8');
+// 2026-09-29 第 4 批拆分：候选族函数（improvementChainBlock/reviewSignalBlock 等）
+// 已迁 review-candidate.js。切片断言的区间端点（improvementFailureDetail 留在
+// views.js）要求 review-candidate 源在前——保持「链块 → 失败详情」的原文顺序。
+const viewsSource = readFileSync(resolve(rootDir, 'src/renderer/modules/cognition-assets/review-candidate.js'), 'utf8')
+  + '\n' + readFileSync(resolve(rootDir, 'src/renderer/modules/cognition-assets/views.js'), 'utf8');
 const coreSource = readFileSync(resolve(rootDir, 'src/renderer/modules/cognition-assets/core.js'), 'utf8');
 const LOCALES = ['zh', 'en', 'ja', 'pt'] as const;
 const tables = Object.fromEntries(LOCALES.map((name) => [
@@ -96,6 +100,8 @@ function ensureModule(): { cogAssets: Record<string, unknown>; domRoot: { innerH
   require('../../src/renderer/modules/ui-page-header.js');
   require('../../src/renderer/modules/cognition-assets/vocabulary.js');
   require('../../src/renderer/modules/cognition-assets/views.js');
+  require('../../src/renderer/modules/cognition-assets/review-candidate.js');
+  require('../../src/renderer/modules/cognition-assets/review-views.js');
   /* eslint-enable @typescript-eslint/no-require-imports */
   return { cogAssets, domRoot };
 }

@@ -74,7 +74,7 @@ function loadModule(
       { filename: file },
     );
   }
-  for (const file of ['core.js', 'views.js']) {
+  for (const file of ['core.js', 'views.js', 'review-candidate.js', 'review-views.js']) {
     vm.runInContext(
       fs.readFileSync(path.join(rendererRoot, 'modules/cognition-assets', file), 'utf8'),
       context,

@@ -20,10 +20,12 @@ const viewsSource = readFileSync(
   'utf8',
 );
 
-/** 抽出 views.js 里经验目录视图段的源码（分组注释到「视图：待我处理」之前）。 */
+/** 抽出 views.js 里经验目录视图段的源码（分组注释到下一区块横幅之前；
+ *  2026-09-29 拆分：「视图：待我处理」横幅随 viewReview 迁至 review-views.js，
+ *  终点锚改为原顺序中紧随其后的 KSTAR 复盘历史区块横幅，切片范围不变）。 */
 function experienceViewsBlock(): string {
   const start = viewsSource.indexOf('视图：经验目录');
-  const end = viewsSource.indexOf('视图：待我处理', start);
+  const end = viewsSource.indexOf('KSTAR 复盘历史区块', start);
   if (start < 0 || end < 0) throw new Error('experience views block not found');
   return viewsSource.slice(start, end);
 }

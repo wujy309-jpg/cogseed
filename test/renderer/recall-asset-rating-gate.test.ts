@@ -51,7 +51,7 @@ function loadAssetsRenderer() {
   context.globalThis = context;
   vm.createContext(context);
   installSharedUi(context);
-  for (const file of ['vocabulary.js', 'core.js', 'views.js']) {
+  for (const file of ['vocabulary.js', 'core.js', 'views.js', 'review-candidate.js', 'review-views.js']) {
     vm.runInContext(
       fs.readFileSync(path.join(root, 'src/renderer/modules/cognition-assets', file), 'utf8'),
       context,
