@@ -3321,8 +3321,9 @@
       ${nightlyOn ? `<div class="note ca-maint-note">${esc(T('cognition.nightly_capture_quiet_hint', '系统会等会话最后一条消息后静默 {minutes} 分钟，再在夜间时段安排整理；如有新消息，会重新计时。', { minutes: String(quietMinutes) }))}</div>` : ''}
       <div class="rowline ca-maint-row">
         <div>
-          <div class="tt">${esc(T('cognition.maint_review_title', '整理产出怎么入库'))}</div>
-          <div class="sub">${esc(T(reviewAuto ? 'cognition.capture_review_auto_note' : 'cognition.capture_review_manual_note', reviewAuto ? '自动保存有条件：内容质量达标、能在你的原话里找到依据、模型不拿不准、不涉高风险——同时满足才直接存；其余仍会进「待我处理」问你。' : '每条先进「待我处理」，由你确认或修改后保存。'))}</div>
+          <div class="tt">${esc(T('cognition.maint_review_title', '是否自动保存'))}</div>
+          <div class="sub"><b>${esc(T('cognition.maint_review_on_tag', '开'))}</b> · ${esc(T('cognition.maint_review_on_desc', '符合条件的建议直接入库：内容质量达标、能在你的原话里找到依据、模型不拿不准、不涉高风险，同时满足才自动存；其余仍会进「待我处理」问你。'))}</div>
+          <div class="sub"><b>${esc(T('cognition.maint_review_off_tag', '关'))}</b> · ${esc(T('cognition.maint_review_off_desc', '每条先进「待我处理」，由你确认或修改后保存。'))}</div>
         </div>
         <div class="right">${window.uiSwitch({
           // 2026-09-29 子安「调整这个按钮」：二选一模式从分段控件收成一个开关
