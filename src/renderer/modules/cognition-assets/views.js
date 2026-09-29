@@ -3258,8 +3258,14 @@
         <div class="sub">${esc(summary)}</div>
       </div>
       <div class="right">
-        ${btn(loading ? T('cognition.cleanup_running', '正在整理…') : T('cognition.cleanup_run', '立即整理'), 'run-cleanup', { small: true, primary: true, disabled: loading })}
-        ${latest ? btn(T('cognition.cleanup_open_report', '查看整理报告'), 'open-cleanup', { small: true, className: 'o' }) : ''}
+        ${btn(loading ? T('cognition.cleanup_running', '正在整理…') : T('cognition.cleanup_run', '立即整理'), 'run-cleanup', {
+          small: true, primary: true, disabled: loading,
+          title: T('cognition.cleanup_run_title', '对已保存的资产做一次清理：规范标题、合并重复、补标签、重写啰嗦正文。会消耗模型额度，拿不准的改动会留给你确认。'),
+        })}
+        ${latest ? btn(T('cognition.cleanup_open_report', '查看整理报告'), 'open-cleanup', {
+          small: true, className: 'o',
+          title: T('cognition.cleanup_report_title', '看每次整理具体改了什么（改前/改后对照），每项都可以单独回滚。'),
+        }) : ''}
       </div>
     </div>`;
   }
@@ -3318,13 +3324,13 @@
           <div class="tt">${esc(T('cognition.maint_review_title', '整理产出怎么入库'))}</div>
           <div class="sub">${esc(T(reviewAuto ? 'cognition.capture_review_auto_note' : 'cognition.capture_review_manual_note', reviewAuto ? '自动保存有条件：内容质量达标、能在你的原话里找到依据、模型不拿不准、不涉高风险——同时满足才直接存；其余仍会进「待我处理」问你。' : '每条先进「待我处理」，由你确认或修改后保存。'))}</div>
         </div>
-        <div class="right">${window.uiSegmentedControl({
-          ariaLabel: T('cognition.maint_review_title', '整理产出怎么入库'),
-          value: reviewAuto ? 'auto' : 'manual',
-          items: [
-            { label: T('cognition.capture_review_auto', '符合条件时自动保存'), value: 'auto', attrs: { 'data-act': 'capture-review-toggle', 'data-id': 'auto' } },
-            { label: T('cognition.capture_review_manual', '每条先问我'), value: 'manual', attrs: { 'data-act': 'capture-review-toggle', 'data-id': 'manual' } },
-          ],
+        <div class="right">${window.uiSwitch({
+          // 2026-09-29 子安「调整这个按钮」：二选一模式从分段控件收成一个开关
+          //（开=符合条件时自动保存，关=每条先问我）；data-id 传目标态，与
+          // 资产级开关同一模式。
+          label: T('cognition.maint_review_switch', '符合条件时自动保存'),
+          checked: reviewAuto,
+          attrs: { 'data-act': 'capture-review-toggle', 'data-id': reviewAuto ? 'manual' : 'auto' },
         })}</div>
       </div>
       ${cleanupSettingsRow()}`;
