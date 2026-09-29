@@ -93,14 +93,19 @@
       try {
         switch (act) {
           case 'go-back': {
-            // 「返回」按文案回列表（2026-09-17 修）：此前是 router.back()——
-            // "返回上一步"，从候选/整理详情跳进资产详情后，点返回退回的是
-            // 跳转前的深层页而不是列表，与按钮文案不符。按详情类型归位到
-            // 对应列表根（资产详情保留分类筛选）；仍压栈，需要时可再进详情。
+            // 「返回」= 回到上一个界面（2026-09-29 子安定稿，推翻 09-17 的
+            // "按文案回列表"口径）：正常点击导航都会压栈，栈里有来路就直接
+            // router.back()——从系统活动点「看报告」进报告页，返回就回系统
+            // 活动。栈空（深链/刷新/replace 进入，如 open-cleanup-report）
+            // 时按详情类型归位到对应主页面兜底（资产详情保留分类筛选）。
+            if (Array.isArray(S.backStack) && S.backStack.length) {
+              router.back();
+              break;
+            }
             const name = S.route.candidateId ? 'review'
               : (S.route.captureId || S.route.name === 'activity' || S.route.name === 'settings') ? 'activity'
                 : 'overview';
-            // 经验详情返回落「我的认知」经验档（specs/017 整改一：经验页签已收编）。
+            // 经验详情兜底落「我的认知」经验档（specs/017 整改一：经验页签已收编）。
             const category = name === 'overview'
               ? (S.route.experienceId || String(S.route.category || '') === 'experiences' ? 'experiences' : String(S.route.category || ''))
               : '';
