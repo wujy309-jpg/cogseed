@@ -45,8 +45,10 @@ export type CognitionInboxKind =
   | 'candidate_ineligible'
   /** 来源失效，已经影响到具体的既有资产。 */
   | 'source_unavailable'
-  /** 普通待确认候选。 */
-  | 'candidate_pending_review'
+  // 2026-09-29 第 2 批·一物一链：`candidate_pending_review` 停产——同一 pending
+  // 候选此前既出候选卡（promote 完整三选一）又出治理行（accept 直调 promote
+  // 不带选项，撞闸门直接报错），两套按钮两条链（B1/B2）。治理清单不再镜像
+  // 候选池；待确认候选唯一确认入口=候选卡/详情。
   /**
    * AI 自主提出的实质变化（specs/008 US-406）：待处理或用户选了「稍后处理」。
    * 与候选分开：候选是"还没成为资产的东西"，这条是"资产已经在、改动等拍板"。
@@ -191,7 +193,6 @@ const INBOX_ACTIONS: Record<CognitionInboxKind, readonly CognitionInboxAction[]>
   evidence_insufficient: ['reject', 'defer'],
   candidate_ineligible: ['reject', 'defer'],
   source_unavailable: [],
-  candidate_pending_review: ['accept', 'reject', 'defer'],
   asset_change_pending: ['accept', 'defer', 'reject'],
   cleanup_uncertain: ['reject', 'defer'],
   inspection_finding: ['reject', 'defer'],
@@ -215,7 +216,6 @@ const URGENCY: Record<CognitionInboxKind, CognitionInboxUrgency> = {
   // 列出来就够，不打断：用户可以改到合格，也可以直接否掉，都不紧急。
   candidate_ineligible: 'low_disturbance',
   source_unavailable: 'confirm',
-  candidate_pending_review: 'low_disturbance',
   asset_change_pending: 'confirm',
   cleanup_uncertain: 'low_disturbance',
   inspection_finding: 'low_disturbance',
@@ -234,7 +234,6 @@ const KIND_ORDER: CognitionInboxKind[] = [
   'asset_change_pending',
   'cleanup_uncertain',
   'inspection_finding',
-  'candidate_pending_review',
 ];
 
 /** 与 candidate-service 的同名比较保持一致：只做空白归一，不做语义归一。 */
@@ -395,9 +394,9 @@ export function buildCognitionInbox(input: CognitionInboxInput): CognitionInboxI
       }));
       continue;
     }
-    items.push(item('candidate_pending_review', `candidate:${candidate.id}`, candidate.judgment || candidate.id, {
-      candidateId: candidate.id,
-    }));
+    // 2026-09-29 第 2 批：普通待确认候选不再进治理清单（candidate_pending_review
+    // 停产，B2）——它的唯一确认入口是候选卡/详情（完整三选一），这里再给
+    // 一套 accept 直调就是第二条确认链。
   }
 
   // 补证据不是"决定"，所以它不能跟决定类共用 `pending` 这层过滤。

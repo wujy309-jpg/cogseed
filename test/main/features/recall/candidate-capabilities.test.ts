@@ -161,7 +161,7 @@ describe('Recall candidate capability — cross-entry consistency', () => {
     expect(pool.filter((c) => getRecallCandidateCapabilities(c).canBatchSelect)).toHaveLength(3);
   });
 
-  it('feeds the inbox from needsUserAction, not from pending_review', async () => {
+  it('no longer mirrors the candidate pool into the inbox（candidate_pending_review 停产）', async () => {
     const { buildCognitionInbox } = await import('../../../../src/main/features/recall/formal-assets/inbox');
     const items = buildCognitionInbox({
       assets: [],
@@ -172,8 +172,11 @@ describe('Recall candidate capability — cross-entry consistency', () => {
       ],
       unavailableSourceIds: new Set(),
     });
-    const candidateItems = items.filter((i) => i.kind === 'candidate_pending_review');
-    expect(candidateItems.map((i) => i.id)).toEqual(['candidate:c-weak']);
+    // 2026-09-29 第 2 批·一物一链：治理清单不再镜像候选池——可操作候选（原
+    // candidate_pending_review）与终态候选一律不出现（终态本就不进，原测试
+    // 的口径意图保留）；待确认候选唯一确认入口=候选卡/详情的完整三选一。
+    expect(items.filter((i) => String(i.id).startsWith('candidate:'))).toEqual([]);
+    expect(items).toEqual([]);
   });
 
   it('lets batch promote consume canPromote and rejects terminal candidates with a stable code', async () => {

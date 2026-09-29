@@ -91,7 +91,10 @@ export type CognitionInboxResolveErrorCode =
   /** 补条件未过门禁（specs/010 T028）——**且不落库**。 */
   | 'invalid_boundary'
   /** 锁内 expectedVersion 重检不一致（specs/010 T021/T030）——不静默覆盖。 */
-  | 'version_conflict';
+  | 'version_conflict'
+  /** 选边后保留侧没过晋升闸门（2026-09-29 第 2 批）：另一边已出局、保留侧
+   *  待用户到候选详情完成完整确认——不是失败态，是半程回执。 */
+  | 'promotion_gate_rejected';
 
 export interface CognitionInboxResolveResult {
   ok: true;
@@ -102,9 +105,10 @@ export interface CognitionInboxResolveResult {
 
 /** 与 `recallCandidateError` 同约定：错误码挂在 Error 上，由 IPC 包装层透出成
  *  `{ ok:false, error, code }`——全仓统一一种错误形状，渲染层不必按通道分支。 */
-function inboxResolveError(code: CognitionInboxResolveErrorCode, message: string): Error & { code: CognitionInboxResolveErrorCode } {
-  const error = new Error(message) as Error & { code: CognitionInboxResolveErrorCode };
+function inboxResolveError(code: CognitionInboxResolveErrorCode, message: string, extra?: Record<string, string>): Error & { code: CognitionInboxResolveErrorCode } {
+  const error = new Error(message) as Error & { code: CognitionInboxResolveErrorCode } & Record<string, string>;
   error.code = code;
+  if (extra) Object.assign(error, extra);
   return error;
 }
 
@@ -183,15 +187,23 @@ export async function resolveCognitionInboxItem(
           });
         });
       }
-      // 晋升闸门（证据/风险/相似）照旧生效：它拒绝的原因就是回执，不吞。
-      await promoteRecallCandidate(userId, candidateId, { actor: 'user', ...(note ? { decisionReason: note } : {}) });
+      // 晋升闸门（证据/风险/相似）照旧生效（2026-09-29 第 2 批）：它拒绝时
+      // 不再裸抛内部错误——转成结构化 code（promotion_gate_rejected）带
+      // 候选编号，前端据此引导去候选详情走完整三选一，而不是笼统报错。
+      try {
+        await promoteRecallCandidate(userId, candidateId, { actor: 'user', ...(note ? { decisionReason: note } : {}) });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw inboxResolveError('promotion_gate_rejected',
+          `选边已生效（另一条已出局），但保留的这一条没有通过晋升检查：${message}。可到「待我处理」的候选详情里查看并完成确认。`,
+          { candidateId });
+      }
       return { ok: true, target: 'recall_candidate', status: 'claimed' };
     }
-    if (action === 'accept') {
-      // 晋升闸门（证据/风险/相似）照旧生效：它拒绝的原因就是回执，不在这里复述一遍。
-      await promoteRecallCandidate(userId, candidateId, { actor: 'user', ...(note ? { decisionReason: note } : {}) });
-      return { ok: true, target: 'recall_candidate', status: 'promoted' };
-    }
+    // 2026-09-29 第 2 批·一物一链：accept 直调分支删除——candidate_pending_review
+    // 已停产（inbox.ts），普通候选的确认唯一入口是候选卡/详情的完整三选一；
+    // 这里保留直调就是第二条不带冲突选项的确认链（B1）。reject/defer/ignore
+    // 是"移出清单"类动作（不落库），保留。
     if (action === 'reject') {
       await rejectRecallCandidate(userId, candidateId, note);
       return { ok: true, target: 'recall_candidate', status: 'rejected' };
@@ -206,7 +218,7 @@ export async function resolveCognitionInboxItem(
     }
     throw inboxResolveError(
       'unsupported_action',
-      `候选类待办只支持 accept / reject / defer / ignore${candidatePrefix === 'conflict:' ? ' / claim' : ''}，收到 ${action || '(空)'}`,
+      `候选类待办只支持 reject / defer / ignore${candidatePrefix === 'conflict:' ? ' / claim' : ''}，收到 ${action || '(空)'}`,
     );
   }
 

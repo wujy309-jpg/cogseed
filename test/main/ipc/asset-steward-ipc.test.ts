@@ -158,9 +158,12 @@ describe('ipc › recall.assets.deleted.purgeNow', () => {
 
 describe('ipc › cognition.inbox.resolve', () => {
   it('候选类待办按动作落到对应处置函数', async () => {
+    // 2026-09-29 第 2 批·一物一链：accept 直调晋升分支已删——candidate_pending_review
+    // 停产，普通候选唯一确认入口是候选卡/详情（完整三选一）；这里再回 accept
+    // 就是第二条不带冲突选项的确认链。
     await expect(call('cognition.inbox.resolve', { id: 'candidate:cand-1', action: 'accept' }))
-      .resolves.toMatchObject({ ok: true, target: 'recall_candidate', status: 'promoted' });
-    expect(candidateMock.promoteRecallCandidate).toHaveBeenCalledWith(UID, 'cand-1', { actor: 'user' });
+      .resolves.toMatchObject({ ok: false, code: 'unsupported_action' });
+    expect(candidateMock.promoteRecallCandidate).not.toHaveBeenCalled();
 
     await expect(call('cognition.inbox.resolve', { id: 'reject-me', action: 'reject' }))
       .resolves.toMatchObject({ ok: false, code: 'unsupported_item_kind' });

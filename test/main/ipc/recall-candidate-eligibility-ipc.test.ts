@@ -146,7 +146,7 @@ const findById = (candidates: CandidateDto[], id: string): CandidateDto => {
 };
 
 describe('候选可确认性在真实 IPC 读口上闭环', () => {
-  it('Case A 合格候选：list 说能确认 → inbox 出普通待办 → promote 真的落出正式资产', async () => {
+  it('Case A 合格候选：list 说能确认 → inbox 不再镜像候选（唯一确认入口=候选详情）→ promote 真的落出正式资产', async () => {
     const candidates = await candidateService();
     const saved = await candidates.saveRecallCandidate(UID, {
       ...DURABLE_PREFERENCE, sourceRefs: REFS, evidenceRefs: REFS,
@@ -158,8 +158,11 @@ describe('候选可确认性在真实 IPC 读口上闭环', () => {
     expect(dto.capabilities.canConfirm).toBe(true);
     expect(dto.capabilities.eligibility).toBe('eligible');
 
+    // 2026-09-29 第 2 批·一物一链：普通待确认候选不再进治理清单
+    // （candidate_pending_review 停产）——此前治理行 accept 直调 promote 不带
+    // 冲突三选一，是与候选卡并行的第二条确认链。inbox 只收系统自查类。
     const inboxItem = (await listInbox()).find((item) => item.candidateId === saved.id);
-    expect(inboxItem?.kind).toBe('candidate_pending_review');
+    expect(inboxItem).toBeUndefined();
 
     const promoted = await call('recall.candidates.promote', { candidateId: saved.id });
     expect(promoted.ok).toBe(true);

@@ -128,11 +128,12 @@ describe('cognition inbox read model', () => {
       ],
     }));
     expect(items.find((entry) => entry.candidateId === 'c-bare')?.kind).toBe('evidence_insufficient');
-    expect(items.find((entry) => entry.candidateId === 'c-ok')?.kind).toBe('candidate_pending_review');
+    // 2026-09-29 第 2 批·一物一链：普通待确认候选不再进治理清单——它的唯一
+    // 确认入口是候选卡/详情（promote 完整三选一），治理行 accept 直调是
+    // 第二条不带冲突选项的确认链（B1/B2）。
+    expect(items.find((entry) => entry.candidateId === 'c-ok')).toBeUndefined();
     // 补证据同样是低打扰：列出来就够，不打断。
     expect(items.find((entry) => entry.candidateId === 'c-bare')?.urgency).toBe('low_disturbance');
-    // 普通候选是低打扰的，不该和冲突、扩权抢同一个确认位。
-    expect(items.find((entry) => entry.candidateId === 'c-ok')?.urgency).toBe('low_disturbance');
   });
 
   it('keeps an evidence-less candidate visible even though it is not a decision', () => {
@@ -157,9 +158,14 @@ describe('cognition inbox read model', () => {
 
   /** id 必须稳定：同一件事重复计算得到同一个 id，否则前端列表会闪。 */
   it('produces stable ids and a decision-first ordering', () => {
+    // 2026-09-29 第 2 批：普通待确认候选（原 low_disturbance 来源）停产，
+    // 换 evidence_insufficient 候选占低打扰位，保持双档排序覆盖。
     const shape = input({
       assets: [asset({ assetId: 'A-skill', assetType: 'skill_method', payload: { kind: 'skill_method' } })],
-      candidates: [{ id: 'c-ok', status: 'pending_review', judgment: '有证据', suggestedType: 'rule', evidenceRefs: [{}] }],
+      candidates: [
+        { id: 'c-ok', status: 'pending_review', judgment: '有证据', suggestedType: 'rule', evidenceRefs: [{}] },
+        { id: 'c-bare', status: 'weak_observation', judgment: '没有证据', suggestedType: 'rule', sourceRefs: [], evidenceRefs: [] },
+      ],
     });
     const first = buildCognitionInbox(shape);
     const second = buildCognitionInbox(shape);
@@ -262,18 +268,19 @@ describe('cognition inbox read model', () => {
 /** 合成一条最小待办条目（分组是纯函数，不依赖 build 的事实来源）。 */
 function inboxItem(overrides: Partial<import('../../../../src/main/features/recall/formal-assets/inbox').CognitionInboxItem> = {}) {
   return {
-    id: 'syn:1', kind: 'candidate_pending_review' as const, urgency: 'low_disturbance' as const,
+    id: 'syn:1', kind: 'candidate_ineligible' as const, urgency: 'low_disturbance' as const,
     title: '合成条目',
     ...overrides,
   };
 }
 
 describe('cognition inbox governance grouping (specs/010)', () => {
-  /** 13 种 kind 各一条，外加按 findingCategory 细分的巡检三类。 */
+  /** 12 种 kind 各一条（candidate_pending_review 已停产，2026-09-29 第 2 批），
+   * 外加按 findingCategory 细分的巡检三类。 */
   const ALL_KINDS = [
     'skill_creation_suggested', 'skill_upgrade_suggested', 'rule_scope_changed', 'template_updated',
     'rule_boundary_missing', 'classification_conflict', 'evidence_insufficient',
-    'candidate_ineligible', 'source_unavailable', 'candidate_pending_review',
+    'candidate_ineligible', 'source_unavailable',
     'asset_change_pending', 'cleanup_uncertain', 'inspection_finding',
   ] as const;
 
@@ -288,10 +295,10 @@ describe('cognition inbox governance grouping (specs/010)', () => {
     return items;
   }
 
-  it('assigns all 13 kinds to a governance group — nothing dropped, nothing invented', () => {
+  it('assigns all 12 kinds to a governance group — nothing dropped, nothing invented', () => {
     const items = kitchenSink();
     const groups = groupCognitionInbox(items);
-    // 全部 15 种 kind 都有归属（无漏项）：逐条都能在某组里找到自己。
+    // 全部条目（12 kind + 巡检细分 3）都有归属（无漏项）：逐条都能在某组里找到自己。
     const flatIds = new Set(groups.flatMap((group) => group.items.map((entry) => entry.id)));
     for (const entry of items) expect(flatIds.has(entry.id)).toBe(true);
     expect(groups.flatMap((group) => group.items).length).toBe(items.length);
