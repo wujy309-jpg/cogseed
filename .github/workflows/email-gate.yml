@@ -34,6 +34,7 @@ permissions:
 
 jobs:
   check-commit-emails:
+    if: github.repository == 'bonc-ai/cogseed-internal'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

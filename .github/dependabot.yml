@@ -9,10 +9,14 @@ updates:
       day: "monday"
       time: "09:00"
       timezone: "Asia/Shanghai"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 3
     labels:
       - "dependencies"
-    # 小版本（patch/minor）与安全修复默认自动合；大版本（major）留人工
+    groups:
+      npm-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    # 大版本（major）留人工评估，避免每个依赖单独消耗门禁额度。
     ignore:
       - dependency-name: "electron"
         update-types: ["version-update:semver-major"]
@@ -21,5 +25,8 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
+      interval: "monthly"
+    open-pull-requests-limit: 2
+    groups:
+      actions-all:
+        patterns: ["*"]
