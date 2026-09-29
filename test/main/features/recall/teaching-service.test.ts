@@ -35,6 +35,21 @@ describe('User teaching signals', () => {
     expect(teaching.classifyTeachingIntent('请继续处理这个任务')).toBeUndefined();
   });
 
+  it('标题与会话整理线统一（2026-09-29）：正文首句短标题，不再前 239 字截断', async () => {
+    const teaching = await import('../../../../src/main/features/recall/teaching-service');
+    const longMemory = '部署任何服务前先跑一遍冒烟清单，任何一步失败都停下来排查而不是带病上线。'.repeat(6);
+    const signal = await teaching.recordTeachingSignalAfterMemoryWrite('user-a', {
+      conversationId: 'conv-title',
+      messageId: 'message-title',
+      userMessage: '请记住：部署前先跑冒烟清单，任何一步失败都停下来排查而不是带病上线。',
+      memoryContent: longMemory,
+      memoryScope: 'personal' as const,
+    });
+    // 标题=正文首句截到 60 字（makeDisplayTitle），不再是 239 字的半行正文。
+    expect(signal!.summary.length).toBeLessThanOrEqual(60);
+    expect(signal!.summary).not.toContain('……');
+  });
+
   it('creates one idempotent pending candidate and revokes both review inputs', async () => {
     const teaching = await import('../../../../src/main/features/recall/teaching-service');
     const candidates = await import('../../../../src/main/features/recall/candidate-service');
