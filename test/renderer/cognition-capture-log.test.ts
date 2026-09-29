@@ -936,14 +936,18 @@ describe('整理详情页', () => {
     expect(html).toContain('发现 1 条待确认内容');
     expect(html).toContain('发布前冒烟');
     expect(html).toContain('data-act="go-review"');
-    // 整合排版不变：状态/元信息/动作收进一行卡头（ca-capture-head 内同层）。
+    // 卡头=状态与元信息一行；动作按钮已沉卡尾（2026-09-29 子安拍板，同建议
+    // 详情的卡尾 actions-right）——卡头不再有按钮排。
     const headAt = html.indexOf('ca-capture-head');
     expect(headAt).toBeGreaterThan(-1);
     const headSection = html.slice(headAt, html.indexOf('ca-capture-head') + 2000);
     expect(headSection).toContain('模型用量');
-    expect(headSection).toContain('data-act="open-conversation"');
     expect(headSection).toContain('meta-row');
-    expect(headSection).toContain('ca-head-actions');
+    expect(headSection).not.toContain('ca-head-actions');
+    expect(headSection).not.toContain('data-act="open-conversation"');
+    // 动作行在卡尾：位置在对话上下文分节之后。
+    const footAt = html.indexOf('data-act="open-conversation"');
+    expect(footAt).toBeGreaterThan(html.indexOf('消息时间线'));
     expect(html).toContain('meta-item');
     expect(html).not.toContain('ca-kv');
   });

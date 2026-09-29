@@ -3945,10 +3945,6 @@
           ${metaItem(T('cognition.capture_detail_attempt', '尝试次数'), String(Number(capture.attempt) || 1))}
           ${metaItem(T('cognition.capture_detail_reason', '触发'), capture.displayReason && vocab ? vocab.captureReasonText(capture.displayReason) : '')}
         </div>
-        <div class="ca-head-actions">
-          ${captureActionButtons({ ...capture, actions: (capture.actions || []).filter((action) => action !== 'review_candidates' && action !== 'view_assets') })}
-          ${btn(T('cognition.capture_action_open_conversation', '打开会话'), 'open-conversation', { id: capture.conversationId || '', small: true })}
-        </div>
       </div>
       <h2 class="cand-title">${esc(recordTitleText)}</h2>
       ${captureStageStepper(capture.stage)}
@@ -3957,6 +3953,17 @@
         ${captureResultSection(capture, messageBySourceId)}
         ${captureConversationSection(capture, contextHit ? (contextHit.loading ? { loading: true } : context) : null)}
       </div>
+      ${captureActionButtonsHtml(capture)}
+    </div>`;
+  }
+
+  /** 卡尾动作行（2026-09-29 子安拍板）：操作按钮与建议详情同款——沉到卡片
+   *  最底部右对齐（actions actions-right），不再卡头横排；状态信息（chip+
+   *  元信息）留在卡头，动线=先看状态与内容、最后做操作。 */
+  function captureActionButtonsHtml(capture) {
+    return `<div class="actions actions-right">
+      ${captureActionButtons({ ...capture, actions: (capture.actions || []).filter((action) => action !== 'review_candidates' && action !== 'view_assets') })}
+      ${btn(T('cognition.capture_action_open_conversation', '打开会话'), 'open-conversation', { id: capture.conversationId || '', small: true })}
     </div>`;
   }
 

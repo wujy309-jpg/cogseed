@@ -374,7 +374,6 @@
    动作按钮收进一行卡头，腾出的空间让待确认表单成为主体。 */
 .ca-capture-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
 .ca-capture-head > .ca-chip { flex: 0 0 auto; }
-.ca-head-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ca-pending-embed { margin-top: 12px; }
 .ca-pending-block + .ca-pending-block { border-top: 1px dashed var(--ca-line); margin-top: 14px; padding-top: 14px; }
 
@@ -402,7 +401,6 @@
 }
 @media (max-width: 720px) {
   .ca-capture-head { align-items: flex-start; }
-  .ca-head-actions { margin-left: 0; }
   .ca-setcard { padding: 12px 13px; }
   .ca-card { padding: 13px 14px; }
 }
