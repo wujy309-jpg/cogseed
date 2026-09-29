@@ -283,8 +283,9 @@ describe('系统活动与认知设置', () => {
     // 合并卡标题：自动维护（夜间整理对话 + 定期检查资产库一个开关）。
     expect(off).toContain('自动维护');
     expect(off).toContain('由你确认或修改后保存');
-    // 2026-09-29 集成维护：「检查一次」并入「立即维护」（run-maintenance）。
-    expect(off).toContain('data-act="run-maintenance"');
+    // 2026-09-29 完全合并：「立即维护」手动行已删——夜间线（巡检轮后）自动
+    // 跑清理，UI 只剩开关；手动清理入口随行撤下。
+    expect(off).not.toContain('data-act="run-maintenance"');
     // 关闭态：开关未亮、无时间选择器；独立巡检开关随合并退役。
     expect(off).toContain('data-act="nightly-toggle"');
     expect(off).toContain('class="ui-switch" role="switch" aria-checked="false"');
@@ -301,12 +302,12 @@ describe('系统活动与认知设置', () => {
     // 候选确认方式保留。
     expect(on).not.toContain('data-act="capture-toggle"');
     expect(on).toContain('data-act="capture-review-toggle"');
-    // 2026-09-29 集成维护：设置页一个「立即维护」按钮跑全套（检查+清理，
-    // recall.maintenance.run）；报告页仍保留单跑清理的 run-cleanup。
-    expect(on).toContain('立即维护');
-    expect(on).toContain('data-act="run-maintenance"');
+    // 2026-09-29 完全合并：手动行撤下；「查看整理报告」并入自动维护行。
+    expect(on).not.toContain('立即维护');
+    expect(on).not.toContain('data-act="run-maintenance"');
     expect(on).not.toContain('data-act="open-cleanup"');
-    expect(on).toContain('尚无整理记录');
+    // 合并后无报告不显示整理状态行（夜间自动会跑，空态句退役）。
+    expect(on).not.toContain('尚无整理记录');
   });
 
   it('资产页保留标签库入口，资产设置说明夜间静默等待时长', () => {
@@ -339,7 +340,6 @@ describe('系统活动与认知设置', () => {
       },
     });
     expect(html).toContain('最近一次');
-    expect(html).toContain('data-act="run-maintenance"');
     expect(html).toContain('data-act="open-cleanup"');
     expect(html).toContain('查看整理报告');
   });
@@ -1565,7 +1565,7 @@ describe('资产详情（使用记录并入）', () => {
     // 设置页（2026-09-29 三轮合一）：入口恒为「完整整理」文案，不再按最近
     // 报告轮次切换导语（旧规则轮/重起轮只在报告页历史里区分）。
     const settings = renderPage('organize-settings', { cleanupReports: { loading: false, reports: [regenReport] } });
-    expect(settings).toContain('自动规范标题、合并重复项、补标签');
+    expect(settings).toContain('规范标题、合并重复、补标签');
     expect(settings).not.toContain('由模型把不合格的标题重新拟一个简短的新标题');
     // 载体或以独立 trigger 值标记本轮（零项的重起报告也能分辨）——两种形态都认。
     const triggerOnly = { ...regenReport, id: 'cr-regen2', trigger: 'title_regen', items: [] };

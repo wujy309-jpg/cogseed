@@ -3237,41 +3237,6 @@
       || (Array.isArray(report.items) && report.items.some((item) => String(item.kind || '') === 'title_regen')));
 
   /** 资产设置中的手动整理入口；报告页继续复用既有 viewCleanup 路由。 */
-  function cleanupSettingsRow() {
-    // 2026-09-29 子安拍板「合并成一个集成功能」：本行=「立即维护」——一个
-    // 按钮跑全套（检查资产库 + 清理已有内容），通道 recall.maintenance.run；
-    // 原「检查一次」「立即整理」两按钮并入。报告入口不变（整理报告含逐项
-    // 改前改后与回滚；检查结果在「自动维护」行的最近检查里）。
-    const state = S.cleanupReports;
-    const reports = state && Array.isArray(state.reports) ? state.reports : [];
-    const loading = Boolean(state && state.loading);
-    const latest = reports[0] || null;
-    const summary = latest
-      ? T('cognition.cleanup_latest', '最近一次：{when} · 执行 {applied} 项 · 拿不准 {uncertain} 项', {
-        when: fmtDate(latest.createdAt),
-        applied: String((latest.items || []).filter((item) => item.status === 'applied').length),
-        uncertain: String((latest.uncertain || []).length),
-      })
-      : T('cognition.cleanup_none_yet', '尚无整理记录。运行一次后，可查看具体改动和回滚方式。');
-    return `<div class="rowline ca-maint-row">
-      <div>
-        <div class="tt">${esc(T('cognition.maint_run_title', '立即维护'))}</div>
-        <div class="sub">${esc(T('cognition.maint_run_hint', '一次跑全套：检查资产库（只报告），并自动规范标题、合并重复项、补标签、把啰嗦的正文交给模型重写（消耗模型额度）；拿不准的会留给你判断。'))}</div>
-        <div class="sub">${esc(summary)}</div>
-      </div>
-      <div class="right">
-        ${btn(loading ? T('cognition.cleanup_running', '正在维护…') : T('cognition.maint_run', '立即维护'), 'run-maintenance', {
-          small: true, primary: true, disabled: loading,
-          title: T('cognition.maint_run_title_hint', '检查资产库并做一次完整清理（规范标题、合并重复、补标签、重写啰嗦正文）。会消耗模型额度，拿不准的改动会留给你确认。'),
-        })}
-        ${latest ? btn(T('cognition.cleanup_open_report', '查看整理报告'), 'open-cleanup', {
-          small: true, className: 'o',
-          title: T('cognition.cleanup_report_title', '看每次整理具体改了什么（改前/改后对照），每项都可以单独回滚。'),
-        }) : ''}
-      </div>
-    </div>`;
-  }
-
   function viewOrganizeSettingsPage() {
     // 「整理功能」总开关卡已撤（specs/017 整改三）：「已开启+关闭按钮」读不懂
     // 且关闭是破坏性动作；后端 enabled 字段与契约保留，整理页的「已关闭」
@@ -3286,9 +3251,19 @@
     // 自动维护合并卡（2026-09-29 拍板：夜间自动整理+定期检查合为一个开关）：
     // 巡检随总开关同步启停（见 app.js nightly-toggle），这里展示它的最近一轮。
     const latestInspection = S.inspection && S.inspection.latestRun ? S.inspection.latestRun : null;
+    // 最近整理状态（原「整理已有内容」行的 summary，行合并后挪进自动维护行）。
+    const cleanupReportsList = (S.cleanupReports && Array.isArray(S.cleanupReports.reports)) ? S.cleanupReports.reports : [];
+    const cleanupLatest = cleanupReportsList[0] || null;
+    const cleanupLatestNote = cleanupLatest
+      ? `<div class="note">${esc(T('cognition.cleanup_latest', '最近一次：{when} · 执行 {applied} 项 · 拿不准 {uncertain} 项', {
+        when: fmtDate(cleanupLatest.createdAt),
+        applied: String((cleanupLatest.items || []).filter((item) => item.status === 'applied').length),
+        uncertain: String((cleanupLatest.uncertain || []).length),
+      }))}</div>`
+      : '';
     return `${hero(
       T('cognition.organize_settings_title', '资产设置'),
-      T('cognition.organize_settings_hint', '自动整理、手动整理和检查集中在这里；整理结果和需要你判断的内容都有记录。'),
+      T('cognition.organize_settings_hint', '自动维护集中在这里：夜间整理对话、检查并清理资产库；整理结果和需要你判断的内容都有记录。'),
     )}
     ${modelNeedsAttention ? `<div class="card ca-setcard">
       <div class="rowline">
@@ -3309,13 +3284,18 @@
         return `<div class="rowline">
         <div>
           <div class="tt">${esc(T('cognition.nightly_capture_title', '自动维护'))}</div>
-          <div class="sub">${esc(T('cognition.maint_hint_short', '夜间自动整理当天结束的会话并检查资产库（消耗模型额度）；整理产出按下方「整理产出怎么入库」入库，检查只报告、不改内容。'))}</div>
+          <div class="sub">${esc(T('cognition.maint_hint_short', '夜间自动整理当天结束的会话，检查资产库并清理存量（规范标题、合并重复、补标签、重写啰嗦正文；消耗模型额度）；整理产出按下方「是否自动保存」入库。'))}</div>
           ${latestInspection ? `<div class="note">${esc(T('cognition.inspection_last_run', '最近检查：{when} · 发现 {n} 条', {
             when: fmtDate(latestInspection.startedAt), n: String(((latestInspection.findings || [])).length),
           }))}</div>` : ''}
+          ${cleanupLatestNote}
         </div>
         <div class="right">
           ${nightlyOn ? `<label class="ca-setting-time"><span>${esc(T('cognition.nightly_capture_time', '开始时间'))}</span>${window.uiInput({ id: 'ca-nightly-start', type: 'time', value: nightlyStart, attrs: { 'data-act': 'nightly-time' } })}</label>` : ''}
+          ${cleanupLatest ? btn(T('cognition.cleanup_open_report', '查看整理报告'), 'open-cleanup', {
+            small: true, className: 'o',
+            title: T('cognition.cleanup_report_title', '看每次整理具体改了什么（改前/改后对照），每项都可以单独回滚。'),
+          }) : ''}
           ${window.uiSwitch({ label: T('cognition.nightly_capture_title', '自动维护'), checked: nightlyOn, attrs: { 'data-act': 'nightly-toggle' } })}
         </div>
       </div>
@@ -3335,7 +3315,7 @@
           attrs: { 'data-act': 'capture-review-toggle', 'data-id': reviewAuto ? 'manual' : 'auto' },
         })}</div>
       </div>
-      ${cleanupSettingsRow()}`;
+      `;
       })()}
     </div>
     ${(() => {

@@ -316,7 +316,26 @@ export async function runScheduledInspectionIfEnabled(
 ): Promise<InspectionRun | undefined> {
   const settings = await readInspectionSettings(userId);
   if (!settings.enabled) return undefined;
-  return runAssetInspection(userId, { trigger: 'scheduled', ...(options.signal ? { signal: options.signal } : {}) });
+  const run = await runAssetInspection(userId, { trigger: 'scheduled', ...(options.signal ? { signal: options.signal } : {}) });
+  // 集成维护（2026-09-29 子安拍板「完全合并」）：自动维护开启时，检查轮之后
+  // 同天追加一轮完整清理（规范标题/合并重复/补标签/重写啰嗦正文，trigger
+  // =inspection，写前备份照旧）。当天已跑过则跳过（按最近一条清理报告的
+  // trigger+日期判重）；失败只记日志，不拖垮检查结果，也不影响返回值。
+  try {
+    const { listCleanupReports, runAssetCleanup } = await import('./cleanup-report-service');
+    const reports = await listCleanupReports(userId, 1);
+    const latest = reports[0];
+    const today = new Date().toISOString().slice(0, 10);
+    const alreadyToday = Boolean(
+      latest
+      && String(latest.trigger || '') === 'inspection'
+      && String(latest.createdAt || '').slice(0, 10) === today,
+    );
+    if (!alreadyToday) await runAssetCleanup(userId, { trigger: 'inspection' });
+  } catch (error) {
+    log.warn('scheduled maintenance cleanup failed', { userId, error: (error as Error).message });
+  }
+  return run;
 }
 
 export interface InspectionLoopHandle {
