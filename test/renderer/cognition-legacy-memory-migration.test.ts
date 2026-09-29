@@ -221,4 +221,30 @@ describe('设置页里的旧记忆归属核对（2026-09-28 两页重整：两�
     expect(loaded.store.legacyMemoryMigration.selectionKeys).toEqual([`user:${'c'.repeat(64)}`]);
     expect(loaded.store.legacyMemoryMigration.running).toBe(false);
   });
+
+  it('迁移完成后整区自动隐藏（2026-09-29 子安拍板）：两区都加载完、零待迁、无上次结果 ⇒ 设置页不再渲染「旧记忆迁移」', () => {
+    const html = renderCognition({ name: 'settings' }, {
+      legacyMemoryMigration: {
+        preview: { items: [], sources: { user: { status: 'ready' }, shared: { status: 'ready' } } },
+        loading: false, failed: false, selectionKeys: [], running: false, lastRun: null,
+      },
+      legacyScopedMemoryMigration: {
+        preview: { items: [], sources: [] },
+        loading: false, failed: false, selectionKeys: [], running: false, lastRun: null,
+      },
+    });
+    expect(html).not.toContain('旧记忆迁移');
+    expect(html).not.toContain('legacy-memory-run');
+    // 有待迁条目时照常显示（含合并区标题与诚实角标）。
+    const withPending = renderCognition({ name: 'settings' }, {
+      legacyMemoryMigration: {
+        preview: PREVIEW, loading: false, failed: false, selectionKeys: [], running: false, lastRun: null,
+      },
+      legacyScopedMemoryMigration: {
+        preview: { items: [], sources: [] }, loading: false, failed: false, selectionKeys: [], running: false, lastRun: null,
+      },
+    });
+    expect(withPending).toContain('旧记忆迁移');
+    expect(withPending).toContain('旧记忆归属与迁移');
+  });
 });

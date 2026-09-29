@@ -1555,6 +1555,8 @@
   "memory.legacy_migration_source_blocked": "Os marcadores de origem em {source} estão danificados ou não correspondem ao conteúdo. Para evitar atribuição incorreta, o arquivo inteiro permanece intacto.",
   "memory.legacy_migration_source_unavailable": "Não é possível ler {source} agora. Nenhuma migração foi executada.",
   "memory.legacy_migration_title": "Origem e migração de memórias antigas",
+  "memory.migration_merged_title": "Migração de memória antiga",
+  "memory.migration_merged_desc": "O conteúdo dos arquivos de memória antigos ainda não movido para os ativos de cognição é migrado aqui item a item; quando tudo for migrado, esta seção desaparece automaticamente.",
   "memory.legacy_migration_user_source": "Notas pessoais · USER.md",
   "memory.import": "Importar",
   "memory.import_empty": "Nada para analisar",

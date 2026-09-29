@@ -3015,7 +3015,15 @@
         body += btn(T('memory.legacy_migration_refresh', '重新检查'), 'legacy-memory-refresh', { small: true, className: 'o' });
       }
     }
-    return `<details class="details"><summary>${esc(T('memory.legacy_migration_title', '旧记忆归属与迁移'))}<span class="n">${items.length}</span></summary><div class="dbody">${body}</div></details>`;
+    // 2026-09-29 子安拍板（两迁移区合并+没活自动隐藏）：返回内层 body 与
+    // 状态，由设置页组装进单个「旧记忆迁移」折叠区；pending=真正待迁条数
+    //（保留类残留不计入角标）；hasReport=有上次结果要展示。
+    return {
+      body,
+      pending: items.length,
+      hasReport: Boolean(state && state.lastRun),
+      loaded: Boolean(state && !state.loading && preview),
+    };
   }
 
   /** Agent / Space / Project 历史记忆迁移入口。逐项展示原范围；项目旧文件
@@ -3149,7 +3157,13 @@
           ${btn(T('memory.scoped_migration_refresh', '重新扫描'), 'legacy-scoped-memory-refresh', { small: true, className: 'o', disabled: Boolean(state.running) })}`;
       }
     }
-    return `<details class="details"><summary>${esc(T('memory.scoped_migration_title', 'Agent / 工作空间 / Project 旧记忆迁移'))}<span class="n">${items.length}</span></summary><div class="dbody">${body}</div></details>`;
+    // 同上（2026-09-29 两迁移区合并）：返回内层 body 与状态。
+    return {
+      body,
+      pending: items.length,
+      hasReport: Boolean(state && state.lastRun),
+      loaded: Boolean(state && !state.loading && preview),
+    };
   }
 
   /* ────────────────────────── 使用记录零件（2026-09-15 自独立页迁入资产详情） ────────────────────────── */
@@ -3294,9 +3308,24 @@
       <p class="note">${esc(T(reviewAuto ? 'cognition.capture_review_auto_note' : 'cognition.capture_review_manual_note', reviewAuto ? '自动保存有条件：内容质量达标、能在你的原话里找到依据、模型不拿不准、不涉高风险——同时满足才直接存；其余仍会进「待我处理」问你。' : '建议先进入「待我处理」，由你确认或修改后保存。'))}</p>
     </div>
     ${cleanupSettingsRow()}
-    ${legacyMemoryMigrationSection()}
-    ${legacyScopedMemoryMigrationSection()}`;
-  }
+    ${(() => {
+      // 两迁移区合并 + 没活自动隐藏（2026-09-29 子安拍板）：单个「旧记忆迁移」
+      // 折叠区，角标=两区真正待迁条数之和（保留类残留不计）；两区都加载完成、
+      // 都没有待迁条目、也都没有上次结果要展示时，整个区不渲染——迁移工具
+      // 在界面层自动退役，代码保留（残留/新用户场景仍可用）。
+      const legacy = legacyMemoryMigrationSection();
+      const scoped = legacyScopedMemoryMigrationSection();
+      const pending = legacy.pending + scoped.pending;
+      const visible = !legacy.loaded || !scoped.loaded
+        || pending > 0 || legacy.hasReport || scoped.hasReport;
+      if (!visible) return '';
+      return `<details class="details"><summary>${esc(T('memory.migration_merged_title', '旧记忆迁移'))}<span class="n">${esc(String(pending))}</span></summary><div class="dbody">
+        <p class="note">${esc(T('memory.migration_merged_desc', '老版本记忆文件里还没搬进认知资产的内容在这里逐条迁移；都搬完后这个区会自动消失。'))}</p>
+        <div class="sect-block"><div class="tt">${esc(T('memory.legacy_migration_title', '旧记忆归属与迁移'))}</div>${legacy.body}</div>
+        <div class="sect-block"><div class="tt">${esc(T('memory.scoped_migration_title', 'Agent / 工作空间 / Project 旧记忆迁移'))}</div>${scoped.body}</div>
+      </div></details>`;
+    })()}`;
+}
 
   /* ────────────────────────── 视图：整理（任务流 + 策略） ──────────────────────────
    * 2026-09-15 全模块重构：原「从历史会话整理」「整理记录」「设置与管理→

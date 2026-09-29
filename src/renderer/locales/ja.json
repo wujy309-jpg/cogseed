@@ -1555,6 +1555,8 @@
   "memory.legacy_migration_source_blocked": "{source} の出典マークが壊れているか本文と一致しません。誤った帰属を防ぐため、ファイル全体をそのまま残します。",
   "memory.legacy_migration_source_unavailable": "現在 {source} を読み取れません。移行は実行されていません。",
   "memory.legacy_migration_title": "旧メモの帰属と移行",
+  "memory.migration_merged_title": "旧メモリの移行",
+  "memory.migration_merged_desc": "旧メモリファイルのうち認識アセットへ未移行の内容をここで逐条移行します。すべて移行するとこの区は自動的に消えます。",
   "memory.legacy_migration_user_source": "個人メモ · USER.md",
   "memory.import": "インポート",
   "memory.import_empty": "解析できる内容がありません",

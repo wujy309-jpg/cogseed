@@ -1684,6 +1684,8 @@
   "memory.legacy_migration_source_blocked": "{source} 的来源标记损坏或内容与记录不符。为避免误迁移，整份文件暂不处理，原文保留。",
   "memory.legacy_migration_source_unavailable": "目前读不了 {source}。没有执行迁移。",
   "memory.legacy_migration_title": "旧记忆归属与迁移",
+  "memory.migration_merged_title": "旧记忆迁移",
+  "memory.migration_merged_desc": "老版本记忆文件里还没搬进认知资产的内容在这里逐条迁移；都搬完后这个区会自动消失。",
   "memory.legacy_migration_user_source": "个人记忆 · USER.md",
   "memory.import": "导入",
   "memory.import_empty": "没有可解析内容",

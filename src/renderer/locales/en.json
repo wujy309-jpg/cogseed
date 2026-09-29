@@ -1681,6 +1681,8 @@
   "memory.legacy_migration_source_blocked": "The source markers in {source} are damaged or do not match the content. To avoid assigning entries to the wrong owner, this file is left untouched.",
   "memory.legacy_migration_source_unavailable": "{source} cannot be read right now. No migration ran.",
   "memory.legacy_migration_title": "Legacy memory ownership and migration",
+  "memory.migration_merged_title": "Legacy memory migration",
+  "memory.migration_merged_desc": "Legacy memory file content not yet moved into cognition assets is migrated here item by item; once everything is moved, this section disappears automatically.",
   "memory.legacy_migration_user_source": "Personal notes · USER.md",
   "memory.import": "Import",
   "memory.import_empty": "Nothing to parse",
