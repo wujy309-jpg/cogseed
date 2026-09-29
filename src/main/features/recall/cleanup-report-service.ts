@@ -82,8 +82,20 @@ export interface CleanupReport extends RecallJsonRecord {
   trigger: 'user' | 'inspection';
   scope: { spaceId?: string; assetType?: string };
   /** 轮次（四病整改 3.3）：'rules'＝既有规则轮（含义不变的机械整理）；
-   *  'title_regen'＝标题重起轮（LLM 含义生成）。旧报告无此字段＝规则轮。 */
-  round?: 'rules' | 'title_regen' | 'statement_regen' | 'candidate_statement_regen';
+   *  'title_regen'＝标题重起轮（LLM 含义生成）。旧报告无此字段＝规则轮。
+   *  'full'＝三轮合一的完整整理（2026-09-29 拍板：日常整理/重新起标题/
+   *  改写正文合并为一个「整理」，见 runAssetFullCleanup）。 */
+  round?: 'rules' | 'title_regen' | 'statement_regen' | 'candidate_statement_regen' | 'full';
+  /** 完整整理轮：被合并汇总的各分轮报告 id。分轮报告仍在盘上（回滚凭据、
+   *  台账与版本锚点逐轮独立），列表按 supersededBy 隐藏分轮、只露合并报告。 */
+  subReportIds?: string[];
+  /** 本报告已被完整整理轮合并，列表不再单独露出（值＝合并报告 id）。 */
+  supersededBy?: string;
+  /** 完整整理轮：写前整库备份目录（标题/正文两轮各一个，回滚参考）。 */
+  backupDirs?: string[];
+  /** 完整整理轮：某分轮整轮未执行的原因（如模型未配置）。规则轮成果不陪葬，
+   *  但必须如实上报，不静默（各轮"整轮失败上报"硬口径在合并层的落点）。 */
+  roundErrors?: { title_regen?: string; statement_regen?: string };
   /** 标题重起轮专用：写前整库备份目录（records/ 之外）。恢复走
    *  updateAbilityAsset 正门逐条改回，不做 raw 写回（见轮内注释）。 */
   backupDir?: string;
@@ -138,6 +150,8 @@ export async function listCleanupReports(userId: string, limit = 20): Promise<Cl
     .flatMap((raw) => {
       try { return [asReport(raw)]; } catch { return []; }
     })
+    // 被完整整理轮合并的分轮不再单独露出（合并报告已汇总其 items/uncertain）。
+    .filter((report) => !report.supersededBy)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     .slice(0, Math.max(1, Math.min(100, limit)));
 }
@@ -793,6 +807,65 @@ export async function runAssetStatementRegenCleanup(
       finishedAt: new Date().toISOString(),
     }));
   }
+}
+
+/* ───────── 完整整理（三轮合一，2026-09-29 拍板） ─────────
+ * 日常整理、重新起标题、改写正文在用户面前合并为**一个「整理」**：一次调用
+ * 顺序跑 规则轮 → 标题重起轮 → 正文改写轮，产出一份合并报告（round:'full'）。
+ * 分轮报告照常落盘——每轮自己的台账、版本锚点、写前备份原样保留（回滚凭据
+ * 不变），只是列表层按 supersededBy 隐藏分轮、只露合并报告：历史不丢，界面
+ * 不重复。模型未配置时两个 LLM 轮整轮失败上报（各轮既有硬口径），合并层
+ * 接住记入 roundErrors——规则轮成果不陪葬，调用方如实展示，不静默。 */
+export async function runAssetFullCleanup(
+  userId: string,
+  options: RunCleanupOptions = {},
+): Promise<CleanupReport> {
+  const roundErrors: NonNullable<CleanupReport['roundErrors']> = {};
+  const rules = await runAssetCleanup(userId, options);
+  let title: CleanupReport | undefined;
+  let statement: CleanupReport | undefined;
+  try {
+    title = await runAssetTitleRegenCleanup(userId, options);
+  } catch (error) {
+    roundErrors.title_regen = (error as Error).message;
+  }
+  try {
+    statement = await runAssetStatementRegenCleanup(userId, options);
+  } catch (error) {
+    roundErrors.statement_regen = (error as Error).message;
+  }
+  const parts = [rules, title, statement].filter((report): report is CleanupReport => Boolean(report));
+  const mergedId = `cr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const scope = options.scope || {};
+  const backupDirs = [title?.backupDir, statement?.backupDir].filter((dir): dir is string => Boolean(dir));
+  const written = await writeRecallJsonRecord(userId, 'cleanup-reports', mergedId, {
+    schemaVersion: 1,
+    ownerId: userId,
+    id: mergedId,
+    trigger: options.trigger || 'user',
+    scope: { ...(scope.spaceId ? { spaceId: scope.spaceId } : {}), ...(scope.assetType ? { assetType: scope.assetType } : {}) },
+    round: 'full',
+    subReportIds: parts.map((report) => report.id),
+    ...(backupDirs.length ? { backupDirs } : {}),
+    ...(Object.keys(roundErrors).length ? { roundErrors } : {}),
+    items: parts.flatMap((report) => report.items),
+    uncertain: parts.flatMap((report) => report.uncertain),
+    skippedSteps: parts.flatMap((report) => report.skippedSteps),
+    createdAt: new Date().toISOString(),
+    finishedAt: new Date().toISOString(),
+    interrupted: parts.some((report) => report.interrupted) || undefined,
+    scanned: parts.reduce((total, report) => total + report.scanned, 0),
+  });
+  // 分轮标记被合并：列表只露合并报告（标记失败不让合并本身失败——下一轮
+  // 完整整理仍会把新报告顶到最前）。
+  for (const report of parts) {
+    try {
+      await patchReport(userId, report.id, () => ({ supersededBy: mergedId }));
+    } catch (error) {
+      log.warn('cleanup full merge supersede failed', { reportId: report.id, error: (error as Error).message });
+    }
+  }
+  return asReport(written);
 }
 
 /* ───────── 候选正文改写轮（2026-09-29 存量统一处理批） ─────────

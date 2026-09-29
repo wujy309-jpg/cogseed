@@ -283,7 +283,8 @@ describe('系统活动与认知设置', () => {
     // 合并卡标题：自动维护（夜间整理对话 + 定期检查资产库一个开关）。
     expect(off).toContain('自动维护');
     expect(off).toContain('由你确认或修改后保存');
-    expect(off).toContain('data-act="run-inspection"');
+    // 2026-09-29 集成维护：「检查一次」并入「立即维护」（run-maintenance）。
+    expect(off).toContain('data-act="run-maintenance"');
     // 关闭态：开关未亮、无时间选择器；独立巡检开关随合并退役。
     expect(off).toContain('data-act="nightly-toggle"');
     expect(off).toContain('class="ui-switch" role="switch" aria-checked="false"');
@@ -300,9 +301,10 @@ describe('系统活动与认知设置', () => {
     // 候选确认方式保留。
     expect(on).not.toContain('data-act="capture-toggle"');
     expect(on).toContain('data-act="capture-review-toggle"');
-    // 「整理已有内容」收进资产设置：可直接发起；无报告时不给报告入口。
-    expect(on).toContain('整理已有内容');
-    expect(on).toContain('data-act="run-cleanup"');
+    // 2026-09-29 集成维护：设置页一个「立即维护」按钮跑全套（检查+清理，
+    // recall.maintenance.run）；报告页仍保留单跑清理的 run-cleanup。
+    expect(on).toContain('立即维护');
+    expect(on).toContain('data-act="run-maintenance"');
     expect(on).not.toContain('data-act="open-cleanup"');
     expect(on).toContain('尚无整理记录');
   });
@@ -337,7 +339,7 @@ describe('系统活动与认知设置', () => {
       },
     });
     expect(html).toContain('最近一次');
-    expect(html).toContain('data-act="run-cleanup"');
+    expect(html).toContain('data-act="run-maintenance"');
     expect(html).toContain('data-act="open-cleanup"');
     expect(html).toContain('查看整理报告');
   });

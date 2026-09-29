@@ -1477,7 +1477,7 @@
     { id: 'ontology', titleKey: 'cognition.tab_ontology', title: '本体' },
     { id: 'review', titleKey: 'cognition.tab_review', title: '待我处理' },
     { id: 'activity', titleKey: 'cognition.tab_activity', title: '系统活动' },
-    { id: 'settings', titleKey: 'cognition.tab_settings', title: '页面整理' },
+    { id: 'settings', titleKey: 'cognition.tab_settings', title: '资产设置' },
   ];
   NS.TABS = TABS;
   // 归边判定 NS.isKstarAsset / NS.isKstarCandidate 由 views.js 定义
@@ -1618,7 +1618,7 @@
     const messages = {
       'conversation has no completed exchange': ['cognition.capture_error_no_completed_exchange', '当前会话还没有完成一轮问答，暂时无法沉淀。'],
       'conversation is still waiting for a response': ['cognition.capture_error_waiting_response', '当前会话仍在等待回复，完成后才能沉淀。'],
-      'recall capture is disabled': ['cognition.capture_error_disabled', '会话整理暂不可用，请查看页面整理。'],
+      'recall capture is disabled': ['cognition.capture_error_disabled', '会话整理暂不可用，请查看资产设置。'],
       'conversation not found': ['cognition.capture_error_conversation_not_found', '找不到这个会话，暂时无法沉淀。'],
     };
     const localized = messages[raw];
@@ -1992,6 +1992,28 @@
       store.assetVersions = null;
       await NS.reload();
     },
+    /** 集成维护（2026-09-29 子安拍板「合并成一个集成功能」）：一个动作跑全套
+     *  = 检查资产库 + 完整清理（recall.maintenance.run，后端组合两个服务）。
+     *  结果分两段 toast：检查发现几条、清理执行几项；报告照旧分别落账。 */
+    async runMaintenance() {
+      store.cleanupReports = { loading: true, reports: (store.cleanupReports && store.cleanupReports.reports) || [] };
+      NS.notify();
+      try {
+        const result = await api.call('recall.maintenance.run', {});
+        const run = (result && result.inspection) || null;
+        const report = (result && result.cleanup) || null;
+        toast(T('cognition.maint_run_done', '维护完成：检查发现 {findings} 条 · 清理执行 {applied} 项，拿不准 {uncertain} 项', {
+          findings: String(((run && run.findings) || []).length),
+          applied: String(((report && report.items) || []).filter((item) => item.status === 'applied').length),
+          uncertain: String(((report && report.uncertain) || []).length),
+        }));
+        store.cleanupReports = { loading: false, stale: true, reports: [] };
+      } catch (error) {
+        store.cleanupReports = { loading: false, stale: true, reports: [] };
+        throw error;
+      }
+      await NS.reload();
+    },
     /** 发起一轮大扫除（specs/008 US-403）：只做不改变含义的整理，拿不准的进清单。 */
     async runCleanup() {
       store.cleanupReports = { loading: true, reports: (store.cleanupReports && store.cleanupReports.reports) || [] };
@@ -2003,6 +2025,10 @@
           applied: String(((report && report.items) || []).filter((item) => item.status === 'applied').length),
           uncertain: String(((report && report.uncertain) || []).length),
         }));
+        // 完整整理轮的分轮失败（如模型未配置）如实补报——不静默（各轮
+        // "整轮失败上报"硬口径在合并报告里的出口）。
+        const roundErrors = report && report.roundErrors ? Object.values(report.roundErrors).filter(Boolean) : [];
+        if (roundErrors.length) toast(roundErrors.join('；'));
         store.cleanupReports = { loading: false, stale: true, reports: [] };
       } catch (error) {
         store.cleanupReports = { loading: false, stale: true, reports: [] };
@@ -2064,12 +2090,16 @@
       await NS.reload();
     },
     /** 巡检开关（specs/008 US-405 T049）：关掉之后不再自动运行；
-     *  手动触发不受影响（那是用户自己要的）。 */
-    async setInspectionEnabled(enabled) {
+     *  手动触发不受影响（那是用户自己要的）。
+     *  opts.silent：自动维护总开关联动时用——不弹自己的 toast（总开关已有
+     *  统一反馈），数据照常置 stale 供「最近检查」行刷新。 */
+    async setInspectionEnabled(enabled, opts = {}) {
       await api.call('recall.inspection.settings.set', { enabled: Boolean(enabled) });
-      toast(enabled
-        ? T('cognition.inspection_switch_on_toast', '已开启定期检查')
-        : T('cognition.inspection_switch_off_toast', '已关闭定期检查'));
+      if (!opts.silent) {
+        toast(enabled
+          ? T('cognition.inspection_switch_on_toast', '已开启定期检查')
+          : T('cognition.inspection_switch_off_toast', '已关闭定期检查'));
+      }
       store.inspection = { loading: false, stale: true, settings: (store.inspection && store.inspection.settings) || null, latestRun: (store.inspection && store.inspection.latestRun) || null };
       await NS.reload();
     },

@@ -625,3 +625,4 @@ workspace.selectDirectory
 workspace.set
 workspace.setCodingProjectDir
 workspace.statPath
+recall.maintenance.run

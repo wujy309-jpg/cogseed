@@ -20,7 +20,7 @@
     'refresh', 'cand-adopt-with-form', 'cand-decide',
     'asset-action', 'asset-recommend-ack', 'select-asset-version', 'delete-asset-version',
     'run-cleanup', 'rollback-cleanup-item', 'cleanup-uncertain-dismiss', 'cleanup-uncertain-defer',
-    'inspection-toggle', 'run-inspection', 'purge-deleted-asset', 'inbox-resolve', 'asset-edit-save', 'edit-from-version', 'merge-asset-version', 'merge-asset', 'source-action', 'capture-action', 'organize-conv',
+    'inspection-toggle', 'run-inspection', 'run-maintenance', 'purge-deleted-asset', 'inbox-resolve', 'asset-edit-save', 'edit-from-version', 'merge-asset-version', 'merge-asset', 'source-action', 'capture-action', 'organize-conv',
     // A5（2026-09-29）：候选清单读失败的显式重试。
     'retry-candidates',
     // 治理待办就地处断（specs/010 T010）：冲突选边、巡检选边/合并。全部经
@@ -215,15 +215,17 @@
           }
           case 'go-organize-settings': router.go({ name: 'settings' }); break;
           case 'nightly-toggle': {
-            // 夜间自动沉淀开关：开 = nightly（并联动「先问我」——产出进
-            // 「待我处理」等批准，而非自动采纳）；关 = 回到纯手动。
-            // 开启是额度消耗行为：先确认。
+            // 自动维护总开关（2026-09-29 合并）：开 = nightly（并联动「先问我」
+            // ——产出进「待我处理」等批准，而非自动采纳）+ 同步启停定期检查
+            // （一个开关管两件事：夜间整理对话 + 定期检查资产库）；关 = 回到
+            // 纯手动、巡检一并停。开启是额度消耗行为：先确认。
             const on = !(S.captureSettings && String(S.captureSettings.executionPolicy || '') === 'nightly');
             if (on) {
-              const ok = await NS.confirmUser(T('cognition.nightly_capture_confirm', '开启后，夜间会在所选时间自动整理当天结束的会话，每次整理都会消耗模型额度。确认开启？'));
+              const ok = await NS.confirmUser(T('cognition.nightly_capture_confirm', '开启后，系统会在夜间自动整理当天结束的会话（消耗模型额度），并定期检查资产库。产出的建议都会先给你过目。确认开启？'));
               if (!ok) break;
             }
             const previous = S.captureSettings;
+            const previousInspection = S.inspection;
             const patch = on
               ? { executionPolicy: 'nightly', reviewPolicy: 'manual' }
               : { executionPolicy: 'manual' };
@@ -231,8 +233,10 @@
             NS.notify();
             try {
               await A.updateCaptureSettings(patch);
+              await A.setInspectionEnabled(on, { silent: true });
             } catch (error) {
               S.captureSettings = previous;
+              S.inspection = previousInspection;
               NS.notify();
               throw error;
             }
@@ -275,6 +279,7 @@
           case 'asset-action': await A.assetAction(id, el.dataset.action); break;
           case 'asset-recommend-ack': await A.acknowledgeAssetRecommendation(id); break;
           case 'select-asset-version': await A.selectAssetVersion(id, el.dataset.version || ''); break;
+          case 'run-maintenance': await A.runMaintenance(); break;
           case 'run-cleanup': await A.runCleanup(); break;
           case 'inspection-toggle': await A.setInspectionEnabled(!(S.inspection && S.inspection.settings && S.inspection.settings.enabled)); break;
           case 'run-inspection': await A.runInspection(); break;
@@ -954,7 +959,9 @@
     if (['cleanup', 'settings', 'activity'].includes(String(S.route.name || ''))) {
       void NS.loadCleanupReports();
     }
-    if (['cleanup', 'activity'].includes(String(S.route.name || ''))) {
+    // 自动维护合并卡（2026-09-29）：settings 页内嵌「最近检查」行，巡检数据
+    // 门控补 'settings'——直接落资产设置时不再漏拉（此前开关恒显假「关」）。
+    if (['cleanup', 'settings', 'activity'].includes(String(S.route.name || ''))) {
       void NS.loadInspection();
     }
     // 采用回执（2026-09-25 US-602）：详情「实际采用记录」区的唯一数据源。

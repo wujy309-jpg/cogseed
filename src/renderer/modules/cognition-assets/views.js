@@ -3238,8 +3238,10 @@
 
   /** 资产设置中的手动整理入口；报告页继续复用既有 viewCleanup 路由。 */
   function cleanupSettingsRow() {
-    // 2026-09-29 子安拍板三块合一：本函数改为返回「维护」大卡的第三行片段
-    //（手动整理存量），由 viewOrganizeSettingsPage 组装进单卡。
+    // 2026-09-29 子安拍板「合并成一个集成功能」：本行=「立即维护」——一个
+    // 按钮跑全套（检查资产库 + 清理已有内容），通道 recall.maintenance.run；
+    // 原「检查一次」「立即整理」两按钮并入。报告入口不变（整理报告含逐项
+    // 改前改后与回滚；检查结果在「自动维护」行的最近检查里）。
     const state = S.cleanupReports;
     const reports = state && Array.isArray(state.reports) ? state.reports : [];
     const loading = Boolean(state && state.loading);
@@ -3253,14 +3255,14 @@
       : T('cognition.cleanup_none_yet', '尚无整理记录。运行一次后，可查看具体改动和回滚方式。');
     return `<div class="rowline ca-maint-row">
       <div>
-        <div class="tt">${esc(T('cognition.cleanup_entry', '整理已有内容'))}</div>
-        <div class="sub">${esc(T('cognition.cleanup_run_hint', '自动规范标题、合并重复项、补标签，啰嗦的正文交给模型重写（消耗模型额度）；拿不准的会留给你判断。'))}</div>
+        <div class="tt">${esc(T('cognition.maint_run_title', '立即维护'))}</div>
+        <div class="sub">${esc(T('cognition.maint_run_hint', '一次跑全套：检查资产库（只报告），并自动规范标题、合并重复项、补标签、把啰嗦的正文交给模型重写（消耗模型额度）；拿不准的会留给你判断。'))}</div>
         <div class="sub">${esc(summary)}</div>
       </div>
       <div class="right">
-        ${btn(loading ? T('cognition.cleanup_running', '正在整理…') : T('cognition.cleanup_run', '立即整理'), 'run-cleanup', {
+        ${btn(loading ? T('cognition.cleanup_running', '正在维护…') : T('cognition.maint_run', '立即维护'), 'run-maintenance', {
           small: true, primary: true, disabled: loading,
-          title: T('cognition.cleanup_run_title', '对已保存的资产做一次清理：规范标题、合并重复、补标签、重写啰嗦正文。会消耗模型额度，拿不准的改动会留给你确认。'),
+          title: T('cognition.maint_run_title_hint', '检查资产库并做一次完整清理（规范标题、合并重复、补标签、重写啰嗦正文）。会消耗模型额度，拿不准的改动会留给你确认。'),
         })}
         ${latest ? btn(T('cognition.cleanup_open_report', '查看整理报告'), 'open-cleanup', {
           small: true, className: 'o',
@@ -3314,7 +3316,6 @@
         </div>
         <div class="right">
           ${nightlyOn ? `<label class="ca-setting-time"><span>${esc(T('cognition.nightly_capture_time', '开始时间'))}</span>${window.uiInput({ id: 'ca-nightly-start', type: 'time', value: nightlyStart, attrs: { 'data-act': 'nightly-time' } })}</label>` : ''}
-          ${btn(T('cognition.inspection_run_now', '检查一次'), 'run-inspection', { small: true, className: 'o' })}
           ${window.uiSwitch({ label: T('cognition.nightly_capture_title', '自动维护'), checked: nightlyOn, attrs: { 'data-act': 'nightly-toggle' } })}
         </div>
       </div>

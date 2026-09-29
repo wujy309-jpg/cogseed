@@ -481,3 +481,39 @@ describe('标题重起轮（设计 3.3 专项轮：LLM 含义生成，与规则�
     expect(rules.items.every((item) => item.kind !== 'title_regen')).toBe(true);
   });
 });
+
+describe('完整整理轮（2026-09-29 三轮合一：日常整理/重新起标题/改写正文 → 一个「整理」）', () => {
+  it('合并报告 round=full 汇总分轮 items，分轮照常落盘但列表只露合并报告', async () => {
+    const uid = 'user-clean-full';
+    const { cleanup } = await modules();
+    // 规则轮处理对象：结尾句读不规范的标题（真机上唯一能落盘的不规范形态）。
+    const asset = await seedAsset(uid, '完整整理样本：导出报表带时间戳。', '完整整理样本标题。');
+    const report = await cleanup.runAssetFullCleanup(uid);
+    expect(report.round).toBe('full');
+    expect(report.subReportIds).toHaveLength(3);
+    expect(report.finishedAt).toBeTruthy();
+    // 规则轮成果进合并报告（items 与台账一一对应的凭据逐轮保留）。
+    expect(report.items.some((item) => item.assetId === asset.id && item.kind === 'title_normalized')).toBe(true);
+    // 分轮被标记 supersededBy：列表只露合并报告，历史不丢（盘上仍可读）。
+    const listed = await cleanup.listCleanupReports(uid, 20);
+    expect(listed.map((row) => row.id)).toEqual([report.id]);
+    const sub = await cleanup.readCleanupReport(uid, report.subReportIds![0]!);
+    expect(sub?.supersededBy).toBe(report.id);
+  });
+
+  it('模型未配置：两个 LLM 轮整轮失败如实上报进 roundErrors，规则轮成果不陪葬', async () => {
+    const uid = 'user-clean-full-nomodel';
+    const { cleanup } = await modules();
+    titleRegenModel.configured = false;
+    try {
+      await seedAsset(uid, '无模型合并样本：导出报表带时间戳。', '无模型合并样本标题。');
+      const report = await cleanup.runAssetFullCleanup(uid);
+      expect(report.round).toBe('full');
+      expect(report.items.some((item) => item.kind === 'title_normalized')).toBe(true);
+      expect(report.roundErrors?.title_regen).toContain('尚未配置可用模型');
+      expect(report.roundErrors?.statement_regen).toContain('尚未配置可用模型');
+    } finally {
+      titleRegenModel.configured = true;
+    }
+  });
+});

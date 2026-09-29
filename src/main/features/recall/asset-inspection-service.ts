@@ -73,7 +73,7 @@ export interface InspectionSettings extends RecallJsonRecord {
 
 // 默认关（2026-09-28 四病整改 G2 / 拍板项 #5）：巡检是低频增值能力，不该
 // 未经用户开启就后台自跑——真机 125 轮 findings 全零也说明默认开没有产出。
-// 用户在「页面整理 → 高级设置」里打开后才会写入 settings 记录（此后以记录为准）。
+// 用户在「资产设置 → 高级设置」里打开后才会写入 settings 记录（此后以记录为准）。
 const DEFAULT_SETTINGS = Object.freeze({ enabled: false });
 
 /** 巡检周期：一天两轮足够——重复/过时/冲突都不是分钟级变化的事，

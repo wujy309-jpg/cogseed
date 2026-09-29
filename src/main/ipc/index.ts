@@ -3030,10 +3030,10 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // report/list 是读口——报告要能被逐项核对，所以读口与实体同批落地。
   'recall.cleanup.run': async ({ trigger, scope, round } = {}, ctx) => {
     if (trigger !== undefined && trigger !== 'user' && trigger !== 'inspection') throw new Error('invalid cleanup trigger');
-    // 专项治理轮（2026-09-29）：round 省略＝规则轮（既有语义）；'title_regen'
-    // /'statement_regen'＝标题重起/正文改写专项轮（LLM，写前自动备份）；
-    // 'candidate_statement_regen'＝候选池正文改写轮（存量统一处理批，只动
-    // 可操作域候选，终态不碰）。
+    // 三轮合一（2026-09-29 拍板）：round 省略＝完整整理（规则轮→标题重起→
+    // 正文改写，round:'full' 一份合并报告；分轮照常落盘，列表按 supersededBy
+    // 隐藏）。显式 round 仍可单跑专项轮；'candidate_statement_regen'＝候选池
+    // 正文改写轮（存量统一处理批，内部链路，渲染层不触达）。
     if (round !== undefined && round !== 'title_regen' && round !== 'statement_regen' && round !== 'candidate_statement_regen') throw new Error('invalid cleanup round');
     if (scope !== undefined) {
       if (!scope || typeof scope !== 'object' || Array.isArray(scope)) throw new Error('invalid cleanup scope');
@@ -3057,7 +3057,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
         ...(trigger !== undefined ? { trigger } : {}),
       }) };
     }
-    return { ok: true, report: await recallCleanup.runAssetCleanup(ctx.userId, {
+    return { ok: true, report: await recallCleanup.runAssetFullCleanup(ctx.userId, {
       ...(trigger !== undefined ? { trigger } : {}),
       ...(scope !== undefined ? { scope: scope as { spaceId?: string; assetType?: string } } : {}),
     }) };
@@ -3079,6 +3079,17 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     ok: true,
     run: await recallInspection.runAssetInspection(ctx.userId, { trigger: 'manual' }),
   }),
+
+  // 集成维护入口（2026-09-29 子安拍板「合并成一个集成功能」）：一次跑全套
+  // = 检查资产库（只报告）+ 完整清理（规范标题/合并重复/补标签/重写啰嗦正文）。
+  // 两个动作各自落自己的报告（inspection runs / cleanup-reports），前端一个
+  // 按钮触发、分别展示结果；夜间是否也自动跑 cleanup 属"睡着时改资产"的
+  // 产品决定，未拍板前夜间线维持"整理对话+检查"不挂清理。
+  'recall.maintenance.run': async (_args, ctx) => {
+    const inspection = await recallInspection.runAssetInspection(ctx.userId, { trigger: 'manual' });
+    const cleanup = await recallCleanup.runAssetCleanup(ctx.userId, { trigger: 'user' });
+    return { ok: true, inspection, cleanup };
+  },
   'recall.inspection.list': async ({ limit } = {}, ctx) => {
     if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 100)) throw new Error('invalid inspection limit');
     return { ok: true, runs: await recallInspection.listInspectionRuns(ctx.userId, limit ?? 20) };

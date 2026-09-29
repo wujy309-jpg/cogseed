@@ -962,7 +962,8 @@
       "phase": 8
     },
     {"act": "toggle-task-failed", "module": "cognition-assets", "ipc": null, "write": false, "pending": false, "phase": 13},
-    {"act": "retry-candidates", "module": "cognition-assets", "ipc": "recall.candidates.list", "write": true, "pending": true, "phase": 13}
+    {"act": "retry-candidates", "module": "cognition-assets", "ipc": "recall.candidates.list", "write": true, "pending": true, "phase": 13},
+    {"act": "run-maintenance", "module": "cognition-assets", "ipc": "recall.maintenance.run", "write": true, "pending": true, "phase": 13}
   ],
   "forbidden": [
     {
