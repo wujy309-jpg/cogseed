@@ -3339,17 +3339,10 @@
     </div>`;
   }
 
-  /** 巡检轮次摘要（系统活动页只读记录）：扫了多少、怎么触发、发现去了哪。 */
-  function inspectionRoundCard() {
-    const inspection = S.inspection || null;
-    const latestRun = inspection && inspection.latestRun ? inspection.latestRun : null;
-    if (!latestRun) return '';
-    return `${sectionHead(T('cognition.inspection_title', '定期检查'), String((latestRun.findings || []).length))}
-    <div class="card ca-setcard"><div class="rowline"><div>
-      <div class="sub">${esc(T('cognition.inspection_last_run', '最近检查：{when} · 发现 {n} 条', { when: fmtDate(latestRun.startedAt), n: String((latestRun.findings || []).length) }))}</div>
-      <div class="sub">${esc(T('cognition.inspection_round_meta', '扫描 {scanned} 条 · 触发：{trigger} · 发现进「待我处理」，只报不改', { scanned: String(latestRun.scanned || 0), trigger: String(latestRun.trigger || '') === 'manual' ? T('cognition.inspection_trigger_manual', '手动') : T('cognition.inspection_trigger_scheduled', '定时') }))}</div>
-    </div></div></div>`;
-  }
+  // 2026-09-29 第 5 批：inspectionRoundCard 死函数删除——018 §四重构后全文件
+  // 零调用（定义即唯一出现）；其要表达的 scanned/trigger 摘要若仍需要，属
+  // 系统活动页时间流的新需求，另立 spec 再做（09-27 审计遗留的「二选一」按
+  // 「默认删」收口）。
 
   function viewCleanup(route) {
     const state = S.cleanupReports;

@@ -65,9 +65,6 @@ chat.executionCapability
 chat.interaction.reply
 cognition.assets.diff
 cognition.assets.list
-cognition.candidates.decide
-cognition.candidates.list
-cognition.dashboard.read
 cognition.extractFromSession
 cognition.inbox.list
 cognition.inbox.resolve

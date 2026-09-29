@@ -11,9 +11,9 @@
  *   meeting.assets.attach      —— 挂载资产引用（冻结版，幂等不覆盖 version）
  *   meeting.assets.detach      —— 摘除引用（只摘引用，不动资产）
  *   meeting.assets.list        —— 引用清单（现状对比/stale 是读时派生，T037）
- *   meeting.conclusions.list / save / confirm —— 纪要条目（T034；precipitate 见下）
- *   meeting.conclusions.precipitate —— 沉淀为候选（T046：必过确认闸，只到候选
- *                                      不到资产；tags/category ⇒ field_not_available）
+ *   meeting.conclusions.list / save / confirm —— 纪要条目（T034）
+ *   meeting.conclusions.precipitate —— 已退役（2026-09-29 第 5 批：渲染层零调用，
+ *                                      且与「会议内容不进认知主线」红线冲突）
  *   meeting.actions.list / confirm / discard —— 待办草稿（T040~T042；confirm 是
  *   唯一落点入口，内部过外发闸 assertActionDraftSendable；save 属后续任务）
  *   meeting.refs.related       —— 跨会议关联（T050，只读只给建议，不自动建立；
@@ -217,23 +217,11 @@ export const invokeHandlers = {
     return { conclusion };
   },
 
-  /**
-   * `meeting.conclusions.precipitate`：把**已确认**的结论沉淀为候选
-   * （contracts/ipc.md §1.3；FR-006 必过确认——闸在 features 的
-   * precipitateMeetingConclusion，status!=='confirmed' 系 ⇒ not_confirmed）。
-   * 只到候选不到资产；走既有 saveRecallCandidate（captureKey 幂等、reviewReady
-   * 不放宽）；tags/category 收到 ⇒ field_not_available（T048）。
-   */
-  'meeting.conclusions.precipitate': async (payload: Payload, ctx: IpcContext) => {
-    const docId = requireDocId(payload?.docId);
-    const { conclusion, candidateId } = await meetingConclusions.precipitateMeetingConclusion(
-      ctx.userId,
-      docId,
-      requireConclusionId(payload?.conclusionId),
-      (payload?.input ?? {}) as meetingConclusions.MeetingPrecipitateInput,
-    );
-    return { conclusion, candidateId };
-  },
+  // 2026-09-29 第 5 批·退役：`meeting.conclusions.precipitate` 通道移除——渲染层
+  // 零调用（注册后从未接线），且与既有红线冲突：会议纪要不进认知主线（capture
+  // 侧 personal 明确排除会议内容；kb-meeting-refs 引用链只依赖资产 id/版本/标题
+  // /摘要）。服务函数 precipitateMeetingConclusion 保留在 features 层，随
+  // 「通道退役大批」统一处置；contracts/ipc.md §1.3 的对应条目同步作废。
 
   // ── 待办草稿（T040~T042：默认 draft、状态机封闭、外发闸唯一处）──────────
   /** `meeting.actions.list`：本会议的待办草稿清单（只读；draft 态照常返回，可续办）。 */

@@ -3451,40 +3451,12 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     };
   },
 
-  'cognition.dashboard.read': async (_args, ctx) => {
-    return { ok: true, dashboard: await cognition.buildCognitionDashboard(ctx.userId) };
-  },
-
-  'cognition.candidates.list': async ({ status, type, conversationId, skillId, limit } = {}, ctx) => {
-    if (status !== undefined && status !== 'pending' && status !== 'accepted' && status !== 'rejected') throw new Error('invalid cognition candidate status');
-    if (type !== undefined && type !== 'preference' && type !== 'ontology' && type !== 'rule' && type !== 'experience' && type !== 'skill_evolution') throw new Error('invalid cognition candidate type');
-    if (conversationId !== undefined && !safeId(conversationId)) throw new Error('invalid conversation id');
-    if (skillId !== undefined && !safeId(skillId)) throw new Error('invalid skill id');
-    const n = limit === undefined ? undefined : Number(limit);
-    return { ok: true, candidates: await cognition.listCognitionCandidates(ctx.userId, {
-      ...(status !== undefined ? { status } : {}),
-      ...(type !== undefined ? { type } : {}),
-      ...(conversationId !== undefined ? { conversationId } : {}),
-      ...(skillId !== undefined ? { skillId } : {}),
-      ...(Number.isFinite(n) && n > 0 ? { limit: Math.min(n, 200) } : {}),
-    }) };
-  },
-
-  'cognition.candidates.decide': async ({ source, candidateId, decision, reason, notes, toGlobalMemory, toGroupIds } = {}, ctx) => {
-    if (source !== 'personal_ontology') throw new Error('invalid cognition candidate source');
-    if (!safeId(candidateId)) throw new Error('invalid candidate id');
-    if (decision !== 'accept' && decision !== 'reject') throw new Error('invalid cognition candidate decision');
-    if (toGroupIds !== undefined && (!Array.isArray(toGroupIds) || toGroupIds.some((id) => !safeId(id)))) throw new Error('invalid group ids');
-    return { ok: true, result: await cognition.decideCognitionCandidate(ctx.userId, {
-      source,
-      candidateId,
-      decision,
-      ...(typeof reason === 'string' ? { reason } : {}),
-      ...(typeof notes === 'string' ? { notes } : {}),
-      ...(typeof toGlobalMemory === 'boolean' ? { toGlobalMemory } : {}),
-      ...(Array.isArray(toGroupIds) ? { toGroupIds } : {}),
-    }) };
-  },
+  // 2026-09-29 第 5 批·退役：cognition.dashboard.read / cognition.candidates.list /
+  // cognition.candidates.decide 三条通道移除——渲染层零调用（09-27 审计与 09-29
+  // 探索双证），且 decide 的 accept 分支即时晋升、绕过「待我处理」确认闸，
+  // 与 recall.candidates.importPersonalOntology（转待确认）语义相反（B4）。
+  // 服务函数保留：listCognitionCandidates 仍被 skill-summary/assets-adapter 内部
+  // 消费；dashboard/decideCognitionCandidate 的服务文件随「通道退役大批」处置。
 
   'cognition.receipts.list': async ({ status, agentId, conversationId, skillId, limit } = {}, ctx) => {
     if (status !== undefined && status !== 'prepared' && status !== 'succeeded' && status !== 'degraded' && status !== 'rejected') throw new Error('invalid cognition receipt status');

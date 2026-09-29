@@ -99,100 +99,12 @@ async function seededEntry(wrong: string, correct: string, runId: string) {
   return entryId;
 }
 
-describe('T046：meeting.conclusions.precipitate（必过确认闸，只到候选不到资产）', () => {
-  it('① draft 态沉淀被拒：not_confirmed，且候选池零写入', async () => {
-    const saved = await callMeeting('meeting.conclusions.save', {
-      docId: DOC, conclusion: { summary: '未确认的结论' },
-    });
-    const code = await codeOf(() => callMeeting('meeting.conclusions.precipitate', {
-      docId: DOC, conclusionId: saved.conclusion.id, input: {},
-    }));
-    expect(code).toBe('not_confirmed');
-    const { listRecallCandidates } = await import('../../../src/main/features/recall/candidate-service');
-    expect(await listRecallCandidates(TEST_UID)).toHaveLength(0);
-  });
-
-  it('② 确认后沉淀成功：候选落盘（recall/records/candidates）、结论回填 candidateId + precipitated', async () => {
-    const id = await confirmedConclusion('确认后的结论', [
-      { utteranceId: 'U0001', blockIndex: 0, from: 0, to: 4 },
-    ]);
-    const result = await callMeeting('meeting.conclusions.precipitate', {
-      docId: DOC, conclusionId: id,
-      input: { suggestedType: 'rule', suggestedScope: 'project' },
-    });
-    expect(result.candidateId).toMatch(/^cand-/);
-    expect(result.conclusion.status).toBe('precipitated');
-    expect(result.conclusion.candidateId).toBe(result.candidateId);
-    // 候选真的落盘在 recall/records/candidates（写口唯一 = saveRecallCandidate）
-    const { userCloudRoot } = await import('../../../src/main/paths');
-    const candidatesDir = path.join(userCloudRoot(TEST_UID), 'recall', 'records', 'candidates');
-    const files = fs.readdirSync(candidatesDir).filter((f) => f.endsWith('.json'));
-    expect(files).toHaveLength(1);
-    // 结论侧记录同步回填
-    const listed = await callMeeting('meeting.conclusions.list', { docId: DOC });
-    expect(listed.conclusions[0].status).toBe('precipitated');
-    expect(listed.conclusions[0].candidateId).toBe(result.candidateId);
-  });
-
-  it('③ 给不出段落锚点 ⇒ 候选落 weak_observation（如实行为，不是缺陷：reviewReady 闸不放宽）', async () => {
-    const id = await confirmedConclusion('没有锚点的结论');                    // 不传 transcriptRefs
-    const result = await callMeeting('meeting.conclusions.precipitate', {
-      docId: DOC, conclusionId: id, input: {},
-    });
-    const { readRecallCandidate } = await import('../../../src/main/features/recall/candidate-service');
-    const candidate = await readRecallCandidate(TEST_UID, result.candidateId);
-    // 既有 reviewReady 的如实判定：evidenceRefs 为空 ⇒ weak_observation。
-    // 这是 candidate-service:1070-1074 一行不改的预期产物——不给锚点硬造证据才是缺陷。
-    expect(candidate.status).toBe('weak_observation');
-  });
-
-  it('④ 二次沉淀幂等：同 candidateId、候选池不新增', async () => {
-    const id = await confirmedConclusion('幂等沉淀', [{ utteranceId: 'U0001', blockIndex: 0, from: 0, to: 4 }]);
-    const first = await callMeeting('meeting.conclusions.precipitate', { docId: DOC, conclusionId: id, input: {} });
-    const second = await callMeeting('meeting.conclusions.precipitate', { docId: DOC, conclusionId: id, input: {} });
-    expect(second.candidateId).toBe(first.candidateId);
-    const { listRecallCandidates } = await import('../../../src/main/features/recall/candidate-service');
-    const pool = (await listRecallCandidates(TEST_UID)).filter((c) => (c.captureKey || '').startsWith('mtg-'));
-    expect(pool).toHaveLength(1);
-    expect(pool[0].id).toBe(first.candidateId);
-  });
-
-  it('⑤ T048：tags / category 各自被拒（field_not_available），文案不指向「待 Epic 2」', async () => {
-    const id = await confirmedConclusion('打标边界的结论', [{ utteranceId: 'U0001', blockIndex: 0, from: 0, to: 4 }]);
-    let message = '';
-    try {
-      await callMeeting('meeting.conclusions.precipitate', { docId: DOC, conclusionId: id, input: { tags: ['架构'] } });
-    } catch (error) {
-      expect((error as { code?: string }).code).toBe('field_not_available');
-      message = (error as Error).message;
-    }
-    // 口径（待总控确认第 14 条·已按默认①）：文案指向已上线的标签路径（晋升后经资产管家
-    // 打标），不写「待 Epic 2」——那已不是事实。
-    expect(message).not.toContain('Epic 2');
-    expect(message).toContain('asset steward');
-    const categoryCode = await codeOf(() => callMeeting('meeting.conclusions.precipitate', {
-      docId: DOC, conclusionId: id, input: { category: '架构' },
-    }));
-    expect(categoryCode).toBe('field_not_available');
-    // 两键都不曾造成候选写入
-    const { listRecallCandidates } = await import('../../../src/main/features/recall/candidate-service');
-    expect(await listRecallCandidates(TEST_UID)).toHaveLength(0);
-  });
-
-  it('⑥ 入参校验：非法 docId / 非法 conclusionId / 不存在 / 非法 suggestedType', async () => {
-    expect(await codeOf(() => callMeeting('meeting.conclusions.precipitate', {
-      docId: '', conclusionId: 'mc_x', input: {},
-    }))).toBe('invalid_doc_id');
-    expect(await codeOf(() => callMeeting('meeting.conclusions.precipitate', {
-      docId: DOC, conclusionId: '', input: {},
-    }))).toBe('invalid_item_id');
-    expect(await codeOf(() => callMeeting('meeting.conclusions.precipitate', {
-      docId: DOC, conclusionId: 'mc_missing', input: {},
-    }))).toBe('item_not_found');
-    const id = await confirmedConclusion('枚举校验的结论', [{ utteranceId: 'U0001', blockIndex: 0, from: 0, to: 4 }]);
-    expect(await codeOf(() => callMeeting('meeting.conclusions.precipitate', {
-      docId: DOC, conclusionId: id, input: { suggestedType: 'epic' },
-    }))).toBe('unknown_scenario');
+describe('T046：meeting.conclusions.precipitate 已退役（2026-09-29 第 5 批）', () => {
+  it('通道不再注册：handler 表无此键（渲染层零调用且与「会议内容不进认知主线」红线冲突，防复活守卫）', async () => {
+    // 原服务级行为闸（确认闸/幂等/锚点/T048 打标边界）随通道一并退役；
+    // precipitateMeetingConclusion 保留在 features 层待「通道退役大批」统一处置。
+    const { invokeHandlers } = await import('../../../src/main/ipc/meeting');
+    expect(Object.keys(invokeHandlers)).not.toContain('meeting.conclusions.precipitate');
   });
 });
 
