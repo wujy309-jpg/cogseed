@@ -431,14 +431,16 @@
       caps.isSnoozed ? btn(T('cognition.candidate_resume', '恢复'), 'cand-decide', { id: candidate.id, data: { action: 'resume' }, small: true, className: 'o' }) : '',
       caps.canDefer ? btn(labels.defer, 'cand-decide', { id: candidate.id, data: { action: 'defer' }, small: true, className: 'o' }) : '',
       caps.canReject ? btn(labels.reject, 'cand-decide', { id: candidate.id, data: { action: 'reject' }, small: true, className: 'o' }) : '',
-      btn(T('cognition.review_card_open_detail', '看内容与证据'), 'open-candidate', { id: candidate.id, small: true, className: 'o' }),
+      // 「看内容与证据」按钮已删（2026-09-29 子安指令）：整卡即详情入口
+      // （act 提到卡根，委托层 closest 最近匹配——点按钮命中按钮自身动作，
+      // 不会误触跳转），按钮成了第四个重复入口。
     ].filter(Boolean);
     const actionsHtml = actionBtns.length
       ? `<div class="c5 ca-card-actions ca-card-actions-flat">${actionBtns.join('')}</div>`
       : '';
     return `
-    <div class="cand${broken ? ' is-broken' : ''}">
-      <div class="c1" data-act="open-candidate" data-id="${esc(candidate.id)}" role="button" tabindex="0">${esc(candidateTitle(candidate))}${warnHtml}<span class="chev" aria-hidden="true">›</span></div>
+    <div class="cand${broken ? ' is-broken' : ''}" data-act="open-candidate" data-id="${esc(candidate.id)}" role="button" tabindex="0">
+      <div class="c1">${esc(candidateTitle(candidate))}${warnHtml}<span class="chev" aria-hidden="true">›</span></div>
       <div class="c2">${chip(categoryLabel(candidate.suggestedType))}${candidateSourceBadge(candidate)}${candidateRiskBadge(candidate)}${(candidate.capabilities && candidate.capabilities.isSnoozed) ? chip(T('cognition.candidate_snoozed', '已稍后处理'), 'amber') : ''}${broken ? '' : chip(T('cognition.candidate_evidence_ok', '证据充足'), 'green')}</div>
       <div class="c3">${esc(String(candidate.judgment || candidate.value || '').slice(0, 800))}</div>
       ${refsHtml}
