@@ -286,10 +286,11 @@ describe('skills renderer frontmatter parsing', () => {
     expect(list).toContain('data-act="open-candidate" data-id="cand-review"');
     // specs/018 T011：卡片主按钮 = 推荐动作（确认），沿既有 cand-adopt-with-form
     // 通道（卡片不在 .ca-candidate-detail 内 → 按未携带编辑确认）；
-    // 稍后/不保存收「其他处理」折叠。
+    // 2026-09-29 子安标注整改：动作全部平铺右侧同一行，不再有「其他处理」折叠。
     expect(list).toContain('data-act="cand-adopt-with-form"');
     expect(list).toContain('data-act="cand-decide"');
-    expect(list).toContain('其他处理');
+    expect(list).not.toContain('其他处理');
+    expect(list).toContain('ca-card-actions-flat');
 
     const detail = renderCognition(
       { name: 'review', candidateId: 'cand-review' },
@@ -382,7 +383,8 @@ describe('skills renderer frontmatter parsing', () => {
     );
 
     expect(html.match(/class="cand"/g)).toHaveLength(2);
-    // 每卡恰好一个主按钮（确认），打开详情入口在标题行与「其他处理」折叠里。
+    // 每卡恰好一个主按钮（确认），打开详情入口在标题行与动作行平铺区里
+    //（2026-09-29 起「其他处理」折叠已撤）。
     expect(html.match(/data-act="cand-adopt-with-form"/g)).toHaveLength(2);
     expect(html.match(/data-act="open-candidate"/g).length).toBeGreaterThanOrEqual(2);
   });

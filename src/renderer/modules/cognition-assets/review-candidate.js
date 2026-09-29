@@ -14,7 +14,7 @@
   const { T, esc } = NS;
   const S = NS.store;
   const {
-    btn, roleBtn, chip, hero, empty, otherActions, CATEGORIES, categoryLabel,
+    btn, roleBtn, chip, hero, empty, CATEGORIES, categoryLabel,
     isKstarEvidenceRef, evidenceChip, evidenceGroupsHtml, stripMarkdown,
     attributionLabel, sourceRefKind, resolveSourceRef, reviewOutcomeText,
     foldValue, kstarEpisodeSection,
@@ -399,13 +399,17 @@
           : T('cognition.evidence_fallback', '来源记录'));
       }).join(' · ')}</div>`
       : '';
-    // 2026-09-29 子安标注整改：「来源已删」卡内黄警示撤下（列表卡）——
-    // 同一件事已经说了三遍（区域抬头「这些候选引用的会话已不存在…可以点开
-    // 确认后仍要保存，或选择不保存」＋徽章行「来源已删」章＋这句），还把
-    // 卡片撑高、把动作区推远。列表卡保留徽章即可；完整警示文案留给候选
-    // 详情页头部（那里没有区域抬头，是用「看内容与证据」进去后必需的信息）。
-    /* 三件套（specs/018 T011）：主按钮 = 推荐动作（确认），其余动作收「其他处理」。
-     * 直接确认沿既有 cand-adopt-with-form 通道：卡片不在 .ca-candidate-detail 里，
+    // 2026-09-29 子安标注整改（第二轮纠正定稿）：「来源已删」卡内黄警示
+    // **不删**，移到卡片**顶部、与标题行对齐**（信息在三处重复是真，但位置
+    // 才是他要的——警示置顶，正文/来源/动作随之收紧）。
+    const warnHtml = broken
+      ? `<div class="warn ca-card-warn-top">${esc(T('cognition.candidate_evidence_all_unavailable', '这条候选的大部分来源记录已被删除，无法核对证据。建议补充新证据后保存，或选择不保存。'))}</div>`
+      : '';
+    /* 动作区（同轮标注）：「…其他处理」折叠开关撤下——保存/稍后处理/
+     * 不保存/看内容与证据（稍后处理态另有「恢复」）**全部平铺、右侧、
+     * 同一行**；不再藏二级折叠。候选确认闸与通道不变，纯呈现层收敛。 */
+    /* 三件套（specs/018 T011）沿革：主按钮 primary 视觉保留；直接确认沿
+     * 既有 cand-adopt-with-form 通道：卡片不在 .ca-candidate-detail 里，
      * readCandidateForm 就近找不到表单 → 按未携带编辑确认（内容原样保存）。
      * 卡片整体不再是点击区——标题行与「看内容与证据」进详情，避免行内按钮
      * 与卡片跳转抢点击（2026-09-26 旅程雕刻前的老问题，这次一并解掉）。 */
@@ -417,7 +421,8 @@
     const primaryBtn = caps.canPromote
       ? btn(primaryLabel, 'cand-adopt-with-form', { id: candidate.id, small: true, primary: true })
       : '';
-    const othersHtml = otherActions([
+    const actionBtns = [
+      primaryBtn,
       // A3（2026-09-29）：「已稍后处理」的候选可就地恢复回待确认——
       // recall.candidates.resume 通道与 CANDIDATE_CHANNELS 映射早已就绪，
       // 此前缺的就是这个入口，静音候选只能一直躺在折叠区。
@@ -425,14 +430,18 @@
       caps.canDefer ? btn(labels.defer, 'cand-decide', { id: candidate.id, data: { action: 'defer' }, small: true, className: 'o' }) : '',
       caps.canReject ? btn(labels.reject, 'cand-decide', { id: candidate.id, data: { action: 'reject' }, small: true, className: 'o' }) : '',
       btn(T('cognition.review_card_open_detail', '看内容与证据'), 'open-candidate', { id: candidate.id, small: true, className: 'o' }),
-    ].join(''));
+    ].filter(Boolean);
+    const actionsHtml = actionBtns.length
+      ? `<div class="c5 ca-card-actions ca-card-actions-flat">${actionBtns.join('')}</div>`
+      : '';
     return `
     <div class="cand${broken ? ' is-broken' : ''}">
+      ${warnHtml}
       <div class="c1" data-act="open-candidate" data-id="${esc(candidate.id)}" role="button" tabindex="0">${esc(candidateTitle(candidate))}<span class="chev" aria-hidden="true">›</span></div>
       <div class="c2">${chip(categoryLabel(candidate.suggestedType))}${candidateSourceBadge(candidate)}${candidateRiskBadge(candidate)}${(candidate.capabilities && candidate.capabilities.isSnoozed) ? chip(T('cognition.candidate_snoozed', '已稍后处理'), 'amber') : ''}${broken ? chip(T('cognition.candidate_evidence_weak', '来源已删'), 'amber') : chip(T('cognition.candidate_evidence_ok', '证据充足'), 'green')}</div>
       <div class="c3">${esc(String(candidate.judgment || candidate.value || '').slice(0, 220))}</div>
       ${refsHtml}
-      ${(primaryBtn || othersHtml) ? `<div class="c5 ca-card-actions">${primaryBtn}${othersHtml}</div>` : ''}
+      ${actionsHtml}
     </div>`;
   }
 

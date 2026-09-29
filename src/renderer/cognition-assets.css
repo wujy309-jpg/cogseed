@@ -922,9 +922,14 @@
 #ca-root .ca-other-actions .dbody { border: 0; padding: 8px 0 0; }
 #ca-root .ca-other-actions .actions { justify-content: flex-start; }
 
-/* 候选卡动作行（T011）：主按钮左、其他处理靠右。 */
+/* 候选卡动作行（T011 沿革）：2026-09-29 子安标注整改——「…其他处理」折叠
+ * 撤下后四按钮平铺右侧同一行；无 flat 类的旧调用（若有）保持原布局。 */
 #ca-root .ca-card-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 #ca-root .ca-card-actions .ca-other-actions { margin-left: auto; }
+#ca-root .ca-card-actions.ca-card-actions-flat { justify-content: flex-end; }
+/* 候选卡「来源已删」警示置顶（与标题行对齐）：卡片首行全宽横条，与标题
+ * 同一左边距起点，下缘与标题行留固定间距。 */
+#ca-root .cand .ca-card-warn-top { margin: 0 0 10px; }
 
 /* 导语可点数字（T010）：句中数字即锚点，chip-link 提供虚线下划线。 */
 #ca-root .ca-jump-num { font-weight: 700; }
