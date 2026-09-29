@@ -3924,6 +3924,7 @@
   "cognition.inspection_switch_off_toast": "已关闭定期检查",
   "cognition.inspection_done": "检查完成：发现 {n} 条待处理",
   "cognition.cleanup_run": "立即整理",
+  "cognition.cleanup_back": "← 返回",
   "cognition.maint_run_title": "立即维护",
   "cognition.maint_run_hint": "一次跑全套：检查资产库（只报告），并自动规范标题、合并重复项、补标签、把啰嗦的正文交给模型重写（消耗模型额度）；拿不准的会留给你判断。",
   "cognition.maint_run": "立即维护",

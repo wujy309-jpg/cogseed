@@ -3362,15 +3362,20 @@
     const loading = Boolean(state && state.loading);
     // 页头走共享 uiPageHeader（契约是紧凑单行 + 最多三个次要操作，没有副标题位）；
     // 说明放正文里的 note，不塞进页头。
-    const header = window.uiPageHeader({
+    // 2026-09-29 子安整改：①页首加返回（此前从系统活动点进来回不去）；
+    // ②右上按钮并入集成维护——改名「立即维护」（跑全套：检查+清理），与
+    // 维护卡同一动作、同一悬浮说明，不再有语义不明的「立即整理」。
+    const header = `${btn(T('cognition.cleanup_back', '← 返回'), 'go-back', { className: 'backlink' })}
+    ${window.uiPageHeader({
       title: T('cognition.cleanup_title', '整理报告'),
       actions: [{
-        label: loading ? T('cognition.cleanup_running', '正在整理…') : T('cognition.cleanup_run', '立即整理'),
+        label: loading ? T('cognition.cleanup_running', '正在维护…') : T('cognition.maint_run', '立即维护'),
         loading,
         disabled: loading,
-        attrs: { 'data-act': 'run-cleanup' },
+        title: T('cognition.maint_run_title_hint', '检查资产库并做一次完整清理（规范标题、合并重复、补标签、重写啰嗦正文）。会消耗模型额度，拿不准的改动会留给你确认。'),
+        attrs: { 'data-act': 'run-maintenance' },
       }],
-    });
+    })}`;
     // 导语按轮次区分：完整整理轮（round:'full'，2026-09-29 三轮合一后的常态）
     // 用合并导语；旧规则轮/标题重起轮的历史报告沿用各自原文案。
     const hint = `<p class="note">${esc(String(report && report.round || '') === 'full'

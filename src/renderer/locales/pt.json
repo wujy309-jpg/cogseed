@@ -3743,6 +3743,7 @@
   "cognition.inspection_switch_off_toast": "Verificação periódica desativada",
   "cognition.inspection_done": "Verificação concluída: {n} itens precisam da sua atenção",
   "cognition.cleanup_run": "Organizar agora",
+  "cognition.cleanup_back": "← Voltar",
   "cognition.maint_run_title": "Manter agora",
   "cognition.maint_run_hint": "Uma passada completa: verifica a biblioteca de ativos (apenas relatórios) e normaliza títulos, mescla duplicatas, adiciona tags e reescreve textos prolixos com o modelo (consome cota); os incertos ficam para você.",
   "cognition.maint_run": "Manter agora",

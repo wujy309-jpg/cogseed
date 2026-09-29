@@ -3921,6 +3921,7 @@
   "cognition.inspection_switch_off_toast": "Scheduled checks disabled",
   "cognition.inspection_done": "Check complete: {n} items need your attention",
   "cognition.cleanup_run": "Organize now",
+  "cognition.cleanup_back": "← Back",
   "cognition.maint_run_title": "Maintain now",
   "cognition.maint_run_hint": "One full pass: check the asset library (reports only), plus normalize titles, merge duplicates, add tags, and rewrite wordy statements with the model (uses quota); uncertain ones are left to you.",
   "cognition.maint_run": "Maintain now",

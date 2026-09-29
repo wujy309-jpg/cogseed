@@ -1601,7 +1601,9 @@ describe('资产详情（使用记录并入）', () => {
   it('整理报告空态：没有报告时给入口而不是空白页', () => {
     const html = renderPage('cleanup', { cleanupReports: { loading: false, reports: [] } });
     expect(html).toContain('还没有整理报告');
-    expect(html).toContain('data-act="run-cleanup"');
+    // 2026-09-29 集成维护：报告页右上按钮并入「立即维护」（跑全套）；页首有返回。
+    expect(html).toContain('data-act="run-maintenance"');
+    expect(html).toContain('data-act="go-back"');
   });
 
   it('「已删除」列表（2026-09-25 US-306/T051）：保留期剩余天数 + 唯一的「立即彻底删除」入口', () => {

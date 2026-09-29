@@ -3743,6 +3743,7 @@
   "cognition.inspection_switch_off_toast": "定期チェックを無効にしました",
   "cognition.inspection_done": "確認完了：対応が必要な項目 {n} 件",
   "cognition.cleanup_run": "今すぐ整理",
+  "cognition.cleanup_back": "← 戻る",
   "cognition.maint_run_title": "今すぐメンテナンス",
   "cognition.maint_run_hint": "一括実行：アセット庫を点検し（報告のみ）、タイトル整形・重複統合・タグ付与・冗長本文の書き直しを行います（枠を消費）。判断できないものはあなたに残します。",
   "cognition.maint_run": "今すぐメンテナンス",
