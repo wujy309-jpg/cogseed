@@ -53,6 +53,9 @@ describe('014 anti-drift（specs/014 T024）', () => {
       'po.data.export',
       'po.data.importPreview',
       'po.data.importApply',
+      // 2026-09-30 合并 origin/develop（#389 KB 另存本地）：转写清理版
+      // 「另存到本地文件夹…」的落盘通道，随 develop 正常演进登记。
+      'library.writeTextToLocal',
     ];
     expect(sneaked.sort(), '出现未登记的新通道').toEqual([...registeredPost014].sort());
     expect(removed, '014 期间不应删除通道').toEqual([]);
