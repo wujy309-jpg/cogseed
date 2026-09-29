@@ -926,12 +926,15 @@
  * 撤下后四按钮平铺右侧同一行；无 flat 类的旧调用（若有）保持原布局。 */
 #ca-root .ca-card-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 #ca-root .ca-card-actions .ca-other-actions { margin-left: auto; }
-#ca-root .ca-card-actions.ca-card-actions-flat { justify-content: flex-end; }
+#ca-root .ca-card-actions.ca-card-actions-flat { justify-content: flex-end; margin-top: 6px; }
 /* 候选卡「来源已删」警示与标题同一行（2026-09-29 第三轮定稿）：标题左、
- * 警示条靠右（chevron 之前）；放不下省略号截断，悬浮 title 看全文。 */
+ * 警示条靠右（chevron 之前）；放不下省略号截断，悬浮 title 看全文。
+ * 视觉降级（同日子安拍板整改①）：去边框、字号降一档、常规字重——退成
+ * 行内备注，不与标题抢焦点。 */
 #ca-root .cand .c1 .ca-card-warn-inline {
   margin-left: auto; flex-shrink: 1; min-width: 0; max-width: 62%;
-  padding: 3px 10px; font-size: var(--font-size-caption); font-weight: 400;
+  padding: 3px 10px; font-size: var(--font-size-2); font-weight: 400;
+  border: none; background: var(--amber-bg); color: var(--amber-t);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 #ca-root .cand .c1 .ca-card-warn-inline ~ .chev { margin-left: 0; }

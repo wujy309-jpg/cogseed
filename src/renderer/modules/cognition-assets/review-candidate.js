@@ -384,20 +384,22 @@
 
   function candidateCard(candidate, broken) {
     const refs = evidenceRefs(candidate);
-    const refsHtml = refs.length
-      ? `<div class="c4">${esc(T('cognition.candidate_source', '来源'))}：${refs.slice(0, 4).map((ref) => {
-        // 2026-09-25 US-603：候选卡的来源名也走唯一解析器——此前它自带一套兜底
-        // （ref.title || '会话记录'），目录窗口外的会话在这里显示不出名字，与
-        // 资产详情/版本/使用记录/KSTAR 四处不同名。
-        const view = resolveSourceRef(ref);
-        if (view.state === 'immediate') return esc(T('cognition.evidence_immediate_note', '对话中当场记（无独立会话出处）'));
-        if (view.state === 'processing') return esc(T('cognition.evidence_source_processing', '来源整理中'));
-        if (view.state === 'unavailable') return esc(T('cognition.source_unavailable_label', '来源记录不可用'));
-        if (view.name) return esc(view.name);
-        return esc(view.kind === 'conversation'
+    // 同名兜底来源去重（2026-09-29 子安拍板的视觉整改③）：两条失效来源都
+    // 渲染成「来源记录不可用」时并列重复——按解析后的显示名聚合计数，
+    // 与详情页来源组的同名合并同一口径。仍只展示前 4 组。
+    const refNameCounts = new Map();
+    for (const ref of refs.slice(0, 8)) {
+      const view = resolveSourceRef(ref);
+      const name = view.state === 'immediate' ? T('cognition.evidence_immediate_note', '对话中当场记（无独立会话出处）')
+        : view.state === 'processing' ? T('cognition.evidence_source_processing', '来源整理中')
+        : view.state === 'unavailable' ? T('cognition.source_unavailable_label', '来源记录不可用')
+        : view.name || (view.kind === 'conversation'
           ? T('cognition.evidence_conversation_generic', '一段对话')
           : T('cognition.evidence_fallback', '来源记录'));
-      }).join(' · ')}</div>`
+      refNameCounts.set(name, (refNameCounts.get(name) || 0) + 1);
+    }
+    const refsHtml = refs.length
+      ? `<div class="c4">${esc(T('cognition.candidate_source', '来源'))}：${[...refNameCounts.entries()].slice(0, 4).map(([name, count]) => esc(count > 1 ? `${name} ×${count}` : name)).join(' · ')}</div>`
       : '';
     // 2026-09-29 子安标注整改（第三轮定稿）：「来源已删」警示**与标题同一行**——
     // 标题在左，警示条靠右（chevron 之前），不再独立成行压在标题上面；
@@ -437,8 +439,8 @@
     return `
     <div class="cand${broken ? ' is-broken' : ''}">
       <div class="c1" data-act="open-candidate" data-id="${esc(candidate.id)}" role="button" tabindex="0">${esc(candidateTitle(candidate))}${warnHtml}<span class="chev" aria-hidden="true">›</span></div>
-      <div class="c2">${chip(categoryLabel(candidate.suggestedType))}${candidateSourceBadge(candidate)}${candidateRiskBadge(candidate)}${(candidate.capabilities && candidate.capabilities.isSnoozed) ? chip(T('cognition.candidate_snoozed', '已稍后处理'), 'amber') : ''}${broken ? chip(T('cognition.candidate_evidence_weak', '来源已删'), 'amber') : chip(T('cognition.candidate_evidence_ok', '证据充足'), 'green')}</div>
-      <div class="c3">${esc(String(candidate.judgment || candidate.value || '').slice(0, 220))}</div>
+      <div class="c2">${chip(categoryLabel(candidate.suggestedType))}${candidateSourceBadge(candidate)}${candidateRiskBadge(candidate)}${(candidate.capabilities && candidate.capabilities.isSnoozed) ? chip(T('cognition.candidate_snoozed', '已稍后处理'), 'amber') : ''}${broken ? '' : chip(T('cognition.candidate_evidence_ok', '证据充足'), 'green')}</div>
+      <div class="c3">${esc(String(candidate.judgment || candidate.value || '').slice(0, 800))}</div>
       ${refsHtml}
       ${actionsHtml}
     </div>`;
