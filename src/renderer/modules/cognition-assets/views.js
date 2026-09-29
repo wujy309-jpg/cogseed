@@ -3360,22 +3360,18 @@
     const selectedId = String(route.cleanupReportId || '');
     const report = reports.find((row) => String(row.id) === selectedId) || reports[0] || null;
     const loading = Boolean(state && state.loading);
-    // 页头走共享 uiPageHeader（契约是紧凑单行 + 最多三个次要操作，没有副标题位）；
-    // 说明放正文里的 note，不塞进页头。
-    // 2026-09-29 子安整改：①页首加返回（此前从系统活动点进来回不去）；
-    // ②右上按钮并入集成维护——改名「立即维护」（跑全套：检查+清理），与
-    // 维护卡同一动作、同一悬浮说明，不再有语义不明的「立即整理」。
+    // 页头与其余详情页同款（2026-09-29 统一）：返回行 + 大标题 + 一行说明 +
+    // 右侧「立即维护」（此前用 uiPageHeader 紧凑组件，模块内三种详情页头
+    // 各不相同）；说明放页头 sub，正文 note 只讲本轮干了什么。
     const header = `${btn(T('cognition.cleanup_back', '← 返回'), 'go-back', { className: 'backlink' })}
-    ${window.uiPageHeader({
-      title: T('cognition.cleanup_title', '整理报告'),
-      actions: [{
-        label: loading ? T('cognition.cleanup_running', '正在维护…') : T('cognition.maint_run', '立即维护'),
-        loading,
+    ${heroRow(
+      T('cognition.cleanup_title', '整理报告'),
+      T('cognition.cleanup_page_hint', '每次整理与清理改了什么，逐项留档，可核对、可回滚。'),
+      btn(loading ? T('cognition.cleanup_running', '正在维护…') : T('cognition.maint_run', '立即维护'), 'run-maintenance', {
         disabled: loading,
         title: T('cognition.maint_run_title_hint', '检查资产库并做一次完整清理（规范标题、合并重复、补标签、重写啰嗦正文）。会消耗模型额度，拿不准的改动会留给你确认。'),
-        attrs: { 'data-act': 'run-maintenance' },
-      }],
-    })}`;
+      }),
+    )}`;
     // 导语按轮次区分：完整整理轮（round:'full'，2026-09-29 三轮合一后的常态）
     // 用合并导语；旧规则轮/标题重起轮的历史报告沿用各自原文案。
     const hint = `<p class="note">${esc(String(report && report.round || '') === 'full'
@@ -3920,19 +3916,19 @@
         <div class="ca-deposit-foot"><span class="note">v${esc(String(receipt.version || '1'))}</span>${btn(T('cognition.capture_action_view_assets', '查看资产'), 'open-asset', { id: receipt.assetId, small: true })}</div>
       </div>`;
     }).join('');
-    /* 整页版式（2026-09-28）：hero 与整合卡全宽置顶（2026-09-15 定的合并卡
-     * 契约中「待确认候选内嵌表单」已随两页重整删除——确认动作收敛到待我处理，
-     * 整理结果区给候选摘要与跳转）；下方对称双栏 = 整理结果 | 对话时间线，
-     * 宽窗下两块并排、窄窗退化为单列。 */
+    /* 整页版式（2026-09-29 与建议详情统一）：页头 = 返回行 + 固定标题
+     * 「整理任务详情」+ 一行说明；此前把会话标题、触发原因、统计卡全塞进
+     * 页头（仪表盘版式），与建议详情（固定标题 → 进卡片）两套观感。会话
+     * 标题降为卡片内 h2（同建议详情的内容标题位）；统计卡撤掉——待确认数
+     * 看下方整理结果区、已保存资产看沉淀区，尝试次数与触发原因进元信息行。
+     * 下方对称双栏 = 整理结果 | 对话时间线，宽窗并排、窄窗单列。 */
+    const recordTitleText = vocab
+      ? vocab.recordTitle(capture)
+      : String(capture.conversationTitle || T('cognition.capture_untitled_record', '未命名会话的整理'));
     return `${backHtml}
     ${hero(
-      vocab ? vocab.recordTitle(capture) : String(capture.conversationTitle || T('cognition.capture_untitled_record', '未命名会话的整理')),
-      vocab ? vocab.captureReasonText(capture.displayReason) : T('cognition.capture_display_reason_other', '原因未记录'),
-      statsRow([
-        [Number(summary.pending) || 0, T('cognition.capture_metric_review', '待确认')],
-        [Number(summary.promoted) || 0, T('cognition.capture_detail_assets', '已保存资产')],
-        [Number(capture.attempt) || 1, T('cognition.capture_detail_attempt', '尝试次数')],
-      ]),
+      T('cognition.capture_detail_title', '整理任务详情'),
+      T('cognition.capture_detail_hint', '查看这场对话的整理任务、进度和结果。'),
     )}
     <div class="card ca-capture-panel">
       <div class="ca-capture-head">
@@ -3943,12 +3939,15 @@
           ${metaItem(T('cognition.capture_detail_finished', '结束时间'), fmtDate(capture.finishedAt))}
           ${metaItem(T('cognition.capture_detail_duration', '耗时'), durationText)}
           ${metaItem(T('cognition.capture_detail_tokens', '模型用量（token）'), tokens ? String(tokens) : '')}
+          ${metaItem(T('cognition.capture_detail_attempt', '尝试次数'), String(Number(capture.attempt) || 1))}
+          ${metaItem(T('cognition.capture_detail_reason', '触发'), capture.displayReason && vocab ? vocab.captureReasonText(capture.displayReason) : '')}
         </div>
         <div class="ca-head-actions">
           ${captureActionButtons({ ...capture, actions: (capture.actions || []).filter((action) => action !== 'review_candidates' && action !== 'view_assets') })}
           ${btn(T('cognition.capture_action_open_conversation', '打开会话'), 'open-conversation', { id: capture.conversationId || '', small: true })}
         </div>
       </div>
+      <h2 class="cand-title">${esc(recordTitleText)}</h2>
       ${captureStageStepper(capture.stage)}
       ${depositBlocks ? `<div class="ca-deposit">${sectionHead(T('cognition.capture_detail_assets', '已保存资产'))}${depositBlocks}</div>` : ''}
     </div>

@@ -783,6 +783,20 @@ describe('整理详情页', () => {
     expect(html).toContain('data-act="go-back"');
   });
 
+  it('页头与建议详情同款（2026-09-29 版式统一）：固定标题+说明，会话标题降为卡内 h2，统计卡撤', () => {
+    const html = renderPage('organize', { captures: [detailCapture], sources: [] }, { captureId: 'rcap-x' });
+    // 页头 = 返回行 + 固定标题「整理任务详情」+ 一行说明（与建议详情同构，
+    // 不再把会话标题/原因/统计卡塞进页头）。
+    expect(html).toContain('整理任务详情');
+    expect(html).toContain('查看这场对话的整理任务、进度和结果。');
+    // 会话标题降为卡片内 h2（同候选详情的 cand-title 标题位）。
+    expect(html).toContain('<h2 class="cand-title">Saying hello</h2>');
+    // 尝试次数并入元信息行（原统计卡第三格的信息保留）。
+    expect(html).toContain('尝试次数');
+    // 统计卡带不再出现在任务详情页（「待确认/已保存资产」计数看下方分区）。
+    expect(html).not.toContain('class="stats"');
+  });
+
   it('整理过程五步进度条：stage 高亮当前步、已过步打勾', () => {
     const html = renderPage('organize', { captures: [detailCapture], sources: [] }, { captureId: 'rcap-x' });
     expect(html).toContain('ca-steps-bar');
@@ -1358,6 +1372,20 @@ describe('待我处理（决策中心）', () => {
     }],
   };
 
+  it('候选详情页头与其他详情页同款（2026-09-29 版式统一）：返回行+固定标题+说明', () => {
+    const mk = (id: string) => ({
+      id, status: 'pending_review', suggestedType: 'rule',
+      judgment: '一条足够长的候选判断正文内容。', summary: `标题-${id}`,
+      capabilities: { canEdit: true, canPromote: true, countsAsPending: true },
+    });
+    const html = renderPage('review', { candidates: [mk('cd-1')], sources: [] }, { candidateId: 'cd-1' });
+    // 返回行在位且是页首第一个元素（固定标题之前）——detail 页顶必有返回。
+    expect(html).toContain('data-act="go-back"');
+    expect(html).toContain('建议详情');
+    expect(html).toContain('查看这条建议的内容、来源和当前处理状态。');
+    expect(html.indexOf('data-act="go-back"')).toBeLessThan(html.indexOf('建议详情'));
+  });
+
   it('来源异常行出现且默认收起；展开后出异常明细与处理动作', () => {
     const store = { sources: [conversationSources[0], issueSource], candidates: [] };
     const collapsed = renderPage('review', store);
@@ -1604,6 +1632,10 @@ describe('资产详情（使用记录并入）', () => {
     // 2026-09-29 集成维护：报告页右上按钮并入「立即维护」（跑全套）；页首有返回。
     expect(html).toContain('data-act="run-maintenance"');
     expect(html).toContain('data-act="go-back"');
+    // 2026-09-29 版式统一：页头与任务/建议详情同款（大标题+说明+右侧动作），
+    // 不再用 ui-page-header 紧凑组件——模块内三种详情页头收敛为一种。
+    expect(html).toContain('每次整理与清理改了什么，逐项留档，可核对、可回滚。');
+    expect(html).not.toContain('ui-page-header');
   });
 
   it('「已删除」列表（2026-09-25 US-306/T051）：保留期剩余天数 + 唯一的「立即彻底删除」入口', () => {

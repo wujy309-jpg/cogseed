@@ -86,9 +86,12 @@
 .ca-app .ca-chip.ca-chip-opt:hover { border-color: var(--ca-ink2); color: var(--ca-ink); }
 .ca-app .ca-chip.ca-chip-opt.is-green { background: var(--ca-green-bg); border-color: var(--ca-green-line); color: var(--color-ca-green-text-deep); font-weight: 600; }
 /* 候选确认卡（2026-09-21 重构）：章行 + 完整标题（可换行，至多 3 行）+
-   小节标签置顶的分区版式——不再用左标签栅格把标题截成一行 */
+   小节标签置顶的分区版式——不再用左标签栅格把标题截成一行。
+   整理任务详情卡（2026-09-29 版式统一）共用同一标题位：会话标题从页头
+   降为卡内 h2，与建议详情同构。 */
 #ca-root .ca-candidate-detail .cand-head { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
-#ca-root .ca-candidate-detail .cand-title {
+#ca-root .ca-candidate-detail .cand-title,
+#ca-root .ca-capture-panel .cand-title {
   font-size: var(--font-size-title); font-weight: 700; line-height: 1.5;
   margin: 0 0 16px; white-space: normal; overflow-wrap: anywhere;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
