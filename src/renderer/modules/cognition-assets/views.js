@@ -3209,7 +3209,7 @@
     && (String(report.trigger || '') === 'title_regen'
       || (Array.isArray(report.items) && report.items.some((item) => String(item.kind || '') === 'title_regen')));
 
-  /** 页面整理中的手动整理入口；报告页继续复用既有 viewCleanup 路由。 */
+  /** 资产设置中的手动整理入口；报告页继续复用既有 viewCleanup 路由。 */
   function cleanupSettingsRow() {
     const state = S.cleanupReports;
     const reports = state && Array.isArray(state.reports) ? state.reports : [];
@@ -3226,9 +3226,7 @@
       <div class="rowline">
         <div>
           <div class="tt">${esc(T('cognition.cleanup_entry', '整理已有内容'))}</div>
-          <div class="sub">${esc(isTitleRegenReport(latest)
-            ? T('cognition.cleanup_regen_hint', '由模型把不合格的标题重新拟一个简短的新标题，自动写入并逐条留档对照；写前有整库备份，不会合并内容或修改正文。')
-            : T('cognition.cleanup_run_hint', '只自动规范标题、合并正文完全相同的重复项；不确定的内容不会改动，会留给你判断。'))}</div>
+          <div class="sub">${esc(T('cognition.cleanup_run_hint', '自动规范标题、合并重复项、补标签，并把不合格的标题与啰嗦的正文交给模型重写（消耗模型额度）；拿不准的会留给你判断。'))}</div>
           <div class="sub">${esc(summary)}</div>
         </div>
         <div class="right">
@@ -3250,8 +3248,11 @@
     const nightlyStart = String(settings.nightlyStart || '02:00');
     const quietMinutes = Number(settings.quietMinutes) > 0 ? Number(settings.quietMinutes) : 10;
     const modelNeedsAttention = !model || !model.configured || model.authorizationRequired;
+    // 自动维护合并卡（2026-09-29 拍板：夜间自动整理+定期检查合为一个开关）：
+    // 巡检随总开关同步启停（见 app.js nightly-toggle），这里展示它的最近一轮。
+    const latestInspection = S.inspection && S.inspection.latestRun ? S.inspection.latestRun : null;
     return `${hero(
-      T('cognition.organize_settings_title', '页面整理'),
+      T('cognition.organize_settings_title', '资产设置'),
       T('cognition.organize_settings_hint', '自动整理、手动整理和检查集中在这里；整理结果和需要你判断的内容都有记录。'),
     )}
     ${modelNeedsAttention ? `<div class="card ca-setcard">
@@ -3267,12 +3268,16 @@
     </div>` : ''}
     <div class="card ca-setting-row">
       <div class="ca-setting-copy">
-        <div class="tt">${esc(T('cognition.nightly_capture_title', '自动整理对话'))}</div>
-        <div class="sub">${esc(T('cognition.nightly_capture_hint', '夜间在所选时间自动整理当天结束的会话（消耗模型额度）；产出的内容进入「待我处理」，等你批准或调整。'))}</div>
+        <div class="tt">${esc(T('cognition.nightly_capture_title', '自动维护'))}</div>
+        <div class="sub">${esc(T('cognition.nightly_capture_hint', '开启后：夜间在所选时间自动整理当天结束的会话（消耗模型额度），产出的内容进入「待我处理」，等你批准或调整；同时定期检查资产库的重复、过时与冲突——检查只报告，不改内容。'))}</div>
         ${nightlyOn ? `<div class="note">${esc(T('cognition.nightly_capture_quiet_hint', '系统会等会话最后一条消息后静默 {minutes} 分钟，再在夜间时段安排整理；如有新消息，会重新计时。', { minutes: String(quietMinutes) }))}</div>` : ''}
+        ${latestInspection ? `<div class="note">${esc(T('cognition.inspection_last_run', '最近检查：{when} · 发现 {n} 条', {
+          when: fmtDate(latestInspection.startedAt), n: String(((latestInspection.findings || [])).length),
+        }))}</div>` : ''}
       </div>
       ${nightlyOn ? `<label class="ca-setting-time"><span>${esc(T('cognition.nightly_capture_time', '开始时间'))}</span>${window.uiInput({ id: 'ca-nightly-start', type: 'time', value: nightlyStart, attrs: { 'data-act': 'nightly-time' } })}</label>` : ''}
-      ${window.uiSwitch({ label: T('cognition.nightly_capture_title', '自动整理对话'), checked: nightlyOn, attrs: { 'data-act': 'nightly-toggle' } })}
+      ${btn(T('cognition.inspection_run_now', '检查一次'), 'run-inspection', { small: true, className: 'o' })}
+      ${window.uiSwitch({ label: T('cognition.nightly_capture_title', '自动维护'), checked: nightlyOn, attrs: { 'data-act': 'nightly-toggle' } })}
     </div>
     <div class="card ca-setcard">
       <div class="rowline">
@@ -3290,18 +3295,7 @@
     </div>
     ${cleanupSettingsRow()}
     ${legacyMemoryMigrationSection()}
-    ${legacyScopedMemoryMigrationSection()}
-    ${window.uiAccordion({
-      items: [{
-        title: T('cognition.organize_advanced_settings', '高级设置'),
-        // 巡检卡收进「高级」折叠（四病整改 G2）：巡检是低频增值能力且后端
-        // 已默认关（拍板项 #5），不再与整理主入口平铺同屏。
-        // 权重卡已从这里彻底移除（G1 拍板项 #3，2026-09-28）：排序已换 v2
-        // 引擎，权重卡是旧引擎遗物——详情「排序依据」解释保留，不再回指这里。
-        bodyHtml: `${inspectionSettingsCard()}`,
-      }],
-      defaultOpen: [],
-    })}`;
+    ${legacyScopedMemoryMigrationSection()}`;
   }
 
   /* ────────────────────────── 视图：整理（任务流 + 策略） ──────────────────────────
@@ -3313,36 +3307,13 @@
    *
    *  报告存在的意义是"用户能自己核对"——所以每一项都显示改了什么、为什么、
    *  以及一个回滚入口；拿不准的项单列，等用户给个处置意见（不擅自处置）。 */
-  /** 整理页中的定期检查入口；系统活动页保留只读轮次摘要。 */
-  function inspectionSettingsCard() {
-    const inspection = S.inspection || null;
-    const inspectionOn = Boolean(inspection && inspection.settings && inspection.settings.enabled);
-    const latestRun = inspection && inspection.latestRun ? inspection.latestRun : null;
-    return `<div class="card ca-setcard">
-      <div class="rowline">
-        <div>
-          <div class="tt">${esc(T('cognition.inspection_title', '定期检查'))}</div>
-          <div class="sub">${esc(T('cognition.inspection_hint', '定期检查认知资产；发现重复、过时或冲突时列入「待我处理」，不会修改内容。'))}</div>
-          ${latestRun ? `<div class="sub">${esc(T('cognition.inspection_last_run', '最近检查：{when} · 发现 {n} 条', {
-            when: fmtDate(latestRun.startedAt), n: String(((latestRun.findings || [])).length),
-          }))}</div>` : ''}
-        </div>
-        <div class="right">
-          ${window.uiSwitch({
-            label: T('cognition.inspection_title', '定期检查'),
-            checked: inspectionOn,
-            attrs: { 'data-act': 'inspection-toggle' },
-          })}
-          ${btn(T('cognition.inspection_run_now', '检查一次'), 'run-inspection', { small: true, className: 'o' })}
-        </div>
-      </div>
-    </div>`;
-  }
-
   // 2026-09-29 第 5 批：inspectionRoundCard 死函数删除——018 §四重构后全文件
   // 零调用（定义即唯一出现）；其要表达的 scanned/trigger 摘要若仍需要，属
   // 系统活动页时间流的新需求，另立 spec 再做（09-27 审计遗留的「二选一」按
   // 「默认删」收口）。
+  // 2026-09-29 自动维护合并：inspectionSettingsCard 随之删除——巡检并入
+  // 上方「自动维护」合并卡（开关同步 + 最近检查行 + 检查一次按钮），
+  // 独立开关与「高级设置」折叠不再存在。
 
   function viewCleanup(route) {
     const state = S.cleanupReports;
@@ -3361,11 +3332,13 @@
         attrs: { 'data-act': 'run-cleanup' },
       }],
     });
-    // 导语按轮次区分（isTitleRegenReport）：规则轮保留原文案；标题重起轮换
-    // 重起文案（LLM 改题不做合并、全自动直接写入——旧导语在这轮上是假话）。
-    const hint = `<p class="note">${esc(isTitleRegenReport(report)
+    // 导语按轮次区分：完整整理轮（round:'full'，2026-09-29 三轮合一后的常态）
+    // 用合并导语；旧规则轮/标题重起轮的历史报告沿用各自原文案。
+    const hint = `<p class="note">${esc(String(report && report.round || '') === 'full'
+      ? T('cognition.cleanup_full_hint', '本轮自动完成：规范标题、合并重复项、补标签，并由模型重写了不合格的标题与啰嗦的正文；写前有整库备份，逐项留档可回滚。')
+      : isTitleRegenReport(report)
       ? T('cognition.cleanup_regen_hint', '由模型把不合格的标题重新拟一个简短的新标题，自动写入并逐条留档对照；写前有整库备份，不会合并内容或修改正文。')
-      : T('cognition.cleanup_run_hint', '只自动规范标题、合并正文完全相同的重复项；不确定的内容不会改动，会留给你判断。'))}</p>`;
+      : T('cognition.cleanup_run_hint_legacy', '只自动规范标题、合并正文完全相同的重复项；不确定的内容不会改动，会留给你判断。'))}</p>`;
     if (!report) {
       return `<div class="ca-page">${header}${hint}${empty(
         T('cognition.cleanup_empty', '还没有整理报告'),
@@ -3376,6 +3349,9 @@
     const KIND_LABELS = {
       title_normalized: T('cognition.cleanup_kind_title_normalized', '标题规范化'),
       merged_duplicate: T('cognition.cleanup_kind_merged_duplicate', '重复归并'),
+      // 补标签（specs/012 T025）：词条四语早已备好却一直没接上，完整整理轮
+      // 必产此 kind——欠账补上（2026-09-29）。
+      tag_added: T('cognition.cleanup_kind_tag_added', '补标签'),
       // 标题重起轮（3.3 专项轮）的新 kind：词条四语由重起轮配套落，这里先按
       // 既有 cleanup_kind_* 命名引用——勿重蹈 tag_added 缺席、显示兜底的欠账。
       title_regen: T('cognition.cleanup_kind_title_regen', '标题重起'),
@@ -3525,12 +3501,13 @@
           : chip(T('cognition.capture_excluded_failed', '未得到回复')))
         : '';
       if (!capture) {
-        // 低价值无任务行：标题可点回看会话内容，「开始整理」位置改为
-        // 「无需整理」提示（2026-09-16 子安口径：内容可看，但不再给整理入口）。
+        // 低价值无任务行：整行可点回看会话内容（2026-09-29 子安指令：条目
+        // 整行可点，不再只限标题），「开始整理」位置改为「无需整理」提示
+        //（2026-09-16 子安口径：内容可看，但不再给整理入口）。
         if (excluded) {
           return `
-          <div class="cap-row">
-            <div class="tw"><div class="tt is-link" data-act="open-conversation" data-id="${esc(conv.id)}" ${roleBtn()} title="${esc(T('cognition.capture_action_open_conversation', '打开会话'))}">${esc(conv.title || T('cognition.evidence_conversation_generic', '一段对话'))}</div>
+          <div class="cap-row is-clickable" data-act="open-conversation" data-id="${esc(conv.id)}" role="button" tabindex="0" title="${esc(T('cognition.capture_action_open_conversation', '打开会话'))}">
+            <div class="tw"><div class="tt">${esc(conv.title || T('cognition.evidence_conversation_generic', '一段对话'))}</div>
             <div class="mm"><span>${esc(convTime)}</span></div></div>
             <div class="sd">${excludedTag}${chip(T('cognition.capture_excluded_action_hint', '无需整理'), 'amber')}</div>
           </div>`;
@@ -3542,8 +3519,10 @@
           <div class="sd">${btn(T('cognition.capture_manual_history_create', '整理这个会话'), 'organize-conv', { id: conv.id, small: true, className: 'g' })}</div>
         </div>`;
       }
-      const detailLink = `data-act="open-capture-detail" data-id="${esc(capture.id)}"`;
-      const titleHtml = `<div class="tt is-link" ${detailLink} ${roleBtn()} title="${esc(T('cognition.capture_detail_open_hint', '查看整理情况'))}">${esc(vocab ? vocab.recordTitle(capture) : String(capture.conversationTitle || conv.title || T('cognition.capture_untitled_record', '未命名会话的整理')))}</div>`;
+      // 整行即详情入口（2026-09-29 子安指令）：act 提到行根（委托层 closest
+      // 最近匹配——行内「立即开始/去确认」等按钮自带 act，点击各归各位）；
+      // 标题不再单独伪装链接。
+      const titleHtml = `<div class="tt" title="${esc(T('cognition.capture_detail_open_hint', '查看整理情况'))}">${esc(vocab ? vocab.recordTitle(capture) : String(capture.conversationTitle || conv.title || T('cognition.capture_untitled_record', '未命名会话的整理')))}</div>`;
       const pending = Number(capture.reviewSummary && capture.reviewSummary.pending) || 0;
       /* 事件句（specs/018 T060）：一行 = 一句人话 + 时间 + 落点。四型——
        * 整理了会话→产出候选 / 夜间沉淀跑完 / 大扫除 / 后台体检（后两类在
@@ -3582,7 +3561,7 @@
           capture.displayStatus === 'failed' ? 'red' : (capture.displayStatus === 'review_ready' || capture.displayStatus === 'completed') ? 'green' : 'amber',
         )}${primaryAction}`;
       return `
-        <div class="cap-row">
+        <div class="cap-row is-clickable" data-act="open-capture-detail" data-id="${esc(capture.id)}" role="button" tabindex="0">
           <div class="tw">${titleHtml}<div class="mm"><span>${esc(metaText)}</span></div></div>
           <div class="sd">${sideHtml}</div>
         </div>`;
@@ -3616,7 +3595,7 @@
         const merged = (report.items || []).filter((item) => item.status === 'applied').length;
         return {
           at: String(report.createdAt || ''),
-          html: `<div class="cap-row">
+          html: `<div class="cap-row is-clickable" data-act="open-cleanup-report" data-report="${esc(String(report.id))}" role="button" tabindex="0">
           <div class="tw"><div class="tt">${esc(merged
             ? T('cognition.activity_event_cleanup', '整理合并 {n} 条重复项', { n: String(merged) })
             : T('cognition.activity_event_cleanup_empty', '整理完成，没有重复项需要合并'))}</div>
@@ -3631,7 +3610,7 @@
       const found = (run.findings || []).length;
       inspectionEvents.push({
         at: String(run.startedAt || ''),
-        html: `<div class="cap-row">
+        html: `<div class="cap-row is-clickable" data-act="go-review" role="button" tabindex="0">
           <div class="tw"><div class="tt">${esc(found
             ? T('cognition.activity_event_inspection', '定期检查发现 {n} 条待处理', { n: String(found) })
             : T('cognition.activity_event_inspection_clean', '定期检查完成，没有发现问题'))}</div>
@@ -3652,7 +3631,7 @@
     return `${heroRow(
       T('cognition.tab_activity', '系统活动'),
       T('cognition.activity_lead', '整理记录按时间排列；需要你判断的内容会进入「待我处理」。'),
-      // 整理入口集中在页面整理；018 T060 起本页只保留事件时间流。
+      // 整理入口集中在资产设置；018 T060 起本页只保留事件时间流。
       // 页头右侧入口已移除，避免与顶层页签重复。
       // 已删（2026-09-27 子安）：页签「沉淀设置」是唯一入口，不再双入口。
       '',
@@ -3661,7 +3640,7 @@
     ${S.captureSettings && S.captureSettings.enabled !== false && retryableIds.length ? `<div class="toolbar"><div class="toolbar-right">${retryableIds.length ? btn(T('cognition.capture_batch_retry', '重试失败（{n}）', { n: String(retryableIds.length) }), 'capture-batch', { data: { batch: 'retry' }, small: true, className: 'o' }) : ''}</div></div>` : ''}
     ${(Array.isArray(S.captures) ? S.captures : []).some((c) => bucketOf(c) === 'active') ? `<div class="note toolbar-note">${esc(T('cognition.capture_running_note', '有任务正在跑：任务完成后这一页会自动更新，不用手动刷新。'))}</div>` : ''}
     <div class="pillbox"><div class="chips">${chips}</div></div>
-    ${timelineEntries.length ? timelineEntries.map((entry) => entry.html).join('') : empty(T('cognition.capture_tasks_empty', '暂无整理任务'), T('cognition.capture_tasks_empty_hint', '一轮会话结束后，系统会在静默期结束后创建整理任务。'), { label: T('cognition.organize_settings_title', '页面整理'), attrs: { 'data-act': 'go-organize-settings' } })}
+    ${timelineEntries.length ? timelineEntries.map((entry) => entry.html).join('') : empty(T('cognition.capture_tasks_empty', '暂无整理任务'), T('cognition.capture_tasks_empty_hint', '一轮会话结束后，系统会在静默期结束后创建整理任务。'), { label: T('cognition.organize_settings_title', '资产设置'), attrs: { 'data-act': 'go-organize-settings' } })}
     ${conversationItems.length >= 100 ? `<div class="note">${esc(T('cognition.capture_sources_truncated', '仅显示最近 100 个会话（来源拉取上限）'))}</div>` : ''}
     ${filtered.length > 5 ? `<div class="list-more">${btn(S.organizeListExpanded
       ? T('cognition.capture_list_collapse', '收起')

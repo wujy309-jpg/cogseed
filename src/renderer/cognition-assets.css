@@ -836,6 +836,9 @@
 
 /* ── 整理 ─────────────────────────────────────────────────── */
 #ca-root .cap-row { display: flex; align-items: center; gap: 12px; background: var(--color-white); border: 1px solid var(--line); border-radius: var(--rm); padding: 12px 15px; margin-bottom: 7px; box-shadow: var(--s1); }
+/* 整行可点（2026-09-29 子安指令）：系统活动条目整行即详情入口。 */
+#ca-root .cap-row.is-clickable { cursor: pointer; transition: border-color 130ms, box-shadow 130ms; }
+#ca-root .cap-row.is-clickable:hover { border-color: var(--color-ca-line-strong); box-shadow: var(--s2); }
 #ca-root .cap-row .tw { flex: 1; min-width: 0; }
 #ca-root .cap-row .tt { font-size: var(--font-size-ui-sm); font-weight: 600; cursor: pointer; }
 #ca-root .cap-row .tt:hover { color: var(--green-t); }

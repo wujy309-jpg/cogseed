@@ -277,15 +277,18 @@ describe('系统活动与认知设置', () => {
     expect(html).toContain('新芽（待确认）');
   });
 
-  it('整理设置页：夜间自动整理卡 + 新建议保存方式 + 大扫除区块', () => {
+  it('整理设置页：自动维护合并卡（2026-09-29 夜间整理+定期检查合一）+ 新建议保存方式 + 大扫除区块', () => {
     const off = renderPage('organize-settings', { captureSettings: { enabled: true, executionPolicy: 'manual', reviewPolicy: 'manual', nightlyStart: '02:00' } });
-    expect(off).toContain('页面整理');
-    expect(off).toContain('自动整理对话');
+    expect(off).toContain('资产设置');
+    // 合并卡标题：自动维护（夜间整理对话 + 定期检查资产库一个开关）。
+    expect(off).toContain('自动维护');
     expect(off).toContain('由你确认或修改后保存');
-    // 关闭态：开关未亮、无时间选择器。
+    expect(off).toContain('data-act="run-inspection"');
+    // 关闭态：开关未亮、无时间选择器；独立巡检开关随合并退役。
     expect(off).toContain('data-act="nightly-toggle"');
     expect(off).toContain('class="ui-switch" role="switch" aria-checked="false"');
     expect(off).not.toContain('type="time"');
+    expect(off).not.toContain('data-act="inspection-toggle"');
 
     const on = renderPage('organize-settings', { captureSettings: { enabled: true, executionPolicy: 'nightly', reviewPolicy: 'manual', nightlyStart: '02:30' } });
     // 开启态：开关亮、时间选择器出现且带当前值。
@@ -297,14 +300,14 @@ describe('系统活动与认知设置', () => {
     // 候选确认方式保留。
     expect(on).not.toContain('data-act="capture-toggle"');
     expect(on).toContain('data-act="capture-review-toggle"');
-    // 「整理已有内容」收进页面整理：可直接发起；无报告时不给报告入口。
+    // 「整理已有内容」收进资产设置：可直接发起；无报告时不给报告入口。
     expect(on).toContain('整理已有内容');
     expect(on).toContain('data-act="run-cleanup"');
     expect(on).not.toContain('data-act="open-cleanup"');
     expect(on).toContain('尚无整理记录');
   });
 
-  it('资产页保留标签库入口，页面整理说明夜间静默等待时长', () => {
+  it('资产页保留标签库入口，资产设置说明夜间静默等待时长', () => {
     const html = renderPage('settings', {
       captureSettings: {
         enabled: true, executionPolicy: 'nightly', reviewPolicy: 'manual',
@@ -443,10 +446,11 @@ describe('系统活动与认知设置', () => {
     expect(html).toContain('已完成 8');
     // 收拢只铺 5 行，但必须有出口看到剩下 3 行（数字用筛选后行数）。
     expect(html).toContain('查看全部 8 个会话');
-    expect(html.match(/class="cap-row"/g)?.length).toBe(5);
+    // 2026-09-29 整行可点：行根带 is-clickable 修饰类，前缀匹配计数。
+    expect(html.match(/class="cap-row[ "]/g)?.length).toBe(5);
     // 展开后 8 行全铺。
     const expanded = renderPage('organize', { ...store, organizeListExpanded: true }, { captureBucket: 'done' });
-    expect(expanded.match(/class="cap-row"/g)?.length).toBe(8);
+    expect(expanded.match(/class="cap-row[ "]/g)?.length).toBe(8);
     expect(expanded).toContain('收起');
   });
 
@@ -486,7 +490,7 @@ describe('系统活动与认知设置', () => {
 
     // 筛选视图：寒暄优先——整理过的寒暄行也从「已完成」移到这里。
     const excluded = renderPage('organize', store, { captureBucket: 'excluded' });
-    expect((excluded.match(/class="cap-row"/g) || []).length).toBe(3);
+    expect((excluded.match(/class="cap-row[ "]/g) || []).length).toBe(3);
     expect(excluded).toContain('整理过的寒暄');
     expect(excluded).not.toContain('正经工作');
     const doneFiltered = renderPage('organize', store, { captureBucket: 'done' });
@@ -1556,17 +1560,40 @@ describe('资产详情（使用记录并入）', () => {
     // 重起轮导语换新文案（不做合并、全自动写入、写前备份）；规则轮导语在这轮上是假话。
     expect(text).toContain('由模型把不合格的标题重新拟一个简短的新标题');
     expect(text).not.toContain('只自动规范标题、合并正文完全相同的重复项');
-    // 设置页：最近一次报告是重起轮时，导语同样按重起轮给。
+    // 设置页（2026-09-29 三轮合一）：入口恒为「完整整理」文案，不再按最近
+    // 报告轮次切换导语（旧规则轮/重起轮只在报告页历史里区分）。
     const settings = renderPage('organize-settings', { cleanupReports: { loading: false, reports: [regenReport] } });
-    expect(settings).toContain('由模型把不合格的标题重新拟一个简短的新标题');
-    expect(settings).not.toContain('只自动规范标题、合并正文完全相同的重复项');
+    expect(settings).toContain('自动规范标题、合并重复项、补标签');
+    expect(settings).not.toContain('由模型把不合格的标题重新拟一个简短的新标题');
     // 载体或以独立 trigger 值标记本轮（零项的重起报告也能分辨）——两种形态都认。
     const triggerOnly = { ...regenReport, id: 'cr-regen2', trigger: 'title_regen', items: [] };
     const triggerHtml = renderPage('cleanup', { cleanupReports: { loading: false, reports: [triggerOnly] } }, { cleanupReportId: 'cr-regen2' });
     expect(triggerHtml).toContain('由模型把不合格的标题重新拟一个简短的新标题');
-    // 规则轮不受影响：导语保留原文案（无报告的空态页头「立即整理」跑的就是规则轮）。
-    const ruleHtml = renderPage('cleanup', { cleanupReports: { loading: false, reports: [] } });
+    // 规则轮不受影响：历史规则轮报告导语保留原文案。
+    const ruleHtml = renderPage('cleanup', { cleanupReports: { loading: false, reports: [] } }, { cleanupReportId: 'missing' });
     expect(ruleHtml).toContain('只自动规范标题、合并正文完全相同的重复项');
+  });
+
+  it('完整整理轮（2026-09-29 三轮合一）：round:full 用合并导语，tag_added 有「补标签」标签不落兜底', () => {
+    const fullReport = {
+      id: 'cr-full', trigger: 'user', round: 'full', createdAt: '2026-09-29T01:00:00.000Z', finishedAt: '2026-09-29T01:00:09.000Z',
+      scanned: 30,
+      items: [
+        { assetId: 'aa-1', kind: 'title_normalized', status: 'applied', before: '旧标题。', after: '旧标题', reason: '结尾句读' },
+        { assetId: 'aa-2', kind: 'tag_added', status: 'applied', before: '', after: '#排查', reason: '同源组多数标签传播' },
+        { assetId: 'aa-3', kind: 'title_regen', status: 'applied', before: '超长旧标题', after: '短标题', reason: '重起' },
+      ],
+      uncertain: [],
+    };
+    const html = renderPage('cleanup', { cleanupReports: { loading: false, reports: [fullReport] } }, { cleanupReportId: 'cr-full' });
+    const text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    // 合并导语，不再套用规则轮/重起轮任一旧文案。
+    expect(text).toContain('本轮自动完成：规范标题');
+    expect(text).not.toContain('只自动规范标题');
+    expect(text).not.toContain('由模型把不合格的标题重新拟一个简短的新标题');
+    // tag_added 走「补标签」词条（此前一直落「整理动作」兜底的欠账）。
+    expect(text).toContain('补标签');
+    expect(text).not.toContain('整理动作');
   });
 
   it('整理报告空态：没有报告时给入口而不是空白页', () => {
