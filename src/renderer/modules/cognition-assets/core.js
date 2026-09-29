@@ -972,23 +972,25 @@
     NS.notify();
   };
 
-  /** 资产详情按需拉采用回执（2026-09-25 US-602 AC5/AC6）。按资产缓存；失败降级
-   *  为空列表——「实际采用」区静默不渲染，但使用记录区仍如实显示"证据不足"口径
-   *  （宁可少显示，也不把没证据的事说成已采用）。 */
-  NS.loadAdoptionReceipts = async function loadAdoptionReceipts(assetId) {
+  /** 资产详情按需拉采用回执。失败保留独立状态，避免把“没读到”误写成 0 次；
+   *  仍不把缺失回执推断为已采用。 */
+  NS.loadAdoptionReceipts = async function loadAdoptionReceipts(assetId, force) {
     const id = String(assetId || '');
-    if (!id || (store.adoptionReceipts && store.adoptionReceipts.assetId === id)) return;
-    store.adoptionReceipts = { assetId: id, items: [], loading: true };
+    if (!id || (!force && store.adoptionReceipts && store.adoptionReceipts.assetId === id)) return;
+    const cachedItems = store.adoptionReceipts && store.adoptionReceipts.assetId === id
+      ? store.adoptionReceipts.items || [] : [];
+    store.adoptionReceipts = { assetId: id, items: cachedItems, loading: true, failed: false };
     NS.notify();
     let items = [];
+    let failed = false;
     try {
       const result = await api.call('recall.assets.adoptionReceipts', { assetId: id });
       items = (result && result.receipts) || [];
     } catch (error) {
-      items = [];
+      failed = true;
     }
     if (!store.adoptionReceipts || store.adoptionReceipts.assetId !== id) return;
-    store.adoptionReceipts = { assetId: id, items };
+    store.adoptionReceipts = { assetId: id, items: failed ? cachedItems : items, loading: false, failed };
     NS.notify();
   };
 

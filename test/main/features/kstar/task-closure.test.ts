@@ -4,6 +4,14 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { RuntimeEventEnvelope, RuntimeRunRequest } from '../../../../src/main/features/cogseed_runtime/protocol';
 
+// 标题闸门（设计 3.2）后晋升链对不合规 summary 走 LLM 起标题；本文件的候选
+// 由 KStar 抽取/即时直投内生生成（summary＝模板拼接或正文首句），单测无模型，
+// mock 出确定性合规标题（与 asset-title-suggestion.test.ts 同一边界口径）。
+vi.mock('../../../../src/main/features/recall/asset-title-suggestion', () => ({
+  suggestAbilityAssetTitle: async () => ({ title: '模型重起的样本标题' }),
+}));
+
+
 // 语义查重不依赖真实 embedding 模型（测试环境无关性）：按文本哈希生成
 // 确定性 512 维向量——不同文本向量不同 → 查重走 no_match 正常晋升。
 vi.mock('../../../../src/main/features/kb_embed', () => ({

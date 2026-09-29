@@ -8,6 +8,13 @@ import type {
   KstarReviewRecord,
 } from '../../../../src/main/features/kstar/types';
 
+// 标题闸门（设计 3.2）后晋升链对不合规 summary 走 LLM 起标题；本文件的候选
+// 由 KStar 抽取/即时直投内生生成（summary＝模板拼接或正文首句），单测无模型，
+// mock 出确定性合规标题（与 asset-title-suggestion.test.ts 同一边界口径）。
+vi.mock('../../../../src/main/features/recall/asset-title-suggestion', () => ({
+  suggestAbilityAssetTitle: async () => ({ title: '模型重起的样本标题' }),
+}));
+
 // specs/015 US-701（T017/T018）：改进候选的**关联与依据链** + **四态反馈与幂等**。
 //
 // 测的是两条沉淀线的真实接线：

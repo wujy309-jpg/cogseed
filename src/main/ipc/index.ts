@@ -98,6 +98,7 @@ import * as recallTeaching from '../features/recall/teaching-service';
 import * as personalOntologyGroups from '../features/personal_ontology_groups';
 import * as personalOntologyTemplateFiles from '../features/personal_ontology_template_files';
 import * as personalOntologyCandidates from '../features/personal_ontology_candidates';
+import * as poApi from '../features/po/api';
 import type { GroupEvent } from '../features/group_chat/bus';
 import { setGroupChatMessageBroadcaster } from '../features/group_chat/bus';
 import { setCognitionChangeBroadcaster } from '../features/recall/store-events';
@@ -4269,6 +4270,137 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (typeof entryText !== 'string') throw new Error('missing entryText');
     if (!fieldName || typeof fieldName !== 'string') throw new Error('missing fieldName');
     return personalOntologyTemplateFiles.promoteEntryToRef(ctx.userId, groupId, entryText, fieldName);
+  },
+
+  // ── 个人本体 v2（2026-09-29 重构）：po.* 干净通道。JSON 单文档存储上的
+  //  全 id 寻址业务 API（src/main/features/po/api.ts）；旧 personalOntology.*
+  //  通道保留（contract / @ 引用 / 候选管道等老消费方在用）。──
+  'po.snapshot': async (_payload, ctx) => poApi.getPoSnapshot(ctx.userId),
+
+  'po.groups.create': async ({ title }, ctx) => {
+    if (typeof title !== 'string' || !title.trim()) throw new Error('missing title');
+    return poApi.poCreateGroup(ctx.userId, title);
+  },
+  'po.groups.rename': async ({ groupId, title }, ctx) => {
+    if (!safeId(groupId)) throw new Error('missing groupId');
+    if (typeof title !== 'string' || !title.trim()) throw new Error('missing title');
+    return poApi.poRenameGroup(ctx.userId, groupId, title);
+  },
+  'po.groups.delete': async ({ groupId }, ctx) => {
+    if (!safeId(groupId)) throw new Error('missing groupId');
+    return poApi.poDeleteGroup(ctx.userId, groupId);
+  },
+  'po.groups.restore': async ({ groupId }, ctx) => {
+    if (!safeId(groupId)) throw new Error('missing groupId');
+    return poApi.poRestoreDeletedGroup(ctx.userId, groupId);
+  },
+  'po.deleted.list': async (_payload, ctx) => ({ deleted: poApi.poListDeletedGroups(ctx.userId) }),
+
+  'po.fields.create': async ({ groupId, name, isRelation, section }, ctx) => {
+    if (!safeId(groupId)) throw new Error('missing groupId');
+    if (typeof name !== 'string' || !name.trim()) throw new Error('missing name');
+    return poApi.poCreateField(ctx.userId, groupId, name, {
+      isRelation: isRelation === true,
+      ...(typeof section === 'string' && section ? { section } : {}),
+    });
+  },
+  'po.fields.rename': async ({ groupId, fieldId, name }, ctx) => {
+    if (!safeId(groupId)) throw new Error('missing groupId');
+    if (!safeId(fieldId)) throw new Error('missing fieldId');
+    if (typeof name !== 'string' || !name.trim()) throw new Error('missing name');
+    return poApi.poRenameField(ctx.userId, groupId, fieldId, name);
+  },
+  'po.fields.delete': async ({ groupId, fieldId }, ctx) => {
+    if (!safeId(groupId)) throw new Error('missing groupId');
+    if (!safeId(fieldId)) throw new Error('missing fieldId');
+    return poApi.poDeleteField(ctx.userId, groupId, fieldId);
+  },
+  'po.fields.setRelation': async ({ groupId, fieldId, isRelation }, ctx) => {
+    if (!safeId(groupId)) throw new Error('missing groupId');
+    if (!safeId(fieldId)) throw new Error('missing fieldId');
+    return poApi.poSetFieldRelationFlag(ctx.userId, groupId, fieldId, isRelation === true);
+  },
+
+  'po.values.add': async ({ groupId, fieldId, text, asOf, ruleKind }, ctx) => {
+    if (!safeId(groupId)) throw new Error('missing groupId');
+    if (!safeId(fieldId)) throw new Error('missing fieldId');
+    if (typeof text !== 'string' || !text.trim()) throw new Error('missing text');
+    if (ruleKind !== undefined && ruleKind !== null && ruleKind !== 'operation' && ruleKind !== 'preference' && ruleKind !== 'constraint') {
+      throw new Error('invalid ruleKind');
+    }
+    return poApi.poAddValue(ctx.userId, groupId, fieldId, { text, ...(typeof asOf === 'string' && asOf ? { asOf } : {}), ...(ruleKind ? { ruleKind } : {}) });
+  },
+  'po.values.update': async ({ groupId, valueId, patch }, ctx) => {
+    if (!safeId(groupId)) throw new Error('missing groupId');
+    if (!safeId(valueId)) throw new Error('missing valueId');
+    if (!patch || typeof patch !== 'object') throw new Error('missing patch');
+    return poApi.poUpdateValue(ctx.userId, groupId, valueId, patch);
+  },
+  'po.values.delete': async ({ groupId, valueId }, ctx) => {
+    if (!safeId(groupId)) throw new Error('missing groupId');
+    if (!safeId(valueId)) throw new Error('missing valueId');
+    return poApi.poDeleteValue(ctx.userId, groupId, valueId);
+  },
+
+  'po.entries.add': async ({ groupId, text, section }, ctx) => {
+    if (!safeId(groupId)) throw new Error('missing groupId');
+    if (typeof text !== 'string' || !text.trim()) throw new Error('missing text');
+    return poApi.poAddEntry(ctx.userId, groupId, text, { ...(typeof section === 'string' && section ? { section } : {}) });
+  },
+  'po.entries.delete': async ({ groupId, entryId }, ctx) => {
+    if (!safeId(groupId)) throw new Error('missing groupId');
+    if (!safeId(entryId)) throw new Error('missing entryId');
+    return poApi.poDeleteEntry(ctx.userId, groupId, entryId);
+  },
+  'po.entries.promote': async ({ groupId, entryId, fieldName }, ctx) => {
+    if (!safeId(groupId)) throw new Error('missing groupId');
+    if (!safeId(entryId)) throw new Error('missing entryId');
+    if (typeof fieldName !== 'string' || !fieldName.trim()) throw new Error('missing fieldName');
+    return poApi.poPromoteEntry(ctx.userId, groupId, entryId, fieldName);
+  },
+
+  'po.templates.status': async (_payload, ctx) => ({ templates: await poApi.poListTemplateStatus(ctx.userId) }),
+  'po.templates.install': async ({ templateId, restoreData }, ctx) => {
+    if (typeof templateId !== 'string' || !safeId(templateId)) throw new Error('missing templateId');
+    return poApi.poInstallTemplate(ctx.userId, templateId, restoreData === true);
+  },
+  'po.templates.uninstall': async ({ templateId, archiveMemory }, ctx) => {
+    if (typeof templateId !== 'string' || !safeId(templateId)) throw new Error('missing templateId');
+    return poApi.poUninstallTemplate(ctx.userId, templateId, archiveMemory === true);
+  },
+  'po.templates.archiveInfo': async ({ templateId }, ctx) => {
+    if (typeof templateId !== 'string' || !safeId(templateId)) throw new Error('missing templateId');
+    return poApi.poTemplateArchiveInfo(ctx.userId, templateId);
+  },
+
+  'po.history.list': async ({ groupId }, ctx) => {
+    if (!safeId(groupId)) throw new Error('missing groupId');
+    return { history: poApi.poListHistory(ctx.userId, groupId) };
+  },
+  'po.history.restore': async ({ groupId, snapshotId }, ctx) => {
+    if (!safeId(groupId)) throw new Error('missing groupId');
+    if (typeof snapshotId !== 'string' || !snapshotId) throw new Error('missing snapshotId');
+    const { restoreGroupSnapshot } = await import('../features/personal_ontology_groups');
+    return restoreGroupSnapshot(ctx.userId, groupId, snapshotId);
+  },
+
+  'po.candidates.confirm': async ({ candidateId, dest, acknowledgeConflict }, ctx) => {
+    if (typeof candidateId !== 'string' || !candidateId) throw new Error('missing candidateId');
+    return personalOntologyCandidates.confirmCandidate(ctx.userId, candidateId, dest, { acknowledgeConflict: acknowledgeConflict === true });
+  },
+  'po.candidates.reject': async ({ candidateId }, ctx) => {
+    if (typeof candidateId !== 'string' || !candidateId) throw new Error('missing candidateId');
+    return personalOntologyCandidates.rejectCandidate(ctx.userId, candidateId);
+  },
+
+  'po.data.export': async (_payload, ctx) => ({ markdown: poApi.poExportMarkdown(ctx.userId) }),
+  'po.data.importPreview': async ({ text }, ctx) => {
+    if (typeof text !== 'string') throw new Error('missing text');
+    return poApi.poImportPreview(ctx.userId, text);
+  },
+  'po.data.importApply': async ({ items }, ctx) => {
+    if (!Array.isArray(items)) throw new Error('missing items');
+    return poApi.poImportApply(ctx.userId, items);
   },
 
   // ── 桥接注册：renderer 引用但漏注册的通道（纯转发到现成能力，

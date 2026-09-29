@@ -71,6 +71,7 @@ async function seedTargetAsset(userId: string): Promise<string> {
   const seeded = await candidates.saveRecallCandidate(userId, {
     judgment: 'Keep the report verification rule.',
     value: 'Keep report verification consistent across runs.',
+    summary: 'Report verification rule',
     suggestedType: 'rule',
     suggestedScope: 'report',
     suggestedAction: 'create',

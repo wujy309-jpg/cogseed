@@ -70,6 +70,12 @@
 
   function bindEvents(root) {
     root.addEventListener('click', async (event) => {
+      const openMore = root.querySelector && root.querySelector('.ca-more-wrap [data-asset-more]');
+      if (openMore && !openMore.hidden && !event.target.closest('.ca-more-wrap')) {
+        openMore.hidden = true;
+        const trigger = openMore.closest('.ca-more-wrap')?.querySelector('[data-act="toggle-asset-more"]');
+        if (trigger) { trigger.classList.remove('is-open'); trigger.setAttribute('aria-expanded', 'false'); }
+      }
       const assetRow = event.target.closest('[data-go-asset]');
       if (assetRow) { router.go({ name: 'overview', assetId: assetRow.dataset.goAsset }); return; }
       const el = event.target.closest('[data-act]');
@@ -114,7 +120,11 @@
           case 'toggle-asset-more': {
             const wrap = el.closest('.ca-more-wrap');
             const menu = wrap ? wrap.querySelector('[data-asset-more]') : null;
-            if (menu) { menu.hidden = !menu.hidden; el.classList.toggle('is-open', !menu.hidden); }
+            if (menu) {
+              menu.hidden = !menu.hidden;
+              el.classList.toggle('is-open', !menu.hidden);
+              el.setAttribute('aria-expanded', menu.hidden ? 'false' : 'true');
+            }
             break;
           }
           case 'refresh': await NS.reload({ tree: true }); await NS.reload(); break;
@@ -204,6 +214,7 @@
           }
           case 'open-conversation': NS.openConversation(id); break;
           case 'asset-timeline-retry': await NS.loadAssetTimeline(id, true); break;
+          case 'asset-adoption-retry': await NS.loadAdoptionReceipts(id, true); break;
           case 'capture-batch': {
             // 批量动作的条数在渲染时写死进按钮（只数当前已加载且该动作可执行
             // 的行）；这里再次从 store 收敛同一口径，防止路由/数据在确认弹窗
@@ -574,6 +585,17 @@
       }
     });
     document.addEventListener('keydown', (event) => {
+      if (event.isComposing || event.keyCode === 229) return;
+      if (event.key === 'Escape') {
+        const more = root.querySelector && root.querySelector('.ca-more-wrap [data-asset-more]');
+        if (more && !more.hidden) {
+          more.hidden = true;
+          const trigger = more.closest('.ca-more-wrap')?.querySelector('[data-act="toggle-asset-more"]');
+          if (trigger) { trigger.classList.remove('is-open'); trigger.setAttribute('aria-expanded', 'false'); trigger.focus(); }
+          event.preventDefault();
+          return;
+        }
+      }
       if (event.key === 'Escape' && (S.route.assetId || S.route.experienceId)) router.back();
     });
     // 树光斑悬停提示（原型 #tip 行为）：.spot 自带 data-title/data-sub，

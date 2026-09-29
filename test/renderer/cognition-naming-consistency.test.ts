@@ -18,8 +18,24 @@ const LOCALES = ['zh', 'en', 'ja', 'pt'] as const;
 /** 旧命名的四语词形——任何语言文件的任何词条值里再出现即为回退。 */
 const STALE_TERMS = ['记忆分组', 'Memory Groups', 'メモリグループ', 'Grupos de memória'];
 
-/** 同一事物在导航与详情两处必须用同一词形（每语内部一致，非跨语相等）。 */
-const SAME_TERM_KEYS = ['personalOntology.nav_groups', 'personalOntology.groups_title'] as const;
+/**
+ * v2（2026-09-29 个人本体重构）：三页导航键（事实与条目 / 规则 / 分组与模板）
+ * 四语齐全；页面标题与导航行在实现上共用同一键（构造即同词形）。
+ */
+const NAV_KEYS = [
+  'personalOntology.nav_abox',
+  'personalOntology.nav_rbox',
+  'personalOntology.nav_groups',
+  'personalOntology.nav_groups_sub',
+] as const;
+/** 三盒时代旧词形——任何语言文件再出现即为回退。 */
+const RETIRED_KEYS = [
+  'personalOntology.nav_tbox',
+  'personalOntology.nav_tbox_sub',
+  'personalOntology.box_tbox_def',
+  'personalOntology.box_abox_def',
+  'personalOntology.box_rbox_def',
+] as const;
 
 function loadLocale(name: typeof LOCALES[number]): Record<string, unknown> {
   return JSON.parse(fs.readFileSync(path.join(root, `src/renderer/locales/${name}.json`), 'utf8')) as Record<string, unknown>;
@@ -52,13 +68,15 @@ describe('M4 命名一致性（本体分组）', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('nav_groups / dest_no_groups / groups_title 三键四语齐全，且导航与详情同词形', () => {
+  it('三页导航键四语齐全；三盒旧词形键不得回流', () => {
     for (const name of LOCALES) {
       const table = loadLocale(name);
-      for (const key of [...SAME_TERM_KEYS, 'personalOntology.dest_no_groups']) {
+      for (const key of NAV_KEYS) {
         expect(typeof table[key], `${name}:${key} 应存在`).toBe('string');
       }
-      expect(table[SAME_TERM_KEYS[0]], `${name}: 导航与详情应同词形`).toBe(table[SAME_TERM_KEYS[1]]);
+      for (const key of RETIRED_KEYS) {
+        expect(table[key], `${name}:${key} 是三盒旧词形，不应存在`).toBeUndefined();
+      }
     }
   });
 

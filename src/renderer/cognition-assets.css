@@ -1417,3 +1417,529 @@
 /* 详情重构（2026-09-29）：来历独立卡与组内去重的 ×N 计数标记。 */
 #ca-root .ca-detail-origin { margin-top: 0; }
 #ca-root .evdup { font-weight: 600; opacity: 0.75; margin-left: 3px; }
+
+/* 正式认知资产详情：所有信息区按同一阅读宽度自上而下排列。 */
+#ca-root .ca-asset-page { width: 100%; max-width: 1040px; margin: 0 auto; }
+#ca-root .ca-asset-head { margin: 0 0 18px; }
+#ca-root .ca-asset-head .ca-detail-facts { margin: 0 0 10px; }
+#ca-root .ca-asset-version-label { color: var(--ink2); font-size: var(--font-size-caption); }
+#ca-root .ca-asset-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+#ca-root .ca-asset-head .ca-asset-title-row h1 {
+  flex: 1 1 auto; min-width: 0; font-size: var(--font-size-heading); line-height: var(--line-height-title);
+}
+#ca-root .ca-asset-head-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#ca-root .ca-asset-availability {
+  display: flex; align-items: center; justify-content: space-between; gap: 18px;
+  margin-top: 18px; padding: 12px 16px; border: 1px solid var(--green-line);
+  border-radius: var(--rm); background: var(--green-bg);
+}
+#ca-root .ca-asset-availability > div { min-width: 0; }
+#ca-root .ca-asset-availability strong { display: block; color: var(--ink); font-size: var(--font-size-4); }
+#ca-root .ca-asset-availability p { margin: 4px 0 0; color: var(--ink2); font-size: var(--font-size-caption); line-height: 1.55; }
+#ca-root .ca-asset-availability .ui-switch { flex: 0 0 auto; }
+#ca-root .ca-asset-stack { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+#ca-root .ca-asset-stack > .card { padding: 20px 22px; }
+#ca-root .ca-asset-stack > .fold { margin: 0; }
+#ca-root .ca-asset-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+#ca-root .ca-asset-section-head h2 { margin: 0; color: var(--ink); font-size: var(--font-size-4); font-weight: 700; line-height: 1.4; }
+#ca-root .ca-asset-section-head .note { margin-left: auto; text-align: right; }
+#ca-root .ca-asset-detail .ca-asset-body {
+  max-width: 880px; margin: 0; color: var(--ink); font-size: var(--font-size-body-lg);
+  line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+#ca-root .ca-asset-detail .ca-stale-pin-warning { margin-bottom: 18px; }
+#ca-root .ca-stale-pin-detail { margin-top: 5px; }
+#ca-root .ca-stale-pin-detail > summary { width: fit-content; color: var(--green-t); font-weight: 600; cursor: pointer; }
+#ca-root .ca-stale-pin-detail > summary:focus-visible { outline: 2px solid var(--green-line); outline-offset: 3px; }
+#ca-root .ca-stale-pin-detail .note,
+#ca-root .ca-stale-pin-list { margin-top: 8px; }
+#ca-root .ca-asset-boundaries { max-width: 880px; margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--line); }
+#ca-root .ca-asset-boundaries h3 { margin: 0 0 10px; color: var(--ink); font-size: var(--font-size-4); }
+#ca-root .ca-asset-boundary { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 12px; padding: 5px 0; }
+#ca-root .ca-asset-boundary > span { color: var(--ink2); font-size: var(--font-size-caption); }
+#ca-root .ca-asset-boundary p { margin: 0; color: var(--ink); font-size: var(--font-size-3); line-height: 1.6; overflow-wrap: anywhere; }
+#ca-root .ca-detail-origin .evgroup { margin-top: 14px; }
+#ca-root .ca-asset-usage-facts { display: grid; gap: 0; }
+#ca-root .ca-asset-usage-fact { padding: 8px 0; border-top: 1px solid var(--line); }
+#ca-root .ca-asset-usage-fact strong { color: var(--ink); font-size: var(--font-size-4); line-height: 1.5; }
+#ca-root .ca-asset-usage > .note { margin: 10px 0 0; line-height: 1.55; }
+#ca-root .ca-asset-usage .ca-asset-usage-note { padding-top: 10px; border-top: 1px solid var(--line); }
+#ca-root .ca-asset-last-use { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+#ca-root .ca-asset-usage .footnote { margin-top: 12px; }
+#ca-root .ca-asset-usage-feedback { margin-top: 6px; }
+#ca-root .ca-asset-manage-card .ca-detail-governance { margin: 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; box-shadow: none; }
+#ca-root .ca-asset-manage-card .ca-detail-governance > summary { padding: 12px 0; }
+#ca-root .ca-asset-manage-card .ca-detail-governance > .dbody { padding: 4px 0 12px; }
+#ca-root .ca-asset-manage-card .ca-more-wrap { margin-top: 0; padding-top: 12px; border-top: 1px solid var(--line); }
+#ca-root .ca-asset-stack .proc-row { min-width: 0; align-items: flex-start; }
+#ca-root .ca-asset-stack .proc-row > span:last-child { min-width: 0; overflow-wrap: anywhere; white-space: normal; }
+#ca-root .ca-asset-stack .meta-item { white-space: normal; overflow-wrap: anywhere; }
+/* 独立经验记录沿用单列阅读节奏，保留自己的业务字段和操作。 */
+#ca-root .ca-experience-detail-grid { grid-template-columns: minmax(0, 1fr); }
+#ca-root .ca-experience-detail-grid .ca-detail-main,
+#ca-root .ca-experience-detail-grid .ca-detail-side { gap: 16px; }
+#ca-root .ca-experience-detail-grid .card { padding: 20px 22px; }
+#ca-root .ca-experience-page .ca-detail-head h1 { font-size: var(--font-size-heading); line-height: var(--line-height-title); }
+#ca-root .ca-experience-detail-grid .content-text { color: var(--ink); font-size: var(--font-size-body-lg); line-height: 1.8; }
+#ca-root .ca-experience-detail-grid .meta-item,
+#ca-root .ca-experience-detail-grid .proc-row > span:last-child { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+@media (max-width: 720px) {
+  #ca-root .ca-asset-title-row { flex-direction: column; gap: 12px; }
+  #ca-root .ca-asset-head-actions { width: 100%; }
+  #ca-root .ca-asset-availability { align-items: flex-start; }
+  #ca-root .ca-asset-stack > .card { padding: 17px 18px; }
+  #ca-root .ca-experience-detail-grid .card { padding: 17px 18px; }
+  #ca-root .ca-asset-boundary { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+}
+
+/* ── 个人本体 v2（2026-09-29 重构）：事实 / 规则 / 分组与模板 三页 ───────── */
+
+#ca-root .po2-view,
+.recall-personal-ontology-section .po2-view {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+#ca-root .po2-toolbar,
+.recall-personal-ontology-section .po2-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+#ca-root .po2-toolbar-hint,
+.recall-personal-ontology-section .po2-toolbar-hint {
+  font-size: 12px;
+}
+#ca-root .po2-select,
+#ca-root .po2-input,
+.recall-personal-ontology-section .po2-select,
+.recall-personal-ontology-section .po2-input {
+  border: 1px solid var(--color-border, #d8dcd3);
+  border-radius: 8px;
+  background: var(--color-surface, #fff);
+  color: var(--color-ink, #222);
+  padding: 5px 10px;
+  font-size: 13px;
+}
+#ca-root .po2-search,
+.recall-personal-ontology-section .po2-search {
+  flex: 1;
+  min-width: 160px;
+  max-width: 320px;
+}
+#ca-root .po2-chips,
+.recall-personal-ontology-section .po2-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+#ca-root .po2-candidates,
+#ca-root .po2-group,
+#ca-root .po2-group-card,
+.recall-personal-ontology-section .po2-candidates,
+.recall-personal-ontology-section .po2-group,
+.recall-personal-ontology-section .po2-group-card {
+  border: 1px solid var(--color-border, #e3e6de);
+  border-radius: 12px;
+  background: var(--color-surface, #fff);
+  padding: 12px 14px;
+}
+#ca-root .po2-candidates,
+.recall-personal-ontology-section .po2-candidates {
+  border-style: dashed;
+  border-color: var(--color-warning, #c77700);
+  background: var(--color-warning-soft, #fdf6e7);
+}
+#ca-root .po2-candidates-title,
+.recall-personal-ontology-section .po2-candidates-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+#ca-root .po2-candidate,
+.recall-personal-ontology-section .po2-candidate {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+}
+#ca-root .po2-candidate-text,
+.recall-personal-ontology-section .po2-candidate-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#ca-root .po2-candidate-preview,
+.recall-personal-ontology-section .po2-candidate-preview {
+  border: 1px solid var(--color-border, #e3e6de);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  white-space: pre-wrap;
+  max-height: 140px;
+  overflow: auto;
+}
+#ca-root .po2-group-head,
+#ca-root .po2-group-card-head,
+.recall-personal-ontology-section .po2-group-head,
+.recall-personal-ontology-section .po2-group-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+#ca-root .po2-group-title,
+.recall-personal-ontology-section .po2-group-title {
+  font-weight: 600;
+}
+#ca-root .po2-group-actions,
+.recall-personal-ontology-section .po2-group-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+#ca-root .po2-section-title,
+.recall-personal-ontology-section .po2-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-ink-soft, #6b7263);
+  margin: 10px 0 4px;
+}
+#ca-root .po2-field,
+.recall-personal-ontology-section .po2-field {
+  padding: 6px 0;
+  border-top: 1px dashed var(--color-border, #eceee7);
+}
+#ca-root .po2-field:first-child,
+.recall-personal-ontology-section .po2-field:first-child {
+  border-top: none;
+}
+#ca-root .po2-field-head,
+.recall-personal-ontology-section .po2-field-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+#ca-root .po2-field-name,
+.recall-personal-ontology-section .po2-field-name {
+  font-weight: 500;
+}
+#ca-root .po2-field-desc,
+.recall-personal-ontology-section .po2-field-desc {
+  color: var(--color-ink-soft, #8a9080);
+  display: inline-flex;
+}
+#ca-root .po2-field-actions,
+.recall-personal-ontology-section .po2-field-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+#ca-root .po2-value-row,
+.recall-personal-ontology-section .po2-value-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0 4px 10px;
+}
+#ca-root .po2-value-row.is-conflict,
+.recall-personal-ontology-section .po2-value-row.is-conflict {
+  background: var(--color-danger-soft, #fdeceb);
+  border-radius: 8px;
+  padding-left: 8px;
+}
+#ca-root .po2-value-text,
+.recall-personal-ontology-section .po2-value-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#ca-root .po2-value-row .po2-value-text,
+.recall-personal-ontology-section .po2-value-row .po2-value-text {
+  display: block;
+}
+#ca-root .po2-value-meta,
+.recall-personal-ontology-section .po2-value-meta {
+  display: inline-flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+#ca-root .po2-value-empty,
+.recall-personal-ontology-section .po2-value-empty {
+  padding: 2px 0 2px 10px;
+  font-size: 12px;
+}
+#ca-root .po2-entry-row,
+.recall-personal-ontology-section .po2-entry-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0 4px 10px;
+}
+#ca-root .po2-entry-text,
+.recall-personal-ontology-section .po2-entry-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#ca-root .po2-entry-actions,
+#ca-root .po2-entry-src,
+.recall-personal-ontology-section .po2-entry-actions,
+.recall-personal-ontology-section .po2-entry-src {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+#ca-root .po2-link-btn,
+.recall-personal-ontology-section .po2-link-btn {
+  border: none;
+  background: none;
+  color: var(--color-brand, #2c6e49);
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+#ca-root .po2-link-btn:hover,
+.recall-personal-ontology-section .po2-link-btn:hover {
+  text-decoration: underline;
+}
+#ca-root .po2-link-btn.is-danger,
+.recall-personal-ontology-section .po2-link-btn.is-danger {
+  color: var(--color-danger, #b3261e);
+}
+/* 下拉菜单（details/summary 自包含） */
+#ca-root .po2-menu,
+.recall-personal-ontology-section .po2-menu {
+  position: relative;
+  display: inline-flex;
+}
+#ca-root .po2-menu-trigger,
+.recall-personal-ontology-section .po2-menu-trigger {
+  list-style: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  color: var(--color-ink-soft, #6b7263);
+}
+#ca-root .po2-menu-trigger::-webkit-details-marker,
+.recall-personal-ontology-section .po2-menu-trigger::-webkit-details-marker {
+  display: none;
+}
+#ca-root .po2-menu-trigger:hover,
+.recall-personal-ontology-section .po2-menu-trigger:hover {
+  background: var(--color-brand-soft, #e8f0ea);
+  color: var(--color-ink, #222);
+}
+#ca-root .po2-menu-list,
+.recall-personal-ontology-section .po2-menu-list {
+  position: absolute;
+  right: 0;
+  top: 30px;
+  min-width: 150px;
+  background: var(--color-surface, #fff);
+  border: 1px solid var(--color-border, #d8dcd3);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  z-index: var(--z-popover);
+}
+#ca-root .po2-menu-item,
+.recall-personal-ontology-section .po2-menu-item {
+  border: none;
+  background: none;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--color-ink, #222);
+}
+#ca-root .po2-menu-item:hover,
+.recall-personal-ontology-section .po2-menu-item:hover {
+  background: var(--color-brand-soft, #e8f0ea);
+}
+#ca-root .po2-menu-item.is-danger,
+.recall-personal-ontology-section .po2-menu-item.is-danger {
+  color: var(--color-danger, #b3261e);
+}
+#ca-root .po2-menu-item.is-active,
+.recall-personal-ontology-section .po2-menu-item.is-active {
+  background: var(--color-brand-soft, #e8f0ea);
+  font-weight: 600;
+}
+#ca-root .po2-menu-item[disabled],
+.recall-personal-ontology-section .po2-menu-item[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+#ca-root .po2-menu-sep,
+.recall-personal-ontology-section .po2-menu-sep {
+  height: 1px;
+  background: var(--color-border, #eceee7);
+  margin: 4px 2px;
+}
+#ca-root .po2-menu-title,
+.recall-personal-ontology-section .po2-menu-title {
+  font-size: 11px;
+  color: var(--color-ink-soft, #8a9080);
+  padding: 2px 10px;
+}
+/* 规则行 */
+#ca-root .po2-rule-row,
+.recall-personal-ontology-section .po2-rule-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 4px;
+  border-top: 1px dashed var(--color-border, #eceee7);
+}
+#ca-root .po2-rule-row:first-child,
+.recall-personal-ontology-section .po2-rule-row:first-child {
+  border-top: none;
+}
+#ca-root .po2-rule-where,
+.recall-personal-ontology-section .po2-rule-where {
+  flex-shrink: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-ink-soft, #6b7263);
+  font-size: 12px;
+}
+#ca-root .po2-rule-text,
+.recall-personal-ontology-section .po2-rule-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 分组管理卡 */
+#ca-root .po2-group-card-body,
+.recall-personal-ontology-section .po2-group-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+#ca-root .po2-field-line,
+.recall-personal-ontology-section .po2-field-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+}
+#ca-root .po2-template-row,
+.recall-personal-ontology-section .po2-template-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+#ca-root .po2-template-row .personal-onto-nav-row,
+.recall-personal-ontology-section .po2-template-row .personal-onto-nav-row {
+  flex: 1;
+  text-align: left;
+}
+#ca-root .po2-deleted,
+.recall-personal-ontology-section .po2-deleted {
+  border: 1px dashed var(--color-border, #d8dcd3);
+  border-radius: 10px;
+  padding: 8px 12px;
+}
+#ca-root .po2-deleted-summary,
+.recall-personal-ontology-section .po2-deleted-summary {
+  cursor: pointer;
+  color: var(--color-ink-soft, #6b7263);
+}
+#ca-root .po2-deleted-row,
+.recall-personal-ontology-section .po2-deleted-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+}
+#ca-root .po2-deleted-title,
+.recall-personal-ontology-section .po2-deleted-title {
+  flex: 1;
+}
+#ca-root .po2-empty,
+.recall-personal-ontology-section .po2-empty {
+  padding: 18px 0;
+}
+/* 历史 / 导入列表 */
+#ca-root .po2-history-row,
+.recall-personal-ontology-section .po2-history-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-top: 1px dashed var(--color-border, #eceee7);
+}
+#ca-root .po2-history-row:first-child,
+.recall-personal-ontology-section .po2-history-row:first-child {
+  border-top: none;
+}
+#ca-root .po2-history-main,
+.recall-personal-ontology-section .po2-history-main {
+  flex: 1;
+  min-width: 0;
+}
+#ca-root .po2-history-preview,
+.recall-personal-ontology-section .po2-history-preview {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+#ca-root .po2-import-item,
+.recall-personal-ontology-section .po2-import-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+}
+#ca-root .po2-profile-section,
+.recall-personal-ontology-section .po2-profile-section {
+  margin-bottom: 10px;
+}
+#ca-root .po2-profile-title,
+.recall-personal-ontology-section .po2-profile-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-ink-soft, #6b7263);
+  margin: 6px 0;
+}
+#ca-root .po2-checkbox,
+.recall-personal-ontology-section .po2-checkbox {
+  margin-right: 6px;
+}
+#ca-root .po2-field-wrap,
+.recall-personal-ontology-section .po2-field-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+#ca-root .po2-field-hint,
+.recall-personal-ontology-section .po2-field-hint {
+  font-size: 12px;
+}
