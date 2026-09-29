@@ -3369,6 +3369,15 @@
     // 认不出的枚举一律走人话兜底，**不裸出机器码**（本模块的既有约定，
     // 有守护测试盯着）；资产名从快照解析，解析不到也给一句话，不裸出内部 id。
     const unknownLabel = (table, key, fallback) => table[key] || fallback;
+    // 工程码翻译（2026-09-29 子安抓的样式整改）：报告 reason/note 里裸出的
+    // too_long/local_path 等正文问题码 → 人话（与候选警示同词条）。
+    const ISSUE_WORD_LABELS = {
+      too_long: T('cognition.statement_issue_too_long', '正文超长'),
+      session_debris: T('cognition.statement_issue_session_debris', '正文带会话一次性标识'),
+      local_path: T('cognition.statement_issue_local_path', '正文带本机路径或源码文件名'),
+      empty: T('cognition.statement_issue_empty', '正文为空'),
+    };
+    const issueText = (text) => String(text || '').replace(/too_long|session_debris|local_path|empty/g, (code) => ISSUE_WORD_LABELS[code] || code);
     const assetTitle = (assetId) => {
       const found = (Array.isArray(S.assets) ? S.assets : []).find((row) => String(row.id) === String(assetId));
       return found && found.title ? String(found.title) : T('cognition.cleanup_item_asset', '这条资产');
@@ -3380,11 +3389,16 @@
       }))}</div></div>
       <div class="sd">${row.interrupted ? window.uiTag({ label: T('cognition.cleanup_status_interrupted', '中断过'), variant: 'outline' }) : ''}</div>
     </div>`).join('');
-    const itemRows = items.length ? items.map((item) => `<div class="row is-flat">
+    const itemRows = items.length ? items.map((item) => {
+      // 改前/改后分段呈现（2026-09-29 子安抓的样式整改）：原来 `${before} → ${after}`
+      // 拼一行，80 字两段糊在一起读不出哪段是改前；现在各带小标签分行，
+      // after 为空（失败/跳过）只显示改前。
+      const diffHtml = `${item.before ? `<div class="mm ca-diff"><span class="ca-diff-tag is-before">${esc(T('cognition.cleanup_diff_before', '改前'))}</span><span class="ca-diff-text">${esc(String(item.before))}</span></div>` : ''}${item.after ? `<div class="mm ca-diff"><span class="ca-diff-tag is-after">${esc(T('cognition.cleanup_diff_after', '改后'))}</span><span class="ca-diff-text">${esc(String(item.after))}</span></div>` : ''}`;
+      return `<div class="row is-flat ca-cleanup-item">
       <div class="tw">
-        <div class="tt">${esc(unknownLabel(KIND_LABELS, item.kind, T('cognition.cleanup_kind_unknown', '整理动作')))} · <a href="#" data-go-asset="${esc(String(item.assetId))}">${esc(assetTitle(item.assetId))}</a></div>
-        <div class="mm">${esc(String(item.before || '—'))} → ${esc(String(item.after || '—'))}</div>
-        <div class="mm">${esc(String(item.reason || ''))}${item.note ? ` · ${esc(String(item.note))}` : ''}</div>
+        <div class="tt">${esc(unknownLabel(KIND_LABELS, item.kind, T('cognition.cleanup_kind_unknown', '整理动作')))} · <a class="ca-asset-link" data-go-asset="${esc(String(item.assetId))}">${esc(assetTitle(item.assetId))}</a></div>
+        ${diffHtml}
+        <div class="mm">${esc(issueText(item.reason || ''))}${item.note ? ` · ${esc(issueText(item.note))}` : ''}</div>
       </div>
       <div class="sd">
         ${window.uiTag({ label: unknownLabel(STATUS_LABELS, item.status, T('cognition.cleanup_status_unknown', '状态未知')), variant: item.status === 'applied' ? 'success' : 'outline' })}
@@ -3393,12 +3407,13 @@
           data: { id: String(item.assetId), version: String(item.rollbackAnchor) },
         }) : ''}
       </div>
-    </div>`).join('') : `<p class="note">${esc(T('cognition.cleanup_no_items', '这一轮没有需要改动的地方。'))}</p>`;
-    const uncertainRows = uncertain.map((entry) => `<div class="row is-flat">
+    </div>`;
+    }).join('') : `<p class="note">${esc(T('cognition.cleanup_no_items', '这一轮没有需要改动的地方。'))}</p>`;
+    const uncertainRows = uncertain.map((entry) => `<div class="row is-flat ca-cleanup-item">
       <div class="tw">
         <div class="tt">${esc(String(entry.title || assetTitle(entry.assetId)))}</div>
-        <div class="mm">${esc(String(entry.question || ''))}</div>
-        <div class="mm">${esc(String(entry.reason || ''))}</div>
+        <div class="mm">${esc(issueText(String(entry.question || '')))}</div>
+        <div class="mm">${esc(issueText(String(entry.reason || '')))}</div>
       </div>
       <div class="sd">${entry.decision
         ? window.uiTag({

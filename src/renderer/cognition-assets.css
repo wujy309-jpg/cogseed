@@ -930,6 +930,25 @@
 #ca-root .ca-card-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 #ca-root .ca-card-actions .ca-other-actions { margin-left: auto; }
 #ca-root .ca-card-actions.ca-card-actions-flat { justify-content: flex-end; }
+
+/* ── 整理报告详情（2026-09-29 子安抓的样式整改）────────────────
+ * 条目卡片化 + 资产链接走主题绿（原裸 <a> 浏览器蓝下划线）+ 改前/改后
+ * 分段小标签（原 before → after 拼一行读不出分段）。 */
+#ca-root .ca-cleanup-item {
+  background: var(--color-white); border: 1px solid var(--line);
+  border-radius: var(--rm); padding: 12px 15px; margin-bottom: 8px;
+}
+#ca-root .ca-asset-link { color: var(--green-t); text-decoration: none; }
+#ca-root .ca-asset-link:hover { text-decoration: underline; }
+#ca-root .ca-diff { display: flex; align-items: baseline; gap: 8px; margin-top: 5px; }
+#ca-root .ca-diff:first-of-type { margin-top: 7px; }
+#ca-root .ca-diff-tag {
+  flex-shrink: 0; font-size: var(--font-size-2); line-height: 1;
+  padding: 3px 8px; border-radius: 5px; font-weight: 600;
+}
+#ca-root .ca-diff-tag.is-before { background: var(--color-ca-chip-bg); color: var(--color-ca-ink-2); }
+#ca-root .ca-diff-tag.is-after { background: var(--color-ca-green-bg); color: var(--green-t); }
+#ca-root .ca-diff-text { min-width: 0; }
 /* 候选卡底部行（2026-09-29 子安标注）：来源（左）与动作按钮（右）同一行，
  * 整体上提贴近正文。来源过长省略号截断、悬浮看全文；无来源/无动作的卡
  * 退化为单侧行。 */
