@@ -3838,6 +3838,7 @@
   "chat.recall.scope_global": "Global",
   "chat.recall.scope_personal": "Personal",
   "chat.recall.scope_project": "Project",
+  "chat.recall.type_fact": "Facts and knowledge",
   "chat.recall.type_personal": "Facts and preferences",
   "chat.recall.type_rule": "Rule",
   "chat.recall.type_skill_method": "Experience method",

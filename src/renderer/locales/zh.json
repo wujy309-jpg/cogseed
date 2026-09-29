@@ -3841,6 +3841,7 @@
   "chat.recall.scope_global": "全局",
   "chat.recall.scope_personal": "个人",
   "chat.recall.scope_project": "项目",
+  "chat.recall.type_fact": "事实与知识",
   "chat.recall.type_personal": "事实与偏好",
   "chat.recall.type_rule": "规则",
   "chat.recall.type_skill_method": "经验方法",

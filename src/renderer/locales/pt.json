@@ -3660,6 +3660,7 @@
   "chat.recall.scope_global": "Global",
   "chat.recall.scope_personal": "Pessoal",
   "chat.recall.scope_project": "Projeto",
+  "chat.recall.type_fact": "Fatos e conhecimento",
   "chat.recall.type_personal": "Fatos e preferências",
   "chat.recall.type_rule": "Regra",
   "chat.recall.type_skill_method": "Método de experiência",

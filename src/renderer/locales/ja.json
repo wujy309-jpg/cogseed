@@ -3660,6 +3660,7 @@
   "chat.recall.scope_global": "グローバル",
   "chat.recall.scope_personal": "個人",
   "chat.recall.scope_project": "プロジェクト",
+  "chat.recall.type_fact": "事実と知識",
   "chat.recall.type_personal": "事実と好み",
   "chat.recall.type_rule": "ルール",
   "chat.recall.type_skill_method": "経験的方法",

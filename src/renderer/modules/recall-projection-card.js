@@ -100,29 +100,41 @@
 
   // ── 引用行（原 conversation.js 记忆卡的内容行，随两卡合并迁入本文件）──────
 
+  /** 类型枚举 = candidate-service.ts::AbilityAssetType（IPC recall.candidates.save
+   *  同集校验）。fact 的措辞与资产页 cognition.asset_category_fact（事实与知识）
+   *  同词，不另造第三种叫法。 */
   function _citationTypeLabel(type) {
     const normalized = String(type || '').trim().toLowerCase();
     const key = normalized === 'personal' ? 'chat.recall.type_personal'
       : normalized === 'rule' ? 'chat.recall.type_rule'
       : normalized === 'template' ? 'chat.recall.type_template'
       : normalized === 'skill_method' ? 'chat.recall.type_skill_method'
+      : normalized === 'fact' ? 'chat.recall.type_fact'
       : '';
     if (!key) return String(type || '').trim();
     const value = typeof t === 'function' ? t(key) : key;
     return value && value !== key ? value : String(type || '').trim();
   }
 
+  /** 范围有两套取值：现行契约五枚（prompts/recall_candidate_contract.md：
+   *  general | report | code | review | product）与历史值（global/project/agent/
+   *  personal——含 transcript 纠错流程仍在写的 'personal'）。契约五枚直接复用
+   *  整理表单的 cognition.capture.scope_* 词条（与 review-candidate.js 的
+   *  candidateScopeField/A7 同源，三处同词）；历史值沿用本卡旧键做存量容错。 */
   function _citationScopeLabel(scope) {
     const normalized = String(scope || '').trim().toLowerCase();
-    const key = normalized === 'global'
-      ? 'chat.recall.scope_global'
-      : normalized === 'project'
-        ? 'chat.recall.scope_project'
-        : normalized === 'agent'
-          ? 'chat.recall.scope_agent'
-          : normalized === 'personal'
-            ? 'chat.recall.scope_personal'
-            : '';
+    const keys = {
+      general: 'cognition.capture.scope_general',
+      report: 'cognition.capture.scope_report',
+      code: 'cognition.capture.scope_code',
+      review: 'cognition.capture.scope_review',
+      product: 'cognition.capture.scope_product',
+      global: 'chat.recall.scope_global',
+      project: 'chat.recall.scope_project',
+      agent: 'chat.recall.scope_agent',
+      personal: 'chat.recall.scope_personal',
+    };
+    const key = Object.prototype.hasOwnProperty.call(keys, normalized) ? keys[normalized] : '';
     if (!key) return String(scope || '').trim();
     const value = typeof t === 'function' ? t(key) : key;
     return value && value !== key ? value : String(scope || '').trim();
@@ -165,7 +177,9 @@
       asset?.status && asset.status !== 'active' ? _assetStatusLabel(asset.status) : '',
       asset?.recommendedAction ? _assetRecommendationLabel(asset.recommendedAction) : '',
     ].filter(Boolean).join(' · ');
-    const meta = [asset?.type, asset?.scope, shownVersion ? `v${shownVersion}` : ''].filter(Boolean).join(' · ');
+    // 带入行与已引用行同一套白话（此前这里 type/scope 原文上屏，同一张卡
+    // 两行两种语言）。词表门禁见 test/renderer/recall-citation-labels.test.ts。
+    const meta = [_citationTypeLabel(asset?.type), _citationScopeLabel(asset?.scope), shownVersion ? `v${shownVersion}` : ''].filter(Boolean).join(' · ');
     // 版本钉住是有意的（不在用户背后换掉他确认过的内容），所以这里只告知，
     // 不提供"就地升到新版"——已确认投影不可再改，新版本要靠下次重新选择。
     const stale = asset?.stale
