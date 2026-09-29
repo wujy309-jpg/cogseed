@@ -399,9 +399,11 @@
           : T('cognition.evidence_fallback', '来源记录'));
       }).join(' · ')}</div>`
       : '';
-    const warnHtml = broken
-      ? `<div class="warn">${esc(T('cognition.candidate_evidence_all_unavailable', '这条候选的大部分来源记录已被删除，无法核对证据。建议补充新证据后保存，或选择不保存。'))}</div>`
-      : '';
+    // 2026-09-29 子安标注整改：「来源已删」卡内黄警示撤下（列表卡）——
+    // 同一件事已经说了三遍（区域抬头「这些候选引用的会话已不存在…可以点开
+    // 确认后仍要保存，或选择不保存」＋徽章行「来源已删」章＋这句），还把
+    // 卡片撑高、把动作区推远。列表卡保留徽章即可；完整警示文案留给候选
+    // 详情页头部（那里没有区域抬头，是用「看内容与证据」进去后必需的信息）。
     /* 三件套（specs/018 T011）：主按钮 = 推荐动作（确认），其余动作收「其他处理」。
      * 直接确认沿既有 cand-adopt-with-form 通道：卡片不在 .ca-candidate-detail 里，
      * readCandidateForm 就近找不到表单 → 按未携带编辑确认（内容原样保存）。
@@ -429,7 +431,7 @@
       <div class="c1" data-act="open-candidate" data-id="${esc(candidate.id)}" role="button" tabindex="0">${esc(candidateTitle(candidate))}<span class="chev" aria-hidden="true">›</span></div>
       <div class="c2">${chip(categoryLabel(candidate.suggestedType))}${candidateSourceBadge(candidate)}${candidateRiskBadge(candidate)}${(candidate.capabilities && candidate.capabilities.isSnoozed) ? chip(T('cognition.candidate_snoozed', '已稍后处理'), 'amber') : ''}${broken ? chip(T('cognition.candidate_evidence_weak', '来源已删'), 'amber') : chip(T('cognition.candidate_evidence_ok', '证据充足'), 'green')}</div>
       <div class="c3">${esc(String(candidate.judgment || candidate.value || '').slice(0, 220))}</div>
-      ${refsHtml}${warnHtml}
+      ${refsHtml}
       ${(primaryBtn || othersHtml) ? `<div class="c5 ca-card-actions">${primaryBtn}${othersHtml}</div>` : ''}
     </div>`;
   }
