@@ -101,6 +101,16 @@ describe('cognition-assets snapshot and routing', () => {
     expect(core).toContain('back()');
   });
 
+  it('returns to the previous page via the back stack, and page-level jumps push it', () => {
+    // 2026-09-29 返回跳错根因守护：go-back 优先弹 backStack（router.back()），
+    // 且进入整理报告页必须入栈——此前 open-cleanup-report 带 replace:true，
+    // 来源页（系统活动）没进栈，「← 返回」弹到更早逛过的历史页（如待我处理）。
+    // 就地状态翻转（编辑态/弹层开合）才允许 replace，页面切换不允许。
+    expect(app).toContain('router.back()');
+    expect(app).toContain("case 'open-cleanup': router.go({ name: 'cleanup', cleanupReportId: '' });");
+    expect(app).toContain("case 'open-cleanup-report': router.go({ name: 'cleanup', cleanupReportId: String(el.dataset.report || '') });");
+  });
+
   it('lands on the cognition tree without auto-redirecting when the inbox is empty', () => {
     expect(core).toContain("Object.assign({ name: 'tree'");
     expect(core).not.toContain('switchSkillsCognitionPage');

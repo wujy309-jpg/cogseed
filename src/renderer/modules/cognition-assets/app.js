@@ -94,10 +94,10 @@
         switch (act) {
           case 'go-back': {
             // 「返回」= 回到上一个界面（2026-09-29 子安定稿，推翻 09-17 的
-            // "按文案回列表"口径）：正常点击导航都会压栈，栈里有来路就直接
+            // "按文案回列表"口径）：页面级导航一律压栈，栈里有来路就直接
             // router.back()——从系统活动点「看报告」进报告页，返回就回系统
-            // 活动。栈空（深链/刷新/replace 进入，如 open-cleanup-report）
-            // 时按详情类型归位到对应主页面兜底（资产详情保留分类筛选）。
+            // 活动。栈空（深链进入/整页刷新丢栈）时按详情类型归位到对应主
+            // 页面兜底（资产详情保留分类筛选）。
             if (Array.isArray(S.backStack) && S.backStack.length) {
               router.back();
               break;
@@ -319,8 +319,11 @@
           case 'inbox-inspection-keep': await A.resolveInboxItem(id, 'keep', { targetAssetId: el.dataset.anchor || '' }); break;
           case 'inbox-inspection-merge': await A.resolveInboxItem(id, 'merge', { targetAssetId: el.dataset.anchor || '' }); break;
           case 'go-inbox-asset': router.go({ name: 'overview', assetId: id }); break;
-          case 'open-cleanup': router.go({ name: 'cleanup', cleanupReportId: '' }, { replace: true }); break;
-          case 'open-cleanup-report': router.go({ name: 'cleanup', cleanupReportId: String(el.dataset.report || '') }, { replace: true }); break;
+          // 进入整理报告页是页面级导航，必须入栈（2026-09-29 返回跳错根因）：
+          // 此前两处带 replace:true，来源页（系统活动/资产设置）没进栈，返回
+          // 时弹到更早逛过的历史页。就地状态翻转才用 replace，页面切换不用。
+          case 'open-cleanup': router.go({ name: 'cleanup', cleanupReportId: '' }); break;
+          case 'open-cleanup-report': router.go({ name: 'cleanup', cleanupReportId: String(el.dataset.report || '') }); break;
           case 'rollback-cleanup-item': await A.rollbackCleanupItem(id, el.dataset.version || ''); break;
           case 'cleanup-uncertain-dismiss': await A.decideCleanupItem(String(el.dataset.report || ''), id, 'reject'); break;
           case 'cleanup-uncertain-defer': await A.decideCleanupItem(String(el.dataset.report || ''), id, 'defer'); break;
