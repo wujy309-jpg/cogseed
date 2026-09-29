@@ -9,7 +9,7 @@ Contents
 - Source: src/ (Electron main, renderer, Core Agent)
 - Resources: resources/ (agents/skills, branding, runtime manifests)
 - Tests: test/
-- Docs: AGENTS.md, README.md, README.zh-CN.md
+- Docs: README.md, README.zh-CN.md, docs/DEVELOPMENT.md, docs/DEVELOPMENT.zh-CN.md
 
 Local / rebuildable (not required in a minimal source tree)
 ----------------------------------------------------------

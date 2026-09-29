@@ -1,7 +1,7 @@
 # CogSeed updates server
 
 Standalone, zero-dependency release catalog API for the in-app update reminder
-feature. Serves the contract documented in `docs/design/updates-api.md`; the
+feature. Serves the contract described in the API section below; the
 client implementation lives in `src/main/features/updater/`.
 
 Production deployment target: `https://hub.example.com/updates/latest` — packaged
@@ -99,4 +99,4 @@ npm test                                  # also runs the client↔server parity
   `node server.cjs`), or place it behind a reverse proxy for TLS.
 - If your official backend is a different stack, treat this directory as the
   reference implementation: the contract, catalog shape, and version
-  semantics are all defined here and in `docs/design/updates-api.md`.
+  semantics are all defined here and in `lib/catalog.cjs`.

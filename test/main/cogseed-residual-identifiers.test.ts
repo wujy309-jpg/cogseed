@@ -48,10 +48,6 @@ describe('CogSeed residual identifiers', () => {
     expect(readme).toContain('.cogseed');
     expect(readme).toContain('cogseed://');
 
-    const agents = read('AGENTS.md');
-    expect(agents).toContain('window.cogseed.{invoke, stream}');
-    const claude = read('CLAUDE.md');
-    expect(claude).toContain('AGENTS.md');
   });
 
   it('uses a canonical CogSeed temp prefix for local imports', async () => {

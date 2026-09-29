@@ -18,14 +18,13 @@
 5. 在 `provenance.json` 中记录 GitHub 作者和全部第三方材料。
 6. 运行 `npm run community:skills:check`。
 7. 使用 DCO 签署提交，采用[社区 Skill PR 模板](../../.github/PULL_REQUEST_TEMPLATE/community-skill.md)
-   向 `develop` 分支提交 PR。如果 GitHub 默认打开了通用模板，可以在 PR 地址中使用
+   向公仓 `main` 分支提交 PR。如果 GitHub 默认打开了通用模板，可以在 PR 地址中使用
    `template=community-skill.md` 查询参数，或复制专用模板正文。
 
 仓库通用环境、邮箱和 DCO 规则仍然适用，详见
 [中文贡献指南](../../CONTRIBUTING.zh-CN.md)。
 
-维护者可以从[首期 Issue 草案](../PILOT_BACKLOG.zh-CN.md)创建推荐任务。这些草案
-只用于降低首次贡献门槛，不限制开发者自主选题和直接提交。
+公仓已发布的推荐 Issue 仅用于降低首次贡献门槛，不限制开发者自主选题和直接提交。
 
 ## 必需目录结构
 
@@ -49,7 +48,8 @@ community/skills/<skill-id>/
 状态严格分开：
 
 1. **已提交 PR**：贡献提案。
-2. **社区候选已合并**：只表示源码通过仓库评审。
+2. **社区候选已接受**：源码通过评审并导入私仓；公仓 PR 以导入记录关闭，
+   源码随后续发布快照公开。
 3. **已验证导入**：在干净 CogSeed 环境中另行验证成功。
 4. **已发布 Hub**：通过独立审核并由 CogSeed Hub 分发。
 5. **已随包发布**：另行批准进入正式应用版本。
@@ -59,5 +59,5 @@ community/skills/<skill-id>/
 
 ## 评审负责人
 
-`community/` 通过 CODEOWNERS 指定 `@windsgone`。涉及安全、版权、脚本、联网或
+维护者通过公仓 PR 安排评审。涉及安全、版权、脚本、联网或
 依赖的提案不属于首期范围，必须退回并进入单独的维护者评审流程。

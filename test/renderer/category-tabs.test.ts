@@ -935,6 +935,35 @@ describe('skills grid › security badge and summary', () => {
     expect(html).not.toContain('重新检查');
   });
 
+  it('offers contribution only for an owned local Skill and keeps a readable avatar', () => {
+    const { context, el } = loadCategoryRenderers();
+    context.renderSkillsGrid([
+      { id: 'my-skill', name: '测试 Skill', source: 'custom', category: 'general', enabled: true },
+      { id: 'codex:imagegen', name: 'External Skill', source: 'custom', category: 'external', enabled: true },
+      { id: 'agent-owned', name: 'Private Skill', source: 'custom', category: 'general', ownerAgent: 'agent-1', enabled: true },
+    ]);
+    const html = el('skills-grid').innerHTML;
+    const ownCard = html.match(/<div class="skill-card[^]*?data-id="my-skill"[^]*?<\/div>\s*<\/div>/)?.[0] || '';
+    expect(ownCard).toContain('data-skill-contribute');
+    expect(ownCard).toContain('skill-card-avatar');
+    expect(ownCard).toContain('测</span>');
+    expect(html.match(/data-skill-contribute/g)).toHaveLength(1);
+  });
+
+  it('shows a local Skill icon while retaining the name initial if it fails to load', () => {
+    const { context, el } = loadCategoryRenderers();
+    context.renderSkillsGrid([
+      { id: 'icon-skill', name: '图标 Skill', source: 'custom', category: 'general', enabled: true,
+        icon_data_url: 'data:image/png;base64,iVBORw0KGgo=' },
+      { id: 'bad-icon', name: '回退 Skill', source: 'custom', category: 'general', enabled: true,
+        icon_data_url: 'javascript:alert(1)' },
+    ]);
+    const html = el('skills-grid').innerHTML;
+    expect(html).toContain('class="skill-card-avatar-image" src="data:image/png;base64,iVBORw0KGgo="');
+    expect(html).toContain('回</span>');
+    expect(html).not.toContain('javascript:alert(1)');
+  });
+
   // The deep scanner reports a score and how the scan was produced. Both belong
   // on the badge: the score is the part a user can judge, and the provenance is
   // what keeps a weakened check from reading as a clean one.
