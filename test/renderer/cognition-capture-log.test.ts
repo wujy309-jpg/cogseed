@@ -920,7 +920,7 @@ describe('整理详情页', () => {
     expect(html).not.toContain('接口变更要同步更新文档。');
   });
 
-  it('待确认候选出「候选摘要 + 去待我处理」：确认动作收敛到待我处理，不在整理详情就地编辑（2026-09-28 两页重整）', () => {
+  it('待确认候选出完整内容块（可点直达确认页）+「去待我处理」总览出口：确认动作收敛到待我处理，不在整理详情就地编辑', () => {
     const pending = {
       id: 'rcand-2', status: 'pending_review',
       judgment: '发布前先跑一遍冒烟清单。', value: '', summary: '发布前冒烟',
@@ -941,8 +941,13 @@ describe('整理详情页', () => {
     expect(html).not.toContain('data-act="cand-adopt-with-form" data-id="rcand-2"');
     expect(html).not.toContain('data-act="cand-decide"');
     expect(html).not.toContain('ca-cand-judgment-rcand-2');
-    // 整理结果区给一行候选摘要（数量 + 标题）与「去待我处理」出口。
+    // 整理结果区：数量行 + 待确认完整内容块（可点直达确认页）+ 总览出口。
     expect(html).toContain('发现 1 条待确认内容');
+    // 2026-09-29 子安：具体内容必须在本页可见——块含标题与全文，整块
+    // open-candidate 深链直达该条的确认页；不再只给一行摘要让人去大队列翻。
+    expect(html).toContain('ca-result-item is-clickable');
+    expect(html).toContain('data-act="open-candidate" data-id="rcand-2"');
+    expect(html).toContain('待确认');
     expect(html).toContain('发布前冒烟');
     expect(html).toContain('data-act="go-review"');
     // 卡头=状态与元信息一行；动作按钮已沉卡尾（2026-09-29 子安拍板，同建议
@@ -961,7 +966,7 @@ describe('整理详情页', () => {
     expect(html).not.toContain('ca-kv');
   });
 
-  it('混合候选：待确认只出摘要行、未保存出完整内容块，页面无表单控件', () => {
+  it('混合候选：待确认与未保存都出完整内容块（待确认可点直达），页面无表单控件', () => {
     const pending = {
       id: 'rcand-2', status: 'pending_review',
       judgment: '发布前先跑一遍冒烟清单。', value: '', summary: '',
@@ -984,6 +989,9 @@ describe('整理详情页', () => {
     // 未保存候选：完整内容块（全文可见）。
     expect(html).toContain('接口变更要同步更新文档。');
     expect(html).toContain('ca-result-item');
+    // 待确认块可点直达确认页；未保存块不挂深链（终态无确认页可去）。
+    expect(html).toContain('data-act="open-candidate" data-id="rcand-2"');
+    expect(html).not.toContain('data-act="open-candidate" data-id="rcand-3"');
     expect(html).not.toContain('ca-cand-judgment-rcand-3');
     // 内嵌表单删除后，整页没有任何候选编辑控件。
     expect(html).not.toContain('data-f="judgment"');

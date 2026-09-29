@@ -3740,38 +3740,45 @@
     //    类型/作用域 + 证据映射 + 未保存标记）——"不保存之后也要看得到
     //    当时整理出的具体内容"，不再只剩一行截断标题。
     const pendingCandidates = candidates.filter((candidate) => NS.candidate.pending(candidate));
+    // 待确认也出完整内容块（2026-09-29 子安：只给一行摘要+跳转=具体内容在
+    // 详情页和大队列页都找不到）；块可点，open-candidate 深链直达该条的
+    // 确认页（此前只能跳大队列页自己翻），「去待我处理」按钮保留作总览出口。
     const pendingSummaryHtml = pendingCandidates.length
       ? `<div class="notice-row ca-pending-summary">
-          <div class="notice-copy"><div class="notice-title">${esc(T('cognition.capture_detail_pending_hint', '发现 {n} 条待确认内容', { n: String(pendingCandidates.length) }))}</div>
-          <div class="notice-detail">${esc(pendingCandidates.map((candidate) => NS.candidate.title(candidate)).join('；'))}</div></div>
+          <div class="notice-copy"><div class="notice-title">${esc(T('cognition.capture_detail_pending_hint', '发现 {n} 条待确认内容', { n: String(pendingCandidates.length) }))}</div></div>
           <span class="sp"></span>${btn(T('cognition.overview_empty_go_review', '去待我处理'), 'go-review', { small: true, primary: true })}
         </div>`
       : '';
     const rejectedCandidates = candidates.filter((candidate) => !pendingCandidates.includes(candidate)
       && candidate.status !== 'confirmed');
     const savedCount = candidates.length - pendingCandidates.length - rejectedCandidates.length;
-    let body = '';
-    if (candidates.length) {
-      const cardHtml = rejectedCandidates.map((candidate) => {
-        const { label, tone } = captureCandidateStatus(candidate.status);
-        const scope = String(candidate.suggestedScope || '').trim();
-        const evidenceBits = (candidate.evidenceRefs || candidate.sourceRefs || []).map((ref) => {
-          const message = messageBySourceId.get(String(ref.id || ''));
-          return message
-            ? `<span class="tag gray">${esc(T('cognition.capture_detail_evidence_from', '来自消息 {label} · {when}', { label: message.label, when: fmtDate(message.ts) }))}</span>`
-            : evidenceChip(ref);
-        }).slice(0, 6).join(' ');
-        return `<div class="ca-result-item">
+    /** 结果区内容块（未保存/待确认共用）：章行 + 全文 + 证据 chips；
+     *  clickable 时挂 open-candidate 深链并加粗标题（待确认直达确认页）。 */
+    const resultItemHtml = (candidate, statusChip, clickable) => {
+      const scope = String(candidate.suggestedScope || '').trim();
+      const evidenceBits = (candidate.evidenceRefs || candidate.sourceRefs || []).map((ref) => {
+        const message = messageBySourceId.get(String(ref.id || ''));
+        return message
+          ? `<span class="tag gray">${esc(T('cognition.capture_detail_evidence_from', '来自消息 {label} · {when}', { label: message.label, when: fmtDate(message.ts) }))}</span>`
+          : evidenceChip(ref);
+      }).slice(0, 6).join(' ');
+      const judgment = String(candidate.judgment || '').trim();
+      return `<div class="ca-result-item${clickable ? ' is-clickable' : ''}"${clickable ? ` data-act="open-candidate" data-id="${esc(candidate.id)}" ${roleBtn()}` : ''}>
           <div class="ca-result-head">
             ${chip(categoryLabel(candidate.suggestedType))}
             ${scope ? `<span class="note">${esc(scope)}</span>` : ''}
-            <span class="right">${chip(label, tone)}</span>
+            <span class="right">${chip(statusChip.label, statusChip.tone)}</span>
           </div>
-          <p class="content-text">${esc(String(candidate.judgment || '').trim() || NS.candidate.title(candidate))}</p>
+          ${clickable ? `<b class="ca-result-title">${esc(NS.candidate.title(candidate))}</b>` : ''}
+          <p class="content-text">${esc(judgment || NS.candidate.title(candidate))}</p>
           ${evidenceBits ? `<div class="chips">${evidenceBits}</div>` : ''}
         </div>`;
-      }).join('');
-      body = `${pendingSummaryHtml}${cardHtml}${savedCount && !pendingCandidates.length && !rejectedCandidates.length
+    };
+    let body = '';
+    if (candidates.length) {
+      const cardHtml = rejectedCandidates.map((candidate) => resultItemHtml(candidate, captureCandidateStatus(candidate.status), false)).join('');
+      const pendingHtml = pendingCandidates.map((candidate) => resultItemHtml(candidate, { label: T('cognition.candidate_status_pending', '待确认'), tone: 'amber' }, true)).join('');
+      body = `${pendingSummaryHtml}${pendingHtml}${cardHtml}${savedCount && !pendingCandidates.length && !rejectedCandidates.length
         ? `<div class="note">${esc(T('cognition.capture_detail_saved_hint', '这次整理出的内容已保存为认知资产，可在「我的认知」中查看和修改。'))}</div>`
         : ''}`;
     } else if (running) {

@@ -3000,7 +3000,7 @@
   "cognition.capture_detail_msg_truncated": "内容が長いため切り詰めました",
   "cognition.capture_detail_open_hint": "整理の状況を見る",
   "cognition.capture_detail_participants_title": "参加役割",
-  "cognition.capture_detail_pending_hint": "確認待ちの内容が {n} 件あります。下のカードで確認してください。",
+  "cognition.capture_detail_pending_hint": "確認待ちの内容が {n} 件あります。下の項目をクリックして確認してください。",
   "cognition.capture_detail_result_none_title": "残す価値のある内容は見つかりませんでした",
   "cognition.capture_detail_result_pending": "整理はまだ進行中です。完了すると、この会話から見つかった内容がここに表示されます。",
   "cognition.capture_detail_result_title": "整理結果",

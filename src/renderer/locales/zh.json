@@ -3157,7 +3157,7 @@
   "cognition.capture_detail_msg_truncated": "内容过长，已截断",
   "cognition.capture_detail_open_hint": "查看整理情况",
   "cognition.capture_detail_participants_title": "参与角色",
-  "cognition.capture_detail_pending_hint": "发现 {n} 条待确认内容，在下方卡片中查看和确认。",
+  "cognition.capture_detail_pending_hint": "发现 {n} 条待确认内容，点下方条目可逐条查看和确认。",
   "cognition.capture_detail_result_none_title": "没有发现值得留存的内容",
   "cognition.capture_detail_result_pending": "整理还在进行，完成后这里会列出从这段对话发现的内容。",
   "cognition.capture_detail_result_title": "整理结果",

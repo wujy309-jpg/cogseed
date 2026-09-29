@@ -3154,7 +3154,7 @@
   "cognition.capture_detail_msg_truncated": "Content truncated due to length",
   "cognition.capture_detail_open_hint": "View organizing details",
   "cognition.capture_detail_participants_title": "Participants",
-  "cognition.capture_detail_pending_hint": "{n} item(s) await your review; view and confirm them in the card below.",
+  "cognition.capture_detail_pending_hint": "{n} item(s) await your review; click an entry below to view and confirm it.",
   "cognition.capture_detail_result_none_title": "Nothing worth keeping was found",
   "cognition.capture_detail_result_pending": "Organizing is still in progress; findings from this conversation will be listed here once it finishes.",
   "cognition.capture_detail_result_title": "What was captured",

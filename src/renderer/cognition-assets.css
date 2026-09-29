@@ -390,6 +390,10 @@
    当时整理出的具体内容）；与已沉淀资产块同一视觉语言。 */
 .ca-result-item { border: 1px solid var(--ca-line); border-radius: var(--radius-item); background: var(--color-ca-paper); padding: 12px 14px; margin-top: 8px; }
 .ca-result-item + .ca-result-item { margin-top: 8px; }
+/* 待确认内容块可点（2026-09-29）：整块直达该条的确认页。 */
+.ca-result-item.is-clickable { cursor: pointer; }
+.ca-result-item.is-clickable:hover { border-color: var(--ca-green-line); }
+.ca-result-title { display: block; margin: 0 0 4px; font-size: var(--font-size-3); line-height: 1.5; }
 .ca-result-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 /* ── 响应式适配（2026-09-15）───────────────────────────────────

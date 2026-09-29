@@ -3000,7 +3000,7 @@
   "cognition.capture_detail_msg_truncated": "Conteúdo truncado por tamanho",
   "cognition.capture_detail_open_hint": "Ver detalhes da organização",
   "cognition.capture_detail_participants_title": "Participantes",
-  "cognition.capture_detail_pending_hint": "{n} item(ns) aguardando confirmação; veja e confirme no cartão abaixo.",
+  "cognition.capture_detail_pending_hint": "{n} item(ns) aguardando confirmação; clique em um item abaixo para ver e confirmar.",
   "cognition.capture_detail_result_none_title": "Nada digno de manter foi encontrado",
   "cognition.capture_detail_result_pending": "A organização ainda está em andamento; as descobertas desta conversa serão listadas aqui ao terminar.",
   "cognition.capture_detail_result_title": "O que foi capturado",
