@@ -23344,12 +23344,28 @@ body:has(#panel-settings.active) .main-top-actions {
 }
 .chat-recall-feedback-actions {
   display: flex;
+  align-items: center;
   gap: 6px;
   margin-top: 7px;
   padding-top: 6px;
   border-top: 1px solid var(--border);
 }
+/* 撤销口贴尾行最右（2026-09-29）：反馈钮居左，撤销独占右端。 */
+.chat-recall-feedback-actions .chat-recall-projection-summary-actions {
+  margin-left: auto;
+}
 .chat-recall-citations.is-feedback-sent .chat-recall-feedback-btn { opacity: 0.55; pointer-events: none; }
+
+/* 折叠（2026-09-29）：头部箭头 chip 收起/展开引用明细（列表＋省略块），
+   尾部反馈与撤销保持可见。状态记在宿主 dataset，整卡重画不丢；展开时箭头
+   朝上（再点收起），收起时朝下。 */
+.chat-recall-citations .chat-recall-toggle { flex: none; margin-top: 0; }
+.chat-recall-citations .chat-recall-toggle .ui-icon { transform: rotate(180deg); }
+.chat-recall-citations.is-collapsed .chat-recall-citation-list,
+.chat-recall-citations.is-collapsed .chat-recall-projection-omitted {
+  display: none;
+}
+.chat-recall-citations.is-collapsed .chat-recall-toggle .ui-icon { transform: none; }
 
 /* 教学卡样式已删（2026-09-28 四病整改 7.0 修7）：教学回执并入保存回执卡
    （.chat-cognition-save-receipts），独立教学卡不再渲染。 */

@@ -7,7 +7,7 @@ const ROOT = path.resolve(__dirname, '../..');
 const conversationSource = fs.readFileSync(path.join(ROOT, 'src/renderer/modules/conversation.js'), 'utf8');
 const styleSource = fs.readFileSync(path.join(ROOT, 'src/renderer/style.css'), 'utf8');
 
-function loadModule(invoke: (channel: string, payload?: unknown) => Promise<unknown>) {
+function loadModule(invoke: (channel: string, payload?: unknown) => Promise<unknown>, windowExtras: Record<string, unknown> = {}) {
   const source = fs.readFileSync(path.join(ROOT, 'src/renderer/modules/recall-projection-card.js'), 'utf8');
   const host: any = {
     className: '',
@@ -27,6 +27,7 @@ function loadModule(invoke: (channel: string, payload?: unknown) => Promise<unkn
         const extra = Object.entries(attrs || {}).map(([key, value]) => ` ${key}="${String(value)}"`).join('');
         return `<button type="button" class="btn ui-button"${extra}><span class="ui-button__label">${String(label)}</span></button>`;
       },
+      ...windowExtras,
     },
     document: {},
     escapeHtml: (value: unknown) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'),
@@ -549,5 +550,76 @@ describe('projection card surfaces a drifted confirmed version', () => {
     expect(context.uiAlert).toHaveBeenCalled();
     expect(String(context.uiAlert.mock.calls[0][0])).toContain('revoke failed');
     expect(host.innerHTML).toContain('Revoke');
+  });
+});
+
+describe('「本次使用的记忆」卡折叠 chip 与撤销贴右（2026-09-29）', () => {
+  const confirmedModelCard = {
+    kind: 'recall_projection_card',
+    projectionId: 'proj-fold',
+    status: 'confirmed',
+    authorization: 'model_selected',
+    purpose: 'model_selected',
+    totalAssetCount: 1,
+    assetSummaries: [{ assetId: 'asset-fold', title: '折叠测试资产', type: 'rule', status: 'active', scope: 'review', version: '1' }],
+  };
+
+  function loadWithIconButton(invoke: (channel: string, payload?: unknown) => Promise<unknown>) {
+    const loaded = loadModule(invoke, {
+      uiIconButton: ({ label, className, attrs }: { label: string; className?: string; attrs?: Record<string, string> }) => {
+        const extra = Object.entries(attrs || {}).map(([key, value]) => ` ${key}="${String(value)}"`).join('');
+        return `<button type="button" class="ui-icon-button ${String(className || '')}"${extra} aria-label="${String(label)}">${String(label)}</button>`;
+      },
+    });
+    return loaded;
+  }
+
+  it('头部渲染折叠 chip：位于右侧状态之后、默认展开（aria-expanded=true）；原语缺席整颗降级', async () => {
+    const withChip = loadWithIconButton(async (channel) => {
+      if (channel === 'recall.projections.card') return { ok: true, card: confirmedModelCard };
+      return { ok: true };
+    });
+    await withChip.context.window.mountRecallProjectionCard(withChip.host, { projectionId: 'proj-fold' }, { cid: 'c1', onlyModelSelected: true });
+    expect(withChip.host.innerHTML).toContain('data-recall-toggle="1"');
+    expect(withChip.host.innerHTML).toContain('aria-expanded="true"');
+    // chip 在头部最右：右侧状态/徽标自然让位左移。
+    expect(withChip.host.innerHTML.indexOf('chat-recall-toggle'))
+      .toBeGreaterThan(withChip.host.innerHTML.indexOf('chat-recall-projection-status'));
+
+    const plain = loadModule(async (channel) => {
+      if (channel === 'recall.projections.card') return { ok: true, card: confirmedModelCard };
+      return { ok: true };
+    });
+    await plain.context.window.mountRecallProjectionCard(plain.host, { projectionId: 'proj-fold' }, { cid: 'c1', onlyModelSelected: true });
+    expect(plain.host.innerHTML).not.toContain('data-recall-toggle');
+    // 降级不能顺手把卡弄丢。
+    expect(plain.host.innerHTML).toContain('本次使用的记忆');
+    expect(plain.host.innerHTML).toContain('data-recall-projection-revoke');
+  });
+
+  it('翻转：is-collapsed + dataset 同步；整卡重画（撤销成功刷新）后折叠态保持', async () => {
+    const loaded = loadWithIconButton(async (channel) => {
+      if (channel === 'recall.projections.card') return { ok: true, card: confirmedModelCard };
+      return { ok: true };
+    });
+    await loaded.context.window.mountRecallProjectionCard(loaded.host, { projectionId: 'proj-fold' }, { cid: 'c1', onlyModelSelected: true });
+    expect(loaded.host.className).not.toContain('is-collapsed');
+
+    loaded.context.window.recallCardToggleCollapsed(loaded.host);
+    expect(loaded.host.className).toContain('is-collapsed');
+    expect(loaded.host.dataset.recallCollapsed).toBe('1');
+
+    // 撤销成功走 refresh 整卡重画：折叠态从 dataset 回读，不弹回展开。
+    await loaded.host.handler({ target: { closest: (selector: string) => (String(selector).includes('revoke') ? { disabled: false } : null) } });
+    expect(loaded.host.className).toContain('is-collapsed');
+    expect(loaded.host.innerHTML).toContain('aria-expanded="false"');
+
+    loaded.context.window.recallCardToggleCollapsed(loaded.host);
+    expect(loaded.host.className).not.toContain('is-collapsed');
+    expect(loaded.host.dataset.recallCollapsed).toBe('0');
+    // 返回值 = 翻转后的折叠态（vm 宿主 querySelector 是空桩，aria 属性的
+    // 即时同步只在真实 DOM 生效；重画路径的 aria 已在上面断过）。
+    expect(loaded.context.window.recallCardToggleCollapsed(loaded.host)).toBe(true);
+    expect(loaded.context.window.recallCardToggleCollapsed(loaded.host)).toBe(false);
   });
 });

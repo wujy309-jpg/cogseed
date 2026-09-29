@@ -5372,6 +5372,13 @@ function _hydrateRecallCitations(messageEl, cid, messageId) {
   // 替换 host.innerHTML），按按钮绑定会在重画后失效——事件挂在 host 上才稳。
   host.dataset.feedbackBound = '1';
   host.addEventListener('click', async (event) => {
+    // 折叠箭头（2026-09-29）：同一颗 host 上 hydrate 与 mount 两个委托都在听，
+    // toggle 只在这里认领翻转（实现收在卡模块 recallCardToggleCollapsed），
+    // mount 的动作委托不认它——否则翻两次等于没翻。
+    if (event.target?.closest?.('[data-recall-toggle]')) {
+      if (typeof window.recallCardToggleCollapsed === 'function') window.recallCardToggleCollapsed(host);
+      return;
+    }
     const button = event.target?.closest?.('[data-recall-feedback]');
     if (!button || button.disabled) return;
     const feedback = button.dataset.recallFeedback;

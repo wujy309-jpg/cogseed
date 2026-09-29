@@ -53,6 +53,22 @@
     return `<span class="${iconClass}">${window.uiIconHtml(name, 'ui-icon')}</span>`;
   }
 
+  /** 头部折叠箭头 chip（2026-09-29）：只画按钮，不翻状态——翻转统一走
+   *  recallCardToggleCollapsed（conversation.js 的 hydrate 委托认领点击后调它）。
+   *  展开时箭头朝上（点它收起），收起时朝下，换向由 CSS 按 .is-collapsed 旋转。
+   *  图标按钮原语缺席（极简渲染上下文）时整颗降级为空串，与 _sharedButton 同一
+   *  规矩，不在基线之外自造控件。 */
+  function _toggleButtonHtml(collapsed) {
+    if (typeof window.uiIconButton !== 'function') return '';
+    return window.uiIconButton({
+      label: _label('chat.recall.memory_card_toggle', 'Expand or collapse cited memories'),
+      icon: 'chevron-down',
+      size: 'sm',
+      className: 'chat-recall-toggle',
+      attrs: { 'data-recall-toggle': '1', 'aria-expanded': collapsed ? 'false' : 'true' },
+    });
+  }
+
   function _assetStatusLabel(status) {
     if (status === 'active') return _label('recall.asset.status.active', 'Active');
     if (status === 'paused') return _label('recall.asset.status.paused', 'Paused');
@@ -222,7 +238,7 @@
    * 事件因此全部走委托（mountRecallProjectionCard 与 conversation.js 的
    * _hydrateRecallCitations 各自委托一次），不怕整卡重画。
    */
-  function _memoryCardInnerHtml(card, userPinned, omissions, citations, feedbackSent) {
+  function _memoryCardInnerHtml(card, userPinned, omissions, citations, feedbackSent, collapsed = false) {
     const citedList = _validCitations(citations);
     const citedAssetIds = new Set(citedList.map((citation) => String(citation.asset_id)));
     const assets = card && Array.isArray(card.assetSummaries) ? card.assetSummaries : [];
@@ -293,6 +309,7 @@
         ${badge ? `<span class="chat-recall-projection-badge">${_escape(badge)}</span>` : ''}
         ${statusLabel ? `<span class="chat-recall-projection-status">${_escape(statusLabel)}</span>` : ''}
         ${feedbackStatus}
+        ${_toggleButtonHtml(collapsed)}
       </div>
       ${rows.length ? `<div class="chat-recall-citation-list">${rows.join('')}</div>` : ''}
       ${omittedRows ? `<div class="chat-recall-projection-omitted">${omittedRows}</div>` : ''}
@@ -306,7 +323,7 @@
    */
   function recallMemoryCardHtml(citations) {
     if (!_validCitations(citations).length) return '';
-    return `<section class="chat-recall-citations">${_memoryCardInnerHtml(null, false, [], citations, false)}</section>`;
+    return `<section class="chat-recall-citations">${_memoryCardInnerHtml(null, false, [], citations, false, false)}</section>`;
   }
 
   // ── 旧预载草稿渲染分支（2026-08-17 起生产不可达：对话侧只挂模型自选与
@@ -414,9 +431,12 @@
         const prose = bubble && typeof bubble.querySelector === 'function' ? bubble.querySelector('.markdown-body') : null;
         if (prose) prose.hidden = true;
       }
-      host.className = `chat-recall-citations${card?.status === 'revoked' ? ' is-projection-revoked' : ''}${host.dataset.feedbackSent === '1' ? ' is-feedback-sent' : ''}`;
+      // 折叠态记在 host dataset（不随 innerHTML 重画丢）：重建 className 时
+      // 回读，箭头 aria-expanded 与列表显隐都按同一份状态走。
+      const collapsed = host.dataset.recallCollapsed === '1';
+      host.className = `chat-recall-citations${card?.status === 'revoked' ? ' is-projection-revoked' : ''}${host.dataset.feedbackSent === '1' ? ' is-feedback-sent' : ''}${collapsed ? ' is-collapsed' : ''}`;
       host.dataset.projectionId = String(card?.projectionId || opts?.projectionId || '');
-      host.innerHTML = _memoryCardInnerHtml(card, userPinned, omissions, opts?.citations, host.dataset.feedbackSent === '1');
+      host.innerHTML = _memoryCardInnerHtml(card, userPinned, omissions, opts?.citations, host.dataset.feedbackSent === '1', collapsed);
       return;
     }
     _renderLegacyDraft(host, card, available, opts, forecastFailure);
@@ -501,8 +521,26 @@
     await refresh();
   }
 
+  /** 折叠翻转的唯一实现（2026-09-29）：状态记在宿主 dataset、is-collapsed 挂在
+   *  宿主 className 上（与卡内其余 className 直写同一套路，vm 测试宿主也好替），
+   *  _render 整卡重画时回读不丢；返回翻转后的折叠态。conversation.js 的 hydrate
+   *  委托认领 [data-recall-toggle] 后调这里；mount 的动作委托不认 toggle——同一
+   *  颗 host 上两个委托监听，只由 hydrate 翻，避免翻两次回到原样。 */
+  function recallCardToggleCollapsed(host) {
+    if (!host || !host.dataset) return undefined;
+    const collapsed = host.dataset.recallCollapsed !== '1';
+    host.dataset.recallCollapsed = collapsed ? '1' : '0';
+    const classes = String(host.className || '').split(/\s+/).filter(Boolean).filter((name) => name !== 'is-collapsed');
+    if (collapsed) classes.push('is-collapsed');
+    host.className = classes.join(' ');
+    const toggle = typeof host.querySelector === 'function' ? host.querySelector('[data-recall-toggle]') : null;
+    if (toggle) toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    return collapsed;
+  }
+
   window.recallMemoryCardHtml = recallMemoryCardHtml;
   window.mountRecallProjectionCard = mountRecallProjectionCard;
+  window.recallCardToggleCollapsed = recallCardToggleCollapsed;
   if (typeof window.addEventListener === 'function') window.addEventListener('i18n-change', () => {
     document.querySelectorAll('[data-recall-projection-bound]').forEach((host) => {
       const state = host.__recallProjectionRenderState;

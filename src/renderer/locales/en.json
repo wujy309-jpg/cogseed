@@ -3834,6 +3834,7 @@
   "chat.recall.memory_card_brought": "Carried in {n}",
   "chat.recall.memory_card_omitted": "Omitted {n}",
   "chat.recall.memory_card_model_picked": "Model picked {n} of them",
+  "chat.recall.memory_card_toggle": "Expand or collapse cited memories",
   "chat.recall.scope_agent": "Agent",
   "chat.recall.scope_global": "Global",
   "chat.recall.scope_personal": "Personal",

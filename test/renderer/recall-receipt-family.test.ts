@@ -178,4 +178,28 @@ describe('对话内「本次使用的记忆」卡（引用卡＋投影卡合并�
     expect(withoutIcons.host.innerHTML).toContain('data-asset-citation="asset-a"');
     expect(withoutIcons.host.innerHTML).toContain('data-recall-projection-revoke');
   });
+
+  it('折叠 affordance（2026-09-29）：chip 走共享原语，conversation 只认领不实现，样式钉在记忆卡段', () => {
+    // chip 是共享 uiIconButton 原语 + icons.js 的 chevron；翻转实现只在卡模块。
+    expect(cardSource).toContain('window.uiIconButton');
+    expect(cardSource).toContain("'chevron-down'");
+    expect(cardSource).toContain('data-recall-toggle');
+    expect(cardSource).toContain('function recallCardToggleCollapsed');
+    // 点击认领在 hydrate 委托（唯一全路径必绑的监听），且在反馈分支之前短路。
+    expect(conversationSource).toContain('[data-recall-toggle]');
+    expect(conversationSource).toContain('window.recallCardToggleCollapsed(host)');
+    expect(conversationSource.indexOf('[data-recall-toggle]'))
+      .toBeLessThan(conversationSource.indexOf('[data-recall-feedback]'));
+    // 折叠只藏内容行（列表＋省略块），尾部反馈/撤销保持可见。
+    const collapsed = cssBlock('.chat-recall-citations.is-collapsed .chat-recall-citation-list');
+    expect(collapsed).toContain('.chat-recall-citations.is-collapsed .chat-recall-projection-omitted {');
+    expect(collapsed).toContain('display: none;');
+    expect(cssBlock('.chat-recall-feedback-actions')).toContain('align-items: center;');
+    expect(cssBlock('.chat-recall-feedback-actions .chat-recall-projection-summary-actions')).toContain('margin-left: auto;');
+    // icon-only 按钮的可访问名是它唯一文案：四语齐全。
+    for (const locale of ['zh', 'en', 'ja', 'pt']) {
+      const table = JSON.parse(fs.readFileSync(path.join(ROOT, `src/renderer/locales/${locale}.json`), 'utf8')) as Record<string, string>;
+      expect(table['chat.recall.memory_card_toggle'], `${locale} 缺 memory_card_toggle`).toBeTruthy();
+    }
+  });
 });

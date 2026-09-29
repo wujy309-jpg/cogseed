@@ -3837,6 +3837,7 @@
   "chat.recall.memory_card_brought": "带入 {n} 条",
   "chat.recall.memory_card_omitted": "省略 {n} 条",
   "chat.recall.memory_card_model_picked": "其中模型挑 {n} 条",
+  "chat.recall.memory_card_toggle": "展开或收起引用明细",
   "chat.recall.scope_agent": "智能体",
   "chat.recall.scope_global": "全局",
   "chat.recall.scope_personal": "个人",
