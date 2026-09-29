@@ -3031,8 +3031,10 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   'recall.cleanup.run': async ({ trigger, scope, round } = {}, ctx) => {
     if (trigger !== undefined && trigger !== 'user' && trigger !== 'inspection') throw new Error('invalid cleanup trigger');
     // 专项治理轮（2026-09-29）：round 省略＝规则轮（既有语义）；'title_regen'
-    // /'statement_regen'＝标题重起/正文改写专项轮（LLM，写前自动备份）。
-    if (round !== undefined && round !== 'title_regen' && round !== 'statement_regen') throw new Error('invalid cleanup round');
+    // /'statement_regen'＝标题重起/正文改写专项轮（LLM，写前自动备份）；
+    // 'candidate_statement_regen'＝候选池正文改写轮（存量统一处理批，只动
+    // 可操作域候选，终态不碰）。
+    if (round !== undefined && round !== 'title_regen' && round !== 'statement_regen' && round !== 'candidate_statement_regen') throw new Error('invalid cleanup round');
     if (scope !== undefined) {
       if (!scope || typeof scope !== 'object' || Array.isArray(scope)) throw new Error('invalid cleanup scope');
       if (scope.spaceId !== undefined && !safeId(scope.spaceId)) throw new Error('invalid cleanup scope space');
@@ -3048,6 +3050,11 @@ const invokeHandlers: Record<string, InvokeHandler> = {
       return { ok: true, report: await recallCleanup.runAssetStatementRegenCleanup(ctx.userId, {
         ...(trigger !== undefined ? { trigger } : {}),
         ...(scope !== undefined ? { scope: scope as { spaceId?: string; assetType?: string } } : {}),
+      }) };
+    }
+    if (round === 'candidate_statement_regen') {
+      return { ok: true, report: await recallCleanup.runCandidateStatementRegenCleanup(ctx.userId, {
+        ...(trigger !== undefined ? { trigger } : {}),
       }) };
     }
     return { ok: true, report: await recallCleanup.runAssetCleanup(ctx.userId, {

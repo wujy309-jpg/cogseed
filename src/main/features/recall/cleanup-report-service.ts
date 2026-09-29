@@ -47,7 +47,7 @@ import type { AbilityAssetTitleIssue } from './title-policy';
 
 const log = createLogger('recall.asset-cleanup');
 
-export type CleanupItemKind = 'title_normalized' | 'merged_duplicate' | 'tag_added' | 'title_regen' | 'statement_regen';
+export type CleanupItemKind = 'title_normalized' | 'merged_duplicate' | 'tag_added' | 'title_regen' | 'statement_regen' | 'candidate_statement_regen';
 export type CleanupItemStatus = 'applied' | 'skipped' | 'uncertain' | 'failed';
 
 export interface CleanupReportItem {
@@ -83,7 +83,7 @@ export interface CleanupReport extends RecallJsonRecord {
   scope: { spaceId?: string; assetType?: string };
   /** 轮次（四病整改 3.3）：'rules'＝既有规则轮（含义不变的机械整理）；
    *  'title_regen'＝标题重起轮（LLM 含义生成）。旧报告无此字段＝规则轮。 */
-  round?: 'rules' | 'title_regen' | 'statement_regen';
+  round?: 'rules' | 'title_regen' | 'statement_regen' | 'candidate_statement_regen';
   /** 标题重起轮专用：写前整库备份目录（records/ 之外）。恢复走
    *  updateAbilityAsset 正门逐条改回，不做 raw 写回（见轮内注释）。 */
   backupDir?: string;
@@ -793,5 +793,148 @@ export async function runAssetStatementRegenCleanup(
       finishedAt: new Date().toISOString(),
     }));
   }
+}
+
+/* ───────── 候选正文改写轮（2026-09-29 存量统一处理批） ─────────
+ * 与资产正文轮（runAssetStatementRegenCleanup）同形态：判定同口径
+ * （recallStatementIssues——候选读时派生 statementIssues 就是它）、LLM 同
+ * 函数（suggestAbilityAssetStatement，judgment↔statement、suggestedType↔type、
+ * summary↔title 对位）、写前整池备份、逐条落 cleanup-reports。
+ * 硬边界：
+ *  - 只动**可操作域**候选（observed/weak_observation/pending_review/deferred）；
+ *    终态（confirmed/rejected/ignored/expired/superseded）一律不碰——终态不可
+ *    变是状态机红线（09-28 修过 deleted 复活）；
+ *  - 标题（summary）与 value 不动——09-28 标题一等化已定稿，value 是独立
+ *    字段（为什么有用），超长的是 judgment 正文；
+ *  - scope 非枚举的脏数据不机械归一（语义没法机器判），进 uncertain 人工定。 */
+export async function runCandidateStatementRegenCleanup(
+  userId: string,
+  options: RunCleanupOptions = {},
+): Promise<CleanupReport> {
+  const { hasConfiguredModelForUser, getConfiguredModelOAuthExpiredMessage } = await import('../auth');
+  if (!hasConfiguredModelForUser(userId).configured) {
+    throw new Error('候选正文改写轮未执行：尚未配置可用模型（配置后重试）；不做静默跳过。');
+  }
+  const oauthExpired = getConfiguredModelOAuthExpiredMessage();
+  if (oauthExpired) throw new Error(`候选正文改写轮未执行：${oauthExpired}`);
+
+  const createdAt = new Date().toISOString();
+  const reportId = `cr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const { listRecallCandidates } = await import('./candidate-service');
+  const ACTIONABLE = ['observed', 'weak_observation', 'pending_review', 'deferred'];
+  const pool = (await listRecallCandidates(userId))
+    .filter((candidate) => ACTIONABLE.includes(String(candidate.status)));
+  const SCOPE_ENUM = new Set(['general', 'global', 'report', 'code', 'review', 'product']);
+  const targets = pool
+    .map((candidate) => ({
+      candidate,
+      issues: recallStatementIssues({ statement: candidate.judgment, type: candidate.suggestedType }),
+      dirtyScope: Boolean(String(candidate.suggestedScope || '').trim()) && !SCOPE_ENUM.has(String(candidate.suggestedScope || '').trim().toLowerCase()),
+    }))
+    .filter((entry) => entry.issues.length > 0 || entry.dirtyScope);
+
+  const backupDir = targets.length ? await backupCandidatesForRegen(userId, createdAt) : undefined;
+
+  await writeRecallJsonRecord(userId, 'cleanup-reports', reportId, {
+    schemaVersion: 1,
+    ownerId: userId,
+    id: reportId,
+    trigger: options.trigger || 'user',
+    scope: {},
+    round: 'candidate_statement_regen',
+    ...(backupDir ? { backupDir } : {}),
+    items: [],
+    uncertain: [],
+    skippedSteps: [],
+    createdAt,
+    scanned: pool.length,
+  } satisfies CleanupReport);
+
+  const { updateRecallCandidate } = await import('./candidate-service');
+  const { suggestAbilityAssetStatement } = await import('./asset-statement-rewrite');
+  const items: CleanupReportItem[] = [];
+  const uncertain: CleanupUncertainItem[] = [];
+  try {
+    for (const { candidate, issues, dirtyScope } of targets) {
+      if (dirtyScope && !issues.length) {
+        const flagged: CleanupUncertainItem = {
+          assetId: candidate.id,
+          question: '候选的适用范围是自由文本，不是标准选项',
+          reason: `scope＝「${String(candidate.suggestedScope).slice(0, 40)}」，无法机械归一——请在确认该候选时改为 通用/报告/编程/审查/产品 之一`,
+        };
+        uncertain.push(flagged);
+        await patchReport(userId, reportId, (report) => ({ uncertain: [...report.uncertain, flagged] }));
+        continue;
+      }
+      try {
+        const rewrite = await suggestAbilityAssetStatement(userId, {
+          statement: candidate.judgment || '',
+          type: candidate.suggestedType,
+          title: candidate.summary,
+        });
+        const recheck = recallStatementIssues({ statement: rewrite.statement, type: candidate.suggestedType });
+        if (recheck.length) {
+          const skipped: CleanupReportItem = {
+            assetId: candidate.id, kind: 'candidate_statement_regen', status: 'skipped',
+            before: (candidate.judgment || '').slice(0, 80), after: '',
+            reason: '候选正文改写', note: `改写结果仍未过规范（${recheck.join('、')}），不落盘，留待人工确认时编辑`,
+          };
+          items.push(skipped);
+          await patchReport(userId, reportId, (report) => ({ items: [...report.items, skipped] }));
+          continue;
+        }
+        await updateRecallCandidate(userId, candidate.id, {
+          judgment: rewrite.statement,
+          value: candidate.value ?? undefined,
+          summary: candidate.summary,
+          uncertainty: candidate.uncertainty ?? undefined,
+          suggestedType: candidate.suggestedType,
+          suggestedScope: candidate.suggestedScope,
+          suggestedAction: candidate.suggestedAction,
+          sourceRefs: candidate.sourceRefs,
+          evidenceRefs: candidate.evidenceRefs,
+        });
+        const item: CleanupReportItem = {
+          assetId: candidate.id, kind: 'candidate_statement_regen', status: 'applied',
+          before: (candidate.judgment || '').slice(0, 80),
+          after: rewrite.statement.slice(0, 80),
+          reason: `候选正文问题：${issues.join('、')}，模型按规范改写（知识点不丢铁律）`,
+        };
+        items.push(item);
+        await patchReport(userId, reportId, (report) => ({ items: [...report.items, item] }));
+      } catch (error) {
+        const failed: CleanupReportItem = {
+          assetId: candidate.id, kind: 'candidate_statement_regen', status: 'failed',
+          before: (candidate.judgment || '').slice(0, 80), after: '',
+          reason: '候选正文改写', note: (error as Error).message,
+        };
+        items.push(failed);
+        await patchReport(userId, reportId, (report) => ({ items: [...report.items, failed] }));
+        log.warn('cleanup candidate statement regen failed', { candidateId: candidate.id, error: (error as Error).message });
+      }
+    }
+    return await patchReport(userId, reportId, () => ({ finishedAt: new Date().toISOString(), items, uncertain }));
+  } catch (error) {
+    log.warn('cleanup candidate statement regen interrupted', { reportId, error: (error as Error).message });
+    return await patchReport(userId, reportId, () => ({
+      items,
+      uncertain,
+      interrupted: true,
+      finishedAt: new Date().toISOString(),
+    }));
+  }
+}
+
+/** 候选池整池备份（改写轮写前）：与资产轮同式，目录名区分轮次。 */
+async function backupCandidatesForRegen(userId: string, createdAt: string): Promise<string> {
+  const records = path.join(recallRoot(userId), 'records', 'candidates');
+  const backupDir = path.join(recallRoot(userId), `backup-candidate_statement_regen-${createdAt.replace(/[:.]/g, '')}`);
+  const names = await fs.readdir(records);
+  await fs.mkdir(backupDir, { recursive: true });
+  for (const name of names) {
+    const from = path.join(records, name);
+    if ((await fs.stat(from)).isFile()) await fs.copyFile(from, path.join(backupDir, name));
+  }
+  return backupDir;
 }
 
