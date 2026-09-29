@@ -9,13 +9,6 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [1.2.0] - 2026-09-23
 
-### Changed
-
-- **发版扫描隐私清理** — 清除旧产品名残留与内部汇报/台账材料；规格文档中的
-  内部证据标题与示例人名脱敏；补充 RFC1918/合成地址扫描豁免说明与整改矩阵
-  （见 `docs/release-scan-remediation-20260923.md`）。正式安装包与 `v1.2.0` tag
-  仍由发布流水线在门禁绿后创建。
-
 ### Fixed
 
 - **知识库问答回答正文的引用：从"删掉"改为"可点 chip"** — 正文里被模型标注的
@@ -62,7 +55,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   entry; once-per-day reminders with a "skip this version" option; in-app download
   with sha256 verification and OS installer hand-off (macOS dmg; zip-based
   automatic replacement is a planned phase 2). Server contract:
-  `GET {COGSEED_API_BASE_URL}/updates/latest` — see `docs/design/updates-api.md`.
+  `GET {COGSEED_API_BASE_URL}/updates/latest`.
 - **工作空间产物页 v0.1（原型 1:1 落地）** — 默认紧凑列表 + 卡片视图切换；
   搜索（名称/来源任务/Agent）、来源任务筛选、时间/任务分组、排序与类型筛选
   （带计数）可组合使用；每条产物展示来源任务、执行 Agent、更新时间、格式与

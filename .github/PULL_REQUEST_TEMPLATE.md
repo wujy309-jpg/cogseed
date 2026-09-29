@@ -9,7 +9,7 @@ Fixes #(issue)
 ## Renderer structural policy (when applicable)
 
 - Shared API(s) reused:
-- Registry entry/entries from `docs/renderer-structural-registry.md`:
+- Public engineering rules followed: `docs/DEVELOPMENT.md` (Development Rules)
 - New page-local structural composition: none / describe the proposed boundary
 
 ## Checklist
