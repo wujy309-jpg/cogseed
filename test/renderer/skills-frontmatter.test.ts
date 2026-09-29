@@ -525,12 +525,16 @@ describe('skills renderer frontmatter parsing', () => {
     expect(archived).toContain('已归并');
     expect(archived).not.toContain('data-action="archive"');
 
-    for (const html of [active, paused, archived]) {
+    // 2026-09-29 详情重构适配：删除入口只对可切换状态（active/paused）渲染；
+    // archived 是只读归并终态（09-17 口径），仅保留「彻底清除」。
+    for (const html of [active, paused]) {
       expect(html).toContain('data-action="delete"');
       // 「撤回使用」已随界面按钮删除（审计 R3，2026-09-28：0 使用＋终态危险）；
       // audit_revoked 台账标签与 status==='revoked' 过滤逻辑保留（历史展示）。
       expect(html).not.toContain('data-action="revoke"');
       expect(html).toContain('data-action="purge"');
     }
+    expect(archived).not.toContain('data-action="delete"');
+    expect(archived).toContain('data-action="purge"');
   });
 });

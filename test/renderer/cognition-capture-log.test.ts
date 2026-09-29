@@ -1736,7 +1736,10 @@ describe('资产详情（使用记录并入）', () => {
     const usageHint = '已启用：符合当前任务、范围和来源规则时，后续任务会向模型展示简短目录，模型可按需读取正文。';
     expect(list).toContain(usageHint);
     // 开关说明贴着标题：解释按规则提供目录并按需读取，不能暗示每个新任务都会带入正文。
-    expect(list).toContain(`class="sub">${usageHint}`);
+    // 2026-09-29 详情重构适配：说明随总开关进 ca-asset-availability 区块（<p> 文案），
+    // 不再是标题下裸 class="sub" 行。
+    expect(list).toContain('ca-asset-availability');
+    expect(list).toContain(`<p>${usageHint}</p>`);
     expect(list).toContain('data-act="edit-asset" data-id="aa-1"');
     expect(list).not.toContain('data-action="archive"');
     // 头部只留标题+正文+开关：详细信息和证据来源已按版本下沉（2026-09-17
