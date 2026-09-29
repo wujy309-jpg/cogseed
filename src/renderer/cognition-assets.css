@@ -940,6 +940,9 @@
   background: var(--color-white); border: 1px solid var(--line);
   border-radius: var(--rm); padding: 12px 15px; margin-bottom: 8px;
 }
+/* 维护大卡（2026-09-29 三块合一）：三行之间细分隔线。 */
+#ca-root .ca-maint-row { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+#ca-root .ca-maint-note { margin-top: 8px; }
 #ca-root .ca-asset-link { color: var(--green-t); text-decoration: none; }
 #ca-root .ca-asset-link:hover { text-decoration: underline; }
 #ca-root .ca-diff { display: flex; align-items: baseline; gap: 8px; margin-top: 5px; }

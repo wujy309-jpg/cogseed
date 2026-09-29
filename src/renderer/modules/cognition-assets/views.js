@@ -3238,6 +3238,8 @@
 
   /** 资产设置中的手动整理入口；报告页继续复用既有 viewCleanup 路由。 */
   function cleanupSettingsRow() {
+    // 2026-09-29 子安拍板三块合一：本函数改为返回「维护」大卡的第三行片段
+    //（手动整理存量），由 viewOrganizeSettingsPage 组装进单卡。
     const state = S.cleanupReports;
     const reports = state && Array.isArray(state.reports) ? state.reports : [];
     const loading = Boolean(state && state.loading);
@@ -3249,17 +3251,15 @@
         uncertain: String((latest.uncertain || []).length),
       })
       : T('cognition.cleanup_none_yet', '尚无整理记录。运行一次后，可查看具体改动和回滚方式。');
-    return `<div class="card ca-setcard">
-      <div class="rowline">
-        <div>
-          <div class="tt">${esc(T('cognition.cleanup_entry', '整理已有内容'))}</div>
-          <div class="sub">${esc(T('cognition.cleanup_run_hint', '自动规范标题、合并重复项、补标签，并把不合格的标题与啰嗦的正文交给模型重写（消耗模型额度）；拿不准的会留给你判断。'))}</div>
-          <div class="sub">${esc(summary)}</div>
-        </div>
-        <div class="right">
-          ${btn(loading ? T('cognition.cleanup_running', '正在整理…') : T('cognition.cleanup_run', '立即整理'), 'run-cleanup', { small: true, primary: true, disabled: loading })}
-          ${latest ? btn(T('cognition.cleanup_open_report', '查看整理报告'), 'open-cleanup', { small: true, className: 'o' }) : ''}
-        </div>
+    return `<div class="rowline ca-maint-row">
+      <div>
+        <div class="tt">${esc(T('cognition.cleanup_entry', '整理已有内容'))}</div>
+        <div class="sub">${esc(T('cognition.cleanup_run_hint', '自动规范标题、合并重复项、补标签，啰嗦的正文交给模型重写（消耗模型额度）；拿不准的会留给你判断。'))}</div>
+        <div class="sub">${esc(summary)}</div>
+      </div>
+      <div class="right">
+        ${btn(loading ? T('cognition.cleanup_running', '正在整理…') : T('cognition.cleanup_run', '立即整理'), 'run-cleanup', { small: true, primary: true, disabled: loading })}
+        ${latest ? btn(T('cognition.cleanup_open_report', '查看整理报告'), 'open-cleanup', { small: true, className: 'o' }) : ''}
       </div>
     </div>`;
   }
@@ -3293,34 +3293,43 @@
         <div class="right">${btn(T('cognition.model_state_open', '去应用设置'), 'go-configure-model', { small: true, className: 'o' })}</div>
       </div>
     </div>` : ''}
-    <div class="card ca-setting-row">
-      <div class="ca-setting-copy">
-        <div class="tt">${esc(T('cognition.nightly_capture_title', '自动维护'))}</div>
-        <div class="sub">${esc(T('cognition.nightly_capture_hint', '开启后：夜间在所选时间自动整理当天结束的会话（消耗模型额度），产出的内容进入「待我处理」，等你批准或调整；同时定期检查资产库的重复、过时与冲突——检查只报告，不改内容。'))}</div>
-        ${nightlyOn ? `<div class="note">${esc(T('cognition.nightly_capture_quiet_hint', '系统会等会话最后一条消息后静默 {minutes} 分钟，再在夜间时段安排整理；如有新消息，会重新计时。', { minutes: String(quietMinutes) }))}</div>` : ''}
-        ${latestInspection ? `<div class="note">${esc(T('cognition.inspection_last_run', '最近检查：{when} · 发现 {n} 条', {
-          when: fmtDate(latestInspection.startedAt), n: String(((latestInspection.findings || [])).length),
-        }))}</div>` : ''}
-      </div>
-      ${nightlyOn ? `<label class="ca-setting-time"><span>${esc(T('cognition.nightly_capture_time', '开始时间'))}</span>${window.uiInput({ id: 'ca-nightly-start', type: 'time', value: nightlyStart, attrs: { 'data-act': 'nightly-time' } })}</label>` : ''}
-      ${btn(T('cognition.inspection_run_now', '检查一次'), 'run-inspection', { small: true, className: 'o' })}
-      ${window.uiSwitch({ label: T('cognition.nightly_capture_title', '自动维护'), checked: nightlyOn, attrs: { 'data-act': 'nightly-toggle' } })}
-    </div>
     <div class="card ca-setcard">
-      <div class="rowline">
-        <div class="tt">${esc(T('cognition.capture_review_title', '新建议如何保存'))}</div>
+      ${(() => {
+        // 三块合一（2026-09-29 子安拍板）：「自动维护 + 新建议如何保存 + 整理
+        // 已有内容」本来就是一件事的三面——夜间自动整理 / 整理产出怎么入库 /
+        // 手动整理存量——收进一张「维护」卡，三行各管一面，通道与动作不变。
+        return `<div class="rowline">
+        <div>
+          <div class="tt">${esc(T('cognition.nightly_capture_title', '自动维护'))}</div>
+          <div class="sub">${esc(T('cognition.maint_hint_short', '夜间自动整理当天结束的会话并检查资产库（消耗模型额度）；整理产出按下方「整理产出怎么入库」入库，检查只报告、不改内容。'))}</div>
+          ${latestInspection ? `<div class="note">${esc(T('cognition.inspection_last_run', '最近检查：{when} · 发现 {n} 条', {
+            when: fmtDate(latestInspection.startedAt), n: String(((latestInspection.findings || [])).length),
+          }))}</div>` : ''}
+        </div>
+        <div class="right">
+          ${nightlyOn ? `<label class="ca-setting-time"><span>${esc(T('cognition.nightly_capture_time', '开始时间'))}</span>${window.uiInput({ id: 'ca-nightly-start', type: 'time', value: nightlyStart, attrs: { 'data-act': 'nightly-time' } })}</label>` : ''}
+          ${btn(T('cognition.inspection_run_now', '检查一次'), 'run-inspection', { small: true, className: 'o' })}
+          ${window.uiSwitch({ label: T('cognition.nightly_capture_title', '自动维护'), checked: nightlyOn, attrs: { 'data-act': 'nightly-toggle' } })}
+        </div>
       </div>
-      ${window.uiSegmentedControl({
-        ariaLabel: T('cognition.capture_review_title', '新建议如何保存'),
-        value: reviewAuto ? 'auto' : 'manual',
-        items: [
-          { label: T('cognition.capture_review_auto', '符合条件时自动保存'), value: 'auto', attrs: { 'data-act': 'capture-review-toggle', 'data-id': 'auto' } },
-          { label: T('cognition.capture_review_manual', '每条先问我'), value: 'manual', attrs: { 'data-act': 'capture-review-toggle', 'data-id': 'manual' } },
-        ],
-      })}
-      <p class="note">${esc(T(reviewAuto ? 'cognition.capture_review_auto_note' : 'cognition.capture_review_manual_note', reviewAuto ? '自动保存有条件：内容质量达标、能在你的原话里找到依据、模型不拿不准、不涉高风险——同时满足才直接存；其余仍会进「待我处理」问你。' : '建议先进入「待我处理」，由你确认或修改后保存。'))}</p>
+      ${nightlyOn ? `<div class="note ca-maint-note">${esc(T('cognition.nightly_capture_quiet_hint', '系统会等会话最后一条消息后静默 {minutes} 分钟，再在夜间时段安排整理；如有新消息，会重新计时。', { minutes: String(quietMinutes) }))}</div>` : ''}
+      <div class="rowline ca-maint-row">
+        <div>
+          <div class="tt">${esc(T('cognition.maint_review_title', '整理产出怎么入库'))}</div>
+          <div class="sub">${esc(T(reviewAuto ? 'cognition.capture_review_auto_note' : 'cognition.capture_review_manual_note', reviewAuto ? '自动保存有条件：内容质量达标、能在你的原话里找到依据、模型不拿不准、不涉高风险——同时满足才直接存；其余仍会进「待我处理」问你。' : '每条先进「待我处理」，由你确认或修改后保存。'))}</div>
+        </div>
+        <div class="right">${window.uiSegmentedControl({
+          ariaLabel: T('cognition.maint_review_title', '整理产出怎么入库'),
+          value: reviewAuto ? 'auto' : 'manual',
+          items: [
+            { label: T('cognition.capture_review_auto', '符合条件时自动保存'), value: 'auto', attrs: { 'data-act': 'capture-review-toggle', 'data-id': 'auto' } },
+            { label: T('cognition.capture_review_manual', '每条先问我'), value: 'manual', attrs: { 'data-act': 'capture-review-toggle', 'data-id': 'manual' } },
+          ],
+        })}</div>
+      </div>
+      ${cleanupSettingsRow()}`;
+      })()}
     </div>
-    ${cleanupSettingsRow()}
     ${(() => {
       // 两迁移区合并 + 没活自动隐藏（2026-09-29 子安拍板）：单个「旧记忆迁移」
       // 折叠区，角标=两区真正待迁条数之和（保留类残留不计）；两区都加载完成、
