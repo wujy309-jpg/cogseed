@@ -5767,6 +5767,10 @@ async function runActorTurnBody(
   // InjectionReceipt（channel='profile_memory'）——「这轮带了哪些背景记忆」
   // 从此可查（此前画像注入零收据，审计黑洞）。
   let recallProfileMemory: Array<{ id: string; source: string; version: string }> = [];
+  // 呈现面合一（2026-09-30）：授权块/画像块的裸渲染（无旧长导语）——目录
+  // 建成后与目录文本合成单一 <asset-context> 块一次追加（见目录段之后）。
+  let recallAuthorizedBlock = '';
+  let recallProfileBlock = '';
   // Commander-granted assets actually injected into a delegated turn, kept for
   // the same usage ledger the Commander injection uses (outcome 'dispatched').
   let dispatchedUsage: Array<{ assetId: string; assetVersion: string }> = [];
@@ -5817,9 +5821,12 @@ async function runActorTurnBody(
           ...(item.forecastId ? { forecastId: item.forecastId } : {}),
         });
         if (recallContext.promptBlock) {
-          systemPrompt = `${systemPrompt}\n\n${recallContext.promptBlock}`;
+          // 呈现面合一（2026-09-30）：不再在此处 append——授权块/画像块攒到
+          // 目录建成后合成单一 <asset-context> 一次追加（见下方目录段之后）。
           recallCitations = recallContext.citations;
           recallProfileMemory = recallContext.profileMemoryEntries ?? [];
+          recallAuthorizedBlock = recallContext.authorizedAssetsBlock ?? '';
+          recallProfileBlock = recallContext.profileAssetsBlock ?? '';
         }
         // PRD 3.6 Transfer Verified 闭环：投影资产真实注入时在同一处落
         // ContextReuseReceipt（key=turn-<turnId>），并登记到本次运行的
@@ -5863,6 +5870,7 @@ async function runActorTurnBody(
       // 资产目录可发现性提示（2026-09-18）：注入解决"这一轮相关"，但模型不会
       // 主动想到"还有别的资产"（真机样本 0/3 会去查目录）。一行提示 + TTL 缓存，
       // 只讲"目录存在且便宜"，挑哪几条仍归模型。
+      let catalogText = '';
       try {
         const { assetCatalogForPromptWithRelevance } = await import('../recall/asset-catalog-hint');
         // 目录带当轮相关度（★标记+排序，2026-09-22 砍注入后的算法落点）：
@@ -5882,14 +5890,34 @@ async function runActorTurnBody(
           ...(turnProjectId ? { turnProjectId } : {}),
           ...(turnSpaceId ? { turnSpaceId } : {}),
         }, actor.id, item.turnId, attachedAssetIds);
-        if (catalog.text) {
-          systemPrompt = `${systemPrompt}\n\n${catalog.text}`;
+        catalogText = catalog.text;
+        if (catalogText) {
           const { recordCatalogObservations } = await import('../recall/catalog-observation');
           await recordCatalogObservations(uid, { turnId: item.turnId, cid, stage: 'prompt_included', assets: catalog.shown });
         }
         catalogRelevantIds = catalog.relevantIds;
       } catch {
         // 目录块拿不到不影响回合。
+      }
+
+      // 呈现面合一（2026-09-30）：授权资产/画像/目录合成单一 <asset-context>
+      // 块一次追加——选择分层与通道记账原样不动；目录建失败时授权/画像子区
+      // 照常合成。经验目录块按 specs/016 保持并列，不并入本块。
+      try {
+        const { composeAssetContextBlock } = await import('../recall/prompt-injection');
+        const assetContext = composeAssetContextBlock({
+          ...(recallAuthorizedBlock ? { authorized: recallAuthorizedBlock } : {}),
+          ...(recallProfileBlock ? { profile: recallProfileBlock } : {}),
+          ...(catalogText ? { catalog: catalogText } : {}),
+        });
+        if (assetContext) systemPrompt = `${systemPrompt}\n\n${assetContext}`;
+      } catch (error) {
+        // 合成失败时回退旧形态直接拼接，注入不丢。
+        log.warn(`asset context compose failed cid=${cid}: ${(error as Error).message}`);
+        if (recallAuthorizedBlock || recallProfileBlock) {
+          systemPrompt = `${systemPrompt}\n\n${[recallAuthorizedBlock, recallProfileBlock].filter(Boolean).join('\n\n')}`;
+        }
+        if (catalogText) systemPrompt = `${systemPrompt}\n\n${catalogText}`;
       }
 
       // 任务经验目录（specs/016 T025 / US-802）：与上面的资产目录**并列**追加、

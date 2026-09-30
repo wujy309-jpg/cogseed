@@ -558,6 +558,77 @@ describe('confirmed Recall projection prompt injection', () => {
     });
   });
 
+  describe('asset-context 单块三区（呈现面合一）', () => {
+    it('composeAssetContextBlock：三区有序合一块、内层标签保留、空子区省略、全空得空串', async () => {
+      const { composeAssetContextBlock } = await import('../../../../src/main/features/recall/prompt-injection');
+      const merged = composeAssetContextBlock({
+        authorized: '<confirmed-ability-assets>\n[{"asset_id":"aa-x"}]\n</confirmed-ability-assets>',
+        profile: '<durable-profile-memory>\n[{"channel":"profile_memory"}]\n</durable-profile-memory>',
+        catalog: 'Asset catalog: 3 assets are available for this task.',
+      });
+      expect(merged.startsWith('<asset-context>')).toBe(true);
+      expect(merged.trimEnd().endsWith('</asset-context>')).toBe(true);
+      // 三区顺序固定：授权 → 画像 → 目录。
+      const orderAuth = merged.indexOf('### Task-authorized assets');
+      const orderProfile = merged.indexOf('### Durable profile');
+      const orderCatalog = merged.indexOf('### Discoverable catalog');
+      expect(orderAuth).toBeGreaterThan(-1);
+      expect(orderAuth).toBeLessThan(orderProfile);
+      expect(orderProfile).toBeLessThan(orderCatalog);
+      // 内层标签原样保留（既有模型面契约不变）。
+      expect(merged).toContain('<confirmed-ability-assets>');
+      expect(merged).toContain('<durable-profile-memory>');
+      // 统一导语只出现一次（吸收三段旧导语，不再逐块重复）。
+      expect(merged.match(/<asset-context>/g)).toHaveLength(1);
+      // 空子区整体省略——不留空标题。
+      const noProfile = composeAssetContextBlock({
+        authorized: '<confirmed-ability-assets>x</confirmed-ability-assets>',
+        catalog: 'Asset catalog: 2 assets',
+      });
+      expect(noProfile).not.toContain('### Durable profile');
+      expect(noProfile).toContain('### Task-authorized assets');
+      expect(noProfile).toContain('### Discoverable catalog');
+      // 全空 → 空串（调用方据此不 append）。
+      expect(composeAssetContextBlock({})).toBe('');
+      expect(composeAssetContextBlock({ authorized: '', profile: '', catalog: '' })).toBe('');
+    });
+
+    it('装配交出裸块（authorizedAssetsBlock/profileAssetsBlock）：带标签、不带旧长导语', async () => {
+      const paths = await import('../../../../src/main/paths');
+      const file = paths.userProfileFile('user-a');
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await fs.writeFile(file, '用户偏好真机画像条目。\n§\n第二条画像。', 'utf8');
+      const promoted = await createAssetWith({
+        judgment: 'Review OAuth callback and token exchange security.',
+        summary: 'OAuth review workflow',
+        sourceId: 'conversation-asset-context-merge',
+      });
+      const { projection, promptInjection } = await modules();
+      const preview = await projection.previewContextProjection('user-a', {
+        taskRunId: 'task-asset-context-merge', purpose: 'global', taskText: 'Audit OAuth callback handling',
+      }, fakeSemanticOptions);
+      const confirmed = await projection.confirmContextProjection('user-a', preview.id);
+
+      const result = await promptInjection.buildRecallTurnPromptContext('user-a', {
+        cid: 'cid-asset-context-merge',
+        taskRunId: 'turn-asset-context-merge',
+        taskText: 'Audit OAuth callback handling',
+        committedProjectionId: confirmed.id,
+      });
+
+      // 裸授权块：标签 + 记录，无旧长导语（导语上移到 <asset-context> 总导语）。
+      expect(result.authorizedAssetsBlock ?? '').toContain('<confirmed-ability-assets>');
+      expect(result.authorizedAssetsBlock ?? '').toContain(promoted.asset.id);
+      expect(result.authorizedAssetsBlock ?? '').not.toContain('### Stored reusable ability assets');
+      // 裸画像块：标签 + 记录，无旧免责段（语义并入子区头）。
+      expect(result.profileAssetsBlock ?? '').toContain('<durable-profile-memory>');
+      expect(result.profileAssetsBlock ?? '').not.toContain('### Durable profile memory');
+      expect(result.profileAssetsBlock ?? '').not.toContain('Background profile context for this user');
+      // 兼容面不动：旧 promptBlock / profileMemoryBlock 形态保持（CogSeed Runtime 路径仍用）。
+      expect(result.promptBlock).toContain('### Stored reusable ability assets');
+    });
+  });
+
   describe('Commander-dispatched assets (agent grant)', () => {
     it('renders only the granted active assets with the dispatched block', async () => {
       const { assets, promptInjection } = await modules();
