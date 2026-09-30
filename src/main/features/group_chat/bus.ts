@@ -7939,20 +7939,16 @@ async function runActorTurnBody(
         });
       }));
     }
-    // 画像通道收据（2026-09-13）：只落 InjectionReceipt（channel 区分），
-    // 不写 usage-records——usage 流水按「资产被使用」记账，画像不是资产，
-    // 混入会让资产使用统计失真。审计「这轮带了什么」以收据流为准。
+    // 画像通道落账（2026-09-13 通道显式化 / 2026-09-30 修2）：回执逐条留
+    // 痕；正式资产镜像（非 onto-*）同口径计入 usage——「画像不是资产」的
+    // 旧口径只适用于已废弃的文件回退形态，统一入口见
+    // injection-receipt.ts::recordProfileMemoryInjection。
     if (recallProfileMemory.length) {
-      const { recordInjectionReceipt } = await import('../recall/injection-receipt');
-      await Promise.allSettled(recallProfileMemory.map((entry) => recordInjectionReceipt(uid, {
-        assetId: entry.id,
-        assetVersion: entry.version,
+      const { recordProfileMemoryInjection } = await import('../recall/injection-receipt');
+      await recordProfileMemoryInjection(uid, recallProfileMemory, {
         taskRunId: item.turnId,
         messageId: persistedMsg.id,
-        boundary: 'real',
-        status: 'injected',
-        channel: 'profile_memory',
-      })));
+      });
     }
     // 漏取审计（2026-09-19）：目录标了★（提示模型"这些相关"）但本回合既没
     // 注入也没被模型取用/派发的资产——每条记一条 omitted/catalog_hint 回执，

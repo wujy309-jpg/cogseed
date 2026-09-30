@@ -151,6 +151,43 @@ export async function listInjectionReceipts(userId: string, taskRunId?: string):
   return records.filter((record) => !taskRunId || record.taskRunId === taskRunId);
 }
 
+/** 画像通道统一落账（2026-09-30 修2）：每条都留 InjectionReceipt（channel=
+ *  profile_memory，无投影授权语义），其中**正式资产镜像**（id 非 onto-
+ *  前缀——onto-<sha> 全仓只有 ontologyAssetFromEntry 一处生成，正式资产
+ *  系统侧恒为 aa-<sha>）再按「带入即计一次使用」写 usage-records，对齐
+ *  投影注入 / Commander 派发 / 模型自取的记账口径。
+ *  2026-09-13「画像不是资产、不写 usage」的口径成立于画像块还渲染
+ *  USER/MEMORY 文件的年代；通道显式化后画像渲染的已是过闸门的正式资产，
+ *  不记账则个人偏好每轮真实生效、用量永远为零、成熟度证据链断。 */
+export async function recordProfileMemoryInjection(
+  userId: string,
+  entries: ReadonlyArray<{ id: string; source: string; version: string }>,
+  context: { taskRunId: string; messageId?: string },
+): Promise<void> {
+  const { recordRecallUsage } = await import('./usage-service');
+  for (const entry of entries) {
+    await recordInjectionReceipt(userId, {
+      assetId: entry.id,
+      assetVersion: entry.version,
+      taskRunId: context.taskRunId,
+      ...(context.messageId ? { messageId: context.messageId } : {}),
+      boundary: 'real',
+      status: 'injected',
+      channel: 'profile_memory',
+    });
+    if (!entry.id.startsWith('onto-')) {
+      await recordRecallUsage(userId, {
+        assetId: entry.id,
+        assetVersion: entry.version,
+        taskRunId: context.taskRunId,
+        ...(context.messageId ? { messageId: context.messageId } : {}),
+        boundary: 'real',
+        outcome: 'injected',
+      });
+    }
+  }
+}
+
 /** Exact host-side lookup. Receipt ids are validated before the JSONL stream
  * is touched so callers cannot turn a lookup into a path/reference probe. */
 export async function readInjectionReceipt(userId: string, receiptId: string): Promise<InjectionReceipt | undefined> {

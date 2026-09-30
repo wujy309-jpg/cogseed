@@ -233,4 +233,29 @@ describe('asset usage receipts', () => {
       channel: 'side_channel' as 'profile_memory',
     })).rejects.toThrow('invalid injection receipt reference');
   });
+
+  it('画像通道正式资产镜像计入使用统计，onto-* 文件遗留仅留回执（修2）', async () => {
+    const injections = await import('../../../../src/main/features/recall/injection-receipt');
+    const { listRecallUsage } = await import('../../../../src/main/features/recall/usage-service');
+    await injections.recordProfileMemoryInjection('user-a', [
+      { id: 'aa-profile-usage-real', source: 'conv-x', version: '3' },
+      { id: 'onto-abc123def456abc123def456', source: 'user_profile', version: '1' },
+    ], { taskRunId: 'turn-profile-usage', messageId: 'message-profile-usage' });
+
+    // 回执：两条都落（审计「这轮带了什么」以收据流为准）。
+    const receipts = await injections.listInjectionReceipts('user-a', 'turn-profile-usage');
+    expect(receipts.map((row) => row.assetId).sort())
+      .toEqual(['aa-profile-usage-real', 'onto-abc123def456abc123def456']);
+    // 使用统计：只有正式资产镜像（aa-*）——「带入即计一次使用」与投影注入/
+    // 派发/模型自取同口径；onto-* 是迁移回退的文件条目，没有资产本体，不进 usage。
+    const profileUsage = (await listRecallUsage('user-a')).filter((row) => row.taskRunId === 'turn-profile-usage');
+    expect(profileUsage).toHaveLength(1);
+    expect(profileUsage[0]).toMatchObject({
+      assetId: 'aa-profile-usage-real',
+      assetVersion: '3',
+      messageId: 'message-profile-usage',
+      boundary: 'real',
+      outcome: 'injected',
+    });
+  });
 });
