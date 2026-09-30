@@ -5871,10 +5871,17 @@ async function runActorTurnBody(
         // 冻结）传进目录排序——命中 spaceId===turnSpaceId 或
         // scopePolicy.{projectIds,workspaceIds} 的资产给正分；两者都缺省时该因子
         // 整体缺席（≠0 分），排序行为接近现状。
+        // 修3（2026-09-30）：注入块已带入的资产（committed/模型自选/画像镜像）
+        // 在目录行尾标注 [attached]——目录保持可用全集语义但不再对已注入内容
+        // 装作未知，模型不必重复翻找已到手的东西。
+        const attachedAssetIds = new Set<string>([
+          ...recallCitations.map((citation) => citation.assetId),
+          ...recallProfileMemory.map((entry) => entry.id),
+        ]);
         const catalog = await assetCatalogForPromptWithRelevance(uid, cid, Date.now(), String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000), {
           ...(turnProjectId ? { turnProjectId } : {}),
           ...(turnSpaceId ? { turnSpaceId } : {}),
-        }, actor.id, item.turnId);
+        }, actor.id, item.turnId, attachedAssetIds);
         if (catalog.text) {
           systemPrompt = `${systemPrompt}\n\n${catalog.text}`;
           const { recordCatalogObservations } = await import('../recall/catalog-observation');

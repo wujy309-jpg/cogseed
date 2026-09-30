@@ -91,6 +91,46 @@ describe('turn-scoped asset catalog', () => {
     expect(rendered.shown.length).toBeLessThanOrEqual(hint.INLINE_CATALOG_MAX_ENTRIES);
     expect([...rendered.relevantIds].every((id) => rendered.shown.some((row) => row.id === id))).toBe(true);
   });
+
+  it('本轮已注入的资产在目录行尾标注 [attached]，标注不删除条目（修3）', async () => {
+    const engine = await import('../../../../src/main/features/recall/catalog-engine');
+    const hint = await import('../../../../src/main/features/recall/asset-catalog-hint');
+    engine.resetCatalogEngineForTest();
+    const snapshot = await engine.catalogSnapshot('catalogtest', { cid: 'conv-att', turnId: 'turn-att', taskText: '发版检查' });
+    const rendered = hint.renderCatalogPrompt(snapshot, { attachedAssetIds: new Set(['aa-release']) });
+    const attachedLine = rendered.text.split('\n').find((line) => line.includes('[asset:aa-release]'));
+    const plainLine = rendered.text.split('\n').find((line) => line.includes('[asset:aa-writing]'));
+    expect(attachedLine).toContain('[attached]');
+    expect(plainLine).not.toContain('[attached]');
+    // 标注而非删除：目录仍是「可用全集」的截断视图，已注入条目照常在列。
+    expect(rendered.shown.map((row) => row.id)).toContain('aa-release');
+  });
+
+  it('目录头行如实披露截断：N 条可用、只列前 M 条（修4）', async () => {
+    const hint = await import('../../../../src/main/features/recall/asset-catalog-hint');
+    const assets = Array.from({ length: 15 }, (_, index) => ({
+      id: `aa-header-${index}`, title: `资产${index}`, statement: `陈述 ${index}`,
+      type: 'rule', status: 'active', maturity: 'bud', version: '1', updatedAt: '2026-09-01T00:00:00Z',
+    }));
+    const ranked = assets.map((asset) => ({ assetId: asset.id, score: 1, factors: [], excluded: [] }));
+    const snapshot = {
+      userId: 'catalogtest', cid: 'conv-header', turnId: 'turn-header', at: 0,
+      assets, ranked,
+      byId: new Map(ranked.map((row) => [row.assetId, row])),
+      matches: new Map(), stars: new Set(), adoption: new Map(),
+    } as unknown as Parameters<typeof hint.renderCatalogPrompt>[0];
+    const rendered = hint.renderCatalogPrompt(snapshot);
+    expect(rendered.shown.length).toBeLessThan(assets.length);
+    expect(rendered.text).toContain(`${assets.length} assets are available`);
+    expect(rendered.text).toContain(`top ${rendered.shown.length} are listed`);
+    // 全量列齐时不多说截断（header 保持原句式）。
+    const full = hint.renderCatalogPrompt({
+      ...snapshot, assets: assets.slice(0, 2), ranked: ranked.slice(0, 2),
+      byId: new Map(ranked.slice(0, 2).map((row) => [row.assetId, row])),
+    } as unknown as Parameters<typeof hint.renderCatalogPrompt>[0]);
+    expect(full.text).toContain('2 assets are available');
+    expect(full.text).not.toContain('are listed');
+  });
 });
 
 describe('retrieval and replay', () => {
