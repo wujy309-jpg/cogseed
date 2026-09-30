@@ -50,6 +50,7 @@ import {
   shouldRemind,
   writeUpdaterState,
 } from './state';
+import { getBootGuardVerdict } from './boot_guard';
 import type {
   CheckResult,
   DownloadProgress,
@@ -883,16 +884,42 @@ export async function openDownloaded(userId: string): Promise<{ opened: boolean;
  *
  * Two UI clicks must never start two detached helpers: the second one would
  * race the first over the same installer and the same app directory. Deliberately
- * module-local and never persisted — it describes THIS process. It stays set on
- * the success path because `installDownloadedUpdate` quits the app: nothing else
- * may start another helper in this process. Every failure path clears it so the
- * user can retry within the same session.
+ * module-local and never persisted — it describes THIS process. It normally stays
+ * set on the success path because `installDownloadedUpdate` quits the app: nothing
+ * else may start another helper in this process.
+ *
+ * It is BOUNDED, though, because `app.quit()` can be blocked and then the session
+ * would be stranded with no way to retry. The bound is comfortably longer than
+ * the helper's 60 s wait for the old pid, so it can only fire once the hand-off
+ * really is over. Every failure path clears it immediately so the user can retry
+ * at once.
  */
+const INSTALL_IN_FLIGHT_TIMEOUT_MS = 90_000;
 let installInFlight = false;
+let installInFlightTimer: ReturnType<typeof setTimeout> | null = null;
+
+function _releaseInstallInFlight(): void {
+  installInFlight = false;
+  if (installInFlightTimer) {
+    clearTimeout(installInFlightTimer);
+    installInFlightTimer = null;
+  }
+}
+
+function _holdInstallInFlight(): void {
+  installInFlight = true;
+  if (installInFlightTimer) clearTimeout(installInFlightTimer);
+  installInFlightTimer = setTimeout(() => {
+    installInFlight = false;
+    installInFlightTimer = null;
+  }, INSTALL_IN_FLIGHT_TIMEOUT_MS);
+  // Never keep the process alive just for this recovery timer.
+  installInFlightTimer.unref();
+}
 
 /** Test-only: clear the module-local in-flight guard between cases. */
 export function resetInstallInFlightForTest(): void {
-  installInFlight = false;
+  _releaseInstallInFlight();
 }
 
 /**
@@ -909,6 +936,9 @@ export function resetInstallInFlightForTest(): void {
  * Other platforms report `unsupported platform` instead of leaking the
  * installer's raw throw: the macOS flow opens the dmg through `openDownloaded`,
  * it never hands off to a helper. Windows failures are returned verbatim.
+ *
+ * An `unstable` boot-guard verdict for this uid refuses the hand-off outright —
+ * main enforces the invariant the renderer only visualises.
  */
 export async function installDownloaded(
   userId: string,
@@ -921,10 +951,18 @@ export async function installDownloaded(
   if (!downloaded?.path || !downloaded.sha256) {
     return { started: false, error: 'no verified download to install' };
   }
+  // The unstable verdict is a MAIN-side invariant, not just a hidden renderer
+  // button: the in-memory verdict dies with the previous process, and a stale
+  // renderer could still invoke `updates.install`. Refuse before any write and
+  // before any spawn. A missing verdict is "unknown", not "healthy".
+  if (getBootGuardVerdict(userId)?.unstable === true) {
+    log.warn(`update install refused: the boot guard judged the upgrade unstable (${downloaded.version})`);
+    return { started: false, error: 'upgrade judged unstable by the boot guard' };
+  }
   if (process.platform !== 'win32') {
     return { started: false, error: 'unsupported platform' };
   }
-  installInFlight = true;
+  _holdInstallInFlight();
   try {
     const { installDownloadedUpdate, defaultWindowsInstallRuntime } = await import('./installer');
     // Re-read AFTER the dynamic import and immediately before the write. The
@@ -938,7 +976,7 @@ export async function installDownloaded(
       // Exhausted before any spawn: dropping the record stops the boot guard from
       // judging this dead install forever, and re-arms a future explicit install.
       writeUpdaterState(userId, clearInstall(fresh));
-      installInFlight = false;
+      _releaseInstallInFlight();
       log.warn(`update install attempts exhausted for ${downloaded.version}`);
       return { started: false, error: 'install attempts exhausted' };
     }
@@ -957,7 +995,7 @@ export async function installDownloaded(
     });
     return { started: true };
   } catch (err) {
-    installInFlight = false;
+    _releaseInstallInFlight();
     const message = (err as Error)?.message || 'install failed';
     log.warn(`update install hand-off failed: ${message}`);
     return { started: false, error: message };

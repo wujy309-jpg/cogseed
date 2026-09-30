@@ -38,9 +38,9 @@ function resetBootGuardState(uid: string): void {
   } catch { /* nothing to clear */ }
 }
 
-function installRecord(requestedAt = 1): Parameters<typeof writeUpdaterState>[1]['install'] {
+function installRecord(requestedAt = 1, version = '0.0.9'): Parameters<typeof writeUpdaterState>[1]['install'] {
   return {
-    version: '0.0.9',
+    version,
     from_version: '0.0.5',
     installer_path: 'x',
     sha256: 'a'.repeat(64),
@@ -107,10 +107,86 @@ describe('boot guard', () => {
       pending_boot: { from_version: '0.0.5', to_version: '0.0.9', attempts: 1, first_seen_at: 1 },
     });
 
-    markBootHealthy(UID);
+    markBootHealthy(UID, { currentVersion: '0.0.9' });
 
     expect(readUpdaterState(UID).pending_boot).toBeUndefined();
     expect(readUpdaterState(UID).install).toBeUndefined();
+  });
+
+  it('keeps a mismatching install record across a healthy window', () => {
+    resetBootGuardState(UID);
+    writeUpdaterState(UID, {
+      version: 1,
+      install: installRecord(),
+      pending_boot: { from_version: '0.0.5', to_version: '0.0.5', attempts: 1, first_seen_at: 1 },
+    });
+
+    // The window that loaded is the OLD version: the app is healthy, but this
+    // window never verified the pending install, so the hand-off evidence (and
+    // its attempts counter) must survive.
+    markBootHealthy(UID, { currentVersion: '0.0.5' });
+
+    const after = readUpdaterState(UID);
+    expect(after.pending_boot).toBeUndefined();
+    expect(after.install).toMatchObject({ version: '0.0.9', attempts: 1 });
+  });
+
+  it('still seeds the streak when a healthy window happened between the two boots', () => {
+    resetBootGuardState(UID);
+    writeUpdaterState(UID, { version: 1, install: installRecord() });
+
+    // Premature relaunch: the OLD version boots while the helper is still waiting.
+    const premature = evaluateBootGuard(UID, { currentVersion: '0.0.5', now: 2_000 });
+    expect(premature.installMissed).toBe(true);
+
+    // Seconds later that old window finished loading, so main marked it healthy.
+    markBootHealthy(UID, { currentVersion: '0.0.5' });
+
+    // The helper then applies the install and the app starts on the NEW version.
+    const applied = evaluateBootGuard(UID, { currentVersion: '0.0.9', now: 3_000 });
+
+    expect(applied.unstable).toBe(false);
+    expect(applied.fromVersion).toBe('0.0.5');
+    expect(readUpdaterState(UID).pending_boot).toMatchObject({
+      from_version: '0.0.5',
+      to_version: '0.0.9',
+      attempts: 1,
+    });
+  });
+
+  it('matches an install target that differs only in version formatting', () => {
+    resetBootGuardState(UID);
+    writeUpdaterState(UID, { version: 1, install: installRecord(1, 'v0.0.9') });
+
+    // A feed version prefixed with `v` names the same build as `app.getVersion()`:
+    // string inequality would call every boot `install-missed` and silently
+    // disable the streak.
+    const verdict = evaluateBootGuard(UID, { currentVersion: '0.0.9', now: 2_000 });
+
+    expect(verdict.installMissed).toBe(false);
+    expect(verdict.fromVersion).toBe('0.0.5');
+    expect(readUpdaterState(UID).pending_boot).toMatchObject({ to_version: '0.0.9', attempts: 1 });
+  });
+
+  it('compares unequal segment counts without a false mismatch', () => {
+    resetBootGuardState(UID);
+    writeUpdaterState(UID, { version: 1, install: installRecord(1, '0.0.9.0') });
+
+    const verdict = evaluateBootGuard(UID, { currentVersion: '0.0.9', now: 2_000 });
+
+    expect(verdict.installMissed).toBe(false);
+    expect(verdict.fromVersion).toBe('0.0.5');
+  });
+
+  it('treats a genuinely different version as a missed install', () => {
+    resetBootGuardState(UID);
+    writeUpdaterState(UID, { version: 1, install: installRecord(1, '0.0.10') });
+
+    const verdict = evaluateBootGuard(UID, { currentVersion: '0.0.9', now: 2_000 });
+
+    expect(verdict.installMissed).toBe(true);
+    expect(verdict.reason).toBe('install-missed');
+    expect(readUpdaterState(UID).install?.version).toBe('0.0.10');
   });
 
   it('still seeds the streak when the install applies after a premature relaunch', () => {
@@ -195,7 +271,7 @@ describe('boot guard', () => {
 
     // The record is this session's past evidence, not live state, so a healthy
     // window must not erase it.
-    markBootHealthy(uid);
+    markBootHealthy(uid, { currentVersion: '0.0.9' });
     expect(getBootGuardVerdict(uid)).toBe(verdict);
 
     writeUpdaterState(otherUid, { version: 1 });

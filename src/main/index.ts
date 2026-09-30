@@ -729,7 +729,10 @@ function runBootGuardOnce(): void {
 function markMainWindowHealthy(): void {
   runBootGuardOnce();
   if (!bootGuardUid) return;
-  markBootHealthy(bootGuardUid);
+  // The running version decides whether this healthy window verified the pending
+  // install: on a premature relaunch it did not, and the record (with its
+  // attempts) must survive (see boot_guard.ts::markBootHealthy).
+  markBootHealthy(bootGuardUid, { currentVersion: app.getVersion() });
 }
 
 async function runBootSelfCheck(): Promise<void> {

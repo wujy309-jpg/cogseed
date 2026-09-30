@@ -42,6 +42,7 @@ vi.mock('../../../../src/main/features/updater/installer', () => ({
 }));
 
 import * as updater from '../../../../src/main/features/updater/client';
+import { evaluateBootGuard } from '../../../../src/main/features/updater/boot_guard';
 import { REMIND_THROTTLE_MS, readUpdaterState, writeUpdaterState } from '../../../../src/main/features/updater/state';
 import { userUpdaterDownloadsDir, userUpdaterStateFile } from '../../../../src/main/paths';
 
@@ -849,6 +850,57 @@ describe('installDownloaded', () => {
     expect(installerMock.installDownloadedUpdate).not.toHaveBeenCalled();
     expect(readUpdaterState(UID).install).toBeUndefined();
   });
+
+  // A dedicated uid: the verdict map is process-global, and an unstable verdict
+  // must not leak into the other install cases.
+  const UNSTABLE_UID = 'updater-client-unstable-verdict';
+
+  it('refuses to install when the boot guard has judged this upgrade unstable', async () => {
+    fs.rmSync(userUpdaterStateFile(UNSTABLE_UID), { force: true });
+    writeUpdaterState(UNSTABLE_UID, {
+      version: 1,
+      downloaded: { ...downloadedFixture(), path: 'C:\\tmp\\CogSeed.exe' },
+      pending_boot: { from_version: '0.0.5', to_version: '0.0.6', attempts: 1, first_seen_at: 1 },
+    });
+    // Two consecutive starts on a never-cleared marker → the guard says unstable.
+    const verdict = evaluateBootGuard(UNSTABLE_UID, { currentVersion: '0.0.6', now: 2_000 });
+    expect(verdict.unstable).toBe(true);
+    const before = readUpdaterState(UNSTABLE_UID);
+
+    const result = await withPlatform('win32', () => updater.installDownloaded(UNSTABLE_UID));
+
+    expect(result.started).toBe(false);
+    expect(result.error).toContain('unstable');
+    // The invariant is enforced in main, not only by the renderer hiding a button:
+    // nothing was written and no helper was ever spawned.
+    expect(installerMock.installDownloadedUpdate).not.toHaveBeenCalled();
+    expect(readUpdaterState(UNSTABLE_UID)).toEqual(before);
+    fs.rmSync(userUpdaterStateFile(UNSTABLE_UID), { force: true });
+  });
+
+  it('releases the in-flight guard when quit never happens, so a stranded session can retry', async () => {
+    vi.useFakeTimers();
+    try {
+      writeUpdaterState(UID, { version: 1, downloaded: downloadedFixture() });
+      installerMock.installDownloadedUpdate.mockResolvedValue(undefined);
+
+      const first = await withPlatform('win32', () => updater.installDownloaded(UID));
+      expect(first).toEqual({ started: true });
+      // The normal path keeps the guard set: the helper took over and the app quits.
+      expect(await withPlatform('win32', () => updater.installDownloaded(UID)))
+        .toEqual({ started: false, error: 'install already in progress' });
+
+      // `app.quit()` did not actually quit. Past the helper's 60 s parent wait the
+      // guard must release itself, or this session could never retry.
+      vi.advanceTimersByTime(90_000);
+
+      const retry = await withPlatform('win32', () => updater.installDownloaded(UID));
+      expect(retry).toEqual({ started: true });
+      expect(installerMock.installDownloadedUpdate).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // `updates.getState` is the renderer-visible shape of the persisted record: the
@@ -910,8 +962,10 @@ describe('updates.getState install projection', () => {
     // Projection is an IPC-boundary concern only: the persisted record still
     // carries what the hand-off and the boot guard read.
     expect(readUpdaterState(UID).install?.installer_path).toBe(installerPath);
-    // Every other field keeps its shape.
-    expect(payload.state.downloaded).toMatchObject({ version: '0.0.6', path: installerPath });
+    // Every other field keeps its shape — except `downloaded`, which is projected
+    // to the one field the renderer reads: `updates.open` resolves the absolute
+    // path in main, so the renderer never needs it.
+    expect(payload.state.downloaded).toEqual({ version: '0.0.6' });
     expect(payload.state.known_latest).toBe('0.0.6');
     expect(payload.state.last_check_at).toBe(111);
   });

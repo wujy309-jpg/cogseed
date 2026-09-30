@@ -404,6 +404,36 @@ describe('settings about pane windows restart-and-install', () => {
     expect(h.el('updater-install-slot').innerHTML).toBe('');
   });
 
+  it('hides the legacy open-installer entry once the Windows silent action is offered', async () => {
+    const h = buildHarness(VERIFIED);
+    await flush();
+
+    // 同一个包、同一个入口位置：旧入口和新入口同时出现，用户会分不清按哪个。
+    expect(h.el('updater-install-slot').innerHTML).toContain('updater-install-btn');
+    expect(h.el('updater-open-btn').hidden).toBe(true);
+  });
+
+  it('keeps the open-installer entry on macOS', async () => {
+    const h = buildHarness({ ...VERIFIED, platform: 'MacIntel' });
+    await flush();
+
+    // macOS 没有静默通道，打开 dmg 仍是唯一入口。
+    expect(h.el('updater-install-slot').innerHTML).toBe('');
+    expect(h.el('updater-open-btn').hidden).toBe(false);
+  });
+
+  it('brings the open-installer entry back when the silent action is blocked', async () => {
+    const h = buildHarness({
+      ...VERIFIED,
+      bootGuard: { unstable: true, reason: 'unstable', fromVersion: '0.0.4', toVersion: '0.0.5' },
+    });
+    await flush();
+
+    // 静默入口被引导自检收起时，手动打开安装包是用户唯一的出路。
+    expect(h.el('updater-install-slot').innerHTML).toBe('');
+    expect(h.el('updater-open-btn').hidden).toBe(false);
+  });
+
   it('keeps an optimistic installing state after the main process takes over', async () => {
     // 成功路径上主进程几乎立刻退出：等不到后续状态推送，界面必须自己给出
     // 「正在重启并安装」而不是停在按下去没反应的按钮上。

@@ -87,12 +87,18 @@ export const invokeHandlers = {
     return {
       // The persisted install record holds an absolute installer path and the
       // artifact digest; the renderer only renders retry bookkeeping, so the
-      // install field is PROJECTED here and never passed through raw. Everything
-      // else keeps the persisted shape (including `downloaded`, out of scope).
+      // install field is PROJECTED here and never passed through raw. The
+      // `downloaded` record is projected for the same reason: the renderer reads
+      // only its version (`updates.open` resolves the absolute path in main), so
+      // the `<uid>/local/...` path and the digest never cross the bridge.
+      // Everything else keeps the persisted shape.
       state: {
         ...state,
         install: state.install
           ? { version: state.install.version, attempts: state.install.attempts }
+          : undefined,
+        downloaded: state.downloaded
+          ? { version: state.downloaded.version }
           : undefined,
       },
       current_version: current,

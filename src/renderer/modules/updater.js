@@ -256,6 +256,28 @@
     label.textContent = t(key);
   }
 
+  /**
+   * 「重启并安装」入口的构建输入。`_renderInstall` 画按钮、`_renderActions` 收起旧的
+   * 手动入口，两处必须同源：任何一处单独判定，都会出现「静默入口没画出来、手动入口
+   * 也被收走」的死角。
+   */
+  function _installActionState() {
+    const installing = _state.installPhase === 'installing';
+    const notice = installing
+      ? { key: 'updates.install.in_progress', vars: {}, blocking: false, hidesInstallAction: false }
+      : bootGuardNoticeFor(_state.bootGuard, _state.install);
+    const action = installActionFor({
+      platform: installPlatformFor(typeof navigator !== 'undefined' ? navigator : null),
+      // 只有主进程算出的 install_ready 才算「校验通过的安装包已就绪」。
+      state: _state.installReady ? 'downloaded' : '',
+      downloadedVersion: _state.downloadedVersion,
+      currentVersion: _state.currentVersion,
+    });
+    const visible = action.visible && action.enabled && !notice.hidesInstallAction
+      && !installing && !_autoAuthoritative() && typeof uiButton === 'function';
+    return { installing, notice, action, visible };
+  }
+
   function _renderActions() {
     const row = _id('updater-actions-row');
     if (!row) return;
@@ -271,7 +293,10 @@
     const transferOwns = _transferOwnsControls();
     row.hidden = transferOwns || !(actionable || _state.installReady);
     _setVisible('updater-download-btn', actionable && !_state.installReady && !transferOwns);
-    _setVisible('updater-open-btn', _state.installReady);
+    // Windows 上「重启并安装」已经是最好的入口，同一个包再挂一个「打开安装包」
+    // 只会让用户分不清按哪个；macOS 没有静默通道，那个入口必须保留。
+    // 静默入口被引导自检收起时（unstable），手动入口重新出现，用户仍有出路。
+    _setVisible('updater-open-btn', _state.installReady && !_installActionState().visible);
     _setVisible('updater-skip-btn', actionable && !_state.installReady && !transferOwns);
     _syncDownloadLabel();
   }
@@ -394,21 +419,9 @@
    */
   function _renderInstall() {
     const slot = _id('updater-install-slot');
-    const installing = _state.installPhase === 'installing';
-    const notice = installing
-      ? { key: 'updates.install.in_progress', vars: {}, blocking: false, hidesInstallAction: false }
-      : bootGuardNoticeFor(_state.bootGuard, _state.install);
+    const { installing, notice, action, visible } = _installActionState();
     _renderNotice(notice);
     if (!slot) return;
-    const action = installActionFor({
-      platform: installPlatformFor(typeof navigator !== 'undefined' ? navigator : null),
-      // 只有主进程算出的 install_ready 才算「校验通过的安装包已就绪」。
-      state: _state.installReady ? 'downloaded' : '',
-      downloadedVersion: _state.downloadedVersion,
-      currentVersion: _state.currentVersion,
-    });
-    const visible = action.visible && action.enabled && !notice.hidesInstallAction
-      && !installing && !_autoAuthoritative();
     let html = '';
     if (installing && typeof uiProgressBar === 'function') {
       html = uiProgressBar({
@@ -416,7 +429,7 @@
         value: 100,
         max: 100,
       });
-    } else if (visible && typeof uiButton === 'function') {
+    } else if (visible) {
       html = uiButton({
         label: t(action.label),
         role: 'primary',
