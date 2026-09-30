@@ -82,6 +82,9 @@ describe('checkForUpdates', () => {
     vi.unstubAllGlobals();
     delete process.env.COGSEED_API_BASE_URL;
     updater.cancelActiveDownloadForTest?.();
+    // This is the only describe that flips isPackaged; restore it so the
+    // packaged state cannot leak into the download describes below.
+    electronMock.app.isPackaged = false;
   });
 
   it('reports a newer server version and surfaces the first reminder', async () => {
@@ -117,20 +120,31 @@ describe('checkForUpdates', () => {
     expect(headers['CogSeed-Arch']).toBe(process.arch);
   });
 
-  it('skips packaged Windows latest checks instead of surfacing updates/latest 400', async () => {
+  it('checks updates/latest on packaged Windows and surfaces the win32 release', async () => {
     electronMock.app.isPackaged = true;
-    const fetchMock = stubFetch(async () => new Response('bad platform', { status: 400 }));
+    // 这一条要证的是"打包 Windows 能拿到并留下更新信息"，所以制品地址也得是
+    // Windows 包：fixture 默认是 mac 的 .dmg，名字里的 win32 就落不到实处。
+    const winInfo = infoFixture({ url: 'https://dl.example.com/CogSeed-0.0.6-win-x64.exe' });
+    const fetchMock = stubFetch(async () => latestResponse(winInfo));
 
     const result = await withPlatform('win32', () => updater.checkForUpdates(UID, { manual: true, now: 1_000 }));
 
-    expect(result).toMatchObject({
-      checked: true,
-      has_update: false,
-      reminded: false,
-      current_version: '0.0.5',
-    });
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(readUpdaterState(UID).latest_info).toBeUndefined();
+    expect(result).toMatchObject({ checked: true, has_update: true, current_version: '0.0.5' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const headers = (fetchMock.mock.calls[0][1].headers || {}) as Record<string, string>;
+    expect(headers['CogSeed-Platform']).toBe('win32');
+    expect(readUpdaterState(UID).latest_info?.latest_version).toBe(winInfo.latest_version);
+    expect(readUpdaterState(UID).latest_info?.url).toBe(winInfo.url);
+  });
+
+  it('checks updates/latest on a packaged non-darwin platform the old guard swallowed', async () => {
+    electronMock.app.isPackaged = true;
+    const fetchMock = stubFetch(async () => latestResponse(infoFixture()));
+
+    const result = await withPlatform('linux', () => updater.checkForUpdates(UID, { manual: true, now: 1_000 }));
+
+    expect(result.checked).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('throttles automatic reminders to once per day, same version', async () => {

@@ -107,10 +107,6 @@ function currentAppVersion(): string {
 
 export { currentAppVersion };
 
-function isPackagedReminderPlatformUnsupported(): boolean {
-  return electronApp?.isPackaged === true && process.platform !== 'darwin';
-}
-
 function _asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -178,12 +174,6 @@ export async function checkForUpdates(
 ): Promise<CheckResult> {
   const now = opts.now ?? Date.now();
   const current = currentAppVersion();
-  if (isPackagedReminderPlatformUnsupported()) {
-    const state = readUpdaterState(userId);
-    state.last_check_at = now;
-    writeUpdaterState(userId, { ...state, latest_info: undefined });
-    return { checked: true, has_update: false, reminded: false, current_version: current };
-  }
   try {
     const info = await _fetchLatest();
     const state = readUpdaterState(userId);
