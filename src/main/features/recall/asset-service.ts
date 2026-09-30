@@ -190,6 +190,7 @@ function asAsset(value: RecallJsonRecord): RecallAbilityAssetRecord {
     typeof value.candidateId !== 'string' || typeof value.title !== 'string' ||
     typeof value.statement !== 'string' || !Array.isArray(value.evidenceRefs) ||
     typeof value.scope !== 'string' || typeof value.version !== 'string' ||
+    typeof value.updatedAt !== 'string' ||
     !ABILITY_ASSET_STATUSES.has(value.status as RecallAbilityAssetRecord['status']) ||
     (value.maturity !== undefined
       && !ABILITY_ASSET_MATURITIES.has(value.maturity as RecallAbilityAssetRecord['maturity']))
@@ -684,8 +685,38 @@ export async function listAbilityAssets(userId: string): Promise<RecallAbilityAs
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw error;
   }
-  const records = await Promise.all(names.filter((name) => name.endsWith('.json') && safeId(name.slice(0, -5))).map((name) => readRecallJsonRecord(userId, 'ability-assets', name.slice(0, -5))));
-  return records.filter((record): record is RecallJsonRecord => Boolean(record)).map(asAsset).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const ids = names
+    .filter((name) => name.endsWith('.json') && safeId(name.slice(0, -5)))
+    .map((name) => name.slice(0, -5));
+  // 逐条降级，而不是让一条坏资产把全部资产列表读失败（照抄同目录
+  // listRecallCandidates / listExperiences 的既有口径）：记录形状的不变量
+  // 分布在两层——store 的 validateRecallRecord 和这里的 asAsset——任一层
+  // 一抛，主列表/空间 tab/收件箱聚合/巡检/启动迁移全挂，好资产也列不出。
+  //
+  // 只降级**记录形状**的错。真正的 IO 故障（EACCES / EISDIR……）带 errno code，
+  // 照旧上抛：那种情况下静默少几条，等于把磁盘问题伪装成「资产变少了」。
+  const reads = await Promise.all(ids.map(async (id) => {
+    try {
+      return { id, record: await readRecallJsonRecord(userId, 'ability-assets', id) };
+    } catch (error) {
+      if (typeof (error as NodeJS.ErrnoException).code === 'string') throw error;
+      return { id, error: error as Error };
+    }
+  }));
+  const assets: RecallAbilityAssetRecord[] = [];
+  for (const read of reads) {
+    if (read.error) {
+      log.warn('skipped an unreadable recall ability asset', { assetId: read.id, error: read.error.message });
+      continue;
+    }
+    if (!read.record) continue;
+    try {
+      assets.push(asAsset(read.record));
+    } catch (error) {
+      log.warn('skipped a malformed recall ability asset', { assetId: read.id, error: (error as Error).message });
+    }
+  }
+  return assets.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 /** 某空间沉淀的资产（按 spaceId 过滤；资产随 recall 全局存储，不随空间删）。
@@ -1137,6 +1168,10 @@ export async function migrateLegacyUserFacingTitles(userId: string): Promise<num
       await updateRecallJsonRecord(userId, 'ability-assets', asset.id, (raw) => {
         if (!raw) throw new Error('recall ability asset not found');
         const current = asAsset(raw);
+        // 锁内终态复核（r2 补齐）：外层快照过滤只对快照时刻有效，遍历期间
+        // 资产可能已被删除/撤回——闭包抛错发生在 writeJson 之前，整个
+        // runExclusive reject 不落盘，外层 catch 记 warn 跳过该资产继续。
+        assertMutableAbilityAsset(current);
         if (nextTitle) current.title = nextTitle;
         if (nextStatement) current.statement = nextStatement;
         current.version = nextVersion(current.version);
@@ -1190,6 +1225,8 @@ export async function migrateLegacyFreeTextScopes(userId: string): Promise<numbe
       await updateRecallJsonRecord(userId, 'ability-assets', asset.id, (raw) => {
         if (!raw) throw new Error('recall ability asset not found');
         const current = asAsset(raw);
+        // 同上（r2 补齐）：锁内终态复核，墓碑/撤回资产不进改写。
+        assertMutableAbilityAsset(current);
         current.scope = normalized;
         current.version = nextVersion(current.version);
         current.updatedAt = new Date().toISOString();
@@ -1359,7 +1396,10 @@ export async function purgeAbilityAsset(
  *   - `usage-records` / `asset-usage-receipts` / `injection-receipts` 的 events
  *     流里带着 assetId 与版本，是"这条资产被用过"的可识别痕迹；
  *   - 投影里的 `assetVersionSnapshots` 是「版本真删」时冻结的**内容副本**
- *     （见 deleteAbilityAssetVersion），正文就在里面。
+ *     （见 deleteAbilityAssetVersion），正文就在里面；
+ *   - 本体回流候选池的 `asset-backflow-<assetId>` 候选（见 ontology-backflow）
+ *     的 memory_text 就是 statement 全文——候选确认不查来源资产存活性，
+ *     留着它等于留了一条「确认即复活」的通道。
  * 留下任何一处，「内容与记录一并清除、搜索不可见、不可恢复」都不成立。
  *
  * 幂等：流不存在或没有匹配行都不报错、不写新账——反复清除不会留下重复痕迹。
@@ -1374,6 +1414,16 @@ async function cascadePurgeAssetReferences(userId: string, assetId: string): Pro
   const cleared = await clearAssetFromAllProjections(userId, assetId);
   if (cleared > 0) {
     log.info(`purge cascade cleared frozen asset copies from projections assetId=${assetId} projections=${cleared}`);
+  }
+  // 动态 import 同上先例：候选池模块（personal_ontology_candidates /
+  // ontology-backflow）静态互引同样会牵出成环依赖。rejectCandidate 按
+  // candidate_id 精确移除这一条回流候选、不动池内其他候选；候选不存在时
+  // 仅告警并返回 {ok:false}，不抛错不写新账——与上面各步同口径满足幂等。
+  const { rejectCandidate } = await import('../personal_ontology_candidates');
+  const { backflowCandidateIdFor } = await import('./ontology-backflow');
+  const rejected = await rejectCandidate(userId, backflowCandidateIdFor(assetId), 'asset purged');
+  if (rejected.ok) {
+    log.info(`purge cascade rejected ontology backflow candidate assetId=${assetId}`);
   }
 }
 
@@ -1654,7 +1704,9 @@ export async function mergeAbilityAssets(
   const merged = asAsset(await updateRecallJsonRecord(userId, 'ability-assets', targetAssetId, (raw) => {
     if (!raw) throw new Error('recall ability asset not found');
     const current = asAsset(raw);
-    assertNotPurged(current);
+    // 锁内复核三终态（与 rollback/select/update 同款）：版本搬运多次 await，
+    // 锁外预检后窗口期内被 delete/revoke 的 target 不许再被铺内容或 bump 版本。
+    assertMutableAbilityAsset(current);
     beforeTarget = current;
     // 关系/溯源并入不挑 source 新旧：source 随即归档，不搬就净丢失（族成员
     // 凭空少）。过滤自指（same_family 互指时 source 带着指向 target 的关系，
@@ -1715,7 +1767,9 @@ export async function mergeAbilityAssets(
   await updateRecallJsonRecord(userId, 'ability-assets', sourceAssetId, (raw) => {
     if (!raw) throw new Error('recall ability asset not found');
     const current = asAsset(raw);
-    assertNotPurged(current);
+    // 同上：锁内复核三终态——窗口期内被 delete/revoke 的 source 强改 archived
+    // 是非法跃迁（deletedAt 脏残留），archived 又是 restore 的合法源会绕过保留期。
+    assertMutableAbilityAsset(current);
     if (current.mergedIntoAssetId) throw new Error('ability asset has already been merged');
     beforeSource = current;
     afterSource = { ...current, status: 'archived' as const, mergedIntoAssetId: targetAssetId, updatedAt: new Date().toISOString() };

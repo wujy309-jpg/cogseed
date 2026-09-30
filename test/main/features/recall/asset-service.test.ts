@@ -1199,6 +1199,68 @@ describe('存量自由文本 scope 迁移（A 轨道 2026-09-13）', () => {
     expect((await assets2.readAbilityAsset('user-scope-keep', asset2.id)).scope).toBe('仅产品工作空间');
   });
 
+  it('status 过滤（2026-09-28 红队补齐口径）：revoked 终态不改写不 bump，archived 被归一+bump', async () => {
+    // 真实存量终态脏数据须绕过写入直改盘模拟（promote 出来的资产是 active）。
+    // 两个方向各用独立 uid：promote 对同内容候选有去重合并语义，同 uid 种
+    // 两条会并成一条（本轮实跑踩到的坑）。
+    const seedTerminal = async (uid: string, status: string) => {
+      const seeded = await seedWithScope(uid, 'general');
+      const { updateRecallJsonRecord } = await import('../../../../src/main/features/recall/store');
+      await updateRecallJsonRecord(uid, 'ability-assets', seeded.asset.id, (raw) => ({ ...raw, scope: '用户全局画像', status }));
+      return seeded.asset.id;
+    };
+    const revokedId = await seedTerminal('user-scope-status-revoked', 'revoked');
+    const archivedId = await seedTerminal('user-scope-status-archived', 'archived');
+
+    const { assets } = await modules();
+    // 终态方向：revoked 的自由文本 scope 原样保留，不进改写分支、不 bump。
+    expect(await assets.migrateLegacyFreeTextScopes('user-scope-status-revoked')).toBe(0);
+    const revoked = await assets.readAbilityAsset('user-scope-status-revoked', revokedId);
+    expect(revoked.scope).toBe('用户全局画像');
+    expect(revoked.version).toBe('1');
+
+    // 放行方向：archived 被归一为词表值并递增版本（与 active 同口径）。
+    expect(await assets.migrateLegacyFreeTextScopes('user-scope-status-archived')).toBe(1);
+    const archived = await assets.readAbilityAsset('user-scope-status-archived', archivedId);
+    expect(archived.scope).toBe('general');
+    expect(archived.version).toBe('2');
+  });
+
+  it('锁内终态复核（r2）：快照后资产被删除则 scope 迁移闭包拒绝改写', async () => {
+    const uid = 'user-scope-race';
+    const seeded = await seedWithScope(uid, 'general');
+    const assetId = seeded.asset.id;
+    const { updateRecallJsonRecord } = await import('../../../../src/main/features/recall/store');
+    await updateRecallJsonRecord(uid, 'ability-assets', assetId, (raw) => ({ ...raw, scope: '用户全局画像' }));
+    const { fileEditLock } = await import('../../../../src/main/util/locks');
+    const { recallJsonRecordPath } = await import('../../../../src/main/features/recall/paths');
+    const recPath = recallJsonRecordPath(uid, 'ability-assets', assetId);
+
+    // 确定性时序：先持同款文件锁再启动迁移——快照读到 active+自由文本，
+    // 改写闭包在锁上排队。
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const holder = fileEditLock(recPath).runExclusive(() => gate);
+    await new Promise((r) => setTimeout(r, 5));
+
+    const migP = seeded.assets.migrateLegacyFreeTextScopes(uid);
+    await new Promise((r) => setTimeout(r, 15));
+
+    // 持锁期间直改盘为 deleted（快照后另一路径删除落盘）。
+    const raw = JSON.parse(fs.readFileSync(recPath, 'utf8')) as Record<string, unknown>;
+    fs.writeFileSync(recPath, JSON.stringify({ ...raw, status: 'deleted' }));
+
+    release();
+    await holder;
+    expect(await migP).toBe(0);
+
+    // 锁内 assert 拒绝：资产保持 deleted + 自由文本 scope + 版本 '1'。
+    const after = JSON.parse(fs.readFileSync(recPath, 'utf8')) as Record<string, unknown>;
+    expect(after.status).toBe('deleted');
+    expect(after.scope).toBe('用户全局画像');
+    expect(after.version).toBe('1');
+  });
+
   it('迁移 bump 版本后同步刷新仍存活 committed 投影的版本快照（2026-09-14 修复）', async () => {
     // 背景：committed 注入路径在读快照之前强校验 assetVersions——迁移只 bump
     // 不刷新的话，requirement 存续期内每回合注入整体失败
@@ -1331,5 +1393,58 @@ describe('存量自由文本 scope 迁移（A 轨道 2026-09-13）', () => {
       createdAt: now, updatedAt: now,
     }, { actor: 'user', reason: 'custom term seed' });
     expect(custom.scope).toBe('architecture-review');
+  });
+});
+
+describe('listAbilityAssets 逐条坏档降级（r4，对齐 candidates/experiences 口径）', () => {
+  it('好+坏并存：列表不 reject、好条目照常返回；坏条目单读仍明确报错', async () => {
+    const uid = 'user-list-badasset';
+    let goodSeq = 0;
+    const seedGood = async (scope: string) => {
+      // promote 对同内容候选有去重合并语义：两条好资产必须内容互异（r2 同坑）。
+      goodSeq += 1;
+      const { candidates } = await modules();
+      const payloads = [
+        { judgment: 'Keep architecture decisions in a decision log.', summary: 'Architecture decision log' },
+        { judgment: 'Compress the weekly report into three key findings and one risk item.', summary: 'Weekly report compression rule' },
+      ];
+      const payload = payloads[goodSeq - 1] || payloads[0];
+      const candidate = await candidates.saveRecallCandidate(uid, {
+        ...payload,
+        suggestedType: 'rule', ...RULE_BOUNDARY, suggestedScope: scope,
+        sourceRefs: [{ kind: 'execution', id: `exec-list-badasset-${goodSeq}` }],
+      });
+      return (await candidates.promoteRecallCandidate(uid, candidate.id, { actor: 'user' })).asset;
+    };
+    const good1 = await seedGood('general');
+    const good2 = await seedGood('review');
+
+    // 直改盘制造三种坏档（合法 id 形状，readdir 会枚举到）：
+    const dir = path.join(tmpDir, uid, 'cloud', 'recall', 'records', 'ability-assets');
+    const base = (id: string, extra: Record<string, unknown> = {}) => ({
+      schemaVersion: 2, ownerId: uid, id, candidateId: `cand-${id}`,
+      title: '坏档', statement: '坏档正文。', evidenceRefs: [{ kind: 'conversation', id: 'c-bad' }],
+      scope: 'general', version: '1', status: 'active',
+      createdAt: '2026-09-28T00:00:00.000Z', updatedAt: '2026-09-28T00:00:00.000Z',
+      ...extra,
+    });
+    // 坏档一：截断 JSON（readRecallJsonRecord 读层 parse 抛）。
+    fs.writeFileSync(path.join(dir, 'aa-bad-trunc-0000000001.json'), '{"id": "aa-bad-trunc');
+    // 坏档二：status 越枚举（asAsset 抛）。
+    fs.writeFileSync(path.join(dir, 'aa-bad-status-0000000001.json'), JSON.stringify(base('aa-bad-status-0000000001', { status: 'bogus' })));
+    // 坏档三：缺 updatedAt（r4 新校验——旧代码在 sort 处 undefined.localeCompare 炸）。
+    const noUpdatedAt = base('aa-bad-noupdate-000000001');
+    delete noUpdatedAt.updatedAt;
+    fs.writeFileSync(path.join(dir, 'aa-bad-noupdate-000000001.json'), JSON.stringify(noUpdatedAt));
+
+    const { assets } = await modules();
+    // 修复前：任一坏档使整个列表 rejects（好资产也列不出）；
+    // 修复后：坏条目跳过、好条目照常（updatedAt 排序不变）。
+    const list = await assets.listAbilityAssets(uid);
+    expect(list.map((a) => a.id).sort()).toEqual([good1.id, good2.id].sort());
+
+    // 单读坏条目仍明确报错（asAsset 校验不被降级旁路；缺 updatedAt 档同款）。
+    await expect(assets.readAbilityAsset(uid, 'aa-bad-status-0000000001')).rejects.toThrow(/malformed recall ability asset/);
+    await expect(assets.readAbilityAsset(uid, 'aa-bad-noupdate-000000001')).rejects.toThrow(/malformed recall ability asset/);
   });
 });

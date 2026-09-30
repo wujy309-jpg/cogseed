@@ -301,8 +301,6 @@
   "cognition.inbox_asset_change_pending": "An AI-proposed change awaits your decision",
   "cognition.inbox_asset_change_pending_hint": "It takes effect only after you confirm; a proposal is not a lock, the asset stays usable.",
   "recall.asset.delete_confirm_rules": "Restorable for 30 days after deletion; during that window you can purge it right away from the Deleted list; once the window ends it is deleted for good — content and records are erased together and it cannot be recovered.",
-  "recall.projection.forecast_failed": "Forecast failed; the Task has not started.",
-  "recall.projection.retry_forecast": "Retry forecast",
   "touchpoints.card.button.approve": "Approve",
   "touchpoints.card.button.confirm": "Confirm",
   "touchpoints.card.button.reject": "Reject",

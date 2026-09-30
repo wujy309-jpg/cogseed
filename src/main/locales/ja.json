@@ -1,5 +1,4 @@
 {
-  "recall.projection.forecast_failed": "予測に失敗しました。タスクは開始されていません。",
   "agent.cli.project_dir.label": "プロジェクトディレクトリ",
   "agent.default_name": "無題のエージェント",
   "agent.run_failed": "⚠️ エージェントの実行に失敗しました: {message}",
@@ -312,5 +311,6 @@
   "touchpoints.card.button.retry": "再試行",
   "touchpoints.card.button.forget_source": "ソースを忘れる",
   "touchpoints.card.button.revoke_grant": "認可を取り消す",
-  "touchpoints.card.resolved": "処理済み"
+  "touchpoints.card.resolved": "処理済み",
+  "dashboard.retry_user_message": "（再試行）"
 }

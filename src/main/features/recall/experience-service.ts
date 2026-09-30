@@ -16,6 +16,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 
 import { safeId } from '../../storage';
+import { createLogger } from '../../logger';
 import { normalizeCognitionSourceRefs, type CognitionSourceRef } from './source-service';
 import { recallJsonRecordPath } from './paths';
 import { readRecallJsonRecord, updateRecallJsonRecord } from './store';
@@ -25,6 +26,8 @@ import type { KstarLearningSignal, KstarLearningProvenance } from '../kstar/type
 
 /** 经验集合名（与 ability-assets 平级的独立集合，data-model §1）。 */
 export const EXPERIENCE_COLLECTION = 'experiences';
+
+const log = createLogger('experience-service');
 
 export type ExperienceType = 'lesson' | 'workflow' | 'gap' | 'uncategorized';
 export type ExperienceStatus = 'active' | 'paused' | 'archived' | 'merged';
@@ -375,11 +378,35 @@ export async function listExperiences(userId: string): Promise<ExperienceRecord[
     .filter((name) => name.endsWith('.json'))
     .map((name) => name.slice(0, -5))
     .filter((id) => safeId(id) && id.startsWith('exp-'));
-  const records = await Promise.all(ids.map((id) => readRecallJsonRecord(userId, EXPERIENCE_COLLECTION, id)));
-  return records
-    .filter((record): record is RecallJsonRecord => Boolean(record))
-    .map((record) => asExperience(record))
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  // 逐条降级，而不是让一条坏经验把整份经验目录读失败（照抄同目录
+  // listRecallCandidates 的既有口径）：记录形状的不变量分布在两层——store 的
+  // validateRecallRecord 和这里的 asExperience——任一层一抛，`experiences.list`
+  // 就整体失败，好条目也列不出、整页不可用。
+  //
+  // 只降级**记录形状**的错。真正的 IO 故障（EACCES / EISDIR……）带 errno code，
+  // 照旧上抛：那种情况下静默少几条，等于把磁盘问题伪装成「经验变少了」。
+  const reads = await Promise.all(ids.map(async (id) => {
+    try {
+      return { id, record: await readRecallJsonRecord(userId, EXPERIENCE_COLLECTION, id) };
+    } catch (error) {
+      if (typeof (error as NodeJS.ErrnoException).code === 'string') throw error;
+      return { id, error: error as Error };
+    }
+  }));
+  const experiences: ExperienceRecord[] = [];
+  for (const read of reads) {
+    if (read.error) {
+      log.warn('skipped an unreadable experience', { experienceId: read.id, error: read.error.message });
+      continue;
+    }
+    if (!read.record) continue;
+    try {
+      experiences.push(asExperience(read.record));
+    } catch (error) {
+      log.warn('skipped a malformed experience', { experienceId: read.id, error: (error as Error).message });
+    }
+  }
+  return experiences.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
 /**

@@ -366,6 +366,13 @@ describe('cognition store', () => {
     expect(pageTwo.items[0].id).toBe('cog_page_a');
     expect(pageOne.items[0]).not.toHaveProperty('evidence');
     await expect(listCognitionAssetPage(uid, 1, MAX_COGNITION_PAGE_SIZE + 1)).rejects.toThrow('page size');
+    // 下界守卫（r4 补齐）：page<1 / pageSize<1 拒绝而非静默返回空 items。
+    // 注意 'invalid cognition page' 是 'invalid cognition page size' 的子串且
+    // toThrow 为子串匹配——page 断言必须 /^…$/ 锚定，防两条 throw 分支互串
+    // 掩盖回归（删掉 page<1 检查后 page=0 曾静默返回空 items、全测试仍绿）。
+    await expect(listCognitionAssetPage(uid, 0, 1)).rejects.toThrow(/^invalid cognition page$/);
+    await expect(listCognitionAssetPage(uid, -1, 1)).rejects.toThrow(/^invalid cognition page$/);
+    await expect(listCognitionAssetPage(uid, 1, 0)).rejects.toThrow('invalid cognition page size');
   });
 
   it('两个同文资产共享记忆记录，失效其中一个不会误删另一个', async () => {

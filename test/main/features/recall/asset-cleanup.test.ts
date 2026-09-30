@@ -482,7 +482,7 @@ describe('标题重起轮（设计 3.3 专项轮：LLM 含义生成，与规则�
   });
 });
 
-describe('完整整理轮（2026-09-29 三轮合一：日常整理/重新起标题/改写正文 → 一个「整理」）', () => {
+describe('完整整理轮（三轮合一 + 2026-09-29 候选正文改写轮 → 一个「整理」）', () => {
   it('合并报告 round=full 汇总分轮 items，分轮照常落盘但列表只露合并报告', async () => {
     const uid = 'user-clean-full';
     const { cleanup } = await modules();
@@ -490,7 +490,8 @@ describe('完整整理轮（2026-09-29 三轮合一：日常整理/重新起标�
     const asset = await seedAsset(uid, '完整整理样本：导出报表带时间戳。', '完整整理样本标题。');
     const report = await cleanup.runAssetFullCleanup(uid);
     expect(report.round).toBe('full');
-    expect(report.subReportIds).toHaveLength(3);
+    // 四份子报告：规则 + 重新起标题 + 改写正文 + 候选正文改写（54ff57a3 收口新增）。
+    expect(report.subReportIds).toHaveLength(4);
     expect(report.finishedAt).toBeTruthy();
     // 规则轮成果进合并报告（items 与台账一一对应的凭据逐轮保留）。
     expect(report.items.some((item) => item.assetId === asset.id && item.kind === 'title_normalized')).toBe(true);

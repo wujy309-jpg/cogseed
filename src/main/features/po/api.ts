@@ -20,7 +20,7 @@ import { editPoDoc, listPoGroupHistory, loadPoDocSync, type PoHistoryEntry } fro
 import { getRoleTemplate } from '../role_templates';
 import { roleTemplateFieldStatus } from '../personal_ontology_contract';
 import { renderUserGroupMarkdown, renderTemplateGroupMarkdown } from './view';
-import { parseGroupContent, parseTemplateContent, isTemplateFileText } from './dialect';
+import { parseGroupContent, parseTemplateContent, isTemplateFileText, isValidAsOfValue } from './dialect';
 import {
   deleteGroup,
   renameGroup,
@@ -286,6 +286,12 @@ export async function poAddValue(
   if (draft?.asOf !== undefined && draft.asOf !== '' && !/^(?:19|20)\d{2}-(?:0[1-9]|1[0-2])$/.test(draft.asOf)) {
     return { ok: false, error: 'invalid asof' };
   }
+  // 与 poUpdateValue(:338-341) 同口径的枚举门（r2 补齐）：否则非法 ruleKind
+  // 写成功落盘、读侧 normalizeRuleKind 剥掉——写读不对称幽灵写。null/undefined 放行。
+  if (draft?.ruleKind !== undefined && draft.ruleKind !== null
+    && draft.ruleKind !== 'operation' && draft.ruleKind !== 'preference' && draft.ruleKind !== 'constraint') {
+    return { ok: false, error: 'invalid rule kind' };
+  }
   let created: PoValue | undefined;
   const result = await editPoDoc(uid, (ctx) => {
     const group = ctx.touch(groupId);
@@ -338,6 +344,12 @@ export async function poUpdateValue(
   if (patch?.ruleKind !== undefined && patch.ruleKind !== null
     && patch.ruleKind !== 'operation' && patch.ruleKind !== 'preference' && patch.ruleKind !== 'constraint') {
     return { ok: false, error: 'invalid rule kind' };
+  }
+  // verified 取值门（r2 补齐，与同函数兄弟参数同风格）：true/'independent'/
+  // false（=清除）之外拒绝——否则任意值写成功落盘、读侧剥掉，成功回执与
+  // 实际效果脱节。读侧 normalizePoDocument 兜底保留不动。
+  if (patch?.verified !== undefined && patch.verified !== true && patch.verified !== false && patch.verified !== 'independent') {
+    return { ok: false, error: 'invalid verified' };
   }
   return editPoDoc(uid, (ctx) => {
     const group = ctx.touch(groupId);
@@ -601,15 +613,24 @@ async function poAddValueToFieldByName(uid: string, groupId: string, fieldName: 
       group.fields.push(field);
     }
     if (group.values.some((v) => v.fieldId === field!.id && v.text === text)) return;
+    // meta 与手写通道同口径校验（对齐 poAddValue/poUpdateValue 的 asOf 正则、
+    // ruleKind 枚举、verified 取值）：导入通道不因单条坏 meta 中止，非法字段
+    // 剥离、合法部分照常落盘——否则外部构造的 items 能把 `asOf: '2026-09\nBOGUS'`
+    // 之类非法结构写进单一事实源，撕裂方言 md 副本并造成写读不对称。
+    const asOf = typeof meta?.asOf === 'string' && isValidAsOfValue(meta.asOf) ? meta.asOf.trim() : undefined;
+    const ruleKind = meta?.ruleKind === 'operation' || meta?.ruleKind === 'preference' || meta?.ruleKind === 'constraint'
+      ? meta.ruleKind
+      : undefined;
+    const verified = meta?.verified === true || meta?.verified === 'independent' ? meta.verified : undefined;
     group.values.push({
       id: genId12(),
       fieldId: field.id,
       text,
       source: '导入',
-      ...(meta?.asOf ? { asOf: meta.asOf } : {}),
-      ...(meta?.ruleKind ? { ruleKind: meta.ruleKind } : {}),
+      ...(asOf ? { asOf } : {}),
+      ...(ruleKind ? { ruleKind } : {}),
       ...(meta?.restricted ? { restricted: true } : {}),
-      ...(meta?.verified !== undefined ? { verified: meta.verified } : {}),
+      ...(verified !== undefined ? { verified } : {}),
       createdAt: nowIso(),
       updatedAt: nowIso(),
     });

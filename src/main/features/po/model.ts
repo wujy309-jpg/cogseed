@@ -112,10 +112,17 @@ export function emptyPoDocument(): PoDocument {
 
 /** 单行文本兜底：换行/制表压空格、首尾去空白、控字数。 */
 export function sanitizePoText(text: unknown, maxLen = 2000): string {
-  return String(text ?? '')
+  let s = String(text ?? '')
     .replace(/[\r\n\t]+/g, ' ')
     .trim()
     .slice(0, maxLen);
+  // slice 按 UTF-16 码元截断可能劈开代理对（emoji 等），末尾留下孤立高代理：
+  // 它落盘 JSON 后经 UTF-8 往返会变 U+FFFD，本地与云同步远端不一致。孤立
+  // 代理必在末尾，砍 1 码元即愈、不引入 U+FFFD；读写都过此处，存量脏数据
+  // 下次读写自愈。maxLen 语义不变（按码元封顶，不按码点翻倍）。
+  const last = s.charCodeAt(s.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) s = s.slice(0, -1);
+  return s;
 }
 
 function asString(v: unknown): string {

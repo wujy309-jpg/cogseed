@@ -107,6 +107,30 @@ describe('experience record validation (T004)', () => {
     expect(listed.map((item) => item.id)).toEqual(['exp-test-0001']);
   });
 
+  it('坏档逐条降级（r3）：一条坏经验 JSON 不炸整页，好条目照常列出（对齐 listRecallCandidates 口径）', async () => {
+    const service = await setup();
+    await service.createExperience(UID, baseExperience());
+    await service.createExperience(UID, variantExperience({ id: 'exp-test-0002', episode: 'kse-ep-0002' }));
+
+    // 直接改盘制造坏档一：语义校验失败（asExperience 抛——枚举外 verification.state）。
+    const dir = path.join(tmpDir, UID, 'cloud', 'recall', 'records', 'experiences');
+    const badPath = path.join(dir, 'exp-test-0001.json');
+    const bad = JSON.parse(fs.readFileSync(badPath, 'utf8'));
+    bad.verification.state = 'bogus_state';
+    fs.writeFileSync(badPath, JSON.stringify(bad));
+    // 坏档二：截断 JSON（parse 在读层就抛，无 errno code，同走降级）。
+    fs.writeFileSync(path.join(dir, 'exp-test-0002.json'), '{"id": "exp-test-0002", "trunc');
+
+    // 修复前：Promise.all 整体 rejects（一条坏档炸掉整个经验页）；
+    // 修复后：坏条目跳过、好条目照常返回（此处两条都坏了 → 空列表不炸）。
+    await expect(service.listExperiences(UID)).resolves.toEqual([]);
+
+    // 再补一条好经验：好条目在坏档共存时照常列出（降级不吞好数据）。
+    await service.createExperience(UID, variantExperience({ id: 'exp-test-0003', episode: 'kse-ep-0003' }));
+    const listed = await service.listExperiences(UID);
+    expect(listed.map((item) => item.id)).toEqual(['exp-test-0003']);
+  });
+
   it('rejects an id without the exp- prefix and writes nothing', async () => {
     const service = await setup();
     await expect(service.createExperience(UID, baseExperience()))

@@ -2102,6 +2102,10 @@
 
   async function _pocShowGroupHistoryV2(gid) {
     const res = await _pocInvoke('po.history.list', { groupId: gid });
+    if (!res || res.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
+      return;
+    }
     const history = res && Array.isArray(res.history) ? res.history : [];
     const group = _pocPoGroupById(gid);
     if (!history.length) {
@@ -2165,6 +2169,8 @@
           if (retry && retry.ok !== false) {
             _pocToast('personalOntology.po2_candidate_accepted', '已收下', 'success');
             await _pocReloadPo();
+          } else {
+            _pocToast('personalOntology.op_failed', _pocOperationErrorText(retry && retry.error), 'error');
           }
         }
         return;
@@ -2189,6 +2195,10 @@
 
   async function _pocOpenExportModal() {
     const res = await _pocInvoke('po.data.export', {});
+    if (!res || res.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
+      return;
+    }
     const markdown = res && res.markdown ? String(res.markdown) : '';
     const id = 'po2-export-text';
     await _pocModalForm({
@@ -2208,7 +2218,11 @@
     const text = String((document.getElementById(id) || {}).value || '');
     if (!text.trim()) return;
     const preview = await _pocInvoke('po.data.importPreview', { text });
-    if (!preview || !Array.isArray(preview.items) || !preview.items.length) {
+    if (!preview || preview.ok === false) {
+      _pocToast('personalOntology.op_failed', _pocOperationErrorText(preview && preview.error), 'error');
+      return;
+    }
+    if (!Array.isArray(preview.items) || !preview.items.length) {
       _pocToast('personalOntology.po2_import_nothing', '没有解析出可导入的内容', 'error');
       return;
     }

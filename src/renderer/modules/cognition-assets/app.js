@@ -256,6 +256,7 @@
           case 'open-conversation': NS.openConversation(id); break;
           case 'asset-timeline-retry': await NS.loadAssetTimeline(id, true); break;
           case 'asset-adoption-retry': await NS.loadAdoptionReceipts(id, true); break;
+          case 'asset-versions-retry': await NS.loadAssetVersions(id, true); break;
           case 'capture-batch': {
             // 批量动作的条数在渲染时写死进按钮（只数当前已加载且该动作可执行
             // 的行）；这里再次从 store 收敛同一口径，防止路由/数据在确认弹窗

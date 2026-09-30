@@ -1,5 +1,4 @@
 {
-  "recall.projection.forecast_failed": "A previsão falhou; a tarefa não foi iniciada.",
   "agent.cli.project_dir.label": "Diretório do projeto",
   "agent.default_name": "Agente sem título",
   "agent.run_failed": "⚠️ Falha na execução do agente: {message}",
@@ -312,5 +311,6 @@
   "touchpoints.card.button.retry": "Repetir",
   "touchpoints.card.button.forget_source": "Esquecer fonte",
   "touchpoints.card.button.revoke_grant": "Revogar concessão",
-  "touchpoints.card.resolved": "Processado"
+  "touchpoints.card.resolved": "Processado",
+  "dashboard.retry_user_message": "(tentar novamente)"
 }

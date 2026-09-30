@@ -61,6 +61,9 @@ async function loadTemplates() {
 async function loadApi() {
   return import('../../../../src/main/features/po/api');
 }
+async function loadModel() {
+  return import('../../../../src/main/features/po/model');
+}
 
 /** 造一个 v1 目录：一个普通组（带字段值/流水/历史）+ 一个模板文件 + 一个已删除组。 */
 function seedV1(): void {
@@ -206,6 +209,29 @@ describe('po v2 store › v1 迁移', () => {
     expect(store.loadPoDocSync(UID).groups.length).toBe(0);
     expect(fs.existsSync(poDocFile())).toBe(false);
   });
+
+  it('F-r1-8：v1 目录存在但无可导入内容 → ensurePoDoc 落盘空 JSON 结清，不再重扫', async () => {
+    // 空 v1 目录（无 groups.md、无组文件、无 .history）：importFromV1Sync
+    // 返回空文档而非 null——修复前这一分支不落盘，下次读照旧全量重扫。
+    fs.mkdirSync(v1Dir(), { recursive: true });
+    const store = await loadStore();
+    const doc = await store.ensurePoDoc(UID);
+    expect(doc.groups.length).toBe(0);
+    // 空 JSON 即「v1 已结清」marker：此后 loadPoDocSync 直接读 JSON，
+    // 不再重跑导入（读 groups.md、扫 .history、孤儿复活计算）。
+    expect(fs.existsSync(poDocFile())).toBe(true);
+    const persisted = JSON.parse(fs.readFileSync(poDocFile(), 'utf8')) as { migratedFromV1At?: string };
+    expect(persisted.migratedFromV1At).toBeTruthy();
+    // v1 目录备份结清，恰好一份。
+    const backups = fs.readdirSync(path.join(userRoot(), 'local')).filter((n) => n.startsWith('ontology-v1-backup-'));
+    expect(backups.length).toBe(1);
+    // 二次调用：JSON 已存在直接读回，不再产生第二份备份。
+    expect((await store.ensurePoDoc(UID)).groups.length).toBe(0);
+    const backupsAgain = fs.readdirSync(path.join(userRoot(), 'local')).filter((n) => n.startsWith('ontology-v1-backup-'));
+    expect(backupsAgain.length).toBe(1);
+    // 读路径走 JSON 分支，返回同一份空文档。
+    expect(store.loadPoDocSync(UID).groups.length).toBe(0);
+  });
 });
 
 describe('po v2 store › CRUD 与规则分类', () => {
@@ -263,6 +289,38 @@ describe('po v2 store › CRUD 与规则分类', () => {
     // 删除
     expect((await api.poDeleteValue(UID, gid, vid)).ok).toBe(true);
     expect(api.getPoSnapshot(UID).groups[0].values.length).toBe(0);
+  });
+
+  it('值写入校验（r2）：poAddValue 拒绝枚举外 ruleKind、poUpdateValue 拒绝三态外 verified（无幽灵写）', async () => {
+    const api = await loadApi();
+    const g = await api.poCreateGroup(UID, '校验组');
+    const gid = g.group!.group_id;
+    const f = await api.poCreateField(UID, gid, '字段');
+    expect(f.ok).toBe(true);
+
+    // F-r2-1：poAddValue 的 ruleKind 枚举门（与 poUpdateValue 同口径）。
+    const bad = await api.poAddValue(UID, gid, f.field!.id, { text: 'v1', ruleKind: 'bogus' as never });
+    expect(bad.ok).toBe(false);
+    expect(bad.error).toBe('invalid rule kind');
+    // 拒绝后不落盘（磁盘 JSON 里没有这条值）
+    expect(api.getPoSnapshot(UID).groups[0].values.length).toBe(0);
+    // 合法枚举 + null/undefined 放行
+    expect((await api.poAddValue(UID, gid, f.field!.id, { text: 'v2', ruleKind: 'operation' })).ok).toBe(true);
+    expect(api.getPoSnapshot(UID).groups[0].values[0].ruleKind).toBe('operation');
+
+    // F-r2-2：poUpdateValue 的 verified 三态门（true/'independent'/false）。
+    const vid = api.getPoSnapshot(UID).groups[0].values[0].id;
+    const badVerified = await api.poUpdateValue(UID, gid, vid, { verified: 'yes' as never });
+    expect(badVerified.ok).toBe(false);
+    expect(badVerified.error).toBe('invalid verified');
+    expect(api.getPoSnapshot(UID).groups[0].values[0].verified).toBeUndefined();
+    // 合法三态照常：设 true → 升 independent → false 清除
+    expect((await api.poUpdateValue(UID, gid, vid, { verified: true })).ok).toBe(true);
+    expect(api.getPoSnapshot(UID).groups[0].values[0].verified).toBe(true);
+    expect((await api.poUpdateValue(UID, gid, vid, { verified: 'independent' })).ok).toBe(true);
+    expect(api.getPoSnapshot(UID).groups[0].values[0].verified).toBe('independent');
+    expect((await api.poUpdateValue(UID, gid, vid, { verified: false })).ok).toBe(true);
+    expect(api.getPoSnapshot(UID).groups[0].values[0].verified).toBeUndefined();
   });
 
   it('流水：记一笔 / 升格为字段值 / 删除', async () => {
@@ -349,6 +407,34 @@ describe('po v2 store › 历史与恢复', () => {
   });
 });
 
+describe('po v2 store › 快照写入口 safeId 门（F-r1-9）', () => {
+  it('writePoGroupSnapshot 拒绝非白名单 uid/groupId：不建目录不落盘；合法调用照常留档', async () => {
+    const store = await loadStore();
+    const before = {
+      id: 'grpX', title: '穿越组', kind: 'user' as const,
+      fields: [], values: [], entries: [],
+      createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z',
+    };
+    // groupId 含 ../：path.join 正规化后逃出 po-history（修复前会在
+    // <uid>/cloud/escape/ 落快照文件）。
+    store.writePoGroupSnapshot(UID, '../../escape', before);
+    // groupId 含 /：非白名单格式（修复前会在 po-history/ 下建嵌套目录 a/b/c）。
+    store.writePoGroupSnapshot(UID, 'a/b/c', before);
+    // groupId 空串 / uid 空串：uid='' 时 userRoot('') = WS_ROOT，
+    // 修复前快照会写到 <WS_ROOT>/cloud/cognition/po-history/。
+    store.writePoGroupSnapshot(UID, '', before);
+    store.writePoGroupSnapshot('', 'grp-ok', before);
+    // 四次非法调用全部被静默拦截：无越界产物、无垃圾目录。
+    expect(fs.existsSync(path.join(userRoot(), 'cloud', 'escape'))).toBe(false);
+    expect(fs.existsSync(path.join(userRoot(), 'cloud', 'cognition'))).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, 'cloud'))).toBe(false);
+    // 合法调用照常留档（正常路径不回归）。
+    store.writePoGroupSnapshot(UID, 'grp-ok', before);
+    expect(store.listPoGroupHistory(UID, 'grp-ok').length).toBe(1);
+    expect(fs.existsSync(path.join(userRoot(), 'cloud', 'cognition', 'po-history', 'grp-ok'))).toBe(true);
+  });
+});
+
 describe('po v2 store › 模板生命周期', () => {
   it('安装 → 填值 → 卸载归档 → 重装恢复原数据', async () => {
     const templates = await loadTemplates();
@@ -418,5 +504,84 @@ describe('po v2 store › 导出导入', () => {
     expect(reg.values[0].ruleKind).toBe('constraint');
     expect(reg.values[0].asOf).toBe('2026-09');
     expect(reg.entries.map((e) => e.text)).toContain('一条流水');
+  });
+
+  it('导入 meta 与手写通道同口径：非法 asOf/ruleKind/verified 剥离，合法部分照常落盘', async () => {
+    const api = await loadApi();
+    // 模拟外部直接构造 items 调 poImportApply（绕过 preview 解析），
+    // 塞入红队探针同款非法结构：撕裂方言 md 副本、写读不对称的入口。
+    const items: Array<{ title: string; mergeIntoExisting: boolean; fields: Array<{ name: string; values: any[] }>; entries: string[] }> = [
+      {
+        title: '注入组',
+        mergeIntoExisting: false,
+        fields: [
+          {
+            name: '字段',
+            values: [
+              { value: '合法 meta', asOf: '2026-09', ruleKind: 'constraint', verified: 'independent', restricted: true },
+              { value: '非法 meta', asOf: '2026-09\nBOGUS', ruleKind: 'evil_kind', verified: 'yes-please' },
+            ],
+          },
+        ],
+        entries: [],
+      },
+    ];
+    const applied = await api.poImportApply(UID, items as any);
+    expect(applied.ok).toBe(true);
+    expect(applied.applied).toBe(2);
+
+    const snap = api.getPoSnapshot(UID);
+    const group = snap.groups.find((g) => g.title === '注入组')!;
+    const good = group.values.find((v) => v.text === '合法 meta')!;
+    expect(good.asOf).toBe('2026-09');
+    expect(good.ruleKind).toBe('constraint');
+    expect(good.verified).toBe('independent');
+    expect(good.restricted).toBe(true);
+
+    // 非法三项全部剥离（text 本身照常落盘，批量导入不因单条坏 meta 中止）
+    const bad = group.values.find((v) => v.text === '非法 meta')!;
+    expect(bad.asOf).toBeUndefined();
+    expect(bad.ruleKind).toBeUndefined();
+    expect(bad.verified).toBeUndefined();
+
+    // 方言 md 副本 round-trip 无损：多行 asOf 若落盘会把值行撕成两行
+    const md = path.join(v1Dir(), `${group.id}.md`);
+    expect(fs.existsSync(md)).toBe(true);
+    const groupsMod = await loadGroups();
+    const parsed = groupsMod.parseGroupContent(fs.readFileSync(md, 'utf8'));
+    const badLine = parsed.fields['字段'].find((v) => v.value === '非法 meta')!;
+    expect(badLine.asOf).toBeUndefined();
+    expect(badLine.ruleKind).toBeUndefined();
+  });
+
+  it('超长文本截断不劈开代理对：末尾无孤立高代理，UTF-8 往返无损', async () => {
+    const { sanitizePoText } = await loadModel();
+    // 红队探针同款输入：1997 个 ASCII + 10 个 emoji，截断点正好落在代理对中间
+    const long = 'x'.repeat(1997) + '😀'.repeat(10);
+    const stored = sanitizePoText(long, 2000);
+    // 1997 ASCII + 完整保留 1 个 emoji（2 码元）= 1999；被劈开的高代理已剔除
+    expect(stored.length).toBe(1999);
+    const last = stored.charCodeAt(stored.length - 1);
+    expect(last >= 0xd800 && last <= 0xdbff).toBe(false); // 末位不是孤立高代理
+    // 磁盘 JSON 往返（UTF-8 序列化）不产生 U+FFFD、不变形
+    const roundTripped = JSON.parse(JSON.stringify(stored)) as string;
+    expect(roundTripped).toBe(stored);
+    expect(roundTripped.includes('\uFFFD')).toBe(false);
+    // 正常 emoji 不受影响
+    expect(sanitizePoText('心情 😀 不错', 2000)).toBe('心情 😀 不错');
+    // 截断点不在代理对上时长度保持
+    expect(sanitizePoText('ab😀cd', 3)).toBe('ab');
+
+    // 全链路：poAddValue 落盘读回同样干净
+    const api = await loadApi();
+    const g = await api.poCreateGroup(UID, '长文本组');
+    const gid = g.group!.group_id;
+    const f = await api.poCreateField(UID, gid, '长文本', {});
+    const v = await api.poAddValue(UID, gid, f.field!.id, { text: long });
+    expect(v.ok).toBe(true);
+    const saved = api.getPoSnapshot(UID).groups[0].values[0].text;
+    const savedLast = saved.charCodeAt(saved.length - 1);
+    expect(savedLast >= 0xd800 && savedLast <= 0xdbff).toBe(false);
+    expect(JSON.parse(fs.readFileSync(poDocFile(), 'utf8')).groups[0].values[0].text).toBe(saved);
   });
 });

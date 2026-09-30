@@ -1298,13 +1298,22 @@ export async function refreshCommittedProjectionAssetVersion(
     if (projection.expiresAt && Date.parse(projection.expiresAt) <= Date.now()) continue;
     if (!Array.isArray(projection.assetIds) || !projection.assetIds.includes(assetId)) continue;
     if (projection.assetVersions && projection.assetVersions[assetId] === newVersion) continue;
+    let overwritten = false;
     await updateRecallJsonRecord(userId, 'projections', projection.id, (inner) => {
       const current = asProjection(inner);
       if (!current.assetVersions || current.assetVersions[assetId] === newVersion) return current;
+      // 单调版本守卫（r2 补齐）：refresh 遍历+读盘期间资产可能又前进了一版，
+      // 后到的旧 refresh 不得把投影版本回退——仅当新版本号大于锁内当前值
+      // 才覆写；相等、更小、或任一侧 NaN/非数字（比较为 false）一律跳过。
+      // 守卫必须在锁内 updater：外层预读(:1300)通过后锁前仍可能变化。
+      const nextVersion = Number(newVersion);
+      const currentVersion = Number(current.assetVersions[assetId] ?? 0);
+      if (!(nextVersion > currentVersion)) return current;
       current.assetVersions = { ...current.assetVersions, [assetId]: newVersion };
+      overwritten = true;
       return current;
     });
-    refreshed += 1;
+    if (overwritten) refreshed += 1;
   }
   return refreshed;
 }

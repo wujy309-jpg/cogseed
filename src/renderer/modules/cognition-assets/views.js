@@ -1257,9 +1257,17 @@
   /** 版本链（2026-09-16 版本组）：V1 归入同条目可展开；在用=指针可切换，
    *  「选用此版」走 select-asset-version（内容同步、不产生新版本号）。
    *  守卫 ≥1 版即显示（2026-09-17 下沉改）：详细信息和证据都归版本展开
-   *  块——单版本资产的证据也要有位置可看。 */
+   *  块——单版本资产的证据也要有位置可看。
+   *  读失败显式标记 + 重试（2026-09-30 r3 补齐，与使用/采用记录同口径）：
+   *  不把「没读到」伪装成「没有版本」。 */
   function assetVersionsSection(asset) {
     const state = S.assetVersions;
+    if (state && state.assetId === String(asset.id) && state.failed) {
+      return `<div class="ca-asset-usage-feedback">
+        <p class="note">${esc(T('cognition.asset_versions_failed', '版本记录暂不可用'))}</p>
+        ${btn(T('common.retry', '重试'), 'asset-versions-retry', { id: asset.id, small: true })}
+      </div>`;
+    }
     if (!state || state.assetId !== String(asset.id) || !Array.isArray(state.versions) || state.versions.length < 1) return '';
     const active = String(asset.activeVersion || asset.version || '');
     const usageByVersion = new Map((state.usage || []).map((u) => [String(u.version), u]));

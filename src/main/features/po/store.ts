@@ -88,16 +88,19 @@ export async function ensurePoDoc(uid: string): Promise<PoDocument> {
   if (fs.existsSync(filePath)) return loadPoDocSync(uid);
   return fileEditLock(filePath).runExclusive(async () => {
     if (fs.existsSync(filePath)) return loadPoDocSync(uid); // 双检：锁内可能已被迁移
-    const { importFromV1Sync, backupV1Dir } = await import('./migrate') as typeof import('./migrate');
-    const doc = importFromV1Sync(uid) ?? emptyPoDocument();
-    if (doc !== undefined && (doc.groups.length || doc.trash.length)) {
+    const { backupV1Dir } = await import('./migrate') as typeof import('./migrate');
+    const doc = importFromV1Sync(uid);
+    if (doc) {
+      // v1 目录存在（返回非 null）→ 无论导入结果空否都落盘结清：空 JSON 即
+      // marker，此后读路径（loadPoDocSync）不再全量重扫 v1（读 groups.md、
+      // 扫 .history、孤儿复活）；null = 新用户，维持懒创建不落盘。
       backupV1Dir(uid);
       doc.migratedFromV1At = doc.migratedFromV1At || nowIso();
       await writeJson(filePath, doc);
       renderAllGroups(uid, doc);
       log.info('po v1 import persisted', { uid, groups: doc.groups.length, trash: doc.trash.length });
     }
-    return doc;
+    return doc ?? emptyPoDocument();
   });
 }
 
@@ -262,6 +265,10 @@ function snapshotPoGroup(uid: string, groupId: string, before: PoGroup): void {
 /** 显式快照写入（组删除前的留档、按文本快照的兼容层用）。 */
 export function writePoGroupSnapshot(uid: string, groupId: string, before: PoGroup): void {
   try {
+    // 与同族入口（listPoGroupHistory / readPoGroupSnapshot / appendPoAudit /
+    // readPoGroupAudit）同构的 safeId 双校验：poHistoryDir 直接拼 groupId，
+    // 非 [A-Za-z0-9_-] 串可路径穿越，静默拒绝（尽力而为写入口，不 throw）。
+    if (!safeId(uid) || !safeId(groupId)) return;
     const dir = poHistoryDir(uid, groupId);
     fs.mkdirSync(dir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');

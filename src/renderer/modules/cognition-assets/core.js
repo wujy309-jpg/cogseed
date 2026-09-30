@@ -941,9 +941,12 @@
     NS.notify();
   };
 
-  /** 资产详情按需拉版本链（版本组 2026-09-16）。按资产缓存；失败降级为
-   *  空列表（版本链区静默不渲染）。`force`（specs/015 T022）：版本冲突后必须
-   *  重拉——缓存里的链正是冲突前那一份，拿它重展示差异等于拿旧差异糊弄用户。 */
+  /** 资产详情按需拉版本链（版本组 2026-09-16）。按资产缓存；读失败保留显式
+   *  failed 标记 + 重试入口（2026-09-30 r3 补齐，对齐 loadAssetTimeline 口径）——
+   *  版本链区是版本组 UI 的主入口，失败时整体消失等于把「没读到」伪装成
+   *  「没有版本」，且失败态被缓存后无恢复路径。`force`（specs/015 T022）：
+   *  版本冲突后必须重拉——缓存里的链正是冲突前那一份，拿它重展示差异等于
+   *  拿旧差异糊弄用户；重试按钮同走 force 绕过失败态缓存判重。 */
   NS.loadAssetVersions = async function loadAssetVersions(assetId, force) {
     const id = String(assetId || '');
     if (!id || (!force && store.assetVersions && store.assetVersions.assetId === id)) return;
@@ -953,6 +956,7 @@
     let usage = [];
     let audit = [];
     let frozen = [];
+    let failed = false;
     try {
       const result = await api.call('recall.assets.versions.list', { assetId: id });
       versions = (result && result.versions) || [];
@@ -964,9 +968,10 @@
       usage = [];
       audit = [];
       frozen = [];
+      failed = true;
     }
     if (!store.assetVersions || store.assetVersions.assetId !== id) return;
-    store.assetVersions = { assetId: id, versions, usage, audit, frozen };
+    store.assetVersions = { assetId: id, versions, usage, audit, frozen, failed };
     NS.notify();
   };
 

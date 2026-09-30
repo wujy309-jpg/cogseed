@@ -125,6 +125,59 @@ describe('采用回执读取恢复', () => {
   });
 });
 
+describe('版本链读取恢复（r3）', () => {
+  it('失败后保留失败态，强制重试成功才显示真实版本链', async () => {
+    let attempts = 0;
+    const { ns, store } = loadCognitionAssets({}, {}, {
+      cogseed: {
+        invoke: async (channel: string) => {
+          if (channel !== 'recall.assets.versions.list') return { ok: true };
+          attempts += 1;
+          if (attempts === 1) throw new Error('offline');
+          return {
+            ok: true,
+            versions: [{ assetId: BASE.id, version: '1', at: '2026-09-14T01:00:00Z', snapshot: { title: 'T', statement: 'S', evidenceRefs: [] } }],
+            usage: [], audit: [], frozen: [],
+          };
+        },
+      },
+    });
+
+    await ns.loadAssetVersions(BASE.id);
+    expect(store.assetVersions.failed).toBe(true);
+    expect(store.assetVersions.versions).toHaveLength(0);
+
+    // 不带 force 的重调被失败态缓存判重挡掉（无网络往返）——force 是唯一恢复路径。
+    await ns.loadAssetVersions(BASE.id);
+    expect(attempts).toBe(1);
+
+    await ns.loadAssetVersions(BASE.id, true);
+    expect(store.assetVersions.failed).toBe(false);
+    expect(store.assetVersions.versions).toHaveLength(1);
+    expect(attempts).toBe(2);
+  });
+
+  it('失败态渲染「版本记录暂不可用」+ 重试按钮，不与空态同形', () => {
+    const failed = renderDetail(BASE, {
+      assetVersions: { assetId: BASE.id, versions: [], usage: [], audit: [], frozen: [], failed: true },
+    });
+    expect(failed).toContain('版本记录暂不可用');
+    expect(failed).toContain('data-act="asset-versions-retry"');
+    // 失败文案不伪装成空态（无「选用此版」等版本条目行为入口）。
+    expect(failed).not.toContain('选用此版');
+
+    // 成功态照常渲染版本链，不出失败文案。
+    const ok = renderDetail(BASE, {
+      assetVersions: {
+        assetId: BASE.id, usage: [],
+        versions: [{ assetId: BASE.id, version: '1', at: '2026-09-14T01:00:00Z', snapshot: { title: 'T', statement: 'S', evidenceRefs: [] } }],
+      },
+    });
+    expect(ok).not.toContain('版本记录暂不可用');
+    expect(ok).not.toContain('data-act="asset-versions-retry"');
+  });
+});
+
 describe('经验详情的一致性', () => {
   it('独立经验按上下顺序展示，保留自己的内容和管理语义', () => {
     const html = renderCognition(
