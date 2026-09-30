@@ -119,6 +119,8 @@ type SkillSourceInput = SkillSource | 'builtin';
 export interface SkillListing {
   id: string;
   name: string;
+  /** Bounded local icon bytes for the card. A missing or invalid icon uses the renderer text fallback. */
+  icon_data_url?: string;
   source: SkillSource;
   description_zh: string;
   description_en: string;
@@ -520,6 +522,25 @@ function skillMetaFile(dir: string): string {
   return path.join(dir, '_meta.json');
 }
 
+function localSkillIconDataUrl(dir: string): string | undefined {
+  for (const [filename, mime] of [
+    ['icon.png', 'image/png'], ['icon.webp', 'image/webp'],
+    ['icon.jpg', 'image/jpeg'], ['icon.jpeg', 'image/jpeg'],
+  ]) {
+    try {
+      const file = path.join(dir, filename);
+      const stat = fs.lstatSync(file);
+      if (!stat.isFile() || stat.size < 12 || stat.size > 128 * 1024) continue;
+      const bytes = fs.readFileSync(file);
+      const valid = mime === 'image/png' ? bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+        : mime === 'image/webp' ? bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP'
+          : bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+      if (valid) return `data:${mime};base64,${bytes.toString('base64')}`;
+    } catch { /* missing or unreadable icon uses the text fallback */ }
+  }
+  return undefined;
+}
+
 function hasSkillMd(dir: string): boolean {
   try { return fs.statSync(skillMdFile(dir)).isFile(); }
   catch { return false; }
@@ -646,7 +667,7 @@ function removeSkillSidecarDescriptionsSync(dir: string): void {
 }
 
 // Module-level cache for `listSkills`.
-const SKILL_CATALOG_CACHE_VERSION = 2;
+const SKILL_CATALOG_CACHE_VERSION = 3;
 const SKILL_PERSISTED_TRUST_MS = 2_000;
 
 interface SkillListCache {
@@ -817,6 +838,12 @@ function _skillDirStamp(userId = getActiveUserId()): string {
         let childMtime = 0;
         try { childMtime = fs.statSync(childDir).mtimeMs; } catch { /* ignore */ }
         stamp += `${child}:${childMtime}:${hasSkillMd(childDir) ? 1 : 0};`;
+        for (const icon of ['icon.png', 'icon.webp', 'icon.jpg', 'icon.jpeg']) {
+          try {
+            const iconStat = fs.lstatSync(path.join(childDir, icon));
+            stamp += `${icon}:${iconStat.mtimeMs}:${iconStat.size};`;
+          } catch { /* no icon */ }
+        }
       }
     }
     catch { stamp += `${d}:0;`; }
@@ -926,8 +953,10 @@ async function _allSkillListingsCached(userId = getActiveUserId()): Promise<Skil
             log.warn(`marketplace skill install metadata unreadable id=${name}: ${(err as Error).message}`);
           }
         }
+        const iconDataUrl = localSkillIconDataUrl(skillDir);
         out.push({
           id: name, name: displayName, source: normalizeSkillSource(source), ...descPair,
+          ...(iconDataUrl ? { icon_data_url: iconDataUrl } : {}),
           category, enabled: true, version,
           ...(typeof status === 'string' ? { status } : {}),
           ...(typeof marketplacePublishedAt === 'number' ? { marketplace_published_at: marketplacePublishedAt } : {}),

@@ -43,6 +43,7 @@ const _rendererFeatureManifest = Object.freeze({
     { src: './modules/recall-information-architecture.js' },
     { src: './modules/import-check-modal.js' },
     { src: './modules/skills.js' },
+    { src: './modules/hub-contributions.js' },
     { src: './modules/skills-bindings.js' },
   ],
   recall: [
