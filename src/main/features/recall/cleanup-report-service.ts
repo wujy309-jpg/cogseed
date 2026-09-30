@@ -1019,4 +1019,3 @@ async function backupCandidatesForRegen(userId: string, createdAt: string): Prom
   }
   return backupDir;
 }
-

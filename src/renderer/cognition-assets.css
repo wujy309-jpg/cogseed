@@ -411,10 +411,10 @@
 
 /* 尊重系统「减少动态效果」：动画是增强，不是功能。 */
 @media (prefers-reduced-motion: reduce) {
-  
+
 .ca-skel-row,
 .ca-app.is-refreshing::before { animation: none; }
-  
+
 .ca-chip { transition: none; }
 }
 

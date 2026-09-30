@@ -3482,7 +3482,7 @@
       <div class="sect-block"><div class="tt">${esc(T('cognition.cleanup_items', '逐项改动'))}</div>${itemRows}</div>
       ${uncertain.length ? `<div class="sect-block"><div class="tt">${esc(T('cognition.cleanup_uncertain_section', '拿不准的（未改动）'))}</div>${uncertainRows}</div>` : ''}
       ${reports.length > 1 ? `<div class="sect-block"><div class="tt">${esc(T('cognition.cleanup_reports', '历史报告'))}</div>${reportRows}</div>` : ''}
-      
+
     </div>`;
   }
 
