@@ -148,6 +148,23 @@ describe('retrieval and replay', () => {
     expect([...scores.values()].every((row) => row.score >= 0 && row.score <= 1)).toBe(true);
   });
 
+  it('词面通道有入场下限：泛词级重合不再被 RRF 名次放大成高分（P7）', async () => {
+    const { catalogMatches } = await import('../../../../src/main/features/recall/catalog-relevance');
+    const assets = [
+      { id: 'aa-floor-relevant', title: 'KSTAR 回退流程', statement: '故障时恢复上一版本的具体操作步骤' },
+      { id: 'aa-floor-junk', title: '露营装备准备', statement: '帐篷炉具食物清单，疲劳后的恢复与补水安排' },
+    ];
+    const scores = await catalogMatches('catalogtest', 'KSTAR 回退流程：故障时恢复上一版本的步骤', assets);
+    // 相关条目照常命中（词面+精确双通道）。
+    expect(scores.get('aa-floor-relevant')!.score).toBeGreaterThan(0.5);
+    expect(scores.get('aa-floor-relevant')!.strong).toBe(true);
+    // 泛词条目只与查询共享个别二元组（如「恢复」），词面覆盖远低于入场下限
+    // ——不得进词面通道，融合分为 0（此前 rank-1/2 的 RRF 名次会把它放大到
+    // 近满分，P7「没问露营却排前」的放大机制正在这里）。★ 不亮、分不涨。
+    expect(scores.get('aa-floor-junk')!.score).toBe(0);
+    expect(scores.get('aa-floor-junk')!.strong).toBe(false);
+  });
+
   it('scores labelled tasks without treating old applied receipts as ground truth', async () => {
     const { evaluateCatalogRuns } = await import('../../../../src/main/features/recall/catalog-evaluation');
     const result = evaluateCatalogRuns(

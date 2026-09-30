@@ -110,7 +110,7 @@ export async function catalogMatches(
     // Search stays usable through its lexical and exact-name channels.
   }
 
-  const lexicalRanks = rankChannel(assets.map((asset) => ({ id: asset.id, value: lexical.get(asset.id) || 0 })));
+  const lexicalRanks = rankChannel(assets.map((asset) => ({ id: asset.id, value: (lexical.get(asset.id) || 0) >= CATALOG_RETRIEVAL.lexicalRankFloor ? lexical.get(asset.id)! : 0 })));
   const exactRanks = rankChannel(assets.map((asset) => ({ id: asset.id, value: exact.get(asset.id) || 0 })));
   const semanticRanks = rankChannel(assets.map((asset) => ({ id: asset.id, value: (semantic.get(asset.id) || 0) >= CATALOG_RETRIEVAL.semanticRankFloor ? semantic.get(asset.id)! : 0 })));
   const channelCount = Number(lexicalRanks.size > 0) + Number(exactRanks.size > 0) + Number(semanticRanks.size > 0);
