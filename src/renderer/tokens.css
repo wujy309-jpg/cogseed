@@ -373,3 +373,14 @@
   --control-stop: var(--color-control-stop);
   --control-stop-hover: var(--color-control-stop-hover);
 }
+
+/* 认知资产面板（cognition-assets）专属色——2026-09-30 从 css 字面量收编：
+   值为收编前的实际渲染值（原 var() 兜底/字面量原样搬运，视觉零变化），
+   tokens:check 门禁归零。 */
+  --cognition-ink-soft: #6b7263;
+  --cognition-ink-faint: #8a9080;
+  --cognition-line: #d8dcd3;
+  --cognition-line-soft: #e3e6de;
+  --cognition-tint: #eceee7;
+  --status-attention: #c58a23;
+  --color-shadow-lift: rgba(0, 0, 0, 0.12);

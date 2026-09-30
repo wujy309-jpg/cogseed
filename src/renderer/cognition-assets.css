@@ -954,7 +954,7 @@
 #ca-root .ca-diff:first-of-type { margin-top: 7px; }
 #ca-root .ca-diff-tag {
   flex-shrink: 0; font-size: var(--font-size-2); line-height: 1;
-  padding: 3px 8px; border-radius: 5px; font-weight: 600;
+  padding: 3px 8px; border-radius: var(--radius-1); font-weight: 600;
 }
 #ca-root .ca-diff-tag.is-before { background: var(--color-ca-chip-bg); color: var(--color-ca-ink-2); }
 #ca-root .ca-diff-tag.is-after { background: var(--color-ca-green-bg); color: var(--green-t); }
@@ -1403,7 +1403,7 @@
 #ca-root .personal-onto-taxonomy-fields { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
 #ca-root .personal-onto-taxonomy-personal { max-width: 1040px; }
 #ca-root .personal-onto-taxonomy-personal .ui-button { margin-top: 12px; }
-#ca-root .personal-onto-domain-error { padding: 10px 12px; border-left: 3px solid var(--status-attention, #c58a23); color: var(--ink2); background: var(--color-white); }
+#ca-root .personal-onto-domain-error { padding: 10px 12px; border-left: 3px solid var(--status-attention); color: var(--ink2); background: var(--color-white); }
 @media (max-width: 720px) {
   #ca-root .personal-onto-graph-entity-grid { grid-template-columns: minmax(0, 1fr); }
   #ca-root .personal-onto-taxonomy-depth-1 { margin-left: 8px; }
@@ -1570,10 +1570,10 @@
 #ca-root .po2-input,
 .recall-personal-ontology-section .po2-select,
 .recall-personal-ontology-section .po2-input {
-  border: 1px solid var(--color-border, #d8dcd3);
+  border: 1px solid var(--cognition-line);
   border-radius: 8px;
-  background: var(--color-surface, #fff);
-  color: var(--color-ink, #222);
+  background: var(--color-surface);
+  color: var(--color-ink);
   padding: 5px 10px;
   font-size: 13px;
 }
@@ -1596,16 +1596,16 @@
 .recall-personal-ontology-section .po2-candidates,
 .recall-personal-ontology-section .po2-group,
 .recall-personal-ontology-section .po2-group-card {
-  border: 1px solid var(--color-border, #e3e6de);
+  border: 1px solid var(--cognition-line-soft);
   border-radius: 12px;
-  background: var(--color-surface, #fff);
+  background: var(--color-surface);
   padding: 12px 14px;
 }
 #ca-root .po2-candidates,
 .recall-personal-ontology-section .po2-candidates {
   border-style: dashed;
-  border-color: var(--color-warning, #c77700);
-  background: var(--color-warning-soft, #fdf6e7);
+  border-color: var(--color-warning);
+  background: var(--color-warning-soft);
 }
 #ca-root .po2-candidates-title,
 .recall-personal-ontology-section .po2-candidates-title {
@@ -1629,7 +1629,7 @@
 }
 #ca-root .po2-candidate-preview,
 .recall-personal-ontology-section .po2-candidate-preview {
-  border: 1px solid var(--color-border, #e3e6de);
+  border: 1px solid var(--cognition-line-soft);
   border-radius: 8px;
   padding: 8px 10px;
   margin-bottom: 10px;
@@ -1661,13 +1661,13 @@
 .recall-personal-ontology-section .po2-section-title {
   font-size: 12px;
   font-weight: 600;
-  color: var(--color-ink-soft, #6b7263);
+  color: var(--cognition-ink-soft);
   margin: 10px 0 4px;
 }
 #ca-root .po2-field,
 .recall-personal-ontology-section .po2-field {
   padding: 6px 0;
-  border-top: 1px dashed var(--color-border, #eceee7);
+  border-top: 1px dashed var(--cognition-tint);
 }
 #ca-root .po2-field:first-child,
 .recall-personal-ontology-section .po2-field:first-child {
@@ -1685,7 +1685,7 @@
 }
 #ca-root .po2-field-desc,
 .recall-personal-ontology-section .po2-field-desc {
-  color: var(--color-ink-soft, #8a9080);
+  color: var(--cognition-ink-faint);
   display: inline-flex;
 }
 #ca-root .po2-field-actions,
@@ -1704,7 +1704,7 @@
 }
 #ca-root .po2-value-row.is-conflict,
 .recall-personal-ontology-section .po2-value-row.is-conflict {
-  background: var(--color-danger-soft, #fdeceb);
+  background: var(--color-danger-soft);
   border-radius: 8px;
   padding-left: 8px;
 }
@@ -1758,7 +1758,7 @@
 .recall-personal-ontology-section .po2-link-btn {
   border: none;
   background: none;
-  color: var(--color-brand, #2c6e49);
+  color: var(--color-brand);
   cursor: pointer;
   padding: 2px 4px;
   font-size: 12px;
@@ -1772,7 +1772,7 @@
 }
 #ca-root .po2-link-btn.is-danger,
 .recall-personal-ontology-section .po2-link-btn.is-danger {
-  color: var(--color-danger, #b3261e);
+  color: var(--color-danger);
 }
 /* 下拉菜单（details/summary 自包含） */
 #ca-root .po2-menu,
@@ -1790,7 +1790,7 @@
   width: 26px;
   height: 26px;
   border-radius: 6px;
-  color: var(--color-ink-soft, #6b7263);
+  color: var(--cognition-ink-soft);
 }
 #ca-root .po2-menu-trigger::-webkit-details-marker,
 .recall-personal-ontology-section .po2-menu-trigger::-webkit-details-marker {
@@ -1798,8 +1798,8 @@
 }
 #ca-root .po2-menu-trigger:hover,
 .recall-personal-ontology-section .po2-menu-trigger:hover {
-  background: var(--color-brand-soft, #e8f0ea);
-  color: var(--color-ink, #222);
+  background: var(--color-brand-soft);
+  color: var(--color-ink);
 }
 #ca-root .po2-menu-list,
 .recall-personal-ontology-section .po2-menu-list {
@@ -1807,10 +1807,10 @@
   right: 0;
   top: 30px;
   min-width: 150px;
-  background: var(--color-surface, #fff);
-  border: 1px solid var(--color-border, #d8dcd3);
-  border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  background: var(--color-surface);
+  border: 1px solid var(--cognition-line);
+  border-radius: var(--radius-item);
+  box-shadow: 0 8px 24px var(--color-shadow-lift);
   padding: 6px;
   display: flex;
   flex-direction: column;
@@ -1825,19 +1825,19 @@
   border-radius: 6px;
   cursor: pointer;
   font-size: 13px;
-  color: var(--color-ink, #222);
+  color: var(--color-ink);
 }
 #ca-root .po2-menu-item:hover,
 .recall-personal-ontology-section .po2-menu-item:hover {
-  background: var(--color-brand-soft, #e8f0ea);
+  background: var(--color-brand-soft);
 }
 #ca-root .po2-menu-item.is-danger,
 .recall-personal-ontology-section .po2-menu-item.is-danger {
-  color: var(--color-danger, #b3261e);
+  color: var(--color-danger);
 }
 #ca-root .po2-menu-item.is-active,
 .recall-personal-ontology-section .po2-menu-item.is-active {
-  background: var(--color-brand-soft, #e8f0ea);
+  background: var(--color-brand-soft);
   font-weight: 600;
 }
 #ca-root .po2-menu-item[disabled],
@@ -1848,13 +1848,13 @@
 #ca-root .po2-menu-sep,
 .recall-personal-ontology-section .po2-menu-sep {
   height: 1px;
-  background: var(--color-border, #eceee7);
+  background: var(--cognition-tint);
   margin: 4px 2px;
 }
 #ca-root .po2-menu-title,
 .recall-personal-ontology-section .po2-menu-title {
   font-size: 11px;
-  color: var(--color-ink-soft, #8a9080);
+  color: var(--cognition-ink-faint);
   padding: 2px 10px;
 }
 /* 规则行 */
@@ -1864,7 +1864,7 @@
   align-items: center;
   gap: 8px;
   padding: 7px 4px;
-  border-top: 1px dashed var(--color-border, #eceee7);
+  border-top: 1px dashed var(--cognition-tint);
 }
 #ca-root .po2-rule-row:first-child,
 .recall-personal-ontology-section .po2-rule-row:first-child {
@@ -1877,7 +1877,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--color-ink-soft, #6b7263);
+  color: var(--cognition-ink-soft);
   font-size: 12px;
 }
 #ca-root .po2-rule-text,
@@ -1915,14 +1915,14 @@
 }
 #ca-root .po2-deleted,
 .recall-personal-ontology-section .po2-deleted {
-  border: 1px dashed var(--color-border, #d8dcd3);
-  border-radius: 10px;
+  border: 1px dashed var(--cognition-line);
+  border-radius: var(--radius-item);
   padding: 8px 12px;
 }
 #ca-root .po2-deleted-summary,
 .recall-personal-ontology-section .po2-deleted-summary {
   cursor: pointer;
-  color: var(--color-ink-soft, #6b7263);
+  color: var(--cognition-ink-soft);
 }
 #ca-root .po2-deleted-row,
 .recall-personal-ontology-section .po2-deleted-row {
@@ -1946,7 +1946,7 @@
   align-items: center;
   gap: 10px;
   padding: 7px 0;
-  border-top: 1px dashed var(--color-border, #eceee7);
+  border-top: 1px dashed var(--cognition-tint);
 }
 #ca-root .po2-history-row:first-child,
 .recall-personal-ontology-section .po2-history-row:first-child {
@@ -1980,7 +1980,7 @@
 .recall-personal-ontology-section .po2-profile-title {
   font-size: 12px;
   font-weight: 600;
-  color: var(--color-ink-soft, #6b7263);
+  color: var(--cognition-ink-soft);
   margin: 6px 0;
 }
 #ca-root .po2-checkbox,
