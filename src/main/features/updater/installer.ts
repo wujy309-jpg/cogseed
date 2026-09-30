@@ -118,8 +118,11 @@ export async function installDownloadedUpdate(opts: InstallDownloadedOptions): P
   if (!fs.existsSync(helper)) {
     throw new Error(`installDownloadedUpdate: helper not found: ${helper}`);
   }
-  // Durable hand-off notes: the child's stdio is discarded, so this log path is
-  // the helper's only evidence channel. It sits next to the downloaded
+  // Best-effort diagnostics written by the helper: its stdio is discarded, so
+  // this log is the only durable trace it can leave. It is not a success
+  // channel — nothing here reads it, and "the install never applied" is
+  // detected on the next launch by the boot guard, which compares the running
+  // version against the pending-install record. It sits next to the downloaded
   // installer (an absolute, user-writable location) rather than under the
   // install root, which may be read-only.
   const helperLogPath = path.join(path.dirname(opts.installerPath), 'apply-update.log');
