@@ -1422,8 +1422,18 @@
                   </div>
                   <div class="settings-row settings-updater-row" id="updater-actions-row" hidden>
                     <button class="btn ui-button ui-button--primary ui-button--sm" id="updater-download-btn" type="button"><span class="ui-button__label" data-i18n="settings.updates.download">下载更新</span></button>
+                    <!-- Windows「重启并安装」的挂载点：按钮 / 进度条由
+                         modules/updater.js 走共享 uiButton() / uiProgressBar() 生成后
+                         注入。不在此处写死 button 元素——index.html 的裸控件计数同样
+                         被 test/renderer/shared-ui-adoption-guard.test.ts 冻结。 -->
+                    <span class="settings-updater-actions" id="updater-install-slot"></span>
                     <button class="btn ui-button ui-button--secondary ui-button--sm" id="updater-open-btn" type="button"><span class="ui-button__label" data-i18n="settings.updates.open_installer">打开安装包</span></button>
                     <button class="btn ui-button ui-button--ghost ui-button--sm" id="updater-skip-btn" type="button"><span class="ui-button__label" data-i18n="settings.updates.skip">跳过此版本</span></button>
+                  </div>
+                  <!-- 引导自检 / 安装状态说明行：文案由 updater.js 按判定写入，纯文本行，
+                       复用既有 settings-updater-row 样式，不新增页面级结构。 -->
+                  <div class="settings-row settings-updater-row" id="updater-notice-row" hidden>
+                    <span id="updater-notice-text" class="settings-updater-status"></span>
                   </div>
                   <div class="settings-row settings-updater-row" id="updater-auto-row" hidden>
                     <span id="updater-auto-text" class="settings-updater-status"></span>
