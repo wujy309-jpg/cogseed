@@ -235,6 +235,11 @@
                   <span data-ui-icon="panel" data-ui-icon-class="chat-header-details-icon"></span>
                 </button>
               </div>
+              <!-- 019 会话侧衔接（方案 A 二迁，2026-09-30）：认知衔接行移入标题栏
+                   居中显示（绝对定位，与标题/右侧按钮并列）；有认知产出（沉淀过/
+                   待确认）时由 conversation-info.js 显示，点叉按会话关闭；N=M=0
+                   时保持隐藏。 -->
+              <div class="chat-cognition-strip" id="chat-cognition-strip" hidden></div>
             </div>
             <!-- Plan strip — permanent slot between chat header and history.
                  Restyled inline below; plan-rail.js writes into the same ids
@@ -462,8 +467,7 @@
                 <!-- 左栏：文件列表（候选 / 角色模板 / 记忆分组）资料库风格 -->
                 <div class="personal-onto-sidebar" id="personal-onto-sidebar">
                   <div class="personal-onto-sidebar-header">
-                    <button type="button" class="personal-onto-back-btn" data-cognition-subview-tree data-i18n="cognition.assets_back_to_tree">返回认知树</button>
-                    <span class="personal-onto-sidebar-title" data-i18n="personalOntology.title">个人本体</span>
+                    <span class="personal-onto-sidebar-title" data-i18n="personalOntology.title">本体</span>
                     <span class="personal-onto-sidebar-actions" id="personal-onto-sidebar-actions"></span>
                   </div>
                   <div class="personal-onto-nav" id="personal-onto-nav"></div>
@@ -1906,9 +1910,13 @@
        conversation.js 与 agents.js 之前——两者在初始化时直接读 window.composerMembers。 -->
   <script src="./modules/composer-members.js"></script>
   <script src="./modules/member-work-state.js"></script>
+  <!-- 资产审批卡片（specs/008 US-406）：conversation.js 的两个挂载点按名字调用
+       window.ChatAssetApproval，须在其之前加载。 -->
+  <script src="./modules/chat-asset-approval.js"></script>
   <script src="./modules/conversation.js"></script>
   <script src="./modules/kb-glossary-manager.js"></script>
   <script src="./modules/kb-transcript-correct.js"></script>
+  <script src="./modules/kb-meeting-refs.js"></script>
   <script src="./modules/anchored-source-view.js"></script>
   <script src="./modules/chat-citation.js"></script>
   <script src="./modules/artifact-security.js"></script>

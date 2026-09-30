@@ -47,10 +47,17 @@
   /** 把扫描候选（逐 span）聚合成词条行。 */
   function groupCandidates(candidates) {
     const byEntry = new Map();
+    // 每个词条（非引例行）出现过的通道集合：聚合成一行后判断"这行是不是纯召回"。
+    const channelsByEntry = new Map();
     for (const candidate of Array.isArray(candidates) ? candidates : []) {
       const ref = String(candidate?.entryRef || '');
       if (!ref) continue;
-      const row = byEntry.get(ref) || {
+      // 【specs/013 T025】引例只读提示行（disposition:'quoted_example'）与同词条的
+      // 真实候选**分开聚合**：同一个词条可能一处是引例、另一处是真错形，
+      // 混在一起会让只读提示沾上「接受」按钮。
+      const quoted = candidate.disposition === 'quoted_example';
+      const key = quoted ? `${ref}::quoted` : ref;
+      const row = byEntry.get(key) || {
         entryRef: ref,
         wrong: String(candidate.wrong || ''),
         correct: String(candidate.correct || ''),
@@ -61,23 +68,108 @@
         context: String(candidate.context || ''),
         // 来源：模型读正文给的建议（不是词表命中）。面板据此标来源、且永不预勾。
         fromModel: candidate.fromModel === true,
+        // 【specs/013 T024】通道与处置随行保留（缺省 exact/suggest，与主进程缺省语义一致）：
+        // exact=字面命中 / recall=多路召回 / model=模型复核；处置分级见 disposition。
+        channel: candidate.channel === 'recall' || candidate.channel === 'model' ? candidate.channel : 'exact',
+        disposition: quoted ? 'quoted_example' : (candidate.disposition === 'review' ? 'review' : 'suggest'),
+        // 【specs/013 T019/T025】引例行命中的标记词（QUOTE_MARKERS 之一），
+        // 供文案解释"为什么降级"（FR-011 可解释）。
+        quotedBy: quoted ? String(candidate.quotedBy || '') : '',
+        // 【specs/013 T026】并列依据（词条/本体规范名/资产），跨 span 去重合并。
+        refs: [],
         count: 0,
         spans: [],
       };
       row.count += 1;
       if (candidate.span) row.spans.push(candidate.span);
-      byEntry.set(ref, row);
+      if (!quoted) {
+        const channels = channelsByEntry.get(ref) || new Set();
+        channels.add(row.channel);
+        channelsByEntry.set(ref, channels);
+      }
+      // 依据合并：同词条多 span、召回并入的并列依据都在；按内容去重保序。
+      const basisList = Array.isArray(candidate.refs) ? candidate.refs : [];
+      for (const basis of basisList) {
+        if (!basis || typeof basis !== 'object') continue;
+        const signature = JSON.stringify(basis);
+        if (!row.refs.some((item) => JSON.stringify(item) === signature)) row.refs.push(basis);
+      }
+      byEntry.set(key, row);
+    }
+    // 通道聚合：同词条混有字面命中时按 exact 报（同 span 的召回条目已在主进程
+    // 并入该行 refs 作并列依据，不重复标召回）；全组都是召回才标 recall。
+    for (const row of byEntry.values()) {
+      if (row.disposition === 'quoted_example' || row.channel !== 'recall') continue;
+      const channels = channelsByEntry.get(row.entryRef);
+      if (channels && channels.size > 1) row.channel = 'exact';
     }
     return [...byEntry.values()].sort((a, b) => (b.count - a.count) || a.wrong.localeCompare(b.wrong));
   }
 
-  /** 汇总选择状态：已选词条数 / 待确认高危 / 影响 span 数。 */
+  /**
+   * 【specs/013 T026】无依据的候选不出行（前端也不兜底造依据）：
+   * 词表/召回/引例通道的候选必须带 refs（SC-001 依据完整率；主进程在构造点
+   * 已保证，这里挡旧载荷/脏数据）。模型建议（fromModel）的判断依据是它给的
+   * 理由（行徽标 title），不在 SC-001 口径内，保持既有行为。
+   */
+  function withBasisOnly(candidates) {
+    return (Array.isArray(candidates) ? candidates : []).filter(
+      (candidate) => candidate?.fromModel === true
+        || (Array.isArray(candidate?.refs) && candidate.refs.length > 0),
+    );
+  }
+
+  /**
+   * 【specs/013 T026】依据文案（纯函数）：词条（wrong→correct + freq）/
+   * 本体规范名 / 资产（标题 + 冻结 vN）三类各一条展示路径。
+   * 只读 refs 的已知字段——多余字段（哪怕带正文）也上不了屏。
+   */
+  function basisRefText(ref, row) {
+    const source = ref && typeof ref === 'object' ? String(ref.source || '') : '';
+    if (source === 'glossary') {
+      return t('kb.meetingRef.basis_glossary', '词条「{wrong} → {correct}」· 累计纠正 {freq} 次', {
+        wrong: String(row?.wrong || ''),
+        correct: row?.action === 'delete' ? '' : String(row?.correct || ''),
+        freq: Number(ref.freq || 0),
+      });
+    }
+    if (source === 'ontology') {
+      return t('kb.meetingRef.basis_ontology', '本体规范名「{name}」', { name: String(ref.name || '') });
+    }
+    if (source === 'asset') {
+      return t('kb.meetingRef.basis_asset', '资产「{title}」· 冻结版 v{version} · {assetId}', {
+        title: String(ref.title || ''),
+        version: String(ref.version || ''),
+        assetId: String(ref.assetId || ''),
+      });
+    }
+    return t('kb.meetingRef.basis_unavailable', '依据不可用（旧记录）');
+  }
+
+  /**
+   * 【specs/013 T021/T023/T025】降级说明文案（纯函数）：只记"缺什么"，
+   * 不编造定位（无说话人/无场景标签/没跑过 run/空间库文档四码）。
+   */
+  function degradedNoteText(reason) {
+    if (reason === 'no_speakers') return t('kb.meetingRef.degraded_no_speakers', '未识别到说话人名单，已按无说话人的稿子扫描');
+    if (reason === 'no_scenario_tags') return t('kb.meetingRef.degraded_no_scenario_tags', '未提供场景标签，词条作用域按无场景判断');
+    if (reason === 'no_transcript_run') return t('kb.meetingRef.degraded_no_transcript_run', '这份文档还没有纠错 run 记录');
+    if (reason === 'space_doc') return t('kb.meetingRef.space_doc_notice', '暂不支持空间库文档纠错，已按可读片段扫描');
+    return '';
+  }
+
+  /** 汇总选择状态：已选词条数 / 待确认高危 / 影响 span 数（引例只读行不计入）。 */
   function summarizeRows(rows, acceptedIds) {
     const accepted = acceptedIds instanceof Set ? acceptedIds : new Set(acceptedIds || []);
     let selected = 0;
     let spans = 0;
     let pendingHigh = 0;
+    let total = 0;
     for (const row of rows || []) {
+      // 【specs/013 T019/T025】引例只读行不是候选（主进程 stats.candidates 也不计它），
+      // 这里同口径剔除，避免"扫描完成 N 条"两边对不上。
+      if (row.disposition === 'quoted_example') continue;
+      total += 1;
       if (accepted.has(row.entryRef)) {
         selected += 1;
         spans += row.count;
@@ -85,7 +177,7 @@
         pendingHigh += 1;
       }
     }
-    return { total: (rows || []).length, selected, spans, pendingHigh };
+    return { total, selected, spans, pendingHigh };
   }
 
   /**
@@ -122,13 +214,24 @@
     return { high, other, ignored };
   }
 
-  /** 默认勾选的行：低风险且未被忽略（被忽略的词条降权，不默认重来一遍）。 */
+  /**
+   * 默认勾选的行：低风险且未被忽略（被忽略的词条降权，不默认重来一遍）。
+   * 【specs/013 T024】预勾规则**只收不放**：
+   *   - 模型建议（fromModel）永不预勾——模型判断要逐条人工确认（既有规则）；
+   *   - 召回通道（channel:'recall'）永不预勾——confidence 恒 < 1 的低置信来源；
+   *   - disposition:'review'（必须逐条人工判断）与引例只读行（quoted_example）一律不预勾。
+   */
   function defaultAcceptedIds(rows) {
     return (rows || [])
       .filter((row) => row.riskLevel === 'low' && Number(row.ignoredCount || 0) === 0)
       // 模型建议**永不预勾**：它的风险等级虽然给的是 medium，但不能只靠这点兜底——
       // 一旦以后有人调整分级，模型判断就会被一键写进正文。
       .filter((row) => row.fromModel !== true)
+      // 召回候选 confidence 恒 < 1（MAX_RECALL_CONFIDENCE = 0.99）：低置信来源
+      // 不进默认集，与「绝不自动替换」同一立场（specs/013 T024）。
+      .filter((row) => row.channel !== 'recall')
+      // review 须逐条人工判断；引例行是提示不是候选：都不预勾。
+      .filter((row) => row.disposition !== 'review' && row.disposition !== 'quoted_example')
       .map((row) => row.entryRef);
   }
 
@@ -429,6 +532,7 @@
       '    <div class="kb-atc__head-actions" data-atc-head-actions></div>',
       '  </div>',
       '  <div class="kb-atc__status" data-atc-status hidden></div>',
+      '  <div class="kb-atc__degraded" data-atc-degraded hidden></div>',
       '  <div class="kb-atc__summary" data-atc-summary hidden></div>',
       '  <div class="kb-atc__body" data-atc-body></div>',
       '  <div class="kb-atc__scope" data-atc-scope></div>',
@@ -441,6 +545,10 @@
       '  <details class="kb-atc__add" data-atc-add>',
       '    <summary data-atc-add-summary></summary>',
       '    <div class="kb-atc__add-form" data-atc-add-form></div>',
+      '  </details>',
+      '  <details class="kb-atc__receipts" data-atc-receipts>',
+      '    <summary data-atc-receipts-summary></summary>',
+      '    <div class="kb-atc__receipts-body" data-atc-receipts-body></div>',
       '  </details>',
       '</div>',
     ].join('');
@@ -488,6 +596,17 @@
       denied: [],
       showDenied: false,
       actionError: '',
+      // 【specs/013 T025】降级说明（无说话人/无场景标签/没跑过 run/空间库文档）：
+      // 初始来自挂载方（查看器传空间库降级），扫描后并入 scan 返回的 degraded；
+      // 去重后恰一处呈现，不重复叠加。
+      degradedNotes: Array.isArray(ctx.degradedNotes) ? ctx.degradedNotes.map(String).filter(Boolean) : [],
+      // 【specs/013 T030】回执区：apply 返回的 receipts（结果+条目），空态恰一处。
+      receipts: [],
+      // 【specs/013 T028/T030】被明确拒绝的词条（apply 时随 rejectedIds 写回执账本，
+      // 此后该形态不再重复建议——主进程末条判定，可经 unreject 撤销）。
+      rejected: new Set(),
+      // 「依据」展开区当前打开的行（specs/013 T026）。
+      basisOpen: '',
     };
 
     container.classList.add('kb-atc-host');
@@ -631,6 +750,23 @@
         main.appendChild(src);
       }
 
+      // 【specs/013 T024】召回通道来源徽标：这条建议来自多路召回（confidence < 1），
+      // 不是词表字面命中，且**不会被预勾**。文案走四语，不上屏裸通道名（recall）。
+      if (!row.fromModel && row.channel === 'recall') {
+        const src = document.createElement('span');
+        src.className = 'kb-atc__badge kb-atc__badge--recall';
+        src.textContent = t('kb.meetingRef.channel_recall', '召回建议');
+        main.appendChild(src);
+      }
+
+      // 【specs/013 T028/T030】被明确拒绝的行：徽标提示"会写回执且不再重复建议"。
+      if (state.rejected.has(row.entryRef)) {
+        const badge = document.createElement('span');
+        badge.className = 'kb-atc__badge kb-atc__badge--rejected';
+        badge.textContent = t('kb.meetingRef.receipt_decision_reject', '已拒绝');
+        main.appendChild(badge);
+      }
+
       const count = document.createElement('span');
       count.className = 'kb-atc__count';
       count.textContent = `×${row.count}`;
@@ -683,6 +819,33 @@
     }
 
     /**
+     * 【specs/013 T019/T025】引例只读提示行：这不是候选，是"为什么没给候选"的
+     * 可解释说明（FR-011）。**无勾选框、无接受/忽略按钮**——只有提示文案与
+     * 命中的标记词（quotedBy，QUOTE_MARKERS 之一），点击行为一律不给。
+     */
+    function quotedRowElement(row) {
+      const el = document.createElement('div');
+      el.className = 'kb-atc__row kb-atc__row--quoted';
+      el.dataset.atcRow = row.entryRef;
+      el.dataset.quoted = '1';
+      const main = document.createElement('div');
+      main.className = 'kb-atc__row-main';
+      const label = document.createElement('span');
+      label.className = 'kb-atc__quoted-note';
+      label.textContent = t(
+        'kb.meetingRef.quoted_row',
+        '引例：上下文出现「{marker}」，这里在讲写法本身，不建议替换',
+        { marker: row.quotedBy || '' },
+      );
+      main.appendChild(label);
+      const count = document.createElement('span');
+      count.className = 'kb-atc__count';
+      count.textContent = `×${row.count}`;
+      el.append(main, count);
+      return el;
+    }
+
+    /**
      * 行内次级动作（默认收起，避免每行堆 5 个按钮）。
      *
      * 菜单内容按行类型分流：
@@ -691,6 +854,8 @@
      *     词表行，那时再加白。给个点了必然失败（`updated: 0`）的按钮才是坑。
      *   - 「改写法」两种行都给：词表行走主进程改条目；模型建议行改的是"这条建议要替换成
      *     什么"，本地生效、勾选并生成清理版时按改后的写法替换（那也是它进词表的时刻）。
+     *   - 「依据 / 拒绝 / 提出为候选」（specs/013）：依据与拒绝两种行都给；「提出为候选」
+     *     只给词表行（模型建议还不是词条，没有 captureKey 可沉淀）。
      *   - 「重新审视」= 恢复：词表行走词表降权还原，模型建议行走"本次不采纳"的还原。
      */
     function rowMenuElement(row, isIgnoredRow) {
@@ -713,6 +878,40 @@
         className: 'kb-atc__btn',
         attrs: { 'data-atc-rename-open': row.entryRef },
       }));
+      parts.push(button({
+        // 【specs/013 T026】「依据」展开区：只读展示 refs（词条/本体规范名/资产），
+        // 纯前端，不发 IPC。
+        label: t('kb.meetingRef.basis', '依据'),
+        role: 'ghost',
+        size: 'sm',
+        className: 'kb-atc__btn',
+        attrs: { 'data-atc-basis-open': row.entryRef },
+      }));
+      parts.push(button({
+        // 【specs/013 T028/T030】拒绝并记回执：按钮名复用既有三键之一
+        // （recall.asset_approval.reject = 拒绝），不新造同义词。
+        label: t('recall.asset_approval.reject', '拒绝'),
+        role: 'ghost',
+        size: 'sm',
+        className: 'kb-atc__btn',
+        attrs: {
+          'data-atc-reject': row.entryRef,
+          'data-atc-rejected': state.rejected.has(row.entryRef) ? '1' : '0',
+        },
+      }));
+      if (isGlossaryRow(row)) {
+        parts.push(button({
+          // 【specs/013 T047】「提出为候选」：把这条词条确定性沉淀进 recall 候选池
+          // （captureKey=glossary-<entryId> 幂等；不是个人本体回流那条池子）。
+          // 模型建议行（model_*）不是词表词条，不提供此入口。
+          label: t('kb.meetingRef.propose_candidate', '提出为候选'),
+          role: 'ghost',
+          size: 'sm',
+          className: 'kb-atc__btn',
+          disabled: state.busy,
+          attrs: { 'data-atc-propose': row.entryRef },
+        }));
+      }
       if (isIgnoredRow) {
         parts.push(button({
           label: t('kb.transcriptCorrect.reopen_row', '重新审视'),
@@ -824,6 +1023,31 @@
         }
         wrap.appendChild(form);
       }
+
+      // 【specs/013 T026】「依据」展开区（只读）：词条（wrong→correct + freq）/
+      // 本体规范名 / 资产（标题 + 冻结 vN + id）三类各一条展示路径；上屏只含
+      // id/版本/标题，不含资产正文；无依据时如实说"不可用"，**不兜底造依据**。
+      if (state.basisOpen === row.entryRef) {
+        const box = document.createElement('div');
+        box.className = 'kb-atc__basis';
+        box.dataset.basis = row.entryRef;
+        const refs = Array.isArray(row.refs) ? row.refs : [];
+        if (!refs.length) {
+          const empty = document.createElement('div');
+          empty.className = 'kb-atc__basis-row';
+          empty.textContent = t('kb.meetingRef.basis_unavailable', '依据不可用（旧记录）');
+          box.appendChild(empty);
+        } else {
+          for (const ref of refs) {
+            const line = document.createElement('div');
+            line.className = 'kb-atc__basis-row';
+            line.dataset.basisSource = String(ref?.source || '');
+            line.textContent = basisRefText(ref, row);
+            box.appendChild(line);
+          }
+        }
+        wrap.appendChild(box);
+      }
       return wrap;
     }
 
@@ -887,7 +1111,10 @@
         return;
       }
 
-      const { high, other, ignored } = splitByRisk(state.rows);
+      const { high, other, ignored } = splitByRisk(state.rows.filter((row) => row.disposition !== 'quoted_example'));
+      // 【specs/013 T025】引例只读提示行单独成区（无勾选框、无接受/忽略按钮），
+      // 不与真实候选混排；排序沿用既有（高危 → 其余 → 已忽略 → 引例 → 被拦）。
+      const quotedRows = state.rows.filter((row) => row.disposition === 'quoted_example');
       if (high.length) {
         body.appendChild(groupHeaderElement(
           t('kb.transcriptCorrect.group_high', '高危 {count} 条 · 逐条确认', { count: high.length }),
@@ -912,6 +1139,14 @@
           'ignored',
         ));
         for (const row of ignored) body.appendChild(rowElement(row));
+      }
+      if (quotedRows.length) {
+        // 【specs/013 T025】引例区：只读提示（为什么降级 + 命中的标记词），不是候选。
+        body.appendChild(groupHeaderElement(
+          t('kb.meetingRef.quoted_group', '引例 {count} 处（不建议替换）', { count: quotedRows.length }),
+          'quoted',
+        ));
+        for (const row of quotedRows) body.appendChild(quotedRowElement(row));
       }
       if (state.denied.length) {
         body.appendChild(groupToggleElement(
@@ -1028,7 +1263,8 @@
         icon: 'check-circle',
         role: 'primary',
         size: 'sm',
-        disabled: state.busy || state.accepted.size === 0,
+        // 【specs/013 T030】有拒绝动作（要写回执）也可生成，不要求同时有接受项。
+        disabled: state.busy || (state.accepted.size === 0 && state.rejected.size === 0),
         loading: state.busy,
         attrs: { 'data-atc-action': 'apply' },
       }));
@@ -1077,13 +1313,11 @@
 
 
     /**
-     * 记忆分组/长期记忆同步块（P1）：概念归组 + 与规范名对齐。
+     * 本体分组/长期记忆同步块（P1）：概念归组 + 与规范名对齐。
      * 文案口径：用户实际看到的措辞以 `zh.json` 为准（本批实测是「本体分组」），
      * 代码回退跟着改成同一措辞 —— 否则缺键时会冒出第二套说法；并写明
      * 长期记忆是散文、只在词表已有该术语时用于对齐——不能让人以为
      * 记忆这半边会源源不断产出建议。
-     * 注意：术语尚未统一——个人本体面板导航仍叫「记忆分组」（`personalOntology.nav_groups`）。
-     * 两处用词不一致是既有状态（非本批引入），等 owner 定一个说法后一起改。
      * 视觉口径：这里全是"建议"，一律弱化色（ghost/次级文字），只有真正被采纳
      * 或需要用户注意的状态才用色调——颜色只表达状态。
      */
@@ -1328,11 +1562,78 @@
       }
     }
 
+    /**
+     * 【specs/013 T021/T023/T025】面板顶部降级说明：无说话人 / 无场景标签 /
+     * 没跑过 run / 空间库文档四码，**恰一处**呈现（单一容器、按原因去重），
+     * 不随行重复叠加。文案只说"缺什么"，不编造定位（FR-012/FR-015 如实降级）。
+     */
+    function renderDegraded() {
+      const host = q('[data-atc-degraded]');
+      if (!host) return;
+      const seen = new Set();
+      const notes = [];
+      for (const reason of state.degradedNotes || []) {
+        const text = degradedNoteText(reason);
+        if (!text || seen.has(reason)) continue;
+        seen.add(reason);
+        notes.push(text);
+      }
+      host.hidden = notes.length === 0;
+      host.textContent = notes.join('；');
+    }
+
+    /**
+     * 【specs/013 T030】回执区：apply 返回的 receipts（拒绝动作的账本凭据）。
+     * 只上屏 结果（决定类型）/ 对应会议 / 条目 / 依据标识 / 回执 id——不含正文；
+     * 空态恰一处（uiEmptyState）。
+     */
+    function renderReceipts() {
+      const body = q('[data-atc-receipts-body]');
+      if (!body) return;
+      const summary = q('[data-atc-receipts-summary]');
+      if (summary) summary.textContent = t('kb.meetingRef.receipt_section', '回执');
+      body.textContent = '';
+      const receipts = Array.isArray(state.receipts) ? state.receipts : [];
+      if (!receipts.length) {
+        body.innerHTML = typeof root.uiEmptyState === 'function'
+          ? root.uiEmptyState({
+            kind: 'quiet',
+            title: t('kb.meetingRef.receipt_empty', '暂无回执（拒绝词条或应用清理后在这里留痕）'),
+          })
+          : '';
+        if (!body.innerHTML) {
+          body.textContent = t('kb.meetingRef.receipt_empty', '暂无回执（拒绝词条或应用清理后在这里留痕）');
+        }
+        return;
+      }
+      const docName = (ctx.displayPath || ctx.docId || '').split(/[\\/]/).filter(Boolean).pop() || ctx.docId || '';
+      for (const receipt of receipts) {
+        const row = state.rows.find((item) => item.entryRef === receipt.entryRef);
+        const basis = row && Array.isArray(row.refs) && row.refs.length
+          ? basisRefText(row.refs[0], row)
+          : String(receipt.entryRef || '');
+        const el = document.createElement('div');
+        el.className = 'kb-atc__receipt-row';
+        el.dataset.receipt = String(receipt.decisionId || '');
+        el.textContent = t('kb.meetingRef.receipt_decision_reject', '已拒绝')
+          + ' · '
+          + t('kb.meetingRef.receipt_row', '会议「{doc}」· 条目「{item}」· 依据 {basis} · 回执 {id}', {
+            doc: docName,
+            item: row
+              ? (row.action === 'delete' ? row.wrong : `${row.wrong} → ${row.correct}`)
+              : String(receipt.entryRef || ''),
+            basis,
+            id: String(receipt.decisionId || ''),
+          });
+        body.appendChild(el);
+      }
+    }
+
     function render() {
       // 逐段尝试渲染：某个共享原语抛错时，不得连带把扫描/替换流程卡死
       // （真实事故：uiField 缺 id 抛错 → render() 在 runScan 的 try 之外抛出，
       //  扫描永远停在"正在扫描…"）。
-      for (const step of [renderHead, renderBody, renderSummary, renderApplyInfo, renderScope, renderActions, renderSync, renderAddForm]) {
+      for (const step of [renderHead, renderBody, renderDegraded, renderSummary, renderApplyInfo, renderScope, renderActions, renderSync, renderAddForm, renderReceipts]) {
         try {
           step();
         } catch (error) {
@@ -1357,11 +1658,21 @@
           includeDelete: true,
           // 「同时让模型读一遍」：模型建议会**并进同一个候选列表**（不是另开一套面板）
           includeReview: state.scanWithReview === true,
+          // 【specs/013 T015/T024】召回通道并入同一候选清单（channel:'recall'，
+          // confidence 恒 < 1，面板永不预勾）。召回是本地字符串匹配、无模型成本，
+          // 与 includeReview 的"不点不花钱"不同，恒开。
+          includeRecall: true,
           // 「仅本场景」的场景标签能力已随主线 #307 的界面收敛整体删除：
           // 渲染层不再产生标签，故这里也不再向 scan 传标签字段。
         });
-        state.rows = groupCandidates(result?.candidates);
-        state.denied = Array.isArray(result?.denied) ? result.denied : [];
+        // 【specs/013 T026】无依据的候选不出行（前端不兜底造依据）：词表/召回/
+        // 引例通道缺 refs 的载荷（旧数据/脏数据）在这里挡下；模型建议例外（其
+        // 判断依据是模型给的理由，行徽标 title 可见）。
+        state.rows = groupCandidates(withBasisOnly(result?.candidates));
+        // 引例已作为 disposition:'quoted_example' 的只读行进入候选清单（T019），
+        // 被拦列表里不再重复展示它们（重复叠加 + 会露出未翻译的 reason 码）。
+        state.denied = (Array.isArray(result?.denied) ? result.denied : [])
+          .filter((item) => item?.reason !== 'quoted_example');
         state.showDenied = false;
         state.scanned = true;
         state.accepted = new Set(defaultAcceptedIds(state.rows));
@@ -1374,12 +1685,22 @@
         const stats = summarizeRows(state.rows, state.accepted);
         state.truncated = Boolean(result?.stats?.truncated);
         state.review = result?.review ?? null;
+        // 【specs/013 T021/T025】降级说明：挂载方带来的（如空间库文档）与 scan
+        // 返回的 degraded 合并去重，面板顶部恰一处呈现。
+        const ctxNotes = Array.isArray(ctx.degradedNotes) ? ctx.degradedNotes.map(String) : [];
+        const scanNotes = Array.isArray(result?.degraded) ? result.degraded.map(String) : [];
+        state.degradedNotes = [...new Set([...ctxNotes, ...scanNotes])];
         const reviewNote = reviewSummary(state.review);
+        // 【specs/013 T029】被拒抑制滤掉的行数如实说：候选变少要有解释。
+        const suppressed = Number(result?.stats?.suppressed || 0);
+        const suppressedNote = suppressed > 0
+          ? t('kb.meetingRef.suppressed_note', '{count} 条此前已拒绝的形态未再出现（可经回执撤销）', { count: suppressed })
+          : '';
         setStatus(stats.total === 0
-          ? reviewNote
+          ? (reviewNote + suppressedNote)
           : (state.truncated
-            ? t('kb.transcriptCorrect.scan_truncated', '扫描完成：{total} 条候选（已达上限，可能还有更多；建议先暂停部分词条）{review}', { total: stats.total, review: reviewNote })
-            : t('kb.transcriptCorrect.scan_done', '扫描完成：{total} 条候选{review}', { total: stats.total, review: reviewNote })), '');
+            ? t('kb.transcriptCorrect.scan_truncated', '扫描完成：{total} 条候选（已达上限，可能还有更多；建议先暂停部分词条）{review}', { total: stats.total, review: reviewNote }) + suppressedNote
+            : t('kb.transcriptCorrect.scan_done', '扫描完成：{total} 条候选{review}', { total: stats.total, review: reviewNote }) + suppressedNote), '');
       } catch (error) {
         log?.warn('transcript scan failed', { error: error?.message || String(error) });
         state.scanned = true;
@@ -1393,7 +1714,8 @@
     }
 
     async function runApply() {
-      if (state.busy || state.accepted.size === 0) return;
+      // 【specs/013 T030】被拒词条也要能走 apply（写回执账本），不要求同时有接受项。
+      if (state.busy || (state.accepted.size === 0 && state.rejected.size === 0)) return;
       state.busy = true;
       setStatus(t('kb.transcriptCorrect.applying', '正在生成…'), 'loading');
       render();
@@ -1407,6 +1729,9 @@
           // 附记要能说清"这份清理版是从哪份转写来的"
           ...(ctx.displayPath ? { sourcePath: ctx.displayPath } : {}),
           acceptedIds: [...state.accepted],
+          // 【specs/013 T028/T030】明确拒绝的词条：apply 时随 rejectedIds 写既有
+          // 回执账本（此后该形态不再重复建议，T029；撤销走 unreject，T032）。
+          ...(state.rejected.size ? { rejectedIds: [...state.rejected] } : {}),
           // 模型建议是**本轮的临时候选**（没有词表条目），apply 时得跟着请求走；
           // 只传被勾选的那些——主进程还会按 span 逐字校验。
           ...(checkedModelCandidates(state.rows, state.accepted).length
@@ -1418,6 +1743,8 @@
         reportMetrics(result?.result);
         state.runId = String(result?.run?.runId || '');
         state.cleanedText = String(result?.result?.text || '');
+        // 【specs/013 T030】回执上屏：apply 返回的 receipts（entryRef + decisionId）。
+        state.receipts = Array.isArray(result?.receipts) ? result.receipts : [];
         // 勾选并应用 = 确认：主进程会把被应用的模型建议记进词表（source: meeting_accept，
         // 只对本文档生效）。这件事必须说出来——否则用户不知道词表被改了。
         const written = Number(result?.glossaryWrites?.created || 0) + Number(result?.glossaryWrites?.updated || 0);
@@ -1987,6 +2314,43 @@
       }
     }
 
+    /**
+     * 【specs/013 T047】提出为候选：把词表词条沉淀进 recall 候选池
+     * （`transcript.correct.proposeCandidate`；captureKey=glossary-<entryId>
+     * 幂等——created:false = 已在候选池，不重复建账，界面如实提示）。
+     * 词条 kind 从依据里的 glossary ref 读（扫描时主进程已带上）；读不到
+     * （旧载荷）就不发起，不猜。
+     */
+    async function runPropose(entryRef) {
+      if (state.busy) return;
+      const row = state.rows.find((item) => item.entryRef === entryRef);
+      const glossaryRef = (Array.isArray(row?.refs) ? row.refs : [])
+        .find((ref) => ref && typeof ref === 'object' && ref.source === 'glossary');
+      const entryKind = glossaryRef ? String(glossaryRef.kind || '') : '';
+      if (!entryKind) {
+        setStatus(t('kb.meetingRef.propose_no_kind', '这条记录缺少词条类别，无法提出为候选。'), 'warning');
+        return;
+      }
+      try {
+        const result = await root.cogseed.invoke('transcript.correct.proposeCandidate', {
+          entryId: entryRef,
+          entryKind,
+          // 面板上下文：用户此刻在这份文档里提出（主进程据此填 sourceRefs）。
+          ...(ctx.docId ? { docId: ctx.docId } : {}),
+        });
+        if (result && result.created === false) {
+          setStatus(t('kb.meetingRef.propose_exists', '「{wrong}」已在候选池，不重复建账。', { wrong: row?.wrong || '' }), '');
+        } else {
+          setStatus(t('kb.meetingRef.propose_done', '已提出为候选：「{wrong}」（确认后才会进入资产库）', { wrong: row?.wrong || '' }), '');
+        }
+      } catch (error) {
+        log?.warn('propose candidate failed', { error: error?.message || String(error) });
+        setStatus(t('kb.meetingRef.propose_failed', '提出为候选失败，请稍后重试。'), 'warning');
+      } finally {
+        render();
+      }
+    }
+
     /** 加白：把用户填的上下文词加入白名单，之后该语境静默（需重扫生效）。 */
     async function runAddAllow(entryRef) {
       if (state.busy) return;
@@ -2169,7 +2533,41 @@
         state.rowMenu = state.rowMenu === ref ? '' : ref;
         state.allowOpen = '';
         state.renameOpen = '';
+        state.basisOpen = '';
         render();
+        return;
+      }
+      // 【specs/013 T026】「依据」展开/收起（纯前端，只读）。
+      const basisOpen = event.target.closest('[data-atc-basis-open]');
+      if (basisOpen) {
+        const ref = basisOpen.getAttribute('data-atc-basis-open');
+        state.basisOpen = state.basisOpen === ref ? '' : ref;
+        state.allowOpen = '';
+        state.renameOpen = '';
+        render();
+        return;
+      }
+      // 【specs/013 T028/T030】拒绝/取消拒绝（本地标记；apply 时随 rejectedIds
+      // 写回执账本，此后不再重复建议）。再点一次即取消（拒错可撤）。
+      const reject = event.target.closest('[data-atc-reject]');
+      if (reject) {
+        const ref = reject.getAttribute('data-atc-reject');
+        const row = state.rows.find((item) => item.entryRef === ref);
+        if (state.rejected.has(ref)) {
+          state.rejected.delete(ref);
+          setStatus(t('kb.meetingRef.reject_unmarked', '已取消拒绝：{wrong}', { wrong: row?.wrong || '' }), '');
+        } else {
+          state.rejected.add(ref);
+          state.accepted.delete(ref);
+          setStatus(t('kb.meetingRef.reject_marked', '已标记拒绝：{wrong}（生成清理版时记入回执，此后不再重复建议）', { wrong: row?.wrong || '' }), '');
+        }
+        render();
+        return;
+      }
+      // 【specs/013 T047】提出为候选（幂等：created:false 时提示已在候选池）。
+      const propose = event.target.closest('[data-atc-propose]');
+      if (propose) {
+        void runPropose(propose.getAttribute('data-atc-propose'));
         return;
       }
       const allowRemove = event.target.closest('[data-atc-allow-remove]');
@@ -2182,6 +2580,7 @@
         const ref = allowOpen.getAttribute('data-atc-allow-open');
         state.allowOpen = state.allowOpen === ref ? '' : ref;
         state.renameOpen = '';
+        state.basisOpen = '';
         render();
         return;
       }
@@ -2194,6 +2593,7 @@
         const ref = renameOpen.getAttribute('data-atc-rename-open');
         state.renameOpen = state.renameOpen === ref ? '' : ref;
         state.allowOpen = '';
+        state.basisOpen = '';
         render();
         return;
       }
@@ -2296,11 +2696,19 @@
         text,
         docId: String(ctx?.docId || ctx?.displayPath || 'transcript'),
         displayPath: String(ctx?.displayPath || ''),
+        // 【specs/013 T023/T025】挂载方已知的降级（如空间库文档只读到片段）：
+        // 并进面板顶部降级说明（恰一处呈现）。
+        ...(Array.isArray(ctx?.degradedNotes) && ctx.degradedNotes.length
+          ? { degradedNotes: ctx.degradedNotes.map(String).filter(Boolean) }
+          : {}),
       });
     },
     // 测试桥（仅纯函数；DOM/IPC 逻辑不进测试桥）
     __test: {
       groupCandidates,
+      withBasisOnly,
+      basisRefText,
+      degradedNoteText,
       groupRowsByConcept,
       buildDiffPanes,
       conceptKeyOfCorrect,
@@ -2324,6 +2732,9 @@
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
       groupCandidates,
+      withBasisOnly,
+      basisRefText,
+      degradedNoteText,
       groupRowsByConcept,
       buildDiffPanes,
       conceptKeyOfCorrect,

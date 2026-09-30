@@ -65,15 +65,18 @@ describe('Ontology R-Box (relation rules)', () => {
     expect((await rules.loadOntologyRules('rule-user')).rules).toEqual([]);
   });
 
-  it('filters project-scoped relation rules to the projection workspace', async () => {
+  it('filters project-scoped relation rules by project id, independent from workspace', async () => {
     const groups = await import('../../../../src/main/features/personal_ontology_groups');
     const rules = await import('../../../../src/main/features/recall/ontology-rules');
     const group = await groups.createGroup('rule-user', '项目规则');
-    await groups.appendFieldValue('rule-user', group.group!.group_id, '映射', '当前项目 → 当前流程', '手动', 'workspace-a');
-    await groups.appendFieldValue('rule-user', group.group!.group_id, '映射', '其他项目 → 其他流程', '手动', 'workspace-b');
+    await groups.appendFieldValue('rule-user', group.group!.group_id, '映射', '当前项目 → 当前流程', '手动', 'project-alpha');
+    await groups.appendFieldValue('rule-user', group.group!.group_id, '映射', '其他项目 → 其他流程', '手动', 'project-beta');
     await groups.appendFieldValue('rule-user', group.group!.group_id, '映射', '全局规则 → 通用流程', '手动');
 
-    const loaded = await rules.loadOntologyRules('rule-user', { workspaceId: 'workspace-a' });
+    const loaded = await rules.loadOntologyRules('rule-user', { projectId: 'project-alpha', workspaceId: 'workspace-a' });
     expect(loaded.rules.map((rule) => rule.subject)).toEqual(['当前项目', '全局规则']);
+
+    const workspaceOnly = await rules.loadOntologyRules('rule-user', { workspaceId: 'workspace-a' });
+    expect(workspaceOnly.rules.map((rule) => rule.subject)).toEqual(['全局规则']);
   });
 });

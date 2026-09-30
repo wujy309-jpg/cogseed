@@ -51,6 +51,8 @@ const _rendererFeatureManifest = Object.freeze({
     { src: './modules/cognition-assets/core.js' },
     { src: './modules/cognition-assets/vocabulary.js' },
     { src: './modules/cognition-assets/views.js' },
+    { src: './modules/cognition-assets/review-candidate.js' },
+    { src: './modules/cognition-assets/review-views.js' },
     { src: './modules/cognition-assets/app.js' },
     { src: './modules/personal-ontology.js' },
   ],
