@@ -161,6 +161,7 @@ import {
 } from './util/boot_init';
 import { getBootDeviceProfile } from './util/boot-device-profile';
 import * as updaterClient from './features/updater/client';
+import { evaluateBootGuard, markBootHealthy } from './features/updater/boot_guard';
 import * as updatesIpc from './ipc/updates';
 
 // `CORE_AGENT_AUTH_DIR` is pinned per-uid by `features/users.activateUser()`
@@ -320,6 +321,20 @@ function createWindow(): BrowserWindow {
     pathToFileURL(rendererFile).toString(),
   );
   win.loadFile(rendererFile);
+
+  // A completed main-window load is this app's "genuinely usable" signal: the
+  // window is shown at creation and has no `ready-to-show` handler, and the
+  // renderer only stops parsing here. The post-upgrade boot guard holds its
+  // marker until this point, so a start that dies before the UI renders counts
+  // as a failed upgrade attempt.
+  win.webContents.once('did-finish-load', () => {
+    if (win.isDestroyed() || win.webContents.isDestroyed()) return;
+    try {
+      markMainWindowHealthy();
+    } catch (err) {
+      log.warn('boot health mark failed', { error: (err as Error)?.message });
+    }
+  });
 
   // Block HTML <title> from populating the native titlebar — we want a
   // frame-only look (drag works, but no label across the top).
@@ -661,6 +676,60 @@ function registerIpc(): void {
       },
     };
   });
+}
+
+// ── Post-upgrade boot guard ──────────────────────────────────────────────
+// The uid the guard judged during this app start, or null before it ran. The
+// uid is read at use time and only remembered to keep the guard once-per-start
+// and to mark the *judged* uid healthy (AGENTS.md: never cache a uid-derived
+// path at module load).
+let bootGuardUid: string | null = null;
+
+/**
+ * Run the post-upgrade boot guard once for the active uid.
+ *
+ * Safe to call from both the immediate boot batch and the main window's
+ * `did-finish-load` hook: the first caller wins, so the marker is always seeded
+ * before the healthy mark can clear it and attempts are never double-counted.
+ */
+function runBootGuardOnce(): void {
+  let uid: string;
+  try {
+    uid = users.getActiveUserId();
+  } catch {
+    // No active user (failed or not-yet-finished activation): nothing to judge.
+    return;
+  }
+  if (bootGuardUid === uid) return;
+  bootGuardUid = uid;
+  const verdict = evaluateBootGuard(uid, { currentVersion: app.getVersion() });
+  if (verdict.installMissed) {
+    // The record is deliberately retained (see boot_guard.ts): the installer may still
+    // be running, and the retained record is what seeds from_version once it applies.
+    log.warn('pending install did not take effect', {
+      reason: verdict.reason,
+      from: verdict.fromVersion,
+      running: app.getVersion(),
+    });
+  } else if (verdict.unstable) {
+    log.warn('upgrade considered unstable; auto-update must not re-install it', {
+      from: verdict.fromVersion,
+      to: verdict.toVersion,
+    });
+  }
+}
+
+/**
+ * Mark the judged upgrade healthy from the main window's first completed load.
+ *
+ * Runs the guard first (in the same synchronous tick) so this can never clear a
+ * marker the guard has not yet seeded; a window that reached this point is the
+ * evidence that the upgrade really works.
+ */
+function markMainWindowHealthy(): void {
+  runBootGuardOnce();
+  if (!bootGuardUid) return;
+  markBootHealthy(bootGuardUid);
 }
 
 async function runBootSelfCheck(): Promise<void> {
@@ -1530,6 +1599,11 @@ if (!gotLock) {
         maxSliceMs: 30_000,
       });
     }
+    // Post-upgrade boot guard. Registered as the first immediate task and fully
+    // synchronous, so the crash-loop marker is seeded (and a bad upgrade judged)
+    // before the renderer can finish loading and clear it as healthy. The verdict
+    // is retained in memory for the updates IPC layer to report.
+    registerImmediate('updater:boot-guard', runBootGuardOnce);
     // P3394 bridge (opt-in): starts a loopback HTTP channel bound to the real
     // runtime controller when COGSEED_P3394_PORT is set; no-op otherwise.
     registerImmediate('p3394:bridge', () => {
