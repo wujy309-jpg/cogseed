@@ -1610,10 +1610,10 @@
           ${forbidden.length ? `<div class="ca-asset-boundary"><span>${esc(T('cognition.asset_version_forbidden', '禁用场景'))}</span><p>${esc(forbidden.join('；'))}</p></div>` : ''}
         </section>`
       : '';
-    /* 「详情与历史」折叠区＝④怎么被用的明细（五区骨架，2026-09-28 对照表）：
-     * 使用明细 / 实际采用记录 / 排序依据 / **版本历史**（版本信息归④）。
-     * 标签与归并（管理操作）移⑤侧栏「更多操作」卡，台账（生命周期记录）随⑤。
-     * 默认收起、内容不丢（T041 口径不变）。 */
+    /* 「详情与历史」折叠区＝④怎么被用的明细（五区骨架，2026-09-28 对照表；
+     * 2026-10-01 子安走查定序：版本历史提到最上——用户管理资产先看版本链，
+     * 使用明细退居其后。标签与归并（管理操作）移⑤侧栏「更多操作」卡，
+     * 台账（生命周期记录）随⑤。默认收起、内容不丢（T041 口径不变）。 */
     /* 版本计数挂上折叠标题（2026-09-29 子安走查「版本好像没有」）：默认收起
      * 又无计数，多版本资产的演化链从外面完全不可见。计数＝版本流里的真实
      * 版本数（S.assetVersions 已补拉时）；补拉未回或单版本时不挂数字。 */
@@ -1623,8 +1623,8 @@
     const historyFold = foldBlock(
       T('cognition.asset_history_fold', '使用与版本'),
       versionCount,
-      T('cognition.asset_history_fold_hint', '使用明细、采用记录、排序依据与版本历史都在这里，内容一样全。'),
-      `${assetUsageSection(asset, route)}${assetRankingWhySection(asset)}${assetAdoptionSection(asset)}${assetVersionsSection(asset)}`,
+      T('cognition.asset_history_fold_hint', '版本历史、使用明细、采用记录与排序依据都在这里，内容一样全。'),
+      `${assetVersionsSection(asset)}${assetUsageSection(asset, route)}${assetRankingWhySection(asset)}${assetAdoptionSection(asset)}`,
       'ca-detail-history',
     );
     const recommendWarn = (() => {

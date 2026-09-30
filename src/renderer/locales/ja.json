@@ -6719,7 +6719,7 @@
   "cognition.asset_boundary_section": "使用条件",
   "cognition.asset_manage_section": "管理",
   "cognition.asset_history_fold": "使用とバージョン",
-  "cognition.asset_history_fold_hint": "使用明細・採用記録・順位根拠・版本履歴はここにすべてあります。",
+  "cognition.asset_history_fold_hint": "版本履歴・使用明細・採用記録・順位根拠はここにすべてあります。",
   "cognition.activity_lead": "整理の記録を時系列で表示します。確認が必要な内容は「対応待ち」に入ります。",
   "cognition.activity_event_running": "この会話を整理中…",
   "cognition.activity_event_nightly": "夜間の整理が完了 → 確認待ちの提案 {n} 件",

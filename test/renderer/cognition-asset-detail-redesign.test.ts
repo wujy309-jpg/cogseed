@@ -46,6 +46,29 @@ describe('正式认知资产详情页', () => {
     expect(html).toContain('aria-label="允许后续任务使用"');
   });
 
+  it('「使用与版本」折叠区内：版本记录在上、使用记录在下（2026-10-01 走查定序）', () => {
+    const html = renderDetail(BASE, {
+      realUsageKinds: ['projection_confirmed'],
+      assetTimeline: {
+        assetId: BASE.id, loading: false, failed: false,
+        items: [{ id: 'proof-1', kind: 'projection_confirmed', occurredAt: '2026-09-28T10:00:00Z', refs: { assetId: BASE.id, projectionId: 'proj-1', version: '1', conversationId: 'conv-1' } }],
+      },
+      adoptionReceipts: { assetId: BASE.id, items: [], loading: false, failed: false },
+      assetVersions: {
+        assetId: BASE.id, usage: [],
+        versions: [{ assetId: BASE.id, version: '1', at: '2026-09-14T01:00:00Z', snapshot: { title: 'T', statement: 'S', evidenceRefs: [] } }],
+      },
+    });
+    // 断言锚在折叠体内部标题上，不受折叠上方「用过吗」摘要卡的「使用记录读取中」干扰；
+    // 使用记录区在时间线为空时走无标题的空态块（views 早退），故必须带真实使用事件。
+    const fold = html.slice(html.indexOf('ca-detail-history'));
+    const versionsIdx = fold.indexOf('<div class="tt">版本记录</div>');
+    const usageIdx = fold.indexOf('<strong class="sect-t">使用记录</strong>');
+    expect(versionsIdx).toBeGreaterThan(-1);
+    expect(usageIdx).toBeGreaterThan(-1);
+    expect(versionsIdx).toBeLessThan(usageIdx);
+  });
+
   it('未读到使用与采用数据时显示读取中，成功读取空结果后才显示零次', () => {
     const pending = useCard(renderDetail());
     expect(pending).toContain('使用记录读取中');

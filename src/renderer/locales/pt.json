@@ -6719,7 +6719,7 @@
   "cognition.asset_boundary_section": "Condições de uso",
   "cognition.asset_manage_section": "Gerenciar",
   "cognition.asset_history_fold": "Uso e versões",
-  "cognition.asset_history_fold_hint": "Detalhes de uso, registros de adoção, base de ordenação e histórico de versões estão aqui.",
+  "cognition.asset_history_fold_hint": "Histórico de versões, detalhes de uso, registros de adoção e base de ordenação estão aqui.",
   "cognition.activity_lead": "As execuções de organização aparecem em ordem cronológica. Os itens que precisam da sua avaliação vão para «Precisa da minha atenção».",
   "cognition.activity_event_running": "organizando esta conversa…",
   "cognition.activity_event_nightly": "Organização noturna concluída → {n} sugestões para revisar",

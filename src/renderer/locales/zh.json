@@ -8802,7 +8802,7 @@
   "cognition.asset_boundary_section": "使用边界",
   "cognition.asset_manage_section": "管理",
   "cognition.asset_history_fold": "使用与版本",
-  "cognition.asset_history_fold_hint": "使用明细、采用记录、排序依据与版本历史都在这里，内容一样全。",
+  "cognition.asset_history_fold_hint": "版本历史、使用明细、采用记录与排序依据都在这里，内容一样全。",
   "cognition.activity_lead": "整理记录按时间排列；需要你判断的内容会进入「待我处理」。",
   "cognition.activity_event_running": "正在整理这段会话…",
   "cognition.activity_event_nightly": "夜间整理完成 → {n} 条待确认建议",

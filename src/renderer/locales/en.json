@@ -8802,7 +8802,7 @@
   "cognition.asset_boundary_section": "When to use it",
   "cognition.asset_manage_section": "Manage",
   "cognition.asset_history_fold": "Usage & versions",
-  "cognition.asset_history_fold_hint": "Usage details, adoption records, ranking rationale and version history live here.",
+  "cognition.asset_history_fold_hint": "Version history, usage details, adoption records and ranking rationale live here.",
   "cognition.activity_lead": "Organization runs are listed by time. Items that need your review appear in Needs my action.",
   "cognition.activity_event_running": "organizing this conversation…",
   "cognition.activity_event_nightly": "Nightly organization finished → {n} suggestions to review",
