@@ -149,6 +149,9 @@ function ontologyTitle(statement: string): string {
   return `${base}…`;
 }
 
+/** Legacy USER/MEMORY 文件条目 → 虚拟画像条目（onto-<sha256 prefix>，bud/v1
+ *  伪造值）。仅在资产库没有任何 personal 记录（迁移未跑）的过渡回退里使用：
+ *  那里「不是资产」，伪造的治理字段是如实的。正式个人资产走真实字段镜像。 */
 function ontologyAssetFromEntry(
   text: string,
   source: 'user_profile' | 'shared_memory',
@@ -173,17 +176,23 @@ function ontologyAssetFromEntry(
   };
 }
 
-/** Personal formal assets → virtual profile entries (onto-<sha256 prefix>).
- *  Callers must pass the IDs admitted for the current task; this is a profile
+/** Personal formal assets → profile entries carrying the asset's real
+ *  governance fields (id/version/maturity/title/scope/evidenceRefs). Callers
+ *  must pass the IDs admitted for the current task; this is a profile
  *  presentation channel and does not create projection citations. Legacy
  *  USER/MEMORY files remain a migration fallback only after a successful store
- *  read confirms that no personal asset records exist. */
+ *  read confirms that no personal asset records exist.
+ *
+ *  2026-09-30 修1：此前镜像把 id 换成 onto-<sha> 并硬编码 bud/v1——同一条
+ *  记录两种投影互相矛盾（真身 v10 已实证 vs 镜像 v1 bud），注入块按伪造值
+ *  展示治理（自检曾据此误判「画像通道绕过闸门」），回执按 onto-id 记账也
+ *  永远连不回资产本体。镜像只保留展示职责，治理与审计回真身。 */
 export async function loadOntologyAssets(
   userId: string,
   options: { allowedPersonalAssetIds?: ReadonlySet<string> } = {},
 ): Promise<WorldModelAbilityAsset[]> {
   const assets: WorldModelAbilityAsset[] = [];
-  let statements: Array<{ text: string; name: 'user_profile' | 'shared_memory' }> = [];
+  let personal: RecallAbilityAssetRecord[] = [];
   let personalAssetStoreRead = false;
   let hasPersonalAssetRecords = false;
   try {
@@ -192,16 +201,33 @@ export async function loadOntologyAssets(
       .filter((asset) => asset.type === 'personal');
     personalAssetStoreRead = true;
     hasPersonalAssetRecords = personalRecords.length > 0;
-    const personal = personalRecords.filter((asset) => (
+    personal = personalRecords.filter((asset) => (
       asset.status === 'active'
       && (options.allowedPersonalAssetIds === undefined || options.allowedPersonalAssetIds.has(asset.id))
     ));
-    statements = personal.map((asset) => ({ text: String(asset.statement || ''), name: 'user_profile' as const }));
   } catch {
-    statements = [];
+    personal = [];
   }
+  if (personalAssetStoreRead && hasPersonalAssetRecords) {
+    for (const record of personal) {
+      assets.push({
+        id: record.id,
+        version: record.version,
+        title: record.title,
+        type: record.type,
+        statement: String(record.statement || '').replace(/\s+/g, ' ').trim().slice(0, MAX_ONTOLOGY_STATEMENT),
+        scope: record.scope,
+        maturity: record.maturity,
+        ontologyRefs: (record.ontologyRefs || []).map((ref) => ({ ...ref })),
+        evidenceRefs: record.evidenceRefs.slice(0, MAX_EVIDENCE_REFS).map((ref) => ({ ...ref })),
+      });
+      if (assets.length >= MAX_ONTOLOGY_ASSETS) break;
+    }
+    return assets;
+  }
+  // 过渡回退：资产库还没有画像（迁移未跑）时读文件。
+  let statements: Array<{ text: string; name: 'user_profile' | 'shared_memory' }> = [];
   if (personalAssetStoreRead && !hasPersonalAssetRecords) {
-    // 过渡回退：资产库还没有画像（迁移未跑）时读文件。
     for (const { file, name } of [
       { file: userProfileFile(userId), name: 'user_profile' as const },
       { file: userMemoryFile(userId), name: 'shared_memory' as const },
@@ -316,9 +342,11 @@ export async function loadCommittedProjectionKnowledge(
         groupTitle: 'Durable personal context',
         field: 'memory',
         value: asset.statement,
-        source: asset.evidenceRefs.some((ref) => ref.id === 'user_profile')
-          ? 'user_profile' as const
-          : 'shared_memory' as const,
+        // onto-* 虚拟条目按文件来源标注；正式资产镜像（aa-*）的真身证据引用
+        // 里没有 user_profile 键，不能落进 shared_memory 误标——画像是用户档案。
+        source: asset.id.startsWith('onto-')
+          ? (asset.evidenceRefs.some((ref) => ref.id === 'user_profile') ? 'user_profile' as const : 'shared_memory' as const)
+          : 'user_profile' as const,
       })),
     ].slice(0, MAX_ONTOLOGY_FACTS),
     ontologyTaxonomy: await loadOntologyTaxonomy(userId),

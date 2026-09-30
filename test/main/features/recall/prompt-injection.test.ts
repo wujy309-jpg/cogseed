@@ -486,6 +486,50 @@ describe('confirmed Recall projection prompt injection', () => {
       expect(result.profileMemoryEntries!.every((entry) => /^onto-/.test(entry.id))).toBe(true);
     });
 
+    it('库里已有正式个人资产时：画像块渲染真实 id/成熟度/版本，注入清单可回连资产', async () => {
+      const { assets, projection, promptInjection } = await modules();
+      const now = new Date().toISOString();
+      const created = await assets.createAbilityAsset('user-a', {
+        schemaVersion: 2, ownerId: 'user-a', id: 'aa-personal-channel',
+        candidateId: 'cand-personal-channel', sourceCandidateIds: ['cand-personal-channel'],
+        reviewDecisionId: 'rd_personal_channel',
+        type: 'personal', title: '沟通语言', statement: '与该用户对话一律使用中文。',
+        evidenceRefs: [{ kind: 'conversation', id: 'conv-personal-channel' }],
+        scope: 'general', status: 'active', lifecycleStatus: 'user_confirmed_unverified',
+        maturity: 'bud', version: '1',
+        createdAt: now, updatedAt: now,
+      }, { actor: 'user', reason: 'profile channel test' });
+      await assets.setAbilityAssetMaturity('user-a', created.id, 'transfer_validated');
+      const preview = await projection.previewContextProjection('user-a', {
+        taskRunId: 'task-profile-real',
+        purpose: 'global',
+        taskText: 'Audit OAuth callback handling',
+      }, fakeSemanticOptions);
+      const confirmed = await projection.confirmContextProjection('user-a', preview.id);
+
+      const result = await promptInjection.buildRecallTurnPromptContext('user-a', {
+        cid: 'cid-profile-real',
+        taskRunId: 'turn-profile-real',
+        taskText: 'Audit OAuth callback handling',
+        committedProjectionId: confirmed.id,
+      });
+
+      const profileBlock = result.profileMemoryBlock ?? '';
+      expect(profileBlock).not.toBe('');
+      const profilePayload = profileBlock
+        .slice(profileBlock.indexOf('\n', profileBlock.indexOf('Background profile context')) + 1)
+        .replace(/\n<\/durable-profile-memory>$/, '');
+      const profileRecords = JSON.parse(profilePayload) as Array<Record<string, unknown>>;
+      // 真实资产过闸门后镜像进块：id/成熟度/版本与库内记录一致，可回连审计。
+      const record = profileRecords.find((row) => row.asset_id === created.id);
+      expect(record).toBeTruthy();
+      expect(record!.maturity).toBe('transfer_validated');
+      expect(record!.version).toBe(created.version);
+      // 注入清单（供回执侧落账）带真实 id——用量统计与成熟度证据链的钥匙。
+      expect(result.profileMemoryEntries?.map((entry) => entry.id)).toContain(created.id);
+      expect(result.profileMemoryEntries?.every((entry) => !/^onto-/.test(entry.id))).toBe(true);
+    });
+
     it('无 durable memory 时不产生画像块，返回结构不携带画像字段', async () => {
       const promoted = await createAssetWith({
         judgment: 'Review OAuth callback and token exchange security.',
