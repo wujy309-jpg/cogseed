@@ -193,4 +193,3 @@ describe('Creator IPC handlers', () => {
     expect(JSON.stringify(result)).not.toContain('/private');
   });
 });
-

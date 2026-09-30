@@ -23,4 +23,3 @@ When tools or Skills are needed, include a `capability_plan` in the same JSON en
 The envelope must also include `capability_plan.riskLevel` and `capability_plan.creationMode`. Use `direct` only when every planned capability is low risk and has no side effect; use `governed` for reading workspace or knowledge, cost-bearing models, network, writing, sending, command execution, or external delegation. Never use a direct mode to bypass governance. If the user explicitly says no network, no tools, or no file writes, honor that restriction and keep the corresponding plan and manifest permissions empty.
 
 For a pure text Agent, return `capability_plan: {"tools":[],"skills":[],"riskLevel":"low","creationMode":"direct"}`. If the workflow requires a capability that is not declared, unavailable, or conflicts with the user's restrictions, do not claim `draft_ready`; return `blocked` or ask one focused high-risk clarification.
-

@@ -71,4 +71,3 @@ describe('containerToCreatorDraft', () => {
     expect(schema.ok).toBe(true);
   });
 });
-

@@ -244,4 +244,3 @@ describe('governed Agent builder flow', () => {
     expect(isGovernedConfirmation('我想确认一下配置')).toBe(false);
   });
 });
-

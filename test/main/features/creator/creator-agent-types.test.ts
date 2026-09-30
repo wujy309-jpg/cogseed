@@ -120,4 +120,3 @@ describe('Creator Agent turn contract', () => {
     expect(summary.capabilities[0]).not.toHaveProperty('transportHandle');
   });
 });
-

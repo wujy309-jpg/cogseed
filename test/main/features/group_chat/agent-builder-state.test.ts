@@ -65,4 +65,3 @@ describe('agent-builder-state', () => {
     expect(BUILDER_FLOW_TTL_MS).toBe(24 * 60 * 60 * 1000);
   });
 });
-

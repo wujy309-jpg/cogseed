@@ -16,4 +16,3 @@ describe('Creator/P3394 renderer IPC wiring', () => {
     expect(preload).not.toContain('endpoint:');
   });
 });
-

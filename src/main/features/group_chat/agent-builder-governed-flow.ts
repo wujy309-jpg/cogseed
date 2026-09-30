@@ -387,4 +387,3 @@ async function markFlowFailed(
 export function isGovernedConfirmation(text: string): boolean {
   return CONFIRM_RE.test(confirmText(text)) || FINAL_CONFIRM_RE.test(confirmText(text)) || CANCEL_RE.test(confirmText(text));
 }
-

@@ -43,4 +43,3 @@ describe('runAgentSmokeTest', () => {
     expect(overlong.status).toBe('failed');
   });
 });
-
