@@ -32,6 +32,11 @@
 - `ontology-driven-query-design-v2.zh-CN.md`
 - `ontology-query-validation-plan.zh-CN.md`
 
+本次更新后的方案：
+
+- `ontology-driven-query-jev-design-v3.zh-CN.md`
+- `ontology-query-jev-validation-v3.zh-CN.md`
+
 它们是设计和测试参考，不代表所有设计中的 `ontology_query` 主入口已经存在于当前代码中。
 
 ## 当前明确未完成的部分
@@ -43,6 +48,8 @@
 3. 把本体查询结果完整接入能力资产候选排序、注入和执行反馈闭环。
 4. 基于真实用户数据的 `kb_search`、本体查询和混合模式对照评估。
 5. Jev 的候选判断和结果验证适配器。
+
+v3 已把 Jev 纳入后续设计，但只是设计和验收基线；Jev 代码尚未接入。
 
 ## 融合原则
 
