@@ -65,15 +65,22 @@ chat.executionCapability
 chat.interaction.reply
 cognition.assets.list
 cognition.extractFromSession
+cognition.homes.replace
 cognition.inbox.list
 cognition.inbox.resolve
 cognition.kernel.backfill
 cognition.kernel.inbox
 cognition.kernel.taskFields
+cognition.migration.run
+cognition.pool.decide
+cognition.pool.list
+cognition.pool.unrouted.decide
+cognition.pool.unrouted.list
 cognition.skills.diff
 cognition.skills.rollback
 cognition.skills.rollback.preview
 cognition.skills.summary
+cognition.store.snapshot
 cogseed.agent.list
 cogseed.anchor.resolve
 cogseed.collaboration.action
@@ -328,9 +335,9 @@ permissions.setLocalExecMode
 personalOntology.candidates.list
 personalOntology.conflicts.list
 personalOntology.entries.list
-personalOntology.groups.deleted.list
 personalOntology.groups.create
 personalOntology.groups.delete
+personalOntology.groups.deleted.list
 personalOntology.groups.entries.promote
 personalOntology.groups.entries.remove
 personalOntology.groups.fields.append
@@ -449,6 +456,7 @@ recall.inspection.settings
 recall.inspection.settings.set
 recall.kstar.episode.read
 recall.kstar.episodes.summaries
+recall.maintenance.run
 recall.memory.migrate
 recall.projections.attachToConversation
 recall.projections.availableAssets
@@ -609,4 +617,3 @@ workspace.selectDirectory
 workspace.set
 workspace.setCodingProjectDir
 workspace.statPath
-recall.maintenance.run

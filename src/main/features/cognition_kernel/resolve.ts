@@ -169,16 +169,23 @@ export function resolveFromSnapshot(
 
 // ── 装配层（只读现有存储，不改写）──────────────────────────────────────────
 
-/** 读一份快照：本体值 + personal 资产（含任务期准入判定结果）。 */
+/** 读一份快照：本体值 + personal 资产（含任务期准入判定结果）。
+ *
+ * S4-a 起统一库优先：迁移/新写入产生的断言（store）按 (groupId,fieldName)
+ * 槽位遮蔽旧账（po 值/资产投影）——同槽以库为准；库为空（未迁移）时行为
+ * 与旧实现逐位一致。消费面因此可以逐个切到统一库而不需要一次性搬家。
+ */
 export async function loadPersonalSourceSnapshot(
   uid: string,
   context?: ResolvePersonalFieldsRequest['context'],
 ): Promise<PersonalSourceSnapshot> {
-  const [{ loadPoDocSync }, { listAbilityAssets }, { filterRecallAssetsForAgentRead }] = await Promise.all([
-    import('../po/store'),
-    import('../recall/asset-service'),
-    import('../recall/prompt-injection'),
-  ]);
+  const [{ loadPoDocSync }, { listAbilityAssets }, { filterRecallAssetsForAgentRead }, { loadCognitionStoreSync }] =
+    await Promise.all([
+      import('../po/store'),
+      import('../recall/asset-service'),
+      import('../recall/prompt-injection'),
+      import('./store'),
+    ]);
 
   const values: OntologyFieldValueView[] = [];
   const doc = loadPoDocSync(uid);
@@ -201,6 +208,36 @@ export async function loadPersonalSourceSnapshot(
         ...(value.assetId ? { assetId: value.assetId } : {}),
       });
     }
+  }
+
+  // 统一库断言（S4-a）：库值全量进场；旧值被同槽（groupId+fieldName）或
+  // 同名字段（库内无组断言按 fieldName 全局遮蔽）让位——任务侧寻址键是字段名。
+  const store = loadCognitionStoreSync(uid);
+  const storeValues: OntologyFieldValueView[] = [];
+  for (const object of Object.values(store.objects)) {
+    if (object.kind !== 'assertion' || object.status === 'deleted') continue;
+    storeValues.push({
+      id: object.id,
+      groupId: object.groupId ?? '',
+      fieldId: '',
+      fieldName: object.fieldName ?? object.title,
+      text: object.statement,
+      source: object.origin,
+      updatedAt: object.updatedAt,
+      ...(object.asOf ? { asOf: object.asOf } : {}),
+      ...(object.verified !== undefined ? { verified: object.verified } : {}),
+    });
+  }
+  if (storeValues.length) {
+    const groupedKeys = new Set(
+      storeValues.filter((v) => v.groupId).map((v) => `${v.groupId}||${v.fieldName}`),
+    );
+    const grouplessNames = new Set(storeValues.filter((v) => !v.groupId).map((v) => v.fieldName));
+    const filtered = values.filter(
+      (v) => !groupedKeys.has(`${v.groupId}||${v.fieldName}`) && !grouplessNames.has(v.fieldName),
+    );
+    values.length = 0;
+    values.push(...filtered, ...storeValues);
   }
 
   const personalAssets = (await listAbilityAssets(uid)).filter((a) => a.type === 'personal');

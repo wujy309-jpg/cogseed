@@ -4430,6 +4430,58 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     });
   },
 
+  // ── 统一认知库（S3/S4-a）：存储快照、统一池、家注册表、迁移 ──────────────
+  'cognition.store.snapshot': async (_payload, ctx) => {
+    const doc = cognitionKernel.loadCognitionStoreSync(ctx.userId);
+    return {
+      objects: Object.values(doc.objects).map((o) => ({
+        id: o.id,
+        kind: o.kind,
+        home: o.home,
+        title: o.title,
+        statement: o.statement,
+        status: o.status,
+        version: o.version,
+        ...(o.fieldName ? { fieldName: o.fieldName } : {}),
+        ...(o.groupId ? { groupId: o.groupId } : {}),
+        ...(o.bundleKind ? { bundleKind: o.bundleKind } : {}),
+        updatedAt: o.updatedAt,
+      })),
+      homes: doc.homes,
+      updatedAt: doc.updatedAt,
+    };
+  },
+  'cognition.pool.list': async ({ status } = {}, ctx) => {
+    const filter =
+      status === 'pending' || status === 'deferred' || status === 'confirmed' || status === 'rejected'
+        ? { status }
+        : undefined;
+    return cognitionKernel.listPool(ctx.userId, filter);
+  },
+  'cognition.pool.decide': async ({ itemId, decision, note, resumeAt } = {}, ctx) => {
+    if (typeof itemId !== 'string' || !itemId.trim()) throw new Error('invalid pool item id');
+    if (decision !== 'confirm' && decision !== 'reject' && decision !== 'defer') throw new Error('invalid decision');
+    return cognitionKernel.decidePoolItem(ctx.userId, itemId, decision, {
+      ...(typeof note === 'string' && note.trim() ? { note: note.slice(0, 500) } : {}),
+      ...(decision === 'defer' && typeof resumeAt === 'string' && resumeAt ? { resumeAt } : {}),
+    });
+  },
+  'cognition.pool.unrouted.list': async (_payload, ctx) => cognitionKernel.listUnrouted(ctx.userId),
+  'cognition.pool.unrouted.decide': async ({ unroutedId, routeHome, discard } = {}, ctx) => {
+    if (typeof unroutedId !== 'string' || !unroutedId.trim()) throw new Error('invalid unrouted id');
+    if (discard === true) return cognitionKernel.decideUnrouted(ctx.userId, unroutedId, { discard: true });
+    if (typeof routeHome !== 'string' || !routeHome.trim()) throw new Error('routeHome required unless discard');
+    return cognitionKernel.decideUnrouted(ctx.userId, unroutedId, { routeHome });
+  },
+  'cognition.homes.replace': async ({ homes } = {}, ctx) => {
+    if (!Array.isArray(homes)) throw new Error('homes must be an array');
+    return cognitionKernel.replaceCognitionHomes(ctx.userId, homes as never);
+  },
+  'cognition.migration.run': async ({ dryRun } = {}, ctx) => {
+    const { migrateLegacyCognition } = await import('../features/cognition_migration');
+    return migrateLegacyCognition(ctx.userId, { dryRun: dryRun === true });
+  },
+
   // ── 桥接注册：renderer 引用但漏注册的通道（纯转发到现成能力，
   //  零逻辑变更；功能等同 renderer 期望语义）。──
   'agents.builtin.delete': async ({ agent_id }, ctx) => {
