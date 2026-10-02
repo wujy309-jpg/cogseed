@@ -163,7 +163,7 @@ describe('反漂移源码级断言（T026）', () => {
     expect(combined).toBe(1);
   });
 
-  it('⑥ tool-catalog.ts 工具名字集合保持受控基线（2026-10-03 随本体查询 72→73）', async () => {
+  it('⑥ tool-catalog.ts 工具名字集合未变（对照 012 开工前 34b87ce8 的冻结基线，2026-09-28 本体图谱切片 71→72，2026-10-02 个人字段两件 72→74）', async () => {
     const { TOOL_CATALOG } = await import('../../../../src/main/model/core-agent/tool-catalog');
     const frozen = [
       'add_custom_connector', 'archive_ability_asset', 'ask_materials', 'bash', 'briefing_get', 'briefing_schedule',
@@ -175,7 +175,10 @@ describe('反漂移源码级断言（T026）', () => {
       'list_connector_tools', 'list_files', 'list_ontology_graph', 'list_task_experiences', 'manage_execution_plan', 'markdown_to_pdf',
       'material_list', 'material_search', 'merge_ability_assets', 'messaging_list_targets', 'messaging_send',
       'messaging_send_file', 'metacognition', 'ocr_file', 'office_read', 'office_render', 'ontology_query', 'p3394_peers',
-      'p3394_send', 'p3394_sessions', 'personal_ontology_fields', 'project_instructions', 'publish_outputs',
+      'p3394_send', 'p3394_sessions',
+      // 2026-10-02：个人字段取件/记住（对话内问答；见 cognition-kernel-tools.ts）。
+      'personal_field_remember', 'personal_fields_check',
+      'personal_ontology_fields', 'project_instructions', 'publish_outputs',
       'read_ability_asset', 'read_file', 'read_task_experience',
       'research_rerank', 'restore_ability_asset', 'rollback_ability_asset', 'search_ability_assets', 'search_files',
       'stat_file', 'tool_result_read_chunk', 'tool_result_search', 'touchpoint_list', 'web_fetch', 'web_search',

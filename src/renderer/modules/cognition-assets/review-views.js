@@ -12,7 +12,8 @@
   if (!NS) return;
   const { T, esc, fmtDate } = NS;
   const S = NS.store;
-  const { btn, roleBtn, hero, empty, sectionHead, termNote, otherActions } = NS.ui;
+  // chip：状态/类型章（本体候选行按 kind 打标签用，2026-10-02）。
+  const { btn, roleBtn, hero, empty, sectionHead, termNote, otherActions, chip } = NS.ui;
   const {
     card: candidateCard,
     viewCandidate,
@@ -27,9 +28,13 @@
   /* ────────────────────────── 视图：待我处理 ────────────────────────── */
 
   function viewReview(route) {
-    if (route.candidateId) return viewCandidate(route);
     // A5（2026-09-29）：候选清单读取失败进显式错误态——不再把「没读到」伪装
     // 成「没有要你决定的」空态（此前 soft 降级空数组，用户会误以为清净了）。
+    // P-r1-58（2026-10-02）：读失败判定先于深链分支——旧顺序深链（candidateId）
+    // 先短路进 viewCandidate，而失败时 S.candidates 恒为空数组，详情页只能给
+    // 「这条建议已不在待处理列表中」——「没读到」被伪装成「不存在」，还指了
+    // 一条没法自救的路（重试清单不在此页）。错误态对深链同样成立：先如实报
+    // 清单读取失败并给重试入口。
     if (S.candidatesError) {
       return `${hero(T('cognition.review_title', '待我处理'), '')}
       <div class="sect-block">${empty(
@@ -38,6 +43,7 @@
         { label: T('cognition.review_load_retry', '重试'), attrs: { 'data-act': 'retry-candidates' } },
       )}</div>`;
     }
+    if (route.candidateId) return viewCandidate(route);
     const stats = NS.stats();
     // 两线不拆（2026-09-17 二次定调）：KSTAR 提案与对话候选同池确认，
     // 候选卡自带来源徽章（KSTAR 复盘/KSTAR 偏好/会话整理）区分出身。
@@ -217,7 +223,16 @@
     const lowBlocks = [];
     let confirmCount = 0;
     let lowCount = 0;
-    if (inboxGroups && inboxGroups.length) {
+    if (S.inboxError) {
+      // F-r3-1（分区级错误态，对齐 candidates 的 A5 先例但不挡整页）：治理
+      // 待办读失败如实说「没读到」，不冒充「没有要你确认的事项」；重试走
+      // refresh（全量重读所有区块，含 inbox）。候选分区照常展示。
+      confirmBlocks.push(`<div class="sect-block">${empty(
+        T('cognition.inbox_load_failed_title', '待确认清单没能读取'),
+        T('cognition.inbox_load_failed_hint', '治理待办的清单没有读到，其他分区不受影响。可以稍后重试；重试仍失败时，重启应用通常能恢复。'),
+        { label: T('cognition.review_load_retry', '重试'), attrs: { 'data-act': 'refresh' } },
+      )}</div>`);
+    } else if (inboxGroups && inboxGroups.length) {
       for (const group of inboxGroups) {
         if (!group || !Array.isArray(group.items) || !group.items.length) continue;
         const confirmItems = group.items.filter(isConfirm);
@@ -234,7 +249,9 @@
     const decideCount = confirmCount + ready.length;
     const lowTotal = lowCount + snoozed.length;
     const evidenceCount = broken.length + weak.length;
-    const allQuiet = !attention.length && !confirmCount && !lowCount && !pending.length && !terminal.length && !processed.length;
+    // F-r3-1：inboxError 非空不得落 allQuiet——「清单没读到」不是「没有要
+    // 确认的事项」，空态文案会与全局错误横幅自相矛盾。
+    const allQuiet = !attention.length && !confirmCount && !lowCount && !pending.length && !terminal.length && !processed.length && !S.inboxError;
     /* 导语（specs/018 T010）：一句话回答「现在要我拍板什么」。概览计数收成
      * 导语里两个可点数字（拍板数 / 证据异常数），点数字滚到对应分区——
      * 统计条与分组计数的重复就此砍掉。「预计分钟数」是硬编码经验值（2026-09-28
@@ -260,7 +277,9 @@
       ${promoted.title ? `<div class="notice-detail">${esc(truncate(promoted.title, 60))}</div>` : ''}</div>
       <span class="sp"></span>${promoted.assetId ? btn(T('cognition.review_promoted_go', '查看这条资产'), 'go-inbox-asset', { id: String(promoted.assetId), small: true, primary: true }) : ''}
     </div></div>` : '';
-    const decideHtml = decideCount ? `<div id="ca-review-decide">${sectionHead(T('cognition.review_queue_decide', '要你拍板'), String(decideCount))}
+    // decideCount 为 0 但治理清单读取失败时也要出 decide 分区（错误块在
+    // confirmBlocks 里，F-r3-1）——导语拍板数字仍只按真实计数给。
+    const decideHtml = decideCount || S.inboxError ? `<div id="ca-review-decide">${sectionHead(T('cognition.review_queue_decide', '要你拍板'), String(decideCount))}
       <div class="note sect-note">${esc(T('cognition.review_queue_decide_hint', '每条都卡在这里等你：动作与后果写在条上，处理一条少一条。'))}</div>
       ${confirmBlocks.join('')}
       ${ready.length ? `${sectionHead(T('cognition.review_group_wait', '等待你确认'), String(ready.length))}<div class="note sect-note">${esc(T('cognition.review_group_wait_note', '保存后生成第一版，来源与撤销入口都保留'))} · ${esc(termNote('candidate'))}</div>${ready.map((c) => candidateCard(c, false)).join('')}` : ''}</div>` : '';
@@ -271,8 +290,55 @@
     const attentionHtml = attention.length
       ? `<details class="details fold fold-attention"${String(route.sourceIssueOpen || '') === 'open' ? ' open' : ''}><summary>${esc(T('cognition.review_other_issues', '其他异常'))}<span class="n">${attention.length}</span></summary><div class="dbody"><div class="note">${esc(T('cognition.review_other_issues_hint', '不是等你拍板的事：整理没跑成、任务没得到回复、来源读取异常；处理入口在「系统活动」。'))}</div>${attention.join('')}${sourceIssuesSection(route)}${taskFailedSection(route)}</div></details>`
       : '';
+    /* 本体候选（关于我）并入同一个收件箱（2026-10-02 归位）：只做展示与两个动作，
+     * 确认走 po.candidates.confirm（默认进全局记忆），驳回走 po.candidates.reject。
+     * 读取失败如实报错，不把「没读到」伪装成「没有」。 */
+    const poList = Array.isArray(S.poCandidates) ? S.poCandidates : [];
+    /* 类型标签按候选的 kind 给（不再一律写「关于我」——2026-10-02 真机抓出：
+     * rule 类回流候选被错标成「关于我」，用户看不出它是规则）。 */
+    const poKindLabel = (kind) => {
+      const map = {
+        rule: ['cognition.review_onto_kind_rule', '规则'],
+        preference: ['cognition.review_onto_kind_about', '关于我'],
+        instance: ['cognition.review_onto_kind_about', '关于我'],
+        property: ['cognition.review_onto_kind_about', '关于我'],
+        relation: ['cognition.review_onto_kind_about', '关于我'],
+      };
+      const hit = map[String(kind || '')] || ['cognition.review_onto_kind_other', '其他'];
+      return T(hit[0], hit[1]);
+    };
+    /* 回流候选（id = asset-backflow-<assetId>）的源资产可能已被删除/清除：
+     * 与主进程同一口径（inbox.ts 的 EXISTING_ASSET_STATUSES），此处用已加载的
+     * 资产列表就地判断，避免让用户去点一条死建议。 */
+    const sourceAlive = (candidateId) => {
+      const raw = String(candidateId || '');
+      if (!raw.startsWith('asset-backflow-')) return true;
+      const assetId = raw.slice('asset-backflow-'.length);
+      return (S.assets || []).some((asset) => String(asset.id) === assetId
+        && !['deleted', 'purged', 'revoked'].includes(String(asset.status || 'active')));
+    };
+    const ontologyHtml = S.poCandidatesError
+      ? `<div class="sect-block">${sectionHead(T('cognition.review_group_ontology', '本体候选'), '!')}
+        <div class="note sect-note">${esc(T('cognition.review_ontology_load_failed', '本体候选没能读取，稍后重试。'))}</div></div>`
+      : poList.length
+        ? `<div class="sect-block" id="ca-review-ontology">${sectionHead(T('cognition.review_group_ontology', '本体候选'), String(poList.length))}
+      <div class="note sect-note">${esc(T('cognition.review_group_ontology_note', '系统从对话与正式资产里提出、等你决定要不要记进档案的条目；确认后进入档案，驳回即丢弃。'))}</div>
+      ${poList.map((c) => {
+        const cid = String(c.candidate_id || '');
+        const dead = cid ? !sourceAlive(cid) : false;
+        return `<div class="ca-review-row">
+        ${chip(poKindLabel(c.kind), c.kind === 'rule' ? 'blue' : 'green')}
+        ${dead ? chip(T('cognition.review_onto_stale_source', '来源已删除'), 'red') : ''}
+        <span class="ca-review-row-text">${esc(String(c.summary || c.memory_text || ''))}</span>
+        <span class="sp"></span>
+        ${cid && !dead ? btn(T('cognition.review_ontology_confirm', '确认记住'), 'po-cand-confirm', { id: cid, small: true, primary: true }) : ''}
+        ${cid ? btn(T('cognition.review_ontology_reject', '驳回'), 'po-cand-reject', { id: cid, small: true, primary: !dead }) : ''}
+      </div>`;
+      }).join('')}</div>`
+        : '';
     return `${hero(T('cognition.review_title', '待我处理'), '', leadHtml)}
     ${promotedHtml}
+    ${ontologyHtml}
     ${allQuiet ? `<div class="sect-block">${empty(
       T('cognition.inbox_empty', '没有需要你确认的事项。'),
       T('cognition.review_all_quiet_hint', '现在没有要你决定的，系统继续在后台沉淀；有新待办时会回到这里。'),

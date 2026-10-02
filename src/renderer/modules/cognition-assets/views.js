@@ -433,8 +433,17 @@
     const id = String(route.kstarEpisodeId || '');
     if (!id) return '';
     const state = S.kstarEpisode;
-    if (!state || state.episodeId !== id) {
+    if (!state || state.episodeId !== id || state.loading) {
       return `<div class="sect-block"><div class="sub">${esc(T('cognition.kstar_episode_loading', '正在读取这次任务的经过…'))}</div></div>`;
+    }
+    // 失败态（读不到 ≠ 没有）：给失败说明与「收起」出口——收起后重新点开
+    // 会重新走 loadKstarEpisode，天然重试，不冒充只有标题的空详情。
+    if (state.failed) {
+      return `<div class="sect-block ca-episode-detail">
+        <div class="tt">${esc(T('cognition.kstar_episode_detail_title', '这次任务的经过'))}</div>
+        <p class="note">${esc(T('cognition.kstar_episode_failed', '这次没读出这块内容。收起后重新点开，会再试一次。'))}</p>
+        ${btn(T('common.close', '收起'), 'open-kstar-episode', { id: '', small: true })}
+      </div>`;
     }
     const review = state.review || {};
     const goal = String((state.episode && state.episode.goal) || '').trim();
@@ -1163,20 +1172,42 @@
 
   /** 两版字段级对比（2026-09-17 报告建议 C）：两版全量快照已在渲染层
    *  （versions.list），前端自算任意两版——通道只返回相邻版本对，覆盖
-   *  不了"v3 vs 在用 v2"。展示顺序照主进程 CHANGE_ORDER：边界→范围→
-   *  正文→证据→标题；无差异明说"内容一致"。 */
+   *  不了"v3 vs 在用 v2"。展示顺序照主进程 CHANGE_ORDER：类型→边界→范围→
+   *  正文→证据→标题；无差异明说"内容一致"。
+   *  P-r1-22 双实现同修：主进程 version-diff.ts 补了 type/scopePolicy 显式
+   *  比对与其余快照键的「其他变更」兜底，这里保持同一口径——否则仅改
+   *  type/scopePolicy 等字段的版本在渲染层仍谎称"两版内容一致"。 */
   function assetVersionDiffBlock(asset, baseV, targetV) {
     const a = (baseV && baseV.snapshot) || {};
     const b = (targetV && targetV.snapshot) || {};
     const text = (value) => (Array.isArray(value) ? value.join('、') : String(value || '')) || '—';
+    const brief = (value) => {
+      if (value === undefined || value === null) return '—';
+      if (typeof value === 'string') return value || '—';
+      const out = JSON.stringify(value, Object.keys(value).sort());
+      return out || '—';
+    };
     const rows = [
+      [T('cognition.type', '类型'), categoryLabel(a.type), categoryLabel(b.type)],
       [T('cognition.asset_edit_field_applicable', '适用场景'), text(a.applicableWhen), text(b.applicableWhen)],
       [T('cognition.asset_edit_field_forbidden', '禁用场景'), text(a.forbiddenWhen), text(b.forbiddenWhen)],
       [T('cognition.asset_version_diff_scope', '适用范围'), text(a.scope), text(b.scope)],
+      [T('cognition.asset_version_diff_scope_policy', '可见范围策略'), brief(a.scopePolicy), brief(b.scopePolicy)],
       [T('cognition.asset_version_diff_statement', '正文'), text(a.statement), text(b.statement)],
       [T('cognition.asset_version_diff_evidence', '证据数量'), String((a.evidenceRefs || []).length), String((b.evidenceRefs || []).length)],
       [T('cognition.asset_version_diff_title_field', '标题'), text(a.title), text(b.title)],
     ].filter((row) => row[1] !== row[2]);
+    // 其余快照键兜底（与主进程 EXPLICIT_SNAPSHOT_KEYS 同口径）：version 是
+    // 版本号本身，每版必变，不比。
+    const explicit = ['title', 'statement', 'type', 'scope', 'scopePolicy', 'applicableWhen', 'forbiddenWhen', 'evidenceRefs', 'maturity', 'status', 'version'];
+    const seen = new Set();
+    for (const key of [...Object.keys(a), ...Object.keys(b)]) {
+      if (seen.has(key) || explicit.includes(key)) continue;
+      seen.add(key);
+      const before = brief(a[key]);
+      const after = brief(b[key]);
+      if (before !== after) rows.push([`${T('cognition.asset_version_diff_other', '其他变更')}·${key}`, before, after]);
+    }
     const title = T('cognition.asset_version_diff_line', '版本对比：v{a}（在用） → v{b}', { a: String((baseV && baseV.version) || '?'), b: String((targetV && targetV.version) || '?') });
     if (!rows.length) {
       return `<div class="sect-block ca-version-diff"><div class="tt">${esc(title)}</div><p class="note">${esc(T('cognition.asset_version_diff_same', '两版内容一致。'))}</p></div>`;
@@ -2726,6 +2757,10 @@
         body += `<div class="note">${skipReasons.map((row) => `· ${esc(NS.experience.migrationReasonText(row.reason))} × ${esc(String(row.count || 0))}`).join('<br>')}</div>`;
       }
       if (previewItems.length) {
+        // 迁移执行中（state.running）：两个执行入口置灰（对齐批量打标/
+        // 旧记忆迁移的做法）——执行中的写入广播会 drain 重画换 DOM，
+        // disabled 是 store 态驱动的，重画后仍成立。
+        const running = Boolean(state && state.running);
         body += previewItems.map((item) => `<div class="row is-flat">
           <div class="tw">
             <div class="tt">${esc(item.title || '')}</div>
@@ -2735,9 +2770,9 @@
               item.frozenProjections ? T('cognition.experience_migration_frozen_refs', '将冻结 {n} 处历史引用', { n: String(item.frozenProjections) }) : '',
             ].filter(Boolean).join(' · '))}</div>
           </div>
-          <div class="sd">${btn(T('cognition.experience_migration_run_one', '迁这一条'), 'experience-migration-run', { data: { asset: String(item.assetId || '') }, small: true })}</div>
+          <div class="sd">${btn(T('cognition.experience_migration_run_one', '迁这一条'), 'experience-migration-run', { data: { asset: String(item.assetId || '') }, disabled: running, small: true })}</div>
         </div>`).join('');
-        body += `<div class="actions">${btn(T('cognition.experience_migration_run_all', '迁移以上 {n} 条', { n: String(previewItems.length) }), 'experience-migration-run', { data: { assets: previewItems.map((item) => String(item.assetId || '')).filter(Boolean).join(',') }, primary: true, small: true })}</div>`;
+        body += `<div class="actions">${btn(T('cognition.experience_migration_run_all', '迁移以上 {n} 条', { n: String(previewItems.length) }), 'experience-migration-run', { data: { assets: previewItems.map((item) => String(item.assetId || '')).filter(Boolean).join(',') }, primary: true, disabled: running, small: true })}</div>`;
       } else {
         body += `<p class="note">${esc(T('cognition.experience_migration_nothing', '没有可迁移的存量：资产库里没有带任务复盘沉淀标记的经验类资产。'))}</p>`;
       }
@@ -3251,11 +3286,15 @@
     // warn 路径也保留（只是 UI 上不再可达）。
     const settings = S.captureSettings || {};
     const model = S.captureModel || null;
+    // P-r3-25（组7·loader 失败静默族）：模型主快照读失败 ≠ 未配置——读不到时
+    // 不给「还没配置模型 + 去应用设置」的错误指引，换如实的读取失败说明
+    // （重试走既有 refresh 动作，成功后标记自清）。
+    const modelReadFailed = Boolean(S.captureModelError);
+    const modelNeedsAttention = !modelReadFailed && (!model || !model.configured || model.authorizationRequired);
     const nightlyOn = String(settings.executionPolicy || 'manual') === 'nightly';
     const reviewAuto = String(settings.reviewPolicy || 'auto') === 'auto';
     const nightlyStart = String(settings.nightlyStart || '02:00');
     const quietMinutes = Number(settings.quietMinutes) > 0 ? Number(settings.quietMinutes) : 10;
-    const modelNeedsAttention = !model || !model.configured || model.authorizationRequired;
     // 自动维护合并卡（2026-09-29 拍板：夜间自动整理+定期检查合为一个开关）：
     // 巡检随总开关同步启停（见 app.js nightly-toggle），这里展示它的最近一轮。
     const latestInspection = S.inspection && S.inspection.latestRun ? S.inspection.latestRun : null;
@@ -3273,14 +3312,20 @@
       T('cognition.organize_settings_title', '资产设置'),
       T('cognition.organize_settings_hint', '自动维护集中在这里：夜间整理对话、检查并清理资产库；整理结果和需要你判断的内容都有记录。'),
     )}
-    ${modelNeedsAttention ? `<div class="card ca-setcard">
+    ${modelReadFailed ? `<div class="card ca-setcard">
+      <div class="rowline">
+        <div><div class="tt">${esc(T('cognition.model_state_title', '模型状态'))}</div>
+        <div class="sub">${esc(T('cognition.model_state_read_failed', '模型状态暂时读取不到——现在不能断定「还没配置模型」，先刷新重试再判断。'))}</div></div>
+        <div class="right">${btn(T('common.retry', '重试'), 'refresh', { small: true, className: 'o' })}</div>
+      </div>
+    </div>` : modelNeedsAttention ? `<div class="card ca-setcard">
       <div class="rowline">
         <div><div class="tt">${esc(T('cognition.model_state_title', '模型状态'))}</div>
         <div class="sub">${esc(model && model.configured
           ? (model.authorizationRequired
             ? T('cognition.model_state_auth', '模型已配置但授权未完成：整理会在需要模型时停住，先去完成授权。')
             : T('cognition.model_state_ok', '模型已配置，自动整理可用。'))
-        : T('cognition.model_state_missing', '还没配置模型：自动整理与候选提炼都跑不起来。'))}</div></div>
+        : T('cognition.model_state_missing', '还没配置模型：自动整理与候选提炼都跑不出来。'))}</div></div>
         <div class="right">${btn(T('cognition.model_state_open', '去应用设置'), 'go-configure-model', { small: true, className: 'o' })}</div>
       </div>
     </div>` : ''}
@@ -3733,11 +3778,23 @@
     return { label, tone };
   }
 
-  function captureResultSection(capture, messageBySourceId) {
-    const vocab = NS.vocabulary;
-    const candidates = (Array.isArray(capture.candidateIds) ? capture.candidateIds : [])
+  /** 整理详情的候选来源（P-r1-55，2026-10-02 数据层修）：优先读 workflow
+   *  记录自带的 candidateOutcomes 内联投影（主进程 summarize 全量读池后
+   *  下发，与 confirmedAssetReceipts 同先例）——此前这里 join 渲染层候选
+   *  队列，而队列（review-queue 视图）只含最近 5 条处理记录，旧任务的
+   *  join 全落空，「整理结果」被误报成「没有发现值得留存的内容」，与同页
+   *  「已保存资产」区自相矛盾。投影缺失时兜底原 join（防御性，不改变
+   *  活任务的现有行为）。 */
+  function captureCandidatesOf(capture) {
+    if (Array.isArray(capture.candidateOutcomes)) return capture.candidateOutcomes;
+    return (Array.isArray(capture.candidateIds) ? capture.candidateIds : [])
       .map((id) => (Array.isArray(S.candidates) ? S.candidates : []).find((row) => String(row.id) === String(id)))
       .filter(Boolean);
+  }
+
+  function captureResultSection(capture, messageBySourceId) {
+    const vocab = NS.vocabulary;
+    const candidates = captureCandidatesOf(capture);
     const running = ['queued', 'extracting', 'writing', 'waiting_quiet', 'waiting_completion', 'waiting_manual', 'scheduled'].includes(String(capture.status));
     // 三分呈现（2026-09-15 子安口径；2026-09-28 两页重整改：内嵌确认表单删除，
     //  待确认候选改为「候选摘要 + 去待我处理」——确认动作收敛到待我处理页，
@@ -3903,9 +3960,9 @@
     const receipts = Array.isArray(capture.confirmedAssetReceipts) ? capture.confirmedAssetReceipts : [];
     // 卡头状态三态（2026-09-15 子安口径）：已完成 · 已保存（有沉淀资产）/
     // 已完成 · 未保存（候选被拒且无资产）/ 原状态文案。文案复用候选状态键。
-    const settledRows = (Array.isArray(capture.candidateIds) ? capture.candidateIds : [])
-      .map((id) => (Array.isArray(S.candidates) ? S.candidates : []).find((row) => String(row.id) === String(id)))
-      .filter(Boolean);
+    // P-r1-55：候选来源与「整理结果」区同改为 workflow 记录内联投影，
+    // 旧任务的卡头「未保存」徽标不再因队列窗口截断而丢失。
+    const settledRows = captureCandidatesOf(capture);
     const hasSaved = receipts.length > 0 || (Number(summary.promoted) || 0) > 0;
     const hasUnsaved = !hasSaved && settledRows.some((row) => ['rejected', 'ignored', 'expired'].includes(String(row.status)));
     const statusLabel = vocab
@@ -4035,7 +4092,8 @@
           : activeTab === 'activity' && route.name === 'activity' && !route.captureId ? 'activity'
             : isDetailRoute ? 'detail' : '';
     const layoutClass = layoutView ? ` ca-layout-${layoutView}` : '';
-    const pendingCount = Number(NS.stats().pending || 0);
+    // 角标口径（2026-10-02）：资产候选 + 本体候选，一个收件箱数得全。
+    const pendingCount = Number(NS.stats().pending || 0) + (Array.isArray(S.poCandidates) ? S.poCandidates.length : 0);
     const tabsInner = NS.TABS.map((tab) => {
       const active = activeTab === tab.id;
       const extra = tab.id === 'overview' ? ' data-cognition-page-link="assets"' : (tab.id === 'activity' ? ' data-cognition-page-link="captures"' : '');

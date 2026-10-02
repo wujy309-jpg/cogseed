@@ -66,6 +66,7 @@ import type { OntologyAnswerEvidenceBundle } from '../../features/recall/ontolog
 import { createAssetStewardTools } from './asset-steward-tools';
 import { createExperienceTools } from './experience-tools';
 import { createPersonalOntologyTools } from './personal-ontology-tools';
+import { createCognitionKernelTools } from './cognition-kernel-tools';
 import { createChatHistoryTools } from './chat-history-tools';
 import { createMessagingTools } from './messaging-tools';
 import { createP3394Tools } from './p3394-tools';
@@ -232,6 +233,13 @@ export interface BuildRunnerParams {
   spaceId?: string;
   /** Agent id bound to the conversation. Empty/undefined = default scope. */
   agentId?: string;
+  /** Optimistic-lock baseline (file mtimeMs per metacognition target)
+   *  captured when the reflection orchestrator read COMPETENCE/STRATEGIES to
+   *  build its prompt (P-r2-13). The injected metacognition tool falls back
+   *  to it when the LLM never read the target itself, so a write based on
+   *  the orchestrator's possibly-minutes-old snapshot is refused once the
+   *  file changed in between. `0` means "file absent at read time". */
+  metacognitionBaselineMtime?: { competence?: number; strategies?: number };
   /** Human-readable actor name used in user-facing local permission prompts. */
   agentName?: string;
   /** Max tool-call rounds per turn before force-end. Undefined → core-agent
@@ -858,9 +866,53 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
 
   // Metacognition tool (per-agent, only if enabled via env var)
   if (isMetacognitionEnabled()) {
+    // P-r2-13 optimistic locking: each read captures the file's mtime as the
+    // write baseline (0 = file absent at read time), and every write whose
+    // baseline no longer matches is rejected instead of silently clobbering
+    // a concurrent write (e.g. a user lesson saved in chat while a
+    // multi-minute background reflection was running). When this session
+    // never read a target, the orchestrator-supplied baseline
+    // (`params.metacognitionBaselineMtime`) applies; a target with neither
+    // keeps the legacy last-writer-wins behavior.
+    const readBaseline = new Map<'competence' | 'strategies', number>();
+    const baselineFor = (t: 'competence' | 'strategies'): number | undefined =>
+      readBaseline.has(t) ? readBaseline.get(t) : params.metacognitionBaselineMtime?.[t];
+    // P-r1-46: the store path resolves through the *global* active user, so
+    // a user switch after this runner was built would read/write another
+    // user's self-assessment. Refuse both sides when they disagree.
+    const activeUserSwitched = (): boolean => {
+      if (!uid) return false;
+      const active = _safeActiveUserId();
+      return active !== null && active !== uid;
+    };
     const metaHandler: MetacognitionToolHandler = {
-      read: (target) => metacognition.readContent(agentId, target),
-      write: (target, content) => metacognition.writeContent(agentId, target, content),
+      read: (target) => {
+        if (activeUserSwitched()) {
+          return {
+            ok: false, content: '',
+            error: 'active user changed since this session started; metacognition store unavailable',
+            usage: { current: 0, limit: 0 },
+          };
+        }
+        const r = metacognition.readContent(agentId, target);
+        readBaseline.set(target, r.mtimeMs ?? 0);
+        return r;
+      },
+      write: (target, content) => {
+        if (activeUserSwitched()) {
+          return {
+            ok: false,
+            error: 'active user changed since this session started; write rejected',
+            usage: { current: 0, limit: 0 },
+          };
+        }
+        const baseline = baselineFor(target);
+        const r = baseline === undefined
+          ? metacognition.writeContent(agentId, target, content)
+          : metacognition.writeContent(agentId, target, content, { expectedMtimeMs: baseline });
+        if (r.ok) readBaseline.set(target, r.mtimeMs ?? 0);
+        return r;
+      },
     };
     const { createMetacognitionTool } = await import('../../../core-agent/src/tools/metacognition-tool');
     injectedTools.push(createMetacognitionTool(metaHandler, {
@@ -1005,6 +1057,12 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   // Skills can inspect the saved graph and template fields through feature contracts
   // instead of shelling out to read groups.md, graph JSON, or template files.
   const personalOntologyTools = uid && !params.disableTools ? createPersonalOntologyTools({
+    userId: uid,
+  }) : [];
+
+  // 个人字段取件/记住工具（personal_fields_check / personal_field_remember，2026-10-02）：
+  // 任务开工前缺的字段在**对话里**问、在**对话里**答，不另设填写界面。
+  const cognitionKernelTools = uid && !params.disableTools ? createCognitionKernelTools({
     userId: uid,
   }) : [];
 
@@ -1156,6 +1214,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     ...assetStewardTools,
     ...experienceTools,
     ...personalOntologyTools,
+    ...cognitionKernelTools,
     ...chatHistoryTools,
     ...messagingTools,
     ...p3394Tools,

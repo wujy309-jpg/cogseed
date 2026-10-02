@@ -337,8 +337,8 @@ describe('T059③ 候选写口唯一（saveRecallCandidate）', () => {
 // T059 ④ tool-catalog 的 recall 组工具数（013 自身新增 0）
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe('T059④ recall 组工具数（不新增会议模型工具）', () => {
-  it(`recall 组工具数 = 15，按源码常量 TOOL_CATALOG 计数`, () => {
+describe('T059④ recall 组工具数（不新增模型工具）', () => {
+  it(`recall 组工具数 = 17，按源码常量 TOOL_CATALOG 计数（013 新增 0）`, () => {
     // 计数从源码常量派生（import 后过滤 group），不是抄名单。
     // 数值口径（git 可核）：tasks.md 立项时 recall 组 = 11（2 基础 + 008 资产管家 9）；
     // 本合流分支上 016 经验目录（4d44add3，先于 013 首个提交 983ef317 落地）向同组
@@ -346,10 +346,12 @@ describe('T059④ recall 组工具数（不新增会议模型工具）', () => {
     // 未改 tool-catalog.ts（实现日志 T060 留证），自身新增 0。
     // 2026-09-28：13⇒14——09-27 本体切片的 list_ontology_graph（工厂与 catalog
     // 双侧注册），基线随树重算。
-    // 2026-10-12：14⇒15——Semantica 增加受治理的 ontology_query；该工具默认关闭，
-    // 仅在用户显式启用本体检索后注入。下一次变更仍须显式更新基线。
+    // 2026-10-02：14⇒16——个人字段取件/记住两件（personal_fields_check /
+    // personal_field_remember）：任务开工前缺的字段在对话里问、在对话里答，
+    // 不另设填写界面（子安当日决定）。工厂见 model/core-agent/cognition-kernel-tools.ts。
+    // 下一次有人往 recall 组加/删工具，这里会红——那是本断言的本意（逼基线显式更新）。
     const recallTools = TOOL_CATALOG.filter((entry) => entry.group === 'recall');
-    expect(recallTools).toHaveLength(15);
+    expect(recallTools).toHaveLength(17);
   });
 
   it('TOOL_CATALOG 不出现会议线工具（013 不新增任何模型工具）', () => {
@@ -518,7 +520,7 @@ describe('T059 反向自证（检测器判别力，src/ 零改动）', () => {
       ...TOOL_CATALOG,
       { name: 'list_meeting_refs', group: 'recall' as const, summary: 'injected' },
     ];
-    expect(injected.filter((entry) => entry.group === 'recall')).toHaveLength(16); // 15 基线 + 1 注入 ⇒ 红
+    expect(injected.filter((entry) => entry.group === 'recall')).toHaveLength(18); // 17 基线 + 1 注入 ⇒ 红
     expect(injected.filter((entry) => /meeting/i.test(entry.name)).map((entry) => entry.name))
       .toEqual(['list_meeting_refs']);
   });

@@ -2071,3 +2071,12 @@
 #ca-root .personal-onto-relgraph-legend-item i.is-bar {
   width: 3px; height: 12px; border-radius: 1.5px;
 }
+
+/* ── 待我处理 · 一行式条目（registry CA-PV-006，Proposed）────────────────
+   本体候选行与「任务还缺哪些字段」行共用：只排布内容与间距，控件走共享原语。 */
+#ca-root .ca-review-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 0; border-bottom: 1px solid var(--line);
+}
+#ca-root .ca-review-row:last-child { border-bottom: 0; }
+#ca-root .ca-review-row-text { flex: 1 1 auto; min-width: 0; color: var(--ink); }

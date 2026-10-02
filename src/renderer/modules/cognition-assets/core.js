@@ -54,100 +54,12 @@
   }
   NS.truncateText = truncateText;
 
-  /* ── 语义融合（移植自 statement-fusion.ts）：句级三档融入 ──
-   * 重述（重叠≥0.50 且新句更长/近全等）→ 保留更长；
-   * 改写（重叠≥0.45）→ 新替旧；
-   * 增量 → 追加到尾部。截断 4000 字。 */
-  const FUSION_STATEMENT_LIMIT = 4000;
-  const RESTATED_OVERLAP = 0.50;
-  const RESTATED_LENGTH_RATIO = 1.8;
-  const RESTATED_NEAR_TOTAL = 0.75;
-  const REWRITE_OVERLAP = 0.45;
-
-  function fusionBigrams(text) {
-    const normalized = String(text || '').replace(/\s+/g, '');
-    const grams = new Set();
-    for (let i = 0; i + 1 < normalized.length; i += 1) grams.add(normalized.slice(i, i + 2));
-    return grams;
-  }
-  function fusionOverlapCoefficient(left, right) {
-    const a = fusionBigrams(left), b = fusionBigrams(right);
-    if (!a.size || !b.size) return 0;
-    let shared = 0;
-    a.forEach(function (g) { if (b.has(g)) shared += 1; });
-    return shared / Math.min(a.size, b.size);
-  }
-  function fusionSplitSentences(text) {
-    return String(text || '').replace(/([。！？!?；;\n])/g, '$1\u0001').split('\u0001').map(function (x) { return x.trim(); }).filter(Boolean);
-  }
-  function fuseStatements(oldStatement, incoming) {
-    const oldSentences = fusionSplitSentences(oldStatement);
-    const newSentences = fusionSplitSentences(incoming);
-    if (!oldSentences.length) {
-      const statement = String(incoming || '').trim().slice(0, FUSION_STATEMENT_LIMIT);
-      return { statement: statement, added: statement ? [statement] : [], replaced: [], keptCount: 0, truncated: (incoming || '').trim().length > FUSION_STATEMENT_LIMIT };
-    }
-    if (!newSentences.length) return { statement: oldStatement, added: [], replaced: [], keptCount: oldSentences.length, truncated: false };
-    const working = oldSentences.slice();
-    for (const sentence of newSentences) {
-      let bestIndex = -1, bestOverlap = 0;
-      for (let i = 0; i < working.length; i += 1) {
-        const overlap = fusionOverlapCoefficient(sentence, working[i]);
-        if (overlap > bestOverlap) { bestOverlap = overlap; bestIndex = i; }
-      }
-      if (bestIndex === -1) { working.push(sentence); continue; }
-      const lengthRatio = sentence.length / working[bestIndex].length;
-      if ((bestOverlap >= RESTATED_OVERLAP && lengthRatio >= RESTATED_LENGTH_RATIO) || bestOverlap >= RESTATED_NEAR_TOTAL) {
-        if (sentence.length > working[bestIndex].length) working[bestIndex] = sentence;
-      } else if (bestOverlap >= REWRITE_OVERLAP) {
-        working[bestIndex] = sentence;
-      } else {
-        working.push(sentence);
-      }
-    }
-    const joined = working.join('');
-    return { statement: joined.slice(0, FUSION_STATEMENT_LIMIT), replaced: [], keptCount: working.length, truncated: joined.length > FUSION_STATEMENT_LIMIT };
-  }
-  NS.fuseStatements = fuseStatements;
-  NS.resolveMergeChainTarget = resolveMergeChainTarget;
-  NS.isAutoCaptureEligible = isAutoCaptureEligible;
-  NS.dedupRefs = dedupRefs;
-
-  /* ── 归并链跟随（对齐后端 promote 实时语义查重）：目标 archived 时 ──
-   * 落到 mergedIntoAssetId 指向的最终存活目标，防止链式归并死循环。 */
-  function resolveMergeChainTarget(asset, allAssets) {
-    let cur = asset;
-    const seen = new Set([String(cur.id)]);
-    while (cur.mergedIntoAssetId) {
-      const next = (allAssets || []).find(function (a) { return String(a.id) === String(cur.mergedIntoAssetId); });
-      if (!next || seen.has(String(next.id))) break;
-      seen.add(String(next.id));
-      cur = next;
-    }
-    return cur;
-  }
-
-  /* ── 自动采纳门禁（对齐 isAutoCaptureEligible）：只有 pending_review ──
-   * 且非高风险的候选可自动写入；其余转待确认由用户手动处理。 */
-  function isAutoCaptureEligible(candidate) {
-    const caps = candidate.capabilities || {};
-    return String(candidate.status || '') === 'pending_review'
-      && String(candidate.risk || 'low') !== 'high'
-      && (caps.canConfirm !== false);
-  }
-
-  /* ── 证据引用去重（对齐 normalizeCognitionSourceRefs seen-set）── */
-  function dedupRefs(refs) {
-    const seen = new Set();
-    const out = [];
-    for (const ref of refs || []) {
-      const key = String(ref);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(ref);
-    }
-    return out;
-  }
+  /* ── 语义融合 / 归并链跟随 / 自动采纳门禁 / 引用去重：真源在后端 ──
+   * 这些判定全部发生在主进程的写入路径上，渲染层只消费结果：
+   *   · 句级语义融合（重述/改写/增量三档）→ src/main/features/recall/statement-fusion.ts
+   *   · 归并链跟随、自动采纳门禁、证据引用去重 → src/main/features/recall/candidate-service.ts
+   * 前端曾移植过一份 fuseStatements 等镜像（迁移残留），口径随后端各自演进
+   * 已经分叉，全仓也无人消费——2026-09-30 认知资产质检 R1 删除，以注释指路。 */
 
   const toArr = (value, keys) => {
     if (Array.isArray(value)) return value;
@@ -375,9 +287,16 @@
     errors: [],
     assets: [],
     candidates: [],
+    /** 本体候选（2026-10-02 收件箱归位）：与资产候选同页展示，读失败单独记错。 */
+    poCandidates: [],
+    poCandidatesError: '',
     captures: [],
     captureCounts: {},
     captureSettings: null,
+    /** 模型主快照读失败标记（P-r3-25，组7）：settings 区块失败时 captureModel
+     *  为 null——视图不得把「没读到」伪装成「还没配置模型」的错误指引；
+     *  此标记让设置页如实显示读取失败（对齐 candidatesError 的 A5 先例）。 */
+    captureModelError: '',
     /** 资产详情按需拉的版本链（版本组 2026-09-16）：{assetId, versions}。 */
     assetVersions: null,
     /** 单资产完整事实链：全局最近记录有数量上限，不能用来判断旧版本挂载是否仍有效。 */
@@ -393,7 +312,7 @@
      *  任何"已完成"语义，处置（重锚/稍后/拒绝）后立即清空。 */
     candidateVersionConflict: null,
     /** KSTAR 溯源（2026-09-17）：{[episodeId]: {goal,status,at}} 摘要缓存；
-     *  kstarEpisode 为点开中的单条详情 {episodeId, episode, review}。 */
+     *  kstarEpisode 为点开中的单条详情 {episodeId, episode, review, loading, failed}。 */
     kstarSummaries: null,
     /** 已请求过且拿到响应的 kse id（2026-09-18）：区分「还没拉到」与「确实
      *  没有」——前者维持兜底文案，后者如实显示「来源记录不可用」；顺带
@@ -458,10 +377,6 @@
      *  null = 还没拉过；[] = 没有建议（如实呈现空态）。 */
     tagSuggestions: null,
     sources: [],
-    tree: null,
-    /** 树懒重建标记：cognition:changed 的 ontology/tree 区块置 false，
-     *  app.js 的补树钩子据此在树页/概览页重拉（不无条件重建）。 */
-    treeRequested: false,
     proofs: [],
     /** 「真实使用」白名单（2026-09-25 US-602）：由主进程单一定义、随
      *  `recall.timeline.list` 载荷下发；列表侧「最近使用」与详情侧使用记录共用它。
@@ -476,7 +391,7 @@
     /** 整理页：会话列表是否展开全部（默认收拢 5 条）。 */
     organizeListExpanded: false,
     /** 路由：{name, category, assetId, candidateId, proofEventId, captureBucket, captureId, sourceIssueOpen} */
-    route: { name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', candCreate: '', ontologyBox: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '', manage: '' },
+    route: { name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', candCreate: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '', manage: '' },
     /** 资产详情异步补数会触发整页 render；编辑表单草稿留在 store，防止
      * 版本/回执/排序依据到达时替换 DOM 并丢掉用户尚未保存的输入。 */
     assetEditDrafts: {},
@@ -546,21 +461,12 @@
       if (store.tags) store.tags = { ...store.tags, stale: true };
       store.loaded = true;
     },
-    async tree() { await loadTree(true); },
   };
   NS.loaders = LOADERS;
 
-  async function loadTree(rebuild) {
-    const result = await api.soft(rebuild ? 'recall.tree.rebuild' : 'recall.tree.read', {}, {});
-    const tree = result && result.tree ? result.tree : result;
-    if (tree && (tree.nodes || tree.edges || tree.error)) store.tree = tree;
-  }
-
   const listeners = new Set();
   NS.onChange = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
-  NS.reload = async function reload(options) {
-    const opts = options || {};
-    if (opts.tree) { await LOADERS.tree(); listeners.forEach((fn) => fn()); return; }
+  NS.reload = async function reload() {
     // C4（2026-09-29）：loading 窗口内到达的 reload 不再静默丢弃——记一次
     // pendingReload，本次读完后立刻补拉。此前连续两次操作时第二次的刷新会
     // 直接落空，只能等写入广播自愈。
@@ -597,9 +503,26 @@
 
   /** 每个区块一个重拉函数；冷启动 snapshot 与事件驱动刷新共用同一份，
    *  不存在"两套口径"。字段处理逻辑沿自主快照原实现。 */
+  /* ── P-r2-20（刷新 drain 与 reload 无互斥 → 世代号作废过期响应）──
+   * 刷新 drain（flushPendingRefresh）与 reload/snapshot 无互斥：同一区块可能
+   * 并发发起两次读取（例：drain 在资产删除前发出旧请求、广播触发的 reload
+   * 拉到新数据先落地），旧响应后到会把已删资产复活显示、直到下次广播。
+   * 每区块维护单调世代号：发起读取时 +1，落地前本区块又有新读取发起的，
+   * 本次响应作废——数据由后发起的读取负责。 */
+  const blockReadGenerations = new Map();
+  function beginBlockRead(block) {
+    const gen = (blockReadGenerations.get(block) || 0) + 1;
+    blockReadGenerations.set(block, gen);
+    return gen;
+  }
+  function isStaleBlockRead(block, gen) {
+    return blockReadGenerations.get(block) !== gen;
+  }
   const BLOCK_FETCHERS = {
     async assets() {
+      const gen = beginBlockRead('assets');
       const assets = await api.soft('recall.assets.list', {}, {});
+      if (isStaleBlockRead('assets', gen)) return;
       store.assets = toArr(assets, ['assets', 'items']);
     },
     async candidates() {
@@ -608,39 +531,94 @@
       // 视图层给重试入口；成功后清掉错误标记。
       // 第 3 批（2026-09-29）：改拉 review-queue 视图——服务端裁掉历史处理
       // 记录（页面只显示最近 5 条）并做字段白名单投影；细分分组仍在本层做。
+      const gen = beginBlockRead('candidates');
       try {
         const candidates = await api.call('recall.candidates.list', { view: 'review-queue' }, {});
+        if (isStaleBlockRead('candidates', gen)) return;
         store.candidates = toArr(candidates, ['candidates', 'items']);
         store.candidatesError = '';
       } catch (error) {
+        if (isStaleBlockRead('candidates', gen)) return;
         store.candidates = [];
         store.candidatesError = String((error && error.message) || error || 'load_failed');
       }
+      // 本体候选并入同一个收件箱（2026-10-02）：此前它们只在「本体」页的横幅里，
+      // 用户得记着去第二个地方看。两个键都收（candidate_updates 为渲染层既有口径）。
+      try {
+        const po = await api.call('personalOntology.candidates.list', {}, {});
+        if (isStaleBlockRead('candidates', gen)) return;
+        store.poCandidates = toArr(po, ['candidate_updates', 'candidates']);
+        store.poCandidatesError = '';
+      } catch (error) {
+        if (isStaleBlockRead('candidates', gen)) return;
+        store.poCandidates = [];
+        store.poCandidatesError = String((error && error.message) || error || 'load_failed');
+      }
     },
     async captures() {
+      const gen = beginBlockRead('captures');
       // scope:'all'：整理页要展示完整历史（含系统判定无留存内容的静默记录）。
       const captures = await api.soft('recall.captures.list', { limit: 40, scope: 'all' }, {});
+      if (isStaleBlockRead('captures', gen)) return;
       store.captures = toArr(captures, ['items', 'captures', 'tasks']);
       store.captureCounts = (captures && captures.counts) || {};
     },
     async settings() {
-      const settings = await api.soft('recall.captures.settings.get', {}, {});
-      store.captureSettings = (settings && settings.settings) || settings || null;
-      store.captureModel = (settings && settings.model) || null;
+      // P-r3-25（组7·loader 失败静默族）：模型主快照读失败此前被 api.soft
+      // 兜成 {} → captureModel=null，视图把「没读到」伪装成「还没配置模型」
+      // 并给「去应用设置」的错误指引（误导力强于同屏横幅）。settings 半边
+      // 经复证实测不触发（兜底 {} truthy，整理页 warn 不出现），为保持该行为
+      // 不变：失败时 store 形状照旧（captureSettings={}、captureModel=null、
+      // errors 照记），只补 captureModelError 分区标记供视图区分。
+      const gen = beginBlockRead('settings');
+      let result = null;
+      let failed = false;
+      try {
+        result = await api.call('recall.captures.settings.get', {});
+      } catch (error) {
+        result = {};
+        failed = true;
+        // 过期响应（含失败）不落地：错误横幅也是「本次读取的产物」，由后发起
+        // 的读取负责，避免旧失败盖掉新成功（P-r2-20）。
+        if (isStaleBlockRead('settings', gen)) return;
+        store.errors.push({ channel: 'recall.captures.settings.get', message: String((error && error.message) || error) });
+      }
+      if (isStaleBlockRead('settings', gen)) return;
+      store.captureSettings = (result && result.settings) || result || null;
+      store.captureModel = (result && result.model) || null;
+      store.captureModelError = failed ? 'load_failed' : '';
     },
     async sources() {
+      const gen = beginBlockRead('sources');
       // limit:100=IPC 上限（审计 C1，2026-09-16）：默认 25 会在会话超 25 后静默丢行。
       const sources = await api.soft('recall.sources.list', { limit: 100 }, {});
+      if (isStaleBlockRead('sources', gen)) return;
       store.sources = toArr(sources, ['groups', 'sources']);
     },
     async inbox() {
-      const inbox = await api.soft('cognition.inbox.list', {}, {});
-      store.inbox = toArr(inbox, ['items']);
-      // 治理分组（specs/010 T013）：缺失/非数组 = null → 渲染层退回扁平清单。
-      store.inboxGroups = inbox && Array.isArray(inbox.groups) ? inbox.groups : null;
+      // F-r3-1（对齐 candidates 的 A5 先例，分区级呈现不挡整页）：治理待办
+      // 读失败不再软降级成空数组——那会把「没读到」伪装成「没有要你确认
+      // 的事项」。失败进显式错误态，视图层只对治理分区给失败说明与重试
+      // 入口，候选分区照常展示；成功后清掉错误标记。
+      const gen = beginBlockRead('inbox');
+      try {
+        const inbox = await api.call('cognition.inbox.list', {}, {});
+        if (isStaleBlockRead('inbox', gen)) return;
+        store.inbox = toArr(inbox, ['items']);
+        // 治理分组（specs/010 T013）：缺失/非数组 = null → 渲染层退回扁平清单。
+        store.inboxGroups = inbox && Array.isArray(inbox.groups) ? inbox.groups : null;
+        store.inboxError = '';
+      } catch (error) {
+        if (isStaleBlockRead('inbox', gen)) return;
+        store.inbox = [];
+        store.inboxGroups = null;
+        store.inboxError = String((error && error.message) || error || 'load_failed');
+      }
     },
     async timeline() {
+      const gen = beginBlockRead('timeline');
       const proofs = await api.soft('recall.timeline.list', { limit: 500 }, {});
+      if (isStaleBlockRead('timeline', gen)) return;
       store.proofs = toArr(proofs, ['items', 'events']);
       store.realUsageKinds = Array.isArray(proofs && proofs.realUsageKinds)
         ? proofs.realUsageKinds.map((kind) => String(kind || '')).filter(Boolean)
@@ -653,10 +631,10 @@
   /** collection → 需要刷新的区块/动作。没列出的 collection（world-model 等）
    *  面板没有对应区块，静默忽略——主进程广播所有认知写入，订阅端自取所需。 */
   const COLLECTION_BLOCKS = {
-    'ability-assets': ['assets', 'timeline', 'tree', 'ontology'],
-    'ability-asset-versions': ['assets', 'tree'],
+    'ability-assets': ['assets', 'timeline', 'ontology'],
+    'ability-asset-versions': ['assets'],
     'ability-asset-audit': ['assets', 'timeline'],
-    'candidates': ['candidates', 'tree'],
+    'candidates': ['candidates'],
     'ontology-candidates': ['ontology'],
     'captures': ['captures'],
     'capture-settings': ['settings'],
@@ -680,8 +658,6 @@
     'ontology-graph': ['ontology'],
     'longterm-memory': ['legacy'],
     'experiences': ['experiences'],
-    'tree': ['treeRead'],
-    'graph': ['tree'],
   };
 
   const pendingRefresh = new Set();
@@ -693,12 +669,6 @@
    *  迁移预览）走各自的失效语义（懒重建或 stale 标记，loaders 的守卫防重入）。 */
   function applyBlock(block) {
     if (BLOCK_FETCHERS[block]) return async () => { await BLOCK_FETCHERS[block](); };
-    if (block === 'tree') return async () => {
-      // 资产或候选变更后，树按需从这两类源数据重建。
-      store.tree = null;
-      store.treeRequested = false;
-    };
-    if (block === 'treeRead') return async () => { await loadTree(false); };
     if (block === 'experiences') return async () => {
       if (store.experiences) store.experiences = { ...store.experiences, stale: true };
     };
@@ -718,7 +688,7 @@
   }
 
   const BLOCK_APPLIERS = {};
-  for (const name of [...Object.keys(BLOCK_FETCHERS), 'tree', 'treeRead', 'experiences', 'legacy', 'ontology', 'projections']) {
+  for (const name of [...Object.keys(BLOCK_FETCHERS), 'experiences', 'legacy', 'ontology', 'projections']) {
     const apply = applyBlock(name);
     if (apply) BLOCK_APPLIERS[name] = apply;
   }
@@ -798,13 +768,14 @@
     const state = store.tags;
     if (!opts.force && !opts.includeRetired && state && !state.stale && !state.failed) return;
     if (!opts.force && opts.includeRetired && state && state.includeRetired && !state.stale && !state.failed) return;
-    store.tags = {
+    const inFlight = {
       items: (state && state.items) || [],
       loading: true,
       failed: false,
       stale: false,
       includeRetired: Boolean(opts.includeRetired),
     };
+    store.tags = inFlight;
     NS.notify();
     let items = [];
     let failed = false;
@@ -814,8 +785,20 @@
     } catch (error) {
       failed = true;
     }
+    // P-r2-45（弹层首帧双发乱序 → 落地前接管检查）：同 tick 双发（active-only
+    // + includeRetired）时响应乱序会让后到的旧响应无条件覆盖新意图（管理
+    // 弹层打开期间 retired 标签消失）。落地前若 store.tags 已被更新的请求
+    // 接管（不再是本次置位的 in-flight 对象），本次响应作废——与同文件
+    // loadAssetVersions/loadAssetTimeline 的落地前身份检查同一先例。
+    if (store.tags !== inFlight) return;
     store.tags = { items, loading: false, failed, stale: false, includeRetired: Boolean(opts.includeRetired) };
-    NS.notify();
+    // P-r1-54（组4·经验/标签通道失败自愈）：失败不 notify。app.js 的 onChange
+    // 钩子每次重画都会补拉标签库，而守卫放行失败态（!failed 才 return）是
+    // 有意的自愈设计——失败态若再无条件 notify，就成了「失败→重画→再拉」
+    // 的自激死循环（探针实测 2 秒自续 10001 次 IPC）。掐断环的后一半：
+    // 自愈自重试保留（下一次任意 notify 仍会经钩子重拉），成功路径照常
+    // notify 刷新界面。
+    if (!failed) NS.notify();
   };
 
   /** 「可能重复的标签」建议（T013，只读；只建议不合并）。管理弹层打开时拉。 */
@@ -902,13 +885,16 @@
   };
 
   /** 后台巡检状态（specs/008 US-405）：开关 + 最近一轮的概要。
-   *  失败降级为空——巡检读不到不该让整理页报"部分数据读取失败"。 */
+   *  失败降级为空但不冻结——P-r1-52（组7）：失败置 stale（巡检读不到不该让
+   *  整理页报"部分数据读取失败"，视图照旧；stale 让下次触发自愈重拉，
+   *  「没读到」不再永久伪装「没有」）。 */
   NS.loadInspection = async function loadInspection() {
     if (store.inspection && !store.inspection.stale) return;
     store.inspection = { loading: true, settings: (store.inspection && store.inspection.settings) || null, latestRun: (store.inspection && store.inspection.latestRun) || null };
     NS.notify();
     let settings = null;
     let latestRun = null;
+    let stale = false;
     try {
       const [settingsResult, runsResult] = await Promise.all([
         api.call('recall.inspection.settings', {}),
@@ -919,25 +905,29 @@
     } catch (error) {
       settings = null;
       latestRun = null;
+      stale = true;
     }
-    store.inspection = { loading: false, settings, latestRun };
+    store.inspection = { loading: false, settings, latestRun, stale };
     NS.notify();
   };
 
   /** 整理报告按需拉取（specs/008 US-403）。按次缓存；失败降级为空列表——
-   *  报告读不到不该让整页报"部分数据读取失败"，它只是整理页的一块。 */
+   *  报告读不到不该让整页报"部分数据读取失败"，它只是整理页的一块。
+   *  P-r1-52（组7）：失败置 stale（同 loadInspection，自愈重拉不冻结）。 */
   NS.loadCleanupReports = async function loadCleanupReports() {
     if (store.cleanupReports && !store.cleanupReports.stale) return;
     store.cleanupReports = { loading: true, reports: (store.cleanupReports && store.cleanupReports.reports) || [] };
     NS.notify();
     let reports = [];
+    let stale = false;
     try {
       const result = await api.call('recall.cleanup.list', { limit: 20 });
       reports = (result && result.reports) || [];
     } catch (error) {
       reports = [];
+      stale = true;
     }
-    store.cleanupReports = { loading: false, reports };
+    store.cleanupReports = { loading: false, reports, stale };
     NS.notify();
   };
 
@@ -1189,20 +1179,24 @@
     await fetchKstarEpisodeSummaries(ids);
   };
 
-  /** 点开单条任务复盘详情（就地展开块）。 */
+  /** 点开单条任务复盘详情（就地展开块）。失败记 failed（读不到 ≠ 没有，
+   *  与 loadExperienceDetail 同一惯例）：视图给失败文案与收起重试出口。 */
   NS.loadKstarEpisode = async function loadKstarEpisode(episodeId) {
     const id = String(episodeId || '');
     if (!id) return;
-    store.kstarEpisode = { episodeId: id };
+    store.kstarEpisode = { episodeId: id, loading: true, failed: false };
     NS.notify();
     let data = null;
+    let failed = false;
     try {
       data = await api.call('recall.kstar.episode.read', { episodeId: id });
     } catch (error) {
+      // 显式记失败：不用 !data 代替（成功但空载荷 ≠ 失败，防误报）。
       data = null;
+      failed = true;
     }
     if (!store.kstarEpisode || String(store.kstarEpisode.episodeId) !== id) return;
-    store.kstarEpisode = { episodeId: id, episode: data && data.episode, review: data && data.review };
+    store.kstarEpisode = { episodeId: id, episode: data && data.episode, review: data && data.review, loading: false, failed };
     NS.notify();
   };
 
@@ -1243,7 +1237,10 @@
       failed = true;
     }
     store.experiences = { items, loading: false, failed, stale: false };
-    NS.notify();
+    // P-r1-54（组4）：失败不 notify（同 loadTags 注释）——app.js 钩子在
+    // overview/experiences 路由每帧补拉，失败态再 notify 即成自激死循环；
+    // 自愈自重试保留，成功照常 notify。
+    if (!failed) NS.notify();
   };
 
   /** 经验详情（E2）：按条缓存；不存在（已归档仍可读，物理删除后查无）如实
@@ -1265,14 +1262,21 @@
     }
     if (!store.experienceDetail || String(store.experienceDetail.experienceId) !== id) return;
     store.experienceDetail = { experienceId: id, experience, loading: false, failed };
-    NS.notify();
+    // P-r1-54/P-r1-56（组4）：失败不 notify（同 loadTags 注释）——app.js 钩子
+    // 在详情路由每帧补拉，失败态再 notify 即成自激死循环。自愈自重试保留
+    // （失败态无重试按钮是拍板口径：自愈在，按钮不必加），成功照常 notify。
+    if (!failed) NS.notify();
   };
 
   /** 迁移预览（E7 只读）：扫描结果进 store，界面据此逐条核对后显式发起。 */
   NS.loadExperienceMigrationPreview = async function loadExperienceMigrationPreview(force) {
+    // P-r2-40（同 loadExperienceMigrationStatus 的保留现值口径）：进入/落地
+    // 不再整体替换——run 的 running、status 读取的 statusLoading 等瞬态照原样
+    // 保留，只动 preview 一族字段，免得扫描在途的提示被另一路读取抹掉。
     const state = store.experienceMigration;
+    if (state && state.previewLoading) return;
     if (!force && state && state.preview && !state.previewFailed) return;
-    store.experienceMigration = { preview: state && state.preview, previewLoading: true, previewFailed: false, lastRun: state && state.lastRun };
+    store.experienceMigration = { ...state, previewLoading: true, previewFailed: false };
     NS.notify();
     let preview = null;
     let previewFailed = false;
@@ -1282,7 +1286,8 @@
       previewFailed = true;
     }
     const current = store.experienceMigration;
-    store.experienceMigration = { preview, previewLoading: false, previewFailed, lastRun: current && current.lastRun };
+    if (!current || current.previewLoading !== true) return;
+    store.experienceMigration = { ...current, preview, previewLoading: false, previewFailed };
     NS.notify();
   };
 
@@ -1367,18 +1372,39 @@
   /** 迁移状态（E8 只读）：最近一次 run 的回执；从未跑过时 migrationId 为
    *  null——界面如实说「还没执行过」，不把空态误报成失败。 */
   NS.loadExperienceMigrationStatus = async function loadExperienceMigrationStatus() {
+    // P-r2-40（保留现值+在途守卫）：此前进入即整体替换 store.experienceMigration
+    // 并把 lastRun 抹成 null、running/previewLoading 一并丢失——扫描/迁移在途时
+    // 常驻入口的「迁移在途」提示被抹掉、界面重现旧清单；读失败还静默把旧
+    // lastRun 置 null 误报「还没执行过」。改为：在途不重入；读取期间保留全部
+    // 现值（只加 statusLoading 标记）；失败保留现值；落地前若已被 run 的终态
+    // 写入接管（statusLoading 不再是本次置位）则不落地。
     const state = store.experienceMigration;
-    store.experienceMigration = { preview: state && state.preview, previewLoading: false, previewFailed: state && state.previewFailed || false, lastRun: null, statusLoading: true };
+    if (state && state.statusLoading) return;
+    store.experienceMigration = {
+      preview: (state && state.preview) || null,
+      previewLoading: Boolean(state && state.previewLoading),
+      previewFailed: Boolean(state && state.previewFailed),
+      running: Boolean(state && state.running),
+      lastRun: (state && state.lastRun) || null,
+      statusLoading: true,
+    };
     NS.notify();
     let lastRun = null;
+    let failed = false;
     try {
       const result = await api.call('recall.experiences.migration.status', {});
       lastRun = result && result.migrationId ? result : null;
     } catch (error) {
-      lastRun = null;
+      // 读失败保留现值（旧 lastRun 不被伪装成「还没执行过」）。
+      failed = true;
     }
     const current = store.experienceMigration;
-    store.experienceMigration = { preview: current && current.preview, previewLoading: false, previewFailed: current && current.previewFailed || false, lastRun, statusLoading: false };
+    if (!current || current.statusLoading !== true) return;
+    store.experienceMigration = {
+      ...current,
+      lastRun: failed ? (current.lastRun || null) : lastRun,
+      statusLoading: false,
+    };
     NS.notify();
   };
 
@@ -1391,7 +1417,11 @@
   /** 改进分析结论（`kstar.improvement.outcomes.list`，倒序，只读）。
    *  失败记 `failed`（读不到 ≠ 没有：空态与读取失败必须分开呈现）；`force` 重拉。 */
   NS.loadImprovementOutcomes = async function loadImprovementOutcomes(force) {
-    if (store.improvementOutcomes && !force && !store.improvementOutcomes.stale) return;
+    // P-r2-21 另半边（失败后无恢复路径）：守卫此前只认 stale，失败后
+    // （failed=true、stale=false）被判重挡死——页签钩子的补拉每次都落空，
+    // 只能等整页 reload。对齐 loadExperiences 的 !failed 同款：失败态放行
+    // 重拉，配合上面的「失败不 notify」即得「自愈自重试且不成环」。
+    if (store.improvementOutcomes && !force && !store.improvementOutcomes.stale && !store.improvementOutcomes.failed) return;
     store.improvementOutcomes = { items: [], loading: true, failed: false, stale: false };
     NS.notify();
     let items = [];
@@ -1403,7 +1433,10 @@
       failed = true;
     }
     store.improvementOutcomes = { items, loading: false, failed, stale: false };
-    NS.notify();
+    // P-r2-21（组4）：失败不 notify（同 loadTags 注释）——本页签的 onChange
+    // 钩子看到 failed 就补拉，失败态再 notify 即成自激死循环；自愈自重试
+    // 保留，成功照常 notify。
+    if (!failed) NS.notify();
   };
 
   /** 失败面（`kstar.failures.list`，只读）：失败类结论的就地详情数据源。 */
@@ -1420,7 +1453,11 @@
       failed = true;
     }
     store.kstarFailures = { items, loading: false, failed };
-    NS.notify();
+    // P-r2-21（组4，探针实测 2 秒自续 10001 次 IPC 的那一处）：失败不 notify。
+    // 环=「下方钩子放行 failed 态」×「装载尾部无条件 notify」两件事，只掐
+    // 后一半即断环；自愈自重试保留（下一次任意 notify 经钩子看到 failed
+    // 仍会重拉），成功路径照常 notify 刷新失败面详情。
+    if (!failed) NS.notify();
   };
 
   const IMPROVEMENT_FAILURE_CONCLUSIONS = new Set(['analysis_failed', 'submit_failed']);
@@ -1503,7 +1540,7 @@
       if (target.category === 'kstar') target = Object.assign({}, target, { category: '' });
       // 先把 next 归一到同一形状再比（部分键字面量 vs 全键展开的序列化恒不等，
       // 连点同一 tab 会堆积重复栈项——2026-09-14 终审修）。
-      const merged = Object.assign({ name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', taskFailedOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', familyRename: '', candCreate: '', ontologyBox: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '', manage: '' }, target);
+      const merged = Object.assign({ name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', taskFailedOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', candCreate: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '', manage: '' }, target);
       const same = JSON.stringify(current) === JSON.stringify(merged);
       if (!opts.replace && !same) store.backStack.push(Object.assign({}, current));
       store.route = merged;
@@ -1561,6 +1598,8 @@
   const RECALL_PROMOTION_BLOCK_TEXTS = {
     personal_is_project_fact: ['cognition.candidate_block_personal_is_project_fact',
       '这是项目或任务事实，它属于项目，不属于个人信息。'],
+    fact_not_stable: ['cognition.candidate_block_fact_not_stable',
+      'fact 只收长期稳定的事实（项目、环境、领域、工具链）；带「今天/本次/当前」这类时间限定、又没写明长期有效的叙述只是任务状态，不算可复用事实。改写为稳定表述或换个类型。'],
     template_not_reusable_structure: ['cognition.candidate_block_template_not_reusable_structure',
       '模板要的是从来源里抽出来的可复用结构，指向原文件本身不算。'],
     skill_not_executable: ['cognition.candidate_block_skill_not_executable',
@@ -1591,6 +1630,19 @@
     // 版本冲突（别的改动先落了）。都如实说"这次没有生效"，不甩原文。
     if (code === 'invalid_boundary') {
       return T('cognition.inbox_error_boundary_invalid', '条件没有通过规则门禁——没有保存，请补齐后再试。');
+    }
+    // 待办处置入口的前三码（P-r3-2/P-r2-39 · 预审决策卡组 5「逐码补分支+
+    // 四语词条」）：id 不合法 / 对象不存在或不能在这里处置 / 动作不适用。
+    // 主进程 message 是中文人话但带动态插值，四语用户读不到——按码翻成固定
+    // 词条；这三码的 7 条抛出路径（含 6 处旧路径）经此一处分支全部覆盖。
+    if (code === 'invalid_item_id') {
+      return T('cognition.inbox_error_item_id_invalid', '这条待办的标识不合法，请刷新后重试。');
+    }
+    if (code === 'unsupported_item_kind') {
+      return T('cognition.inbox_error_item_kind_unsupported', '这条待办指向的对象已不存在或不能再在这里处置，请刷新列表查看最新状态。');
+    }
+    if (code === 'unsupported_action') {
+      return T('cognition.inbox_error_action_unsupported', '这个操作不适用于这条待办，请刷新后查看最新状态。');
     }
     if (code === 'version_conflict') {
       return T('cognition.inbox_error_version_conflict', '这条资产刚被别的改动更新过（版本冲突），请重试。');
@@ -2066,7 +2118,13 @@
             : group)
           .filter((group) => group && Array.isArray(group.items) && group.items.length);
       }
-      if (rowId.startsWith('inspection:')) await BLOCK_FETCHERS.inbox();
+      // P-r3-6（组6·claim 选边族）：conflict: 选边成功后，同组 sibling 候选已在
+      // 主进程被逐一 reject——上面的就地删行只删得掉本行，sibling 行变「盘上
+      // 已处置、界面仍可操作」的僵尸行（二次点击撞终态守卫）。重拉条件扩展
+      // conflict:+claim（最小修：不扩 COLLECTION_BLOCKS 的 candidates 映射，
+      // 避免高频广播成本）；inspection: 前缀维持既有显式重拉。
+      if (rowId.startsWith('inspection:')
+        || (rowId.startsWith('conflict:') && String(action || '') === 'claim')) await BLOCK_FETCHERS.inbox();
       NS.notify();
     },
     /** 「已删除」列表按需拉（specs/008 US-306/T051）：保留期剩余天数由服务端现算。 */
@@ -2076,6 +2134,9 @@
       NS.notify();
       let items = [];
       let total = 0;
+      // P-r1-52（组7·loader 失败静默族）：失败置 stale——「没读到」不得伪装成
+      // 「没有」后被判重挡死；置 stale 后守卫放行，下一次进页/触发自愈重拉。
+      let stale = false;
       try {
         const result = await api.call('recall.assets.deleted.list', { limit: 200 });
         items = (result && result.items) || [];
@@ -2083,8 +2144,9 @@
       } catch (error) {
         items = [];
         total = 0;
+        stale = true;
       }
-      store.deletedAssets = { loading: false, items, total };
+      store.deletedAssets = { loading: false, items, total, stale };
       NS.notify();
     },
     /** 保留期内的「立即彻底删除」（入口只在这里，specs/008 US-306 口径）。 */
@@ -2402,14 +2464,27 @@
       await NS.loadExperienceMigrationPreview(true);
     },
     async experienceMigrationRun(assetIds) {
+      // 判重（对齐 legacyMemoryMigrationRun 先例）：迁移执行中的写入广播会
+      // drain 重画换 DOM，按钮的 pending 保护失效后可再次点击启动双跑——
+      // running 必须放 store（局部变量在换 DOM 后作废），视图侧据此 disabled。
+      const state = store.experienceMigration;
+      if (state && state.running) return;
       const ids = [...new Set((assetIds || []).map((id) => String(id || '').trim()).filter(Boolean))];
       if (!ids.length) return;
       const ok = await confirmUser(T('cognition.experience_migration_run_confirm', '将迁移以上 {n} 条经验类资产：先冻结历史引用，再写入经验目录并从资产库迁出；跳过与失败会如实列出。确认执行？', { n: String(ids.length) }), true);
       if (!ok) return;
+      store.experienceMigration = { ...store.experienceMigration, running: true };
+      NS.notify();
       let result;
       try {
         result = await api.call('recall.experiences.migration.run', { assetIds: ids });
-      } catch (error) { throw new Error(experienceActionErrorText(error)); }
+      } catch (error) {
+        // 失败显式复位 running（成功路径下方整体重建对象天然复位）：
+        // 否则迁移失败一次后这个入口永久锁死。
+        store.experienceMigration = { ...store.experienceMigration, running: false };
+        NS.notify();
+        throw new Error(experienceActionErrorText(error));
+      }
       const migrated = (result && result.migrated) || 0;
       const skipped = (result && result.skipped) || 0;
       const failed = (result && result.failed) || 0;
@@ -2575,16 +2650,24 @@
         toast(T('cognition.tag_duplicate_hint', '已有同名标签（不区分大小写），不再重复添加'), 'warning');
         return;
       }
-      await this.setAssetTags(assetId, [...current, raw]);
+      // P-r2-22（单条打标走批量增量通道）：此前「读本地快照→拼整组→整组替换」
+      // 非原子——快速连打两个标签时第二个请求拼的数组不含第一个，落地即
+      // 覆盖（两次都报成功、第一枚丢失）；连点移除两个时第一个被旧快照复活。
+      // 改走 recall.assets.tags.batch 的 add/remove 增量语义：主进程按最新
+      // tags 合并（服务层同名不重复加、幂等），并发交错不再互相覆盖。
+      await api.call('recall.assets.tags.batch', { assetIds: [assetId], op: { add: [raw] } });
+      toast(T('cognition.tag_added_toast', '已打标'));
+      await this.refreshTags();
     },
     async removeAssetTag(assetId, name) {
       const asset = (store.assets || []).find((row) => String(row.id) === String(assetId));
       if (!asset) return;
       const key = (value) => String(value || '').trim().toLocaleLowerCase();
       const current = Array.isArray(asset.tags) ? asset.tags : [];
-      const next = current.filter((entry) => key(entry) !== key(name));
-      if (next.length === current.length) return;
-      await api.call('recall.assets.tags.set', { assetId, tags: next });
+      if (!current.some((entry) => key(entry) === key(name))) return;
+      // P-r2-22：同 addAssetTag——移标也走增量通道（remove 语义），主进程读
+      // 最新，连续移除不再被旧快照复活。
+      await api.call('recall.assets.tags.batch', { assetIds: [assetId], op: { remove: [String(name || '')] } });
       toast(T('cognition.tag_removed_toast', '已移除「{name}」', { name: String(name || '') }));
       await this.refreshTags();
     },

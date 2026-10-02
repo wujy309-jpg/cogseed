@@ -99,6 +99,7 @@ import * as personalOntologyGroups from '../features/personal_ontology_groups';
 import * as personalOntologyTemplateFiles from '../features/personal_ontology_template_files';
 import * as personalOntologyCandidates from '../features/personal_ontology_candidates';
 import * as poApi from '../features/po/api';
+import * as cognitionKernel from '../features/cognition_kernel';
 import type { GroupEvent } from '../features/group_chat/bus';
 import { setGroupChatMessageBroadcaster } from '../features/group_chat/bus';
 import { setCognitionChangeBroadcaster } from '../features/recall/store-events';
@@ -2944,9 +2945,14 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (!safeId(proposalId)) throw new Error('invalid asset change proposal id');
     if (!['confirm', 'defer', 'reject'].includes(String(decision))) throw new Error('invalid asset approval decision');
     if (payload !== undefined && (!payload || typeof payload !== 'object' || Array.isArray(payload))) throw new Error('invalid asset approval payload');
-    return { ok: true, ...(await recallAssetApproval.decideAssetChangeProposal(ctx.userId, proposalId, decision, {
+    // P-r3-33 隐式契约显式化：ok 由 decideAssetChangeProposal 的返回自带
+    // （versionConflict/已处置时为 false），此前写死 { ok:true, ...spread } 纯靠
+    // spread 顺序把 false 覆盖回来——服务层改形状即把失败伪装成成功且零护栏。
+    // 现在直接透传 AssetApprovalDecisionResult，回执键集由
+    // test/main/ipc/asset-approval-channels.test.ts 钉住。
+    return await recallAssetApproval.decideAssetChangeProposal(ctx.userId, proposalId, decision, {
       ...(payload !== undefined ? { payload: payload as Record<string, unknown> } : {}),
-    })) };
+    });
   },
 
   // ── 经验目录（specs/016 契约 E1~E6）：与 recall.assets.* 平级的独立段，
@@ -3523,28 +3529,20 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // cognition.candidates.decide 三条通道移除——渲染层零调用（09-27 审计与 09-29
   // 探索双证），且 decide 的 accept 分支即时晋升、绕过「待我处理」确认闸，
   // 与 recall.candidates.importPersonalOntology（转待确认）语义相反（B4）。
-  // 服务函数保留：listCognitionCandidates 仍被 skill-summary/assets-adapter 内部
-  // 消费；dashboard/decideCognitionCandidate 的服务文件随「通道退役大批」处置。
+  // 服务函数处置（2026-10-01 死代码真删批更新）：skill-summary 与 assets-adapter
+  // 对 listCognitionCandidates 的两处内部消费已随 P-r1-1（归因死过滤恒空）与
+  // P-r3-1（每列表关联读删）删除，服务现为运行时零消费、仅测试直测（读取映射
+  // 与排序有 cognition.test.ts 钉着），按「有测试依赖保留并登记」留下；
+  // dashboard/decideCognitionCandidate 的服务文件已随通道退役删除（2026-10-01 F-r1-2 兑现）。
 
-  'cognition.receipts.list': async ({ status, agentId, conversationId, skillId, limit } = {}, ctx) => {
-    if (status !== undefined && status !== 'prepared' && status !== 'succeeded' && status !== 'degraded' && status !== 'rejected') throw new Error('invalid cognition receipt status');
-    if (agentId !== undefined && !safeId(agentId)) throw new Error('invalid agent id');
-    if (conversationId !== undefined && !safeId(conversationId)) throw new Error('invalid conversation id');
-    if (skillId !== undefined && !safeId(skillId)) throw new Error('invalid skill id');
-    const n = limit === undefined ? undefined : Number(limit);
-    return { ok: true, receipts: await cognition.listCognitionReuseReceipts(ctx.userId, {
-      ...(status !== undefined ? { status } : {}),
-      ...(agentId !== undefined ? { agentId } : {}),
-      ...(conversationId !== undefined ? { conversationId } : {}),
-      ...(skillId !== undefined ? { skillId } : {}),
-      ...(Number.isFinite(n) && n > 0 ? { limit: Math.min(n, 200) } : {}),
-    }) };
-  },
-
-  'cognition.receipts.read': async ({ executionId } = {}, ctx) => {
-    if (!safeId(executionId)) throw new Error('invalid execution id');
-    return { ok: true, receipt: await cognition.readCognitionReuseReceipt(ctx.userId, executionId) };
-  },
+  // 2026-10-01 组12·退役：cognition.receipts.list / cognition.receipts.read /
+  // cognition.reviewDecisions.list / cognition.skills.audit 四条通道移除——
+  // 渲染层零调用（回执 UI 实际读口是别的通道；已处理历史 UI 用另一数据源），
+  // 通道级测试零（2026-09-30 认知资产质检循环 P-r3-3/P-r3-4，预审决策卡拍板）。
+  // 服务函数处置：listCognitionReuseReceipts（skill-summary/assets-adapter 在用）与
+  // listRecentReviewDecisions（meeting_metrics 汇总在用）保留；唯一消费者就是
+  // 通道的 readCognitionReuseReceipt 与 getSkillVersionMigrationAudit 随通道一并
+  // 删除（真删原则，P-r1-20 的 legacy 双重计数根源随退消解）。
 
   'cognition.assets.list': async ({ type, limit } = {}, ctx) => {
     // N-6: 类型枚举必须与 `CognitionAssetType`（= 四类正式资产）一致。
@@ -3603,40 +3601,16 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     });
   },
 
-  // 「已处理历史」：跨全部候选列出真实落账的审查决定，按处理时间倒序。
-  // 决定账本此前只有按 targetRef 的单读口（存储就是一个 targetRef 一个 jsonl），
-  // 回答不了"我一共处理过什么"，那一段历史在界面上完全看不到。
-  //
-  // 只读既有权威存储，不新增模型、不改候选状态机；`items + total` 与认知资产
-  // 其余读口同一契约。
-  'cognition.reviewDecisions.list': async ({ limit } = {}, ctx) => {
-    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 200)) {
-      throw new Error('invalid review decision limit');
-    }
-    return {
-      ok: true,
-      ...(await cognition.listRecentReviewDecisions(ctx.userId, {
-        ...(limit !== undefined ? { limit } : {}),
-      })),
-    };
-  },
-
-  // 「版本与治理」问的是"这一版改了什么"。版本快照本来就存着全量内容，这里
-  // 只做比对，不新增持久化。没有 diff 的话，"回滚到此版本"对用户就是盲赌。
-  'cognition.assets.diff': async ({ assetId } = {}, ctx) => {
-    if (!safeId(assetId)) throw new Error('invalid cognition asset id');
-    return { ok: true, diffs: await cognition.listCognitionAssetDiffs(ctx.userId, assetId) };
-  },
+  // 2026-10-01 P-r1-23·退役：cognition.assets.diff 通道移除——渲染层零调用
+  // （「版本与治理」页的版本比对走 cognition.skills.diff，有通道级测试），
+  // 且服务读口 listCognitionAssetDiffs 吞一切读错误伪装成「没有变更」。
+  // 服务文件 version-diff-adapter.ts 随通道一并删除（真删原则）；
+  // recall 侧 buildAssetVersionDiffs 实现与其测试不受影响。
 
   'cognition.skills.summary': async ({ skillId } = {}, ctx) => {
     if (!safeId(skillId)) throw new Error('invalid skill id');
     return { ok: true, summary: await cognition.getSkillCognitionSummary(ctx.userId, skillId) };
   },
-
-  'cognition.skills.audit': async (_args, ctx) => ({
-    ok: true,
-    audit: await cognition.getSkillVersionMigrationAudit(ctx.userId),
-  }),
 
   'cognition.skills.diff': async ({ skillId, fromVersion, toVersion } = {}, ctx) => {
     if (!safeId(skillId) || typeof fromVersion !== 'string' || !fromVersion.trim()
@@ -4157,19 +4131,21 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { entries: await contract.listOntologyEntries(ctx.userId) };
   },
 
-  // 可写入的角色模板字段落点（已安装 ∩ T-box）。targets[].fieldRef 是 opaque
-  // 写入句柄，调用方只回传它；label 已拼好，渲染层不重组显示名。
-  'personalOntology.templates.fieldTargets': async (_payload, ctx) => {
-    const contract = await import('../features/personal_ontology_contract');
-    return { targets: await contract.listRoleTemplateFieldTargets(ctx.userId) };
-  },
+  // （P-r1-64，2026-10-01 拍板按前遍结论退役）旧 personalOntology.* 死通道
+  // 九条已删（渲染层零调用，契约审计 r1 矩阵 32 注册/20 活/12 死在册）：
+  // templates.fieldTargets / profile.syncRecall / candidates.confirm /
+  // candidates.reject / groups.fields.list / groups.history.list /
+  // groups.history.restore / groups.deleted.list / groups.fields.remove。
+  // 服务函数全部保留（各有活消费者：fieldTargets→core-agent 工具、
+  // syncRecall→candidate/asset 服务、confirm/reject→po.* 通道与个人上下文、
+  // fields.list→ontology-conflicts、history.restore→po.history.restore、
+  // deleted.list→po.snapshot、fields.remove/fields.list→回归测试钉住）。
+  // verify/cycleRuleKind/sensitivity 三条死通道按 P-r1-28 拍板保留待补
+  // 资产投影守卫，不在本批删除面内。
 
   // ── Personal Ontology Role Templates (角色模板) ──
   'personalOntology.templates.list': async (_payload, ctx) => {
     return { templates: await personalOntologyTemplateFiles.listTemplateStatus(ctx.userId) };
-  },
-  'personalOntology.profile.syncRecall': async (_payload, ctx) => {
-    return { ok: true, ...(await recallProfileSync.schedulePersonalProfileSync(ctx.userId)) };
   },
   // 冲突台账（2026-09-20 本体界面）：读取自带自愈——值已被用户删除的
   // 冲突行顺手清除，返回的每一条都仍然成立。
@@ -4182,30 +4158,23 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // 资产回流），读取与确认零暴露零 UI——回流闭环的确认端在这里补齐。 ──
   'personalOntology.candidates.list': async (_payload, ctx) => {
     const data = await personalOntologyCandidates.listCandidates(ctx.userId);
-    return { ok: true, candidates: data.candidate_updates || [] };
+    // corrupt（P-r2-7 读侧结构化错误）：池文件坏档时如实带回，渲染层据此
+    // 出「从备份恢复/重置」入口；写侧此时已被 corrupt-guard 拒绝。
+    // 契约漂移修复（2026-10-02 S2 取证）：本通道历史上返回 `candidates`，
+    // 而 rendered 侧 personal-ontology.js 读的是 `candidate_updates`——两边不一致
+    // 导致本体候选横幅在生产上恒报「加载失败」（死功能）。此处**同时**返回两个
+    // 键：老消费方读 candidates 不受影响，横幅恢复可用。
+    const list = data.candidate_updates || [];
+    return { ok: true, candidates: list, candidate_updates: list, ...(data.corrupt ? { corrupt: data.corrupt } : {}) };
   },
-  'personalOntology.candidates.confirm': async ({ candidateId, dest, acknowledgeConflict } = {}, ctx) => {
-    if (!candidateId || typeof candidateId !== 'string') throw new Error('missing candidateId');
-    // 冲突门越过标记（specs/014 T014）：布尔校验后透传；命中冲突时返回体带
-    // conflicts[]（渲染层弹「仍然写入」对话用）。
-    if (acknowledgeConflict !== undefined && typeof acknowledgeConflict !== 'boolean') {
-      throw new Error('invalid acknowledgeConflict');
-    }
-    return personalOntologyCandidates.confirmCandidate(
-      ctx.userId,
-      candidateId,
-      dest && typeof dest === 'object' ? dest : {},
-      acknowledgeConflict === true ? { acknowledgeConflict: true } : {},
-    );
-  },
-  'personalOntology.candidates.reject': async ({ candidateId, reason } = {}, ctx) => {
-    if (!candidateId || typeof candidateId !== 'string') throw new Error('missing candidateId');
-    return personalOntologyCandidates.rejectCandidate(
-      ctx.userId,
-      candidateId,
-      typeof reason === 'string' ? reason : undefined,
-    );
-  },
+  // （P-r1-64 退役）candidates.confirm/reject 两条老通道已删——渲染层回流
+  // 确认走 po.candidates.confirm / po.candidates.reject（同一服务函数）。
+
+  // （2026-10-01 b2 回滚）cognition.corrupt.list/restore/reset 三通道曾随
+  // P-r1-88 坏档三件套落地，未登记进 014 anti-drift 白名单
+  //（test/main/features/recall/ontology-step2-guard.test.ts）致门禁新增
+  // 失败，已按回滚令移除；重新落地时须先登记该白名单。
+
   'personalOntology.templates.install': async ({ templateId, restoreData }, ctx) => {
     if (!templateId || typeof templateId !== 'string') throw new Error('missing templateId');
     return personalOntologyTemplateFiles.installTemplateFile(ctx.userId, templateId, restoreData === true);
@@ -4223,10 +4192,9 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   },
 
   // ── Personal Ontology Group Fields (挖空表单字段，兼容复合 id) ──
-  'personalOntology.groups.fields.list': async ({ groupId }, ctx) => {
-    if (!groupId || typeof groupId !== 'string') throw new Error('missing groupId');
-    return personalOntologyTemplateFiles.listFieldsByRef(ctx.userId, groupId);
-  },
+  // （P-r1-64 退役）groups.fields.list 与 groups.fields.remove 两条老通道
+  // 已删——渲染层零调用；fields.list 的服务面 listFieldsByRef 仍被
+  // ontology-conflicts 与候选确认消费。
   'personalOntology.groups.fields.append': async ({ groupId, fieldName, value, source, asOf, clearAsOf }, ctx) => {
     if (!groupId || typeof groupId !== 'string') throw new Error('missing groupId');
     if (!fieldName || typeof fieldName !== 'string') throw new Error('missing fieldName');
@@ -4271,21 +4239,18 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (typeof value !== 'string') throw new Error('invalid value');
     return personalOntologyGroups.cycleFieldValueRuleKind(ctx.userId, groupId, fieldName, value);
   },
-  // 组变更历史（spec 007 T304）：快照列表与恢复。
-  'personalOntology.groups.history.list': async ({ groupId }, ctx) => {
-    if (!groupId || typeof groupId !== 'string') throw new Error('missing groupId');
-    return { ok: true, history: personalOntologyGroups.listGroupHistory(ctx.userId, groupId) };
-  },
-  'personalOntology.groups.history.restore': async ({ groupId, snapshotId }, ctx) => {
-    if (!groupId || typeof groupId !== 'string') throw new Error('missing groupId');
-    if (!snapshotId || typeof snapshotId !== 'string') throw new Error('missing snapshotId');
-    return personalOntologyGroups.restoreGroupSnapshot(ctx.userId, groupId, snapshotId);
-  },
-  // 已删除分组列表（spec 009 D5b / T026，待总控确认第 7 条·选项②）：无参，
-  // 只校验转调 features（Constitution II）；恢复复用上面的 history.restore。
+  // 已删除分组列表（spec 009 D5b / T026）：无参，只校验转调 features
+  // （Constitution II）；恢复复用上面的 history.restore。
+  // 2026-10-02 收尾恢复：P-r1-64 判「渲染零调用」漏了协议层活测试
+  // （personal-ontology-deleted-groups.test.ts 三用例按通道名劫持——正是
+  // P-r1-94 指出的 grep 失明盲区），按 v2 判据「有测试依赖→保留」恢复注册；
+  // 原码自标「待总控确认第 7 条·选项②」，退役须先销该测试。
   'personalOntology.groups.deleted.list': async (_payload, ctx) => {
     return { ok: true, deleted: personalOntologyGroups.listDeletedGroups(ctx.userId) };
   },
+  // （P-r1-64 退役）组变更历史两条老通道已删（history.list /
+  // history.restore）——渲染层 v2 面走 po.history.list /
+  // po.history.restore（deleted 随 po.snapshot 下发）。
   // 敏感性（spec 007 T302）：restricted 不进任务自动注入与世界模型。
   'personalOntology.groups.fields.sensitivity': async ({ groupId, fieldName, value, restricted }, ctx) => {
     if (!groupId || typeof groupId !== 'string') throw new Error('missing groupId');
@@ -4300,11 +4265,6 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (!fieldName || typeof fieldName !== 'string') throw new Error('missing fieldName');
     if (typeof value !== 'string') throw new Error('missing value');
     return personalOntologyTemplateFiles.removeFieldValueToRef(ctx.userId, groupId, fieldName, value);
-  },
-  'personalOntology.groups.fields.remove': async ({ groupId, fieldName }, ctx) => {
-    if (!groupId || typeof groupId !== 'string') throw new Error('missing groupId');
-    if (!fieldName || typeof fieldName !== 'string') throw new Error('missing fieldName');
-    return personalOntologyTemplateFiles.removeFieldToRef(ctx.userId, groupId, fieldName);
   },
 
   // ── Personal Ontology Group Entries (流水区，兼容复合 id) ──
@@ -4449,6 +4409,25 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   'po.data.importApply': async ({ items }, ctx) => {
     if (!Array.isArray(items)) throw new Error('missing items');
     return poApi.poImportApply(ctx.userId, items);
+  },
+
+  // ── 认知内核契约层（S2，2026-10-02）：合并收件箱 / 任务字段缺口 / 回填 ──
+  // 只读聚合 + 缺值回填：回填走 po 的统一写路径，并回一张改动记录单（Delta）。
+  // （总览通道随「总览页签」一并撤回：既有页面已各自承载那些信息，不另开页面。）
+  'cognition.kernel.inbox': async (_payload, ctx) => cognitionKernel.readMergedInbox(ctx.userId),
+  'cognition.kernel.taskFields': async ({ packId } = {}, ctx) => {
+    const pack = cognitionKernel.getTaskFieldPack(String(packId ?? ''));
+    if (!pack) throw new Error('unknown task field pack');
+    return cognitionKernel.checkTaskFields(ctx.userId, pack);
+  },
+  'cognition.kernel.backfill': async ({ fieldName, value, groupTitle } = {}, ctx) => {
+    if (typeof fieldName !== 'string' || !fieldName.trim()) throw new Error('invalid field name');
+    if (typeof value !== 'string' || !value.trim()) throw new Error('invalid value');
+    return cognitionKernel.backfillFieldValue(ctx.userId, {
+      fieldName,
+      value,
+      ...(typeof groupTitle === 'string' && groupTitle.trim() ? { groupTitle } : {}),
+    });
   },
 
   // ── 桥接注册：renderer 引用但漏注册的通道（纯转发到现成能力，
@@ -5392,24 +5371,17 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (typeof spaceId !== 'string' || !safeId(spaceId)) return { state: null };
     return { state: await shareFeishu.getFeishuShare(ctx.userId, spaceId) };
   },
-  'kb.share.needsUpdate': async ({ spaceId } = {}, ctx) => {
-    if (typeof spaceId !== 'string' || !safeId(spaceId)) return { needed: false };
-    return shareFeishu.shareNeedsUpdate(ctx.userId, spaceId);
-  },
+  // 2026-10-01 组12·退役：kb 域 6 条渲染零调用死通道移除（2026-09-30 认知资产
+  // 质检循环 P-r1-92，预审决策卡拍板）——kb.share.needsUpdate / kb.share.appConfig.get /
+  // kb.share.appConfig.clear / kb.share.cogseed.update / kb.share.cogseed.list /
+  // kb.share.cogseed.config.get。服务函数保留（shareNeedsUpdate、
+  // listCogseedShares 等有测试/服务内部消费）。
   // 分享应用配置（独立于消息机器人）：appId/appSecret 存本机，供分享 OAuth 使用。
-  'kb.share.appConfig.get': async (_payload, ctx) => {
-    const cfg = await personalContextManager.getFeishuShareAppConfig(ctx.userId);
-    return { configured: cfg !== null, ...(cfg ? { appId: cfg.appId } : {}) }; // 不回传 appSecret
-  },
   'kb.share.appConfig.set': async ({ appId, appSecret } = {}, ctx) => {
     const aid = typeof appId === 'string' ? appId.trim() : '';
     const secret = typeof appSecret === 'string' ? appSecret.trim() : '';
     if (!aid || !secret) return { ok: false, error: '请填写 App ID 与 App Secret' };
     await personalContextManager.setFeishuShareAppConfig(ctx.userId, { appId: aid, appSecret: secret });
-    return { ok: true };
-  },
-  'kb.share.appConfig.clear': async (_payload, ctx) => {
-    await personalContextManager.setFeishuShareAppConfig(ctx.userId, null);
     return { ok: true };
   },
   // 分享授权：用分享专用应用凭据（或回退机器人凭据）发起写权限 OAuth
@@ -5438,17 +5410,6 @@ const invokeHandlers: Record<string, InvokeHandler> = {
       description: sp?.description,
     }, { force: force === true });
   },
-  'kb.share.cogseed.update': async ({ spaceId } = {}, ctx) => {
-    if (typeof spaceId !== 'string' || !safeId(spaceId)) return { ok: false, code: 'publish_failed', error: 'invalid spaceId' };
-    const sp = await spaces.getSpace(ctx.userId, spaceId);
-    if (!sp) return { ok: false, code: 'publish_failed', error: 'space not found' };
-    return shareCogseed.publishSpaceToCogseedShare(ctx.userId, spaceId, {
-      name: sp.name || spaceId,
-      joinMode: sp.join_mode ?? 'direct',
-      memberPermission: sp.member_permission ?? 'view_export',
-      description: sp.description,
-    }, { force: true });
-  },
   'kb.share.cogseed.syncPolicy': async ({ spaceId } = {}, ctx) => {
     if (typeof spaceId !== 'string' || !safeId(spaceId)) return { ok: false, error: 'invalid spaceId' };
     const sp = await spaces.getSpace(ctx.userId, spaceId);
@@ -5462,14 +5423,9 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (typeof spaceId !== 'string' || !safeId(spaceId)) return { ok: false, error: 'invalid spaceId' };
     return shareCogseed.revokeCogseedShare(ctx.userId, spaceId);
   },
-  'kb.share.cogseed.list': async (_payload, ctx) => ({ items: await shareCogseed.listCogseedShares(ctx.userId) }),
   'kb.share.cogseed.get': async ({ spaceId } = {}, ctx) => {
     if (typeof spaceId !== 'string' || !safeId(spaceId)) return { state: null };
     return { state: await shareCogseed.getCogseedShare(ctx.userId, spaceId) };
-  },
-  'kb.share.cogseed.config.get': async (_payload, ctx) => {
-    const cfg = await shareCogseed.getCogseedShareConfig(ctx.userId);
-    return { configured: cfg !== null, ...(cfg ? { baseUrl: cfg.baseUrl } : {}) }; // 不回传 apiKey
   },
   'kb.share.cogseed.config.set': async ({ baseUrl, apiKey } = {}, ctx) => {
     const url = typeof baseUrl === 'string' ? baseUrl.trim() : '';

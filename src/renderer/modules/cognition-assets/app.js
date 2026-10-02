@@ -19,15 +19,15 @@
   const WRITE_ACTIONS = new Set([
     'refresh', 'cand-adopt-with-form', 'cand-decide',
     'asset-action', 'asset-recommend-ack', 'select-asset-version', 'delete-asset-version',
-    'run-cleanup', 'rollback-cleanup-item', 'cleanup-uncertain-dismiss', 'cleanup-uncertain-defer',
-    'inspection-toggle', 'run-inspection', 'run-maintenance', 'purge-deleted-asset', 'inbox-resolve', 'asset-edit-save', 'edit-from-version', 'merge-asset-version', 'merge-asset', 'source-action', 'capture-action', 'organize-conv',
+    'rollback-cleanup-item', 'cleanup-uncertain-dismiss', 'cleanup-uncertain-defer',
+    'run-maintenance', 'purge-deleted-asset', 'inbox-resolve', 'asset-edit-save', 'edit-from-version', 'merge-asset-version', 'merge-asset', 'source-action', 'capture-action', 'organize-conv',
     // A5（2026-09-29）：候选清单读失败的显式重试。
     'retry-candidates',
-    // 治理待办就地处断（specs/010 T010）：冲突选边、巡检选边/合并。全部经
-    // cognition.inbox.resolve（core.actions 转发，不在渲染层写）。扩权/定级
-    // 两类动作已随敏感级机制整体删除（2026-09-28）；「补条件」就地表单已随
-    // 两页重整删除，inbox-boundary-save 暂留死码——cognition-actions.json
-    // fixture 钉住该 act（双向一致不变量），待 fixture 同步删除后一并清理。
+    // 治理待办就地处断（specs/010 T010）：冲突选边、巡检选边/合并、补边界。
+    // 全部经 cognition.inbox.resolve（core.actions 转发，不在渲染层写）。扩权/
+    // 定级两类动作已随敏感级机制整体删除（2026-09-28）；「补条件」就地表单
+    // 已随 T028 恢复（2026-09-29，review-views.js boundaryFormRow 渲染，
+    // case 见委托层 inbox-boundary-save），不再是待清理的死码。
     'inbox-conflict-claim',
     'inbox-inspection-keep', 'inbox-inspection-merge',
     'inbox-boundary-save',
@@ -41,6 +41,8 @@
     'tag-add', 'tag-remove', 'tag-batch-run', 'tag-rename-save', 'tag-merge-confirm', 'tag-delete',
     // 「记一条」保存（设计 7.2）：走 recall.candidates.save 产生候选。
     'cand-create-save',
+    // 用户钉资产到会话（user_pinned 投影）也是写通道。
+    'asset-use-in-chat',
     // ranking-weights-save 已随权重卡彻底移除删除（G1 拍板项 #3，2026-09-28）。
   ]);
 
@@ -134,7 +136,22 @@
             }
             break;
           }
-          case 'refresh': await NS.reload({ tree: true }); await NS.reload(); break;
+          case 'refresh': await NS.reload(); break;
+          // 本体候选（2026-10-02 收件箱归位）：确认 = 进全局记忆的档案；驳回 = 丢弃。
+          // 两个动作都复用既有通道，不在渲染层写存储。
+          case 'po-cand-confirm': {
+            const res = await NS.api.call('po.candidates.confirm', { candidateId: id, dest: { toGlobalMemory: true } }, {});
+            if (!res || res.ok === false) { NS.toast(T('cognition.review_ontology_failed', '没处理成功，请重试。'), 'error'); break; }
+            NS.toast(T('cognition.review_ontology_confirmed', '已记住。'));
+            await NS.reload();
+            break;
+          }
+          case 'po-cand-reject': {
+            const res = await NS.api.call('po.candidates.reject', { candidateId: id }, {});
+            if (!res || res.ok === false) { NS.toast(T('cognition.review_ontology_failed', '没处理成功，请重试。'), 'error'); break; }
+            await NS.reload();
+            break;
+          }
           case 'tab': router.go({ name: id }); break;
           case 'filter-cat': router.go({ name: 'overview', category: id }); break;
           // 目录视图切换（2026-09-18）：同一个列表页换一种行形态（模型视角），
@@ -286,9 +303,6 @@
           case 'asset-recommend-ack': await A.acknowledgeAssetRecommendation(id); break;
           case 'select-asset-version': await A.selectAssetVersion(id, el.dataset.version || ''); break;
           case 'run-maintenance': await A.runMaintenance(); break;
-          case 'run-cleanup': await A.runCleanup(); break;
-          case 'inspection-toggle': await A.setInspectionEnabled(!(S.inspection && S.inspection.settings && S.inspection.settings.enabled)); break;
-          case 'run-inspection': await A.runInspection(); break;
           case 'purge-deleted-asset': {
             // 真机修复（2026-09-26 T035 取证抓出）：此处曾裸调 confirmUser ——
             // helper 定义在 core.js 闭包、经 NS.confirmUser 暴露，裸引用直接
@@ -299,23 +313,6 @@
             break;
           }
           case 'inbox-resolve': await A.resolveInboxItem(id, el.dataset.action || ''); break;
-          /* ── 治理待办就地处断（specs/010 T010 / contracts/renderer-seams §3）─────────
-           *  剩冲突选边与巡检选边/合并，全部经 core.actions 走 cognition.inbox.resolve。
-           *  扩权/定级档位选择与「补条件」表单已随敏感级机制/两页重整删除
-           *  （2026-09-28）；inbox-boundary-save 的 case 留作 fixture 钉住的
-           *  死码（见 WRITE_ACTIONS 注释），无渲染入口。 */
-          case 'inbox-boundary-save': {
-            // 就地读 [data-f]（契约 §4）：多值按顿号/逗号分隔，与资产编辑同口径。
-            const form = el.closest('[data-inbox-boundary-form]');
-            if (!form) break;
-            const readList = (field) => String((form.querySelector(`[data-f="${field}"]`) || {}).value || '')
-              .split(/[、,，]/).map((value) => value.trim()).filter(Boolean);
-            await A.resolveInboxItem(id, 'set_boundary', {
-              applicableWhen: readList('applicableWhen'),
-              forbiddenWhen: readList('forbiddenWhen'),
-            });
-            break;
-          }
           case 'inbox-conflict-claim': await A.resolveInboxItem(id, 'claim'); break;
           case 'inbox-inspection-keep': await A.resolveInboxItem(id, 'keep', { targetAssetId: el.dataset.anchor || '' }); break;
           case 'inbox-inspection-merge': await A.resolveInboxItem(id, 'merge', { targetAssetId: el.dataset.anchor || '' }); break;
@@ -879,8 +876,6 @@
     // 由 MutationObserver 注入，后台窗口零 IPC，回前台 flush 挂起区块。
     NS.setupChangeRail(panelVisible);
     await NS.reload();
-    // 认知树是默认落地页:快照落地后按需补一次树(overview 页也保留补树)。
-    if (!S.treeRequested && (S.route.name === 'tree' || S.route.name === 'overview')) { S.treeRequested = true; await NS.reload({ tree: true }); }
     NS.notify();
   }
 
@@ -898,15 +893,6 @@
     // 面板可能已经处于激活态（深链进来）。
     if (panelVisible()) boot();
   }
-
-  // 数据变化时：树页/概览页没树就补树（cognition:changed 的 tree 区块会把
-  // S.treeRequested 复位，实现"本体/资产变化后懒重建树"）。
-  NS.onChange(() => {
-    if ((S.route.name === 'tree' || S.route.name === 'overview') && !S.treeRequested && S.loaded) {
-      S.treeRequested = true;
-      void NS.reload({ tree: true });
-    }
-  });
 
   // 范围编辑器和受限候选详情按需读取 Agent / 空间名称；普通浏览资产时
   // 不额外加载目录，候选卡只有在确实展示这些权限边界时才读一次。
@@ -1072,8 +1058,9 @@
     } catch (error) {
       next = { assetId: id, ...(turnId ? { turnId } : {}), failed: true, error: String((error && error.message) || error) };
     }
-    // 回执到达前用户已切走/换资产：这帧作废（不把 A 资产的拆解画给 B 资产）。
-    if (rankingWhyLast.assetId !== id) return;
+    // 回执到达前用户已切走/换资产/换回合：这帧作废（不把 A 资产的拆解画给
+    // B 资产，也不把旧回合的拆解盖到新回合上——与发起判重双键对称）。
+    if (rankingWhyLast.assetId !== id || rankingWhyLast.turnId !== turnId) return;
     NS.rankingWhy = next;
     NS.render();
   }
