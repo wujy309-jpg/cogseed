@@ -1,0 +1,324 @@
+/**
+ * cognition_kernel/pool — 统一候选池（S3-c）。
+ *
+ * 池条目就是一个 status:'proposed' 的 Delta（D1③：一切写入皆 Delta，区别
+ * 只在是否自动确认）。双收件箱（po 候选 markdown 方言 + recall 候选 10 态）
+ * 在 S3-d/S4 由迁移与消费面重接收编进这一个池。
+ *
+ * 生命周期（池级，最小完备）：pending → confirmed / rejected / deferred
+ *（deferred=「稍后再说」，到点回到 pending 由消费面拉起；对象级的
+ * paused/merged 等状态属统一库对象，不属池）。
+ *
+ * 幂等与去重（两层，2026-10-02 钉死）：
+ *  · 槽位键（idempotencyKey）：同一槽位的重复提议，池内只留最新一条（旧
+ *    pending 项被顶替进 rejected，注明 superseded）——这是槽位键的正确用途；
+ *  · deltaId：confirm 后的精确重放由统一库 appliedDeltas 索引拦截。
+ *
+ * 存储独立于主档（cognition-pool.json，同目录同锁纪律同坏档三件套）：
+ * 池是高频流转的工作区，不搅动事实源主档。
+ */
+
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { fileEditLock } from '../../util/locks';
+import { corruptRecordFor, readTextGuarded, reportCorruptFile } from '../../util/corrupt-guard';
+import { userCognitionDir } from '../../paths';
+import { nowIso, safeId } from '../../storage';
+import { createLogger } from '../../logger';
+import type { CognitionDelta } from './types';
+import { validateDelta } from './delta';
+import { applyCognitionDeltas, loadCognitionStoreSync } from './store';
+
+const log = createLogger('cognition-pool');
+
+export const POOL_SCHEMA_VERSION = 1 as const;
+export const POOL_CORRUPT_DOMAIN = 'cognition-pool';
+export const POOL_MAX_ITEMS = 500;
+
+export type PoolItemStatus = 'pending' | 'confirmed' | 'rejected' | 'deferred';
+export type PoolSourceKind = 'judge' | 'capture' | 'backflow' | 'import' | 'user';
+
+export interface PoolItem {
+  /** 池条目 id（与 delta.deltaId 分离：同槽顶替会产生新条目）。 */
+  id: string;
+  delta: CognitionDelta;
+  status: PoolItemStatus;
+  sourceKind: PoolSourceKind;
+  createdAt: string;
+  updatedAt: string;
+  /** deferred 到期时刻（消费面扫描回 pending）。 */
+  resumeAt?: string;
+  note?: string;
+  decidedAt?: string;
+  /** 顶替关系：本条被哪个新条目顶掉（仅 superseded 的 rejected 项有）。 */
+  supersededBy?: string;
+  /** 迁移映射：来自旧 po/recall 候选时的原 id（S3-d 用）。 */
+  originalRef?: { kind: 'po_candidate' | 'recall_candidate'; id: string };
+}
+
+export interface PoolDocument {
+  schemaVersion: 1;
+  items: PoolItem[];
+  updatedAt: string;
+}
+
+export function poolPath(uid: string): string {
+  return path.join(userCognitionDir(uid), 'cognition-pool.json');
+}
+
+export function emptyPool(): PoolDocument {
+  return { schemaVersion: POOL_SCHEMA_VERSION, items: [], updatedAt: nowIso() };
+}
+
+function normalizeItem(raw: unknown): PoolItem | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const id = typeof r.id === 'string' ? r.id.trim() : '';
+  const status = typeof r.status === 'string' ? r.status : '';
+  if (!id || (status !== 'pending' && status !== 'confirmed' && status !== 'rejected' && status !== 'deferred')) {
+    return null;
+  }
+  const sourceKind = typeof r.sourceKind === 'string' ? r.sourceKind : 'user';
+  const now = nowIso();
+  return {
+    id,
+    delta: r.delta as CognitionDelta,
+    status,
+    sourceKind: (['judge', 'capture', 'backflow', 'import', 'user'].includes(sourceKind) ? sourceKind : 'user') as PoolSourceKind,
+    createdAt: typeof r.createdAt === 'string' ? r.createdAt : now,
+    updatedAt: typeof r.updatedAt === 'string' ? r.updatedAt : now,
+    ...(typeof r.resumeAt === 'string' && r.resumeAt ? { resumeAt: r.resumeAt } : {}),
+    ...(typeof r.note === 'string' && r.note ? { note: r.note } : {}),
+    ...(typeof r.decidedAt === 'string' && r.decidedAt ? { decidedAt: r.decidedAt } : {}),
+    ...(typeof r.supersededBy === 'string' && r.supersededBy ? { supersededBy: r.supersededBy } : {}),
+    ...(r.originalRef && typeof r.originalRef === 'object'
+      ? { originalRef: r.originalRef as PoolItem['originalRef'] }
+      : {}),
+  };
+}
+
+function normalizePool(raw: unknown): PoolDocument {
+  const doc = emptyPool();
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return doc;
+  const r = raw as Record<string, unknown>;
+  if (r.schemaVersion !== POOL_SCHEMA_VERSION) return doc;
+  if (Array.isArray(r.items)) {
+    for (const item of r.items) {
+      const normalized = normalizeItem(item);
+      if (normalized) doc.items.push(normalized);
+    }
+  }
+  doc.updatedAt = typeof r.updatedAt === 'string' ? r.updatedAt : doc.updatedAt;
+  return doc;
+}
+
+/** 读池（坏档三件套读侧：copy 备份+拒写 latch，返回空池供展示）。 */
+export function loadPoolSync(uid: string): PoolDocument {
+  if (!safeId(uid)) return emptyPool();
+  const filePath = poolPath(uid);
+  if (!fs.existsSync(filePath)) return emptyPool();
+  const guarded = readTextGuarded(filePath, { domain: POOL_CORRUPT_DOMAIN });
+  if (guarded.status !== 'ok') return emptyPool();
+  try {
+    return normalizePool(JSON.parse(guarded.text));
+  } catch (err) {
+    reportCorruptFile(filePath, `bad JSON: ${(err as Error).message}`, { domain: POOL_CORRUPT_DOMAIN });
+    log.warn('cognition pool unreadable; corrupt-guard engaged', { uid, error: (err as Error).message });
+    return emptyPool();
+  }
+}
+
+function writePoolSync(filePath: string, doc: PoolDocument): void {
+  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tmp, JSON.stringify(doc, null, 2), 'utf8');
+  fs.renameSync(tmp, filePath);
+}
+
+// ── 提交（生产者入口）──────────────────────────────────────────────────
+
+export interface SubmitOutcome {
+  ok: boolean;
+  error?: string;
+  /** 本槽位当前的活条目 id（新建或顶替后的新条目）。 */
+  itemId?: string;
+  /** 被顶替进 rejected 的旧条目 id。 */
+  supersededId?: string;
+}
+
+/**
+ * 提议入池。同槽位（delta.idempotencyKey）已有 pending/deferred 条目时，
+ * 旧条目顶替进 rejected（superseded，非用户决定、不进用户视野的历史噪声），
+ * 池内每槽只留最新。
+ */
+export async function submitToPool(
+  uid: string,
+  delta: CognitionDelta,
+  options?: { sourceKind?: PoolSourceKind; originalRef?: PoolItem['originalRef'] },
+): Promise<SubmitOutcome> {
+  if (!safeId(uid)) return { ok: false, error: 'invalid uid' };
+  const knownHomes = new Set(loadCognitionStoreSync(uid).homes.map((entry) => entry.home));
+  const checked = validateDelta(delta, knownHomes);
+  if (checked.ok === false) return { ok: false, error: `invalid delta: ${checked.reason}` };
+  if (delta.status !== 'proposed') return { ok: false, error: 'pool 只收 proposed（applied 走统一库）' };
+  const filePath = poolPath(uid);
+  return fileEditLock(filePath).runExclusive(async () => {
+    const doc = loadPoolSync(uid);
+    const corrupt = corruptRecordFor(filePath);
+    if (corrupt) return { ok: false, error: `cognition pool corrupt; write refused (${corrupt.reason})` };
+
+    const now = nowIso();
+    const itemId = `pi-${delta.deltaId.slice(0, 12)}-${String(doc.items.length).padStart(4, '0')}`;
+    let supersededId: string | undefined;
+    // 顶替只发生在「范围化槽位」（带 fieldName/objectId 的 set/update——新值
+    // 换旧值是本意）；裸 add（无字段无对象）同家不同内容是不同提议，共存。
+    // 2026-10-02 修正：首版按槽位键一刀切，把同家两条不同内容的 add 错顶替。
+    const scopedSlot = Boolean(delta.target.fieldName || delta.target.objectId);
+    const surviving: PoolItem[] = [];
+    for (const item of doc.items) {
+      const sameSlot =
+        item.delta.idempotencyKey === delta.idempotencyKey &&
+        scopedSlot &&
+        (item.status === 'pending' || item.status === 'deferred');
+      if (sameSlot) {
+        supersededId = item.id;
+        surviving.push({
+          ...item,
+          status: 'rejected',
+          updatedAt: now,
+          decidedAt: now,
+          note: item.note ?? '同槽位被更新的提议顶替',
+          supersededBy: itemId,
+        });
+      } else {
+        surviving.push(item);
+      }
+    }
+    const entry: PoolItem = {
+      id: itemId,
+      delta: { ...delta },
+      status: 'pending',
+      sourceKind: options?.sourceKind ?? 'user',
+      createdAt: now,
+      updatedAt: now,
+      ...(options?.originalRef ? { originalRef: options.originalRef } : {}),
+    };
+    surviving.push(entry);
+    // 容量约束：确认/拒绝的旧条目先淘汰（最旧优先），活条目永不被挤出。
+    while (surviving.length > POOL_MAX_ITEMS) {
+      const idx = surviving.findIndex((item) => item.status === 'confirmed' || item.status === 'rejected');
+      if (idx === -1) break;
+      surviving.splice(idx, 1);
+    }
+    doc.items = surviving;
+    doc.updatedAt = now;
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    writePoolSync(filePath, doc);
+    return { ok: true, itemId, ...(supersededId ? { supersededId } : {}) };
+  });
+}
+
+// ── 列表 ─────────────────────────────────────────────────────────────────
+
+export interface PoolView {
+  items: PoolItem[];
+}
+
+export function listPool(uid: string, filter?: { status?: PoolItemStatus; sourceKind?: PoolSourceKind }): PoolView {
+  const doc = loadPoolSync(uid);
+  const items = doc.items.filter(
+    (item) =>
+      (!filter?.status || item.status === filter.status) &&
+      (!filter?.sourceKind || item.sourceKind === filter.sourceKind),
+  );
+  // pending 最优先，同状态内新→旧。
+  const rank: Record<PoolItemStatus, number> = { pending: 0, deferred: 1, confirmed: 2, rejected: 3 };
+  items.sort((a, b) => rank[a.status] - rank[b.status] || (a.createdAt < b.createdAt ? 1 : -1));
+  return { items };
+}
+
+// ── 决定（confirm / reject / defer）────────────────────────────────────
+
+export interface DecideOutcome {
+  ok: boolean;
+  error?: string;
+  /** confirm 成功后的统一库落地结果。 */
+  appliedCount?: number;
+}
+
+/**
+ * 用户决定。confirm = delta 转 applied 经统一库唯一写入口落地 + 池条目
+ * confirmed（双失败安全：库落地失败则池不动；池写失败库已落地，重试 confirm
+ * 会命中统一库 appliedDeltas 幂等索引安全返回）。
+ */
+export async function decidePoolItem(
+  uid: string,
+  itemId: string,
+  decision: 'confirm' | 'reject' | 'defer',
+  options?: { note?: string; resumeAt?: string },
+): Promise<DecideOutcome> {
+  if (!safeId(uid) || !safeId(itemId)) return { ok: false, error: 'invalid uid or itemId' };
+  const filePath = poolPath(uid);
+  if (decision === 'confirm') {
+    // 先在锁外读条目（读侧安全），confirm 的原子性由统一库幂等索引兜底。
+    const current = loadPoolSync(uid).items.find((item) => item.id === itemId);
+    if (!current) return { ok: false, error: 'pool item not found' };
+    if (current.status !== 'pending' && current.status !== 'deferred') {
+      return { ok: false, error: `pool item 已 ${current.status}` };
+    }
+    const applied: CognitionDelta = { ...current.delta, status: 'applied' };
+    const result = await applyCognitionDeltas(uid, [applied]);
+    if (!result.ok) return { ok: false, error: `统一库落地失败：${result.error ?? 'unknown'}` };
+  }
+  return fileEditLock(filePath).runExclusive(async () => {
+    const doc = loadPoolSync(uid);
+    const corrupt = corruptRecordFor(filePath);
+    if (corrupt) return { ok: false, error: `cognition pool corrupt; write refused (${corrupt.reason})` };
+    const item = doc.items.find((entry) => entry.id === itemId);
+    if (!item) return { ok: false, error: 'pool item not found' };
+    const now = nowIso();
+    if (decision === 'confirm') {
+      item.status = 'confirmed';
+    } else if (decision === 'reject') {
+      item.status = 'rejected';
+    } else {
+      if (item.status === 'confirmed' || item.status === 'rejected') {
+        return { ok: false, error: `pool item 已 ${item.status}` };
+      }
+      item.status = 'deferred';
+      if (options?.resumeAt) item.resumeAt = options.resumeAt;
+    }
+    item.updatedAt = now;
+    item.decidedAt = now;
+    if (options?.note) item.note = options.note;
+    doc.updatedAt = now;
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    writePoolSync(filePath, doc);
+    return { ok: true };
+  });
+}
+
+/** deferred 到期扫描（消费面轮询用）：到点条目回 pending。 */
+export function resumeDuePoolItems(uid: string, now: string = nowIso()): number {
+  if (!safeId(uid)) return 0;
+  const filePath = poolPath(uid);
+  const doc = loadPoolSync(uid);
+  let resumed = 0;
+  for (const item of doc.items) {
+    if (item.status === 'deferred' && item.resumeAt && item.resumeAt <= now) {
+      item.status = 'pending';
+      item.updatedAt = now;
+      resumed += 1;
+    }
+  }
+  if (resumed > 0) {
+    doc.updatedAt = now;
+    try {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      writePoolSync(filePath, doc);
+    } catch (err) {
+      log.warn('pool resume persist failed', { uid, error: (err as Error).message });
+      return 0;
+    }
+  }
+  return resumed;
+}

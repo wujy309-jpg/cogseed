@@ -100,3 +100,18 @@ export {
   replaceCognitionHomes,
 } from './store';
 export type { ApplyDeltasOutcome, CognitionVersionLine, DeltaApplyResult, ReplaceHomesOutcome } from './store';
+
+// S3-c：统一候选池（池条目 = proposed Delta；同槽只留最新）。
+export {
+  POOL_CORRUPT_DOMAIN,
+  POOL_MAX_ITEMS,
+  POOL_SCHEMA_VERSION,
+  decidePoolItem,
+  emptyPool,
+  listPool,
+  loadPoolSync,
+  poolPath,
+  resumeDuePoolItems,
+  submitToPool,
+} from './pool';
+export type { DecideOutcome, PoolDocument, PoolItem, PoolItemStatus, PoolSourceKind, PoolView, SubmitOutcome } from './pool';
