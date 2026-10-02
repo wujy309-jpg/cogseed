@@ -6863,5 +6863,8 @@
   "settings.semantica.demo.working": "Processando…",
   "settings.semantica.demo.seed_success": "Ativos de demonstração prontos",
   "settings.semantica.demo.clear_success": "Ativos de demonstração removidos",
-  "settings.semantica.demo.failure": "Falha na operação"
+  "settings.semantica.demo.failure": "Falha na operação",
+  "cognition.inbox_action_deferred_reject": "Não me lembrar",
+  "cognition.inbox_deferred_note": "Adiado · volta em {days}d",
+  "cognition.inbox_action_resume": "Tratar agora"
 }

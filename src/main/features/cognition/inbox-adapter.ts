@@ -20,6 +20,7 @@ import {
 import {
   comparableJudgmentText,
   deferRecallCandidate,
+  resumeRecallCandidate,
   ignoreRecallCandidate,
   listRecallCandidates,
   promoteRecallCandidate,
@@ -303,13 +304,19 @@ export async function resolveCognitionInboxItem(
       await deferRecallCandidate(userId, candidateId, note);
       return { ok: true, target: 'recall_candidate', status: 'deferred' };
     }
+    if (action === 'resume') {
+      // 「现在处理」：把已稍后的候选立刻拉回待确认（candidate_deferred 行的
+      // 一键动作，2026-10-02 可见性修复的配套）。
+      await resumeRecallCandidate(userId, candidateId);
+      return { ok: true, target: 'recall_candidate', status: 'pending_review' };
+    }
     if (action === 'ignore') {
       await ignoreRecallCandidate(userId, candidateId, note);
       return { ok: true, target: 'recall_candidate', status: 'ignored' };
     }
     throw inboxResolveError(
       'unsupported_action',
-      `候选类待办只支持 reject / defer / ignore${candidatePrefix === 'conflict:' ? ' / claim' : ''}，收到 ${action || '(空)'}`,
+      `候选类待办只支持 reject / defer / ignore / resume${candidatePrefix === 'conflict:' ? ' / claim' : ''}，收到 ${action || '(空)'}`,
     );
   }
 

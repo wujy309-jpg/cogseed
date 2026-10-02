@@ -9132,5 +9132,8 @@
   "kb.glossary.corrupt_reset_done": "已重置。词表从空表开始，可正常写入。",
   "cognition.candidate_advisory_personal_not_stable": "个人条目没写明这是长期的，可能只是一次性状态，建议核对。",
   "ontologyGraph.error_parent_category_not_found": "所选上级分类已不存在，请重新选择后再保存",
-  "cognition.inbox_load_failed_hint": "治理待办的清单没有读到，其他分区不受影响。可以稍后重试；重试仍失败时，重启应用通常能恢复。"
+  "cognition.inbox_load_failed_hint": "治理待办的清单没有读到，其他分区不受影响。可以稍后重试；重试仍失败时，重启应用通常能恢复。",
+  "cognition.inbox_action_deferred_reject": "不再提醒",
+  "cognition.inbox_deferred_note": "已稍后处理 · {days} 天后自动回来",
+  "cognition.inbox_action_resume": "现在处理"
 }

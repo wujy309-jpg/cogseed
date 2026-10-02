@@ -44,6 +44,9 @@ export type CognitionInboxKind =
    * 具体原因在 detail 里（PromotionBlockReason 的码，UI 负责翻译）。
    */
   | 'candidate_ineligible'
+  /** 已「稍后处理」的候选（2026-10-02 修复：点“以后再说”后从待我处理直接消失
+   *  整个冷却期——按子安口径 deferred 与待确认同形态可见，带“现在处理”一键恢复。 */
+  | 'candidate_deferred'
   /** 来源失效，已经影响到具体的既有资产。 */
   | 'source_unavailable'
   // 2026-09-29 第 2 批·一物一链：`candidate_pending_review` 停产——同一 pending
@@ -89,6 +92,7 @@ export type CognitionInboxAction =
   | 'reject'
   | 'defer'
   | 'ignore'
+  | 'resume'
   | 'claim'
   | 'set_boundary'
   | 'keep'
@@ -116,6 +120,8 @@ export interface CognitionInboxItem {
   findingCategory?: 'duplicate' | 'outdated' | 'conflict';
   /** 缺边界规则**当前**的条件（仅 `rule_boundary_missing` 带，供就地表单预填）。 */
   boundary?: { applicableWhen: readonly string[]; forbiddenWhen: readonly string[] };
+  /** 冷却到期时刻（仅 `candidate_deferred` 带，渲染层换算“N 天后回来”）。 */
+  resumeAt?: string;
 }
 
 /**
@@ -130,6 +136,8 @@ export interface CognitionInboxItem {
 export interface CognitionInboxCandidate {
   id: string;
   status: string;
+  /** 稍后处理的冷却到期时刻（deferred 时由服务侧维护；resume 清空）。 */
+  cooldownUntil?: string;
   judgment?: string;
   value?: string;
   summary?: string;
@@ -197,6 +205,7 @@ const INBOX_ACTIONS: Record<CognitionInboxKind, readonly CognitionInboxAction[]>
   classification_conflict: ['claim', 'reject', 'defer'],
   evidence_insufficient: ['reject', 'defer'],
   candidate_ineligible: ['reject', 'defer'],
+  candidate_deferred: ['resume', 'reject'],
   source_unavailable: [],
   asset_change_pending: ['accept', 'defer', 'reject'],
   cleanup_uncertain: ['reject', 'defer'],
@@ -220,6 +229,7 @@ const URGENCY: Record<CognitionInboxKind, CognitionInboxUrgency> = {
   evidence_insufficient: 'low_disturbance',
   // 列出来就够，不打断：用户可以改到合格，也可以直接否掉，都不紧急。
   candidate_ineligible: 'low_disturbance',
+  candidate_deferred: 'low_disturbance',
   source_unavailable: 'confirm',
   asset_change_pending: 'confirm',
   cleanup_uncertain: 'low_disturbance',
@@ -239,6 +249,7 @@ const KIND_ORDER: CognitionInboxKind[] = [
   'asset_change_pending',
   'cleanup_uncertain',
   'inspection_finding',
+  'candidate_deferred',
 ];
 
 /** 同文本判重的唯一口径：直接复用 candidate-service 的 comparableJudgmentText
@@ -405,6 +416,20 @@ export function buildCognitionInbox(input: CognitionInboxInput): CognitionInboxI
     // 2026-09-29 第 2 批：普通待确认候选不再进治理清单（candidate_pending_review
     // 停产，B2）——它的唯一确认入口是候选卡/详情（完整三选一），这里再给
     // 一套 accept 直调就是第二条确认链。
+  }
+
+  // 已「稍后处理」的候选：同形态可见（2026-10-02 修复）。旧版 needsUserAction
+  // 过滤把它们整行排除——点一次“以后再说”就从待我处理消失整个冷却期（默认
+  // 7 天），用户感知等同丢失。现改为保留行 + 「现在处理」一键恢复（resume
+  // 通道既有），不占冲突/待确认的判定面（上面 pending 循环仍按 needsUserAction）。
+  for (const candidate of input.candidates) {
+    const capabilities = tryGetRecallCandidateCapabilities(candidate);
+    if (capabilities?.isSnoozed !== true) continue;
+    if (['confirmed', 'rejected', 'ignored', 'expired', 'superseded', 'failed'].includes(String(candidate.status))) continue;
+    items.push(item('candidate_deferred', `deferred:${candidate.id}`, candidate.judgment || candidate.id, {
+      candidateId: candidate.id,
+      ...(candidate.cooldownUntil ? { resumeAt: candidate.cooldownUntil } : {}),
+    }));
   }
 
   // 补证据不是"决定"，所以它不能跟决定类共用 `pending` 这层过滤。

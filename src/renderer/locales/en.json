@@ -9132,5 +9132,8 @@
   "settings.semantica.demo.working": "Working…",
   "settings.semantica.demo.seed_success": "Demo assets ready",
   "settings.semantica.demo.clear_success": "Demo assets removed",
-  "settings.semantica.demo.failure": "Operation failed"
+  "settings.semantica.demo.failure": "Operation failed",
+  "cognition.inbox_action_deferred_reject": "Don't remind me",
+  "cognition.inbox_deferred_note": "Snoozed · returns in {days}d",
+  "cognition.inbox_action_resume": "Handle now"
 }

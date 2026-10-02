@@ -6863,5 +6863,8 @@
   "settings.semantica.demo.working": "処理中…",
   "settings.semantica.demo.seed_success": "デモ資産の準備が完了しました",
   "settings.semantica.demo.clear_success": "デモ資産を削除しました",
-  "settings.semantica.demo.failure": "操作に失敗しました"
+  "settings.semantica.demo.failure": "操作に失敗しました",
+  "cognition.inbox_action_deferred_reject": "通知しない",
+  "cognition.inbox_deferred_note": "後で処理中 · {days} 日後に戻ります",
+  "cognition.inbox_action_resume": "今すぐ処理"
 }
