@@ -661,8 +661,56 @@ describe('confirmed Recall projection prompt injection', () => {
       expect(result.profileMemoryEntries!.every((entry) => /^onto-/.test(entry.id))).toBe(true);
     });
 
-    it('库里已有正式个人资产时：画像块渲染真实 id/成熟度/版本，注入清单可回连资产', async () => {
+    it('已进本轮投影的个人资产不再以画像镜像双注（2026-10-02 对话建议①跨通道去重）', async () => {
       const { assets, projection, promptInjection } = await modules();
+      const now = new Date().toISOString();
+      // 投影确认前就在库里：会进投影冻结集（旧版行为=同资产全文两块各一次，
+      // 措辞/版本可能分叉——实测口径稀释的根源）。
+      const created = await assets.createAbilityAsset('user-a', {
+        schemaVersion: 2, ownerId: 'user-a', id: 'aa-personal-dup',
+        candidateId: 'cand-personal-dup', sourceCandidateIds: ['cand-personal-dup'],
+        reviewDecisionId: 'rd_personal_dup',
+        type: 'personal', title: '沟通语言', statement: '与该用户对话一律使用中文。',
+        evidenceRefs: [{ kind: 'conversation', id: 'conv-personal-dup' }],
+        scope: 'general', status: 'active', lifecycleStatus: 'user_confirmed_unverified',
+        maturity: 'bud', version: '1',
+        createdAt: now, updatedAt: now,
+      }, { actor: 'user', reason: 'dedupe test' });
+      const preview = await projection.previewContextProjection('user-a', {
+        taskRunId: 'task-profile-dup',
+        purpose: 'global',
+        taskText: 'Audit OAuth callback handling',
+      }, fakeSemanticOptions);
+      const confirmed = await projection.confirmContextProjection('user-a', preview.id);
+      const result = await promptInjection.buildRecallTurnPromptContext('user-a', {
+        cid: 'cid-profile-dup',
+        taskRunId: 'turn-profile-dup',
+        taskText: 'Audit OAuth callback handling',
+        committedProjectionId: confirmed.id,
+      });
+      // 授权投影块是更强形态：保留全文与 projection 引用。
+      expect(result.promptBlock).toContain('<confirmed-ability-assets>');
+      expect(result.promptBlock).toContain(created.id);
+      // 画像块不再重复注入同 id；注入清单亦不含（收据按授权通道落账）。
+      const profileBlock = result.profileMemoryBlock ?? '';
+      expect(profileBlock.includes(created.id)).toBe(false);
+      expect((result.profileMemoryEntries ?? []).map((entry) => entry.id)).not.toContain(created.id);
+    });
+
+    it('库里已有正式个人资产（未进本轮投影冻结集）：画像块渲染真实 id/成熟度/版本，注入清单可回连资产', async () => {
+      const { assets, projection, promptInjection } = await modules();
+      const promoted = await createAssetWith({
+        judgment: 'Review OAuth callback and token exchange security.',
+        summary: 'OAuth review workflow',
+        sourceId: 'conversation-profile-real',
+      });
+      const preview = await projection.previewContextProjection('user-a', {
+        taskRunId: 'task-profile-real',
+        purpose: 'global',
+        taskText: 'Audit OAuth callback handling',
+      }, fakeSemanticOptions);
+      const confirmed = await projection.confirmContextProjection('user-a', preview.id);
+      // 投影确认之后才落库的个人资产：可读、但不在冻结集 → 走画像镜像通道。
       const now = new Date().toISOString();
       const created = await assets.createAbilityAsset('user-a', {
         schemaVersion: 2, ownerId: 'user-a', id: 'aa-personal-channel',
@@ -675,12 +723,6 @@ describe('confirmed Recall projection prompt injection', () => {
         createdAt: now, updatedAt: now,
       }, { actor: 'user', reason: 'profile channel test' });
       await assets.setAbilityAssetMaturity('user-a', created.id, 'transfer_validated');
-      const preview = await projection.previewContextProjection('user-a', {
-        taskRunId: 'task-profile-real',
-        purpose: 'global',
-        taskText: 'Audit OAuth callback handling',
-      }, fakeSemanticOptions);
-      const confirmed = await projection.confirmContextProjection('user-a', preview.id);
 
       const result = await promptInjection.buildRecallTurnPromptContext('user-a', {
         cid: 'cid-profile-real',
@@ -703,6 +745,8 @@ describe('confirmed Recall projection prompt injection', () => {
       // 注入清单（供回执侧落账）带真实 id——用量统计与成熟度证据链的钥匙。
       expect(result.profileMemoryEntries?.map((entry) => entry.id)).toContain(created.id);
       expect(result.profileMemoryEntries?.every((entry) => !/^onto-/.test(entry.id))).toBe(true);
+      // 已进投影的规则资产不属于画像镜像（loadOntologyAssets 只镜像 personal）。
+      expect((result.profileMemoryEntries ?? []).map((entry) => entry.id)).not.toContain(promoted.asset.id);
     });
 
     it('无 durable memory 时不产生画像块，返回结构不携带画像字段', async () => {

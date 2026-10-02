@@ -660,8 +660,16 @@ async function buildPromptContextForCommittedProjection(
     statement: safePromptText(asset.statement, MAX_STATEMENT_LENGTH),
     source_refs: asset.evidenceRefs.map((ref) => ({ kind: ref.kind, id: ref.id })),
   }));
+  // 跨通道去重（2026-10-02 对话建议①）：同一资产已在授权投影块（更强形态：
+  // 带 projection 引用 + 运行时闸门）时，不再以画像镜像重复注入——同文双块
+  // 两种措辞、版本还可能分叉，稀释模型对"哪条是硬约束"的权重判断。
+  // 实测（2026-10-02 运行时）：aa-34b688 同轮出现在投影块与画像块，又在目录
+  // 行带 [attached] 出现第三次。目录行保留 [attached] 标注（既有拍板：目录
+  // 维持可用全集语义），本处只消全文双块。
+  const authorizedAssetIds = new Set(records.map((record) => record.asset_id));
+  const dedupedProfileRecords = profileRecords.filter((record) => !authorizedAssetIds.has(record.asset_id));
   const rendered = renderPromptBlock(records);
-  const profileRendered = renderPromptBlock(profileRecords, PROFILE_MEMORY_PREFIX_LINES, MAX_PROFILE_BLOCK_LENGTH);
+  const profileRendered = renderPromptBlock(dedupedProfileRecords, PROFILE_MEMORY_PREFIX_LINES, MAX_PROFILE_BLOCK_LENGTH);
   const bareAuthorized = renderPromptBlock(rendered.records, ['<confirmed-ability-assets>'], MAX_BLOCK_LENGTH);
   const bareProfile = renderPromptBlock(profileRendered.records, ['<durable-profile-memory>'], MAX_PROFILE_BLOCK_LENGTH);
   const profileMemoryEntries = profileRendered.records.map((record) => ({
