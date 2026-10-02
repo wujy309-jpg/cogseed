@@ -314,10 +314,15 @@ describe('KSTAR review inference', () => {
         }],
       }),
     });
-    // 2026-10-02 契约更新：引用不实的**该条**归因被丢弃，但模型评审本体保留
-    //（旧版整份作废降级成机械归因——一个坏 token 丢掉全部推理结论）。
+    // 2026-10-02 契约更新：引用不实的**该条**归因被丢弃，模型评审本体保留
+    //（inferenceMethod=model；旧版整份作废降级成 unknown——一个坏 token 丢掉
+    // 全部推理结论）。次级归因由确定性兜底回填 insufficient_evidence（detailsFor
+    // 的既定回填语义），不再阻断评审。
     expect(rejected.inferenceMethod).toBe('model');
-    expect(rejected.review.attributionDetails).toBeUndefined();
+    expect(rejected.review.attributionDetails).toMatchObject([{
+      category: 'insufficient_evidence',
+      source: 'deterministic',
+    }]);
   });
 
   it('lets deterministic permission facts override model secondary attribution', async () => {
