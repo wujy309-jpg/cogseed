@@ -260,7 +260,7 @@ describe('确认更新撞版本冲突的处置（T022 / US-702）', () => {
     // 数据来源：强制重拉版本链（带目标资产），没有写任何东西。
     expect(callsOf('recall.assets.versions.list').map((c) => c.payload.assetId)).toContain('aa-t1');
     expect(callsOf('recall.candidates.promote')).toHaveLength(1);
-    for (const write of ['recall.candidates.update', 'recall.candidates.reject', 'recall.candidates.defer', 'recall.candidates.ignore']) {
+    for (const write of ['recall.candidates.update', 'recall.candidates.reject', 'recall.candidates.ignore']) {
       expect(callsOf(write), write).toHaveLength(0);
     }
   });
@@ -334,17 +334,17 @@ describe('确认更新撞版本冲突的处置（T022 / US-702）', () => {
     const html = renderDetail();
     expect(html).toContain(zh['cognition.candidate_version_conflict_body_missing']);
     expect(html).not.toContain('data-rebase="1"');
-    // 控件回到可操作态：另外两条出口还在（不是禁用死锁）。
-    expect(html).toContain('data-action="defer"');
+    // 控件回到可操作态：拒绝出口还在（不是禁用死锁）；「稍后处理」已删除。
+    expect(html).not.toContain('data-action="defer"');
     expect(html).toContain('data-action="reject"');
   });
 
-  it('用户改「稍后处理 / 拒绝」后，冲突提示不再挂着', async () => {
+  it('用户改「拒绝」后，冲突提示不再挂着', async () => {
     const ns = await promoteIntoConflict();
     CALLS.length = 0;
-    await ns.actions.decideCandidate('rcand-u', 'defer');
+    await ns.actions.decideCandidate('rcand-u', 'reject');
     expect(ns.store.candidateVersionConflict).toBeNull();
-    expect(callsOf('recall.candidates.defer')).toHaveLength(1);
+    expect(callsOf('recall.candidates.reject')).toHaveLength(1);
     expect(renderDetail()).not.toContain(zh['cognition.candidate_version_conflict_not_applied_plain']);
   });
 
@@ -396,7 +396,6 @@ describe('候选三态与按钮名按型分支（T023 / US-702）', () => {
     for (const action of ['update', 'limit_scope']) {
       const text = labelsOf(action);
       expect(text, action).toContain(zh['recall.asset_approval.confirm']);
-      expect(text, action).toContain(zh['recall.asset_approval.defer']);
       expect(text, action).toContain(zh['recall.asset_approval.reject']);
       // 更新型不说新建型的旧文案「保存并使用」（2026-09-29 A6 词根统一后
       // 新建=「保存」、更新=「保存更新」，同根不同缀——按完整旧词钉，不再
@@ -408,7 +407,6 @@ describe('候选三态与按钮名按型分支（T023 / US-702）', () => {
   it('新建型保持既有措辞：「保存并使用 / 稍后处理 / 不保存」', () => {
     const text = labelsOf('create');
     expect(text).toContain(zh['cognition.candidate_save_and_use']);
-    expect(text).toContain(zh['cognition.candidate_defer_action']);
     expect(text).toContain(zh['cognition.candidate_reject']);
     expect(text).not.toContain(zh['recall.asset_approval.confirm']);
   });

@@ -373,12 +373,10 @@
   const candidateDecisionLabels = (candidate) => (candidateUpdateType(candidate)
     ? {
       promote: T('recall.asset_approval.confirm', '保存更新'),
-      defer: T('recall.asset_approval.defer', '稍后处理'),
       reject: T('recall.asset_approval.reject', '拒绝'),
     }
     : {
       promote: T('cognition.candidate_save_and_use', '保存'),
-      defer: T('cognition.candidate_defer_action', '稍后处理'),
       reject: T('cognition.candidate_reject', '不保存'),
     });
 
@@ -425,11 +423,6 @@
       : '';
     const actionBtns = [
       primaryBtn,
-      // A3（2026-09-29）：「已稍后处理」的候选可就地恢复回待确认——
-      // recall.candidates.resume 通道与 CANDIDATE_CHANNELS 映射早已就绪，
-      // 此前缺的就是这个入口，静音候选只能一直躺在折叠区。
-      caps.isSnoozed ? btn(T('cognition.candidate_resume', '恢复'), 'cand-decide', { id: candidate.id, data: { action: 'resume' }, small: true, className: 'o' }) : '',
-      caps.canDefer ? btn(labels.defer, 'cand-decide', { id: candidate.id, data: { action: 'defer' }, small: true, className: 'o' }) : '',
       caps.canReject ? btn(labels.reject, 'cand-decide', { id: candidate.id, data: { action: 'reject' }, small: true, className: 'o' }) : '',
       // 「看内容与证据」按钮已删（2026-09-29 子安指令）：整卡即详情入口
       // （act 提到卡根，委托层 closest 最近匹配——点按钮命中按钮自身动作，
@@ -441,7 +434,7 @@
     return `
     <div class="cand${broken ? ' is-broken' : ''}" data-act="open-candidate" data-id="${esc(candidate.id)}" role="button" tabindex="0">
       <div class="c1">${esc(candidateTitle(candidate))}${warnHtml}<span class="chev" aria-hidden="true">›</span></div>
-      <div class="c2">${chip(categoryLabel(candidate.suggestedType))}${candidateSourceBadge(candidate)}${candidateRiskBadge(candidate)}${(candidate.capabilities && candidate.capabilities.isSnoozed) ? chip(T('cognition.candidate_snoozed', '已稍后处理'), 'amber') : ''}${broken ? '' : chip(T('cognition.candidate_evidence_ok', '证据充足'), 'green')}</div>
+      <div class="c2">${chip(categoryLabel(candidate.suggestedType))}${candidateSourceBadge(candidate)}${candidateRiskBadge(candidate)}${(candidate.capabilities && candidate.capabilities.isSnoozed) ? chip(T('cognition.candidate_system_hold', '系统保留（语义复核有发现）'), 'amber') : ''}${broken ? '' : chip(T('cognition.candidate_evidence_ok', '证据充足'), 'green')}</div>
       <div class="c3">${esc(String(candidate.judgment || candidate.value || '').slice(0, 800))}</div>
       ${(refsHtml || actionsHtml) ? `<div class="ca-card-footer">${refsHtml}${actionsHtml}</div>` : ''}
     </div>`;
@@ -648,13 +641,12 @@
     // 能力一律按主进程下发的 capability 判定，**缺失即视为只读**——与旧模块
     // "treats a candidate without capabilities as read-only instead of guessing"
     // 的口径一致。2026-09-20 统一：此前同一函数里并存三种读法（canEdit 用
-    // `capabilities && …`、canPromote 用真值、canDefer/canReject 用 `!== false`），
+    // `capabilities && …`、canPromote 用真值、canReject 用 `!== false`），
     // 于是"capabilities 缺失"时仍会渲染出「稍后处理 / 拒绝」——正是本 PR 要消灭的
     // 那类必然失败的按钮。
     const caps = candidate.capabilities || {};
     const canEdit = !!caps.canEdit;
     const canPromote = !!caps.canPromote;
-    const canDefer = !!caps.canDefer;
     const canReject = !!caps.canReject;
     const edit = canEdit;
     const field = (label, inner) => `<label class="field"><span>${esc(label)}</span>${inner}</label>`;
@@ -676,7 +668,7 @@
       ? evidenceGroupsHtml(refs)
       : `<span class="note">${esc(T('cognition.candidate_no_evidence', '没有可追溯的证据引用；确认前建议先补证。'))}</span>`}`;
     // 决策动作同样按 capability 收敛（2026-09-20 修）：终态候选（confirmed /
-    // rejected / ignored）的映射是 canDefer=false、canReject=false、isTerminal=true，
+    // rejected / ignored）的映射是 canReject=false、isTerminal=true，
     // 此前这两个按钮**无条件**渲染，用户点下去必然被后端状态机拒绝——旧 skills.js
     // 模块有一条 "never renders decision actions for terminal candidates" 的用例守着，
     // 2026-09-15 #266 重写时没带过来。口径见函数开头：缺失 capabilities 即只读。
@@ -684,7 +676,6 @@
     const decisionLabels = candidateDecisionLabels(candidate);
     const actionsHtml = `<div class="actions actions-right">
         ${canPromote ? btn(decisionLabels.promote, 'cand-adopt-with-form', { id: candidate.id, primary: true }) : ''}
-        ${canDefer ? btn(decisionLabels.defer, 'cand-decide', { id: candidate.id, data: { action: 'defer' }, className: 'o' }) : ''}
         ${canReject ? btn(decisionLabels.reject, 'cand-decide', { id: candidate.id, data: { action: 'reject' }, danger: true }) : ''}
       </div>`;
     return `
@@ -753,7 +744,7 @@
     const copy = {
       needs_review: ['cognition.candidate_status_pending', '待确认', 'amber'],
       weak_evidence: ['cognition.candidate_status_weak_evidence', '证据不足', 'amber'],
-      deferred: ['cognition.candidate_snoozed', '已稍后处理', 'amber'],
+      deferred: ['cognition.candidate_system_hold', '系统保留（语义复核有发现）', 'amber'],
       confirmed: ['cognition.candidate_status_promoted', '已保存', 'green'],
       rejected: ['cognition.candidate_status_rejected', '未保存', 'gray'],
       ignored: ['cognition.candidate_status_ignored', '已忽略', 'gray'],

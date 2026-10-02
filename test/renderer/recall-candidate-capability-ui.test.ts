@@ -61,12 +61,12 @@ function loadSkillsRenderer() {
 
 const ACTIONABLE = {
   canView: true, canEdit: true, canConfirm: true, canPromote: true, canReject: true,
-  canDefer: true, canRetry: false, canBatchSelect: true, needsUserAction: true,
+  canRetry: false, canBatchSelect: true, needsUserAction: true,
   countsAsPending: true, isSnoozed: false, isTerminal: false,
 };
 const READ_ONLY = {
   canView: true, canEdit: false, canConfirm: false, canPromote: false, canReject: false,
-  canDefer: false, canRetry: false, canBatchSelect: false, needsUserAction: false,
+  canRetry: false, canBatchSelect: false, needsUserAction: false,
   countsAsPending: false, isSnoozed: false, isTerminal: true,
 };
 
@@ -147,7 +147,6 @@ describe('recall candidate pool renders from capability, not raw status', () => 
     expect(viewsSource).toContain('const caps = candidate.capabilities || {}');
     expect(viewsSource).toContain('const canEdit = !!caps.canEdit');
     expect(viewsSource).toContain('const canPromote = !!caps.canPromote');
-    expect(viewsSource).toContain('const canDefer = !!caps.canDefer');
     expect(viewsSource).toContain('const canReject = !!caps.canReject');
   });
 });

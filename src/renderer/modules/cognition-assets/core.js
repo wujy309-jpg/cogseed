@@ -1690,8 +1690,6 @@
     reject: 'recall.candidates.reject',
     ignore: 'recall.candidates.ignore',
     'keep-current': 'recall.candidates.keepCurrent',
-    defer: 'recall.candidates.defer',
-    resume: 'recall.candidates.resume',
   };
 
   // originKindOf 已随出身收敛退役（2026-09-20）：「模型记的=已确定」，
@@ -1994,18 +1992,7 @@
         await NS.reload();
         return;
       }
-      if (action === 'defer') {
-        // 「稍后处理」的提示与导航随语境分流（2026-09-16 子安口径；整理详情
-        // 内嵌表单删除后（2026-09-28）「稍后处理」只剩待我处理侧入口，非
-        // review 路由的 toast 分支留作防御）：
-        if (String(store.route && store.route.name || '') === 'review') {
-          router.go({ name: 'review' });
-        } else {
-          toast(T('cognition.candidate_deferred', '已放入稍后处理'));
-        }
-      } else {
-        toast({ reject: T('cognition.candidate_rejected', '已拒绝'), ignore: T('cognition.candidate_ignored', '已忽略'), resume: T('cognition.candidate_resumed', '已恢复，回到待确认') }[action] || T('common.done', '已完成'));
-      }
+      toast({ reject: T('cognition.candidate_rejected', '已拒绝'), ignore: T('cognition.candidate_ignored', '已忽略') }[action] || T('common.done', '已完成'));
       NS.notify();
     },
     async rateProof(proofId, feedback, extra) {

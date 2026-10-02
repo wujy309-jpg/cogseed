@@ -190,16 +190,14 @@ describe('认知资产 · 候选行的就地处理', () => {
     return capabilities ? { ...base, capabilities } : base;
   }
 
-  it('候选详情里就地提供「稍后处理 / 拒绝」，动作带候选 id（不跳页、走 IPC）', () => {
+  it('候选详情就地提供「拒绝」（不跳页、走 IPC）；「稍后处理」已整体删除（2026-10-02 子安拍板）', () => {
     const html = renderAssets({ name: 'review', candidateId: 'c-1' }, (store) => {
       store.candidates = [candidate('c-1', 'pending_review', CAPS)];
     });
-    expect(html).toContain(zh['cognition.candidate_defer_action']);
-    const deferButtons = [...html.matchAll(/<button[^>]*data-action="defer"[^>]*>/g)].map((m) => m[0]);
+    expect(html).not.toContain('data-action="defer"');
     const rejectButtons = [...html.matchAll(/<button[^>]*data-action="reject"[^>]*>/g)].map((m) => m[0]);
-    expect(deferButtons.length).toBeGreaterThan(0);
     expect(rejectButtons.length).toBeGreaterThan(0);
-    for (const button of [...deferButtons, ...rejectButtons]) expect(button).toContain('data-id="c-1"');
+    for (const button of rejectButtons) expect(button).toContain('data-id="c-1"');
   });
 
   it('终态的候选详情渲染为只读记录，不再提供就地处理入口', () => {

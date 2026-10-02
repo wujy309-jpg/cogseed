@@ -10,7 +10,7 @@ export type { CognitionCatalogKind, CognitionCatalogSource, CognitionSourceActio
 export { cognitionSourceControlId, isCognitionSourceEnabled, listCognitionSourceControls, readCognitionSourceControl } from './source-control';
 export type { CognitionSourceAvailability, CognitionSourceControlRecord, CognitionSourceRemovalImpact, RemoveCognitionSourceResult } from './source-control';
 
-export { deferRecallCandidate, importPersonalOntologyCandidate, listRecallCandidates, promoteRecallCandidate, recallCandidateConflictingTypes, readRecallAssetHandoffReceipt, readRecallCandidate, rejectRecallCandidate, updateRecallCandidate, resumeRecallCandidate, saveRecallCandidate, recordRecallCandidateValidation } from './candidate-service';
+export { importPersonalOntologyCandidate, listRecallCandidates, promoteRecallCandidate, recallCandidateConflictingTypes, readRecallAssetHandoffReceipt, readRecallCandidate, rejectRecallCandidate, updateRecallCandidate, saveRecallCandidate, recordRecallCandidateValidation } from './candidate-service';
 export { recordInjectionReceipt, listInjectionReceipts } from './injection-receipt';
 export { recordValidation, listValidationRecords, recoverValidationApplications } from './validation-service';
 export { evaluatePromotionPolicy } from './promotion-policy';

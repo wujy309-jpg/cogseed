@@ -48,20 +48,20 @@ describe('Recall candidate capability matrix', () => {
     const matrix = Object.fromEntries(ALL_STATUSES.map((status) => {
       const c = getRecallCandidateCapabilities({ status });
       return [status, [c.displayState, c.canEdit, c.canConfirm, c.canPromote, c.canReject,
-        c.canDefer, c.canRetry, c.canBatchSelect, c.needsUserAction, c.countsAsPending,
+        c.canRetry, c.canBatchSelect, c.needsUserAction, c.countsAsPending,
         c.isSnoozed, c.isTerminal, c.disabledReason ?? '-'].join('|')];
     }));
     expect(matrix).toEqual({
-      observed:         'needs_review|true|true|true|true|true|false|true|true|true|false|false|-',
-      weak_observation: 'weak_evidence|true|true|true|true|true|false|true|true|true|false|false|-',
-      pending_review:   'needs_review|true|true|true|true|true|false|true|true|true|false|false|-',
-      deferred:         'deferred|true|true|true|true|true|false|true|true|true|true|false|-',
-      failed:           'failed|true|true|true|true|true|true|true|true|true|false|false|-',
-      confirmed:        'confirmed|false|false|false|false|false|false|false|false|false|false|true|candidate_confirmed',
-      rejected:         'rejected|false|false|false|false|false|false|false|false|false|false|true|candidate_rejected',
-      ignored:          'ignored|false|false|false|false|false|false|false|false|false|false|true|candidate_ignored',
-      expired:          'expired|false|false|false|false|false|false|false|false|false|false|true|candidate_expired',
-      superseded:       'superseded|false|false|false|false|false|false|false|false|false|false|true|candidate_superseded',
+      observed:         'needs_review|true|true|true|true|false|true|true|true|false|false|-',
+      weak_observation: 'weak_evidence|true|true|true|true|false|true|true|true|false|false|-',
+      pending_review:   'needs_review|true|true|true|true|false|true|true|true|false|false|-',
+      deferred:         'deferred|true|true|true|true|false|true|true|true|true|false|-',
+      failed:           'failed|true|true|true|true|true|true|true|true|false|false|-',
+      confirmed:        'confirmed|false|false|false|false|false|false|false|false|false|true|candidate_confirmed',
+      rejected:         'rejected|false|false|false|false|false|false|false|false|false|true|candidate_rejected',
+      ignored:          'ignored|false|false|false|false|false|false|false|false|false|true|candidate_ignored',
+      expired:          'expired|false|false|false|false|false|false|false|false|false|true|candidate_expired',
+      superseded:       'superseded|false|false|false|false|false|false|false|false|false|true|candidate_superseded',
     });
   });
 

@@ -158,7 +158,9 @@ describe('candidate decisions', () => {
     expect(core).toContain("reject: 'recall.candidates.reject'");
     expect(core).toContain("ignore: 'recall.candidates.ignore'");
     expect(core).toContain("'keep-current': 'recall.candidates.keepCurrent'");
-    expect(core).toContain("defer: 'recall.candidates.defer'");
+    // 「稍后处理」前后端已删（2026-10-02）：defer/resume 通道不得回流。
+    expect(core).not.toContain("recall.candidates.defer");
+    expect(core).not.toContain("recall.candidates.resume");
     const decide = fnBlock('async decideCandidate');
     expect(decide).toContain('await NS.reload()');
   });
@@ -207,12 +209,10 @@ describe('candidate pool rendering', () => {
     const caps = CAPS('pending_review');
     expect(caps.canPromote).toBe(true);
     expect(caps.canEdit).toBe(true);
-    expect(caps.canDefer).toBe(true);
     // 2026-09-20：晋升/编辑/决策入口统一读 views.js 里归一化的一组 canX 常量，
-    // **capabilities 缺失即只读**（终态候选的 canDefer/canReject 正是 false）。
+    // **capabilities 缺失即只读**（终态候选的 canReject 正是 false）。
     expect(views).toContain('const caps = candidate.capabilities || {}');
     expect(views).toContain('const canPromote = !!caps.canPromote');
-    expect(views).toContain('const canDefer = !!caps.canDefer');
     expect(views).toContain('const canReject = !!caps.canReject');
     expect(views).toContain('const canEdit = !!caps.canEdit');
   });

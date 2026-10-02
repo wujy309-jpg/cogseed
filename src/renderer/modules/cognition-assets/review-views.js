@@ -105,7 +105,6 @@
     const INBOX_ACTION_LABELS = {
       accept: T('cognition.inbox_action_accept', '保存'),
       reject: T('cognition.inbox_action_reject', '拒绝'),
-      defer: T('cognition.inbox_action_defer', '稍后处理'),
       ignore: T('cognition.inbox_action_ignore', '忽略'),
     };
     const PROPOSAL_ACTION_LABELS = {
@@ -117,22 +116,11 @@
       reject: T('cognition.inbox_action_dismiss', '不管它'),
       defer: T('cognition.inbox_action_look_later', '回头再看'),
     };
-    // 已稍后候选（2026-10-02 可见性修复）：行保留可见，给一键「现在处理」。
-    const DEFERRED_ACTION_LABELS = {
-      resume: T('cognition.inbox_action_resume', '现在处理'),
-      reject: T('cognition.inbox_action_deferred_reject', '不再提醒'),
-    };
     const actionLabelsFor = (kind) => (kind === 'asset_change_pending'
       ? PROPOSAL_ACTION_LABELS
-      : kind === 'candidate_deferred' ? DEFERRED_ACTION_LABELS
       : kind === 'cleanup_uncertain' || kind === 'inspection_finding' ? FINDING_ACTION_LABELS : INBOX_ACTION_LABELS);
     // 标题一行截断（2026-09-26 真机取证）：inbox 的 title 可能是资产正文全文，
     // 五行大标题把整页压垮；全文进 title 悬浮，行上只给一句能扫的。
-    const deferredDaysLeft = (resumeAt) => {
-      const time = Date.parse(String(resumeAt || ''));
-      if (!Number.isFinite(time)) return 7;
-      return Math.max(1, Math.ceil((time - Date.now()) / 86400000));
-    };
     const rowTitle = (row) => {
       const raw = String(row.title || '');
       const cut = raw.length > 60 ? `${raw.slice(0, 60)}…` : raw;
@@ -180,11 +168,8 @@
       const fallback = actions.length || !row.assetId
         ? ''
         : btn(T('cognition.inbox_go_asset', '去资产详情处理'), 'go-inbox-asset', { small: true, className: 'o', data: { id: String(row.assetId) } });
-      const deferredNote = String(row.kind || '') === 'candidate_deferred'
-        ? `<div class="notice-detail">${esc(T('cognition.inbox_deferred_note', '已稍后处理 · {days} 天后自动回来', { days: String(deferredDaysLeft(row.resumeAt)) }))}</div>`
-        : '';
       return `<div class="notice-row">
-        <div class="notice-copy">${rowTitle(row)}${deferredNote}${row.detail ? `<div class="notice-detail">${esc(String(row.detail))}</div>` : ''}</div>
+        <div class="notice-copy">${rowTitle(row)}${row.detail ? `<div class="notice-detail">${esc(String(row.detail))}</div>` : ''}</div>
         <span class="sp"></span>${fallback}${primaryBtn}${restBtns}
       </div>`;
     };
@@ -209,7 +194,7 @@
       const detail = row.aggregate ? '' : row.detail;
       const head = `<div class="notice-copy">${rowTitle(row)}${detail ? `<div class="notice-detail">${esc(String(detail))}</div>` : ''}</div>`;
       if (row.kind === 'classification_conflict' && has('claim')) {
-        return `<div class="notice-row">${head}<span class="sp"></span>${btn(T('cognition.inbox_action_claim', '保留这一条'), 'inbox-conflict-claim', { small: true, primary: true, data: { id } })}${otherActions([has('reject') ? btn(INBOX_ACTION_LABELS.reject, 'inbox-resolve', { small: true, className: 'o', data: { id, action: 'reject' } }) : '', has('defer') ? btn(INBOX_ACTION_LABELS.defer, 'inbox-resolve', { small: true, className: 'o', data: { id, action: 'defer' } }) : ''].join(''))}</div>`;
+        return `<div class="notice-row">${head}<span class="sp"></span>${btn(T('cognition.inbox_action_claim', '保留这一条'), 'inbox-conflict-claim', { small: true, primary: true, data: { id } })}${otherActions([has('reject') ? btn(INBOX_ACTION_LABELS.reject, 'inbox-resolve', { small: true, className: 'o', data: { id, action: 'reject' } }) : ''].join(''))}</div>`;
       }
       if (row.kind === 'inspection_finding' && (has('keep') || has('merge'))) {
         // 巡检冲突/重复（specs/010 T033）：选边归档或合并。目标 = 本行锚定的

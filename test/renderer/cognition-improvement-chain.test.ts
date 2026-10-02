@@ -482,7 +482,7 @@ describe('「改进分析」只读分区（T016 / US-701 AC3）', () => {
       coreSource.indexOf('const IMPROVEMENT_FAILURE_CONCLUSIONS'),
     );
     expect(loaders.length).toBeGreaterThan(0);
-    for (const writeCall of ['promote', 'candidates.update', 'candidates.reject', 'candidates.defer', 'assets.update']) {
+    for (const writeCall of ['promote', 'candidates.update', 'candidates.reject', 'assets.update']) {
       expect(loaders, writeCall).not.toContain(writeCall);
     }
     // 分区渲染侧同样零写通道。

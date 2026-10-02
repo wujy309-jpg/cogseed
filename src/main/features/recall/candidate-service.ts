@@ -89,7 +89,6 @@ export type RecallCandidateRisk = 'low' | 'medium' | 'high';
 export type RecallAbilityAssetLifecycleStatus = 'user_confirmed_unverified' | 'automatically_extracted_unverified' | 'system_precipitated_unverified';
 
 const DEFAULT_CANDIDATE_TTL_MS = 90 * 24 * 60 * 60 * 1_000;
-const DEFAULT_DEFER_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1_000;
 const CANDIDATE_CONTENT_FORMAT_MIGRATION_ID = 'candidate-content-v1';
 
 
@@ -1217,6 +1216,7 @@ function candidateIdForCaptureKey(captureKey: string): string {
 
 export async function listRecallCandidates(userId: string): Promise<RecallCandidateRecord[]> {
   await migrateCandidateContentFormat(userId);
+  await retireUserDeferredCandidates(userId);
   let names: string[];
   try { names = await fs.readdir(candidateDirectory(userId)); }
   catch (error) {
@@ -1256,6 +1256,47 @@ export async function listRecallCandidates(userId: string): Promise<RecallCandid
     }
   }
   return candidates.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+/** 一次性退役迁移（2026-10-02）：用户侧「稍后处理」删除后，把**用户点出来**
+ * deferred 候选（无语义复核标记）迁回 pending_review——不留一批永远隐身的
+ * 存量；语义复核保留的（failureCode=semantic_review_flagged）是系统专用态，
+ * 原样保留在候选列表等用户确认/拒绝。marker 模式与内容迁移同款，可安全重跑。 */
+const USER_DEFER_RETIRED_MIGRATION_ID = 'user-defer-retired-20261002';
+
+async function retireUserDeferredCandidates(userId: string): Promise<void> {
+  const migrationLockPath = recallJsonRecordPath(userId, 'candidate-locks', USER_DEFER_RETIRED_MIGRATION_ID);
+  await fileEditLock(migrationLockPath).runExclusive(async () => {
+    if (await readRecallJsonRecord(userId, 'candidate-migrations', USER_DEFER_RETIRED_MIGRATION_ID)) return;
+    let names: string[];
+    try { names = await fs.readdir(candidateDirectory(userId)); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+    const now = new Date().toISOString();
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue;
+      const id = name.slice(0, -5);
+      if (!safeId(id)) continue;
+      try {
+        await updateRecallJsonRecord(userId, 'candidates', id, (current) => {
+          if (!current) return undefined;
+          if (normalizeCandidateStatus(current.status) !== 'deferred') return current;
+          if (current.failureCode === 'semantic_review_flagged') return current;
+          return { ...current, status: 'pending_review', cooldownUntil: undefined, updatedAt: now };
+        });
+      } catch (error) {
+        log.warn('user-defer retire migration skipped a candidate', { candidateId: id, error: (error as Error).message });
+      }
+    }
+    await writeRecallJsonRecord(userId, 'candidate-migrations', USER_DEFER_RETIRED_MIGRATION_ID, {
+      schemaVersion: 1,
+      ownerId: userId,
+      id: USER_DEFER_RETIRED_MIGRATION_ID,
+      at: now,
+    } as never);
+  });
 }
 
 /** One-time, lossless migration for existing candidate JSON records. Old bubble
@@ -1768,30 +1809,6 @@ export async function recordRecallCandidateValidation(
   return asCandidate(updated);
 }
 
-export function deferRecallCandidate(userId: string, candidateId: string, note?: string): Promise<RecallCandidateRecord> {
-  return decideWithoutAsset(userId, candidateId, 'defer', 'deferred', note);
-}
-
-export async function resumeRecallCandidate(userId: string, candidateId: string): Promise<RecallCandidateRecord> {
-  const updated = await updateRecallJsonRecord(userId, 'candidates', candidateId, (current) => {
-    if (!current) throw new Error('recall candidate not found');
-    const storedStatus = normalizeCandidateStatus(current.status);
-    const candidate = asCandidate(current);
-    if (isTerminalCandidate(storedStatus)) {
-      throw new RecallCandidateStateError(RECALL_CANDIDATE_TERMINAL_ERROR_CODE, 'recall candidate is terminal', storedStatus);
-    }
-    if (storedStatus !== 'deferred') throw new Error('only a deferred recall candidate can be resumed');
-    if (!isCandidateContentReviewReady(candidate)) throw new Error('candidate evidence is insufficient for review');
-    return {
-      ...candidate,
-      status: 'pending_review',
-      cooldownUntil: undefined,
-      updatedAt: new Date().toISOString(),
-    };
-  });
-  return asCandidate(updated);
-}
-
 export function rejectRecallCandidate(userId: string, candidateId: string, note?: string): Promise<RecallCandidateRecord> {
   return decideWithoutAsset(userId, candidateId, 'reject', 'rejected', note);
 }
@@ -1807,8 +1824,8 @@ export function keepCurrentRecallCandidate(userId: string, candidateId: string, 
 async function decideWithoutAsset(
   userId: string,
   candidateId: string,
-  decisionType: 'defer' | 'reject' | 'ignore' | 'keep_current',
-  status: 'deferred' | 'rejected' | 'ignored',
+  decisionType: 'reject' | 'ignore' | 'keep_current',
+  status: 'rejected' | 'ignored',
   note?: string,
   actor: ReviewDecisionActor = 'user',
 ): Promise<RecallCandidateRecord> {
@@ -1845,9 +1862,7 @@ async function decideWithoutAsset(
         ...candidate,
         status,
         ...(decisionNote ? { decisionNote } : {}),
-        ...(status === 'deferred'
-          ? { cooldownUntil: new Date(Date.now() + DEFAULT_DEFER_COOLDOWN_MS).toISOString() }
-          : { cooldownUntil: undefined }),
+        cooldownUntil: undefined,
         updatedAt: new Date().toISOString(),
       };
     });
@@ -1920,8 +1935,9 @@ export async function autoApplyRecallCandidate(
   // N-2: 语义复核（模型级，SEMANTIC_RULES 闭集）。自动晋升是无人审阅的
   // 路径，语义发现（越权改写/敏感个人信息/疑似凭据/越界声称）应把候选
   // 留给用户决定，而不是静默晋升。复核失败（模型不可用）不阻断——退化
-  // 为纯确定性闸（现状），只记一条警告。这里复用 review-decision 的
-  // defer 语义，候选以 deferred 状态留在池里等用户。
+  // 为纯确定性闸（现状），只记一条警告。deferred 是**系统专用保留态**
+  //（2026-10-02：用户侧「稍后处理」已整体删除——子安拍板无用），只有
+  // 语义复核会写它；候选以 deferred 留在候选列表（可见、可确认/拒绝）。
   try {
     const { reviewCandidateSemantically } = await import('../cognition/semantic-review');
     const reviewed = await reviewCandidateSemantically(userId, {

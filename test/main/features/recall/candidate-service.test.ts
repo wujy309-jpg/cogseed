@@ -54,7 +54,7 @@ async function service() {
 }
 
 describe('Recall candidate governance', () => {
-  it('saves deduplicated candidates with normalized evidence and allows defer/resume/reject', async () => {
+  it('saves deduplicated candidates with normalized evidence and allows reject（defer/resume 已删）', async () => {
     const candidates = await service();
     const input = {
       judgment: '  Prefer concise answers for product decisions. ',
@@ -82,17 +82,10 @@ describe('Recall candidate governance', () => {
     expect(edited.judgment).toContain('explicit decision evidence');
     expect(edited.suggestedScope).toBe('product,review');
 
-    const deferred = await candidates.deferRecallCandidate('user-a', first.id, 'need more evidence');
-    expect(deferred.status).toBe('deferred');
-    expect(deferred.decisionNote).toBe('need more evidence');
-    expect(deferred.cooldownUntil).toBeTruthy();
-
-    const resumed = await candidates.resumeRecallCandidate('user-a', first.id);
-    expect(resumed.status).toBe('pending_review');
-
+    // 「稍后处理/恢复」已整体删除（2026-10-02 子安拍板）：deferred 只剩
+    // 语义复核的系统保留态，用户侧处置只有确认/拒绝两条。
     const rejected = await candidates.rejectRecallCandidate('user-a', first.id, 'not durable');
     expect(rejected.status).toBe('rejected');
-    await expect(candidates.resumeRecallCandidate('user-a', first.id)).rejects.toThrow(/terminal/i);
   });
 
   it('imports a personal ontology candidate into the formal recall review flow without confirming it to memory', async () => {
@@ -584,28 +577,44 @@ describe('Recall candidate governance', () => {
     expect(await candidates.readRecallCandidate('user-a', weak.id)).toMatchObject({ status: 'failed' });
   });
 
-  it('keeps deferred candidates quiet until their cooldown expires', async () => {
+  it('存量用户-defer 候选被一次性迁移回待确认；语义复核保留态不动（2026-10-02）', async () => {
     const candidates = await service();
-    const candidate = await candidates.saveRecallCandidate('user-a', {
-      judgment: 'Keep decisions traceable.',
-      value: 'Reduce repeated architecture review work.',
+    const userDeferred = await candidates.saveRecallCandidate('user-a', {
+      judgment: '用户点过稍后处理的存量候选。',
+      value: '退役迁移应把它拉回待确认。',
       suggestedType: 'rule',
-      applicableWhen: ['正式评审与架构决策时'],
-      forbiddenWhen: ['内部快速对齐'],
+      applicableWhen: ['正式评审时'],
+      forbiddenWhen: ['闲聊'],
       suggestedScope: 'project',
-      suggestedAction: 'create',
-      sourceRefs: [{ kind: 'conversation', id: 'conv-cooldown' }],
+      sourceRefs: [{ kind: 'conversation', id: 'conv-retire-user' }],
     });
-    await candidates.deferRecallCandidate('user-a', candidate.id, 'review next week');
-    expect(await candidates.readRecallCandidate('user-a', candidate.id)).toMatchObject({ status: 'deferred' });
-
+    const systemHeld = await candidates.saveRecallCandidate('user-a', {
+      judgment: '语义复核拦下的系统保留候选。',
+      value: '应保持 deferred 等用户确认或拒绝。',
+      suggestedType: 'rule',
+      applicableWhen: ['正式评审时'],
+      forbiddenWhen: ['闲聊'],
+      suggestedScope: 'project',
+      sourceRefs: [{ kind: 'conversation', id: 'conv-retire-sys' }],
+    });
     const store = await import('../../../../src/main/features/recall/store');
-    await store.updateRecallJsonRecord('user-a', 'candidates', candidate.id, (current) => ({
-      ...current!,
-      cooldownUntil: '2020-01-01T00:00:00.000Z',
+    await store.updateRecallJsonRecord('user-a', 'candidates', userDeferred.id, (current) => ({
+      ...current!, status: 'deferred', cooldownUntil: '2099-01-01T00:00:00.000Z',
+    }));
+    await store.updateRecallJsonRecord('user-a', 'candidates', systemHeld.id, (current) => ({
+      ...current!, status: 'deferred', failureCode: 'semantic_review_flagged',
     }));
 
-    expect(await candidates.readRecallCandidate('user-a', candidate.id)).toMatchObject({ status: 'pending_review' });
+    // saveRecallCandidate 内部也会 list（查重），marker 已提前落盘——清掉再
+    // 触发，模拟「首次读口时存量 deferred 已存在」的真实时序。
+    const { recallJsonRecordPath } = await import('../../../../src/main/features/recall/paths');
+    const { userCloudRoot } = await import('../../../../src/main/paths');
+    void userCloudRoot;
+    fs.rmSync(recallJsonRecordPath('user-a', 'candidate-migrations', 'user-defer-retired-20261002'), { force: true });
+
+    await candidates.listRecallCandidates('user-a');
+    expect(await candidates.readRecallCandidate('user-a', userDeferred.id)).toMatchObject({ status: 'pending_review' });
+    expect(await candidates.readRecallCandidate('user-a', systemHeld.id)).toMatchObject({ status: 'deferred' });
   });
 
   it('merges exact duplicate evidence without creating another candidate', async () => {
@@ -802,7 +811,12 @@ describe('Recall candidate governance', () => {
       ...base,
       sourceRefs: [{ kind: 'conversation', id: 'conv-deferred-old' }],
     });
-    await candidates.deferRecallCandidate('user-a', first.id, 'wait for evidence');
+    // deferred 现为系统保留态（语义复核专用）：不带 semantic_review_flagged 的
+    // 存量会被一次性退役迁移拉回 pending，测不了重开——按系统态造数。
+    const store2 = await import('../../../../src/main/features/recall/store');
+    await store2.updateRecallJsonRecord('user-a', 'candidates', first.id, (current) => ({
+      ...current!, status: 'deferred', failureCode: 'semantic_review_flagged',
+    }));
 
     const unchanged = await candidates.saveRecallCandidate('user-a', {
       ...base,
@@ -816,25 +830,6 @@ describe('Recall candidate governance', () => {
     });
     expect(reopened).toMatchObject({ id: first.id, status: 'pending_review' });
     expect(reopened.cooldownUntil).toBeUndefined();
-  });
-
-  it('does not let resume turn a weak observation into a reviewable candidate', async () => {
-    const candidates = await service();
-    const weak = await candidates.saveRecallCandidate('user-a', {
-      judgment: 'Possible reusable rule without evidence.',
-      value: '',
-      suggestedType: 'rule',
-      applicableWhen: ['正式评审与架构决策时'],
-      forbiddenWhen: ['内部快速对齐'],
-      suggestedScope: 'project',
-      sourceRefs: [],
-    });
-
-    await expect(candidates.resumeRecallCandidate('user-a', weak.id)).rejects.toThrow(/deferred/i);
-    // 带证据的弱候选现在允许用户推迟/拒绝；这条没有 refs，仍然出不去。
-    await expect(candidates.deferRecallCandidate('user-a', weak.id, 'collect evidence'))
-      .rejects.toThrow(/insufficient/i);
-    expect(await candidates.readRecallCandidate('user-a', weak.id)).toMatchObject({ status: 'weak_observation', value: '' });
   });
 
   it('moves a weak observation to review only after new evidence makes it complete', async () => {
@@ -1815,7 +1810,7 @@ describe('「保持原版 / 稍后处理 / 系统保持当前」的落点（spec
     expect((await assets.readAbilityAsset(uid, asset.id)).version).toBe('1');
   });
 
-  it('稍后处理 = deferred：不丢、可再次处置，处置前后目标资产都还是 v1', async () => {
+  it('「稍后处理」已删（2026-10-02）：KSTAR 更新提案不处置也不丢，稍后可确认生效 v2（T024 改写）', async () => {
     const uid = 'user-defer-later';
     const candidates = await service();
     const assets = await import('../../../../src/main/features/recall/asset-service');
@@ -1824,16 +1819,10 @@ describe('「保持原版 / 稍后处理 / 系统保持当前」的落点（spec
       proposal: '结论先写，理由随后，最后给可执行动作。',
     }, { source: 'exec-defer-later', run: 'run-defer-later', dedupeKey: 'kstar-improve-defer-later' });
 
-    const deferred = await candidates.deferRecallCandidate(uid, proposal.id, '稍后处理');
-
-    expect(deferred.status).toBe('deferred');
-    expect(deferred.cooldownUntil).toBeTruthy();
-    // 不丢：还在池子里（非终态），且能再次处置。
+    // 不处置：提案仍非终态、在池子里可见（不丢），资产保持 v1。
     expect((await candidates.listRecallCandidates(uid)).map((row) => row.id)).toContain(proposal.id);
-    expect((await candidates.resumeRecallCandidate(uid, proposal.id)).status).toBe('pending_review');
-    // 稍后处理本身不改资产。
     expect((await assets.readAbilityAsset(uid, asset.id)).version).toBe('1');
-    // 真的可以再处置：这次确认生效为 v2（重检通过，因为资产还是 v1）。
+    // 之后确认：重检通过（资产仍是 v1），生效为 v2。
     const promoted = await candidates.promoteRecallCandidate(uid, proposal.id, { actor: 'user' });
     expect(promoted.asset).toMatchObject({ id: asset.id, version: '2' });
     expect(promoted.asset.statement).toContain('可执行动作');

@@ -458,7 +458,7 @@ describe('与 008 口径一致性（specs/015 T027）', () => {
     expect((await assets.readAbilityAsset(uid, asset.id)).statement).toBe('他处改过的正文二。');
   });
 
-  it('三态名一致：两条线都落在同一套状态词（confirmed / deferred / rejected）', async () => {
+  it('状态词一致：提议三态（confirmed/deferred/rejected），候选两态（confirmed/rejected，deferred 已成系统专用 2026-10-02）', async () => {
     const uid = 'user-parity-tri-state';
     const { approval, candidates } = await modules();
     const asset = await seedAsset(uid, '三态口径的基线正文。');
@@ -488,17 +488,16 @@ describe('与 008 口径一致性（specs/015 T027）', () => {
       sourceRefs: [{ kind: 'execution_evaluation', id: sourceId }],
     });
     const confirmed = await saveCandidate('候选确认态正文。', 'run-parity-confirm');
-    const deferred = await saveCandidate('候选稍后态正文。', 'run-parity-defer');
     const rejected = await saveCandidate('候选拒绝态正文。', 'run-parity-reject');
     const candidateStates = [
       (await candidates.promoteRecallCandidate(uid, confirmed.id, { actor: 'user' })).candidate.status,
-      (await candidates.deferRecallCandidate(uid, deferred.id)).status,
       (await candidates.rejectRecallCandidate(uid, rejected.id)).status,
     ];
 
-    // 同一套状态词：不是"008 说 deferred、候选线说 scheduled"。
-    expect(candidateStates).toEqual(['confirmed', 'deferred', 'rejected']);
-    expect(candidateStates).toEqual(eightStates);
+    // 用户可达的状态词对齐：候选侧 confirmed/rejected 与提议侧同名；
+    // 提议侧多出的 deferred 是其独有的「稍后处理」（候选侧已删，2026-10-02）。
+    expect(candidateStates).toEqual(['confirmed', 'rejected']);
+    expect(eightStates.filter((state) => state !== 'deferred')).toEqual(candidateStates);
   });
 
   it('「拒绝 = 保持原版 + 留档」两侧一致', async () => {

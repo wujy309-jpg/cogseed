@@ -663,7 +663,7 @@ describe('系统活动与认知设置', () => {
     expect(cleanupZero).not.toContain('归并 0 条');
   });
 
-  it('「等待确认」口径统一（2026-09-16 B1）：deferred 可见但不占数，带「已稍后处理」标注', () => {
+  it('「等待确认」口径统一（B1）：系统保留态（语义复核）可见但不占数，2026-10-02 起无用户侧稍后', () => {
     // 审计 B1：三套口径曾同时给出 7/5/0。统一为「需要判断且未被稍后处理
     // 静音」——统计卡/全局 stats 同函数；deferred 行留在列表（子安口径）。
     expect(coreSource).toContain('countsAsPending && !');
@@ -1049,14 +1049,10 @@ describe('整理详情页', () => {
     expect(empty).toContain('未命名候选');
   });
 
-  it('「稍后处理」随界面语境分流（2026-09-16）：待我处理页静默回列表，整理页提示去向', () => {
-    // 子安口径：人已在「待我处理」页时无需提示去向，处理完
-    // 这条直接回列表；整理详情页（内容确实被送走）才提示去向。
-    expect(coreSource).toContain("if (action === 'defer')");
-    expect(coreSource).toContain("=== 'review'");
-    expect(coreSource).toContain("router.go({ name: 'review' })");
-    expect(coreSource).toContain("cognition.candidate_deferred", '已放入稍后处理');
-    expect(coreSource).not.toContain("defer: T('cognition.candidate_deferred'");
+  it('「稍后处理」已整体删除（2026-10-02 子安拍板无用）：决定路径不再有 defer 分支与去向提示', () => {
+    expect(coreSource).not.toContain("if (action === 'defer')");
+    expect(coreSource).not.toContain("'recall.candidates.defer'");
+    expect(coreSource).not.toContain("'recall.candidates.resume'");
   });
 
   it('更新候选的差异确认卡：旧版对照 + 版本核对提示（2026-09-16 版本组）', () => {

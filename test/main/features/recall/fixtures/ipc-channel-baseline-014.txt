@@ -401,7 +401,6 @@ recall.assets.versions
 recall.assets.versions.delete
 recall.assets.versions.list
 recall.assets.versions.select
-recall.candidates.defer
 recall.candidates.ignore
 recall.candidates.importPersonalOntology
 recall.candidates.keepCurrent
@@ -410,7 +409,6 @@ recall.candidates.promote
 recall.candidates.promoteBatch
 recall.candidates.read
 recall.candidates.reject
-recall.candidates.resume
 recall.candidates.save
 recall.candidates.update
 recall.captures.batchRetry

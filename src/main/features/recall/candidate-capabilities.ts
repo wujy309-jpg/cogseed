@@ -90,7 +90,6 @@ export interface RecallCandidateCapabilities {
   canConfirm: boolean;
   canPromote: boolean;
   canReject: boolean;
-  canDefer: boolean;
   canRetry: boolean;
   /** 能否进入批量入库勾选池。= canPromote 且不是必须单条复核的高风险候选。 */
   canBatchSelect: boolean;
@@ -125,7 +124,6 @@ const ACTIONABLE = {
   canConfirm: true,
   canPromote: true,
   canReject: true,
-  canDefer: true,
   canRetry: false,
   needsUserAction: true,
   countsAsPending: true,
@@ -144,7 +142,6 @@ function terminal(
     canConfirm: false,
     canPromote: false,
     canReject: false,
-    canDefer: false,
     canRetry: false,
     needsUserAction: false,
     countsAsPending: false,
@@ -266,7 +263,6 @@ export function getRecallCandidateCapabilities(
       canConfirm: false,
       canPromote: false,
       canReject: false,
-      canDefer: false,
       canRetry: false,
       needsUserAction: false,
       countsAsPending: false,
@@ -286,7 +282,7 @@ export function getRecallCandidateCapabilities(
       ...base,
       canConfirm: false,
       canPromote: false,
-      needsUserAction: base.canEdit || base.canReject || base.canDefer || base.canRetry,
+      needsUserAction: base.canEdit || base.canReject || base.canRetry,
     };
   }
   const batchBlocked = base.canPromote && blocksBatch(candidate.risk);
