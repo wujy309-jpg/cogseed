@@ -58,7 +58,7 @@
   }
 
   // 骨架分区（顺序即面板呈现顺序；标题/空态文案全部内联键名，走 kb.meetingRef.*）
-  const SECTION_KEYS = ['refs', 'conclusions', 'actions', 'related', 'receipts'];
+  const SECTION_KEYS = ['refs', 'conclusions', 'minutes', 'actions', 'related', 'receipts'];
 
   /** 分区文案（键名内联：kb-i18n-keys 门禁按 t('…') 字面扫描）。 */
   function sectionText(key) {
@@ -72,6 +72,12 @@
       return {
         title: t('kb.meetingRef.conclusion_section', '纪要条目'),
         empty: t('kb.meetingRef.conclusion_empty', '暂无纪要条目'),
+      };
+    }
+    if (key === 'minutes') {
+      return {
+        title: t('kb.meetingRef.minutes_section', '纪要正文'),
+        empty: t('kb.meetingRef.minutes_empty', '尚未撰写纪要正文'),
       };
     }
     if (key === 'actions') {
@@ -96,6 +102,7 @@
   function errorText(code) {
     const key = String(code || '');
     if (key === 'invalid_doc_id') return t('kb.meetingRef.error_invalid_doc_id', '会议文档标识不合法');
+    if (key === 'invalid_minutes') return t('kb.meetingRef.error_invalid_minutes', '纪要正文不合法（超过 20000 字上限）');
     if (key === 'invalid_asset_id') return t('kb.meetingRef.error_invalid_asset_id', '资产标识不合法');
     if (key === 'invalid_via') return t('kb.meetingRef.error_invalid_via', '引用来源不合法');
     if (key === 'asset_missing') return t('kb.meetingRef.error_asset_missing', '该资产不存在或已彻底删除');
@@ -164,6 +171,10 @@
       expanded: {},
       status: '',
       statusTone: '',
+      // 纪要正文：已存值 / 未保存草稿 / 脏标记（重渲染回读，见 onInput）。
+      minutes: '',
+      minutesDraft: '',
+      minutesDirty: false,
     };
 
     function setStatus(message, tone) {
@@ -278,8 +289,20 @@
       }
     }
 
+    async function loadMinutes() {
+      try {
+        const result = await callMeeting('meeting.minutes.get', { docId: ctx.docId });
+        state.minutes = typeof result?.minutes === 'string' ? result.minutes : '';
+        if (!state.minutesDirty) state.minutesDraft = state.minutes;
+      } catch (error) {
+        log?.warn('meeting minutes load failed', { error: error?.message || String(error) });
+        state.minutes = '';
+        if (!state.minutesDirty) state.minutesDraft = '';
+      }
+    }
+
     async function loadAll() {
-      await Promise.all([loadRefs(), loadConclusions(), loadActions()]);
+      await Promise.all([loadRefs(), loadConclusions(), loadActions(), loadMinutes()]);
       await loadRelated(); // 关联查询要等本会议引用清单（assetIds/terms 的来源）
       render();
     }
@@ -541,6 +564,39 @@
         if (!state.actions.length) return { html: emptyHtml(text.empty), empty: true };
         return { html: state.actions.map((d) => actionRowHtml(d)).join(''), empty: false };
       }
+      if (key === 'minutes') {
+        if (state.minutesError) return { html: emptyHtml(errorText(state.minutesError)), empty: true };
+        const value = state.minutesDirty ? state.minutesDraft : state.minutes;
+        if (typeof root.uiTextarea !== 'function' || typeof root.uiButton !== 'function') {
+          // 共享原语缺失：只读呈现已存正文（不裸写 textarea，守卫基线 0）。
+          if (!value) return { html: emptyHtml(text.empty), empty: true };
+          return { html: `<pre class="kb-mrf__minutes-readonly">${escapeHtml(value)}</pre>`, empty: false };
+        }
+        const textarea = root.uiTextarea({
+          id: 'mrf-minutes',
+          value,
+          placeholder: t('kb.meetingRef.minutes_placeholder', '会议纪要正文（markdown）；可手写，或从下方纪要条目一键生成草稿'),
+          attrs: { 'data-mrf-minutes': '' },
+        });
+        const saveBtn = root.uiButton({
+          label: t('kb.meetingRef.minutes_save', '保存纪要正文'),
+          role: 'primary',
+          size: 'sm',
+          attrs: { 'data-act': 'meeting-minutes-save' },
+        });
+        const draftBtn = root.uiButton({
+          label: t('kb.meetingRef.minutes_draft_from_conclusions', '从纪要条目生成草稿'),
+          size: 'sm',
+          attrs: { 'data-act': 'meeting-minutes-draft' },
+        });
+        const dirtyTag = state.minutesDirty
+          ? ` <small class="kb-mrf__minutes-dirty">${escapeHtml(t('kb.meetingRef.minutes_dirty_tag', '未保存'))}</small>`
+          : '';
+        return {
+          html: `<div class="kb-mrf__minutes" data-mrf-minutes-box>${textarea}<div class="kb-mrf__minutes-actions">${draftBtn}${saveBtn}${dirtyTag}</div></div>`,
+          empty: false,
+        };
+      }
       if (key === 'related') {
         if (state.relatedError) return { html: emptyHtml(errorText(state.relatedError)), empty: true };
         if (!state.related.length) return { html: emptyHtml(text.empty), empty: true };
@@ -652,6 +708,40 @@
       }
     }
 
+    /** 保存纪要正文（写守卫复用 writeBusy；成功后清脏标记并回读确认）。 */
+    async function saveMinutes() {
+      if (state.writeBusy) return;
+      state.writeBusy = true;
+      try {
+        const box = q('[data-mrf-minutes-box] textarea');
+        if (box && typeof box.value === 'string') state.minutesDraft = box.value;
+        await callMeeting('meeting.minutes.save', { docId: ctx.docId, minutes: state.minutesDraft });
+        state.minutes = state.minutesDraft;
+        state.minutesDirty = false;
+        setStatus(t('kb.meetingRef.minutes_save_done', '纪要正文已保存'), '');
+      } catch (error) {
+        log?.warn('meeting minutes save failed', { error: error?.message || String(error) });
+        setStatus(errorText(error?.code), 'warning');
+      } finally {
+        state.writeBusy = false;
+      }
+      render();
+    }
+
+    /** 从纪要条目生成本地草稿（确定性拼装，不走 LLM；覆盖前先确认）。 */
+    async function draftMinutesFromConclusions() {
+      if (state.minutesDirty) {
+        const ok = typeof root.uiConfirm === 'function'
+          ? await root.uiConfirm({ message: t('kb.meetingRef.minutes_draft_confirm_overwrite', '当前有未保存的正文，生成草稿会覆盖它，继续？') })
+          : true;
+        if (!ok) return;
+      }
+      state.minutesDraft = buildMinutesDraft(state.conclusions, ctx.displayPath);
+      state.minutesDirty = true;
+      setStatus(t('kb.meetingRef.minutes_draft_done', '已从纪要条目生成草稿（未保存，可继续编辑）'), '');
+      render();
+    }
+
     function onClick(event) {
       const target = event && event.target;
       const holder = target && typeof target.closest === 'function' ? target.closest('[data-act]') : null;
@@ -663,8 +753,21 @@
       else if (act === 'meeting-action-defer') deferAction();
       else if (act === 'meeting-action-discard' && id) void runAction('discard', id);
       else if (act === 'meeting-related-cite' && id) void citeRelated(id);
+      else if (act === 'meeting-minutes-save') void saveMinutes();
+      else if (act === 'meeting-minutes-draft') void draftMinutesFromConclusions();
     }
     container.addEventListener('click', onClick);
+
+    // 输入即时回读草稿：重渲染（i18n-change / 其他动作后的 render）不清空未保存编辑。
+    function onInput(event) {
+      const target = event && event.target;
+      if (!target || typeof target.closest !== 'function') return;
+      const holder = target.closest('[data-mrf-minutes]');
+      if (!holder) return;
+      state.minutesDraft = typeof target.value === 'string' ? target.value : '';
+      state.minutesDirty = state.minutesDraft !== state.minutes;
+    }
+    container.addEventListener('input', onInput);
 
     // 语言切换：面板自己持有 DOM，必须自响应 i18n-change（kb-i18n-keys 门禁要求）。
     const onI18nChange = () => { render(); };
@@ -678,6 +781,7 @@
       destroy() {
         root.removeEventListener('i18n-change', onI18nChange);
         container.removeEventListener('click', onClick);
+        container.removeEventListener('input', onInput);
         container.textContent = '';
       },
     };
@@ -701,8 +805,37 @@
     },
   };
 
+  /**
+   * 纪要正文草稿（纯函数，供测试直测）：把结构化纪要条目确定性拼装为 markdown。
+   * 纪律：无时间戳（时间由读者从上下文取，避免伪造）、不走 LLM、不编造——
+   * unlinkable 条目如实标注，assetRefs 只列已给标题/版本。
+   */
+  function buildMinutesDraft(conclusions, displayPath) {
+    const list = Array.isArray(conclusions) ? conclusions : [];
+    const name = String(displayPath || '').split('/').filter(Boolean).pop() || '';
+    const lines = [];
+    if (name) lines.push(`# ${name}`);
+    lines.push('## 纪要条目');
+    if (!list.length) {
+      lines.push('（暂无纪要条目）');
+      return lines.join('\n');
+    }
+    list.forEach((item, index) => {
+      const summary = String(item?.summary || '').trim();
+      if (!summary) return;
+      lines.push(`${index + 1}. ${summary}${item?.unlinkable ? '（部分引用暂缺）' : ''}`);
+      const refs = Array.isArray(item?.assetRefs) ? item.assetRefs : [];
+      refs.forEach((ref) => {
+        const title = String(ref?.title || '').trim();
+        const version = ref?.version != null ? ` · v${ref.version}` : '';
+        if (title) lines.push(`   - ${title}${version}`);
+      });
+    });
+    return lines.join('\n');
+  }
+
   root.KbMeetingRefs = api;
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { SECTION_KEYS };
+    module.exports = { SECTION_KEYS, buildMinutesDraft };
   }
 })(typeof window !== 'undefined' ? window : globalThis);

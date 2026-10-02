@@ -12,7 +12,7 @@
  *   meeting.assets.detach      —— 摘除引用（只摘引用，不动资产）
  *   meeting.assets.list        —— 引用清单（现状对比/stale 是读时派生，T037）
  *   meeting.conclusions.list / save / confirm —— 纪要条目（T034）
- *   meeting.conclusions.precipitate —— 已退役（2026-09-29 第 5 批：渲染层零调用，
+ *   meeting.minutes.get / save —— 纪要正文（docId 级 markdown；save ≤20000 字符原子写） *   meeting.conclusions.precipitate —— 已退役（2026-09-29 第 5 批：渲染层零调用，
  *                                      且与「会议内容不进认知主线」红线冲突）
  *   meeting.actions.list / confirm / discard —— 待办草稿（T040~T042；confirm 是
  *   唯一落点入口，内部过外发闸 assertActionDraftSendable；save 属后续任务）
@@ -204,6 +204,23 @@ export const invokeHandlers = {
       },
     );
     return { conclusion };
+  },
+
+  /** `meeting.minutes.get`：纪要正文（只读探测；缺失 → 空串，不惰性建档）。 */
+  'meeting.minutes.get': async (payload: Payload, ctx: IpcContext) => {
+    const docId = requireDocId(payload?.docId);
+    return { minutes: meetingDoc.readMeetingMinutes(ctx.userId, docId) };
+  },
+
+  /** `meeting.minutes.save`：保存纪要正文（类型/长度校验；空串 = 清除字段）。 */
+  'meeting.minutes.save': async (payload: Payload, ctx: IpcContext) => {
+    const docId = requireDocId(payload?.docId);
+    const minutes = payload?.minutes;
+    if (typeof minutes !== 'string' || minutes.length > meetingDoc.MAX_MINUTES_CHARS) {
+      throw new meetingDoc.MeetingDocError('invalid meeting minutes', 'invalid_minutes');
+    }
+    const doc = meetingDoc.saveMeetingMinutes(ctx.userId, docId, minutes);
+    return { doc };
   },
 
   /** `meeting.conclusions.confirm`：确认一条结论（draft → confirmed；零候选/资产副作用）。 */

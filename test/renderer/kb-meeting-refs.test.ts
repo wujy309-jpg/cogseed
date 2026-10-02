@@ -87,19 +87,20 @@ describe('kb-meeting-refs 骨架（T014）', () => {
     expect(typeof windowMock.KbMeetingRefs?.destroy).toBe('undefined'); // destroy 在实例上
   });
 
-  it('五个分区各渲染一条空态：资产引用/纪要条目/待办草稿/关联建议/回执', () => {
+  it('六个分区各渲染一条空态：资产引用/纪要条目/纪要正文/待办草稿/关联建议/回执', () => {
     const { nodes, instance } = mountPanel();
     const sectionsHost = nodes.get('[data-mrf-sections]');
     const sections = sectionsHost.children;
     expect(sections.map((s: any) => s.dataset.mrfSection))
-      .toEqual(['refs', 'conclusions', 'actions', 'related', 'receipts']);
+      .toEqual(['refs', 'conclusions', 'minutes', 'actions', 'related', 'receipts']);
 
     const empties = sections.map((s: any) => s.children[1].innerHTML);
     expect(empties[0]).toContain('暂无资产引用');
     expect(empties[1]).toContain('暂无纪要条目');
-    expect(empties[2]).toContain('暂无待办草稿');
-    expect(empties[3]).toContain('暂无关联建议');
-    expect(empties[4]).toContain('暂无回执');
+    expect(empties[2]).toContain('尚未撰写纪要正文');
+    expect(empties[3]).toContain('暂无待办草稿');
+    expect(empties[4]).toContain('暂无关联建议');
+    expect(empties[5]).toContain('暂无回执');
 
     // 标题与提示也渲染（面板标题/文件名尾段）
     expect(nodes.get('[data-mrf-title]')._text).toBe('会议引用');
@@ -127,8 +128,28 @@ describe('kb-meeting-refs 骨架（T014）', () => {
     expect(() => windowMock.KbMeetingRefs.mount(fakeElement(), {})).toThrow(/docId/);
   });
 
-  it('SECTION_KEYS 导出五个分区（后续任务按分区接线数据）', () => {
-    expect(exports.SECTION_KEYS).toEqual(['refs', 'conclusions', 'actions', 'related', 'receipts']);
+  it('SECTION_KEYS 导出六个分区（后续任务按分区接线数据）', () => {
+    expect(exports.SECTION_KEYS).toEqual(['refs', 'conclusions', 'minutes', 'actions', 'related', 'receipts']);
+  });
+
+  it('buildMinutesDraft：确定性拼装，编号+资产缩进+缺引标注，无时间戳不编造', () => {
+    const draft = exports.buildMinutesDraft(
+      [
+        { summary: '确认 Q4 预算', assetRefs: [{ title: '预算表', version: 3 }] },
+        { summary: '迁移事项待定', assetRefs: [], unlinkable: true },
+        { summary: '' },
+      ],
+      '/kb/meetings/2026-10-02-评审.txt',
+    );
+    expect(draft).toContain('# 2026-10-02-评审.txt');
+    expect(draft).toContain('## 纪要条目');
+    expect(draft).toContain('1. 确认 Q4 预算');
+    expect(draft).toContain('   - 预算表 · v3');
+    // 空 summary 条目不产编号行（第 3 条被跳过，第 2 条编号仍是 2）
+    expect(draft).toContain('2. 迁移事项待定（部分引用暂缺）');
+    expect(draft).not.toMatch(/3\./);
+    // 无时间戳纪律：不伪造会议时间
+    expect(draft).not.toMatch(/\d{2}:\d{2}|\d{4}-\d{2}-\d{2}T/);
   });
 });
 
@@ -286,7 +307,7 @@ describe('T038 双引用展开与冻结版对比', () => {
   it('③ 控件全走共享原语：按钮来自 uiButton、无裸控件（基线未上调由 guard 看守）', async () => {
     const { instance, sectionBody } = mountPanelWithData();
     await instance.ready;
-    const html = [sectionBody(0), sectionBody(1), sectionBody(2)].join('');
+    const html = [sectionBody(0), sectionBody(1), sectionBody(3)].join('');
     // 源码级「零裸控件」由上方既有断言看守；这里钉渲染产物也经共享原语
     expect(html).toContain('ui-button');
     expect(html).not.toMatch(/<button(?![^>]*ui-button)/);
@@ -313,7 +334,7 @@ describe('T043 草稿待办视图', () => {
   it('①② 草稿章可见；来源/资产引用/三动作齐；无裸英文动作名', async () => {
     const { instance, sectionBody } = mountPanelWithData();
     await instance.ready;
-    const html = sectionBody(2);
+    const html = sectionBody(3);
     // 状态章（草稿，经 uiTag）
     expect(html).toContain('data-mrf-action-status');
     expect(html).toContain('ui-tag');
@@ -339,11 +360,12 @@ describe('T043 草稿待办视图', () => {
   it('③ 空态恰一处：有数据的分区无空态，无数据的分区恰一条', async () => {
     const { instance, sectionBody } = mountPanelWithData();
     await instance.ready;
-    expect(sectionBody(2)).not.toContain('ui-empty-state');
+    expect(sectionBody(3)).not.toContain('ui-empty-state');
     expect(sectionBody(1)).not.toContain('ui-empty-state');
     expect(sectionBody(0)).not.toContain('ui-empty-state');
-    expect((sectionBody(3).match(/ui-empty-state/g) || []).length).toBe(1);
+    expect((sectionBody(2).match(/ui-empty-state/g) || []).length).toBe(1);
     expect((sectionBody(4).match(/ui-empty-state/g) || []).length).toBe(1);
+    expect((sectionBody(5).match(/ui-empty-state/g) || []).length).toBe(1);
     instance.destroy();
   });
 
@@ -395,7 +417,7 @@ describe('meeting.* 通道降级（renderer-seams §5）', () => {
       return {};
     });
     await instance.ready;
-    const html = sectionBody(3);
+    const html = sectionBody(4);
     expect((html.match(/ui-empty-state/g) || []).length).toBe(1);
     expect(html).toContain('资产标识不合法');
     expect(sectionBody(0)).toContain('发布检查单 · v2');
@@ -441,7 +463,7 @@ describe('T051 关联建议：列表渲染 + 点了才建立', () => {
     expect(relatedCall.payload.assetIds).toEqual(['a_1', 'a_2']);
     expect(relatedCall.payload.terms).toEqual(['发布检查单', '旧版资产']);
     // 列表内容（只有标识与摘要，不含资产正文）
-    const html = sectionBody(3);
+    const html = sectionBody(4);
     expect((html.match(/data-mrf-related=/g) || []).length).toBe(2);
     expect(html).toContain('data-mrf-related-summary');
     expect(html).toContain('发布流程要先过检查单');
