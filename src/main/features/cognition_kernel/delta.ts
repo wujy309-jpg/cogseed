@@ -46,6 +46,9 @@ const ORIGINS: ReadonlySet<string> = new Set<DeltaOrigin>([
 ]);
 const STATUSES: ReadonlySet<string> = new Set<DeltaStatus>(['proposed', 'applied', 'rejected', 'rolled_back']);
 
+/** 内置六家（缺省已知集）；文档级注册表的家经 knownHomes 放行（自定义家）。 */
+export const BUILTIN_HOMES: ReadonlySet<string> = HOMES;
+
 function sha256Hex(input: string, length = 24): string {
   return createHash('sha256').update(input).digest('hex').slice(0, length);
 }
@@ -116,8 +119,9 @@ function isTextOrNull(value: unknown): value is string | null | undefined {
   return value === undefined || value === null || typeof value === 'string';
 }
 
-/** 落地器入口守卫：形状不合法一律拒绝，不做"尽力而为"的修补。 */
-export function validateDelta(value: unknown): DeltaValidation {
+/** 落地器入口守卫：形状不合法一律拒绝，不做"尽力而为"的修补。
+ * knownHomes：家注册表全集（内置六家 + 自定义家）；缺省只认内置六家。 */
+export function validateDelta(value: unknown, knownHomes: ReadonlySet<string> = HOMES): DeltaValidation {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return { ok: false, reason: 'delta 必须是对象' };
   const delta = value as Partial<CognitionDelta>;
 
@@ -127,7 +131,9 @@ export function validateDelta(value: unknown): DeltaValidation {
   if (typeof delta.status !== 'string' || !STATUSES.has(delta.status)) return { ok: false, reason: 'status 非法' };
   const target = delta.target;
   if (!target || typeof target !== 'object' || Array.isArray(target)) return { ok: false, reason: '缺 target' };
-  if (typeof target.home !== 'string' || !HOMES.has(target.home)) return { ok: false, reason: 'target.home 非法' };
+  if (typeof target.home !== 'string' || !knownHomes.has(target.home)) {
+    return { ok: false, reason: 'target.home 非法' };
+  }
   if (typeof delta.idempotencyKey !== 'string' || !delta.idempotencyKey.startsWith(DELTA_ID_PREFIX)) {
     return { ok: false, reason: '幂等键缺失或前缀错误' };
   }

@@ -26,12 +26,16 @@ import { validateDelta } from './delta';
 import {
   COGNITION_STORE_SCHEMA_VERSION,
   APPLIED_DELTA_INDEX_MAX,
+  DEFAULT_HOME_REGISTRY,
   type CognitionObject,
+  type CognitionObjectKind,
   type CognitionStoreDocument,
+  type HomeRegistryEntry,
   emptyCognitionStore,
   findAssertionSlot,
-  homeToObjectShape,
   normalizeCognitionStoreDocument,
+  storeShapeForHomes,
+  validateHomeRegistry,
 } from './object-model';
 
 const log = createLogger('cognition-store');
@@ -115,9 +119,11 @@ function rememberAppliedDelta(doc: CognitionStoreDocument, delta: CognitionDelta
   }
 }
 
-function newObject(delta: CognitionDelta, now: string): CognitionObject | null {
-  const shape = homeToObjectShape(delta.target.home);
-  if (!shape) return null;
+function newObject(
+  delta: CognitionDelta,
+  shape: { kind: CognitionObjectKind; bundleKind?: string },
+  now: string,
+): CognitionObject | null {
   const id = delta.target.objectId?.trim() || `co-${genId12()}`;
   const isAssertion = shape.kind === 'assertion';
   return {
@@ -133,7 +139,7 @@ function newObject(delta: CognitionDelta, now: string): CognitionObject | null {
     updatedAt: now,
     ...(delta.target.groupId ? { groupId: delta.target.groupId } : {}),
     ...(delta.target.fieldName ? { fieldName: delta.target.fieldName } : {}),
-    ...(shape.bundleKind ? { bundleKind: shape.bundleKind } : {}),
+    ...(shape.bundleKind ? { bundleKind: shape.bundleKind as CognitionObject['bundleKind'] } : {}),
     ...(delta.evidenceRefs.length ? { evidenceRefs: [...delta.evidenceRefs] } : {}),
   };
 }
@@ -146,7 +152,8 @@ function newObject(delta: CognitionDelta, now: string): CognitionObject | null {
  *（proposed 属候选池，不进本库）。
  */
 export function applyCognitionDelta(doc: CognitionStoreDocument, delta: CognitionDelta): DeltaApplyResult {
-  const checked = validateDelta(delta);
+  const knownHomes = new Set<string>(doc.homes.map((entry) => entry.home));
+  const checked = validateDelta(delta, knownHomes);
   if (checked.ok === false) {
     return { applied: false, reason: `invalid delta: ${checked.reason}` };
   }
@@ -160,9 +167,9 @@ export function applyCognitionDelta(doc: CognitionStoreDocument, delta: Cognitio
   if (objectId0 && !safeId(objectId0)) {
     return { applied: false, reason: 'invalid objectId' };
   }
-  const shape = homeToObjectShape(delta.target.home);
+  const shape = storeShapeForHomes(doc.homes, delta.target.home);
   if (!shape) {
-    return { applied: false, reason: `home '${delta.target.home}' 不在统一库（experience/task_local 走各自支撑位）` };
+    return { applied: false, reason: `家 '${delta.target.home}' 不可存（experience/task_local 类只判不存，走各自支撑位）` };
   }
   const now = new Date().toISOString();
 
@@ -171,7 +178,7 @@ export function applyCognitionDelta(doc: CognitionStoreDocument, delta: Cognitio
     if (objectId && doc.objects[objectId]) {
       return { applied: false, reason: `object ${objectId} already exists` };
     }
-    const created = newObject(delta, now);
+    const created = newObject(delta, shape, now);
     if (!created) return { applied: false, reason: 'cannot build object from delta' };
     objectId = created.id;
     doc.objects[objectId] = created;
@@ -186,7 +193,7 @@ export function applyCognitionDelta(doc: CognitionStoreDocument, delta: Cognitio
       slot.version += 1;
       objectId = slot.id;
     } else {
-      const created = newObject(delta, now);
+      const created = newObject(delta, shape, now);
       if (!created) return { applied: false, reason: 'cannot build assertion from delta' };
       objectId = created.id;
       doc.objects[objectId] = created;
@@ -325,6 +332,54 @@ function writeStoreFileSync(filePath: string, doc: CognitionStoreDocument): void
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
   fs.writeFileSync(tmp, JSON.stringify(doc, null, 2), 'utf8');
   fs.renameSync(tmp, filePath);
+}
+
+// ── 家注册表写口 ─────────────────────────────────────────────────────────
+
+export interface ReplaceHomesOutcome {
+  ok: boolean;
+  error?: string;
+  homes?: HomeRegistryEntry[];
+}
+
+/**
+ * 家注册表写口（S4 消费面接 IPC/UI 用）：锁内 校验（id 唯一/合法、内置六家
+ * 不可删、存储映射合法）→ 替换 homes → 原子写 + 台账。内置家的判据文案允许
+ * 被覆盖（用户可改措辞），id 与存储映射以出厂为准不可漂移。
+ */
+export async function replaceCognitionHomes(uid: string, homes: readonly HomeRegistryEntry[]): Promise<ReplaceHomesOutcome> {
+  if (!safeId(uid)) return { ok: false, error: 'invalid uid' };
+  const validated = validateHomeRegistry(homes);
+  if (validated.ok === false) return { ok: false, error: validated.reason };
+  const filePath = cognitionStorePath(uid);
+  return fileEditLock(filePath).runExclusive(async () => {
+    const doc = loadCognitionStoreSync(uid);
+    const corrupt = corruptRecordFor(filePath);
+    if (corrupt) {
+      return { ok: false, error: `cognition store corrupt; write refused (${corrupt.reason})` };
+    }
+    // 内置家的 pool/store 映射强制回出厂值（防注册表改写破坏存储语义）。
+    const builtinById = new Map(DEFAULT_HOME_REGISTRY.map((entry) => [entry.home, entry]));
+    const merged = homes.map((entry) => {
+      const builtin = builtinById.get(entry.home);
+      if (!builtin) return entry;
+      return { ...entry, pool: builtin.pool, store: builtin.store, builtin: true as const };
+    });
+    doc.homes = merged;
+    doc.updatedAt = nowIso();
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    writeStoreFileSync(filePath, doc);
+    try {
+      appendJsonl(
+        cognitionAuditPath(uid),
+        { at: nowIso(), origin: 'user', ops: [{ objectId: '', op: 'homes.replace', home: '', summary: `homes=${merged.length}` }] },
+        VERSION_LINE_MAX,
+      );
+    } catch {
+      // 台账尽力而为
+    }
+    return { ok: true, homes: merged };
+  });
 }
 
 // ── 读辅助（版本流/台账）────────────────────────────────────────────────

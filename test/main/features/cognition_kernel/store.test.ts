@@ -238,4 +238,56 @@ describe('cognition_kernel/store — 统一认知库内核', () => {
     expect(doc.appliedDeltas).toEqual({ 'd-1': true });
     expect(APPLIED_DELTA_INDEX_MAX).toBeGreaterThan(0);
   });
+
+  it('家注册表：空档种子默认六家；自定义家可加并可存；未知家拒收', async () => {
+    const { loadCognitionStoreSync, applyCognitionDeltas, replaceCognitionHomes } = await kernel();
+    const seeded = loadCognitionStoreSync(UID);
+    expect(seeded.homes.map((h) => h.home)).toEqual(
+      expect.arrayContaining(['personal_fact', 'rule', 'template', 'method', 'task_local', 'experience']),
+    );
+
+    // 加一个自定义家（联系人，断言语义）。
+    const withCustom = [...seeded.homes, {
+      home: 'contact', label: '联系人', definition: '与我协作的人及其关键信息。',
+      examples: ['张三是支付网关的对接人'], pool: 'ontology' as const, store: { kind: 'assertion' as const },
+    }];
+    const replaced = await replaceCognitionHomes(UID, withCustom);
+    expect(replaced.ok).toBe(true);
+
+    const delta = await build({ op: 'set', home: 'contact', fieldName: '对接人', after: '张三' });
+    const r = await applyCognitionDeltas(UID, [delta]);
+    expect(r.ok).toBe(true);
+    const doc = loadCognitionStoreSync(UID);
+    const contactObject = Object.values(doc.objects).find((o) => o.home === 'contact');
+    expect(contactObject?.kind).toBe('assertion');
+
+    const unknown = await build({ op: 'set', home: 'not_a_home', fieldName: 'x', after: 'y' });
+    const r2 = await applyCognitionDeltas(UID, [unknown]);
+    expect(r2.ok).toBe(false);
+  });
+
+  it('家注册表写口校验：内置家不可删、id 重复拒绝、内置存储映射强制回出厂', async () => {
+    const { loadCognitionStoreSync, replaceCognitionHomes } = await kernel();
+    const seeded = loadCognitionStoreSync(UID);
+
+    // 删掉一个内置家 → 拒绝。
+    const missingBuiltin = seeded.homes.filter((h) => h.home !== 'experience');
+    const r1 = await replaceCognitionHomes(UID, missingBuiltin);
+    expect(r1.ok).toBe(false);
+    expect(r1.error).toContain('experience');
+
+    // id 重复 → 拒绝。
+    const dup = [...seeded.homes, { ...seeded.homes[0] }];
+    const r2 = await replaceCognitionHomes(UID, dup);
+    expect(r2.ok).toBe(false);
+
+    // 篡改内置家的存储映射（rule→bundle）→ 落库时强制回出厂 rule。
+    const tampered = seeded.homes.map((h) =>
+      h.home === 'rule' ? { ...h, store: { kind: 'bundle' as const, bundleKind: 'template' as const } } : h,
+    );
+    const r3 = await replaceCognitionHomes(UID, tampered);
+    expect(r3.ok).toBe(true);
+    const after = loadCognitionStoreSync(UID).homes.find((h) => h.home === 'rule');
+    expect(after?.store?.kind).toBe('rule');
+  });
 });

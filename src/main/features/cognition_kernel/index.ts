@@ -65,15 +65,21 @@ export type { BackfillFieldInput, BackfillFieldResult, FieldGap, TaskFieldCheck 
 export { INBOX_LIMIT, buildMergedInbox, readMergedInbox } from './inbox';
 export type { InboxItem, MergedInbox } from './inbox';
 
-// S3：统一认知库（对象模型 + 存储内核 + Delta 落地器）。
+// S3：统一认知库（对象模型 + 存储内核 + Delta 落地器 + 家注册表）。
 export {
   APPLIED_DELTA_INDEX_MAX,
+  BUILTIN_HOME_IDS,
   COGNITION_STORE_SCHEMA_VERSION,
+  DEFAULT_HOME_REGISTRY,
   emptyCognitionStore,
   findAssertionSlot,
+  findHomeEntry,
   homeToObjectShape,
   normalizeCognitionObject,
   normalizeCognitionStoreDocument,
+  normalizeHomeRegistry,
+  storeShapeForHomes,
+  validateHomeRegistry,
 } from './object-model';
 export type {
   BundleKind,
@@ -81,6 +87,7 @@ export type {
   CognitionObjectKind,
   CognitionObjectStatus,
   CognitionStoreDocument,
+  HomeRegistryEntry,
 } from './object-model';
 export {
   COGNITION_STORE_CORRUPT_DOMAIN,
@@ -90,5 +97,6 @@ export {
   cognitionStorePath,
   listCognitionVersions,
   loadCognitionStoreSync,
+  replaceCognitionHomes,
 } from './store';
-export type { ApplyDeltasOutcome, CognitionVersionLine, DeltaApplyResult } from './store';
+export type { ApplyDeltasOutcome, CognitionVersionLine, DeltaApplyResult, ReplaceHomesOutcome } from './store';
