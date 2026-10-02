@@ -783,6 +783,7 @@ function asProjection(value: RecallJsonRecord): ContextProjectionRecord {
   if (value.projectId !== undefined && !safeId(value.projectId)) throw new Error('malformed context projection project id');
   if (value.workspaceId !== undefined && !safeId(value.workspaceId)) throw new Error('malformed context projection workspace id');
   if (value.selectionDegraded !== undefined && typeof value.selectionDegraded !== 'boolean') throw new Error('malformed context projection');
+  if (value.expiresAt !== undefined && (typeof value.expiresAt !== 'string' || Number.isNaN(Date.parse(value.expiresAt)))) throw new Error('malformed context projection expiry');
   const agentId = normalizeOptionalScopeId(value.agentId, 'agent id');
   const roleId = normalizeOptionalScopeId(value.roleId, 'role id');
   const conversationKind = normalizeOptionalScopeId(value.conversationKind, 'conversation kind');

@@ -568,6 +568,32 @@ describe('RecallView and ContextProjection', () => {
       expect.objectContaining({ id: first.id }),
     ]);
   });
+
+  it('treats an unparseable expiresAt as malformed and skips the projection fail-closed', async () => {
+    const { projection } = await modules();
+    const recallStore = await import('../../../../src/main/features/recall/store');
+    // 损坏/手改的过期串会让 Date.parse 得 NaN，使所有过期比较恒 false——
+    // confirmed 投影将永不过期、每轮继续注入。读侧必须与其他损坏字段一样 fail-closed。
+    await recallStore.writeRecallJsonRecord('user-a', 'projections', 'proj-bad-expiry', {
+      schemaVersion: 2, ownerId: 'user-a', id: 'proj-bad-expiry', taskRunId: 'task-bad-expiry',
+      purpose: 'review', authorization: 'user_confirmed', assetIds: [], sourceRefs: [], omittedRefs: [],
+      status: 'confirmed', confirmedAt: '2026-09-01T00:00:00.000Z', decidedAt: '2026-09-01T00:00:00.000Z',
+      expiresAt: 'not-a-date', createdAt: '2026-09-01T00:00:00.000Z',
+    });
+    await recallStore.writeRecallJsonRecord('user-a', 'projections', 'proj-good-expiry', {
+      schemaVersion: 2, ownerId: 'user-a', id: 'proj-good-expiry', taskRunId: 'task-good-expiry',
+      purpose: 'review', authorization: 'user_confirmed', assetIds: [], sourceRefs: [], omittedRefs: [],
+      status: 'preview', expiresAt: '2000-01-01T00:00:00.000Z', createdAt: '2026-09-02T00:00:00.000Z',
+    });
+
+    await expect(projection.listContextProjections('user-a', { includeExpired: true })).resolves.toEqual([
+      expect.objectContaining({ id: 'proj-good-expiry', status: 'expired' }),
+    ]);
+    await expect(projection.readContextProjection('user-a', 'proj-bad-expiry'))
+      .rejects.toThrow(/malformed context projection expiry/i);
+    await expect(projection.readContextProjection('user-a', 'proj-good-expiry'))
+      .resolves.toMatchObject({ id: 'proj-good-expiry', status: 'preview' });
+  });
 });
 
 describe('Recall projection auto-confirm and semantic Top-N', () => {

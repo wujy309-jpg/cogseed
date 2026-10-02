@@ -177,7 +177,7 @@ function resetWorld(candidate: Record<string, unknown> = updateCandidate()) {
     name: 'review', category: '', assetId: '', candidateId: 'rcand-u', proofEventId: '',
     captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '',
     assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '',
-    assetView: '', familyRename: '', ontologyBox: '',
+    assetView: '',
   };
   return ns;
 }

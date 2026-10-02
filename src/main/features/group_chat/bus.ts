@@ -3940,9 +3940,10 @@ async function _enqueueBody(
     // `docs/plans/expert-signals-phase0-wiring-gaps.md`): cancels pending
     // silence check + extracts text-class signals (accept / correction /
     // reject / edit) against the cached last agent message. Fire-and-
-    // forget; correctionDetected return value is intentionally unused
-    // here (runner.ts:665 does its own detectUserCorrection for
-    // RunMetrics — acceptable double-judgment for v0).
+    // forget; the correctionDetected return value is unused here — the
+    // live consumer is the `correction` signal extracted inside
+    // onUserMessage itself (the runner-side RunMetrics counter it once
+    // fed was removed with the reflection-trigger subsystem).
     onUserMessage({
       uid,
       cid,
@@ -7999,10 +8000,18 @@ async function runActorTurnBody(
     // injection-receipt.ts::recordProfileMemoryInjection。
     if (recallProfileMemory.length) {
       const { recordProfileMemoryInjection } = await import('../recall/injection-receipt');
-      await recordProfileMemoryInjection(uid, recallProfileMemory, {
-        taskRunId: item.turnId,
-        messageId: persistedMsg.id,
-      });
+      // P-r1-91 bus 侧容错：画像通道落账失败不阻断回合收尾——一条坏记录/瞬时
+      // IO 错上抛会把整批画像收据+usage 记账一起丢掉、已持久化的回合被误标
+      // failed、后面的漏取审计也被跳过。与上方 usage/回执的 allSettled、下方
+      // 漏取审计的 try/catch 同口径：warn 留痕后继续。
+      try {
+        await recordProfileMemoryInjection(uid, recallProfileMemory, {
+          taskRunId: item.turnId,
+          messageId: persistedMsg.id,
+        });
+      } catch (error) {
+        log.warn(`Recall profile-memory persistence failed cid=${cid} error=${(error as Error).message}`);
+      }
     }
     // 漏取审计（2026-09-19）：目录标了★（提示模型"这些相关"）但本回合既没
     // 注入也没被模型取用/派发的资产——每条记一条 omitted/catalog_hint 回执，

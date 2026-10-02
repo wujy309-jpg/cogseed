@@ -1914,6 +1914,14 @@ if (!gotLock) {
       const { migrateLegacyFreeTextScopes } = await import('./features/recall/asset-service');
       await migrateLegacyFreeTextScopes(users.getActiveUserId());
     }, 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
+    // P-r2-3（2026-10-01 根治）启动期清扫：purge 与版本追加已纳入同一把锁，
+    // 但修锁前泄漏已发生的现场（purged 资产名下被在途 append 重建的版本流）
+    // 无产品通道可清——启动时按「墓碑/记录已除名 ⇒ 流必不存」清一遍。幂等，
+    // 正常情况下空转；逐条容错不拦启动。
+    registerDeferred('recall:purge-version-stream-sweep', async () => {
+      const { sweepPurgedAbilityAssetVersionStreams } = await import('./features/recall/asset-service');
+      await sweepPurgedAbilityAssetVersionStreams(users.getActiveUserId());
+    }, 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
     // 旧 USER.md / MEMORY.md 是用户数据，不在启动时自动归属迁移。用户须先
     // 在记忆内容页查看来源和原文、逐条选择并确认；preview 是只读，只有确认
     // 后才备份、尝试写入资产，并仅清理已成功入库且源文件未变化的条目。

@@ -22453,8 +22453,6 @@ body:has(#panel-settings.active) .main-top-actions {
   overflow: hidden;
 }
 
-.cognition-header > .ui-page-header { padding-inline: 0; background: transparent; }
-.cognition-header-subtitle { margin: var(--space-2) 0 0; color: var(--text-secondary); font-size: var(--font-size-3); line-height: var(--line-height-body); }
 .cognition-capture-modal { width: min(600px, calc(100vw - 32px)); }
 .cognition-capture-body { display: grid; gap: var(--space-3); }
 .cognition-capture-status { margin: 0; border-left: var(--focus-width) solid var(--status-success-text); background: var(--status-success-bg); color: var(--status-success-text); padding: var(--space-2) var(--space-3); font-size: var(--font-size-2); line-height: var(--line-height-body); }
@@ -24120,6 +24118,35 @@ body:has(#panel-settings.active) .main-top-actions {
 
 .personal-onto-nav-section {
  display: flex; flex-direction: column;
+}
+
+/* 坏档三件套·恢复入口（P-r1-88/P-r2-7）：po 主档 / 候选池文件损坏横幅。 */
+.personal-onto-corrupt {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 8px 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-warning-text);
+  border-radius: var(--radius-2);
+  background: var(--color-warning-soft);
+}
+
+.personal-onto-corrupt-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.personal-onto-corrupt-text {
+  color: var(--color-warning-text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.personal-onto-corrupt-actions {
+  display: flex;
+  gap: 6px;
 }
 
 .personal-onto-profile-nav-section {
@@ -33292,6 +33319,29 @@ section.kb-wb-right { display: flex; flex-direction: column; min-width: 0; min-h
 .kb-glo__meta {
   color: var(--text-muted);
   font-size: var(--font-size-2);
+}
+/* 坏档三件套·恢复入口（P-r1-88）：词表文件损坏横幅（从备份恢复/重置）。 */
+.kb-glo__corrupt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-warning-text);
+  border-radius: var(--radius-2);
+  background: var(--color-warning-soft);
+}
+.kb-glo__corrupt[hidden] {
+  display: none;
+}
+.kb-glo__corrupt-text {
+  color: var(--color-warning-text);
+  font-size: var(--font-size-2);
+}
+.kb-glo__corrupt-actions {
+  display: flex;
+  gap: var(--space-1);
 }
 .kb-glo__filters {
   display: grid;

@@ -286,7 +286,7 @@
       "module": "cognition-assets",
       "ipc": "recall.projections.attachToConversation",
       "write": true,
-      "pending": false,
+      "pending": true,
       "phase": 9
     },
     {
@@ -296,14 +296,6 @@
       "write": true,
       "pending": true,
       "phase": 5
-    },
-    {
-      "act": "run-cleanup",
-      "module": "cognition-assets",
-      "ipc": "recall.cleanup.run",
-      "write": true,
-      "pending": true,
-      "phase": 7
     },
     {
       "act": "open-cleanup",
@@ -344,22 +336,6 @@
       "write": true,
       "pending": true,
       "phase": 7
-    },
-    {
-      "act": "inspection-toggle",
-      "module": "cognition-assets",
-      "ipc": "recall.inspection.settings.set",
-      "write": true,
-      "pending": true,
-      "phase": 8
-    },
-    {
-      "act": "run-inspection",
-      "module": "cognition-assets",
-      "ipc": "recall.inspection.run",
-      "write": true,
-      "pending": true,
-      "phase": 8
     },
     {
       "act": "purge-deleted-asset",
@@ -969,6 +945,18 @@
     {
       "act": "batchRunNow",
       "reason": "批量立即整理入口确认不迁移;后端能力保留,前端不暴露(施工矩阵 L48)"
+    },
+    {
+      "act": "run-cleanup",
+      "reason": "手动清理入口随 2026-09-29 自动维护合并撤下(夜间线自动跑);后端 recall.cleanup.run 保留,前端不暴露(替代入口 run-maintenance)"
+    },
+    {
+      "act": "inspection-toggle",
+      "reason": "独立巡检开关随 2026-09-29 自动维护合并退役(一个 nightly-toggle 管两件事);后端 recall.inspection.settings.set 保留,前端不暴露"
+    },
+    {
+      "act": "run-inspection",
+      "reason": "手动巡检入口随 2026-09-29 自动维护合并撤下(夜间线巡检轮后自动跑);后端 recall.inspection.run 保留,前端不暴露"
     }
   ]
 }

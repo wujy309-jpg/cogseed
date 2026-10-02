@@ -323,6 +323,30 @@ describe('po v2 store › CRUD 与规则分类', () => {
     expect(api.getPoSnapshot(UID).groups[0].values[0].verified).toBeUndefined();
   });
 
+  it('字段写入校验（r3）：poCreateField 拒绝普通组 section（无幽灵字段）', async () => {
+    const api = await loadApi();
+    const g = await api.poCreateGroup(UID, '分节组');
+    const gid = g.group!.group_id;
+
+    // F-r3-10：普通组无分节（model.ts 契约「普通组恒为 undefined」）——带
+    // section 写成功落盘后被渲染层跳过、原文保存整组替换时丢失，写侧直接拒。
+    const bad = await api.poCreateField(UID, gid, '字段', { section: '基本信息' });
+    expect(bad.ok).toBe(false);
+    expect(bad.error).toBe('section not allowed on user group');
+    // 拒绝后不落盘（ctx.fail 中止本次编辑）
+    expect(api.getPoSnapshot(UID).groups[0].fields.length).toBe(0);
+
+    // 判原始参数：空白串 section（sanitize 后为 ''）同样被拦，不漏网成幽灵空分节
+    const blank = await api.poCreateField(UID, gid, '字段', { section: '   ' });
+    expect(blank.ok).toBe(false);
+    expect(blank.error).toBe('section not allowed on user group');
+
+    // 对照：不带 section 照常创建，section 恒为 undefined
+    const ok = await api.poCreateField(UID, gid, '字段');
+    expect(ok.ok).toBe(true);
+    expect(ok.field!.section).toBeUndefined();
+  });
+
   it('流水：记一笔 / 升格为字段值 / 删除', async () => {
     const api = await loadApi();
     const g = await api.poCreateGroup(UID, '随记');

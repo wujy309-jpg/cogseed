@@ -2,7 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 
 import { safeId } from '../../storage';
-import { recallJsonRecordPath } from './paths';
+import { recallJsonlPath, recallJsonRecordPath } from './paths';
 import { normalizeCognitionSourceRefs, type CognitionSourceRef } from './source-service';
 import {
   appendRecallJsonlRecord, listRecallJsonlRecords, readRecallJsonRecord,
@@ -16,6 +16,7 @@ import { readAbilityAssetRelationContract } from './asset-relations';
 import { readAbilityAssetSemantics } from './asset-semantics';
 import { normalizeAbilityAssetScopePolicy, resolveScopeForAsset, normalizeAssetScopeValue, isRecallScopeTerm, type RecallAbilityAssetScopePolicy } from './scope-policy';
 import { assertNotForbiddenToPersist } from '../../util/cognition-sensitivity';
+import { fileEditLock } from '../../util/locks';
 import { normalizeCausalRule } from './world-model-types';
 import { resolveExecutionEvidenceRefs } from './evidence-resolution';
 import { assertCompliantAbilityAssetTitle, recallTitleIssue } from './title-policy';
@@ -41,12 +42,14 @@ export interface AbilityAssetVersionRecord extends RecallJsonRecord {
   at: string;
   reason?: string;
   actor?: AbilityAssetActor;
+  // P-r1-25：sensitivity 已从快照类型删除——snapshot() 本就不写它（幽灵字段），
+  // 版本流不版本化敏感性；受限语义在主记录与读取投影层判定。
   snapshot: Pick<
     RecallAbilityAssetRecord,
     | 'title' | 'statement' | 'type' | 'scope' | 'scopePolicy' | 'evidenceRefs'
     | 'status' | 'maturity' | 'version' | 'learningSignal' | 'learningProvenance'
     | 'ontologyRefs' | 'relations' | 'derivedFrom'
-    | 'applicableWhen' | 'forbiddenWhen' | 'sensitivity' | 'sourceSessionIds'
+    | 'applicableWhen' | 'forbiddenWhen' | 'sourceSessionIds'
   >;
 }
 
@@ -156,6 +159,13 @@ const ABILITY_ASSET_STATUSES = new Set<RecallAbilityAssetRecord['status']>([
 
 const ABILITY_ASSET_MATURITIES = new Set<RecallAbilityAssetRecord['maturity']>([
   'seed', 'bud', 'transfer_validated', 'effectiveness_validated',
+]);
+
+/** P-r3-12 写侧 type 五枚举闸（与 candidate-service 的 AbilityAssetType
+ *  同源）。单列常量而不 import 对方函数：那边 requireAssetType 未导出，
+ *  为此扩导出面不如两处各持一份白名单（枚举变化时 typecheck 双向可见）。 */
+const ABILITY_ASSET_TYPES = new Set<RecallAbilityAssetRecord['type']>([
+  'personal', 'rule', 'template', 'skill_method', 'fact',
 ]);
 
 /**
@@ -334,9 +344,41 @@ function asVersion(value: RecallJsonRecord): AbilityAssetVersionRecord {
   } as AbilityAssetVersionRecord;
 }
 
+/**
+ * 版本流追加收口（P-r2-3 根治）：与主记录同一把 fileEditLock + 锁内复核。
+ *
+ * 此前 appendVersion 在 updateRecallJsonRecord 释放锁**之后**才落流——「主记录
+ * 已写、append 在路上」的窗口里并发 purge 会完成 墓碑+rm 全程，迟到的 append
+ * 随后重建流文件，purged 资产带正文的版本快照复活且终态拒写、无通道可清
+ * （真删红线）。现在追加持主记录锁执行，且落流前在锁内重读记录复核：purge
+ * 的墓碑写与这里的追加因此互斥，任一交错序下流都不会被复活——purge 先完则
+ * 追加被拒（抛 purged 错），追加先完则 purge 的 rm 连它一起清掉。记录已被
+ * 物理除名（E7 迁移删记录面）同样拒绝：除名资产的流不许再进新行。物理层
+ * 互斥（rm 与 appendFile 的行锁）在 store.removeRecallJsonlStream。
+ *
+ * 复核只挡 purged 与记录缺失，**不**用三终态 assertMutableAbilityAsset：
+ * revoked/deleted 是保留态软终态，正文仍在主记录上，补快照不构成「擦除后
+ * 复活」；且 initializeAbilityAsset 的存量补版路径要给终态软删除资产补初始
+ * v1 快照。内容写路径的「终态不可再变更版本」不变量由锁内 updater 的
+ * assertMutableAbilityAsset 把关（记录都写不进，追加无从发生）。
+ */
+async function appendAbilityAssetVersionLine(
+  userId: string,
+  assetId: string,
+  record: AbilityAssetVersionRecord,
+): Promise<void> {
+  const recordPath = recallJsonRecordPath(userId, 'ability-assets', assetId);
+  await fileEditLock(recordPath).runExclusive(async () => {
+    const raw = await readRecallJsonRecord(userId, 'ability-assets', assetId);
+    if (!raw) throw new Error('recall ability asset not found');
+    assertNotPurged(asAsset(raw));
+    await appendRecallJsonlRecord(userId, 'ability-asset-versions', assetId, record);
+  });
+}
+
 async function appendVersion(userId: string, asset: RecallAbilityAssetRecord, metadata: { reason?: string; actor?: AbilityAssetActor } = {}): Promise<void> {
   const at = new Date().toISOString();
-  await appendRecallJsonlRecord(userId, 'ability-asset-versions', asset.id, {
+  await appendAbilityAssetVersionLine(userId, asset.id, {
     schemaVersion: 1,
     ownerId: userId,
     id: `${asset.id}-v${asset.version}`,
@@ -748,6 +790,15 @@ function formatTagNames(names: readonly string[]): string {
 
 export async function updateAbilityAsset(userId: string, assetId: string, input: UpdateAbilityAssetInput): Promise<RecallAbilityAssetRecord> {
   if ('id' in input || 'ownerId' in input) throw new Error('ability asset identity is immutable');
+  // P-r3-12 写侧五枚举闸：type 此前在写侧（:832 直写）与读侧（asAsset 校验
+  // 清单）双向缺席，任意字符串落盘透传——伪造 type='personal' 可把任意资产
+  // 正文送进个人画像投影（每轮 system prompt 的画像块）。对照先例：同函数
+  // status/maturity 有集合校验、candidate-service requireAssetType 有同款
+  // 五枚举闸。读侧刻意不补枚举（存量非法值要读得出才可修复），靠存量巡检
+  // 兜底发现。
+  if (input.type !== undefined && !ABILITY_ASSET_TYPES.has(input.type)) {
+    throw new Error(`invalid ability asset type: ${String(input.type)}`);
+  }
   // 刀一（2026-09-19）：scope 写入点归一——词条放行、场景描述句兜底 general。
   if (input.scope !== undefined) input = { ...input, scope: resolveScopeForAsset(input.scope) };
   const action = requireAssetAction(input);
@@ -1348,6 +1399,10 @@ export async function purgeAbilityAsset(
   input: AbilityAssetUserActionInput,
   options: { requireDeleted?: boolean } = {},
 ): Promise<RecallAbilityAssetRecord> {
+  // P-r1-29：setStatus 的 mutate 会把正文清成空串，返回的墓碑不再携带
+  // statement——「按文本清候选池残留」必须在清空前拿到原文。
+  const beforePurge = await readRecallJsonRecord(userId, 'ability-assets', assetId);
+  const purgedStatement = String((beforePurge as { statement?: unknown } | undefined)?.statement || '').trim();
   const asset = await setStatus(userId, assetId, 'purged', input, () => ({
     title: '',
     statement: '',
@@ -1374,6 +1429,14 @@ export async function purgeAbilityAsset(
     // 成熟度是对已清除内容的效果声明（2026-09-28 补）：与 sensitivity 同理，
     // 墓碑不该继续声称「这条已验证」。
     maturity: undefined,
+    // 验证三件套是同一句声明的展开（2026-10-01 补）：validationCount>0 加
+    // lastValidatedAt 就是「已验证 N 次、最近验证于 X」，consecutiveFailures
+    // 同为验证效果记账——maturity 升 bud 的依据恰恰是 validationCount（见
+    // recordAbilityAssetValidation），只清结论不清依据，墓碑仍在替已清除的
+    // 内容背书，且 purged 终态拒写后永远清不掉。
+    validationCount: undefined,
+    consecutiveFailures: undefined,
+    lastValidatedAt: undefined,
   } as Partial<RecallAbilityAssetRecord>),
   // 到期清扫传 requireDeleted（2026-09-28 补）：锁内复核仍是 deleted 才清——
   // 清扫列表是锁外读的快照，窗口期内被用户恢复的资产不许被照单清除。
@@ -1385,7 +1448,20 @@ export async function purgeAbilityAsset(
   // 版本快照同样含正文，留着就不算「删除内容和版本」。审计流保留：它只有
   // 动作名和时间戳，属于规范允许保留的不可识别最小项。
   await removeRecallJsonlStream(userId, 'ability-asset-versions', assetId);
-  await cascadePurgeAssetReferences(userId, assetId);
+  // 双向复核（purge 侧，纵深）：删后复读一遍流——追加侧已持锁复核，正常这里
+  // 必为空；仍有行（或流已坏到读不出）说明有旁路写漏网，再清一次并留证据。
+  // 复核失败不等同于干净：坏流同样不允许留在已清除资产名下。
+  try {
+    const residue = await listAbilityAssetVersions(userId, assetId);
+    if (residue.length) {
+      log.warn(`purge version stream residue reswept assetId=${assetId} lines=${residue.length}`);
+      await removeRecallJsonlStream(userId, 'ability-asset-versions', assetId);
+    }
+  } catch (error) {
+    log.warn(`purge version stream unreadable, reswept assetId=${assetId}: ${error instanceof Error ? error.message : String(error)}`);
+    await removeRecallJsonlStream(userId, 'ability-asset-versions', assetId);
+  }
+  await cascadePurgeAssetReferences(userId, assetId, purgedStatement);
   return asset;
 }
 
@@ -1404,7 +1480,7 @@ export async function purgeAbilityAsset(
  *
  * 幂等：流不存在或没有匹配行都不报错、不写新账——反复清除不会留下重复痕迹。
  */
-async function cascadePurgeAssetReferences(userId: string, assetId: string): Promise<void> {
+async function cascadePurgeAssetReferences(userId: string, assetId: string, purgedStatement: string): Promise<void> {
   const dropAsset = (record: RecallJsonRecord) => String(record.assetId || '') !== assetId;
   await removeRecallJsonlRecords(userId, 'usage-records', 'events', dropAsset);
   await removeRecallJsonlRecords(userId, 'asset-usage-receipts', 'events', dropAsset);
@@ -1419,12 +1495,70 @@ async function cascadePurgeAssetReferences(userId: string, assetId: string): Pro
   // ontology-backflow）静态互引同样会牵出成环依赖。rejectCandidate 按
   // candidate_id 精确移除这一条回流候选、不动池内其他候选；候选不存在时
   // 仅告警并返回 {ok:false}，不抛错不写新账——与上面各步同口径满足幂等。
-  const { rejectCandidate } = await import('../personal_ontology_candidates');
+  const { rejectCandidate, rejectCandidatesByText } = await import('../personal_ontology_candidates');
   const { backflowCandidateIdFor } = await import('./ontology-backflow');
   const rejected = await rejectCandidate(userId, backflowCandidateIdFor(assetId), 'asset purged');
   if (rejected.ok) {
     log.info(`purge cascade rejected ontology backflow candidate assetId=${assetId}`);
   }
+  // P-r1-29 兜存量：带这条资产正文全文的 pending 候选不止 backflow id 一条
+  // （历史投放/池满等），按 id 清不掉；确认即复活已 purge 的正文。按文本
+  // 全文相等兜底清一轮——purgedStatement 为空（本来就无正文/记录已除名）
+  // 时该函数直接返回，不动池。
+  const rejectedByText = await rejectCandidatesByText(userId, purgedStatement, 'asset purged');
+  if (rejectedByText.rejectedCount > 0) {
+    log.info(`purge cascade rejected same-text candidates assetId=${assetId} count=${rejectedByText.rejectedCount}`);
+  }
+}
+
+/**
+ * 启动期清扫：清掉已清除资产名下残留/被重建的版本流（P-r2-3 根治的存量治愈）。
+ *
+ * 修锁前泄漏已发生的现场没有产品通道可清（purged 终态拒绝一切写）——本函数
+ * 就是那条通道：枚举 ability-asset-versions 流目录，凡对应主记录已是 purged
+ * 墓碑、或记录已除名（E7 经验迁移物理删记录）的流，一律删除。含正文的快照
+ * 只许跟着活资产存在。
+ *
+ * 幂等可重入：流不存在即无事；逐条容错，单条失败只 warn 不拦其余。启动挂接
+ * 见 src/main/index.ts 的 recall:purge-version-stream-sweep（deferred + idleDisk，
+ * 与其他 recall 维护任务同队列）。
+ */
+export interface PurgedAssetVersionStreamSweepReport {
+  sweptStreams: string[];
+  /** 主记录仍可读且为 purged 墓碑的条数（其余为记录已除名的 E7 足迹）。 */
+  purgedTombs: number;
+}
+
+export async function sweepPurgedAbilityAssetVersionStreams(
+  userId: string,
+): Promise<PurgedAssetVersionStreamSweepReport> {
+  const streamsDir = path.dirname(recallJsonlPath(userId, 'ability-asset-versions', 'placeholder'));
+  let names: string[];
+  try {
+    names = await fs.readdir(streamsDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { sweptStreams: [], purgedTombs: 0 };
+    throw error;
+  }
+  const report: PurgedAssetVersionStreamSweepReport = { sweptStreams: [], purgedTombs: 0 };
+  for (const name of names) {
+    if (!name.endsWith('.jsonl')) continue;
+    const assetId = name.slice(0, -'.jsonl'.length);
+    if (!safeId(assetId)) continue;
+    try {
+      const record = await readRecallJsonRecord(userId, 'ability-assets', assetId);
+      // 记录仍在且非墓碑 = 活资产（active/paused/archived/deleted/revoked 都
+      // 保留内容），流必须原样保留。只清「记录已除名」与「purged 墓碑」两种。
+      if (record && record.status !== 'purged') continue;
+      await removeRecallJsonlStream(userId, 'ability-asset-versions', assetId);
+      report.sweptStreams.push(assetId);
+      if (record) report.purgedTombs += 1;
+      log.warn(`startup sweep removed a residual ability asset version stream assetId=${assetId} record=${record ? 'purged tombstone' : 'missing (migrated out)'}`);
+    } catch (error) {
+      log.warn(`startup sweep failed on an ability asset version stream assetId=${assetId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return report;
 }
 
 /**
@@ -1538,11 +1672,18 @@ export async function selectAbilityAssetVersion(
   // 标题闸门（设计 3.2 拍板项 #2 / 深探 F14，与 rollback 同口径）：选用标题
   // 不合规的旧快照时保留在用标题，其余内容照常切换。
   let titleRetained = false;
-  const updated = await updateRecallJsonRecord(userId, 'ability-assets', assetId, (raw) => {
+  const updated = await updateRecallJsonRecord(userId, 'ability-assets', assetId, async (raw) => {
     if (!raw) throw new Error('recall ability asset not found');
     const current = asAsset(raw);
     assertMutableAbilityAsset(current);
     if ((current.activeVersion || current.version) === toVersion) throw new Error('ability asset already selected');
+    // P-r1-86 锁内重校：上面的版本清单读在锁外，窗口期内目标版本可能已被
+    // 并发删除（删除段全程持同一把资产记录锁，见 deleteAbilityAssetVersion）。
+    // 这里在锁内重列版本流，目标版本已蒸发就拒绝——activeVersion 永不指向
+    // 不存在的快照。版本行只追加不改写，锁外读到的 target 快照与锁内一致。
+    if (!(await listAbilityAssetVersions(userId, assetId)).some((record) => record.version === toVersion)) {
+      throw new Error('recall ability asset version not found');
+    }
     // 内容同步为所选快照（治理状态与成熟度不动，与 rollback 同口径）。
     // scope 单独摘出且不倒退（2026-09-17 修）：旧快照可能带着词表化之前的
     // 自由文本 scope——原样写回会让 legacy scope 迁移在下次启动时再 bump
@@ -1590,36 +1731,45 @@ export async function deleteAbilityAssetVersion(
   const action = requireAssetAction(input);
   if (!/^[0-9]{1,9}$/.test(version)) throw new Error('invalid recall ability asset version');
   // 先判终态再查版本（与 select/rollback 同序）。
-  const current = await readAbilityAsset(userId, assetId);
-  assertMutableAbilityAsset(current);
-  const target = (await listAbilityAssetVersions(userId, assetId)).find((record) => record.version === version);
-  if (!target) throw new Error('recall ability asset version not found');
-  if (String(current.activeVersion || current.version) === version) {
-    throw new Error('cannot delete the active version; select another version first');
-  }
-  // ① 先给所有引用它的已确认投影冻结内容副本（先保引用，幂等）。
-  // 全量枚举（2026-09-17 P0 修复）：listContextProjections 默认 clamp 到 20 条，
-  // 投影存量超过后老投影漏冻结——删了版本副本就丢，注入静默降级。与
-  // refreshCommittedProjectionAssetVersion 同款教训，改走全量目录扫描。
-  const { listAllConfirmedProjections } = await import('./context-projection');
-  const referencing = (await listAllConfirmedProjections(userId)).filter((projection) =>
-    String(projection.assetVersions?.[assetId] || '') === version);
-  for (const projection of referencing) {
-    await updateRecallJsonRecord(userId, 'projections', projection.id, (raw) => {
-      if (!raw) throw new Error('context projection not found');
-      const existing = raw.assetVersionSnapshots;
-      const cached = existing && typeof existing === 'object' && !Array.isArray(existing)
-        ? existing as Record<string, { version: string; snapshot: unknown }>
-        : {};
-      if (cached[assetId] && String(cached[assetId].version || '') === version) return raw;
-      return { ...raw, assetVersionSnapshots: { ...cached, [assetId]: { version, snapshot: target.snapshot } } };
-    });
-  }
-  // ② 再物理删除该版本的全部记录行。
-  await removeRecallJsonlRecords(userId, 'ability-asset-versions', assetId,
-    (record) => String(record.version || '') !== version);
-  // ③ 审计只记动作（何时删了 v几），不记任何内容——与彻底清除同口径。
-  await appendAudit(userId, assetId, 'version_deleted', { note: `${action.reason || 'delete'} (v${version})`, actor: action.actor });
+  assertMutableAbilityAsset(await readAbilityAsset(userId, assetId));
+  // P-r1-86 检查+删除同锁串行化：「在用不可删」此前在任何锁外判——检查通过
+  // 到物理删除之间隔着全量投影冻结的大窗口，并发 select 把要删的版本切成
+  // 在用后，删除照常物理移除该版本 → activeVersion 指向蒸发版本且无自愈。
+  // 整个「锁内复核→冻结→物理删除」段纳入资产主记录文件锁：select 的
+  // activeVersion 写走 updateRecallJsonRecord 的同一把锁，两边互斥；锁内
+  // 重读做在用复核，检查与删除不再有可交错的窗口。
+  await fileEditLock(recallJsonRecordPath(userId, 'ability-assets', assetId)).runExclusive(async () => {
+    const current = await readAbilityAsset(userId, assetId);
+    assertMutableAbilityAsset(current);
+    const target = (await listAbilityAssetVersions(userId, assetId)).find((record) => record.version === version);
+    if (!target) throw new Error('recall ability asset version not found');
+    if (String(current.activeVersion || current.version) === version) {
+      throw new Error('cannot delete the active version; select another version first');
+    }
+    // ① 先给所有引用它的已确认投影冻结内容副本（先保引用，幂等）。
+    // 全量枚举（2026-09-17 P0 修复）：listContextProjections 默认 clamp 到 20 条，
+    // 投影存量超过后老投影漏冻结——删了版本副本就丢，注入静默降级。与
+    // refreshCommittedProjectionAssetVersion 同款教训，改走全量目录扫描。
+    const { listAllConfirmedProjections } = await import('./context-projection');
+    const referencing = (await listAllConfirmedProjections(userId)).filter((projection) =>
+      String(projection.assetVersions?.[assetId] || '') === version);
+    for (const projection of referencing) {
+      await updateRecallJsonRecord(userId, 'projections', projection.id, (raw) => {
+        if (!raw) throw new Error('context projection not found');
+        const existing = raw.assetVersionSnapshots;
+        const cached = existing && typeof existing === 'object' && !Array.isArray(existing)
+          ? existing as Record<string, { version: string; snapshot: unknown }>
+          : {};
+        if (cached[assetId] && String(cached[assetId].version || '') === version) return raw;
+        return { ...raw, assetVersionSnapshots: { ...cached, [assetId]: { version, snapshot: target.snapshot } } };
+      });
+    }
+    // ② 再物理删除该版本的全部记录行。
+    await removeRecallJsonlRecords(userId, 'ability-asset-versions', assetId,
+      (record) => String(record.version || '') !== version);
+    // ③ 审计只记动作（何时删了 v几），不记任何内容——与彻底清除同口径。
+    await appendAudit(userId, assetId, 'version_deleted', { note: `${action.reason || 'delete'} (v${version})`, actor: action.actor });
+  });
 }
 
 /**
@@ -1661,7 +1811,9 @@ export async function mergeAbilityAssets(
     if (lastAppendedKey !== null && key === lastAppendedKey) continue;
     lastAppendedKey = key;
     versionCursor = nextVersion(versionCursor);
-    await appendRecallJsonlRecord(userId, 'ability-asset-versions', targetAssetId, {
+    // 版本流追加走统一收口（P-r2-3）：持 target 主记录锁+锁内复核——归并搬运
+    // 多次 await，期间 target 被 purge 的话，后续追加不得重建它的版本流。
+    await appendAbilityAssetVersionLine(userId, targetAssetId, {
       schemaVersion: 1,
       ownerId: userId,
       id: `${targetAssetId}-v${versionCursor}`,
@@ -1684,7 +1836,8 @@ export async function mergeAbilityAssets(
   let activeCursor = versionCursor;
   if (sourceNewer && sourceActiveIndex >= 0 && sourceActiveIndex !== sourceVersions.length - 1) {
     activeCursor = nextVersion(versionCursor);
-    await appendRecallJsonlRecord(userId, 'ability-asset-versions', targetAssetId, {
+    // 同上：统一收口，锁内复核 target 终态后才落流。
+    await appendAbilityAssetVersionLine(userId, targetAssetId, {
       schemaVersion: 1,
       ownerId: userId,
       id: `${targetAssetId}-v${activeCursor}`,

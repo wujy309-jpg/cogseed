@@ -191,7 +191,7 @@ const inlineSvgBaseline: Record<string, number> = {
   // （`SEC-PV-001`）。数值为 1，任何第二处内联 SVG 都会直接红。
   'settings-security.js': 1,
   'avatar.js': 4,
-  'cognition/pages.js': 1,
+  'cognition/pages.js': 0,
   'cognition-assets/views.js': 1,
   'dashboard.js': 2,
   'import-check-modal.js': 1,

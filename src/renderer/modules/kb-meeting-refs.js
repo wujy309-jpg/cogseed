@@ -102,8 +102,7 @@
   function errorText(code) {
     const key = String(code || '');
     if (key === 'invalid_doc_id') return t('kb.meetingRef.error_invalid_doc_id', '会议文档标识不合法');
-    if (key === 'invalid_minutes') return t('kb.meetingRef.error_invalid_minutes', '纪要正文不合法（超过 20000 字上限）');
-    if (key === 'invalid_asset_id') return t('kb.meetingRef.error_invalid_asset_id', '资产标识不合法');
+    if (key === 'invalid_minutes') return t('kb.meetingRef.error_invalid_minutes', '纪要正文不合法（超过 20000 字上限）');    if (key === 'invalid_asset_id') return t('kb.meetingRef.error_invalid_asset_id', '资产标识不合法');
     if (key === 'invalid_via') return t('kb.meetingRef.error_invalid_via', '引用来源不合法');
     if (key === 'asset_missing') return t('kb.meetingRef.error_asset_missing', '该资产不存在或已彻底删除');
     if (key === 'asset_inactive') return t('kb.meetingRef.error_asset_inactive', '该资产已归档或暂停，不能引用');
@@ -171,6 +170,9 @@
       expanded: {},
       status: '',
       statusTone: '',
+      // P-r3-28（组 10 · KB busy 纪律）：写操作 in-flight 标记（runAction 与
+      // citeRelated 共用；只读路径不占用）。
+      writeBusy: false,
       // 纪要正文：已存值 / 未保存草稿 / 脏标记（重渲染回读，见 onInput）。
       minutes: '',
       minutesDraft: '',
@@ -656,6 +658,13 @@
     }
 
     async function runAction(kind, draftId) {
+      // P-r3-28（预审决策卡组 10 · KB busy 纪律）：写操作 in-flight 守卫——
+      // 双击/连点的第二次直接忽略，不再发出第二个写请求。此前第二次会被主进程
+      // 状态机拒为 invalid_status_transition，回执「状态已变更，请刷新后重试」
+      // 属误导（第一次已成功且 loadActions 后界面自动刷新）。守卫只罩写操作；
+      // 只读的 toggleCompare 不抢这把锁（组 10「只读不抢全局锁」）。
+      if (state.writeBusy) return;
+      state.writeBusy = true;
       const channel = kind === 'confirm' ? 'meeting.actions.confirm' : 'meeting.actions.discard';
       try {
         await callMeeting(channel, { docId: ctx.docId, draftId });
@@ -666,6 +675,8 @@
       } catch (error) {
         log?.warn(`meeting action ${kind} failed`, { error: error?.message || String(error) });
         setStatus(errorText(error?.code), 'warning');
+      } finally {
+        state.writeBusy = false;
       }
       render();
     }
@@ -685,26 +696,35 @@
     async function citeRelated(key) {
       const entry = state.related.find((r) => relatedKey(r) === key);
       if (!entry) return;
+      // P-r3-28（组 10 · KB busy 纪律）：与 runAction 共用同一把写守卫——
+      // 连点「引用到本会议」不发第二轮（attach 虽幂等无数据损，但会重复整段
+      // 挂载流程并可能叠加状态回执）。
+      if (state.writeBusy) return;
+      state.writeBusy = true;
       const assetIds = (Array.isArray(entry.assetIds) ? entry.assetIds : [])
         .map((id) => String(id || '').trim())
         .filter(Boolean);
       try {
-        for (const assetId of assetIds) {
-          await callMeeting('meeting.assets.attach', { docId: ctx.docId, assetId, via: 'attach' });
+        try {
+          for (const assetId of assetIds) {
+            await callMeeting('meeting.assets.attach', { docId: ctx.docId, assetId, via: 'attach' });
+          }
+          await callMeeting('meeting.conclusions.save', {
+            docId: ctx.docId,
+            conclusion: {
+              summary: String(entry.summary || ''),
+              ...(assetIds.length ? { assetRefs: assetIds } : {}),
+            },
+          });
+          setStatus(t('kb.meetingRef.related_cite_done', '已引用到本会议：挂载 {count} 项资产并保存结论草稿', { count: String(assetIds.length) }), '');
+          await loadAll();
+        } catch (error) {
+          log?.warn('meeting related cite failed', { error: error?.message || String(error) });
+          setStatus(errorText(error?.code), 'warning');
+          render();
         }
-        await callMeeting('meeting.conclusions.save', {
-          docId: ctx.docId,
-          conclusion: {
-            summary: String(entry.summary || ''),
-            ...(assetIds.length ? { assetRefs: assetIds } : {}),
-          },
-        });
-        setStatus(t('kb.meetingRef.related_cite_done', '已引用到本会议：挂载 {count} 项资产并保存结论草稿', { count: String(assetIds.length) }), '');
-        await loadAll();
-      } catch (error) {
-        log?.warn('meeting related cite failed', { error: error?.message || String(error) });
-        setStatus(errorText(error?.code), 'warning');
-        render();
+      } finally {
+        state.writeBusy = false;
       }
     }
 

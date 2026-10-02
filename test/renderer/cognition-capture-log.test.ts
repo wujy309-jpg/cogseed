@@ -899,6 +899,38 @@ describe('整理详情页', () => {
     expect(html).not.toContain('data-act="open-candidate"');
   });
 
+  it('P-r1-55：队列窗口外的旧任务读 candidateOutcomes 内联投影，不误报「没有发现值得留存的内容」', () => {
+    // 生产条件复现：review-queue 视图只含最近 5 条处理记录（core.js
+    // BLOCK_FETCHERS.candidates），旧任务的候选不在 S.candidates 里——
+    // 此前详情页 join 队列全落空，「整理结果」被误报成空态，与同页
+    // 「已保存资产」区自相矛盾。数据层修（P-r1-55）：投影由主进程
+    // summarize 全量读池后内联进 workflow 记录，详情页直接读记录。
+    const html = renderPage('organize', {
+      captures: [{
+        ...detailCapture,
+        candidateIds: ['rcand-old-1'],
+        status: 'completed', displayStatus: 'completed', displayReason: 'review_completed',
+        confirmedAssetReceipts: [],
+        reviewSummary: { total: 1, pending: 0, deferred: 0, promoted: 0, rejected: 1, missing: 0 },
+        candidateOutcomes: [{
+          id: 'rcand-old-1', status: 'rejected',
+          judgment: '旧任务产出的判断全文，队列窗口已裁掉但记录仍在。', value: '',
+          summary: '旧任务的候选', suggestedType: 'rule', suggestedScope: 'general',
+          sourceRefs: [], evidenceRefs: [{ id: 'msg-aaa' }],
+          capabilities: { canEdit: false, canPromote: false, countsAsPending: false, isTerminal: true },
+        }],
+      }],
+      sources: [], candidates: [], // 队列为空 = join 全落空（bug 触发条件）
+      ...contextStore,
+    }, { captureId: 'rcap-x' });
+    // 结果区出完整内容块（投影驱动），不再误报空态。
+    expect(html).toContain('ca-result-item');
+    expect(html).toContain('旧任务产出的判断全文，队列窗口已裁掉但记录仍在。');
+    expect(html).not.toContain('没有发现值得留存的内容');
+    // 卡头三态同步受益：队列外的被拒候选不再丢失「已完成 · 未保存」徽标。
+    expect(html).toContain('已完成 · 未保存');
+  });
+
   it('已保存：卡头「已完成 · 已保存」，成果由已保存资产区代表', () => {
     const confirmed = {
       id: 'rcand-4', status: 'confirmed', promotedAssetId: 'aa-1',
@@ -1720,8 +1752,11 @@ describe('资产详情（使用记录并入）', () => {
 
   it('冷启动快照与事件刷新共用具名区块加载器，不靠 Promise 顺序配对数据', () => {
     const start = coreSource.indexOf('async snapshot() {');
-    const end = coreSource.indexOf('async tree()', start);
+    // P-r3-30：LOADERS.tree 死链已删（认知树页面全靠现算），snapshot 切片
+    // 的结束锚点改用 LOADERS 的挂载点。
+    const end = coreSource.indexOf('NS.loaders = LOADERS;', start);
     expect(start, '找不到 snapshot 加载器').toBeGreaterThan(-1);
+    expect(end, '找不到 LOADERS 挂载点').toBeGreaterThan(-1);
     const snapshot = coreSource.slice(start, end);
     const blocks = [...snapshot.matchAll(/BLOCK_FETCHERS\.(\w+)\(\)/g)].map((match) => match[1]);
     expect(blocks).toEqual(['assets', 'candidates', 'captures', 'settings', 'sources', 'inbox', 'timeline']);

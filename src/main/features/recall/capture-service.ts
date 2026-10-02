@@ -11,7 +11,7 @@ import { scheduleBootBackground, type ScheduledBootBackgroundTask } from '../../
 import { getConfiguredModelOAuthExpiredMessage, hasConfiguredModel } from '../auth';
 import * as chats from '../chats';
 import type { ReviewDecision } from '../cognition/review-decision';
-import { getRecallCandidateCapabilities, recallCandidateError } from './candidate-capabilities';
+import { getRecallCandidateCapabilities, recallCandidateError, type RecallCandidateCapabilities } from './candidate-capabilities';
 import { normalizeAssetScopeValue } from './scope-policy';
 import type { PersonalProfileSyncResult, PersonalProfileTarget } from './personal-profile-sync';
 import {
@@ -38,8 +38,10 @@ import {
   type RecallAssetHandoffReceipt,
   type RecallAbilityAssetRecord,
   type RecallCandidateRecord,
+  type RecallCandidateStatus,
 } from './candidate-service';
 import { recallJsonRecordPath } from './paths';
+import type { CognitionSourceRef } from './source-service';
 import {
   cognitionArtifactSourceId,
   cognitionMessageSourceId,
@@ -261,6 +263,25 @@ function isSilentCapture(capture: RecallCaptureRecord): boolean {
   return capture.status === 'no_candidate' && capture.visibility === 'internal';
 }
 
+/** 候选投影（P-r1-55，2026-10-02 数据层修）：summarize 全量读池后内联进
+ *  workflow 记录的展示形状——渲染层候选队列（review-queue 视图）只含最近
+ *  5 条处理记录，旧任务详情按 candidateIds join 队列全落空，「整理结果」
+ *  被误报成空态。字段=整理详情「整理结果」区实际消费的白名单（标题兜底
+ *  链、证据 chips、pending 过滤所需的 capabilities），与 confirmedAssetReceipts
+ *  同一先例：详情页展示数据随 workflow 记录下发，不依赖队列窗口。 */
+export interface RecallCaptureCandidateOutcome {
+  id: string;
+  status: RecallCandidateStatus;
+  summary: string;
+  judgment: string;
+  suggestedType: AbilityAssetType;
+  suggestedScope: string;
+  sourceRefs: CognitionSourceRef[];
+  evidenceRefs: CognitionSourceRef[];
+  /** pending 过滤口径与队列同源（getRecallCandidateCapabilities 现算）。 */
+  capabilities: RecallCandidateCapabilities;
+}
+
 export interface RecallCaptureWorkflowRecord extends RecallCaptureRecord {
   workflowStatus: RecallCaptureWorkflowStatus;
   displayStatus: RecallCaptureDisplayStatus;
@@ -269,6 +290,8 @@ export interface RecallCaptureWorkflowRecord extends RecallCaptureRecord {
   reviewSummary: RecallCaptureReviewSummary;
   linkedAssetIds: string[];
   confirmedAssetReceipts: RecallCaptureConfirmedAssetReceipt[];
+  /** 整理结果内联投影（P-r1-55）：见 RecallCaptureCandidateOutcome。 */
+  candidateOutcomes: RecallCaptureCandidateOutcome[];
   nextAction: RecallCaptureNextAction;
   actions: RecallCaptureAction[];
 }
@@ -1296,6 +1319,25 @@ async function summarizeRecallCaptures(
       workflowStatus = 'completed';
     }
     const linkedAssets = [...linkedAssetIds];
+    // 整理结果内联投影（P-r1-55）：全量读池结果直接进 workflow 记录，详情页
+    // 不再依赖渲染层队列窗口（review-queue 只含最近 5 条处理记录）。读不到
+    // 的候选（missing）不进投影——与旧 join 语义一致（.filter(Boolean)），
+    // missing 计数仍由 reviewSummary 如实反映。
+    const candidateOutcomes: RecallCaptureCandidateOutcome[] = [];
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+      candidateOutcomes.push({
+        id: candidate.id,
+        status: candidate.status,
+        summary: candidate.summary,
+        judgment: candidate.judgment,
+        suggestedType: candidate.suggestedType,
+        suggestedScope: candidate.suggestedScope,
+        sourceRefs: candidate.sourceRefs,
+        evidenceRefs: candidate.evidenceRefs,
+        capabilities: getRecallCandidateCapabilities(candidate),
+      });
+    }
     const displayStatus = captureDisplayStatus(capture, workflowStatus);
     // 分桶与展示状态对齐（2026-09-15 口径修正）：review_ready 的候选被全部
     // 处理完时 displayStatus 已是 completed（行上显示「已完成」），桶必须
@@ -1312,6 +1354,7 @@ async function summarizeRecallCaptures(
       reviewSummary,
       linkedAssetIds: linkedAssets,
       confirmedAssetReceipts,
+      candidateOutcomes,
       nextAction: captureNextAction(capture, workflowStatus, linkedAssets),
       actions: captureActions(capture, workflowStatus, linkedAssets),
     };
@@ -1332,6 +1375,8 @@ function silentRecallCaptureWorkflow(capture: RecallCaptureRecord): RecallCaptur
     reviewSummary: { total: 0, pending: 0, deferred: 0, promoted: 0, rejected: 0, missing: 0 },
     linkedAssetIds: [],
     confirmedAssetReceipts: [],
+    // 静默记录语义上无候选（no_candidate），投影为空数组即真值（P-r1-55）。
+    candidateOutcomes: [],
     nextAction: 'none',
     actions: ['open_conversation'],
   };

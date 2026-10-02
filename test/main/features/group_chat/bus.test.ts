@@ -257,6 +257,49 @@ vi.mock('../../../../src/main/features/local_agents/launch_confirm', () => ({
   requestLaunchConfirm: vi.fn(async () => true),
 }));
 
+// P-r1-91 回归（画像通道落账 bus 侧容错）：两个可探单点——
+//  ① buildRecallTurnPromptContext：携带 PROFILE_MEMORY_LEDGER_TEST 标记的回合
+//     注入一条画像记忆条目（真实实现走不到画像分支：本文件 mock 掉了
+//     context-projection），其余回合原样透传真实实现；
+//  ② recordProfileMemoryInjection：按开关拒绝，模拟收据流一条坏记录/瞬时
+//     IO 错（其余导出保持真实实现）。
+const profileLedgerProbe = vi.hoisted(() => ({ calls: 0, failNext: false }));
+vi.mock('../../../../src/main/features/recall/prompt-injection', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../../src/main/features/recall/prompt-injection')>();
+  return {
+    ...actual,
+    buildRecallTurnPromptContext: async (uid: string, input: any) => {
+      try {
+        const result = await actual.buildRecallTurnPromptContext(uid, input);
+        if (!String(input?.taskText || '').includes('PROFILE_MEMORY_LEDGER_TEST')) return result;
+        return {
+          ...result,
+          promptBlock: result.promptBlock || '<asset-context>profile ledger probe</asset-context>',
+          profileMemoryEntries: [{ id: 'aa-profile-ledger-probe', source: 'USER.md', version: '1' }],
+        };
+      } catch {
+        if (!String(input?.taskText || '').includes('PROFILE_MEMORY_LEDGER_TEST')) throw new Error('no projection in routing tests');
+        return {
+          promptBlock: '<asset-context>profile ledger probe</asset-context>',
+          citations: [],
+          profileMemoryEntries: [{ id: 'aa-profile-ledger-probe', source: 'USER.md', version: '1' }],
+        } as any;
+      }
+    },
+  };
+});
+vi.mock('../../../../src/main/features/recall/injection-receipt', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../../src/main/features/recall/injection-receipt')>();
+  return {
+    ...actual,
+    recordProfileMemoryInjection: async (..._args: unknown[]) => {
+      profileLedgerProbe.calls += 1;
+      if (profileLedgerProbe.failNext) throw new Error('profile ledger IO error (regression-b6)');
+      return undefined;
+    },
+  };
+});
+
 let tmpDir: string;
 let prevWs: string | undefined;
 let prevWakeGate: string | undefined;
@@ -276,6 +319,8 @@ beforeEach(async () => {
   gatewayTurnMock.calls.length = 0;
   cliRunMock.nextResult = null;
   cliRunMock.nextResults.length = 0;
+  profileLedgerProbe.calls = 0;
+  profileLedgerProbe.failNext = false;
   streamProbe.messages.length = 0;
   streamProbe.readOnlyRoots.length = 0;
   streamProbe.dispatchResults.length = 0;
@@ -665,6 +710,30 @@ describe('group_chat bus › enqueue routing + persistence', () => {
         }),
       }),
     ]));
+  });
+
+  it('P-r1-91: profile-memory ledger failure does not fail the persisted turn (bus-side tolerance)', async () => {
+    const bus = await import('../../../../src/main/features/group_chat/bus');
+    const paths = await import('../../../../src/main/paths');
+    profileLedgerProbe.failNext = true;
+    await bus.enqueue({
+      uid: TEST_UID, cid: TEST_CID, fromActorId: 'user',
+      text: 'PROFILE_MEMORY_LEDGER_TEST 普通问题',
+    });
+    await waitForQuiescent(TEST_UID, TEST_CID);
+
+    // 画像落账确实被调用且确实失败（模拟收据流坏记录/瞬时 IO 错）。
+    expect(profileLedgerProbe.calls).toBe(1);
+    // 已持久化的回合不被误标失败：commander 运行统计仍是 success/零 error。
+    const stats = JSON.parse(fs.readFileSync(paths.commanderRuntimeStatsFile(TEST_UID), 'utf-8'));
+    expect(stats.attempts).toBe(1);
+    expect(stats.successes).toBe(1);
+    expect(stats.failures).toBe(0);
+    expect(stats.errors).toBe(0);
+    // 回合正常收尾：commander 回复真实落盘。
+    const mainFile = path.join(paths.userChatsDir(TEST_UID), `${TEST_CID}.jsonl`);
+    const lines = fs.readFileSync(mainFile, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(findCommanderReply(lines)).toBeTruthy();
   });
 
   it('ignores legacy Hermes commander backend config and runs the CogSeed commander', async () => {

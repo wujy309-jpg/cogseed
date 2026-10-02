@@ -68,15 +68,20 @@ function fnBlock(marker: string): string {
 
 describe('cognition-assets snapshot and routing', () => {
   it('loads the five snapshot channels in parallel with soft fallbacks', () => {
-    // 五个读口并行拉取——四个走 api.soft 容错；候选清单例外（2026-09-29 A5）：
-    // 读失败进显式错误态（api.call+catch 置 store.candidatesError），不再把
-    // 「没读到」软降级成空数组伪装成「没有要你决定的」。
+    // 五个读口并行拉取——三个走 api.soft 容错；两个例外走 api.call+catch 的
+    // 显式错误态：候选清单（2026-09-29 A5：读失败置 store.candidatesError，
+    // 不把「没读到」软降级成空数组伪装成「没有要你决定的」）；沉淀设置
+    // （2026-10-01 P-r3-25 组7：captureModel 读失败置 store.captureModelError，
+    // 不再伪装成「还没配置模型」；settings 半边行为不变——失败落 {}、
+    // store.errors 照记，与 api.soft 兜底等价）。
     for (const channel of [
       'recall.assets.list', 'recall.captures.list',
-      'recall.captures.settings.get', 'recall.sources.list',
+      'recall.sources.list',
     ]) expect(core).toContain(`api.soft('${channel}'`);
     expect(core).toContain("api.call('recall.candidates.list'");
     expect(core).toContain('store.candidatesError');
+    expect(core).toContain("api.call('recall.captures.settings.get'");
+    expect(core).toContain('store.captureModelError');
     expect(core).toContain('Promise.all([');
     expect(core).toContain('async soft(channel, payload, fallback)');
     expect(core).toContain('return fallback;');

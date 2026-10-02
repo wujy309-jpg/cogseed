@@ -2337,6 +2337,58 @@ describe('Recall conversation capture', () => {
     });
   });
 
+  it('inlines candidate outcomes into the workflow record for detail rendering (P-r1-55)', async () => {
+    // 数据层修（P-r1-55）：渲染层候选队列（review-queue 视图）只含最近 5 条
+    // 处理记录，旧任务详情按 candidateIds join 队列全落空 →「整理结果」误报
+    // 空态。summarize 全量读池后必须把候选投影内联进 workflow 记录（与
+    // confirmedAssetReceipts 同先例），列表与单条读口都要带。
+    const capture = await captureModule();
+    const queued = await capture.queueRecallCaptureFromTerminal(completedEvent);
+    const store = await import('../../../../src/main/features/recall/store');
+    await store.updateRecallJsonRecord('capture-user', 'captures', queued!.id, (current) => ({
+      ...current!,
+      status: 'review_ready',
+      visibility: 'visible',
+      screeningStatus: 'qualified',
+      candidateIds: ['cand-old-rejected'],
+    }));
+    mocks.readCandidate.mockResolvedValue({
+      id: 'cand-old-rejected',
+      status: 'rejected',
+      summary: '旧任务的被拒候选',
+      judgment: '队列窗口外的判断全文。',
+      suggestedType: 'rule',
+      suggestedScope: 'general',
+      sourceRefs: [],
+      evidenceRefs: [{ kind: 'conversation', id: 'conv-1' }],
+    });
+    const expectedOutcome = {
+      id: 'cand-old-rejected',
+      status: 'rejected',
+      summary: '旧任务的被拒候选',
+      judgment: '队列窗口外的判断全文。',
+      suggestedType: 'rule',
+      suggestedScope: 'general',
+      sourceRefs: [],
+      evidenceRefs: [{ kind: 'conversation', id: 'conv-1' }],
+      capabilities: expect.any(Object),
+    };
+    // 单条读口（整理详情页数据源）。
+    await expect(capture.readRecallCaptureWorkflow('capture-user', queued!.id)).resolves.toMatchObject({
+      candidateOutcomes: [expectedOutcome],
+    });
+    // 列表读口（详情页从列表行取记录，两路同源）。派生 workflowStatus=
+    // completed（唯一候选已拒），按派生态过滤取回。
+    const page = await capture.queryRecallCaptures('capture-user', { statuses: ['completed'] });
+    expect(page.captures[0]).toMatchObject({ candidateOutcomes: [expectedOutcome] });
+    // 读不到的候选（missing）不进投影，由 reviewSummary.missing 如实计数。
+    mocks.readCandidate.mockResolvedValue(undefined);
+    await expect(capture.readRecallCaptureWorkflow('capture-user', queued!.id)).resolves.toMatchObject({
+      candidateOutcomes: [],
+      reviewSummary: expect.objectContaining({ missing: 1 }),
+    });
+  });
+
   it('keeps a confirmed candidate retryable when its immutable handoff receipt is unavailable', async () => {
     const capture = await captureModule();
     const queued = await capture.queueRecallCaptureFromTerminal(completedEvent);

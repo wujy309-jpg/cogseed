@@ -77,7 +77,7 @@ function assertDecisionType(v: unknown): asserts v is ReviewDecisionType {
 }
 
 /** 短确认语义：decision 属于 "采用/确认/是" 类短确认时必须带 antecedent_ref。 */
-const SHORT_CONFIRMATIONS = new Set(['accept', 'yes', 'confirm', '采用', '确认', '是', 'ok', 'yes']);
+const SHORT_CONFIRMATIONS = new Set(['accept', 'yes', 'confirm', '采用', '确认', '是', 'ok']);
 
 export function isShortConfirmation(decision: string): boolean {
   return SHORT_CONFIRMATIONS.has(decision.trim().toLowerCase());

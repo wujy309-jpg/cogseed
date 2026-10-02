@@ -41,7 +41,6 @@ vi.mock('../../../src/main/features/cognition', () => ({
     skillId,
     version: '2',
     baselineStatus: 'available',
-    pendingCandidateCount: 1,
     recentReceipts: [],
     versions: [{ version: '2', canRollback: true, rollbackScope: 'full_tree' }],
   })),

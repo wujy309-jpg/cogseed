@@ -127,7 +127,7 @@ function renderPage(
     name: routeName, category: '', assetId: '', candidateId: '', proofEventId: '',
     captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '',
     assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '',
-    assetView: '', familyRename: '', ontologyBox: '',
+    assetView: '',
     ...routePatch,
   };
   rootEl.innerHTML = '';

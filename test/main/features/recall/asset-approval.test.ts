@@ -149,7 +149,7 @@ describe('三态处置（T036）', () => {
     expect(rows.find((row) => row.action === 'approval_proposed')!.actor).toBe('ai');
   });
 
-  it('确认时版本重检不一致：保持待处理、不静默覆盖', async () => {
+  it('确认时版本重检不一致：冲突即作废（P-r1-74）——提议置 superseded，不静默覆盖', async () => {
     const uid = 'user-conflict';
     const { assets, approval } = await modules();
     const asset = await seedAsset(uid);
@@ -159,13 +159,49 @@ describe('三态处置（T036）', () => {
 
     const result = await approval.decideAssetChangeProposal(uid, proposal.id, 'confirm');
     expect(result.ok).toBe(false);
-    expect(result.state).toBe('pending');
+    expect(result.state).toBe('superseded');
     expect(result.versionConflict).toMatchObject({ baselineVersion: '1' });
     // 资产保持用户改后的内容，AI 的提议没有被套上去。
     expect((await assets.readAbilityAsset(uid, asset.id)).statement).toBe('用户自己改过的正文。');
-    expect((await approval.readAssetChangeProposal(uid, proposal.id))!.state).toBe('pending');
+    // 冲突即作废：baseline 永不刷新，confirm 对这条提议永久不可达——作废后
+    // AI 可基于最新版本重提（作废态不进去重拦截）。
+    expect((await approval.readAssetChangeProposal(uid, proposal.id))!.state).toBe('superseded');
     const rows = await assets.listAbilityAssetAudit(uid, asset.id);
-    expect(String(rows.find((row) => row.action === 'approval_confirmed' && String(row.reason).includes('未生效'))?.note)).toContain(proposal.id);
+    expect(String(rows.find((row) => row.action === 'approval_superseded')?.note)).toContain(proposal.id);
+    // 作废不挡重提：同一变更可以再提（新提议、新 baseline）。
+    const repropose = await proposeStatementChange(uid, asset.id, '2', 'AI 想改成的正文。');
+    expect(repropose.created).toBe(true);
+  });
+
+  /** P-r1-75：decide 的 payload 此前整对象直达资产更新，治理键（actor/
+   *  reason/expectedVersion/id）混入即被写路径消费。修复：键集白名单过滤，
+   *  只放行内容字段；治理键由 decide 自己显式设置。 */
+  it('P-r1-75：confirm 带毒键 payload——治理键被键集过滤丢弃，只生效内容字段', async () => {
+    const uid = 'user-payload-keys';
+    const { assets, approval } = await modules();
+    const asset = await seedAsset(uid);
+    const { proposal } = await proposeStatementChange(uid, asset.id, asset.version, '想生效的正文。');
+
+    const result = await approval.decideAssetChangeProposal(uid, proposal.id, 'confirm', {
+      payload: {
+        statement: '确认时用户编辑过的正文。',
+        actor: 'ai' as never,                       // 毒键：生效 actor 必须仍是 user
+        reason: '被 payload 覆盖的 reason' as never, // 毒键：reason 必须是 decide 的
+        expectedVersion: '99' as never,             // 毒键：不得借 payload 抢 CAS 位
+        id: 'aa-forged' as never,                   // 毒键：身份不可变
+        ownerId: 'someone-else' as never,           // 毒键
+        statementLengthHack: 1 as never,            // 未知键不落盘
+      },
+    });
+    expect(result.ok).toBe(true);
+    const after = await assets.readAbilityAsset(uid, asset.id);
+    expect(after.statement).toBe('确认时用户编辑过的正文。');
+    expect(after.id).toBe(asset.id);
+    expect(after.ownerId).toBe(uid);
+    // 生效 actor 是用户（decide 显式设置），不是 payload 塞进来的 ai。
+    const rows = await assets.listAbilityAssetAudit(uid, asset.id);
+    expect(rows.find((row) => row.action === 'updated')!.actor).toBe('user');
+    expect(String(rows.find((row) => row.action === 'updated')!.reason)).toContain(proposal.id);
   });
 
   it('稍后处理：进待确认清单，不丢', async () => {
@@ -415,8 +451,9 @@ describe('与 008 口径一致性（specs/015 T027）', () => {
       expect(typeof eightConflict[key], `008 ${key}`).toBe('string');
       expect(typeof candidateConflict!.versionConflict![key], `候选 ${key}`).toBe('string');
     }
-    // 两侧冲突后都还能再决定：008 提议保持待处理，候选保持待处理（非终态）。
-    expect((await approval.readAssetChangeProposal(uid, proposal.id))!.state).toBe('pending');
+    // 两侧冲突后各有去处：008 提议冲突即作废（P-r1-74：baseline 永不刷新，
+    // 死路不如作废，AI 会重提），候选保持待处理（候选重检锚定最新版本，可再决定）。
+    expect((await approval.readAssetChangeProposal(uid, proposal.id))!.state).toBe('superseded');
     expect((await candidates.readRecallCandidate(uid, candidate.id)).status).toBe('pending_review');
     expect((await assets.readAbilityAsset(uid, asset.id)).statement).toBe('他处改过的正文二。');
   });
@@ -529,11 +566,12 @@ describe('与 008 口径一致性（specs/015 T027）', () => {
       ? (six as PromiseRejectedResult).reason.versionConflict
       : (eight as PromiseFulfilledResult<{ versionConflict?: unknown }>).value.versionConflict;
     expect(loserConflict).toMatchObject({ baselineVersion: '1', currentVersion: '2' });
-    // 输的那条留在可再决定的状态：不静默覆盖、不落终态。
+    // 输的那条如实收场：候选保持待处理可再决定；008 提议冲突即作废
+    // （P-r1-74：confirm 对旧 baseline 永久不可达，作废让位于 AI 的重提）。
     if (applied[0] === '008') {
       expect((await candidates.readRecallCandidate(uid, candidate.id)).status).toBe('pending_review');
     } else {
-      expect((await approval.readAssetChangeProposal(uid, proposal.id))!.state).toBe('pending');
+      expect((await approval.readAssetChangeProposal(uid, proposal.id))!.state).toBe('superseded');
     }
   });
 });

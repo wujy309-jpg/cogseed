@@ -1356,11 +1356,12 @@ describe('messaging manager adapter flow', () => {
       });
 
       // 批准路径：候选离开池、卡片更新为终态。
-      const { candidate_ids } = await ontology.addCandidates('user-1', [
-        { judgment: '日程：测试课', suggestedType: 'template' },
-      ]);
-      expect(candidate_ids).toHaveLength(1);
-      const candidateId = candidate_ids[0];
+      // （P-r1-31 改写：批量 addCandidates 已删，改用单条 addCandidate 等价
+      //   入池——原映射 template → instance / user。）
+      const { candidate } = await ontology.addCandidate('user-1', {
+        summary: '日程：测试课', kind: 'instance', memory_scope: 'user',
+      });
+      const candidateId = candidate.candidate_id;
       await manager.ingestCardAction('user-1', {
         platform: 'feishu_lark',
         instanceId: created.id,
@@ -1376,9 +1377,9 @@ describe('messaging manager adapter flow', () => {
       await vi.waitFor(() => expect(adapter.updateCard).toHaveBeenCalledTimes(1));
 
       // 拒绝路径：候选直接移除。
-      const { candidate_ids: ids2 } = await ontology.addCandidates('user-1', [
-        { judgment: '日程：另一课', suggestedType: 'template' },
-      ]);
+      const { candidate: candidate2 } = await ontology.addCandidate('user-1', {
+        summary: '日程：另一课', kind: 'instance', memory_scope: 'user',
+      });
       await manager.ingestCardAction('user-1', {
         platform: 'feishu_lark',
         instanceId: created.id,
@@ -1386,11 +1387,11 @@ describe('messaging manager adapter flow', () => {
         externalChatId: 'oc_candidate',
         externalUserId: 'user-1',
         action: 'candidate_reject',
-        payload: { candidate_id: ids2[0] },
+        payload: { candidate_id: candidate2.candidate_id },
         receivedAt: new Date().toISOString(),
       });
       const pool2 = await ontology.listCandidates('user-1');
-      expect(pool2.candidate_updates.find((c) => c.candidate_id === ids2[0])).toBeUndefined();
+      expect(pool2.candidate_updates.find((c) => c.candidate_id === candidate2.candidate_id)).toBeUndefined();
 
       // 缺 candidate_id 的卡片动作被拒绝。
       const rejected = await manager.ingestCardAction('user-1', {

@@ -101,7 +101,7 @@ function loadCognition(options: {
       name: 'overview', category: '', assetId: '', candidateId: '', proofEventId: '',
       captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '',
       assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '',
-      assetView: '', familyRename: '', ontologyBox: '', experienceId: '',
+      assetView: '', experienceId: '',
       tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '',
       ...(options.route || {}),
     },
@@ -232,13 +232,19 @@ describe('资产详情「标签」节（T010）', () => {
     expect(emptyHtml).not.toContain(`data-act="tag-remove"`);
   });
 
-  it('提交走整组替换：新增时提交的是「现值 + 新名」的最终名单（真实调用级）', async () => {
+  // P-r2-22（2026-10-01 拍板：单条打标走批量增量通道）：此前「读本地快照→拼
+  // 整组→整组替换」非原子——快速连打两个标签第二个覆盖第一个（两次都报
+  // 成功）。改走 recall.assets.tags.batch 的 add/remove 增量语义（主进程读
+  // 最新合并、同名幂等），并发交错不再互相覆盖。
+  it('新增走增量通道：op.add 只带新名（主进程按最新合并，P-r2-22）', async () => {
     const invoke = vi.fn(async () => ({ ok: true, asset: { ...TAG_ASSETS[0] } }));
     const loaded = loadCognition({ invoke });
     await loaded.ns.actions.addAssetTag('aa-tag-1', ' 重构 ');
-    const calls = callOf(invoke, 'recall.assets.tags.set');
+    const calls = callOf(invoke, 'recall.assets.tags.batch');
     expect(calls).toHaveLength(1);
-    expect(calls[0][1]).toEqual({ assetId: 'aa-tag-1', tags: ['发布', '重构'] });
+    expect(calls[0][1]).toEqual({ assetIds: ['aa-tag-1'], op: { add: ['重构'] } });
+    // 整组替换通道不再被单条新增触碰（编辑器显式提交才走它）。
+    expect(callOf(invoke, 'recall.assets.tags.set')).toHaveLength(0);
   });
 
   it('同名标签不触发 IPC，只提示不重复添加', async () => {
@@ -249,13 +255,13 @@ describe('资产详情「标签」节（T010）', () => {
     expect(loaded.toasts.some((entry) => entry.message === zh['cognition.tag_duplicate_hint'])).toBe(true);
   });
 
-  it('移除也是整组替换：把目标名字从现值里减掉', async () => {
+  it('移除走增量通道：op.remove 只带目标名（主进程读最新，P-r2-22）', async () => {
     const invoke = vi.fn(async () => ({ ok: true }));
     const loaded = loadCognition({ invoke });
     await loaded.ns.actions.removeAssetTag('aa-tag-2', '发布');
-    const calls = callOf(invoke, 'recall.assets.tags.set');
+    const calls = callOf(invoke, 'recall.assets.tags.batch');
     expect(calls).toHaveLength(1);
-    expect(calls[0][1].tags).toEqual(['沟通']);
+    expect(calls[0][1]).toEqual({ assetIds: ['aa-tag-2'], op: { remove: ['发布'] } });
     expect(loaded.toasts.some((entry) => entry.message.includes('发布'))).toBe(true);
   });
 });
@@ -642,6 +648,9 @@ describe('排序依据小节与权重入口（T020 / US-202 AC4+AC6）', () => {
     // 详情装载：只查「该资产最近一次回合」的一条（limit 1，带 assetId）。
     expect(appSource).toContain("'recall.catalog.ranking'");
     expect(appSource).toContain('taskRunId: turnId, assetId: id, limit: 1');
+    // 2026-10-01 修复回归：完成守卫与发起判重同为 {assetId, turnId} 双键——
+    // 同资产换回合的双在途请求乱序时，旧回合拆解不得覆盖新回合结果。
+    expect(appSource).toContain('if (rankingWhyLast.assetId !== id || rankingWhyLast.turnId !== turnId) return;');
     // 权重卡的保存/重置接线与数据装载已删（G1 拍板项 #3）；写通道本体后端保留。
     expect(appSource).not.toContain("'ranking-weights-save'");
     expect(appSource).not.toContain("'recall.catalog.weights.set'");

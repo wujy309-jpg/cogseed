@@ -447,11 +447,31 @@ function _settingsRenderLocalExec() {
 async function _settingsRefreshMetacognition() {
   try {
     const res = await window.cogseed.invoke('prefs.getMetacognition');
-    _settingsState.metacognition = (res && res.ok)
-      ? { enabled: !!res.enabled, envForcedOff: !!res.envForcedOff }
-      : { enabled: true, envForcedOff: false };
-  } catch (_) {
+    if (res && res.ok) {
+      _settingsState.metacognition = { enabled: !!res.enabled, envForcedOff: !!res.envForcedOff };
+    } else {
+      // P-r3-42（2026-10-02 与写路径对称）：读回执不带 ok——此前与 throw 半边
+      // 一样静默回默认开。失败留日志+遥测（写路径的 rejected 分支同款），
+      // UI 形态不变（回默认开是既有兜底行为，卡上决策不加 readFailed 态）。
+      _settingsState.metacognition = { enabled: true, envForcedOff: false };
+      _settingsLog.warn('getMetacognition rejected', res);
+      _settingsTrackEvent('metacognition_read_result', { result: 'failure' });
+      _settingsTrackError('metacognition_read', {
+        error_type: 'operation',
+        error_message: 'metacognition_read_rejected',
+      });
+    }
+  } catch (err) {
+    // P-r3-42：读偏好失败此前连错误对象都不留（catch (_) 直接吞），UI 无线索
+    // 回退默认开——对照同域写失败有日志+遥测+回滚三件套。只补日志+遥测
+    // 让失败可查，不改 UI 形态。
     _settingsState.metacognition = { enabled: true, envForcedOff: false };
+    _settingsLog.warn('getMetacognition failed', err);
+    _settingsTrackEvent('metacognition_read_result', { result: 'failure' });
+    _settingsTrackError('metacognition_read', {
+      error_type: 'operation',
+      error_message: (err && err.message) || 'metacognition_read_failed',
+    });
   }
 }
 

@@ -106,6 +106,11 @@ describe('Recall ability assets', () => {
     expect(versions.map((entry) => entry.version)).toEqual(['1', '2']);
     expect(versions[0].snapshot.statement).toBe(asset.statement);
     expect(versions[1].snapshot.scope).toBe('architecture-review');
+    // P-r1-25 回归：版本快照不版本化 sensitivity（snapshot() 从不写入，
+    // 类型已同步收缩——幽灵字段不再回流）。
+    for (const entry of versions) {
+      expect('sensitivity' in entry.snapshot).toBe(false);
+    }
 
     const audit = await assets.listAbilityAssetAudit('user-a', asset.id);
     expect(audit.map((entry) => entry.action)).toEqual(['created', 'updated', 'paused', 'revoked']);

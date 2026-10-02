@@ -161,6 +161,31 @@ describe('候选失败文案', () => {
     expect(reasons.filter((reason) => !blockTexts[reason])).toEqual([]);
   });
 
+  it('F-r3-5：screening 直推 blockingReasons 的码前端码表都有文案（fact_not_stable 在内）', () => {
+    // 消费点真相：候选卡读的是 capabilities.ineligibleReasons，它来自
+    // classification.blockingReasons（candidate-capabilities.ts 的
+    // ineligibleReasons 字段），**不经** describePromotionBlock 的 case 表——
+    // 那张表只显式列 6 码，capture-value-screening 直推 blocking 的码
+    // （fact_not_stable 等）此前从门禁眼皮底下漏过。
+    const { blockTexts } = loadFormatter();
+    const screening = fs.readFileSync(path.join(root, 'src/main/features/recall/capture-value-screening.ts'), 'utf8');
+    const blockingCodes = [...screening.matchAll(/pushUnique\(blockingReasons,\s*'([a-z_]+)'\)/g)]
+      .map((match) => match[1]);
+    expect(blockingCodes).toContain('fact_not_stable');
+    expect(blockingCodes.length).toBeGreaterThanOrEqual(2);
+    expect(blockingCodes.filter((code) => !blockTexts[code])).toEqual([]);
+  });
+
+  it('F-r3-5：fact_not_stable 拦截原因展开为人话，不再被 filter(Boolean) 静默滤掉', () => {
+    const { format } = loadFormatter();
+    const message = format({
+      code: 'promotion_blocked',
+      error: 'candidate does not meet the formal asset bar: ...',
+      promotionReasons: ['fact_not_stable'],
+    });
+    expect(message).toContain(locales.zh['cognition.candidate_block_fact_not_stable']);
+  });
+
   it('四语都有这批词条——缺一门语言就会退回中文兜底', () => {
     const { codeTexts, blockTexts } = loadFormatter();
     const keys = [
@@ -181,5 +206,59 @@ describe('候选失败文案', () => {
     const message = format({ code: 'recall_candidate_evidence_insufficient', error: 'candidate evidence is insufficient for review' });
     expect(message).toBe(locales.en['cognition.candidate_error_evidence_insufficient']);
     expect(message).not.toMatch(/[一-龥]/);
+  });
+});
+
+// ── P-r3-2 / P-r2-39 · inbox 处置错误码（预审决策卡组 5「逐码补分支+四语词条」）──
+
+/** inbox 处置通道后端码表：CognitionInboxResolveErrorCode 联合类型全集。 */
+function inboxCodes(): string[] {
+  const adapter = fs.readFileSync(
+    path.join(root, 'src/main/features/cognition/inbox-adapter.ts'), 'utf8',
+  );
+  const start = adapter.indexOf('export type CognitionInboxResolveErrorCode =');
+  const end = adapter.indexOf(';', start);
+  return [...adapter.slice(start, end).matchAll(/'([a-z_]+)'/g)].map((match) => match[1]);
+}
+
+describe('inbox 处置错误码（P-r3-2/P-r2-39 · 组 5）', () => {
+  it('三新码翻成固定四语词条：不外泄主进程带动态插值的中文 message', () => {
+    const { format } = loadFormatter();
+    // 主进程 message 是中文+动态插值（inbox-adapter.ts），四语用户读不到，
+    // 也不能把它当定稿文案直出——按码翻成固定词条。
+    expect(format({ code: 'invalid_item_id', error: '待办 id 里的候选编号不合法：c_123' }))
+      .toBe(locales.zh['cognition.inbox_error_item_id_invalid']);
+    expect(format({ code: 'unsupported_item_kind', error: '这条资产已是终态（archived），不能再在这里处置。' }))
+      .toBe(locales.zh['cognition.inbox_error_item_kind_unsupported']);
+    expect(format({ code: 'unsupported_action', error: '提议类待办支持 accept / reject / defer，收到 ignore' }))
+      .toBe(locales.zh['cognition.inbox_error_action_unsupported']);
+  });
+
+  it('机械门禁：inbox 处置码表每加一码，渲染层都必须翻得出来（不再出现 F-r1-4 式裸奔）', () => {
+    const codes = inboxCodes();
+    // 证明确实解析到了码表（否则这条门禁会退化为空断言）。
+    expect(codes).toContain('unsupported_item_kind');
+    expect(codes.length).toBeGreaterThanOrEqual(6);
+    const { format } = loadFormatter();
+    const generic = locales.zh['cognition.candidate_error_generic'];
+    // promotion_gate_rejected 除外：半程回执，设计上优先透出主进程人话 message。
+    const leaks = codes.filter((code) => code !== 'promotion_gate_rejected')
+      .filter((code) => {
+        const message = format({ code, error: `raw-${code}` });
+        return message === generic || message === `raw-${code}`;
+      });
+    expect(leaks).toEqual([]);
+  });
+
+  it('三新码词条四语齐全（缺一门语言就会退回中文兜底）', () => {
+    const keys = [
+      'cognition.inbox_error_item_id_invalid',
+      'cognition.inbox_error_item_kind_unsupported',
+      'cognition.inbox_error_action_unsupported',
+    ];
+    const gaps = Object.entries(locales).flatMap(([name, table]) => keys
+      .filter((key) => !(key in table))
+      .map((key) => `${name}:${key}`));
+    expect(gaps).toEqual([]);
   });
 });

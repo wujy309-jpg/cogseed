@@ -124,6 +124,13 @@
   let _pocGroups = { list: [], loaded: false, loadError: '' };
   let _pocCandidatesLoaded = false;
   let _pocPendingCandidates = [];
+  /** 候选池读取失败标记（P-r3-24，组7）：读失败 ≠ 没有候选——横幅消失前
+   *  先给共用错误块，不把「没读到」伪装成「没有建议」。 */
+  let _pocCandidatesLoadError = '';
+  /** 坏档三件套（P-r1-88/P-r2-7）：po 主档 / 候选池文件损坏时主进程已 copy
+   *  备份并拒绝写，这里持有 cognition.corrupt.list 回传的登记项，导航顶部
+   *  渲染「从备份恢复/重置」入口（B 段已批）。 */
+  let _pocCorruptItems = [];
   /** 三盒数据（盒子化重构）：A/R/T 盒共用一次加载——资产 + 全组字段与
    *  流水 + 全量冲突台账。groups: [{gid,title,fields,entries}]。 */
   let _pocBoxData = {
@@ -136,15 +143,10 @@
   let _pocView = 'personal';
   let _pocTaxonomyDomain = 'affairs';
   let _pocDomainCategoryFilter = 'all';
-  /** 值行展开状态：`gid\x00field\x00value` 集合（点击行 toggle）。 */
-  const _pocExpandedValues = new Set();
   // 导航就是三个盒子（词汇 T / 事实 A / 规则 R）；模板编辑器是 T 盒的下钻。
   let _pocSelected = { kind: 'facts', id: 'facts' };
   // 模板文件编辑器 { groupId, templateId, sections, content, view:'form'|'raw' }
   let _pocGroupEditor = null;
-  /** D5b（spec 009 T027）：「已删除分组」折叠块。懒加载——首次展开才拉
-   *  deleted.list（IPC 纪律 contracts/ipc.md §5.4：不给每次渲染加调用）。 */
-  let _pocDeletedGroups = { open: false, loaded: false, loadError: '', list: [] };
   /** po.snapshot（2026-09-29 v2 重构）：一次快照拿全分组/字段/值/流水/回收站。 */
   let _pocPo = { snapshot: null, loaded: false, loadError: '' };
   /** 事实页筛选：分组下拉 + 搜索词。 */
@@ -318,8 +320,9 @@
     _pocActionLocks.add(key);
     _pocSetControlBusy(el, true);
     try {
-      await task();
-      return true;
+      // 透传 task（IPC 调用）的返回值：消费方靠 res.ok 区分成败——
+      // 丢弃返回值恒返 true 会让 IPC 失败显示假成功。锁命中仍返 false（保守报失败）。
+      return await task();
     } finally {
       _pocActionLocks.delete(key);
       _pocSetControlBusy(el, false);
@@ -480,10 +483,16 @@
     if (_pocProjectNames) return _pocProjectNames;
     try {
       const res = await window.cogseed.invoke('projects.list');
-      const projects = (res && Array.isArray(res.projects)) ? res.projects : [];
-      _pocProjectNames = new Map(projects.map((p) => [p.project_id, p.name || p.project_id]));
+      // P-r2-29/P-r3-23（失败不写缓存）：读不到形状合法的清单时保持 null——
+      // 下一次打开分组编辑器自然重试。此前把空 Map 固化成缓存：projects.list
+      // 尚无主进程注册（数据源未定，见待议 P-r3-23），首次 invoke 返回
+      // {ok:false, unknown channel} 后 @项目 从此永久显示原始 pid 且再不发
+      // 请求；「修固化」是拍板口径（新增通道/改调 spaces.list 需先定数据源）。
+      if (!res || res.ok === false || !Array.isArray(res.projects)) return null;
+      _pocProjectNames = new Map(res.projects.map((p) => [p.project_id, p.name || p.project_id]));
     } catch (_) {
-      _pocProjectNames = new Map();
+      // 同上：失败不写缓存（渲染层 @项目 显示按 null 回退原始 pid，与空 Map
+      // 的显示一致，区别只在下次会真实重试）。
     }
     return _pocProjectNames;
   }
@@ -525,7 +534,9 @@
       _pocInvoke('personalOntology.groups.read', { groupId: ed.groupId }),
       _pocInvoke('personalOntology.templates.list', {}),
     ]);
-    if (!_pocGroupEditor || _pocGroupEditor.groupId !== ed.groupId) return;
+    // 对象身份守卫（同 _pocOpenGroup :488 先例）：同组关闭后快速重开时，旧刷新
+    // 响应按 groupId 弱匹配会写进新编辑器（raw 视图回显写前内容）。
+    if (_pocGroupEditor !== ed) return;
     if (res && res.ok !== false) {
       _pocGroupEditor.content = res.content || '';
       _pocGroupEditor.entriesBySection = _pocParseTemplateSections(_pocGroupEditor.content);
@@ -549,13 +560,32 @@
   }
 
   // ── 模板管理 ─────────────────────────────────────────────────────────────
+  /** P-r1-63/P-r2-28/P-r3-21（拍板：报错中止）：归档探测失败 / 有归档但无法
+   *  询问用户时，统一 fail-fast 中止安装——不重建空模板（空数据落盘后卸载会
+   *  写进更新的 _backup_<ts>，旧真数据实质不可达），错误信息写明数据未损与
+   *  恢复途径；零新 UI，走既有 _notifyFail 通道。 */
+  function _pocAbortInstallArchiveUnknown(detail) {
+    const reason = _t('personalOntology.template_archive_probe_failed',
+      '无法确认该模板的归档数据，已停止安装。你的数据没有丢失：归档仍保存在本机备份目录中，重新安装并在提示时选择「恢复原数据」即可找回。');
+    _notifyFail(
+      _t('personalOntology.templates_install_error', '模板安装失败'),
+      new Error(detail ? `${reason} (${detail})` : reason),
+    );
+  }
+
   /** 安装模板：有归档 → 让用户选「恢复原数据 / 重建空模板」；无归档 → 直接装。 */
   async function _pocInstallTemplate(templateId) {
     let restoreData = false;
     // 有归档旧数据 → 提供恢复选项
     try {
       const ar = await _pocInvoke('personalOntology.templates.hasArchive', { templateId });
-      if (ar && ar.hasArchive) {
+      // 探测失败 ≠ 没有归档：_pocInvoke 永不抛（失败归一成 {ok:false,error}），
+      // 此前 ok:false 被「ar && ar.hasArchive」当无归档静默走下去重建空模板。
+      if (!ar || ar.ok === false) {
+        _pocAbortInstallArchiveUnknown(ar && ar.error);
+        return;
+      }
+      if (ar.hasArchive) {
         if (typeof uiConfirmDanger === 'function') {
           const restoreOk = await uiConfirmDanger({
             title: _t('personalOntology.template_reinstall_title', '重新安装'),
@@ -571,10 +601,17 @@
             if (!freshOk) return;
           }
         } else {
-          restoreData = false;
+          // 组件缺失分支（P-r2-28）：「恢复还是重建」无法交给用户选择时，同样
+          // 报错中止——不再默认重建空模板（同类降级一并覆盖）。
+          _pocAbortInstallArchiveUnknown();
+          return;
         }
       }
-    } catch (_) {}
+    } catch (err) {
+      // 防御：探测/询问链路任何异常同口径中止，不吞（吞掉=回到静默重建）。
+      _pocAbortInstallArchiveUnknown(err && err.message ? err.message : String(err || 'probe failed'));
+      return;
+    }
     const res = await _pocInvoke('personalOntology.templates.install', { templateId, restoreData });
     if (!res || res.ok === false) {
       if (res && res.error === 'template_limit_reached') {
@@ -674,11 +711,14 @@
         _pocInvoke('skills.list'),
         _pocInvoke('agents.list'),
       ]);
+      // P-r2-29（失败不写缓存）：任一侧读失败（ok:false / 形状不对）都不写
+      // 缓存——保持 null 让下一次打开模板库自然重试。此前把空 Map 固化，
+      // 一次瞬时失败后 bundle 名称永久退化到裸 id/裸英文名。
+      if (!skillsRes || skillsRes.ok === false || !agentsRes || agentsRes.ok === false) return;
       _pocSkillNames = new Map((skillsRes.skills || []).map((s) => [s.id, { name: s.name || s.id, desc: (s.description_zh || s.description_en || '').trim() }]));
       _pocAgentNames = new Map((agentsRes.agents || []).map((a) => [a.agent_id, { name: a.name || a.agent_id, desc: (a.description_zh || a.description_en || '').trim() }]));
     } catch (_) {
-      _pocSkillNames = _pocSkillNames || new Map();
-      _pocAgentNames = _pocAgentNames || new Map();
+      // 同上：失败不写缓存，下次自然重试。
     }
   }
 
@@ -1474,11 +1514,12 @@
     </div>`;
 
     if (_pocView !== 'personal') {
-      nav.innerHTML = hubNav;
+      nav.innerHTML = `${_pocRenderCorruptBannerHtml()}${hubNav}`;
+      _pocBindCorruptBanner(nav);
       return;
     }
 
-    nav.innerHTML = `${hubNav}
+    nav.innerHTML = `${_pocRenderCorruptBannerHtml()}${hubNav}
     <div class="personal-onto-nav-section personal-onto-personal-subnav">
       <div class="personal-onto-nav-section-title">${escapeHtml(_t('personalOntology.personal_sections', '个人本体内容'))}</div>
       ${row('facts', 'user', 'personalOntology.nav_abox', '事实与条目', counts.facts, 'personalOntology.nav_abox_sub', '身份、偏好、项目——AI 长期记住的「关于我」')}
@@ -1493,6 +1534,20 @@
       </div>
       <div class="personal-onto-io-hint">${escapeHtml(_t('personalOntology.io_hint', '导出：把事实与规则保存为文本文件。导入：从粘贴或文件加入条目，导入前可预览确认。'))}</div>
     </div>`;
+    _pocBindCorruptBanner(nav);
+  }
+
+  /** 恢复横幅按钮绑定（_pocRenderNav 设 innerHTML 后调用）。 */
+  function _pocBindCorruptBanner(nav) {
+    if (!nav) return;
+    nav.querySelectorAll('[data-poc-corrupt-op]').forEach((el) => {
+      el.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        const row = el.closest('[data-corrupt-domain]');
+        const domain = row ? row.getAttribute('data-corrupt-domain') : '';
+        await _pocRunCorruptRecovery(domain, el.getAttribute('data-poc-corrupt-op'));
+      });
+    });
   }
 
   // ── 右栏渲染 ─────────────────────────────────────────────────────────────
@@ -1531,7 +1586,12 @@
       ? assetsRes.assets.filter((asset) => asset && asset.id)
       : [];
     const assets = sourceAssets.filter((asset) => asset.status === 'active');
-    const snapshotOk = _pocPo.loaded ? true : await _pocLoadPoSnapshot();
+    // P-r3-24（组7）：_pocPo.loaded 只代表「读过」，不代表「读成了」——此前首轮
+    // po.snapshot 失败后（loaded=true、snapshot=null），这里把 loaded 当成功，
+    // _pocProjectBoxGroups(null) 对 null 取 .groups 直接抛 TypeError，整页渲染
+    // 进 catch（用户看到裸英文栈信息，分组页错误块也渲染不出来）。失败快照
+    // 在这里重试一次；仍失败则如实走 loadError 分支（分组页由共用错误块呈现）。
+    const snapshotOk = _pocPo.loaded && _pocPo.snapshot ? true : await _pocLoadPoSnapshot();
     const groupsWithFields = snapshotOk ? _pocProjectBoxGroups(_pocPo.snapshot) : [];
     const [conflictsRes, graphRes] = await Promise.all([
       _pocInvoke('personalOntology.conflicts.list', {}),
@@ -1566,30 +1626,9 @@
     await renderPersonalOntology();
   }
 
-  async function refreshOntologyGraph() {
-    const route = window.CogAssets && window.CogAssets.store && window.CogAssets.store.route;
-    if (!_pocBoxData.loaded || (route && route.name !== 'ontology')) return;
-    const previous = _pocBoxData.graph || { categories: [], entities: [], relations: [] };
-    const result = await _pocInvoke('ontology.graph.read', {});
-    if (!result || result.ok === false || !result.graph) {
-      _pocBoxData.graph = { ...previous, loaded: true, loadError: (result && result.error) || _t('ontologyGraph.load_error', '本体图谱读取失败') };
-    } else {
-      _pocBoxData.graph = {
-        loaded: true,
-        loadError: '',
-        categories: Array.isArray(result.graph.categories) ? result.graph.categories : [],
-        entities: Array.isArray(result.graph.entities) ? result.graph.entities : [],
-        relations: Array.isArray(result.graph.relations) ? result.graph.relations : [],
-      };
-    }
-    const nav = document.getElementById('personal-onto-nav');
-    const body = document.getElementById('personal-onto-main-body');
-    if (nav && body) {
-      _pocRenderNav();
-      _pocBindNav();
-      _pocRenderMain();
-    }
-  }
+  // P-r2-27/P-r3-20（2026-10-01 拍板「直接删除」）：refreshOntologyGraph 死导出
+  // 已删——window 零消费，且内部藏「previous 快照 await 后覆写新数据」的
+  // 潜伏竞态（接线即活）。图谱重载走 renderPersonalOntology / refreshPersonalOntology。
 
   /** 值冲突命中（按 gid+字段+值，冲突数据来自全量台账）。 */
   function _pocConflictFor(gid, field, value) {
@@ -1847,7 +1886,20 @@
 
   /** 来自认知资产的画像条目（正式资产是事实来源，这里只读呈现 + 跳转）。
    *  分节按关键词现算（与 profile 数据层解耦，条目本身不带 section）。 */
+  /** P-r3-24（组7·loader 失败静默族）：按需区块读取失败的共用错误块——
+   *  「加载失败」必须与「没有数据」不同形（对齐 _pocRenderGroupEditorHtml
+   *  的编辑器既有模式：错误说明 + 重试出口）。画像区 / 分组列表 / 候选横幅
+   *  三处消费；重试按钮走 reload-data → refreshPersonalOntology 全量重读。 */
+  function _pocSectionLoadErrorHtml(error) {
+    const detail = error ? `: ${escapeHtml(String(error))}` : '';
+    return `<div class="personal-onto-template-read-error poc-section-load-error" role="alert">
+      <span>${escapeHtml(_t('personalOntology.load_error', '加载失败'))}${detail}</span>
+      ${_button({ label: _t('personalOntology.retry', '重试'), size: 'sm', attrs: { 'data-poc-op': 'reload-data' } })}
+    </div>`;
+  }
+
   function _pocRenderProfileSection() {
+    if (_pocProfile.loadError) return _pocSectionLoadErrorHtml(_pocProfile.loadError);
     const entries = _pocProfile.entries || [];
     if (!entries.length) return '';
     const sections = _pocProfileSections();
@@ -1865,21 +1917,21 @@
         ${section.entries.map(item).join('')}
       </div>`;
     }).join('');
-    const classified = new Set(sections.flatMap((s) => s.entries || []).map((e) => e.assetId + '\u0000' + e.text));
-    const rest = entries.filter((entry) => !classified.has(entry.assetId + '\u0000' + entry.text));
+    // 归不进固定类别的条目由 _pocProfileSections 的 other 分节（其他沉淀）承载，
+    // 不需要额外的 rest 兜底。
     return `<section class="po2-group po2-profile-group">
       <header class="po2-group-head">
         <span class="po2-group-title">${escapeHtml(_t('personalOntology.po2_profile_title', '来自对话的个人信息'))}</span>
         <span class="po2-group-count muted">${escapeHtml(_tv('personalOntology.po2_group_count', { n: entries.length }, '{n} 条'))}</span>
       </header>
-      <div class="po2-group-body">${sectionHtml}
-        ${rest.length ? `<div class="po2-profile-section"><div class="po2-profile-title">${escapeHtml(_t('personalOntology.ontology_other', '其他沉淀'))}</div>${rest.map(item).join('')}</div>` : ''}
-      </div>
+      <div class="po2-group-body">${sectionHtml}</div>
     </section>`;
   }
 
   /** 待确认候选横幅（AI 提议 → 用户拍板：收下时选去向）。 */
   function _pocRenderCandidateBanner() {
+    // P-r3-24（组7）：读失败 ≠ 没有候选——横幅位置给共用错误块，不静默消失。
+    if (_pocCandidatesLoadError) return _pocSectionLoadErrorHtml(_pocCandidatesLoadError);
     if (!_pocPendingCandidates.length) return '';
     const rows = _pocPendingCandidates.map((candidate) => {
       if (!candidate || !candidate.candidate_id) return '';
@@ -2073,7 +2125,11 @@
         <span class="po2-toolbar-hint muted">${escapeHtml(_t('personalOntology.po2_groups_hint', '分组是事实的抽屉；角色模板是现成的表格。'))}</span>
       </div>
       ${groupCards}
-      ${!userGroups.length ? `<div class="po2-empty">${_emptyState({
+      ${_pocGroups.loadError
+        // P-r3-24（组7）：分组读失败 ≠ 还没有分组——共用错误块替换可操作的
+        // 新建引导空态（「加载失败」与「没有数据」必须不同形）。
+        ? _pocSectionLoadErrorHtml(_pocGroups.loadError)
+        : !userGroups.length ? `<div class="po2-empty">${_emptyState({
         kind: 'actionable',
         title: _t('personalOntology.po2_groups_empty', '还没有自己的分组。新建一个，或从下面的模板库装一个现成表格。'),
         icon: 'folder',
@@ -2096,13 +2152,89 @@
 
   async function _pocLoadPendingCandidates() {
     const res = await _pocInvoke('personalOntology.candidates.list', {});
-    _pocPendingCandidates = res && Array.isArray(res.candidate_updates) ? res.candidate_updates.filter((c) => c && c.candidate_id) : [];
+    // P-r3-24（组7）：失败显式记错误（对齐 _pocLoadProfile/_pocLoadTemplates 的
+    // 判定口径：ok===false 或载荷形状不对都算读失败）——此前失败与空池同形，
+    // 横幅静默消失，「没读到」伪装成「没有建议」。
+    if (!res || res.ok === false || !Array.isArray(res.candidate_updates)) {
+      _pocPendingCandidates = [];
+      _pocCandidatesLoadError = (res && res.error) || _t('personalOntology.load_error', '加载失败');
+      _pocCandidatesLoaded = true;
+      return;
+    }
+    _pocPendingCandidates = res.candidate_updates.filter((c) => c && c.candidate_id);
+    _pocCandidatesLoadError = '';
     _pocCandidatesLoaded = true;
+  }
+
+  // ── 坏档三件套·恢复入口（P-r1-88/P-r2-7，B 段已批「从备份恢复/重置」一键）──
+
+  /** 拉主进程坏档登记（po 主档 / 候选池），驱动导航顶部的恢复横幅。 */
+  async function _pocLoadCorruptState() {
+    try {
+      const res = await _pocInvoke('cognition.corrupt.list', {});
+      const items = res && Array.isArray(res.items) ? res.items : [];
+      _pocCorruptItems = items.filter((it) => it && (it.domain === 'po' || it.domain === 'ontology-candidates'));
+    } catch (_) {
+      _pocCorruptItems = [];
+    }
+  }
+
+  function _pocCorruptDomainLabel(domain) {
+    if (domain === 'po') return _t('personalOntology.corrupt_domain_po', '个人本体');
+    if (domain === 'ontology-candidates') return _t('personalOntology.corrupt_domain_candidates', '本体候选池');
+    return String(domain || '');
+  }
+
+  function _pocRenderCorruptBannerHtml() {
+    if (!_pocCorruptItems.length) return '';
+    const rows = _pocCorruptItems.map((it) => `
+      <div class="personal-onto-corrupt-row" data-corrupt-domain="${escapeHtml(it.domain || '')}">
+        <div class="personal-onto-corrupt-text">${escapeHtml(_tv('personalOntology.corrupt_banner', { name: _pocCorruptDomainLabel(it.domain) }, '{name}数据文件损坏，已自动备份，写入已暂停。'))}</div>
+        <div class="personal-onto-corrupt-actions">
+          ${_button({ label: _t('personalOntology.corrupt_restore', '从备份恢复'), size: 'sm', attrs: { 'data-poc-corrupt-op': 'restore' } })}
+          ${_button({ label: _t('personalOntology.corrupt_reset', '重置'), size: 'sm', className: 'o', attrs: { 'data-poc-corrupt-op': 'reset' } })}
+        </div>
+      </div>`).join('');
+    return `<div class="personal-onto-corrupt" role="alert">${rows}</div>`;
+  }
+
+  /** 恢复/重置点击（横幅按钮）：reset 破坏性（丢损坏文件从空数据重来，备份
+   *  保留）须确认；完成后重拉快照与坏档登记。 */
+  async function _pocRunCorruptRecovery(domain, op) {
+    if (!domain) return;
+    if (op === 'reset') {
+      const ok = (typeof uiConfirm === 'function')
+        ? await uiConfirm({ message: _tv('personalOntology.corrupt_reset_confirm', { name: _pocCorruptDomainLabel(domain) }, '重置会丢弃「{name}」当前损坏的数据文件、从空数据重来（.corrupt 备份保留在原目录）。确定重置？') })
+        : true;
+      if (!ok) return;
+    }
+    const lock = `corrupt:${domain}`;
+    if (_pocActionLocks.has(lock)) return;
+    _pocActionLocks.add(lock);
+    try {
+      const res = await _pocInvoke(op === 'restore' ? 'cognition.corrupt.restore' : 'cognition.corrupt.reset', { domain });
+      if (!res || res.ok === false) {
+        _notifyFail(_t('personalOntology.corrupt_recover_failed', '恢复失败'), new Error((res && res.error) || ''));
+        return;
+      }
+      try {
+        uiToast(op === 'restore'
+          ? _t('personalOntology.corrupt_restored', '已从备份恢复。若文件内容仍损坏，会再次提示。')
+          : _t('personalOntology.corrupt_reset_done', '已重置。可正常写入。'), { variant: 'success' });
+      } catch (_) {}
+      _pocGroups = { list: [], loaded: false, loadError: '' };
+      await _pocLoadCorruptState();
+      await _pocReloadPo();
+    } finally {
+      _pocActionLocks.delete(lock);
+    }
   }
 
   // ── 弹层表单小助手（uiModal 契约：actions 返回 {value}，字段按 id 取值）──
 
-  async function _pocModalForm({ title, bodyHtml, actions, submitLabel }) {
+  /** 表单弹窗。非 async：同步返回 uiModal 的 thenable 对象（带 .dialog/.close），
+   *  调用方可在 await 之前对 dialog 内的按钮做二次绑定（await 会解包丢掉这些属性）。 */
+  function _pocModalForm({ title, bodyHtml, actions, submitLabel }) {
     if (typeof window.uiModal !== 'function') return null;
     return window.uiModal({
       title,
@@ -2143,6 +2275,10 @@
   async function _pocReloadPo() {
     _pocPo = { snapshot: null, loaded: false, loadError: '' };
     _pocBoxData = { loaded: false, loadError: '', groups: [], assets: [], sourceAssets: [], conflicts: [], graph: _pocBoxData.graph };
+    // 候选池一并失效（同 refreshPersonalOntology 的既有模式）：确认/拒绝后
+    // 不重拉会滞留横幅与 nav 角标，诱使对已处理候选重复点击报错。
+    _pocCandidatesLoaded = false;
+    _pocPendingCandidates = [];
     await renderPersonalOntology();
   }
 
@@ -2299,7 +2435,8 @@
 
   // ── 值操作 ──────────────────────────────────────────────────────────────
 
-  /** 目标字段选择数据：分组下拉 → 字段下拉（联动用 data 属性静态联动，简单二列）。 */
+  /** 目标字段选择数据：分组下拉 → 字段下拉（分组切换的 options 重建联动在
+   *  _pocComposeValuePrompt 内对弹窗 overlay 绑 change 实现）。 */
   function _pocDestinationOptions() {
     const groups = _pocPoGroups();
     return groups.map((g) => ({
@@ -2330,7 +2467,7 @@
       { value: 'preference', label: _t('personalOntology.rulekind_preference', '偏好') },
       { value: 'constraint', label: _t('personalOntology.rulekind_constraint', '约束') },
     ];
-    const dialog = await _pocModalForm({
+    const modal = _pocModalForm({
       title: presetKind ? _t('personalOntology.po2_compose_rule', '加规则') : _t('personalOntology.po2_compose_value', '记一条'),
       bodyHtml: `
         ${_pocFieldSelect(groupSelectId, _t('personalOntology.po2_dest_group', '写进哪个分组'), dests, gid)}
@@ -2339,13 +2476,27 @@
         ${presetKind ? _pocFieldSelect(kindId, _t('personalOntology.po2_rule_kind_title', '规则分类'), kindOptions, presetKind) : ''}
         ${_pocFieldText(asOfId, _t('personalOntology.po2_asof_label', '信息截至时间（可选）'), '', { placeholder: 'YYYY-MM', hint: _t('personalOntology.po2_asof_hint', '让 AI 知道这条信息什么时候还可靠') })}`,
     });
+    // 分组切换 → 字段下拉联动（弹窗挂在 document.body，await 前对 overlay 内
+    // select 绑 change——同 _pocGraphFormModal 的 overlay 二次绑定做法）。
+    const groupSelect = modal && modal.overlay ? modal.overlay.querySelector(`#${groupSelectId}`) : null;
+    const fieldSelect = modal && modal.overlay ? modal.overlay.querySelector(`#${fieldSelectId}`) : null;
+    if (groupSelect && fieldSelect) {
+      groupSelect.addEventListener('change', () => {
+        const nextDest = dests.find((d) => d.value === groupSelect.value) || dests[0];
+        const options = [{ value: '', label: _t('personalOntology.po2_pick_field', '选择字段…'), disabled: true }].concat(nextDest.fields.map((f) => ({ value: f.value, label: f.label })));
+        fieldSelect.innerHTML = options.map((opt) => `<option value="${escapeHtml(opt.value)}"${opt.disabled ? ' disabled' : ''}${opt.value === '' ? ' selected' : ''}>${escapeHtml(opt.label)}</option>`).join('');
+        fieldSelect.value = '';
+      });
+    }
+    const dialog = await modal;
     if (!dialog || dialog.value !== 'save') return;
     const nextGid = String((document.getElementById(groupSelectId) || {}).value || '');
     const fieldId = String((document.getElementById(fieldSelectId) || {}).value || '');
     const text = String((document.getElementById(textId) || {}).value || '').trim();
     const asOf = String((document.getElementById(asOfId) || {}).value || '').trim();
     const kind = String((document.getElementById(kindId) || {}).value || '').trim();
-    if (!nextGid || !fieldId) {
+    const nextDest = dests.find((d) => d.value === nextGid);
+    if (!nextGid || !fieldId || !(nextDest && nextDest.fields.some((f) => f.value === fieldId))) {
       _pocToast('personalOntology.po2_pick_field_first', '选一个分组和字段', 'error');
       return;
     }
@@ -2547,22 +2698,38 @@
       </div>
       ${_button({ label: _t('personalOntology.po2_history_restore', '恢复到这版'), size: 'xs', className: 'o', attrs: { 'data-poc-history-restore': entry.id, 'data-poc-gid': gid } })}
     </div>`).join('');
-    const dialog = await _pocModalForm({
+    const modal = _pocModalForm({
       title: _tv('personalOntology.po2_history_title', { title: (group && group.title) || '' }, '「{title}」的历史版本'),
       bodyHtml: `<div class="po2-history-list">${rows}</div>`,
       actions: [{ label: _t('common.close', '关闭'), id: 'close', role: 'secondary' }],
     });
-    void dialog;
+    // 「恢复到这版」按钮渲染在挂 document.body 的弹窗 overlay 里，主视图容器
+    // （#personal-onto-main-body）查不到——在等待弹窗关闭前对 dialog 内按钮逐个
+    // 绑定（同 _pocGraphFormModal 对 overlay 的二次绑定做法）。
+    if (modal && modal.dialog) {
+      modal.dialog.querySelectorAll('[data-poc-history-restore]').forEach((el) => {
+        el.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const snapshotId = el.getAttribute('data-poc-history-restore');
+          const btnGid = el.getAttribute('data-poc-gid');
+          if (!snapshotId || !btnGid) return;
+          if (await _pocRestoreHistoryV2(el, btnGid, snapshotId)) modal.close();
+        });
+      });
+    }
+    await modal;
   }
 
+  /** 恢复指定快照；返回是否成功（成功时调用方关闭历史弹窗）。 */
   async function _pocRestoreHistoryV2(el, gid, snapshotId) {
     const res = await _pocRunOnce(`po-history-restore:${gid}:${snapshotId}`, el, () => _pocInvoke('po.history.restore', { groupId: gid, snapshotId }));
     if (!res || res.ok === false) {
       _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
-      return;
+      return false;
     }
     _pocToast('personalOntology.po2_history_restored', '已恢复到该版本', 'success');
     await _pocReloadPo();
+    return true;
   }
 
   // ── 候选确认 / 跳过 ─────────────────────────────────────────────────────
@@ -2667,7 +2834,7 @@
       _pocToast('personalOntology.op_failed', _pocOperationErrorText(applied && applied.error), 'error');
       return;
     }
-    _pocToast('personalOntology.po2_import_done', `已导入 ${applied.applied} 条`, 'success');
+    _pocToast('personalOntology.po2_import_done', `已导入 ${applied.applied} 条`, 'success', { n: applied.applied });
     await _pocReloadPo();
   }
 
@@ -2816,6 +2983,10 @@
   }
 
   function _pocGraphErrorText(error) {
+    // P-r3-27（映射补齐）：主进程可达错误补 5+1 条——自环 2 类（关系表单直接
+    // 可造：双 self / 同实体两端）+ not found 3 类（并发窗口：本地图数据仍在、
+    // 主进程侧已被其他窗口删除）+ 复核顺带补 parent category not found，修前全
+    // 落 generic「保存失败，请检查填写内容」。
     const key = {
       'ontology category already exists': ['ontologyGraph.error_category_duplicate', '同级分类已存在'],
       'ontology category contains entities': ['ontologyGraph.error_category_has_entities', '分类下还有实体，请先移动或删除这些实体'],
@@ -2826,6 +2997,12 @@
       'ontology relation endpoint is archived': ['ontologyGraph.error_archived_endpoint', '已归档实体不能建立新关系'],
       'ontology relation endpoint not found': ['ontologyGraph.error_endpoint_missing', '关系的一端已不存在'],
       'ontology entity category is unavailable': ['ontologyGraph.error_category_missing', '所选分类不可用'],
+      'ontology self relation is not allowed': ['ontologyGraph.error_relation_self_self', '起点和终点不能都是「我」'],
+      'ontology entity cannot relate to itself': ['ontologyGraph.error_relation_same_entity', '关系的起点和终点不能是同一个实体'],
+      'ontology relation not found': ['ontologyGraph.error_relation_not_found', '这条关系已不存在（可能已在其他窗口删除），请刷新后重试'],
+      'ontology entity not found': ['ontologyGraph.error_entity_not_found', '该实体已不存在（可能已在其他窗口删除），请刷新后重试'],
+      'ontology category not found': ['ontologyGraph.error_category_not_found', '该分类已不存在（可能已在其他窗口删除），请刷新后重试'],
+      'ontology parent category not found': ['ontologyGraph.error_parent_category_not_found', '所选上级分类已不存在，请重新选择后再保存'],
     }[String(error || '')];
     return key ? _t(key[0], key[1]) : _t('ontologyGraph.error_generic', '保存失败，请检查填写内容后重试');
   }
@@ -3758,14 +3935,9 @@
         else if (op === 'compose-rule') await _pocComposeValuePrompt('', '', 'operation');
         else if (op === 'new-group') await _pocCreateGroupPrompt();
         else if (op === 'template-library') _pocOpenTemplateLibrary();
-      });
-    });
-    bodyEl.querySelectorAll('[data-poc-history-restore]').forEach((el) => {
-      el.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const snapshotId = el.getAttribute('data-poc-history-restore');
-        const gid = el.getAttribute('data-poc-gid');
-        if (snapshotId && gid) await _pocRestoreHistoryV2(el, gid, snapshotId);
+        // P-r3-24（组7）：按需区块错误块的重试出口——全量重读（模板/画像/
+        // 分组/候选池/快照一并），与模板库整页错误态的重试同一语义。
+        else if (op === 'reload-data') await _pocRunOnce('poc-reload-data', el, () => refreshPersonalOntology());
       });
     });
     bodyEl.querySelectorAll('[data-poc-deleted-op]').forEach((el) => {
@@ -3993,6 +4165,9 @@ function _pocBindNav() {
         _pocLoadProfile(),
         _pocGroups.loaded ? Promise.resolve() : _pocLoadGroups(),
         _pocCandidatesLoaded ? Promise.resolve() : _pocLoadPendingCandidates(),
+        // 坏档登记与数据加载并行：po.snapshot / candidates.list 读取时若探测到
+        // 坏档（copy 备份 + 拒写），横幅随首屏出现（P-r1-88/P-r2-7 恢复入口）。
+        _pocLoadCorruptState(),
       ]);
     }
 
@@ -4045,9 +4220,6 @@ function _pocBindNav() {
   }
 
   function refreshPersonalOntology(options = {}) {
-    if (options && options.selectProfile) {
-      _pocSelected = { kind: 'profile', id: 'user-profile' };
-    }
     _pocTemplatesLoaded = false;
     _pocTemplatesLoadError = '';
     _pocProfile = { entries: [], loaded: false, loadError: '' };
@@ -4056,6 +4228,7 @@ function _pocBindNav() {
     // 其他入口）后刷新不重读列表，nav 永远显示旧集合。
     _pocGroups = { list: [], loaded: false, loadError: '' };
     _pocCandidatesLoaded = false;
+    _pocCandidatesLoadError = '';
     _pocBoxData = {
       loaded: false, loadError: '', groups: [], assets: [], sourceAssets: [], conflicts: [],
       graph: { loaded: false, loadError: '', categories: [], entities: [], relations: [] },
@@ -4063,7 +4236,6 @@ function _pocBindNav() {
     _pocPo = { snapshot: null, loaded: false, loadError: '' };
     _pocFactsFilter = { group: 'all', q: '' };
     _pocRuleFilter = 'all';
-    _pocExpandedValues.clear();
     const route = window.CogAssets && window.CogAssets.store && window.CogAssets.store.route;
     if (options.deferWhenHidden && route && route.name !== 'ontology') return Promise.resolve();
     return renderPersonalOntology();
@@ -4114,7 +4286,6 @@ function _pocBindNav() {
 
   window.renderPersonalOntology = renderPersonalOntology;
   window.refreshPersonalOntology = refreshPersonalOntology;
-  window.refreshOntologyGraph = refreshOntologyGraph;
   if (typeof window.addEventListener === 'function') {
     window.addEventListener('i18n-change', () => { void _pocRefreshForLanguage(); });
   }

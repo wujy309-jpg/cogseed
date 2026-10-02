@@ -19,6 +19,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileEditLock } from '../../util/locks';
+import { corruptRecordFor, readTextGuarded, reportCorruptFile } from '../../util/corrupt-guard';
 import { userCognitionDir, userContextsDir, userOntologyGroupsDir } from '../../paths';
 import { genId12, nowIso, safeId, writeJson, writeJsonSync } from '../../storage';
 import { writeTextAtomicSync } from '../../storage';
@@ -41,6 +42,9 @@ export function poDocPath(uid: string): string {
   return path.join(userCognitionDir(uid), 'personal-ontology.json');
 }
 
+/** 坏档三件套的业务域名（恢复通道 cognition.corrupt.* 按 domain 寻址）。 */
+export const PO_CORRUPT_DOMAIN = 'po';
+
 /** 组历史目录（快照 + 摘要台账）。 */
 export function poHistoryDir(uid: string, groupId: string): string {
   return path.join(userCognitionDir(uid), 'po-history', groupId);
@@ -60,17 +64,29 @@ function readTextSafe(filePath: string): string {
  * 同步加载文档：JSON 存在 → 读 + 修复；不存在 → 尝试一次性 v1 导入（同步，
  * 全程 fs 同步 API）；v1 也没有 → 空文档。**本函数永不写盘**——迁移的持久化
  * 由写路径（editPoDoc → persistWhenMigrated）或启动钩子完成，读路径零副作用。
+ *
+ * 坏档三件套（P-r1-88 po 同构点，决策卡拍板）：读到坏档（非 ENOENT 读错 /
+ * JSON 解析失败）→ 先 copy `.corrupt-<ts>` 备份并登记拒写 latch，再返回空
+ * 文档供展示（写侧 editPoDoc 会拒绝；恢复入口走 cognition.corrupt.*）。
+ * 旧病：坏档仅 warn + 空文档，下一次成功写入把旧文档整体替换，无备份。
  */
 export function loadPoDocSync(uid: string): PoDocument {
   if (!safeId(uid)) return emptyPoDocument();
   const filePath = poDocPath(uid);
   if (fs.existsSync(filePath)) {
-    try {
-      return normalizePoDocument(JSON.parse(readTextSafe(filePath)));
-    } catch (err) {
-      log.warn('po doc unreadable; starting from empty (v1 import skipped)', { uid, error: (err as Error).message });
-      return emptyPoDocument();
+    const guarded = readTextGuarded(filePath, { domain: PO_CORRUPT_DOMAIN });
+    if (guarded.status === 'corrupt') return emptyPoDocument();
+    if (guarded.status === 'ok') {
+      try {
+        return normalizePoDocument(JSON.parse(guarded.text));
+      } catch (err) {
+        reportCorruptFile(filePath, `bad JSON: ${(err as Error).message}`, { domain: PO_CORRUPT_DOMAIN });
+        log.warn('po doc unreadable; corrupt-guard engaged', { uid, error: (err as Error).message });
+        return emptyPoDocument();
+      }
     }
+    // existsSync 与读取之间文件消失（迁移/外部操作竞态）：按空文档处理。
+    return emptyPoDocument();
   }
   try {
     const imported = importFromV1Sync(uid);
@@ -145,17 +161,10 @@ function renderAllGroups(uid: string, doc: PoDocument): void {
   for (const group of doc.groups) syncGroupRender(uid, group);
 }
 
-/** 按渲染副本 relPath 找到组并重刷副本（v1 notifyGroupUpserted 的语义）。 */
-export function syncRenderForRelPath(uid: string, relPath: string): void {
-  const doc = loadPoDocSync(uid);
-  const group = doc.groups.find((g) => poGroupRelPath(g) === relPath);
-  if (group) syncGroupRender(uid, group);
-}
-
-/** 按渲染副本 relPath 删副本 + 踢索引（v1 notifyGroupDeleted 的语义）。 */
-export function dropRenderForRelPath(uid: string, relPath: string): void {
-  dropGroupRender(uid, relPath);
-}
+// （P-r2-8，2026-10-02）syncRenderForRelPath / dropRenderForRelPath 已删：
+// 它们是 v1 notifyGroupUpserted / notifyGroupDeleted（personal_ontology_groups.ts
+// 兼容导出）的唯一消费链，后者生产零消费随死链清理；组级渲染统一走写路径
+// 内部的 touch / markRemoved（见下方 PoEditContext），不要按 relPath 从外部重刷。
 
 // ── 统一写路径 ───────────────────────────────────────────────────────────
 
@@ -187,6 +196,13 @@ export async function editPoDoc(
   const filePath = poDocPath(uid);
   return fileEditLock(filePath).runExclusive(async () => {
     const doc = loadPoDocSync(uid);
+    // 坏档三件套·写侧门：load 探测到坏档（已 copy 备份 + 登记）→ 拒绝落盘。
+    // 只有真 ENOENT（文件不存在）走空初始化后落盘；恢复/重置后才恢复可写。
+    const corrupt = corruptRecordFor(filePath);
+    if (corrupt) {
+      log.warn('po doc corrupt; write refused', { uid, reason: corrupt.reason });
+      return { ok: false, error: `po doc corrupt; write refused (${corrupt.reason}); use backup recovery` };
+    }
     const touched = new Map<string, { before: PoGroup }>();
     const removedRels: string[] = [];
     let failure: string | undefined;

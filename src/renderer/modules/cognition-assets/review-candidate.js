@@ -609,6 +609,39 @@
     const lines = issues.map((issue) => STATEMENT_ISSUE_LABELS[issue] || String(issue)).join('；');
     return `<div class="note ca-statement-warning">${esc(T('cognition.statement_warning_prefix', '正文建议调整（可改后保存）：'))}${esc(lines)}</div>`;
   };
+
+  /** 准入软提醒（F-r3-6，2026-10-01）：主进程随 capabilities 专门下发的
+   *  eligibilityAdvisories——soft_warning 的来源（candidate-capabilities.ts：
+   *  「不阻断但应如实告知的欠缺」）。此前渲染层零消费，soft_warning 与
+   *  eligible 界面同形，确认时收不到任何欠缺提醒。口径：
+   *  - 只提醒不拦截（把关权在人）：「保存」按钮照常渲染；
+   *  - 快照口径：这是最近一次读取主进程时的判定，编辑后不即时重算（前端
+   *    不另立口径，与 statementWarningHtml 同一纪律），文案注明按最近一次读取；
+   *  - 码表与 capture-value-screening 的 advisoryReasons 一一对应（5 码全覆盖），
+   *    fact_not_stable 与阻断面（F-r3-5）共用同一词条键；未知码不上屏
+   *    （主进程契约：码由 UI 翻译，内部标识不直接展示），全未知时不渲染。 */
+  const CANDIDATE_ADVISORY_LABELS = {
+    personal_not_stable: T('cognition.candidate_advisory_personal_not_stable', '个人条目没写明这是长期的，可能只是一次性状态，建议核对。'),
+    fact_not_stable: T('cognition.candidate_block_fact_not_stable', 'fact 只收长期稳定的事实（项目、环境、领域、工具链）；带「今天/本次/当前」这类时间限定、又没写明长期有效的叙述只是任务状态，不算可复用事实。改写为稳定表述或换个类型。'),
+    skill_shape_incomplete: T('cognition.candidate_advisory_skill_shape_incomplete', '方法的结构不完整（目标、步骤、输入输出、评估缺了几项），建议补齐。'),
+    rule_missing_boundary: T('cognition.candidate_advisory_rule_missing_boundary', '规则没写适用或禁止范围；可以先保存，之后在待办里补齐边界。'),
+    statement_over_soft_budget: T('cognition.candidate_advisory_statement_over_soft_budget', '正文超过 300 字软预算；长叙事建议移到来历区，正文只留结论与做法。'),
+  };
+  const candidateAdvisoryLines = (candidate) => {
+    const caps = candidate.capabilities || {};
+    if (String(caps.eligibility || '') !== 'soft_warning') return [];
+    const advisories = Array.isArray(caps.eligibilityAdvisories) ? caps.eligibilityAdvisories : [];
+    return advisories.map((code) => CANDIDATE_ADVISORY_LABELS[code] || '').filter(Boolean);
+  };
+  const candidateAdvisoryHtml = (candidate, opts = {}) => {
+    const lines = candidateAdvisoryLines(candidate);
+    if (!lines.length) return '';
+    const head = esc(T('cognition.candidate_advisory_prefix', '以下欠缺不阻止确认，但建议先核对（按最近一次读取）：'));
+    // 只读分支给简版一行；编辑分支逐条列出（与 ineligibleReasons 块同形）。
+    return opts.inline
+      ? `<p class="note">${head}${esc(lines.join('；'))}</p>`
+      : `<div class="note cand-block-note">${head}${lines.map((line) => `<br>· ${esc(line)}`).join('')}</div>`;
+  };
   function candidateFormBody(candidate) {
     const refs = evidenceRefs(candidate);
     const broken = evidenceMostlyUnavailable(candidate);
@@ -686,12 +719,14 @@
             if (!lines.length) return '';
             return `<div class="note cand-block-note">${esc(T('cognition.candidate_error_promotion_blocked', '这条候选还不够格成为正式资产：'))}${lines.map((line) => `<br>· ${esc(line)}`).join('')}<br>${esc(T('cognition.candidate_block_hint', '修改内容或类型使其合格后，「保存」会自动出现。'))}</div>`;
           })()}
+          ${candidateAdvisoryHtml(candidate)}
           ${actionsHtml}
         </div>
       ` : `
         <p class="content-text">${esc(candidate.judgment || '')}</p>
         ${refs.length ? evidenceGroupsHtml(refs) : ''}
         ${kstarEpisodeSection(S.route)}
+        ${candidateAdvisoryHtml(candidate, { inline: true })}
         ${actionsHtml}
       `}`;
   }

@@ -40,6 +40,21 @@ const RETRY_JITTER_RATIO = 0.2;
 const TOOL_HEARTBEAT_TIMEOUT_GRACE_MS = 30_000;
 export const COMPACTED_HISTORY_PLACEHOLDER_ERROR_CODE = "E_COMPACTED_HISTORY_PLACEHOLDER";
 const LEGACY_COMPACTED_TOOL_USE_INPUT_KEY = "__cogseed_compacted_tool_use";
+
+/**
+ * 反思（runReflection）允许携带的工具闭合集：反思的既定产出通道只有
+ * skill_manage（建/改技能）与 metacognition（更新 COMPETENCE.md /
+ * LEARNING_STRATEGIES.md）——systemPrompt 里的 "Available tools" 句与此集
+ * 必须同步。bash / write_file / web_fetch 等全量工具此前会被一并交给后台
+ * 自动触发的反思真实执行（prompt 谎称只有两个），web_fetch 可把 prompt 里的
+ * 用户原文外发，属权限敞口，故收敛为白名单。导出是为了让不变量可被测试钉住
+ * （READ_ONLY_TOOL_ALLOWLIST 同款先例），不是给调用方拼装——要加工具请改
+ * 这里并同步那条测试的判据。
+ */
+export const REFLECTION_TOOL_ALLOWLIST: ReadonlySet<string> = new Set([
+  "skill_manage",
+  "metacognition",
+]);
 const TOOL_LOOP_LIMIT_SUMMARY_MAX_TOKENS = 1_200;
 export const RUN_CONVERGENCE_SOFT_RATIO = 0.8;
 export const RUN_CONVERGENCE_ELAPSED_MS = 8 * 60 * 1000;
@@ -1467,7 +1482,7 @@ export class AgentRunner {
 
             yield { type: "tool_start", id: call.id, name: call.name, input: call.input };
             toolNamesSet.add(call.name);
-            // Track skill reads for metacognition metrics
+            // Track skill reads for the run-result meta (skillsLoaded).
             if (call.name === "skill_manage" && call.input && (call.input as any).action === "read" && (call.input as any).id) {
               skillsLoadedSet.add((call.input as any).id as string);
             }
@@ -2521,8 +2536,9 @@ export class AgentRunner {
 
   /**
    * Run a one-shot reflection turn: send the review prompt to the LLM
-   * with access to skill_manage + any injected tools, then return the
-   * text response. The reflection session is ephemeral (no persistence).
+   * with access to the reflection tool allowlist (skill_manage +
+   * metacognition), then return the text response. The reflection session
+   * is ephemeral (no persistence).
    */
   async runReflection(
     reviewPrompt: string,
@@ -2542,10 +2558,12 @@ export class AgentRunner {
 
     const provider = resolved.provider;
     const modelId = resolved.modelId;
-    // manage_execution_plan controls the live conversation Session and has no valid
-    // active user turn during this ephemeral reflection run.
+    // 反思只拿既定产出通道（见 REFLECTION_TOOL_ALLOWLIST 头注释）：
+    // 白名单过滤，而非「全量减 manage_execution_plan」——此前全量工具集
+    // 与 systemPrompt 谎报的 2 工具不一致，web_fetch/bash/write_file 等
+    // 会被后台自动反思免确认真实执行。
     const reflectionTools = new Map(
-      [...this.tools.entries()].filter(([name]) => name !== "manage_execution_plan"),
+      [...this.tools.entries()].filter(([name]) => REFLECTION_TOOL_ALLOWLIST.has(name)),
     );
     const toolDefs = [...reflectionTools.values()].map(toToolDefinition);
     const toolState: ToolContext["state"] = sandboxEnv ? { sandboxEnv } : {};

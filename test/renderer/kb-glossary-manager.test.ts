@@ -135,7 +135,7 @@ describe('locale 覆盖（词表管理页）', () => {
     'pack_import', 'pack_imported', 'pack_import_failed', 'pack_invalid',
     'metrics_runs', 'metrics_no_latency', 'metrics_latency', 'metrics_ok',
     'metrics_over', 'metrics_retention', 'metrics_glossary', 'metrics_reached',
-    'metrics_not_reached', 'metrics_not_measurable', 'candidates_title',
+    'metrics_not_reached', 'metrics_not_measurable',
     // develop #307 的拦截原因（guardReason）：合并后代码仍会发出这些文案，必须四语齐全
     'select_required', 'entry_missing', 'delete_missing', 'status_paused_one', 'status_resumed_one',
     'export_generate_required', 'import_preview_required', 'import_empty',
@@ -174,6 +174,11 @@ describe('源码契约', () => {
       // 与既有 transcript.metrics.summary 两数据源两读口（互不混流），不是写入。
       'meeting.metrics.summary',
       'library.writeText',
+      // 坏档三件套·恢复入口（P-r1-88，决策卡 B 段已批「从备份恢复/重置」一键）：
+      // 词表文件损坏时主进程已 copy 备份并拒绝写，面板凭这三个通道提供出路。
+      'cognition.corrupt.list',
+      'cognition.corrupt.restore',
+      'cognition.corrupt.reset',
     ]);
     for (const channel of channels) expect(allowed.has(channel)).toBe(true);
   });

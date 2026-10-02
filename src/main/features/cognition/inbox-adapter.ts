@@ -18,6 +18,7 @@ import {
   updateAbilityAsset,
 } from '../recall/asset-service';
 import {
+  comparableJudgmentText,
   deferRecallCandidate,
   ignoreRecallCandidate,
   listRecallCandidates,
@@ -27,6 +28,7 @@ import {
 } from '../recall/candidate-service';
 import { listAssetChangeProposals } from '../recall/asset-approval-service';
 import { decideAssetChangeProposal } from '../recall/asset-approval-service';
+import { RECALL_CANDIDATE_TERMINAL_ERROR_CODE } from '../recall/candidate-capabilities';
 import {
   decideCleanupUncertainItem,
   listCleanupReports,
@@ -128,6 +130,15 @@ async function settle<T>(work: () => Promise<T>): Promise<T> {
     if (/not found/i.test(message)) {
       throw inboxResolveError('unsupported_item_kind', '这条待办指向的对象已经不存在了（可能刚被删除或合并）。');
     }
+    // 终态兜底映射（2026-10-01 质检 P-r1-76）：名单资产被删/撤回/彻底清除后，
+    // keep/merge 的写路径在 assertMutableAbilityAsset 抛英文终态守卫错误原样
+    // 上屏且重试必再失败。按「对象已是终态」口径翻译（与下方
+    // readMutableAssetOrReject 同 code 同语义），覆盖预检之后窗口期内才被动
+    // 掉的 TOCTOU 场景。「already been merged」不在此列——那是 merge 循环
+    // 幂等化（P-r2-5/P-r1-11）的达成信号。
+    if (/has been purged/i.test(message) || /ability asset cannot be changed/i.test(message)) {
+      throw inboxResolveError('unsupported_item_kind', '这条待办涉及的资产已是终态（被删除/撤回/彻底清除），不能再在这里处置——请刷新清单。');
+    }
     throw error;
   }
 }
@@ -139,6 +150,26 @@ async function readMutableAssetOrReject(userId: string, assetId: string) {
     throw inboxResolveError('unsupported_item_kind', `这条资产已是终态（${asset.status}），不能再在这里处置。`);
   }
   return asset;
+}
+
+/**
+ * 巡检处置（keep/merge，2026-10-01 质检 P-r1-76）的终态预检：名单里任何资产
+ * 已是 purged/revoked/deleted 时，整个处置**开始前**如实拒绝。预检的意义：
+ * ① keep 的 target 没了还去归档其余，等于让用户保一条已死的资产——语义上就
+ * 该拒；② 否则循环走到终态成员才撞英文守卫错误，前面的成员已被归档（半途
+ * 而废）。终态口径与 mergeAbilityAssets 的 assertMutableAbilityAsset 三态一致
+ * （archived 可并/可再归档，不拦）。读不到（含 not found）不在预检吞掉——
+ * 继续走 settle 的既有口径如实透出；预检后窗口期内才被动掉的（TOCTOU）也由
+ * settle 的终态映射兜底。
+ */
+async function rejectInspectionTerminalAssets(userId: string, assetIds: readonly string[]): Promise<void> {
+  for (const assetId of assetIds) {
+    const asset = await readAbilityAsset(userId, assetId).catch(() => undefined);
+    const status = asset?.status;
+    if (status === 'purged' || status === 'revoked' || status === 'deleted') {
+      throw inboxResolveError('unsupported_item_kind', `名单里的资产 ${assetId} 已是终态（${status}），不能再在这里处置——请刷新清单。`);
+    }
+  }
 }
 
 /**
@@ -172,20 +203,44 @@ export async function resolveCognitionInboxItem(
       const conflicting = recallCandidateConflictingTypes(candidates);
       const mine = candidates.find((candidate) => candidate.id === candidateId);
       if (!mine) throw inboxResolveError('unsupported_item_kind', '这条冲突待办指向的候选已经不存在了。');
+      // 竞态加固：终态候选（rejected/ignored/expired——与 promote 锁内抛
+      // RecallCandidateStateError 的集合一致）已不在待办里（needsUserAction=
+      // false）；id 仍被直接提交时提前如实拒绝，也避免先把 others 拒掉造成
+      // 无主处置。锁内识别保留作兜底（读后写前再被动过的窗口）。
+      const claimTerminalMessage = '这条冲突待办指向的候选刚被处置过了（已是终态），请刷新清单。';
+      if (mine.status === 'rejected' || mine.status === 'ignored' || mine.status === 'expired') {
+        throw inboxResolveError('unsupported_item_kind', claimTerminalMessage);
+      }
       const reason = note || `与候选 ${candidateId} 冲突，裁定保留后者`;
       const others = candidates.filter((candidate) => {
         if (candidate.id === candidateId) return false;
         // 冲突表记的是「与它不同类型的那些类型」——非空即在同一冲突组。
         const conflictTypes = conflicting.get(candidate.id) || [];
-        return conflictTypes.length > 0 && String(candidate.judgment || '').replace(/\s+/g, ' ').trim().toLocaleLowerCase()
-          === String(mine.judgment || '').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
+        // 文本口径 + 类型口径都必须与冲突表/晋升闸门对齐：文本用
+        // comparableJudgmentText（NFKC+剥标点，自算宽松版会让标点变体漏拒、
+        // 选边收不了口）；类型必须**不同**才构成冲突——同类型同文本的兄弟
+        // 不在冲突面里，连带终态拒绝会剥夺它 forceCreateSimilar 的出路。
+        return conflictTypes.length > 0 && candidate.suggestedType !== mine.suggestedType
+          && comparableJudgmentText(candidate.judgment) === comparableJudgmentText(mine.judgment);
       });
+      // 如实计数（2026-10-01 质检 P-r2-1）：sibling 的拒绝结果逐条记账——拒
+      // 不掉的（如空证据 weak 候选连 reject 都过不了能力闸）不再被吞掉后凭
+      // 空断言「另一条已出局」。计数只进回执文案；晋升仍照常尝试，闸门自己
+      // 会复核冲突面（拒不掉的 sibling 仍会挡住晋升——回执必须把这件事说破，
+      // 否则就是「拒不掉、闸门被它挡、无出路提示」的死结）。
+      let rejectedSiblingCount = 0;
+      const siblingRejectFailures: string[] = [];
       for (const other of others) {
-        await rejectRecallCandidate(userId, other.id, reason).catch((error) => {
+        try {
+          await rejectRecallCandidate(userId, other.id, reason);
+          rejectedSiblingCount += 1;
+        } catch (error) {
+          const message = String((error as Error)?.message || error);
+          siblingRejectFailures.push(`${other.id}：${message}`);
           log.warn('inbox conflict claim: sibling reject degraded', {
-            userId, candidateId: other.id, error: (error as Error).message,
+            userId, candidateId: other.id, error: message,
           });
-        });
+        }
       }
       // 晋升闸门（证据/风险/相似）照旧生效（2026-09-29 第 2 批）：它拒绝时
       // 不再裸抛内部错误——转成结构化 code（promotion_gate_rejected）带
@@ -193,9 +248,45 @@ export async function resolveCognitionInboxItem(
       try {
         await promoteRecallCandidate(userId, candidateId, { actor: 'user', ...(note ? { decisionReason: note } : {}) });
       } catch (error) {
+        // 终态竞态（读清单后、点 claim 前候选被别处处置，锁内重检撞上）：按
+        // 「对象已被处置」口径如实拒绝——UI 靠 code 翻译、不拼英文内部
+        // message（capability 契约），也不给「到候选详情完成确认」的落空
+        // 引导（终态候选 needsUserAction=false，详情里已无事可做）。
+        if ((error as { name?: string }).name === 'RecallCandidateStateError'
+          || (error as { code?: unknown }).code === RECALL_CANDIDATE_TERMINAL_ERROR_CODE) {
+          throw inboxResolveError('unsupported_item_kind', claimTerminalMessage);
+        }
+        // 按错误类型映射（2026-10-01 质检 P-r1-10）：只有晋升闸门
+        // （PromotionBlockedError）才映射 promotion_gate_rejected；候选服务的
+        // 结构化错误码（recall_candidate_*：证据不足 / 高风险未确认 / 疑似
+        // 重复 / 安全拦截……）原样透出，由渲染层码表翻译——把它们一刀切包
+        // 成「没通过晋升检查」会误导用户去改内容，而真正的处置是补证据、
+        // 确认风险或裁定相似。not found / version conflict 沿用 settle 的
+        // 稳定化口径。
         const message = error instanceof Error ? error.message : String(error);
+        if (/not found/i.test(message)) {
+          throw inboxResolveError('unsupported_item_kind', '这条冲突待办指向的候选已经不存在了。');
+        }
+        if (/version conflict/i.test(message)) {
+          throw inboxResolveError('version_conflict', '这条候选刚被别的改动更新过（版本冲突），请重试');
+        }
+        const isPromotionGateBlocked = (error as { name?: string }).name === 'PromotionBlockedError'
+          || (error as { code?: unknown }).code === 'promotion_blocked';
+        if (!isPromotionGateBlocked) throw error;
+        // 如实计数回执（P-r2-1）：只陈述本轮实际做到的事。others 为空时说
+        // 「另一条已出局」是凭空断言；sibling 没全拒掉时冲突面仍在，如实报
+        // 数量与原因（失败原因保留服务层原文，不吞原因——人话词条是 B 段
+        // 的口径）。
+        let settledPart: string;
+        if (!others.length) {
+          settledPart = `保留的这一条没有通过晋升检查：${message}`;
+        } else if (rejectedSiblingCount === others.length) {
+          settledPart = `选边已生效（另一条已出局），但保留的这一条没有通过晋升检查：${message}`;
+        } else {
+          settledPart = `另一条共 ${others.length} 条，本轮拒掉 ${rejectedSiblingCount} 条、没拒掉 ${siblingRejectFailures.length} 条（${siblingRejectFailures.join('；')}）——没拒掉的另一条仍在冲突面里，会挡住这次晋升。保留的这一条没有通过晋升检查：${message}`;
+        }
         throw inboxResolveError('promotion_gate_rejected',
-          `选边已生效（另一条已出局），但保留的这一条没有通过晋升检查：${message}。可到「待我处理」的候选详情里查看并完成确认。`,
+          `${settledPart}。可到「待我处理」的候选详情里查看并完成确认。`,
           { candidateId });
       }
       return { ok: true, target: 'recall_candidate', status: 'claimed' };
@@ -234,6 +325,16 @@ export async function resolveCognitionInboxItem(
       proposalId,
       action === 'accept' ? 'confirm' : action === 'reject' ? 'reject' : 'defer',
     );
+    // 服务层的 ok:false 是如实回执（已处置过 / 版本冲突——冲突即作废后提议
+    // 落 superseded，AI 会基于最新版本重提，P-r1-74），不能伪装成 ok:true——
+    // 渲染层对成功是 toast+删行，刷新后待办复活，用户
+    // 以为办完了实则什么都没落（假装成功比拒绝更糟）。
+    if (!result.ok) {
+      if (result.versionConflict) {
+        throw inboxResolveError('version_conflict', result.message || '这条资产刚被别的改动更新过（版本冲突），提议已作废，AI 会基于最新内容重新提议');
+      }
+      throw inboxResolveError('unsupported_item_kind', result.message || '这条提议已经处置过了。');
+    }
     return { ok: true, target: 'asset_change_proposal', status: result.state };
   }
 
@@ -274,8 +375,31 @@ export async function resolveCognitionInboxItem(
         throw inboxResolveError('invalid_item_id', `目标资产不在本条发现的名单里：${targetAssetId}`);
       }
       const others = finding.assetIds.filter((assetId) => assetId !== targetAssetId);
+      // 终态预检（P-r1-76 第一道）：处置开始前拒掉名单里的终态资产，英文
+      // 终态守卫错误不上屏、循环不半途而废。
+      await rejectInspectionTerminalAssets(userId, [targetAssetId, ...others]);
       if (action === 'merge') {
+        // 幂等化（2026-10-01 质检 P-r2-5/P-r1-11）：合并循环不原子，部分成功后
+        // 重试会在已并成员上撞「already been merged」原样透出——finding 永远
+        // 关不掉，只能 reject 弃单收口。两层防：① 预检跳过已并成员
+        // （mergedIntoAssetId 非空 = 该成员已通过合并处置归档、去向已记——
+        // 无论并入本目标还是别处，这条的重复问题都已收口，重复处置必抛错
+        // 且无意义）；② 预检后仍撞「已并」= 预检读到的资产在合并窗口内被
+        // 并发处置（TOCTOU 兜底），同样视为达成、继续循环。
+        const pendingMergeIds: string[] = [];
         for (const other of others) {
+          // 读不到（含 not found）时不在预检吞掉——继续进 merge，让既有
+          // 口径（settle 翻译 not found）如实透出。
+          const asset = await readAbilityAsset(userId, other).catch(() => undefined);
+          if (asset?.mergedIntoAssetId) {
+            log.info('inbox inspection merge: skip already-merged member', {
+              userId, findingKey: key, assetId: other, mergedInto: asset.mergedIntoAssetId,
+            });
+            continue;
+          }
+          pendingMergeIds.push(other);
+        }
+        for (const other of pendingMergeIds) {
           await settle(() => mergeAbilityAssets(userId, other, targetAssetId, {
             actor: 'user',
             reason: note || `治理待办：合并疑似重复（保留 ${targetAssetId}）`,
@@ -284,6 +408,13 @@ export async function resolveCognitionInboxItem(
             const message = String((error as Error)?.message || error);
             if (/same type/i.test(message)) {
               throw inboxResolveError('unsupported_action', '两条资产的类型不同，不能合并——请先到资产详情对齐类型，或改用「保留这一条」。');
+            }
+            // 已并视为达成（幂等化第②层）：预检窗口内被并发合并，这一条已收口。
+            if (/already been merged/i.test(message)) {
+              log.info('inbox inspection merge: concurrent merge detected, treated as done', {
+                userId, findingKey: key, assetId: other,
+              });
+              return;
             }
             throw error;
           });
@@ -411,6 +542,12 @@ export async function listCognitionInbox(userId: string): Promise<CognitionInbox
   const skillStateUnknownAssetIds = new Set<string>();
   const skillUpgradeCurrentAssetIds = new Set<string>();
   const skillUpgradeRejectedAssetIds = new Set<string>();
+  // binding 读不到的资产（2026-10-01 质检 P-r1-13）：追平/拒绝状态未知。此前
+  // 降级只 log.warn、哪个集合都不进——inbox.ts 里「不在已追平集也不在已拒绝集」
+  // 就产出升级待办，已追平/已拒绝的升级以假待办复活。归入专用 unknown 集，
+  // 未知状态不能反推成「待升版」（与 skillStateUnknownAssetIds 同一原则：
+  // 宁可少报，不放假警报）。
+  const skillUpgradeUnknownAssetIds = new Set<string>();
   const withSkillState = await Promise.all(assets.map(async (asset) => {
     if (asset.assetType !== 'skill_method' || asset.payload.kind !== 'skill_method') return asset;
     let generatedSkillId: string | undefined;
@@ -434,6 +571,8 @@ export async function listCognitionInbox(userId: string): Promise<CognitionInbox
       log.warn('inbox skill binding read degraded', {
         userId, assetId: asset.assetId, error: (error as Error).message,
       });
+      // P-r1-13：binding 降级进 unknown 集，不让已追平/已拒绝的升级复活。
+      skillUpgradeUnknownAssetIds.add(asset.assetId);
     }
     return generatedSkillId
       ? { ...asset, payload: { ...asset.payload, generatedSkillId } }
@@ -497,5 +636,6 @@ export async function listCognitionInbox(userId: string): Promise<CognitionInbox
     skillStateUnknownAssetIds,
     skillUpgradeCurrentAssetIds,
     skillUpgradeRejectedAssetIds,
+    skillUpgradeUnknownAssetIds,
   });
 }

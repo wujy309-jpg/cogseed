@@ -29,7 +29,6 @@ const storeDefaults = {
   captureBuckets: null,
   captureSettings: null,
   sources: [],
-  tree: null,
   proofs: [],
   // 与真实载荷同默认（主进程随 recall.timeline.list 下发）：列表与详情共用它。
   // 用例要考「白名单缺失时 fail-closed」就显式传 []。

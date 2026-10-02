@@ -23,7 +23,7 @@ import * as path from 'node:path';
 import { userLocalRoot, userOntologyGroupsDir } from '../paths';
 import { writeTextAtomicSync, safeId, nowIso, readJsonSync } from '../storage';
 import { notifyCognitionWrite } from './recall/store-events';
-import { addEntry as addMemoryEntry, addRoleTemplateMemoryEntry } from './memory';
+import { addEntry as addMemoryEntry, addEntryTransactional, addRoleTemplateMemoryEntry } from './memory';
 import { listGroups } from './personal_ontology_groups';
 import { routeCandidateToField } from './personal_ontology_router';
 import {
@@ -38,9 +38,17 @@ import {
   type TemplateSection,
 } from './personal_ontology_template_files';
 import { createLogger } from '../logger';
+import {
+  CorruptFileError,
+  assertNotCorrupt,
+  readTextGuarded,
+} from '../util/corrupt-guard';
 import type { FieldTargetStatus } from './personal_ontology_contract';
 
 const log = createLogger('personal-ontology-candidates');
+
+/** 坏档三件套的业务域名（恢复通道 cognition.corrupt.* 按 domain 寻址）。 */
+export const CANDIDATES_CORRUPT_DOMAIN = 'ontology-candidates';
 
 /** "选择去向"控件：确认一条候选时可以同时/分别写入全局记忆和任意数量的记忆
  *  分组，两者不互斥。`toGlobalMemory` 缺省为 true（向后兼容旧的单一去向行为）；
@@ -140,13 +148,17 @@ export interface BlockedItem {
 export interface CandidatesData {
   candidate_updates: CandidateUpdate[];
   blocked_items: BlockedItem[];
+  /** 坏档如实上报（P-r2-7 读侧结构化错误，失败≠空态）：池文件读错被拒时
+   *  给渲染层展示「文件损坏+恢复入口」的依据；无坏档时缺省。 */
+  corrupt?: { reason: string; at: string };
 }
 
 function candidatesDir(uid: string): string {
   return path.join(userLocalRoot(uid), 'ontology_candidates');
 }
 
-function candidatesMdPath(uid: string): string {
+/** 候选池主档路径（cognition.corrupt.* 恢复通道按 domain 寻址时主进程用）。 */
+export function candidatesMdPath(uid: string): string {
   return path.join(candidatesDir(uid), 'candidates.md');
 }
 
@@ -248,25 +260,45 @@ export function parseCandidatesMarkdown(text: string): CandidateUpdate[] {
   return out;
 }
 
-/** 把候选数组序列化成人读 markdown。技能产出内容也应遵循这个格式。 */
+/**
+ * 候选方言拍平（P-r1-27，决策卡拍板）：`candidates.md` 的字段值是单行
+ * `- 字段: 值` 列表，多行值无法往返——续行被解析器静默丢弃（截断），形如
+ * `- 类型: x` 的续行更会覆盖字段（kind 污染改变落库分档），confirm 再把
+ * 截断值写库固化。序列化侧统一拍平成单行（换行/制表折叠为单空格，有损
+ * 归一）——与 recall/personal-profile-sync.ts 投影拍平同款先例。
+ */
+function flattenInline(value: unknown): string {
+  return String(value ?? '').replace(/[\r\n]+/g, ' ').replace(/[\t ]+/g, ' ').trim();
+}
+
+/** 把候选数组序列化成人读 markdown。技能产出内容也应遵循这个格式。
+ *  所有自由文本字段值先经 flattenInline 拍平：落盘即单行，往返不再截断。 */
 export function serializeCandidatesMarkdown(candidates: CandidateUpdate[]): string {
   const header = `# 个人本体候选（待确认）\n\n> 最后更新: ${nowIso()} | 共 ${candidates.length} 条待确认\n`;
   if (!candidates.length) return `${header}\n暂无待确认候选。\n`;
   const blocks = candidates.map(c => {
+    const summary = flattenInline(c.summary);
+    const memoryText = flattenInline(c.memory_text);
+    const registryPath = flattenInline(c.registry_like_path);
+    const diffSummary = flattenInline(c.diff_summary);
+    const targetField = flattenInline(c.target_field);
+    const projectId = flattenInline(c.project_id);
+    const recordedTime = flattenInline(c.recorded_time);
+    const sourceRefs = (c.source_memory_refs || []).map(flattenInline).filter(Boolean);
     const lines = [`### ${c.candidate_id}`];
     lines.push(`- 类型: ${c.kind}`);
     lines.push(`- 置信度: ${c.confidence}`);
-    if (c.summary) lines.push(`- 摘要: ${c.summary}`);
+    if (summary) lines.push(`- 摘要: ${summary}`);
     lines.push(`- 记忆去向: ${c.memory_scope}`);
-    if (c.memory_text) lines.push(`- 记忆文本: ${c.memory_text}`);
-    if (c.registry_like_path) lines.push(`- 路径: ${c.registry_like_path}`);
-    if (c.diff_summary) lines.push(`- 差异: ${c.diff_summary}`);
-    if (c.target_field) lines.push(`- 建议字段: ${c.target_field}`);
-    if (c.project_id) lines.push(`- 来源项目: ${c.project_id}`);
+    if (memoryText) lines.push(`- 记忆文本: ${memoryText}`);
+    if (registryPath) lines.push(`- 路径: ${registryPath}`);
+    if (diffSummary) lines.push(`- 差异: ${diffSummary}`);
+    if (targetField) lines.push(`- 建议字段: ${targetField}`);
+    if (projectId) lines.push(`- 来源项目: ${projectId}`);
     if (c.sensitivity && c.sensitivity !== 'standard') lines.push(`- 敏感度: ${c.sensitivity}`);
     if (c.write_actor && c.write_actor !== 'llm') lines.push(`- 写入者: ${c.write_actor}`);
-    if (c.recorded_time) lines.push(`- 记录时间: ${c.recorded_time}`);
-    if (c.source_memory_refs?.length) lines.push(`- 来源: ${c.source_memory_refs.join(', ')}`);
+    if (recordedTime) lines.push(`- 记录时间: ${recordedTime}`);
+    if (sourceRefs.length) lines.push(`- 来源: ${sourceRefs.join(', ')}`);
     return lines.join('\n');
   });
   return `${header}\n${blocks.join('\n\n')}\n`;
@@ -322,6 +354,14 @@ function legacySummaryFor(c: LegacyCandidate): string {
   try { return JSON.stringify(c.payload).slice(0, 200); } catch { return c.candidate_id; }
 }
 
+// b6 回滚注（P-r2-11 async 化 → 恢复同步）：readCandidates/migrate 曾转
+// async（补写走事务通道），但 await 让出点打破了 rejectCandidate「read→
+// splice→write 全同步原子」的既有契约（probe-r2-candidate-lostwrite 用例 3
+// 实证交错丢写复发），已按回滚令恢复同步形态。可重放加固（补写全部成功才
+// 动池文件）保留；shared 补写退回同步 addMemoryEntry（事务化随 async 化
+// 一并回滚，重新落地须与 reject 原子性一起裁决——例如把迁移挪出读路径）。
+// writeCandidateToDestinations 的 addEntryTransactional（confirm 路径）不
+// 在读路径，保留。
 function migrateLegacyJsonIfPresent(uid: string): void {
   const mdPath = candidatesMdPath(uid);
   const jsonPath = legacyCandidatesJsonPath(uid);
@@ -331,6 +371,7 @@ function migrateLegacyJsonIfPresent(uid: string): void {
     const legacy = readJsonSync<LegacyCandidatesJson>(jsonPath);
     const items = Array.isArray(legacy.candidate_updates) ? legacy.candidate_updates : [];
     const kept: CandidateUpdate[] = [];
+    const backfills: Array<{ scope: MemoryTargetScope; summary: string; candidateId: string }> = [];
     let migratedToMemory = 0;
 
     for (const c of items) {
@@ -342,9 +383,7 @@ function migrateLegacyJsonIfPresent(uid: string): void {
 
       if (c.status === 'confirmed') {
         // 历史欠账：之前「确认」只打了状态戳，从未真正写入记忆。这里补写。
-        const res = addMemoryEntry(uid, scope === 'user' ? 'user' : 'memory', summary);
-        if (res.ok) migratedToMemory++;
-        else log.warn('legacy confirmed candidate migration write failed', { uid, candidateId: c.candidate_id, error: res.error });
+        backfills.push({ scope, summary, candidateId: c.candidate_id });
         continue;
       }
 
@@ -362,8 +401,42 @@ function migrateLegacyJsonIfPresent(uid: string): void {
       });
     }
 
+    // P-r2-11 可重放加固（b6 回滚后保留）：补写全部成功才动池文件——任何一条
+    // 补写失败都不写 candidates.md、不 rename，旧 json 原样保留，迁移可重放
+    // （重放时已写入的条目由 addEntry 的文本去重幂等吸收）。修复前「补写失败
+    // 也照样 rename」会让该条记忆永久丢失且无重放路径。
+    // 注：补写曾改走 addEntryTransactional（事务通道），随「readCandidates
+    // async 化」回滚一并退回同步 addMemoryEntry——重新事务化须与 reject 同步
+    // 原子性一起裁决（见函数头 b6 回滚注）。
+    let backfillFailed = false;
+    for (const backfill of backfills) {
+      try {
+        const res = addMemoryEntry(uid, backfill.scope === 'user' ? 'user' : 'memory', backfill.summary);
+        if (res.ok) migratedToMemory++;
+        else {
+          backfillFailed = true;
+          log.warn('legacy confirmed candidate migration write failed', {
+            uid, candidateId: backfill.candidateId, error: res.error,
+          });
+        }
+      } catch (err) {
+        backfillFailed = true;
+        log.warn('legacy confirmed candidate migration write threw', {
+          uid, candidateId: backfill.candidateId, error: (err as Error).message,
+        });
+      }
+    }
+    if (backfillFailed) return;
+
     writeTextAtomicSync(mdPath, serializeCandidatesMarkdown(kept));
-    fs.renameSync(jsonPath, `${jsonPath}.bak`);
+    try {
+      fs.renameSync(jsonPath, `${jsonPath}.bak`);
+    } catch (err) {
+      // mdPath 在迁移前不存在（迁移条件即 !exists），删掉它恢复迁移前状态，
+      // 否则下次读取会被 exists(mdPath) 挡住、迁移永远无法重放。
+      try { fs.rmSync(mdPath, { force: true }); } catch { /* 尽力而为 */ }
+      throw err;
+    }
     log.info('migrated legacy candidates.json', { uid, kept: kept.length, migratedToMemory });
   } catch (err) {
     log.warn('legacy candidates.json migration failed', { uid, error: (err as Error).message });
@@ -372,12 +445,24 @@ function migrateLegacyJsonIfPresent(uid: string): void {
 
 // ── 读写 ─────────────────────────────────────────────────────────────────
 
+/**
+ * 读候选池（P-r2-7 三件套）：只吞**真 ENOENT**（空池初始化）；其它读错
+ * （磁盘故障/权限等）先 copy `.corrupt-<ts>` 备份再抛 CorruptFileError——
+ * 不再吞成空表让下一次写（含后台回流投放）全量覆写、候选池静默清空。
+ */
+// b6 回滚注：本函数曾随 P-r2-11 转 async（内部 await 迁移），await 让出点
+// 打破 rejectCandidate 的同步原子契约，已恢复同步（见 migrateLegacyJsonIfPresent
+// 头注）；各调用点的 await 已同步去除。
 function readCandidates(uid: string): CandidateUpdate[] {
   migrateLegacyJsonIfPresent(uid);
-  return parseCandidatesMarkdown(readTextSafe(candidatesMdPath(uid)));
+  const guarded = readTextGuarded(candidatesMdPath(uid), { domain: CANDIDATES_CORRUPT_DOMAIN });
+  if (guarded.status === 'corrupt') throw new CorruptFileError(guarded.record);
+  return parseCandidatesMarkdown(guarded.status === 'ok' ? guarded.text : '');
 }
 
 function writeCandidates(uid: string, candidates: CandidateUpdate[]): void {
+  // 写侧门：坏档登记在案即拒绝（备份被移走不影响判定；恢复/重置后才可写）。
+  assertNotCorrupt(candidatesMdPath(uid));
   writeTextAtomicSync(candidatesMdPath(uid), serializeCandidatesMarkdown(candidates));
   notifyCognitionWrite(uid, 'ontology-candidates', 'update');
 }
@@ -388,12 +473,23 @@ function readBlockedItems(uid: string): BlockedItem[] {
 
 /**
  * 读取候选列表 + 阻断项。文件不存在时返回空数组（首次读取会顺带触发旧数据迁移）。
+ * 池文件坏档（非 ENOENT 读错）时不再吞成空表：corrupt 字段如实带回坏档信息，
+ * 渲染层据此出「从备份恢复/重置」入口（写侧此时已被 corrupt-guard 拒绝）。
  */
 export async function listCandidates(uid: string): Promise<CandidatesData> {
   if (!safeId(uid)) throw new Error('invalid uid');
+  let candidates: CandidateUpdate[] = [];
+  let corrupt: CandidatesData['corrupt'];
+  try {
+    candidates = readCandidates(uid);
+  } catch (err) {
+    if (!(err instanceof CorruptFileError)) throw err;
+    corrupt = { reason: err.record.reason, at: err.record.at };
+  }
   return {
-    candidate_updates: readCandidates(uid),
+    candidate_updates: candidates,
     blocked_items: readBlockedItems(uid),
+    ...(corrupt ? { corrupt } : {}),
   };
 }
 
@@ -458,89 +554,10 @@ export async function addCandidate(
   return { ok: true, candidate, candidates };
 }
 
-/** onboarding 抽取产物 → 候选池的最小映射。抽取层用的是 `ExtractionCandidate`
- *  （judgment/summary/suggestedType/suggestedScope/uncertainty），候选池用的是
- *  `CandidateUpdate`。这里做一次忠实转换，不臆造任何字段：
- *  - suggestedType → kind + memory_scope：
- *      personal     → preference / user   （个人偏好进 USER.md）
- *      rule         → rule       / shared （通用规则进 MEMORY.md）
- *      template     → instance   / user   （实例化信息，个人画像）
- *      skill_method → rule       / shared （可复用做法，当规则记）
- *  - judgment → memory_text（确认后真正写进记忆的文本）；summary 回退用 judgment
- *  - confidence 一律 'low'：onboarding 首轮抽取未经用户核对，进池等确认，不冒充高置信
- *  - source_memory_refs 置空：onboarding 没有可回指的既有记忆条目 */
-type OnboardingCandidate = {
-  judgment: string;
-  summary?: string;
-  suggestedType: 'personal' | 'rule' | 'template' | 'skill_method';
-  suggestedScope?: string;
-  uncertainty?: string;
-};
-
-function mapOnboardingType(
-  t: OnboardingCandidate['suggestedType'],
-): { kind: CandidateKind; scope: MemoryTargetScope } {
-  switch (t) {
-    case 'personal':
-      return { kind: 'preference', scope: 'user' };
-    case 'rule':
-      return { kind: 'rule', scope: 'shared' };
-    case 'template':
-      return { kind: 'instance', scope: 'user' };
-    case 'skill_method':
-      return { kind: 'rule', scope: 'shared' };
-    default:
-      return { kind: 'instance', scope: 'user' };
-  }
-}
-
-/**
- * 把 onboarding 抽取出的候选批量写入候选池（不确认、不落记忆——只是进池等
- * 用户在第 4 步勾选后再走 `confirmCandidate`）。返回实际写入的 candidate_id 列表，
- * 供前端记录「哪些进了池」，勾选确认时按 id 调 `confirmCandidate`。
- *
- * 忠实约束：judgment 为空的条目直接跳过（不编造摘要）；candidate_id 不含空白
- * （解析器用 `### <id>` 且 id 匹配 `\S+`），用时间戳+序号+随机后缀保证唯一。
- */
-export async function addCandidates(
-  uid: string,
-  candidates: OnboardingCandidate[],
-): Promise<{ candidate_ids: string[] }> {
-  if (!safeId(uid)) throw new Error('invalid uid');
-  const incoming = Array.isArray(candidates) ? candidates : [];
-  if (!incoming.length) return { candidate_ids: [] };
-
-  const existing = readCandidates(uid);
-  const written: string[] = [];
-  const stamp = Date.now();
-  let seq = 0;
-
-  for (const c of incoming) {
-    const judgment = typeof c?.judgment === 'string' ? c.judgment.trim() : '';
-    if (!judgment) continue; // 无正文不入池，绝不编造
-    const { kind, scope } = mapOnboardingType(c.suggestedType);
-    const summary = (typeof c.summary === 'string' && c.summary.trim()) || judgment;
-    const rand = Math.random().toString(36).slice(2, 8);
-    const candidateId = `ob-${stamp}-${seq++}-${rand}`;
-    existing.push({
-      candidate_id: candidateId,
-      kind,
-      confidence: 'low',
-      summary,
-      memory_scope: scope,
-      memory_text: judgment,
-      ...(typeof c.uncertainty === 'string' && c.uncertainty.trim()
-        ? { diff_summary: c.uncertainty.trim() }
-        : {}),
-      source_memory_refs: [],
-    });
-    written.push(candidateId);
-  }
-
-  if (written.length) writeCandidates(uid, existing);
-  log.info('onboarding candidates added to pool', { uid, added: written.length });
-  return { candidate_ids: written };
-}
+/** P-r1-31：onboarding 批量入池函数 addCandidates（连同其私有映射
+ *  OnboardingCandidate / mapOnboardingType）已删——生产零调用，注释描述的
+ *  onboarding 第 4 步流程不存在；单条入池走 addCandidate（回流线
+ *  ontology-backflow 也用它）。 */
 
 /**
  * 判断 groupId 是否模板文件组（阶段 D：台账带 template_id 且文件携带
@@ -722,9 +739,16 @@ async function writeCandidateToDestinations(
           if (tpl) { roleTemplateId = tpl.template_id; break; }
         }
       }
+      // P-r2-11：shared MEMORY.md 的确认写入必须走事务通道（与整文件回滚
+      // 互斥，裸写会被并发事务的回滚整段抹掉）；USER.md / 模板独立文件不跨
+      // cognition 事务，保持直写。只包全局记忆写这一段——本函数后续的分组
+      // 写入会拿组文件锁，不得在持有 memory 事务时再拿组锁（锁序固定为
+      // 组锁 → memory 事务，反向嵌套会死锁）。
       const res = roleTemplateId
         ? addRoleTemplateMemoryEntry(uid, target, roleTemplateId, text)
-        : addMemoryEntry(uid, target, text);
+        : target === 'memory'
+          ? await addEntryTransactional(uid, 'memory', text)
+          : addMemoryEntry(uid, target, text);
       result.globalMemory = { ok: res.ok, ...(res.error ? { error: res.error } : {}) };
       if (res.ok) anySucceeded = true;
       else log.warn('candidate global-memory write blocked', { uid, candidateId: candidate.candidate_id, error: res.error });
@@ -1006,6 +1030,36 @@ export async function rejectCandidates(uid: string, candidateIds: string[], reas
   if (rejectedCount > 0) {
     writeCandidates(uid, remaining);
     log.info('candidates batch rejected', { uid, rejectedCount, reason });
+  }
+
+  return { ok: true, rejectedCount };
+}
+
+/**
+ * 按记忆文本驳回（P-r1-29 兜存量）：purge 级联里，带资产正文全文的回流
+ * 候选不止 `asset-backflow-<assetId>` 一条 id——回流池满、id 之外的历史
+ * 投放都可能留下同文 pending 候选，确认即复活已 purge 的正文。这里把
+ * memory_text 与给定正文全文相等（拍平空白后）的候选一并驳回。
+ *
+ * 只做全文相等，不做包含匹配：包含会把用户自己的相近记忆一起清掉。
+ * 空文本直接返回——空串与任何候选都不该匹配。
+ */
+export async function rejectCandidatesByText(
+  uid: string,
+  text: string,
+  reason?: string,
+): Promise<{ ok: boolean; rejectedCount: number }> {
+  if (!safeId(uid)) throw new Error('invalid uid');
+  const needle = flattenInline(text);
+  if (!needle) return { ok: true, rejectedCount: 0 };
+
+  const candidates = readCandidates(uid);
+  const remaining = candidates.filter(c => flattenInline(c.memory_text) !== needle);
+  const rejectedCount = candidates.length - remaining.length;
+
+  if (rejectedCount > 0) {
+    writeCandidates(uid, remaining);
+    log.info('candidates rejected by text match (purge cascade)', { uid, rejectedCount, reason });
   }
 
   return { ok: true, rejectedCount };

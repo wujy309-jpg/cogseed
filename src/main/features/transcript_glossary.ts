@@ -31,6 +31,7 @@ import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 import { userTranscriptGlossaryFile } from '../paths';
 import { createLogger } from '../logger';
+import { assertNotCorrupt } from '../util/corrupt-guard';
 
 const log = createLogger('transcript_glossary');
 
@@ -321,6 +322,11 @@ export function emptyGlossary(uid: string): GlossaryFile {
   return { version: GLOSSARY_VERSION, uid, entries: [], meta: { lastReconcileAt: 0, ownerNote: '' } };
 }
 
+// 坏档三件套·词表接线说明（P-r1-88，2026-10-01 b2 曾落地后回滚）：读侧
+// 结构化错误（readTextGuarded + 抛 CorruptFileError）曾与既有契约测试
+// 「JSON 损坏 → 降级空表且不抛错」直接冲突并致门禁新增失败，读侧已按
+// 回滚令恢复降级空表行为；saveGlossary 的 assertNotCorrupt 写侧门保留
+// （词表 latch 无读侧登记入口，恒放行，行为与基线一致）。
 export function loadGlossary(userId: string): GlossaryFile {
   const file = userTranscriptGlossaryFile(userId);
   let raw: unknown;
@@ -434,6 +440,8 @@ function normalizeScope(v: unknown): GlossaryScope {
 
 export function saveGlossary(userId: string, file: GlossaryFile): void {
   const target = userTranscriptGlossaryFile(userId);
+  // 坏档三件套·写侧门：登记在案即拒绝（备份被移走不影响判定；恢复/重置后才可写）。
+  assertNotCorrupt(target);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   const payload: GlossaryFile = {
     version: GLOSSARY_VERSION,
@@ -643,9 +651,17 @@ export function setQueryRewrite(userId: string, enabled: boolean): boolean {
   return enabled === true;
 }
 
-/** 读取开关状态（缺省 false）。 */
+/** 读取开关状态（缺省 false）。词表坏档时按 false 降级——改写依赖词表，
+ *  词表不可用就不改写，不把坏档故障放大到检索路径。 */
 export function isQueryRewriteEnabled(userId: string): boolean {
-  return loadGlossary(userId).meta.queryRewrite === true;
+  try {
+    return loadGlossary(userId).meta.queryRewrite === true;
+  } catch (err) {
+    log.warn('glossary corrupt/unreadable; query rewrite disabled', {
+      error: (err as Error).message,
+    });
+    return false;
+  }
 }
 
 /**
@@ -912,6 +928,10 @@ export function importGlossary(
   if (!Array.isArray(list)) throw new Error('transcript glossary: payload.entries must be an array');
   const mode = opts.mode === 'replace' ? 'replace' : 'merge';
   if (mode === 'replace') {
+    // 坏档三件套收口：replace 是词表唯一「先写后读」的路径（直接落空表），
+    // 先走一次 loadGlossary 探测——坏档时它会拒（备份+登记），下面的清空
+    // 保存随之被写侧门拒绝，不会把坏档静默覆盖成空表。
+    loadGlossary(userId);
     const empty = emptyGlossary(userId);
     saveGlossary(userId, empty);
   }

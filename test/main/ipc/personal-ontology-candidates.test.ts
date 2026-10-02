@@ -45,13 +45,12 @@ function call(channel: string, payload: unknown = {}) {
 
 describe('ipc › personal ontology templates', () => {
   it('re-exposes single-item candidate channels for backflow confirmation while keeping batch channels retired', async () => {
-    // 2026-09-20 本体分组迁入：回流候选的确认端需要 list/confirm/reject 三个
-    // 单条通道——旧候选审核面板退役时的「全禁」约束随之收窄（防的是面板复活，
-    // 不是防回流确认这个窄入口）。批量与 onboarding 通道保持退役。
+    // 2026-09-20 本体分组迁入时回流确认端用过 list/confirm/reject 三个单条
+    // 通道；2026-09-29 v2 界面改走 po.candidates.confirm / po.candidates.reject
+    // （同一服务函数），老 confirm/reject 变渲染层零调用——P-r1-64（2026-10-01
+    // 拍板按前遍结论）随死通道批次退役，list 保留（渲染层候选横幅在读）。
     const liveChannels = [
       'personalOntology.candidates.list',
-      'personalOntology.candidates.confirm',
-      'personalOntology.candidates.reject',
     ];
     for (const channel of liveChannels) {
       const res = await call(channel);
@@ -59,6 +58,8 @@ describe('ipc › personal ontology templates', () => {
     }
 
     const retiredChannels = [
+      'personalOntology.candidates.confirm',
+      'personalOntology.candidates.reject',
       'personalOntology.candidates.confirmBatch',
       'personalOntology.candidates.rejectBatch',
       'personalOntology.candidates.addFromOnboarding',

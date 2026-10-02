@@ -5,8 +5,9 @@
  * 但只「提议」不「写入」：投进本体候选池等用户确认（update change set 的
  * 提议半段），未确认候选不可被用是硬红线。
  *
- * 映射照 personal_ontology_candidates 的 mapOnboardingType 先例（onboarding
- * 抽取 → 候选池的同一条路），保证仍需本体判断的类型形状一致：
+ * 类型映射沿用「onboarding 抽取 → 候选池」既定的形状约定（原参考实现
+ * mapOnboardingType 已随批量入池函数退役删除，P-r1-31），保证仍需本体
+ * 判断的类型形状一致：
  *   personal → 不回流（个人资产已经是“我的认知”的权威记录；再建本体候选会
  *              让用户重复确认，并留下无法跟随编辑/暂停的第二份值）
  *   rule     → rule       / shared （操作规则，R-Box 规则形状）

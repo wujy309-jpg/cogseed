@@ -13,8 +13,6 @@
  */
 
 import * as fs from 'node:fs';
-import * as path from 'node:path';
-import { userOntologyGroupsDir } from '../paths';
 import { nowIso, safeId } from '../storage';
 import { ENTRY_SEPARATOR } from './memory';
 import { getRoleTemplate } from './role_templates';
@@ -24,17 +22,13 @@ import {
   editPoDoc,
   listPoGroupHistory,
   loadPoDocSync,
-  poDocPath,
   readPoGroupAudit,
   readPoGroupSnapshot,
-  syncRenderForRelPath,
-  dropRenderForRelPath,
-  writePoGroupSnapshot,
   type PoAuditLine,
   type PoAuditOpts,
   type PoHistoryEntry,
 } from './po/store';
-import type { PoDocument, PoEntry, PoField, PoGroup, PoValue } from './po/model';
+import type { PoEntry, PoField, PoGroup, PoValue } from './po/model';
 import { sanitizePoText } from './po/model';
 import { poGroupRelPath, poGroupToMeta } from './po/view';
 
@@ -78,11 +72,9 @@ import type {
   GroupMeta,
 } from './po/dialect';
 import {
-  isTemplateFileText,
   normalizeSource,
   parseFieldValueLine,
   parseGroupContent,
-  parseTemplateContent,
   resolveAsOfControl,
   serializeFieldValueLine,
   summarizeFieldValue,
@@ -423,6 +415,8 @@ export async function setFieldValueVerified(
     if (!field) return ctx.fail('field value not found');
     const targets = group.values.filter((v) => v.fieldId === field.id && v.text === val);
     if (!targets.length) return ctx.fail('field value not found');
+    // P-r1-28：资产投影值的核实档归来源资产管（与 setFieldValue/removeFieldValue 同款守卫）。
+    if (targets.some((v) => v.assetId)) return ctx.fail('asset_projection_read_only');
     const next: boolean | 'independent' | undefined = level === false ? undefined : level;
     let changed = false;
     for (const v of targets) {
@@ -456,6 +450,8 @@ export async function cycleFieldValueRuleKind(
     if (!field) return ctx.fail('field value not found');
     const targets = group.values.filter((v) => v.fieldId === field.id && v.text === val);
     if (!targets.length) return ctx.fail('field value not found');
+    // P-r1-28：资产投影值的规则分类归来源资产管（同款守卫）。
+    if (targets.some((v) => v.assetId)) return ctx.fail('asset_projection_read_only');
     let changed = false;
     for (const v of targets) {
       const idx = ORDER.indexOf(v.ruleKind);
@@ -489,6 +485,9 @@ export async function setFieldValueSensitivity(
     if (!field) return ctx.fail('field value not found');
     const targets = group.values.filter((v) => v.fieldId === field.id && v.text === val);
     if (!targets.length) return ctx.fail('field value not found');
+    // P-r1-28：资产投影值的敏感性标记有安全语义，同样归来源资产管（同款守卫）。
+    // 字段级的 restricted 判定逻辑（ontology-rules / projection-knowledge）不受影响。
+    if (targets.some((v) => v.assetId)) return ctx.fail('asset_projection_read_only');
     let changed = false;
     for (const v of targets) {
       const next = restricted;
@@ -680,65 +679,9 @@ export async function listGroupFields(uid: string, groupId: string): Promise<Lis
 }
 
 // ── 历史 / 回收站 / 恢复 ─────────────────────────────────────────────────
-
-/** 兼容导出：v1 签名是 (uid, groupId, text)。新存储快照存整组状态，这里把
- *  text 解析回组状态再留档（与 v1 快照迁移同一条转换路径）。 */
-export function snapshotGroupHistory(uid: string, groupId: string, text: string): void {
-  try {
-    if (!String(text ?? '').trim()) return;
-    const doc = loadPoDocSync(uid);
-    const live = doc.groups.find((g) => g.id === groupId);
-    const parsed = parseGroupContentForSnapshot(text);
-    let before = parsed;
-    if (live) {
-      // 只替换内容部分（快照语义：该组内容的前一版）。
-      before = JSON.parse(JSON.stringify(live)) as PoGroup;
-      before.fields = parsed.fields;
-      before.values = parsed.values;
-      before.entries = parsed.entries;
-    }
-    writePoGroupSnapshot(uid, groupId, before);
-  } catch (err) { console.error('[PO-COMPAT-DEBUG]', (err as Error).message); }
-}
-
-/** 从方言文本重建一份带 id 的组状态（快照/迁移共用形状）。 */
-function parseGroupContentForSnapshot(text: string): PoGroup {
-  const now = nowIso();
-  const group: PoGroup = {
-    id: '',
-    title: '',
-    kind: isTemplateFileText(text) ? 'template' : 'user',
-    fields: [],
-    values: [],
-    entries: [],
-    createdAt: now,
-    updatedAt: now,
-  };
-  if (group.kind === 'template') {
-    const content = parseTemplateContent(text);
-    group.title = content.title;
-    group.templateId = content.template_id;
-    group.templateVersion = content.version;
-    group.installedAt = content.installed_at || undefined;
-    for (const section of content.sections) {
-      for (const name of Object.keys(section.fields)) {
-        const field: PoField = { id: `f${Math.random().toString(16).slice(2, 10)}`, name, origin: 'schema', section: section.title, createdAt: now };
-        group.fields.push(field);
-        for (const fv of section.fields[name]) group.values.push({ ...poLineToValue(fv, field.id), createdAt: now, updatedAt: now });
-      }
-      for (const t of section.flowEntries) group.entries.push({ id: `e${Math.random().toString(16).slice(2, 10)}`, text: t, section: section.title, createdAt: now });
-    }
-    return group;
-  }
-  const content = parseGroupContent(text);
-  for (const name of Object.keys(content.fields)) {
-    const field: PoField = { id: `f${Math.random().toString(16).slice(2, 10)}`, name, origin: 'user', createdAt: now };
-    group.fields.push(field);
-    for (const fv of content.fields[name]) group.values.push({ ...poLineToValue(fv, field.id), createdAt: now, updatedAt: now });
-  }
-  for (const t of content.entries) group.entries.push({ id: `e${Math.random().toString(16).slice(2, 10)}`, text: t, createdAt: now });
-  return group;
-}
+// （P-r1-30：v1 按文本留档的兼容导出 snapshotGroupHistory 与其私有解析器
+//  parseGroupContentForSnapshot 已删——生产零调用；写前留档统一走 store 的
+//  writePoGroupSnapshot（整组状态），不再有「方言文本→组状态」的旁路。）
 
 export function listGroupHistory(uid: string, groupId: string): GroupHistoryEntry[] {
   return listPoGroupHistory(uid, groupId);
@@ -823,38 +766,11 @@ export function readGroupAudit(uid: string, groupId: string): OntologyAuditLine[
   return readPoGroupAudit(uid, groupId);
 }
 
-/** 重刷一个组的渲染副本 + 收进 kb 索引（旧导出语义保留）。 */
-export function notifyGroupUpserted(uid: string, relPath: string): void {
-  try {
-    syncRenderForRelPath(uid, relPath);
-  } catch (err) {
-    log.warn('kb reindex hook failed on group upsert', { error: (err as Error).message });
-  }
-}
-
-/** 删渲染副本 + 踢出 kb 索引（旧导出语义保留）。 */
-export function notifyGroupDeleted(uid: string, relPath: string): void {
-  try {
-    dropRenderForRelPath(uid, relPath);
-  } catch (err) {
-    log.warn('kb reindex hook failed on group delete', { error: (err as Error).message });
-  }
-}
-
-/** 组内容文件绝对路径（IPC 层 / chat-use 读原文用；防御纵深同 v1）。 */
-export function resolveGroupContentAbsPathForUser(uid: string, groupId: string): string {
-  if (!safeId(groupId)) throw new Error('invalid group id');
-  const root = path.resolve(userOntologyGroupsDir(uid));
-  const abs = path.resolve(root, `${groupId}.md`);
-  const rel = path.relative(root, abs);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) throw new Error('path escapes ontology groups root');
-  return abs;
-}
-
-/** 文档路径暴露（诊断/测试用）。 */
-export function ontologyDocPathForUser(uid: string): string {
-  return poDocPath(uid);
-}
+// （P-r2-8，2026-10-02）v1 兼容导出 notifyGroupUpserted / notifyGroupDeleted 已删：
+// 生产零消费（2026-09-29 重构后写路径在 po/store.ts 内部经 touch/markRemoved
+// 驱动渲染副本，不再需要外部 notify），po/store 的 syncRenderForRelPath /
+// dropRenderForRelPath 作为其唯一消费链一并删除；导出面由
+// personal_ontology_groups_surface.test.ts 钉住防回流。
 
 // 兼容：v1 的 ENTRY_SEPARATOR 再导出（模板文件流水分隔符）。
 export { ENTRY_SEPARATOR };

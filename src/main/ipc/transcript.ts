@@ -872,10 +872,26 @@ export const invokeHandlers = {
     // T029 抑制读口、data-model §1.5 同构）；idempotencyKey 含 runId（缺省本次 run；
     // 重试同一动作传 receiptRunId 复用原 key）——同动作重试命中幂等分支返回既有
     // 决定，不产生第二条。decision_type === 'reject' ⇒ 末条判定为抑制 ⇒ T029 生效。
+    // 【P-r1-67】幂等跳过（与 unreject 通道对称）：渲染层的 rejected 集合是跨轮
+    // 回执账本（T030 有意设计，apply 不清空），每次「生成清理版」都会全量重发
+    // rejectedIds——幂等键含 runId 而 apply 每次都新 run，键必不同 ⇒ 旧实现每
+    // apply 一轮就给同一条被拒形态追加一条重复 reject 回执（账本膨胀、unreject
+    // 只认末条、指标侧拒绝计数虚高）。末条判定已是抑制态时跳过写入，receipts
+    // 回填既有末条决定 id（渲染层拿到的 receipt 指针不变）；判据与 unreject 的
+    // isCandidateSuppressed 前置判断同一口径，不新写第二套。
     const receipts: Array<{ entryRef: string; decisionId: string }> = [];
     for (const entryRef of rejectedSet) {
+      const targetRef = `meeting:${docId}:${entryRef}`;
+      if (await isCandidateSuppressed(ctx.userId, targetRef)) {
+        const decisions = await listReviewDecisions(ctx.userId, targetRef);
+        const last = decisions[decisions.length - 1];
+        if (last) {
+          receipts.push({ entryRef, decisionId: last.decision_id });
+          continue;
+        }
+      }
       const decision = await writeReviewDecision(ctx.userId, {
-        targetRef: `meeting:${docId}:${entryRef}`,
+        targetRef,
         decisionType: 'reject',
         decision: 'reject',
         actor: 'user',

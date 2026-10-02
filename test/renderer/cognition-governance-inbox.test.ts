@@ -86,10 +86,10 @@ function ensureModule(): { cogAssets: Record<string, unknown>; domRoot: { innerH
   return { cogAssets, domRoot };
 }
 
-function renderPage(routeName: string, storePatch: Record<string, unknown>): string {
+function renderPage(routeName: string, storePatch: Record<string, unknown>, routePatch: Record<string, string> = {}): string {
   const { cogAssets: NS, domRoot: rootEl } = ensureModule();
   Object.assign(NS.store as Record<string, unknown>, storePatch);
-  (NS.store as Record<string, unknown>).route = { name: routeName, category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '' };
+  (NS.store as Record<string, unknown>).route = { name: routeName, category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', ...routePatch };
   rootEl.innerHTML = '';
   (NS.render as () => void)();
   return rootEl.innerHTML;
@@ -220,5 +220,52 @@ describe('治理待办分组区（specs/010 T014~T016；2026-09-28 收窄后）'
     expect((html.match(/没有需要你确认的事项。/g) || []).length).toBe(1);
     expect(html).not.toContain('冲突与重复');
     expect(html).not.toContain('其他待处理');
+  });
+
+  it('F-r3-1：治理待办读取失败如实呈现失败态，不冒充「没有要确认的事项」', () => {
+    const html = renderPage('review', { inbox: [], inboxGroups: null, inboxError: 'inbox list unavailable' });
+    // 失败说明（分区级，不挡整页）：说清是「没读到」，别的分区照常。
+    const errAt = html.indexOf('待确认清单没能读取');
+    expect(errAt).toBeGreaterThan(-1);
+    expect(html).toContain('其他分区不受影响');
+    // 错误块自带重试（refresh 全量重读所有区块，含 inbox）。
+    expect(html.slice(errAt, errAt + 2000)).toContain('data-act="refresh"');
+    // 不得落 allQuiet 空态——「清单没读到」≠「没有需要你确认的事项」。
+    expect(html).not.toContain('没有需要你确认的事项。');
+    // 也不冒充降级扁平清单小节（失败时 groups 置 null 但不渲染清单）。
+    expect(html).not.toMatch(/<div class="tt">待确认清单/);
+    // 分区级：错误块挂在「要你拍板」分区内，页面骨架（页头）照常。
+    expect(errAt).toBeGreaterThan(html.indexOf('ca-review-decide'));
+    expect(html).toContain('要你拍板');
+  });
+
+  it('P-r1-58：候选深链 + 清单读失败 ⇒ 先报读失败并给重试，不伪装「这条建议已不在待处理列表中」', () => {
+    // 旧顺序：route.candidateId 先短路进 viewCandidate，而读失败时
+    // S.candidates 恒为空 ⇒ 详情页给「这条建议已不在待处理列表中」——
+    // 「没读到」被伪装成「不存在」。修后：读失败判定先于深链分支，
+    // 深链同样落到清单读失败错误态（含重试入口 retry-candidates）。
+    const html = renderPage('review', { candidates: [], candidatesError: 'load_failed' }, { candidateId: 'cand-1' });
+    expect(html).toContain('清单没能读取');
+    expect(html).toContain('data-act="retry-candidates"');
+    expect(html).not.toContain('这条建议已不在当前列表中');
+    // 对照：读成功（无错误标记）时深链照常走候选详情分支。
+    const deepLinkOk = renderPage('review', { candidates: [], candidatesError: '' }, { candidateId: 'cand-1' });
+    expect(deepLinkOk).toContain('这条建议已不在当前列表中');
+  });
+
+  it('F-r3-1：inboxError 与候选分区共存——失败只影响治理分区，不挡整页', () => {
+    // 候选空、治理失败：decide 分区因 inboxError 出现（错误块在 confirmBlocks）。
+    const html = renderPage('review', { inbox: [], inboxGroups: null, inboxError: 'load_failed' });
+    expect(html.indexOf('ca-review-decide')).toBeGreaterThan(-1);
+    // 候选在场时（pending 一条）：候选卡与治理失败块同页呈现，互不替代。
+    const withCandidate = renderPage('review', {
+      inbox: [], inboxGroups: null, inboxError: 'load_failed',
+      candidates: [{
+        id: 'cand-1', summary: '一条待确认候选', status: 'pending_review', sourceLabel: '当前会话',
+        capabilities: { countsAsPending: true, displayState: 'awaiting', canConfirm: true },
+      }],
+    });
+    expect(withCandidate).toContain('一条待确认候选');
+    expect(withCandidate).toContain('待确认清单没能读取');
   });
 });

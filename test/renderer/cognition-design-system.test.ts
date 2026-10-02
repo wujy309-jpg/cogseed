@@ -17,22 +17,19 @@ function loadPages() {
     'modules/icons.js',
     'modules/ui-button.js',
     'modules/ui-form.js',
-    'modules/ui-empty.js',
-    'modules/ui-page-header.js',
     'modules/cognition/pages.js',
   ]) {
     vm.runInContext(readFileSync(resolve(rendererRoot, file), 'utf8'), context, { filename: file });
   }
   return context.CognitionPages as {
-    renderCognitionPage: (input: Record<string, unknown>) => string;
     renderCognitionCapture: (input: Record<string, unknown>) => string;
   };
 }
 
 describe('cognition design-system integration', () => {
-  it('renders page actions, controls, headers, and empty states through shared primitives', () => {
+  it('renders capture controls through shared primitives', () => {
+    // P-r3-9：认知成长页死页族已删，本契约只覆盖保留的 capture 弹窗。
     const pages = loadPages();
-    const page = pages.renderCognitionPage({ assets: [], view: 'tree' });
     const capture = pages.renderCognitionCapture({
       state: 'ready',
       title: '名称',
@@ -44,9 +41,6 @@ describe('cognition design-system integration', () => {
       messageId: 'msg_1',
     });
 
-    expect(page).toContain('ui-page-header');
-    expect(page).toContain('ui-empty-state');
-    expect(page).toContain('ui-button');
     expect(capture).toContain('ui-modal ui-modal--md');
     expect(capture).toContain('ui-modal__header');
     expect(capture).toContain('ui-modal__body');
@@ -65,17 +59,16 @@ describe('cognition design-system integration', () => {
   });
 
   it('keeps only composite or semantic native controls outside shared factories', () => {
-    expect((pagesSource.match(/<(?:button|input|textarea|select)\b/gi) || [])).toHaveLength(5);
-    expect(pagesSource).toContain('class="cognition-tab');
-    expect(pagesSource).toContain('class="cognition-asset-row');
+    // 死页族删除后 pages.js 只剩 capture 模板：字面原生控件只剩归类的
+    // <select>（P-r1-50：两个隐藏域已随死 DOM 删除，hidden 计数为 0）。
+    expect((pagesSource.match(/<(?:button|input|textarea|select)\b/gi) || [])).toHaveLength(1);
     expect(pagesSource).toContain('<select class="ui-control"');
-    expect((pagesSource.match(/<input type="hidden"/g) || [])).toHaveLength(2);
+    expect((pagesSource.match(/<input type="hidden"/g) || [])).toHaveLength(0);
   });
 
   it('does not restore page-local modal or control skins over shared components', () => {
     expect(rendererCss).not.toContain('.cognition-capture-actions .btn');
     expect(rendererCss).not.toContain('.cognition-capture-body input, .cognition-capture-body textarea');
     expect(rendererCss).not.toMatch(/\.cognition-capture-modal\s*\{[^}]*border-radius/);
-    expect(rendererCss).toContain('.cognition-header > .ui-page-header');
   });
 });

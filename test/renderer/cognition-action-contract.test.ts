@@ -53,6 +53,27 @@ function referencedActs(): Set<string> {
   return acts;
 }
 
+/** personal-ontology.js 实际发起调用的 IPC 通道:只认 _pocInvoke('x') /
+ *  _pocGroupAction('x') 的字面量首参调用语法,且**先剥注释再匹配**——对齐
+ *  handledActs/referencedActs 的语法锚定惯例(P-r3-35:原 `ontology.includes
+ *  ("'act'")` 是裸文本匹配,调用点被删但通道名残留注释时守卫照绿,是潜在盲区;
+ *  通道名出现在注释里不算落地)。剥除误差方向宁红勿绿:误剥只会让守卫更早红。 */
+function poCalledChannelsIn(source: string): Set<string> {
+  // 块注释整体剥;以 // 开头的行整行剥(行中段 // 不动——URL 字符串里 // 前有
+  // 冒号,粗暴截断会误伤真实代码)。
+  const codeOnly = source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('//'))
+    .join('\n');
+  const channels = new Set<string>();
+  for (const m of codeOnly.matchAll(/\b_poc(?:Invoke|GroupAction)\(\s*'([a-zA-Z0-9.]+)'/g)) channels.add(m[1]);
+  return channels;
+}
+function poCalledChannels(): Set<string> {
+  return poCalledChannelsIn(ontology);
+}
+
 const writeActionsBlock = (() => {
   const start = app.indexOf('const WRITE_ACTIONS = new Set([');
   if (start < 0) return '';
@@ -75,11 +96,22 @@ describe('认知资产动作契约', () => {
     expect(app).not.toContain('batchRunNow');
   });
 
+  it('app.js switch 的 case 名不得重复(重复时仅首个匹配执行,后续分支永不可达)', () => {
+    // 2026-10-01 修复回归:inbox-boundary-save 曾在同一 switch 出现两次,
+    // 第二分支永不可达且读的字段名与渲染层(boundary-applicable)不一致。
+    const names = [...app.matchAll(/case '([a-z0-9-]+)'/g)].map((m) => m[1]);
+    const seen = new Set<string>();
+    const dup = names.filter((name) => (seen.has(name) ? true : (seen.add(name), false)));
+    expect(dup, `app.js 存在重复 case(仅首个执行):${dup.join(', ')}`).toEqual([]);
+  });
+
   it('fixture 动作全部在目标模块落地(迁移完成的机械判据)', () => {
     const handled = handledActs();
+    // P-r3-35:personal-ontology 侧按调用语法锚定(见 poCalledChannels 注释)。
+    const poCalled = poCalledChannels();
     const missing = fixture.actions.filter((entry) => {
       if (entry.module === 'cognition-assets') return !handled.has(entry.act);
-      return !ontology.includes(`'${entry.act}'`);
+      return !poCalled.has(entry.act);
     }).map((entry) => `${entry.module}:${entry.act}`);
     expect(missing).toEqual([]);
   });
@@ -113,5 +145,32 @@ describe('app.js 委托层的 helper 引用（真机修复守卫）', () => {
     const bare = [...app.matchAll(/(?<!NS\.)\bconfirmUser\s*\(/g)];
     expect(bare.map((m) => m[0]), `app.js 存在裸 confirmUser 调用（真机会 ReferenceError）：${bare.length} 处`).toHaveLength(0);
     expect(app).toContain('NS.confirmUser');
+  });
+});
+
+/* ═══════════ P-r3-35 盲区守卫的回归钉 ═══════════
+ * 本条修的盲区:调用点被删(整行注释掉)但通道名残留注释时,原裸 includes
+ * 断言照绿。落地断言已改为「剥注释 + 调用语法锚定」(poCalledChannels),此处
+ * 用受控样本钉住剥离行为本身——未来若有人把剥注释逻辑简化掉(退回裸正则),
+ * 这里先红。mutation 验证记录见 reports/认知资产质检循环-20260930/wo-b8-err-hot.md。 */
+describe('poCalledChannels 注释剥离（P-r3-35 回归钉）', () => {
+  it('注释里的 _pocInvoke 调用形态不算落地,真实调用点才算', () => {
+    const sample = [
+      "    const res = await _pocInvoke('po.real.channel', { groupId: 'g' });",
+      "    // const dead = await _pocInvoke('po.line.commented', { groupId: 'g' });",
+      '    /* const dead2 = await _pocInvoke(\'po.block.commented\', {}); */',
+      "    const act = await _pocGroupAction('po.real.groupAction', { groupId: 'g' });",
+      "    // _pocGroupAction('po.groupAction.commented', {})",
+    ].join('\n');
+    const channels = poCalledChannelsIn(sample);
+    expect([...channels].sort()).toEqual(['po.real.channel', 'po.real.groupAction']);
+  });
+
+  it('行中段 // 不截断:URL 里的双斜杠不算注释开头(剥除误伤会让守卫假红)', () => {
+    const sample = [
+      "    const url = 'https://example.com/x';",
+      "    const res = await _pocInvoke('po.after.url', {});",
+    ].join('\n');
+    expect([...poCalledChannelsIn(sample)]).toEqual(['po.after.url']);
   });
 });

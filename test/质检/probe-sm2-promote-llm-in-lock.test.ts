@@ -70,7 +70,7 @@ afterEach(() => {
 });
 
 describe('probe-sm2 › promote 锁内 LLM 起标题', () => {
-  it('suggestAbilityAssetTitle 执行期间候选记录锁被 promote 持有（150ms 探测超时）', async () => {
+  it('【已修 P-r2-17】suggestAbilityAssetTitle 执行期间候选记录锁空闲（标题已在锁外预计算）', async () => {
     const candidates = await import('../../src/main/features/recall/candidate-service');
     // summary 与 judgment 首字相同 → prefix_overlap 不合规 → 走 LLM 兜底链。
     const candidate = await candidates.saveRecallCandidate(UID, {
@@ -87,9 +87,10 @@ describe('probe-sm2 › promote 锁内 LLM 起标题', () => {
 
     const promoted = await candidates.promoteRecallCandidate(UID, candidate.id, { actor: 'user' });
 
-    // promote 全链成功（mock 标题生效），且锁探测证明 LLM 调用发生在锁内。
+    // P-r2-17 修复后：起标题（LLM）在所有锁之外预计算（锁内仅当正文与预计算
+    // 依据一致时沿用预计算标题），探测应能立即拿到候选记录锁。
     expect(promoted.candidate.status).toBe('confirmed');
     expect(promoted.asset.title).toBe('模型重起的样本标题');
-    expect(probe.lockHeldDuringLlm).toBe(true);
+    expect(probe.lockHeldDuringLlm).toBe(false);
   });
 });

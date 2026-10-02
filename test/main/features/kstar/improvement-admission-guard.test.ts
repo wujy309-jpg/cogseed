@@ -38,6 +38,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createAssetStewardTools } from '../../../../src/main/model/core-agent/asset-steward-tools';
 import { createPersonalOntologyTools } from '../../../../src/main/model/core-agent/personal-ontology-tools';
+import { createCognitionKernelTools } from '../../../../src/main/model/core-agent/cognition-kernel-tools';
 import { createRecallTools } from '../../../../src/main/model/core-agent/recall-tools';
 import { createExperienceTools } from '../../../../src/main/model/core-agent/experience-tools';
 import { TOOL_CATALOG } from '../../../../src/main/model/core-agent/tool-catalog';
@@ -523,9 +524,15 @@ describe('T046 ④ tool-catalog recall 组工具面受控扩展', () => {
    * personal-ontology-tools.test.ts，本基线随树重算补登记。
    * 2026-10-03 +1：ontology_query（受治理的能力资产关系查询）——只返回
    * 关系证据与元数据，不读取资产正文；工厂、catalog 和专项测试同步登记。
+   * 2026-10-02 +2：personal_fields_check（只读）/ personal_field_remember（写，
+   * 带用户原话凭证约束）——本体总线 S2「缺值改对话提问、回填后不再问」的
+   * owner 拍板设计，工厂（cognition-kernel-tools）与 catalog 双侧注册，
+   * 行为测试在 test/main/features/cognition_kernel/。
    */
   const RECALL_GROUP_BASELINE = [
     'personal_ontology_fields',
+    'personal_fields_check',
+    'personal_field_remember',
     'search_ability_assets',
     'ontology_query',
     'list_task_experiences',
@@ -554,6 +561,7 @@ describe('T046 ④ tool-catalog recall 组工具面受控扩展', () => {
         ...createAssetStewardTools({ userId: 'admission-guard' }),
         ...createPersonalOntologyTools({ userId: 'admission-guard' }),
         ...createExperienceTools({ userId: 'admission-guard' }),
+        ...createCognitionKernelTools({ userId: 'admission-guard' }),
       ].map((tool) => tool.name);
     } finally {
       vi.unstubAllEnvs();

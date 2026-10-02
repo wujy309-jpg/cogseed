@@ -135,12 +135,27 @@ function requiredBoundedId(value: unknown, field: string, maxLength: number): st
   return trimmed;
 }
 
+// slice 按 UTF-16 码元截断可能劈开代理对（emoji 等）：头部截断的末尾留下
+// 孤立高代理、尾部截断的开头留下孤立低代理，经 JSON.stringify 直接进模型
+// prompt。孤立代理必在截断边缘，砍 1 码元即愈、不引入 U+FFFD；maxLength
+// 语义不变（按码元封顶，不按码点翻倍）。同型先例：sanitizePoText（po/model.ts）、
+// semantic-review._buildPrompt。
+function dropTrailingLoneHigh(value: string): string {
+  const last = value.charCodeAt(value.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? value.slice(0, -1) : value;
+}
+
+function dropLeadingLoneLow(value: string): string {
+  const first = value.charCodeAt(0);
+  return first >= 0xdc00 && first <= 0xdfff ? value.slice(1) : value;
+}
+
 function truncateText(value: string, maxLength: number): string {
   if (value.length <= maxLength) return value;
-  if (maxLength <= 32) return value.slice(0, Math.max(0, maxLength));
+  if (maxLength <= 32) return dropTrailingLoneHigh(value.slice(0, Math.max(0, maxLength)));
   const headLength = Math.max(1, Math.floor(maxLength * 0.72));
   const tailLength = Math.max(1, maxLength - headLength - 20);
-  return `${value.slice(0, headLength)}\n[…中间内容已截断…]\n${value.slice(-tailLength)}`;
+  return `${dropTrailingLoneHigh(value.slice(0, headLength))}\n[…中间内容已截断…]\n${dropLeadingLoneLow(value.slice(-tailLength))}`;
 }
 
 function normalizeText(value: string): string {
@@ -419,8 +434,11 @@ async function loadSourceContext(userId: string, request: CognitionCaptureReques
   if (!boundedMessages.some((message) => message.anchor)) {
     throw new CognitionCaptureError('anchor_not_found', 'selected assistant reply exceeded the context boundary');
   }
-  const conversationTitle = (typeof conversation.title === 'string' ? conversation.title : conversationId)
-    .trim().slice(0, MAX_CONVERSATION_TITLE_LENGTH);
+  // 裸 slice 封顶同样可能劈开代理对，末尾砍 1 码元（同上 truncateText 治理）。
+  const conversationTitle = dropTrailingLoneHigh(
+    (typeof conversation.title === 'string' ? conversation.title : conversationId)
+      .trim().slice(0, MAX_CONVERSATION_TITLE_LENGTH),
+  );
   return {
     conversationId,
     conversationTitle: conversationTitle || conversationId,
@@ -497,6 +515,7 @@ export async function generateCognitionDraft(
 
 export const _captureDraftInternals = {
   isCopiedOnly,
+  truncateText,
   loadSourceContext,
   parseModelOutput,
   buildPrompt,

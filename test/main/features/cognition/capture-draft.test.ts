@@ -173,3 +173,81 @@ describe('cognition capture draft', () => {
     expect(context.messages.some((item) => item.anchor)).toBe(true);
   });
 });
+
+/** 检测字符串是否含未配对代理（孤立高/低代理码元）。 */
+function hasUnpairedSurrogate(text: string): boolean {
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code >= 0xD800 && code <= 0xDBFF) {
+      const next = text.charCodeAt(i + 1);
+      if (!(next >= 0xDC00 && next <= 0xDFFF)) return true;
+    } else if (code >= 0xDC00 && code <= 0xDFFF) {
+      const prev = text.charCodeAt(i - 1);
+      if (!(prev >= 0xD800 && prev <= 0xDBFF)) return true;
+    }
+  }
+  return false;
+}
+
+describe('cognition capture draft › truncation must not split surrogate pairs', () => {
+  it('short branch (maxLength <= 32): drops the lone high surrogate at the cut edge', () => {
+    // 31 个 'a' + 😀(2 码元) 共 33 码元 > 32：slice(0, 32) 的末码元恰好是
+    // 😀 的高代理 → 砍 1 码元，而不是把孤立高代理留给 JSON.stringify 进 prompt。
+    const result = _captureDraftInternals.truncateText('a'.repeat(31) + '😀', 32);
+    expect(result).toBe('a'.repeat(31));
+    expect(hasUnpairedSurrogate(result)).toBe(false);
+    expect(result).not.toContain('\uFFFD');
+  });
+
+  it('head/tail branch: drops lone high at the head edge and lone low at the tail edge', () => {
+    // maxLength=100 → headLength=72、tailLength=8。
+    // head：'a'×71 后紧跟 😀 → slice(0, 72) 末尾是孤立高代理，砍 1。
+    const headCase = _captureDraftInternals.truncateText('a'.repeat(71) + '😀' + 'b'.repeat(60), 100);
+    expect(hasUnpairedSurrogate(headCase)).toBe(false);
+    expect(headCase.startsWith('a'.repeat(71))).toBe(true);
+    expect(headCase).not.toContain('\uFFFD');
+    // tail：末 9 码元是 [高,低,'y'×7] → slice(-8) 开头是孤立低代理，砍 1。
+    const tailCase = _captureDraftInternals.truncateText('x'.repeat(120) + '😀' + 'y'.repeat(7), 100);
+    expect(hasUnpairedSurrogate(tailCase)).toBe(false);
+    expect(tailCase.endsWith('y'.repeat(7))).toBe(true);
+    expect(tailCase).not.toContain('\uFFFD');
+  });
+
+  it('code-unit cap semantics unchanged when no pair is split', () => {
+    // 不劈开代理对时短分支仍恰为 maxLength 码元：按码元封顶，不按码点翻倍。
+    const intact = _captureDraftInternals.truncateText('a'.repeat(40), 32);
+    expect(intact).toBe('a'.repeat(32));
+  });
+
+  it('conversation title cap drops the lone trailing high surrogate too', async () => {
+    chatMock.getConversation.mockResolvedValue({
+      conversation_id: 'conv_1',
+      title: 't'.repeat(159) + '😀',
+    });
+    const context = await _captureDraftInternals.loadSourceContext('user_1', {
+      conversationId: 'conv_1',
+      messageId: 'msg_2',
+    });
+    expect(context.conversationTitle).toBe('t'.repeat(159));
+    expect(hasUnpairedSurrogate(context.conversationTitle)).toBe(false);
+  });
+
+  it('deterministic fuzz: truncated output never keeps a lone surrogate', () => {
+    // 可复现 LCG 随机串（仅 ASCII 与完整代理对，输入自身干净）跨三个截断
+    // 分支扫描，输出必须同样干净（砍 1、绝不引入 U+FFFD）。
+    let seed = 0x2f6e1b5;
+    const randomUnit = () => {
+      seed = (Math.imul(seed, 48271) + 11) % 0x7fffffff;
+      return seed % 3 === 0 ? '😀' : String.fromCharCode(97 + (seed % 26));
+    };
+    for (let i = 0; i < 2_000; i += 1) {
+      const length = 1 + (i % 300);
+      let value = '';
+      for (let j = 0; j < length; j += 1) value += randomUnit();
+      const maxLength = 1 + (i % 120);
+      const result = _captureDraftInternals.truncateText(value, maxLength);
+      expect(hasUnpairedSurrogate(result)).toBe(false);
+      expect(result).not.toContain('\uFFFD');
+    }
+  });
+});

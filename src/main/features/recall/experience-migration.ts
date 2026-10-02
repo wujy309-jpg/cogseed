@@ -19,6 +19,9 @@
  *   ④ 台账记 `assetId ↔ experienceId`（`experience-migrations` 集合，`exm-` 前缀）。
  * 任一步失败 → 该条记 `failed` 并**保持资产原状**（无半迁：经验没写成前不动
  * 资产记录；冻结副本是投影侧的幂等加法，写失败即中止、写成功也无害）。
+ * 例外（P-r1-89 迁出锁内终态复核）：③ 发现资产在窗口期内已被删除（保留期
+ * 内）时，经验条目未写的记 `skipped`(terminal_status)、已写的记 `failed`，
+ * 两种分叉都不物理删除已删资产。
  *
  * 与资产域的关系：本文件**只读调用** asset-service 的列举/读取原语；迁出用的
  * 物理删除是「同形操作」（store 没有删 JSON 记录的原语，这里按同一把文件锁
@@ -212,7 +215,7 @@ function liveSnapshotOf(asset: RecallAbilityAssetRecord): AbilityAssetVersionRec
     ...(asset.derivedFrom ? { derivedFrom: asset.derivedFrom } : {}),
     ...(asset.applicableWhen ? { applicableWhen: asset.applicableWhen } : {}),
     ...(asset.forbiddenWhen ? { forbiddenWhen: asset.forbiddenWhen } : {}),
-    ...(asset.sensitivity ? { sensitivity: asset.sensitivity } : {}),
+    // P-r1-25：sensitivity 不进版本快照（snapshot() 同形——版本流不版本化敏感性）。
     ...(asset.sourceSessionIds?.length ? { sourceSessionIds: asset.sourceSessionIds } : {}),
     status: asset.status,
     maturity: asset.maturity,
@@ -333,12 +336,34 @@ async function writeExperienceForAsset(
   });
 }
 
+/** P-r1-89 锁内复核信号：迁出窗口内资产已进终态（deleted/purged/revoked）。
+ *  调用方据「经验条目是否已写出」分叉：未写 → 记 skipped（terminal_status，
+ *  资产原状保留）；已写 → 记 failed（半迁如实可见，资产仍保留可恢复）。 */
+class AssetTerminalDuringMigrationError extends Error {
+  constructor(readonly status: string) {
+    super(`asset entered terminal status (${status}) during experience migration`);
+    this.name = 'AssetTerminalDuringMigrationError';
+  }
+}
+
 /** ③ 迁出资产库：物理删主记录（同一把文件锁，与 update 原语互斥）+ 清版本流。
  *  不清审计流（只有动作名与时间戳，是历史可考的最小项）；**绝不**碰投影里的
- *  冻结副本（那是 SC-002 的载体）。ENOENT 容忍：迁出可重入。 */
+ *  冻结副本（那是 SC-002 的载体）。ENOENT 容忍：迁出可重入。
+ *
+ *  P-r1-89 锁内终态复核：判据（migrationVerdict）到物理迁出之间隔着冻结+写
+ *  经验两段多次 await，窗口期内资产可能已被用户删除（deleted 保留期内应可
+ *  restore）。删除主记录前在同一把记录锁内重读复核终态——已删资产不迁出，
+ *  保留期承诺不被物理删除打破。 */
 async function removeAssetRecordAndVersions(userId: string, assetId: string): Promise<void> {
   const recordPath = recallJsonRecordPath(userId, 'ability-assets', assetId);
   await fileEditLock(recordPath).runExclusive(async () => {
+    const current = await readRecallJsonRecord(userId, 'ability-assets', assetId).catch(() => undefined);
+    if (current) {
+      const status = String((current as unknown as { status?: unknown }).status || '');
+      if (status === 'deleted' || status === 'purged' || status === 'revoked') {
+        throw new AssetTerminalDuringMigrationError(status);
+      }
+    }
     await fs.rm(recordPath, { force: true });
   });
   await removeRecallJsonlStream(userId, 'ability-asset-versions', assetId);
@@ -477,10 +502,29 @@ export async function runExperienceMigration(
         record.failed.push({ assetId, reason: 'experience_write_failed', error: (error as Error).message });
         continue;
       }
-      // ③ 迁出资产库（主记录 + 版本流）。
+      // ③ 迁出资产库（主记录 + 版本流）。P-r1-89：锁内复核发现资产已进终态
+      // （保留期内被删）时按卡分叉——经验条目**未写**的记 skipped（terminal_
+      // status，资产原状保留、restore 通道完好）；经验条目**已写出**的记
+      // failed（半迁如实可见，资产同样保留，复用既有 asset_removal_failed
+      // 码不加新界面码）。两种分叉都不物理删除已删资产。注：现执行序 ②恒先
+      // 于③，复核触发时经验必已写出——「未写」分支是防御位（执行序被调整或
+      // ②部分失败重排时保持口径正确）。
       try {
         await removeAssetRecordAndVersions(userId, assetId);
       } catch (error) {
+        if (error instanceof AssetTerminalDuringMigrationError) {
+          if (experienceId) {
+            record.failed.push({
+              assetId,
+              experienceId,
+              reason: 'asset_removal_failed',
+              error: `asset entered terminal status (${error.status}) after the experience entry was written; asset kept in place`,
+            });
+          } else {
+            record.skipped.push({ assetId, reason: 'terminal_status' });
+          }
+          continue;
+        }
         record.failed.push({ assetId, experienceId, reason: 'asset_removal_failed', error: (error as Error).message });
         continue;
       }

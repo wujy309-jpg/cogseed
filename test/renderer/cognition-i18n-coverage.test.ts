@@ -114,4 +114,65 @@ describe('认知域词条覆盖', () => {
       .map((locale) => `${locale}: maint_hint_short 引用的节名与 maint_review_title 不一致`);
     expect(stale).toEqual([]);
   });
+
+  it('organize_settings_hint 词条与代码兜底同口径（a69d3ea0 删手动整理入口后词条曾滞后）', () => {
+    // T() 词条命中优先于兜底：代码兜底改成「自动维护」新口径而词条仍停在
+    // 旧口径时，四语用户看到的都是旧文案——只有缺词条的语言才会走兜底。
+    // 机械门禁：zh 词条必须逐字等于 views.js 里的兜底，兜底再改而词条
+    // 不动时这里会红。外语无法逐字对比译文，退而守旧口径关键词不回潮。
+    const views = fs.readFileSync(
+      path.join(root, 'src/renderer/modules/cognition-assets/views.js'),
+      'utf8',
+    );
+    const fallback = views.match(/T\('cognition\.organize_settings_hint',\s*'([^']*)'\)/)?.[1];
+    expect(fallback).toBeTruthy();
+    expect(tables.zh['cognition.organize_settings_hint']).toBe(fallback);
+    // 手动整理入口已随 a69d3ea0 删除，任何语言不得再宣传它。
+    const staleTerms: Record<string, string> = {
+      zh: '手动整理', en: 'manual cleanup', ja: '手動整理', pt: 'manual',
+    };
+    const advertisingRemovedEntry = LOCALES
+      .filter((locale) => {
+        const text = tables[locale]['cognition.organize_settings_hint'];
+        return typeof text !== 'string' || text.includes(staleTerms[locale]);
+      })
+      .map((locale) => `${locale}: organize_settings_hint 仍宣传已删除的手动整理入口`);
+    expect(advertisingRemovedEntry).toEqual([]);
+  });
+
+  it('已删功能的死键不得回潮，仍活跃的近邻键不得误删（maint_run / cleanup / inspection 家族）', () => {
+    // a69d3ea0 删除手动整理入口后，maint_run_title / maint_run_hint /
+    // nightly_capture_hint 三个词条失去全部代码消费点（nightly_capture_hint
+    // 还停留在「检查只报告」的旧行为口径）。死词条留着会误导后续改文案的
+    // 人，机械门禁：死键四语必须不存在；真正的消费点四语必须在。
+    // F-r3-9 追加：d607b8e4「立即维护」合并删除三死 act 后，cleanup_*/inspection_*
+    // 家族 11 键 + cleanup_run_hint（无后缀版，代码只消费 cleanup_run_hint_legacy）
+    // 同型漏删，一并纳入防回潮清单。
+    const deadKeys = [
+      'cognition.maint_run_title',
+      'cognition.maint_run_hint',
+      'cognition.nightly_capture_hint',
+      'cognition.inspection_run_now',
+      'cognition.cleanup_entry',
+      'cognition.cleanup_none_yet',
+      'cognition.cleanup_run_title',
+      'cognition.cleanup_run_hint_statement_regen',
+      'cognition.cleanup_run_hint_title_regen',
+      'cognition.inspection_hint',
+      'cognition.inspection_round_meta',
+      'cognition.inspection_title',
+      'cognition.inspection_trigger_manual',
+      'cognition.inspection_trigger_scheduled',
+      'cognition.cleanup_run_hint',
+    ];
+    const revived = deadKeys.flatMap((key) => LOCALES
+      .filter((locale) => key in tables[locale])
+      .map((locale) => `${locale}:${key}`));
+    expect(revived).toEqual([]);
+    const aliveKeys = ['cognition.maint_run', 'cognition.maint_run_title_hint', 'cognition.cleanup_run_hint_legacy'];
+    const missing = aliveKeys.flatMap((key) => LOCALES
+      .filter((locale) => !(key in tables[locale]))
+      .map((locale) => `${locale}:${key}`));
+    expect(missing).toEqual([]);
+  });
 });

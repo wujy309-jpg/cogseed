@@ -18,12 +18,17 @@
   const CLAMP_CHARS = 160;
   let anonymousSeq = 0;
 
+  // 行集与 main 白名单 SUBSTANTIAL_FIELDS 同源（statement/scope/applicableWhen/
+  // forbiddenWhen/tags）：title 走分级③由 AI 直接处理、sensitivity 已随敏感级
+  // 机制整体下线（2026-09-28），两者都到不了审批卡——别再给它们补标签行
+  // （P-r3-32：本表曾经的 title 行是白名单外死行，已删；main 四语同名的
+  // recall.asset_approval.field_sensitivity 死键一并收口）。
   const FIELD_LABELS = {
     statement: ['cognition.asset_version_diff_statement', '正文'],
-    title: ['cognition.asset_version_diff_title_field', '标题'],
     scope: ['cognition.asset_version_diff_scope', '适用范围'],
     applicableWhen: ['cognition.asset_edit_field_applicable', '适用场景'],
     forbiddenWhen: ['cognition.asset_edit_field_forbidden', '禁用场景'],
+    tags: ['cognition.asset_edit_field_tags', '标签'],
   };
 
   /** 取词：拿不到译文就用代码里的中文兜底；兜底也要补变量——
@@ -80,6 +85,8 @@
     if (state === 'confirmed') return root.uiTag({ label: tr('recall.asset_approval.tag_confirmed', '已确认'), variant: 'success' });
     if (state === 'deferred') return root.uiTag({ label: tr('recall.asset_approval.tag_deferred', '已稍后处理'), variant: 'outline' });
     if (state === 'rejected') return root.uiTag({ label: tr('recall.asset_approval.tag_rejected', '已拒绝'), variant: 'outline' });
+    // 作废（P-r1-74 冲突即作废）：基于的版本已被顶掉，这条提议已关闭。
+    if (state === 'superseded') return root.uiTag({ label: tr('recall.asset_approval.tag_superseded', '已作废'), variant: 'outline' });
     return '';
   }
 
@@ -198,6 +205,7 @@
     }
     if (state === 'deferred') return tr('recall.asset_approval.state_deferred', '已稍后处理（在待确认清单里）');
     if (state === 'rejected') return tr('recall.asset_approval.state_rejected', '已拒绝');
+    if (state === 'superseded') return tr('recall.asset_approval.state_superseded', '基于的版本已过期，这条提议已作废；AI 会基于最新内容重新提议');
     return '';
   }
 
@@ -250,15 +258,35 @@
   }
 
   /** 弹提示。uiAlert 是全局函数（有的文件从 window 取、有的靠全局作用域），两条都认；
-   *  两条都没有时**留痕**——一句要用户知道的失败提示不能就这么没了。 */
+   *  两条都没有时**留痕**——一句要用户知道的失败提示不能就这么没了。
+   *  P-r2-37（2026-10-02）：弹框机制自身出错（uiAlert 同步 throw 或返回
+   *  rejected promise）不再升级为 unhandled rejection——「报告失败的机制」
+   *  自己炸掉会把处置流程二次打断（resolve 的 catch 里再弹一次提示，连环
+   *  抛错直接冒到 void 调用点）。失败只留痕（对齐本函数「留痕不吞错」
+   *  既有先例），弹不出就弹不出，不让它变成新的故障源。 */
   function alertUser(message) {
     const body = String(message == null ? '' : message);
     let fn = null;
     if (typeof uiAlert === 'function') fn = uiAlert;
     else if (typeof root.uiAlert === 'function') fn = root.uiAlert;
-    if (fn) return Promise.resolve(fn(body));
-    log.warn('uiAlert unavailable; user-facing message dropped', { message: body });
-    return Promise.resolve();
+    if (!fn) {
+      log.warn('uiAlert unavailable; user-facing message dropped', { message: body });
+      return Promise.resolve();
+    }
+    try {
+      return Promise.resolve(fn(body)).catch((error) => {
+        log.warn('uiAlert threw; user-facing message dropped', {
+          message: body,
+          error: (error && error.message) || String(error),
+        });
+      });
+    } catch (error) {
+      log.warn('uiAlert threw; user-facing message dropped', {
+        message: body,
+        error: (error && error.message) || String(error),
+      });
+      return Promise.resolve();
+    }
   }
 
   function defaultPort() {
@@ -285,26 +313,65 @@
       }
       const result = await io.invoke('recall.assets.approval.decide', body);
       if (!result || !result.ok) {
-        // 版本重检不一致：卡片**保持待处理**，如实说明为什么没生效（不静默覆盖）。
+        // 版本重检不一致（P-r1-74 冲突即作废重提）：主进程已把提议置为
+        // superseded——基线版本永不刷新，confirm 对这条提议永久不可达，卡片
+        // 落终态作废，AI 会基于最新内容重新提议（不再让用户「再决定」一条
+        // 永远再冲突的死路提议）。
         if (result && result.versionConflict) {
           card.dataset.busy = '';
           card.classList.remove('is-busy');
-          render(card, payload, { ...(card._assetApprovalView || {}), state: 'pending' });
-          await io.alert(tr('recall.asset_approval.version_conflict',
-            '这条资产在你看卡片之后被改过（v{a} → v{b}），这次没有生效。请重新看一眼内容再决定。',
+          card._assetApprovalPendingHydration = null;
+          render(card, payload, { ...(card._assetApprovalView || {}), state: String(result.state || 'superseded') });
+          await io.alert(tr('recall.asset_approval.version_conflict_superseded',
+            '这条资产在你看卡片之后被改过（v{a} → v{b}），这条提议已作废；AI 会基于最新内容重新提议。',
             { a: String(result.versionConflict.baselineVersion || ''), b: String(result.versionConflict.currentVersion || '') }));
           return;
         }
-        throw new Error((result && result.error) || tr('recall.asset_approval.decide_failed', '处置失败：{message}', { message: '' }));
+        // P-r1-73（已处置回执三重缺陷）：主进程对「没能处置」的回执分四形：
+        // 已处置过 / 并发补偿回滚 / 版本冲突（前一分支）/ 资产不可达作废——
+        // 除版本冲突外都形如 {ok:false, state:<终态>, message:<如实说明>}。此前
+        // 这类回执落进下面的通用 throw 分支，三重缺陷：message 字段被丢（读的
+        // 是不存在的 result.error）、错误文案双层叠加（throw 已带「处置失败：」
+        // 前缀、catch 再包一层成「处置失败：处置失败：」）、卡片停在 pending
+        // 且按钮重新可点（同一条已处置提议可反复再点、反复报同一错）。
+        // 现按 versionConflict 分支同构处理：终态如实落卡（按钮随终态收掉），
+        // 提示只说一次——回执自带的 message 如实透传（并发回滚/资产撤回的
+        // 说明各有安全语义，不能一刀切成「已处置」），缺 message 时用
+        // already_decided 词条兜底。
+        if (result && result.state && String(result.state) !== 'pending') {
+          card.dataset.busy = '';
+          card.classList.remove('is-busy');
+          card._assetApprovalPendingHydration = null;
+          render(card, payload, { ...(card._assetApprovalView || {}), state: String(result.state) });
+          const receiptMessage = String(result.message || '');
+          await io.alert(receiptMessage
+            ? tr('recall.asset_approval.decide_failed', '处置失败：{message}', { message: receiptMessage })
+            : tr('recall.asset_approval.already_decided', '这条提议已经处置过了。'));
+          return;
+        }
+        // P-r1-73（双层模板修复）：这里只抛裸 message（主进程回执的
+        // error/message 原文），「处置失败：」前缀由 catch 的 decide_failed
+        // 模板统一包一次——旧实现两边各包一层，用户看到双重前缀。
+        throw new Error(String((result && (result.error || result.message)) || 'decide failed'));
       }
       card.dataset.busy = '';
       card.classList.remove('is-busy');
+      card._assetApprovalPendingHydration = null;
       const state = String(result.state || (action === 'confirm' ? 'confirmed' : action === 'defer' ? 'deferred' : 'rejected'));
       render(card, payload, { state, ...(result.appliedVersion ? { appliedVersion: result.appliedVersion } : {}) });
     } catch (error) {
       card.dataset.busy = '';
       card.classList.remove('is-busy');
       card.querySelectorAll('button').forEach((button) => { button.disabled = false; });
+      // P-r2-18（hydrate 暂存回放）：处置失败回到 pending 的卡片，若在 busy
+      // 窗口内收到过 mount 发出的 hydrate 结果（read 通道真实状态与拟生效
+      // 内容），此刻回放——否则卡片停在只有标题、无内容、无提示、按钮可点
+      // 的骨架态（守卫丢弃+失败回滚两件事叠加出的空壳卡形态）。
+      const pendingHydration = card._assetApprovalPendingHydration;
+      card._assetApprovalPendingHydration = null;
+      if (pendingHydration && card.dataset.busy !== '1' && card.dataset.status === 'pending') {
+        render(card, payload, pendingHydration);
+      }
       await io.alert(tr('recall.asset_approval.decide_failed', '处置失败：{message}', { message: (error && error.message) || String(error) }));
     }
   }
@@ -327,6 +394,21 @@
     root.cogseed.invoke('recall.assets.approval.read', { proposalId: payload.proposalId }).then((result) => {
       const proposal = result && result.proposal ? result.proposal : null;
       if (!proposal) return;
+      // 正忙或不待处理时不插手，免得把处置中/已处置的卡还原成可点
+      // （与 conversation.js 的 kstar 复查卡同一口径）。
+      // P-r2-18（hydrate 暂存回放）：busy 窗口内到达的 hydrate 结果不丢弃而是
+      // 暂存——处置失败回 pending 时回放（见 resolve 的 catch），否则卡片停在
+      // 只有标题、无内容、无提示、按钮可点的骨架态；处置成功落终态则暂存随
+      // 之作废，终态卡永不回放。已终态（status!=='pending'）的卡无需暂存。
+      if (card.dataset.busy === '1' && card.dataset.status === 'pending') {
+        card._assetApprovalPendingHydration = {
+          state: String(proposal.state || 'pending'),
+          ...(proposal.payload ? { proposed: proposal.payload } : {}),
+          ...(proposal.beforeValues ? { current: proposal.beforeValues } : {}),
+        };
+        return;
+      }
+      if (card.dataset.busy === '1' || card.dataset.status !== 'pending') return;
       render(card, payload, {
         state: String(proposal.state || 'pending'),
         ...(proposal.payload ? { proposed: proposal.payload } : {}),
@@ -339,6 +421,7 @@
         proposalId: String(payload.proposalId || ''),
         error: (error && error.message) || String(error),
       });
+      if (card.dataset.busy === '1' || card.dataset.status !== 'pending') return;
       render(card, payload, { state: 'pending', readFailed: true });
     });
     return card;

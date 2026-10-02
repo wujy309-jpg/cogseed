@@ -485,8 +485,9 @@ export interface PromoteRecallCandidateOptions extends AbilityAssetSemantics {
 const log = createLogger('recall.candidates');
 
 /** 判重用的可比文本：与 capture-service 的同名归一化保持一致（大小写、
- *  空白、标点都不参与比较）。 */
-function comparableJudgmentText(value: string): string {
+ *  空白、标点都不参与比较）。冲突表、inbox 待办分组、inbox 选边共用这一个
+ *  口径——各处自算一份会让「列表说有冲突、选边说没有」互相打脸。 */
+export function comparableJudgmentText(value: string): string {
   return String(value || '').normalize('NFKC').replace(/[\p{P}\p{S}\s]/gu, '').toLocaleLowerCase();
 }
 
@@ -1812,37 +1813,74 @@ async function decideWithoutAsset(
   actor: ReviewDecisionActor = 'user',
 ): Promise<RecallCandidateRecord> {
   const decisionNote = boundedText(note, 'decision note', 1_000);
-  const updated = await updateRecallJsonRecord(userId, 'candidates', candidateId, async (current) => {
-    if (!current) throw new Error('recall candidate not found');
-    const candidate = asCandidate(current);
-    if (isTerminalCandidate(candidate.status)) return candidate;
-    // 同上：拒绝 / 稍后 / 忽略 是用户对一条弱候选最基本的处置权，不能因为
-    // 证据弱就把它锁死在待办里。系统 actor 仍然不许替用户下这个决定，
-    // refs 为空的候选也仍然出不去（否则写出的记录读不回来）。
-    if ((candidate.status === 'observed' || candidate.status === 'weak_observation')
-      && (actor !== 'user' || !getRecallCandidateCapabilities(candidate).canReject)) {
-      throw new Error('candidate evidence is insufficient for review');
-    }
-    await writeReviewDecision(userId, {
-      targetRef: `recall_candidate:${candidate.id}`,
-      decisionType,
-      decision: decisionType,
-      antecedentRef: candidate.id,
-      scope: candidate.suggestedScope,
-      reason: decisionNote,
-      actor,
-      idempotencyKey: `${decisionType}-${candidate.updatedAt}`,
+  // 账本是否已落（P-r2-6）：writeReviewDecision 在 updater 内执行，主档写失败
+  // 时据它区分「账本已落、候选仍 pending」的半提交（需补偿）与 updater 早退
+  // （账本未落，无需补偿）。
+  let ledgerWritten = false;
+  let updated: RecallJsonRecord;
+  try {
+    updated = await updateRecallJsonRecord(userId, 'candidates', candidateId, async (current) => {
+      if (!current) throw new Error('recall candidate not found');
+      const candidate = asCandidate(current);
+      if (isTerminalCandidate(candidate.status)) return candidate;
+      // 同上：拒绝 / 稍后 / 忽略 是用户对一条弱候选最基本的处置权，不能因为
+      // 证据弱就把它锁死在待办里。系统 actor 仍然不许替用户下这个决定，
+      // refs 为空的候选也仍然出不去（否则写出的记录读不回来）。
+      if ((candidate.status === 'observed' || candidate.status === 'weak_observation')
+        && (actor !== 'user' || !getRecallCandidateCapabilities(candidate).canReject)) {
+        throw new Error('candidate evidence is insufficient for review');
+      }
+      await writeReviewDecision(userId, {
+        targetRef: `recall_candidate:${candidate.id}`,
+        decisionType,
+        decision: decisionType,
+        antecedentRef: candidate.id,
+        scope: candidate.suggestedScope,
+        reason: decisionNote,
+        actor,
+        idempotencyKey: `${decisionType}-${candidate.updatedAt}`,
+      });
+      ledgerWritten = true;
+      return {
+        ...candidate,
+        status,
+        ...(decisionNote ? { decisionNote } : {}),
+        ...(status === 'deferred'
+          ? { cooldownUntil: new Date(Date.now() + DEFAULT_DEFER_COOLDOWN_MS).toISOString() }
+          : { cooldownUntil: undefined }),
+        updatedAt: new Date().toISOString(),
+      };
     });
-    return {
-      ...candidate,
-      status,
-      ...(decisionNote ? { decisionNote } : {}),
-      ...(status === 'deferred'
-        ? { cooldownUntil: new Date(Date.now() + DEFAULT_DEFER_COOLDOWN_MS).toISOString() }
-        : { cooldownUntil: undefined }),
-      updatedAt: new Date().toISOString(),
-    };
-  });
+  } catch (error) {
+    // 半提交补偿（P-r2-6）：账本已落、主档写失败时，候选不能留在 pending——
+    // 「已处理历史」里有这条决定而待办里它还躺着，两边口径矛盾。补偿把候选
+    // 标 failed（可重试口径：重新决定会走新的幂等键再记账），补偿本身失败只
+    // warn（原错误优先上抛，不吞不换）。账本未落（updater 早退/复核拒绝）时
+    // 不补偿——那不是半提交。
+    if (ledgerWritten) {
+      await updateRecallJsonRecord(userId, 'candidates', candidateId, (current) => {
+        if (!current) return undefined;
+        const latest = asCandidate(current);
+        if (isTerminalCandidate(latest.status)) return latest;
+        const now = new Date().toISOString();
+        return {
+          ...latest,
+          status: 'failed',
+          failureCode: 'decision_write_failed',
+          failureMessage: `review decision was recorded but the candidate write failed: ${(error as Error).message}`.slice(0, 1_000),
+          failedAt: now,
+          updatedAt: now,
+        };
+      }).catch((compensationError) => {
+        log.warn('recall candidate decision compensation failed', {
+          userId,
+          candidateId,
+          error: (compensationError as Error).message,
+        });
+      });
+    }
+    throw error;
+  }
   return asCandidate(updated);
 }
 
@@ -1904,6 +1942,11 @@ export async function autoApplyRecallCandidate(
       }).catch(() => undefined);
       await updateRecallJsonRecord(userId, 'candidates', candidate.id, (current) => {
         if (!current) return undefined;
+        // 锁内终态复核（P-r1-97）：语义复核是模型级调用，秒级窗口内用户可能
+        // 已经 reject/confirm/ignore——用户的处置优先，后台线不得把终态覆写回
+        // deferred（终态复活回待办）。幂等返回原记录，与 decideWithoutAsset
+        // /promote 的锁内复核同款口径。
+        if (isTerminalCandidate(normalizeCandidateStatus(current.status))) return current;
         return {
           ...current,
           status: 'deferred',
@@ -2457,41 +2500,49 @@ export async function promoteRecallCandidate(
   // 统一晋升闸门（PRD 3.1 四类最低准入门槛）。晋升入口不止一个——会话线、
   // KStar 线、用户确认、失败重试都能走到这里，所以校验必须钉在这一处，
   // 而不是只在抽取管线里做一次。
-  {
-    // 同一句话被分成两类，说明至少一边分错了。扫一遍候选池：只看同文本、
-    // 未被否决的条目，收集它们的类型。
-    const sameText = comparableJudgmentText(preflight.judgment);
-    const conflictingTypes = sameText
-      ? [...new Set((await listRecallCandidates(userId))
-        .filter((other) => other.id !== preflight.id
-          && other.status !== 'rejected'
-          && other.status !== 'ignored'
-          && other.status !== 'expired'
-          && other.status !== 'failed'
-          && comparableJudgmentText(other.judgment) === sameText
-          && other.suggestedType !== preflight.suggestedType)
-        .map((other) => other.suggestedType))]
-      : [];
-    const validation = validatePromotionByAssetType({
-      judgment: preflight.judgment,
-      value: preflight.value,
-      summary: preflight.summary,
-      suggestedType: preflight.suggestedType,
-      suggestedScope: preflight.suggestedScope,
-      suggestedAction: preflight.suggestedAction,
-      applicableWhen: semantics.applicableWhen,
-      forbiddenWhen: semantics.forbiddenWhen,
-      ...(conflictingTypes.length ? { conflictingTypes } : {}),
-    }, { actor: options.actor });
-    if (!validation.ok) {
-      log.info('recall candidate blocked at the promotion gate', {
-        candidateId,
-        suggestedType: preflight.suggestedType,
-        actor: options.actor,
-        reasons: validation.reasons,
-      });
-      throw new PromotionBlockedError(validation.reasons);
-    }
+  //
+  // P-r1-78 池级互斥（原则 5 锁内复核，照 :1316 saveRecallCandidate 的
+  // candidate-locks/save 池锁先例）：冲突扫描与晋升提交必须在同一把**池级**锁内
+  // 原子完成。各候选只持自己的记录锁——扫描若在锁外，两条同文本不同类型的
+  // failed 候选并发重试（failed 在排除表里，互相看不见对方）可以双双穿过
+  // 冲突门再各自落 confirmed。锁内用新鲜读复核，保证扫的就是将要提交的状态。
+  const promotePoolLock = fileEditLock(recallJsonRecordPath(userId, 'candidate-locks', 'promote'));
+
+  // P-r2-17 标题 LLM 外移锁外：晋升 updater 此前全程持记录锁调
+  // resolvePromotionAssetTitle（summary 不合规时走 LLM 起标题，秒级）。标题的
+  // 输入在锁外就齐了（preflight 正文 / 目标资产正文），先在**所有锁之外**把
+  // 标题与它所依据的正文一并算好；锁内只在「正文与预计算依据一致」时直接
+  // 沿用预计算标题（与原实现同样信任起标题链自身的合规约束），锁外锁内之间
+  // 正文被并发改过的罕见竞态下才退回锁内重算——「标题必合规」的口径不变。
+  const preflightTarget = preflight.targetAssetId && candidateActionNeedsTarget(preflight.suggestedAction)
+    ? await readAbilityAsset(userId, preflight.targetAssetId)
+    : undefined;
+  // 只预计算本次动作将实际走到的分支（create 或 update/limit_scope），另一
+  // 分支的标题输入根本不存在，预跑只会白调一次模型。
+  const plannedCreateStatement = (preflight.suggestedAction || 'create') === 'create'
+    ? preflight.judgment.slice(0, 4_000)
+    : undefined;
+  const plannedCreateTitle = plannedCreateStatement !== undefined
+    ? await resolvePromotionAssetTitle(userId, {
+      preferredTitle: preflight.summary || '',
+      statement: plannedCreateStatement,
+      type: preflight.suggestedType,
+    })
+    : undefined;
+  let plannedUpdate: { statement: string; title: string } | undefined;
+  if (preflightTarget && (preflight.suggestedAction === 'update' || preflight.suggestedAction === 'limit_scope')) {
+    const plannedFused = preflight.suggestedAction === 'update' && String(preflightTarget.statement || '').trim()
+      ? fuseStatements(String(preflightTarget.statement), String(preflight.judgment || ''))
+      : null;
+    const plannedUpdateStatement = plannedFused ? plannedFused.statement : preflight.judgment;
+    plannedUpdate = {
+      statement: plannedUpdateStatement,
+      title: await resolvePromotionAssetTitle(userId, {
+        preferredTitle: preflight.summary || '',
+        statement: plannedUpdateStatement,
+        type: preflight.suggestedType,
+      }),
+    };
   }
 
   let decision: ReviewDecision | undefined;
@@ -2502,7 +2553,48 @@ export async function promoteRecallCandidate(
   let rebasedFrom: string | undefined;
   let updated: RecallJsonRecord;
   try {
-    updated = await updateRecallJsonRecord(userId, 'candidates', candidateId, async (current) => {
+    updated = await promotePoolLock.runExclusive(() => (async () => {
+      // 锁内新鲜读：preflight 是锁外快照，窗口期内候选可能被编辑（换类型/改
+      // 正文都会改变冲突扫描的键）。扫不到（记录被删）时 updater 自会报
+      // not found，这里退回 preflight 让闸门照常先跑。
+      const scanBase = (await readRecallCandidate(userId, candidateId)) || preflight;
+      {
+        // 同一句话被分成两类，说明至少一边分错了。扫一遍候选池：只看同文本、
+        // 未被否决的条目，收集它们的类型。
+        const sameText = comparableJudgmentText(scanBase.judgment);
+        const conflictingTypes = sameText
+          ? [...new Set((await listRecallCandidates(userId))
+            .filter((other) => other.id !== scanBase.id
+              && other.status !== 'rejected'
+              && other.status !== 'ignored'
+              && other.status !== 'expired'
+              && other.status !== 'failed'
+              && comparableJudgmentText(other.judgment) === sameText
+              && other.suggestedType !== scanBase.suggestedType)
+            .map((other) => other.suggestedType))]
+          : [];
+        const validation = validatePromotionByAssetType({
+          judgment: scanBase.judgment,
+          value: scanBase.value,
+          summary: scanBase.summary,
+          suggestedType: scanBase.suggestedType,
+          suggestedScope: scanBase.suggestedScope,
+          suggestedAction: scanBase.suggestedAction,
+          applicableWhen: semantics.applicableWhen,
+          forbiddenWhen: semantics.forbiddenWhen,
+          ...(conflictingTypes.length ? { conflictingTypes } : {}),
+        }, { actor: options.actor });
+        if (!validation.ok) {
+          log.info('recall candidate blocked at the promotion gate', {
+            candidateId,
+            suggestedType: scanBase.suggestedType,
+            actor: options.actor,
+            reasons: validation.reasons,
+          });
+          throw new PromotionBlockedError(validation.reasons);
+        }
+      }
+      return await updateRecallJsonRecord(userId, 'candidates', candidateId, async (current) => {
     if (!current) throw new Error('recall candidate not found');
     const candidate = asCandidate(current);
     if (candidate.status === 'confirmed') return candidate;
@@ -2633,11 +2725,15 @@ export async function promoteRecallCandidate(
       // 更新/融合路（else 分支）维持旧拼装：value 参与融合是 KStar admission
       // 链核对基线的既有语义，本轮规范只收新建路，不动它。
       const createStatement = candidate.judgment.slice(0, 4_000);
-      const promotionTitle = await resolvePromotionAssetTitle(userId, {
-        preferredTitle: candidate.summary || '',
-        statement: createStatement,
-        type: candidate.suggestedType,
-      });
+      // P-r2-17：标题已在锁外按 preflight 正文预计算。正文没被并发改过（与
+      // 预计算依据一致）就直接沿用；变了才退回锁内按原口径重算（罕见竞态）。
+      const promotionTitle = plannedCreateTitle !== undefined && createStatement === plannedCreateStatement
+        ? plannedCreateTitle
+        : await resolvePromotionAssetTitle(userId, {
+          preferredTitle: candidate.summary || '',
+          statement: createStatement,
+          type: candidate.suggestedType,
+        });
       stored = await createAbilityAsset(userId, {
         schemaVersion: 2,
         ownerId: userId,
@@ -2720,13 +2816,16 @@ export async function promoteRecallCandidate(
           ? fuseStatements(String(target.statement), String(candidate.judgment || ''))
           : null;
         const updateStatement = fused ? fused.statement : candidate.judgment;
-        // 与 create 分支同款：标题合规判定拿**写入后的最终正文**（融合结果）
-        // 比对；summary 不合规时走 LLM 起标题链（设计 3.2 晋升线口径）。
-        const updateTitle = await resolvePromotionAssetTitle(userId, {
-          preferredTitle: candidate.summary || '',
-          statement: updateStatement,
-          type: candidate.suggestedType,
-        });
+        // 与 create 分支同款（P-r2-17）：标题已在锁外按 preflight 目标正文+
+        // 候选判断预融合预计算；融合结果与预计算依据一致时直接沿用，并发改过
+        // 才退回锁内按原口径重算。
+        const updateTitle = plannedUpdate && plannedUpdate.statement === updateStatement
+          ? plannedUpdate.title
+          : await resolvePromotionAssetTitle(userId, {
+            preferredTitle: candidate.summary || '',
+            statement: updateStatement,
+            type: candidate.suggestedType,
+          });
         try {
           stored = await updateAbilityAsset(userId, target.id, {
             title: updateTitle,
@@ -2808,6 +2907,7 @@ export async function promoteRecallCandidate(
       updatedAt: now,
     };
     });
+    })());
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // 版本重检不一致（specs/015 D6/D9）：候选**不落终态**——用户没做错什么，
