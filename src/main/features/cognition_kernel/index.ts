@@ -64,3 +64,31 @@ export type { BackfillFieldInput, BackfillFieldResult, FieldGap, TaskFieldCheck 
 
 export { INBOX_LIMIT, buildMergedInbox, readMergedInbox } from './inbox';
 export type { InboxItem, MergedInbox } from './inbox';
+
+// S3：统一认知库（对象模型 + 存储内核 + Delta 落地器）。
+export {
+  APPLIED_DELTA_INDEX_MAX,
+  COGNITION_STORE_SCHEMA_VERSION,
+  emptyCognitionStore,
+  findAssertionSlot,
+  homeToObjectShape,
+  normalizeCognitionObject,
+  normalizeCognitionStoreDocument,
+} from './object-model';
+export type {
+  BundleKind,
+  CognitionObject,
+  CognitionObjectKind,
+  CognitionObjectStatus,
+  CognitionStoreDocument,
+} from './object-model';
+export {
+  COGNITION_STORE_CORRUPT_DOMAIN,
+  applyCognitionDelta,
+  applyCognitionDeltas,
+  cognitionAuditPath,
+  cognitionStorePath,
+  listCognitionVersions,
+  loadCognitionStoreSync,
+} from './store';
+export type { ApplyDeltasOutcome, CognitionVersionLine, DeltaApplyResult } from './store';
