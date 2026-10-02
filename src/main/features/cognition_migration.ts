@@ -48,7 +48,7 @@ export interface MigrationReport {
   at: string;
   dryRun: boolean;
   backupDir?: string;
-  poValues: { total: number; migrated: number; skippedProjection: number; skippedEmpty: number; slotMerged: number };
+  poValues: { total: number; migrated: number; skippedProjection: number; skippedEmpty: number; slotMerged: number; skippedRestricted?: number };
   assets: { total: number; migrated: number; skippedTerminal: number; fingerprintMerged: number; byType: Record<string, number> };
   candidates: { recallMigrated: number; poMigrated: number; skippedTerminal: number };
   errors: string[];
@@ -149,6 +149,13 @@ export async function migrateLegacyCognition(uid: string, options?: { dryRun?: b
         }
         if (!body) {
           report.poValues.skippedEmpty += 1;
+          continue;
+        }
+        if (value.restricted) {
+          // 隐私不回退：restricted（仅自己可见）不经 Delta 文本通道，迁移进库会
+          // 丢标记并进任务注入——留在旧账（resolve 的 restricted 过滤仍兜住），
+          // 等 S4 隐私标记进对象模型后再迁。
+          report.poValues.skippedRestricted = (report.poValues.skippedRestricted ?? 0) + 1;
           continue;
         }
         const slot = `${group.id}||${fieldName}`;

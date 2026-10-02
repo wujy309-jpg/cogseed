@@ -7,9 +7,10 @@
  *     status='applied' 记录"用户当场答的，立即生效"）
  *   → 同一个任务再跑，缺口消失。
  *
- * 分工：本文件只做"算缺口 + 回填"；取值的规则全在 resolve.ts，写入全走 po 的
- * 统一写路径（poCreateGroup/poCreateField/poAddValue）。S3 会把写入本身也换成
- * Delta 落地器，本文件只需替换第 4 步的调用，契约不变。
+ * 分工：本文件只做"算缺口 + 回填"；取值的规则全在 resolve.ts，写入走统一库
+ * Delta 落地器（2026-10-02 回归轮切换：旧版双写 po 会被库优先遮蔽成过期值——
+ * 迁移后用户的新回答反而不生效）。回填断言为无组槽位（fieldName 寻址），
+ * 同名旧账字段在 resolve 读侧被遮蔽，无需再动 po。
  */
 
 import { buildDelta } from './delta';
@@ -107,9 +108,8 @@ export interface BackfillFieldResult {
   error?: string;
   /** 落地的那条改动记录（origin='gap' + status='applied'）。 */
   delta?: CognitionDelta;
-  groupId?: string;
-  fieldId?: string;
-  valueId?: string;
+  /** 统一库对象 id（2026-10-02 起 po 的 groupId/fieldId/valueId 退役）。 */
+  objectId?: string;
   /** 值本来就在（重复回答）——幂等，不算失败。 */
   duplicate?: boolean;
 }
@@ -125,66 +125,31 @@ export async function backfillFieldValue(uid: string, input: BackfillFieldInput)
   const value = String(input?.value ?? '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 2000);
   if (!fieldName) return { ok: false, error: 'field name required' };
   if (!value) return { ok: false, error: 'empty value' };
+  void input.groupTitle; // 兼容入参保留：回填断言按 fieldName 全局寻址，不再选 po 分组
 
-  const groupTitle = String(input.groupTitle ?? '').trim() || DEFAULT_GROUP_TITLE;
-  const [{ loadPoDocSync }, { poCreateGroup, poCreateField, poAddValue }] = await Promise.all([
-    import('../po/store'),
-    import('../po/api'),
-  ]);
-
-  const findTarget = () => {
-    const doc = loadPoDocSync(uid);
-    const group = doc.groups.find((g) => g.kind === 'user' && g.title === groupTitle);
-    const field = group?.fields.find((f) => f.name === fieldName);
-    return { group, field };
-  };
-
-  let { group, field } = findTarget();
-  if (!group) {
-    const created = await poCreateGroup(uid, groupTitle);
-    if (!created.ok) return { ok: false, error: created.error ?? 'create group failed' };
-    ({ group, field } = findTarget());
-  }
-  if (!group) return { ok: false, error: 'group not found after create' };
-  if (!field) {
-    const created = await poCreateField(uid, group.id, fieldName);
-    if (!created.ok) return { ok: false, error: created.error ?? 'create field failed' };
-    ({ field } = findTarget());
-  }
-  if (!field) return { ok: false, error: 'field not found after create' };
+  const { loadCognitionStoreSync, applyCognitionDeltas } = await import('./store');
 
   const delta = buildDelta({
-    op: 'add',
-    target: { home: 'personal_fact', groupId: group.id, fieldName },
+    op: 'set',
+    target: { home: 'personal_fact', fieldName },
     origin: 'gap',
     after: value,
     evidenceRefs: input.evidenceRefs ?? [],
-    // 用户当场答的：立即生效（origin 说明"为什么存在"，status 说明"是否已落地"）。
     status: 'applied',
   });
 
-  const added = await poAddValue(uid, group.id, field.id, { text: value });
-  if (!added.ok) {
-    if (added.error === 'duplicate value') {
-      const existing = findTarget();
-      const dup = existing.group?.values.find((v) => v.fieldId === existing.field?.id && v.text === value);
-      return {
-        ok: true,
-        duplicate: true,
-        delta,
-        groupId: group.id,
-        fieldId: field.id,
-        ...(dup ? { valueId: dup.id } : {}),
-      };
-    }
-    return { ok: false, error: added.error ?? 'add value failed' };
+  // 幂等：同字段同内容重复回答 → 不改数据不算失败（用户多点一次不报错）。
+  const doc = loadCognitionStoreSync(uid);
+  const existing = Object.values(doc.objects).find(
+    (o) => o.kind === 'assertion' && o.status !== 'deleted' && o.fieldName === fieldName && o.statement === value,
+  );
+  if (existing) {
+    return { ok: true, duplicate: true, delta, objectId: existing.id };
   }
 
-  return {
-    ok: true,
-    delta,
-    groupId: group.id,
-    fieldId: field.id,
-    ...(added.value ? { valueId: added.value.id } : {}),
-  };
+  const result = await applyCognitionDeltas(uid, [delta]);
+  if (!result.ok) return { ok: false, error: result.error ?? 'backfill failed' };
+  const first = result.results[0];
+  if (first.applied === false) return { ok: false, error: first.reason };
+  return { ok: true, delta, objectId: first.objectId };
 }

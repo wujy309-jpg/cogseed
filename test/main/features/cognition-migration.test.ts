@@ -55,6 +55,7 @@ function writePoDoc(): void {
           { id: 'v-bank', fieldId: 'f-bank', text: '6222…1234', source: 'manual', createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' },
           { id: 'v-dept', fieldId: 'f-dept', text: '开源项目组', source: 'manual', createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' },
           { id: 'v-proj', fieldId: 'f-pref', text: '我偏好简短中文回复', source: 'candidate', assetId: 'aa-pers-1', createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' },
+          { id: 'v-secret', fieldId: 'f-bank', text: '绝密：不该进任务注入的值', source: 'manual', restricted: true, createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' },
         ],
         entries: [],
       },
@@ -111,8 +112,9 @@ describe('cognition_migration — 三源迁移', () => {
     const { mig, store, pool } = await mods();
     const report = await mig.migrateLegacyCognition(UID, { dryRun: true });
     expect(report.dryRun).toBe(true);
-    expect(report.poValues.total).toBe(3);
+    expect(report.poValues.total).toBe(4);
     expect(report.poValues.skippedProjection).toBe(1);
+    expect(report.poValues.skippedRestricted).toBe(1);
     expect(report.poValues.migrated).toBe(2);
     expect(report.assets.total).toBe(4);
     expect(report.assets.skippedTerminal).toBe(1);
@@ -137,6 +139,8 @@ describe('cognition_migration — 三源迁移', () => {
     // 断言：银行卡号 + 部门（投影值跳过，由资产侧落同一槽位）
     const bank = objects.find((o) => o.fieldName === '银行卡号');
     expect(bank?.statement).toBe('6222…1234');
+    // 隐私不回退：restricted 值不迁移进库（留在旧账，resolve 的 restricted 过滤兜住）
+    expect(objects.find((o) => o.statement.includes('绝密'))).toBeUndefined();
     // personal 资产 aa-pers-1 的 po 投影（assetId 对上）→ 断言落投影槽位（回复偏好），
     // 槽位值=资产正文——「同一内容两处账」合一；规则资产独立成 rule 对象（带适用/禁止）
     const projected = objects.find((o) => o.fieldName === '回复偏好');

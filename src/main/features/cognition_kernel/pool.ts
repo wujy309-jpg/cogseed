@@ -23,7 +23,7 @@ import * as path from 'node:path';
 import { fileEditLock } from '../../util/locks';
 import { corruptRecordFor, readTextGuarded, reportCorruptFile } from '../../util/corrupt-guard';
 import { userCognitionDir } from '../../paths';
-import { nowIso, safeId } from '../../storage';
+import { genId12, nowIso, safeId } from '../../storage';
 import { createLogger } from '../../logger';
 import type { CognitionDelta } from './types';
 import { validateDelta } from './delta';
@@ -205,7 +205,7 @@ export async function submitToPool(
     if (corrupt) return { ok: false, error: `cognition pool corrupt; write refused (${corrupt.reason})` };
 
     const now = nowIso();
-    const itemId = `pi-${delta.deltaId.slice(0, 12)}-${String(doc.items.length).padStart(4, '0')}`;
+    const itemId = `pi-${genId12()}`; // 随机段：条目数序号在裁剪后会重号（2026-10-02 回归轮修正）
     let supersededId: string | undefined;
     // 顶替只发生在「范围化槽位」（带 fieldName/objectId 的 set/update——新值
     // 换旧值是本意）；裸 add（无字段无对象）同家不同内容是不同提议，共存。
@@ -380,7 +380,7 @@ export async function addUnrouted(uid: string, statement: string, sourceKind: Po
     const corrupt = corruptRecordFor(filePath);
     if (corrupt) return { ok: false, error: `cognition pool corrupt; write refused (${corrupt.reason})` };
     const now = nowIso();
-    const unroutedId = `ur-${now.replace(/[^0-9]/g, '').slice(-12)}-${String(doc.unrouted.length).padStart(3, '0')}`;
+    const unroutedId = `ur-${genId12()}`;
     doc.unrouted.push({ id: unroutedId, statement: text, sourceKind, createdAt: now });
     doc.unrouted = doc.unrouted.slice(-UNROUTED_MAX);
     doc.updatedAt = now;

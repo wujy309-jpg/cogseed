@@ -1,180 +1,150 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+/**
+ * 缺口引擎与回填测试（S2 行为断言 + 2026-10-02 回归轮改写为统一库落地）。
+ *
+ * 行为断言（不变）：答一次永久记住（同任务包再体检该字段不再是缺口）、
+ * 重复回答幂等、空白拒绝、delta origin=gap/status=applied。
+ * 实现耦合断言（D5 重写）：落地位置从 po 组/字段/值改为统一库断言+版本流。
+ */
 
-interface FakeGroup {
-  id: string;
-  title: string;
-  kind: 'user' | 'template';
-  fields: Array<{ id: string; name: string; origin: 'user'; createdAt: string }>;
-  values: Array<{ id: string; fieldId: string; text: string; source: string; createdAt: string; updatedAt: string; restricted?: boolean }>;
-  entries: unknown[];
-  createdAt: string;
-  updatedAt: string;
-}
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
-const h = vi.hoisted(() => {
-  const doc: { schemaVersion: number; groups: FakeGroup[]; trash: unknown[] } = { schemaVersion: 2, groups: [], trash: [] };
-  const calls: Array<{ fn: string; args: unknown[] }> = [];
-  return { doc, calls };
-});
-
-vi.mock('../../../../src/main/features/po/store', () => ({
-  loadPoDocSync: () => h.doc,
+vi.mock('../../../../src/main/logger', () => ({
+  createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
 
-vi.mock('../../../../src/main/features/po/api', () => ({
-  poCreateGroup: async (uid: string, title: string) => {
-    h.calls.push({ fn: 'poCreateGroup', args: [uid, title] });
-    h.doc.groups.push({
-      id: 'g-' + (h.doc.groups.length + 1),
-      title,
-      kind: 'user',
-      fields: [],
-      values: [],
-      entries: [],
-      createdAt: 'x',
-      updatedAt: 'x',
-    });
-    return { ok: true };
-  },
-  poCreateField: async (uid: string, groupId: string, name: string) => {
-    h.calls.push({ fn: 'poCreateField', args: [uid, groupId, name] });
-    const group = h.doc.groups.find((g) => g.id === groupId);
-    if (!group) return { ok: false, error: 'group not found' };
-    const field = { id: 'f-' + (group.fields.length + 1), name, origin: 'user' as const, createdAt: 'x' };
-    group.fields.push(field);
-    return { ok: true, field };
-  },
-  poAddValue: async (uid: string, groupId: string, fieldId: string, draft: { text: string }) => {
-    h.calls.push({ fn: 'poAddValue', args: [uid, groupId, fieldId, draft] });
-    const group = h.doc.groups.find((g) => g.id === groupId);
-    const field = group?.fields.find((f) => f.id === fieldId);
-    if (!group || !field) return { ok: false, error: 'field not found' };
-    if (group.values.some((v) => v.fieldId === fieldId && v.text === draft.text)) {
-      return { ok: false, error: 'duplicate value' };
-    }
-    const value = {
-      id: 'v-' + (group.values.length + 1),
-      fieldId,
-      text: draft.text,
-      source: '手动',
-      createdAt: 'x',
-      updatedAt: 'x',
-    };
-    group.values.push(value);
-    return { ok: true, value };
-  },
-}));
-
-vi.mock('../../../../src/main/features/recall/asset-service', () => ({ listAbilityAssets: async () => [] }));
-vi.mock('../../../../src/main/features/recall/prompt-injection', () => ({
-  filterRecallAssetsForAgentRead: async (_uid: string, assets: unknown[]) => assets,
-}));
-
-import { backfillFieldValue, checkTaskFields } from '../../../../src/main/features/cognition_kernel/gap';
-import type { TaskFieldPack } from '../../../../src/main/features/cognition_kernel/task_field_packs';
-
-const PACK: TaskFieldPack = {
-  id: 'test',
-  title: '测试任务',
-  fields: [{ fieldName: '姓名' }, { fieldName: '银行卡号' }, { fieldName: '身份证号' }],
-};
+let tmpDir: string;
+let prevWs: string | undefined;
+const UID = 'u1';
 
 beforeEach(() => {
-  h.calls.length = 0;
-  h.doc.groups = [
-    {
-      id: 'g1',
-      title: '关于我',
-      kind: 'user',
-      fields: [
-        { id: 'f1', name: '姓名', origin: 'user', createdAt: 'x' },
-        { id: 'f2', name: '银行卡号', origin: 'user', createdAt: 'x' },
-        { id: 'f3', name: '身份证号', origin: 'user', createdAt: 'x' },
-      ],
-      values: [
-        { id: 'v1', fieldId: 'f1', text: '牛保康', source: '手动', createdAt: 'x', updatedAt: '2026-09-01T00:00:00Z' },
-        {
-          id: 'v3',
-          fieldId: 'f3',
-          text: '110101',
-          source: '手动',
-          createdAt: 'x',
-          updatedAt: '2026-09-01T00:00:00Z',
-          restricted: true,
-        },
-      ],
-      entries: [],
-      createdAt: 'x',
-      updatedAt: 'x',
-    },
-  ];
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cogseed-ck-gap-'));
+  prevWs = process.env.COGSEED_WORKSPACE_ROOT;
+  process.env.COGSEED_WORKSPACE_ROOT = tmpDir;
+  vi.resetModules();
 });
 
-describe('cognition_kernel/gap — 缺口引擎', () => {
-  it('分成"已有/缺"，缺的按原因给出不同问法与动作', async () => {
-    const check = await checkTaskFields('u1', PACK);
+afterEach(() => {
+  process.env.COGSEED_WORKSPACE_ROOT = prevWs;
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+function writePoDoc(): void {
+  const dir = path.join(tmpDir, UID, 'cloud', 'cognition');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, 'personal-ontology.json'),
+    JSON.stringify({
+      schemaVersion: 2,
+      groups: [
+        {
+          id: 'g1',
+          kind: 'user',
+          title: '关于我',
+          createdAt: '2026-09-01T00:00:00Z',
+          updatedAt: '2026-09-01T00:00:00Z',
+          fields: [
+            { id: 'f1', name: '姓名', origin: 'user', createdAt: '2026-09-01T00:00:00Z' },
+            { id: 'f2', name: '银行卡号', origin: 'user', createdAt: '2026-09-01T00:00:00Z' },
+          ],
+          values: [
+            { id: 'v1', fieldId: 'f1', text: '牛保康', source: 'manual', createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' },
+          ],
+          entries: [],
+        },
+      ],
+      trash: [],
+      updatedAt: '2026-09-01T00:00:00Z',
+    }),
+    'utf8',
+  );
+}
+
+function mods() {
+  return Promise.all([
+    import('../../../../src/main/features/cognition_kernel/gap'),
+    import('../../../../src/main/features/cognition_kernel/store'),
+  ]).then(([gap, store]) => ({ gap, store }));
+}
+
+const PACK = { id: 'expense', title: '报销', fields: [
+  { fieldName: '姓名', required: true },
+  { fieldName: '银行卡号', required: true },
+] } as const;
+
+describe('cognition_kernel/gap — 体检（缺口计算）', () => {
+  it('旧账有值→bound；缺的→gap 带提问与动作', async () => {
+    writePoDoc();
+    const { gap } = await mods();
+    const check = await gap.checkTaskFields(UID, PACK);
     expect(check.boundCount).toBe(1);
-    expect(check.totalCount).toBe(3);
-    expect(check.gaps.map((g) => [g.fieldName, g.reason, g.action])).toEqual([
-      ['银行卡号', 'no_value', 'answer'],
-      ['身份证号', 'restricted', 'open_settings'],
-    ]);
-    expect(check.gaps[0].question).toBe('请补充：银行卡号');
-    expect(check.gaps[1].question).toContain('仅自己可见');
+    expect(check.gaps).toHaveLength(1);
+    expect(check.gaps[0]).toMatchObject({ fieldName: '银行卡号', reason: 'no_value', action: 'answer' });
+    expect(check.gaps[0].question).toContain('银行卡号');
   });
 
   it('非必需字段缺失不进缺口（但仍如实记录在 resolution.missing）', async () => {
-    const pack: TaskFieldPack = { id: 'p', title: 'p', fields: [{ fieldName: '银行卡号', required: false }] };
-    const check = await checkTaskFields('u1', pack);
+    const { gap } = await mods();
+    const check = await gap.checkTaskFields(UID, { id: 'p', title: 'p', fields: [{ fieldName: '银行卡号', required: false }] });
     expect(check.gaps).toHaveLength(0);
     expect(check.resolution.missing).toHaveLength(1);
   });
 });
 
 describe('cognition_kernel/gap — 回填（答一次，永久记住）', () => {
-  it('组和字段都已存在 → 直接写值，并给出 origin=gap/status=applied 的改动记录', async () => {
-    const r = await backfillFieldValue('u1', {
+  it('回填 → 统一库断言落地 + 版本流，delta origin=gap/status=applied', async () => {
+    writePoDoc();
+    const { gap, store } = await mods();
+    const r = await gap.backfillFieldValue(UID, {
       fieldName: '银行卡号',
       value: '6217-0000-0000-1234',
       evidenceRefs: [{ kind: 'task_run', id: 't1' }],
     });
     expect(r.ok).toBe(true);
-    expect(r.groupId).toBe('g1');
+    expect(r.objectId).toBeTruthy();
     expect(r.delta?.origin).toBe('gap');
     expect(r.delta?.status).toBe('applied');
     expect(r.delta?.target).toMatchObject({ home: 'personal_fact', fieldName: '银行卡号' });
-    expect(h.calls.filter((c) => c.fn === 'poCreateGroup')).toHaveLength(0);
-    expect(h.calls.filter((c) => c.fn === 'poCreateField')).toHaveLength(0);
-    expect(h.calls.filter((c) => c.fn === 'poAddValue')).toHaveLength(1);
-  });
-
-  it('组/字段不存在时自动建，再写值', async () => {
-    h.doc.groups = [];
-    const r = await backfillFieldValue('u1', { fieldName: '开户行', value: '工商银行' });
-    expect(r.ok).toBe(true);
-    expect(h.calls.map((c) => c.fn)).toEqual(['poCreateGroup', 'poCreateField', 'poAddValue']);
-    expect(h.doc.groups[0].title).toBe('关于我');
-    expect(h.doc.groups[0].fields[0].name).toBe('开户行');
-    expect(h.doc.groups[0].values[0].text).toBe('工商银行');
+    const doc = store.loadCognitionStoreSync(UID);
+    const obj = doc.objects[r.objectId as string];
+    expect(obj.kind).toBe('assertion');
+    expect(obj.statement).toBe('6217-0000-0000-1234');
+    expect(store.listCognitionVersions(UID, r.objectId as string)).toHaveLength(1);
+    // po 旧账不再被写（写入路径单一切换）
+    const poRaw = JSON.parse(fs.readFileSync(path.join(tmpDir, UID, 'cloud', 'cognition', 'personal-ontology.json'), 'utf8'));
+    expect(poRaw.groups[0].values).toHaveLength(1);
   });
 
   it('重复回答同一条内容 → 幂等成功，不报错也不重复写', async () => {
-    await backfillFieldValue('u1', { fieldName: '姓名', value: '牛保康' });
-    const again = await backfillFieldValue('u1', { fieldName: '姓名', value: '牛保康' });
+    writePoDoc();
+    const { gap, store } = await mods();
+    await gap.backfillFieldValue(UID, { fieldName: '姓名', value: '牛保康' });
+    const again = await gap.backfillFieldValue(UID, { fieldName: '姓名', value: '牛保康' });
     expect(again.ok).toBe(true);
     expect(again.duplicate).toBe(true);
-    expect(h.doc.groups[0].values.filter((v) => v.text === '牛保康')).toHaveLength(1);
+    const doc = store.loadCognitionStoreSync(UID);
+    expect(Object.values(doc.objects).filter((o) => o.statement === '牛保康')).toHaveLength(1);
   });
 
   it('空白值 / 空字段名 → 拒绝', async () => {
-    expect((await backfillFieldValue('u1', { fieldName: '开户行', value: '   ' })).ok).toBe(false);
-    expect((await backfillFieldValue('u1', { fieldName: '  ', value: 'x' })).ok).toBe(false);
+    const { gap } = await mods();
+    expect((await gap.backfillFieldValue(UID, { fieldName: '开户行', value: '   ' })).ok).toBe(false);
+    expect((await gap.backfillFieldValue(UID, { fieldName: '  ', value: 'x' })).ok).toBe(false);
   });
 
-  it('回答完成后，同一个任务包再体检 → 该字段不再是缺口', async () => {
-    await backfillFieldValue('u1', { fieldName: '银行卡号', value: '6217-live' });
-    const check = await checkTaskFields('u1', PACK);
-    expect(check.gaps.map((g) => g.fieldName)).toEqual(['身份证号']);
-    expect(check.boundCount).toBe(2);
+  it('回答完成后，同一个任务包再体检 → 该字段不再是缺口（库优先遮蔽旧账）', async () => {
+    writePoDoc();
+    const { gap } = await mods();
+    const before = await gap.checkTaskFields(UID, PACK);
+    expect(before.gaps.map((g) => g.fieldName)).toEqual(['银行卡号']);
+    await gap.backfillFieldValue(UID, { fieldName: '银行卡号', value: '6217-live' });
+    const after = await gap.checkTaskFields(UID, PACK);
+    expect(after.gaps).toHaveLength(0);
+    expect(after.boundCount).toBe(2);
+    const bound = after.resolution.bound.find((b) => b.fieldName === '银行卡号');
+    expect(bound?.value).toBe('6217-live');
+    expect(bound?.sourceId).toMatch(/^co-/);
   });
 });

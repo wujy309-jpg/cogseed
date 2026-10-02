@@ -311,11 +311,11 @@ export async function applyCognitionDeltas(uid: string, deltas: readonly Cogniti
         cognitionAuditPath(uid),
         {
           at: nowIso(),
-          origin: deltas[0]?.origin ?? '',
           ops: [...touched.entries()].map(([objectId, d]) => ({
             objectId,
             op: d.op,
             home: d.target.home,
+            origin: d.origin,
             summary: summary(d.after ?? d.before ?? d.deltaId),
           })),
         },
