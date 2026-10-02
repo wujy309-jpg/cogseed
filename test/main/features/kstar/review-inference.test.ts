@@ -273,7 +273,7 @@ describe('KSTAR review inference', () => {
     });
   });
 
-  it('accepts model secondary attribution only when it cites an Episode evidence id', async () => {
+  it('accepts model secondary attribution only when it cites an Episode evidence id（坏引用只丢条目不废评审）', async () => {
     const inference = await import('../../../../src/main/features/kstar/review-inference');
     const result = await inference.inferKstarReview('user-a', episode(), {
       runModel: async () => JSON.stringify({
@@ -314,11 +314,10 @@ describe('KSTAR review inference', () => {
         }],
       }),
     });
-    expect(rejected.inferenceMethod).toBe('unknown');
-    expect(rejected.review.attributionDetails).toMatchObject([{
-      category: 'insufficient_evidence',
-      source: 'deterministic',
-    }]);
+    // 2026-10-02 契约更新：引用不实的**该条**归因被丢弃，但模型评审本体保留
+    //（旧版整份作废降级成机械归因——一个坏 token 丢掉全部推理结论）。
+    expect(rejected.inferenceMethod).toBe('model');
+    expect(rejected.review.attributionDetails).toBeUndefined();
   });
 
   it('lets deterministic permission facts override model secondary attribution', async () => {
