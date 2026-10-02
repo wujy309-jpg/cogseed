@@ -373,5 +373,8 @@ describe('personal ontology v2 renderer › relation graph', () => {
     expect(ontology).not.toMatch(/z-index\s*:/);
     expect(ontology).not.toContain('<input type="checkbox"');
     expect(ontology).not.toContain('<svg');
+    // 回归：自闭合 svg 标签在 <template>（HTML 解析）下不自闭合——text 会被吞成
+    // rect/path 的子元素而丢字。所有 svg 元素必须显式闭合。
+    expect(ontology).not.toMatch(/<(?:rect|path|circle)\b[^>]*\/>/);
   });
 });

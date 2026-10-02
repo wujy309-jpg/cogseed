@@ -161,6 +161,8 @@
   let _pocRelationsKindOff = null;
   /** 图谱节点位置缓存（fingerprint + key→{x,y}），拖拽固定后跨渲染保留。 */
   let _pocRelationsPositions = { fingerprint: '', map: new Map() };
+  /** 图谱点击高亮（非资产节点无详情页可跳，点击用持续高亮作反馈）。 */
+  let _pocRelationsFocusKey = '';
 
   // PersonalOntology is stored as durable profile statements. Keep the
   // storage contract flat, but present those statements as a small ontology
@@ -1253,7 +1255,7 @@
       const lx = (a.x + b.x) / 2;
       const ly = (a.y + b.y) / 2;
       return `<g class="personal-onto-relgraph-edge-group" data-poc-rel-edge-group="" data-rel-from="${escapeHtml(a.key)}" data-rel-to="${escapeHtml(b.key)}">
-        <path class="personal-onto-relgraph-edge" d="M ${fc(a.x)} ${fc(a.y)} C ${fc(a.x + dx)} ${fc(a.y)}, ${fc(b.x - dx)} ${fc(b.y)}, ${fc(b.x)} ${fc(b.y)}" fill="none" stroke="${color}" stroke-width="1.6" stroke-opacity="0.7"/>
+        <path class="personal-onto-relgraph-edge" d="M ${fc(a.x)} ${fc(a.y)} C ${fc(a.x + dx)} ${fc(a.y)}, ${fc(b.x - dx)} ${fc(b.y)}, ${fc(b.x)} ${fc(b.y)}" fill="none" stroke="${color}" stroke-width="1.6" stroke-opacity="0.7"></path>
         ${edge.predicate ? `<text class="personal-onto-relgraph-edge-label" x="${fc(lx)}" y="${fc(ly - 6)}" text-anchor="middle" fill="${color}">${escapeHtml(edge.predicate)}</text>` : ''}
       </g>`;
     }).join('');
@@ -1262,8 +1264,8 @@
       const strong = node.degree >= 3;
       const lines = node.lines.map((ln, i) => `<tspan x="0" dy="${fc(i === 0 ? -((node.lines.length - 1) / 2) * node.lineH + node.size * 0.35 : node.lineH)}" font-size="${node.size}">${escapeHtml(ln)}</tspan>`).join('');
       return `<g class="personal-onto-relgraph-node${node.assetId ? ' is-clickable' : ''}" data-poc-rel-node="${escapeHtml(node.key)}"${node.assetId ? ` data-asset-id="${escapeHtml(node.assetId)}"` : ''} transform="translate(${fc(node.x)},${fc(node.y)})">
-        <rect x="${fc(-node.w / 2)}" y="${fc(-node.h / 2)}" width="${fc(node.w)}" height="${fc(node.h)}" rx="9" fill="var(--color-white)" stroke="${strong ? accent : 'var(--line)'}" stroke-width="${strong ? 1.8 : 1}"/>
-        <rect x="${fc(-node.w / 2)}" y="${fc(-node.h / 2 + 6)}" width="3" height="${fc(node.h - 12)}" rx="1.5" fill="${accent}"/>
+        <rect x="${fc(-node.w / 2)}" y="${fc(-node.h / 2)}" width="${fc(node.w)}" height="${fc(node.h)}" rx="9" fill="var(--color-white)" stroke="${strong ? accent : 'var(--line)'}" stroke-width="${strong ? 1.8 : 1}"></rect>
+        <rect x="${fc(-node.w / 2)}" y="${fc(-node.h / 2 + 6)}" width="3" height="${fc(node.h - 12)}" rx="1.5" fill="${accent}"></rect>
         <text class="personal-onto-relgraph-node-label" x="0" y="0" text-anchor="middle" font-weight="550" fill="var(--ink)">${lines}</text>
         <title>${escapeHtml(node.label)}${node.assetId ? ` · ${escapeHtml(_t('personalOntology.relationship_open_source', '打开来源条目'))}` : ''}</title>
       </g>`;
@@ -1320,7 +1322,7 @@
       const nodeEl = event.target && event.target.closest ? event.target.closest('[data-poc-rel-node]') : null;
       _pocSetRelationsHover(canvas, nodeEl ? nodeEl.getAttribute('data-poc-rel-node') : '');
     });
-    canvas.addEventListener('mouseleave', () => _pocSetRelationsHover(canvas, ''));
+    canvas.addEventListener('mouseleave', () => _pocSetRelationsHover(canvas, _pocRelationsFocusKey));
     let drag = null;
     canvas.addEventListener('pointerdown', (event) => {
       const nodeEl = event.target && event.target.closest ? event.target.closest('[data-poc-rel-node]') : null;
@@ -1368,7 +1370,13 @@
         _pocRenderMain();
       } else if (!moved && nodeEl && nodeKey) {
         const assetId = nodeEl.getAttribute('data-asset-id');
-        if (assetId && typeof window.openCognitionAssetById === 'function') window.openCognitionAssetById(assetId);
+        if (assetId && typeof window.openCognitionAssetById === 'function') {
+          window.openCognitionAssetById(assetId);
+          return;
+        }
+        // 非资产节点（本体分组/图谱来源）：点击给持续高亮，再点取消。
+        _pocRelationsFocusKey = _pocRelationsFocusKey === nodeKey ? '' : nodeKey;
+        _pocSetRelationsHover(canvas, _pocRelationsFocusKey);
       }
     };
     canvas.addEventListener('pointerup', finishDrag);
