@@ -103,6 +103,11 @@
     return window.uiEmptyState(options);
   }
 
+  function _chip(options) {
+    if (typeof window.uiChip !== 'function') throw new Error('personal ontology requires uiChip');
+    return window.uiChip(options);
+  }
+
   // ── state ────────────────────────────────────────────────────────────────
   let _pocTemplates = [];
   let _pocTemplatesLoaded = false;
@@ -146,6 +151,16 @@
   let _pocFactsFilter = { group: 'all', q: '' };
   /** 规则页分类筛选：'all'|'operation'|'preference'|'constraint'|'none'。 */
   let _pocRuleFilter = 'all';
+  /** 关系网络呈现：'list' 清单（默认）| 'graph' 图谱。 */
+  let _pocRelationsMode = 'list';
+  /** 图谱布局：'force' 力导向（d3-force 主路）| 'layered' 分层（兜底）。 */
+  let _pocRelationsLayout = 'force';
+  /** 图谱视图变换：模块级保留，重渲染/切 kind 过滤不清空。 */
+  let _pocRelationsTransform = { zoom: 1, panX: 0, panY: 0 };
+  /** kind 过滤：Set 存被关掉的资产关系 kind（ontology/graph 来源无边 kind，不受影响）。 */
+  let _pocRelationsKindOff = null;
+  /** 图谱节点位置缓存（fingerprint + key→{x,y}），拖拽固定后跨渲染保留。 */
+  let _pocRelationsPositions = { fingerprint: '', map: new Map() };
 
   // PersonalOntology is stored as durable profile statements. Keep the
   // storage contract flat, but present those statements as a small ontology
@@ -968,6 +983,409 @@
       });
     });
     return rows;
+  }
+
+  // ── 关系图谱（清单/图谱双呈现）────────────────────────────────────────
+  // 底线不变（见关系视图尾注）：只绘制明确保存的关系；same_family 同来源
+  // 分组不画线。布局借力 vendor 的 d3-force（按需注入，失败自动落分层列
+  // 布局），渲染沿仓内自持 SVG 卡片先例（kb-workbench _mmTreeSvg）。
+
+  const _POC_REL_GRAPH_KINDS = ['refines', 'depends_on', 'replaces', 'conflicts_with', 'related_to'];
+  const _POC_REL_GRAPH_KIND_COLOR = {
+    refines: '#2563EB',
+    depends_on: '#0E9F6E',
+    replaces: '#C2740C',
+    conflicts_with: '#B4231F',
+    related_to: '#64748B',
+  };
+  const _POC_REL_GRAPH_SOURCE_COLOR = { asset: '#2563EB', ontology: '#7C3AED', graph: '#0D9488' };
+  const _POC_REL_GRAPH_SOURCES = ['asset', 'ontology', 'graph'];
+
+  function _pocRelGraphKindLabel(kind) {
+    const map = {
+      refines: ['personalOntology.relationship_kind_refines', '细化'],
+      depends_on: ['personalOntology.relationship_kind_depends_on', '依赖'],
+      replaces: ['personalOntology.relationship_kind_replaces', '替代'],
+      conflicts_with: ['personalOntology.relationship_kind_conflicts_with', '存在冲突'],
+      related_to: ['personalOntology.relationship_kind_related_to', '相关'],
+    };
+    const hit = map[String(kind || '')];
+    return hit ? _t(hit[0], hit[1]) : String(kind || '');
+  }
+
+  function _pocRelGraphSourceLabel(sourceKind) {
+    const map = {
+      asset: ['personalOntology.relationship_source_assets', '正式认知资产'],
+      ontology: ['personalOntology.relationship_source_ontology', '本体分组'],
+      graph: ['ontologyGraph.source_graph', '本体图谱'],
+    };
+    const hit = map[String(sourceKind || '')];
+    return hit ? _t(hit[0], hit[1]) : String(sourceKind || '');
+  }
+
+  // d3-force（vendor，按需注入）：四个 UMD 按官方依赖顺序挂到共享 window.d3。
+  const _POC_FORCE_SCRIPTS = [
+    './vendor/d3-force/d3-quadtree.min.js',
+    './vendor/d3-force/d3-dispatch.min.js',
+    './vendor/d3-force/d3-timer.min.js',
+    './vendor/d3-force/d3-force.min.js',
+  ];
+  let _pocForceLibState = 'idle'; // 'idle' | 'loading' | 'ready' | 'failed'
+  let _pocForceLibPromise = null;
+
+  function _pocForceReady() {
+    return typeof window !== 'undefined' && !!(window.d3 && typeof window.d3.forceSimulation === 'function');
+  }
+
+  function _pocLoadScriptOnce(src) {
+    return new Promise((resolve) => {
+      const script = document.createElement('script');
+      script.src = src;
+      script.onload = () => resolve(true);
+      script.onerror = () => resolve(false);
+      document.head.appendChild(script);
+    });
+  }
+
+  function _pocEnsureForceLib() {
+    if (_pocForceReady()) { _pocForceLibState = 'ready'; return Promise.resolve(true); }
+    if (_pocForceLibState === 'failed') return Promise.resolve(false);
+    if (_pocForceLibState === 'loading' && _pocForceLibPromise) return _pocForceLibPromise;
+    _pocForceLibState = 'loading';
+    _pocForceLibPromise = (async () => {
+      for (const src of _POC_FORCE_SCRIPTS) {
+        const ok = await _pocLoadScriptOnce(src);
+        if (!ok) { _pocForceLibState = 'failed'; return false; }
+      }
+      _pocForceLibState = _pocForceReady() ? 'ready' : 'failed';
+      return _pocForceLibState === 'ready';
+    })();
+    return _pocForceLibPromise;
+  }
+
+  // 文本量尺：CJK 全角按 1em、拉丁词按窄字宽（沿 kb-workbench 的真实字宽算法，
+  // 避免"字符数×字号"对英文标签的高估）。
+  function _pocRelGraphCharW(ch, size) {
+    const code = ch.codePointAt(0) || 0;
+    const wide = (code >= 0x1100 && code <= 0x115f)
+      || code === 0x2329 || code === 0x232a
+      || (code >= 0x2e80 && code <= 0xa4cf)
+      || (code >= 0xac00 && code <= 0xd7a3)
+      || (code >= 0xf900 && code <= 0xfaff)
+      || (code >= 0xfe30 && code <= 0xfe6f)
+      || (code >= 0xff00 && code <= 0xff60)
+      || (code >= 0xffe0 && code <= 0xffe6);
+    if (wide) return size;
+    if (ch === ' ') return size * 0.3;
+    if (/[iIljtfr.,:;!'|]/.test(ch)) return size * 0.33;
+    if (/[A-Z0-9]/.test(ch)) return size * 0.64;
+    return size * 0.54;
+  }
+
+  function _pocRelGraphTextW(text, size) {
+    let w = 0;
+    for (const ch of String(text || '')) w += _pocRelGraphCharW(ch, size);
+    return w;
+  }
+
+  function _pocRelGraphWrap(text, size, maxW) {
+    const raw = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!raw) return { lines: [''] };
+    if (_pocRelGraphTextW(raw, size) <= maxW) return { lines: [raw] };
+    const MAX_LINES = 2;
+    const breakChars = /[\s，。；、,.!?：:;()（）\-—/·]/;
+    const lines = [];
+    let rest = raw;
+    while (rest && lines.length < MAX_LINES) {
+      if (_pocRelGraphTextW(rest, size) <= maxW) { lines.push(rest); rest = ''; break; }
+      let cut = 0; let acc = 0; let lastBreak = 0;
+      for (const ch of rest) {
+        const cw = _pocRelGraphCharW(ch, size);
+        if (acc + cw > maxW) break;
+        acc += cw;
+        cut += ch.length;
+        if (breakChars.test(ch)) lastBreak = cut;
+      }
+      if (cut === 0) cut = Math.min(rest.length, 1);
+      if (lines.length < MAX_LINES - 1 && lastBreak > 0 && lastBreak < cut) cut = lastBreak;
+      lines.push(rest.slice(0, cut).trim());
+      rest = rest.slice(cut).trim();
+    }
+    if (rest) {
+      let last = lines[lines.length - 1] || '';
+      while (last && _pocRelGraphTextW(last + '…', size) > maxW) last = last.slice(0, -1);
+      lines[lines.length - 1] = last + '…';
+    }
+    return { lines };
+  }
+
+  function _pocRelGraphNodeDims(label) {
+    const size = 12;
+    const { lines } = _pocRelGraphWrap(String(label || ''), size, 158);
+    const textW = lines.reduce((m, l) => Math.max(m, _pocRelGraphTextW(l, size)), 0);
+    const lineH = Math.round(size * 1.4);
+    return {
+      lines,
+      w: Math.round(Math.min(190, Math.max(64, textW + 26))),
+      h: lines.length * lineH + 14,
+      lineH,
+      size,
+    };
+  }
+
+  function _pocRelationsGraphModel() {
+    const rows = _pocRelationRows().filter((row) => row.relationKind !== 'same_family');
+    const off = _pocRelationsKindOff;
+    const visible = rows.filter((row) => !row.relationKind || !off || !off.has(row.relationKind));
+    const nodes = new Map();
+    const ensureNode = (label, sourceKind, id) => {
+      const key = `${sourceKind}|${id || String(label || '').trim()}`;
+      if (!nodes.has(key)) {
+        nodes.set(key, {
+          key,
+          label: String(label || '').trim(),
+          sourceKind: sourceKind || '',
+          assetId: id || '',
+          degree: 0,
+          x: 0,
+          y: 0,
+          ..._pocRelGraphNodeDims(label),
+        });
+      }
+      const node = nodes.get(key);
+      node.degree += 1;
+      return node;
+    };
+    const edges = visible.map((row) => {
+      const from = ensureNode(row.from, row.sourceKind, row.sourceKind === 'asset' ? String(row.assetId || '') : '');
+      const to = ensureNode(row.to, row.sourceKind, row.sourceKind === 'asset' ? String(row.targetAssetId || '') : '');
+      return {
+        from,
+        to,
+        predicate: String(row.predicate || ''),
+        relationKind: String(row.relationKind || ''),
+      };
+    });
+    return { nodes: Array.from(nodes.values()), edges };
+  }
+
+  function _pocRelationsGraphFingerprint(model) {
+    return `${model.edges.length}|${model.nodes.map((n) => n.key).sort().join('|')}`;
+  }
+
+  function _pocApplyRelationsForceLayout(model, fingerprint) {
+    const sim = window.d3.forceSimulation(model.nodes)
+      .force('link', window.d3.forceLink(model.edges.map((edge) => ({ source: edge.from.key, target: edge.to.key })))
+        .id((d) => d.key).distance(120).strength(0.3))
+      .force('charge', window.d3.forceManyBody().strength(-240))
+      .force('collide', window.d3.forceCollide((d) => Math.max(d.w, d.h) / 2 + 10))
+      .force('x', window.d3.forceX(0).strength(0.06))
+      .force('y', window.d3.forceY(0).strength(0.06))
+      .stop();
+    // 确定性初值：按序号摆圆环；被用户拖过的节点（fingerprint 一致）固定坐标。
+    const radius = 30 + model.nodes.length * 7;
+    model.nodes.forEach((node, index) => {
+      const pinned = _pocRelationsPositions.fingerprint === fingerprint
+        ? _pocRelationsPositions.map.get(node.key) : null;
+      if (pinned) {
+        node.x = pinned.x; node.y = pinned.y;
+        node.fx = pinned.x; node.fy = pinned.y;
+      } else {
+        const angle = (index / Math.max(1, model.nodes.length)) * Math.PI * 2;
+        node.x = radius * Math.cos(angle);
+        node.y = radius * Math.sin(angle);
+      }
+    });
+    for (let i = 0; i < 300; i += 1) sim.tick();
+    sim.stop();
+    // 记录本次坐标（保留已有拖拽固定项），供下次渲染与分层布局复用。
+    _pocRelationsPositions.fingerprint = fingerprint;
+    model.nodes.forEach((node) => {
+      if (!_pocRelationsPositions.map.has(node.key)) _pocRelationsPositions.map.set(node.key, { x: node.x, y: node.y });
+    });
+  }
+
+  function _pocApplyRelationsLayeredLayout(model, fingerprint) {
+    const columns = new Map(_POC_REL_GRAPH_SOURCES.map((kind) => [kind, []]));
+    const others = [];
+    model.nodes.forEach((node) => {
+      const column = columns.get(node.sourceKind);
+      if (column) column.push(node);
+      else others.push(node);
+    });
+    if (others.length) columns.set('other', others);
+    const colGap = 130;
+    const rowGap = 26;
+    let cursorX = 0;
+    [..._POC_REL_GRAPH_SOURCES, 'other'].forEach((kind) => {
+      const list = (columns.get(kind) || []).slice().sort((a, b) => a.label.localeCompare(b.label));
+      if (!list.length) return;
+      const colW = list.reduce((m, n) => Math.max(m, n.w), 0);
+      const totalH = list.reduce((acc, n) => acc + n.h + rowGap, -rowGap);
+      const centerX = cursorX + colW / 2;
+      let y = -totalH / 2;
+      list.forEach((node) => {
+        const pinned = _pocRelationsPositions.fingerprint === fingerprint
+          ? _pocRelationsPositions.map.get(node.key) : null;
+        node.x = pinned ? pinned.x : centerX;
+        node.y = pinned ? pinned.y : y + node.h / 2;
+        y += node.h + rowGap;
+      });
+      cursorX += colW + colGap;
+    });
+  }
+
+  function _pocRenderRelationsGraphSvgParts(model) {
+    const fc = (v) => (Math.round(v * 100) / 100).toString();
+    const pad = 70;
+    const nodes = model.nodes;
+    const minX = Math.min(...nodes.map((n) => n.x - n.w / 2)) - pad;
+    const maxX = Math.max(...nodes.map((n) => n.x + n.w / 2)) + pad;
+    const minY = Math.min(...nodes.map((n) => n.y - n.h / 2)) - pad;
+    const maxY = Math.max(...nodes.map((n) => n.y + n.h / 2)) + pad;
+    const svgW = Math.max(360, maxX - minX);
+    const svgH = Math.max(280, maxY - minY);
+    const edgeSvg = model.edges.map((edge) => {
+      const a = edge.from;
+      const b = edge.to;
+      const dx = (b.x - a.x) / 2;
+      const color = edge.relationKind ? _POC_REL_GRAPH_KIND_COLOR[edge.relationKind] : '#94A3B8';
+      const lx = (a.x + b.x) / 2;
+      const ly = (a.y + b.y) / 2;
+      return `<g class="personal-onto-relgraph-edge-group" data-poc-rel-edge-group="" data-rel-from="${escapeHtml(a.key)}" data-rel-to="${escapeHtml(b.key)}">
+        <path class="personal-onto-relgraph-edge" d="M ${fc(a.x)} ${fc(a.y)} C ${fc(a.x + dx)} ${fc(a.y)}, ${fc(b.x - dx)} ${fc(b.y)}, ${fc(b.x)} ${fc(b.y)}" fill="none" stroke="${color}" stroke-width="1.6" stroke-opacity="0.7"/>
+        ${edge.predicate ? `<text class="personal-onto-relgraph-edge-label" x="${fc(lx)}" y="${fc(ly - 6)}" text-anchor="middle" fill="${color}">${escapeHtml(edge.predicate)}</text>` : ''}
+      </g>`;
+    }).join('');
+    const nodeSvg = nodes.map((node) => {
+      const accent = _POC_REL_GRAPH_SOURCE_COLOR[node.sourceKind] || '#94A3B8';
+      const strong = node.degree >= 3;
+      const lines = node.lines.map((ln, i) => `<tspan x="0" dy="${fc(i === 0 ? -((node.lines.length - 1) / 2) * node.lineH + node.size * 0.35 : node.lineH)}" font-size="${node.size}">${escapeHtml(ln)}</tspan>`).join('');
+      return `<g class="personal-onto-relgraph-node${node.assetId ? ' is-clickable' : ''}" data-poc-rel-node="${escapeHtml(node.key)}"${node.assetId ? ` data-asset-id="${escapeHtml(node.assetId)}"` : ''} transform="translate(${fc(node.x)},${fc(node.y)})">
+        <rect x="${fc(-node.w / 2)}" y="${fc(-node.h / 2)}" width="${fc(node.w)}" height="${fc(node.h)}" rx="9" fill="var(--color-white)" stroke="${strong ? accent : 'var(--line)'}" stroke-width="${strong ? 1.8 : 1}"/>
+        <rect x="${fc(-node.w / 2)}" y="${fc(-node.h / 2 + 6)}" width="3" height="${fc(node.h - 12)}" rx="1.5" fill="${accent}"/>
+        <text class="personal-onto-relgraph-node-label" x="0" y="0" text-anchor="middle" font-weight="550" fill="var(--ink)">${lines}</text>
+        <title>${escapeHtml(node.label)}${node.assetId ? ` · ${escapeHtml(_t('personalOntology.relationship_open_source', '打开来源条目'))}` : ''}</title>
+      </g>`;
+    }).join('');
+    const { zoom, panX, panY } = _pocRelationsTransform;
+    return {
+      viewBox: `${fc(minX)} ${fc(minY)} ${fc(svgW)} ${fc(svgH)}`,
+      inner: `<g data-poc-rel-viewport="" transform="translate(${fc(panX)} ${fc(panY)}) scale(${fc(zoom)})">${edgeSvg}${nodeSvg}</g>`,
+    };
+  }
+
+  function _pocApplyRelationsTransform(bodyEl) {
+    const viewport = bodyEl && typeof bodyEl.querySelector === 'function' ? bodyEl.querySelector('[data-poc-rel-viewport]') : null;
+    if (!viewport) return;
+    const { zoom, panX, panY } = _pocRelationsTransform;
+    viewport.setAttribute('transform', `translate(${Math.round(panX * 100) / 100} ${Math.round(panY * 100) / 100}) scale(${Math.round(zoom * 100) / 100})`);
+  }
+
+  function _pocSetRelationsHover(canvas, nodeKey) {
+    canvas.querySelectorAll('[data-poc-rel-node]').forEach((el) => {
+      el.classList.toggle('is-hover', !!nodeKey && el.getAttribute('data-poc-rel-node') === nodeKey);
+    });
+    canvas.querySelectorAll('[data-poc-rel-edge-group]').forEach((el) => {
+      const hit = !!nodeKey && (el.getAttribute('data-rel-from') === nodeKey || el.getAttribute('data-rel-to') === nodeKey);
+      el.classList.toggle('is-hover', hit);
+    });
+  }
+
+  function _pocBindRelationsGraph(bodyEl) {
+    const host = bodyEl && typeof bodyEl.querySelector === 'function' ? bodyEl.querySelector('[data-poc-rel-canvas-host]') : null;
+    const template = host && typeof host.querySelector === 'function' ? host.querySelector('template[data-poc-rel-graph-tpl]') : null;
+    // SVG 根节点在绑定期用 createElementNS 构建：源码不内联 svg 根标签（守卫口径）；
+    // 模板缺位或环境不支持时保持占位容器，不抛错。
+    let canvas = host;
+    if (host && template && typeof document !== 'undefined' && typeof document.createElementNS === 'function') {
+      try {
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('class', 'personal-onto-relgraph-svg');
+        svg.setAttribute('data-poc-rel-canvas', '');
+        const viewBox = host.getAttribute('data-view-box');
+        if (viewBox) svg.setAttribute('viewBox', viewBox);
+        svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+        svg.setAttribute('role', 'img');
+        const aria = host.getAttribute('data-aria-label');
+        if (aria) svg.setAttribute('aria-label', aria);
+        svg.innerHTML = template.innerHTML;
+        host.innerHTML = '';
+        host.appendChild(svg);
+        canvas = svg;
+      } catch (_) { /* 保底：模板留在容器里，交互不可用 */ }
+    }
+    if (!canvas || typeof canvas.addEventListener !== 'function') return;
+    canvas.addEventListener('mouseover', (event) => {
+      const nodeEl = event.target && event.target.closest ? event.target.closest('[data-poc-rel-node]') : null;
+      _pocSetRelationsHover(canvas, nodeEl ? nodeEl.getAttribute('data-poc-rel-node') : '');
+    });
+    canvas.addEventListener('mouseleave', () => _pocSetRelationsHover(canvas, ''));
+    let drag = null;
+    canvas.addEventListener('pointerdown', (event) => {
+      const nodeEl = event.target && event.target.closest ? event.target.closest('[data-poc-rel-node]') : null;
+      drag = {
+        nodeKey: nodeEl ? nodeEl.getAttribute('data-poc-rel-node') : '',
+        nodeEl,
+        startX: event.clientX,
+        startY: event.clientY,
+        moved: false,
+      };
+      if (canvas.setPointerCapture) {
+        try { canvas.setPointerCapture(event.pointerId); } catch (_) {}
+      }
+    });
+    canvas.addEventListener('pointermove', (event) => {
+      if (!drag) return;
+      const dx = event.clientX - drag.startX;
+      const dy = event.clientY - drag.startY;
+      if (!drag.moved && Math.hypot(dx, dy) < 3) return;
+      drag.moved = true;
+      if (drag.nodeEl) {
+        if (!drag.nodeEl.getAttribute('data-rel-base')) drag.nodeEl.setAttribute('data-rel-base', drag.nodeEl.getAttribute('transform') || '');
+        const base = drag.nodeEl.getAttribute('data-rel-base') || '';
+        const bm = base.match(/translate\(\s*([-\d.]+)[, ]+([-\d.]+)/);
+        const bx = bm ? Number(bm[1]) : 0;
+        const by = bm ? Number(bm[2]) : 0;
+        drag.nodeEl.setAttribute('transform', `translate(${bx + dx / _pocRelationsTransform.zoom},${by + dy / _pocRelationsTransform.zoom})`);
+        drag.nodeEl.classList.add('is-dragging');
+      } else {
+        _pocRelationsTransform.panX += dx;
+        _pocRelationsTransform.panY += dy;
+        drag.startX = event.clientX;
+        drag.startY = event.clientY;
+        _pocApplyRelationsTransform(bodyEl);
+      }
+    });
+    const finishDrag = () => {
+      if (!drag) return;
+      const { nodeEl, nodeKey, moved } = drag;
+      drag = null;
+      if (nodeEl) nodeEl.classList.remove('is-dragging');
+      if (moved && nodeEl && nodeKey) {
+        const m = String(nodeEl.getAttribute('transform') || '').match(/translate\(\s*([-\d.]+)[, ]+([-\d.]+)/);
+        if (m) _pocRelationsPositions.map.set(nodeKey, { x: Number(m[1]), y: Number(m[2]) });
+        _pocRenderMain();
+      } else if (!moved && nodeEl && nodeKey) {
+        const assetId = nodeEl.getAttribute('data-asset-id');
+        if (assetId && typeof window.openCognitionAssetById === 'function') window.openCognitionAssetById(assetId);
+      }
+    };
+    canvas.addEventListener('pointerup', finishDrag);
+    canvas.addEventListener('pointercancel', finishDrag);
+    canvas.addEventListener('wheel', (event) => {
+      event.preventDefault();
+      const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
+      const next = Math.min(4, Math.max(0.2, _pocRelationsTransform.zoom * factor));
+      const ratio = next / _pocRelationsTransform.zoom;
+      _pocRelationsTransform.zoom = next;
+      const rect = canvas.getBoundingClientRect ? canvas.getBoundingClientRect() : { width: 0, height: 0 };
+      const cx = (rect.width || 0) / 2;
+      const cy = (rect.height || 0) / 2;
+      _pocRelationsTransform.panX = cx - (cx - _pocRelationsTransform.panX) * ratio;
+      _pocRelationsTransform.panY = cy - (cy - _pocRelationsTransform.panY) * ratio;
+      _pocApplyRelationsTransform(bodyEl);
+    }, { passive: false });
   }
 
   function _pocNavigate(action) {
@@ -2909,11 +3327,77 @@
     const graphError = _pocOntologyGraph().loadError
       ? `<p class="personal-onto-domain-error" role="alert">${escapeHtml(_pocGraphErrorText(_pocOntologyGraph().loadError))}</p>`
       : '';
-    return `<div class="personal-onto-domain-view">
-      <div class="personal-onto-domain-intro">${escapeHtml(_t('personalOntology.relationships_hint', '每条明确关系按“起点 → 关系 → 终点”读取；来源用于说明关系是从哪里保存的。'))}</div>
-      <div class="personal-onto-graph-toolbar">${_button({ label: _t('ontologyGraph.relation_new', '新建关系'), icon: 'plus', size: 'sm', disabled: !canCreateGraphRelation, attrs: { 'data-poc-graph-op': 'relation-create' } })}${!canCreateGraphRelation ? `<span class="muted">${escapeHtml(_t('ontologyGraph.relation_needs_entity', '先创建至少一个实体，再添加关系。'))}</span>` : ''}</div>
-      ${graphError}
-      <section class="personal-onto-relation-section" aria-labelledby="personal-onto-explicit-relations-title">
+    const modeControl = [
+      { label: _t('personalOntology.relations_mode_list', '清单'), value: 'list' },
+      { label: _t('personalOntology.relations_mode_graph', '图谱'), value: 'graph' },
+    ].map((item) => _button({
+      label: item.label,
+      size: 'sm',
+      className: `personal-onto-filter-chip${_pocRelationsMode === item.value ? ' is-on' : ''}`,
+      attrs: { 'data-poc-rel-mode': item.value, 'aria-pressed': String(_pocRelationsMode === item.value) },
+    })).join('');
+    const presentKinds = _POC_REL_GRAPH_KINDS.filter((kind) => rows.some((row) => row.relationKind === kind));
+    const kindChips = _pocRelationsMode === 'graph' && presentKinds.length
+      ? `<div class="personal-onto-relgraph-chips" role="group" aria-label="${escapeHtml(_t('personalOntology.relations_graph_filter_label', '按关系类型筛选'))}">
+          ${presentKinds.map((kind) => _chip({
+            label: _pocRelGraphKindLabel(kind),
+            selected: !(_pocRelationsKindOff && _pocRelationsKindOff.has(kind)),
+            attrs: { 'data-poc-rel-kind': kind },
+          })).join('')}
+        </div>`
+      : '';
+    let graphArea = '';
+    if (_pocRelationsMode === 'graph') {
+      const model = _pocRelationsGraphModel();
+      const forceReady = _pocForceReady();
+      const fingerprint = _pocRelationsGraphFingerprint(model);
+      if (!model.nodes.length || !model.edges.length) {
+        graphArea = `<div class="personal-onto-domain-empty">${_emptyState({
+          kind: 'quiet',
+          title: _t('personalOntology.relations_graph_empty_title', '暂无可绘制的明确关系'),
+          hint: _t('personalOntology.relations_graph_empty_hint', '图谱只绘制明确保存的关系；先创建实体或资产关系，再回到这里查看。'),
+        })}</div>`;
+      } else {
+        const useForce = _pocRelationsLayout === 'force' && forceReady;
+        if (useForce) _pocApplyRelationsForceLayout(model, fingerprint);
+        else _pocApplyRelationsLayeredLayout(model, fingerprint);
+        const fallbackTag = _pocRelationsLayout === 'force' && !forceReady
+          ? _tag(_t('personalOntology.relations_graph_fallback_tag', '力导向组件未加载，已用分层布局'))
+          : '';
+        const layoutControl = [
+          { label: _t('personalOntology.relations_layout_force', '力导向'), value: 'force' },
+          { label: _t('personalOntology.relations_layout_layered', '分层'), value: 'layered' },
+        ].map((item) => _button({
+          label: item.label,
+          size: 'sm',
+          className: `personal-onto-filter-chip${_pocRelationsLayout === item.value ? ' is-on' : ''}`,
+          attrs: { 'data-poc-rel-layout': item.value, 'aria-pressed': String(_pocRelationsLayout === item.value) },
+        })).join('');
+        const zoomButtons = [
+          _button({ label: _t('personalOntology.relations_graph_zoom_in', '放大'), size: 'sm', className: 'o', attrs: { 'data-poc-rel-zoom': 'in' } }),
+          _button({ label: _t('personalOntology.relations_graph_zoom_out', '缩小'), size: 'sm', className: 'o', attrs: { 'data-poc-rel-zoom': 'out' } }),
+          _button({ label: _t('personalOntology.relations_graph_reset', '重置视图'), size: 'sm', className: 'o', attrs: { 'data-poc-rel-zoom': 'reset' } }),
+        ].join('');
+        const meta = _tv('personalOntology.relations_graph_meta',
+          { nodes: model.nodes.length, edges: model.edges.length },
+          `${model.nodes.length} 个节点 · ${model.edges.length} 条边`);
+        const kindLegend = presentKinds.map((kind) => `<span class="personal-onto-relgraph-legend-item"><i style="background:${_POC_REL_GRAPH_KIND_COLOR[kind]}"></i>${escapeHtml(_pocRelGraphKindLabel(kind))}</span>`).join('');
+        const sourceLegend = _POC_REL_GRAPH_SOURCES.filter((kind) => model.nodes.some((node) => node.sourceKind === kind))
+          .map((kind) => `<span class="personal-onto-relgraph-legend-item"><i class="is-bar" style="background:${_POC_REL_GRAPH_SOURCE_COLOR[kind]}"></i>${escapeHtml(_pocRelGraphSourceLabel(kind))}</span>`).join('');
+        const svgParts = _pocRenderRelationsGraphSvgParts(model);
+        graphArea = `<div class="personal-onto-relgraph">
+          <div class="personal-onto-relgraph-toolbar">
+            <span class="personal-onto-relgraph-layout" role="group" aria-label="${escapeHtml(_t('personalOntology.relations_layout_label', '图谱布局'))}">${layoutControl}</span>
+            <span class="personal-onto-relgraph-zoom">${zoomButtons}</span>
+          </div>
+          <div class="personal-onto-relgraph-meta"><span class="muted">${escapeHtml(meta)}</span>${fallbackTag}</div>
+          ${kindChips}
+          <div class="personal-onto-relgraph-canvas" data-poc-rel-canvas-host data-view-box="${escapeHtml(svgParts.viewBox)}" data-aria-label="${escapeHtml(_t('personalOntology.relations_graph_aria', '本体关系图谱'))}" role="img"><template data-poc-rel-graph-tpl>${svgParts.inner}</template></div>
+          ${(kindLegend || sourceLegend) ? `<div class="personal-onto-relgraph-legend"><span class="muted">${escapeHtml(_t('personalOntology.relations_graph_legend_kinds', '关系类型'))}：</span>${kindLegend}${sourceLegend ? `<span class="muted">${escapeHtml(_t('personalOntology.relations_graph_legend_sources', '节点来源'))}：</span>${sourceLegend}` : ''}</div>` : ''}
+        </div>`;
+      }
+    }
+    const listArea = `<section class="personal-onto-relation-section" aria-labelledby="personal-onto-explicit-relations-title">
         <div class="personal-onto-zone-head" id="personal-onto-explicit-relations-title">${escapeHtml(_t('personalOntology.relationships_explicit_title', '明确关系'))} <span class="muted">${explicitRows.length}</span></div>
         <p class="personal-onto-relation-help">${escapeHtml(_t('personalOntology.relationships_explicit_hint', '这些关系明确记录了起点、关系名称和终点，例如“我 → 负责 → 项目”。'))}</p>
         ${relationHtml || `<div class="personal-onto-domain-empty">${_emptyState({
@@ -2926,8 +3410,16 @@
         <summary>${escapeHtml(_tv('personalOntology.relationships_same_source_title', { n: sameSourceRows.length }, `同来源分组（系统整理）· ${sameSourceRows.length} 组`))}</summary>
         <p class="personal-onto-relation-help">${escapeHtml(_t('personalOntology.relationships_same_source_hint', '这些资产来自相同来源，被系统归为一组；这不表示它们之间存在业务依赖关系。'))}</p>
         ${sameSourceHtml}
-      </details>` : ''}
-      <p class="personal-onto-overview-note">${escapeHtml(_t('personalOntology.relationships_boundary_note', '关系图当前以清单呈现，避免把文本相似或模型猜测误显示成真实连接。'))}</p>
+      </details>` : ''}`;
+    return `<div class="personal-onto-domain-view">
+      <div class="personal-onto-domain-intro">${escapeHtml(_t('personalOntology.relationships_hint', '每条明确关系按“起点 → 关系 → 终点”读取；来源用于说明关系是从哪里保存的。'))}</div>
+      <div class="personal-onto-relgraph-mode" role="group" aria-label="${escapeHtml(_t('personalOntology.relations_mode_label', '关系呈现'))}">${modeControl}</div>
+      <div class="personal-onto-graph-toolbar">${_button({ label: _t('ontologyGraph.relation_new', '新建关系'), icon: 'plus', size: 'sm', disabled: !canCreateGraphRelation, attrs: { 'data-poc-graph-op': 'relation-create' } })}${!canCreateGraphRelation ? `<span class="muted">${escapeHtml(_t('ontologyGraph.relation_needs_entity', '先创建至少一个实体，再添加关系。'))}</span>` : ''}</div>
+      ${graphError}
+      ${_pocRelationsMode === 'graph' ? graphArea : listArea}
+      <p class="personal-onto-overview-note">${escapeHtml(_pocRelationsMode === 'graph'
+        ? _t('personalOntology.relations_graph_note', '图谱只绘制明确保存的关系；同来源分组与模型猜测不会画成连线。')
+        : _t('personalOntology.relationships_boundary_note', '关系图当前以清单呈现，避免把文本相似或模型猜测误显示成真实连接。'))}</p>
     </div>`;
   }
 
@@ -2960,6 +3452,55 @@
         await _pocHandleGraphOperation(el);
       });
     });
+    bodyEl.querySelectorAll('[data-poc-rel-mode]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const mode = el.getAttribute('data-poc-rel-mode');
+        if (mode === 'list' || mode === 'graph') {
+          _pocRelationsMode = mode;
+          _pocRenderMain();
+          if (mode === 'graph' && _pocRelationsLayout === 'force') {
+            void _pocEnsureForceLib().then((ok) => {
+              if (ok && _pocRelationsMode === 'graph') _pocRenderMain();
+            });
+          }
+        }
+      });
+    });
+    bodyEl.querySelectorAll('[data-poc-rel-layout]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const layout = el.getAttribute('data-poc-rel-layout');
+        if (layout === 'force' || layout === 'layered') {
+          _pocRelationsLayout = layout;
+          _pocRelationsPositions = { fingerprint: '', map: new Map() };
+          _pocRenderMain();
+          if (layout === 'force') {
+            void _pocEnsureForceLib().then((ok) => {
+              if (ok && _pocRelationsMode === 'graph') _pocRenderMain();
+            });
+          }
+        }
+      });
+    });
+    bodyEl.querySelectorAll('[data-poc-rel-kind]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const kind = el.getAttribute('data-poc-rel-kind');
+        if (!_POC_REL_GRAPH_KINDS.includes(kind)) return;
+        if (!_pocRelationsKindOff) _pocRelationsKindOff = new Set();
+        if (_pocRelationsKindOff.has(kind)) _pocRelationsKindOff.delete(kind);
+        else _pocRelationsKindOff.add(kind);
+        _pocRenderMain();
+      });
+    });
+    bodyEl.querySelectorAll('[data-poc-rel-zoom]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const op = el.getAttribute('data-poc-rel-zoom');
+        if (op === 'in') _pocRelationsTransform.zoom = Math.min(4, _pocRelationsTransform.zoom * 1.25);
+        else if (op === 'out') _pocRelationsTransform.zoom = Math.max(0.2, _pocRelationsTransform.zoom / 1.25);
+        else if (op === 'reset') _pocRelationsTransform = { zoom: 1, panX: 0, panY: 0 };
+        _pocApplyRelationsTransform(bodyEl);
+      });
+    });
+    _pocBindRelationsGraph(bodyEl);
   }
 
   async function _pocHandleGraphOperation(el) {
@@ -3419,6 +3960,10 @@ function _pocBindNav() {
   async function renderPersonalOntology(options = {}) {
     if (options && ['overview', 'personal', 'affairs', 'resources', 'concepts', 'taxonomy', 'relationships'].includes(options.view)) {
       _pocView = options.view;
+    }
+    // 关系网络呈现模式深链（清单/图谱）。
+    if (options && (options.relationsMode === 'list' || options.relationsMode === 'graph')) {
+      _pocRelationsMode = options.relationsMode;
     }
     // 深链直达个人本体某一页（facts / rules / groups）。
     if (options && ['facts', 'rules', 'groups'].includes(options.box)) {

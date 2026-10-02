@@ -313,3 +313,65 @@ describe('personal ontology v2 renderer › legacy domains compatibility', () =>
     expect(ontology).not.toContain('window.MemoryTools.openExport');
   });
 });
+
+// ── 关系图谱（清单/图谱双呈现，2026-10-02）──────────────────────────────
+
+describe('personal ontology v2 renderer › relation graph', () => {
+  const makeGraphInvoke = () => {
+    const base = makeInvoke();
+    return vi.fn(async (channel: string) => {
+      if (channel === 'recall.assets.list') {
+        return {
+          ok: true,
+          assets: [
+            {
+              id: 'asset-7', type: 'personal', status: 'active',
+              statement: '用户是 CogSeed 的开发人员', title: '身份',
+              relations: [{ kind: 'refines', assetId: 'asset-8' }, { kind: 'same_family', assetId: 'asset-8' }],
+            },
+            { id: 'asset-8', type: 'rule', status: 'active', statement: '回复长任务 → 先给分段结论', title: '长任务回复' },
+          ],
+        };
+      }
+      return base(channel);
+    });
+  };
+
+  it('图谱模式渲染 SVG 画布；same_family 不画线（显式关系底线）', async () => {
+    const loaded = loadPersonalOntology(makeGraphInvoke());
+    await loaded.sandbox.renderPersonalOntology({ view: 'relationships', relationsMode: 'graph' });
+    await settle();
+    const html1 = body(loaded);
+    expect(html1).toContain('data-poc-rel-canvas-host');
+    expect(html1).toContain('data-poc-rel-viewport');
+    // refines 资产边 + 部署规则本体边 = 2 组；same_family 被排除（计入应为 3）
+    expect((html1.match(/data-poc-rel-edge-group/g) || []).length).toBe(2);
+    // 图谱模式下不渲染清单的同来源折叠区
+    expect(html1).not.toContain('personal-onto-related-groups');
+  });
+
+  it('默认仍是清单模式：无画布，同来源分组以折叠区呈现', async () => {
+    const loaded = loadPersonalOntology(makeGraphInvoke());
+    await loaded.sandbox.renderPersonalOntology({ view: 'relationships' });
+    await settle();
+    const html1 = body(loaded);
+    expect(html1).not.toContain('data-poc-rel-canvas-host');
+    expect(html1).toContain('personal-onto-related-groups');
+  });
+
+  it('无 d3-force 环境自动降级分层布局并提示（降级不变量）', async () => {
+    const loaded = loadPersonalOntology(makeGraphInvoke());
+    await loaded.sandbox.renderPersonalOntology({ view: 'relationships', relationsMode: 'graph' });
+    await settle();
+    const html1 = body(loaded);
+    // 沙箱不注入 vendor d3-force：布局必须仍出图，并显示降级提示（沙箱 t() 返回键名）。
+    expect(html1).toContain('relations_graph_fallback_tag');
+    expect((html1.match(/data-poc-rel-node/g) || []).length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('布局与渲染不引入字面 z-index / 裸控件 / 内联 svg 根（守卫口径自查）', () => {
+    expect(ontology).not.toMatch(/z-index\s*:/);
+    expect(ontology).not.toContain('<input type="checkbox"');
+    expect(ontology).not.toContain('<svg');
+  });
+});

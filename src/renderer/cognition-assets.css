@@ -1998,3 +1998,76 @@
 .recall-personal-ontology-section .po2-field-hint {
   font-size: 12px;
 }
+
+/* ── 关系图谱（清单/图谱双呈现）────────────────────────────────────────── */
+#ca-root .personal-onto-relgraph-mode {
+  display: flex; align-items: center; gap: 10px; margin: 10px 0 4px;
+}
+#ca-root .personal-onto-relgraph {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 0;
+}
+#ca-root .personal-onto-relgraph-toolbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+}
+#ca-root .personal-onto-relgraph-zoom {
+  display: inline-flex; gap: 6px; flex-wrap: wrap;
+}
+#ca-root .personal-onto-relgraph-meta {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+#ca-root .personal-onto-relgraph-chips {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+#ca-root .personal-onto-relgraph-canvas {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--color-white-92);
+  overflow: hidden;
+  touch-action: none;
+}
+#ca-root .personal-onto-relgraph-svg {
+  display: block; width: 100%; height: 460px; cursor: grab;
+}
+#ca-root .personal-onto-relgraph-canvas:active {
+  cursor: grabbing;
+}
+#ca-root .personal-onto-relgraph-node {
+  cursor: default;
+}
+#ca-root .personal-onto-relgraph-node.is-clickable {
+  cursor: pointer;
+}
+#ca-root .personal-onto-relgraph-node.is-dragging {
+  cursor: grabbing;
+}
+#ca-root .personal-onto-relgraph-node.is-hover rect {
+  stroke-width: 2.2;
+}
+#ca-root .personal-onto-relgraph-node:not(.is-hover),
+#ca-root .personal-onto-relgraph-edge-group {
+  transition: opacity 0.12s ease;
+}
+#ca-root .personal-onto-relgraph-canvas:hover .personal-onto-relgraph-edge-group:not(.is-hover) {
+  opacity: 0.45;
+}
+#ca-root .personal-onto-relgraph-edge-label {
+  font-size: 10px; font-weight: 600;
+  paint-order: stroke; stroke: var(--color-white); stroke-width: 3px; stroke-linejoin: round;
+}
+#ca-root .personal-onto-relgraph-node-label {
+  user-select: none;
+}
+#ca-root .personal-onto-relgraph-legend {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  font-size: var(--font-size-caption); color: var(--ink2);
+}
+#ca-root .personal-onto-relgraph-legend-item {
+  display: inline-flex; align-items: center; gap: 5px;
+}
+#ca-root .personal-onto-relgraph-legend-item i {
+  display: inline-block; width: 10px; height: 10px; border-radius: 5px; flex: none;
+}
+#ca-root .personal-onto-relgraph-legend-item i.is-bar {
+  width: 3px; height: 12px; border-radius: 1.5px;
+}
