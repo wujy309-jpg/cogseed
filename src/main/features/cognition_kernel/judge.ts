@@ -1,19 +1,19 @@
 /**
- * cognition_kernel/judge — 归属判定引擎（2026-10-02 改版，取代写死的规则表）。
+ * cognition_kernel/judge — 归属判定引擎（S3-d v3：可核验门控 + 进池）。
  *
- * 分工（这是本次改版的核心）：
- *   · **判断**：大模型读数——内容语义 + 用户本体（T-Box 字段 / R-Box 规则）
- *     + 用户自己的归属规则与历次纠正样例 → 输出 { home, confidence, reason, ruleIds }
- *   · **闸门**：代码硬约束——三档门控、两池互斥、判定结果永不直接写用户档案
- *     （高置信也只进候选池，等用户点头）。安全与权威不交给模型。
+ * v3 相对 v2（2026-10-02 自查后重做）的三处根治：
+ *   ① 自报置信度门控废弃——LLM 自报 confidence 普遍偏自信，拿它当闸门等于
+ *      没有闸门。新门控只认**可核验信号**：确定性短路（用户显式声明/字段有
+ *      明确落点）直接出结果不调模型；模型判定一律进池 pending 等用户点头，
+ *      置信度只用于排序展示。
+ *   ② 多候选 + 空（判定层如实报告，存储层永远单家）：模型输出 candidates
+ *      数组（≤3 条，含置信度），允许空数组=不属于任何家；主候选建 Delta 进
+ *      池，次候选记为 alternatives 供确认界面「选主家」。
+ *   ③ 纠正样例按相关性检索（词面重合打分取 top），不再按最近 12 条——老
+ *      样例不再被新样例挤出。
  *
- * 三档门控（照 Jev 参考实现已验证的 auto/floor 形状）：
- *   ≥ AUTO  → 'auto'        进候选池（**不写档案**）
- *   ≥ FLOOR → 'ask'         问你一句
- *   < FLOOR → 'unclassified' 不猜、不进任何家
- *
- * 降级：模型不可用／回复不可解析 → 'unclassified'（宁可未分类，不制造错误归属）。
- * 留痕：每次判定记一条 routing-decisions.jsonl，可审计、可回放、可做评测集。
+ * 分工不变：判断归模型、闸门归代码、规则即数据；判定永不直写档案。
+ * 留痕 routing-decisions.jsonl 照旧（可审计、可回放、可做评测集）。
  */
 
 import * as fs from 'node:fs';
@@ -23,16 +23,13 @@ import type { buildRunner } from '../../model/core-agent/runner';
 import { createLogger } from '../../logger';
 import { userCognitionDir } from '../../paths';
 import { nowIso, safeId } from '../../storage';
-import { HOME_DEFINITIONS, UNCLASSIFIED } from './routing';
+import { UNCLASSIFIED } from './routing';
 import { readRoutingRules, type RoutingCorrection, type RoutingRule, type RoutingRulesDoc } from './routing_rules';
+import { loadCognitionStoreSync } from './store';
+import type { HomeRegistryEntry } from './object-model';
 import type { ContentHome } from './types';
 
 const log = createLogger('cognition-routing-judge');
-
-/** ≥ 此值：自动归入候选池（仍然不写档案，等用户点头）。 */
-export const AUTO_CONFIDENCE = 0.75;
-/** ≥ 此值：转成一次提问；低于此值：未分类。 */
-export const FLOOR_CONFIDENCE = 0.45;
 
 const MAX_STATEMENT_FOR_PROMPT = 800;
 const MAX_ONTOLOGY_CHARS = 1800;
@@ -40,34 +37,50 @@ const MAX_RULES_IN_PROMPT = 20;
 const MAX_CORRECTIONS_IN_PROMPT = 12;
 const MAX_REASON_CHARS = 120;
 const MAX_AUDIT_STATEMENT_CHARS = 300;
-
-const HOMES: ReadonlySet<string> = new Set<ContentHome>(HOME_DEFINITIONS.map((entry) => entry.home));
+const MAX_CANDIDATES = 3;
 
 export interface ContentToRoute {
   statement: string;
   /** 生产者给的弱信号（模型建议/来源通道）：只作参考，不作判定依据。 */
   suggestedType?: string;
   sourceKind?: string;
+  /**
+   * 确定性短路口（可核验信号，不调模型）：可信生产者已确知归属时传入——
+   * 例：用户在对话里明说「记住我的部门是…」（explicitHome=personal_fact）、
+   * 回填已知字段（fieldName 有明确落点）。闸门只认这类信号，不认自报置信度。
+   */
+  explicitHome?: ContentHome;
+  /** 字段有明确落点 → 断言语义短路（不调模型）。 */
+  fieldName?: string;
 }
 
-export type RoutingOutcome = 'auto' | 'ask' | 'unclassified';
+export type RoutingOutcome = 'deterministic' | 'proposed' | 'unclassified';
+
+export interface HomeCandidate {
+  home: string;
+  confidence: number;
+}
 
 export interface RoutingJudgement {
   outcome: RoutingOutcome;
-  /** outcome='unclassified' 时为 null。 */
+  /** 主候选（outcome='proposed' 时必有；unclassified 为 null）。 */
   home: ContentHome | null;
+  /** 全部候选（≤3，按置信度降序）；deterministic 时只有主候选一条。 */
+  candidates: HomeCandidate[];
+  /** 主候选置信度（仅排序展示，不作闸门）。 */
   confidence: number;
   reason: string;
   matchedRuleIds: string[];
-  /** 'llm' = 模型判定；'degraded' = 模型不可用/不可解析（未分类）。 */
-  model: 'llm' | 'degraded';
+  /** 'rules'=确定性短路；'llm'=模型判定；'degraded'=不可用/不可解析。 */
+  model: 'rules' | 'llm' | 'degraded';
 }
 
 export interface JudgeOptions {
-  /** 测试缝：与 semantic-review / personal_ontology_router 同一手法。 */
+  /** 测试缝：与 semantic-review 同一手法。 */
   buildRunnerFn?: typeof buildRunner;
   readRulesFn?: (uid: string) => RoutingRulesDoc;
   ontologyContextFn?: (uid: string) => Promise<string>;
+  homesFn?: (uid: string) => HomeRegistryEntry[];
 }
 
 function clip(value: unknown, max: number): string {
@@ -109,20 +122,59 @@ export async function buildOntologyContext(uid: string): Promise<string> {
       uid,
       error: String((error as Error)?.message || error),
     });
-    return '（本体上下文读取失败：本次判定缺少本体依据，请对不确定的内容给低置信度。）';
+    return '（本体上下文读取失败：本次判定缺少本体依据，请如实给低置信度或空候选。）';
   }
 }
+
+// ── 纠正样例相关性检索（自查⑤：替代"最近 12 条"）──────────────────────
+
+/** 分词：CJK 拆 2-gram，其余按非字母数字切词——零依赖的词面相关性。 */
+function tokenize(text: string): Set<string> {
+  const tokens = new Set<string>();
+  const compact = String(text ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const cjk = compact.match(/[\u4e00-\u9fff]{2,}/g) ?? [];
+  for (const run of cjk) {
+    for (let i = 0; i + 1 < run.length; i += 1) tokens.add(run.slice(i, i + 2));
+  }
+  for (const word of compact.split(/[^\p{L}\p{N}]+/u)) {
+    if (word.length >= 2) tokens.add(word);
+  }
+  return tokens;
+}
+
+/** 按与待判内容的词面重合排序取 top-N（重合同分时新的在前）。 */
+export function rankCorrectionsByRelevance(
+  statement: string,
+  corrections: readonly RoutingCorrection[],
+  limit: number = MAX_CORRECTIONS_IN_PROMPT,
+): RoutingCorrection[] {
+  const query = tokenize(statement);
+  if (!query.size) return corrections.slice(-limit).reverse();
+  const scored = corrections.map((item, index) => {
+    const target = tokenize(item.statement);
+    let overlap = 0;
+    for (const token of target) if (query.has(token)) overlap += 1;
+    const score = overlap / (1 + Math.sqrt(target.size));
+    return { item, score, index };
+  });
+  scored.sort((a, b) => b.score - a.score || b.index - a.index);
+  return scored.slice(0, limit).map((entry) => entry.item);
+}
+
+// ── prompt 与解析（多候选 + 空）─────────────────────────────────────────
 
 export function buildJudgePrompt(input: {
   statement: string;
   suggestedType?: string;
   sourceKind?: string;
   ontology: string;
+  homes: readonly HomeRegistryEntry[];
   rules: readonly RoutingRule[];
   corrections: readonly RoutingCorrection[];
 }): string {
-  const homes = HOME_DEFINITIONS.map((entry) => (
-    '- ' + entry.home + '（' + entry.label + '）：' + entry.definition + '\n  例：' + entry.examples.join('；')
+  const homesText = input.homes.map((entry) => (
+    '- ' + entry.home + '（' + entry.label + '）：' + entry.definition
+    + (entry.examples.length ? '\n  例：' + entry.examples.join('；') : '')
   )).join('\n');
 
   const userRules = input.rules.length
@@ -130,7 +182,7 @@ export function buildJudgePrompt(input: {
     : '（暂无）';
 
   const corrections = input.corrections.length
-    ? input.corrections.slice(-MAX_CORRECTIONS_IN_PROMPT)
+    ? input.corrections
         .map((item) => '- "' + clip(item.statement, 120) + '"：用户把它从 ' + (item.fromHome || '未分类') + ' 改成 ' + item.toHome
           + (item.note ? '（原因：' + item.note + '）' : ''))
         .join('\n')
@@ -141,11 +193,13 @@ export function buildJudgePrompt(input: {
     input.sourceKind ? '来源通道=' + input.sourceKind : '',
   ].filter(Boolean).join('，') || '（无）';
 
+  const homeIds = input.homes.map((entry) => entry.home).join('|');
+
   return [
     '你是「认知归属判定员」。判断下面这条内容该进用户认知的哪个家。',
     '',
-    '【家的定义（只能选一个，或给 ' + UNCLASSIFIED + '）】',
-    homes,
+    '【家的定义】',
+    homesText,
     '',
     '【用户的本体】',
     input.ontology,
@@ -153,7 +207,7 @@ export function buildJudgePrompt(input: {
     '【用户自己的归属规则】',
     userRules,
     '',
-    '【用户过去纠正过的样例】',
+    '【与这条内容最相关的历史纠正样例】',
     corrections,
     '',
     '【待判内容】',
@@ -161,21 +215,18 @@ export function buildJudgePrompt(input: {
     '（参考信号，不构成判据：' + hints + '）',
     '',
     '【输出】只输出一个 JSON 对象，不要解释、不要代码块：',
-    '{"home":"personal_fact|rule|template|method|task_local|experience|' + UNCLASSIFIED + '",'
-      + '"confidence":0.0到1.0,"reason":"一句话依据（不超过60字）","matchedRuleIds":["命中的用户规则 id，没有就空数组"]}',
-    '判不准就给低置信度或直接 ' + UNCLASSIFIED + '——不要猜。',
-    '特别注意：' + 'task_local' + ' 是项目/任务的临时事实（不进长期档案）；'
-      + 'experience' + ' 只对某一次任务成立；这两类最容易与 personal_fact 混淆。',
+    '{"candidates":[{"home":"候选家id","confidence":0.0到1.0},…最多' + MAX_CANDIDATES + '条],"reason":"一句话依据（≤60字）","matchedRuleIds":["命中的用户规则id，没有就空数组"]}',
+    '规则：candidates 按把握从高到低排；一条内容可能同时像两个家（如"我不吃辣"既像 personal_fact 又像 rule），'
+      + '把握接近就都列出来，不要硬选一个；完全不属于任何家（闲聊/问候/一次性请求）就给空数组——如实报告，不要猜。',
+    '可用的家 id：' + homeIds + '（都不合适 → 空数组）。',
   ].join('\n');
 }
 
-/** 解析模型回复：宽松取第一个 JSON 对象，字段严格收口。 */
-export function parseJudgeReply(text: string): {
-  home: ContentHome | null;
-  confidence: number;
-  reason: string;
-  matchedRuleIds: string[];
-} | null {
+/** 解析模型回复：宽松取第一个 JSON 对象；candidates 严格收口（≤3、合法家、按置信度降序）。 */
+export function parseJudgeReply(
+  text: string,
+  knownHomes: ReadonlySet<string>,
+): { candidates: HomeCandidate[]; confidence: number; reason: string; matchedRuleIds: string[] } | null {
   const match = String(text || '').match(/\{[\s\S]*\}/);
   if (!match) return null;
   let raw: Record<string, unknown>;
@@ -184,43 +235,26 @@ export function parseJudgeReply(text: string): {
   } catch {
     return null;
   }
-  const homeText = String(raw.home ?? '').trim();
-  const home = HOMES.has(homeText) ? (homeText as ContentHome) : null;
-  if (!home && homeText !== UNCLASSIFIED) return null;
-  const rawConfidence = Number(raw.confidence);
-  const confidence = Number.isFinite(rawConfidence) ? Math.min(1, Math.max(0, rawConfidence)) : 0;
+  const rawCandidates = Array.isArray(raw.candidates) ? raw.candidates : [];
+  const seen = new Set<string>();
+  const candidates: HomeCandidate[] = [];
+  for (const item of rawCandidates) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const r = item as Record<string, unknown>;
+    const home = String(r.home ?? '').trim();
+    if (!home || home === UNCLASSIFIED || !knownHomes.has(home) || seen.has(home)) continue;
+    seen.add(home);
+    const rawConfidence = Number(r.confidence);
+    const confidence = Number.isFinite(rawConfidence) ? Math.min(1, Math.max(0, rawConfidence)) : 0;
+    candidates.push({ home, confidence });
+    if (candidates.length >= MAX_CANDIDATES) break;
+  }
+  candidates.sort((a, b) => b.confidence - a.confidence);
   const reason = clip(raw.reason, MAX_REASON_CHARS);
   const matchedRuleIds = Array.isArray(raw.matchedRuleIds)
     ? raw.matchedRuleIds.filter((id): id is string => typeof id === 'string').slice(0, 8)
     : [];
-  return { home, confidence, reason, matchedRuleIds };
-}
-
-function gate(parsed: { home: ContentHome | null; confidence: number; reason: string; matchedRuleIds: string[] }): RoutingJudgement {
-  if (!parsed.home) {
-    return {
-      outcome: 'unclassified',
-      home: null,
-      confidence: parsed.confidence,
-      reason: parsed.reason || '模型判定为未分类',
-      matchedRuleIds: parsed.matchedRuleIds,
-      model: 'llm',
-    };
-  }
-  if (parsed.confidence >= AUTO_CONFIDENCE) {
-    return { outcome: 'auto', home: parsed.home, confidence: parsed.confidence, reason: parsed.reason, matchedRuleIds: parsed.matchedRuleIds, model: 'llm' };
-  }
-  if (parsed.confidence >= FLOOR_CONFIDENCE) {
-    return { outcome: 'ask', home: parsed.home, confidence: parsed.confidence, reason: parsed.reason, matchedRuleIds: parsed.matchedRuleIds, model: 'llm' };
-  }
-  return {
-    outcome: 'unclassified',
-    home: null,
-    confidence: parsed.confidence,
-    reason: parsed.reason || '置信度低于下限',
-    matchedRuleIds: parsed.matchedRuleIds,
-    model: 'llm',
-  };
+  return { candidates, confidence: candidates[0]?.confidence ?? 0, reason, matchedRuleIds };
 }
 
 /** 判定一条内容该进哪个家。永不抛错：失败一律回退为 unclassified。 */
@@ -231,8 +265,39 @@ export async function judgeContentHome(
 ): Promise<RoutingJudgement> {
   const statement = clip(content?.statement, MAX_STATEMENT_FOR_PROMPT);
   if (!safeId(uid) || !statement) {
-    return { outcome: 'unclassified', home: null, confidence: 0, reason: '内容为空或用户无效', matchedRuleIds: [], model: 'degraded' };
+    return { outcome: 'unclassified', home: null, candidates: [], confidence: 0, reason: '内容为空或用户无效', matchedRuleIds: [], model: 'degraded' };
   }
+
+  // 确定性短路（可核验信号，不调模型）。
+  const homes = options.homesFn ? options.homesFn(uid) : loadCognitionStoreSync(uid).homes;
+  const knownHomes = new Set(homes.map((entry) => entry.home));
+  if (content.explicitHome && knownHomes.has(content.explicitHome)) {
+    const judgement: RoutingJudgement = {
+      outcome: 'deterministic',
+      home: content.explicitHome,
+      candidates: [{ home: content.explicitHome, confidence: 1 }],
+      confidence: 1,
+      reason: '可信生产者显式声明（不调模型）',
+      matchedRuleIds: [],
+      model: 'rules',
+    };
+    void recordRoutingDecision(uid, { content: statement, judgement });
+    return judgement;
+  }
+  if (content.fieldName && knownHomes.has('personal_fact')) {
+    const judgement: RoutingJudgement = {
+      outcome: 'deterministic',
+      home: 'personal_fact',
+      candidates: [{ home: 'personal_fact', confidence: 1 }],
+      confidence: 1,
+      reason: '字段有明确落点（' + clip(content.fieldName, 40) + '）→ 断言语义，不调模型',
+      matchedRuleIds: [],
+      model: 'rules',
+    };
+    void recordRoutingDecision(uid, { content: statement, judgement });
+    return judgement;
+  }
+
   try {
     const readRules = options.readRulesFn ?? readRoutingRules;
     const buildContext = options.ontologyContextFn ?? buildOntologyContext;
@@ -241,28 +306,49 @@ export async function judgeContentHome(
     const build = options.buildRunnerFn ?? (await import('../../model/core-agent/runner')).buildRunner;
     const tail = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     const { runner } = await build({
-      sessionId: 'memory-extract-recall-routing-judge-' + tail,
+      sessionId: 'cognition-routing-judge-' + tail,
       userId: uid,
     });
     const reply = await runner.runReflection(buildJudgePrompt({
       statement,
       ontology,
+      homes,
       rules: rulesDoc.rules,
-      corrections: rulesDoc.corrections,
+      corrections: rankCorrectionsByRelevance(statement, rulesDoc.corrections),
       ...(content.suggestedType ? { suggestedType: String(content.suggestedType) } : {}),
       ...(content.sourceKind ? { sourceKind: String(content.sourceKind) } : {}),
     }));
-    const parsed = parseJudgeReply(reply || '');
+    const parsed = parseJudgeReply(reply || '', knownHomes);
     if (!parsed) {
       log.warn('routing judge reply unparseable', { uid });
-      return { outcome: 'unclassified', home: null, confidence: 0, reason: '模型回复不可解析', matchedRuleIds: [], model: 'degraded' };
+      const judgement: RoutingJudgement = { outcome: 'unclassified', home: null, candidates: [], confidence: 0, reason: '模型回复不可解析', matchedRuleIds: [], model: 'degraded' };
+      void recordRoutingDecision(uid, { content: statement, judgement });
+      return judgement;
     }
-    const judgement = gate(parsed);
+    const judgement: RoutingJudgement = parsed.candidates.length
+      ? {
+          outcome: 'proposed',
+          home: parsed.candidates[0].home as ContentHome,
+          candidates: parsed.candidates,
+          confidence: parsed.candidates[0].confidence,
+          reason: parsed.reason,
+          matchedRuleIds: parsed.matchedRuleIds,
+          model: 'llm',
+        }
+      : {
+          outcome: 'unclassified',
+          home: null,
+          candidates: [],
+          confidence: 0,
+          reason: parsed.reason || '模型判定为空（不属于任何家）',
+          matchedRuleIds: parsed.matchedRuleIds,
+          model: 'llm',
+        };
     void recordRoutingDecision(uid, { content: statement, judgement });
     return judgement;
   } catch (error) {
     log.warn('routing judge unavailable', { uid, error: String((error as Error)?.message || error) });
-    return { outcome: 'unclassified', home: null, confidence: 0, reason: '判定不可用', matchedRuleIds: [], model: 'degraded' };
+    return { outcome: 'unclassified', home: null, candidates: [], confidence: 0, reason: '判定不可用', matchedRuleIds: [], model: 'degraded' };
   }
 }
 
@@ -280,7 +366,7 @@ export async function recordRoutingDecision(
       content: clip(record.content, MAX_AUDIT_STATEMENT_CHARS),
       outcome: record.judgement.outcome,
       home: record.judgement.home,
-      confidence: record.judgement.confidence,
+      candidates: record.judgement.candidates,
       reason: clip(record.judgement.reason, MAX_REASON_CHARS),
       matchedRuleIds: record.judgement.matchedRuleIds,
       model: record.judgement.model,

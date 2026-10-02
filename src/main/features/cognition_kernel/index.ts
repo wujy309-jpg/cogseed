@@ -39,15 +39,14 @@ export { PERSONAL_FIELD_POLICY_VERSION } from './types';
 export { CONTENT_ROUTE_TABLE, HOME_DEFINITIONS, POOL_BY_HOME, UNCLASSIFIED } from './routing';
 export type { HomeDefinition } from './routing';
 export {
-  AUTO_CONFIDENCE,
-  FLOOR_CONFIDENCE,
   buildJudgePrompt,
   buildOntologyContext,
   judgeContentHome,
   parseJudgeReply,
+  rankCorrectionsByRelevance,
   recordRoutingDecision,
 } from './judge';
-export type { ContentToRoute, JudgeOptions, RoutingJudgement, RoutingOutcome } from './judge';
+export type { ContentToRoute, HomeCandidate, JudgeOptions, RoutingJudgement, RoutingOutcome } from './judge';
 export { addRoutingRule, learnFromCorrection, readRoutingRules, routingRulesPath } from './routing_rules';
 export type { RoutingCorrection, RoutingRule, RoutingRulesDoc } from './routing_rules';
 
@@ -106,12 +105,30 @@ export {
   POOL_CORRUPT_DOMAIN,
   POOL_MAX_ITEMS,
   POOL_SCHEMA_VERSION,
+  UNROUTED_MAX,
+  addUnrouted,
   decidePoolItem,
+  decideUnrouted,
   emptyPool,
   listPool,
+  listUnrouted,
   loadPoolSync,
   poolPath,
   resumeDuePoolItems,
   submitToPool,
 } from './pool';
-export type { DecideOutcome, PoolDocument, PoolItem, PoolItemStatus, PoolSourceKind, PoolView, SubmitOutcome } from './pool';
+export type {
+  DecideOutcome,
+  PoolDocument,
+  PoolItem,
+  PoolItemStatus,
+  PoolSourceKind,
+  PoolView,
+  SubmitOutcome,
+  UnroutedItem,
+  UnroutedOutcome,
+} from './pool';
+
+// S3-d：判定→池 总装线（一条内容进门的唯一入口）。
+export { routeAndSubmit } from './pipeline';
+export type { RouteAndSubmitOptions, RouteAndSubmitResult } from './pipeline';

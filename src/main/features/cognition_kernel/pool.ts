@@ -54,11 +54,23 @@ export interface PoolItem {
   supersededBy?: string;
   /** 迁移映射：来自旧 po/recall 候选时的原 id（S3-d 用）。 */
   originalRef?: { kind: 'po_candidate' | 'recall_candidate'; id: string };
+  /** 判定层给出的次候选（主候选在 delta.target.home；确认界面可「换主家」）。 */
+  alternatives?: Array<{ home: string; confidence: number }>;
+}
+
+/** 未分类出口：判不出来（空候选/降级）的内容先进这里，用户选家或丢弃——不给黑洞。 */
+export interface UnroutedItem {
+  id: string;
+  statement: string;
+  sourceKind: PoolSourceKind;
+  createdAt: string;
 }
 
 export interface PoolDocument {
   schemaVersion: 1;
   items: PoolItem[];
+  /** 未分类暂存（≤100，FIFO）：有出口、不进任何家。 */
+  unrouted: UnroutedItem[];
   updatedAt: string;
 }
 
@@ -66,8 +78,10 @@ export function poolPath(uid: string): string {
   return path.join(userCognitionDir(uid), 'cognition-pool.json');
 }
 
+export const UNROUTED_MAX = 100;
+
 export function emptyPool(): PoolDocument {
-  return { schemaVersion: POOL_SCHEMA_VERSION, items: [], updatedAt: nowIso() };
+  return { schemaVersion: POOL_SCHEMA_VERSION, items: [], unrouted: [], updatedAt: nowIso() };
 }
 
 function normalizeItem(raw: unknown): PoolItem | null {
@@ -94,6 +108,9 @@ function normalizeItem(raw: unknown): PoolItem | null {
     ...(r.originalRef && typeof r.originalRef === 'object'
       ? { originalRef: r.originalRef as PoolItem['originalRef'] }
       : {}),
+    ...(Array.isArray(r.alternatives)
+      ? { alternatives: (r.alternatives as PoolItem['alternatives']).slice(0, 3) }
+      : {}),
   };
 }
 
@@ -107,6 +124,22 @@ function normalizePool(raw: unknown): PoolDocument {
       const normalized = normalizeItem(item);
       if (normalized) doc.items.push(normalized);
     }
+  }
+  if (Array.isArray(r.unrouted)) {
+    for (const item of r.unrouted) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+      const u = item as Record<string, unknown>;
+      const id = typeof u.id === 'string' ? u.id.trim() : '';
+      const statement = typeof u.statement === 'string' ? u.statement.trim() : '';
+      if (!id || !statement) continue;
+      doc.unrouted.push({
+        id,
+        statement,
+        sourceKind: (typeof u.sourceKind === 'string' ? u.sourceKind : 'user') as PoolSourceKind,
+        createdAt: typeof u.createdAt === 'string' ? u.createdAt : nowIso(),
+      });
+    }
+    doc.unrouted = doc.unrouted.slice(-UNROUTED_MAX);
   }
   doc.updatedAt = typeof r.updatedAt === 'string' ? r.updatedAt : doc.updatedAt;
   return doc;
@@ -153,7 +186,12 @@ export interface SubmitOutcome {
 export async function submitToPool(
   uid: string,
   delta: CognitionDelta,
-  options?: { sourceKind?: PoolSourceKind; originalRef?: PoolItem['originalRef'] },
+  options?: {
+    sourceKind?: PoolSourceKind;
+    originalRef?: PoolItem['originalRef'];
+    /** 判定层次候选（S3-d pipeline 传入）。 */
+    alternatives?: Array<{ home: string; confidence: number }>;
+  },
 ): Promise<SubmitOutcome> {
   if (!safeId(uid)) return { ok: false, error: 'invalid uid' };
   const knownHomes = new Set(loadCognitionStoreSync(uid).homes.map((entry) => entry.home));
@@ -201,6 +239,7 @@ export async function submitToPool(
       createdAt: now,
       updatedAt: now,
       ...(options?.originalRef ? { originalRef: options.originalRef } : {}),
+      ...(options?.alternatives?.length ? { alternatives: options.alternatives.slice(0, 3) } : {}),
     };
     surviving.push(entry);
     // 容量约束：确认/拒绝的旧条目先淘汰（最旧优先），活条目永不被挤出。
@@ -321,4 +360,81 @@ export function resumeDuePoolItems(uid: string, now: string = nowIso()): number 
     }
   }
   return resumed;
+}
+// ── 未分类出口（判定为空的内容：有出口、不给黑洞）──────────────────────
+
+export interface UnroutedOutcome {
+  ok: boolean;
+  error?: string;
+  unroutedId?: string;
+}
+
+/** 未分类暂存（judge 空候选/降级时由 pipeline 调用；≤100 FIFO）。 */
+export async function addUnrouted(uid: string, statement: string, sourceKind: PoolSourceKind = 'judge'): Promise<UnroutedOutcome> {
+  if (!safeId(uid)) return { ok: false, error: 'invalid uid' };
+  const text = String(statement ?? '').replace(/\s+/g, ' ').trim().slice(0, 800);
+  if (!text) return { ok: false, error: 'empty statement' };
+  const filePath = poolPath(uid);
+  return fileEditLock(filePath).runExclusive(async () => {
+    const doc = loadPoolSync(uid);
+    const corrupt = corruptRecordFor(filePath);
+    if (corrupt) return { ok: false, error: `cognition pool corrupt; write refused (${corrupt.reason})` };
+    const now = nowIso();
+    const unroutedId = `ur-${now.replace(/[^0-9]/g, '').slice(-12)}-${String(doc.unrouted.length).padStart(3, '0')}`;
+    doc.unrouted.push({ id: unroutedId, statement: text, sourceKind, createdAt: now });
+    doc.unrouted = doc.unrouted.slice(-UNROUTED_MAX);
+    doc.updatedAt = now;
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    writePoolSync(filePath, doc);
+    return { ok: true, unroutedId };
+  });
+}
+
+export function listUnrouted(uid: string): UnroutedItem[] {
+  return loadPoolSync(uid).unrouted.slice().reverse();
+}
+
+/** 用户为未分类内容选家 → 变成该家的 proposed 提议进池（仍需确认）；discard 直接清掉。 */
+export async function decideUnrouted(
+  uid: string,
+  unroutedId: string,
+  decision: { routeHome: string } | { discard: true },
+): Promise<UnroutedOutcome & { poolItemId?: string }> {
+  if (!safeId(uid) || !safeId(unroutedId)) return { ok: false, error: 'invalid uid or unroutedId' };
+  const doc = loadPoolSync(uid);
+  const item = doc.unrouted.find((entry) => entry.id === unroutedId);
+  if (!item) return { ok: false, error: 'unrouted item not found' };
+  if ('discard' in decision && decision.discard) {
+    const filePath = poolPath(uid);
+    return fileEditLock(filePath).runExclusive(async () => {
+      const latest = loadPoolSync(uid);
+      latest.unrouted = latest.unrouted.filter((entry) => entry.id !== unroutedId);
+      latest.updatedAt = nowIso();
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      writePoolSync(filePath, latest);
+      return { ok: true };
+    });
+  }
+  const home = ('routeHome' in decision && decision.routeHome) || '';
+  const knownHomes = new Set(loadCognitionStoreSync(uid).homes.map((entry) => entry.home));
+  if (!knownHomes.has(home)) return { ok: false, error: `unknown home: ${home || '(空)'}` };
+  const { buildDelta } = await import('./delta');
+  const delta = buildDelta({
+    op: 'add',
+    target: { home: home as never },
+    origin: 'user',
+    after: item.statement,
+    status: 'proposed',
+  });
+  const submit = await submitToPool(uid, delta, { sourceKind: item.sourceKind });
+  if (!submit.ok) return submit;
+  const filePath = poolPath(uid);
+  await fileEditLock(filePath).runExclusive(async () => {
+    const latest = loadPoolSync(uid);
+    latest.unrouted = latest.unrouted.filter((entry) => entry.id !== unroutedId);
+    latest.updatedAt = nowIso();
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    writePoolSync(filePath, latest);
+  });
+  return { ok: true, poolItemId: submit.itemId };
 }
