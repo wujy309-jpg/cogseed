@@ -188,6 +188,7 @@ export function applyCognitionDelta(doc: CognitionStoreDocument, delta: Cognitio
     }
     const slot = findAssertionSlot(doc, delta.target.groupId, delta.target.fieldName ?? '');
     if (slot) {
+      if (slot.managedSource) return { applied: false, reason: 'source-managed slot; use canonical business API' };
       slot.statement = delta.after ?? '';
       slot.updatedAt = now;
       slot.version += 1;
@@ -207,6 +208,7 @@ export function applyCognitionDelta(doc: CognitionStoreDocument, delta: Cognitio
     }
     if (!target) return { applied: false, reason: `object not found: ${objectId || delta.target.fieldName || '?'}` };
     objectId = target.id;
+    if (target.managedSource) return { applied: false, reason: 'source-managed object; use canonical business API' };
     if (delta.op === 'update') {
       if (target.status === 'deleted') return { applied: false, reason: `object ${objectId} 已删除，先恢复再改` };
       target.statement = delta.after ?? '';
@@ -407,4 +409,21 @@ export function listCognitionVersions(uid: string, objectId: string): CognitionV
   } catch {
     return [];
   }
+}
+
+/** 兼容桥的原子入口：调用者提供已验证的来源快照，仍复用库锁、坏档拒写和原子落盘。
+ * 变更不会伪造新内容版本；版本/审计 JSONL 由既有资产业务服务维护。 */
+export async function editCognitionCompatibility(
+  uid: string, edit: (doc: CognitionStoreDocument) => void,
+): Promise<void> {
+  if (!safeId(uid)) throw new Error('invalid uid');
+  const filePath = cognitionStorePath(uid);
+  await fileEditLock(filePath).runExclusive(async () => {
+    const doc = loadCognitionStoreSync(uid);
+    if (corruptRecordFor(filePath)) throw new Error('cognition store corrupt; compatibility write refused');
+    edit(doc);
+    doc.updatedAt = nowIso();
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    writeStoreFileSync(filePath, doc);
+  });
 }

@@ -4471,9 +4471,15 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (!Array.isArray(homes)) throw new Error('homes must be an array');
     return cognitionKernel.replaceCognitionHomes(ctx.userId, homes as never);
   },
-  'cognition.migration.run': async ({ dryRun } = {}, ctx) => {
+  'cognition.migration.run': async ({ dryRun, activate, rollback } = {}, ctx) => {
     const { migrateLegacyCognition } = await import('../features/cognition_migration');
-    return migrateLegacyCognition(ctx.userId, { dryRun: dryRun === true });
+    if (rollback === true) {
+      if (dryRun === true || activate === true) throw new Error('rollback cannot combine with dryRun/activate');
+      const { rollbackCognitionAuthority } = await import('../features/cognition_bridge');
+      await rollbackCognitionAuthority(ctx.userId);
+      return { ok: true, mode: 'mirror' };
+    }
+    return migrateLegacyCognition(ctx.userId, { dryRun: dryRun === true, activate: activate === true });
   },
 
   // ── 桥接注册：renderer 引用但漏注册的通道（纯转发到现成能力，

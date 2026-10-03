@@ -17,6 +17,7 @@
 
   /** 写操作集合：点击后按钮进入 pending（禁用+变淡），完成或重画后还原。 */
   const WRITE_ACTIONS = new Set([
+    'storage-check', 'storage-activate', 'storage-rollback', 'storage-recover',
     'refresh', 'cand-adopt-with-form', 'cand-decide',
     'asset-action', 'asset-recommend-ack', 'select-asset-version', 'delete-asset-version',
     'rollback-cleanup-item', 'cleanup-uncertain-dismiss', 'cleanup-uncertain-defer',
@@ -550,6 +551,10 @@
             break;
           }
           case 'experience-migration-status': await A.experienceMigrationStatus(); break;
+          case 'storage-check': await A.cognitionStorageUpgrade('check'); break;
+          case 'storage-activate': await A.cognitionStorageUpgrade('activate'); break;
+          case 'storage-recover': await A.cognitionStorageUpgrade('recover'); break;
+          case 'storage-rollback': await A.cognitionStorageUpgrade('rollback'); break;
           case 'legacy-memory-refresh': await NS.loadLegacyMemoryMigrationPreview(true); break;
           case 'legacy-memory-run': await A.legacyMemoryMigrationRun(); break;
           case 'legacy-scoped-memory-refresh': await NS.loadLegacyScopedMemoryMigrationPreview(true); break;

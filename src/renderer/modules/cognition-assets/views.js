@@ -3281,6 +3281,25 @@
       || (Array.isArray(report.items) && report.items.some((item) => String(item.kind || '') === 'title_regen')));
 
   /** 资产设置中的手动整理入口；报告页继续复用既有 viewCleanup 路由。 */
+  function cognitionStorageUpgradeSection() {
+    const state = S.cognitionStorageUpgrade || {};
+    const report = state.report;
+    const running = Boolean(state.running);
+    const unified = report && report.mode === 'unified';
+    const checked = Boolean(report && !state.failed && !report.errors?.length);
+    const body = `<p>${esc(T('cognition.storage_upgrade_hint', '升级认知数据存储，保留资产正文、版本引用、候选和个人本体。升级前自动备份，升级后可恢复兼容存储。'))}</p>
+      ${running ? `<p role="status">${esc(T('cognition.storage_upgrade_running', '正在核对和处理，请稍候…'))}</p>` : ''}
+      ${report ? `<p role="status">${esc(T(unified ? 'cognition.storage_mode_unified' : 'cognition.storage_mode_compatible', unified ? '当前使用统一存储。' : '当前使用兼容存储。'))}</p>` : ''}
+      ${report && report.assets && report.candidates && report.poValues ? `<p>${esc(T('cognition.storage_upgrade_counts', '已核对：资产 {assets} 条、候选 {candidates} 条、本体值 {values} 条。', { assets: String(report.assets.total), candidates: String(report.candidates.recallMigrated + report.candidates.poMigrated), values: String(report.poValues.total) }))}</p>` : ''}
+      ${state.failed ? `<p role="alert">${esc(T('cognition.storage_upgrade_failed', '核对或处理未完成，未确认升级成功。请保留现有数据并重试。'))}</p>` : ''}
+      ${report && report.projectionPending ? `<p role="status">${esc(T('cognition.storage_projection_pending', '统一存储已生效，兼容副本仍待恢复。'))}</p>` : ''}
+      ${btn(T('cognition.storage_upgrade_check', '检查认知数据'), 'storage-check', { disabled: running })}
+      ${btn(T('cognition.storage_upgrade_activate', '升级存储'), 'storage-activate', { disabled: running || !checked || unified, primary: true })}
+      ${report && report.projectionPending ? btn(T('cognition.storage_upgrade_recover', '恢复兼容副本'), 'storage-recover', { disabled: running }) : ''}
+      ${unified ? btn(T('cognition.storage_upgrade_rollback', '恢复兼容存储'), 'storage-rollback', { disabled: running }) : ''}`;
+    return window.uiAccordion({ defaultOpen: state.report || state.running || state.failed ? [0] : [], items: [{ title: T('cognition.storage_upgrade_title', '认知数据升级'), bodyHtml: body }] });
+  }
+
   function viewOrganizeSettingsPage() {
     // 「整理功能」总开关卡已撤（specs/017 整改三）：「已开启+关闭按钮」读不懂
     // 且关闭是破坏性动作；后端 enabled 字段与契约保留，整理页的「已关闭」
@@ -3372,6 +3391,7 @@
       `;
       })()}
     </div>
+    ${cognitionStorageUpgradeSection()}
     ${(() => {
       // 两迁移区合并 + 没活自动隐藏（2026-09-29 子安拍板）：单个「旧记忆迁移」
       // 折叠区，角标=两区真正待迁条数之和（保留类残留不计）；两区都加载完成、

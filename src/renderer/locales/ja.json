@@ -6865,5 +6865,17 @@
   "settings.semantica.demo.seed_success": "デモ資産の準備が完了しました",
   "settings.semantica.demo.clear_success": "デモ資産を削除しました",
   "settings.semantica.demo.failure": "操作に失敗しました",
-  "cognition.candidate_system_hold": "システム保留（意味レビューで発見あり）"
+  "cognition.candidate_system_hold": "システム保留（意味レビューで発見あり）",
+  "cognition.storage_mode_unified": "統合ストレージを使用中です。",
+  "cognition.storage_upgrade_recover": "互換コピーを復旧",
+  "cognition.storage_upgrade_counts": "確認済み：資産 {assets} 件、候補 {candidates} 件、値 {values} 件。",
+  "cognition.storage_upgrade_running": "確認・処理中…",
+  "cognition.storage_upgrade_title": "認知データの更新",
+  "cognition.storage_upgrade_check": "認知データを確認",
+  "cognition.storage_mode_compatible": "互換ストレージを使用中です。",
+  "cognition.storage_upgrade_activate": "ストレージを更新",
+  "cognition.storage_upgrade_rollback": "互換ストレージに戻す",
+  "cognition.storage_projection_pending": "統合ストレージは有効ですが、互換コピーの復旧待ちです。",
+  "cognition.storage_upgrade_failed": "確認または処理が完了していません。既存データを保持して再試行してください。",
+  "cognition.storage_upgrade_hint": "資産本文、版の参照、候補、個人オントロジーを保持して保存先を更新します。更新前にバックアップし、互換保存先へ戻せます。"
 }

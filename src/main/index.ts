@@ -1918,6 +1918,10 @@ if (!gotLock) {
     // 但修锁前泄漏已发生的现场（purged 资产名下被在途 append 重建的版本流）
     // 无产品通道可清——启动时按「墓碑/记录已除名 ⇒ 流必不存」清一遍。幂等，
     // 正常情况下空转；逐条容错不拦启动。
+    registerDeferred('cognition:compatibility-recovery', async () => {
+      const { recoverCognitionProjection } = await import('./features/cognition_bridge');
+      await recoverCognitionProjection(users.getActiveUserId());
+    }, 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
     registerDeferred('recall:purge-version-stream-sweep', async () => {
       const { sweepPurgedAbilityAssetVersionStreams } = await import('./features/recall/asset-service');
       await sweepPurgedAbilityAssetVersionStreams(users.getActiveUserId());

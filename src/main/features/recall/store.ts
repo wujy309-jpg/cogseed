@@ -1,4 +1,5 @@
 import * as fs from 'node:fs/promises';
+import { isManagedCognitionCollection, readUnifiedCognitionRecord, persistCognitionSource, withCognitionTransition } from '../cognition_bridge';
 
 import { appendJsonlAtomic, removeJsonlRecords, removeJsonlStream, safeId, writeJson } from '../../storage';
 import { fileEditLock } from '../../util/locks';
@@ -99,6 +100,8 @@ export async function readRecallJsonRecord(
   recordId: string,
 ): Promise<RecallJsonRecord | undefined> {
   const recordPath = recallJsonRecordPath(userId, collection, recordId);
+  const unified = readUnifiedCognitionRecord(userId, collection, recordId);
+  if (unified.authoritative) return unified.record ? validateRecallRecord(userId, recordId, unified.record) : undefined;
   return readExistingRecallRecord(userId, recordPath, recordId);
 }
 
@@ -109,12 +112,14 @@ export async function writeRecallJsonRecord(
   record: RecallJsonRecord,
 ): Promise<RecallJsonRecord> {
   const recordPath = recallJsonRecordPath(userId, collection, recordId);
-  const validated = await fileEditLock(recordPath).runExclusive(async () => {
-    await readExistingRecallRecord(userId, recordPath, recordId);
+  const work = () => fileEditLock(recordPath).runExclusive(async () => {
+    await readRecallJsonRecord(userId, collection, recordId);
     const result = validateRecallRecord(userId, recordId, record);
-    await writeJson(recordPath, result);
+    if (isManagedCognitionCollection(collection)) await persistCognitionSource(userId, collection, recordId, result, () => writeJson(recordPath, result));
+    else await writeJson(recordPath, result);
     return result;
   });
+  const validated = await (isManagedCognitionCollection(collection) ? withCognitionTransition(userId, work) : work());
   notifyCognitionWrite(userId, collection, 'write', recordId);
   return validated;
 }
@@ -126,13 +131,15 @@ export async function updateRecallJsonRecord(
   updater: RecallJsonRecordUpdater,
 ): Promise<RecallJsonRecord> {
   const recordPath = recallJsonRecordPath(userId, collection, recordId);
-  const validated = await fileEditLock(recordPath).runExclusive(async () => {
-    const current = await readExistingRecallRecord(userId, recordPath, recordId);
+  const work = () => fileEditLock(recordPath).runExclusive(async () => {
+    const current = await readRecallJsonRecord(userId, collection, recordId);
     const next = await updater(current);
     const result = validateRecallRecord(userId, recordId, next);
-    await writeJson(recordPath, result);
+    if (isManagedCognitionCollection(collection)) await persistCognitionSource(userId, collection, recordId, result, () => writeJson(recordPath, result));
+    else await writeJson(recordPath, result);
     return result;
   });
+  const validated = await (isManagedCognitionCollection(collection) ? withCognitionTransition(userId, work) : work());
   notifyCognitionWrite(userId, collection, 'update', recordId);
   return validated;
 }

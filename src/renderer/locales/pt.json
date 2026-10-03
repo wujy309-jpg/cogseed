@@ -6865,5 +6865,17 @@
   "settings.semantica.demo.seed_success": "Ativos de demonstração prontos",
   "settings.semantica.demo.clear_success": "Ativos de demonstração removidos",
   "settings.semantica.demo.failure": "Falha na operação",
-  "cognition.candidate_system_hold": "Retenção do sistema (achado da revisão semântica)"
+  "cognition.candidate_system_hold": "Retenção do sistema (achado da revisão semântica)",
+  "cognition.storage_mode_unified": "O armazenamento unificado está ativo.",
+  "cognition.storage_upgrade_recover": "Recuperar cópias compatíveis",
+  "cognition.storage_upgrade_counts": "Verificados: {assets} ativos, {candidates} candidatos, {values} valores de ontologia.",
+  "cognition.storage_upgrade_running": "Verificando e processando…",
+  "cognition.storage_upgrade_title": "Atualização dos dados cognitivos",
+  "cognition.storage_upgrade_check": "Verificar dados cognitivos",
+  "cognition.storage_mode_compatible": "O armazenamento compatível está ativo.",
+  "cognition.storage_upgrade_activate": "Atualizar armazenamento",
+  "cognition.storage_upgrade_rollback": "Restaurar armazenamento compatível",
+  "cognition.storage_projection_pending": "O armazenamento unificado está ativo; as cópias compatíveis aguardam recuperação.",
+  "cognition.storage_upgrade_failed": "A verificação ou o processamento não foi concluído. O sucesso não foi confirmado. Mantenha os dados e tente novamente.",
+  "cognition.storage_upgrade_hint": "Atualize o armazenamento preservando conteúdo, referências de versões, candidatos e ontologia pessoal. Um backup é criado antes; o armazenamento compatível pode ser restaurado."
 }

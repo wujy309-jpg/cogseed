@@ -220,7 +220,8 @@ export async function loadPersonalSourceSnapshot(
   const groupedKeys = new Set<string>();
   const grouplessNames = new Set<string>();
   for (const object of Object.values(store.objects)) {
-    if (object.kind !== 'assertion' || object.status === 'deleted') continue;
+    // 兼容桥管理的断言已由上方 po/asset 权威读口装配，保留完整引用准入，不重复投影。
+    if (object.managedSource || object.kind !== 'assertion' || object.status === 'deleted') continue;
     // 占槽键与取值侧同源：断言缺 fieldName 时用 title 兜底（与下方
     // storeValues 的 fieldName 口径一致，否则占槽键落成 "g||undefined"）。
     const nameKey = object.fieldName ?? object.title;

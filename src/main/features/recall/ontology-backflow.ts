@@ -11,7 +11,7 @@
  *   personal → 不回流（个人资产已经是“我的认知”的权威记录；再建本体候选会
  *              让用户重复确认，并留下无法跟随编辑/暂停的第二份值）
  *   rule     → rule       / shared （操作规则，R-Box 规则形状）
- *   template → instance   / user   （实例化信息，A-Box 断言形状）
+ *   template → 不回流。可复用模板不是用户个人事实，不能自动转换为个人实例。
  *   skill_method → 不回流。蓝图 T-Box 里 Skill/MetaSkill 是独立概念族，
  *   技能的家是认知资产库本身，不进个人本体断言（拍板 2026-09-19）。
  * 既有 asset-backflow 候选保留原样；本模块不批量删除或改写用户旧数据。
@@ -39,7 +39,7 @@ interface BackflowTypeMapping {
 const BACKFLOW_TYPES: Record<string, BackflowTypeMapping | null> = {
   personal: null,
   rule: { kind: 'rule', scope: 'shared' },
-  template: { kind: 'instance', scope: 'user' },
+  template: null,
   skill_method: null,
 };
 

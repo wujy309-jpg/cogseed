@@ -1745,6 +1745,21 @@
   }
 
   const actions = {
+    async cognitionStorageUpgrade(action) {
+      const previous = store.cognitionStorageUpgrade || {};
+      if (previous.running) return;
+      if (!['check', 'activate', 'rollback', 'recover'].includes(action)) throw new Error('invalid storage action');
+      store.cognitionStorageUpgrade = { ...previous, running: true, failed: false };
+      NS.notify();
+      try {
+        const report = await api.call('cognition.migration.run', action === 'rollback' ? { rollback: true }
+          : { dryRun: action === 'check', activate: action === 'activate' || action === 'recover' });
+        if (!report || (!Array.isArray(report.errors) && report.ok !== true)) throw new Error('invalid storage upgrade receipt');
+        store.cognitionStorageUpgrade = { report, running: false, failed: Boolean(report.errors && report.errors.length), action };
+        if (action !== 'check' && !store.cognitionStorageUpgrade.failed) await NS.reload();
+      } catch (_) { store.cognitionStorageUpgrade = { ...previous, running: false, failed: true }; }
+      NS.notify();
+    },
     /** 资产编辑按需加载可读的 Agent / 工作空间名称。目录失败不阻断正文
      *  编辑；保存时省略 scopePolicy，后端就会保留原策略。 */
     async loadAssetScopeOptions() {

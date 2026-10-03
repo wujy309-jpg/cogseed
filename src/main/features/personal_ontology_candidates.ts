@@ -1,3 +1,5 @@
+import { readUnifiedOntologyCandidates, persistOntologyCandidates } from './cognition_bridge';
+import { fileEditLock } from '../util/locks';
 /**
  * Personal Ontology Candidates — 个人本体候选审阅功能。
  *
@@ -450,20 +452,23 @@ function migrateLegacyJsonIfPresent(uid: string): void {
  * （磁盘故障/权限等）先 copy `.corrupt-<ts>` 备份再抛 CorruptFileError——
  * 不再吞成空表让下一次写（含后台回流投放）全量覆写、候选池静默清空。
  */
-// b6 回滚注：本函数曾随 P-r2-11 转 async（内部 await 迁移），await 让出点
-// 打破 rejectCandidate 的同步原子契约，已恢复同步（见 migrateLegacyJsonIfPresent
-// 头注）；各调用点的 await 已同步去除。
+// 2026-10-03：列表读取仍同步；异步持久化由池文件锁串行化读改写。
+// 确认的目标写入可等待模型/其他业务，收尾重读池并只移除目标，避免旧数组覆写。
 function readCandidates(uid: string): CandidateUpdate[] {
+  const unified = readUnifiedOntologyCandidates(uid);
+  if (unified) return unified as unknown as CandidateUpdate[];
   migrateLegacyJsonIfPresent(uid);
   const guarded = readTextGuarded(candidatesMdPath(uid), { domain: CANDIDATES_CORRUPT_DOMAIN });
   if (guarded.status === 'corrupt') throw new CorruptFileError(guarded.record);
   return parseCandidatesMarkdown(guarded.status === 'ok' ? guarded.text : '');
 }
 
-function writeCandidates(uid: string, candidates: CandidateUpdate[]): void {
+async function writeCandidates(uid: string, candidates: CandidateUpdate[]): Promise<void> {
   // 写侧门：坏档登记在案即拒绝（备份被移走不影响判定；恢复/重置后才可写）。
   assertNotCorrupt(candidatesMdPath(uid));
-  writeTextAtomicSync(candidatesMdPath(uid), serializeCandidatesMarkdown(candidates));
+  await persistOntologyCandidates(uid, candidates as unknown as Record<string, unknown>[], async () => {
+    writeTextAtomicSync(candidatesMdPath(uid), serializeCandidatesMarkdown(candidates));
+  });
   notifyCognitionWrite(uid, 'ontology-candidates', 'update');
 }
 
@@ -503,7 +508,7 @@ export interface AddCandidateInput extends Partial<CandidateUpdate> {
  * A caller-supplied candidate_id is an idempotency key: the latest payload
  * replaces the existing row instead of creating a duplicate.
  */
-export async function addCandidate(
+async function addCandidateUnlocked(
   uid: string,
   input: AddCandidateInput,
 ): Promise<{ ok: true; candidate: CandidateUpdate; candidates: CandidateUpdate[] }> {
@@ -550,7 +555,7 @@ export async function addCandidate(
   const index = candidates.findIndex((item) => item.candidate_id === candidateId);
   if (index >= 0) candidates[index] = candidate;
   else candidates.push(candidate);
-  writeCandidates(uid, candidates);
+  await writeCandidates(uid, candidates);
   return { ok: true, candidate, candidates };
 }
 
@@ -964,7 +969,7 @@ async function resolveLlmRoute(
  * 至少一个去向成功即从候选池移除；全部失败则保留在池里，不会静默丢失。
  * `opts.routeWithLlm` 开启时先做一轮 LLM 对号入座路由（见 resolveLlmRoute）。
  */
-export async function confirmCandidate(
+async function confirmCandidateUnlocked(
   uid: string,
   candidateId: string,
   dest: ConfirmDestinations = {},
@@ -984,8 +989,10 @@ export async function confirmCandidate(
   const result = await writeCandidateToDestinations(uid, candidate, effectiveDest, source, userPickedRole, opts);
   if (!result.ok) return result;
 
-  candidates.splice(idx, 1);
-  writeCandidates(uid, candidates);
+  await fileEditLock(candidatesMdPath(uid)).runExclusive(async () => {
+    const latest = readCandidates(uid);
+    await writeCandidates(uid, latest.filter(c => c.candidate_id !== candidateId));
+  });
   log.info('candidate confirmed and written to destinations', {
     uid, candidateId,
     globalMemory: result.globalMemory?.ok,
@@ -999,7 +1006,7 @@ export async function confirmCandidate(
 /**
  * 驳回一个候选：直接从候选池移除，不写入任何记忆。
  */
-export async function rejectCandidate(uid: string, candidateId: string, reason?: string): Promise<{ ok: boolean }> {
+async function rejectCandidateUnlocked(uid: string, candidateId: string, reason?: string): Promise<{ ok: boolean }> {
   if (!safeId(uid) || !candidateId) throw new Error('invalid uid or candidateId');
 
   const candidates = readCandidates(uid);
@@ -1010,7 +1017,7 @@ export async function rejectCandidate(uid: string, candidateId: string, reason?:
   }
 
   candidates.splice(idx, 1);
-  writeCandidates(uid, candidates);
+  await writeCandidates(uid, candidates);
   log.info('candidate rejected', { uid, candidateId, reason });
   return { ok: true };
 }
@@ -1018,7 +1025,7 @@ export async function rejectCandidate(uid: string, candidateId: string, reason?:
 /**
  * 批量驳回。
  */
-export async function rejectCandidates(uid: string, candidateIds: string[], reason?: string): Promise<{ ok: boolean; rejectedCount: number }> {
+async function rejectCandidatesUnlocked(uid: string, candidateIds: string[], reason?: string): Promise<{ ok: boolean; rejectedCount: number }> {
   if (!safeId(uid)) throw new Error('invalid uid');
   if (!Array.isArray(candidateIds) || !candidateIds.length) return { ok: true, rejectedCount: 0 };
 
@@ -1028,7 +1035,7 @@ export async function rejectCandidates(uid: string, candidateIds: string[], reas
   const rejectedCount = candidates.length - remaining.length;
 
   if (rejectedCount > 0) {
-    writeCandidates(uid, remaining);
+    await writeCandidates(uid, remaining);
     log.info('candidates batch rejected', { uid, rejectedCount, reason });
   }
 
@@ -1044,7 +1051,7 @@ export async function rejectCandidates(uid: string, candidateIds: string[], reas
  * 只做全文相等，不做包含匹配：包含会把用户自己的相近记忆一起清掉。
  * 空文本直接返回——空串与任何候选都不该匹配。
  */
-export async function rejectCandidatesByText(
+async function rejectCandidatesByTextUnlocked(
   uid: string,
   text: string,
   reason?: string,
@@ -1058,9 +1065,39 @@ export async function rejectCandidatesByText(
   const rejectedCount = candidates.length - remaining.length;
 
   if (rejectedCount > 0) {
-    writeCandidates(uid, remaining);
+    await writeCandidates(uid, remaining);
     log.info('candidates rejected by text match (purge cascade)', { uid, rejectedCount, reason });
   }
 
   return { ok: true, rejectedCount };
 }
+
+/** 同一候选池读改写串行化；确认跨 await 不再覆盖期间新增/驳回。 */
+export const addCandidate = (...args: Parameters<typeof addCandidateUnlocked>): ReturnType<typeof addCandidateUnlocked> => {
+  if (!safeId(args[0])) return Promise.reject(new Error('invalid uid'));
+  return fileEditLock(candidatesMdPath(args[0])).runExclusive(() => addCandidateUnlocked(...args));
+};
+
+/** 同一候选的重复确认串行化；等待期间不占池锁，收尾在池锁内重读。 */
+export const confirmCandidate = (...args: Parameters<typeof confirmCandidateUnlocked>): ReturnType<typeof confirmCandidateUnlocked> => {
+  if (!safeId(args[0])) return Promise.reject(new Error('invalid uid'));
+  return fileEditLock(candidatesMdPath(args[0]) + ':confirm:' + args[1]).runExclusive(() => confirmCandidateUnlocked(...args));
+};
+
+/** 同一候选池读改写串行化；确认跨 await 不再覆盖期间新增/驳回。 */
+export const rejectCandidate = (...args: Parameters<typeof rejectCandidateUnlocked>): ReturnType<typeof rejectCandidateUnlocked> => {
+  if (!safeId(args[0])) return Promise.reject(new Error('invalid uid'));
+  return fileEditLock(candidatesMdPath(args[0])).runExclusive(() => rejectCandidateUnlocked(...args));
+};
+
+/** 同一候选池读改写串行化；确认跨 await 不再覆盖期间新增/驳回。 */
+export const rejectCandidates = (...args: Parameters<typeof rejectCandidatesUnlocked>): ReturnType<typeof rejectCandidatesUnlocked> => {
+  if (!safeId(args[0])) return Promise.reject(new Error('invalid uid'));
+  return fileEditLock(candidatesMdPath(args[0])).runExclusive(() => rejectCandidatesUnlocked(...args));
+};
+
+/** 同一候选池读改写串行化；确认跨 await 不再覆盖期间新增/驳回。 */
+export const rejectCandidatesByText = (...args: Parameters<typeof rejectCandidatesByTextUnlocked>): ReturnType<typeof rejectCandidatesByTextUnlocked> => {
+  if (!safeId(args[0])) return Promise.reject(new Error('invalid uid'));
+  return fileEditLock(candidatesMdPath(args[0])).runExclusive(() => rejectCandidatesByTextUnlocked(...args));
+};

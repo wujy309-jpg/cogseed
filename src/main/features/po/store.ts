@@ -17,6 +17,7 @@
  */
 
 import * as fs from 'node:fs';
+import { readUnifiedPoDocument, persistPoSource, withCognitionTransition } from '../cognition_bridge';
 import * as path from 'node:path';
 import { fileEditLock } from '../../util/locks';
 import { corruptRecordFor, readTextGuarded, reportCorruptFile } from '../../util/corrupt-guard';
@@ -72,6 +73,8 @@ function readTextSafe(filePath: string): string {
  */
 export function loadPoDocSync(uid: string): PoDocument {
   if (!safeId(uid)) return emptyPoDocument();
+  const unified = readUnifiedPoDocument(uid);
+  if (unified) return normalizePoDocument(unified);
   const filePath = poDocPath(uid);
   if (fs.existsSync(filePath)) {
     const guarded = readTextGuarded(filePath, { domain: PO_CORRUPT_DOMAIN });
@@ -100,6 +103,8 @@ export function loadPoDocSync(uid: string): PoDocument {
 /** 异步加载（迁移完成时会持久化 + 渲染副本 + 备份 v1 目录；写路径与启动钩子用）。 */
 export async function ensurePoDoc(uid: string): Promise<PoDocument> {
   if (!safeId(uid)) return emptyPoDocument();
+  const unified = readUnifiedPoDocument(uid);
+  if (unified) return normalizePoDocument(unified);
   const filePath = poDocPath(uid);
   if (fs.existsSync(filePath)) return loadPoDocSync(uid);
   return fileEditLock(filePath).runExclusive(async () => {
@@ -194,7 +199,7 @@ export async function editPoDoc(
 ): Promise<PoEditOutcome> {
   if (!safeId(uid)) return { ok: false, error: 'invalid uid' };
   const filePath = poDocPath(uid);
-  return fileEditLock(filePath).runExclusive(async () => {
+  return withCognitionTransition(uid, () => fileEditLock(filePath).runExclusive(async () => {
     const doc = loadPoDocSync(uid);
     // 坏档三件套·写侧门：load 探测到坏档（已 copy 备份 + 登记）→ 拒绝落盘。
     // 只有真 ENOENT（文件不存在）走空初始化后落盘；恢复/重置后才恢复可写。
@@ -251,7 +256,7 @@ export async function editPoDoc(
       backupV1Dir(uid);
       doc.migratedFromV1At = doc.migratedFromV1At || nowIso();
     }
-    await writeJson(filePath, doc);
+    await persistPoSource(uid, doc, () => writeJson(filePath, doc));
     for (const [, { before }] of touched) {
       const after = doc.groups.find((g) => g.id === before.id);
       if (after) syncGroupRender(uid, after);
@@ -259,7 +264,7 @@ export async function editPoDoc(
     for (const relPath of removedRels) dropGroupRender(uid, relPath);
     notifyCognitionWrite(uid, 'ontology-groups', 'update');
     return { ok: true };
-  });
+  }));
 }
 
 // ── 历史快照（写前留档，滚动 50 份）──────────────────────────────────────

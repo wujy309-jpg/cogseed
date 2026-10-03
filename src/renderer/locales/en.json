@@ -9134,5 +9134,17 @@
   "settings.semantica.demo.seed_success": "Demo assets ready",
   "settings.semantica.demo.clear_success": "Demo assets removed",
   "settings.semantica.demo.failure": "Operation failed",
-  "cognition.candidate_system_hold": "System hold (semantic review finding)"
+  "cognition.candidate_system_hold": "System hold (semantic review finding)",
+  "cognition.storage_mode_unified": "Unified storage is active.",
+  "cognition.storage_upgrade_recover": "Recover compatibility copies",
+  "cognition.storage_upgrade_counts": "Checked: {assets} assets, {candidates} candidates, {values} ontology values.",
+  "cognition.storage_upgrade_running": "Checking and processing…",
+  "cognition.storage_upgrade_title": "Cognition data upgrade",
+  "cognition.storage_upgrade_check": "Check cognition data",
+  "cognition.storage_mode_compatible": "Compatibility storage is active.",
+  "cognition.storage_upgrade_activate": "Upgrade storage",
+  "cognition.storage_upgrade_rollback": "Restore compatibility storage",
+  "cognition.storage_projection_pending": "Unified storage is active; compatibility copies await recovery.",
+  "cognition.storage_upgrade_failed": "Verification or processing did not complete. Upgrade success is unconfirmed. Keep existing data and retry.",
+  "cognition.storage_upgrade_hint": "Upgrade storage while preserving asset content, version references, candidates and personal ontology. A backup is created before upgrading; compatibility storage can be restored."
 }

@@ -1,3 +1,4 @@
+import { unifiedCognitionRecordIds } from '../cognition_bridge';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 
@@ -722,7 +723,8 @@ async function reconcilePersonalProfileProjection(
 
 export async function listAbilityAssets(userId: string): Promise<RecallAbilityAssetRecord[]> {
   let names: string[];
-  try { names = await fs.readdir(assetsDirectory(userId)); }
+  const unifiedIds = unifiedCognitionRecordIds(userId, 'ability-assets');
+  try { names = unifiedIds ? unifiedIds.map(id => `${id}.json`) : await fs.readdir(assetsDirectory(userId)); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw error;

@@ -72,17 +72,17 @@ describe('ontology-backflow › whitelist and pool shape', () => {
     expect(await backflowIds()).toEqual([]);
   });
 
-  it('maps rule → rule/shared and template → instance/user', async () => {
+  it('maps rule → rule/shared while preserving templates outside personal ontology', async () => {
     const backflow = await loadBackflow();
     await backflow.backflowAssetToOntologyPool(UID, fakeAsset({ id: 'aa-rule', type: 'rule', statement: '评审先讲产品模型。' }));
-    await backflow.backflowAssetToOntologyPool(UID, fakeAsset({ id: 'aa-tpl', type: 'template', statement: '学生身份在读。' }));
+    const outcome = await backflow.backflowAssetToOntologyPool(UID, fakeAsset({ id: 'aa-tpl', type: 'template', statement: '准备活动时列出事项与验收条件。' }));
+    expect(outcome).toEqual({ offered: false, reason: 'type_not_whitelisted' });
 
     const poc = await loadPoc();
     const pool = await poc.listCandidates(UID);
     expect(pool.candidate_updates.find((c) => c.candidate_id === 'asset-backflow-aa-rule'))
       .toMatchObject({ kind: 'rule', memory_scope: 'shared' });
-    expect(pool.candidate_updates.find((c) => c.candidate_id === 'asset-backflow-aa-tpl'))
-      .toMatchObject({ kind: 'instance', memory_scope: 'user' });
+    expect(pool.candidate_updates.find((c) => c.candidate_id === 'asset-backflow-aa-tpl')).toBeUndefined();
   });
 
   it('never offers skill_method assets', async () => {

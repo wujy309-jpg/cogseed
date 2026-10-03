@@ -190,10 +190,25 @@ export interface CognitionObject {
   deletedAt?: string;
   /** 并入去向（merge 语义保留在版本链之外的事实指针）。 */
   mergedIntoId?: string;
+  /** 来源管理对象只由兼容桥更新，禁止 Delta 与旧业务同时写。 */
+  managedSource?: string;
+}
+
+/** 兼容契约：保留完整来源形状。业务 API 不变，存储权威可逐用户切换。
+ * JSONL 版本/采用/审计流继续作为不可变支撑账，不在对象主档复制正文历史。 */
+export interface CognitionCompatibilityState {
+  mode: 'mirror' | 'unified';
+  revision: number;
+  records: Record<string, Record<string, Record<string, unknown>>>;
+  po?: Record<string, unknown>;
+  ontologyCandidates?: Record<string, unknown>[];
+  pendingProjection: boolean;
+  migratedAt: string;
 }
 
 export interface CognitionStoreDocument {
   schemaVersion: 1;
+  compatibility?: CognitionCompatibilityState;
   objects: Record<string, CognitionObject>;
   /** 家注册表（数据化：可加自定义家；内置六家出厂种子、不可删）。 */
   homes: HomeRegistryEntry[];
@@ -270,6 +285,7 @@ export function normalizeCognitionObject(raw: unknown): CognitionObject | null {
     ...(optionalStr(r.source) ? { source: optionalStr(r.source) } : {}),
     ...(optionalStr(r.scope) ? { scope: optionalStr(r.scope) } : {}),
     ...(Array.isArray(r.evidenceRefs) ? { evidenceRefs: r.evidenceRefs as DeltaEvidenceRef[] } : {}),
+    ...(optionalStr(r.managedSource) ? { managedSource: optionalStr(r.managedSource) } : {}),
     ...(optionalStr(r.deletedAt) ? { deletedAt: optionalStr(r.deletedAt) } : {}),
     ...(optionalStr(r.mergedIntoId) ? { mergedIntoId: optionalStr(r.mergedIntoId) } : {}),
   };
@@ -283,7 +299,7 @@ export function normalizeCognitionStoreDocument(raw: unknown): CognitionStoreDoc
   if (r.objects && typeof r.objects === 'object' && !Array.isArray(r.objects)) {
     for (const [id, value] of Object.entries(r.objects as Record<string, unknown>)) {
       const normalized = normalizeCognitionObject(value);
-      if (normalized && normalized.id === id) objects[id] = normalized;
+      if (normalized && normalized.id === id) Object.defineProperty(objects, id, { value: normalized, writable: true, enumerable: true, configurable: true });
     }
   }
   if (r.appliedDeltas && typeof r.appliedDeltas === 'object' && !Array.isArray(r.appliedDeltas)) {
@@ -293,6 +309,17 @@ export function normalizeCognitionStoreDocument(raw: unknown): CognitionStoreDoc
         doc.appliedOrder.push(deltaId);
       }
     }
+  }
+  if (r.compatibility !== undefined) {
+    const c = r.compatibility as CognitionCompatibilityState;
+    if (!c || (c.mode !== 'mirror' && c.mode !== 'unified') || !Number.isSafeInteger(c.revision)
+      || c.revision < 1 || !c.records || typeof c.records !== 'object' || Array.isArray(c.records)
+      || !c.records['ability-assets'] || !c.records.candidates || !c.po || !Array.isArray(c.po.groups) || !Array.isArray(c.po.trash)
+      || (c.ontologyCandidates !== undefined && !Array.isArray(c.ontologyCandidates))
+      || typeof c.pendingProjection !== 'boolean' || typeof c.migratedAt !== 'string') {
+      throw new Error('invalid cognition compatibility state');
+    }
+    doc.compatibility = JSON.parse(JSON.stringify(c)) as CognitionCompatibilityState;
   }
   doc.updatedAt = str(r.updatedAt, doc.updatedAt);
   return { ...doc, objects, homes: normalizeHomeRegistry(r.homes) };

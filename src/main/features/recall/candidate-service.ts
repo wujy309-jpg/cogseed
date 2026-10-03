@@ -1,3 +1,4 @@
+import { unifiedCognitionRecordIds } from '../cognition_bridge';
 import * as fs from 'node:fs/promises';
 import { describeRoleTemplateFieldRef } from '../personal_ontology_contract';
 import * as personalOntologyCandidates from '../personal_ontology_candidates';
@@ -1210,7 +1211,8 @@ export async function listRecallCandidates(userId: string): Promise<RecallCandid
   await migrateCandidateContentFormat(userId);
   await retireUserDeferredCandidates(userId);
   let names: string[];
-  try { names = await fs.readdir(candidateDirectory(userId)); }
+  const unifiedIds = unifiedCognitionRecordIds(userId, 'candidates');
+  try { names = unifiedIds ? unifiedIds.map(id => `${id}.json`) : await fs.readdir(candidateDirectory(userId)); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw error;
