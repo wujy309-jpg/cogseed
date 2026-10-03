@@ -103,9 +103,9 @@ describe('resolve 统一读：库优先遮蔽（S4-a）', () => {
     expect(snap.values.map((v) => v.text)).toContain('旧卡号-陈旧值');
   });
 
-  it('paused/archived 断言不进场也不遮蔽（暂停/归档即停用），restricted 随 active 值透传', async () => {
-    // 待办#4：统一库状态过滤。此前断言路径只跳过 deleted——paused/archived
-    // 仍然供应任务并遮蔽旧值，与资产侧「暂停后不可读取」的口径相悖。
+  it('paused/archived 断言占槽不供值（旧值不复活），restricted 随 active 值透传', async () => {
+    // 待办#4 + CodeRabbit 校正：统一库状态过滤。paused/archived 收回这条值，
+    // 但槽位已归统一库——迁移前的旧值不能趁机复活；只有 deleted 释放槽位。
     fixtures.state.storeObjects = {
       'co-paused': {
         id: 'co-paused', kind: 'assertion', home: 'personal_fact', title: '银行卡号', statement: '已暂停值',
@@ -126,11 +126,11 @@ describe('resolve 统一读：库优先遮蔽（S4-a）', () => {
     const { loadPersonalSourceSnapshot } = await snapshotMod();
     const snap = await loadPersonalSourceSnapshot('u1');
     const texts = snap.values.map((v) => v.text);
-    // paused/archived 不进场，被它们占住的槽回落到旧值。
+    // paused/archived 不供值，且被它们占住的槽不让旧值复活。
     expect(texts).not.toContain('已暂停值');
     expect(texts).not.toContain('已归档值');
-    expect(texts).toContain('旧卡号-陈旧值');
-    expect(texts).toContain('开源项目组');
+    expect(texts).not.toContain('旧卡号-陈旧值');
+    expect(texts).not.toContain('开源项目组');
     // active 值正常进场，治理标记随值透传。
     const restricted = snap.values.find((v) => v.text === '北京');
     expect(restricted).toMatchObject({ restricted: true });

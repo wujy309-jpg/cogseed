@@ -5385,11 +5385,13 @@ function _hydrateRecallCitations(messageEl, cid, messageId) {
     if (!button || button.disabled) return;
     const feedback = button.dataset.recallFeedback;
     // 逐行反馈（2026-10-03 待办#2）：按钮钉在自己行的资产上——反馈只记给用户
-    // 点的那条资产，不再连带同消息其他引用。没有资产指向的旧形态按钮直接忽略。
+    // 点的那条资产，不再连带同消息其他引用。行取包含按钮的已引用行（按钮自身
+    // 也带 data-recall-asset-id，closest 从按钮起会只命中按钮自己）。
     const assetId = String(button.dataset.recallAssetId || '');
     if (!cid || !resolvedMessageId || !assetId || (feedback !== 'positive' && feedback !== 'negative')) return;
-    const row = button.closest('[data-recall-asset-id]');
-    if (row?.dataset.feedbackBusy === '1' || row?.dataset.feedbackSent === '1') return;
+    const row = button.closest('.chat-recall-citation.is-cited');
+    if (!row) return;
+    if (row.dataset.feedbackBusy === '1' || row.dataset.feedbackSent === '1') return;
     row.dataset.feedbackBusy = '1';
     row.querySelectorAll('[data-recall-feedback]').forEach((item) => { item.disabled = true; });
     try {
@@ -5403,12 +5405,17 @@ function _hydrateRecallCitations(messageEl, cid, messageId) {
       // 负反馈后认知资产面板的刷新不再走 window CustomEvent（2026-09-27
       // 刷新机制重写）：主进程写回执时经 recall store 广播 cognition:changed
       // （asset-usage-receipts → timeline 区块），面板订阅中枢自己重拉。
-      row.dataset.feedbackSent = '1';
-      row.classList.add('is-feedback-sent');
       const sent = new Set(String(host.dataset.feedbackAssets || '').split(',').filter(Boolean));
       sent.add(assetId);
       host.dataset.feedbackAssets = [...sent].join(',');
-      const status = row.querySelector('[data-recall-feedback-status]');
+      // 整卡可能在请求期间被投影补全重画：按 assetId 重查当前渲染的行再落
+      // 状态，不依赖请求前捕获的节点（CodeRabbit 校正）；行不在（极端重画）
+      // 时 dataset 已记账，重画自然呈现已反馈态。
+      const currentRow = host.querySelector(`.chat-recall-citation.is-cited[data-recall-asset-id="${assetId}"]`);
+      const targetRow = currentRow || row;
+      targetRow.dataset.feedbackSent = '1';
+      targetRow.classList.add('is-feedback-sent');
+      const status = targetRow.querySelector('[data-recall-feedback-status]');
       const key = 'chat.recall.feedback_thanks';
       const value = typeof t === 'function' ? t(key) : key;
       if (status) status.textContent = value && value !== key ? value : 'Thanks for the feedback';

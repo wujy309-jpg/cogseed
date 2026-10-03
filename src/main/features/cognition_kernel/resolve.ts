@@ -212,13 +212,19 @@ export async function loadPersonalSourceSnapshot(
 
   // 统一库断言（S4-a）：库值全量进场；旧值被同槽（groupId+fieldName）或
   // 同名字段（库内无组断言按 fieldName 全局遮蔽）让位——任务侧寻址键是字段名。
-  // 治理态同口径（2026-10-03 待办#4）：只有 active 的断言可供应任务——
-  // paused/archived 与 deleted 一样不进场（暂停/归档即停用，宁少取不越权）；
-  // restricted 随值透传，与旧值侧的携带规则一致。
+  // 治理态同口径（2026-10-03 待办#4 + CodeRabbit 校正）：paused/archived
+  // **占槽但不供值**——槽位已归统一库，暂停/归档只是收回这条值，不能让迁移
+  // 前的旧值复活；deleted 才释放槽位回落旧值。restricted 随 active 值透传。
   const store = loadCognitionStoreSync(uid);
   const storeValues: OntologyFieldValueView[] = [];
+  const groupedKeys = new Set<string>();
+  const grouplessNames = new Set<string>();
   for (const object of Object.values(store.objects)) {
-    if (object.kind !== 'assertion' || object.status !== 'active') continue;
+    if (object.kind !== 'assertion' || object.status === 'deleted') continue;
+    const slotKey = object.groupId ? `${object.groupId}||${object.fieldName}` : '';
+    if (slotKey) groupedKeys.add(slotKey);
+    else grouplessNames.add(object.fieldName ?? object.title);
+    if (object.status !== 'active') continue;
     storeValues.push({
       id: object.id,
       groupId: object.groupId ?? '',
@@ -232,11 +238,7 @@ export async function loadPersonalSourceSnapshot(
       ...(object.restricted === true ? { restricted: true } : {}),
     });
   }
-  if (storeValues.length) {
-    const groupedKeys = new Set(
-      storeValues.filter((v) => v.groupId).map((v) => `${v.groupId}||${v.fieldName}`),
-    );
-    const grouplessNames = new Set(storeValues.filter((v) => !v.groupId).map((v) => v.fieldName));
+  if (storeValues.length || groupedKeys.size || grouplessNames.size) {
     const filtered = values.filter(
       (v) => !groupedKeys.has(`${v.groupId}||${v.fieldName}`) && !grouplessNames.has(v.fieldName),
     );
