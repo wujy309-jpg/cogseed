@@ -221,9 +221,12 @@ export async function loadPersonalSourceSnapshot(
   const grouplessNames = new Set<string>();
   for (const object of Object.values(store.objects)) {
     if (object.kind !== 'assertion' || object.status === 'deleted') continue;
-    const slotKey = object.groupId ? `${object.groupId}||${object.fieldName}` : '';
+    // 占槽键与取值侧同源：断言缺 fieldName 时用 title 兜底（与下方
+    // storeValues 的 fieldName 口径一致，否则占槽键落成 "g||undefined"）。
+    const nameKey = object.fieldName ?? object.title;
+    const slotKey = object.groupId ? `${object.groupId}||${nameKey}` : '';
     if (slotKey) groupedKeys.add(slotKey);
-    else grouplessNames.add(object.fieldName ?? object.title);
+    else grouplessNames.add(nameKey);
     if (object.status !== 'active') continue;
     storeValues.push({
       id: object.id,
