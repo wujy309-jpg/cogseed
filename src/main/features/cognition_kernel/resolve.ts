@@ -212,10 +212,13 @@ export async function loadPersonalSourceSnapshot(
 
   // 统一库断言（S4-a）：库值全量进场；旧值被同槽（groupId+fieldName）或
   // 同名字段（库内无组断言按 fieldName 全局遮蔽）让位——任务侧寻址键是字段名。
+  // 治理态同口径（2026-10-03 待办#4）：只有 active 的断言可供应任务——
+  // paused/archived 与 deleted 一样不进场（暂停/归档即停用，宁少取不越权）；
+  // restricted 随值透传，与旧值侧的携带规则一致。
   const store = loadCognitionStoreSync(uid);
   const storeValues: OntologyFieldValueView[] = [];
   for (const object of Object.values(store.objects)) {
-    if (object.kind !== 'assertion' || object.status === 'deleted') continue;
+    if (object.kind !== 'assertion' || object.status !== 'active') continue;
     storeValues.push({
       id: object.id,
       groupId: object.groupId ?? '',
@@ -226,6 +229,7 @@ export async function loadPersonalSourceSnapshot(
       updatedAt: object.updatedAt,
       ...(object.asOf ? { asOf: object.asOf } : {}),
       ...(object.verified !== undefined ? { verified: object.verified } : {}),
+      ...(object.restricted === true ? { restricted: true } : {}),
     });
   }
   if (storeValues.length) {

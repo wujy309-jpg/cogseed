@@ -102,4 +102,37 @@ describe('resolve 统一读：库优先遮蔽（S4-a）', () => {
     const snap = await loadPersonalSourceSnapshot('u1');
     expect(snap.values.map((v) => v.text)).toContain('旧卡号-陈旧值');
   });
+
+  it('paused/archived 断言不进场也不遮蔽（暂停/归档即停用），restricted 随 active 值透传', async () => {
+    // 待办#4：统一库状态过滤。此前断言路径只跳过 deleted——paused/archived
+    // 仍然供应任务并遮蔽旧值，与资产侧「暂停后不可读取」的口径相悖。
+    fixtures.state.storeObjects = {
+      'co-paused': {
+        id: 'co-paused', kind: 'assertion', home: 'personal_fact', title: '银行卡号', statement: '已暂停值',
+        origin: 'import', status: 'paused', version: 2, createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z',
+        groupId: 'g1', fieldName: '银行卡号',
+      },
+      'co-archived': {
+        id: 'co-archived', kind: 'assertion', home: 'personal_fact', title: '部门', statement: '已归档值',
+        origin: 'import', status: 'archived', version: 3, createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z',
+        groupId: 'g1', fieldName: '部门',
+      },
+      'co-restricted': {
+        id: 'co-restricted', kind: 'assertion', home: 'personal_fact', title: '城市', statement: '北京',
+        origin: 'user', status: 'active', restricted: true, version: 1,
+        createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z', fieldName: '城市',
+      },
+    };
+    const { loadPersonalSourceSnapshot } = await snapshotMod();
+    const snap = await loadPersonalSourceSnapshot('u1');
+    const texts = snap.values.map((v) => v.text);
+    // paused/archived 不进场，被它们占住的槽回落到旧值。
+    expect(texts).not.toContain('已暂停值');
+    expect(texts).not.toContain('已归档值');
+    expect(texts).toContain('旧卡号-陈旧值');
+    expect(texts).toContain('开源项目组');
+    // active 值正常进场，治理标记随值透传。
+    const restricted = snap.values.find((v) => v.text === '北京');
+    expect(restricted).toMatchObject({ restricted: true });
+  });
 });
