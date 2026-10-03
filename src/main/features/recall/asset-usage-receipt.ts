@@ -11,6 +11,11 @@ import {
 import { appendRecallJsonlRecord, listRecallJsonlRecords } from './store';
 import type { RecallJsonRecord } from './types';
 
+/** 主动读取（agent_read）没有投影授权，采用回执的 projectionId 用这个常量
+ *  占位：读取侧据此区分「投影供应」与「模型本轮主动读正文」两条带入通道，
+ *  回执幂等键也保持确定。 */
+export const AGENT_READ_PROJECTION_ID = 'agent-read';
+
 export type AssetUsageStatus =
   | 'applied'
   | 'considered_not_applicable'
@@ -137,10 +142,15 @@ export async function recordAssetUsageReceipt(
   if (!injection) throw new Error('injection receipt not found');
   if (
     injection.taskRunId !== input.taskRunId
-    || injection.projectionId !== input.projectionId
     || injection.assetId !== input.assetId
     || injection.assetVersion !== input.assetVersion
   ) throw new Error('injection receipt does not match asset usage');
+  // agent_read 回执在工具调用时写入，天然没有投影 id；只对这个通道放行
+  // 常量占位符，其余回执仍要求投影 id 逐字相等。
+  const projectionIdMatchesInjection = injection.channel === 'agent_read' && injection.projectionId === undefined
+    ? input.projectionId === AGENT_READ_PROJECTION_ID
+    : injection.projectionId === input.projectionId;
+  if (!projectionIdMatchesInjection) throw new Error('injection receipt does not match asset usage');
   if (injection.status !== 'injected' && injection.status !== 'dispatched') {
     throw new Error('injection receipt did not inject asset');
   }

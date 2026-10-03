@@ -26,6 +26,15 @@ async function supply(assetId = 'asset-a', overrides: Record<string, unknown> = 
     messageId: 'message-a', boundary: 'real', status: 'injected', ...overrides,
   });
 }
+/** 主动读取快照：宿主在正文模式写入的 agent_read 注入回执（无 messageId、无投影）。 */
+async function agentRead(assetId = 'aa-read1', overrides: Record<string, unknown> = {}) {
+  const { recordInjectionReceipt } = await import('../../../../src/main/features/recall/injection-receipt');
+  return recordInjectionReceipt('user-a', {
+    taskRunId: 'turn-a', assetId, assetVersion: '1',
+    boundary: 'real', status: 'injected', channel: 'agent_read', ...overrides,
+  });
+}
+const readClaim = { assetId: 'aa-read1', assetVersion: 'v1', outputExcerpt: excerpt };
 
 it('登记阶段只核对宿主本轮供应版本，不生成采用回执', async () => {
   const { prepareAssetUsageClaim } = await import('../../../../src/main/features/recall/asset-usage-claim');
@@ -74,6 +83,68 @@ it('报告片段未出现在最终回复、非法报告或别的用户供应均�
   expect(await finalizeAssetUsageClaims('user-a', input)).toEqual([]);
   expect(await finalizeAssetUsageClaims('user-b', { ...input, finalText: excerpt })).toEqual([]);
   expect(await finalizeAssetUsageClaims('user-a', { ...input, finalText: excerpt, claims: [{ ...claim, outputExcerpt: '短' }] })).toEqual([]);
+});
+
+it('主动读取快照赋予采用资格：版本须与宿主记录精确匹配，经验条目与跨回合读取不算', async () => {
+  const { prepareAssetUsageClaim } = await import('../../../../src/main/features/recall/asset-usage-claim');
+  await expect(prepareAssetUsageClaim('user-a', 'turn-a', readClaim, [])).rejects.toThrow('not supplied');
+  await agentRead();
+  await expect(prepareAssetUsageClaim('user-a', 'turn-a', readClaim, [])).resolves.toEqual(readClaim);
+  await expect(prepareAssetUsageClaim('user-a', 'turn-a', { ...readClaim, assetVersion: '2' }, [])).rejects.toThrow('not supplied');
+  await expect(prepareAssetUsageClaim('user-a', 'another-turn', readClaim, [])).rejects.toThrow('not supplied');
+  await agentRead('exp-entry1');
+  await expect(prepareAssetUsageClaim('user-a', 'turn-a', { ...readClaim, assetId: 'exp-entry1' }, [])).rejects.toThrow('not supplied');
+});
+
+it('主动读取的采用报告在最终回复持久化后按快照生成回执，重复核验不重复计数', async () => {
+  const injection = await agentRead();
+  const { finalizeAssetUsageClaims } = await import('../../../../src/main/features/recall/asset-usage-claim');
+  const { listAssetUsageReceipts } = await import('../../../../src/main/features/recall/asset-usage-receipt');
+  const input = { taskRunId: 'turn-a', messageId: 'message-a', finalText: excerpt, claims: [readClaim] };
+  expect(await finalizeAssetUsageClaims('user-a', input)).toEqual([
+    expect.objectContaining({
+      assetId: 'aa-read1', assetVersion: '1', projectionId: 'agent-read',
+      injectionReceiptId: injection.id, status: 'applied', evidenceKind: 'final_output', boundary: 'real',
+    }),
+  ]);
+  await finalizeAssetUsageClaims('user-a', input);
+  expect(await listAssetUsageReceipts('user-a')).toHaveLength(1);
+  expect((await listAssetUsageReceipts('user-a'))[0].evidenceRefs).toEqual([expect.objectContaining({ id: 'message-a' })]);
+});
+
+it('同一资产既投影供应又主动读取时，只按消息绑定的投影回执记一次', async () => {
+  await supply('aa-read1');
+  await agentRead();
+  const { finalizeAssetUsageClaims } = await import('../../../../src/main/features/recall/asset-usage-claim');
+  const { listAssetUsageReceipts } = await import('../../../../src/main/features/recall/asset-usage-receipt');
+  await finalizeAssetUsageClaims('user-a', { taskRunId: 'turn-a', messageId: 'message-a', finalText: excerpt, claims: [readClaim] });
+  const receipts = await listAssetUsageReceipts('user-a');
+  expect(receipts).toHaveLength(1);
+  expect(receipts[0].projectionId).toBe('projection-a');
+});
+
+it('主动读取但片段未进最终回复时仍不生成采用回执', async () => {
+  await agentRead();
+  const { finalizeAssetUsageClaims } = await import('../../../../src/main/features/recall/asset-usage-claim');
+  const { listAssetUsageReceipts } = await import('../../../../src/main/features/recall/asset-usage-receipt');
+  await finalizeAssetUsageClaims('user-a', { taskRunId: 'turn-a', messageId: 'message-a', finalText: '只读正文，没有产出。', claims: [readClaim] });
+  expect(await listAssetUsageReceipts('user-a')).toEqual([]);
+});
+
+it('agent-read 占位投影只对 agent_read 回执放行，投影回执仍要求逐字相等', async () => {
+  const read = await agentRead();
+  const projection = await supply('aa-read2');
+  const { recordAssetUsageReceipt } = await import('../../../../src/main/features/recall/asset-usage-receipt');
+  await recordAssetUsageReceipt('user-a', {
+    taskRunId: 'turn-a', projectionId: 'agent-read', assetId: 'aa-read1', assetVersion: '1',
+    injectionReceiptId: read.id, status: 'applied', evidenceKind: 'final_output', boundary: 'real',
+    evidenceRefs: [{ kind: 'message', id: 'message-a' }],
+  });
+  await expect(recordAssetUsageReceipt('user-a', {
+    taskRunId: 'turn-a', projectionId: 'agent-read', assetId: 'aa-read2', assetVersion: '1',
+    injectionReceiptId: projection.id, status: 'applied', evidenceKind: 'final_output', boundary: 'real',
+    evidenceRefs: [{ kind: 'message', id: 'message-a' }],
+  })).rejects.toThrow('does not match');
 });
 
 it('真实最终输出可补齐未知回执，但不能覆盖用户否定', async () => {

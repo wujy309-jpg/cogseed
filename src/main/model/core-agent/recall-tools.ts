@@ -718,7 +718,7 @@ function createAssetUsageReportTools(opts: RecallToolsOpts): AgentTool[] {
   const tools: AgentTool[] = [];
   if (opts.onAssetUsageClaim && opts.turnId) tools.push({
     name: 'report_ability_asset_usage',
-    description: '报告本轮确实采用的一条资产及读到的版本。完成产出后、最终回复前调用，outputExcerpt 必须是即将放入最终回复的原文片段（12至500字），具体体现这条资产如何影响产出。只读取、列目录、提及名称不算采用。此工具只登记待核验报告；主进程核对当轮供应记录和最终消息后才留下采用回执，不代表效果已验证。不采用则不要调用。多条资产分别报告，不要把同一工具成功算给所有引用。',
+    description: '报告本轮确实采用的一条资产及读到的版本。完成产出后、最终回复前调用，outputExcerpt 必须是即将放入最终回复的原文片段（12至500字），具体体现这条资产如何影响产出。只读取、列目录、提及名称不算采用。此工具只登记待核验报告；主进程核对当轮供应或主动读取记录（search_ability_assets 的 assetIds 正文模式）和最终消息后才留下采用回执，不代表效果已验证。不采用则不要调用。多条资产分别报告，不要把同一工具成功算给所有引用。',
     inputSchema: {
       type: 'object', properties: {
         assetId: { type: 'string' }, assetVersion: { type: 'string', description: '读到的版本，例如 1 或 v1。' },
@@ -731,7 +731,7 @@ function createAssetUsageReportTools(opts: RecallToolsOpts): AgentTool[] {
         await opts.onAssetUsageClaim!(claim);
         return { content: '采用报告已登记，等待最终消息持久化后核验；尚未生成采用回执，也未验证效果。' };
       } catch {
-        return { content: '未登记：需要本轮已供应的资产及版本、12至500字的最终产出原文片段；没有生成采用回执。', isError: true };
+        return { content: '未登记：需要本轮已供应或已读正文（search_ability_assets 的 assetIds 模式）的资产及版本、12至500字的最终产出原文片段；没有生成采用回执。', isError: true };
       }
     },
   });
