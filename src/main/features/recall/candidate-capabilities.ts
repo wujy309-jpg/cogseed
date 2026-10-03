@@ -18,6 +18,7 @@ import type { RecallCandidateRisk, RecallCandidateStatus } from './candidate-ser
 import type { AbilityAssetType, RecallCandidateAction } from './candidate-service';
 import type { RecallCandidateClassificationReason } from './capture-value-screening';
 import { validatePromotionByAssetType, type PromotionBlockReason } from './formal-assets/promotion';
+import { hasReviewableCandidateEvidence } from './candidate-evidence';
 
 /** 用户可见的产品态。后端枚举不直接进 UI。 */
 export type RecallCandidateDisplayState =
@@ -65,6 +66,7 @@ export type RecallCandidateBlockedReason =
  */
 export interface RecallCandidateCapabilityInput {
   status: RecallCandidateStatus;
+  origin?: string;
   risk?: RecallCandidateRisk;
   sourceRefs?: readonly unknown[];
   evidenceRefs?: readonly unknown[];
@@ -194,12 +196,7 @@ function blocksBatch(risk: RecallCandidateRisk | undefined): boolean {
  * 未提供 refs 时不额外收紧——真实记录一定带这两个字段。
  */
 function hasReviewableEvidence(candidate: RecallCandidateCapabilityInput): boolean {
-  const evidence = candidate.evidenceRefs ?? candidate.sourceRefs;
-  if (candidate.sourceRefs === undefined && evidence === undefined) return true;
-  // 只对**给到的**字段判空：调用方可能只带其中一个（inbox DTO 就是这样），
-  // 缺字段不等于"没有证据"。asCandidate 要求两者都非空，所以两者都要过。
-  return (candidate.sourceRefs === undefined || candidate.sourceRefs.length > 0)
-    && (evidence === undefined || evidence.length > 0);
+  return hasReviewableCandidateEvidence(candidate);
 }
 
 /**
@@ -255,6 +252,11 @@ export function getRecallCandidateCapabilities(
   let base = BY_STATUS[candidate.status];
   if (!base) throw new Error('unknown recall candidate status');
   const evidenceBound = candidate.status === 'observed' || candidate.status === 'weak_observation';
+  if (evidenceBound && candidate.origin === 'manual') {
+    // Older detail edits downgraded manual candidates. Their user provenance
+    // is still valid; expose review without rewriting historical records.
+    base = { ...base, displayState: 'needs_review' };
+  }
   if (evidenceBound && !hasReviewableEvidence(candidate)) {
     // 证据补齐前它连状态都迁不出去：UI 说"可以处理"就是假话。
     base = {

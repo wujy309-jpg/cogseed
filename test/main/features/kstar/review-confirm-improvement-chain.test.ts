@@ -278,6 +278,7 @@ describe('US-704 T035 复盘确认沿同一改进分析链路继续', () => {
       .find((candidate) => !before.includes(candidate.id));
     expect(created).toMatchObject({
       suggestedAction: 'update',
+      suggestedType: 'rule',
       targetAssetId: scenario.targetAssetId,
       targetVersionUsed: '1',
     });

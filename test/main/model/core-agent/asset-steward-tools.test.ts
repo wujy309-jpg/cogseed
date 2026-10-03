@@ -417,15 +417,64 @@ describe('只读会话不变量（T016）', () => {
     }
   });
 
-  it('资产管家的工具面 = 3 读 + 6 写', async () => {
+  it('资产管家的工具面 = 3 读 + 6 管理写入 + 1 仅候选提交', async () => {
     // 第 3 个读工具（list_asset_change_proposals）是 2026-09-25 真机反馈"模型拿不到
     // 待审批的内容"补的：读侧不提供任何代拍的形状（处置权在用户）。
     const { names } = await stewardTools();
     expect(names).toEqual([
+      'propose_ability_asset',
       'list_ability_assets', 'read_ability_asset', 'list_asset_change_proposals',
       'edit_ability_asset', 'merge_ability_assets', 'archive_ability_asset',
       'delete_ability_asset', 'restore_ability_asset', 'rollback_ability_asset',
     ]);
+  });
+});
+
+describe('明确类型的认知候选提交', () => {
+  const input = { title: '跨任务会议准备清单', type: 'template', statement: 'Reusable meeting checklist：先写会议目标，再列三项待办，最后写一个风险和应对。', value: '为后续会议准备提供可复用结构。' };
+
+  it('用户要求保存模板时写真实模板候选和回执，保持待确认且不写个人资产', async () => {
+    const { createAssetStewardTools } = await import('../../../../src/main/model/core-agent/asset-steward-tools');
+    const receipts: unknown[] = [];
+    const tool = createAssetStewardTools({ userId: TEST_UID, cid: 'candidate-chat', sourceMessageId: 'candidate-message',
+      taskText: '请保存一份可复用的会议清单模板，这不是长期偏好。', sourceMessageFromUser: true, spaceId: 'sp-review',
+      onCognitionSaveReceipt: (receipt) => { receipts.push(receipt); },
+    }).find((tool) => tool.name === 'propose_ability_asset')!;
+    const result = await tool.execute(input, {} as never);
+    expect(result.isError).not.toBe(true);
+    const { listRecallCandidates } = await import('../../../../src/main/features/recall/candidate-service');
+    const { listAbilityAssets } = await import('../../../../src/main/features/recall/asset-service');
+    const candidates = await listRecallCandidates(TEST_UID);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({ suggestedType: 'template', status: 'pending_review', scopePolicy: { workspaceIds: ['sp-review'] } });
+    expect(candidates[0].origin).not.toBe('manual');
+    expect(candidates[0].sourceRefs).toEqual([expect.objectContaining({ id: 'candidate-chat', kind: 'conversation' })]);
+    expect(receipts).toEqual([expect.objectContaining({ id: candidates[0].id, target: 'candidate', outcome: 'pending-review' })]);
+    expect(result.content).toContain(`[candidate:${candidates[0].id}]`);
+    expect(await listAbilityAssets(TEST_UID)).toEqual([]);
+  });
+
+  it.each([
+    { taskText: '不要保存，这只是当前任务的草稿。', sourceMessageFromUser: true },
+    { taskText: '请保存这份模板。', sourceMessageFromUser: false },
+    { taskText: '请保存这份模板。', sourceMessageFromUser: true, sourceMessageId: undefined },
+  ])('拒绝无当前用户授权或来源的候选提交：%j', async (source) => {
+    const { createAssetStewardTools } = await import('../../../../src/main/model/core-agent/asset-steward-tools');
+    const tool = createAssetStewardTools({ userId: TEST_UID, cid: 'candidate-chat', sourceMessageId: 'candidate-message', ...source }).find((tool) => tool.name === 'propose_ability_asset')!;
+    expect((await tool.execute(input, {} as never)).isError).toBe(true);
+    const { listRecallCandidates } = await import('../../../../src/main/features/recall/candidate-service');
+    expect(await listRecallCandidates(TEST_UID)).toEqual([]);
+  });
+
+  it('回执发送失败时如实保留真实候选，不声称回执已送达', async () => {
+    const { createAssetStewardTools } = await import('../../../../src/main/model/core-agent/asset-steward-tools');
+    const tool = createAssetStewardTools({ userId: TEST_UID, cid: 'candidate-chat', sourceMessageId: 'candidate-message',
+      taskText: '请保存一份模板。', sourceMessageFromUser: true,
+      onCognitionSaveReceipt: () => { throw new Error('callback unavailable'); },
+    }).find((tool) => tool.name === 'propose_ability_asset')!;
+    expect((await tool.execute(input, {} as never)).content).toContain('保存回执未送达');
+    const { listRecallCandidates } = await import('../../../../src/main/features/recall/candidate-service');
+    expect(await listRecallCandidates(TEST_UID)).toHaveLength(1);
   });
 });
 
@@ -471,6 +520,38 @@ describe('写工具（US-402）', () => {
     expect(row.reason).toBe('用户要求把这条改清楚点');
     expect(row.before).toContain('statement=');
     expect(row.after).toContain('灰度范围');
+  });
+
+  it('仅提议模式即使正文匹配用户原话也不生效，且提议可查', async () => {
+    const asset = await seedAsset('发布前必须核对回滚方案。');
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    const approval = await import('../../../../src/main/features/recall/asset-approval-service');
+    const statement = '发布前必须核对回滚方案与灰度范围。';
+    const { edit } = await tools({ taskText: `请把这条改成：${statement}`, sourceMessageFromUser: true });
+    const out = await call(edit, {
+      assetId: asset.id, fields: { statement }, reason: '仅生成候选',
+      origin: 'user_instruction', mode: 'propose', expectedVersion: asset.version,
+    });
+    // 本测试无会话，卡片下发失败；留档回执仍必须准确。
+    expect(out.content).toContain('提议已留档');
+    const [proposal] = await approval.listAssetChangeProposals(TEST_UID, { assetId: asset.id });
+    expect(proposal).toMatchObject({ state: 'pending', baselineVersion: asset.version, payload: { statement } });
+    expect(out.content).toContain(proposal.id);
+    expect(await assets.readAbilityAsset(TEST_UID, asset.id)).toMatchObject({ statement: asset.statement, version: asset.version });
+  });
+
+  it('过时版本不能创建提议或绕过仅提议模式', async () => {
+    const asset = await seedAsset('并发提议基线。');
+    const approval = await import('../../../../src/main/features/recall/asset-approval-service');
+    const { edit } = await tools();
+    const out = await call(edit, {
+      assetId: asset.id, fields: { statement: '过时的改动。' }, reason: '旧版本',
+      mode: 'propose', expectedVersion: '0',
+    });
+    expect(out).toMatchObject({ isError: true });
+    expect(out.content).toContain('version conflict');
+    expect(await approval.listAssetChangeProposals(TEST_UID, { assetId: asset.id })).toEqual([]);
+    expect(await call(edit, { assetId: asset.id, fields: { title: '改名' }, reason: '候选', mode: 'propose' })).toMatchObject({ isError: true });
   });
 
   it('并发不一致：拒绝而不是静默覆盖', async () => {

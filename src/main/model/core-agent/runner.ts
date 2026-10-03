@@ -223,6 +223,8 @@ export interface BuildRunnerParams {
   sourceMessageId?: string;
   sourceMessageFromUser?: boolean;
   onCognitionSaveReceipt?: (receipt: CognitionSaveReceipt) => void | Promise<void>;
+  onAssetUsageClaim?: (claim: import('../../features/recall/asset-usage-claim').AssetUsageClaim) => void | Promise<void>;
+  suppliedAbilityAssets?: Array<{ assetId: string; assetVersion: string }>;
   /** Project id of the conversation, when it belongs to one. Threaded
    *  through to local-tools / file-tools / image-gen-tool so workspace
    *  resolution picks up the project-scoped selection. Resolved once at
@@ -1014,6 +1016,8 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   // 与使用流水（turnId），并以当前消息文本做适用/禁用场景匹配（taskText）。
   const recallToolSuite = uid && !params.disableTools ? createRecallToolSuite({
     userId: uid,
+    ...(params.onAssetUsageClaim ? { onAssetUsageClaim: params.onAssetUsageClaim } : {}),
+    ...(params.suppliedAbilityAssets ? { suppliedAbilityAssets: params.suppliedAbilityAssets } : {}),
     ...(agentId ? { agentId } : {}),
     ...(params.turnId ? { turnId: params.turnId } : {}),
     ...(params.cid ? { cid: params.cid } : {}),
@@ -1030,6 +1034,8 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   // 同样注入给主会话与 group_chat 各 actor，且**不进只读白名单**（见下）。
   const assetStewardTools = uid && !params.disableTools ? createAssetStewardTools({
     userId: uid,
+    ...(params.sourceMessageId ? { sourceMessageId: params.sourceMessageId } : {}),
+    ...(params.onCognitionSaveReceipt ? { onCognitionSaveReceipt: params.onCognitionSaveReceipt } : {}),
     ...(agentId ? { agentId } : {}),
     ...(params.projectId ? { projectId: params.projectId } : {}),
     ...(params.turnId ? { turnId: params.turnId } : {}),

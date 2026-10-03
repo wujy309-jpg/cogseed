@@ -193,7 +193,11 @@ describe('candidate pool rendering', () => {
     expect(views).toContain('evidenceMostlyUnavailable');
     expect(views).toContain('is-broken');
     expect(views).toContain("T('cognition.candidate_evidence_all_unavailable'");
-    expect(views).toContain("T('cognition.candidate_evidence_ok'");
+    // 有引用只表示可追溯，手动输入只表示用户提供；两者均不宣称效果已验证。
+    expect(views).toContain("T('cognition.candidate_user_provided'");
+    expect(views).toContain("T('cognition.candidate_has_refs'");
+    expect(views).toContain("T('cognition.candidate_missing_refs'");
+    expect(views).not.toContain("T('cognition.candidate_evidence_ok'");
   });
 
   it('keeps confirmed/rejected/ignored candidates in the processed fold only', () => {

@@ -55,6 +55,7 @@
    *  确定性扫描线）、会话整理（capture 线，无信号）。KSTAR 两条线的徽章
    *  文案必须带 "KSTAR" 前缀（子安口径：用户可辨，不接受裸"任务复盘"）。 */
   function candidateSourceBadge(candidate) {
+    if (candidate.origin === 'manual') return chip(T('cognition.source_manual', '手动输入'));
     const signal = candidate.learningSignal;
     if (signal && String(signal.source || '') === 'preference_scan') {
       return chip(T('cognition.source_pref_scan', '偏好扫描'));
@@ -434,7 +435,7 @@
     return `
     <div class="cand${broken ? ' is-broken' : ''}" data-act="open-candidate" data-id="${esc(candidate.id)}" role="button" tabindex="0">
       <div class="c1">${esc(candidateTitle(candidate))}${warnHtml}<span class="chev" aria-hidden="true">›</span></div>
-      <div class="c2">${chip(categoryLabel(candidate.suggestedType))}${candidateSourceBadge(candidate)}${candidateRiskBadge(candidate)}${(candidate.capabilities && candidate.capabilities.isSnoozed) ? chip(T('cognition.candidate_system_hold', '系统保留（语义复核有发现）'), 'amber') : ''}${broken ? '' : chip(T('cognition.candidate_evidence_ok', '证据充足'), 'green')}</div>
+      <div class="c2">${chip(categoryLabel(candidate.suggestedType))}${candidateSourceBadge(candidate)}${candidateRiskBadge(candidate)}${(candidate.capabilities && candidate.capabilities.isSnoozed) ? chip(T('cognition.candidate_system_hold', '系统保留（语义复核有发现）'), 'amber') : ''}${candidate.origin === 'manual' ? chip(T('cognition.candidate_user_provided', '用户直接提供')) : broken ? '' : chip(refs.length ? T('cognition.candidate_has_refs', '有来源引用') : T('cognition.candidate_missing_refs', '缺少来源引用'), refs.length ? '' : 'amber')}</div>
       <div class="c3">${esc(String(candidate.judgment || candidate.value || '').slice(0, 800))}</div>
       ${(refsHtml || actionsHtml) ? `<div class="ca-card-footer">${refsHtml}${actionsHtml}</div>` : ''}
     </div>`;
@@ -666,7 +667,9 @@
       : '';
     const evidenceHtml = `${legacyEvidenceHtml}${refs.length
       ? evidenceGroupsHtml(refs)
-      : `<span class="note">${esc(T('cognition.candidate_no_evidence', '没有可追溯的证据引用；确认前建议先补证。'))}</span>`}`;
+      : `<span class="note">${esc(candidate.origin === 'manual'
+        ? T('cognition.candidate_manual_evidence_note', '这条内容由你直接输入，可以确认保存；没有外部引用，保存不代表效果已验证。')
+        : T('cognition.candidate_no_evidence', '没有可追溯的证据引用；确认前建议先补证。'))}</span>`}`;
     // 决策动作同样按 capability 收敛（2026-09-20 修）：终态候选（confirmed /
     // rejected / ignored）的映射是 canReject=false、isTerminal=true，
     // 此前这两个按钮**无条件**渲染，用户点下去必然被后端状态机拒绝——旧 skills.js

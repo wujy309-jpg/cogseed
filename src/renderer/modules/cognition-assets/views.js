@@ -174,11 +174,12 @@
   const assetStatusChip = (asset) => {
     const entry = ASSET_STATUS[String(asset.status || 'active')];
     const [label, tone] = entry ? [entry[0](), entry[1]] : [T('cognition.asset_status_unknown', '状态未知'), ''];
-    // 刀三（2026-09-22）：成熟度章收敛两态——transfer+ 统一「已实证」，未验证
-    // 不摆章；工作名待认知树映射层统一定名。
-    const maturity = ['transfer_validated', 'effectiveness_validated'].includes(String(asset.maturity || ''))
-      ? chip(T('cognition.maturity_validated', '已实证'), 'green')
-      : '';
+    // 成功加载不等于效果得到验证，两种证据分别展示。
+    const maturity = asset.maturity === 'effectiveness_validated'
+      ? chip(T('cognition.maturity_effectiveness', '效果已验证'), 'green')
+      : asset.maturity === 'transfer_validated'
+        ? chip(T('cognition.maturity_loaded', '已跨任务加载'), '')
+        : '';
     return chip(label, tone) + maturity;
   };
   // originChip（出身章「模型记的/系统沉淀」）已随出身收敛退役（2026-09-20）：

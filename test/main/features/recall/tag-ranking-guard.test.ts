@@ -178,9 +178,9 @@ describe('反漂移源码级断言（T026）', () => {
       'p3394_send', 'p3394_sessions',
       // 2026-10-02：个人字段取件/记住（对话内问答；见 cognition-kernel-tools.ts）。
       'personal_field_remember', 'personal_fields_check',
-      'personal_ontology_fields', 'project_instructions', 'publish_outputs',
+      'personal_ontology_fields', 'project_instructions', 'propose_ability_asset', 'publish_outputs',
       'read_ability_asset', 'read_file', 'read_task_experience',
-      'research_rerank', 'restore_ability_asset', 'rollback_ability_asset', 'search_ability_assets', 'search_files',
+      'report_ability_asset_usage', 'research_rerank', 'restore_ability_asset', 'rollback_ability_asset', 'search_ability_assets', 'search_files',
       'stat_file', 'tool_result_read_chunk', 'tool_result_search', 'touchpoint_list', 'web_fetch', 'web_search',
       'write_file',
     ];

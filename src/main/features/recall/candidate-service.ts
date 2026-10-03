@@ -13,6 +13,7 @@ import { assertNotForbiddenToPersist } from '../../util/cognition-sensitivity';
 import { fileEditLock } from '../../util/locks';
 import { recallJsonRecordPath } from './paths';
 import { gateCandidateStatement } from './candidate-statement-gate';
+import { hasReviewableCandidateEvidence } from './candidate-evidence';
 import { notifyCognitionWrite } from './store-events';
 import {
   readRecallJsonRecord,
@@ -1167,15 +1168,6 @@ function maxCandidateRisk(left: RecallCandidateRisk, right: RecallCandidateRisk)
   return rank[left] >= rank[right] ? left : right;
 }
 
-function isCandidateContentReviewReady(candidate: Pick<
-  RecallCandidateRecord,
-  'value' | 'sourceRefs' | 'evidenceRefs' | 'suggestedScope' | 'suggestedAction' | 'targetAssetId'
->): boolean {
-  return Boolean(candidate.value) && candidate.sourceRefs.length > 0 && candidate.evidenceRefs.length > 0
-    && Boolean(candidate.suggestedScope)
-    && (!candidateActionNeedsTarget(candidate.suggestedAction) || Boolean(candidate.targetAssetId));
-}
-
 function candidateActionNeedsTarget(action: RecallCandidateAction): boolean {
   return action === 'update' || action === 'limit_scope' || action === 'pause';
 }
@@ -1465,7 +1457,7 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
   };
   const reviewReady = input.forceWeakObservation !== true
     && Boolean(resolvedValue)
-    && (input.manual === true || (sourceRefs.length > 0 && evidenceRefs.length > 0))
+    && hasReviewableCandidateEvidence({ origin: input.manual === true ? 'manual' : undefined, sourceRefs, evidenceRefs })
     && Boolean(suggestedScope) && (hasExplicitAction || !hasExplicitValue)
     && (!candidateActionNeedsTarget(suggestedAction) || Boolean(targetAssetId));
   let existing = (await listRecallCandidates(userId)).find((candidate) => {
@@ -1739,7 +1731,7 @@ export async function updateRecallCandidate(userId: string, candidateId: string,
     //
     // 反过来也成立：用户真把内容改成一条合格的长期偏好，这里就会放它进
     // pending_review，确认按钮自己回来。
-    const reviewReady = Boolean(resolvedValue) && sourceRefs.length > 0 && evidenceRefs.length > 0
+    const reviewReady = Boolean(resolvedValue) && hasReviewableCandidateEvidence({ origin: current.origin, sourceRefs, evidenceRefs })
       && Boolean(suggestedScope) && (!candidateActionNeedsTarget(suggestedAction) || Boolean(targetAssetId))
       && promotionEligible;
     const now = new Date().toISOString();

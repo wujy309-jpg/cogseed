@@ -230,4 +230,31 @@ describe('认知资产 · 候选行的就地处理', () => {
       expect(html).not.toContain('data-act="cand-adopt-with-form"');
     }
   });
+
+  it('手动候选无外部引用时保留保存入口，并明确来源和效果验证边界', () => {
+    const manual = { ...candidate('c-manual', 'weak_observation', CAPS), origin: 'manual', sourceRefs: [], evidenceRefs: [] };
+    const context = loadAssetsRenderer();
+    const card = context.window.CogAssets.candidate.card(manual, false);
+    expect(card).toContain(zh['cognition.source_manual']);
+    expect(card).toContain(zh['cognition.candidate_user_provided']);
+    expect(card).not.toContain(zh['cognition.candidate_evidence_ok']);
+    const detail = renderAssets({ name: 'review', candidateId: manual.id }, (store) => {
+      store.candidates = [manual];
+    });
+    expect(detail).toContain(zh['cognition.candidate_manual_evidence_note']);
+    expect(detail).toContain('data-act="cand-adopt-with-form"');
+  });
+
+  it('自动候选只陈述有无引用，不把引用或失效来源宣称为证据充足', () => {
+    const context = loadAssetsRenderer();
+    const renderer = context.window.CogAssets.candidate;
+    const automatic = { ...candidate('c-auto', 'pending_review', CAPS), origin: 'conversation' };
+    expect(renderer.card(automatic, false)).toContain(zh['cognition.candidate_has_refs']);
+    const empty = renderer.card({ ...automatic, sourceRefs: [], evidenceRefs: [] }, false);
+    expect(empty).toContain(zh['cognition.candidate_missing_refs']);
+    const broken = renderer.card(automatic, true);
+    expect(broken).toContain(zh['cognition.candidate_evidence_all_unavailable']);
+    expect(broken).not.toContain(zh['cognition.candidate_has_refs']);
+    for (const html of [empty, broken]) expect(html).not.toContain(zh['cognition.candidate_evidence_ok']);
+  });
 });

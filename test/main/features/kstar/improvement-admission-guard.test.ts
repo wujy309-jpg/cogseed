@@ -56,6 +56,7 @@ const F = {
   taskClosure: 'src/main/features/kstar/task-closure.ts',
   trace: 'src/main/features/kstar/trace.ts',
   usageReceipt: 'src/main/features/recall/asset-usage-receipt.ts',
+  usageClaim: 'src/main/features/recall/asset-usage-claim.ts',
   assetService: 'src/main/features/recall/asset-service.ts',
   candidateService: 'src/main/features/recall/candidate-service.ts',
   approvalService: 'src/main/features/recall/asset-approval-service.ts',
@@ -351,6 +352,10 @@ describe('T046 ② 不存在第二处「采用判定」', () => {
   /** `'applied'` 字面量的显式允许清单：**每项都要说清它为什么不是第二套采用判定**。 */
   const appliedLiteralAllowlist: Array<{ file: string; why: string }> = [
     {
+      file: F.usageClaim,
+      why: '显式采用报告的写入侧：绑定当轮真实供应版本和最终消息后，调用权威回执服务写入；不解释已有回执，不参与候选准入或效果验证。',
+    },
+    {
       file: F.usageReceipt,
       why: '权威口径本身（specs/011 定稿）：`status === \'applied\' && boundary === \'real\'` 的唯一判定在这里，读取一律走 `listAppliedUsageReceipts`。',
     },
@@ -377,6 +382,7 @@ describe('T046 ② 不存在第二处「采用判定」', () => {
   ];
 
   const APPLIED_LITERAL = /['"]applied['"]/g;
+  const isUsageDecision = (line: string) => /boundary/.test(line) && /(?:={2,3}|!={1,2})/.test(line);
   /** 两条件并判（同行的 `applied` + `real`）：采用口径的形状本身，只允许权威处。 */
   const TWO_CONDITION = /=== 'applied'[^\n]*=== 'real'|=== 'real'[^\n]*=== 'applied'/g;
 
@@ -412,9 +418,15 @@ describe('T046 ② 不存在第二处「采用判定」', () => {
 
     // 同一行同时出现 `applied` 与 `boundary` = 自己重写采用判定的形状 → 只允许权威处。
     const sameLine = scan(assetDomainTsFiles(), APPLIED_LITERAL)
-      .filter((hit) => hit.file !== F.usageReceipt && /boundary/.test(hit.text));
+      .filter((hit) => hit.file !== F.usageReceipt && isUsageDecision(hit.text));
     expect(sameLine, `出现清单外文件里的「applied + boundary」同判形状（等于第二套采用判定）：\n${hitSummary(sameLine)}`)
       .toEqual([]);
+  });
+
+  it('赋值写入不算采用判定，状态比较和边界同判仍受守卫约束', () => {
+    expect(isUsageDecision("status: 'applied', boundary: 'real'")).toBe(false);
+    expect(isUsageDecision("receipt.status === 'applied' && receipt.boundary === 'real'")).toBe(true);
+    expect(isUsageDecision("receipt.status == 'applied' && receipt.boundary != 'test-double'")).toBe(true);
   });
 });
 
@@ -530,6 +542,9 @@ describe('T046 ④ tool-catalog recall 组工具面受控扩展', () => {
    * 行为测试在 test/main/features/cognition_kernel/。
    */
   const RECALL_GROUP_BASELINE = [
+    // 2026-10-03：用户授权重构保存与采用入口；只扩展这两项，既有冻结仍生效。
+    'propose_ability_asset',
+    'report_ability_asset_usage',
     'personal_ontology_fields',
     'personal_fields_check',
     'personal_field_remember',
@@ -557,7 +572,7 @@ describe('T046 ④ tool-catalog recall 组工具面受控扩展', () => {
     let factoryNames: string[];
     try {
       factoryNames = [
-        ...createRecallTools({ userId: 'admission-guard' }),
+        ...createRecallTools({ userId: 'admission-guard', turnId: 'guard-turn', onAssetUsageClaim: () => {} }),
         ...createAssetStewardTools({ userId: 'admission-guard' }),
         ...createPersonalOntologyTools({ userId: 'admission-guard' }),
         ...createExperienceTools({ userId: 'admission-guard' }),

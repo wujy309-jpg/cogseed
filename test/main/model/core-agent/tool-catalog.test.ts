@@ -115,7 +115,7 @@ function enumerateAllInjectedTools(): AgentTool[] {
   const previousSemantica = process.env.COGSEED_SEMANTICA_ENABLED;
   process.env.COGSEED_SEMANTICA_ENABLED = '1';
   try {
-    tools.push(...createRecallTools({ userId: 'testuid' }));
+    tools.push(...createRecallTools({ userId: 'testuid', turnId: 'catalog-turn', onAssetUsageClaim: () => {} }));
   } finally {
     if (previousSemantica === undefined) delete process.env.COGSEED_SEMANTICA_ENABLED;
     else process.env.COGSEED_SEMANTICA_ENABLED = previousSemantica;

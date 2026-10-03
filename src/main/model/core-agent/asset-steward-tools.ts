@@ -10,6 +10,9 @@
  */
 
 import type { AgentTool } from '#core-agent';
+import type { CognitionSaveReceipt } from '../client';
+import { saveRecallCandidate, type AbilityAssetType } from '../../features/recall/candidate-service';
+import { classifyMemorySaveIntent } from '../../features/recall/memory-save-intent';
 import { createLogger } from '../../logger';
 import { t } from '../../i18n';
 import {
@@ -61,6 +64,67 @@ export interface AssetStewardToolsOpts {
   taskText?: string;
   /** 只有当前可见来源行确实由用户发出时，才能把原话当作直写授权。 */
   sourceMessageFromUser?: boolean;
+  sourceMessageId?: string;
+  onCognitionSaveReceipt?: (receipt: CognitionSaveReceipt) => void | Promise<void>;
+}
+
+function createProposeAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
+  return {
+    name: 'propose_ability_asset',
+    description: '用户要求保存一份模板、方法、规则、事实或个人信息时，直接调用本工具创建真实待确认候选。必须明确 type，不要把模板或方法转成个人偏好，也不要用本体候选替代。只创建候选，不批准生效；用户已要求保存时不必再次请求创建候选的许可。只有工具返回真实 candidate 编号才能说已提交。更新已有资产用 edit_ability_asset 的 mode=propose。',
+    inputSchema: {
+      type: 'object', properties: {
+        title: { type: 'string', minLength: 1, maxLength: 160 },
+        statement: { type: 'string', minLength: 1, maxLength: 4000 },
+        value: { type: 'string', minLength: 1, maxLength: 1000 },
+        type: { type: 'string', enum: ['personal', 'rule', 'template', 'skill_method', 'fact'] },
+        applicableWhen: { type: 'array', items: { type: 'string' }, maxItems: 12 },
+        forbiddenWhen: { type: 'array', items: { type: 'string' }, maxItems: 12 },
+      }, required: ['title', 'statement', 'value', 'type'], additionalProperties: false,
+    },
+    async execute(input: Record<string, unknown>) {
+      const statement = typeof input.statement === 'string' ? input.statement.trim() : '';
+      if (!opts.cid || !safeId(opts.cid) || !opts.sourceMessageId || !safeId(opts.sourceMessageId)
+        || classifyMemorySaveIntent(opts.taskText, statement, opts.sourceMessageFromUser === true) === 'none') {
+        return { content: '未提交：需要当前用户的保存指令及真实来源消息；没有创建候选或资产。', isError: true };
+      }
+      const title = typeof input.title === 'string' ? input.title.trim() : '';
+      const value = typeof input.value === 'string' ? input.value.trim() : '';
+      if (!title || title.length > 160 || !statement || statement.length > 4000 || !value || value.length > 1000
+        || !['personal', 'rule', 'template', 'skill_method', 'fact'].includes(String(input.type))) {
+        return { content: '未提交：需要明确的类型、标题、正文和保存价值；没有创建候选或资产。', isError: true };
+      }
+      const arrays = [input.applicableWhen, input.forbiddenWhen];
+      if (arrays.some((items) => items !== undefined && (!Array.isArray(items) || items.length > 12
+        || items.some((item) => typeof item !== 'string' || !item.trim() || item.length > 500)))) {
+        return { content: '未提交：适用与禁用场景必须是至多12条的非空文字数组。', isError: true };
+      }
+      try {
+        const candidate = await saveRecallCandidate(opts.userId, {
+          judgment: statement, summary: title, value, suggestedType: input.type as AbilityAssetType,
+          suggestedScope: 'general', suggestedAction: 'create',
+          sourceRefs: [{ kind: 'conversation', id: opts.cid, scope: 'conversation', title: '用户保存指令所在对话' }],
+          captureKey: `user-save-${opts.sourceMessageId}`,
+          ...(opts.turnId ? { taskRunId: opts.turnId } : {}),
+          ...(opts.spaceId ? { spaceId: opts.spaceId, scopePolicy: { workspaceIds: [opts.spaceId] } } : {}),
+          ...(Array.isArray(input.applicableWhen) ? { applicableWhen: input.applicableWhen as string[] } : {}),
+          ...(Array.isArray(input.forbiddenWhen) ? { forbiddenWhen: input.forbiddenWhen as string[] } : {}),
+        });
+        const confirmed = candidate.status === 'confirmed';
+        let receiptDelivered = false;
+        try {
+          if (opts.onCognitionSaveReceipt) {
+            await opts.onCognitionSaveReceipt({ target: 'candidate', id: candidate.id, summary: candidate.summary,
+              outcome: confirmed ? 'already-confirmed' : 'pending-review' });
+            receiptDelivered = true;
+          }
+        } catch { log.warn('candidate persisted but save receipt callback failed'); }
+        return { content: `[candidate:${candidate.id}] 类型：${candidate.suggestedType}；状态：${candidate.status}。${confirmed ? '命中已确认记录，没有重复创建或重新启用。' : '候选已真实入池，尚未成为生效资产，请在待我处理检查并确认。'}${receiptDelivered ? '已发送保存回执。' : '保存回执未送达，请通过候选编号查询；持久记录已保留。'}` };
+      } catch {
+        return { content: '未提交成功：候选保存未返回成功记录，不能声称已保存。', isError: true };
+      }
+    },
+  };
 }
 
 /** 列表分页默认与上限，对齐既有目录工具量级（一页 30、最多 50）。 */
@@ -364,6 +428,7 @@ function createReadAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
     description: [
       '读出一条认知资产的**完整正文**：单批最多 2000 字，长正文用 chunk 逐批读完（返回里会写明第几批/共几批与下一批的 chunk）。',
       '这是管理视角的全文读取，不受"一次 6 条、每条 2000 字"的目录取用限制；适合改动前先看清内容、核对某条到底写了什么。',
+      '读取本身不算采用；若确实按它形成产出，且本轮有 report_ability_asset_usage，最终回复前调用该工具报告具体版本和产出原文片段。只写采用说明不会留下正式回执。',
       '资产**不可用时不会返回正文**，而是如实说明原因（已删除/已暂停/来源被撤权/范围不符/命中禁用场景/敏感级过高/未分级等）——这不是"找不到"，别当成资产不存在，也别试图绕过。',
       '已删除的资产在保留期内仍然存在，但正文已不可用；要恢复它用 restore_ability_asset。',
       '这条资产若挂着**待审批提议**（AI 提过改动、用户还没定），返回里会点明：那类改动**不重复提交**，先把卡片的事告诉用户。',
@@ -987,6 +1052,7 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
     description: [
       '改一条认知资产的内容：标题、正文、适用范围、适用/禁用场景、主题标签。**必须**说明依据（reason）。',
       '**分级（很重要）**：只有用户在当前消息里明确给出并逐字写出要改成的正文或单组标签值，主进程才允许直接改这项；含义由你补写、值来自旧上下文或用户指令不够具体时，不得把 origin 标成 user_instruction，必须走用户审批。你自己提出的正文/适用范围/标签实质变化也必须审批。',
+      '用户要求生成或提交待确认改进候选时，现在就调用本工具，mode=propose：只创建真实待审批提议，资产原文与版本不变，不需要再次请求创建候选的许可。查询工具不能提交；只有本工具返回提议编号才能说已提交。',
       '读到的版本号（metaLine 里的「在用版」）请通过 expectedVersion 带回来：如果这条资产在你读取之后被改过（用户正在手动编辑），工具会拒绝而不是覆盖——重新读一次再决定。',
       '改动会写进台账（谁改的/时间/前后值/依据），并且随时可回滚（rollback_ability_asset）。',
       '主题标签：fields.tags 传字符串数组（整体替换；每条 trim 后非空且 ≤20 字、去重后 ≤12 条，超限拒绝不截断）；category 是旧入参，会**收编为一条标签**与 tags 合并去重（不再单独存在）。标签改动不 bump 内容版本，台账记「标签：旧 → 新」。',
@@ -1016,6 +1082,7 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
         },
         reason: { type: 'string', description: '改动依据：用户的原话或具体证据（必填，写进台账）。' },
         expectedVersion: { type: 'string', description: '你读到这条时的版本号；给了就要求与当前一致，不一致则拒绝（不静默覆盖）。' },
+        mode: { type: 'string', enum: ['propose', 'apply_if_authorized'], description: 'propose：仅提交待审批提议，不直接修改；apply_if_authorized（默认）：由主进程核验直写授权，否则仍走待审批。用户要求候选或暂不生效时必须用propose。' },
         origin: {
           type: 'string',
           description: '这只是你对来源的声明，不是授权凭据。主进程会核对当前用户消息；只有用户原话明确要求、且单项正文或标签改动值逐字匹配时，才允许直接改动。其他实质变化会进入用户审批。你自己提出的改动用 ai_initiated（缺省）。',
@@ -1025,6 +1092,9 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
       additionalProperties: false,
     },
     async execute(input: Record<string, unknown>): Promise<{ content: string; isError?: boolean }> {
+      if (input.mode !== undefined && input.mode !== 'propose' && input.mode !== 'apply_if_authorized') {
+        return { content: 'mode 必须是 propose 或 apply_if_authorized；没有提交或修改。', isError: true };
+      }
       const assetId = typeof input.assetId === 'string' ? input.assetId.trim() : '';
       if (!safeId(assetId)) return { content: `不是合法的资产 id：${assetId || '(空)'}`, isError: true };
       const reasonOrError = requireReason(input.reason);
@@ -1112,7 +1182,7 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
         : touched.length === 1 && touched[0] === 'tags' && Array.isArray(fields.tags)
           ? fields.tags.join('、')
           : undefined;
-      const directUserEdit = input.origin === 'user_instruction'
+      const directUserEdit = input.mode !== 'propose' && input.origin === 'user_instruction'
         && opts.sourceMessageFromUser === true
         && typeof directFieldText === 'string'
         && classifyMemoryReplaceIntent(opts.taskText, directFieldText, true) === 'direct';
@@ -1129,6 +1199,9 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
       // 发审批卡片；这里保留"绝不静默生效"这道底线——提议建不出来时也宁可拒绝。
       const substantial = touched.filter((key) => (SUBSTANTIAL_FIELDS as readonly string[]).includes(key));
       const fieldsOutsideProposal = touched.filter((key) => !(SUBSTANTIAL_FIELDS as readonly string[]).includes(key));
+      if (input.mode === 'propose' && !substantial.length) {
+        return { content: '待审批提议需要正文、适用范围或标签等实质变化；没有提交或修改。', isError: true };
+      }
       if (origin !== 'user_instruction' && substantial.length) {
         if (fieldsOutsideProposal.length) {
           return blockedWriteReceipt(
@@ -1142,6 +1215,10 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
         // 只把**这次真正要改的**字段带进提议：提议的 payload 就是"确认后要写什么"。
         const proposalPayload: Record<string, unknown> = {};
         for (const key of substantial) proposalPayload[key] = fields[key];
+        if (typeof input.expectedVersion === 'string' && input.expectedVersion.trim()
+          && input.expectedVersion.trim() !== abilityAssetActiveVersion(asset)) {
+          return { content: 'version conflict：资产版本已变化，请重新读取后再提交；没有创建提议或修改正文。', isError: true };
+        }
         return proposeSubstantialChange(opts, {
           asset,
           assetId,
@@ -1431,6 +1508,7 @@ function createRollbackAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool 
  *  属权限扩张。由 `test/main/model/core-agent/asset-steward-tools.test.ts` 钉住。 */
 export function createAssetStewardTools(opts: AssetStewardToolsOpts): AgentTool[] {
   return [
+    createProposeAbilityAssetTool(opts),
     createListAbilityAssetsTool(opts),
     createReadAbilityAssetTool(opts),
     createListAssetChangeProposalsTool(opts),

@@ -6182,6 +6182,7 @@ async function runActorTurnBody(
   // 四病整改 7.0 修7): the runner emits candidate+taught-pending-review through
   // onCognitionSaveReceipt, so this turn keeps no separate teaching collector.
   const turnCognitionSaveReceipts: NonNullable<GroupMessage["cognition_save_receipts"]> = [];
+  const turnAssetUsageClaims: import('../recall/asset-usage-claim').AssetUsageClaim[] = [];
   const onArtifactCreated = (a: { id: string; title: string }) => {
     turnArtifacts.push(a);
     emit(state, {
@@ -6861,6 +6862,13 @@ async function runActorTurnBody(
           }
           turnCognitionSaveReceipts.push({ ...receipt });
         },
+        onAssetUsageClaim: (claim) => {
+          const index = turnAssetUsageClaims.findIndex((item) => item.assetId === claim.assetId && item.assetVersion === claim.assetVersion);
+          if (index >= 0) turnAssetUsageClaims[index] = { ...claim };
+          else if (turnAssetUsageClaims.length < 12) turnAssetUsageClaims.push({ ...claim });
+          else throw new Error('asset usage report limit reached');
+        },
+        suppliedAbilityAssets: recallCitations.map((citation) => ({ assetId: citation.assetId, assetVersion: citation.version })),
         // Every in-process turn reports its resolved runtime (actual
         // provider/model after override / fallback). Commander keeps its
         // existing collector; all actors also emit the live execution-config
@@ -7809,7 +7817,15 @@ async function runActorTurnBody(
   }
 
   let persistedMsg: GroupMessage | null = null;
+  let finalOutputForUsage = '';
   if (outcome.kind === "persist") {
+    finalOutputForUsage = outcome.text;
+    if (!outcome.failureKind && !errText && !aborted && turnAssetUsageClaims.length) {
+      const { countClaimsMissingFromFinalOutput } = await import('../recall/asset-usage-claim');
+      if (countClaimsMissingFromFinalOutput(turnAssetUsageClaims, finalOutputForUsage) > 0) {
+        outcome.text = [outcome.text, t('recall.usage_claim_output_missing_notice')].filter(Boolean).join('\n\n');
+      }
+    }
     // Task 5: usage/timing metrics for this settled reply. CLI turns arrive
     // fully assembled from _runCliAgentTurn (runner attaches startedAt /
     // firstTokenAt to the terminal done event); internal model turns rebuild
@@ -7993,6 +8009,17 @@ async function runActorTurnBody(
           ...(rankedRow ? { ranking: explainRanking(rankedRow) } : {}),
         });
       }));
+    }
+    if (!outcome.failureKind && !errText && !aborted && turnAssetUsageClaims.length) {
+      try {
+        const { finalizeAssetUsageClaims } = await import('../recall/asset-usage-claim');
+        await finalizeAssetUsageClaims(uid, {
+          taskRunId: item.turnId, messageId: persistedMsg.id,
+          finalText: finalOutputForUsage, claims: turnAssetUsageClaims,
+        });
+      } catch {
+        log.warn('asset-specific adoption persistence failed; final message preserved');
+      }
     }
     // 画像通道落账（2026-09-13 通道显式化 / 2026-09-30 修2）：回执逐条留
     // 痕；正式资产镜像（非 onto-*）同口径计入 usage——「画像不是资产」的

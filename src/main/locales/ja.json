@@ -1,4 +1,5 @@
 {
+  "recall.usage_claim_output_missing_notice": "採用レシートは記録されませんでした。報告された成果の抜粋がこの最終返信に含まれていません。実際の成果をこの返信に記載してから、もう一度採用を報告してください。",
   "agent.cli.project_dir.label": "プロジェクトディレクトリ",
   "agent.default_name": "無題のエージェント",
   "agent.run_failed": "⚠️ エージェントの実行に失敗しました: {message}",

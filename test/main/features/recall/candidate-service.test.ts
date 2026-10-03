@@ -54,6 +54,48 @@ async function service() {
 }
 
 describe('Recall candidate governance', () => {
+  it('keeps user-authored provenance through a detail edit and confirmation without fabricated references', async () => {
+    const candidates = await service();
+    const input = {
+      judgment: 'Reusable meeting checklist: a goal, three actions and one risk.',
+      value: 'Reusable meeting checklist: a goal, three actions and one risk.',
+      summary: 'Meeting preparation framework',
+      suggestedType: 'template' as const,
+      suggestedScope: 'general',
+      suggestedAction: 'create' as const,
+      sourceRefs: [],
+    };
+    const created = await candidates.saveRecallCandidate('user-a', { ...input, manual: true });
+    const edited = await candidates.updateRecallCandidate('user-a', created.id, {
+      ...input,
+      judgment: `${input.judgment} Assign each action an owner.`,
+      value: `${input.value} Assign each action an owner.`,
+    });
+    expect(edited).toMatchObject({ origin: 'manual', status: 'pending_review', sourceRefs: [], evidenceRefs: [] });
+    const promoted = await candidates.promoteRecallCandidate('user-a', edited.id, { actor: 'user' });
+    expect(promoted.asset).toMatchObject({ version: '1', origin: 'manual', evidenceRefs: [] });
+    expect(promoted.asset.statement).toContain('Assign each action an owner.');
+    expect((await candidates.readRecallCandidate('user-a', edited.id)).status).toBe('confirmed');
+  });
+
+  it('does not grant user-authored provenance to an edited automatic candidate without evidence', async () => {
+    const candidates = await service();
+    const input = {
+      judgment: 'Reusable meeting checklist: a goal, three actions and one risk.',
+      value: 'Reusable meeting checklist: a goal, three actions and one risk.',
+      summary: 'Meeting preparation framework',
+      suggestedType: 'template' as const,
+      suggestedScope: 'general',
+      suggestedAction: 'create' as const,
+      sourceRefs: [],
+    };
+    const created = await candidates.saveRecallCandidate('user-a', input);
+    const edited = await candidates.updateRecallCandidate('user-a', created.id, input);
+    expect(edited.status).toBe('weak_observation');
+    expect(edited.origin).not.toBe('manual');
+    await expect(candidates.promoteRecallCandidate('user-a', edited.id, { actor: 'user' })).rejects.toThrow(/insufficient/i);
+  });
+
   it('saves deduplicated candidates with normalized evidence and allows reject（defer/resume 已删）', async () => {
     const candidates = await service();
     const input = {

@@ -1,4 +1,5 @@
 {
+  "recall.usage_claim_output_missing_notice": "采用登记未生成回执：报告的产出片段没有出现在本条最终回复中。请把实际成果写在这条回复里，再重新报告采用。",
   "agent.cli.project_dir.label": "项目目录",
   "agent.default_name": "未命名智能体",
   "agent.run_failed": "⚠️ 智能体运行失败：{message}",

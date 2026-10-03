@@ -1093,7 +1093,7 @@ describe('KSTAR direct experience asset line', () => {
     const assets = await import('../../../../src/main/features/recall/asset-service');
     const candidates = await import('../../../../src/main/features/recall/candidate-service');
     const originalCandidate = await candidates.saveRecallCandidate('closure-user', {
-      judgment: 'Keep the report verification rule.',
+      judgment: '报告发布前必须完成核查。每次输出都附上证据编号。',
       value: 'Keep report verification consistent across runs.',
       suggestedType: 'rule',
       suggestedScope: 'report',
@@ -1108,7 +1108,7 @@ describe('KSTAR direct experience asset line', () => {
     });
 
     await direct.precipitateDirectExperienceAssets('closure-user', seededEpisode, [{
-      judgment: 'Update the report verification rule to require an acceptance check.',
+      judgment: '报告发布前必须完成验收核查。',
       summary: 'Updated report verification rule',
       suggestedType: 'rule',
       suggestedScope: 'report',
@@ -1119,27 +1119,18 @@ describe('KSTAR direct experience asset line', () => {
     }]);
 
     const updated = await assets.readAbilityAsset('closure-user', original.asset.id);
-    // update 是融合不是覆盖：v2 推进，旧证据保留，新判断落成正文。
-    //
-    // 期望值在 2026-09-29「正文一等规范」后从"新判断＋旧正文第二句"变成单句：
-    // 那次改动把**新建路**的资产正文收敛为 judgment 单一来源（value 不再拼进
-    // statement），所以这个种子晋升出来的旧正文只有一句，融合时它被同主题的
-    // 新判断改写掉，没有第二句可保留。
-    //
-    // 融合的"旧句保留 / 新句追加 / 同主题改写"三档语义由
-    // test/main/features/recall/statement-fusion.test.ts 用 keptCount / added /
-    // replaced 专门覆盖；这条集成用例只负责验证更新链路走通、版本推进与证据
-    // 累积，不重复承担融合算法本身的断言（把种子改成两句会把它推到语义查重的
-    // 另一条分支上，反而测不到更新路径）。
+    // 同主题规则可改写；不相关的旧约束必须保留，历史v1必须冻结。
     expect(updated).toMatchObject({
       id: original.asset.id,
       version: '2',
-      statement: 'Update the report verification rule to require an acceptance check.',
+      statement: '报告发布前必须完成验收核查。每次输出都附上证据编号。',
     });
     expect(updated.evidenceRefs).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'execution', id: 'kse-run-direct-original' }),
       expect.objectContaining({ kind: 'execution', id: 'kse-run-direct-update' }),
     ]));
+    const history = await assets.listAbilityAssetVersions('closure-user', original.asset.id);
+    expect(history.find((version) => version.version === '1')?.snapshot.statement).toBe(original.asset.statement);
   });
 
   it('carries the conversation space into the asset through the real closure path (space asset tab)', async () => {

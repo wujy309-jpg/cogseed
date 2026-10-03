@@ -1,6 +1,6 @@
 import { createLogger } from '../../logger';
 import { safeId } from '../../storage';
-import { classifyAbilityAssetWriteFailure } from '../recall/asset-service';
+import { classifyAbilityAssetWriteFailure, readAbilityAsset } from '../recall/asset-service';
 import { alignUpdateCandidateType, autoApplyRecallCandidate, saveRecallCandidate } from '../recall/candidate-service';
 import { createExperience, type ExperienceRecord } from '../recall/experience-service';
 import { normalizeCognitionSourceRefs, type CognitionSourceRef } from '../recall/source-service';
@@ -458,7 +458,16 @@ export async function precipitateDirectExperienceFromSource(
       // 1. Enter the unified candidate pool (exact-fingerprint dedup inside).
       //    saveRecallCandidate returns the EXISTING candidate when the exact
       //    fingerprint matched (merged evidence), or a fresh one otherwise.
-      const candidate = await saveRecallCandidate(userId, await proposalToCandidateInput(userId, source, proposal, index));
+      const input = await proposalToCandidateInput(userId, source, proposal, index);
+      // Attribution names the gap, not the target's storage type. A knowledge
+      // gap in an existing rule must not turn its update into a personal fact.
+      // Read the actual owned target before persisting; missing targets fail
+      // honestly rather than leaving a candidate that can never be confirmed.
+      if (action.targetAssetId) {
+        const target = await readAbilityAsset(userId, action.targetAssetId);
+        input.suggestedType = target.type;
+      }
+      const candidate = await saveRecallCandidate(userId, input);
       result.candidateIds.push(candidate.id);
 
       // 2. Unified promotion exit: semantic dedup + quality fusion against

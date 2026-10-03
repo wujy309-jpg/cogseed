@@ -50,11 +50,14 @@ import {
   type OntologyAnswerEvidenceBundle,
 } from '../../features/recall/ontology-answer-validation';
 import { isSemanticaEnabled } from '../../features/recall/semantica-settings';
+import { prepareAssetUsageClaim, type AssetUsageClaim } from '../../features/recall/asset-usage-claim';
 
 const log = createLogger('recall-tools');
 
 export interface RecallToolsOpts {
   userId: string;
+  onAssetUsageClaim?: (claim: AssetUsageClaim) => void | Promise<void>;
+  suppliedAbilityAssets?: Array<{ assetId: string; assetVersion: string }>;
   /** 当前目标 Agent；用于资产 scopePolicy.agentIds 准入判断。 */
   agentId?: string;
   /** 当前回合 id：写 agent_read 注入回执/使用流水用；缺省时只读不记账。 */
@@ -494,6 +497,7 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts, evidence: RecallTu
       '②assetIds = 取某几条的完整正文（最多 6 条/次）——看到目录里有合适的，取正文再动手；',
       '③query = 语义、词面与专名混合检索（覆盖当前可用正式资产 + 遗留画像记忆；遗留记忆会标注来源并仅供参考）。',
       '目录很长时带 query 检索；搜索摘要只是线索，采用前须用 assetIds 读完整正文。',
+      '读到正文仍不算采用。若本轮有 report_ability_asset_usage 且你确实据此形成产出，在最终回复前报告具体资产版本和产出原文片段；只写“已采用”不会生成回执。',
       '如果这次任务确实要长期用到某几条，用 attach_assets_to_task 把它们挂到本任务上（用户会看到一张可撤销的卡）。',
       '引用格式 [asset:<id>]，例如 [asset:aa-xxx]。',
     ].join(''),
@@ -699,6 +703,7 @@ export function createRecallToolSuite(opts: RecallToolsOpts): RecallToolSuite {
     tools: [
       createSearchAbilityAssetsTool(opts, evidence),
       ...(semanticaEnabled ? [createOntologyQueryTool(opts, evidence)] : []),
+      ...createAssetUsageReportTools(opts),
     ],
     finalResponseGate,
   };
@@ -707,4 +712,28 @@ export function createRecallToolSuite(opts: RecallToolsOpts): RecallToolSuite {
 /** Read-only recall asset tools. No localExec needed. */
 export function createRecallTools(opts: RecallToolsOpts): AgentTool[] {
   return createRecallToolSuite(opts).tools;
+}
+
+function createAssetUsageReportTools(opts: RecallToolsOpts): AgentTool[] {
+  const tools: AgentTool[] = [];
+  if (opts.onAssetUsageClaim && opts.turnId) tools.push({
+    name: 'report_ability_asset_usage',
+    description: '报告本轮确实采用的一条资产及读到的版本。完成产出后、最终回复前调用，outputExcerpt 必须是即将放入最终回复的原文片段（12至500字），具体体现这条资产如何影响产出。只读取、列目录、提及名称不算采用。此工具只登记待核验报告；主进程核对当轮供应记录和最终消息后才留下采用回执，不代表效果已验证。不采用则不要调用。多条资产分别报告，不要把同一工具成功算给所有引用。',
+    inputSchema: {
+      type: 'object', properties: {
+        assetId: { type: 'string' }, assetVersion: { type: 'string', description: '读到的版本，例如 1 或 v1。' },
+        outputExcerpt: { type: 'string', minLength: 12, maxLength: 500 },
+      }, required: ['assetId', 'assetVersion', 'outputExcerpt'], additionalProperties: false,
+    },
+    async execute(input: Record<string, unknown>) {
+      try {
+        const claim = await prepareAssetUsageClaim(opts.userId, opts.turnId!, input, opts.suppliedAbilityAssets || []);
+        await opts.onAssetUsageClaim!(claim);
+        return { content: '采用报告已登记，等待最终消息持久化后核验；尚未生成采用回执，也未验证效果。' };
+      } catch {
+        return { content: '未登记：需要本轮已供应的资产及版本、12至500字的最终产出原文片段；没有生成采用回执。', isError: true };
+      }
+    },
+  });
+  return tools;
 }

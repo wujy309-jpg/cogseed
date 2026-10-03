@@ -227,6 +227,8 @@ export interface ChatOptions {
    * this chain on 2026-09-28 (四病整改 7.0 修7): the runner emits
    * candidate+taught-pending-review here instead of a separate callback. */
   onCognitionSaveReceipt?: (receipt: CognitionSaveReceipt) => void | Promise<void>;
+  onAssetUsageClaim?: (claim: import('../features/recall/asset-usage-claim').AssetUsageClaim) => void | Promise<void>;
+  suppliedAbilityAssets?: Array<{ assetId: string; assetVersion: string }>;
   /** Host observation of the actual runtime candidate and final tool catalog. */
   onResolvedRuntime?: (runtime: ChatResolvedRuntime) => void;
   /** Project id of the conversation, when it belongs to one. Threaded

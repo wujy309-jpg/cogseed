@@ -1,4 +1,5 @@
 {
+  "recall.usage_claim_output_missing_notice": "No adoption receipt was recorded: the reported output excerpt was not included in this final reply. Include the actual result here before reporting adoption again.",
   "agent.cli.project_dir.label": "Project directory",
   "agent.default_name": "UntitledAgent",
   "agent.run_failed": "⚠️ Agent run failed: {message}",

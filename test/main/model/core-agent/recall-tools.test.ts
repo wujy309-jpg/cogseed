@@ -205,6 +205,21 @@ describe('recall search_ability_assets tool', () => {
       .resolves.toEqual({ text: '保留模型生成的完整回答。' });
   });
 
+  it('采用工具只交给宿主待核验报告，版本未供应时拒绝且不写回执', async () => {
+    const { createRecallTools } = await import('../../../../src/main/model/core-agent/recall-tools');
+    const claims: unknown[] = [];
+    const report = createRecallTools({ userId: TEST_UID, turnId: 'usage-turn',
+      suppliedAbilityAssets: [{ assetId: 'asset-report', assetVersion: '1' }],
+      onAssetUsageClaim: (claim) => { claims.push(claim); },
+    }).find((tool) => tool.name === 'report_ability_asset_usage')!;
+    const input = { assetId: 'asset-report', assetVersion: 'v1', outputExcerpt: '每项待办都明确写出责任人以及可核对的验收条件。' };
+    expect((await report.execute(input, {} as never)).content).toContain('尚未生成采用回执');
+    expect(claims).toEqual([input]);
+    expect((await report.execute({ ...input, assetVersion: '2' }, {} as never)).isError).toBe(true);
+    expect(claims).toHaveLength(1);
+    const { listAssetUsageReceipts } = await import('../../../../src/main/features/recall/asset-usage-receipt');
+    expect(await listAssetUsageReceipts(TEST_UID)).toEqual([]);
+  });
   it('searches the GLOBAL pool (all spaces + general assets) and returns citation format', async () => {
     await seedAsset('发布类公告应包含背景、变更点、影响范围、生效时间、联系方式五段。', { spaceId: 'sp_a', scope: 'space' });
     await seedAsset('竞品调研应先明确可比维度（范围/功能/定价/体验）再收集证据。', { spaceId: 'sp_b', scope: 'space' });

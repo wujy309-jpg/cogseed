@@ -1,4 +1,5 @@
 {
+  "recall.usage_claim_output_missing_notice": "Nenhum recibo de adoção foi registrado: o trecho de saída informado não apareceu nesta resposta final. Inclua aqui o resultado real antes de relatar a adoção novamente.",
   "agent.cli.project_dir.label": "Diretório do projeto",
   "agent.default_name": "Agente sem título",
   "agent.run_failed": "⚠️ Falha na execução do agente: {message}",

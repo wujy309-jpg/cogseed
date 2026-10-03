@@ -100,6 +100,13 @@ describe('Recall candidate capability matrix', () => {
       .toBe('candidate_confirmed');
   });
 
+  it('allows a legacy weak manual candidate to be reviewed without fabricated references', async () => {
+    const { getRecallCandidateCapabilities } = await caps();
+    expect(getRecallCandidateCapabilities({
+      origin: 'manual', status: 'weak_observation', sourceRefs: [], evidenceRefs: [],
+    })).toMatchObject({ canPromote: true, countsAsPending: true, displayState: 'needs_review' });
+  });
+
   it('keeps high-risk candidates out of batch select but still individually actionable', async () => {
     const { getRecallCandidateCapabilities } = await caps();
     const high = getRecallCandidateCapabilities({ status: 'weak_observation', risk: 'high' });

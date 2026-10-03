@@ -169,6 +169,13 @@ export async function recordAssetUsageReceipt(
   return fileEditLock(streamPath).runExclusive(async () => {
     const existing = (await listAssetUsageReceipts(userId)).find((item) => item.id === id);
     if (existing) {
+      // A later message-bound explicit report can resolve an unknown event.
+      // Never override user contradiction, or manufacture an effect proof.
+      if (existing.status === 'usage_unknown' && input.status === 'applied'
+        && input.evidenceKind === 'final_output' && input.boundary === 'real') {
+        await appendRecallJsonlRecord(userId, 'asset-usage-receipts', 'events', record);
+        return record;
+      }
       // 负反馈覆盖（2026-09-14）：KSTAR 收账先写过 applied/usage_unknown 的
       // 同键收据，用户随后点踩的 contradicted 会被幂等去重静默吞掉——
       // 「点踩进治理」在 KSTAR 路径失效。contradicted 是用户明确否定，
