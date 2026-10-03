@@ -4104,34 +4104,6 @@ body.is-sidebar-resizing iframe { pointer-events: none; }
   object-fit: cover;
 }
 
-.contribution-file-content {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  max-height: 65vh;
-  overflow: auto;
-}
-
-.contribution-metadata,
-.contribution-preview,
-.contribution-declarations {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-
-.contribution-file-details {
-  display: grid;
-  min-width: 0;
-  gap: var(--space-3);
-}
-
-.contribution-file-hash {
-  color: var(--text-muted);
-  font-size: var(--font-size-1);
-  overflow-wrap: anywhere;
-}
-
 .skill-card-name {
   flex: 1;
   min-width: 0;

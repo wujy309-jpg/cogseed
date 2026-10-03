@@ -1476,6 +1476,9 @@ function _showSkillsGridView() {
     if (chatCol) chatCol.style.display = 'none';
     _updateEditButtonLabel();
   }
+  // Contribution pages are same-level views of the grid; leaving them via the
+  // grid also ends any contribution session they still hold.
+  if (typeof window.hideContributionViews === 'function') window.hideContributionViews();
   if (grid) grid.style.display = 'flex';
   if (detail) detail.style.display = 'none';
   // Collapse source tree so next detail open starts clean.
@@ -1494,6 +1497,7 @@ async function _showSkillsDetailView(source, id, opts = {}) {
   source = _skillSource(source);
   const grid = document.getElementById('skills-grid-view');
   const detail = document.getElementById('skills-detail-view');
+  if (typeof window.hideContributionViews === 'function') window.hideContributionViews();
   if (grid) grid.style.display = 'none';
   if (detail) detail.style.display = 'flex';
   await loadSkills(true);

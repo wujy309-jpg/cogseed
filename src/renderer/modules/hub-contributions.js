@@ -1,11 +1,37 @@
-// Hub Skill contribution flow. Business sequencing stays page-owned while all
-// actions, prompts, decisions, focus management and forms use shared UI seams.
+// Hub Skill contribution pages (registry HUBC-PV-001/002/003). Two same-level
+// views of the Skills page: the four-stage contribution flow and "My
+// contributions". Business sequencing stays page-owned; every control, prompt,
+// decision and overlay comes from the shared ui* seams. Pure derivations
+// (check rows, history stats/filter) live in hub-contributions-model.js.
 (function initHubContributions(root) {
   'use strict';
+
+  const model = root.HubContributionsModel;
+  const STAGES = ['complete', 'check', 'preview', 'send'];
+  const MINE_POLL_MS = 55_000;
+  const MINE_FILTERS = ['all', 'pending', 'rejected', 'published', 'withdrawal'];
+  const ORIGIN_TYPES = ['original', 'derived_from_hub', 'third_party'];
+  const HUB_CONTENT_ID = /^[0-9a-f]{12}$/;
+  const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+  const MISSING_FALLBACK = {
+    origin: 'origin declaration',
+    origin_note: 'third-party origin note',
+    terms: 'accept the terms',
+    maintenance: 'confirm maintenance responsibility',
+  };
+
+  let session = null;
+  let mine = null;
+  let minePoll = null;
 
   function tr(key, fallback) {
     const value = typeof root.t === 'function' ? root.t(key) : '';
     return value && value !== key ? value : fallback;
+  }
+
+  function fmt(template, values) {
+    return Object.entries(values || {}).reduce((out, [key, value]) => out.split(`{${key}}`).join(String(value)), template);
   }
 
   function esc(value) {
@@ -16,6 +42,20 @@
   function modal(options) {
     if (typeof root.uiModal !== 'function') throw new Error('contribution requires uiModal');
     return root.uiModal({ closeLabel: tr('common.close', 'Close'), ...options });
+  }
+
+  function icon(name) {
+    return typeof root.uiIconHtml === 'function' ? root.uiIconHtml(name, 'hubc-icon') : '';
+  }
+
+  function button(options) {
+    return root.uiButton(options);
+  }
+
+  function formatTime(value) {
+    if (!value) return '';
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
   }
 
   function statusTone(status) {
@@ -44,8 +84,13 @@
         [finding.ruleId, finding.message].filter(Boolean).join(' · ')) : []),
       ...(Array.isArray(admission.componentsBlocking) ? admission.componentsBlocking : []),
     ].filter(Boolean);
-    return [tr(`skills.contribute_reason.${admission.reason}`, tr('skills.contribute_blocked', 'Local checks blocked contribution.')), ...issues].join('\n');
+    return {
+      reason: tr(`skills.contribute_reason.${admission.reason}`, tr('skills.contribute_blocked', 'Local checks blocked contribution.')),
+      issues,
+    };
   }
+
+  // ── Identity (login-required prompt, reused by the entry and My contributions) ──
 
   async function ensureIdentity(name) {
     const preflight = await root.cogseed.invoke('contribution.preflight', {});
@@ -79,377 +124,659 @@
     return resumed?.identity?.outcome === 'ready' ? resumed : null;
   }
 
-  async function collectMissing(token, result) {
-    let current = result;
-    while (current?.completion?.missing?.length || current?.completion?.conflicts?.length) {
-      const present = current.completion.present || {};
-      const needsSecurity = (current.completion.missing || []).includes('security_manifest');
-      const fieldLabels = {
-        skill_md: tr('skills.contribute_skill_md', 'SKILL.md'),
-        name: tr('skills.contribute_meta_name', 'Name'),
-        description: tr('skills.contribute_meta_desc', 'Description'),
-        version: tr('skills.contribute_meta_version', 'Version'),
-        security_manifest: tr('skills.contribute_security_manifest', 'Security declaration'),
-      };
-      const issueRows = (current.completion.missing || []).map((field) => ({
-        field: fieldLabels[field] || field,
-        issue: tr('skills.contribute_required', 'Required'),
-      }));
-      issueRows.push(...(current.completion.conflicts || []).map((conflict) => {
+  // ── View plumbing ──
+
+  function hostOf(kind) {
+    return document.getElementById(kind === 'mine' ? 'skills-contributions-view' : 'skills-contribute-view');
+  }
+
+  function showView(kind) {
+    const grid = document.getElementById('skills-grid-view');
+    const detail = document.getElementById('skills-detail-view');
+    if (grid) grid.style.display = 'none';
+    if (detail) detail.style.display = 'none';
+    hostOf('contribute').style.display = kind === 'contribute' ? 'flex' : 'none';
+    hostOf('mine').style.display = kind === 'mine' ? 'flex' : 'none';
+  }
+
+  function viewVisible(kind) {
+    const host = hostOf(kind);
+    return Boolean(host) && host.style.display !== 'none';
+  }
+
+  function stopMinePoll() {
+    if (minePoll) clearInterval(minePoll);
+    minePoll = null;
+  }
+
+  async function endSession() {
+    const current = session;
+    session = null;
+    if (!current) return;
+    if (typeof current.cancelCheck === 'function') current.cancelCheck();
+    if (typeof current.cancelUpload === 'function') current.cancelUpload();
+    if (current.token) await root.cogseed.invoke('contribution.cancel', { token: current.token }).catch(() => {});
+  }
+
+  // Called by skills.js whenever the grid or detail view takes over again.
+  function hideContributionViews() {
+    stopMinePoll();
+    mine = null;
+    void endSession();
+    for (const kind of ['contribute', 'mine']) {
+      const host = hostOf(kind);
+      if (host) {
+        host.style.display = 'none';
+        host.innerHTML = '';
+      }
+    }
+  }
+
+  function leaveToSkills() {
+    if (typeof _showSkillsGridView === 'function') _showSkillsGridView();
+    else {
+      hideContributionViews();
+      const grid = document.getElementById('skills-grid-view');
+      if (grid) grid.style.display = 'flex';
+    }
+  }
+
+  function backline(label) {
+    return `<div class="hubc-backline">${button({
+      label: tr('skills.contribute_back', 'Back to Skills'), role: 'ghost', size: 'sm', icon: 'chevron-left',
+      attrs: { 'data-hubc-action': 'back' },
+    })}<span class="hubc-backline__sep" aria-hidden="true">/</span><span>${esc(label)}</span></div>`;
+  }
+
+  function hydrateSelects(container, callbacks) {
+    const apis = {};
+    if (typeof root.hydrateUiFormSelects !== 'function') return apis;
+    const hosts = Array.from(container.querySelectorAll('[data-ui-select]'));
+    const hydrated = root.hydrateUiFormSelects(container, callbacks) || [];
+    hosts.forEach((host, index) => { apis[host.id] = hydrated[index]; });
+    return apis;
+  }
+
+  // ── Contribution page ──
+
+  function hasMissing(state) {
+    return Boolean(state?.completion?.missing?.length || state?.completion?.conflicts?.length);
+  }
+
+  function stepIndex() {
+    if (!session) return 0;
+    if (session.stage === 'complete') return 0;
+    if (session.stage === 'check') return 1;
+    return session.sending ? 3 : 2;
+  }
+
+  function stepsHtml() {
+    const current = stepIndex();
+    const labels = [
+      tr('skills.contribute_step_complete', 'Complete details'),
+      tr('skills.contribute_step_check', 'Local checks'),
+      tr('skills.contribute_step_preview', 'Preview and declarations'),
+      tr('skills.contribute_step_send', 'Submit for review'),
+    ];
+    return `<ol class="hubc-steps" aria-label="${esc(tr('skills.contribute_steps_label', 'Contribution steps'))}">${STAGES.map((stage, index) => {
+      const state = index < current ? 'done' : index === current ? 'current' : 'todo';
+      const word = state === 'done' ? tr('skills.contribute_step_done', 'Done')
+        : state === 'current' ? tr('skills.contribute_step_current', 'Current step') : '';
+      return `<li class="hubc-step is-${state}"${state === 'current' ? ' aria-current="step"' : ''}>`
+        + `<span class="hubc-step__mark" aria-hidden="true">${state === 'done' ? icon('check') : index + 1}</span>`
+        + `<span class="hubc-step__label">${esc(labels[index])}</span>`
+        + `${word ? `<span class="ui-visually-hidden">${esc(word)}</span>` : ''}</li>`;
+    }).join('')}</ol>`;
+  }
+
+  function pageShell(stageHtml) {
+    const s = session;
+    const subtitle = s.targetContentId
+      ? fmt(tr('skills.contribute_page_subtitle_version', 'Submit a new version of {id} from “{name}”.'), { id: s.targetContentId, name: s.name })
+      : fmt(tr('skills.contribute_page_subtitle', 'Contribute “{name}” to Hub. Submissions enter review first; accepted content still needs publishing.'), { name: s.name });
+    return `<div class="hubc-page" data-hubc-page="contribute">
+      ${backline(tr('skills.contribute_page_title', 'Contribute Skill'))}
+      <header class="hubc-heading"><div><h1>${esc(tr('skills.contribute_page_title', 'Contribute Skill'))}</h1><p>${esc(subtitle)}</p></div>
+        ${root.uiStatusPill({ label: tr('skills.contribute_pill_review_only', 'Submitted for review only'), tone: 'neutral' })}</header>
+      ${stepsHtml()}
+      <div class="hubc-stage" data-hubc-stage="${esc(s.stage)}">${stageHtml}</div>
+    </div>`;
+  }
+
+  function renderContribute() {
+    if (!session) return;
+    const host = hostOf('contribute');
+    const html = session.stage === 'complete' ? completeHtml()
+      : session.stage === 'check' ? checkHtml() : previewHtml();
+    host.innerHTML = pageShell(html);
+    showView('contribute');
+    if (session.stage === 'complete') hydrateComplete(host);
+    if (session.stage === 'preview') hydratePreview(host);
+  }
+
+  // Stage 1 — complete missing or conflicting details.
+  function fieldLabels() {
+    return {
+      skill_md: tr('skills.contribute_skill_md', 'SKILL.md'),
+      name: tr('skills.contribute_meta_name', 'Name'),
+      description: tr('skills.contribute_meta_desc', 'Description'),
+      version: tr('skills.contribute_meta_version', 'Version'),
+      security_manifest: tr('skills.contribute_security_manifest', 'Security declaration'),
+    };
+  }
+
+  function completionAlertHtml() {
+    const completion = session.state?.completion || {};
+    const labels = fieldLabels();
+    const lines = [
+      ...(completion.missing || []).map((field) =>
+        fmt(tr('skills.contribute_missing_field', '{field}: required.'), { field: labels[field] || field })),
+      ...(completion.conflicts || []).map((conflict) => {
         const values = (conflict.values || []).map((item) => `${item.source}: ${item.value}`).join(' · ');
-        return {
-          field: fieldLabels[conflict.field] || conflict.field,
-          issue: tr('skills.contribute_conflicting_values', 'Conflicting values: {values}').replace('{values}', values),
-        };
-      }));
-      const issues = root.uiDataTable({
-        label: tr('skills.contribute_metadata_issues', 'Submission metadata issues'),
-        columns: [
-          { key: 'field', label: tr('skills.contribute_issue_field', 'Field'), primary: true },
-          { key: 'issue', label: tr('skills.contribute_issue_detail', 'Issue') },
-        ],
-        rows: issueRows,
-      });
-      const securityFields = needsSecurity ? [
-        { html: root.uiField({
-          id: 'contrib-network-access', label: tr('skills.contribute_security_network', 'External network access'), required: true,
-          hint: tr('skills.contribute_security_network_hint', 'Choose restricted access only when the Skill contacts specific services.'),
-          control: { kind: 'select', value: '', placeholder: tr('skills.contribute_security_choose', 'Choose one'), options: [
-            { value: 'none', label: tr('skills.contribute_security_network_none', 'Does not access external networks') },
-            { value: 'restricted', label: tr('skills.contribute_security_network_restricted', 'Accesses declared domains only') },
-          ] },
-        }) },
-        { html: root.uiField({
+        return fmt(tr('skills.contribute_conflict_field', '{field}: conflicting values ({values}).'),
+          { field: labels[conflict.field] || conflict.field, values });
+      }),
+    ];
+    if (session.declarationNote) lines.push(session.declarationNote);
+    return lines.length ? `<div class="hubc-alert" role="alert">${lines.map((line) => `<p>${esc(line)}</p>`).join('')}</div>` : '';
+  }
+
+  function securityFieldsHtml() {
+    const draft = session.draft.security;
+    const choose = tr('skills.contribute_security_choose', 'Choose one');
+    const select = (id, label, value, options, extra = {}) => ({
+      html: root.uiField({ id, label, required: !extra.optional, hint: extra.hint, control: { kind: 'select', value, placeholder: choose, options } }),
+    });
+    return [
+      select('contrib-network-access', tr('skills.contribute_security_network', 'External network access'), draft.network_access, [
+        { value: 'none', label: tr('skills.contribute_security_network_none', 'Does not access external networks') },
+        { value: 'restricted', label: tr('skills.contribute_security_network_restricted', 'Accesses declared domains only') },
+      ], { hint: tr('skills.contribute_security_network_hint', 'Choose restricted access only when the Skill contacts specific services.') }),
+      {
+        html: root.uiField({
           id: 'contrib-network-allowlist', label: tr('skills.contribute_security_network_allowlist', 'Allowed domains'),
           hint: tr('skills.contribute_security_network_allowlist_hint', 'Required only for restricted network access. Enter one domain or HTTPS address per line.'),
-          control: { kind: 'textarea', value: '', attrs: { rows: 3, spellcheck: 'false' } },
-        }) },
-        { html: root.uiField({
-          id: 'contrib-file-access', label: tr('skills.contribute_security_files', 'Local file access'), required: true,
-          control: { kind: 'select', value: '', placeholder: tr('skills.contribute_security_choose', 'Choose one'), options: [
-            { value: 'none', label: tr('skills.contribute_security_files_none', 'Does not directly read or write local files') },
-            { value: 'read_selected', label: tr('skills.contribute_security_files_read', 'Reads only files selected by the user') },
-            { value: 'read_write_selected', label: tr('skills.contribute_security_files_write', 'Reads and writes only files selected by the user') },
-          ] },
-        }) },
-        { html: root.uiField({
-          id: 'contrib-command-access', label: tr('skills.contribute_security_commands', 'Commands and external tools'), required: true,
-          control: { kind: 'select', value: '', placeholder: tr('skills.contribute_security_choose', 'Choose one'), options: [
-            { value: 'none', label: tr('skills.contribute_security_commands_none', 'Does not execute commands or external tools') },
-            { value: 'declared_tools', label: tr('skills.contribute_security_commands_declared', 'Uses the tools listed below') },
-          ] },
-        }) },
-        { html: root.uiField({
+          control: { kind: 'textarea', value: draft.network_allowlist, attrs: { rows: 3, spellcheck: 'false' } },
+        }),
+      },
+      select('contrib-file-access', tr('skills.contribute_security_files', 'Local file access'), draft.file_access, [
+        { value: 'none', label: tr('skills.contribute_security_files_none', 'Does not directly read or write local files') },
+        { value: 'read_selected', label: tr('skills.contribute_security_files_read', 'Reads only files selected by the user') },
+        { value: 'read_write_selected', label: tr('skills.contribute_security_files_write', 'Reads and writes only files selected by the user') },
+      ]),
+      select('contrib-command-access', tr('skills.contribute_security_commands', 'Commands and external tools'), draft.command_access, [
+        { value: 'none', label: tr('skills.contribute_security_commands_none', 'Does not execute commands or external tools') },
+        { value: 'declared_tools', label: tr('skills.contribute_security_commands_declared', 'Uses the tools listed below') },
+      ]),
+      {
+        html: root.uiField({
           id: 'contrib-external-tools', label: tr('skills.contribute_security_tool_names', 'Tool names'),
           hint: tr('skills.contribute_security_tool_names_hint', 'Required only when tools are used. Enter executable or package names, one per line.'),
-          control: { kind: 'textarea', value: '', attrs: { rows: 3, spellcheck: 'false' } },
-        }) },
-        { html: root.uiField({
-          id: 'contrib-sensitive-data', label: tr('skills.contribute_security_data', 'Sensitive data'), required: true,
-          control: { kind: 'select', value: '', placeholder: tr('skills.contribute_security_choose', 'Choose one'), options: [
-            { value: 'none', label: tr('skills.contribute_security_data_none', 'Not intended to process personal information or credentials') },
-            { value: 'personal', label: tr('skills.contribute_security_data_personal', 'May process personal information') },
-            { value: 'credentials', label: tr('skills.contribute_security_data_credentials', 'May process credentials or secrets') },
-          ] },
-        }) },
-      ] : [];
-      const form = root.uiForm({
-        ariaLabel: tr('skills.contribute_metadata', 'Submission metadata'),
-        fields: [
-          { html: root.uiField({ id: 'contrib-name', label: tr('skills.contribute_meta_name', 'Name'), required: true, control: { kind: 'input', value: present.name || '' } }) },
-          { html: root.uiField({ id: 'contrib-description', label: tr('skills.contribute_meta_desc', 'Description'), required: true, control: { kind: 'textarea', value: present.description || '', attrs: { rows: 4 } } }) },
-          { html: root.uiField({ id: 'contrib-version', label: tr('skills.contribute_meta_version', 'Version'), required: true, control: { kind: 'input', value: present.version || '', placeholder: '1.0.0' } }) },
-          ...securityFields,
-        ],
-      });
-      const dialog = modal({
-        title: tr('skills.contribute_metadata', 'Submission metadata'),
-        description: tr('skills.contribute_metadata_hint', 'Changes apply only to the submission copy.'),
-        bodyHtml: `<div class="contribution-metadata">${issues}${form}</div>`,
-        actions: [{ id: 'cancel', label: tr('common.cancel', 'Cancel') }, { id: 'save', label: tr('common.continue', 'Continue'), role: 'primary' }],
-      });
-      const securitySelects = needsSecurity && typeof root.hydrateUiFormSelects === 'function'
-        ? root.hydrateUiFormSelects(dialog.overlay)
-        : [];
-      const answer = await dialog;
-      if (answer.value !== 'save') return null;
-      const securityDeclaration = needsSecurity ? {
-        network_access: securitySelects[0]?.getValue?.() || '',
-        network_allowlist: dialog.overlay.querySelector('#contrib-network-allowlist')?.value || '',
-        file_access: securitySelects[1]?.getValue?.() || '',
-        command_access: securitySelects[2]?.getValue?.() || '',
-        external_tools: dialog.overlay.querySelector('#contrib-external-tools')?.value || '',
-        sensitive_data: securitySelects[3]?.getValue?.() || '',
-      } : null;
-      if (securityDeclaration && (!securityDeclaration.network_access || !securityDeclaration.file_access
-        || !securityDeclaration.command_access || !securityDeclaration.sensitive_data)) {
-        await root.uiAlert(tr('skills.contribute_security_required', 'Choose an answer for every security item.'));
-        continue;
-      }
-      if (securityDeclaration?.network_access === 'restricted' && !securityDeclaration.network_allowlist.trim()) {
-        await root.uiAlert(tr('skills.contribute_security_network_required', 'List at least one allowed domain.'));
-        continue;
-      }
-      if (securityDeclaration?.command_access === 'declared_tools' && !securityDeclaration.external_tools.trim()) {
-        await root.uiAlert(tr('skills.contribute_security_tools_required', 'List at least one command or external tool.'));
-        continue;
-      }
-      const next = await root.cogseed.invoke('contribution.complete', {
-        token,
-        name: dialog.overlay.querySelector('#contrib-name')?.value || '',
-        description: dialog.overlay.querySelector('#contrib-description')?.value || '',
-        version: dialog.overlay.querySelector('#contrib-version')?.value || '',
-        ...(securityDeclaration ? { security_declaration: securityDeclaration } : {}),
-      });
-      current = next;
-      if (current?.admission?.outcome !== 'pass') return current;
-    }
-    return current;
+          control: { kind: 'textarea', value: draft.external_tools, attrs: { rows: 3, spellcheck: 'false' } },
+        }),
+      },
+      select('contrib-sensitive-data', tr('skills.contribute_security_data', 'Sensitive data'), draft.sensitive_data, [
+        { value: 'none', label: tr('skills.contribute_security_data_none', 'Not intended to process personal information or credentials') },
+        { value: 'personal', label: tr('skills.contribute_security_data_personal', 'May process personal information') },
+        { value: 'credentials', label: tr('skills.contribute_security_data_credentials', 'May process credentials or secrets') },
+      ]),
+    ];
   }
 
-  async function chooseOrigin(token, state, previousOrigin) {
-    if (state.originPrefill?.locked) {
-      const source = state.originPrefill.forked_from;
-      if (!source?.content_id || !source?.version) return null;
-      const note = await root.uiPrompt(tr('skills.contribute_origin_derived_note',
-        'Derived from Hub content {content_id} v{version}. Add an optional note.')
-        .replace('{content_id}', source.content_id).replace('{version}', source.version), '');
-      if (note === null) return null;
-      await root.cogseed.invoke('contribution.declare', {
-        token, kind: 'origin', origin_type: 'derived_from_hub', note,
-      });
-      state.originNote = note;
-      state.originForkedFrom = source;
-      return 'derived_from_hub';
-    }
-    const origin = await root.uiChoice({
-      title: tr('skills.contribute_origin_title', 'Origin declaration'),
-      message: previousOrigin?.type
-        ? tr('skills.contribute_origin_previous', 'Previous declaration: {origin}. Confirm or change it.').replace('{origin}', previousOrigin.type)
-        : tr('skills.contribute_origin_choose', 'Select the true origin.'),
-      choices: [
-        { id: 'original', label: tr('skills.contribute_origin.original', 'Original') },
-        { id: 'derived_from_hub', label: tr('skills.contribute_origin.derived_from_hub', 'Derived from Hub content') },
-        { id: 'third_party', label: tr('skills.contribute_origin.third_party', 'Third-party material') },
-      ].sort((a, b) => (a.id === previousOrigin?.type ? -1 : b.id === previousOrigin?.type ? 1 : 0)),
+  function completeHtml() {
+    const draft = session.draft;
+    const detailsForm = root.uiForm({
+      ariaLabel: tr('skills.contribute_metadata', 'Submission metadata'),
+      columns: 2,
+      fields: [
+        { html: root.uiField({ id: 'contrib-name', label: tr('skills.contribute_meta_name', 'Name'), required: true, control: { kind: 'input', value: draft.name } }) },
+        { html: root.uiField({ id: 'contrib-version', label: tr('skills.contribute_meta_version', 'Version'), required: true, hint: tr('skills.contribute_version_hint', 'Standard SemVer, for example 1.0.0.'), control: { kind: 'input', value: draft.version, placeholder: '1.0.0' } }) },
+        { wide: true, html: root.uiField({ id: 'contrib-description', label: tr('skills.contribute_meta_desc', 'Description'), required: true, control: { kind: 'textarea', value: draft.description, attrs: { rows: 3 } } }) },
+      ],
     });
-    if (!origin) return null;
-    let note = '';
-    let forkedFrom = null;
-    if (origin === 'derived_from_hub') {
-      const contentId = await root.uiPrompt(tr('skills.contribute_origin_content_id', 'Enter the Hub content ID (12 lowercase hex characters).'),
-        previousOrigin?.forked_from?.content_id || '');
-      if (contentId === null) return null;
-      const version = await root.uiPrompt(tr('skills.contribute_origin_source_version', 'Enter the Hub source version (SemVer).'),
-        previousOrigin?.forked_from?.version || '');
-      if (version === null) return null;
-      if (!/^[0-9a-f]{12}$/.test(contentId.trim()) || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version.trim())) {
-        await root.uiAlert(tr('skills.contribute_origin_invalid_ref', 'Enter a valid Hub content ID and SemVer source version.'));
-        return null;
-      }
-      forkedFrom = { content_id: contentId.trim(), version: version.trim() };
-      const enteredNote = await root.uiPrompt(tr('skills.contribute_origin_derived_note',
-        'Derived from Hub content {content_id} v{version}. Add an optional note.')
-        .replace('{content_id}', forkedFrom.content_id).replace('{version}', forkedFrom.version),
-      previousOrigin?.type === 'derived_from_hub' ? String(previousOrigin.note || '') : '');
-      if (enteredNote === null) return null;
-      note = enteredNote;
+    const security = session.needsSecurity ? `
+      <div class="hubc-divider"></div>
+      <div class="hubc-section-head"><div><h2>${esc(tr('skills.contribute_security_title', 'Security declaration'))}</h2>
+        <p>${esc(tr('skills.contribute_security_hint', 'Answer from the Skill’s real behavior. An unanswered fact is never treated as “none”.'))}</p></div>
+        ${root.uiStatusPill({ label: tr('skills.contribute_security_pill', 'Declaration precheck'), tone: 'neutral' })}</div>
+      ${root.uiForm({ ariaLabel: tr('skills.contribute_security_title', 'Security declaration'), columns: 2, fields: securityFieldsHtml() })}` : '';
+    return `<section class="hubc-panel" aria-labelledby="hubc-complete-title">
+      <div class="hubc-section-head"><div><h2 id="hubc-complete-title">${esc(tr('skills.contribute_complete_title', 'Complete this submission’s details'))}</h2>
+        <p>${esc(tr('skills.contribute_metadata_hint', 'Changes apply only to the submission copy.'))}</p></div>
+        ${root.uiStatusPill({ label: tr('skills.contribute_complete_pill', 'Needs details'), tone: 'attention' })}</div>
+      ${completionAlertHtml()}
+      ${detailsForm}
+      ${security}
+      <div class="hubc-actions"><p>${esc(tr('skills.contribute_complete_note', 'Existing values are prefilled. After saving, all checks run again on the final copy.'))}</p>
+        ${button({ label: tr('skills.contribute_complete_save', 'Save and recheck'), role: 'primary', attrs: { 'data-hubc-action': 'complete-save' } })}</div>
+    </section>`;
+  }
+
+  function hydrateComplete(host) {
+    session.selects = hydrateSelects(host, {});
+  }
+
+  function readComplete() {
+    const host = hostOf('contribute');
+    const value = (id) => host.querySelector(`#${id}`)?.value || '';
+    const select = (id) => session.selects?.[id]?.getValue?.() || '';
+    const draft = session.draft;
+    draft.name = value('contrib-name');
+    draft.description = value('contrib-description');
+    draft.version = value('contrib-version');
+    if (session.needsSecurity) {
+      draft.security = {
+        network_access: select('contrib-network-access'),
+        network_allowlist: value('contrib-network-allowlist'),
+        file_access: select('contrib-file-access'),
+        command_access: select('contrib-command-access'),
+        external_tools: value('contrib-external-tools'),
+        sensitive_data: select('contrib-sensitive-data'),
+      };
     }
-    if (origin === 'third_party') {
-      note = await root.uiPrompt(tr('skills.contribute_origin_note_ph', 'Describe the third-party source.'), previousOrigin?.type === 'third_party' ? String(previousOrigin.note || '') : '');
-      if (!note) return null;
+    return draft;
+  }
+
+  async function saveComplete() {
+    const draft = readComplete();
+    const security = draft.security;
+    if (session.needsSecurity) {
+      if (!security.network_access || !security.file_access || !security.command_access || !security.sensitive_data) {
+        await root.uiAlert(tr('skills.contribute_security_required', 'Choose an answer for every security item.'));
+        return;
+      }
+      if (security.network_access === 'restricted' && !security.network_allowlist.trim()) {
+        await root.uiAlert(tr('skills.contribute_security_network_required', 'List at least one allowed domain.'));
+        return;
+      }
+      if (security.command_access === 'declared_tools' && !security.external_tools.trim()) {
+        await root.uiAlert(tr('skills.contribute_security_tools_required', 'List at least one command or external tool.'));
+        return;
+      }
+    }
+    const token = session.token;
+    const next = await root.cogseed.invoke('contribution.complete', {
+      token,
+      name: draft.name,
+      description: draft.description,
+      version: draft.version,
+      ...(session.needsSecurity ? { security_declaration: security } : {}),
+    });
+    if (!session || session.token !== token) return;
+    next.originPrefill = session.originPrefill;
+    session.state = next;
+    session.declarationNote = '';
+    if (hasMissing(next)) {
+      if ((next.completion?.missing || []).includes('security_manifest')) session.needsSecurity = true;
+      seedDraft(next);
+      renderContribute();
+      return;
+    }
+    await runCheck();
+  }
+
+  function seedDraft(state) {
+    const present = state?.completion?.present || {};
+    const draft = session.draft;
+    draft.name = present.name || draft.name || '';
+    draft.description = present.description || draft.description || '';
+    draft.version = present.version || draft.version || '';
+  }
+
+  // Stage 2 — local checks (one recheck call; progress is indeterminate by design).
+  async function runCheck() {
+    const token = session.token;
+    session.stage = 'check';
+    session.checkResult = 'running';
+    renderContribute();
+    const cancelled = new Promise((resolve) => { session.cancelCheck = () => resolve({ kind: 'cancel' }); });
+    const check = root.cogseed.invoke('contribution.recheck', { token })
+      .then((result) => ({ kind: 'result', result }), (error) => ({ kind: 'error', error }));
+    const outcome = await Promise.race([check, cancelled]);
+    if (!session || session.token !== token) return;
+    session.cancelCheck = null;
+    if (outcome.kind === 'cancel') {
+      await root.cogseed.invoke('contribution.cancel', { token });
+      session.token = null;
+      leaveToSkills();
+      return;
+    }
+    if (outcome.kind === 'error') throw outcome.error;
+    const result = outcome.result;
+    result.originPrefill = session.originPrefill;
+    session.state = result;
+    const kind = model.classifyAdmission(result?.admission);
+    if (kind === 'needs_declaration') {
+      session.needsSecurity = true;
+      session.state.completion = {
+        ...(result.completion || {}),
+        missing: Array.from(new Set([...(result.completion?.missing || []), 'security_manifest'])),
+      };
+      session.declarationNote = tr(`skills.contribute_reason.${result.admission.reason}`, '');
+      seedDraft(result);
+      session.stage = 'complete';
+      renderContribute();
+      return;
+    }
+    if (kind === 'passed') {
+      session.stage = 'preview';
+      session.selectedFile = 0;
+      session.fileCache = {};
+      session.sending = false;
+      renderContribute();
+      void loadFile(0);
+      return;
+    }
+    session.checkResult = kind;
+    renderContribute();
+  }
+
+  function checkRowHtml(row) {
+    const tone = row.state === 'ok' ? 'success' : row.state === 'blocked' ? 'critical' : 'attention';
+    const name = tr(`skills.contribute_check_row.${row.id}`, row.id);
+    const version = row.version ? ` v${row.version}` : '';
+    const detail = row.id === 'local' && row.count
+      ? fmt(tr('skills.contribute_check_issue_count', '{count} issues'), { count: row.count })
+      : row.id === 'declaration' && row.ontologyVersion
+        ? `${tr(`skills.contribute_check_state.${row.state}`, row.state)} · ${tr('skills.contribute_check_ontology', 'Ontology')} ${row.ontologyVersion}`
+        : tr(`skills.contribute_check_state.${row.state}`, row.state);
+    const mark = row.state === 'ok' ? 'check-circle' : row.state === 'blocked' ? 'x-circle' : row.state === 'skipped' ? 'dot' : 'warning';
+    return `<li class="hubc-check-row is-${tone}" data-check-state="${esc(row.state)}">${icon(mark)}<strong>${esc(name + version)}</strong><span>${esc(detail)}</span></li>`;
+  }
+
+  function checkHtml() {
+    const s = session;
+    const result = s.checkResult;
+    const running = result === 'running';
+    const pill = running ? { label: tr('skills.contribute_check_running', 'Checking'), tone: 'attention' }
+      : result === 'blocked' ? { label: tr('skills.contribute_check_blocked', 'Blocking issues'), tone: 'critical' }
+        : { label: tr('skills.contribute_check_unavailable', 'Check unavailable'), tone: 'attention' };
+    const title = running ? tr('skills.contribute_checking', 'Running local checks')
+      : result === 'blocked' ? tr('skills.contribute_check_blocked_title', 'Local checks found blocking issues')
+        : tr('skills.contribute_check_unavailable_title', 'Local checks could not finish');
+    const hint = running ? tr('skills.contribute_checking_hint', 'No package bytes are sent while local checks run.')
+      : tr('skills.contribute_check_done_hint', 'No file left this device. Fix the items below, then check again.');
+    let body;
+    if (running) {
+      body = root.uiSkeleton({ ariaLabel: tr('skills.contribute_checking', 'Running local checks'), lines: [54, 92, 78, 66, 84] });
+    } else {
+      const details = admissionDetails(s.state);
+      const rows = model.checkRows(s.state?.admission).map(checkRowHtml).join('');
+      body = `<p class="hubc-alert" role="alert">${esc(details.reason)}</p>
+        <ul class="hubc-check-list" aria-label="${esc(tr('skills.contribute_check_panel_title', 'Local checks'))}">${rows}</ul>
+        ${details.issues.length ? `<ul class="hubc-issues" aria-label="${esc(tr('skills.contribute_check_issues', 'Findings'))}">${details.issues.map((issue) => `<li>${esc(issue)}</li>`).join('')}</ul>` : ''}`;
+    }
+    return `<section class="hubc-panel" aria-labelledby="hubc-check-title" aria-busy="${running ? 'true' : 'false'}">
+      <div class="hubc-section-head"><div><h2 id="hubc-check-title">${esc(title)}</h2><p>${esc(hint)}</p></div>${root.uiStatusPill(pill)}</div>
+      ${body}
+      <div class="hubc-actions"><p>${esc(running ? tr('skills.contribute_check_footnote_running', 'Files stay on this device until checks finish.') : '')}</p>
+        ${running
+    ? button({ label: tr('skills.contribute_check_cancel', 'Cancel check'), attrs: { 'data-hubc-action': 'cancel-check' } })
+    : button({ label: tr('skills.contribute_check_recheck', 'Check again'), role: 'primary', attrs: { 'data-hubc-action': 'recheck' } })}</div>
+    </section>`;
+  }
+
+  // Stage 3/4 — preview, declarations and submission.
+  function previewFiles() {
+    return Array.isArray(session.state?.preview?.files) ? session.state.preview.files : [];
+  }
+
+  function originSelected() {
+    return session.origin.type || '';
+  }
+
+  function previewHtml() {
+    const s = session;
+    const files = previewFiles();
+    const present = s.state?.completion?.present || {};
+    const metadata = {
+      name: present.name || s.name,
+      version: present.version || '',
+      description: present.description || '',
+    };
+    const selected = files[s.selectedFile];
+    const fileRows = files.length ? files.map((file, index) => `<li class="hubc-file${index === s.selectedFile ? ' is-selected' : ''}">${button({
+      label: file.path, role: 'ghost', size: 'sm', icon: 'file-text',
+      attrs: { 'data-hubc-action': 'select-file', 'data-hubc-file-index': index, 'aria-pressed': index === s.selectedFile ? 'true' : 'false' },
+    })}<span class="hubc-file__size">${esc(`${Number(file.size) || 0} B`)}</span></li>`).join('')
+      : `<li>${root.uiEmptyState({ title: tr('skills.contribute_preview_files_empty', 'No files in this submission') })}</li>`;
+    const sending = s.sending === true;
+    const originLocked = Boolean(s.originPrefill?.locked);
+    const origin = s.origin;
+    const originOptions = ORIGIN_TYPES.map((type) => ({ value: type, label: tr(`skills.contribute_origin.${type}`, type) }));
+    const derived = origin.type === 'derived_from_hub';
+    const refs = originLocked && s.originPrefill?.forked_from
+      ? `<p class="hubc-origin-ref">${esc(fmt(tr('skills.contribute_origin_derived_from_ref', 'Derived from Hub content {content_id} v{version}; type and link cannot be changed.'),
+        { content_id: s.originPrefill.forked_from.content_id, version: s.originPrefill.forked_from.version }))}</p>`
+      : `<div class="hubc-origin-refs" data-hubc-origin-refs${derived ? '' : ' hidden'}>${root.uiForm({
+        ariaLabel: tr('skills.contribute_origin_derived_from', 'Derived from Hub content'),
+        columns: 2,
+        fields: [
+          { html: root.uiField({ id: 'hubc-origin-content-id', label: tr('skills.contribute_origin_source_id', 'Hub content ID'), required: true, hint: tr('skills.contribute_origin_content_id', 'Enter the Hub content ID (12 lowercase hex characters).'), control: { kind: 'input', value: origin.contentId } }) },
+          { html: root.uiField({ id: 'hubc-origin-version', label: tr('skills.contribute_origin_source_version_label', 'Source version'), required: true, hint: tr('skills.contribute_origin_source_version', 'Enter the Hub source version (SemVer).'), control: { kind: 'input', value: origin.version, placeholder: '1.0.0' } }) },
+        ],
+      })}</div>`;
+    const termsLink = button({
+      label: fmt(tr('skills.contribute_terms_link', 'Community Contribution Terms {version}'), { version: s.terms?.version || '' }),
+      role: 'ghost', size: 'sm', className: 'hubc-inline-link', attrs: { 'data-hubc-action': 'read-terms' },
+    });
+    return `<div class="hubc-preview-head hubc-section-head"><div><h2>${esc(tr('skills.contribute_preview_heading', 'Submission preview'))}</h2>
+        <p>${esc(tr('skills.contribute_preview_hint', 'These files and details are sent to Hub with this contribution. Open each file to read it.'))}</p></div>
+        ${root.uiStatusPill({ label: tr('skills.contribute_preview_readonly', 'Read-only preview'), tone: 'success', check: true })}</div>
+      <div class="hubc-preview" data-contribution-preview>
+        <section class="hubc-file-list" aria-label="${esc(tr('skills.contribute_file_list_label', 'Submission files'))}">
+          <div class="hubc-panel-head"><span>${esc(tr('skills.contribute_file_list_label', 'Submission files'))}</span><span>${esc(fmt(tr('skills.contribute_file_count', '{count} files'), { count: files.length }))}</span></div>
+          <ul>${fileRows}</ul>
+          <p class="hubc-panel-foot">${esc(tr('skills.contribute_files_note', 'Only the listed files and metadata will be sent.'))}</p>
+        </section>
+        <section class="hubc-file-content" aria-label="${esc(tr('skills.contribute_file_content_label', 'File content'))}" aria-live="polite">
+          <div class="hubc-panel-head">${icon('file-text')}<strong>${esc(selected?.path || '')}</strong><span>${esc(`${Number(selected?.size) || 0} B · ${tr('skills.contribute_file_readonly', 'Read-only')}`)}</span></div>
+          <pre data-hubc-file-content>${esc(session.fileCache[s.selectedFile] ?? '')}</pre>
+        </section>
+      </div>
+      <section class="hubc-panel" aria-labelledby="hubc-metadata-title">
+        <div class="hubc-section-head"><div><h2 id="hubc-metadata-title">${esc(tr('skills.contribute_metadata_title', 'Details to be submitted'))}</h2>
+          <p>${esc(tr('skills.contribute_metadata_source', 'Files and details come from the rechecked submission copy.'))}</p></div>
+          ${button({ label: tr('skills.contribute_edit_draft', 'Edit details'), attrs: { 'data-hubc-action': 'edit-draft' } })}</div>
+        <dl class="hubc-meta">
+          <div><dt>${esc(tr('skills.contribute_meta_name', 'Name'))}</dt><dd>${esc(metadata.name)}</dd></div>
+          <div><dt>${esc(tr('skills.contribute_meta_version', 'Version'))}</dt><dd>${esc(metadata.version)}</dd></div>
+          <div><dt>${esc(tr('skills.contribute_contributor', 'Contributor'))}</dt><dd>${esc(s.displayName || '')}</dd></div>
+          <div><dt>${esc(tr('skills.contribute_terms_version_label', 'Terms version'))}</dt><dd>${esc(s.terms?.version || '')}</dd></div>
+        </dl>
+        <div class="hubc-meta-desc"><span>${esc(tr('skills.contribute_meta_desc', 'Description'))}</span><p>${esc(metadata.description)}</p></div>
+      </section>
+      <section class="hubc-panel" aria-labelledby="hubc-declarations-title">
+        <h2 id="hubc-declarations-title">${esc(tr('skills.contribute_declarations', 'Contribution declarations'))}</h2>
+        <div class="hubc-declaration">
+          ${root.uiField({
+    id: 'hubc-origin-type', label: tr('skills.contribute_origin_title', 'Origin declaration'), required: true,
+    hint: tr('skills.contribute_origin_hint', 'Describe where this Skill really comes from.'),
+    control: { kind: 'select', value: origin.type, placeholder: tr('skills.contribute_origin_choose', 'Choose the true origin.'), options: originOptions, disabled: originLocked || sending },
+  })}
+          ${refs}
+          ${root.uiField({
+    id: 'hubc-origin-note', label: tr('skills.contribute_origin_note', 'Origin note'),
+    control: { kind: 'textarea', value: origin.note, placeholder: tr('skills.contribute_origin_note_optional', 'Add an origin note (optional)'), attrs: { rows: 2 }, disabled: sending },
+  })}
+        </div>
+        <div class="hubc-check"><span class="hubc-check__control">${root.uiCheckbox({ id: 'hubc-accept-terms', label: tr('skills.contribute_terms_accept', 'I have read and accept'), checked: s.accepted.terms, disabled: sending })}</span>
+          <span><label for="hubc-accept-terms">${esc(tr('skills.contribute_terms_accept', 'I have read and accept'))}</label> ${termsLink}</span></div>
+        <div class="hubc-check"><span class="hubc-check__control">${root.uiCheckbox({ id: 'hubc-accept-maintenance', label: tr('skills.contribute_maint_note', 'I confirm maintenance responsibility.'), checked: s.accepted.maintenance, disabled: sending })}</span>
+          <label for="hubc-accept-maintenance">${esc(tr('skills.contribute_maint_note', 'I confirm maintenance responsibility.'))}</label></div>
+        <p class="hubc-privacy">${icon('shield-check')}<span>${esc(tr('skills.contribute_privacy_note', 'Install lists, user settings, task text, device information and other Skills are never sent with this submission.'))}</span></p>
+      </section>
+      <div class="hubc-submit-bar">
+        <div><strong>${esc(tr('skills.contribute_submit_bar_title', 'Enters review after submission'))}</strong>
+          <span>${esc(tr('skills.contribute_submit_bar_hint', 'Accepted content still needs publishing before it appears in the Hub catalog.'))}</span>
+          <span class="hubc-missing" data-hubc-missing role="status"></span></div>
+        <div class="hubc-submit-actions">
+          ${sending ? button({ label: tr('skills.contribute_cancel_submit', 'Cancel submission'), attrs: { 'data-hubc-action': 'cancel-submit' } }) : ''}
+          ${button({
+    label: sending ? tr('skills.contribute_submitting', 'Submitting') : tr('skills.contribute_submit', 'Submit for review'),
+    role: 'primary', icon: sending ? 'loader' : 'upload', loading: sending, disabled: true,
+    attrs: { 'data-hubc-action': 'submit' },
+  })}
+        </div>
+      </div>`;
+  }
+
+  function hydratePreview(host) {
+    session.selects = hydrateSelects(host, {
+      'hubc-origin-type': (value) => {
+        session.origin.type = value || '';
+        const refs = host.querySelector('[data-hubc-origin-refs]');
+        if (refs) refs.hidden = session.origin.type !== 'derived_from_hub';
+        updateSubmit();
+      },
+    });
+    updateSubmit();
+  }
+
+  function captureDeclarations() {
+    const host = hostOf('contribute');
+    if (!session || session.stage !== 'preview' || !host.querySelector('#hubc-accept-terms')) return;
+    const origin = session.origin;
+    const field = (id) => host.querySelector(`#${id}`);
+    origin.type = session.selects?.['hubc-origin-type']?.getValue?.() || origin.type || '';
+    origin.note = field('hubc-origin-note')?.value ?? origin.note;
+    origin.contentId = field('hubc-origin-content-id')?.value ?? origin.contentId;
+    origin.version = field('hubc-origin-version')?.value ?? origin.version;
+    session.accepted.terms = field('hubc-accept-terms')?.checked === true;
+    session.accepted.maintenance = field('hubc-accept-maintenance')?.checked === true;
+  }
+
+  function missingDeclarations() {
+    const origin = session.origin;
+    const missing = [];
+    if (!origin.type) missing.push('origin');
+    else if (origin.type === 'derived_from_hub' && !session.originPrefill?.locked
+      && !(HUB_CONTENT_ID.test(origin.contentId.trim()) && SEMVER.test(origin.version.trim()))) missing.push('origin');
+    else if (origin.type === 'third_party' && !origin.note.trim()) missing.push('origin_note');
+    if (!session.accepted.terms) missing.push('terms');
+    if (!session.accepted.maintenance) missing.push('maintenance');
+    return missing;
+  }
+
+  // C-FR-005: the submit action stays unavailable and names what is missing.
+  function updateSubmit() {
+    if (!session || session.stage !== 'preview') return;
+    captureDeclarations();
+    const host = hostOf('contribute');
+    const submit = host.querySelector('[data-hubc-action="submit"]');
+    const missing = session.sending ? [] : missingDeclarations();
+    if (submit) submit.disabled = session.sending || missing.length > 0;
+    const note = host.querySelector('[data-hubc-missing]');
+    if (note) {
+      note.textContent = missing.length
+        ? fmt(tr('skills.contribute_missing_prefix', 'Still needed: {items}'),
+          { items: missing.map((item) => tr(`skills.contribute_missing_item.${item}`, MISSING_FALLBACK[item] || item)).join(', ') })
+        : '';
+    }
+  }
+
+  async function loadFile(index) {
+    const s = session;
+    const token = s?.token;
+    const file = previewFiles()[index];
+    if (!s || !file || Object.hasOwn(s.fileCache, index)) return;
+    let content;
+    try {
+      const result = await root.cogseed.invoke('contribution.readFile', { token, path: file.path });
+      content = result.binary
+        ? tr('skills.contribute_binary_file', 'Binary file ({size} bytes)').replace('{size}', String(result.size || file.size))
+        : result.content || '';
+    } catch (error) {
+      await root.uiAlert(tr('skills.contribute_file_read_failed', 'Could not read this file. Please restart the preview.'));
+      return;
+    }
+    if (session !== s || s.token !== token) return;
+    s.fileCache[index] = content;
+    if (s.selectedFile === index) {
+      const pre = hostOf('contribute').querySelector('[data-hubc-file-content]');
+      if (pre) pre.textContent = content;
+    }
+  }
+
+  function selectFile(index) {
+    const files = previewFiles();
+    if (!files[index]) return;
+    captureDeclarations();
+    session.selectedFile = index;
+    renderContribute();
+    void loadFile(index);
+  }
+
+  async function showTerms() {
+    if (typeof renderMarkdown !== 'function') throw new Error('contribution requires renderMarkdown');
+    const terms = session.terms || {};
+    await modal({
+      title: tr('skills.contribute_terms_title', 'Community Contribution Terms'),
+      description: `${tr('skills.contribute_terms_version', 'Version')} ${terms.version || ''}`,
+      size: 'lg',
+      bodyHtml: `<article class="markdown-body hubc-terms">${renderMarkdown(terms.body_markdown)}</article>`,
+      actions: [{ id: 'close', label: tr('common.close', 'Close'), role: 'primary' }],
+    });
+  }
+
+  async function submitContribution() {
+    const s = session;
+    captureDeclarations();
+    const missing = missingDeclarations();
+    if (missing.length) {
+      updateSubmit();
+      return;
+    }
+    const token = s.token;
+    const origin = s.origin;
+    let forkedFrom = null;
+    let note = origin.note;
+    if (s.originPrefill?.locked) {
+      forkedFrom = s.originPrefill.forked_from;
+      if (!forkedFrom?.content_id || !forkedFrom?.version) return;
+    } else if (origin.type === 'derived_from_hub') {
+      forkedFrom = { content_id: origin.contentId.trim(), version: origin.version.trim() };
     }
     await root.cogseed.invoke('contribution.declare', {
-      token, kind: 'origin', origin_type: origin, note,
-      ...(forkedFrom ? { forked_from: forkedFrom } : {}),
+      token, kind: 'origin', origin_type: origin.type, note,
+      ...(forkedFrom && !s.originPrefill?.locked ? { forked_from: forkedFrom } : {}),
     });
-    state.originNote = note;
-    state.originForkedFrom = forkedFrom;
-    return origin;
-  }
-
-  async function confirmPreview(token, name, state, terms, origin, displayName) {
-    const preview = state.preview || { files: [] };
-    const metadata = state.completion?.present || {};
-    const metadataTable = root.uiDataTable({
-      label: tr('skills.contribute_preview_metadata', 'Submission metadata'),
-      columns: [
-        { key: 'field', label: tr('skills.contribute_issue_field', 'Field'), primary: true },
-        { key: 'value', label: tr('skills.contribute_preview_value', 'Value') },
-      ],
-      rows: [
-        { field: tr('skills.contribute_meta_name', 'Name'), value: metadata.name || name || '' },
-        { field: tr('skills.contribute_meta_desc', 'Description'), value: metadata.description || '' },
-        { field: tr('skills.contribute_meta_version', 'Version'), value: metadata.version || '' },
-        { field: tr('skills.contribute_origin_title', 'Origin declaration'), value: tr(`skills.contribute_origin.${origin}`, origin) },
-        ...(state.originForkedFrom ? [{
-          field: tr('skills.contribute_origin_derived_from', 'Derived from Hub content'),
-          value: `${state.originForkedFrom.content_id} v${state.originForkedFrom.version}`,
-        }] : []),
-        ...(state.originNote ? [{ field: tr('skills.contribute_origin_note', 'Origin note'), value: state.originNote }] : []),
-        { field: tr('skills.contribute_terms_version', 'Terms version'), value: terms.version || '' },
-        { field: tr('skills.contribute_contributor', 'Contributor'), value: displayName || '' },
-      ],
-    });
-    const files = Array.isArray(preview.files) ? preview.files : [];
-    const filesAccordion = files.length ? root.uiAccordion({
-      defaultOpen: [],
-      items: files.map((file, index) => ({
-        title: file.path,
-        meta: `${Number(file.size) || 0} B`,
-        bodyHtml: `<div class="contribution-file-details">${[
-          `<code class="contribution-file-hash">${esc(file.sha256)}</code>`,
-          root.uiButton({
-            label: tr('skills.contribute_view_file', 'View file'),
-            size: 'sm',
-            attrs: { 'data-contribution-file-index': index },
-          }),
-          `<pre class="contribution-file-content" data-contribution-file-content="${index}" hidden></pre>`,
-        ].join('')}</div>`,
-      })),
-    }) : root.uiEmptyState({ title: tr('skills.contribute_preview_files_empty', 'No files in this submission') });
-    const choice = modal({
-      title: tr('skills.contribute_preview_title', 'Submission preview').replace('{name}', name || ''),
-      description: tr('skills.contribute_files_note', 'Only the listed files and metadata will be sent.'),
-      size: 'lg',
-      bodyHtml: `<div class="contribution-preview" data-contribution-preview>${metadataTable}${filesAccordion}</div>`,
-      actions: [{ id: 'cancel', label: tr('common.cancel', 'Cancel') }, { id: 'continue', label: tr('common.continue', 'Continue'), role: 'primary' }],
-    });
-    choice.overlay.addEventListener('click', async (event) => {
-      const button = event.target.closest('[data-contribution-file-index]');
-      if (!button) return;
-      const file = files[Number(button.dataset.contributionFileIndex)];
-      if (!file) return;
-      try {
-        const result = await root.cogseed.invoke('contribution.readFile', { token, path: file.path });
-        const content = choice.overlay.querySelector(`[data-contribution-file-content="${button.dataset.contributionFileIndex}"]`);
-        if (!content) return;
-        content.textContent = result.binary
-          ? tr('skills.contribute_binary_file', 'Binary file ({size} bytes)').replace('{size}', String(result.size || file.size))
-          : result.content || '';
-        content.hidden = false;
-      } catch (error) {
-        await root.uiAlert(tr('skills.contribute_file_read_failed', 'Could not read this file. Please restart the preview.'));
-      }
-    });
-    const previewResult = await choice;
-    if (previewResult.value !== 'continue') return false;
-
-    const declarationsForm = root.uiForm({
-      ariaLabel: tr('skills.contribute_declarations', 'Contribution declarations'),
-      fields: [
-        { html: root.uiField({
-          id: 'contribution-accept-terms',
-          label: tr('skills.contribute_terms_accept', 'I accept the contribution terms'),
-          required: true,
-          control: { kind: 'checkbox', accessibleLabel: tr('skills.contribute_terms_accept', 'I accept the contribution terms') },
-        }) },
-        { html: root.uiField({
-          id: 'contribution-confirm-maintenance',
-          label: tr('skills.contribute_maint_note', 'I confirm maintenance responsibility.'),
-          required: true,
-          control: { kind: 'checkbox', accessibleLabel: tr('skills.contribute_maint_note', 'I confirm maintenance responsibility.') },
-        }) },
-      ],
-    });
-    if (typeof renderMarkdown !== 'function') throw new Error('contribution requires renderMarkdown');
-    const termsHtml = renderMarkdown(terms.body_markdown);
-    const termsDialog = modal({
-      title: tr('skills.contribute_terms_title', 'Community Contribution Terms'),
-      description: `${tr('skills.contribute_terms_version', 'Version')} ${terms.version}`,
-      size: 'lg', bodyHtml: `<div class="contribution-declarations"><article class="markdown-body">${termsHtml}</article>${declarationsForm}</div>`,
-      actions: [{ id: 'cancel', label: tr('common.cancel', 'Cancel') }, { id: 'accept', label: tr('common.confirm', 'Confirm'), role: 'primary' }],
-    });
-    if ((await termsDialog).value !== 'accept') return false;
-    const acceptedTerms = termsDialog.overlay.querySelector('#contribution-accept-terms')?.checked === true;
-    const acceptedMaintenance = termsDialog.overlay.querySelector('#contribution-confirm-maintenance')?.checked === true;
-    if (!acceptedTerms || !acceptedMaintenance) {
-      await root.uiAlert(tr('skills.contribute_declarations_required', 'Accept the terms and confirm maintenance responsibility before continuing.'));
-      return false;
-    }
     await root.cogseed.invoke('contribution.declare', { token, kind: 'terms' });
     await root.cogseed.invoke('contribution.declare', { token, kind: 'maintenance' });
-    const confirmed = await root.cogseed.invoke('contribution.confirm', { token, digest: preview.digest });
-    return confirmed?.confirmed === true;
+    const confirmed = await root.cogseed.invoke('contribution.confirm', { token, digest: s.state?.preview?.digest });
+    if (confirmed?.confirmed !== true) {
+      await root.uiAlert(tr('skills.contribute_snapshot_changed', 'The submission no longer matches the preview. Check and preview it again.'));
+      await runCheck();
+      return;
+    }
+    await sendSubmission();
   }
 
-  async function startSkillContribution(skillId, name, targetContentId, previousOrigin) {
-    let token = null;
+  async function sendSubmission() {
+    const s = session;
+    const token = s.token;
+    let replaceConfirmed = false;
+    s.sending = true;
+    renderContribute();
     try {
-      const preflight = await ensureIdentity(name);
-      if (!preflight) return;
-      const termsResponse = await root.cogseed.invoke('contribution.terms', {});
-      if (termsResponse?.state?.status !== 'open') {
-        await root.uiAlert(termsResponse?.state?.status === 'closed'
-          ? tr('skills.contribute_terms_closed', 'Contribution is not open right now.')
-          : tr('skills.contribute_terms_unavailable', 'Could not load the current terms.'));
-        return;
-      }
-      let state = await root.cogseed.invoke('contribution.start', { skill_id: skillId, defer_check: true });
-      token = state?.token || null;
-      if (!token) return;
-      const originPrefill = state.originPrefill;
-      state = await collectMissing(token, state);
-      if (!state) return;
-      state.originPrefill = originPrefill;
-      const progress = modal({
-        title: tr('skills.contribute_checking', 'Running local checks'),
-        description: tr('skills.contribute_checking_hint', 'No package bytes are sent while local checks run.'),
-        dismissible: false,
-        bodyHtml: root.uiSkeleton({ ariaLabel: tr('skills.contribute_checking', 'Running local checks'), lines: [54, 92, 78] }),
-        actions: [{ id: 'cancel', label: tr('common.cancel', 'Cancel') }],
-      });
-      const check = root.cogseed.invoke('contribution.recheck', { token })
-        .then((result) => ({ kind: 'result', result }), (error) => ({ kind: 'error', error }));
-      const outcome = await Promise.race([check, progress.then(() => ({ kind: 'cancel' }))]);
-      if (outcome.kind === 'cancel') {
-        await root.cogseed.invoke('contribution.cancel', { token });
-        token = null;
-        return;
-      }
-      progress.close('complete', 'programmatic');
-      if (outcome.kind === 'error') throw outcome.error;
-      state = outcome.result;
-      state.originPrefill = originPrefill;
-      if (state?.admission?.outcome !== 'pass') {
-        const declarationReason = state?.admission?.declaration?.reason;
-        if (['declaration_absent', 'declaration_needs_input', 'declaration_mismatch'].includes(declarationReason)) {
-          state.completion.missing = Array.from(new Set([...(state.completion.missing || []), 'security_manifest']));
-          state = await collectMissing(token, state);
-          if (state) state.originPrefill = originPrefill;
-        }
-      }
-      if (!state || state?.admission?.outcome !== 'pass') {
-        if (state) await root.uiAlert(admissionDetails(state));
-        return;
-      }
-      const origin = await chooseOrigin(token, state, previousOrigin);
-      if (!origin) return;
-      if (!await confirmPreview(token, name, state, termsResponse.state.terms, origin,
-        state.identity?.displayName || preflight.identity?.displayName)) return;
-      let replaceConfirmed = false;
       for (;;) {
-        const upload = modal({
-          title: tr('skills.contribute_uploading', 'Uploading contribution'),
-          description: tr('skills.contribute_uploading_hint', 'Keep this window open until Hub confirms receipt.'),
-          dismissible: false,
-          bodyHtml: root.uiSkeleton({ ariaLabel: tr('skills.contribute_uploading', 'Uploading contribution'), lines: [62, 88] }),
-          actions: [{ id: 'cancel', label: tr('common.cancel', 'Cancel') }],
-        });
-        const submitAttempt = root.cogseed.invoke('contribution.submit', {
+        const attempt = root.cogseed.invoke('contribution.submit', {
           token,
-          ...(targetContentId ? { target_content_id: targetContentId } : {}),
+          ...(s.targetContentId ? { target_content_id: s.targetContentId } : {}),
           ...(replaceConfirmed ? { replace_confirmed: true } : {}),
         }).then((result) => ({ kind: 'result', result }), (error) => ({ kind: 'error', error }));
-        const uploadOutcome = await Promise.race([submitAttempt, upload.then(() => ({ kind: 'cancel' }))]);
-        if (uploadOutcome.kind === 'cancel') {
+        const cancelled = new Promise((resolve) => { s.cancelUpload = () => resolve({ kind: 'cancel' }); });
+        const outcome = await Promise.race([attempt, cancelled]);
+        s.cancelUpload = null;
+        if (session !== s) return;
+        if (outcome.kind === 'cancel') {
           await root.cogseed.invoke('contribution.abortUpload', { token });
-          await submitAttempt;
+          await attempt;
+          if (typeof root.uiToast === 'function') root.uiToast(tr('skills.contribute_cancelled_toast', 'Submission cancelled. The preview stays on this device.'));
           break;
         }
-        upload.close('complete', 'programmatic');
-        if (uploadOutcome.kind === 'error') throw uploadOutcome.error;
-        const submitted = uploadOutcome.result;
+        if (outcome.kind === 'error') throw outcome.error;
+        const submitted = outcome.result;
         if (submitted?.reason === 'replacement_confirmation_required') {
           replaceConfirmed = await root.uiConfirm({
             message: tr('skills.contribute_replace_confirm', 'This will replace your pending submission for the same content. Continue?'),
@@ -459,9 +786,11 @@
           break;
         }
         if (submitted?.ok) {
-          token = null;
-          await root.uiAlert(tr('skills.contribute_submitted', 'Submitted for review.'));
-          break;
+          s.token = null;
+          if (typeof root.uiToast === 'function') root.uiToast(tr('skills.contribute_submitted_toast', 'Submitted for review. Track progress in My contributions.'), { variant: 'success' });
+          await endSession();
+          await openMyContributions({ skipIdentity: true });
+          return;
         }
         const retryable = submitted?.error?.retryable === true || submitted?.retryable === true || submitted?.reason === 'snapshot_drift';
         if (!retryable) {
@@ -481,12 +810,75 @@
         });
         if (!retry) break;
       }
-    } catch (error) {
-      if (root.createLogger) root.createLogger('hub-contributions').warn('flow failed', { error: String(error) });
-      await root.uiAlert(tr('skills.contribute_start_failed', 'Could not start contribution.'));
     } finally {
-      if (token) await root.cogseed.invoke('contribution.cancel', { token }).catch(() => {});
+      if (session === s) {
+        s.sending = false;
+        s.cancelUpload = null;
+        if (s.stage === 'preview') renderContribute();
+      }
     }
+  }
+
+  async function startSkillContribution(skillId, name, targetContentId, previousOrigin) {
+    try {
+      await endSession();
+      const preflight = await ensureIdentity(name);
+      if (!preflight) return;
+      const termsResponse = await root.cogseed.invoke('contribution.terms', {});
+      if (termsResponse?.state?.status !== 'open') {
+        await root.uiAlert(termsResponse?.state?.status === 'closed'
+          ? tr('skills.contribute_terms_closed', 'Contribution is not open right now.')
+          : tr('skills.contribute_terms_unavailable', 'Could not load the current terms.'));
+        return;
+      }
+      const state = await root.cogseed.invoke('contribution.start', { skill_id: skillId, defer_check: true });
+      if (!state?.token) return;
+      const prefill = state.originPrefill || null;
+      session = {
+        token: state.token,
+        skillId,
+        name: name || skillId,
+        targetContentId: targetContentId || '',
+        terms: termsResponse.state.terms,
+        displayName: state.identity?.displayName || preflight.identity?.displayName || '',
+        originPrefill: prefill,
+        state,
+        stage: 'complete',
+        needsSecurity: (state.completion?.missing || []).includes('security_manifest'),
+        declarationNote: '',
+        checkResult: 'running',
+        draft: {
+          name: '', description: '', version: '',
+          security: { network_access: '', network_allowlist: '', file_access: '', command_access: '', external_tools: '', sensitive_data: '' },
+        },
+        origin: {
+          type: prefill?.locked ? 'derived_from_hub' : (previousOrigin?.type || ''),
+          note: prefill?.locked ? '' : String(previousOrigin?.note || ''),
+          contentId: String(previousOrigin?.forked_from?.content_id || ''),
+          version: String(previousOrigin?.forked_from?.version || ''),
+        },
+        accepted: { terms: false, maintenance: false },
+        selectedFile: 0,
+        fileCache: {},
+        sending: false,
+        selects: {},
+      };
+      seedDraft(state);
+      stopMinePoll();
+      if (hasMissing(state)) {
+        renderContribute();
+        return;
+      }
+      await runCheck();
+    } catch (error) {
+      await failFlow(error);
+    }
+  }
+
+  async function failFlow(error) {
+    if (root.createLogger) root.createLogger('hub-contributions').warn('flow failed', { error: String(error) });
+    await root.uiAlert(tr('skills.contribute_start_failed', 'Could not start contribution.'));
+    if (session) leaveToSkills();
   }
 
   async function chooseLocalSkill(targetContentId, previousOrigin) {
@@ -504,129 +896,348 @@
     if (skill) await startSkillContribution(skill.id, skill.name || skill.id, targetContentId, previousOrigin);
   }
 
-  async function openMyContributions() {
-    if (!await ensureIdentity(tr('skills.contribute_mine', 'My contributions'))) return;
-    const response = await root.cogseed.invoke('contribution.mine', { refresh: true });
-    const items = Object.values(response?.cache?.items || {}).filter((item) => item && typeof item === 'object');
-    const bodyHtml = items.length ? root.uiResourceGrid({
-      attrs: { 'data-contribution-mine-grid': true },
-      bodyHtml: items.map((item, index) => {
-        const title = String(item.name || item.title || item.content_id || item.submission_id || `#${index + 1}`);
-        const latest = item.latest_submission && typeof item.latest_submission === 'object' ? item.latest_submission : {};
-        const withdrawal = item.withdrawal_request && typeof item.withdrawal_request === 'object' ? item.withdrawal_request : {};
-        const status = String(latest.status || item.status || item.review_status || item.submission_status || item.content_status || tr('skills.contribute_status_unknown', 'Unknown'));
-        const contentId = String(item.content_id || '');
-        const submissionId = String(latest.submission_id || item.submission_id || '');
-        const contentStatus = String(item.content_status || '').toLowerCase();
-        const lifecycleNote = ['disabled', 'withdrawn'].includes(contentStatus)
-          ? tr('skills.contribute_lifecycle_recovery_notice', 'This content is {status}. A higher-version submission still requires a governance role to restore availability after publication.')
-            .replace('{status}', tr(`skills.contribute_lifecycle.${contentStatus}`, contentStatus))
-          : '';
-        const actions = [
-          contentId ? { label: status.toUpperCase() === 'RETURNED'
-            ? tr('skills.contribute_resubmit', 'Revise and resubmit')
-            : tr('skills.contribute_new_version', 'Submit new version'), attrs: { 'data-contribution-new-version': contentId, 'data-contribution-index': index } } : null,
-          !contentId && status.toUpperCase() === 'RETURNED'
-            ? { label: tr('skills.contribute_resubmit', 'Revise and resubmit'), attrs: { 'data-contribution-resubmit': true } } : null,
-          submissionId && status.toUpperCase() === 'PENDING_REVIEW'
-            ? { label: tr('skills.contribute_withdraw_pending', 'Withdraw submission'), role: 'danger', attrs: { 'data-contribution-withdraw-pending': submissionId } } : null,
-          contentId && contentStatus === 'published' && String(withdrawal.status || '').toUpperCase() !== 'PENDING'
-            ? { label: tr('skills.contribute_request_withdrawal', 'Request withdrawal'), role: 'danger', attrs: { 'data-contribution-request-withdrawal': contentId } } : null,
-          contentId ? { label: tr('skills.contribute_withdrawal_history', 'Withdrawal history'), attrs: { 'data-contribution-withdrawal-history': contentId } } : null,
-        ].filter(Boolean);
-        return root.uiResourceCard({
-          title,
-          description: [
-            String(item.entry_id || contentId || submissionId || ''),
-            item.current_published_version ? `${tr('skills.contribute_published_version', 'Published version')}: ${String(item.current_published_version)}` : '',
-            withdrawal.status ? `${tr('skills.contribute_withdrawal_status', 'Withdrawal')}: ${tr(`skills.contribute_withdrawal_state.${String(withdrawal.status).toUpperCase()}`, String(withdrawal.status))}` : '',
-            lifecycleNote,
-            String(withdrawal.rejected_reason || latest.returned_reason || item.reason || item.review_reason || item.description || ''),
-          ].filter(Boolean).join(' '),
-          status: statusDescriptor(status),
-          actions,
-        });
-      }).join(''),
-    }) : root.uiEmptyState({ title: tr('skills.contribute_mine_empty', 'No contributions yet') });
-    const dialog = modal({
-      title: tr('skills.contribute_mine', 'My contributions'),
-      description: response?.stale
-        ? `${tr('skills.contribute_mine_stale', 'Showing the last saved result because Hub could not be refreshed.')} ${String(response?.cache?.generated_at || '')}`.trim()
-        : '',
-      size: 'lg', bodyHtml,
-      actions: [
-        { id: 'close', label: tr('common.close', 'Close') },
-        { id: 'refresh', label: tr('common.refresh', 'Refresh'), role: 'primary' },
-      ],
+  // ── My contributions page ──
+
+  function mineFilterControl() {
+    return root.uiSegmentedControl({
+      ariaLabel: tr('skills.contribute_mine_filters', 'Filter contributions'),
+      value: mine.filter,
+      items: MINE_FILTERS.map((value) => ({
+        value, label: tr(`skills.contribute_mine_filter.${value}`, value), attrs: { 'data-hubc-filter': value },
+      })),
     });
-    dialog.overlay.addEventListener('click', async (event) => {
-      const newVersion = event.target.closest('[data-contribution-new-version]');
-      if (newVersion) {
-        const item = items[Number(newVersion.dataset.contributionIndex)];
-        dialog.close('new-version', 'programmatic');
-        return chooseLocalSkill(newVersion.dataset.contributionNewVersion, item?.latest_submission?.declarations_origin || null);
+  }
+
+  function mineDetailMessage(entry) {
+    if (entry.status === 'PENDING_REVIEW' || entry.status === 'PENDING') {
+      return tr('skills.contribute_mine_msg.pending', 'Operations is reviewing this submission. You can withdraw it before review.');
+    }
+    if (entry.status === 'RETURNED' || entry.status === 'REJECTED') {
+      return entry.returnedReason || tr('skills.contribute_mine_msg.returned', 'The submission was returned. Revise it and submit again.');
+    }
+    if (entry.status === 'WITHDRAWN') return tr('skills.contribute_mine_msg.withdrawn', 'You withdrew this pending submission.');
+    return entry.publishedVersion
+      ? fmt(tr('skills.contribute_mine_msg.published', 'Published version v{version}. A new version needs review and publishing again.'), { version: entry.publishedVersion })
+      : tr('skills.contribute_mine_msg.accepted', 'Review accepted; the publisher has not published it yet.');
+  }
+
+  function mineDetailHtml(entry) {
+    if (!entry) {
+      return root.uiEmptyState({
+        title: tr('skills.contribute_mine_pick', 'Select a contribution'),
+        hint: tr('skills.contribute_mine_pick_hint', 'See its status and the actions available.'),
+      });
+    }
+    const actions = model.detailActions(entry);
+    const buttons = [
+      actions.newVersion ? button({
+        label: entry.status === 'RETURNED' ? tr('skills.contribute_resubmit', 'Revise and resubmit') : tr('skills.contribute_new_version', 'Submit new version'),
+        role: 'primary', attrs: { 'data-hubc-action': 'new-version', 'data-hubc-key': entry.key },
+      }) : (actions.resubmit ? button({
+        label: tr('skills.contribute_resubmit', 'Revise and resubmit'), role: 'primary', attrs: { 'data-hubc-action': 'resubmit' },
+      }) : ''),
+      actions.withdrawPending ? button({
+        label: tr('skills.contribute_withdraw_pending', 'Withdraw submission'), role: 'danger', attrs: { 'data-hubc-action': 'withdraw-pending', 'data-hubc-key': entry.key },
+      }) : '',
+      actions.requestWithdrawal ? button({
+        label: tr('skills.contribute_request_withdrawal', 'Request withdrawal'), role: 'danger', attrs: { 'data-hubc-action': 'request-withdrawal', 'data-hubc-key': entry.key },
+      }) : '',
+      actions.withdrawalHistory ? button({
+        label: tr('skills.contribute_withdrawal_history', 'Withdrawal history'), attrs: { 'data-hubc-action': 'withdrawal-history', 'data-hubc-key': entry.key },
+      }) : '',
+    ].filter(Boolean).join('');
+    const lifecycle = ['disabled', 'withdrawn'].includes(entry.contentStatus)
+      ? `<p class="hubc-detail__note">${esc(fmt(tr('skills.contribute_lifecycle_recovery_notice',
+        'This content is {status}. A higher-version submission still requires a governance role to restore availability after publication.'),
+      { status: tr(`skills.contribute_lifecycle.${entry.contentStatus}`, entry.contentStatus) }))}</p>` : '';
+    const origin = entry.origin?.type
+      ? `<div class="hubc-block"><span>${esc(tr('skills.contribute_origin_title', 'Origin declaration'))}</span><strong>${esc(tr(`skills.contribute_origin.${entry.origin.type}`, entry.origin.type))}</strong></div>` : '';
+    const withdrawal = entry.withdrawal
+      ? `<div class="hubc-block"><span>${esc(tr('skills.contribute_withdrawal_status', 'Withdrawal'))}</span><strong>${esc(tr(`skills.contribute_withdrawal_state.${entry.withdrawal.status}`, entry.withdrawal.status))}</strong>
+          <p>${esc(entry.withdrawal.rejectedReason || entry.withdrawal.reason)}</p></div>` : '';
+    return `<h2>${esc(entry.title)}</h2>
+      <span class="hubc-detail__id">${esc(entry.contentId || entry.submissionId || entry.key)}</span>
+      ${root.uiStatusPill(statusDescriptor(entry.status || tr('skills.contribute_status_unknown', 'Unknown')))}
+      <div class="hubc-block"><span>${esc(tr('skills.contribute_mine_latest', 'Latest submission'))}</span>
+        <strong>${esc([entry.version ? `v${entry.version}` : '', formatTime(entry.submittedAt)].filter(Boolean).join(' · '))}</strong>
+        <p>${esc(mineDetailMessage(entry))}</p></div>
+      ${entry.publishedVersion ? `<div class="hubc-block"><span>${esc(tr('skills.contribute_published_version', 'Published version'))}</span><strong>v${esc(entry.publishedVersion)}</strong></div>` : ''}
+      ${origin}${withdrawal}${lifecycle}
+      <div class="hubc-detail__actions">${buttons}</div>`;
+  }
+
+  function mineRowHtml(entry) {
+    const selected = entry.key === mine.selected;
+    const withdrawal = entry.withdrawal
+      ? ` · ${tr(`skills.contribute_withdrawal_state.${entry.withdrawal.status}`, entry.withdrawal.status)}` : '';
+    return `<li class="hubc-row${selected ? ' is-selected' : ''}" data-hubc-row="${esc(entry.key)}">
+      <div class="hubc-row__name">${button({
+    label: entry.title, role: 'ghost', size: 'sm',
+    attrs: { 'data-hubc-action': 'select-row', 'data-hubc-key': entry.key, 'aria-pressed': selected ? 'true' : 'false' },
+  })}<small>${esc((entry.contentId || entry.submissionId || entry.key) + withdrawal)}</small></div>
+      <div class="hubc-row__cell">${root.uiStatusPill(statusDescriptor(entry.status || tr('skills.contribute_status_unknown', 'Unknown')))}<small>${esc(formatTime(entry.submittedAt))}</small></div>
+      <div class="hubc-row__cell">${esc(entry.publishedVersion ? `v${entry.publishedVersion}` : '—')}</div>
+    </li>`;
+  }
+
+  function renderMineList() {
+    const host = hostOf('mine');
+    const visible = model.filterHistory(mine.items, { filter: mine.filter, query: mine.query });
+    if (!visible.some((entry) => entry.key === mine.selected)) mine.selected = visible[0]?.key || null;
+    const list = host.querySelector('[data-hubc-list]');
+    const detail = host.querySelector('[data-hubc-detail]');
+    if (!list || !detail) return;
+    // The list is rebuilt on every selection; keep keyboard focus on the selected row.
+    const listHadFocus = list.contains(document.activeElement);
+    list.innerHTML = visible.length
+      ? `<ul>${visible.map(mineRowHtml).join('')}</ul>`
+      : mine.loading && !mine.items.length
+        ? root.uiSkeleton({ ariaLabel: tr('skills.contribute_mine', 'My contributions'), lines: [48, 90, 74] })
+        : root.uiEmptyState({
+        title: mine.items.length ? tr('skills.contribute_mine_no_match', 'No matching contributions') : tr('skills.contribute_mine_empty', 'No contributions yet'),
+        hint: mine.items.length ? tr('skills.contribute_mine_no_match_hint', 'Adjust the filters and try again.') : undefined,
+      });
+    detail.innerHTML = mineDetailHtml(visible.find((entry) => entry.key === mine.selected));
+    if (listHadFocus) list.querySelector('[aria-pressed="true"]')?.focus();
+    const filters = host.querySelector('[data-hubc-filters]');
+    if (filters) {
+      const hadFocus = filters.contains(document.activeElement);
+      filters.innerHTML = mineFilterControl();
+      if (hadFocus) filters.querySelector('[aria-pressed="true"]')?.focus();
+    }
+  }
+
+  function renderMine() {
+    const host = hostOf('mine');
+    if (!mine || !host) return;
+    const stats = model.historyStats(mine.items);
+    const synced = formatTime(mine.generatedAt);
+    const searchFocused = document.activeElement?.id === 'hubc-mine-search';
+    host.innerHTML = `<div class="hubc-page" data-hubc-page="mine">
+      ${backline(tr('skills.contribute_mine', 'My contributions'))}
+      <header class="hubc-heading hubc-heading--center"><div><h1>${esc(tr('skills.contribute_mine', 'My contributions'))}</h1>
+        <p>${esc(tr('skills.contribute_mine_desc', 'See submissions and review status, and look after published Skills.'))}</p></div>
+        ${button({ label: tr('common.refresh', 'Refresh'), icon: 'refresh', loading: mine.loading, attrs: { 'data-hubc-action': 'mine-refresh' } })}</header>
+      ${mine.stale ? `<p class="hubc-alert" role="status">${esc(tr('skills.contribute_mine_stale', 'Hub could not be refreshed; showing the last saved result.'))}</p>` : ''}
+      <div class="hubc-summary">
+        <span><strong>${esc(stats.total)}</strong>${esc(tr('skills.contribute_mine_total', 'contributions'))}</span>
+        <span><strong>${esc(stats.pending)}</strong>${esc(tr('skills.contribute_mine_pending', 'pending review'))}</span>
+        <span><strong>${esc(stats.published)}</strong>${esc(tr('skills.contribute_mine_published', 'published'))}</span>
+        <small>${esc(synced ? fmt(tr('skills.contribute_mine_synced', 'Last synced {time}'), { time: synced }) : '')}</small>
+      </div>
+      <div class="hubc-toolbar"><div data-hubc-filters>${mineFilterControl()}</div>
+        <div class="hubc-search">${root.uiInput({ id: 'hubc-mine-search', type: 'search', value: mine.query, placeholder: tr('skills.contribute_mine_search', 'Search my contributions'), attrs: { 'aria-label': tr('skills.contribute_mine_search', 'Search my contributions') } })}</div></div>
+      <div class="hubc-master">
+        <section class="hubc-list" aria-label="${esc(tr('skills.contribute_mine_list', 'Contribution list'))}">
+          <div class="hubc-list__head"><span>${esc(tr('skills.contribute_mine_col_skill', 'Skill'))}</span><span>${esc(tr('skills.contribute_mine_col_latest', 'Latest submission'))}</span><span>${esc(tr('skills.contribute_published_version', 'Published version'))}</span></div>
+          <div data-hubc-list></div>
+        </section>
+        <aside class="hubc-detail" aria-label="${esc(tr('skills.contribute_mine_detail', 'Contribution details'))}" data-hubc-detail></aside>
+      </div></div>`;
+    showView('mine');
+    renderMineList();
+    if (searchFocused) {
+      const search = host.querySelector('#hubc-mine-search');
+      if (search) {
+        search.focus();
+        search.setSelectionRange?.(search.value.length, search.value.length);
       }
-      const resubmit = event.target.closest('[data-contribution-resubmit]');
-      if (resubmit) {
-        dialog.close('resubmit', 'programmatic');
-        return chooseLocalSkill();
+    }
+  }
+
+  async function loadMine() {
+    if (!mine) return false;
+    mine.loading = true;
+    let response;
+    try {
+      response = await root.cogseed.invoke('contribution.mine', { refresh: true });
+    } catch (error) {
+      mine.loading = false;
+      await root.uiAlert(tr('skills.contribute_start_failed', 'Could not load contributions.'));
+      return false;
+    }
+    if (!mine) return false;
+    mine.loading = false;
+    if (!response?.cache) {
+      await root.uiAlert(tr(`skills.contribute_reason.${response?.reason}`, tr('skills.contribute_unavailable', 'Contribution is unavailable.')));
+      return false;
+    }
+    mine.items = model.normalizeItems(response.cache.items);
+    mine.stale = response.stale === true;
+    mine.generatedAt = response.cache.last_success_at || response.cache.generated_at || '';
+    renderMine();
+    return true;
+  }
+
+  async function openMyContributions(options) {
+    try {
+      if (!options?.skipIdentity && !await ensureIdentity(tr('skills.contribute_mine', 'My contributions'))) return;
+      await endSession();
+      mine = { items: [], filter: 'all', query: '', selected: null, stale: false, generatedAt: '', loading: true };
+      renderMine();
+      if (!await loadMine()) {
+        leaveToSkills();
+        return;
       }
-      const withdraw = event.target.closest('[data-contribution-withdraw-pending]');
-      if (withdraw && await root.uiConfirmDanger({ message: tr('skills.contribute_withdraw_pending_confirm', 'Withdraw this pending submission?') })) {
-        const result = await root.cogseed.invoke('contribution.withdrawPending', { submission_id: withdraw.dataset.contributionWithdrawPending });
-        if (!result?.ok) await root.uiAlert(result?.error?.message || tr('skills.contribute_action_failed', 'The action could not be completed.'));
-        else dialog.close('updated');
+      stopMinePoll();
+      // Refresh only while this page is foregrounded; leaving it stops polling.
+      minePoll = setInterval(() => {
+        if (!viewVisible('mine')) { stopMinePoll(); return; }
+        void loadMine();
+      }, MINE_POLL_MS);
+    } catch (error) {
+      await root.uiAlert(tr('skills.contribute_start_failed', 'Could not load contributions.'));
+      if (mine) leaveToSkills();
+    }
+  }
+
+  async function mineAction(action, key) {
+    const entry = mine?.items.find((item) => item.key === key);
+    if (action === 'resubmit') return chooseLocalSkill();
+    if (!entry) return undefined;
+    if (action === 'new-version') return chooseLocalSkill(entry.contentId, entry.origin || null);
+    if (action === 'withdraw-pending') {
+      if (!await root.uiConfirmDanger({ message: tr('skills.contribute_withdraw_pending_confirm', 'Withdraw this pending submission?') })) return undefined;
+      const result = await root.cogseed.invoke('contribution.withdrawPending', { submission_id: entry.submissionId });
+      if (!result?.ok) await root.uiAlert(result?.error?.message || tr('skills.contribute_action_failed', 'The action could not be completed.'));
+      else {
+        if (typeof root.uiToast === 'function') root.uiToast(tr('skills.contribute_withdrawn_toast', 'Pending submission withdrawn.'), { variant: 'success' });
+        await loadMine();
       }
-      const request = event.target.closest('[data-contribution-request-withdrawal]');
-      if (request) {
-        const understood = await root.uiConfirm({
-          message: tr('skills.contribute_withdrawal_notice', 'A withdrawal request takes effect only after governance review. The content remains published while pending.'),
-          okLabel: tr('common.continue', 'Continue'),
-        });
-        if (!understood) return;
-        const reason = await root.uiPrompt(tr('skills.contribute_withdrawal_reason', 'Explain why this published content should be withdrawn.'), '');
-        if (!reason) return;
-        const result = await root.cogseed.invoke('contribution.requestWithdrawal', { content_id: request.dataset.contributionRequestWithdrawal, reason });
-        if (!result?.ok) await root.uiAlert(result?.error?.message || tr('skills.contribute_action_failed', 'The action could not be completed.'));
-        else dialog.close('updated');
+      return undefined;
+    }
+    if (action === 'request-withdrawal') {
+      const understood = await root.uiConfirm({
+        message: tr('skills.contribute_withdrawal_notice', 'A withdrawal request takes effect only after governance review. The content remains published while pending.'),
+        okLabel: tr('common.continue', 'Continue'),
+      });
+      if (!understood) return undefined;
+      const reason = await root.uiPrompt(tr('skills.contribute_withdrawal_reason', 'Explain why this published content should be withdrawn.'), '');
+      if (!reason) return undefined;
+      const result = await root.cogseed.invoke('contribution.requestWithdrawal', { content_id: entry.contentId, reason });
+      if (!result?.ok) await root.uiAlert(result?.error?.message || tr('skills.contribute_action_failed', 'The action could not be completed.'));
+      else {
+        if (typeof root.uiToast === 'function') root.uiToast(tr('skills.contribute_withdrawal_requested_toast', 'Withdrawal request submitted; waiting for governance review.'), { variant: 'success' });
+        await loadMine();
       }
-      const history = event.target.closest('[data-contribution-withdrawal-history]');
-      if (history) {
-        const result = await root.cogseed.invoke('contribution.withdrawalHistory', { content_id: history.dataset.contributionWithdrawalHistory });
-        if (!result?.ok) {
-          await root.uiAlert(result?.error?.message || tr('skills.contribute_action_failed', 'The action could not be completed.'));
-          return;
-        }
-        const rows = Array.isArray(result.result?.items) ? result.result.items : [];
-        const historyBody = rows.length ? rows.map((row) => root.uiResourceCard({
-          title: tr('skills.contribute_withdrawal_record', 'Withdrawal request'),
-          description: [String(row.requested_at || ''), String(row.rejected_reason || row.reason || '')].filter(Boolean).join(' · '),
-          status: statusDescriptor(row.status, 'skills.contribute_withdrawal_state'),
-        })).join('') : root.uiEmptyState({ title: tr('skills.contribute_withdrawal_history_empty', 'No withdrawal requests') });
-        await modal({
-          title: tr('skills.contribute_withdrawal_history', 'Withdrawal history'),
-          bodyHtml: root.uiResourceGrid({ bodyHtml: historyBody }),
-          actions: [{ id: 'close', label: tr('common.close', 'Close') }],
-        });
+      return undefined;
+    }
+    if (action === 'withdrawal-history') {
+      const result = await root.cogseed.invoke('contribution.withdrawalHistory', { content_id: entry.contentId });
+      if (!result?.ok) {
+        await root.uiAlert(result?.error?.message || tr('skills.contribute_action_failed', 'The action could not be completed.'));
+        return undefined;
       }
-    });
-    // Refresh only while the foreground modal exists; closing it stops polling.
-    const foregroundRefresh = setTimeout(() => dialog.close('poll', 'programmatic'), 55_000);
-    const result = await dialog;
-    clearTimeout(foregroundRefresh);
-    if (result.value === 'refresh' || result.value === 'poll') await openMyContributions();
+      const rows = Array.isArray(result.result?.items) ? result.result.items : [];
+      const historyBody = rows.length ? rows.map((row) => root.uiResourceCard({
+        title: tr('skills.contribute_withdrawal_record', 'Withdrawal request'),
+        description: [String(row.requested_at || ''), String(row.rejected_reason || row.reason || '')].filter(Boolean).join(' · '),
+        status: statusDescriptor(row.status, 'skills.contribute_withdrawal_state'),
+      })).join('') : root.uiEmptyState({ title: tr('skills.contribute_withdrawal_history_empty', 'No withdrawal requests') });
+      await modal({
+        title: tr('skills.contribute_withdrawal_history', 'Withdrawal history'),
+        bodyHtml: root.uiResourceGrid({ bodyHtml: historyBody }),
+        actions: [{ id: 'close', label: tr('common.close', 'Close') }],
+      });
+    }
+    return undefined;
+  }
+
+  // ── Events ──
+
+  async function onClick(event) {
+    const target = event.target.closest('[data-hubc-action], [data-hubc-row]');
+    if (!target) return;
+    const action = target.dataset.hubcAction || 'select-row';
+    const key = target.dataset.hubcKey || target.dataset.hubcRow || '';
+    try {
+      if (action === 'back') leaveToSkills();
+      else if (action === 'complete-save') await saveComplete();
+      else if (action === 'cancel-check') session?.cancelCheck?.();
+      else if (action === 'recheck') await runCheck();
+      else if (action === 'select-file') selectFile(Number(target.dataset.hubcFileIndex));
+      else if (action === 'edit-draft') {
+        captureDeclarations();
+        seedDraft(session.state);
+        session.stage = 'complete';
+        renderContribute();
+      } else if (action === 'read-terms') await showTerms();
+      else if (action === 'submit') await submitContribution();
+      else if (action === 'cancel-submit') session?.cancelUpload?.();
+      else if (action === 'mine-refresh') {
+        mine.loading = true;
+        renderMine();
+        await loadMine();
+      } else if (action === 'select-row') {
+        mine.selected = key;
+        renderMineList();
+      } else await mineAction(action, key);
+    } catch (error) {
+      if (session) await failFlow(error);
+      else {
+        if (root.createLogger) root.createLogger('hub-contributions').warn('action failed', { error: String(error) });
+        await root.uiAlert(tr('skills.contribute_action_failed', 'The action could not be completed.'));
+      }
+    }
+  }
+
+  function onInput(event) {
+    if (event.target?.id === 'hubc-mine-search' && mine) {
+      mine.query = event.target.value || '';
+      renderMineList();
+      return;
+    }
+    if (session?.stage === 'preview') updateSubmit();
+  }
+
+  function onFilterClick(event) {
+    const filter = event.target.closest('[data-hubc-filter]');
+    if (!filter || !mine) return;
+    mine.filter = filter.dataset.hubcFilter;
+    renderMineList();
   }
 
   function mountMineAction() {
     const actions = document.querySelector('#skills-grid-view .skills-resource-toolbar-controls .header-actions');
     if (!actions || actions.querySelector('[data-contribution-mine]') || typeof root.uiButton !== 'function') return;
-    actions.insertAdjacentHTML('afterbegin', root.uiButton({ label: tr('skills.contribute_mine', 'My contributions'), size: 'sm', attrs: { 'data-contribution-mine': true } }));
+    const html = root.uiButton({ label: tr('skills.contribute_mine', 'My contributions'), size: 'sm', attrs: { 'data-contribution-mine': true } });
+    const more = actions.querySelector('#skills-more-btn');
+    if (more) more.insertAdjacentHTML('beforebegin', html);
+    else actions.insertAdjacentHTML('beforeend', html);
     actions.querySelector('[data-contribution-mine]').addEventListener('click', () => openMyContributions().catch(async () => {
       await root.uiAlert(tr('skills.contribute_start_failed', 'Could not load contributions.'));
     }));
   }
 
+  function bindViews() {
+    for (const kind of ['contribute', 'mine']) {
+      const host = hostOf(kind);
+      if (!host || host.dataset.hubcBound === 'true') continue;
+      host.dataset.hubcBound = 'true';
+      host.addEventListener('click', (event) => { void onClick(event); });
+      host.addEventListener('click', onFilterClick);
+      host.addEventListener('input', onInput);
+      host.addEventListener('change', onInput);
+    }
+  }
+
+  function onLanguageChange() {
+    const label = document.querySelector('[data-contribution-mine] .ui-button__label');
+    if (label) label.textContent = tr('skills.contribute_mine', 'My contributions');
+    if (session && viewVisible('contribute')) {
+      if (session.stage === 'complete') readComplete();
+      else captureDeclarations();
+      renderContribute();
+    }
+    if (mine && viewVisible('mine')) renderMine();
+  }
+
   root.startSkillContribution = startSkillContribution;
   root.openMyContributions = openMyContributions;
-  mountMineAction();
+  root.hideContributionViews = hideContributionViews;
+  if (typeof root.addEventListener === 'function') root.addEventListener('i18n-change', onLanguageChange);
+  if (typeof document !== 'undefined' && typeof document.getElementById === 'function') {
+    bindViews();
+    mountMineAction();
+  }
 })(window);
