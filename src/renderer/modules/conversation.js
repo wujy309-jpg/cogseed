@@ -5384,32 +5384,39 @@ function _hydrateRecallCitations(messageEl, cid, messageId) {
     const button = event.target?.closest?.('[data-recall-feedback]');
     if (!button || button.disabled) return;
     const feedback = button.dataset.recallFeedback;
-    if (!cid || !resolvedMessageId || (feedback !== 'positive' && feedback !== 'negative')) return;
-    if (host.dataset.feedbackBusy === '1' || host.dataset.feedbackSent === '1') return;
-    host.dataset.feedbackBusy = '1';
-    host.querySelectorAll('[data-recall-feedback]').forEach((item) => { item.disabled = true; });
+    // 逐行反馈（2026-10-03 待办#2）：按钮钉在自己行的资产上——反馈只记给用户
+    // 点的那条资产，不再连带同消息其他引用。没有资产指向的旧形态按钮直接忽略。
+    const assetId = String(button.dataset.recallAssetId || '');
+    if (!cid || !resolvedMessageId || !assetId || (feedback !== 'positive' && feedback !== 'negative')) return;
+    const row = button.closest('[data-recall-asset-id]');
+    if (row?.dataset.feedbackBusy === '1' || row?.dataset.feedbackSent === '1') return;
+    row.dataset.feedbackBusy = '1';
+    row.querySelectorAll('[data-recall-feedback]').forEach((item) => { item.disabled = true; });
     try {
       const result = await window.cogseed.invoke('recall.usage.feedback', {
         cid,
         messageId: resolvedMessageId,
         feedback,
+        assetId,
       });
       if (!result?.ok) throw new Error(result?.error || 'Recall feedback failed');
       // 负反馈后认知资产面板的刷新不再走 window CustomEvent（2026-09-27
       // 刷新机制重写）：主进程写回执时经 recall store 广播 cognition:changed
       // （asset-usage-receipts → timeline 区块），面板订阅中枢自己重拉。
-      host.dataset.feedbackSent = '1';
-      host.dataset.feedback = feedback;
-      host.classList.add('is-feedback-sent');
-      const status = host.querySelector('[data-recall-feedback-status]');
+      row.dataset.feedbackSent = '1';
+      row.classList.add('is-feedback-sent');
+      const sent = new Set(String(host.dataset.feedbackAssets || '').split(',').filter(Boolean));
+      sent.add(assetId);
+      host.dataset.feedbackAssets = [...sent].join(',');
+      const status = row.querySelector('[data-recall-feedback-status]');
       const key = 'chat.recall.feedback_thanks';
       const value = typeof t === 'function' ? t(key) : key;
       if (status) status.textContent = value && value !== key ? value : 'Thanks for the feedback';
     } catch (error) {
-      host.querySelectorAll('[data-recall-feedback]').forEach((item) => { item.disabled = false; });
+      row.querySelectorAll('[data-recall-feedback]').forEach((item) => { item.disabled = false; });
       if (typeof uiAlert === 'function') await uiAlert((error && error.message) || String(error));
     } finally {
-      host.dataset.feedbackBusy = '0';
+      row.dataset.feedbackBusy = '0';
     }
   });
   // 头部带 role="button"：键盘等效入口（Enter/Space 翻转折叠），忽略 IME 组合期。

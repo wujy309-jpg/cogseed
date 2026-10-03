@@ -9,6 +9,9 @@ export interface RecordRecallMessageFeedbackInput {
   cid: string;
   messageId: string;
   feedback: RecallMessageFeedback;
+  /** 定向到具体资产：只对这条消息里该资产的引用记账（流水、contradicted
+   *  收据、暂停建议三环同口径收窄），不再连带同消息的其他引用。 */
+  assetId?: string;
 }
 
 export interface RecordRecallMessageFeedbackResult {
@@ -55,6 +58,7 @@ export async function recordRecallMessageFeedback(
 ): Promise<RecordRecallMessageFeedbackResult> {
   if (!safeId(input.cid) || !safeId(input.messageId)) throw new Error('invalid Recall feedback message');
   if (input.feedback !== 'positive' && input.feedback !== 'negative') throw new Error('invalid Recall feedback value');
+  if (input.assetId !== undefined && !safeId(input.assetId)) throw new Error('invalid Recall feedback asset');
 
   const messages = await readJsonl<GroupMessage>(conversationMessageReadFile(userId, input.cid), 100_000);
   const message = [...messages].reverse().find((item) => item?.id === input.messageId);
@@ -66,6 +70,15 @@ export async function recordRecallMessageFeedback(
   if (message.recall_citations.length > 12 || !message.recall_citations.every(isCitation)) {
     throw new Error('assistant message contains malformed Recall citations');
   }
+  // 反馈范围（2026-10-03 待办#2）：定向反馈只作用于目标资产的引用；未定向
+  // 时保留整条消息的旧口径（全部引用）。定向到不在引用里的资产直接拒绝，
+  // 不静默记到别的资产上。
+  const targets = input.assetId
+    ? message.recall_citations.filter((citation) => citation.asset_id === input.assetId)
+    : message.recall_citations;
+  if (input.assetId && !targets.length) {
+    throw new Error('Recall feedback asset is not cited by this message');
+  }
 
   const outcome = `feedback_${input.feedback}`;
   const taskRunId = typeof message.turn_id === 'string' && safeId(message.turn_id)
@@ -73,7 +86,7 @@ export async function recordRecallMessageFeedback(
     : message.id;
   const existing = await listRecallUsage(userId);
   const records: RecallUsageRecord[] = [];
-  for (const citation of message.recall_citations) {
+  for (const citation of targets) {
     const duplicate = existing.some((record) => (
       record.messageId === message.id
       && record.assetId === citation.asset_id
@@ -102,7 +115,7 @@ export async function recordRecallMessageFeedback(
       const { listInjectionReceipts } = await import('./injection-receipt');
       const { recordAssetUsageReceipt } = await import('./asset-usage-receipt');
       const injections = await listInjectionReceipts(userId, taskRunId);
-      for (const citation of message.recall_citations) {
+      for (const citation of targets) {
         const injection = injections.find((receipt) => (
           receipt.assetId === citation.asset_id
           && receipt.assetVersion === citation.version
@@ -129,7 +142,7 @@ export async function recordRecallMessageFeedback(
     try {
       const allUsage = await listRecallUsage(userId);
       const { recommendAbilityAssetAction } = await import('./asset-service');
-      for (const citation of message.recall_citations) {
+      for (const citation of targets) {
         const negatives = allUsage.filter((record) => (
           record.assetId === citation.asset_id && record.outcome === 'feedback_negative'
         )).length;
@@ -146,7 +159,7 @@ export async function recordRecallMessageFeedback(
   }
   return {
     feedback: input.feedback,
-    citationCount: message.recall_citations.length,
+    citationCount: targets.length,
     recordedCount: records.length,
     records,
   };

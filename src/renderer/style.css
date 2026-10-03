@@ -23657,6 +23657,9 @@ body:has(#panel-settings.active) .main-top-actions {
   color: var(--muted);
   font-size: var(--font-size-1);
 }
+/* 逐行反馈（2026-10-03 待办#2）：按钮推到行尾，已反馈的行只留感谢态。 */
+.chat-recall-feedback-row { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; }
+.chat-recall-citation.is-feedback-sent .chat-recall-feedback-row .chat-recall-feedback-btn { display: none; }
 .chat-recall-citations.is-feedback-sent .chat-recall-feedback-btn { opacity: 0.55; pointer-events: none; }
 
 /* 折叠（2026-09-29 二轮）：头部即点击热区（cursor/悬停反馈在这层），箭头只是

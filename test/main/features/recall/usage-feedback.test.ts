@@ -196,4 +196,95 @@ describe('Recall message usage feedback', () => {
     // 建议非停用：治理状态仍是 active，由人在治理页决定。
     expect(current.status).toBe('active');
   });
+
+  it('per-asset feedback records only the target asset; sibling citations stay untouched', async () => {
+    await appendMessage('cid-scope', {
+      id: 'msg-scope', ts: new Date().toISOString(), from: 'commander', to: ['user'],
+      turn_id: 'turn-scope', text: 'Answer',
+      recall_citations: [
+        { asset_id: 'asset-target', title: 'Target rule', type: 'rule', version: '1', scope: 'global', projection_id: 'proj-t', match_method: 'semantic' },
+        { asset_id: 'asset-bystander', title: 'Bystander rule', type: 'rule', version: '2', scope: 'global', projection_id: 'proj-b', match_method: 'semantic' },
+      ],
+    });
+    const injections = await import('../../../../src/main/features/recall/injection-receipt');
+    for (const [assetId, projectionId] of [['asset-target', 'proj-t'], ['asset-bystander', 'proj-b']] as const) {
+      await injections.recordInjectionReceipt('user-a', {
+        taskRunId: 'turn-scope', projectionId, assetId, assetVersion: assetId === 'asset-target' ? '1' : '2',
+        boundary: 'real', status: 'injected', messageId: 'msg-scope',
+      });
+    }
+    const feedback = await import('../../../../src/main/features/recall/usage-feedback-service');
+    const usage = await import('../../../../src/main/features/recall/usage-service');
+    const usageReceipts = await import('../../../../src/main/features/recall/asset-usage-receipt');
+
+    const result = await feedback.recordRecallMessageFeedback('user-a', {
+      cid: 'cid-scope', messageId: 'msg-scope', feedback: 'negative', assetId: 'asset-target',
+    });
+
+    expect(result).toMatchObject({ citationCount: 1, recordedCount: 1 });
+    expect(await usage.listRecallUsage('user-a', 'asset-target')).toHaveLength(1);
+    expect(await usage.listRecallUsage('user-a', 'asset-bystander')).toEqual([]);
+    const receipts = await usageReceipts.listAssetUsageReceipts('user-a', 'turn-scope');
+    expect(receipts.map((receipt) => receipt.assetId)).toEqual(['asset-target']);
+    expect(receipts[0]).toMatchObject({ status: 'contradicted' });
+    // 重复点同一资产的反馈幂等；隔壁资产依旧零记录。
+    const retry = await feedback.recordRecallMessageFeedback('user-a', {
+      cid: 'cid-scope', messageId: 'msg-scope', feedback: 'negative', assetId: 'asset-target',
+    });
+    expect(retry.recordedCount).toBe(0);
+    expect(await usage.listRecallUsage('user-a', 'asset-bystander')).toEqual([]);
+  });
+
+  it('per-asset feedback counts only that asset toward the pause-recommendation threshold', async () => {
+    const feedback = await import('../../../../src/main/features/recall/usage-feedback-service');
+    const injections = await import('../../../../src/main/features/recall/injection-receipt');
+    const candidates = await import('../../../../src/main/features/recall/candidate-service');
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    const target = await candidates.promoteRecallCandidate('user-a', (await candidates.saveRecallCandidate('user-a', {
+      judgment: 'Prefer tables.', summary: 'Table habit', suggestedType: 'personal',
+      suggestedScope: 'general', sourceRefs: [{ kind: 'execution', id: 'exec-s1' }],
+    })).id, { actor: 'user' });
+    const bystander = await candidates.promoteRecallCandidate('user-a', (await candidates.saveRecallCandidate('user-a', {
+      judgment: 'Prefer lists.', summary: 'List habit', suggestedType: 'personal',
+      suggestedScope: 'general', sourceRefs: [{ kind: 'execution', id: 'exec-s2' }],
+    })).id, { actor: 'user' });
+    for (const [messageId, turnId] of [['msg-s1', 'turn-s1'], ['msg-s2', 'turn-s2']] as const) {
+      await appendMessage('cid-scope2', {
+        id: messageId, ts: new Date().toISOString(), from: 'commander', to: ['user'],
+        turn_id: turnId, text: 'Answer',
+        recall_citations: [
+          { asset_id: target.asset.id, title: 'Target', type: 'personal', version: '1', scope: 'general', projection_id: 'proj-st', match_method: 'semantic' },
+          { asset_id: bystander.asset.id, title: 'Bystander', type: 'personal', version: '1', scope: 'general', projection_id: 'proj-sb', match_method: 'semantic' },
+        ],
+      });
+      await injections.recordInjectionReceipt('user-a', {
+        taskRunId: turnId, projectionId: 'proj-st', assetId: target.asset.id, assetVersion: '1',
+        boundary: 'real', status: 'injected', messageId,
+      });
+    }
+    // 同一资产两次定向负反馈才触发暂停建议； bystander 只是同消息出现，不累计。
+    await feedback.recordRecallMessageFeedback('user-a', { cid: 'cid-scope2', messageId: 'msg-s1', feedback: 'negative', assetId: target.asset.id });
+    expect((await assets.readAbilityAsset('user-a', target.asset.id)).recommendedAction).toBeUndefined();
+    await feedback.recordRecallMessageFeedback('user-a', { cid: 'cid-scope2', messageId: 'msg-s2', feedback: 'negative', assetId: target.asset.id });
+    expect((await assets.readAbilityAsset('user-a', target.asset.id)).recommendedAction).toBe('pause');
+    expect((await assets.readAbilityAsset('user-a', bystander.asset.id)).recommendedAction).toBeUndefined();
+  });
+
+  it('rejects per-asset feedback for an asset the message does not cite', async () => {
+    await appendMessage('cid-uncited', {
+      id: 'msg-uncited', ts: new Date().toISOString(), from: 'commander', to: ['user'],
+      turn_id: 'turn-uncited', text: 'Answer',
+      recall_citations: [{
+        asset_id: 'asset-a', title: 'Rule', type: 'rule', version: '1', scope: 'global',
+        projection_id: 'proj-a', match_method: 'semantic',
+      }],
+    });
+    const feedback = await import('../../../../src/main/features/recall/usage-feedback-service');
+    const usage = await import('../../../../src/main/features/recall/usage-service');
+
+    await expect(feedback.recordRecallMessageFeedback('user-a', {
+      cid: 'cid-uncited', messageId: 'msg-uncited', feedback: 'positive', assetId: 'asset-not-cited',
+    })).rejects.toThrow(/not cited/i);
+    expect(await usage.listRecallUsage('user-a', 'asset-a')).toEqual([]);
+  });
 });

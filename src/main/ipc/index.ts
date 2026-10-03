@@ -3506,13 +3506,16 @@ const invokeHandlers: Record<string, InvokeHandler> = {
       receipts: await listAssetUsageReceiptViews(ctx.userId, assetId, limit === undefined ? 50 : limit),
     };
   },
-  'recall.usage.feedback': async ({ cid, messageId, feedback } = {}, ctx) => {
+  'recall.usage.feedback': async ({ cid, messageId, feedback, assetId } = {}, ctx) => {
     if (!safeId(cid) || !safeId(messageId) || (feedback !== 'positive' && feedback !== 'negative')) {
       throw new Error('invalid Recall usage feedback');
     }
+    if (assetId !== undefined && !safeId(assetId)) throw new Error('invalid Recall usage feedback asset');
     return {
       ok: true,
-      result: await recallUsageFeedback.recordRecallMessageFeedback(ctx.userId, { cid, messageId, feedback }),
+      result: await recallUsageFeedback.recordRecallMessageFeedback(ctx.userId, {
+        cid, messageId, feedback, ...(assetId ? { assetId } : {}),
+      }),
     };
   },
 
