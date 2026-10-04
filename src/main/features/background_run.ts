@@ -82,6 +82,9 @@ export interface BackgroundRun {
   stop(): void;
   /** 窗口刚被隐藏时调用：每个 BackgroundRun 实例只提示一次（index.ts 只在启动时创建一次，因此等价于每个应用会话一次）。仅 Windows 生效。 */
   notifyHidden(): void;
+  /** 窗口是否可见（前台）。构造时视为可见：可见时状态行无意义，不轮询也不预读计数。
+   *  隐藏时立即取一次计数并启动轮询；重新显示时停表。由 index.ts 在 show/hide 时驱动。 */
+  setForeground(foreground: boolean): void;
 }
 
 /** 状态行文案；null 表示"未知"，调用方不得显示任何一行（绝不显示会误导的 0）。 */
@@ -112,6 +115,7 @@ function noopRun(): BackgroundRun {
     isAvailable: () => false,
     stop() { /* 没有托盘可销毁 */ },
     notifyHidden() { /* 没有托盘可提示 */ },
+    setForeground() { /* 没有托盘就没有轮询可开关 */ },
   };
 }
 
@@ -153,6 +157,9 @@ export function startBackgroundRun(deps: BackgroundRunDeps): BackgroundRun {
   let stopped = false;
   let seq = 0;
   let statusReadFailed = false;
+  // 构造时窗口是可见的；隐藏时才开表，重新显示就停表。
+  let foreground = true;
+  let stopRefresh: (() => void) | null = null;
 
   const menu = (): TrayMenuItemSpec[] => buildMenuItems({
     statusLabel: statusLabelFor(activeTaskCount),
@@ -189,36 +196,51 @@ export function startBackgroundRun(deps: BackgroundRunDeps): BackgroundRun {
     paint();
   };
 
-  // 构造期同样可能抛（setContextMenu / on(...) / startStatusRefresh 都是外部实现），
-  // 任何一步失败都必须拆掉半成品托盘并降级——否则 index.ts 会以为托盘可用，
-  // 进而把窗口藏到一个没有入口的进程里。
-  let stopRefresh: () => void = () => { /* 尚未启动 */ };
+  /** 开表；已开表或已停用时不重复开。轮询起不来是非致命的（托盘仍可用）。 */
+  const startTimer = (): void => {
+    if (stopped || stopRefresh) return;
+    try {
+      stopRefresh = deps.host.startStatusRefresh(() => { void refresh(); }, STATUS_REFRESH_MS);
+    } catch (err) {
+      // 状态行停在最近一次读取的结果上，但托盘本身仍然可用——不要因此降级整个托盘。
+      stopRefresh = null;
+      log.warn('tray refresh start failed', { error: errorMessage(err) });
+    }
+  };
+
+  /** 停表；幂等。停止函数是外部实现，抛错只告警，绝不影响销毁托盘。 */
+  const stopTimer = (): void => {
+    if (!stopRefresh) return;
+    const stop = stopRefresh;
+    stopRefresh = null;
+    try { stop(); } catch (err) { log.warn('tray refresh stop failed', { error: errorMessage(err) }); }
+  };
+
+  // 构造期同样可能抛（setContextMenu / on(...) 都是外部实现），任何一步失败都必须
+  // 拆掉半成品托盘并降级——否则 index.ts 会以为托盘可用，进而把窗口藏到一个没有
+  // 入口的进程里。轮询不在构造期启动：窗口可见时它没有意义（见 setForeground）。
   try {
     if (isMac) {
       // macOS：设置 contextMenu 后"点击即展开菜单"由系统接管，不绑单击呼出。
+      // 这次 setMenu 必须留在构造期：菜单不能在点击时才构建。
       deps.host.setMenu(tray, menu());
     } else {
       deps.host.onLeftClick(tray, () => { if (!stopped) deps.showMainWindow(); });
-      // Windows：每次右键都重建菜单。计数由下面的轮询保持最新，因此这里能立刻拿到值。
+      // Windows：每次右键都重建菜单。计数由隐藏期间的轮询保持最新，因此这里能立刻拿到值。
       deps.host.onRightClick(tray, () => { if (stopped) return; deps.host.popUpMenu(tray, menu()); });
     }
-    stopRefresh = deps.host.startStatusRefresh(() => { void refresh(); }, STATUS_REFRESH_MS);
   } catch (err) {
     log.warn('tray wiring failed; background run stays disabled', { error: errorMessage(err) });
     try { deps.host.destroy(tray); } catch { /* 拆不掉也不能让启动失败 */ }
     return noopRun();
   }
 
-  // 两个平台都轮询：Windows 的 tooltip 是悬停可见的，不轮询就会永远停在启动时的值。
-  // Windows 的右键菜单仍然每次重建，只是数据来自最近一次轮询结果。
-  void refresh();
-
   const run: BackgroundRun = {
     isAvailable: () => true,
     stop(): void {
       if (stopped) return;
       stopped = true;
-      try { stopRefresh(); } catch (err) { log.warn('tray refresh stop failed', { error: errorMessage(err) }); }
+      stopTimer();
       try { deps.host.destroy(tray); } catch (err) { log.warn('tray destroy failed', { error: errorMessage(err) }); }
       if (active === run) active = null;
     },
@@ -231,6 +253,18 @@ export function startBackgroundRun(deps: BackgroundRunDeps): BackgroundRun {
       } catch (err) {
         log.warn('tray balloon failed', { error: errorMessage(err) });
       }
+    },
+    setForeground(next: boolean): void {
+      if (stopped || next === foreground) return; // 已停用或状态未变：什么都不碰
+      foreground = next;
+      if (!next) {
+        // 两个平台都在隐藏期间轮询：Windows 的 tooltip 是悬停可见的，macOS 的
+        // 菜单不能惰性构建。隐藏的第一时间先读一次，随后交给定时器。
+        void refresh();
+        startTimer();
+        return;
+      }
+      stopTimer();
     },
   };
   active = run;

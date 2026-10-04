@@ -379,8 +379,14 @@ function createWindow(): BrowserWindow {
     })) return;
     event.preventDefault();
     win.hide();
+    backgroundRun?.setForeground(false);
     backgroundRun?.notifyHidden();
   });
+
+  // 托盘、任务栏、dock 或 showMainWindow() 把窗口叫回来时停表：窗口可见时状态行
+  // 没有意义，也没有必要每 5 s 读一次运行时状态。模块初始即前台，所以启动时这
+  // 一次 show 是空操作。
+  win.on('show', () => backgroundRun?.setForeground(true));
 
   windowState.watchWindowState(win);
   if (restored.isMaximized) win.maximize();

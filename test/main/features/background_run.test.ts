@@ -58,6 +58,7 @@ interface HostCalls {
   balloons: Array<{ title: string; content: string }>;
   destroyed: number;
   refreshIntervalMs: number | null;
+  refreshStarts: number;
   refreshStops: number;
   refreshFlush: (() => void) | null;
   leftClick: (() => void) | null;
@@ -67,7 +68,7 @@ interface HostCalls {
 function makeHost(overrides: Partial<TrayHost> = {}): { host: TrayHost; calls: HostCalls } {
   const calls: HostCalls = {
     menus: [], poppedMenus: [], tooltips: [], balloons: [],
-    destroyed: 0, refreshIntervalMs: null, refreshStops: 0, refreshFlush: null,
+    destroyed: 0, refreshIntervalMs: null, refreshStarts: 0, refreshStops: 0, refreshFlush: null,
     leftClick: null, rightClick: null,
   };
   const host: TrayHost = {
@@ -81,6 +82,7 @@ function makeHost(overrides: Partial<TrayHost> = {}): { host: TrayHost; calls: H
     displayBalloon: (_tray, title, content) => { calls.balloons.push({ title, content }); },
     destroy: () => { calls.destroyed += 1; },
     startStatusRefresh: (flush, intervalMs) => {
+      calls.refreshStarts += 1;
       calls.refreshIntervalMs = intervalMs;
       calls.refreshFlush = flush;
       return () => { calls.refreshStops += 1; };
@@ -139,11 +141,93 @@ describe('buildMenuItems', () => {
 });
 
 describe('startBackgroundRun on win32', () => {
+  it.each(['win32', 'darwin'] as const)(
+    'on %s reads nothing and starts no timer while the window stays visible',
+    async (platform) => {
+      const { host, calls } = makeHost();
+      const countSpy = vi.fn(async () => 0);
+      startBackgroundRun(makeDeps(host, { platform, getActiveTaskCount: countSpy }));
+      await settle();
+
+      // 可见时状态行没有意义：不读运行时状态（因而不会初始化运行时控制器），也不开表。
+      expect(countSpy).not.toHaveBeenCalled();
+      expect(calls.refreshIntervalMs).toBeNull();
+      expect(calls.refreshStarts).toBe(0);
+      expect(calls.tooltips).toHaveLength(0);
+    },
+  );
+
+  it('reads once on hide, stops polling on show, and starts a new timer on the next hide', async () => {
+    const { host, calls } = makeHost();
+    const countSpy = vi.fn(async () => 2);
+    const run = startBackgroundRun(makeDeps(host, { getActiveTaskCount: countSpy }));
+
+    run.setForeground(false); // 第一次隐藏：立即读一次并开表
+    await settle();
+    expect(countSpy).toHaveBeenCalledTimes(1);
+    expect(calls.refreshStarts).toBe(1);
+    expect(calls.refreshIntervalMs).toBe(STATUS_REFRESH_MS);
+    expect(calls.tooltips.at(-1)).toContain('tray.status.running');
+
+    run.setForeground(false); // 已经在后台：重复调用不重复读、不重复开表
+    expect(countSpy).toHaveBeenCalledTimes(1);
+    expect(calls.refreshStarts).toBe(1);
+
+    run.setForeground(true); // 重新显示：停表
+    expect(calls.refreshStops).toBe(1);
+
+    run.setForeground(true); // 已经在前台：无操作
+    expect(calls.refreshStops).toBe(1);
+
+    run.setForeground(false); // 再次隐藏：重新读一次并开新表
+    await settle();
+    expect(countSpy).toHaveBeenCalledTimes(2);
+    expect(calls.refreshStarts).toBe(2);
+  });
+
+  it('touches nothing when setForeground runs after stop', async () => {
+    const { host, calls } = makeHost();
+    const countSpy = vi.fn(async () => 1);
+    const run = startBackgroundRun(makeDeps(host, { getActiveTaskCount: countSpy }));
+    run.setForeground(false);
+    await settle();
+    run.stop();
+    const readsAtStop = countSpy.mock.calls.length;
+    const startsAtStop = calls.refreshStarts;
+    const stopsAtStop = calls.refreshStops;
+
+    run.setForeground(true);
+    run.setForeground(false);
+    await settle();
+
+    expect(countSpy).toHaveBeenCalledTimes(readsAtStop);
+    expect(calls.refreshStarts).toBe(startsAtStop);
+    expect(calls.refreshStops).toBe(stopsAtStop);
+    expect(calls.destroyed).toBe(1);
+  });
+
+  it('stays available when the refresh timer cannot be started', async () => {
+    const { host, calls } = makeHost({ startStatusRefresh: () => { throw new Error('no timer'); } });
+    const run = startBackgroundRun(makeDeps(host));
+    await settle();
+
+    expect(() => run.setForeground(false)).not.toThrow(); // 起表失败不得抛给 index.ts
+    await settle();
+    expect(run.isAvailable()).toBe(true);
+    expect(calls.refreshIntervalMs).toBeNull();
+    expect(loggerSpy.warn).toHaveBeenCalled();
+
+    run.setForeground(true); // 停表在"未开表"状态下也必须安全
+    run.stop();
+    expect(calls.destroyed).toBe(1);
+  });
+
   it('shows the window on left click and rebuilds the menu on right click', async () => {
     const { host, calls } = makeHost();
     const countSpy = vi.fn(async () => 0);
     const deps = makeDeps(host, { getActiveTaskCount: countSpy });
-    startBackgroundRun(deps);
+    const run = startBackgroundRun(deps);
+    run.setForeground(false); // 隐藏后才开始轮询
     await settle();
 
     expect(calls.leftClick).toBeTypeOf('function');
@@ -173,7 +257,8 @@ describe('startBackgroundRun on win32', () => {
 
   it('hides the status row when the count is unknown', async () => {
     const { host, calls } = makeHost();
-    startBackgroundRun(makeDeps(host, { getActiveTaskCount: async () => null }));
+    const run = startBackgroundRun(makeDeps(host, { getActiveTaskCount: async () => null }));
+    run.setForeground(false);
     await settle();
 
     expect(calls.tooltips.at(-1)).toBe('tray.tooltip');
@@ -183,9 +268,10 @@ describe('startBackgroundRun on win32', () => {
 
   it('hides the status row (and warns) when the count lookup throws', async () => {
     const { host, calls } = makeHost();
-    startBackgroundRun(makeDeps(host, {
+    const run = startBackgroundRun(makeDeps(host, {
       getActiveTaskCount: async () => { throw new Error('boom'); },
     }));
+    run.setForeground(false);
     await settle();
 
     calls.rightClick?.();
@@ -205,7 +291,8 @@ describe('startBackgroundRun on win32', () => {
   it('re-reads the count on each refresh tick', async () => {
     const { host, calls } = makeHost();
     const countSpy = vi.fn(async () => 0);
-    startBackgroundRun(makeDeps(host, { getActiveTaskCount: countSpy }));
+    const run = startBackgroundRun(makeDeps(host, { getActiveTaskCount: countSpy }));
+    run.setForeground(false);
     await settle();
     expect(countSpy).toHaveBeenCalledTimes(1);
     expect(calls.tooltips.at(-1)).toContain('tray.status.idle');
@@ -231,6 +318,7 @@ describe('startBackgroundRun on win32', () => {
     let release: (value: number) => void = () => { /* 稍后赋值 */ };
     const pending = new Promise<number>((resolve) => { release = resolve; });
     const run = startBackgroundRun(makeDeps(host, { getActiveTaskCount: () => pending }));
+    run.setForeground(false); // 读取还在飞
     run.stop(); // 读取还没回来
     const tooltipsAfterStop = calls.tooltips.length;
     release(5);
@@ -261,9 +349,10 @@ describe('startBackgroundRun on win32', () => {
   it('keeps the newest count when two reads resolve out of order', async () => {
     const { host, calls } = makeHost();
     const resolvers: Array<(value: number | null) => void> = [];
-    startBackgroundRun(makeDeps(host, {
+    const run = startBackgroundRun(makeDeps(host, {
       getActiveTaskCount: () => new Promise<number | null>((resolve) => { resolvers.push(resolve); }),
     }));
+    run.setForeground(false); // 隐藏触发首次读取
 
     resolvers[0](0); // 首次读取返回：idle
     await settle();
@@ -293,7 +382,8 @@ describe('startBackgroundRun on win32', () => {
   it('warns once, not on every tick, when the count keeps failing', async () => {
     const { host, calls } = makeHost();
     const countSpy = vi.fn(async () => { throw new Error('down'); });
-    startBackgroundRun(makeDeps(host, { getActiveTaskCount: countSpy }));
+    const run = startBackgroundRun(makeDeps(host, { getActiveTaskCount: countSpy }));
+    run.setForeground(false);
     await settle();
     expect(countSpy).toHaveBeenCalledTimes(1);
     expect(loggerSpy.warn).toHaveBeenCalledTimes(1);
@@ -316,15 +406,16 @@ describe('startBackgroundRun on win32', () => {
 });
 
 describe('startBackgroundRun on darwin', () => {
-  it('sets the context menu and refreshes on a timer instead of polling menu clicks', async () => {
+  it('sets the context menu eagerly and polls the status on a timer once hidden', async () => {
     const { host, calls } = makeHost();
-    startBackgroundRun(makeDeps(host, { platform: 'darwin' }));
+    const run = startBackgroundRun(makeDeps(host, { platform: 'darwin', getActiveTaskCount: async () => 0 }));
+    run.setForeground(false);
     await settle();
 
-    // 启动时先立刻设一次菜单（计数未知 → 只有显示/退出两项），首次计数读回后
-    // 再由 paint() 重建一次（这次带上状态行）。这里断言"最后一次是对的"，
+    // 构造时先立刻设一次菜单（计数未知 → 只有显示/退出两项），隐藏后首次计数
+    // 读回时再由 paint() 重建一次（这次带上状态行）。这里断言"最后一次是对的"，
     // 不锁死 setMenu 的调用次数。
-    expect(calls.menus.length).toBeGreaterThanOrEqual(1);
+    expect(calls.menus.length).toBeGreaterThanOrEqual(2);
     expect(calls.menus.at(-1)!.map((item) => item.id)).toEqual(['show', 'status', 'quit']);
     expect(calls.refreshIntervalMs).toBe(STATUS_REFRESH_MS);
     expect(calls.leftClick).toBeNull();
@@ -355,8 +446,10 @@ describe('startBackgroundRun on darwin', () => {
   it('stops the refresh timer on stop', async () => {
     const { host, calls } = makeHost();
     const run = startBackgroundRun(makeDeps(host, { platform: 'darwin' }));
+    run.setForeground(false);
     await settle();
     run.stop();
+    expect(calls.refreshStarts).toBe(1);
     expect(calls.refreshStops).toBe(1);
     expect(calls.destroyed).toBe(1);
   });
@@ -417,6 +510,7 @@ describe('startBackgroundRun degradation', () => {
       startStatusRefresh: () => () => { throw new Error('no clear'); },
     });
     const run = startBackgroundRun(makeDeps(host));
+    run.setForeground(false);
     await settle();
     run.stop();
     expect(calls.destroyed).toBe(1);
