@@ -83,7 +83,9 @@ export interface BackgroundRun {
   /** 窗口刚被隐藏时调用：每个 BackgroundRun 实例只提示一次（index.ts 只在启动时创建一次，因此等价于每个应用会话一次）。仅 Windows 生效。 */
   notifyHidden(): void;
   /** 窗口是否可见（前台）。构造时视为可见：可见时状态行无意义，不轮询也不预读计数。
-   *  隐藏时立即取一次计数并启动轮询；重新显示时停表。由 index.ts 在 show/hide 时驱动。 */
+   *  隐藏时立即取一次计数并启动轮询；重新显示时停表，并把隐藏期间读到的计数作废
+   *  （停表后它不会再被刷新，留着就是冻结的误导值）。由 index.ts 在
+   *  show/hide/minimize/restore 时驱动。 */
   setForeground(foreground: boolean): void;
 }
 
@@ -265,6 +267,11 @@ export function startBackgroundRun(deps: BackgroundRunDeps): BackgroundRun {
         return;
       }
       stopTimer();
+      // 恢复可见后不再轮询，所以必须把上一轮读到的计数作废：否则 tooltip 会一直
+      // 停在隐藏期间读到的数字。过期值和错误值一样会误导，未知状态才是诚实的。
+      seq += 1;                 // 丢弃可能还在飞的读取
+      activeTaskCount = null;   // 未知 → statusLabelFor(null) 隐藏状态行
+      paint();
     },
   };
   active = run;

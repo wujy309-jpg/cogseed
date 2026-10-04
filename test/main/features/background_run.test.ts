@@ -175,14 +175,54 @@ describe('startBackgroundRun on win32', () => {
 
     run.setForeground(true); // 重新显示：停表
     expect(calls.refreshStops).toBe(1);
+    // 可见端状态必须是"未知"：停表后隐藏期读到的 2 不会再被刷新，留着就是冻结值。
+    expect(calls.tooltips.at(-1)).toBe('tray.tooltip');
+    const tooltipsAfterShow = calls.tooltips.length;
 
     run.setForeground(true); // 已经在前台：无操作
     expect(calls.refreshStops).toBe(1);
+    expect(calls.tooltips).toHaveLength(tooltipsAfterShow);
 
     run.setForeground(false); // 再次隐藏：重新读一次并开新表
     await settle();
     expect(countSpy).toHaveBeenCalledTimes(2);
     expect(calls.refreshStarts).toBe(2);
+    expect(calls.tooltips.at(-1)).toContain('tray.status.running');
+  });
+
+  it('clears the stale count when the window comes back', async () => {
+    const { host, calls } = makeHost();
+    const countSpy = vi.fn(async () => 3);
+    const run = startBackgroundRun(makeDeps(host, { getActiveTaskCount: countSpy }));
+    run.setForeground(false); // 隐藏：读到 3 并画到托盘上
+    await settle();
+    expect(countSpy).toHaveBeenCalledTimes(1);
+    expect(calls.tooltips.at(-1)).toContain('tray.status.running');
+
+    run.setForeground(true); // 窗口回来了：轮询停下，这个 3 再也不会被刷新
+    expect(calls.refreshStops).toBe(1);
+    expect(countSpy).toHaveBeenCalledTimes(1); // 可见时不补读，只作废
+    expect(calls.tooltips.at(-1)).toBe('tray.tooltip'); // 回到"未知"，不是冻结的 3
+
+    calls.rightClick?.(); // 状态行同样必须消失
+    expect(calls.poppedMenus.at(-1)!.map((item) => item.id)).toEqual(['show', 'quit']);
+  });
+
+  it('discards a read that lands after the window came back', async () => {
+    const { host, calls } = makeHost();
+    const resolvers: Array<(value: number | null) => void> = [];
+    const run = startBackgroundRun(makeDeps(host, {
+      getActiveTaskCount: () => new Promise<number | null>((resolve) => { resolvers.push(resolve); }),
+    }));
+    run.setForeground(false); // 隐藏触发首次读取：结果还在飞
+    run.setForeground(true);  // 窗口已经回来了，这次读取必须作废
+    const tooltipsAfterShow = calls.tooltips.length;
+    expect(calls.tooltips.at(-1)).toBe('tray.tooltip');
+
+    resolvers[0](3); // 迟到的结果不能把计数画到已经可见的托盘上
+    await settle();
+    expect(calls.tooltips).toHaveLength(tooltipsAfterShow);
+    expect(calls.tooltips.at(-1)).toBe('tray.tooltip');
   });
 
   it('touches nothing when setForeground runs after stop', async () => {

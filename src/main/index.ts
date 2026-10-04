@@ -376,8 +376,9 @@ function createWindow(): BrowserWindow {
   win.on('query-session-end', () => { isQuitting = true; });
   win.on('session-end', () => { isQuitting = true; });
 
-  // 关闭按钮拦截：只剩"隐藏到托盘"这一种改写。最小化按钮完全不动（本特性
-  // 不接管最小化）。注意 `event.preventDefault()` 只阻止"关闭窗口"这个默认
+  // 关闭按钮拦截：只剩"隐藏到托盘"这一种改写。最小化按钮本身不被改写（这里不
+  // preventDefault、也不 hide），只是被当成"进入后台"观察——见下面 minimize/restore
+  // 两个监听器。注意 `event.preventDefault()` 只阻止"关闭窗口"这个默认
   // 动作，不会阻止本窗口其它 `close` 监听器——下面 `watchWindowState` 注册的
   // 几何保存 `saveNow` 照常执行，所以"隐藏而非关闭"这条路径下窗口位置尺寸
   // 仍然持久化，不要为了它去跳过 hide。
@@ -401,10 +402,14 @@ function createWindow(): BrowserWindow {
     }
   });
 
-  // 托盘、任务栏、dock 或 showMainWindow() 把窗口叫回来时停表：窗口可见时状态行
-  // 没有意义，也没有必要每 5 s 读一次运行时状态。模块初始即前台，所以启动时这
+  // 托盘、任务栏、dock 或 showMainWindow() 把窗口叫回来时停表并作废计数：窗口可见时
+  // 状态行没有意义，也没有必要每 5 s 读一次运行时状态。模块初始即前台，所以启动时这
   // 一次 show 是空操作。
   win.on('show', () => backgroundRun?.setForeground(true));
+  // 最小化是最常见的"把应用放到一边"，它只发 `minimize` 不发 `hide`：不在这里切到后台
+  // 状态，窗口就会一边显示"前台、不轮询"、一边真的不在前台，托盘计数从此冻结。
+  win.on('minimize', () => backgroundRun?.setForeground(false));
+  win.on('restore', () => backgroundRun?.setForeground(true));
 
   windowState.watchWindowState(win);
   if (restored.isMaximized) win.maximize();
