@@ -2000,11 +2000,11 @@ if (!gotLock) {
   app.on('before-quit', async (e) => {
     // 必须在两个早退分支之前置位：App 退出流程一启动，close 就不得再被拦成隐藏。
     isQuitting = true;
-    if (shutdownFlushed) {
-      backgroundRun?.stop();
-      backgroundRun = null;
-      return;
-    }
+    // 退出流程一开始就把托盘收掉：quit 已在路上，留一个"看起来还活着"的托盘点既没有意义，
+    // 也会在 Windows 留下残影（`stop()` 幂等，重复调用无害）。
+    backgroundRun?.stop();
+    backgroundRun = null;
+    if (shutdownFlushed) return;
     e.preventDefault();
     if (shutdownPromise) return shutdownPromise;
     shutdownPromise = Promise.resolve().then(async () => {
@@ -2021,8 +2021,6 @@ if (!gotLock) {
         import('./features/p3394_bridge/external-gateways').then((m) => m.stopAllExternalGateways()),
       ]);
       shutdownFlushed = true;
-      backgroundRun?.stop();
-      backgroundRun = null;
       app.quit();
     });
     await shutdownPromise;
