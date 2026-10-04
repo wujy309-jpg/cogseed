@@ -53,6 +53,10 @@ describe('014 anti-drift（specs/014 T024）', () => {
       'po.data.export',
       'po.data.importPreview',
       'po.data.importApply',
+      // 2026-09-30 托盘常驻：关闭到托盘的偏好通道（7c04fded 加入 handler 表，
+      // 按字母序排在 po.* 之后、recall.* 之前）。
+      'prefs.getCloseToTray',
+      'prefs.setCloseToTray',
       // 2026-09-30 合并 origin/develop（#389 KB 另存本地）：转写清理版
       // 「另存到本地文件夹…」的落盘通道，随 develop 正常演进登记。
       'library.writeTextToLocal',

@@ -312,6 +312,15 @@ function toTrayTemplate(items: TrayMenuItemSpec[]): MenuItemConstructorOptions[]
 }
 
 function createWindow(): BrowserWindow {
+  // 幂等：已经有存活的主窗口就直接把它显示出来。second-instance 在 app ready
+  // 之后、启动流程建窗之前（boot 自检 + 版本迁移期间）会经 showMainWindow()
+  // 建出窗口 A，随后启动流程再调一次本函数——没有这段就会建出窗口 B 并覆盖
+  // mainWindow，泄漏第二个渲染进程、第二个音频权限门和一个再也够不着的孤儿窗口。
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show();
+    mainWindow.focus();
+    return mainWindow;
+  }
   const dev = !app.isPackaged || !!process.env.COGSEED_ONBOARDING_ALWAYS; // Force dev mode when testing onboarding
   const restored = windowState.restoreWindowState();
   // This is deliberately not a `persist:` partition. The official remote
@@ -359,9 +368,12 @@ function createWindow(): BrowserWindow {
   });
 
   // Windows 关机/注销不会经过 `app.quit()`，所以 `before-quit` 不是唯一上游，
-  // 这里单独兜底一次。注意 `session-end` 是 BrowserWindow 的事件（`@platform
-  // win32`），Electron 没有 `app.on('session-end')`；主窗口就是被 close 拦截
-  // 的那个窗口，因此挂在它上面覆盖相同范围。
+  // 这里单独兜底。两个事件都绑：`query-session-end` 是可取消的更早信号，
+  // `session-end` 一旦触发就无法阻止、也不保证与 `close` 的先后顺序，谁先到
+  // 都能把 isQuitting 置位，close 才不会在那之后被拦成隐藏。注意二者都是
+  // BrowserWindow 的事件（`@platform win32`），Electron 没有 `app.on('session-end')`；
+  // 主窗口就是被 close 拦截的那个窗口，因此挂在它上面覆盖相同范围。
+  win.on('query-session-end', () => { isQuitting = true; });
   win.on('session-end', () => { isQuitting = true; });
 
   // 关闭按钮拦截：只剩"隐藏到托盘"这一种改写。最小化按钮完全不动（本特性
@@ -378,9 +390,15 @@ function createWindow(): BrowserWindow {
       trayAvailable: backgroundRun?.isAvailable() ?? false,
     })) return;
     event.preventDefault();
-    win.hide();
-    backgroundRun?.setForeground(false);
-    backgroundRun?.notifyHidden();
+    try {
+      win.hide();
+      backgroundRun?.setForeground(false);
+      backgroundRun?.notifyHidden();
+    } catch {
+      // 隐藏失败绝不能留下一个"已被 veto、还开着、又再也不会被显示"的窗口：
+      // 直接销毁它，让这次关闭照常完成。
+      win.destroy();
+    }
   });
 
   // 托盘、任务栏、dock 或 showMainWindow() 把窗口叫回来时停表：窗口可见时状态行
@@ -672,6 +690,9 @@ function registerIpc(): void {
       });
       child.unref();
       log.info('relaunch via shell script', { script });
+      // `app.exit(0)` 绕过 `before-quit`，托盘不会被销毁；Windows 会因此留下一个
+      // 幽灵通知区图标，直到用户把鼠标划过去。先手动拆掉再退出。
+      backgroundRun?.stop();
       app.exit(0);
       return { ok: true };
     });
@@ -1546,10 +1567,13 @@ if (!gotLock) {
   // 已有一个 second-instance 监听，但它用 `getAllWindows()` 取窗口（可能抓到
   // wecom 分区弹窗）、没有窗口时直接返回；这里统一走 `showMainWindow()`。
   app.on('second-instance', () => {
-    // app ready 之前一个窗口都没有；此时若让 showMainWindow() 回退到
-    // createWindow()，BrowserWindow 构造会抛
-    // "Cannot create BrowserWindow before app is ready" 并终结主进程
-    // （双击图标时第二次启动很容易落在这一段）。启动流程随后自会建窗。
+    // `app.isReady()` 不是完整的护栏：ready 之后、启动流程末尾调 createWindow()
+    // 之前还隔着 boot 自检和版本迁移。提前 `if (!isReady) return` 只是因为
+    // ready 之前一个窗口都没有，此时让 showMainWindow() 回退到 createWindow()
+    // 会抛 "Cannot create BrowserWindow before app is ready" 并终结主进程
+    // （双击图标时第二次启动很容易落在这一段）。ready 之后的那段空窗由
+    // createWindow() 的幂等性兜住：showMainWindow() 建出的窗口就是启动流程
+    // 随后会复用的同一个，不会出现第二个主窗口。
     if (!app.isReady()) return;
     showMainWindow();
   });
@@ -1618,45 +1642,70 @@ if (!gotLock) {
       openConversation: openConversationFromTaskNotification,
     });
     app.once('before-quit', stopTaskNotifications);
-    backgroundRun = startBackgroundRun({
-      platform: process.platform,
-      host: {
-        createIcon: () => {
-          // macOS 用彩色 png 缩到 16pt（不做 template image：彩色图设成
-          // template 会渲染成一整块黑）。Windows 直接用多尺寸 ico。
-          const file = process.platform === 'win32' ? 'icon.ico' : 'icon.png';
-          const image = nativeImage.createFromPath(path.join(paths.SRC_ROOT, 'resources', 'icons', file));
-          if (image.isEmpty()) return null;
-          return process.platform === 'win32' ? image : image.resize({ width: 16, height: 16 });
+    // 托盘只在 macOS/Windows 上启动：只有这两个平台有可用的呼出入口（Windows 的
+    // `right-click`、macOS 的 contextMenu；`popUpContextMenu` 本身也是 darwin/win32
+    // 限定）。Linux 上偏好默认是开的、`isAvailable()` 会返回 true，close 就会把
+    // 窗口藏到一个没有可用菜单的托盘后面——正是 shouldHideOnClose 要防的不可达状态。
+    // 其余平台保持 backgroundRun 为 null，close 处理器继续走今天的路径
+    // （trayAvailable=false → 不拦截）。无头 window station 的打包冒烟同理跳过。
+    if (!IS_PACKAGED_SMOKE && (process.platform === 'darwin' || process.platform === 'win32')) {
+      backgroundRun = startBackgroundRun({
+        platform: process.platform,
+        host: {
+          createIcon: () => {
+            // macOS 用彩色 png 缩到 16pt（不做 template image：彩色图设成
+            // template 会渲染成一整块黑）。Windows 直接用多尺寸 ico。
+            const file = process.platform === 'win32' ? 'icon.ico' : 'icon.png';
+            const image = nativeImage.createFromPath(path.join(paths.SRC_ROOT, 'resources', 'icons', file));
+            if (image.isEmpty()) return null;
+            return process.platform === 'win32' ? image : image.resize({ width: 16, height: 16 });
+          },
+          createTray: (icon) => new Tray(icon as NativeImage),
+          // 托盘可能已经被销毁（stop()、托盘菜单退出、系统回收 explorer 之后），
+          // 再碰原生对象会抛；主进程没有 unhandledRejection 兜底，所以这几个
+          // 写入型调用在 isDestroyed() 时直接 no-op。
+          setToolTip: (tray, text) => {
+            const native = tray as Tray;
+            if (native.isDestroyed()) return;
+            native.setToolTip(text);
+          },
+          setMenu: (tray, items) => {
+            const native = tray as Tray;
+            if (native.isDestroyed()) return;
+            native.setContextMenu(Menu.buildFromTemplate(toTrayTemplate(items)));
+          },
+          popUpMenu: (tray, items) => {
+            const native = tray as Tray;
+            if (native.isDestroyed()) return;
+            native.popUpContextMenu(Menu.buildFromTemplate(toTrayTemplate(items)));
+          },
+          onLeftClick: (tray, listener) => { (tray as Tray).on('click', listener); },
+          onRightClick: (tray, listener) => { (tray as Tray).on('right-click', listener); },
+          displayBalloon: (tray, title, content) => {
+            const native = tray as Tray;
+            if (native.isDestroyed()) return;
+            native.displayBalloon({ title, content });
+          },
+          destroy: (tray) => { (tray as Tray).destroy(); },
+          startStatusRefresh: (flush, intervalMs) => {
+            const timer = setInterval(flush, intervalMs);
+            timer.unref?.();
+            return () => clearInterval(timer);
+          },
         },
-        createTray: (icon) => new Tray(icon as NativeImage),
-        setToolTip: (tray, text) => { (tray as Tray).setToolTip(text); },
-        setMenu: (tray, items) => { (tray as Tray).setContextMenu(Menu.buildFromTemplate(toTrayTemplate(items))); },
-        popUpMenu: (tray, items) => { (tray as Tray).popUpContextMenu(Menu.buildFromTemplate(toTrayTemplate(items))); },
-        onLeftClick: (tray, listener) => { (tray as Tray).on('click', listener); },
-        onRightClick: (tray, listener) => { (tray as Tray).on('right-click', listener); },
-        displayBalloon: (tray, title, content) => { (tray as Tray).displayBalloon({ title, content }); },
-        destroy: (tray) => { (tray as Tray).destroy(); },
-        startStatusRefresh: (flush, intervalMs) => {
-          const timer = setInterval(flush, intervalMs);
-          timer.unref?.();
-          return () => clearInterval(timer);
-        },
-      },
-      showMainWindow,
-      requestQuit: () => app.quit(),
-      getActiveTaskCount: async () => {
-        const uid = users.getActiveUserId();
-        if (!uid) return null;
-        try {
+        showMainWindow,
+        requestQuit: () => app.quit(),
+        getActiveTaskCount: async () => {
+          const uid = users.getActiveUserId();
+          if (!uid) return null;
+          // 不做本地 catch：让它 reject，由模块的 refresh() 统一处理——那条路径只在
+          // "正常 → 失败"翻转时告警一次。在这里吞掉并返回 null 会让去重失效，持续
+          // 失败就变成每 5 s 刷一行日志。
           const status = await cogseedBackend.cogseedIpcService.runtimeStatus(uid);
           return typeof status?.activeTaskCount === 'number' ? status.activeTaskCount : null;
-        } catch (err) {
-          log.warn('tray task count unavailable', { error: err instanceof Error ? err.message : String(err) });
-          return null; // 未知 → 状态行隐藏
-        }
-      },
-    });
+        },
+      });
+    }
     const stopRecallCapture = startRecallCaptureOrchestrator();
     app.once('before-quit', stopRecallCapture);
     const stopGroupKstarClosure = startGroupKstarClosure();
