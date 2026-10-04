@@ -30,7 +30,7 @@ import * as fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
-import { app, BrowserWindow, Menu, Notification, ipcMain, nativeImage, net, protocol, session, shell, type WebContents } from 'electron';
+import { app, BrowserWindow, Menu, Notification, Tray, ipcMain, nativeImage, net, protocol, session, shell, type MenuItemConstructorOptions, type NativeImage, type WebContents } from 'electron';
 import { resolveRuntimeIdentity } from './brand';
 import { desktopPlatform, osVersion } from './system_info';
 import {
@@ -234,6 +234,8 @@ import * as clientConfigFeature from './features/client_config';
 import * as connectorsFeature from './features/connectors';
 import * as messagingFeature from './features/messaging';
 import * as taskNotifications from './features/task_notifications';
+import { shouldHideOnClose, startBackgroundRun, type BackgroundRun, type TrayMenuItemSpec } from './features/background_run';
+import * as cogseedBackend from './features/cogseed_backend';
 import { recoverRecallCaptures, startRecallCaptureOrchestrator } from './features/recall/capture-service';
 import { startAutoCloseRecovery, startGroupKstarClosure } from './features/kstar/task-closure';
 import { startGroupChatRecallTerminalProofs } from './features/group_chat/recall-terminal-proof';
@@ -258,6 +260,17 @@ let mainRendererWebContents: WebContents | null = null;
  * 那个列表里，会被抓错。
  */
 let mainWindow: BrowserWindow | null = null;
+
+/**
+ * 一旦进入任何退出流程就置位。`before-quit` 是托盘退出 / Cmd+Q /
+ * `updates.install`（installer.ts 走 app.quit()）的共同上游；Windows 关机不走
+ * `before-quit`，另由主窗口上的 `session-end` 监听兜底（`session-end` 是
+ * BrowserWindow 事件，Electron 没有 `app.on('session-end')`）。
+ * 因此它是唯一可靠的信号：有了它，close 处理器才不会把"退出"拦成"隐藏"，
+ * 否则 app.quit() 会被中止，分离安装助手等不到父进程退出而超时。
+ */
+let isQuitting = false;
+let backgroundRun: BackgroundRun | null = null;
 
 function setTaskNotificationBadgeCount(count: number): void {
   const normalized = Math.max(0, Math.trunc(count));
@@ -287,6 +300,15 @@ function showMainWindow(): BrowserWindow {
   if (!win.isVisible()) win.show();
   win.focus();
   return win;
+}
+
+/** `background_run` 的菜单项规格 → Electron 模板项。纯映射，便于单测。 */
+function toTrayTemplate(items: TrayMenuItemSpec[]): MenuItemConstructorOptions[] {
+  return items.map((item) => ({
+    label: item.label,
+    enabled: item.enabled,
+    ...(item.click ? { click: item.click } : {}),
+  }));
 }
 
 function createWindow(): BrowserWindow {
@@ -335,6 +357,31 @@ function createWindow(): BrowserWindow {
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null;
   });
+
+  // Windows 关机/注销不会经过 `app.quit()`，所以 `before-quit` 不是唯一上游，
+  // 这里单独兜底一次。注意 `session-end` 是 BrowserWindow 的事件（`@platform
+  // win32`），Electron 没有 `app.on('session-end')`；主窗口就是被 close 拦截
+  // 的那个窗口，因此挂在它上面覆盖相同范围。
+  win.on('session-end', () => { isQuitting = true; });
+
+  // 关闭按钮拦截：只剩"隐藏到托盘"这一种改写。最小化按钮完全不动（本特性
+  // 不接管最小化）。注意 `event.preventDefault()` 只阻止"关闭窗口"这个默认
+  // 动作，不会阻止本窗口其它 `close` 监听器——下面 `watchWindowState` 注册的
+  // 几何保存 `saveNow` 照常执行，所以"隐藏而非关闭"这条路径下窗口位置尺寸
+  // 仍然持久化，不要为了它去跳过 hide。
+  win.on('close', (event) => {
+    if (!shouldHideOnClose({
+      isQuitting,
+      closeToTray: appConfig.getCloseToTrayEnabled(),
+      // 托盘没建起来就不能藏窗口：藏了就再没有入口把它叫回来。
+      // 这里在 close 时读取（而非建窗时），所以与托盘启动的先后顺序无关。
+      trayAvailable: backgroundRun?.isAvailable() ?? false,
+    })) return;
+    event.preventDefault();
+    win.hide();
+    backgroundRun?.notifyHidden();
+  });
+
   windowState.watchWindowState(win);
   if (restored.isMaximized) win.maximize();
 
@@ -1565,6 +1612,45 @@ if (!gotLock) {
       openConversation: openConversationFromTaskNotification,
     });
     app.once('before-quit', stopTaskNotifications);
+    backgroundRun = startBackgroundRun({
+      platform: process.platform,
+      host: {
+        createIcon: () => {
+          // macOS 用彩色 png 缩到 16pt（不做 template image：彩色图设成
+          // template 会渲染成一整块黑）。Windows 直接用多尺寸 ico。
+          const file = process.platform === 'win32' ? 'icon.ico' : 'icon.png';
+          const image = nativeImage.createFromPath(path.join(paths.SRC_ROOT, 'resources', 'icons', file));
+          if (image.isEmpty()) return null;
+          return process.platform === 'win32' ? image : image.resize({ width: 16, height: 16 });
+        },
+        createTray: (icon) => new Tray(icon as NativeImage),
+        setToolTip: (tray, text) => { (tray as Tray).setToolTip(text); },
+        setMenu: (tray, items) => { (tray as Tray).setContextMenu(Menu.buildFromTemplate(toTrayTemplate(items))); },
+        popUpMenu: (tray, items) => { (tray as Tray).popUpContextMenu(Menu.buildFromTemplate(toTrayTemplate(items))); },
+        onLeftClick: (tray, listener) => { (tray as Tray).on('click', listener); },
+        onRightClick: (tray, listener) => { (tray as Tray).on('right-click', listener); },
+        displayBalloon: (tray, title, content) => { (tray as Tray).displayBalloon({ title, content }); },
+        destroy: (tray) => { (tray as Tray).destroy(); },
+        startStatusRefresh: (flush, intervalMs) => {
+          const timer = setInterval(flush, intervalMs);
+          timer.unref?.();
+          return () => clearInterval(timer);
+        },
+      },
+      showMainWindow,
+      requestQuit: () => app.quit(),
+      getActiveTaskCount: async () => {
+        const uid = users.getActiveUserId();
+        if (!uid) return null;
+        try {
+          const status = await cogseedBackend.cogseedIpcService.runtimeStatus(uid);
+          return typeof status?.activeTaskCount === 'number' ? status.activeTaskCount : null;
+        } catch (err) {
+          log.warn('tray task count unavailable', { error: err instanceof Error ? err.message : String(err) });
+          return null; // 未知 → 状态行隐藏
+        }
+      },
+    });
     const stopRecallCapture = startRecallCaptureOrchestrator();
     app.once('before-quit', stopRecallCapture);
     const stopGroupKstarClosure = startGroupKstarClosure();
@@ -1852,7 +1938,13 @@ if (!gotLock) {
   let shutdownFlushed = false;
   let shutdownPromise: Promise<void> | null = null;
   app.on('before-quit', async (e) => {
-    if (shutdownFlushed) return;
+    // 必须在两个早退分支之前置位：App 退出流程一启动，close 就不得再被拦成隐藏。
+    isQuitting = true;
+    if (shutdownFlushed) {
+      backgroundRun?.stop();
+      backgroundRun = null;
+      return;
+    }
     e.preventDefault();
     if (shutdownPromise) return shutdownPromise;
     shutdownPromise = Promise.resolve().then(async () => {
@@ -1869,6 +1961,8 @@ if (!gotLock) {
         import('./features/p3394_bridge/external-gateways').then((m) => m.stopAllExternalGateways()),
       ]);
       shutdownFlushed = true;
+      backgroundRun?.stop();
+      backgroundRun = null;
       app.quit();
     });
     await shutdownPromise;
