@@ -10,6 +10,9 @@ import { t } from '../i18n';
 
 const log = createLogger('background_run');
 
+/** 统一的错误文案提取，避免每处都写一遍三元表达式。 */
+const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
 /** darwin 的托盘菜单不能惰性构建（点击即展开），后台驻留期间按这个周期刷新。 */
 export const STATUS_REFRESH_MS = 5_000;
 
@@ -74,14 +77,14 @@ export interface BackgroundRun {
   isAvailable(): boolean;
   /** 销毁托盘并停表；幂等。 */
   stop(): void;
-  /** 窗口刚被隐藏时调用：每个应用会话只提示一次（仅 Windows）。 */
+  /** 窗口刚被隐藏时调用：每个 BackgroundRun 实例只提示一次（index.ts 只在启动时创建一次，因此等价于每个应用会话一次）。仅 Windows 生效。 */
   notifyHidden(): void;
 }
 
-/** 状态行文案；null 表示"未知"，调用方不得显示任何一行。 */
+/** 状态行文案；null 表示"未知"，调用方不得显示任何一行（绝不显示会误导的 0）。 */
 export function statusLabelFor(count: number | null): string | null {
-  if (count === null) return null;
-  if (!Number.isFinite(count) || count <= 0) return t('tray.status.idle');
+  if (count === null || !Number.isFinite(count)) return null;
+  if (count <= 0) return t('tray.status.idle');
   return t('tray.status.running', { count: String(Math.trunc(count)) });
 }
 
@@ -126,7 +129,7 @@ export function startBackgroundRun(deps: BackgroundRunDeps): BackgroundRun {
     tray = deps.host.createTray(icon);
   } catch (err) {
     log.warn('tray creation failed; background run stays disabled', {
-      error: err instanceof Error ? err.message : String(err),
+      error: errorMessage(err),
     });
     return noopRun();
   }
@@ -139,6 +142,7 @@ export function startBackgroundRun(deps: BackgroundRunDeps): BackgroundRun {
   let activeTaskCount: number | null = null;
   let hinted = false;
   let stopped = false;
+  let seq = 0;
 
   const menu = (): TrayMenuItemSpec[] => buildMenuItems({
     statusLabel: statusLabelFor(activeTaskCount),
@@ -155,37 +159,52 @@ export function startBackgroundRun(deps: BackgroundRunDeps): BackgroundRun {
 
   const refresh = async (): Promise<void> => {
     if (stopped) return;
+    const ticket = ++seq;
     try {
       const next = await deps.getActiveTaskCount();
-      activeTaskCount = next === null ? null : Math.max(0, Math.trunc(next));
+      if (ticket !== seq) return; // 有更新的读取在飞，丢弃这次结果
+      activeTaskCount = (next === null || !Number.isFinite(next))
+        ? null
+        : Math.max(0, Math.trunc(next));
     } catch (err) {
+      if (ticket !== seq) return;
       activeTaskCount = null; // 未知 → 隐藏状态行，不向用户暴露错误
-      log.warn('tray status unavailable', { error: err instanceof Error ? err.message : String(err) });
+      log.warn('tray status unavailable', { error: errorMessage(err) });
     }
     paint();
   };
 
-  if (isMac) {
-    // macOS：设置 contextMenu 后"点击即展开菜单"由系统接管，不绑单击呼出。
-    deps.host.setMenu(tray, menu());
-  } else {
-    deps.host.onLeftClick(tray, () => deps.showMainWindow());
-    // Windows：每次右键都重新构建菜单，拿到的计数必然是最新的。
-    deps.host.onRightClick(tray, () => deps.host.popUpMenu(tray, menu()));
+  // 构造期同样可能抛（setContextMenu / on(...) / startStatusRefresh 都是外部实现），
+  // 任何一步失败都必须拆掉半成品托盘并降级——否则 index.ts 会以为托盘可用，
+  // 进而把窗口藏到一个没有入口的进程里。
+  let stopRefresh: () => void = () => { /* 尚未启动 */ };
+  try {
+    if (isMac) {
+      // macOS：设置 contextMenu 后"点击即展开菜单"由系统接管，不绑单击呼出。
+      deps.host.setMenu(tray, menu());
+    } else {
+      deps.host.onLeftClick(tray, () => { if (!stopped) deps.showMainWindow(); });
+      // Windows：每次右键都重建菜单。计数由下面的轮询保持最新，因此这里能立刻拿到值。
+      deps.host.onRightClick(tray, () => { if (stopped) return; deps.host.popUpMenu(tray, menu()); });
+    }
+    stopRefresh = deps.host.startStatusRefresh(() => { void refresh(); }, STATUS_REFRESH_MS);
+  } catch (err) {
+    log.warn('tray wiring failed; background run stays disabled', { error: errorMessage(err) });
+    try { deps.host.destroy(tray); } catch { /* 拆不掉也不能让启动失败 */ }
+    return noopRun();
   }
 
+  // 两个平台都轮询：Windows 的 tooltip 是悬停可见的，不轮询就会永远停在启动时的值。
+  // Windows 的右键菜单仍然每次重建，只是数据来自最近一次轮询结果。
   void refresh();
-  const stopRefresh = isMac
-    ? deps.host.startStatusRefresh(() => { void refresh(); }, STATUS_REFRESH_MS)
-    : () => { /* win32 用右键重建菜单替代轮询 */ };
 
   const run: BackgroundRun = {
     isAvailable: () => true,
     stop(): void {
       if (stopped) return;
       stopped = true;
-      stopRefresh();
-      deps.host.destroy(tray);
+      try { stopRefresh(); } catch (err) { log.warn('tray refresh stop failed', { error: errorMessage(err) }); }
+      try { deps.host.destroy(tray); } catch (err) { log.warn('tray destroy failed', { error: errorMessage(err) }); }
       if (active === run) active = null;
     },
     notifyHidden(): void {

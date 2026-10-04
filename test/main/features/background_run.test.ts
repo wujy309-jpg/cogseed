@@ -1,12 +1,18 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../src/main/i18n', () => ({
   t: (key: string, vars?: Record<string, string>) => (vars ? `${key}:${JSON.stringify(vars)}` : key),
 }));
 
+const loggerSpy = vi.hoisted(() => ({ warn: vi.fn() }));
+
 vi.mock('../../../src/main/logger', () => ({
-  createLogger: () => ({ warn: vi.fn(), info: vi.fn() }),
+  createLogger: () => ({ warn: loggerSpy.warn, info: vi.fn() }),
 }));
+
+beforeEach(() => {
+  loggerSpy.warn.mockClear();
+});
 
 import {
   shouldHideOnClose,
@@ -51,6 +57,7 @@ interface HostCalls {
   destroyed: number;
   refreshIntervalMs: number | null;
   refreshStops: number;
+  refreshFlush: (() => void) | null;
   leftClick: (() => void) | null;
   rightClick: (() => void) | null;
 }
@@ -58,7 +65,8 @@ interface HostCalls {
 function makeHost(overrides: Partial<TrayHost> = {}): { host: TrayHost; calls: HostCalls } {
   const calls: HostCalls = {
     menus: [], poppedMenus: [], tooltips: [], balloons: [],
-    destroyed: 0, refreshIntervalMs: null, refreshStops: 0, leftClick: null, rightClick: null,
+    destroyed: 0, refreshIntervalMs: null, refreshStops: 0, refreshFlush: null,
+    leftClick: null, rightClick: null,
   };
   const host: TrayHost = {
     createIcon: () => ({ icon: true }),
@@ -70,8 +78,9 @@ function makeHost(overrides: Partial<TrayHost> = {}): { host: TrayHost; calls: H
     onRightClick: (_tray, listener) => { calls.rightClick = listener; },
     displayBalloon: (_tray, title, content) => { calls.balloons.push({ title, content }); },
     destroy: () => { calls.destroyed += 1; },
-    startStatusRefresh: (_flush, intervalMs) => {
+    startStatusRefresh: (flush, intervalMs) => {
       calls.refreshIntervalMs = intervalMs;
+      calls.refreshFlush = flush;
       return () => { calls.refreshStops += 1; };
     },
     ...overrides,
@@ -106,6 +115,11 @@ describe('statusLabelFor', () => {
   it('interpolates the running count', () => {
     expect(statusLabelFor(2)).toBe('tray.status.running:{"count":"2"}');
   });
+
+  it('treats non-finite counts as unknown instead of idle', () => {
+    expect(statusLabelFor(Number.NaN)).toBeNull();
+    expect(statusLabelFor(Number.POSITIVE_INFINITY)).toBeNull();
+  });
 });
 
 describe('buildMenuItems', () => {
@@ -125,14 +139,16 @@ describe('buildMenuItems', () => {
 describe('startBackgroundRun on win32', () => {
   it('shows the window on left click and rebuilds the menu on right click', async () => {
     const { host, calls } = makeHost();
-    const deps = makeDeps(host);
+    const countSpy = vi.fn(async () => 0);
+    const deps = makeDeps(host, { getActiveTaskCount: countSpy });
     startBackgroundRun(deps);
     await settle();
 
     expect(calls.leftClick).toBeTypeOf('function');
     expect(calls.rightClick).toBeTypeOf('function');
     expect(calls.menus).toHaveLength(0);      // win32 不预先设置菜单，避免和右键菜单重复
-    expect(calls.refreshIntervalMs).toBeNull(); // win32 不轮询
+    expect(calls.refreshIntervalMs).toBe(STATUS_REFRESH_MS);
+    expect(countSpy).toHaveBeenCalledTimes(1);
 
     calls.leftClick?.();
     expect(deps.showMainWindow).toHaveBeenCalledTimes(1);
@@ -172,6 +188,7 @@ describe('startBackgroundRun on win32', () => {
 
     calls.rightClick?.();
     expect(calls.poppedMenus[0].map((item) => item.id)).toEqual(['show', 'quit']);
+    expect(loggerSpy.warn).toHaveBeenCalled();
   });
 
   it('destroys the tray on stop', async () => {
@@ -181,6 +198,62 @@ describe('startBackgroundRun on win32', () => {
     expect(run.isAvailable()).toBe(true);
     run.stop();
     expect(calls.destroyed).toBe(1);
+  });
+
+  it('re-reads the count on each refresh tick', async () => {
+    const { host, calls } = makeHost();
+    const countSpy = vi.fn(async () => 0);
+    startBackgroundRun(makeDeps(host, { getActiveTaskCount: countSpy }));
+    await settle();
+    expect(countSpy).toHaveBeenCalledTimes(1);
+    expect(calls.tooltips.at(-1)).toContain('tray.status.idle');
+
+    countSpy.mockResolvedValue(3);
+    calls.refreshFlush?.();
+    await settle();
+    expect(countSpy).toHaveBeenCalledTimes(2);
+    expect(calls.tooltips.at(-1)).toContain('tray.status.running');
+  });
+
+  it('does not pop a menu after stop', async () => {
+    const { host, calls } = makeHost();
+    const run = startBackgroundRun(makeDeps(host));
+    await settle();
+    run.stop();
+    calls.rightClick?.();
+    expect(calls.poppedMenus).toHaveLength(0);
+  });
+
+  it('ignores a status read that resolves after stop', async () => {
+    const { host, calls } = makeHost();
+    let release: (value: number) => void = () => { /* 稍后赋值 */ };
+    const pending = new Promise<number>((resolve) => { release = resolve; });
+    const run = startBackgroundRun(makeDeps(host, { getActiveTaskCount: () => pending }));
+    run.stop(); // 读取还没回来
+    const tooltipsAfterStop = calls.tooltips.length;
+    release(5);
+    await settle();
+    expect(calls.tooltips).toHaveLength(tooltipsAfterStop);
+  });
+
+  it('destroys the tray only once when stopped twice', async () => {
+    const { host, calls } = makeHost();
+    const run = startBackgroundRun(makeDeps(host));
+    await settle();
+    run.stop();
+    run.stop();
+    expect(calls.destroyed).toBe(1);
+  });
+
+  it('does not touch a destroyed tray when the window is hidden after stop', async () => {
+    const { host, calls } = makeHost();
+    const run = startBackgroundRun(makeDeps(host));
+    await settle();
+    run.stop();
+    const tooltipsAfterStop = calls.tooltips.length;
+    run.notifyHidden();
+    expect(calls.balloons).toHaveLength(0);
+    expect(calls.tooltips).toHaveLength(tooltipsAfterStop);
   });
 });
 
@@ -255,6 +328,21 @@ describe('startBackgroundRun degradation', () => {
     await settle();
     startBackgroundRun(makeDeps(host));
     await settle();
+    expect(calls.destroyed).toBe(1);
+  });
+
+  it('degrades and destroys the half-built tray when darwin wiring throws', () => {
+    const { host, calls } = makeHost({ setMenu: () => { throw new Error('no menu'); } });
+    const run = startBackgroundRun(makeDeps(host, { platform: 'darwin' }));
+    expect(run.isAvailable()).toBe(false);
+    expect(calls.destroyed).toBe(1);
+    expect(loggerSpy.warn).toHaveBeenCalled();
+  });
+
+  it('degrades and destroys the half-built tray when win32 wiring throws', () => {
+    const { host, calls } = makeHost({ onRightClick: () => { throw new Error('no handler'); } });
+    const run = startBackgroundRun(makeDeps(host, { platform: 'win32' }));
+    expect(run.isAvailable()).toBe(false);
     expect(calls.destroyed).toBe(1);
   });
 });
