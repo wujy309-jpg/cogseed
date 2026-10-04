@@ -103,6 +103,17 @@ class FakeElement {
     for (const handler of this.listeners.get('click') || []) {
       await handler({ currentTarget: this, target: this });
     }
+    // 最小化的 DOM label 激活模型：点击结束后，如果点击目标在 <label> 内且不是该
+    // label 的可标记控件（及其后代），浏览器会把这次点击转发给那个控件一次。这样
+    // “标题文字点击”既能暴露目标自身多绑的 handler，也不会漏掉转发本身。
+    const label = this.closest('label');
+    if (!label) return;
+    const control = label.querySelector('button') || label.querySelector('input');
+    if (!control || control === this) return;
+    for (let node: FakeElement | null = this; node; node = node.parentElement) {
+      if (node === control) return;
+    }
+    await control.click();
   }
 
   async dispatch(type: string, event: Record<string, unknown> = {}) {
@@ -411,6 +422,10 @@ async function mountSwitch(harness: Harness) {
   return harness.registry.get('settings-close-to-tray-switch')!;
 }
 
+function setWriteCalls(harness: Harness) {
+  return harness.invoke.mock.calls.filter(([channel]) => channel === 'prefs.setCloseToTray');
+}
+
 describe('settings › close to tray switch', () => {
   it('reflects the stored preference on render', async () => {
     const off = buildHarness({ closeToTray: false });
@@ -469,6 +484,46 @@ describe('settings › close to tray switch', () => {
     expect(harness.warn).toHaveBeenCalledWith('setCloseToTray failed', expect.any(Error));
   });
 
+  it('starts a single write when clicked twice while a failing write is in flight', async () => {
+    // 探针：存储值 ON，两次连击都在途且两次写入都失败。没有在途守卫时，第二次
+    // 点击会把第一次的乐观值当 previous，回滚后开关停在 false，而存储值仍是 true。
+    const harness = buildHarness({ closeToTray: true, failWrite: true });
+    const toggle = await mountSwitch(harness);
+    const first = toggle.click();
+    const second = toggle.click();
+    await Promise.all([first, second]);
+    expect(setWriteCalls(harness)).toHaveLength(1);
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    expect(toggle.className).toContain('is-on');
+    expect(harness.storedPreference()).toBe(true);
+    // 写入结束后开关必须恢复可用，否则用户再也切不动它。
+    expect(toggle.disabled).toBe(false);
+  });
+
+  it('toggles exactly once when the caption inside the toggle label is clicked', async () => {
+    // index.html 用 <label class="settings-toggle"> 包住开关（与相邻两个开关一致，
+    // 才能吃到 .settings-row > label.settings-toggle 的 flex/cursor 规则）。label 是
+    // 可标记元素的容器，点标题文字会激活里面的 <button>；这里验证它只激活一次。
+    const html = readFileSync(resolve(root, 'src/renderer/index.html'), 'utf8');
+    expect(html).toMatch(/<div class="settings-row">\s*<label class="settings-toggle">\s*<span id="settings-close-to-tray-toggle"><\/span>/);
+
+    const harness = buildHarness({ closeToTray: true });
+    const wrapper = new FakeElement(harness.registry, '', 'label');
+    wrapper.className = 'settings-toggle';
+    const host = harness.registry.get('settings-close-to-tray-toggle')!;
+    wrapper.appendChild(host);
+    const caption = new FakeElement(harness.registry, '', 'span');
+    caption.textContent = 'en:settings.close_to_tray.toggle';
+    wrapper.appendChild(caption);
+
+    const toggle = await mountSwitch(harness);
+    await caption.click();
+
+    expect(setWriteCalls(harness)).toHaveLength(1);
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    expect(harness.storedPreference()).toBe(false);
+  });
+
   it('re-renders the JS-derived accessible name on i18n-change without remounting', async () => {
     const harness = buildHarness({ closeToTray: true });
     const toggle = await mountSwitch(harness);
@@ -489,7 +544,14 @@ describe('settings › close to tray switch', () => {
     const source = readFileSync(resolve(root, 'src/renderer/modules/settings.js'), 'utf8');
     expect(source).toContain("_settingsSafeCall('settings close-to-tray refresh', _settingsRefreshCloseToTray)");
     expect(source).toContain("_settingsSafeCall('settings close-to-tray render', _settingsRenderCloseToTray)");
-    expect(source).toContain('_settingsRenderCloseToTray();');
+    // 只在监听器体内出现才算数：宽松的 toContain 在调用只出现在 loadSettings 时
+    // 也会通过，证明不了 i18n 路径接了线。
+    const listenerStart = source.indexOf("window.addEventListener('i18n-change'");
+    const listenerEnd = source.indexOf('\n});', listenerStart);
+    expect(listenerStart).toBeGreaterThanOrEqual(0);
+    expect(listenerEnd).toBeGreaterThan(listenerStart);
+    const listenerBody = source.slice(listenerStart, listenerEnd);
+    expect(listenerBody).toContain('_settingsRenderCloseToTray();');
   });
 
   it('uses the shared switch seam instead of a raw checkbox', () => {

@@ -399,7 +399,6 @@ function _settingsRenderCloseToTray() {
       id: 'settings-close-to-tray-switch',
       label: t('settings.close_to_tray.toggle'),
       checked: _settingsState.closeToTray !== false,
-      className: 'settings-close-to-tray-switch',
     }));
     // 生成失败就不渲染：宁可不显示，也不退回裸 checkbox。
     if (!created) return;
@@ -409,6 +408,9 @@ function _settingsRenderCloseToTray() {
       const previous = _settingsSwitchIsChecked(toggle);
       const next = !previous;
       _settingsSetSwitchChecked(toggle, next);
+      // 写入在途时禁用：否则第二次点击会把第一次的乐观值当成 previous，
+      // 两次写入都失败后开关停在存储值的反面，用户以为偏好已经关掉。
+      toggle.disabled = true;
       try {
         const res = await window.cogseed.invoke('prefs.setCloseToTray', { enabled: next });
         if (res && res.ok) {
@@ -421,6 +423,8 @@ function _settingsRenderCloseToTray() {
       } catch (err) {
         _settingsSetSwitchChecked(toggle, previous);
         _settingsLog.warn('setCloseToTray failed', err);
+      } finally {
+        toggle.disabled = false;
       }
     });
   }
