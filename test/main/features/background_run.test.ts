@@ -424,22 +424,27 @@ describe('startBackgroundRun degradation', () => {
   });
 });
 
-const TRAY_KEYS = [
-  'tray.show_window',
-  'tray.quit',
-  'tray.tooltip',
-  'tray.tooltip_with_status',
-  'tray.status.idle',
-  'tray.status.running',
-  'tray.background_hint.title',
-  'tray.background_hint.content',
-];
-
 describe('main locale coverage', () => {
-  it.each(['zh', 'en'])('%s locale defines every tray key', (lang) => {
-    const file = path.join(__dirname, '../../../src/main/locales', `${lang}.json`);
-    const table = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, string>;
-    for (const key of TRAY_KEYS) {
+  const moduleSource = fs.readFileSync(
+    path.join(__dirname, '../../../src/main/features/background_run.ts'),
+    'utf8',
+  );
+  const keys = Array.from(
+    new Set((moduleSource.match(/t\('(tray\.[a-z_.]+)'/g) || []).map((hit) => hit.slice(3, -1))),
+  ).sort();
+
+  it('finds the tray keys by scanning the module source', () => {
+    // 守卫：正则若因模块改写而失配，下面两条会退化成"零个键都通过"，这里先钉住扫描结果。
+    expect(keys.length).toBeGreaterThanOrEqual(8);
+    expect(keys).toContain('tray.status.running');
+    expect(keys).toContain('tray.background_hint.content');
+  });
+
+  it.each(['zh', 'en'])('%s locale defines every tray key used by the module', (lang) => {
+    const table = JSON.parse(
+      fs.readFileSync(path.join(__dirname, '../../../src/main/locales', `${lang}.json`), 'utf8'),
+    ) as Record<string, string>;
+    for (const key of keys) {
       expect(table[key], `${lang} is missing ${key}`).toBeTruthy();
     }
   });

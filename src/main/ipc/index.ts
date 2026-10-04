@@ -5757,7 +5757,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   'prefs.setCloseToTray': async ({ enabled }) => {
     // 这个偏好落在可同步的 per-uid 配置里，畸形 payload 绝不能把它悄悄改成
     // false——OFF 意味着点 X 直接退出，可能打断正在跑的长任务。非布尔即拒绝
-    // （同 prefs.setCliFallback / prefs.setCommanderAvatar 的做法）。
+    // （同 prefs.setCliFallback 的做法：入参非法直接抛错）。
     if (typeof enabled !== 'boolean') throw new Error('invalid enabled');
     return { enabled: appConfig.setCloseToTrayEnabled(enabled) };
   },
