@@ -255,6 +255,62 @@ describe('startBackgroundRun on win32', () => {
     expect(calls.balloons).toHaveLength(0);
     expect(calls.tooltips).toHaveLength(tooltipsAfterStop);
   });
+
+  it('keeps the newest count when two reads resolve out of order', async () => {
+    const { host, calls } = makeHost();
+    const resolvers: Array<(value: number | null) => void> = [];
+    startBackgroundRun(makeDeps(host, {
+      getActiveTaskCount: () => new Promise<number | null>((resolve) => { resolvers.push(resolve); }),
+    }));
+
+    resolvers[0](0); // 首次读取返回：idle
+    await settle();
+    expect(calls.tooltips.at(-1)).toContain('tray.status.idle');
+
+    calls.refreshFlush?.(); // 第二次读取（更新的票据）
+    calls.refreshFlush?.(); // 第三次读取（票据再 +1）
+    resolvers[1](9);        // 旧读取晚到 → 必须被丢弃，不能覆盖
+    await settle();
+    expect(calls.tooltips.at(-1)).toContain('tray.status.idle');
+
+    resolvers[2](7);        // 最新读取返回
+    await settle();
+    expect(calls.tooltips.at(-1)).toContain('tray.status.running');
+  });
+
+  it('does not reveal the window from a stale left click after stop', async () => {
+    const { host, calls } = makeHost();
+    const deps = makeDeps(host);
+    const run = startBackgroundRun(deps);
+    await settle();
+    run.stop();
+    calls.leftClick?.();
+    expect(deps.showMainWindow).not.toHaveBeenCalled();
+  });
+
+  it('warns once, not on every tick, when the count keeps failing', async () => {
+    const { host, calls } = makeHost();
+    const countSpy = vi.fn(async () => { throw new Error('down'); });
+    startBackgroundRun(makeDeps(host, { getActiveTaskCount: countSpy }));
+    await settle();
+    expect(countSpy).toHaveBeenCalledTimes(1);
+    expect(loggerSpy.warn).toHaveBeenCalledTimes(1);
+
+    calls.refreshFlush?.();
+    await settle();
+    calls.refreshFlush?.();
+    await settle();
+    expect(countSpy).toHaveBeenCalledTimes(3);
+    expect(loggerSpy.warn).toHaveBeenCalledTimes(1); // 只在状态翻转时告警
+  });
+
+  it('survives a throwing balloon call', async () => {
+    const { host } = makeHost({ displayBalloon: () => { throw new Error('no balloon'); } });
+    const run = startBackgroundRun(makeDeps(host));
+    await settle();
+    expect(() => run.notifyHidden()).not.toThrow();
+    expect(loggerSpy.warn).toHaveBeenCalled();
+  });
 });
 
 describe('startBackgroundRun on darwin', () => {
@@ -344,5 +400,24 @@ describe('startBackgroundRun degradation', () => {
     const run = startBackgroundRun(makeDeps(host, { platform: 'win32' }));
     expect(run.isAvailable()).toBe(false);
     expect(calls.destroyed).toBe(1);
+  });
+
+  it('stays disabled when icon creation throws', () => {
+    const { host, calls } = makeHost({ createIcon: () => { throw new Error('boom'); } });
+    const run = startBackgroundRun(makeDeps(host));
+    expect(run.isAvailable()).toBe(false);
+    expect(calls.destroyed).toBe(0);
+    expect(loggerSpy.warn).toHaveBeenCalled();
+  });
+
+  it('still destroys the tray when stopping the refresh timer throws', async () => {
+    const { host, calls } = makeHost({
+      startStatusRefresh: () => () => { throw new Error('no clear'); },
+    });
+    const run = startBackgroundRun(makeDeps(host));
+    await settle();
+    run.stop();
+    expect(calls.destroyed).toBe(1);
+    expect(loggerSpy.warn).toHaveBeenCalled();
   });
 });

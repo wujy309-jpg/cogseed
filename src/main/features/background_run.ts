@@ -13,7 +13,10 @@ const log = createLogger('background_run');
 /** 统一的错误文案提取，避免每处都写一遍三元表达式。 */
 const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
-/** darwin 的托盘菜单不能惰性构建（点击即展开），后台驻留期间按这个周期刷新。 */
+/**
+ * 状态轮询周期。两个平台都靠它保持 tooltip / 状态行新鲜：Windows 的 tooltip 悬停可见，
+ * macOS 的托盘菜单不能惰性构建（点击即展开），两者都必须由定期刷新驱动。
+ */
 export const STATUS_REFRESH_MS = 5_000;
 
 export interface ClosePolicyInput {
@@ -118,7 +121,13 @@ let active: BackgroundRun | null = null;
 export function startBackgroundRun(deps: BackgroundRunDeps): BackgroundRun {
   if (active) { active.stop(); active = null; }
 
-  const icon = deps.host.createIcon();
+  let icon: unknown = null;
+  try {
+    icon = deps.host.createIcon();
+  } catch (err) {
+    log.warn('tray icon creation failed; background run stays disabled', { error: errorMessage(err) });
+    return noopRun();
+  }
   if (!icon) {
     log.warn('tray icon unavailable; background run stays disabled');
     return noopRun();
@@ -143,6 +152,7 @@ export function startBackgroundRun(deps: BackgroundRunDeps): BackgroundRun {
   let hinted = false;
   let stopped = false;
   let seq = 0;
+  let statusReadFailed = false;
 
   const menu = (): TrayMenuItemSpec[] => buildMenuItems({
     statusLabel: statusLabelFor(activeTaskCount),
@@ -166,10 +176,15 @@ export function startBackgroundRun(deps: BackgroundRunDeps): BackgroundRun {
       activeTaskCount = (next === null || !Number.isFinite(next))
         ? null
         : Math.max(0, Math.trunc(next));
+      statusReadFailed = false;
     } catch (err) {
       if (ticket !== seq) return;
       activeTaskCount = null; // 未知 → 隐藏状态行，不向用户暴露错误
-      log.warn('tray status unavailable', { error: errorMessage(err) });
+      // 轮询每 5 s 会重试；只在"正常 → 失败"翻转时告警，避免持续失败刷爆日志。
+      if (!statusReadFailed) {
+        statusReadFailed = true;
+        log.warn('tray status unavailable', { error: errorMessage(err) });
+      }
     }
     paint();
   };
@@ -211,7 +226,11 @@ export function startBackgroundRun(deps: BackgroundRunDeps): BackgroundRun {
       if (stopped || hinted) return;
       hinted = true;
       if (deps.platform !== 'win32') return; // macOS 没有气泡 API
-      deps.host.displayBalloon(tray, t('tray.background_hint.title'), t('tray.background_hint.content'));
+      try {
+        deps.host.displayBalloon(tray, t('tray.background_hint.title'), t('tray.background_hint.content'));
+      } catch (err) {
+        log.warn('tray balloon failed', { error: errorMessage(err) });
+      }
     },
   };
   active = run;
