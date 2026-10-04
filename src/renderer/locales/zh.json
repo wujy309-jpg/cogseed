@@ -8842,5 +8842,8 @@
   "updates.boot_guard.install_missed": "上次开始的安装（版本 {version}）没有生效，可以重试。",
   "updates.boot_guard.install_missed_unknown": "上次开始的安装没有生效，可以重试；若反复失败，请手动运行已下载的安装包。",
   "updates.install.failed": "安装失败：{message}",
-  "updates.install.in_progress": "正在重启并安装…"
+  "updates.install.in_progress": "正在重启并安装…",
+  "settings.close_to_tray.title": "关闭窗口时最小化到托盘",
+  "settings.close_to_tray.sub": "关闭窗口后应用继续在后台运行，长任务不会中断；可以从托盘菜单重新显示窗口或彻底退出。",
+  "settings.close_to_tray.toggle": "启用"
 }

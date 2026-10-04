@@ -8842,5 +8842,8 @@
   "updates.boot_guard.install_missed": "The install started for version {version} did not take effect. You can retry.",
   "updates.boot_guard.install_missed_unknown": "A previously started install did not take effect. You can retry; if it keeps failing, run the downloaded installer manually.",
   "updates.install.failed": "Install failed: {message}",
-  "updates.install.in_progress": "Restarting and installing…"
+  "updates.install.in_progress": "Restarting and installing…",
+  "settings.close_to_tray.title": "Minimize to tray on close",
+  "settings.close_to_tray.sub": "The app keeps running in the background after you close the window, so long tasks are not interrupted. Use the tray menu to reopen the window or quit completely.",
+  "settings.close_to_tray.toggle": "Enable"
 }
