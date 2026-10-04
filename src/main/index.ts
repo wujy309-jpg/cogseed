@@ -252,6 +252,13 @@ let windowsTaskBadgeIcon: ReturnType<typeof nativeImage.createFromDataURL> | nul
 let mainRendererAudioPermissionObservation = { checkCount: 0, requestCount: 0 };
 let mainRendererWebContents: WebContents | null = null;
 
+/**
+ * 主窗口引用。托盘/任务通知/activate/second-instance 都要"呼出主窗口本身"，
+ * 不能靠 `getAllWindows()[0]`——弹窗（如 wecom quick-create 分区窗口）也在
+ * 那个列表里，会被抓错。
+ */
+let mainWindow: BrowserWindow | null = null;
+
 function setTaskNotificationBadgeCount(count: number): void {
   const normalized = Math.max(0, Math.trunc(count));
   if (process.platform === 'win32') {
@@ -266,6 +273,20 @@ function setTaskNotificationBadgeCount(count: number): void {
     return;
   }
   app.setBadgeCount(normalized);
+}
+
+/**
+ * 呼出主窗口的唯一实现：优先用主窗口引用，只有它已销毁时才回退到
+ * "第一个存活窗口 / 新建窗口"。返回被呼出的窗口，调用方常需要它继续发送数据。
+ */
+function showMainWindow(): BrowserWindow {
+  const win = (mainWindow && !mainWindow.isDestroyed())
+    ? mainWindow
+    : BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed()) || createWindow();
+  if (win.isMinimized()) win.restore();
+  if (!win.isVisible()) win.show();
+  win.focus();
+  return win;
 }
 
 function createWindow(): BrowserWindow {
@@ -309,6 +330,10 @@ function createWindow(): BrowserWindow {
       // the NPAPI / NaCl code path.
       plugins: true,
     }),
+  });
+  mainWindow = win;
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null;
   });
   windowState.watchWindowState(win);
   if (restored.isMaximized) win.maximize();
@@ -414,10 +439,7 @@ function openConversationFromTaskNotification(
     return;
   }
 
-  const win = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed()) || createWindow();
-  if (win.isMinimized()) win.restore();
-  if (!win.isVisible()) win.show();
-  win.focus();
+  const win = showMainWindow();
 
   const send = () => {
     if (win.isDestroyed() || win.webContents.isDestroyed()) return;
@@ -1467,6 +1489,17 @@ if (!gotLock) {
   // Account login is stripped, but connector OAuth still returns through the OS protocol. Keep
   // this connector-only receiver outside the removed account protocol module.
   registerConnectorProtocol({ owner: RUNTIME_IDENTITY.protocolOwner });
+  // 后台驻留时双击桌面图标：呼出已存在的实例。`features/connectors/protocol.ts:114`
+  // 已有一个 second-instance 监听，但它用 `getAllWindows()` 取窗口（可能抓到
+  // wecom 分区弹窗）、没有窗口时直接返回；这里统一走 `showMainWindow()`。
+  app.on('second-instance', () => {
+    // app ready 之前一个窗口都没有；此时若让 showMainWindow() 回退到
+    // createWindow()，BrowserWindow 构造会抛
+    // "Cannot create BrowserWindow before app is ready" 并终结主进程
+    // （双击图标时第二次启动很容易落在这一段）。启动流程随后自会建窗。
+    if (!app.isReady()) return;
+    showMainWindow();
+  });
   void app.whenReady().then(async () => {
     await runBootSelfCheck();
 
@@ -1803,7 +1836,8 @@ if (!gotLock) {
     void runBootPhases(BOOT_BACKGROUND_DEFER_MS);
 
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+      // 隐藏到托盘的窗口也算"存在"，旧实现只在 0 窗口时建窗，于是点 dock 图标没反应。
+      showMainWindow();
     });
   }).catch((err) => {
     log.error('application startup failed', { error: (err as Error).message });
