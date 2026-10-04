@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../src/main/i18n', () => ({
@@ -419,5 +421,26 @@ describe('startBackgroundRun degradation', () => {
     run.stop();
     expect(calls.destroyed).toBe(1);
     expect(loggerSpy.warn).toHaveBeenCalled();
+  });
+});
+
+const TRAY_KEYS = [
+  'tray.show_window',
+  'tray.quit',
+  'tray.tooltip',
+  'tray.tooltip_with_status',
+  'tray.status.idle',
+  'tray.status.running',
+  'tray.background_hint.title',
+  'tray.background_hint.content',
+];
+
+describe('main locale coverage', () => {
+  it.each(['zh', 'en'])('%s locale defines every tray key', (lang) => {
+    const file = path.join(__dirname, '../../../src/main/locales', `${lang}.json`);
+    const table = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, string>;
+    for (const key of TRAY_KEYS) {
+      expect(table[key], `${lang} is missing ${key}`).toBeTruthy();
+    }
   });
 });
