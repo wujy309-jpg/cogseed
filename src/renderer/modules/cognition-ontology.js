@@ -18,8 +18,8 @@
   };
   let state = null;
 
-  function button(label, action, role = 'secondary', attrs = {}) {
-    return root.uiButton({ label, role, attrs: { 'data-ontology-action': action, ...attrs } });
+  function button(label, action, role = 'secondary', attrs = {}, icon = '') {
+    return root.uiButton({ label, role, className: 'ontology-ws-button', ...(icon ? { icon } : {}), attrs: { 'data-ontology-action': action, ...attrs } });
   }
   function tabs(items, selected, label, attrs = {}) {
     return root.uiTabs({ items: items.map(([value, itemLabel]) => ({ value, label: itemLabel })), value: selected, ariaLabel: label, attrs });
@@ -228,7 +228,7 @@
     const visibleModules = allModules.slice(state.modulePage * modulePageSize, (state.modulePage + 1) * modulePageSize);
     const entities = Object.values(state.doc.records).filter(r => r.kind === 'entity' && r.status === 'active');
     const rules = Object.values(state.doc.records).filter(r => r.kind === 'rule' && r.status === 'active');
-    return `${pageHeader({ kicker: 'ONTOLOGY WORKSPACE', title: text('title', '本体'), description: text('subtitle', '组织你理解世界的方式，连接人物、项目、事实与规则。'), actions: `${button(text('import', '导入资料'), 'import')}${button(text('supplement', '补充认知'), 'supplement')}${button(text('createModule', '创建本体'), 'create-module', 'primary')}` })}
+    return `${pageHeader({ kicker: 'ONTOLOGY WORKSPACE', title: text('title', '本体'), description: text('subtitle', '组织你理解世界的方式，连接人物、项目、事实与规则。'), actions: `${button(text('import', '导入资料'), 'import', 'secondary', {}, 'upload')}${button(text('supplement', '补充认知'), 'supplement', 'secondary', {}, 'sparkles')}${button(text('createModule', '创建本体'), 'create-module', 'primary', {}, 'plus')}` })}
       <div class="ontology-ws-stats">${stat(text('modules', '本体'), allModules.length)}${stat(text('objects', '具体对象'), entities.length)}${stat(text('rules', '有效规则'), rules.length)}${stat(text('revision', '版本'), state.doc.revision)}</div>
       <div class="ontology-ws-search">${root.uiField({ id: 'ontology-search-input', label: text('search', '搜索本体、人物、项目或关系'), showRequirement: false, control: { kind: 'input', type: 'search', placeholder: text('searchPlaceholder', '输入名称、别名或内容'), value: state.searchQuery || '', attrs: { 'data-ontology-field': 'search' } } })}${state.searchResults?.length ? `<div class="ontology-ws-search-results">${searchResultRows(state.searchResults, 'search-result')}</div>` : state.searchQuery ? `<div class="ontology-ws-search-empty">${esc(text('noSearchResults', '没有找到匹配内容。'))}</div>` : ''}</div>
       <div class="ontology-ws-list-heading"><h2>${esc(text('myModules', '我的本体'))}</h2>${tabs([['list', text('list', '列表')], ['graph', text('globalGraph', '关系图谱')]], state.mode, text('viewMode', '查看方式'), { 'data-ontology-tabs': 'workspace' })}</div>
@@ -236,7 +236,7 @@
         const count = Object.values(state.doc.records).filter(r => r.kind !== 'module' && r.moduleId === m.id && r.status === 'active').length;
         const visual = moduleVisual(m);
         const icon = typeof root.uiIconHtml === 'function' ? root.uiIconHtml(visual.icon, 'ontology-ws-module-glyph') : '';
-        return `<article class="ontology-ws-module-card"><div class="ontology-ws-module-icon ontology-ws-module-icon--${visual.kind}" aria-hidden="true">${icon}</div><span class="ontology-ws-scope ontology-ws-scope--${visual.kind}">${esc(visual.label)}</span><h3>${esc(m.name)}</h3><p>${esc(moduleDescription(m))}</p><div class="ontology-ws-card-meta"><span>${count} ${esc(text('records', '条内容'))}</span><span>v${m.version}</span></div><div class="ontology-ws-card-actions">${button(text('open', '打开本体'), 'open-module', 'primary', { 'data-record-id': m.id })}</div></article>`;
+        return `<article class="ontology-ws-module-card"><div class="ontology-ws-module-icon ontology-ws-module-icon--${visual.kind}" aria-hidden="true">${icon}</div><span class="ontology-ws-scope ontology-ws-scope--${visual.kind}">${esc(visual.label)}</span><h3>${esc(m.name)}</h3><p>${esc(moduleDescription(m))}</p><div class="ontology-ws-card-meta"><span>${count} ${esc(text('records', '条内容'))}</span><span>v${m.version}</span></div><div class="ontology-ws-card-actions">${button(text('open', '打开本体'), 'open-module', 'secondary', { 'data-record-id': m.id }, 'arrow-right')}</div></article>`;
       }).join('') : `<div class="ontology-ws-empty"><h2>${esc(text('emptyTitle', '还没有本体'))}</h2><p>${esc(text('emptyBody', '创建一个本体，开始整理人物、项目和事实。'))}</p>${button(text('createModule', '创建本体'), 'create-module', 'primary')}</div>`}</div>
       ${pageControls('modules', state.modulePage, allModules.length, modulePageSize)}`;
   }

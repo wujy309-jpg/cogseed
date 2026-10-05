@@ -22,9 +22,8 @@
   /* ────────────────────────── 共享零件 ────────────────────────── */
 
   /* 按钮一律走共享 uiButton 工厂（shared-ui-adoption-guard 约束：本模块不落
-   * 裸控件）。皮肤由 cognition-assets.css 的「原型移植段」按 .btn 修饰类给出：
-   * 默认 = 浅绿实底（原型 .btn.g）、primary = 深绿实底（.btn）、danger = 红（.btn.d）、
-   * 需要描边白底时用 className: 'o'。 */
+   * 裸控件）。认知资产页面的 primary 用浅品牌底色+描边，secondary 用白底描边；
+   * danger 保留危险色，className:'o' 用于白底低强调动作。 */
   const btn = (label, act, options) => {
     const opts = options || {};
     /* chip / rnm 是完整自管皮肤（白底选中态 / 无框文字钮），不吃默认浅绿

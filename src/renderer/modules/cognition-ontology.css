@@ -41,12 +41,12 @@
 .ontology-ws-module-icon--personal { color:var(--color-success,#1e6e4e); background:var(--color-success-soft,#e8f1ec); }
 .ontology-ws-module-icon--project { color:var(--color-info,#2563eb); background:var(--color-info-soft,#eaf2f8); }
 .ontology-ws-module-icon--workspace { color:var(--color-violet,#8b5cf6); background:color-mix(in srgb,var(--color-violet,#8b5cf6) 11%,var(--surface-card,#fff)); }
-.ontology-ws-module-icon--legacy { color:var(--color-ink-2,#3e5a4c); background:var(--color-surface-2,#edf3ef); }
+.ontology-ws-module-icon--legacy { color:var(--color-warning-text,#8a5a14); background:var(--color-warning-soft,#fbf1e2); }
 .ontology-ws-module-glyph { width:19px; height:19px; }
 .ontology-ws-scope { align-self:flex-start; padding:4px 9px; border-radius:999px; background:color-mix(in srgb,var(--onto-accent) 10%,transparent); color:var(--onto-accent); font-size:12px; }
 .ontology-ws-scope--project { color:var(--color-info,#2563eb); background:var(--color-info-soft,#eaf2f8); }
 .ontology-ws-scope--workspace { color:var(--color-violet,#8b5cf6); background:color-mix(in srgb,var(--color-violet,#8b5cf6) 11%,var(--surface-card,#fff)); }
-.ontology-ws-scope--legacy { color:var(--color-ink-2,#3e5a4c); background:var(--color-surface-2,#edf3ef); }
+.ontology-ws-scope--legacy { color:var(--color-warning-text,#8a5a14); background:var(--color-warning-soft,#fbf1e2); }
 .ontology-ws-module-card h3 { margin:18px 0 8px; font-size:18px; }
 .ontology-ws-module-card p { flex:1; margin:0; color:var(--onto-muted); line-height:1.5; }
 .ontology-ws-card-meta { display:flex; justify-content:space-between; margin:18px 0 12px; color:var(--onto-muted); font-size:12px; }
@@ -130,6 +130,12 @@
 .ontology-ws-provenance { display:grid; gap:8px; margin-top:18px; padding-top:14px; border-top:1px solid var(--onto-line); font-size:13px; }
 .ontology-ws-provenance ul { margin:0; padding-left:20px; color:var(--onto-muted); }
 .ontology-ws-detail-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:18px; }
+.ontology-ws-button.ui-button--primary { border:1px solid color-mix(in srgb,var(--color-brand) 36%,var(--line-default)); border-radius:var(--radius-control); background:var(--color-brand-soft); color:var(--color-accent); box-shadow:none; font-weight:650; }
+.ontology-ws-button.ui-button--primary:hover,.ontology-ws-button.ui-button--primary:active { border-color:var(--color-brand); background:color-mix(in srgb,var(--color-brand) 16%,var(--color-white)); color:var(--color-accent); }
+.ontology-ws-button.ui-button--secondary { border:1px solid var(--line-field); border-radius:var(--radius-control); background:var(--surface-card); color:var(--color-ink-2); font-weight:500; }
+.ontology-ws-button.ui-button--secondary:hover,.ontology-ws-button.ui-button--secondary:active { border-color:var(--color-brand); background:var(--color-surface-2); color:var(--color-accent); }
+.ontology-ws-button.ui-button--ghost { border-color:transparent; background:transparent; color:var(--color-ink-2); }
+.ontology-ws-button.ui-button--ghost:hover,.ontology-ws-button.ui-button--ghost:active { border-color:transparent; background:var(--color-brand-soft); color:var(--color-accent); }
 .ontology-ws-legacy-note { max-width:860px; margin:16px 0; padding:16px 20px; border:1px solid var(--onto-line); border-radius:12px; background:var(--surface-subtle,#f6f8f7); }
 .ontology-ws-legacy-note p { margin:0 0 12px; color:var(--onto-muted); line-height:1.5; }
 .ontology-ws-history article { padding:13px 0; border-top:1px solid var(--onto-line); }

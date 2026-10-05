@@ -7,6 +7,7 @@ function pageHarness(extraRecords: Record<string, any> = {}, customSearchResults
   const file = path.join(__dirname, '../../src/renderer/modules/cognition-ontology.js');
   const source = fs.readFileSync(file, 'utf8');
   const calls: Array<{ channel: string; payload: Record<string, unknown> }> = [];
+  const buttonCalls: Array<Record<string, any>> = [];
   const toasts: Array<{ message: string; options?: Record<string, unknown> }> = [];
   let failNextGraph = false;
   let confirmResult = true;
@@ -73,7 +74,12 @@ function pageHarness(extraRecords: Record<string, any> = {}, customSearchResults
       }
       throw new Error(`unexpected channel ${channel}`);
     } },
-    uiButton({ label, attrs = {} }: any) { return `<button ${Object.entries(attrs).map(([k,v]) => `${k}="${v}"`).join(' ')}>${label}</button>`; },
+    uiButton(options: any) {
+      buttonCalls.push(options);
+      const { label, attrs = {}, role = 'secondary', className = '', icon = '' } = options;
+      const iconMarkup = icon ? `<svg class="ui-button__icon is-${icon}"></svg>` : '';
+      return `<button class="ui-button ui-button--${role} ${className}" ${Object.entries(attrs).map(([k,v]) => `${k}="${v}"`).join(' ')}>${iconMarkup}<span>${label}</span></button>`;
+    },
     uiIconHtml(name: string, className: string) { return `<svg class="${className} is-${name}"></svg>`; },
     uiIconButton() { return '<button aria-label="close">x</button>'; },
     uiInput() { return '<input />'; }, uiField({ id, control }: any) {
@@ -114,7 +120,7 @@ function pageHarness(extraRecords: Record<string, any> = {}, customSearchResults
   };
   const context: any = { window: root, document: {}, console, Date, Intl, Map, Set, String, Number, Math, JSON, setTimeout, clearTimeout };
   vm.runInNewContext(source, context, { filename: file });
-  return { context, container, calls, toasts, module, failNextGraph() { failNextGraph = true; }, setFormValues(values: Record<string, string>) { nextFormValues = values; },
+  return { context, container, calls, buttonCalls, toasts, module, failNextGraph() { failNextGraph = true; }, setFormValues(values: Record<string, string>) { nextFormValues = values; },
     setConfirmResult(value: boolean) { confirmResult = value; },
     async saveDialog() {
       const saveControl: any = { disabled: false, dataset: { ontologyAction: 'dialog-save' } };
@@ -170,6 +176,19 @@ describe('本体工作台页面层级与接线', () => {
     expect(f.container.innerHTML).toContain('ontology-ws-graph-shell');
     expect(f.container.innerHTML).not.toContain('ontology-ws-stats');
     expect(f.container.innerHTML).not.toContain('ontology-ws-module-grid');
+  });
+  it('认知资产按钮使用浅色层级和能表达动作的图标', async () => {
+    const f = pageHarness();
+    await f.context.window.mountCognitionOntology(f.container);
+    const action = (name: string) => f.buttonCalls.find(button => button.attrs?.['data-ontology-action'] === name);
+    expect(action('import')).toMatchObject({ role: 'secondary', className: 'ontology-ws-button', icon: 'upload' });
+    expect(action('supplement')).toMatchObject({ role: 'secondary', className: 'ontology-ws-button', icon: 'sparkles' });
+    expect(action('create-module')).toMatchObject({ role: 'primary', className: 'ontology-ws-button', icon: 'plus' });
+    expect(action('open-module')).toMatchObject({ role: 'secondary', className: 'ontology-ws-button', icon: 'arrow-right' });
+    expect(f.container.innerHTML).toContain('ui-button__icon is-upload');
+    const assetCss = fs.readFileSync(path.join(__dirname, '../../src/renderer/cognition-assets.css'), 'utf8');
+    expect(assetCss).toContain('#ca-root .btn.ui-button--primary');
+    expect(assetCss).toContain('background: var(--color-brand-soft)');
   });
   it('本体卡片用不同图标与颜色区分范围和旧来源', async () => {
     const personal = { id: 'personal-module', kind: 'module', version: 1, status: 'active', access: 'task', createdAt: null, updatedAt: null,
