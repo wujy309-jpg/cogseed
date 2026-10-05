@@ -6936,7 +6936,7 @@
   "ontologyWorkspace.asset": "Cognitive asset",
   "ontologyWorkspace.cardinalityAnchor": "Cardinality anchor",
   "ontologyWorkspace.identityStatus": "Identity status",
-  "ontologyWorkspace.title": "Title",
+  "ontologyWorkspace.title": "本体",
   "ontologyWorkspace.addDefinition": "Add definition",
   "ontologyWorkspace.emptyTitle": "No ontologies yet",
   "ontologyWorkspace.boolean": "Yes or no",

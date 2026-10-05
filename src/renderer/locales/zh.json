@@ -9205,7 +9205,7 @@
   "ontologyWorkspace.asset": "认知资产",
   "ontologyWorkspace.cardinalityAnchor": "数量约束对象",
   "ontologyWorkspace.identityStatus": "身份确认状态",
-  "ontologyWorkspace.title": "标题",
+  "ontologyWorkspace.title": "本体",
   "ontologyWorkspace.addDefinition": "添加定义",
   "ontologyWorkspace.emptyTitle": "还没有本体",
   "ontologyWorkspace.boolean": "是或否",

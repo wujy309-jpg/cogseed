@@ -29,7 +29,7 @@ function graphProjection(doc: OntologyDocument, graph: Awaited<ReturnType<typeof
   if (!hasLegacyGraph) return;
   const moduleId = 'legacy-ontology-graph';
   addUnique(doc.records, { ...legacyBase(moduleId, 'module', '旧图谱', 'ontology-graph.json'),
-    name: '旧图谱内容', description: '从旧图谱只读展示的分类、对象和关系；原始记录仍保留在旧图谱中。', scope: { kind: 'personal' } });
+    name: '旧图谱内容', description: '', scope: { kind: 'personal' } });
   const typeByCategory = new Map<string, string>();
   const fieldByKey = new Map<string, string>();
   for (const category of graph.categories) {
@@ -125,7 +125,7 @@ function personalOntologyProjection(doc: OntologyDocument, userId: string): void
     if (group.kind !== 'user' || !group.fields.length && !group.values.some(value => !value.assetId) && !group.entries.length) continue;
     const moduleId = legacyId('po-module', group.id), typeId = legacyId('po-type', group.id), selfId = legacyId('po-self', group.id);
     addUnique(doc.records, { ...legacyBase(moduleId, 'module', '舊個人本體', group.id), name: group.title,
-      description: '從舊個人本體只讀展示；原始值與歷史仍由個人本體維護。', scope: { kind: 'personal' } });
+      description: '', scope: { kind: 'personal' } });
     addUnique(doc.records, { ...legacyBase(typeId, 'definition', '舊個人本體類型', group.id), moduleId, name: '人物', description: '',
       definitionKind: 'type', subjectTypes: [], objectTypes: [], valueType: 'entity', cardinality: 'many', cardinalityAnchor: 'subject' });
     addUnique(doc.records, { ...legacyBase(selfId, 'entity', '舊個人本體中的“我”', group.id), moduleId, typeId,

@@ -154,6 +154,8 @@ describe('本体工作台页面层级与接线', () => {
     for (const locale of ['zh', 'en', 'ja', 'pt']) {
       const table = JSON.parse(fs.readFileSync(path.join(__dirname, `../../src/renderer/locales/${locale}.json`), 'utf8'));
       for (const key of keys) expect(table[key], `${locale}.json missing ${key}`).toBeTruthy();
+      const expectedTitle = ({ zh: '本体', en: 'Ontology', ja: '本体', pt: 'Ontologia' } as const)[locale];
+      expect(table['ontologyWorkspace.title'], `${locale}.json has wrong ontology page title`).toBe(expectedTitle);
     }
   });
   it('列表与全局图谱是同级视图，图谱页不会重复渲染本体首页内容', async () => {

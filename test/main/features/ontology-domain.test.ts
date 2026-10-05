@@ -190,10 +190,12 @@ describe('旧内容只读兼容', () => {
     const noteModule = Object.values(view.records).find(r => r.kind === 'module' && r.source.recordId === 'notes-only-group');
     const noteEntry = Object.values(view.records).find(r => r.kind === 'entity' && r.source.label === '旧个人本体自由文本条目');
     expect(noteModule?.kind).toBe('module');
+    expect(noteModule?.kind === 'module' && noteModule.description).toBe('');
     expect(noteEntry).toMatchObject({ kind: 'entity', moduleId: noteModule?.id, access: 'owner_only',
       description: '项目交付记录：周五安排复盘。', source: { kind: 'legacy' } });
     const legacyModule = Object.values(view.records).find(r => r.kind === 'module' && r.source.recordId === 'profile-group');
     expect(legacyModule?.kind).toBe('module');
+    expect(legacyModule?.kind === 'module' && legacyModule.description).toBe('');
     const facts = queryOntologyFacts(view, { moduleId: legacyModule!.id, at: '2026-10-05' });
     expect(facts.matched.map(row => (row.object.kind === 'literal' ? row.object.value : row.object.id))).toContain('Asia/Shanghai');
     expect(facts.matched.some(row => row.source.recordId === 'private-dept')).toBe(false);
