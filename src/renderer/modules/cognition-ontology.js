@@ -44,6 +44,18 @@
       .sort((a, b) => (String(b.updatedAt || '') > String(a.updatedAt || '') ? 1 : String(b.updatedAt || '') < String(a.updatedAt || '') ? -1 : 0)
         || a.name.localeCompare(b.name));
   }
+  function moduleDescription(module) {
+    if (module.description) return module.description;
+    return module.source.kind === 'legacy'
+      ? text('legacyModuleCardHint', '旧内容只读保留。打开单条记录可送入待我处理，核对后再整理。')
+      : text('noDescription', '还没有填写简介。');
+  }
+  function moduleVisual(module) {
+    if (module.source.kind === 'legacy') return { kind: 'legacy', icon: 'archive', label: text('legacy', '旧来源') };
+    if (module.scope.kind === 'project') return { kind: 'project', icon: 'folder', label: text('project', '项目') };
+    if (module.scope.kind === 'workspace') return { kind: 'workspace', icon: 'users', label: text('workspace', '工作区') };
+    return { kind: 'personal', icon: 'user', label: text('personal', '个人') };
+  }
   function moduleAccess() { return state.doc.records[state.moduleId]?.access || 'task'; }
   function recordsIn(moduleId, kind) {
     return Object.values(state.doc.records).filter(r => r.kind === kind && r.moduleId === moduleId && r.status === 'active');
@@ -222,9 +234,9 @@
       <div class="ontology-ws-list-heading"><h2>${esc(text('myModules', '我的本体'))}</h2>${tabs([['list', text('list', '列表')], ['graph', text('globalGraph', '关系图谱')]], state.mode, text('viewMode', '查看方式'), { 'data-ontology-tabs': 'workspace' })}</div>
       <div class="ontology-ws-module-grid">${allModules.length ? visibleModules.map(m => {
         const count = Object.values(state.doc.records).filter(r => r.kind !== 'module' && r.moduleId === m.id && r.status === 'active').length;
-        const scope = m.scope.kind === 'project' ? text('project', '项目') : m.scope.kind === 'workspace' ? text('workspace', '工作区') : text('personal', '个人');
-        const icon = typeof root.uiIconHtml === 'function' ? root.uiIconHtml('git-branch', 'ontology-ws-module-glyph') : '';
-        return `<article class="ontology-ws-module-card"><div class="ontology-ws-module-icon" aria-hidden="true">${icon}</div><span class="ontology-ws-scope">${esc(scope)}</span><h3>${esc(m.name)}</h3><p>${esc(m.description || text('noDescription', '还没有填写简介。'))}</p><div class="ontology-ws-card-meta"><span>${count} ${esc(text('records', '条内容'))}</span><span>v${m.version}</span></div><div class="ontology-ws-card-actions">${button(text('open', '打开本体'), 'open-module', 'primary', { 'data-record-id': m.id })}</div></article>`;
+        const visual = moduleVisual(m);
+        const icon = typeof root.uiIconHtml === 'function' ? root.uiIconHtml(visual.icon, 'ontology-ws-module-glyph') : '';
+        return `<article class="ontology-ws-module-card"><div class="ontology-ws-module-icon ontology-ws-module-icon--${visual.kind}" aria-hidden="true">${icon}</div><span class="ontology-ws-scope ontology-ws-scope--${visual.kind}">${esc(visual.label)}</span><h3>${esc(m.name)}</h3><p>${esc(moduleDescription(m))}</p><div class="ontology-ws-card-meta"><span>${count} ${esc(text('records', '条内容'))}</span><span>v${m.version}</span></div><div class="ontology-ws-card-actions">${button(text('open', '打开本体'), 'open-module', 'primary', { 'data-record-id': m.id })}</div></article>`;
       }).join('') : `<div class="ontology-ws-empty"><h2>${esc(text('emptyTitle', '还没有本体'))}</h2><p>${esc(text('emptyBody', '创建一个本体，开始整理人物、项目和事实。'))}</p>${button(text('createModule', '创建本体'), 'create-module', 'primary')}</div>`}</div>
       ${pageControls('modules', state.modulePage, allModules.length, modulePageSize)}`;
   }
@@ -240,7 +252,7 @@
     const actions = legacy ? ''
       : `${button(text('addContent', '添加内容'), 'add-content', 'primary')}${button(text('createReference', '引用其他本体'), 'create-reference')}`;
     const body = state.tab === 'graph' ? graphCanvas(state.graph, true) : state.tab === 'overview'
-      ? `<div class="ontology-ws-overview"><section class="ontology-ws-overview-card"><span>${esc(text('scope', '范围'))}</span><strong>${esc(m.scope.kind === 'personal' ? text('personal', '个人') : m.scope.kind === 'project' ? text('project', '项目') : text('workspace', '工作区'))}</strong><p>${esc(m.scope.id || '')}</p></section><section class="ontology-ws-overview-card"><span>${esc(text('description', '说明'))}</span><p>${esc(m.description || text('noDescription', '还没有填写简介。'))}</p></section><section class="ontology-ws-overview-card"><span>${esc(text('threeBoxes', '三个基础盒子'))}</span><div class="ontology-ws-box-summary">${button(`TBox · ${all.filter(r => r.kind === 'definition' && r.definitionKind !== 'relation').length}`, 'select-box', 'secondary', { 'data-box': 'T' })}${button(`ABox · ${all.filter(r => r.kind === 'entity' || r.kind === 'assertion').length}`, 'select-box', 'secondary', { 'data-box': 'A' })}${button(`RBox · ${all.filter(r => r.kind === 'reference' || r.kind === 'rule' || (r.kind === 'definition' && r.definitionKind === 'relation')).length}`, 'select-box', 'secondary', { 'data-box': 'R' })}</div></section></div><section class="ontology-ws-recent"><h2>${esc(text('recentRecords', '最近整理的内容'))}</h2>${renderRecordList(all.slice(0, 8))}</section>`
+      ? `<div class="ontology-ws-overview"><section class="ontology-ws-overview-card"><span>${esc(text('scope', '范围'))}</span><strong>${esc(m.scope.kind === 'personal' ? text('personal', '个人') : m.scope.kind === 'project' ? text('project', '项目') : text('workspace', '工作区'))}</strong><p>${esc(m.scope.id || '')}</p></section><section class="ontology-ws-overview-card"><span>${esc(text('description', '说明'))}</span><p>${esc(moduleDescription(m))}</p></section><section class="ontology-ws-overview-card"><span>${esc(text('threeBoxes', '三个基础盒子'))}</span><div class="ontology-ws-box-summary">${button(`TBox · ${all.filter(r => r.kind === 'definition' && r.definitionKind !== 'relation').length}`, 'select-box', 'secondary', { 'data-box': 'T' })}${button(`ABox · ${all.filter(r => r.kind === 'entity' || r.kind === 'assertion').length}`, 'select-box', 'secondary', { 'data-box': 'A' })}${button(`RBox · ${all.filter(r => r.kind === 'reference' || r.kind === 'rule' || (r.kind === 'definition' && r.definitionKind === 'relation')).length}`, 'select-box', 'secondary', { 'data-box': 'R' })}</div></section></div><section class="ontology-ws-recent"><h2>${esc(text('recentRecords', '最近整理的内容'))}</h2>${renderRecordList(all.slice(0, 8))}</section>`
       : `<div class="ontology-ws-box-title"><div><span>${esc(boxName)}</span><p>${esc(state.box === 'T' ? text('tboxHint', '定义这个本体认识哪些类型和属性。') : state.box === 'A' ? text('aboxHint', '保存具体人物、项目以及它们当前或过去的事实。') : text('rboxHint', '查看关系、规则和本体之间的引用。'))}</p></div>${legacy ? '' : state.box === 'A'
         ? `${button(text('addEntity', '添加对象'), 'create-entity', 'primary')}${button(text('addFact', '记录关系或事实'), 'create-assertion')}`
         : state.box === 'T' ? button(text('addDefinition', '添加定义'), 'create-definition', 'primary')

@@ -74,6 +74,7 @@ function pageHarness(extraRecords: Record<string, any> = {}, customSearchResults
       throw new Error(`unexpected channel ${channel}`);
     } },
     uiButton({ label, attrs = {} }: any) { return `<button ${Object.entries(attrs).map(([k,v]) => `${k}="${v}"`).join(' ')}>${label}</button>`; },
+    uiIconHtml(name: string, className: string) { return `<svg class="${className} is-${name}"></svg>`; },
     uiIconButton() { return '<button aria-label="close">x</button>'; },
     uiInput() { return '<input />'; }, uiField({ id, control }: any) {
       const attrs = Object.entries(control?.attrs || {}).map(([key, value]) => `${key}="${String(value)}"`).join(' ');
@@ -169,6 +170,26 @@ describe('本体工作台页面层级与接线', () => {
     expect(f.container.innerHTML).toContain('ontology-ws-graph-shell');
     expect(f.container.innerHTML).not.toContain('ontology-ws-stats');
     expect(f.container.innerHTML).not.toContain('ontology-ws-module-grid');
+  });
+  it('本体卡片用不同图标与颜色区分范围和旧来源', async () => {
+    const personal = { id: 'personal-module', kind: 'module', version: 1, status: 'active', access: 'task', createdAt: null, updatedAt: null,
+      source: { kind: 'user', label: '用户确认' }, name: '个人规则', description: '', scope: { kind: 'personal' } };
+    const workspace = { id: 'workspace-module', kind: 'module', version: 1, status: 'active', access: 'task', createdAt: null, updatedAt: null,
+      source: { kind: 'user', label: '用户确认' }, name: '团队知识', description: '', scope: { kind: 'workspace', id: 'w-1' } };
+    const legacy = { id: 'legacy-module', kind: 'module', version: 1, status: 'active', access: 'task', createdAt: null, updatedAt: null,
+      source: { kind: 'legacy', label: '旧个人本体', recordId: 'legacy-group' }, name: '旧记录', description: '', scope: { kind: 'personal' } };
+    const f = pageHarness({ [personal.id]: personal, [workspace.id]: workspace, [legacy.id]: legacy });
+    await f.context.window.mountCognitionOntology(f.container);
+    expect(f.container.innerHTML).toContain('ontology-ws-module-icon--project');
+    expect(f.container.innerHTML).toContain('is-folder');
+    expect(f.container.innerHTML).toContain('ontology-ws-module-icon--personal');
+    expect(f.container.innerHTML).toContain('is-user');
+    expect(f.container.innerHTML).toContain('ontology-ws-module-icon--workspace');
+    expect(f.container.innerHTML).toContain('is-users');
+    expect(f.container.innerHTML).toContain('ontology-ws-module-icon--legacy');
+    expect(f.container.innerHTML).toContain('is-archive');
+    expect(f.container.innerHTML).toContain('ontology-ws-scope--legacy');
+    expect(f.container.innerHTML).toContain('旧来源');
   });
   it('候选整理入口先展示来源并按项目范围选本体，手工新增记录经候选交接 IPC 保存', async () => {
     const personType = { id: 'person-type', kind: 'definition', moduleId: 'project-module', version: 1, status: 'active', access: 'task',

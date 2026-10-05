@@ -9421,5 +9421,6 @@
   "ontologyWorkspace.boxEmpty": "这里还没有内容。",
   "ontologyWorkspace.targetModuleId": "引用的本体",
   "ontologyWorkspace.requiredImport": "请填写标题和内容。",
-  "ontologyWorkspace.openDetails": "查看详情"
+  "ontologyWorkspace.openDetails": "查看详情",
+  "ontologyWorkspace.legacyModuleCardHint": "旧内容只读保留。打开单条记录可送入待我处理，核对后再整理。"
 }

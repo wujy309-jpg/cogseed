@@ -7152,5 +7152,6 @@
   "ontologyWorkspace.boxEmpty": "There is no content here yet.",
   "ontologyWorkspace.targetModuleId": "Referenced ontology",
   "ontologyWorkspace.requiredImport": "Enter a title and content.",
-  "ontologyWorkspace.openDetails": "View details"
+  "ontologyWorkspace.openDetails": "View details",
+  "ontologyWorkspace.legacyModuleCardHint": "Conteúdo antigo preservado somente para leitura. Abra um registro para enviá-lo à revisão antes de reorganizar."
 }

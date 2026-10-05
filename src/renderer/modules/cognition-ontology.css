@@ -37,9 +37,16 @@
 .ontology-ws-module-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:14px; }
 .ontology-ws-module-card,.ontology-ws-overview-card { position:relative; min-width:0; padding:20px; border:1px solid var(--onto-line); border-radius:14px; background:var(--onto-card); }
 .ontology-ws-module-card { display:flex; min-height:238px; flex-direction:column; }
-.ontology-ws-module-icon { position:absolute; top:17px; right:19px; color:var(--onto-accent); font-size:24px; }
-.ontology-ws-module-glyph { width:22px; height:22px; }
+.ontology-ws-module-icon { position:absolute; top:16px; right:17px; display:grid; place-items:center; width:36px; height:36px; border-radius:10px; color:var(--onto-muted); background:var(--surface-subtle,#f6f8f7); }
+.ontology-ws-module-icon--personal { color:var(--color-success,#1e6e4e); background:var(--color-success-soft,#e8f1ec); }
+.ontology-ws-module-icon--project { color:var(--color-info,#2563eb); background:var(--color-info-soft,#eaf2f8); }
+.ontology-ws-module-icon--workspace { color:var(--color-violet,#8b5cf6); background:color-mix(in srgb,var(--color-violet,#8b5cf6) 11%,var(--surface-card,#fff)); }
+.ontology-ws-module-icon--legacy { color:var(--color-ink-2,#3e5a4c); background:var(--color-surface-2,#edf3ef); }
+.ontology-ws-module-glyph { width:19px; height:19px; }
 .ontology-ws-scope { align-self:flex-start; padding:4px 9px; border-radius:999px; background:color-mix(in srgb,var(--onto-accent) 10%,transparent); color:var(--onto-accent); font-size:12px; }
+.ontology-ws-scope--project { color:var(--color-info,#2563eb); background:var(--color-info-soft,#eaf2f8); }
+.ontology-ws-scope--workspace { color:var(--color-violet,#8b5cf6); background:color-mix(in srgb,var(--color-violet,#8b5cf6) 11%,var(--surface-card,#fff)); }
+.ontology-ws-scope--legacy { color:var(--color-ink-2,#3e5a4c); background:var(--color-surface-2,#edf3ef); }
 .ontology-ws-module-card h3 { margin:18px 0 8px; font-size:18px; }
 .ontology-ws-module-card p { flex:1; margin:0; color:var(--onto-muted); line-height:1.5; }
 .ontology-ws-card-meta { display:flex; justify-content:space-between; margin:18px 0 12px; color:var(--onto-muted); font-size:12px; }
