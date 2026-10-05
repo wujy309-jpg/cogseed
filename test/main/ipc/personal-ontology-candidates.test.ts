@@ -1,5 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as fs from 'node:fs';
 import * as os from 'node:os';
+import * as path from 'node:path';
 import { trustedIpcSender } from '../../helpers/trusted-ipc-sender';
 
 type InvokeFn = (event: unknown, req: { channel: string; payload?: unknown }) => Promise<any>;
@@ -37,6 +39,9 @@ beforeEach(async () => {
   const ipc = await import('../../../src/main/ipc/index');
   ipc.register();
 });
+afterEach(() => {
+  vi.resetModules();
+});
 
 function call(channel: string, payload: unknown = {}) {
   if (!invokeHandler) throw new Error('invoke handler not registered');
@@ -45,12 +50,11 @@ function call(channel: string, payload: unknown = {}) {
 
 describe('ipc › personal ontology templates', () => {
   it('re-exposes single-item candidate channels for backflow confirmation while keeping batch channels retired', async () => {
-    // 2026-09-20 本体分组迁入时回流确认端用过 list/confirm/reject 三个单条
-    // 通道；2026-09-29 v2 界面改走 po.candidates.confirm / po.candidates.reject
-    // （同一服务函数），老 confirm/reject 变渲染层零调用——P-r1-64（2026-10-01
-    // 拍板按前遍结论）随死通道批次退役，list 保留（渲染层候选横幅在读）。
+    // 旧本体候选由个人本体工作台生成；现由过渡入口送入 Recall 共同审核，
+    // 不再直接确认写入旧全局记忆。list 用于兼容旧候选队列展示。
     const liveChannels = [
       'personalOntology.candidates.list',
+      'personalOntology.candidates.transferToRecall',
     ];
     for (const channel of liveChannels) {
       const res = await call(channel);
@@ -70,6 +74,23 @@ describe('ipc › personal ontology templates', () => {
         error: `unknown channel: ${channel}`,
       });
     }
+  });
+
+  it('transfers a legacy candidate into common Recall review before removing the old row', async () => {
+    const po = await import('../../../src/main/features/personal_ontology_candidates');
+    const old = await po.addCandidate(TEST_UID, { candidate_id: 'legacy-po-ipc', kind: 'relation', confidence: 'high',
+      summary: '项目负责人', memory_scope: 'shared', memory_text: 'CogSeed 项目的负责人是林青。', source_memory_refs: ['legacy-memory-1'] });
+    expect(old.ok).toBe(true);
+    const first = await call('personalOntology.candidates.transferToRecall', { candidateId: 'legacy-po-ipc' });
+    expect(first).toMatchObject({ ok: true, candidate: { suggestedType: 'fact' }, sourceRemoved: true });
+    expect((await po.listCandidates(TEST_UID)).candidate_updates).toEqual([]);
+    const candidateId = first.candidate.id;
+    await expect(call('recall.candidates.read', { candidateId })).resolves.toMatchObject({ ok: true, candidate: { status: 'pending_review' } });
+
+    const retry = await call('personalOntology.candidates.transferToRecall', { candidateId: 'legacy-po-ipc' });
+    expect(retry.candidate.id).toBe(candidateId);
+    expect(retry.sourceRemoved).toBe(false);
+    expect((await po.listCandidates(TEST_UID)).candidate_updates).toEqual([]);
   });
 
   it('preserves template restore and archive options across IPC', async () => {

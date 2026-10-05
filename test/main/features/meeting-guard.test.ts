@@ -349,7 +349,7 @@ describe('T059④ recall 组工具数（不新增模型工具）', () => {
     // 2026-10-02：14⇒16——个人字段取件/记住两件（personal_fields_check /
     // personal_field_remember）：任务开工前缺的字段在对话里问、在对话里答，
     // 不另设填写界面（子安当日决定）。工厂见 model/core-agent/cognition-kernel-tools.ts。
-    // 下一次有人往 recall 组加/删工具，这里会红——那是本断言的本意（逼基线显式更新）。
+    // 2026-10-05：旧的无范围 list_ontology_graph 由 cognition_ontology_query 替代，工具总数净减1。
     const recallTools = TOOL_CATALOG.filter((entry) => entry.group === 'recall');
     // 2026-10-03：认知资产修复增加明确候选提交与采用报告两件；会议线仍新增0。
     expect(recallTools).toHaveLength(19);

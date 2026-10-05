@@ -422,8 +422,14 @@
     const primaryBtn = caps.canPromote
       ? btn(primaryLabel, 'cand-adopt-with-form', { id: candidate.id, small: true, primary: true })
       : '';
+    const ontologyBtn = caps.canContinueOntology
+      ? btn(T('cognition.candidate_continue_ontology', '继续整理到本体'), 'cand-organize-ontology', { id: candidate.id, small: true, className: 'o' })
+      : caps.canEdit && !caps.isTerminal
+        ? btn(T('cognition.candidate_organize_ontology', '整理到本体'), 'cand-organize-ontology', { id: candidate.id, small: true, className: 'o' })
+        : '';
     const actionBtns = [
       primaryBtn,
+      ontologyBtn,
       caps.canReject ? btn(labels.reject, 'cand-decide', { id: candidate.id, data: { action: 'reject' }, small: true, className: 'o' }) : '',
       // 「看内容与证据」按钮已删（2026-09-29 子安指令）：整卡即详情入口
       // （act 提到卡根，委托层 closest 最近匹配——点按钮命中按钮自身动作，
@@ -649,6 +655,7 @@
     const canEdit = !!caps.canEdit;
     const canPromote = !!caps.canPromote;
     const canReject = !!caps.canReject;
+    const canContinueOntology = !!caps.canContinueOntology;
     const edit = canEdit;
     const field = (label, inner) => `<label class="field"><span>${esc(label)}</span>${inner}</label>`;
     // 更新候选的差异确认卡（2026-09-16 版本组）：旧版全文对照 + 版本核对
@@ -677,8 +684,12 @@
     // 2026-09-15 #266 重写时没带过来。口径见函数开头：缺失 capabilities 即只读。
     // 按钮名按型分支（specs/015 T023；2026-09-28 词表统一）：更新型「保存更新」，新建型「保存」。
     const decisionLabels = candidateDecisionLabels(candidate);
+    const ontologyAction = canContinueOntology
+      ? btn(T('cognition.candidate_continue_ontology', '继续整理到本体'), 'cand-organize-ontology', { id: candidate.id, className: 'o' })
+      : edit ? btn(T('cognition.candidate_organize_ontology', '整理到本体'), 'cand-organize-ontology', { id: candidate.id, className: 'o' }) : '';
     const actionsHtml = `<div class="actions actions-right">
         ${canPromote ? btn(decisionLabels.promote, 'cand-adopt-with-form', { id: candidate.id, primary: true }) : ''}
+        ${ontologyAction}
         ${canReject ? btn(decisionLabels.reject, 'cand-decide', { id: candidate.id, data: { action: 'reject' }, danger: true }) : ''}
       </div>`;
     return `
@@ -734,6 +745,7 @@
       pending_review: 'needs_review',
       deferred: 'deferred',
       confirmed: 'confirmed',
+      integrated: 'integrated',
       rejected: 'rejected',
       ignored: 'ignored',
       expired: 'expired',
@@ -748,7 +760,9 @@
       needs_review: ['cognition.candidate_status_pending', '待确认', 'amber'],
       weak_evidence: ['cognition.candidate_status_weak_evidence', '证据不足', 'amber'],
       deferred: ['cognition.candidate_system_hold', '系统保留（语义复核有发现）', 'amber'],
+      ontology_in_progress: ['cognition.candidate_ontology_in_progress', '正在整理到本体', 'amber'],
       confirmed: ['cognition.candidate_status_promoted', '已保存', 'green'],
+      integrated: ['cognition.candidate_status_integrated', '已整理到本体', 'green'],
       rejected: ['cognition.candidate_status_rejected', '未保存', 'gray'],
       ignored: ['cognition.candidate_status_ignored', '已忽略', 'gray'],
       expired: ['cognition.candidate_status_expired', '已失效', 'gray'],
@@ -763,12 +777,24 @@
     const broken = evidenceMostlyUnavailable(candidate);
     const status = candidateStatusPresentation(candidate);
     const isTerminal = Boolean((candidate.capabilities || {}).isTerminal)
-      || ['confirmed', 'rejected', 'ignored', 'expired', 'superseded'].includes(status.state);
+      || ['confirmed', 'integrated', 'rejected', 'ignored', 'expired', 'superseded'].includes(status.state);
     const stateHint = status.state === 'confirmed'
       ? T('cognition.candidate_detail_saved_hint', '已保存为正式资产。后续修改或暂停，请到资产详情操作。')
-      : T('cognition.candidate_detail_terminal_hint', '这条建议已处理，不能再次确认；原记录保留供查看。');
-    const nextStep = status.state === 'confirmed' && candidate.promotedAssetId
-      ? btn(T('cognition.candidate_detail_open_asset', '查看已保存资产'), 'go-inbox-asset', {
+      : status.state === 'ontology_in_progress'
+        ? T('cognition.candidate_ontology_resume_hint', '已有内容整理到本体，继续添加关联记录或完成整理。')
+      : status.state === 'integrated'
+        ? T('cognition.candidate_detail_integrated_hint', '已整理到本体，没有另存为普通认知资产。')
+        : T('cognition.candidate_detail_terminal_hint', '这条建议已处理，不能再次确认；原记录保留供查看。');
+    const nextStep = status.state === 'integrated' && candidate.ontologyHandoff?.recordIds?.length
+      ? btn(T('cognition.candidate_detail_open_ontology', '查看本体记录'), 'open-ontology', {
+        small: true, className: 'o', data: { moduleId: String(candidate.ontologyHandoff.moduleIds?.[0] || ''), recordId: String(candidate.ontologyHandoff.recordIds[0]) },
+      })
+      : candidate.capabilities?.canContinueOntology
+        ? btn(T('cognition.candidate_continue_ontology', '继续整理到本体'), 'cand-organize-ontology', { id: candidate.id, small: true, className: 'o' })
+        : candidate.capabilities?.canEdit && !isTerminal
+          ? btn(T('cognition.candidate_organize_ontology', '整理到本体'), 'cand-organize-ontology', { id: candidate.id, small: true, className: 'o' })
+      : status.state === 'confirmed' && candidate.promotedAssetId
+        ? btn(T('cognition.candidate_detail_open_asset', '查看已保存资产'), 'go-inbox-asset', {
         small: true, className: 'o', data: { id: String(candidate.promotedAssetId) },
       })
       : status.state === 'ignored' && candidate.mergedInto

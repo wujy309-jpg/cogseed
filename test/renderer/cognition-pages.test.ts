@@ -203,7 +203,9 @@ describe('cognition-assets 五页签结构(迁移终态)', () => {
     expect(views2).toContain('ca-banner-slot');
     expect(html2).toContain('id="ca-ontology-parking"');
     expect(core2).toContain('ca-ontology-parking');
-    expect(core2).toContain('renderPersonalOntology');
+    expect(core2).toContain("await load('cognition-ontology')");
+    expect(core2).toContain('mountCognitionOntology(mount, options)');
+    expect(core2).not.toContain('renderPersonalOntology()');
   });
 
   it('五页签标题四语齐全', () => {

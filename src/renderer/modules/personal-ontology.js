@@ -1937,12 +1937,13 @@
       if (!candidate || !candidate.candidate_id) return '';
       const text = String(candidate.memory_text || candidate.summary || '').trim();
       const kindTag = candidate.kind === 'rule' ? _tag(_t('personalOntology.po2_candidate_rule', '规则')) : '';
+      const restricted = ['restricted', 'sensitive'].includes(String(candidate.sensitivity || 'standard'));
       return `<div class="po2-candidate" data-poc-candidate-id="${escapeHtml(candidate.candidate_id)}">
         <span class="po2-candidate-tag">${_statusPill(_t('personalOntology.po2_candidate_pending', '待确认'), 'warning')}</span>
         <span class="po2-candidate-text">${escapeHtml(_pocTextSnippet(text || candidate.summary || '', 200))}</span>
         ${kindTag}
         <span class="po2-candidate-actions">
-          ${_button({ label: _t('personalOntology.po2_candidate_accept', '收下'), size: 'sm', attrs: { 'data-poc-candidate-op': 'confirm', 'data-poc-candidate-id': candidate.candidate_id } })}
+          ${restricted ? `<span class="muted">${escapeHtml(_t('personalOntology.po2_candidate_restricted', '仅本人可见，不能转入任务可用资产'))}</span>` : _button({ label: _t('personalOntology.po2_candidate_transfer', '移入待我处理'), size: 'sm', attrs: { 'data-poc-candidate-op': 'transfer', 'data-poc-candidate-id': candidate.candidate_id } })}
           ${_button({ label: _t('personalOntology.po2_candidate_skip', '跳过'), size: 'sm', className: 'o', attrs: { 'data-poc-candidate-op': 'reject', 'data-poc-candidate-id': candidate.candidate_id } })}
         </span>
       </div>`;
@@ -2734,45 +2735,17 @@
 
   // ── 候选确认 / 跳过 ─────────────────────────────────────────────────────
 
-  async function _pocConfirmCandidateV2(candidateId) {
-    const candidate = _pocPendingCandidates.find((c) => c && c.candidate_id === candidateId);
-    if (!candidate) return;
-    const dests = _pocDestinationOptions();
-    if (!dests.length) {
-      _pocToast('personalOntology.po2_need_group_first', '先到「分组与模板」建一个分组', 'error');
-      return;
-    }
-    const gid = dests[0].value;
-    const groupSelectId = 'po2-candidate-group';
-    const dialog = await _pocModalForm({
-      title: _t('personalOntology.po2_candidate_accept', '收下这条建议'),
-      bodyHtml: `
-        <div class="po2-candidate-preview">${escapeHtml(_pocTextSnippet(candidate.memory_text || candidate.summary || '', 240))}</div>
-        ${_pocFieldSelect(groupSelectId, _t('personalOntology.po2_dest_group', '写进哪个分组'), dests, gid, { hint: _t('personalOntology.po2_candidate_dest_hint', 'AI 会按内容挑最合适的字段落位；落不进字段的先进流水') })}`,
-    });
-    if (!dialog || dialog.value !== 'save') return;
-    const nextGid = String((document.getElementById(groupSelectId) || {}).value || '');
-    if (!nextGid) return;
-    const res = await _pocInvoke('po.candidates.confirm', { candidateId, dest: { toGlobalMemory: false, toGroupIds: [nextGid] } });
+  async function _pocTransferCandidateV2(candidateId, el) {
+    const res = await _pocRunOnce(`po-candidate-transfer:${candidateId}`, el, () => _pocInvoke('personalOntology.candidates.transferToRecall', { candidateId }));
     if (!res || res.ok === false) {
-      if (res && res.error === 'conflict_detected') {
-        const ack = typeof uiConfirm === 'function' && await uiConfirm({ message: _t('personalOntology.po2_candidate_conflict', '这条内容与已有内容疑似矛盾。仍要写入吗？') });
-        if (ack) {
-          const retry = await _pocInvoke('po.candidates.confirm', { candidateId, dest: { toGlobalMemory: false, toGroupIds: [nextGid] }, acknowledgeConflict: true });
-          if (retry && retry.ok !== false) {
-            _pocToast('personalOntology.po2_candidate_accepted', '已收下', 'success');
-            await _pocReloadPo();
-          } else {
-            _pocToast('personalOntology.op_failed', _pocOperationErrorText(retry && retry.error), 'error');
-          }
-        }
-        return;
-      }
       _pocToast('personalOntology.op_failed', _pocOperationErrorText(res && res.error), 'error');
       return;
     }
-    _pocToast('personalOntology.po2_candidate_accepted', '已收下', 'success');
+    _pocToast('personalOntology.po2_candidate_transferred', '已转入「待我处理」；尚未保存为正式认知。', 'success');
     await _pocReloadPo();
+    if (res.candidate?.id && window.CogAssets?.router?.go) {
+      window.CogAssets.router.go({ name: 'review', candidateId: String(res.candidate.id) });
+    }
   }
 
   async function _pocRejectCandidateV2(candidateId, el) {
@@ -3902,7 +3875,7 @@
         e.stopPropagation();
         const op = el.getAttribute('data-poc-candidate-op');
         const cid = el.getAttribute('data-poc-candidate-id');
-        if (op === 'confirm' && cid) await _pocConfirmCandidateV2(cid);
+        if (op === 'transfer' && cid) await _pocTransferCandidateV2(cid, el);
         else if (op === 'reject' && cid) await _pocRejectCandidateV2(cid, el);
       });
     });

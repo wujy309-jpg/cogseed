@@ -11,7 +11,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 const ROOT = path.resolve(__dirname, '../../../..');
-const ipcSource = fs.readFileSync(path.join(ROOT, 'src/main/ipc/index.ts'), 'utf8');
+// Registered handlers may be moved to the cognition module without retiring channels.
+const ipcSource = ['index.ts', 'cognition.ts'].map(file => fs.readFileSync(path.join(ROOT, 'src/main/ipc', file), 'utf8')).join('\n');
 
 describe('014 anti-drift（specs/014 T024）', () => {
   it('③ IPC 通道与 014 基线一致，且只允许已登记的后续迁移通道', () => {
@@ -22,6 +23,25 @@ describe('014 anti-drift（specs/014 T024）', () => {
     const sneaked = [...new Set(current)].filter((name) => !baseline.includes(name));
     const removed = baseline.filter((name) => !current.includes(name));
     const registeredPost014 = [
+      // These already registered cognition-module handlers are now included in the scan.
+      'cognition.capture.draft',
+      'cognition.assets.page',
+      'personalOntology.candidates.transferToRecall',
+      // 2026-10-05：本体模块查询、三盒、图谱、历史、规则、变更与本机文件候选入口。
+      'cognition.ontology.candidate.commit',
+      'cognition.ontology.candidate.complete',
+      'cognition.ontology.box.list',
+      'cognition.ontology.command.commit',
+      'cognition.ontology.command.preview',
+      'cognition.ontology.facts.query',
+      'cognition.ontology.graph.query',
+      'cognition.ontology.history.get',
+      'cognition.ontology.import.file',
+      'cognition.ontology.import.submit',
+      'cognition.ontology.record.get',
+      'cognition.ontology.rules.query',
+      'cognition.ontology.search',
+      'cognition.ontology.snapshot',
       'recall.scopedMemoryMigration.preview',
       'recall.scopedMemoryMigration.run',
       // 2026-09-29 个人本体 v2 重构：po.* 干净通道（JSON 单文档存储上的

@@ -200,12 +200,13 @@ describe('candidate pool rendering', () => {
     expect(views).not.toContain("T('cognition.candidate_evidence_ok'");
   });
 
-  it('keeps confirmed/rejected/ignored candidates in the processed fold only', () => {
-    expect(views).toContain("['confirmed', 'rejected', 'ignored']");
+  it('keeps completed, rejected, ignored, and ontology-integrated candidates in the processed fold only', () => {
+    expect(views).toContain("['confirmed', 'integrated', 'rejected', 'ignored']");
     expect(views).toContain('fold-processed');
     expect(views).toContain("T('cognition.candidate_status_promoted'");
     expect(views).toContain("T('cognition.candidate_status_rejected'");
     expect(views).toContain("T('cognition.candidate_status_ignored'");
+    expect(views).toContain("integrated: T('cognition.candidate_status_integrated'");
   });
 
   it('reads capabilities from the main-process mapping before rendering actions', () => {

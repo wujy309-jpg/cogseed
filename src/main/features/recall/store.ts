@@ -1,4 +1,5 @@
 import * as fs from 'node:fs/promises';
+import { withPendingAssetVersion } from './asset-version-journal';
 import { isManagedCognitionCollection, readUnifiedCognitionRecord, persistCognitionSource, withCognitionTransition } from '../cognition_bridge';
 
 import { appendJsonlAtomic, removeJsonlRecords, removeJsonlStream, safeId, writeJson } from '../../storage';
@@ -113,8 +114,8 @@ export async function writeRecallJsonRecord(
 ): Promise<RecallJsonRecord> {
   const recordPath = recallJsonRecordPath(userId, collection, recordId);
   const work = () => fileEditLock(recordPath).runExclusive(async () => {
-    await readRecallJsonRecord(userId, collection, recordId);
-    const result = validateRecallRecord(userId, recordId, record);
+    const current = await readRecallJsonRecord(userId, collection, recordId);
+    const result = validateRecallRecord(userId, recordId, collection === 'ability-assets' ? withPendingAssetVersion(current, record) : record);
     if (isManagedCognitionCollection(collection)) await persistCognitionSource(userId, collection, recordId, result, () => writeJson(recordPath, result));
     else await writeJson(recordPath, result);
     return result;
@@ -134,7 +135,7 @@ export async function updateRecallJsonRecord(
   const work = () => fileEditLock(recordPath).runExclusive(async () => {
     const current = await readRecallJsonRecord(userId, collection, recordId);
     const next = await updater(current);
-    const result = validateRecallRecord(userId, recordId, next);
+    const result = validateRecallRecord(userId, recordId, collection === 'ability-assets' ? withPendingAssetVersion(current, next) : next);
     if (isManagedCognitionCollection(collection)) await persistCognitionSource(userId, collection, recordId, result, () => writeJson(recordPath, result));
     else await writeJson(recordPath, result);
     return result;

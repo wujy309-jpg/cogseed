@@ -457,8 +457,8 @@
       <!-- Cognitive assets -->
       <section class="panel ui-resource-page" id="panel-recall">
                   <div id="ca-root"></div>
-          <!-- 个人本体 section 的常驻停车场：本体路由激活时被移进 #ca-ontology-mount，
-               离开时归还这里——同一 DOM 节点往返，内部状态不销毁（2026-09-21 五页签迁移）。 -->
+          <!-- 旧个人本体页面壳保留在隐藏停车区供兼容功能使用。当前本体路由在
+               #ca-ontology-mount 加载独立工作台，不把此旧页面移入新本体页。 -->
           <div id="ca-ontology-parking" hidden>
           <section class="recall-personal-ontology-section" id="skills-cognition-personal-ontology" hidden>
             <!-- 个人本体（#panel-personal-ontology）整体内嵌：保留 id，渲染函数照常工作。 -->
@@ -1952,6 +1952,7 @@
   <script src="./modules/artifact-security.js"></script>
   <script src="./modules/chat-artifact.js"></script>
   <script src="./modules/plan-rail.js"></script>
+  <script src="./modules/conversation-cognition-strip.js"></script>
   <script src="./modules/conversation-info.js"></script>
   <script src="./modules/run-center-model.js"></script>
   <script src="./modules/run-center-global.js"></script>

@@ -540,6 +540,8 @@ describe('T046 ④ tool-catalog recall 组工具面受控扩展', () => {
    * 带用户原话凭证约束）——本体总线 S2「缺值改对话提问、回填后不再问」的
    * owner 拍板设计，工厂（cognition-kernel-tools）与 catalog 双侧注册，
    * 行为测试在 test/main/features/cognition_kernel/。
+   * 2026-10-05：cognition_ontology_query（只读任务查询）接入同一 cognition-kernel 工具工厂，
+   * 以范围过滤的共同查询替代旧 list_ontology_graph，不重写 KSTAR。
    */
   const RECALL_GROUP_BASELINE = [
     // 2026-10-03：用户授权重构保存与采用入口；只扩展这两项，既有冻结仍生效。
@@ -548,11 +550,11 @@ describe('T046 ④ tool-catalog recall 组工具面受控扩展', () => {
     'personal_ontology_fields',
     'personal_fields_check',
     'personal_field_remember',
+    'cognition_ontology_query',
     'search_ability_assets',
     'ontology_query',
     'list_task_experiences',
     'read_task_experience',
-    'list_ontology_graph',
     'list_ability_assets',
     'read_ability_asset',
     'list_asset_change_proposals',

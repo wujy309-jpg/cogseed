@@ -33,9 +33,19 @@ export function createCogSeedAgentKernel(deps: CogSeedAgentKernelDeps = {}): Cog
       maxToolRounds: deps.maxToolRounds,
     })
     : null;
+  const active = new Map<string, AbortController>();
   return {
-    run: runner ? runner.run : unsupportedNativeRun,
-    async cancel(_requestId: string): Promise<void> {},
+    async *run(request, options = {}) {
+      if (!runner) { yield* unsupportedNativeRun(request); return; }
+      if (active.has(request.requestId)) throw new Error('runtime request already running');
+      const controller = new AbortController();
+      active.set(request.requestId, controller);
+      try {
+        yield* runner.run(request, { ...options, signal: options.signal
+          ? AbortSignal.any([options.signal, controller.signal]) : controller.signal });
+      } finally { active.delete(request.requestId); }
+    },
+    async cancel(requestId: string): Promise<void> { active.get(requestId)?.abort(); },
     async getSession(userId: string, runtimeSessionId: string): Promise<RuntimeKernelSessionSummary> {
       const session = await readNativeRuntimeSession(userId, runtimeSessionId);
       const lastTurn = [...session.records]

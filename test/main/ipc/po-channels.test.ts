@@ -126,21 +126,27 @@ const CASES: Array<{ channel: string; payload: any; target: () => any; args: any
   { channel: 'po.templates.archiveInfo', payload: { templateId: 'student' }, target: () => poApi.poTemplateArchiveInfo, args: ['student'] },
   { channel: 'po.history.list', payload: { groupId: GID }, target: () => poApi.poListHistory, args: [GID], wrapKey: 'history' },
   { channel: 'po.history.restore', payload: { groupId: GID, snapshotId: 'snap001' }, target: () => groupsFeature.restoreGroupSnapshot, args: [GID, 'snap001'] },
-  { channel: 'po.candidates.confirm', payload: { candidateId: 'cand1', dest: {}, acknowledgeConflict: true }, target: () => candidatesFeature.confirmCandidate, args: ['cand1', {}, { acknowledgeConflict: true }] },
   { channel: 'po.candidates.reject', payload: { candidateId: 'cand1' }, target: () => candidatesFeature.rejectCandidate, args: ['cand1'] },
   { channel: 'po.data.export', payload: {}, target: () => poApi.poExportMarkdown, args: [], wrapKey: 'markdown' },
   { channel: 'po.data.importPreview', payload: { text: '## 组' }, target: () => poApi.poImportPreview, args: ['## 组'] },
   { channel: 'po.data.importApply', payload: { items: [] }, target: () => poApi.poImportApply, args: [[]] },
 ];
 
-describe('ipc › po.* v2 通道（27 条薄转发）', () => {
+describe('ipc › po.* v2 通道（26 条薄转发）', () => {
   it('全部通道已注册（不是 unknown channel）', async () => {
-    expect(CASES.length).toBe(27);
+    expect(CASES.length).toBe(26);
     for (const c of CASES) {
       const res = await call(c.channel, c.payload);
       expect(res, c.channel).not.toEqual({ ok: false, error: `unknown channel: ${c.channel}` });
       expect(res.ok, c.channel).toBe(true);
     }
+  });
+
+  it('不允许旧本体候选绕过共同审核直接写入旧记忆', async () => {
+    const result = await call('po.candidates.confirm', { candidateId: 'cand-legacy', dest: { toGlobalMemory: true } });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('transfer it to the common Recall review');
+    expect(candidatesFeature.confirmCandidate).not.toHaveBeenCalled();
   });
 
   it('payload 塞 uid 不改变转调入参：身份只来自 ctx.userId', async () => {

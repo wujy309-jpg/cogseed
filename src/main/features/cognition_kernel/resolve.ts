@@ -113,6 +113,7 @@ export function resolveFromSnapshot(
           source: 'personal_asset',
           sourceId: asset.id,
           version: asset.version,
+        ...(asset.revision ? { revision: asset.revision } : {}),
           ...(primary.asOf ? { asOf: primary.asOf } : {}),
           ...(primary.verified !== undefined ? { verified: primary.verified } : {}),
           updatedAt: asset.updatedAt || primary.updatedAt,
@@ -155,6 +156,7 @@ export function resolveFromSnapshot(
         source: 'personal_asset',
         sourceId: asset.id,
         version: asset.version,
+        ...(asset.revision ? { revision: asset.revision } : {}),
         updatedAt: asset.updatedAt,
         ...(conflictPatch.length ? { disputed: true as const, conflictsWith: conflictPatch } : {}),
       });
@@ -267,7 +269,8 @@ export async function loadPersonalSourceSnapshot(
     id: asset.id,
     title: String(asset.title ?? ''),
     statement: String(asset.statement ?? ''),
-    version: String(asset.version ?? ''),
+    version: String(asset.activeVersion ?? asset.version ?? ''),
+    revision: String(asset.version ?? ''),
     status: String(asset.status ?? ''),
     updatedAt: String(asset.updatedAt ?? ''),
     ontologyRefs: (asset.ontologyRefs ?? []).map((ref) => ({

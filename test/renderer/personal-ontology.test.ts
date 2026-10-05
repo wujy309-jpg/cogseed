@@ -151,7 +151,7 @@ const nav = (loaded: { elements: Map<string, any> }) => loaded.elements.get('per
 // ── wiring ───────────────────────────────────────────────────────────────
 
 describe('personal ontology v2 renderer › wiring', () => {
-  it('keeps the parking section, modals, and cognition-assets mount contract', () => {
+  it('keeps the old shell while routing the workbench through the new cognition-assets mount', () => {
     for (const id of [
       'panel-personal-ontology', 'personal-onto-sidebar',
       'personal-onto-nav', 'personal-onto-main-header', 'personal-onto-main-body',
@@ -159,7 +159,9 @@ describe('personal ontology v2 renderer › wiring', () => {
     ]) expect(html).toContain(`id="${id}"`);
     expect(boot).toContain("const openPersonalOntology = view === 'personal-ontology'");
     expect(cognitionViews).toContain('data-act="open-ontology"');
-    expect(cognitionCore).toContain('renderPersonalOntology');
+    expect(cognitionCore).toContain("await load('cognition-ontology')");
+    expect(cognitionCore).toContain('mountCognitionOntology(mount, options)');
+    expect(cognitionCore).not.toContain('renderPersonalOntology()');
     expect(boot).toContain("_loadViewFeature('recall', 'recall'");
   });
 
@@ -206,13 +208,13 @@ describe('personal ontology v2 renderer › facts', () => {
     expect(row).not.toContain('data-poc-value-op="delete"');
   });
 
-  it('候选横幅：待确认 + 收下/跳过；收下走 po.candidates.confirm', async () => {
+  it('旧本体候选改为转入共同审核；不再直接写入旧记忆', async () => {
     const invoke = makeInvoke();
     const loaded = await renderFacts(invoke);
     const html1 = body(loaded);
     expect(html1).toContain('po2-candidates');
     expect(html1).toContain('T035 测试资产A');
-    expect(html1).toContain('data-poc-candidate-op="confirm"');
+    expect(html1).toContain('data-poc-candidate-op="transfer"');
     expect(html1).toContain('data-poc-candidate-op="reject"');
     // 侧栏徽标
     expect(nav(loaded)).toContain('backflow_badge');

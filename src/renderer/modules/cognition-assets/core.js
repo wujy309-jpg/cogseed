@@ -1540,7 +1540,7 @@
       if (target.category === 'kstar') target = Object.assign({}, target, { category: '' });
       // 先把 next 归一到同一形状再比（部分键字面量 vs 全键展开的序列化恒不等，
       // 连点同一 tab 会堆积重复栈项——2026-09-14 终审修）。
-      const merged = Object.assign({ name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', taskFailedOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', candCreate: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '', manage: '' }, target);
+      const merged = Object.assign({ name: 'tree', category: '', assetId: '', candidateId: '', moduleId: '', recordId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', taskFailedOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', candCreate: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '', manage: '' }, target);
       const same = JSON.stringify(current) === JSON.stringify(merged);
       if (!opts.replace && !same) store.backStack.push(Object.assign({}, current));
       store.route = merged;
@@ -2877,11 +2877,10 @@
     return true;
   };
 
-  /* ────────────────────────── 个人本体（内嵌工作台） ────────────────────────── */
-  /* #panel-personal-ontology 整体内嵌在 #panel-recall（index.html），
-   * 渲染函数来自 personal-ontology.js（随 recall 特性组
-   * 加载）。旧实现的显隐控制在 skills.js 被删的 4549 行里；此处接管：
-   * overview 常驻入口（views.js）+ boot.js 深链。 */
+  /* ────────────────────────── 本体工作台挂载 ────────────────────────── */
+  /* 当前路由在 cognition-assets 的 #ca-ontology-mount 内加载 cognition-ontology。
+   * #panel-personal-ontology 是保留的旧页面壳，不再承载本体工作台；旧深链在 boot.js
+   * 归一化后进入同一新路由。 */
 
   function showRecallPanel() {
     try {
@@ -2903,17 +2902,16 @@
     return false;
   };
 
-  /* ───────────── 个人本体独立页(2026-09-21 认知页签迁移) ───────────── */
-  /* 本体不再是"隐藏 ca-root + 整屏替换"的独立形态,而是认知资产顶级入口中的一个路由:
-   * 渲染层在 ca-scroll 里放 #ca-ontology-mount,再由这里把 index.html 的
-   * #skills-cognition-personal-ontology section 从 parking 容器移进 mount,
-   * 调 renderPersonalOntology()。离开路由时先归还 parking 再擦除内容区——
-   * section 始终是同一个 DOM 节点,本体内部状态(_pocSelected 等)不销毁。 */
+  /* ───────────── 本体工作台路由挂载 ───────────── */
+  /* 本体是认知资产顶级入口下的完整工作台。此处只加载并挂载新本体页；不移动旧页面 DOM，
+   * 也不复用旧图谱写接口。旧数据以有来源的只读投影出现，整理通过共同候选入口提交。 */
 
   NS.unmountPersonalOntology = function unmountPersonalOntology() {
+    if (typeof window.unmountCognitionOntology === 'function') window.unmountCognitionOntology();
     const section = document.getElementById('skills-cognition-personal-ontology');
     if (!section) return;
     const parking = document.getElementById('ca-ontology-parking');
+    // Restore the old shell if a stale/pre-upgrade view had moved it into the page.
     if (parking && section.parentElement !== parking) parking.appendChild(section);
     section.hidden = true;
     section.classList.remove('is-standalone');
@@ -2921,28 +2919,27 @@
 
   NS.mountPersonalOntology = async function mountPersonalOntology(options = {}) {
     showRecallPanel();
-    const section = document.getElementById('skills-cognition-personal-ontology');
     const mount = document.getElementById('ca-ontology-mount');
-    if (!section || !mount) return;
-    // 深链可能早于特性组加载完成:渲染函数不在时按需补载再画。
-    if (typeof window.renderPersonalOntology !== 'function') {
-      const load = typeof loadRendererFeature === 'function' ? loadRendererFeature : window.loadRendererFeature;
-      if (typeof load === 'function') {
-        try { await load('personal-ontology'); } catch (_) { /* 渲染函数缺席时下面跳过 */ }
-      }
+    if (!mount) return;
+    const load = typeof loadRendererFeature === 'function' ? loadRendererFeature : window.loadRendererFeature;
+    if (typeof window.mountCognitionOntology !== 'function' && typeof load === 'function') {
+      try { await load('cognition-ontology'); } catch (_) { /* visible error is rendered below */ }
     }
-    if (mount.parentElement && section.parentElement !== mount) mount.appendChild(section);
-    section.hidden = false;
-    section.classList.add('is-standalone');
-    if (typeof window.renderPersonalOntology === 'function') {
-      try {
-        await window.renderPersonalOntology(options.resetToOverview ? { view: 'overview' } : {});
-      } catch (_) { /* 本体渲染失败不阻塞主 UI */ }
+    if (typeof window.mountCognitionOntology === 'function') {
+      await window.mountCognitionOntology(mount, options);
+      return;
     }
+    mount.innerHTML = `<main class="ontology-workspace"><div class="ontology-ws-error" role="alert"><h1>${T('ontologyWorkspace.loadFailed', '本体暂时无法加载')}</h1><p>${T('ontologyWorkspace.loadBundleFailed', '本体工作台加载失败，请重试。')}</p>${typeof window.uiButton === 'function' ? window.uiButton({ label: T('ontologyWorkspace.retry', '重试'), role: 'primary', attrs: { id: 'ontology-workspace-retry' } }) : ''}</div></main>`;
+    const retry = mount.querySelector('#ontology-workspace-retry');
+    if (retry) retry.addEventListener('click', () => { void NS.mountPersonalOntology(options); });
   };
 
-  NS.openPersonalOntology = function openPersonalOntology() {
-    NS.router.go({ name: 'ontology' });
+  NS.openPersonalOntology = function openPersonalOntology(options = {}) {
+    NS.router.go({ name: 'ontology',
+      ...(options.candidateId ? { candidateId: String(options.candidateId) } : {}),
+      ...(options.moduleId ? { moduleId: String(options.moduleId) } : {}),
+      ...(options.recordId ? { recordId: String(options.recordId) } : {}),
+    });
   };
 
 })();

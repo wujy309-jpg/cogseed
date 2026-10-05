@@ -22,6 +22,9 @@ import {
 } from '../../features/cognition_kernel';
 import { logErrorRef, maskId } from '../../util/log-redact';
 
+import { recordAssetAgentReads } from '../../features/recall/agent-read-accounting';
+import type { ResolvePersonalFieldsRequest } from '../../features/cognition_kernel/types';
+import { createOntologyTools } from './ontology-tools';
 const log = createLogger('cognition-kernel-tools');
 
 const PACK_IDS = Object.keys(TASK_FIELD_PACKS);
@@ -29,6 +32,11 @@ const MAX_VALUE_CHARS = 2000;
 
 export interface CognitionKernelToolsOpts {
   userId: string;
+  turnId?: string;
+  cid?: string;
+  spaceId?: string;
+  context?: ResolvePersonalFieldsRequest['context'];
+  observed?: Map<string, { sourceId: string; version?: string; expectedUpdatedAt?: string; expectedValue?: string }>;
 }
 
 function packIdOf(input: Record<string, unknown>): string {
@@ -58,13 +66,19 @@ function createFieldsCheckTool(opts: CognitionKernelToolsOpts): AgentTool {
       const pack = getTaskFieldPack(packId);
       if (!pack) return { content: 'personal_fields_check: 未知的任务字段包，可选：' + PACK_IDS.join(' / '), isError: true };
       try {
-        const check = await checkTaskFields(userId, pack);
+        const check = await checkTaskFields(userId, pack, opts.context);
+        for (const field of check.resolution.bound) opts.observed?.set(field.fieldName, { sourceId: field.sourceId, version: field.revision ?? field.version,
+          // Ontology timestamps have second precision; also bind the value so
+          // two edits in the same second cannot overwrite an old observation.
+          ...(!field.version ? { expectedUpdatedAt: field.updatedAt, expectedValue: field.value } : {}) });
+        await recordAssetAgentReads(opts, check.resolution.bound.flatMap(field => field.source === 'personal_asset' && field.version
+          ? [{ assetId: field.sourceId, assetVersion: field.version }] : []));
         const result = {
           pack: pack.id,
           title: pack.title,
           total: check.totalCount,
           boundCount: check.boundCount,
-          bound: check.resolution.bound.map((field) => ({ field: field.fieldName, value: field.value, source: field.source })),
+          bound: check.resolution.bound.map((field) => ({ field: field.fieldName, value: field.value, source: field.source, sourceId: field.sourceId, ...(field.version ? { version: field.version, revision: field.revision ?? field.version } : {}) })),
           missing: check.gaps.map((gap) => ({ field: gap.fieldName, ask: gap.question, action: gap.action })),
         };
         return { content: JSON.stringify(result, null, 2) };
@@ -100,12 +114,14 @@ function createFieldRememberTool(opts: CognitionKernelToolsOpts): AgentTool {
       if (!field || !value) return { content: 'personal_field_remember: field 与 value 都不能为空', isError: true };
       if (value.length > MAX_VALUE_CHARS) return { content: 'personal_field_remember: 值过长，请先精简', isError: true };
       try {
-        const result = await backfillFieldValue(userId, { fieldName: field, value });
+        const result = await backfillFieldValue(userId, { fieldName: field, value, context: opts.context, ...opts.observed?.get(field), expectedVersion: opts.observed?.get(field)?.version });
         if (!result.ok) return { content: 'personal_field_remember: 写入失败（' + String(result.error || 'unknown') + '）', isError: true };
         return {
           content: JSON.stringify({
             remembered: field,
             duplicate: result.duplicate === true,
+            sourceId: result.objectId,
+            version: result.version,
             message: result.duplicate ? '这一项档案里已经有了，未重复写入。' : '已记住，下次同类任务不会再问这个字段。',
           }),
         };
@@ -119,5 +135,6 @@ function createFieldRememberTool(opts: CognitionKernelToolsOpts): AgentTool {
 
 /** 组装本模块的工具（只读 check + 写入 remember）。 */
 export function createCognitionKernelTools(opts: CognitionKernelToolsOpts): AgentTool[] {
-  return [createFieldsCheckTool(opts), createFieldRememberTool(opts)];
+  const scoped = { ...opts, observed: new Map<string, { sourceId: string; version?: string; expectedUpdatedAt?: string; expectedValue?: string }>() };
+  return [createFieldsCheckTool(scoped), createFieldRememberTool(scoped), ...createOntologyTools({ userId: opts.userId, turnId: opts.turnId, context: opts.context })];
 }

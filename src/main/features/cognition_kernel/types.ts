@@ -51,6 +51,7 @@ export interface ResolvedPersonalField {
   sourceId: string;
   /** 资产来源时的版本号；本体手编值没有版本。 */
   version?: string;
+  revision?: string;
   /** 信息截至年月 YYYY-MM（本体值的 @asof）。 */
   asOf?: string;
   /** 核实档：true=有来源支持；'independent'=独立核实过。 */
@@ -129,6 +130,7 @@ export interface PersonalAssetView {
   title: string;
   statement: string;
   version: string;
+  revision?: string;
   status: string;
   updatedAt: string;
   /** 显式声明的本体落点（T-Box 指针）。 */

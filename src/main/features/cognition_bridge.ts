@@ -60,10 +60,12 @@ function objectIdForPo(groupId: string, valueId: string): string {
   return 'co-po-' + createHash('sha256').update(JSON.stringify([groupId, valueId])).digest('hex').slice(0, 24);
 }
 /** 完整记录留兼容契约，规范对象用于统一读取；字段不猜测、不改写正文、不按正文去重。 */
-function sourceObjects(c: CognitionCompatibilityState): CognitionObject[] {
+function sourceObjects(c: CognitionCompatibilityState, includePoValues = true): CognitionObject[] {
   const out: CognitionObject[] = [];
   const homes: Record<string, CognitionObject['home']> = { personal: 'personal_fact', fact: 'personal_fact', rule: 'rule', template: 'template', skill_method: 'method' };
   const po = c.po as unknown as PoDocument | undefined;
+  const projected = new Map<string, { g: PoDocument['groups'][number]; v: PoDocument['groups'][number]['values'][number] }>();
+  for (const g of po?.groups ?? []) for (const v of g.values) if (v.assetId && !projected.has(v.assetId)) projected.set(v.assetId, { g, v });
   for (const a of Object.values(c.records['ability-assets'] ?? {})) {
     const home = homes[String(a.type)];
     if (!home) throw new Error(`unsupported asset type: ${String(a.id)}`);
@@ -71,7 +73,7 @@ function sourceObjects(c: CognitionCompatibilityState): CognitionObject[] {
     if (!['active', 'paused', 'archived', 'deleted', 'purged', 'revoked'].includes(status)) throw new Error(`invalid asset status: ${String(a.id)}`);
     const version = Number(a.activeVersion ?? a.version);
     if (!Number.isSafeInteger(version) || version < 1) throw new Error(`invalid asset version: ${String(a.id)}`);
-    const projection = po?.groups.flatMap(g => g.values.map(v => ({ g, v }))).find(x => x.v.assetId === a.id);
+    const projection = projected.get(String(a.id));
     const fieldName = projection?.g.fields.find(f => f.id === projection.v.fieldId)?.name;
     out.push({
       id: String(a.id), kind: home === 'personal_fact' ? 'assertion' : home === 'rule' ? 'rule' : 'bundle', home,
@@ -87,7 +89,7 @@ function sourceObjects(c: CognitionCompatibilityState): CognitionObject[] {
       ...(a.scope ? { scope: String(a.scope) } : {}),
     });
   }
-  for (const g of po?.groups ?? []) for (const v of g.values) {
+  for (const g of includePoValues ? po?.groups ?? [] : []) for (const v of g.values) {
     if (v.assetId) continue; // 引用态仍由资产治理、版本和来源准入负责。
     const fieldName = g.fields.find(f => f.id === v.fieldId)?.name;
     if (!fieldName) throw new Error(`orphan ontology value: ${v.id}`);
@@ -102,12 +104,13 @@ function sourceObjects(c: CognitionCompatibilityState): CognitionObject[] {
 }
 function rebuildObjects(doc: CognitionStoreDocument, c: CognitionCompatibilityState): void {
   const objects = sourceObjects(c);
+  const unmanagedSlots = new Map(Object.values(doc.objects).filter(x => !x.managedSource && x.kind === 'assertion' && x.status !== 'deleted')
+    .map(x => [JSON.stringify([x.groupId ?? '', x.fieldName]), x.id]));
   for (const o of objects) {
     const old = Object.hasOwn(doc.objects, o.id) ? doc.objects[o.id] : undefined;
     if (old && !old.managedSource) throw new Error(`unmanaged cognition object conflicts with source: ${o.id}`);
-    const conflict = Object.values(doc.objects).find(x => !x.managedSource && x.kind === 'assertion'
-      && o.kind === 'assertion' && (x.groupId ?? '') === (o.groupId ?? '') && x.fieldName === o.fieldName && x.status !== 'deleted');
-    if (conflict) throw new Error(`unmanaged cognition slot conflicts with source: ${conflict.id}`);
+    const conflict = o.kind === 'assertion' ? unmanagedSlots.get(JSON.stringify([o.groupId ?? '', o.fieldName])) : undefined;
+    if (conflict) throw new Error(`unmanaged cognition slot conflicts with source: ${conflict}`);
   }
   for (const [id, o] of Object.entries(doc.objects)) if (o.managedSource) delete doc.objects[id];
   for (const o of objects) Object.defineProperty(doc.objects, o.id, { value: o, writable: true, enumerable: true, configurable: true });
@@ -117,18 +120,38 @@ export async function replaceCognitionSources(uid: string, c: CognitionCompatibi
 }
 /** mirror 失写不能让已提交的旧库操作变成假失败；完整旧记录就是重放日志。
  * 切权威必须再次全量核对。unified 失写则直接失败，绝不回落旧库。 */
-async function commitSourceChange(uid: string, change: (c: CognitionCompatibilityState) => void): Promise<void> {
+async function commitSourceChange(uid: string, change: (c: CognitionCompatibilityState) => void, dirty: NonNullable<CognitionCompatibilityState['projectionChanges']>): Promise<void> {
   await editCognitionCompatibility(uid, doc => {
     if (!doc.compatibility) throw new Error('missing compatibility state');
-    const next = JSON.parse(JSON.stringify(doc.compatibility)) as CognitionCompatibilityState;
+    // editCognitionCompatibility loads a fresh draft under the document lock.
+    const next = doc.compatibility;
+    if (next.mode === 'unified') {
+      if (!next.pendingProjection) next.projectionChanges = { records: {} };
+      if (next.projectionChanges) {
+        for (const [collection, ids] of Object.entries(dirty.records)) next.projectionChanges.records[collection] = [...new Set([...(next.projectionChanges.records[collection] ?? []), ...ids])];
+        if (dirty.po) next.projectionChanges.po = true;
+        if (dirty.ontologyCandidates) next.projectionChanges.ontologyCandidates = true;
+      }
+    }
     change(next); next.revision++; next.pendingProjection = next.mode === 'unified';
-    rebuildObjects(doc, next); doc.compatibility = next;
+    if (dirty.po) rebuildObjects(doc, next);
+    else for (const id of dirty.records['ability-assets'] ?? []) {
+      const source = next.records['ability-assets'][id];
+      if (!source) { if (doc.objects[id]?.managedSource === `recall:${id}`) delete doc.objects[id]; continue; }
+      const object = sourceObjects({ ...next, records: { 'ability-assets': { [id]: source } } }, false).find(o => o.managedSource === `recall:${id}`);
+      if (!object) throw new Error('asset source object missing');
+      const old = Object.hasOwn(doc.objects, id) ? doc.objects[id] : undefined;
+      if (old && !old.managedSource) throw new Error(`unmanaged cognition object conflicts with source: ${id}`);
+      if (object.kind === 'assertion' && Object.values(doc.objects).some(x => !x.managedSource && x.kind === 'assertion' && x.status !== 'deleted'
+        && (x.groupId ?? '') === (object.groupId ?? '') && x.fieldName === object.fieldName)) throw new Error('unmanaged cognition slot conflicts with source');
+      Object.defineProperty(doc.objects, id, { value: object, enumerable: true, configurable: true, writable: true });
+    }
   });
 }
 export async function persistCognitionSource(uid: string, collection: string, id: string, record: Record<string, unknown>, legacyWrite: () => Promise<void>): Promise<void> {
   const c = cognitionCompatibility(uid);
   if (!c) { await legacyWrite(); return; }
-  const commit = () => commitSourceChange(uid, next => { Object.defineProperty(next.records[collection] ??= {}, id, { value: record, writable: true, enumerable: true, configurable: true }); });
+  const commit = () => commitSourceChange(uid, next => { Object.defineProperty(next.records[collection] ??= {}, id, { value: record, writable: true, enumerable: true, configurable: true }); }, { records: { [collection]: [id] } });
   if (c.mode === 'mirror') {
     await legacyWrite();
     try { await commit(); } catch { log.warn('cognition mirror needs reconciliation', { collection, id }); }
@@ -140,26 +163,30 @@ export async function persistCognitionSource(uid: string, collection: string, id
 export async function persistPoSource(uid: string, doc: PoDocument, legacyWrite: () => Promise<void>): Promise<void> {
   const c = cognitionCompatibility(uid);
   if (!c) { await legacyWrite(); return; }
-  const commit = () => commitSourceChange(uid, next => { next.po = doc as unknown as Record<string, unknown>; });
+  const commit = () => commitSourceChange(uid, next => { next.po = doc as unknown as Record<string, unknown>; }, { records: {}, po: true });
   if (c.mode === 'mirror') {
     await legacyWrite();
     try { await commit(); } catch { log.warn('ontology mirror needs reconciliation'); }
   } else { await commit(); await recoverCognitionProjectionLocked(uid); }
 }
-async function project(uid: string, c: CognitionCompatibilityState): Promise<void> {
+async function project(uid: string, c: CognitionCompatibilityState, full = true): Promise<void> {
+  const dirty = full ? undefined : c.projectionChanges;
   for (const collection of MANAGED_COLLECTIONS) {
+    if (dirty && !dirty.records[collection]?.length) continue;
     const dir = path.join(userCloudRoot(uid), 'recall', 'records', collection);
     fs.mkdirSync(dir, { recursive: true });
-    for (const [id, record] of Object.entries(c.records[collection] ?? {})) {
+    for (const id of dirty ? dirty.records[collection] ?? [] : Object.keys(c.records[collection] ?? {})) {
+      const record = c.records[collection]?.[id];
       if (!safeId(id)) throw new Error('invalid projection id');
-      await writeJson(path.join(dir, `${id}.json`), record);
+      if (record) await writeJson(path.join(dir, `${id}.json`), record);
+      else fs.rmSync(path.join(dir, `${id}.json`), { force: true });
     }
-    for (const name of fs.readdirSync(dir)) if (name.endsWith('.json') && !Object.hasOwn(c.records[collection] ?? {}, name.slice(0, -5))) {
+    if (!dirty) for (const name of fs.readdirSync(dir)) if (name.endsWith('.json') && !Object.hasOwn(c.records[collection] ?? {}, name.slice(0, -5))) {
       fs.unlinkSync(path.join(dir, name));
     }
   }
-  if (c.po) await writeJson(path.join(userCognitionDir(uid), 'personal-ontology.json'), c.po);
-  if (c.ontologyCandidates) {
+  if (c.po && (!dirty || dirty.po)) await writeJson(path.join(userCognitionDir(uid), 'personal-ontology.json'), c.po);
+  if (c.ontologyCandidates && (!dirty || dirty.ontologyCandidates)) {
     const { candidatesMdPath, serializeCandidatesMarkdown } = await import('./personal_ontology_candidates');
     const { writeTextAtomicSync } = await import('../storage');
     writeTextAtomicSync(candidatesMdPath(uid), serializeCandidatesMarkdown(c.ontologyCandidates as never));
@@ -173,15 +200,25 @@ async function projectPending(uid: string): Promise<boolean> {
   const c = cognitionCompatibility(uid);
   if (!c || c.mode !== 'unified' || !c.pendingProjection) return true;
   try {
-    await project(uid, c);
+    await project(uid, c, false);
     await editCognitionCompatibility(uid, doc => {
-      if (doc.compatibility?.revision === c.revision) doc.compatibility.pendingProjection = false;
+      if (doc.compatibility?.revision === c.revision) {
+        doc.compatibility.pendingProjection = false;
+        delete doc.compatibility.projectionChanges;
+      }
     });
     return true;
   } catch { log.warn('cognition compatibility projection pending recovery'); return false; }
 }
-export async function recoverCognitionProjection(uid: string): Promise<boolean> {
-  return withCognitionTransition(uid, () => recoverCognitionProjectionLocked(uid));
+export async function recoverCognitionProjection(uid: string, full = false): Promise<boolean> {
+  return withCognitionTransition(uid, async () => {
+    if (full) await editCognitionCompatibility(uid, doc => {
+      if (doc.compatibility?.mode !== 'unified') return;
+      doc.compatibility.pendingProjection = true;
+      delete doc.compatibility.projectionChanges;
+    });
+    return recoverCognitionProjectionLocked(uid);
+  });
 }
 export async function rollbackCognitionAuthority(uid: string): Promise<void> {
   await withCognitionTransition(uid, async () => {
@@ -190,7 +227,7 @@ export async function rollbackCognitionAuthority(uid: string): Promise<void> {
     await project(uid, c); // 完整导出成功后才切回，半导出不能降权威。
     await editCognitionCompatibility(uid, doc => {
       if (!doc.compatibility) throw new Error('missing compatibility state');
-      doc.compatibility.mode = 'mirror'; doc.compatibility.pendingProjection = false;
+      doc.compatibility.mode = 'mirror'; doc.compatibility.pendingProjection = false; delete doc.compatibility.projectionChanges;
     });
   });
 }
@@ -208,7 +245,7 @@ export async function persistOntologyCandidates(uid: string, candidates: Record<
   await withCognitionTransition(uid, async () => {
     const c = cognitionCompatibility(uid);
     if (!c) { await legacyWrite(); return; }
-    const commit = () => commitSourceChange(uid, next => { next.ontologyCandidates = candidates; });
+    const commit = () => commitSourceChange(uid, next => { next.ontologyCandidates = candidates; }, { records: {}, ontologyCandidates: true });
     if (c.mode === 'mirror') {
       await legacyWrite();
       try { await commit(); } catch { log.warn('ontology candidate mirror needs reconciliation'); }

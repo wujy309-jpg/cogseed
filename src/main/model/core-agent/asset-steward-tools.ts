@@ -11,7 +11,7 @@
 
 import type { AgentTool } from '#core-agent';
 import type { CognitionSaveReceipt } from '../client';
-import { saveRecallCandidate, type AbilityAssetType } from '../../features/recall/candidate-service';
+import { type AbilityAssetType } from '../../features/recall/candidate-service';
 import { classifyMemorySaveIntent } from '../../features/recall/memory-save-intent';
 import { createLogger } from '../../logger';
 import { t } from '../../i18n';
@@ -48,6 +48,7 @@ import { safeId } from '../../storage';
 import { logErrorRef, maskId } from '../../util/log-redact';
 import { classifyMemoryReplaceIntent } from '../../features/recall/memory-save-intent';
 
+import { submitCognitionCandidate } from '../../features/cognition/candidate-submission';
 const log = createLogger('asset-steward-tools');
 
 export interface AssetStewardToolsOpts {
@@ -100,7 +101,7 @@ function createProposeAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
         return { content: '未提交：适用与禁用场景必须是至多12条的非空文字数组。', isError: true };
       }
       try {
-        const candidate = await saveRecallCandidate(opts.userId, {
+        const candidate = await submitCognitionCandidate(opts.userId, {
           judgment: statement, summary: title, value, suggestedType: input.type as AbilityAssetType,
           suggestedScope: 'general', suggestedAction: 'create',
           sourceRefs: [{ kind: 'conversation', id: opts.cid, scope: 'conversation', title: '用户保存指令所在对话' }],

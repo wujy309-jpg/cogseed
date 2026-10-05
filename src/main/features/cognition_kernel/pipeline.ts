@@ -15,9 +15,12 @@ import { buildDelta } from './delta';
 import { addUnrouted, submitToPool, type PoolSourceKind } from './pool';
 import { applyCognitionDeltas } from './store';
 import type { DeltaOrigin } from './types';
+import type { SaveRecallCandidateInput, RecallCandidateRecord } from '../recall/candidate-service';
 
 export interface RouteAndSubmitOptions {
   judge?: JudgeOptions;
+  /** Production submissions use the governed formal-candidate workflow, never the experimental Delta pool. */
+  canonicalInput?: SaveRecallCandidateInput;
   sourceKind?: PoolSourceKind;
   /** Delta 来源口径（六枚举）；缺省 gap（提议），用户显式回答传 user。 */
   origin?: DeltaOrigin;
@@ -27,6 +30,7 @@ export interface RouteAndSubmitOptions {
 
 export interface RouteAndSubmitResult {
   judgement: RoutingJudgement;
+  candidate?: RecallCandidateRecord;
   /** proposed/deterministic 进池后的条目 id。 */
   poolItemId?: string;
   /** unclassified 进未分类暂存后的 id。 */
@@ -42,6 +46,17 @@ export async function routeAndSubmit(
   options: RouteAndSubmitOptions = {},
 ): Promise<RouteAndSubmitResult> {
   const judgement = await judgeContentHome(uid, content, options.judge);
+  if (options.canonicalInput) {
+    if (judgement.outcome === 'unclassified' || options.applyDeterministic) return { judgement, error: '明确类型后才能提交正式候选' };
+    const statement = String(content.statement ?? '').trim();
+    if (!statement || statement.length > 4000) return { judgement, error: 'invalid candidate statement' };
+    const homes: Record<string, string> = { personal: 'personal_fact', fact: 'personal_fact', rule: 'rule', template: 'template', skill_method: 'method' };
+    if (homes[options.canonicalInput.suggestedType] !== judgement.home) return { judgement, error: 'candidate type does not match routed home' };
+    const { saveRecallCandidate } = await import('../recall/candidate-service');
+    const candidate = await saveRecallCandidate(uid, { ...options.canonicalInput, judgment: statement });
+    return { judgement, candidate };
+  }
+  // Legacy kernel-only fixtures and experiments; no production writer uses this pool.
   const statement = String(content?.statement ?? '').replace(/\s+/g, ' ').trim().slice(0, 800);
   if (!statement) return { judgement, error: 'empty statement' };
 

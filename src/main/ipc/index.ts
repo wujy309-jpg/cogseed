@@ -99,7 +99,6 @@ import * as personalOntologyGroups from '../features/personal_ontology_groups';
 import * as personalOntologyTemplateFiles from '../features/personal_ontology_template_files';
 import * as personalOntologyCandidates from '../features/personal_ontology_candidates';
 import * as poApi from '../features/po/api';
-import * as cognitionKernel from '../features/cognition_kernel';
 import type { GroupEvent } from '../features/group_chat/bus';
 import { setGroupChatMessageBroadcaster } from '../features/group_chat/bus';
 import { setCognitionChangeBroadcaster } from '../features/recall/store-events';
@@ -2745,7 +2744,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (!safeId(assetId)) throw new Error('invalid recall asset id');
     const asset = await formalAssets.getFormalAsset(ctx.userId, assetId);
     if (!asset) throw new Error('recall ability asset not found');
-    return { ok: true, asset: asset.record };
+    return { ok: true, asset: asset.record, payload: asset.payload };
   },
   'recall.assets.update': async ({ assetId, title, statement, scope, scopePolicy, type, evidenceRefs, ontologyRefs, relations, derivedFrom, applicableWhen, forbiddenWhen, reason, acknowledgeRecommendation, tags } = {}, ctx) => {
     if (!safeId(assetId)) throw new Error('invalid recall asset id');
@@ -4148,8 +4147,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     const conflicts = await listConflicts(ctx.userId, typeof groupId === 'string' && groupId ? groupId : undefined);
     return { ok: true, conflicts };
   },
-  // ── 本体候选池（2026-09-20 首次暴露）：此前只有写入方（转写桥/onboarding/
-  // 资产回流），读取与确认零暴露零 UI——回流闭环的确认端在这里补齐。 ──
+  // ── 旧个人本体候选只作为过渡队列展示；接受必须先转入 Recall 共同审核，不能直写 USER.md / MEMORY.md。 ──
   'personalOntology.candidates.list': async (_payload, ctx) => {
     const data = await personalOntologyCandidates.listCandidates(ctx.userId);
     // corrupt（P-r2-7 读侧结构化错误）：池文件坏档时如实带回，渲染层据此
@@ -4161,8 +4159,13 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     const list = data.candidate_updates || [];
     return { ok: true, candidates: list, candidate_updates: list, ...(data.corrupt ? { corrupt: data.corrupt } : {}) };
   },
-  // （P-r1-64 退役）candidates.confirm/reject 两条老通道已删——渲染层回流
-  // 确认走 po.candidates.confirm / po.candidates.reject（同一服务函数）。
+  'personalOntology.candidates.transferToRecall': async ({ candidateId }, ctx) => {
+    if (!safeId(candidateId)) throw new Error('invalid personal ontology candidate id');
+    const transferred = await personalOntologyCandidates.transferCandidateToRecall(ctx.userId, candidateId);
+    return { ok: true, candidate: withRecallCandidateCapabilities(transferred.candidate), sourceRemoved: transferred.sourceRemoved };
+  },
+  // 旧版 personalOntology.candidates.confirm/reject 批量入口已退役；过渡候选
+  // 通过 transferToRecall 进入 Recall 共同审核，之后由统一资产/本体流程处理。
 
   // （2026-10-01 b2 回滚）cognition.corrupt.list/restore/reset 三通道曾随
   // P-r1-88 坏档三件套落地，未登记进 014 anti-drift 白名单
@@ -4387,8 +4390,8 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   },
 
   'po.candidates.confirm': async ({ candidateId, dest, acknowledgeConflict }, ctx) => {
-    if (typeof candidateId !== 'string' || !candidateId) throw new Error('missing candidateId');
-    return personalOntologyCandidates.confirmCandidate(ctx.userId, candidateId, dest, { acknowledgeConflict: acknowledgeConflict === true });
+    void candidateId; void dest; void acknowledgeConflict; void ctx;
+    throw new Error('legacy personal ontology candidate confirmation is disabled; transfer it to the common Recall review first');
   },
   'po.candidates.reject': async ({ candidateId }, ctx) => {
     if (typeof candidateId !== 'string' || !candidateId) throw new Error('missing candidateId');
@@ -4403,83 +4406,6 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   'po.data.importApply': async ({ items }, ctx) => {
     if (!Array.isArray(items)) throw new Error('missing items');
     return poApi.poImportApply(ctx.userId, items);
-  },
-
-  // ── 认知内核契约层（S2，2026-10-02）：合并收件箱 / 任务字段缺口 / 回填 ──
-  // 只读聚合 + 缺值回填：回填走 po 的统一写路径，并回一张改动记录单（Delta）。
-  // （总览通道随「总览页签」一并撤回：既有页面已各自承载那些信息，不另开页面。）
-  'cognition.kernel.inbox': async (_payload, ctx) => cognitionKernel.readMergedInbox(ctx.userId),
-  'cognition.kernel.taskFields': async ({ packId } = {}, ctx) => {
-    const pack = cognitionKernel.getTaskFieldPack(String(packId ?? ''));
-    if (!pack) throw new Error('unknown task field pack');
-    return cognitionKernel.checkTaskFields(ctx.userId, pack);
-  },
-  'cognition.kernel.backfill': async ({ fieldName, value, groupTitle } = {}, ctx) => {
-    if (typeof fieldName !== 'string' || !fieldName.trim()) throw new Error('invalid field name');
-    if (typeof value !== 'string' || !value.trim()) throw new Error('invalid value');
-    return cognitionKernel.backfillFieldValue(ctx.userId, {
-      fieldName,
-      value,
-      ...(typeof groupTitle === 'string' && groupTitle.trim() ? { groupTitle } : {}),
-    });
-  },
-
-  // ── 统一认知库（S3/S4-a）：存储快照、统一池、家注册表、迁移 ──────────────
-  'cognition.store.snapshot': async (_payload, ctx) => {
-    const doc = cognitionKernel.loadCognitionStoreSync(ctx.userId);
-    return {
-      objects: Object.values(doc.objects).map((o) => ({
-        id: o.id,
-        kind: o.kind,
-        home: o.home,
-        title: o.title,
-        statement: o.statement,
-        status: o.status,
-        version: o.version,
-        ...(o.fieldName ? { fieldName: o.fieldName } : {}),
-        ...(o.groupId ? { groupId: o.groupId } : {}),
-        ...(o.bundleKind ? { bundleKind: o.bundleKind } : {}),
-        updatedAt: o.updatedAt,
-      })),
-      homes: doc.homes,
-      updatedAt: doc.updatedAt,
-    };
-  },
-  'cognition.pool.list': async ({ status } = {}, ctx) => {
-    const filter =
-      status === 'pending' || status === 'deferred' || status === 'confirmed' || status === 'rejected'
-        ? { status }
-        : undefined;
-    return cognitionKernel.listPool(ctx.userId, filter);
-  },
-  'cognition.pool.decide': async ({ itemId, decision, note, resumeAt } = {}, ctx) => {
-    if (typeof itemId !== 'string' || !itemId.trim()) throw new Error('invalid pool item id');
-    if (decision !== 'confirm' && decision !== 'reject' && decision !== 'defer') throw new Error('invalid decision');
-    return cognitionKernel.decidePoolItem(ctx.userId, itemId, decision, {
-      ...(typeof note === 'string' && note.trim() ? { note: note.slice(0, 500) } : {}),
-      ...(decision === 'defer' && typeof resumeAt === 'string' && resumeAt ? { resumeAt } : {}),
-    });
-  },
-  'cognition.pool.unrouted.list': async (_payload, ctx) => cognitionKernel.listUnrouted(ctx.userId),
-  'cognition.pool.unrouted.decide': async ({ unroutedId, routeHome, discard } = {}, ctx) => {
-    if (typeof unroutedId !== 'string' || !unroutedId.trim()) throw new Error('invalid unrouted id');
-    if (discard === true) return cognitionKernel.decideUnrouted(ctx.userId, unroutedId, { discard: true });
-    if (typeof routeHome !== 'string' || !routeHome.trim()) throw new Error('routeHome required unless discard');
-    return cognitionKernel.decideUnrouted(ctx.userId, unroutedId, { routeHome });
-  },
-  'cognition.homes.replace': async ({ homes } = {}, ctx) => {
-    if (!Array.isArray(homes)) throw new Error('homes must be an array');
-    return cognitionKernel.replaceCognitionHomes(ctx.userId, homes as never);
-  },
-  'cognition.migration.run': async ({ dryRun, activate, rollback } = {}, ctx) => {
-    const { migrateLegacyCognition } = await import('../features/cognition_migration');
-    if (rollback === true) {
-      if (dryRun === true || activate === true) throw new Error('rollback cannot combine with dryRun/activate');
-      const { rollbackCognitionAuthority } = await import('../features/cognition_bridge');
-      await rollbackCognitionAuthority(ctx.userId);
-      return { ok: true, mode: 'mirror' };
-    }
-    return migrateLegacyCognition(ctx.userId, { dryRun: dryRun === true, activate: activate === true });
   },
 
   // ── 桥接注册：renderer 引用但漏注册的通道（纯转发到现成能力，

@@ -1090,6 +1090,26 @@ export const rejectCandidate = (...args: Parameters<typeof rejectCandidateUnlock
   return fileEditLock(candidatesMdPath(args[0])).runExclusive(() => rejectCandidateUnlocked(...args));
 };
 
+/** A user-requested transfer: create/reuse the common Recall candidate before removing the legacy row. */
+export async function transferCandidateToRecall(uid: string, candidateId: string): Promise<{
+  candidate: import('./recall/candidate-service').RecallCandidateRecord; sourceRemoved: boolean;
+}> {
+  if (!safeId(uid) || !safeId(candidateId)) throw new Error('invalid legacy candidate transfer reference');
+  return fileEditLock(candidatesMdPath(uid) + ':confirm:' + candidateId).runExclusive(async () => {
+    const { importPersonalOntologyCandidate } = await import('./recall/candidate-service');
+    const candidate = await importPersonalOntologyCandidate(uid, candidateId);
+    const sourceRemoved = await fileEditLock(candidatesMdPath(uid)).runExclusive(async () => {
+      const current = readCandidates(uid);
+      const remaining = current.filter((item) => item.candidate_id !== candidateId);
+      if (remaining.length === current.length) return false;
+      await writeCandidates(uid, remaining);
+      log.info('legacy ontology candidate transferred to Recall review', { uid, candidateId, recallCandidateId: candidate.id });
+      return true;
+    });
+    return { candidate, sourceRemoved };
+  });
+}
+
 /** 同一候选池读改写串行化；确认跨 await 不再覆盖期间新增/驳回。 */
 export const rejectCandidates = (...args: Parameters<typeof rejectCandidatesUnlocked>): ReturnType<typeof rejectCandidatesUnlocked> => {
   if (!safeId(args[0])) return Promise.reject(new Error('invalid uid'));

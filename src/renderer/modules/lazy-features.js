@@ -65,6 +65,10 @@ const _rendererFeatureManifest = Object.freeze({
     { src: './modules/personal-context-review.js' },
     { src: './modules/personal-ontology.js' },
   ],
+  'cognition-ontology': [
+    { src: './modules/cognition-ontology.css', type: 'style' },
+    { src: './modules/cognition-ontology.js' },
+  ],
   workspace: [
     { src: './modules/workspace.js' },
   ],

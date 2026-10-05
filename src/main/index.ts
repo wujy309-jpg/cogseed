@@ -1921,6 +1921,8 @@ if (!gotLock) {
     registerDeferred('cognition:compatibility-recovery', async () => {
       const { recoverCognitionProjection } = await import('./features/cognition_bridge');
       await recoverCognitionProjection(users.getActiveUserId());
+      const { recoverAbilityAssetVersionJournals } = await import('./features/recall/asset-service');
+      await recoverAbilityAssetVersionJournals(users.getActiveUserId());
     }, 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
     registerDeferred('recall:purge-version-stream-sweep', async () => {
       const { sweepPurgedAbilityAssetVersionStreams } = await import('./features/recall/asset-service');

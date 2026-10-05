@@ -1,0 +1,260 @@
+/** 纯命令落地：提交前在草稿上检查身份、引用、基线和时间；失败不改变输入。 */
+import { createHash } from 'node:crypto';
+import { z } from 'zod';
+import {
+  OntologyError, boundedJson, isCalendarDate, validateOntologyDocument, validateOntologyId,
+  validateOntologyRecord, ontologyValueSchema,
+  type OntologyDocument, type OntologyRecord, type OntologyDefinition, type OntologyAssertion,
+  type OntologyValue, type OntologyReceipt,
+} from './model';
+
+export type OntologyAction =
+  | { intent: 'create'; recordId?: string; record: Record<string, unknown>; sourceLabel: string }
+  | { intent: 'update'; recordId: string; expectedVersion: number; patch: Record<string, unknown>; sourceLabel: string }
+  | { intent: 'archive'; recordId: string; expectedVersion: number; sourceLabel: string }
+  | { intent: 'change'; recordId: string; expectedVersion: number; effectiveFrom: string; object?: OntologyValue; subjectId?: string; sourceLabel: string }
+  | { intent: 'correct'; recordId: string; expectedVersion: number; object?: OntologyValue; subjectId?: string; sourceLabel: string };
+export interface OntologyCommand { commandId: string; expectedRevision: number; actions: OntologyAction[] }
+export interface OntologyCommandSourceOverride { kind: 'candidate'; recordId: string; label: string }
+const key = z.string().refine(value => { try { validateOntologyId(value); return true; } catch { return false; } });
+const sourceLabel = z.string().trim().min(1).max(200);
+const target = { recordId: key, expectedVersion: z.number().int().positive(), sourceLabel };
+const commandSchema = z.object({ commandId: key, expectedRevision: z.number().int().nonnegative(),
+  actions: z.array(z.discriminatedUnion('intent', [
+    z.object({ intent: z.literal('create'), recordId: key.optional(), record: z.record(z.unknown()), sourceLabel }).strict(),
+    z.object({ intent: z.literal('update'), ...target, patch: z.record(z.unknown()) }).strict(),
+    z.object({ intent: z.literal('archive'), ...target }).strict(),
+    z.object({ intent: z.literal('change'), ...target, effectiveFrom: z.string(), object: ontologyValueSchema.optional(), subjectId: key.optional() }).strict(),
+    z.object({ intent: z.literal('correct'), ...target, object: ontologyValueSchema.optional(), subjectId: key.optional() }).strict(),
+  ])).min(1).max(50),
+}).strict();
+export function validateOntologyCommand(raw: unknown): OntologyCommand {
+  boundedJson(raw);
+  let serialized: string;
+  try { serialized = JSON.stringify(raw); } catch { throw new OntologyError('invalid_input', 'ontology command must be JSON'); }
+  if (!serialized || Buffer.byteLength(serialized, 'utf8') > 1024 * 1024) throw new OntologyError('invalid_input', 'ontology command too large');
+  const parsed = commandSchema.safeParse(raw);
+  if (!parsed.success) throw new OntologyError('invalid_input', 'invalid ontology command');
+  if (parsed.data.actions.some(a => (a.intent === 'change' || a.intent === 'correct') && !a.object && !a.subjectId))
+    throw new OntologyError('invalid_input', 'fact change requires a new subject or object');
+  return parsed.data as OntologyCommand;
+}
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
+  if (value && typeof value === 'object') return '{' + Object.keys(value).sort()
+    .filter(k => (value as Record<string, unknown>)[k] !== undefined)
+    .map(k => JSON.stringify(k) + ':' + canonical((value as Record<string, unknown>)[k])).join(',') + '}';
+  return JSON.stringify(value);
+}
+export function ontologyCommandHash(command: OntologyCommand): string {
+  return createHash('sha256').update(canonical(command)).digest('hex');
+}
+function requireRecord(doc: OntologyDocument, id: string, kind?: OntologyRecord['kind']): OntologyRecord {
+  const record = doc.records[id];
+  if (!record || (kind && record.kind !== kind)) throw new OntologyError('not_found', 'ontology record unavailable', { recordId: id });
+  return record;
+}
+export function moduleCanUse(doc: OntologyDocument, moduleId: string, record: OntologyRecord): boolean {
+  if (record.kind === 'module') return moduleId === record.id;
+  if (record.moduleId === moduleId) return true;
+  if (record.access !== 'task') return false;
+  return Object.values(doc.records).some(ref => ref.kind === 'reference' && ref.status === 'active' && ref.access === 'task'
+    && ref.moduleId === moduleId && ref.targetModuleId === record.moduleId
+    && (!ref.targetRecordId || ref.targetRecordId === record.id)
+    && (ref.versionPolicy === 'current' || (ref.targetRecordId
+      ? ref.targetVersion === record.version || doc.history.some(entry => entry.after.id === record.id && entry.after.version === ref.targetVersion)
+      : ref.targetVersion === doc.records[record.moduleId]?.version
+        || doc.history.some(entry => entry.after.id === record.moduleId && entry.after.version === ref.targetVersion))));
+}
+/** Resolve the exact record version a module is allowed to reference. */
+export function resolveOntologyRecordForModule(doc: OntologyDocument, moduleId: string, recordId: string): OntologyRecord | undefined {
+  const current = doc.records[recordId];
+  if (!current || !moduleCanUse(doc, moduleId, current)) return undefined;
+  if (current.kind === 'module' || current.moduleId === moduleId) return current;
+  const pin = Object.values(doc.records).find(ref => ref.kind === 'reference' && ref.status === 'active'
+    && ref.access === 'task' && ref.moduleId === moduleId && ref.targetModuleId === current.moduleId
+    && ref.targetRecordId === recordId && ref.versionPolicy === 'pinned');
+  if (pin?.kind !== 'reference' || !pin.targetVersion || pin.targetVersion === current.version) return current;
+  return [...doc.history].reverse().find(entry => entry.after.id === recordId && entry.after.version === pin.targetVersion)?.after;
+}
+function usable(doc: OntologyDocument, moduleId: string, id: string, kind: OntologyRecord['kind'], access: OntologyRecord['access'] = 'task'): OntologyRecord {
+  let record = requireRecord(doc, id, kind);
+  if (record.kind !== 'module' && record.moduleId !== moduleId) {
+    const resolved = resolveOntologyRecordForModule(doc, moduleId, record.id);
+    if (resolved) record = resolved;
+  }
+  const home = record.kind === 'module' ? record : requireRecord(doc, record.moduleId, 'module');
+  if (record.status !== 'active' || home.status !== 'active' || (access === 'task' && (record.access !== 'task' || home.access !== 'task'))
+    || !moduleCanUse(doc, moduleId, record))
+    throw new OntologyError('not_authorized', 'ontology record is not available in this module', { recordId: id });
+  return record;
+}
+const intervalStart = (value: string | null) => value === null ? '' : value.length === 7 ? value + '-01' : value;
+const intervalEnd = (value: string | null) => value === null ? '9999-12-31' : value.length === 7 ? value + '-01' : value;
+export function intervalsOverlap(a: OntologyAssertion, b: OntologyAssertion): boolean {
+  return intervalStart(a.validity.from) < intervalEnd(b.validity.until)
+    && intervalStart(b.validity.from) < intervalEnd(a.validity.until);
+}
+function sameValue(a: OntologyValue, b: OntologyValue): boolean { return canonical(a) === canonical(b); }
+function assertRuleCondition(doc: OntologyDocument, moduleId: string, condition: import('./model').OntologyCondition | null, access: OntologyRecord['access']): void {
+  if (!condition) return;
+  if (condition.kind === 'all' || condition.kind === 'any') {
+    condition.conditions.forEach(child => assertRuleCondition(doc, moduleId, child, access)); return;
+  }
+  if (condition.kind === 'not') { assertRuleCondition(doc, moduleId, condition.condition, access); return; }
+  if (condition.kind !== 'assertion') return;
+  const definition = usable(doc, moduleId, condition.definitionId, 'definition', access) as OntologyDefinition;
+  if (definition.definitionKind === 'type') throw new OntologyError('invalid_rule', 'rule condition must use a relation or attribute');
+  const subject = usable(doc, moduleId, condition.subjectId, 'entity', access);
+  if (subject.kind !== 'entity' || subject.identityStatus !== 'confirmed') throw new OntologyError('ambiguous_identity', 'rule subject identity is unresolved');
+  if (definition.subjectTypes.length && !definition.subjectTypes.includes(subject.typeId)) throw new OntologyError('invalid_rule', 'rule subject type mismatch');
+  if (!condition.object) return;
+  if (condition.object.kind === 'entity') {
+    if (definition.valueType !== 'entity') throw new OntologyError('invalid_rule', 'rule object type mismatch');
+    const object = usable(doc, moduleId, condition.object.id, 'entity', access);
+    if (object.kind !== 'entity' || object.identityStatus !== 'confirmed'
+      || (definition.objectTypes.length && !definition.objectTypes.includes(object.typeId))) throw new OntologyError('invalid_rule', 'rule object identity or type mismatch');
+  } else if (definition.valueType !== condition.object.valueType) throw new OntologyError('invalid_rule', 'rule literal type mismatch');
+}
+function assertRecordSemantics(doc: OntologyDocument, record: OntologyRecord): void {
+  if (record.kind === 'module') return;
+  const parentModule = requireRecord(doc, record.moduleId, 'module');
+  if (parentModule.status !== 'active' || (record.access === 'task' && parentModule.access !== 'task'))
+    throw new OntologyError('not_authorized', 'ontology module is not active');
+  if (record.kind === 'definition') {
+    for (const typeId of [...record.subjectTypes, ...record.objectTypes]) {
+      const type = usable(doc, record.moduleId, typeId, 'definition', record.access) as OntologyDefinition;
+      if (type.definitionKind !== 'type') throw new OntologyError('invalid_type', 'endpoint must reference a type definition');
+    }
+    if (record.definitionKind === 'relation' && record.valueType !== 'entity')
+      throw new OntologyError('invalid_type', 'relation must reference an entity');
+    if (record.valueType !== 'entity' && record.cardinalityAnchor === 'object')
+      throw new OntologyError('invalid_type', 'literal cardinality must be anchored at subject');
+  } else if (record.kind === 'entity') {
+    const type = usable(doc, record.moduleId, record.typeId, 'definition', record.access) as OntologyDefinition;
+    if (type.definitionKind !== 'type') throw new OntologyError('invalid_type', 'entity must reference a type');
+  } else if (record.kind === 'assertion') {
+    const definition = usable(doc, record.moduleId, record.definitionId, 'definition', record.access) as OntologyDefinition;
+    if (definition.definitionKind === 'type') throw new OntologyError('invalid_type', 'type is not a fact predicate');
+    const subject = usable(doc, record.moduleId, record.subjectId, 'entity', record.access);
+    if (subject.kind !== 'entity' || subject.identityStatus !== 'confirmed')
+      throw new OntologyError('ambiguous_identity', 'assertion subject identity is unresolved');
+    if (definition.subjectTypes.length && !definition.subjectTypes.includes(subject.typeId))
+      throw new OntologyError('invalid_type', 'assertion subject type mismatch');
+    if (record.object.kind === 'entity') {
+      if (definition.valueType !== 'entity') throw new OntologyError('invalid_type', 'predicate expects a literal');
+      const object = usable(doc, record.moduleId, record.object.id, 'entity', record.access);
+      if (object.kind !== 'entity' || object.identityStatus !== 'confirmed')
+        throw new OntologyError('ambiguous_identity', 'assertion object identity is unresolved');
+      if (definition.objectTypes.length && !definition.objectTypes.includes(object.typeId))
+        throw new OntologyError('invalid_type', 'assertion object type mismatch');
+    } else if (definition.valueType !== record.object.valueType) throw new OntologyError('invalid_type', 'assertion literal type mismatch');
+    const conflicts = Object.values(doc.records).filter((other): other is OntologyAssertion => {
+      if (other.kind !== 'assertion' || other.id === record.id || other.status !== 'active'
+        || other.definitionId !== record.definitionId || other.moduleId !== record.moduleId) return false;
+      const slot = definition.cardinalityAnchor === 'subject' ? other.subjectId === record.subjectId
+        : sameValue(other.object, record.object);
+      const different = definition.cardinalityAnchor === 'subject' ? !sameValue(other.object, record.object)
+        : other.subjectId !== record.subjectId;
+      return definition.cardinality === 'one' && slot && different && intervalsOverlap(record, other);
+    });
+    if (conflicts.length) throw new OntologyError('conflicting_facts', 'single-valued relationship has overlapping facts', { recordIds: conflicts.map(r => r.id) });
+  } else if (record.kind === 'reference') {
+    const targetModule = requireRecord(doc, record.targetModuleId, 'module');
+    if (targetModule.status !== 'active' || record.moduleId === record.targetModuleId
+      || (record.access === 'task' && targetModule.access !== 'task'))
+      throw new OntologyError('invalid_reference', 'reference target unavailable');
+    const target = record.targetRecordId ? requireRecord(doc, record.targetRecordId) : targetModule;
+    if ((target.kind === 'module' ? target.id : target.moduleId) !== record.targetModuleId)
+      throw new OntologyError('invalid_reference', 'reference target module mismatch');
+    if (record.versionPolicy === 'pinned' && !record.targetRecordId)
+      throw new OntologyError('invalid_reference', 'pin a specific record version, not a changing module as a whole');
+    if (record.versionPolicy === 'pinned' && record.targetVersion !== target.version)
+      throw new OntologyError('baseline_changed', 'reference version does not match target');
+    if (record.versionPolicy === 'current' && record.targetVersion !== undefined)
+      throw new OntologyError('invalid_reference', 'current reference cannot specify a pinned version');
+  } else if (record.kind === 'rule') {
+    assertRuleCondition(doc, record.moduleId, record.condition, record.access);
+    if (record.effect.kind === 'include_recipient') usable(doc, record.moduleId, record.effect.entityId, 'entity', record.access);
+  }
+}
+export interface OntologyCommandOutcome { document: OntologyDocument; receipt: OntologyReceipt; duplicate: boolean }
+export function applyOntologyCommand(current: OntologyDocument, input: unknown, recordedAt: string, sourceOverride?: OntologyCommandSourceOverride): OntologyCommandOutcome {
+  const command = validateOntologyCommand(input);
+  if (sourceOverride) {
+    validateOntologyId(sourceOverride.recordId);
+    if (sourceOverride.kind !== 'candidate' || typeof sourceOverride.label !== 'string' || !sourceOverride.label.trim() || sourceOverride.label.length > 200)
+      throw new OntologyError('invalid_input', 'invalid ontology candidate source');
+  }
+  const requestHash = sourceOverride
+    ? createHash('sha256').update(`${ontologyCommandHash(command)}\n${canonical(sourceOverride)}`).digest('hex')
+    : ontologyCommandHash(command);
+  const old = current.receipts[command.commandId];
+  if (old) {
+    if (old.requestHash !== requestHash) throw new OntologyError('command_reused', 'command id reused with different input');
+    return { document: current, receipt: old, duplicate: true };
+  }
+  if (command.expectedRevision !== current.revision)
+    throw new OntologyError('baseline_changed', 'ontology changed since it was loaded', { expected: command.expectedRevision, actual: current.revision });
+  const doc: OntologyDocument = structuredClone(current), changed = new Set<string>();
+  if (Object.keys(doc.receipts).length >= 20000 || doc.history.length + command.actions.length * 2 > 100000)
+    throw new OntologyError('capacity_exceeded', 'ontology change history has reached its capacity');
+  function save(value: unknown, intent: string, before?: OntologyRecord): OntologyRecord {
+    const record = validateOntologyRecord(value);
+    doc.records[record.id] = record;
+    doc.history.push({ commandId: command.commandId, revision: current.revision + 1, intent, recordedAt, ...(before ? { before } : {}), after: structuredClone(record) });
+    changed.add(record.id); return record;
+  }
+  const newId = (index: string) => 'ont-' + createHash('sha256').update(current.ownerId + ':' + command.commandId + ':' + index).digest('hex').slice(0, 24);
+  command.actions.forEach((action, index) => {
+    const source = sourceOverride ? { ...sourceOverride, label: sourceOverride.label.trim() } : { kind: 'user' as const, label: action.sourceLabel };
+    if (action.intent === 'create') {
+      if (Object.keys(doc.records).length >= 25000) throw new OntologyError('capacity_exceeded', 'ontology record capacity reached');
+      const id = action.recordId || newId(String(index));
+      if (doc.records[id]) throw new OntologyError('already_exists', 'ontology id is already in use');
+      if (['id', 'version', 'status', 'createdAt', 'updatedAt', 'source'].some(key => Object.hasOwn(action.record, key)))
+        throw new OntologyError('invalid_input', 'record metadata is assigned by the service');
+      save({ ...action.record, id, version: 1, access: action.record.access ?? 'task', status: 'active', source, createdAt: recordedAt, updatedAt: recordedAt }, action.intent);
+      return;
+    }
+    const before = structuredClone(requireRecord(doc, action.recordId));
+    if (before.version !== action.expectedVersion) throw new OntologyError('baseline_changed', 'record version changed', { recordId: before.id });
+    if (action.intent === 'update') {
+      if (before.kind === 'assertion') throw new OntologyError('invalid_intent', 'facts require change or correction, not overwrite');
+      if (['id', 'kind', 'moduleId', 'version', 'createdAt', 'updatedAt', 'source'].some(key => Object.hasOwn(action.patch, key)))
+        throw new OntologyError('invalid_input', 'record identity cannot be patched');
+      if (action.patch.status === 'corrected') throw new OntologyError('invalid_intent', 'corrected status requires a correction command');
+      save({ ...before, ...action.patch, source, version: before.version + 1, updatedAt: recordedAt }, action.intent, before);
+    } else if (action.intent === 'archive') {
+      save({ ...before, status: 'archived', source, version: before.version + 1, updatedAt: recordedAt }, action.intent, before);
+    } else {
+      if (before.kind !== 'assertion' || before.status !== 'active') throw new OntologyError('invalid_intent', 'only active facts can change or be corrected');
+      const successorId = newId(String(index) + '-successor');
+      if (doc.records[successorId]) throw new OntologyError('already_exists', 'successor id is already in use');
+      if (action.intent === 'change') {
+        if (!isCalendarDate(action.effectiveFrom, before.validity.precision) || before.validity.from === null
+          || action.effectiveFrom <= before.validity.from || (before.validity.until !== null && action.effectiveFrom >= before.validity.until))
+          throw new OntologyError('invalid_time', 'change date must be inside the known fact interval');
+        save({ ...before, validity: { ...before.validity, until: action.effectiveFrom }, version: before.version + 1, updatedAt: recordedAt }, 'close_validity', before);
+      } else save({ ...before, status: 'corrected', version: before.version + 1, updatedAt: recordedAt }, 'mark_corrected', before);
+      save({ ...before, id: successorId, version: 1, object: action.object ?? before.object, subjectId: action.subjectId ?? before.subjectId, source, status: 'active',
+        validity: { ...before.validity, ...(action.intent === 'change' ? { from: action.effectiveFrom } : {}) },
+        supersedesId: before.id, createdAt: recordedAt, updatedAt: recordedAt,
+      }, action.intent);
+    }
+  });
+  // Check the final batch, so creating a module and its definitions in one atomic group is valid.
+  for (const id of changed) {
+    const record = doc.records[id];
+    if (record.status === 'active') assertRecordSemantics(doc, record);
+  }
+  // Definition/reference edits must not invalidate any already saved active content.
+  if ([...changed].some(id => ['definition', 'reference', 'entity', 'module'].includes(doc.records[id].kind))) {
+    for (const record of Object.values(doc.records)) if (record.status === 'active'
+      && ['entity', 'assertion', 'rule'].includes(record.kind)) assertRecordSemantics(doc, record);
+  }
+  doc.revision++;
+  const receipt: OntologyReceipt = { commandId: command.commandId, requestHash, revision: doc.revision, recordedAt, changedIds: [...changed] };
+  doc.receipts[command.commandId] = receipt;
+  return { document: validateOntologyDocument(doc), receipt, duplicate: false };
+}

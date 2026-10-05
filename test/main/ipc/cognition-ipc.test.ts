@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as fs from 'node:fs';
 import * as os from 'node:os';
+import * as path from 'node:path';
 import { trustedIpcSender } from '../../helpers/trusted-ipc-sender';
 
 type InvokeResult = { ok: boolean; error?: string } & Record<string, unknown>;
@@ -7,6 +9,7 @@ type InvokeFn = (event: unknown, req: { channel: string; payload?: unknown }) =>
 
 let invokeHandler: InvokeFn | null = null;
 const TEST_UID = 'uCognitionIpc';
+const dialogMock = vi.hoisted(() => vi.fn(async () => ({ canceled: true, filePaths: [] as string[] })));
 
 vi.mock('electron', () => ({
   ipcMain: {
@@ -17,7 +20,7 @@ vi.mock('electron', () => ({
   },
   shell: { openExternal: vi.fn(async () => undefined), showItemInFolder: vi.fn() },
   BrowserWindow: { getFocusedWindow: vi.fn(() => null), getAllWindows: vi.fn(() => []) },
-  dialog: { showOpenDialog: vi.fn(async () => ({ canceled: true, filePaths: [] })) },
+  dialog: { showOpenDialog: dialogMock },
   app: { getPath: vi.fn(() => os.tmpdir()), isPackaged: false },
 }));
 
@@ -81,6 +84,7 @@ vi.mock('../../../src/main/features/cognition/capture-draft', () => ({
 beforeEach(async () => {
   // Keep the isolated workspace assigned by test/setup-env.ts.
   invokeHandler = null;
+  dialogMock.mockReset().mockResolvedValue({ canceled: true, filePaths: [] });
   vi.resetModules();
   vi.clearAllMocks();
   vi.doMock('../../../src/main/ipc/local_agents', () => ({ invokeHandlers: {} }));
@@ -126,6 +130,25 @@ describe('ipc cognition channels', () => {
     }
     for (const stale of ['skill', 'knowledge', 'ontology', 'evaluation']) {
       expect((await call('cognition.assets.list', { type: stale })).ok).toBe(false);
+    }
+  });
+
+  it('本体文件导入只解析用户在原生选择器中选择的文件，并支持取消', async () => {
+    const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'cogseed-ontology-picker-'));
+    const file = path.join(folder, 'project-notes.md');
+    const body = '# 项目负责人\n\n负责人由张浩变更为林青。';
+    fs.writeFileSync(file, body, 'utf8');
+    try {
+      dialogMock.mockResolvedValueOnce({ canceled: false, filePaths: [file] });
+      const selected = await call('cognition.ontology.import.file');
+      expect(selected).toMatchObject({ ok: true, cancelled: false, name: 'project-notes.md', text: body });
+      expect(dialogMock).toHaveBeenCalledTimes(1);
+      expect(dialogMock.mock.calls[0][0]).toMatchObject({ properties: ['openFile'] });
+
+      dialogMock.mockResolvedValueOnce({ canceled: true, filePaths: [] });
+      expect(await call('cognition.ontology.import.file')).toMatchObject({ ok: true, cancelled: true });
+    } finally {
+      fs.rmSync(folder, { recursive: true, force: true });
     }
   });
 

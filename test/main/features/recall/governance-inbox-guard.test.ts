@@ -78,7 +78,8 @@ describe('governance inbox anti-drift guards (specs/010 T038)', () => {
     // 2026-09-28：71→72（09-27 本体图谱切片新增 list_ontology_graph，基线随功能更新）。
     // 2026-10-02：72→74（本体总线 S2 新增 personal_fields_check / personal_field_remember，
     // owner 拍板「缺值改对话提问」的功能性扩张，基线随功能更新）。
-    // 2026-10-03：候选提交与逐资产采用报告为本轮授权扩展，治理动作仍不进工具面。
+    // 2026-10-03：候选提交与逐资产采用报告；2026-10-05：通用范围查询替代旧无范围图谱读取。
+    // 治理动作仍不进工具面。
     expect(names.length).toBe(77);
     // 本 feature 的新动作名是**用户的界面动作**，不得注册成模型工具。
     for (const notTool of ['classify_ability_assets', 'set_rule_boundary', 'claim_conflict']) {

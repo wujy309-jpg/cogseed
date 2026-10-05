@@ -62,7 +62,7 @@ describe('formal asset canonical boundary', () => {
       maturity: 'bud',
       status: 'active',
     });
-    expect(list[0].payload).toEqual({ kind: 'rule' });
+    expect(list[0].payload).toEqual({ kind: 'rule', action: asset.statement, applicableWhen: [], forbiddenWhen: [], boundaryRecorded: false });
   });
 
   // PRD 3.3：支撑对象不占四类一级分类。个人本体分组曾被合成 `CA-PERSONAL-*`

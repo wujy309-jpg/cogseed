@@ -133,8 +133,8 @@ describe('recall candidate pool renders from capability, not raw status', () => 
   });
 
   it('never renders decision actions for terminal candidates', () => {
-    // 已处理（confirmed/rejected/ignored）只出现在处理记录折叠区，无决策按钮。
-    expect(viewsSource).toContain("['confirmed', 'rejected', 'ignored']");
+    // 已处理（包括已整理到本体的候选）只出现在处理记录折叠区，无决策按钮。
+    expect(viewsSource).toContain("['confirmed', 'integrated', 'rejected', 'ignored']");
     expect(viewsSource).toContain('fold-processed');
   });
 

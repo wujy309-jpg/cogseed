@@ -39,7 +39,7 @@ const caps = async () => import('../../../../src/main/features/recall/candidate-
 const service = async () => import('../../../../src/main/features/recall/candidate-service');
 
 const ACTIONABLE_STATUSES = ['observed', 'weak_observation', 'pending_review', 'deferred', 'failed'] as const;
-const TERMINAL_STATUSES = ['confirmed', 'rejected', 'ignored', 'expired', 'superseded'] as const;
+const TERMINAL_STATUSES = ['confirmed', 'integrated', 'rejected', 'ignored', 'expired', 'superseded'] as const;
 const ALL_STATUSES = [...ACTIONABLE_STATUSES, ...TERMINAL_STATUSES] as const;
 
 describe('Recall candidate capability matrix', () => {
@@ -58,6 +58,7 @@ describe('Recall candidate capability matrix', () => {
       deferred:         'deferred|true|true|true|true|false|true|true|true|true|false|-',
       failed:           'failed|true|true|true|true|true|true|true|true|false|false|-',
       confirmed:        'confirmed|false|false|false|false|false|false|false|false|false|true|candidate_confirmed',
+      integrated:       'integrated|false|false|false|false|false|false|false|false|false|true|candidate_integrated',
       rejected:         'rejected|false|false|false|false|false|false|false|false|false|true|candidate_rejected',
       ignored:          'ignored|false|false|false|false|false|false|false|false|false|true|candidate_ignored',
       expired:          'expired|false|false|false|false|false|false|false|false|false|true|candidate_expired',

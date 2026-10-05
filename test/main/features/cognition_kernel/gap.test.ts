@@ -125,7 +125,9 @@ describe('cognition_kernel/gap — 回填（答一次，永久记住）', () => 
     expect(again.ok).toBe(true);
     expect(again.duplicate).toBe(true);
     const doc = store.loadCognitionStoreSync(UID);
-    expect(Object.values(doc.objects).filter((o) => o.statement === '牛保康')).toHaveLength(1);
+    expect(Object.values(doc.objects).filter((o) => o.statement === '牛保康')).toHaveLength(0);
+    const poRaw = JSON.parse(fs.readFileSync(path.join(tmpDir, UID, 'cloud', 'cognition', 'personal-ontology.json'), 'utf8'));
+    expect(poRaw.groups[0].values.filter((v: any) => v.text === '牛保康')).toHaveLength(1);
   });
 
   it('空白值 / 空字段名 → 拒绝', async () => {

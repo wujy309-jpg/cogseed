@@ -163,16 +163,16 @@ describe('反漂移源码级断言（T026）', () => {
     expect(combined).toBe(1);
   });
 
-  it('⑥ tool-catalog.ts 工具名字集合未变（对照 012 开工前 34b87ce8 的冻结基线，2026-09-28 本体图谱切片 71→72，2026-10-02 个人字段两件 72→74）', async () => {
+  it('⑥ tool-catalog.ts 工具名字集合按已授权的本体查询能力更新', async () => {
     const { TOOL_CATALOG } = await import('../../../../src/main/model/core-agent/tool-catalog');
     const frozen = [
       'add_custom_connector', 'archive_ability_asset', 'ask_materials', 'bash', 'briefing_get', 'briefing_schedule',
-      'call_connector_tool', 'chat_read', 'chat_search', 'create_artifact', 'create_docx', 'create_pptx', 'create_xlsx',
+      'call_connector_tool', 'chat_read', 'chat_search', 'cognition_ontology_query', 'create_artifact', 'create_docx', 'create_pptx', 'create_xlsx',
       'cross_session_memory', 'delete_ability_asset', 'delete_file', 'edit_ability_asset', 'edit_file', 'edit_office',
       'expense_case_status', 'expense_configuration_status', 'expense_precheck_case', 'feishu_dashboard', 'generate_image',
       'grep_files', 'html_to_pdf', 'interactive_cli_close', 'interactive_cli_read', 'interactive_cli_send',
       'interactive_cli_start', 'kb_list', 'kb_read', 'kb_search', 'list_ability_assets', 'list_asset_change_proposals',
-      'list_connector_tools', 'list_files', 'list_ontology_graph', 'list_task_experiences', 'manage_execution_plan', 'markdown_to_pdf',
+      'list_connector_tools', 'list_files', 'list_task_experiences', 'manage_execution_plan', 'markdown_to_pdf',
       'material_list', 'material_search', 'merge_ability_assets', 'messaging_list_targets', 'messaging_send',
       'messaging_send_file', 'metacognition', 'ocr_file', 'office_read', 'office_render', 'ontology_query', 'p3394_peers',
       'p3394_send', 'p3394_sessions',

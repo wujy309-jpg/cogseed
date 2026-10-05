@@ -922,11 +922,19 @@
       "phase": 8
     },
     {
-      "act": "po.candidates.confirm",
+      "act": "personalOntology.candidates.transferToRecall",
       "module": "personal-ontology",
-      "ipc": "po.candidates.confirm",
+      "ipc": "personalOntology.candidates.transferToRecall",
       "write": true,
       "pending": false,
+      "phase": 8
+    },
+    {
+      "act": "po-cand-transfer",
+      "module": "cognition-assets",
+      "ipc": "personalOntology.candidates.transferToRecall",
+      "write": true,
+      "pending": true,
       "phase": 8
     },
     {

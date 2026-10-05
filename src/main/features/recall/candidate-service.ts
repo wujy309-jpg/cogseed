@@ -80,6 +80,7 @@ export type RecallCandidateStatus =
   | 'pending_review'
   | 'deferred'
   | 'confirmed'
+  | 'integrated'
   | 'rejected'
   | 'ignored'
   | 'expired'
@@ -128,6 +129,8 @@ export interface RecallCandidateRecord extends RecallJsonRecord {
   /** 正文规范警示（读时派生、不落盘，2026-09-29）：确认页展示，不拦截写入。 */
   statementIssues?: Array<'empty' | 'too_long' | 'session_debris' | 'local_path'>;
   promotedAssetId?: string;
+  /** The candidate was user-reviewed and materialized as canonical ontology records. */
+  ontologyHandoff?: RecallCandidateOntologyHandoff;
   reviewDecisionId?: string;
   decisionNote?: string;
   /** 空间归属：候选来自哪个空间（空间绘画/任务产出的认知）。资产随 recall 全局存储，
@@ -158,6 +161,15 @@ export interface RecallCandidateRecord extends RecallJsonRecord {
   userModifiedAt?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface RecallCandidateOntologyHandoff {
+  status: 'in_progress' | 'integrated';
+  commandId: string;
+  moduleIds: string[];
+  recordIds: string[];
+  ontologyRevision: number;
+  committedAt: string;
 }
 
 export interface RecallAbilityAssetRecord extends RecallJsonRecord {
@@ -580,12 +592,12 @@ function sourceSessionIdsFrom(refs: CognitionSourceRef[]): string[] {
   return ids;
 }
 
-function boundedText(value: unknown, field: string, max: number, required = false): string | undefined {
+function boundedText(value: unknown, field: string, max: number, required = false, preserveLayout = false): string | undefined {
   if (typeof value !== 'string') {
     if (required) throw new Error(`missing ${field}`);
     return undefined;
   }
-  const text = value.replace(/\s+/g, ' ').trim();
+  const text = preserveLayout ? value.trim() : value.replace(/\s+/g, ' ').trim();
   if (!text) {
     if (required) throw new Error(`missing ${field}`);
     return undefined;
@@ -654,17 +666,38 @@ function normalizeCandidateStatus(value: unknown): RecallCandidateStatus {
   // 是不可达分支，删掉，免得读回行为看起来有两套。
   if (value === 'superseded') return 'ignored';
   if (value === 'observed' || value === 'weak_observation' || value === 'pending_review'
-    || value === 'deferred' || value === 'confirmed' || value === 'rejected'
+    || value === 'deferred' || value === 'confirmed' || value === 'integrated' || value === 'rejected'
     || value === 'ignored' || value === 'expired' || value === 'failed') return value;
   throw new Error('malformed recall candidate');
 }
 
 function isTerminalCandidate(status: RecallCandidateStatus): boolean {
-  return status === 'confirmed' || status === 'rejected' || status === 'ignored' || status === 'expired';
+  return status === 'confirmed' || status === 'integrated' || status === 'rejected' || status === 'ignored' || status === 'expired';
 }
 
 function isSuppressedTerminalCandidate(status: RecallCandidateStatus): boolean {
-  return status === 'rejected' || status === 'ignored' || status === 'expired';
+  return status === 'integrated' || status === 'rejected' || status === 'ignored' || status === 'expired';
+}
+
+/** Serialize ontology handoff against normal candidate promotion/rejection. */
+export function withRecallCandidateReviewLock<T>(userId: string, work: () => Promise<T>): Promise<T> {
+  if (!safeId(userId)) throw new Error('invalid recall candidate owner');
+  return fileEditLock(recallJsonRecordPath(userId, 'candidate-locks', 'promote')).runExclusive(work);
+}
+
+function normalizeOntologyHandoff(value: unknown): RecallCandidateOntologyHandoff | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('malformed ontology candidate handoff');
+  const raw = value as Partial<RecallCandidateOntologyHandoff>;
+  if ((raw.status !== 'in_progress' && raw.status !== 'integrated') || !safeId(raw.commandId) || !Array.isArray(raw.moduleIds) || raw.moduleIds.length < 1 || raw.moduleIds.length > 20
+    || raw.moduleIds.some(id => !safeId(id)) || new Set(raw.moduleIds).size !== raw.moduleIds.length
+    || !Array.isArray(raw.recordIds) || raw.recordIds.length < 1 || raw.recordIds.length > 100
+    || raw.recordIds.some(id => !safeId(id)) || new Set(raw.recordIds).size !== raw.recordIds.length
+    || !Number.isSafeInteger(raw.ontologyRevision) || Number(raw.ontologyRevision) < 1) {
+    throw new Error('malformed ontology candidate handoff');
+  }
+  return { status: raw.status, commandId: raw.commandId, moduleIds: [...raw.moduleIds], recordIds: [...raw.recordIds],
+    ontologyRevision: Number(raw.ontologyRevision), committedAt: requireIsoTimestamp(raw.committedAt, 'ontology handoff committed at') };
 }
 
 /**
@@ -1029,6 +1062,11 @@ function asCandidate(value: RecallJsonRecord): RecallCandidateRecord {
   const learningSignal = normalizeLearningSignal(value.learningSignal);
   const learningProvenance = normalizeLearningProvenance(value.learningProvenance);
   const scopePolicy = normalizeAbilityAssetScopePolicy(value.scopePolicy);
+  const ontologyHandoff = normalizeOntologyHandoff(value.ontologyHandoff);
+  if ((status === 'integrated') !== (ontologyHandoff?.status === 'integrated')
+    || (ontologyHandoff?.status === 'in_progress' && isTerminalCandidate(status))) {
+    throw new Error('malformed recall candidate ontology handoff state');
+  }
   const origin = deriveCandidateOrigin(value, learningProvenance !== undefined);
   const createdAt = requireIsoTimestamp(value.createdAt, 'candidate created at');
   // The previous bubble-capture contract wrote an evidence explanation into
@@ -1048,7 +1086,7 @@ function asCandidate(value: RecallJsonRecord): RecallCandidateRecord {
   const candidateSummary = boundedText(value.summary, 'candidate summary', 1_000)
     || fallbackCandidateTitle(String(value.judgment || ''));
   const candidateValue = Object.prototype.hasOwnProperty.call(value, 'value')
-    ? (legacyBubbleEvidence ? '' : boundedText(value.value, 'candidate value', 4_000) || '')
+    ? (legacyBubbleEvidence ? '' : boundedText(value.value, 'candidate value', 4_000, false, true) || '')
     : value.judgment;
   return {
     ...value,
@@ -1068,6 +1106,7 @@ function asCandidate(value: RecallJsonRecord): RecallCandidateRecord {
     ...(learningSignal ? { learningSignal } : {}),
     ...(learningProvenance ? { learningProvenance } : {}),
     ...(scopePolicy ? { scopePolicy } : {}),
+    ...(ontologyHandoff ? { ontologyHandoff } : {}),
     ...(origin ? { origin } : {}),
     // 正文规范警示（2026-09-29）：读时派生、不落盘——只给人看与治理轮圈选，
     // 不拦截写入（正文是知识本体，把关权在人，设计定稿）。
@@ -1352,11 +1391,17 @@ export async function readRecallCandidate(userId: string, candidateId: string): 
 }
 
 export async function importPersonalOntologyCandidate(userId: string, legacyCandidateId: string): Promise<RecallCandidateRecord> {
-  if (!safeId(legacyCandidateId)) throw new Error('invalid personal ontology candidate id');
+  if (!safeId(userId) || !safeId(legacyCandidateId)) throw new Error('invalid personal ontology candidate id');
+  const captureKey = `po-candidate-${createHash('sha256').update(`${userId}\n${legacyCandidateId}`).digest('hex').slice(0, 32)}`;
+  const existing = (await listRecallCandidates(userId)).find((candidate) => candidate.captureKey === captureKey);
+  if (existing) return existing;
   const data = await personalOntologyCandidates.listCandidates(userId);
   const legacy = (data.candidate_updates || []).find((candidate) => candidate.candidate_id === legacyCandidateId);
   if (!legacy) throw new Error('personal ontology candidate not found');
-  const suggestedType: AbilityAssetType = legacy.kind === 'preference' ? 'personal' : legacy.kind === 'rule' ? 'rule' : 'personal';
+  if (legacy.sensitivity && legacy.sensitivity !== 'standard') {
+    throw Object.assign(new Error('restricted personal ontology candidates cannot be transferred to task-visible review'), { code: 'legacy_candidate_restricted' });
+  }
+  const suggestedType: AbilityAssetType = legacy.kind === 'preference' ? 'personal' : legacy.kind === 'rule' ? 'rule' : 'fact';
   return saveRecallCandidate(userId, {
     judgment: legacy.memory_text || legacy.summary,
     // 旧本体候选导入=历史原文搬运：豁免闸门。
@@ -1365,6 +1410,8 @@ export async function importPersonalOntologyCandidate(userId: string, legacyCand
     suggestedType,
     suggestedScope: legacy.memory_scope === 'user' ? 'global' : 'project',
     sourceRefs: legacy.source_memory_refs.map((id) => ({ kind: 'memory', id })),
+    captureKey,
+    ...(legacy.project_id && safeId(legacy.project_id) ? { scopePolicy: { projectIds: [legacy.project_id] } } : {}),
   });
 }
 
@@ -1383,10 +1430,10 @@ export async function saveRecallCandidate(userId: string, input: SaveRecallCandi
 }
 
 async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCandidateInput): Promise<RecallCandidateRecord> {
-  const judgment = boundedText(input.judgment, 'judgment', 4_000, true)!;
+  const judgment = boundedText(input.judgment, 'judgment', 4_000, true, true)!;
   // value 上限与 judgment 对齐（2026-09-19）：value 缺省兜底改为 judgment 全文，
   // 1000 上限会把长 judgment 挡在门外（forecast-commit 实测抓出）。
-  const value = boundedText(input.value, 'value', 4_000);
+  const value = boundedText(input.value, 'value', 4_000, false, true);
   const evidenceSummary = boundedText(input.evidenceSummary, 'evidence summary', 4_000);
   const summary = boundedText(input.summary, 'summary', 1_000) || fallbackCandidateTitle(judgment);
   const uncertainty = boundedText(input.uncertainty, 'uncertainty', 1_000);
@@ -1620,10 +1667,10 @@ async function assertResolvableNewSourceRefs(
 }
 
 export async function updateRecallCandidate(userId: string, candidateId: string, input: SaveRecallCandidateInput): Promise<RecallCandidateRecord> {
-  const judgment = boundedText(input.judgment, 'judgment', 4_000, true)!;
+  const judgment = boundedText(input.judgment, 'judgment', 4_000, true, true)!;
   // value 上限与 judgment 对齐（2026-09-19）：value 缺省兜底改为 judgment 全文，
   // 1000 上限会把长 judgment 挡在门外（forecast-commit 实测抓出）。
-  const value = boundedText(input.value, 'value', 4_000);
+  const value = boundedText(input.value, 'value', 4_000, false, true);
   const summary = boundedText(input.summary, 'summary', 1_000) || fallbackCandidateTitle(judgment);
   const uncertainty = boundedText(input.uncertainty, 'uncertainty', 1_000);
   const suggestedScope = boundedText(input.suggestedScope, 'suggested scope', 500) || '';
@@ -1813,6 +1860,76 @@ export function ignoreRecallCandidate(userId: string, candidateId: string, note?
 
 export function keepCurrentRecallCandidate(userId: string, candidateId: string, note?: string): Promise<RecallCandidateRecord> {
   return decideWithoutAsset(userId, candidateId, 'keep_current', 'ignored', note);
+}
+
+/** Use the same pool mutex as asset promotion for cross-domain candidate handoffs. */
+export function withRecallCandidatePromotionLock<T>(userId: string, work: () => Promise<T>): Promise<T> {
+  if (!safeId(userId)) throw new Error('invalid recall candidate owner');
+  return fileEditLock(recallJsonRecordPath(userId, 'candidate-locks', 'promote')).runExclusive(work);
+}
+
+/** Save progress after one or more ontology records were committed from this candidate. */
+export async function recordRecallCandidateOntologyProgress(
+  userId: string,
+  candidateId: string,
+  handoffInput: Omit<RecallCandidateOntologyHandoff, 'status'>,
+): Promise<RecallCandidateRecord> {
+  if (!safeId(userId) || !safeId(candidateId)) throw new Error('invalid ontology candidate handoff reference');
+  const handoff = normalizeOntologyHandoff({ ...handoffInput, status: 'in_progress' });
+  if (!handoff) throw new Error('ontology candidate progress is required');
+  const updated = await updateRecallJsonRecord(userId, 'candidates', candidateId, raw => {
+    if (!raw) throw new Error('recall candidate not found');
+    const candidate = asCandidate(raw);
+    if (candidate.status === 'integrated') throw new RecallCandidateStateError(RECALL_CANDIDATE_TERMINAL_ERROR_CODE, 'candidate is already integrated into ontology', candidate.status);
+    if (isTerminalCandidate(candidate.status)) throw new RecallCandidateStateError(RECALL_CANDIDATE_TERMINAL_ERROR_CODE, 'recall candidate is terminal', candidate.status);
+    const previous = candidate.ontologyHandoff?.status === 'in_progress' ? candidate.ontologyHandoff : undefined;
+    const merged = normalizeOntologyHandoff({
+      ...handoff,
+      moduleIds: [...new Set([...(previous?.moduleIds || []), ...handoff.moduleIds])],
+      recordIds: [...new Set([...(previous?.recordIds || []), ...handoff.recordIds])],
+    });
+    if (!merged) throw new Error('invalid ontology candidate progress');
+    return { ...candidate, ontologyHandoff: merged, updatedAt: new Date().toISOString() };
+  });
+  return asCandidate(updated);
+}
+
+/** Finalize a user-reviewed candidate after its canonical T/A/R records commit. */
+export async function markRecallCandidateIntegrated(
+  userId: string,
+  candidateId: string,
+  handoffInput: RecallCandidateOntologyHandoff,
+): Promise<RecallCandidateRecord> {
+  if (!safeId(userId) || !safeId(candidateId)) throw new Error('invalid ontology candidate handoff reference');
+  const handoff = normalizeOntologyHandoff(handoffInput);
+  if (!handoff) throw new Error('ontology candidate handoff is required');
+  const integratedHandoff: RecallCandidateOntologyHandoff = { ...handoff, status: 'integrated' };
+  const updated = await updateRecallJsonRecord(userId, 'candidates', candidateId, async raw => {
+    if (!raw) throw new Error('recall candidate not found');
+    const candidate = asCandidate(raw);
+    if (candidate.status === 'integrated') {
+      if (candidate.ontologyHandoff?.recordIds.join(',') === integratedHandoff.recordIds.join(',')) return candidate;
+      throw new RecallCandidateStateError(RECALL_CANDIDATE_TERMINAL_ERROR_CODE, 'candidate is already integrated into ontology', candidate.status);
+    }
+    if (isTerminalCandidate(candidate.status)) {
+      throw new RecallCandidateStateError(RECALL_CANDIDATE_TERMINAL_ERROR_CODE, 'recall candidate is terminal', candidate.status);
+    }
+    const decision = await writeReviewDecision(userId, {
+      targetRef: `recall_candidate:${candidate.id}`,
+      decisionType: 'modify',
+      decision: 'integrate_to_ontology',
+      antecedentRef: candidate.id,
+      scope: candidate.suggestedScope,
+      reason: 'User reviewed and structured this candidate into canonical ontology records.',
+      modifiedContent: `${handoff.recordIds.length} ontology records in ${handoff.moduleIds.length} module(s), revision ${handoff.ontologyRevision}`,
+      actor: 'user',
+      idempotencyKey: `ontology-${handoff.commandId}`,
+    });
+    const now = new Date().toISOString();
+    return { ...candidate, status: 'integrated', ontologyHandoff: integratedHandoff, reviewDecisionId: decision.decision_id,
+      decisionNote: '已整理到本体', cooldownUntil: undefined, updatedAt: now };
+  });
+  return asCandidate(updated);
 }
 
 async function decideWithoutAsset(

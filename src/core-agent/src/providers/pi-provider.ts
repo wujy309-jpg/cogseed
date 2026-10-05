@@ -12,7 +12,6 @@ import {
   stream as piStream,
   completeSimple as piCompleteSimple,
   streamSimple as piStreamSimple,
-  Type,
 } from "@earendil-works/pi-ai";
 import type {
   Model,
@@ -197,33 +196,10 @@ function buildPiContext(
   const piTools: PiTool[] | undefined = tools?.map((t) => ({
     name: t.name,
     description: t.description,
-    parameters: Type.Object(
-      Object.fromEntries(
-        Object.entries((t.inputSchema as Record<string, unknown>).properties ?? {}).map(
-          ([key, schema]) => {
-            const s = schema as Record<string, unknown>;
-            const required = ((t.inputSchema as Record<string, unknown>).required as string[] | undefined)?.includes(key);
-            const typeStr = s.type as string;
-            let tbType;
-            switch (typeStr) {
-              case "number":
-                tbType = Type.Number({ description: s.description as string });
-                break;
-              case "boolean":
-                tbType = Type.Boolean({ description: s.description as string });
-                break;
-              case "array":
-                tbType = Type.Array(Type.Any(), { description: s.description as string });
-                break;
-              default:
-                tbType = Type.String({ description: s.description as string });
-                break;
-            }
-            return [key, required ? tbType : Type.Optional(tbType)];
-          },
-        ),
-      ),
-    ),
+    // pi-ai accepts JSON Schema directly. Rebuilding just the top-level
+    // primitives loses nested objects, enums and constraints (and turned
+    // template slot maps into strings in real calls).
+    parameters: structuredClone(t.inputSchema) as PiTool["parameters"],
   }));
 
   return {

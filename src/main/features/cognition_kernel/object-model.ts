@@ -11,6 +11,7 @@
  */
 
 import type { CandidatePool, ContentHome, DeltaEvidenceRef } from './types';
+import { validateOntologyDocument, type OntologyDocument } from '../cognition/ontology/model';
 
 export type CognitionObjectKind = 'assertion' | 'rule' | 'bundle';
 export type BundleKind = 'template' | 'method';
@@ -203,11 +204,15 @@ export interface CognitionCompatibilityState {
   po?: Record<string, unknown>;
   ontologyCandidates?: Record<string, unknown>[];
   pendingProjection: boolean;
+  /** Absent with pending=true means full recovery (legacy markers remain compatible). */
+  projectionChanges?: { records: Record<string, string[]>; po?: boolean; ontologyCandidates?: boolean };
   migratedAt: string;
 }
 
 export interface CognitionStoreDocument {
   schemaVersion: 1;
+  /** 本体领域共用认知主档，旧档未创建本体时没有此字段。 */
+  ontology?: OntologyDocument;
   compatibility?: CognitionCompatibilityState;
   objects: Record<string, CognitionObject>;
   /** 家注册表（数据化：可加自定义家；内置六家出厂种子、不可删）。 */
@@ -295,6 +300,7 @@ export function normalizeCognitionStoreDocument(raw: unknown): CognitionStoreDoc
   const doc = emptyCognitionStore();
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return doc;
   const r = raw as Record<string, unknown>;
+  if (r.ontology !== undefined) doc.ontology = validateOntologyDocument(r.ontology);
   const objects: Record<string, CognitionObject> = {};
   if (r.objects && typeof r.objects === 'object' && !Array.isArray(r.objects)) {
     for (const [id, value] of Object.entries(r.objects as Record<string, unknown>)) {
@@ -318,6 +324,14 @@ export function normalizeCognitionStoreDocument(raw: unknown): CognitionStoreDoc
       || (c.ontologyCandidates !== undefined && !Array.isArray(c.ontologyCandidates))
       || typeof c.pendingProjection !== 'boolean' || typeof c.migratedAt !== 'string') {
       throw new Error('invalid cognition compatibility state');
+    }
+    if (c.projectionChanges) {
+      const dirty = c.projectionChanges;
+      if (!dirty.records || typeof dirty.records !== 'object' || Array.isArray(dirty.records)
+        || Object.entries(dirty.records).some(([key, ids]) => !['ability-assets', 'candidates'].includes(key)
+          || !Array.isArray(ids) || ids.some(id => typeof id !== 'string' || !/^[A-Za-z0-9_-]+$/.test(id)))
+        || (dirty.po !== undefined && typeof dirty.po !== 'boolean')
+        || (dirty.ontologyCandidates !== undefined && typeof dirty.ontologyCandidates !== 'boolean')) throw new Error('invalid cognition projection changes');
     }
     doc.compatibility = JSON.parse(JSON.stringify(c)) as CognitionCompatibilityState;
   }

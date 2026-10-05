@@ -1,8 +1,9 @@
-import { unifiedCognitionRecordIds } from '../cognition_bridge';
+import { unifiedCognitionRecordIds, withCognitionTransition, persistCognitionSource } from '../cognition_bridge';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
-import { safeId } from '../../storage';
+import { safeId, writeJson } from '../../storage';
 import { recallJsonlPath, recallJsonRecordPath } from './paths';
 import { normalizeCognitionSourceRefs, type CognitionSourceRef } from './source-service';
 import {
@@ -10,6 +11,7 @@ import {
   removeRecallJsonlStream, removeRecallJsonlRecords, updateRecallJsonRecord,
 } from './store';
 import type { RecallJsonRecord } from './types';
+import { assetVersionSnapshot, pendingAssetVersions } from './asset-version-journal';
 import { normalizeAbilityAssetOntologyRefs } from './ontology-refs';
 import type { RecallAbilityAssetRecord, RecallAbilityAssetLifecycleStatus } from './candidate-service';
 import { ensureAbilityTags, normalizeAbilityTagList } from './ability-tag-service';
@@ -306,25 +308,7 @@ function nextVersion(version: string): string {
 }
 
 function snapshot(asset: RecallAbilityAssetRecord): AbilityAssetVersionRecord['snapshot'] {
-  return {
-    title: asset.title,
-    statement: asset.statement,
-    type: asset.type,
-    scope: asset.scope,
-    ...(asset.scopePolicy ? { scopePolicy: asset.scopePolicy } : {}),
-    evidenceRefs: asset.evidenceRefs,
-    ...(asset.learningSignal ? { learningSignal: asset.learningSignal } : {}),
-    ...(asset.learningProvenance ? { learningProvenance: asset.learningProvenance } : {}),
-    ...(asset.ontologyRefs ? { ontologyRefs: asset.ontologyRefs } : {}),
-    ...(asset.relations ? { relations: asset.relations } : {}),
-    ...(asset.derivedFrom ? { derivedFrom: asset.derivedFrom } : {}),
-    ...(asset.applicableWhen ? { applicableWhen: asset.applicableWhen } : {}),
-    ...(asset.forbiddenWhen ? { forbiddenWhen: asset.forbiddenWhen } : {}),
-    ...(asset.sourceSessionIds?.length ? { sourceSessionIds: asset.sourceSessionIds } : {}),
-    status: asset.status,
-    maturity: asset.maturity,
-    version: asset.version,
-  };
+  return assetVersionSnapshot(asset) as AbilityAssetVersionRecord['snapshot'];
 }
 
 function asVersion(value: RecallJsonRecord): AbilityAssetVersionRecord {
@@ -369,12 +353,26 @@ async function appendAbilityAssetVersionLine(
   record: AbilityAssetVersionRecord,
 ): Promise<void> {
   const recordPath = recallJsonRecordPath(userId, 'ability-assets', assetId);
-  await fileEditLock(recordPath).runExclusive(async () => {
+  await withCognitionTransition(userId, () => fileEditLock(recordPath).runExclusive(async () => {
     const raw = await readRecallJsonRecord(userId, 'ability-assets', assetId);
     if (!raw) throw new Error('recall ability asset not found');
     assertNotPurged(asAsset(raw));
-    await appendRecallJsonlRecord(userId, 'ability-asset-versions', assetId, record);
-  });
+    const existing = (await listRecallJsonlRecords(userId, 'ability-asset-versions', assetId, 0)).find(row => row.version === record.version);
+    if (existing && !isDeepStrictEqual(existing.snapshot, record.snapshot)) throw new Error('immutable version snapshot conflict');
+    try {
+      if (!existing) await appendRecallJsonlRecord(userId, 'ability-asset-versions', assetId, record);
+    } catch (error) {
+      if (!pendingAssetVersions(raw).some(row => row.version === record.version && isDeepStrictEqual(row.snapshot, record.snapshot))) throw error;
+      log.warn('asset version ledger pending recovery', { assetId, version: record.version });
+      return;
+    }
+    const queued = pendingAssetVersions(raw);
+    if (queued.some(row => row.version === record.version)) {
+      const clean = { ...raw, pendingVersionSnapshots: queued.filter(row => row.version !== record.version) };
+      if (!clean.pendingVersionSnapshots.length) delete (clean as RecallJsonRecord).pendingVersionSnapshots;
+      await persistCognitionSource(userId, 'ability-assets', assetId, clean, () => writeJson(recordPath, clean));
+    }
+  }));
 }
 
 async function appendVersion(userId: string, asset: RecallAbilityAssetRecord, metadata: { reason?: string; actor?: AbilityAssetActor } = {}): Promise<void> {
@@ -588,7 +586,7 @@ export function abilityAssetActiveVersion(
 
 export async function initializeAbilityAsset(userId: string, asset: RecallAbilityAssetRecord, metadata: { reason?: string; actor?: AbilityAssetActor } = {}): Promise<void> {
   const current = await listAbilityAssetVersions(userId, asset.id);
-  if (!current.length) await appendVersion(userId, asset, metadata);
+  if (!current.length || pendingAssetVersions(asset).some(row => row.version === asset.version)) await appendVersion(userId, asset, metadata);
   const audit = await listAbilityAssetAudit(userId, asset.id);
   if (!audit.length) await appendAudit(userId, asset.id, 'created', metadata.reason || metadata.actor ? { note: metadata.reason, actor: metadata.actor } : {});
 }
@@ -1953,7 +1951,13 @@ export async function mergeAbilityAssets(
 }
 
 export async function listAbilityAssetVersions(userId: string, assetId: string): Promise<AbilityAssetVersionRecord[]> {
-  return (await listRecallJsonlRecords(userId, 'ability-asset-versions', assetId, 0)).map(asVersion);
+  // Capture pending snapshots first: recovery can append and clear them
+  // between reads, so reading the ledger first could miss the same version twice.
+  const raw = await readRecallJsonRecord(userId, 'ability-assets', assetId);
+  const persisted = await listRecallJsonlRecords(userId, 'ability-asset-versions', assetId, 0);
+  const versions = new Map(persisted.map(row => [String(row.version), row]));
+  if (raw?.status !== 'purged') for (const row of pendingAssetVersions(raw)) if (!versions.has(String(row.version))) versions.set(String(row.version), row);
+  return [...versions.values()].map(asVersion).sort((a, b) => Number(a.version) - Number(b.version));
 }
 
 /** 版本链 + 按版本的使用效果聚合（2026-09-16 M8）：供版本对比视图——
@@ -2233,4 +2237,15 @@ export async function downgradeAbilityAssetMaturityForRevokedEvidence(
     });
   }
   return { asset, downgraded };
+}
+
+/** Recovery is idempotent; an immutable snapshot is never regenerated from current text. */
+export async function recoverAbilityAssetVersionJournals(userId: string): Promise<void> {
+  for (const asset of await listAbilityAssets(userId)) {
+    if (asset.status === 'purged') continue;
+    for (const row of pendingAssetVersions(asset)) {
+      try { await appendAbilityAssetVersionLine(userId, asset.id, asVersion(row)); }
+      catch { log.warn('asset version journal recovery failed', { assetId: asset.id }); }
+    }
+  }
 }

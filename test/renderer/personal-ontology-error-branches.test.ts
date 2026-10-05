@@ -251,28 +251,29 @@ describe('personal ontology v2 renderer › IPC 失败分支', () => {
     expect(close).toHaveBeenCalledTimes(1); // 成功后关弹窗
   });
 
-  it('F-r3-2 候选确认后重拉候选池：横幅与 nav 角标不滞留、不再诱使重复点击', async () => {
+  it('旧本体候选转入共同审核后重拉候选池，成功文案不声称已经保存', async () => {
     let listCalls = 0;
     const invoke = makeInvoke({
       'personalOntology.candidates.list': async () => {
         listCalls += 1;
         return { ok: true, candidate_updates: listCalls === 1 ? [{ candidate_id: 'c1', kind: 'rule', summary: '候选A', memory_text: '周五先跑全量测试再合入。' }] : [], blocked_items: [] };
       },
-      'po.candidates.confirm': { ok: true },
+      'personalOntology.candidates.transferToRecall': { ok: true, candidate: { id: 'recall-c1' }, sourceRemoved: true },
     });
-    const confirmBtn = clickTarget({ 'data-poc-candidate-op': 'confirm', 'data-poc-candidate-id': 'c1' });
+    const transferBtn = clickTarget({ 'data-poc-candidate-op': 'transfer', 'data-poc-candidate-id': 'c1' });
     const loaded = await boot(invoke, {
-      bodyTargets: new Map([['[data-poc-candidate-op]', [confirmBtn]]]),
-      documentElements: [makeElement('po2-candidate-group', { value: 'g1' })],
+      bodyTargets: new Map([['[data-poc-candidate-op]', [transferBtn]]]),
     });
     const bodyEl = loaded.elements.get('personal-onto-main-body');
     const navEl = loaded.elements.get('personal-onto-nav');
     expect(String(bodyEl.innerHTML)).toContain('周五先跑全量测试再合入'); // 初始横幅在场
     expect(String(navEl.innerHTML)).toContain('backflow_badge'); // 初始角标在场
-    await click(confirmBtn);
+    await click(transferBtn);
     expect(listCalls).toBe(2); // 确认后必须重拉候选池（修前缓存未失效恒为 1）
     expect(String(bodyEl.innerHTML)).not.toContain('周五先跑全量测试再合入'); // 横幅消失
     expect(String(navEl.innerHTML)).not.toContain('backflow_badge'); // 角标消失
+    expect(hasToast(loaded.uiToast, 'po2_candidate_transferred', 'success')).toBe(true);
+    expect(hasToast(loaded.uiToast, 'po2_candidate_accepted', 'success')).toBe(false);
   });
 
   /** F-r3-3 共用：两组各一字段的快照 + 带 overlay 的弹窗 mock（联动绑定挂在 overlay 内 select 上）。 */
@@ -554,51 +555,13 @@ describe('personal ontology v2 renderer › IPC 失败分支', () => {
     expect(loaded.uiToast.mock.calls.some(([msg]: any[]) => String(msg).includes('{n}'))).toBe(false);
   });
 
-  it('F-r1-7 候选冲突：「仍要写入」重试失败时提示 op_failed，不再零反馈', async () => {
-    const confirmImpl = vi.fn(async (_channel: string, payload: any) => (
-      payload && payload.acknowledgeConflict ? { ok: false, error: 'db_busy' } : { ok: false, error: 'conflict_detected' }
-    ));
-    const invoke = makeInvoke({ 'po.candidates.confirm': confirmImpl });
-    const confirmBtn = clickTarget({ 'data-poc-candidate-op': 'confirm', 'data-poc-candidate-id': 'c1' });
-    const loaded = await boot(invoke, {
-      bodyTargets: new Map([['[data-poc-candidate-op]', [confirmBtn]]]),
-      documentElements: [makeElement('po2-candidate-group', { value: 'g1' })],
+  it('受限旧候选不会显示转入共同审核入口', async () => {
+    const invoke = makeInvoke({
+      'personalOntology.candidates.list': { ok: true, candidate_updates: [{ candidate_id: 'restricted', kind: 'preference',
+        sensitivity: 'restricted', summary: '私密内容', memory_text: '不应进入任务可用资产' }], blocked_items: [] },
     });
-    await click(confirmBtn);
-    expect(confirmImpl).toHaveBeenCalledTimes(2);
-    expect(confirmImpl.mock.calls[1][1].acknowledgeConflict).toBe(true);
-    expect(loaded.uiConfirm).toHaveBeenCalledTimes(1);
-    expect(hasToast(loaded.uiToast, 'op_failed', 'error')).toBe(true);
-    expect(hasToast(loaded.uiToast, 'po2_candidate_accepted', 'success')).toBe(false);
-  });
-
-  it('F-r1-7 候选冲突：重试成功仍提示「已收下」', async () => {
-    const confirmImpl = vi.fn(async (_channel: string, payload: any) => (
-      payload && payload.acknowledgeConflict ? { ok: true } : { ok: false, error: 'conflict_detected' }
-    ));
-    const invoke = makeInvoke({ 'po.candidates.confirm': confirmImpl });
-    const confirmBtn = clickTarget({ 'data-poc-candidate-op': 'confirm', 'data-poc-candidate-id': 'c1' });
-    const loaded = await boot(invoke, {
-      bodyTargets: new Map([['[data-poc-candidate-op]', [confirmBtn]]]),
-      documentElements: [makeElement('po2-candidate-group', { value: 'g1' })],
-    });
-    await click(confirmBtn);
-    expect(hasToast(loaded.uiToast, 'po2_candidate_accepted', 'success')).toBe(true);
-    expect(hasToast(loaded.uiToast, 'op_failed', 'error')).toBe(false);
-  });
-
-  it('F-r1-7 候选冲突：确认框点取消不重试、不提示错误（行为不变）', async () => {
-    const confirmImpl = vi.fn(async () => ({ ok: false, error: 'conflict_detected' }));
-    const invoke = makeInvoke({ 'po.candidates.confirm': confirmImpl });
-    const confirmBtn = clickTarget({ 'data-poc-candidate-op': 'confirm', 'data-poc-candidate-id': 'c1' });
-    const loaded = await boot(invoke, {
-      bodyTargets: new Map([['[data-poc-candidate-op]', [confirmBtn]]]),
-      documentElements: [makeElement('po2-candidate-group', { value: 'g1' })],
-      uiConfirmResult: false,
-    });
-    await click(confirmBtn);
-    expect(confirmImpl).toHaveBeenCalledTimes(1); // 未带 acknowledgeConflict 重试
-    expect(hasToast(loaded.uiToast, 'op_failed', 'error')).toBe(false);
-    expect(hasToast(loaded.uiToast, 'po2_candidate_accepted', 'success')).toBe(false);
+    const loaded = await boot(invoke);
+    expect(String(loaded.elements.get('personal-onto-main-body').innerHTML)).not.toContain('data-poc-candidate-op="transfer"');
+    expect(String(loaded.elements.get('personal-onto-main-body').innerHTML)).toContain('po2_candidate_restricted');
   });
 });

@@ -19,6 +19,7 @@
   const WRITE_ACTIONS = new Set([
     'storage-check', 'storage-activate', 'storage-rollback', 'storage-recover',
     'refresh', 'cand-adopt-with-form', 'cand-decide',
+    'po-cand-transfer',
     'asset-action', 'asset-recommend-ack', 'select-asset-version', 'delete-asset-version',
     'rollback-cleanup-item', 'cleanup-uncertain-dismiss', 'cleanup-uncertain-defer',
     'run-maintenance', 'purge-deleted-asset', 'inbox-resolve', 'asset-edit-save', 'edit-from-version', 'merge-asset-version', 'merge-asset', 'source-action', 'capture-action', 'organize-conv',
@@ -138,13 +139,13 @@
             break;
           }
           case 'refresh': await NS.reload(); break;
-          // 本体候选（2026-10-02 收件箱归位）：确认 = 进全局记忆的档案；驳回 = 丢弃。
-          // 两个动作都复用既有通道，不在渲染层写存储。
-          case 'po-cand-confirm': {
-            const res = await NS.api.call('po.candidates.confirm', { candidateId: id, dest: { toGlobalMemory: true } }, {});
+          // 旧个人本体候选先转入 Recall 共同审核；不再直写 USER.md / MEMORY.md。
+          case 'po-cand-transfer': {
+            const res = await NS.api.call('personalOntology.candidates.transferToRecall', { candidateId: id }, {});
             if (!res || res.ok === false) { NS.toast(T('cognition.review_ontology_failed', '没处理成功，请重试。'), 'error'); break; }
-            NS.toast(T('cognition.review_ontology_confirmed', '已记住。'));
+            NS.toast(T('cognition.review_ontology_transferred', '已转入「待我处理」。它还没有保存为正式认知。'), 'success');
             await NS.reload();
+            if (res.candidate?.id) router.go({ name: 'review', candidateId: String(res.candidate.id) });
             break;
           }
           case 'po-cand-reject': {
@@ -290,12 +291,13 @@
             break;
           }
           case 'open-candidate': router.go({ name: 'review', candidateId: id }); break;
+          case 'cand-organize-ontology': await NS.openPersonalOntology({ candidateId: id }); break;
           // 「记一条」（设计 7.2）：手动新建候选——列表页头/空态入口，表单卡
           // 就地展开（candCreate 路由参数），保存走 recall.candidates.save。
           case 'cand-create': router.go({ name: 'overview', candCreate: '1' }); break;
           case 'cand-create-cancel': router.go({ name: 'overview', candCreate: '' }, { replace: true }); break;
           case 'cand-create-save': await A.saveManualCandidate(readCandidateForm(el) || undefined); break;
-          case 'open-ontology': await NS.openPersonalOntology(); break;
+          case 'open-ontology': await NS.openPersonalOntology({ moduleId: el.dataset.moduleId || '', recordId: el.dataset.recordId || '' }); break;
           case 'open-asset': router.go({ name: 'overview', assetId: id }); break;
           case 'open-overview': router.go({ name: 'overview' }); break;
           case 'cand-adopt-with-form': await A.adoptCandidate(id, readCandidateForm(el) || undefined); break;

@@ -1919,10 +1919,9 @@
       </div>`;
   }
 
-  /* ────────────────────────── 视图:个人本体(独立页挂载点) ────────────────────────── */
-  /* 本体页的真实内容不在本文件:render() 把这个 mount 放进内容区后,由
-   * core.mountPersonalOntology 把 index.html 里的本体 section 移进来并调
-   * window.renderPersonalOntology()——本体模块自持状态,切页不销毁。 */
+  /* ────────────────────────── 视图:本体工作台 ────────────────────────── */
+  /* 新工作台以独立 classic script 懒加载到这个挂载点；旧 personal-ontology section
+   * 保留在隐藏停车区，不再嵌入本体路由。 */
 
   function viewOntology() {
     return '<div id="ca-ontology-mount" class="ca-ontology-mount"></div>';
@@ -4070,7 +4069,7 @@
   let lastRenderKey = '';
   let treeSettlePass = 0;
   function routeKey(route) {
-    return [route.name, route.assetId, route.candidateId, route.captureId, route.category, route.captureBucket, route.experienceId].join('|');
+    return [route.name, route.assetId, route.candidateId, route.moduleId, route.recordId, route.captureId, route.category, route.captureBucket, route.experienceId].join('|');
   }
 
   function render(opts) {
@@ -4164,6 +4163,19 @@
     const tabsNav = document.getElementById('ca-tabs-nav');
     const bannerSlot = document.getElementById('ca-banner-slot');
     const main = document.getElementById('ca-scroll');
+    // Background refresh must not erase a manual candidate being composed.
+    // Keep this draft only across a redraw of the same open form; cancel/save
+    // removes that form, so a later new draft starts empty.
+    const oldManual = route.candCreate === '1' ? main?.querySelector?.('[data-manual-candidate]') : null;
+    const manualDraft = oldManual ? {
+      type: oldManual.dataset.candType,
+      fields: Array.from(oldManual.querySelectorAll('[data-f]')).map(input => ({
+        name: input.dataset.f, value: input.value,
+        ...(input === document.activeElement && typeof input.selectionStart === 'number'
+          ? { start: input.selectionStart, end: input.selectionEnd } : {}),
+      })),
+      expanded: oldManual.querySelector('details')?.open === true,
+    } : null;
     // 树页/本体页是「整页高度」型：滚动容器不收滚动、改由页面自己占满
     //（原型 .tree-stage/.onto-page 都是整屏高度，不随内容滚）。
     const stageScroll = route.name === 'tree' || route.name === 'ontology';
@@ -4206,6 +4218,26 @@
       }
     }
     const scrollRoot = document.getElementById('ca-scroll');
+    const newManual = manualDraft ? scrollRoot?.querySelector?.('[data-manual-candidate]') : null;
+    if (newManual) {
+      newManual.dataset.candType = manualDraft.type;
+      for (const input of newManual.querySelectorAll('[data-f]')) {
+        const draft = manualDraft.fields.find(field => field.name === input.dataset.f);
+        if (!draft) continue;
+        input.value = draft.value;
+        if (draft.start !== undefined && typeof input.setSelectionRange === 'function') {
+          if (typeof input.focus === 'function') input.focus();
+          input.setSelectionRange(draft.start, draft.end);
+        }
+      }
+      for (const chip of newManual.querySelectorAll('[data-act="cand-type"]')) {
+        const selected = chip.dataset.id === manualDraft.type;
+        chip.classList.toggle('is-green', selected);
+        chip.setAttribute('aria-pressed', selected ? 'true' : 'false');
+      }
+      const details = newManual.querySelector('details');
+      if (details) details.open = manualDraft.expanded;
+    }
     if (route.assetId && scrollRoot && typeof scrollRoot.querySelector === 'function') {
       for (const selector of openDisclosures) {
         const disclosure = scrollRoot.querySelector(selector);
@@ -4227,7 +4259,11 @@
     // 进入本体路由：mount 点已在 body 里，交给 core 的挂载编排（加载特性组、
     // 移 section、渲染本体）。异步执行，不阻塞本轮渲染。
     if (route.name === 'ontology' && typeof NS.mountPersonalOntology === 'function') {
-      void NS.mountPersonalOntology({ resetToOverview: enteringOntology });
+      void NS.mountPersonalOntology({ resetToOverview: enteringOntology,
+        ...(route.candidateId ? { candidateId: String(route.candidateId) } : {}),
+        ...(route.moduleId ? { moduleId: String(route.moduleId) } : {}),
+        ...(route.recordId ? { recordId: String(route.recordId) } : {}),
+      });
     }
     // 标签弹层接线（specs/012 T012/T013）：DOM 刚写完，就地过 uiModalController
     //（onChange 监听器注册顺序早于 boot 的渲染监听，不能放 app.js 的 notify 里）。

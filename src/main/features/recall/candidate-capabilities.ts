@@ -26,6 +26,8 @@ export type RecallCandidateDisplayState =
   | 'weak_evidence'
   | 'deferred'
   | 'confirmed'
+  | 'integrated'
+  | 'ontology_in_progress'
   | 'rejected'
   | 'ignored'
   | 'expired'
@@ -48,6 +50,7 @@ export type RecallCandidateEligibility = 'eligible' | 'soft_warning' | 'ineligib
 /** disabledReason / 批量拦截原因的稳定码。UI 负责翻译，不得直接展示。 */
 export type RecallCandidateBlockedReason =
   | 'candidate_confirmed'
+  | 'candidate_integrated'
   | 'candidate_rejected'
   | 'candidate_ignored'
   | 'candidate_expired'
@@ -70,6 +73,7 @@ export interface RecallCandidateCapabilityInput {
   risk?: RecallCandidateRisk;
   sourceRefs?: readonly unknown[];
   evidenceRefs?: readonly unknown[];
+  ontologyHandoff?: { status?: 'in_progress' | 'integrated' };
   judgment?: string;
   value?: string;
   summary?: string;
@@ -93,6 +97,7 @@ export interface RecallCandidateCapabilities {
   canPromote: boolean;
   canReject: boolean;
   canRetry: boolean;
+  canContinueOntology: boolean;
   /** 能否进入批量入库勾选池。= canPromote 且不是必须单条复核的高风险候选。 */
   canBatchSelect: boolean;
   /** 还需要用户做决定。= canConfirm || canReject || canDefer || canRetry。 */
@@ -127,6 +132,7 @@ const ACTIONABLE = {
   canPromote: true,
   canReject: true,
   canRetry: false,
+  canContinueOntology: false,
   needsUserAction: true,
   countsAsPending: true,
   isSnoozed: false,
@@ -145,6 +151,7 @@ function terminal(
     canPromote: false,
     canReject: false,
     canRetry: false,
+    canContinueOntology: false,
     needsUserAction: false,
     countsAsPending: false,
     isSnoozed: false,
@@ -173,6 +180,7 @@ const BY_STATUS: Record<RecallCandidateStatus, BaseCapabilities> = {
   // 所以这里不能把它当只读。产品上的主动作是重试。
   failed: { ...ACTIONABLE, canRetry: true, displayState: 'failed' },
   confirmed: terminal('confirmed', 'candidate_confirmed'),
+  integrated: terminal('integrated', 'candidate_integrated'),
   rejected: terminal('rejected', 'candidate_rejected'),
   ignored: terminal('ignored', 'candidate_ignored'),
   expired: terminal('expired', 'candidate_expired'),
@@ -271,6 +279,10 @@ export function getRecallCandidateCapabilities(
       disabledReason: 'candidate_evidence_insufficient',
     };
   }
+  if (candidate.ontologyHandoff?.status === 'in_progress') {
+    base = { ...base, canEdit: false, canConfirm: false, canPromote: false, canReject: false, canRetry: false,
+      canContinueOntology: true, needsUserAction: true, countsAsPending: true, isTerminal: false, displayState: 'ontology_in_progress' };
+  }
   // 准入门槛：内容不够格时**必须**关掉确认与晋升。留着它就是假审批——
   // 用户点确认，promoteRecallCandidate 里的同一个 validatePromotionByAssetType
   // 会再拒一次，一次认真的审批白做。
@@ -284,7 +296,7 @@ export function getRecallCandidateCapabilities(
       ...base,
       canConfirm: false,
       canPromote: false,
-      needsUserAction: base.canEdit || base.canReject || base.canRetry,
+      needsUserAction: base.canEdit || base.canReject || base.canRetry || base.canContinueOntology,
     };
   }
   const batchBlocked = base.canPromote && blocksBatch(candidate.risk);

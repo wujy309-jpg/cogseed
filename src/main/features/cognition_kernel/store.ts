@@ -413,17 +413,24 @@ export function listCognitionVersions(uid: string, objectId: string): CognitionV
 
 /** 兼容桥的原子入口：调用者提供已验证的来源快照，仍复用库锁、坏档拒写和原子落盘。
  * 变更不会伪造新内容版本；版本/审计 JSONL 由既有资产业务服务维护。 */
-export async function editCognitionCompatibility(
-  uid: string, edit: (doc: CognitionStoreDocument) => void,
+export async function editCognitionDocument(
+  uid: string, edit: (doc: CognitionStoreDocument) => void | false,
 ): Promise<void> {
   if (!safeId(uid)) throw new Error('invalid uid');
   const filePath = cognitionStorePath(uid);
   await fileEditLock(filePath).runExclusive(async () => {
     const doc = loadCognitionStoreSync(uid);
     if (corruptRecordFor(filePath)) throw new Error('cognition store corrupt; compatibility write refused');
-    edit(doc);
+    if (edit(doc) === false) return;
     doc.updatedAt = nowIso();
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     writeStoreFileSync(filePath, doc);
   });
+}
+
+/** 保留兼容桥的既有调用契约。 */
+export async function editCognitionCompatibility(
+  uid: string, edit: (doc: CognitionStoreDocument) => void,
+): Promise<void> {
+  return editCognitionDocument(uid, edit);
 }

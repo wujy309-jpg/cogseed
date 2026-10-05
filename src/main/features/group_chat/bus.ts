@@ -8021,6 +8021,16 @@ async function runActorTurnBody(
         log.warn('asset-specific adoption persistence failed; final message preserved');
       }
     }
+    if (!outcome.failureKind && !errText && !aborted && persistedMsg && String(outcome.text || '').includes('[[ontology:')) {
+      try {
+        const { finalizeOntologyUsageCitations } = await import('../cognition/ontology/usage-receipt');
+        await finalizeOntologyUsageCitations(uid, {
+          taskRunId: item.turnId, messageId: persistedMsg.id, finalText: String(outcome.text || ''),
+        });
+      } catch {
+        log.warn('ontology usage persistence failed; final message preserved');
+      }
+    }
     // 画像通道落账（2026-09-13 通道显式化 / 2026-09-30 修2）：回执逐条留
     // 痕；正式资产镜像（非 onto-*）同口径计入 usage——「画像不是资产」的
     // 旧口径只适用于已废弃的文件回退形态，统一入口见

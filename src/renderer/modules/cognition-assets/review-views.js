@@ -64,12 +64,13 @@
     const snoozed = pending.filter((c) => c.capabilities && c.capabilities.isSnoozed);
     const terminal = S.candidates.filter((c) => ['expired', 'superseded'].includes(displayState(c)) && !candidatePending(c)).slice(0, 8);
     const processed = S.candidates
-      .filter((c) => ['confirmed', 'rejected', 'ignored'].includes(String(c.status || '')))
+      .filter((c) => ['confirmed', 'integrated', 'rejected', 'ignored'].includes(String(c.status || '')))
       .slice(0, 5);
-    // 处理结果按真实状态如实显示——此前无论保存还是拒绝都写「已保存」，
-    // 与筛选口径（confirmed/rejected/ignored 三种）不符（用户实测抓出）。
+    // 处理结果按真实状态如实显示——保存、整理到本体、拒绝和忽略使用各自状态文案，
+    // 不把不同治理结果都写成「已保存」。
     const processedLabel = (c) => ({
       confirmed: T('cognition.candidate_status_promoted', '已保存'),
+      integrated: T('cognition.candidate_status_integrated', '已整理到本体'),
       rejected: T('cognition.candidate_status_rejected', '未保存'),
       ignored: T('cognition.candidate_status_ignored', '已忽略'),
     }[String(c.status || '')] || T('cognition.candidate_status_other', '已处理'));
@@ -289,9 +290,8 @@
     const attentionHtml = attention.length
       ? `<details class="details fold fold-attention"${String(route.sourceIssueOpen || '') === 'open' ? ' open' : ''}><summary>${esc(T('cognition.review_other_issues', '其他异常'))}<span class="n">${attention.length}</span></summary><div class="dbody"><div class="note">${esc(T('cognition.review_other_issues_hint', '不是等你拍板的事：整理没跑成、任务没得到回复、来源读取异常；处理入口在「系统活动」。'))}</div>${attention.join('')}${sourceIssuesSection(route)}${taskFailedSection(route)}</div></details>`
       : '';
-    /* 本体候选（关于我）并入同一个收件箱（2026-10-02 归位）：只做展示与两个动作，
-     * 确认走 po.candidates.confirm（默认进全局记忆），驳回走 po.candidates.reject。
-     * 读取失败如实报错，不把「没读到」伪装成「没有」。 */
+    /* 旧个人本体候选留在同一收件箱，但只能转入 Recall 共同审核后再保存；
+     * 这里不再直接写旧全局记忆。受限条目不转成任务可用候选。 */
     const poList = Array.isArray(S.poCandidates) ? S.poCandidates : [];
     /* 类型标签按候选的 kind 给（不再一律写「关于我」——2026-10-02 真机抓出：
      * rule 类回流候选被错标成「关于我」，用户看不出它是规则）。 */
@@ -325,12 +325,14 @@
       ${poList.map((c) => {
         const cid = String(c.candidate_id || '');
         const dead = cid ? !sourceAlive(cid) : false;
+        const restricted = ['restricted', 'sensitive'].includes(String(c.sensitivity || 'standard'));
         return `<div class="ca-review-row">
         ${chip(poKindLabel(c.kind), c.kind === 'rule' ? 'blue' : 'green')}
         ${dead ? chip(T('cognition.review_onto_stale_source', '来源已删除'), 'red') : ''}
         <span class="ca-review-row-text">${esc(String(c.summary || c.memory_text || ''))}</span>
+        ${restricted ? `<span class="note">${esc(T('cognition.review_ontology_restricted_transfer', '这条旧候选标记为仅本人可见，不能转入任务可用资产。'))}</span>` : ''}
         <span class="sp"></span>
-        ${cid && !dead ? btn(T('cognition.review_ontology_confirm', '确认记住'), 'po-cand-confirm', { id: cid, small: true, primary: true }) : ''}
+        ${cid && !dead && !restricted ? btn(T('cognition.review_ontology_transfer', '移入共同审核'), 'po-cand-transfer', { id: cid, small: true, primary: true }) : ''}
         ${cid ? btn(T('cognition.review_ontology_reject', '驳回'), 'po-cand-reject', { id: cid, small: true, primary: !dead }) : ''}
       </div>`;
       }).join('')}</div>`
@@ -352,7 +354,7 @@
     ${terminal.length ? `<details class="details fold fold-terminal"><summary>${esc(T('cognition.review_group_terminal', '已失效的候选'))}<span class="n">${terminal.length}</span></summary><div class="dbody"><div class="note">${esc(T('cognition.review_group_terminal_note', '已过期或被取代，仅保留记录'))}</div>${terminal.map((c) => candidateCard(c, false)).join('')}</div></details>` : ''}
     ${processed.length ? `<details class="details fold fold-processed"><summary>${esc(T('cognition.inbox_processed_badge', '处理记录'))}<span class="n">${processed.length}</span></summary><div class="dbody"><div class="note">${esc(T('cognition.inbox_processed_hint', '按处理时间倒序，只显示已处理的决定'))}</div>${processed.map((c) => `
       <div class="vrow">
-        <div class="vt"><div class="v1">${esc(candidateTitle(c))}${String(c.status || '') === 'confirmed' && c.promotedAssetId ? ` <span class="chip-link" data-act="go-inbox-asset" data-id="${esc(String(c.promotedAssetId))}" ${roleBtn()}>${esc(T('cognition.review_promoted_go', '查看这条资产'))}</span>` : ''}</div>
+        <div class="vt"><div class="v1">${esc(candidateTitle(c))}${String(c.status || '') === 'confirmed' && c.promotedAssetId ? ` <span class="chip-link" data-act="go-inbox-asset" data-id="${esc(String(c.promotedAssetId))}" ${roleBtn()}>${esc(T('cognition.review_promoted_go', '查看这条资产'))}</span>` : ''}${String(c.status || '') === 'integrated' && c.ontologyHandoff?.recordIds?.length ? ` <span class="chip-link" data-act="open-ontology" data-module-id="${esc(String(c.ontologyHandoff.moduleIds?.[0] || ''))}" data-record-id="${esc(String(c.ontologyHandoff.recordIds[0]))}" ${roleBtn()}>${esc(T('cognition.candidate_detail_open_ontology', '查看本体记录'))}</span>` : ''}</div>
         <div class="v2">${esc(fmtDate(c.updatedAt || c.createdAt))} · ${esc(processedLabel(c))}</div></div>
       </div>`).join('')}</div></details>` : ''}
     ${attentionHtml}`;

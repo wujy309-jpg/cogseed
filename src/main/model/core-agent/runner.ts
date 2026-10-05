@@ -1059,9 +1059,8 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     ...(params.userMessage ? { taskText: params.userMessage } : {}),
   }) : [];
 
-  // Personal Ontology read-only tools (personal_ontology_fields / list_ontology_graph).
-  // Skills can inspect the saved graph and template fields through feature contracts
-  // instead of shelling out to read groups.md, graph JSON, or template files.
+  // Legacy personal-ontology template field lookup. Task ontology reads use the
+  // scope-filtered cognition_ontology_query registered with cognition-kernel tools.
   const personalOntologyTools = uid && !params.disableTools ? createPersonalOntologyTools({
     userId: uid,
   }) : [];
@@ -1070,6 +1069,8 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   // 任务开工前缺的字段在**对话里**问、在**对话里**答，不另设填写界面。
   const cognitionKernelTools = uid && !params.disableTools ? createCognitionKernelTools({
     userId: uid,
+    turnId: params.turnId, cid: params.cid, spaceId: params.spaceId,
+    context: { agentId, workspaceId: params.spaceId, projectId: params.projectId, taskText: params.userMessage },
   }) : [];
 
   // Conversation-history tools (chat_search + chat_read). Commander-only:

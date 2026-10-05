@@ -193,6 +193,8 @@ const inlineSvgBaseline: Record<string, number> = {
   'avatar.js': 4,
   'cognition/pages.js': 0,
   'cognition-assets/views.js': 1,
+  // cognition-ontology.js：本体关系网络的业务画布（ONTO-PV-001）。SVG 只绘制查询结果中的显式节点与边，不承载叶子图标。
+  'cognition-ontology.js': 1,
   'dashboard.js': 2,
   'import-check-modal.js': 1,
   // kb-workbench.js：4 → 2（2026-09-21）。删掉的 2 处是页面自带的一套 svg path 表

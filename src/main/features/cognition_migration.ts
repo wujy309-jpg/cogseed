@@ -5,6 +5,7 @@
  * 绝不能拿陈旧的兼容文件反向覆盖主档。
  */
 import * as fs from 'node:fs';
+import { pendingAssetVersions } from './recall/asset-version-journal';
 import * as path from 'node:path';
 import { userCognitionDir, userCloudRoot } from '../paths';
 import { nowIso, safeId } from '../storage';
@@ -12,7 +13,7 @@ import { candidatesMdPath, parseCandidatesMarkdown } from './personal_ontology_c
 import { corruptRecordFor } from '../util/corrupt-guard';
 import { loadPoDocSync, poDocPath } from './po/store';
 import { cognitionCompatibility, withCognitionTransition, MANAGED_COLLECTIONS,
-  validateCognitionSources, replaceCognitionSources, recoverCognitionProjectionLocked } from './cognition_bridge';
+  validateCognitionSources, replaceCognitionSources, recoverCognitionProjection } from './cognition_bridge';
 import type { CognitionCompatibilityState } from './cognition_kernel/object-model';
 
 export interface MigrationReport {
@@ -114,7 +115,7 @@ export async function migrateLegacyCognition(uid: string, options: { dryRun?: bo
         const groups = old.po?.groups;
         report.poValues.total = Array.isArray(groups)
           ? groups.reduce((n, g) => n + (Array.isArray(g?.values) ? g.values.length : 0), 0) : 0;
-        report.projectionPending = report.dryRun ? old.pendingProjection : !await recoverCognitionProjectionLocked(uid);
+        report.projectionPending = report.dryRun ? old.pendingProjection : !await recoverCognitionProjection(uid, true);
         return;
       }
       const po = loadPoDocSync(uid);
@@ -124,7 +125,7 @@ export async function migrateLegacyCognition(uid: string, options: { dryRun?: bo
       const versions = validateVersionStreams(uid);
       for (const a of Object.values(records['ability-assets'])) {
         const active = String(a.activeVersion ?? a.version);
-        if (a.status !== 'purged' && active !== '1' && !versions.get(String(a.id))?.has(active)) {
+        if (a.status !== 'purged' && active !== '1' && !versions.get(String(a.id))?.has(active) && !pendingAssetVersions(a as never).some(row => row.version === active)) {
           throw new Error(`active version snapshot missing: ${String(a.id)}`);
         }
         report.assets.total++; report.assets.migrated++;
@@ -153,7 +154,7 @@ export async function migrateLegacyCognition(uid: string, options: { dryRun?: bo
       report.backupDir = backup(uid, report.at);
       await replaceCognitionSources(uid, next);
       report.mode = next.mode;
-      if (next.mode === 'unified') report.projectionPending = !await recoverCognitionProjectionLocked(uid);
+      if (next.mode === 'unified') report.projectionPending = !await recoverCognitionProjection(uid, true);
     });
   } catch (error) { report.errors.push(error instanceof Error ? error.message : String(error)); }
   return report;
