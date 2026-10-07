@@ -1,6 +1,18 @@
 /** 查询区分现实有效时间与当时系统知道的版本；未知起点不自动当成有效。 */
-import { OntologyError, isCalendarDate, type OntologyAssertion, type OntologyDocument, type OntologyRecord } from './model';
+import { OntologyError, isCalendarDate, type OntologyAssertion, type OntologyDocument, type OntologyModule, type OntologyRecord } from './model';
 import { moduleCanUse, resolveOntologyRecordForModule } from './commands';
+
+/** 任务侧上下文的最小结构（与 cognition_kernel 的 RecallAgentReadContextLike 同形）。 */
+export interface OntologyTaskScopeContext { projectId?: string; workspaceId?: string }
+
+/** 模块对一次任务是否可见（personal 恒可见；project/workspace 须 id 匹配）。 */
+export function ontologyModuleVisibleToTask(module: OntologyModule, context?: OntologyTaskScopeContext): boolean {
+  if (module.access !== 'task') return false;
+  if (module.scope.kind === 'personal') return true;
+  if (module.scope.kind === 'project') return Boolean(module.scope.id && module.scope.id === context?.projectId);
+  if (module.scope.kind === 'workspace') return Boolean(module.scope.id && module.scope.id === context?.workspaceId);
+  return false;
+}
 
 export type OntologyTruth = 'true' | 'false' | 'unknown';
 export function assertionValidityAt(assertion: OntologyAssertion, day: string): OntologyTruth {

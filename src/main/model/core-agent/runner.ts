@@ -216,6 +216,9 @@ export interface BuildRunnerParams {
   /** Stable id for the current visible actor/model turn. Used by delete_file
    *  confirmation UI so batching never crosses prior conversation turns. */
   turnId?: string;
+  /** Real task-run id (group chat run) when one is active; cognition bound
+   *  receipts prefer it over turnId for run-level accounting. */
+  taskRunId?: string;
   /** Current real user text, used by tools that must bind an approval action
    * to explicit user intent rather than merely to the existence of a turn. */
   userMessage?: string;
@@ -1070,6 +1073,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   const cognitionKernelTools = uid && !params.disableTools ? createCognitionKernelTools({
     userId: uid,
     turnId: params.turnId, cid: params.cid, spaceId: params.spaceId,
+    ...(params.taskRunId ? { taskRunId: params.taskRunId } : {}),
     context: { agentId, workspaceId: params.spaceId, projectId: params.projectId, taskText: params.userMessage },
   }) : [];
 

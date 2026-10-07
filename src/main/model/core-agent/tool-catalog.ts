@@ -135,8 +135,9 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: 'search_ability_assets', group: 'recall', summary: 'Semantic search over the user\'s ability asset pool (沉淀的可复用经验/规则/模板/方法；全量只读，含所有空间与全局资产).' },
   { name: 'ontology_query', group: 'recall', summary: 'Navigate governed ability-asset relations with bounded hops and return auditable evidence paths.' },
   // 个人字段取件/记住（2026-10-02）：任务开工前缺的字段在对话里问、在对话里答。
-  { name: 'personal_fields_check', group: 'recall', summary: 'Read which personal fields a task type needs, which are already on file, and which are still missing (packs: expense / bid). Ask the user in the conversation for the missing ones.' },
+  { name: 'personal_fields_check', group: 'recall', summary: 'Read which cognition slots a task type needs across three axes (personal fields / ontology facts and rules / method assets), which are bound, and which are missing (packs: expense / bid / weekly_report). Ask the user in the conversation for the missing ones.' },
   { name: 'personal_field_remember', group: 'recall', summary: 'Persist a personal field the user just stated in the conversation, so the same task will not ask again. Only after an explicit answer; never invent a value.' },
+  { name: 'ontology_slot_remember', group: 'recall', summary: 'Persist an ontology fact the user just answered in the conversation, through the governed ontology command path (exact names only; same-name entities are never auto-merged). Only after an explicit answer; never invent a value.' },
   { name: 'cognition_ontology_query', group: 'recall', summary: 'Read time-aware ontology facts and applicable rules through explicit module references, with source/version citations and private-scope filtering.' },
 
   // 任务经验（specs/016 T024 / US-802）：与资产**完全隔离**的第二套集合（exp- 前缀）。

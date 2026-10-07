@@ -1,19 +1,21 @@
 /**
- * cognition_kernel/bound_receipt — 绑定回执（438 P0，2026-10-07）。
+ * cognition_kernel/bound_receipt — 绑定回执（438 P0，2026-10-07；P1 扩三轴＋filled）。
  *
  * 六级证据刻度（retrieved→eligible→bound→projected→consumed→effective）中
- * bound 档的落盘载体：personal_fields_check 每次真实体检后，把"这次任务绑到了
- * 哪些字段值（assetId@version 指针）、还缺哪些槽（四因）"记成一条 JSONL。
+ * bound 档的落盘载体：一次真实体检后，把"这次任务绑到了哪些槽位（指针+版本）、
+ * 还缺哪些（原因）"记成一条 JSONL。P1 起覆盖三轴：
+ *   personal ＝ 个人字段（PoValue/资产指针）；ontology ＝ 本体记录
+ *   （moduleId/recordId@version）；asset ＝ 方法资产（assetId@version）。
  *
  * 纪律（沿用 query-receipt 家规）：
- *   - 只存指针与版本，绝不存字段值或提问正文（value/asOf/updatedAt 不进回执）；
- *   - 无真实回合（turnId）不记录；
- *   - 写时严格校验、读时宽松跳过坏档；
+ *   - 只存指针与版本，绝不存字段值或正文（value/statement 不进回执）；
+ *   - 无真实回合（turnId/taskRunId）不记录；
+ *   - 写时严格校验、读时宽松跳过坏档（P0 的 axis=personal 历史记录继续可读）；
  *   - 回执失败只 warn，不阻断工具结果（接线处保证）。
  *
- * P1 计划：axis 扩到 ontology/asset 两轴、taskRunId 换真实运行 ID；P2 补
- * filled 事件（缺口问答回填后闭环可度量）。填写回执是记账，不是准入——
- * 不证明投影、采用或执行。
+ * P2 的 filled 事件：缺口问答回填落地后追加 status='filled' 的回执（指向写入
+ * 产物），checked→filled 两点齐了，闭环转化才可度量（P3 的大门）。填写回执是
+ * 记账，不是准入——不证明投影、采用或执行。
  */
 
 import { genId12, safeId } from '../../storage';
@@ -27,30 +29,37 @@ const FILE_KEY = 'events';
 const MAX_SLOTS = 64;
 const ID_PATTERN = /^cbound-[A-Za-z0-9_-]{8,40}$/;
 const MISSING_REASONS: readonly MissingReason[] = ['no_value', 'restricted', 'not_authorized', 'stale'];
+const AXES = ['personal', 'ontology', 'asset'] as const;
+
+export type BoundSlotAxis = (typeof AXES)[number];
 
 export interface BoundSlotRef {
   slot: string;
-  axis: 'personal';
-  source: PersonalFieldSource;
-  /** 值的权威指针（PoValue.id 或 asset.id）——只存指针，不存值文本。 */
+  axis: BoundSlotAxis;
+  source: PersonalFieldSource | 'ontology_record' | 'recall_asset';
+  /** 值的权威指针（PoValue.id / 资产 id / 本体记录 id）——只存指针，不存值文本。 */
   sourceId: string;
+  /** ontology 轴：记录所属本体模块。 */
+  moduleId?: string;
   version?: string;
   revision?: string;
 }
 
 export interface MissingSlotRef {
   slot: string;
-  axis: 'personal';
+  axis: BoundSlotAxis;
   reason: MissingReason;
   required: boolean;
 }
 
 export interface CognitionBoundReceipt extends RecallJsonRecord {
   schemaVersion: 1;
-  /** P0 以对话回合 ID 充当运行标识；P1 换真实 taskRunId 后旧回执仍按此字段读。 */
+  /** P0 以对话回合 ID 充当运行标识；有真实 taskRunId 时优先记它。 */
   taskRunId: string;
+  /** 对话回合 ID（P0 记录缺此字段，读侧不强制）。 */
+  turnId?: string;
   packId: string;
-  status: 'checked';
+  status: 'checked' | 'filled';
   policyVersion: string;
   bound: BoundSlotRef[];
   missing: MissingSlotRef[];
@@ -63,7 +72,7 @@ function validSlot(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 60;
 }
 
-function toBoundRef(field: { fieldName: string; source: PersonalFieldSource; sourceId: string; version?: string; revision?: string }): BoundSlotRef {
+function toPersonalBoundRef(field: { fieldName: string; source: PersonalFieldSource; sourceId: string; version?: string; revision?: string }): BoundSlotRef {
   if (!validSlot(field.fieldName) || !validSlot(field.source) || !validSlot(field.sourceId)) {
     throw new Error('invalid bound slot reference');
   }
@@ -77,6 +86,20 @@ function toBoundRef(field: { fieldName: string; source: PersonalFieldSource; sou
   };
 }
 
+function toOntologyBoundRef(ref: { slot: string; moduleId: string; recordId: string; version: number }): BoundSlotRef {
+  if (!validSlot(ref.slot) || !validSlot(ref.moduleId) || !validSlot(ref.recordId)) {
+    throw new Error('invalid bound slot reference');
+  }
+  const version = String(ref.version);
+  if (!validSlot(version)) throw new Error('invalid bound slot reference');
+  return { slot: ref.slot, axis: 'ontology', source: 'ontology_record', sourceId: ref.recordId, moduleId: ref.moduleId, version };
+}
+
+function toAssetBoundRef(ref: { slot: string; assetId: string; version: string }): BoundSlotRef {
+  if (!validSlot(ref.slot) || !validSlot(ref.assetId)) throw new Error('invalid bound slot reference');
+  return { slot: ref.slot, axis: 'asset', source: 'recall_asset', sourceId: ref.assetId, version: ref.version };
+}
+
 function toMissingRef(field: { fieldName: string; reason: MissingReason; required: boolean }): MissingSlotRef {
   if (!validSlot(field.fieldName) || !MISSING_REASONS.includes(field.reason)) {
     throw new Error('invalid missing slot reference');
@@ -84,20 +107,30 @@ function toMissingRef(field: { fieldName: string; reason: MissingReason; require
   return { slot: field.fieldName, axis: 'personal', reason: field.reason, required: field.required === true };
 }
 
-/** 读侧校验：输入已是落盘的 BoundSlotRef 形状（slot/source/sourceId），不是 resolve 的原始字段。 */
+function missingReasonAllowed(axis: BoundSlotAxis, reason: MissingReason): boolean {
+  return axis === 'personal' ? MISSING_REASONS.includes(reason)
+    : reason === 'no_value' || reason === 'not_authorized';
+}
+
+/** 读侧校验：输入已是落盘的 BoundSlotRef 形状，按轴校验关键字段。 */
 function parseBoundRef(value: unknown): BoundSlotRef {
   if (!value || typeof value !== 'object') throw new Error('invalid bound slot reference');
   const ref = value as Record<string, unknown>;
-  if (!validSlot(ref.slot) || ref.axis !== 'personal' || !validSlot(ref.source) || !validSlot(ref.sourceId)) {
-    throw new Error('invalid bound slot reference');
-  }
+  if (!validSlot(ref.slot) || !validSlot(ref.source) || !validSlot(ref.sourceId)
+    || !AXES.includes(ref.axis as BoundSlotAxis)) throw new Error('invalid bound slot reference');
+  const axis = ref.axis as BoundSlotAxis;
+  const expected = axis === 'personal' ? ['ontology_value', 'personal_asset'] : axis === 'ontology' ? ['ontology_record'] : ['recall_asset'];
+  if (!expected.includes(String(ref.source))) throw new Error('invalid bound slot reference');
+  if (axis === 'ontology' && (!validSlot(ref.moduleId) || !validSlot(ref.version))) throw new Error('invalid bound slot reference');
+  if (ref.moduleId !== undefined && !validSlot(ref.moduleId)) throw new Error('invalid bound slot reference');
   if (ref.version !== undefined && !validSlot(ref.version)) throw new Error('invalid bound slot reference');
   if (ref.revision !== undefined && !validSlot(ref.revision)) throw new Error('invalid bound slot reference');
   return {
     slot: ref.slot,
-    axis: 'personal',
-    source: ref.source as PersonalFieldSource,
+    axis,
+    source: ref.source as BoundSlotRef['source'],
     sourceId: ref.sourceId,
+    ...(ref.moduleId ? { moduleId: ref.moduleId as string } : {}),
     ...(ref.version ? { version: ref.version as string } : {}),
     ...(ref.revision ? { revision: ref.revision as string } : {}),
   };
@@ -107,10 +140,30 @@ function parseBoundRef(value: unknown): BoundSlotRef {
 function parseMissingRef(value: unknown): MissingSlotRef {
   if (!value || typeof value !== 'object') throw new Error('invalid missing slot reference');
   const ref = value as Record<string, unknown>;
-  if (!validSlot(ref.slot) || ref.axis !== 'personal' || !MISSING_REASONS.includes(ref.reason as MissingReason)) {
+  if (!validSlot(ref.slot) || !AXES.includes(ref.axis as BoundSlotAxis)
+    || !MISSING_REASONS.includes(ref.reason as MissingReason)
+    || !missingReasonAllowed(ref.axis as BoundSlotAxis, ref.reason as MissingReason)) {
     throw new Error('invalid missing slot reference');
   }
-  return { slot: ref.slot, axis: 'personal', reason: ref.reason as MissingReason, required: ref.required === true };
+  return { slot: ref.slot, axis: ref.axis as BoundSlotAxis, reason: ref.reason as MissingReason, required: ref.required === true };
+}
+
+function slotsOf(check: TaskFieldCheck): { bound: BoundSlotRef[]; missing: MissingSlotRef[] } {
+  const bound = check.resolution.bound.map(toPersonalBoundRef);
+  const missing = check.resolution.missing.map(toMissingRef);
+  for (const ref of check.ontology?.bound ?? []) bound.push(toOntologyBoundRef(ref));
+  for (const ref of check.ontology?.missing ?? []) {
+    if (!missingReasonAllowed('ontology', ref.reason)) throw new Error('invalid missing slot reference');
+    if (!validSlot(ref.slot)) throw new Error('invalid missing slot reference');
+    missing.push({ slot: ref.slot, axis: 'ontology', reason: ref.reason, required: ref.required === true });
+  }
+  for (const ref of check.assets?.bound ?? []) bound.push(toAssetBoundRef(ref));
+  for (const ref of check.assets?.missing ?? []) {
+    if (!missingReasonAllowed('asset', ref.reason)) throw new Error('invalid missing slot reference');
+    if (!validSlot(ref.slot)) throw new Error('invalid missing slot reference');
+    missing.push({ slot: ref.slot, axis: 'asset', reason: ref.reason, required: ref.required === true });
+  }
+  return { bound, missing };
 }
 
 /** 无真实回合不记账；包为空或槽位超限拒绝写（宁可不记也不记半截）。 */
@@ -119,18 +172,20 @@ export async function recordCognitionBoundReceipt(
   turnId: string | undefined,
   packId: string,
   check: TaskFieldCheck,
+  taskRunId?: string,
 ): Promise<CognitionBoundReceipt | undefined> {
-  if (!turnId) return undefined;
-  if (!safeId(userId) || !safeId(turnId) || !validSlot(packId)) throw new Error('invalid cognition bound receipt owner or pack');
-  const bound = check.resolution.bound.map(toBoundRef);
-  const missing = check.resolution.missing.map(toMissingRef);
+  const runId = taskRunId ?? turnId;
+  if (!runId) return undefined;
+  if (!safeId(userId) || !safeId(runId) || !validSlot(packId)) throw new Error('invalid cognition bound receipt owner or pack');
+  const { bound, missing } = slotsOf(check);
   if (bound.length + missing.length < 1) throw new Error('cognition bound receipt requires at least one slot');
   if (bound.length + missing.length > MAX_SLOTS) throw new Error('cognition bound receipt exceeds slot limit');
   const receipt: CognitionBoundReceipt = {
     schemaVersion: 1,
     ownerId: userId,
     id: `cbound-${genId12()}`,
-    taskRunId: turnId,
+    taskRunId: runId,
+    ...(turnId && turnId !== runId ? { turnId } : {}),
     packId,
     status: 'checked',
     policyVersion: typeof check.resolution.policyVersion === 'string' ? check.resolution.policyVersion : '',
@@ -144,7 +199,63 @@ export async function recordCognitionBoundReceipt(
   return receipt;
 }
 
-/** 读回执（按回合过滤可选）；坏档跳过，不当作证据。 */
+export interface FilledSlotInput {
+  slot: string;
+  axis: BoundSlotAxis;
+  sourceId: string;
+  /** personal 轴的落点来源（资产或本体值）；缺省按资产记。 */
+  source?: PersonalFieldSource;
+  moduleId?: string;
+  version?: string;
+  packId: string;
+  policyVersion?: string;
+}
+
+/** P2：缺口问答回填落地后追加 filled 回执（指向写入产物，不存值）。 */
+export async function recordCognitionFilledReceipt(
+  userId: string,
+  turnId: string | undefined,
+  input: FilledSlotInput,
+  taskRunId?: string,
+): Promise<CognitionBoundReceipt | undefined> {
+  const runId = taskRunId ?? turnId;
+  if (!runId) return undefined;
+  if (!safeId(userId) || !safeId(runId)) throw new Error('invalid cognition bound receipt owner');
+  if (!validSlot(input.slot) || !validSlot(input.sourceId) || !validSlot(input.packId)
+    || !AXES.includes(input.axis)) throw new Error('invalid filled slot reference');
+  const source = input.axis === 'personal'
+    ? (input.source ?? 'personal_asset')
+    : input.axis === 'ontology' ? 'ontology_record' : 'recall_asset';
+  if (!validSlot(source)) throw new Error('invalid filled slot reference');
+  if (input.axis === 'ontology' && !validSlot(input.moduleId)) throw new Error('invalid filled slot reference');
+  const bound: BoundSlotRef[] = [{
+    slot: input.slot,
+    axis: input.axis,
+    source,
+    sourceId: input.sourceId,
+    ...(input.moduleId ? { moduleId: input.moduleId } : {}),
+    ...(input.version ? { version: input.version } : {}),
+  }];
+  const receipt: CognitionBoundReceipt = {
+    schemaVersion: 1,
+    ownerId: userId,
+    id: `cbound-${genId12()}`,
+    taskRunId: runId,
+    ...(turnId && turnId !== runId ? { turnId } : {}),
+    packId: input.packId,
+    status: 'filled',
+    policyVersion: typeof input.policyVersion === 'string' ? input.policyVersion : '',
+    bound,
+    missing: [],
+    boundCount: 1,
+    totalCount: 1,
+    createdAt: new Date().toISOString(),
+  };
+  await appendRecallJsonlRecord(userId, COLLECTION, FILE_KEY, receipt);
+  return receipt;
+}
+
+/** 读回执（按运行标识过滤可选）；坏档跳过，不当作证据。 */
 export async function listCognitionBoundReceipts(
   userId: string,
   taskRunId?: string,
@@ -155,7 +266,7 @@ export async function listCognitionBoundReceipts(
   for (const value of values) {
     if (value.schemaVersion !== 1 || value.ownerId !== userId
       || typeof value.id !== 'string' || !ID_PATTERN.test(value.id)
-      || value.status !== 'checked'
+      || (value.status !== 'checked' && value.status !== 'filled')
       || typeof value.taskRunId !== 'string' || typeof value.packId !== 'string'
       || typeof value.createdAt !== 'string'
       || !Array.isArray(value.bound) || !Array.isArray(value.missing)

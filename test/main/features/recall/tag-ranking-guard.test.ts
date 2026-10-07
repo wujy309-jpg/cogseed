@@ -174,7 +174,9 @@ describe('反漂移源码级断言（T026）', () => {
       'interactive_cli_start', 'kb_list', 'kb_read', 'kb_search', 'list_ability_assets', 'list_asset_change_proposals',
       'list_connector_tools', 'list_files', 'list_task_experiences', 'manage_execution_plan', 'markdown_to_pdf',
       'material_list', 'material_search', 'merge_ability_assets', 'messaging_list_targets', 'messaging_send',
-      'messaging_send_file', 'metacognition', 'ocr_file', 'office_read', 'office_render', 'ontology_query', 'p3394_peers',
+      'messaging_send_file', 'metacognition', 'ocr_file', 'office_read', 'office_render', 'ontology_query',
+      // 2026-10-07：本体轴缺口对话回填（438 P2；见 cognition-kernel-tools.ts）。
+      'ontology_slot_remember', 'p3394_peers',
       'p3394_send', 'p3394_sessions',
       // 2026-10-02：个人字段取件/记住（对话内问答；见 cognition-kernel-tools.ts）。
       'personal_field_remember', 'personal_fields_check',

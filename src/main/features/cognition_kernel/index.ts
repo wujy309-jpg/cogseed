@@ -56,13 +56,35 @@ export type { BuildDeltaInput, DeltaValidation } from './delta';
 export { loadPersonalSourceSnapshot, resolveFromSnapshot, resolvePersonalFields } from './resolve';
 
 export { TASK_FIELD_PACKS, getTaskFieldPack } from './task_field_packs';
-export type { TaskFieldPack } from './task_field_packs';
+export type { AssetSlotRef, OntologySlotRef, TaskFieldPack } from './task_field_packs';
 
 export { backfillFieldValue, checkTaskFields } from './gap';
 export type { BackfillFieldInput, BackfillFieldResult, FieldGap, TaskFieldCheck } from './gap';
 
-export { listCognitionBoundReceipts, recordCognitionBoundReceipt } from './bound_receipt';
-export type { BoundSlotRef, CognitionBoundReceipt, MissingSlotRef } from './bound_receipt';
+export {
+  listCognitionBoundReceipts,
+  recordCognitionBoundReceipt,
+  recordCognitionFilledReceipt,
+} from './bound_receipt';
+export type { BoundSlotAxis, BoundSlotRef, CognitionBoundReceipt, FilledSlotInput, MissingSlotRef } from './bound_receipt';
+
+export {
+  rememberOntologySlotAnswer,
+  resolveAssetSlots,
+  resolveOntologySlots,
+} from './slots';
+export type {
+  AssetSlotBound,
+  AssetSlotMissing,
+  AssetSlotResolution,
+  OntologySlotBound,
+  OntologySlotMissing,
+  OntologySlotResolution,
+  RememberOntologySlotInput,
+  RememberOntologySlotResult,
+  ResolveSlotOptions,
+  SlotAxis,
+} from './slots';
 
 export { INBOX_LIMIT, buildMergedInbox, readMergedInbox } from './inbox';
 export type { InboxItem, MergedInbox } from './inbox';

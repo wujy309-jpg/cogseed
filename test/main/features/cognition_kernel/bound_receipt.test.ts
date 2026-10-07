@@ -62,7 +62,7 @@ function fixtureCheck(): import('../../../../src/main/features/cognition_kernel'
       ],
       policyVersion: 'pfv-1',
     },
-    gaps: [{ fieldName: '工号', required: true, reason: 'no_value', question: '请补充：工号', action: 'answer' }],
+    gaps: [{ axis: 'personal', fieldName: '工号', required: true, reason: 'no_value', question: '请补充：工号', action: 'answer' }],
     boundCount: 1,
     totalCount: 3,
   };
@@ -125,7 +125,7 @@ describe('personal_fields_check 绑定回执接线', () => {
     const result = await check!.execute({ pack: 'expense' });
     const payload = JSON.parse((result as { content: string }).content);
     expect(payload.boundCount).toBe(1);
-    expect(payload.missing[0].field).toBe('工号');
+    expect(payload.missing[0]).toMatchObject({ slot: '工号', axis: 'personal', ask: '请补充：工号', action: 'answer' });
 
     const receipts = await kernel.listCognitionBoundReceipts('u1', 'turn-42');
     expect(receipts).toHaveLength(1);

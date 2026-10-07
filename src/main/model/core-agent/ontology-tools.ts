@@ -1,8 +1,8 @@
 /** 按任务时间、对象和显式模块引用读取本体；查询不会保存任务临时安排。 */
 import type { AgentTool } from '#core-agent';
-import { OntologyError, validateOntologyId, type OntologyModule } from '../../features/cognition/ontology/model';
+import { OntologyError, validateOntologyId } from '../../features/cognition/ontology/model';
 import { readOntologyView } from '../../features/cognition/ontology/service';
-import { queryOntologyFacts, queryOntologyRules, searchOntologyRecords } from '../../features/cognition/ontology/query';
+import { ontologyModuleVisibleToTask, queryOntologyFacts, queryOntologyRules, searchOntologyRecords } from '../../features/cognition/ontology/query';
 import { resolveOntologyRecordForModule } from '../../features/cognition/ontology/commands';
 import { recordOntologyQueryReadReceipt, type OntologyQueryReadRef } from '../../features/cognition/ontology/query-receipt';
 import type { ResolvePersonalFieldsRequest } from '../../features/cognition_kernel/types';
@@ -32,13 +32,6 @@ function todayLocal(): string {
 }
 function ontologyCitation(moduleId: string, recordId: string, version: number): string {
   return `[[ontology:${moduleId}/${recordId}@${version}]]`;
-}
-function scopeVisible(module: OntologyModule, context?: ResolvePersonalFieldsRequest['context']): boolean {
-  if (module.access !== 'task') return false;
-  if (module.scope.kind === 'personal') return true;
-  if (module.scope.kind === 'project') return Boolean(module.scope.id && module.scope.id === context?.projectId);
-  if (module.scope.kind === 'workspace') return Boolean(module.scope.id && module.scope.id === context?.workspaceId);
-  return false;
 }
 const contains = (value: unknown, needle: string) => String(value ?? '').toLocaleLowerCase().includes(needle.toLocaleLowerCase());
 
@@ -74,11 +67,11 @@ export function createOntologyTools(options: OntologyToolsOptions): AgentTool[] 
         const doc = await readOntologyView(options.userId);
         const candidateRows = searchOntologyRecords(doc, query);
         const modules = Object.values(doc.records).filter((r): r is Extract<typeof r, { kind: 'module' }> => r.kind === 'module'
-          && r.status === 'active' && scopeVisible(r, options.context));
+          && r.status === 'active' && ontologyModuleVisibleToTask(r, options.context));
         let targetModules = modules;
         if (typeof input.moduleId === 'string' && input.moduleId) {
           const moduleId = validateOntologyId(input.moduleId), selected = doc.records[moduleId];
-          if (!selected || selected.kind !== 'module' || !scopeVisible(selected, options.context))
+          if (!selected || selected.kind !== 'module' || !ontologyModuleVisibleToTask(selected, options.context))
             throw new OntologyError('not_authorized', '所选本体不存在或不属于当前任务范围');
           targetModules = [selected];
         } else {
@@ -95,7 +88,7 @@ export function createOntologyTools(options: OntologyToolsOptions): AgentTool[] 
             const subject = resolveOntologyRecordForModule(doc, module.id, assertion.subjectId);
             const object = assertion.object.kind === 'entity' ? resolveOntologyRecordForModule(doc, module.id, assertion.object.id) : null;
             const sourceModule = doc.records[assertion.moduleId];
-            if (!sourceModule || sourceModule.kind !== 'module' || !scopeVisible(sourceModule, options.context)) return false;
+            if (!sourceModule || sourceModule.kind !== 'module' || !ontologyModuleVisibleToTask(sourceModule, options.context)) return false;
             if (typeof input.moduleId === 'string' && input.moduleId) return true;
             return entityIds.has(assertion.subjectId)
               || (assertion.object.kind === 'entity' && entityIds.has(assertion.object.id))
@@ -121,7 +114,7 @@ export function createOntologyTools(options: OntologyToolsOptions): AgentTool[] 
             ...(typeof input.entityId === 'string' && input.entityId ? { entityId: validateOntologyId(input.entityId) } : {}),
           } })) {
             const sourceModule = doc.records[result.rule.moduleId];
-            if (!sourceModule || sourceModule.kind !== 'module' || !scopeVisible(sourceModule, options.context)) continue;
+            if (!sourceModule || sourceModule.kind !== 'module' || !ontologyModuleVisibleToTask(sourceModule, options.context)) continue;
             if (typeof input.moduleId !== 'string' && result.match === 'not_matched'
               && !contains(result.rule.name, query) && !contains(result.rule.requirement, query)) continue;
             const effect = result.rule.effect.kind === 'include_recipient'

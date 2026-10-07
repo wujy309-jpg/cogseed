@@ -542,6 +542,8 @@ describe('T046 ④ tool-catalog recall 组工具面受控扩展', () => {
    * 行为测试在 test/main/features/cognition_kernel/。
    * 2026-10-05：cognition_ontology_query（只读任务查询）接入同一 cognition-kernel 工具工厂，
    * 以范围过滤的共同查询替代旧 list_ontology_graph，不重写 KSTAR。
+   * 2026-10-07 +1：ontology_slot_remember（438 P2 本体轴缺口对话回填，提交走
+   * commitOntologyCommand 唯一命令口，行为测试在 cognition_kernel/slots.test.ts）。
    */
   const RECALL_GROUP_BASELINE = [
     // 2026-10-03：用户授权重构保存与采用入口；只扩展这两项，既有冻结仍生效。
@@ -550,6 +552,7 @@ describe('T046 ④ tool-catalog recall 组工具面受控扩展', () => {
     'personal_ontology_fields',
     'personal_fields_check',
     'personal_field_remember',
+    'ontology_slot_remember',
     'cognition_ontology_query',
     'search_ability_assets',
     'ontology_query',
