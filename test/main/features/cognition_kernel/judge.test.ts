@@ -67,6 +67,31 @@ describe('cognition_kernel/judge v3 — 可核验门控 + 多候选', () => {
     expect(parsed?.matchedRuleIds).toEqual(['r1']);
   });
 
+  it('解析容错：思考块带干扰花括号/多对象/代码围栏（Mem0 评估采纳项）', async () => {
+    const { parseJudgeReply } = await judgeMod();
+    const known = new Set(['personal_fact', 'rule']);
+    // ① <think> 内含花括号 + 正文 JSON——旧贪心匹配会从 think 的 '{' 起整段失败
+    const think = parseJudgeReply('<think>先看 {home: rule?} 不对，再看 candidates</think>\n{"candidates":[{"home":"rule","confidence":0.9}],"reason":"带思考块"}', known);
+    expect(think?.candidates).toEqual([{ home: 'rule', confidence: 0.9 }]);
+    // ② 前面出现无关合法对象（无判词键），后面才是判词——须取含 candidates 的那个
+    const multi = parseJudgeReply('{"usage":{"tokens":120}} {"candidates":[{"home":"personal_fact","confidence":0.7}],"reason":"第二个才是判词"}', known);
+    expect(multi?.candidates).toEqual([{ home: 'personal_fact', confidence: 0.7 }]);
+    // ③ 代码围栏包裹
+    const fenced = parseJudgeReply('```json\n{"candidates":[{"home":"rule","confidence":0.6}],"reason":"围栏"}\n```', known);
+    expect(fenced?.candidates).toEqual([{ home: 'rule', confidence: 0.6 }]);
+    // ④ 字符串里带 '}' 转义与花括号——深度扫描须字符串感知
+    const braces = parseJudgeReply('{"candidates":[{"home":"rule","confidence":0.5}],"reason":"含 } 与 { 的字符串"}', known);
+    expect(braces?.reason).toBe('含 } 与 { 的字符串');
+  });
+
+  it('解析容错：截断/坏 JSON 仍如实返回 null（拒绝似是而非）', async () => {
+    const { parseJudgeReply } = await judgeMod();
+    const known = new Set(['personal_fact', 'rule']);
+    expect(parseJudgeReply('{"candidates":[{"home":"rule"', known)).toBeNull();
+    expect(parseJudgeReply('完全没有对象 { 也没有闭合', known)).toBeNull();
+    expect(parseJudgeReply('', known)).toBeNull();
+  });
+
   it('空候选=不属于任何家（不再逼模型硬选）', async () => {
     const { parseJudgeReply } = await judgeMod();
     const known = new Set(['personal_fact', 'rule']);

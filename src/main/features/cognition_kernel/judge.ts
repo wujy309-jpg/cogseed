@@ -223,18 +223,51 @@ export function buildJudgePrompt(input: {
 }
 
 /** 解析模型回复：宽松取第一个 JSON 对象；candidates 严格收口（≤3、合法家、按置信度降序）。 */
+/**
+ * 从模型回复中提取判词 JSON 对象。三层容错（2026-10-07 采纳 Mem0 固定版
+ * abb81c8 的解析容错评估结论，Apache-2.0，自研适配）：剥 <think>/代码围栏 →
+ * 花括号深度扫描（字符串与转义感知，逐起点尝试）→ 优先取含判词键的对象。
+ * 全部失败返回 null——判词解析失败按 unclassified 处理，不猜。
+ */
+function extractJudgeObject(text: string): Record<string, unknown> | null {
+  const cleaned = String(text || '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, ' ')
+    .replace(/```[a-zA-Z]*\n?/g, ' ')
+    .replace(/```/g, ' ');
+  const found: Record<string, unknown>[] = [];
+  for (let start = cleaned.indexOf('{'); start !== -1 && found.length < 8; start = cleaned.indexOf('{', start + 1)) {
+    let depth = 0, inString = false, escaped = false;
+    for (let i = start; i < cleaned.length; i++) {
+      const ch = cleaned[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') { inString = true; continue; }
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          try {
+            const value: unknown = JSON.parse(cleaned.slice(start, i + 1));
+            if (value && typeof value === 'object' && !Array.isArray(value)) found.push(value as Record<string, unknown>);
+          } catch { /* 这个起点的片段不合法，换下一个 '{' */ }
+          break;
+        }
+      }
+    }
+  }
+  return found.find(o => Array.isArray(o.candidates) || typeof o.reason === 'string') ?? found[0] ?? null;
+}
+
 export function parseJudgeReply(
   text: string,
   knownHomes: ReadonlySet<string>,
 ): { candidates: HomeCandidate[]; confidence: number; reason: string; matchedRuleIds: string[] } | null {
-  const match = String(text || '').match(/\{[\s\S]*\}/);
-  if (!match) return null;
-  let raw: Record<string, unknown>;
-  try {
-    raw = JSON.parse(match[0]) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
+  const raw = extractJudgeObject(text);
+  if (!raw) return null;
   const rawCandidates = Array.isArray(raw.candidates) ? raw.candidates : [];
   const seen = new Set<string>();
   const candidates: HomeCandidate[] = [];
