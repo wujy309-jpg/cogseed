@@ -37,7 +37,7 @@ describe('cognition_ontology_query', () => {
     const [tool] = createOntologyTools({ userId, turnId: 'turn-ontology-query-1', context: { projectId: 'project-a', taskText: '准备 CogSeed 周报' } });
     const result = await tool.execute({ query: 'CogSeed', purpose: 'weekly_report', at: '2026-10-05' });
     expect(result.isError).toBeUndefined();
-    const payload = JSON.parse(result.content) as { modules: Array<{ id: string }>; facts: Array<{ source: { recordId: string; version: number }; citation: string }>; rules: Array<{ source: { recordId: string }; strength: string; match: string; citation: string }>; conflicts: Array<{ key: string; values: string[]; state: string }>; conflictsComplete: boolean; uncertainFacts: unknown[]; readReceipt: { status: string; id?: string }; truncated: { rules: number } };
+    const payload = JSON.parse(result.content) as { modules: Array<{ id: string }>; facts: Array<{ source: { recordId: string; version: number }; citation: string }>; rules: Array<{ source: { recordId: string }; strength: string; match: string; citation: string }>; conflicts: Array<{ key: string; values: string[]; state: string }>; conflictsComplete: boolean; uncertainFacts: unknown[]; readReceipt: { status: string; id?: string }; truncated: { rules: number }; usageReceiptPolicy: string; useBoundary: string };
     expect(payload.modules.map(m => m.id)).toEqual(['project-module']);
     expect(payload.facts.some(f => f.source.recordId === 'owner-fact' && f.source.version === 1)).toBe(true);
     expect(payload.facts.find(f => f.source.recordId === 'owner-fact')?.citation).toBe('[[ontology:project-module/owner-fact@1]]');
@@ -47,6 +47,10 @@ describe('cognition_ontology_query', () => {
     expect(payload.conflicts).toContainEqual(expect.objectContaining({ key: 'report_style', values: expect.arrayContaining(['brief', 'detailed']), state: 'confirmed' }));
     expect(payload.truncated.rules).toBe(4);
     expect(payload.conflictsComplete).toBe(false);
+    // 执行证据边界防漂移：查询/采用回证只证明「读到了、引用进了答复」，
+    // 不证明外部动作已执行或生效——这两句被删改时测试必须失败。
+    expect(payload.usageReceiptPolicy).toContain('does not prove external action execution or effectiveness');
+    expect(payload.useBoundary).toContain('A rule match does not mean rule execution');
     expect(payload.readReceipt.status).toBe('recorded');
     const { listRecallJsonlRecords } = await import('../../../../src/main/features/recall/store');
     const receipts = await listRecallJsonlRecords(userId, 'ontology-query-receipts', 'events', 0);

@@ -937,6 +937,15 @@ function recallExperienceDetail(exp: recallExperiences.ExperienceRecord) {
   };
 }
 
+// 旧个人本体直写通道治理收口（2026-10-06）：po.* 写通道曾留给兼容层，但唯一
+// 渲染消费方（旧 personal-ontology 页）已停驻隐藏停车区，新本体工作台是唯一
+// 入口且把旧记录当只读投影＋送审候选。为防止绕过共同本体命令服务直改旧文档，
+// 与 po.candidates.confirm 同口径：结构化写通道一律拒绝并指向治理入口。
+// features 层函数不动——主进程内部合法流程（候选管道、语义审查等）照常直调。
+function legacyPoWriteClosed(): Promise<never> {
+  return Promise.reject(new Error('legacy personal ontology writes are closed; edit through the governed ontology workbench commands instead'));
+}
+
 const invokeHandlers: Record<string, InvokeHandler> = {
   // conv-core M2：双向交互（审批/提问）的渲染层回复入口。晚到/未知 id
   // 由 hub 幂等吞掉（返回 handled:false，不抛错）。
@@ -4282,97 +4291,28 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   //  通道保留（contract / @ 引用 / 候选管道等老消费方在用）。──
   'po.snapshot': async (_payload, ctx) => poApi.getPoSnapshot(ctx.userId),
 
-  'po.groups.create': async ({ title }, ctx) => {
-    if (typeof title !== 'string' || !title.trim()) throw new Error('missing title');
-    return poApi.poCreateGroup(ctx.userId, title);
-  },
-  'po.groups.rename': async ({ groupId, title }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (typeof title !== 'string' || !title.trim()) throw new Error('missing title');
-    return poApi.poRenameGroup(ctx.userId, groupId, title);
-  },
-  'po.groups.delete': async ({ groupId }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    return poApi.poDeleteGroup(ctx.userId, groupId);
-  },
-  'po.groups.restore': async ({ groupId }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    return poApi.poRestoreDeletedGroup(ctx.userId, groupId);
-  },
+  'po.groups.create': legacyPoWriteClosed,
+  'po.groups.rename': legacyPoWriteClosed,
+  'po.groups.delete': legacyPoWriteClosed,
+  'po.groups.restore': legacyPoWriteClosed,
   'po.deleted.list': async (_payload, ctx) => ({ deleted: poApi.poListDeletedGroups(ctx.userId) }),
 
-  'po.fields.create': async ({ groupId, name, isRelation, section }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (typeof name !== 'string' || !name.trim()) throw new Error('missing name');
-    return poApi.poCreateField(ctx.userId, groupId, name, {
-      isRelation: isRelation === true,
-      ...(typeof section === 'string' && section ? { section } : {}),
-    });
-  },
-  'po.fields.rename': async ({ groupId, fieldId, name }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (!safeId(fieldId)) throw new Error('missing fieldId');
-    if (typeof name !== 'string' || !name.trim()) throw new Error('missing name');
-    return poApi.poRenameField(ctx.userId, groupId, fieldId, name);
-  },
-  'po.fields.delete': async ({ groupId, fieldId }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (!safeId(fieldId)) throw new Error('missing fieldId');
-    return poApi.poDeleteField(ctx.userId, groupId, fieldId);
-  },
-  'po.fields.setRelation': async ({ groupId, fieldId, isRelation }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (!safeId(fieldId)) throw new Error('missing fieldId');
-    return poApi.poSetFieldRelationFlag(ctx.userId, groupId, fieldId, isRelation === true);
-  },
+  'po.fields.create': legacyPoWriteClosed,
+  'po.fields.rename': legacyPoWriteClosed,
+  'po.fields.delete': legacyPoWriteClosed,
+  'po.fields.setRelation': legacyPoWriteClosed,
 
-  'po.values.add': async ({ groupId, fieldId, text, asOf, ruleKind }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (!safeId(fieldId)) throw new Error('missing fieldId');
-    if (typeof text !== 'string' || !text.trim()) throw new Error('missing text');
-    if (ruleKind !== undefined && ruleKind !== null && ruleKind !== 'operation' && ruleKind !== 'preference' && ruleKind !== 'constraint') {
-      throw new Error('invalid ruleKind');
-    }
-    return poApi.poAddValue(ctx.userId, groupId, fieldId, { text, ...(typeof asOf === 'string' && asOf ? { asOf } : {}), ...(ruleKind ? { ruleKind } : {}) });
-  },
-  'po.values.update': async ({ groupId, valueId, patch }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (!safeId(valueId)) throw new Error('missing valueId');
-    if (!patch || typeof patch !== 'object') throw new Error('missing patch');
-    return poApi.poUpdateValue(ctx.userId, groupId, valueId, patch);
-  },
-  'po.values.delete': async ({ groupId, valueId }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (!safeId(valueId)) throw new Error('missing valueId');
-    return poApi.poDeleteValue(ctx.userId, groupId, valueId);
-  },
+  'po.values.add': legacyPoWriteClosed,
+  'po.values.update': legacyPoWriteClosed,
+  'po.values.delete': legacyPoWriteClosed,
 
-  'po.entries.add': async ({ groupId, text, section }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (typeof text !== 'string' || !text.trim()) throw new Error('missing text');
-    return poApi.poAddEntry(ctx.userId, groupId, text, { ...(typeof section === 'string' && section ? { section } : {}) });
-  },
-  'po.entries.delete': async ({ groupId, entryId }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (!safeId(entryId)) throw new Error('missing entryId');
-    return poApi.poDeleteEntry(ctx.userId, groupId, entryId);
-  },
-  'po.entries.promote': async ({ groupId, entryId, fieldName }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (!safeId(entryId)) throw new Error('missing entryId');
-    if (typeof fieldName !== 'string' || !fieldName.trim()) throw new Error('missing fieldName');
-    return poApi.poPromoteEntry(ctx.userId, groupId, entryId, fieldName);
-  },
+  'po.entries.add': legacyPoWriteClosed,
+  'po.entries.delete': legacyPoWriteClosed,
+  'po.entries.promote': legacyPoWriteClosed,
 
   'po.templates.status': async (_payload, ctx) => ({ templates: await poApi.poListTemplateStatus(ctx.userId) }),
-  'po.templates.install': async ({ templateId, restoreData }, ctx) => {
-    if (typeof templateId !== 'string' || !safeId(templateId)) throw new Error('missing templateId');
-    return poApi.poInstallTemplate(ctx.userId, templateId, restoreData === true);
-  },
-  'po.templates.uninstall': async ({ templateId, archiveMemory }, ctx) => {
-    if (typeof templateId !== 'string' || !safeId(templateId)) throw new Error('missing templateId');
-    return poApi.poUninstallTemplate(ctx.userId, templateId, archiveMemory === true);
-  },
+  'po.templates.install': legacyPoWriteClosed,
+  'po.templates.uninstall': legacyPoWriteClosed,
   'po.templates.archiveInfo': async ({ templateId }, ctx) => {
     if (typeof templateId !== 'string' || !safeId(templateId)) throw new Error('missing templateId');
     return poApi.poTemplateArchiveInfo(ctx.userId, templateId);
@@ -4382,12 +4322,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (!safeId(groupId)) throw new Error('missing groupId');
     return { history: poApi.poListHistory(ctx.userId, groupId) };
   },
-  'po.history.restore': async ({ groupId, snapshotId }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (typeof snapshotId !== 'string' || !snapshotId) throw new Error('missing snapshotId');
-    const { restoreGroupSnapshot } = await import('../features/personal_ontology_groups');
-    return restoreGroupSnapshot(ctx.userId, groupId, snapshotId);
-  },
+  'po.history.restore': legacyPoWriteClosed,
 
   'po.candidates.confirm': async ({ candidateId, dest, acknowledgeConflict }, ctx) => {
     void candidateId; void dest; void acknowledgeConflict; void ctx;
@@ -4403,10 +4338,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (typeof text !== 'string') throw new Error('missing text');
     return poApi.poImportPreview(ctx.userId, text);
   },
-  'po.data.importApply': async ({ items }, ctx) => {
-    if (!Array.isArray(items)) throw new Error('missing items');
-    return poApi.poImportApply(ctx.userId, items);
-  },
+  'po.data.importApply': legacyPoWriteClosed,
 
   // ── 桥接注册：renderer 引用但漏注册的通道（纯转发到现成能力，
   //  零逻辑变更；功能等同 renderer 期望语义）。──

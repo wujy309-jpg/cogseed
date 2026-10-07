@@ -103,6 +103,12 @@ vi.mock('../../../../src/main/model/client', () => ({
       yield { type: 'done' };
       return;
     }
+    if (String(_opts?.message || '').includes('ONTOLOGY_CITATION_TEST')) {
+      // 本体引用采用回归：commander 最终答复携带 [[ontology: 稳定引用标记。
+      yield { type: 'final', text: '按负责人规则整理 [[ontology:project-module/owner-rule@3]]' };
+      yield { type: 'done' };
+      return;
+    }
     if (String(_opts?.message || '').includes('CONTEXT_PATCH_TEST')) {
       yield {
         type: 'final',
@@ -300,6 +306,22 @@ vi.mock('../../../../src/main/features/recall/injection-receipt', async (importO
   };
 });
 
+// 本体采用回执消费侧探针：bus 在最终答复持久化后扫描 [[ontology: 引用标记并
+// 调用 finalizeOntologyUsageCitations。探针只捕获入参并支持注入失败；真实
+// 实现照常透传（隔离工作区里没有查询回执时它只会安静返回空数组）。
+const ontologyUsageProbe = vi.hoisted(() => ({ calls: [] as Array<{ uid: string; taskRunId: string; messageId: string; finalText: string }>, failNext: false }));
+vi.mock('../../../../src/main/features/cognition/ontology/usage-receipt', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../../src/main/features/cognition/ontology/usage-receipt')>();
+  return {
+    ...actual,
+    finalizeOntologyUsageCitations: async (uid: string, input: { taskRunId: string; messageId: string; finalText: string }) => {
+      ontologyUsageProbe.calls.push({ uid, ...input });
+      if (ontologyUsageProbe.failNext) throw new Error('ontology usage IO error (regression)');
+      return actual.finalizeOntologyUsageCitations(uid, input);
+    },
+  };
+});
+
 let tmpDir: string;
 let prevWs: string | undefined;
 let prevWakeGate: string | undefined;
@@ -321,6 +343,8 @@ beforeEach(async () => {
   cliRunMock.nextResults.length = 0;
   profileLedgerProbe.calls = 0;
   profileLedgerProbe.failNext = false;
+  ontologyUsageProbe.calls.length = 0;
+  ontologyUsageProbe.failNext = false;
   streamProbe.messages.length = 0;
   streamProbe.readOnlyRoots.length = 0;
   streamProbe.dispatchResults.length = 0;
@@ -734,6 +758,42 @@ describe('group_chat bus › enqueue routing + persistence', () => {
     const mainFile = path.join(paths.userChatsDir(TEST_UID), `${TEST_CID}.jsonl`);
     const lines = fs.readFileSync(mainFile, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
     expect(findCommanderReply(lines)).toBeTruthy();
+  });
+
+  it('finalizes ontology citations only for persisted replies carrying the marker and survives receipt failure', async () => {
+    const bus = await import('../../../../src/main/features/group_chat/bus');
+    const paths = await import('../../../../src/main/paths');
+    const marker = '[[ontology:project-module/owner-rule@3]]';
+    await bus.enqueue({ uid: TEST_UID, cid: TEST_CID, fromActorId: 'user', text: 'ONTOLOGY_CITATION_TEST 普通问题' });
+    await waitForQuiescent(TEST_UID, TEST_CID);
+
+    // 持久化后的最终答复带标记：宿主按 uid + 本回合 + 已落盘消息调用采用回执。
+    expect(ontologyUsageProbe.calls).toHaveLength(1);
+    const citationCall = ontologyUsageProbe.calls[0];
+    expect(citationCall.uid).toBe(TEST_UID);
+    expect(citationCall.taskRunId).toBeTruthy();
+    expect(citationCall.finalText).toContain(marker);
+    const mainFile = path.join(paths.userChatsDir(TEST_UID), `${TEST_CID}.jsonl`);
+    const lines = fs.readFileSync(mainFile, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
+    const reply = findCommanderReply(lines);
+    expect(reply?.text).toContain(marker);
+    expect(citationCall.messageId).toBe(reply?.id);
+
+    // 不带标记的普通答复不触发采用回执（用独立会话避免历史回显命中标记分支）。
+    const plainCid = 'cidbus-ontology-plain';
+    await bus.enqueue({ uid: TEST_UID, cid: plainCid, fromActorId: 'user', text: '再问一个' });
+    await waitForQuiescent(TEST_UID, plainCid);
+    expect(ontologyUsageProbe.calls).toHaveLength(1);
+
+    // 收据流写入失败只留 warn，不把已持久化回合标成失败。
+    ontologyUsageProbe.failNext = true;
+    const failCid = 'cidbus-ontology-fail';
+    await bus.enqueue({ uid: TEST_UID, cid: failCid, fromActorId: 'user', text: 'ONTOLOGY_CITATION_TEST 第三次' });
+    await waitForQuiescent(TEST_UID, failCid);
+    expect(ontologyUsageProbe.calls).toHaveLength(2);
+    const stats = JSON.parse(fs.readFileSync(paths.commanderRuntimeStatsFile(TEST_UID), 'utf-8'));
+    expect(stats.successes).toBe(3);
+    expect(stats.errors).toBe(0);
   });
 
   it('ignores legacy Hermes commander backend config and runs the CogSeed commander', async () => {
