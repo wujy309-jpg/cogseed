@@ -20,7 +20,7 @@
  * 通用条目因"相关度达标"条件不满足而缺席——宁可少给，不编分数。
  */
 
-import { scopeForTask } from '../kstar/extraction-service';
+import { scopeForTask } from './experience-taxonomy';
 import { catalogTruncate } from './asset-catalog';
 import {
   evaluateExperienceRuntimeEligibility,

@@ -8,7 +8,7 @@ import { safeId } from '../../storage';
 // 全部失效，只剩画像旁路在起作用（实机 09-12：proj-a3ae7e6a3646
 // assetIds=[]、两条身份资产 omittedRefs=scope_mismatch）。
 //
-// 词表与 KStar 线（extraction-service.scopeForTask）的五个任务类型词对齐，
+// 词表与经验域共享词表（experience-taxonomy.scopeForTask）的五个任务类型词对齐，
 // 另有 'space:<id>'（空间限定）与 '*'（显式通配）两个结构形态。词表是
 // **目标不是闸门**：产生线经 normalizeAssetScopeValue 尽力归一，归不了的
 // 保留原值（软着陆——匹配层的 token 软匹配本就兜底，硬拒会拦存量与

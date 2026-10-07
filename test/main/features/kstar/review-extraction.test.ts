@@ -463,7 +463,7 @@ describe('KSTAR review and Recall bridge', () => {
     }])).rejects.toThrow(/target asset/i);
   });
   it('maps CJK task goals to short scope tags (scopeForTask)', async () => {
-    const { scopeForTask } = await import('../../../../src/main/features/kstar/extraction-service');
+    const { scopeForTask } = await import('../../../../src/main/features/recall/experience-taxonomy');
     expect(scopeForTask('审查 Group Chat 消息路由')).toBe('review');
     expect(scopeForTask('修复 OAuth 回调函数缺陷')).toBe('code');
     expect(scopeForTask('生成一份架构审查报告')).toBe('report');

@@ -47,7 +47,7 @@ import {
   type ExperienceVerification,
 } from './experience-service';
 import type { KstarLearningProvenance } from '../kstar/types';
-import { scopeForTask, experienceTypeOf } from '../kstar/extraction-service';
+import { scopeForTask, experienceTypeOf } from './experience-taxonomy';
 import { readKstarEpisode } from '../kstar/episode-store';
 import { readKstarReview } from '../kstar/review-service';
 import { userFacingSummary } from '../kstar/task-level-precipitation';

@@ -6,7 +6,7 @@ import { submitCognitionCandidate } from '../cognition/candidate-submission';
 import { createExperience, type ExperienceRecord } from '../recall/experience-service';
 import { normalizeCognitionSourceRefs, type CognitionSourceRef } from '../recall/source-service';
 import { recallFieldsForKstarProposal } from './candidate-contract';
-import { experienceTypeOf, scopeForTask } from './extraction-service';
+import { experienceTypeOf, scopeForTask } from '../recall/experience-taxonomy';
 import { recordKstarFailure } from './failure-service';
 import {
   admitKstarProposals,

@@ -33,7 +33,7 @@ import {
   type ExperienceTaskType,
   type ExperienceType,
 } from '../../features/recall/experience-service';
-import { scopeForTask } from '../../features/kstar/extraction-service';
+import { scopeForTask } from '../../features/recall/experience-taxonomy';
 import type { AssetRuntimeContext } from '../../features/recall/formal-assets/runtime';
 import { recordInjectionReceipt, listInjectionReceipts } from '../../features/recall/injection-receipt';
 import { recordRecallUsage } from '../../features/recall/usage-service';
