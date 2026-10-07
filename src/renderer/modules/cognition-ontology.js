@@ -228,7 +228,7 @@
     const visibleModules = allModules.slice(state.modulePage * modulePageSize, (state.modulePage + 1) * modulePageSize);
     const entities = Object.values(state.doc.records).filter(r => r.kind === 'entity' && r.status === 'active');
     const rules = Object.values(state.doc.records).filter(r => r.kind === 'rule' && r.status === 'active');
-    return `${pageHeader({ kicker: 'ONTOLOGY WORKSPACE', title: text('title', '本体'), description: text('subtitle', '组织你理解世界的方式，连接人物、项目、事实与规则。'), actions: `${button(text('import', '导入资料'), 'import', 'secondary', {}, 'upload')}${button(text('supplement', '补充认知'), 'supplement', 'secondary', {}, 'sparkles')}${button(text('createModule', '创建本体'), 'create-module', 'primary', {}, 'plus')}` })}
+    return `${pageHeader({ kicker: 'ONTOLOGY WORKSPACE', title: text('title', '本体'), description: text('subtitle', '组织你理解世界的方式，连接人物、项目、事实与规则。'), actions: `${button(text('import', '导入资料'), 'import', 'secondary', {}, 'upload')}${button(text('supplement', '补充认知'), 'supplement', 'secondary', {}, 'sparkles')}${button(text('export', '导出本体'), 'export', 'secondary', {}, 'download')}${button(text('createModule', '创建本体'), 'create-module', 'primary', {}, 'plus')}` })}
       <div class="ontology-ws-stats">${stat(text('modules', '本体'), allModules.length)}${stat(text('objects', '具体对象'), entities.length)}${stat(text('rules', '有效规则'), rules.length)}${stat(text('revision', '版本'), state.doc.revision)}</div>
       <div class="ontology-ws-search">${root.uiField({ id: 'ontology-search-input', label: text('search', '搜索本体、人物、项目或关系'), showRequirement: false, control: { kind: 'input', type: 'search', placeholder: text('searchPlaceholder', '输入名称、别名或内容'), value: state.searchQuery || '', attrs: { 'data-ontology-field': 'search' } } })}${state.searchResults?.length ? `<div class="ontology-ws-search-results">${searchResultRows(state.searchResults, 'search-result')}</div>` : state.searchQuery ? `<div class="ontology-ws-search-empty">${esc(text('noSearchResults', '没有找到匹配内容。'))}</div>` : ''}</div>
       <div class="ontology-ws-list-heading"><h2>${esc(text('myModules', '我的本体'))}</h2>${tabs([['list', text('list', '列表')], ['graph', text('globalGraph', '关系图谱')]], state.mode, text('viewMode', '查看方式'), { 'data-ontology-tabs': 'workspace' })}</div>
@@ -249,8 +249,9 @@
         : all.filter(r => r.kind === 'reference' || r.kind === 'rule' || (r.kind === 'definition' && r.definitionKind === 'relation'));
     const boxName = state.box === 'T' ? text('tbox', 'TBox · 概念定义') : state.box === 'A' ? text('abox', 'ABox · 对象与事实') : text('rbox', 'RBox · 关系与规则');
     const legacy = m.source.kind === 'legacy';
-    const actions = legacy ? ''
-      : `${button(text('addContent', '添加内容'), 'add-content', 'primary')}${button(text('createReference', '引用其他本体'), 'create-reference')}`;
+    const exportButton = button(text('export', '导出本体'), 'export', 'secondary', {}, 'download');
+    const actions = legacy ? exportButton
+      : `${exportButton}${button(text('addContent', '添加内容'), 'add-content', 'primary')}${button(text('createReference', '引用其他本体'), 'create-reference')}`;
     const body = state.tab === 'graph' ? graphCanvas(state.graph, true) : state.tab === 'overview'
       ? `<div class="ontology-ws-overview"><section class="ontology-ws-overview-card"><span>${esc(text('scope', '范围'))}</span><strong>${esc(m.scope.kind === 'personal' ? text('personal', '个人') : m.scope.kind === 'project' ? text('project', '项目') : text('workspace', '工作区'))}</strong><p>${esc(m.scope.id || '')}</p></section><section class="ontology-ws-overview-card"><span>${esc(text('description', '说明'))}</span><p>${esc(moduleDescription(m))}</p></section><section class="ontology-ws-overview-card"><span>${esc(text('threeBoxes', '三个基础盒子'))}</span><div class="ontology-ws-box-summary">${button(`TBox · ${all.filter(r => r.kind === 'definition' && r.definitionKind !== 'relation').length}`, 'select-box', 'secondary', { 'data-box': 'T' })}${button(`ABox · ${all.filter(r => r.kind === 'entity' || r.kind === 'assertion').length}`, 'select-box', 'secondary', { 'data-box': 'A' })}${button(`RBox · ${all.filter(r => r.kind === 'reference' || r.kind === 'rule' || (r.kind === 'definition' && r.definitionKind === 'relation')).length}`, 'select-box', 'secondary', { 'data-box': 'R' })}</div></section></div><section class="ontology-ws-recent"><h2>${esc(text('recentRecords', '最近整理的内容'))}</h2>${renderRecordList(all.slice(0, 8))}</section>`
       : `<div class="ontology-ws-box-title"><div><span>${esc(boxName)}</span><p>${esc(state.box === 'T' ? text('tboxHint', '定义这个本体认识哪些类型和属性。') : state.box === 'A' ? text('aboxHint', '保存具体人物、项目以及它们当前或过去的事实。') : text('rboxHint', '查看关系、规则和本体之间的引用。'))}</p></div>${legacy ? '' : state.box === 'A'
@@ -616,6 +617,12 @@
     const id = target.dataset.recordId || target.closest('[data-record-id]')?.dataset.recordId || '';
     if (action === 'create-module') return openModuleDialog(target);
     if (action === 'import' || action === 'supplement') return openImportDialog(target, action === 'supplement');
+    if (action === 'export') {
+      const result = await invoke('cognition.ontology.export', state.page === 'module' ? { moduleId: state.moduleId } : {});
+      if (result.canceled) return;
+      root.uiToast?.(text('exportSaved', '已导出本体快照：{path}', { path: result.filePath }), { variant: 'success' });
+      return;
+    }
     if (action === 'candidate-back') {
       const candidateId = state.candidateDraft?.id;
       if (candidateId) root.CogAssets?.router?.go({ name: 'review', candidateId });

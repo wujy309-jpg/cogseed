@@ -9422,5 +9422,7 @@
   "ontologyWorkspace.targetModuleId": "Referenced ontology",
   "ontologyWorkspace.requiredImport": "Enter a title and content.",
   "ontologyWorkspace.openDetails": "View details",
-  "ontologyWorkspace.legacyModuleCardHint": "Legacy content is read-only. Open an individual record to send it for review before reorganizing."
+  "ontologyWorkspace.legacyModuleCardHint": "Legacy content is read-only. Open an individual record to send it for review before reorganizing.",
+  "ontologyWorkspace.export": "Export ontology",
+  "ontologyWorkspace.exportSaved": "Ontology snapshot saved: {path}"
 }

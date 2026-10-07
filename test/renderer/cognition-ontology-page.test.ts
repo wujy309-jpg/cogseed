@@ -10,6 +10,7 @@ function pageHarness(extraRecords: Record<string, any> = {}, customSearchResults
   const buttonCalls: Array<Record<string, any>> = [];
   const toasts: Array<{ message: string; options?: Record<string, unknown> }> = [];
   let failNextGraph = false;
+  let exportResponse: Record<string, unknown> = { ok: true, canceled: false, filePath: '/tmp/cogseed-ontology-export.json', bytes: 256 };
   let confirmResult = true;
   let candidate = candidateFixture ? structuredClone(candidateFixture) : null;
   let modalClick: Function | null = null;
@@ -42,6 +43,7 @@ function pageHarness(extraRecords: Record<string, any> = {}, customSearchResults
     cogseed: { async invoke(channel: string, payload: Record<string, unknown> = {}) {
       calls.push({ channel, payload });
       if (channel === 'cognition.ontology.snapshot') return { ok: true, ontology: doc };
+      if (channel === 'cognition.ontology.export') return { ...exportResponse };
       if (channel === 'cognition.ontology.graph.query') {
         if (failNextGraph) { failNextGraph = false; return { ok: false, error: 'temporary graph failure' }; }
         const focusId = String(payload.focusId || '');
@@ -423,5 +425,24 @@ describe('本体工作台页面层级与接线', () => {
     expect(f.container.innerHTML).toContain('研发组');
     expect(f.container.innerHTML).toContain('客户组');
     expect(f.container.innerHTML.match(/data-ontology-action="focus-record"/g)).toHaveLength(2);
+  });
+});
+
+describe('本体导出（FR-015/AC-013）页面接线', () => {
+  it('首页与模块页都有导出按钮；成功后 toast 带路径，取消不提示', async () => {
+    const f = pageHarness();
+    await f.context.window.mountCognitionOntology(f.container);
+    expect(f.container.innerHTML).toContain('data-ontology-action="export"');
+    // 模块详情页也有
+    click(f.container, 'open-module', 'project-module');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(f.container.innerHTML).toContain('data-ontology-action="export"');
+    // 成功导出（模块页 → 带 moduleId）
+    click(f.container, 'export');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const call = f.calls.find(c => c.channel === 'cognition.ontology.export');
+    expect(call).toBeTruthy();
+    expect(call?.payload).toEqual({ moduleId: 'project-module' });
+    expect(f.toasts.some(t => String(t.message).includes('/tmp/cogseed-ontology-export.json'))).toBe(true);
   });
 });

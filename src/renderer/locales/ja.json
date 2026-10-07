@@ -7153,5 +7153,7 @@
   "ontologyWorkspace.targetModuleId": "Referenced ontology",
   "ontologyWorkspace.requiredImport": "Enter a title and content.",
   "ontologyWorkspace.openDetails": "View details",
-  "ontologyWorkspace.legacyModuleCardHint": "以前の内容は読み取り専用で保持されます。個別の記録を開き、確認してから整理してください。"
+  "ontologyWorkspace.legacyModuleCardHint": "以前の内容は読み取り専用で保持されます。個別の記録を開き、確認してから整理してください。",
+  "ontologyWorkspace.export": "Export ontology",
+  "ontologyWorkspace.exportSaved": "Ontology snapshot saved: {path}"
 }

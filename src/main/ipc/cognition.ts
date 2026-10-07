@@ -4,6 +4,7 @@ import { generateCognitionDraft } from '../features/cognition/capture-draft';
 import { extractOntologyImportFile, submitOntologyImport } from '../features/cognition/ontology/import-text';
 import { commitCandidateOntologyRecords, completeCandidateOntologyHandoff } from '../features/cognition/ontology/candidate-handoff';
 import { commitOntologyCommand, previewOntologyCommand, readOntologyDocument, readOntologyView } from '../features/cognition/ontology/service';
+import { buildOntologyExport } from '../features/cognition/ontology/export';
 import { moduleCanUse } from '../features/cognition/ontology/commands';
 import { ontologyRecordsKnownAt, queryOntologyFacts, queryOntologyGraph, queryOntologyRules, searchOntologyRecords } from '../features/cognition/ontology/query';
 import { OntologyError, type OntologyDocument } from '../features/cognition/ontology/model';
@@ -208,6 +209,20 @@ export const invokeHandlers = {
       throw new OntologyError('invalid_input', 'unsupported ontology import type');
     return submitOntologyImport(ctx.userId, ontologyText(payload.name, 'file name', 240), ontologyRawText(payload.text, 'import text', 100_000),
       (payload.suggestedType || 'fact') as 'personal' | 'fact' | 'rule' | 'template' | 'skill_method');
+  },
+  'cognition.ontology.export': async (payload: Payload, ctx: IpcContext) => {
+    const moduleId = payload.moduleId !== undefined ? ontologyId(payload.moduleId, 'ontology module id') : undefined;
+    const { json, bytes } = await buildOntologyExport(ctx.userId, moduleId);
+    const base = (moduleId ? moduleId : 'ontology').replace(/[\\/:*?"<>|\s]+/g, '-').slice(0, 40) || 'ontology';
+    const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+    const options = { title: '导出本体 JSON 快照',
+      defaultPath: `cogseed-ontology-${base}-${Date.now()}.json`,
+      filters: [{ name: 'JSON', extensions: ['json'] }] };
+    const result = parent ? await dialog.showSaveDialog(parent, options) : await dialog.showSaveDialog(options);
+    if (result.canceled || !result.filePath) return { ok: true, canceled: true };
+    const fs = await import('node:fs');
+    fs.writeFileSync(result.filePath, json, 'utf-8');
+    return { ok: true, canceled: false, filePath: result.filePath, bytes };
   },
   'cognition.pool.list': async ({ status }: any = {}, ctx: IpcContext) => {
     const filter =
