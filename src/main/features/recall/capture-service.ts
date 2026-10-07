@@ -33,13 +33,13 @@ import {
   promoteRecallCandidate,
   readRecallAssetHandoffReceipt,
   readRecallCandidate,
-  saveRecallCandidate,
   type AbilityAssetType,
   type RecallAssetHandoffReceipt,
   type RecallAbilityAssetRecord,
   type RecallCandidateRecord,
   type RecallCandidateStatus,
 } from './candidate-service';
+import { submitCognitionCandidate } from '../cognition/candidate-submission';
 import { recallJsonRecordPath } from './paths';
 import type { CognitionSourceRef } from './source-service';
 import {
@@ -2219,7 +2219,7 @@ export async function runRecallCapture(
       const captureSpaceId = typeof (conversation as any)?.space_id === 'string'
         ? (conversation as any).space_id : undefined;
       try {
-        const storedCandidate = await saveRecallCandidate(userId, {
+        const storedCandidate = await submitCognitionCandidate(userId, {
           judgment: candidate.judgment,
           value: candidate.value,
           summary: candidate.summary,
