@@ -317,9 +317,13 @@ describe('T059③ 候选写口唯一（saveRecallCandidate）', () => {
     for (const impl of impls) {
       if (impl.file === 'src/main/features/recall/candidate-service.ts') continue; // 本体（含其同文件锁内助手）
       // 别处的同名形态实现（如 kstar 桥）必须是**委托**：函数体（其后 4000 字内）
-      // 调用唯一写口，而不是绕开它自写一套。
+      // 调用唯一写口，而不是绕开它自写一套。2026-10-07（SPEC §3 提取管线唯一）
+      // 起委托链多一节合法形态：先经统一提取入口 submitCognitionCandidate
+      // （cognition/candidate-submission → routeAndSubmit，canonicalInput 路径
+      // 内部仍落 saveRecallCandidate），例如 kstar 的 KSTAR 适配器提交。
       const body = (files.get(impl.file) ?? '').slice(impl.index, impl.index + 4000);
-      expect(body, `${impl.file} 的 ${impl.name} 必须委托 saveRecallCandidate`).toContain('saveRecallCandidate(');
+      const delegates = body.includes('saveRecallCandidate(') || body.includes('submitCognitionCandidate(');
+      expect(delegates, `${impl.file} 的 ${impl.name} 必须委托 saveRecallCandidate（直接或经统一提取入口 submitCognitionCandidate）`).toBe(true);
     }
   });
 
