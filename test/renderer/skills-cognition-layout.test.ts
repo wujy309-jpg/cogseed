@@ -294,18 +294,12 @@ describe('Recall cognition workspace layout', () => {
     const desktopStart = css.indexOf('@media (min-width: 901px)');
     const desktopEnd = css.indexOf('@media (max-width: 900px)', desktopStart);
     const desktopRules = css.slice(desktopStart, desktopEnd);
-    expect(html).toContain('class="panel skills-embedded-panel recall-personal-ontology-frame"');
-    expect(recallCss).toMatch(/\.recall-personal-ontology-frame\s*\{[^}]*height:\s*clamp\(420px, calc\(100dvh - 300px\), 580px\);[^}]*overflow:\s*hidden;/s);
-    expect(recallCss).toMatch(/@media \(max-width: 720px\)[\s\S]*?\.recall-personal-ontology-frame\s*\{[^}]*height:\s*max\(360px, calc\(100dvh - 160px\)\);[^}]*max-height:\s*680px;/);
-    expect(recallCss).toMatch(/\.recall-personal-ontology-frame \.personal-onto-modal\s*\{[^}]*max-height:\s*min\(720px, calc\(100dvh - 48px\)\);[^}]*overflow/s);
-    expect(recallCss).toMatch(/\.recall-personal-ontology-frame \.personal-onto-library-list\s*\{[^}]*max-height:\s*none;[^}]*overscroll-behavior:\s*auto;/s);
-    expect(recallCss).toMatch(/#skills-cognition-assets\s*\{[^}]*overflow-x:\s*hidden;[^}]*overscroll-behavior:\s*auto;/s);
+    expect(css).toMatch(/#skills-cognition-assets\s*\{[^}]*overflow-x:\s*hidden;[^}]*overscroll-behavior:\s*auto;/s);
     expect(desktopRules).toContain('#skills-cognition-assets-body { height: clamp(420px, calc(100dvh - 250px), 620px); min-height: 0; }');
     expect(desktopRules).toMatch(/\.ability-asset-list-body\s*\{[\s\S]*overflow-y:\s*auto;/);
     expect(desktopRules).toMatch(/\.ability-asset-detail\s*\{[\s\S]*height:\s*100%;/);
     expect(desktopRules).toContain('overscroll-behavior: auto');
     expect(desktopRules).toContain('scrollbar-gutter: stable');
-    expect(recallLocalCss).toMatch(/\.recall-personal-ontology-frame \.personal-onto-nav,[\s\S]*?overflow-y:\s*auto;[\s\S]*?overscroll-behavior:\s*auto;/);
   });
 
   it('uses a task-oriented cognition header and removes the personal tag surface', () => {
@@ -460,12 +454,13 @@ describe('Recall cognition workspace layout', () => {
   // tab 切换只翻 pane 的 hidden 属性，而 .skills-cognition-page 自带 display，
   // 会盖掉 UA 的 [hidden]{display:none}。少了这条守卫，六个 pane 全部保留布局
   // 竖排在 overflow:hidden 的容器里，只有第一屏露出来，切 tab 像点不动。
-  it('keeps the embedded ontology pane hidden until opened', () => {
-    // 2026-09-15 重构：旧 .skills-cognition-page 六 pane 结构删除；内嵌本体
-    // 骨架默认带 hidden 属性，由 overview 树上的 open-ontology 入口切换。
-    expect(html).toContain('id="skills-cognition-personal-ontology" hidden');
+  it('旧个人本体壳已退役：parking 骨架与新工作台挂载点互不残留（2026-10-07 停驻页退役）', () => {
+    expect(html).not.toContain('id="skills-cognition-personal-ontology"');
+    expect(html).not.toContain('id="panel-personal-ontology"');
+    expect(html).not.toContain('id="personal-onto-');
+    expect(html).toContain('id="ca-root"');
     const views = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/views.js'), 'utf-8');
-    expect(views).toContain('data-act="open-ontology"');
+    expect(views).toContain('id="ca-ontology-mount"');
   });
 
   // 认知资产页把技能库和个人本体整体内嵌，两份骨架很容易在合并时被同时保留。
@@ -478,21 +473,6 @@ describe('Recall cognition workspace layout', () => {
     expect(duplicated).toEqual([]);
   });
 
-  // 「关于我」不再是独立任务页，而是「我的资产」里的一类。个人本体骨架跟着
-  // 搬进 assets 页，但仍然只能有一份——两份同 id 骨架会让渲染落到靠前那份。
-  it('renders the personal ontology shell exactly once, inside My assets', () => {
-    expect(html).not.toContain('skills-cognition-about-me');
-    const sectionStart = html.indexOf('id="skills-cognition-personal-ontology"');
-    expect(sectionStart).toBeGreaterThan(-1);
-    // 旧四 tab 骨架已删；本体 section 位于 panel-recall 内、ca-root 之后。
-    const rootStart = html.indexOf('id="ca-root"');
-    expect(rootStart).toBeGreaterThan(-1);
-    expect(sectionStart).toBeGreaterThan(rootStart);
-    for (const id of ['personal-onto-nav', 'personal-onto-main-body', 'personal-onto-template-library-modal']) {
-      const occurrences = [...html.matchAll(new RegExp(`\\sid="${id}"`, 'g'))];
-      expect(occurrences).toHaveLength(1);
-      expect(occurrences[0].index).toBeGreaterThan(sectionStart);
-    }
-  });
+
 
 });

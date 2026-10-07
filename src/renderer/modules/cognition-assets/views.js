@@ -4137,21 +4137,13 @@
     const errorBanner = S.errors.length && S.loaded
       ? `<div class="ca-banner">${esc(T('cognition.partial_load', '部分数据读取失败，页面已用可用数据渲染。'))}${btn(T('common.retry', '重试'), 'refresh', { small: true })}</div>`
       : '';
-    // 离开本体路由，或在本体路由上重渲染（数据变更触发的 notify）：
-    // 都要先把 section 归还 parking——内容区即将整体替换，若不先移走，
-    // 本体 DOM 会连同内部状态一起被 innerHTML 销毁，页面从此白一片
-    // （Phase 3 挂载契约；2026-09-21 补「本路由重渲染」这半边）。
+    // 离开本体路由时显式卸载本体工作台（清窗口级 i18n 监听与内部状态）；
+    // 本体路由自身重渲染无需先卸载——渲染尾部的 mountPersonalOntology 会在新
+    // mount 点重新挂载收口，旧节点上的监听随 innerHTML 一并销毁。
     const enteringOntology = route.name === 'ontology' && S.prevRouteName !== 'ontology';
-    if (typeof NS.unmountPersonalOntology === 'function'
-      && (S.prevRouteName === 'ontology' || route.name === 'ontology')) {
-      const mountedSection = document.getElementById('skills-cognition-personal-ontology');
-      if (mountedSection && route.name !== 'ontology') NS.unmountPersonalOntology();
-      if (mountedSection && route.name === 'ontology') {
-        // 本体路由自身重渲染：mount 点将被重建，先把区段挪出内容区，
-        // 随后本渲染尾部的 mountPersonalOntology 会再次移入。
-        const mountEl = document.getElementById('ca-ontology-mount');
-        if (mountEl && mountedSection.parentElement === mountEl) NS.unmountPersonalOntology();
-      }
+    if (S.prevRouteName === 'ontology' && route.name !== 'ontology'
+      && typeof NS.unmountPersonalOntology === 'function') {
+      NS.unmountPersonalOntology();
     }
     S.prevRouteName = route.name;
     // 持久页面壳（2026-09-21 认知页签迁移）：ca-app 结构只建一次，此后每次

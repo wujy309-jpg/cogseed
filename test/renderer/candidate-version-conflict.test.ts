@@ -79,7 +79,6 @@ function ensureModule(): Ns {
     uiAlert: async (message: string) => { ALERTS.push(message); },
     uiConfirm: async () => true,
     uiConfirmDanger: async () => true,
-    refreshPersonalOntology: async () => {},
     t: (key: string, vars?: Record<string, string>) => localized(key, undefined, vars),
   };
   globalScope.window = windowStub;

@@ -631,11 +631,13 @@
   /** collection → 需要刷新的区块/动作。没列出的 collection（world-model 等）
    *  面板没有对应区块，静默忽略——主进程广播所有认知写入，订阅端自取所需。 */
   const COLLECTION_BLOCKS = {
-    'ability-assets': ['assets', 'timeline', 'ontology'],
+    'ability-assets': ['assets', 'timeline'],
     'ability-asset-versions': ['assets'],
     'ability-asset-audit': ['assets', 'timeline'],
     'candidates': ['candidates'],
-    'ontology-candidates': ['ontology'],
+    // 2026-10-07 旧停驻页退役：po 候选与 Recall 候选同住「待我处理」收件箱，
+    // 广播改刷 candidates 区块（两个列表一并重拉），旧页面刷新入口已删除。
+    'ontology-candidates': ['candidates'],
     'captures': ['captures'],
     'capture-settings': ['settings'],
     'usage-records': ['timeline'],
@@ -653,9 +655,8 @@
     'asset-handoff-receipts': ['timeline'],
     'workspace-refs': ['assets'],
     'workspace-ref-history': ['assets'],
-    'ontology-groups': ['ontology'],
-    'ontology-conflicts': ['ontology', 'inbox'],
-    'ontology-graph': ['ontology'],
+    // 2026-10-07 旧停驻页退役：ontology 区块 applier 随旧模块删除，冲突仍走 inbox。
+    'ontology-conflicts': ['inbox'],
     'longterm-memory': ['legacy'],
     'experiences': ['experiences'],
   };
@@ -676,11 +677,6 @@
       if (store.legacyMemoryMigration) void NS.loadLegacyMemoryMigrationPreview(true);
       if (store.legacyScopedMemoryMigration) void NS.loadLegacyScopedMemoryMigrationPreview(true);
     };
-    if (block === 'ontology') return async () => {
-      if (typeof window.refreshPersonalOntology === 'function') {
-        await window.refreshPersonalOntology({ deferWhenHidden: true });
-      }
-    };
     if (block === 'projections') return async () => {
       await NS.loadModelSelectedAssets();
     };
@@ -688,7 +684,7 @@
   }
 
   const BLOCK_APPLIERS = {};
-  for (const name of [...Object.keys(BLOCK_FETCHERS), 'experiences', 'legacy', 'ontology', 'projections']) {
+  for (const name of [...Object.keys(BLOCK_FETCHERS), 'experiences', 'legacy', 'projections']) {
     const apply = applyBlock(name);
     if (apply) BLOCK_APPLIERS[name] = apply;
   }
@@ -1910,15 +1906,6 @@
       }
       // 确认已落地：冲突状态不再成立（重锚成功也走这里）。
       store.candidateVersionConflict = null;
-      // 晋升可能改变个人画像投影：异步刷新本体，失败只提醒不阻断（资产已落库）。
-      void (async () => {
-        if (typeof window.refreshPersonalOntology !== 'function') return;
-        try {
-          await window.refreshPersonalOntology();
-        } catch (error) {
-          toast(T('personalOntology.profile_sync_warning', '资产已保存，个人画像自动更新未完成，稍后可重试。'), 'warning');
-        }
-      })();
       // promote 结果体的资产身份在 `asset.id`（顶层 `assetId` 是更早契约的读法，
       // 兼容保留）。拿得到才发去向提示并直落资产详情；拿不到不发——认知树没有
       // 资产级节点，宁可不给入口也不往树跳。
@@ -2878,9 +2865,8 @@
   };
 
   /* ────────────────────────── 本体工作台挂载 ────────────────────────── */
-  /* 当前路由在 cognition-assets 的 #ca-ontology-mount 内加载 cognition-ontology。
-   * #panel-personal-ontology 是保留的旧页面壳，不再承载本体工作台；旧深链在 boot.js
-   * 归一化后进入同一新路由。 */
+  /* 当前路由在 cognition-assets 的 #ca-ontology-mount 内加载 cognition-ontology；
+   * 旧深链 setView('personal-ontology') 在 boot.js 归一化后进入同一路由。 */
 
   function showRecallPanel() {
     try {
@@ -2903,18 +2889,11 @@
   };
 
   /* ───────────── 本体工作台路由挂载 ───────────── */
-  /* 本体是认知资产顶级入口下的完整工作台。此处只加载并挂载新本体页；不移动旧页面 DOM，
-   * 也不复用旧图谱写接口。旧数据以有来源的只读投影出现，整理通过共同候选入口提交。 */
+  /* 本体是认知资产顶级入口下的完整工作台。此处只负责加载并挂载，不复用旧图谱
+   * 写接口。旧数据以有来源的只读投影出现，整理通过共同候选入口提交。 */
 
   NS.unmountPersonalOntology = function unmountPersonalOntology() {
     if (typeof window.unmountCognitionOntology === 'function') window.unmountCognitionOntology();
-    const section = document.getElementById('skills-cognition-personal-ontology');
-    if (!section) return;
-    const parking = document.getElementById('ca-ontology-parking');
-    // Restore the old shell if a stale/pre-upgrade view had moved it into the page.
-    if (parking && section.parentElement !== parking) parking.appendChild(section);
-    section.hidden = true;
-    section.classList.remove('is-standalone');
   };
 
   NS.mountPersonalOntology = async function mountPersonalOntology(options = {}) {

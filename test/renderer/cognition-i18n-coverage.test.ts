@@ -81,7 +81,8 @@ describe('认知域词条覆盖', () => {
     expect(keys).toContain('cognition.candidate_error_terminal');
     // 属性式（TABS 的 titleKey）与字面量兜底（EVENT_TITLES）都要真的扫到。
     expect(keys).toContain('recall.projection.title');
-    expect(keys).toContain('personalOntology.ontology_identity');
+    // 2026-10-07 旧停驻页退役：personalOntology.* 取词点随旧模块全部消失
+    //（剩余同名串都是 IPC 通道名，非词条），旧域哨兵撤下。
   });
 
   it('四语都有，缺一门就会退回代码里的中文兜底', () => {

@@ -26,8 +26,10 @@ describe('Ontology navigation copy', () => {
   });
 
   it('uses the Ontology name in the embedded workspace header', () => {
-    const html = fs.readFileSync(path.join(rendererRoot, 'index.html'), 'utf8');
-    expect(html).toContain('data-i18n="personalOntology.title">本体</span>');
+    // 2026-10-07 旧停驻页退役：工作台标题不再来自 index.html 壳，改锚
+    // cognition-ontology.js 的 pageHeader 取词点（zh 兜底=本体）。
+    const source = fs.readFileSync(path.join(rendererRoot, 'modules', 'cognition-ontology.js'), 'utf8');
+    expect(source).toContain("title: text('title', '本体')");
   });
 
   it('keeps the selected ontology subpage during data rerenders and resets only on a new entry', () => {

@@ -141,9 +141,9 @@ describe('cognition pages', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2026-09-21 认知资产迁移:HTML 原型 v7 的五页签结构守护(源码级契约,
-// 与上方旧模块 require 测试并存——旧模块仍被 personal-ontology 懒加载组使用)。
-// 迁移终态:tree / ontology / overview / review / organize,默认路由 tree。
+// 2026-09-21 认知资产迁移:HTML 原型 v7 的页签结构守护(源码级契约)。
+// 2026-10-07 旧模块 personal-ontology.js 随停驻页退役删除——同名懒加载组只余
+// cognition/pages.js + cognition.js + personal-context-review.js。
 // ─────────────────────────────────────────────────────────────────────────────
 describe('cognition-assets 五页签结构(迁移终态)', () => {
   const core2 = readFileSync(resolve(__dirname, '../../src/renderer/modules/cognition-assets/core.js'), 'utf8');
@@ -197,15 +197,18 @@ describe('cognition-assets 五页签结构(迁移终态)', () => {
     expect(overviewBlock).not.toContain('treeBlocks(');
   });
 
-  it('页面壳只建一次:持久壳 + 内容区局部重绘', () => {
+  it('页面壳只建一次:持久壳 + 内容区局部重绘(旧停驻页已退役)', () => {
     expect(views2).toContain('ca-ontology-mount');
     expect(views2).toContain('unmountPersonalOntology');
     expect(views2).toContain('ca-banner-slot');
-    expect(html2).toContain('id="ca-ontology-parking"');
-    expect(core2).toContain('ca-ontology-parking');
+    // 2026-10-07 退役:HTML 不再有停车区壳,core 不再有归还逻辑。
+    expect(html2).not.toContain('ca-ontology-parking');
+    expect(html2).not.toContain('id="panel-personal-ontology"');
+    expect(core2).not.toContain('ca-ontology-parking');
     expect(core2).toContain("await load('cognition-ontology')");
     expect(core2).toContain('mountCognitionOntology(mount, options)');
     expect(core2).not.toContain('renderPersonalOntology()');
+    expect(core2).not.toContain('refreshPersonalOntology');
   });
 
   it('五页签标题四语齐全', () => {

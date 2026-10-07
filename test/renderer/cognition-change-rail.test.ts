@@ -104,12 +104,14 @@ describe('cognition change rail', () => {
     expect(store.treeRequested).toBeUndefined();
   });
 
-  it('routes ontology candidate changes to the ontology cache instead of the Recall candidate list', async () => {
+  it('routes ontology candidate changes into the shared review-inbox block after po page retirement', async () => {
     const handlers = new Map<string, (notice: Notice) => void>();
-    const refreshPersonalOntology = vi.fn(async () => {});
-    const invoke = vi.fn(async () => ({ ok: true }));
+    const invoke = vi.fn(async (channel: string) => (
+      channel === 'recall.candidates.list' ? { ok: true, candidates: [] }
+        : channel === 'personalOntology.candidates.list' ? { ok: true, candidate_updates: [] }
+        : { ok: true }
+    ));
     const { ns } = loadCognitionAssets({}, {}, {
-      refreshPersonalOntology,
       cogseed: {
         invoke,
         onPushEvent: (channel: string, handler: (notice: Notice) => void) => {
@@ -122,7 +124,7 @@ describe('cognition change rail', () => {
 
     handlers.get('cognition:changed')!({ collection: 'ontology-candidates', generation: 1 });
     await ns.flushPendingRefresh();
-    expect(refreshPersonalOntology).toHaveBeenCalledWith({ deferWhenHidden: true });
-    expect(invoke).not.toHaveBeenCalledWith('recall.candidates.list', {});
+    expect(invoke).toHaveBeenCalledWith('recall.candidates.list', { view: 'review-queue' });
+    expect(invoke).toHaveBeenCalledWith('personalOntology.candidates.list', {});
   });
 });

@@ -9,9 +9,9 @@
  *    渲染出来点了没反应的按钮。
  * 2. **禁入**:batchRunNow 不得出现在认知资产前端(批量立即整理入口
  *    确认不迁移,后端能力保留)。
- * 3. **必达**:fixture 里每个动作在目标模块落地(cognition-assets 看
- *    app.js handler;personal-ontology 看 IPC 通道调用点)。迁移分阶段
- *    推进,该断言在 Phase 5-8 期间逐步由红转绿,是迁移完成的机械判据。
+ * 3. **必达**:fixture 里每个 cognition-assets 动作在 app.js handler 落地。
+ *    旧 personal-ontology 模块已于 2026-10-07 退役删除,其 fixture 动作
+ *    (module='personal-ontology')随模块一并移出本契约的落地断言。
  * 4. **pending 态**:fixture 标 pending=true 的写动作必须在 app.js 的
  *    WRITE_ACTIONS 集合里(点击即禁用,防双击重复提交)。
  */
@@ -28,7 +28,6 @@ const views = ['views.js', 'review-candidate.js', 'review-views.js']
   .map((file) => read(`src/renderer/modules/cognition-assets/${file}`))
   .join('\n');
 const app = read('src/renderer/modules/cognition-assets/app.js');
-const ontology = read('src/renderer/modules/personal-ontology.js');
 const fixture = JSON.parse(read('test/renderer/fixtures/cognition-actions.json')) as {
   actions: { act: string; module: string; ipc: string | null; write: boolean; pending: boolean; phase: number }[];
   forbidden: { act: string; reason: string }[];
@@ -51,27 +50,6 @@ function referencedActs(): Set<string> {
   for (const m of views.matchAll(/\bbtn\(\s*[^,()]+(?:\([^()]*\))?[^,()]*,\s*'([a-z0-9-]+)'/g)) acts.add(m[1]);
   for (const m of views.matchAll(/\bmoreRow\(\s*[^,]+,\s*[^,]+,\s*'([a-z0-9-]+)'/g)) acts.add(m[1]);
   return acts;
-}
-
-/** personal-ontology.js 实际发起调用的 IPC 通道:只认 _pocInvoke('x') /
- *  _pocGroupAction('x') 的字面量首参调用语法,且**先剥注释再匹配**——对齐
- *  handledActs/referencedActs 的语法锚定惯例(P-r3-35:原 `ontology.includes
- *  ("'act'")` 是裸文本匹配,调用点被删但通道名残留注释时守卫照绿,是潜在盲区;
- *  通道名出现在注释里不算落地)。剥除误差方向宁红勿绿:误剥只会让守卫更早红。 */
-function poCalledChannelsIn(source: string): Set<string> {
-  // 块注释整体剥;以 // 开头的行整行剥(行中段 // 不动——URL 字符串里 // 前有
-  // 冒号,粗暴截断会误伤真实代码)。
-  const codeOnly = source
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    .filter((line) => !line.trimStart().startsWith('//'))
-    .join('\n');
-  const channels = new Set<string>();
-  for (const m of codeOnly.matchAll(/\b_poc(?:Invoke|GroupAction)\(\s*'([a-zA-Z0-9.]+)'/g)) channels.add(m[1]);
-  return channels;
-}
-function poCalledChannels(): Set<string> {
-  return poCalledChannelsIn(ontology);
 }
 
 const writeActionsBlock = (() => {
@@ -107,12 +85,8 @@ describe('认知资产动作契约', () => {
 
   it('fixture 动作全部在目标模块落地(迁移完成的机械判据)', () => {
     const handled = handledActs();
-    // P-r3-35:personal-ontology 侧按调用语法锚定(见 poCalledChannels 注释)。
-    const poCalled = poCalledChannels();
-    const missing = fixture.actions.filter((entry) => {
-      if (entry.module === 'cognition-assets') return !handled.has(entry.act);
-      return !poCalled.has(entry.act);
-    }).map((entry) => `${entry.module}:${entry.act}`);
+    const missing = fixture.actions.filter((entry) => entry.module === 'cognition-assets' && !handled.has(entry.act))
+      .map((entry) => `${entry.module}:${entry.act}`);
     expect(missing).toEqual([]);
   });
 
@@ -145,32 +119,5 @@ describe('app.js 委托层的 helper 引用（真机修复守卫）', () => {
     const bare = [...app.matchAll(/(?<!NS\.)\bconfirmUser\s*\(/g)];
     expect(bare.map((m) => m[0]), `app.js 存在裸 confirmUser 调用（真机会 ReferenceError）：${bare.length} 处`).toHaveLength(0);
     expect(app).toContain('NS.confirmUser');
-  });
-});
-
-/* ═══════════ P-r3-35 盲区守卫的回归钉 ═══════════
- * 本条修的盲区:调用点被删(整行注释掉)但通道名残留注释时,原裸 includes
- * 断言照绿。落地断言已改为「剥注释 + 调用语法锚定」(poCalledChannels),此处
- * 用受控样本钉住剥离行为本身——未来若有人把剥注释逻辑简化掉(退回裸正则),
- * 这里先红。mutation 验证记录见 reports/认知资产质检循环-20260930/wo-b8-err-hot.md。 */
-describe('poCalledChannels 注释剥离（P-r3-35 回归钉）', () => {
-  it('注释里的 _pocInvoke 调用形态不算落地,真实调用点才算', () => {
-    const sample = [
-      "    const res = await _pocInvoke('po.real.channel', { groupId: 'g' });",
-      "    // const dead = await _pocInvoke('po.line.commented', { groupId: 'g' });",
-      '    /* const dead2 = await _pocInvoke(\'po.block.commented\', {}); */',
-      "    const act = await _pocGroupAction('po.real.groupAction', { groupId: 'g' });",
-      "    // _pocGroupAction('po.groupAction.commented', {})",
-    ].join('\n');
-    const channels = poCalledChannelsIn(sample);
-    expect([...channels].sort()).toEqual(['po.real.channel', 'po.real.groupAction']);
-  });
-
-  it('行中段 // 不截断:URL 里的双斜杠不算注释开头(剥除误伤会让守卫假红)', () => {
-    const sample = [
-      "    const url = 'https://example.com/x';",
-      "    const res = await _pocInvoke('po.after.url', {});",
-    ].join('\n');
-    expect([...poCalledChannelsIn(sample)]).toEqual(['po.after.url']);
   });
 });
