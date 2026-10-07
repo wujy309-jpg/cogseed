@@ -3,7 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 
-function pageHarness(extraRecords: Record<string, any> = {}, customSearchResults?: Array<Record<string, unknown>>, candidateFixture?: Record<string, any>) {
+function pageHarness(extraRecords: Record<string, any> = {}, customSearchResults?: Array<Record<string, unknown>>, candidateFixture?: Record<string, any>, options: { holdSnapshot?: boolean } = {}) {
+  let releaseSnapshot: (() => void) | null = null;
+  const snapshotGate = options.holdSnapshot ? new Promise<void>(resolve => { releaseSnapshot = resolve; }) : null;
   const file = path.join(__dirname, '../../src/renderer/modules/cognition-ontology.js');
   const source = fs.readFileSync(file, 'utf8');
   const calls: Array<{ channel: string; payload: Record<string, unknown> }> = [];
@@ -37,12 +39,18 @@ function pageHarness(extraRecords: Record<string, any> = {}, customSearchResults
     get innerHTML() { return this._html; },
   };
   const root: any = {
-    addEventListener() {}, removeEventListener() {},
+    listeners: new Map<string, Function[]>(),
+    addEventListener(type: string, fn: Function) { this.listeners.set(type, [...(this.listeners.get(type) || []), fn]); },
+    removeEventListener(type: string, fn: Function) { this.listeners.set(type, (this.listeners.get(type) || []).filter(f => f !== fn)); },
+    dispatchEvent(event: { type: string }) { for (const fn of [...(this.listeners.get(event.type) || [])]) fn(event); return true; },
     t(key: string) { return key; },
     uiToast(message: string, options?: Record<string, unknown>) { toasts.push({ message, options }); },
     cogseed: { async invoke(channel: string, payload: Record<string, unknown> = {}) {
       calls.push({ channel, payload });
-      if (channel === 'cognition.ontology.snapshot') return { ok: true, ontology: doc };
+      if (channel === 'cognition.ontology.snapshot') {
+        if (!snapshotGate) return { ok: true, ontology: doc };
+        return snapshotGate.then(() => ({ ok: true, ontology: doc }));
+      }
       if (channel === 'cognition.ontology.export') return { ...exportResponse };
       if (channel === 'cognition.ontology.graph.query') {
         if (failNextGraph) { failNextGraph = false; return { ok: false, error: 'temporary graph failure' }; }
@@ -124,6 +132,8 @@ function pageHarness(extraRecords: Record<string, any> = {}, customSearchResults
   vm.runInNewContext(source, context, { filename: file });
   return { context, container, calls, buttonCalls, toasts, module, failNextGraph() { failNextGraph = true; }, setFormValues(values: Record<string, string>) { nextFormValues = values; },
     setConfirmResult(value: boolean) { confirmResult = value; },
+    releaseSnapshot() { releaseSnapshot?.(); },
+    dispatchWindowEvent(type: string) { root.dispatchEvent({ type }); },
     async saveDialog() {
       const saveControl: any = { disabled: false, dataset: { ontologyAction: 'dialog-save' } };
       if (!modalClick) throw new Error('no dialog is open');
@@ -425,6 +435,26 @@ describe('本体工作台页面层级与接线', () => {
     expect(f.container.innerHTML).toContain('研发组');
     expect(f.container.innerHTML).toContain('客户组');
     expect(f.container.innerHTML.match(/data-ontology-action="focus-record"/g)).toHaveLength(2);
+  });
+});
+
+describe('i18n-change 在快照未落地时只重绘加载骨架（语言切换崩溃修复）', () => {
+  it('doc 未加载时收到 i18n-change 不走全量 render；落地后再触发则正常重绘', async () => {
+    const f = pageHarness({}, undefined, undefined, { holdSnapshot: true });
+    const container = f.container;
+    // 不 await：mount 已同步渲染骨架，快照仍在途（state.doc === undefined 窗口）
+    const mounted = f.context.window.mountCognitionOntology(container);
+    f.dispatchWindowEvent('i18n-change');
+    // 修复前：此处抛 TypeError（listPage→modules 读 state.doc.records）；修复后只重绘骨架
+    expect(container.innerHTML).toContain('ontology-ws-loading');
+    expect(container.innerHTML).not.toContain('ontology-ws-stats');
+    expect(container.innerHTML).not.toContain('ontology-ws-module-grid');
+    f.releaseSnapshot();
+    await mounted;
+    // 数据落地后：i18n-change 走全量 render，模块网格正常回来
+    f.dispatchWindowEvent('i18n-change');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(container.innerHTML).toContain('ontology-ws-module-grid');
   });
 });
 

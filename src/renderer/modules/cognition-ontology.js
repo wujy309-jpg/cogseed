@@ -905,7 +905,16 @@
     event.preventDefault();
     onClick({ target: node });
   }
-  function onI18nChange() { if (state) render(); }
+  // 数据未落地前（mount→snapshot 在途）i18n-change 只能重绘加载骨架；
+  // 全量 render 会经 listPage→modules 读 state.doc.records 而崩溃。
+  function onI18nChange() {
+    if (!state || !state.root || !state.root.isConnected) return;
+    if (!state.doc) {
+      state.root.innerHTML = `<main class="ontology-workspace"><div class="ontology-ws-loading" role="status">${esc(text('loading', '正在加载本体…'))}</div></main>`;
+      return;
+    }
+    render();
+  }
   function onChange(event) {
     const input = event.target.closest('[data-ontology-field="graphAt"]'); if (!input) return;
     state.at = input.value;
