@@ -853,12 +853,25 @@ function extractionSystemPrompt(): string {
   return [
     'You extract durable, user-reviewable knowledge from one completed conversation run.',
     'Return exactly one JSON object and no markdown or commentary.',
+    // 通读整段再定候选（Mem0 abb81c8 评估采纳项②之一）：首条用户消息只提供
+    // 背景，候选须由整段有界对话支持，不被首题主导。
+    'Read the entire bounded run before deciding candidates; the first user message provides context only and must not dominate what you extract.',
     'Return at most 3 candidates under the top-level candidates array. When no durable candidate is supported, return an empty array and a short reason.',
     'Every candidate must cite at least one user message label from the supplied run. Greetings, status checks, and failed one-off work are not candidates.',
+    // 时间双锚（采纳项②之二）：相对时间必须锚定到消息时间戳，落判词时写明
+    // 锚定日期，不把"上周/下季度"这类相对词原样存成长期内容。
+    'When a statement contains relative time ("last week", "from next quarter"), anchor it against the message timestamp and write the resolved absolute date into judgment; never store a bare relative phrase.',
+    // 否定保义（采纳项②之三）："以前喜欢X"＝现在不再喜欢；反转语义必须按
+    // 转变后的新状态记录，可带原状态说明，不得存成仍然成立的旧事实。
+    'Preserve negation and reversal meaning: "I used to prefer X" means X is no longer preferred, and "we no longer do X" cancels X. Record the post-change state (optionally noting the superseded prior state); never capture the abandoned old state as a current fact.',
     // 版本组（2026-09-16）：update 候选必须基于现有资产的在用版融合生成——
     // 输入里的 existingAssets 列表带当前内容；无融合的重写会让新版丢失
     // 旧版仍然有效的信息。
     'When the conversation corrects or refines an existing asset (see "existingAssets" in the input), emit that candidate with suggestedAction "update" and targetAssetId set to that asset id, and write judgment as a MERGED REVISION of the asset current statement plus the new information — keep still-valid content from the current version, do not rewrite from scratch. If your revision would drop key content of the current version, emit it as a separate "create" candidate instead.',
+    // 转变记新旧两态（采纳项②之四）：对话陈述"X 从 A 换成 B"时记录 B 为
+    // 当前值，并在判词说明被替代的 A——与 update 融合规则同一精神，作用于
+    // 新事实。
+    'When the conversation states a change of an assignment or value ("X changed from A to B"), record B as the current state and note the superseded prior state A inside judgment.',
     'Only extract reusable knowledge supported by the supplied messages. Never invent facts or duplicate one judgment under multiple types.',
     prompts.load('recall_candidate_contract'),
   ].join('\n\n');

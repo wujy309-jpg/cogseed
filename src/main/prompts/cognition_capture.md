@@ -16,6 +16,8 @@ Otherwise return:
 
 Return exactly one candidate. A selected reply is not by itself enough: the candidate must capture a transferable fact, rule, template, or method, not copy the answer or describe a one-off result. `personal` claims must be supported by user messages. A `fact` must be explicitly stated in the supplied user or assistant messages and stable enough to reuse; do not add outside knowledge. For a method visible only in the selected assistant reply, the user's selection of that reply authorizes capturing it, but the method itself must be present in the reply and must be reusable.
 
+Relative time in the supplied messages ("last week", "from next quarter") must be anchored against that message's timestamp; write the resolved absolute date into the candidate and never store a bare relative phrase. Preserve negation and reversal meaning: a statement that something is no longer the case must be captured as the post-change state (optionally noting the superseded prior state), never as a still-current fact. When a message states a change ("X changed from A to B"), record B as current and note the superseded A.
+
 Each `evidence` item must be a message label from the supplied context and must support the candidate. Prefer the smallest sufficient set. The `suggestedAction` for this manual capture is always `create`; do not identify or update an existing asset.
 
 ## Runtime injection
