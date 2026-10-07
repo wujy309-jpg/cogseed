@@ -28,6 +28,8 @@ describe('014 anti-drift（specs/014 T024）', () => {
       'cognition.assets.page',
       'personalOntology.candidates.transferToRecall',
       // 2026-10-05：本体模块查询、三盒、图谱、历史、规则、变更与本机文件候选入口。
+      // 2026-10-07：本体导出（FR-015/AC-013，JSON 时点快照，只读投影+原生保存框）。
+      'cognition.ontology.export',
       'cognition.ontology.candidate.commit',
       'cognition.ontology.candidate.complete',
       'cognition.ontology.box.list',
