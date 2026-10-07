@@ -11,7 +11,7 @@ import * as path from 'node:path';
 describe('提取 prompt 规则钉子（Mem0 采纳项②）', () => {
   it('自动提取 system prompt 含四项规则', () => {
     const source = fs.readFileSync(
-      path.join(__dirname, '../../src/main/features/recall/capture-service.ts'),
+      path.join(__dirname, '../../../src/main/features/recall/capture-service.ts'),
       'utf8',
     );
     expect(source, '通读整段防首题主导').toMatch(/Read the entire bounded run before deciding candidates/);
@@ -22,7 +22,7 @@ describe('提取 prompt 规则钉子（Mem0 采纳项②）', () => {
 
   it('手动捕获 prompt（cognition_capture.md）含时间锚与否定保义', () => {
     const prompt = fs.readFileSync(
-      path.join(__dirname, '../../src/main/prompts/cognition_capture.md'),
+      path.join(__dirname, '../../../src/main/prompts/cognition_capture.md'),
       'utf8',
     );
     expect(prompt, '相对时间锚定').toMatch(/anchored against that message's timestamp/);
