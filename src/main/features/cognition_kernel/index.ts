@@ -61,6 +61,9 @@ export type { TaskFieldPack } from './task_field_packs';
 export { backfillFieldValue, checkTaskFields } from './gap';
 export type { BackfillFieldInput, BackfillFieldResult, FieldGap, TaskFieldCheck } from './gap';
 
+export { listCognitionBoundReceipts, recordCognitionBoundReceipt } from './bound_receipt';
+export type { BoundSlotRef, CognitionBoundReceipt, MissingSlotRef } from './bound_receipt';
+
 export { INBOX_LIMIT, buildMergedInbox, readMergedInbox } from './inbox';
 export type { InboxItem, MergedInbox } from './inbox';
 

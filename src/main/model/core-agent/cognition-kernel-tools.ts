@@ -18,6 +18,7 @@ import {
   backfillFieldValue,
   checkTaskFields,
   getTaskFieldPack,
+  recordCognitionBoundReceipt,
   TASK_FIELD_PACKS,
 } from '../../features/cognition_kernel';
 import { logErrorRef, maskId } from '../../util/log-redact';
@@ -73,6 +74,11 @@ function createFieldsCheckTool(opts: CognitionKernelToolsOpts): AgentTool {
           ...(!field.version ? { expectedUpdatedAt: field.updatedAt, expectedValue: field.value } : {}) });
         await recordAssetAgentReads(opts, check.resolution.bound.flatMap(field => field.source === 'personal_asset' && field.version
           ? [{ assetId: field.sourceId, assetVersion: field.version }] : []));
+        try {
+          await recordCognitionBoundReceipt(userId, opts.turnId, pack.id, check);
+        } catch (error) {
+          log.warn('personal fields bound receipt failed', { userId: maskId(userId), turnId: maskId(opts.turnId), pack: packId, error: logErrorRef(error as Error) });
+        }
         const result = {
           pack: pack.id,
           title: pack.title,
