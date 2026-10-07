@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+const model = vi.hoisted(() => vi.fn());
+vi.mock('../../../src/main/model/client', () => ({ chatWithModel: model }));
 vi.mock('../../../src/main/features/recall/store-events', () => ({ notifyCognitionWrite: vi.fn() }));
 vi.mock('../../../src/main/logger', () => ({ createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) }));
 
@@ -13,6 +15,7 @@ beforeEach(() => {
   previousRoot = process.env.COGSEED_WORKSPACE_ROOT;
   process.env.COGSEED_WORKSPACE_ROOT = root;
   vi.resetModules();
+  model.mockReset();
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -53,4 +56,38 @@ describe('本机资料经共同候选治理进入本体', () => {
     expect(committed.candidate.ontologyHandoff?.status).toBe('in_progress');
     expect((await handoff.completeCandidateOntologyHandoff(userId, candidate.id)).candidate.status).toBe('integrated');
   });
+  it('模型建议经过真实共同候选存储，原文不可替换，重试不重复且未授权不写本体', async () => {
+    const sourceText = '验收项目由林青负责。';
+    const draft = { summary: '项目负责人', judgment: sourceText, quote: sourceText, suggestedType: 'fact' };
+    model.mockResolvedValue({ ok: true, text: JSON.stringify({ candidates: [draft] }) });
+    const importing = await import('../../../src/main/features/cognition/ontology/import-extraction');
+    const first = await importing.extractOntologyImportCandidates(userId, '虚构资料.md', sourceText);
+    const again = await importing.extractOntologyImportCandidates(userId, '虚构资料.md', sourceText);
+    expect(again.candidateIds).toEqual(first.candidateIds);
+    const candidates = await import('../../../src/main/features/recall/candidate-service');
+    const candidate = await candidates.readRecallCandidate(userId, first.candidateIds[0]);
+    expect(candidate.status).toBe('pending_review');
+    expect(candidate.origin).not.toBe('manual');
+    expect(candidate.sourceRefs).toEqual([expect.objectContaining({ id: first.sourceId, kind: 'artifact_file', sourceVersion: expect.any(String) })]);
+    expect(candidate.evidenceSummary).toBe(sourceText);
+    const sources = await import('../../../src/main/features/cognition/ontology/import-source');
+    expect((await sources.readOntologyImportSource(userId, first.sourceId)).text).toBe(sourceText);
+    const ontology = await import('../../../src/main/features/cognition/ontology/service');
+    expect(Object.keys(ontology.readOntologyDocument(userId).records)).toHaveLength(0);
+  });
+  it('后一片提取失败时保留完整原文和前片候选，重试复用已提交建议', async () => {
+    const sourceText = '验收项目由林青负责。' + '。'.repeat(3800);
+    const draft = { summary: '负责人', judgment: '验收项目由林青负责。', quote: '验收项目由林青负责。', suggestedType: 'fact' };
+    model.mockResolvedValueOnce({ ok: true, text: JSON.stringify({ candidates: [draft] }) }).mockResolvedValueOnce({ ok: false });
+    const importing = await import('../../../src/main/features/cognition/ontology/import-extraction');
+    let failure: any;
+    try { await importing.extractOntologyImportCandidates(userId, '多片虚构资料.md', sourceText); } catch (error) { failure = error; }
+    expect(failure).toMatchObject({ code: 'import_partial', details: { submitted: 1, completedParts: 1, totalParts: 2 } });
+    const sources = await import('../../../src/main/features/cognition/ontology/import-source');
+    expect((await sources.readOntologyImportSource(userId, failure.details.sourceId)).text).toBe(sourceText);
+    model.mockResolvedValueOnce({ ok: true, text: JSON.stringify({ candidates: [draft] }) }).mockResolvedValueOnce({ ok: true, text: '{"candidates":[]}' });
+    const retry = await importing.extractOntologyImportCandidates(userId, '多片虚构资料.md', sourceText);
+    expect(retry.candidateIds).toEqual(failure.details.candidateIds);
+  });
+
 });

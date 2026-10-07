@@ -310,7 +310,8 @@
 /* 夜间自动沉淀条状卡：左说明 / 中时间 / 右开关。 */
 .ca-setting-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 14px 16px; }
 .ca-setting-copy { flex: 1 1 240px; min-width: 0; }
-.ca-setting-time { display: inline-flex; align-items: center; gap: 8px; color: var(--ca-ink2); font-size: var(--font-size-2); }
+.ca-setting-time { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 8px; color: var(--ca-ink2); font-size: var(--font-size-2); }
+.ca-setting-time > span { white-space: nowrap; }
 .ca-setting-time input[type="time"] {
   border: 1px solid var(--ca-line); border-radius: 8px; padding: 5px 8px;
   background: var(--ca-card); color: var(--ca-ink); font-family: inherit; font-size: var(--font-size-3);
@@ -2087,3 +2088,8 @@
 }
 #ca-root .ca-review-row:last-child { border-bottom: 0; }
 #ca-root .ca-review-row-text { flex: 1 1 auto; min-width: 0; color: var(--ink); }
+
+/* 维护设置在窄窗口中保留时间标签和动作的可读宽度。 */
+#ca-root .ca-layout-settings .rowline { flex-wrap: wrap; }
+#ca-root .ca-layout-settings .rowline > div:first-child { flex: 1 1 280px; min-width: 0; }
+#ca-root .ca-layout-settings .rowline > .right { flex: 0 1 auto; flex-wrap: wrap; }

@@ -33,7 +33,7 @@ describe('Recall capture settings', () => {
     await expect(readRecallCaptureSettings('capture-user')).resolves.toMatchObject({
       enabled: true,
       executionPolicy: 'manual',
-      reviewPolicy: 'auto',
+      reviewPolicy: 'manual',
       quietMinutes: 10,
       nightlyStart: '02:00',
       nightlyEnd: '06:00',
@@ -93,9 +93,18 @@ describe('Recall capture settings', () => {
 
     await expect(readRecallCaptureSettings('capture-user')).resolves.toMatchObject({
       executionPolicy: 'smart',
-      reviewPolicy: 'auto',
+      reviewPolicy: 'manual',
       quietMinutes: 10,
     });
+  });
+
+  it('存量 auto 策略读取为逐条确认，读取不改写原始配置', async () => {
+    const store = await import('../../../../src/main/features/recall/store');
+    const settings = await updateRecallCaptureSettings('capture-user', { executionPolicy: 'nightly' });
+    await store.updateRecallJsonRecord('capture-user', 'capture-settings', 'settings', () => ({ ...settings, reviewPolicy: 'auto' }));
+    expect((await readRecallCaptureSettings('capture-user')).reviewPolicy).toBe('manual');
+    expect((await store.readRecallJsonRecord('capture-user', 'capture-settings', 'settings'))?.reviewPolicy).toBe('auto');
+    expect((await updateRecallCaptureSettings('capture-user', { reviewPolicy: 'auto' })).reviewPolicy).toBe('manual');
   });
 
   it('computes same-day and cross-midnight windows in local time', () => {

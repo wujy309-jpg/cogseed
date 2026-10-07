@@ -220,6 +220,9 @@ export interface CognitionStoreDocument {
   /** 已落地 Delta 的精确重放索引：deltaId → true（有界 FIFO；防同一 Delta 双提交/崩溃重试双落地）。 */
   appliedDeltas: Record<string, true>;
   appliedOrder: string[];
+  /** Durable replay fingerprints survive eviction of the fast index. */
+  deltaReceipts?: Record<string, string>;
+  pendingJournal?: { key: string; objectId?: string; line: Record<string, unknown> }[];
   updatedAt: string;
 }
 
@@ -315,6 +318,16 @@ export function normalizeCognitionStoreDocument(raw: unknown): CognitionStoreDoc
         doc.appliedOrder.push(deltaId);
       }
     }
+  }
+  if (r.deltaReceipts !== undefined) {
+    if (!r.deltaReceipts || typeof r.deltaReceipts !== 'object' || Array.isArray(r.deltaReceipts)
+      || Object.values(r.deltaReceipts).some(v => typeof v !== 'string' || !/^[a-f0-9]{64}$/.test(v))) throw new Error('invalid delta receipts');
+    doc.deltaReceipts = { ...r.deltaReceipts as Record<string, string> };
+  }
+  if (r.pendingJournal !== undefined) {
+    if (!Array.isArray(r.pendingJournal) || r.pendingJournal.some(v => !v || typeof v.key !== 'string'
+      || (v.objectId !== undefined && !/^[A-Za-z0-9_-]+$/.test(v.objectId)) || !v.line || typeof v.line !== 'object' || Array.isArray(v.line))) throw new Error('invalid pending journal');
+    doc.pendingJournal = r.pendingJournal;
   }
   if (r.compatibility !== undefined) {
     const c = r.compatibility as CognitionCompatibilityState;

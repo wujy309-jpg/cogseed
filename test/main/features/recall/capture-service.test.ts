@@ -1208,7 +1208,7 @@ describe('Recall conversation capture', () => {
     expect(await capture.listRecallCaptures('capture-user')).toEqual([]);
   });
 
-  it('automatically writes clear candidates to memory when automatic write is enabled', async () => {
+  it("旧自动策略保留待审核候选：automatically writes clear candidates to memory when automatic write is enabled", async () => {
     mocks.runModel.mockResolvedValueOnce({
       text: JSON.stringify({
         candidates: [{
@@ -1229,10 +1229,13 @@ describe('Recall conversation capture', () => {
     const queued = await capture.queueRecallCaptureFromTerminal(completedEvent);
     await capture.runRecallCaptureNow('capture-user', queued!.id);
     const completed = await capture.runRecallCapture('capture-user', queued!.id);
-
-    expect(mocks.autoApplyCandidate).toHaveBeenCalledWith('capture-user', 'cand-0');
-    expect(completed).toMatchObject({ status: 'completed', autoWrite: true, candidateIds: ['cand-0'] });
-  });
+      // 旧自动策略只安排提取，不构成发布授权；失败的旧发布钩子也不能吞掉候选。
+      expect(mocks.autoApplyCandidate).not.toHaveBeenCalled();
+      expect(mocks.prepareSkillDraft).not.toHaveBeenCalled();
+      expect(completed.status).toBe('review_ready');
+      expect(completed.candidateIds.length).toBeGreaterThan(0);
+      expect(completed.errorCode).toBeUndefined();
+});
 
   it('keeps a high-risk automatic candidate visible for the independent manual gate', async () => {
     mocks.runModel.mockResolvedValueOnce({
@@ -1271,7 +1274,7 @@ describe('Recall conversation capture', () => {
   });
 
   it.each(['confirmed', 'rejected', 'ignored', 'expired'] as const)(
-    'skips a settled %s candidate during automatic replay while applying pending candidates',
+    "旧自动策略保留待审核候选：skips a settled %s candidate during automatic replay while applying pending candidates",
     async (settledStatus) => {
       mocks.runModel.mockResolvedValueOnce({
         text: JSON.stringify({
@@ -1296,17 +1299,16 @@ describe('Recall conversation capture', () => {
       const queued = await capture.queueRecallCaptureFromTerminal(completedEvent);
       await capture.runRecallCaptureNow('capture-user', queued!.id);
       const completed = await capture.runRecallCapture('capture-user', queued!.id);
-
-      expect(mocks.autoApplyCandidate).toHaveBeenCalledTimes(1);
-      expect(mocks.autoApplyCandidate).toHaveBeenCalledWith('capture-user', 'cand-1');
-      expect(completed).toMatchObject({
-        status: 'completed',
-        candidateIds: ['cand-0', 'cand-1'],
-      });
-    },
+      // 旧自动策略只安排提取，不构成发布授权；失败的旧发布钩子也不能吞掉候选。
+      expect(mocks.autoApplyCandidate).not.toHaveBeenCalled();
+      expect(mocks.prepareSkillDraft).not.toHaveBeenCalled();
+      expect(completed.status).toBe('review_ready');
+      expect(completed.candidateIds.length).toBeGreaterThan(0);
+      expect(completed.errorCode).toBeUndefined();
+},
   );
 
-  it('retries remaining automatic candidates without replaying a settled candidate', async () => {
+  it("旧自动策略保留待审核候选：retries remaining automatic candidates without replaying a settled candidate", async () => {
     const statuses = new Map<string, string>([
       ['cand-0', 'pending_review'],
       ['cand-1', 'pending_review'],
@@ -1347,25 +1349,17 @@ describe('Recall conversation capture', () => {
     const capture = await captureModule('auto');
     const queued = await capture.queueRecallCaptureFromTerminal(completedEvent);
     await capture.runRecallCaptureNow('capture-user', queued!.id);
-    await expect(capture.runRecallCapture('capture-user', queued!.id)).resolves.toMatchObject({
-      status: 'failed',
-      errorCode: 'asset_write_failed',
-      candidateIds: ['cand-0', 'cand-1'],
-    });
+    const reviewed = await capture.runRecallCapture('capture-user', queued!.id);
 
-    await capture.retryRecallCapture('capture-user', queued!.id);
-    await expect(capture.runRecallCapture('capture-user', queued!.id)).resolves.toMatchObject({
-      status: 'completed',
-      candidateIds: ['cand-0', 'cand-1'],
-    });
-    expect(mocks.autoApplyCandidate.mock.calls.map(([, candidateId]) => candidateId)).toEqual([
-      'cand-0',
-      'cand-1',
-      'cand-1',
-    ]);
-  });
+      // 旧自动策略只安排提取，不构成发布授权；失败的旧发布钩子也不能吞掉候选。
+      expect(mocks.autoApplyCandidate).not.toHaveBeenCalled();
+      expect(mocks.prepareSkillDraft).not.toHaveBeenCalled();
+      expect(reviewed.status).toBe('review_ready');
+      expect(reviewed.candidateIds.length).toBeGreaterThan(0);
+      expect(reviewed.errorCode).toBeUndefined();
+});
 
-  it('continues writing later candidates when an earlier candidate fails', async () => {
+  it("旧自动策略保留待审核候选：continues writing later candidates when an earlier candidate fails", async () => {
     const statuses = new Map<string, string>([
       ['cand-0', 'pending_review'],
       ['cand-1', 'pending_review'],
@@ -1404,26 +1398,17 @@ describe('Recall conversation capture', () => {
     const capture = await captureModule('auto');
     const queued = await capture.queueRecallCaptureFromTerminal(completedEvent);
     await capture.runRecallCaptureNow('capture-user', queued!.id);
-    await expect(capture.runRecallCapture('capture-user', queued!.id)).resolves.toMatchObject({
-      status: 'failed',
-      errorCode: 'asset_write_failed',
-      candidateIds: ['cand-0', 'cand-1'],
-    });
-    expect(statuses.get('cand-1')).toBe('confirmed');
+    const reviewed = await capture.runRecallCapture('capture-user', queued!.id);
 
-    await capture.retryRecallCapture('capture-user', queued!.id);
-    await expect(capture.runRecallCapture('capture-user', queued!.id)).resolves.toMatchObject({
-      status: 'completed',
-      candidateIds: ['cand-0', 'cand-1'],
-    });
-    expect(mocks.autoApplyCandidate.mock.calls.map(([, candidateId]) => candidateId)).toEqual([
-      'cand-0',
-      'cand-1',
-      'cand-0',
-    ]);
-  });
+      // 旧自动策略只安排提取，不构成发布授权；失败的旧发布钩子也不能吞掉候选。
+      expect(mocks.autoApplyCandidate).not.toHaveBeenCalled();
+      expect(mocks.prepareSkillDraft).not.toHaveBeenCalled();
+      expect(reviewed.status).toBe('review_ready');
+      expect(reviewed.candidateIds.length).toBeGreaterThan(0);
+      expect(reviewed.errorCode).toBeUndefined();
+});
 
-  it('prepares a Skill draft after an automatically written skill memory', async () => {
+  it("旧自动策略保留待审核候选：prepares a Skill draft after an automatically written skill memory", async () => {
     mocks.getMessages.mockResolvedValue(messages.map((message) => (
       message.id === 'user-1'
         ? { ...message, text: 'From now on, for every product review: review the request, apply the method, and validate the result.' }
@@ -1452,11 +1437,13 @@ describe('Recall conversation capture', () => {
     const queued = await capture.queueRecallCaptureFromTerminal(completedEvent);
     await capture.runRecallCaptureNow('capture-user', queued!.id);
     const completed = await capture.runRecallCapture('capture-user', queued!.id);
-
-    expect(mocks.autoApplyCandidate).toHaveBeenCalledWith('capture-user', 'cand-0');
-    expect(mocks.prepareSkillDraft).toHaveBeenCalledWith('capture-user', 'aa-skill');
-    expect(completed).toMatchObject({ status: 'completed', autoWrite: true, candidateIds: ['cand-0'] });
-  });
+      // 旧自动策略只安排提取，不构成发布授权；失败的旧发布钩子也不能吞掉候选。
+      expect(mocks.autoApplyCandidate).not.toHaveBeenCalled();
+      expect(mocks.prepareSkillDraft).not.toHaveBeenCalled();
+      expect(completed.status).toBe('review_ready');
+      expect(completed.candidateIds.length).toBeGreaterThan(0);
+      expect(completed.errorCode).toBeUndefined();
+});
 
   it('keeps uncertain automatic candidates only as weak observations', async () => {
     mocks.runModel.mockResolvedValueOnce({
@@ -1610,7 +1597,7 @@ describe('Recall conversation capture', () => {
     expect(completed.errorCode ?? '').toBe('');
   });
 
-  it('keeps an automatic write failure visible and retryable', async () => {
+  it("旧自动策略保留待审核候选：keeps an automatic write failure visible and retryable", async () => {
     mocks.runModel.mockResolvedValueOnce({
       text: JSON.stringify({
         candidates: [{
@@ -1631,16 +1618,13 @@ describe('Recall conversation capture', () => {
     const queued = await capture.queueRecallCaptureFromTerminal(completedEvent);
     await capture.runRecallCaptureNow('capture-user', queued!.id);
     const completed = await capture.runRecallCapture('capture-user', queued!.id);
-
-    expect(completed).toMatchObject({
-      status: 'failed',
-      autoWrite: true,
-      errorCode: 'asset_write_failed',
-      candidateIds: ['cand-0'],
-    });
-    expect(mocks.autoApplyCandidate).toHaveBeenCalledWith('capture-user', 'cand-0');
-    await expect(capture.retryRecallCapture('capture-user', queued!.id)).resolves.toMatchObject({ status: 'queued' });
-  });
+      // 旧自动策略只安排提取，不构成发布授权；失败的旧发布钩子也不能吞掉候选。
+      expect(mocks.autoApplyCandidate).not.toHaveBeenCalled();
+      expect(mocks.prepareSkillDraft).not.toHaveBeenCalled();
+      expect(completed.status).toBe('review_ready');
+      expect(completed.candidateIds.length).toBeGreaterThan(0);
+      expect(completed.errorCode).toBeUndefined();
+});
 
   it('rejects pause and cancel once candidate persistence has started', async () => {
     let markSaveStarted!: () => void;

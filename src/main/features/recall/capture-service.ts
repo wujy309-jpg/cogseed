@@ -2153,10 +2153,8 @@ export async function runRecallCapture(
     const parsed = parseResult.candidates;
     capture = await setCaptureStage(userId, id, 'candidate_save');
     if (capture.status !== 'extracting') return capture;
-    const automaticMode = capture.autoWrite === true || (
-      capture.executionPolicy !== 'manual'
-      && (await readRecallCaptureSettings(userId)).reviewPolicy === 'auto'
-    );
+    // 自动来源只能形成候选；旧 autoWrite/auto 配置不构成逐条确认授权。
+    const automaticMode = false;
     const byLabel = new Map(promptMessages.map((message) => [message.label, message]));
     const candidates: RecallCandidateRecord[] = [];
     // Once an automatic task reaches writing, these ids are the durable replay

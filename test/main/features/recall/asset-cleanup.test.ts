@@ -121,6 +121,25 @@ async function cloneAsset(uid: string, base: Record<string, unknown>, id: string
 }
 
 describe('整理报告与执行链（T041 / T042）', () => {
+  it('定时巡检只报告规范化和重复建议，不修改权威资产或审计版本', async () => {
+    const uid = 'user-inspection-review';
+    const { assets, cleanup } = await modules();
+    const asset = await seedAsset(uid, '导出报表一律带上生成时间戳。', '报表时间戳纪律。');
+    await cloneAsset(uid, asset, 'inspection-duplicate', { updatedAt: '2020-01-01T00:00:00.000Z' });
+    const before = await assets.readAbilityAsset(uid, asset.id);
+    const duplicateBefore = await assets.readAbilityAsset(uid, 'inspection-duplicate');
+    const auditBefore = await assets.listAbilityAssetAudit(uid, asset.id);
+    const report = await cleanup.runAssetCleanup(uid, { trigger: 'inspection' });
+    expect(report.finishedAt).toBeTruthy();
+    expect(report.items.some(item => item.kind === 'title_normalized' && item.status === 'uncertain')).toBe(true);
+    expect(report.items.some(item => item.kind === 'merged_duplicate' && item.status === 'uncertain')).toBe(true);
+    expect(report.items.some(item => item.status === 'applied')).toBe(false);
+    expect(report.uncertain.length).toBeGreaterThan(0);
+    expect(await assets.readAbilityAsset(uid, asset.id)).toEqual(before);
+    expect(await assets.readAbilityAsset(uid, 'inspection-duplicate')).toEqual(duplicateBefore);
+    expect(await assets.listAbilityAssetAudit(uid, asset.id)).toEqual(auditBefore);
+  });
+
   it('命名规范化：只动空白与结尾标点，报告项与台账一一对应', async () => {
     const uid = 'user-clean-title';
     const { assets, cleanup } = await modules();

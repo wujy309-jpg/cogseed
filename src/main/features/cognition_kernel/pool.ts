@@ -304,7 +304,7 @@ export async function decidePoolItem(
     if (current.status !== 'pending' && current.status !== 'deferred') {
       return { ok: false, error: `pool item 已 ${current.status}` };
     }
-    const applied: CognitionDelta = { ...current.delta, status: 'applied' };
+    const applied: CognitionDelta = { ...current.delta, status: 'applied', evidenceRefs: current.delta.evidenceRefs.length ? current.delta.evidenceRefs : [{ kind: 'candidate', id: current.id, title: current.delta.after?.slice(0, 200) }] };
     const result = await applyCognitionDeltas(uid, [applied]);
     if (!result.ok) return { ok: false, error: `统一库落地失败：${result.error ?? 'unknown'}` };
   }

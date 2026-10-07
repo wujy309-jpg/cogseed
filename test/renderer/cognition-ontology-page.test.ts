@@ -51,6 +51,11 @@ function pageHarness(extraRecords: Record<string, any> = {}, customSearchResults
         if (!snapshotGate) return { ok: true, ontology: doc };
         return snapshotGate.then(() => ({ ok: true, ontology: doc }));
       }
+      if (channel === 'recall.candidates.list') return { ok: true, candidates: [
+        { capabilities: { countsAsPending: true } }, { capabilities: { countsAsPending: true, isSnoozed: true } },
+        { capabilities: { countsAsPending: false } },
+      ] };
+      if (channel === 'personalOntology.candidates.list') return { ok: true, candidate_updates: [] };
       if (channel === 'cognition.ontology.export') return { ...exportResponse };
       if (channel === 'cognition.ontology.graph.query') {
         if (failNextGraph) { failNextGraph = false; return { ok: false, error: 'temporary graph failure' }; }
@@ -62,6 +67,7 @@ function pageHarness(extraRecords: Record<string, any> = {}, customSearchResults
           ...(focusId ? { focusId, focusNodeId: focusId } : {}) } };
       }
       if (channel === 'cognition.ontology.search') return { ok: true, results: customSearchResults || [{ id: 'focus-person', kind: 'entity', name: '林青', moduleId: 'project-module' }] };
+      if (channel === 'cognition.ontology.command.preview') return { ok: true, changes: [] };
       if (channel === 'cognition.ontology.history.get') return { ok: true, history: [] };
       if (channel === 'cognition.ontology.import.file') return { ok: true, cancelled: false, ...importFile };
       if (channel === 'cognition.ontology.import.submit') return { ok: true, submitted: 1, total: 1, candidateIds: ['candidate-imported'] };
@@ -105,7 +111,7 @@ function pageHarness(extraRecords: Record<string, any> = {}, customSearchResults
       const selects = [...bodyHtml.matchAll(/<div id="([^"]+)" data-ui-select data-ui-select-config='([^']*)'/g)].map(match => ({ id: match[1], dataset: { uiSelectConfig: match[2] } }));
       bodySelects.push(...selects.map(select => ({ id: select.id, value: JSON.parse(select.dataset.uiSelectConfig).value || '' })));
       const error = { hidden: true, textContent: '' };
-      const form: any = { querySelectorAll(selector: string) { return selector === '[data-ontology-field]' ? controls : selector === '[data-ui-select]' ? selects : []; },
+      const form: any = { dataset: {}, querySelectorAll(selector: string) { return selector === '[data-ontology-field]' ? controls : selector === '[data-ui-select]' ? selects : []; },
         querySelector(selector: string) {
           if (selector === '.ontology-ws-form-error') return error;
           const match = selector.match(/\[data-ontology-field="([^"]+)"\]/);
@@ -186,8 +192,34 @@ describe('本体工作台页面层级与接线', () => {
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(f.calls.some(call => call.channel === 'cognition.ontology.graph.query' && !call.payload.moduleId)).toBe(true);
     expect(f.container.innerHTML).toContain('ontology-ws-graph-shell');
-    expect(f.container.innerHTML).not.toContain('ontology-ws-stats');
+    expect(f.container.innerHTML).toContain('ontology-ws-stats');
+    expect(f.container.tabGroups.some((group: any) => group.dataset.ontologyTabs === 'workspace')).toBe(true);
     expect(f.container.innerHTML).not.toContain('ontology-ws-module-grid');
+  });
+  it('首页待处理统计只计入可处理且未延后的共同候选', async () => {
+    const f = pageHarness();
+    await f.context.window.mountCognitionOntology(f.container);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(f.calls.some(call => call.channel === 'personalOntology.candidates.list')).toBe(true);
+    expect(f.container.innerHTML).toContain('<strong>1</strong><span>待处理事项</span>');
+    expect(f.container.innerHTML).not.toContain('<strong>3</strong><span>待处理事项</span>');
+  });
+  it('拒绝白话保存预览时不提交候选记录，保留表单供再次核对', async () => {
+    const type = { id: 'person-type', kind: 'definition', moduleId: 'project-module', version: 1, status: 'active', access: 'task',
+      source: { kind: 'user', label: '用户确认' }, name: '人物', definitionKind: 'type', subjectTypes: [], objectTypes: [], valueType: 'entity', cardinality: 'many' };
+    const candidate = { id: 'candidate-preview', status: 'pending_review', summary: '负责人', value: '林青是负责人', risk: 'low', capabilities: { canEdit: true } };
+    const f = pageHarness({ [type.id]: type }, undefined, candidate);
+    await f.context.window.mountCognitionOntology(f.container, { candidateId: candidate.id });
+    click(f.container, 'candidate-select-module', f.module.id);
+    f.setFormValues({ name: '林青', description: '', aliases: '' });
+    click(f.container, 'create-entity');
+    f.setConfirmResult(false);
+    await f.saveDialog();
+    expect(f.calls.some(call => call.channel === 'cognition.ontology.command.preview')).toBe(true);
+    expect(f.calls.some(call => call.channel === 'cognition.ontology.candidate.commit')).toBe(false);
+    f.setConfirmResult(true);
+    await f.saveDialog();
+    expect(f.calls.filter(call => call.channel === 'cognition.ontology.candidate.commit')).toHaveLength(1);
   });
   it('认知资产按钮使用浅色层级和能表达动作的图标', async () => {
     const f = pageHarness();
@@ -280,6 +312,23 @@ describe('本体工作台页面层级与接线', () => {
     });
     expect(f.calls.some(call => call.channel === 'cognition.ontology.command.commit')).toBe(false);
     expect(f.toasts.some(toast => toast.options?.variant === 'success')).toBe(true);
+  });
+  it('从全局图谱进入本体再返回时恢复图谱层级、缩放和选中对象', async () => {
+    const f = pageHarness();
+    await f.context.window.mountCognitionOntology(f.container);
+    f.container.tabGroups.find((group: any) => group.dataset.ontologyTabs === 'workspace').fire('graph');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(f.container.innerHTML).toContain('role="group" aria-label="本体关系图谱"');
+    click(f.container, 'graph-zoom-in');
+    const viewBox = f.container.innerHTML.match(/viewBox="([^"]+)"/)?.[1];
+    click(f.container, 'open-module', f.module.id);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(f.container.innerHTML).toContain('返回全局图谱');
+    click(f.container, 'back-list');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(f.container.innerHTML).toContain('ontology-ws-node-panel');
+    expect(f.container.innerHTML).toContain('本体关系图谱');
+    expect(f.container.innerHTML.match(/viewBox="([^"]+)"/)?.[1]).toBe(viewBox);
   });
   it('进入具体本体后，三个盒子与本体图谱位于同一层级并请求模块范围图', async () => {
     const f = pageHarness();
@@ -398,6 +447,13 @@ describe('本体工作台页面层级与接线', () => {
     expect(f.container.innerHTML.match(/viewBox="([^"]+)"/)?.[1]).not.toBe(normalViewBox);
     click(f.container, 'graph-zoom-reset');
     expect(f.container.innerHTML.match(/viewBox="([^"]+)"/)?.[1]).toBe(normalViewBox);
+    click(f.container, 'graph-fullscreen');
+    expect(f.container.innerHTML).toContain('is-fullscreen');
+    expect(f.container.innerHTML).toContain('退出全屏');
+    expect(f.container.innerHTML.match(/viewBox="([^"]+)"/)?.[1]).toBe(normalViewBox);
+    for (const listener of f.context.window.listeners.get('keydown') || []) listener({ key: 'Escape', preventDefault() {}, target: { closest: () => null } });
+    expect(f.container.innerHTML).not.toContain('is-fullscreen');
+    expect(f.container.innerHTML).toContain('返回本体图谱全景');
     f.failNextGraph();
     click(f.container, 'graph-full');
     await new Promise(resolve => setTimeout(resolve, 0));

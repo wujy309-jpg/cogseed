@@ -11,7 +11,11 @@ import {
 export type OntologyAction =
   | { intent: 'create'; recordId?: string; record: Record<string, unknown>; sourceLabel: string }
   | { intent: 'update'; recordId: string; expectedVersion: number; patch: Record<string, unknown>; sourceLabel: string }
+  | { intent: 'restore'; recordId: string; expectedVersion: number; sourceLabel: string }
+  | { intent: 'merge'; recordId: string; expectedVersion: number; targetId: string; expectedTargetVersion: number; sourceLabel: string }
+  | { intent: 'undo_merge'; recordId: string; expectedVersion: number; mergeCommandId: string; sourceLabel: string }
   | { intent: 'archive'; recordId: string; expectedVersion: number; sourceLabel: string }
+  | { intent: 'delete'; recordId: string; expectedVersion: number; sourceLabel: string }
   | { intent: 'change'; recordId: string; expectedVersion: number; effectiveFrom: string; object?: OntologyValue; subjectId?: string; sourceLabel: string }
   | { intent: 'correct'; recordId: string; expectedVersion: number; object?: OntologyValue; subjectId?: string; sourceLabel: string };
 export interface OntologyCommand { commandId: string; expectedRevision: number; actions: OntologyAction[] }
@@ -24,6 +28,10 @@ const commandSchema = z.object({ commandId: key, expectedRevision: z.number().in
     z.object({ intent: z.literal('create'), recordId: key.optional(), record: z.record(z.unknown()), sourceLabel }).strict(),
     z.object({ intent: z.literal('update'), ...target, patch: z.record(z.unknown()) }).strict(),
     z.object({ intent: z.literal('archive'), ...target }).strict(),
+    z.object({ intent: z.literal('delete'), ...target }).strict(),
+    z.object({ intent: z.literal('restore'), ...target }).strict(),
+    z.object({ intent: z.literal('merge'), ...target, targetId: key, expectedTargetVersion: z.number().int().positive() }).strict(),
+    z.object({ intent: z.literal('undo_merge'), ...target, mergeCommandId: key }).strict(),
     z.object({ intent: z.literal('change'), ...target, effectiveFrom: z.string(), object: ontologyValueSchema.optional(), subjectId: key.optional() }).strict(),
     z.object({ intent: z.literal('correct'), ...target, object: ontologyValueSchema.optional(), subjectId: key.optional() }).strict(),
   ])).min(1).max(50),
@@ -35,6 +43,8 @@ export function validateOntologyCommand(raw: unknown): OntologyCommand {
   if (!serialized || Buffer.byteLength(serialized, 'utf8') > 1024 * 1024) throw new OntologyError('invalid_input', 'ontology command too large');
   const parsed = commandSchema.safeParse(raw);
   if (!parsed.success) throw new OntologyError('invalid_input', 'invalid ontology command');
+  if (parsed.data.actions.length !== 1 && parsed.data.actions.some(a => a.intent === 'merge' || a.intent === 'undo_merge'))
+    throw new OntologyError('invalid_input', 'identity merge must be reviewed as one standalone operation');
   if (parsed.data.actions.some(a => (a.intent === 'change' || a.intent === 'correct') && !a.object && !a.subjectId))
     throw new OntologyError('invalid_input', 'fact change requires a new subject or object');
   return parsed.data as OntologyCommand;
@@ -57,7 +67,10 @@ function requireRecord(doc: OntologyDocument, id: string, kind?: OntologyRecord[
 export function moduleCanUse(doc: OntologyDocument, moduleId: string, record: OntologyRecord): boolean {
   if (record.kind === 'module') return moduleId === record.id;
   if (record.moduleId === moduleId) return true;
-  if (record.access !== 'task') return false;
+  const sourceModule = doc.records[record.moduleId];
+  const current = doc.records[record.id];
+  if (record.access !== 'task' || current?.status !== 'active' || current.access !== 'task'
+    || sourceModule?.kind !== 'module' || sourceModule.status !== 'active' || sourceModule.access !== 'task') return false;
   return Object.values(doc.records).some(ref => ref.kind === 'reference' && ref.status === 'active' && ref.access === 'task'
     && ref.moduleId === moduleId && ref.targetModuleId === record.moduleId
     && (!ref.targetRecordId || ref.targetRecordId === record.id)
@@ -219,13 +232,77 @@ export function applyOntologyCommand(current: OntologyDocument, input: unknown, 
     }
     const before = structuredClone(requireRecord(doc, action.recordId));
     if (before.version !== action.expectedVersion) throw new OntologyError('baseline_changed', 'record version changed', { recordId: before.id });
-    if (action.intent === 'update') {
+    if (before.status === 'archived' && [...doc.history].reverse().find(row => row.after.id === before.id)?.intent === 'merge_source'
+      && action.intent !== 'undo_merge')
+      throw new OntologyError('invalid_intent', 'merged identities require undo_merge to restore their references');
+    if (action.intent === 'merge') {
+      const targetRecord = structuredClone(requireRecord(doc, action.targetId, 'entity'));
+      if (targetRecord.version !== action.expectedTargetVersion) throw new OntologyError('baseline_changed', 'merge target version changed');
+      if (before.kind !== 'entity' || targetRecord.kind !== 'entity' || before.id === targetRecord.id
+        || before.status !== 'active' || targetRecord.status !== 'active'
+        || before.identityStatus !== 'confirmed' || targetRecord.identityStatus !== 'confirmed'
+        || before.moduleId !== targetRecord.moduleId || before.typeId !== targetRecord.typeId || before.access !== targetRecord.access
+        || doc.records[before.moduleId]?.status !== 'active')
+        throw new OntologyError('invalid_intent', 'merge requires two confirmed active identities with the same module, type and access');
+      if (action.sourceLabel.trim().length < 5) throw new OntologyError('invalid_input', 'explicit identity evidence is required for merge');
+      const redirects: Array<{ before: OntologyRecord; after: OntologyRecord }> = [];
+      function redirectCondition(condition: unknown): unknown {
+        if (!condition || typeof condition !== 'object') return condition;
+        const value = condition as Record<string, unknown>;
+        if (value.kind === 'assertion') return { ...value, subjectId: value.subjectId === before.id ? targetRecord.id : value.subjectId,
+          ...(value.object ? { object: redirectValue(value.object) } : {}) };
+        if (value.kind === 'task' && value.field === 'entityId' && value.equals === before.id) return { ...value, equals: targetRecord.id };
+        if (value.kind === 'not') return { ...value, condition: redirectCondition(value.condition) };
+        if (value.kind === 'all' || value.kind === 'any') return { ...value, conditions: (value.conditions as unknown[]).map(redirectCondition) };
+        return value;
+      }
+      function redirectValue(value: unknown): unknown {
+        const object = value as Record<string, unknown>;
+        return object.kind === 'entity' && object.id === before.id ? { ...object, id: targetRecord.id } : object;
+      }
+      for (const record of Object.values(doc.records)) {
+        if (record.status !== 'active') continue;
+        let redirected = record;
+        if (record.kind === 'assertion') redirected = { ...record, subjectId: record.subjectId === before.id ? targetRecord.id : record.subjectId,
+          object: redirectValue(record.object) as OntologyValue };
+        else if (record.kind === 'rule') redirected = { ...record, condition: redirectCondition(record.condition) as typeof record.condition,
+          effect: record.effect.kind === 'include_recipient' && record.effect.entityId === before.id ? { ...record.effect, entityId: targetRecord.id } : record.effect };
+        else if (record.kind === 'reference' && record.targetRecordId === before.id) {
+          if (record.versionPolicy === 'pinned') throw new OntologyError('invalid_reference', 'pinned identity references must be reviewed before merge', { recordId: record.id });
+          redirected = { ...record, targetRecordId: targetRecord.id };
+        }
+        if (JSON.stringify(redirected) !== JSON.stringify(record)) redirects.push({ before: structuredClone(record), after: redirected });
+      }
+      if (redirects.length + 2 > 100 || doc.history.length + redirects.length + 2 > 100000)
+        throw new OntologyError('capacity_exceeded', 'merge impact exceeds the safe operation limit');
+      save({ ...targetRecord, aliases: [...new Set([...targetRecord.aliases, ...before.aliases, before.name])].filter(name => name !== targetRecord.name),
+        source, version: targetRecord.version + 1, updatedAt: recordedAt }, 'merge_target', targetRecord);
+      for (const redirect of redirects) save({ ...redirect.after, source, version: redirect.before.version + 1, updatedAt: recordedAt }, 'merge_redirect', redirect.before);
+      save({ ...before, status: 'archived', source, version: before.version + 1, updatedAt: recordedAt }, 'merge_source', before);
+    } else if (action.intent === 'undo_merge') {
+      const entries = doc.history.filter(row => row.commandId === action.mergeCommandId && row.intent.startsWith('merge_'));
+      if (!entries.some(row => row.intent === 'merge_source' && row.after.id === before.id)
+        || entries.some(row => !row.before) || before.status !== 'archived')
+        throw new OntologyError('invalid_intent', 'no reversible identity merge for this record');
+      if (entries.length > 100 || doc.history.length + entries.length > 100000) throw new OntologyError('capacity_exceeded', 'merge recovery exceeds history capacity');
+      for (const entry of entries) {
+        const latest = requireRecord(doc, entry.after.id);
+        if (latest.version !== entry.after.version || JSON.stringify(latest) !== JSON.stringify(entry.after))
+          throw new OntologyError('baseline_changed', 'merge impact changed; automatic recovery refused', { recordId: latest.id });
+      }
+      for (const entry of entries) save({ ...entry.before, source, version: entry.after.version + 1, updatedAt: recordedAt }, 'undo_merge', entry.after);
+    } else if (action.intent === 'update') {
       if (before.kind === 'assertion') throw new OntologyError('invalid_intent', 'facts require change or correction, not overwrite');
       if (['id', 'kind', 'moduleId', 'version', 'createdAt', 'updatedAt', 'source'].some(key => Object.hasOwn(action.patch, key)))
         throw new OntologyError('invalid_input', 'record identity cannot be patched');
       if (action.patch.status === 'corrected') throw new OntologyError('invalid_intent', 'corrected status requires a correction command');
       save({ ...before, ...action.patch, source, version: before.version + 1, updatedAt: recordedAt }, action.intent, before);
-    } else if (action.intent === 'archive') {
+    } else if (action.intent === 'restore') {
+      if (before.status !== 'archived') throw new OntologyError('invalid_intent', 'only archived records can be restored; corrections retain their history');
+      if ([...doc.history].reverse().find(row => row.after.id === before.id)?.intent === 'merge_source')
+        throw new OntologyError('invalid_intent', 'merged identities require undo_merge to restore their references');
+      save({ ...before, status: 'active', source, version: before.version + 1, updatedAt: recordedAt }, action.intent, before);
+    } else if (action.intent === 'archive' || action.intent === 'delete') {
       save({ ...before, status: 'archived', source, version: before.version + 1, updatedAt: recordedAt }, action.intent, before);
     } else {
       if (before.kind !== 'assertion' || before.status !== 'active') throw new OntologyError('invalid_intent', 'only active facts can change or be corrected');
@@ -251,6 +328,7 @@ export function applyOntologyCommand(current: OntologyDocument, input: unknown, 
   // Definition/reference edits must not invalidate any already saved active content.
   if ([...changed].some(id => ['definition', 'reference', 'entity', 'module'].includes(doc.records[id].kind))) {
     for (const record of Object.values(doc.records)) if (record.status === 'active'
+      && (record.kind === 'module' || doc.records[record.moduleId]?.status === 'active')
       && ['entity', 'assertion', 'rule'].includes(record.kind)) assertRecordSemantics(doc, record);
   }
   doc.revision++;

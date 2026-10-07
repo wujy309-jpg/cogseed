@@ -1259,8 +1259,8 @@ function _aiSelectMount(el, config) {
     }
   };
 
-  // Portal the popover to <body> while open so an ancestor with
-  // `overflow: auto / hidden` (modals, settings panes) can't clip it.
+  // Portal fixed-position popovers out of the widget to avoid scroll clipping.
+  // A modal owns its listbox; other pages use <body>.
   // We set `position: fixed` + viewport coords from the trigger's
   // bounding rect; on scroll/resize we re-measure. This replaces the
   // earlier "popover lives inside .ai-select" layout — the markup
@@ -1291,7 +1291,9 @@ function _aiSelectMount(el, config) {
     popover.hidden = false;
     portalParent = popover.parentNode;
     portalNextSibling = popover.nextSibling;
-    document.body.appendChild(popover);
+    // aria-modal hides sibling portals from assistive technology. Keep a modal's
+    // fixed-position listbox inside its dialog while retaining body portals elsewhere.
+    (el.closest('[role="dialog"]') || document.body).appendChild(popover);
     const visibleOptions = _aiSelectFilterOptions(state.options, state.query);
     const selectedIndex = visibleOptions.findIndex(o => o.value === state.value);
     state.activeIdx = visibleOptions.length ? Math.max(0, selectedIndex) : -1;

@@ -195,7 +195,7 @@ describe('2026-08-17 修复集场景（边界单路径 + 回执并集 + 语言�
       sourceRefs: [{ kind: 'execution', id: 'exec-c1' }],
       evidenceRefs: [{ kind: 'execution', id: 'exec-c1' }],
     });
-    const p1 = await candidates.autoApplyRecallCandidate(UID, c1.id, { provenance: 'kstar' });
+    const p1 = await candidates.promoteRecallCandidate(UID, c1.id, { actor: 'user', provenance: 'kstar' });
     const c2 = await candidates.saveRecallCandidate(UID, {
       judgment: '资产二：另一个回合注入的第二条经验。',
       value: '资产二：另一个回合注入的第二条经验。',
@@ -207,7 +207,7 @@ describe('2026-08-17 修复集场景（边界单路径 + 回执并集 + 语言�
       sourceRefs: [{ kind: 'execution', id: 'exec-c2' }],
       evidenceRefs: [{ kind: 'execution', id: 'exec-c2' }],
     });
-    const p2 = await candidates.autoApplyRecallCandidate(UID, c2.id, { provenance: 'kstar' });
+    const p2 = await candidates.promoteRecallCandidate(UID, c2.id, { actor: 'user', provenance: 'kstar' });
     expect(p1.asset).toBeTruthy();
     expect(p2.asset).toBeTruthy();
 
@@ -322,7 +322,7 @@ describe('2026-08-17 修复集场景（边界单路径 + 回执并集 + 语言�
       sourceRefs: [{ kind: 'execution', id: 'exec-e1' }],
       evidenceRefs: [{ kind: 'execution', id: 'exec-e1' }],
     });
-    const p1 = await candidates.autoApplyRecallCandidate(UID, c1.id, { provenance: 'kstar' });
+    const p1 = await candidates.promoteRecallCandidate(UID, c1.id, { actor: 'user', provenance: 'kstar' });
     expect(p1.asset).toBeTruthy();
 
     const projection = await import('../../../../src/main/features/recall/context-projection');

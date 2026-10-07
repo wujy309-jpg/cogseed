@@ -97,8 +97,8 @@ async function createTransferValidatedAsset(): Promise<Awaited<ReturnType<(typeo
     sourceRefs: [{ kind: 'execution', id: 'exec-kstar-closure-candidate' }],
     evidenceRefs: [{ kind: 'execution', id: 'exec-kstar-closure-candidate' }],
   });
-  const promoted = await candidates.autoApplyRecallCandidate(USER_ID, candidate.id, { provenance: 'kstar' });
-  expect(semanticReviewMock.reviewCandidateSemantically).toHaveBeenCalledTimes(1);
+  const promoted = await candidates.promoteRecallCandidate(USER_ID, candidate.id, { actor: 'user', provenance: 'kstar' });
+  expect(semanticReviewMock.reviewCandidateSemantically).not.toHaveBeenCalled();
   if (!promoted.asset) throw new Error('KSTAR scenario asset was not promoted');
   const asset = await assets.setAbilityAssetMaturity(USER_ID, promoted.asset.id, 'transfer_validated');
   await refs.addWorkspaceAssetReference(USER_ID, {

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { applyOntologyCommand, resolveOntologyRecordForModule, type OntologyCommand } from '../../../src/main/features/cognition/ontology/commands';
 import { emptyOntologyDocument, type OntologyDocument, type OntologyAssertion, type OntologyRecord } from '../../../src/main/features/cognition/ontology/model';
-import { queryOntologyFacts, queryOntologyRules } from '../../../src/main/features/cognition/ontology/query';
+import { queryOntologyFacts, queryOntologyRules, ontologyRecordsKnownAt } from '../../../src/main/features/cognition/ontology/query';
 
 vi.mock('../../../src/main/features/recall/store-events', () => ({ notifyCognitionWrite: vi.fn() }));
 vi.mock('../../../src/main/logger', () => ({ createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) }));
@@ -37,6 +37,93 @@ function mutation(intent: 'change' | 'correct') {
     object: { kind: 'entity', id: 'zhang-b' }, ...(intent === 'change' ? { effectiveFrom: '2026-10-01' } : {}), sourceLabel: '用户说明' }] };
 }
 describe('本体领域的真实行为', () => {
+  const mergeCommand = (doc: OntologyDocument): OntologyCommand => ({ commandId: 'merge-identities', expectedRevision: doc.revision,
+    actions: [{ intent: 'merge', recordId: 'zhang-a', expectedVersion: doc.records['zhang-a'].version,
+      targetId: 'zhang-b', expectedTargetVersion: doc.records['zhang-b'].version, sourceLabel: '用户核对唯一人员编号，确认为同一人' }] });
+  it('显式合并重定向当前事实、规则和引用，保留双方身份和历史版本', () => {
+    let doc = seed();
+    doc = applyOntologyCommand(doc, { commandId: 'merge-dependencies', expectedRevision: doc.revision, actions: [
+      create('specific-ref', { kind: 'reference', moduleId: 'projects', targetModuleId: 'people', targetRecordId: 'zhang-a', versionPolicy: 'current' }),
+      create('merge-rule', { kind: 'rule', moduleId: 'projects', name: '必须通知此人', requirement: '通知此人', strength: 'required',
+        condition: { kind: 'all', conditions: [{ kind: 'task', field: 'entityId', equals: 'zhang-a' },
+          { kind: 'assertion', subjectId: 'zhang-a', definitionId: 'department-def' }] },
+        effect: { kind: 'include_recipient', entityId: 'zhang-a' }, exception: '' }),
+    ] }, t2).document;
+    const merged = applyOntologyCommand(doc, mergeCommand(doc), t2).document;
+    expect(merged.records['zhang-a'].status).toBe('archived');
+    expect(fact(merged, 'owner').object).toEqual({ kind: 'entity', id: 'zhang-b' });
+    expect(fact(merged, 'department').subjectId).toBe('zhang-b');
+    expect(merged.records['specific-ref']).toMatchObject({ targetRecordId: 'zhang-b', version: 2 });
+    expect(merged.records['merge-rule']).toMatchObject({ effect: { entityId: 'zhang-b' }, condition: { conditions: [
+      { kind: 'task', equals: 'zhang-b' }, { kind: 'assertion', subjectId: 'zhang-b' } ] } });
+    expect((ontologyRecordsKnownAt(merged, undefined, doc.revision).owner as OntologyAssertion).object).toEqual({ kind: 'entity', id: 'zhang-a' });
+    expect(queryOntologyFacts(merged, { moduleId: 'projects', definitionId: 'owner-def', at: '2026-10-05', knownRevision: doc.revision }).matched).toEqual([]);
+    expect(doc.records['zhang-a'].status).toBe('active');
+  });
+  it('撤销合并逐项升版恢复原身份和引用，旧合并历史继续保留', () => {
+    const doc = seed();
+    const result = applyOntologyCommand(doc, mergeCommand(doc), t2);
+    const recovered = applyOntologyCommand(result.document, { commandId: 'undo-identity', expectedRevision: result.document.revision, actions: [
+      { intent: 'undo_merge', recordId: 'zhang-a', expectedVersion: 2, mergeCommandId: 'merge-identities', sourceLabel: '用户确认撤销身份合并' },
+    ] }, t2).document;
+    expect(recovered.records['zhang-a']).toMatchObject({ status: 'active', version: 3 });
+    expect(fact(recovered, 'owner')).toMatchObject({ object: { id: 'zhang-a' }, version: 3 });
+    expect(recovered.history.some(entry => entry.intent === 'merge_source')).toBe(true);
+    expect(recovered.history.some(entry => entry.intent === 'undo_merge')).toBe(true);
+    expect(() => applyOntologyCommand(result.document, { commandId: 'wrong-restore', expectedRevision: result.document.revision,
+      actions: [{ intent: 'restore', recordId: 'zhang-a', expectedVersion: 2, sourceLabel: '用户确认' }] }, t2)).toThrow(/undo_merge/);
+  });
+  it('合并后任一受影响记录被修改，撤销拒绝覆盖后续版本', () => {
+    const original = seed();
+    const merged = applyOntologyCommand(original, mergeCommand(original), t2).document;
+    const changed = applyOntologyCommand(merged, { commandId: 'post-merge-edit', expectedRevision: merged.revision, actions: [
+      { intent: 'update', recordId: 'zhang-b', expectedVersion: 2, patch: { description: '后续已核对的新资料' }, sourceLabel: '用户确认' },
+    ] }, t2).document;
+    expect(() => applyOntologyCommand(changed, { commandId: 'unsafe-undo', expectedRevision: changed.revision, actions: [
+      { intent: 'undo_merge', recordId: 'zhang-a', expectedVersion: 2, mergeCommandId: 'merge-identities', sourceLabel: '用户确认' },
+    ] }, t2)).toThrow(/impact changed/);
+    expect(changed.records['zhang-b']).toMatchObject({ description: '后续已核对的新资料', version: 3 });
+  });
+  it('固定版本身份引用阻止合并；不会偷偷改写历史依据', () => {
+    const initial = seed();
+    const pinned = applyOntologyCommand(initial, { commandId: 'merge-pinned', expectedRevision: initial.revision, actions: [
+      create('pin-source', { kind: 'reference', moduleId: 'projects', targetModuleId: 'people', targetRecordId: 'zhang-a', versionPolicy: 'pinned', targetVersion: 1 }),
+    ] }, t2).document;
+    expect(() => applyOntologyCommand(pinned, mergeCommand(pinned), t2)).toThrow(/pinned identity references/);
+    expect(pinned.records['zhang-a'].status).toBe('active');
+  });
+  it('合并形成单值冲突时整批拒绝，不覆盖任何对象', () => {
+    const initial = seed();
+    const conflicting = applyOntologyCommand(initial, { commandId: 'merge-conflict', expectedRevision: initial.revision, actions: [
+      create('other-department', { kind: 'assertion', moduleId: 'people', subjectId: 'zhang-b', definitionId: 'department-def',
+        object: { kind: 'literal', valueType: 'text', value: '销售部' }, validity }),
+    ] }, t2).document;
+    expect(() => applyOntologyCommand(conflicting, mergeCommand(conflicting), t2)).toThrow(/overlapping facts/);
+    expect(conflicting.records['zhang-a'].status).toBe('active');
+    expect(fact(conflicting, 'department').subjectId).toBe('zhang-a');
+  });
+  it('合并要求确切双版本、身份依据及相同本体类型权限', () => {
+    const doc = seed();
+    const command = mergeCommand(doc);
+    expect(() => applyOntologyCommand(doc, { ...command, actions: [{ ...command.actions[0], expectedTargetVersion: 2 }] }, t2)).toThrow(/target version changed/);
+    expect(() => applyOntologyCommand(doc, { ...command, actions: [{ ...command.actions[0], sourceLabel: '同名' }] }, t2)).toThrow(/identity evidence/);
+    expect(() => applyOntologyCommand(doc, { ...command, actions: [{ ...command.actions[0], targetId: 'project' }] }, t2)).toThrow(/same module/);
+  });
+  it('删除保留版本与来源，恢复重新校验；有有效依赖的身份不能直接删除', () => {
+    const doc = seed();
+    expect(() => applyOntologyCommand(doc, { commandId: 'delete-used-person', expectedRevision: doc.revision, actions: [
+      { intent: 'delete', recordId: 'zhang-a', expectedVersion: 1, sourceLabel: '用户明确删除' },
+    ] }, t2)).toThrow(/not available/);
+    const deleted = applyOntologyCommand(doc, { commandId: 'delete-unused-person', expectedRevision: doc.revision, actions: [
+      { intent: 'delete', recordId: 'zhang-b', expectedVersion: 1, sourceLabel: '用户明确删除' },
+    ] }, t2).document;
+    expect(deleted.records['zhang-b']).toMatchObject({ status: 'archived', version: 2 });
+    expect(deleted.history.at(-1)).toMatchObject({ intent: 'delete', before: { status: 'active', version: 1 } });
+    const restored = applyOntologyCommand(deleted, { commandId: 'restore-deleted-person', expectedRevision: deleted.revision, actions: [
+      { intent: 'restore', recordId: 'zhang-b', expectedVersion: 2, sourceLabel: '用户确认恢复' },
+    ] }, t2).document;
+    expect(restored.records['zhang-b']).toMatchObject({ status: 'active', version: 3 });
+  });
   it('同名人物保留不同身份，项目明确引用共同人物', () => {
     const doc = seed();
     expect(doc.records['zhang-a'].id).not.toBe(doc.records['zhang-b'].id);
@@ -204,5 +291,19 @@ describe('旧内容只读兼容', () => {
     expect(fs.existsSync(store.cognitionStorePath(uid))).toBe(false);
     expect(fs.readFileSync(graphPath, 'utf8')).toBe(graphBytes);
     expect(fs.readFileSync(poPath, 'utf8')).toBe(poBytes);
+  });
+});
+
+
+describe('停用恢复仍走语义校验', () => {
+  it('恢复停用事实产生新版本，并在当前单值冲突时拒绝整批提交', () => {
+    const initial = seed();
+    const archived = applyOntologyCommand(initial, { commandId: 'archive-fact', expectedRevision: initial.revision, actions: [{ intent: 'archive', recordId: 'owner', expectedVersion: 1, sourceLabel: '验收停用' }] }, t2).document;
+    const restored = applyOntologyCommand(archived, { commandId: 'restore-fact', expectedRevision: archived.revision, actions: [{ intent: 'restore', recordId: 'owner', expectedVersion: 2, sourceLabel: '验收恢复' }] }, t2).document;
+    expect(restored.records.owner).toMatchObject({ status: 'active', version: 3 });
+    expect(restored.history.at(-1)?.intent).toBe('restore');
+    const replacement = applyOntologyCommand(archived, { commandId: 'replacement-fact', expectedRevision: archived.revision, actions: [create('other-owner', { kind: 'assertion', moduleId: 'projects', subjectId: 'project', definitionId: 'owner-def', object: { kind: 'entity', id: 'zhang-b' }, validity })] }, t2).document;
+    expect(() => applyOntologyCommand(replacement, { commandId: 'restore-conflict', expectedRevision: replacement.revision, actions: [{ intent: 'restore', recordId: 'owner', expectedVersion: 2, sourceLabel: '恢复' }] }, t2)).toThrow();
+    expect(replacement.records.owner.status).toBe('archived');
   });
 });

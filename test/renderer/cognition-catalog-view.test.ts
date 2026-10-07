@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
-import { renderCognition } from './helpers/cognition-renderer';
+import { describe, expect, it, vi } from 'vitest';
+import { renderCognition, loadCognitionAssets } from './helpers/cognition-renderer';
 
 /* 计量词条（2026-09-28 词表统一）文本随 locale 同步更新——按 zh.json 派生，
  * 断言钉「用了哪个键 + 数字」，词条改文前后都成立。 */
@@ -31,6 +31,70 @@ const asset = {
 };
 
 describe('资产目录视图', () => {
+  it('后台刷新和切页保留可交互页签节点，角标变化不替换整排导航', () => {
+    const loaded = loadCognitionAssets({}, { name: 'overview' });
+    const items = new Map(['tree', 'overview', 'ontology', 'review', 'activity', 'settings'].map(id => [id, { innerHTML: '', classList: { toggle: vi.fn() } }]));
+    const replaceNav = vi.fn();
+    const nav = {
+      querySelector: (selector: string) => items.get(selector.match(/data-id="([^"]+)"/)?.[1] || ''),
+      set innerHTML(value: string) { replaceNav(value); },
+    };
+    const root = loaded.context.document.getElementById('ca-root');
+    loaded.context.document.getElementById = (id: string) => (({ 'ca-root': root, 'ca-tabs-nav': nav, 'ca-banner-slot': { innerHTML: '' }, 'ca-scroll': { innerHTML: '', querySelector: () => null } } as Record<string, unknown>)[id] || null);
+    loaded.render();
+    loaded.store.route.name = 'ontology';
+    const previousStats = loaded.ns.stats;
+    loaded.ns.stats = () => ({ ...previousStats(), pending: 1 });
+    loaded.ns.mountPersonalOntology = vi.fn();
+    loaded.render();
+    expect(replaceNav).not.toHaveBeenCalled();
+    expect(items.get('ontology')!.classList.toggle).toHaveBeenLastCalledWith('is-on', true);
+    expect(items.get('overview')!.classList.toggle).toHaveBeenLastCalledWith('is-on', false);
+    expect(items.get('review')!.innerHTML).toContain('bdg');
+  });
+
+  it('后台刷新保留同一本体路由挂载和图谱状态，显式切换模块重新挂载', () => {
+    const loaded = loadCognitionAssets({ prevRouteName: 'ontology', ontologyMountRouteKey: JSON.stringify(['module-a', '', '', '']) }, { name: 'ontology', moduleId: 'module-a' });
+    const main = { innerHTML: 'existing graph and form', querySelector: () => null };
+    const mount = { querySelector: () => ({}) };
+    const root = loaded.context.document.getElementById('ca-root');
+    loaded.context.document.getElementById = (id: string) => (({ 'ca-root': root, 'ca-tabs-nav': { innerHTML: '' }, 'ca-banner-slot': { innerHTML: '' }, 'ca-scroll': main, 'ca-ontology-mount': mount } as Record<string, unknown>)[id] || null);
+    const mountSpy = vi.fn();
+    loaded.ns.mountPersonalOntology = mountSpy;
+    loaded.render();
+    expect(main.innerHTML).toBe('existing graph and form');
+    expect(mountSpy).not.toHaveBeenCalled();
+    loaded.store.route.moduleId = 'module-b';
+    loaded.render();
+    expect(main.innerHTML).toContain('ca-ontology-mount');
+    expect(mountSpy).toHaveBeenCalledWith(expect.objectContaining({ moduleId: 'module-b' }));
+  });
+
+  it('我的认知展示同一权威本体目录，入口带确切模块身份而不复制正文编辑器', () => {
+    const html = renderCognition({ name: 'overview' }, { ontologySnapshot: { records: {
+      'module-a': { id: 'module-a', kind: 'module', name: '项目甲本体', description: '真实主档目录', status: 'active', version: 7, source: { label: '用户确认' } },
+      'module-b': { id: 'module-b', kind: 'module', name: '暂停模块不得默认出现', status: 'paused', version: 2, source: { label: '用户确认' } },
+    }, history: [] } });
+    expect(html).toContain('项目甲本体');
+    expect(html).toContain('data-module-id="module-a"');
+    expect(html).toContain('v7');
+    expect(html).not.toContain('暂停模块不得默认出现');
+  });
+  it('系统活动的保存记录打开精确历史版本，不把保存当作任务采用', () => {
+    const html = renderCognition({ name: 'activity' }, { ontologySnapshot: { records: {}, history: [{ recordedAt: '2026-10-07T00:00:00Z', intent: 'correct', after: {
+      id: 'entity-a', kind: 'entity', moduleId: 'module-a', name: '历史人物', version: 3, source: { label: '原始依据' },
+    } }] } });
+    expect(html).toContain('历史人物');
+    expect(html).toContain('data-record-id="entity-a"');
+    expect(html).toContain('data-record-version="3"');
+    expect(html).toContain('保存不代表任务已采用');
+  });
+  it('本体目录读取失败给出重试入口，不把失败显示成空目录', () => {
+    const html = renderCognition({ name: 'overview' }, { ontologyError: 'cannot read' });
+    expect(html).toContain('本体暂时无法加载');
+    expect(html).toContain('data-act="open-ontology"');
+  });
+
   it('目录视图：一行一条（标题 / 一句话 / 类型·范围·版本·使用次数），并给回列表的入口', () => {
     const html = renderCognition(
       { name: 'overview', assetView: 'catalog' },

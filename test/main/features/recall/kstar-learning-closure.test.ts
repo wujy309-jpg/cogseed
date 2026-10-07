@@ -131,7 +131,12 @@ describe('KSTAR learning evidence', () => {
         evidenceRefs: [{ kind: 'execution_evaluation', id: `evaluation-${taskRunId}` }],
       });
     }
-    await expect(candidates.autoApplyRecallCandidate('user-a', candidate.id, { semanticDedup: false })).rejects.toMatchObject({ code: 'promotion_paused' });
+    const result = await candidates.autoApplyRecallCandidate('user-a', candidate.id, { semanticDedup: false });
+    expect(result.candidate).toMatchObject({ consecutiveFailures: 3 });
+    expect(result.candidate.status).not.toBe('confirmed');
+    expect(result.asset).toBeUndefined();
+    const policy = await import('../../../../src/main/features/recall/promotion-policy');
+    expect(policy.evaluatePromotionPolicy(result.candidate)).toMatchObject({ action: 'pause' });
   });
 
   it('counts independent asset outcomes, advances a seed after two successes, and pauses after repeated failures', async () => {

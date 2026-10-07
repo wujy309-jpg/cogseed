@@ -11,7 +11,7 @@ import {
 } from '../../recall/candidate-service';
 import { commitOntologyCommand, readOntologyDocument } from './service';
 import { OntologyError, type OntologyModule } from './model';
-import { validateOntologyCommand } from './commands';
+import { applyOntologyCommand, validateOntologyCommand } from './commands';
 
 function assertCandidateModuleScope(candidate: Awaited<ReturnType<typeof readRecallCandidate>>, module: OntologyModule): void {
   const policy = candidate.scopePolicy;
@@ -91,6 +91,9 @@ export async function commitCandidateOntologyRecords(userId: string, input: {
     const commandInput = { ...command, commandId };
     let commandReceipt = document.receipts[commandId];
     let duplicate = Boolean(commandReceipt);
+    if (commandReceipt) applyOntologyCommand(document, commandInput, new Date().toISOString(), {
+      kind: 'candidate', recordId: candidate.id, label: candidate.summary.slice(0, 200) || '待处理候选',
+    });
     if (!commandReceipt) {
       const committed = await commitOntologyCommand(userId, commandInput, {
         kind: 'candidate', recordId: candidate.id, label: candidate.summary.slice(0, 200) || '待处理候选',

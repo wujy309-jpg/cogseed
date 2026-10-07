@@ -18,7 +18,7 @@ import * as fs from 'node:fs';
 import { SRC_ROOT } from './paths';
 
 export type Lang = 'zh' | 'en' | 'ja' | 'pt';
-export type UiLang = 'zh' | 'en';
+export type UiLang = Lang;
 
 export interface LocaleMeta {
   code: Lang;
@@ -65,7 +65,7 @@ export const LOCALES: readonly LocaleMeta[] = [
 ] as const;
 
 export const SUPPORTED_LANGS: readonly Lang[] = LOCALES.map((l) => l.code);
-export const UI_LANGS: readonly UiLang[] = ['zh', 'en'] as const;
+export const UI_LANGS: readonly UiLang[] = ['zh', 'en', 'ja', 'pt'] as const;
 const LOCALE_BY_CODE: Readonly<Record<Lang, LocaleMeta>> = LOCALES.reduce((acc, meta) => {
   acc[meta.code] = meta;
   return acc;

@@ -67,3 +67,28 @@ describe('本体图谱输出边界', () => {
       .toThrow(expect.objectContaining({ code: 'not_found' }));
   });
 });
+
+
+describe('图谱尺度与可续读边界', () => {
+  it('按稳定游标继续加载，变化的版本或筛选条件必须重新读取', () => {
+    const doc = graphDocument(340, 340);
+    const input = { moduleId: 'graph-module', at: '2026-10-05', contentScale: 'instances' as const };
+    const first = queryOntologyGraph(doc, input);
+    expect(first.nextCursor).toBeTruthy();
+    const next = queryOntologyGraph(doc, { ...input, cursor: first.nextCursor });
+    expect(next.nodes).toHaveLength(340);
+    expect(next.truncated).toBe(false);
+    expect(() => queryOntologyGraph({ ...doc, revision: doc.revision + 1 }, { ...input, cursor: first.nextCursor })).toThrow(expect.objectContaining({ code: 'baseline_changed' }));
+    expect(() => queryOntologyGraph(doc, { ...input, at: '2026-10-06', cursor: first.nextCursor })).toThrow(expect.objectContaining({ code: 'baseline_changed' }));
+  });
+  it('结构、实例、关系筛选来自同一记录且所有连线都可定位凭证', () => {
+    const doc = graphDocument(8, 8);
+    const schema = queryOntologyGraph(doc, { moduleId: 'graph-module', contentScale: 'schema' });
+    expect(schema.nodes.every(node => node.kind === 'definition')).toBe(true);
+    const instances = queryOntologyGraph(doc, { moduleId: 'graph-module', at: '2026-10-05', contentScale: 'instances', definitionId: 'graph-related-to' });
+    expect(instances.edges).toHaveLength(8);
+    expect(instances.edges.every(edge => edge.version === 1 && edge.source?.kind === 'user' && edge.recordId)).toBe(true);
+    const filtered = queryOntologyGraph(doc, { moduleId: 'graph-module', at: '2026-10-05', contentScale: 'instances', definitionId: 'unmatched-relation' });
+    expect(filtered.edges).toHaveLength(0);
+  });
+});

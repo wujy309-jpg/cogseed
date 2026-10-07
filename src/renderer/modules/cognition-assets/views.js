@@ -357,7 +357,8 @@
    *  引用清单仍在版本数据里，界面上不再逐枚刷灰。 */
   const evidenceGroupsHtml = (refs) => {
     const kstar = refs.filter(isKstarEvidenceRef);
-    const chat = refs.filter((ref) => !isKstarEvidenceRef(ref));
+    const imported = refs.filter(ref => /^ontimport-[a-f0-9]{64}$/.test(ref.id || ''));
+    const chat = refs.filter((ref) => !isKstarEvidenceRef(ref) && !imported.includes(ref));
     const group = (titleKey, title, hintKey, hint, list) => {
       if (!list.length) return '';
       const UNAVAILABLE_TEXT = T('cognition.source_unavailable_label', '来源记录不可用');
@@ -385,6 +386,7 @@
         </div>`;
     };
     return group('cognition.evidence_group_kstar', '任务复盘', 'cognition.evidence_group_kstar_hint', '任务完结后系统复盘学到的', kstar)
+      + group('cognition.evidence_group_import', '导入资料', 'cognition.evidence_group_import_hint', '保留原文的资料与模型整理建议', imported)
       + group('cognition.evidence_group_chat', '对话与你的表态', 'cognition.evidence_group_chat_hint', '日常对话里总结出来的', chat);
   };
 
@@ -2235,6 +2237,23 @@
     </div>`;
   }
 
+  function ontologyDirectorySection(activity = false) {
+    const doc = S.ontologySnapshot;
+    if (S.ontologyError) return `<section>${sectionHead(T('ontologyWorkspace.title', '本体'), '')}<p role="alert">${esc(T('ontologyWorkspace.loadFailed', '本体暂时无法加载'))}</p>${btn(T('ontologyWorkspace.retry', '重试'), 'open-ontology')}</section>`;
+    if (!doc?.records) return '';
+    const modules = Object.values(doc.records).filter(record => record.kind === 'module' && record.status === 'active');
+    const entries = activity ? (doc.history || []).slice(-20).reverse() : modules;
+    if (!entries.length) return '';
+    return `<section>${sectionHead(T(activity ? 'cognition.ontology_changes' : 'cognition.ontology_directory', activity ? '本体保存与版本变更' : '本体目录'), String(entries.length), btn(T('ontologyWorkspace.title', '本体'), 'open-ontology', { small: true, icon: 'git-branch' }))}
+      <p class="note">${esc(T(activity ? 'cognition.ontology_changes_hint' : 'cognition.ontology_directory_hint', activity ? '这里显示最近20条真实保存与纠正，打开记录查看版本、依据和完整历史；保存不代表任务已采用。' : '与本体页读取同一份内容。打开可查看定义、对象、关系、规则、来源和版本。'))}</p>
+      ${entries.map(entry => {
+        const record = activity ? entry.after : entry;
+        const moduleId = record.kind === 'module' ? record.id : record.moduleId;
+        const label = activity ? `${fmtDate(entry.recordedAt)} · ${T('ontologyWorkspace.' + entry.intent, entry.intent)} · ${record.name || record.id}` : record.name;
+        return `<div class="row"><div class="tw">${btn(label, 'open-ontology', { className: 'rnm', data: { 'module-id': moduleId, ...(activity ? { 'record-id': record.id, 'record-version': String(record.version) } : {}) } })}<div class="mm">v${esc(record.version)} · ${esc(record.source?.label || '')}${activity ? '' : ' · ' + esc(record.description || '')}</div></div></div>`;
+      }).join('')}</section>`;
+  }
+
   function viewOverview(route) {
     const stats = NS.stats();
     // 两线不拆列表（2026-09-17 二次定调；2026-09-26 specs/017 整改一收窄）：
@@ -2489,13 +2508,14 @@
         toolButtons,
       )}
       ${catalogView ? `<div class="note list-caption">${esc(T('cognition.catalog_view_hint', '这就是模型挑资产时看的那份目录：一行一条；要看全文点进去。'))}</div>` : ''}
-      ${!catalogView && route.category !== 'deleted' && !manageMode ? `<div class="note list-caption">${esc(T('cognition.overview_sort_note', '按最近使用排在前；类型 / 最近一次 / 被任务用过次数写在每行上。'))}</div>` : ''}
+      ${!catalogView && route.category !== 'deleted' && !manageMode ? `<div class="note list-caption">${esc(T('cognition.overview_sort_note', '按最近带入任务排序；每行显示类型、最近带入时间和次数。带入不等于最终采用、执行或产生效果。'))}</div>` : ''}
       ${route.candCreate === '1' && route.category !== 'deleted' && !catalogView ? manualCandidateForm() : ''}
       ${pillboxHtml}
       ${tagFilterBar(route, filteredByType)}
       ${tagSelectOn ? tagBatchBar(route, filtered) : ''}
       ${listHtml}
       </div>
+      ${!route.category ? ontologyDirectorySection() : ''}
       ${kstarEpisodesSection(route)}`;
   }
 
@@ -3310,7 +3330,6 @@
     const modelReadFailed = Boolean(S.captureModelError);
     const modelNeedsAttention = !modelReadFailed && (!model || !model.configured || model.authorizationRequired);
     const nightlyOn = String(settings.executionPolicy || 'manual') === 'nightly';
-    const reviewAuto = String(settings.reviewPolicy || 'auto') === 'auto';
     const nightlyStart = String(settings.nightlyStart || '02:00');
     const quietMinutes = Number(settings.quietMinutes) > 0 ? Number(settings.quietMinutes) : 10;
     // 自动维护合并卡（2026-09-29 拍板：夜间自动整理+定期检查合为一个开关）：
@@ -3371,21 +3390,10 @@
         </div>
       </div>
       ${nightlyOn ? `<div class="note ca-maint-note">${esc(T('cognition.nightly_capture_quiet_hint', '系统会等会话最后一条消息后静默 {minutes} 分钟，再在夜间时段安排整理；如有新消息，会重新计时。', { minutes: String(quietMinutes) }))}</div>` : ''}
-      <div class="rowline ca-maint-row">
-        <div>
-          <div class="tt">${esc(T('cognition.maint_review_title', '是否自动保存'))}</div>
-          <div class="sub"><b>${esc(T('cognition.maint_review_on_tag', '开'))}</b> · ${esc(T('cognition.maint_review_on_desc', '符合条件的建议直接入库：内容质量达标、能在你的原话里找到依据、模型不拿不准、不涉高风险，同时满足才自动存；其余仍会进「待我处理」问你。'))}</div>
-          <div class="sub"><b>${esc(T('cognition.maint_review_off_tag', '关'))}</b> · ${esc(T('cognition.maint_review_off_desc', '每条先进「待我处理」，由你确认或修改后保存。'))}</div>
-        </div>
-        <div class="right">${window.uiSwitch({
-          // 2026-09-29 子安「调整这个按钮」：二选一模式从分段控件收成一个开关
-          //（开=符合条件时自动保存，关=每条先问我）；data-id 传目标态，与
-          // 资产级开关同一模式。
-          label: T('cognition.maint_review_switch', '符合条件时自动保存'),
-          checked: reviewAuto,
-          attrs: { 'data-act': 'capture-review-toggle', 'data-id': reviewAuto ? 'manual' : 'auto' },
-        })}</div>
-      </div>
+      <div class="rowline ca-maint-row"><div>
+        <div class="tt">${esc(T('cognition.manual_review_required', '自动整理需要逐条确认'))}</div>
+        <div class="sub">${esc(T('cognition.manual_review_required_hint', '自动提取、任务复盘及智能体提出的内容只进入待我处理。只有你逐条确认后，才会保存为长期认知。旧的自动保存设置不会跳过审核。'))}</div>
+      </div></div>
       `;
       })()}
     </div>
@@ -3655,8 +3663,10 @@
        * 整理了会话→产出候选 / 夜间沉淀跑完 / 大扫除 / 后台体检（后两类在
        * 时间流另行并入）；等待与失败类沿用原因白话（vocabulary 唯一出口）。 */
       const nightly = String(capture.executionPolicy || '') === 'nightly';
+      const extractionCompleted = ['review_ready', 'completed', 'no_candidate'].includes(String(capture.status));
       const eventLine = isRunning(capture)
         ? T('cognition.activity_event_running', '正在整理这段会话…')
+        : !extractionCompleted ? ''
         : nightly && pending
           ? T('cognition.activity_event_nightly', '夜间整理完成 → {n} 条待确认建议', { n: String(pending) })
           : nightly
@@ -3773,6 +3783,7 @@
       ? T('cognition.capture_list_collapse', '收起')
       : T('cognition.capture_list_expand', '查看全部 {n} 个会话', { n: String(filtered.length) }), 'toggle-organize-list', { small: true, className: 'o' })}</div>` : ''}
     <div class="note footnote">${esc(T('cognition.capture_bucket_scope_note', '口径说明：按每个会话最近相关的整理任务分组；「需要你看一眼」包括待确认与被暂停的任务；「无需保存」包括纯寒暄与未得到回复的会话。'))}</div>
+    ${!route.captureBucket ? ontologyDirectorySection(true) : ''}
     ${improvementAnalysisSection(route)}`;
   }
 
@@ -4068,7 +4079,7 @@
   let lastRenderKey = '';
   let treeSettlePass = 0;
   function routeKey(route) {
-    return [route.name, route.assetId, route.candidateId, route.moduleId, route.recordId, route.captureId, route.category, route.captureBucket, route.experienceId].join('|');
+    return [route.name, route.assetId, route.candidateId, route.moduleId, route.recordId, route.recordVersion, route.captureId, route.category, route.captureBucket, route.experienceId].join('|');
   }
 
   function render(opts) {
@@ -4113,15 +4124,16 @@
     const layoutClass = layoutView ? ` ca-layout-${layoutView}` : '';
     // 角标口径（2026-10-02）：资产候选 + 本体候选，一个收件箱数得全。
     const pendingCount = Number(NS.stats().pending || 0) + (Array.isArray(S.poCandidates) ? S.poCandidates.length : 0);
+    const tabBodies = new Map();
     const tabsInner = NS.TABS.map((tab) => {
       const active = activeTab === tab.id;
       const extra = tab.id === 'overview' ? ' data-cognition-page-link="assets"' : (tab.id === 'activity' ? ' data-cognition-page-link="captures"' : '');
       // 2026-09-15 子安要求：tab 只留标题，描述小字与 title 悬浮注释删除。
       // 待确认计数走原型 .bdg 角标（原型只在「待我处理」上挂）。
       const badge = tab.id === 'review' && pendingCount ? `<span class="bdg">${pendingCount}</span>` : '';
-      return `<div class="ca-tab${active ? ' is-on' : ''}" data-act="tab" data-id="${tab.id}"${extra} ${roleBtn()}>
-        <strong>${esc(T(tab.titleKey, tab.title))}</strong>${badge}
-      </div>`;
+      const content = `<strong>${esc(T(tab.titleKey, tab.title))}</strong>${badge}`;
+      tabBodies.set(tab.id, content);
+      return `<div class="ca-tab${active ? ' is-on' : ''}" data-act="tab" data-id="${tab.id}"${extra} ${roleBtn()}>${content}</div>`;
     }).join('');
     let body = '';
     if (S.loading && !S.loaded) {
@@ -4138,13 +4150,16 @@
       ? `<div class="ca-banner">${esc(T('cognition.partial_load', '部分数据读取失败，页面已用可用数据渲染。'))}${btn(T('common.retry', '重试'), 'refresh', { small: true })}</div>`
       : '';
     // 离开本体路由时显式卸载本体工作台（清窗口级 i18n 监听与内部状态）；
-    // 本体路由自身重渲染无需先卸载——渲染尾部的 mountPersonalOntology 会在新
-    // mount 点重新挂载收口，旧节点上的监听随 innerHTML 一并销毁。
+    // 同一路由的后台重绘保留工作台节点与当前交互状态；显式深链变化才重新挂载。
     const enteringOntology = route.name === 'ontology' && S.prevRouteName !== 'ontology';
     if (S.prevRouteName === 'ontology' && route.name !== 'ontology'
       && typeof NS.unmountPersonalOntology === 'function') {
       NS.unmountPersonalOntology();
     }
+    const ontologyRouteKey = JSON.stringify([route.moduleId || '', route.recordId || '', route.recordVersion || '', route.candidateId || '']);
+    const preserveOntologyMount = route.name === 'ontology' && !enteringOntology && !options.rebuild
+      && S.ontologyMountRouteKey === ontologyRouteKey && !!document.getElementById('ca-ontology-mount')?.querySelector?.('.ontology-workspace');
+    S.ontologyMountRouteKey = route.name === 'ontology' ? ontologyRouteKey : null;
     S.prevRouteName = route.name;
     // 持久页面壳（2026-09-21 认知页签迁移）：ca-app 结构只建一次，此后每次
     // 渲染只更新页签态、横幅与内容区——壳不重建，事件委托与 tab 焦点稳定，
@@ -4187,7 +4202,16 @@
         </div>`;
       lastTagOverlaySlotHtml = tagOverlaySlotHtml;
     } else {
-      tabsNav.innerHTML = tabsInner;
+      // 后台首载/刷新到达时保留正在被点击或键盘聚焦的页签节点。
+      // 只更新选中状态与有变化的标题/计数，避免替换节点吞掉切页操作。
+      if (typeof tabsNav.querySelector === 'function') {
+        for (const tab of NS.TABS) {
+          const item = tabsNav.querySelector(`[data-act="tab"][data-id="${tab.id}"]`);
+          if (!item) { tabsNav.innerHTML = tabsInner; break; }
+          item.classList.toggle('is-on', activeTab === tab.id);
+          if (item.innerHTML !== tabBodies.get(tab.id)) item.innerHTML = tabBodies.get(tab.id);
+        }
+      } else tabsNav.innerHTML = tabsInner;
       bannerSlot.innerHTML = errorBanner;
       // 测试沙箱的 getElementById 返回裸对象（只有 innerHTML，没有 classList）：
       // 取不到就跳过切类，与上面的「退回整串写入」同一条守则。
@@ -4197,7 +4221,7 @@
           main.classList.toggle(`ca-layout-${layout}`, layoutView === layout);
         });
       }
-      main.innerHTML = body;
+      if (!preserveOntologyMount) main.innerHTML = body;
       // 弹层只在内容变化时重写（对照模块级记录串，见文件头注释），保住打开中的
       // overlay 节点与焦点。slot !== root 是测试沙箱防呆：简化夹具的
       // getElementById 对任何 id 都返回根节点，真机槽位是根的子孙、永不相等——
@@ -4249,11 +4273,13 @@
     }
     // 进入本体路由：mount 点已在 body 里，交给 core 的挂载编排（加载特性组、
     // 移 section、渲染本体）。异步执行，不阻塞本轮渲染。
-    if (route.name === 'ontology' && typeof NS.mountPersonalOntology === 'function') {
-      void NS.mountPersonalOntology({ resetToOverview: enteringOntology,
+    if (preserveOntologyMount && typeof window.syncCognitionOntology === 'function' && S.ontologySnapshot) window.syncCognitionOntology(S.ontologySnapshot);
+    if (route.name === 'ontology' && !preserveOntologyMount && typeof NS.mountPersonalOntology === 'function') {
+      void NS.mountPersonalOntology({ resetToOverview: enteringOntology && !route.candidateId && !route.moduleId && !route.recordId,
         ...(route.candidateId ? { candidateId: String(route.candidateId) } : {}),
         ...(route.moduleId ? { moduleId: String(route.moduleId) } : {}),
         ...(route.recordId ? { recordId: String(route.recordId) } : {}),
+        ...(route.recordVersion ? { recordVersion: Number(route.recordVersion) } : {}),
       });
     }
     // 标签弹层接线（specs/012 T012/T013）：DOM 刚写完，就地过 uiModalController

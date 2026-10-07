@@ -282,7 +282,7 @@ describe('系统活动与认知设置', () => {
     expect(off).toContain('资产设置');
     // 合并卡标题：自动维护（夜间整理对话 + 定期检查资产库一个开关）。
     expect(off).toContain('自动维护');
-    expect(off).toContain('由你确认或修改后保存');
+    expect(off).toContain('自动整理需要逐条确认');
     // 2026-09-29 完全合并：「立即维护」手动行已删——夜间线（巡检轮后）自动
     // 跑清理，UI 只剩开关；手动清理入口随行撤下。
     expect(off).not.toContain('data-act="run-maintenance"');
@@ -301,7 +301,9 @@ describe('系统活动与认知设置', () => {
     // 「整理功能」总开关卡已撤（specs/017 整改三）：capture-toggle 退役，
     // 候选确认方式保留。
     expect(on).not.toContain('data-act="capture-toggle"');
-    expect(on).toContain('data-act="capture-review-toggle"');
+    expect(on).not.toContain('data-act="capture-review-toggle"');
+    expect(on).toContain('自动整理需要逐条确认');
+    expect(on).toContain('旧的自动保存设置不会跳过审核。');
     // 2026-09-29 完全合并：手动行撤下；「查看整理报告」并入自动维护行。
     expect(on).not.toContain('立即维护');
     expect(on).not.toContain('data-act="run-maintenance"');
@@ -593,6 +595,17 @@ describe('系统活动与认知设置', () => {
     expect(deciding).toContain('件事等你拍板');
     expect(deciding).toMatch(/data-act="review-jump" data-id="ca-review-decide"/);
     expect(deciding).toContain('id="ca-review-decide"');
+  });
+
+  it('夜间等待、暂停和失败记录不得显示已经整理完成', () => {
+    for (const status of ['waiting_manual', 'waiting_quiet', 'scheduled', 'paused', 'failed', 'configuration_required']) {
+      const html = renderPage('activity', { ...baseStore, captures: [{
+        id: 'rcap-waiting', conversationId: 'conv-1', conversationTitle: '等待中的验收任务',
+        status, displayStatus: 'waiting', displayReason: 'manual_policy', bucket: 'attention',
+        executionPolicy: 'nightly', actions: [], reviewSummary: { pending: 0, total: 0 },
+      }] });
+      expect(html).not.toContain('夜间整理完成');
+    }
   });
 
   it('系统活动时间流：夜间整理结果、大扫除与体检事件并入，分桶筛选激活时事件不出现', () => {

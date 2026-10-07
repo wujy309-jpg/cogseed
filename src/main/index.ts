@@ -1920,6 +1920,9 @@ if (!gotLock) {
     // 正常情况下空转；逐条容错不拦启动。
     registerDeferred('cognition:compatibility-recovery', async () => {
       const { recoverCognitionProjection } = await import('./features/cognition_bridge');
+      const { applyCognitionDeltas } = await import('./features/cognition_kernel/store');
+      const journal = await applyCognitionDeltas(users.getActiveUserId(), []);
+      if (!journal.ok || journal.pendingHistory) log.warn('cognition journal recovery incomplete', { error: journal.error || 'history projection pending' });
       await recoverCognitionProjection(users.getActiveUserId());
       const { recoverAbilityAssetVersionJournals } = await import('./features/recall/asset-service');
       await recoverAbilityAssetVersionJournals(users.getActiveUserId());

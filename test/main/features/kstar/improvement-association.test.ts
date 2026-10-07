@@ -413,7 +413,9 @@ describe('US-701 关联与依据链（T017）', () => {
       targetAssetId,
       targetVersionUsed: '1',
     });
-    // 放行且带版本 → 统一晋升出口按既有语义融合生效（不是本次改动引入的行为）。
+    // 采用证据可以准入候选，但发布仍需用户逐条确认。
+    expect((await assets.readAbilityAsset(USER, targetAssetId)).version).toBe('1');
+    await candidates.promoteRecallCandidate(USER, result.candidateIds[0], { actor: 'user' });
     expect((await assets.readAbilityAsset(USER, targetAssetId)).version).toBe('2');
     expect(await outcome.readKstarImprovementOutcome(USER, EPISODE)).toBeNull();
   });

@@ -15,6 +15,9 @@
  */
 
 import * as fs from 'node:fs';
+import { createHash } from 'node:crypto';
+import { applyOntologyCommand, type OntologyCommandOutcome, type OntologyCommandSourceOverride } from '../cognition/ontology/commands';
+import { emptyOntologyDocument, OntologyError } from '../cognition/ontology/model';
 import * as path from 'node:path';
 import { fileEditLock } from '../../util/locks';
 import { corruptRecordFor, readTextGuarded, reportCorruptFile } from '../../util/corrupt-guard';
@@ -46,7 +49,6 @@ export const COGNITION_STORE_CORRUPT_DOMAIN = 'cognition-store';
 const VERSIONS_DIR = 'cognition-versions';
 const AUDIT_FILE = 'cognition-audit.jsonl';
 const AUDIT_SUMMARY_MAX_CHARS = 200;
-const VERSION_LINE_MAX = 5000;
 
 export function cognitionStorePath(uid: string): string {
   return path.join(userCognitionDir(uid), 'cognition-store.json');
@@ -107,10 +109,18 @@ function isDeltaFailure(r: DeltaApplyResult): r is Extract<DeltaApplyResult, { a
   return r.applied === false && r.duplicate !== true;
 }
 
+function deltaFingerprint(delta: CognitionDelta): string {
+  const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical)
+    : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, canonical(v)])) : value;
+  return createHash('sha256').update(JSON.stringify(canonical(delta))).digest('hex');
+}
+
 function rememberAppliedDelta(doc: CognitionStoreDocument, delta: CognitionDelta): void {
   // 幂等口径=按 deltaId 精确重放去重（双提交/崩溃重试）；槽位键（idempotencyKey）
   // 是候选池「同槽只留最新提议」的语义，不用于存储侧——同一对象的后续变更
   // 是新 Delta，必须放行（2026-10-02 修正：首版误用槽位键导致 set→set 升版被吞）。
+  doc.deltaReceipts ??= {};
+  doc.deltaReceipts[delta.deltaId] = deltaFingerprint(delta);
   doc.appliedDeltas[delta.deltaId] = true;
   doc.appliedOrder.push(delta.deltaId);
   while (doc.appliedOrder.length > APPLIED_DELTA_INDEX_MAX) {
@@ -152,6 +162,10 @@ function newObject(
  *（proposed 属候选池，不进本库）。
  */
 export function applyCognitionDelta(doc: CognitionStoreDocument, delta: CognitionDelta): DeltaApplyResult {
+  return applyCognitionDeltaAtReceiptCount(doc, delta, Object.keys(doc.deltaReceipts ?? {}).length);
+}
+
+function applyCognitionDeltaAtReceiptCount(doc: CognitionStoreDocument, delta: CognitionDelta, receiptCount: number): DeltaApplyResult {
   const knownHomes = new Set<string>(doc.homes.map((entry) => entry.home));
   const checked = validateDelta(delta, knownHomes);
   if (checked.ok === false) {
@@ -160,9 +174,14 @@ export function applyCognitionDelta(doc: CognitionStoreDocument, delta: Cognitio
   if (delta.status !== 'applied') {
     return { applied: false, reason: `delta status '${delta.status}' not appliable (proposed 属候选池)` };
   }
-  if (doc.appliedDeltas[delta.deltaId]) {
+  if (delta.op !== 'remove' && !delta.evidenceRefs.length) return { applied: false, reason: 'authoritative value requires evidenceRefs' };
+  const receipt = doc.deltaReceipts?.[delta.deltaId];
+  if (receipt && receipt !== deltaFingerprint(delta)) return { applied: false, reason: 'deltaId reused with different content' };
+  if (receipt || doc.appliedDeltas[delta.deltaId]) {
     return { applied: false, reason: 'delta already applied (exact replay)', duplicate: true };
   }
+  // 永久回执不能随热索引淘汰，否则旧请求重放会再次写入。容量满时明确失败。
+  if (receiptCount >= 100000) return { applied: false, reason: 'durable replay receipt capacity exceeded' };
   const objectId0 = delta.target.objectId?.trim() ?? '';
   if (objectId0 && !safeId(objectId0)) {
     return { applied: false, reason: 'invalid objectId' };
@@ -233,6 +252,8 @@ export interface ApplyDeltasOutcome {
   error?: string;
   results: DeltaApplyResult[];
   appliedCount: number;
+  pendingHistory?: boolean;
+  ontology?: Omit<OntologyCommandOutcome, 'document'>;
 }
 
 interface VersionLine {
@@ -247,8 +268,13 @@ interface VersionLine {
 
 function appendJsonl(filePath: string, line: unknown, maxChars: number): void {
   const text = JSON.stringify(line);
-  if (text.length > maxChars) return; // 超长行整体不写（台账/版本流宁可缺行不可坏行）
-  fs.appendFileSync(filePath, text + '\n', 'utf8');
+  if (text.length > maxChars) throw new Error('journal line exceeds capacity');
+  const fd = fs.openSync(filePath, 'a+');
+  try {
+    const size = fs.fstatSync(fd).size;
+    if (size > 0) { const last = Buffer.alloc(1); fs.readSync(fd, last, 0, 1, size - 1); if (last[0] !== 10) fs.writeSync(fd, '\n'); }
+    fs.writeFileSync(fd, text + '\n', 'utf8'); fs.fsyncSync(fd);
+  } finally { fs.closeSync(fd); }
 }
 
 function summary(text: string): string {
@@ -260,80 +286,115 @@ function summary(text: string): string {
  * 唯一写入口：文件锁内 加载→坏档门→逐个纯落地→原子写主档→版本流→台账。
  * 全批原子语义：任何一个 Delta 非法/失败都不落盘（要么全生效，要么全不动）。
  */
-export async function applyCognitionDeltas(uid: string, deltas: readonly CognitionDelta[]): Promise<ApplyDeltasOutcome> {
+type CognitionDocumentBatch = { kind: 'document'; edit: (doc: CognitionStoreDocument) => void | false };
+export type OntologyDeltaBatch = { kind: 'ontology'; command: unknown; sourceOverride?: OntologyCommandSourceOverride };
+
+/** Retry projections under the same store lock. The durable main-file journal is authoritative until drained. */
+function drainJournal(uid: string, doc: CognitionStoreDocument): boolean {
+  const remaining: NonNullable<CognitionStoreDocument['pendingJournal']> = [];
+  const journalKeys = new Map<string, Set<string>>();
+  for (const entry of doc.pendingJournal ?? []) {
+    try {
+      const target = entry.objectId ? versionStreamPath(uid, entry.objectId) : cognitionAuditPath(uid);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      let keys = journalKeys.get(target);
+      if (!keys) {
+        keys = new Set<string>();
+        const prior = fs.existsSync(target) ? fs.readFileSync(target, 'utf8').split('\n') : [];
+        for (const text of prior) { try { const key = JSON.parse(text).journalKey; if (typeof key === 'string') keys.add(key); } catch { /* retain malformed historical lines */ } }
+        journalKeys.set(target, keys);
+      }
+      if (!keys.has(entry.key)) {
+        appendJsonl(target, { ...entry.line, journalKey: entry.key }, 16 * 1024 * 1024);
+        keys.add(entry.key);
+      }
+    } catch (error) {
+      remaining.push(entry);
+      log.warn('cognition journal projection pending', { uid, key: entry.key, error: String(error) });
+    }
+  }
+  doc.pendingJournal = remaining;
+  return remaining.length > 0;
+}
+
+export async function applyCognitionDeltas(uid: string, deltas: readonly CognitionDelta[] | OntologyDeltaBatch | CognitionDocumentBatch): Promise<ApplyDeltasOutcome> {
   if (!safeId(uid)) return { ok: false, error: 'invalid uid', results: [], appliedCount: 0 };
   const filePath = cognitionStorePath(uid);
   return fileEditLock(filePath).runExclusive(async () => {
     const doc = loadCognitionStoreSync(uid);
-    const corrupt = corruptRecordFor(filePath);
-    if (corrupt) {
-      log.warn('cognition store corrupt; write refused', { uid, reason: corrupt.reason });
-      return { ok: false, error: `cognition store corrupt; write refused (${corrupt.reason}); use backup recovery`, results: [], appliedCount: 0 };
-    }
-    // 先在副本上全批落地，全部成功才替换文档（全或无）。
-    const draft: CognitionStoreDocument = JSON.parse(JSON.stringify(doc)) as CognitionStoreDocument;
+    if (corruptRecordFor(filePath)) return { ok: false, error: 'cognition store corrupt; write refused', results: [], appliedCount: 0 };
+    const draft: CognitionStoreDocument = JSON.parse(JSON.stringify(doc));
     const results: DeltaApplyResult[] = [];
-    const touched = new Map<string, CognitionDelta>();
-    for (const delta of deltas) {
-      const result = applyCognitionDelta(draft, delta);
-      results.push(result);
-      if (result.applied) touched.set(result.objectId, delta);
-    }
-    const hardFailure = results.find(isDeltaFailure);
-    if (hardFailure) {
-      return { ok: false, error: hardFailure.reason, results, appliedCount: 0 };
-    }
-    if (touched.size === 0) {
-      return { ok: true, results, appliedCount: 0 };
-    }
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    writeStoreFileSync(filePath, draft);
-    for (const [objectId, delta] of touched) {
-      const object = draft.objects[objectId];
-      if (!object || !safeId(objectId)) continue;
-      try {
-        const streamPath = versionStreamPath(uid, objectId);
-        fs.mkdirSync(path.dirname(streamPath), { recursive: true });
-        const line: VersionLine = {
-          at: object.updatedAt,
-          deltaId: delta.deltaId,
-          op: delta.op,
-          version: object.version,
-          origin: delta.origin,
-          ...(delta.before !== undefined && delta.before !== null ? { before: delta.before } : {}),
-          ...(delta.after !== undefined && delta.after !== null ? { after: delta.after } : {}),
-        };
-        appendJsonl(streamPath, line, VERSION_LINE_MAX);
-      } catch (err) {
-        log.warn('cognition version stream append failed (best effort)', { uid, objectId, error: (err as Error).message });
+    let ontology: ApplyDeltasOutcome['ontology'];
+    let appliedCount = 0;
+    draft.pendingJournal ??= [];
+    if (!Array.isArray(deltas)) {
+      const batch = deltas as OntologyDeltaBatch | CognitionDocumentBatch;
+      if (batch.kind === 'document') {
+        if (batch.edit(draft) === false) return { ok: true, results, appliedCount: 0 };
+        const commitKey = createHash('sha256').update(JSON.stringify([doc, draft])).digest('hex');
+        for (const id of new Set([...Object.keys(doc.objects), ...Object.keys(draft.objects)])) {
+          const before = doc.objects[id], after = draft.objects[id];
+          if (JSON.stringify(before) === JSON.stringify(after)) continue;
+          draft.pendingJournal.push({ key: `document-${commitKey}-${id}`, objectId: id, line: {
+            at: new Date().toISOString(), deltaId: `document-${commitKey}-${id}`, op: after ? before ? 'update' : 'add' : 'remove',
+            version: after?.version ?? (before.version + 1), origin: 'projection', before: before?.statement, after: after?.statement,
+            evidenceRefs: after?.evidenceRefs ?? before?.evidenceRefs ?? [],
+          } });
+        }
+        draft.pendingJournal.push({ key: `document-${commitKey}`, line: { at: new Date().toISOString(), kind: 'compatibility', commitKey } });
+        appliedCount = 1;
+      } else {
+      const current = draft.ontology ?? emptyOntologyDocument(uid);
+      if (current.ownerId !== uid) throw new OntologyError('store_corrupt', 'ontology owner mismatch');
+      const outcome = applyOntologyCommand(current, batch.command, new Date().toISOString(), batch.sourceOverride);
+      if (!outcome.duplicate) {
+        if (Buffer.byteLength(JSON.stringify(outcome.document), 'utf8') > 16 * 1024 * 1024) throw new OntologyError('capacity_exceeded', 'ontology document exceeds size limit');
+        draft.ontology = outcome.document;
+        appliedCount = 1;
+        draft.pendingJournal.push({ key: `ontology-${outcome.receipt.commandId}`, line: { at: nowIso(), kind: 'ontology', receipt: outcome.receipt } });
+      }
+      ontology = { receipt: outcome.receipt, duplicate: outcome.duplicate };
+      }
+    } else {
+      let receiptCount = Object.keys(draft.deltaReceipts ?? {}).length;
+      for (const delta of deltas) {
+        const result = applyCognitionDeltaAtReceiptCount(draft, delta, receiptCount);
+        results.push(result);
+        if (isDeltaFailure(result)) return { ok: false, error: result.reason, results, appliedCount: 0 };
+        if (!result.applied) continue;
+        appliedCount++;
+        receiptCount++;
+        const object = draft.objects[result.objectId];
+        draft.pendingJournal.push({ key: `version-${delta.deltaId}`, objectId: result.objectId, line: {
+          at: object.updatedAt, deltaId: delta.deltaId, op: delta.op, version: object.version, origin: delta.origin, evidenceRefs: [...delta.evidenceRefs],
+          ...(delta.before != null ? { before: delta.before } : {}), ...(delta.after != null ? { after: delta.after } : {}),
+        } });
+        draft.pendingJournal.push({ key: `audit-${delta.deltaId}`, line: { at: nowIso(), ops: [{ objectId: result.objectId,
+          op: delta.op, home: delta.target.home, origin: delta.origin, summary: summary(delta.after ?? delta.before ?? delta.deltaId) }] } });
       }
     }
-    try {
-      appendJsonl(
-        cognitionAuditPath(uid),
-        {
-          at: nowIso(),
-          ops: [...touched.entries()].map(([objectId, d]) => ({
-            objectId,
-            op: d.op,
-            home: d.target.home,
-            origin: d.origin,
-            summary: summary(d.after ?? d.before ?? d.deltaId),
-          })),
-        },
-        VERSION_LINE_MAX,
-      );
-    } catch (err) {
-      log.warn('cognition audit append failed (best effort)', { uid, error: (err as Error).message });
-    }
-    return { ok: true, results, appliedCount: touched.size };
+    if (!appliedCount && !draft.pendingJournal.length) return { ok: true, results, appliedCount, ontology };
+    if (appliedCount) draft.updatedAt = nowIso();
+    if (Buffer.byteLength(JSON.stringify(draft), 'utf8') > 64 * 1024 * 1024) return { ok: false, error: 'cognition store capacity exceeded', results, appliedCount: 0 };
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    writeStoreFileSync(filePath, draft);
+    const pendingHistory = drainJournal(uid, draft);
+    // Projection cleanup is optional: a crash or failure leaves replayable entries in the committed file.
+    try { writeStoreFileSync(filePath, draft); } catch (error) { log.warn('cognition journal cleanup pending', { uid, error: String(error) }); }
+    return { ok: true, results, appliedCount, pendingHistory, ontology };
   });
 }
 
 function writeStoreFileSync(filePath: string, doc: CognitionStoreDocument): void {
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  fs.writeFileSync(tmp, JSON.stringify(doc, null, 2), 'utf8');
+  const fd = fs.openSync(tmp, 'w');
+  try { fs.writeFileSync(fd, JSON.stringify(doc, null, 2), 'utf8'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   fs.renameSync(tmp, filePath);
+  if (process.platform !== 'win32') {
+    const directory = fs.openSync(path.dirname(filePath), 'r');
+    try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
+  }
 }
 
 // ── 家注册表写口 ─────────────────────────────────────────────────────────
@@ -353,35 +414,13 @@ export async function replaceCognitionHomes(uid: string, homes: readonly HomeReg
   if (!safeId(uid)) return { ok: false, error: 'invalid uid' };
   const validated = validateHomeRegistry(homes);
   if (validated.ok === false) return { ok: false, error: validated.reason };
-  const filePath = cognitionStorePath(uid);
-  return fileEditLock(filePath).runExclusive(async () => {
-    const doc = loadCognitionStoreSync(uid);
-    const corrupt = corruptRecordFor(filePath);
-    if (corrupt) {
-      return { ok: false, error: `cognition store corrupt; write refused (${corrupt.reason})` };
-    }
-    // 内置家的 pool/store 映射强制回出厂值（防注册表改写破坏存储语义）。
-    const builtinById = new Map(DEFAULT_HOME_REGISTRY.map((entry) => [entry.home, entry]));
-    const merged = homes.map((entry) => {
-      const builtin = builtinById.get(entry.home);
-      if (!builtin) return entry;
-      return { ...entry, pool: builtin.pool, store: builtin.store, builtin: true as const };
-    });
-    doc.homes = merged;
-    doc.updatedAt = nowIso();
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    writeStoreFileSync(filePath, doc);
-    try {
-      appendJsonl(
-        cognitionAuditPath(uid),
-        { at: nowIso(), origin: 'user', ops: [{ objectId: '', op: 'homes.replace', home: '', summary: `homes=${merged.length}` }] },
-        VERSION_LINE_MAX,
-      );
-    } catch {
-      // 台账尽力而为
-    }
-    return { ok: true, homes: merged };
+  const builtinById = new Map(DEFAULT_HOME_REGISTRY.map(entry => [entry.home, entry]));
+  const merged = homes.map(entry => {
+    const builtin = builtinById.get(entry.home);
+    return builtin ? { ...entry, pool: builtin.pool, store: builtin.store, builtin: true as const } : entry;
   });
+  const outcome = await applyCognitionDeltas(uid, { kind: 'document', edit: doc => { doc.homes = merged; } });
+  return outcome.ok ? { ok: true, homes: merged } : { ok: false, error: outcome.error };
 }
 
 // ── 读辅助（版本流/台账）────────────────────────────────────────────────
@@ -390,25 +429,16 @@ export interface CognitionVersionLine extends VersionLine {}
 
 export function listCognitionVersions(uid: string, objectId: string): CognitionVersionLine[] {
   if (!safeId(uid) || !safeId(objectId)) return [];
-  const p = versionStreamPath(uid, objectId);
+  const lines: VersionLine[] = [];
   try {
-    if (!fs.existsSync(p)) return [];
-    return fs
-      .readFileSync(p, 'utf8')
-      .split('\n')
-      .filter((line) => line.trim())
-      .map((line) => {
-        try {
-          return JSON.parse(line) as VersionLine;
-        } catch {
-          // 坏行跳过（读侧逐行降级），不拖垮整条流。
-          return null;
-        }
-      })
-      .filter((v): v is VersionLine => v !== null);
-  } catch {
-    return [];
+    for (const text of fs.readFileSync(versionStreamPath(uid, objectId), 'utf8').split('\n')) {
+      try { if (text.trim()) lines.push(JSON.parse(text)); } catch { /* Bad lines cannot conceal other versions. */ }
+    }
+  } catch { /* A pending journal may be the only readable history. */ }
+  for (const entry of loadCognitionStoreSync(uid).pendingJournal ?? []) {
+    if (entry.objectId === objectId && !lines.some(line => line.deltaId === entry.line.deltaId)) lines.push(entry.line as unknown as VersionLine);
   }
+  return lines.sort((a, b) => a.version - b.version);
 }
 
 /** 兼容桥的原子入口：调用者提供已验证的来源快照，仍复用库锁、坏档拒写和原子落盘。
@@ -417,15 +447,8 @@ export async function editCognitionDocument(
   uid: string, edit: (doc: CognitionStoreDocument) => void | false,
 ): Promise<void> {
   if (!safeId(uid)) throw new Error('invalid uid');
-  const filePath = cognitionStorePath(uid);
-  await fileEditLock(filePath).runExclusive(async () => {
-    const doc = loadCognitionStoreSync(uid);
-    if (corruptRecordFor(filePath)) throw new Error('cognition store corrupt; compatibility write refused');
-    if (edit(doc) === false) return;
-    doc.updatedAt = nowIso();
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    writeStoreFileSync(filePath, doc);
-  });
+  const outcome = await applyCognitionDeltas(uid, { kind: 'document', edit });
+  if (!outcome.ok) throw new Error(outcome.error || 'cognition document commit failed');
 }
 
 /** 保留兼容桥的既有调用契约。 */

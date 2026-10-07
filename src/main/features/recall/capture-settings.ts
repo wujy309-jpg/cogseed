@@ -40,7 +40,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   //（terminalCaptureEnabledFor 仅放行 nightly），默认留在半死档会让
   // "smart+auto"组合的手动整理意外自动采纳。
   executionPolicy: 'manual' as const,
-  reviewPolicy: 'auto' as const,
+  reviewPolicy: 'manual' as const,
   quietMinutes: 10,
   nightlyStart: '02:00',
   nightlyEnd: '06:00',
@@ -92,7 +92,8 @@ function asSettings(value: RecallJsonRecord): RecallCaptureSettingsRecord {
   return {
     ...value,
     executionPolicy: canonicalExecutionPolicy(value.executionPolicy),
-    reviewPolicy: isReviewPolicy(value.reviewPolicy) ? value.reviewPolicy : DEFAULT_SETTINGS.reviewPolicy,
+    // 兼容读取旧 auto 配置，但自动来源不能跳过逐条确认。
+    reviewPolicy: 'manual',
     quietMinutes: isQuietMinutes(value.quietMinutes) ? value.quietMinutes : DEFAULT_SETTINGS.quietMinutes,
   } as RecallCaptureSettingsRecord;
 }
@@ -153,7 +154,7 @@ export async function updateRecallCaptureSettings(
         ...base,
         ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
         ...(input.executionPolicy === undefined ? {} : { executionPolicy: canonicalExecutionPolicy(input.executionPolicy) }),
-        ...(input.reviewPolicy === undefined ? {} : { reviewPolicy: input.reviewPolicy }),
+        reviewPolicy: 'manual',
         ...(input.quietMinutes === undefined ? {} : { quietMinutes: input.quietMinutes }),
         ...(nightlyStart === undefined ? {} : { nightlyStart }),
         ...(nightlyEnd === undefined ? {} : { nightlyEnd }),

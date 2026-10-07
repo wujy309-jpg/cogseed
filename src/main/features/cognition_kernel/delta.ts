@@ -97,14 +97,15 @@ export function buildDelta(input: BuildDeltaInput): CognitionDelta {
   });
   const status: DeltaStatus = input.status ?? (input.origin === 'user' ? 'applied' : 'proposed');
   const seed = [idempotencyKey, input.op, String(input.after ?? ''), createdAt].join('|');
+  const deltaId = 'd-' + sha256Hex(seed, 16);
   return {
-    deltaId: 'd-' + sha256Hex(seed, 16),
+    deltaId,
     op: input.op,
     target: { ...input.target },
     ...(input.before !== undefined ? { before: input.before } : {}),
     ...(input.after !== undefined ? { after: input.after } : {}),
     origin: input.origin,
-    evidenceRefs: [...(input.evidenceRefs ?? [])],
+    evidenceRefs: [...(input.evidenceRefs?.length ? input.evidenceRefs : input.origin === 'user' ? [{ kind: 'user_input' as const, id: deltaId, title: String(input.after ?? input.before ?? '').slice(0, 200) }] : [])],
     idempotencyKey,
     status,
     ...(input.version !== undefined ? { version: input.version } : {}),
@@ -138,6 +139,9 @@ export function validateDelta(value: unknown, knownHomes: ReadonlySet<string> = 
     return { ok: false, reason: '幂等键缺失或前缀错误' };
   }
   if (!Array.isArray(delta.evidenceRefs)) return { ok: false, reason: '缺 evidenceRefs' };
+  if (delta.evidenceRefs.some(ref => !ref || !['session', 'message', 'asset', 'task_run', 'meeting', 'file', 'user_input', 'candidate'].includes(ref.kind)
+    || typeof ref.id !== 'string' || !ref.id.trim() || ref.id.length > 200
+    || ref.title !== undefined && (typeof ref.title !== 'string' || ref.title.length > 200))) return { ok: false, reason: 'invalid evidence reference' };
   if (!isTextOrNull(delta.before) || !isTextOrNull(delta.after)) return { ok: false, reason: 'before/after 必须是文本或空' };
   if (String(delta.after ?? '').length > MAX_DELTA_TEXT) return { ok: false, reason: 'after 超过 2000 字' };
   if (delta.op !== 'remove' && !String(delta.after ?? '').trim()) return { ok: false, reason: '非删除操作必须有 after 内容' };

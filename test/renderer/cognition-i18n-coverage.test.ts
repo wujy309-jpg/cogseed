@@ -101,19 +101,16 @@ describe('认知域词条覆盖', () => {
     expect(mismatches).toEqual([]);
   });
 
-  it('维护卡提示引用的节名必须逐字命中本语「是否自动保存」标题', () => {
-    // maint_hint_short 指引用户看同一张维护卡里 maint_review_title 渲染出的
-    // 那一节。词条改写时容易脱离 UI 现实，引用一个不存在的节名——代码兜底
-    // 里看不出来（T() 词条命中优先于兜底），四语用户看到的都是词条。机械
-    // 门禁：四语 hint 都必须逐字包含本语 title 的实际值。
-    const stale = LOCALES
-      .filter((locale) => {
-        const hint = tables[locale]['cognition.maint_hint_short'];
-        const title = tables[locale]['cognition.maint_review_title'];
-        return typeof hint !== 'string' || typeof title !== 'string' || !hint.includes(title);
-      })
-      .map((locale) => `${locale}: maint_hint_short 引用的节名与 maint_review_title 不一致`);
-    expect(stale).toEqual([]);
+  it('四语整理设置提供逐条确认说明，并移除自动保存开关', () => {
+    for (const locale of LOCALES) {
+      expect(tables[locale]['cognition.manual_review_required']).toBeTruthy();
+      expect(tables[locale]['cognition.manual_review_required_hint']).toBeTruthy();
+      expect(tables[locale]['cognition.maint_hint_short']).toBeTruthy();
+    }
+    const views = fs.readFileSync(path.join(root, 'src/renderer/modules/cognition-assets/views.js'), 'utf8');
+    expect(views).toContain("T('cognition.manual_review_required'");
+    expect(views).toContain("T('cognition.manual_review_required_hint'");
+    expect(views).not.toContain('data-act="capture-review-toggle"');
   });
 
   it('organize_settings_hint 词条与代码兜底同口径（a69d3ea0 删手动整理入口后词条曾滞后）', () => {

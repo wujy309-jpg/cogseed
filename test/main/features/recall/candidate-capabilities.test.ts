@@ -207,7 +207,7 @@ describe('Recall candidate capability — cross-entry consistency', () => {
 
     // 系统不得替用户把弱证据候选变成资产。
     await expect(candidates.promoteRecallCandidate(userId, weak[1].id, { actor: 'system' }))
-      .rejects.toThrow('candidate evidence is insufficient for review');
+      .rejects.toThrow('user_confirmation_required');
 
     // 用户显式确认后可以沉淀，并且候选进入 confirmed 终态、能力随之收敛。
     const { getRecallCandidateCapabilities } = await caps();

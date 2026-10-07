@@ -241,7 +241,7 @@ describe('Recall candidate governance', () => {
     expect(listed).toEqual([expect.objectContaining({ id: candidate.id, promotedAssetId: first.asset.id })]);
   });
 
-  it('automatically persists a reviewable candidate with system provenance and an automatic lifecycle', async () => {
+  it('用户逐条确认后保存资产并记录用户授权', async () => {
     const candidates = await service();
     const candidate = await candidates.saveRecallCandidate('user-a', {
       judgment: 'Record architecture decisions before implementation starts.',
@@ -255,8 +255,8 @@ describe('Recall candidate governance', () => {
       sourceRefs: [{ kind: 'conversation', id: 'conv-auto-create' }],
     });
 
-    const result = await candidates.autoApplyRecallCandidate('user-a', candidate.id);
-    if (!result.asset) throw new Error('automatic capture did not create an ability asset');
+    const result = await candidates.promoteRecallCandidate('user-a', candidate.id, { actor: 'user' });
+    if (!result.asset) throw new Error('user confirmation did not create an ability asset');
 
     expect(result.candidate).toMatchObject({
       id: candidate.id,
@@ -267,7 +267,7 @@ describe('Recall candidate governance', () => {
       candidateId: candidate.id,
       status: 'active',
       lifecycleStatus: 'user_confirmed_unverified',
-      maturity: 'seed',
+      maturity: 'bud',
       version: '1',
     });
 
@@ -275,9 +275,8 @@ describe('Recall candidate governance', () => {
     await expect(review.listReviewDecisions('user-a', `recall_candidate:${candidate.id}`)).resolves.toEqual([
       expect.objectContaining({
         decision_type: 'accept',
-        decision: 'automatic capture',
-        actor: 'system',
-        reason: 'automatic capture policy',
+        decision: 'accept',
+        actor: 'user',
         asset_id: result.asset.id,
         outcome: 'asset_created',
       }),
@@ -285,7 +284,7 @@ describe('Recall candidate governance', () => {
 
     const assets = await import('../../../../src/main/features/recall/asset-service');
     await expect(assets.listAbilityAssetAudit('user-a', result.asset.id)).resolves.toEqual([
-      expect.objectContaining({ action: 'created', actor: 'system' }),
+      expect.objectContaining({ action: 'created', actor: 'user' }),
     ]);
   });
 
@@ -326,7 +325,7 @@ describe('Recall candidate governance', () => {
     await expect(assets.listAbilityAssets('user-a')).resolves.toHaveLength(1);
   });
 
-  it('rejects automatic application of a high-risk candidate without consuming its manual review gate', async () => {
+  it('keeps automatic application as a candidate of a high-risk candidate without consuming its manual review gate', async () => {
     const candidates = await service();
     const candidate = await candidates.saveRecallCandidate('user-a', {
       judgment: 'Run the production rollback workflow before every deployment.',
@@ -341,7 +340,7 @@ describe('Recall candidate governance', () => {
 
     expect(candidate).toMatchObject({ status: 'pending_review', risk: 'high' });
     await expect(candidates.autoApplyRecallCandidate('user-a', candidate.id))
-      .rejects.toThrow(/high-risk.*user risk gate/i);
+      .resolves.toMatchObject({ candidate: { id: candidate.id, status: 'pending_review' } });
     await expect(candidates.readRecallCandidate('user-a', candidate.id))
       .resolves.toMatchObject({ status: 'pending_review', risk: 'high' });
     await expect((await import('../../../../src/main/features/recall/asset-service')).listAbilityAssets('user-a'))
@@ -350,7 +349,7 @@ describe('Recall candidate governance', () => {
       .listReviewDecisions('user-a', `recall_candidate:${candidate.id}`)).resolves.toEqual([]);
   });
 
-  it('automatically records reject and keep-current decisions without creating assets', async () => {
+  it('自动建议不能替用户决定拒绝或保留，候选与决定日志保持原状', async () => {
     const candidates = await service();
     const rejected = await candidates.saveRecallCandidate('user-a', {
       judgment: 'Do not retain this one-time deployment note.',
@@ -376,18 +375,14 @@ describe('Recall candidate governance', () => {
     const rejectedResult = await candidates.autoApplyRecallCandidate('user-a', rejected.id);
     const keptCurrentResult = await candidates.autoApplyRecallCandidate('user-a', keptCurrent.id);
 
-    expect(rejectedResult).toMatchObject({ candidate: { id: rejected.id, status: 'rejected' } });
+    expect(rejectedResult).toMatchObject({ candidate: { id: rejected.id, status: rejected.status } });
     expect(rejectedResult.asset).toBeUndefined();
-    expect(keptCurrentResult).toMatchObject({ candidate: { id: keptCurrent.id, status: 'ignored' } });
+    expect(keptCurrentResult).toMatchObject({ candidate: { id: keptCurrent.id, status: keptCurrent.status } });
     expect(keptCurrentResult.asset).toBeUndefined();
 
     const review = await import('../../../../src/main/features/cognition/review-decision');
-    await expect(review.listReviewDecisions('user-a', `recall_candidate:${rejected.id}`)).resolves.toEqual([
-      expect.objectContaining({ decision_type: 'reject', actor: 'system', reason: 'automatic capture policy' }),
-    ]);
-    await expect(review.listReviewDecisions('user-a', `recall_candidate:${keptCurrent.id}`)).resolves.toEqual([
-      expect.objectContaining({ decision_type: 'keep_current', actor: 'system', reason: 'automatic capture policy' }),
-    ]);
+    await expect(review.listReviewDecisions('user-a', `recall_candidate:${rejected.id}`)).resolves.toEqual([]);
+    await expect(review.listReviewDecisions('user-a', `recall_candidate:${keptCurrent.id}`)).resolves.toEqual([]);
     await expect((await import('../../../../src/main/features/recall/asset-service')).listAbilityAssets('user-a'))
       .resolves.toEqual([]);
   });
@@ -1201,7 +1196,7 @@ describe('Recall candidate governance', () => {
       });
   });
 
-  it('repairs a confirmed automatic candidate when its asset file is missing', async () => {
+  it('repairs an already user-confirmed candidate when its asset file is missing', async () => {
     const candidates = await service();
     const candidate = await candidates.saveRecallCandidate('user-a', {
       judgment: 'Keep a compact release checklist for repeat deployments.', summary: 'Compact release checklist',
@@ -1209,12 +1204,15 @@ describe('Recall candidate governance', () => {
       suggestedType: 'template', suggestedScope: 'project', suggestedAction: 'create',
       sourceRefs: [{ kind: 'conversation', id: 'conv-confirmed-missing-asset' }],
     });
-    const first = await candidates.autoApplyRecallCandidate('user-a', candidate.id);
+    const first = await candidates.promoteRecallCandidate('user-a', candidate.id, { actor: 'user' });
     if (!first.asset) throw new Error('automatic asset was not created');
     const { recallJsonRecordPath } = await import('../../../../src/main/features/recall/paths');
     fs.unlinkSync(recallJsonRecordPath('user-a', 'ability-assets', first.asset.id));
 
-    const repaired = await candidates.autoApplyRecallCandidate('user-a', candidate.id);
+    const interrupted = await candidates.autoApplyRecallCandidate('user-a', candidate.id);
+    expect(interrupted.asset).toBeUndefined();
+    expect(interrupted.candidate.status).toBe('failed');
+    const repaired = await candidates.promoteRecallCandidate('user-a', candidate.id, { actor: 'user' });
     expect(repaired.asset).toMatchObject({ id: first.asset.id, lifecycleStatus: 'user_confirmed_unverified' });
     expect(repaired.candidate.status).toBe('confirmed');
     await expect((await import('../../../../src/main/features/recall/asset-service')).listAbilityAssets('user-a'))
@@ -1290,7 +1288,7 @@ describe('Recall candidate governance', () => {
     })).rejects.toThrow(/forbidden to persist/i);
   });
 
-  it('keeps automatic capture behind sensitivity and prompt-injection gates', async () => {
+  it('explicit user confirmation still checks sensitivity and prompt-injection', async () => {
     const candidates = await service();
     const sensitive = await candidates.saveRecallCandidate('user-a', {
       judgment: 'Use the documented request configuration.', summary: 'Documented config usage',
@@ -1309,7 +1307,7 @@ describe('Recall candidate governance', () => {
       judgment: 'Use api_key=not-a-real-secret for requests.', summary: 'Fake key request rule',
     }));
 
-    await expect(candidates.autoApplyRecallCandidate('user-a', sensitive.id))
+    await expect(candidates.promoteRecallCandidate('user-a', sensitive.id, { actor: 'user' }))
       .rejects.toThrow(/forbidden to persist/i);
     await expect(candidates.readRecallCandidate('user-a', sensitive.id))
       .resolves.toMatchObject({ status: 'failed', failureCode: 'asset_write_failed' });
@@ -1325,7 +1323,7 @@ describe('Recall candidate governance', () => {
       sourceRefs: [{ kind: 'conversation', id: 'conv-auto-injection' }],
     });
 
-    await expect(candidates.autoApplyRecallCandidate('user-a', injected.id))
+    await expect(candidates.promoteRecallCandidate('user-a', injected.id, { actor: 'user' }))
       .rejects.toThrow(/blocked by cognition security gate/i);
     await expect(candidates.readRecallCandidate('user-a', injected.id))
       .resolves.toMatchObject({ status: 'pending_review' });
@@ -1465,7 +1463,7 @@ describe('Recall candidate/asset › 空间归属（spaceId）管线', () => {
       .resolves.toMatchObject({ asset: { id: 'aa-sim-existing' } });
   });
 
-  it('L2 related+clearly-better: a high-quality related candidate is rewritten as an update instead of a new asset（查重金字塔）', async () => {
+  it('L2 related and higher quality remains a proposal until user confirmation', async () => {
     const users = await import('../../../../src/main/features/users');
     users.activateUser('user-l2');
     const candidates = await service();
@@ -1509,14 +1507,13 @@ describe('Recall candidate/asset › 空间归属（spaceId）管线', () => {
     });
 
     const applied = await candidates.autoApplyRecallCandidate('user-l2', candidate.id);
-    // 质量显著更优 → 改写为更新既有资产，不新开零散条目。
+    // 质量或相似度不是用户确认，不自动改写目标或创建长期资产。
     expect(applied.asset).toBeUndefined();
-    expect(applied.candidate.suggestedAction).toBe('update');
-    expect(applied.candidate.targetAssetId).toBe('aa-l2-weak');
-    expect(applied.mergedIntoAssetId).toBe('aa-l2-weak');
+    expect(applied.candidate).toMatchObject({ id: candidate.id, suggestedAction: 'create', status: candidate.status });
+    expect(applied.candidate.targetAssetId).toBeUndefined();
   });
 
-  it('L2 related but not better: candidate promotes as its own asset（差距不足放行）', async () => {
+  it('L2 related lower-quality proposal cannot create an asset without confirmation', async () => {
     const users = await import('../../../../src/main/features/users');
     users.activateUser('user-l2');
     const candidates = await service();
@@ -1556,10 +1553,10 @@ describe('Recall candidate/asset › 空间归属（spaceId）管线', () => {
     });
 
     const applied = await candidates.autoApplyRecallCandidate('user-l2', candidate.id);
-    // 差距不足 → 不是重复也不是更优 → 照常新开（归族提示由 L3/面板层负责）。
-    expect(applied.asset).toBeDefined();
-    expect(applied.asset?.id).not.toBe('aa-l2-strong');
-    expect(applied.asset?.statement).toContain(thinJudgment);
+    // 质量或相似度不是用户确认，不自动改写目标或创建长期资产。
+    expect(applied.asset).toBeUndefined();
+    expect(applied.candidate).toMatchObject({ id: candidate.id, suggestedAction: 'create', status: candidate.status });
+    expect(applied.candidate.targetAssetId).toBeUndefined();
   });
 
   it('update promote fuses statements instead of overwriting（刀二：融合接线）', async () => {
@@ -1734,7 +1731,7 @@ describe('Recall candidate/asset › 空间归属（spaceId）管线', () => {
     })).rejects.toThrow(/suspicious content/);
   });
 
-  it('points a semantically merged save receipt at the surviving review candidate', async () => {
+  it('明确保存遇到不足准入条件时返回实际待审核候选，不假报合并', async () => {
     const users = await import('../../../../src/main/features/users');
     users.activateUser('user-ingest-merged-candidate');
     const candidates = await service();
@@ -1757,12 +1754,11 @@ describe('Recall candidate/asset › 空间归属（spaceId）管线', () => {
         conversationId: 'conv-new-suggestion',
       });
 
-      expect(result).toEqual({ mode: 'merged', candidateId: recipient.id });
+      expect(result.mode).toBe('pending-review');
       await expect(candidates.readRecallCandidate('user-ingest-merged-candidate', result.candidateId))
-        .resolves.toMatchObject({ id: recipient.id, status: 'pending_review' });
-      const pool = await candidates.listRecallCandidates('user-ingest-merged-candidate');
-      expect(pool.find((item) => item.id !== recipient.id && item.mergedInto === recipient.id))
-        .toMatchObject({ status: 'ignored' });
+        .resolves.toMatchObject({ id: result.candidateId, status: 'pending_review' });
+      await expect(candidates.readRecallCandidate('user-ingest-merged-candidate', recipient.id))
+        .resolves.toMatchObject({ id: recipient.id, status: recipient.status });
     } finally {
       duplicateLookup.mockRestore();
     }

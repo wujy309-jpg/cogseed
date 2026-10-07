@@ -343,10 +343,8 @@ export async function runScheduledInspectionIfEnabled(
   const settings = await readInspectionSettings(userId);
   if (!settings.enabled) return undefined;
   const run = await runAssetInspection(userId, { trigger: 'scheduled', ...(options.signal ? { signal: options.signal } : {}) });
-  // 集成维护（2026-09-29 子安拍板「完全合并」）：自动维护开启时，检查轮之后
-  // 同天追加一轮完整清理（规范标题/合并重复/补标签/重写啰嗦正文，trigger
-  // =inspection，写前备份照旧）。当天已跑过则跳过（按最近一条清理报告的
-  // trigger+日期判重）；失败只记日志，不拖垮检查结果，也不影响返回值。
+  // 自动检查追加只读整理报告；规范化、归并、补标签均等待用户逐条确认。
+  // 同天只运行一次，报告失败不影响检查结果。
   try {
     const { listCleanupReports, runAssetCleanup } = await import('./cleanup-report-service');
     const reports = await listCleanupReports(userId, 1);

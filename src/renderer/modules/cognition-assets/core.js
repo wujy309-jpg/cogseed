@@ -286,6 +286,8 @@
     loading: false,
     errors: [],
     assets: [],
+    ontologySnapshot: null,
+    ontologyError: '',
     candidates: [],
     /** 本体候选（2026-10-02 收件箱归位）：与资产候选同页展示，读失败单独记错。 */
     poCandidates: [],
@@ -524,6 +526,15 @@
       const assets = await api.soft('recall.assets.list', {}, {});
       if (isStaleBlockRead('assets', gen)) return;
       store.assets = toArr(assets, ['assets', 'items']);
+      try {
+        const snapshot = await api.call('cognition.ontology.snapshot', {}, {});
+        if (isStaleBlockRead('assets', gen)) return;
+        if (!snapshot.ontology?.records) throw new Error(T('ontologyWorkspace.loadFailed', '本体暂时无法加载'));
+        store.ontologySnapshot = snapshot.ontology; store.ontologyError = '';
+      } catch (error) {
+        if (isStaleBlockRead('assets', gen)) return;
+        store.ontologyError = String(error?.message || error);
+      }
     },
     async candidates() {
       // A5（2026-09-29）：候选清单读失败不再软降级成空数组——那会把「没读到」
@@ -638,6 +649,7 @@
     // 2026-10-07 旧停驻页退役：po 候选与 Recall 候选同住「待我处理」收件箱，
     // 广播改刷 candidates 区块（两个列表一并重拉），旧页面刷新入口已删除。
     'ontology-candidates': ['candidates'],
+    'ontology': ['assets'],
     'captures': ['captures'],
     'capture-settings': ['settings'],
     'usage-records': ['timeline'],
@@ -1536,7 +1548,7 @@
       if (target.category === 'kstar') target = Object.assign({}, target, { category: '' });
       // 先把 next 归一到同一形状再比（部分键字面量 vs 全键展开的序列化恒不等，
       // 连点同一 tab 会堆积重复栈项——2026-09-14 终审修）。
-      const merged = Object.assign({ name: 'tree', category: '', assetId: '', candidateId: '', moduleId: '', recordId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', taskFailedOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', candCreate: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '', manage: '' }, target);
+      const merged = Object.assign({ name: 'tree', category: '', assetId: '', candidateId: '', moduleId: '', recordId: '', recordVersion: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', taskFailedOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', candCreate: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '', manage: '' }, target);
       const same = JSON.stringify(current) === JSON.stringify(merged);
       if (!opts.replace && !same) store.backStack.push(Object.assign({}, current));
       store.route = merged;
@@ -2918,6 +2930,7 @@
       ...(options.candidateId ? { candidateId: String(options.candidateId) } : {}),
       ...(options.moduleId ? { moduleId: String(options.moduleId) } : {}),
       ...(options.recordId ? { recordId: String(options.recordId) } : {}),
+      ...(options.recordVersion ? { recordVersion: Number(options.recordVersion) } : {}),
     });
   };
 

@@ -82,7 +82,7 @@ describe('semantic dedup degradation', () => {
     const candidate = await reviewableCandidate(candidates);
 
     await expect(candidates.autoApplyRecallCandidate(UID, candidate.id))
-      .rejects.toMatchObject({ code: 'semantic_dedup_unavailable' });
+      .resolves.toMatchObject({ candidate: { id: candidate.id, status: 'pending_review' } });
 
     // 候选没有被动过：人工确认路径仍然可用。
     const after = await candidates.readRecallCandidate(UID, candidate.id);
@@ -101,13 +101,14 @@ describe('semantic dedup degradation', () => {
     expect(asset.lifecycleStatus).toBe('user_confirmed_unverified');
   });
 
-  it('opts out of the check only when the caller explicitly disables it', async () => {
+  it('disabling semantic dedup cannot replace user confirmation', async () => {
     const users = await import('../../../../src/main/features/users');
     users.activateUser(UID);
     const candidates = await import('../../../../src/main/features/recall/candidate-service');
     const candidate = await reviewableCandidate(candidates);
 
     const applied = await candidates.autoApplyRecallCandidate(UID, candidate.id, { semanticDedup: false });
-    expect(applied.asset?.type).toBe('rule');
+    expect(applied.asset).toBeUndefined();
+    expect(applied.candidate.status).toBe('pending_review');
   });
 });

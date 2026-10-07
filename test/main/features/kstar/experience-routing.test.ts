@@ -181,6 +181,8 @@ describe('KSTAR 沉淀分流（specs/016 T010）', () => {
     expect(result.experienceIds).toEqual([]);
     const experiences = await import('../../../../src/main/features/recall/experience-service');
     expect(await experiences.listExperiences('route-user')).toHaveLength(0);
+    expect((await assets.readAbilityAsset('route-user', original.asset.id)).version).toBe('1');
+    await candidates.promoteRecallCandidate('route-user', result.candidateIds[0], { actor: 'user' });
     const updated = await assets.readAbilityAsset('route-user', original.asset.id);
     expect(updated).toMatchObject({ id: original.asset.id, version: '2' });
     expect(String(updated!.statement)).toContain('acceptance check');

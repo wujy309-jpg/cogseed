@@ -1087,7 +1087,7 @@ describe('KSTAR direct experience asset line', () => {
     expect(await assets.listAbilityAssets('closure-user')).toHaveLength(0);
   });
 
-  it('updates the explicitly targeted existing asset through the direct KSTAR line', async () => {
+  it('KSTAR 先提出精确目标候选，用户确认后才更新既有资产', async () => {
     const builder = await import('../../../../src/main/features/kstar/episode-builder');
     const direct = await import('../../../../src/main/features/kstar/direct-experience-assets');
     const assets = await import('../../../../src/main/features/recall/asset-service');
@@ -1107,7 +1107,7 @@ describe('KSTAR direct experience asset line', () => {
       createdAt: '2026-08-05T00:00:00.000Z',
     });
 
-    await direct.precipitateDirectExperienceAssets('closure-user', seededEpisode, [{
+    const proposed = await direct.precipitateDirectExperienceAssets('closure-user', seededEpisode, [{
       judgment: '报告发布前必须完成验收核查。',
       summary: 'Updated report verification rule',
       suggestedType: 'rule',
@@ -1118,6 +1118,8 @@ describe('KSTAR direct experience asset line', () => {
       sourceRefs: [{ kind: 'execution', id: 'kse-run-direct-update' }],
     }]);
 
+    expect((await assets.readAbilityAsset('closure-user', original.asset.id)).version).toBe('1');
+    await candidates.promoteRecallCandidate('closure-user', proposed.candidateIds[0], { actor: 'user' });
     const updated = await assets.readAbilityAsset('closure-user', original.asset.id);
     // 同主题规则可改写；不相关的旧约束必须保留，历史v1必须冻结。
     expect(updated).toMatchObject({

@@ -1,4 +1,5 @@
 /** 查询区分现实有效时间与当时系统知道的版本；未知起点不自动当成有效。 */
+import { createHash } from 'node:crypto';
 import { OntologyError, isCalendarDate, type OntologyAssertion, type OntologyDocument, type OntologyModule, type OntologyRecord } from './model';
 import { moduleCanUse, resolveOntologyRecordForModule } from './commands';
 
@@ -37,6 +38,12 @@ export function ontologyRecordsKnownAt(doc: OntologyDocument, recordedAt?: strin
   return records;
 }
 
+function taskDependencyAvailable(doc: OntologyDocument, moduleId: string, id: string): boolean {
+  const record = doc.records[id];
+  return Boolean(record && record.kind !== 'module' && record.status === 'active' && record.access === 'task'
+    && doc.records[record.moduleId]?.status === 'active' && doc.records[record.moduleId]?.access === 'task'
+    && moduleCanUse(doc, moduleId, record));
+}
 export function queryOntologyFacts(doc: OntologyDocument, input: {
   moduleId: string; subjectId?: string; definitionId?: string; at: string; knownAt?: string; knownRevision?: number;
 }): { matched: OntologyAssertion[]; uncertain: OntologyAssertion[] } {
@@ -45,11 +52,16 @@ export function queryOntologyFacts(doc: OntologyDocument, input: {
   const view: OntologyDocument = { ...doc, records };
   const module = records[input.moduleId];
   if (!module || module.kind !== 'module' || module.status !== 'active' || module.access !== 'task') throw new OntologyError('not_found', 'ontology module unavailable');
+  if (doc.records[input.moduleId]?.status !== 'active' || doc.records[input.moduleId]?.access !== 'task') throw new OntologyError('not_authorized', 'current ontology permission unavailable');
   const matched: OntologyAssertion[] = [], uncertain: OntologyAssertion[] = [];
   for (const record of Object.values(records)) {
     if (record.kind !== 'assertion' || record.access === 'owner_only' || !moduleCanUse(view, input.moduleId, record)
+      || records[record.moduleId]?.status !== 'active' || records[record.moduleId]?.access !== 'task'
       || (input.subjectId && record.subjectId !== input.subjectId)
       || (input.definitionId && record.definitionId !== input.definitionId)) continue;
+    if (doc.records[record.id]?.access !== 'task' || !taskDependencyAvailable(doc, record.moduleId, record.subjectId)
+      || !taskDependencyAvailable(doc, record.moduleId, record.definitionId)
+      || record.object.kind === 'entity' && !taskDependencyAvailable(doc, record.moduleId, record.object.id)) continue;
     const truth = assertionValidityAt(record, input.at);
     if (truth === 'true') matched.push(record);
     if (truth === 'unknown') uncertain.push(record);
@@ -99,18 +111,21 @@ export function queryOntologyRules(doc: OntologyDocument, input: { moduleId: str
   const module = records[input.moduleId];
   if (!module || module.kind !== 'module' || module.status !== 'active' || module.access !== 'task') throw new OntologyError('not_found', 'ontology module unavailable');
   return Object.values(records).filter((r): r is OntologyRecord & { kind: 'rule' } => r.kind === 'rule'
-    && r.status === 'active' && r.access !== 'owner_only' && moduleCanUse(view, input.moduleId, r)).map(rule => ({
+    && r.status === 'active' && r.access !== 'owner_only' && records[r.moduleId]?.status === 'active'
+    && records[r.moduleId]?.access === 'task' && moduleCanUse(view, input.moduleId, r)).map(rule => ({
     rule, match: evaluateCondition(view, input.moduleId, rule.condition, input.task),
   }));
 }
 
 export interface OntologyGraphProjection {
   scale: 'modules' | 'module';
-  nodes: Array<{ id: string; kind: string; label: string; moduleId?: string; status: string; description?: string }>;
-  edges: Array<{ id: string; from: string; to: string; label: string; kind: string; truth?: OntologyTruth; recordId?: string }>;
+  contentScale?: 'schema' | 'instances';
+  nodes: Array<{ id: string; kind: string; label: string; moduleId?: string; status: string; description?: string; version?: number; source?: OntologyRecord['source'] }>;
+  edges: Array<{ id: string; from: string; to: string; label: string; labelKey?: string; kind: string; truth?: OntologyTruth; recordId?: string; version?: number; source?: OntologyRecord['source']; validity?: OntologyAssertion['validity'] }>;
   totalNodes: number;
   totalEdges: number;
   truncated: boolean;
+  nextCursor?: string;
   focusId?: string;
   focusNodeId?: string;
   focusEdgeId?: string;
@@ -154,15 +169,26 @@ function boundOntologyGraph(
 }
 
 /** 图是当前本体记录按所选层级和日期形成的只读投影。 */
-export function queryOntologyGraph(doc: OntologyDocument, input: { moduleId?: string; at?: string; focusId?: string }): OntologyGraphProjection {
+export function queryOntologyGraph(doc: OntologyDocument, input: { moduleId?: string; at?: string; focusId?: string; contentScale?: 'schema' | 'instances'; includeRules?: boolean; definitionId?: string; cursor?: string }): OntologyGraphProjection {
+  if (input.contentScale !== undefined && !['schema', 'instances'].includes(input.contentScale)) throw new OntologyError('invalid_input', 'invalid graph content scale');
+  const queryKey = createHash('sha256').update(JSON.stringify([doc.revision, input.moduleId, input.at, input.focusId, input.contentScale, input.includeRules, input.definitionId])).digest('hex').slice(0, 24);
+  let page = 1;
+  if (input.cursor) {
+    const [key, rawPage] = input.cursor.split(':'); page = Number(rawPage);
+    if (key !== queryKey || !Number.isSafeInteger(page) || page < 2 || page > 128) throw new OntologyError('baseline_changed', 'graph cursor expired; reload this view');
+  }
+  const bound = (scale: OntologyGraphProjection['scale'], nodes: OntologyGraphProjection['nodes'], edges: OntologyGraphProjection['edges'], nodeLimit: number, edgeLimit: number, focus?: Pick<OntologyGraphProjection, 'focusId' | 'focusNodeId' | 'focusEdgeId'>) => {
+    const result = boundOntologyGraph(scale, nodes, edges, nodeLimit * page, edgeLimit * page, focus);
+    return { ...result, ...(result.truncated && page < 128 ? { nextCursor: `${queryKey}:${page + 1}` } : {}) };
+  };
   const modules = Object.values(doc.records).filter((r): r is Extract<OntologyRecord, { kind: 'module' }> => r.kind === 'module' && r.status === 'active');
   if (!input.moduleId) {
     const activeIds = new Set(modules.map(m => m.id));
-    const nodes = modules.map(m => ({ id: m.id, kind: m.kind, label: m.name, status: m.status, description: m.description }));
+    const nodes = modules.map(m => ({ id: m.id, kind: m.kind, label: m.name, status: m.status, description: m.description, version: m.version, source: m.source }));
     const edges = Object.values(doc.records).filter((r): r is Extract<OntologyRecord, { kind: 'reference' }> => r.kind === 'reference' && r.status === 'active'
         && activeIds.has(r.moduleId) && activeIds.has(r.targetModuleId)).map(r => ({
         id: r.id, from: r.moduleId, to: r.targetModuleId,
-        label: r.targetRecordId ? '引用对象' : '引用本体', kind: 'reference', recordId: r.id,
+        label: r.targetRecordId ? '引用对象' : '引用本体', labelKey: r.targetRecordId ? 'graphRecordReference' : 'graphModuleReference', kind: 'reference', recordId: r.id, version: r.version, source: r.source,
       }));
     if (input.focusId) {
       const focusModule = modules.find(m => m.id === input.focusId);
@@ -170,19 +196,19 @@ export function queryOntologyGraph(doc: OntologyDocument, input: { moduleId?: st
       const relatedEdges = edges.filter(edge => edge.from === focusModule.id || edge.to === focusModule.id);
       const relatedIds = new Set([focusModule.id, ...relatedEdges.flatMap(edge => [edge.from, edge.to])]);
       const relatedNodes = nodes.filter(node => relatedIds.has(node.id));
-      return boundOntologyGraph('modules', relatedNodes, relatedEdges, GLOBAL_GRAPH_NODE_LIMIT, GLOBAL_GRAPH_EDGE_LIMIT,
+      return bound('modules', relatedNodes, relatedEdges, GLOBAL_GRAPH_NODE_LIMIT, GLOBAL_GRAPH_EDGE_LIMIT,
         { focusId: input.focusId, focusNodeId: input.focusId });
     }
-    return boundOntologyGraph('modules', nodes, edges, GLOBAL_GRAPH_NODE_LIMIT, GLOBAL_GRAPH_EDGE_LIMIT);
+    return bound('modules', nodes, edges, GLOBAL_GRAPH_NODE_LIMIT, GLOBAL_GRAPH_EDGE_LIMIT);
   }
   const module = doc.records[input.moduleId];
   if (!module || module.kind !== 'module' || module.status !== 'active') throw new OntologyError('not_found', 'ontology module unavailable');
-  if (!input.at) throw new OntologyError('invalid_time', 'module graph requires an explicit query date');
+  if (!input.at && input.contentScale !== 'schema') throw new OntologyError('invalid_time', 'module graph requires an explicit query date');
   const nodes = new Map<string, OntologyGraphProjection['nodes'][number]>(), edges: OntologyGraphProjection['edges'] = [];
   const addNode = (r: OntologyRecord) => {
     const label = r.kind === 'module' || r.kind === 'definition' || r.kind === 'entity' || r.kind === 'rule'
       ? r.name : r.kind === 'assertion' ? '事实' : '本体引用';
-    nodes.set(r.id, { id: r.id, kind: r.kind, label,
+    nodes.set(r.id, { id: r.id, kind: r.kind, label, version: r.version, source: r.source,
       ...(r.kind === 'module' ? {} : { moduleId: r.moduleId }), status: r.status,
       ...('description' in r && r.description ? { description: r.description } : {}) });
   };
@@ -199,18 +225,18 @@ export function queryOntologyGraph(doc: OntologyDocument, input: { moduleId?: st
   if (day && !isCalendarDate(day)) throw new OntologyError('invalid_time', 'graph date must be a calendar day');
   for (const record of records) {
     if (record.kind === 'definition' && record.moduleId === module.id && record.status === 'active') {
-      for (const typeId of record.subjectTypes) if (nodes.has(typeId)) edges.push({ id: `domain:${record.id}:${typeId}`, from: typeId, to: record.id, label: '適用於', kind: 'definition', recordId: record.id });
-      for (const typeId of record.objectTypes) if (nodes.has(typeId)) edges.push({ id: `range:${record.id}:${typeId}`, from: record.id, to: typeId, label: '指向類型', kind: 'definition', recordId: record.id });
+      for (const typeId of record.subjectTypes) if (nodes.has(typeId)) edges.push({ id: `domain:${record.id}:${typeId}`, from: typeId, to: record.id, label: '適用於', labelKey: 'graphDomain', kind: 'definition', recordId: record.id });
+      for (const typeId of record.objectTypes) if (nodes.has(typeId)) edges.push({ id: `range:${record.id}:${typeId}`, from: record.id, to: typeId, label: '指向類型', labelKey: 'graphRange', kind: 'definition', recordId: record.id });
       continue;
     }
     if (record.kind === 'entity' && record.status === 'active' && record.moduleId === module.id) {
       const type = resolveOntologyRecordForModule(doc, module.id, record.typeId);
-      if (nodes.has(record.typeId)) edges.push({ id: `type:${record.id}`, from: record.id, to: record.typeId, label: '类型', kind: 'type', recordId: record.id });
+      if (nodes.has(record.typeId)) edges.push({ id: `type:${record.id}`, from: record.id, to: record.typeId, label: '类型', labelKey: 'graphType', kind: 'type', recordId: record.id });
       continue;
     }
     if (record.kind === 'assertion' && record.moduleId === module.id && record.status === 'active') {
       const truth = day ? assertionValidityAt(record, day) : 'true';
-      if (truth === 'false') continue;
+      if (truth === 'false' || input.definitionId && record.definitionId !== input.definitionId) continue;
       const predicate = resolveOntologyRecordForModule(doc, module.id, record.definitionId);
       if (!nodes.has(record.subjectId) || !nodes.has(record.definitionId)) continue;
       if (record.object.kind === 'entity') {
@@ -233,18 +259,28 @@ export function queryOntologyGraph(doc: OntologyDocument, input: { moduleId?: st
     if (record.kind === 'rule' && record.moduleId === module.id && record.status === 'active'
       && record.effect.kind === 'include_recipient') {
       const recipient = resolveOntologyRecordForModule(doc, module.id, record.effect.entityId);
-      if (recipient) { if (!nodes.has(recipient.id)) addNode(recipient); edges.push({ id: record.id, from: record.id, to: recipient.id, label: '接收人', kind: 'rule', recordId: record.id }); }
+      if (recipient) { if (!nodes.has(recipient.id)) addNode(recipient); edges.push({ id: record.id, from: record.id, to: recipient.id, label: '接收人', labelKey: 'graphRecipient', kind: 'rule', recordId: record.id }); }
     }
     if (record.kind === 'rule' && record.moduleId === module.id && record.status === 'active' && record.condition) {
       const walk = (condition: import('./model').OntologyCondition) => {
         if (condition.kind === 'all' || condition.kind === 'any') { condition.conditions.forEach(walk); return; }
         if (condition.kind === 'not') { walk(condition.condition); return; }
         if (condition.kind !== 'assertion') return;
-        if (nodes.has(condition.subjectId)) edges.push({ id: `condition:${record.id}:${condition.subjectId}`, from: record.id, to: condition.subjectId, label: '條件對象', kind: 'rule', recordId: record.id });
-        if (nodes.has(condition.definitionId)) edges.push({ id: `predicate:${record.id}:${condition.definitionId}`, from: record.id, to: condition.definitionId, label: '條件關係', kind: 'rule', recordId: record.id });
+        if (nodes.has(condition.subjectId)) edges.push({ id: `condition:${record.id}:${condition.subjectId}`, from: record.id, to: condition.subjectId, label: '條件對象', labelKey: 'graphConditionObject', kind: 'rule', recordId: record.id });
+        if (nodes.has(condition.definitionId)) edges.push({ id: `predicate:${record.id}:${condition.definitionId}`, from: record.id, to: condition.definitionId, label: '條件關係', labelKey: 'graphConditionRelation', kind: 'rule', recordId: record.id });
       };
       walk(record.condition);
     }
+  }
+  for (const edge of edges) {
+    const record = edge.recordId && doc.records[edge.recordId];
+    if (record) { edge.version = record.version; edge.source = record.source; if (record.kind === 'assertion') edge.validity = record.validity; }
+  }
+  if (input.contentScale || input.includeRules === false) {
+    const allowedKinds = input.contentScale === 'schema' ? new Set(['definition', 'rule'])
+      : input.contentScale === 'instances' ? new Set(['entity', 'value', 'rule']) : null;
+    for (const [id, node] of nodes) if (allowedKinds && !allowedKinds.has(node.kind) || input.includeRules === false && node.kind === 'rule') nodes.delete(id);
+    for (let index = edges.length - 1; index >= 0; index--) if (!nodes.has(edges[index].from) || !nodes.has(edges[index].to)) edges.splice(index, 1);
   }
   if (input.focusId) {
     const focusNode = nodes.get(input.focusId);
@@ -255,10 +291,10 @@ export function queryOntologyGraph(doc: OntologyDocument, input: { moduleId?: st
     const relatedIds = new Set(seedIds);
     for (const edge of relatedEdges) { relatedIds.add(edge.from); relatedIds.add(edge.to); }
     const relatedNodes = [...nodes.values()].filter(node => relatedIds.has(node.id));
-    return boundOntologyGraph('module', relatedNodes, relatedEdges, MODULE_GRAPH_NODE_LIMIT, MODULE_GRAPH_EDGE_LIMIT,
+    return bound('module', relatedNodes, relatedEdges, MODULE_GRAPH_NODE_LIMIT, MODULE_GRAPH_EDGE_LIMIT,
       { focusId: input.focusId, ...(focusNode ? { focusNodeId: focusNode.id } : { focusNodeId: focusEdge!.from }), ...(focusEdge ? { focusEdgeId: focusEdge.id } : {}) });
   }
-  return boundOntologyGraph('module', [...nodes.values()], edges, MODULE_GRAPH_NODE_LIMIT, MODULE_GRAPH_EDGE_LIMIT);
+  return { ...bound('module', [...nodes.values()], edges, MODULE_GRAPH_NODE_LIMIT, MODULE_GRAPH_EDGE_LIMIT), ...(input.contentScale ? { contentScale: input.contentScale } : {}) };
 }
 
 export function searchOntologyRecords(doc: OntologyDocument, query: string, moduleId?: string): Array<{
@@ -267,7 +303,8 @@ export function searchOntologyRecords(doc: OntologyDocument, query: string, modu
   const q = query.trim().toLocaleLowerCase();
   if (!q) return [];
   const rows = Object.values(doc.records).filter(r => {
-    if (r.status !== 'active' || (moduleId && (r.kind === 'module' ? r.id !== moduleId : r.moduleId !== moduleId))) return false;
+    if (r.status !== 'active' || (r.kind !== 'module' && doc.records[r.moduleId]?.status !== 'active')
+      || (moduleId && (r.kind === 'module' ? r.id !== moduleId : r.moduleId !== moduleId))) return false;
     const subject = r.kind === 'assertion' ? doc.records[r.subjectId] : undefined;
     const definition = r.kind === 'assertion' ? doc.records[r.definitionId] : undefined;
     const value = r.kind === 'assertion' ? r.object.kind === 'entity' ? doc.records[r.object.id] : r.object.value : undefined;

@@ -107,8 +107,10 @@ export async function listOntologyUsageReceipts(userId: string, taskRunId?: stri
   const rows = await listRecallJsonlRecords(userId, 'ontology-usage-receipts', 'events', 0);
   const latest = new Map<string, OntologyUsageReceipt>();
   for (const row of rows) {
-    const receipt = asReceipt(userId, row);
-    latest.set(receipt.id, receipt);
+    try {
+      const receipt = asReceipt(userId, row);
+      latest.set(receipt.id, receipt);
+    } catch { /* A damaged legacy row must not hide the remaining verified receipts. */ }
   }
   return [...latest.values()].filter(receipt => taskRunId === undefined || receipt.taskRunId === taskRunId);
 }

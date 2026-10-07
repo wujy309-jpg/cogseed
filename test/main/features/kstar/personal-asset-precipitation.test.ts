@@ -204,7 +204,7 @@ describe('跨类型去重集成：已有同主题资产时不产 personal', () =
       sourceRefs: [{ kind: 'execution', id: 'exec-dedup' }],
       evidenceRefs: [{ kind: 'execution', id: 'exec-dedup' }],
     });
-    await candidates.autoApplyRecallCandidate('user-dedup', c.id, { provenance: 'kstar' });
+    await candidates.promoteRecallCandidate('user-dedup', c.id, { actor: 'user', provenance: 'kstar' });
 
     // mock chats 返回"我以后的周报都要按这个格式"（同主题偏好）
     vi.doMock('../../../../src/main/features/chats', () => ({

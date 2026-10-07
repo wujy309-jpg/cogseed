@@ -1,4 +1,5 @@
 import { OntologyError } from './model';
+import { saveOntologyImportSource } from './import-source';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -45,6 +46,7 @@ export async function extractOntologyImportFile(filePath: string): Promise<{ nam
 export async function submitOntologyImport(userId: string, name: string, content: string, suggestedType: SaveRecallCandidateInput['suggestedType'] = 'fact'): Promise<{ submitted: number; total: number; candidateIds: string[] }> {
   const safeName = name.trim().slice(0, 240) || '导入资料';
   const chunks = splitOntologyImportText(content), candidateIds: string[] = [];
+  const source = await saveOntologyImportSource(userId, safeName, content);
   for (let index = 0; index < chunks.length; index++) {
     const partLabel = chunks.length > 1 ? `${safeName} (${index + 1}/${chunks.length})` : safeName;
     const key = createHash('sha256').update(JSON.stringify([userId, safeName, index, chunks[index]])).digest('hex').slice(0, 40);
@@ -52,12 +54,12 @@ export async function submitOntologyImport(userId: string, name: string, content
       const candidate = await submitCognitionCandidate(userId, {
         judgment: partLabel, value: chunks[index], summary: partLabel,
         evidenceSummary: `用户从本机导入资料：${partLabel}`,
-        suggestedType, suggestedScope: 'global', sourceRefs: [], manual: true,
+        suggestedType, suggestedScope: 'general', suggestedAction: 'create', sourceRefs: [{ kind: 'artifact_file', subtype: 'artifact', scope: 'personal', id: source.id, sourceVersion: source.fingerprint, title: safeName, excerpt: chunks[index].slice(0, 1500) }], manual: true,
         captureKey: `ontology-import-${key}`,
       });
       candidateIds.push(candidate.id);
     } catch {
-      throw new OntologyError('import_partial', `已送入${candidateIds.length}段资料；第${index + 1}段未完成。已送入内容可在“待我处理”查看后重试。`, { submitted: candidateIds.length, total: chunks.length, candidateIds });
+      throw new OntologyError('import_partial', `已送入${candidateIds.length}段资料；第${index + 1}段未完成。已送入内容可在“待我处理”查看后重试。`, { sourceId: source.id, submitted: candidateIds.length, total: chunks.length, candidateIds });
     }
   }
   return { submitted: candidateIds.length, total: chunks.length, candidateIds };

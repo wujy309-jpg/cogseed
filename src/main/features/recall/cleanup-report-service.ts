@@ -260,9 +260,17 @@ export async function runAssetCleanup(userId: string, options: RunCleanupOptions
     for (const asset of pool) {
       const normalized = normalizeAssetTitle(asset.title);
       if (!normalized || normalized === asset.title) continue;
+      if (options.trigger === 'inspection') {
+        const item: CleanupReportItem = { assetId: asset.id, kind: 'title_normalized', status: 'uncertain',
+          before: asset.title, after: normalized, reason: '自动检查只提出标题规范化建议，等待逐条确认' };
+        items.push(item);
+        uncertain.push({ assetId: asset.id, title: asset.title, question: `是否将标题改为「${normalized}」？`, reason: item.reason });
+        await patchReport(userId, reportId, () => ({ items: [...items], uncertain: [...uncertain] }));
+        continue;
+      }
       const anchor = abilityAssetActiveVersion(asset);
       try {
-        // actor='user'：这一轮是**用户发起**的，机械步骤由系统代执行。用 'system'
+        // actor='user' ：这一轮是**用户发起**的，机械步骤由系统代执行。用 'system'
         // 会撞"自动线必须带评审交接"的闸门，而给大扫除凭空造一个评审决定会污染
         // appliedReviewDecisionIds（与到期清理那次同一个理由）；台账的 reason 里
         // 写着报告号，谁发起的、哪一轮，一目了然。
@@ -317,6 +325,15 @@ export async function runAssetCleanup(userId: string, options: RunCleanupOptions
       const target = ordered[0];
       for (const source of ordered.slice(1)) {
         if (mergedIds.has(source.id) || source.id === target.id) continue;
+        if (options.trigger === 'inspection') {
+          const item: CleanupReportItem = { assetId: source.id, kind: 'merged_duplicate', status: 'uncertain',
+            before: '独立条目', after: `建议并入 ${target.id}`, mergedIntoAssetId: target.id,
+            reason: '同正文不构成合并授权；自动检查只报告，保留双方身份与内容' };
+          items.push(item);
+          uncertain.push({ assetId: source.id, title: source.title, question: `与「${target.title}」正文相同，是否需要人工核对身份与归并影响？`, reason: item.reason });
+          await patchReport(userId, reportId, () => ({ items: [...items], uncertain: [...uncertain] }));
+          continue;
+        }
         const anchor = abilityAssetActiveVersion(target);
         try {
           await mergeAbilityAssets(userId, source.id, target.id, {
@@ -409,6 +426,14 @@ export async function runAssetCleanup(userId: string, options: RunCleanupOptions
         .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name));
       if (consensus.length) {
         const names = consensus.map((entry) => entry.name);
+        if (options.trigger === 'inspection') {
+          const item: CleanupReportItem = { assetId: asset.id, kind: 'tag_added', status: 'uncertain',
+            before: '（未分类）', after: names.join('、'), reason: '自动检查只建议同源标签，等待逐条确认' };
+          items.push(item);
+          uncertain.push({ assetId: asset.id, title: asset.title, question: `是否补充标签「${names.join('、')}」？`, reason: item.reason });
+          await patchReport(userId, reportId, () => ({ items: [...items], uncertain: [...uncertain] }));
+          continue;
+        }
         const anchor = abilityAssetActiveVersion(asset);
         const strongest = consensus[0];
         try {

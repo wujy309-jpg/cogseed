@@ -127,6 +127,20 @@ describe('cognition_kernel/store — 统一认知库内核', () => {
     expect(loadCognitionStoreSync(UID).objects[Object.keys(doc.objects)[0]].version).toBe(2);
   });
 
+  it('永久回执达到容量时拒绝新写，但精确重放仍幂等且不改正文', async () => {
+    const { applyCognitionDelta, loadCognitionStoreSync } = await kernel();
+    const doc = loadCognitionStoreSync(UID);
+    const first = await build({ op: 'set', home: 'personal_fact', fieldName: '部门', after: '容量验收' });
+    expect(applyCognitionDelta(doc, first).applied).toBe(true);
+    for (let i = 0; i < 99999; i++) doc.deltaReceipts![`capacity-${i}`] = 'fixture';
+    const before = JSON.stringify(doc.objects);
+    expect(applyCognitionDelta(doc, first)).toMatchObject({ applied: false, duplicate: true });
+    const next = await build({ op: 'set', home: 'personal_fact', fieldName: '部门', after: '不能保存' });
+    expect(applyCognitionDelta(doc, next)).toMatchObject({ applied: false, reason: 'durable replay receipt capacity exceeded' });
+    expect(JSON.stringify(doc.objects)).toBe(before);
+    expect(doc.deltaReceipts![first.deltaId]).toBeTruthy();
+  });
+
   it('add/update/remove：升版、软删墓碑、删后拒改', async () => {
     const { applyCognitionDeltas, loadCognitionStoreSync } = await kernel();
     const add = await build({ op: 'add', home: 'rule', after: '对外报价不承诺交期' });
@@ -289,5 +303,67 @@ describe('cognition_kernel/store — 统一认知库内核', () => {
     expect(r3.ok).toBe(true);
     const after = loadCognitionStoreSync(UID).homes.find((h) => h.home === 'rule');
     expect(after?.store?.kind).toBe('rule');
+  });
+});
+
+
+describe('durable delta journal', () => {
+  it('keeps both versions of a same-object batch', async () => {
+    const k = await kernel();
+    const first = await build({ op: 'set', home: 'personal_fact', fieldName: '负责人', after: '甲' });
+    const second = await build({ op: 'set', home: 'personal_fact', fieldName: '负责人', after: '乙' });
+    const outcome = await k.applyCognitionDeltas(UID, [first, second]);
+    expect(outcome.ok).toBe(true);
+    const object = Object.values(k.loadCognitionStoreSync(UID).objects)[0];
+    expect(k.listCognitionVersions(UID, object.id).map(v => v.after)).toEqual(['甲', '乙']);
+  });
+  it('preserves readable history when projection fails, then retries without duplicates', async () => {
+    const k = await kernel();
+    const delta = await build({ op: 'add', home: 'rule', after: '持久化记录' });
+    fs.mkdirSync(path.dirname(storeFile()), { recursive: true });
+    fs.writeFileSync(versionsDir(), 'blocked');
+    const outcome = await k.applyCognitionDeltas(UID, [delta]);
+    expect(outcome).toMatchObject({ ok: true, pendingHistory: true });
+    const object = Object.values(k.loadCognitionStoreSync(UID).objects)[0];
+    expect(k.listCognitionVersions(UID, object.id)).toHaveLength(1);
+    fs.unlinkSync(versionsDir());
+    expect(await k.applyCognitionDeltas(UID, [delta])).toMatchObject({ ok: true, appliedCount: 0, pendingHistory: false });
+    expect(k.listCognitionVersions(UID, object.id)).toHaveLength(1);
+    expect(k.loadCognitionStoreSync(UID).pendingJournal).toEqual([]);
+  });
+  it('rejects reuse of a durable delta identity with changed content', async () => {
+    const k = await kernel();
+    const delta = await build({ op: 'add', home: 'rule', after: '原始' });
+    expect((await k.applyCognitionDeltas(UID, [delta])).ok).toBe(true);
+    expect(await k.applyCognitionDeltas(UID, [{ ...delta, after: '篡改' }])).toMatchObject({ ok: false, appliedCount: 0 });
+    expect(Object.values(k.loadCognitionStoreSync(UID).objects)[0].statement).toBe('原始');
+  });
+});
+
+
+describe('崩溃后日志与重放边界', () => {
+  it('残缺 JSONL 尾行不会吞掉后续有效版本', async () => {
+    const k = await kernel();
+    const first = await build({ op: 'set', home: 'personal_fact', fieldName: '测试字段', after: '原始' });
+    await k.applyCognitionDeltas(UID, [first]);
+    const object = Object.values(k.loadCognitionStoreSync(UID).objects)[0];
+    fs.appendFileSync(path.join(versionsDir(), object.id + '.jsonl'), '{"journalKey":"partial');
+    const next = await build({ op: 'set', home: 'personal_fact', fieldName: '测试字段', after: '后续' });
+    expect((await k.applyCognitionDeltas(UID, [next])).ok).toBe(true);
+    expect(k.listCognitionVersions(UID, object.id).map(line => line.after)).toEqual(['原始', '后续']);
+  });
+  it('超过快速索引容量后，旧提交仍不能重放生效', async () => {
+    const k = await kernel();
+    const deltas = await Promise.all(Array.from({ length: 502 }, (_, index) => build({ op: 'set', home: 'personal_fact', fieldName: '重放验收', after: String(index) })));
+    expect((await k.applyCognitionDeltas(UID, deltas)).ok).toBe(true);
+    const replay = await k.applyCognitionDeltas(UID, [deltas[0]]);
+    expect(replay).toMatchObject({ ok: true, appliedCount: 0 });
+    expect(Object.values(k.loadCognitionStoreSync(UID).objects)[0]).toMatchObject({ statement: '501', version: 502 });
+  }, 30000);
+  it('无凭证的自动值拒绝进入权威版本', async () => {
+    const k = await kernel();
+    const delta = await build({ op: 'add', home: 'rule', after: '未确认建议', origin: 'gap', status: 'applied' });
+    expect(await k.applyCognitionDeltas(UID, [delta])).toMatchObject({ ok: false, appliedCount: 0 });
+    expect(fs.existsSync(storeFile())).toBe(false);
   });
 });

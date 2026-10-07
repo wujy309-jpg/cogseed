@@ -12,6 +12,7 @@
  * 断言按 fieldName 寻址。来源、版本或治理状态变化时要求重新检查。
  */
 
+import { createHash } from 'node:crypto';
 import { buildDelta } from './delta';
 import { resolvePersonalFields } from './resolve';
 import { resolveAssetSlots, resolveOntologySlots, type AssetSlotResolution, type OntologySlotResolution } from './slots';
@@ -175,7 +176,7 @@ export async function backfillFieldValue(uid: string, input: BackfillFieldInput)
     target: { home: 'personal_fact', fieldName },
     origin: 'gap',
     after: value,
-    evidenceRefs: input.evidenceRefs ?? [],
+    evidenceRefs: input.evidenceRefs?.length ? input.evidenceRefs : [{ kind: 'user_input', id: `backfill-${createHash('sha256').update(JSON.stringify([uid, fieldName, value])).digest('hex')}`, title: value.slice(0, 200) }],
     status: 'applied',
   });
 

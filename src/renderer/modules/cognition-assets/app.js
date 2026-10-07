@@ -297,7 +297,7 @@
           case 'cand-create': router.go({ name: 'overview', candCreate: '1' }); break;
           case 'cand-create-cancel': router.go({ name: 'overview', candCreate: '' }, { replace: true }); break;
           case 'cand-create-save': await A.saveManualCandidate(readCandidateForm(el) || undefined); break;
-          case 'open-ontology': await NS.openPersonalOntology({ moduleId: el.dataset.moduleId || '', recordId: el.dataset.recordId || '' }); break;
+          case 'open-ontology': await NS.openPersonalOntology({ moduleId: el.dataset.moduleId || '', recordId: el.dataset.recordId || '', recordVersion: el.dataset.recordVersion || '' }); break;
           case 'open-asset': router.go({ name: 'overview', assetId: id }); break;
           case 'open-overview': router.go({ name: 'overview' }); break;
           case 'cand-adopt-with-form': await A.adoptCandidate(id, readCandidateForm(el) || undefined); break;

@@ -174,7 +174,7 @@ export interface DeltaTarget {
 }
 
 export interface DeltaEvidenceRef {
-  kind: 'session' | 'message' | 'asset' | 'task_run' | 'meeting' | 'file';
+  kind: 'session' | 'message' | 'asset' | 'task_run' | 'meeting' | 'file' | 'user_input' | 'candidate';
   id: string;
   title?: string;
 }

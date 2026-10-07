@@ -660,7 +660,7 @@ function normalizeCandidateStatus(value: unknown): RecallCandidateStatus {
   if (value === 'pending') return 'pending_review';
   if (value === 'promoted') return 'confirmed';
   // 历史兼容：早期实现给语义重复候选写过未声明的 `superseded`。现在
-  // semanticDedupBeforePromote 走的是 mergedInto + decideWithoutAsset('ignored')，
+  // 历史语义合并使用 mergedInto + decideWithoutAsset('ignored')，
   // 全仓已无写入方，所以这里只做旧数据迁移——迁成 ignored 后它本来就是终态，
   // isTerminalCandidate 无需改动。落到下面的白名单里再放行一次 superseded
   // 是不可达分支，删掉，免得读回行为看起来有两套。
@@ -797,19 +797,9 @@ export async function ingestImmediateKnowledge(
   }
   if (input.requireUserReview) return { mode: 'pending-review', candidateId: candidate.id };
   try {
-    const applied = await autoApplyRecallCandidate(userId, candidate.id, { provenance: 'capture' });
+    const applied = await promoteRecallCandidate(userId, candidate.id, { actor: 'user', decisionType: 'accept', decisionReason: 'User explicitly requested saving this exact content.' });
     if (applied.asset?.id) return { mode: 'created', assetId: applied.asset.id, candidateId: candidate.id };
-    // 查重命中既有资产（L1/L2）→ 已改写为 update 候选，等你确认后融合出新版本。
-    if (applied.updateCandidate?.targetAssetId) {
-      return { mode: 'fused-update-pending', candidateId: candidate.id };
-    }
-    // When semantic dedup merges this new candidate into an existing candidate,
-    // point callers at the surviving review item. The newly ingested candidate
-    // is terminal (`ignored`) and cannot be the user's next review destination.
-    return {
-      mode: 'merged',
-      candidateId: applied.mergedIntoCandidateId || applied.candidate.id,
-    };
+    return { mode: 'pending-review', candidateId: candidate.id };
   } catch (error) {
     // 自动晋升受阻不等于候选写入失败：内容已经进入候选池，交给「待我处理」
     // 让用户补充边界/修改类型。项目事实误入个人档就是这类准入阻塞。
@@ -2010,7 +2000,7 @@ async function decideWithoutAsset(
   return asCandidate(updated);
 }
 
-/** Apply an extracted candidate under the user's automatic-capture policy. */
+/** 系统只核验已确认候选的现有资产；缺失资产留给用户处理，系统不得重新发布。 */
 export async function autoApplyRecallCandidate(
   userId: string,
   candidateId: string,
@@ -2022,98 +2012,21 @@ export async function autoApplyRecallCandidate(
   mergedIntoCandidateId?: string;
   updateCandidate?: RecallCandidateRecord;
 }> {
-  // 两条系统线共用这个出口，来源要一路带到 lifecycleStatus，否则 KStar
-  // 自进化沉淀会被记成会话自动抽取。缺省按 capture 线处理。
-  const provenance: RecallPromotionProvenance = opts.provenance || 'capture';
   const candidate = await readRecallCandidate(userId, candidateId);
+  if (candidate.status !== 'confirmed') return { candidate };
   const policy = evaluatePromotionPolicy(candidate);
   if (policy.action === 'pause') throw new PromotionPausedError(policy.reason);
-  if (candidate.status === 'confirmed') {
-    try {
-      const promoted = await promoteRecallCandidate(userId, candidate.id, { actor: 'system', provenance });
-      return { candidate: promoted.candidate, asset: promoted.asset };
-    } catch (error) {
-      const retryable = await readRecallCandidate(userId, candidate.id);
-      if (retryable.status !== 'failed') throw error;
-      const recovered = await promoteRecallCandidate(userId, retryable.id, { actor: 'system', provenance });
-      return { candidate: recovered.candidate, asset: recovered.asset };
-    }
-  }
-  if (!isAutoCaptureEligible(candidate)) throw new Error('candidate is not ready for automatic capture');
-  if (candidate.risk === 'high') {
-    throw new Error('high-risk candidate requires an independent user risk gate');
-  }
-  // N-2: 语义复核（模型级，SEMANTIC_RULES 闭集）。自动晋升是无人审阅的
-  // 路径，语义发现（越权改写/敏感个人信息/疑似凭据/越界声称）应把候选
-  // 留给用户决定，而不是静默晋升。复核失败（模型不可用）不阻断——退化
-  // 为纯确定性闸（现状），只记一条警告。deferred 是**系统专用保留态**
-  //（2026-10-02：用户侧「稍后处理」已整体删除——子安拍板无用），只有
-  // 语义复核会写它；候选以 deferred 留在候选列表（可见、可确认/拒绝）。
   try {
-    const { reviewCandidateSemantically } = await import('../cognition/semantic-review');
-    const reviewed = await reviewCandidateSemantically(userId, {
-      title: candidate.summary,
-      summary: candidate.value,
-      body: candidate.judgment,
+    const promoted = await promoteRecallCandidate(userId, candidate.id, {
+      actor: 'system', provenance: opts.provenance || 'capture',
     });
-    if (reviewed.ok && reviewed.findings.some((finding) => finding.level !== 'LOW')) {
-      const { writeReviewDecision } = await import('../cognition/review-decision');
-      await writeReviewDecision(userId, {
-        targetRef: `recall_candidate:${candidate.id}`,
-        decisionType: 'defer',
-        decision: 'semantic review flag',
-        antecedentRef: candidate.id,
-        scope: candidate.suggestedScope,
-        reason: `Semantic review flagged ${reviewed.findings.map((finding) => finding.rule).join(', ')}; kept for user decision.`,
-        actor: 'system',
-      }).catch(() => undefined);
-      await updateRecallJsonRecord(userId, 'candidates', candidate.id, (current) => {
-        if (!current) return undefined;
-        // 锁内终态复核（P-r1-97）：语义复核是模型级调用，秒级窗口内用户可能
-        // 已经 reject/confirm/ignore——用户的处置优先，后台线不得把终态覆写回
-        // deferred（终态复活回待办）。幂等返回原记录，与 decideWithoutAsset
-        // /promote 的锁内复核同款口径。
-        if (isTerminalCandidate(normalizeCandidateStatus(current.status))) return current;
-        return {
-          ...current,
-          status: 'deferred',
-          failureCode: 'semantic_review_flagged',
-          failureMessage: `Semantic review flagged: ${reviewed.findings.map((finding) => finding.rule).join(', ')}`,
-          updatedAt: new Date().toISOString(),
-        };
-      });
-      log.info('recall candidate deferred by semantic review', {
-        candidateId: candidate.id,
-        rules: reviewed.findings.map((finding) => finding.rule),
-      });
-      return { candidate: await readRecallCandidate(userId, candidate.id) };
-    }
+    return { candidate: promoted.candidate, asset: promoted.asset };
   } catch (error) {
-    log.warn('recall candidate semantic review degraded; proceeding with deterministic gate', {
-      candidateId: candidate.id,
-      error: (error as Error).message,
-    });
+    const retryable = await readRecallCandidate(userId, candidate.id);
+    if (retryable.status !== 'failed') throw error;
+    // 恢复缺失资产仍需用户核对，failed 状态不能作为新的系统授权。
+    return { candidate: retryable };
   }
-  // 晋升前资产语义查重 + 质量融合（设计 §4.7/§4.9）。默认开启；查重不可用时
-  // semanticDedupBeforePromote 抛 SemanticDedupUnavailableError，自动晋升中止。
-  if (opts.semanticDedup !== false) {
-    const deduped = await semanticDedupBeforePromote(userId, candidate);
-    if (deduped) return deduped;
-  }
-  const reason = 'automatic capture policy';
-  if (candidate.suggestedAction === 'reject') {
-    return { candidate: await decideWithoutAsset(userId, candidate.id, 'reject', 'rejected', reason, 'system') };
-  }
-  if (candidate.suggestedAction === 'keep_current') {
-    return { candidate: await decideWithoutAsset(userId, candidate.id, 'keep_current', 'ignored', reason, 'system') };
-  }
-  const promoted = await promoteRecallCandidate(userId, candidate.id, {
-    actor: 'system',
-    provenance,
-    decisionType: 'accept',
-    decisionReason: reason,
-  });
-  return { candidate: promoted.candidate, asset: promoted.asset };
 }
 
 /** 语义查重辅助：加载候选池 + 资产库的可比文本。
@@ -2136,157 +2049,6 @@ async function loadDedupPools(userId: string): Promise<{
       .filter((a) => a.status !== 'deleted' && a.status !== 'purged' && a.status !== 'revoked')
       .map((a) => ({ id: a.id, text: String(a.statement || a.title || ''), ...(a.scopePolicy ? { scopePolicy: a.scopePolicy } : {}) })),
   };
-}
-
-/** 把候选改写为"更新目标资产"形态（L1 重复命中与 L2 质量更优共用）。
- *  不直接改资产——update 候选仍要过确认闸门，由融合路径合成新版本。 */
-async function rewriteCandidateAsAssetUpdate(
-  userId: string,
-  candidate: RecallCandidateRecord,
-  asset: RecallAbilityAssetRecord,
-): Promise<RecallCandidateRecord> {
-  const updateCandidate = await updateRecallCandidate(userId, candidate.id, {
-    judgment: candidate.judgment,
-    value: candidate.value,
-    summary: candidate.summary,
-    uncertainty: candidate.uncertainty,
-    // 更新的是 asset 这条资产，类型跟着目标走（与下面 applicableWhen /
-    // forbiddenWhen 同样的继承口径）。用候选自带的类型会在确认守卫处撞上
-    // type mismatch，这条融合路径就永远走不完。
-    suggestedType: asset.type,
-    suggestedScope: candidate.suggestedScope,
-    suggestedAction: 'update',
-    risk: candidate.risk,
-    targetAssetId: asset.id,
-    sourceRefs: candidate.sourceRefs,
-    evidenceRefs: candidate.evidenceRefs,
-    expiresAt: candidate.expiresAt,
-    taskRunId: candidate.taskRunId,
-    ...(candidate.applicableWhen !== undefined
-      ? { applicableWhen: candidate.applicableWhen }
-      : asset.applicableWhen !== undefined ? { applicableWhen: asset.applicableWhen } : {}),
-    ...(candidate.forbiddenWhen !== undefined
-      ? { forbiddenWhen: candidate.forbiddenWhen }
-      : asset.forbiddenWhen !== undefined ? { forbiddenWhen: asset.forbiddenWhen } : {}),
-  });
-  await updateRecallJsonRecord(userId, 'candidates', candidate.id, (current) => ({
-    ...(current || updateCandidate),
-    mergedIntoAssetId: asset.id,
-  }));
-  return readRecallCandidate(userId, candidate.id);
-}
-
-/** 晋升前资产语义查重（设计 §4.7/§4.9 ＋ 2026-09-19 查重金字塔 L2）。
- *  返回 null 表示无语义重复 → 调用方继续正常 promote。
- *  命中正式资产时只生成 update 候选，不能在没有 ReviewDecision 和交接回执的
- *  情况下直接改资产；命中候选时合并证据并正常结束重复候选。 */
-async function semanticDedupBeforePromote(
-  userId: string,
-  candidate: RecallCandidateRecord,
-): Promise<{
-  candidate: RecallCandidateRecord;
-  asset?: RecallAbilityAssetRecord;
-  mergedIntoAssetId?: string;
-  mergedIntoCandidateId?: string;
-  updateCandidate?: RecallCandidateRecord;
-} | null> {
-  const { findSemanticDuplicate, assetQualityScore, QUALITY_GAP } = await import('./similarity');
-  const pools = await loadDedupPools(userId);
-  const scopeIdentity = scopePolicyIdentity(candidate.scopePolicy);
-  const outcome = await findSemanticDuplicate(userId, {
-    text: String(candidate.judgment || ''),
-    candidateTexts: pools.candidateTexts
-      .filter((c) => c.id !== candidate.id && scopePolicyIdentity(c.scopePolicy) === scopeIdentity)
-      .map(({ id, text }) => ({ id, text })),
-    assetTexts: pools.assetTexts
-      .filter((asset) => scopePolicyIdentity(asset.scopePolicy) === scopeIdentity)
-      .map(({ id, text }) => ({ id, text })),
-    excludeIds: new Set([candidate.id]),
-  });
-  // 查重没做成 ≠ 没有重复。embedding 不可用时不能当作"查过且干净"继续晋升，
-  // 否则两条沉淀线会无声地各写一条讲同一件事的正式资产（指纹拦不住，两边
-  // judgment 文本几乎从不逐字相同）。这里抛错，让自动线把候选留在池子里等
-  // 人工确认；用户手动确认的晋升路径不经过这里，不受影响。
-  if (outcome.status === 'degraded') {
-    throw new SemanticDedupUnavailableError(outcome.reason);
-  }
-  if (outcome.status === 'no_match') {
-    // L2 相关层（查重金字塔）：0.70–0.85 的相关资产不是重复，但当新内容
-    // 质量显著更优（差 ≥ QUALITY_GAP）时，它的增量值得并入旧资产——走与
-    // 重复命中相同的 update 候选路径，由确认闸门与融合生成器合成新版本，
-    // 而不是放任新开一条讲相关事情的零散资产。差距不足的相关命中留给 L3
-    // 归族，此轮放行。
-    const related = outcome.related;
-    if (related?.kind === 'asset') {
-      const relatedAsset = await readAbilityAssetSafe(userId, related.id);
-      if (relatedAsset) {
-        const now = Date.now();
-        const candidateScore = assetQualityScore({
-          text: String(candidate.judgment || ''),
-          id: candidate.id,
-          kind: 'candidate',
-          evidenceCount: (candidate.evidenceRefs || []).length,
-          sourceKinds: new Set((candidate.evidenceRefs || []).map((ref) => ref.kind)),
-          ageMs: now - Date.parse(candidate.createdAt || ''),
-          risk: candidate.risk,
-          structureBonus: Boolean(candidate.applicableWhen?.length || candidate.forbiddenWhen?.length),
-        });
-        const assetScore = assetQualityScore({
-          text: String(relatedAsset.statement || relatedAsset.title || ''),
-          id: relatedAsset.id,
-          kind: 'asset',
-          evidenceCount: (relatedAsset.evidenceRefs || []).length,
-          sourceKinds: new Set((relatedAsset.evidenceRefs || []).map((ref) => ref.kind)),
-          ageMs: now - Date.parse(relatedAsset.updatedAt || ''),
-          maturity: relatedAsset.maturity,
-          structureBonus: Boolean(relatedAsset.applicableWhen?.length || relatedAsset.forbiddenWhen?.length),
-        });
-        if (candidateScore - assetScore >= QUALITY_GAP) {
-          const linked = await rewriteCandidateAsAssetUpdate(userId, candidate, relatedAsset);
-          return { candidate: linked, updateCandidate: linked, mergedIntoAssetId: relatedAsset.id };
-        }
-      }
-    }
-    return null;
-  }
-  const match = outcome.match;
-  if (match.kind === 'asset') {
-    const asset = await readAbilityAssetSafe(userId, match.id);
-    if (!asset) return null;
-    const linked = await rewriteCandidateAsAssetUpdate(userId, candidate, asset);
-    return { candidate: linked, updateCandidate: linked, mergedIntoAssetId: asset.id };
-  }
-  // 命中候选：证据并入已有候选（语义合并），候选标记 mergedInto
-  const existingCandidate = await readRecallCandidate(userId, match.id).catch(() => undefined);
-  if (existingCandidate) {
-    const merged = await updateRecallJsonRecord(userId, 'candidates', existingCandidate.id, (current) => {
-      const cur = current ? asCandidate(current) : existingCandidate;
-      const mergedSources = mergeSourceRefs(cur.sourceRefs || [], candidate.sourceRefs || []);
-      const mergedEvidence = mergeSourceRefs(cur.evidenceRefs || [], candidate.evidenceRefs || []);
-      const upgraded = cur.status === 'weak_observation' || cur.status === 'observed' ? 'pending_review' : cur.status;
-      return { ...cur, evidenceRefs: mergedEvidence, sourceRefs: mergedSources, status: upgraded };
-    });
-    await updateRecallJsonRecord(userId, 'candidates', candidate.id, (current) => {
-      const cur = current ? asCandidate(current) : candidate;
-      return { ...cur, mergedInto: existingCandidate.id };
-    });
-    const ignored = await decideWithoutAsset(
-      userId,
-      candidate.id,
-      'ignore',
-      'ignored',
-      `semantic duplicate of candidate ${existingCandidate.id}`,
-      'system',
-    );
-    return {
-      candidate: ignored,
-      mergedIntoCandidateId: asCandidate(merged).id,
-      // Compatibility for callers that historically collected every dedup
-      // target in one list. New code should prefer mergedIntoCandidateId.
-      mergedIntoAssetId: existingCandidate.id,
-    };
-  }
-  return null;
 }
 
 async function readAbilityAssetSafe(userId: string, assetId: string): Promise<RecallAbilityAssetRecord | undefined> {
@@ -2555,6 +2317,7 @@ export async function promoteRecallCandidate(
   const relationContract = readAbilityAssetRelationContract(options as Record<string, unknown>);
   const optionSemantics = readAbilityAssetSemantics(options as unknown as Record<string, unknown>);
   const preflight = await readRecallCandidate(userId, candidateId);
+  if (options.actor === 'system' && preflight.status !== 'confirmed') throw new PromotionPausedError('user_confirmation_required');
   // 版本组防分裂闸门（2026-09-16）：用户确认 create 候选时若与现有资产语义
   // 高度相似，先问一句（专用错误码）——前端提示"新条目还是改为更新"，确认
   // 新条目后带 forceCreateSimilar 重试。带 update 目标/自动线不经过这里；

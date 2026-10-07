@@ -51,11 +51,11 @@ describe('i18n › isLang', () => {
 });
 
 describe('i18n › isUiLang', () => {
-  it('accepts only the languages exposed by the first UI release', () => {
+  it('accepts all four product UI languages', () => {
     expect(isUiLang('zh')).toBe(true);
     expect(isUiLang('en')).toBe(true);
-    expect(isUiLang('ja')).toBe(false);
-    expect(isUiLang('pt')).toBe(false);
+    expect(isUiLang('ja')).toBe(true);
+    expect(isUiLang('pt')).toBe(true);
     expect(isUiLang('fr')).toBe(false);
   });
 });
@@ -151,8 +151,8 @@ describe('i18n › renderer boot bundle', () => {
     expect(Object.keys(getRendererBootTables('zh')).sort()).toEqual(['en', 'zh']);
   });
 
-  it('exposes only Chinese and English renderer tables', () => {
-    expect(Object.keys(getRendererTables()).sort()).toEqual(['en', 'zh']);
+  it('exposes all four supported renderer tables', () => {
+    expect(Object.keys(getRendererTables()).sort()).toEqual(['en', 'ja', 'pt', 'zh']);
   });
 });
 
