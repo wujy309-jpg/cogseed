@@ -1,7 +1,8 @@
 import { createLogger } from '../../logger';
 import { safeId } from '../../storage';
 import { classifyAbilityAssetWriteFailure, readAbilityAsset } from '../recall/asset-service';
-import { alignUpdateCandidateType, autoApplyRecallCandidate, saveRecallCandidate } from '../recall/candidate-service';
+import { alignUpdateCandidateType, autoApplyRecallCandidate } from '../recall/candidate-service';
+import { submitCognitionCandidate } from '../cognition/candidate-submission';
 import { createExperience, type ExperienceRecord } from '../recall/experience-service';
 import { normalizeCognitionSourceRefs, type CognitionSourceRef } from '../recall/source-service';
 import { recallFieldsForKstarProposal } from './candidate-contract';
@@ -455,9 +456,10 @@ export async function precipitateDirectExperienceFromSource(
         result.experienceIds.push(experience.id);
         continue;
       }
-      // 1. Enter the unified candidate pool (exact-fingerprint dedup inside).
-      //    saveRecallCandidate returns the EXISTING candidate when the exact
-      //    fingerprint matched (merged evidence), or a fresh one otherwise.
+      // 1. Enter the unified extraction pipeline (KSTAR = its adapter): the
+      //    submission goes through submitCognitionCandidate, never straight to
+      //    saveRecallCandidate. Same dedup semantics: the EXISTING candidate is
+      //    returned when the exact fingerprint matched (merged evidence).
       const input = await proposalToCandidateInput(userId, source, proposal, index);
       // Attribution names the gap, not the target's storage type. A knowledge
       // gap in an existing rule must not turn its update into a personal fact.
@@ -467,7 +469,7 @@ export async function precipitateDirectExperienceFromSource(
         const target = await readAbilityAsset(userId, action.targetAssetId);
         input.suggestedType = target.type;
       }
-      const candidate = await saveRecallCandidate(userId, input);
+      const candidate = await submitCognitionCandidate(userId, input);
       result.candidateIds.push(candidate.id);
 
       // 2. Unified promotion exit: semantic dedup + quality fusion against

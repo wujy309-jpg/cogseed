@@ -1,9 +1,6 @@
 import { safeId } from '../../storage';
-import {
-  alignUpdateCandidateType,
-  saveRecallCandidate,
-  type RecallCandidateRecord,
-} from '../recall/candidate-service';
+import { submitCognitionCandidate } from '../cognition/candidate-submission';
+import { alignUpdateCandidateType, type RecallCandidateRecord } from '../recall/candidate-service';
 import type { KstarCandidateProposal } from './types';
 import { recallFieldsForKstarProposal } from './candidate-contract';
 
@@ -26,9 +23,9 @@ export async function saveKstarCandidateProposals(
       suggestedAction: action.suggestedAction,
       ...(action.targetAssetId ? { targetAssetId: action.targetAssetId } : {}),
     });
-    candidates.push(await saveRecallCandidate(userId, {
+    candidates.push(await submitCognitionCandidate(userId, {
       judgment: proposal.judgment,
-      // value = judgment：saveRecallCandidate 的 reviewReady 要求 value 非空
+      // value = judgment：候选保存的 reviewReady 要求 value 非空
       // （空 → weak_observation）；promote 时 statement 拼接有
       // value !== judgment 检查——相等则不拼，statement 保持纯净 lesson。
       // 不传时 value 默认成 summary（标题），promote 会把标题残片拼进

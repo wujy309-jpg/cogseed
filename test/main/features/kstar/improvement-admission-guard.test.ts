@@ -233,16 +233,11 @@ function stringLiteralUnionOfField(code: string, field: string): string[] {
 
 describe('T046 ① 两条沉淀线都经同一个准入门', () => {
   /** 允许写候选的 kstar 文件（唯一出口 + 零调用点的历史桥）：每项都必须给理由。 */
-  const candidateWriteAllowlist: Array<{ file: string; why: string }> = [
-    {
-      file: F.direct,
-      why: '两条沉淀线共用的**唯一候选出口**：`admitKstarProposals` 在此调用，`saveRecallCandidate` 排在它之后（放行的才落候选）。',
-    },
-    {
-      file: F.bridge,
-      why: '历史 drain 桥（`saveKstarCandidateProposals`）：`src/main` 内**零调用点**（下一条断言钉住），生产不可达；一旦被接线必须先接准入门。',
-    },
-  ];
+  // 2026-10-07 收敛（SPEC §3 提取管线唯一）：kstar 域不再直调
+  // `saveRecallCandidate`——KSTAR 的候选提交是统一提取管线（cognition/
+  // candidate-submission → routeAndSubmit）的子线程/适配器。白名单随之
+  // 清空：直调本身就是漂移，不再需要"允许的直调者"。
+  const candidateWriteAllowlist: Array<{ file: string; why: string }> = [];
 
   it('门的实现与调用点各只有一处，且两条线都路由到它', () => {
     const mainFiles = mainTsFiles();
@@ -274,14 +269,13 @@ describe('T046 ① 两条沉淀线都经同一个准入门', () => {
     expect(sliceFunctionBody(direct, 'precipitateDirectExperienceAssets'), '直通线入口必须调两条线共用的提交出口')
       .toContain('precipitateDirectExperienceFromSource(');
 
-    // kstar 域内允许写候选的文件 = 显式清单（新增第三个写入者 → 红）。
+    // kstar 域内不得直调 saveRecallCandidate / saveKstarCandidateProposals（=0）；
+    // 候选提交一律过统一提取入口 submitCognitionCandidate（提取管线唯一的子线程）。
     const writers = kstarCandidateWriters();
-    expect(writers, 'kstar 域内的候选写入者只有显式清单里的两个（新增写入者必须显式登记并说明它怎么过准入门）')
+    expect(writers, 'kstar 域内不得直调 saveRecallCandidate/saveKstarCandidateProposals——KSTAR 提交必须过统一提取入口 submitCognitionCandidate（直调即漂移）')
       .toEqual(candidateWriteAllowlist.map((entry) => entry.file).sort());
-    for (const entry of candidateWriteAllowlist) {
-      expect(entry.why.length, `${entry.file} 必须在允许清单里写清为什么允许`)
-        .toBeGreaterThan(20);
-    }
+    expect(callSites(stripComments(readSource(F.direct)), 'submitCognitionCandidate'), '唯一候选出口必须经统一提取入口提交').toBeGreaterThan(0);
+    expect(callSites(stripComments(readSource(F.bridge)), 'submitCognitionCandidate'), '历史桥与生产出口同契约，都走统一提取入口').toBeGreaterThan(0);
 
     // 历史桥必须保持不可达：否则它就是绕过准入门、不经 #1 出口的第二条候选写入路径。
     expect(callSites(stripComments(readSource(F.bridge)), 'saveKstarCandidateProposals'), '历史桥自身只有定义，没有自调用')
@@ -336,9 +330,10 @@ describe('T046 ① 两条沉淀线都经同一个准入门', () => {
 
     const exitBody = sliceFunctionBody(stripComments(readSource(F.direct)), 'precipitateDirectExperienceFromSource');
     const gateAt = exitBody.indexOf('admitKstarProposals(');
-    const writeAt = exitBody.indexOf('saveRecallCandidate(');
+    // 2026-10-07：候选写入改经统一提取入口（提取管线唯一的 KSTAR 适配器）。
+    const writeAt = exitBody.indexOf('submitCognitionCandidate(');
     expect(gateAt, '唯一出口里必须有准入门调用').toBeGreaterThan(-1);
-    expect(writeAt, '唯一出口里必须有候选写入').toBeGreaterThan(-1);
+    expect(writeAt, '唯一出口里必须有候选写入（统一提取入口）').toBeGreaterThan(-1);
     expect(gateAt, '准入必须排在写候选之前（先过门再写）').toBeLessThan(writeAt);
 
     const between = exitBody.slice(gateAt, writeAt);
