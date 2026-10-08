@@ -556,3 +556,16 @@ export function assessRecallCaptureCandidateQuality(
     automaticIneligibilityReasons,
   };
 }
+
+/** 一次任务的操作限制不能自动变成长期规则；不按验收/调试等主题词过滤。 */
+export function isTaskLocalRuleProposal(
+  candidate: RecallCaptureCandidateQualityInput,
+  messages: readonly RecallCaptureScreeningMessage[],
+): boolean {
+  if (candidate.suggestedType !== 'rule' || (candidate.suggestedAction && candidate.suggestedAction !== 'create')) return false;
+  const users = messages.filter(message => message.role === 'user');
+  if (!users.length) return false;
+  const localBoundary = /(?:本次|这次|当前(?:回合|任务|对话)|この(?:タスク|会話)|今回|\b(?:this (?:task|turn|conversation)|for this run|nesta (?:tarefa|conversa))\b).{0,80}(?:只|仅|不要|禁止|不(?:得|允许|使用|执行)|だけ|のみ|禁止|\b(?:only|do not|must not|apenas|somente|não))|仅限(?:本次|这次)/i;
+  return users.some(message => localBoundary.test(message.text))
+    && users.every(message => !FUTURE_OR_REUSE_INTENT_PATTERN.test(message.text) && !STABLE_PREFERENCE_PATTERN.test(message.text));
+}

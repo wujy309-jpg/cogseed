@@ -628,10 +628,10 @@
        承载「有真实任务使用记录的资产数」（与枝牌同一视觉语言），整冠可点=已验证资产，
        落点「我的认知」默认按最近真实使用排（018 T021）。 */
     const crownTitle = validated
-      ? T('cognition.tree_crown_validated', '被真用过 {n}', { n: String(validated) })
-      : T('cognition.tree_crown_empty', '还没有被真用过的');
+      ? T('cognition.tree_crown_validated', '有带入或读取记录 {n} 条', { n: String(validated) })
+      : T('cognition.tree_crown_empty', '暂无带入或读取记录');
     const pillY = crownCy - 20;
-    g += `<g class="spot" ${roleBtn(`data-act="open-overview" data-title="${esc(crownTitle)}" data-sub="${esc(T('cognition.tree_crown_sub', '被真用过的都在树冠——点开按最近真实使用排'))}" aria-label="${esc(crownTitle)}"`)}>
+    g += `<g class="spot" ${roleBtn(`data-act="open-overview" data-title="${esc(crownTitle)}" data-sub="${esc(T('cognition.tree_crown_sub', '点开查看资产列表及带入或读取记录'))}" aria-label="${esc(crownTitle)}"`)}>
       <circle cx="${cx}" cy="${crownCy}" r="118" fill="url(#ca-crown-grad)"/>
       <circle cx="${cx - 150}" cy="${crownCy + 30}" r="80" fill="url(#ca-crown-grad)"/>
       <circle cx="${cx + 150}" cy="${crownCy + 30}" r="80" fill="url(#ca-crown-grad)"/>
@@ -644,7 +644,7 @@
       <rect x="${cx - 85}" y="${pillY}" width="170" height="40" rx="20" class="branch-plate"/>
       <circle cx="${cx - 55}" cy="${pillY + 20}" r="5" class="crown-dot"/>
       <text x="${cx + 8}" y="${pillY + 26}" text-anchor="middle" class="branch-plate-name">${esc(crownTitle)}</text>
-      <text x="${cx}" y="${pillY + 66}" text-anchor="middle" class="crown-sub">${esc(T('cognition.tree_crown_sub', '被真用过的都在树冠——点开按最近真实使用排'))}</text>
+      <text x="${cx}" y="${pillY + 66}" text-anchor="middle" class="crown-sub">${esc(T('cognition.tree_crown_sub', '点开查看资产列表及带入或读取记录'))}</text>
     </g>`;
 
     /* 树干：有机锥形 + 竖排「本体」（点开进入多领域本体总览）。 */
@@ -848,8 +848,8 @@
   /** 「被任务用过」计数（唯一公式，列表行 / 目录行 / 详情摘要共用；原「被带入任务」）：
    *  白名单事件（来自主进程）+ 防重复——一次带入在数据层会产生两条记录
    *  （projection_confirmed 与同投影的 usage_recorded/injected），必须按投影去重，
-   *  否则一次带入被数成两次。没有投影关联的 usage 行只在明确是"另一条路线"
-   *  （模型自读 / 派发 / 迁移核对 / 你的评价）时才另计；否则视作该投影自身的记录，
+   *  否则一次带入被数成两次。没有投影关联的 usage 行按明确曝光路线计入；反馈不计数。明确是"另一条路线"
+   *  （注入 / 模型自读 / 派发 / 迁移核对）时才另计；否则视作该投影自身的记录，
    *  **宁可少算不多算**。撤销事件单列不计。 */
   function assetProofItems(assetId) {
     const timeline = S.assetTimeline;
@@ -858,23 +858,24 @@
     return S.proofs;
   }
 
-  function broughtInCountFor(assetId, proofItems) {
+  function taskExposureProofs(assetId, proofItems) {
     const realKinds = new Set(Array.isArray(S.realUsageKinds) ? S.realUsageKinds : []);
-    const items = (Array.isArray(proofItems) ? proofItems : S.proofs).filter((proof) => realKinds.has(String(proof.kind || ''))
-      && String((proof.refs || {}).assetId || '') === String(assetId));
-    const confirmedProjectionIds = new Set(items
-      .filter((p) => String(p.kind || '') === 'projection_confirmed')
-      .map((p) => String((p.refs || {}).projectionId || ''))
-      .filter(Boolean));
-    const separateRoutes = new Set(['agent_read', 'dispatched', 'succeeded', 'degraded', 'rejected', 'feedback_positive', 'feedback_negative']);
-    return items.filter((p) => String(p.kind || '') === 'projection_confirmed').length
-      + items.filter((p) => {
-        if (String(p.kind || '') !== 'usage_recorded') return false;
-        const refs = p.refs || {};
-        const projectionId = String(refs.projectionId || '');
-        if (projectionId) return !confirmedProjectionIds.has(projectionId);
-        return separateRoutes.has(String(refs.usageOutcome || ''));
-      }).length;
+    const routes = new Set(['injected', 'agent_read', 'dispatched', 'succeeded', 'degraded', 'rejected']);
+    const byExposure = new Map();
+    for (const proof of (Array.isArray(proofItems) ? proofItems : S.proofs)) {
+      const kind = String(proof.kind || '');
+      const refs = proof.refs || {};
+      if (!realKinds.has(kind) || String(refs.assetId || '') !== String(assetId)) continue;
+      if (kind !== 'projection_confirmed' && !(kind === 'usage_recorded' && routes.has(String(refs.usageOutcome || 'injected')))) continue;
+      const key = refs.projectionId ? `projection:${refs.projectionId}` : `event:${proof.id}`;
+      const previous = byExposure.get(key);
+      if (!previous || String(proof.occurredAt || '') > String(previous.occurredAt || '')) byExposure.set(key, proof);
+    }
+    return [...byExposure.values()];
+  }
+
+  function broughtInCountFor(assetId, proofItems) {
+    return taskExposureProofs(assetId, proofItems).length;
   }
 
   /** 资产详情的使用记录区（原独立「使用记录」页的按资产切片）。 */
@@ -912,7 +913,7 @@
     const contradictedCount = receipts.filter((r) => String(r.status || '') === 'contradicted').length;
     const unknownCount = receipts.filter((r) => !['applied', 'contradicted'].includes(String(r.status || ''))).length;
     const summaryLine = [
-      broughtInCount ? T('cognition.proof_projected_times', '被任务用过 {n} 次', { n: String(broughtInCount) }) : '',
+      broughtInCount ? T('cognition.proof_projected_times', '带入或读取 {n} 次', { n: String(broughtInCount) }) : '',
       appliedCount ? T('cognition.adoption_applied_times', '其中模型确认采用 {n} 次', { n: String(appliedCount) }) : '',
       contradictedCount ? T('cognition.adoption_contradicted_times', '被否定 {n} 次', { n: String(contradictedCount) }) : '',
       unknownCount ? T('cognition.adoption_unknown_times', '证据不足 {n} 次', { n: String(unknownCount) }) : '',
@@ -1508,7 +1509,7 @@
     const advancedFold = `<details class="details ca-asset-edit-advanced">
       <summary>${esc(T('cognition.candidate_advanced', '高级选项（通常不用改）'))}</summary>
       ${fieldHtml(T('cognition.asset_edit_field_applicable', '适用场景（多条用顿号分隔）'), window.uiInput({ id: fid('applicable'), value: String(draftValue('applicable', joinList(asset.applicableWhen)) || ''), attrs: { 'data-f': 'applicable' } }))}
-      ${fieldHtml(T('cognition.asset_edit_field_forbidden', '禁用场景（多条用顿号分隔）'), window.uiInput({ id: fid('forbidden'), value: String(draftValue('forbidden', joinList(asset.forbiddenWhen)) || ''), attrs: { 'data-f': 'forbidden' } }))}
+      ${fieldHtml(T('cognition.asset_edit_field_forbidden', '禁用场景（多条用顿号分隔）'), window.uiInput({ id: fid('forbidden'), value: String(draftValue('forbidden', joinList(asset.forbiddenWhen)) || ''), attrs: { 'data-f': 'forbidden' } }))}</div>
       ${assetScopeEditor(asset, editDraft)}
     </details>`;
     return `<div class="sect-block ca-asset-edit" data-asset-edit-id="${esc(asset.id)}">
@@ -1577,10 +1578,8 @@
      * 确认采用 M 次（无采用回执时省略后半句）· 最近一次 {when}。口径零改动：
      * 被任务用过＝broughtInCountFor 唯一公式（原「被带入」），模型确认采用＝
      * applied 回执（原「实际采用」）；逐条明细在「详情与历史」折叠区。 */
-    const realKinds = new Set(Array.isArray(S.realUsageKinds) ? S.realUsageKinds : []);
     const detailProofs = assetProofItems(asset.id);
-    const realProofs = detailProofs
-      .filter((p) => realKinds.has(String(p.kind || '')) && String((p.refs || {}).assetId || '') === String(asset.id))
+    const realProofs = taskExposureProofs(asset.id, detailProofs)
       .sort((left, right) => String(right.occurredAt || '').localeCompare(String(left.occurredAt || '')));
     const lastProof = realProofs[0] || null;
     const timelineState = S.assetTimeline && String(S.assetTimeline.assetId || '') === String(asset.id)
@@ -1607,7 +1606,7 @@
             ? T('cognition.asset_usage_failed_short', '使用记录暂不可用')
             : timelinePending
               ? T('cognition.asset_usage_loading', '使用记录读取中…')
-              : T('cognition.proof_projected_times', '被任务用过 {n} 次', { n: String(broughtIn) }))}</strong>
+              : T('cognition.proof_projected_times', '带入或读取 {n} 次', { n: String(broughtIn) }))}</strong>
         </div>
         <div class="ca-asset-usage-fact">
           <strong>${esc(receiptFailed
@@ -1620,7 +1619,7 @@
       ${timelineFailed ? `<div class="ca-asset-usage-feedback">${btn(T('common.retry', '重试'), 'asset-timeline-retry', { id: asset.id, small: true })}</div>` : ''}
       ${receiptFailed ? `<div class="ca-asset-usage-feedback">${btn(T('common.retry', '重试'), 'asset-adoption-retry', { id: asset.id, small: true })}</div>` : ''}
       ${!timelinePending && !timelineFailed && !broughtIn && !appliedCount ? `<p class="note">${esc(T('cognition.asset_no_proofs_section', '还没有被真实使用过。资产在任务中被真正使用、并留下可核对的记录后，会出现在这里。'))}</p>` : ''}
-      ${lastProof ? `<div class="ca-asset-last-use"><span class="note">${esc(T('cognition.asset_last_used_at', '最近一次 {when}', { when: fmtDate(lastProof.occurredAt) }))}</span>${lastRef ? evidenceChip(lastRef) : ''}</div>` : ''}
+      ${lastProof ? `<div class="ca-asset-last-use"><span class="note">${esc(T('cognition.asset_last_used_at', '最近带入或读取 {when}', { when: fmtDate(lastProof.occurredAt) }))}</span>${lastRef ? evidenceChip(lastRef) : ''}</div>` : ''}
       ${!timelinePending && !timelineFailed && broughtIn ? `<p class="note ca-asset-usage-note">${esc(T('cognition.asset_usage_metric_note', '前者记录任务中带入或读取等痕迹；真正采用只计模型确认的回执。'))}</p>` : ''}
     </div>`;
     /* 状态章两件（T040①）：类型 / 生效中（正常态也出章，018 覆盖 2026-09-17
@@ -1903,13 +1902,13 @@
       <div class="tree-stage${S.loading && !S.loaded ? ' is-loading' : ''}">
         <div class="fl-top">
           <div class="ft ft-title">${esc(T('cognition.tree_panel_title', '我的认知树'))}</div>
-          <div class="ft">${esc(T('cognition.tree_page_hint', '这棵树是你的认知全景：土壤是记录与来源，根部是待确认的候选，枝上是正式资产，树冠是被真实复用验证过的。'))}</div>
+          <div class="ft">${esc(T('cognition.tree_page_hint', '查看常规资产、候选和来源的分布。树冠统计有带入或读取记录的资产；不代表已采用或效果已验证。'))}</div>
           <div class="ft">${btn(T('cognition.catalog_view_back', '列表视图'), 'asset-view', { id: '', small: true, className: 'o' })}</div>
         </div>
         ${treeFigure({ counts, pending: stats.pending, validated, sources: sourceCount, captures: captureCount }, directions)}
         <div class="fl-bottom">
           <div class="legend">
-            <span class="k"><span class="dt" style="background:var(--green)"></span>${esc(T('cognition.tree_legend_validated', '被真用过'))}</span>
+            <span class="k"><span class="dt" style="background:var(--green)"></span>${esc(T('cognition.tree_legend_validated', '有带入或读取记录'))}</span>
             <span class="k"><span class="dt" style="background:var(--green-line)"></span>${esc(T('cognition.tree_legend_asset', '资产'))}</span>
             <span class="k"><span class="dt" style="background:var(--blue)"></span>${esc(T('cognition.tree_legend_kstar', '任务复盘学的'))}</span>
             <span class="k"><span class="dt" style="background:var(--amber-dot)"></span>${esc(T('cognition.tree_legend_pending', '新芽（待确认）'))}</span>
@@ -2208,31 +2207,28 @@
       </div>`;
   }
 
-  /** 「记一条」表单（设计 7.2，2026-09-28）：手动新建候选。复用候选确认表单
-   *  的五字段形态（类型/标题/可复用内容/价值/高级选项），容器沿用
-   *  `.ca-candidate-detail` + `data-cand-type`——`cand-type` 就地切类型、
-   *  readCandidateForm 就近读 [data-f] 值，与候选详情同一交互契约（切换类型
-   *  不重画，输入不丢）。保存走 recall.candidates.save 产生**候选**，进
-   *  「待我处理」确认后才入库——不破坏"确认后才入库"一致性。 */
+  /** 手动确认保存表单；主要内容在首屏，价值与条件按需补充，规则需真实边界。 */
   function manualCandidateForm() {
     const defaultType = 'personal';
     const field = (label, inner) => `<label class="field"><span>${esc(label)}</span>${inner}</label>`;
     return `<div class="card ca-candidate-detail ca-manual-candidate" data-cand-type="${esc(defaultType)}" data-manual-candidate>
       <div class="tt">${esc(T('cognition.cand_create_entry', '记一条'))}</div>
-      <p class="note">${esc(T('cognition.cand_create_hint', '自己写一条认知。保存后先进「待我处理」，确认后才会入库。'))}</p>
+      <p class="note">${esc(T('cognition.cand_create_hint', '填写要长期保存的内容；点击确认保存后可直接打开详情。重复内容或不完整的保存条件会留在待我处理。'))}</p>
       ${field(T('cognition.type', '类型'), `<div class="chips">${CATEGORIES.map(([id, key, fb]) => { const on = id === defaultType; return `<span class="ca-chip ca-chip-opt${on ? ' is-green' : ''}" data-act="cand-type" data-id="${esc(id)}" ${roleBtn(`aria-pressed="${on ? 'true' : 'false'}"`)}>${esc(T(key, fb))}</span>`; }).join('')}</div>`)}
       ${field(T('cognition.capture.name', '认知名称'), window.uiInput({ id: 'ca-manual-summary', value: '', attrs: { maxlength: 60, 'data-f': 'summary', placeholder: T('cognition.cand_create_title_placeholder', '一句话标题，建议 16 字以内') } }))}
       ${field(T('cognition.capture.summary', '可复用内容'), window.uiTextarea({ id: 'ca-manual-judgment', value: '', attrs: { 'data-f': 'judgment' } }))}
-      ${field(T('cognition.chain_value_label', '带来的价值'), window.uiTextarea({ id: 'ca-manual-value', value: '', attrs: { 'data-f': 'value' } }))}
       <details class="details">
         <summary>${esc(T('cognition.candidate_advanced', '高级选项（通常不用改）'))}</summary>
+        ${field(T('cognition.chain_value_label', '带来的价值'), window.uiTextarea({ id: 'ca-manual-value', value: '', attrs: { 'data-f': 'value' } }))}
         ${field(T('cognition.candidate_scope_domain', '适用任务范围'), window.uiInput({ id: 'ca-manual-scope', value: '', placeholder: T('cognition.candidate_scope_placeholder', '例如：仅产品工作空间'), attrs: { 'data-f': 'scope' } }))}
         <div class="note">${esc(T('cognition.candidate_scope_hint', '常用范围：跨对话通用（general）、报告（report）、编程（code）、审查（review）、产品（product）。其他写法可能匹配不上任务，建议从这里选一个。'))}</div>
+        <div data-manual-rule-boundaries hidden>${field(T('cognition.manual_rule_applicable', '规则在什么情况下适用（每行一个条件）'), window.uiTextarea({ id: 'ca-manual-applicable', attrs: { 'data-f': 'applicable' } }))}
+        ${field(T('cognition.manual_rule_forbidden', '规则在什么情况下不适用（每行一个条件）'), window.uiTextarea({ id: 'ca-manual-forbidden', attrs: { 'data-f': 'forbidden' } }))}</div>
         ${field(T('cognition.chain_uncertainty_label', '仍不确定的地方'), window.uiTextarea({ id: 'ca-manual-uncertainty', value: '', attrs: { 'data-f': 'uncertainty' } }))}
       </details>
       <div class="actions actions-right">
         ${btn(T('common.cancel', '取消'), 'cand-create-cancel', { small: true })}
-        ${btn(T('cognition.cand_create_save', '存为候选'), 'cand-create-save', { small: true, primary: true })}
+        ${btn(T('cognition.cand_create_save', '确认保存'), 'cand-create-save', { small: true, primary: true })}
       </div>
     </div>`;
   }
@@ -2262,27 +2258,17 @@
     //（保留期恢复入口只有这一处）。
     const counts = {};
     for (const [id] of CATEGORIES) counts[id] = S.assets.filter((a) => a.type === id && !['archived', 'deleted', 'purged', 'revoked'].includes(String(a.status || 'active'))).length;
-    // 每个资产的最近使用时间（时间线里 occurredAt 的最大值）：列表行此前
-    // 硬编码「最近无使用记录」，被真实复用过的资产也这么显示（终审修）。
-    // 每个资产的最近使用时间（**只算「真实使用」**）：白名单由主进程单一定义、
-    // 随载荷下发（2026-09-25 US-602 FR-004），列表与详情共用同一份。
-    // 修复前这里对全部事件取 occurredAt 最大值——创建、保存版本、治理操作都会
-    // 把「最近使用」刷新成今天，与详情侧口径打架（缺陷本体）。
-    const realKinds = new Set(Array.isArray(S.realUsageKinds) ? S.realUsageKinds : []);
+    // 时间和次数从同一组去重后的任务带入/读取事实计算，评价不刷新使用时间。
     const lastUseByAsset = new Map();
-    for (const proof of S.proofs) {
-      if (!realKinds.has(String(proof.kind || ''))) continue;
-      const assetId = String((proof.refs || {}).assetId || '');
-      const at = String(proof.occurredAt || '');
-      if (!assetId || !at) continue;
-      const current = lastUseByAsset.get(assetId);
-      if (!current || at > current) lastUseByAsset.set(assetId, at);
+    for (const asset of S.assets) {
+      const at = taskExposureProofs(asset.id).map(proof => String(proof.occurredAt || '')).sort().at(-1);
+      if (at) lastUseByAsset.set(String(asset.id), at);
     }
     const lastUseText = (assetId) => {
       const at = lastUseByAsset.get(String(assetId));
       return at
-        ? T('cognition.asset_last_used_at', '最近一次 {when}', { when: fmtDate(at) })
-        : T('cognition.asset_last_use', '还没被任务用过');
+        ? T('cognition.asset_last_used_at', '最近带入或读取 {when}', { when: fmtDate(at) })
+        : T('cognition.asset_last_use', '暂无带入或读取记录');
     };
     /* 导语（specs/018 T030）：hero 统计条并入导语两个可点数字——
      * {n} 条认知（点开滚到列表）· {m} 条等你确认（去「待我处理」）。
@@ -2294,7 +2280,7 @@
     const visibleAssetCount = S.assets.filter((a) => !['archived', 'deleted', 'purged', 'revoked'].includes(String(a.status || 'active'))).length;
     const leadNum = (value, anchor) => `<span class="chip-link ca-jump-num" data-act="review-jump" data-id="${esc(anchor)}" aria-label="${esc(T('cognition.review_lead_jump_aria', '跳到「{where}」', { where: anchor === 'ca-review-decide' ? T('cognition.review_queue_decide', '要你拍板') : anchor === 'ca-review-evidence' ? T('cognition.review_lead_evidence', '条证据要补') : T('cognition.overview_list_title', '资产明细') }))}" ${roleBtn()}>${esc(String(value))}</span>`;
     const assetsPart = visibleAssetCount
-      ? `${leadNum(visibleAssetCount, 'ca-asset-list')} ${esc(T('cognition.overview_lead_assets', '条认知'))}`
+      ? `${leadNum(visibleAssetCount, 'ca-asset-list')} ${esc(T('cognition.overview_lead_assets', '条常规资产'))}`
       : '';
     const pendingPart = stats.pending
       ? `<span class="chip-link ca-jump-num" data-act="go-review" aria-label="${esc(T('cognition.overview_lead_pending_aria', '去「待我处理」看 {n} 条', { n: String(stats.pending) }))}" ${roleBtn()}>${esc(String(stats.pending))}</span> ${esc(T('cognition.overview_lead_pending', '条等你确认'))}`
@@ -2338,7 +2324,7 @@
       : filteredByType;
     // 「未分类」+「同时具备」恒为空集：明确说，不给一屏空白。
     const tagContradiction = route.category !== 'deleted' && tagFilterContradiction(route);
-    const chips = [['', T('common.all', '全部'), S.assets.filter((a) => !HIDDEN_STATUS.includes(String(a.status || 'active'))).length]]
+    const chips = [['', T('cognition.catalog_all', '常规资产'), S.assets.filter((a) => !HIDDEN_STATUS.includes(String(a.status || 'active'))).length]]
       .concat(CATEGORIES.map(([id, key, fallback]) => [id, T(key, fallback), counts[id]]))
       .concat([['experiences', T('cognition.assets_experiences_tab', '经验'), experienceItems.length]])
       .concat(deletedCount ? [['deleted', T('cognition.assets_deleted_tab', '已删除'), deletedCount]] : []);
@@ -2377,7 +2363,7 @@
         `v${String(asset.activeVersion || asset.version || '1')}`,
         // 目录行与列表/详情同口径（2026-09-25 US-602；2026-09-28 词表统一）：
         // 只算「被任务用过」（原「被带入任务」），不把宿主注入说成采用。
-        used ? T('cognition.catalog_used_times', '被任务用过 {n} 次', { n: String(used) }) : T('cognition.catalog_never_used', '还没被任务用过'),
+        used ? T('cognition.catalog_used_times', '带入或读取 {n} 次', { n: String(used) }) : T('cognition.catalog_never_used', '暂无带入或读取记录'),
       ].join(' · ');
       return `<div class="row" data-go-asset="${esc(asset.id)}" role="button" tabindex="0">
         <div class="tw">
@@ -2408,8 +2394,8 @@
             <div class="mm">${esc([
               categoryLabel(asset.type),
               lastUseText(asset.id),
-              used ? T('cognition.catalog_used_times', '被任务用过 {n} 次', { n: String(used) }) : T('cognition.catalog_never_used', '还没被任务用过'),
-            ].join(' · '))}</div>
+              used ? T('cognition.catalog_used_times', '带入或读取 {n} 次', { n: String(used) }) : '',
+            ].filter(Boolean).join(' · '))}</div>
           </div>
           <div class="sd">${NS.isKstarAsset(asset) ? chip(T('cognition.asset_kstar_badge', 'KSTAR'), 'blue') : ''}${assetStatusChip(asset)}<span class="chev" aria-hidden="true">›</span></div>
         </div>`;
@@ -3339,15 +3325,16 @@
     const cleanupReportsList = (S.cleanupReports && Array.isArray(S.cleanupReports.reports)) ? S.cleanupReports.reports : [];
     const cleanupLatest = cleanupReportsList[0] || null;
     const cleanupLatestNote = cleanupLatest
-      ? `<div class="note">${esc(T('cognition.cleanup_latest', '最近一次：{when} · 执行 {applied} 项 · 拿不准 {uncertain} 项', {
+      ? `<div class="note">${esc(T(cleanupLatest.mode === 'report_only' ? 'cognition.cleanup_check_latest' : 'cognition.cleanup_latest', cleanupLatest.mode === 'report_only' ? '最近检查：{when} · 建议 {uncertain} 项 · 内容未修改' : '最近一次：{when} · 执行 {applied} 项 · 拿不准 {uncertain} 项', {
         when: fmtDate(cleanupLatest.createdAt),
+        n: String((cleanupLatest.uncertain || []).length),
         applied: String((cleanupLatest.items || []).filter((item) => item.status === 'applied').length),
         uncertain: String((cleanupLatest.uncertain || []).length),
       }))}</div>`
       : '';
     return `${hero(
       T('cognition.organize_settings_title', '资产设置'),
-      T('cognition.organize_settings_hint', '自动维护集中在这里：夜间整理对话、检查并清理资产库；整理结果和需要你判断的内容都有记录。'),
+      T('cognition.organize_settings_hint', '安排会话提取与资产检查。自动生成的内容进入待我处理，检查只提出建议。'),
     )}
     ${modelReadFailed ? `<div class="card ca-setcard">
       <div class="rowline">
@@ -3374,7 +3361,7 @@
         return `<div class="rowline">
         <div>
           <div class="tt">${esc(T('cognition.nightly_capture_title', '自动维护'))}</div>
-          <div class="sub">${esc(T('cognition.maint_hint_short', '夜间自动整理当天结束的会话，检查资产库并清理存量（规范标题、合并重复、补标签、重写啰嗦正文；消耗模型额度）；整理产出按下方「是否自动保存」入库。'))}</div>
+          <div class="sub">${esc(T('cognition.maint_hint_short', '夜间整理会话并检查资产库（消耗模型额度）；生成的建议进入待我处理，检查只报告、不修改内容。'))}</div>
           ${latestInspection ? `<div class="note">${esc(T('cognition.inspection_last_run', '最近检查：{when} · 发现 {n} 条', {
             when: fmtDate(latestInspection.startedAt), n: String(((latestInspection.findings || [])).length),
           }))}</div>` : ''}
@@ -3384,7 +3371,7 @@
           ${nightlyOn ? `<label class="ca-setting-time"><span>${esc(T('cognition.nightly_capture_time', '开始时间'))}</span>${window.uiInput({ id: 'ca-nightly-start', type: 'time', value: nightlyStart, attrs: { 'data-act': 'nightly-time' } })}</label>` : ''}
           ${cleanupLatest ? btn(T('cognition.cleanup_open_report', '查看整理报告'), 'open-cleanup', {
             small: true, className: 'o',
-            title: T('cognition.cleanup_report_title', '看每次整理具体改了什么（改前/改后对照），每项都可以单独回滚。'),
+            title: T('cognition.cleanup_report_link_hint', '查看检查建议；历史已执行改动保留原有记录与恢复入口。'),
           }) : ''}
           ${window.uiSwitch({ label: T('cognition.nightly_capture_title', '自动维护'), checked: nightlyOn, attrs: { 'data-act': 'nightly-toggle' } })}
         </div>
@@ -3439,6 +3426,7 @@
     const reports = state && Array.isArray(state.reports) ? state.reports : [];
     const selectedId = String(route.cleanupReportId || '');
     const report = reports.find((row) => String(row.id) === selectedId) || reports[0] || null;
+    const reportOnly = !!report && report.mode === 'report_only';
     const loading = Boolean(state && state.loading);
     // 页头与其余详情页同款（2026-09-29 统一）：返回行 + 大标题 + 一行说明 +
     // 右侧「立即维护」（此前用 uiPageHeader 紧凑组件，模块内三种详情页头
@@ -3446,15 +3434,17 @@
     const header = `${btn(T('cognition.cleanup_back', '← 返回'), 'go-back', { className: 'backlink' })}
     ${heroRow(
       T('cognition.cleanup_title', '整理报告'),
-      T('cognition.cleanup_page_hint', '每次整理与清理改了什么，逐项留档，可核对、可回滚。'),
+      T('cognition.cleanup_page_hint', '检查建议与历史整理记录；当前检查不会修改资产或候选。'),
       btn(loading ? T('cognition.cleanup_running', '正在维护…') : T('cognition.maint_run', '立即维护'), 'run-maintenance', {
         disabled: loading,
-        title: T('cognition.maint_run_title_hint', '检查资产库并做一次完整清理（规范标题、合并重复、补标签、重写啰嗦正文）。会消耗模型额度，拿不准的改动会留给你确认。'),
+        title: T('cognition.maint_run_title_hint', '检查资产库并生成建议，不批量修改标题、正文、标签或合并资产。'),
       }),
     )}`;
     // 导语按轮次区分：完整整理轮（round:'full'，2026-09-29 三轮合一后的常态）
     // 用合并导语；旧规则轮/标题重起轮的历史报告沿用各自原文案。
-    const hint = `<p class="note">${esc(String(report && report.round || '') === 'full'
+    const hint = `<p class="note">${esc(!report || report.mode === 'report_only'
+      ? T('cognition.cleanup_report_only_hint', '本次只检查并提出建议，没有修改资产或候选。需要修改时，打开对应内容逐项处理。')
+      : String(report && report.round || '') === 'full'
       ? T('cognition.cleanup_full_hint', '本轮自动完成：规范标题、合并重复项、补标签，并由模型重写了不合格的标题与啰嗦的正文；写前有整库备份，逐项留档可回滚。')
       : isTitleRegenReport(report)
       ? T('cognition.cleanup_regen_hint', '由模型把不合格的标题重新拟一个简短的新标题，自动写入并逐条留档对照；写前有整库备份，不会合并内容或修改正文。')
@@ -3462,7 +3452,7 @@
     if (!report) {
       return `<div class="ca-page">${header}${hint}${empty(
         T('cognition.cleanup_empty', '还没有整理报告'),
-        T('cognition.cleanup_empty_hint', '运行整理后，这里会列出改动内容、原因和逐项回滚入口。'),
+        T('cognition.cleanup_empty_hint', '运行检查后，这里显示建议与依据；资产和候选内容保持原样。'),
       )}</div>`;
     }
 
@@ -3503,7 +3493,7 @@
       return found && found.title ? String(found.title) : T('cognition.cleanup_item_asset', '这条资产');
     };
     const reportRows = reports.map((row) => `<div class="row is-flat is-clickable ${String(row.id) === String(report.id) ? 'is-selected' : ''}" data-act="open-cleanup-report" data-report="${esc(String(row.id))}" ${roleBtn()}>
-      <div class="tw"><div class="tt">${esc(fmtDate(row.createdAt))}</div><div class="mm">${esc(T('cognition.cleanup_row_summary', '执行 {applied} 项 · 拿不准 {uncertain} 项', {
+      <div class="tw"><div class="tt">${esc(fmtDate(row.createdAt))}</div><div class="mm">${esc(row.mode === 'report_only' ? T('cognition.cleanup_check_row', '建议 {uncertain} 项 · 内容未修改', { uncertain: String((row.uncertain || []).length) }) : T('cognition.cleanup_row_summary', '执行 {applied} 项 · 拿不准 {uncertain} 项', {
         applied: String((row.items || []).filter((item) => item.status === 'applied').length),
         uncertain: String((row.uncertain || []).length),
       }))}</div></div>
@@ -3531,7 +3521,7 @@
     }).join('') : `<p class="note">${esc(T('cognition.cleanup_no_items', '这一轮没有需要改动的地方。'))}</p>`;
     const uncertainRows = uncertain.map((entry) => `<div class="row is-flat ca-cleanup-item">
       <div class="tw">
-        <div class="tt">${esc(String(entry.title || assetTitle(entry.assetId)))}</div>
+        <div class="tt">${btn(String(entry.title || assetTitle(entry.assetId)), 'open-asset', { id: String(entry.assetId), small: true, className: 'o' })}</div>
         <div class="mm">${esc(issueText(String(entry.question || '')))}</div>
         <div class="mm">${esc(issueText(String(entry.reason || '')))}</div>
       </div>
@@ -3544,14 +3534,14 @@
       </div>
     </div>`).join('');
     return `<div class="ca-page">${header}${hint}
-      ${report.interrupted ? `<div class="sect-block"><p class="note">${esc(T('cognition.cleanup_interrupted', '这轮中断过：已执行项仍然有效、可逐项回滚；未执行的保持原状。'))}</p></div>` : ''}
-      <div class="sect-block"><div class="tt">${esc(T('cognition.cleanup_summary', '扫描 {scanned} 条 · 执行 {applied} 项 · 拿不准 {uncertain} 项', {
+      ${report.interrupted ? `<div class="sect-block"><p class="note">${esc(reportOnly ? T('cognition.cleanup_check_interrupted', '检查中断，报告保留已形成的建议；资产与候选内容没有修改。') : T('cognition.cleanup_interrupted', '这轮中断过：已执行项仍然有效、可逐项回滚；未执行的保持原状。'))}</p></div>` : ''}
+      <div class="sect-block"><div class="tt">${esc(reportOnly ? T('cognition.cleanup_check_summary', '扫描 {scanned} 条 · 建议 {uncertain} 项 · 内容未修改', { scanned: String(report.scanned || 0), uncertain: String(uncertain.length) }) : T('cognition.cleanup_summary', '扫描 {scanned} 条 · 执行 {applied} 项 · 拿不准 {uncertain} 项', {
         scanned: String(report.scanned || 0), applied: String(appliedCount), uncertain: String(uncertain.length),
       }))}</div>
       ${Array.isArray(report.skippedSteps) && report.skippedSteps.length
         ? `<p class="note">${esc(T('cognition.cleanup_skipped', '本轮跳过：{steps}', { steps: report.skippedSteps.join('；') }))}</p>`
         : ''}</div>
-      <div class="sect-block"><div class="tt">${esc(T('cognition.cleanup_items', '逐项改动'))}</div>${itemRows}</div>
+      ${reportOnly ? '' : `<div class="sect-block"><div class="tt">${esc(T('cognition.cleanup_items', '逐项改动'))}</div>${itemRows}</div>`}
       ${uncertain.length ? `<div class="sect-block"><div class="tt">${esc(T('cognition.cleanup_uncertain_section', '拿不准的（未改动）'))}</div>${uncertainRows}</div>` : ''}
       ${reports.length > 1 ? `<div class="sect-block"><div class="tt">${esc(T('cognition.cleanup_reports', '历史报告'))}</div>${reportRows}</div>` : ''}
 
@@ -3733,7 +3723,9 @@
         return {
           at: String(report.createdAt || ''),
           html: `<div class="cap-row is-clickable" data-act="open-cleanup-report" data-report="${esc(String(report.id))}" role="button" tabindex="0">
-          <div class="tw"><div class="tt">${esc(merged
+          <div class="tw"><div class="tt">${esc(report.mode === 'report_only'
+            ? T('cognition.activity_event_check', '检查完成，生成 {n} 项建议；内容未修改', { n: String((report.uncertain || []).length) })
+            : merged
             ? T('cognition.activity_event_cleanup', '整理合并 {n} 条重复项', { n: String(merged) })
             : T('cognition.activity_event_cleanup_empty', '整理完成，没有重复项需要合并'))}</div>
           <div class="mm"><span>${esc(fmtDate(report.createdAt))}</span></div></div>
@@ -3758,7 +3750,7 @@
     }
     const timelineEntries = [
       ...visibleRows.map((row) => ({
-        at: String(row.conv.updatedAt || row.conv.createdAt || ''),
+        at: String((row.capture && (row.capture.finishedAt || row.capture.updatedAt || row.capture.createdAt)) || row.conv.updatedAt || row.conv.createdAt || ''),
         pinned: Boolean(row.capture && isRunning(row.capture)),
         html: rowHtml(row),
       })),
@@ -3767,7 +3759,7 @@
       || String(right.at).localeCompare(String(left.at)));
     return `${heroRow(
       T('cognition.tab_activity', '系统活动'),
-      T('cognition.activity_lead', '整理记录按时间排列；需要你判断的内容会进入「待我处理」。'),
+      T('cognition.activity_lead', '进行中的整理优先显示，其余按整理或检查的发生时间排列；需要你判断的内容进入待我处理。'),
       // 整理入口集中在资产设置；018 T060 起本页只保留事件时间流。
       // 页头右侧入口已移除，避免与顶层页签重复。
       // 已删（2026-09-27 子安）：页签「沉淀设置」是唯一入口，不再双入口。
@@ -3775,7 +3767,7 @@
     )}
     ${!S.captureSettings || S.captureSettings.enabled === false ? `<div class="warn">${esc(T('cognition.capture_disabled_note', '整理功能已关闭：不再开始新的整理；已创建任务和「我的认知」资产不受影响。'))}</div>` : ''}
     ${S.captureSettings && S.captureSettings.enabled !== false && retryableIds.length ? `<div class="toolbar"><div class="toolbar-right">${retryableIds.length ? btn(T('cognition.capture_batch_retry', '重试失败（{n}）', { n: String(retryableIds.length) }), 'capture-batch', { data: { batch: 'retry' }, small: true, className: 'o' }) : ''}</div></div>` : ''}
-    ${(Array.isArray(S.captures) ? S.captures : []).some((c) => bucketOf(c) === 'active') ? `<div class="note toolbar-note">${esc(T('cognition.capture_running_note', '有任务正在跑：任务完成后这一页会自动更新，不用手动刷新。'))}</div>` : ''}
+    ${(Array.isArray(S.captures) ? S.captures : []).some(isRunning) ? `<div class="note toolbar-note">${esc(T('cognition.capture_running_note', '有任务正在跑：任务完成后这一页会自动更新，不用手动刷新。'))}</div>` : ''}
     <div class="pillbox"><div class="chips">${chips}</div></div>
     ${timelineEntries.length ? timelineEntries.map((entry) => entry.html).join('') : empty(T('cognition.capture_tasks_empty', '暂无整理任务'), T('cognition.capture_tasks_empty_hint', '一轮会话结束后，系统会在静默期结束后创建整理任务。'), { label: T('cognition.organize_settings_title', '资产设置'), attrs: { 'data-act': 'go-organize-settings' } })}
     ${conversationItems.length >= 100 ? `<div class="note">${esc(T('cognition.capture_sources_truncated', '仅显示最近 100 个会话（来源拉取上限）'))}</div>` : ''}

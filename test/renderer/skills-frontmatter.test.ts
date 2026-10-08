@@ -354,7 +354,7 @@ describe('skills renderer frontmatter parsing', () => {
     expect(visibleText(html)).toContain('Scoped review rule');
     // 2026-09-17 下沉改：「用过几次」随详细信息归版本展开块；顶部汇总在使用记录区。
     // 2026-09-28 词表统一：计量统一为「被任务用过 N 次」（四语词条已同步）。
-    expect(visibleText(html)).toContain('被任务用过 1 次');
+    expect(visibleText(html)).toContain('带入或读取 2 次');
     expect(visibleText(html)).not.toContain('被实际使用');
     expect(html).toContain('data-act="proof-toggle" data-id="proof-1"');
   });

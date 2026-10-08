@@ -404,7 +404,7 @@
     // 标题在左，警示条靠右（chevron 之前），不再独立成行压在标题上面；
     // 行内放不下时省略号截断、悬浮 title 看全文。
     const warnHtml = broken
-      ? `<span class="warn ca-card-warn-inline" title="${esc(T('cognition.candidate_evidence_all_unavailable', '这条候选的大部分来源记录已被删除，无法核对证据。建议补充新证据后保存，或选择不保存。'))}">${esc(T('cognition.candidate_evidence_all_unavailable', '这条候选的大部分来源记录已被删除，无法核对证据。建议补充新证据后保存，或选择不保存。'))}</span>`
+      ? `<span class="warn ca-card-warn-inline" title="${esc(T('cognition.candidate_evidence_all_unavailable', '这条候选的大部分来源暂时无法核对。原会话可能仍然存在；请查看可打开的来源，补充依据或选择不保存。'))}">${esc(T('cognition.candidate_evidence_all_unavailable', '这条候选的大部分来源暂时无法核对。原会话可能仍然存在；请查看可打开的来源，补充依据或选择不保存。'))}</span>`
       : '';
     /* 动作区（同轮标注）：「…其他处理」折叠开关撤下——保存/稍后处理/
      * 不保存/看内容与证据（稍后处理态另有「恢复」）**全部平铺、右侧、
@@ -693,7 +693,7 @@
         ${canReject ? btn(decisionLabels.reject, 'cand-decide', { id: candidate.id, data: { action: 'reject' }, danger: true }) : ''}
       </div>`;
     return `
-      ${broken ? `<div class="warn">${esc(T('cognition.candidate_evidence_all_unavailable', '这条候选的大部分来源记录已被删除，无法核对证据。建议补充新证据后保存，或选择不保存。'))}</div>` : ''}
+      ${broken ? `<div class="warn">${esc(T('cognition.candidate_evidence_all_unavailable', '这条候选的大部分来源暂时无法核对。原会话可能仍然存在；请查看可打开的来源，补充依据或选择不保存。'))}</div>` : ''}
       ${candidate.mergedIntoAssetId ? `<div class="note">${esc(T('cognition.candidate_merged_into', '这条与已有资产相似：确认后会并入那条资产（融合出新版本），不会另开一条。'))}</div>` : ''}
       ${chainHtml ? '' : reviewSignalBlock(candidate)}
       ${chainHtml}
@@ -808,7 +808,7 @@
     return `
     <div class="card ca-candidate-detail" data-cand-id="${esc(candidate.id)}" data-cand-type="${esc(candidate.suggestedType || '')}">
       <div class="cand-head">
-        ${chip(status.label, status.tone)}${chip(categoryLabel(candidate.suggestedType))}${candidateRiskBadge(candidate)}${broken ? chip(T('cognition.candidate_evidence_weak', '来源已删'), 'amber') : ''}
+        ${chip(status.label, status.tone)}${chip(categoryLabel(candidate.suggestedType))}${candidateRiskBadge(candidate)}${broken ? chip(T('cognition.candidate_evidence_weak', '来源待核对'), 'amber') : ''}
       </div>
       <h2 class="cand-title">${esc(fullTitle)}</h2>
       ${isTerminal ? `<div class="note ca-candidate-state-note">${esc(stateHint)}${nextStep ? `<div class="actions">${nextStep}</div>` : ''}</div>` : ''}

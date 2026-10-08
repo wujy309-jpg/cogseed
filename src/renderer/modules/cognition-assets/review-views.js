@@ -346,7 +346,7 @@
       { label: T('cognition.review_empty_go_activity', '去看看系统在忙什么'), attrs: { 'data-act': 'go-organize' } },
     )}</div>` : `${decideHtml}
     ${broken.length || weak.length ? `<div id="ca-review-evidence">
-    ${broken.length ? `${sectionHead(T('cognition.review_group_evidence', '来源已删除的候选'), String(broken.length))}<div class="note sect-note">${esc(T('cognition.review_group_evidence_note', '这些候选的原始出处已被删除；可以点开确认后仍要保存，或选择不保存'))}</div>${broken.map((c) => candidateCard(c, true)).join('')}` : ''}
+    ${broken.length ? `${sectionHead(T('cognition.review_group_evidence', '来源需要核对的候选'), String(broken.length))}<div class="note sect-note">${esc(T('cognition.review_group_evidence_note', '部分来源暂时无法核对，不代表会话已删除。打开候选查看原文与可用来源，再决定是否保存。'))}</div>${broken.map((c) => candidateCard(c, true)).join('')}` : ''}
     ${weak.length ? `${sectionHead(T('cognition.review_group_weak', '证据不足（先补证据）'), String(weak.length))}<div class="note sect-note">${esc(T('cognition.review_group_weak_note', '可以修改内容并补上证据后保存，或先稍后处理'))}</div>${weak.map((c) => candidateCard(c, false)).join('')}` : ''}
     </div>` : ''}
     ${lowHtml}`}

@@ -540,3 +540,15 @@ describe('Recall candidate classification gate', () => {
     expect(verbose.blockingReasons).not.toContain('statement_over_soft_budget');
   });
 });
+
+
+describe('临时任务规则的长期边界', () => {
+  it('一次只读工具限制不自动升格为长期规则，即使写成一般规则', async () => {
+    const { isTaskLocalRuleProposal } = await import('../../../../src/main/features/recall/capture-value-screening');
+    const candidate = { judgment: '查询姓名必须只读且不得使用其他工具', value: '避免其他查询', summary: '姓名查询限制', suggestedType: 'rule' as const, suggestedScope: 'general', valueProvided: true, actionProvided: true };
+    expect(isTaskLocalRuleProposal(candidate, [{ role: 'user', text: '本次只查询姓名，不得使用其他工具。' }])).toBe(true);
+    expect(isTaskLocalRuleProposal(candidate, [{ role: 'user', text: '本次只查询姓名。以后每次查询姓名都必须保持只读。' }])).toBe(false);
+    expect(isTaskLocalRuleProposal({ ...candidate, suggestedType: 'template' }, [{ role: 'user', text: '本次只处理验收清单模板。' }])).toBe(false);
+    expect(isTaskLocalRuleProposal(candidate, [{ role: 'user', text: '以后每次业务验收都必须核对原始证据。' }])).toBe(false);
+  });
+});

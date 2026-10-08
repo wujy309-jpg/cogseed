@@ -114,8 +114,8 @@ describe('cognition tree reuse count wording', () => {
       ],
     }));
 
-    expect(html).toContain('有真实使用验证的资产 2 条');
-    expect(html).toContain('至少有一次真实任务使用记录的资产数');
+    expect(html).toContain('有带入或读取记录 2 条');
+    expect(html).toContain('不代表已采用或效果已验证');
     expect(html).not.toContain('被真用过 2');
   });
 });
@@ -286,5 +286,29 @@ describe('实际采用记录（US-602 AC5/AC6）', () => {
     expect(html).toContain('带进了上下文');
     expect(html).not.toContain('已实际采用');
     expect(html).not.toContain('被实际使用');
+  });
+});
+
+
+describe('同一曝光事实计算时间与次数', () => {
+  it('没有投影ID的实际注入也计一次，评价不能把最近使用时间刷成今天', () => {
+    const proofs = [
+      { id: 'injected', kind: 'usage_recorded', occurredAt: '2026-09-18T05:00:00.000Z', refs: { assetId: ASSET.id, usageOutcome: 'injected' } },
+      { id: 'feedback', kind: 'usage_recorded', occurredAt: '2026-10-08T05:00:00.000Z', refs: { assetId: ASSET.id, usageOutcome: 'feedback_positive' } },
+    ];
+    const listHtml = visibleText(list({ proofs }));
+    expect(listHtml).toContain(zhPhrase('cognition.catalog_used_times', { n: '1' }));
+    expect(listHtml).not.toContain('2026/10/8');
+    expect(visibleText(detail({ proofs }))).toContain(zhPhrase('cognition.proof_projected_times', { n: '1' }));
+  });
+
+  it('同投影的确认与多条注入只计一次，撤销仍单独保留', () => {
+    const proofs = [
+      { id: 'confirm', kind: 'projection_confirmed', occurredAt: '2026-09-18T05:00:00.000Z', refs: { assetId: ASSET.id, projectionId: 'projection-one' } },
+      { id: 'inject1', kind: 'usage_recorded', occurredAt: '2026-09-18T05:01:00.000Z', refs: { assetId: ASSET.id, projectionId: 'projection-one', usageOutcome: 'injected' } },
+      { id: 'inject2', kind: 'usage_recorded', occurredAt: '2026-09-18T05:02:00.000Z', refs: { assetId: ASSET.id, projectionId: 'projection-one', usageOutcome: 'injected' } },
+    ];
+    expect(visibleText(list({ proofs }))).toContain(zhPhrase('cognition.catalog_used_times', { n: '1' }));
+    expect(visibleText(detail({ proofs }))).toContain(zhPhrase('cognition.proof_projected_times', { n: '1' }));
   });
 });

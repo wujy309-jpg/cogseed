@@ -316,6 +316,7 @@
       </div>
       ${rows.length ? `<div class="chat-recall-citation-list">${rows.join('')}</div>` : ''}
       ${omittedRows ? `<div class="chat-recall-projection-omitted">${omittedRows}</div>` : ''}
+      <small class="chat-recall-citations-note">${_escape(_label('chat.recall.memory_card_evidence_hint', '带入、读取和引用记录不代表已核实采用或效果；可打开详情分别查看来源、采用证据与反馈。'))}</small>
       <div class="chat-recall-feedback-actions">${noteHtml}${projectionActions}</div>`;
   }
 

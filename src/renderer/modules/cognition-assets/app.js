@@ -71,6 +71,8 @@
       judgment: value('judgment'),
       ...(card.querySelector('[data-f="value"]') ? { value: value('value') } : {}),
       ...(card.querySelector('[data-f="uncertainty"]') ? { uncertainty: value('uncertainty') } : {}),
+      ...(card.querySelector('[data-f="applicable"]') ? { applicableWhen: value('applicable').split(/\r?\n/).map(v => v.trim()).filter(Boolean) } : {}),
+      ...(card.querySelector('[data-f="forbidden"]') ? { forbiddenWhen: value('forbidden').split(/\r?\n/).map(v => v.trim()).filter(Boolean) } : {}),
     };
   }
 
@@ -120,7 +122,14 @@
             // 类型选择是纯前端态：只更新 chip 选中与卡片 dataset，不触发重画
             // （整页重画会丢失其他字段未保存的输入）。
             const card = el.closest('.ca-candidate-detail');
-            if (card) card.dataset.candType = id;
+            if (card) {
+              card.dataset.candType = id;
+              const boundaries = card.querySelector('[data-manual-rule-boundaries]');
+              if (boundaries) {
+                boundaries.hidden = id !== 'rule';
+                if (id === 'rule') boundaries.closest('details').open = true;
+              }
+            }
             el.parentElement.querySelectorAll('.ca-chip-opt').forEach((chipEl) => {
               const on = chipEl === el;
               chipEl.classList.toggle('is-green', on);

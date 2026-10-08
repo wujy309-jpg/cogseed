@@ -172,7 +172,7 @@ describe('资产目录视图', () => {
     const html = renderCognition({ name: 'overview', assetView: 'catalog' }, { assets: many, proofs: [] });
     const rows = html.split('data-go-asset=').length - 1;
     expect(rows).toBe(35);
-    expect(html).toContain('全部 35');
+    expect(html).toContain('常规资产 35');
   });
 
   it('视图切换与分类筛选互不打扰（O7）：目录视图下仍带分类 chips，筛选态在切换后保持', () => {

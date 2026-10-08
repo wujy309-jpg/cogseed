@@ -46,3 +46,5 @@ Field rules:
 - `uncertainty` is optional and contains a concrete unresolved point, not a confidence score.
 - Type and scope are the system's controlled classifications. Do not generate free-form asset tags; users manage tags after promotion.
 - If any required field cannot be supported, omit the candidate rather than filling the gap with guesses.
+
+Automatic extraction must preserve lifetime and scope. A restriction for this task, turn, or conversation (including a temporary read-only tool restriction) is not a cross-task rule. Omit it unless the user separately states a durable reuse intent. Do not filter by topic words: business acceptance checklists and debugging methods can be reusable. Explicit user-selected saving remains distinct from automatic extraction.

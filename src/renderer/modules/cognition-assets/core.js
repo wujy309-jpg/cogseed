@@ -1952,23 +1952,21 @@
         await NS.reload();
       }
     },
-    /** 「记一条」（设计 7.2，2026-09-28）：手动新建走 recall.candidates.save
-     *  产生**候选**（不直接入库），保存后跳「待我处理」确认——不破坏
-     *  "确认后才入库"一致性。标题（summary）与内容（judgment）渲染层先做
-     *  必填提示；正式标题闸门在晋升/入库收口（3.2）。
-     *  manual 标记（2026-09-28 拍板 A）：手动候选的"证据"就是用户本人的
-     *  直接输入——证据闸防的是自动提炼线编造来源，手动线不适用该威胁模型。
-     *  主进程按 manual=true + 空来源豁免"证据不足"降级，直接 pending_review
-     *  可确认；自动提炼线行为零变化。 */
+    /** 明确手动保存：先保留候选审计，再复用用户晋升出口。成功落到正式详情；
+     * 准入失败落到该条候选。自动来源仍需逐条确认，不能借 manual 豁免发布。 */
     async saveManualCandidate(form) {
       const input = form || {};
       const judgment = String(input.judgment || '').trim();
       const summary = String(input.summary || '').trim();
       if (!judgment || !summary) {
-        toast(T('cognition.cand_create_need_title', '标题和内容都要填，才能存成候选。'), 'warning');
+        toast(T('cognition.cand_create_need_title', '请填写标题和内容。'), 'warning');
         return;
       }
-      await api.call('recall.candidates.save', {
+      if (input.suggestedType === 'rule' && (!Array.isArray(input.applicableWhen) || !input.applicableWhen.length || !Array.isArray(input.forbiddenWhen) || !input.forbiddenWhen.length)) {
+        toast(T('cognition.manual_rule_boundary_required', '保存规则前，请在高级选项中填写适用和不适用条件。'), 'warning');
+        return;
+      }
+      const saved = await api.call('recall.candidates.save', {
         judgment,
         summary,
         suggestedType: String(input.suggestedType || 'personal'),
@@ -1976,12 +1974,30 @@
         suggestedAction: 'create',
         manual: true,
         sourceRefs: [],
+        ...(input.suggestedType === 'rule' ? { applicableWhen: input.applicableWhen, forbiddenWhen: input.forbiddenWhen } : {}),
         ...(input.value ? { value: String(input.value) } : {}),
         ...(input.uncertainty ? { uncertainty: String(input.uncertainty) } : {}),
       });
-      toast(T('cognition.cand_create_done', '已存好。去「待我处理」确认后才会入库。'), 'success');
-      router.go({ name: 'overview', candCreate: '' }, { replace: true });
-      router.go({ name: 'review' });
+      const candidate = saved && saved.candidate;
+      if (!candidate || !candidate.id) throw new Error('manual candidate response missing');
+      let assetId = candidate.status === 'confirmed' ? candidate.promotedAssetId : '';
+      if (!assetId) {
+        try {
+          const result = await api.call('recall.candidates.promote', { candidateId: candidate.id });
+          assetId = (result && result.asset && result.asset.id) || (result && result.candidate && result.candidate.promotedAssetId) || '';
+        } catch (error) {
+          // The submission is durable. A promotion failure must not look like a failed write
+          // or invite another submission; ordinary review retains conflict/permission checks.
+          toast(T('cognition.manual_save_unconfirmed', '内容已提交，暂时无法确认正式保存结果。请打开这条记录核对状态，不必重复提交。'), 'warning');
+          router.go({ name: 'review', candidateId: candidate.id }, { replace: true });
+          await NS.reload();
+          return;
+        }
+      }
+      toast(assetId
+        ? T('cognition.cand_create_done', '已保存，可在详情中修改内容、查看来源和使用记录。')
+        : T('cognition.manual_save_pending', '内容已提交，但尚未成为正式资产。请在这条待处理内容中核对保存条件。'), assetId ? 'success' : 'warning');
+      router.go(assetId ? { name: 'overview', assetId } : { name: 'review', candidateId: candidate.id }, { replace: true });
       await NS.reload();
     },
     async decideCandidate(candidateId, action) {
@@ -2050,9 +2066,7 @@
       store.assetVersions = null;
       await NS.reload();
     },
-    /** 集成维护（2026-09-29 子安拍板「合并成一个集成功能」）：一个动作跑全套
-     *  = 检查资产库 + 完整清理（recall.maintenance.run，后端组合两个服务）。
-     *  结果分两段 toast：检查发现几条、清理执行几项；报告照旧分别落账。 */
+    /** 维护只检查并生成建议；不改资产、候选或历史。 */
     async runMaintenance() {
       store.cleanupReports = { loading: true, reports: (store.cleanupReports && store.cleanupReports.reports) || [] };
       NS.notify();
@@ -2060,33 +2074,11 @@
         const result = await api.call('recall.maintenance.run', {});
         const run = (result && result.inspection) || null;
         const report = (result && result.cleanup) || null;
-        toast(T('cognition.maint_run_done', '维护完成：检查发现 {findings} 条 · 清理执行 {applied} 项，拿不准 {uncertain} 项', {
+        toast(T('cognition.maint_run_done', '检查完成：发现 {findings} 条 · 整理建议 {uncertain} 项；没有修改内容', {
           findings: String(((run && run.findings) || []).length),
           applied: String(((report && report.items) || []).filter((item) => item.status === 'applied').length),
           uncertain: String(((report && report.uncertain) || []).length),
         }));
-        store.cleanupReports = { loading: false, stale: true, reports: [] };
-      } catch (error) {
-        store.cleanupReports = { loading: false, stale: true, reports: [] };
-        throw error;
-      }
-      await NS.reload();
-    },
-    /** 发起一轮大扫除（specs/008 US-403）：只做不改变含义的整理，拿不准的进清单。 */
-    async runCleanup() {
-      store.cleanupReports = { loading: true, reports: (store.cleanupReports && store.cleanupReports.reports) || [] };
-      NS.notify();
-      try {
-        const result = await api.call('recall.cleanup.run', { trigger: 'user' });
-        const report = (result && result.report) || null;
-        toast(T('cognition.cleanup_done', '整理完成：执行 {applied} 项，拿不准 {uncertain} 项', {
-          applied: String(((report && report.items) || []).filter((item) => item.status === 'applied').length),
-          uncertain: String(((report && report.uncertain) || []).length),
-        }));
-        // 完整整理轮的分轮失败（如模型未配置）如实补报——不静默（各轮
-        // "整轮失败上报"硬口径在合并报告里的出口）。
-        const roundErrors = report && report.roundErrors ? Object.values(report.roundErrors).filter(Boolean) : [];
-        if (roundErrors.length) toast(roundErrors.join('；'));
         store.cleanupReports = { loading: false, stale: true, reports: [] };
       } catch (error) {
         store.cleanupReports = { loading: false, stale: true, reports: [] };

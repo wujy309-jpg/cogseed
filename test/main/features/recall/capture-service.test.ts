@@ -1885,6 +1885,22 @@ describe('Recall conversation capture', () => {
     expect(mocks.saveCandidate).not.toHaveBeenCalled();
   });
 
+  it('已有合格候选全部处理完时记为完成，不误报没有候选', async () => {
+    mocks.runModel.mockResolvedValueOnce({
+      text: JSON.stringify({ candidates: [{ judgment: 'Keep a traceable decision log.', ...reviewableCandidateContract, summary: 'Decision traceability', suggestedType: 'rule', suggestedScope: 'project', evidence: ['m1'] }] }),
+      content: [], meta: { aborted: false },
+    });
+    mocks.saveCandidate.mockImplementation(async (_userId: string, input: any) => ({ ...input, id: 'cand-settled', status: 'rejected' }));
+    mocks.readCandidate.mockResolvedValue({ id: 'cand-settled', status: 'rejected' });
+    const capture = await captureModule();
+    const queued = await capture.queueRecallCaptureFromTerminal(completedEvent);
+    await capture.runRecallCaptureNow('capture-user', queued!.id);
+    const completed = await capture.runRecallCapture('capture-user', queued!.id);
+    expect(completed).toMatchObject({ status: 'completed', candidateIds: ['cand-settled'], screeningStatus: 'qualified' });
+    expect(completed.filterReason).toBeUndefined();
+    expect(mocks.autoApplyCandidate).not.toHaveBeenCalled();
+  });
+
   it('records zero candidates, invalid output, model setup, retry, and crash recovery explicitly', async () => {
     const capture = await captureModule();
 

@@ -29,7 +29,6 @@ import type { GroupMessage } from '../group_chat/visibility';
 import { listAbilityAssets, readAbilityAsset } from './asset-service';
 import {
   isAutoCaptureEligible,
-  autoApplyRecallCandidate,
   promoteRecallCandidate,
   readRecallAssetHandoffReceipt,
   readRecallCandidate,
@@ -65,6 +64,7 @@ import {
 import {
   assessRecallCandidateClassification,
   assessRecallCaptureCandidateQuality,
+  isTaskLocalRuleProposal,
   screenRecallCaptureValue,
   type RecallCaptureFilterReason,
   type RecallCaptureValueSignal,
@@ -158,7 +158,7 @@ export interface RecallCaptureRecord extends RecallJsonRecord {
    *  为准，杜绝 defer 冷却过期等读取时点漂移把已完成任务翻成失败。 */
   reviewSnapshot?: RecallCaptureReviewSummary;
   writingCandidateId?: string;
-  /** Persisted intent to write qualifying candidates without a later approval click. */
+  /** 历史自动写入标记，只用于读兼容；新提取不设置、不授予发布权限。 */
   autoWrite?: boolean;
   recallViewId?: string;
   errorCode?: string;
@@ -1838,74 +1838,6 @@ function isSettledAutomaticCandidate(candidate: Pick<RecallCandidateRecord, 'sta
   return ['rejected', 'ignored', 'expired'].includes(candidate.status);
 }
 
-async function automaticallyApplyReviewableCandidates(
-  userId: string,
-  candidateIds: Iterable<string>,
-): Promise<{
-  resolved: Map<string, RecallCandidateRecord>;
-  failedCandidateIds: string[];
-  /** 自动写入被安全机制挡下（不是失败）：候选原封不动留在池子里等人工确认。 */
-  deferredCandidateIds: string[];
-}> {
-  const resolved = new Map<string, RecallCandidateRecord>();
-  const failedCandidateIds: string[] = [];
-  const deferredCandidateIds: string[] = [];
-  for (const candidateId of new Set(candidateIds)) {
-    try {
-      // Read immediately before applying. A prior run or a concurrent user
-      // decision may already have settled this candidate.
-      const candidate = await readRecallCandidate(userId, candidateId);
-      resolved.set(candidate.id, candidate);
-      if (isSettledAutomaticCandidate(candidate)) continue;
-      if (candidate.status === 'confirmed') {
-        // A complete handoff is already settled. Only re-enter the recovery
-        // path when the persisted asset or immutable receipt is missing.
-        if (candidate.promotedAssetId && candidate.reviewDecisionId) {
-          let asset: RecallAbilityAssetRecord | undefined;
-          let receipt: RecallAssetHandoffReceipt | undefined;
-          try { asset = await readAbilityAsset(userId, candidate.promotedAssetId); } catch { asset = undefined; }
-          try { receipt = await readRecallAssetHandoffReceipt(userId, candidate.id, candidate.reviewDecisionId); } catch { receipt = undefined; }
-          if (asset && receipt && confirmedAssetReceipt(candidate, asset, receipt)) continue;
-        } else {
-          continue;
-        }
-        const applied = await autoApplyRecallCandidate(userId, candidate.id);
-        resolved.set(applied.candidate.id, applied.candidate);
-        if (applied.asset) await prepareSkillDraftForPromotedAsset(userId, {
-          candidate: applied.candidate,
-          asset: applied.asset,
-        });
-        continue;
-      }
-      if (!isAutoCaptureEligible(candidate)) continue;
-      if (candidate.risk === 'high') continue;
-
-      const applied = await autoApplyRecallCandidate(userId, candidate.id);
-      resolved.set(applied.candidate.id, applied.candidate);
-      if (applied.asset) await prepareSkillDraftForPromotedAsset(userId, {
-        candidate: applied.candidate,
-        asset: applied.asset,
-      });
-    } catch (error) {
-      // 语义查重不可用不是写入失败：候选没被动过，仍然可以人工确认。把它记成
-      // 失败会让整次沉淀显示成错误并催用户重试，而重试同样查不了重。
-      // 两类"挡下"都不是写入失败：候选没被动过，仍然可以人工确认。
-      //   semantic_dedup_unavailable  查重做不了，不能当作"查过且干净"
-      //   promotion_blocked           没到该类型的正式准入门槛（PRD 3.1）
-      // 记成失败会让整次沉淀显示成错误并催用户重试，而重试同样过不了。
-      const code = (error as { code?: string })?.code;
-      if (code === 'semantic_dedup_unavailable' || code === 'promotion_blocked') {
-        deferredCandidateIds.push(candidateId);
-        continue;
-      }
-      // Continue so one blocked or temporarily failed candidate cannot prevent
-      // independent later candidates from reaching their terminal state.
-      failedCandidateIds.push(candidateId);
-    }
-  }
-  return { resolved, failedCandidateIds, deferredCandidateIds };
-}
-
 export async function runRecallCapture(
   userId: string,
   id: string,
@@ -2154,16 +2086,14 @@ export async function runRecallCapture(
     capture = await setCaptureStage(userId, id, 'candidate_save');
     if (capture.status !== 'extracting') return capture;
     // 自动来源只能形成候选；旧 autoWrite/auto 配置不构成逐条确认授权。
-    const automaticMode = false;
     const byLabel = new Map(promptMessages.map((message) => [message.label, message]));
     const candidates: RecallCandidateRecord[] = [];
-    // Once an automatic task reaches writing, these ids are the durable replay
-    // set. Preserve them even if a retry's model output is not byte-identical.
-    const automaticallyEligibleCandidateIds = new Set<string>(
-      capture.autoWrite === true ? capture.candidateIds : [],
-    );
     for (const [index, candidate] of parsed.entries()) {
       const evidenceMessages = candidate.evidence.map((label) => byLabel.get(label)!);
+      if (capture.executionPolicy !== 'manual' && isTaskLocalRuleProposal(candidate, evidenceMessages)) {
+        log.info('recall capture omitted task-local rule', { captureId: capture.id, candidateIndex: index });
+        continue;
+      }
       const quality = assessRecallCaptureCandidateQuality(candidate, evidenceMessages);
       // 归类校验：提示词要求模型按五类定义分类，运行时仍需兜底校验。命中 PRD
       // 明确排除的内容（项目事实当 personal、原文件当 template、能力自述当
@@ -2176,11 +2106,7 @@ export async function runRecallCapture(
           reasons: classification.blockingReasons,
         });
       }
-      const requiresManualRiskGate = quality.reviewable
-        && classification.ok
-        && quality.automaticIneligibilityReasons.includes('high_risk_requires_review');
-      const retainForReview = classification.ok
-        && (!automaticMode || quality.automaticEligible || requiresManualRiskGate);
+      const retainForReview = classification.ok;
       const teachingSignals = activeTeachingSignals.filter((signal) => (
         evidenceMessages.some((message) => message.id === signal.messageId)
       ));
@@ -2199,8 +2125,6 @@ export async function runRecallCapture(
             && isAutoCaptureEligible(matching);
           if (retainMatching) {
             candidates.push(matching);
-            if (quality.automaticEligible) automaticallyEligibleCandidateIds.add(matching.id);
-            else automaticallyEligibleCandidateIds.delete(matching.id);
           }
           if (isAutoCaptureEligible(matching) || matching.status === 'confirmed') continue;
         }
@@ -2229,7 +2153,7 @@ export async function runRecallCapture(
           ...(candidate.targetAssetId ? { targetAssetId: candidate.targetAssetId } : {}),
           ...(candidate.applicableWhen ? { applicableWhen: candidate.applicableWhen } : {}),
           ...(candidate.forbiddenWhen ? { forbiddenWhen: candidate.forbiddenWhen } : {}),
-          forceWeakObservation: !quality.reviewable || !classification.ok || (automaticMode && !quality.automaticEligible && !requiresManualRiskGate),
+          forceWeakObservation: !quality.reviewable || !classification.ok,
           captureKey: `capture-${capture.id}-${index}`,
           ...(captureSpaceId ? { spaceId: captureSpaceId } : {}),
           taskRunId: capture.terminalRunId,
@@ -2250,8 +2174,6 @@ export async function runRecallCapture(
             isAutoCaptureEligible(storedCandidate) || isSettledAutomaticCandidate(storedCandidate)
           )) {
           candidates.push(storedCandidate);
-          if (quality.automaticEligible) automaticallyEligibleCandidateIds.add(storedCandidate.id);
-          else automaticallyEligibleCandidateIds.delete(storedCandidate.id);
         }
       } catch (error) {
         const messageText = error instanceof Error ? error.message : String(error);
@@ -2280,7 +2202,6 @@ export async function runRecallCapture(
     }
 
     const candidateIds = [...new Set([
-      ...(automaticMode ? automaticallyEligibleCandidateIds : []),
       ...candidates.map((candidate) => candidate.id),
     ])];
     capture = await updateCapture(userId, id, (current) => current.status !== 'extracting'
@@ -2292,76 +2213,18 @@ export async function runRecallCapture(
         });
     if (capture.status !== 'extracting' || signal?.aborted) return settleInterruptedCapture(userId, id);
 
-    const automaticWrite = automaticMode && automaticallyEligibleCandidateIds.size > 0;
-    const resolvedCandidates = new Map(candidates.map((candidate) => [candidate.id, candidate]));
-    if (automaticWrite) {
-      capture = await updateCapture(userId, id, (current) => current.status !== 'extracting'
-        ? current
-        : {
-            ...current,
-            status: 'writing',
-            stage: 'asset_write',
-            autoWrite: true,
-            updatedAt: new Date().toISOString(),
-      });
-      if (capture.status !== 'writing') return capture;
-      try {
-        const application = await automaticallyApplyReviewableCandidates(
-          userId,
-          automaticallyEligibleCandidateIds,
-        );
-        for (const [candidateId, candidate] of application.resolved) {
-          resolvedCandidates.set(candidateId, candidate);
-        }
-        if (application.deferredCandidateIds.length) {
-          log.info('recall capture automatic write deferred to manual review', {
-            captureId: id,
-            candidateIds: application.deferredCandidateIds,
-            reason: 'blocked_or_undecidable',
-          });
-        }
-        if (application.failedCandidateIds.length) {
-          throw new Error('one or more candidates could not be automatically written');
-        }
-      } catch {
-        throw new CaptureFailure('asset_write_failed', 'candidate could not be automatically written to Recall');
-      }
-    }
-
     const finishedAt = new Date().toISOString();
     const modelUsage = extractionModelUsage;
     const hasQualifiedCandidates = candidateIds.length > 0;
     const hasReviewableCandidates = candidates.some((candidate) => (
-      isAutoCaptureEligible(resolvedCandidates.get(candidate.id) || candidate)
+      isAutoCaptureEligible(candidate)
     ));
-    // 终态固化复核快照（2026-09-16 A2）：只在 completed 落点固化（自动写
-    // 完成线）——防 defer 冷却过期等读取时点漂移把已完成任务翻成失败。
-    // review_ready 是活的等待区（用户处理后照常翻「已完成」），不固化。
-    // 口径与读取侧共用 summarizeRecallCaptures；读取异常时放弃固化，绝不
-    // 让它把一次成功的整理拖成 failed。
-    const finishingAsCompleted = automaticWrite && !hasReviewableCandidates;
-    let reviewSnapshot: RecallCaptureReviewSummary | undefined;
-    if (finishingAsCompleted && candidateIds.length) {
-      try {
-        const [workflow] = await summarizeRecallCaptures(userId, [
-          { ...capture, candidateIds } as RecallCaptureRecord,
-        ]);
-        if (workflow && workflow.reviewSummary.total) reviewSnapshot = workflow.reviewSummary;
-      } catch {
-        // 快照是防漂移的加固，不是整理的必要产物——读取侧异常时放弃固化，
-        // 保持既有读取时现算口径，绝不让它把一次成功的整理拖成 failed。
-        reviewSnapshot = undefined;
-      }
-    }
-    capture = await updateCapture(userId, id, (current) => (automaticWrite
-      ? current.status !== 'writing'
-      : current.status !== 'extracting')
+    capture = await updateCapture(userId, id, (current) => current.status !== 'extracting'
       ? current
       : {
           ...current,
-          status: hasReviewableCandidates ? 'review_ready' : automaticWrite ? 'completed' : 'no_candidate',
-          ...(reviewSnapshot ? { reviewSnapshot } : {}),
-          visibility: current.executionPolicy === 'manual' || hasQualifiedCandidates || automaticWrite ? 'visible' : 'internal',
+          status: hasReviewableCandidates ? 'review_ready' : hasQualifiedCandidates ? 'completed' : 'no_candidate',
+          visibility: current.executionPolicy === 'manual' || hasQualifiedCandidates ? 'visible' : 'internal',
           screeningStatus: hasQualifiedCandidates ? 'qualified' : 'filtered',
           // 三分而不是二分：模型判空 / 模型给了但全被丢弃 / 给了且接住但下游筛掉。
           // 中间那档过去混在 model_no_candidate 里，让解析侧的丢弃伪装成"内容里
@@ -2375,7 +2238,7 @@ export async function runRecallCapture(
             ? { noCandidateReason: parseResult.noCandidateReason }
             : {}),
           stage: undefined,
-          ...(automaticWrite ? { autoWrite: true } : {}),
+          autoWrite: undefined,
           candidateIds,
           errorCode: undefined,
           finishedAt,

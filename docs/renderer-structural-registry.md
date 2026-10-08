@@ -193,6 +193,7 @@ written here until `@bonc-ai/reviewers` promotes, narrows or rejects it.
 | `CA-PV-006` | 待我处理 · 本体候选行（`cognition-assets/review-views.js`，页面级类名 `ca-review-row` / `ca-review-row-text`，2026-10-02 归位） | Proposed | 在既有「待我处理」页内新增一块：**本体候选行**——原先只在「本体」页横幅里，用户要去第二个地方看；现在同页一行一句内容 + 「确认记住／驳回」，确认走 `po.candidates.confirm`、驳回走 `po.candidates.reject`（均为既有通道）。**不新增页签、不新增控件皮肤**：按钮走 `NS.ui.btn`（内部 `uiButton(...)`）、标题走 `sectionHead(...)`、空态走 `NS.ui.empty`；`.ca-review-row` 只做行排布（flex + 分隔线），不覆盖共享控件的边框/圆角/阴影。**另注（同日撤回）**：曾在本页加过"任务开工前要的个人字段"填写表单，因子安 2026-10-02 判定"填写表单界面不该存在、字段应在对话里问"，已整块移除；该能力改为模型工具 `personal_fields_check` / `personal_field_remember`（对话内提问与回答，见 runner.ts 工具装配）。 | `sectionHead(...)`、`NS.ui.btn`、`NS.ui.empty`、设计 token（仅 `var(--*)`） | `@bonc-ai/reviewers`, 2026-10-02 | 若本体候选行被第二个页面复用，抽成共享组件并把本行改为 `Migrated` |
 
 | `ONTO-PV-004` | 本体对象详情、首页待处理提示与最近查看、完整原文窗口、我的认知与系统活动本体投影（2026-10-07） | Proposed | 对象详情组合当前信息、关系、相关规则、历史来源和实际采用版本；历史版本只读；首页待处理数来自共同候选队列，失败不显示零；最近查看只存本机对象 ID；我的认知与系统活动只读同一主档目录和版本记录，深链进入正式本体工作台；原文窗口只读，不作为确认授权。 | `uiTabs`、`uiField`、`uiButton`、`uiModal`、i18n 与既有页面 token；不增加共享叶子控件。页内组合依赖本体数据与权限语义，现有共享叶子 API 已覆盖控件但没有同一业务结构；PR/issue：TBD。 | `@bonc-ai/reviewers`, TBD | 按用户本轮全量实现授权接入正式页面；产品与审查批准状态不由代理代签。 |
+| `COG-PV-018` | 认知资产手动确认表单与只读维护建议（2026-10-08） | Proposed | 用户本轮授权收敛：手动保存沿用候选审计及准入，规则选择展开真实边界；维护报告区分新只读建议和历史执行恢复，不增加页面、候选池或共享控件。 | 既有 `uiInput`、`uiTextarea`、`uiButton`、原生 `<details>`、i18n；属于页面业务组合。 | `@bonc-ai/reviewers`, TBD | 已按用户授权实现并验证；维护者审查状态仍为 Proposed，代理不代签批准。 |
 
 ## PR notation
 

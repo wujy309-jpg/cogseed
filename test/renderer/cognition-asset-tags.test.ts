@@ -760,27 +760,47 @@ describe('「记一条」（设计 7.2：手动新建候选）', () => {
     expect(html).toContain('data-act="cand-create-cancel"');
   });
 
-  it('保存走 recall.candidates.save 产生候选（suggestedAction=create、空来源数组）并提示去待我处理', async () => {
-    const invoke = vi.fn(async () => ({ ok: true, candidate: { id: 'cand-new' } }));
+
+  it('明确保存只点一次，候选审计后经既有晋升出口打开正式资产详情', async () => {
+    const invoke = vi.fn(async (channel: string) => channel === 'recall.candidates.promote'
+      ? { ok: true, asset: { id: 'asset-new' } }
+      : { ok: true, candidate: { id: 'cand-new', status: 'pending_review' } });
     const loaded = loadCognition({ invoke });
-    await loaded.ns.actions.saveManualCandidate({
-      summary: '发布走灰度', judgment: '发布前先小流量验证。', suggestedType: 'rule', suggestedScope: '',
+    await loaded.ns.actions.saveManualCandidate({ summary: '发布走灰度', judgment: '发布前先小流量验证。', suggestedType: 'rule', applicableWhen: ['发布'], forbiddenWhen: ['日常同步'] });
+    const payload = callOf(invoke, 'recall.candidates.save')[0][1];
+    expect(payload).toMatchObject({ manual: true, suggestedAction: 'create', suggestedScope: 'general', sourceRefs: [], applicableWhen: ['发布'], forbiddenWhen: ['日常同步'] });
+    expect(callOf(invoke, 'recall.candidates.promote')).toHaveLength(1);
+    expect(loaded.ns.store.route).toMatchObject({ name: 'overview', assetId: 'asset-new' });
+    expect(loaded.toasts.some(toast => toast.message.includes('已保存'))).toBe(true);
+  });
+
+  it('晋升受阻时只留一条候选并打开该条处理，不能声称正式保存成功', async () => {
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === 'recall.candidates.promote') throw Object.assign(new Error('blocked'), { code: 'promotion_blocked' });
+      return { ok: true, candidate: { id: 'cand-new', status: 'pending_review' } };
     });
-    const calls = callOf(invoke, 'recall.candidates.save');
-    expect(calls).toHaveLength(1);
-    const payload = calls[0][1];
-    expect(payload.summary).toBe('发布走灰度');
-    expect(payload.judgment).toBe('发布前先小流量验证。');
-    expect(payload.suggestedType).toBe('rule');
-    expect(payload.suggestedAction).toBe('create');
-    // 手动创建没有对话来源：来源与证据都为空；manual 标记让主进程豁免
-    // "证据不足"降级（拍板 A：手动候选的证据就是用户本人的直接输入），
-    // 直接 pending_review 可确认，不直接入库。
-    expect(payload.sourceRefs).toEqual([]);
-    expect(payload.manual).toBe(true);
-    // suggestedScope 兜底 general（通道要求字符串）。
-    expect(payload.suggestedScope).toBe('general');
-    expect(loaded.toasts.some((toast) => toast.message.includes('待我处理'))).toBe(true);
+    const loaded = loadCognition({ invoke });
+    await loaded.ns.actions.saveManualCandidate({ summary: '文档目录', judgment: '项目资料统一保存在文档目录。', suggestedType: 'fact' });
+    expect(callOf(invoke, 'recall.candidates.save')).toHaveLength(1);
+    expect(loaded.ns.store.route).toMatchObject({ name: 'review', candidateId: 'cand-new' });
+    expect(loaded.toasts.some(toast => toast.variant === 'success')).toBe(false);
+    expect(loaded.toasts.some(toast => toast.message.includes('暂时无法确认正式保存结果'))).toBe(true);
+  });
+
+  it('规则缺少真实边界时保持表单，不生成无从晋升的候选', async () => {
+    const invoke = vi.fn();
+    const loaded = loadCognition({ invoke });
+    await loaded.ns.actions.saveManualCandidate({ summary: '发布走灰度', judgment: '发布前先小流量验证。', suggestedType: 'rule' });
+    expect(callOf(invoke, 'recall.candidates.save')).toHaveLength(0);
+    expect(loaded.toasts.some(toast => toast.message.includes('适用和不适用条件'))).toBe(true);
+  });
+
+  it('已确认的幂等提交直接打开已有资产，不再次晋升', async () => {
+    const invoke = vi.fn(async () => ({ ok: true, candidate: { id: 'cand-existing', status: 'confirmed', promotedAssetId: 'asset-existing' } }));
+    const loaded = loadCognition({ invoke });
+    await loaded.ns.actions.saveManualCandidate({ summary: '文档目录', judgment: '项目资料统一保存在文档目录。', suggestedType: 'fact' });
+    expect(callOf(invoke, 'recall.candidates.promote')).toHaveLength(0);
+    expect(loaded.ns.store.route.assetId).toBe('asset-existing');
   });
 
   it('标题或内容缺一不提交，给必填提示（标题必填口径）', async () => {

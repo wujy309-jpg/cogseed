@@ -652,7 +652,7 @@ describe('系统活动与认知设置', () => {
   it('0 值分段不出现（specs/018 迭代轮 2 猎区 1）：空库导语让位空态，树冠与大扫除给空态专用句', () => {
     // P3 导语：0 条认知 · 0 条等你确认 → 数字段全隐，空态引导承接。
     const emptyOverview = renderPage('overview', { assets: [], proofs: [], sources: [], candidates: [] });
-    expect(emptyOverview).not.toContain('条认知');
+    expect(emptyOverview).not.toContain('条常规资产');
     expect(emptyOverview).not.toContain('条等你确认');
     expect(emptyOverview).toContain('还没有正式资产');
     // 有认知、无待确认：只出资产段。
@@ -661,11 +661,11 @@ describe('系统活动与认知设置', () => {
       proofs: [], sources: [], candidates: [],
     });
     expect(noPending).toContain('1');
-    expect(noPending).toContain('条认知');
+    expect(noPending).toContain('条常规资产');
     expect(noPending).not.toContain('条等你确认');
     // 树冠：0 已验证 → 空态专用句，不出「被真用过 0」。
     const tree = renderPage('tree', { assets: [], proofs: [], sources: [], candidates: [] });
-    expect(tree).toContain('还没有被真用过的');
+    expect(tree).toContain('暂无带入或读取记录');
     expect(tree).not.toContain('被真用过 0');
     // 大扫除事件：跑了但 0 归并 → 空态专用句。
     const cleanupZero = renderPage('activity', {
@@ -1535,7 +1535,7 @@ describe('资产详情（使用记录并入）', () => {
       { assetId: 'aa-1', proofEventId: 'ev-1' },
     );
     expect(html).toContain('使用记录');
-    expect(html).toContain('被任务用过');
+    expect(html).toContain('带入或读取');
     expect(html).toContain('对话《Saying hello》里');
     expect(html).toContain('data-act="proof-toggle" data-id="ev-1"');
     expect(html).toContain('data-feedback="positive"');
@@ -1550,13 +1550,13 @@ describe('资产详情（使用记录并入）', () => {
       { id: 'ev-5', kind: 'asset_archived', occurredAt: '2026-09-16T03:00:00.000Z', refs: { assetId: 'aa-1' } },
     ];
     const html = renderPage('overview', { assets: [asset], proofs: noisy, sources: conversationSources }, { assetId: 'aa-1' });
-    expect(html).toContain('被任务用过');
+    expect(html).toContain('带入或读取');
     expect(html).not.toContain('保存了新版本');
     expect(html).not.toContain('选用 v2 为在用版本');
     // 噪音事件不进计数摘要；且口径已改（2026-09-25 US-602 AC4；2026-09-28 词表
     // 统一）：宿主注入过一律归「被任务用过」，不再宣称「被实际使用」——是否
     // 采用只看「模型确认采用」。
-    expect(html).toContain('被任务用过 1 次');
+    expect(html).toContain('带入或读取 2 次');
     expect(html).not.toContain('被实际使用');
   });
 
@@ -1662,7 +1662,7 @@ describe('资产详情（使用记录并入）', () => {
     // 设置页（2026-09-29 三轮合一）：入口恒为「完整整理」文案，不再按最近
     // 报告轮次切换导语（旧规则轮/重起轮只在报告页历史里区分）。
     const settings = renderPage('organize-settings', { cleanupReports: { loading: false, reports: [regenReport] } });
-    expect(settings).toContain('规范标题、合并重复、补标签');
+    expect(settings).toContain('检查只报告、不修改内容');
     expect(settings).not.toContain('由模型把不合格的标题重新拟一个简短的新标题');
     // 载体或以独立 trigger 值标记本轮（零项的重起报告也能分辨）——两种形态都认。
     const triggerOnly = { ...regenReport, id: 'cr-regen2', trigger: 'title_regen', items: [] };
@@ -1670,7 +1670,7 @@ describe('资产详情（使用记录并入）', () => {
     expect(triggerHtml).toContain('由模型把不合格的标题重新拟一个简短的新标题');
     // 规则轮不受影响：历史规则轮报告导语保留原文案。
     const ruleHtml = renderPage('cleanup', { cleanupReports: { loading: false, reports: [] } }, { cleanupReportId: 'missing' });
-    expect(ruleHtml).toContain('只自动规范标题、合并正文完全相同的重复项');
+    expect(ruleHtml).toContain('没有修改资产或候选');
   });
 
   it('完整整理轮（2026-09-29 三轮合一）：round:full 用合并导语，tag_added 有「补标签」标签不落兜底', () => {
@@ -1703,7 +1703,7 @@ describe('资产详情（使用记录并入）', () => {
     expect(html).toContain('data-act="go-back"');
     // 2026-09-29 版式统一：页头与任务/建议详情同款（大标题+说明+右侧动作），
     // 不再用 ui-page-header 紧凑组件——模块内三种详情页头收敛为一种。
-    expect(html).toContain('每次整理与清理改了什么，逐项留档，可核对、可回滚。');
+    expect(html).toContain('检查建议与历史整理记录；当前检查不会修改资产或候选。');
     expect(html).not.toContain('ui-page-header');
   });
 

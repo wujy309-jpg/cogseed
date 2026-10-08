@@ -79,7 +79,7 @@ describe('正式认知资产详情页', () => {
       assetTimeline: { assetId: BASE.id, items: [], loading: false, failed: false },
       adoptionReceipts: { assetId: BASE.id, items: [], loading: false, failed: false },
     }));
-    expect(loaded).toContain('被任务用过 0 次');
+    expect(loaded).toContain('带入或读取 0 次');
     expect(loaded).toContain('其中模型确认采用 0 次');
     expect(loaded).toContain('还没有被真实使用过');
   });
@@ -106,7 +106,7 @@ describe('正式认知资产详情页', () => {
       adoptionReceipts: { assetId: BASE.id, items: [], loading: false, failed: false },
       sources: [{ kind: 'conversation', items: [{ kind: 'conversation', id: 'conv-1', title: '发布检查', status: 'ready' }] }],
     });
-    expect(useCard(html)).toContain('被任务用过 1 次');
+    expect(useCard(html)).toContain('带入或读取 1 次');
     expect(useCard(html)).toContain('真正采用只计模型确认的回执');
     expect(useCard(html)).not.toContain('只记真实用过（实际采用）');
     expect(html).toContain('<details class="ca-stale-pin-detail">');
