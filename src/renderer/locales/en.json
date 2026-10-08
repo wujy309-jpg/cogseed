@@ -6142,6 +6142,10 @@
   "settings.updates.errors.file_missing": "Installer file is missing, please download again",
   "settings.updates.errors.insecure_url": "Insecure update download URL — HTTPS is required",
   "settings.updates.errors.bad_url": "Invalid update download URL",
+  "settings.updates.errors.install_no_download": "No verified update package to install — download the update first",
+  "settings.updates.errors.install_attempts_exhausted": "Install attempts are exhausted — run the downloaded installer manually",
+  "settings.updates.errors.install_unsupported_platform": "Silent install is not supported on this platform",
+  "settings.updates.errors.install_in_progress": "An install is already in progress",
   "ws.import_folder_label": "Local folder (optional)",
   "ws.import_folder_pick": "Choose a local folder",
   "ws.import_folder_none": "Not chosen — the space starts empty, files can be added anytime",
@@ -9099,5 +9103,14 @@
   "skills.contribute_withdrawal_notice": "A withdrawal request takes effect only after governance review. The content remains published while pending.",
   "skills.contribute_checking": "Running local checks",
   "skills.contribute_checking_hint": "No package bytes are sent while local checks run.",
-  "skills.contribute_origin_previous": "Previous declaration: {origin}. Confirm or change it."
+  "skills.contribute_origin_previous": "Previous declaration: {origin}. Confirm or change it.",
+  "updates.action.restart_install": "Restart and install",
+  "updates.boot_guard.unstable": "The last upgrade did not start up reliably, so automatic updating is paused. Check the release notes or contact support before trying again.",
+  "updates.boot_guard.install_missed": "The install started for version {version} did not take effect. You can retry.",
+  "updates.boot_guard.install_missed_unknown": "A previously started install did not take effect. You can retry; if it keeps failing, run the downloaded installer manually.",
+  "updates.install.failed": "Install failed: {message}",
+  "updates.install.in_progress": "Restarting and installing…",
+  "settings.close_to_tray.title": "Minimize to tray on close",
+  "settings.close_to_tray.sub": "The app keeps running in the background after you close the window, so long tasks are not interrupted. Use the tray menu to reopen the window or quit completely.",
+  "settings.close_to_tray.toggle": "Enable"
 }

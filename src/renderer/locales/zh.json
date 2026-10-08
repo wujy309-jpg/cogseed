@@ -6142,6 +6142,10 @@
   "settings.updates.errors.file_missing": "安装包文件不存在，请重新下载",
   "settings.updates.errors.insecure_url": "更新下载地址不安全，必须使用 HTTPS",
   "settings.updates.errors.bad_url": "更新下载地址无效",
+  "settings.updates.errors.install_no_download": "没有已校验的安装包，请先下载更新",
+  "settings.updates.errors.install_attempts_exhausted": "安装尝试次数已达上限，请手动运行已下载的安装包",
+  "settings.updates.errors.install_unsupported_platform": "当前平台不支持静默安装",
+  "settings.updates.errors.install_in_progress": "已有安装任务进行中",
   "ws.import_folder_label": "本地文件夹（可选）",
   "ws.import_folder_pick": "选择本地文件夹",
   "ws.import_folder_none": "未选择——空间创建后为空，文件可随时加入",
@@ -9099,5 +9103,14 @@
   "skills.contribute_withdrawal_notice": "撤回申请需经内容治理审核后才生效；待处理期间内容保持发布。",
   "skills.contribute_checking": "正在执行本地检查",
   "skills.contribute_checking_hint": "本地检查期间不会发送任何投稿包字节。",
-  "skills.contribute_origin_previous": "上一版来源声明：{origin}。请确认或修改。"
+  "skills.contribute_origin_previous": "上一版来源声明：{origin}。请确认或修改。",
+  "updates.action.restart_install": "重启并安装",
+  "updates.boot_guard.unstable": "上次升级未能稳定启动，自动更新已暂停。请先查看更新日志或联系支持，再决定是否继续。",
+  "updates.boot_guard.install_missed": "上次开始的安装（版本 {version}）没有生效，可以重试。",
+  "updates.boot_guard.install_missed_unknown": "上次开始的安装没有生效，可以重试；若反复失败，请手动运行已下载的安装包。",
+  "updates.install.failed": "安装失败：{message}",
+  "updates.install.in_progress": "正在重启并安装…",
+  "settings.close_to_tray.title": "关闭窗口时最小化到托盘",
+  "settings.close_to_tray.sub": "关闭窗口后应用继续在后台运行，长任务不会中断；可以从托盘菜单重新显示窗口或彻底退出。",
+  "settings.close_to_tray.toggle": "启用"
 }

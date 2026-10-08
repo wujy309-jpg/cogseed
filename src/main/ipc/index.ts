@@ -5824,6 +5824,20 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { enabled: appConfig.setMetacognitionEnabled(!!enabled) };
   },
 
+  // 关闭窗口时最小化到托盘（后台运行）。行为判定在
+  // src/main/features/background_run.ts；这里只做入参校验 + 转发。
+  'prefs.getCloseToTray': async () => ({
+    enabled: appConfig.getCloseToTrayEnabled(),
+  }),
+  'prefs.setCloseToTray': async ({ enabled }) => {
+    // 这个偏好落在可同步的 per-uid 配置里，畸形 payload 绝不能把它悄悄改成
+    // false——OFF 意味着点 X 直接退出，可能打断正在跑的长任务。按分层规则入参
+    // 校验留在 ipc/，因此对非布尔值直接抛错：路由会包成 { ok: false }，渲染层
+    // 据此把开关回滚到原状态。
+    if (typeof enabled !== 'boolean') throw new Error('invalid enabled');
+    return { enabled: appConfig.setCloseToTrayEnabled(enabled) };
+  },
+
   // Thinking strength (reasoning effort) for chat model calls.
   'prefs.getThinkingLevel': async () => ({ level: appConfig.getThinkingLevel() }),
   'prefs.setThinkingLevel': async ({ level }) => ({ level: appConfig.setThinkingLevel(level) }),
