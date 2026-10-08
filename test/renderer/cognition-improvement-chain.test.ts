@@ -352,7 +352,7 @@ const FOUR_OUTCOMES = [
 
 describe('「改进分析」只读分区（T016 / US-701 AC3）', () => {
   it('空态走共享 EmptyState，不是空白块', () => {
-    const html = renderPage('activity', { improvementOutcomes: { items: [], loading: false, failed: false } });
+    const html = renderPage('activity', { improvementOutcomes: { items: [], loading: false, failed: false } }, { activityDone: '1' });
     expect(html).toContain(zh['cognition.improvement_section']);
     expect(html).toContain(zh['cognition.improvement_empty']);
     expect(html).toContain(zh['cognition.improvement_empty_hint']);
@@ -366,7 +366,7 @@ describe('「改进分析」只读分区（T016 / US-701 AC3）', () => {
       ...kstarStore,
       kstarSummaries: { 'kse-1': { id: 'kse-1', goal: '第一次复盘任务' }, 'kse-ep1': { id: 'kse-ep1', goal: '把接口变更同步到文档' } },
       kstarSummariesSettled: ['kse-1', 'kse-ep1'],
-    });
+    }, { activityDone: '1' });
     const tail = improvementTail(html);
     expect(tail).not.toBe('');
     for (const key of [
@@ -407,7 +407,7 @@ describe('「改进分析」只读分区（T016 / US-701 AC3）', () => {
         failed: false,
       },
       ...kstarStore,
-    });
+    }, { activityDone: '1' });
     const tail = improvementTail(html);
     expect(tail).toContain(targetAsset.title);
     expect(tail).toContain(zh['cognition.improvement_ref_generic']);
@@ -427,7 +427,7 @@ describe('「改进分析」只读分区（T016 / US-701 AC3）', () => {
         failed: false,
       },
       ...kstarStore,
-    });
+    }, { activityDone: '1' });
     const tail = improvementTail(html);
     expect(tail).toContain(zh['cognition.improvement_failure_detail']);
     expect(tail).toContain(zh['cognition.improvement_failure_stage_precipitation']);
@@ -453,7 +453,7 @@ describe('「改进分析」只读分区（T016 / US-701 AC3）', () => {
         failed: false,
       },
       ...kstarStore,
-    });
+    }, { activityDone: '1' });
     const tail = improvementTail(html);
     // kse-ep1 的「无需更新」被收敛掉（该 episode 已有候选），另一条照旧可见。
     expect(tail).toContain('<span class="n">1</span>');
@@ -462,12 +462,12 @@ describe('「改进分析」只读分区（T016 / US-701 AC3）', () => {
   });
 
   it('读取失败与空态分开：说读不到并给重试（既有 refresh 动作，不是新动作）', () => {
-    const failed = renderPage('activity', { improvementOutcomes: { items: [], loading: false, failed: true } });
+    const failed = renderPage('activity', { improvementOutcomes: { items: [], loading: false, failed: true } }, { activityDone: '1' });
     expect(failed).toContain(zh['cognition.improvement_read_failed']);
     expect(failed).toContain('data-act="refresh"');
     expect(failed).not.toContain(zh['cognition.improvement_empty']);
 
-    const loading = renderPage('activity', { improvementOutcomes: null });
+    const loading = renderPage('activity', { improvementOutcomes: null }, { activityDone: '1' });
     expect(loading).toContain(zh['cognition.improvement_loading']);
     expect(loading).not.toContain(zh['cognition.improvement_empty']);
   });
@@ -531,7 +531,7 @@ describe('受限正文不进界面（T019 验收点）', () => {
         failed: false,
       },
       ...kstarStore,
-    });
+    }, { activityDone: '1' });
     expect(list).not.toContain(MARKER);
     expect(list).not.toContain(RESTRICTED_BODY);
     // 契约里明列的摘要字段照常可见（不是把整块都藏了）。

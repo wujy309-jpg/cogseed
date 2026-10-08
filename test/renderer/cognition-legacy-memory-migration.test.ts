@@ -108,7 +108,7 @@ describe('设置页里的旧记忆归属核对（2026-09-28 两页重整：两�
       uiAlert: async () => {},
     });
 
-    loaded.ns.router.go({ name: 'review' });
+    loaded.ns.router.go({ name: 'activity' });
     expect(calls.filter(([channel]) => channel === 'recall.memory.migrate')).toEqual([
       ['recall.memory.migrate', { dryRun: true }],
     ]);

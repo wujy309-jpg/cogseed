@@ -277,7 +277,7 @@ describe('conversation cognition save receipts', () => {
 
     expect(context.window.openCognitionCandidateById('cand-review-1')).toBe(true);
     expect(shown).toBe(1);
-    expect(routes).toEqual([{ name: 'review', candidateId: 'cand-review-1' }]);
+    expect(routes).toEqual([{ name: 'activity', candidateId: 'cand-review-1' }]);
     // 跳转后必须重取一次：对话侧刚保存的候选不在陈旧 store 里（B11 假空态）。
     expect(reloads).toBe(1);
   });

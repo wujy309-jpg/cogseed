@@ -50,7 +50,7 @@ describe('资产目录视图', () => {
     expect(replaceNav).not.toHaveBeenCalled();
     expect(items.get('ontology')!.classList.toggle).toHaveBeenLastCalledWith('is-on', true);
     expect(items.get('overview')!.classList.toggle).toHaveBeenLastCalledWith('is-on', false);
-    expect(items.get('review')!.innerHTML).toContain('bdg');
+    expect(items.get('activity')!.innerHTML).toContain('bdg');
   });
 
   it('后台刷新保留同一本体路由挂载和图谱状态，显式切换模块重新挂载', () => {
@@ -81,7 +81,7 @@ describe('资产目录视图', () => {
     expect(html).not.toContain('暂停模块不得默认出现');
   });
   it('系统活动的保存记录打开精确历史版本，不把保存当作任务采用', () => {
-    const html = renderCognition({ name: 'activity' }, { ontologySnapshot: { records: {}, history: [{ recordedAt: '2026-10-07T00:00:00Z', intent: 'correct', after: {
+    const html = renderCognition({ name: 'activity', activityDone: '1' }, { ontologySnapshot: { records: {}, history: [{ recordedAt: '2026-10-07T00:00:00Z', intent: 'correct', after: {
       id: 'entity-a', kind: 'entity', moduleId: 'module-a', name: '历史人物', version: 3, source: { label: '原始依据' },
     } }] } });
     expect(html).toContain('历史人物');

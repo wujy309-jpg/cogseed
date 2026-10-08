@@ -154,7 +154,7 @@
             if (!res || res.ok === false) { NS.toast(T('cognition.review_ontology_failed', '没处理成功，请重试。'), 'error'); break; }
             NS.toast(T('cognition.review_ontology_transferred', '已转入「待我处理」。它还没有保存为正式认知。'), 'success');
             await NS.reload();
-            if (res.candidate?.id) router.go({ name: 'review', candidateId: String(res.candidate.id) });
+            if (res.candidate?.id) router.go({ name: 'activity', candidateId: String(res.candidate.id) });
             break;
           }
           case 'po-cand-reject': {
@@ -187,7 +187,8 @@
             }));
             break;
           }
-          case 'go-review': router.go({ name: 'review' }); break;
+          case 'go-review': router.go({ name: 'activity' }); break;
+          case 'activity-view': router.go({ name: 'activity', activityDone: id === 'done' ? '1' : '', captureBucket: '' }); break;
           // 导语可点数字（specs/018 T010）：滚动到本页对应分区（纯呈现，
           // 不动路由栈——这是页内锚点跳转，不是导航）。
           case 'review-jump': {
@@ -211,7 +212,7 @@
           case 'toggle-source-issues': {
             // 来源异常就地展开（异常驱动：健康时无入口，无常态页）。
             router.go({
-              name: 'review',
+              name: 'activity',
               sourceIssueOpen: String(S.route.sourceIssueOpen || '') === 'open' ? '' : 'open',
             });
             break;
@@ -220,7 +221,7 @@
             // 任务执行失败就地展开（A4，2026-09-29）：逐条列出并给「回到会话」
             // 入口——不再跳系统活动页（那边是低价值排除行，处理不了）。
             router.go({
-              name: 'review',
+              name: 'activity',
               taskFailedOpen: String(S.route.taskFailedOpen || '') === 'open' ? '' : 'open',
             });
             break;
@@ -299,7 +300,7 @@
             await A.captureBatch('retry', runnable.map((capture) => capture.id));
             break;
           }
-          case 'open-candidate': router.go({ name: 'review', candidateId: id }); break;
+          case 'open-candidate': router.go({ name: 'activity', candidateId: id }); break;
           case 'cand-organize-ontology': await NS.openPersonalOntology({ candidateId: id }); break;
           // 「记一条」（设计 7.2）：手动新建候选——列表页头/空态入口，表单卡
           // 就地展开（candCreate 路由参数），保存走 recall.candidates.save。

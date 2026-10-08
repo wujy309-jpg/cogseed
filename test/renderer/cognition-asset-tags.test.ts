@@ -782,7 +782,7 @@ describe('「记一条」（设计 7.2：手动新建候选）', () => {
     const loaded = loadCognition({ invoke });
     await loaded.ns.actions.saveManualCandidate({ summary: '文档目录', judgment: '项目资料统一保存在文档目录。', suggestedType: 'fact' });
     expect(callOf(invoke, 'recall.candidates.save')).toHaveLength(1);
-    expect(loaded.ns.store.route).toMatchObject({ name: 'review', candidateId: 'cand-new' });
+    expect(loaded.ns.store.route).toMatchObject({ name: 'activity', candidateId: 'cand-new' });
     expect(loaded.toasts.some(toast => toast.variant === 'success')).toBe(false);
     expect(loaded.toasts.some(toast => toast.message.includes('暂时无法确认正式保存结果'))).toBe(true);
   });

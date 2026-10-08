@@ -43,7 +43,6 @@ function ensureModule(): { cogAssets: Record<string, unknown>; domRoot: { innerH
       { id: 'tree', titleKey: 'cognition.tab_tree', title: '认知树' },
       { id: 'overview', titleKey: 'cognition.tab_overview', title: '我的认知' },
       { id: 'ontology', titleKey: 'cognition.tab_ontology', title: '本体' },
-      { id: 'review', titleKey: 'cognition.tab_review', title: '待我处理' },
       { id: 'activity', titleKey: 'cognition.tab_activity', title: '系统活动' },
       { id: 'settings', titleKey: 'cognition.tab_settings', title: '整理设置' },
     ],
@@ -188,22 +187,23 @@ const detailCapture = {
 };
 
 describe('信息架构：六个顶级入口与深链归一', () => {
-  it('旧六视图已删净，新视图 + 设置页 + 异常下钻组件存在', () => {
-    // specs/018:整理页改名系统活动、整理设置保留为页签。
+  it('旧六视图已删净，新视图（系统活动双视角）+ 设置页 + 异常下钻组件存在', () => {
+    // specs/018 + 2026-10-08 U04：独立待我处理页下线，五页签；
+    // 治理动作收敛进系统活动（viewActivity：需要关注/已处理）。
     expect(coreSource).toContain("{ id: 'tree', titleKey: 'cognition.tab_tree'");
     expect(coreSource).toContain("{ id: 'activity', titleKey: 'cognition.tab_activity'");
     expect(coreSource).toContain("{ id: 'settings', titleKey: 'cognition.tab_settings'");
+    expect(coreSource).not.toContain("{ id: 'review', titleKey: 'cognition.tab_review'");
     expect(coreSource).toContain("route: { name: 'tree'");
-    // 两线不拆 tab（2026-09-17 二次定调）：KSTAR 以徽章出现，不设独立页签。
     expect(coreSource).not.toContain("id: 'kstar-assets'");
-    // 墓碑只拦 2026-09-15 删掉的旧六视图。
     expect(coreSource.match(/id: '(evidence|organize-history|capture-log|manage)'/g)).toBeNull();
-    for (const gone of ['function viewManage', 'function viewSourcesOverview', 'function viewSourceDetail', 'function viewOrganizeHistory', 'function viewCaptureLog', 'function organizeSettingsDrawer']) {
+    for (const gone of ['function viewManage', 'function viewSourcesOverview', 'function viewSourceDetail', 'function viewOrganizeHistory', 'function viewCaptureLog', 'function organizeSettingsDrawer', 'function viewOrganizeTasks']) {
       expect(viewsSource, gone).not.toContain(gone);
     }
-    expect(viewsSource).toContain('function viewOrganizeTasks');
+    expect(viewsSource).toContain('function viewActivity');
     expect(viewsSource).toContain('function viewOrganizeSettingsPage');
     expect(viewsSource).toContain('sourceIssuesSection');
+    expect(viewsSource).toContain("'activity-view'");
   });
 
   it('旧路由/委托 case 已收敛，齿轮入口与设置页分流存在', () => {
@@ -346,206 +346,107 @@ describe('系统活动与认知设置', () => {
     expect(html).toContain('查看整理报告');
   });
 
-  it('整理中的条目置顶、按钮变「整理中」且禁用；失败出状态 chip', () => {
+  it('需要关注只收可操作捕获：失败给重试、等待手动给立即开始；运行中与静默不进列表（C-05）', () => {
     const html = renderPage('organize', baseStore);
-    const top = html.indexOf('design-review 技能用途');
-    const plain = html.indexOf('季度目标对齐');
-    expect(top).toBeGreaterThan(-1);
-    expect(plain).toBeGreaterThan(top);
-    expect(html).toContain('整理中');
-    expect(html).toContain('is-disabled');
-    expect(html).toContain('>失败</span>');
+    expect(html).toContain('整理失败，可重试');
+    expect(html).toContain('data-id="rcap-fail" data-action="retry"');
+    expect(html).toContain('data-act="open-capture-detail" data-id="rcap-fail"');
+    // 运行中（rcap-org）与静默筛掉（rcap-silent）不进两列表。
+    expect(html).not.toContain('rcap-org');
+    expect(html).not.toContain('rcap-silent');
+    expect(html).not.toContain('data-act="organize-conv"');
+    expect(html).not.toContain('is-disabled');
   });
 
-  it('等待手动开始不再是「整理中」：显示等待 chip + 行内「立即开始」按钮', () => {
+  it('等待手动开始的行进需要关注并给行内「立即开始」', () => {
     const html = renderPage('organize', baseStore);
-    // waiting_manual 行（conv-4）：等待态 chip + run_now 按钮，且该行无禁用钮。
-    const waitAt = html.indexOf('rcap-wait');
-    expect(waitAt).toBeGreaterThan(-1);
     expect(html).toContain('data-id="rcap-wait" data-action="run_now"');
-    expect(html).toContain('等你手动开始整理');
-    // 行内不再有两个「整理中」：只有 extracting 的那一条显示整理中。
-    expect((html.match(/is-disabled/g) || []).length).toBe(1);
+    expect(html).not.toContain('整理中');
   });
 
-  it('有任务条目点标题进详情；无任务条目保留「整理这个会话」', () => {
+  it('全量会话列表退役：无任务会话不再逐行出现；失败捕获整行可进详情', () => {
     const html = renderPage('organize', baseStore);
-    expect(html).toContain('data-act="open-capture-detail" data-id="rcap-org"');
-    expect(html).toContain('data-act="organize-conv" data-id="conv-5"');
+    expect(html).not.toContain('data-id="conv-5"');
+    expect(html).not.toContain('整理这个会话');
+    expect(html).toContain('data-act="open-capture-detail" data-id="rcap-fail"');
   });
 
-  it('筛选 chip 四枚带计数；attention 只留需要处理、done 命中无留存内容（口径与行一致）', () => {
-    const html = renderPage('organize', baseStore);
-    const chips = [...html.matchAll(/data-act="capture-filter"/g)].length;
-    expect(chips).toBe(4);
-    // 「全部」= 列表行数（4 个有任务会话 + conv-5 无任务行），2026-09-16 起与行同口径。
-    expect(html).toContain('全部 5');
-
-    const filtered = renderPage('organize', baseStore, { captureBucket: 'attention' });
-    expect(filtered).toContain('rcap-fail');
-    expect(filtered).not.toContain('data-id="conv-1"');
-    expect(filtered).not.toContain('data-id="conv-5"');
-
-    // 2026-09-15 口径修复：无留存内容的行显示「已完成」，必须能在
-    // 「已完成」筛选下出现（此前 bucket=silent 导致筛选恒空）。
-    const doneFiltered = renderPage('organize', baseStore, { captureBucket: 'done' });
-    expect(doneFiltered).toContain('rcap-silent');
-    expect(doneFiltered).toContain('整理完成，没有发现需要保存的内容');
+  it('双视角切换 chip：需要关注/已处理带计数（口径与行一致）', () => {
+    const clean = { ...baseStore, candidates: [], inbox: [], inboxGroups: null, poCandidates: [], cleanupReports: { loading: false, reports: [] }, inspection: null };
+    const html = renderPage('organize', clean);
+    expect([...html.matchAll(/data-act="activity-view"/g)].length).toBe(2);
+    // 需要关注 = 失败 + 等待手动（无候选/inbox/po 时）。
+    expect(html).toContain('需要关注 2');
+    expect(html).toContain('已处理 0');
+    const done = renderPage('organize', clean, { activityDone: '1' });
+    expect(done).toContain('还没有处理记录');
+    expect(done).not.toContain('整理失败，可重试');
   });
 
-  it('chip 计数与列表行同口径：同一会话多条整理记录只计 1 行（2026-09-16 修复）', () => {
-    // 真实事故形态：会话被整理过多次（失败重试/夜间多轮），后端 buckets 按
-    // 记录数计数，列表却每会话只显示最相关一条——修复前 chip 显示「需要你看
-    // 一眼 4」而列表只有 2 行，数字与内容对不上。（桶名 2026-09-28 自「需要
-    // 我处理」改名，避免与「待我处理」页签同名异义。）
-    const store = {
-      sources: [{
-        kind: 'conversation',
-        items: [
-          { id: 'conv-a', kind: 'conversation', title: '关于我的了解程度', updatedAt: '2026-09-15T02:00:00.000Z' },
-          { id: 'conv-b', kind: 'conversation', title: '别的会话', updatedAt: '2026-09-14T02:00:00.000Z' },
-        ],
-      }],
-      captures: [
-        { ...waitingCapture, id: 'w1', conversationId: 'conv-a', conversationTitle: '关于我的了解程度', updatedAt: '2026-09-15T04:00:00.000Z' },
-        { ...waitingCapture, id: 'w2', conversationId: 'conv-a', conversationTitle: '关于我的了解程度', updatedAt: '2026-09-15T03:00:00.000Z' },
-        { ...waitingCapture, id: 'w3', conversationId: 'conv-a', conversationTitle: '关于我的了解程度', updatedAt: '2026-09-15T02:00:00.000Z' },
-        { ...failedCapture, id: 'f1', conversationId: 'conv-b', conversationTitle: '别的会话' },
-      ],
-      captureSettings: baseStore.captureSettings,
-    };
+  it('已完成捕获进已处理·整理记录；no_candidate（筛掉）不进任何列表', () => {
+    const completed = { ...organizingCapture, id: 'rcap-done', conversationId: 'conv-5', conversationTitle: '季度目标对齐', status: 'completed', bucket: 'done', displayStatus: 'completed', displayReason: 'review_completed', actions: [] };
+    const store = { ...baseStore, captures: [...baseStore.captures, completed] };
     const html = renderPage('organize', store);
-    // 行口径：conv-a 三条记录去重成 1 行 + conv-b 1 行 = 2。
-    expect(html).toContain('需要你看一眼 2');
-    expect(html).not.toContain('需要你看一眼 4');
-    expect(html).not.toContain('需要我处理');
-    // 「全部」数列表行数（含无任务行），不再是四桶记录之和。
-    expect(html).toContain('全部 2');
-    // 筛选后可见行数与 chip 一致。
-    const filtered = renderPage('organize', store, { captureBucket: 'attention' });
-    expect((filtered.match(/data-act="open-capture-detail"/g) || []).length).toBe(2);
+    expect(html).toContain('已处理 1');
+    const done = renderPage('organize', store, { activityDone: '1' });
+    expect(done).toContain('整理记录');
+    expect(done).toContain('季度目标对齐');
+    expect(done).not.toContain('Saying hello');
   });
 
-  it('筛选态行数超过收拢上限也出「查看全部」按钮（2026-09-16：chip 数字必须能被看到）', () => {
-    // 真实数据形态：已完成 8 行 > 收拢上限 5。此前展开按钮被
-    // `!route.captureBucket` 排除在筛选态外——chip 显示 8、列表只铺 5 行
-    // 且无法展开，数字与可见内容对不上。
-    const manyDone = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => ({
-      ...silentCapture,
-      id: `done-${n}`,
-      conversationId: `conv-done-${n}`,
-      conversationTitle: `已完成的会话 ${n}`,
-      updatedAt: `2026-09-${String(10 + n).padStart(2, '0')}T02:00:00.000Z`,
-    }));
+  it('已处理·整理记录超过收拢上限出「显示全部」', () => {
+    const manyDone = Array.from({ length: 12 }, (_, i) => {
+      const n = i + 1;
+      return { ...organizingCapture, id: `done-${n}`, conversationId: `conv-done-${n}`,
+        conversationTitle: `已完成的会话 ${n}`, status: 'completed', bucket: 'done',
+        displayStatus: 'completed', displayReason: 'review_completed', actions: [],
+        updatedAt: `2026-09-${String(10 + n).padStart(2, '0')}T02:00:00.000Z` };
+    });
+    const store = { sources: [], captures: manyDone, organizeListExpanded: false, candidates: [], inbox: [], inboxGroups: null, poCandidates: [], cleanupReports: { loading: false, reports: [] }, inspection: null, captureSettings: baseStore.captureSettings };
+    const html = renderPage('organize', store, { activityDone: '1' });
+    expect(html).toContain('已处理 12');
+    expect(html).toContain('已完成的会话 12');
+    expect((html.match(/class="cap-row[ "]/g) || []).length).toBeLessThanOrEqual(10);
+    expect(html).toContain('显示全部');
+    const expanded = renderPage('organize', { ...store, organizeListExpanded: true }, { activityDone: '1' });
+    expect(expanded).toContain('已完成的会话 12');
+  });
+
+  it('寒暄与无回复会话不进系统活动两列表（C-05：已跳过不灌入）', () => {
     const store = {
-      sources: [{
-        kind: 'conversation',
-        items: manyDone.map((c) => ({ id: c.conversationId, kind: 'conversation', title: c.conversationTitle, updatedAt: c.updatedAt })),
-      }],
-      captures: manyDone,
-      organizeListExpanded: false,
-      captureSettings: baseStore.captureSettings,
+      sources: [{ kind: 'conversation', items: [
+        { id: 'conv-failed', kind: 'conversation', title: '没等到回复的会话', updatedAt: '2026-09-15T04:00:00.000Z', lastTurnFailed: true },
+        { id: 'conv-chat', kind: 'conversation', title: '打个招呼', updatedAt: '2026-09-15T03:00:00.000Z', chatLike: true },
+        { id: 'conv-real', kind: 'conversation', title: '正经工作', updatedAt: '2026-09-15T02:00:00.000Z' },
+      ] }],
+      captures: [], captureSettings: baseStore.captureSettings,
     };
-    const html = renderPage('organize', store, { captureBucket: 'done' });
-    expect(html).toContain('已完成 8');
-    // 收拢只铺 5 行，但必须有出口看到剩下 3 行（数字用筛选后行数）。
-    expect(html).toContain('查看全部 8 个会话');
-    // 2026-09-29 整行可点：行根带 is-clickable 修饰类，前缀匹配计数。
-    expect(html.match(/class="cap-row[ "]/g)?.length).toBe(5);
-    // 展开后 8 行全铺。
-    const expanded = renderPage('organize', { ...store, organizeListExpanded: true }, { captureBucket: 'done' });
-    expect(expanded.match(/class="cap-row[ "]/g)?.length).toBe(8);
-    expect(expanded).toContain('收起');
+    for (const page of [renderPage('organize', store), renderPage('organize', store, { activityDone: '1' })]) {
+      expect(page).not.toContain('没等到回复的会话');
+      expect(page).not.toContain('打个招呼');
+      expect(page).not.toContain('正经工作');
+      expect(page).not.toContain('纯寒暄');
+    }
   });
 
-  it('「无需保存」分类：寒暄优先归类（含整理过的），全部含低价值行，行可点开内容（2026-09-16）', () => {
-    const store = {
-      sources: [{
-        kind: 'conversation',
-        items: [
-          { id: 'conv-failed', kind: 'conversation', title: '没等到回复的会话', updatedAt: '2026-09-15T04:00:00.000Z', lastTurnFailed: true },
-          { id: 'conv-chat', kind: 'conversation', title: '打个招呼', updatedAt: '2026-09-15T03:00:00.000Z', chatLike: true },
-          { id: 'conv-real', kind: 'conversation', title: '正经工作', updatedAt: '2026-09-15T02:00:00.000Z' },
-          { id: 'conv-chat-tasked', kind: 'conversation', title: '整理过的寒暄', updatedAt: '2026-09-15T01:00:00.000Z', chatLike: true },
-        ],
-      }],
-      captures: [{ ...silentCapture, id: 'rcap-chatted', conversationId: 'conv-chat-tasked', conversationTitle: '整理过的寒暄' }],
-      captureSettings: baseStore.captureSettings,
-    };
-    // 「全部」含低价值行（2026-09-16 子安口径）：默认视图展示所有会话。
-    const html = renderPage('organize', store);
-    expect(html).toContain('全部 4');
-    expect(html).toContain('无需保存 3');
-    expect(html).toContain('没等到回复的会话');
-    expect(html).toContain('正经工作');
-    // 任务三桶只数正常行：寒暄任务行（原本进已完成）移入无需保存。
-    expect(html).toContain('已完成 0');
-
-    // 低价值无任务行：标题可点回看内容，「整理这个会话」位置提示「无需整理」。
-    expect(html).toContain('data-act="open-conversation" data-id="conv-failed"');
-    expect(html).toContain('data-act="open-conversation" data-id="conv-chat"');
-    expect(html).toContain('未得到回复');
-    expect(html).toContain('纯寒暄');
-    expect(html).toContain('无需整理');
-    expect(html).not.toContain('data-act="organize-conv" data-id="conv-failed"');
-    expect(html).not.toContain('data-act="organize-conv" data-id="conv-chat"');
-    // 正常无任务行保留「整理这个会话」（恢复入口只给普通会话）。
-    expect(html).toContain('data-act="organize-conv" data-id="conv-real"');
-
-    // 筛选视图：寒暄优先——整理过的寒暄行也从「已完成」移到这里。
-    const excluded = renderPage('organize', store, { captureBucket: 'excluded' });
-    expect((excluded.match(/class="cap-row[ "]/g) || []).length).toBe(3);
-    expect(excluded).toContain('整理过的寒暄');
-    expect(excluded).not.toContain('正经工作');
-    const doneFiltered = renderPage('organize', store, { captureBucket: 'done' });
-    expect(doneFiltered).not.toContain('整理过的寒暄');
-  });
-
-  it('消息级溯源项（subtype:message）不混进整理任务流（2026-09-16 真机抓出 msg- 哈希行）', () => {
-    // sources 组里除会话级（subtype:session）项外还有消息级溯源项——它的 id
-    // 是 msg- 哈希、没有会话标题，只供证据 chip 解析；混进任务流会显示成
-    // 「msg-xxx + 整理这个会话」且不属于任何筛选桶。真机形态：后端 limit 默认
-    // 25，会话不足时用消息项补足（14 会话 + 11 消息项 = 25 行）。
+  it('消息级溯源项（subtype:message）不进系统活动', () => {
     const store = {
       ...baseStore,
-      sources: [{
-        kind: 'conversation',
-        items: [
-          { id: 'conv-a', kind: 'conversation', subtype: 'session', title: '真实会话', updatedAt: '2026-09-15T02:00:00.000Z' },
-          { id: 'msg-de01145145dc9f9b355a73b6', kind: 'conversation', subtype: 'message', sourceVersion: '2026-09-15T01:00:00.000Z' },
-          { id: 'msg-5dfab3464124da9847ab5cff', kind: 'conversation', subtype: 'message', sourceVersion: '2026-09-15T00:00:00.000Z' },
-        ],
-      }],
+      sources: [{ kind: 'conversation', items: [
+        { id: 'conv-a', kind: 'conversation', subtype: 'session', title: '真实会话', updatedAt: '2026-09-15T02:00:00.000Z' },
+        { id: 'msg-de01145145dc9f9b355a73b6', kind: 'conversation', subtype: 'message', sourceVersion: '2026-09-15T01:00:00.000Z' },
+      ] }],
       captures: [],
     };
     const html = renderPage('organize', store);
-    expect(html).toContain('真实会话');
     expect(html).not.toContain('msg-de0114');
-    expect(html).not.toContain('msg-5dfab3');
-    // 计数只数会话行。
-    expect(html).toContain('全部 1');
-    expect((html.match(/data-act="organize-conv"/g) || []).length).toBe(1);
+    expect(html).not.toContain('真实会话');
   });
 
-  it('来源拉满上限时提示「仅显示最近 100 个会话」（2026-09-16 C1：静默丢行不可接受）', () => {
-    // 审计 C1：渲染层此前不传 limit（后端默认 25），第 26 个会话起静默丢失。
-    // 修复=显式传 limit:100（IPC 上限）+ 满额时提示，不再无声截断。
+  it('来源拉取上限守卫保留（limit:100 供证据解析；全量会话清单已退役）', () => {
     expect(coreSource).toContain("'recall.sources.list', { limit: 100 }");
-    const full = {
-      kind: 'conversation',
-      items: Array.from({ length: 100 }, (_, n) => ({
-        id: `conv-${n}`, kind: 'conversation', subtype: 'session',
-        title: `会话 ${n}`, updatedAt: `2026-09-01T00:00:00.000Z`,
-      })),
-    };
-    const html = renderPage('organize', { ...baseStore, sources: [full] });
-    expect(html).toContain('仅显示最近 100 个会话');
-    // 未满额不提示。
-    const partial = renderPage('organize', {
-      ...baseStore,
-      sources: [{ kind: 'conversation', items: full.items.slice(0, 99) }],
-    });
-    expect(partial).not.toContain('仅显示最近 100 个会话');
+    const html = renderPage('organize', { ...baseStore, sources: [{ kind: 'conversation', items: [] }] });
+    expect(html).not.toContain('仅显示最近');
   });
 
   it('去向提示（specs/018 T014）：确认后两分钟内回到「待我处理」，入口直开刚保存的资产详情，过期不提示', () => {
@@ -563,16 +464,15 @@ describe('系统活动与认知设置', () => {
     expect(none).not.toContain('已确认 · 已保存为正式资产');
   });
 
-  it('处理记录：confirmed 候选带 promotedAssetId 时「查看这条资产」直开资产详情，缺 id 不给入口', () => {
+  it('处理记录（已处理视角）：confirmed 候选带 promotedAssetId 时「查看这条资产」直开资产详情，缺 id 不给入口', () => {
     const html = renderPage('review', {
       candidates: [
         { id: 'cand-ok', status: 'confirmed', promotedAssetId: 'asset-a', summary: '带资产身份的一条', updatedAt: '2026-09-20T00:00:00.000Z' },
         { id: 'cand-old', status: 'confirmed', summary: '没有资产身份的旧记录', updatedAt: '2026-09-19T00:00:00.000Z' },
       ],
-    });
+    }, { activityDone: '1' });
     expect(html).toContain('处理记录');
     expect(html).toContain('data-act="go-inbox-asset" data-id="asset-a"');
-    // 没有资产身份的旧记录不出入口，全页不再出现跳认知树的跟进入口。
     expect(html).not.toContain('data-act="asset-view" data-id="tree"');
   });
 
@@ -608,32 +508,20 @@ describe('系统活动与认知设置', () => {
     }
   });
 
-  it('系统活动时间流：夜间整理结果、大扫除与体检事件并入，分桶筛选激活时事件不出现', () => {
-    const nightly = {
-      id: 'rcap-nightly', conversationId: 'conv-1', conversationTitle: '夜间整理的会话',
-      status: 'no_candidate', displayStatus: 'completed', displayReason: 'no_candidate',
-      bucket: 'done', executionPolicy: 'nightly', updatedAt: '2026-09-26T02:00:00.000Z',
-      actions: [], reviewSummary: { pending: 2, total: 2 },
-    };
-    const html = renderPage('activity', {
-      ...baseStore,
-      captures: [nightly],
+  it('已处理·整理记录并入大扫除与体检事件；需要关注不摆事件流', () => {
+    const patch = {
+      captures: [],
       cleanupReports: { loading: false, reports: [{ id: 'rep-1', createdAt: '2026-09-25T10:11:00.000Z', items: [{ status: 'applied' }, { status: 'applied' }], uncertain: [] }] },
       inspection: { loading: false, settings: { enabled: true }, latestRun: { startedAt: '2026-09-26T13:00:00.000Z', findings: [{ id: 'f1' }], scanned: 20, trigger: 'manual' } },
-    });
-    expect(html).toContain('夜间整理完成 → 2 条待确认建议');
-    expect(html).toContain('整理合并 2 条重复项');
-    expect(html).toContain('定期检查发现 1 条待处理');
-    expect(html).toContain('data-act="open-cleanup-report"');
-    // 分桶筛选激活：大扫除/体检不属于任何分桶，不出现。
-    const filtered = renderPage('activity', {
-      ...baseStore,
-      captures: [nightly],
-      cleanupReports: { loading: false, reports: [{ id: 'rep-1', createdAt: '2026-09-25T10:11:00.000Z', items: [{ status: 'applied' }], uncertain: [] }] },
-      inspection: { loading: false, settings: { enabled: true }, latestRun: { startedAt: '2026-09-26T13:00:00.000Z', findings: [], scanned: 20, trigger: 'manual' } },
-    }, { captureBucket: 'done' });
-    expect(filtered).not.toContain('整理合并');
-    expect(filtered).not.toContain('定期检查发现');
+    };
+    const done = renderPage('activity', { ...baseStore, ...patch }, { activityDone: '1' });
+    expect(done).toContain('整理记录');
+    expect(done).toContain('整理合并 2 条重复项');
+    expect(done).toContain('定期检查发现 1 条待处理');
+    expect(done).toContain('data-act="open-cleanup-report"');
+    const attention = renderPage('activity', { ...baseStore, ...patch });
+    expect(attention).not.toContain('整理合并');
+    expect(attention).not.toContain('定期检查发现');
   });
 
   it('管理模式退出（specs/018 T031 迭代轮 1）：退出按有效管理态判定，并清目录视图与多选态（app.js 委托源码契约）', () => {
@@ -650,28 +538,23 @@ describe('系统活动与认知设置', () => {
   });
 
   it('0 值分段不出现（specs/018 迭代轮 2 猎区 1）：空库导语让位空态，树冠与大扫除给空态专用句', () => {
-    // P3 导语：0 条认知 · 0 条等你确认 → 数字段全隐，空态引导承接。
     const emptyOverview = renderPage('overview', { assets: [], proofs: [], sources: [], candidates: [] });
     expect(emptyOverview).not.toContain('条常规资产');
     expect(emptyOverview).not.toContain('条等你确认');
     expect(emptyOverview).toContain('还没有正式资产');
-    // 有认知、无待确认：只出资产段。
     const noPending = renderPage('overview', {
       assets: [{ id: 'aa-x', title: '一条', type: 'rule', status: 'active', version: '1', updatedAt: '2026-09-26T00:00:00.000Z' }],
       proofs: [], sources: [], candidates: [],
     });
-    expect(noPending).toContain('1');
     expect(noPending).toContain('条常规资产');
     expect(noPending).not.toContain('条等你确认');
-    // 树冠：0 已验证 → 空态专用句，不出「被真用过 0」。
     const tree = renderPage('tree', { assets: [], proofs: [], sources: [], candidates: [] });
     expect(tree).toContain('暂无带入或读取记录');
     expect(tree).not.toContain('被真用过 0');
-    // 大扫除事件：跑了但 0 归并 → 空态专用句。
     const cleanupZero = renderPage('activity', {
       ...baseStore,
       cleanupReports: { loading: false, reports: [{ id: 'rep-0', createdAt: '2026-09-25T10:11:00.000Z', items: [{ status: 'skipped' }], uncertain: [] }] },
-    });
+    }, { activityDone: '1' });
     expect(cleanupZero).toContain('整理完成，没有重复项需要合并');
     expect(cleanupZero).not.toContain('归并 0 条');
   });
@@ -699,85 +582,46 @@ describe('系统活动与认知设置', () => {
     expect(html).toContain('已稍后处理');
   });
 
-  it('批量入口只留重试失败；单条「立即开始」保留', () => {
+  it('批量入口随任务列表退役；失败行保留单条「重试」与「立即开始」', () => {
     const html = renderPage('organize', baseStore);
-    expect(html).toContain('重试失败（1）');
-    expect(html).toContain('data-batch="retry"');
-    expect(html).not.toContain('data-batch="run_now"');
-    expect(html).not.toContain('立即开始（');
-    // 单条任务行的「立即开始」保留。
-    expect(html).toContain('data-action="run_now"');
+    expect(html).not.toContain('data-batch');
+    expect(html).toContain('data-id="rcap-fail" data-action="retry"');
+    expect(html).toContain('data-id="rcap-wait" data-action="run_now"');
   });
 
-  it('静默任务也如实显示（无留存内容）', () => {
+  it('静默筛掉的会话不进两列表（C-05：已跳过不灌入已处理）', () => {
     const html = renderPage('organize', baseStore);
-    expect(html).toContain('整理完成，没有发现需要保存的内容');
+    const done = renderPage('organize', baseStore, { activityDone: '1' });
+    for (const page of [html, done]) {
+      expect(page).not.toContain('Saying hello');
+      expect(page).not.toContain('整理完成，没有发现需要保存的内容');
+    }
   });
 
-  it('旧主进程字段缺席时兜底：无 bucket 字段的行仍按状态显示「整理中」，计数走前端现算', () => {
-    // 版本错配场景（2026-09-15 实测事故）：主进程旧代码不返回 bucket/buckets，
-    // 前端不能因此显示全 0 计数或把「整理中」退化成「等待中」。
-    const legacyCapture = {
-      ...organizingCapture,
-      bucket: undefined,
-      // 旧的 displayStatus 语义保留，行仍有态。
-      displayStatus: 'extracting',
-    };
+  it('主进程字段缺席兜底：无 bucket 字段时失败行仍按状态归入需要关注', () => {
     const html = renderPage('organize', {
       sources: conversationSources,
-      captures: [legacyCapture],
+      captures: [{ ...failedCapture, bucket: undefined }, { ...organizingCapture, bucket: undefined }],
       captureSettings: { enabled: true, executionPolicy: 'smart', reviewPolicy: 'auto' },
     });
-    expect(html).toContain('整理中');
-    // 计数恒为行口径现算（2026-09-16 起不读后端 buckets，版本错配天然免疫）：
-    // 1 行 active。
-    expect(html).toContain('进行中 1');
-    // 列表行 = 5 个会话（1 有任务 + 4 无任务行）。
-    expect(html).toContain('全部 5');
+    expect(html).toContain('整理失败，可重试');
+    expect(html).toContain('rcap-fail');
+    expect(html).not.toContain('rcap-org');
   });
 
-  it('简单对话不再被隐藏：带寒暄标记的进「无需保存」，无标记的留在主列表（宁漏勿误伤）', () => {
-    // 2026-09-16 起 messageCount 前端隐藏过滤退役：低价值判定由后端
-    // chatLike/lastTurnFailed 打标（见 source-catalog），前端不猜。
+  it('全量会话清单退役：普通会话（无论标记）不再逐行出现，需要关注只收可操作捕获', () => {
     const store = {
       ...baseStore,
-      sources: [{
-        kind: 'conversation',
-        items: [
-          { id: 'conv-full', kind: 'conversation', title: '完整的多轮会话', updatedAt: '2026-09-15T02:00:00.000Z', messageCount: 8 },
-          { id: 'conv-tiny', kind: 'conversation', title: '打个招呼而已', updatedAt: '2026-09-14T02:00:00.000Z', messageCount: 2, chatLike: true },
-          { id: 'conv-none', kind: 'conversation', title: '还没得到回复', updatedAt: '2026-09-13T02:00:00.000Z', messageCount: 1 },
-        ],
-      }],
-      captures: [silentCapture],
+      sources: [{ kind: 'conversation', items: [
+        { id: 'conv-full', kind: 'conversation', title: '完整的多轮会话', updatedAt: '2026-09-15T02:00:00.000Z', messageCount: 8 },
+        { id: 'conv-tiny', kind: 'conversation', title: '打个招呼而已', updatedAt: '2026-09-14T02:00:00.000Z', messageCount: 2, chatLike: true },
+      ] }],
+      captures: [], candidates: [], inbox: [], inboxGroups: null, poCandidates: [],
     };
-    // silentCapture 属 conv-1——不在本组数据里，无干扰。
     const html = renderPage('organize', store);
-    expect(html).toContain('完整的多轮会话');
-    // 无标记的简单对话留在主列表：判定信号来自后端，不由 messageCount 猜。
-    expect(html).toContain('还没得到回复');
-    // 「全部」含低价值行（2026-09-16 口径）：3 个会话全展示。
-    expect(html).toContain('全部 3');
-    expect(html).toContain('无需保存 1');
-    expect(html).toContain('打个招呼而已');
-    const excluded = renderPage('organize', store, { captureBucket: 'excluded' });
-    expect(excluded).toContain('打个招呼而已');
-    expect(excluded).not.toContain('完整的多轮会话');
-
-    // 有任务的简单对话照常显示（整理中的条目不能凭空消失）。
-    const tinyWithTask = {
-      sources: [{
-        kind: 'conversation',
-        items: [
-          { id: 'conv-tiny', kind: 'conversation', title: '打个招呼而已', updatedAt: '2026-09-15T02:00:00.000Z', messageCount: 2 },
-        ],
-      }],
-      captures: [{ ...organizingCapture, conversationId: 'conv-tiny', conversationTitle: '打个招呼而已' }],
-      captureSettings: baseStore.captureSettings,
-    };
-    const withTask = renderPage('organize', tinyWithTask);
-    expect(withTask).toContain('打个招呼而已');
-    expect(withTask).toContain('整理中');
+    expect(html).not.toContain('完整的多轮会话');
+    expect(html).not.toContain('打个招呼而已');
+    expect(html).toContain('需要关注 0');
   });
 });
 
@@ -1506,12 +1350,18 @@ describe('待我处理（决策中心）', () => {
     expect(html).not.toContain('Saying hello');
   });
 
-  it('整理失败入口指向整理页；处理记录收进折叠', () => {
+  it('整理失败在需要关注就地列出并给重试；处理记录进已处理视角', () => {
     const html = renderPage('review', {
-      sources: [], candidates: [], captureCounts: { failed: 2 },
+      sources: [], candidates: [],
+      captures: [
+        { id: 'cap-f1', conversationId: 'conv-1', conversationTitle: '失败任务一', status: 'failed', displayStatus: 'failed', displayReason: 'capture_failed', actions: ['retry'] },
+        { id: 'cap-f2', conversationId: 'conv-2', conversationTitle: '失败任务二', status: 'failed', displayStatus: 'failed', displayReason: 'model_failed', actions: ['retry'] },
+      ],
     });
-    expect(html).toContain('data-act="go-organize"');
-    expect(html).toContain('2 个整理任务需要重试');
+    expect(html).toContain('整理失败，可重试');
+    expect(html).toContain('失败任务一');
+    expect(html).toContain('失败任务二');
+    expect((html.match(/data-action="retry"/g) || []).length).toBe(2);
   });
 });
 
@@ -2145,14 +1995,12 @@ describe('G1 任务执行失败与整理失败分别反馈（承接表 01）', (
     const html = renderPage('review', {
       loaded: true, loading: false,
       inbox: [], inboxGroups: null,
-      captureCounts: { failed: 2 },
       sources: [{ items: [{ id: 'conv-task-fail', lastTurnFailed: true }, { id: 'conv-ok' }] }],
-      captures: [{ id: 'cap-1', conversationId: 'conv-ok', actions: [] }],
+      captures: [{ id: 'cap-1', conversationId: 'conv-ok', conversationTitle: '正常会话的整理', status: 'failed', displayStatus: 'failed', displayReason: 'capture_failed', actions: ['retry'] }],
     });
-    expect(html).toContain('2 个整理任务需要重试');
+    expect(html).toContain('整理失败，可重试');
     expect(html).toContain('1 个任务执行失败（未得到回复）');
-    // 两行都在（分别反馈，不是二选一）。
-    expect(html.indexOf('整理任务需要重试')).toBeGreaterThan(-1);
+    expect(html.indexOf('整理失败，可重试')).toBeGreaterThan(-1);
     expect(html.indexOf('任务执行失败')).toBeGreaterThan(-1);
   });
 

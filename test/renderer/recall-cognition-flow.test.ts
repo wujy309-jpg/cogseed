@@ -92,9 +92,9 @@ describe('cognition-assets snapshot and routing', () => {
     // 默认落地待我处理;认知树是 overview 的视图投影(assetView='tree')。
     // 旧路由名(tree/organize/organize-settings/experiences)在 router.go 归一。
     expect(core).toContain("route: { name: 'tree'");
-    expect(core).toContain("router.go({ name: 'review' })");
+    expect(core).toContain("router.go({ name: 'activity', candidateId: String(candidateId) })");
     expect(core).toContain("{ id: 'tree', titleKey: 'cognition.tab_tree'");
-    expect(core).toContain("{ id: 'review', titleKey: 'cognition.tab_review'");
+    expect(core).not.toContain("{ id: 'review', titleKey: 'cognition.tab_review'");
     expect(core).toContain("{ id: 'activity', titleKey: 'cognition.tab_activity'");
     expect(core).toContain("{ id: 'settings', titleKey: 'cognition.tab_settings'");
     // 旧名归一在入栈前完成(store 里恒为新名,onChange 钩子不做双名判断)。

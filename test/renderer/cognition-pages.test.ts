@@ -162,15 +162,16 @@ describe('cognition-assets 五页签结构(迁移终态)', () => {
     return tabs;
   }
 
-  it('TABS 是六页签且顺序固定:认知树 / 我的认知 / 个人本体 / 待我处理 / 系统活动 / 设置', () => {
+  it('TABS 是五页签且顺序固定:认知树 / 我的认知 / 个人本体 / 系统活动 / 设置', () => {
     // specs/018 + 2026-09-26 子安真机否决树降级:认知树恢复顶级页签与默认
-    // 落地;经验仍是「我的认知」分类档;整理页与整理设置保留为独立入口。
+    // 落地;经验仍是「我的认知」分类档。2026-10-08 U04:独立「待我处理」页签
+    // 下线,治理动作收敛到系统活动(需要关注/已处理),旧 review 路由归一。
     // 2026-09-27 子安定序:「我的认知」提到「个人本体(关于我)」之前。
     const tabs = parseTabs(core2);
-    expect(tabs.map((t) => t.id)).toEqual(['tree', 'overview', 'ontology', 'review', 'activity', 'settings']);
+    expect(tabs.map((t) => t.id)).toEqual(['tree', 'overview', 'ontology', 'activity', 'settings']);
     expect(tabs.map((t) => t.titleKey)).toEqual([
       'cognition.tab_tree', 'cognition.tab_overview', 'cognition.tab_ontology',
-      'cognition.tab_review', 'cognition.tab_activity', 'cognition.tab_settings',
+      'cognition.tab_activity', 'cognition.tab_settings',
     ]);
   });
 

@@ -82,7 +82,7 @@ describe('router 白名单键形状（F-r4-3）', () => {
     NS.router.go(tab);
     expect(NS.store.backStack).toHaveLength(1);
     // 目标真的变了才允许再入栈。
-    NS.router.go({ name: 'review' });
+    NS.router.go({ name: 'activity' });
     expect(NS.store.backStack).toHaveLength(2);
   });
 });

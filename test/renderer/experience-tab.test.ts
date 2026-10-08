@@ -56,7 +56,7 @@ describe('经验入口：「我的认知」下的分类档（specs/017 整改一
     const html = renderCognition({ name: 'experiences' }, { experiences: loadedExperiences([]) });
     const ids = [...html.matchAll(/class="ca-tab[^"]*" data-act="tab" data-id="([a-z-]+)"/g)].map((m) => m[1]);
     // specs/018 + 树恢复 + 2026-09-27 定序:六页签=认知树/我的认知/关于我/待我处理/系统活动/整理设置。
-    expect(ids).toEqual(['tree', 'overview', 'ontology', 'review', 'activity', 'settings']);
+    expect(ids).toEqual(['tree', 'overview', 'ontology', 'activity', 'settings']);
     expect(html).not.toContain('data-act="tab" data-id="experiences"');
     // 旧深链 { name: 'experiences' } 归一到「我的认知」：经验档选中、目录在页面内。
     expect(html).toContain('data-act="filter-cat" data-id="experiences"');

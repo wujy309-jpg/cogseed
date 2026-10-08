@@ -3548,242 +3548,6 @@
     </div>`;
   }
 
-  function viewOrganizeTasks(route) {
-    const vocab = NS.vocabulary;
-
-    // 只取会话级项：同组里还有 subtype:message 的消息级溯源项（id=msg- 哈希、
-    // 无会话标题，供证据 chip 解析），混进任务流会显示成裸哈希行且不属于任何
-    // 筛选桶（2026-09-16 真机抓出；后端 limit 不足时用它补位）。排除法保兼容。
-    const conversationItems = S.sources
-      .filter((g) => String(g.kind || '') === 'conversation' || (g.items || []).some((i) => i.kind === 'conversation'))
-      .flatMap((g) => (Array.isArray(g.items) ? g.items : []))
-      .filter((item) => String(item.subtype || '') !== 'message');
-    // 任务关联（含 silent：无留存内容的记录也如实显示）：每会话取最相关一条。
-    const CLASS_ORDER = { active: 0, attention: 1, done: 2, silent: 3 };
-    const captureByConv = new Map();
-    for (const capture of (Array.isArray(S.captures) ? S.captures : [])) {
-      const prev = captureByConv.get(capture.conversationId);
-      const rank = (row) => (CLASS_ORDER[row.bucket] !== undefined ? CLASS_ORDER[row.bucket] : 9);
-      if (!prev
-        || rank(capture) < rank(prev)
-        || (rank(capture) === rank(prev) && String(capture.updatedAt || '') > String(prev.updatedAt || ''))) {
-        captureByConv.set(capture.conversationId, capture);
-      }
-    }
-    const bucketOf = (capture) => (capture.bucket || (
-      // 兜底口径与后端对齐（2026-09-15）：no_candidate 对用户就是"已完成"，
-      // 行上显示的正是「已完成」——不能让它只出现在「全部」里。
-      capture.status === 'no_candidate' ? 'done'
-        : ['failed', 'configuration_required', 'review_ready', 'paused', 'waiting_manual'].includes(capture.status) ? 'attention'
-          : ['completed', 'cancelled'].includes(capture.status) ? 'done' : 'active'));
-    /** 真·整理中：排队/提炼/写入（通常几十秒）。等待类（等你手动开始/静默期/
-     *  夜间窗口）不算——2026-09-15 修正：waiting_manual 曾被显示成「整理中」，
-     *  但它的动作是「立即整理」，列表与详情自相矛盾。 */
-    const isRunning = (capture) => ['queued', 'extracting', 'writing'].includes(String(capture.status));
-
-    let rows = conversationItems.map((conv) => ({ conv, capture: captureByConv.get(conv.id) || null }));
-    // 低价值归类（2026-09-16「无需沉淀」分类，子安口径）：寒暄命中即归类
-    //（无视任务——整理过的寒暄如「hi」也从「已完成」移入）；回复失败仅对
-    // 无任务行（失败会话被整理过=用户已主动处理过）。取代旧的 messageCount
-    // 前端隐藏过滤——判定信号由后端出，前端不猜，宁漏勿误伤。
-    const isExcludedRow = (row) => Boolean(row.conv.chatLike || (!row.capture && row.conv.lastTurnFailed));
-    // 真正跑着的（queued/extracting/writing）恒在最顶，其余按会话最近活动。
-    rows.sort((left, right) => {
-      const leftActive = left.capture && isRunning(left.capture) ? 1 : 0;
-      const rightActive = right.capture && isRunning(right.capture) ? 1 : 0;
-      if (leftActive !== rightActive) return rightActive - leftActive;
-      return String(right.conv.updatedAt || right.conv.createdAt || '')
-        .localeCompare(String(left.conv.updatedAt || left.conv.createdAt || ''));
-    });
-    const normalRows = rows.filter((row) => !isExcludedRow(row));
-    const excludedRows = rows.filter(isExcludedRow);
-    // 「全部」含低价值行（2026-09-16 子安口径）：默认视图展示所有会话，低
-    // 价值行带标注；任务三桶只数正常行（寒暄任务行已移入无需沉淀）。
-    const filtered = route.captureBucket === 'excluded' ? excludedRows
-      : route.captureBucket
-        ? normalRows.filter((row) => row.capture && bucketOf(row.capture) === route.captureBucket)
-        : rows;
-    // chip 计数与列表行同口径（2026-09-16 修复）：列表每会话只显示最相关
-    // 一条任务，同一会话的多次整理（重试/夜间多轮）会让后端 buckets 的记录
-    // 数大于列表行数——chip 必须数 rows，点开筛选看到的行数才和数字对得上。
-    const rowBucketCounts = { attention: 0, active: 0, silent: 0, done: 0 };
-    for (const row of normalRows) if (row.capture) rowBucketCounts[bucketOf(row.capture)] += 1;
-    // 批量入口口径：只作用于「当前已加载且该动作在 actions 里」的行——立即
-    // 整理每条都是一次模型额度消耗，绝不按后端计数隐式扩大范围。
-    const retryableIds = (Array.isArray(S.captures) ? S.captures : []).filter((capture) => (capture.actions || []).includes('retry'));
-
-    const listLimit = S.organizeListExpanded ? filtered.length : Math.min(5, filtered.length);
-    const visibleRows = filtered.slice(0, listLimit);
-
-    const rowHtml = (row) => {
-      const { conv, capture } = row;
-      const convTime = fmtDate(conv.updatedAt || conv.createdAt);
-      const excluded = isExcludedRow(row);
-      // 低价值行的原因 chip（2026-09-16）：寒暄/失败分别注明。
-      const excludedTag = excluded
-        ? (conv.chatLike
-          ? chip(T('cognition.capture_excluded_chatty', '纯寒暄'))
-          : chip(T('cognition.capture_excluded_failed', '未得到回复')))
-        : '';
-      if (!capture) {
-        // 低价值无任务行：整行可点回看会话内容（2026-09-29 子安指令：条目
-        // 整行可点，不再只限标题），「开始整理」位置改为「无需整理」提示
-        //（2026-09-16 子安口径：内容可看，但不再给整理入口）。
-        if (excluded) {
-          return `
-          <div class="cap-row is-clickable" data-act="open-conversation" data-id="${esc(conv.id)}" role="button" tabindex="0" title="${esc(T('cognition.capture_action_open_conversation', '打开会话'))}">
-            <div class="tw"><div class="tt">${esc(conv.title || T('cognition.evidence_conversation_generic', '一段对话'))}</div>
-            <div class="mm"><span>${esc(convTime)}</span></div></div>
-            <div class="sd">${excludedTag}${chip(T('cognition.capture_excluded_action_hint', '无需整理'), 'amber')}</div>
-          </div>`;
-        }
-        return `
-        <div class="cap-row">
-          <div class="tw"><div class="tt">${esc(conv.title || T('chat.untitled', '未命名对话'))}</div>
-          <div class="mm"><span>${esc(convTime)}</span></div></div>
-          <div class="sd">${btn(T('cognition.capture_manual_history_create', '整理这个会话'), 'organize-conv', { id: conv.id, small: true, className: 'g' })}</div>
-        </div>`;
-      }
-      // 整行即详情入口（2026-09-29 子安指令）：act 提到行根（委托层 closest
-      // 最近匹配——行内「立即开始/去确认」等按钮自带 act，点击各归各位）；
-      // 标题不再单独伪装链接。
-      const titleHtml = `<div class="tt" title="${esc(T('cognition.capture_detail_open_hint', '查看整理情况'))}">${esc(vocab ? vocab.recordTitle(capture) : String(capture.conversationTitle || conv.title || T('cognition.capture_untitled_record', '未命名会话的整理')))}</div>`;
-      const pending = Number(capture.reviewSummary && capture.reviewSummary.pending) || 0;
-      /* 事件句（specs/018 T060）：一行 = 一句人话 + 时间 + 落点。四型——
-       * 整理了会话→产出候选 / 夜间沉淀跑完 / 大扫除 / 后台体检（后两类在
-       * 时间流另行并入）；等待与失败类沿用原因白话（vocabulary 唯一出口）。 */
-      const nightly = String(capture.executionPolicy || '') === 'nightly';
-      const extractionCompleted = ['review_ready', 'completed', 'no_candidate'].includes(String(capture.status));
-      const eventLine = isRunning(capture)
-        ? T('cognition.activity_event_running', '正在整理这段会话…')
-        : !extractionCompleted ? ''
-        : nightly && pending
-          ? T('cognition.activity_event_nightly', '夜间整理完成 → {n} 条待确认建议', { n: String(pending) })
-          : nightly
-            ? T('cognition.activity_event_nightly_empty', '夜间整理完成，没有发现需要保存的内容')
-            : pending
-              ? T('cognition.activity_event_session', '整理了这段会话 → 产出 {n} 条候选', { n: String(pending) })
-              : '';
-      const reasonText = vocab ? vocab.captureReasonText(capture.displayReason) : T('cognition.capture_display_reason_other', '原因未记录');
-      const metaText = [eventLine || reasonText, convTime].filter(Boolean).join(' · ');
-      // 用 isRunning 判定「整理中」（仅排队/提炼/写入）：等待类显示原因
-      // chip；等待手动开始的行直接给「立即整理」按钮（不必进详情页）。
-      /* 低价值行（纯寒暄/未回复）不给「立即整理」——行上同时摆「纯寒暄」
-         和「立即整理」是自相矛盾的口径（2026-09-21 子安抓出「界面混乱」）；
-         与无任务的低价值行同款「无需整理」提示，点标题可回看内容。 */
-      /* 落点按钮（018 T060）：产出候选 →「去处理」（go-review）；
-       * 等待手动 →「立即整理」；运行中不给按钮（正在跑）。 */
-      const actions = Array.isArray(capture.actions) ? capture.actions : [];
-      const primaryAction = !excluded && !isRunning(capture) && actions.includes('run_now')
-        ? btn(T('cognition.capture_action_run_now', '立即开始'), 'capture-action', { id: capture.id, data: { action: 'run_now' }, small: true, primary: true })
-        : !excluded && !isRunning(capture) && pending && actions.includes('review_candidates')
-          ? btn(vocab ? vocab.captureActionText('review_candidates') : T('cognition.capture_action_review_candidates', '去确认'), 'go-review', { small: true, primary: true })
-          : excluded && !isRunning(capture)
-            ? chip(T('cognition.capture_excluded_action_hint', '无需整理'), 'amber')
-            : '';
-      const sideHtml = isRunning(capture)
-        ? btn(T('cognition.organize_active_label', '整理中'), '', { small: true, primary: true, disabled: true })
-        : `${excludedTag}${chip(
-          vocab ? vocab.captureDisplayStatusText(capture.displayStatus) : T('cognition.capture_display_status_other', '状态未知'),
-          capture.displayStatus === 'failed' ? 'red' : (capture.displayStatus === 'review_ready' || capture.displayStatus === 'completed') ? 'green' : 'amber',
-        )}${primaryAction}`;
-      return `
-        <div class="cap-row is-clickable" data-act="open-capture-detail" data-id="${esc(capture.id)}" role="button" tabindex="0">
-          <div class="tw">${titleHtml}<div class="mm"><span>${esc(metaText)}</span></div></div>
-          <div class="sd">${sideHtml}</div>
-        </div>`;
-    };
-
-    const chips = [['', T('common.all', '全部')], ['attention', null], ['active', null], ['done', null],
-      ...(excludedRows.length ? [['excluded', null]] : [])]
-      .map(([id, label]) => {
-        const text = label || (vocab ? vocab.captureBucketText(id) : id);
-        const count = id === '' ? rows.length : id === 'excluded' ? excludedRows.length : rowBucketCounts[id];
-        return btn(`${text} ${count}`, 'capture-filter', {
-          id,
-          className: `chip${String(route.captureBucket || '') === id ? ' on' : ''}`,
-        });
-      }).join('');
-    // 批量入口只保留「重试失败」(2026-09-21 原型 v7 定调):批量「立即整理」
-    // 会诱导用户跳过逐条处理,且每次都是模型额度消耗——施工矩阵明确不迁移,
-    // 单条任务行上的「立即整理」保留。
-
-    // 页首右侧只留一个设置入口（2026-09-15 子安标注）：原型是一枚
-    // 「沉淀设置」文字按钮（tbtn），我们走共享 uiButton + icons.js 的
-    // settings 图标（团队规范：图标不手写 SVG）。
-    /* 系统事件并入时间流（specs/018 T060）：大扫除报告与后台体检作为
-     * 时间线事件呈现（一句人话 + 时间 + 落点）；仅在未选分桶筛选时出现
-     * （它们不属于任何整理分桶）。发起入口在「设置」页（不重复摆卡）。 */
-    const cleanupEvents = ((S.cleanupReports && Array.isArray(S.cleanupReports.reports)) ? S.cleanupReports.reports : [])
-      .slice(0, 3)
-      .map((report) => {
-        // 0 归并是合法结果（跑了但没找到可归并的）——给空态专用句，
-        // 不写「归并 0 条重复」（迭代轮 2 猎区 1）。
-        const merged = (report.items || []).filter((item) => item.status === 'applied').length;
-        return {
-          at: String(report.createdAt || ''),
-          html: `<div class="cap-row is-clickable" data-act="open-cleanup-report" data-report="${esc(String(report.id))}" role="button" tabindex="0">
-          <div class="tw"><div class="tt">${esc(report.mode === 'report_only'
-            ? T('cognition.activity_event_check', '检查完成，生成 {n} 项建议；内容未修改', { n: String((report.uncertain || []).length) })
-            : merged
-            ? T('cognition.activity_event_cleanup', '整理合并 {n} 条重复项', { n: String(merged) })
-            : T('cognition.activity_event_cleanup_empty', '整理完成，没有重复项需要合并'))}</div>
-          <div class="mm"><span>${esc(fmtDate(report.createdAt))}</span></div></div>
-          <div class="sd">${btn(T('cognition.activity_event_see_report', '看报告'), 'open-cleanup-report', { small: true, className: 'o', data: { report: String(report.id) } })}</div>
-        </div>`,
-        };
-      });
-    const inspectionEvents = [];
-    if (S.inspection && S.inspection.latestRun) {
-      const run = S.inspection.latestRun;
-      const found = (run.findings || []).length;
-      inspectionEvents.push({
-        at: String(run.startedAt || ''),
-        html: `<div class="cap-row is-clickable" data-act="go-review" role="button" tabindex="0">
-          <div class="tw"><div class="tt">${esc(found
-            ? T('cognition.activity_event_inspection', '定期检查发现 {n} 条待处理', { n: String(found) })
-            : T('cognition.activity_event_inspection_clean', '定期检查完成，没有发现问题'))}</div>
-          <div class="mm"><span>${esc(fmtDate(run.startedAt))}</span></div></div>
-          <div class="sd">${btn(T('cognition.activity_event_inspection_go', '去看看'), 'go-review', { small: true, primary: found > 0 })}</div>
-        </div>`,
-      });
-    }
-    const timelineEntries = [
-      ...visibleRows.map((row) => ({
-        at: String((row.capture && (row.capture.finishedAt || row.capture.updatedAt || row.capture.createdAt)) || row.conv.updatedAt || row.conv.createdAt || ''),
-        pinned: Boolean(row.capture && isRunning(row.capture)),
-        html: rowHtml(row),
-      })),
-      ...(route.captureBucket ? [] : [...cleanupEvents, ...inspectionEvents]),
-    ].sort((left, right) => (right.pinned ? 1 : 0) - (left.pinned ? 1 : 0)
-      || String(right.at).localeCompare(String(left.at)));
-    return `${heroRow(
-      T('cognition.tab_activity', '系统活动'),
-      T('cognition.activity_lead', '进行中的整理优先显示，其余按整理或检查的发生时间排列；需要你判断的内容进入待我处理。'),
-      // 整理入口集中在资产设置；018 T060 起本页只保留事件时间流。
-      // 页头右侧入口已移除，避免与顶层页签重复。
-      // 已删（2026-09-27 子安）：页签「沉淀设置」是唯一入口，不再双入口。
-      '',
-    )}
-    ${!S.captureSettings || S.captureSettings.enabled === false ? `<div class="warn">${esc(T('cognition.capture_disabled_note', '整理功能已关闭：不再开始新的整理；已创建任务和「我的认知」资产不受影响。'))}</div>` : ''}
-    ${S.captureSettings && S.captureSettings.enabled !== false && retryableIds.length ? `<div class="toolbar"><div class="toolbar-right">${retryableIds.length ? btn(T('cognition.capture_batch_retry', '重试失败（{n}）', { n: String(retryableIds.length) }), 'capture-batch', { data: { batch: 'retry' }, small: true, className: 'o' }) : ''}</div></div>` : ''}
-    ${(Array.isArray(S.captures) ? S.captures : []).some(isRunning) ? `<div class="note toolbar-note">${esc(T('cognition.capture_running_note', '有任务正在跑：任务完成后这一页会自动更新，不用手动刷新。'))}</div>` : ''}
-    <div class="pillbox"><div class="chips">${chips}</div></div>
-    ${timelineEntries.length ? timelineEntries.map((entry) => entry.html).join('') : empty(T('cognition.capture_tasks_empty', '暂无整理任务'), T('cognition.capture_tasks_empty_hint', '一轮会话结束后，系统会在静默期结束后创建整理任务。'), { label: T('cognition.organize_settings_title', '资产设置'), attrs: { 'data-act': 'go-organize-settings' } })}
-    ${conversationItems.length >= 100 ? `<div class="note">${esc(T('cognition.capture_sources_truncated', '仅显示最近 100 个会话（来源拉取上限）'))}</div>` : ''}
-    ${filtered.length > 5 ? `<div class="list-more">${btn(S.organizeListExpanded
-      ? T('cognition.capture_list_collapse', '收起')
-      : T('cognition.capture_list_expand', '查看全部 {n} 个会话', { n: String(filtered.length) }), 'toggle-organize-list', { small: true, className: 'o' })}</div>` : ''}
-    <div class="note footnote">${esc(T('cognition.capture_bucket_scope_note', '口径说明：按每个会话最近相关的整理任务分组；「需要你看一眼」包括待确认与被暂停的任务；「无需保存」包括纯寒暄与未得到回复的会话。'))}</div>
-    ${!route.captureBucket ? ontologyDirectorySection(true) : ''}
-    ${improvementAnalysisSection(route)}`;
-  }
-
-  /* 整理详情（2026-09-15 新增）：一条整理任务的完整执行情况——状态与当前
-   * 步骤、时间与模型用量、候选产出与已沉淀资产；动作与整理记录行同一套
-   * 语义（captureActionButtons），标题可回来源会话。 */
-  /* 整理结果区（2026-09-15 详情页改造）：三态——有候选（结构化卡 + 证据
-   *  映射到时间线消息）/ 进行中 / 无候选（模型理由 + 筛选原因白话）。 */
   const CAPTURE_CANDIDATE_STATUS = {
     pending_review: ['cognition.capture_detail_candidate_pending', '待确认'],
     deferred: ['cognition.capture_detail_candidate_pending', '待确认'],
@@ -4071,7 +3835,7 @@
   let lastRenderKey = '';
   let treeSettlePass = 0;
   function routeKey(route) {
-    return [route.name, route.assetId, route.candidateId, route.moduleId, route.recordId, route.recordVersion, route.captureId, route.category, route.captureBucket, route.experienceId].join('|');
+    return [route.name, route.assetId, route.candidateId, route.moduleId, route.recordId, route.recordVersion, route.captureId, route.category, route.captureBucket, route.experienceId, route.activityDone].join('|');
   }
 
   function render(opts) {
@@ -4079,10 +3843,11 @@
     const root = document.getElementById('ca-root');
     if (!root) return;
     let route = S.route;
-    // 旧深链归一化（specs/018；experiences/kstar 档为 specs/017）：router.go 已在
+    // 旧深链归一化（specs/018；experiences/kstar 档为 specs/017；2026-10-08
+    // U04：review 随独立待我处理页下线归一到 activity）：router.go 已在
     // 入栈前归一，这里兜住直接写 store 的路径（持久化恢复/测试装配）。只归一
     // 渲染视角、不回写 store。
-    if (route.name === 'organize') route = Object.assign({}, route, { name: 'activity' });
+    if (route.name === 'organize' || route.name === 'review') route = Object.assign({}, route, { name: 'activity' });
     else if (route.name === 'organize-settings') route = Object.assign({}, route, { name: 'settings' });
     else if (route.name === 'experiences') route = Object.assign({}, route, { name: 'overview', category: route.category || 'experiences' });
     if (route.category === 'kstar') route = Object.assign({}, route, { category: '' });
@@ -4097,32 +3862,33 @@
     lastRenderKey = key;
     // 候选详情归「待我处理」、整理详情与大扫除报告归「系统活动」；
     // interactive-tour 靠 data-cognition-page-link="assets"/"captures" 定位 tab。
-    // 六个顶级入口（树 / 本体 / 我的认知 / 待我处理 / 系统活动 / 设置）；
-    // activity（captureId、cleanup 报告深链归并）；未知路由回到我的认知。
-    const activeTab = route.name === 'review' || route.candidateId ? 'review'
-      : route.name === 'activity' || route.name === 'cleanup' || route.captureId ? 'activity'
-        : route.name === 'settings' ? 'settings'
-          : route.name === 'ontology' ? 'ontology'
-            : route.name === 'tree' ? 'tree' : 'overview';
+    // 五个顶级入口（树 / 本体 / 我的认知 / 系统活动 / 设置，2026-10-08 U04
+    // 收敛：独立待我处理下线）；activity 承接候选详情、captureId、cleanup
+    // 报告与旧 review 深链；未知路由回到我的认知。
+    const activeTab = route.name === 'activity' || route.name === 'cleanup' || route.captureId || route.candidateId ? 'activity'
+      : route.name === 'settings' ? 'settings'
+        : route.name === 'ontology' ? 'ontology'
+          : route.name === 'tree' ? 'tree' : 'overview';
     // 详情子界面（资产/经验/整理详情、整理报告）也走整页版式；候选详情
-    // 复用 review 工作台的全宽态（候选卡类名同一套）。
+    // 复用旧 review 工作台的全宽态（候选卡类名同一套，layout 类名仅为宽度）。
     const isDetailRoute = Boolean(route.assetId || route.experienceId || route.candidateId
       || (route.name === 'activity' && route.captureId) || route.name === 'cleanup');
     const layoutView = activeTab === 'ontology' || activeTab === 'settings' ? activeTab
       : activeTab === 'overview' && !route.assetId && !route.experienceId ? 'overview'
-        : activeTab === 'review' && !route.candidateId ? 'review'
+        : route.candidateId ? 'review'
           : activeTab === 'activity' && route.name === 'activity' && !route.captureId ? 'activity'
             : isDetailRoute ? 'detail' : '';
     const layoutClass = layoutView ? ` ca-layout-${layoutView}` : '';
-    // 角标口径（2026-10-02）：资产候选 + 本体候选，一个收件箱数得全。
+    // 角标口径（2026-10-02；2026-10-08 U04 挂到系统活动）：资产候选 + 本体
+    // 候选，一个收件箱数得全。
     const pendingCount = Number(NS.stats().pending || 0) + (Array.isArray(S.poCandidates) ? S.poCandidates.length : 0);
     const tabBodies = new Map();
     const tabsInner = NS.TABS.map((tab) => {
       const active = activeTab === tab.id;
       const extra = tab.id === 'overview' ? ' data-cognition-page-link="assets"' : (tab.id === 'activity' ? ' data-cognition-page-link="captures"' : '');
       // 2026-09-15 子安要求：tab 只留标题，描述小字与 title 悬浮注释删除。
-      // 待确认计数走原型 .bdg 角标（原型只在「待我处理」上挂）。
-      const badge = tab.id === 'review' && pendingCount ? `<span class="bdg">${pendingCount}</span>` : '';
+      // 待确认计数走原型 .bdg 角标（U04 起挂在「系统活动」上）。
+      const badge = tab.id === 'activity' && pendingCount ? `<span class="bdg">${pendingCount}</span>` : '';
       const content = `<strong>${esc(T(tab.titleKey, tab.title))}</strong>${badge}`;
       tabBodies.set(tab.id, content);
       return `<div class="ca-tab${active ? ' is-on' : ''}" data-act="tab" data-id="${tab.id}"${extra} ${roleBtn()}>${content}</div>`;
@@ -4132,8 +3898,7 @@
       // 首载骨架：结构化的三行占位（shimmer 由 CSS 驱动），比纯文字更快有页面感。
       body = `<div class="ca-loading"><div class="ca-skel-row"></div><div class="ca-skel-row"></div><div class="ca-skel-row"></div></div>`;
     } else if (route.name === 'ontology') body = viewOntology(route);
-    else if (route.name === 'review') body = NS.viewReview(route);
-    else if (route.name === 'activity') body = route.captureId ? viewCaptureDetail(route) : viewOrganizeTasks(route);
+    else if (route.name === 'activity') body = route.captureId ? viewCaptureDetail(route) : NS.viewActivity(route);
     else if (route.name === 'cleanup') body = viewCleanup(route);
     else if (route.name === 'settings') body = viewOrganizeSettingsPage();
     else if (route.name === 'tree') body = viewTree(route);
@@ -4279,6 +4044,12 @@
     if (typeof NS.wireTagOverlay === 'function') NS.wireTagOverlay();
   }
   NS.render = render;
+  // 系统活动·已处理视角复用的只读分区（改进分析：U04 随 viewOrganizeTasks
+  // 退役自 activity 主视图迁出，仍由本文件渲染）。
+  NS.improvementAnalysisSection = improvementAnalysisSection;
+  // 系统活动·已处理视角的本体保存记录区（最近保存与纠正，精确版本链接；
+  // 保存不代表任务已采用）。
+  NS.ontologyActivitySection = () => ontologyDirectorySection(true);
   // 共享渲染件（2026-09-20 本体界面重构）：个人本体页复用资产页同一套
   // 章/行形态。只有 IIFE 顶层的件可导出——plainRow/catalogRow 定义在
   // render 内部（闭包捕获每帧状态），不在此列。

@@ -97,7 +97,7 @@ describe('source refs never fall back to a raw locator', () => {
 describe('processed history shows semantic candidate records', () => {
   it('shows the processed candidate title without exposing its locator', () => {
     const html = renderCognition(
-      { name: 'review' },
+      { name: 'review', activityDone: '1' },
       {
         candidates: [candidate({
           id: 'cand-processed',

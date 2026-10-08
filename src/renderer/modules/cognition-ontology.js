@@ -788,7 +788,7 @@
     const current = state;
     if (['back-list', 'back-module', 'open-module', 'open-record', 'search-result', 'select-box', 'candidate-back'].includes(action)) { state.graphRequest++; state.recordRequest++; }
     const id = target.dataset.recordId || target.closest('[data-record-id]')?.dataset.recordId || '';
-    if (action === 'open-review') { root.CogAssets?.router?.go({ name: 'review' }); return; }
+    if (action === 'open-review') { root.CogAssets?.router?.go({ name: 'activity' }); return; }
     if (action === 'toggle-inactive-records') { state.showRecordInactive = !state.showRecordInactive; render(); return; }
     if (action === 'merge-identity') return openMergeDialog(target);
     if (action === 'undo-merge') {
@@ -822,7 +822,7 @@
     }
     if (action === 'candidate-back') {
       const candidateId = state.candidateDraft?.id;
-      if (candidateId) root.CogAssets?.router?.go({ name: 'review', candidateId });
+      if (candidateId) root.CogAssets?.router?.go({ name: 'activity', candidateId });
       return;
     }
     if (action === 'candidate-select-module') {

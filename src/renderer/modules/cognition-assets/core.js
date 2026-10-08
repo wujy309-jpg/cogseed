@@ -1489,11 +1489,11 @@
 
   /** 进入承载旧记忆迁移工具卡的页签时读取原文；启动和其他页签均不扫描。
    *  两区已自「待我处理」页尾挪入设置页（2026-09-28 两页重整）——门控路由
-   *  清单随挪页扩入 settings（照 app.js 懒加载先例），review 保留兜底（返回
-   *  栈深链），不扩则设置页两区永久 loading 且该分支无任何按钮（深探 F23）。 */
+   *  清单随挪页扩入 settings；2026-10-08 U04 待我处理页下线后，旧 review
+   *  深链归一到 activity，门控随之改挂 activity（返回栈深链不断）。 */
   NS.onChange(() => {
     const routeName = String((store.route && store.route.name) || '');
-    if (!['review', 'settings'].includes(routeName) || String(store.route.candidateId || '')) return;
+    if (!['activity', 'settings'].includes(routeName) || String(store.route.candidateId || '')) return;
     if (!store.legacyMemoryMigration) void NS.loadLegacyMemoryMigrationPreview(false);
     if (!store.legacyScopedMemoryMigration) void NS.loadLegacyScopedMemoryMigrationPreview(false);
   });
@@ -1525,7 +1525,9 @@
     // 「我的认知」在「本体」前（2026-09-27 子安定序，勿再对调）。
     { id: 'overview', titleKey: 'cognition.tab_overview', title: '我的认知' },
     { id: 'ontology', titleKey: 'cognition.tab_ontology', title: '本体' },
-    { id: 'review', titleKey: 'cognition.tab_review', title: '待我处理' },
+    // 2026-10-08 认知资产全量重构（U04）：独立「待我处理」页签下线——全部
+    // 治理动作收敛到「系统活动」的需要关注/已处理；旧 review 路由在
+    // router.go 归一化到 activity，深链与历史栈不断。
     { id: 'activity', titleKey: 'cognition.tab_activity', title: '系统活动' },
     { id: 'settings', titleKey: 'cognition.tab_settings', title: '资产设置' },
   ];
@@ -1537,18 +1539,20 @@
     go(next, options) {
       const opts = options || {};
       const current = store.route;
-      // 旧路由名归一（specs/018）：tree 保持为认知树顶级页；organize→系统活动、
-      // organize-settings→设置、experiences→我的认知·经验档（specs/017）。
+      // 旧路由名归一（specs/018；2026-10-08 U04 再收敛）：tree 保持为认知树
+      // 顶级页；organize→系统活动、organize-settings→设置、experiences→我的
+      // 认知·经验档；review（已下线的独立待我处理页）→系统活动·需要关注。
       // 在入栈/落 store 前归一，app.js 的 onChange 钩子读到的恒为新名。
       let target = next || {};
       const legacyName = String(target.name || '');
       if (legacyName === 'organize') target = Object.assign({}, target, { name: 'activity' });
       else if (legacyName === 'organize-settings') target = Object.assign({}, target, { name: 'settings' });
       else if (legacyName === 'experiences') target = Object.assign({}, target, { name: 'overview', category: target.category || 'experiences' });
+      else if (legacyName === 'review') target = Object.assign({}, target, { name: 'activity' });
       if (target.category === 'kstar') target = Object.assign({}, target, { category: '' });
       // 先把 next 归一到同一形状再比（部分键字面量 vs 全键展开的序列化恒不等，
       // 连点同一 tab 会堆积重复栈项——2026-09-14 终审修）。
-      const merged = Object.assign({ name: 'tree', category: '', assetId: '', candidateId: '', moduleId: '', recordId: '', recordVersion: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', taskFailedOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', candCreate: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '', manage: '' }, target);
+      const merged = Object.assign({ name: 'tree', category: '', assetId: '', candidateId: '', moduleId: '', recordId: '', recordVersion: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', taskFailedOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', candCreate: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '', manage: '', activityDone: '' }, target);
       const same = JSON.stringify(current) === JSON.stringify(merged);
       if (!opts.replace && !same) store.backStack.push(Object.assign({}, current));
       store.route = merged;
@@ -1937,7 +1941,7 @@
       } else {
         toast(T('cognition.candidate_promoted', '已成为正式资产'), 'success');
         store.lastPromoted = null;
-        router.go({ name: 'review' });
+        router.go({ name: 'activity' });
       }
       // 第 3 批（2026-09-29）：晋升的就地消费——候选响应直接替换 store 条目
       //（confirmed + promotedAssetId），资产/树/时间线由写入广播重拉（candidates /
@@ -1989,7 +1993,7 @@
           // The submission is durable. A promotion failure must not look like a failed write
           // or invite another submission; ordinary review retains conflict/permission checks.
           toast(T('cognition.manual_save_unconfirmed', '内容已提交，暂时无法确认正式保存结果。请打开这条记录核对状态，不必重复提交。'), 'warning');
-          router.go({ name: 'review', candidateId: candidate.id }, { replace: true });
+          router.go({ name: 'activity', candidateId: candidate.id }, { replace: true });
           await NS.reload();
           return;
         }
@@ -1997,7 +2001,7 @@
       toast(assetId
         ? T('cognition.cand_create_done', '已保存，可在详情中修改内容、查看来源和使用记录。')
         : T('cognition.manual_save_pending', '内容已提交，但尚未成为正式资产。请在这条待处理内容中核对保存条件。'), assetId ? 'success' : 'warning');
-      router.go(assetId ? { name: 'overview', assetId } : { name: 'review', candidateId: candidate.id }, { replace: true });
+      router.go(assetId ? { name: 'overview', assetId } : { name: 'activity', candidateId: candidate.id }, { replace: true });
       await NS.reload();
     },
     async decideCandidate(candidateId, action) {
@@ -2850,19 +2854,18 @@
   window.openCognitionCandidateById = function openCognitionCandidateById(candidateId) {
     if (!candidateId) return false;
     showRecallPanel();
-    router.go({ name: 'review', candidateId: String(candidateId) });
+    router.go({ name: 'activity', candidateId: String(candidateId) });
     // 同上：对话里刚保存的候选不在陈旧 store 里，必须重取后才找得到（B11/D1）。
     void NS.reload();
     return true;
   };
 
-  /** 跳到认知资产「待我处理」页（审计 R4 拍板项 #6，2026-09-28）：会话头
-   *  部的认知衔接行是本会话 N/M 计数行、无具体资产 id——跳资产详情不可
-   *  执行，统一去向＝「待我处理」（本会话的候选就在那排队）。
+  /** 会话头部的认知衔接行落点（2026-10-08 U04 收敛）：原「待我处理」页已
+   *  下线，统一去向＝「系统活动」需要关注（本会话的候选就在那排队）。
    *  conversation-info.js 调用；不依赖调用方已在认知资产页。 */
   window.openCognitionReview = function openCognitionReview() {
     showRecallPanel();
-    router.go({ name: 'review', candidateId: '' });
+    router.go({ name: 'activity', candidateId: '' });
     // 同 openCognitionCandidateById：对话侧写入无广播直达这里，跳转后重拉。
     void NS.reload();
     return true;
