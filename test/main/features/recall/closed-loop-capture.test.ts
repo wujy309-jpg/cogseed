@@ -204,15 +204,14 @@ describe('Recall selected-conversation closed loop', () => {
 
     // 一键提取写入的资产是 seed 档（系统写入、无人确认）。按 PRD 3.6，
     // 它还没有"被正确带入过"的证明，所以**不进静默默认注入**——用户主动带入
-    // 注入以「适合度」为准（产品决策）：seed 资产只要语义匹配即可注入
-    // （未验证由 prompt 块内的 lifecycle 标注承担）——不用等升档。
+    // 查原文／明确选用与默认带入分开；尚未验证的系统内容不能默认进入。
     const beforeProof = await promptInjection.buildRecallTurnPromptContext(USER_ID, {
       cid: 'new-conversation-relevant',
       taskRunId: 'new-turn-relevant',
       taskText: 'How should we validate a schema migration rollback before deployment?',
       workspaceId: 'workspace-closed-loop',
     }, semanticOptions);
-    expect(beforeProof.promptBlock).toContain('Always prepare and test a rollback plan');
+    expect(beforeProof.promptBlock).not.toContain('Always prepare and test a rollback plan');
 
     // 真实使用一次：手动投影 → 落回执 → 终态 → TransferProof 带 receiptId。
     const assetsSvc = await import('../../../../src/main/features/recall/asset-service');

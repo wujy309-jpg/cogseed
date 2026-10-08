@@ -190,10 +190,8 @@ function listLine(asset: RecallAbilityAssetRecord): string {
 /** 一条资产是否是"能交给模型看的"——与注入/派单同一道运行时准入门，
  *  同源判定，避免两处标准分叉。
  *
- *  软条件 `not_applicable_context` 不计入拦截（与既有正文读取同口径）：
- *  applicableWhen 是给模型自己判断的软提示，按用户消息做词面匹配来否掉模型的
- *  明确选择，会把这个功能废掉。硬闸照旧：状态 / 来源 / scopePolicy / 禁用场景 /
- *  敏感度 / targetAgents。
+ *  inspect 将任务相关性单独返回；此处不得删除或改写阻断理由。
+ *  硬边界与自动消费同源，查阅许可不意味着默认使用许可。
  */
 async function runtimeBlockReasons(
   opts: AssetStewardToolsOpts,
@@ -205,9 +203,9 @@ async function runtimeBlockReasons(
     ...(opts.spaceId ? { workspaceId: opts.spaceId } : {}),
     ...(opts.taskText ? { taskText: opts.taskText } : {}),
     ...(opts.taskText ? { purpose: opts.taskText } : {}),
-    silentDefaultInjection: true,
+    operation: 'inspect',
   });
-  return eligibility.reasons.filter((reason) => reason !== 'not_applicable_context');
+  return eligibility.reasons;
 }
 
 // ── 待审批提议（US-406）：管理视角的可见性 ────────────────────────────────

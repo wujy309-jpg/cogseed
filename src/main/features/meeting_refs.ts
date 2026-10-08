@@ -184,7 +184,7 @@ async function admitAsset(uid: string, assetId: string): Promise<RecallAbilityAs
   }, {
     // 用户主动挂载（不是静默默认注入）：成熟度与适用条件不作硬门槛，
     // 权限与状态门照过——与 buildExplicitAssetView 的语义一致。
-    silentDefaultInjection: false,
+    operation: 'explicit_use',
   });
   if (!gate.eligible && gate.reasons.length) {
     throw new MeetingRefError(

@@ -34,7 +34,6 @@ import { approveWakeRequest, getWakeRequest } from '../p3394/wake-service';
 import { normalizeCognitionSourceRefs, type CognitionSourceRef } from './source-service';
 import { isCognitionSourceEnabled } from './source-control';
 import {
-  evaluateAssetRuntimeEligibility,
   assetRuntimeBlockRule,
   type AssetRuntimeBlockReason,
   type AssetRuntimeContext,
@@ -1176,25 +1175,13 @@ async function buildExplicitAssetView(
     if (asset.status !== 'active') {
       throw explicitBlockError(['status_not_active'], id, asset.status);
     }
-    const gate = evaluateAssetRuntimeEligibility({
-      status: asset.status,
-      maturity: asset.maturity,
-      lifecycleStatus: asset.lifecycleStatus,
-      scope: asset.scope,
-      ...(asset.crossScopeConfirmedAt ? { crossScopeConfirmedAt: asset.crossScopeConfirmedAt } : {}),
-      ...(asset.scopePolicy ? {
-        scopePolicy: projectionPurposeIsDeferred(undefined, context.purpose || '')
-          ? scopePolicyWithoutPurposeTags(asset.scopePolicy)
-          : asset.scopePolicy,
-      } : {}),
-      ...(asset.applicableWhen ? { applicableWhen: asset.applicableWhen } : {}),
-      ...(asset.forbiddenWhen ? { forbiddenWhen: asset.forbiddenWhen } : {}),
-    }, {
-      ...context,
-      // 用户主动挑选，不是静默默认注入：成熟度与适用条件不作硬门槛。
-      silentDefaultInjection: false,
-      sourceAvailable: await hasEnabledAutomaticSources(userId, asset),
-    });
+    const { evaluateRecallAssetRuntimeEligibility } = await import('./prompt-injection');
+    const gate = await evaluateRecallAssetRuntimeEligibility(userId, {
+      ...asset,
+      scopePolicy: projectionPurposeIsDeferred(undefined, context.purpose || '')
+        ? scopePolicyWithoutPurposeTags(asset.scopePolicy)
+        : asset.scopePolicy,
+    }, { ...context, operation: 'explicit_use' });
     const blocking = context.agentId
       ? gate.reasons
       : gate.reasons.filter((reason) => ATTACH_BLOCKING_REASONS.has(reason));
@@ -1342,17 +1329,9 @@ export async function createAutomaticContextProjection(
     // confirmed、authorization 置成 not_required，不经用户挑选就进本轮提示词。
     // 所以按 PRD 3.6 只接纳已经证明过能被正确带入的资产——User Confirmed /
     // Unverified 仍然只能由用户主动带入（手动投影那条路不经过这里）。
-    const runtime = evaluateAssetRuntimeEligibility({
-      status: asset.status,
-      maturity: asset.maturity,
-      lifecycleStatus: asset.lifecycleStatus,
-      scope: asset.scope,
-      ...(asset.crossScopeConfirmedAt ? { crossScopeConfirmedAt: asset.crossScopeConfirmedAt } : {}),
-      ...(asset.scopePolicy ? { scopePolicy: asset.scopePolicy } : {}),
-      ...(asset.applicableWhen ? { applicableWhen: asset.applicableWhen } : {}),
-      ...(asset.forbiddenWhen ? { forbiddenWhen: asset.forbiddenWhen } : {}),
-    }, {
-      silentDefaultInjection: true,
+    const { evaluateRecallAssetRuntimeEligibility } = await import('./prompt-injection');
+    const runtime = await evaluateRecallAssetRuntimeEligibility(userId, asset, {
+      operation: 'default_injection',
       purpose: taskText,
       ...(taskText ? { taskText } : {}),
       ...(agentId ? { agentId } : {}),

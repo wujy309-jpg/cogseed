@@ -55,6 +55,9 @@ describe('loadAssetProfileEntries', () => {
     const paused = await mk('停用画像：不该出现。', 'aa-pb-c');
     await assets.pauseAbilityAsset(UID, paused.id, { actor: 'user', reason: 'test pause' });
 
+    // 此用例验证默认画像排序；未验证画像的隔离另有跨入口契约测试。
+    await assets.setAbilityAssetMaturity(UID, 'aa-pb-a', 'transfer_validated');
+    await assets.setAbilityAssetMaturity(UID, 'aa-pb-b', 'transfer_validated');
     const entries = await profile.loadAssetProfileEntries(UID, {
       usageCounts: async () => new Map([['aa-pb-a', 9], ['aa-pb-b', 1], ['aa-pb-c', 99]]),
     });
@@ -101,12 +104,16 @@ describe('profile ordering + origin prefix (2026-09-19 三小修)', () => {
     const fresh = new Date().toISOString();
     await mk('aa-rank-fresh-confirmed', '刚确认的新偏好。', fresh, 'user_confirmed_unverified');
 
+    for (const id of ['aa-rank-old-confirmed-1', 'aa-rank-old-confirmed-2', 'aa-rank-fresh-confirmed']) {
+      await assets.setAbilityAssetMaturity('user-pb-rank', id, 'transfer_validated');
+    }
     const entries = await profile.loadAssetProfileEntries('user-pb-rank', {
+      listAssets: async uid => (await assets.listAbilityAssets(uid)).map(item => ({ ...item, updatedAt: item.createdAt })),
       usageCounts: async () => new Map([['aa-rank-old-confirmed-1', 99], ['aa-rank-old-confirmed-2', 50]]),
     });
     // 72h 内的新资产压过 99 次使用的老资产，排第一。
     expect(entries[0]).toBe('刚确认的新偏好。');
-    // 出身收敛（2026-09-20）：模型记的=已确定——条目是纯内容，无出身前缀。
+    // 内容已通过共同默认准入；排序不自行提升可信度。
     expect(entries.every((entry) => !entry.startsWith('['))).toBe(true);
   });
 });

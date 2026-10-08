@@ -211,6 +211,20 @@ async function hasEnabledSources(userId: string, evidenceRefs: Awaited<ReturnTyp
   return true;
 }
 
+/** 个人记忆的长期默认使用意图必须有真实用户确认回执。
+ * 不信任旧 lifecycle 单值化，也不把模型自述或迁移次数当作用户授权。
+ * 更新候选可能沿用资产身份，因此在来源候选中定位当前确认决定。 */
+async function hasUserAuthorizedPersonalDefaultUse(userId: string, asset: RecallAbilityAssetRecord): Promise<boolean> {
+  if (asset.type !== 'personal' || asset.lifecycleStatus !== 'user_confirmed_unverified' || asset.maturity === 'seed') return false;
+  const { readReviewDecision } = await import('../cognition/review-decision');
+  for (const candidateId of new Set([asset.candidateId, ...(asset.sourceCandidateIds || [])])) {
+    if (!candidateId || !asset.reviewDecisionId) continue;
+    const decision = await readReviewDecision(userId, `recall_candidate:${candidateId}`, asset.reviewDecisionId);
+    if (decision?.actor === 'user' && (decision.decision_type === 'accept' || decision.decision_type === 'modify')) return true;
+  }
+  return false;
+}
+
 /** Runtime admission for a stored asset. Keeping this conversion in one place
  * prevents automatic injection, manual Projection use and Commander dispatch
  * from drifting into three subtly different governance policies. */
@@ -220,7 +234,9 @@ export async function evaluateRecallAssetRuntimeEligibility(
   context: AssetRuntimeContext = {},
 ): Promise<AssetRuntimeEligibility> {
   const sourceAvailable = await hasEnabledSources(userId, asset.evidenceRefs);
+  const defaultUseAuthorized = await hasUserAuthorizedPersonalDefaultUse(userId, asset);
   return evaluateAssetRuntimeEligibility({
+    defaultUseAuthorized,
     status: asset.status,
     maturity: asset.maturity,
     lifecycleStatus: asset.lifecycleStatus,
@@ -231,19 +247,18 @@ export async function evaluateRecallAssetRuntimeEligibility(
     ...(asset.forbiddenWhen ? { forbiddenWhen: asset.forbiddenWhen } : {}),
   }, {
     ...context,
-    sourceAvailable,
+    sourceAvailable: sourceAvailable && context.sourceAvailable !== false,
   });
 }
 
 /** Context shared by task-time asset reads, compact catalogs, and semantic search. */
 export type RecallAgentReadContext = Pick<
   AssetRuntimeContext,
-  'agentId' | 'roleId' | 'projectId' | 'workspaceId' | 'conversationKind' | 'fileKinds' | 'purpose' | 'taskText'
+  'agentId' | 'roleId' | 'projectId' | 'workspaceId' | 'conversationKind' | 'fileKinds' | 'purpose' | 'taskText' | 'scope'
 >;
 
-/** All task-time reads use the same runtime purpose and soft applicability semantics.
- *  A mismatch with `applicableWhen` is guidance for the model, while every other
- *  runtime reason is a hard block. */
+/** 目录与按需读取只判 inspect。可查阅并不授权后台带入；相关性单独返回。
+ * 自动消费必须经 filterRecallAssetsForDefaultInjection。 */
 export async function evaluateRecallAssetAgentReadEligibility(
   userId: string,
   asset: Awaited<ReturnType<typeof readAbilityAsset>>,
@@ -252,14 +267,14 @@ export async function evaluateRecallAssetAgentReadEligibility(
   return evaluateRecallAssetRuntimeEligibility(userId, asset, {
     ...context,
     purpose: context.purpose || context.taskText,
-    silentDefaultInjection: true,
+    operation: 'inspect',
   });
 }
 
 export function recallAssetAgentReadBlockReasons(
   eligibility: AssetRuntimeEligibility,
 ): AssetRuntimeEligibility['reasons'] {
-  return eligibility.reasons.filter((reason) => reason !== 'not_applicable_context');
+  return eligibility.reasons;
 }
 
 /** Filter task-time catalogs with bounded concurrency. A failed admission check
@@ -268,6 +283,7 @@ export async function filterRecallAssetsForAgentRead(
   userId: string,
   assets: readonly RecallAbilityAssetRecord[],
   context: RecallAgentReadContext = {},
+  operation: 'inspect' | 'default_injection' = 'inspect',
 ): Promise<RecallAbilityAssetRecord[]> {
   const eligible = new Array<RecallAbilityAssetRecord | null>(assets.length).fill(null);
   let next = 0;
@@ -278,7 +294,11 @@ export async function filterRecallAssetsForAgentRead(
       next += 1;
       const asset = assets[index];
       try {
-        const result = await evaluateRecallAssetAgentReadEligibility(userId, asset, context);
+        const result = operation === 'inspect'
+          ? await evaluateRecallAssetAgentReadEligibility(userId, asset, context)
+          : await evaluateRecallAssetRuntimeEligibility(userId, asset, {
+            ...context, purpose: context.purpose || context.taskText, operation,
+          });
         if (!recallAssetAgentReadBlockReasons(result).length) eligible[index] = asset;
       } catch (error) {
         log.warn('asset runtime eligibility failed during agent read', {
@@ -288,6 +308,15 @@ export async function filterRecallAssetsForAgentRead(
     }
   }));
   return eligible.filter((asset): asset is RecallAbilityAssetRecord => asset !== null);
+}
+
+/** 自动画像等后台消费使用同一权限边界，再施加默认使用与适用性限制。 */
+export async function filterRecallAssetsForDefaultInjection(
+  userId: string,
+  assets: readonly RecallAbilityAssetRecord[],
+  context: RecallAgentReadContext = {},
+): Promise<RecallAbilityAssetRecord[]> {
+  return filterRecallAssetsForAgentRead(userId, assets, context, 'default_injection');
 }
 
 /** Filter assets explicitly selected or included in a confirmed projection.
@@ -309,6 +338,7 @@ export async function filterRecallAssetsForCommittedProjection(
       try {
         const result = await evaluateRecallAssetRuntimeEligibility(userId, asset, {
           ...context,
+          operation: 'explicit_use',
           silentDefaultInjection: false,
         });
         if (result.eligible) eligible[index] = asset;
@@ -581,7 +611,7 @@ async function buildPromptContextForCommittedProjection(
 ): Promise<RecallTurnPromptContext> {
   const projectionId = input.committedProjectionId!;
   const personalAssets = (await listAbilityAssets(userId)).filter((asset) => asset.type === 'personal');
-  const readablePersonalAssets = await filterRecallAssetsForAgentRead(userId, personalAssets, {
+  const readablePersonalAssets = await filterRecallAssetsForDefaultInjection(userId, personalAssets, {
     ...(input.agentId ? { agentId: input.agentId } : {}),
     ...(input.roleId ? { roleId: input.roleId } : {}),
     ...(input.projectId ? { projectId: input.projectId } : {}),

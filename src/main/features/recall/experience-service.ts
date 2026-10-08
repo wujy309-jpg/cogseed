@@ -765,9 +765,8 @@ export async function archiveExperience(
  *   - `merged` 是经验特有终态，映射到同为终态的 `archived`：闸门只按
  *     `!== 'active'` 判 `status_not_active`，语义等价，不新造第四种状态判据；
  *   - `maturity` 固定 `bud`：经验没有成熟度轴（决策口径 6），但闸门的入参
- *     要求该字段。取 bud 是唯一"既不拦也不撒谎"的档位——seed 会在非静默
- *     路径落 `maturity_below_default_use`（把未验证当成资产的 Candidate 禁令，
- *     不适用于经验），transfer+ 则谎称效果已实证；
+ *     要求该字段。固定 bud 不代表验证已完成：查阅／明确选用可访问，
+ *     默认带入仍被共同默认策略阻止；transfer+ 会谎称已有迁移实证；
  *   - `agentId` 映射 `targetAgents`：单值白名单，语义就是"只许这个 Agent 用"。
  */
 export function experienceRuntimeCandidate(exp: ExperienceRecord): AssetRuntimeCandidate {

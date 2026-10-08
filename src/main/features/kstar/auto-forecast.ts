@@ -2,7 +2,7 @@ import { createLogger } from '../../logger';
 import { loadCommittedProjectionKnowledge } from '../recall/projection-knowledge';
 import { listAbilityAssets } from '../recall/asset-service';
 import {
-  filterRecallAssetsForAgentRead,
+  filterRecallAssetsForDefaultInjection,
   filterRecallAssetsForCommittedProjection,
 } from '../recall/prompt-injection';
 import {
@@ -158,7 +158,7 @@ async function runAutoForecastForRequirement(
       ...(workspaceId ? { workspaceId } : {}),
       taskText: requirement.goalText,
     };
-    const readablePersonalAssets = await filterRecallAssetsForAgentRead(
+    const readablePersonalAssets = await filterRecallAssetsForDefaultInjection(
       userId,
       allAssets.filter((asset) => asset.type === 'personal'),
       readContext,

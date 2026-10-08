@@ -11652,10 +11652,10 @@ async function resolveDispatchedAbilityAssets(
       return { ok: false, error: DISPATCHED_ASSET_ERRORS.unauthorized };
     }
     if (!asset) return { ok: false, error: DISPATCHED_ASSET_ERRORS.unauthorized };
-    const gate = await evaluateRecallAssetRuntimeEligibility(uid, asset, context);
+    const gate = await evaluateRecallAssetRuntimeEligibility(uid, asset, { ...context, operation: 'explicit_use' });
     // 同 attach：模型明确点名的授予不做软提示否决（"适用场景"由模型在目录里
     // 自行判断），硬闸保留。
-    const hardBlocks = gate.reasons.filter((reason) => reason !== 'not_applicable_context');
+    const hardBlocks = gate.reasons;
     if (hardBlocks.length) {
       return { ok: false, error: DISPATCHED_ASSET_ERRORS.runtimeDenied };
     }
@@ -12270,9 +12270,9 @@ async function buildCommanderExtraTools(
             ...(typeof currentSourceMessageText === "string" && currentSourceMessageText
               ? { taskText: currentSourceMessageText.slice(0, 2_000) }
               : {}),
-            silentDefaultInjection: true,
+            operation: 'explicit_use',
           });
-          const hardBlocks = gate.reasons.filter((item) => item !== "not_applicable_context");
+          const hardBlocks = gate.reasons;
           if (hardBlocks.length) return _toolError(DISPATCHED_ASSET_ERRORS.runtimeDenied);
           granted.push(asset.id);
         }
