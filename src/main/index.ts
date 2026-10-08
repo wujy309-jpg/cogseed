@@ -159,6 +159,7 @@ import {
   registerImmediate,
   runBootPhases,
 } from './util/boot_init';
+import { primeLoginShellPathDirs } from './util/login-shell-env';
 import { getBootDeviceProfile } from './util/boot-device-profile';
 import * as updaterClient from './features/updater/client';
 import { evaluateBootGuard, markBootHealthy } from './features/updater/boot_guard';
@@ -1808,6 +1809,8 @@ if (!gotLock) {
       const { installModelOverrideResolver } = await import('./features/model_overrides');
       installModelOverrideResolver();
     }, 'serial');
+    // 登录 shell 的 PATH 探测：只影响 CLI 子进程环境，失败即回落约定目录。
+    registerImmediate('local-agents:login-shell-path', () => primeLoginShellPathDirs());
     registerImmediate('skills:version-recovery', async () => {
       const { recoverSkillVersionMutations } = await import('./features/skills/version-mutation-service');
       const result = await recoverSkillVersionMutations(users.getActiveUserId());

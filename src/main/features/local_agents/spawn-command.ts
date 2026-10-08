@@ -1,5 +1,7 @@
 import * as path from 'node:path';
 import * as os from 'node:os';
+
+import { loginShellPathDirs } from '../../util/login-shell-env';
 import * as fs from 'node:fs';
 
 export type ResolvedCliCommand = {
@@ -80,6 +82,9 @@ export function buildCliSpawnEnv(
   const rawPath = env.PATH || env.Path || '';
   const candidates = rawPath.split(delimiter).filter(Boolean);
   candidates.push(pathApi.dirname(binPath));
+  // 用户登录 shell 带来的真实 PATH（启动时探测一次并缓存；未探测过则为空）。
+  // 顺序：继承的环境 → 登录 shell → 我们的约定目录，用户自己的顺序优先。
+  if (platform !== 'win32') candidates.push(...loginShellPathDirs());
 
   if (platform === 'win32') {
     const localAppData = env.LOCALAPPDATA || (home ? path.win32.join(home, 'AppData', 'Local') : '');

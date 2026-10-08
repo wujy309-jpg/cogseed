@@ -272,3 +272,38 @@ describe('buildCliSpawnEnv › Electron 进程控制变量不得泄漏给 CLI', 
     expect(out.PATH).toContain('/usr/local/bin');
   });
 });
+
+// B1：登录 shell PATH 必须真正进入 CLI 子进程环境（顺序：继承环境 → 登录 shell → 约定目录）
+describe('buildCliSpawnEnv › 登录 shell PATH', () => {
+  it('appends cached login-shell dirs and keeps user order first', async () => {
+    const { buildCliSpawnEnv } = await import('../../../../src/main/features/local_agents/spawn-command');
+    const shellEnv = await import('../../../../src/main/util/login-shell-env');
+    shellEnv._setLoginShellPathDirsForTest(['/Users/x/company-bin']);
+    try {
+      const out = buildCliSpawnEnv('/usr/local/bin/claude', {
+        PATH: '/usr/bin:/bin',
+      } as NodeJS.ProcessEnv, 'darwin', '/Users/x');
+      const dirs = String(out.PATH).split(':');
+      expect(dirs).toContain('/Users/x/company-bin');
+      // 用户/继承顺序在前，登录 shell 目录在约定目录（/opt/homebrew/bin 等）之前
+      expect(dirs.indexOf('/usr/bin')).toBeLessThan(dirs.indexOf('/Users/x/company-bin'));
+      expect(dirs.indexOf('/Users/x/company-bin')).toBeLessThan(dirs.indexOf('/opt/homebrew/bin'));
+    } finally {
+      shellEnv._setLoginShellPathDirsForTest(null);
+    }
+  });
+
+  it('does not consult the login shell on Windows', async () => {
+    const { buildCliSpawnEnv } = await import('../../../../src/main/features/local_agents/spawn-command');
+    const shellEnv = await import('../../../../src/main/util/login-shell-env');
+    shellEnv._setLoginShellPathDirsForTest(['/Users/x/company-bin']);
+    try {
+      const out = buildCliSpawnEnv('C:\\npm\\claude.cmd', {
+        PATH: 'C:\\Windows;C:\\Windows\\System32',
+      } as NodeJS.ProcessEnv, 'win32', 'C:\\Users\\x');
+      expect(String(out.PATH)).not.toContain('/Users/x/company-bin');
+    } finally {
+      shellEnv._setLoginShellPathDirsForTest(null);
+    }
+  });
+});
