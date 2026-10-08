@@ -434,14 +434,6 @@
       "phase": 7
     },
     {
-      "act": "nightly-time",
-      "module": "cognition-assets",
-      "ipc": "recall.captures.settings.update",
-      "write": true,
-      "pending": false,
-      "phase": 7
-    },
-    {
       "act": "proof-rate",
       "module": "cognition-assets",
       "ipc": "recall.proofs.effectiveness.feedback",

@@ -3334,7 +3334,7 @@
       : '';
     return `${hero(
       T('cognition.organize_settings_title', '资产设置'),
-      T('cognition.organize_settings_hint', '安排会话提取与资产检查。自动生成的内容进入待我处理，检查只提出建议。'),
+      T('cognition.organize_settings_hint', '默认夜间处理，醒来只看值得关注的变化。'),
     )}
     ${modelReadFailed ? `<div class="card ca-setcard">
       <div class="rowline">

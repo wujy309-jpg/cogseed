@@ -108,8 +108,7 @@ describe('认知域词条覆盖', () => {
       expect(tables[locale]['cognition.maint_hint_short']).toBeTruthy();
     }
     const views = fs.readFileSync(path.join(root, 'src/renderer/modules/cognition-assets/views.js'), 'utf8');
-    expect(views).toContain("T('cognition.manual_review_required'");
-    expect(views).toContain("T('cognition.manual_review_required_hint'");
+    expect(views).toContain("T('cognition.settings_wake_hint'");
     expect(views).not.toContain('data-act="capture-review-toggle"');
   });
 
