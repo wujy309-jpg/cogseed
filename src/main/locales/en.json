@@ -312,5 +312,13 @@
   "touchpoints.card.button.forget_source": "Forget source",
   "touchpoints.card.button.revoke_grant": "Revoke grant",
   "touchpoints.card.resolved": "Processed",
-  "dashboard.retry_user_message": "(retry)"
+  "dashboard.retry_user_message": "(retry)",
+  "tray.show_window": "Show main window",
+  "tray.quit": "Quit CogSeed",
+  "tray.tooltip": "CogSeed",
+  "tray.tooltip_with_status": "CogSeed · {status}",
+  "tray.status.idle": "No tasks running",
+  "tray.status.running": "{count} task(s) running",
+  "tray.background_hint.title": "CogSeed is still running in the background",
+  "tray.background_hint.content": "Long-running tasks keep going. Use \"Quit CogSeed\" in the tray menu to exit completely."
 }

@@ -30,7 +30,7 @@ import * as fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
-import { app, BrowserWindow, Menu, Notification, ipcMain, nativeImage, net, protocol, session, shell, type WebContents } from 'electron';
+import { app, BrowserWindow, Menu, Notification, Tray, ipcMain, nativeImage, net, protocol, session, shell, type MenuItemConstructorOptions, type NativeImage, type WebContents } from 'electron';
 import { resolveRuntimeIdentity } from './brand';
 import { desktopPlatform, osVersion } from './system_info';
 import {
@@ -234,6 +234,8 @@ import * as clientConfigFeature from './features/client_config';
 import * as connectorsFeature from './features/connectors';
 import * as messagingFeature from './features/messaging';
 import * as taskNotifications from './features/task_notifications';
+import { shouldHideOnClose, startBackgroundRun, type BackgroundRun, type TrayMenuItemSpec } from './features/background_run';
+import * as cogseedBackend from './features/cogseed_backend';
 import { recoverRecallCaptures, startRecallCaptureOrchestrator } from './features/recall/capture-service';
 import { startAutoCloseRecovery, startGroupKstarClosure } from './features/kstar/task-closure';
 import { startGroupChatRecallTerminalProofs } from './features/group_chat/recall-terminal-proof';
@@ -252,6 +254,24 @@ let windowsTaskBadgeIcon: ReturnType<typeof nativeImage.createFromDataURL> | nul
 let mainRendererAudioPermissionObservation = { checkCount: 0, requestCount: 0 };
 let mainRendererWebContents: WebContents | null = null;
 
+/**
+ * 主窗口引用。托盘/任务通知/activate/second-instance 都要"呼出主窗口本身"，
+ * 不能靠 `getAllWindows()[0]`——弹窗（如 wecom quick-create 分区窗口）也在
+ * 那个列表里，会被抓错。
+ */
+let mainWindow: BrowserWindow | null = null;
+
+/**
+ * 一旦进入任何退出流程就置位。`before-quit` 是托盘退出 / Cmd+Q /
+ * `updates.install`（installer.ts 走 app.quit()）的共同上游；Windows 关机不走
+ * `before-quit`，另由主窗口上的 `session-end` 监听兜底（`session-end` 是
+ * BrowserWindow 事件，Electron 没有 `app.on('session-end')`）。
+ * 因此它是唯一可靠的信号：有了它，close 处理器才不会把"退出"拦成"隐藏"，
+ * 否则 app.quit() 会被中止，分离安装助手等不到父进程退出而超时。
+ */
+let isQuitting = false;
+let backgroundRun: BackgroundRun | null = null;
+
 function setTaskNotificationBadgeCount(count: number): void {
   const normalized = Math.max(0, Math.trunc(count));
   if (process.platform === 'win32') {
@@ -268,7 +288,39 @@ function setTaskNotificationBadgeCount(count: number): void {
   app.setBadgeCount(normalized);
 }
 
+/**
+ * 呼出主窗口的唯一实现：优先用主窗口引用，只有它已销毁时才回退到
+ * "第一个存活窗口 / 新建窗口"。返回被呼出的窗口，调用方常需要它继续发送数据。
+ */
+function showMainWindow(): BrowserWindow {
+  const win = (mainWindow && !mainWindow.isDestroyed())
+    ? mainWindow
+    : BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed()) || createWindow();
+  if (win.isMinimized()) win.restore();
+  if (!win.isVisible()) win.show();
+  win.focus();
+  return win;
+}
+
+/** `background_run` 的菜单项规格 → Electron 模板项。纯映射，便于单测。 */
+function toTrayTemplate(items: TrayMenuItemSpec[]): MenuItemConstructorOptions[] {
+  return items.map((item) => ({
+    label: item.label,
+    enabled: item.enabled,
+    ...(item.click ? { click: item.click } : {}),
+  }));
+}
+
 function createWindow(): BrowserWindow {
+  // 幂等：已经有存活的主窗口就直接把它显示出来。second-instance 在 app ready
+  // 之后、启动流程建窗之前（boot 自检 + 版本迁移期间）会经 showMainWindow()
+  // 建出窗口 A，随后启动流程再调一次本函数——没有这段就会建出窗口 B 并覆盖
+  // mainWindow，泄漏第二个渲染进程、第二个音频权限门和一个再也够不着的孤儿窗口。
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show();
+    mainWindow.focus();
+    return mainWindow;
+  }
   const dev = !app.isPackaged || !!process.env.COGSEED_ONBOARDING_ALWAYS; // Force dev mode when testing onboarding
   const restored = windowState.restoreWindowState();
   // This is deliberately not a `persist:` partition. The official remote
@@ -310,6 +362,55 @@ function createWindow(): BrowserWindow {
       plugins: true,
     }),
   });
+  mainWindow = win;
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null;
+  });
+
+  // Windows 关机/注销不会经过 `app.quit()`，所以 `before-quit` 不是唯一上游，
+  // 这里单独兜底。两个事件都绑：`query-session-end` 是可取消的更早信号，
+  // `session-end` 一旦触发就无法阻止、也不保证与 `close` 的先后顺序，谁先到
+  // 都能把 isQuitting 置位，close 才不会在那之后被拦成隐藏。注意二者都是
+  // BrowserWindow 的事件（`@platform win32`），Electron 没有 `app.on('session-end')`；
+  // 主窗口就是被 close 拦截的那个窗口，因此挂在它上面覆盖相同范围。
+  win.on('query-session-end', () => { isQuitting = true; });
+  win.on('session-end', () => { isQuitting = true; });
+
+  // 关闭按钮拦截：只剩"隐藏到托盘"这一种改写。最小化按钮本身不被改写（这里不
+  // preventDefault、也不 hide），只是被当成"进入后台"观察——见下面 minimize/restore
+  // 两个监听器。注意 `event.preventDefault()` 只阻止"关闭窗口"这个默认
+  // 动作，不会阻止本窗口其它 `close` 监听器——下面 `watchWindowState` 注册的
+  // 几何保存 `saveNow` 照常执行，所以"隐藏而非关闭"这条路径下窗口位置尺寸
+  // 仍然持久化，不要为了它去跳过 hide。
+  win.on('close', (event) => {
+    if (!shouldHideOnClose({
+      isQuitting,
+      closeToTray: appConfig.getCloseToTrayEnabled(),
+      // 托盘没建起来就不能藏窗口：藏了就再没有入口把它叫回来。
+      // 这里在 close 时读取（而非建窗时），所以与托盘启动的先后顺序无关。
+      trayAvailable: backgroundRun?.isAvailable() ?? false,
+    })) return;
+    event.preventDefault();
+    try {
+      win.hide();
+      backgroundRun?.setForeground(false);
+      backgroundRun?.notifyHidden();
+    } catch {
+      // 隐藏失败绝不能留下一个"已被 veto、还开着、又再也不会被显示"的窗口：
+      // 直接销毁它，让这次关闭照常完成。
+      win.destroy();
+    }
+  });
+
+  // 托盘、任务栏、dock 或 showMainWindow() 把窗口叫回来时停表并作废计数：窗口可见时
+  // 状态行没有意义，也没有必要每 5 s 读一次运行时状态。模块初始即前台，所以启动时这
+  // 一次 show 是空操作。
+  win.on('show', () => backgroundRun?.setForeground(true));
+  // 最小化是最常见的"把应用放到一边"，它只发 `minimize` 不发 `hide`：不在这里切到后台
+  // 状态，窗口就会一边显示"前台、不轮询"、一边真的不在前台，托盘计数从此冻结。
+  win.on('minimize', () => backgroundRun?.setForeground(false));
+  win.on('restore', () => backgroundRun?.setForeground(true));
+
   windowState.watchWindowState(win);
   if (restored.isMaximized) win.maximize();
 
@@ -414,10 +515,7 @@ function openConversationFromTaskNotification(
     return;
   }
 
-  const win = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed()) || createWindow();
-  if (win.isMinimized()) win.restore();
-  if (!win.isVisible()) win.show();
-  win.focus();
+  const win = showMainWindow();
 
   const send = () => {
     if (win.isDestroyed() || win.webContents.isDestroyed()) return;
@@ -597,6 +695,9 @@ function registerIpc(): void {
       });
       child.unref();
       log.info('relaunch via shell script', { script });
+      // `app.exit(0)` 绕过 `before-quit`，托盘不会被销毁；Windows 会因此留下一个
+      // 幽灵通知区图标，直到用户把鼠标划过去。先手动拆掉再退出。
+      backgroundRun?.stop();
       app.exit(0);
       return { ok: true };
     });
@@ -1467,6 +1568,20 @@ if (!gotLock) {
   // Account login is stripped, but connector OAuth still returns through the OS protocol. Keep
   // this connector-only receiver outside the removed account protocol module.
   registerConnectorProtocol({ owner: RUNTIME_IDENTITY.protocolOwner });
+  // 后台驻留时双击桌面图标：呼出已存在的实例。`features/connectors/protocol.ts:114`
+  // 已有一个 second-instance 监听，但它用 `getAllWindows()` 取窗口（可能抓到
+  // wecom 分区弹窗）、没有窗口时直接返回；这里统一走 `showMainWindow()`。
+  app.on('second-instance', () => {
+    // `app.isReady()` 不是完整的护栏：ready 之后、启动流程末尾调 createWindow()
+    // 之前还隔着 boot 自检和版本迁移。提前 `if (!isReady) return` 只是因为
+    // ready 之前一个窗口都没有，此时让 showMainWindow() 回退到 createWindow()
+    // 会抛 "Cannot create BrowserWindow before app is ready" 并终结主进程
+    // （双击图标时第二次启动很容易落在这一段）。ready 之后的那段空窗由
+    // createWindow() 的幂等性兜住：showMainWindow() 建出的窗口就是启动流程
+    // 随后会复用的同一个，不会出现第二个主窗口。
+    if (!app.isReady()) return;
+    showMainWindow();
+  });
   void app.whenReady().then(async () => {
     await runBootSelfCheck();
 
@@ -1532,6 +1647,70 @@ if (!gotLock) {
       openConversation: openConversationFromTaskNotification,
     });
     app.once('before-quit', stopTaskNotifications);
+    // 托盘只在 macOS/Windows 上启动：只有这两个平台有可用的呼出入口（Windows 的
+    // `right-click`、macOS 的 contextMenu；`popUpContextMenu` 本身也是 darwin/win32
+    // 限定）。Linux 上偏好默认是开的、`isAvailable()` 会返回 true，close 就会把
+    // 窗口藏到一个没有可用菜单的托盘后面——正是 shouldHideOnClose 要防的不可达状态。
+    // 其余平台保持 backgroundRun 为 null，close 处理器继续走今天的路径
+    // （trayAvailable=false → 不拦截）。无头 window station 的打包冒烟同理跳过。
+    if (!IS_PACKAGED_SMOKE && (process.platform === 'darwin' || process.platform === 'win32')) {
+      backgroundRun = startBackgroundRun({
+        platform: process.platform,
+        host: {
+          createIcon: () => {
+            // macOS 用彩色 png 缩到 16pt（不做 template image：彩色图设成
+            // template 会渲染成一整块黑）。Windows 直接用多尺寸 ico。
+            const file = process.platform === 'win32' ? 'icon.ico' : 'icon.png';
+            const image = nativeImage.createFromPath(path.join(paths.SRC_ROOT, 'resources', 'icons', file));
+            if (image.isEmpty()) return null;
+            return process.platform === 'win32' ? image : image.resize({ width: 16, height: 16 });
+          },
+          createTray: (icon) => new Tray(icon as NativeImage),
+          // 托盘可能已经被销毁（stop()、托盘菜单退出、系统回收 explorer 之后），
+          // 再碰原生对象会抛；主进程没有 unhandledRejection 兜底，所以这几个
+          // 写入型调用在 isDestroyed() 时直接 no-op。
+          setToolTip: (tray, text) => {
+            const native = tray as Tray;
+            if (native.isDestroyed()) return;
+            native.setToolTip(text);
+          },
+          setMenu: (tray, items) => {
+            const native = tray as Tray;
+            if (native.isDestroyed()) return;
+            native.setContextMenu(Menu.buildFromTemplate(toTrayTemplate(items)));
+          },
+          popUpMenu: (tray, items) => {
+            const native = tray as Tray;
+            if (native.isDestroyed()) return;
+            native.popUpContextMenu(Menu.buildFromTemplate(toTrayTemplate(items)));
+          },
+          onLeftClick: (tray, listener) => { (tray as Tray).on('click', listener); },
+          onRightClick: (tray, listener) => { (tray as Tray).on('right-click', listener); },
+          displayBalloon: (tray, title, content) => {
+            const native = tray as Tray;
+            if (native.isDestroyed()) return;
+            native.displayBalloon({ title, content });
+          },
+          destroy: (tray) => { (tray as Tray).destroy(); },
+          startStatusRefresh: (flush, intervalMs) => {
+            const timer = setInterval(flush, intervalMs);
+            timer.unref?.();
+            return () => clearInterval(timer);
+          },
+        },
+        showMainWindow,
+        requestQuit: () => app.quit(),
+        getActiveTaskCount: async () => {
+          const uid = users.getActiveUserId();
+          if (!uid) return null;
+          // 不做本地 catch：让它 reject，由模块的 refresh() 统一处理——那条路径只在
+          // "正常 → 失败"翻转时告警一次。在这里吞掉并返回 null 会让去重失效，持续
+          // 失败就变成每 5 s 刷一行日志。
+          const status = await cogseedBackend.cogseedIpcService.runtimeStatus(uid);
+          return typeof status?.activeTaskCount === 'number' ? status.activeTaskCount : null;
+        },
+      });
+    }
     const stopRecallCapture = startRecallCaptureOrchestrator();
     app.once('before-quit', stopRecallCapture);
     const stopGroupKstarClosure = startGroupKstarClosure();
@@ -1803,7 +1982,8 @@ if (!gotLock) {
     void runBootPhases(BOOT_BACKGROUND_DEFER_MS);
 
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+      // 隐藏到托盘的窗口也算"存在"，旧实现只在 0 窗口时建窗，于是点 dock 图标没反应。
+      showMainWindow();
     });
   }).catch((err) => {
     log.error('application startup failed', { error: (err as Error).message });
@@ -1818,6 +1998,12 @@ if (!gotLock) {
   let shutdownFlushed = false;
   let shutdownPromise: Promise<void> | null = null;
   app.on('before-quit', async (e) => {
+    // 必须在两个早退分支之前置位：App 退出流程一启动，close 就不得再被拦成隐藏。
+    isQuitting = true;
+    // 退出流程一开始就把托盘收掉：quit 已在路上，留一个"看起来还活着"的托盘点既没有意义，
+    // 也会在 Windows 留下残影（`stop()` 幂等，重复调用无害）。
+    backgroundRun?.stop();
+    backgroundRun = null;
     if (shutdownFlushed) return;
     e.preventDefault();
     if (shutdownPromise) return shutdownPromise;

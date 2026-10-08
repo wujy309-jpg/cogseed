@@ -312,5 +312,13 @@
   "touchpoints.card.button.forget_source": "遗忘来源",
   "touchpoints.card.button.revoke_grant": "撤销授权",
   "touchpoints.card.resolved": "已处理",
-  "dashboard.retry_user_message": "（重试）"
+  "dashboard.retry_user_message": "（重试）",
+  "tray.show_window": "显示主窗口",
+  "tray.quit": "退出 CogSeed",
+  "tray.tooltip": "CogSeed",
+  "tray.tooltip_with_status": "CogSeed · {status}",
+  "tray.status.idle": "当前没有运行中的任务",
+  "tray.status.running": "正在运行 {count} 个任务",
+  "tray.background_hint.title": "CogSeed 仍在后台运行",
+  "tray.background_hint.content": "长任务会继续执行。要彻底退出，请用托盘菜单里的「退出 CogSeed」。"
 }
