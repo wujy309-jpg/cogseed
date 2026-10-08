@@ -4383,6 +4383,7 @@
   "agent_picker.input_placeholder_space": "Type @ to choose agents, skills, artifacts, assets",
   "chat.space_asset_refs_label": "Referenced assets",
   "chat.asset_citation_tip": "View asset details",
+  "chat.ontology_citation_open": "View ontology record",
   "chat.candidate_citation_open": "Review suggestion",
   "chat.cognition_save.state_active": "Saved and active · use still depends on task rules",
   "chat.cognition_save.state_existing": "Already confirmed · inspect current status",

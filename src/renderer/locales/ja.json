@@ -4114,6 +4114,7 @@
   "agent_picker.input_placeholder_space": "@ でエージェント・スキル・成果物・アセットを選択",
   "chat.space_asset_refs_label": "参照アセット",
   "chat.asset_citation_tip": "資産の詳細を表示",
+  "chat.ontology_citation_open": "本体の根拠を見る",
   "chat.candidate_citation_open": "確認項目を見る",
   "chat.cognition_save.state_active": "保存して有効 · 実際の使用はタスク条件に従います",
   "chat.cognition_save.state_existing": "確認済み · 現在の状態を確認してください",

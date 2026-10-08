@@ -4347,6 +4347,7 @@
   "agent_picker.input_placeholder_space": "输入 @ 选择智能体、技能、产物、资产",
   "chat.space_asset_refs_label": "引用资产",
   "chat.asset_citation_tip": "查看资产详情",
+  "chat.ontology_citation_open": "查看本体依据",
   "chat.candidate_citation_open": "查看待我处理",
   "chat.cognition_save.state_active": "已保存并启用，是否使用仍按任务规则判断",
   "chat.cognition_save.state_existing": "这条内容已确认 · 请查看当前状态",

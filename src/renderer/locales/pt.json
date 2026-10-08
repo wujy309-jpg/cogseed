@@ -4114,6 +4114,7 @@
   "agent_picker.input_placeholder_space": "Digite @ para escolher agentes, habilidades, artefatos, ativos",
   "chat.space_asset_refs_label": "Ativos referenciados",
   "chat.asset_citation_tip": "Ver detalhes do ativo",
+  "chat.ontology_citation_open": "Ver registro da ontologia",
   "chat.candidate_citation_open": "Revisar sugestão",
   "chat.cognition_save.state_active": "Salvo e ativo · o uso depende das regras da tarefa",
   "chat.cognition_save.state_existing": "Já confirmado · confira o status atual",

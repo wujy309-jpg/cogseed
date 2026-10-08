@@ -2876,6 +2876,16 @@
     return true;
   };
 
+  /** 最终答复中的本体依据打开确切记录版本；读取失败由正式工作台显示。 */
+  window.openCognitionOntologyRecord = function openCognitionOntologyRecord(moduleId, recordId, recordVersion) {
+    if (!/^[A-Za-z0-9_-]{1,160}$/.test(moduleId || '') || !/^[A-Za-z0-9_-]{1,160}$/.test(recordId || '')
+      || !Number.isInteger(recordVersion) || recordVersion < 1 || recordVersion > 999999999) return false;
+    showRecallPanel();
+    NS.openPersonalOntology({ moduleId, recordId, recordVersion });
+    void NS.reload();
+    return true;
+  };
+
   /* ────────────────────────── 本体工作台挂载 ────────────────────────── */
   /* 当前路由在 cognition-assets 的 #ca-ontology-mount 内加载 cognition-ontology；
    * 旧深链 setView('personal-ontology') 在 boot.js 归一化后进入同一路由。 */

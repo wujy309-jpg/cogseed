@@ -340,22 +340,29 @@ function _renderMessageMarkdown(text) {
   // marker was plain text. Protect it through markdown and turn it into an
   // actionable button below, beside the existing asset citation handling.
   const candidateRefIds = [];
-  const markdownInput = protectedText.replace(/\[candidate:([A-Za-z0-9_-]{1,64})\]/g, (m, id) => {
+  const candidateText = protectedText.replace(/\[candidate:([A-Za-z0-9_-]{1,64})\]/g, (m, id) => {
     const idx = candidateRefIds.length;
     candidateRefIds.push(id);
     return `\x00CANDIDATEREF${idx}\x00`;
+  });
+  const ontologyRefs = [];
+  const markdownInput = candidateText.replace(/\[\[ontology:([A-Za-z0-9_-]{1,160})\/([A-Za-z0-9_-]{1,160})@([1-9]\d{0,8})\]\]/g, (_marker, moduleId, recordId, version) => {
+    const index = ontologyRefs.length;
+    ontologyRefs.push({ moduleId, recordId, version: Number(version) });
+    return `\uE000ONTOLOGYREF${index}\uE001`;
   });
   const html = renderMarkdownFull(markdownInput);
   const needsSkillRewrite = _htmlMayContainKnownSkillIdForDisplay(html, skills);
   // Mention highlighting requires DOM walking — do it on a detached
   // container, then return its innerHTML for the bubble to embed.
-  if (!html || (html.indexOf('@') < 0 && !needsSkillRewrite && !assetRefIds.length && !candidateRefIds.length)) return html;
+  if (!html || (html.indexOf('@') < 0 && !needsSkillRewrite && !assetRefIds.length && !candidateRefIds.length && !ontologyRefs.length)) return html;
   const tmp = document.createElement('div');
   tmp.innerHTML = html;
   if (needsSkillRewrite) _replaceKnownSkillIdsIn(tmp, skills);
   _highlightMentionsIn(tmp);
   if (assetRefIds.length) _replaceAssetCitationsIn(tmp, assetRefIds);
   if (candidateRefIds.length) _replaceCandidateCitationsIn(tmp, candidateRefIds);
+  if (ontologyRefs.length) _replaceOntologyCitationsIn(tmp, ontologyRefs);
   return tmp.innerHTML;
 }
 
@@ -476,6 +483,44 @@ function _replaceCandidateCitationsIn(container, ids) {
     }
     if (last < node.nodeValue.length) frag.appendChild(document.createTextNode(node.nodeValue.slice(last)));
     node.parentNode.replaceChild(frag, node);
+  }
+}
+
+// 本体标记仅提供精确版本阅读入口，采用与效果仍以主进程回执为准。
+function _replaceOntologyCitationsIn(container, refs) {
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    const pattern = /\uE000ONTOLOGYREF(\d+)\uE001/g;
+    if (!pattern.test(node.nodeValue)) continue;
+    pattern.lastIndex = 0;
+    const fragment = document.createDocumentFragment();
+    let last = 0;
+    let match;
+    while ((match = pattern.exec(node.nodeValue))) {
+      if (match.index > last) fragment.appendChild(document.createTextNode(node.nodeValue.slice(last, match.index)));
+      const ref = refs[Number(match[1])];
+      if (ref && node.parentElement?.closest('pre, code')) {
+        fragment.appendChild(document.createTextNode(`[[ontology:${ref.moduleId}/${ref.recordId}@${ref.version}]]`));
+      } else if (ref) {
+        const key = 'chat.ontology_citation_open';
+        const translated = typeof t === 'function' ? t(key) : key;
+        const label = translated && translated !== key ? translated : 'View ontology record';
+        const template = document.createElement('template');
+        template.innerHTML = uiButton({ label: `${label} · v${ref.version}`, role: 'ghost', size: 'sm',
+          attrs: { 'data-ontology-citation': ref.recordId, 'data-ontology-module': ref.moduleId, 'data-ontology-version': String(ref.version) },
+        });
+        fragment.appendChild(template.content.cloneNode(true));
+      }
+      last = match.index + match[0].length;
+    }
+    if (last < node.nodeValue.length) fragment.appendChild(document.createTextNode(node.nodeValue.slice(last)));
+    node.parentNode.replaceChild(fragment, node);
   }
 }
 
@@ -2811,6 +2856,19 @@ document.addEventListener('click', (e) => {
     return;
   }
   // recall feature 未加载：先懒加载（同上 asset 引用卡的 fallback），再打开评审详情。
+  const loader = typeof loadRendererFeature === 'function' ? loadRendererFeature : window.loadRendererFeature;
+  if (typeof loader === 'function') loader('recall').then(open).catch(() => {});
+});
+
+// [[ontology:module/record@version]] → 同一权威记录的只读历史版本。
+document.addEventListener('click', (event) => {
+  const el = event.target?.closest?.('[data-ontology-citation]');
+  if (!el) return;
+  const { ontologyCitation: recordId, ontologyModule: moduleId, ontologyVersion } = el.dataset;
+  if (!/^[A-Za-z0-9_-]{1,160}$/.test(recordId || '') || !/^[A-Za-z0-9_-]{1,160}$/.test(moduleId || '')
+    || !/^[1-9]\d{0,8}$/.test(ontologyVersion || '')) return;
+  const open = () => window.openCognitionOntologyRecord?.(moduleId, recordId, Number(ontologyVersion));
+  if (typeof window.openCognitionOntologyRecord === 'function') { open(); return; }
   const loader = typeof loadRendererFeature === 'function' ? loadRendererFeature : window.loadRendererFeature;
   if (typeof loader === 'function') loader('recall').then(open).catch(() => {});
 });
