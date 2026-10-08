@@ -147,13 +147,17 @@
     }
   ],
   "normative_files": {
-    "00-先看这里.md": "400afc5fd68dd619e881fbde56c1848e9905f04b17fe402bc6dd52b8c23eea17",
+    "00-先看这里.md": "41f3a6f39b3ace51f964683dd9a335cf50cb3cbf83e5b0950c341c243949c0da",
     "01-全部已确认范围与页面要求.md": "bc648cc6550b42e74e47393cc0774e820f8616534dcc7da47311935b220a05e0",
-    "02-技术基线与实施任务.md": "5137ef5a170e87c9f454e50a7b9b7497fc33bc1462403bc58e17d6e76c74f2b2",
+    "02-技术基线与实施任务.md": "ae47f5488308cf8063482f914a592e9d6e6f6be15ed8b7de50ffd4586bf6f355",
     "03-全量需求与验收矩阵.md": "6593fcac21ec201bb8ee10ff6ba4fa90d509107bbc9da644559c33ff863e9ef7",
     "04-已确认页面原型.html": "2af235d1c0d1a5d5249e25300c301dcfd20c27c7adbde54b54bbf65df7864ee9",
     "05-文件整理与有效性索引.md": "aff184e7b6c67a09b5e61bb51bb5c3f27894af249ac84d800ac56930db5eb38f",
     "06-直接交给开发智能体的提示词.md": "216685e55b552e9214b041040d6791ca90c798b0a636535953db23c138fd4af3"
+  },
+  "concurrent_parent_changes": {
+    "included_in_development_branch": false,
+    "policy": "原工作树正在开发的未提交改动留在原处，不复制、不覆盖、不自动合并；新分支从冻结提交及正式交接文档起步"
   },
   "path_policy": "本副本移除本机绝对路径；外部原件提供接棒智能体的确切本地路径。HTML字节保持一致。"
 }
