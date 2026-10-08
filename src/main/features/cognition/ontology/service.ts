@@ -4,7 +4,7 @@ import { cognitionStorePath, applyCognitionDeltas, loadCognitionStoreSync } from
 import { corruptRecordFor } from '../../../util/corrupt-guard';
 import { notifyCognitionWrite } from '../../recall/store-events';
 import { applyOntologyCommand, type OntologyCommandOutcome, type OntologyCommandSourceOverride } from './commands';
-import { emptyOntologyDocument, OntologyError, validateOntologyDocument, type OntologyDocument } from './model';
+import { emptyOntologyDocument, OntologyError, validateOntologyDocument, type OntologyDocument, type OntologyRecord } from './model';
 
 export function readOntologyDocument(userId: string): OntologyDocument {
   const empty = emptyOntologyDocument(userId);
@@ -38,4 +38,41 @@ export async function commitOntologyCommand(userId: string, input: unknown, sour
   }
   if (!result.duplicate) notifyCognitionWrite(userId, 'ontology', 'update');
   return { receipt: result.receipt, duplicate: result.duplicate };
+}
+
+/**
+ * 2026-10-08 U03/U07：「本体整体暂停」退役的结构迁移。旧 paused 模块的
+ * 在用内容逐条置为 paused（不静默扩大可用性），模块本身恢复 active
+ * （模块级暂停概念删除，可用性由条目自身状态决定）。走标准命令通道：
+ * 每步入版本历史、可恢复、commandId 稳定幂等，重复执行为 no-op。
+ */
+export async function retireOntologyModulePause(userId: string): Promise<{ migratedModules: number; pausedRecords: number }> {
+  let migratedModules = 0;
+  let pausedRecords = 0;
+  for (;;) {
+    const doc = readOntologyDocument(userId);
+    const pausedModule = Object.values(doc.records).find((record): record is Extract<OntologyRecord, { kind: 'module' }> => (
+      record.kind === 'module' && record.status === 'paused'
+    ));
+    if (!pausedModule) break;
+    const moduleRecords = Object.values(doc.records)
+      .filter((record) => record.kind !== 'module' && record.moduleId === pausedModule.id && record.status === 'active');
+    await commitOntologyCommand(userId, {
+      commandId: `retire-module-pause-${pausedModule.id}`,
+      expectedRevision: doc.revision,
+      actions: [
+        { intent: 'update', recordId: pausedModule.id, expectedVersion: pausedModule.version, patch: { status: 'active' }, sourceLabel: 'module-pause-retirement' },
+        ...moduleRecords.map((record) => ({
+          intent: 'update' as const,
+          recordId: record.id,
+          expectedVersion: record.version,
+          patch: { status: 'paused' as const },
+          sourceLabel: 'module-pause-retirement',
+        })),
+      ],
+    });
+    migratedModules += 1;
+    pausedRecords += moduleRecords.length;
+  }
+  return { migratedModules, pausedRecords };
 }

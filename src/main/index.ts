@@ -1977,6 +1977,13 @@ if (!gotLock) {
       const uid = users.getActiveUserId();
       if (uid) startNightlyCaptureSweepLoop(uid);
     }, 'parallel', BOOT_HEAVY_DISK_DELAY_MS, { resourceClass: 'disk', preferIdle: true });
+    // 本体整体暂停退役迁移（U03/U07）：幂等 no-op 安全，逐版本入历史可恢复。
+    registerDeferred('recall:ontology-pause-retirement', async () => {
+      const uid = users.getActiveUserId();
+      if (!uid) return;
+      const { retireOntologyModulePause } = await import('./features/cognition/ontology/service');
+      await retireOntologyModulePause(uid);
+    }, 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
     registerDeferred('recall:validation-recovery', async () => {
       const uid = users.getActiveUserId();
       if (!uid) return;

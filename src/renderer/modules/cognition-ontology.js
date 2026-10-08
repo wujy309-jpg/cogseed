@@ -295,7 +295,7 @@
     const legacy = m.source.kind === 'legacy' || m.status !== 'active';
     const exportButton = m.status === 'active' ? button(text('export', '导出本体'), 'export', 'secondary', {}, 'download') : '';
     const actions = legacy ? exportButton
-      : `${exportButton}${button(text('addContent', '添加内容'), 'add-content', 'primary')}${button(text('editModule', '编辑本体'), 'edit-module')}${button(text('createReference', '引用其他本体'), 'create-reference')}${button(text('pauseModule', '暂停本体'), 'pause-module', 'danger')}${button(state.showRecordInactive ? text('showActive', '查看使用中的本体') : text('showInactiveRecords', '查看历史或停用内容'), 'toggle-inactive-records')}`;
+      : `${exportButton}${button(text('addContent', '添加内容'), 'add-content', 'primary')}${button(text('editModule', '编辑本体'), 'edit-module')}${button(text('createReference', '引用其他本体'), 'create-reference')}${button(state.showRecordInactive ? text('showActive', '查看使用中的本体') : text('showInactiveRecords', '查看历史或停用内容'), 'toggle-inactive-records')}`;
     const body = state.tab === 'graph' ? graphCanvas(state.graph, true) : state.tab === 'overview'
       ? `<div class="ontology-ws-overview"><section class="ontology-ws-overview-card"><span>${esc(text('scope', '范围'))}</span><strong>${esc(m.scope.kind === 'personal' ? text('personal', '个人') : m.scope.kind === 'project' ? text('project', '项目') : text('workspace', '工作区'))}</strong><p>${esc(m.scope.id || '')}</p></section><section class="ontology-ws-overview-card"><span>${esc(text('description', '说明'))}</span><p>${esc(moduleDescription(m))}</p></section><section class="ontology-ws-overview-card"><span>${esc(text('threeBoxes', '三个基础盒子'))}</span><div class="ontology-ws-box-summary">${button(`TBox · ${all.filter(r => r.kind === 'definition' && r.definitionKind !== 'relation').length}`, 'select-box', 'secondary', { 'data-box': 'T' })}${button(`ABox · ${all.filter(r => r.kind === 'entity' || r.kind === 'assertion').length}`, 'select-box', 'secondary', { 'data-box': 'A' })}${button(`RBox · ${all.filter(r => r.kind === 'reference' || r.kind === 'rule' || (r.kind === 'definition' && r.definitionKind === 'relation')).length}`, 'select-box', 'secondary', { 'data-box': 'R' })}</div></section></div><section class="ontology-ws-recent"><h2>${esc(text('recentRecords', '最近整理的内容'))}</h2>${renderRecordList(all.slice(0, 8))}</section>`
       : `<div class="ontology-ws-box-title"><div><span>${esc(boxName)}</span><p>${esc(state.box === 'T' ? text('tboxHint', '定义这个本体认识哪些类型和属性。') : state.box === 'A' ? text('aboxHint', '保存具体人物、项目以及它们当前或过去的事实。') : text('rboxHint', '查看关系、规则和本体之间的引用。'))}</p></div>${legacy ? '' : state.box === 'A'
@@ -969,13 +969,6 @@
       if (record?.kind === 'definition') return openDefinitionDialog(target, record.definitionKind, record);
       if (record?.kind === 'rule') return openRuleDialog(target, record);
       if (record?.kind === 'reference') return openReferenceDialog(target, record);
-    }
-    if (action === 'pause-module') {
-      const record = state.doc.records[state.moduleId];
-      if (!record || record.source.kind === 'legacy') return;
-      if (!await root.uiConfirm(text('pauseModuleConfirm', '暂停后本体及其内容不再供新任务使用，历史保留。是否继续？'))) return;
-      await commit([{ intent: 'update', recordId: record.id, expectedVersion: record.version, patch: { status: 'paused' }, sourceLabel: sourceLabel() }]);
-      state.page = 'list'; state.mode = 'list'; render(); return;
     }
     if (action === 'delete-record') {
       const record = state.doc.records[state.recordId]; if (!record) return;

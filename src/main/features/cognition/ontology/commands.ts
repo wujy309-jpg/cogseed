@@ -296,6 +296,11 @@ export function applyOntologyCommand(current: OntologyDocument, input: unknown, 
       if (['id', 'kind', 'moduleId', 'version', 'createdAt', 'updatedAt', 'source'].some(key => Object.hasOwn(action.patch, key)))
         throw new OntologyError('invalid_input', 'record identity cannot be patched');
       if (action.patch.status === 'corrected') throw new OntologyError('invalid_intent', 'corrected status requires a correction command');
+      // 2026-10-08 U03：本体整体暂停写口退役——模块不能再被置为 paused。
+      // 具体条目/对象的停用走 archive；旧 paused 模块由
+      // retireOntologyModulePause 迁移（恢复 active 方向不受此限）。
+      if (before.kind === 'module' && action.patch.status === 'paused')
+        throw new OntologyError('invalid_intent', 'module-level pause is retired; archive individual records instead');
       save({ ...before, ...action.patch, source, version: before.version + 1, updatedAt: recordedAt }, action.intent, before);
     } else if (action.intent === 'restore') {
       if (before.status !== 'archived') throw new OntologyError('invalid_intent', 'only archived records can be restored; corrections retain their history');

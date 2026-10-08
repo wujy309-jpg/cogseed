@@ -275,6 +275,13 @@ export const invokeHandlers = {
       await rollbackCognitionAuthority(ctx.userId);
       return { ok: true, mode: 'mirror' };
     }
+    if (dryRun !== true) {
+      // 2026-10-08 U03：本体整体暂停退役迁移（幂等 no-op 安全）。
+      const { retireOntologyModulePause } = await import('../features/cognition/ontology/service');
+      const retirement = await retireOntologyModulePause(ctx.userId);
+      const migrated = await migrateLegacyCognition(ctx.userId, { dryRun: dryRun === true, activate: activate === true });
+      return { ...migrated, modulePauseRetirement: retirement };
+    }
     return migrateLegacyCognition(ctx.userId, { dryRun: dryRun === true, activate: activate === true });
   },
 
