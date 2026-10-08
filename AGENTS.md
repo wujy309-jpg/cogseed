@@ -6,7 +6,7 @@ Prompt context only: keep hard constraints, short rationale, and traps already h
 
 CogSeed desktop companion agent (Electron). Main is TypeScript under `src/main`, renderer is vanilla HTML/CSS/JS under `src/renderer`.
 
-- Quick gates: `npm run typecheck` (tsc --noEmit), `npm test` (js + resources), `./run.sh` to start.
+- Quick gates: `npm run typecheck` (tsc --noEmit), `npm test` (js + resources), `npm run check:line-endings` (CRLF/LF 混用；已有 12 个历史文件冻结在 `scripts/line-endings-baseline.json`，只对**新增**违规失败), `./run.sh` to start.
 
 ## Boundary
 
