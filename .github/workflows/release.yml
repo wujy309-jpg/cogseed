@@ -117,10 +117,37 @@ jobs:
         run: npm run verify:package:launch
       - name: Packaged STT smoke
         run: npm run verify:package:stt:win
+      - name: Generate Windows update feed entry
+        shell: pwsh
+        run: |
+          $exe = @(Get-ChildItem dist/CogSeed-*-win-x64.exe)
+          if (-not $exe) { throw "no win-x64 installer found in dist/" }
+          if ($exe.Count -gt 1) { throw "multiple win-x64 installers found: $($exe.Name -join ', ')" }
+          $hash = (Get-FileHash $exe[0].FullName -Algorithm SHA256).Hash.ToLower()
+          # LF-terminated "sha256  filename" sidecar so `sha256sum -c` verifies it.
+          "$hash  $($exe[0].Name)`n" | Out-File -Encoding ascii -NoNewline "$($exe[0].FullName).sha256"
+          node updates-server/publish.cjs $exe[0].FullName --platform win32 --arch x64 `
+            --notes "${{ github.ref_name }}" --catalog dist/win-feed.json --no-copy
       - uses: actions/upload-artifact@v4
         with:
           name: CogSeed-windows-x64-${{ needs.gate.outputs.peeled-sha }}
           path: dist/CogSeed-*-win-x64.exe
+          if-no-files-found: error
+          retention-days: 14
+      # The publish job downloads every `CogSeed-*` artifact and validates an
+      # exact five-file installer set twice, so the feed metadata ships as its
+      # own artifact instead of breaking that check.
+      # The entry file is produced here for the release pipeline only; serving it
+      # to the distribution feed requires the Hub-side endpoint (currently an
+      # external dependency), so today the artifact is consumed manually or
+      # expires with the artifact retention window.
+      - name: Upload Windows update feed metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: updates-win-feed-${{ needs.gate.outputs.peeled-sha }}
+          path: |
+            dist/*.exe.sha256
+            dist/win-feed.json
           if-no-files-found: error
           retention-days: 14
 
