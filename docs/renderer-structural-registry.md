@@ -57,6 +57,17 @@ business-logic changes.
 Migration status above reflects the local implementation dated 2026-09-21. Related PR is `TBD` until
 the branch is submitted; code-owner review may supersede any boundary without deleting its history.
 
+## Known non-icon inline SVG
+
+Inline `<svg>` is counted by `test/renderer/shared-ui-adoption-guard.test.ts` so that icons cannot
+bypass `modules/icons.js`. A **data visualisation** cannot be expressed as a static icon path, and
+this section is where those are registered. Each entry is counted in `inlineSvgBaseline`; adding one
+requires a record here in the same change.
+
+| ID | File | What it draws | Why it is not an icon | Registered |
+| --- | --- | --- | --- | --- |
+| `SEC-PV-001-SVG` | `settings-security.js` | Security score ring (`scoreRing`) | Radius, stroke width and `stroke-dashoffset` are computed from the score; the arc length is the datum. A static path cannot carry it. | 2026-03-06 |
+
 ## Approved Provisional compositions
 
 | ID | Scope | Status | Allowed boundary | Required shared seams | Decision owner/date | Review trigger |
@@ -110,6 +121,32 @@ written here until `@bonc-ai/reviewers` promotes, narrows or rejects it.
   same stable step-indicator contract (then propose `uiSteps(...)` / a connector-detail seam), or
   `@bonc-ai/reviewers` decides the shared layer should own it now.
 - **Related PR/issue**: `TBD` (branch `dev/cx677-tencent-meeting-page`)
+
+### `SEC-PV-001` — 安全与信任 page body (`sec-*`)
+
+- **ID**: `SEC-PV-001`
+- **Scope**: `settings-security.js` security page body (`sec-*`)
+- **Status**: `Proposed`
+- **Allowed boundary** (the boundary this proposal asks to keep page-local; nothing here is approved yet): The 安全与信任 page owns its business composition: the hero (kept as-is by review decision) and the **content of the three accordion row bodies** — the capability list, the composition-path list, and the receipts table — plus the detail-drawer sections. The page shell below the hero is **no longer page-local structure**: the three rows are `uiAccordion(...)`, which gained per-item `tone` / `icon` / `statusHtml` for exactly this shape. `sec-*` classes are page-local and may not be reused outside this page. The score ring is page-owned because it encodes a *security score band*, not a generic gauge: `scoreBand()` is the single banding function so the ring and the table's score bar cannot disagree.
+- **Required shared seams**: `uiAccordion`, `uiButton`/`uiIconButton`, `uiInput`, `uiStatusPill`, `uiStatusDot`, `uiTag`, `uiBadge`, `uiSegmentedControl`, `uiProgressBar`, `uiSkeleton`, `uiEmptyState`, `uiDrawer`, `uiIconHtml`, `uiToast`/`uiPrompt`/`uiConfirm`, design tokens, and the `--z-*` layer tokens.
+- **Rationale**: 由安全与信任页面在实现它的同一提交内提出，把页面本地结构登记到可复核的边界里；`SEC-PV-001` 覆盖页面主体与三个行体内容，`SEC-PV-002` 覆盖其中的组合路径图。
+- **Decision owner**: `TBD` (`@bonc-ai/reviewers` owns the decision; no approval has been given)
+- **Decision date**: `TBD`
+- **Review trigger**: A second page needs the same stable score-gauge or capability-list contract, or the receipts table moves to `uiDataTable` once it can host rich cells.
+- **Related PR/issue**: `TBD`
+
+### `SEC-PV-002` — Composition path figure (`sec-graph*`)
+
+- **ID**: `SEC-PV-002`
+- **Scope**: `settings-security.js` composition path figure (`sec-graph*`)
+- **Status**: `Proposed`
+- **Allowed boundary** (the boundary this proposal asks to keep page-local; nothing here is approved yet): Each cross-skill risk path renders as a **directed figure**: one node per participating skill, carrying the capability that step contributes (shared `uiTag`) and a shared `uiButton` that opens the detail drawer, joined by an `arrow-right` from `modules/icons.js`. A skill appearing in more than one path carries a shared-paths meta row (`git-branch` + shared `uiBadge`). It stays inside `SEC-PV-001`'s composition-row-body scope and introduces no new shared seam. Nodes are CSS geometry only, and the figure is **deliberately not an inline-SVG case**: no geometry is derived from data (unlike the score ring, whose arc length *is* the score), so it neither needs nor adds a `Known non-icon inline SVG` row — hand-computed text coordinates would in any case drift across the four locales. Capability→skill attribution follows the report's own path semantics (`participants[i]` provides `capabilities[i]`), falling back to per-skill capability evidence, then to a separate tag row, only when the two arrays disagree in length, so that a capability is never silently dropped and never drawn on the wrong step.
+- **Required shared seams**: `uiButton`, `uiTag`, `uiBadge`, `uiIconHtml` (`arrow-right`, `git-branch`), design tokens.
+- **Rationale**: 由安全与信任页面在实现它的同一提交内提出，把页面本地结构登记到可复核的边界里；`SEC-PV-001` 覆盖页面主体与三个行体内容，`SEC-PV-002` 覆盖其中的组合路径图。
+- **Decision owner**: `TBD` (`@bonc-ai/reviewers` owns the decision; no approval has been given)
+- **Decision date**: `TBD`
+- **Review trigger**: A second page needs the same node/edge figure → propose a shared `uiFlowFigure(...)`; or the figure gains geometry derived from data → it becomes a `Known non-icon inline SVG` entry.
+- **Related PR/issue**: `TBD`
 
 ## Explicit business-owned decisions
 

@@ -238,6 +238,32 @@
         { title: '同步记录', meta: '12:40', bodyHtml: '<p>最近一次同步成功。</p>' },
       ],
     });
+    // 行式状态：icon + tone 染图标 + statusHtml 放控件。
+    // 用于「若干行，点开才展开」的页面：健康行不给徽章，只有需要注意的行带 uiStatusPill。
+    const accordionRows = uiAccordion({
+      defaultOpen: [],
+      items: [
+        {
+          title: '技能检查', icon: 'shield-check', tone: 'critical', open: true,
+          statusHtml: uiStatusPill({ label: '需要处理', tone: 'critical' }),
+          bodyHtml: '<p>5 个已检查 · 1 个被拦截。</p>',
+        },
+        {
+          title: '检测能力', icon: 'search', tone: 'attention',
+          statusHtml: uiStatusPill({ label: '需要留意', tone: 'attention' }),
+          bodyHtml: '<p>13 可用 · 3 项降级。</p>',
+        },
+        {
+          title: '组合风险', icon: 'git-branch',
+          statusHtml: '<span>尚未分析</span>',
+          bodyHtml: '<p>分析会为每个技能派生能力清单，再找能走通的有害路径。</p>',
+        },
+        {
+          title: '来源与完整性', icon: 'lock', meta: '规则包 v1.1.0',
+          bodyHtml: '<p>扫描器完整性与发布哈希一致。</p>',
+        },
+      ],
+    });
     const tree = uiTree({
       ariaLabel: '知识库目录',
       items: [
@@ -248,6 +274,7 @@
     byId('structured-data-specimens').innerHTML = [
       specimen('DataTable', '原生表格 · 可排序表头 · 数值右对齐', table),
       specimen('Accordion', '独立展开 · 左侧恒定箭头 · 右侧元数据', accordion),
+      specimen('Accordion · 行式状态', 'icon + tone 染图标 · statusHtml 放胶囊 · meta 与 statusHtml 二选一', accordionRows),
       specimen('Tree', '方向键导航 · 展开/收起 · 单一 Tab 入口', tree),
     ].join('');
     hydrateUiIcons(byId('structured-data-specimens'));

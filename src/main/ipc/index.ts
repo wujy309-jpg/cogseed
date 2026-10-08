@@ -4506,13 +4506,18 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   /** Deep re-verify one installed skill and persist the verdict. Backs the
    *  "重新检查" action on the skills panel. */
   'skills.trust.reverify': async ({ skillId } = {}, ctx) => {
-    if (!skills.isValidSkillId(skillId)) throw new Error('invalid skill id');
+    // Scannable, not merely valid: external (`claude:`/`codex:`) skills are
+    // scanned read-only and their receipt lives in OUR local store.
+    if (!skills.isScannableSkillId(skillId)) throw new Error('invalid skill id');
     return { result: await skillReverify.reverifySkillDeep(ctx.userId, skillId) };
   },
 
   /** Receipts on record, for a trust/audit surface. */
   'skills.trust.list': async (_args, ctx) => {
-    return { receipts: skillTrust.listReceipts(ctx.userId) };
+    // Display projection: the panel shows a security verdict, so it needs
+    // `securityNotable` (a `risk` record can be declaration hygiene only) and it
+    // must not re-derive that judgement in the renderer — see `skill_verdict.ts`.
+    return { receipts: skillTrust.listReceiptsForDisplay(ctx.userId) };
   },
 
   /** W5/W6: run the generation admission gate on one custom skill and return
@@ -4539,6 +4544,76 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   'skills.security.status': async () => {
     const { guardrailStatus } = await import('../features/security/guardrail-status');
     return { status: guardrailStatus() };
+  },
+
+  /** Path-level composition risk across the installed library.
+   *
+   *  Every other surface answers "is this one skill dangerous". This answers a
+   *  question no single-skill report can: two skills that each pass, but whose
+   *  capabilities compose into a harmful path (read a credential here, send it
+   *  there). Bounded and cached — see features/security/composition.ts.
+   */
+  'skills.security.composition': async (_args, ctx) => {
+    const { libraryComposition } = await import('../features/security/composition');
+    return libraryComposition(ctx.userId);
+  },
+
+  /** Full-detail security report for one skill, for the 安全与信任 panel.
+   *
+   *  The panel used to show only the score from the last receipt, so a user
+   *  reading "78/100" had no way to ask "why". This runs the engine's detail
+   *  path on demand (the install path deliberately does not carry findings)
+   *  and returns a renderer-safe shape. Read-only: it never changes a verdict.
+   */
+  'skills.security.report': async ({ skillId } = {}) => {
+    if (!skills.isScannableSkillId(skillId)) throw new Error('invalid skill id');
+    const { reportForSkill } = await import('../features/security/security-report');
+    return reportForSkill(skillId);
+  },
+
+  /** Accept one finding's risk, with a reason and an expiry. */
+  'skills.security.accept': async ({ skillId, fingerprint, ruleId, file, reason, days, severity } = {}, ctx) => {
+    if (!skills.isValidSkillId(skillId)) throw new Error('invalid skill id');
+    const { acceptFinding } = await import('../features/security/security-report');
+    return acceptFinding(ctx.userId, {
+      skillId,
+      fingerprint: String(fingerprint || ''),
+      ruleId: String(ruleId || ''),
+      file: String(file || ''),
+      reason: String(reason || ''),
+      days: Number(days),
+      severity: String(severity || ''),
+    });
+  },
+
+  /** Revoke a previously accepted risk. */
+  'skills.security.revoke': async ({ skillId, fingerprint } = {}, ctx) => {
+    if (!skills.isValidSkillId(skillId)) throw new Error('invalid skill id');
+    const { revokeFinding } = await import('../features/security/security-report');
+    return revokeFinding(ctx.userId, skillId, String(fingerprint || ''));
+  },
+
+  /** Risk acceptances on record for one skill. */
+  'skills.security.acceptances': async ({ skillId } = {}) => {
+    if (!skills.isScannableSkillId(skillId)) throw new Error('invalid skill id');
+    const { listAcceptances } = await import('../features/security/security-report');
+    return { acceptances: listAcceptances(skillId) };
+  },
+
+  /** Serialize one skill's report for download (json / sarif / csv / markdown).
+   *
+   *  Returns text rather than writing a file: the renderer already downloads
+   *  via a Blob, and adding a second file-writing surface in main for an
+   *  export button would widen the paths that can write to disk for no gain.
+   */
+  'skills.security.export': async ({ skillId, format } = {}) => {
+    if (!skills.isValidSkillId(skillId)) throw new Error('invalid skill id');
+    const wanted = String(format || 'json');
+    if (!['json', 'sarif', 'csv', 'markdown'].includes(wanted)) throw new Error('invalid format');
+    const { reportForSkill, serializeReport } = await import('../features/security/security-report');
+    const result = await reportForSkill(skillId);
+    if (!result.ok || !result.evidence) return { ok: false, reason: result.reason || 'scan_failed' };
+    return { ok: true, ...serializeReport(result.evidence, wanted as 'json') };
   },
 
   'skills.writeFile': async ({ id, file, content }) => {
