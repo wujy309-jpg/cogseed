@@ -237,7 +237,19 @@ import * as taskNotifications from './features/task_notifications';
 import { shouldHideOnClose, startBackgroundRun, type BackgroundRun, type TrayMenuItemSpec } from './features/background_run';
 import * as cogseedBackend from './features/cogseed_backend';
 import { recoverRecallCaptures, startNightlyCaptureSweepLoop, startRecallCaptureOrchestrator } from './features/recall/capture-service';
-import { startAutoCloseRecovery, startGroupKstarClosure } from './features/kstar/task-closure';
+// 2026-10-08 U09：KSTAR 收口编排动态导入——KSTAR 缺失不影响主进程启动
+// 与认知流程。
+type KstarClosureStoppers = Array<() => void>;
+let kstarClosureStoppers: KstarClosureStoppers = [];
+async function startKstarClosureOrchestrators(): Promise<KstarClosureStoppers> {
+  try {
+    const { startAutoCloseRecovery, startGroupKstarClosure } = await import('./features/kstar/task-closure');
+    return [startGroupKstarClosure(), startAutoCloseRecovery()];
+  } catch (error) {
+    log.warn('kstar closure orchestrators unavailable', { error: (error as Error).message });
+    return [];
+  }
+}
 import { startGroupChatRecallTerminalProofs } from './features/group_chat/recall-terminal-proof';
 import { startTaskAutoArchiveOrchestrator } from './features/kb_task_auto_archive';
 import * as notificationPermissions from './features/notification_permissions';
@@ -1713,10 +1725,10 @@ if (!gotLock) {
     }
     const stopRecallCapture = startRecallCaptureOrchestrator();
     app.once('before-quit', stopRecallCapture);
-    const stopGroupKstarClosure = startGroupKstarClosure();
-    app.once('before-quit', stopGroupKstarClosure);
-    const stopAutoCloseRecovery = startAutoCloseRecovery();
-    app.once('before-quit', stopAutoCloseRecovery);
+    void startKstarClosureOrchestrators().then((stoppers) => {
+      kstarClosureStoppers = stoppers;
+    });
+    app.once('before-quit', () => { for (const stop of kstarClosureStoppers) stop(); });
     const stopGroupChatRecallTerminalProofs = startGroupChatRecallTerminalProofs();
     app.once('before-quit', stopGroupChatRecallTerminalProofs);
     const stopTaskAutoArchive = startTaskAutoArchiveOrchestrator();

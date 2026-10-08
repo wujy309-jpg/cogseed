@@ -48,9 +48,24 @@ import {
 } from './experience-service';
 import type { KstarLearningProvenance } from '../kstar/types';
 import { scopeForTask, experienceTypeOf } from './experience-taxonomy';
-import { readKstarEpisode } from '../kstar/episode-store';
-import { readKstarReview } from '../kstar/review-service';
-import { userFacingSummary } from '../kstar/task-level-precipitation';
+// 2026-10-08 U09：KSTAR 读取走动态导入——KSTAR 缺失/损坏时经验迁移仍可
+// 运行（复盘信息按不可用降级，不阻断认知主流程）。
+async function kstarReaders() {
+  try {
+    const [episodes, reviews, summaries] = await Promise.all([
+      import('../kstar/episode-store'),
+      import('../kstar/review-service'),
+      import('../kstar/task-level-precipitation'),
+    ]);
+    return {
+      readEpisode: episodes.readKstarEpisode.bind(episodes),
+      readReview: reviews.readKstarReview.bind(reviews),
+      summarize: summaries.userFacingSummary.bind(summaries),
+    };
+  } catch {
+    return null;
+  }
+}
 
 /** 迁移台账集合（data-model §7：`<uid>/cloud/recall/records/experience-migrations/`）。 */
 export const EXPERIENCE_MIGRATION_COLLECTION = 'experience-migrations';
@@ -281,7 +296,8 @@ async function writeExperienceForAsset(
   let taskGoal = '';
   let taskStatus = 'unknown';
   try {
-    const episode = await readKstarEpisode(userId, provenance.episodeId);
+    const readers = await kstarReaders();
+    const episode = readers ? await readers.readEpisode(userId, provenance.episodeId).catch(() => undefined) : undefined;
     taskGoal = String(episode?.t.userGoal || '');
     taskStatus = String(episode?.r.status || 'unknown') || 'unknown';
   } catch {
@@ -296,7 +312,8 @@ async function writeExperienceForAsset(
     confidence: asset.learningSignal?.confidence ?? 0,
   };
   try {
-    const review = await readKstarReview(userId, provenance.episodeId);
+    const readers2 = await kstarReaders();
+    const review = readers2 ? await readers2.readReview(userId, provenance.episodeId).catch(() => undefined) : undefined;
     if (review) {
       verification = {
         state: review.reviewState || 'unknown',
@@ -317,7 +334,7 @@ async function writeExperienceForAsset(
       taskStatus,
     },
     experienceType: experienceTypeOf(kind),
-    title: userFacingSummary(kind, asset.scope, body),
+    title: (await kstarReaders())?.summarize(kind, asset.scope, body) ?? asset.title ?? '',
     body,
     ...(asset.learningSignal?.expectedResult ? { expected: asset.learningSignal.expectedResult } : {}),
     ...(asset.learningSignal?.actualResult ? { actual: asset.learningSignal.actualResult } : {}),

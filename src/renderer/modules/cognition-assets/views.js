@@ -3355,32 +3355,50 @@
     </div>` : ''}
     <div class="card ca-setcard">
       ${(() => {
-        // 三块合一（2026-09-29 子安拍板）：「自动维护 + 新建议如何保存 + 整理
-        // 已有内容」本来就是一件事的三面——夜间自动整理 / 整理产出怎么入库 /
-        // 手动整理存量——收进一张「维护」卡，三行各管一面，通道与动作不变。
+        // 2026-10-08 U02（冻结原型·资产设置）：夜间自动发现/严格筛选/醒来
+        // 处理/默认使用说明/存量整理五张说明卡；调度时间与静默时长等日常
+        // 调度控制退役（用户不管理来源、队列或时间），暂停开关收进
+        // 「高级：隐私与暂停夜间发现」。
         return `<div class="rowline">
         <div>
-          <div class="tt">${esc(T('cognition.nightly_capture_title', '自动维护'))}</div>
-          <div class="sub">${esc(T('cognition.maint_hint_short', '夜间整理会话并检查资产库（消耗模型额度）；生成的建议进入待我处理，检查只报告、不修改内容。'))}</div>
+          <div class="tt">${esc(T('cognition.settings_nightly_title', '夜间自动发现'))}</div>
+          <div class="sub">${esc(T('cognition.settings_nightly_hint', '系统在夜间自动检查新产生或有更新的对话，无需手动挑选来源或安排时间。'))}</div>
           ${latestInspection ? `<div class="note">${esc(T('cognition.inspection_last_run', '最近检查：{when} · 发现 {n} 条', {
             when: fmtDate(latestInspection.startedAt), n: String(((latestInspection.findings || [])).length),
           }))}</div>` : ''}
           ${cleanupLatestNote}
         </div>
         <div class="right">
-          ${nightlyOn ? `<label class="ca-setting-time"><span>${esc(T('cognition.nightly_capture_time', '开始时间'))}</span>${window.uiInput({ id: 'ca-nightly-start', type: 'time', value: nightlyStart, attrs: { 'data-act': 'nightly-time' } })}</label>` : ''}
+          ${nightlyOn ? `<span class="chip g">${esc(T('cognition.settings_status_on', '夜间自动运行'))}</span>` : `<span class="chip">${esc(T('cognition.settings_status_off', '已暂停'))}</span>`}
           ${cleanupLatest ? btn(T('cognition.cleanup_open_report', '查看整理报告'), 'open-cleanup', {
             small: true, className: 'o',
             title: T('cognition.cleanup_report_link_hint', '查看检查建议；历史已执行改动保留原有记录与恢复入口。'),
           }) : ''}
-          ${window.uiSwitch({ label: T('cognition.nightly_capture_title', '自动维护'), checked: nightlyOn, attrs: { 'data-act': 'nightly-toggle' } })}
         </div>
       </div>
-      ${nightlyOn ? `<div class="note ca-maint-note">${esc(T('cognition.nightly_capture_quiet_hint', '系统会等会话最后一条消息后静默 {minutes} 分钟，再在夜间时段安排整理；如有新消息，会重新计时。', { minutes: String(quietMinutes) }))}</div>` : ''}
       <div class="rowline ca-maint-row"><div>
-        <div class="tt">${esc(T('cognition.manual_review_required', '自动整理需要逐条确认'))}</div>
-        <div class="sub">${esc(T('cognition.manual_review_required_hint', '自动提取、任务复盘及智能体提出的内容只进入待我处理。只有你逐条确认后，才会保存为长期认知。旧的自动保存设置不会跳过审核。'))}</div>
+        <div class="tt">${esc(T('cognition.settings_strict_title', '只留下值得长期保留的内容'))}</div>
+        <div class="sub">${esc(T('cognition.settings_strict_hint', '先忽略低价值会话，再判断有多次迭代的长对话，最后严格提取、去重和核对已有认知；预计只留下极少数有价值变化。不是按比例凑数量；短对话中的明确长期要求仍可保留。'))}</div>
       </div></div>
+      <div class="rowline ca-maint-row"><div>
+        <div class="tt">${esc(T('cognition.settings_wake_title', '醒来后处理建议'))}</div>
+        <div class="sub">${esc(T('cognition.settings_wake_hint', '打开系统活动，查看少量「需要关注」，核对后保存或拒绝；设备休眠或离线时不假装完成，恢复可运行后自动补处理。'))}</div>
+      </div>
+      <div class="right">${btn(T('cognition.settings_wake_go', '查看需要关注'), 'go-review', { small: true, primary: true })}</div></div>
+      <div class="rowline ca-maint-row"><div>
+        <div class="tt">${esc(T('cognition.settings_default_use_title', '后续聊天的默认使用'))}</div>
+        <div class="sub">${esc(T('cognition.settings_default_use_hint', '已确认内容按各自的适用范围与逐条授权被任务使用；对象或具体内容停用时，相关内容也停止默认使用。'))}</div>
+      </div></div>
+      <div class="rowline ca-maint-row"><div>
+        <div class="tt">${esc(T('cognition.settings_organize_row_title', '整理已有内容'))}</div>
+        <div class="sub">${esc(T('cognition.settings_organize_row_hint', '统一检查重复、混写与范围不清，先审阅再修改。'))}</div>
+      </div>
+      <div class="right">${btn(T('cognition.settings_organize_row_go', '整理已有内容'), 'open-cleanup', { small: true })}</div></div>
+      <details class="details"><summary>${esc(T('cognition.settings_advanced_title', '高级：隐私与暂停夜间发现'))}</summary><div class="dbody">
+        <p class="note">${esc(T('cognition.settings_advanced_hint', '暂停只影响后台发现；历史对话留在原聊天界面，主动保存仍可使用。'))}</p>
+        <div class="rowline"><div><div class="tt">${esc(T('cognition.settings_advanced_toggle', '允许夜间处理新增或更新的对话'))}</div></div>
+        <div class="right">${window.uiSwitch({ label: T('cognition.settings_advanced_toggle', '允许夜间处理新增或更新的对话'), checked: nightlyOn, attrs: { 'data-act': 'nightly-toggle' } })}</div></div>
+      </div></details>
       `;
       })()}
     </div>

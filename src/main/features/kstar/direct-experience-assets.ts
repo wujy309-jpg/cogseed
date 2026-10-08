@@ -96,107 +96,6 @@ function experienceKindFor(proposal: KstarCandidateProposal): 'lesson' | 'workfl
   return proposal.suggestedType === 'skill_method' ? 'workflow' : 'lesson';
 }
 
-/** 分流判定（specs/016 D2，唯一分叉点，两条沉淀线共用）：
- *  `create`（解析后无 targetAssetId）且非 preference_scan → 写经验条目；
- *  其余（mutating 带 target / keep_current / reject / preference_scan 的
- *  personal 候选）→ 原路走候选池。preference_scan 必须排除——「关于我」
- *  偏好陈述属于资产域（D5 迁移判据的反例），分流误伤它会断掉 personal
- *  资产主链；判据用 `learningSignal.source` 这个既有来源徽章字段。 */
-function routesToExperience(
-  proposal: KstarCandidateProposal,
-  action: ReturnType<typeof recallFieldsForKstarProposal>,
-): boolean {
-  return action.suggestedAction === 'create'
-    && !action.targetAssetId
-    && proposal.learningSignal?.source !== 'preference_scan';
-}
-
-/** 把一条 create 提案写成经验条目（specs/016 T013 字段映射）。
- *
- *  映射口径（data-model §1）：
- *  - title 走 `userFacingSummary` 既有口径（内容核心本身，无模板前后缀）；
- *  - experienceType 走 `experienceTypeOf(experienceKindFor(proposal))`；
- *  - body = judgment（与候选 value 同款清洗 + 4000 上限）；
- *  - verification 从 review 映射（state/outcome/deltaR/confidence），review
- *    读不到时用提案的 learningSignal 兜底（outcome/deltaR/confidence 本就
- *    来自 review 快照，state 退化为 unknown 如实表达"没读到"）；
- *  - learningProvenance 原样保留；缺失时（存量直通线/聚合线投影缺失）构造
- *    降级版：episodeId 锚到提案自己的溯源 episode（无则锚 episode），其余
- *    字段留空/unclear——空值是"没有回指"的如实表达，不编造投影 id。
- *  - id：`exp-<source.id>-<index>`，与候选 captureKey `kstar-<source.id>-<index>`
- *    同一先例（稳定指纹）——同 episode 同提案重试得到同 id，
- *    `createExperience` 幂等返回既有记录，不产生第二条。
- */
-async function writeExperienceForProposal(
-  userId: string,
-  source: DirectExperienceSource,
-  proposal: KstarCandidateProposal,
-  index: number,
-  admission: KstarAdmissionContext,
-  routing: DirectExperienceRouting,
-  evidenceRefs: CognitionSourceRef[],
-): Promise<ExperienceRecord> {
-  const kind = experienceKindFor(proposal);
-  const scope = String(proposal.suggestedScope || 'general').slice(0, 500);
-  const body = String(proposal.judgment || '').replace(/\s+/g, ' ').trim().slice(0, 4_000);
-  // 溯源 episode：优先提案自带的 provenance（聚合线 gap 提案锚自己的 episode），
-  // 缺失时锚 admission 的锚 episode（与 `ksr-<episodeId>` 兜底同口径）。
-  const episodeId = proposal.learningProvenance?.episodeId || admission.episodeId;
-  let verification: ExperienceRecord['verification'];
-  try {
-    const review = await readKstarReview(userId, episodeId);
-    verification = {
-      state: review?.reviewState || 'unknown',
-      outcome: review?.outcome ?? proposal.learningSignal?.outcome ?? 'unclear',
-      deltaR: review?.deltaR ?? proposal.learningSignal?.deltaR ?? 'unknown',
-      confidence: review?.confidence ?? proposal.learningSignal?.confidence ?? 0,
-    };
-  } catch {
-    // review 读失败不阻断沉淀（best-effort，与 kstarReviewIdForEpisode 同语义）；
-    // 验证状态退化为 learningSignal 快照 + state unknown，不假装读过。
-    verification = {
-      state: 'unknown',
-      outcome: proposal.learningSignal?.outcome ?? 'unclear',
-      deltaR: proposal.learningSignal?.deltaR ?? 'unknown',
-      confidence: proposal.learningSignal?.confidence ?? 0,
-    };
-  }
-  const learningProvenance: KstarLearningProvenance = proposal.learningProvenance ?? {
-    // 降级 provenance：projectionId 空串 = 该提案没有投影回指（存量直通线
-    // 从不带 provenance、聚合线在投影缺失时也省略）——asExperience 只硬性
-    // 要求 episodeId 与 source 一致，这里不编造不存在的投影/Forecast id。
-    projectionId: '',
-    episodeId,
-    ruleRefs: [],
-    attribution: 'unclear',
-  };
-  return createExperience(userId, {
-    id: `exp-${source.id}-${index}`,
-    source: {
-      episodeId,
-      ...(source.requirementId ? { requirementId: source.requirementId } : {}),
-      ...(source.conversationId ? { conversationId: source.conversationId } : {}),
-      taskGoal: routing.taskGoal,
-      taskType: scopeForTask(routing.taskGoal) as ExperienceRecord['source']['taskType'],
-      taskStatus: routing.taskStatus,
-    },
-    experienceType: experienceTypeOf(kind),
-    title: userFacingSummary(kind, scope, body),
-    body,
-    ...(proposal.learningSignal?.expectedResult ? { expected: proposal.learningSignal.expectedResult } : {}),
-    ...(proposal.learningSignal?.actualResult ? { actual: proposal.learningSignal.actualResult } : {}),
-    ...(proposal.applicableWhen ? { applicableWhen: proposal.applicableWhen } : {}),
-    ...(proposal.forbiddenWhen ? { forbiddenWhen: proposal.forbiddenWhen } : {}),
-    scope,
-    verification,
-    evidenceRefs,
-    ...(proposal.learningSignal ? { learningSignal: proposal.learningSignal } : {}),
-    learningProvenance,
-    status: 'active',
-    // 空间归属：经验与资产同语义（挂空间会话的沉淀只在该空间可见）。
-    ...(source.workspaceId && safeId(source.workspaceId) ? { spaceId: source.workspaceId } : {}),
-  });
-}
 
 /** Lightweight source reference for requirement-level precipitation. */
 export interface DirectExperienceSource {
@@ -446,16 +345,12 @@ export async function precipitateDirectExperienceFromSource(
       const evidenceRefs = normalizeCognitionSourceRefs(proposal.sourceRefs);
       if (!evidenceRefs.length) continue;
       const action = recallFieldsForKstarProposal(proposal);
-      // 分流（specs/016 D2 / T013）：create 型（无目标资产）改道写经验条目，
-      // 不进候选池、不调 autoApplyRecallCandidate——经验与资产的晋升主链
-      // 从这里物理分开（经验没有"候选→晋升"这扇门，D1）。
-      if (routesToExperience(proposal, action)) {
-        const experience = await writeExperienceForProposal(
-          userId, source, proposal, index, admission, routing, evidenceRefs,
-        );
-        result.experienceIds.push(experience.id);
-        continue;
-      }
+      // 2026-10-08 U09（KSTAR 双向隔离）：create 型提案不再直写经验条目
+      //（经验属「我的认知」域，KSTAR 新产出不得绕过确认写入认知）；
+      // 全部提案统一进 submitCognitionCandidate 候选池，只作建议，
+      // 由用户确认后经 autoApplyRecallCandidate（仅作用于已 confirmed
+      // 候选）走正式写口。
+      void action;
       // 1. Enter the unified extraction pipeline (KSTAR = its adapter): the
       //    submission goes through submitCognitionCandidate, never straight to
       //    saveRecallCandidate. Same dedup semantics: the EXISTING candidate is

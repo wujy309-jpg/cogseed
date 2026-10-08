@@ -280,9 +280,13 @@ describe('系统活动与认知设置', () => {
   it('整理设置页：自动维护合并卡（2026-09-29 夜间整理+定期检查合一）+ 新建议保存方式 + 大扫除区块', () => {
     const off = renderPage('organize-settings', { captureSettings: { enabled: true, executionPolicy: 'manual', reviewPolicy: 'manual', nightlyStart: '02:00' } });
     expect(off).toContain('资产设置');
-    // 合并卡标题：自动维护（夜间整理对话 + 定期检查资产库一个开关）。
-    expect(off).toContain('自动维护');
-    expect(off).toContain('自动整理需要逐条确认');
+    // 2026-10-08 U02：五说明卡（夜间自动发现/严格筛选/醒来处理/默认使用/
+    // 存量整理）+ 高级暂停折叠；调度时间与静默说明退役。
+    expect(off).toContain('夜间自动发现');
+    expect(off).toContain('只留下值得长期保留的内容');
+    expect(off).toContain('醒来后处理建议');
+    expect(off).toContain('整理已有内容');
+    expect(off).toContain('已暂停');
     // 2026-09-29 完全合并：「立即维护」手动行已删——夜间线（巡检轮后）自动
     // 跑清理，UI 只剩开关；手动清理入口随行撤下。
     expect(off).not.toContain('data-act="run-maintenance"');
@@ -293,21 +297,23 @@ describe('系统活动与认知设置', () => {
     expect(off).not.toContain('data-act="inspection-toggle"');
 
     const on = renderPage('organize-settings', { captureSettings: { enabled: true, executionPolicy: 'nightly', reviewPolicy: 'manual', nightlyStart: '02:30' } });
-    // 开启态：开关亮、时间选择器出现且带当前值。
+    // 开启态：状态章「夜间自动运行」；暂停开关收进高级折叠。
+    expect(on).toContain('夜间自动运行');
+    expect(on).toContain('高级：隐私与暂停夜间发现');
     expect(on).toContain('class="ui-switch is-on" role="switch" aria-checked="true"');
-    expect(on).toContain('type="time"');
-    expect(on).toContain('value="02:30"');
-    expect(on).toContain('开始时间');
+    // 调度时间控件退役（U02：用户不管理开始时间）。
+    expect(on).not.toContain('type="time"');
+    expect(on).not.toContain('开始时间');
     // 「整理功能」总开关卡已撤（specs/017 整改三）：capture-toggle 退役，
     // 候选确认方式保留。
     expect(on).not.toContain('data-act="capture-toggle"');
     expect(on).not.toContain('data-act="capture-review-toggle"');
-    expect(on).toContain('自动整理需要逐条确认');
-    expect(on).toContain('旧的自动保存设置不会跳过审核。');
+    expect(on).toContain('核对后保存或拒绝');
     // 2026-09-29 完全合并：手动行撤下；「查看整理报告」并入自动维护行。
     expect(on).not.toContain('立即维护');
     expect(on).not.toContain('data-act="run-maintenance"');
-    expect(on).not.toContain('data-act="open-cleanup"');
+    // 存量整理入口保留（U02：唯一已有内容整理入口）。
+    expect(on).toContain('data-act="open-cleanup"');
     // 合并后无报告不显示整理状态行（夜间自动会跑，空态句退役）。
     expect(on).not.toContain('尚无整理记录');
   });
@@ -320,8 +326,9 @@ describe('系统活动与认知设置', () => {
       },
       captureModel: { configured: true, authorizationRequired: false },
     });
-    expect(html).toContain('17 分钟');
-    expect(html).toContain('如有新消息，会重新计时');
+    expect(html).toContain('先忽略低价值会话');
+    expect(html).toContain('恢复可运行后自动补处理');
+    expect(html).not.toContain('如有新消息，会重新计时');
     // 模型可用时不再显示一张重复的成功状态卡。
     expect(html).not.toContain('模型状态');
     const assets = renderPage('overview', { assets: [], tags: [] });
@@ -1512,7 +1519,7 @@ describe('资产详情（使用记录并入）', () => {
     // 设置页（2026-09-29 三轮合一）：入口恒为「完整整理」文案，不再按最近
     // 报告轮次切换导语（旧规则轮/重起轮只在报告页历史里区分）。
     const settings = renderPage('organize-settings', { cleanupReports: { loading: false, reports: [regenReport] } });
-    expect(settings).toContain('检查只报告、不修改内容');
+    expect(settings).toContain('夜间自动发现');
     expect(settings).not.toContain('由模型把不合格的标题重新拟一个简短的新标题');
     // 载体或以独立 trigger 值标记本轮（零项的重起报告也能分辨）——两种形态都认。
     const triggerOnly = { ...regenReport, id: 'cr-regen2', trigger: 'title_regen', items: [] };

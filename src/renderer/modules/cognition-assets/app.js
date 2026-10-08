@@ -787,25 +787,8 @@
         el.dataset.scopeKind, el.dataset.scopeId, el.dataset.hash, Boolean(el.checked),
       );
     });
-    root.addEventListener('change', async (event) => {
-      const el = event.target.closest && event.target.closest('[data-act="nightly-time"]');
-      if (!el) return;
-      const value = String(el.value || '').trim();
-      if (!/^\d{2}:\d{2}$/.test(value)) return;
-      const previous = S.captureSettings;
-      S.captureSettings = Object.assign({}, previous, { nightlyStart: value });
-      NS.notify();
-      try {
-        await A.updateCaptureSettings({ nightlyStart: value });
-      } catch (error) {
-        S.captureSettings = previous;
-        NS.notify();
-        const message = error && error.code && NS.recallErrorText
-          ? NS.recallErrorText(error)
-          : String((error && error.message) || error);
-        await NS.alertUser(message);
-      }
-    });
+    // nightly-time（调度时间控件）已随 2026-10-08 U02 日常调度控制退役：
+    // 用户不管理开始时间/静默时长，设置页不再渲染该控件。
   }
 
   /* ────────────────────────── 生命周期 ────────────────────────── */
