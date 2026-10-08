@@ -1,0 +1,159 @@
+{
+  "packet_version": "1.0",
+  "date": "2026-10-08",
+  "timezone": "Asia/Shanghai",
+  "source_branch": "dev/牛保康-10.1",
+  "source_commit": "8088bce0cddd19a926806481410fdc735e4189ee",
+  "development_branch": "dev/认知资产全量重构-10.1",
+  "development_worktree": "以 git rev-parse --show-toplevel 的结果为准",
+  "source_repository": "原 dev/牛保康-10.1 工作目录（不可施工）",
+  "approved_ui_source": "04-已确认页面原型.html",
+  "approved_ui_sha256": "2af235d1c0d1a5d5249e25300c301dcfd20c27c7adbde54b54bbf65df7864ee9",
+  "functional_requirements": 25,
+  "original_acceptance": 19,
+  "new_acceptance": 15,
+  "source_snapshots": [
+    {
+      "name": "CogSeed全量实施交付记录-2026-10-08.md",
+      "source": "本地外部交接包/历史参考快照/CogSeed全量实施交付记录-2026-10-08.md",
+      "sha256": "1fb99146fc73e5876e7828eb9960a8dd3bb2eaf605e48e3e41e51360757bf9ea",
+      "bytes": 10116
+    },
+    {
+      "name": "CogSeed全量实施需求与验收对照-2026-10-07.md",
+      "source": "本地外部交接包/历史参考快照/CogSeed全量实施需求与验收对照-2026-10-07.md",
+      "sha256": "ad7de4e287b7d28eb175817a80405e1ce7917e31cf83af669a7a0f51861dfd8a",
+      "bytes": 224
+    },
+    {
+      "name": "CogSeed全量实施需求与验收对照-2026-10-08.md",
+      "source": "本地外部交接包/历史参考快照/CogSeed全量实施需求与验收对照-2026-10-08.md",
+      "sha256": "3799097a541b938d875f842481703a695477d51ac04fb48443f35ac9ee41dc6f",
+      "bytes": 13710
+    },
+    {
+      "name": "CogSeed夜间认知筛选实施约束与本体重构方案-2026-10-08.md",
+      "source": "本地外部交接包/历史参考快照/CogSeed夜间认知筛选实施约束与本体重构方案-2026-10-08.md",
+      "sha256": "35a28fedbec3603558b3d97eeafd294ab668cb0316e1f890434e106a25271ff6",
+      "bytes": 12591
+    },
+    {
+      "name": "CogSeed本体产品与三盒设计方案-2026-10-05.md",
+      "source": "本地外部交接包/历史参考快照/CogSeed本体产品与三盒设计方案-2026-10-05.md",
+      "sha256": "510630d1211400e84e0448b77e857d51485235f02b60c2c5dfe1ae549b50196f",
+      "bytes": 43378
+    },
+    {
+      "name": "CogSeed本体技术设计与实施准备-2026-10-05.md",
+      "source": "本地外部交接包/历史参考快照/CogSeed本体技术设计与实施准备-2026-10-05.md",
+      "sha256": "cb9038620d11dff49d1e3d6ce390176965be2f61a9cb717322265c9f3a8084bf",
+      "bytes": 52316
+    },
+    {
+      "name": "CogSeed本体正式实施计划-2026-10-05.md",
+      "source": "本地外部交接包/历史参考快照/CogSeed本体正式实施计划-2026-10-05.md",
+      "sha256": "02ebb4944ed50e6f0624b98797f41594fbd123ef6a6ba3c875c8b576054ded32",
+      "bytes": 98820
+    },
+    {
+      "name": "CogSeed本体页面完整交互原型-2026-10-05.html",
+      "source": "本地外部交接包/历史参考快照/CogSeed本体页面完整交互原型-2026-10-05.html",
+      "sha256": "7d81ffe147347b88341b9314e79a979958b261549685bd1ed94bae0cb96957eb",
+      "bytes": 106415
+    },
+    {
+      "name": "CogSeed统一治理与使用层第一批实施结果-2026-10-08.md",
+      "source": "本地外部交接包/历史参考快照/CogSeed统一治理与使用层第一批实施结果-2026-10-08.md",
+      "sha256": "dde765929738c1981589d5e8ef3376994e83d0379ee8a2ba0d27129be139bc7b",
+      "bytes": 5650
+    },
+    {
+      "name": "CogSeed认知资产全部内容清单-2026-10-08.md",
+      "source": "本地外部交接包/历史参考快照/CogSeed认知资产全部内容清单-2026-10-08.md",
+      "sha256": "5e809e1bb85d895fcd300869f7ee94c2f9a25bf9786aa228b9de23ee27fee19b",
+      "bytes": 243246
+    },
+    {
+      "name": "CogSeed认知资产完整用户旅程与页面设计稿-2026-10-08.md",
+      "source": "本地外部交接包/历史参考快照/CogSeed认知资产完整用户旅程与页面设计稿-2026-10-08.md",
+      "sha256": "b48f5198bc816cd8c907e70973d11b4f1b8683bb4fed99430d0a49dbe42106c8",
+      "bytes": 30756
+    },
+    {
+      "name": "CogSeed认知资产完整重构交互原型-2026-10-08.html",
+      "source": "本地外部交接包/历史参考快照/CogSeed认知资产完整重构交互原型-2026-10-08.html",
+      "sha256": "89ce62d011af4d2992c0f32b6b24b85416227de7bd2dc4634a64d733038f7d87",
+      "bytes": 65249
+    },
+    {
+      "name": "CogSeed认知资产实际可用性复核-2026-10-08.md",
+      "source": "本地外部交接包/历史参考快照/CogSeed认知资产实际可用性复核-2026-10-08.md",
+      "sha256": "1635099a831cc196e8771b2d4602704ef7a522be00bb92d194edbe15243a2cee",
+      "bytes": 16950
+    },
+    {
+      "name": "CogSeed认知资产收敛与全链路梳理-2026-10-08.md",
+      "source": "本地外部交接包/历史参考快照/CogSeed认知资产收敛与全链路梳理-2026-10-08.md",
+      "sha256": "4a79686517364726e4cc7cc6b4e4f1a9192023f21d718e6d9aa76c5af98d6725",
+      "bytes": 11923
+    },
+    {
+      "name": "CogSeed认知资产收敛重构HTML评审与验证记录-2026-10-08.md",
+      "source": "本地外部交接包/历史参考快照/CogSeed认知资产收敛重构HTML评审与验证记录-2026-10-08.md",
+      "sha256": "32606b30584ee8ae974dd41518ac93fb9e668eee06f5ca1ce57c918e9b095aa0",
+      "bytes": 16347
+    },
+    {
+      "name": "CogSeed认知资产收敛重构完整原型-2026-10-08.html",
+      "source": "本地外部交接包/历史参考快照/CogSeed认知资产收敛重构完整原型-2026-10-08.html",
+      "sha256": "2af235d1c0d1a5d5249e25300c301dcfd20c27c7adbde54b54bbf65df7864ee9",
+      "bytes": 890961
+    },
+    {
+      "name": "CogSeed认知资产收敛重构方向与用户旅程讨论稿-2026-10-08.md",
+      "source": "本地外部交接包/历史参考快照/CogSeed认知资产收敛重构方向与用户旅程讨论稿-2026-10-08.md",
+      "sha256": "ddc77c9cbeaff646ed87d0d4e335a86043c153cdb5a77058bd0be2f3a6b93610",
+      "bytes": 23902
+    },
+    {
+      "name": "CogSeed认知资产本体与KSTAR历史文件整理建议-2026-10-08.md",
+      "source": "本地外部交接包/历史参考快照/CogSeed认知资产本体与KSTAR历史文件整理建议-2026-10-08.md",
+      "sha256": "110e6c375fcfcfaedae59e688216ee34173146285c79eebb349af50d62a97f0c",
+      "bytes": 6715
+    },
+    {
+      "name": "CogSeed认知资产用户旅程与重构评审方案-2026-10-08.md",
+      "source": "本地外部交接包/历史参考快照/CogSeed认知资产用户旅程与重构评审方案-2026-10-08.md",
+      "sha256": "b63b050a114ccd69932334a6044d0401c292eaddf144ca154f7357168da8b5d8",
+      "bytes": 13271
+    },
+    {
+      "name": "CogSeed认知资产统一梳理与逻辑调整方案-2026-10-08.md",
+      "source": "本地外部交接包/历史参考快照/CogSeed认知资产统一梳理与逻辑调整方案-2026-10-08.md",
+      "sha256": "ed4d6891fa9820e58a74b464258b1430b6b524589ce29ae55c683d1088583bb3",
+      "bytes": 32268
+    },
+    {
+      "name": "CogSeed认知资产重构原型验证记录-2026-10-08.md",
+      "source": "本地外部交接包/历史参考快照/CogSeed认知资产重构原型验证记录-2026-10-08.md",
+      "sha256": "851274faba225e3f5f93bf33cf1fe32cf656ced7d3f34413f60e38fedde283a7",
+      "bytes": 2480
+    },
+    {
+      "name": "CogSeed认知资产重构统一工作清单-2026-10-08.md",
+      "source": "本地外部交接包/历史参考快照/CogSeed认知资产重构统一工作清单-2026-10-08.md",
+      "sha256": "486842f05b90c8dee1d42bf4b93c55330fb64040460471580d32caa8c4547c4f",
+      "bytes": 20685
+    }
+  ],
+  "normative_files": {
+    "00-先看这里.md": "400afc5fd68dd619e881fbde56c1848e9905f04b17fe402bc6dd52b8c23eea17",
+    "01-全部已确认范围与页面要求.md": "bc648cc6550b42e74e47393cc0774e820f8616534dcc7da47311935b220a05e0",
+    "02-技术基线与实施任务.md": "5137ef5a170e87c9f454e50a7b9b7497fc33bc1462403bc58e17d6e76c74f2b2",
+    "03-全量需求与验收矩阵.md": "6593fcac21ec201bb8ee10ff6ba4fa90d509107bbc9da644559c33ff863e9ef7",
+    "04-已确认页面原型.html": "2af235d1c0d1a5d5249e25300c301dcfd20c27c7adbde54b54bbf65df7864ee9",
+    "05-文件整理与有效性索引.md": "aff184e7b6c67a09b5e61bb51bb5c3f27894af249ac84d800ac56930db5eb38f",
+    "06-直接交给开发智能体的提示词.md": "216685e55b552e9214b041040d6791ca90c798b0a636535953db23c138fd4af3"
+  },
+  "path_policy": "本副本移除本机绝对路径；外部原件提供接棒智能体的确切本地路径。HTML字节保持一致。"
+}
