@@ -60,6 +60,16 @@ describe('014 anti-drift（specs/014 T024）', () => {
       // 2026-09-30 合并 origin/develop（#389 KB 另存本地）：转写清理版
       // 「另存到本地文件夹…」的落盘通道，随 develop 正常演进登记。
       'library.writeTextToLocal',
+      // 2026-10-08 安全与信任模块（skill-sentry v2.2.0 引擎 + v3 页面）：
+      // 详情扫描、跨技能组合风险、风险接受（列表/接受/撤销）与回执导出。
+      // 实现在 features/security/**；accept / revoke 只接受内部技能 id，外部技能
+      // 一律返回 external_skill_readonly，不会写用户自己的 ~/.claude 目录。
+      'skills.security.report',
+      'skills.security.composition',
+      'skills.security.acceptances',
+      'skills.security.accept',
+      'skills.security.revoke',
+      'skills.security.export',
     ];
     expect(sneaked.sort(), '出现未登记的新通道').toEqual([...registeredPost014].sort());
     expect(removed, '014 期间不应删除通道').toEqual([]);

@@ -27777,125 +27777,343 @@ body.is-terminal-resizing {
   animation: autoTimeAdjustResultFadeIn 0.3s ease-out;
 }
 
-/* ── 安全与信任设置页（v2）────────────────────────────────────────────── */
-#settings-security-body { max-width: 880px; }
-.sec-loading { padding: 28px 0; color: var(--text-3); font-size: 13px; }
-.sec-empty { padding: 18px 16px; text-align: center; color: var(--text-3); font-size: 13px; }
+/* ── 安全与信任设置页（v3）────────────────────────────────────────────
+   命名：sec-* 为页面私有结构（见 docs/renderer-structural-registry.md
+   `SEC-PV-001`）。控件本身一律走共享 seam（uiButton/uiStatusPill/uiTag/
+   uiBadge/uiSegmentedControl/uiProgressBar/uiSkeleton/uiEmptyState/uiDrawer），
+   这里只放业务内容的排版与状态色。全部颜色走 token，不写字面 z-index。 */
+#settings-security-body { max-width: 940px; }
+.sec-visually-hidden {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.sec-loading { display: grid; gap: var(--space-4); }
+.sec-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 
-/* Hero */
+/* ── Hero ───────────────────────────────────────────────────────────── */
 .sec-hero {
-  display: flex; gap: 16px; align-items: flex-start;
-  background: var(--panel, var(--color-surface)); border: 1px solid var(--border);
-  border-radius: 14px; padding: 18px 20px; margin-bottom: 16px;
+  display: flex; gap: var(--space-5); align-items: flex-start; flex-wrap: wrap;
+  background: var(--surface-card); border: 1px solid var(--line-default);
+  border-radius: var(--radius-window); padding: var(--space-5); margin-bottom: var(--space-4);
 }
-.sec-hero-icon {
-  width: 40px; height: 40px; border-radius: 50%; flex: none;
-  display: flex; align-items: center; justify-content: center;
-  background: var(--success-soft); border: 1px solid transparent;
+.sec-hero[data-kind="warn"] { border-color: var(--state-caution-line); }
+.sec-hero[data-kind="bad"] { border-color: var(--danger); }
+.sec-hero-main { flex: 1 1 320px; min-width: 0; }
+.sec-hero-title {
+  font-size: var(--font-size-title); font-weight: 650; margin: 0;
+  display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
 }
-.sec-hero-icon.warn { background: var(--color-warning-soft); }
-.sec-hero-icon.bad { background: var(--danger-soft, #fee2e2); }
-.sec-hero-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--success); }
-.sec-hero-icon.warn .sec-hero-dot { background: var(--color-warning); }
-.sec-hero-icon.bad .sec-hero-dot { background: var(--danger); }
-.sec-hero-main { flex: 1; min-width: 0; }
-.sec-hero-title { font-size: 15.5px; font-weight: 650; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.sec-hero-desc { font-size: 12.5px; color: var(--text-2); margin-top: 4px; }
-.sec-hero-meta { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: var(--text-3); }
-.sec-hero-meta b { color: var(--text-2); font-weight: 600; }
+.sec-hero-desc { font-size: var(--font-size-caption); color: var(--text-secondary); margin: var(--space-1) 0 0; }
+.sec-hero-meta { display: flex; gap: var(--space-4); flex-wrap: wrap; margin-top: var(--space-3); }
+.sec-meta-item { display: flex; flex-direction: column; gap: 2px; font-size: var(--font-size-2); }
+.sec-meta-label { color: var(--text-muted); }
+.sec-meta-item b { color: var(--text-body); font-weight: 600; font-variant-numeric: tabular-nums; }
+.sec-hero-actions { display: flex; gap: var(--space-2); flex-wrap: wrap; align-items: flex-start; }
 
-/* 状态胶囊/标签 */
-.sec-tag, .sec-pill {
-  font-size: 11px; font-weight: 500; padding: 2px 9px; border-radius: 999px; white-space: nowrap;
+/* 评分环 */
+/* 环与说明用一列 flex，而不是把说明绝对定位到环下面：绝对定位在环尺寸
+   变化时（sm/lg）会压到环上——实测截图里「库内最低分」正好叠在圆环下缘。 */
+.sec-ring { position: relative; display: flex; flex-direction: column; align-items: center; gap: var(--space-2); flex: none; }
+.sec-ring > svg { position: relative; }
+.sec-ring svg { display: block; }
+.sec-ring-track { stroke: var(--line-subtle); }
+.sec-ring-value { stroke: var(--primary); transition: stroke-dashoffset var(--duration-panel) var(--easing-ui); }
+.sec-ring--ok .sec-ring-value { stroke: var(--success); }
+.sec-ring--warn .sec-ring-value,
+.sec-ring--mid .sec-ring-value { stroke: var(--color-warning); }
+.sec-ring--bad .sec-ring-value { stroke: var(--danger); }
+.sec-ring--unknown .sec-ring-value { stroke: transparent; }
+.sec-ring-number {
+  position: absolute; top: 0; left: 0; right: 0; height: 92px;
+  display: grid; place-items: center;
+  font-size: var(--font-size-6); font-weight: 650; color: var(--text-heading);
+  font-variant-numeric: tabular-nums;
 }
-.sec-tag.ok, .sec-pill.ok { background: var(--success-soft); color: var(--success); }
-.sec-tag.warn, .sec-pill.warn { background: var(--color-warning-soft); color: #b45309; }
-.sec-tag.bad, .sec-pill.bad { background: var(--danger-soft, #fee2e2); color: var(--danger); }
-.sec-pill.muted { background: #f1f5f3; color: var(--text-3); }
+.sec-ring--sm .sec-ring-number { font-size: var(--font-size-5); height: 64px; }
+.sec-ring-caption { font-size: var(--font-size-1); color: var(--text-muted); white-space: nowrap; }
 
-/* 组件卡片 */
-.sec-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px; }
-@media (max-width: 760px) { .sec-grid { grid-template-columns: 1fr; } }
-.sec-card {
-  background: var(--panel, var(--color-surface)); border: 1px solid var(--border);
-  border-radius: 14px; padding: 14px 15px 12px;
+/* ── 异常提示 ───────────────────────────────────────────────────────── */
+.sec-issues { display: grid; gap: var(--space-2); margin-bottom: var(--space-4); }
+.sec-issue {
+  display: flex; gap: var(--space-2); align-items: flex-start;
+  padding: var(--space-3) var(--space-4); border-radius: var(--radius-card);
+  background: var(--status-warning-bg); color: var(--status-warning-text);
+  font-size: var(--font-size-caption); border: 1px solid var(--state-caution-line);
 }
-.sec-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.sec-card-name { font-size: 13.5px; font-weight: 600; flex: 1; }
-.sec-card-row { display: flex; justify-content: space-between; font-size: 12.5px; padding: 4px 0; color: var(--text-2); }
-.sec-card-row span:last-child { color: var(--text); font-variant-numeric: tabular-nums; }
-.sec-card-note { font-size: 11.5px; color: var(--text-3); margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border-strong); }
+.sec-issue-icon { flex: none; display: inline-flex; margin-top: 1px; }
+/* 提示条分两档：attention = 防护变差（琥珀）；info = 装个工具就能解锁（中性）。
+   两者都写成琥珀时，「需要安装 osv-scanner」读起来和「扫描器被篡改」一样严重。 */
+.sec-issue[data-tone="info"] {
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  border-color: var(--line-subtle);
+}
 
-/* 记录表 */
-.sec-section-head { display: flex; justify-content: space-between; align-items: flex-end; margin: 20px 0 10px; flex-wrap: wrap; gap: 6px; }
-.sec-section-title { font-size: 14.5px; font-weight: 650; }
-.sec-section-sub { font-size: 12px; color: var(--text-3); margin-top: 2px; }
-.sec-table-wrap { background: var(--panel, var(--color-surface)); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
-.sec-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+/* ── 区块 ───────────────────────────────────────────────────────────── */
+/* 防护项：hero 以下只有这一组行。区块头退化成一个小组标签——
+   信息架构靠「行」而不是「区块」，所以不再需要 section 头。 */
+.sec-section { margin-bottom: var(--space-5); }
+.sec-section-label {
+  margin: 0 0 var(--space-1);
+  font-size: var(--font-size-2); font-weight: 500; color: var(--text-faint);
+}
+.sec-aside-label { font-size: var(--font-size-2); color: var(--text-muted); }
+
+/* 行体：与共享 .ui-accordion__body 的左缩进对齐，内容再收一点边距 */
+.sec-rowbody { display: block; padding-top: var(--space-1); }
+.sec-row-note { margin: 0; font-size: var(--font-size-2); color: var(--text-muted); }
+.sec-row-note b { color: var(--text-secondary); font-weight: 500; }
+.sec-rowfoot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--space-3); flex-wrap: wrap; margin-top: var(--space-3);
+}
+
+/* 能力覆盖 */
+.sec-rulebar { display: flex; gap: var(--space-2); flex-wrap: wrap; margin-bottom: var(--space-3); }
+/* 名称一行、状态一行。
+   单行「名称 … 状态」在窄列里会把中文名称逐字换行，状态文字也被挤成
+   一列单字——实测截图里「依赖漏洞扫描」竖排了四行，状态与名称互相重叠。
+   两行布局对任何名称长度都稳定，也不需要 nowrap 与省略号。 */
+.sec-caps {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(272px, 1fr)); gap: var(--space-3);
+  background: var(--surface-card); border: 1px solid var(--line-default);
+  border-radius: var(--radius-card); padding: var(--space-4);
+}
+.sec-cap { display: grid; grid-template-columns: auto 1fr; gap: 2px var(--space-2); font-size: var(--font-size-caption); min-width: 0; }
+.sec-cap > :first-child { grid-row: span 2; align-self: start; margin-top: 3px; }
+.sec-cap-name { color: var(--text-body); min-width: 0; }
+.sec-cap-state { color: var(--text-muted); font-size: var(--font-size-1); min-width: 0; }
+.sec-cap[data-status="absent"] .sec-cap-name { color: var(--text-muted); }
+.sec-cap[data-status="degraded"] .sec-cap-state { color: var(--status-warning-text); }
+.sec-cap[data-status="partial"] .sec-cap-state { color: var(--status-warning-text); }
+
+/* 统计磁贴 */
+/* 库级概览：数字是信息（一行文字），筛选是控件（共享分段控件）。
+   两者合成一排按钮的版本会让页面自己写 button，绕开共享无障碍契约。 */
+/* 行内筛选：数字的唯一载体是分段控件本身；同一句话另有一份视觉隐藏副本供
+   屏幕阅读器一次读完（原先是可见的一行，等于把同一组数字渲染两遍）。 */
+.sec-stats { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: var(--space-3); }
+
+/* ── 记录表 ─────────────────────────────────────────────────────────── */
+.sec-table-wrap {
+  background: var(--surface-card); border: 1px solid var(--line-default);
+  border-radius: var(--radius-window); overflow: hidden;
+}
+.sec-table { width: 100%; border-collapse: collapse; font-size: var(--font-size-3); }
 .sec-table th {
-  text-align: left; font-weight: 500; color: var(--text-3); font-size: 12px;
-  padding: 10px 15px; border-bottom: 1px solid var(--border); background: #f7faf8;
+  text-align: left; font-weight: 500; color: var(--text-muted);
+  font-size: var(--font-size-2); padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--line-default); background: var(--surface-subtle);
+  /* 中文表头「检查时间」「提示数」在窄列里会逐字换行，两行表头比省下的
+     那点宽度难读得多。 */
+  white-space: nowrap;
 }
-.sec-table td { padding: 10px 15px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.sec-table td { padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--line-subtle); vertical-align: middle; }
 .sec-table tbody tr:last-child td { border-bottom: none; }
-.sec-id { display: flex; align-items: center; gap: 9px; }
+.sec-table tbody tr:hover { background: var(--surface-subtle); }
+.sec-num { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.sec-id { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
 .sec-dot {
-  width: 26px; height: 26px; border-radius: 8px; background: var(--primary-soft);
-  color: var(--primary-text); font-size: 12px; font-weight: 600;
-  display: flex; align-items: center; justify-content: center; flex: none;
+  width: 26px; height: 26px; border-radius: var(--radius-2); background: var(--primary-soft);
+  color: var(--primary-text); font-size: var(--font-size-2); font-weight: 600;
+  display: grid; place-items: center; flex: none;
 }
+.sec-id-body { min-width: 0; }
 .sec-id-name { font-weight: 550; }
-.sec-id-sub { font-size: 11.5px; color: var(--text-3); }
-.sec-score { display: flex; align-items: center; gap: 8px; }
-.sec-score-bar { width: 60px; height: 5px; border-radius: 999px; background: #edf2ef; overflow: hidden; }
-.sec-score-bar i { display: block; height: 100%; border-radius: 999px; background: var(--primary); }
-.sec-score-bar i.mid { background: var(--color-warning); }
-.sec-score-bar i.low { background: var(--danger); }
-.sec-score-num { color: var(--text-2); font-size: 12px; font-variant-numeric: tabular-nums; }
-.sec-time { color: var(--text-3); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.sec-id-sub { font-size: var(--font-size-1); color: var(--text-muted); }
+.sec-score { display: flex; align-items: center; gap: var(--space-2); }
+.sec-score-bar { width: 60px; height: 5px; border-radius: var(--radius-pill); background: var(--line-subtle); overflow: hidden; }
+/* 与评分环共用同一套分档（data-band 由 scoreBand() 产出），
+   两处各自写阈值会让同一个分数在环和条上显示成不同颜色。 */
+.sec-score-bar i { display: block; height: 100%; border-radius: var(--radius-pill); background: var(--success); }
+.sec-score-bar i[data-band="warn"],
+.sec-score-bar i[data-band="mid"] { background: var(--color-warning); }
+.sec-score-bar i[data-band="bad"] { background: var(--danger); }
+.sec-score-num { color: var(--text-secondary); font-size: var(--font-size-2); font-variant-numeric: tabular-nums; }
+.sec-row-actions { display: flex; gap: var(--space-2); justify-content: flex-end; }
 .sec-table-foot {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 11px 15px; border-top: 1px solid var(--border); background: var(--color-surface-4);
+  display: flex; justify-content: space-between; align-items: center; gap: var(--space-2);
+  padding: var(--space-3) var(--space-4); border-top: 1px solid var(--line-default);
+  background: var(--color-surface-4); flex-wrap: wrap;
 }
-.sec-hint { font-size: 12px; color: var(--text-3); }
+.sec-hint { font-size: var(--font-size-2); color: var(--text-muted); }
 
-/* 操作 + 选择器 + 保护说明 */
-.sec-actions { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
-.sec-btn-primary { background: var(--primary); border-color: var(--primary); color: var(--color-surface); }
-.sec-btn-primary:hover { background: var(--color-brand-hover); }
-.sec-link {
-  background: none; border: none; cursor: pointer; font-family: inherit;
-  font-size: 12.5px; color: var(--primary-text); padding: 4px 2px;
+/* ── 技能选择器 ─────────────────────────────────────────────────────── */
+/* 技能选择器：内容渲染在共享 uiDrawer 里（右侧抽屉），不再是页面流里的卡片。
+   抽屉 full-height，所以搜索框固定在顶部、列表自己滚——列表高度取视口减去
+   抽屉头与内边距，使 body 本身不产生第二条滚动条。 */
+.sec-picker-input { width: 100%; margin-bottom: var(--space-2); }
+.sec-picker-list {
+  max-height: calc(100vh - 190px);
+  overflow-y: auto;
 }
-.sec-link:hover { text-decoration: underline; }
-.sec-link:disabled { color: var(--text-3); cursor: default; text-decoration: none; }
-.sec-picker {
-  display: none; margin-top: 12px; background: var(--panel, var(--color-surface));
-  border: 1px solid var(--border); border-radius: 14px; padding: 12px;
-}
-.sec-picker.open { display: block; }
-.sec-picker-input {
-  width: 100%; padding: 8px 12px; font-size: 13px; font-family: inherit;
-  border: 1px solid var(--border-strong); border-radius: 9px; margin-bottom: 10px;
-  color: var(--text); background: var(--color-surface-4); outline: none;
-}
-.sec-picker-input:focus { border-color: var(--primary); }
-.sec-picker-list { max-height: 240px; overflow-y: auto; }
 .sec-picker-item {
-  display: flex; align-items: center; gap: 12px; padding: 8px 6px;
-  border-bottom: 1px solid var(--border); font-size: 13px;
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: var(--space-2) 0; border-bottom: 1px solid var(--line-hairline);
+  font-size: var(--font-size-3);
 }
 .sec-picker-item:last-child { border-bottom: none; }
-.sec-picker-name { font-weight: 550; min-width: 150px; }
-.sec-picker-sub { flex: 1; color: var(--text-3); font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sec-protect {
-  margin-top: 20px; padding: 13px 16px; border-radius: 12px;
-  background: #f7faf8; border: 1px solid var(--border);
-  font-size: 12.5px; color: var(--text-2); display: flex; gap: 10px; align-items: flex-start;
+/* 两行式：抽屉只有 480px，ID 与名称单行并排放不下，名称会被省略号吃掉。 */
+.sec-picker-text { flex: 1 1 auto; min-width: 0; display: block; }
+.sec-picker-name {
+  display: block; font-weight: 550;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.sec-lock {
-  width: 8px; height: 8px; border-radius: 2px; background: var(--text-3);
-  margin-top: 5px; flex: none; opacity: .6;
+.sec-picker-sub {
+  display: block; color: var(--text-muted); font-size: var(--font-size-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sec-picker-actions { flex: 0 0 auto; display: inline-flex; align-items: center; gap: var(--space-1); }
+
+/* ── 保护说明 ───────────────────────────────────────────────────────── */
+.sec-protect {
+  display: flex; gap: var(--space-2); align-items: flex-start;
+  padding: var(--space-3) var(--space-4); border-radius: var(--radius-card);
+  background: var(--surface-subtle); border: 1px solid var(--line-subtle);
+  font-size: var(--font-size-caption); color: var(--text-secondary);
+}
+.sec-protect-icon { flex: none; display: inline-flex; color: var(--text-muted); margin-top: 1px; }
+
+/* ── 组合风险（path-level） ─────────────────────────────────────────── */
+.sec-composition-meta { font-size: var(--font-size-2); color: var(--text-muted); margin-bottom: var(--space-2); }
+.sec-paths { list-style: none; margin: 0 0 var(--space-2); padding: 0; display: grid; gap: var(--space-3); }
+.sec-path {
+  border: 1px solid var(--line-default); border-left-width: 3px;
+  border-radius: var(--radius-card); padding: var(--space-3) var(--space-4);
+  background: var(--surface-card);
+}
+.sec-path[data-severity="high"] { border-left-color: var(--danger); }
+.sec-path[data-severity="medium"] { border-left-color: var(--color-warning); }
+.sec-path-head { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.sec-path-name { font-weight: 600; font-size: var(--font-size-caption); }
+.sec-path-desc { font-size: var(--font-size-2); color: var(--text-body); margin: var(--space-2) 0; }
+/* 只在数据异常（能力归属不到任何参与者）时才渲染的兜底行。 */
+.sec-path-skills { display: flex; align-items: center; gap: var(--space-1); flex-wrap: wrap; }
+/* 组合路径图：节点是技能，边是能力交接。
+   几何量全部来自布局而非数据，所以不需要 SVG 例外（评分环的弧长来自分数，才需要）；
+   手算坐标还会在 4 种语言下因文案长度而错位。 */
+.sec-graph {
+  display: flex; align-items: stretch; gap: var(--space-2);
+  /* 不折行：折行之后横箭头就不再成立，方向会被读错。窄到放不下时横向滚动
+     （最小宽度 ≈ 2×148 + 箭头 + 两道间距 ≈ 340px）。 */
+  flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px;
+}
+.sec-graph-node {
+  display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-1);
+  /* 封顶宽度：不封顶时两个节点会被拉满整行（实测各约 440px），一行三个短标签
+     的节点看起来像一个空表格，而不是图。 */
+  flex: 1 1 148px; max-width: 340px; min-width: 148px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line-default); border-radius: var(--radius-control);
+  background: var(--surface-subtle);
+}
+/* 「涉及 N 条路径」是节点上的元信息，不是这个技能的能力；用组合风险行自己的
+   图标把它和上面的能力标签区分开，否则两枚灰底小标签看起来是同一类东西。 */
+.sec-graph-shared { display: inline-flex; align-items: center; gap: var(--space-1); color: var(--text-muted); }
+.sec-graph-shared-icon { width: 13px; height: 13px; }
+/* 技能 id 是外部数据，可能是 `claude:pdf-tools` 这类长串。共享按钮默认
+   nowrap + 定高，长 id 会顶破节点边框，所以在这个容器内允许它折行。 */
+.sec-graph-node .ui-button {
+  max-width: 100%; height: auto; min-height: var(--control-height);
+  justify-content: flex-start; white-space: normal; text-align: left;
+}
+.sec-graph-node .ui-button__label { overflow-wrap: anywhere; }
+.sec-graph-edge { display: flex; align-items: center; flex: none; color: var(--text-muted); }
+.sec-graph-arrow { width: 18px; height: 18px; }
+
+/* ── 详情抽屉 ───────────────────────────────────────────────────────── */
+/* 抽屉可用宽度只有约 430px：环与元数据并排时元数据被压成一列，
+   头部因此高得离谱。改成可换行，并在窄容器里让元数据保持两列。 */
+.sec-drawer-hero { display: flex; flex-wrap: wrap; gap: var(--space-4); align-items: center; margin-bottom: var(--space-4); }
+.sec-drawer-hero-main { min-width: 220px; flex: 1 1 220px; }
+.sec-drawer-verdict { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; margin-bottom: var(--space-2); }
+.sec-drawer-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: var(--space-2); margin: 0; }
+.sec-drawer-meta dt { font-size: var(--font-size-1); color: var(--text-muted); }
+.sec-drawer-meta dd { margin: 0; font-size: var(--font-size-caption); color: var(--text-body); font-variant-numeric: tabular-nums; }
+.sec-drawer-section { margin-top: var(--space-5); }
+.sec-drawer-title { font-size: var(--font-size-3); font-weight: 650; margin: 0 0 var(--space-1); }
+.sec-drawer-sub { font-size: var(--font-size-2); color: var(--text-muted); margin: 0 0 var(--space-3); }
+.sec-drawer-note {
+  font-size: var(--font-size-2); color: var(--status-warning-text);
+  background: var(--status-warning-bg); border-radius: var(--radius-control);
+  padding: var(--space-2) var(--space-3); margin: var(--space-2) 0 0;
+}
+.sec-drawer-alert {
+  font-size: var(--font-size-2); color: var(--danger); background: var(--status-danger-bg, var(--color-danger-soft));
+  border-radius: var(--radius-control); padding: var(--space-2) var(--space-3); margin-bottom: var(--space-3);
+}
+.sec-drawer-notices {
+  list-style: none; margin: 0 0 var(--space-3); padding: 0;
+  display: grid; gap: var(--space-1); font-size: var(--font-size-2); color: var(--status-warning-text);
+}
+.sec-drawer-loading { display: grid; gap: var(--space-3); }
+.sec-stages { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-1); font-size: var(--font-size-2); color: var(--text-muted); }
+.sec-stages .is-active { color: var(--text-body); font-weight: 550; }
+
+.sec-sevbar { margin-bottom: var(--space-3); }
+.sec-findings { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-3); }
+.sec-finding {
+  border: 1px solid var(--line-default); border-left-width: 3px; border-radius: var(--radius-card);
+  padding: var(--space-3) var(--space-4); background: var(--surface-card);
+}
+.sec-finding[data-severity="critical"] { border-left-color: var(--danger); }
+.sec-finding[data-severity="high"] { border-left-color: var(--danger); }
+.sec-finding[data-severity="medium"] { border-left-color: var(--color-warning); }
+.sec-finding[data-severity="low"] { border-left-color: var(--line-strong); }
+.sec-finding[data-severity="info"] { border-left-color: var(--line-subtle); }
+.sec-finding[data-suppressed="1"] { opacity: .72; }
+.sec-finding-head { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.sec-finding-rule { font-weight: 600; font-size: var(--font-size-caption); }
+.sec-finding-loc {
+  font-size: var(--font-size-2); color: var(--text-muted);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+.sec-finding-desc { font-size: var(--font-size-caption); margin: var(--space-2) 0 0; color: var(--text-body); }
+.sec-finding-tags { display: flex; gap: var(--space-1); flex-wrap: wrap; margin-top: var(--space-2); }
+.sec-finding-meta { display: flex; gap: var(--space-4); flex-wrap: wrap; margin: var(--space-2) 0 0; }
+.sec-finding-meta div { display: flex; gap: var(--space-1); align-items: baseline; }
+.sec-finding-meta dt { font-size: var(--font-size-1); color: var(--text-muted); }
+.sec-finding-meta dd { margin: 0; font-size: var(--font-size-2); color: var(--text-secondary); }
+.sec-finding-fix {
+  display: flex; gap: var(--space-2); margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3); border-radius: var(--radius-control);
+  background: var(--surface-subtle); font-size: var(--font-size-2); color: var(--text-body);
+}
+.sec-finding-fix-label { color: var(--text-muted); flex: none; }
+.sec-finding-refs { display: flex; gap: var(--space-3); flex-wrap: wrap; margin-top: var(--space-2); font-size: var(--font-size-1); }
+.sec-finding-refs a { color: var(--primary-text); }
+.sec-finding-actions { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-2); flex-wrap: wrap; }
+.sec-finding-accepted { font-size: var(--font-size-1); color: var(--text-muted); }
+
+.sec-breakdown { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2); }
+.sec-breakdown li { display: grid; grid-template-columns: minmax(90px, 1fr) 2fr auto auto; gap: var(--space-2); align-items: center; font-size: var(--font-size-2); }
+.sec-breakdown-name { color: var(--text-body); }
+.sec-breakdown-bar { height: 5px; border-radius: var(--radius-pill); background: var(--line-subtle); overflow: hidden; }
+.sec-breakdown-bar i { display: block; height: 100%; background: var(--color-warning); border-radius: var(--radius-pill); }
+.sec-breakdown-num { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.sec-breakdown-count { color: var(--text-muted); white-space: nowrap; }
+
+.sec-framework-group { margin-bottom: var(--space-2); }
+.sec-framework-label { font-size: var(--font-size-2); color: var(--text-muted); margin-bottom: var(--space-1); }
+.sec-framework-tags, .sec-tags { display: flex; gap: var(--space-1); flex-wrap: wrap; }
+.sec-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: var(--space-3); margin: 0; }
+.sec-kv dt { font-size: var(--font-size-1); color: var(--text-muted); }
+.sec-kv dd { margin: 0; font-size: var(--font-size-caption); color: var(--text-body); font-variant-numeric: tabular-nums; }
+.sec-limitations { margin: 0; padding-left: var(--space-4); font-size: var(--font-size-2); color: var(--text-muted); display: grid; gap: 2px; }
+.sec-export-row { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+
+/* 窄屏：抽屉里的两列网格压缩成一列，避免 1fr 列被挤成不可读宽度。 */
+@media (max-width: 720px) {
+  .sec-hero { gap: var(--space-3); }
+  .sec-breakdown li { grid-template-columns: 1fr auto; }
+  .sec-breakdown-bar { display: none; }
+  .sec-caps { grid-template-columns: 1fr; }
+  .sec-table th:nth-child(4), .sec-table td:nth-child(4) { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sec-ring-value { transition: none; }
+  .sec-stat { transition: none; }
 }
 
 /* ── 导入检查结果弹窗（W5，文件夹/URL 统一）────────────────────────── */

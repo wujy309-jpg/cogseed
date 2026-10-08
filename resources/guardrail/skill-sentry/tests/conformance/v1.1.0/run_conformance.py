@@ -8,7 +8,7 @@ run_conformance.py — 回归验证脚本
    依赖，用标准库实现最小可用校验。
 
 用法：
-    python3 tests/conformance/v1.0.0/run_conformance.py
+    python3 tests/conformance/v1.1.0/run_conformance.py
 退出码：0 = 全部通过；1 = 存在断言失败。
 """
 from __future__ import annotations
@@ -68,6 +68,23 @@ def run() -> int:
         expect = vector["expect"]
         mismatches = []
         for key, expected_value in expect.items():
+            if key == "must_include_rules":
+                # 断言「这些规则必须命中」，而不是「只命中这些」。
+                # 锁定完整命中集会让任何新增检测都变成回归失败，于是规则
+                # 只能加不能改——那不是回归契约，那是冻结。
+                present = {str(f.get("rule_id")) for f in (report.get("findings") or [])}
+                missing = [r for r in expected_value if r not in present]
+                if missing:
+                    mismatches.append(f"must_include_rules: 缺少 {missing}")
+                continue
+            if key == "max_severity":
+                order = ["info", "low", "medium", "high", "critical"]
+                worst = max((order.index(str(f.get("severity")))
+                             for f in (report.get("findings") or [])), default=0)
+                if order.index(expected_value) < worst:
+                    mismatches.append(
+                        f"max_severity: 期望不超过 {expected_value}，实际 {order[worst]}")
+                continue
             actual_value = report.get(key)
             if actual_value != expected_value:
                 mismatches.append(f"{key}: expected={expected_value!r} actual={actual_value!r}")

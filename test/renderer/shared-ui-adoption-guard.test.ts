@@ -184,6 +184,12 @@ const emojiAsIconBaseline: Record<string, number> = {
  * 往它里面加图标正是规范要求的做法，冻死它等于堵掉正确路径。
  */
 const inlineSvgBaseline: Record<string, number> = {
+  // settings-security.js：1 处，评分环（`scoreRing`）。
+  // 它不是图标，而是**数据可视化**：半径/描边/`stroke-dashoffset` 都由分数
+  // 计算，无法用 icons.js 的静态 path 表达。已按 kb-workbench 的先例登记在
+  // 《Renderer structural registry》的 "Known non-icon inline SVG" 一节
+  // （`SEC-PV-001`）。数值为 1，任何第二处内联 SVG 都会直接红。
+  'settings-security.js': 1,
   'avatar.js': 4,
   'cognition/pages.js': 1,
   'cognition-assets/views.js': 1,

@@ -206,6 +206,43 @@ describe('first-version renderer components', () => {
     expect(typeof hydrateUiTrees).toBe('function');
   });
 
+  it('lets an accordion row carry a tone, an icon and a control status', () => {
+    const { uiAccordion } = loadFactories();
+    // 页面用「若干行，点开才展开」的形态时，需要区分健康行与告警行，并把状态放成
+    // 控件（uiStatusPill / uiTag）而不是纯文本。缺这三样，页面就只能自己实现一套
+    // disclosure，等于在一个已经有共享缝的地方留下第二套行实现。
+    const rows = uiAccordion({
+      defaultOpen: [],
+      items: [
+        {
+          title: '技能检查', icon: 'shield-check', tone: 'critical', open: true,
+          statusHtml: '<span class="ui-status-pill">需要处理</span>',
+          bodyHtml: '<p>1 个被拦截。</p>',
+        },
+        { title: '组合风险', icon: 'git-branch', statusHtml: '<span>尚未分析</span>', bodyHtml: '<p>—</p>' },
+        { title: '来源', meta: '规则包 v1.1.0', bodyHtml: '<p>已校验。</p>' },
+      ],
+    });
+    // tone 落在 item 上（CSS 只染图标，标题保持中性）
+    expect(rows).toContain('data-tone="critical"');
+    // 逐项 open 生效；defaultOpen 为空时其余项不展开
+    expect(rows).toContain('<details class="ui-accordion__item" data-tone="critical" open>');
+    expect(rows.match(/<details/g)).toHaveLength(3);
+    expect(rows.match(/ open>/g)).toHaveLength(1);
+    // icon 走 icons.js（内联 svg），不是硬编码路径
+    expect(rows).toContain('ui-accordion__icon');
+    expect(rows).toContain('<svg');
+    // statusHtml 优先于 meta，且原样透传（调用方负责转义，与 bodyHtml 同契约）
+    expect(rows).toContain('ui-accordion__status');
+    expect(rows).toContain('ui-status-pill');
+    // 未给 statusHtml 的项回落到 meta 槽
+    expect(rows).toContain('ui-accordion__meta');
+    // 白名单外的 tone 不得写进 DOM（用错值只应静默降级，不能变成任意属性）
+    expect(uiAccordion({ items: [{ title: 'x', tone: 'elaborate', bodyHtml: '' }] })).not.toContain('data-tone');
+    // meta 仍然转义；statusHtml 与 bodyHtml 同为调用方负责
+    expect(uiAccordion({ items: [{ title: 'x', meta: '<img>', bodyHtml: '' }] })).toContain('&lt;img&gt;');
+  });
+
   it('enforces the three EmptyState contracts and one-action boundary', () => {
     const { uiEmptyState } = loadFactories();
 
