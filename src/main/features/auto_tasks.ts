@@ -1096,7 +1096,28 @@ function _buildSeedText(task: AutoTask): string {
   if (task.recipient && task.recipient.kind === 'agent' && task.recipient.name) {
     text = `@${task.recipient.name} ${text}`;
   }
-  return text;
+  return `${_fireFramingLine(task)}${text}`;
+}
+
+/** Fixed origin line prepended to every fired message.
+ *
+ *  A fired task lands in a fresh conversation as an ordinary user-role message,
+ *  so without this line the model reads a schedule's output as something the
+ *  user just typed — it answers the schedule ("why are you telling me this?")
+ *  instead of doing the task, and treats a briefing as a live request. The line
+ *  states the origin inside the message the model actually reads; the trailing
+ *  clock icon in the sidebar (conv.origin_auto_task_id) only tells the human.
+ *
+ *  Deliberately carries no timestamp: the runtime injection block already
+ *  carries the current time for the turn, and a per-fire timestamp here would
+ *  make otherwise identical fires read as different messages. */
+function _fireFramingLine(task: AutoTask): string {
+  const label = (task.title || '').trim() || task.id;
+  return _formatSeedPrefix(
+    'auto_tasks.fire_prefix',
+    { task: label },
+    `Automated task "${label}": sent by a schedule, not typed by the user just now.\n\n`,
+  );
 }
 
 export function _buildSeedTextForTest(task: AutoTask): string {

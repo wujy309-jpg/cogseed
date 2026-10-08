@@ -26,6 +26,7 @@
     "test": "npm run test:js && npm run test:resources",
     "test:js": "node scripts/run-tests.mjs run",
     "test:resources": "node scripts/run-python-tests.mjs resources/builtin resources/test resources/guardrail/skill-sentry/tests resources/guardrail/skill-sentry/runtime_trust -q",
+    "session:inspect": "node scripts/inspect-session.mjs",
     "test:coverage": "node scripts/run-tests.mjs run --coverage",
     "test:watch": "node scripts/run-tests.mjs",
     "test:local-agents:live": "tsx scripts/test-local-agents-live.ts",
