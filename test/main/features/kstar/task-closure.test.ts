@@ -1053,7 +1053,7 @@ describe('KSTAR task closure', () => {
 });
 
 describe('KSTAR direct experience asset line', () => {
-  it('precipitates verified workflow experience as an experience entry (direct line, specs/016 分流)', async () => {
+  it('precipitates a verified workflow proposal as a candidate (direct line, 2026-10-08 U09)', async () => {
     const builder = await import('../../../../src/main/features/kstar/episode-builder');
     const direct = await import('../../../../src/main/features/kstar/direct-experience-assets');
     const assets = await import('../../../../src/main/features/recall/asset-service');
@@ -1067,23 +1067,25 @@ describe('KSTAR direct experience asset line', () => {
       sourceRefs: [{ kind: 'execution', id: 'kse-run-direct' }],
     }]);
 
-    // specs/016 T013（FR-001）：直通线 create 提案改道写经验条目
-    // （skill_method → workflow），不进候选池、不晋升资产。
-    expect(result.experienceIds).toHaveLength(1);
-    expect(result.candidateIds).toEqual([]);
+    // 2026-10-08 U09：KSTAR 双向隔离——create 型不再直写经验，统一进候选池
+    //（产出 pending_review 候选只作建议），不写经验、不晋升资产。
+    expect(result.candidateIds).toHaveLength(1);
+    expect(result.experienceIds).toEqual([]);
     expect(result.createdAssetIds).toEqual([]);
-    const experiences = await import('../../../../src/main/features/recall/experience-service');
-    const stored = await experiences.listExperiences('closure-user');
+    const stored = await candidates.listRecallCandidates('closure-user');
     expect(stored).toHaveLength(1);
     expect(stored[0]).toMatchObject({
-      experienceType: 'workflow',
-      status: 'active',
-      scope: 'report',
+      status: 'pending_review',
+      suggestedType: 'skill_method',
+      suggestedScope: 'report',
+      suggestedAction: 'create',
+      captureKey: 'kstar-kse-run-direct-0',
     });
-    expect(stored[0].body).toContain('verified workflow');
+    expect(String(stored[0].judgment)).toContain('verified workflow');
     expect(stored[0].evidenceRefs.some((ref) => ref.kind === 'execution' && ref.id === 'kse-run-direct')).toBe(true);
-    // 候选池与资产库零记录（隔离）。
-    expect(await candidates.listRecallCandidates('closure-user')).toHaveLength(0);
+    // 经验库与资产库零记录（隔离：候选不自动晋升）。
+    const experiences = await import('../../../../src/main/features/recall/experience-service');
+    expect(await experiences.listExperiences('closure-user')).toHaveLength(0);
     expect(await assets.listAbilityAssets('closure-user')).toHaveLength(0);
   });
 
@@ -1135,7 +1137,7 @@ describe('KSTAR direct experience asset line', () => {
     expect(history.find((version) => version.version === '1')?.snapshot.statement).toBe(original.asset.statement);
   });
 
-  it('carries the conversation space into the asset through the real closure path (space asset tab)', async () => {
+  it('carries the conversation space into the candidate through the real closure path (space asset tab)', async () => {
     // 真实链路：挂空间会话 → captureGroupKstarClosure（读 conversation.space_id
     // 填 episode.s.workspaceId）→ 任务级沉淀 → 资产带 spaceId。修复前 episode
     // 构建不透传 workspaceId，此测试在真实链路上断言（不再手动塞 episode.s）。
@@ -1202,22 +1204,26 @@ describe('KSTAR direct experience asset line', () => {
     expect(episode).toBeDefined();
     expect(episode!.s?.workspaceId).toBe('sp_abc123');
 
-    // 任务级沉淀（真实 KSTAR 产出出口，specs/016 分流后为经验条目）→ 经验
-    // 带 spaceId（空间过滤键，与资产同语义）。
+    // 任务级沉淀（真实 KSTAR 产出出口）→ 候选带 spaceId（空间过滤键，用户
+    // 确认晋升后资产继承空间归属）。
     // 注意：闭环已把 episode attach 到磁盘上的 requirement，必须重读最新对象
     // （precipitateRequirementLevel 按传入对象的 episodeIds 聚合）。
     const freshRequirement = await store.readKstarRequirement('closure-user', requirement.id);
     expect(freshRequirement?.episodeIds).toContain('kse-run-direct-space-real');
     const precipitation = await import('../../../../src/main/features/kstar/task-level-precipitation');
     const result = await precipitation.precipitateRequirementLevel('closure-user', freshRequirement!);
-    expect(result.experienceIds.length).toBeGreaterThan(0);
-    const experiences = await import('../../../../src/main/features/recall/experience-service');
-    const created = (await experiences.listExperiences('closure-user')).find((e) => e.id === result.experienceIds[0]);
+    // 2026-10-08 U09：KSTAR 双向隔离——create 型不再直写经验，统一进候选池
+    expect(result.candidateIds.length).toBeGreaterThan(0);
+    const candidates = await import('../../../../src/main/features/recall/candidate-service');
+    const created = (await candidates.listRecallCandidates('closure-user')).find((c) => c.id === result.candidateIds[0]);
     expect(created).toBeDefined();
     expect(created!.spaceId).toBe('sp_abc123');
+    // 空间断言的另一半：经验库无新条目（KSTAR 不再直写经验）。
+    const experiences = await import('../../../../src/main/features/recall/experience-service');
+    expect(await experiences.listExperiences('closure-user')).toHaveLength(0);
   });
 
-  it('does not duplicate the direct experience across repeated precipitation (id-stable)', async () => {
+  it('does not duplicate the direct candidate across repeated precipitation (id-stable)', async () => {
     const builder = await import('../../../../src/main/features/kstar/episode-builder');
     const direct = await import('../../../../src/main/features/kstar/direct-experience-assets');
     const assets = await import('../../../../src/main/features/recall/asset-service');
@@ -1229,13 +1235,16 @@ describe('KSTAR direct experience asset line', () => {
       suggestedScope: 'report',
       sourceRefs: [{ kind: 'execution', id: 'kse-run-direct-dup' }],
     };
-    await direct.precipitateDirectExperienceAssets('closure-user', seededEpisode, [proposal]);
-    await direct.precipitateDirectExperienceAssets('closure-user', seededEpisode, [proposal]);
+    const first = await direct.precipitateDirectExperienceAssets('closure-user', seededEpisode, [proposal]);
+    const second = await direct.precipitateDirectExperienceAssets('closure-user', seededEpisode, [proposal]);
 
-    // specs/016 T013：重复沉淀幂等——经验 id 稳定派生（同 episode 同提案
-    // 同序），createExperience 同 id 返回既有记录，不产生第二条；资产面零。
+    // 2026-10-08 U09：KSTAR 双向隔离——create 型不再直写经验，统一进候选池
+    // 重复沉淀幂等改为候选 captureKey 断言：同一提案重沉淀返回同一候选 id。
+    expect(second.candidateIds).toEqual(first.candidateIds);
+    const candidates = await import('../../../../src/main/features/recall/candidate-service');
+    expect((await candidates.listRecallCandidates('closure-user')).filter((c) => c.id === first.candidateIds[0])).toHaveLength(1);
     const experiences = await import('../../../../src/main/features/recall/experience-service');
-    expect(await experiences.listExperiences('closure-user')).toHaveLength(1);
+    expect(await experiences.listExperiences('closure-user')).toHaveLength(0);
     expect(await assets.listAbilityAssets('closure-user')).toHaveLength(0);
   });
 

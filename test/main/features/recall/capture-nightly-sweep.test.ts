@@ -19,6 +19,7 @@ vi.mock('../../../../src/main/features/chats', () => ({
 vi.mock('../../../../src/main/features/group_chat/bus', () => ({
   isQuiescent: mocks.isQuiescent,
   subscribeTaskTerminals: () => () => {},
+  subscribe: () => () => {},
 }));
 vi.mock('../../../../src/main/features/auth', () => ({
   hasConfiguredModel: () => ({ configured: true }),
@@ -34,6 +35,8 @@ let previousRoot: string | undefined;
 
 const USER = 'sweep-user';
 const T0 = '2026-10-08T02:30:00.000Z';
+/** 相对 now 的小时数 → ISO。 */
+const isoAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString();
 
 function conversation(cid: string, updatedIso: string) {
   return { conversation_id: cid, title: `Conv ${cid}`, kind: 'normal', updated_at: updatedIso };
@@ -47,6 +50,19 @@ function messages(...items: Array<{ id: string; ts: string; role: 'user' | 'assi
     to: item.role === 'user' ? ['commander'] : ['user'],
     text: `Message ${item.id}`,
   }));
+}
+
+/** 预置一条过去基线的清扫记录（模拟早期安装：基线之前的历史不回扫，
+ *  基线之后有更新的会话应当入队）。 */
+async function seedSweepBaseline(baselineIso: string) {
+  const store = await import('../../../../src/main/features/recall/store');
+  await store.updateRecallJsonRecord(USER, 'capture-sweep', 'nightly', () => ({
+    schemaVersion: 1,
+    ownerId: USER,
+    id: 'nightly',
+    baselineAt: baselineIso,
+    cursors: {},
+  } as never));
 }
 
 beforeEach(() => {
@@ -73,9 +89,8 @@ async function sweepModules() {
   const capture = await import('../../../../src/main/features/recall/capture-service');
   const settings = await import('../../../../src/main/features/recall/capture-settings');
   const stats = await import('../../../../src/main/features/recall/capture-stats');
-  const store = await import('../../../../src/main/features/recall/store');
   await settings.updateRecallCaptureSettings(USER, { executionPolicy: 'nightly' });
-  return { capture, settings, stats, store };
+  return { capture, settings, stats };
 }
 
 async function nightlySettings() {
@@ -86,12 +101,13 @@ async function nightlySettings() {
 describe('nightly capture sweep (U01)', () => {
   it('does not backscan conversations updated before the first sweep baseline', async () => {
     const { capture } = await sweepModules();
+    // 无预置记录：首轮创建基线=当前时刻，此前任何更新都早于基线 → 跳过。
     mocks.listConversations.mockResolvedValue([
-      conversation('conv-old', '2026-10-01T10:00:00.000Z'),
+      conversation('conv-old', isoAgo(24 * 7)),
     ]);
     mocks.getMessages.mockResolvedValue(messages(
-      { id: 'u1', ts: '2026-10-01T10:00:00.000Z', role: 'user' },
-      { id: 'a1', ts: '2026-10-01T10:01:00.000Z', role: 'assistant' },
+      { id: 'u1', ts: isoAgo(24 * 7 + 1), role: 'user' },
+      { id: 'a1', ts: isoAgo(24 * 7), role: 'assistant' },
     ));
     const result = await capture.runNightlyCaptureSweep(USER, T0, await nightlySettings());
     expect(result.ran).toBe(true);
@@ -102,60 +118,38 @@ describe('nightly capture sweep (U01)', () => {
     expect(sweep?.cursors['conv-old']).toBeUndefined();
   });
 
-  it('queues an incremental capture for conversations updated after the baseline and records the cursor', async () => {
+  it('queues an incremental capture for conversations updated after a past baseline and records the cursor', async () => {
     const { capture } = await sweepModules();
-    mocks.listConversations.mockResolvedValue([
-      conversation('conv-old', '2026-10-01T10:00:00.000Z'),
-    ]);
+    await seedSweepBaseline(isoAgo(24 * 7));
+    mocks.listConversations.mockResolvedValue([conversation('conv-x', isoAgo(1))]);
     mocks.getMessages.mockResolvedValue(messages(
-      { id: 'u1', ts: '2026-10-01T10:00:00.000Z', role: 'user' },
-      { id: 'a1', ts: '2026-10-01T10:01:00.000Z', role: 'assistant' },
+      { id: 'u1', ts: isoAgo(1.1), role: 'user' },
+      { id: 'a1', ts: isoAgo(1), role: 'assistant' },
     ));
-    await capture.runNightlyCaptureSweep(USER, T0, await nightlySettings());
-
-    // 基线之后产生新消息：第二次窗口应建增量 capture。
-    mocks.listConversations.mockResolvedValue([
-      conversation('conv-old', '2026-10-08T02:10:00.000Z'),
-    ]);
-    mocks.getMessages.mockResolvedValue(messages(
-      { id: 'u1', ts: '2026-10-01T10:00:00.000Z', role: 'user' },
-      { id: 'a1', ts: '2026-10-01T10:01:00.000Z', role: 'assistant' },
-      { id: 'u2', ts: '2026-10-08T02:09:00.000Z', role: 'user' },
-      { id: 'a2', ts: '2026-10-08T02:10:00.000Z', role: 'assistant' },
-    ));
+    const first = await capture.runNightlyCaptureSweep(USER, T0, await nightlySettings());
+    expect(first.ran).toBe(true);
+    if (!first.ran) return;
+    expect(first.queued).toBe(1);
+    const sweep = await capture.readRecallNightlySweep(USER);
+    expect(sweep?.cursors['conv-x']).toMatchObject({ state: 'covered', throughMessageId: 'a1' });
+    // 无新消息的下一轮：跳过且不重复建 capture。
     const second = await capture.runNightlyCaptureSweep(USER, '2026-10-09T02:00:00.000Z', await nightlySettings());
     expect(second.ran).toBe(true);
     if (!second.ran) return;
-    expect(second.queued).toBe(1);
-    const sweep = await capture.readRecallNightlySweep(USER);
-    expect(sweep?.cursors['conv-old']).toMatchObject({
-      state: 'covered',
-      throughMessageId: 'a2',
-    });
-    // 第三次窗口无新消息：跳过且不重复建 capture。
-    const third = await capture.runNightlyCaptureSweep(USER, '2026-10-10T02:00:00.000Z', await nightlySettings());
-    expect(third.ran).toBe(true);
-    if (!third.ran) return;
-    expect(third.queued).toBe(0);
-    expect(third.skipped).toBe(1);
+    expect(second.queued).toBe(0);
+    expect(second.skipped).toBe(1);
   });
 
   it('defers active conversations without advancing the cursor', async () => {
     const { capture } = await sweepModules();
-    mocks.listConversations.mockResolvedValue([
-      conversation('conv-active', '2026-10-08T02:10:00.000Z'),
-    ]);
+    await seedSweepBaseline(isoAgo(24 * 7));
+    mocks.listConversations.mockResolvedValue([conversation('conv-active', isoAgo(1))]);
     mocks.getMessages.mockResolvedValue(messages(
-      { id: 'u1', ts: '2026-10-08T02:09:00.000Z', role: 'user' },
-      { id: 'a1', ts: '2026-10-08T02:10:00.000Z', role: 'assistant' },
+      { id: 'u1', ts: isoAgo(1.1), role: 'user' },
+      { id: 'a1', ts: isoAgo(1), role: 'assistant' },
     ));
-    // 基线建立：第一轮把会话标记延后。
-    await capture.runNightlyCaptureSweep(USER, T0, await nightlySettings());
     mocks.isQuiescent.mockReturnValue(false);
-    mocks.listConversations.mockResolvedValue([
-      conversation('conv-active', '2026-10-08T03:00:00.000Z'),
-    ]);
-    const result = await capture.runNightlyCaptureSweep(USER, '2026-10-09T02:00:00.000Z', await nightlySettings());
+    const result = await capture.runNightlyCaptureSweep(USER, T0, await nightlySettings());
     expect(result.ran).toBe(true);
     if (!result.ran) return;
     expect(result.deferred).toBe(1);
@@ -171,22 +165,21 @@ describe('nightly capture sweep (U01)', () => {
   });
 
   it('retries failed automatic captures a bounded number of nights and then stops', async () => {
-    const { capture, store } = await sweepModules();
-    mocks.listConversations.mockResolvedValue([
-      conversation('conv-failed', '2026-10-08T02:10:00.000Z'),
-    ]);
-    const failedMessages = messages(
-      { id: 'u1', ts: '2026-10-08T02:09:00.000Z', role: 'user' },
-      { id: 'a1', ts: '2026-10-08T02:10:00.000Z', role: 'assistant' },
-    );
-    mocks.getMessages.mockResolvedValue(failedMessages);
+    const { capture } = await sweepModules();
+    await seedSweepBaseline(isoAgo(24 * 7));
+    mocks.listConversations.mockResolvedValue([conversation('conv-failed', isoAgo(0.9))]);
+    mocks.getMessages.mockResolvedValue(messages(
+      { id: 'u1', ts: isoAgo(1.1), role: 'user' },
+      { id: 'a1', ts: isoAgo(1), role: 'assistant' },
+    ));
     // 第一轮建 capture（scheduled）。
     await capture.runNightlyCaptureSweep(USER, T0, await nightlySettings());
-    // 人工把它打成 failed（attempt=1）。
     const sweepAfterFirst = await capture.readRecallNightlySweep(USER);
     expect(sweepAfterFirst?.cursors['conv-failed']).toMatchObject({ state: 'covered' });
     const created = await capture.queryRecallCaptures(USER, { scope: 'all', limit: 10 });
     expect(created.captures.length).toBe(1);
+    // 人工把它打成 failed（attempt=1）。
+    const store = await import('../../../../src/main/features/recall/store');
     await store.updateRecallJsonRecord(USER, 'captures', created.captures[0].id, (current) => ({
       ...current,
       status: 'failed',
@@ -218,12 +211,11 @@ describe('nightly capture sweep (U01)', () => {
   it('marks disabled conversation sources as ignored without queuing', async () => {
     const { capture } = await sweepModules();
     const control = await import('../../../../src/main/features/recall/source-control');
-    mocks.listConversations.mockResolvedValue([
-      conversation('conv-paused', '2026-10-08T02:10:00.000Z'),
-    ]);
+    await seedSweepBaseline(isoAgo(24 * 7));
+    mocks.listConversations.mockResolvedValue([conversation('conv-paused', isoAgo(1))]);
     mocks.getMessages.mockResolvedValue(messages(
-      { id: 'u1', ts: '2026-10-08T02:09:00.000Z', role: 'user' },
-      { id: 'a1', ts: '2026-10-08T02:10:00.000Z', role: 'assistant' },
+      { id: 'u1', ts: isoAgo(1.1), role: 'user' },
+      { id: 'a1', ts: isoAgo(1), role: 'assistant' },
     ));
     // 旧显式暂停不能被默认夜间无声覆盖：来源标记 paused 后清扫跳过。
     await control.pauseCognitionSource(USER, {
@@ -242,21 +234,30 @@ describe('nightly capture sweep (U01)', () => {
 
   it('records aggregate stats without leaking message content', async () => {
     const { capture, stats } = await sweepModules();
-    mocks.listConversations.mockResolvedValue([
-      conversation('conv-stats', '2026-10-08T02:10:00.000Z'),
-    ]);
+    await seedSweepBaseline(isoAgo(24 * 7));
+    mocks.listConversations.mockResolvedValue([conversation('conv-stats', isoAgo(1))]);
     mocks.getMessages.mockResolvedValue(messages(
-      { id: 'u1', ts: '2026-10-08T02:09:00.000Z', role: 'user' },
-      { id: 'a1', ts: '2026-10-08T02:10:00.000Z', role: 'assistant' },
+      { id: 'u1', ts: isoAgo(1.1), role: 'user' },
+      { id: 'a1', ts: isoAgo(1), role: 'assistant' },
     ));
     await capture.runNightlyCaptureSweep(USER, T0, await nightlySettings());
     const totals = await stats.readRecallCaptureStats(USER);
     expect(totals.sweeps).toBe(1);
     expect(totals.conversationsScanned).toBe(1);
-    const raw = fs.readFileSync(
-      path.join(tmpDir, 'data', USER, 'cloud', 'recall', 'records', 'capture-settings', 'capture-stats.json'),
-      'utf8',
-    );
-    expect(raw).not.toContain('Message u1');
+    // 递归定位统计文件（存储布局以实现为准），断言只含计数、不含原文。
+    const statFile = (() => {
+      const found: string[] = [];
+      const walk = (dir: string) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) walk(full);
+          else if (entry.name === 'capture-stats.json') found.push(full);
+        }
+      };
+      walk(tmpDir);
+      return found[0];
+    })();
+    expect(statFile).toBeTruthy();
+    expect(fs.readFileSync(statFile!, 'utf8')).not.toContain('Message u1');
   });
 });

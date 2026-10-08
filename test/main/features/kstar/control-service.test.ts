@@ -535,21 +535,18 @@ describe('KStar Commander control service', () => {
     expect(newTask).toMatchObject({ title: 'New task after switch', status: 'open' });
     const newRequirement = await seeded.store.readKstarRequirement('user-a', state!.currentRequirementId!);
     expect(newRequirement).toMatchObject({ goalText: 'Fresh goal after the switch' });
-    // Requirement-level precipitation ran (specs/016 分流后 create 线产经验条目，
-    // 不再进资产/候选池——skill_method 映射为 workflow 型经验)。
-    // from the unified candidate pool (设计 §3.2.1).
+    // 2026-10-08 U09：KSTAR 双向隔离——create 型不再直写经验，统一进候选池
+    //（skill_method 提案 → pending_review 候选等用户确认），资产库零新增。
     const assets = await import('../../../../src/main/features/recall/asset-service');
     const abilityAssets = await assets.listAbilityAssets('user-a');
     expect(abilityAssets.filter((asset) => asset.type === 'skill_method')).toHaveLength(0);
     const experiences = await import('../../../../src/main/features/recall/experience-service');
-    const precipitated = (await experiences.listExperiences('user-a'))
-      .filter((exp) => exp.experienceType === 'workflow');
-    expect(precipitated).toHaveLength(1);
-    expect(precipitated[0]).toMatchObject({ status: 'active' });
-    // 候选池零 kstar 候选：经验与资产/候选池完全隔离（specs/016 C-7）。
+    expect(await experiences.listExperiences('user-a')).toHaveLength(0);
     const candidates = await import('../../../../src/main/features/recall/candidate-service');
     const pending = await candidates.listRecallCandidates('user-a');
-    expect(pending.some((c) => String(c.id ?? '').startsWith('kstar-'))).toBe(false);
+    const kstarPending = pending.filter((c) => String(c.captureKey ?? '').startsWith('kstar-'));
+    expect(kstarPending).toHaveLength(1);
+    expect(kstarPending[0]).toMatchObject({ status: 'pending_review', suggestedType: 'skill_method' });
     expect(await recordCounts()).toEqual({ tasks: 2, requirements: 2 });
   });
 
@@ -605,9 +602,15 @@ describe('KStar Commander control service', () => {
 
     const assets = await import('../../../../src/main/features/recall/asset-service');
     const abilityAssets = await assets.listAbilityAssets('user-a');
-    // specs/016 分流：skill_method 型沉淀改落经验（workflow 型），资产库零新增。
+    // 2026-10-08 U09：KSTAR 双向隔离——create 型不再直写经验，统一进候选池
+    //（资产库零新增、经验库零条目、候选 pending_review 待确认）。
     expect(abilityAssets.filter((asset) => asset.type === 'skill_method')).toHaveLength(0);
     const experiences2 = await import('../../../../src/main/features/recall/experience-service');
-    expect((await experiences2.listExperiences('user-a')).filter((exp) => exp.experienceType === 'workflow')).toHaveLength(1);
+    expect(await experiences2.listExperiences('user-a')).toHaveLength(0);
+    const candidates2 = await import('../../../../src/main/features/recall/candidate-service');
+    const kstarCandidates = (await candidates2.listRecallCandidates('user-a'))
+      .filter((c) => String(c.captureKey ?? '').startsWith('kstar-'));
+    expect(kstarCandidates).toHaveLength(1);
+    expect(kstarCandidates[0]).toMatchObject({ status: 'pending_review', suggestedType: 'skill_method' });
   });
 });

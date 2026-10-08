@@ -161,7 +161,7 @@ async function seedRequirementWithLesson(cid: string, goal: string, lesson: stri
 }
 
 describe('KStar design-v4 chain (candidate pool + semantic dedup + auto-close)', () => {
-  it('1. precipitates a lesson into an experience entry (specs/016 分流：不进候选池不产资产)', async () => {
+  it('1. precipitates a lesson into a candidate (2026-10-08 U09：不写经验不产资产)', async () => {
     const cid = newCid();
     const requirementId = await seedRequirementWithLesson(cid, '写一份 500 字资料', 'N 字资料类请求：交付开头注明实际字数并按板块组织');
     const precipitation = await import('../../../../src/main/features/kstar/task-level-precipitation');
@@ -170,28 +170,27 @@ describe('KStar design-v4 chain (candidate pool + semantic dedup + auto-close)',
 
     const result = await precipitation.precipitateRequirementLevel('user-a', requirement!);
 
-    // specs/016 T013/T014（FR-001）：lesson 型 create 提案改道写经验条目——
-    // 不落统一候选池（kstar- captureKey 零出现）、不自动晋升资产。
-    expect(result.experienceIds).toHaveLength(1);
-    expect(result.candidateIds).toEqual([]);
+    // 2026-10-08 U09：KSTAR 双向隔离——create 型不再直写经验，统一进候选池
+    //（产 pending_review 候选只作建议），经验库与资产库零产出。
+    expect(result.candidateIds).toHaveLength(1);
+    expect(result.experienceIds).toEqual([]);
     expect(result.createdAssetIds).toEqual([]);
-    const experiences = await import('../../../../src/main/features/recall/experience-service');
-    const stored = await experiences.listExperiences('user-a');
-    const exp = stored.find((e) => e.id === result.experienceIds[0]);
-    expect(exp).toBeDefined();
-    expect(exp!.body).toContain('N 字资料');
-    expect(exp!.experienceType).toBe('lesson');
-    expect(exp!.status).toBe('active');
     const candidates = await import('../../../../src/main/features/recall/candidate-service');
     const all = await candidates.listRecallCandidates('user-a');
-    expect(all.some((c) => String(c.captureKey).startsWith('kstar-'))).toBe(false);
+    const kstar = all.filter((c) => String(c.captureKey ?? '').startsWith('kstar-'));
+    expect(kstar).toHaveLength(1);
+    expect(kstar[0]).toMatchObject({ status: 'pending_review', suggestedType: 'rule' });
+    expect(String(kstar[0].judgment)).toContain('N 字资料');
+    const experiences = await import('../../../../src/main/features/recall/experience-service');
+    expect(await experiences.listExperiences('user-a')).toHaveLength(0);
     const assets = await import('../../../../src/main/features/recall/asset-service');
     expect(await assets.listAbilityAssets('user-a')).toHaveLength(0);
   });
 
-  it('2. 分流后 create 线零资产；不同任务的相近表述各自成条、同任务重沉淀经验不重复', async () => {
+  it('2. U09 后 create 线零资产；不同任务的相近表述各自成候选、同任务重沉淀候选不重复', async () => {
     const similarity = await import('../../../../src/main/features/recall/similarity');
     // Both lessons "say the same thing" → identical embedding → cosine 1.0.
+    // （U09 后 create 线不走自动晋升的语义查重，注入仅保留夹具原状。）
     const vector = Array.from({ length: 8 }, (_, i) => (i === 0 ? 1 : 0));
     similarity._injectEmbeddingForTest('user-a', 'A 类任务：交付开头注明实际字数', vector);
     similarity._injectEmbeddingForTest('user-a', 'B 类任务：开头标注真实字数', vector);
@@ -208,20 +207,20 @@ describe('KStar design-v4 chain (candidate pool + semantic dedup + auto-close)',
     const r2 = await store.readKstarRequirement('user-a', req2);
     const result2 = await precipitation.precipitateRequirementLevel('user-a', r2!);
 
-    // specs/016 D2：create 线不再走自动晋升的语义查重（那是资产通道的
-    // 机制）——「不重复」的保证改为经验 id 幂等。资产面对 create 线零产出。
+    // 2026-10-08 U09：KSTAR 双向隔离——create 型不再直写经验，统一进候选池
+    //「不重复」的保证改为候选 captureKey 幂等；资产面对 create 线零产出。
     const assets = await import('../../../../src/main/features/recall/asset-service');
     const all = await assets.listAbilityAssets('user-a');
     expect(all).toHaveLength(0);
     expect(result2.createdAssetIds).toHaveLength(0);
     expect(result2.mergedIntoIds).toEqual([]);
-    // 不同任务（不同 episode）的相近表述各自成条（各自溯源，data-model 关系）。
-    expect(result2.experienceIds).toHaveLength(1);
-    // 同一任务重复沉淀：经验不重复（id 稳定派生，createExperience 幂等）。
+    // 不同任务（不同 requirement → 不同 captureKey）的相近表述各自成候选。
+    expect(result2.candidateIds).toHaveLength(1);
+    // 同一任务重复沉淀：候选不重复（captureKey 稳定指纹 → 同一候选 id）。
     const again = await precipitation.precipitateRequirementLevel('user-a', r2!);
-    expect(again.experienceIds).toEqual(result2.experienceIds);
-    const experiences = await import('../../../../src/main/features/recall/experience-service');
-    expect((await experiences.listExperiences('user-a')).filter((e) => e.id === result2.experienceIds[0])).toHaveLength(1);
+    expect(again.candidateIds).toEqual(result2.candidateIds);
+    const candidates = await import('../../../../src/main/features/recall/candidate-service');
+    expect((await candidates.listRecallCandidates('user-a')).filter((c) => c.id === result2.candidateIds[0])).toHaveLength(1);
   });
 
   it('3. quiet-window auto-close: schedule → pendingAutoCloseAt → expiry runs finish', async () => {

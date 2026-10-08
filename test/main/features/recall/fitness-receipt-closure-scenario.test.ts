@@ -118,14 +118,16 @@ describe('2026-08-17 修复集场景（边界单路径 + 回执并集 + 语言�
     // 单边界：只带 applicableWhen，不带 forbiddenWhen
     expect(result.proposals[0].applicableWhen).toBeTruthy();
     expect((result.proposals[0] as { forbiddenWhen?: string[] }).forbiddenWhen).toBeUndefined();
-    // 系统线沉淀不被 rule_boundary_required 阻断（specs/016 分流后落经验条目）
+    // 2026-10-08 U09：KSTAR 双向隔离——create 型不再直写经验条目，统一进
+    // 候选池作建议（等用户确认）；经验库零新增。
     expect(result.createdAssetIds).toEqual([]);
-    expect(result.experienceIds).toHaveLength(1);
-    const experiences = await import('../../../../src/main/features/recall/experience-service');
-    const exp = await experiences.readExperience(UID, result.experienceIds![0]);
-    expect(exp.experienceType).toBe('lesson');
-    expect(exp.status).toBe('active');
-    expect(exp.body).toContain('写城市资料时应先收集数据再成文');
+    expect(result.experienceIds).toEqual([]);
+    expect(result.candidateIds).toHaveLength(1);
+    const candidates = await import('../../../../src/main/features/recall/candidate-service');
+    const cand = await candidates.readRecallCandidate(UID, result.candidateIds[0]);
+    expect(cand.suggestedType).toBe('rule');
+    expect(cand.status).toBe('pending_review');
+    expect(cand.judgment).toContain('写城市资料时应先收集数据再成文');
   });
 
   it('B. drain 收口：drainKstarTaskState 不产候选，requirement 级为唯一沉淀路径（A1）', async () => {
@@ -165,20 +167,22 @@ describe('2026-08-17 修复集场景（边界单路径 + 回执并集 + 语言�
     expect(drainResult?.candidates).toEqual([]);
     expect(drainResult?.task.status).toBe('closed');
 
-    // 2. requirement 级路径正常产出（唯一沉淀路径）
+    // 2. requirement 级路径正常产出（唯一沉淀路径）。
+    // 2026-10-08 U09：KSTAR 双向隔离——create 型不再直写经验，统一进候选池
+    // 作建议；经验库零新增。
     const precipitation = await import('../../../../src/main/features/kstar/task-level-precipitation');
     const result = await precipitation.precipitateRequirementLevel(UID, requirement);
-    expect(result.experienceIds).toHaveLength(1);
+    expect(result.experienceIds).toEqual([]);
+    expect(result.candidateIds).toHaveLength(1);
 
-    // 3. 无双写：requirement 级恰好产一条经验（drain 线不带来重复沉淀），
-    //    且分流后候选池零记录（specs/016：create 线与候选池完全隔离）。
+    // 3. 恰好一条候选（drain 线不带来重复沉淀），judgment 承载 lesson。
     const candidates = await import('../../../../src/main/features/recall/candidate-service');
     const pool = await candidates.listRecallCandidates(UID);
-    expect(pool.filter((c) => String(c.judgment).includes('城市资料交付应注明实际字数'))).toHaveLength(0);
+    expect(pool.filter((c) => String(c.judgment).includes('城市资料交付应注明实际字数'))).toHaveLength(1);
     const experiencesB = await import('../../../../src/main/features/recall/experience-service');
     const relatedExp = (await experiencesB.listExperiences(UID))
       .filter((exp) => exp.body.includes('城市资料交付应注明实际字数'));
-    expect(relatedExp).toHaveLength(1);
+    expect(relatedExp).toHaveLength(0);
   });
 
   it('C. 迁移证明回执并集覆盖：多回合分散注入仍升档（B4）', async () => {

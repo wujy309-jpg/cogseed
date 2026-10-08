@@ -640,8 +640,9 @@ describe('US-701 四态反馈与幂等（T018）', () => {
     expect(blockedRecord?.conclusion).toBe('insufficient_evidence');
     expect(blockedRecord?.conclusion).not.toBe('no_update');
 
-    // 新建型提案不受采用门影响（门只管"改既有对象"）——specs/016 分流后
-    // 等价表达为：照常产出沉淀物（经验条目），且不进候选池。
+    // 新建型提案不受采用门影响（门只管"改既有对象"）——照常产出沉淀物。
+    // 2026-10-08 U09：KSTAR 双向隔离——create 型不再直写经验，统一进候选池
+    //（pending_review 候选，用户确认后才落资产）。
     const created = await direct.precipitateDirectExperienceAssets(USER, episode, [{
       judgment: 'Write the section outline before drafting the report body.',
       summary: '报告先列大纲',
@@ -649,7 +650,7 @@ describe('US-701 四态反馈与幂等（T018）', () => {
       suggestedScope: 'report',
       sourceRefs: [{ kind: 'execution', id: EPISODE }],
     }]);
-    expect(created.candidateIds).toEqual([]);
-    expect(created.experienceIds).toHaveLength(1);
+    expect(created.candidateIds).toHaveLength(1);
+    expect(created.experienceIds).toEqual([]);
   });
 });

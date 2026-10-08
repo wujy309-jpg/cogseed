@@ -3496,16 +3496,8 @@ export async function runNightlyCaptureSweep(
         counters.skipped += 1;
         continue;
       }
-      if (cursor?.throughMessageId === latest.id) {
-        cursors[cid] = {
-          state: 'covered',
-          throughMessageId: latest.id,
-          ...(isIsoTimestamp(latest.ts) ? { throughTs: latest.ts } : {}),
-          updatedAt: startedAt,
-        };
-        counters.skipped += 1;
-        continue;
-      }
+      // 覆盖同一最新消息的捕获优先判定：失败/待配置的覆盖捕获要先走
+      // 有限重试（cursor 命中短路会让失败的覆盖捕获永远轮不到重试）。
       const covering = (capturesByConversation.get(cid) || [])
         .find((capture) => capture.messageIds.at(-1) === latest.id);
       if (covering) {
@@ -3553,6 +3545,16 @@ export async function runNightlyCaptureSweep(
           counters.skipped += 1;
           continue;
         }
+      } else if (cursor?.throughMessageId === latest.id) {
+        // 无覆盖捕获但水位已到最新（如捕获记录被清理）：记 covered 即可。
+        cursors[cid] = {
+          state: 'covered',
+          throughMessageId: latest.id,
+          ...(isIsoTimestamp(latest.ts) ? { throughTs: latest.ts } : {}),
+          updatedAt: startedAt,
+        };
+        counters.skipped += 1;
+        continue;
       } else {
         const tail = sweepTailMessages(messages, cursor, baselineMs);
         const anchor = tail.find((message) => message.from === 'user');

@@ -213,13 +213,14 @@ describe('post-merge full-chain scenario (Commander-centric KStar on merged tree
 
     const result = await precipitation.precipitateRequirementLevel('user-a', requirement!);
 
-    expect(result.experienceIds!.length).toBeGreaterThan(0);
+    // 2026-10-08 U09：KSTAR 双向隔离——lesson 不再直写经验条目，统一进
+    // 候选池作建议；经验库零新增，等用户确认后走正式写口。
+    expect(result.experienceIds).toEqual([]);
     expect(result.createdAssetIds).toEqual([]);
-    const experiences = await import('../../../../src/main/features/recall/experience-service');
-    const entry = await experiences.readExperience('user-a', result.experienceIds![0]);
-    // Lesson became the experience body; 经验无成熟度/生命周期口径（specs/016 D12）。
-    expect(entry.body).toContain('N 字资料');
-    expect(entry.experienceType).toBe('lesson');
-    expect(entry.status).toBe('active');
+    expect(result.candidateIds!.length).toBeGreaterThan(0);
+    const candidates = await import('../../../../src/main/features/recall/candidate-service');
+    const cand = await candidates.readRecallCandidate('user-a', result.candidateIds![0]);
+    expect(cand.status).toBe('pending_review');
+    expect(cand.judgment).toContain('N 字资料');
   });
 });
