@@ -247,3 +247,28 @@ describe('spawn-command · node fallback (WorkBuddy codebuddy without system nod
     expect(resolved.envPatch).toBeUndefined();
   });
 });
+
+// 对照 Orkas 的事故记录（2026-10-08 审计 P0）：Electron 的进程控制变量是「我们的」，
+// 不是 CLI 的。CLI agent 会跑任意用户命令，从它启动的 Electron 应用若继承
+// ELECTRON_RUN_AS_NODE，会以纯 Node 启动然后「秒退」——agent 把这假失败当真去 debug。
+describe('buildCliSpawnEnv › Electron 进程控制变量不得泄漏给 CLI', () => {
+  it('strips ELECTRON_RUN_AS_NODE / ELECTRON_NO_ASAR and keeps the user env', async () => {
+    const { buildCliSpawnEnv } = await import('../../../../src/main/features/local_agents/spawn-command');
+    const out = buildCliSpawnEnv('/usr/local/bin/claude', {
+      PATH: '/usr/bin:/bin',
+      ELECTRON_RUN_AS_NODE: '1',
+      ELECTRON_NO_ASAR: '1',
+      HOME: '/Users/someone',
+      ANTHROPIC_API_KEY: 'sk-test',
+    } as NodeJS.ProcessEnv, 'darwin', '/Users/someone');
+
+    expect(out.ELECTRON_RUN_AS_NODE).toBeUndefined();
+    expect(out.ELECTRON_NO_ASAR).toBeUndefined();
+    // 用户环境原样保留（我们只摘掉自己的变量）
+    expect(out.HOME).toBe('/Users/someone');
+    expect(out.ANTHROPIC_API_KEY).toBe('sk-test');
+    expect(out.PATH).toContain('/usr/bin');
+    // PATH 仍按平台补齐 CLI 自身目录
+    expect(out.PATH).toContain('/usr/local/bin');
+  });
+});

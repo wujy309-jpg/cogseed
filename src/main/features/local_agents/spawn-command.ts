@@ -69,6 +69,12 @@ export function buildCliSpawnEnv(
   home = os.homedir(),
 ): NodeJS.ProcessEnv {
   const out = { ...env };
+  // Electron 的进程控制变量是「我们的」，不是 CLI 的：CLI agent 会跑任意用户命令，
+  // 从它启动的任何 Electron 应用都会继承这两个变量——带 ELECTRON_RUN_AS_NODE 时
+  // 那个应用会以纯 Node 启动然后「秒退」，agent 于是把这**假失败**当真去 debug 好几轮
+  // （Orkas 复盘里有同款事故记录）。子进程该看到的是用户环境，不是我们的。
+  delete out.ELECTRON_RUN_AS_NODE;
+  delete out.ELECTRON_NO_ASAR;
   const delimiter = platform === 'win32' ? ';' : ':';
   const pathApi = platform === 'win32' ? path.win32 : path.posix;
   const rawPath = env.PATH || env.Path || '';
