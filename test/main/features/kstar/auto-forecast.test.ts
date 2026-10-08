@@ -1,9 +1,12 @@
-import { describe, expect, it, beforeAll, afterAll } from 'vitest';
+import { describe, expect, it, beforeAll, afterAll, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { drainMainRuntimeForTest } from '../../../helpers/drain-main-runtime';
+
+// Historical forecast primitive fixtures remain testable; the production hard boundary is verified independently.
+vi.mock('../../../../src/main/features/cognition/integration-boundary', () => ({ cognitionIntegrationIsolated: () => false }));
 
 let tmp: string;
 let previous: string | undefined;

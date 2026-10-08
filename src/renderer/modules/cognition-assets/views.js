@@ -3853,7 +3853,7 @@
   let lastRenderKey = '';
   let treeSettlePass = 0;
   function routeKey(route) {
-    return [route.name, route.assetId, route.candidateId, route.moduleId, route.recordId, route.recordVersion, route.captureId, route.category, route.captureBucket, route.experienceId, route.activityDone].join('|');
+    return [route.name, route.assetId, route.candidateId, route.moduleId, route.recordId, route.recordVersion, route.captureId, route.inboxId, route.poCandidateId, route.activityView, route.activityPage, route.category, route.captureBucket, route.experienceId, route.activityDone].join('|');
   }
 
   function render(opts) {

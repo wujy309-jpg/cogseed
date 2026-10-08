@@ -61,7 +61,7 @@ describe('Recall capture value screening', () => {
     expect(result).toMatchObject({ eligible: false, reason: 'no_result' });
   });
 
-  it('allows a substantial exchange through for model-level judgment', () => {
+  it('does not retain an ordinary comparison merely because it is long', () => {
     const result = screenRecallCaptureValue([
       {
         role: 'user',
@@ -77,7 +77,7 @@ describe('Recall capture value screening', () => {
       },
     ]);
 
-    expect(result).toEqual({ eligible: true, signals: ['substantive_exchange'] });
+    expect(result).toEqual({ eligible: false, signals: [], reason: 'low_reuse_value' });
   });
 });
 
@@ -550,5 +550,19 @@ describe('临时任务规则的长期边界', () => {
     expect(isTaskLocalRuleProposal(candidate, [{ role: 'user', text: '本次只查询姓名。以后每次查询姓名都必须保持只读。' }])).toBe(false);
     expect(isTaskLocalRuleProposal({ ...candidate, suggestedType: 'template' }, [{ role: 'user', text: '本次只处理验收清单模板。' }])).toBe(false);
     expect(isTaskLocalRuleProposal(candidate, [{ role: 'user', text: '以后每次业务验收都必须核对原始证据。' }])).toBe(false);
+  });
+});
+
+
+describe('收敛后的粗筛边界', () => {
+  it('普通问答即使含技术词也不靠关键词进入沉淀', () => {
+    const prompts = ['解释一下这个方法', '帮我生成这次活动的清单', '这次报告用表格', '继续', '现在进展如何', '谢谢', '分析一下这份文件', '这段代码为什么报错', '今天吃什么'];
+    for (const text of prompts) expect(screenRecallCaptureValue([{ role: 'user', text }, { role: 'assistant', text: '已完成这次请求，下面是方法、模板、流程和输出结果。' }]).eligible).toBe(false);
+  });
+  it('明确长期要求和稳定个人字段不会因对话短而被丢弃', () => {
+    for (const text of ['以后解释陌生技术时，请先讲清楚是什么。', '我的职业是软件工程师。', 'My native language is Japanese.']) expect(screenRecallCaptureValue([{ role: 'user', text }, { role: 'assistant', text: '明白，这是你明确提供的信息。' }]).eligible).toBe(true);
+  });
+  it('询问自身信息不是对身份事实的确认', () => {
+    expect(screenRecallCaptureValue([{ role: 'user', text: '我的职业是什么？' }, { role: 'assistant', text: '暂时不知道，需要你明确提供。' }]).eligible).toBe(false);
   });
 });

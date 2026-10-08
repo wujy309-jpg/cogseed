@@ -1,3 +1,4 @@
+import { cognitionIntegrationIsolated } from '../cognition/integration-boundary';
 import { createLogger } from '../../logger';
 import { loadCommittedProjectionKnowledge } from '../recall/projection-knowledge';
 import { listAbilityAssets } from '../recall/asset-service';
@@ -123,6 +124,7 @@ async function runAutoForecastForRequirement(
       });
     } catch { /* observability must not block execution */ }
   };
+  if (cognitionIntegrationIsolated()) { await setStatus('skipped', 'ordinary cognition integration isolated'); return { ok: false, reason: 'ordinary cognition integration isolated' }; }
   try {
     const { readKstarRequirement } = await import('./requirement-store');
     const requirement = await readKstarRequirement(userId, requirementId);

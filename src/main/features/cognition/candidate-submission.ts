@@ -1,12 +1,7 @@
-/** Classify once, then write through the established candidate/promotion contract. */
-import { routeAndSubmit } from '../cognition_kernel/pipeline';
-import type { ContentHome } from '../cognition_kernel/types';
-import type { SaveRecallCandidateInput, RecallCandidateRecord } from '../recall/candidate-service';
+/** 类型是生产者建议；候选保存不把建议转换为确定的内容归属。 */
+import { saveRecallCandidate, type SaveRecallCandidateInput, type RecallCandidateRecord } from '../recall/candidate-service';
+import { isKstarCognitionSource } from './integration-boundary';
 export async function submitCognitionCandidate(userId: string, input: SaveRecallCandidateInput): Promise<RecallCandidateRecord> {
-  const homeByType: Record<string, ContentHome> = { personal: 'personal_fact', fact: 'personal_fact', rule: 'rule', template: 'template', skill_method: 'method' };
-  const explicitHome = homeByType[input.suggestedType];
-  if (!explicitHome) throw new Error('invalid candidate type');
-  const result = await routeAndSubmit(userId, { statement: input.judgment, explicitHome }, { canonicalInput: input });
-  if (!result.candidate) throw new Error(result.error || 'candidate submission failed');
-  return result.candidate;
+  if (isKstarCognitionSource(input)) throw new Error('KSTAR cognition integration isolated');
+  return saveRecallCandidate(userId, input);
 }

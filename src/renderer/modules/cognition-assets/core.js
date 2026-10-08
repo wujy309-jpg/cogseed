@@ -393,7 +393,7 @@
     /** 整理页：会话列表是否展开全部（默认收拢 5 条）。 */
     organizeListExpanded: false,
     /** 路由：{name, category, assetId, candidateId, proofEventId, captureBucket, captureId, sourceIssueOpen} */
-    route: { name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', candCreate: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '', manage: '' },
+    route: { name: 'tree', category: '', assetId: '', candidateId: '', proofEventId: '', inboxId: '', poCandidateId: '', activityQuery: '', activityPage: '', captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', candCreate: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '', manage: '' },
     /** 资产详情异步补数会触发整页 render；编辑表单草稿留在 store，防止
      * 版本/回执/排序依据到达时替换 DOM 并丢掉用户尚未保存的输入。 */
     assetEditDrafts: {},
@@ -406,11 +406,11 @@
   /** 派生统计：全部从这里取，视图不自己算口径。 */
   NS.stats = function stats() {
     const s = store;
-    const confirmed = s.assets.filter((a) => String(a.status || 'active') !== 'archived').length;
+    const confirmed = s.assets.filter((a) => !['archived', 'deleted', 'purged', 'revoked'].includes(String(a.status || 'active'))).length;
     // 待确认口径（2026-09-16 B1 统一）：需要判断且未被"稍后处理"静音——
     // 与 views.candidateAwaiting 同一份口径（countsAsPending && !isSnoozed），
     // deferred 不再占「待确认」名额（三套口径 7/5/0 分叉的修复）。
-    const pending = s.candidates.filter((c) => (c.capabilities && c.capabilities.countsAsPending) && !(c.capabilities && c.capabilities.isSnoozed)).length;
+    const pending = s.candidates.filter((c) => !(NS.isKstarCandidate && NS.isKstarCandidate(c)) && (c.capabilities && c.capabilities.countsAsPending) && !(c.capabilities && c.capabilities.isSnoozed)).length;
     const validated = s.assets.filter((a) => a.maturity === 'effectiveness_validated').length;
     const transferOk = s.assets.filter((a) => a.maturity === 'transfer_validated' || a.maturity === 'effectiveness_validated').length;
     const sourceIssues = s.sources
@@ -452,7 +452,6 @@
         BLOCK_FETCHERS.candidates(),
         BLOCK_FETCHERS.captures(),
         BLOCK_FETCHERS.settings(),
-        BLOCK_FETCHERS.sources(),
         BLOCK_FETCHERS.inbox(),
         BLOCK_FETCHERS.timeline(),
       ]);
@@ -544,7 +543,7 @@
       // 记录（页面只显示最近 5 条）并做字段白名单投影；细分分组仍在本层做。
       const gen = beginBlockRead('candidates');
       try {
-        const candidates = await api.call('recall.candidates.list', { view: 'review-queue' }, {});
+        const candidates = await api.call('recall.candidates.list', { view: 'activity-queue' }, {});
         if (isStaleBlockRead('candidates', gen)) return;
         store.candidates = toArr(candidates, ['candidates', 'items']);
         store.candidatesError = '';
@@ -1468,25 +1467,6 @@
     if (!failed) NS.notify();
   };
 
-  const IMPROVEMENT_FAILURE_CONCLUSIONS = new Set(['analysis_failed', 'submit_failed']);
-
-  /** 进「待我处理」页签：补拉结论；有失败类结论时补拉失败面；顺手补复盘摘要
-   *  （来源任务 chip 要显示任务目标，而不是兜底"一次任务"）。各 loader 自带
-   *  缓存/在途守卫，这里只做"什么时候该拉"的判断。 */
-  NS.onChange(() => {
-    if (String((store.route && store.route.name) || '') !== 'activity') return;
-    const state = store.improvementOutcomes;
-    if (!state || state.failed || state.stale) { void NS.loadImprovementOutcomes(); return; }
-    if (state.loading) return;
-    const items = Array.isArray(state.items) ? state.items : [];
-    void NS.loadKstarEpisodeSummariesByIds(items.map((row) => String(row.episodeId || '')));
-    if (!store.kstarFailures || store.kstarFailures.failed) {
-      if (items.some((row) => IMPROVEMENT_FAILURE_CONCLUSIONS.has(String(row.conclusion || '')))) {
-        void NS.loadKstarFailures();
-      }
-    }
-  });
-
   /** 进入承载旧记忆迁移工具卡的页签时读取原文；启动和其他页签均不扫描。
    *  两区已自「待我处理」页尾挪入设置页（2026-09-28 两页重整）——门控路由
    *  清单随挪页扩入 settings；2026-10-08 U04 待我处理页下线后，旧 review
@@ -1552,7 +1532,7 @@
       if (target.category === 'kstar') target = Object.assign({}, target, { category: '' });
       // 先把 next 归一到同一形状再比（部分键字面量 vs 全键展开的序列化恒不等，
       // 连点同一 tab 会堆积重复栈项——2026-09-14 终审修）。
-      const merged = Object.assign({ name: 'tree', category: '', assetId: '', candidateId: '', moduleId: '', recordId: '', recordVersion: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', taskFailedOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', candCreate: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '', manage: '', activityDone: '' }, target);
+      const merged = Object.assign({ name: 'tree', category: '', assetId: '', candidateId: '', moduleId: '', recordId: '', recordVersion: '', proofEventId: '', inboxId: '', poCandidateId: '', activityQuery: '', activityPage: '', captureBucket: '', captureId: '', sourceIssueOpen: '', taskFailedOpen: '', kstarEpisodeId: '', assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '', assetView: '', candCreate: '', experienceId: '', tagFilter: '', tagMode: '', tagUntagged: '', tagSelect: '', tagOverlay: '', manage: '', activityDone: '' }, target);
       const same = JSON.stringify(current) === JSON.stringify(merged);
       if (!opts.replace && !same) store.backStack.push(Object.assign({}, current));
       store.route = merged;

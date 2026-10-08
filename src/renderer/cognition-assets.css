@@ -2060,7 +2060,7 @@
   opacity: 0.45;
 }
 #ca-root .personal-onto-relgraph-edge-label {
-  font-size: 10px; font-weight: 600;
+  font-size: var(--font-size-1); font-weight: 600;
   paint-order: stroke; stroke: var(--color-white); stroke-width: 3px; stroke-linejoin: round;
 }
 #ca-root .personal-onto-relgraph-node-label {
@@ -2074,10 +2074,10 @@
   display: inline-flex; align-items: center; gap: 5px;
 }
 #ca-root .personal-onto-relgraph-legend-item i {
-  display: inline-block; width: 10px; height: 10px; border-radius: 5px; flex: none;
+  display: inline-block; width: 10px; height: 10px; border-radius: var(--radius-pill); flex: none;
 }
 #ca-root .personal-onto-relgraph-legend-item i.is-bar {
-  width: 3px; height: 12px; border-radius: 1.5px;
+  width: 3px; height: 12px; border-radius: var(--radius-pill);
 }
 
 /* ── 待我处理 · 一行式条目（registry CA-PV-006，Proposed）────────────────
@@ -2093,3 +2093,8 @@
 #ca-root .ca-layout-settings .rowline { flex-wrap: wrap; }
 #ca-root .ca-layout-settings .rowline > div:first-child { flex: 1 1 280px; min-width: 0; }
 #ca-root .ca-layout-settings .rowline > .right { flex: 0 1 auto; flex-wrap: wrap; }
+
+/* 变化列表以共享表格承载；条目进入独立详情，避免在列表堆放确认表单。 */
+.ca-activity-changes .ui-data-table td { padding-block:10px; cursor:pointer; }
+.ca-activity-changes .ui-data-table td:first-child { white-space:pre-line; max-width:36rem; }
+.ca-activity-changes tr[tabindex]:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }

@@ -2143,6 +2143,12 @@ export async function runRecallCapture(
           if (isAutoCaptureEligible(matching) || matching.status === 'confirmed') continue;
         }
       }
+      // Automatic output rejected by evidence/value gates must not accumulate as weak observations.
+      const strictReasons = quality.automaticIneligibilityReasons.filter(reason => reason !== 'high_risk_requires_review');
+      if (capture.executionPolicy !== 'manual' && (!quality.reviewable || !classification.ok || strictReasons.length)) {
+        log.info('capture candidate filtered before persistence', { captureId: capture.id, reasons: strictReasons, classification: classification.blockingReasons });
+        continue;
+      }
       const artifactRefs = evidenceMessages.flatMap((message) => message.artifacts.map((artifact) => ({
         kind: 'artifact_file' as const,
         subtype: 'artifact' as const,

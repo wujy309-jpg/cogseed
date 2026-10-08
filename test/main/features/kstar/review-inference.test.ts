@@ -70,7 +70,7 @@ describe('KSTAR review inference', () => {
     expect(result.review.actualResult).toContain('auth.test.ts');
   });
 
-  it('feeds referenced assets (in-use versions) into review input for lesson fusion（2026-09-16 版本组）', async () => {
+  it('does not feed ordinary cognition assets into isolated review input（2026-09-16 版本组）', async () => {
     const inference = await import('../../../../src/main/features/kstar/review-inference');
     let capturedMessage = '';
     const runModel = vi.fn(async ({ message }: { message: string }) => {
@@ -81,9 +81,9 @@ describe('KSTAR review inference', () => {
       k: { memoryRefs: [], contextRefs: [], abilityAssetRefs: ['asset-fuse-1'] },
     }), { runModel });
 
-    expect(capturedMessage).toContain('referencedAssets');
-    expect(capturedMessage).toContain('asset-fuse-1');
-    expect(capturedMessage).toContain('decision log');
+    expect(capturedMessage).not.toContain('referencedAssets');
+    expect(capturedMessage).not.toContain('asset-fuse-1');
+    expect(capturedMessage).not.toContain('decision log');
   });
 
   it('uses strict model analysis for a completed task without objective verification', async () => {

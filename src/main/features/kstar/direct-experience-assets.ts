@@ -1,3 +1,4 @@
+import { cognitionIntegrationIsolated } from '../cognition/integration-boundary';
 import { createLogger } from '../../logger';
 import { safeId } from '../../storage';
 import { classifyAbilityAssetWriteFailure, readAbilityAsset } from '../recall/asset-service';
@@ -283,6 +284,7 @@ export async function precipitateDirectExperienceAssets(
   proposals: KstarCandidateProposal[],
 ): Promise<PrecipitateDirectExperienceResult> {
   if (!safeId(userId) || !safeId(episode.id)) throw new Error('invalid direct experience reference');
+  if (cognitionIntegrationIsolated()) return { createdAssetIds: [], candidateIds: [], experienceIds: [], mergedIntoIds: [], updateCandidateIds: [], failureIds: [] };
   const admission = await kstarPrecipitationAdmission(userId, {
     source: 'direct_experience',
     episodes: [episode],
@@ -321,6 +323,7 @@ export async function precipitateDirectExperienceFromSource(
   routing: DirectExperienceRouting,
 ): Promise<PrecipitateDirectExperienceResult> {
   if (!safeId(userId) || !safeId(source.id)) throw new Error('invalid direct experience reference');
+  if (cognitionIntegrationIsolated()) return { createdAssetIds: [], candidateIds: [], experienceIds: [], mergedIntoIds: [], updateCandidateIds: [], failureIds: [] };
   // 提交前取采用证据 + 准入（T007/T010/T011）：门在写入之前**只走一次**，
   // 两条线共用同一判定，不存在绕过它的第二出口。分流在准入**之后**——
   // 被准入拦下的提案既不落候选也不写经验（specs/016：分流的分流点在准入

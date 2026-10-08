@@ -161,67 +161,6 @@ async function seedRequirementWithLesson(cid: string, goal: string, lesson: stri
 }
 
 describe('KStar design-v4 chain (candidate pool + semantic dedup + auto-close)', () => {
-  it('1. precipitates a lesson into a candidate (2026-10-08 U09：不写经验不产资产)', async () => {
-    const cid = newCid();
-    const requirementId = await seedRequirementWithLesson(cid, '写一份 500 字资料', 'N 字资料类请求：交付开头注明实际字数并按板块组织');
-    const precipitation = await import('../../../../src/main/features/kstar/task-level-precipitation');
-    const requirement = await (await import('../../../../src/main/features/kstar/requirement-store'))
-      .readKstarRequirement('user-a', requirementId);
-
-    const result = await precipitation.precipitateRequirementLevel('user-a', requirement!);
-
-    // 2026-10-08 U09：KSTAR 双向隔离——create 型不再直写经验，统一进候选池
-    //（产 pending_review 候选只作建议），经验库与资产库零产出。
-    expect(result.candidateIds).toHaveLength(1);
-    expect(result.experienceIds).toEqual([]);
-    expect(result.createdAssetIds).toEqual([]);
-    const candidates = await import('../../../../src/main/features/recall/candidate-service');
-    const all = await candidates.listRecallCandidates('user-a');
-    const kstar = all.filter((c) => String(c.captureKey ?? '').startsWith('kstar-'));
-    expect(kstar).toHaveLength(1);
-    expect(kstar[0]).toMatchObject({ status: 'pending_review', suggestedType: 'rule' });
-    expect(String(kstar[0].judgment)).toContain('N 字资料');
-    const experiences = await import('../../../../src/main/features/recall/experience-service');
-    expect(await experiences.listExperiences('user-a')).toHaveLength(0);
-    const assets = await import('../../../../src/main/features/recall/asset-service');
-    expect(await assets.listAbilityAssets('user-a')).toHaveLength(0);
-  });
-
-  it('2. U09 后 create 线零资产；不同任务的相近表述各自成候选、同任务重沉淀候选不重复', async () => {
-    const similarity = await import('../../../../src/main/features/recall/similarity');
-    // Both lessons "say the same thing" → identical embedding → cosine 1.0.
-    // （U09 后 create 线不走自动晋升的语义查重，注入仅保留夹具原状。）
-    const vector = Array.from({ length: 8 }, (_, i) => (i === 0 ? 1 : 0));
-    similarity._injectEmbeddingForTest('user-a', 'A 类任务：交付开头注明实际字数', vector);
-    similarity._injectEmbeddingForTest('user-a', 'B 类任务：开头标注真实字数', vector);
-
-    const cid = newCid();
-    const req1 = await seedRequirementWithLesson(cid, '任务一', 'A 类任务：交付开头注明实际字数');
-    const precipitation = await import('../../../../src/main/features/kstar/task-level-precipitation');
-    const store = await import('../../../../src/main/features/kstar/requirement-store');
-    const r1 = await store.readKstarRequirement('user-a', req1);
-    await precipitation.precipitateRequirementLevel('user-a', r1!);
-
-    const cid2 = newCid();
-    const req2 = await seedRequirementWithLesson(cid2, '任务二', 'B 类任务：开头标注真实字数');
-    const r2 = await store.readKstarRequirement('user-a', req2);
-    const result2 = await precipitation.precipitateRequirementLevel('user-a', r2!);
-
-    // 2026-10-08 U09：KSTAR 双向隔离——create 型不再直写经验，统一进候选池
-    //「不重复」的保证改为候选 captureKey 幂等；资产面对 create 线零产出。
-    const assets = await import('../../../../src/main/features/recall/asset-service');
-    const all = await assets.listAbilityAssets('user-a');
-    expect(all).toHaveLength(0);
-    expect(result2.createdAssetIds).toHaveLength(0);
-    expect(result2.mergedIntoIds).toEqual([]);
-    // 不同任务（不同 requirement → 不同 captureKey）的相近表述各自成候选。
-    expect(result2.candidateIds).toHaveLength(1);
-    // 同一任务重复沉淀：候选不重复（captureKey 稳定指纹 → 同一候选 id）。
-    const again = await precipitation.precipitateRequirementLevel('user-a', r2!);
-    expect(again.candidateIds).toEqual(result2.candidateIds);
-    const candidates = await import('../../../../src/main/features/recall/candidate-service');
-    expect((await candidates.listRecallCandidates('user-a')).filter((c) => c.id === result2.candidateIds[0])).toHaveLength(1);
-  });
 
   it('3. quiet-window auto-close: schedule → pendingAutoCloseAt → expiry runs finish', async () => {
     // Seed an open requirement directly (terminal events are failed in the

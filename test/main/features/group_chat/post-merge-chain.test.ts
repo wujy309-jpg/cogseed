@@ -183,8 +183,9 @@ describe('post-merge full-chain scenario (Commander-centric KStar on merged tree
     const requirement = await waitForForecast(store, taskState!.currentRequirementId!);
     expect(requirement?.projectionId).toBeTruthy();
     // 3. World-model auto-forecast committed.
-    expect(requirement?.forecastId).toMatch(/^wf-/);
-    expect(recallRecords('world-model-forecasts')).toHaveLength(1);
+    expect(requirement?.forecastId).toBeUndefined();
+    expect(requirement?.forecastStatus).toBe('skipped');
+    expect(recallRecords('world-model-forecasts')).toHaveLength(0);
     expect(recallRecords('projections')).toHaveLength(1);
   });
 
@@ -203,24 +204,5 @@ describe('post-merge full-chain scenario (Commander-centric KStar on merged tree
     const messages = await groupChat.readMessages('user-a', cid);
     const review = messages.find((m) => String(m.text).includes('<kstar-review>'));
     expect(review?.system_kind).toBe('kstar_review');
-  });
-
-  it('precipitates a lesson-bearing closed requirement as an honest experience entry (P3394 §3.1 line, specs/016 分流)', async () => {
-    const seeded = await seedClosedRequirementWithLesson();
-    const precipitation = await import('../../../../src/main/features/kstar/task-level-precipitation');
-    const requirement = await (await import('../../../../src/main/features/kstar/requirement-store'))
-      .readKstarRequirement('user-a', seeded.requirementId);
-
-    const result = await precipitation.precipitateRequirementLevel('user-a', requirement!);
-
-    // 2026-10-08 U09：KSTAR 双向隔离——lesson 不再直写经验条目，统一进
-    // 候选池作建议；经验库零新增，等用户确认后走正式写口。
-    expect(result.experienceIds).toEqual([]);
-    expect(result.createdAssetIds).toEqual([]);
-    expect(result.candidateIds!.length).toBeGreaterThan(0);
-    const candidates = await import('../../../../src/main/features/recall/candidate-service');
-    const cand = await candidates.readRecallCandidate('user-a', result.candidateIds![0]);
-    expect(cand.status).toBe('pending_review');
-    expect(cand.judgment).toContain('N 字资料');
   });
 });

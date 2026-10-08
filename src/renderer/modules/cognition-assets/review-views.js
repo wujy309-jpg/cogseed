@@ -29,11 +29,11 @@
 
   /* ────────────────────────── 视图：系统活动 ────────────────────────── */
 
-  function viewActivity(route) {
+  function governanceDetail(route) {
     // A5（2026-09-29）：候选清单读取失败进显式错误态——不再把「没读到」伪装
     // 成「没有要你决定的」空态。P-r1-58（2026-10-02）：读失败判定先于深链
     // 分支——错误态对深链同样成立：先如实报清单读取失败并给重试入口。
-    if (S.candidatesError) {
+    if (S.candidatesError && !route.inboxId && !route.poCandidateId) {
       return `${hero(T('cognition.tab_activity', '系统活动'), '')}
       <div class="sect-block">${empty(
         T('cognition.review_load_failed_title', '清单没能读取'),
@@ -45,15 +45,15 @@
     const doneView = String(route.activityDone || '') === '1';
     const stats = NS.stats();
     const vocab = NS.vocabulary;
-    const pending = S.candidates.filter(candidatePending);
+    const pending = route.inboxId || route.poCandidateId ? [] : S.candidates.filter(candidatePending);
     const displayState = (c) => String(((c || {}).capabilities || {}).displayState || '');
     const awaiting = pending.filter(candidateAwaiting);
     const broken = awaiting.filter(evidenceMostlyUnavailable);
     const weak = awaiting.filter((c) => !evidenceMostlyUnavailable(c) && displayState(c) === 'weak_evidence');
     const ready = awaiting.filter((c) => !evidenceMostlyUnavailable(c) && displayState(c) !== 'weak_evidence');
     const snoozed = pending.filter((c) => c.capabilities && c.capabilities.isSnoozed);
-    const terminal = S.candidates.filter((c) => ['expired', 'superseded'].includes(displayState(c)) && !candidatePending(c)).slice(0, 8);
-    const processed = S.candidates
+    const terminal = (route.inboxId || route.poCandidateId ? [] : S.candidates).filter((c) => ['expired', 'superseded'].includes(displayState(c)) && !candidatePending(c)).slice(0, 8);
+    const processed = (route.inboxId || route.poCandidateId ? [] : S.candidates)
       .filter((c) => ['confirmed', 'integrated', 'rejected', 'ignored'].includes(String(c.status || '')));
     const processedLabel = (c) => ({
       confirmed: T('cognition.candidate_status_promoted', '已保存'),
@@ -92,8 +92,8 @@
       attention.push(`<div class="notice-row" data-act="toggle-task-failed" ${roleBtn()}><div class="notice-copy"><div class="notice-title">${esc(T('cognition.overview_task_failed', '{count} 个任务执行失败（未得到回复）', { count: String(stats.taskFailed) }))}</div></div><span class="sp"></span>${btn(T('cognition.review_task_failed_open', '看是哪几次'), 'toggle-task-failed', { small: true, className: 'o' })}</div>`);
     }
     // 治理待办 / 待确认清单（渲染层只渲染读模型给的动作 item.actions）。
-    const inboxItems = Array.isArray(S.inbox) ? S.inbox : [];
-    const inboxGroups = Array.isArray(S.inboxGroups) ? S.inboxGroups : null;
+    const inboxItems = (route.poCandidateId ? [] : Array.isArray(S.inbox) ? S.inbox : []).filter(row => !route.inboxId || String(row.id) === route.inboxId);
+    const inboxGroups = route.poCandidateId ? [] : Array.isArray(S.inboxGroups) ? S.inboxGroups.map(group => ({ ...group, items: (group.items || []).filter(row => !route.inboxId || String(row.id) === route.inboxId) })).filter(group => group.items.length) : null;
     const INBOX_ACTION_LABELS = {
       accept: T('cognition.inbox_action_accept', '保存'),
       reject: T('cognition.inbox_action_reject', '拒绝'),
@@ -208,7 +208,7 @@
       confirmBlocks.push(`<div class="sect-block"><div class="tt">${esc(T('cognition.inbox_section', '待确认清单'))}<span class="note">${esc(String(inboxItems.length))}</span></div>${inboxRows}</div>`);
       confirmCount += inboxItems.length;
     }
-    const poList = Array.isArray(S.poCandidates) ? S.poCandidates : [];
+    const poList = (Array.isArray(S.poCandidates) ? S.poCandidates : []).filter(c => !route.poCandidateId || String(c.candidate_id) === route.poCandidateId);
     const needsTotal = confirmCount + ready.length + broken.length + weak.length + poList.length + failedCaptures.length;
     const doneTotal = processed.length + terminal.length + doneCapturesAll.length;
 
@@ -386,6 +386,59 @@
     ${snoozed.length ? `<details class="details fold fold-snoozed"><summary>${esc(T('cognition.review_group_snoozed', '已稍后处理'))}<span class="n">${snoozed.length}</span></summary><div class="dbody"><div class="note">${esc(T('cognition.review_group_snoozed_note', '静音中，不计入待确认'))}</div>${snoozed.map((c) => candidateCard(c, false)).join('')}</div></details>` : ''}
     ${failedHtml}
     ${attentionHtml}`;
+  }
+
+    function viewActivity(route) {
+    if (route.candidateId) return governanceDetail(route);
+    if (route.inboxId && !S.inboxError && !(S.inbox || []).some(item => String(item.id) === route.inboxId)) return `${btn('← ' + T('common.back', '返回'), 'go-back')}${empty(T('cognition.activity_item_missing', '这条变化暂时无法定位'), T('cognition.activity_item_missing_hint', '请返回列表核对最新处理结果。'))}`;
+    if (route.inboxId || route.poCandidateId) return `${btn('← ' + T('common.back', '返回'), 'go-back')}${governanceDetail(route)}`;
+    const attention = [], done = [];
+    const candidates = (S.candidates || []).filter(c => !(NS.isKstarCandidate && NS.isKstarCandidate(c)));
+    for (const c of candidates) {
+      const waiting = candidatePending(c);
+      if (!waiting && !['confirmed', 'integrated', 'rejected', 'ignored', 'expired'].includes(c.status)) continue;
+      if (c.status === 'weak_observation' && !c.capabilities?.countsAsPending) continue;
+      (waiting ? attention : done).push({ title: candidateTitle(c), detail: c.judgment || c.value || c.summary || '', scope: c.suggestedScope || '', rawAt: c.updatedAt || c.createdAt || '', at: fmtDate(c.updatedAt || c.createdAt), result: waiting ? T('cognition.activity_pending', '待确认') : c.status === 'confirmed' ? T('cognition.activity_saved', '已保存') : T('cognition.activity_processed', '已处理'), route: { candidateId: c.id } });
+    }
+    for (const item of S.inbox || []) {
+      if (item.candidateId && (S.candidates || []).some(c => c.id === item.candidateId && NS.isKstarCandidate?.(c))) continue;
+      const existing = item.candidateId ? attention.find(row => row.route.candidateId === item.candidateId) : null;
+      if (existing) {
+        if (item.kind !== 'candidate_pending_review') { existing.route = { inboxId: String(item.id) }; existing.result = T('cognition.activity_check', '需要核对'); }
+        continue;
+      }
+      attention.push({ title: item.title || item.summary || '', detail: item.detail || '', scope: item.scope || '', rawAt: item.updatedAt || item.createdAt || '', at: fmtDate(item.updatedAt || item.createdAt), result: T('cognition.activity_check', '需要核对'), route: { inboxId: String(item.id) } });
+    }
+    for (const c of S.poCandidates || []) attention.push({ title: c.summary || c.memory_text || '', detail: T('cognition.activity_legacy_review', '核对旧内容后移入共同审核'), scope: '', rawAt: c.created_at || '', at: fmtDate(c.created_at), result: T('cognition.activity_pending', '待确认'), route: { poCandidateId: c.candidate_id } });
+    const ontology = S.ontologySnapshot;
+    for (const entry of ontology?.history || []) {
+      const record = entry.after;
+      if (!record) continue;
+      const subject = ontology.records[record.subjectId], definition = ontology.records[record.definitionId];
+      const object = record.object?.kind === 'entity' ? ontology.records[record.object.id]?.name : record.object?.value;
+      done.push({ title: record.name || [subject?.name, definition?.name, object].filter(Boolean).join(' · ') || T('cognition.ontology_changes', '本体保存与版本变更'), detail: record.description || record.requirement || record.source?.label || '', scope: ontology.records[record.moduleId]?.name || record.name || '', rawAt: entry.recordedAt, at: fmtDate(entry.recordedAt), result: T('cognition.activity_saved', '已保存'), route: { name: 'ontology', moduleId: record.kind === 'module' ? record.id : record.moduleId, recordId: record.id, recordVersion: String(record.version) } });
+    }
+    const processed = route.activityView === 'done' || route.activityDone === '1';
+    const query = String(route.activityQuery || '').trim().toLowerCase();
+    const all = (processed ? done : attention).filter(row => (row.title + row.detail + row.scope).toLowerCase().includes(query)).sort((a,b) => String(b.rawAt).localeCompare(String(a.rawAt)));
+    const page = Math.max(0, Math.min(Number(route.activityPage) || 0, Math.ceil(all.length / 50) - 1));
+    const rows = all.slice(page * 50, page * 50 + 50);
+    for (const row of rows) row.key = row.route.candidateId ? 'candidate:' + row.route.candidateId : row.route.inboxId ? 'inbox:' + row.route.inboxId : row.route.poCandidateId ? 'legacy:' + row.route.poCandidateId : 'ontology:' + row.route.recordId + '@' + row.route.recordVersion;
+    S.activityRows = rows;
+    const table = rows.length ? window.uiDataTable({ label: T('cognition.activity_table', '认知变化'), className: 'ca-activity-changes', columns: [
+      { key: 'content', label: T('cognition.activity_content', '认知变化与内容'), primary: true },
+      { key: 'scope', label: T('cognition.activity_scope', '适用范围') },
+      { key: 'at', label: T('cognition.activity_time', '发生时间') },
+      { key: 'result', label: T('cognition.activity_result', '处理结果') },
+    ], rows: rows.map(row => ({ ...row, content: row.title + '\n' + String(row.detail).slice(0, 110) })) }).replace(/data-ui-table-row="(\d+)"/g, (match, index) => `${match} data-act="activity-row" data-id="${esc(rows[Number(index)].key)}" tabindex="0" role="button"`)
+      : empty(T(processed ? 'cognition.activity_done_empty' : 'cognition.activity_empty', processed ? '暂无已处理的认知变化' : '当前没有需要关注的认知变化'), T('cognition.activity_empty_hint', '没有有价值的结果时，这里保持空白。'));
+    const failed = S.candidatesError || S.inboxError || S.poCandidatesError;
+    return `${hero(T('cognition.tab_activity', '系统活动'), T('cognition.activity_filtered_hint', '只记录筛选后的认知变化。普通对话保留在原聊天历史中。'))}
+      <div class="actions">${btn(T('cognition.activity_attention', '需要关注') + ' ' + attention.length, 'activity-view', { id: 'attention', primary: !processed })}${btn(T('cognition.activity_done', '已处理') + ' ' + done.length, 'activity-view', { id: 'done', primary: processed })}</div>
+      ${window.uiInput({ id: 'ca-activity-search', type: 'search', value: route.activityQuery || '', attrs: { 'data-act': 'activity-search', placeholder: T('cognition.activity_search', '搜索变化内容或适用范围') } })}
+      ${failed ? `<div role="alert">${esc(T('cognition.activity_read_failed', '部分变化未能读取，请重试；不能据此判断没有待处理内容。'))}${btn(T('common.retry', '重试'), 'refresh')}</div>` : ''}${table}
+      ${processed ? `<p class="note">${esc(T('cognition.activity_save_is_not_use', '保存不代表任务已采用。'))}</p>` : ''}
+      ${all.length > 50 ? `<div class="actions">${page > 0 ? btn(T('common.previous', '上一页'), 'activity-page', { id: String(page-1) }) : ''}${page*50+50 < all.length ? btn(T('common.next', '下一页'), 'activity-page', { id: String(page+1) }) : ''}</div>` : ''}`;
   }
 
   NS.viewActivity = viewActivity;

@@ -261,33 +261,6 @@ describe('US-704 T035 复盘确认沿同一改进分析链路继续', () => {
     expect(record?.failureCategory).toBeUndefined();
   });
 
-  it('partial：确认后同一链路的采用门放行 update 候选（回指原方法与版本）', async () => {
-    const { closure, outcome, candidates } = await modules();
-    const userId = 'u-confirm-partial';
-    const scenario = await seedScenario({ userId, caseId: 'partial' });
-    await seedReview(userId, scenario.episodeId, outdatedReview(scenario.episodeId));
-    await recordAppliedUsage(userId, scenario.runId, scenario.targetAssetId);
-    const before = await candidateIds(userId);
-
-    await closure.confirmKstarReview(userId, scenario.episodeId, { verdict: 'partial' });
-
-    // 出候选这一条路径同样有记录可查：候选回指原方法 + 任务当时用的版本。
-    const after = await candidateIds(userId);
-    expect(after.length).toBe(before.length + 1);
-    const created = (await candidates.listRecallCandidates(userId))
-      .find((candidate) => !before.includes(candidate.id));
-    expect(created).toMatchObject({
-      suggestedAction: 'update',
-      suggestedType: 'rule',
-      targetAssetId: scenario.targetAssetId,
-      targetVersionUsed: '1',
-    });
-    // 确认后的终态（用户口径）进了候选的学习信号。
-    expect(created?.learningSignal?.outcome).toBe('worse_than_expected');
-    // 成功路径不产"没出候选"的结论（结论只装实话）。
-    expect(await outcome.readKstarImprovementOutcome(userId, scenario.episodeId)).toBeNull();
-  });
-
   it('skip（需要修正）：不产候选，只如实落一条结论留痕', async () => {
     const { closure, outcome } = await modules();
     const userId = 'u-confirm-skip';

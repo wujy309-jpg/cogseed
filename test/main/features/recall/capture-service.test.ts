@@ -138,7 +138,7 @@ beforeEach(async () => {
     content: [],
     meta: { aborted: false },
   });
-  mocks.saveCandidate.mockImplementation(async (_userId: string, input: { captureKey: string }) => ({
+  mocks.saveCandidate.mockReset().mockImplementation(async (_userId: string, input: { captureKey: string }) => ({
     id: `cand-${input.captureKey.slice(-1)}`,
     status: 'pending_review',
     ...input,
@@ -1051,7 +1051,7 @@ describe('Recall conversation capture', () => {
     mocks.runModel.mockResolvedValueOnce({
       text: JSON.stringify({
         candidates: [{
-          judgment: 'Keep a traceable decision log.',
+          judgment: 'Always keep decisions traceable.',
           ...reviewableCandidateContract,
           summary: 'Decision traceability',
           suggestedType: 'rule',
@@ -1143,7 +1143,7 @@ describe('Recall conversation capture', () => {
     expect(JSON.stringify(recallView)).not.toContain('/private/attachment.txt');
   });
 
-  it('keeps weak observations without creating a review task', async () => {
+  it('drops weak automatic output without persisting observations', async () => {
     mocks.runModel.mockResolvedValueOnce({
       text: JSON.stringify({
         candidates: [{
@@ -1171,10 +1171,10 @@ describe('Recall conversation capture', () => {
     const completed = await capture.runRecallCapture('capture-user', queued!.id);
 
     expect(completed).toMatchObject({ status: 'no_candidate', candidateIds: [] });
-    expect(mocks.saveCandidate).toHaveBeenCalledWith('capture-user', expect.objectContaining({ taskRunId: 'run-1' }));
+    expect(mocks.saveCandidate).not.toHaveBeenCalled();
   });
 
-  it('keeps model output that fails deterministic quality checks as a hidden weak observation', async () => {
+  it('drops automatic output that fails deterministic quality checks', async () => {
     mocks.runModel.mockResolvedValueOnce({
       text: JSON.stringify({
         candidates: [{
@@ -1194,10 +1194,7 @@ describe('Recall conversation capture', () => {
     await capture.runRecallCaptureNow('capture-user', queued!.id);
     const completed = await capture.runRecallCapture('capture-user', queued!.id);
 
-    expect(mocks.saveCandidate).toHaveBeenCalledWith('capture-user', expect.objectContaining({
-      value: '',
-      forceWeakObservation: true,
-    }));
+    expect(mocks.saveCandidate).not.toHaveBeenCalled();
     expect(completed).toMatchObject({
       status: 'no_candidate',
       visibility: 'internal',
@@ -1212,7 +1209,7 @@ describe('Recall conversation capture', () => {
     mocks.runModel.mockResolvedValueOnce({
       text: JSON.stringify({
         candidates: [{
-          judgment: 'Keep a traceable decision log.',
+          judgment: 'Always keep decisions traceable.',
           ...reviewableCandidateContract,
           summary: 'Decision traceability',
           suggestedType: 'rule',
@@ -1316,7 +1313,7 @@ describe('Recall conversation capture', () => {
     mocks.runModel.mockResolvedValue({
       text: JSON.stringify({
         candidates: [0, 1].map(() => ({
-          judgment: 'Keep a traceable decision log.',
+          judgment: 'Always keep decisions traceable.',
           ...reviewableCandidateContract,
           summary: 'Decision traceability',
           suggestedType: 'rule',
@@ -1367,7 +1364,7 @@ describe('Recall conversation capture', () => {
     mocks.runModel.mockResolvedValue({
       text: JSON.stringify({
         candidates: [0, 1].map(() => ({
-          judgment: 'Keep a traceable decision log.',
+          judgment: 'Always keep decisions traceable.',
           ...reviewableCandidateContract,
           summary: 'Decision traceability',
           suggestedType: 'rule',
@@ -1445,7 +1442,7 @@ describe('Recall conversation capture', () => {
       expect(completed.errorCode).toBeUndefined();
 });
 
-  it('keeps uncertain automatic candidates only as weak observations', async () => {
+  it('drops uncertain automatic output before persistence', async () => {
     mocks.runModel.mockResolvedValueOnce({
       text: JSON.stringify({
         candidates: [{
@@ -1468,9 +1465,7 @@ describe('Recall conversation capture', () => {
     const completed = await capture.runRecallCapture('capture-user', queued!.id);
 
     expect(mocks.autoApplyCandidate).not.toHaveBeenCalled();
-    expect(mocks.saveCandidate).toHaveBeenCalledWith('capture-user', expect.objectContaining({
-      forceWeakObservation: true,
-    }));
+    expect(mocks.saveCandidate).not.toHaveBeenCalled();
     expect(completed).toMatchObject({ status: 'no_candidate', candidateIds: [] });
     expect(completed.autoWrite).toBeUndefined();
   });
@@ -1528,7 +1523,7 @@ describe('Recall conversation capture', () => {
     mocks.runModel.mockResolvedValueOnce({
       text: JSON.stringify({
         candidates: [{
-          judgment: 'Keep a traceable decision log.',
+          judgment: 'Always keep decisions traceable.',
           ...reviewableCandidateContract,
           summary: 'Decision traceability',
           suggestedType: 'rule',
@@ -1601,7 +1596,7 @@ describe('Recall conversation capture', () => {
     mocks.runModel.mockResolvedValueOnce({
       text: JSON.stringify({
         candidates: [{
-          judgment: 'Keep a traceable decision log.',
+          judgment: 'Always keep decisions traceable.',
           ...reviewableCandidateContract,
           summary: 'Decision traceability',
           suggestedType: 'rule',
@@ -1726,7 +1721,7 @@ describe('Recall conversation capture', () => {
     expect(rebuilt.sourceRefs.some((ref) => ref.id === 'teach-revoked')).toBe(false);
   });
 
-  it('reuses only the matching teaching candidate and preserves other knowledge from the same message', async () => {
+  it('reuses confirmed teaching but drops unrelated model inventions from the same message', async () => {
     const teaching = await import('../../../../src/main/features/recall/teaching-service');
     const signal = await teaching.recordTeachingSignalAfterMemoryWrite('capture-user', {
       conversationId: 'conv-1',
@@ -1772,12 +1767,8 @@ describe('Recall conversation capture', () => {
     await capture.runRecallCaptureNow('capture-user', queued!.id);
     const completed = await capture.runRecallCapture('capture-user', queued!.id);
 
-    expect(completed.candidateIds).toEqual(expect.arrayContaining([signal!.candidateIds[0], 'cand-1']));
-    expect(mocks.saveCandidate).toHaveBeenCalledTimes(1);
-    expect(mocks.saveCandidate).toHaveBeenCalledWith('capture-user', expect.objectContaining({
-      judgment: 'Use the completed decision log as the review template.',
-      captureKey: `capture-${queued!.id}-1`,
-    }));
+    expect(completed.candidateIds).toEqual([signal!.candidateIds[0]]);
+    expect(mocks.saveCandidate).not.toHaveBeenCalled();
   });
 
   it('sends rejected teaching content with new conversation evidence back through candidate governance', async () => {

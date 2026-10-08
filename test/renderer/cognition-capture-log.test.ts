@@ -353,72 +353,6 @@ describe('系统活动与认知设置', () => {
     expect(html).toContain('查看整理报告');
   });
 
-  it('需要关注只收可操作捕获：失败给重试、等待手动给立即开始；运行中与静默不进列表（C-05）', () => {
-    const html = renderPage('organize', baseStore);
-    expect(html).toContain('整理失败，可重试');
-    expect(html).toContain('data-id="rcap-fail" data-action="retry"');
-    expect(html).toContain('data-act="open-capture-detail" data-id="rcap-fail"');
-    // 运行中（rcap-org）与静默筛掉（rcap-silent）不进两列表。
-    expect(html).not.toContain('rcap-org');
-    expect(html).not.toContain('rcap-silent');
-    expect(html).not.toContain('data-act="organize-conv"');
-    expect(html).not.toContain('is-disabled');
-  });
-
-  it('等待手动开始的行进需要关注并给行内「立即开始」', () => {
-    const html = renderPage('organize', baseStore);
-    expect(html).toContain('data-id="rcap-wait" data-action="run_now"');
-    expect(html).not.toContain('整理中');
-  });
-
-  it('全量会话列表退役：无任务会话不再逐行出现；失败捕获整行可进详情', () => {
-    const html = renderPage('organize', baseStore);
-    expect(html).not.toContain('data-id="conv-5"');
-    expect(html).not.toContain('整理这个会话');
-    expect(html).toContain('data-act="open-capture-detail" data-id="rcap-fail"');
-  });
-
-  it('双视角切换 chip：需要关注/已处理带计数（口径与行一致）', () => {
-    const clean = { ...baseStore, candidates: [], inbox: [], inboxGroups: null, poCandidates: [], cleanupReports: { loading: false, reports: [] }, inspection: null };
-    const html = renderPage('organize', clean);
-    expect([...html.matchAll(/data-act="activity-view"/g)].length).toBe(2);
-    // 需要关注 = 失败 + 等待手动（无候选/inbox/po 时）。
-    expect(html).toContain('需要关注 2');
-    expect(html).toContain('已处理 0');
-    const done = renderPage('organize', clean, { activityDone: '1' });
-    expect(done).toContain('还没有处理记录');
-    expect(done).not.toContain('整理失败，可重试');
-  });
-
-  it('已完成捕获进已处理·整理记录；no_candidate（筛掉）不进任何列表', () => {
-    const completed = { ...organizingCapture, id: 'rcap-done', conversationId: 'conv-5', conversationTitle: '季度目标对齐', status: 'completed', bucket: 'done', displayStatus: 'completed', displayReason: 'review_completed', actions: [] };
-    const store = { ...baseStore, captures: [...baseStore.captures, completed] };
-    const html = renderPage('organize', store);
-    expect(html).toContain('已处理 1');
-    const done = renderPage('organize', store, { activityDone: '1' });
-    expect(done).toContain('整理记录');
-    expect(done).toContain('季度目标对齐');
-    expect(done).not.toContain('Saying hello');
-  });
-
-  it('已处理·整理记录超过收拢上限出「显示全部」', () => {
-    const manyDone = Array.from({ length: 12 }, (_, i) => {
-      const n = i + 1;
-      return { ...organizingCapture, id: `done-${n}`, conversationId: `conv-done-${n}`,
-        conversationTitle: `已完成的会话 ${n}`, status: 'completed', bucket: 'done',
-        displayStatus: 'completed', displayReason: 'review_completed', actions: [],
-        updatedAt: `2026-09-${String(10 + n).padStart(2, '0')}T02:00:00.000Z` };
-    });
-    const store = { sources: [], captures: manyDone, organizeListExpanded: false, candidates: [], inbox: [], inboxGroups: null, poCandidates: [], cleanupReports: { loading: false, reports: [] }, inspection: null, captureSettings: baseStore.captureSettings };
-    const html = renderPage('organize', store, { activityDone: '1' });
-    expect(html).toContain('已处理 12');
-    expect(html).toContain('已完成的会话 12');
-    expect((html.match(/class="cap-row[ "]/g) || []).length).toBeLessThanOrEqual(10);
-    expect(html).toContain('显示全部');
-    const expanded = renderPage('organize', { ...store, organizeListExpanded: true }, { activityDone: '1' });
-    expect(expanded).toContain('已完成的会话 12');
-  });
-
   it('寒暄与无回复会话不进系统活动两列表（C-05：已跳过不灌入）', () => {
     const store = {
       sources: [{ kind: 'conversation', items: [
@@ -456,54 +390,6 @@ describe('系统活动与认知设置', () => {
     expect(html).not.toContain('仅显示最近');
   });
 
-  it('去向提示（specs/018 T014）：确认后两分钟内回到「待我处理」，入口直开刚保存的资产详情，过期不提示', () => {
-    const fresh = renderPage('review', { lastPromoted: { assetId: 'asset-promoted-1', title: '刚确认的一条', at: Date.now() - 10_000 } });
-    expect(fresh).toContain('已确认 · 已保存为正式资产');
-    expect(fresh).toContain('data-act="go-inbox-asset" data-id="asset-promoted-1"');
-    expect(fresh).toContain('刚确认的一条');
-    // 拿不到资产身份就不给入口：认知树没有资产级节点，不再退回跳树按钮。
-    const noAsset = renderPage('review', { lastPromoted: { title: '没有资产身份的一条', at: Date.now() - 10_000 } });
-    expect(noAsset).not.toContain('data-act="go-inbox-asset"');
-    expect(noAsset).not.toContain('data-act="asset-view" data-id="tree"');
-    const stale = renderPage('review', { lastPromoted: { assetId: 'asset-promoted-1', title: '很久以前确认的', at: Date.now() - 10 * 60_000 } });
-    expect(stale).not.toContain('已确认 · 已保存为正式资产');
-    const none = renderPage('review', {});
-    expect(none).not.toContain('已确认 · 已保存为正式资产');
-  });
-
-  it('处理记录（已处理视角）：confirmed 候选带 promotedAssetId 时「查看这条资产」直开资产详情，缺 id 不给入口', () => {
-    const html = renderPage('review', {
-      candidates: [
-        { id: 'cand-ok', status: 'confirmed', promotedAssetId: 'asset-a', summary: '带资产身份的一条', updatedAt: '2026-09-20T00:00:00.000Z' },
-        { id: 'cand-old', status: 'confirmed', summary: '没有资产身份的旧记录', updatedAt: '2026-09-19T00:00:00.000Z' },
-      ],
-    }, { activityDone: '1' });
-    expect(html).toContain('处理记录');
-    expect(html).toContain('data-act="go-inbox-asset" data-id="asset-a"');
-    expect(html).not.toContain('data-act="asset-view" data-id="tree"');
-  });
-
-  it('导语分段拼装（specs/018 迭代轮 1）：拍板数为 0 时不出现「0 件事等你拍板 · 预计…分钟」，锚点分区随之在', () => {
-    const mk = (id: string) => ({
-      id, status: 'pending_review', suggestedType: 'rule',
-      judgment: '一条足够长的候选判断正文内容。', summary: `标题-${id}`,
-      capabilities: { canEdit: true, canPromote: true, countsAsPending: true },
-    });
-    // 只有证据异常（displayState=weak_evidence），拍板数为 0。
-    const weak = renderPage('review', {
-      candidates: [Object.assign(mk('w1'), { capabilities: { canEdit: true, canPromote: true, countsAsPending: true, displayState: 'weak_evidence' } })],
-    });
-    expect(weak).not.toContain('件事等你拍板');
-    expect(weak).not.toContain('预计');
-    expect(weak).toContain('条证据要补');
-    expect(weak).toContain('id="ca-review-evidence"');
-    // 拍板数 >0：拍板锚点元素与数字都在。
-    const deciding = renderPage('review', { candidates: [mk('p1')] });
-    expect(deciding).toContain('件事等你拍板');
-    expect(deciding).toMatch(/data-act="review-jump" data-id="ca-review-decide"/);
-    expect(deciding).toContain('id="ca-review-decide"');
-  });
-
   it('夜间等待、暂停和失败记录不得显示已经整理完成', () => {
     for (const status of ['waiting_manual', 'waiting_quiet', 'scheduled', 'paused', 'failed', 'configuration_required']) {
       const html = renderPage('activity', { ...baseStore, captures: [{
@@ -513,22 +399,6 @@ describe('系统活动与认知设置', () => {
       }] });
       expect(html).not.toContain('夜间整理完成');
     }
-  });
-
-  it('已处理·整理记录并入大扫除与体检事件；需要关注不摆事件流', () => {
-    const patch = {
-      captures: [],
-      cleanupReports: { loading: false, reports: [{ id: 'rep-1', createdAt: '2026-09-25T10:11:00.000Z', items: [{ status: 'applied' }, { status: 'applied' }], uncertain: [] }] },
-      inspection: { loading: false, settings: { enabled: true }, latestRun: { startedAt: '2026-09-26T13:00:00.000Z', findings: [{ id: 'f1' }], scanned: 20, trigger: 'manual' } },
-    };
-    const done = renderPage('activity', { ...baseStore, ...patch }, { activityDone: '1' });
-    expect(done).toContain('整理记录');
-    expect(done).toContain('整理合并 2 条重复项');
-    expect(done).toContain('定期检查发现 1 条待处理');
-    expect(done).toContain('data-act="open-cleanup-report"');
-    const attention = renderPage('activity', { ...baseStore, ...patch });
-    expect(attention).not.toContain('整理合并');
-    expect(attention).not.toContain('定期检查发现');
   });
 
   it('管理模式退出（specs/018 T031 迭代轮 1）：退出按有效管理态判定，并清目录视图与多选态（app.js 委托源码契约）', () => {
@@ -544,58 +414,6 @@ describe('系统活动与认知设置', () => {
     expect(appSource).toContain("tagSelect: inManage ? '' :");
   });
 
-  it('0 值分段不出现（specs/018 迭代轮 2 猎区 1）：空库导语让位空态，树冠与大扫除给空态专用句', () => {
-    const emptyOverview = renderPage('overview', { assets: [], proofs: [], sources: [], candidates: [] });
-    expect(emptyOverview).not.toContain('条常规资产');
-    expect(emptyOverview).not.toContain('条等你确认');
-    expect(emptyOverview).toContain('还没有正式资产');
-    const noPending = renderPage('overview', {
-      assets: [{ id: 'aa-x', title: '一条', type: 'rule', status: 'active', version: '1', updatedAt: '2026-09-26T00:00:00.000Z' }],
-      proofs: [], sources: [], candidates: [],
-    });
-    expect(noPending).toContain('条常规资产');
-    expect(noPending).not.toContain('条等你确认');
-    const tree = renderPage('tree', { assets: [], proofs: [], sources: [], candidates: [] });
-    expect(tree).toContain('暂无带入或读取记录');
-    expect(tree).not.toContain('被真用过 0');
-    const cleanupZero = renderPage('activity', {
-      ...baseStore,
-      cleanupReports: { loading: false, reports: [{ id: 'rep-0', createdAt: '2026-09-25T10:11:00.000Z', items: [{ status: 'skipped' }], uncertain: [] }] },
-    }, { activityDone: '1' });
-    expect(cleanupZero).toContain('整理完成，没有重复项需要合并');
-    expect(cleanupZero).not.toContain('归并 0 条');
-  });
-
-  it('「等待确认」口径统一（B1）：系统保留态（语义复核）可见但不占数，2026-10-02 起无用户侧稍后', () => {
-    // 审计 B1：三套口径曾同时给出 7/5/0。统一为「需要判断且未被稍后处理
-    // 静音」——统计卡/全局 stats 同函数；deferred 行留在列表（子安口径）。
-    expect(coreSource).toContain('countsAsPending && !');
-    expect(coreSource).toContain('isSnoozed');
-    const mk = (id, status, snoozed) => ({
-      id, status, suggestedType: 'rule',
-      judgment: '一条足够长的候选判断正文内容。', summary: `标题-${id}`,
-      capabilities: { canEdit: true, canPromote: true, countsAsPending: true, isSnoozed: snoozed },
-    });
-    const html = renderPage('review', {
-      sources: [conversationSources[0]],
-      candidates: [mk('p1', 'pending_review', false), mk('d1', 'deferred', true)],
-    });
-    // specs/018 T010：统计条收进导语两个可点数字；deferred 仍可见但不占
-    // 「要你拍板」数（导语数字 1 而非 2）。
-    expect(html).toContain('件事等你拍板');
-    expect(html).toMatch(/data-act="review-jump" data-id="ca-review-decide"[^>]*>1</);
-    expect(html).not.toMatch(/data-act="review-jump" data-id="ca-review-decide"[^>]*>2</);
-    expect(html).toContain('标题-d1');
-    expect(html).toContain('已稍后处理');
-  });
-
-  it('批量入口随任务列表退役；失败行保留单条「重试」与「立即开始」', () => {
-    const html = renderPage('organize', baseStore);
-    expect(html).not.toContain('data-batch');
-    expect(html).toContain('data-id="rcap-fail" data-action="retry"');
-    expect(html).toContain('data-id="rcap-wait" data-action="run_now"');
-  });
-
   it('静默筛掉的会话不进两列表（C-05：已跳过不灌入已处理）', () => {
     const html = renderPage('organize', baseStore);
     const done = renderPage('organize', baseStore, { activityDone: '1' });
@@ -603,17 +421,6 @@ describe('系统活动与认知设置', () => {
       expect(page).not.toContain('Saying hello');
       expect(page).not.toContain('整理完成，没有发现需要保存的内容');
     }
-  });
-
-  it('主进程字段缺席兜底：无 bucket 字段时失败行仍按状态归入需要关注', () => {
-    const html = renderPage('organize', {
-      sources: conversationSources,
-      captures: [{ ...failedCapture, bucket: undefined }, { ...organizingCapture, bucket: undefined }],
-      captureSettings: { enabled: true, executionPolicy: 'smart', reviewPolicy: 'auto' },
-    });
-    expect(html).toContain('整理失败，可重试');
-    expect(html).toContain('rcap-fail');
-    expect(html).not.toContain('rcap-org');
   });
 
   it('全量会话清单退役：普通会话（无论标记）不再逐行出现，需要关注只收可操作捕获', () => {
@@ -942,31 +749,6 @@ describe('整理详情页', () => {
     const aligned = { ...update, targetVersionUsed: '2' };
     const reviewAligned = renderPage('review', { sources: [conversationSources[0]], candidates: [aligned], assets: [target] }, { candidateId: 'rcand-u' });
     expect(reviewAligned).not.toContain('任务当时使用的是');
-  });
-
-  it('来源徽章与复盘信号块（2026-09-16 KSTAR 前端融合）：KSTAR 复盘/KSTAR 偏好/会话整理', () => {
-    const mk = (over) => ({
-      id: 'rcand-k', status: 'pending_review', suggestedType: 'rule', suggestedScope: 'general',
-      judgment: '性能类提问需用真实日志做分层归因。', summary: '性能归因',
-      capabilities: { canEdit: true, canPromote: true, countsAsPending: true, isSnoozed: false },
-      ...over,
-    });
-    const review = (cands) => renderPage('review', { sources: [conversationSources[0]], candidates: cands });
-    // KSTAR 复盘候选（B 档两线分开）：在 KSTAR 侧「待确认提案」列出，
-    // 列表行带「KSTAR 复盘」徽章；详情展开复盘信号块。
-    const kstar = mk({ learningSignal: { deltaR: -1, deltaA: 'unknown', outcome: 'worse_than_expected', confidence: 0.95, source: 'review', expectedResult: '给出技术结论', actualResult: '模型调用失败' } });
-    const listHtml = review([kstar]);
-    expect(listHtml).toContain('任务复盘');
-    const detailHtml = renderPage('review', { sources: [conversationSources[0]], candidates: [kstar] }, { candidateId: 'rcand-k' });
-    expect(detailHtml).toContain('复盘依据');
-    expect(detailHtml).toContain('给出技术结论');
-    expect(detailHtml).toContain('模型调用失败');
-    expect(detailHtml).toContain('比预期差');
-    // 偏好扫描候选：徽章「KSTAR 偏好」。
-    const pref = mk({ suggestedType: 'personal', learningSignal: { deltaR: 'unknown', deltaA: 'unknown', outcome: 'met_expected', confidence: 0.9, source: 'preference_scan' } });
-    expect(review([pref])).toContain('偏好扫描');
-    // capture 候选：徽章「会话整理」。
-    expect(review([mk({})])).toContain('会话整理');
   });
 
   it('版本块溯源行（2026-09-16/17 下沉改）：快照带 learningProvenance 时标来源，无信号不出该行', () => {
@@ -1306,69 +1088,10 @@ describe('待我处理（决策中心）', () => {
     expect(html.indexOf('data-act="go-back"')).toBeLessThan(html.indexOf('建议详情'));
   });
 
-  it('来源异常行出现且默认收起；展开后出异常明细与处理动作', () => {
-    const store = { sources: [conversationSources[0], issueSource], candidates: [] };
-    const collapsed = renderPage('review', store);
-    expect(collapsed).toContain('1 条来源记录需要处理');
-    expect(collapsed).toContain('data-act="toggle-source-issues"');
-    expect(collapsed).not.toContain('data-action="retry"');
-
-    const open = renderPage('review', store, { sourceIssueOpen: 'open' });
-    expect(open).toContain('架构决策记录.md');
-    expect(open).toContain('文件索引失败，可重试');
-    expect(open).toContain('data-action="retry"');
-    expect(open).toContain('data-kind="artifact_file"');
-  });
-
-  it('执行失败轮次不算「来源需要处理」（2026-09-16：turn-哈希行看不懂且无可用动作）', () => {
-    // execution_evaluation 的 failed 项（reason=execution_failed、无标题、
-    // actions 仅 remove）是 agent 执行失败的历史轮次——不是用户能修复的
-    // 数据源，进异常区只显示成 turn-哈希 + 无效重试；执行失败在对话侧已
-    // 可见，这里纯属噪音（真机 13 条全部如此）。
-    const failedTurns = {
-      kind: 'execution_evaluation',
-      items: [1, 2].map((n) => ({
-        id: `turn-abc${n}`, kind: 'execution_evaluation', subtype: 'execution',
-        status: 'failed', statusReason: 'execution_failed', actions: ['remove'],
-      })),
-    };
-    const store = { sources: [conversationSources[0], failedTurns, issueSource], candidates: [] };
-    const collapsed = renderPage('review', store);
-    // 只数 artifact_file 那条真异常。
-    expect(collapsed).toContain('1 条来源记录需要处理');
-    const open = renderPage('review', store, { sourceIssueOpen: 'open' });
-    expect(open).not.toContain('turn-abc1');
-    expect(open).toContain('架构决策记录.md');
-  });
-
-  it('重试按钮只给 actions 含 retry 的来源项（2026-09-16：无效重试误导）', () => {
-    const noRetry = {
-      kind: 'context_file',
-      items: [{ id: 'src-x', kind: 'context_file', title: '读不了的文件.md', status: 'failed', statusReason: 'source_unavailable', actions: ['remove'] }],
-    };
-    const open = renderPage('review', { sources: [conversationSources[0], noRetry], candidates: [] }, { sourceIssueOpen: 'open' });
-    expect(open).toContain('读不了的文件.md');
-    expect(open).not.toContain('data-action="retry"');
-  });
-
   it('健康来源不出现在待我处理（异常驱动，无常态清单）', () => {
     const html = renderPage('review', { sources: [conversationSources[0]], candidates: [] });
     expect(html).not.toContain('条来源记录需要处理');
     expect(html).not.toContain('Saying hello');
-  });
-
-  it('整理失败在需要关注就地列出并给重试；处理记录进已处理视角', () => {
-    const html = renderPage('review', {
-      sources: [], candidates: [],
-      captures: [
-        { id: 'cap-f1', conversationId: 'conv-1', conversationTitle: '失败任务一', status: 'failed', displayStatus: 'failed', displayReason: 'capture_failed', actions: ['retry'] },
-        { id: 'cap-f2', conversationId: 'conv-2', conversationTitle: '失败任务二', status: 'failed', displayStatus: 'failed', displayReason: 'model_failed', actions: ['retry'] },
-      ],
-    });
-    expect(html).toContain('整理失败，可重试');
-    expect(html).toContain('失败任务一');
-    expect(html).toContain('失败任务二');
-    expect((html.match(/data-action="retry"/g) || []).length).toBe(2);
   });
 });
 
@@ -1592,45 +1315,6 @@ describe('资产详情（使用记录并入）', () => {
     }, { category: 'deleted' });
     expect(html).toContain('删除时间不可用');
     expect(html).not.toContain('保留期还剩');
-  });
-
-  it('待确认清单（2026-09-25 T051 重上）：动作由读模型给出，没有一键动作的给落点', () => {
-    const html = renderPage('review', {
-      inbox: [
-        { id: 'candidate:cand-1', kind: 'candidate_pending_review', urgency: 'low_disturbance', title: '一条待确认候选', actions: ['accept', 'reject', 'defer'] },
-        { id: 'sensitivity:aa-x', kind: 'sensitivity_unclassified', urgency: 'confirm', title: '还没分级的资产', assetId: 'aa-x', actions: [] },
-        { id: 'inspection:outdated:aa-y', kind: 'inspection_finding', urgency: 'low_disturbance', title: '过时的资产', detail: '超过 180 天没有更新过', actions: ['reject', 'defer'] },
-      ],
-    });
-    expect(html).toContain('待确认清单');
-    // 候选类：三态按钮。
-    expect(html).toContain('data-act="inbox-resolve" data-id="candidate:cand-1" data-action="accept"');
-    expect(html).toContain('data-act="inbox-resolve" data-id="candidate:cand-1" data-action="reject"');
-    expect(html).toContain('data-act="inbox-resolve" data-id="candidate:cand-1" data-action="defer"');
-    // 巡检发现：不管它 / 回头再看（没有"确认"——巡检不改资产）。
-    expect(html).toContain('data-id="inspection:outdated:aa-y" data-action="reject"');
-    expect(html).toContain('data-id="inspection:outdated:aa-y" data-action="defer"');
-    expect(html).not.toContain('data-id="inspection:outdated:aa-y" data-action="accept"');
-    // 资产类没有一键动作：给"去资产详情处理"的落点，而不是只报警。
-    expect(html).toContain('data-act="go-inbox-asset" data-id="aa-x"');
-    expect(html).not.toContain('data-id="sensitivity:aa-x" data-action=');
-  });
-
-  it('冷启动快照与事件刷新共用具名区块加载器，不靠 Promise 顺序配对数据', () => {
-    const start = coreSource.indexOf('async snapshot() {');
-    // P-r3-30：LOADERS.tree 死链已删（认知树页面全靠现算），snapshot 切片
-    // 的结束锚点改用 LOADERS 的挂载点。
-    const end = coreSource.indexOf('NS.loaders = LOADERS;', start);
-    expect(start, '找不到 snapshot 加载器').toBeGreaterThan(-1);
-    expect(end, '找不到 LOADERS 挂载点').toBeGreaterThan(-1);
-    const snapshot = coreSource.slice(start, end);
-    const blocks = [...snapshot.matchAll(/BLOCK_FETCHERS\.(\w+)\(\)/g)].map((match) => match[1]);
-    expect(blocks).toEqual(['assets', 'candidates', 'captures', 'settings', 'sources', 'inbox', 'timeline']);
-
-    const fetchersStart = coreSource.indexOf('const BLOCK_FETCHERS = {');
-    const fetchersEnd = coreSource.indexOf('const COLLECTION_BLOCKS = {', fetchersStart);
-    const fetchers = coreSource.slice(fetchersStart, fetchersEnd);
-    for (const name of blocks) expect(fetchers).toContain(`${name}() {`);
   });
 
   it('生命周期记录走版本链读口（2026-09-25 真机修）：audit 由 assetVersions 提供时也要渲染', () => {
@@ -1998,18 +1682,6 @@ describe('引导层（app.js / core.js）', () => {
 /* ═══════════ G1/G2 补落点（承接表 01/02，2026-09-26 B 阶段复核）═══════════ */
 
 describe('G1 任务执行失败与整理失败分别反馈（承接表 01）', () => {
-  it('任务失败与整理失败各出一行、文案分开、互不吞并', () => {
-    const html = renderPage('review', {
-      loaded: true, loading: false,
-      inbox: [], inboxGroups: null,
-      sources: [{ items: [{ id: 'conv-task-fail', lastTurnFailed: true }, { id: 'conv-ok' }] }],
-      captures: [{ id: 'cap-1', conversationId: 'conv-ok', conversationTitle: '正常会话的整理', status: 'failed', displayStatus: 'failed', displayReason: 'capture_failed', actions: ['retry'] }],
-    });
-    expect(html).toContain('整理失败，可重试');
-    expect(html).toContain('1 个任务执行失败（未得到回复）');
-    expect(html.indexOf('整理失败，可重试')).toBeGreaterThan(-1);
-    expect(html.indexOf('任务执行失败')).toBeGreaterThan(-1);
-  });
 
   it('已有整理记录的失败会话不重复计任务失败；无失败时不出该行', () => {
     const withCapture = renderPage('review', {

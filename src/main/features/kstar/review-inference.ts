@@ -1,3 +1,4 @@
+import { cognitionIntegrationIsolated } from '../cognition/integration-boundary';
 import { createLogger } from '../../logger';
 import { buildRunner } from '../../model/core-agent/runner';
 import { dominantScript, lessonLanguageMismatches } from '../../util/language';
@@ -266,6 +267,7 @@ async function defaultRunModel(
  *  归因 asset_outdated 的 lesson 才能基于现有内容给出融合修订，而非凭空
  *  重写导致新版丢失旧版仍然有效的信息。读取失败静默跳过（复盘不阻断）。 */
 async function referencedAssetsForReview(userId: string, episode: KstarEpisodeRecord) {
+  if (cognitionIntegrationIsolated()) return [];
   const refs = [...new Set((episode.k.abilityAssetRefs || []))].slice(0, 5);
   const assets: Awaited<ReturnType<typeof readAbilityAsset>>[] = [];
   for (const assetId of refs) {

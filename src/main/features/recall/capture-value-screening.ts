@@ -139,6 +139,8 @@ const ONE_OFF_REQUEST_PATTERN = /(?:帮我|请(?:帮我)?|麻烦|能否|可以(?
 // 项目/任务事实：PRD 3.4 要求它们留在 Workspace / Project 支撑记录，不进
 // PersonalOntologyAsset。典型："我今天在修 KSTAR"、"这个 Sprint 截止 8/19"。
 const STABLE_FACT_SUBJECT_PATTERN = /(?:团队|项目|环境|工具链|仓库|服务|系统|域名|版本|技术栈|组织|外部系统|依赖|部署|构建|协作入口|\b(?:team|project|environment|toolchain|repository|service|system|domain|version|stack|organization|external system|dependency|deployment|build|collaboration)\b)/i;
+const STABLE_PERSONAL_FACT_PATTERN = /(?:我的(?:名字|姓名|职业|部门|母语|常用语言)(?:是|为)(?!什么|啥|哪)|我(?:长期|一直)从事|\bmy (?:name|occupation|department|native language) is\b|私の(?:名前|職業|部署|母語)は|\b(?:meu nome é|minha profissão é|meu departamento é)\b)/i;
+const STABLE_FACT_CHANGE_PATTERN = /(?:从.{0,32}(?:日起|起由|开始)|负责人(?:改为|变更为)|固定.{0,24}(?:接收|负责)|\b(?:effective (?:from|on)|owner changed to|permanent owner|fixed recipients)\b|担当者.{0,16}変更|responsável.{0,16}alterad)/i;
 const PROJECT_FACT_PATTERN = /(?:今天|今日|昨天|明天|本周|这周|下周|本月|这次|本次|当前|目前|正在|眼下|这个(?:迭代|冲刺|阶段|版本|项目|需求)|本(?:轮|期|阶段|迭代)|截止|deadline|由\S{1,8}负责|负责人是|会议|日程|排期|\bsprint\b|\bmilestone\b|\btoday\b|\bthis (?:week|month|sprint|iteration|release)\b|\bdue\b|\bhoje\b|\besta semana\b)/i;
 // 长期稳定性标记：有这些才算"关于我"，否则多半是一次性状态。
 const LONG_TERM_PATTERN = /(?:长期|一直|向来|一贯|通常|一般|习惯(?:上|于)?|总是|每次都|我的风格|我倾向|我偏好|长年|多年|常年|いつも|普段|長期|\b(?:long[- ]term|usually|generally|typically|habitually|always|by habit|tend to|my style)\b)/i;
@@ -203,11 +205,11 @@ function durableIntentKindsForUserMessage(message: RecallCaptureScreeningMessage
   const hasFutureOrReuseIntent = FUTURE_OR_REUSE_INTENT_PATTERN.test(text);
   const kinds: DurableIntentKind[] = [];
 
-  if (STABLE_PREFERENCE_PATTERN.test(text)) pushUnique(kinds, 'personal');
+  if ((STABLE_PERSONAL_FACT_PATTERN.test(text) && !/[?？]/.test(text)) || STABLE_PREFERENCE_PATTERN.test(text) || (hasFutureOrReuseIntent && /(?:解释|回答|输出|表达|表格|\b(?:explain|respond|answer|format)\b)/i.test(text))) pushUnique(kinds, 'personal');
   if (RULE_PATTERN.test(text) && hasFutureOrReuseIntent) pushUnique(kinds, 'rule');
   if (TEMPLATE_PATTERN.test(text) && hasFutureOrReuseIntent) pushUnique(kinds, 'template');
   if (METHOD_PATTERN.test(text) && hasFutureOrReuseIntent) pushUnique(kinds, 'skill_method');
-  if (STABLE_FACT_SUBJECT_PATTERN.test(text) && (hasFutureOrReuseIntent || LONG_TERM_PATTERN.test(text))) pushUnique(kinds, 'fact');
+  if (STABLE_FACT_SUBJECT_PATTERN.test(text) && (hasFutureOrReuseIntent || LONG_TERM_PATTERN.test(text) || STABLE_FACT_CHANGE_PATTERN.test(text))) pushUnique(kinds, 'fact');
 
   // A universal or default rule is durable even when it does not say "in the
   // future" literally, for example "所有架构决定必须记录来源".
@@ -322,7 +324,7 @@ function candidateScopeSupportedByUserIntent(
   const requestsGlobalScope = GLOBAL_SCOPE_PATTERN.test(scope) || scope === 'global';
   if (!requestsGlobalScope) return true;
   if (candidate.suggestedType === 'personal'
-    && userMessages.some((message) => STABLE_PREFERENCE_PATTERN.test(message.text))) {
+    && userMessages.some((message) => STABLE_PREFERENCE_PATTERN.test(message.text) || STABLE_PERSONAL_FACT_PATTERN.test(message.text))) {
     return true;
   }
   return userMessages.some((message) => GLOBAL_SCOPE_PATTERN.test(message.text));
@@ -392,12 +394,18 @@ export function screenRecallCaptureValue(
     return { eligible: false, signals, reason: 'no_result' };
   }
 
-  if (signals.length) return { eligible: true, signals };
+  if (nonTrivialUsers.some(message => STABLE_PERSONAL_FACT_PATTERN.test(message.text) && !/[?？]/.test(message.text))) return { eligible: true, signals: ['substantive_exchange'] };
+  const durable = nonTrivialUsers.some(message => FUTURE_OR_REUSE_INTENT_PATTERN.test(message.text) || STABLE_PREFERENCE_PATTERN.test(message.text) || /(?:记住|記憶して|覚えて|\bremember\b|\blembre\b)/i.test(message.text));
+  if (nonTrivialUsers.some(message => STABLE_FACT_SUBJECT_PATTERN.test(message.text) && STABLE_FACT_CHANGE_PATTERN.test(message.text))) return { eligible: true, signals: [...signals, 'decision'] };
+  if (durable && nonTrivialUsers.some(message => /(?:解释|回答|输出|表达|表格|\b(?:explain|respond|answer|format)\b)/i.test(message.text))) return { eligible: true, signals: [...new Set([...signals, 'preference' as const])] };
+  if (durable && signals.some(signal => ['preference', 'rule', 'template', 'method', 'decision'].includes(signal))) return { eligible: true, signals };
 
   const userLength = nonTrivialUsers.reduce((total, message) => total + meaningfulLength(message.text), 0);
   const totalLength = messages.reduce((total, message) => total + meaningfulLength(message.text), 0);
-  const substantive = (userLength >= 48 && totalLength >= 140)
-    || (nonTrivialUsers.length >= 2 && userLength >= 36 && totalLength >= 110);
+  const substantive = nonTrivialUsers.length >= 4 && assistantMessages.length >= 4
+    && userLength >= 300 && totalLength >= 1500
+    && signals.some(signal => ['template', 'method', 'decision'].includes(signal))
+    && signals.includes('reusable_outcome');
   if (substantive) {
     return { eligible: true, signals: ['substantive_exchange'] };
   }
@@ -445,7 +453,7 @@ export function assessRecallCandidateClassification(
   if (candidate.suggestedType === 'fact') {
     // fact 只收稳定的项目/环境/领域/工具链事实。带“今天/本次/当前”等
     // 时间壳且没有长期标记的叙述是任务状态，不是可复用事实。
-    if (PROJECT_FACT_PATTERN.test(text) && !LONG_TERM_PATTERN.test(text)) {
+    if (PROJECT_FACT_PATTERN.test(text) && !LONG_TERM_PATTERN.test(text) && !STABLE_FACT_CHANGE_PATTERN.test(text)) {
       pushUnique(blockingReasons, 'fact_not_stable');
     } else if (!LONG_TERM_PATTERN.test(text) && !STABLE_FACT_SUBJECT_PATTERN.test(text)) {
       pushUnique(advisoryReasons, 'fact_not_stable');

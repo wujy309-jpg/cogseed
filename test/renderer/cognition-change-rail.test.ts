@@ -93,7 +93,7 @@ describe('cognition change rail', () => {
     // 保留（tree-service.test.ts 锁定），但渲染层零调用。
     handlers.get('cognition:changed')!({ collection: 'candidates', generation: 1 });
     await ns.flushPendingRefresh();
-    expect(invoke).toHaveBeenCalledWith('recall.candidates.list', { view: 'review-queue' });
+    expect(invoke).toHaveBeenCalledWith('recall.candidates.list', { view: 'activity-queue' });
 
     handlers.get('cognition:changed')!({ collection: 'tree', generation: 1 });
     handlers.get('cognition:changed')!({ collection: 'graph', generation: 1 });
@@ -124,7 +124,7 @@ describe('cognition change rail', () => {
 
     handlers.get('cognition:changed')!({ collection: 'ontology-candidates', generation: 1 });
     await ns.flushPendingRefresh();
-    expect(invoke).toHaveBeenCalledWith('recall.candidates.list', { view: 'review-queue' });
+    expect(invoke).toHaveBeenCalledWith('recall.candidates.list', { view: 'activity-queue' });
     expect(invoke).toHaveBeenCalledWith('personalOntology.candidates.list', {});
   });
 });

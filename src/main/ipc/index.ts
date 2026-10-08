@@ -2351,7 +2351,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
       // 而晋升闸门按同一批数据判冲突并拒绝——又是一次假审批。
       const conflicts = recallCandidates.recallCandidateConflictingTypes(all);
       const withCaps = all.map((candidate) => withRecallCandidateCapabilities(candidate, conflicts.get(candidate.id)));
-      if (view === 'review-queue') return projectReviewQueueCandidates(withCaps);
+      if (view === 'review-queue' || view === 'activity-queue') return projectReviewQueueCandidates(withCaps, view === 'activity-queue');
       return withCaps;
     })(),
   }),

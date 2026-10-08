@@ -188,7 +188,7 @@
             break;
           }
           case 'go-review': router.go({ name: 'activity' }); break;
-          case 'activity-view': router.go({ name: 'activity', activityDone: id === 'done' ? '1' : '', captureBucket: '' }); break;
+          case 'activity-view': router.go({ name: 'activity', activityView: id, activityDone: id === 'done' ? '1' : '', captureBucket: '' }); break;
           // 导语可点数字（specs/018 T010）：滚动到本页对应分区（纯呈现，
           // 不动路由栈——这是页内锚点跳转，不是导航）。
           case 'review-jump': {
@@ -300,6 +300,8 @@
             await A.captureBatch('retry', runnable.map((capture) => capture.id));
             break;
           }
+          case 'activity-row': { const row = (S.activityRows || []).find(item => item.key === id); if (row) router.go(Object.assign({ name: 'activity', activityView: S.route.activityView || 'attention' }, row.route)); break; }
+          case 'activity-page': router.go({ name: 'activity', activityView: S.route.activityView, activityQuery: S.route.activityQuery, activityPage: id }, { replace: true }); break;
           case 'open-candidate': router.go({ name: 'activity', candidateId: id }); break;
           case 'cand-organize-ontology': await NS.openPersonalOntology({ candidateId: id }); break;
           // 「记一条」（设计 7.2）：手动新建候选——列表页头/空态入口，表单卡
@@ -729,6 +731,7 @@
     });
     // div[role=button] 控件（行、chip 单选、tab、折叠头）不含原生 button 的
     // 键盘激活，Enter/Space 在委托层统一转成 click，保持键盘可达。
+    root.addEventListener('input', event => { if (event.isComposing || event.target?.id !== 'ca-activity-search') return; router.go({ name: 'activity', activityView: S.route.activityView, activityQuery: event.target.value }, { replace: true }); });
     root.addEventListener('keydown', (event) => {
       if (event.key !== 'Enter' && event.key !== ' ') return;
       const el = event.target.closest && event.target.closest('[data-act][role="button"], [data-go-asset][role="button"]');
@@ -900,7 +903,7 @@
   NS.onChange(() => {
     const activeAssetId = S.route.name === 'overview' && S.route.assetEdit === '1'
       ? String(S.route.assetId || '') : '';
-    const candidateRoute = S.route.name === 'review' || (S.route.name === 'activity' && Boolean(S.route.captureId));
+    const candidateRoute = S.route.name === 'activity';
     const needsCandidateDirectory = candidateRoute && (Array.isArray(S.candidates) ? S.candidates : []).some((candidate) => {
       const policy = candidate && candidate.scopePolicy && typeof candidate.scopePolicy === 'object' ? candidate.scopePolicy : {};
       return (Array.isArray(policy.agentIds) && policy.agentIds.length > 0)
@@ -946,7 +949,6 @@
     if (assetId && (!S.assetTimeline || S.assetTimeline.assetId !== assetId || S.assetTimeline.stale)) {
       void NS.loadAssetTimeline(assetId);
     }
-    if (assetId) void NS.loadKstarEpisodeSummaries(assetId);
     // 整理报告：进整理相关页签就补拉一次（内部有缓存判重）。沉淀设置页的
     // 大扫除 section（specs/017 整改三）也要最近报告摘要，一并补拉。
     // 「已删除」页签：保留期剩余天数由服务端现算，进这个页签时补拉一次。
@@ -978,14 +980,11 @@
       const cand = S.candidates.find((c) => String(c.id) === candidateId);
       if (cand) {
         const candRefs = [...(cand.sourceRefs || []), ...(cand.evidenceRefs || [])];
-        const ids = candRefs.map((r) => String(r.id || ''));
-        void NS.loadKstarEpisodeSummariesByIds(ids);
         void NS.loadConversationTitlesByIds(candRefs);
       }
     }
     // KSTAR 复盘折叠区（2026-09-17 二次定调）：复盘历史随「我的认知」页
     // 懒加载一次（折叠区默认收起，数据先备好，展开即渲染）。
-    if (String(S.route.name || '') === 'overview') void NS.loadKstarEpisodes();
     // 模型自选标记随「我的认知」一起刷新（2026-09-18）：目录视图据此标"模型挂着"。
     if (String(S.route.name || '') === 'overview') void NS.loadModelSelectedAssets();
     // 经验目录（specs/016；specs/017 整改一收编为「我的认知」经验档）：进
@@ -1000,7 +999,6 @@
         const loaded = S.experienceDetail;
         if (loaded && !loaded.loading && loaded.experience) {
           const refs = loaded.experience.evidenceRefs || [];
-          void NS.loadKstarEpisodeSummariesByIds(refs.map((ref) => String((ref && ref.id) || '')));
           void NS.loadConversationTitlesByIds(refs);
         }
       }

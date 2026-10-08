@@ -85,8 +85,8 @@ describe('资产目录视图', () => {
       id: 'entity-a', kind: 'entity', moduleId: 'module-a', name: '历史人物', version: 3, source: { label: '原始依据' },
     } }] } });
     expect(html).toContain('历史人物');
-    expect(html).toContain('data-record-id="entity-a"');
-    expect(html).toContain('data-record-version="3"');
+    expect(html).toContain('data-id="ontology:entity-a@3"');
+    expect(html).not.toContain('实际采用');
     expect(html).toContain('保存不代表任务已采用');
   });
   it('本体目录读取失败给出重试入口，不把失败显示成空目录', () => {

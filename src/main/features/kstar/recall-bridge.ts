@@ -1,3 +1,4 @@
+import { cognitionIntegrationIsolated } from '../cognition/integration-boundary';
 import { safeId } from '../../storage';
 import { submitCognitionCandidate } from '../cognition/candidate-submission';
 import { alignUpdateCandidateType, type RecallCandidateRecord } from '../recall/candidate-service';
@@ -12,6 +13,7 @@ export async function saveKstarCandidateProposals(
   proposals: KstarCandidateProposal[],
   options: { spaceId?: string } = {},
 ): Promise<RecallCandidateRecord[]> {
+  if (cognitionIntegrationIsolated()) return [];
   const candidates: RecallCandidateRecord[] = [];
   for (const proposal of proposals.slice(0, 3)) {
     const action = recallFieldsForKstarProposal(proposal);

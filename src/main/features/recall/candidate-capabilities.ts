@@ -367,17 +367,17 @@ const REVIEW_QUEUE_OMIT_FIELDS = new Set([
 
 export function projectReviewQueueCandidates<
   T extends { id: string; status: string; updatedAt?: string; createdAt?: string; capabilities?: RecallCandidateCapabilities },
->(candidates: readonly T[]): Array<Partial<T> & { id: string; status: string; capabilities?: RecallCandidateCapabilities }> {
+>(candidates: readonly T[], activity = false): Array<Partial<T> & { id: string; status: string; capabilities?: RecallCandidateCapabilities }> {
   const byRecency = (a: T, b: T) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || ''));
   const actionable = candidates.filter((c) => ['observed', 'weak_observation', 'pending_review', 'failed'].includes(String(c.status)));
   const actionableIds = new Set(actionable.map((c) => c.id));
   const snoozed = candidates.filter((c) => c.capabilities?.isSnoozed === true && !actionableIds.has(c.id));
   const terminal = candidates
     .filter((c) => ['expired', 'superseded'].includes(String(c.status)))
-    .sort(byRecency).slice(0, REVIEW_QUEUE_TERMINAL_LIMIT);
+    .sort(byRecency).slice(0, activity ? candidates.length : REVIEW_QUEUE_TERMINAL_LIMIT);
   const processed = candidates
     .filter((c) => ['confirmed', 'rejected', 'ignored'].includes(String(c.status)))
-    .sort(byRecency).slice(0, REVIEW_QUEUE_PROCESSED_LIMIT);
+    .sort(byRecency).slice(0, activity ? candidates.length : REVIEW_QUEUE_PROCESSED_LIMIT);
   const queue = [...actionable, ...snoozed, ...terminal, ...processed];
   return queue.map((candidate) => {
     const projected: Record<string, unknown> = {};

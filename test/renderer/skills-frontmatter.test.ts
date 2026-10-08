@@ -283,18 +283,18 @@ describe('skills renderer frontmatter parsing', () => {
     ]);
   });
 
-  it('renders pending Recall candidates with a primary confirm on the card (specs/018 T011)', () => {
+  it('opens pending suggestions from compact activity rows and confirms only in detail', () => {
     const candidate = cognitionCandidate();
     const list = renderCognition({ name: 'review' }, { candidates: [candidate] });
     expect(visibleText(list)).toContain('Keep every approval tied to source evidence.');
-    expect(list).toContain('data-act="open-candidate" data-id="cand-review"');
+    expect(list).toContain('data-act="activity-row" data-id="candidate:cand-review"');
     // specs/018 T011：卡片主按钮 = 推荐动作（确认），沿既有 cand-adopt-with-form
     // 通道（卡片不在 .ca-candidate-detail 内 → 按未携带编辑确认）；
     // 2026-09-29 子安标注整改：动作全部平铺右侧同一行，不再有「其他处理」折叠。
-    expect(list).toContain('data-act="cand-adopt-with-form"');
-    expect(list).toContain('data-act="cand-decide"');
+    expect(list).not.toContain('data-act="cand-adopt-with-form"');
+    expect(list).not.toContain('data-act="cand-decide"');
     expect(list).not.toContain('其他处理');
-    expect(list).toContain('ca-card-actions-flat');
+    expect(list).toContain('ca-activity-changes');
 
     const detail = renderCognition(
       { name: 'review', candidateId: 'cand-review' },
@@ -311,7 +311,7 @@ describe('skills renderer frontmatter parsing', () => {
       { candidates: [cognitionCandidate({ id: 'cand-deferred', status: 'deferred', capabilities: CAPS('deferred'), judgment: 'Add invariant checks.' })] },
     );
 
-    expect(html).toContain('data-act="open-candidate" data-id="cand-deferred"');
+    expect(html).toContain('data-act="activity-row" data-id="candidate:cand-deferred"');
     expect(visibleText(html)).toContain('Add invariant checks.');
   });
 
@@ -380,17 +380,18 @@ describe('skills renderer frontmatter parsing', () => {
     expect(html).not.toContain('cognition-asset-card');
   });
 
-  it('renders Recall candidates as entry cards with exactly one primary action each (specs/018 T011)', () => {
+  it('renders one stable detail entry per suggestion without inline publishing actions', () => {
     const html = renderCognition(
       { name: 'review' },
       { candidates: [cognitionCandidate(), cognitionCandidate({ id: 'cand-second', judgment: 'Second candidate' })] },
     );
 
-    expect(html.match(/class="cand"/g)).toHaveLength(2);
+    expect(html.match(/data-act="activity-row"/g)).toHaveLength(2);
     // 每卡恰好一个主按钮（确认），打开详情入口在标题行与动作行平铺区里
     //（2026-09-29 起「其他处理」折叠已撤）。
-    expect(html.match(/data-act="cand-adopt-with-form"/g)).toHaveLength(2);
-    expect(html.match(/data-act="open-candidate"/g).length).toBeGreaterThanOrEqual(2);
+    expect(html).not.toContain('data-act="cand-adopt-with-form"');
+    expect(html).toContain('data-id="candidate:cand-review"');
+    expect(html).toContain('data-id="candidate:cand-second"');
   });
 
   it('renders ability assets with PRD categories and without marketplace skill promotion', () => {
