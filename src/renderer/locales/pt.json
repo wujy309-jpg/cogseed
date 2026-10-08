@@ -6661,7 +6661,7 @@
   "cognition.term_inspection_note": "relata problemas sem alterar os ativos; os itens encontrados vão para «Precisa da minha atenção»",
   "cognition.other_actions": "Outras ações",
   "cognition.review_card_confirm": "Salvar",
-  "cognition.cand_create_entry": "Anotar um",
+  "cognition.cand_create_entry": "Adicionar manualmente",
   "cognition.cand_create_hint": "Insira conteúdo para manter a longo prazo. Confirmar abre os detalhes; duplicados ou condições incompletas ficam para revisão.",
   "cognition.cand_create_title_placeholder": "Título em uma linha, idealmente até 16 caracteres",
   "cognition.cand_create_need_title": "Preencha o título e o conteúdo.",

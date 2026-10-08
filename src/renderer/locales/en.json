@@ -8679,7 +8679,7 @@
   "cognition.term_inspection_note": "reports issues without changing assets; findings go to Needs my action",
   "cognition.other_actions": "Other actions",
   "cognition.review_card_confirm": "Save",
-  "cognition.cand_create_entry": "Write one",
+  "cognition.cand_create_entry": "Add manually",
   "cognition.cand_create_hint": "Enter content to keep long term. Confirm save opens its details; duplicates or incomplete conditions go to review.",
   "cognition.cand_create_title_placeholder": "A one-line title, ideally 16 characters or fewer",
   "cognition.cand_create_need_title": "Enter a title and content.",

@@ -732,8 +732,8 @@ describe('详情五区骨架（2026-09-28 设计五章对照表）', () => {
   });
 });
 
-describe('「记一条」（设计 7.2：手动新建候选）', () => {
-  it('列表页头与空库空态都给「记一条」入口', () => {
+describe('「手动添加」（设计 7.2：手动新建候选；2026-10-08 C-06 文案定名）', () => {
+  it('列表页头与空库空态都给「手动添加」入口', () => {
     const withAssets = loadCognition({});
     const html = withAssets.render();
     expect(html).toContain('data-act="cand-create"');

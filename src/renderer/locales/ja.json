@@ -6661,7 +6661,7 @@
   "cognition.term_inspection_note": "資産を変更せず問題を報告し、発見項目は「対応待ち」に入ります",
   "cognition.other_actions": "その他の処理",
   "cognition.review_card_confirm": "保存",
-  "cognition.cand_create_entry": "自分で書く",
+  "cognition.cand_create_entry": "手動で追加",
   "cognition.cand_create_hint": "長期保存する内容を入力してください。保存を確認すると詳細が開き、重複や条件不足は確認待ちに残ります。",
   "cognition.cand_create_title_placeholder": "一文タイトル（16字以内推奨）",
   "cognition.cand_create_need_title": "タイトルと内容を入力してください。",

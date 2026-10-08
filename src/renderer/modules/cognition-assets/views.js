@@ -2212,7 +2212,7 @@
     const defaultType = 'personal';
     const field = (label, inner) => `<label class="field"><span>${esc(label)}</span>${inner}</label>`;
     return `<div class="card ca-candidate-detail ca-manual-candidate" data-cand-type="${esc(defaultType)}" data-manual-candidate>
-      <div class="tt">${esc(T('cognition.cand_create_entry', '记一条'))}</div>
+      <div class="tt">${esc(T('cognition.cand_create_entry', '手动添加'))}</div>
       <p class="note">${esc(T('cognition.cand_create_hint', '填写要长期保存的内容；点击确认保存后可直接打开详情。重复内容或不完整的保存条件会留在待我处理。'))}</p>
       ${field(T('cognition.type', '类型'), `<div class="chips">${CATEGORIES.map(([id, key, fb]) => { const on = id === defaultType; return `<span class="ca-chip ca-chip-opt${on ? ' is-green' : ''}" data-act="cand-type" data-id="${esc(id)}" ${roleBtn(`aria-pressed="${on ? 'true' : 'false'}"`)}>${esc(T(key, fb))}</span>`; }).join('')}</div>`)}
       ${field(T('cognition.capture.name', '认知名称'), window.uiInput({ id: 'ca-manual-summary', value: '', attrs: { maxlength: 60, 'data-f': 'summary', placeholder: T('cognition.cand_create_title_placeholder', '一句话标题，建议 16 字以内') } }))}
@@ -2444,7 +2444,7 @@
     /* 空态引导（specs/018 T033）＋「记一条」（设计 7.2，2026-09-28）：空库
      * 也能手动写第一条——空态在「去待我处理」之外并排给「记一条」入口。 */
     const emptyState = `<div class="actions" style="margin-bottom:8px">
-        ${btn(T('cognition.cand_create_entry', '记一条'), 'cand-create', { small: true, primary: true })}
+        ${btn(T('cognition.cand_create_entry', '手动添加'), 'cand-create', { small: true, primary: true })}
       </div>${empty(
       T('cognition.tree_empty', '还没有正式资产'),
       T('cognition.tree_empty_hint', '你在「待我处理」点过「确认」的事，会出现在这里。'),
@@ -2483,7 +2483,7 @@
     /* 工具入口（specs/018 T031）＋「记一条」（设计 7.2）：默认「记一条」+
      * 「树视图」+「管理」小切换；管理模式下才出现 批量打标 / 目录视图
      * （多选条随 tagSelect 出）。「已删除」档不给「记一条」（保留期语义优先）。 */
-    const toolButtons = `${route.category !== 'deleted' && !catalogView ? btn(T('cognition.cand_create_entry', '记一条'), 'cand-create', { small: true, primary: true }) : ''}${route.category !== 'deleted' ? btn(T('cognition.tree_view_toggle', '树视图'), 'asset-view', { id: 'tree', small: true, className: 'o' }) : ''}${manageMode
+    const toolButtons = `${route.category !== 'deleted' && !catalogView ? btn(T('cognition.cand_create_entry', '手动添加'), 'cand-create', { small: true, primary: true }) : ''}${route.category !== 'deleted' ? btn(T('cognition.tree_view_toggle', '树视图'), 'asset-view', { id: 'tree', small: true, className: 'o' }) : ''}${manageMode
       ? `${route.category !== 'deleted' ? btn(T('cognition.tag_batch_entry', '批量打标'), 'tag-select-mode', { small: true, className: 'o' }) : ''}${btn(catalogView ? T('cognition.catalog_view_back', '列表视图') : T('cognition.catalog_view_toggle', '目录视图'), 'asset-view', { id: catalogView ? '' : 'catalog', small: true, className: 'o' })}${btn(T('cognition.overview_manage_exit', '退出管理'), 'overview-manage-toggle', { small: true, className: 'o' })}`
       : btn(T('cognition.overview_manage_entry', '管理'), 'overview-manage-toggle', { small: true, className: 'o' })}`;
     return `${heroHtml}

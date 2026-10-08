@@ -8606,7 +8606,7 @@
   "cognition.term_inspection_note": "只报告问题，不修改资产；发现项进入「待我处理」",
   "cognition.other_actions": "其他处理",
   "cognition.review_card_confirm": "保存",
-  "cognition.cand_create_entry": "记一条",
+  "cognition.cand_create_entry": "手动添加",
   "cognition.cand_create_hint": "填写要长期保存的内容；点击确认保存后可直接打开详情。重复内容或不完整的保存条件会留在待我处理。",
   "cognition.cand_create_title_placeholder": "一句话标题，建议 16 字以内",
   "cognition.cand_create_need_title": "请填写标题和内容。",
