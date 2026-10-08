@@ -307,3 +307,33 @@ describe('buildCliSpawnEnv › 登录 shell PATH', () => {
     }
   });
 });
+
+// 例外：目标是我们自己这个可执行文件时，必须把 ELECTRON_RUN_AS_NODE 放回去。
+// 打包版里我们自己拉起的 bridge/worker、以及 Electron-as-Node 测试宿主都靠它
+// 才有 Node 语义；剥离会让子进程以 GUI 形态启动然后一直不说话（MCP 那条测试
+// 就是被这个坑卡了 30s 超时）。
+describe('buildCliSpawnEnv › 自身可执行文件例外', () => {
+  it('restores the marker only for our own executable under an Electron host', async () => {
+    const { shouldRestoreRunAsNode } = await import('../../../../src/main/features/local_agents/spawn-command');
+    const execPath = '/Applications/CogSeed.app/Contents/MacOS/CogSeed';
+
+    expect(shouldRestoreRunAsNode(execPath, { execPath, isElectron: true })).toBe(true);
+    // 同一个路径但在纯 Node 宿主里：没有 Electron 语义可依赖，保持剥离
+    expect(shouldRestoreRunAsNode(execPath, { execPath, isElectron: false })).toBe(false);
+    // Electron 宿主里的**用户 CLI**：标记不得泄漏
+    expect(shouldRestoreRunAsNode('/usr/local/bin/claude', { execPath, isElectron: true })).toBe(false);
+    // 无法解析的路径：按剥离处理
+    expect(shouldRestoreRunAsNode('', { execPath, isElectron: true })).toBe(false);
+  });
+
+  it('keeps the marker stripped for a user CLI through the full env builder', async () => {
+    const { buildCliSpawnEnv } = await import('../../../../src/main/features/local_agents/spawn-command');
+    const out = buildCliSpawnEnv('/usr/local/bin/claude', {
+      PATH: '/usr/bin:/bin',
+      ELECTRON_RUN_AS_NODE: '1',
+      ELECTRON_NO_ASAR: '1',
+    } as NodeJS.ProcessEnv, 'darwin', '/Users/x');
+    expect(out.ELECTRON_RUN_AS_NODE).toBeUndefined();
+    expect(out.ELECTRON_NO_ASAR).toBeUndefined();
+  });
+});

@@ -64,6 +64,23 @@ function expandStarSegments(
  * launcher still cannot find Node. Keep the user's existing order, then add
  * the same conventional install roots used by CLI discovery.
  */
+/** 目标就是我们自己这个可执行文件吗？（Electron 宿主 + 同路径）
+ *
+ *  纯函数便于测试：`process.versions.electron` 在宿主里是只读的，
+ *  测试无法伪造宿主，只能直接验这个判断。 */
+export function shouldRestoreRunAsNode(
+  binPath: string,
+  opts: { execPath?: string; isElectron?: boolean } = {},
+): boolean {
+  const isElectron = opts.isElectron ?? Boolean(process.versions.electron);
+  if (!isElectron) return false;
+  try {
+    return path.resolve(binPath) === path.resolve(opts.execPath ?? process.execPath);
+  } catch {
+    return false;
+  }
+}
+
 export function buildCliSpawnEnv(
   binPath: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -77,6 +94,11 @@ export function buildCliSpawnEnv(
   // （Orkas 复盘里有同款事故记录）。子进程该看到的是用户环境，不是我们的。
   delete out.ELECTRON_RUN_AS_NODE;
   delete out.ELECTRON_NO_ASAR;
+  // 例外：目标就是我们自己这个可执行文件时，它**需要** ELECTRON_RUN_AS_NODE 才会以
+  // Node 模式运行（打包版里我们自己拉起的 bridge/worker，以及 Electron-as-Node 测试宿主
+  // 都是这条路径——剥离它会让子进程以 GUI 形态启动然后一直不说话）。
+  // 只有我们自己会 spawn process.execPath，所以这个例外不会把标记泄漏给用户 CLI。
+  if (shouldRestoreRunAsNode(binPath)) out.ELECTRON_RUN_AS_NODE = '1';
   const delimiter = platform === 'win32' ? ';' : ':';
   const pathApi = platform === 'win32' ? path.win32 : path.posix;
   const rawPath = env.PATH || env.Path || '';

@@ -8,14 +8,10 @@ import { EventEmitter } from 'node:events';
  *
  * 这里锁住审查（对照 Orkas）后补上的两点：
  *   1. taskkill 是有界工具 → spawn 必须带 timeout（超时即失败，不再无限等）
- *   2. 树终止失败必须**留痕**：降级为直接 kill 的同时打一条脱敏 warn
- *      （只带平台与原因，不带 PID / 命令 / 路径），否则只剩静默降级
+ *   2. 树终止失败必须**让调用方能留痕**：降级为直接 kill 的同时回调
+ *      `onFailure(reason)`（本文件属"依赖极轻"边界，不许 import logger——
+ *      见 cognition-expense-module-boundary 测试），由 features 侧决定怎么记
  */
-
-const { warn } = vi.hoisted(() => ({ warn: vi.fn() }));
-vi.mock('../../../src/main/logger', () => ({
-  createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() }),
-}));
 
 const { killProcessTree } = await import('../../../src/main/util/process-tree');
 
@@ -29,8 +25,11 @@ function childStub(pid = 2468) {
   return { pid, kill: vi.fn() } as any;
 }
 
+let failures: string[] = [];
+const onFailure = (reason: string) => { failures.push(reason); };
+
 beforeEach(() => {
-  warn.mockClear();
+  failures = [];
 });
 
 describe('killProcessTree (util)', () => {
@@ -49,27 +48,19 @@ describe('killProcessTree (util)', () => {
 
     killer.emit('exit', 0);
     expect(child.kill).not.toHaveBeenCalled();
-    expect(warn).not.toHaveBeenCalled();
+    expect(failures).toEqual([]);
   });
 
   it('warns with sanitized fields and falls back to a direct kill on a nonzero exit', () => {
     const killer = killerStub();
     const child = childStub(4321);
 
-    killProcessTree(child, 'SIGTERM', { platform: 'win32', spawnFn: (() => killer) as any });
+    killProcessTree(child, 'SIGTERM', { platform: 'win32', spawnFn: (() => killer) as any, onFailure });
     killer.emit('exit', 1);
 
     expect(child.kill).toHaveBeenCalledWith('SIGTERM');
-    expect(warn).toHaveBeenCalledWith('CLI process tree termination failed', {
-      platform: 'win32',
-      reason: 'tree_command_nonzero_exit',
-      fallback: 'direct_child_only',
-    });
-    // 脱敏：不得带 PID / 命令 / 路径
-    const payload = JSON.stringify(warn.mock.calls[0][1]);
-    expect(payload).not.toContain('4321');
-    expect(payload).not.toContain('taskkill');
-    expect(payload).not.toContain('\\');
+    // 失败原因交给调用方（本文件禁止依赖 logger，见 boundary 测试）——只带原因，不带 PID/命令/路径
+    expect(failures).toEqual(['tree_command_nonzero_exit']);
   });
 
   it('warns and falls back when taskkill cannot even start', () => {
@@ -77,15 +68,11 @@ describe('killProcessTree (util)', () => {
     killer.unref = vi.fn();
     const child = childStub();
 
-    killProcessTree(child, 'SIGKILL', { platform: 'win32', spawnFn: (() => killer) as any });
+    killProcessTree(child, 'SIGKILL', { platform: 'win32', spawnFn: (() => killer) as any, onFailure });
     killer.emit('error', new Error('spawn taskkill ENOENT'));
 
     expect(child.kill).toHaveBeenCalledWith('SIGKILL');
-    expect(warn).toHaveBeenCalledWith('CLI process tree termination failed', {
-      platform: 'win32',
-      reason: 'tree_command_failed',
-      fallback: 'direct_child_only',
-    });
+    expect(failures).toEqual(['tree_command_failed']);
   });
 
   it('signals the whole POSIX process group instead of the lone child', () => {
@@ -95,7 +82,7 @@ describe('killProcessTree (util)', () => {
       killProcessTree(child, 'SIGTERM', { platform: 'linux', spawnFn: (() => killerStub()) as any });
       expect(killSpy).toHaveBeenCalledWith(-777, 'SIGTERM');
       expect(child.kill).not.toHaveBeenCalled();
-      expect(warn).not.toHaveBeenCalled();
+      expect(failures).toEqual([]);
     } finally {
       killSpy.mockRestore();
     }
