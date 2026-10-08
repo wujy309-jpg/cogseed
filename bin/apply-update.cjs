@@ -20,6 +20,11 @@
  * record. `installer spawned` therefore means only that the installer process
  * started, never that the update applied.
  *
+ * `INSTALLER_SPAWN_OPTIONS.detached` is load-bearing and was established from a
+ * real-machine failure on 2026-10-08 (see `defaultSpawn`): a non-detached
+ * installer dies with this helper's process tree, so the log stops at
+ * `installer spawned` and the version never changes.
+ *
  * The app re-verifies the installer's sha256 (installer.ts:110) and this helper
  * then waits up to 60 s before executing that same path, so the bytes could in
  * principle be replaced in between (TOCTOU). Same-user attacker, low risk; a
@@ -110,18 +115,41 @@ function runInstaller(installerPath, spawnFn) {
 }
 
 /**
- * Spawn the installer, then release it from this process's event loop.
+ * Spawn the installer so that it outlives this helper.
  *
- * `unref()` is required, not cosmetic: with `{ detached: false }` the child
- * keeps this process referenced for the installer's whole lifetime (minutes), so
- * the helper itself would still be a running executable under $INSTDIR when NSIS
- * runs CHECK_APP_RUNNING — and the PowerShell branch force-kills everything
- * under $INSTDIR with no $pid exclusion
- * (allowOnlyOneInstallerInstance.nsh:94). The installer is a separate OS
- * process, so it keeps running after this helper exits.
+ * `detached: true` is a correctness requirement, not a preference, and it was
+ * established from a real-machine failure on Windows (10.0.26200, 2026-10-08):
+ * a NON-detached installer is destroyed together with this helper's process tree
+ * as soon as `main()` returns. The log still ends at `installer spawned`, NSIS
+ * writes nothing, the installed version never changes, and the only trace left
+ * is the boot guard's `install-missed` verdict on the next launch — the user
+ * stays on the old build with no error shown. Measured on the delivered 1.2.0
+ * package updating to a real 1.2.1 build: 4/4 non-detached attempts installed
+ * nothing (two through the app, one through this helper run manually, one
+ * through a bare `spawn` with these same options), and 2/2 detached attempts
+ * installed correctly (one bare `spawn`, one through the app). Control runs of
+ * the very same artifact from a console, synchronously, install fine.
+ *
+ * `unref()` is required on top of that, and for its own reason: without it the
+ * child would keep this helper referenced for the installer's whole lifetime
+ * (minutes), so the helper would still be a running executable under $INSTDIR
+ * when NSIS runs CHECK_APP_RUNNING — and the PowerShell branch force-kills
+ * everything under $INSTDIR with no $pid exclusion
+ * (allowOnlyOneInstallerInstance.nsh:94). Detaching and `unref()` are not
+ * substitutes: the first keeps the installer alive past this process, the second
+ * stops this process from outliving the spawn.
+ *
+ * `spawnFn` is the same injected seam `runInstaller` takes; production passes
+ * nothing and gets `node:child_process.spawn`.
  */
-function defaultSpawn(exe, args) {
-  const child = spawn(exe, args, { detached: false, stdio: 'ignore', windowsHide: true });
+const INSTALLER_SPAWN_OPTIONS = Object.freeze({
+  detached: true,
+  stdio: 'ignore',
+  windowsHide: true,
+});
+
+function defaultSpawn(exe, args, spawnFn = spawn) {
+  const child = spawnFn(exe, args, INSTALLER_SPAWN_OPTIONS);
   child.unref();
   return child.pid || 0;
 }
@@ -186,7 +214,7 @@ async function main(argv) {
   note(`installer spawned pid=${pid}`);
 }
 
-module.exports = { INSTALLER_ARGS, waitForParentExit, runInstaller };
+module.exports = { INSTALLER_ARGS, INSTALLER_SPAWN_OPTIONS, defaultSpawn, waitForParentExit, runInstaller };
 
 if (require.main === module) {
   void main(process.argv.slice(2)).catch((err) => {

@@ -28,6 +28,12 @@ type SpawnResult = number | { pid?: number };
 
 const helper = require('../../../../bin/apply-update.cjs') as {
   INSTALLER_ARGS: string[];
+  INSTALLER_SPAWN_OPTIONS: { detached: boolean; stdio: string; windowsHide: boolean };
+  defaultSpawn: (
+    exe: string,
+    args: string[],
+    spawnFn?: (exe: string, args: string[], opts: Record<string, unknown>) => SpawnResult,
+  ) => number;
   waitForParentExit: (
     pid: number,
     opts: { isAlive?: (pid: number) => boolean; timeoutMs: number; pollMs: number },
@@ -151,6 +157,29 @@ describe('apply-update helper', () => {
     const pid = helper.runInstaller('C:\\x\\CogSeed-0.0.9-win-x64.exe', spawnFn);
     expect(pid).toBe(777);
     expect(spawnFn).toHaveBeenCalledWith('C:\\x\\CogSeed-0.0.9-win-x64.exe', ['/S', '--force-run']);
+  });
+
+  // Regression lock for the 2026-10-08 real-machine failure: a non-detached
+  // installer is destroyed with the helper's process tree, so the update
+  // downloads and hands off cleanly and then silently never installs. Detaching
+  // is what keeps the installer alive after `main()` returns; `unref()` only
+  // releases this process from the event loop and cannot replace it.
+  it('detaches the installer so it outlives this helper', () => {
+    const calls: Array<{ exe: string; args: string[]; opts: Record<string, unknown> }> = [];
+    const unref = vi.fn();
+    const spawnFn = vi.fn((exe: string, args: string[], opts: Record<string, unknown>) => {
+      calls.push({ exe, args, opts });
+      return { pid: 4242, unref };
+    });
+    const pid = helper.defaultSpawn('C:\\x\\CogSeed-1.2.1-win-x64.exe', ['/S', '--force-run'], spawnFn);
+    expect(pid).toBe(4242);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].opts).toMatchObject({ detached: true, stdio: 'ignore', windowsHide: true });
+    expect(calls[0].args).toEqual(['/S', '--force-run']);
+    // Still released from the event loop: the helper must not stay alive under
+    // $INSTDIR while NSIS runs CHECK_APP_RUNNING.
+    expect(unref).toHaveBeenCalledTimes(1);
+    expect(helper.INSTALLER_SPAWN_OPTIONS.detached).toBe(true);
   });
 
   // The seam stays tolerant: a bare pid is still accepted from an injected stub.
