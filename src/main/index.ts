@@ -236,7 +236,7 @@ import * as messagingFeature from './features/messaging';
 import * as taskNotifications from './features/task_notifications';
 import { shouldHideOnClose, startBackgroundRun, type BackgroundRun, type TrayMenuItemSpec } from './features/background_run';
 import * as cogseedBackend from './features/cogseed_backend';
-import { recoverRecallCaptures, startRecallCaptureOrchestrator } from './features/recall/capture-service';
+import { recoverRecallCaptures, startNightlyCaptureSweepLoop, startRecallCaptureOrchestrator } from './features/recall/capture-service';
 import { startAutoCloseRecovery, startGroupKstarClosure } from './features/kstar/task-closure';
 import { startGroupChatRecallTerminalProofs } from './features/group_chat/recall-terminal-proof';
 import { startTaskAutoArchiveOrchestrator } from './features/kb_task_auto_archive';
@@ -1970,6 +1970,12 @@ if (!gotLock) {
     registerDeferred('recall:capture-recovery', async () => {
       const uid = users.getActiveUserId();
       if (uid) await recoverRecallCaptures(uid);
+    }, 'parallel', BOOT_HEAVY_DISK_DELAY_MS, { resourceClass: 'disk', preferIdle: true });
+    // 夜间增量清扫（U01）：低频自续期；窗口内/错过补跑都由内部判定，
+    // 应用未运行不假装完成，恢复可运行后续办。
+    registerDeferred('recall:nightly-sweep', () => {
+      const uid = users.getActiveUserId();
+      if (uid) startNightlyCaptureSweepLoop(uid);
     }, 'parallel', BOOT_HEAVY_DISK_DELAY_MS, { resourceClass: 'disk', preferIdle: true });
     registerDeferred('recall:validation-recovery', async () => {
       const uid = users.getActiveUserId();

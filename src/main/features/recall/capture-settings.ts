@@ -36,10 +36,11 @@ export interface UpdateRecallCaptureSettingsInput {
 
 const DEFAULT_SETTINGS = Object.freeze({
   enabled: true,
-  // 2026-09-16 B3：默认档与实际行为对齐——smart 的自动创建早已下线
-  //（terminalCaptureEnabledFor 仅放行 nightly），默认留在半死档会让
-  // "smart+auto"组合的手动整理意外自动采纳。
-  executionPolicy: 'manual' as const,
+  // 2026-10-08 认知资产全量重构（U01）：默认夜间自动发现——用户不管理来源、
+  // 队列或日常调度；smart 的自动创建闸（terminalCaptureEnabledFor 仅放行
+  // nightly）与夜间增量清扫（capture-service 夜间 sweep）都按 nightly 生效。
+  // 存量显式选择不被默认值覆盖：已保存的 manual/paused 配置原样保留。
+  executionPolicy: 'nightly' as const,
   reviewPolicy: 'manual' as const,
   quietMinutes: 10,
   nightlyStart: '02:00',

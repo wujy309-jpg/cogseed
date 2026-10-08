@@ -15,6 +15,7 @@ import { fileEditLock } from '../../util/locks';
 import { recallJsonRecordPath } from './paths';
 import { gateCandidateStatement } from './candidate-statement-gate';
 import { hasReviewableCandidateEvidence } from './candidate-evidence';
+import { bumpRecallCaptureStats } from './capture-stats';
 import { notifyCognitionWrite } from './store-events';
 import {
   readRecallJsonRecord,
@@ -1524,6 +1525,10 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
     }
   }
   if (existing) {
+    // 相同内容命中既有候选（追加依据而非新增近义资产）：夜间统计记账。
+    void bumpRecallCaptureStats(userId, { duplicatesSuppressed: 1 }).catch(() => {
+      // 统计失败不影响候选合并主流程。
+    });
     const merged = await updateRecallJsonRecord(userId, 'candidates', existing.id, (current) => {
       if (!current) return existing;
       const candidate = asCandidate(current);

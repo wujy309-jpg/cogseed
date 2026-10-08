@@ -136,6 +136,15 @@ export async function writeReviewDecision(
   await appendJsonlAtomic<ReviewDecision>(reviewDecisionLogPath(uid, input.targetRef), record);
   notifyCognitionWrite(uid, 'candidates', 'append', decisionId);
   log.info(`review decision actor=${input.actor || 'user'} user=${maskId(uid)} target=${maskId(input.targetRef)} type=${input.decisionType}`);
+  // 夜间筛选统计（U01/N-07）：只记决策类型计数，不落任何原文——reason 是
+  // 用户自由文本，不能作为聚合键（统计不泄露原文）。
+  void import('../recall/capture-stats').then(({ bumpRecallCaptureStats }) => (
+    bumpRecallCaptureStats(uid, {
+      decisions: { [input.decisionType]: 1 },
+    })
+  )).catch(() => {
+    // 统计失败不影响决定账本主流程。
+  });
   return record;
 }
 

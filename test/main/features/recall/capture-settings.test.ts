@@ -26,13 +26,14 @@ afterEach(() => {
 });
 
 describe('Recall capture settings', () => {
-  it('defaults to manual capture with a ten-minute quiet period and persists a validated nightly policy', async () => {
-    // 2026-09-16 B3：默认值 smart→manual。smart 自动创建早已下线（见
-    // capture-service terminalCaptureEnabledFor），默认值留在半死档会让
-    // "smart+auto"存量组合的手动整理意外自动采纳——默认档与实际行为对齐。
+  it('defaults to nightly capture with a ten-minute quiet period and persists a validated manual policy', async () => {
+    // 2026-10-08 认知资产全量重构（U01）：默认 smart→manual（2026-09-16 B3）
+    // 再→nightly——夜间自动发现成为默认，用户不管理来源/队列/日常调度；
+    // 终端闸 terminalCaptureEnabledFor 与夜间增量清扫都按 nightly 生效。
+    // 存量显式 manual/paused 配置持久保存，不被新默认覆盖。
     await expect(readRecallCaptureSettings('capture-user')).resolves.toMatchObject({
       enabled: true,
-      executionPolicy: 'manual',
+      executionPolicy: 'nightly',
       reviewPolicy: 'manual',
       quietMinutes: 10,
       nightlyStart: '02:00',

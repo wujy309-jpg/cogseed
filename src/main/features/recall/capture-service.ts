@@ -60,7 +60,12 @@ import {
   nextNightlyRunAt,
   readRecallCaptureSettings,
   type RecallCaptureExecutionPolicy,
+  type RecallCaptureSettingsRecord,
 } from './capture-settings';
+import {
+  bumpRecallCaptureStats,
+  type RecallCaptureStatsDelta,
+} from './capture-stats';
 import {
   assessRecallCandidateClassification,
   assessRecallCaptureCandidateQuality,
@@ -1809,7 +1814,7 @@ async function screenQueuedRecallCapture(
   }
   const screening = screenRecallCaptureValue(promptMessages);
   const screenedAt = new Date().toISOString();
-  return updateCapture(userId, id, (current) => current.status !== 'queued'
+  const screened = await updateCapture(userId, id, (current) => current.status !== 'queued'
     ? current
     : screening.eligible
       ? {
@@ -1832,6 +1837,15 @@ async function screenQueuedRecallCapture(
           durationMs: undefined,
           updatedAt: screenedAt,
         });
+  if (screened.status === 'no_candidate' && screened.filterReason) {
+    void bumpRecallCaptureStats(userId, {
+      coarseFiltered: 1,
+      coarseReasons: { [screened.filterReason]: 1 },
+    }).catch(() => {
+      // 统计失败不影响筛选主流程。
+    });
+  }
+  return screened;
 }
 
 function isSettledAutomaticCandidate(candidate: Pick<RecallCandidateRecord, 'status'>): boolean {
@@ -2246,6 +2260,21 @@ export async function runRecallCapture(
           ...(modelUsage ? { modelUsage } : {}),
           updatedAt: finishedAt,
         });
+    if (capture.status === 'review_ready' || capture.status === 'no_candidate' || capture.status === 'completed') {
+      void bumpRecallCaptureStats(userId, {
+        extracted: 1,
+        suggestions: candidateIds.length,
+        ...(capture.status === 'review_ready' ? { reviewReady: 1 } : {}),
+        ...(capture.status === 'no_candidate'
+          ? {
+            noCandidate: 1,
+            ...(capture.filterReason ? { noCandidateReasons: { [capture.filterReason]: 1 } } : {}),
+          }
+          : {}),
+      }).catch(() => {
+        // 统计失败不影响结算主流程。
+      });
+    }
     captureControlRequests.delete(captureTaskKey(userId, id));
     return capture;
   } catch (error) {
@@ -2260,6 +2289,11 @@ export async function runRecallCapture(
       error_code: code,
     });
     const finishedAt = new Date().toISOString();
+    void bumpRecallCaptureStats(userId, {
+      failures: { [code]: 1 },
+    }).catch(() => {
+      // 统计失败不影响失败结算主流程。
+    });
     captureControlRequests.delete(captureTaskKey(userId, id));
     return updateCapture(userId, id, (current) => (current.status !== 'extracting' && current.status !== 'writing')
       ? current
@@ -3235,6 +3269,505 @@ export async function recoverRecallCaptures(userId: string): Promise<number> {
 }
 
 type TerminalSubscribe = (listener: TaskTerminalListener) => () => void;
+
+// ── 夜间增量清扫（U01）──────────────────────────────────────────────────────
+// 终态事件建 capture 是主触发；本清扫是兜底：夜间窗口内对「基线之后有更新」
+// 的会话做增量排队，活跃会话延后，失败有限重试，忽略与完成都记扫描水位，
+// 避免每晚重扫同一批内容。新基线只向前看，不回扫全部历史。
+const SWEEP_COLLECTION = 'capture-sweep';
+const NIGHTLY_SWEEP_ID = 'nightly';
+const NIGHTLY_SWEEP_TICK_MS = 15 * 60_000;
+const NIGHTLY_AUTO_RETRY_ATTEMPT_LIMIT = 3;
+
+export type RecallNightlySweepCursorState = 'covered' | 'ignored' | 'failed' | 'deferred';
+
+export interface RecallNightlySweepCursor {
+  state: RecallNightlySweepCursorState;
+  throughMessageId?: string;
+  throughTs?: string;
+  errorCode?: string;
+  updatedAt: string;
+}
+
+export interface RecallNightlySweepResult {
+  ranForWindow: string;
+  finishedAt: string;
+  scanned: number;
+  queued: number;
+  deferred: number;
+  retried: number;
+  skipped: number;
+  failed: number;
+  error?: string;
+}
+
+export interface RecallNightlySweepRecord extends RecallJsonRecord {
+  id: typeof NIGHTLY_SWEEP_ID;
+  baselineAt: string;
+  cursors: Record<string, RecallNightlySweepCursor>;
+  lastRunAt?: string;
+  lastResult?: RecallNightlySweepResult;
+  consecutiveErrors?: number;
+}
+
+export type RecallNightlySweepRun = RecallNightlySweepResult & { ran: true } | { ran: false; reason: string };
+
+function asSweepCursor(value: unknown): RecallNightlySweepCursor {
+  const raw = (value || {}) as Partial<RecallNightlySweepCursor>;
+  const state: RecallNightlySweepCursorState = raw.state === 'covered' || raw.state === 'ignored'
+    || raw.state === 'failed' || raw.state === 'deferred' ? raw.state : 'deferred';
+  return {
+    state,
+    ...(typeof raw.throughMessageId === 'string' ? { throughMessageId: raw.throughMessageId } : {}),
+    ...(typeof raw.throughTs === 'string' ? { throughTs: raw.throughTs } : {}),
+    ...(typeof raw.errorCode === 'string' ? { errorCode: raw.errorCode } : {}),
+    updatedAt: typeof raw.updatedAt === 'string' && isIsoTimestamp(raw.updatedAt) ? raw.updatedAt : new Date().toISOString(),
+  };
+}
+
+function asSweepRecord(value: RecallJsonRecord): RecallNightlySweepRecord {
+  const raw = value as unknown as Partial<RecallNightlySweepRecord>;
+  const cursors: Record<string, RecallNightlySweepCursor> = {};
+  if (raw.cursors && typeof raw.cursors === 'object') {
+    for (const [cid, cursor] of Object.entries(raw.cursors)) cursors[cid] = asSweepCursor(cursor);
+  }
+  return {
+    ...value,
+    id: NIGHTLY_SWEEP_ID,
+    baselineAt: typeof raw.baselineAt === 'string' && isIsoTimestamp(raw.baselineAt)
+      ? raw.baselineAt : new Date().toISOString(),
+    cursors,
+    ...(raw.lastRunAt ? { lastRunAt: raw.lastRunAt } : {}),
+    ...(raw.lastResult ? { lastResult: raw.lastResult } : {}),
+    ...(typeof raw.consecutiveErrors === 'number' ? { consecutiveErrors: raw.consecutiveErrors } : {}),
+  } as RecallNightlySweepRecord;
+}
+
+async function readNightlySweepRecord(userId: string): Promise<RecallNightlySweepRecord | undefined> {
+  const stored = await readRecallJsonRecord(userId, SWEEP_COLLECTION, NIGHTLY_SWEEP_ID);
+  return stored ? asSweepRecord(stored) : undefined;
+}
+
+export async function readRecallNightlySweep(userId: string): Promise<RecallNightlySweepRecord | undefined> {
+  return readNightlySweepRecord(userId);
+}
+
+function minuteOfDayValue(value: string): number {
+  const [hours, minutes] = value.split(':').map(Number);
+  return hours * 60 + minutes;
+}
+
+function mostRecentWindowStart(now: Date, nightlyStart: string, nightlyEnd: string): Date {
+  const start = minuteOfDayValue(nightlyStart);
+  const candidate = new Date(now);
+  candidate.setHours(Math.floor(start / 60), start % 60, 0, 0);
+  if (candidate.getTime() > now.getTime()) candidate.setDate(candidate.getDate() - 1);
+  return candidate;
+}
+
+function windowEndFromStart(start: Date, nightlyStart: string, nightlyEnd: string): Date {
+  const startMinute = minuteOfDayValue(nightlyStart);
+  const endMinute = minuteOfDayValue(nightlyEnd);
+  const lengthMinutes = (endMinute - startMinute + 24 * 60) % (24 * 60) || 24 * 60;
+  return new Date(start.getTime() + lengthMinutes * 60_000);
+}
+
+/** 当前时刻应补跑哪个夜间窗口：窗口内跑当窗；错过且 catchUpMissed 补最近一个
+ *  已结束窗口；应用未运行/休眠时不假装完成，恢复可运行后续办。 */
+function dueNightlyWindow(
+  now: Date,
+  settings: RecallCaptureSettingsRecord,
+  record: RecallNightlySweepRecord | undefined,
+): string | undefined {
+  const { nightlyStart, nightlyEnd } = settings;
+  const inWindow = isWithinNightlyWindow(now, nightlyStart, nightlyEnd);
+  const recentStart = mostRecentWindowStart(now, nightlyStart, nightlyEnd);
+  if (!inWindow && !settings.catchUpMissed) return undefined;
+  if (!inWindow && now.getTime() < windowEndFromStart(recentStart, nightlyStart, nightlyEnd).getTime()) return undefined;
+  const windowKey = recentStart.toISOString();
+  if (record?.lastResult?.ranForWindow === windowKey) return undefined;
+  return windowKey;
+}
+
+function sweepTailMessages(
+  messages: GroupMessage[],
+  cursor: RecallNightlySweepCursor | undefined,
+  baselineMs: number,
+): GroupMessage[] {
+  if (!cursor) return messages.filter((message) => timestampMs(message.ts) >= baselineMs);
+  if (cursor.throughMessageId) {
+    const index = messages.findIndex((message) => message.id === cursor.throughMessageId);
+    if (index >= 0) return messages.slice(index + 1);
+  }
+  if (cursor.throughTs) {
+    const through = Date.parse(cursor.throughTs);
+    if (!Number.isNaN(through)) return messages.filter((message) => timestampMs(message.ts) > through);
+  }
+  return messages.slice();
+}
+
+function nightSweepRunId(ranForWindow: string): string {
+  return `nightly-sweep-${ranForWindow.replace(/[^0-9A-Za-z-]/g, '')}`;
+}
+
+const nightlySweepsInFlight = new Set<string>();
+
+export async function runNightlyCaptureSweep(
+  userId: string,
+  ranForWindow: string,
+  settings: RecallCaptureSettingsRecord,
+): Promise<RecallNightlySweepRun> {
+  if (nightlySweepsInFlight.has(userId)) return { ran: false, reason: 'sweep_in_flight' };
+  nightlySweepsInFlight.add(userId);
+  const startedAt = new Date().toISOString();
+  let counters = { scanned: 0, queued: 0, deferred: 0, retried: 0, skipped: 0, failed: 0 };
+  let failure: string | undefined;
+  try {
+    const [conversations, captures] = await Promise.all([
+      chats.listConversations(userId),
+      listAllRecallCaptures(userId),
+    ]);
+    const capturesByConversation = new Map<string, RecallCaptureRecord[]>();
+    for (const capture of captures) {
+      const list = capturesByConversation.get(capture.conversationId) || [];
+      list.push(capture);
+      capturesByConversation.set(capture.conversationId, list);
+    }
+    // 先建基线再扫：首轮基线=现在，之前的会话一律不动（不回扫历史）。
+    const sweep = asSweepRecord(await updateRecallJsonRecord(userId, SWEEP_COLLECTION, NIGHTLY_SWEEP_ID, (current) => {
+      if (current) return current;
+      return {
+        schemaVersion: 1,
+        ownerId: userId,
+        id: NIGHTLY_SWEEP_ID,
+        baselineAt: startedAt,
+        cursors: {},
+      } as RecallJsonRecord;
+    }));
+    const baselineMs = Date.parse(sweep.baselineAt);
+    const cursors: Record<string, RecallNightlySweepCursor> = { ...sweep.cursors };
+    const ordered = [...conversations].sort((left, right) => String(left.updated_at).localeCompare(String(right.updated_at)));
+    for (const conversation of ordered) {
+      counters.scanned += 1;
+      const cid = conversation.conversation_id;
+      const cursor = cursors[cid];
+      const conversationUpdatedMs = Date.parse(String(conversation.updated_at));
+      if (cursor?.throughTs && !Number.isNaN(conversationUpdatedMs)
+        && conversationUpdatedMs <= Date.parse(cursor.throughTs)) {
+        counters.skipped += 1;
+        continue;
+      }
+      if (!cursor && !Number.isNaN(conversationUpdatedMs) && conversationUpdatedMs < baselineMs) {
+        counters.skipped += 1;
+        continue;
+      }
+      const sourceControl = await readCognitionSourceControl(userId, { kind: 'conversation', id: cid });
+      if (sourceControl && sourceControl.availability !== 'active') {
+        cursors[cid] = {
+          state: 'ignored',
+          ...(isIsoTimestamp(String(conversation.updated_at)) ? { throughTs: String(conversation.updated_at) } : {}),
+          updatedAt: startedAt,
+        };
+        counters.skipped += 1;
+        continue;
+      }
+      if (!isQuiescent(userId, cid)) {
+        // 活跃对话延后：不推进水位，下轮再扫。
+        cursors[cid] = { ...(cursor || { state: 'deferred' as const }), state: 'deferred', updatedAt: startedAt };
+        counters.deferred += 1;
+        continue;
+      }
+      let messages: GroupMessage[];
+      try {
+        messages = (await chats.getMessages(userId, cid, 2_000)).filter(isRecallConversationMessage);
+      } catch {
+        // 会话暂不可读：不推进水位，留待下轮。
+        cursors[cid] = { ...(cursor || { state: 'deferred' as const }), state: 'deferred', updatedAt: startedAt };
+        counters.deferred += 1;
+        continue;
+      }
+      const latest = messages.at(-1);
+      if (!latest) {
+        cursors[cid] = {
+          state: 'ignored',
+          ...(isIsoTimestamp(String(conversation.updated_at)) ? { throughTs: String(conversation.updated_at) } : {}),
+          updatedAt: startedAt,
+        };
+        counters.skipped += 1;
+        continue;
+      }
+      if (cursor?.throughMessageId === latest.id) {
+        cursors[cid] = {
+          state: 'covered',
+          throughMessageId: latest.id,
+          ...(isIsoTimestamp(latest.ts) ? { throughTs: latest.ts } : {}),
+          updatedAt: startedAt,
+        };
+        counters.skipped += 1;
+        continue;
+      }
+      const covering = (capturesByConversation.get(cid) || [])
+        .find((capture) => capture.messageIds.at(-1) === latest.id);
+      if (covering) {
+        if (covering.status === 'failed' || covering.status === 'configuration_required') {
+          if ((covering.attempt || 1) < NIGHTLY_AUTO_RETRY_ATTEMPT_LIMIT) {
+            const retriedAt = new Date().toISOString();
+            await updateCapture(userId, covering.id, (current) => (
+              current.status !== 'failed' && current.status !== 'configuration_required'
+            ) ? current : {
+              ...current,
+              status: 'queued',
+              stage: undefined,
+              resumeStatus: undefined,
+              scheduledFor: undefined,
+              waitingCompletionReason: undefined,
+              attempt: (current.attempt || 1) + 1,
+              errorCode: undefined,
+              recoveredAt: undefined,
+              startedAt: undefined,
+              finishedAt: undefined,
+              durationMs: undefined,
+              modelUsage: undefined,
+              updatedAt: retriedAt,
+            });
+            scheduleRecallCapture(userId, covering.id);
+            counters.retried += 1;
+          } else {
+            cursors[cid] = {
+              state: 'failed',
+              throughMessageId: latest.id,
+              ...(isIsoTimestamp(latest.ts) ? { throughTs: latest.ts } : {}),
+              errorCode: covering.errorCode || 'capture_failed',
+              updatedAt: startedAt,
+            };
+            counters.failed += 1;
+            continue;
+          }
+        } else {
+          cursors[cid] = {
+            state: 'covered',
+            throughMessageId: latest.id,
+            ...(isIsoTimestamp(latest.ts) ? { throughTs: latest.ts } : {}),
+            updatedAt: startedAt,
+          };
+          counters.skipped += 1;
+          continue;
+        }
+      } else {
+        const tail = sweepTailMessages(messages, cursor, baselineMs);
+        const anchor = tail.find((message) => message.from === 'user');
+        const selected = anchor
+          ? selectCaptureMessages(messages, 0, Number.MAX_SAFE_INTEGER, anchor.id, latest.id)
+          : [];
+        if (!selected.length || selected.at(-1)?.role !== 'assistant' || !anchor) {
+          // 尾部没有完整问答（如停在用户消息）：延后，不动水位。
+          cursors[cid] = { ...(cursor || { state: 'deferred' as const }), state: 'deferred', updatedAt: startedAt };
+          counters.deferred += 1;
+          continue;
+        }
+        const mergeable = (capturesByConversation.get(cid) || []).find((capture) => (
+          (capture.executionPolicy === 'smart' || capture.executionPolicy === 'nightly')
+          && MERGEABLE_AUTOMATIC_STATUSES.has(capture.status)
+        ));
+        const nowDate = new Date();
+        const now = nowDate.toISOString();
+        const scheduledFor = nightlyScheduleAfterQuiet(
+          new Date(isIsoTimestamp(latest.ts) ? latest.ts : now),
+          settings.quietMinutes,
+          settings.nightlyStart,
+          settings.nightlyEnd,
+        ).toISOString();
+        const lastActivityAt = isIsoTimestamp(latest.ts) ? latest.ts : now;
+        if (mergeable) {
+          await updateCapture(userId, mergeable.id, (current) => !MERGEABLE_AUTOMATIC_STATUSES.has(current.status)
+            ? current
+            : {
+              ...current,
+              terminalRunId: nightSweepRunId(ranForWindow),
+              anchorMessageId: anchor.id,
+              messageIds: selected.map((message) => message.id),
+              status: 'scheduled',
+              screeningStatus: 'pending',
+              screeningSignals: undefined,
+              screenedAt: undefined,
+              filterReason: undefined,
+              waitingCompletionReason: undefined,
+              scheduledFor,
+              lastActivityAt,
+              resumeStatus: current.status === 'paused' ? 'scheduled' as const : undefined,
+              errorCode: undefined,
+              updatedAt: now,
+            });
+          cancelScheduledCapture(userId, mergeable.id);
+          const refreshed = await readRecallCapture(userId, mergeable.id);
+          scheduleKnownRecallCapture(userId, refreshed);
+        } else {
+          const record: RecallCaptureRecord = {
+            schemaVersion: 1,
+            taxonomyVersion: 2,
+            ownerId: userId,
+            id: captureId(cid, anchor.id),
+            conversationId: cid,
+            ...(conversation.title ? { conversationTitle: conversation.title } : {}),
+            terminalRunId: nightSweepRunId(ranForWindow),
+            anchorMessageId: anchor.id,
+            messageIds: selected.map((message) => message.id),
+            status: 'scheduled',
+            visibility: 'internal',
+            screeningStatus: 'pending',
+            executionPolicy: settings.executionPolicy,
+            quietMinutes: settings.quietMinutes,
+            lastActivityAt,
+            scheduledFor,
+            nightlyStart: settings.nightlyStart,
+            nightlyEnd: settings.nightlyEnd,
+            catchUpMissed: settings.catchUpMissed,
+            attempt: 1,
+            candidateIds: [],
+            createdAt: now,
+            updatedAt: now,
+          };
+          const stored = asCapture(await updateRecallJsonRecord(userId, CAPTURE_COLLECTION, record.id, (current) => {
+            if (!current) return record;
+            const existing = asCapture(current);
+            if (sameIds(existing.messageIds, record.messageIds)) return existing;
+            return { ...existing, ...record, id: existing.id, createdAt: existing.createdAt };
+          }));
+          log.info('recall nightly sweep capture created', {
+            conversation_id: cid,
+            capture_id: stored.id,
+            window: ranForWindow,
+            message_count: stored.messageIds.length,
+          });
+          scheduleKnownRecallCapture(userId, stored);
+        }
+        counters.queued += 1;
+      }
+      // 扫描水位推进到最新消息；失败语义由 capture 记录自身携带（有限重试）。
+      cursors[cid] = {
+        state: 'covered',
+        throughMessageId: latest.id,
+        ...(isIsoTimestamp(latest.ts) ? { throughTs: latest.ts } : {}),
+        updatedAt: startedAt,
+      };
+    }
+    const result: RecallNightlySweepResult = {
+      ranForWindow,
+      finishedAt: new Date().toISOString(),
+      ...counters,
+    };
+    await updateRecallJsonRecord(userId, SWEEP_COLLECTION, NIGHTLY_SWEEP_ID, (current) => {
+      const base = asSweepRecord(current || {
+        schemaVersion: 1,
+        ownerId: userId,
+        id: NIGHTLY_SWEEP_ID,
+        baselineAt: startedAt,
+        cursors: {},
+      } as RecallJsonRecord);
+      return {
+        ...base,
+        cursors,
+        lastRunAt: result.finishedAt,
+        lastResult: result,
+        consecutiveErrors: 0,
+      } as RecallJsonRecord;
+    });
+    const statsDelta: RecallCaptureStatsDelta = {
+      sweeps: 1,
+      conversationsScanned: counters.scanned,
+      retried: counters.retried,
+    };
+    await bumpRecallCaptureStats(userId, statsDelta).catch((error) => {
+      log.warn('recall capture stats update failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    return { ran: true, ...result };
+  } catch (error) {
+    failure = error instanceof Error ? error.message : String(error);
+    log.warn('recall nightly sweep failed', { window: ranForWindow, error: failure });
+    await updateRecallJsonRecord(userId, SWEEP_COLLECTION, NIGHTLY_SWEEP_ID, (current) => {
+      const base = asSweepRecord(current || {
+        schemaVersion: 1,
+        ownerId: userId,
+        id: NIGHTLY_SWEEP_ID,
+        baselineAt: startedAt,
+        cursors: {},
+      } as RecallJsonRecord);
+      return {
+        ...base,
+        lastRunAt: startedAt,
+        consecutiveErrors: (base.consecutiveErrors || 0) + 1,
+        lastResult: {
+          ranForWindow,
+          finishedAt: new Date().toISOString(),
+          scanned: counters.scanned,
+          queued: counters.queued,
+          deferred: counters.deferred,
+          retried: counters.retried,
+          skipped: counters.skipped,
+          failed: counters.failed,
+          error: failure,
+        },
+      } as RecallJsonRecord;
+    }).catch(() => {
+      // 水位写失败时下一轮重扫：宁可重扫不可漏扫。
+    });
+    return {
+      ran: true,
+      ranForWindow,
+      finishedAt: new Date().toISOString(),
+      ...counters,
+      error: failure,
+    };
+  } finally {
+    nightlySweepsInFlight.delete(userId);
+  }
+}
+
+export interface RecallCaptureSweepLoopHandle {
+  stop(): void;
+}
+
+/** 夜间清扫循环：低频自续期，只在应跑窗口跑一次（窗口内当窗，错过补最近），
+ *  其余 tick 只做廉价判定。配置缺失/禁用/非 nightly 时静默不动。 */
+export function startNightlyCaptureSweepLoop(userId: string): RecallCaptureSweepLoopHandle {
+  let scheduled: ScheduledBootBackgroundTask | null = null;
+  let stopped = false;
+  const scheduleNext = (delayMs: number): void => {
+    scheduled = scheduleBootBackground('recall:nightly-sweep', async (signal) => {
+      if (stopped || signal?.aborted) return;
+      try {
+        const settings = await readRecallCaptureSettings(userId);
+        if (!settings.enabled || settings.executionPolicy !== 'nightly') return;
+        // 连续失败熔断：3 次后当天不再重试，等下一个窗口。
+        const record = await readNightlySweepRecord(userId);
+        if ((record?.consecutiveErrors || 0) >= 3 && record?.lastRunAt
+          && Date.now() - Date.parse(record.lastRunAt) < 24 * 60 * 60_000) return;
+        const windowKey = dueNightlyWindow(new Date(), settings, record);
+        if (!windowKey) return;
+        await runNightlyCaptureSweep(userId, windowKey, settings);
+      } catch (error) {
+        log.warn('recall nightly sweep tick failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }, delayMs, { resourceClass: 'disk', preferIdle: true, maxSliceMs: 20_000 });
+    void scheduled.promise.finally(() => {
+      scheduled = null;
+      if (!stopped) scheduleNext(NIGHTLY_SWEEP_TICK_MS);
+    });
+  };
+  scheduleNext(0);
+  return {
+    stop() {
+      stopped = true;
+      scheduled?.cancel();
+      scheduled = null;
+    },
+  };
+}
+
 
 export interface RecallCaptureOrchestratorRuntime {
   subscribe?: TerminalSubscribe;

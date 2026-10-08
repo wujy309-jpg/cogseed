@@ -92,6 +92,8 @@ describe('014 anti-drift（specs/014 T024）', () => {
       'skills.security.accept',
       'skills.security.revoke',
       'skills.security.export',
+      // 2026-10-08 认知资产全量重构（U01/N-07）：夜间筛选聚合计数只读通道。
+      'recall.captures.stats',
     ];
     expect(sneaked.sort(), '出现未登记的新通道').toEqual([...registeredPost014].sort());
     expect(removed, '014 期间不应删除通道').toEqual([]);

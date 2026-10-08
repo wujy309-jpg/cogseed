@@ -93,6 +93,7 @@ import * as effectivenessFeedback from '../features/recall/effectiveness-feedbac
 import * as recallSources from '../features/recall/source-catalog';
 import * as recallCaptures from '../features/recall/capture-service';
 import * as recallCaptureSettings from '../features/recall/capture-settings';
+import { readRecallCaptureStats } from '../features/recall/capture-stats';
 import * as recallViews from '../features/recall/recall-view-service';
 import * as recallTeaching from '../features/recall/teaching-service';
 import * as personalOntologyGroups from '../features/personal_ontology_groups';
@@ -2598,6 +2599,15 @@ const invokeHandlers: Record<string, InvokeHandler> = {
         authorizationRequired: Boolean(auth.getConfiguredModelOAuthExpiredMessage()),
       },
     };
+  },
+
+  // 夜间筛选统计（U01/N-07）：聚合计数与原因码，不含任何原文。
+  'recall.captures.stats': async (_input, ctx) => {
+    const [totals, sweep] = await Promise.all([
+      readRecallCaptureStats(ctx.userId),
+      recallCaptures.readRecallNightlySweep(ctx.userId),
+    ]);
+    return { ok: true, totals, sweep };
   },
 
   'recall.captures.settings.update': async (input = {}, ctx) => {
