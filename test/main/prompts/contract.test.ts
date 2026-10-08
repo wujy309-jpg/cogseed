@@ -564,3 +564,38 @@ describe('prompts ↔ code contract', () => {
     expect(cliPrompt).toMatch(/\$task_body\n\n\$runtime_datetime_block\s*$/);
   });
 });
+
+// 缓存前缀不变量（对齐 DSH 的 prefix-stability 教训，见 AGENTS.md「Prompt Files」）：
+// 易变内容必须垫在最后，否则它后面的一切都落在缓存前缀的分歧点之后、每回合被重算重计费。
+// 既有断言只覆盖"共享规则在 marker 之前 + marker 唯一"；这里补上"marker 之后不得再出现
+// 新的二级标题"——即易变段之后不能又冒出静态章节。
+describe('prompts › cache prefix stability', () => {
+  const render = async (template: 'chat_commander' | 'chat_agent_in_group', args: Record<string, string | number | boolean>, general: boolean) => {
+    const bus = await import('../../../src/main/features/group_chat/bus');
+    const hook = (bus as unknown as {
+      _renderPromptWithSharedRulesForTest?: (
+        t: typeof template, a: Record<string, string | number | boolean>, g: boolean,
+      ) => Promise<string>;
+    })._renderPromptWithSharedRulesForTest;
+    expect(typeof hook).toBe('function');
+    return hook!(template, args, general);
+  };
+
+  it.each(['chat_commander', 'chat_agent_in_group'] as const)(
+    '%s keeps every level-2 section before the runtime-injection tail',
+    async (template) => {
+      const rendered = await render(template, {}, true);
+      const marker = rendered.indexOf('## Runtime injection');
+      expect(marker, 'marker must exist').toBeGreaterThan(-1);
+      const tail = rendered.slice(marker);
+      // marker 之后只允许是它自己的 ### 子节；出现新的 ## 章节即意味着静态内容排在了易变段之后
+      const level2AfterMarker = [...tail.matchAll(/^## (?!#).+$/gm)].map((m) => m[0]);
+      expect(level2AfterMarker.slice(1), `${template} sections after the runtime tail`).toEqual([]);
+    },
+  );
+
+  // 已知例外（2026-10-08 审计发现，未擅自改动 prompt 语义）：chat_cli_agent 在
+  // `## Runtime injection` 之后还有 `## Your task`。CLI 模板发给外部 CLI 自己的模型客户端，
+  // 其缓存策略不由我们的 KV 前缀决定；但若后续该模板改用我们的模型客户端，这条要先修。
+  it.todo('chat_cli_agent: `## Your task` 目前排在 Runtime injection 之后（见上方注释）');
+});
