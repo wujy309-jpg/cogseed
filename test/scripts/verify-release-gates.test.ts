@@ -60,7 +60,6 @@ function run({
   const jobsByRun: Record<string, unknown[]> = {
     '20/attempts/1': [
       { name: 'verify', status: 'completed', conclusion: 'success', run_attempt: 1 },
-      { name: 'verify-windows', status: 'completed', conclusion: 'success', run_attempt: 1 },
     ],
     '21/attempts/1': [
       { name: 'compliance', status: 'completed', conclusion: 'success', run_attempt: 1 },
@@ -188,7 +187,6 @@ describe('release gate verification', () => {
         '20/attempts/1': [],
         '20/attempts/2': [
           { name: 'verify', status: 'completed', conclusion: 'success', run_attempt: 2 },
-          { name: 'verify-windows', status: 'completed', conclusion: 'success', run_attempt: 2 },
         ],
       },
       requestedUrls,
@@ -213,9 +211,16 @@ describe('release gate verification', () => {
     await expect(run({ ciRuns: [historical] })).rejects.toThrow(/exact.*ci\.yml.*SHA/i);
   });
 
-  it('rejects missing and duplicate required jobs', async () => {
-    await expect(run({ jobs: { '20/attempts/1': [{ name: 'verify', status: 'completed', conclusion: 'success', run_attempt: 1 }] } }))
-      .rejects.toThrow(/verify-windows/i);
+  it('rejects missing, unexpected and duplicate required jobs', async () => {
+    // ci.yml 收敛为零成本门禁后只剩 verify 一个 job：缺了它必须拒绝……
+    await expect(run({ jobs: { '20/attempts/1': [] } }))
+      .rejects.toThrow(/missing.*ci\.yml.*verify/i);
+    // ……而多出一个（例如方案 C 之前的 verify-windows）同样必须拒绝，否则
+    // ci.yml 与门禁脚本脱节时会被静默放行。
+    await expect(run({ jobs: { '20/attempts/1': [
+      { name: 'verify', status: 'completed', conclusion: 'success', run_attempt: 1 },
+      { name: 'verify-windows', status: 'completed', conclusion: 'success', run_attempt: 1 },
+    ] } })).rejects.toThrow(/unexpected.*ci\.yml.*verify-windows/i);
     await expect(run({ jobs: { '21/attempts/1': [
       { name: 'compliance', status: 'completed', conclusion: 'success', run_attempt: 1 },
       { name: 'compliance', status: 'completed', conclusion: 'success', run_attempt: 1 },
@@ -242,7 +247,6 @@ describe('release gate verification', () => {
       jobs: {
         '20/attempts/0': [
           { name: 'verify', status: 'completed', conclusion: 'success', run_attempt: 0 },
-          { name: 'verify-windows', status: 'completed', conclusion: 'success', run_attempt: 0 },
         ],
       },
     })).rejects.toThrow(/run attempt.*positive integer/i);
