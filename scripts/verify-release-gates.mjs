@@ -3,8 +3,13 @@ import { appendFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// 与 ci.yml 的真实 job 集必须逐字一致：requiredNames 少写会放行缺失的门禁，
+// 多写一个不存在的 job 会在打 tag 时抛 "Missing required ci.yml job" 把发布
+// 卡死。2026-09-28 ci.yml 收敛为零成本门禁（方案 C）后私仓只跑 Ubuntu 的
+// verify，Windows/macOS 的打包验证改由 release.yml 的 build-windows /
+// build-macos 承担，因此这里只剩 verify。
 const WORKFLOW_JOBS = Object.freeze({
-  'ci.yml': Object.freeze(['verify', 'verify-windows']),
+  'ci.yml': Object.freeze(['verify']),
   'compliance.yml': Object.freeze(['compliance']),
 });
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
