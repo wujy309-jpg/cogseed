@@ -29,8 +29,19 @@ function makeHost() {
     addEventListener(type: string, handler: Handler) { (handlers[type] ||= []).push(handler); },
     node(selector: string) {
       if (!nodes.has(selector)) {
+        const classes = new Set<string>(
+          /<button[^>]*class="[^"]*\bis-disabled\b[^"]*"[^>]*data-hubc-action="submit"/.test(html) ? ['is-disabled'] : [],
+        );
         nodes.set(selector, {
           disabled: /<button[^>]*data-hubc-action="submit"[^>]*disabled/.test(html),
+          classList: {
+            toggle(name: string, force?: boolean) {
+              const on = force ?? !classes.has(name);
+              if (on) classes.add(name); else classes.delete(name);
+              return on;
+            },
+            contains: (name: string) => classes.has(name),
+          },
           hidden: false, textContent: '', innerHTML: '', focus() {},
           contains: () => host.focusInside === selector,
           querySelector: () => ({ focus: host.focusSpy }),
@@ -103,7 +114,7 @@ function loadPage(invoke: (channel: string, payload: any) => Promise<any>, optio
     uiToast: vi.fn(),
     uiModal: vi.fn(() => Promise.resolve({ value: 'close' })),
     uiButton: vi.fn(({ label, disabled, loading, attrs: buttonAttrs }: any) =>
-      `<button ${attrs(buttonAttrs)}${disabled || loading ? ' disabled' : ''}>${label}</button>`),
+      `<button class="ui-button${disabled || loading ? ' is-disabled' : ''}" ${attrs(buttonAttrs)}${disabled || loading ? ' disabled' : ''}>${label}</button>`),
     uiIconHtml: () => '',
     uiForm: vi.fn(({ fields }: any) => fields.map((field: any) => field.html).join('')),
     uiField: vi.fn(({ id, control }: any) => (control?.kind === 'select'
@@ -508,11 +519,14 @@ describe('Hub contribution page: declarations and submission', () => {
 
     const submit = page.hosts.contribute.node('[data-hubc-action="submit"]');
     expect(submit.disabled).toBe(true);
+    expect(submit.classList.contains('is-disabled')).toBe(true);
     expect(page.hosts.contribute.node('[data-hubc-missing]').textContent)
       .toBe('Still needed: origin declaration, accept the terms, confirm maintenance responsibility');
 
     await acceptDeclarations(page);
     expect(submit.disabled).toBe(false);
+    // The class carries pointer-events:none in the real stylesheet, so it must clear with the attribute.
+    expect(submit.classList.contains('is-disabled')).toBe(false);
     expect(page.hosts.contribute.node('[data-hubc-missing]').textContent).toBe('');
     expect(page.calls().some((call) => call.channel === 'contribution.declare')).toBe(false);
   });
