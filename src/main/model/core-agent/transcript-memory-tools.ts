@@ -70,4 +70,3 @@ export function createTranscriptMemoryTools(options: { userId: string; cid?: str
   });
   return tools;
 }
-
