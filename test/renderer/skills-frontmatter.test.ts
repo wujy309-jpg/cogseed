@@ -70,6 +70,7 @@ function loadSkillRendererHelpers() {
   for (const file of [
     'icons.js',
     'ui-button.js',
+    'ui-status.js',
     'ui-form.js',
     'ui-empty.js',
     'ui-segmented-control.js',
@@ -77,6 +78,9 @@ function loadSkillRendererHelpers() {
     const code = fs.readFileSync(path.join(process.cwd(), 'src', 'renderer', 'modules', file), 'utf8');
     vm.runInContext(code, context, { filename: file });
   }
+  vm.runInContext(fs.readFileSync(path.join(process.cwd(), 'src/shared/hub-content-status.js'), 'utf8'), context);
+  context.uiStatusPill = context.window.uiStatusPill;
+  vm.runInContext(fs.readFileSync(path.join(process.cwd(), 'src/renderer/modules/agents.js'), 'utf8'), context, { filename: 'agents.js' });
   const code = fs.readFileSync(path.join(process.cwd(), 'src', 'renderer', 'modules', 'skills.js'), 'utf8');
   vm.runInContext(code, context, { filename: 'skills.js' });
   return context;
@@ -538,5 +542,33 @@ describe('skills renderer frontmatter parsing', () => {
     }
     expect(archived).not.toContain('data-action="delete"');
     expect(archived).toContain('data-action="purge"');
+  });
+});
+
+
+describe('installed Hub Skill governance in the production Skills grid', () => {
+  it.each([true, false])('disables new use while preserving the user choice and restores it (enabled=%s)', (enabled) => {
+    const ctx = loadSkillRendererHelpers();
+    const grid = { innerHTML: '', classList: { add() {}, remove() {} }, querySelectorAll: () => [], querySelector: () => null };
+    ctx.document = { getElementById: (id: string) => id === 'skills-grid' ? grid : null };
+    ctx.getLang = () => 'zh';
+    ctx.pickDesc = (s: any) => s.description_zh || '';
+    const originalT = ctx.t;
+    ctx.t = (key: string) => ({ 'marketplace.state_disabled': '已停用', 'skills.use': '使用此技能' } as any)[key] || originalT(key);
+    const skill = { id: 'governed-skill', name: 'Governed', source: 'marketplace', enabled, status: 'disabled', category: 'general' };
+    ctx.renderSkillsGrid([skill]);
+    expect(grid.innerHTML).toContain('已停用');
+    expect(grid.innerHTML).toMatch(/<button[^>]*disabled[^>]*data-skill-use/);
+    expect(skill.enabled).toBe(enabled);
+    ctx.renderSkillsGrid([{ ...skill, status: 'approved' }]);
+    expect(grid.innerHTML).not.toContain('已停用');
+    expect(/<button[^>]*disabled[^>]*data-skill-use/.test(grid.innerHTML)).toBe(!enabled);
+    expect(grid.innerHTML).toContain('使用此技能');
+  });
+
+  it('does not apply Hub governance to a custom skill with its own lifecycle status', () => {
+    const ctx = loadSkillRendererHelpers();
+    expect(ctx._isHubSkillDisabled({ source: 'custom', status: 'disabled' })).toBe(false);
+    expect(ctx._isHubSkillDisabled({ source: 'marketplace', status: ' DISABLED ' })).toBe(true);
   });
 });

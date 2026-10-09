@@ -1766,6 +1766,30 @@ describe("group_chat bus integration › teaching receipts", () => {
 });
 
 describe("group_chat bus integration › disabled skills", () => {
+  it("blocks a structured Hub-disabled selection before commander execution", async () => {
+    const cid = newCid();
+    const state = await import("../../../../src/main/features/group_chat/state");
+    const bus = await import("../../../../src/main/features/group_chat/bus");
+    const paths = await import("../../../../src/main/paths");
+    const storage = await import("../../../../src/main/storage");
+    const enabled = await import("../../../../src/main/features/component_enabled");
+    const skillDir = paths.userMarketplaceSkillDir(TEST_UID, "hub-disabled");
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, "SKILL.md"), '---\nname: hub-disabled\ndescription_en: test\n---\n# test');
+    fs.writeFileSync(path.join(skillDir, "_install.json"), JSON.stringify({ version: "1.0.0", status: "disabled" }));
+    enabled.setSkillEnabled(TEST_UID, "hub-disabled", true);
+    _setScript(state.buildGconvSessionId(cid), [{ type: "final", text: "WRONG: disabled skill ran" }]);
+    await bus.enqueue({ uid: TEST_UID, cid, fromActorId: "user", text: "开始", use_selections: [{ kind: "skill", id: "hub-disabled" }] });
+    await waitForQuiescent(TEST_UID, cid);
+    const messages = await storage.readJsonl<any>(path.join(paths.userChatsDir(TEST_UID), `${cid}.jsonl`));
+    expect(messages.some((message: any) => String(message.text || "").includes("WRONG"))).toBe(false);
+    const failure = messages.find((message: any) => message.from === "commander" && message.failure_kind);
+    expect(failure).toMatchObject({ failure_kind: "dependency", failure_code: "skill_disabled" });
+    expect(failure.text).toMatch(/Hub/);
+    expect(failure.text).not.toMatch(/重新启用|re-enable/);
+    expect(enabled.readDisabledSets(TEST_UID).skills.has("hub-disabled")).toBe(false);
+  });
+
   it("does not let commander substitute another skill when user explicitly requests a disabled one", async () => {
     const cid = newCid();
     const state =
@@ -3028,9 +3052,8 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
     const candidates = await import("../../../../src/main/features/recall/candidate-service");
     // This assertion covers both sides of the boundary: the Commander must
     // receive host-owned Recall context, while the delegated Agent receives
-    // only the explicit dispatch grant. Enable the host routing path so the
-    // test creates the confirmed projection that supplies that context.
-    process.env.COGSEED_KSTAR_HOST_ROUTING = "1";
+    // only the explicit dispatch grant. Pin the projection explicitly so this
+    // dispatch-boundary test does not depend on semantic-ranking heuristics.
 
     const candidate = await candidates.saveRecallCandidate(TEST_UID, {
       judgment: "Never leak asset context into delegated turns unless the Commander grants it.",
@@ -3044,6 +3067,15 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
     // "资产只经 Commander 分发、不由宿主注入 Agent"的契约，不是成熟度闸门，
     // 所以先把资产抬到够格的档位。
     await (await import("../../../../src/main/features/recall/asset-service")).setAbilityAssetMaturity(TEST_UID, asset.id, "transfer_validated");
+    const projections = await import("../../../../src/main/features/recall/context-projection");
+    const projection = await projections.previewContextProjection(TEST_UID, {
+      taskRunId: "task-dispatch-boundary",
+      purpose: "review",
+      authorization: "user_confirmed",
+      explicitAssetIds: [asset.id],
+      confirm: true,
+    });
+    expect(projection.assetIds).toContain(asset.id);
 
     const AGENT_REPLY = "AGENT-OK-58d2";
     _setScript(state.buildGconvSessionId(cid), [
@@ -3058,7 +3090,13 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
     _setScript(agentSid, [{ type: "final", text: AGENT_REPLY }]);
 
     bus.subscribe(TEST_UID, cid, () => {});
-    await bus.enqueue({ uid: TEST_UID, cid, fromActorId: "user", text: "run the audit" });
+    await bus.enqueue({
+      uid: TEST_UID,
+      cid,
+      fromActorId: "user",
+      text: "run the audit",
+      committedProjectionId: projection.id,
+    });
     await waitForQuiescent(TEST_UID, cid);
 
     // The agent's system prompt received the Commander-granted asset block...
@@ -6804,10 +6842,11 @@ describe("group_chat bus integration › Recall asset usage receipt", () => {
     const preview = await projections.previewContextProjection(TEST_UID, {
       taskRunId: "task-receipt",
       purpose: "review",
-      taskText: "Audit OAuth login",
-      authorization: "workspace_policy",
+      authorization: "user_confirmed",
+      explicitAssetIds: [asset.id],
       confirm: true,
     });
+    expect(preview.assetIds).toContain(asset.id);
     const messageFile = layout.conversationMessageFile(TEST_UID, cid);
     fs.mkdirSync(path.dirname(messageFile), { recursive: true });
     await storage.appendJsonlAtomic(messageFile, {

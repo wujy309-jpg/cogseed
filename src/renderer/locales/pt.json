@@ -1366,6 +1366,8 @@
   "local.delete_file.send_to_continue": "Envie uma mensagem para permitir que o agente conclua a exclusão.",
   "local.delete_file.title": "Confirme a exclusão do arquivo",
   "local.delete_file.user_continue": "Confirmado, por favor continue.",
+  "marketplace.state_disabled": "Desativada pelo Hub",
+  "marketplace.disabled_hint": "Esta habilidade foi desativada pelo Hub. Novas instalações e usos estão bloqueados. Cópias locais e tarefas já iniciadas são preservadas; sua preferência de ativação é mantida após a recuperação.",
   "marketplace.action_failed_retry_later": "O Marketplace está temporariamente indisponível. Por favor, tente novamente mais tarde.",
   "marketplace.all": "Todos",
   "marketplace.app_update_required": "Requer o CogSeed {minimum} ou mais recente (atual {current}). Atualize o CogSeed e instale novamente.",

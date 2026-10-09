@@ -67,6 +67,7 @@ function _skillUiEmptyState(options) {
 function _skillCardChipsHtml(s) {
   const lang = getLang();
   const parts = [];
+  if (_isHubSkillDisabled(s)) parts.push(uiStatusPill({ label: t('marketplace.state_disabled'), tone: 'attention' }));
   // 技能卡片不再展示版本号（产品口径：技能库技能下方只留分类/安全状态 chip）。
   const catLabel = _resolveCategoryLabel(s && s.category, lang);
   if (catLabel) parts.push(`<span class="skill-card-chip">${escapeHtml(catLabel)}</span>`);
@@ -79,6 +80,10 @@ function _skillCardChipsHtml(s) {
     );
   }
   return parts.join('');
+}
+
+function _isHubSkillDisabled(s) {
+  return _isSkillPlatformSource(s?.source) && HubContentStatus.isHubContentDisabled(s);
 }
 
 /** True when the main process reported this skill as held back by the
@@ -665,10 +670,11 @@ function renderSkillsGrid(skills) {
     const enabled = s.enabled !== false;
     const cardChips = _skillCardChipsHtml(s);
     const withheld = _isSkillWithheld(s);
-    const usable = enabled && !withheld;
-    const thisUseTitle = withheld ? t('skills.security_withheld_hint') : useTitle;
+    const hubDisabled = _isHubSkillDisabled(s);
+    const usable = enabled && !withheld && !hubDisabled;
+    const thisUseTitle = hubDisabled ? t('marketplace.disabled_hint') : withheld ? t('skills.security_withheld_hint') : useTitle;
     const useBtn = _skillUiButton({
-      label: t('skills.use'),
+      label: hubDisabled ? t('marketplace.state_disabled') : t('skills.use'),
       role: 'primary',
       size: 'sm',
       className: 'skill-card-use',
@@ -686,7 +692,7 @@ function renderSkillsGrid(skills) {
       })
       : '';
     return `
-      <div class="skill-card ui-resource-card${enabled ? '' : ' is-disabled'}${withheld ? ' is-withheld' : ''}" data-id="${escapeHtml(s.id)}" data-source="${escapeHtml(s.source || '')}">
+      <div class="skill-card ui-resource-card${enabled && !hubDisabled ? '' : ' is-disabled'}${withheld ? ' is-withheld' : ''}" data-id="${escapeHtml(s.id)}" data-source="${escapeHtml(s.source || '')}">
         <div class="skill-card-header">
           <span class="skill-card-avatar" aria-hidden="true">${escapeHtml(Array.from(String(s.name || s.id || '?').trim())[0] || '?')}${iconDataUrl ? `<img class="skill-card-avatar-image" src="${escapeHtml(iconDataUrl)}" alt="">` : ''}</span>
           <span class="skill-card-name">${escapeHtml(s.name)}</span>
@@ -1902,7 +1908,7 @@ async function selectSkillFile(source, id, filepath, nodeEl) {
     source,
     version: skill?.version || '',
     category: skill?.category || '',
-  });
+  }) + (_isHubSkillDisabled(skill) ? uiStatusPill({ label: t('marketplace.state_disabled'), tone: 'attention', attrs: { title: t('marketplace.disabled_hint') } }) : '');
   _renderSkillDetailCategory(skill, source);
 
   // Doc sections (description / external dependencies / dependent
@@ -1928,8 +1934,12 @@ async function selectSkillFile(source, id, filepath, nodeEl) {
     const delBtn = document.getElementById('skill-delete-btn');
     if (useBtn) {
       useBtn.style.display = editingThis ? 'none' : '';
-      useBtn.disabled = skill?.enabled === false;
-      useBtn.setAttribute('aria-disabled', skill?.enabled === false ? 'true' : 'false');
+      useBtn.disabled = skill?.enabled === false || _isHubSkillDisabled(skill) || _isSkillWithheld(skill);
+      useBtn.setAttribute('aria-disabled', String(useBtn.disabled));
+      useBtn.classList.toggle('is-disabled', useBtn.disabled);
+      useBtn.textContent = _isHubSkillDisabled(skill) ? t('marketplace.state_disabled') : t('skills.use');
+      useBtn.title = _isHubSkillDisabled(skill) ? t('marketplace.disabled_hint') : t('skills.use_tooltip');
+      useBtn.setAttribute('aria-label', useBtn.title);
     }
     if (editBtn) editBtn.style.display = canEditThisSkill ? '' : 'none';
     if (enableBtn) enableBtn.style.display = editingThis ? 'none' : '';

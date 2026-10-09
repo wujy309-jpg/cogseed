@@ -227,6 +227,7 @@ import {
   type CoordinatorAccessRequest,
 } from "./coordinator_admission";
 import { buildRetryResumeModelText } from "./retry_resume";
+import * as HubContentStatus from '../../../shared/hub-content-status';
 import { isAgentEnabled, readDisabledSets } from "../component_enabled";
 import { finalizeProducedFile } from "../produced_output_hooks";
 import { selectVisibleProducedFiles } from "../produced_files";
@@ -633,8 +634,10 @@ async function _runtimeSkillListForAgent(
 async function _findDisabledSkillUseRequest(
   uid: string,
   text: string,
-): Promise<{ id: string; name: string } | null> {
-  if (!_hasSkillUseIntent(text)) return null;
+  selections?: readonly ChatUseSelection[],
+): Promise<{ id: string; name: string; hubDisabled: boolean } | null> {
+  const selected = new Set(_selectedSkillRefs(selections));
+  if (!_hasSkillUseIntent(text) && !selected.size) return null;
   let skills: skillsFeat.SkillListing[];
   try {
     skills = await skillsFeat.listSkills();
@@ -646,12 +649,14 @@ async function _findDisabledSkillUseRequest(
   }
   const haystack = _normaliseSkillMentionText(text);
   for (const skill of skills) {
-    if (skill.enabled !== false) continue;
+    const hubDisabled = skill.source === 'marketplace' && HubContentStatus.isHubContentDisabled(skill);
+    if (skill.enabled !== false && !hubDisabled) continue;
+    if (selected.has(skill.id)) return { id: skill.id, name: skill.name, hubDisabled };
     const needles = [skill.id, skill.name]
       .map((s) => _normaliseSkillMentionText(s))
       .filter((s, idx, arr) => s.length >= 2 && arr.indexOf(s) === idx);
     if (needles.some((needle) => haystack.includes(needle))) {
-      return { id: skill.id, name: skill.name || skill.id };
+      return { id: skill.id, name: skill.name || skill.id, hubDisabled };
     }
   }
   return null;
@@ -5484,9 +5489,10 @@ async function runActorTurnBody(
     const disabledSkill = await _findDisabledSkillUseRequest(
       uid,
       item.llmPayload,
+      item.useSelections,
     );
     if (disabledSkill) {
-      const reply = `<span style="color:var(--danger)">${escapeHtmlForBubble(t("component.skill_disabled_request", { name: disabledSkill.name || disabledSkill.id }))}</span>`;
+      const reply = `<span style="color:var(--danger)">${escapeHtmlForBubble(t(disabledSkill.hubDisabled ? "component.skill_hub_disabled_request" : "component.skill_disabled_request", { name: disabledSkill.name || disabledSkill.id }))}</span>`;
       log.info(
         `blocked disabled skill request cid=${cid} skill=${disabledSkill.id}`,
       );

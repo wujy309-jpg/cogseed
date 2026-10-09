@@ -1492,6 +1492,8 @@
   "local.delete_file.send_to_continue": "Send a message to let the agent finish the deletion.",
   "local.delete_file.title": "Confirm file deletion",
   "local.delete_file.user_continue": "Confirmed, please continue.",
+  "marketplace.state_disabled": "Disabled by Hub",
+  "marketplace.disabled_hint": "This skill is disabled by Hub. New installs and uses are blocked. Local copies and started tasks are preserved; your enable preference is kept after recovery.",
   "marketplace.action_failed_retry_later": "Marketplace is temporarily unavailable. Please try again later.",
   "marketplace.all": "All",
   "marketplace.app_update_required": "Requires CogSeed {minimum} or newer (current {current}). Update CogSeed, then install.",

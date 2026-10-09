@@ -1212,6 +1212,9 @@ describe('ConversationInfo files tab', () => {
       // 未确认候选不得说成「已保存」：两个状态分开说明。
       expect(result.cognitionStrip.html).not.toContain('已沉淀 2');
       expect(result.cognitionStrip.html).toContain('data-cognition-strip-goto');
+      expect(result.cognitionStrip.html).toContain('ui-button--ghost');
+      expect(result.cognitionStrip.html).toContain('chat-cognition-strip-goto');
+      expect(result.cognitionStrip.html).toContain('ui-icon-button');
     });
 
     it('relationRefs 关联的正式资产计入已保存数量；与抽屉 tab 同一计数（同屏一致）', async () => {

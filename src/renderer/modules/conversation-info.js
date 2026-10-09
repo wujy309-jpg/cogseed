@@ -1897,22 +1897,25 @@ const ConversationInfo = (() => {
       : '';
     const summary = [settledPart, pendingPart].filter(Boolean).join(' · ');
     const dismissLabel = _label('conversation_info.cognition_strip_dismiss', '不再显示本会话的认知提示');
-    const dismissButton = typeof window.uiIconButton === 'function'
-      ? window.uiIconButton({
-          label: dismissLabel,
-          icon: 'x',
-          size: 'sm',
-          className: 'chat-cognition-strip-dismiss',
-          attrs: { 'data-cognition-strip-dismiss': '1' },
-        })
-      : '<button type="button" class="chat-cognition-strip-dismiss" data-cognition-strip-dismiss="1" aria-label="' + escapeHtml(dismissLabel) + '">×</button>';
+    const dismissButton = _iconButton({
+      label: dismissLabel,
+      icon: 'x',
+      size: 'sm',
+      className: 'chat-cognition-strip-dismiss',
+      attrs: { 'data-cognition-strip-dismiss': '1' },
+    });
+    const gotoButton = _button({
+      label: _label('conversation_info.cognition_strip_goto', '去处理'),
+      role: 'ghost',
+      size: 'sm',
+      className: 'chat-cognition-strip-goto',
+      attrs: { 'data-cognition-strip-goto': '1' },
+    });
     el.innerHTML =
       '<div class="chat-cognition-strip-inner" role="status">' +
         '<span data-ui-icon="git-branch" data-ui-icon-class="ui-icon chat-cognition-strip-icon"></span>' +
         '<span class="chat-cognition-strip-label">' + escapeHtml(summary) + '</span>' +
-        '<button type="button" class="chat-cognition-strip-goto" data-cognition-strip-goto="1">' +
-          escapeHtml(_label('conversation_info.cognition_strip_goto', '去处理')) +
-        '</button>' +
+        gotoButton +
         dismissButton +
       '</div>';
     el.hidden = false;

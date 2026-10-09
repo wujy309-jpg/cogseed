@@ -64,7 +64,7 @@ const legacyRawControlBaseline: Record<string, number> = {
   // ⚠️ 基线按**合并后实测**填：单独照抄任一支的自测值都会留出空档。
   'kb-workbench.js': 5,
   'library-transfer.js': 7,
-  'marketplace.js': 7,
+  'marketplace.js': 6,
   'md-view-edit.js': 5,
   'memory.js': 1,
   'model-authorization.js': 3,

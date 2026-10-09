@@ -31,6 +31,7 @@
   "cli_agent.version_unknown": "⚠️ エージェント「{name}」を実行できません：「{cli}」のバージョンを識別できません。CLI を更新するかインストールを確認してから、再試行してください。",
   "commander.hermes.dispatch_claim_blocked": "Dispatch was not executed: the external commander only wrote text claiming agents had started, but did not output a structured orchestration command the host can execute. Please send the task again or switch back to the ビルトインのコマンダー; agents show as running only after a real dispatch_to / hand_off_to / run_worker executes.",
   "component.skill_disabled_request": "スキル「{name}」は無効です。使用する前に再度有効にしてください。",
+  "component.skill_hub_disabled_request": "スキル「{name}」は Hub により無効化されています。Hub が復元するまで新しい利用はできません。ローカルのコピーと開始済みのタスクは保持されます。",
   "connectors.inline_text": "{connector} コネクター",
   "connectors.use_prefix": "{connector} コネクターを使用: {content}",
   "contexts.index.dirs_heading": "フォルダ",

@@ -34061,8 +34061,9 @@ section.kb-wb-right { display: flex; flex-direction: column; min-width: 0; min-h
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.chat-cognition-strip-goto {
+.chat-cognition-strip-goto.ui-button {
   flex: 0 0 auto;
+  height: auto;
   padding: 0;
   border: none;
   background: transparent;
@@ -34070,7 +34071,11 @@ section.kb-wb-right { display: flex; flex-direction: column; min-width: 0; min-h
   font-size: var(--font-size-1);
   cursor: pointer;
 }
-.chat-cognition-strip-goto:hover { text-decoration: underline; }
+.chat-cognition-strip-goto.ui-button:hover {
+  background: transparent;
+  color: var(--primary);
+  text-decoration: underline;
+}
 .chat-cognition-strip .chat-cognition-strip-dismiss {
   flex: 0 0 auto;
   width: 20px;

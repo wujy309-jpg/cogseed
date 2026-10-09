@@ -1366,6 +1366,8 @@
   "local.delete_file.send_to_continue": "エージェントに削除を完了させるためメッセージを送信してください。",
   "local.delete_file.title": "ファイル削除の確認",
   "local.delete_file.user_continue": "確認しました、続行してください。",
+  "marketplace.state_disabled": "Hub により無効化",
+  "marketplace.disabled_hint": "Hub によりこのスキルは無効化されています。新規インストールと新たな使用はできません。ローカルコピーと開始済みタスクは保持され、復旧後も元の有効・無効設定を維持します。",
   "marketplace.action_failed_retry_later": "マーケットプレイスを一時的に利用できません。しばらくしてからもう一度お試しください。",
   "marketplace.all": "すべて",
   "marketplace.app_update_required": "CogSeed {minimum} 以降が必要です（現在 {current}）。CogSeed を更新してからインストールしてください。",

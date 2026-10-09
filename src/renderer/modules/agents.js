@@ -3586,11 +3586,11 @@ async function useAgent(agentId, managementOpenGesture) {
 
 async function useSkill(skillId, skillName) {
   if (typeof _skillsCache !== 'undefined'
-      && _skillsCache?.some((s) => s.id === skillId && s.enabled === false)) return;
+      && _skillsCache?.some((s) => s.id === skillId && (s.enabled === false || (s.source === 'marketplace' && HubContentStatus.isHubContentDisabled(s))))) return;
   // Open-tier skills (external packages / global folders) live in their own
   // cache; a disabled one must not run from its card's play button either.
   if (typeof _openSkillsCache !== 'undefined' && Array.isArray(_openSkillsCache)
-      && _openSkillsCache.some((s) => s.id === skillId && s.enabled === false)) return;
+      && _openSkillsCache.some((s) => s.id === skillId && (s.enabled === false || (s.source === 'marketplace' && HubContentStatus.isHubContentDisabled(s))))) return;
   // Skill "use" flow: navigate to the new-chat page with the skill
   // pre-selected and wait for user input.
   _agentsLog.info('use skill', { skill_id: skillId, skill_name: skillName || skillId });
