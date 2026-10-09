@@ -68,7 +68,7 @@ import {
   normalizeMarketplaceCategoryCode,
 } from './marketplace_biz';
 import { normalizeInstallVersion } from './marketplace_installs';
-import { installedVersionOf } from './marketplace/installed-version';
+import { readContentStatus, installedVersionOf } from './marketplace/installed-version';
 import { NAME_DISPLAY_MAX_UNITS, nameDisplayWidth } from '../util/name-limit';
 import { captureSkillTree, normalizeSkillSnapshotPath } from './skills/snapshot-service';
 import { createProcessCollector } from './chat_events/process-persist';
@@ -949,7 +949,11 @@ async function _allSkillListingsCached(): Promise<SkillListing[]> {
  *  without having to bump dir mtime. */
 function _overlaySkillEnabled(list: SkillListing[]): SkillListing[] {
   const { skills: disabledSkillIds } = readDisabledSets(getActiveUserId());
-  return list.map((s) => ({ ...s, enabled: !disabledSkillIds.has(s.id) }));
+  const uid = getActiveUserId();
+  return list.map((s) => ({
+    ...s, enabled: !disabledSkillIds.has(s.id),
+    ...(s.source === 'marketplace' && !s.ownerAgent ? { status: readContentStatus(uid, s.id).raw } : {}),
+  }));
 }
 
 /**

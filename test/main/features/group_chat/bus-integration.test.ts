@@ -1766,6 +1766,30 @@ describe("group_chat bus integration › teaching receipts", () => {
 });
 
 describe("group_chat bus integration › disabled skills", () => {
+  it("blocks a structured Hub-disabled selection before commander execution", async () => {
+    const cid = newCid();
+    const state = await import("../../../../src/main/features/group_chat/state");
+    const bus = await import("../../../../src/main/features/group_chat/bus");
+    const paths = await import("../../../../src/main/paths");
+    const storage = await import("../../../../src/main/storage");
+    const enabled = await import("../../../../src/main/features/component_enabled");
+    const skillDir = paths.userMarketplaceSkillDir(TEST_UID, "hub-disabled");
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, "SKILL.md"), '---\nname: hub-disabled\ndescription_en: test\n---\n# test');
+    fs.writeFileSync(path.join(skillDir, "_install.json"), JSON.stringify({ version: "1.0.0", status: "disabled" }));
+    enabled.setSkillEnabled(TEST_UID, "hub-disabled", true);
+    _setScript(state.buildGconvSessionId(cid), [{ type: "final", text: "WRONG: disabled skill ran" }]);
+    await bus.enqueue({ uid: TEST_UID, cid, fromActorId: "user", text: "开始", use_selections: [{ kind: "skill", id: "hub-disabled" }] });
+    await waitForQuiescent(TEST_UID, cid);
+    const messages = await storage.readJsonl<any>(path.join(paths.userChatsDir(TEST_UID), `${cid}.jsonl`));
+    expect(messages.some((message: any) => String(message.text || "").includes("WRONG"))).toBe(false);
+    const failure = messages.find((message: any) => message.from === "commander" && message.failure_kind);
+    expect(failure).toMatchObject({ failure_kind: "dependency", failure_code: "skill_disabled" });
+    expect(failure.text).toMatch(/Hub/);
+    expect(failure.text).not.toMatch(/重新启用|re-enable/);
+    expect(enabled.readDisabledSets(TEST_UID).skills.has("hub-disabled")).toBe(false);
+  });
+
   it("does not let commander substitute another skill when user explicitly requests a disabled one", async () => {
     const cid = newCid();
     const state =

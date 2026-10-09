@@ -31,6 +31,7 @@
   "cli_agent.version_unknown": "⚠️ 智能体「{name}」无法运行：无法识别「{cli}」的版本。请更新 CLI 或检查安装，然后重试。",
   "commander.hermes.dispatch_claim_blocked": "未执行调度：外接 cogseed 只输出了“已启动/后台运行”的文字，但没有输出平台可执行的结构化调度指令。请重新发送任务，或切回 应用内置 cogseed；只有真实 dispatch_to / hand_off_to / run_worker 执行后，Agent 状态里才会显示运行中。",
   "component.skill_disabled_request": "技能「{name}」已被停用，请重新启用后再使用。",
+  "component.skill_hub_disabled_request": "技能「{name}」已被 Hub 停用，恢复前不能开始新的使用。本机副本和已开始的任务会保留。",
   "connectors.inline_text": "{connector} 连接器",
   "connectors.use_prefix": "使用 {connector} 连接器：{content}",
   "contexts.index.dirs_heading": "目录",

@@ -1495,6 +1495,8 @@
   "local.delete_file.send_to_continue": "请发送一条消息让智能体继续完成删除。",
   "local.delete_file.title": "确认删除文件",
   "local.delete_file.user_continue": "已确认,请继续。",
+  "marketplace.state_disabled": "已停用",
+  "marketplace.disabled_hint": "Hub 已停用此技能，无法新安装或开始新的使用。本机副本和已开始的任务保留；恢复后沿用你的原有启停选择。",
   "marketplace.action_failed_retry_later": "市场暂时不可用，请稍后重试。",
   "marketplace.all": "全部",
   "marketplace.app_update_required": "需要 CogSeed {minimum} 或更高版本（当前 {current}），请更新 CogSeed 后再安装。",

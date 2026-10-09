@@ -160,6 +160,7 @@ function loadCategoryRenderers() {
   for (const file of [
     'icons.js',
     'ui-button.js',
+    'ui-status.js',
     'ui-form.js',
     'ui-empty.js',
     'ui-segmented-control.js',
@@ -167,6 +168,8 @@ function loadCategoryRenderers() {
     const code = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules', file), 'utf8');
     vm.runInContext(code, context, { filename: file });
   }
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../../src/shared/hub-content-status.js'), 'utf8'), context);
+  context.uiStatusPill = context.window.uiStatusPill;
   for (const file of ['agents.js', 'skills.js']) {
     const code = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules', file), 'utf8');
     vm.runInContext(code, context, { filename: file });

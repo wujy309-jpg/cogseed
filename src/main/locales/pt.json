@@ -31,6 +31,7 @@
   "cli_agent.version_unknown": "⚠️ O agente “{name}” não pode ser executado: não foi possível identificar a versão de “{cli}”. Atualize a CLI ou verifique a instalação e tente novamente.",
   "commander.hermes.dispatch_claim_blocked": "Dispatch was not executed: the external commander only wrote text claiming agents had started, but did not output a structured orchestration command the host can execute. Please send the task again or switch back to the o comando integrado; agents show as running only after a real dispatch_to / hand_off_to / run_worker executes.",
   "component.skill_disabled_request": "A habilidade \"{name}\" está desativada. Reative-a antes de usá-la.",
+  "component.skill_hub_disabled_request": "A habilidade \"{name}\" foi desativada pelo Hub. Novos usos ficam bloqueados até o Hub restaurá-la. A cópia local e as tarefas já iniciadas são preservadas.",
   "connectors.inline_text": "conector {connector}",
   "connectors.use_prefix": "Use o conector {connector}: {content}",
   "contexts.index.dirs_heading": "Pastas",
