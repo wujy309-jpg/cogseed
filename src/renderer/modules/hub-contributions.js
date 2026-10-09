@@ -665,7 +665,12 @@
     const host = hostOf('contribute');
     const submit = host.querySelector('[data-hubc-action="submit"]');
     const missing = session.sending ? [] : missingDeclarations();
-    if (submit) submit.disabled = session.sending || missing.length > 0;
+    if (submit) {
+      const blocked = session.sending || missing.length > 0;
+      submit.disabled = blocked;
+      // uiButton renders `is-disabled` with the attribute; the class carries pointer-events:none.
+      submit.classList.toggle('is-disabled', blocked);
+    }
     const note = host.querySelector('[data-hubc-missing]');
     if (note) {
       note.textContent = missing.length
