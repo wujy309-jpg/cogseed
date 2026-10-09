@@ -1119,11 +1119,22 @@ describe('KSTAR direct experience asset line', () => {
     }]);
 
     const updated = await assets.readAbilityAsset('closure-user', original.asset.id);
-    // 2026-09-19 刀二：update 是融合不是覆盖——旧正文保留、新判断融入，v2。
+    // update 是融合不是覆盖：v2 推进，旧证据保留，新判断落成正文。
+    //
+    // 期望值在 2026-09-29「正文一等规范」后从"新判断＋旧正文第二句"变成单句：
+    // 那次改动把**新建路**的资产正文收敛为 judgment 单一来源（value 不再拼进
+    // statement），所以这个种子晋升出来的旧正文只有一句，融合时它被同主题的
+    // 新判断改写掉，没有第二句可保留。
+    //
+    // 融合的"旧句保留 / 新句追加 / 同主题改写"三档语义由
+    // test/main/features/recall/statement-fusion.test.ts 用 keptCount / added /
+    // replaced 专门覆盖；这条集成用例只负责验证更新链路走通、版本推进与证据
+    // 累积，不重复承担融合算法本身的断言（把种子改成两句会把它推到语义查重的
+    // 另一条分支上，反而测不到更新路径）。
     expect(updated).toMatchObject({
       id: original.asset.id,
       version: '2',
-      statement: 'Update the report verification rule to require an acceptance check.Keep report verification consistent across runs.',
+      statement: 'Update the report verification rule to require an acceptance check.',
     });
     expect(updated.evidenceRefs).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'execution', id: 'kse-run-direct-original' }),
