@@ -595,6 +595,42 @@ describe('Hub contribution page: declarations and submission', () => {
     expect(page.hosts.contribute.style.display).toBe('none');
   });
 
+  it('shows the details Hub returned when a submission is rejected, not just the message', async () => {
+    const page = loadPage(router({
+      'contribution.submit': () => ({
+        ok: false,
+        error: {
+          code: 'SUBMISSION_REJECTED', message: 'Rejected by server check. See blockers.', retryable: false,
+          details: { blockers: [{ rule_id: 'SEC-102', path: 'scripts/run.sh', message: 'Uses a network call' }] },
+        },
+      }),
+    }));
+    await reachPreview(page);
+    await acceptDeclarations(page);
+    await page.click('contribute', 'submit');
+
+    expect(page.root.uiAlert).toHaveBeenCalledWith(
+      'Rejected by server check. See blockers.\n· Uses a network call (scripts/run.sh)',
+    );
+  });
+
+  it('keeps the details in the retry prompt when Hub did not confirm receipt', async () => {
+    const page = loadPage(router({
+      'contribution.submit': () => ({
+        ok: false,
+        error: { code: 'UNKNOWN_ERROR', message: 'Hub did not confirm.', retryable: true, details: { request: 'timed out' } },
+      }),
+    }));
+    page.root.uiConfirm.mockResolvedValue(false);
+    await reachPreview(page);
+    await acceptDeclarations(page);
+    await page.click('contribute', 'submit');
+
+    expect(page.root.uiConfirm).toHaveBeenCalledWith(expect.objectContaining({
+      message: 'Hub did not confirm.\nrequest: timed out',
+    }));
+  });
+
   it('rechecks instead of submitting when the preview digest no longer matches', async () => {
     const page = loadPage(router({ 'contribution.confirm': () => ({ confirmed: false }) }));
     await reachPreview(page);

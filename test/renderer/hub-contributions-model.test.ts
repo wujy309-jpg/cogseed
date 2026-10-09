@@ -141,3 +141,40 @@ describe('Hub contribution view model: My contributions', () => {
     expect(model.detailActions(beta)).toMatchObject({ newVersion: false, resubmit: true, withdrawPending: false, requestWithdrawal: false });
   });
 });
+
+describe('Hub contribution view model: API error details', () => {
+  it('keeps the message and expands array, object and scalar details', () => {
+    const text = model.describeApiError({
+      message: 'Submission rejected. See server_check blockers.',
+      details: {
+        blockers: [
+          { rule_id: 'SEC-102', path: 'scripts/run.sh', message: 'Uses a network call', fix: 'Remove the call' },
+          'Missing artifact.yaml',
+        ],
+        server_check: { reason: 'stricter_than_local' },
+        attempt: 2,
+      },
+    }, 'fallback');
+    expect(text.split('\n')).toEqual([
+      'Submission rejected. See server_check blockers.',
+      '· Uses a network call (scripts/run.sh) → Remove the call',
+      '· Missing artifact.yaml',
+      'server_check: stricter_than_local',
+      'attempt: 2',
+    ]);
+  });
+
+  it('falls back to the given message and ignores empty or non-object details', () => {
+    expect(model.describeApiError({ details: null }, 'fallback')).toBe('fallback');
+    expect(model.describeApiError({ message: '  ', details: 'x' }, 'fallback')).toBe('fallback');
+    expect(model.describeApiError(undefined, 'fallback')).toBe('fallback');
+    expect(model.describeApiError({ message: 'm', details: { a: [] } }, 'fb')).toBe('m');
+  });
+
+  it('bounds the number and length of detail lines', () => {
+    const many = Array.from({ length: 30 }, (_, index) => `item ${index}`);
+    const lines = model.detailLines({ items: many, long: 'x'.repeat(500) });
+    expect(lines).toHaveLength(8);
+    expect(model.detailLines({ long: 'x'.repeat(500) })[0].length).toBeLessThanOrEqual(206);
+  });
+});

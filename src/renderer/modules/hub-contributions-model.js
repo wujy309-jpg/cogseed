@@ -174,6 +174,52 @@
     };
   }
 
+  const DETAIL_LINE_LIMIT = 8;
+  const DETAIL_TEXT_LIMIT = 200;
+
+  function clip(value) {
+    const out = text(value).replace(/\s+/g, ' ').trim();
+    return out.length > DETAIL_TEXT_LIMIT ? `${out.slice(0, DETAIL_TEXT_LIMIT - 1)}…` : out;
+  }
+
+  function describeDetail(item) {
+    if (typeof item === 'string' || typeof item === 'number') return clip(item);
+    if (!isRecord(item)) return '';
+    const head = clip(item.message || item.title || item.reason || item.rule_id || item.code);
+    const where = clip(item.path || item.file);
+    const fix = clip(item.fix || item.suggestion || item.remediation);
+    return [head, where && `(${where})`, fix && `→ ${fix}`].filter(Boolean).join(' ');
+  }
+
+  // Hub's `error.details` has no frozen shape, so expand it defensively: arrays become one
+  // bullet per entry, scalars become `key: value`, and the total is bounded.
+  function detailLines(details) {
+    if (!isRecord(details)) return [];
+    const lines = [];
+    const push = (line) => { if (line && lines.length < DETAIL_LINE_LIMIT) lines.push(line); };
+    for (const [key, value] of Object.entries(details)) {
+      if (Array.isArray(value)) {
+        for (const entry of value) {
+          const line = describeDetail(entry);
+          if (line) push(`· ${line}`);
+        }
+      } else if (isRecord(value)) {
+        push(`${key}: ${describeDetail(value) || clip(JSON.stringify(value))}`);
+      } else if (value != null && value !== '') {
+        push(`${key}: ${clip(value)}`);
+      }
+    }
+    return lines;
+  }
+
+  // The message Hub gave plus whatever it explained, so a rejection never shows only
+  // "see server_check" while the client holds the blocking items.
+  function describeApiError(error, fallback) {
+    const message = text(isRecord(error) ? error.message : '').trim() || text(fallback);
+    const lines = isRecord(error) ? detailLines(error.details) : [];
+    return lines.length ? `${message}\n${lines.join('\n')}` : message;
+  }
+
   const api = {
     classifyAdmission,
     checkRows,
@@ -181,6 +227,8 @@
     historyStats,
     filterHistory,
     detailActions,
+    detailLines,
+    describeApiError,
   };
 
   root.HubContributionsModel = api;
