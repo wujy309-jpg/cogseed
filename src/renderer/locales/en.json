@@ -9642,5 +9642,8 @@
   "cognition.activity_decision_pause": "Confirm disabling",
   "cognition.activity_search_empty": "No matching changes. Adjust your search.",
   "cognition.activity_completed_change": "Completed change",
-  "cognition.activity_excluded_isolated_source": "This source is not connected to daily cognition governance. Historical content is preserved for traceability."
+  "cognition.activity_excluded_isolated_source": "This source is not connected to daily cognition governance. Historical content is preserved for traceability.",
+  "chat.cognition_save.open_ontology": "View ontology",
+  "chat.cognition_save.ontology_saved": "Saved to ontology",
+  "chat.cognition_save.ontology_pending": "Saved to ontology · some details pending"
 }

@@ -167,7 +167,7 @@ describe('反漂移源码级断言（T026）', () => {
     const { TOOL_CATALOG } = await import('../../../../src/main/model/core-agent/tool-catalog');
     const frozen = [
       'add_custom_connector', 'archive_ability_asset', 'ask_materials', 'bash', 'briefing_get', 'briefing_schedule',
-      'call_connector_tool', 'chat_read', 'chat_search', 'cognition_ontology_query', 'create_artifact', 'create_docx', 'create_pptx', 'create_xlsx',
+      'call_connector_tool', 'chat_read', 'chat_search', 'cognition_ontology_query', 'cognition_ontology_save', 'create_artifact', 'create_docx', 'create_pptx', 'create_xlsx',
       'cross_session_memory', 'delete_ability_asset', 'delete_file', 'edit_ability_asset', 'edit_file', 'edit_office',
       'expense_case_status', 'expense_configuration_status', 'expense_precheck_case', 'feishu_dashboard', 'generate_image',
       'grep_files', 'html_to_pdf', 'interactive_cli_close', 'interactive_cli_read', 'interactive_cli_send',
@@ -183,7 +183,7 @@ describe('反漂移源码级断言（T026）', () => {
       'personal_ontology_fields', 'project_instructions', 'propose_ability_asset', 'publish_outputs',
       'read_ability_asset', 'read_file', 'read_task_experience',
       'report_ability_asset_usage', 'research_rerank', 'restore_ability_asset', 'rollback_ability_asset', 'search_ability_assets', 'search_files',
-      'stat_file', 'tool_result_read_chunk', 'tool_result_search', 'touchpoint_list', 'web_fetch', 'web_search',
+      'stat_file', 'tool_result_read_chunk', 'tool_result_search', 'touchpoint_list', 'transcript_corrections_query', 'transcript_remember_correction', 'web_fetch', 'web_search',
       'write_file',
     ];
     expect(TOOL_CATALOG.map((entry) => entry.name).sort()).toEqual(frozen);

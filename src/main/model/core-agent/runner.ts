@@ -1072,6 +1072,8 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   // 任务开工前缺的字段在**对话里**问、在**对话里**答，不另设填写界面。
   const cognitionKernelTools = uid && !params.disableTools ? createCognitionKernelTools({
     userId: uid,
+    allowConversationWrite: isCommander && params.sourceMessageFromUser === true,
+    onCognitionSaveReceipt: params.onCognitionSaveReceipt,
     turnId: params.turnId, cid: params.cid, spaceId: params.spaceId,
     ...(params.taskRunId ? { taskRunId: params.taskRunId } : {}),
     context: { agentId, workspaceId: params.spaceId, projectId: params.projectId, taskText: params.userMessage },
@@ -1351,6 +1353,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     ? formatSpaceInstructionsForSystemPrompt(uid, params.spaceId)
     : '';
   if (projectInstructionsBlock) parts.push(projectInstructionsBlock);
+  if (isCommander && params.cid) parts.push('Ontology task completion contract: when the user asks to create, save, correct or backfill an ontology, use cognition_ontology_query then cognition_ontology_save with verified sourceMessages evidence. Writing or publishing a Markdown document is not ontology creation. Read back the saved records and report the formal save receipt and entry separately from file outputs. Read transcript_corrections_query before transcript revision; persist explicit human correction pairs with transcript_remember_correction. Unknown identities and meanings stay pending. Never invent a save receipt or promise automatic backfill from a text checklist.');
   if (runtimeInjectionBlock) parts.push(runtimeInjectionBlock);
   // Cross-session memory (read side): the user's stored profile + notes as
   // background context. It is more turn-volatile than resource indexes, so

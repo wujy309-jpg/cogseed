@@ -7901,6 +7901,13 @@ async function runActorTurnBody(
       ...(citation.matchScore !== undefined ? { match_score: citation.matchScore } : {}),
       match_method: citation.matchMethod,
     }));
+    if (isCommander && !aborted && !outcome.failureKind) {
+      try {
+        const { auditConversationOntologyCompletion } = await import('../cognition/ontology/completion-audit');
+        const audit = await auditConversationOntologyCompletion(uid, cid, item.msgId);
+        if (audit.required && !audit.saved) outcome.text = t('chat.ontology_save_missing') + '\n\n' + outcome.text;
+      } catch (error) { log.warn('ontology completion audit unavailable', { error: logErrorRef(error) }); }
+    }
     persistedMsg = await enqueue({
       uid,
       cid,

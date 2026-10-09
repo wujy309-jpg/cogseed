@@ -7374,5 +7374,8 @@
   "cognition.activity_decision_pause": "無効化を確認",
   "cognition.activity_search_empty": "一致する変更がありません。検索条件を変更してください。",
   "cognition.activity_completed_change": "完了した変更",
-  "cognition.activity_excluded_isolated_source": "この出典は日常の認知管理に接続されていません。履歴は保持しています。"
+  "cognition.activity_excluded_isolated_source": "この出典は日常の認知管理に接続されていません。履歴は保持しています。",
+  "chat.cognition_save.open_ontology": "オントロジーを見る",
+  "chat.cognition_save.ontology_saved": "オントロジーに保存済み",
+  "chat.cognition_save.ontology_pending": "保存済み・一部内容は確認待ち"
 }

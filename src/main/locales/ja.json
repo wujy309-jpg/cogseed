@@ -304,5 +304,6 @@
   "touchpoints.card.button.forget_source": "ソースを忘れる",
   "touchpoints.card.button.revoke_grant": "認可を取り消す",
   "touchpoints.card.resolved": "処理済み",
-  "dashboard.retry_user_message": "（再試行）"
+  "dashboard.retry_user_message": "（再試行）",
+  "chat.ontology_save_missing": "本体の保存は未完了です。このターンには正式な保存記録がありません。以下のファイル・分析は本体の作成や更新を意味しません。"
 }

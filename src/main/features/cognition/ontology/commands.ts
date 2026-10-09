@@ -16,8 +16,8 @@ export type OntologyAction =
   | { intent: 'undo_merge'; recordId: string; expectedVersion: number; mergeCommandId: string; sourceLabel: string }
   | { intent: 'archive'; recordId: string; expectedVersion: number; sourceLabel: string }
   | { intent: 'delete'; recordId: string; expectedVersion: number; sourceLabel: string }
-  | { intent: 'change'; recordId: string; expectedVersion: number; effectiveFrom: string; object?: OntologyValue; subjectId?: string; sourceLabel: string }
-  | { intent: 'correct'; recordId: string; expectedVersion: number; object?: OntologyValue; subjectId?: string; sourceLabel: string };
+  | { intent: 'change'; recordId: string; expectedVersion: number; effectiveFrom: string; certainty?: 'confirmed' | 'inferred' | 'unknown'; object?: OntologyValue; subjectId?: string; sourceLabel: string }
+  | { intent: 'correct'; recordId: string; expectedVersion: number; certainty?: 'confirmed' | 'inferred' | 'unknown'; object?: OntologyValue; subjectId?: string; sourceLabel: string };
 export interface OntologyCommand { commandId: string; expectedRevision: number; actions: OntologyAction[] }
 export interface OntologyCommandSourceOverride { kind: 'candidate'; recordId: string; label: string }
 const key = z.string().refine(value => { try { validateOntologyId(value); return true; } catch { return false; } });
@@ -32,8 +32,8 @@ const commandSchema = z.object({ commandId: key, expectedRevision: z.number().in
     z.object({ intent: z.literal('restore'), ...target }).strict(),
     z.object({ intent: z.literal('merge'), ...target, targetId: key, expectedTargetVersion: z.number().int().positive() }).strict(),
     z.object({ intent: z.literal('undo_merge'), ...target, mergeCommandId: key }).strict(),
-    z.object({ intent: z.literal('change'), ...target, effectiveFrom: z.string(), object: ontologyValueSchema.optional(), subjectId: key.optional() }).strict(),
-    z.object({ intent: z.literal('correct'), ...target, object: ontologyValueSchema.optional(), subjectId: key.optional() }).strict(),
+    z.object({ intent: z.literal('change'), ...target, effectiveFrom: z.string(), certainty: z.enum(['confirmed', 'inferred', 'unknown']).optional(), object: ontologyValueSchema.optional(), subjectId: key.optional() }).strict(),
+    z.object({ intent: z.literal('correct'), ...target, certainty: z.enum(['confirmed', 'inferred', 'unknown']).optional(), object: ontologyValueSchema.optional(), subjectId: key.optional() }).strict(),
   ])).min(1).max(50),
 }).strict();
 export function validateOntologyCommand(raw: unknown): OntologyCommand {
@@ -42,7 +42,7 @@ export function validateOntologyCommand(raw: unknown): OntologyCommand {
   try { serialized = JSON.stringify(raw); } catch { throw new OntologyError('invalid_input', 'ontology command must be JSON'); }
   if (!serialized || Buffer.byteLength(serialized, 'utf8') > 1024 * 1024) throw new OntologyError('invalid_input', 'ontology command too large');
   const parsed = commandSchema.safeParse(raw);
-  if (!parsed.success) throw new OntologyError('invalid_input', 'invalid ontology command');
+  if (!parsed.success) throw new OntologyError('invalid_input', 'invalid ontology command: ' + parsed.error.issues.slice(0,8).map(issue => issue.path.join('.') + ' ' + issue.message).join('; '), { issues: parsed.error.issues.slice(0,8).map(issue => ({ path: issue.path, message: issue.message })) });
   if (parsed.data.actions.length !== 1 && parsed.data.actions.some(a => a.intent === 'merge' || a.intent === 'undo_merge'))
     throw new OntologyError('invalid_input', 'identity merge must be reviewed as one standalone operation');
   if (parsed.data.actions.some(a => (a.intent === 'change' || a.intent === 'correct') && !a.object && !a.subjectId))
@@ -150,14 +150,14 @@ function assertRecordSemantics(doc: OntologyDocument, record: OntologyRecord): v
     const definition = usable(doc, record.moduleId, record.definitionId, 'definition', record.access) as OntologyDefinition;
     if (definition.definitionKind === 'type') throw new OntologyError('invalid_type', 'type is not a fact predicate');
     const subject = usable(doc, record.moduleId, record.subjectId, 'entity', record.access);
-    if (subject.kind !== 'entity' || subject.identityStatus !== 'confirmed')
+    if (subject.kind !== 'entity' || subject.identityStatus !== 'confirmed' && (!record.certainty || record.certainty === 'confirmed'))
       throw new OntologyError('ambiguous_identity', 'assertion subject identity is unresolved');
     if (definition.subjectTypes.length && !definition.subjectTypes.includes(subject.typeId))
       throw new OntologyError('invalid_type', 'assertion subject type mismatch');
     if (record.object.kind === 'entity') {
       if (definition.valueType !== 'entity') throw new OntologyError('invalid_type', 'predicate expects a literal');
       const object = usable(doc, record.moduleId, record.object.id, 'entity', record.access);
-      if (object.kind !== 'entity' || object.identityStatus !== 'confirmed')
+      if (object.kind !== 'entity' || object.identityStatus !== 'confirmed' && (!record.certainty || record.certainty === 'confirmed'))
         throw new OntologyError('ambiguous_identity', 'assertion object identity is unresolved');
       if (definition.objectTypes.length && !definition.objectTypes.includes(object.typeId))
         throw new OntologyError('invalid_type', 'assertion object type mismatch');
@@ -321,7 +321,7 @@ export function applyOntologyCommand(current: OntologyDocument, input: unknown, 
       } else save({ ...before, status: 'corrected', version: before.version + 1, updatedAt: recordedAt }, 'mark_corrected', before);
       save({ ...before, id: successorId, version: 1, object: action.object ?? before.object, subjectId: action.subjectId ?? before.subjectId, source, status: 'active',
         validity: { ...before.validity, ...(action.intent === 'change' ? { from: action.effectiveFrom } : {}) },
-        supersedesId: before.id, createdAt: recordedAt, updatedAt: recordedAt,
+        ...(action.certainty ? { certainty: action.certainty } : {}), supersedesId: before.id, createdAt: recordedAt, updatedAt: recordedAt,
       }, action.intent);
     }
   });

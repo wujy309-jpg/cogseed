@@ -138,6 +138,9 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: 'personal_fields_check', group: 'recall', summary: 'Read which cognition slots a task type needs across three axes (personal fields / ontology facts and rules / method assets), which are bound, and which are missing (packs: expense / bid / weekly_report). Ask the user in the conversation for the missing ones.' },
   { name: 'personal_field_remember', group: 'recall', summary: 'Persist a personal field the user just stated in the conversation, so the same task will not ask again. Only after an explicit answer; never invent a value.' },
   { name: 'ontology_slot_remember', group: 'recall', summary: 'Persist an ontology fact the user just answered in the conversation, through the governed ontology command path (exact names only; same-name entities are never auto-merged). Only after an explicit answer; never invent a value.' },
+  { name: 'transcript_corrections_query', group: 'recall', summary: 'Read confirmed conversation/ontology-scene transcript corrections and canonical names before revising a transcript; exclude uncertain identities.' },
+  { name: 'transcript_remember_correction', group: 'recall', summary: 'Persist only explicitly user-confirmed transcript corrections, with verified original attachment and human quote, scoped to the conversation document.' },
+  { name: 'cognition_ontology_save', group: 'recall', summary: 'Save explicitly requested ontology creation/correction through governed commands; verify human evidence and return read-back receipts. A document is not a saved ontology.' },
   { name: 'cognition_ontology_query', group: 'recall', summary: 'Read time-aware ontology facts and applicable rules through explicit module references, with source/version citations and private-scope filtering.' },
 
   // 任务经验（specs/016 T024 / US-802）：与资产**完全隔离**的第二套集合（exp- 前缀）。

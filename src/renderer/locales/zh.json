@@ -9642,5 +9642,8 @@
   "cognition.activity_decision_pause": "确认停用",
   "cognition.activity_search_empty": "没有匹配的变化，请调整搜索条件。",
   "cognition.activity_completed_change": "已完成的变化",
-  "cognition.activity_excluded_isolated_source": "此来源未接入日常认知治理；历史内容保留用于追溯。"
+  "cognition.activity_excluded_isolated_source": "此来源未接入日常认知治理；历史内容保留用于追溯。",
+  "chat.cognition_save.open_ontology": "查看本体",
+  "chat.cognition_save.ontology_saved": "已保存到本体",
+  "chat.cognition_save.ontology_pending": "已保存到本体 · 部分内容待回填"
 }

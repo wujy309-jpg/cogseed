@@ -5363,7 +5363,9 @@ function _renderCognitionSaveReceiptsHtml(receipts) {
   return `<div class="chat-cognition-save-receipts">${receipts.map((receipt) => {
     // taught-pending-review（2026-09-28 四病整改 7.0 修7）：教学回执并入保存
     // 回执后的新态——用户教了一条记忆，信号落库时建了候选、等审核。
-    const outcomeKey = receipt.outcome === 'created'
+    const outcomeKey = receipt.target === 'ontology'
+      ? receipt.outcome === 'ontology-pending' ? 'chat.cognition_save.ontology_pending' : 'chat.cognition_save.ontology_saved'
+      : receipt.outcome === 'created'
       ? 'chat.cognition_save.state_active'
       : receipt.outcome === 'already-confirmed'
         ? 'chat.cognition_save.state_existing'
@@ -5385,7 +5387,7 @@ function _renderCognitionSaveReceiptsHtml(receipts) {
           : receipt.outcome === 'taught-pending-review'
             ? '已记住 · 待审核'
             : 'Awaiting your review · not active yet';
-    const label = receipt.outcome === 'already-confirmed'
+    const label = receipt.target === 'ontology' ? copy('chat.cognition_save.open_ontology', '查看本体') : receipt.outcome === 'already-confirmed'
       ? copy('chat.cognition_save.open_existing', 'View record')
       : receipt.target === 'asset'
         ? copy('chat.cognition_save.open_asset', 'View and edit')
@@ -5395,7 +5397,9 @@ function _renderCognitionSaveReceiptsHtml(receipts) {
       role: 'ghost',
       size: 'sm',
       className: 'chat-cognition-save-open',
-      attrs: receipt.target === 'asset'
+      attrs: receipt.target === 'ontology'
+        ? { 'data-ontology-citation': receipt.id, 'data-ontology-module': receipt.moduleId || receipt.id, 'data-ontology-version': String(receipt.version || 1) }
+        : receipt.target === 'asset'
         ? { 'data-asset-citation': receipt.id }
         : { 'data-candidate-citation': receipt.id },
     });

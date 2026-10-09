@@ -312,5 +312,6 @@
   "tray.status.idle": "No tasks running",
   "tray.status.running": "{count} task(s) running",
   "tray.background_hint.title": "CogSeed is still running in the background",
-  "tray.background_hint.content": "Long-running tasks keep going. Use \"Quit CogSeed\" in the tray menu to exit completely."
+  "tray.background_hint.content": "Long-running tasks keep going. Use \"Quit CogSeed\" in the tray menu to exit completely.",
+  "chat.ontology_save_missing": "Ontology save incomplete: no formal save receipt was produced this turn. File or analysis outputs below do not mean the ontology was created or updated."
 }

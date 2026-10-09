@@ -8,6 +8,8 @@ export interface OntologySourceRef { kind: 'asset' | 'candidate' | 'legacy'; id:
 export interface OntologyBase {
   id: string; kind: OntologyKind; version: number; status: OntologyStatus;
   access: OntologyAccess;
+  /** Undefined is legacy confirmed; new conversation writes explicitly distinguish uncertainty. */
+  certainty?: 'confirmed' | 'inferred' | 'unknown';
   createdAt: string | null; updatedAt: string | null;
   source: { kind: 'user' | 'candidate' | 'legacy'; label: string; recordId?: string;
     refs?: OntologySourceRef[] };
@@ -116,6 +118,7 @@ const condition: z.ZodTypeAny = z.lazy(() => z.union([
 const base = {
   id, version: z.number().int().positive(), status: z.enum(['active', 'paused', 'archived', 'corrected']),
   access: z.enum(['task', 'owner_only']).default('task'),
+  certainty: z.enum(['confirmed', 'inferred', 'unknown']).optional(),
   createdAt: stamp.nullable(), updatedAt: stamp.nullable(),
   source: z.object({ kind: z.enum(['user', 'candidate', 'legacy']), label: name, recordId: id.optional(),
     refs: z.array(z.object({ kind: z.enum(['asset', 'candidate', 'legacy']), id }).strict()).max(100).optional() }).strict(),

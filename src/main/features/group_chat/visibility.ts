@@ -302,10 +302,12 @@ export interface GroupMessage {
    * CognitionSaveReceipt 同步扩枚举。上面的 teaching_receipts 字段仅作历史
    * 数据容忍保留（新消息不再写入，渲染层也不再消费）。 */
   cognition_save_receipts?: Array<{
-    target: 'asset' | 'candidate';
+    target: 'asset' | 'candidate' | 'ontology';
+    moduleId?: string;
+    version?: number;
     id: string;
     summary: string;
-    outcome: 'created' | 'already-confirmed' | 'pending-review' | 'merged' | 'fused-update-pending' | 'taught-pending-review';
+    outcome: 'created' | 'already-confirmed' | 'pending-review' | 'merged' | 'fused-update-pending' | 'taught-pending-review' | 'ontology-saved' | 'ontology-pending';
   }>;
   /** Commander-requested marketplace installs. The model can search the
    * official marketplace and request a user decision, but the install only

@@ -72,10 +72,12 @@ export interface ChatAttachmentMetadata {
  * `target: 'candidate'` + `outcome: 'taught-pending-review'` 装进同一回执链，
  * 渲染层不再有独立教学卡。 */
 export interface CognitionSaveReceipt {
-  target: 'asset' | 'candidate';
+  target: 'asset' | 'candidate' | 'ontology';
+    moduleId?: string;
+    version?: number;
   id: string;
   summary: string;
-  outcome: 'created' | 'already-confirmed' | 'pending-review' | 'merged' | 'fused-update-pending' | 'taught-pending-review';
+  outcome: 'created' | 'already-confirmed' | 'pending-review' | 'merged' | 'fused-update-pending' | 'taught-pending-review' | 'ontology-saved' | 'ontology-pending';
 }
 
 export interface ChatResolvedRuntime {

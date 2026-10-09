@@ -304,5 +304,6 @@
   "touchpoints.card.button.forget_source": "Esquecer fonte",
   "touchpoints.card.button.revoke_grant": "Revogar concessão",
   "touchpoints.card.resolved": "Processado",
-  "dashboard.retry_user_message": "(tentar novamente)"
+  "dashboard.retry_user_message": "(tentar novamente)",
+  "chat.ontology_save_missing": "A gravação da ontologia está incompleta: não existe recibo formal nesta interação. Os ficheiros ou análises abaixo não comprovam a criação ou atualização."
 }

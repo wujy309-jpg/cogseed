@@ -7374,5 +7374,8 @@
   "cognition.activity_decision_pause": "Confirmar desativação",
   "cognition.activity_search_empty": "Sem alterações correspondentes. Ajuste a pesquisa.",
   "cognition.activity_completed_change": "Alteração concluída",
-  "cognition.activity_excluded_isolated_source": "Esta fonte não está ligada à gestão diária da cognição. O histórico é preservado."
+  "cognition.activity_excluded_isolated_source": "Esta fonte não está ligada à gestão diária da cognição. O histórico é preservado.",
+  "chat.cognition_save.open_ontology": "Ver ontologia",
+  "chat.cognition_save.ontology_saved": "Guardado na ontologia",
+  "chat.cognition_save.ontology_pending": "Guardado · alguns detalhes pendentes"
 }

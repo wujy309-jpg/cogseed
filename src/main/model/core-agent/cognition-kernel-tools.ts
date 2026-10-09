@@ -13,6 +13,7 @@
  * **明确回答之后**调用，禁止自行编造值（宁可不填也不要写错——档案是长期记忆）。
  */
 
+import type { CognitionSaveReceipt } from '../client';
 import type { AgentTool } from '#core-agent';
 import { createLogger } from '../../logger';
 import {
@@ -28,6 +29,7 @@ import { logErrorRef, maskId } from '../../util/log-redact';
 
 import { recordAssetAgentReads } from '../../features/recall/agent-read-accounting';
 import type { ResolvePersonalFieldsRequest } from '../../features/cognition_kernel/types';
+import { createTranscriptMemoryTools } from './transcript-memory-tools';
 import { createOntologyTools } from './ontology-tools';
 const log = createLogger('cognition-kernel-tools');
 
@@ -40,6 +42,8 @@ export interface CognitionKernelToolsOpts {
   /** 真实任务运行 ID（群聊 run）；缺省回退 turnId 记账。 */
   taskRunId?: string;
   cid?: string;
+  allowConversationWrite?: boolean;
+  onCognitionSaveReceipt?: (receipt: CognitionSaveReceipt) => void | Promise<void>;
   spaceId?: string;
   context?: ResolvePersonalFieldsRequest['context'];
   observed?: Map<string, { sourceId: string; version?: string; expectedUpdatedAt?: string; expectedValue?: string }>;
@@ -247,6 +251,7 @@ export function createCognitionKernelTools(opts: CognitionKernelToolsOpts): Agen
     createFieldsCheckTool(scoped),
     createFieldRememberTool(scoped),
     createOntologySlotRememberTool(scoped),
-    ...createOntologyTools({ userId: opts.userId, turnId: opts.turnId, context: opts.context }),
+    ...createTranscriptMemoryTools(opts),
+    ...createOntologyTools({ userId: opts.userId, turnId: opts.turnId, cid: opts.cid, allowConversationWrite: opts.allowConversationWrite, onCognitionSaveReceipt: opts.onCognitionSaveReceipt, context: opts.context }),
   ];
 }

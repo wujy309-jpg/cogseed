@@ -43,6 +43,7 @@ import {
   type GlossaryKind,
 } from './transcript_glossary';
 import { loadEntries as loadMemoryEntries } from './memory';
+import { readOntologyDocument } from './cognition/ontology/service';
 import { loadOntologyTaxonomy } from './recall/ontology-taxonomy';
 import {
   collectTemplateFileFields,
@@ -258,6 +259,15 @@ export function collectCanonicalNames(userId: string): CanonicalName[] {
     names.push({ name: trimmed, source, ...extra });
   };
 
+  // 正式本体主档优先；仅收任务可用、已确认的个人域规范实体，未确认身份不作纠错依据。
+  const ontology = readOntologyDocument(userId);
+  for (const record of Object.values(ontology.records)) {
+    if (record.kind !== 'entity' || record.status !== 'active' || record.access !== 'task'
+      || record.identityStatus !== 'confirmed' || record.certainty && record.certainty !== 'confirmed') continue;
+    const module = ontology.records[record.moduleId];
+    if (module?.kind !== 'module' || module.status !== 'active' || module.access !== 'task' || module.scope.kind !== 'personal') continue;
+    for (const name of [record.name, ...record.aliases]) push(name, 'ontology', { seedKind: 'value', ontologyRef: { groupId: module.id, fieldId: record.id } });
+  }
   // 本体分组（目录可能不存在）
   const dir = userOntologyGroupsDir(userId);
   let files: string[] = [];

@@ -549,6 +549,9 @@ describe('T046 ④ tool-catalog recall 组工具面受控扩展', () => {
     'personal_field_remember',
     'ontology_slot_remember',
     'cognition_ontology_query',
+    'cognition_ontology_save',
+    'transcript_corrections_query',
+    'transcript_remember_correction',
     'search_ability_assets',
     'ontology_query',
     'list_task_experiences',
@@ -576,13 +579,13 @@ describe('T046 ④ tool-catalog recall 组工具面受控扩展', () => {
         ...createAssetStewardTools({ userId: 'admission-guard' }),
         ...createPersonalOntologyTools({ userId: 'admission-guard' }),
         ...createExperienceTools({ userId: 'admission-guard' }),
-        ...createCognitionKernelTools({ userId: 'admission-guard' }),
+        ...createCognitionKernelTools({ userId: 'admission-guard', cid: 'authorized-conversation', allowConversationWrite: true }),
       ].map((tool) => tool.name);
     } finally {
       vi.unstubAllEnvs();
     }
 
-    expect([...catalogRecall].sort(), 'recall 组新增/删除了工具——「不新增模型工具」是 specs/015 D15 的硬约束，确要变更先找 owner')
+    expect([...catalogRecall].sort(), 'recall 组新增/删除了工具——工具面只能包含已登记能力：2026-10-09 用户授权本体与转写链路新增3件')
       .toEqual([...RECALL_GROUP_BASELINE].sort());
     expect(factoryNames.length, '工厂产出的工具名不得重复').toBe(new Set(factoryNames).size);
     expect([...factoryNames].sort(), 'catalog 的 recall 组必须与四个工厂的实际工具面逐一对上（缺一行/多一行都要红）')

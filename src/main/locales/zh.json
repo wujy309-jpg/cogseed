@@ -312,5 +312,6 @@
   "tray.status.idle": "当前没有运行中的任务",
   "tray.status.running": "正在运行 {count} 个任务",
   "tray.background_hint.title": "CogSeed 仍在后台运行",
-  "tray.background_hint.content": "长任务会继续执行。要彻底退出，请用托盘菜单里的「退出 CogSeed」。"
+  "tray.background_hint.content": "长任务会继续执行。要彻底退出，请用托盘菜单里的「退出 CogSeed」。",
+  "chat.ontology_save_missing": "本体保存未完成：本轮没有正式本体保存回执。以下文件或分析产出不能视为本体已创建或更新。"
 }

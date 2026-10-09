@@ -23,7 +23,7 @@ export function assertionValidityAt(assertion: OntologyAssertion, day: string): 
   const start = from && (precision === 'month' ? from + '-01' : from);
   const end = until && (precision === 'month' ? until + '-01' : until);
   if ((start && day < start) || (end && day >= end)) return 'false';
-  return from === null ? 'unknown' : 'true';
+  return from === null || assertion.certainty && assertion.certainty !== 'confirmed' ? 'unknown' : 'true';
 }
 
 /** 不返回未来才录入的事实。结果是不可写的派生视图，不伪装成可提交主档。 */
@@ -62,7 +62,10 @@ export function queryOntologyFacts(doc: OntologyDocument, input: {
     if (doc.records[record.id]?.access !== 'task' || !taskDependencyAvailable(doc, record.moduleId, record.subjectId)
       || !taskDependencyAvailable(doc, record.moduleId, record.definitionId)
       || record.object.kind === 'entity' && !taskDependencyAvailable(doc, record.moduleId, record.object.id)) continue;
-    const truth = assertionValidityAt(record, input.at);
+    const dependencies = [records[record.subjectId], ...(record.object.kind === 'entity' ? [records[record.object.id]] : [])];
+    const unsure = record.certainty && record.certainty !== 'confirmed' || dependencies.some(row => row && ((row.certainty && row.certainty !== 'confirmed') || row.kind === 'entity' && row.identityStatus === 'unresolved'));
+    const validityTruth = assertionValidityAt(record, input.at);
+    const truth = validityTruth === 'false' ? 'false' : unsure ? 'unknown' : validityTruth;
     if (truth === 'true') matched.push(record);
     if (truth === 'unknown') uncertain.push(record);
   }
@@ -113,7 +116,7 @@ export function queryOntologyRules(doc: OntologyDocument, input: { moduleId: str
   return Object.values(records).filter((r): r is OntologyRecord & { kind: 'rule' } => r.kind === 'rule'
     && r.status === 'active' && r.access !== 'owner_only' && records[r.moduleId]?.status === 'active'
     && records[r.moduleId]?.access === 'task' && moduleCanUse(view, input.moduleId, r)).map(rule => ({
-    rule, match: evaluateCondition(view, input.moduleId, rule.condition, input.task),
+    rule, match: rule.certainty && rule.certainty !== 'confirmed' ? 'unknown' : evaluateCondition(view, input.moduleId, rule.condition, input.task),
   }));
 }
 

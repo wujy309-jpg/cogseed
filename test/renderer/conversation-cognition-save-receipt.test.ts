@@ -290,4 +290,13 @@ describe('conversation cognition save receipts', () => {
     expect(source).toContain('_mountFinalEvidenceBlock(ph, gm)');
     expect(source).toContain("closest('[data-candidate-citation]')");
   });
+  it('正式本体保存回执打开本体，不误跳候选；待回填状态与已保存分开呈现', () => {
+    const html = renderReceipts([{ target: 'ontology', id: 'meeting', moduleId: 'meeting', version: 2, summary: '9:30站会', outcome: 'ontology-pending' }]);
+    expect(html).toContain('data-ontology-citation="meeting"');
+    expect(html).toContain('data-ontology-module="meeting"');
+    expect(html).toContain('data-ontology-version="2"');
+    expect(html).not.toContain('data-candidate-citation');
+    expect(html).toContain('查看本体');
+  });
+
 });

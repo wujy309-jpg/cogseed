@@ -141,6 +141,7 @@ export interface RunRecord {
   corrections: number;
   actors: RunActorRecord[];
   status: 'running' | 'completed' | 'failed' | 'blocked' | 'stopped';
+  interruption_reason?: 'application_interrupted';
   summary?: RunSummary;
   summary_publication?: RunSummaryPublication;
 }
@@ -467,6 +468,7 @@ function normalizeRecord(raw: unknown, expected?: { cid: string; runId: string }
     corrections: Number(raw.corrections),
     actors,
     status: raw.status as RunRecord['status'],
+    ...(raw.interruption_reason === 'application_interrupted' ? { interruption_reason: 'application_interrupted' as const } : {}),
     ...(summary ? { summary } : {}),
     ...(summaryPublication ? { summary_publication: summaryPublication } : {}),
   };
@@ -593,6 +595,7 @@ export async function createRun(input: CreateRunInput): Promise<RunRecord | null
     external: externalAgentIds.length,
     sequential: record.input_snapshot.requires_sequential,
   });
+  await recoverAbandonedCommanderRuns(input.uid, input.cid, Date.now() - process.uptime() * 1000, runId, input.projectHint);
   return record;
 }
 
@@ -959,4 +962,25 @@ export async function prepareRunRetry(
     return record;
   }, projectHint);
   return run && retryAgentIds.length ? { run, retry_agent_ids: retryAgentIds } : null;
+}
+
+/** Close only pre-process ordinary commander runs; live/member runs and completed contributions are untouched. */
+export async function recoverAbandonedCommanderRuns(uid: string, cid: string, cutoffMs: number, keepRunId?: string, projectHint?: string | null): Promise<number> {
+  if (!Number.isFinite(cutoffMs)) return 0;
+  let recovered = 0;
+  for (const runId of await listRunIds(uid, cid, projectHint)) {
+    if (runId === keepRunId) continue;
+    const record = await readRun(uid, cid, runId, projectHint);
+    if (!record || record.status !== 'running' || record.actors.length || Date.parse(record.updated_at) >= cutoffMs) continue;
+    let changed = false;
+    const settled = await updateRun(uid, cid, runId, current => {
+      // Recheck under the record lock: a resumed or completed run always wins.
+      if (current.status === 'running' && !current.actors.length && Date.parse(current.updated_at) < cutoffMs) {
+        current.status = 'stopped'; current.interruption_reason = 'application_interrupted'; changed = true;
+      }
+      return current;
+    }, projectHint);
+    if (changed && settled?.status === 'stopped') recovered++;
+  }
+  return recovered;
 }
