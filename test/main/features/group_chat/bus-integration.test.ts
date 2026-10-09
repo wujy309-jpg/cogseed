@@ -3052,9 +3052,8 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
     const candidates = await import("../../../../src/main/features/recall/candidate-service");
     // This assertion covers both sides of the boundary: the Commander must
     // receive host-owned Recall context, while the delegated Agent receives
-    // only the explicit dispatch grant. Enable the host routing path so the
-    // test creates the confirmed projection that supplies that context.
-    process.env.COGSEED_KSTAR_HOST_ROUTING = "1";
+    // only the explicit dispatch grant. Pin the projection explicitly so this
+    // dispatch-boundary test does not depend on semantic-ranking heuristics.
 
     const candidate = await candidates.saveRecallCandidate(TEST_UID, {
       judgment: "Never leak asset context into delegated turns unless the Commander grants it.",
@@ -3068,6 +3067,15 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
     // "资产只经 Commander 分发、不由宿主注入 Agent"的契约，不是成熟度闸门，
     // 所以先把资产抬到够格的档位。
     await (await import("../../../../src/main/features/recall/asset-service")).setAbilityAssetMaturity(TEST_UID, asset.id, "transfer_validated");
+    const projections = await import("../../../../src/main/features/recall/context-projection");
+    const projection = await projections.previewContextProjection(TEST_UID, {
+      taskRunId: "task-dispatch-boundary",
+      purpose: "review",
+      authorization: "user_confirmed",
+      explicitAssetIds: [asset.id],
+      confirm: true,
+    });
+    expect(projection.assetIds).toContain(asset.id);
 
     const AGENT_REPLY = "AGENT-OK-58d2";
     _setScript(state.buildGconvSessionId(cid), [
@@ -3082,7 +3090,13 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
     _setScript(agentSid, [{ type: "final", text: AGENT_REPLY }]);
 
     bus.subscribe(TEST_UID, cid, () => {});
-    await bus.enqueue({ uid: TEST_UID, cid, fromActorId: "user", text: "run the audit" });
+    await bus.enqueue({
+      uid: TEST_UID,
+      cid,
+      fromActorId: "user",
+      text: "run the audit",
+      committedProjectionId: projection.id,
+    });
     await waitForQuiescent(TEST_UID, cid);
 
     // The agent's system prompt received the Commander-granted asset block...
@@ -6828,10 +6842,11 @@ describe("group_chat bus integration › Recall asset usage receipt", () => {
     const preview = await projections.previewContextProjection(TEST_UID, {
       taskRunId: "task-receipt",
       purpose: "review",
-      taskText: "Audit OAuth login",
-      authorization: "workspace_policy",
+      authorization: "user_confirmed",
+      explicitAssetIds: [asset.id],
       confirm: true,
     });
+    expect(preview.assetIds).toContain(asset.id);
     const messageFile = layout.conversationMessageFile(TEST_UID, cid);
     fs.mkdirSync(path.dirname(messageFile), { recursive: true });
     await storage.appendJsonlAtomic(messageFile, {
