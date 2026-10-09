@@ -396,6 +396,7 @@
   background: var(--surface-subtle);
   color: var(--text-secondary);
   font-size: var(--font-size-meta);
+  flex-wrap: wrap;
 }
 
 .hubc-summary strong {
@@ -412,9 +413,13 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
+  flex-wrap: wrap;
 }
 
-.hubc-search { width: 220px; flex: none; }
+/* Filter group scrolls instead of widening the page when the window is narrow. */
+.hubc-toolbar > :first-child { min-width: 0; max-width: 100%; overflow-x: auto; }
+
+.hubc-search { width: 220px; max-width: 100%; flex: 0 1 220px; min-width: 0; }
 
 .hubc-master {
   display: grid;

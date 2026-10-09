@@ -25,6 +25,11 @@
   let mine = null;
   let minePoll = null;
 
+  // Hub's message plus the details it returned (blocking items etc.), never the message alone.
+  function errorText(error, fallback) {
+    return model.describeApiError(error, fallback);
+  }
+
   function tr(key, fallback) {
     const value = typeof root.t === 'function' ? root.t(key) : '';
     return value && value !== key ? value : fallback;
@@ -806,11 +811,11 @@
               : submitted?.reason === 'target_version_unavailable'
                 ? tr('skills.contribute_target_refresh', 'Refresh My contributions before submitting a new version.')
                 : '';
-          await root.uiAlert(localMessage || submitted?.error?.message || tr('skills.contribute_submit_failed', 'Submission was not confirmed.'));
+          await root.uiAlert(localMessage || errorText(submitted?.error, tr('skills.contribute_submit_failed', 'Submission was not confirmed.')));
           break;
         }
         const retry = await root.uiConfirm({
-          message: submitted?.error?.message || tr('skills.contribute_submit_retry', 'Hub did not confirm receipt. Retry the exact same package?'),
+          message: errorText(submitted?.error, tr('skills.contribute_submit_retry', 'Hub did not confirm receipt. Retry the exact same package?')),
           okLabel: tr('common.retry', 'Retry'),
         });
         if (!retry) break;
@@ -1104,7 +1109,7 @@
     if (action === 'withdraw-pending') {
       if (!await root.uiConfirmDanger({ message: tr('skills.contribute_withdraw_pending_confirm', 'Withdraw this pending submission?') })) return undefined;
       const result = await root.cogseed.invoke('contribution.withdrawPending', { submission_id: entry.submissionId });
-      if (!result?.ok) await root.uiAlert(result?.error?.message || tr('skills.contribute_action_failed', 'The action could not be completed.'));
+      if (!result?.ok) await root.uiAlert(errorText(result?.error, tr('skills.contribute_action_failed', 'The action could not be completed.')));
       else {
         if (typeof root.uiToast === 'function') root.uiToast(tr('skills.contribute_withdrawn_toast', 'Pending submission withdrawn.'), { variant: 'success' });
         await loadMine();
@@ -1120,7 +1125,7 @@
       const reason = await root.uiPrompt(tr('skills.contribute_withdrawal_reason', 'Explain why this published content should be withdrawn.'), '');
       if (!reason) return undefined;
       const result = await root.cogseed.invoke('contribution.requestWithdrawal', { content_id: entry.contentId, reason });
-      if (!result?.ok) await root.uiAlert(result?.error?.message || tr('skills.contribute_action_failed', 'The action could not be completed.'));
+      if (!result?.ok) await root.uiAlert(errorText(result?.error, tr('skills.contribute_action_failed', 'The action could not be completed.')));
       else {
         if (typeof root.uiToast === 'function') root.uiToast(tr('skills.contribute_withdrawal_requested_toast', 'Withdrawal request submitted; waiting for governance review.'), { variant: 'success' });
         await loadMine();
@@ -1130,7 +1135,7 @@
     if (action === 'withdrawal-history') {
       const result = await root.cogseed.invoke('contribution.withdrawalHistory', { content_id: entry.contentId });
       if (!result?.ok) {
-        await root.uiAlert(result?.error?.message || tr('skills.contribute_action_failed', 'The action could not be completed.'));
+        await root.uiAlert(errorText(result?.error, tr('skills.contribute_action_failed', 'The action could not be completed.')));
         return undefined;
       }
       const rows = Array.isArray(result.result?.items) ? result.result.items : [];
