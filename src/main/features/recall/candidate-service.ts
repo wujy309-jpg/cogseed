@@ -1180,6 +1180,36 @@ function candidateActionNeedsTarget(action: RecallCandidateAction): boolean {
   return action === 'update' || action === 'limit_scope' || action === 'pause';
 }
 
+/**
+ * 更新型候选（update / limit_scope / pause）的 suggestedType 必须取自目标资产。
+ *
+ * 确认/晋升时的守卫是硬拒绝——`target.type !== candidate.suggestedType` 抛
+ * `candidate target asset type mismatch`。类型对不上，这条提案**永远确认不了**，
+ * 用户只会看到 submit_failed：语义查重的融合与 KSTAR 的改进链都断在这里，而且
+ * 断在用户点了确认之后，前面没有任何一步会提示。
+ *
+ * update 型候选的类型不是「推断出来的属性」，而是「它要改的那条资产的类型」。
+ * 但三条生产路径各自独立决定类型（语义查重改写 / KSTAR drain 桥 / KSTAR 直通），
+ * 它们都拿不到目标资产，所以各自在落候选前过一道这个口。读不到目标（已删除、
+ * 不存在）时保持原样——让守卫如实拒绝，不在这里把它吞成静默。
+ */
+export async function alignUpdateCandidateType(
+  userId: string,
+  input: {
+    suggestedType: RecallAbilityAssetRecord['type'];
+    suggestedAction: RecallCandidateAction;
+    targetAssetId?: string;
+  },
+): Promise<RecallAbilityAssetRecord['type']> {
+  if (!input.targetAssetId || !candidateActionNeedsTarget(input.suggestedAction)) return input.suggestedType;
+  try {
+    const target = await readAbilityAsset(userId, input.targetAssetId);
+    return target?.type ?? input.suggestedType;
+  } catch {
+    return input.suggestedType;
+  }
+}
+
 function candidateIdForCaptureKey(captureKey: string): string {
   return `cand-${createHash('sha256').update(captureKey).digest('hex').slice(0, 24)}`;
 }
@@ -1950,7 +1980,10 @@ async function rewriteCandidateAsAssetUpdate(
     value: candidate.value,
     summary: candidate.summary,
     uncertainty: candidate.uncertainty,
-    suggestedType: candidate.suggestedType,
+    // 更新的是 asset 这条资产，类型跟着目标走（与下面 applicableWhen /
+    // forbiddenWhen 同样的继承口径）。用候选自带的类型会在确认守卫处撞上
+    // type mismatch，这条融合路径就永远走不完。
+    suggestedType: asset.type,
     suggestedScope: candidate.suggestedScope,
     suggestedAction: 'update',
     risk: candidate.risk,

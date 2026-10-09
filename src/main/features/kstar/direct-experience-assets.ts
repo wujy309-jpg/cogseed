@@ -1,7 +1,7 @@
 import { createLogger } from '../../logger';
 import { safeId } from '../../storage';
 import { classifyAbilityAssetWriteFailure } from '../recall/asset-service';
-import { autoApplyRecallCandidate, saveRecallCandidate } from '../recall/candidate-service';
+import { alignUpdateCandidateType, autoApplyRecallCandidate, saveRecallCandidate } from '../recall/candidate-service';
 import { createExperience, type ExperienceRecord } from '../recall/experience-service';
 import { normalizeCognitionSourceRefs, type CognitionSourceRef } from '../recall/source-service';
 import { recallFieldsForKstarProposal } from './candidate-contract';
@@ -321,12 +321,12 @@ export async function recordKstarSubmitFailedOutcome(
   ));
 }
 
-function proposalToCandidateInput(
+async function proposalToCandidateInput(
   userId: string,
   source: DirectExperienceSource,
   proposal: KstarCandidateProposal,
   index: number,
-): import('../recall/candidate-service').SaveRecallCandidateInput {
+): Promise<import('../recall/candidate-service').SaveRecallCandidateInput> {
   const evidenceRefs = normalizeCognitionSourceRefs(proposal.sourceRefs);
   const action = recallFieldsForKstarProposal(proposal);
   return {
@@ -339,7 +339,14 @@ function proposalToCandidateInput(
     value: String(proposal.judgment || '').replace(/\s+/g, ' ').trim().slice(0, 1_000),
     summary: String(proposal.summary || '').replace(/\s+/g, ' ').trim().slice(0, 1_000),
     ...(proposal.uncertainty ? { uncertainty: String(proposal.uncertainty).slice(0, 1_000) } : {}),
-    suggestedType: proposal.suggestedType,
+    // 更新型提案的类型取自目标资产：类型在抽取阶段是按"缺口类型"推的
+    // （gapType 认不出 execution_gap 时会退化成新建线的 skill_method），
+    // 与它要改的那条资产无关；不一致会在确认守卫处硬拒绝。
+    suggestedType: await alignUpdateCandidateType(userId, {
+      suggestedType: proposal.suggestedType,
+      suggestedAction: action.suggestedAction,
+      ...(action.targetAssetId ? { targetAssetId: action.targetAssetId } : {}),
+    }),
     suggestedScope: String(proposal.suggestedScope || 'general').slice(0, 500),
     suggestedAction: action.suggestedAction,
     ...(action.targetAssetId ? { targetAssetId: action.targetAssetId } : {}),
@@ -451,7 +458,7 @@ export async function precipitateDirectExperienceFromSource(
       // 1. Enter the unified candidate pool (exact-fingerprint dedup inside).
       //    saveRecallCandidate returns the EXISTING candidate when the exact
       //    fingerprint matched (merged evidence), or a fresh one otherwise.
-      const candidate = await saveRecallCandidate(userId, proposalToCandidateInput(userId, source, proposal, index));
+      const candidate = await saveRecallCandidate(userId, await proposalToCandidateInput(userId, source, proposal, index));
       result.candidateIds.push(candidate.id);
 
       // 2. Unified promotion exit: semantic dedup + quality fusion against

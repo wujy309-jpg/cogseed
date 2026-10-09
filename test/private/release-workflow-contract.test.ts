@@ -27,16 +27,22 @@ describe('release workflow contract', () => {
     expect(workflow).not.toContain('diagnose-local-agents.mjs --json --only codex');
   });
 
-  it('runs blocking packaged launch and STT verifiers after the Windows build', () => {
-    const workflow = parse(fs.readFileSync(path.resolve('.github/workflows/ci.yml'), 'utf8'), { version: '1.2' });
-    const steps = workflow.jobs['verify-windows'].steps as Array<{ run?: string; continueOnError?: boolean }>;
-    const buildIndex = steps.findIndex((step) => step.run === 'npm run build:win');
-    const launchIndex = steps.findIndex((step) => step.run === 'npm run verify:package:launch');
-    const smokeIndex = steps.findIndex((step) => step.run === 'npm run verify:package:stt:win');
+  // 2026-09-28 方案 C：私仓 ci.yml 收敛为零成本门禁（Ubuntu-only），Windows
+  // 打包验证改由 release.yml 的 build-windows 承担。断言意图不变——构建之后
+  // 必须紧跟启动冒烟与 STT 冒烟，且不许静默失败——只是落点跟着架构搬家：
+  // 继续在 ci.yml 里找 verify-windows 会指向一个已不存在的 job。
+  it('runs blocking packaged launch and STT verifiers right after the Windows build', () => {
+    const windowsSteps = steps(load('release.yml').jobs['build-windows']) as Array<{ run?: string; 'continue-on-error'?: boolean }>;
+    const buildIndex = windowsSteps.findIndex((step) => step.run === 'npm run build:win');
+    const launchIndex = windowsSteps.findIndex((step) => step.run === 'npm run verify:package:launch');
+    const smokeIndex = windowsSteps.findIndex((step) => step.run === 'npm run verify:package:stt:win');
 
+    expect(buildIndex).toBeGreaterThanOrEqual(0);
     expect(launchIndex).toBe(buildIndex + 1);
     expect(smokeIndex).toBe(launchIndex + 1);
-    expect(steps[smokeIndex].continueOnError).toBeUndefined();
+    // YAML 的 `continue-on-error` 解析后就是这个带连字符的键名；写成
+    // `continueOnError` 永远取到 undefined，会让这条断言变成空断言。
+    expect(windowsSteps[smokeIndex]['continue-on-error']).toBeUndefined();
   });
 
   it('discovers both .yml and .yaml workflow files', () => {
