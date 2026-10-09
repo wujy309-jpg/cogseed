@@ -221,12 +221,12 @@
     const table = uiDataTable({
       label: '知识来源状态',
       columns: [
-        { key: 'name', label: '来源', primary: true },
+        { key: 'name', descriptionKey: 'description', label: '来源', primary: true },
         { key: 'status', label: '状态' },
         { key: 'count', label: '资料数', align: 'right', sortable: true },
       ],
       rows: [
-        { name: '飞书 Wiki', status: '已连接', count: 18 },
+        { name: '飞书 Wiki', description: '团队知识来源，标题与说明分开呈现', status: '已连接', count: 18 },
         { name: '个人资料库', status: '可检索', count: 42 },
       ],
       sortKey: 'count',

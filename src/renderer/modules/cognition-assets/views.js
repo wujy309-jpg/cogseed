@@ -3948,6 +3948,8 @@
     // Keep this draft only across a redraw of the same open form; cancel/save
     // removes that form, so a later new draft starts empty.
     const oldManual = route.candCreate === '1' ? main?.querySelector?.('[data-manual-candidate]') : null;
+    const oldSearch = route.name === 'activity' && !route.candidateId ? main?.querySelector?.('#ca-activity-search') : null;
+    const searchSelection = oldSearch && oldSearch === document.activeElement ? { start: oldSearch.selectionStart, end: oldSearch.selectionEnd } : null;
     const manualDraft = oldManual ? {
       type: oldManual.dataset.candType,
       fields: Array.from(oldManual.querySelectorAll('[data-f]')).map(input => ({
@@ -4008,6 +4010,11 @@
       }
     }
     const scrollRoot = document.getElementById('ca-scroll');
+    const newSearch = searchSelection ? scrollRoot?.querySelector?.('#ca-activity-search') : null;
+    if (newSearch) {
+      newSearch.focus();
+      if (typeof newSearch.setSelectionRange === 'function') newSearch.setSelectionRange(searchSelection.start, searchSelection.end);
+    }
     const newManual = manualDraft ? scrollRoot?.querySelector?.('[data-manual-candidate]') : null;
     if (newManual) {
       newManual.dataset.candType = manualDraft.type;

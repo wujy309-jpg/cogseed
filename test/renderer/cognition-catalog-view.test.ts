@@ -80,12 +80,12 @@ describe('资产目录视图', () => {
     expect(html).toContain('v7');
     expect(html).not.toContain('暂停模块不得默认出现');
   });
-  it('系统活动的保存记录打开精确历史版本，不把保存当作任务采用', () => {
+  it('系统活动不铺开本体底层保存日志，保存仍不表示采用', () => {
     const html = renderCognition({ name: 'activity', activityDone: '1' }, { ontologySnapshot: { records: {}, history: [{ recordedAt: '2026-10-07T00:00:00Z', intent: 'correct', after: {
       id: 'entity-a', kind: 'entity', moduleId: 'module-a', name: '历史人物', version: 3, source: { label: '原始依据' },
     } }] } });
-    expect(html).toContain('历史人物');
-    expect(html).toContain('data-id="ontology:entity-a@3"');
+    expect(html).not.toContain('历史人物');
+    expect(html).not.toContain('data-id="ontology:entity-a@3"');
     expect(html).not.toContain('实际采用');
     expect(html).toContain('保存不代表任务已采用');
   });

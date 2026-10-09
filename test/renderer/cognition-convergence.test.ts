@@ -41,4 +41,41 @@ describe('认知收敛后的单一治理入口', () => {
     expect(projectReviewQueueCandidates(records)).toHaveLength(5);
     expect(projectReviewQueueCandidates(records, true)).toHaveLength(12);
   });
+  it('标题和说明分层、搜索框可读，范围与决策使用用户语言', () => {
+    const html = renderCognition({ name: 'activity' }, { candidates: [{ ...candidate('c1'), suggestedScope: 'general' }] });
+    expect(html).toContain('ui-data-table__title');
+    expect(html).toContain('ui-data-table__description');
+    expect(html).toContain('placeholder="搜索变化内容或适用范围"');
+    expect(html).toContain('跨任务通用');
+    expect(html).toContain('确认保存');
+    expect(html).toContain('查看建议');
+  });
+  it('临时记录退出待办，重复建议合并且计数与顶部一致，冲突仍保留', () => {
+    const { ns } = loadCognitionAssets({ candidates: [candidate('c1'), candidate('c2'), { ...candidate('test'), activityExclusionReason: 'task_local' }], inbox: [{ id: 'test-inbox', kind: 'candidate_pending_review', candidateId: 'test' }, { id: 'conflict', kind: 'type_conflict', title: '需要判断类型' }] });
+    const model = ns.activityModel();
+    expect(model.attention).toHaveLength(2);
+    expect(model.attention[0].candidateIds).toHaveLength(2);
+    expect(ns.stats().pending).toBe(model.attention.length);
+    expect(ns.viewActivity({ name: 'activity', candidateId: 'c1' })).toContain('相同建议已在列表合并');
+    expect(ns.viewActivity({ name: 'activity' })).not.toContain('data-id="candidate:test"');
+  });
+  it('不同适用范围或版本的建议不合并；已处理不铺开对象保存日志', () => {
+    const { ns } = loadCognitionAssets({ candidates: [candidate('c1'), { ...candidate('c2'), suggestedScope: 'report' }, { ...candidate('c3'), targetVersionUsed: 'v2' }], ontologySnapshot: { history: [{ recordedAt: '2026-10-09', after: { id: 'test', name: '验收身份副本', version: 2, kind: 'entity' } }], records: {} } });
+    expect(ns.activityModel().attention).toHaveLength(3);
+    expect(ns.viewActivity({ name: 'activity', activityView: 'done' })).not.toContain('验收身份副本');
+  });
+  it('同一次决定合并结果、不同决定分别保留，空搜索不伪装成没有活动', () => {
+    const records = [{ ...candidate('c1', 'confirmed'), reviewDecisionId: 'd1' }, { ...candidate('c2', 'confirmed'), reviewDecisionId: 'd1' }, { ...candidate('c3', 'confirmed'), reviewDecisionId: 'd2' }];
+    const { ns } = loadCognitionAssets({ candidates: records });
+    expect(ns.activityModel().done).toHaveLength(2);
+    expect(ns.viewActivity({ name: 'activity', activityView: 'done', activityQuery: '不存在的词' })).toContain('没有匹配的变化');
+  });
+
+  it('同候选的不同治理冲突分别保留，静音候选不进入待办', () => {
+    const { ns } = loadCognitionAssets({ candidates: [candidate('c1'), { ...candidate('snoozed'), capabilities: { countsAsPending: true, isSnoozed: true } }], inbox: [{ id: 'conflict1', kind: 'type_conflict', candidateId: 'c1' }, { id: 'conflict2', kind: 'version_conflict', candidateId: 'c1' }] });
+    const rows = ns.activityModel().attention;
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row: any) => row.route.inboxId)).toEqual(['conflict1', 'conflict2']);
+  });
+
 });

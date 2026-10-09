@@ -1,3 +1,4 @@
+import { nonRetainableActivityContent } from './activity-projection';
 import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
@@ -2104,7 +2105,7 @@ export async function runRecallCapture(
     const candidates: RecallCandidateRecord[] = [];
     for (const [index, candidate] of parsed.entries()) {
       const evidenceMessages = candidate.evidence.map((label) => byLabel.get(label)!);
-      if (capture.executionPolicy !== 'manual' && isTaskLocalRuleProposal(candidate, evidenceMessages)) {
+      if (capture.executionPolicy !== 'manual' && (isTaskLocalRuleProposal(candidate, evidenceMessages) || nonRetainableActivityContent(candidate.judgment))) {
         log.info('recall capture omitted task-local rule', { captureId: capture.id, candidateIndex: index });
         continue;
       }

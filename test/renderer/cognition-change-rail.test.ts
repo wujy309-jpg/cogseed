@@ -68,6 +68,8 @@ describe('cognition change rail', () => {
     await ns.flushPendingRefresh();
     expect(invoke).toHaveBeenCalledWith('recall.assets.list', {});
     expect(store.assets).toEqual([{ id: 'asset-1' }]);
+    // 修改现行认知后，活动投影的“内容已存在”判断必须同步重算。
+    expect(invoke).toHaveBeenCalledWith('recall.candidates.list', { view: 'activity-queue' });
   });
 
   it('keeps the renderer tree link dead: candidate/tree notices never trigger tree IPC (P-r3-30)', async () => {
@@ -125,6 +127,6 @@ describe('cognition change rail', () => {
     handlers.get('cognition:changed')!({ collection: 'ontology-candidates', generation: 1 });
     await ns.flushPendingRefresh();
     expect(invoke).toHaveBeenCalledWith('recall.candidates.list', { view: 'activity-queue' });
-    expect(invoke).toHaveBeenCalledWith('personalOntology.candidates.list', {});
+    expect(invoke).toHaveBeenCalledWith('personalOntology.candidates.list', { view: 'activity-queue' });
   });
 });

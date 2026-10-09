@@ -731,10 +731,10 @@
     });
     // div[role=button] 控件（行、chip 单选、tab、折叠头）不含原生 button 的
     // 键盘激活，Enter/Space 在委托层统一转成 click，保持键盘可达。
-    root.addEventListener('input', event => { if (event.isComposing || event.target?.id !== 'ca-activity-search') return; router.go({ name: 'activity', activityView: S.route.activityView, activityQuery: event.target.value }, { replace: true }); });
+    root.addEventListener('input', event => { if (event.isComposing || event.target?.id !== 'ca-activity-search') return; router.go({ name: 'activity', activityView: S.route.activityView, activityDone: S.route.activityDone, activityQuery: event.target.value }, { replace: true }); });
     root.addEventListener('keydown', (event) => {
-      if (event.key !== 'Enter' && event.key !== ' ') return;
-      const el = event.target.closest && event.target.closest('[data-act][role="button"], [data-go-asset][role="button"]');
+      if (event.isComposing || event.keyCode === 229 || (event.key !== 'Enter' && event.key !== ' ')) return;
+      const el = event.target.closest && event.target.closest('[data-act][role="button"], [data-go-asset][role="button"], tr[data-act="activity-row"]');
       if (!el || el.getAttribute('aria-disabled') === 'true') return;
       event.preventDefault();
       el.click();

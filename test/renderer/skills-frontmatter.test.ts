@@ -305,14 +305,16 @@ describe('skills renderer frontmatter parsing', () => {
     expect(detail).toContain('data-action="reject"');
   });
 
-  it('keeps deferred Recall candidates actionable in the wait list after #266', () => {
+  it('keeps deferred Recall candidates actionable in their detail while quiet in the daily list', () => {
     const html = renderCognition(
       { name: 'review' },
       { candidates: [cognitionCandidate({ id: 'cand-deferred', status: 'deferred', capabilities: CAPS('deferred'), judgment: 'Add invariant checks.' })] },
     );
 
-    expect(html).toContain('data-act="activity-row" data-id="candidate:cand-deferred"');
-    expect(visibleText(html)).toContain('Add invariant checks.');
+    expect(html).not.toContain('data-id="candidate:cand-deferred"');
+    const detail = renderCognition({ name: 'activity', candidateId: 'cand-deferred' }, { candidates: [cognitionCandidate({ id: 'cand-deferred', status: 'deferred', capabilities: CAPS('deferred'), judgment: 'Add invariant checks.' })] });
+    expect(visibleText(detail)).toContain('Add invariant checks.');
+    expect(detail).toContain('data-act="cand-adopt-with-form"');
   });
 
   it('renders Recall candidate judgment, scope, evidence, and action set', () => {

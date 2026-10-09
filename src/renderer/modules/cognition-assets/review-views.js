@@ -388,54 +388,104 @@
     ${attentionHtml}`;
   }
 
-    function viewActivity(route) {
-    if (route.candidateId) return governanceDetail(route);
-    if (route.inboxId && !S.inboxError && !(S.inbox || []).some(item => String(item.id) === route.inboxId)) return `${btn('← ' + T('common.back', '返回'), 'go-back')}${empty(T('cognition.activity_item_missing', '这条变化暂时无法定位'), T('cognition.activity_item_missing_hint', '请返回列表核对最新处理结果。'))}`;
-    if (route.inboxId || route.poCandidateId) return `${btn('← ' + T('common.back', '返回'), 'go-back')}${governanceDetail(route)}`;
+  const normalizeActivityText = value => String(value || '').normalize('NFKC').replace(/\s+/g, ' ').trim();
+  function activityScope(scope) {
+    const key = ['general', 'report', 'code', 'review', 'product'].includes(scope) ? 'cognition.capture.scope_' + scope : '';
+    return key ? T(key, scope) : scope || T('cognition.activity_scope_unknown', '范围待核对');
+  }
+  const activityDecisionLabels = {
+    create: ['cognition.activity_decision_create', '确认保存'], update: ['cognition.activity_decision_update', '核对更新'],
+    limit_scope: ['cognition.activity_decision_limit_scope', '核对范围'], pause: ['cognition.activity_decision_pause', '确认停用'],
+    keep_current: ['cognition.activity_decision_keep_current', '确认保留现有内容'], reject: ['cognition.activity_decision_reject', '确认忽略'],
+  };
+  const activityOutcomeLabels = {
+    confirmed: ['cognition.activity_outcome_confirmed', '已保存'], integrated: ['cognition.activity_outcome_integrated', '已纳入本体'],
+    rejected: ['cognition.activity_outcome_rejected', '已拒绝'], ignored: ['cognition.activity_outcome_ignored', '已忽略'], expired: ['cognition.activity_outcome_expired', '已过期'],
+    update: ['cognition.activity_outcome_update', '已更新'], limit_scope: ['cognition.activity_outcome_limit_scope', '已调整范围'], pause: ['cognition.activity_outcome_pause', '已停用'],
+    keep_current: ['cognition.activity_outcome_keep_current', '已保留现有内容'], reject: ['cognition.activity_outcome_reject', '已忽略'],
+  };
+  const activityExclusionLabels = {
+    task_local: ['cognition.activity_excluded_task_local', '此记录明确属于当次临时内容，已退出日常活动列表；原文与来源仍然保留。'],
+    execution_record: ['cognition.activity_excluded_execution_record', '此记录属于执行或计数记录，已退出日常活动列表；原文与来源仍然保留。'],
+    already_current: ['cognition.activity_excluded_already_current', '现行认知已包含完全相同的内容和范围，无需重复确认；原建议与来源仍然保留。'],
+    isolated_source: ['cognition.activity_excluded_isolated_source', '此来源未接入日常认知治理；历史内容保留用于追溯。'],
+  };
+  function activityResult(candidate, waiting) {
+    const action = candidate.suggestedAction || 'create';
+    const label = waiting ? activityDecisionLabels[action] : activityOutcomeLabels[candidate.status === 'confirmed' && action !== 'create' ? action : candidate.status];
+    return label ? T(label[0], label[1]) : T('cognition.activity_check', '需要核对');
+  }
+  function activityModel() {
     const attention = [], done = [];
-    const candidates = (S.candidates || []).filter(c => !(NS.isKstarCandidate && NS.isKstarCandidate(c)));
-    for (const c of candidates) {
-      const waiting = candidatePending(c);
+    const candidates = S.candidates || [];
+    const excluded = new Set(candidates.filter(c => c.activityExclusionReason || NS.isKstarCandidate?.(c)).map(c => c.id));
+    const decisionGroups = new Map();
+    const sorted = [...candidates].sort((a,b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)));
+    for (const c of sorted) {
+      if (excluded.has(c.id)) continue;
+      const waiting = candidateAwaiting(c);
       if (!waiting && !['confirmed', 'integrated', 'rejected', 'ignored', 'expired'].includes(c.status)) continue;
       if (c.status === 'weak_observation' && !c.capabilities?.countsAsPending) continue;
-      (waiting ? attention : done).push({ title: candidateTitle(c), detail: c.judgment || c.value || c.summary || '', scope: c.suggestedScope || '', rawAt: c.updatedAt || c.createdAt || '', at: fmtDate(c.updatedAt || c.createdAt), result: waiting ? T('cognition.activity_pending', '待确认') : c.status === 'confirmed' ? T('cognition.activity_saved', '已保存') : T('cognition.activity_processed', '已处理'), route: { candidateId: c.id } });
+      const action = c.suggestedAction || 'create';
+      const result = activityResult(c, waiting);
+      const row = { key: 'candidate:' + c.id, title: candidateTitle(c), detail: c.judgment || c.value || '', scope: activityScope(c.suggestedScope), rawAt: c.updatedAt || c.createdAt || '', at: fmtDate(c.updatedAt || c.createdAt), result, route: { candidateId: c.id }, candidateIds: [c.id] };
+      // 只折叠完全相同、同范围且同治理边界的建议；不同冲突/版本/风险绝不能合并。
+      const hasConflict = (S.inbox || []).some(item => item.candidateId === c.id && item.kind !== 'candidate_pending_review');
+      const identity = waiting && !hasConflict ? JSON.stringify([normalizeActivityText(c.judgment), c.suggestedType, normalizeActivityText(c.suggestedScope), action, c.targetAssetId, c.targetVersionUsed, c.scopePolicy, c.applicableWhen, c.forbiddenWhen, c.risk, c.capabilities?.displayState, c.capabilities?.eligibility])
+        : !waiting && c.reviewDecisionId ? JSON.stringify(['decision', c.reviewDecisionId, c.promotedAssetId || c.targetAssetId, c.suggestedType, c.suggestedScope, normalizeActivityText(c.judgment)]) : row.key;
+      const previous = decisionGroups.get(identity);
+      if (previous) { previous.candidateIds.push(c.id); continue; }
+      decisionGroups.set(identity, row);
+      (waiting ? attention : done).push(row);
     }
     for (const item of S.inbox || []) {
-      if (item.candidateId && (S.candidates || []).some(c => c.id === item.candidateId && NS.isKstarCandidate?.(c))) continue;
-      const existing = item.candidateId ? attention.find(row => row.route.candidateId === item.candidateId) : null;
+      if (item.candidateId && item.kind === 'candidate_pending_review' && (excluded.has(item.candidateId) || candidates.some(c => c.id === item.candidateId && !candidateAwaiting(c)))) continue;
+      if (item.candidateId && candidates.some(c => c.id === item.candidateId && NS.isKstarCandidate?.(c))) continue;
+      const existing = item.candidateId ? attention.find(row => row.candidateIds.includes(item.candidateId)) : null;
       if (existing) {
-        if (item.kind !== 'candidate_pending_review') { existing.route = { inboxId: String(item.id) }; existing.result = T('cognition.activity_check', '需要核对'); }
-        continue;
+        if (item.kind === 'candidate_pending_review') continue;
+        if (!existing.route.inboxId) { existing.route = { inboxId: String(item.id) }; existing.key = 'inbox:' + item.id; existing.result = T('cognition.activity_check', '需要核对'); continue; }
+        if (existing.route.inboxId === String(item.id)) continue;
       }
-      attention.push({ title: item.title || item.summary || '', detail: item.detail || '', scope: item.scope || '', rawAt: item.updatedAt || item.createdAt || '', at: fmtDate(item.updatedAt || item.createdAt), result: T('cognition.activity_check', '需要核对'), route: { inboxId: String(item.id) } });
+      attention.push({ key: 'inbox:' + item.id, title: item.title || item.summary || '', detail: item.detail || '', scope: activityScope(item.scope), rawAt: item.updatedAt || item.createdAt || '', at: fmtDate(item.updatedAt || item.createdAt), result: T('cognition.activity_check', '需要核对'), route: { inboxId: String(item.id) }, candidateIds: [] });
     }
-    for (const c of S.poCandidates || []) attention.push({ title: c.summary || c.memory_text || '', detail: T('cognition.activity_legacy_review', '核对旧内容后移入共同审核'), scope: '', rawAt: c.created_at || '', at: fmtDate(c.created_at), result: T('cognition.activity_pending', '待确认'), route: { poCandidateId: c.candidate_id } });
-    const ontology = S.ontologySnapshot;
-    for (const entry of ontology?.history || []) {
-      const record = entry.after;
-      if (!record) continue;
-      const subject = ontology.records[record.subjectId], definition = ontology.records[record.definitionId];
-      const object = record.object?.kind === 'entity' ? ontology.records[record.object.id]?.name : record.object?.value;
-      done.push({ title: record.name || [subject?.name, definition?.name, object].filter(Boolean).join(' · ') || T('cognition.ontology_changes', '本体保存与版本变更'), detail: record.description || record.requirement || record.source?.label || '', scope: ontology.records[record.moduleId]?.name || record.name || '', rawAt: entry.recordedAt, at: fmtDate(entry.recordedAt), result: T('cognition.activity_saved', '已保存'), route: { name: 'ontology', moduleId: record.kind === 'module' ? record.id : record.moduleId, recordId: record.id, recordVersion: String(record.version) } });
+    for (const c of (S.poCandidates || []).filter(c => !c.activityExclusionReason)) attention.push({ key: 'legacy:' + c.candidate_id, title: c.summary || c.memory_text || '', detail: T('cognition.activity_legacy_review', '核对旧内容是否值得保留'), scope: T('cognition.activity_scope_unknown', '范围待核对'), rawAt: c.recorded_time || c.created_at || '', at: fmtDate(c.recorded_time || c.created_at), result: T('cognition.activity_check', '需要核对'), route: { poCandidateId: c.candidate_id }, candidateIds: [] });
+    // 本体逐次保存历史只在对应对象的详情查看；共同确认结果由候选的 integrated 记录承载。
+    return { attention, done, excludedCount: excluded.size };
+  }
+  NS.activityModel = activityModel;
+
+  function viewActivity(route) {
+    const model = activityModel();
+    if (route.candidateId) {
+      const group = [...model.attention, ...model.done].find(row => row.candidateIds.includes(route.candidateId));
+      const siblings = group?.candidateIds.filter(id => id !== route.candidateId) || [];
+      const selected = S.candidates.find(c => c.id === route.candidateId);
+      const exclusion = selected?.activityExclusionReason;
+      const exclusionLabel = activityExclusionLabels[exclusion];
+      const explanation = exclusionLabel ? `<p class="note">${esc(T(exclusionLabel[0], exclusionLabel[1]))}</p>` : '';
+      return explanation + governanceDetail(route) + (siblings.length ? `<div class="sect-block"><p class="note">${esc(T('cognition.activity_related_proposals', '相同建议已在列表合并，原始建议和来源仍分别保留。'))}</p><div class="actions">${siblings.map(id => btn(candidateTitle(S.candidates.find(c => c.id === id)), 'open-candidate', { id, small: true })).join('')}</div></div>` : '');
     }
+    if (route.inboxId && !S.inboxError && !(S.inbox || []).some(item => String(item.id) === route.inboxId)) return `${btn('← ' + T('common.back', '返回'), 'go-back')}${empty(T('cognition.activity_item_missing', '这条变化暂时无法定位'), T('cognition.activity_item_missing_hint', '请返回列表核对最新处理结果。'))}`;
+    if (route.inboxId || route.poCandidateId) return `${btn('← ' + T('common.back', '返回'), 'go-back')}${governanceDetail(route)}`;
     const processed = route.activityView === 'done' || route.activityDone === '1';
     const query = String(route.activityQuery || '').trim().toLowerCase();
-    const all = (processed ? done : attention).filter(row => (row.title + row.detail + row.scope).toLowerCase().includes(query)).sort((a,b) => String(b.rawAt).localeCompare(String(a.rawAt)));
+    const all = (processed ? model.done : model.attention).filter(row => (row.title + row.detail + row.scope + row.result).toLowerCase().includes(query)).sort((a,b) => String(b.rawAt).localeCompare(String(a.rawAt)));
     const page = Math.max(0, Math.min(Number(route.activityPage) || 0, Math.ceil(all.length / 50) - 1));
     const rows = all.slice(page * 50, page * 50 + 50);
-    for (const row of rows) row.key = row.route.candidateId ? 'candidate:' + row.route.candidateId : row.route.inboxId ? 'inbox:' + row.route.inboxId : row.route.poCandidateId ? 'legacy:' + row.route.poCandidateId : 'ontology:' + row.route.recordId + '@' + row.route.recordVersion;
     S.activityRows = rows;
     const table = rows.length ? window.uiDataTable({ label: T('cognition.activity_table', '认知变化'), className: 'ca-activity-changes', columns: [
-      { key: 'content', label: T('cognition.activity_content', '认知变化与内容'), primary: true },
+      { key: 'title', descriptionKey: 'preview', label: T(processed ? 'cognition.activity_completed_change' : 'cognition.activity_proposed_change', processed ? '已完成的变化' : '建议变化'), primary: true },
       { key: 'scope', label: T('cognition.activity_scope', '适用范围') },
       { key: 'at', label: T('cognition.activity_time', '发生时间') },
-      { key: 'result', label: T('cognition.activity_result', '处理结果') },
-    ], rows: rows.map(row => ({ ...row, content: row.title + '\n' + String(row.detail).slice(0, 110) })) }).replace(/data-ui-table-row="(\d+)"/g, (match, index) => `${match} data-act="activity-row" data-id="${esc(rows[Number(index)].key)}" tabindex="0" role="button"`)
-      : empty(T(processed ? 'cognition.activity_done_empty' : 'cognition.activity_empty', processed ? '暂无已处理的认知变化' : '当前没有需要关注的认知变化'), T('cognition.activity_empty_hint', '没有有价值的结果时，这里保持空白。'));
+      { key: 'result', label: T(processed ? 'cognition.activity_result' : 'cognition.activity_decision', processed ? '处理结果' : '需要你决定') },
+      { key: 'openLabel', label: T('cognition.activity_detail', '详情') },
+    ], rows: rows.map(row => ({ ...row, preview: normalizeActivityText(row.detail), openLabel: T(processed ? 'cognition.activity_view_result' : 'cognition.activity_view_proposal', processed ? '查看结果' : '查看建议') })) }).replace(/data-ui-table-row="(\d+)"/g, (match, index) => `${match} data-act="activity-row" data-id="${esc(rows[Number(index)].key)}" tabindex="0"`)
+      : empty(T(processed ? 'cognition.activity_done_empty' : 'cognition.activity_empty', processed ? '暂无已处理的认知变化' : '当前没有需要关注的认知变化'), T(query ? 'cognition.activity_search_empty' : 'cognition.activity_empty_hint', query ? '没有匹配的变化，请调整搜索条件。' : '没有有价值的结果时，这里保持空白。'));
     const failed = S.candidatesError || S.inboxError || S.poCandidatesError;
-    return `${hero(T('cognition.tab_activity', '系统活动'), T('cognition.activity_filtered_hint', '只记录筛选后的认知变化。普通对话保留在原聊天历史中。'))}
-      <div class="actions">${btn(T('cognition.activity_attention', '需要关注') + ' ' + attention.length, 'activity-view', { id: 'attention', primary: !processed })}${btn(T('cognition.activity_done', '已处理') + ' ' + done.length, 'activity-view', { id: 'done', primary: processed })}</div>
-      ${window.uiInput({ id: 'ca-activity-search', type: 'search', value: route.activityQuery || '', attrs: { 'data-act': 'activity-search', placeholder: T('cognition.activity_search', '搜索变化内容或适用范围') } })}
+    return `${hero(T('cognition.tab_activity', '系统活动'), T(processed ? 'cognition.activity_results_hint' : 'cognition.activity_decisions_hint', processed ? '查看已经确认、更新或忽略的结果。逐次编辑记录保留在对应条目的历史中。' : '只看值得你决定的认知变化。打开建议，核对内容与来源后再确认。'))}
+      <div class="actions">${btn(T('cognition.activity_attention', '需要关注') + ' ' + model.attention.length, 'activity-view', { id: 'attention', primary: !processed })}${btn(T('cognition.activity_done', '已处理') + ' ' + model.done.length, 'activity-view', { id: 'done', primary: processed })}</div>
+      ${window.uiInput({ id: 'ca-activity-search', className: 'ca-activity-search', type: 'search', value: route.activityQuery || '', placeholder: T('cognition.activity_search', '搜索变化内容或适用范围'), attrs: { 'data-act': 'activity-search', 'aria-label': T('cognition.activity_search', '搜索变化内容或适用范围') } })}
       ${failed ? `<div role="alert">${esc(T('cognition.activity_read_failed', '部分变化未能读取，请重试；不能据此判断没有待处理内容。'))}${btn(T('common.retry', '重试'), 'refresh')}</div>` : ''}${table}
       ${processed ? `<p class="note">${esc(T('cognition.activity_save_is_not_use', '保存不代表任务已采用。'))}</p>` : ''}
       ${all.length > 50 ? `<div class="actions">${page > 0 ? btn(T('common.previous', '上一页'), 'activity-page', { id: String(page-1) }) : ''}${page*50+50 < all.length ? btn(T('common.next', '下一页'), 'activity-page', { id: String(page+1) }) : ''}</div>` : ''}`;

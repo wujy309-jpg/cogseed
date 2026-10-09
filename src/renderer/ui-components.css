@@ -1336,3 +1336,7 @@ body.ui-modal-open { overflow: hidden; }
   .settings-check-chips { gap: 6px; }
   .settings-check-chip { padding: 6px 10px; font-size: 12px; }
 }
+
+/* Shared table title + secondary textual description. Both values are escaped. */
+.ui-data-table__title { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ui-data-table__description { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-muted); font-weight:var(--font-weight-regular); font-size:var(--font-size-1); margin-top:var(--space-1); }

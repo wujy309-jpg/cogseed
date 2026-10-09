@@ -360,7 +360,7 @@ const REVIEW_QUEUE_TERMINAL_LIMIT = 8;
 const REVIEW_QUEUE_PROCESSED_LIMIT = 5;
 /** 渲染层零消费的记录级字段，review-queue 视图不出 IPC（全形状读口保留）。 */
 const REVIEW_QUEUE_OMIT_FIELDS = new Set([
-  'contentFormatVersion', 'taxonomyVersion', 'reviewDecisionId', 'decisionNote', 'spaceId',
+  'contentFormatVersion', 'taxonomyVersion', 'decisionNote', 'spaceId',
   'cooldownUntil', 'failureCode', 'failureMessage', 'failedAt', 'validationCount',
   'lastValidatedAt', 'consecutiveFailures', 'appliedValidationIds', 'userModifiedAt',
 ]);
@@ -376,7 +376,7 @@ export function projectReviewQueueCandidates<
     .filter((c) => ['expired', 'superseded'].includes(String(c.status)))
     .sort(byRecency).slice(0, activity ? candidates.length : REVIEW_QUEUE_TERMINAL_LIMIT);
   const processed = candidates
-    .filter((c) => ['confirmed', 'rejected', 'ignored'].includes(String(c.status)))
+    .filter((c) => (['confirmed', 'rejected', 'ignored'].includes(String(c.status)) || (activity && String(c.status) === 'integrated')))
     .sort(byRecency).slice(0, activity ? candidates.length : REVIEW_QUEUE_PROCESSED_LIMIT);
   const queue = [...actionable, ...snoozed, ...terminal, ...processed];
   return queue.map((candidate) => {

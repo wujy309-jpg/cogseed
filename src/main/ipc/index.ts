@@ -54,6 +54,7 @@ import * as executionLog from '../features/execution_log';
 import * as workbench from '../features/workbench';
 import * as cognition from '../features/cognition';
 import * as recallCandidates from '../features/recall/candidate-service';
+import { projectActivityCandidates, projectLegacyActivityCandidates } from '../features/recall/activity-projection';
 import { withRecallCandidateCapabilities, projectReviewQueueCandidates } from '../features/recall/candidate-capabilities';
 import * as recallAssets from '../features/recall/asset-service';
 import * as recallExperiences from '../features/recall/experience-service';
@@ -2351,7 +2352,8 @@ const invokeHandlers: Record<string, InvokeHandler> = {
       // 而晋升闸门按同一批数据判冲突并拒绝——又是一次假审批。
       const conflicts = recallCandidates.recallCandidateConflictingTypes(all);
       const withCaps = all.map((candidate) => withRecallCandidateCapabilities(candidate, conflicts.get(candidate.id)));
-      if (view === 'review-queue' || view === 'activity-queue') return projectReviewQueueCandidates(withCaps, view === 'activity-queue');
+      if (view === 'activity-queue') return projectReviewQueueCandidates(projectActivityCandidates(withCaps, await recallAssets.listAbilityAssets(ctx.userId)), true);
+      if (view === 'review-queue') return projectReviewQueueCandidates(withCaps);
       return withCaps;
     })(),
   }),
@@ -4167,7 +4169,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true, conflicts };
   },
   // ── 旧个人本体候选只作为过渡队列展示；接受必须先转入 Recall 共同审核，不能直写 USER.md / MEMORY.md。 ──
-  'personalOntology.candidates.list': async (_payload, ctx) => {
+  'personalOntology.candidates.list': async ({ view } = {}, ctx) => {
     const data = await personalOntologyCandidates.listCandidates(ctx.userId);
     // corrupt（P-r2-7 读侧结构化错误）：池文件坏档时如实带回，渲染层据此
     // 出「从备份恢复/重置」入口；写侧此时已被 corrupt-guard 拒绝。
@@ -4175,7 +4177,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     // 而 rendered 侧 personal-ontology.js 读的是 `candidate_updates`——两边不一致
     // 导致本体候选横幅在生产上恒报「加载失败」（死功能）。此处**同时**返回两个
     // 键：老消费方读 candidates 不受影响，横幅恢复可用。
-    const list = data.candidate_updates || [];
+    const list = view === 'activity-queue' ? projectLegacyActivityCandidates(data.candidate_updates || []) : data.candidate_updates || [];
     return { ok: true, candidates: list, candidate_updates: list, ...(data.corrupt ? { corrupt: data.corrupt } : {}) };
   },
   'personalOntology.candidates.transferToRecall': async ({ candidateId }, ctx) => {

@@ -199,6 +199,10 @@ describe('first-version renderer components', () => {
     expect(table).toContain('aria-sort="descending"');
     expect(table).toContain('data-ui-table-sort="count"');
     expect(uiDataTable({ label: '转义', columns: [{ key: 'name', label: '名称' }], rows: [{ name: '<script>' }] })).toContain('&lt;script&gt;');
+    const described = uiDataTable({ label: '建议', columns: [{ key: 'name', descriptionKey: 'detail', label: '变化', primary: true }], rows: [{ name: '<img>', detail: '<script>正文</script>' }] });
+    expect(described).toContain('ui-data-table__title">&lt;img&gt;');
+    expect(described).toContain('ui-data-table__description">&lt;script&gt;正文&lt;/script&gt;');
+    expect(described).not.toContain('<script>');
     expect(uiAccordion({ items: [{ title: '来源', meta: '3 项', bodyHtml: '<p>内容</p>' }] })).toContain('<details class="ui-accordion__item" open>');
     const tree = uiTree({ ariaLabel: '资料树', items: [{ id: 'root', label: '根目录', expanded: true, children: [{ id: 'child', label: '文档', selected: true }] }] });
     expect(tree).toContain('role="tree" aria-label="资料树"');

@@ -410,7 +410,7 @@
     // 待确认口径（2026-09-16 B1 统一）：需要判断且未被"稍后处理"静音——
     // 与 views.candidateAwaiting 同一份口径（countsAsPending && !isSnoozed），
     // deferred 不再占「待确认」名额（三套口径 7/5/0 分叉的修复）。
-    const pending = s.candidates.filter((c) => !(NS.isKstarCandidate && NS.isKstarCandidate(c)) && (c.capabilities && c.capabilities.countsAsPending) && !(c.capabilities && c.capabilities.isSnoozed)).length;
+    const pending = NS.activityModel ? NS.activityModel().attention.length : s.candidates.filter((c) => !c.activityExclusionReason && !(NS.isKstarCandidate && NS.isKstarCandidate(c)) && (c.capabilities && c.capabilities.countsAsPending) && !(c.capabilities && c.capabilities.isSnoozed)).length;
     const validated = s.assets.filter((a) => a.maturity === 'effectiveness_validated').length;
     const transferOk = s.assets.filter((a) => a.maturity === 'transfer_validated' || a.maturity === 'effectiveness_validated').length;
     const sourceIssues = s.sources
@@ -555,7 +555,7 @@
       // 本体候选并入同一个收件箱（2026-10-02）：此前它们只在「本体」页的横幅里，
       // 用户得记着去第二个地方看。两个键都收（candidate_updates 为渲染层既有口径）。
       try {
-        const po = await api.call('personalOntology.candidates.list', {}, {});
+        const po = await api.call('personalOntology.candidates.list', { view: 'activity-queue' }, {});
         if (isStaleBlockRead('candidates', gen)) return;
         store.poCandidates = toArr(po, ['candidate_updates', 'candidates']);
         store.poCandidatesError = '';
@@ -641,8 +641,8 @@
   /** collection → 需要刷新的区块/动作。没列出的 collection（world-model 等）
    *  面板没有对应区块，静默忽略——主进程广播所有认知写入，订阅端自取所需。 */
   const COLLECTION_BLOCKS = {
-    'ability-assets': ['assets', 'timeline'],
-    'ability-asset-versions': ['assets'],
+    'ability-assets': ['assets', 'timeline', 'candidates'],
+    'ability-asset-versions': ['assets', 'candidates'],
     'ability-asset-audit': ['assets', 'timeline'],
     'candidates': ['candidates'],
     // 2026-10-07 旧停驻页退役：po 候选与 Recall 候选同住「待我处理」收件箱，
