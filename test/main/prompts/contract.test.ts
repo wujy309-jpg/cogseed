@@ -561,7 +561,10 @@ describe('prompts ↔ code contract', () => {
     expect(skills).toMatch(/buildLanguageDirective\([^)]*\)[\s\S]+buildRuntimeDatetimeBlock\(\)/);
     expect(bus).toMatch(/language_block:\s*buildLanguageDirective\(getLanguage\(\)\)/);
     expect(cliPrompt).toContain('$language_block');
-    expect(cliPrompt).toMatch(/\$task_body\n\n\$runtime_datetime_block\s*$/);
+    // 该模板的易变尾部必须收尾。审计 2026-10-08 把静态的 `## Your task` 挪到了易变段之前，
+    // 所以这里不再断言"$task_body 紧跟 datetime"，改为断言 datetime 仍是最后一个块。
+    expect(cliPrompt).toContain('$task_body');
+    expect(cliPrompt).toMatch(/\$runtime_datetime_block\s*$/);
   });
 });
 
@@ -570,7 +573,7 @@ describe('prompts ↔ code contract', () => {
 // 既有断言只覆盖"共享规则在 marker 之前 + marker 唯一"；这里补上"marker 之后不得再出现
 // 新的二级标题"——即易变段之后不能又冒出静态章节。
 describe('prompts › cache prefix stability', () => {
-  const render = async (template: 'chat_commander' | 'chat_agent_in_group', args: Record<string, string | number | boolean>, general: boolean) => {
+  const render = async (template: 'chat_commander' | 'chat_agent_in_group' | 'chat_cli_agent', args: Record<string, string | number | boolean>, general: boolean) => {
     const bus = await import('../../../src/main/features/group_chat/bus');
     const hook = (bus as unknown as {
       _renderPromptWithSharedRulesForTest?: (
@@ -581,10 +584,11 @@ describe('prompts › cache prefix stability', () => {
     return hook!(template, args, general);
   };
 
-  it.each(['chat_commander', 'chat_agent_in_group'] as const)(
+  it.each(['chat_commander', 'chat_agent_in_group', 'chat_cli_agent'] as const)(
     '%s keeps every level-2 section before the runtime-injection tail',
     async (template) => {
-      const rendered = await render(template, {}, true);
+      // chat_cli_agent 是不带通用共享规则的那一个（见上方参数化用例）
+      const rendered = await render(template, {}, template !== 'chat_cli_agent');
       const marker = rendered.indexOf('## Runtime injection');
       expect(marker, 'marker must exist').toBeGreaterThan(-1);
       const tail = rendered.slice(marker);
@@ -594,8 +598,14 @@ describe('prompts › cache prefix stability', () => {
     },
   );
 
-  // 已知例外（2026-10-08 审计发现，未擅自改动 prompt 语义）：chat_cli_agent 在
-  // `## Runtime injection` 之后还有 `## Your task`。CLI 模板发给外部 CLI 自己的模型客户端，
-  // 其缓存策略不由我们的 KV 前缀决定；但若后续该模板改用我们的模型客户端，这条要先修。
-  it.todo('chat_cli_agent: `## Your task` 目前排在 Runtime injection 之后（见上方注释）');
+  it('chat_cli_agent keeps the static task section ahead of the runtime tail', async () => {
+    // 2026-10-08 审计把该模板的 `## Your task` 挪到易变段之前（AGENTS.md：静态在前、
+    // 易变字段只放末尾的 `## Runtime injection`）。位置本身也要锁住，避免以后又被挪回去。
+    const rendered = await render('chat_cli_agent', {}, false);
+    const taskIdx = rendered.indexOf('## Your task');
+    const marker = rendered.indexOf('## Runtime injection');
+    expect(taskIdx).toBeGreaterThan(-1);
+    expect(marker).toBeGreaterThan(-1);
+    expect(taskIdx).toBeLessThan(marker);
+  });
 });
