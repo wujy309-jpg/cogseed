@@ -80,9 +80,19 @@ function download(url, outPath) {
 
 function extract(tarball, dstDir) {
   console.log(`[sherpa-onnx] extracting ${path.basename(tarball)}`);
-  // .tar.bz2 — 系统 tar（macOS / Linux / WSL / 现代 Windows 都有）。
-  const r = spawnSync('tar', ['-xjf', tarball, '-C', dstDir], { stdio: 'inherit' });
-  if (r.status !== 0) throw new Error(`tar extraction failed (exit ${r.status})`);
+  // Windows PATH can select Git/MSYS tar rather than Windows' bsdtar.
+  // Use the native tool and a relative archive name so a drive-letter colon
+  // cannot be interpreted as a remote archive by another tar implementation.
+  const tar = process.platform === 'win32'
+    ? path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe')
+    : 'tar';
+  const r = spawnSync(tar, ['-xf', path.basename(tarball), '-C', dstDir], {
+    cwd: path.dirname(tarball),
+    stdio: ['ignore', 'inherit', 'inherit'],
+    timeout: 120_000,
+  });
+  if (r.error) throw new Error(`tar extraction failed (${r.error.code || r.error.message})`);
+  if (r.status !== 0) throw new Error(`tar extraction failed (exit ${r.status}, signal ${r.signal || 'none'})`);
 }
 
 async function main() {

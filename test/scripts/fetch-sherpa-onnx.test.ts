@@ -58,8 +58,17 @@ function run(mode: string) {
       });
       return req;
     };
-    cp.spawnSync = (command, args) => {
+    cp.spawnSync = (command, args, options) => {
       if (openWriters) throw new Error('archive writer is still open at extraction');
+      if (mode === 'windows-tar') {
+        const nativeTar = path.win32.join(process.env.SystemRoot, 'System32', 'tar.exe');
+        if (command !== nativeTar) throw new Error('Windows tar must not resolve through PATH');
+        if (path.isAbsolute(args[1]) || args[1].includes(':')) throw new Error('archive must use a local relative name');
+        if (!fs.existsSync(path.join(options.cwd, args[1]))) throw new Error('archive cwd is incorrect');
+        if (options.stdio[0] !== 'ignore') throw new Error('tar stdin must be closed');
+        if (!(options.timeout > 0)) throw new Error('tar must have a bounded timeout');
+      }
+      if (mode === 'extract-timeout') return { status: null, error: Object.assign(new Error('spawn ETIMEDOUT'), { code: 'ETIMEDOUT' }) };
       if (mode === 'extract-error') return { status: 2 };
       const dir = path.join(args[args.indexOf('-C') + 1], ${JSON.stringify(model)});
       fs.mkdirSync(dir, { recursive: true });
@@ -68,6 +77,10 @@ function run(mode: string) {
       }
       return { status: 0 };
     };
+    if (mode === 'windows-tar') {
+      process.env.SystemRoot = 'C:\\Windows';
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+    }
   `);
   const result = spawnSync(process.env.COGSEED_TEST_NODE || process.execPath, [
     '--require', preload, path.join(root, 'scripts/fetch-sherpa-onnx.mjs'),
@@ -76,7 +89,7 @@ function run(mode: string) {
 }
 
 describe('fetch-sherpa-onnx CLI', () => {
-  it.each(['direct', 'redirect'])('closes the archive before extracting after a %s download', (mode) => {
+  it.each(['direct', 'redirect', 'windows-tar'])('closes the archive before extracting after a %s download', (mode) => {
     const { result, resourceRoot } = run(mode);
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain('ready at');
@@ -87,6 +100,7 @@ describe('fetch-sherpa-onnx CLI', () => {
     ['interrupted', /connection reset/],
     ['http-error', /HTTP 403/],
     ['extract-error', /tar extraction failed/],
+    ['extract-timeout', /ETIMEDOUT/],
   ])('fails and removes the partial archive after %s', (mode, error) => {
     const { result, resourceRoot } = run(String(mode));
     expect(result.status, result.stderr).toBe(1);
