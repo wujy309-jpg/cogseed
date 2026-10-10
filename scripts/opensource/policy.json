@@ -4196,6 +4196,7 @@
     "test/scripts/ensure-node-pty-electron-abi.test.ts",
     "test/scripts/ensure-sherpa-windows-runtime.test.ts",
     "test/scripts/fetch-embedding-model.test.ts",
+    "test/scripts/fetch-sherpa-onnx.test.ts",
     "test/scripts/package-dev-mac.test.ts",
     "test/scripts/platform-test-entrypoints.test.ts",
     "test/scripts/python-test-runtime.test.ts",

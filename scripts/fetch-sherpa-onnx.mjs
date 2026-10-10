@@ -14,6 +14,7 @@ import * as path from 'node:path';
 import * as https from 'node:https';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { pipeline } from 'node:stream/promises';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const pcRoot = path.resolve(here, '..');
@@ -37,19 +38,14 @@ function allFilesPresent() {
 
 function download(url, outPath) {
   return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(outPath);
     const req = https.get(url, { headers: { 'User-Agent': 'cogseed-postinstall' } }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
-        file.close();
-        fs.rmSync(outPath, { force: true });
-        download(res.headers.location, outPath).then(resolve, reject);
+        download(new URL(res.headers.location, url).href, outPath).then(resolve, reject);
         return;
       }
       if (res.statusCode !== 200) {
         res.resume();
-        file.close();
-        fs.rmSync(outPath, { force: true });
         reject(new Error(`HTTP ${res.statusCode} fetching ${url}`));
         return;
       }
@@ -66,20 +62,24 @@ function download(url, outPath) {
           }
         }
       });
-      res.pipe(file);
-      file.on('finish', () => { file.close(); process.stdout.write('\n'); resolve(); });
-      file.on('error', (err) => { file.close(); fs.rmSync(outPath, { force: true }); reject(err); });
+      // Wait for close, not just finish: synchronous tar must not run while
+      // Windows still holds the archive writer. pipeline also propagates a
+      // response abort and closes both streams before partial-file cleanup.
+      pipeline(res, fs.createWriteStream(outPath)).then(() => {
+        process.stdout.write('\n');
+        resolve();
+      }, (err) => {
+        fs.rmSync(outPath, { force: true });
+        reject(err);
+      });
     });
-    req.on('error', (err) => {
-      file.close();
-      fs.rmSync(outPath, { force: true });
-      reject(err);
-    });
+    req.on('error', reject);
     req.setTimeout(120_000, () => { req.destroy(new Error('timeout')); });
   });
 }
 
 function extract(tarball, dstDir) {
+  console.log(`[sherpa-onnx] extracting ${path.basename(tarball)}`);
   // .tar.bz2 — 系统 tar（macOS / Linux / WSL / 现代 Windows 都有）。
   const r = spawnSync('tar', ['-xjf', tarball, '-C', dstDir], { stdio: 'inherit' });
   if (r.status !== 0) throw new Error(`tar extraction failed (exit ${r.status})`);
