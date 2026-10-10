@@ -16,6 +16,8 @@ RD 在 `bonc-ai/cogseed-internal` 开发；定版后从固定提交导出公开�
 
 ## 后续每次定版
 
+从私仓定版到公仓 CI、维护者审批、正式 tag／签名发布及分发验收，统一执行 [新版本发布 SOP](./CICD-PLAN-C-RUNBOOK.md)。本节仅概述源码同步，不替代正式发版确认。
+
 1. RD 按现有流程合入 cicd，选择完整 40 位提交 SHA，确认该 SHA 在 cicd 历史中，且该 SHA 最新的 cicd push CI 和 compliance 均成功。
 2. 确认私仓 develop 中的导出清单和引用提示复核值适用于该版本。发起 `Public source snapshot PR` workflow，只填 `source_sha`。
 3. workflow 使用发起时固定的 develop 工具版本和指定源码 SHA，执行分类、逐文件哈希校验、密钥扫描及同 SHA 门禁，再创建或更新公仓 `public-source-sync` → `main` PR。
@@ -42,7 +44,7 @@ App 只安装到公仓 `bonc-ai/cogseed`，授予 Contents: write、Pull request
 
 ```bash
 npm test --prefix scripts/opensource
-node scripts/opensource/export.mjs --source <完整SHA> --out <仓库外新目录>
+node scripts/opensource/export.mjs --source '<完整SHA>' --out '<仓库外新目录>'
 node scripts/opensource/sync.mjs --help
 node scripts/opensource/cutover.mjs --help
 ```
