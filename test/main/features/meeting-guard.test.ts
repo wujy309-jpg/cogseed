@@ -60,7 +60,7 @@ function collectSourceFiles(rootDirs: string[]): Map<string, string> {
       const stat = fs.statSync(full);
       if (stat.isDirectory()) walk(full);
       else if (/\.(ts|js)$/.test(name)) {
-        files.set(path.relative(REPO_ROOT, full), fs.readFileSync(full, 'utf8'));
+        files.set(path.relative(REPO_ROOT, full).split(path.sep).join('/'), fs.readFileSync(full, 'utf8'));
       }
     }
   };
@@ -174,7 +174,7 @@ function meetingLineFiles(files: Map<string, string>): Map<string, string> {
   const out = new Map<string, string>();
   for (const [file, source] of files) {
     const base = path.basename(file);
-    if (/^meeting[\w-]*\.(ts|js)$/.test(base) || file === path.join('src', 'main', 'ipc', 'meeting.ts')) {
+    if (/^meeting[\w-]*\.(ts|js)$/.test(base) || file === 'src/main/ipc/meeting.ts') {
       out.set(file, source);
     }
   }

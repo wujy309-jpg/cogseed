@@ -22,12 +22,13 @@ function verify(identity: Record<string, unknown>, expectedChannel = 'release') 
 
 describe('verify-packaged-build-info', () => {
   it('resolves the Windows unpacked app and both macOS layouts', () => {
+    const root = path.resolve('/repo');
     expect(verifier.resolvePackagedAsar({
-      root: '/repo', platform: 'win32', exists: (candidate: string) => candidate.endsWith('app.asar'),
-    })).toBe(path.join('/repo', 'dist', 'win-unpacked', 'resources', 'app.asar'));
+      root, platform: 'win32', exists: (candidate: string) => candidate.endsWith('app.asar'),
+    })).toBe(path.join(root, 'dist', 'win-unpacked', 'resources', 'app.asar'));
     expect(verifier.resolvePackagedAsar({
-      root: '/repo', platform: 'darwin', arch: 'arm64', appPath: 'dist/mac-arm64/CogSeed.app',
-    })).toBe(path.join('/repo', 'dist', 'mac-arm64', 'CogSeed.app', 'Contents', 'Resources', 'app.asar'));
+      root, platform: 'darwin', arch: 'arm64', appPath: 'dist/mac-arm64/CogSeed.app',
+    })).toBe(path.join(root, 'dist', 'mac-arm64', 'CogSeed.app', 'Contents', 'Resources', 'app.asar'));
   });
 
   it('accepts a release identity with a real HTTPS origin', () => {

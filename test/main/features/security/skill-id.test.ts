@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import path from 'node:path';
 import {
   EXTERNAL_SKILL_ROOTS, SKILL_EXTERNAL_ID_RE,
   fileStemToSkillId, isExternalSkillId, isScannableSkillId, isValidSkillId,
@@ -119,10 +120,10 @@ describe('skill id → receipt file stem', () => {
 });
 
 describe('resolveIdUnderBase', () => {
-  const base = '/tmp/skills';
+  const base = path.resolve('/tmp/skills');
 
   it('resolves a plain child', () => {
-    expect(resolveIdUnderBase(base, 'pdf-tools')).toBe('/tmp/skills/pdf-tools');
+    expect(resolveIdUnderBase(base, 'pdf-tools')).toBe(path.join(base, 'pdf-tools'));
   });
 
   it('refuses anything that escapes the base', () => {

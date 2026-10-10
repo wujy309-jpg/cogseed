@@ -35,7 +35,7 @@ function run(mode: string) {
     const { EventEmitter } = require('node:events');
     const { Readable } = require('node:stream');
     const mode = process.env.COGSEED_SHERPA_TEST_MODE;
-    const windows = mode.startsWith('windows-');
+    const windows = mode.startsWith('windows-') || process.platform === 'win32';
     const real = mode === 'windows-real';
     const realSpawn = cp.spawnSync;
     const nativeTarOnHost = process.platform === 'win32'

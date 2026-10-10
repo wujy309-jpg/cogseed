@@ -1027,8 +1027,7 @@ describe('危险操作的安全网（US-404 / T027–T031）', () => {
     const { del } = await dangerTools();
     const { hub } = await answerNext(null);
     const pending = call(del, { assetIds: allIds, reason: '用户要求批量删掉' });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(hub.pendingInteractionCount()).toBe(1);
+    await vi.waitFor(() => expect(hub.pendingInteractionCount()).toBe(1));
     hub.cancelInteractionsForTurn(TURN);
     const out = await pending;
     expect(out.isError).toBe(true);
