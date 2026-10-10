@@ -80,7 +80,7 @@ vi.mock('../../../src/main/features/personal_ontology_template_files', () => ({
 }));
 
 beforeEach(async () => {
-  process.env.COGSEED_WORKSPACE_ROOT = os.tmpdir();
+  // Keep the isolated workspace assigned by test/setup-env.ts.
   invokeHandler = null;
   vi.resetModules();
   vi.clearAllMocks();

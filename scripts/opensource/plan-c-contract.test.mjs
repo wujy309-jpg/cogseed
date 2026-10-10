@@ -45,6 +45,7 @@ test('public CI graph exactly matches release prerequisites including every plat
     } else names.push(id);
   }
   assert.deepEqual(names.sort(), [...PUBLIC_CI_JOBS].sort());
+  assert.match(commands(wf.jobs['linux-tests']), /xvfb-run --auto-servernum npm run test:js/);
   const upload = wf.jobs.compliance.steps.find((s) => s.uses?.startsWith('actions/upload-artifact@'));
   const download = wf.jobs.compliance.steps.find((s) => s.uses?.startsWith('actions/download-artifact@'));
   assert.equal(upload.with.path, 'package.json');

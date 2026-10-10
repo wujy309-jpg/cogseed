@@ -72,7 +72,7 @@ vi.mock('../../../src/main/features/recall/candidate-service', async (importOrig
 }));
 
 beforeEach(async () => {
-  process.env.COGSEED_WORKSPACE_ROOT = os.tmpdir();
+  // Keep the isolated workspace assigned by test/setup-env.ts.
   invokeHandler = null;
   vi.resetModules();
   vi.clearAllMocks();
