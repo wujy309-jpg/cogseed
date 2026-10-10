@@ -279,31 +279,63 @@ describe('migrateProjectLayoutV5', () => {
     expect(fs.existsSync(p.projectChatIndexFile(UID, 'pBad'))).toBe(true); // 失败项目原地保留
   });
 
-  it('records completion even when a project failed — force is the only retry path', async () => {
+  it('records the failed project and retries only it on the next launch', async () => {
     const { p, migrateProjectLayoutV5 } = await load();
+    // 把公共的 `cloud/spaces` 占成文件 → 建 `cloud/spaces/<sid>/chats` 时父路径是文件 → ENOTDIR，
+    // 两个项目都会失败（注意 spaceChatIndexFile 在 `<space>/chats/_index.json`，所以是三层 dirname）
+    writeJson(p.projectMetaFile(UID, 'pBad'), { project_id: 'pBad', name: 'Bad', space_id: 'sBad' });
+    writeJson(p.projectChatIndexFile(UID, 'pBad'), [convRow('cBad', 'pBad')]);
+    writeText(path.join(p.projectChatsDir(UID, 'pBad'), 'cBad.jsonl'), '{"from":"user","text":"bad"}\n');
+    writeJson(p.projectMetaFile(UID, 'pGood'), { project_id: 'pGood', name: 'Good', space_id: 'sGood' });
+    writeJson(p.projectChatIndexFile(UID, 'pGood'), [convRow('cGood', 'pGood')]);
+    writeText(path.join(p.projectChatsDir(UID, 'pGood'), 'cGood.jsonl'), '{"from":"user","text":"ok"}\n');
+    const spacesRoot = path.dirname(path.dirname(path.dirname(p.spaceChatIndexFile(UID, 'sBad'))));
+    writeText(spacesRoot, 'not a directory');
+
+    const first = migrateProjectLayoutV5(UID);
+    expect(first.warnings, JSON.stringify(first.warnings)).toHaveLength(2);
+    // marker 记下失败项（而不是把一次瞬时失败当成永久完成）
+    const marker = JSON.parse(fs.readFileSync(markerPath(p), 'utf8'));
+    expect(marker.version).toBe(5);
+    expect([...marker.failed_project_ids].sort()).toEqual(['pBad', 'pGood']);
+
+    // 清掉占位文件后**无需 force**：下次启动自动补做失败的项目
+    fs.rmSync(spacesRoot, { force: true });
+    const retry = migrateProjectLayoutV5(UID);
+    expect(retry.warnings).toEqual([]);
+    expect(retry.projects_migrated).toBe(2);
+    expect(fs.existsSync(path.join(p.spaceChatsDir(UID, 'sBad'), 'cBad.jsonl'))).toBe(true);
+    expect(fs.existsSync(path.join(p.spaceChatsDir(UID, 'sGood'), 'cGood.jsonl'))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(markerPath(p), 'utf8')).failed_project_ids).toEqual([]);
+  });
+
+  it('retries only the failed project, leaving already-migrated ones alone', async () => {
+    const { p, migrateProjectLayoutV5 } = await load();
+    // 先让 pGood 正常迁移（无失败项）
+    writeJson(p.projectMetaFile(UID, 'pGood'), { project_id: 'pGood', name: 'Good', space_id: 'sGood' });
+    writeJson(p.projectChatIndexFile(UID, 'pGood'), [convRow('cGood', 'pGood')]);
+    writeText(path.join(p.projectChatsDir(UID, 'pGood'), 'cGood.jsonl'), '{"from":"user","text":"ok"}\n');
+    const first = migrateProjectLayoutV5(UID);
+    expect(first.warnings).toEqual([]);
+    expect(JSON.parse(fs.readFileSync(markerPath(p), 'utf8')).failed_project_ids).toEqual([]);
+    const migratedBytes = fs.readFileSync(path.join(p.spaceChatsDir(UID, 'sGood'), 'cGood.jsonl'), 'utf8');
+
+    // 之后加入一个会失败的项目：force 全量跑一次以制造失败项
     writeJson(p.projectMetaFile(UID, 'pBad'), { project_id: 'pBad', name: 'Bad', space_id: 'sBad' });
     writeJson(p.projectChatIndexFile(UID, 'pBad'), [convRow('cBad', 'pBad')]);
     writeText(path.join(p.projectChatsDir(UID, 'pBad'), 'cBad.jsonl'), '{"from":"user","text":"bad"}\n');
     const spacesRoot = path.dirname(path.dirname(p.spaceChatIndexFile(UID, 'sBad')));
     writeText(spacesRoot, 'not a directory');
+    const second = migrateProjectLayoutV5(UID, { force: true });
+    expect(second.warnings).toHaveLength(1);
+    expect(JSON.parse(fs.readFileSync(markerPath(p), 'utf8')).failed_project_ids).toEqual(['pBad']);
 
-    const first = migrateProjectLayoutV5(UID);
-    expect(first.warnings).toHaveLength(1);
-    // 当前行为：失败也会写下 marker → 下次启动不再重试（只有 force 能重来）
-    const marker = JSON.parse(fs.readFileSync(markerPath(p), 'utf8'));
-    expect(marker.version).toBe(5);
-    expect(marker.stats.warnings).toHaveLength(1);
-
-    const retryWithoutForce = migrateProjectLayoutV5(UID);
-    expect(retryWithoutForce.projects_migrated).toBe(0);
-    expect(retryWithoutForce.warnings).toEqual([]);
-
-    // 清掉占位文件后，force 可以把失败项目救回来
+    // 修复后普通启动：只补做 pBad，已迁移的 pGood 内容字节不变
     fs.rmSync(spacesRoot, { force: true });
-    const forced = migrateProjectLayoutV5(UID, { force: true });
-    expect(forced.warnings).toEqual([]);
-    expect(forced.projects_migrated).toBe(1);
-    expect(fs.existsSync(path.join(p.spaceChatsDir(UID, 'sBad'), 'cBad.jsonl'))).toBe(true);
+    const third = migrateProjectLayoutV5(UID);
+    expect(third.warnings).toEqual([]);
+    expect(third.projects_migrated).toBe(1);
+    expect(fs.readFileSync(path.join(p.spaceChatsDir(UID, 'sGood'), 'cGood.jsonl'), 'utf8')).toBe(migratedBytes);
   });
 
   it('reports an invalid uid as a warning instead of throwing', async () => {
