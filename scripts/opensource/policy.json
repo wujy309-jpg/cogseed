@@ -2673,6 +2673,7 @@
     "src/main/util/extract-docx.ts",
     "src/main/util/extract-office.ts",
     "src/main/util/extract-pdf.ts",
+    "src/main/util/directory-stamp.ts",
     "src/main/util/file-import.ts",
     "src/main/util/file_to_chunks.ts",
     "src/main/util/generation-guard.ts",
