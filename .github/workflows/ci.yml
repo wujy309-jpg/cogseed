@@ -1,6 +1,7 @@
 name: CI
 
-# 私仓 CI 只保留 Ubuntu 轻量门禁。Windows/macOS 验证在公开快照 PR 上执行。
+# Private hosted minutes are billable (including cicd). This gate only qualifies
+# a candidate for export; public-ci.yml owns full tests and package validation.
 on:
   pull_request:
     branches:
@@ -9,13 +10,18 @@ on:
     branches:
       - cicd
 
+concurrency:
+  group: private-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
   verify:
     if: github.repository == 'bonc-ai/cogseed-internal'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,13 +30,12 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
-      - run: npm run test:resources:setup
+      - run: npm ci --ignore-scripts
       - run: npm run typecheck
       - run: npm run lint
-      # 限制 worker，避免 Ubuntu 免费额度被并发测试快速消耗。
-      - run: node scripts/run-tests.mjs run --maxWorkers=2
-      - run: npm run test:resources
+      - name: Export and workflow contracts (no native runtime)
+        run: node --test scripts/opensource/*.test.mjs
+      - run: node scripts/check-skipped-tests.mjs --strict
       - run: npm run readme:check
       - run: npm run community:skills:check
       - run: npm run tokens:check

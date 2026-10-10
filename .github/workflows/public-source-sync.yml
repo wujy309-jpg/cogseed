@@ -93,7 +93,10 @@ jobs:
           echo "public_base=$PUBLIC_BASE" >> "$GITHUB_OUTPUT"
       - name: Test private export and sync contracts
         working-directory: tooling
-        run: node --test scripts/opensource/*.test.mjs
+        # YAML contract tests reuse the existing dependency; no models/native builds.
+        run: |
+          npm ci --ignore-scripts
+          node --test scripts/opensource/*.test.mjs
       - name: Export and require a reviewed, complete candidate
         id: export
         env:
@@ -337,6 +340,7 @@ jobs:
           repositories: cogseed
           permission-contents: write
           permission-pull-requests: write
+          permission-workflows: write
       - name: Check out public main with the public-only token
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

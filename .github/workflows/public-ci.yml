@@ -1,0 +1,151 @@
+name: Public CI
+
+# Only reviewed exported snapshots run here. No signing secrets or private checkout.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compliance:
+    if: github.repository == 'bonc-ai/cogseed'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run reuse:check
+      - run: npm run sbom:check
+      - run: npm run tokens:check
+      - run: npm run builtin:manifest:check
+      - run: npm run readme:check
+      - run: npm run community:skills:check
+      - run: node scripts/check-skipped-tests.mjs --strict
+
+  linux-tests:
+    if: github.repository == 'bonc-ai/cogseed'
+    name: linux-tests (${{ matrix.shard }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run test:resources:setup
+      - run: npm run test:js -- --maxWorkers=1 --shard=${{ matrix.shard }}/4
+      - if: matrix.shard == 1
+        run: npm run test:resources
+
+  macos-tests:
+    if: github.repository == 'bonc-ai/cogseed'
+    name: macos-tests (${{ matrix.shard }})
+    runs-on: macos-15
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run test:resources:setup
+      - run: npm run test:js -- --maxWorkers=1 --shard=${{ matrix.shard }}/4
+      - if: matrix.shard == 1
+        run: npm run test:resources
+
+  windows-tests:
+    if: github.repository == 'bonc-ai/cogseed'
+    name: windows-tests (${{ matrix.shard }})
+    runs-on: windows-2022
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run test:resources:setup
+      - run: npm run test:js -- --maxWorkers=1 --shard=${{ matrix.shard }}/4
+      - if: matrix.shard == 1
+        run: npm run test:resources
+      - if: matrix.shard == 1
+        run: npm run test:platform-native
+      - if: matrix.shard == 1
+        run: npm run test:p3394:windows
+      - if: matrix.shard == 1
+        run: node p3394-gateway/test/smoke.cjs
+
+  verify-macos:
+    if: github.repository == 'bonc-ai/cogseed'
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run package:dev:mac && npm run verify:package:dev:mac
+
+  verify-windows-package:
+    if: github.repository == 'bonc-ai/cogseed'
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: node scripts/write-build-info.cjs --channel=ci
+      - run: npm run build:win
+      - run: npm run verify:package:build-info -- --channel=ci
+      - name: Packaged launch smoke
+        run: npm run verify:package:launch
+      - name: Packaged STT smoke
+        run: npm run verify:package:stt:win
+      - run: node scripts/check-fuses.cjs dist/win-unpacked/CogSeed.exe

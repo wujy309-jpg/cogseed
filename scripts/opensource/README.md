@@ -34,11 +34,11 @@ RD 在 `bonc-ai/cogseed-internal` 开发；定版后从固定提交导出公开�
 | Variable | PUBLIC_SOURCE_BASELINE_SHA | 首次切换后公仓无父根提交完整 SHA |
 | Variable | PUBLIC_SOURCE_BASELINE_READY | `true`，仅在首次切换核验完成后设置 |
 
-App 只安装到公仓 `bonc-ai/cogseed`，授予 Contents: write、Pull requests: write（Metadata: read 为基础权限）。私仓 checkout/CI 查询使用本次 workflow 的只读 GITHUB_TOKEN。不要把个人 gh CLI token 作为永久自动化凭据。私仓当前套餐不支持强制 branch protection，因此不能声称已有平台强制的独立评审；需限制有权更改 develop、Secrets 和发起 workflow 的维护者。升级套餐后的环境审批可另行配置，不是当前运行前提。
+App 只安装到公仓 `bonc-ai/cogseed`，授予 Contents: write、Pull requests: write、Workflows: write（同步已批准的工作流文件）（Metadata: read 为基础权限）。私仓 checkout/CI 查询使用本次 workflow 的只读 GITHUB_TOKEN。不要把个人 gh CLI token 作为永久自动化凭据。私仓当前套餐不支持强制 branch protection，因此不能声称已有平台强制的独立评审；需限制有权更改 develop、Secrets 和发起 workflow 的维护者。升级套餐后的环境审批可另行配置，不是当前运行前提。
 
 ## 本地工具与证据
 
-工具无需新增 npm 依赖，需要 Git 和 Node.js 24：
+导出工具本身无需新增 npm 依赖，需要 Git 和 Node.js 24；工作流契约测试复用仓库现有 yaml 依赖（先运行 `npm ci --ignore-scripts`）：
 
 ```bash
 npm test --prefix scripts/opensource

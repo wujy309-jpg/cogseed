@@ -64,7 +64,8 @@
     "prebuild:win": "node scripts/ensure-sherpa-windows-runtime.cjs && node scripts/ensure-sqlite-electron-abi.mjs && node scripts/ensure-node-pty-electron-abi.mjs",
     "build:win": "electron-builder --win --x64 --publish never",
     "verify:package:launch": "node scripts/verify-packaged-launch.cjs",
-    "verify:package:stt:win": "node scripts/verify-packaged-stt-win.cjs"
+    "verify:package:stt:win": "node scripts/verify-packaged-stt-win.cjs",
+    "verify:package:build-info": "node scripts/verify-packaged-build-info.cjs"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
@@ -166,6 +167,13 @@
       ".build/build-info.json"
     ],
     "asar": true,
+    "electronFuses": {
+      "runAsNode": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true
+    },
     "asarUnpack": [
       "bin/**/*",
       "src/shared/**/*.js",

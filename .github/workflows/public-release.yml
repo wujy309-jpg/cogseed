@@ -1,4 +1,4 @@
-name: Release
+name: Public Release
 
 on:
   push:
@@ -15,7 +15,8 @@ concurrency:
 
 jobs:
   gate:
-    runs-on: ubuntu-latest
+    if: github.repository == 'bonc-ai/cogseed'
+    runs-on: ubuntu-24.04
     outputs:
       peeled-sha: ${{ steps.verify.outputs.peeled-sha }}
     steps:
@@ -23,7 +24,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Verify exact cicd tip and required workflow attempts
+      - name: Verify exact public main tip and required workflow attempts
         id: verify
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -35,8 +36,10 @@ jobs:
         run: node -e "const p=require('./package.json'); if ('v'+p.version !== process.env.GITHUB_REF_NAME) throw new Error('package.json version does not match release tag')"
 
   build-macos:
+    if: github.repository == 'bonc-ai/cogseed'
     needs: gate
-    runs-on: macos-latest
+    environment: release-signing
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,6 +52,7 @@ jobs:
       - name: Create temporary keychain
         run: |
           KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
           echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
           security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
           security default-keychain -s build.keychain
@@ -78,11 +82,16 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          npx json -I -f package.json -e 'this.build.mac.notarize = true'
-          npx json -I -f package.json -e 'this.build.asarUnpack = this.build.asarUnpack || []'
-          npx json -I -f package.json -e 'this.build.files.push("!**/archive/**")'
-          npx json -I -f package.json -e 'this.build.files.push("!**/*.tar.gz")'
+          node -e "const fs=require('node:fs'); const p=require('./package.json'); p.build.mac.notarize=true; p.build.files.push('!**/archive/**', '!**/*.tar.gz'); fs.writeFileSync('package.json', JSON.stringify(p,null,2)+'\\n')"
           npx electron-builder --mac --publish never
+      - name: Verify packaged build metadata
+        run: |
+          npm run verify:package:build-info -- \
+            --channel=release \
+            --app=dist/mac-arm64/CogSeed.app \
+            --app=dist/mac/CogSeed.app
+      - name: Assert packaged Electron fuse baseline
+        run: node scripts/check-fuses.cjs dist/mac-arm64/CogSeed.app dist/mac/CogSeed.app
       - name: Packaged launch smoke
         run: npm run verify:package:launch
       - uses: actions/upload-artifact@v4
@@ -98,8 +107,9 @@ jobs:
         run: security delete-keychain build.keychain || true
 
   build-windows:
+    if: github.repository == 'bonc-ai/cogseed'
     needs: gate
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
         with:
@@ -113,6 +123,10 @@ jobs:
         env:
           COGSEED_HUB_API_BASE: ${{ vars.COGSEED_HUB_API_BASE_URL }}
       - run: npm run build:win
+      - name: Verify packaged build metadata
+        run: npm run verify:package:build-info -- --channel=release
+      - name: Assert packaged Electron fuse baseline
+        run: node scripts/check-fuses.cjs dist/win-unpacked/CogSeed.exe
       - name: Packaged launch smoke
         run: npm run verify:package:launch
       - name: Packaged STT smoke
@@ -152,8 +166,9 @@ jobs:
           retention-days: 14
 
   publish:
+    if: github.repository == 'bonc-ai/cogseed'
     needs: [gate, build-macos, build-windows]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: write
@@ -183,6 +198,12 @@ jobs:
             throw new Error(`Release artifact set mismatch. Expected ${expected_files.join(', ')}; got ${files.join(', ')}`);
           }
           NODE
+      - name: Generate release checksums
+        run: (cd artifacts && sha256sum CogSeed-* > SHA256SUMS.txt)
+      - name: Revalidate public CI after builds
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/verify-release-gates.mjs
       - name: Revalidate tag and existing Release
         env:
           EXPECTED_SHA: ${{ needs.gate.outputs.peeled-sha }}
@@ -211,6 +232,7 @@ jobs:
             `CogSeed-${version}-mac-x64.dmg`,
             `CogSeed-${version}-mac-x64.zip`,
             `CogSeed-${version}-win-x64.exe`,
+            'SHA256SUMS.txt',
           ].sort();
           if (!release.isDraft || JSON.stringify(names) !== JSON.stringify(expected_files)) {
             throw new Error(`Draft asset verification failed. Expected ${expected_files.join(', ')}; got ${names.join(', ')}`);

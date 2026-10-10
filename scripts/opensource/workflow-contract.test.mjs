@@ -50,6 +50,8 @@ test('reviewed inventory and same-version secret scan precede any public token',
   for (const [, action] of workflow.matchAll(/^\s*-?\s*uses:\s*(\S+)/gm)) {
     assert.match(action, /^[a-z0-9-]+\/[a-z0-9-]+@[0-9a-f]{40}$/u, `unpinned action: ${action}`);
   }
+  const contracts = step(prepare, 'Test private export and sync contracts');
+  assert.match(contracts, /npm ci --ignore-scripts/);
   const exported = step(prepare, 'Export and require a reviewed, complete candidate');
   assert.match(exported, /report\.policyStatus !== 'reviewed'/);
   assert.match(exported, /report\.missingPublicFiles\.length !== 0/);
@@ -95,6 +97,7 @@ test('publication binds scan evidence, authorizer and expected public base', () 
   assert.match(token, /repositories: cogseed/);
   assert.match(token, /permission-contents: write/);
   assert.match(token, /permission-pull-requests: write/);
+  assert.match(token, /permission-workflows: write/);
   assert.match(token, /secrets\.PUBLIC_SOURCE_APP_PRIVATE_KEY/);
   const staged = step(publish, 'Stage idempotent public snapshot commit locally');
   for (const arg of ['--candidate', '--private-repo', '--public-repo', '--policy', '--exporter', '--expected-base', '--target-origin', '--approval', '--scan-report', '--mapping-out']) {

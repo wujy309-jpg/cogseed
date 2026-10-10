@@ -6,6 +6,7 @@ const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { cleanupTemporaryRoot } = require('./verify-packaged-launch.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const DEFAULT_SPEECH_FIXTURE = path.join(ROOT, 'test', 'fixtures', 'stt', 'sherpa-onnx-zh-0.wav');
@@ -205,7 +206,13 @@ async function launchSmoke(executable) {
   try {
     const marker = await waitForMarker(markerPath, child, configuredSmokeTimeoutMs());
     const errors = verifySttSmokeMarker(marker);
-    if (errors.length) throw new Error(`${errors.join('; ')}${stderr ? `\n${stderr}` : ''}`);
+    // The marker is deliberately limited to booleans and counts. Include it
+    // when validation fails so a Windows runner tells us whether Chromium
+    // reached the permission gate, fake device, or STT transport; never emit
+    // audio, session IDs, or recognized text.
+    if (errors.length) {
+      throw new Error(`${errors.join('; ')}\n--- smoke marker ---\n${JSON.stringify(marker)}${stderr ? `\n${stderr}` : ''}`);
+    }
     return marker;
   } catch (error) {
     // Preserve the packaged app's own diagnostics when the smoke times out or
@@ -219,7 +226,7 @@ async function launchSmoke(executable) {
     throw new Error(details);
   } finally {
     await terminateChild(child);
-    fs.rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    cleanupTemporaryRoot(tempRoot);
   }
 }
 

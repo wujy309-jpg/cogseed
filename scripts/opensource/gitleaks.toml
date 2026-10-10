@@ -168,3 +168,85 @@ regexes = [
   '''^\Qsk-1234567890abcdef\E$''',
   '''^\Qtok-1234567890\E$''',
 ]
+
+[[allowlists]]
+description = "Reviewed fixed detector patterns or synthetic test fixtures (2026-10-10)"
+targetRules = ["private-key"]
+condition = "AND"
+regexTarget = "secret"
+paths = ['''(?:^|/)resources/guardrail/skill\-sentry/engine/rulesets/v1\.1\.0/secret\-patterns\.yaml$''']
+regexes = [
+  '''^\Q-----BEGIN OPENSSH PRIVATE KEY-----'
+    severity: critical
+    confidence: high
+  - id: pgp_private_key
+    pattern: '-----BEGIN PGP PRIVATE KEY BLOCK-----\E$''',
+  '''^\Q-----BEGIN PRIVATE KEY-----'
+    severity: critical
+    confidence: high
+  - id: google_oauth_client_secret
+    pattern: 'GOCSPX-[A-Za-z0-9_\-]{28,}'
+    severity: critical
+    confidence: high
+  - id: azure_storage_connection_string
+    pattern: 'DefaultEndpointsProtocol=https?;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/=]{40,}'
+    severity: critical
+    confidence: high
+  - id: azure_client_secret
+    pattern: '(?:AZURE_CLIENT_SECRET|client_secret)["'']?\s*[:=]\s*["'']?[A-Za-z0-9_\-\.~]{30,}'
+    severity: high
+    confidence: medium
+  - id: aliyun_access_key
+    pattern: 'LTAI[A-Za-z0-9]{12,20}'
+    severity: high
+    confidence: medium
+  - id: tencent_secret_id
+    pattern: 'AKID[A-Za-z0-9]{13,20}'
+    severity: high
+    confidence: medium
+  - id: digitalocean_token
+    pattern: 'dop_v1_[A-Za-z0-9]{64}'
+    severity: critical
+    confidence: high
+
+  # ---- 私钥块 ----
+  - id: private_key_block
+    pattern: '-----BEGIN .*PRIVATE KEY-----\E$''',
+]
+
+[[allowlists]]
+description = "Reviewed fixed detector patterns or synthetic test fixtures (2026-10-10)"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "secret"
+paths = ['''(?:^|/)resources/guardrail/skill\-sentry/tests/unit/test_detectors\.py$''']
+regexes = [
+  '''^\Q9xK2mQ7pL4tW1nR8bV6cH3z\E$''',
+  '''^\QAKIA3XQ7PL2MWR8TB6VC\E$''',
+  '''^\QMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\E$''',
+  '''^\QaB3xK9mQ2pL7wR4tY6uI8oP1\E$''',
+  '''^\Qda39a3ee5e6b4b0d3255bfef95601890afd80709\E$''',
+  '''^\Qe3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\E$''',
+  '''^\Qghp_7Kd93mQxL2pR8tW4nB6vC1zY5hJ0\E$''',
+  '''^\Qsk-live-9fK2mQ7xR4tW1pL8zN6bV3cH\E$''',
+]
+
+[[allowlists]]
+description = "Reviewed fixed detector patterns or synthetic test fixtures (2026-10-10)"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "secret"
+paths = ['''(?:^|/)test/main/features/kstar/improvement\-outcome\.test\.ts$''']
+regexes = [
+  '''^\Qsk-live-abcd12345678\E$''',
+]
+
+[[allowlists]]
+description = "Reviewed fixed detector patterns or synthetic test fixtures (2026-10-10)"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "secret"
+paths = ['''(?:^|/)test/renderer/hub\-contributions\-flow\.test\.ts$''']
+regexes = [
+  '''^\Qabc123def456\E$''',
+]

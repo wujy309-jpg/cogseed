@@ -27,18 +27,18 @@ describe('release workflow contract', () => {
     expect(workflow).not.toContain('diagnose-local-agents.mjs --json --only codex');
   });
 
-  // 2026-09-28 方案 C：私仓 ci.yml 收敛为零成本门禁（Ubuntu-only），Windows
-  // 打包验证改由 release.yml 的 build-windows 承担。断言意图不变——构建之后
-  // 必须紧跟启动冒烟与 STT 冒烟，且不许静默失败——只是落点跟着架构搬家：
+  // 2026-09-28 方案 C：私仓 ci.yml 收敛为限成本门禁（Ubuntu-only），Windows
+  // 打包验证改由 public-release.yml 的 build-windows 承担。断言意图不变——构建之后
+  // 必须执行启动冒烟与 STT 冒烟，且不许静默失败——只是落点跟着架构搬家：
   // 继续在 ci.yml 里找 verify-windows 会指向一个已不存在的 job。
-  it('runs blocking packaged launch and STT verifiers right after the Windows build', () => {
-    const windowsSteps = steps(load('release.yml').jobs['build-windows']) as Array<{ run?: string; 'continue-on-error'?: boolean }>;
+  it('runs blocking packaged launch and STT verifiers after the Windows build', () => {
+    const windowsSteps = steps(load('public-release.yml').jobs['build-windows']) as Array<{ run?: string; 'continue-on-error'?: boolean }>;
     const buildIndex = windowsSteps.findIndex((step) => step.run === 'npm run build:win');
     const launchIndex = windowsSteps.findIndex((step) => step.run === 'npm run verify:package:launch');
     const smokeIndex = windowsSteps.findIndex((step) => step.run === 'npm run verify:package:stt:win');
 
     expect(buildIndex).toBeGreaterThanOrEqual(0);
-    expect(launchIndex).toBe(buildIndex + 1);
+    expect(launchIndex).toBeGreaterThan(buildIndex);
     expect(smokeIndex).toBe(launchIndex + 1);
     // YAML 的 `continue-on-error` 解析后就是这个带连字符的键名；写成
     // `continueOnError` 永远取到 undefined，会让这条断言变成空断言。
@@ -60,8 +60,10 @@ describe('release workflow contract', () => {
   it('keeps private CI lightweight and Ubuntu-only', () => {
     const workflow = load('ci.yml');
     expect(Object.keys(workflow.jobs)).toEqual(['verify']);
-    expect(workflow.jobs.verify['runs-on']).toBe('ubuntu-latest');
-    expect(commands(workflow.jobs.verify)).toContain('node scripts/run-tests.mjs run --maxWorkers=2');
+    expect(workflow.jobs.verify['runs-on']).toBe('ubuntu-24.04');
+    expect(commands(workflow.jobs.verify)).toContain('npm ci --ignore-scripts');
+    expect(commands(workflow.jobs.verify)).not.toMatch(/run-tests|test:js|test:resources/);
+    expect(commands(workflow.jobs.verify)).toContain('node --test scripts/opensource/*.test.mjs');
     expect(commands(workflow.jobs.verify)).not.toContain('package:dev:mac');
     expect(JSON.stringify(workflow.jobs)).not.toContain('windows-latest');
   });
@@ -76,7 +78,7 @@ describe('release workflow contract', () => {
   });
 
   it('triggers the release workflow only for v* tags', () => {
-    const workflow = load('release.yml');
+    const workflow = load('public-release.yml');
     expect(workflow.on).toEqual({ push: { tags: ['v*'] } });
     expect(workflow.permissions).toEqual({ actions: 'read', contents: 'read' });
     expect(workflow.concurrency).toEqual({
@@ -86,7 +88,7 @@ describe('release workflow contract', () => {
   });
 
   it('uses gate -> two builds -> one publisher and checks out the peeled SHA', () => {
-    const workflow = load('release.yml');
+    const workflow = load('public-release.yml');
     expect(Object.keys(workflow.jobs).sort()).toEqual(['build-macos', 'build-windows', 'gate', 'publish']);
     expect(workflow.jobs.gate.outputs['peeled-sha']).toContain('steps.verify.outputs.peeled-sha');
     for (const name of ['build-macos', 'build-windows']) {
@@ -114,13 +116,13 @@ describe('release workflow contract', () => {
       }
       expect(workflow.permissions?.contents).not.toBe('write');
     }
-    expect(writers).toEqual([{ file: 'release.yml', job: 'publish' }]);
-    expect(releaseActions).toEqual([{ file: 'release.yml', job: 'publish' }]);
-    expect(load('release.yml').jobs.publish.permissions).toEqual({ actions: 'read', contents: 'write' });
+    expect(writers).toEqual([{ file: 'public-release.yml', job: 'publish' }]);
+    expect(releaseActions).toEqual([{ file: 'public-release.yml', job: 'publish' }]);
+    expect(load('public-release.yml').jobs.publish.permissions).toEqual({ actions: 'read', contents: 'write' });
   });
 
   it('checks the remote tag and existing Release before the sole pinned publisher action', () => {
-    const workflow = load('release.yml');
+    const workflow = load('public-release.yml');
     const publishSteps = steps(workflow.jobs.publish);
     const preflightIndex = publishSteps.findIndex((step) => String(step.run ?? '').includes('--publish-target'));
     const artifactValidationIndex = publishSteps.findIndex((step) => step.name === 'Validate release artifact set');
@@ -130,12 +132,12 @@ describe('release workflow contract', () => {
     expect(preflightIndex).toBe(releaseIndex - 1);
     expect(publishSteps[preflightIndex].env.EXPECTED_SHA).toBe('${{ needs.gate.outputs.peeled-sha }}');
     expect(publishSteps[releaseIndex].uses).toBe('softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65');
-    const source = fs.readFileSync(path.join(workflowsDir, 'release.yml'), 'utf8');
+    const source = fs.readFileSync(path.join(workflowsDir, 'public-release.yml'), 'utf8');
     expect(source).toContain('softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2');
   });
 
   it('makes the publisher validate exactly four mac files and one win-x64 exe before publishing the draft', () => {
-    const publish = load('release.yml').jobs.publish;
+    const publish = load('public-release.yml').jobs.publish;
     const script = commands(publish);
     expect(script).toContain('expected_files');
     for (const suffix of ['mac-arm64.dmg', 'mac-arm64.zip', 'mac-x64.dmg', 'mac-x64.zip', 'win-x64.exe']) {

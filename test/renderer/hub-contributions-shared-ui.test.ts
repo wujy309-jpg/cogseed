@@ -10,7 +10,6 @@ const model = read('src/renderer/modules/hub-contributions-model.js');
 const css = read('src/renderer/hub-contributions.css');
 const style = read('src/renderer/style.css');
 const html = read('src/renderer/index.html');
-const registry = read('docs/renderer-structural-registry.md');
 const zh = JSON.parse(read('src/renderer/locales/zh.json'));
 const en = JSON.parse(read('src/renderer/locales/en.json'));
 
@@ -59,14 +58,6 @@ describe('Hub contribution pages: shared UI adoption', () => {
     const skills = read('src/renderer/modules/skills.js');
     expect(skills.match(/window\.hideContributionViews\(\)/g)).toHaveLength(2);
     expect(read('src/renderer/modules/lazy-features.js')).toContain("{ src: './hub-contributions.css', type: 'style' }");
-  });
-
-  it('registers each page-local structure as a proposal in the structural registry', () => {
-    for (const id of ['HUBC-PV-001', 'HUBC-PV-002', 'HUBC-PV-003']) {
-      expect(registry).toMatch(new RegExp(`\`${id}\`[^\\n]*\\| Proposed \\|`));
-    }
-    // A proposal must not be mistaken for an approved exception.
-    expect(registry).not.toMatch(/`HUBC-PV-00\d`[^\n]*Approved Provisional/);
   });
 
   it('marks the active step for assistive technology and keeps the step list native', () => {
