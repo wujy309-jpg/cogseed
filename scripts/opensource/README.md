@@ -51,6 +51,8 @@ node scripts/opensource/cutover.mjs --help
 
 `sync.mjs` 再次对照源 Git 对象、清单、扫描和授权证据，建立只有公仓父提交的快照；`--bootstrap` 建立无父根提交。它本身不联网、不推送。`--allow-review-required-local` 仅供本地演练，其映射不得用于真实切换。
 
+标准同步的两阶段通过少量 job outputs 传递 `evidence.mjs` 生成的来源、清单/审查字节摘要和扫描报告；发布阶段重导出并核对全部摘要后才创建公仓 token。扫描摘要、脱敏日志和私有映射保留在私仓运行日志/summary，不依赖 Actions artifact 存储。公仓 CI 另以一个公开小文件检验产物上传、下载和校验和，正式签名前必须通过。
+
 首次用户授权记录采用本地明确批准方式，记录只重写公仓 heads/tags、保留 Release 资产和接受只读 PR refs 的范围，不伪造 workflow run。后续自动化只接受实际 workflow_dispatch 运行记录。
 
 额度停用期间的加急发版只允许一次 `explicit_user_emergency` 授权：授权必须绑定当前源 SHA、导出摘要、策略摘要和引用提示摘要，`scope` 固定为 `single_snapshot_pr`，并提供仓库外的私有授权记录文件。`expiresAt` 不得晚于 `2026-10-01T00:00:00+08:00`，且工具按本次提交时间拒绝已过期授权；不得携带 `workflowRunId` 或 `workflowRunAttempt`，也不能与 `--bootstrap` 同用。该方式仅用于 2026-09 加急发版，10 月 1 日后必须回到真实 `workflow_dispatch` 运行记录；它不改变 PR 审查、Gitleaks 扫描或公仓 CI 门禁。这些 JSON 是私有审计记录，不是加密身份证明。

@@ -45,6 +45,12 @@ test('public CI graph exactly matches release prerequisites including every plat
     } else names.push(id);
   }
   assert.deepEqual(names.sort(), [...PUBLIC_CI_JOBS].sort());
+  const upload = wf.jobs.compliance.steps.find((s) => s.uses?.startsWith('actions/upload-artifact@'));
+  const download = wf.jobs.compliance.steps.find((s) => s.uses?.startsWith('actions/download-artifact@'));
+  assert.equal(upload.with.path, 'package.json');
+  assert.equal(upload.with['retention-days'], 1);
+  assert.equal(download.with.name, upload.with.name);
+  assert.match(commands(wf.jobs.compliance), /sha256sum --check/);
   assert.match(commands(wf.jobs['verify-macos']), /verify:package:dev:mac/);
   assert.match(commands(wf.jobs['verify-windows-package']), /verify:package:launch/);
   assert.match(commands(wf.jobs['verify-windows-package']), /verify:package:stt:win/);

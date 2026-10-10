@@ -26,6 +26,7 @@ jobs:
     outputs:
       public_base: ${{ steps.identity.outputs.public_base }}
       export_sha256: ${{ steps.export.outputs.export_sha256 }}
+      evidence_json: ${{ steps.evidence.outputs.json }}
     steps:
       - name: Require private default branch dispatch
         env:
@@ -199,20 +200,34 @@ jobs:
           };
           fs.writeFileSync(process.env.RUNNER_TEMP + '/scan-report.json', JSON.stringify(report) + '\n', { mode: 0o600 });
           NODE
+      - name: Capture compact scan evidence
+        id: evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { captureEvidence } from './tooling/scripts/opensource/evidence.mjs';
+          const root = process.env.RUNNER_TEMP;
+          const evidence = captureEvidence(root + '/public-source-export', fs.readFileSync(root + '/scan-report.json', 'utf8'));
+          fs.writeFileSync(root + '/evidence.json', JSON.stringify(evidence) + '\n', { mode: 0o600 });
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `json=${JSON.stringify(evidence)}\n`);
+          NODE
       - name: Retain private review and scan evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: private-source-review-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/public-source-export/manifest.json
-            ${{ runner.temp }}/public-source-export/review.json
-            ${{ runner.temp }}/scan-report.json
-            ${{ runner.temp }}/gitleaks-pat-canary.log
-            ${{ runner.temp }}/gitleaks-allowlist-canary.log
-            ${{ runner.temp }}/gitleaks-candidate.log
-          if-no-files-found: ignore
-          retention-days: 30
+        # Private artifact storage may be exhausted. Job outputs carry only
+        # compact digests; private logs/summary retain reproducible evidence.
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const root = process.env.RUNNER_TEMP;
+          const file = root + '/evidence.json';
+          if (fs.existsSync(file)) {
+            const evidence = JSON.parse(fs.readFileSync(file));
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, '## Private source scan evidence\n```json\n' + JSON.stringify(evidence, null, 2) + '\n```\n');
+          }
+          for (const name of ['gitleaks-pat-canary.log', 'gitleaks-allowlist-canary.log', 'gitleaks-candidate.log']) {
+            if (fs.existsSync(root + '/' + name)) process.stdout.write(name + '\n' + fs.readFileSync(root + '/' + name, 'utf8'));
+          }
+          NODE
 
   publish_pr:
     needs: prepare
@@ -271,15 +286,11 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
-      - name: Restore private scan evidence
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: private-source-review-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/review-evidence
       - name: Re-export the same immutable candidate
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
           EXPECTED_EXPORT: ${{ needs.prepare.outputs.export_sha256 }}
+          SCAN_EVIDENCE_JSON: ${{ needs.prepare.outputs.evidence_json }}
         run: |
           set -euo pipefail
           set +e
@@ -289,17 +300,16 @@ jobs:
           EXPORT_STATUS=$?
           set -e
           [[ "$EXPORT_STATUS" == 0 || "$EXPORT_STATUS" == 2 ]] || exit 1
-          cmp "$RUNNER_TEMP/public-source-export/manifest.json" "$RUNNER_TEMP/review-evidence/manifest.json"
-          cmp "$RUNNER_TEMP/public-source-export/review.json" "$RUNNER_TEMP/review-evidence/review.json"
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
-          const manifest = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/public-source-export/manifest.json'));
-          const scan = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/review-evidence/scan-report.json'));
-          if (manifest.sourceSha !== process.env.SOURCE_SHA || manifest.exportSha256 !== process.env.EXPECTED_EXPORT ||
-              scan.sourceSha !== process.env.SOURCE_SHA || scan.exportSha256 !== manifest.exportSha256 ||
-              scan.status !== 'passed' || scan.tool !== 'gitleaks' || scan.version !== '8.30.1') {
-            throw new Error('Candidate differs from prior scan evidence');
-          }
+          import { verifyEvidence } from './tooling/scripts/opensource/evidence.mjs';
+          const root = process.env.RUNNER_TEMP;
+          const evidence = verifyEvidence(root + '/public-source-export', JSON.parse(process.env.SCAN_EVIDENCE_JSON), {
+            sourceSha: process.env.SOURCE_SHA,
+            exportSha256: process.env.EXPECTED_EXPORT,
+          });
+          fs.mkdirSync(root + '/review-evidence', { mode: 0o700 });
+          fs.writeFileSync(root + '/review-evidence/scan-report.json', evidence.scanReportJson, { mode: 0o600 });
           NODE
       - name: Record manual source authorization privately
         env:
@@ -418,12 +428,12 @@ jobs:
           fi
       - name: Retain mapping in the private workflow only
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: private-public-mapping-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/private-public-mapping.json
-            ${{ runner.temp }}/sync-result.json
-            ${{ runner.temp }}/approval.json
-          if-no-files-found: ignore
-          retention-days: 30
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          for (const name of ['private-public-mapping.json', 'sync-result.json', 'approval.json']) {
+            const file = process.env.RUNNER_TEMP + '/' + name;
+            if (fs.existsSync(file)) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+              '## ' + name + '\n```json\n' + fs.readFileSync(file, 'utf8') + '\n```\n');
+          }
+          NODE

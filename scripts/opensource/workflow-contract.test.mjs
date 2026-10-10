@@ -84,9 +84,14 @@ test('publication binds scan evidence, authorizer and expected public base', () 
   assert.match(publish, /runs\[0\]\.conclusion !== 'success'/);
   assert.match(publish, /Public main changed during review/);
   const fresh = step(publish, 'Re-export the same immutable candidate');
-  assert.match(fresh, /cmp .*manifest\.json/);
-  assert.match(fresh, /cmp .*review\.json/);
-  assert.match(fresh, /scan\.status !== 'passed'/);
+  assert.match(fresh, /verifyEvidence/);
+  assert.match(fresh, /SCAN_EVIDENCE_JSON: \$\{\{ needs\.prepare\.outputs\.evidence_json \}\}/);
+  assert.match(fresh, /sourceSha: process\.env\.SOURCE_SHA/);
+  assert.match(fresh, /exportSha256: process\.env\.EXPECTED_EXPORT/);
+  assert.doesNotMatch(workflow, /actions\/(?:upload|download)-artifact/);
+  assert.match(step(prepare, 'Capture compact scan evidence'), /captureEvidence/);
+  assert.match(step(prepare, 'Retain private review and scan evidence'), /GITHUB_STEP_SUMMARY/);
+  assert.match(step(publish, 'Retain mapping in the private workflow only'), /GITHUB_STEP_SUMMARY/);
   const approval = step(publish, 'Record manual source authorization privately');
   assert.match(approval, /AUTHORIZED_BY: \$\{\{ github\.actor \}\}/);
   assert.match(approval, /authorizationMethod: 'workflow_dispatch'/);
