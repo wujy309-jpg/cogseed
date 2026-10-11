@@ -87,6 +87,29 @@ export async function listValidationRecords(userId: string): Promise<ValidationR
   const directory = path.dirname(recallJsonRecordPath(userId, 'validation-records', 'placeholder'));
   let names: string[];
   try { names = await fs.readdir(directory); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
-  const records = await Promise.all(names.filter((name) => name.endsWith('.json')).map((name) => readRecallJsonRecord(userId, 'validation-records', name.slice(0, -5))));
-  return records.filter((record): record is ValidationRecord => Boolean(record)) as ValidationRecord[];
+  // 逐条降级 + 文件名 safeId 过滤（照抄 listRecallCandidates 的既有口径）：
+  // 此前一条坏 .json（损坏 JSON / ownerId 不匹配，或 macOS AppleDouble
+  // '._val-*.json' 之类的非法 id 文件名）会让整个列表 reject，启动期的
+  // recoverValidationApplications 随之失败——只降级记录形状的错，真正的 IO
+  // 故障（带 errno code）照旧上抛。
+  const reads = await Promise.all(names
+    .filter((name) => name.endsWith('.json') && safeId(name.slice(0, -5)))
+    .map(async (name) => {
+      const id = name.slice(0, -5);
+      try {
+        return { id, record: await readRecallJsonRecord(userId, 'validation-records', id) };
+      } catch (error) {
+        if (typeof (error as NodeJS.ErrnoException).code === 'string') throw error;
+        return { id, error: error as Error };
+      }
+    }));
+  const records: ValidationRecord[] = [];
+  for (const read of reads) {
+    if (read.error) {
+      log.warn('skipped an unreadable validation record', { recordId: read.id, error: read.error.message });
+      continue;
+    }
+    if (read.record) records.push(read.record as ValidationRecord);
+  }
+  return records;
 }

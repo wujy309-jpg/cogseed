@@ -4,6 +4,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 
 import { safeId } from '../../storage';
+import { createLogger } from '../../logger';
 import {
   readRecallCandidate,
   rejectRecallCandidate,
@@ -15,6 +16,7 @@ import { updateRecallJsonRecord, readRecallJsonRecord } from './store';
 import type { RecallJsonRecord } from './types';
 
 const TEACHING_COLLECTION = 'teaching-signals';
+const log = createLogger('recall.teaching');
 
 export type UserTeachingIntent = 'remember' | 'prefer' | 'avoid' | 'correct';
 export type UserTeachingScope = 'personal' | 'project' | 'agent';
@@ -219,12 +221,36 @@ async function readSortedTeachingSignals(
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw error;
   }
-  const records = await Promise.all(names
+  // 逐条降级，而不是让一条坏记录把整份教学回执列表读失败（照抄 listExperiences
+  // 的既有口径）：记录形状的不变量分布在 store 的 validateRecallRecord 和这里的
+  // asTeachingSignal 两层，任一层一抛，`recall.teaching.list` 就整体失败，好记录
+  // 也列不出。只降级记录形状的错；真正的 IO 故障（带 errno code）照旧上抛——
+  // 静默少几条等于把磁盘问题伪装成「教学信号变少了」。
+  const reads = await Promise.all(names
     .filter((name) => name.endsWith('.json') && safeId(name.slice(0, -5)))
-    .map((name) => readRecallJsonRecord(userId, TEACHING_COLLECTION, name.slice(0, -5))));
-  return records
-    .filter((record): record is RecallJsonRecord => Boolean(record))
-    .map(asTeachingSignal)
+    .map(async (name) => {
+      const id = name.slice(0, -5);
+      try {
+        return { id, record: await readRecallJsonRecord(userId, TEACHING_COLLECTION, id) };
+      } catch (error) {
+        if (typeof (error as NodeJS.ErrnoException).code === 'string') throw error;
+        return { id, error: error as Error };
+      }
+    }));
+  const signals: UserTeachingSignalRecord[] = [];
+  for (const read of reads) {
+    if (read.error) {
+      log.warn('skipped an unreadable teaching signal', { teachingId: read.id, error: read.error.message });
+      continue;
+    }
+    if (!read.record) continue;
+    try {
+      signals.push(asTeachingSignal(read.record));
+    } catch (error) {
+      log.warn('skipped a malformed teaching signal', { teachingId: read.id, error: (error as Error).message });
+    }
+  }
+  return signals
     .filter((signal) => !conversationId || signal.conversationId === conversationId)
     .filter((signal) => !status || signal.status === status)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
