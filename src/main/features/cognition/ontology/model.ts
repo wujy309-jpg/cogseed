@@ -201,10 +201,16 @@ export function validateOntologyDocument(raw: unknown): OntologyDocument {
     if (key !== receipt.commandId || receipt.revision > doc.revision)
       throw new OntologyError('store_corrupt', 'ontology receipt identity mismatch');
   }
-  if (doc.receipts && Object.keys(doc.receipts).some(key => {
-    const receipt = doc.receipts[key];
-    return receipt.changedIds.some(id => !doc.history.some(entry => entry.commandId === key && entry.revision === receipt.revision && entry.after.id === id));
-  })) throw new OntologyError('store_corrupt', 'ontology receipt has no matching history');
+  // 单遍索引（性能 2026-10-11）：history 按原序遍历一次建两张表——
+  // latestByRecord（每记录最后一次出现的历史条目，等价于此前每记录
+  // [...history].reverse().find(...)）与 changedByCommand（每个
+  // commandId:revision 覆盖过的 after.id 集合，等价于此前每个 receipt×
+  // changedId 对全量 history 的 some 线性扫）。id 正则不含冒号，拼接键无
+  // 碰撞。文档上限 25000 记录/100000 历史，旧写法最坏 O(records×history +
+  // receipts×changedIds×history)，而本校验是每次本体读写（含每个命令提交
+  // 两次）的必经点，同步阻塞主进程。
+  const latestByRecord = new Map<string, (typeof doc.history)[number]>();
+  const changedByCommand = new Map<string, Set<string>>();
   for (const entry of doc.history) {
     if (entry.revision > doc.revision) throw new OntologyError('store_corrupt', 'ontology history exceeds document revision');
     if (entry.before && (entry.before.id !== entry.after.id || entry.before.kind !== entry.after.kind
@@ -212,10 +218,20 @@ export function validateOntologyDocument(raw: unknown): OntologyDocument {
     if (!doc.receipts[entry.commandId] || doc.receipts[entry.commandId].revision !== entry.revision
       || !doc.receipts[entry.commandId].changedIds.includes(entry.after.id))
       throw new OntologyError('store_corrupt', 'ontology history receipt missing');
+    latestByRecord.set(entry.after.id, entry);
+    const commandKey = `${entry.commandId}:${entry.revision}`;
+    const covered = changedByCommand.get(commandKey);
+    if (covered) covered.add(entry.after.id);
+    else changedByCommand.set(commandKey, new Set([entry.after.id]));
+  }
+  for (const [key, receipt] of Object.entries(doc.receipts)) {
+    const covered = changedByCommand.get(`${key}:${receipt.revision}`);
+    if (receipt.changedIds.some(id => !covered?.has(id)))
+      throw new OntologyError('store_corrupt', 'ontology receipt has no matching history');
   }
   for (const record of Object.values(doc.records)) {
     if (record.source.kind === 'legacy') continue; // read-only projections intentionally have no invented history.
-    const latest = [...doc.history].reverse().find(entry => entry.after.id === record.id);
+    const latest = latestByRecord.get(record.id);
     if (!latest || latest.after.version !== record.version || latest.after.kind !== record.kind)
       throw new OntologyError('store_corrupt', 'ontology record does not match its recorded history');
   }
