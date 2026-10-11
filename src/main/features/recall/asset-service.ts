@@ -1603,11 +1603,19 @@ export async function rollbackAbilityAsset(
   // （版本流只追加、物理不动），回滚不能成为「把烂标题带回在用版」的通道。
   // 目标快照标题不合规时保留在用标题，其余字段照常回滚；在锁内置位供台账注记。
   let titleRetained = false;
-  const updated = await updateRecallJsonRecord(userId, 'ability-assets', assetId, (raw) => {
+  const updated = await updateRecallJsonRecord(userId, 'ability-assets', assetId, async (raw) => {
     if (!raw) throw new Error('recall ability asset not found');
     const current = asAsset(raw);
     assertMutableAbilityAsset(current);
     if (current.version === toVersion) throw new Error('ability asset is already at that version');
+    // P-r1-86 锁内重校（与 selectAbilityAssetVersion 同款）：上面的版本清单读在
+    // 锁外，窗口期内目标版本可能已被并发删除（deleteAbilityAssetVersion 全程持
+    // 同一把资产记录锁，删除语义是「真删不可恢复」）。锁内重列版本流，目标版本
+    // 已蒸发就拒绝——不让已删除的版本内容借回滚以新版本号复活。版本行只追加
+    // 不改写，锁外读到的 target 快照与锁内一致。
+    if (!(await listAbilityAssetVersions(userId, assetId)).some((record) => record.version === toVersion)) {
+      throw new Error('recall ability asset version not found');
+    }
     beforeAsset = current;
     // scope 单独摘出且不倒退（2026-09-17 对齐 select 的守卫）：旧快照可能带
     // 词表化前的自由文本 scope，原样写回会再触发 legacy 迁移垫空版本。
@@ -1913,6 +1921,22 @@ export async function mergeAbilityAssets(
       activeVersion: activeCursor,
       updatedAt: new Date().toISOString(),
     };
+  }));
+  // 归并最终写盘会经 store 层 withPendingAssetVersion 为 activeCursor 再记一条
+  // pending 版本快照（快照=合并后主记录），而该号版本行已在上面直接入流（快照
+  // =source 侧）——两条必不相等，启动期 recoverAbilityAssetVersionJournals 重放
+  // 时撞 'immutable version snapshot conflict'，warn 后永久滞留、每次启动重复
+  // 告警。镜像 appendAbilityAssetVersionLine 的清账段：落盘后在同一资产记录锁
+  // 内清掉该号 pending 行（读侧 listAbilityAssetVersions 本就偏好流内行，对外
+  // 行为不变）。
+  await withCognitionTransition(userId, () => fileEditLock(recallJsonRecordPath(userId, 'ability-assets', targetAssetId)).runExclusive(async () => {
+    const raw = await readRecallJsonRecord(userId, 'ability-assets', targetAssetId);
+    if (!raw) return;
+    const queued = pendingAssetVersions(raw);
+    if (!queued.some((row) => String(row.version) === String(activeCursor))) return;
+    const clean = { ...raw, pendingVersionSnapshots: queued.filter((row) => String(row.version) !== String(activeCursor)) };
+    if (!clean.pendingVersionSnapshots.length) delete (clean as RecallJsonRecord).pendingVersionSnapshots;
+    await persistCognitionSource(userId, 'ability-assets', targetAssetId, clean, () => writeJson(recallJsonRecordPath(userId, 'ability-assets', targetAssetId), clean));
   }));
   // source 归档 + 去向 + 双向审计。
   let beforeSource: RecallAbilityAssetRecord | undefined;
