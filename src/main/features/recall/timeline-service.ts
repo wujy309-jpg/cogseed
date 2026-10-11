@@ -2,6 +2,25 @@ import { listAbilityAssetAudit, listAbilityAssetVersions, listAbilityAssets, rea
 import { listAllContextProjections, readContextProjection, type ProjectionAuthorization } from './context-projection';
 import { listEffectivenessProofs, listTransferProofs, transferReceiptIsProven, type TransferProofRecord } from './proof-service';
 import { listRecallUsage } from './usage-service';
+import { createLogger } from '../../logger';
+
+const log = createLogger('recall.timeline');
+
+/** 一条坏记录不该把整个时间线拖垮（同函数回执段 2026-09-19 的降级口径）：
+ *  集合读取对记录形状错误降级为空集、少几行事件；真正的 IO 故障（带 errno
+ *  code）照旧上抛——静默少几行等于把磁盘问题伪装成「时间线变短了」。 */
+async function readTimelineSet<T>(
+  label: string,
+  read: () => Promise<T[]>,
+): Promise<T[]> {
+  try {
+    return await read();
+  } catch (error) {
+    if (typeof (error as NodeJS.ErrnoException).code === 'string') throw error;
+    log.warn('timeline source degraded; events from it are skipped', { source: label, error: (error as Error).message });
+    return [];
+  }
+}
 
 export type RecallAssetTimelineKind =
   | 'asset_created'
@@ -128,6 +147,7 @@ function auditTimelineKind(action: unknown): RecallAssetTimelineKind | undefined
     case 'maturity_corrected':
     case 'merged_from':
     case 'merged_into':
+    case 'version_deleted':
       return 'asset_updated';
     default: return undefined;
   }
@@ -295,10 +315,12 @@ export async function listAbilityAssetTimeline(userId: string, assetId: string):
     }
   };
   // 检修剪（2026-09-16）：proofs 只读一次，建投影索引供全部 usage 行查询
-  // （下方 transfer 段复用同一份，避免重复全量扫描）。
-  const transferProofs = await listTransferProofs(userId);
+  // （下方 transfer 段复用同一份，避免重复全量扫描）。三处集合读取走
+  // readTimelineSet 降级：单条坏证明/坏 usage 行只少对应事件行，不再拖垮
+  // 全部资产时间线（与 kstar episodes / 回执段同款防护，此前唯独这三处裸读）。
+  const transferProofs = await readTimelineSet('transfer-proofs', () => listTransferProofs(userId));
   const transferProofByProjection = await buildTransferProofIndex(userId, transferProofs);
-  for (const usage of await listRecallUsage(userId, assetId)) {
+  for (const usage of await readTimelineSet('usage-records', () => listRecallUsage(userId, assetId))) {
     // 会话 id：新投影的 conversationId 优先；旧数据用 episode 的
     // taskRunId→sessionId 回溯——用户要求老记录也能看出"在哪个对话里被用"。
     const usageConversationId = (await conversationOfProjection(usage.projectionId))
@@ -379,7 +401,7 @@ export async function listAbilityAssetTimeline(userId: string, assetId: string):
     }
   }
 
-  const effectivenessProofs = await listEffectivenessProofs(userId);
+  const effectivenessProofs = await readTimelineSet('effectiveness-proofs', () => listEffectivenessProofs(userId));
   const transferById = new Map(transferProofs.map((proof) => [proof.id, proof]));
   for (const proof of effectivenessProofs) {
     const transfer = transferById.get(proof.transferProofId);
