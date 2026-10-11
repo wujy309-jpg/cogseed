@@ -1100,10 +1100,13 @@ function asCandidate(value: RecallJsonRecord): RecallCandidateRecord {
     ...(ontologyHandoff ? { ontologyHandoff } : {}),
     ...(origin ? { origin } : {}),
     // 正文规范警示（2026-09-29）：读时派生、不落盘——只给人看与治理轮圈选，
-    // 不拦截写入（正文是知识本体，把关权在人，设计定稿）。
+    // 不拦截写入（正文是知识本体，把关权在人，设计定稿）。无条件权威覆盖：
+    // 盘上若残留旧写路径落下的陈旧 statementIssues，fresh 为空时会经上方
+    // 展开外泄（用户改正文后警示不消失），显式置 undefined 使读侧始终等于
+    // 即时派生值。
     ...(recallStatementIssues({ statement: value.judgment, type: value.suggestedType }).length
       ? { statementIssues: recallStatementIssues({ statement: value.judgment, type: value.suggestedType }) }
-      : {}),
+      : { statementIssues: undefined }),
   } as RecallCandidateRecord;
 }
 
@@ -1513,7 +1516,11 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
       || hasNewSourceRefs(existing.evidenceRefs, evidenceRefs);
     if (hasNewProvenance) {
       const asset = await readAbilityAsset(userId, existing.promotedAssetId);
-      if (asset.status === 'revoked' || asset.status === 'purged') {
+      // 软删除（status='deleted'）与 revoked/purged 同为终态：mergeAbilityAssetEvidence
+      // 的 assertMutableAbilityAsset 对 deleted 抛 'deleted ability asset cannot be
+      // changed'，会打挂整条 saveRecallCandidate。三态一并走 existing=undefined
+      // 新建候选（查重池 loadDedupPools 本就把三态并列排除）。
+      if (asset.status === 'revoked' || asset.status === 'purged' || asset.status === 'deleted') {
         existing = undefined;
       } else {
         await appendAssetEvidence(userId, asset, {
