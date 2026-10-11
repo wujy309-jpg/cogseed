@@ -109,15 +109,17 @@ export async function ensurePoDoc(uid: string): Promise<PoDocument> {
   if (fs.existsSync(filePath)) return loadPoDocSync(uid);
   return fileEditLock(filePath).runExclusive(async () => {
     if (fs.existsSync(filePath)) return loadPoDocSync(uid); // 双检：锁内可能已被迁移
-    const { backupV1Dir } = await import('./migrate') as typeof import('./migrate');
     const doc = importFromV1Sync(uid);
     if (doc) {
       // v1 目录存在（返回非 null）→ 无论导入结果空否都落盘结清：空 JSON 即
       // marker，此后读路径（loadPoDocSync）不再全量重扫 v1（读 groups.md、
       // 扫 .history、孤儿复活）；null = 新用户，维持懒创建不落盘。
-      backupV1Dir(uid);
+      // 顺序约束：必须先落盘再退役 v1 台账（backupV1Dir 内删 groups.md）——
+      // 落盘失败时 v1 原文仍在，迁移可无损重试；否则空文档会被当作迁移结果固化。
       doc.migratedFromV1At = doc.migratedFromV1At || nowIso();
       await writeJson(filePath, doc);
+      const { backupV1Dir } = await import('./migrate') as typeof import('./migrate');
+      backupV1Dir(uid);
       renderAllGroups(uid, doc);
       log.info('po v1 import persisted', { uid, groups: doc.groups.length, trash: doc.trash.length });
     }
@@ -248,15 +250,18 @@ export async function editPoDoc(
     }
 
     // 首次落盘：如果 JSON 还不存在，这次写入就是迁移结果的持久化（或新用户
-    // 的第一笔）——先把 v1 目录备份走，再落 marker 表示「v1 已结清」，此后
-    // 读路径不会再尝试导入。
+    // 的第一笔）。顺序约束：先落 marker（JSON），落盘成功后再备份走 v1 目录、
+    // 退役 groups.md 台账——落盘失败时 v1 原文仍在，可无损重试；且备份必须
+    // 抢在下方 syncGroupRender 覆写 v1 渲染副本之前，备份里才是 v1 原始字节。
     const firstPersist = !fs.existsSync(filePath);
     if (firstPersist) {
-      const { backupV1Dir } = await import('./migrate') as typeof import('./migrate');
-      backupV1Dir(uid);
       doc.migratedFromV1At = doc.migratedFromV1At || nowIso();
     }
     await persistPoSource(uid, doc, () => writeJson(filePath, doc));
+    if (firstPersist) {
+      const { backupV1Dir } = await import('./migrate') as typeof import('./migrate');
+      backupV1Dir(uid);
+    }
     for (const [, { before }] of touched) {
       const after = doc.groups.find((g) => g.id === before.id);
       if (after) syncGroupRender(uid, after);
