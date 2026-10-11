@@ -7,6 +7,9 @@ import {
 } from './proof-service';
 import { readContextProjection } from './context-projection';
 import { recommendAbilityAssetAction } from './asset-service';
+import { createLogger } from '../../logger';
+
+const log = createLogger('recall.effectiveness-feedback');
 
 export type RecallEffectivenessFeedback = 'positive' | 'neutral' | 'negative' | 'invalid' | 'rework';
 
@@ -62,11 +65,19 @@ async function applyRecommendedAssetAction(
     ? `${proof.observedResult.slice(0, 997)}...`
     : proof.observedResult;
   for (const item of transfer.assetVersions) {
-    await recommendAbilityAssetAction(userId, item.assetId, {
-      actor: 'system',
-      action,
-      reason,
-    });
+    // 逐资产降级（照 usage-feedback-service 对同一 recommendAbilityAssetAction 的
+    // 先例）：负向反馈到达时资产可能已被删除/撤销/清除，assertMutableAbilityAsset
+    // 会抛错——效果证明已先行落盘，单条推荐失败只记日志，不炸整条反馈 API、
+    // 不中断剩余资产的推荐（重试也不会因此累积重复证明）。
+    try {
+      await recommendAbilityAssetAction(userId, item.assetId, {
+        actor: 'system',
+        action,
+        reason,
+      });
+    } catch (error) {
+      log.warn('effectiveness recommendation skipped', { assetId: item.assetId, action, error: (error as Error).message });
+    }
   }
 }
 

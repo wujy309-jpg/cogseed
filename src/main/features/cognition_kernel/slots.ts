@@ -203,7 +203,10 @@ export async function resolveAssetSlots(
     const eligible = await filterRecallAssetsForAgentRead(uid, assets, (context ?? {}) as Parameters<typeof filterRecallAssetsForAgentRead>[2]);
     eligibleIds = new Set(eligible.map(a => a.id));
   } catch {
-    // 准入判定失败按"全部不可用"处理：宁少取，不越权。
+    // 准入判定失败按"全部不可用"处理：宁少取，不越权。此前 catch 后
+    // eligibleIds 保持 undefined，下方 `!eligibleIds ||` 会把它反向解读成
+    // 「全部放行」，与注释语义相反。
+    eligibleIds = new Set();
   }
   for (const slot of slots) {
     const required = slot.required !== false;
