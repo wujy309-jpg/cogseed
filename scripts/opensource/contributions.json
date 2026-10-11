@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "repository": "bonc-ai/cogseed",
+  "contributions": [
+    {
+      "pr": 406,
+      "headSha": "9bfc3af368dd707c8d2cc0c6d9f1798fba1fc3e8"
+    }
+  ]
+}

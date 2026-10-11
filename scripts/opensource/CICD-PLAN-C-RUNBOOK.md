@@ -1,10 +1,10 @@
 # CogSeed 新版本发布 SOP：私仓 → 公仓 → 正式发布
 
-适用仓库：`bonc-ai/cogseed-internal`（私仓）与 `bonc-ai/cogseed`（公仓）。维护日期：2026-10-10。
+适用仓库：`bonc-ai/cogseed-internal`（私仓）与 `bonc-ai/cogseed`（公仓）。维护日期：2026-10-11。
 
 本手册是后续版本发布的统一入口，保留原文件名。所有版本号、SHA、PR 编号与 run ID 都必须取本次实际值，不复用历史候选。本文件和发布证据仅留私仓，不进入公开快照。
 
-> 标准顺序：私仓 develop 定版 → PR 晋升 cicd → 同 SHA 私仓 push 检查 → 标准导出同步 → 公仓 PR 完整 CI → 维护者批准 → 合并 main → 同 SHA main push CI → 负责人正式发版确认 → 创建 tag → 签名环境批准 → 自动构建并发布 → 下载、安装、升级与分发验收。
+> 标准顺序：私仓 develop 定版 → PR 晋升 cicd → 同 SHA 私仓 push 检查 → 外部贡献公仓 CI／审批／保留作者合并 → 标准导出同步 → 公仓 PR 完整 CI → 维护者批准 → 合并 main → 同 SHA main push CI → 负责人正式发版确认 → 创建 tag → 签名环境批准 → 自动构建并发布 → 下载、安装、升级与分发验收。
 
 ## 1. 角色、成本与不可越过的边界
 
@@ -142,6 +142,31 @@ gh run list -R "$PRIVATE_REPO" --workflow compliance.yml \
 
 注意本仓库 fetch 配置可能只跟踪 develop；`git fetch origin develop cicd` 不保证更新 `origin/cicd`。采用上面的完整 refspec。
 
+### 阶段 B.1：外部贡献归属回流
+
+1. 定版前在同一私仓变更中登记每个已接受的外部 PR，保留作者、DCO、`Source-PR`
+   和 `scripts/opensource/contributions.json` 的最终公开 head。登记表随完整树晋升
+   cicd；检查与 develop 定版内容一致，不删减历史条目。手工复制贡献同样须登记。
+2. 固定源码 SHA 通过阶段 B 门禁后，逐条核对对应公仓 PR：接受的内容已导入本次候选；
+   新增祖先全部属于当前清洁公开基线之后的已审核公开提交。旧基线 PR 须清洁迁移，
+   不得接回旧私有历史。仅验证最终 tree 相同不足以替代逐提交历史审查。
+3. 导入后保持原 PR 打开；仅因导入而关闭的可重新打开。需要追上公仓 main 时正常
+   更新 PR 分支，保留原始提交，然后重新检查最新 head 的差异、CI 和审批。
+4. 按阶段 D 相同门禁完成当前 PR head 的 **15/15 必需检查 success** 和正式
+   CODEOWNERS Approve；执行人不得自批代替。合并外部 PR 使用 **`--merge`** 和
+   `--match-head-commit`，不得使用 squash/rebase 丢弃原始贡献提交；不要删除贡献者分支。
+5. 合并后逐条验证登记 head 是当前公仓 main 的祖先，再开始阶段 C。
+   公仓 main 在同步期间前进时，重新生成基于最新 main 的候选。
+
+内容已经通过快照公开的历史修复，额外要求普通合并的完整 tree 等于修复前 main，
+合并后再次确认；有冲突或差异时先停下审查，不能以重复应用、空提交或强推冒充归属恢复。
+历史修复仍需要同样的 CI 和正式审核。若正在执行阶段 E 到正式发布，先遵守该阶段的
+main 冻结安排，不使已批准 tag 的来源 SHA 失效。此次修复不创建新 tag 或 Release。
+
+阶段 C 的 prepare 检查和 `sync.mjs` 均从固定源码读取登记，拒绝贡献 head 尚未进入
+公仓 main 的快照；无内容变化也不跳过。首次启用新工具时，先将含登记表的源码重新
+晋升 cicd 并通过原有门禁。空登记只适用于确实没有外部贡献的源码，不是旧版本兼容开关。
+
 ### 阶段 C：导出审查与标准同步
 
 本地导出可用于提前发现分类问题；只导出提交中的文件，不包含工作区未提交内容：
@@ -206,6 +231,8 @@ gh pr checks "$PUBLIC_PR" -R "$PUBLIC_REPO"
    gh pr merge "$PUBLIC_PR" -R "$PUBLIC_REPO" --squash \
      --match-head-commit "$PUBLIC_PR_SHA" --delete-branch
    ```
+
+本阶段的 squash 仅用于快照 PR；外部贡献 PR 必须按 B.1 保留提交历史合并。
 
 删除已合并的 `public-source-sync` 分支是收尾的一部分。残留分支没有对应 open PR 时，下一次同步会拒绝覆盖；先确认确为已合并旧分支，再清理，不强行覆盖未知分支。
 

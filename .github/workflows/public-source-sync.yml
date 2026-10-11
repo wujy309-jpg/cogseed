@@ -92,6 +92,23 @@ jobs:
           BASELINE_MERGE_BASE="$(gh api "repos/bonc-ai/cogseed/compare/$BASELINE_SHA...$PUBLIC_BASE" --jq '.merge_base_commit.sha')"
           [[ "$BASELINE_MERGE_BASE" == "$BASELINE_SHA" ]] || { echo '::error::Public main is outside the approved clean baseline'; exit 1; }
           echo "public_base=$PUBLIC_BASE" >> "$GITHUB_OUTPUT"
+      - name: Check out public history for contribution attribution
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: bonc-ai/cogseed
+          ref: ${{ steps.identity.outputs.public_base }}
+          path: public-history
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require imported contributions in public main history
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          PUBLIC_BASE: ${{ steps.identity.outputs.public_base }}
+        run: |
+          set -euo pipefail
+          node tooling/scripts/opensource/contributions.mjs \
+            "$GITHUB_WORKSPACE/source" "$SOURCE_SHA" \
+            "$GITHUB_WORKSPACE/public-history" "$PUBLIC_BASE"
       - name: Test private export and sync contracts
         working-directory: tooling
         # YAML contract tests reuse the existing dependency; no models/native builds.

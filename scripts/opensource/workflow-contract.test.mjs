@@ -120,3 +120,20 @@ test('publication binds scan evidence, authorizer and expected public base', () 
   assert.doesNotMatch(remote, /git .*push .*refs\/heads\/main|gh pr merge|--admin|--force origin main/);
   assert.doesNotMatch(remote.slice(remote.indexOf('gh pr create')), /SOURCE_SHA|source_sha|cicd|cogseed-internal/);
 });
+
+test('public author history is verified before write credentials and snapshot mutation', () => {
+  const checkout = step(prepare, 'Check out public history for contribution attribution');
+  assert.match(checkout, /repository: bonc-ai\/cogseed/);
+  assert.match(checkout, /ref: \$\{\{ steps\.identity\.outputs\.public_base \}\}/);
+  assert.match(checkout, /fetch-depth: 0/);
+  assert.match(checkout, /persist-credentials: false/);
+  const attribution = step(prepare, 'Require imported contributions in public main history');
+  assert.match(attribution, /SOURCE_SHA: \$\{\{ inputs\.source_sha \}\}/);
+  assert.match(attribution, /PUBLIC_BASE: \$\{\{ steps\.identity\.outputs\.public_base \}\}/);
+  assert.match(attribution, /contributions\.mjs/);
+  assert.match(attribution, /"\$GITHUB_WORKSPACE\/source" "\$SOURCE_SHA"/);
+  assert.match(attribution, /"\$GITHUB_WORKSPACE\/public-history" "\$PUBLIC_BASE"/);
+  assert.ok(prepare.indexOf('Require imported contributions') < prepare.indexOf('Capture compact scan evidence'));
+  assert.match(publish, /needs: prepare|Stage idempotent public snapshot commit locally/);
+  assert.match(workflow, /publish_pr:\n    needs: prepare/);
+});

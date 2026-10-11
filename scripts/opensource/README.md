@@ -19,11 +19,34 @@ RD 在 `bonc-ai/cogseed-internal` 开发；定版后从固定提交导出公开�
 从私仓定版到公仓 CI、维护者审批、正式 tag／签名发布及分发验收，统一执行 [新版本发布 SOP](./CICD-PLAN-C-RUNBOOK.md)。本节仅概述源码同步，不替代正式发版确认。
 
 1. RD 按现有流程合入 cicd，选择完整 40 位提交 SHA，确认该 SHA 在 cicd 历史中，且该 SHA 最新的 cicd push CI 和 compliance 均成功。
-2. 确认私仓 develop 中的导出清单和引用提示复核值适用于该版本。发起 `Public source snapshot PR` workflow，只填 `source_sha`。
+2. 先按下节核验贡献登记和公仓作者历史；外部 PR 未完成合并时停止。确认私仓 develop 中的导出清单和引用提示复核值适用于该版本。发起 `Public source snapshot PR` workflow，只填 `source_sha`。
 3. workflow 使用发起时固定的 develop 工具版本和指定源码 SHA，执行分类、逐文件哈希校验、密钥扫描及同 SHA 门禁，再创建或更新公仓 `public-source-sync` → `main` PR。
-4. 维护者审阅公仓差异并按仓库规则合并。workflow 不合并 PR、不创建 Release、不修改 main 或旧标签。公开贡献先导入私仓，再随后续版本回流，避免下一次快照覆盖尚未导入的贡献。
+4. 维护者审阅公仓差异并按仓库规则合并。workflow 不合并 PR、不创建 Release、不修改 main 或旧标签。公开贡献先导入私仓并登记；源码候选通过门禁后，外部 PR 先完成必需 CI 和正式审核，以 merge commit 保留原始作者提交，之后才发起快照同步。快照 PR 仍可 squash，因为外部提交已在其公仓父历史中。
 
 相同内容不生成重复提交；已有同步 PR 可按精确 lease 更新。main 在准备期间变化会停止运行。旧同步分支无对应 open PR 时停止，不覆盖来历不明的分支。
+
+## 外部贡献归属门禁
+
+导入外部 PR 时保留作者、DCO 和 `Source-PR: https://github.com/bonc-ai/cogseed/pull/<编号>`
+尾注，并在同一私仓变更中更新 `contributions.json`：每条记录含 `pr` 和接受的最终
+公开 `headSha`（完整 40 位 SHA）。登记的是原始贡献 head，不是私仓 cherry-pick SHA、
+同步 SHA 或为了追上 main 新增的 merge SHA。记录为累计清单；后续重构或撤销内容也
+不删除原贡献记录。审核者核对 PR、接受范围和 head，不能用某个已有 main SHA 顶替。
+未使用尾注的手工复制也必须登记；自动检查不能从任意复制的文件反推出原作者。
+
+`contributions.mjs` 从固定源码 SHA 读取登记表，适配 develop → cicd 的完整树晋升；
+不读取未提交的登记改动，也不要求私仓导入提交出现在 cicd 祖先中。缺失、无效、重复
+登记、历史条目被删除或替换、可见 `Source-PR` 缺项或任何登记 head 不在预期公仓 main 祖先中，都阻止同步。
+第一次使用新工具前，源码候选必须携带登记表；旧候选缺表应重新晋升，不能用空表绕过。
+
+工作流 prepare 阶段在发放公仓写 token 前检查一次，`sync.mjs` 生成任何快照前再检查；
+无内容变化和本地演练同样检查。私有映射记录登记摘要、PR 列表和检查数量。
+`--bootstrap` 遇到非空登记表拒绝执行，不能通过重建根提交丢弃已登记贡献。
+
+只允许当前清洁基线之后的公开历史。切换前 PR 必须清洁迁移，不能接回旧祖先；
+源码文件相同并不证明历史可以公开。修复已被快照吸收的贡献时先验证普通合并的完整
+树等于当前 main，再走公仓 CI 和 CODEOWNERS 审批；合并后验证原 head 是 main 祖先且
+文件树未变。新 PR 按发布 SOP 的贡献回流阶段执行，历史修复同样不豁免门禁。
 
 ## 首次启用配置
 

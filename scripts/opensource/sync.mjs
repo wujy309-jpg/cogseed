@@ -11,6 +11,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { verifyContributions } from './contributions.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SOURCE_REPOSITORY = 'bonc-ai/cogseed-internal';
@@ -34,7 +35,7 @@ function help() {
   --commit-time <Unix seconds>  Optional fixed run time for reproducible retries across fresh checkouts; defaults to the current time. The commit is always at least one second newer than its public parent.
   --allow-review-required-local  Local rehearsal only: bypass reviewed, scan, and approval gates. Never authorizes publishing.
 
-The approval JSON binds sourceSha, exportSha256, policySha256 and referenceHintsSha256. Recurring sync requires authorizationMethod "workflow_dispatch", authorizedBy, and positive workflowRunId/workflowRunAttempt. The one-time emergency path accepts authorizationMethod "explicit_user_emergency", authorizedBy, scope "single_snapshot_pr", a private authorizationReference file, and expiresAt no later than ${EMERGENCY_EXPIRY}; it rejects workflowRunId/workflowRunAttempt and is refused at or after the expiry. Bootstrap accepts authorizationMethod "explicit_user_cutover" with a real private authorizationReference file, scope "public_heads_and_tags_only", preserveReleaseAssets:true, and acceptRetainedPullRefs:true. These local JSON files record authorization; they are not cryptographic identity credentials. No remote operations are performed.\n`;
+The selected source must contain scripts/opensource/contributions.json. Every registered public PR head must already be in the expected public base history, including unchanged snapshots and local rehearsals. Bootstrap refuses nonempty contribution ledgers.\n\nThe approval JSON binds sourceSha, exportSha256, policySha256 and referenceHintsSha256. Recurring sync requires authorizationMethod "workflow_dispatch", authorizedBy, and positive workflowRunId/workflowRunAttempt. The one-time emergency path accepts authorizationMethod "explicit_user_emergency", authorizedBy, scope "single_snapshot_pr", a private authorizationReference file, and expiresAt no later than ${EMERGENCY_EXPIRY}; it rejects workflowRunId/workflowRunAttempt and is refused at or after the expiry. Bootstrap accepts authorizationMethod "explicit_user_cutover" with a real private authorizationReference file, scope "public_heads_and_tags_only", preserveReleaseAssets:true, and acceptRetainedPullRefs:true. These local JSON files record authorization; they are not cryptographic identity credentials. No remote operations are performed.\n`;
 }
 
 function args(argv) {
@@ -442,6 +443,8 @@ function run(options) {
   if (authorization?.reference && within(root, authorization.reference.path)) {
     fail('Bootstrap authorizationReference must stay outside the public checkout');
   }
+  const contributions = verifyContributions({ privateRepo: privateRoot, sourceSha: manifest.sourceSha,
+    publicRepo: root, publicBase: options.bootstrap ? null : options['expected-base'] });
   const mapping = mappingPath(options['mapping-out'], [privateRoot, candidate, root]);
   // Reserve a private output before any Git object/ref mutation. A failed run
   // removes the reservation, leaving only unreachable local objects if needed.
@@ -458,6 +461,7 @@ function run(options) {
       sourceSha: manifest.sourceSha, exportSha256: manifest.exportSha256,
       publicBaseSha: options.bootstrap ? null : options['expected-base'], publicSha: result.publicSha,
       publicBranch: result.branch, publicTreeSha: result.tree, status: result.status,
+      contributions,
       policyStatus, referenceHintsCount, reviewRequired: Boolean(requiresReview), publicationApproved: false,
       localReviewOverride: Boolean(options['allow-review-required-local']),
       authorizationMethod: authorization?.method || null, authorizedBy: authorization?.authorizedBy || null,
