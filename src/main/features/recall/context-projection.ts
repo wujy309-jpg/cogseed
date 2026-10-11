@@ -1299,6 +1299,18 @@ export async function createAutomaticContextProjection(
     if (projection.status === 'confirmed') return projection;
   }
 
+  // 基线开关（2026-09-22 起默认反转）：正文自动注入默认**关闭**——查重与
+  // 知识发现由常驻目录＋模型自取承担（A/B 对照实验：注入抑制自取 5↔10 次、
+  // 命中增益仅 5/12↔3/12，砍注入的决策依据）。COGSEED_RECALL_BASELINE_TOP=N>0
+  // 显式恢复旧的"自动挑 N 条塞正文"行为（回滚通道与实验复跑都保留）。
+  // 在全量资格评估之前检查两个自动使用开关，免去全部禁用时的目录读与逐资产 IO。
+  const baselineTopEnv = process.env.COGSEED_RECALL_BASELINE_TOP;
+  const baselineTop = baselineTopEnv === undefined || baselineTopEnv.trim() === '' ? Number.NaN : Number(baselineTopEnv);
+  const baselineEnabled = Number.isFinite(baselineTop) && baselineTop > 0;
+  // Semantica is a separate explicit opt-in; skip qualification IO only when
+  // both automatic reuse paths are disabled.
+  if (!baselineEnabled && !isSemanticaEnabled(userId)) return undefined;
+
   const allAssets = await listAbilityAssets(userId);
   const workspaceRefs = workspaceId ? await listWorkspaceAssetReferences(userId) : [];
   const workspaceRefsByAsset = new Map(
@@ -1349,21 +1361,7 @@ export async function createAutomaticContextProjection(
   }
   if (!eligibleAssets.length) return undefined;
 
-  // 基线开关（2026-09-22 起默认反转）：正文自动注入默认**关闭**——查重与
-  // 知识发现由常驻目录＋模型自取承担（A/B 对照实验：注入抑制自取 5↔10 次、
-  // 命中增益仅 5/12↔3/12，砍注入的决策依据）。COGSEED_RECALL_BASELINE_TOP=N>0
-  // 显式恢复旧的"自动挑 N 条塞正文"行为（回滚通道与实验复跑都保留）。
-  const baselineTopEnv = process.env.COGSEED_RECALL_BASELINE_TOP;
-  const baselineTop = baselineTopEnv === undefined || baselineTopEnv.trim() === '' ? Number.NaN : Number(baselineTopEnv);
-  const baselineEnabled = Number.isFinite(baselineTop) && baselineTop > 0;
-  // Semantica is an explicit user opt-in to automatic governed reuse. It must
-  // not remain inert merely because the older baseline-injection experiment
-  // is off. With Semantica disabled, the legacy baseline switch keeps its
-  // exact behavior.
-  const automaticSelectionEnabled = baselineEnabled || isSemanticaEnabled(userId);
-  const selection = automaticSelectionEnabled
-    ? await applySemanticSelection(userId, eligibleAssets, taskText, options, [], input.taskText, workspaceId, projectId)
-    : { assets: [] as RecallAbilityAssetRecord[], degraded: false };
+  const selection = await applySemanticSelection(userId, eligibleAssets, taskText, options, [], input.taskText, workspaceId, projectId);
   const selectedAssets = selection.assets;
   if (!selectedAssets.length) return undefined;
 

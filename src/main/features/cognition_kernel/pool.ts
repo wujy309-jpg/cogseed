@@ -314,6 +314,14 @@ export async function decidePoolItem(
     if (corrupt) return { ok: false, error: `cognition pool corrupt; write refused (${corrupt.reason})` };
     const item = doc.items.find((entry) => entry.id === itemId);
     if (!item) return { ok: false, error: 'pool item not found' };
+    // 锁内终态复查（confirm/reject 与 defer 分支同款）：confirm 的统一库落地
+    // 在锁外（上方 await applyCognitionDeltas），窗口内同槽 submitToPool 可能把
+    // 该条顶替成 rejected(superseded)、或并发决定已改变状态——不复查会把已
+    // 拒/已被顶替的条目改写成 confirmed，违背池『同槽只留最新』『已决定不可
+    // 再决定』的语义。
+    if (item.status !== 'pending' && item.status !== 'deferred') {
+      return { ok: false, error: `pool item 已 ${item.status}` };
+    }
     const now = nowIso();
     if (decision === 'confirm') {
       item.status = 'confirmed';
