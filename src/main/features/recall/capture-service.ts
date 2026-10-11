@@ -1565,12 +1565,36 @@ async function listAllRecallCaptures(userId: string): Promise<RecallCaptureRecor
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw error;
   }
-  const records = await Promise.all(names
+  // 逐条降级，而不是让一条坏 capture 把整个列表、终端事件入队和调度恢复全部
+  // 读失败（照抄 workspace-refs / listAbilityAssets 的既有口径）：记录形状的
+  // 不变量分布在 store 的 validateRecallRecord 和这里的 asCapture 两层，任一层
+  // 一抛，好记录也列不出。只降级记录形状的错；真正的 IO 故障（带 errno code）
+  // 照旧上抛——静默少几条等于把磁盘问题伪装成「没有整理任务」。
+  const reads = await Promise.all(names
     .filter((name) => name.endsWith('.json') && safeId(name.slice(0, -5)))
-    .map((name) => readRecallJsonRecord(userId, CAPTURE_COLLECTION, name.slice(0, -5))));
-  return records
-    .filter((record): record is RecallJsonRecord => Boolean(record))
-    .map(asCapture)
+    .map(async (name) => {
+      const id = name.slice(0, -5);
+      try {
+        return { id, record: await readRecallJsonRecord(userId, CAPTURE_COLLECTION, id) };
+      } catch (error) {
+        if (typeof (error as NodeJS.ErrnoException).code === 'string') throw error;
+        return { id, error: error as Error };
+      }
+    }));
+  const captures: RecallCaptureRecord[] = [];
+  for (const read of reads) {
+    if (read.error) {
+      log.warn('skipped an unreadable recall capture', { captureId: read.id, error: read.error.message });
+      continue;
+    }
+    if (!read.record) continue;
+    try {
+      captures.push(asCapture(read.record));
+    } catch (error) {
+      log.warn('skipped a malformed recall capture', { captureId: read.id, error: (error as Error).message });
+    }
+  }
+  return captures
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.id.localeCompare(left.id));
 }
 
@@ -1791,27 +1815,34 @@ async function loadStoredPromptMessages(
   }));
 }
 
+/** 筛选自动策略的排队 capture；把已加载的消息随结果带出，供提取阶段复用
+ *  （同一次 run 内免去对同一会话 JSONL 的第二次全量翻页读）。manual 或已
+ *  qualified 的重跑不读消息，promptMessages 为 undefined、提取阶段自读。 */
 async function screenQueuedRecallCapture(
   userId: string,
   id: string,
   capture: RecallCaptureRecord,
-): Promise<RecallCaptureRecord> {
-  if (capture.executionPolicy === 'manual' || capture.screeningStatus === 'qualified') return capture;
+): Promise<{ capture: RecallCaptureRecord; promptMessages?: CapturePromptMessage[] }> {
+  if (capture.executionPolicy === 'manual' || capture.screeningStatus === 'qualified') {
+    return { capture };
+  }
   let promptMessages: CapturePromptMessage[];
   try {
     promptMessages = await loadStoredPromptMessages(userId, capture);
   } catch {
     const finishedAt = new Date().toISOString();
-    return updateCapture(userId, id, (current) => current.status !== 'queued'
-      ? current
-      : {
-          ...current,
-          status: 'failed',
-          visibility: 'internal',
-          errorCode: 'source_unavailable',
-          finishedAt,
-          updatedAt: finishedAt,
-        });
+    return {
+      capture: await updateCapture(userId, id, (current) => current.status !== 'queued'
+        ? current
+        : {
+            ...current,
+            status: 'failed',
+            visibility: 'internal',
+            errorCode: 'source_unavailable',
+            finishedAt,
+            updatedAt: finishedAt,
+          }),
+    };
   }
   const screening = screenRecallCaptureValue(promptMessages);
   const screenedAt = new Date().toISOString();
@@ -1846,7 +1877,7 @@ async function screenQueuedRecallCapture(
       // 统计失败不影响筛选主流程。
     });
   }
-  return screened;
+  return { capture: screened, promptMessages };
 }
 
 function isSettledAutomaticCandidate(candidate: Pick<RecallCandidateRecord, 'status'>): boolean {
@@ -1875,7 +1906,12 @@ export async function runRecallCapture(
           updatedAt: new Date().toISOString(),
         });
   }
-  queued = await screenQueuedRecallCapture(userId, id, queued);
+  const screened = await screenQueuedRecallCapture(userId, id, queued);
+  // 筛选阶段已加载过同一份消息（messageIds 在 capture 创建时固定，两次读之间
+  // 本就无锁），提取阶段复用，免去对同一会话 JSONL 的第二次全量翻页读；
+  // qualified/manual 重跑没读过（undefined）则提取阶段自读。
+  const screenedPromptMessages = screened.promptMessages;
+  queued = screened.capture;
   if (queued.status !== 'queued') return queued;
   let claimed = false;
   const startedAt = new Date().toISOString();
@@ -1910,7 +1946,7 @@ export async function runRecallCapture(
     try {
       [conversation, promptMessages] = await Promise.all([
         chats.getConversation(userId, capture.conversationId),
-        loadStoredPromptMessages(userId, capture),
+        screenedPromptMessages ?? loadStoredPromptMessages(userId, capture),
       ]);
     } catch (error) {
       if (error instanceof CaptureFailure) throw error;
