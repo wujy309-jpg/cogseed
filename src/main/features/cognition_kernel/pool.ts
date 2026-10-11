@@ -328,9 +328,7 @@ export async function decidePoolItem(
     } else if (decision === 'reject') {
       item.status = 'rejected';
     } else {
-      if (item.status === 'confirmed' || item.status === 'rejected') {
-        return { ok: false, error: `pool item 已 ${item.status}` };
-      }
+      // defer 原有的终态检查已被上方锁内复查覆盖（同谓词，TS 已证不可达）。
       item.status = 'deferred';
       if (options?.resumeAt) item.resumeAt = options.resumeAt;
     }
