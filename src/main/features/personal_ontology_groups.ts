@@ -229,7 +229,7 @@ export async function writeGroupContent(uid: string, groupId: string, content: s
         const prior = oldValues.find((v) => v.text === fv.value && !usedIds.has(v.id));
         const id = prior ? (usedIds.add(prior.id), prior.id) : `v${Math.random().toString(16).slice(2, 10)}`;
         usedIds.add(id);
-        nextValues.push(poLineToValue(fv, field.id));
+        nextValues.push(poLineToValue(fv, field.id, { id, createdAt: prior?.createdAt }));
       }
     }
     const oldEntryIds = new Map(group.entries.map((e) => [e.text, e.id]));
@@ -246,11 +246,13 @@ export async function writeGroupContent(uid: string, groupId: string, content: s
   return result;
 }
 
-/** 方言值行 → PoValue（id/时间戳由调用方补）。 */
-function poLineToValue(fv: FieldValue, fieldId: string): PoValue {
-  const at = nowIso();
+/** 方言值行 → PoValue。keep.id 由调用方传入（prior 命中时为旧值 id，保全
+ *  值身份——po.values.* 按 id 寻址、cognition 对象身份哈希含该 id）；prior
+ *  命中同时带上原 createdAt 保住值龄，updatedAt 刷新为本次保存时间。 */
+function poLineToValue(fv: FieldValue, fieldId: string, keep: { id: string; createdAt?: string }): PoValue {
+  const now = nowIso();
   return {
-    id: `v${Math.random().toString(16).slice(2, 10)}`,
+    id: keep.id,
     fieldId,
     text: fv.value,
     source: fv.source || '手动',
@@ -260,8 +262,8 @@ function poLineToValue(fv: FieldValue, fieldId: string): PoValue {
     ...(fv.ruleKind ? { ruleKind: fv.ruleKind } : {}),
     ...(fv.sensitivity === 'restricted' ? { restricted: true } : {}),
     ...(fv.recallAssetId ? { assetId: fv.recallAssetId } : {}),
-    createdAt: at,
-    updatedAt: at,
+    createdAt: keep.createdAt || now,
+    updatedAt: now,
   };
 }
 
