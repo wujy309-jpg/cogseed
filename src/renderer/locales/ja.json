@@ -677,6 +677,7 @@
   "chat.result_block.receipt": "受領証 Receipt",
   "chat.task_plan_label": "プラン {done}/{total}",
   "chat.status.running": "実行中",
+  "chat.status.waiting_approval": "承認待ち",
   "chat.status.replying_short": "返信中",
   "chat.stop_reply": "返信を停止",
   "chat.stream.approval": "確認待ち",

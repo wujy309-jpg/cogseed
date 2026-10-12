@@ -36,8 +36,8 @@ import { getLanguage } from './config';
 
 // Custom skills live per-user at `<uid>/cloud/skills/`. Resolved lazily
 // from the active uid.
-function CUSTOM_SKILLS_DIR(): string {
-  return userSkillsDir(getActiveUserId());
+function CUSTOM_SKILLS_DIR(userId = getActiveUserId()): string {
+  return userSkillsDir(userId);
 }
 
 const log = createLogger('skills');
@@ -45,7 +45,7 @@ import { prompts } from '../prompts/loader';
 import { buildRuntimeDatetimeBlock } from '../prompts/runtime_context';
 import {
   nowIso, readJson, writeJson, writeJsonSync, writeTextAtomicSync,
-  appendJsonlAtomic, invalidateLineCount, readJsonl,
+  appendJsonlAtomic, invalidateLineCount, readJsonl, safeId,
 } from '../storage';
 import { invalidateSkills as invalidateCoreAgentSkills } from '../model/core-agent/skill-registry';
 import { readDisabledSets, setSkillEnabled } from './component_enabled';
@@ -514,6 +514,10 @@ function skillBaseDir(source: SkillSourceInput): string {
   return normalizeSkillSource(source) === 'custom' ? CUSTOM_SKILLS_DIR() : userMarketplaceSkillsDir(getActiveUserId());
 }
 
+function skillBaseDirForUser(userId: string, source: SkillSourceInput): string {
+  return normalizeSkillSource(source) === 'custom' ? userSkillsDir(userId) : userMarketplaceSkillsDir(userId);
+}
+
 function skillMdFile(dir: string): string {
   return path.join(dir, 'SKILL.md');
 }
@@ -647,13 +651,17 @@ function isMarkedImportDraftDirSync(dir: string): boolean {
     && (marker as Record<string, unknown>).draft === true;
 }
 
-function clearSkillImportDraftMarkerSync(skillId: string): void {
-  const dir = customSkillDir(skillId);
+function clearSkillImportDraftMarkerSyncForUser(userId: string, skillId: string): void {
+  const dir = customSkillDirForUser(userId, skillId);
   const current = readSkillCogSeedMetaSync(dir);
   if (!current._import) return;
   const next = { ...current };
   delete next._import;
   writeJsonSync(skillMetaFile(dir), next);
+}
+
+function clearSkillImportDraftMarkerSync(skillId: string): void {
+  clearSkillImportDraftMarkerSyncForUser(getActiveUserId(), skillId);
 }
 
 function removeSkillSidecarDescriptionsSync(dir: string): void {
@@ -674,22 +682,25 @@ interface SkillListCache {
 }
 let _skillListCache: SkillListCache | null = null;
 
-function _skillCatalogCacheFile(): string {
-  return userSkillCatalogCacheFile(getActiveUserId());
+function _skillCatalogCacheFile(userId = getActiveUserId()): string {
+  return userSkillCatalogCacheFile(userId);
 }
 
-function _skillRootStamp(): string {
+function _skillRootStamp(userId = getActiveUserId()): string {
   let stamp = '';
-  for (const dir of [CUSTOM_SKILLS_DIR(), userMarketplaceSkillsDir(getActiveUserId())]) {
+  for (const dir of [CUSTOM_SKILLS_DIR(userId), userMarketplaceSkillsDir(userId)]) {
     try { stamp += `${dir}:${fs.statSync(dir).mtimeMs};`; }
     catch { stamp += `${dir}:0;`; }
   }
   return stamp;
 }
 
-function _readPersistedSkillCatalog(rootStamp: string): { stamp: string; data: SkillListing[] } | null {
+function _readPersistedSkillCatalog(
+  rootStamp: string,
+  userId = getActiveUserId(),
+): { stamp: string; data: SkillListing[] } | null {
   try {
-    const raw = JSON.parse(fs.readFileSync(_skillCatalogCacheFile(), 'utf8'));
+    const raw = JSON.parse(fs.readFileSync(_skillCatalogCacheFile(userId), 'utf8'));
     if (
       raw?.version !== SKILL_CATALOG_CACHE_VERSION
       || raw?.rootStamp !== rootStamp
@@ -702,9 +713,14 @@ function _readPersistedSkillCatalog(rootStamp: string): { stamp: string; data: S
   }
 }
 
-function _writePersistedSkillCatalog(rootStamp: string, stamp: string, data: SkillListing[]): void {
+function _writePersistedSkillCatalog(
+  rootStamp: string,
+  stamp: string,
+  data: SkillListing[],
+  userId = getActiveUserId(),
+): void {
   try {
-    writeJsonSync(_skillCatalogCacheFile(), {
+    writeJsonSync(_skillCatalogCacheFile(userId), {
       version: SKILL_CATALOG_CACHE_VERSION,
       rootStamp,
       stamp,
@@ -729,6 +745,16 @@ function _invalidateSkillListCache(opts: { markDirty?: boolean } = {}): void {
   } catch { /* features/sync stripped */ }
 }
 
+function _invalidateSkillListCacheForUser(userId: string, opts: { markDirty?: boolean } = {}): void {
+  _skillListCache = null;
+  try { fs.rmSync(userSkillCatalogCacheFile(userId), { force: true }); } catch { /* cache is best-effort */ }
+  if (opts.markDirty === false) return;
+  try {
+    const sync = null as { markDirty?: (domain: string, relPath: string) => void };
+    sync?.markDirty?.('skills', 'cloud/skills');
+  } catch { /* features/sync stripped */ }
+}
+
 /** Internal cache invalidator + core-agent registry invalidator. Exported for
  *  the dev-only `skills_dev` module so its dual-write path goes through the
  *  same cache-busting chain as `writeCustomSkillFile`. */
@@ -743,12 +769,20 @@ export function clearSkillListCache(): void {
   _invalidateSkillListCache({ markDirty: false });
 }
 
+export function clearSkillListCacheForUser(userId: string): void {
+  if (safeId(userId)) _invalidateSkillListCacheForUser(userId, { markDirty: false });
+}
+
 /** A skill id resolves to a built-in iff there's a directory with that name
  *  under the runtime built-in tree. The src tree may be missing in packaged
  *  builds, so the runtime tree is the authoritative check. */
 export function isBuiltinSkill(skillId: string): boolean {
+  return isBuiltinSkillForUser(getActiveUserId(), skillId);
+}
+
+function isBuiltinSkillForUser(userId: string, skillId: string): boolean {
   if (!skillId) return false;
-  const d = path.join(userMarketplaceSkillsDir(getActiveUserId()), skillId);
+  const d = path.join(userMarketplaceSkillsDir(userId), skillId);
   try { return fs.statSync(d).isDirectory(); } catch { return false; }
 }
 
@@ -757,10 +791,14 @@ export function isBuiltinSkill(skillId: string): boolean {
  *  was found. Platform/builtin is checked first to match runtime conflict
  *  precedence. */
 export async function getSkillForEdit(skillId: string): Promise<SkillForEdit | null> {
+  return getSkillForEditForUser(getActiveUserId(), skillId);
+}
+
+export async function getSkillForEditForUser(userId: string, skillId: string): Promise<SkillForEdit | null> {
   if (!skillId) return null;
   const sources: Array<[SkillSource, string]> = [
-    ['marketplace', userMarketplaceSkillsDir(getActiveUserId())],
-    ['custom', CUSTOM_SKILLS_DIR()],
+    ['marketplace', userMarketplaceSkillsDir(userId)],
+    ['custom', userSkillsDir(userId)],
   ];
   for (const [source, base] of sources) {
     const d = path.join(base, skillId);
@@ -789,9 +827,9 @@ export async function getSkillForEdit(skillId: string): Promise<SkillForEdit | n
   return null;
 }
 
-function _skillDirStamp(): string {
+function _skillDirStamp(userId = getActiveUserId()): string {
   let stamp = '';
-  for (const d of [CUSTOM_SKILLS_DIR(), userMarketplaceSkillsDir(getActiveUserId())]) {
+  for (const d of [CUSTOM_SKILLS_DIR(userId), userMarketplaceSkillsDir(userId)]) {
     try {
       const root = fs.statSync(d);
       stamp += `${d}:${root.mtimeMs};`;
@@ -821,8 +859,8 @@ function _skillDirStamp(): string {
  *  (`ownerAgent`) skills, cached by per-dir mtime. The two public listers
  *  below filter this: `listSkills` drops owner-private entries (the user
  *  panel), `listAgentPrivateSkills` keeps only them (dev inspection). */
-async function _allSkillListingsCached(): Promise<SkillListing[]> {
-  const rootStamp = _skillRootStamp();
+async function _allSkillListingsCached(userId = getActiveUserId()): Promise<SkillListing[]> {
+  const rootStamp = _skillRootStamp(userId);
   if (
     _skillListCache
     && _skillListCache.rootStamp === rootStamp
@@ -831,7 +869,7 @@ async function _allSkillListingsCached(): Promise<SkillListing[]> {
     return _skillListCache.data;
   }
   if (!_skillListCache) {
-    const persisted = _readPersistedSkillCatalog(rootStamp);
+    const persisted = _readPersistedSkillCatalog(rootStamp, userId);
     if (persisted) {
       _skillListCache = {
         stamp: persisted.stamp,
@@ -842,7 +880,7 @@ async function _allSkillListingsCached(): Promise<SkillListing[]> {
       return persisted.data;
     }
   }
-  const stamp = _skillDirStamp();
+  const stamp = _skillDirStamp(userId);
   let out: SkillListing[];
   if (
     _skillListCache
@@ -854,7 +892,7 @@ async function _allSkillListingsCached(): Promise<SkillListing[]> {
     out = [];
     const seen = new Set<string>();
     // Platform/builtin first so product-owned skills win id conflicts.
-    const sources: Array<[SkillSource, string]> = [['marketplace', userMarketplaceSkillsDir(getActiveUserId())], ['custom', CUSTOM_SKILLS_DIR()]];
+    const sources: Array<[SkillSource, string]> = [['marketplace', userMarketplaceSkillsDir(userId)], ['custom', CUSTOM_SKILLS_DIR(userId)]];
     for (const [source, baseDir] of sources) {
       if (!fs.existsSync(baseDir)) continue;
       const names = fs.readdirSync(baseDir, { withFileTypes: true })
@@ -939,7 +977,7 @@ async function _allSkillListingsCached(): Promise<SkillListing[]> {
       trustUntil: 0,
       data: out,
     };
-    _writePersistedSkillCatalog(rootStamp, stamp, out);
+    _writePersistedSkillCatalog(rootStamp, stamp, out, userId);
   }
   return out;
 }
@@ -947,12 +985,11 @@ async function _allSkillListingsCached(): Promise<SkillListing[]> {
 /** Overlay per-user enabled overrides outside the cache (same pattern as
  *  listAgents). Cheap per-call read so a toggle takes effect immediately
  *  without having to bump dir mtime. */
-function _overlaySkillEnabled(list: SkillListing[]): SkillListing[] {
-  const { skills: disabledSkillIds } = readDisabledSets(getActiveUserId());
-  const uid = getActiveUserId();
+function _overlaySkillEnabled(list: SkillListing[], userId = getActiveUserId()): SkillListing[] {
+  const { skills: disabledSkillIds } = readDisabledSets(userId);
   return list.map((s) => ({
     ...s, enabled: !disabledSkillIds.has(s.id),
-    ...(s.source === 'marketplace' && !s.ownerAgent ? { status: readContentStatus(uid, s.id).raw } : {}),
+    ...(s.source === 'marketplace' && !s.ownerAgent ? { status: readContentStatus(userId, s.id).raw } : {}),
   }));
 }
 
@@ -979,7 +1016,7 @@ function _overlaySkillEnabled(list: SkillListing[]): SkillListing[] {
  * entries come back unannotated — the same fail-open direction the load gate
  * uses, and one that cannot make a working skill look broken.
  */
-async function _overlaySkillSecurity(list: SkillListing[]): Promise<SkillListing[]> {
+async function _overlaySkillSecurity(list: SkillListing[], userId = getActiveUserId()): Promise<SkillListing[]> {
   // Custom skills are included now that `reverifySkill` resolves their directory
   // too. They were excluded while it looked only in the marketplace tree, where
   // a custom id never exists — so they came back `unknown` and were left
@@ -994,13 +1031,12 @@ async function _overlaySkillSecurity(list: SkillListing[]): Promise<SkillListing
     .map((s) => s.id);
   if (!scannableIds.length) return list;
 
-  const uid = getActiveUserId();
   let withheldById: Map<string, string>;
   let receiptById: Map<string, SecurityReceipt>;
   try {
-    const { withheld } = await partitionSkillsByTrustDeep(uid, scannableIds);
+    const { withheld } = await partitionSkillsByTrustDeep(userId, scannableIds);
     withheldById = new Map(withheld.map((w) => [w.skillId, w.reason || 'unknown']));
-    receiptById = new Map(listReceipts(uid).map((r) => [r.skillId, r]));
+    receiptById = new Map(listReceipts(userId).map((r) => [r.skillId, r]));
   } catch {
     return list;
   }
@@ -1127,7 +1163,13 @@ async function _scanExternalSkills(): Promise<SkillListing[]> {
  * library is rescanned sequentially.
  */
 export async function listSkillCatalog(): Promise<SkillListing[]> {
-  const internal = _overlaySkillEnabled((await _allSkillListingsCached()).filter((s) => !s.ownerAgent));
+  return listSkillCatalogForUser(getActiveUserId());
+}
+
+/** User-scoped skill catalog used by queued and Creator control-plane work. */
+export async function listSkillCatalogForUser(userId: string): Promise<SkillListing[]> {
+  if (!safeId(userId)) return [];
+  const internal = _overlaySkillEnabled((await _allSkillListingsCached(userId)).filter((s) => !s.ownerAgent), userId);
 
   // Auto-detect external skills from Claude Code and Codex（带目录 stamp 缓存）
   const stamp = _externalSkillStamp();
@@ -1147,21 +1189,32 @@ export async function listSkills(): Promise<SkillListing[]> {
   // External skills carry no receipt, and neither do custom ones — the overlay
   // leaves unannotated what it cannot vouch for rather than labelling it
   // `unchecked`, which would read as "scanned, nothing found".
-  return _overlaySkillSecurity(await listSkillCatalog());
+  return listSkillsForUser(getActiveUserId());
+}
+
+/** User-scoped skill list for queued work and Creator provenance checks. */
+export async function listSkillsForUser(userId: string): Promise<SkillListing[]> {
+  if (!safeId(userId)) return [];
+  return _overlaySkillSecurity(await listSkillCatalogForUser(userId), userId);
 }
 
 /** Dev-only: the agent-private (`ownerAgent`) skills hidden from `listSkills`.
  *  Surfaced behind a dev-gated IPC so the skill panel can show an inspection
  *  section in development; gated off in production. */
 export async function listAgentPrivateSkills(): Promise<SkillListing[]> {
-  return _overlaySkillEnabled((await _allSkillListingsCached()).filter((s) => !!s.ownerAgent));
+  const userId = getActiveUserId();
+  return _overlaySkillEnabled((await _allSkillListingsCached(userId)).filter((s) => !!s.ownerAgent), userId);
 }
 
 /** Toggle the active user's enabled override for a skill. Triggers the
  *  same invalidation chain as a custom-skill mutation so the next runner
  *  build re-renders the skills system-prompt block. */
 export function setSkillEnabledForActiveUser(skillId: string, enabled: boolean): void {
-  setSkillEnabled(getActiveUserId(), skillId, enabled);
+  setSkillEnabledForUser(getActiveUserId(), skillId, enabled);
+}
+
+export function setSkillEnabledForUser(userId: string, skillId: string, enabled: boolean): void {
+  setSkillEnabled(userId, skillId, enabled);
   // `enabled` is overlaid outside the catalog cache, so toggling it must not
   // discard and rebuild the unchanged SKILL.md snapshot.
   invalidateCoreAgentSkills();
@@ -1172,7 +1225,13 @@ export type Result<T = Record<string, unknown>> = ({ ok: true } & T) | { ok: fal
 export async function readSkillFile(
   source: SkillSourceInput, skillId: string, filepath = 'SKILL.md',
 ): Promise<Result<{ content: string; ext: string; path: string }>> {
-  const base = skillBaseDir(source);
+  return readSkillFileForUser(getActiveUserId(), source, skillId, filepath);
+}
+
+export async function readSkillFileForUser(
+  userId: string, source: SkillSourceInput, skillId: string, filepath = 'SKILL.md',
+): Promise<Result<{ content: string; ext: string; path: string }>> {
+  const base = skillBaseDirForUser(userId, source);
   const skillDir = path.resolve(base, skillId);
   const target = path.resolve(skillDir, filepath);
   if (target !== skillDir && !target.startsWith(skillDir + path.sep)) {
@@ -1193,7 +1252,13 @@ export async function readSkillFile(
 export async function listSkillTree(
   source: SkillSourceInput, skillId: string,
 ): Promise<Result<{ tree: SkillTreeNode[] }>> {
-  const base = skillBaseDir(source);
+  return listSkillTreeForUser(getActiveUserId(), source, skillId);
+}
+
+export async function listSkillTreeForUser(
+  userId: string, source: SkillSourceInput, skillId: string,
+): Promise<Result<{ tree: SkillTreeNode[] }>> {
+  const base = skillBaseDirForUser(userId, source);
   const skillDir = path.resolve(base, skillId);
   if (!fs.existsSync(skillDir) || !fs.statSync(skillDir).isDirectory()) {
     return { ok: false, error: 'skill not found' };
@@ -1252,6 +1317,10 @@ export { isValidSkillId, isExternalSkillId, isScannableSkillId, SKILL_EXTERNAL_I
 
 function customSkillDir(skillId: string): string {
   return path.join(CUSTOM_SKILLS_DIR(), skillId);
+}
+
+function customSkillDirForUser(userId: string, skillId: string): string {
+  return path.join(userSkillsDir(userId), skillId);
 }
 
 export function skillMdContent(
@@ -1322,8 +1391,8 @@ function normalizeSkillMdForWrite(content: string, fallbackName = ''): string {
   return skillMdContent(name, { zh: descPair.description_zh, en: descPair.description_en }, body);
 }
 
-export async function getCustomSkill(skillId: string): Promise<CustomSkill | null> {
-  const d = customSkillDir(skillId);
+export async function getCustomSkillForUser(userId: string, skillId: string): Promise<CustomSkill | null> {
+  const d = customSkillDirForUser(userId, skillId);
   if (!fs.existsSync(d) || !fs.statSync(d).isDirectory()) return null;
   if (!hasSkillMd(d)) return null;
   const md = skillMdFile(d);
@@ -1347,8 +1416,17 @@ export async function getCustomSkill(skillId: string): Promise<CustomSkill | nul
   };
 }
 
+export async function getCustomSkill(skillId: string): Promise<CustomSkill | null> {
+  return getCustomSkillForUser(getActiveUserId(), skillId);
+}
+
 export async function listCustomSkillFiles(skillId: string): Promise<SkillFileInfo[]> {
   return _listSkillFilesAt(customSkillDir(skillId));
+}
+
+/** User-scoped file manifest used by queued skill-edit chats. */
+export async function listCustomSkillFilesForUser(userId: string, skillId: string): Promise<SkillFileInfo[]> {
+  return _listSkillFilesAt(customSkillDirForUser(userId, skillId));
 }
 
 /** Internal: walk a skill directory (custom or built-in) and return its file
@@ -1388,16 +1466,23 @@ async function _listSkillFilesAt(skillDir: string): Promise<SkillFileInfo[]> {
  * passes the same two gates. specs/010 FR-055 leans on this prohibition: it is what makes the
  * fork order ("uninstall the official copy first, then copy") a hard requirement.
  */
-export function assertCustomSkillIdAvailable(name: string): void {
-  if (fs.existsSync(customSkillDir(name))) throw new Error(t('skills.errors.skill_exists', { name }));
-  if (fs.existsSync(path.join(userMarketplaceSkillsDir(getActiveUserId()), name))) {
+/** Per-user form of {@link assertCustomSkillIdAvailable}. Explicit-scope callers (queued
+ * commander mutations, directory imports) can run after the active user changed, so they
+ * must gate against the directories of the user the work belongs to. */
+export function assertCustomSkillIdAvailableForUser(userId: string, name: string): void {
+  if (fs.existsSync(customSkillDirForUser(userId, name))) throw new Error(t('skills.errors.skill_exists', { name }));
+  if (fs.existsSync(path.join(userMarketplaceSkillsDir(userId), name))) {
     throw new Error(t('skills.errors.builtin_conflict', { name }));
   }
 }
 
+export function assertCustomSkillIdAvailable(name: string): void {
+  assertCustomSkillIdAvailableForUser(getActiveUserId(), name);
+}
+
 /** A free custom-skill id derived from `baseName`, using the existing import dedupe rule. */
-export function reserveFreeCustomSkillId(baseName: string): string {
-  return _dedupeImportName(baseName, new Set<string>());
+export function reserveFreeCustomSkillId(baseName: string, userId = getActiveUserId()): string {
+  return _dedupeImportName(userId, baseName, new Set<string>());
 }
 
 /**
@@ -1466,13 +1551,27 @@ export async function adoptCustomSkillFromStagedTree(opts: {
   return getCustomSkill(desiredId);
 }
 
+export async function createCustomSkillForUser(
+  userId: string, name: string, description = '', category = '',
+): Promise<CustomSkill | null> {
+  return _createCustomSkillIn(userId, name, description, category);
+}
+
 export async function createCustomSkill(
   name: string, description: string, category = '',
 ): Promise<CustomSkill | null> {
+  return _createCustomSkillIn(getActiveUserId(), name, description, category);
+}
+
+/** Shared create path: the explicit-scope wrapper and the active-user wrapper must not
+ *  diverge — every gate, sidecar write and cache invalidation is per-user. */
+async function _createCustomSkillIn(
+  userId: string, name: string, description: string, category: string,
+): Promise<CustomSkill | null> {
   const err = validateSkillName(name);
   if (err) throw new Error(err);
-  const d = customSkillDir(name);
-  assertCustomSkillIdAvailable(name);
+  const d = customSkillDirForUser(userId, name);
+  assertCustomSkillIdAvailableForUser(userId, name);
   fs.mkdirSync(d, { recursive: true });
   const skillMdPath = path.join(d, 'SKILL.md');
   writeTextAtomicSync(skillMdPath, skillMdContent(name, description, '', category, 'approved'));
@@ -1492,12 +1591,13 @@ export async function createCustomSkill(
   // 2026-05-22 17:14 sync pass deleted_local=4).
   try { fs.utimesSync(skillMdPath, new Date(), new Date()); } catch { /* best effort */ }
   log.info(`created name=${name} category=${category || '(none)'}`);
-  _invalidateSkillListCache();
+  _invalidateSkillListCacheForUser(userId);
   invalidateCoreAgentSkills().catch(() => { /* runner may not be loaded yet */ });
-  return getCustomSkill(name);
+  return getCustomSkillForUser(userId, name);
 }
 
-export async function updateCustomSkill(
+export async function updateCustomSkillForUser(
+  userId: string,
   skillId: string,
   updates: {
     name?: string;
@@ -1508,7 +1608,7 @@ export async function updateCustomSkill(
   },
   options: { skipRename?: boolean } = {},
 ): Promise<CustomSkill | null> {
-  let d = customSkillDir(skillId);
+  let d = customSkillDirForUser(userId, skillId);
   if (!fs.existsSync(d) || !fs.statSync(d).isDirectory()) return null;
   let md = path.join(d, 'SKILL.md');
   let meta: SkillFrontmatter = {}; let body = '';
@@ -1548,9 +1648,9 @@ export async function updateCustomSkill(
   if (newName !== skillId && !options.skipRename) {
     const err = validateSkillName(newName);
     if (err) throw new Error(err);
-    const target = customSkillDir(newName);
+    const target = customSkillDirForUser(userId, newName);
     if (fs.existsSync(target)) throw new Error(t('skills.errors.skill_exists', { name: newName }));
-    if (fs.existsSync(path.join(userMarketplaceSkillsDir(getActiveUserId()), newName))) {
+    if (fs.existsSync(path.join(userMarketplaceSkillsDir(userId), newName))) {
       throw new Error(t('skills.errors.builtin_conflict', { name: newName }));
     }
     fs.renameSync(d, target);
@@ -1600,15 +1700,23 @@ export async function updateCustomSkill(
     status: String(meta.status || meta.state || readSkillCogSeedMetaSync(d).status || 'approved'),
   });
   removeSkillSidecarDescriptionsSync(d);
-  clearSkillImportDraftMarkerSync(currentId);
+  clearSkillImportDraftMarkerSyncForUser(userId, currentId);
   log.info(`updated name=${currentId} category=${newCategory || '(none)'}`);
-  _invalidateSkillListCache();
+  _invalidateSkillListCacheForUser(userId);
   invalidateCoreAgentSkills().catch(() => { /* runner may not be loaded yet */ });
-  return getCustomSkill(currentId);
+  return getCustomSkillForUser(userId, currentId);
 }
 
-export async function deleteCustomSkill(skillId: string): Promise<boolean> {
-  const d = customSkillDir(skillId);
+export async function updateCustomSkill(
+  skillId: string,
+  updates: Parameters<typeof updateCustomSkillForUser>[2],
+  options: Parameters<typeof updateCustomSkillForUser>[3] = {},
+): Promise<CustomSkill | null> {
+  return updateCustomSkillForUser(getActiveUserId(), skillId, updates, options);
+}
+
+export async function deleteCustomSkillForUser(userId: string, skillId: string): Promise<boolean> {
+  const d = customSkillDirForUser(userId, skillId);
   if (!fs.existsSync(d) || !fs.statSync(d).isDirectory()) return false;
   try { fs.rmSync(d, { recursive: true, force: true }); }
   catch (err) { log.warn(`rmtree failed for ${skillId}: ${(err as Error).message}`); return false; }
@@ -1640,9 +1748,13 @@ export async function deleteCustomSkill(skillId: string): Promise<boolean> {
   }
 
   log.info(`deleted id=${skillId}`);
-  _invalidateSkillListCache();
+  _invalidateSkillListCacheForUser(userId);
   invalidateCoreAgentSkills().catch(() => { /* runner may not be loaded yet */ });
   return true;
+}
+
+export async function deleteCustomSkill(skillId: string): Promise<boolean> {
+  return deleteCustomSkillForUser(getActiveUserId(), skillId);
 }
 
 // ── Import-from-URL / Import-from-Dir ─────────────────────────────────────
@@ -1867,13 +1979,13 @@ async function _scanImportedSkill(skillDir: string): Promise<SentryScanResult> {
  * so a failed write must not undo that. It only means the first re-verification
  * rescans instead of reusing a receipt.
  */
-async function _recordImportReceipt(skillId: string, skillDir: string, scan: SentryScanResult): Promise<void> {
+async function _recordImportReceipt(userId: string, skillId: string, skillDir: string, scan: SentryScanResult): Promise<void> {
   try {
     const hash = skillPayloadHash(skillDir);
     if (!hash) return;
     const report = validateSkillDir(skillDir, { enforceSkillRunner: false });
     const top = topViolationOf(report.violations);
-    writeInstallReceipt(getActiveUserId(), skillId, hash, scan, {
+    writeInstallReceipt(userId, skillId, hash, scan, {
       violationCount: report.violations.length,
       ...(top?.rule ? { topRule: top.rule } : {}),
       ...(top?.level ? { topLevel: top.level } : {}),
@@ -1891,11 +2003,12 @@ async function _recordImportReceipt(skillId: string, skillDir: string, scan: Sen
  * failed to start would train them to dismiss the real thing.
  */
 async function _rejectImportForSecurity(
+  userId: string,
   scan: SentryScanResult,
   skillIds: string[],
 ): Promise<ImportResult> {
   for (const id of skillIds) {
-    try { await deleteCustomSkill(id); } catch { /* best-effort rollback */ }
+    try { await deleteCustomSkillForUser(userId, id); } catch { /* best-effort rollback */ }
   }
   const unavailable = scan.outcome === 'unknown';
   return {
@@ -1952,13 +2065,13 @@ function _skillNameFromSourceSkillMd(skillMdPath: string, fallbackDir: string): 
   return _defaultSkillNameFromDir(fallbackDir);
 }
 
-function _dedupeImportName(baseName: string, reserved: Set<string>): string {
+function _dedupeImportName(userId: string, baseName: string, reserved: Set<string>): string {
   let name = baseName;
   let i = 2;
   while (
     reserved.has(name)
-    || fs.existsSync(customSkillDir(name))
-    || fs.existsSync(path.join(userMarketplaceSkillsDir(getActiveUserId()), name))
+    || fs.existsSync(customSkillDirForUser(userId, name))
+    || fs.existsSync(path.join(userMarketplaceSkillsDir(userId), name))
   ) {
     const suffix = `-${i}`;
     const stem = baseName.slice(0, Math.max(1, NAME_DISPLAY_MAX_UNITS - suffix.length));
@@ -2141,6 +2254,7 @@ function _isQualityBlockedImport(
 }
 
 async function _installSourceSkillRoots(
+  userId: string,
   name: string | null,
   description: string | null,
   realSrc: string,
@@ -2161,15 +2275,15 @@ async function _installSourceSkillRoots(
       const baseName = single && (name || '').trim()
         ? (name || '').trim()
         : _skillNameFromSourceSkillMd(sourceSkillMd, sourceRoot);
-      const effectiveName = _dedupeImportName(baseName, reserved);
+      const effectiveName = _dedupeImportName(userId, baseName, reserved);
       const effectiveDesc = single && (description || '').trim()
         ? (description || '').trim()
         : _sourceSkillImportDescription(sourceSkillMd, t('skills.import.default_desc_dir'));
-      const created = await createCustomSkill(effectiveName, effectiveDesc);
+      const created = await createCustomSkillForUser(userId, effectiveName, effectiveDesc);
       if (!created) throw new Error(t('skills.errors.create_failed'));
       createdIds.push(created.id);
 
-      const skillDir = customSkillDir(created.id);
+      const skillDir = customSkillDirForUser(userId, created.id);
       const rootFiles = _dropSourceMetaFiles(_filesForSourceSkillRoot(sourceRoot, files, sourceRoots));
       fs.rmSync(skillMetaFile(skillDir), { force: true });
       _copyImportedSkillFilesPreservingSource(skillDir, rootFiles);
@@ -2182,7 +2296,7 @@ async function _installSourceSkillRoots(
       pendingSkeletons.push({ skillDir, skillId: created.id, name: effectiveName });
       writeSkillCogSeedMetaFullSync(skillDir, _sourceSkillInstallMeta(sourceRoot, sourceSkillMd));
 
-      const fresh = await getCustomSkill(created.id);
+      const fresh = await getCustomSkillForUser(userId, created.id);
       if (fresh) createdSkills.push(fresh);
     }
   } catch (err) {
@@ -2192,20 +2306,20 @@ async function _installSourceSkillRoots(
       error_message: (err as Error).message,
     });
     for (const id of createdIds) {
-      try { await deleteCustomSkill(id); } catch { /* best-effort rollback */ }
+      try { await deleteCustomSkillForUser(userId, id); } catch { /* best-effort rollback */ }
     }
     return { ok: false, error: t('skills.errors.copy_failed', { message: (err as Error).message }) };
   }
 
-  _invalidateSkillListCache();
+  _invalidateSkillListCacheForUser(userId);
   invalidateCoreAgentSkills().catch(() => { /* runner may not be loaded yet */ });
 
   let firstReport: QualityReport | undefined;
   let firstReportSkillId = '';
   for (const skill of createdSkills) {
-    const report = validateSkillDir(customSkillDir(skill.id));
+    const report = validateSkillDir(customSkillDirForUser(userId, skill.id));
     void persistQualityReport({
-      uid: getActiveUserId(), kind: 'skill', id: skill.id, report,
+      uid: userId, kind: 'skill', id: skill.id, report,
     });
     if (!firstReport && !report.ok) {
       firstReport = report;
@@ -2214,7 +2328,7 @@ async function _installSourceSkillRoots(
   }
   if (firstReport && _isQualityBlockedImport(firstReport, acceptRedFlagRisk)) {
     for (const id of createdIds) {
-      try { await deleteCustomSkill(id); } catch { /* best-effort rollback */ }
+      try { await deleteCustomSkillForUser(userId, id); } catch { /* best-effort rollback */ }
     }
     return {
       ok: false,
@@ -2235,12 +2349,12 @@ async function _installSourceSkillRoots(
   let worstScan: SentryScanResult | undefined;
   const admitted: { skillId: string; scan: SentryScanResult }[] = [];
   for (const skill of createdSkills) {
-    const scan = await _scanImportedSkill(customSkillDir(skill.id));
+    const scan = await _scanImportedSkill(customSkillDirForUser(userId, skill.id));
     // Same consent as the quality gate above. Gating them differently would let
     // one refuse what the other just waived, and the user would see a dialog that
     // does nothing.
     if (!acceptRedFlagRisk && scanVerdictBlocksInstall(scan.outcome)) {
-      return _rejectImportForSecurity(scan, createdIds);
+      return _rejectImportForSecurity(userId, scan, createdIds);
     }
     admitted.push({ skillId: skill.id, scan });
     if (!worstScan || (scan.outcome === 'restricted' && worstScan.outcome !== 'restricted')) {
@@ -2274,7 +2388,7 @@ async function _installSourceSkillRoots(
   // Receipts last: only verdicts that admitted the skill become receipts, and the
   // hash must describe the tree as it will be found on disk.
   for (const entry of admitted) {
-    await _recordImportReceipt(entry.skillId, customSkillDir(entry.skillId), entry.scan);
+    await _recordImportReceipt(userId, entry.skillId, customSkillDirForUser(userId, entry.skillId), entry.scan);
   }
 
   log.info('created-from-dir direct skill install', {
@@ -2300,6 +2414,7 @@ async function _installSourceSkillRoots(
 }
 
 async function _createEditableDraftFromImportDir(
+  userId: string,
   name: string | null,
   description: string | null,
   realSrc: string,
@@ -2309,28 +2424,28 @@ async function _createEditableDraftFromImportDir(
 ): Promise<ImportResult> {
   const effectiveName = (name || '').trim() || _defaultSkillNameFromDir(realSrc);
   const effectiveDesc = (description || '').trim() || t('skills.import.default_desc_dir');
-  const created = await createCustomSkill(effectiveName, effectiveDesc);
+  const created = await createCustomSkillForUser(userId, effectiveName, effectiveDesc);
   if (!created) return { ok: false, error: t('skills.errors.create_failed') };
 
-  const skillDir = customSkillDir(created.id);
+  const skillDir = customSkillDirForUser(userId, created.id);
   try {
     _copyImportedDraftFiles(skillDir, files);
     markSkillImportDraftSync(skillDir, 'dir');
   } catch (err) {
     log.warn(`import-dir draft copy failed skill=${created.id}: ${(err as Error).message}`);
-    try { await deleteCustomSkill(created.id); } catch { /* ignore */ }
+    try { await deleteCustomSkillForUser(userId, created.id); } catch { /* ignore */ }
     return { ok: false, error: t('skills.errors.copy_failed', { message: (err as Error).message }) };
   }
 
-  _invalidateSkillListCache();
+  _invalidateSkillListCacheForUser(userId);
   invalidateCoreAgentSkills().catch(() => { /* runner may not be loaded yet */ });
 
   const report = validateSkillDir(skillDir);
   void persistQualityReport({
-    uid: getActiveUserId(), kind: 'skill', id: created.id, report,
+    uid: userId, kind: 'skill', id: created.id, report,
   });
   if (_isQualityBlockedImport(report, acceptRedFlagRisk)) {
-    try { await deleteCustomSkill(created.id); } catch { /* best-effort rollback */ }
+    try { await deleteCustomSkillForUser(userId, created.id); } catch { /* best-effort rollback */ }
     return {
       ok: false,
       error: t('skills.errors.validation_blocked'),
@@ -2344,11 +2459,11 @@ async function _createEditableDraftFromImportDir(
   // be rejected while it is still just bytes on disk.
   const scan = await _scanImportedSkill(skillDir);
   if (!acceptRedFlagRisk && scanVerdictBlocksInstall(scan.outcome)) {
-    return _rejectImportForSecurity(scan, [created.id]);
+    return _rejectImportForSecurity(userId, scan, [created.id]);
   }
-  await _recordImportReceipt(created.id, skillDir, scan);
+  await _recordImportReceipt(userId, created.id, skillDir, scan);
 
-  const fresh = await getCustomSkill(created.id) || created;
+  const fresh = await getCustomSkillForUser(userId, created.id) || created;
   log.info('created-from-dir import draft', {
     skill_id: fresh.id,
     files: files.length,
@@ -2369,7 +2484,8 @@ async function _createEditableDraftFromImportDir(
  *  in the visible skill edit chat so the user sees progress and the model can
  *  decide whether to restore SKILL.md, split multiple skills, or use the
  *  external-package route. */
-export async function createFromUrl(
+export async function createFromUrlForUser(
+  userId: string,
   name: string | null,
   description: string | null,
   url: string,
@@ -2384,7 +2500,7 @@ export async function createFromUrl(
   const effectiveName = (name || '').trim() || _defaultSkillNameFromUrl(trimmedUrl);
   const effectiveDesc = (description || '').trim() || t('skills.import.default_desc_url', { url: trimmedUrl });
 
-  const created = await createCustomSkill(effectiveName, effectiveDesc);
+  const created = await createCustomSkillForUser(userId, effectiveName, effectiveDesc);
   if (!created) {
     log.warn('url import placeholder create failed', {
       source_type: sourceType,
@@ -2392,7 +2508,7 @@ export async function createFromUrl(
     });
     return { ok: false, error: t('skills.errors.create_failed') };
   }
-  markSkillImportDraftSync(customSkillDir(created.id), 'url');
+  markSkillImportDraftSync(customSkillDirForUser(userId, created.id), 'url');
 
   log.info('url import seeded edit chat', {
     source_type: sourceType,
@@ -2409,6 +2525,14 @@ export async function createFromUrl(
   };
 }
 
+export async function createFromUrl(
+  name: string | null,
+  description: string | null,
+  url: string,
+): Promise<ImportResult> {
+  return createFromUrlForUser(getActiveUserId(), name, description, url);
+}
+
 /** Delete a URL-import placeholder skill iff it was never authored — i.e. it
  *  still holds only the boilerplate SKILL.md (empty body, plus the metadata
  *  sidecar that `createCustomSkill` writes). Called when the user leaves an import edit chat
@@ -2418,14 +2542,18 @@ export async function createFromUrl(
  *  pristine check makes this safe to call on any id: an authored skill (real
  *  body or extra files) is never deleted. Returns true when a draft was removed. */
 export async function discardImportDraftIfPristine(skillId: string): Promise<boolean> {
-  if (!_isPristineImportDraftSkillSync(skillId)) return false;
-  const ok = await deleteCustomSkill(skillId);
+  return discardImportDraftIfPristineForUser(getActiveUserId(), skillId);
+}
+
+export async function discardImportDraftIfPristineForUser(userId: string, skillId: string): Promise<boolean> {
+  if (!_isPristineImportDraftSkillSyncForUser(userId, skillId)) return false;
+  const ok = await deleteCustomSkillForUser(userId, skillId);
   if (ok) log.info(`discarded pristine import draft id=${skillId}`);
   return ok;
 }
 
-function _isPristineImportDraftSkillSync(skillId: string): boolean {
-  const dir = customSkillDir(skillId);
+function _isPristineImportDraftSkillSyncForUser(userId: string, skillId: string): boolean {
+  const dir = customSkillDirForUser(userId, skillId);
   try { if (!fs.statSync(dir).isDirectory()) return false; }
   catch { return false; }
   // Pristine = nothing but SKILL.md plus the generated CogSeed sidecar on disk...
@@ -2444,17 +2572,22 @@ function _isPristineImportDraftSkillSync(skillId: string): boolean {
   return true;
 }
 
-function _isImportDraftForExternalSkillContainersSync(skillId: string): boolean {
-  const dir = customSkillDir(skillId);
+function _isPristineImportDraftSkillSync(skillId: string): boolean {
+  return _isPristineImportDraftSkillSyncForUser(getActiveUserId(), skillId);
+}
+
+function _isImportDraftForExternalSkillContainersSyncForUser(userId: string, skillId: string): boolean {
+  const dir = customSkillDirForUser(userId, skillId);
   try { if (!fs.statSync(dir).isDirectory()) return false; }
   catch { return false; }
-  return isMarkedImportDraftDirSync(dir) || _isPristineImportDraftSkillSync(skillId);
+  return isMarkedImportDraftDirSync(dir) || _isPristineImportDraftSkillSyncForUser(userId, skillId);
 }
 
 /** Create skills from a local folder. Existing source SKILL.md roots are
  *  installed directly as one-or-more skills; folders without a SKILL.md become
  *  editable drafts that the visible inline skill chat can organize. */
-export async function createFromDir(
+export async function createFromDirForUser(
+  userId: string,
   name: string | null,
   description: string | null,
   srcDir: string,
@@ -2491,15 +2624,24 @@ export async function createFromDir(
   const sourceRoots = _findSourceSkillRoots(realSrc, files);
   if (sourceRoots.length > 0) {
     return _installSourceSkillRoots(
-      name, description, realSrc, files, sourceRoots, totalBytes,
+      userId, name, description, realSrc, files, sourceRoots, totalBytes,
       _opts.acceptRedFlagRisk === true,
     );
   }
 
   return _createEditableDraftFromImportDir(
-    name, description, realSrc, files, totalBytes,
+    userId, name, description, realSrc, files, totalBytes,
     _opts.acceptRedFlagRisk === true,
   );
+}
+
+export async function createFromDir(
+  name: string | null,
+  description: string | null,
+  srcDir: string,
+  opts: { force?: boolean; acceptRedFlagRisk?: boolean } = {},
+): Promise<ImportResult> {
+  return createFromDirForUser(getActiveUserId(), name, description, srcDir, opts);
 }
 
 // ── target skill write guard ─────────────────────────────────────────────
@@ -2513,7 +2655,11 @@ export async function createFromDir(
  * Returns the new id if renamed, null otherwise.
  */
 async function _renameSkillByFrontmatterIfNeeded(currentId: string): Promise<string | null> {
-  const md = path.join(customSkillDir(currentId), 'SKILL.md');
+  return _renameSkillByFrontmatterIfNeededForUser(getActiveUserId(), currentId);
+}
+
+async function _renameSkillByFrontmatterIfNeededForUser(userId: string, currentId: string): Promise<string | null> {
+  const md = path.join(customSkillDirForUser(userId, currentId), 'SKILL.md');
   if (!fs.existsSync(md)) return null;
   let meta: SkillFrontmatter;
   try { meta = parseSkillFrontmatter(fs.readFileSync(md, 'utf8')); }
@@ -2522,10 +2668,10 @@ async function _renameSkillByFrontmatterIfNeeded(currentId: string): Promise<str
   if (!intended || intended === currentId) return null;
   if (validateSkillName(intended) !== '') return null;
   // Don't clobber an existing skill (custom or builtin) at the new id
-  if (fs.existsSync(customSkillDir(intended))) return null;
-  if (fs.existsSync(path.join(userMarketplaceSkillsDir(getActiveUserId()), intended))) return null;
+  if (fs.existsSync(customSkillDirForUser(userId, intended))) return null;
+  if (fs.existsSync(path.join(userMarketplaceSkillsDir(userId), intended))) return null;
   try {
-    const updated = await updateCustomSkill(currentId, { name: intended });
+    const updated = await updateCustomSkillForUser(userId, currentId, { name: intended });
     if (updated) {
       log.info(`auto-renamed skill ${currentId} -> ${intended} (from SKILL.md frontmatter)`);
       return intended;
@@ -2552,16 +2698,16 @@ export interface WriteSkillFileResult {
  * startup and avoid a static cycle through the Recall feature barrel.
  */
 async function writeBoundRecallSkillFile(
+  userId: string,
   skillId: string,
   relpath: string,
   content: string,
   sidecarPatch: SkillCogSeedMeta,
 ): Promise<WriteSkillFileResult | undefined> {
-  const userId = getActiveUserId();
   const bindings = await import('./recall/skill-binding-service');
   const binding = (await bindings.listSkillBindings(userId)).find((item) => item.skillId === skillId);
   if (!binding) return undefined;
-  const skill = await getCustomSkill(skillId);
+  const skill = await getCustomSkillForUser(userId, skillId);
   if (!skill?.dir) return { ok: false, reason: 'missing_dir' };
   let normalizedPath: string;
   try {
@@ -2600,7 +2746,7 @@ async function writeBoundRecallSkillFile(
   if (normalizedPath === 'SKILL.md' && _hasSkillSidecarPatch(sidecarPatch)) {
     writeSkillCogSeedMetaSync(skill.dir, sidecarPatch);
   }
-  clearSkillImportDraftMarkerSync(skillId);
+  clearSkillImportDraftMarkerSyncForUser(userId, skillId);
   return { ok: true, report };
 }
 
@@ -2618,12 +2764,13 @@ async function writeBoundRecallSkillFile(
  * `<<<skill-file>>>` apply path; future inline edit chat). Callers that
  * only need a yes/no go through the legacy `writeCustomSkillFile()` wrapper.
  */
-export function writeCustomSkillFileChecked(
+export function writeCustomSkillFileCheckedForUser(
+  userId: string,
   skillId: string,
   relpath: string,
   content: string,
 ): WriteSkillFileResult {
-  const d = path.resolve(customSkillDir(skillId));
+  const d = path.resolve(customSkillDirForUser(userId, skillId));
   if (!fs.existsSync(d) || !fs.statSync(d).isDirectory()) {
     return { ok: false, reason: 'missing_dir' };
   }
@@ -2639,18 +2786,30 @@ export function writeCustomSkillFileChecked(
   // Persist best-effort regardless of outcome — the report's also the input
   // for the future evolution / reflection signal stream.
   void persistQualityReport({
-    uid: getActiveUserId(), kind: 'skill', id: skillId, report,
+    uid: userId, kind: 'skill', id: skillId, report,
   });
   if (!report.ok) {
     return { ok: false, report };
   }
-  const written = _writeSkillFileAt(d, relpath, contentForWrite, /* invalidateOnSkillMd */ true);
+  const written = _writeSkillFileAt(d, relpath, contentForWrite, /* invalidateOnSkillMd */ false);
   if (!written) return { ok: false, report, reason: 'invalid_path' };
   if (isSkillMdWrite && _hasSkillSidecarPatch(sidecarPatch)) {
     writeSkillCogSeedMetaSync(d, sidecarPatch);
   }
-  clearSkillImportDraftMarkerSync(skillId);
+  clearSkillImportDraftMarkerSyncForUser(userId, skillId);
+  if (isSkillMdWrite) {
+    _invalidateSkillListCacheForUser(userId);
+    invalidateCoreAgentSkills().catch(() => { /* runner may not be loaded yet */ });
+  }
   return { ok: true, report };
+}
+
+export function writeCustomSkillFileChecked(
+  skillId: string,
+  relpath: string,
+  content: string,
+): WriteSkillFileResult {
+  return writeCustomSkillFileCheckedForUser(getActiveUserId(), skillId, relpath, content);
 }
 
 /**
@@ -2707,18 +2866,27 @@ export async function writeSkillFileForEditChecked(
   relpath: string,
   content: string,
 ): Promise<WriteSkillFileResult> {
+  return writeSkillFileForEditCheckedForUser(getActiveUserId(), skillId, relpath, content);
+}
+
+export async function writeSkillFileForEditCheckedForUser(
+  userId: string,
+  skillId: string,
+  relpath: string,
+  content: string,
+): Promise<WriteSkillFileResult> {
   const isSkillMdWrite = relpath.toUpperCase() === 'SKILL.MD';
   const sidecarPatch = isSkillMdWrite
     ? _skillSidecarPatchFromFrontmatter(splitSkillMd(content).meta)
     : {};
   const contentForWrite = isSkillMdWrite ? normalizeSkillMdForWrite(content, skillId) : content;
-  const customDir = customSkillDir(skillId);
+  const customDir = customSkillDirForUser(userId, skillId);
   if (fs.existsSync(customDir) && fs.statSync(customDir).isDirectory()) {
-    const versioned = await writeBoundRecallSkillFile(skillId, relpath, contentForWrite, sidecarPatch);
+    const versioned = await writeBoundRecallSkillFile(userId, skillId, relpath, contentForWrite, sidecarPatch);
     if (versioned) return versioned;
-    return writeCustomSkillFileChecked(skillId, relpath, content);
+    return writeCustomSkillFileCheckedForUser(userId, skillId, relpath, content);
   }
-  if (isBuiltinSkill(skillId)) {
+  if (fs.existsSync(path.join(userMarketplaceSkillsDir(userId), skillId))) {
     return { ok: false };
   }
   return { ok: false };
@@ -2734,6 +2902,15 @@ export async function writeSkillFileForEdit(
   return (await writeSkillFileForEditChecked(skillId, relpath, content)).ok;
 }
 
+export async function writeSkillFileForEditForUser(
+  userId: string,
+  skillId: string,
+  relpath: string,
+  content: string,
+): Promise<boolean> {
+  return (await writeSkillFileForEditCheckedForUser(userId, skillId, relpath, content)).ok;
+}
+
 /** Batch variant used by the multi-file Skill edit protocol. Bound Recall
  * Skills receive one complete-tree `manual_edit` version for the whole edit,
  * while ordinary custom Skills keep their established per-file behavior. */
@@ -2741,11 +2918,18 @@ export async function writeSkillFilesForEditChecked(
   skillId: string,
   files: Array<{ path: string; content: string }>,
 ): Promise<WriteSkillFileResult[] | undefined> {
-  const userId = getActiveUserId();
+  return writeSkillFilesForEditCheckedForUser(getActiveUserId(), skillId, files);
+}
+
+export async function writeSkillFilesForEditCheckedForUser(
+  userId: string,
+  skillId: string,
+  files: Array<{ path: string; content: string }>,
+): Promise<WriteSkillFileResult[] | undefined> {
   const bindings = await import('./recall/skill-binding-service');
   const binding = (await bindings.listSkillBindings(userId)).find((item) => item.skillId === skillId);
   if (!binding) return undefined;
-  const skill = await getCustomSkill(skillId);
+  const skill = await getCustomSkillForUser(userId, skillId);
   if (!skill?.dir) return files.map(() => ({ ok: false, reason: 'missing_dir' as const }));
   const normalized: Array<{ path: string; content: string; sidecarPatch: SkillCogSeedMeta }> = [];
   const results: WriteSkillFileResult[] = [];
@@ -2787,7 +2971,7 @@ export async function writeSkillFilesForEditChecked(
   });
   const skillMd = normalized.find((file) => file.path === 'SKILL.md');
   if (skillMd && _hasSkillSidecarPatch(skillMd.sidecarPatch)) writeSkillCogSeedMetaSync(skill.dir, skillMd.sidecarPatch);
-  clearSkillImportDraftMarkerSync(skillId);
+  clearSkillImportDraftMarkerSyncForUser(userId, skillId);
   return results;
 }
 
@@ -2805,7 +2989,16 @@ export async function applySkillMetadataForEdit(
   updates: SkillMetadataUpdate,
   opts: { replaceSidecar?: boolean } = {},
 ): Promise<SkillMetadataApplyResult> {
-  const skill = await getSkillForEdit(skillId);
+  return applySkillMetadataForEditForUser(getActiveUserId(), skillId, updates, opts);
+}
+
+export async function applySkillMetadataForEditForUser(
+  userId: string,
+  skillId: string,
+  updates: SkillMetadataUpdate,
+  opts: { replaceSidecar?: boolean } = {},
+): Promise<SkillMetadataApplyResult> {
+  const skill = await getSkillForEditForUser(userId, skillId);
   if (!skill) return { ok: false, skillId, written: false, reason: 'missing_dir' };
   const mdPath = path.join(skill.dir, 'SKILL.md');
   const current = fs.existsSync(mdPath) ? fs.readFileSync(mdPath, 'utf8') : '';
@@ -2814,7 +3007,7 @@ export async function applySkillMetadataForEdit(
   let wrote = false;
 
   if (next !== current) {
-    const res = await writeSkillFileForEditChecked(skillId, 'SKILL.md', next);
+    const res = await writeSkillFileForEditCheckedForUser(userId, skillId, 'SKILL.md', next);
     if (!res.ok) {
       return { ok: false, skillId, written: false, report: res.report, reason: res.reason };
     }
@@ -2833,17 +3026,17 @@ export async function applySkillMetadataForEdit(
       writeSkillCogSeedMetaSync(skill.dir, sidecarPatch);
     }
     wrote = true;
-    _invalidateSkillListCache();
+    _invalidateSkillListCacheForUser(userId);
     invalidateCoreAgentSkills().catch(() => { /* runner may not be loaded yet */ });
   }
 
   let resolvedId = skillId;
   if (skill.source === 'custom') {
-    const newId = await _renameSkillByFrontmatterIfNeeded(skillId);
+    const newId = await _renameSkillByFrontmatterIfNeededForUser(userId, skillId);
     if (newId && newId !== skillId) resolvedId = newId;
-    if (wrote) clearSkillImportDraftMarkerSync(resolvedId);
+    if (wrote) clearSkillImportDraftMarkerSyncForUser(userId, resolvedId);
   }
-  const post = await getSkillForEdit(resolvedId);
+  const post = await getSkillForEditForUser(userId, resolvedId);
   log.info(`skill=${skillId}${resolvedId !== skillId ? ` -> ${resolvedId}` : ''} metadata updated`);
   return { ok: true, skillId: resolvedId, name: post?.name || resolvedId, written: wrote, report };
 }
@@ -2916,7 +3109,7 @@ async function _appendSkillChatMessage(userId: string, skillId: string, record: 
 export async function clearSkillChat(userId: string, skillId: string): Promise<boolean> {
   // Allow clearing for either custom or built-in (dev mode reaches built-in
   // edit chats). Path is id-keyed regardless of source.
-  if (!fs.existsSync(customSkillDir(skillId)) && !isBuiltinSkill(skillId)) return false;
+  if (!fs.existsSync(customSkillDirForUser(userId, skillId)) && !isBuiltinSkillForUser(userId, skillId)) return false;
   for (const p of [skillChatMsgsPath(userId, skillId), skillChatMetaPath(userId, skillId)]) {
     if (fs.existsSync(p)) {
       try { await fsp.unlink(p); }
@@ -3439,20 +3632,35 @@ export interface SkillContainerResult {
  *  single rejected path doesn't roll back earlier successes (matches
  *  `streamSendToSkillChat`'s file-by-file outcome). */
 export async function applySkillContainerFromCommander(
+  userId: string,
   container: SkillContainerExtracted,
-  opts: { replaceSidecar?: boolean } = {},
+  opts?: { replaceSidecar?: boolean },
+): Promise<SkillContainerResult>;
+/** Legacy active-user wrapper retained for non-queued callers. */
+export async function applySkillContainerFromCommander(
+  container: SkillContainerExtracted,
+  opts?: { replaceSidecar?: boolean },
+): Promise<SkillContainerResult>;
+export async function applySkillContainerFromCommander(
+  userOrContainer: string | SkillContainerExtracted,
+  containerOrOpts?: SkillContainerExtracted | { replaceSidecar?: boolean },
+  maybeOpts: { replaceSidecar?: boolean } = {},
 ): Promise<SkillContainerResult> {
+  const userId = typeof userOrContainer === 'string' ? userOrContainer : getActiveUserId();
+  const container = typeof userOrContainer === 'string' ? containerOrOpts as SkillContainerExtracted : userOrContainer;
+  const opts = typeof userOrContainer === 'string' ? maybeOpts : (containerOrOpts as { replaceSidecar?: boolean } | undefined) || {};
   const hasMetadata = _hasSkillMetadataUpdate(container.metadata);
   if (!container.files.length && !hasMetadata) {
     return { ok: false, error: t('skills.errors.container_empty') };
   }
   if (container.skillId) {
-    return _applySkillContainerEdit(container.skillId, container.files, container.metadata, opts);
+    return _applySkillContainerEdit(userId, container.skillId, container.files, container.metadata, opts);
   }
-  return _applySkillContainerCreate(container.files, container.metadata);
+  return _applySkillContainerCreate(userId, container.files, container.metadata);
 }
 
 async function _applySkillContainerCreate(
+  userId: string,
   files: SkillFileBlock[],
   metadata?: SkillMetadataUpdate,
 ): Promise<SkillContainerResult> {
@@ -3476,10 +3684,10 @@ async function _applySkillContainerCreate(
   if (validateErr) return { ok: false, error: validateErr };
   // Collision checks — same gates as the IPC create path so commander and
   // detail panel produce identical failure modes.
-  if (fs.existsSync(customSkillDir(name))) {
+  if (fs.existsSync(customSkillDirForUser(userId, name))) {
     return { ok: false, error: t('skills.errors.skill_exists', { name }) };
   }
-  if (fs.existsSync(path.join(userMarketplaceSkillsDir(getActiveUserId()), name))) {
+  if (fs.existsSync(path.join(userMarketplaceSkillsDir(userId), name))) {
     return { ok: false, error: t('skills.errors.builtin_conflict', { name }) };
   }
   // Pre-validate every file BEFORE any FS mutation. Without this, the path
@@ -3513,7 +3721,7 @@ async function _applySkillContainerCreate(
   const metadataSidecar = metadata ? _skillSidecarPatchFromMetadataUpdate(metadata) : {};
   const fileSidecar = _skillSidecarPatchFromFrontmatter(meta);
   const seedCategory = String(metadataSidecar.category || fileSidecar.category || '');
-  const created = await createCustomSkill(name, seedDescription, seedCategory);
+  const created = await createCustomSkillForUser(userId, name, seedDescription, seedCategory);
   if (!created) return { ok: false, error: t('skills.errors.create_failed') };
 
   const written: string[] = [];
@@ -3521,7 +3729,7 @@ async function _applySkillContainerCreate(
   for (const fb of files) {
     // After pre-validation passed, the only remaining reason to reject is
     // a path-escape attempt (handled inside `writeCustomSkillFileChecked`).
-    const res = writeCustomSkillFileChecked(name, fb.path, fb.content);
+    const res = writeCustomSkillFileCheckedForUser(userId, name, fb.path, fb.content);
     if (res.ok) {
       written.push(fb.path);
     } else {
@@ -3535,11 +3743,11 @@ async function _applySkillContainerCreate(
   // delete tombstone's deleted_at_ms and triggering re-deletion next pass.
   const stampNow = new Date();
   for (const w of written) {
-    try { fs.utimesSync(path.join(customSkillDir(name), w), stampNow, stampNow); }
+    try { fs.utimesSync(path.join(customSkillDirForUser(userId, name), w), stampNow, stampNow); }
     catch { /* best effort */ }
   }
   if (_hasSkillSidecarPatch(metadataSidecar)) {
-    writeSkillCogSeedMetaSync(customSkillDir(name), metadataSidecar);
+    writeSkillCogSeedMetaSync(customSkillDirForUser(userId, name), metadataSidecar);
   }
   if (written.length) log.info(`commander created skill=${name} files=${written.length}`);
 
@@ -3555,12 +3763,12 @@ async function _applySkillContainerCreate(
     // trigger/anti-trigger semantics on every new skill — so shape
     // findings escalate to a `risk` receipt here. Foreign-format imports keep
     // the advisory reading (see the module docs).
-    admission = await admissionMod.admitCustomSkill(getActiveUserId(), name, { escalateSkillShape: true });
+    admission = await admissionMod.admitCustomSkill(userId, name, { escalateSkillShape: true });
   } catch (err) {
     log.warn('commander skill admission failed', { skill: name, error: (err as Error).message });
   }
   if (admission?.outcome === 'blocked') {
-    await deleteCustomSkill(name);
+    await deleteCustomSkillForUser(userId, name);
     log.warn('commander skill create blocked by security admission', {
       skill: name,
       rules: admission.scan?.blockingRules || admission.scan?.localRedLines || [],
@@ -3585,6 +3793,7 @@ async function _applySkillContainerCreate(
 }
 
 async function _applySkillContainerEdit(
+  userId: string,
   skillId: string,
   files: SkillFileBlock[],
   metadata?: SkillMetadataUpdate,
@@ -3594,12 +3803,12 @@ async function _applySkillContainerEdit(
   if (!files.length && !hasMetadata) {
     return { ok: false, error: t('skills.errors.container_empty') };
   }
-  const skill = await getSkillForEdit(skillId);
+  const skill = await getSkillForEditForUser(userId, skillId);
   if (!skill) {
     const hasSkillMd = files.some((f) => f.path.toUpperCase() === 'SKILL.MD');
     if (hasSkillMd) {
       log.info(`commander target skill=${skillId} missing; treating SKILL.md payload as create`);
-      return _applySkillContainerCreate(files);
+      return _applySkillContainerCreate(userId, files);
     }
     return { ok: false, error: t('skills.errors.skill_not_found', { id: skillId }) };
   }
@@ -3617,10 +3826,10 @@ async function _applySkillContainerEdit(
   const validationFailed: { path: string; report: QualityReport }[] = [];
   const validationWarnings: { path: string; report: QualityReport }[] = [];
   let touchedSkillMd = false;
-  const managedBatch = await writeSkillFilesForEditChecked(skillId, files);
+  const managedBatch = await writeSkillFilesForEditCheckedForUser(userId, skillId, files);
   for (let index = 0; index < files.length; index += 1) {
     const fb = files[index];
-    const res = managedBatch?.[index] || await writeSkillFileForEditChecked(skillId, fb.path, fb.content);
+    const res = managedBatch?.[index] || await writeSkillFileForEditCheckedForUser(userId, skillId, fb.path, fb.content);
     if (res.ok) {
       written.push(fb.path);
       if (fb.path.toUpperCase() === 'SKILL.MD') touchedSkillMd = true;
@@ -3647,13 +3856,13 @@ async function _applySkillContainerEdit(
   // same hook as the per-skill edit chat (`streamSendToSkillChat`).
   let resolvedId = skillId;
   if (touchedSkillMd) {
-    const newId = await _renameSkillByFrontmatterIfNeeded(skillId);
+    const newId = await _renameSkillByFrontmatterIfNeededForUser(userId, skillId);
     if (newId && newId !== skillId) resolvedId = newId;
   }
 
   let metadataOk = !hasMetadata;
   if (hasMetadata) {
-    const metaRes = await applySkillMetadataForEdit(resolvedId, metadata || {}, opts);
+    const metaRes = await applySkillMetadataForEditForUser(userId, resolvedId, metadata || {}, opts);
     if (metaRes.ok) {
       metadataOk = true;
       resolvedId = metaRes.skillId;
@@ -3669,7 +3878,7 @@ async function _applySkillContainerEdit(
       rejected.push('SKILL.md');
     }
   }
-  const post = await getSkillForEdit(resolvedId);
+  const post = await getSkillForEditForUser(userId, resolvedId);
   if (written.length) log.info(`commander updated skill=${skillId}${resolvedId !== skillId ? ` -> ${resolvedId}` : ''} files=${written.length}`);
   const ok = files.length > 0 || metadataOk;
 
@@ -3687,7 +3896,7 @@ async function _applySkillContainerEdit(
     try {
       const admissionMod = await import('./security/custom-skill-admission');
       const admission = await admissionMod.admitCustomSkill(
-        getActiveUserId(), resolvedId, { recordBlockedReceipt: true },
+        userId, resolvedId, { recordBlockedReceipt: true },
       );
       securityBlocked = admission.outcome === 'blocked';
       securityUnavailable = admission.outcome === 'unknown';
@@ -3723,7 +3932,7 @@ function skillFilesBlock(files: SkillFileInfo[]): string {
  * skill metadata + file listing so the LLM always sees up-to-date state —
  * re-run every turn.
  */
-export async function buildSkillEditSystemPrompt(skill: {
+export async function buildSkillEditSystemPrompt(userId: string, skill: {
   id?: string;
   name?: string;
   /** Legacy single-language seed; auto-routed via Chinese-character heuristic. */
@@ -3739,7 +3948,7 @@ export async function buildSkillEditSystemPrompt(skill: {
 }): Promise<string> {
   const files = isMarketplaceSource(skill.source || 'custom') && skill.dir
     ? await _listSkillFilesAt(skill.dir)
-    : await listCustomSkillFiles(skill.id || '');
+    : await listCustomSkillFilesForUser(userId, skill.id || '');
   // Resolve all three forms into a single legacy `$skill_description` for the
   // current template, plus the bilingual pair for forward-compat. Phase 2
   // splits the template; this keeps existing prompt rendering working.
@@ -3815,7 +4024,7 @@ export async function sendToSkillChat(
   content: string,
   opts: { attachments?: string[]; modelText?: string } = {},
 ): Promise<SkillChatResult> {
-  const skill = await getSkillForEdit(skillId);
+  const skill = await getSkillForEditForUser(userId, skillId);
   if (!skill) return { ok: false, error: 'skill not found' };
   if (isMarketplaceSource(skill.source) && !false) {
     return { ok: false, error: t('errors.builtin_skill_not_editable') };
@@ -3824,7 +4033,7 @@ export async function sendToSkillChat(
   const meta = await loadSkillChatMeta(userId, skillId);
   const sessionId = meta.session_id || defaultSkillSessionId(skillId);
 
-  const systemPrompt = await buildSkillEditSystemPrompt(skill);
+  const systemPrompt = await buildSkillEditSystemPrompt(userId, skill);
   const modelText = typeof opts.modelText === 'string' ? opts.modelText.trim() : '';
   const modelContent = modelText || content;
   const attachmentCtx = await buildSkillEditMessageWithAttachments(userId, skillId, modelContent, opts.attachments);
@@ -3849,7 +4058,7 @@ export async function sendToSkillChat(
     // that, so it's blocked at the sandbox level.
     readOnlyExtraRoots: [
       ...(skill.dir ? [skill.dir] : []),
-      userMarketplaceSkillsDir(getActiveUserId()),
+      userMarketplaceSkillsDir(userId),
       userSkillsDir(userId),
       // System skills root so a URL-import chat can read `package-installer`
       // before driving `cogseed-pkg`; ordinary SkillRegistry no longer loads
@@ -3877,7 +4086,7 @@ export async function sendToSkillChat(
   const written: string[] = [];
   const skillsTouchingMd = new Set<string>();
   for (const fb of fileBlocks) {
-    if (await writeSkillFileForEdit(skillId, fb.path, fb.content)) {
+    if (await writeSkillFileForEditForUser(userId, skillId, fb.path, fb.content)) {
       written.push(fb.path);
       if (fb.path.toUpperCase() === 'SKILL.MD') {
         skillsTouchingMd.add(skillId);
@@ -3895,7 +4104,7 @@ export async function sendToSkillChat(
   let currentSkillId = skillId;
   if (skill.source === 'custom') {
     for (const sid of skillsTouchingMd) {
-      const newId = await _renameSkillByFrontmatterIfNeeded(sid);
+      const newId = await _renameSkillByFrontmatterIfNeededForUser(userId, sid);
       if (newId && newId !== sid) {
         renamed.push({ oldId: sid, newId });
         if (sid === currentSkillId) currentSkillId = newId;
@@ -3905,7 +4114,7 @@ export async function sendToSkillChat(
 
   let updatedMetadata = false;
   if (_hasSkillMetadataUpdate(metadataUpdate)) {
-    const metaRes = await applySkillMetadataForEdit(currentSkillId, metadataUpdate);
+    const metaRes = await applySkillMetadataForEditForUser(userId, currentSkillId, metadataUpdate);
     if (metaRes.ok) {
       updatedMetadata = true;
       if (metaRes.written && !written.includes('SKILL.md')) written.push('SKILL.md');
@@ -3918,7 +4127,7 @@ export async function sendToSkillChat(
     }
   }
   if (skill.source === 'custom' && (written.length > 0 || updatedMetadata)) {
-    clearSkillImportDraftMarkerSync(currentSkillId);
+    clearSkillImportDraftMarkerSyncForUser(userId, currentSkillId);
   }
 
   const assistantText = _skillEditMutationFinalText({
@@ -3948,7 +4157,7 @@ export async function* streamSendToSkillChat(
   userId: string, skillId: string, content: string,
   opts: { abortSignal?: AbortSignal; attachments?: string[]; modelText?: string } = {},
 ): AsyncGenerator<any, void, unknown> {
-  const skill = await getSkillForEdit(skillId);
+  const skill = await getSkillForEditForUser(userId, skillId);
   if (!skill) {
     yield { type: 'error', text: 'skill not found' };
     yield { type: 'done' };
@@ -3964,7 +4173,7 @@ export async function* streamSendToSkillChat(
   const sessionId = meta.session_id || defaultSkillSessionId(skillId);
   const importMetaTargets = _skillChatImportMetaTargets(meta);
 
-  const systemPrompt = await buildSkillEditSystemPrompt(skill);
+  const systemPrompt = await buildSkillEditSystemPrompt(userId, skill);
   const modelText = typeof opts.modelText === 'string' ? opts.modelText.trim() : '';
   const modelContent = modelText || content;
   const attachmentCtx = await buildSkillEditMessageWithAttachments(userId, skillId, modelContent, opts.attachments);
@@ -4004,7 +4213,7 @@ export async function* streamSendToSkillChat(
       cacheRetention: 'short',
       readOnlyExtraRoots: [
       ...(skill.dir ? [skill.dir] : []),
-      userMarketplaceSkillsDir(getActiveUserId()),
+      userMarketplaceSkillsDir(userId),
       userSkillsDir(userId),
       // System skills root so a URL-import chat can read `package-installer`
       // before driving `cogseed-pkg`; ordinary SkillRegistry no longer loads
@@ -4040,7 +4249,7 @@ export async function* streamSendToSkillChat(
         if (pkgMarker) {
           let placeholderDeleted = false;
           try {
-            placeholderDeleted = await deleteCustomSkill(skillId);
+            placeholderDeleted = await deleteCustomSkillForUser(userId, skillId);
           }
           catch (e) { log.warn(`drop placeholder skill failed skill=${skillId}: ${(e as Error).message}`); }
           log.info('url import finalized as external package', {
@@ -4083,7 +4292,7 @@ export async function* streamSendToSkillChat(
         let updatedMetadata = false;
         let usedImportDraftAsSkill = false;
         for (const fb of fileBlocks) {
-          if (await writeSkillFileForEdit(skillId, fb.path, fb.content)) {
+          if (await writeSkillFileForEditForUser(userId, skillId, fb.path, fb.content)) {
             written.push(fb.path);
             synthesizedProgress.push(t('process.skill.file_written', { path: fb.path }));
             if (fb.path.toUpperCase() === 'SKILL.MD') {
@@ -4098,7 +4307,7 @@ export async function* streamSendToSkillChat(
         let processedExternalContainers = false;
         if (externalContainers.length) {
           const allowExternalImportDraft = skill.source === 'custom'
-            && _isImportDraftForExternalSkillContainersSync(skillId);
+            && _isImportDraftForExternalSkillContainersSyncForUser(userId, skillId);
           const allowExternalMetadataTargets = skill.source === 'custom' && directImportMetadataOnly;
           if (allowExternalImportDraft) {
             for (const container of externalContainers) {
@@ -4106,13 +4315,13 @@ export async function* streamSendToSkillChat(
                 && container.files.some((f) => f.path.toUpperCase() === 'SKILL.MD');
               const targetBefore = currentSkillId;
               const res = useCurrentDraft
-                ? await _applySkillContainerEdit(currentSkillId, container.files, container.metadata)
-                : await applySkillContainerFromCommander(container);
+                ? await _applySkillContainerEdit(userId, currentSkillId, container.files, container.metadata)
+                : await applySkillContainerFromCommander(userId, container);
               if (res.ok && res.skillId) {
                 if (useCurrentDraft) {
                   usedImportDraftAsSkill = true;
                   currentSkillId = res.skillId;
-                  clearSkillImportDraftMarkerSync(currentSkillId);
+                  clearSkillImportDraftMarkerSyncForUser(userId, currentSkillId);
                   if (res.skillId !== targetBefore) {
                     const evt = {
                       type: 'event',
@@ -4128,7 +4337,7 @@ export async function* streamSendToSkillChat(
                   kind: res.kind,
                 });
                 processedExternalContainers = true;
-                if (res.kind === 'updated') clearSkillImportDraftMarkerSync(res.skillId);
+                if (res.kind === 'updated') clearSkillImportDraftMarkerSyncForUser(userId, res.skillId);
                 synthesizedProgress.push(t(
                   res.kind === 'updated' ? 'process.skill.import_updated' : 'process.skill.import_created',
                   { name: res.name || res.skillId },
@@ -4150,6 +4359,7 @@ export async function* streamSendToSkillChat(
                 continue;
               }
               const res = await _applySkillContainerEdit(
+                userId,
                 container.skillId,
                 [],
                 metadataOnly,
@@ -4162,7 +4372,7 @@ export async function* streamSendToSkillChat(
                   kind: res.kind,
                 });
                 processedExternalContainers = true;
-                clearSkillImportDraftMarkerSync(res.skillId);
+                clearSkillImportDraftMarkerSyncForUser(userId, res.skillId);
                 synthesizedProgress.push(t('process.skill.import_updated', { name: res.name || res.skillId }));
               } else {
                 log.warn(`rejected inline import metadata update skill=${container.skillId}: ${res.error || 'unknown'}`);
@@ -4182,7 +4392,7 @@ export async function* streamSendToSkillChat(
         // also need to rename src and data trees plus migrate user chat dirs.
         if (skill.source === 'custom') {
           for (const sid of skillsTouchingMd) {
-            const newId = await _renameSkillByFrontmatterIfNeeded(sid);
+            const newId = await _renameSkillByFrontmatterIfNeededForUser(userId, sid);
             if (newId && newId !== sid) {
               if (sid === currentSkillId) currentSkillId = newId;
               const evt = {
@@ -4195,7 +4405,8 @@ export async function* streamSendToSkillChat(
           }
         }
         if (_hasSkillMetadataUpdate(metadataUpdate)) {
-          const metaRes = await applySkillMetadataForEdit(
+          const metaRes = await applySkillMetadataForEditForUser(
+            userId,
             currentSkillId,
             metadataUpdate,
             { replaceSidecar: directImportMetadataOnly },
@@ -4226,7 +4437,7 @@ export async function* streamSendToSkillChat(
           || usedImportDraftAsSkill
           || processedExternalContainers
         )) {
-          clearSkillImportDraftMarkerSync(currentSkillId);
+          clearSkillImportDraftMarkerSyncForUser(userId, currentSkillId);
         }
         finalText = _skillEditMutationFinalText({
           extracted,
