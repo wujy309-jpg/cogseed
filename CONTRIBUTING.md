@@ -2,9 +2,10 @@
 
 English · [简体中文](./CONTRIBUTING.zh-CN.md)
 
-Thanks for your interest in contributing to CogSeed! This project is developed
-in the open, and contributions — bug reports, fixes, documentation, features,
-tests, and examples — are welcome.
+Thanks for your interest in contributing to CogSeed! The public repository
+contains reviewed release snapshots; development takes place in a private
+repository. Contributions — bug reports, fixes, documentation, features, tests,
+and examples — are welcome.
 
 ## Code of Conduct
 
@@ -13,7 +14,7 @@ participating, you are expected to uphold this code.
 
 ## Getting Started
 
-To try a release from source, follow the [README](./README.md#run-from-source). The steps below are for contributing changes from the latest `develop`.
+To try a release from source, follow the [README](./README.md#run-from-source). The steps below are for contributing changes from the latest public `main`.
 
 CogSeed's primary development platforms are macOS and Windows. Before you
 start, install Git, Node.js 24.x, and npm 11.11.0. See the
@@ -38,10 +39,10 @@ setup details.
    git config user.email "<github-user-id>+<username>@users.noreply.github.com"
    ```
 
-3. Create a short-lived branch from the latest `develop`:
+3. Create a short-lived branch from the latest public `main`:
 
    ```bash
-   git switch -c dev/<your-github-username> upstream/develop
+   git switch -c dev/<your-github-username> upstream/main
    ```
 
 4. Install the locked dependencies. `npm ci` also prepares native modules and
@@ -84,7 +85,7 @@ native-module ABI before and after the JavaScript suite.
 
 - Keep changes focused; prefer small, reviewable pull requests.
 - Follow the repository layout and engineering boundaries in
-  [AGENTS.md](./AGENTS.md).
+  [Development Guide](./docs/DEVELOPMENT.md#development-rules).
 - Add or update tests for behavior you change, including failure and recovery
   paths where relevant.
 - Run `npm run typecheck`, `npm run lint`, `npm test`, and
@@ -107,9 +108,10 @@ network access, external-system writes, or new dependencies. See the
 [Community Skill guide](./community/skills/README.md) for the package shape,
 verification command, review boundary, and candidate states.
 
-A merge into `community/skills/` means repository-reviewed candidate source
-only. It does not mean import verification, Hub publication, release bundling,
-or production approval.
+Acceptance into `community/skills/` means repository-reviewed candidate source
+only, imported into private development before a later public snapshot. It does
+not mean application import verification, Hub publication, release bundling, or
+production approval.
 
 ## Developer Certificate of Origin (DCO)
 
@@ -149,48 +151,38 @@ gate scans the complete public commit record.
 
 ## Pull Requests
 
-- Open external contributions against `develop`, not `main` or `cicd`.
+- Open external contributions against the public `main` branch.
 - Reference the issue your pull request addresses, if any.
 - Describe what changed, why it is needed, and how you verified it.
 - Keep generated output and unrelated formatting changes out of the diff.
 - Be responsive to review feedback and keep the branch current with
-  `upstream/develop`.
+  `upstream/main`.
 
 For a first-time contributor, GitHub may show the workflow as waiting for
 maintainer approval. This is expected for pull requests from forks and does not
 mean the checks failed.
 
-Pull requests to `develop` must pass:
+Before review, run the verification commands above and the tests relevant to
+your change. Public CI checks are defined by the workflows and required checks
+actually configured in the public repository; a document is not evidence that
+a check has run or passed. Report any platform you have not verified.
 
-- `check-commit-emails` — protects the public history from personal addresses;
-- `static-gates` — typecheck, lint, design tokens, built-in manifest, README
-  links, and skipped-test policy;
-- `affected-tests` — module-graph-aware tests selected from the pull request
-  diff.
+## Contribution integration
 
-Windows test shards also run and must be investigated when red, although they
-are not currently required status checks. A full suite runs again after changes
-land on `develop`; promotion to `cicd` runs the complete macOS, Windows, and
-compliance release gates.
+The public `main` branch receives approved source snapshots at release time.
+External pull requests are reviewed against that branch, then accepted patches
+are imported into the private development repository. Maintainers preserve the
+public PR reference, author attribution and DCO sign-offs. The public PR is
+closed with an imported status rather than merged into public `main`.
 
-## Branching and Merge Rules
+Acceptance into development does not mean a release is available. The change
+appears in a later public snapshot only after that version passes its release
+gates. Maintainers link the public release when available. Internal review
+records and private commit history are not copied into the public repository.
 
-CogSeed uses three long-lived branches:
-
-- `main` — protected public release branch; always intended to be releasable.
-- `develop` — protected integration branch and the target for feature and
-  external-contributor pull requests.
-- `cicd` — protected release gate; promotion from `develop` runs the full
-  verification and compliance pipeline before a release tag is accepted.
-
-Short-lived contributor branches use `dev/<your-github-username>` by default.
-Release maintainers may create `release/vX.Y` branches for patch-only work.
-
-Merging requires at least one approving CODEOWNER review and all required
-status checks. Pull request authors cannot approve their own changes; only a
-maintainer with write access can merge after the requirements are satisfied.
-Maintainers who merge through GitHub must enable **Keep my email addresses
-private** so the generated merge commit also uses a noreply address.
+Create contributor branches from `upstream/main` and follow the public PR's
+review feedback. Do not merge private branches or push release snapshots into
+the public repository yourself.
 
 ### Commit messages
 

@@ -30,7 +30,7 @@ Starter Issue or proposal Issue, if one exists:
       confidential material
 - [ ] The contribution contains no scripts, executables, binaries, network
       access, external writes, or new dependencies
-- [ ] I understand that merge means “community candidate”; it does not mean Hub
+- [ ] I understand that acceptance/import means “community candidate”; it does not mean Hub
       publication, release bundling, or production approval
 - [ ] Every commit is signed off with `git commit -s` (DCO)
 

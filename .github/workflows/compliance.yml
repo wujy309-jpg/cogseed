@@ -7,7 +7,7 @@
 #
 # The full compliance gate runs on promotion PRs into cicd and again on the
 # resulting cicd push. Release verification accepts only the push run for the
-# exact tagged cicd tip.
+# exact candidate cicd SHA; public release requires its own full CI.
 
 name: compliance
 
@@ -24,14 +24,16 @@ permissions:
 
 jobs:
   compliance:
-    runs-on: ubuntu-latest
+    if: github.repository == 'bonc-ai/cogseed-internal'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run reuse:check
       - run: npm run builtin:manifest:check
       - run: npm run sbom:check

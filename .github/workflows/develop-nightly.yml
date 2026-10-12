@@ -2,14 +2,7 @@ name: Develop Nightly
 
 # L2 每日全量 —— 兜住 L1 的漏网，翻出"攒着没人发现"的红单。
 #
-# 【为什么不用 schedule 触发 —— 重要】
-#   GitHub 的 schedule 事件**只在仓库默认分支上运行**。
-#   本仓库默认分支是 main，而 main 是"发版镜像"（只从 cicd 同步过来、零夹带），
-#   把 develop 的工具放到 main 上会破坏这个约定。
-#   所以这里改用 push 触发 + 覆盖门控：
-#     - push 事件读的是**被 push 分支上的 workflow 文件**，develop 上可以生效；
-#     - 门控步骤检查"**当前 head SHA 是否已被一次完成的全量覆盖**"，覆盖过才跳过。
-#   净效果 = 每个 develop 尖端都被一次全量覆盖；连续 push 由 concurrency 收敛到最后一次。
+# 方案 C：额度硬停期间只允许手动触发，只允许受控 Linux 自建 runner，避免消耗私仓托管分钟。
 #
 # 【门控口径为什么从"今天是否跑过"改成"当前 head SHA 是否被覆盖"】
 #   旧口径（2026-09-16 上线当天暴露的缺陷 2，规范 ⓪2 记为"假绿"）：
@@ -39,10 +32,6 @@ name: Develop Nightly
 #   建议：SM 每天早会固定过一眼本 workflow 的结果。
 
 on:
-  push:
-    branches:
-      - develop
-  # 保留手动触发：想立刻验证时不必等下一次 push。手动触发不做门控。
   workflow_dispatch:
 
 # 连续 push 时取消上一次未跑完的，让最终 tip 一定被覆盖，而不是排队跑一串旧 tip。
@@ -56,7 +45,8 @@ permissions:
 
 jobs:
   full-suite:
-    runs-on: macos-latest
+    if: github.repository == 'bonc-ai/cogseed-internal'
+    runs-on: [self-hosted, Linux, cogseed-internal]
     timeout-minutes: 40
     steps:
       - name: 覆盖门控（fail-open：出任何问题都照常跑）
@@ -139,11 +129,9 @@ jobs:
         run: npm run lint
 
       # 与 ci.yml 的 verify 保持一致：限 2 个 worker。
-      # macos-latest 是 3 vCPU，默认 4 worker 会过度抢占，导致负载型时序用例
-      # （CLI 版本探测、boot 恢复投影等）偶发超时红单。
       - name: Full JS suite
         if: steps.gate.outputs.should_run != 'false'
-        run: node scripts/run-tests.mjs run --maxWorkers=2
+        run: node scripts/run-tests.mjs run --maxWorkers=1
 
       - if: steps.gate.outputs.should_run != 'false'
         run: npm run test:resources

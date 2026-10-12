@@ -20,7 +20,7 @@ binary files, or new dependencies.
    negative evaluation case.
 5. Record the GitHub author and all third-party material in `provenance.json`.
 6. Run `npm run community:skills:check`.
-7. Commit with DCO sign-off and open a pull request against `develop` using the
+7. Commit with DCO sign-off and open a pull request against public `main` using the
    [community Skill PR template](../../.github/PULL_REQUEST_TEMPLATE/community-skill.md).
    If GitHub opened the generic template, select this template with the
    `template=community-skill.md` pull-request query parameter or copy its body.
@@ -28,8 +28,7 @@ binary files, or new dependencies.
 The general repository setup and DCO rules remain mandatory; see
 [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
-Maintainers can start from the reviewed
-[pilot Issue drafts](../PILOT_BACKLOG.zh-CN.md). They are optional onboarding
+Starter Issues published in the public repository are optional onboarding
 prompts and do not limit independent proposals.
 
 ## Required package
@@ -57,7 +56,8 @@ merge date.
 The status chain is deliberately separate:
 
 1. **Pull request opened** — proposed contribution.
-2. **Merged community candidate** — repository-reviewed source only.
+2. **Accepted community candidate** — reviewed and imported into private development;
+   the public PR is closed with an import record and the source appears in a later release snapshot.
 3. **Import verified** — separately tested in a clean CogSeed environment.
 4. **Hub published** — separately approved and distributed through CogSeed Hub.
 5. **Bundled** — separately approved for inclusion in an application release.
@@ -67,6 +67,6 @@ the maintainers explicitly run and record an additional gate.
 
 ## Review ownership
 
-`community/` is owned by `@windsgone` through CODEOWNERS. Security-sensitive,
+Maintainers assign reviewers through the public PR. Security-sensitive,
 copyright-sensitive, executable, networked, or dependency-bearing proposals are
 outside the pilot and must be returned for a separate maintainer review path.

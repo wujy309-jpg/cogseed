@@ -1,0 +1,439 @@
+name: Public source snapshot PR
+
+# Run reviewed tooling from the private default branch against a fixed private
+# cicd commit with successful CI and compliance runs. Only a public PR is made;
+# it never merges, publishes a Release, or rewrites public main.
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full 40-character private cicd commit SHA with successful CI and compliance
+        required: true
+        type: string
+
+concurrency:
+  group: public-source-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      public_base: ${{ steps.identity.outputs.public_base }}
+      export_sha256: ${{ steps.export.outputs.export_sha256 }}
+      evidence_json: ${{ steps.evidence.outputs.json }}
+    steps:
+      - name: Require private default branch dispatch
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          BASELINE_READY: ${{ vars.PUBLIC_SOURCE_BASELINE_READY }}
+          BASELINE_SHA: ${{ vars.PUBLIC_SOURCE_BASELINE_SHA }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == bonc-ai/cogseed-internal && "$GITHUB_REF" == refs/heads/develop && "$GITHUB_EVENT_NAME" == workflow_dispatch ]] || exit 1
+          [[ "$GITHUB_RUN_ATTEMPT" == 1 ]] || { echo '::error::Start a new manual dispatch instead of rerunning an old authorization'; exit 1; }
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::A full lowercase source SHA is required'; exit 1; }
+          [[ "$BASELINE_READY" == true && "$BASELINE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::Public baseline is not activated'; exit 1; }
+      - name: Check out reviewed tooling at the dispatch SHA
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: tooling
+          persist-credentials: false
+      - name: Check out the fixed private source commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Validate repositories, source release gates and public base
+        id: identity
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          TOOLING_SHA: ${{ github.sha }}
+          BASELINE_SHA: ${{ vars.PUBLIC_SOURCE_BASELINE_SHA }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::A full lowercase source SHA is required'; exit 1; }
+          [[ "$(git -C tooling rev-parse HEAD)" == "$TOOLING_SHA" ]] || exit 1
+          [[ "$(git -C source rev-parse HEAD)" == "$SOURCE_SHA" ]] || exit 1
+          [[ "$(git -C source cat-file -t "$SOURCE_SHA")" == commit ]] || exit 1
+          [[ "$(git -C tooling remote get-url origin)" =~ ^https://github\.com/bonc-ai/cogseed-internal(\.git)?$ ]] || exit 1
+          [[ "$(git -C source remote get-url origin)" =~ ^https://github\.com/bonc-ai/cogseed-internal(\.git)?$ ]] || exit 1
+          COMPARE_BASE="$(gh api "repos/bonc-ai/cogseed-internal/compare/$SOURCE_SHA...cicd" --jq '.merge_base_commit.sha')"
+          [[ "$COMPARE_BASE" == "$SOURCE_SHA" ]] || { echo '::error::Source is not on private cicd history'; exit 1; }
+          for WORKFLOW in ci.yml compliance.yml; do
+            gh api -X GET "repos/bonc-ai/cogseed-internal/actions/workflows/$WORKFLOW/runs" \
+              -f head_sha="$SOURCE_SHA" -f branch=cicd -f event=push -f per_page=100 \
+              > "$RUNNER_TEMP/$WORKFLOW-runs.json"
+            WORKFLOW="$WORKFLOW" node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const result = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/${process.env.WORKFLOW}-runs.json`));
+          const runs = (result.workflow_runs || []).filter((run) => run.head_sha === process.env.SOURCE_SHA &&
+            run.head_branch === 'cicd' && run.event === 'push');
+          runs.sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
+          if (!runs.length || runs[0].status !== 'completed' || runs[0].conclusion !== 'success') {
+            throw new Error(`${process.env.WORKFLOW} has no successful current push run for source SHA`);
+          }
+          NODE
+          done
+          PUBLIC_BASE="$(git ls-remote https://github.com/bonc-ai/cogseed.git refs/heads/main | cut -f1)"
+          [[ "$PUBLIC_BASE" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::Public main could not be resolved'; exit 1; }
+          BASELINE_MERGE_BASE="$(gh api "repos/bonc-ai/cogseed/compare/$BASELINE_SHA...$PUBLIC_BASE" --jq '.merge_base_commit.sha')"
+          [[ "$BASELINE_MERGE_BASE" == "$BASELINE_SHA" ]] || { echo '::error::Public main is outside the approved clean baseline'; exit 1; }
+          echo "public_base=$PUBLIC_BASE" >> "$GITHUB_OUTPUT"
+      - name: Test private export and sync contracts
+        working-directory: tooling
+        # YAML contract tests reuse the existing dependency; no models/native builds.
+        run: |
+          npm ci --ignore-scripts
+          node --test scripts/opensource/*.test.mjs
+      - name: Export and require a reviewed, complete candidate
+        id: export
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          CANDIDATE="$RUNNER_TEMP/public-source-export"
+          set +e
+          node tooling/scripts/opensource/export.mjs --repo "$GITHUB_WORKSPACE/source" --source "$SOURCE_SHA" \
+            --policy "$GITHUB_WORKSPACE/tooling/scripts/opensource/policy.json" --out "$CANDIDATE" > "$RUNNER_TEMP/export-result.json"
+          EXPORT_STATUS=$?
+          set -e
+          [[ "$EXPORT_STATUS" == 0 || "$EXPORT_STATUS" == 2 ]] || exit 1
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { createHash } from 'node:crypto';
+          const root = process.env.RUNNER_TEMP + '/public-source-export';
+          const manifest = JSON.parse(fs.readFileSync(root + '/manifest.json', 'utf8'));
+          const report = JSON.parse(fs.readFileSync(root + '/review.json', 'utf8'));
+          const policy = JSON.parse(fs.readFileSync('tooling/scripts/opensource/policy.json', 'utf8'));
+          const hintsHash = createHash('sha256').update(JSON.stringify(report.privateReferenceHints)).digest('hex');
+          if (manifest.sourceSha !== process.env.SOURCE_SHA ||
+              manifest.sourceRepository !== 'bonc-ai/cogseed-internal' ||
+              manifest.targetRepository !== 'bonc-ai/cogseed' ||
+              report.sourceSha !== process.env.SOURCE_SHA ||
+              report.exportSha256 !== manifest.exportSha256 ||
+              report.policyStatus !== 'reviewed' ||
+              report.missingPublicFiles.length !== 0 ||
+              report.unclassifiedFiles.length !== 0 ||
+              !Array.isArray(report.privateReferenceHints) ||
+              policy.reviewedReferenceHintsSha256 !== hintsHash ||
+              fs.existsSync(root + '/INCOMPLETE')) {
+            throw new Error('Export is incomplete or still needs inventory review');
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `export_sha256=${manifest.exportSha256}\n`);
+          NODE
+      - name: Install verified Gitleaks 8.30.1
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/gitleaks-bin"
+          ARCHIVE="$RUNNER_TEMP/gitleaks_8.30.1_linux_x64.tar.gz"
+          curl --fail --location --retry 3 --silent --show-error \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            --output "$ARCHIVE"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $ARCHIVE" | sha256sum --check --status
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/gitleaks-bin" gitleaks
+          [[ "$("$RUNNER_TEMP/gitleaks-bin/gitleaks" version)" == 8.30.1 ]] || exit 1
+      - name: Prove scanner detects secrets, then scan exact candidate
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          EXPORT_SHA256: ${{ steps.export.outputs.export_sha256 }}
+        run: |
+          set -euo pipefail
+          SCANNER="$RUNNER_TEMP/gitleaks-bin/gitleaks"
+          CONFIG="$GITHUB_WORKSPACE/tooling/scripts/opensource/gitleaks.toml"
+          [[ -f "$CONFIG" ]] || { echo '::error::Reviewed scan configuration is missing'; exit 1; }
+          [[ ! -e "$RUNNER_TEMP/public-source-export/source/.gitleaks.toml" ]] || exit 1
+          mkdir -p "$RUNNER_TEMP/scan-canary-pat" "$RUNNER_TEMP/scan-canary-allowlist/src/core-agent/test"
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { randomBytes } from 'node:crypto';
+          const root = process.env.RUNNER_TEMP;
+          fs.writeFileSync(path.join(root, 'scan-canary-pat/example.txt'),
+            `token = "ghp_${randomBytes(18).toString('hex')}"\n`);
+          fs.writeFileSync(path.join(root, 'scan-canary-allowlist/src/core-agent/test/tools.test.ts'),
+            `api_key = '${randomBytes(32).toString('hex')}'\n`);
+          NODE
+          for CASE in pat allowlist; do
+            if [[ "$CASE" == pat ]]; then RULE=github-pat; else RULE=generic-api-key; fi
+            set +e
+            (cd "$RUNNER_TEMP/scan-canary-$CASE" && env -u GITLEAKS_CONFIG -u GITLEAKS_CONFIG_TOML \
+              "$SCANNER" dir --config "$CONFIG" --redact --exit-code 23 \
+              --report-format json --report-path "$RUNNER_TEMP/gitleaks-$CASE-report.json" .) \
+              > "$RUNNER_TEMP/gitleaks-$CASE-canary.log" 2>&1
+            CANARY_STATUS=$?
+            set -e
+            [[ "$CANARY_STATUS" == 23 ]] || { echo "::error::Gitleaks failed the $CASE detection control"; exit 1; }
+            EXPECTED_RULE="$RULE" REPORT="$RUNNER_TEMP/gitleaks-$CASE-report.json" node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const findings = JSON.parse(fs.readFileSync(process.env.REPORT, 'utf8'));
+          if (!findings.some((finding) => finding.RuleID === process.env.EXPECTED_RULE)) {
+            throw new Error('Gitleaks canary did not hit its expected rule');
+          }
+          NODE
+          done
+          (cd "$RUNNER_TEMP/public-source-export/source" && env -u GITLEAKS_CONFIG -u GITLEAKS_CONFIG_TOML \
+            "$SCANNER" dir --config "$CONFIG" --redact --exit-code 23 .) \
+            > "$RUNNER_TEMP/gitleaks-candidate.log" 2>&1 || {
+              echo '::error::Candidate secret scan failed; review the private scan log'; exit 1;
+            }
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const report = {
+            sourceSha: process.env.SOURCE_SHA,
+            exportSha256: process.env.EXPORT_SHA256,
+            status: 'passed',
+            tool: 'gitleaks',
+            version: '8.30.1',
+          };
+          fs.writeFileSync(process.env.RUNNER_TEMP + '/scan-report.json', JSON.stringify(report) + '\n', { mode: 0o600 });
+          NODE
+      - name: Capture compact scan evidence
+        id: evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { captureEvidence } from './tooling/scripts/opensource/evidence.mjs';
+          const root = process.env.RUNNER_TEMP;
+          const evidence = captureEvidence(root + '/public-source-export', fs.readFileSync(root + '/scan-report.json', 'utf8'));
+          fs.writeFileSync(root + '/evidence.json', JSON.stringify(evidence) + '\n', { mode: 0o600 });
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `json=${JSON.stringify(evidence)}\n`);
+          NODE
+      - name: Retain private review and scan evidence
+        if: always()
+        # Private artifact storage may be exhausted. Job outputs carry only
+        # compact digests; private logs/summary retain reproducible evidence.
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const root = process.env.RUNNER_TEMP;
+          const file = root + '/evidence.json';
+          if (fs.existsSync(file)) {
+            const evidence = JSON.parse(fs.readFileSync(file));
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, '## Private source scan evidence\n```json\n' + JSON.stringify(evidence, null, 2) + '\n```\n');
+          }
+          for (const name of ['gitleaks-pat-canary.log', 'gitleaks-allowlist-canary.log', 'gitleaks-candidate.log']) {
+            if (fs.existsSync(root + '/' + name)) process.stdout.write(name + '\n' + fs.readFileSync(root + '/' + name, 'utf8'));
+          }
+          NODE
+
+  publish_pr:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Require configured public baseline and still-approved source
+        env:
+          BASELINE_READY: ${{ vars.PUBLIC_SOURCE_BASELINE_READY }}
+          BASELINE_SHA: ${{ vars.PUBLIC_SOURCE_BASELINE_SHA }}
+          APP_ID: ${{ vars.PUBLIC_SOURCE_APP_ID }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_RUN_ATTEMPT" == 1 ]] || { echo '::error::Start a new manual dispatch instead of rerunning an old authorization'; exit 1; }
+          [[ "$BASELINE_READY" == true && "$BASELINE_SHA" =~ ^[0-9a-f]{40}$ && -n "$APP_ID" ]] || { echo '::error::Public-source sync configuration is incomplete'; exit 1; }
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          COMPARE_BASE="$(gh api "repos/bonc-ai/cogseed-internal/compare/$SOURCE_SHA...cicd" --jq '.merge_base_commit.sha')"
+          [[ "$COMPARE_BASE" == "$SOURCE_SHA" ]] || { echo '::error::Source is no longer on private cicd history'; exit 1; }
+          for WORKFLOW in ci.yml compliance.yml; do
+            gh api -X GET "repos/bonc-ai/cogseed-internal/actions/workflows/$WORKFLOW/runs" \
+              -f head_sha="$SOURCE_SHA" -f branch=cicd -f event=push -f per_page=100 \
+              > "$RUNNER_TEMP/$WORKFLOW-runs.json"
+            WORKFLOW="$WORKFLOW" node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const result = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/${process.env.WORKFLOW}-runs.json`));
+          const runs = (result.workflow_runs || []).filter((run) => run.head_sha === process.env.SOURCE_SHA &&
+            run.head_branch === 'cicd' && run.event === 'push');
+          runs.sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
+          if (!runs.length || runs[0].status !== 'completed' || runs[0].conclusion !== 'success') {
+            throw new Error(`${process.env.WORKFLOW} has no successful current push run for source SHA`);
+          }
+          NODE
+          done
+          PUBLIC_BASE="$(git ls-remote https://github.com/bonc-ai/cogseed.git refs/heads/main | cut -f1)"
+          [[ "$PUBLIC_BASE" == "${{ needs.prepare.outputs.public_base }}" ]] || { echo '::error::Public main changed during review'; exit 1; }
+          BASELINE_MERGE_BASE="$(gh api "repos/bonc-ai/cogseed/compare/$BASELINE_SHA...$PUBLIC_BASE" --jq '.merge_base_commit.sha')"
+          [[ "$BASELINE_MERGE_BASE" == "$BASELINE_SHA" ]] || { echo '::error::Public main is outside the approved clean baseline'; exit 1; }
+      - name: Check out reviewed tooling at dispatch SHA
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: tooling
+          persist-credentials: false
+      - name: Check out exact selected private source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Re-export the same immutable candidate
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          EXPECTED_EXPORT: ${{ needs.prepare.outputs.export_sha256 }}
+          SCAN_EVIDENCE_JSON: ${{ needs.prepare.outputs.evidence_json }}
+        run: |
+          set -euo pipefail
+          set +e
+          node tooling/scripts/opensource/export.mjs --repo "$GITHUB_WORKSPACE/source" --source "$SOURCE_SHA" \
+            --policy "$GITHUB_WORKSPACE/tooling/scripts/opensource/policy.json" \
+            --out "$RUNNER_TEMP/public-source-export" > "$RUNNER_TEMP/export-result.json"
+          EXPORT_STATUS=$?
+          set -e
+          [[ "$EXPORT_STATUS" == 0 || "$EXPORT_STATUS" == 2 ]] || exit 1
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { verifyEvidence } from './tooling/scripts/opensource/evidence.mjs';
+          const root = process.env.RUNNER_TEMP;
+          const evidence = verifyEvidence(root + '/public-source-export', JSON.parse(process.env.SCAN_EVIDENCE_JSON), {
+            sourceSha: process.env.SOURCE_SHA,
+            exportSha256: process.env.EXPECTED_EXPORT,
+          });
+          fs.mkdirSync(root + '/review-evidence', { mode: 0o700 });
+          fs.writeFileSync(root + '/review-evidence/scan-report.json', evidence.scanReportJson, { mode: 0o600 });
+          NODE
+      - name: Record manual source authorization privately
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          EXPORT_SHA256: ${{ needs.prepare.outputs.export_sha256 }}
+          AUTHORIZED_BY: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { createHash } from 'node:crypto';
+          const root = process.env.RUNNER_TEMP + '/public-source-export';
+          const manifest = JSON.parse(fs.readFileSync(root + '/manifest.json'));
+          const review = JSON.parse(fs.readFileSync(root + '/review.json'));
+          const policy = JSON.parse(fs.readFileSync('tooling/scripts/opensource/policy.json'));
+          const referenceHintsSha256 = createHash('sha256').update(JSON.stringify(review.privateReferenceHints)).digest('hex');
+          if (policy.reviewedReferenceHintsSha256 !== referenceHintsSha256) {
+            throw new Error('Reference hints changed since policy review');
+          }
+          fs.writeFileSync(process.env.RUNNER_TEMP + '/approval.json', JSON.stringify({
+            sourceSha: process.env.SOURCE_SHA,
+            exportSha256: process.env.EXPORT_SHA256,
+            policySha256: manifest.policySha256,
+            referenceHintsSha256,
+            authorizedBy: process.env.AUTHORIZED_BY,
+            authorizationMethod: 'workflow_dispatch',
+            workflowRunId: Number(process.env.GITHUB_RUN_ID),
+            workflowRunAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+          }) + '\n', { mode: 0o600 });
+          NODE
+      - name: Create narrowly scoped public repository token
+        id: public_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ vars.PUBLIC_SOURCE_APP_ID }}
+          private-key: ${{ secrets.PUBLIC_SOURCE_APP_PRIVATE_KEY }}
+          owner: bonc-ai
+          repositories: cogseed
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+      - name: Check out public main with the public-only token
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: bonc-ai/cogseed
+          ref: main
+          path: public
+          fetch-depth: 0
+          token: ${{ steps.public_token.outputs.token }}
+      - name: Require unchanged public main
+        env:
+          EXPECTED_BASE: ${{ needs.prepare.outputs.public_base }}
+          BASELINE_SHA: ${{ vars.PUBLIC_SOURCE_BASELINE_SHA }}
+        run: |
+          set -euo pipefail
+          [[ "$(git -C public rev-parse HEAD)" == "$EXPECTED_BASE" ]] || exit 1
+          [[ "$(git -C public ls-remote origin refs/heads/main | cut -f1)" == "$EXPECTED_BASE" ]] || exit 1
+          git -C public merge-base --is-ancestor "$BASELINE_SHA" "$EXPECTED_BASE"
+      - name: Stage idempotent public snapshot commit locally
+        env:
+          EXPECTED_BASE: ${{ needs.prepare.outputs.public_base }}
+        run: |
+          set -euo pipefail
+          node tooling/scripts/opensource/sync.mjs \
+            --candidate "$RUNNER_TEMP/public-source-export" \
+            --private-repo "$GITHUB_WORKSPACE/source" \
+            --public-repo "$GITHUB_WORKSPACE/public" \
+            --policy "$GITHUB_WORKSPACE/tooling/scripts/opensource/policy.json" \
+            --exporter "$GITHUB_WORKSPACE/tooling/scripts/opensource/export.mjs" \
+            --expected-base "$EXPECTED_BASE" \
+            --target-origin https://github.com/bonc-ai/cogseed.git \
+            --approval "$RUNNER_TEMP/approval.json" \
+            --scan-report "$RUNNER_TEMP/review-evidence/scan-report.json" \
+            --mapping-out "$RUNNER_TEMP/private-public-mapping.json" \
+            > "$RUNNER_TEMP/sync-result.json"
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const result = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/sync-result.json'));
+          if (result.changed !== true && result.changed !== false) throw new Error('Invalid sync result');
+          if (result.changed && result.branch !== 'public-source-sync') throw new Error('Unexpected public branch');
+          fs.appendFileSync(process.env.GITHUB_ENV, `PUBLIC_SYNC_CHANGED=${result.changed}\n`);
+          NODE
+      - name: Push only the snapshot branch and open or update its PR
+        if: env.PUBLIC_SYNC_CHANGED == 'true'
+        env:
+          GH_TOKEN: ${{ steps.public_token.outputs.token }}
+          EXPECTED_BASE: ${{ needs.prepare.outputs.public_base }}
+        run: |
+          set -euo pipefail
+          [[ "$(git -C public ls-remote origin refs/heads/main | cut -f1)" == "$EXPECTED_BASE" ]] || exit 1
+          EXISTING_BRANCH="$(git -C public ls-remote origin refs/heads/public-source-sync | cut -f1)"
+          OPEN_PR="$(gh api -X GET repos/bonc-ai/cogseed/pulls \
+            -f head=bonc-ai:public-source-sync -f base=main -f state=open --jq '.[0].number // empty')"
+          if [[ -n "$EXISTING_BRANCH" && -z "$OPEN_PR" ]]; then
+            echo '::error::Existing sync branch has no open PR; refusing to overwrite it'
+            exit 1
+          fi
+          if [[ -n "$EXISTING_BRANCH" ]]; then
+            git -C public fetch --no-tags origin refs/heads/public-source-sync
+            [[ "$(git -C public rev-parse FETCH_HEAD)" == "$EXISTING_BRANCH" ]] || exit 1
+            [[ "$(git -C public show -s --format=%an "$EXISTING_BRANCH")" == 'CogSeed Public Sync' ]] || exit 1
+            [[ "$(git -C public show -s --format=%ae "$EXISTING_BRANCH")" == 'public-sync@users.noreply.github.com' ]] || exit 1
+            [[ "$(git -C public show -s --format=%s "$EXISTING_BRANCH")" =~ ^chore:\ sync\ public\ source\ [0-9a-f]{16}$ ]] || exit 1
+            [[ "$(git -C public rev-list --parents -n 1 "$EXISTING_BRANCH" | wc -w | tr -d ' ')" == 2 ]] || exit 1
+            git -C public merge-base --is-ancestor "$EXISTING_BRANCH^" "$EXPECTED_BASE"
+          fi
+          git -C public push --force-with-lease="refs/heads/public-source-sync:$EXISTING_BRANCH" \
+            origin refs/heads/public-source-sync:refs/heads/public-source-sync
+          [[ "$(git -C public ls-remote origin refs/heads/main | cut -f1)" == "$EXPECTED_BASE" ]] || exit 1
+          if [[ -z "$OPEN_PR" ]]; then
+            gh pr create --repo bonc-ai/cogseed --base main --head public-source-sync \
+              --title 'Sync public source snapshot' \
+              --body 'Refresh the candidate public source snapshot. Review the diff and required checks before merging.'
+          else
+            gh pr view "$OPEN_PR" --repo bonc-ai/cogseed --json url --jq .url
+          fi
+      - name: Retain mapping in the private workflow only
+        if: always()
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          for (const name of ['private-public-mapping.json', 'sync-result.json', 'approval.json']) {
+            const file = process.env.RUNNER_TEMP + '/' + name;
+            if (fs.existsSync(file)) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+              '## ' + name + '\n```json\n' + fs.readFileSync(file, 'utf8') + '\n```\n');
+          }
+          NODE

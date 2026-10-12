@@ -47,6 +47,9 @@ const INTERNAL_ENTRYPOINT_CONSUMERS = Object.freeze({
     'src/main/model/core-agent/client.ts',
     'src/main/model/core-agent/local-tools.ts',
   ]),
+  'apply-update.cjs': Object.freeze([
+    'src/main/features/updater/installer.ts',
+  ]),
 });
 
 const PACKAGED_BIN_ENTRYPOINTS = Object.freeze([

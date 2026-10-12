@@ -7,11 +7,12 @@ description: Modify or add shared CogSeed Renderer components, their component-g
 
 Change CogSeed components without letting the product contract, production implementation, preview coverage, tests, and real-page evidence drift apart.
 
-## Preserve the two-repository boundary
+## Preserve the repository boundary
 
 - Work from the `cogseed-source` repository for production components, the component gallery, tests, real-page integration, and Electron verification.
-- Locate the independent `cogseed-product` repository and recheck its current path rather than assuming that a historical checkout is still active. The expected sibling checkout is `../cogseed-product`.
-- Treat `my-work/work/cogseed-ux-consistency/CogSeed_首版组件与预览页产品清单_v0.1_Draft.md` and the work-package README in the product repository as the current product contract and routing source. Read the live files; do not copy their component rules into this Skill.
+- The former independent product repository was deleted. Its sibling checkout, checklist, and work-package README paths are retired; no replacement product-repository path is registered.
+- The source checkout still contains design material under `design/opensource-design-system/`. This is not a replacement product contract. Do not present it as confirmed product approval.
+- For source-only changes, use the current user request and applicable source-side contracts. Report the product contract as unavailable when no live product contract is supplied; if the task specifically requires changing a separate product document, ask the user for its current path.
 - A product document or gallery result is not implementation, QA, release, or real-page proof. Keep those evidence lanes separate.
 - Inspect Git status in every repository the request may touch. Preserve pre-existing changes and do not package unrelated work.
 
@@ -29,7 +30,7 @@ as the authoritative decision log for approved Provisional boundaries and requir
 
 Choose the smallest matching class and state it in the working update:
 
-1. **Component contract change**: changes a shared component's role, API, states, behavior, wording rules, accessibility contract, or acceptance criteria. Update the product checklist before or together with implementation when the current request authorizes the formal component adjustment. If the request is source-only, describe the required product delta and do not present the implementation as accepted contract truth.
+1. **Component contract change**: changes a shared component's role, API, states, behavior, wording rules, accessibility contract, or acceptance criteria. Update an active product checklist before or together with implementation when the current request authorizes the formal component adjustment. If no active product checklist exists, describe the required product delta as unconfirmed and do not present the implementation as accepted product-contract truth.
 2. **Existing-contract correction**: fixes production code that fails an already-defined contract. Change the production component, regression coverage, and any gallery case needed to reproduce the failure. Do not churn the product checklist when its meaning is unchanged.
 3. **Page-specific composition**: combines existing components for one business page without creating a reusable primitive. Keep it in that page and add integration coverage; do not extract a shared component merely to satisfy this workflow.
 4. **Experiment**: explores a visual or interaction option before approval. It may live in the gallery only when clearly labeled experimental and isolated from production claims.
@@ -38,7 +39,7 @@ Promote a new shared component only when multiple pages need the same stable rol
 
 ## Implement through the production seam
 
-1. Read the current product contract, relevant production component files under `src/renderer/`, `component-gallery.*`, the target business page, and directly related tests.
+1. Read the current product contract when an active location is supplied, plus relevant production component files under `src/renderer/`, `component-gallery.*`, the target business page, and directly related tests. If the product contract is unavailable, record that limitation and do not infer approval from source-side design artifacts.
 2. For an authorized contract change, make the product requirement and acceptance case unambiguous before relying on implementation details to define the behavior. Keep unresolved choices Draft or blocked instead of silently deciding them in code.
 3. Modify the production token, shared CSS, or classic-script component. Preserve Renderer constraints: no JSX/bundler, no new dependency without discussion, icons from `modules/icons.js`, visible strings through i18n, and no change to business data, validation, scheduling, or IPC unless the user explicitly requested it.
 4. Make the gallery load the same production token, CSS, and component JS. Gallery-only CSS may arrange specimens and annotations, but must not duplicate or override the component implementation to manufacture the target appearance.
@@ -63,7 +64,7 @@ Promote a new shared component only when multiple pages need the same stable rol
 
 Report these independently:
 
-- **Product contract**: unchanged, updated Draft, confirmed, or blocked.
+- **Product contract**: unchanged, updated Draft, confirmed, unavailable, or blocked.
 - **Production implementation**: complete or partial, with the component and page surfaces named.
 - **Gallery acceptance**: passed, failed, or not run, with the exercised states.
 - **Real-page acceptance**: passed, failed, blocked, or not applicable.

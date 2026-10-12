@@ -273,7 +273,7 @@ export interface TerminologyRow {
     riskLevel: string;
     kind: string;
     freq: number;
-    /** 来自记忆分组时给出定位（groupId/fieldId）。 */
+    /** 来自本体分组时给出定位（groupId/fieldId）。 */
     ontologyRef?: { groupId: string; fieldId: string };
     /** 词表里已经找不到这条（被删/被改）——如实标注，不编依据。 */
     missingInGlossary?: boolean;
@@ -325,7 +325,7 @@ export function buildReport(userId: string, runId: string): CorrectionReport {
       };
     });
   const contextMaterials = Array.isArray(run.params.contextMaterials) ? run.params.contextMaterials : [];
-  // 材料清单：能由事实推出的就推（源文件、词表、规则包、记忆分组），不编造
+  // 材料清单：能由事实推出的就推（源文件、词表、规则包、本体分组），不编造
   const ontologyBacked = terminology.filter((row) => row.basis.ontologyRef).length;
   const materials = [
     run.sourcePath

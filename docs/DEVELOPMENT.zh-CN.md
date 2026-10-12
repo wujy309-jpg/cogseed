@@ -201,7 +201,7 @@ WSL 中会委托给 Windows 启动器，以便输入法和桌面集成运行在 
 
 体验发布版源码，请使用 [README](../README.zh-CN.md#从源码运行) 中指定版本的命令。
 参与开发，请按照[贡献指南](../CONTRIBUTING.zh-CN.md)克隆你的 Fork，
-从最新 `upstream/develop` 创建开发分支，然后运行：
+从最新 `upstream/main` 创建开发分支，然后运行：
 
 ```bash
 npm ci
@@ -271,19 +271,25 @@ Node 原生 SQLite ABI 的切换和恢复。运行单个 JavaScript 或 TypeScri
 
 ### Pull Request 验证
 
-提交到 `develop` 的 Pull Request 会运行三个必需检查：
+请运行 `npm run typecheck`、`npm run lint`、`npm test`、`npm run readme:check`
+及本次改动相关检查，并在 PR 中说明结果与未验证的平台。公仓 CI 以仓库实际
+设置为准；这份说明不代表某项远端检查已经启用。
 
-- `check-commit-emails`：校验完整提交记录；
-- `static-gates`：运行类型检查、Lint、设计 Token、内置资源清单、README
-  和跳过测试策略检查；
-- `affected-tests`：通过模块依赖图选择相关测试。
+外部 PR 提交到公仓 `main`。评审通过的补丁由维护者导入私仓研发，保留作者和
+DCO 签署，公仓 PR 以导入结果关闭；改动随后随新版本快照公开。详见
+[贡献回流](../CONTRIBUTING.zh-CN.md#贡献回流)。
 
-Windows 测试分片也会运行。它们目前会报告真实失败，但不作为必需状态检查；
-合并前仍应调查并解释红色分片。改动合入 `develop` 后，Nightly 工作流会针对
-该分支的准确提交运行完整测试。从 `develop` 提升到 `cicd` 时，会运行完整
-的发布验证和合规门禁。
+公开测试覆盖应用和构建工具契约。私仓还运行 `test/private/` 中的内部治理检查；
+这些检查及其核对的内部记录不进入公开导出。
 
 ### 开发规则
+
+- 共享 Renderer 改动必须复用已有 API，不得提高 `test/renderer/shared-ui-adoption-guard.test.ts` 的原始控件基线来绕过回归。
+- 层级使用命名的 `--z-*` 变量；键盘快捷操作必须忽略输入法组合过程。
+- 可见文本通过语言文件和 `t(...)` 提供；动态界面响应 `i18n-change`。
+- 文件工具执行路径沙箱检查，工具结果遵循已有大小限制。
+- 新增 npm 依赖前先与维护者讨论。
+- 完整共享 API 清单见[英文开发规则](./DEVELOPMENT.md#development-rules)；两份指南采用相同工程约束。
 
 - IPC 处理器只负责校验和委托给功能层。
 - Renderer 使用经典脚本；新文件必须注册到 `src/renderer/index.html`。
@@ -316,9 +322,8 @@ scripts/restart-cogseed.sh
 ### 面向发布的构建
 
 仓库提供 `npm run build:mac` 和 `npm run build:win`，用于平台构建诊断。
-官方发布产物通过受保护的 `cicd` 和由标签触发的 GitHub 工作流生成，这些流程
-会强制执行验证、签名、合规和发布门禁。不要把本地构建描述为已签名、已公证、
-已验收或已发布。
+官方发布需由维护者完成源码核验、平台构建、适用的签名和发布检查；这些发布
+工作流不随公开源码导出。不要把本地构建描述为已签名、已公证、已验收或已发布。
 
 ## 故障排查
 
