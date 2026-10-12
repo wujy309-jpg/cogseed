@@ -9,6 +9,8 @@ import {
   hasNodeOnPath,
   isNodeShebangScript,
   resolveCliCommand,
+  selectWindowsShimScriptToken,
+  windowsShimTokens,
 } from '../../../../src/main/features/local_agents/spawn-command';
 
 const TEST_NODE = process.env.COGSEED_TEST_NODE || process.execPath;
@@ -335,5 +337,92 @@ describe('buildCliSpawnEnv › 自身可执行文件例外', () => {
     } as NodeJS.ProcessEnv, 'darwin', '/Users/x');
     expect(out.ELECTRON_RUN_AS_NODE).toBeUndefined();
     expect(out.ELECTRON_NO_ASAR).toBeUndefined();
+  });
+});
+
+describe('spawn-command · Windows 真机：npm 模板 shim 必须走直连 node', () => {
+  // 与上一条同源：真机上 npm 家族 shim 是 `SET "VAR=%~dp0\…"` 形式，
+  // 修复前永远解析失败 → 落 cmd.exe。这条用例把"修复后真的走直连"钉在真机上。
+  it.runIf(process.platform === 'win32')('runs a SET-style npm shim through the process Node instead of cmd.exe', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cogseed-npm-shim-'));
+    try {
+      const binDir = path.join(tmpDir, 'node_modules', '.bin');
+      const cli = path.join(tmpDir, 'node_modules', 'npm', 'bin', 'npm-cli.js');
+      fs.mkdirSync(binDir, { recursive: true });
+      fs.mkdirSync(path.dirname(cli), { recursive: true });
+      fs.writeFileSync(cli, 'process.stdout.write(JSON.stringify(process.argv.slice(2)));');
+      const shim = path.join(binDir, 'npm.cmd');
+      fs.writeFileSync(shim, [
+        '@ECHO OFF',
+        'SETLOCAL',
+        'SET "NODE_EXE=%~dp0\\node.exe"',
+        'SET "NPM_CLI_JS=%~dp0\\..\\npm\\bin\\npm-cli.js"',
+        '"%NODE_EXE%" "%NPM_CLI_JS%" %*',
+        '',
+      ].join('\r\n'));
+
+      const args = ['install', 'a&b', '第一行\r\n第二行 & "q" %v%', 'trailing\\'];
+      const resolved = resolveCliCommand(shim, args, 'win32', process.env);
+      // 直连 node：命令是进程自身、带 ELECTRON_RUN_AS_NODE，且 args 第一个是 JS 入口
+      expect(resolved.command).not.toMatch(/cmd\.exe$/i);
+      expect(resolved.envPatch?.ELECTRON_RUN_AS_NODE).toBe('1');
+      expect(resolved.args[0]).toBe(cli);
+
+      const result = spawnSync(resolved.command, resolved.args, { encoding: 'utf8', env: { ...process.env, ...resolved.envPatch } });
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual(args);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('spawn-command · Windows shim token parsing (fixtures from a real Windows npm.cmd)', () => {
+  // 模板取自 Windows 真机验收报告里的 `npm.cmd`（Node 24 自带 npm 的 shim）。
+  const NPM_SHIM = [
+    ':: Created by npm, please don\'t edit manually.',
+    '@ECHO OFF',
+    '',
+    'SETLOCAL',
+    '',
+    'SET "NODE_EXE=%~dp0\\node.exe"',
+    'IF NOT EXIST "%NODE_EXE%" (',
+    '  SET "NODE_EXE=node"',
+    ')',
+    '',
+    'SET "NPM_PREFIX_JS=%~dp0\\node_modules\\npm\\bin\\npm-prefix.js"',
+    'SET "NPM_CLI_JS=%~dp0\\node_modules\\npm\\bin\\npm-cli.js"',
+    'FOR /F "delims=" %%F IN (\'CALL "%NODE_EXE%" "%NPM_PREFIX_JS%"\') DO (',
+    '  SET "NPM_PREFIX_NPM_CLI_JS=%%F\\node_modules\\npm\\bin\\npm-cli.js"',
+    ')',
+    'IF EXIST "%NPM_PREFIX_NPM_CLI_JS%" (',
+    '  SET "NPM_CLI_JS=%NPM_PREFIX_NPM_CLI_JS%"',
+    ')',
+    '',
+    '"%NODE_EXE%" "%NPM_CLI_JS%" %*',
+    '',
+  ].join('\r\n');
+
+  it('strips the SET "VAR=" prefix so the real npm shim resolves to its JS entry', () => {
+    // 缺陷形态：不剥前缀会得到 `<dir>\NPM_CLI_JS=%~dp0\node_modules\...`，
+    // 该路径必然不存在 → 解析失败 → 每次 npm 启动都回落 cmd.exe 二次解析。
+    expect(windowsShimTokens(NPM_SHIM)).toContain('%~dp0\\node_modules\\npm\\bin\\npm-cli.js');
+    expect(selectWindowsShimScriptToken(NPM_SHIM)).toBe('%~dp0\\node_modules\\npm\\bin\\npm-cli.js');
+    // 变量间接赋值（%NPM_CLI_JS%）不是字面路径 → 不可选
+    expect(selectWindowsShimScriptToken(NPM_SHIM)).not.toContain('=');
+  });
+
+  it('keeps resolving bare-path shims (pnpm / yarn / older npm templates)', () => {
+    const bare = '@ECHO OFF\r\n"node" "%~dp0\\cli.js" %*\r\n';
+    expect(selectWindowsShimScriptToken(bare)).toBe('%~dp0\\cli.js');
+    const pnpm = '@ECHO OFF\r\nSET "NODE_EXE=%~dp0\\node.exe"\r\n"%NODE_EXE%" "%~dp0\\node_modules\\pnpm\\bin\\pnpm.cjs" %*\r\n';
+    expect(selectWindowsShimScriptToken(pnpm)).toBe('%~dp0\\node_modules\\pnpm\\bin\\pnpm.cjs');
+    const yarn = '@ECHO OFF\r\nSET "NODE_EXE=%~dp0\\node.exe"\r\n"%NODE_EXE%" "%~dp0\\node_modules\\yarn\\bin\\yarn.js" %*\r\n';
+    expect(selectWindowsShimScriptToken(yarn)).toBe('%~dp0\\node_modules\\yarn\\bin\\yarn.js');
+  });
+
+  it('returns null when the shim only ever references variables (no literal JS path)', () => {
+    expect(selectWindowsShimScriptToken('@ECHO OFF\r\n"%SOMEWHERE%\\cli.js" %*\r\n')).toBeNull();
+    expect(selectWindowsShimScriptToken('')).toBeNull();
   });
 });

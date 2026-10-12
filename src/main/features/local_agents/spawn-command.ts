@@ -179,6 +179,39 @@ function expandWindowsShimPath(value: string, shimDir: string): string | null {
   return path.win32.normalize(expanded);
 }
 
+/**
+ * npm / pnpm / yarn write their shim as `SET "VAR=%~dp0\…\cli.js"`, so the
+ * quoted token carries the **assignment prefix**, not a bare path. Feeding that
+ * whole string to `expandWindowsShimPath` produced
+ * `<shimDir>\NPM_CLI_JS=%~dp0\node_modules\npm\bin\npm-cli.js`, which never
+ * exists → the shim was declared unresolvable and every npm-family launch fell
+ * back to `cmd.exe` (i.e. the direct-Node path this function exists for was
+ * dead code for npm/pnpm/yarn). Stripping `NAME=` before path expansion is what
+ * makes the real-world shim resolvable; verified against a real Windows
+ * `npm.cmd` template.
+ */
+function stripShimAssignment(token: string): string {
+  const match = /^[A-Za-z_][A-Za-z0-9_]*=([\s\S]*)$/.exec(token);
+  return match ? match[1] : token;
+}
+
+/** Quoted tokens of a Windows shim, assignment prefixes stripped. */
+export function windowsShimTokens(source: string): string[] {
+  return [...String(source).matchAll(/"([^"\r\n]+)"/g)].map((match) => stripShimAssignment(match[1]));
+}
+
+/**
+ * The `.js`-family token a shim ultimately runs, or null. Exported so the
+ * real-world shim templates (npm / pnpm / yarn / bare-path) can be pinned by
+ * fixtures without needing Windows.
+ */
+export function selectWindowsShimScriptToken(source: string): string | null {
+  // Last match wins: npm's shim assigns the cli path twice and the later
+  // assignment (`%NPM_CLI_JS%` indirection) is a variable, not a literal path —
+  // reversing keeps the literal one first among resolvable candidates.
+  return windowsShimTokens(source).reverse().find((token) => /%~?dp0/i.test(token) && /\.(?:cjs|mjs|js)$/i.test(token)) ?? null;
+}
+
 function resolveWindowsCommandShim(binPath: string, args: string[]): ResolvedCliCommand | null {
   let source: string;
   try {
@@ -187,8 +220,8 @@ function resolveWindowsCommandShim(binPath: string, args: string[]): ResolvedCli
     return null;
   }
   const shimDir = path.win32.dirname(binPath);
-  const tokens = [...source.matchAll(/"([^"\r\n]+)"/g)].map((match) => match[1]);
-  const scriptToken = tokens.slice().reverse().find((token) => /%~?dp0/i.test(token) && /\.(?:cjs|mjs|js)$/i.test(token));
+  const tokens = windowsShimTokens(source);
+  const scriptToken = selectWindowsShimScriptToken(source);
   if (scriptToken) {
     const target = expandWindowsShimPath(scriptToken, shimDir);
     if (target) {
