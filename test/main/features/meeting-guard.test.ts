@@ -341,7 +341,7 @@ describe('T059③ 候选写口唯一（saveRecallCandidate）', () => {
 // T059 ④ tool-catalog 的 recall 组工具数（013 自身新增 0）
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe('T059④ recall 组工具数（不新增模型工具）', () => {
+describe('T059④ recall 组工具数（不新增会议模型工具）', () => {
   it(`recall 组工具数 = 23，按源码常量 TOOL_CATALOG 计数（2026-10-07 438 P2 +1）`, () => {
     // 计数从源码常量派生（import 后过滤 group），不是抄名单。
     // 数值口径（git 可核）：tasks.md 立项时 recall 组 = 11（2 基础 + 008 资产管家 9）；
@@ -357,7 +357,8 @@ describe('T059④ recall 组工具数（不新增模型工具）', () => {
     const recallTools = TOOL_CATALOG.filter((entry) => entry.group === 'recall');
     // 2026-10-03：认知资产修复增加明确候选提交与采用报告两件；会议线仍新增0。
     // 2026-10-09 用户明确要求打通本体创建/纠正/转写：登记新增3件，旧会议外发/候选闸不变。
-    expect(recallTools).toHaveLength(22);
+    // 同步上游 Semantica：新增受治理的 ontology_query，原 22 件基线增加 1。
+    expect(recallTools).toHaveLength(23);
   });
 
   it('TOOL_CATALOG 不出现会议线工具（013 不新增任何模型工具）', () => {
@@ -526,7 +527,7 @@ describe('T059 反向自证（检测器判别力，src/ 零改动）', () => {
       ...TOOL_CATALOG,
       { name: 'list_meeting_refs', group: 'recall' as const, summary: 'injected' },
     ];
-    expect(injected.filter((entry) => entry.group === 'recall')).toHaveLength(23); // 22 基线 + 1 注入 ⇒ 红
+    expect(injected.filter((entry) => entry.group === 'recall')).toHaveLength(24); // 23 基线 + 1 注入 ⇒ 红
     expect(injected.filter((entry) => /meeting/i.test(entry.name)).map((entry) => entry.name))
       .toEqual(['list_meeting_refs']);
   });

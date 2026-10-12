@@ -23,7 +23,7 @@
     return '<div class="chat-cognition-strip-inner" role="status">' +
         '<span data-ui-icon="git-branch" data-ui-icon-class="ui-icon chat-cognition-strip-icon"></span>' +
         '<span class="chat-cognition-strip-label">' + escapeHtml(summary) + '</span>' +
-        _button({ label: _label('conversation_info.cognition_strip_goto', '去处理'), size: 'sm',
+        _button({ label: _label('conversation_info.cognition_strip_goto', '去处理'), role: 'ghost', size: 'sm',
           className: 'chat-cognition-strip-goto', attrs: { 'data-cognition-strip-goto': '1' } }) +
         dismissButton +
       '</div>';

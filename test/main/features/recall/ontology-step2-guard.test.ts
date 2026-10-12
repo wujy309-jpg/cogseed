@@ -100,6 +100,9 @@ describe('014 anti-drift（specs/014 T024）', () => {
       // 2026-10-11 系统活动原型：用户显式标记稍后，候选仍保留在需要关注中。
       // 独立 candidate-defer 服务保留生命周期与来源，不恢复旧 deferred 静音语义。
       'recall.candidates.defer',
+      // 同步时保留的系统活动重构：候选历史与审核依据的只读查询。
+      'recall.candidates.history',
+      'recall.reviewEvidence.read',
     ];
     expect(sneaked.sort(), '出现未登记的新通道').toEqual([...registeredPost014].sort());
     expect(removed, '014 期间不应删除通道').toEqual([]);
