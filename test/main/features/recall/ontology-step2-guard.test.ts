@@ -56,6 +56,10 @@ describe('014 anti-drift（specs/014 T024）', () => {
       // 2026-09-30 托盘常驻：关闭到托盘的偏好通道（7c04fded 加入 handler 表，
       // 按字母序排在 po.* 之后、recall.* 之前）。
       'prefs.getCloseToTray',
+      // 2026-10-12 合并登记：creator 线新增的"等待用户批准"通道。渲染层用它把
+      // "只剩等用户点批准"与"仍在执行"区分开（处理态字段 waiting_approval），
+      // 只回会话 id 列表以便对全部已知行做绝对同步。
+      'conversations.waitingApproval',
       'prefs.setCloseToTray',
       // 2026-09-30 合并 origin/develop（#389 KB 另存本地）：转写清理版
       // 「另存到本地文件夹…」的落盘通道，随 develop 正常演进登记。
