@@ -67,7 +67,10 @@
     "build:win": "electron-builder --win --x64 --publish never",
     "verify:package:launch": "node scripts/verify-packaged-launch.cjs",
     "verify:package:stt:win": "node scripts/verify-packaged-stt-win.cjs",
-    "verify:package:build-info": "node scripts/verify-packaged-build-info.cjs"
+    "verify:package:build-info": "node scripts/verify-packaged-build-info.cjs",
+    "cli:install": "tsx scripts/cli-command.ts install",
+    "cli:uninstall": "tsx scripts/cli-command.ts uninstall",
+    "cli:status": "tsx scripts/cli-command.ts status"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
