@@ -549,7 +549,14 @@ describe('prompts ↔ code contract', () => {
     // User-authored project instructions are low-churn configuration and sit
     // in the stable cache prefix: after the agents block, before the
     // runtime-injection region begins.
-    expect(runner).toMatch(/if \(agentsBlock\) parts\.push\(agentsBlock\);[\s\S]{0,1200}?if \(projectContextPolicyBlock\) parts\.push\(projectContextPolicyBlock\);[\s\S]{0,600}?if \(projectInstructionsBlock\) parts\.push\(projectInstructionsBlock\);\s+if \(runtimeInjectionBlock\) parts\.push\(runtimeInjectionBlock\);/);
+    // 本体完成契约也是稳定前缀；验证顺序，不要求配置块与 runtime 紧邻。
+    const stableOrder = ['if (agentsBlock) parts.push(agentsBlock);',
+      'if (projectContextPolicyBlock) parts.push(projectContextPolicyBlock);',
+      'if (projectInstructionsBlock) parts.push(projectInstructionsBlock);',
+      'Ontology task completion contract:',
+      'if (runtimeInjectionBlock) parts.push(runtimeInjectionBlock);'].map(block => runner.indexOf(block));
+    expect(stableOrder.every(index => index >= 0)).toBe(true);
+    expect(stableOrder).toEqual([...stableOrder].sort((a, b) => a - b));
     // memoryBlock is the LAST block pushed into the (cached) system prompt.
     expect(runner).toMatch(/if \(memoryBlock\) parts\.push\(memoryBlock\);/);
     // The volatile blocks feed turnEphemeral, NOT the system prompt parts.

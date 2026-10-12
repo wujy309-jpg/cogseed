@@ -352,12 +352,12 @@ describe('Recall cognition workspace layout', () => {
    * 这条用例因此从"只跳一次"翻转为"一次都不跳"。原断言编码的是被取消的行为，
    * 不是回归。
    */
-  it('lands on the cognition tree without auto-redirecting away', () => {
-    // 2026-09-26 子安真机否决树降级:默认落地恢复认知树;不因待办为空
-    // 自动跳页;空态给显式入口,跳不跳由用户决定。
+  it('lands on my cognition while the tree tab is disabled', () => {
     const core = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/core.js'), 'utf-8');
-    expect(core).toContain("route: { name: 'tree'");
-    expect(core).toContain("Object.assign({ name: 'tree'");
+    expect(core).toContain("route: { name: 'overview'");
+    expect(core).toContain("Object.assign({ name: 'overview'");
+    expect(core).toContain("{ id: 'tree', titleKey: 'cognition.tab_tree', title: '认知树', disabled: true }");
+    expect(core).toContain("if (legacyName === 'tree') target = Object.assign({}, target, { name: 'overview' })");
     // 没有 switchSkillsCognitionPage 这类强制跳转残留。
     const skills = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/skills.js'), 'utf-8');
     expect(skills).not.toContain('switchSkillsCognitionPage');

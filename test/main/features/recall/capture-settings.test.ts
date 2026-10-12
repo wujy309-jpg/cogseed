@@ -108,6 +108,21 @@ describe('Recall capture settings', () => {
     expect((await updateRecallCaptureSettings('capture-user', { reviewPolicy: 'auto' })).reviewPolicy).toBe('manual');
   });
 
+  it('requires explicit automatic approval opt-in and rotates authorization epoch on every toggle', async () => {
+    expect((await readRecallCaptureSettings('capture-user')).autoApproval).toBe(false);
+    const enabled = await updateRecallCaptureSettings('capture-user', { autoApproval: true });
+    expect(enabled.autoApproval).toBe(true);
+    expect(enabled.autoApprovalEpoch).toBeTruthy();
+    expect(enabled.autoApprovalEnabledAt).toBeTruthy();
+    const unchanged = await updateRecallCaptureSettings('capture-user', { quietMinutes: 11 });
+    expect(unchanged.autoApprovalEpoch).toBe(enabled.autoApprovalEpoch);
+    const disabled = await updateRecallCaptureSettings('capture-user', { autoApproval: false });
+    expect(disabled.autoApprovalEnabledAt).toBeUndefined();
+    const reenabled = await updateRecallCaptureSettings('capture-user', { autoApproval: true });
+    expect(reenabled.autoApprovalEpoch).not.toBe(enabled.autoApprovalEpoch);
+    await expect(updateRecallCaptureSettings('capture-user', { autoApproval: 'yes' } as never)).rejects.toThrow(/auto approval/);
+  });
+
   it('computes same-day and cross-midnight windows in local time', () => {
     const atThree = new Date(2026, 7, 6, 3, 0, 0);
     expect(isWithinNightlyWindow(atThree, '02:00', '06:00')).toBe(true);

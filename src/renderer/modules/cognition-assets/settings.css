@@ -1,0 +1,47 @@
+/* 所有设置横向占满内容区，按行从上到下排列。 */
+#ca-root .ca-layout-settings { container-type: inline-size; }
+#ca-root .ca-app .ca-settings-shell { width: 100%; min-width: 0; }
+#ca-root .ca-app .ca-settings-heading { margin: 0 0 var(--space-3); font-size: var(--font-size-4); font-weight: 600; color: var(--ca-ink2); }
+#ca-root .ca-app .ca-policy-list { border: 1px solid var(--ca-line); border-radius: var(--radius-card); background: var(--ca-card); overflow: hidden; }
+#ca-root .ca-app .ca-policy-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-5); padding: var(--space-5); }
+#ca-root .ca-app .ca-policy-row + .ca-policy-row { border-top: 1px solid var(--ca-line); }
+#ca-root .ca-app .ca-policy-copy { flex: 1; min-width: 0; }
+#ca-root .ca-app .ca-settings-shell .tt { font-size: var(--font-size-4); font-weight: 600; }
+#ca-root .ca-app .ca-settings-shell .sub { margin-top: var(--space-2); line-height: 1.65; font-size: var(--font-size-3); }
+#ca-root .ca-app .ca-policy-copy .note { margin-top: var(--space-2); }
+#ca-root .ca-app .ca-policy-copy > button { margin-top: var(--space-2); padding-inline: 0; }
+#ca-root .ca-app .ca-policy-switch { display: flex; align-items: center; gap: var(--space-2); white-space: nowrap; flex-shrink: 0; }
+#ca-root .ca-app .ca-settings-note { margin: var(--space-3) 0 var(--space-5); padding-inline: var(--space-1); }
+#ca-root .ca-app .ca-settings-records { border: 1px solid var(--ca-line); border-radius: var(--radius-card); background: var(--ca-card); overflow: hidden; }
+#ca-root .ca-app .ca-settings-model,
+#ca-root .ca-app .ca-discovery-status,
+#ca-root .ca-app .ca-settings-link { display: flex; align-items: center; justify-content: space-between; gap: var(--space-5); width: 100%; padding: var(--space-4) var(--space-5); }
+#ca-root .ca-app .ca-settings-records > * + * { border-top: 1px solid var(--ca-line); }
+#ca-root .ca-app .ca-settings-row-copy { flex: 1; min-width: 0; }
+#ca-root .ca-app .ca-settings-model.is-warning { background: var(--ca-amber-bg); }
+#ca-root .ca-app .ca-discovery-heading { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); }
+#ca-root .ca-app .ca-settings-records p.note { margin: var(--space-2) 0 0; }
+#ca-root .ca-app .ca-settings-records .actions { flex: 0 0 auto; justify-content: flex-end; gap: var(--space-4); }
+#ca-root .ca-app .ca-settings-records .rnm { padding-inline: 0; }
+#ca-root .ca-app .ca-settings-link .sub { color: var(--ca-ink2); font-size: var(--font-size-2); }
+#ca-root .ca-app .ca-settings-link .note { margin-top: var(--space-2); }
+#ca-root .ca-app .ca-settings-tools { margin-top: var(--space-5); }
+#ca-root .ca-app .ca-settings-tools-heading { display: flex; align-items: center; gap: var(--space-3); }
+#ca-root .ca-app .ca-settings-tools-heading .ca-settings-heading { margin: 0; }
+#ca-root .ca-app .ca-settings-tools-hint { margin: var(--space-2) 0 var(--space-3); }
+#ca-root .ca-app .ca-settings-maintenance-item { border: 1px solid var(--ca-line); border-radius: var(--radius-card); background: var(--ca-card); margin-top: var(--space-2); padding-inline: var(--space-4); }
+#ca-root .ca-app .ca-settings-maintenance-item summary { gap: var(--space-3); }
+#ca-root .ca-app .ca-settings-maintenance-item .ui-accordion__title { font-weight: 500; }
+#ca-root .ca-app .ca-settings-maintenance-item .ui-accordion__meta { font-family: inherit; font-size: var(--font-size-2); white-space: normal; text-align: right; max-width: 50%; }
+#ca-root .ca-app .ca-settings-maintenance-item .ui-accordion__body { padding-bottom: var(--space-4); line-height: 1.65; }
+#ca-root .ca-app .ca-settings-maintenance-item p { margin: 0 0 var(--space-2); }
+#ca-root .ca-app .ca-settings-maintenance-item .actions { margin-top: var(--space-3); }
+@container (max-width: 720px) {
+  #ca-root .ca-app .ca-settings-records > * { flex-wrap: wrap; gap: var(--space-3); }
+  #ca-root .ca-app .ca-settings-records .ca-settings-row-copy { flex-basis: 100%; }
+  #ca-root .ca-app .ca-settings-records .actions { margin-left: auto; flex-wrap: wrap; max-width: 100%; }
+}
+@container (max-width: 520px) {
+  #ca-root .ca-app .ca-policy-row { padding: var(--space-4); gap: var(--space-3); }
+  #ca-root .ca-app .ca-policy-switch { flex-direction: column-reverse; gap: var(--space-1); }
+}

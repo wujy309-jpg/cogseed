@@ -78,7 +78,7 @@ function ensureModule(): { cogAssets: Record<string, unknown>; domRoot: { innerH
   };
   domRoot = { innerHTML: '' };
   /* eslint-disable @typescript-eslint/no-require-imports */
-  const { uiInput, uiSwitch, uiTextarea } = require('../../src/renderer/modules/ui-form.js');
+  const { uiInput, uiSwitch, uiTextarea, uiSelect } = require('../../src/renderer/modules/ui-form.js');
   const { uiEmptyState } = require('../../src/renderer/modules/ui-empty.js');
   globalScope.window = {
     CogAssets: cogAssets,
@@ -90,6 +90,7 @@ function ensureModule(): { cogAssets: Record<string, unknown>; domRoot: { innerH
     })(),
     uiInput,
     uiSwitch,
+    uiSelect,
     uiTextarea,
     uiEmptyState,
   };

@@ -1892,3 +1892,69 @@ describe('「保持原版 / 稍后处理 / 系统保持当前」的落点（spec
     expect(after.statement).toBe(asset.statement);
   });
 });
+
+describe('explicit nightly low-risk automatic approval', () => {
+  async function automaticFixture() {
+    const candidates = await service();
+    const settingsService = await import('../../../../src/main/features/recall/capture-settings');
+    const store = await import('../../../../src/main/features/recall/store');
+    const { approvalCandidateSnapshot } = await import('../../../../src/main/features/recall/automatic-approval-policy');
+    const settings = await settingsService.updateRecallCaptureSettings('user-a', { autoApproval: true });
+    const enabledAt = new Date(Date.now() - 10_000).toISOString();
+    await store.updateRecallJsonRecord('user-a', 'capture-settings', 'settings', current => ({ ...current!, autoApprovalEnabledAt: enabledAt }));
+    const createdAt = new Date(Date.now() - 5_000).toISOString();
+    const startedAt = new Date(Date.now() - 1_000).toISOString();
+    await store.updateRecallJsonRecord('user-a', 'captures', 'night-batch-1', () => ({
+      schemaVersion: 1, ownerId: 'user-a', id: 'night-batch-1', executionPolicy: 'nightly', status: 'extracting',
+      autoApprovalEpoch: settings.autoApprovalEpoch, createdAt, startedAt,
+    }));
+    const candidate = await candidates.saveRecallCandidate('user-a', {
+      judgment: 'Reusable meeting checklist: a goal, three actions and one risk.',
+      value: 'Provide a reusable preparation checklist for future project meetings.', summary: 'Meeting preparation framework',
+      suggestedType: 'template', suggestedScope: 'general', suggestedAction: 'create', risk: 'low',
+      captureKey: 'capture-night-batch-1-0', scopePolicy: { projectIds: ['project-a'] },
+      sourceRefs: [{ kind: 'conversation', subtype: 'message', id: 'conv-a-message-a' }],
+    });
+    const context = { captureId: 'night-batch-1', policyEpoch: settings.autoApprovalEpoch!, captureCreatedAt: createdAt, startedAt,
+      sourceScope: 'general', sourceScopePolicy: { projectIds: ['project-a'] }, evidenceReviewed: true, riskReviewed: true, actionReviewed: true, candidateSnapshot: approvalCandidateSnapshot(candidate) };
+    return { candidates, candidate, context, settingsService };
+  }
+  it('uses the canonical save transaction and system decision ledger for an eligible new candidate', async () => {
+    const { candidates, candidate, context } = await automaticFixture();
+    const approved = await candidates.approveNewNightlyRecallCandidate('user-a', candidate.id, context);
+    expect(approved.autoReview?.reasons).toEqual([]);
+    expect(approved).toMatchObject({ status: 'confirmed', autoReview: { eligible: true } });
+    expect(approved.promotedAssetId).toBeTruthy();
+    const ledger = await import('../../../../src/main/features/cognition/review-decision');
+    const decision = await ledger.readReviewDecision('user-a', `recall_candidate:${candidate.id}`, approved.reviewDecisionId!);
+    expect(decision).toMatchObject({ actor: 'system', decision: 'automatic low-risk approval', outcome: 'asset_created' });
+    expect(await candidates.withRecallCandidateProcessingDetails('user-a', approved)).toMatchObject({ processingActor: '系统自动批准' });
+  });
+  it('does not grant system promotion to ordinary callers, or reuse a previous policy epoch', async () => {
+    const { candidates, candidate, context, settingsService } = await automaticFixture();
+    await expect(candidates.promoteRecallCandidate('user-a', candidate.id, { actor: 'system' })).rejects.toThrow(/user_confirmation_required/);
+    await settingsService.updateRecallCaptureSettings('user-a', { autoApproval: false });
+    await settingsService.updateRecallCaptureSettings('user-a', { autoApproval: true });
+    const held = await candidates.approveNewNightlyRecallCandidate('user-a', candidate.id, context);
+    expect(held).toMatchObject({ status: 'pending_review', autoReview: { eligible: false } });
+    expect(held.promotedAssetId).toBeUndefined();
+    expect(held.autoReview?.reasons.join('；')).toContain('本轮');
+  });
+});
+
+it('preserves fresh reject, ignore and keep-current decision identities for activity receipts', async () => {
+  const candidates = await service();
+  for (const [index, action] of [candidates.rejectRecallCandidate, candidates.ignoreRecallCandidate, candidates.keepCurrentRecallCandidate].entries()) {
+    const candidate = await candidates.saveRecallCandidate('user-a', {
+      judgment: `Reusable meeting checklist variant ${index}: a goal, three actions and one risk.`,
+      value: `Prepare later project meeting variant ${index}.`, summary: `Meeting preparation variant ${index}`,
+      suggestedType: 'template', suggestedScope: 'general', suggestedAction: 'create', sourceRefs: [], manual: true,
+    });
+    const decided = await action('user-a', candidate.id);
+    expect(decided.reviewDecisionId).toBeTruthy();
+    const projected = await candidates.withRecallCandidateProcessingDetails('user-a', decided);
+    expect(projected).toMatchObject({ processingActor: '你（人工）' });
+    expect(projected.processingReason).toBeTruthy();
+    expect((await candidates.readRecallCandidate('user-a', candidate.id)).reviewDecisionId).toBe(decided.reviewDecisionId);
+  }
+});

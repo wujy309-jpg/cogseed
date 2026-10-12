@@ -19,7 +19,7 @@ export type OntologyAction =
   | { intent: 'change'; recordId: string; expectedVersion: number; effectiveFrom: string; certainty?: 'confirmed' | 'inferred' | 'unknown'; object?: OntologyValue; subjectId?: string; sourceLabel: string }
   | { intent: 'correct'; recordId: string; expectedVersion: number; certainty?: 'confirmed' | 'inferred' | 'unknown'; object?: OntologyValue; subjectId?: string; sourceLabel: string };
 export interface OntologyCommand { commandId: string; expectedRevision: number; actions: OntologyAction[] }
-export interface OntologyCommandSourceOverride { kind: 'candidate'; recordId: string; label: string }
+export interface OntologyCommandSourceOverride { kind: 'candidate' | 'legacy'; recordId: string; label: string }
 const key = z.string().refine(value => { try { validateOntologyId(value); return true; } catch { return false; } });
 const sourceLabel = z.string().trim().min(1).max(200);
 const target = { recordId: key, expectedVersion: z.number().int().positive(), sourceLabel };
@@ -196,7 +196,7 @@ export function applyOntologyCommand(current: OntologyDocument, input: unknown, 
   const command = validateOntologyCommand(input);
   if (sourceOverride) {
     validateOntologyId(sourceOverride.recordId);
-    if (sourceOverride.kind !== 'candidate' || typeof sourceOverride.label !== 'string' || !sourceOverride.label.trim() || sourceOverride.label.length > 200)
+    if (!['candidate', 'legacy'].includes(sourceOverride.kind) || typeof sourceOverride.label !== 'string' || !sourceOverride.label.trim() || sourceOverride.label.length > 200)
       throw new OntologyError('invalid_input', 'invalid ontology candidate source');
   }
   const requestHash = sourceOverride

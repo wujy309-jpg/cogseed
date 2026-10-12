@@ -409,6 +409,24 @@ describe('first-version renderer components', () => {
     expect(rangeField.match(/ required/g)).toHaveLength(2);
   });
 
+  it('renders an accessible native select for direct document editing with escaped attrs and state', () => {
+    const { uiSelect } = loadFactories();
+    const html = uiSelect({
+      native: true, id: 'fact-<1>', ariaLabel: '事实"值', className: 'document-select',
+      value: 'false', disabled: true,
+      attrs: { 'data-ontology-edit': 'object.value', 'data-record-id': 'record"1', onclick: 'bad' },
+      options: [{ value: 'true', label: '是' }, { value: 'false', label: '否<script>' }],
+    });
+    expect(html).toContain('<select id="fact-&lt;1&gt;"');
+    expect(html).toContain('class="ui-native-select document-select"');
+    expect(html).toContain('aria-label="事实&quot;值" disabled');
+    expect(html).toContain('data-ontology-edit="object.value"');
+    expect(html).toContain('data-record-id="record&quot;1"');
+    expect(html).toContain('<option value="false" selected>否&lt;script&gt;</option>');
+    expect(html).not.toContain('onclick=');
+    expect(() => uiSelect({ native: true, id: 'unlabelled', options: [] })).toThrow(/accessible label/);
+  });
+
   it('lets a field drop the per-field requirement marker without losing required semantics', () => {
     const { uiField } = loadFactories();
 
@@ -633,5 +651,26 @@ const modal = read('src/renderer/modules/ui-modal.js');
     expect(drawer).toContain("icon: 'x'");
     expect(drawer).toContain("controller.close('backdrop')");
     expect(drawer).not.toContain('>×</button>');
+  });
+});
+
+describe('认知原型需要的共享控件能力', () => {
+  it('原生多选保留全部已选值、尺寸和禁用状态', () => {
+    const ui = loadFactories();
+    const html = ui.uiSelect({ id: 'scope-multi', native: true, multiple: true, size: 3, ariaLabel: '工作空间', value: ['a', 'b'], disabled: true, options: [{ value: 'a', label: '空间 A' }, { value: 'b', label: '空间 B' }, { value: 'c', label: '空间 C' }] });
+    expect(html).toContain(' multiple');
+    expect(html).toContain(' size="3"');
+    expect(html).toContain(' disabled');
+    expect(html).toContain('<option value="a" selected>空间 A</option>');
+    expect(html).toContain('<option value="b" selected>空间 B</option>');
+    expect(html).not.toContain('<option value="c" selected>');
+  });
+  it('筛选按钮的前缀和取值独立转义，并沿用图标库', () => {
+    const ui = loadFactories();
+    const html = ui.uiButton({ label: '所有类型', labelPrefix: '<类型>', iconEnd: 'chevron-down' });
+    expect(html).toContain('&lt;类型&gt;');
+    expect(html).toContain('所有类型');
+    expect(html).toContain('is-chevron-down');
+    expect(html).not.toContain('<类型>');
   });
 });

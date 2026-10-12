@@ -6,6 +6,30 @@ type Notice = { collection: string; generation: number };
 type ResolveRead = (value: { ok: true; assets: Array<{ id: string }> }) => void;
 
 describe('cognition change rail', () => {
+  it('refreshes nightly status on sweep notices and queues completion behind an in-flight running read', async () => {
+    const handlers = new Map<string, (notice: Notice) => void>();
+    const pendingReads: Array<(value: unknown) => void> = [];
+    const invoke = vi.fn((channel: string) => channel === 'recall.captures.stats'
+      ? new Promise(resolve => pendingReads.push(resolve))
+      : Promise.resolve({ ok: true }));
+    const { ns, store } = loadCognitionAssets({}, { name: 'overview' }, {
+      cogseed: { invoke, onPushEvent: (channel: string, handler: (notice: Notice) => void) => {
+        handlers.set(channel, handler);
+        return () => handlers.delete(channel);
+      } },
+    });
+    ns.setupChangeRail(() => true);
+    handlers.get('cognition:changed')!({ collection: 'capture-sweep', generation: 1 });
+    await vi.waitFor(() => expect(pendingReads).toHaveLength(1));
+    handlers.get('cognition:changed')!({ collection: 'capture-sweep', generation: 2 });
+    pendingReads[0]({ ok: true, runtime: { running: true } });
+    await vi.waitFor(() => expect(pendingReads).toHaveLength(2));
+    const completed = { ok: true, runtime: { running: false }, sweep: { lastResult: { scanned: 2, queued: 1 } } };
+    pendingReads[1](completed);
+    await vi.waitFor(() => expect(store.captureStats).toEqual(completed));
+    expect(invoke.mock.calls.map(([channel]) => channel)).toEqual(['recall.captures.stats', 'recall.captures.stats']);
+  });
+
   it('queues a second change that arrives while the same block is being read', async () => {
     const handlers = new Map<string, (notice: Notice) => void>();
     const pendingReads: ResolveRead[] = [];

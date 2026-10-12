@@ -110,7 +110,7 @@ describe('processed history shows semantic candidate records', () => {
       },
     );
 
-    expect(html).toContain('ca-activity-changes');
+    expect(html).toContain('ca-activity-table');
     expect(visibleText(html)).toContain('架构决策要留可追溯记录');
     expect(visibleText(html)).not.toContain('cand-processed');
   });

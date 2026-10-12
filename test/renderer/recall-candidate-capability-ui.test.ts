@@ -236,7 +236,7 @@ describe('governance page carries the asset revision entry', () => {
   });
 
   it('refuses to open a blank form when the authoritative record is missing', () => {
-    expect(viewsSource).toContain('assetDetail(asset, route)');
+    expect(viewsSource).toContain('assetDetail(asset, route, { compact: true })');
     expect(viewsSource).not.toContain('blank form');
   });
 

@@ -11,8 +11,7 @@
  *
  * Step 2 is why a packaged release can reach the Hub at all: a double-clicked
  * `.app` inherits no environment, and the source tree deliberately carries no
- * real origin (open-source publication removed non-owned domains — see the #5
- * blocker in `docs/release-scan-remediation-20260923.md`).
+ * real origin; release deployments supply their service origin at package time.
  *
  * Every endpoint returns the Hub envelope `{ ok: true, data }`; failures
  * throw `HubApiError` carrying the service error code (e.g.

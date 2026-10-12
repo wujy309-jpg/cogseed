@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
  * 「loader 失败置 stale」）：loadDeletedAssets / loadInspection /
  * loadCleanupReports 失败时此前写 {loading:false} 不带 stale——守卫
  * `!stale` 判重直接 return，「没读到」永久伪装「没有」。修法（catch 补
- * stale，3 行最小自愈）：失败置 stale=true，下一次触发自愈重拉；成功
+ * stale，3 行最小自愈）：失败置 stale=true；巡检/报告同时缓存 failed 防止通知自续，由 force 显式重试；成功
  * stale=false 照常缓存。视图零改动（失败态文案已另批走查）。
  *
  * 装配与 cognition-inbox-error-state.test.ts 同构。
@@ -31,8 +31,8 @@ const NS = (() => {
   require('../../src/renderer/modules/cognition-assets/core.js');
   return stub as unknown as {
     store: Record<string, unknown>;
-    loadInspection: () => Promise<void>;
-    loadCleanupReports: () => Promise<void>;
+    loadInspection: (force?: boolean) => Promise<void>;
+    loadCleanupReports: (force?: boolean) => Promise<void>;
     actions: {
       loadDeletedAssets: () => Promise<void>;
     };
@@ -68,7 +68,7 @@ describe('组7：按需 loader 失败置 stale（P-r1-52）', () => {
     expect(count('recall.assets.deleted.list')).toBe(settled); // 健康态缓存判重照旧
   });
 
-  it('loadInspection 失败置 stale，第二次调用自愈重拉', async () => {
+  it('loadInspection 失败保留未知标记，普通调用不循环，force 可恢复', async () => {
     invokeImpl = async (channel) => ((channel === 'recall.inspection.settings' || channel === 'recall.inspection.list')
       ? { ok: false, error: 'inspection unreadable', code: 'E_IO' }
       : { ok: true });
@@ -79,10 +79,15 @@ describe('组7：按需 loader 失败置 stale（P-r1-52）', () => {
     expect(NS.store.inspection).toMatchObject({ loading: false, stale: true });
     await NS.loadInspection();
     await settle();
-    expect(count('recall.inspection.settings')).toBe(2); // 修前：恒为 1（判重挡死）
+    expect(count('recall.inspection.settings')).toBe(1);
+    expect(NS.store.inspection).toMatchObject({ failed: true, stale: true });
+    invokeImpl = async () => ({ ok: true, settings: { enabled: true }, runs: [{ id: 'run-1' }] });
+    await NS.loadInspection(true);
+    expect(count('recall.inspection.settings')).toBe(2);
+    expect(NS.store.inspection).toMatchObject({ failed: false, stale: false, latestRun: { id: 'run-1' } });
   });
 
-  it('loadCleanupReports 失败置 stale，第二次调用自愈重拉', async () => {
+  it('loadCleanupReports 失败保留未知标记，普通调用不循环，force 可恢复', async () => {
     invokeImpl = async (channel) => (channel === 'recall.cleanup.list'
       ? { ok: false, error: 'cleanup reports unreadable', code: 'E_IO' }
       : { ok: true });
@@ -93,6 +98,11 @@ describe('组7：按需 loader 失败置 stale（P-r1-52）', () => {
     expect(NS.store.cleanupReports).toMatchObject({ loading: false, stale: true });
     await NS.loadCleanupReports();
     await settle();
-    expect(count('recall.cleanup.list')).toBe(2); // 修前：恒为 1（判重挡死）
+    expect(count('recall.cleanup.list')).toBe(1);
+    expect(NS.store.cleanupReports).toMatchObject({ failed: true, stale: true });
+    invokeImpl = async () => ({ ok: true, reports: [{ id: 'report-1' }] });
+    await NS.loadCleanupReports(true);
+    expect(count('recall.cleanup.list')).toBe(2);
+    expect(NS.store.cleanupReports).toMatchObject({ failed: false, stale: false, reports: [{ id: 'report-1' }] });
   });
 });

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import { loadCognitionAssets } from './helpers/cognition-renderer';
+
 import { getRecallCandidateCapabilities } from '../../src/main/features/recall/candidate-capabilities';
 
 /** 候选桩的能力必须来自主进程的真实映射，否则测试会绿在一套假判据上。 */
@@ -67,17 +69,17 @@ function fnBlock(marker: string): string {
 }
 
 describe('cognition-assets snapshot and routing', () => {
-  it('loads the five snapshot channels in parallel with soft fallbacks', () => {
-    // 五个读口并行拉取——三个走 api.soft 容错；两个例外走 api.call+catch 的
-    // 显式错误态：候选清单（2026-09-29 A5：读失败置 store.candidatesError，
-    // 不把「没读到」软降级成空数组伪装成「没有要你决定的」）；沉淀设置
-    // （2026-10-01 P-r3-25 组7：captureModel 读失败置 store.captureModelError，
-    // 不再伪装成「还没配置模型」；settings 半边行为不变——失败落 {}、
-    // store.errors 照记，与 api.soft 兜底等价）。
+  it('loads snapshot channels in parallel and gives assets/candidates/settings explicit read-error states', () => {
+    // 资产、候选和设置采用显式错误态；资产读失败保留缓存，不伪装成空目录。
+    // 对话整理与来源目录继续使用独立软降级，不能把一个失败扩大成整页清空。
     for (const channel of [
-      'recall.assets.list', 'recall.captures.list',
+      'recall.captures.list',
       'recall.sources.list',
     ]) expect(core).toContain(`api.soft('${channel}'`);
+    const assets = fnBlock('async assets()');
+    expect(assets).toContain("api.call('recall.assets.list'");
+    expect(assets).toContain('store.assetsError');
+    expect(assets).not.toMatch(/store\.assets\s*=\s*\[\]/);
     expect(core).toContain("api.call('recall.candidates.list'");
     expect(core).toContain('store.candidatesError');
     expect(core).toContain("api.call('recall.captures.settings.get'");
@@ -88,12 +90,11 @@ describe('cognition-assets snapshot and routing', () => {
   });
 
   it('routes the five views through one router', () => {
-    // specs/018 后端驱动重构:五页签=待我处理/我的认知/个人本体/系统活动/设置,
-    // 默认落地待我处理;认知树是 overview 的视图投影(assetView='tree')。
+    // 树暂禁用，默认落地我的认知；旧 tree 深链归一到 overview。
     // 旧路由名(tree/organize/organize-settings/experiences)在 router.go 归一。
-    expect(core).toContain("route: { name: 'tree'");
+    expect(core).toContain("route: { name: 'overview'");
     expect(core).toContain("router.go({ name: 'activity', candidateId: String(candidateId) })");
-    expect(core).toContain("{ id: 'tree', titleKey: 'cognition.tab_tree'");
+    expect(core).toContain("{ id: 'tree', titleKey: 'cognition.tab_tree', title: '认知树', disabled: true }");
     expect(core).not.toContain("{ id: 'review', titleKey: 'cognition.tab_review'");
     expect(core).toContain("{ id: 'activity', titleKey: 'cognition.tab_activity'");
     expect(core).toContain("{ id: 'settings', titleKey: 'cognition.tab_settings'");
@@ -116,9 +117,24 @@ describe('cognition-assets snapshot and routing', () => {
     expect(app).toContain("case 'open-cleanup-report': router.go({ name: 'cleanup', cleanupReportId: String(el.dataset.report || '') });");
   });
 
-  it('lands on the cognition tree without auto-redirecting when the inbox is empty', () => {
-    expect(core).toContain("Object.assign({ name: 'tree'");
+  it('lands on my cognition without auto-redirecting when the inbox is empty', () => {
+    expect(core).toContain("Object.assign({ name: 'overview'");
     expect(core).not.toContain('switchSkillsCognitionPage');
+  });
+
+  it('资产读取失败保留已读资产并展示明确错误，不能软降级成空目录', async () => {
+    const cached = { id: 'asset-cached', type: 'template', title: '已有汇报骨架', statement: '按目标、进展与下一步行动组织汇报。', status: 'active', version: '1' };
+    const { ns, render } = loadCognitionAssets({ assets: [cached] }, {}, {
+      cogseed: { invoke: async (channel: string) => channel === 'recall.assets.list'
+        ? { ok: false, error: 'asset read offline' } : { ok: true } },
+    });
+    await ns.reload();
+    expect(ns.store.assets).toEqual([cached]);
+    expect(ns.store.assetsError).toContain('asset read offline');
+    const html = render();
+    expect(html).toContain(cached.title);
+    expect(html).toContain('上次读取');
+    expect(html).not.toContain('这里还没有内容');
   });
 
   it('reloads in place after decisions and keeps partial-failure data', () => {
@@ -148,7 +164,7 @@ describe('candidate decisions', () => {
 
   it('keeps evidence refs and boundaries untouched by form edits', () => {
     const adopt = fnBlock('async adoptCandidate');
-    expect(adopt).toContain('sourceRefs: candidate.evidenceRefs || candidate.sourceRefs || []');
+    expect(adopt).toContain('sourceRefs: candidate.sourceRefs || candidate.evidenceRefs || []');
     expect(adopt).toContain('evidenceRefs: candidate.evidenceRefs || candidate.sourceRefs || []');
     expect(adopt).toContain('applicableWhen: candidate.applicableWhen || []');
     expect(adopt).toContain('forbiddenWhen: candidate.forbiddenWhen || []');
@@ -158,8 +174,8 @@ describe('candidate decisions', () => {
     expect(core).toContain("reject: 'recall.candidates.reject'");
     expect(core).toContain("ignore: 'recall.candidates.ignore'");
     expect(core).toContain("'keep-current': 'recall.candidates.keepCurrent'");
-    // 「稍后处理」前后端已删（2026-10-02）：defer/resume 通道不得回流。
-    expect(core).not.toContain("recall.candidates.defer");
+    // 新“稍后”持久化处理顺序标记，仍留在需要关注，不恢复旧的静音生命周期。
+    expect(core).toContain("defer: 'recall.candidates.defer'");
     expect(core).not.toContain("recall.candidates.resume");
     const decide = fnBlock('async decideCandidate');
     expect(decide).toContain('await NS.reload()');

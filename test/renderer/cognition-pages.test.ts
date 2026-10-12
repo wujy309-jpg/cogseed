@@ -162,9 +162,8 @@ describe('cognition-assets 五页签结构(迁移终态)', () => {
     return tabs;
   }
 
-  it('TABS 是五页签且顺序固定:认知树 / 我的认知 / 个人本体 / 系统活动 / 设置', () => {
-    // specs/018 + 2026-09-26 子安真机否决树降级:认知树恢复顶级页签与默认
-    // 落地;经验仍是「我的认知」分类档。2026-10-08 U04:独立「待我处理」页签
+  it('TABS 保留五个位置但认知树禁用，顺序固定', () => {
+    // 认知树暂禁用并由旧路由归一到「我的认知」。2026-10-08 U04:独立「待我处理」页签
     // 下线,治理动作收敛到系统活动(需要关注/已处理),旧 review 路由归一。
     // 2026-09-27 子安定序:「我的认知」提到「个人本体(关于我)」之前。
     const tabs = parseTabs(core2);
@@ -173,12 +172,13 @@ describe('cognition-assets 五页签结构(迁移终态)', () => {
       'cognition.tab_tree', 'cognition.tab_overview', 'cognition.tab_ontology',
       'cognition.tab_activity', 'cognition.tab_settings',
     ]);
+    expect(core2).toContain("{ id: 'tree', titleKey: 'cognition.tab_tree', title: '认知树', disabled: true }");
   });
 
-  it('默认路由是认知树,深链归一化键保留', () => {
-    // 2026-09-26 子安真机否决:默认落地恢复认知树(全景第一眼)。
-    expect(core2).toContain("route: { name: 'tree'");
-    expect(core2).toContain("Object.assign({ name: 'tree'");
+  it('默认路由是我的认知，旧树深链归一且详情键保留', () => {
+    expect(core2).toContain("route: { name: 'overview'");
+    expect(core2).toContain("Object.assign({ name: 'overview'");
+    expect(core2).toContain("if (legacyName === 'tree') target = Object.assign({}, target, { name: 'overview' })");
     // 深链兼容:既有详情路由键一个都不能少(资产/候选/整理/版本/KSTAR)。
     for (const key of ['assetId', 'candidateId', 'captureId', 'assetVersionId', 'kstarEpisodeId', 'assetEdit']) {
       expect(core2).toContain(`${key}: ''`);

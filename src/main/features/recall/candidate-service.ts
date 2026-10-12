@@ -1,3 +1,6 @@
+import { readRecallCaptureSettings, withRecallAutoApprovalLock } from './capture-settings';
+import { evaluateAutomaticCandidateApproval, type AutomaticCandidateReview, type NightlyApprovalContext } from './automatic-approval-policy';
+const AUTOMATIC_APPROVAL = Symbol('nightly-low-risk-approval');
 import { unifiedCognitionRecordIds } from '../cognition_bridge';
 import * as fs from 'node:fs/promises';
 import { describeRoleTemplateFieldRef } from '../personal_ontology_contract';
@@ -133,6 +136,7 @@ export interface RecallCandidateRecord extends RecallJsonRecord {
   /** The candidate was user-reviewed and materialized as canonical ontology records. */
   ontologyHandoff?: RecallCandidateOntologyHandoff;
   reviewDecisionId?: string;
+  autoReview?: AutomaticCandidateReview;
   decisionNote?: string;
   /** 空间归属：候选来自哪个空间（空间绘画/任务产出的认知）。资产随 recall 全局存储，
    *  空间资产 tab 按此字段过滤显示；空间可读全局资产但显示只显示本空间产生的。 */
@@ -463,6 +467,7 @@ interface StoredRecallAssetHandoffReceipt extends RecallJsonRecord, RecallAssetH
 export type RecallPromotionProvenance = 'capture' | 'kstar';
 
 export interface PromoteRecallCandidateOptions extends AbilityAssetSemantics {
+  [AUTOMATIC_APPROVAL]?: NightlyApprovalContext;
   /** 评审决定的 actor：只有人与自动线两种。资产管家的 AI 工具**不能**晋升候选
    *  ——记忆的出生必须来自人确认或自动抽取线，所以这里不接受 'ai'
    *  （与 ReviewDecisionActor 同域，specs/008 未开这个口子）。 */
@@ -623,9 +628,14 @@ function fallbackCandidateTitle(judgment: string): string {
  */
 async function resolvePromotionAssetTitle(
   userId: string,
-  input: { preferredTitle: string; statement: string; type: AbilityAssetType },
+  input: { preferredTitle: string; statement: string; type: AbilityAssetType; reviewedTitle?: boolean },
 ): Promise<string> {
   const statement = String(input.statement || '');
+  if (input.reviewedTitle) {
+    const { assertReviewedAbilityAssetTitle } = await import('./title-policy');
+    assertReviewedAbilityAssetTitle(input.preferredTitle);
+    return input.preferredTitle;
+  }
   if (!recallTitleIssue(input.preferredTitle, statement)) return input.preferredTitle;
   const { suggestAbilityAssetTitle } = await import('./asset-title-suggestion');
   const suggested = await suggestAbilityAssetTitle(userId, {
@@ -1960,7 +1970,7 @@ async function decideWithoutAsset(
         && (actor !== 'user' || !getRecallCandidateCapabilities(candidate).canReject)) {
         throw new Error('candidate evidence is insufficient for review');
       }
-      await writeReviewDecision(userId, {
+      const decision = await writeReviewDecision(userId, {
         targetRef: `recall_candidate:${candidate.id}`,
         decisionType,
         decision: decisionType,
@@ -1974,6 +1984,7 @@ async function decideWithoutAsset(
       return {
         ...candidate,
         status,
+        reviewDecisionId: decision.decision_id,
         ...(decisionNote ? { decisionNote } : {}),
         cooldownUntil: undefined,
         updatedAt: new Date().toISOString(),
@@ -2010,6 +2021,54 @@ async function decideWithoutAsset(
     throw error;
   }
   return asCandidate(updated);
+}
+
+/** Activity processing identity comes from the decision ledger, never from the candidate's origin. */
+export async function withRecallCandidateProcessingDetails(candidateUserId: string, candidate: RecallCandidateRecord) {
+  if (!candidate.reviewDecisionId) return candidate;
+  try {
+    const decision = await readReviewDecision(candidateUserId, `recall_candidate:${candidate.id}`, candidate.reviewDecisionId);
+    if (!decision) return { ...candidate, processingActor: '处理者记录不可用', processingReason: candidate.decisionNote || '' };
+    return { ...candidate,
+      processingActor: decision.actor === 'system' ? (decision.decision === 'automatic low-risk approval' ? '系统自动批准' : '系统')
+        : decision.actor === 'user' ? '你（人工）' : '处理者未记录',
+      processingReason: decision.reason || candidate.decisionNote || ({ accept: '人工核对后保存', modify: '人工修改后保存', reject: '人工拒绝此建议', ignore: '人工忽略此建议', keep_current: '人工确认保留现有内容', defer: '人工选择稍后处理', trial: '人工选择试用' }[decision.decision_type] || ''),
+    };
+  } catch {
+    return { ...candidate, processingActor: '处理者暂时无法读取', processingReason: candidate.decisionNote || '' };
+  }
+}
+
+/** Called only by the nightly capture producer, never by IPC/model tool arguments. */
+export async function approveNewNightlyRecallCandidate(userId: string, candidateId: string, context: NightlyApprovalContext): Promise<RecallCandidateRecord> {
+  return withRecallAutoApprovalLock(userId, async () => {
+    let candidate = await readRecallCandidate(userId, candidateId);
+    let review: AutomaticCandidateReview;
+    try {
+      const settings = await readRecallCaptureSettings(userId);
+      const capture = await readRecallJsonRecord(userId, 'captures', context.captureId);
+      const target = candidate.targetAssetId ? await readAbilityAsset(userId, candidate.targetAssetId) : undefined;
+      review = evaluateAutomaticCandidateApproval(candidate, settings, context, target);
+      if (!capture || capture.executionPolicy !== 'nightly' || capture.status !== 'extracting'
+        || capture.autoApprovalEpoch !== context.policyEpoch || capture.createdAt !== context.captureCreatedAt
+        || capture.startedAt !== context.startedAt) review.reasons.push('夜间批次校验失败');
+      review.eligible = review.reasons.length === 0;
+      if (review.eligible) {
+        const result = await promoteRecallCandidate(userId, candidateId, {
+          actor: 'system', provenance: 'capture', [AUTOMATIC_APPROVAL]: context,
+          decisionReason: '自动批准策略 v1：本轮新夜间建议；证据已核对；明确低风险；无冲突；来源授权与使用范围不扩大；更新基准版本一致。',
+        });
+        candidate = result.candidate;
+      }
+    } catch (error) {
+      review = { policyVersion: 1, eligible: false, reasons: [`自动批准未完成，保留人工处理：${String((error as Error).message).slice(0, 500)}`], checkedAt: new Date().toISOString(), policyEpoch: context.policyEpoch };
+      candidate = await readRecallCandidate(userId, candidateId);
+    }
+    return asCandidate(await updateRecallJsonRecord(userId, 'candidates', candidateId, current => {
+      if (!current) throw new Error('recall candidate not found');
+      return { ...current, autoReview: review };
+    }));
+  });
 }
 
 /** 系统只核验已确认候选的现有资产；缺失资产留给用户处理，系统不得重新发布。 */
@@ -2329,7 +2388,7 @@ export async function promoteRecallCandidate(
   const relationContract = readAbilityAssetRelationContract(options as Record<string, unknown>);
   const optionSemantics = readAbilityAssetSemantics(options as unknown as Record<string, unknown>);
   const preflight = await readRecallCandidate(userId, candidateId);
-  if (options.actor === 'system' && preflight.status !== 'confirmed') throw new PromotionPausedError('user_confirmation_required');
+  if (options.actor === 'system' && preflight.status !== 'confirmed' && !options[AUTOMATIC_APPROVAL]) throw new PromotionPausedError('user_confirmation_required');
   // 版本组防分裂闸门（2026-09-16）：用户确认 create 候选时若与现有资产语义
   // 高度相似，先问一句（专用错误码）——前端提示"新条目还是改为更新"，确认
   // 新条目后带 forceCreateSimilar 重试。带 update 目标/自动线不经过这里；
@@ -2429,6 +2488,7 @@ export async function promoteRecallCandidate(
       preferredTitle: preflight.summary || '',
       statement: plannedCreateStatement,
       type: preflight.suggestedType,
+        reviewedTitle: options.actor !== 'system' && !options[AUTOMATIC_APPROVAL] && (preflight.origin === 'manual' || Boolean(preflight.userModifiedAt)),
     })
     : undefined;
   let plannedUpdate: { statement: string; title: string } | undefined;
@@ -2443,6 +2503,7 @@ export async function promoteRecallCandidate(
         preferredTitle: preflight.summary || '',
         statement: plannedUpdateStatement,
         type: preflight.suggestedType,
+        reviewedTitle: options.actor !== 'system' && !options[AUTOMATIC_APPROVAL] && (preflight.origin === 'manual' || Boolean(preflight.userModifiedAt)),
       }),
     };
   }
@@ -2460,6 +2521,17 @@ export async function promoteRecallCandidate(
       // 正文都会改变冲突扫描的键）。扫不到（记录被删）时 updater 自会报
       // not found，这里退回 preflight 让闸门照常先跑。
       const scanBase = (await readRecallCandidate(userId, candidateId)) || preflight;
+      if (options[AUTOMATIC_APPROVAL] && scanBase.suggestedAction === 'create') {
+        const { findSemanticDuplicate } = await import('./similarity');
+        const { listAbilityAssets } = await import('./asset-service');
+        const [poolCandidates, poolAssets] = await Promise.all([listRecallCandidates(userId), listAbilityAssets(userId)]);
+        const duplicate = await findSemanticDuplicate(userId, {
+          text: scanBase.judgment,
+          candidateTexts: poolCandidates.filter(entry => entry.id !== scanBase.id && !isTerminalCandidate(entry.status)).map(entry => ({ id: entry.id, text: entry.judgment })),
+          assetTexts: poolAssets.filter(entry => entry.status === 'active').map(entry => ({ id: entry.id, text: String(entry.statement || '') })),
+        });
+        if (duplicate.status !== 'no_match' || duplicate.related) throw new PromotionPausedError('无法确认不存在相似内容或分类冲突');
+      }
       {
         // 同一句话被分成两类，说明至少一边分错了。扫一遍候选池：只看同文本、
         // 未被否决的条目，收集它们的类型。
@@ -2499,6 +2571,13 @@ export async function promoteRecallCandidate(
       return await updateRecallJsonRecord(userId, 'candidates', candidateId, async (current) => {
     if (!current) throw new Error('recall candidate not found');
     const candidate = asCandidate(current);
+    if (options[AUTOMATIC_APPROVAL]) {
+      const context = options[AUTOMATIC_APPROVAL]!;
+      const settings = await readRecallCaptureSettings(userId);
+      const target = candidate.targetAssetId ? await readAbilityAsset(userId, candidate.targetAssetId) : undefined;
+      const review = evaluateAutomaticCandidateApproval(candidate, settings, context, target);
+      if (!review.eligible) throw new PromotionPausedError(review.reasons.join('；'));
+    }
     if (candidate.status === 'confirmed') return candidate;
     if (isTerminalCandidate(candidate.status)) {
       throw new RecallCandidateStateError(RECALL_CANDIDATE_TERMINAL_ERROR_CODE, 'recall candidate is terminal', candidate.status);
@@ -2565,7 +2644,7 @@ export async function promoteRecallCandidate(
       targetRef,
       decisionType: options.decisionType || (candidate.userModifiedAt ? 'modify' : 'accept'),
       decision: options.actor === 'system'
-        ? 'automatic capture'
+        ? options[AUTOMATIC_APPROVAL] ? 'automatic low-risk approval' : 'automatic capture'
         : options.decisionType === 'modify' || candidate.userModifiedAt ? 'modify and save' : 'accept',
       antecedentRef: candidate.id,
       scope: candidate.suggestedScope,
@@ -2635,6 +2714,7 @@ export async function promoteRecallCandidate(
           preferredTitle: candidate.summary || '',
           statement: createStatement,
           type: candidate.suggestedType,
+        reviewedTitle: options.actor !== 'system' && !options[AUTOMATIC_APPROVAL] && (candidate.origin === 'manual' || Boolean(candidate.userModifiedAt)),
         });
       stored = await createAbilityAsset(userId, {
         schemaVersion: 2,
@@ -2727,6 +2807,7 @@ export async function promoteRecallCandidate(
             preferredTitle: candidate.summary || '',
             statement: updateStatement,
             type: candidate.suggestedType,
+        reviewedTitle: options.actor !== 'system' && !options[AUTOMATIC_APPROVAL] && (candidate.origin === 'manual' || Boolean(candidate.userModifiedAt)),
           });
         try {
           stored = await updateAbilityAsset(userId, target.id, {
@@ -2744,6 +2825,7 @@ export async function promoteRecallCandidate(
             // 重锚后的当前在用版）交给资产服务，在它的锁内与当前在用版比对
             // ——不在本文件写第二处比对。
             ...(versionPlan.expectedVersion ? { expectedVersion: versionPlan.expectedVersion } : {}),
+            ...(options[AUTOMATIC_APPROVAL] ? { expectedActiveVersion: candidate.targetVersionUsed, expectedStatus: 'active' as const } : {}),
             actor: handoffActor,
             reason: fused ? `${handoffReason};semantic-fusion` : handoffReason,
             reviewDecisionId: decision.decision_id,
@@ -2803,6 +2885,7 @@ export async function promoteRecallCandidate(
       status: 'confirmed',
       promotedAssetId: stored.id,
       reviewDecisionId: decision.decision_id,
+      ...(options[AUTOMATIC_APPROVAL] ? { decisionNote: options.decisionReason } : {}),
       failureCode: undefined,
       failureMessage: undefined,
       failedAt: undefined,

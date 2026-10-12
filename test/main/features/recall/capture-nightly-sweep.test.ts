@@ -78,7 +78,10 @@ beforeEach(() => {
   }));
 });
 
-afterEach(() => {
+afterEach(async () => {
+  const events = await import('../../../../src/main/features/recall/store-events');
+  events.setCognitionChangeBroadcaster(null);
+  events.resetCognitionChangeStateForTests();
   vi.useRealTimers();
   if (previousRoot === undefined) delete process.env.COGSEED_WORKSPACE_ROOT;
   else process.env.COGSEED_WORKSPACE_ROOT = previousRoot;
@@ -99,6 +102,33 @@ async function nightlySettings() {
 }
 
 describe('nightly capture sweep (U01)', () => {
+  it.each(['completed', 'failed'] as const)('broadcasts running and cleared runtime for a %s sweep', async (outcome) => {
+    const { capture, settings } = await sweepModules();
+    const policy = await settings.readRecallCaptureSettings(USER);
+    const events = await import('../../../../src/main/features/recall/store-events');
+    events.resetCognitionChangeStateForTests();
+    const runtimeNotices: Array<{ running: boolean; startedAt?: string }> = [];
+    events.setCognitionChangeBroadcaster(notice => {
+      if (notice.collection === 'capture-sweep') runtimeNotices.push(capture.readRecallNightlySweepRuntime(USER));
+    });
+    let finishListing!: (rows: Array<Record<string, unknown>>) => void;
+    let failListing!: (error: Error) => void;
+    mocks.listConversations.mockImplementationOnce(() => new Promise((resolve, reject) => {
+      finishListing = resolve;
+      failListing = reject;
+    }));
+    const running = capture.runNightlyCaptureSweep(USER, T0, policy);
+    await vi.waitFor(() => expect(runtimeNotices).toHaveLength(1));
+    expect(runtimeNotices[0]).toMatchObject({ running: true, startedAt: expect.any(String) });
+    if (outcome === 'failed') failListing(new Error('conversation listing unavailable'));
+    else finishListing([]);
+    const result = await running;
+    expect(result).toMatchObject({ ran: true, ...(outcome === 'failed' ? { error: 'conversation listing unavailable' } : { failed: 0 }) });
+    await vi.waitFor(() => expect(runtimeNotices.at(-1)).toEqual({ running: false, startedAt: undefined }));
+    const sweep = await capture.readRecallNightlySweep(USER);
+    expect(sweep?.lastResult).toMatchObject(outcome === 'failed' ? { error: 'conversation listing unavailable' } : { scanned: 0, queued: 0 });
+  });
+
   it('does not backscan conversations updated before the first sweep baseline', async () => {
     const { capture } = await sweepModules();
     // 无预置记录：首轮创建基线=当前时刻，此前任何更新都早于基线 → 跳过。

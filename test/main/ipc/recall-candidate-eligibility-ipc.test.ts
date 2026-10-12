@@ -145,6 +145,83 @@ const findById = (candidates: CandidateDto[], id: string): CandidateDto => {
   return found;
 };
 
+describe('真实 IPC 自动批准设置持久化', () => {
+  it('临时用户可以开启、独立回读、关闭并再次回读，不依赖 renderer 乐观状态', async () => {
+    const initial = await call('recall.captures.settings.get');
+    expect(initial.ok).toBe(true);
+    expect(initial.settings).toMatchObject({ autoApproval: false });
+    expect(initial.capabilities).toEqual({ autoApproval: true });
+    const enabled = await call('recall.captures.settings.update', { autoApproval: true });
+    expect(enabled.ok).toBe(true);
+    expect(enabled.settings).toMatchObject({ autoApproval: true });
+    const enabledRead = await call('recall.captures.settings.get');
+    expect(enabledRead.ok).toBe(true);
+    expect(enabledRead.capabilities).toEqual({ autoApproval: true });
+    expect(enabledRead.settings).toMatchObject({
+      autoApproval: true,
+      autoApprovalEpoch: (enabled.settings as Record<string, unknown>).autoApprovalEpoch,
+      autoApprovalEnabledAt: expect.any(String),
+    });
+    const disabled = await call('recall.captures.settings.update', { autoApproval: false });
+    expect(disabled.ok).toBe(true);
+    const disabledRead = await call('recall.captures.settings.get');
+    expect(disabledRead.ok).toBe(true);
+    expect(disabledRead.capabilities).toEqual({ autoApproval: true });
+    expect(disabledRead.settings).toMatchObject({ autoApproval: false });
+    expect((disabledRead.settings as Record<string, unknown>).autoApprovalEnabledAt).toBeUndefined();
+  });
+});
+
+describe('手动添加对象范围经真实 IPC 保留', () => {
+  it('保存候选、确认和正式资产回读保留对象限制，不将语义范围或来源归属混同', async () => {
+    const scopePolicy = { agentIds: ['agent-manual-scope'], workspaceIds: ['space-manual-scope'] };
+    const saved = await call('recall.candidates.save', {
+      judgment: '项目汇报结构包含目标、进展、三个风险和下一步负责人，供后续项目周报复用。',
+      summary: '周报组织骨架', value: '后续周报复用同一结构，确保行动和风险可以核对。',
+      suggestedType: 'template', suggestedScope: 'report', suggestedAction: 'create', manual: true, sourceRefs: [], scopePolicy,
+    });
+    expect(saved.ok).toBe(true);
+    const candidate = saved.candidate as { id: string; spaceId?: string };
+    expect(candidate).toMatchObject({ origin: 'manual', suggestedScope: 'report', scopePolicy, sourceRefs: [] });
+    expect(candidate.spaceId).toBeUndefined();
+    const promoted = await call('recall.candidates.promote', { candidateId: candidate.id });
+    expect(promoted.ok).toBe(true);
+    const asset = promoted.asset as { id: string };
+    const reread = await call('recall.assets.read', { assetId: asset.id });
+    expect(reread.ok).toBe(true);
+    expect(reread.asset).toMatchObject({ scope: 'report', scopePolicy, origin: 'manual' });
+    expect((reread.asset as { spaceId?: string }).spaceId).toBeUndefined();
+  });
+});
+
+describe('正式资产编辑 IPC 基准版本', () => {
+  it('透传内容和在用版本 CAS，拒绝并发编辑与切换旧版本后的过期草稿', async () => {
+    const candidates = await candidateService();
+    const saved = await candidates.saveRecallCandidate(UID, { ...DURABLE_PREFERENCE, sourceRefs: REFS, evidenceRefs: REFS } as never);
+    const promoted = await call('recall.candidates.promote', { candidateId: saved.id });
+    expect(promoted.ok).toBe(true);
+    const assetId = (promoted.asset as { id: string }).id;
+    const listed = await call('recall.assets.list');
+    expect(listed.ok).toBe(true);
+    expect(listed.capabilities).toEqual({ versionedUpdate: true });
+    expect((listed.assets as Array<{ id: string }>).some(asset => asset.id === assetId)).toBe(true);
+    const edited = await call('recall.assets.update', { assetId, reason: '用户编辑认知', title: '整体结构偏好', expectedVersion: '1', expectedActiveVersion: '1' });
+    expect(edited.error).toBeUndefined();
+    expect(edited.ok).toBe(true);
+    expect(edited.asset).toMatchObject({ version: '2', title: '整体结构偏好' });
+    const stale = await call('recall.assets.update', { assetId, reason: '用户编辑认知', title: '过期编辑', expectedVersion: '1', expectedActiveVersion: '1' });
+    expect(stale.ok).toBe(false);
+    expect(stale.error).toContain('version conflict');
+    expect((await call('recall.assets.read', { assetId })).asset).toMatchObject({ version: '2', title: '整体结构偏好' });
+    expect((await call('recall.assets.versions.select', { assetId, version: '1' })).ok).toBe(true);
+    const switched = await call('recall.assets.update', { assetId, reason: '用户编辑认知', title: '错误覆盖历史版', expectedVersion: '2', expectedActiveVersion: '2' });
+    expect(switched.ok).toBe(false);
+    expect(switched.error).toContain('active version conflict');
+    expect((await call('recall.assets.read', { assetId })).asset).toMatchObject({ version: '2', activeVersion: '1' });
+    expect((await call('recall.assets.update', { assetId, reason: '用户编辑认知', title: '错误格式', expectedVersion: 2 })).ok).toBe(false);
+  });
+});
+
 describe('候选可确认性在真实 IPC 读口上闭环', () => {
   it('Case A 合格候选：list 说能确认 → inbox 不再镜像候选（唯一确认入口=候选详情）→ promote 真的落出正式资产', async () => {
     const candidates = await candidateService();
@@ -235,6 +312,21 @@ describe('候选可确认性在真实 IPC 读口上闭环', () => {
     expect('contentFormatVersion' in fullPending).toBe(true);
   });
 
+  it('编辑保存的 IPC 返回真实全池冲突校验，不能短暂伪装成可确认', async () => {
+    const candidates = await candidateService();
+    const personal = await candidates.saveRecallCandidate(UID, { ...DURABLE_PREFERENCE, sourceRefs: REFS, evidenceRefs: REFS } as never);
+    await candidates.saveRecallCandidate(UID, {
+      ...DURABLE_PREFERENCE, suggestedType: 'rule', suggestedScope: 'product',
+      sourceRefs: [{ kind: 'conversation', id: 'conv-conflict-edit' }], evidenceRefs: [{ kind: 'conversation', id: 'conv-conflict-edit' }],
+    } as never);
+    const result = await call('recall.candidates.update', { ...DURABLE_PREFERENCE, candidateId: personal.id, sourceRefs: REFS, evidenceRefs: REFS });
+    expect(result.ok).toBe(true);
+    const candidate = result.candidate as CandidateDto;
+    expect(candidate.capabilities.canPromote).toBe(false);
+    expect(candidate.capabilities.ineligibleReasons).toContain('type_conflicts_with_existing');
+    expect((await call('recall.candidates.promote', { candidateId: personal.id })).ok).toBe(false);
+  });
+
   it('Case C 跨候选冲突：list 真的跑了 recallCandidateConflictingTypes，不是只做单条投影', async () => {
     // 冲突是**跨候选**判断，单条候选算不出来——只有持有全量列表的读口能算。
     // handler 里少传 conflicts 的话，列表会说"能确认"，而晋升闸门按同一批
@@ -263,5 +355,42 @@ describe('候选可确认性在真实 IPC 读口上闭环', () => {
     const promoted = await call('recall.candidates.promote', { candidateId: asPersonal.id });
     expect(promoted.ok).toBe(false);
     expect(promoted.code).toBe('promotion_blocked');
+  });
+});
+
+describe('系统活动逐条处理记录 IPC', () => {
+  it('读取当前用户的真实候选审查账本，返回状态而不泄露修改正文', async () => {
+    const candidates = await candidateService();
+    const saved = await candidates.saveRecallCandidate(UID, { ...DURABLE_PREFERENCE, manual: true, sourceRefs: [], evidenceRefs: [] } as never);
+    const { writeReviewDecision } = await import('../../../src/main/features/cognition/review-decision');
+    await writeReviewDecision(UID, { targetRef: `recall_candidate:${saved.id}`, decisionType: 'modify', decision: '修改后保存', actor: 'user', reason: '已核对来源', modifiedContent: '不应通过历史接口返回的正文' });
+    const result = await call('recall.candidates.history', { candidateId: saved.id });
+    expect(result.ok).toBe(true);
+    expect(result.items).toEqual([expect.objectContaining({ decision_type: 'modify', actor: 'user', reason: '已核对来源', outcome: 'recorded' })]);
+    expect(JSON.stringify(result)).not.toContain('不应通过历史接口返回的正文');
+    expect((await call('recall.candidates.history', { candidateId: '../../other' })).ok).toBe(false);
+    const other = await candidates.saveRecallCandidate('otherHistoryUser', { ...DURABLE_PREFERENCE, manual: true, sourceRefs: [], evidenceRefs: [] } as never);
+    expect((await call('recall.candidates.history', { candidateId: other.id })).ok).toBe(false);
+  });
+});
+
+describe('HTML 表单与正式资产的持久化一致性', () => {
+  it('人工确认的长标题与正文同字开头仍原样保存；自定义任务范围不变成通用', async () => {
+    const title = '项目周报交付模板与跨部门风险核对方式';
+    const scope = '项目甲每周交付与风险核对';
+    const saved = await call('recall.candidates.save', {
+      manual: true, summary: title, suggestedType: 'template', suggestedScope: scope,
+      judgment: '项目周报按以下结构组织：\n项目：{{项目名称}}\n本周进展：{{进展}}\n风险与阻塞：{{风险}}\n下周计划：{{计划}}',
+      sourceRefs: [], evidenceRefs: [],
+    });
+    expect(saved.ok).toBe(true);
+    const id = (saved.candidate as { id: string }).id;
+    const promoted = await call('recall.candidates.promote', { candidateId: id });
+    expect(promoted.ok).toBe(true);
+    const assetId = (promoted.asset as { id: string }).id;
+    const read = await call('recall.assets.read', { assetId });
+    expect(read.asset).toMatchObject({ title, scope, origin: 'manual' });
+    expect((await call('recall.reviewEvidence.read', { assetId })).items).toEqual([]);
+    expect((await call('recall.reviewEvidence.read', { candidateId: id, assetId })).ok).toBe(false);
   });
 });

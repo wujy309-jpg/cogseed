@@ -1,3 +1,4 @@
+import { approvalCandidateSnapshot } from './automatic-approval-policy';
 import { nonRetainableActivityContent } from './activity-projection';
 import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
@@ -29,6 +30,7 @@ import { readMembers } from '../group_chat/state';
 import type { GroupMessage } from '../group_chat/visibility';
 import { listAbilityAssets, readAbilityAsset } from './asset-service';
 import {
+  approveNewNightlyRecallCandidate,
   isAutoCaptureEligible,
   promoteRecallCandidate,
   readRecallAssetHandoffReceipt,
@@ -41,6 +43,7 @@ import {
 } from './candidate-service';
 import { submitCognitionCandidate } from '../cognition/candidate-submission';
 import { recallJsonRecordPath } from './paths';
+import { notifyCognitionWrite } from './store-events';
 import type { CognitionSourceRef } from './source-service';
 import {
   cognitionArtifactSourceId,
@@ -166,6 +169,7 @@ export interface RecallCaptureRecord extends RecallJsonRecord {
   writingCandidateId?: string;
   /** 历史自动写入标记，只用于读兼容；新提取不设置、不授予发布权限。 */
   autoWrite?: boolean;
+  autoApprovalEpoch?: string;
   recallViewId?: string;
   errorCode?: string;
   recoveredAt?: string;
@@ -945,6 +949,25 @@ function extractionInput(
  *  installed/authenticated local CLI (claude preferred, else first available),
  *  dispatch a one-shot print-mode turn with the extraction prompt + input, and
  *  return the CLI's final text. Returns null when no CLI is usable. */
+/** Same channel selection as the extraction runner; never infer outage from a failed read. */
+export async function readRecallCaptureModelRuntime() {
+  const apiConfigured = hasConfiguredModel().configured || Boolean(process.env.ANTHROPIC_API_KEY);
+  const authorizationRequired = apiConfigured && Boolean(getConfiguredModelOAuthExpiredMessage());
+  if (apiConfigured) return { runtimeStatus: 'known' as const, apiConfigured, available: !authorizationRequired,
+    channel: authorizationRequired ? 'unavailable' as const : 'api' as const, authorizationRequired };
+  try {
+    const entries = await detectAll();
+    const available = entries.filter(entry => entry?.available);
+    const chosen = available.find(entry => entry.type === 'claude') || available[0];
+    return { runtimeStatus: 'known' as const, apiConfigured: false, cliAvailable: Boolean(chosen), available: Boolean(chosen),
+      channel: chosen ? 'cli' as const : 'unavailable' as const, cliAgentId: chosen?.type, cliAuthenticated: chosen?.auth?.loggedIn,
+      authorizationRequired: false, cliAuthorizationRequired: chosen?.auth?.loggedIn === false };
+  } catch (error) {
+    return { runtimeStatus: 'unknown' as const, apiConfigured: false, available: undefined, channel: undefined,
+      runtimeError: String((error as Error).message).slice(0, 300) };
+  }
+}
+
 async function extractCaptureViaCli(
   userId: string,
   capture: RecallCaptureRecord,
@@ -952,12 +975,13 @@ async function extractCaptureViaCli(
   promptMessages: CapturePromptMessage[],
   recallView: RecallViewRecord,
   signal: AbortSignal | undefined,
+  existingAssets: Awaited<ReturnType<typeof existingAssetsForExtraction>>,
 ): Promise<string | null> {
   const entries = await detectAll();
   const available = entries.filter((e) => e && e.available);
   if (!available.length) return null;
   const chosen = available.find((e) => e.type === 'claude') ?? available[0];
-  const input = extractionInput(conversation?.title || capture.conversationTitle || '', promptMessages, recallView, await existingAssetsForExtraction(userId));
+  const input = extractionInput(conversation?.title || capture.conversationTitle || '', promptMessages, recallView, existingAssets);
   const prompt = `${extractionSystemPrompt()}\n\nAnalyze the bounded conversation JSON below.\n\n## Conversation JSON\n${input}`;
 
   const controller = new AbortController();
@@ -1881,7 +1905,7 @@ async function screenQueuedRecallCapture(
 }
 
 function isSettledAutomaticCandidate(candidate: Pick<RecallCandidateRecord, 'status'>): boolean {
-  return ['rejected', 'ignored', 'expired'].includes(candidate.status);
+  return ['confirmed', 'integrated', 'rejected', 'ignored', 'expired'].includes(candidate.status);
 }
 
 export async function runRecallCapture(
@@ -1915,6 +1939,7 @@ export async function runRecallCapture(
   if (queued.status !== 'queued') return queued;
   let claimed = false;
   const startedAt = new Date().toISOString();
+  const approvalSettings = await readRecallCaptureSettings(userId);
   let capture = await updateCapture(userId, id, (current) => ({
     ...(current.status === 'queued' ? (() => {
       claimed = true;
@@ -1924,6 +1949,9 @@ export async function runRecallCapture(
         stage: 'model_check' as const,
         errorCode: undefined,
         startedAt,
+        autoApprovalEpoch: approvalSettings.autoApproval && current.executionPolicy === 'nightly'
+          && approvalSettings.autoApprovalEnabledAt && Date.parse(current.createdAt) > Date.parse(approvalSettings.autoApprovalEnabledAt)
+          ? approvalSettings.autoApprovalEpoch : undefined,
         finishedAt: undefined,
         durationMs: undefined,
         modelUsage: undefined,
@@ -2053,6 +2081,7 @@ export async function runRecallCapture(
     // installed/authenticated local CLI instead of failing with
     // model_not_configured. This keeps the capture→candidate→confirm loop
     // working in the exact setup that motivated CLI fallback.
+    const extractionAssets = await existingAssetsForExtraction(userId);
     let extractionText: string;
     let extractionModelUsage: RecallCaptureModelUsage | undefined;
     if (!hasConfiguredModel().configured && !process.env.ANTHROPIC_API_KEY) {
@@ -2064,6 +2093,7 @@ export async function runRecallCapture(
           promptMessages,
           recallView,
           signal,
+          extractionAssets,
         );
         if (cliText === null) {
           throw new CaptureFailure('model_not_configured', 'model configuration is required (no local CLI available)');
@@ -2094,7 +2124,7 @@ export async function runRecallCapture(
       if (signal?.aborted) modelController.abort();
       try {
         result = await runner.run({
-          message: extractionInput(conversation.title, promptMessages, recallView, await existingAssetsForExtraction(userId)),
+          message: extractionInput(conversation.title, promptMessages, recallView, extractionAssets),
           signal: modelController.signal,
           thinkingLevel: 'off',
           cacheRetention: 'none',
@@ -2198,7 +2228,7 @@ export async function runRecallCapture(
       const captureSpaceId = typeof (conversation as any)?.space_id === 'string'
         ? (conversation as any).space_id : undefined;
       try {
-        const storedCandidate = await submitCognitionCandidate(userId, {
+        let storedCandidate = await submitCognitionCandidate(userId, {
           judgment: candidate.judgment,
           value: candidate.value,
           summary: candidate.summary,
@@ -2207,7 +2237,10 @@ export async function runRecallCapture(
           suggestedScope: candidate.suggestedScope,
           ...(candidate.suggestedAction ? { suggestedAction: candidate.suggestedAction } : {}),
           ...(candidate.risk ? { risk: candidate.risk } : {}),
-          ...(candidate.targetAssetId ? { targetAssetId: candidate.targetAssetId } : {}),
+          ...(candidate.targetAssetId ? { targetAssetId: candidate.targetAssetId,
+            targetVersionUsed: extractionAssets.find(asset => asset.id === candidate.targetAssetId)?.version } : {}),
+          ...(captureSpaceId ? { scopePolicy: { workspaceIds: [captureSpaceId] } }
+            : conversation.project_id ? { scopePolicy: { projectIds: [conversation.project_id] } } : {}),
           ...(candidate.applicableWhen ? { applicableWhen: candidate.applicableWhen } : {}),
           ...(candidate.forbiddenWhen ? { forbiddenWhen: candidate.forbiddenWhen } : {}),
           forceWeakObservation: !quality.reviewable || !classification.ok,
@@ -2225,6 +2258,18 @@ export async function runRecallCapture(
             ...artifactRefs,
           ],
         });
+        if (capture.executionPolicy === 'nightly' && capture.autoApprovalEpoch && capture.startedAt) {
+          storedCandidate = await approveNewNightlyRecallCandidate(userId, storedCandidate.id, {
+            captureId: capture.id, policyEpoch: capture.autoApprovalEpoch, captureCreatedAt: capture.createdAt, startedAt: capture.startedAt,
+            sourceScope: captureSpaceId || conversation.project_id ? candidate.suggestedScope : '',
+            sourceScopePolicy: captureSpaceId ? { workspaceIds: [captureSpaceId] }
+              : conversation.project_id ? { projectIds: [conversation.project_id] } : {},
+            riskReviewed: candidate.risk === 'low', actionReviewed: candidate.actionProvided,
+            evidenceReviewed: quality.reviewable && classification.ok && !quality.automaticIneligibilityReasons.length
+              && evidenceMessages.some(message => message.role === 'user'),
+            candidateSnapshot: approvalCandidateSnapshot(storedCandidate),
+          });
+        }
         if (quality.reviewable
           && retainForReview
           && (
@@ -3454,6 +3499,10 @@ function nightSweepRunId(ranForWindow: string): string {
 }
 
 const nightlySweepsInFlight = new Set<string>();
+const nightlySweepStartedAt = new Map<string, string>();
+export function readRecallNightlySweepRuntime(userId: string) {
+  return { running: nightlySweepsInFlight.has(userId), startedAt: nightlySweepStartedAt.get(userId) };
+}
 
 export async function runNightlyCaptureSweep(
   userId: string,
@@ -3463,6 +3512,10 @@ export async function runNightlyCaptureSweep(
   if (nightlySweepsInFlight.has(userId)) return { ran: false, reason: 'sweep_in_flight' };
   nightlySweepsInFlight.add(userId);
   const startedAt = new Date().toISOString();
+  nightlySweepStartedAt.set(userId, startedAt);
+  // Runtime is part of the capture-stats read model but is not persisted.
+  // Reuse its collection notice so open settings can observe a running sweep.
+  notifyCognitionWrite(userId, SWEEP_COLLECTION, 'update', NIGHTLY_SWEEP_ID);
   let counters = { scanned: 0, queued: 0, deferred: 0, retried: 0, skipped: 0, failed: 0 };
   let failure: string | undefined;
   try {
@@ -3767,6 +3820,10 @@ export async function runNightlyCaptureSweep(
     };
   } finally {
     nightlySweepsInFlight.delete(userId);
+    nightlySweepStartedAt.delete(userId);
+    // Persisting the result can broadcast before runtime clears; publish after
+    // clearing it as well so a concurrent read cannot remain stuck on running.
+    notifyCognitionWrite(userId, SWEEP_COLLECTION, 'update', NIGHTLY_SWEEP_ID);
   }
 }
 

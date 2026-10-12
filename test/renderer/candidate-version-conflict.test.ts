@@ -73,6 +73,7 @@ function ensureModule(): Ns {
     uiInput: require('../../src/renderer/modules/ui-form.js').uiInput,
     uiSwitch: require('../../src/renderer/modules/ui-form.js').uiSwitch,
     uiTextarea: require('../../src/renderer/modules/ui-form.js').uiTextarea,
+    uiSelect: require('../../src/renderer/modules/ui-form.js').uiSelect,
     uiEmptyState: require('../../src/renderer/modules/ui-empty.js').uiEmptyState,
     escapeHtml: esc,
     uiToast: (message: string, options: { variant?: string } = {}) => { TOASTS.push({ message, variant: options.variant }); },
@@ -85,7 +86,7 @@ function ensureModule(): Ns {
   globalScope.document = { getElementById: () => domRoot, querySelector: () => null, querySelectorAll: () => [] };
   /* eslint-disable @typescript-eslint/no-require-imports */
   require('../../src/renderer/modules/icons.js');
-  windowStub.uiIconHtml = (globalThis as unknown as Record<string, unknown>).uiIconHtml;
+  windowStub.uiIconHtml ||= (globalThis as unknown as Record<string, unknown>).uiIconHtml;
   // ui-status.js / ui-page-header.js 是 index.html 里的静态共享层（真机先于
   // cognition-assets 就绪）：夹具的 window 必须和真机一样有这一层。
   require('../../src/renderer/modules/ui-status.js');
@@ -391,10 +392,10 @@ describe('候选三态与按钮名按型分支（T023 / US-702）', () => {
     return visibleText(renderDetail());
   };
 
-  it('更新型（update / limit_scope 且有目标方法）：「保存更新 / 稍后处理 / 拒绝」，与 008 卡片同一批词条', () => {
+  it('更新与边界建议分别显示保存更新、保存边界，保留稍后与拒绝', () => {
     for (const action of ['update', 'limit_scope']) {
       const text = labelsOf(action);
-      expect(text, action).toContain(zh['recall.asset_approval.confirm']);
+      expect(text, action).toContain(zh[action === 'limit_scope' ? 'cognition.activity_save_boundary' : 'recall.asset_approval.confirm']);
       expect(text, action).toContain(zh['recall.asset_approval.reject']);
       // 更新型不说新建型的旧文案「保存并使用」（2026-09-29 A6 词根统一后
       // 新建=「保存」、更新=「保存更新」，同根不同缀——按完整旧词钉，不再
@@ -403,10 +404,13 @@ describe('候选三态与按钮名按型分支（T023 / US-702）', () => {
     }
   });
 
-  it('新建型保持既有措辞：「保存并使用 / 稍后处理 / 不保存」', () => {
+  it('新建型活动详情：「修改并保存 / 保存修改并校验 / 拒绝」，稍后保留在其他处理', () => {
     const text = labelsOf('create');
     expect(text).toContain(zh['cognition.candidate_save_and_use']);
-    expect(text).toContain(zh['cognition.candidate_reject']);
+    expect(text).toContain(zh['cognition.activity_formal_save']);
+    expect(text).toContain(zh['cognition.activity_save_validate']);
+    expect(text).toContain(zh['cognition.inbox_action_reject']);
+    expect(text).toContain(zh['cognition.activity_defer']);
     expect(text).not.toContain(zh['recall.asset_approval.confirm']);
   });
 
@@ -415,7 +419,7 @@ describe('候选三态与按钮名按型分支（T023 / US-702）', () => {
     const text = labelsOf('update', { targetAssetId: '' });
     expect(text).not.toContain(zh['recall.asset_approval.confirm']);
     expect(text).toContain(zh['cognition.candidate_save_and_use']);
-    expect(text).not.toContain(zh['recall.asset_approval.reject']);
+    expect(text).toContain(zh['cognition.inbox_action_reject']);
   });
 
   it('pause 提案保持既有呈现：不走重锚路径、也没有版本冲突块', () => {

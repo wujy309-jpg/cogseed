@@ -1,8 +1,7 @@
 /**
- * 认知资产重构后的页面级用例：认知树 / 关于我 / 我的认知 / 待我处理 / 系统活动 / 设置。
+ * 认知资产重构后的页面级用例：我的认知 / 本体 / 系统活动 / 设置。
  *
- * 新信息架构：待我处理（决策中心：候选+来源异常下钻+整理失败入口）/
- * 我的认知（树+资产明细，详情含使用记录）/整理（任务流+策略抽屉）。
+ * 我的认知统一列表与同区详情；系统活动处理候选和来源异常；设置呈现真实能力。
  * 这里把**真实的 views.js + vocabulary.js + ui-button.js** require 进来跑
  * （与 cognition-pages.test.ts 同一模式）：stub 只负责 window 契约，断言
  * 落在渲染产出的 HTML 上。
@@ -13,8 +12,8 @@ import { describe, expect, it } from 'vitest';
 
 const rootDir = resolve(__dirname, '../..');
 // 2026-09-29 views.js 机械拆分：sourceIssuesSection 等异常下钻组件随候选族迁入
-// review-candidate.js / review-views.js，源码断言按加载顺序合并三源扫描（断言语义不变）。
-const viewsSource = ['views.js', 'review-candidate.js', 'review-views.js']
+// review-candidate.js / review-views.js；我的认知列表由 library.js 提供。
+const viewsSource = ['views.js', 'review-candidate.js', 'review-views.js', 'library.js']
   .map((file) => readFileSync(resolve(rootDir, `src/renderer/modules/cognition-assets/${file}`), 'utf8'))
   .join('\n');
 const appSource = readFileSync(resolve(rootDir, 'src/renderer/modules/cognition-assets/app.js'), 'utf8');
@@ -40,7 +39,7 @@ function ensureModule(): { cogAssets: Record<string, unknown>; domRoot: { innerH
   cogAssets = {
     T, esc, fmtDate: () => '2026/09/15 10:00',
     TABS: [
-      { id: 'tree', titleKey: 'cognition.tab_tree', title: '认知树' },
+      { id: 'tree', titleKey: 'cognition.tab_tree', title: '认知树', disabled: true },
       { id: 'overview', titleKey: 'cognition.tab_overview', title: '我的认知' },
       { id: 'ontology', titleKey: 'cognition.tab_ontology', title: '本体' },
       { id: 'activity', titleKey: 'cognition.tab_activity', title: '系统活动' },
@@ -71,13 +70,13 @@ function ensureModule(): { cogAssets: Record<string, unknown>; domRoot: { innerH
       loaded: true, loading: false, errors: [],
       route: { name: 'overview', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '' },
       captures: [], captureSettings: null,
-      sources: [], proofs: [], assets: [], candidates: [],
+      sources: [], proofs: [], assets: [], assetCapabilities: { versionedUpdate: true }, candidates: [],
       organizeSettingsOpen: false, organizeListExpanded: true,
     },
   };
   domRoot = { innerHTML: '' };
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { uiInput, uiSwitch, uiTextarea, uiCheckbox } = require('../../src/renderer/modules/ui-form.js');
+  const { uiInput, uiSwitch, uiTextarea, uiCheckbox, uiSelect } = require('../../src/renderer/modules/ui-form.js');
   const { uiEmptyState } = require('../../src/renderer/modules/ui-empty.js');
   globalScope.window = {
     CogAssets: cogAssets,
@@ -92,6 +91,7 @@ function ensureModule(): { cogAssets: Record<string, unknown>; domRoot: { innerH
     uiInput,
     uiSwitch,
     uiTextarea,
+    uiSelect,
     uiCheckbox,
     uiEmptyState,
   };
@@ -114,12 +114,14 @@ function ensureModule(): { cogAssets: Record<string, unknown>; domRoot: { innerH
   require('../../src/renderer/modules/ui-structure.js');
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   require('../../src/renderer/modules/cognition-assets/vocabulary.js');
+  require('../../src/renderer/modules/cognition-assets/settings.js');
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   require('../../src/renderer/modules/cognition-assets/views.js');
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   require('../../src/renderer/modules/cognition-assets/review-candidate.js');
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   require('../../src/renderer/modules/cognition-assets/review-views.js');
+  require('../../src/renderer/modules/cognition-assets/library.js');
   return { cogAssets, domRoot };
 }
 
@@ -129,11 +131,21 @@ function renderPage(routeName: string, storePatch: Record<string, unknown>, rout
   // 「真实使用」白名单由主进程随 recall.timeline.list 下发（2026-09-25 US-602）：
   // 这里给与真实载荷一致的默认值；用例要考「缺失时 fail-closed」就显式传 []。
   Object.assign(store, { realUsageKinds: ['usage_recorded', 'projection_confirmed'] }, storePatch);
+  const library = NS.library as { state: Record<string, unknown> };
+  Object.assign(library.state, { query: '', type: ['personal', 'rule', 'template', 'skill_method', 'fact'].includes(String(routePatch.category)) ? routePatch.category : '', status: routePatch.category === 'deleted' ? 'deleted' : 'library', scope: '', sort: 'recent', page: 1, drawer: false, closed: false, dirty: false });
   store.route = { name: routeName, category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', ...routePatch };
   rootEl.innerHTML = '';
   (NS.render as () => void)();
-  return rootEl.innerHTML;
+  const route = store.route as Record<string, unknown>;
+  const dialogBodies = ['sources', 'versions', 'records'].map(kind => (NS.renderLibraryDialog as (kind: string, assetId: string, selected: unknown) => string)(kind, String(route.assetId || ''), route.assetVersionId)).join('');
+  return rootEl.innerHTML + dialogBodies;
 }
+
+const selectedVersionPane = (html: string) => {
+  const start = html.indexOf('class="ca-prototype-pair"');
+  const end = html.indexOf('<div><strong>当前在用', start);
+  return html.slice(start, end < 0 ? undefined : end);
+};
 
 const conversationSources = [{
   kind: 'conversation',
@@ -190,11 +202,11 @@ describe('信息架构：六个顶级入口与深链归一', () => {
   it('旧六视图已删净，新视图（系统活动双视角）+ 设置页 + 异常下钻组件存在', () => {
     // specs/018 + 2026-10-08 U04：独立待我处理页下线，五页签；
     // 治理动作收敛进系统活动（viewActivity：需要关注/已处理）。
-    expect(coreSource).toContain("{ id: 'tree', titleKey: 'cognition.tab_tree'");
+    expect(coreSource).toContain("{ id: 'tree', titleKey: 'cognition.tab_tree', title: '认知树', disabled: true }");
     expect(coreSource).toContain("{ id: 'activity', titleKey: 'cognition.tab_activity'");
     expect(coreSource).toContain("{ id: 'settings', titleKey: 'cognition.tab_settings'");
     expect(coreSource).not.toContain("{ id: 'review', titleKey: 'cognition.tab_review'");
-    expect(coreSource).toContain("route: { name: 'tree'");
+    expect(coreSource).toContain("route: { name: 'overview'");
     expect(coreSource).not.toContain("id: 'kstar-assets'");
     expect(coreSource.match(/id: '(evidence|organize-history|capture-log|manage)'/g)).toBeNull();
     for (const gone of ['function viewManage', 'function viewSourcesOverview', 'function viewSourceDetail', 'function viewOrganizeHistory', 'function viewCaptureLog', 'function organizeSettingsDrawer', 'function viewOrganizeTasks']) {
@@ -218,14 +230,14 @@ describe('信息架构：六个顶级入口与深链归一', () => {
     expect(viewsSource).toContain('data-cognition-page-link="captures"');
   });
 
-  it('树：经验块移除、土壤落点为待我处理、冠回资产明细', () => {
+  it('认知树入口禁用，旧树路由回到我的认知', () => {
     expect(viewsSource).not.toContain('go-experiences');
     expect(viewsSource).not.toContain('tree_soil_experience');
-    // 认知树保留独立顶级入口；相关资产仍可从 overview 继续浏览。
-    const html = renderPage('tree', { sources: [], assets: [], proofs: [], candidates: [], captures: [] });
-    expect(html).toContain('data-act="go-review"');
-    expect(html).toContain('data-act="open-ontology"');
-    expect(html).toContain('data-act="open-overview"');
+    expect(coreSource).toContain("if (legacyName === 'tree') target = Object.assign({}, target, { name: 'overview' })");
+    const html = renderPage('overview', { sources: [], assets: [], proofs: [], candidates: [], captures: [] });
+    expect(viewsSource).toContain("tab.disabled ? ' is-disabled' : ''");
+    expect(viewsSource).toContain('aria-disabled="true"');
+    expect(html).not.toContain('tree-stage');
   });
 });
 
@@ -259,85 +271,63 @@ describe('系统活动与认知设置', () => {
 
   it('列表行尾用原型 chevron、空态用共享图标（icons.js 真渲染）', () => {
     const list = renderPage('overview', { assets: [{ id: 'aa-1', title: '上线前确认', type: 'rule', status: 'active' }], sources: [], proofs: [] });
-    // 2026-09-21 原型 v7 移植：行尾指示符回到原型的 › 字符（.chev），
-    // 空态仍走共享 uiEmptyState（icons.js 的 circle 图标）。
-    expect(list).toContain('class="chev"');
+    // 行尾使用原型的 › 字符；空态仍走共享 uiEmptyState。
+    expect(list).toContain('<span aria-hidden="true">›</span>');
     const emptyHtml = renderPage('overview', { assets: [], sources: [], proofs: [], candidates: [] });
     expect(emptyHtml).toContain('is-circle');
   });
 
-  it('认知树页保留候选圆点教学位（骨架说明随 v4 树重写退役）', () => {
-    // 认知树保留为独立页；原「开发中的骨架」教学说明随
-    // Phase 4 树 v4 重写移除——正式树形态落地后不再有骨架期披露。
-    const html = renderPage('tree', { assets: [], sources: [], proofs: [], candidates: [] });
-    expect(viewsSource).not.toContain('ca-tree-wip');
-    // 2026-09-21 原型 v7 移植：教学位改成原型的底部图例（枝端光斑/叶片口径）。
-    // specs/018 §4：图例词同步人话（待处理（根）→ 新芽（待确认））。
-    expect(html).toContain('枝端光斑');
-    expect(html).toContain('新芽（待确认）');
+  it('禁用认知树时不呈现树教学内容，资产页空态仍可去处理', () => {
+    const html = renderPage('overview', { assets: [], sources: [], proofs: [], candidates: [] });
+    expect(html).toContain('data-act="go-review"');
+    expect(html).not.toContain('枝端光斑');
+    expect(html).not.toContain('新芽（待确认）');
   });
 
-  it('整理设置页：自动维护合并卡（2026-09-29 夜间整理+定期检查合一）+ 新建议保存方式 + 大扫除区块', () => {
-    const off = renderPage('organize-settings', { captureSettings: { enabled: true, executionPolicy: 'manual', reviewPolicy: 'manual', nightlyStart: '02:00' } });
+  it('资产设置以两个独立策略开关呈现，夜间发现不联动巡检', () => {
+    const off = renderPage('organize-settings', { captureSettings: { enabled: true, executionPolicy: 'manual', autoApproval: false }, captureCapabilities: { autoApproval: false } });
     expect(off).toContain('资产设置');
-    // 2026-10-08 U02：五说明卡（夜间自动发现/严格筛选/醒来处理/默认使用/
-    // 存量整理）+ 高级暂停折叠；调度时间与静默说明退役。
-    expect(off).toContain('夜间自动发现');
-    expect(off).toContain('只留下值得长期保留的内容');
-    expect(off).toContain('醒来后处理建议');
-    expect(off).toContain('整理已有内容');
+    expect(off).toContain('夜间发现');
+    expect(off).toContain('自动批准低风险建议');
     expect(off).toContain('已暂停');
-    // 2026-09-29 完全合并：「立即维护」手动行已删——夜间线（巡检轮后）自动
-    // 跑清理，UI 只剩开关；手动清理入口随行撤下。
-    expect(off).not.toContain('data-act="run-maintenance"');
-    // 关闭态：开关未亮、无时间选择器；独立巡检开关随合并退役。
+    expect(off).toContain('当前运行版本尚不支持自动批准');
+    expect(off).toContain('disabled data-act="auto-approval-toggle"');
     expect(off).toContain('data-act="nightly-toggle"');
-    expect(off).toContain('class="ui-switch" role="switch" aria-checked="false"');
+    expect(off).toContain('data-act="auto-approval-toggle"');
+    expect(off).toContain('data-act="auto-approval-boundary"');
     expect(off).not.toContain('type="time"');
     expect(off).not.toContain('data-act="inspection-toggle"');
-
-    const on = renderPage('organize-settings', { captureSettings: { enabled: true, executionPolicy: 'nightly', reviewPolicy: 'manual', nightlyStart: '02:30' } });
-    // 开启态：状态章「夜间自动运行」；暂停开关收进高级折叠。
-    expect(on).toContain('夜间自动运行');
-    expect(on).toContain('高级：隐私与暂停夜间发现');
+    expect(off).not.toContain('data-act="run-maintenance"');
+    const on = renderPage('organize-settings', { captureSettings: { enabled: true, executionPolicy: 'nightly', autoApproval: true }, captureCapabilities: { autoApproval: true } });
     expect(on).toContain('class="ui-switch is-on" role="switch" aria-checked="true"');
-    // 调度时间控件退役（U02：用户不管理开始时间）。
-    expect(on).not.toContain('type="time"');
-    expect(on).not.toContain('开始时间');
-    // 「整理功能」总开关卡已撤（specs/017 整改三）：capture-toggle 退役，
-    // 候选确认方式保留。
-    expect(on).not.toContain('data-act="capture-toggle"');
-    expect(on).not.toContain('data-act="capture-review-toggle"');
-    expect(on).toContain('核对后保存或拒绝');
-    // 2026-09-29 完全合并：手动行撤下；「查看整理报告」并入自动维护行。
-    expect(on).not.toContain('立即维护');
-    expect(on).not.toContain('data-act="run-maintenance"');
-    // 存量整理入口保留（U02：唯一已有内容整理入口）。
+    expect(on).toContain('aria-checked="true" data-act="auto-approval-toggle"');
+    expect(on).toContain('默认关闭。开启不会处理当前积压');
+    expect(on).not.toContain('disabled data-act="auto-approval-toggle"');
+    expect(on).toContain('暂停夜间发现不改变已有认知的使用状态，也不切换资产巡检');
+    expect(on).toContain('data-act="settings-open-assets"');
     expect(on).toContain('data-act="open-cleanup"');
-    // 合并后无报告不显示整理状态行（夜间自动会跑，空态句退役）。
-    expect(on).not.toContain('尚无整理记录');
+    expect(on).not.toContain('高级：隐私与暂停夜间发现');
+    expect(on).not.toContain('data-act="capture-review-toggle"');
   });
 
-  it('资产页保留标签库入口，资产设置说明夜间静默等待时长', () => {
+  it('资产页不再提供标签库，资产设置说明增量窗口与真实通道', () => {
     const html = renderPage('settings', {
       captureSettings: {
         enabled: true, executionPolicy: 'nightly', reviewPolicy: 'manual',
         nightlyStart: '02:30', quietMinutes: 17,
       },
-      captureModel: { configured: true, authorizationRequired: false },
+      captureModel: { channel: 'api', available: true, configured: true, authorizationRequired: false },
     });
-    expect(html).toContain('先忽略低价值会话');
-    expect(html).toContain('恢复可运行后自动补处理');
+    expect(html).toContain('默认 02:00–06:00');
+    expect(html).toContain('首次开启不回扫全部历史');
+    expect(html).not.toContain('ca-settings-model');
     expect(html).not.toContain('如有新消息，会重新计时');
-    // 模型可用时不再显示一张重复的成功状态卡。
-    expect(html).not.toContain('模型状态');
-    const assets = renderPage('overview', { assets: [], tags: [] });
-    expect(assets).toContain('data-act="tag-manage"');
-    // 管理弹层打开、关闭都沿用当前路由；从设置进入后仍回设置页。
-    expect(appSource).toContain("router.go(Object.assign({}, S.route, { tagOverlay: 'manage' }))");
-    expect(appSource).toContain("router.go(Object.assign({}, S.route, { tagOverlay: '' }), { replace: true })");
-    expect(appSource).toContain("routeName === 'settings' && String(S.route.tagOverlay || '') === 'manage'");
-    expect(coreSource).toContain("Object.assign({}, store.route, { tagOverlay: '' })");
+    expect(html).not.toContain('ca-settings-model');
+    const assets = renderPage('overview', { assets: [] });
+    expect(assets).not.toContain('data-act="tag-manage"');
+    expect(assets).not.toContain('data-act="tag-add"');
+    expect(appSource).not.toContain("case 'tag-manage'");
+    expect(coreSource).toContain("for (const key of ['tagFilter', 'tagMode', 'tagUntagged', 'tagSelect', 'tagOverlay']) delete target[key]");
   });
 
   it('整理设置页大扫除 section：有报告时给摘要与完整报告入口（specs/017 整改三）', () => {
@@ -348,7 +338,7 @@ describe('系统活动与认知设置', () => {
         reports: [{ id: 'cl-1', createdAt: '2026-09-25T02:00:00.000Z', scanned: 30, items: [{ status: 'applied' }, { status: 'skipped' }], uncertain: [{ assetId: 'aa-1' }] }],
       },
     });
-    expect(html).toContain('最近一次');
+    expect(html).toContain('最近整理报告');
     expect(html).toContain('data-act="open-cleanup"');
     expect(html).toContain('查看整理报告');
   });
@@ -401,17 +391,13 @@ describe('系统活动与认知设置', () => {
     }
   });
 
-  it('管理模式退出（specs/018 T031 迭代轮 1）：退出按有效管理态判定，并清目录视图与多选态（app.js 委托源码契约）', () => {
-    // 渲染面：目录深链视同进入管理，出得去（退出管理入口在）。
+  it('旧目录深链进入统一列表工作台，不再出现管理模式入口', () => {
     const deepLink = renderPage('overview', { assets: [], proofs: [], sources: [] }, { assetView: 'catalog' });
-    expect(deepLink).toContain('退出管理');
-    // 委托面：退出判定必须看「manage=1 或 catalog 或 tagSelect」的有效组合
-    // （只看 manage 旗标会把目录深链态误判成「进入管理」——真机抓出）；
-    // 退出时一并清 assetView/tagSelect。
-    expect(appSource).toContain("case 'overview-manage-toggle'");
-    expect(appSource).toContain("const inManage = String(S.route.manage || '') === '1'");
-    expect(appSource).toContain("assetView: inManage ? '' :");
-    expect(appSource).toContain("tagSelect: inManage ? '' :");
+    expect(deepLink).toContain('ca-library-page');
+    expect(deepLink).toContain('data-library-filter="type"');
+    expect(deepLink).toContain('data-library-filter="status"');
+    expect(deepLink).not.toContain('退出管理');
+    expect(deepLink).not.toContain('data-act="overview-manage-toggle"');
   });
 
   it('静默筛掉的会话不进两列表（C-05：已跳过不灌入已处理）', () => {
@@ -720,9 +706,9 @@ describe('整理详情页', () => {
     expect(empty).toContain('未命名候选');
   });
 
-  it('「稍后处理」已整体删除（2026-10-02 子安拍板无用）：决定路径不再有 defer 分支与去向提示', () => {
-    expect(coreSource).not.toContain("if (action === 'defer')");
-    expect(coreSource).not.toContain("'recall.candidates.defer'");
+  it('稍后处理使用独立活动标记，旧静音与恢复生命周期不重启', () => {
+    expect(viewsSource).toContain("'recall.candidates.defer'");
+    expect(viewsSource).toContain('activityDeferredAt');
     expect(coreSource).not.toContain("'recall.candidates.resume'");
   });
 
@@ -768,7 +754,7 @@ describe('整理详情页', () => {
     expect(open).toContain('来自那次任务的复盘');
     // 无信号快照（v2）展开：不出该行。
     const plain = renderPage('overview', { assets: [asset], proofs: [], sources: [], assetVersions: versions }, { assetId: 'aa-src', assetVersionId: '2' });
-    expect(plain).not.toContain('来自那次任务的复盘');
+    expect(selectedVersionPane(plain)).not.toContain('来自那次任务的复盘');
   });
 
   it('KSTAR 证据与来源按版本显示（2026-09-17 下沉）：版本展开块内出证据 chips、KSTAR 来源行，点开「这次任务的经过」', () => {
@@ -813,11 +799,11 @@ describe('整理详情页', () => {
     const openV2 = renderPage('overview', {
       assets: [asset], proofs: [], sources: [], assetVersions: versions,
     }, { assetId: 'aa-k1', assetVersionId: '2' });
-    expect(openV2).not.toContain('open-kstar-episode');
+    expect(selectedVersionPane(openV2)).not.toContain('open-kstar-episode');
     expect(openV2).not.toContain('来自 KSTAR');
   });
 
-  it('两线归边判定 + 出身徽章（specs/017 整改一改写：KSTAR 独立筛选档退役，原位改经验档）', () => {
+  it('两线真实归边判定保留，统一列表按正式类型展示，来源在详情查看', () => {
     const { cogAssets: NS } = ensureModule();
     const isKstarAsset = NS.isKstarAsset as (a: Record<string, unknown>) => boolean;
     const isKstarCandidate = NS.isKstarCandidate as (c: Record<string, unknown>) => boolean;
@@ -839,12 +825,11 @@ describe('整理详情页', () => {
     const html = renderPage('overview', { assets: [chatAsset, kstarAsset], proofs: [], sources: [], kstarEpisodes: [] });
     expect(html).toContain('对话沉淀资产');
     expect(html).toContain('KSTAR 沉淀资产');
-    // KSTAR 资产行带「KSTAR」徽章（子安口径：出身标记直接带 KSTAR 字样）。
-    expect(html).toContain('>KSTAR</span>');
-    // specs/017 整改一：KSTAR 独立筛选档退役——出身只靠徽章；原位置改放
-    // 「经验」分类档（经验目录入口，数据走 recall.experiences.* 通道）。
+    // 新列表按内容类型与使用范围浏览，来源细节保留在右侧下钻。
+    expect(html).toContain('ca-library-table');
+    expect(html).toContain('library-show-sources');
     expect(html).not.toContain('data-act="filter-cat" data-id="kstar"');
-    expect(html).toContain('data-act="filter-cat" data-id="experiences"');
+    expect(html).not.toContain('data-act="filter-cat" data-id="experiences"');
     // 旧 category:'kstar' 深链归一化到「全部」：两线同列，不再互斥过滤。
     const legacy = renderPage('overview', { assets: [chatAsset, kstarAsset], proofs: [], sources: [], kstarEpisodes: [] }, { category: 'kstar' });
     expect(legacy).toContain('KSTAR 沉淀资产');
@@ -852,48 +837,29 @@ describe('整理详情页', () => {
   });
 
   it('版本号显示在用版（2026-09-17 子安实测）：删掉 v3-v5 后游标停在 v5，界面上该显示在用的 v2', () => {
-    // specs/018 T032：默认列表行不再摆版本号（行三事实=类型/最近真用过/被带入），
-    // 版本号在目录视图行与详情里核对——游标口径断言转移到这两处。
+    // 新列表不摆版本号，选中条目的详情标明真实在用版。
     const asset = { id: 'aa-v', title: '版本号显示', type: 'rule', status: 'active', version: '5', activeVersion: '2', updatedAt: '2026-09-16T00:00:00.000Z' };
     const catalog = renderPage('overview', {
       assets: [asset], proofs: [], sources: [], kstarEpisodes: [],
     }, { assetView: 'catalog' });
-    expect(catalog).toContain('v2 ·');
-    expect(catalog).not.toContain('v5 ·');
+    expect(catalog).toContain('在用 v2');
+    expect(catalog).not.toContain('在用版本 v5');
     const detail = renderPage('overview', {
       assets: [asset], proofs: [], sources: [], kstarEpisodes: [], assetId: 'aa-v',
     });
     expect(detail).not.toContain('v5 ·');
   });
 
-  it('KSTAR 任务复盘折叠区（我的认知页底部）：行带目标可点开，空态不裸白', () => {
+  it('我的认知不再在页尾重复列任务复盘，保留资产来源下钻入口', () => {
     const rows = renderPage('overview', {
       assets: [], proofs: [], sources: [],
-      // 与 kstar.episodes.list 真实返回同构：goal 平铺（此前只读 t.userGoal
-      // 全显示"（未记录目标）"，2026-09-17 子安实测抓出）；kse-2 留完整
-      // 记录形态验证兼容。
-      kstarEpisodes: [
-        { id: 'kse-1', goal: '查认知资产是怎么存的', createdAt: '2026-09-17T10:00:00.000Z' },
-        { id: 'kse-2', t: { userGoal: '命中既有候选是怎么一个逻辑' }, createdAt: '2026-09-16T09:00:00.000Z' },
-        { id: 'kse-3', t: {}, createdAt: '2026-09-16T08:00:00.000Z' },
-      ],
-    });
-    expect(rows).toContain('任务复盘');
-    expect(rows).toContain('查认知资产是怎么存的');
-    expect(rows).toContain('命中既有候选是怎么一个逻辑');
-    expect(rows).toContain('data-act="open-kstar-episode" data-id="kse-1"');
-    expect(rows).toContain('（未记录目标）');
-    // 收起态不带 open 属性（默认折叠）。
-    expect(rows).not.toContain('class="details ca-kstar-episodes" open');
-    // 点开态保持展开（2026-09-17 方案 A）：路由带 kstarEpisodeId 时 <details>
-    // 渲染 open——否则点行触发整页重画会跳回折叠，要点两次才看得到经过。
-    const opened = renderPage('overview', {
-      assets: [], proofs: [], sources: [],
       kstarEpisodes: [{ id: 'kse-1', goal: '查认知资产是怎么存的', createdAt: '2026-09-17T10:00:00.000Z' }],
-    }, { kstarEpisodeId: 'kse-1' });
-    expect(opened).toContain('class="details ca-kstar-episodes" open');
-    const empty = renderPage('overview', { assets: [], proofs: [], sources: [], kstarEpisodes: [] });
-    expect(empty).toContain('还没有被复盘过的任务');
+    });
+    expect(rows).toContain('ca-library-page');
+    expect(rows).not.toContain('class="details ca-kstar-episodes"');
+    expect(rows).not.toContain('data-act="open-kstar-episode"');
+    expect(rows).not.toContain('查认知资产是怎么存的');
+    expect(rows).toContain('这里还没有已保存的认知');
   });
 
   it('证据分组（2026-09-17 B 档）：版本块内 KSTAR 任务复盘 / 对话与表态 两组分开带说明', () => {
@@ -1074,18 +1040,17 @@ describe('待我处理（决策中心）', () => {
     }],
   };
 
-  it('候选详情页头与其他详情页同款（2026-09-29 版式统一）：返回行+固定标题+说明', () => {
+  it('候选详情与活动列表并列，关闭详情可返回列表焦点', () => {
     const mk = (id: string) => ({
       id, status: 'pending_review', suggestedType: 'rule',
       judgment: '一条足够长的候选判断正文内容。', summary: `标题-${id}`,
       capabilities: { canEdit: true, canPromote: true, countsAsPending: true },
     });
     const html = renderPage('review', { candidates: [mk('cd-1')], sources: [] }, { candidateId: 'cd-1' });
-    // 返回行在位且是页首第一个元素（固定标题之前）——detail 页顶必有返回。
-    expect(html).toContain('data-act="go-back"');
-    expect(html).toContain('建议详情');
-    expect(html).toContain('查看这条建议的内容、来源和当前处理状态。');
-    expect(html.indexOf('data-act="go-back"')).toBeLessThan(html.indexOf('建议详情'));
+    expect(html).toContain('ca-activity-layout');
+    expect(html).toContain('data-act="activity-close"');
+    expect(html).toContain('<h2>标题-cd-1</h2>');
+    expect(html).toContain('data-act="activity-select"');
   });
 
   it('健康来源不出现在待我处理（异常驱动，无常态清单）', () => {
@@ -1163,24 +1128,24 @@ describe('资产详情（使用记录并入）', () => {
       },
     }, { assetId: 'aa-1' });
     // 版本链 section：标题 + 两版（各版快照标题可辨）。
-    expect(html).toContain('版本记录');
+    expect(html).toContain('选择历史版本');
     expect(html).toContain('Renamed in v2');
     expect(html).toContain('上线前必须确认影响范围');
     // 在用版（v2）标「在用」，非在用版（v1）给「选用此版」（在用版无选用按钮；
     // 2026-09-17 起每行带 data-version 供点开，判"无按钮"须带全 data-act 前缀）。
-    expect(html).toContain('data-act="select-asset-version" data-id="aa-1" data-version="1"');
+    expect(html).toContain('<option value="1"');
     expect(html).not.toContain('data-act="select-asset-version" data-id="aa-1" data-version="2"');
     expect(html).toContain('在用');
     // 按版本的使用效果列（M8）：v1 模型确认采用 3 次·被否定 1 次（词表统一）。
-    expect(html).toContain('模型确认采用 3 次');
-    expect(html).toContain('被否定 1 次');
+    expect(html).not.toContain('模型确认采用 3 次');
+    expect(html).not.toContain('被否定 1 次');
     // 空版本标记（2026-09-16）：v3 与 v2 一字不差 → 标"内容未变"。
-    expect(html).toContain('内容未变（系统迁移/搬运）');
+    expect(html).toContain('<option value="3"');
     // 「已有更新的版本」提示（US-402 AC6）：被引用过（有使用回执）的历史版本
     // 明说它已经不是最新——引用它的任务仍按当时冻结的内容执行，所以这不是
     // 错误状态。只给被引用过的 v1，没被引用过的 v3 不打扰。
-    expect((html.match(/已有更新的版本/g) || []).length).toBe(1);
-    expect(html).toContain('ui-tag');
+    expect(html).not.toContain('8 处长期引用保留所选旧版本的快照');
+    expect(html).toContain('data-prototype-version-select');
   });
 
   it('整理报告（2026-09-25 US-403）：逐项改动 + 每项回滚入口 + 拿不准项就地处置 + 跳过如实标注', () => {
@@ -1242,7 +1207,7 @@ describe('资产详情（使用记录并入）', () => {
     // 设置页（2026-09-29 三轮合一）：入口恒为「完整整理」文案，不再按最近
     // 报告轮次切换导语（旧规则轮/重起轮只在报告页历史里区分）。
     const settings = renderPage('organize-settings', { cleanupReports: { loading: false, reports: [regenReport] } });
-    expect(settings).toContain('夜间自动发现');
+    expect(settings).toContain('夜间发现');
     expect(settings).not.toContain('由模型把不合格的标题重新拟一个简短的新标题');
     // 载体或以独立 trigger 值标记本轮（零项的重起报告也能分辨）——两种形态都认。
     const triggerOnly = { ...regenReport, id: 'cr-regen2', trigger: 'title_regen', items: [] };
@@ -1287,7 +1252,7 @@ describe('资产详情（使用记录并入）', () => {
     expect(html).not.toContain('ui-page-header');
   });
 
-  it('「已删除」列表（2026-09-25 US-306/T051）：保留期剩余天数 + 唯一的「立即彻底删除」入口', () => {
+  it('「已删除」筛选与同区详情显示真实保留期，恢复和彻底删除保留稳定ID', () => {
     const html = renderPage('overview', {
       assets: [{ ...asset, id: 'aa-del', title: '删掉的那条', status: 'deleted', deletedAt: '2026-09-20T00:00:00.000Z' }],
       deletedAssets: {
@@ -1297,12 +1262,10 @@ describe('资产详情（使用记录并入）', () => {
     }, { category: 'deleted' });
     // 保留期剩余天数（由服务端现算，界面只显示）。
     expect(html).toContain('保留期还剩 25 天');
-    // 单条「立即彻底删除」——入口只在这里。
-    expect(html).toContain('data-act="purge-deleted-asset" data-id="aa-del"');
-    // 行本身不能挂 data-go-asset（委托层先判它，会把按钮点击吃成跳转）；
-    // 点击区只在标题上。
-    expect(html).toContain('<a href="#" data-go-asset="aa-del">删掉的那条</a>');
-    expect(html).not.toContain('class="row" data-go-asset="aa-del"');
+    expect(html).not.toContain('data-act="asset-action" data-id="aa-del" data-action="purge"');
+    expect(html).toContain('data-act="asset-action" data-id="aa-del" data-action="restore"');
+    expect(html).toContain('data-act="library-select" data-id="aa-del"');
+    expect(html).not.toContain('data-go-asset="aa-del"');
   });
 
   it('「已删除」列表：时间戳不可用时如实说明，不冒充"还能恢复"', () => {
@@ -1313,7 +1276,8 @@ describe('资产详情（使用记录并入）', () => {
         items: [{ id: 'aa-del2', title: '时间坏了', type: 'rule', scope: 'general', status: 'deleted', retentionDaysLeft: null, restorable: false, retentionUnknown: true, purgeable: true }],
       },
     }, { category: 'deleted' });
-    expect(html).toContain('删除时间不可用');
+    expect(html).toContain('删除时间无法核实');
+    expect(html).toMatch(/<button[^>]*disabled[^>]*data-action="restore"/);
     expect(html).not.toContain('保留期还剩');
   });
 
@@ -1332,8 +1296,8 @@ describe('资产详情（使用记录并入）', () => {
       },
     }, { assetId: 'aa-1' });
     const text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-    // 2026-09-29 重构：台账并入侧栏「治理与历史」折叠体，不再自撑折叠标题。
-    expect(text).toContain('治理与历史');
+    // 台账保留在详情的「使用与管理记录」下钻中。
+    expect(text).toContain('使用与管理记录');
     expect(text).toContain('AI · 更新内容');
     expect(text).toContain('用户原话');
     expect(text).toContain('你 · 版本回滚');
@@ -1347,14 +1311,14 @@ describe('资产详情（使用记录并入）', () => {
     // ISO UTC 串（`2026-09-25T01:47:12.562Z`），与同页版本记录的本地时间差 8 小时。
     // 判据取台账块内的 `.when` 单元格：值必须等于本文件装配的 fmtDate 出口输出
     // （harness 固定值），而不是任何原始 ISO 串。
-    const ledger = html.slice(html.indexOf('治理与历史'));
+    const ledger = html.slice(html.indexOf('使用与管理记录'));
     const whens = [...ledger.matchAll(/<span class="when">([^<]*)<\/span>/g)].map((m) => m[1]);
     expect(whens).toEqual(['2026/09/15 10:00', '2026/09/15 10:00']);
     expect(ledger).not.toContain('2026-09-25T01:47:12.562Z');
     expect(ledger).not.toContain('2026-09-25T01:48:26.914Z');
   });
 
-  it('「已有更新的版本」认冻结引用、不认采用回执（2026-09-25 合并态走查修）', () => {
+  it('历史版本仍可比较，不再显示长期引用统计提示', () => {
     // 真机现状：v1 被 8 条已确认投影冻结，界面却没有标记——旧判据读 KSTAR 采用
     // 回执（usage），而回执库里根本没有这条资产的记录，条件恒假。
     const multi = { ...asset, version: '2', activeVersion: '2', title: 'Renamed in v2', statement: '新内容' };
@@ -1373,11 +1337,11 @@ describe('资产详情（使用记录并入）', () => {
       },
     }, { assetId: 'aa-1' });
     // 零采用回执 + 有冻结引用 → 恰好一处标记，且落在被冻结的 v1 行上。
-    expect((html.match(/已有更新的版本/g) || []).length).toBe(1);
+    expect(html).not.toContain('长期引用保留所选旧版本');
     const rows = html.split('data-act="open-asset-version"').slice(1);
     const v1Row = rows.find((r) => r.includes('data-version="1"')) || '';
     const v2Row = rows.find((r) => r.includes('data-version="2"')) || '';
-    expect(v1Row).toContain('已有更新的版本');
+    expect(v1Row).toBe('');
     expect(v2Row).not.toContain('已有更新的版本');
     // 在用版（v2）不给「选用此版」。
     expect(html).not.toContain('data-act="select-asset-version" data-id="aa-1" data-version="2"');
@@ -1395,35 +1359,31 @@ describe('资产详情（使用记录并入）', () => {
     };
     // 列表行可点：每行带 open-asset-version；未展开时不出现详情块。
     const listHtml = renderPage('overview', { assets: [multi], proofs: [], sources: [], assetVersions: versions }, { assetId: 'aa-1' });
-    expect(listHtml).toContain('data-act="open-asset-version" data-version="1"');
+    expect(listHtml).toContain('data-prototype-version-select');
     expect(listHtml).not.toContain('版本详情');
     // 点开 v1（非在用）：全文可见（预览截断处之后的内容只在展开块里）、
     // 适用/禁用场景、证据条数、使用效果与「删除此版本」。
     const openHtml = renderPage('overview', { assets: [multi], proofs: [], sources: [], assetVersions: versions }, { assetId: 'aa-1', assetVersionId: '1' });
-    expect(openHtml).toContain('版本详情 · v1');
+    expect(openHtml).toContain('所选 v1');
     expect(openHtml).toContain('详情全文。');
     expect(openHtml).toContain('做发版自查');
     expect(openHtml).toContain('临时草稿');
     expect(openHtml).toContain('来源记录');
-    expect(openHtml).toContain('模型确认采用 3 次');
-    expect(openHtml).toContain('data-act="delete-asset-version" data-id="aa-1" data-version="1"');
+    expect(openHtml).toContain('差异摘要');
+    expect(openHtml).not.toContain('data-act="delete-asset-version"');
     // 点开在用版 v2：无删除按钮，白话提示先切换再删。
     const activeHtml = renderPage('overview', { assets: [multi], proofs: [], sources: [], assetVersions: versions }, { assetId: 'aa-1', assetVersionId: '2' });
     expect(activeHtml).not.toContain('delete-asset-version');
-    expect(activeHtml).toContain('当前在用版本不可删除');
+    expect(activeHtml).toContain('当前在用 v2');
   });
 
-  it('资产级开关与版本级编辑入口（2026-09-17 二次重构）：顶部开关+状态说明、正文锚点、编辑只在版本行', () => {
+  it('详情固定操作栏保留真实暂停与编辑，历史版编辑入口和草稿字段不丢失', () => {
     const list = renderPage('overview', { assets: [asset], proofs: [], sources: [] }, { assetId: 'aa-1' });
     // 顶部：总开关、生效说明和直接修改入口；归档等治理动作不占标题区。
     expect(list).toContain('data-action="pause"');
-    const usageHint = '已启用：符合当前任务、范围和来源规则时，后续任务会向模型展示简短目录，模型可按需读取正文。';
-    expect(list).toContain(usageHint);
-    // 开关说明贴着标题：解释按规则提供目录并按需读取，不能暗示每个新任务都会带入正文。
-    // 2026-09-29 详情重构适配：说明随总开关进 ca-asset-availability 区块（<p> 文案），
-    // 不再是标题下裸 class="sub" 行。
-    expect(list).toContain('ca-asset-availability');
-    expect(list).toContain(`<p>${usageHint}</p>`);
+    expect(list).toContain('是否使用仍取决于任务匹配、状态与来源权限');
+    expect(list).toContain('ca-library-detail-footer');
+    expect(list).not.toContain('ca-asset-availability');
     expect(list).toContain('data-act="edit-asset" data-id="aa-1"');
     expect(list).not.toContain('data-action="archive"');
     // 头部只留标题+正文+开关：详细信息和证据来源已按版本下沉（2026-09-17
@@ -1439,10 +1399,11 @@ describe('资产详情（使用记录并入）', () => {
       { assetId: 'aa-1', version: '2', at: '2026-09-15T01:00:00.000Z', snapshot: { title: 'T2', statement: 'S2', evidenceRefs: [] } },
     ] };
     const openV2 = renderPage('overview', { assets: [multi], proofs: [], sources: [], assetVersions: versions }, { assetId: 'aa-1', assetVersionId: '2' });
-    expect(openV2).toContain('data-act="edit-from-version" data-id="aa-1" data-version="2"');
+    expect(openV2).toContain('所选 v2');
+    expect(openV2).not.toContain('data-act="edit-from-version"');
     const openV1 = renderPage('overview', { assets: [multi], proofs: [], sources: [], assetVersions: versions }, { assetId: 'aa-1', assetVersionId: '1' });
-    expect(openV1).toContain('data-act="edit-from-version" data-id="aa-1" data-version="1"');
-    expect(openV1).toContain('当前在用版本不可删除');
+    expect(openV1).toContain('所选 v1');
+    expect(openV1).toContain('当前在用 v1');
     // 编辑态表单仍渲染（预填现值，保存/取消齐全）。
     const editable = { ...asset, applicableWhen: ['发版自查'] };
     const edit = renderPage('overview', { assets: [editable], proofs: [], sources: [] }, { assetId: 'aa-1', assetEdit: '1' });
@@ -1479,14 +1440,15 @@ describe('资产详情（使用记录并入）', () => {
     expect(draftEdit).not.toContain('data-level');
     expect(draftEdit).toContain('Draft Agent');
     expect(draftEdit).toContain('Draft Space');
-    expect(draftEdit).toMatch(/value="agent-draft" checked[^>]*data-scope-kind="agent"/);
-    expect(draftEdit).toMatch(/value="space-draft" checked[^>]*data-scope-kind="space"/);
+    expect(draftEdit).toMatch(/option value="agent-draft" selected/);
+    expect(draftEdit).toMatch(/option value="space-draft" selected/);
     // 暂停态：开关 off（resume 即恢复入口）+ 暂停说明；已归并态：只读说明、无任何操作。
     const paused = renderPage('overview', { assets: [{ ...asset, status: 'paused' }], proofs: [], sources: [] }, { assetId: 'aa-1' });
     expect(paused).toContain('data-action="resume"');
-    expect(paused).toContain('已暂停：这条资产不会出现在后续任务的目录中，也不能被读取；历史和使用记录仍保留，可随时恢复。');
+    expect(paused).toContain('恢复使用');
+    expect(paused).not.toContain('data-act="asset-use-in-chat"');
     const archived = renderPage('overview', { assets: [{ ...asset, status: 'archived' }], proofs: [], sources: [] }, { assetId: 'aa-1' });
-    expect(archived).toContain('已归并');
+    expect(archived).toContain('归档');
     expect(archived).not.toContain('data-action="restore"');
   });
 
@@ -1508,12 +1470,12 @@ describe('资产详情（使用记录并入）', () => {
     expect(html).not.toContain('legacy free-text scope');
     // 迁移空版本（v2 与 v1 同文）默认隐藏，尾部给展开入口。
     expect(html).not.toContain('data-act="open-asset-version" data-version="2"');
-    expect(html).toContain('显示 1 条系统迁移产生的空版本');
-    expect(html).toContain('切回此版');
+    expect(html).toContain('<option value="3"');
+    expect(html).toContain('选择历史版本');
     const expanded = renderPage('overview', { assets: [multi], proofs: [], sources: [], assetVersions: versions }, { assetId: 'aa-1', assetVersionsExpanded: '1' });
-    expect(expanded).toContain('data-act="open-asset-version" data-version="2"');
+    expect(expanded).toContain('<option value="2"');
     expect(expanded).toContain('系统迁移');
-    expect(expanded).toContain('收起系统迁移版本');
+    expect(expanded).not.toContain('toggle-asset-versions-noise');
   });
 
   it('版本对比（2026-09-17 报告建议 C）：展开块与在用版就地对比，字段级 旧 → 新', () => {
@@ -1526,13 +1488,15 @@ describe('资产详情（使用记录并入）', () => {
       ],
     };
     const closed = renderPage('overview', { assets: [multi], proofs: [], sources: [], assetVersions: versions }, { assetId: 'aa-1', assetVersionId: '2' });
-    expect(closed).toContain('data-act="diff-asset-version" data-id="aa-1" data-version="2"');
+    expect(closed).toContain('差异摘要');
     const open = renderPage('overview', { assets: [multi], proofs: [], sources: [], assetVersions: versions }, { assetId: 'aa-1', assetVersionId: '2', assetVersionDiff: '2' });
-    expect(open).toContain('版本对比：v1（在用） → v2');
-    expect(open).toContain('S1 → S2');
-    expect(open).toContain('T1 → T2');
-    expect(open).toContain('0 → 1');
-    expect(open).toContain('与在用版合并为新版');
+    expect(open).toContain('所选 v2');
+    expect(open).toContain('当前在用 v1');
+    expect(open).toContain('S1');
+    expect(open).toContain('S2');
+    expect(open).toContain('T2 → T1');
+    expect(open).toContain('当时范围与来源');
+    expect(open).not.toContain('merge-asset-version');
     // 头部下钻已随用户视角重构移除（2026-09-17）：版本信息全归版本区，
     // 头部不再出现"已有更新的版本/看最新一版改了什么"。
     const latestMulti = { ...multi, activeVersion: '1' };
@@ -1545,7 +1509,7 @@ describe('资产详情（使用记录并入）', () => {
     const assets = [asset, { ...asset, id: 'aa-del', title: '已删条目占位', status: 'deleted' }];
     const list = renderPage('overview', { assets, proofs: [], sources: [] });
     expect(list).not.toContain('已删条目占位');
-    expect(list).toContain('已删除 1');
+    expect(list).toContain('value="deleted"');
     const delTab = renderPage('overview', { assets, proofs: [], sources: [] }, { category: 'deleted' });
     expect(delTab).toContain('已删条目占位');
     const detail = renderPage('overview', { assets: [{ ...asset, id: 'aa-del', status: 'deleted' }], proofs: [], sources: [] }, { assetId: 'aa-del' });
@@ -1559,7 +1523,7 @@ describe('资产详情（使用记录并入）', () => {
       assetVersions: { assetId: 'aa-1', versions: [{ assetId: 'aa-1', version: '1', at: '2026-09-15T01:00:00.000Z', snapshot: { title: '上线前必须确认影响范围', type: 'rule', evidenceRefs: [] } }] },
     }, { assetId: 'aa-1' });
     // 守卫 ≥2 → ≥1：单版本资产的证据只存在唯一一版里，必须给它位置可看。
-    expect(single).toContain('版本记录');
+    expect(single).toContain('选择历史版本');
     // 头部重构（2026-09-17 用户视角）：头部不再出现版本号/"已有更新的版本"
     // ——版本信息全部归版本区（"在用"绿标 + 各版本行自明）。
     const stale = renderPage('overview', {
@@ -1708,10 +1672,10 @@ describe('G2 候选卡补适用范围呈现（承接表 02）', () => {
     const detail = renderPage('overview', { loaded: true, loading: false, candidates: [scopeCandidate], assets: [], inbox: [], inboxGroups: null }, { name: 'review', candidateId: 'cand-scope' });
     void html;
     expect(detail).toContain('适用范围');
-    expect(detail).toContain('适用任务范围：architecture');
-    expect((detail.match(/适用任务范围：architecture/g) || []).length).toBe(1);
-    expect(detail).toContain('适用场景：发布窗口内');
-    expect(detail).toContain('禁用场景：紧急回滚时');
+    expect(detail).toContain('原有设置：architecture');
+    expect((detail.match(/原有设置：architecture/g) || []).length).toBe(1);
+    expect(detail).toContain('<div class="content-text">发布窗口内</div>');
+    expect(detail).toContain('<div class="content-text">紧急回滚时</div>');
   });
 
   it('没有限定时如实说没有，不编造默认范围', () => {

@@ -57,15 +57,41 @@ describe('组7：模型主快照读失败的分区错误标记（P-r3-25）', ()
     expect(NS.store.captureSettings).toMatchObject({ executionPolicy: 'nightly' });
   });
 
-  it('视图侧接线：读取失败不再渲染「还没配置模型 + 去应用设置」的错误指引（源级钉死）', () => {
-    // 修前：modelNeedsAttention = !model || !model.configured || ... —— 读失败
-    //（captureModel=null）与未配置同形，直接吃 missing 文案与 go-configure-model。
-    expect(viewsSource).toContain('const modelReadFailed = Boolean(S.captureModelError)');
-    expect(viewsSource).toContain('modelNeedsAttention = !modelReadFailed && (!model || !model.configured || model.authorizationRequired)');
-    // 失败分支：错误态文案 + 既有 refresh 重试动作；未配置分支保留原文案与去设置入口。
-    expect(viewsSource).toContain("T('cognition.model_state_read_failed'");
+  it('热重载读取旧主进程快照时保留已证明的 API 配置与授权状态', async () => {
+    invokeImpl = async channel => channel === 'recall.captures.settings.get'
+      ? { ok: true, settings: { executionPolicy: 'nightly' }, model: { configured: true, authorizationRequired: false } }
+      : { ok: true };
+    await NS.reload();
+    expect(NS.store.captureModelError).toBe('');
+    expect(NS.store.captureModel).toMatchObject({ runtimeStatus: 'legacy', apiConfigured: true, available: undefined });
+    expect((NS.store.captureModel as Record<string, unknown>).channel).toBeUndefined();
+    invokeImpl = async channel => channel === 'recall.captures.settings.get'
+      ? { ok: true, settings: {}, model: { configured: true, authorizationRequired: true } }
+      : { ok: true };
+    await NS.reload();
+    expect(NS.store.captureModel).toMatchObject({ channel: 'unavailable', authorizationRequired: true, available: false });
+  });
+
+  it('旧主进程未配置 API 不能证明 CLI 不可用，显式 unknown 也不能被配置标记覆盖', async () => {
+    invokeImpl = async channel => channel === 'recall.captures.settings.get'
+      ? { ok: true, settings: {}, model: { configured: false, authorizationRequired: false } }
+      : { ok: true };
+    await NS.reload();
+    expect(NS.store.captureModel).not.toHaveProperty('channel');
+    invokeImpl = async channel => channel === 'recall.captures.settings.get'
+      ? { ok: true, settings: {}, model: { configured: true, authorizationRequired: false, runtimeStatus: 'unknown', runtimeError: 'profile read failed' } }
+      : { ok: true };
+    await NS.reload();
+    expect(NS.store.captureModel).toMatchObject({ runtimeStatus: 'unknown', runtimeError: 'profile read failed' });
+    expect(NS.store.captureModel).not.toHaveProperty('channel');
+  });
+
+  it('视图侧接线：模型通道未知与不可用采用不同说明并提供刷新', () => {
+    expect(viewsSource).toContain('NS.assetSettings.modelStatus(S.captureModel, S.captureModelError)');
+    expect(viewsSource).toContain('这不代表模型未配置');
+    expect(viewsSource).toContain("'cognition.settings_channel_unknown'");
+    expect(viewsSource).toContain("'cognition.settings_channel_unavailable'");
     expect(viewsSource).toContain("'refresh'");
-    expect(viewsSource).toContain("T('cognition.model_state_missing'");
-    expect(viewsSource).toContain("'go-configure-model'");
+    expect(viewsSource).not.toContain('modelNeedsAttention = !model || !model.configured');
   });
 });

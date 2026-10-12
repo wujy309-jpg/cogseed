@@ -287,14 +287,12 @@ describe('skills renderer frontmatter parsing', () => {
     const candidate = cognitionCandidate();
     const list = renderCognition({ name: 'review' }, { candidates: [candidate] });
     expect(visibleText(list)).toContain('Keep every approval tied to source evidence.');
-    expect(list).toContain('data-act="activity-row" data-id="candidate:cand-review"');
-    // specs/018 T011：卡片主按钮 = 推荐动作（确认），沿既有 cand-adopt-with-form
-    // 通道（卡片不在 .ca-candidate-detail 内 → 按未携带编辑确认）；
-    // 2026-09-29 子安标注整改：动作全部平铺右侧同一行，不再有「其他处理」折叠。
-    expect(list).not.toContain('data-act="cand-adopt-with-form"');
-    expect(list).not.toContain('data-act="cand-decide"');
-    expect(list).not.toContain('其他处理');
-    expect(list).toContain('ca-activity-changes');
+    expect(list).toContain('data-act="activity-select" data-id="candidate:cand-review"');
+    // 双栏视图默认选中首条；写操作只属于右侧详情，列表行不直接批准。
+    const table = list.match(/<table[\s\S]*?<\/table>/)?.[0] || '';
+    expect(table).not.toContain('data-act="cand-adopt-with-form"');
+    expect(table).not.toContain('data-act="cand-decide"');
+    expect(list).toContain('ca-activity-layout');
 
     const detail = renderCognition(
       { name: 'review', candidateId: 'cand-review' },
@@ -361,20 +359,13 @@ describe('skills renderer frontmatter parsing', () => {
     expect(html).toContain('data-act="proof-toggle" data-id="proof-1"');
   });
 
-  it('renders assets as tree-first integrated rows instead of nested cards', () => {
-    // 2026-09-21 五页签迁移:树是独立页;「我的认知」页只保留列表/目录与筛选,
-    // 资产以整行(数据驱动导航)呈现,不再回到嵌套卡片。
+  it('renders assets as integrated rows in my cognition while the tree is disabled', () => {
+    // 树入口暂禁用；资产仍在「我的认知」里按整行展示。
     const html = renderCognition(
       { name: 'overview' },
       { assets: [cognitionAsset(), cognitionAsset({ id: 'asset-template', type: 'template', title: 'Review template' })] },
     );
 
-    const treePage = renderCognition(
-      { name: 'tree' },
-      { assets: [cognitionAsset(), cognitionAsset({ id: 'asset-template', type: 'template', title: 'Review template' })] },
-    );
-    // 树页是整页画布（原型 .tree-stage），不再是列表页里的卡片。
-    expect(treePage).toContain('tree-stage');
     expect(html).not.toContain('tree-stage');
     expect(html).toContain('data-act="filter-cat"');
     expect(html).toContain('data-go-asset="asset-rule"');
@@ -388,10 +379,10 @@ describe('skills renderer frontmatter parsing', () => {
       { candidates: [cognitionCandidate(), cognitionCandidate({ id: 'cand-second', judgment: 'Second candidate' })] },
     );
 
-    expect(html.match(/data-act="activity-row"/g)).toHaveLength(2);
-    // 每卡恰好一个主按钮（确认），打开详情入口在标题行与动作行平铺区里
-    //（2026-09-29 起「其他处理」折叠已撤）。
-    expect(html).not.toContain('data-act="cand-adopt-with-form"');
+    expect(html.match(/data-act="activity-select"/g)).toHaveLength(2);
+    expect(html.match(/class="[^"]*\bca-candidate-detail\b/g)).toHaveLength(1);
+    const table = html.match(/<table[\s\S]*?<\/table>/)?.[0] || '';
+    expect(table).not.toContain('data-act="cand-adopt-with-form"');
     expect(html).toContain('data-id="candidate:cand-review"');
     expect(html).toContain('data-id="candidate:cand-second"');
   });

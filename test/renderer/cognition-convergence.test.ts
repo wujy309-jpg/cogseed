@@ -9,8 +9,25 @@ describe('认知收敛后的单一治理入口', () => {
     ns.router.go({ name: 'review', candidateId: 'c1' });
     expect(ns.store.route).toMatchObject({ name: 'activity', candidateId: 'c1' });
   });
+  it('我的认知使用新目录工作台，默认在库只含启用和暂停，授权范围显示真实目录名称', () => {
+    const asset = { id: 'asset-active', type: 'rule', title: '交付核对规则', statement: '交付前核对真实来源与适用范围。', status: 'active', scope: 'review', version: '1', scopePolicy: { workspaceIds: ['space-private'] } };
+    const { ns, render } = loadCognitionAssets({
+      assets: [asset, { ...asset, id: 'asset-paused', status: 'paused' }, { ...asset, id: 'asset-archived', status: 'archived' }, { ...asset, id: 'asset-deleted', status: 'deleted' }],
+      assetScopeOptions: { status: 'ready', spaces: [{ space_id: 'space-private', name: '个人核对空间' }], agents: [] },
+    });
+    const html = render();
+    expect(html).toContain('ca-library-page');
+    expect(html).toContain('ca-library-table');
+    expect(html).toContain('个人核对空间');
+    expect(html).not.toContain('data-act="overview-manage-toggle"');
+    expect(html).not.toContain('data-act="filter-cat"');
+    expect(ns.library.filtered().map((entry: { id: string }) => entry.id)).toEqual(['asset-active', 'asset-paused']);
+    ns.library.state.status = 'all';
+    expect(ns.library.filtered()).toHaveLength(4);
+  });
+
   it('普通聊天和后台队列不成为需要关注，重复候选治理行只显示一次', () => {
-    const html = renderCognition({ name: 'activity' }, { candidates: [candidate('c1')], inbox: [{ id: 'candidate:c1', candidateId: 'c1', title: '不应重复' }], captures: [{ id: 'low', conversationTitle: '无营养闲聊', status: 'queued' }], sources: [{ title: '全部聊天历史' }] });
+    const html = renderCognition({ name: 'activity' }, { candidates: [candidate('c1')], inbox: [{ id: 'candidate:c1', kind: 'candidate_pending_review', candidateId: 'c1', title: '不应重复' }], captures: [{ id: 'low', conversationTitle: '无营养闲聊', status: 'queued' }], sources: [{ title: '全部聊天历史' }] });
     expect(html).toContain('方案比较格式');
     expect(html).not.toContain('不应重复');
     expect(html).not.toContain('无营养闲聊');
@@ -21,16 +38,20 @@ describe('认知收敛后的单一治理入口', () => {
     expect(renderCognition({ name: 'activity' }, { candidates: records })).not.toContain('data-act="candidate-promote"');
     const done = renderCognition({ name: 'activity', activityView: 'done' }, { candidates: records });
     expect(done).toContain('已保存');
-    expect(done).toContain('data-act="activity-row"');
+    expect(done).toContain('data-act="activity-select"');
+    expect(done).toContain('ca-activity-detail');
   });
   it('读取失败的建议详情给出重试，不伪装成记录不存在', () => {
     const html = renderCognition({ name: 'activity', candidateId: 'c1' }, { candidatesError: 'offline', candidates: [] });
-    expect(html).toContain('data-act="retry-candidates"');
+    expect(html).toContain('data-act="refresh"');
+    expect(html).toContain('部分变化未能读取，请重试');
     expect(html).not.toContain('这条建议已不在');
   });
-  it('新设置只管理夜间发现，移除联动维护和 KSTAR 展示', () => {
+  it('新设置独立管理夜间发现和自动批准，移除联动维护和 KSTAR 展示', () => {
     const html = renderCognition({ name: 'settings' }, { captureSettings: { enabled: true, executionPolicy: 'nightly' }, captureModel: { configured: true } });
-    expect(html).toContain('夜间自动发现');
+    expect(html).toContain('夜间发现');
+    expect(html).toContain('data-act="auto-approval-toggle"');
+    expect(html).toContain('仅限授权范围可核实的项目或工作空间');
     expect(html).toContain('data-act="nightly-toggle"');
     expect(html).not.toContain('data-act="nightly-time"');
     expect(html).not.toContain('KSTAR');
@@ -43,12 +64,13 @@ describe('认知收敛后的单一治理入口', () => {
   });
   it('标题和说明分层、搜索框可读，范围与决策使用用户语言', () => {
     const html = renderCognition({ name: 'activity' }, { candidates: [{ ...candidate('c1'), suggestedScope: 'general' }] });
-    expect(html).toContain('ui-data-table__title');
-    expect(html).toContain('ui-data-table__description');
-    expect(html).toContain('placeholder="搜索变化内容或适用范围"');
+    expect(html).toContain('<strong>方案比较格式</strong>');
+    expect(html).toContain('<p>以后方案比较优先使用表格。</p>');
+    expect(html).toContain('placeholder="搜索标题、摘要或适用范围"');
     expect(html).toContain('跨任务通用');
-    expect(html).toContain('确认保存');
-    expect(html).toContain('查看建议');
+    expect(html).toContain('保存');
+    expect(html).toContain('<h2>方案比较格式</h2>');
+    expect(html).toContain('ca-activity-detail-footer');
   });
   it('临时记录退出待办，重复建议合并且计数与顶部一致，冲突仍保留', () => {
     const { ns } = loadCognitionAssets({ candidates: [candidate('c1'), candidate('c2'), { ...candidate('test'), activityExclusionReason: 'task_local' }], inbox: [{ id: 'test-inbox', kind: 'candidate_pending_review', candidateId: 'test' }, { id: 'conflict', kind: 'type_conflict', title: '需要判断类型' }] });

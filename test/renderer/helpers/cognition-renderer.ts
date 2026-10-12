@@ -23,6 +23,7 @@ const storeDefaults = {
   loading: false,
   errors: [],
   assets: [],
+  assetCapabilities: { versionedUpdate: true },
   candidates: [],
   captures: [],
   captureCounts: {},
@@ -73,7 +74,7 @@ function loadModule(
       { filename: file },
     );
   }
-  for (const file of ['core.js', 'views.js', 'review-candidate.js', 'review-views.js']) {
+  for (const file of ['core.js', 'settings.js', 'views.js', 'review-candidate.js', 'review-views.js', 'library.js']) {
     vm.runInContext(
       fs.readFileSync(path.join(rendererRoot, 'modules/cognition-assets', file), 'utf8'),
       context,
@@ -116,4 +117,13 @@ export function loadCognitionAssets(
       return root.innerHTML;
     },
   };
+}
+
+/** Read the actual prototype dialog bodies alongside the visible detail. This
+ * helper is for data contracts which span the three distinct entry points. */
+export function renderCognitionWithDialogs(route: Record<string, unknown>, state: Record<string, unknown> = {}): string {
+  const loaded = loadCognitionAssets(state, route);
+  const html = loaded.render();
+  const assetId = String(route.assetId || loaded.store.route.assetId || '');
+  return html + ['sources', 'versions', 'records'].map(kind => loaded.ns.renderLibraryDialog(kind, assetId, route.assetVersionId)).join('');
 }

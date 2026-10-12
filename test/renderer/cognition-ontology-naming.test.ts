@@ -7,22 +7,19 @@ import { loadCognitionAssets } from './helpers/cognition-renderer';
 const rendererRoot = path.resolve(__dirname, '../../src/renderer');
 
 describe('Ontology navigation copy', () => {
-  it.each(['zh', 'en', 'ja', 'pt'] as const)('renders localized labels and scope on the real tree page (%s)', (locale) => {
+  it.each(['zh', 'en', 'ja', 'pt'] as const)('keeps localized ontology navigation while the tree is disabled (%s)', (locale) => {
     const translations = JSON.parse(
       fs.readFileSync(path.join(rendererRoot, 'locales', `${locale}.json`), 'utf8'),
     ) as Record<string, string>;
-    const page = loadCognitionAssets({}, { name: 'tree' }, {
+    const page = loadCognitionAssets({}, { name: 'overview' }, {
       t: (key: string) => translations[key] || key,
     });
     const rendered = page.render();
 
     expect(rendered).toContain(translations['cognition.tab_ontology']);
-    expect(rendered).toContain(translations['cognition.ontology_entry_title']);
-    expect(rendered).toContain(translations['cognition.ontology_entry_hint']);
-    const treeLabel = rendered.match(/<text\b[^>]*class="trunk-name"[^>]*>([\s\S]*?)<\/text>/)?.[1]
-      .replace(/<[^>]+>/g, '') || '';
-    expect(Array.from(treeLabel)).toEqual(Array.from(translations['cognition.ontology_tree_label']));
-    expect(translations['cognition.ontology_entry_hint']).toMatch(/ontolog|本体|オントロジー/i);
+    expect(rendered).toContain('data-id="tree"');
+    expect(rendered).toContain('aria-disabled="true"');
+    expect(rendered).not.toContain('class="trunk-name"');
   });
 
   it('uses the Ontology name in the embedded workspace header', () => {

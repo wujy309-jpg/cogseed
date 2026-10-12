@@ -20463,7 +20463,7 @@ body:has(#panel-settings.active) .main-top-actions {
 
 /* ─── Connector detail view (registry CONN-PV-001) ───
    Page-local structural composition for one business surface: the Tencent Meeting
-   connector detail. Proposed in docs/renderer-structural-registry.md; it must not grow
+   connector detail. It must not grow
    into a second visual variant of the card grid. Tokens only — no literal color,
    font-size, radius or z-index. Layout only: the shared shells (ui-resource-card,
    ui-button, ui-status-pill) keep their own visual identity, exactly as

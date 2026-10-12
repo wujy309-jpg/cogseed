@@ -3069,3 +3069,29 @@ describe('整理详情：对话上下文（readRecallCaptureContext）', () => {
       .rejects.toThrow(/not found/i);
   });
 });
+
+describe('capture settings model runtime evidence', () => {
+  it('reports configured API and its expired authorization without inventing a CLI check', async () => {
+    const service = await import('../../../../src/main/features/recall/capture-service');
+    expect(await service.readRecallCaptureModelRuntime()).toMatchObject({ channel: 'api', apiConfigured: true, available: true });
+    mocks.oauthExpired = 'OAuth expired';
+    const runtime = await service.readRecallCaptureModelRuntime();
+    expect(runtime).toMatchObject({ channel: 'unavailable', authorizationRequired: true, available: false });
+    expect(runtime).not.toHaveProperty('cliAvailable');
+  });
+  it('reports installed CLI fallback and treats a failed detector as unknown', async () => {
+    const service = await import('../../../../src/main/features/recall/capture-service');
+    mocks.configured = false;
+    const priorKey = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    try {
+      mocks.detectLocalAgents.mockResolvedValue([{ type: 'claude', available: true, auth: { loggedIn: true } }]);
+      expect(await service.readRecallCaptureModelRuntime()).toMatchObject({ channel: 'cli', cliAvailable: true, cliAgentId: 'claude', cliAuthenticated: true });
+      mocks.detectLocalAgents.mockRejectedValue(new Error('detector failed'));
+      expect(await service.readRecallCaptureModelRuntime()).toMatchObject({ runtimeStatus: 'unknown', available: undefined });
+    } finally {
+      if (priorKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = priorKey;
+    }
+  });
+});

@@ -78,6 +78,9 @@ describe('用户 @ 钉住的资产：回显与撤销（US-601 AC2/AC3 的 IPC �
     const projection = await import('../../../../src/main/features/recall/context-projection');
 
     const asset = await seedActiveAsset(assets, 'aa-pin-list', '引用条要能回显这条内容。');
+    await assets.updateAbilityAsset(UID, asset.id, { statement: '引用条的第二版内容需要保留独立版本。', actor: 'user', reason: '建立第二个版本' });
+    await assets.selectAbilityAssetVersion(UID, asset.id, '1', { actor: 'user', reason: '当前对话应冻结在用旧版' });
+    expect(await assets.readAbilityAsset(UID, asset.id)).toMatchObject({ version: '2', activeVersion: '1' });
     await projection.previewContextProjection(UID, {
       ...attachInput(asset.id, 'user-attach-pin-list'),
       conversationId: 'conv-pin-list',
@@ -88,9 +91,16 @@ describe('用户 @ 钉住的资产：回显与撤销（US-601 AC2/AC3 的 IPC �
     expect(before[0]).toMatchObject({ assetId: asset.id, title: asset.title, version: '1' });
     // 只给 projectionId/assetId/title/version 四个字段——不含正文、不含多余内部键。
     expect(Object.keys(before[0]).sort()).toEqual(['assetId', 'projectionId', 'title', 'version']);
+    const listedBefore = await projection.listContextProjections(UID, { conversationId: 'conv-pin-list', status: 'confirmed' });
+    expect(listedBefore).toHaveLength(1);
+    expect(listedBefore[0]).toMatchObject({ id: before[0].projectionId, status: 'confirmed', assetVersions: { [asset.id]: '1' } });
 
     await projection.revokeUserPinnedProjection(UID, before[0].projectionId);
     expect(await projection.listUserPinnedAssets(UID, 'conv-pin-list')).toEqual([]);
+    const listedAfter = await projection.listContextProjections(UID, { conversationId: 'conv-pin-list', status: 'revoked' });
+    expect(listedAfter).toHaveLength(1);
+    expect(listedAfter[0]).toMatchObject({ id: before[0].projectionId, status: 'revoked', assetVersions: { [asset.id]: '1' } });
+    expect(await projection.listContextProjections(UID, { conversationId: 'conv-pin-list', status: 'confirmed' })).toEqual([]);
   });
 
   it('模型自选投影不进用户引用条（两条授权线互不串台）', async () => {

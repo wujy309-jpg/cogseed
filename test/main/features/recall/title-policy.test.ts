@@ -81,3 +81,14 @@ describe('assertCompliantAbilityAssetTitle（收口闸门用的可读错误）',
     expect(() => assertCompliantAbilityAssetTitle('清单先行。', STATEMENT)).toThrow(/invalid ability asset title/);
   });
 });
+
+describe('HTML 人工确认标题契约', () => {
+  it('保留用户确认的标题，允许与正文首字相同及 80 字名称；模型生成仍走严格规则', async () => {
+    const { assertReviewedAbilityAssetTitle } = await import('../../../../src/main/features/recall/title-policy');
+    expect(() => assertReviewedAbilityAssetTitle('项目周报交付模板')).not.toThrow();
+    expect(() => assertReviewedAbilityAssetTitle('标'.repeat(80))).not.toThrow();
+    expect(() => assertReviewedAbilityAssetTitle('标'.repeat(81))).toThrow('1 to 80');
+    expect(() => assertReviewedAbilityAssetTitle('')).toThrow();
+    expect(recallTitleIssue('遇到同类', STATEMENT)).toBe('prefix_overlap');
+  });
+});

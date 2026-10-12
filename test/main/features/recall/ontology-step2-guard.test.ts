@@ -2,8 +2,8 @@
  * 014 反漂移守卫（specs/014 T024③）。
  *  本 spec 零新增 IPC 通道：当前通道名集合与开工基线（014 开工前提交
  *  660f82e8 的快照）做**集合比较**（顺序无关）——能抓住「偷偷加通道」。
- *  后续认知资产迁移为显式用户选择新增了两个登记通道；白名单只登记这两个，
- *  仍拒绝任何未登记的新增，同时继续检测基线通道删除（基线随通道退役同步，
+ *  后续认知资产演进新增通道须逐项登记在 registeredPost014；集合仍精确比较，
+ *  拒绝任何未登记的新增，同时继续检测基线通道删除（基线随通道退役同步，
  *  如 2026-09-28 敏感级机制删除时下线的 recall.assets.sensitivity.batch）。
  */
 import { describe, expect, it } from 'vitest';
@@ -35,11 +35,14 @@ describe('014 anti-drift（specs/014 T024）', () => {
       'cognition.ontology.box.list',
       'cognition.ontology.command.commit',
       'cognition.ontology.command.preview',
+      // 2026-10-10：单页本体文档字段编辑走主档命令、回执与回读。
+      'cognition.ontology.document.edit',
       'cognition.ontology.facts.query',
       'cognition.ontology.graph.query',
       'cognition.ontology.history.get',
       'cognition.ontology.import.file',
       'cognition.ontology.import.submit',
+      'cognition.ontology.module.lifecycle',
       'cognition.ontology.record.get',
       'cognition.ontology.rules.query',
       'cognition.ontology.search',
@@ -94,6 +97,9 @@ describe('014 anti-drift（specs/014 T024）', () => {
       'skills.security.export',
       // 2026-10-08 认知资产全量重构（U01/N-07）：夜间筛选聚合计数只读通道。
       'recall.captures.stats',
+      // 2026-10-11 系统活动原型：用户显式标记稍后，候选仍保留在需要关注中。
+      // 独立 candidate-defer 服务保留生命周期与来源，不恢复旧 deferred 静音语义。
+      'recall.candidates.defer',
     ];
     expect(sneaked.sort(), '出现未登记的新通道').toEqual([...registeredPost014].sort());
     expect(removed, '014 期间不应删除通道').toEqual([]);

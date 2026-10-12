@@ -518,6 +518,8 @@
   display: inline-flex; align-items: center; gap: 0;
 }
 #ca-root .ca-tab:hover { color: var(--ink); }
+#ca-root .ca-tab.is-disabled,
+#ca-root .ca-tab.is-disabled:hover { color: var(--ink2); opacity: 0.45; cursor: not-allowed; }
 #ca-root .ca-tab.is-on { color: var(--ink); font-weight: 600; }
 #ca-root .ca-tab.is-on::after {
   content: ''; position: absolute; left: 11px; right: 11px; bottom: -1px; height: 2.5px;
@@ -864,19 +866,6 @@
 #ca-root .step.done { background: var(--green); }
 #ca-root .step.cur { background: var(--amber-dot); }
 
-/* ── 标签系统（specs/012 T010~T013）与排序依据/权重（T020）的最小排版 ──────
- * 弹层外壳/进度条/分段控件/输入框全部走共享层（ui-modal / uiProgressBar /
- * uiSegmentedControl / uiInput 的既有皮肤），这里只补业务排布；不使用
- * var(--panel)（全库未定义）、零 z-index 字面量（层序只归 --z-*）。 */
-#ca-root .ca-tags-row { align-items: center; }
-#ca-root .ca-tag-item { display: inline-flex; align-items: center; gap: 5px; }
-#ca-root .ca-tag-candidates { display: inline-block; margin: 0; }
-#ca-root .ca-tag-candidates summary { padding: 7px 11px; }
-#ca-root .ca-tag-filter { align-items: center; }
-#ca-root .ca-batch-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; border: 1px solid var(--line); border-radius: var(--rm); background: var(--color-white); padding: 9px 12px; margin-bottom: 12px; }
-#ca-root .ca-batch-bar .sp { flex: 1; height: 1px; background: var(--line); }
-#ca-root .ca-tag-progress { display: flex; align-items: center; gap: 9px; flex: 1 1 100%; }
-#ca-root .ca-tag-failures { flex: 1 1 100%; border-top: 1px dashed var(--line); padding-top: 7px; }
 /* 排序依据小节（资产详情·使用记录区）与权重卡（沉淀设置页）。 */
 #ca-root .ca-rank-rows { display: grid; gap: 4px; margin-bottom: 7px; }
 #ca-root .ca-rank-row { display: flex; align-items: baseline; gap: 10px; font-size: var(--font-size-2); }

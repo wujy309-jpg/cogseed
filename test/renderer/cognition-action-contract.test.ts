@@ -18,16 +18,18 @@
 import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { loadCognitionAssets } from './helpers/cognition-renderer';
 
 const root = path.join(__dirname, '../..');
 const read = (rel: string) => fs.readFileSync(path.join(root, rel), 'utf8');
 const core = read('src/renderer/modules/cognition-assets/core.js');
 // 2026-09-29 views.js 机械拆分:候选族/待我处理动作随函数迁入 review-candidate.js /
 // review-views.js,动作扫描按加载顺序合并三源(断言语义不变)。
-const views = ['views.js', 'review-candidate.js', 'review-views.js']
+const views = ['views.js', 'settings.js', 'library.js', 'review-candidate.js', 'review-views.js']
   .map((file) => read(`src/renderer/modules/cognition-assets/${file}`))
   .join('\n');
 const app = read('src/renderer/modules/cognition-assets/app.js');
+const activityController = loadCognitionAssets({}, { name: 'activity' }).ns.activityController;
 const fixture = JSON.parse(read('test/renderer/fixtures/cognition-actions.json')) as {
   actions: { act: string; module: string; ipc: string | null; write: boolean; pending: boolean; phase: number }[];
   forbidden: { act: string; reason: string }[];
@@ -38,6 +40,8 @@ function handledActs(): Set<string> {
   const acts = new Set<string>();
   for (const m of app.matchAll(/case '([a-z0-9-]+)'/g)) acts.add(m[1]);
   for (const m of app.matchAll(/\[data-act="([a-z0-9-]+)"\]/g)) acts.add(m[1]);
+  for (const act of activityController.handledActions) acts.add(act);
+  for (const act of loadCognitionAssets().ns.library.handledActions) acts.add(act);
   return acts;
 }
 
@@ -64,6 +68,18 @@ describe('认知资产动作契约', () => {
     const handled = handledActs();
     const orphan = [...referencedActs()].filter((act) => !handled.has(act)).sort();
     expect(orphan).toEqual([]);
+  });
+
+  it('独立活动控制器由真实委托调用，登记的写动作都有内部 pending 与真实 IPC 路径', () => {
+    expect(app).toContain('NS.activityController.handleClick(el)');
+    expect(activityController.handleClick).toBeTypeOf('function');
+    const handler = String(activityController.handleClick);
+    expect(handler).toContain('ACTIVITY_ACTIONS.includes(act)');
+    expect(handler).toContain('ACTIVITY_WRITE_ACTIONS.includes(act)');
+    expect(handler).toContain("getAttribute('aria-busy') === 'true'");
+    expect(handler).toContain("setAttribute('disabled', 'disabled')");
+    expect(handler).toContain("removeAttribute('disabled')");
+    for (const entry of fixture.actions.filter(entry => activityController.writeActions.includes(entry.act))) expect(handler).toContain(entry.ipc);
   });
 
   it('批量立即整理入口不进前端(batchRunNow 禁入)', () => {
@@ -94,14 +110,14 @@ describe('认知资产动作契约', () => {
     const pendingRequired = fixture.actions
       .filter((entry) => entry.module === 'cognition-assets' && entry.pending)
       .map((entry) => entry.act);
-    const missing = pendingRequired.filter((act) => !writeActionsBlock.includes(`'${act}'`));
+    const missing = pendingRequired.filter((act) => !writeActionsBlock.includes(`'${act}'`) && !activityController.writeActions.includes(act));
     expect(missing).toEqual([]);
   });
 
   it('fixture 覆盖了现役全部写通道,未静默漏掉新动作', () => {
     // 反向钳制:app.js WRITE_ACTIONS 里的动作都必须出现在 fixture 里——
     // 未来新增写动作若没登记进施工矩阵,这里会先红。
-    const inWriteSet = [...writeActionsBlock.matchAll(/'([a-z0-9-]+)'/g)].map((m) => m[1]);
+    const inWriteSet = [...writeActionsBlock.matchAll(/'([a-z0-9-]+)'/g)].map((m) => m[1]).concat(activityController.writeActions);
     const known = new Set(fixture.actions.filter((e) => e.module === 'cognition-assets').map((e) => e.act));
     const unregistered = inWriteSet.filter((act) => !known.has(act));
     expect(unregistered).toEqual([]);

@@ -33,6 +33,7 @@
   }
 
   const UI_ICONS = {
+    'cognition-search': '<circle cx="10.5" cy="10.5" r="6.8"></circle><path d="m16 16 5 5"></path>',
     search: '<circle cx="11" cy="11" r="7"></circle><path d="m21 21-4.3-4.3"></path>',
     // 新建会话场景图标（index.html data-ui-icon="target"）：同心圆靶心。
     target: '<circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="5"></circle><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"></circle>',

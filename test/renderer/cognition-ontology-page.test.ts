@@ -9,6 +9,7 @@ function pageHarness(extraRecords: Record<string, any> = {}, customSearchResults
   const file = path.join(__dirname, '../../src/renderer/modules/cognition-ontology.js');
   const source = fs.readFileSync(file, 'utf8');
   const calls: Array<{ channel: string; payload: Record<string, unknown> }> = [];
+  const graphMounts: Array<{ moduleId: string; records: Record<string, unknown> }> = [];
   const buttonCalls: Array<Record<string, any>> = [];
   const toasts: Array<{ message: string; options?: Record<string, unknown> }> = [];
   let failNextGraph = false;
@@ -27,6 +28,13 @@ function pageHarness(extraRecords: Record<string, any> = {}, customSearchResults
     querySelectorAll(selector: string) {
       if (selector !== '[data-ui-tabs]') return [];
       return this.tabGroups;
+    },
+    querySelector(selector: string) {
+      if (selector === '[data-ontology-graph-mount]' && this._html.includes('data-ontology-graph-mount')) {
+        const moduleId = this._html.match(/data-ontology-graph-mount data-module-id="([^"]*)"/)?.[1] || '';
+        return { dataset: { moduleId } };
+      }
+      return null;
     },
     set innerHTML(value: string) {
       this._html = value;
@@ -51,6 +59,16 @@ function pageHarness(extraRecords: Record<string, any> = {}, customSearchResults
         if (!snapshotGate) return { ok: true, ontology: doc };
         return snapshotGate.then(() => ({ ok: true, ontology: doc }));
       }
+      if (channel === 'cognition.ontology.document.edit') {
+        const record = (doc.records as Record<string, any>)[String(payload.recordId)];
+        if (payload.expectedRevision !== doc.revision || payload.expectedVersion !== record.version) return { ok: false, error: 'baseline_changed', code: 'baseline_changed' };
+        const changes = payload.changes as Record<string, unknown>;
+        const saved = { ...record, ...changes, version: record.version + 1 };
+        (doc.records as Record<string, any>)[record.id] = saved;
+        doc.revision++;
+        (doc.history as any[]).push({ commandId: payload.commandId, after: saved });
+        return { ok: true, recordId: record.id, receipt: { commandId: payload.commandId, revision: doc.revision, changedIds: [record.id] }, ontology: structuredClone(doc) };
+      }
       if (channel === 'recall.candidates.list') return { ok: true, candidates: [
         { capabilities: { countsAsPending: true } }, { capabilities: { countsAsPending: true, isSnoozed: true } },
         { capabilities: { countsAsPending: false } },
@@ -67,6 +85,7 @@ function pageHarness(extraRecords: Record<string, any> = {}, customSearchResults
           ...(focusId ? { focusId, focusNodeId: focusId } : {}) } };
       }
       if (channel === 'cognition.ontology.search') return { ok: true, results: customSearchResults || [{ id: 'focus-person', kind: 'entity', name: '林青', moduleId: 'project-module' }] };
+      if (channel === 'cognition.ontology.module.lifecycle') return { ok: true, receipt: { changedIds: [payload.moduleId] } };
       if (channel === 'cognition.ontology.command.preview') return { ok: true, changes: [] };
       if (channel === 'cognition.ontology.history.get') return { ok: true, history: [] };
       if (channel === 'cognition.ontology.import.file') return { ok: true, cancelled: false, ...importFile };
@@ -104,7 +123,13 @@ function pageHarness(extraRecords: Record<string, any> = {}, customSearchResults
       if (control?.kind === 'textarea') return `<textarea id="${id}" ${attrs}>${control.value || ''}</textarea>`;
       if (control?.kind === 'select') return `<div id="${id}" data-ui-select data-ui-select-config='${JSON.stringify({ value: control.value || '' })}'></div>`;
       return '<div class="ui-field"></div>';
-    }, uiTextarea() { return '<textarea></textarea>'; }, uiSelect() { return '<div></div>'; },
+    }, uiTextarea() { return '<textarea></textarea>'; }, uiSelect(options: any) {
+      if (options?.native === true) {
+        const attrs = Object.entries(options.attrs || {}).map(([key, value]) => `${key}="${String(value)}"`).join(' ');
+        return `<select id="${options.id}" class="ui-native-select ${options.className || ''}" aria-label="${options.ariaLabel}" ${attrs}>${(options.options || []).map((option: any) => `<option value="${option.value}"${option.value === options.value ? ' selected' : ''}>${option.label}</option>`).join('')}</select>`;
+      }
+      return '<div></div>';
+    },
     async uiConfirm() { return confirmResult; },
     uiModal({ bodyHtml }: any) {
       const controls = [...bodyHtml.matchAll(/data-ontology-field="([^"]+)"/g)].map(match => ({ dataset: { ontologyField: match[1] }, value: nextFormValues[match[1]] || '' }));
@@ -129,14 +154,21 @@ function pageHarness(extraRecords: Record<string, any> = {}, customSearchResults
     uiTabs({ items, attrs = {} }: any) { return `<div class="ui-tabs" data-ui-tabs ${Object.entries(attrs).map(([k,v]) => `${k}="${v}"`).join(' ')}>${items.map((item: any) => `<button data-ui-tab="${item.value}">${item.label}</button>`).join('')}</div>`; },
     hydrateUiTabs() {},
   };
+  root.CogOntologyGraph = { mount(_mount: unknown, options: any) {
+    graphMounts.push({ moduleId: options.moduleId, records: options.doc.records });
+    return { update() {}, destroy() {} };
+  } };
   const bodySelects: Array<{ id: string; value: string }> = [];
   root.hydrateUiFormSelects = (_form: unknown, callbacks: Record<string, (value: string) => void>) => {
     for (const select of bodySelects) callbacks[select.id]?.(select.value);
     bodySelects.length = 0;
   };
   const context: any = { window: root, document: {}, console, Date, Intl, Map, Set, String, Number, Math, JSON, setTimeout, clearTimeout };
+  for (const name of ['cognition-ontology-document.js', 'cognition-ontology-editor.js']) {
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../src/renderer/modules', name), 'utf8'), context, { filename: name });
+  }
   vm.runInNewContext(source, context, { filename: file });
-  return { context, container, calls, buttonCalls, toasts, module, failNextGraph() { failNextGraph = true; }, setFormValues(values: Record<string, string>) { nextFormValues = values; },
+  return { context, container, calls, graphMounts, buttonCalls, toasts, module, failNextGraph() { failNextGraph = true; }, setFormValues(values: Record<string, string>) { nextFormValues = values; },
     setConfirmResult(value: boolean) { confirmResult = value; },
     releaseSnapshot() { releaseSnapshot?.(); },
     dispatchWindowEvent(type: string) { root.dispatchEvent({ type }); },
@@ -172,6 +204,66 @@ function clickEdge(container: any, edgeId: string) {
 }
 
 describe('本体工作台页面层级与接线', () => {
+  it('原地切换各类详情，保留正文节点并保持点击位置和无滚动的焦点恢复', async () => {
+    const base = { moduleId: 'project-module', version: 1, status: 'active', access: 'task', source: { kind: 'user', label: '来源' }, createdAt: null, updatedAt: null };
+    const records: Record<string, any> = {
+      type: { ...base, id: 'type', kind: 'definition', name: '人物', definitionKind: 'type', subjectTypes: [], objectTypes: [], valueType: 'entity', cardinality: 'many' },
+      relation: { ...base, id: 'relation', kind: 'definition', name: '协作', definitionKind: 'relation', subjectTypes: ['type'], objectTypes: ['type'], valueType: 'entity', cardinality: 'many' },
+      rule: { ...base, id: 'rule', kind: 'rule', name: '规则', requirement: '需要核对', strength: 'required', effect: { kind: 'note' } },
+      person: { ...base, id: 'person', kind: 'entity', name: '甲', typeId: 'type', description: '说明', aliases: [], identityStatus: 'confirmed' },
+      fact: { ...base, id: 'fact', kind: 'assertion', subjectId: 'person', definitionId: 'relation', object: { kind: 'entity', id: 'person' }, validity: { from: null, until: null, precision: 'day', timezone: 'UTC' } },
+    };
+    const f = pageHarness(records);
+    await f.context.window.mountCognitionOntology(f.container, { moduleId: 'project-module' });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const originalHTML = f.container.innerHTML;
+    const scrollCalls: any[] = [];
+    const scroll = { scrollTop: 1000, scrollLeft: 12, scrollTo(options: any) { scrollCalls.push(options); this.scrollTop = options.top; } };
+    const panels = Object.keys(records).map(id => {
+      const cell = { innerHTML: '' };
+      return { dataset: { ontologyPanel: id }, tagName: ['person', 'fact'].includes(id) ? 'DIV' : 'TR', hidden: true, innerHTML: '', querySelector: () => cell, cell };
+    });
+    const focusCalls: any[] = [];
+    const controls = panels.map((panel, index) => ({
+      dataset: { ontologyAction: 'document-disclosure', recordId: panel.dataset.ontologyPanel }, isConnected: true, expanded: 'false',
+      classList: { contains: (name: string) => name === 'ont-record-disclosure' },
+      setAttribute(_name: string, value: string) { this.expanded = value; },
+      getBoundingClientRect: () => ({ top: 200 + index * 40 + panels.slice(0, index).filter(node => !node.hidden).length * 120 - scroll.scrollTop }),
+      closest(selector: string) { return selector === '[data-ontology-action]' ? this : null; },
+      focus(options: any) { focusCalls.push(options); },
+    }));
+    f.container.querySelectorAll = (selector: string) => selector === '[data-ontology-panel]' ? panels : selector === '[data-ontology-action="document-disclosure"]' ? controls : [];
+    f.container.querySelector = (selector: string) => selector === '[data-ontology-scroll]' ? scroll : null;
+    const dispatch = (target: any) => (f.container.listeners.get('click') || []).forEach((listener: Function) => listener({ target, preventDefault() {} }));
+    for (const [index, control] of controls.entries()) {
+      const top = control.getBoundingClientRect().top;
+      dispatch(control);
+      expect(control.getBoundingClientRect().top).toBe(top);
+      expect(control.expanded).toBe('true');
+      expect(panels.filter(panel => !panel.hidden)).toEqual([panels[index]]);
+      const body = panels[index].tagName === 'TR' ? panels[index].cell : panels[index];
+      expect(body.innerHTML).toContain('ont-inspector');
+      expect(f.container.innerHTML).toBe(originalHTML);
+    }
+    const close = { dataset: controls.at(-1)!.dataset, closest(selector: string) { return selector === '[data-ontology-action]' ? this : selector === '[data-ontology-panel]' ? panels.at(-1) : null; } };
+    dispatch(close);
+    expect(panels.every(panel => panel.hidden)).toBe(true);
+    expect(focusCalls).toEqual([{ preventScroll: true }]);
+    expect(scrollCalls.every(call => call.behavior === 'instant' && call.left === 12)).toBe(true);
+    expect(f.calls.some(call => call.channel === 'cognition.ontology.document.edit')).toBe(false);
+  });
+
+  it('文档重绘恢复滚动时绕过平滑动画', async () => {
+    const f = pageHarness();
+    await f.context.window.mountCognitionOntology(f.container);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const scrollCalls: any[] = [];
+    const scroll = { scrollTop: 480, scrollLeft: 20, scrollTo(options: any) { scrollCalls.push(options); } };
+    f.container.querySelector = (selector: string) => selector === '[data-ontology-scroll]' ? scroll : null;
+    click(f.container, 'directory-scope', '', { scope: 'all' });
+    expect(scrollCalls).toEqual([{ top: 480, left: 20, behavior: 'instant' }]);
+  });
+
   it('本体页面引用的动态文案在四个语言文件中都能找到', () => {
     const source = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-ontology.js'), 'utf8');
     const keys = new Set([...source.matchAll(/text\('([^']+)'/g)].map(match => `ontologyWorkspace.${match[1]}`));
@@ -183,26 +275,27 @@ describe('本体工作台页面层级与接线', () => {
       expect(table['ontologyWorkspace.title'], `${locale}.json has wrong ontology page title`).toBe(expectedTitle);
     }
   });
-  it('列表与全局图谱是同级视图，图谱页不会重复渲染本体首页内容', async () => {
+  it('列表与全局图谱是同级视图，图谱从当前主档投影', async () => {
     const f = pageHarness();
     await f.context.window.mountCognitionOntology(f.container);
-    expect(f.container.innerHTML).toContain('ontology-ws-module-grid');
-    expect(f.container.tabGroups.some((group: any) => group.dataset.ontologyTabs === 'workspace')).toBe(true);
-    f.container.tabGroups.find((group: any) => group.dataset.ontologyTabs === 'workspace').fire('graph');
+    expect(f.container.innerHTML).toContain('ont-module-cards');
+    expect(f.container.innerHTML).toContain('data-ontology-action="directory-view"');
+    click(f.container, 'directory-view', '', { view: 'graph' });
     await new Promise(resolve => setTimeout(resolve, 0));
-    expect(f.calls.some(call => call.channel === 'cognition.ontology.graph.query' && !call.payload.moduleId)).toBe(true);
-    expect(f.container.innerHTML).toContain('ontology-ws-graph-shell');
-    expect(f.container.innerHTML).toContain('ontology-ws-stats');
-    expect(f.container.tabGroups.some((group: any) => group.dataset.ontologyTabs === 'workspace')).toBe(true);
-    expect(f.container.innerHTML).not.toContain('ontology-ws-module-grid');
+    expect(f.graphMounts.at(-1)?.moduleId).toBe('');
+    expect(f.graphMounts.at(-1)?.records['project-module']).toBeDefined();
+    expect(f.calls.some(call => call.channel === 'cognition.ontology.graph.query')).toBe(false);
+    expect(f.container.innerHTML).toContain('data-ontology-graph-mount');
+    expect(f.container.innerHTML).toContain('data-ontology-action="directory-view"');
+    expect(f.container.innerHTML).not.toContain('ont-module-cards');
   });
-  it('首页待处理统计只计入可处理且未延后的共同候选', async () => {
+  it('目录移除旧统计区，同时保留共同候选读取', async () => {
     const f = pageHarness();
     await f.context.window.mountCognitionOntology(f.container);
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(f.calls.some(call => call.channel === 'personalOntology.candidates.list')).toBe(true);
-    expect(f.container.innerHTML).toContain('<strong>1</strong><span>待处理事项</span>');
-    expect(f.container.innerHTML).not.toContain('<strong>3</strong><span>待处理事项</span>');
+    expect(f.container.innerHTML).not.toContain('ontology-ws-stats');
+    expect(f.container.innerHTML).toContain('ont-directory-compact');
   });
   it('拒绝白话保存预览时不提交候选记录，保留表单供再次核对', async () => {
     const type = { id: 'person-type', kind: 'definition', moduleId: 'project-module', version: 1, status: 'active', access: 'task',
@@ -221,38 +314,22 @@ describe('本体工作台页面层级与接线', () => {
     await f.saveDialog();
     expect(f.calls.filter(call => call.channel === 'cognition.ontology.candidate.commit')).toHaveLength(1);
   });
-  it('认知资产按钮使用浅色层级和能表达动作的图标', async () => {
-    const f = pageHarness();
+  it('v17 目录提供创建、导入及范围筛选，卡片只有一个可键盘访问的入口', async () => {
+    const personal = { id: 'personal-module', kind: 'module', version: 1, status: 'active', access: 'task', source: { kind: 'user', label: '用户确认' }, name: '个人规则', description: '用途说明。第二句话', scope: { kind: 'personal' } };
+    const f = pageHarness({ [personal.id]: personal });
     await f.context.window.mountCognitionOntology(f.container);
-    const action = (name: string) => f.buttonCalls.find(button => button.attrs?.['data-ontology-action'] === name);
-    expect(action('import')).toMatchObject({ role: 'secondary', className: 'ontology-ws-button', icon: 'upload' });
-    expect(action('supplement')).toMatchObject({ role: 'secondary', className: 'ontology-ws-button', icon: 'sparkles' });
-    expect(action('create-module')).toMatchObject({ role: 'primary', className: 'ontology-ws-button', icon: 'plus' });
-    expect(action('open-module')).toMatchObject({ role: 'secondary', className: 'ontology-ws-button', icon: 'arrow-right' });
-    expect(f.container.innerHTML).toContain('ui-button__icon is-upload');
-    const assetCss = fs.readFileSync(path.join(__dirname, '../../src/renderer/cognition-assets.css'), 'utf8');
-    expect(assetCss).toContain('#ca-root .btn.ui-button--primary');
-    expect(assetCss).toContain('background: var(--color-brand-soft)');
-  });
-  it('本体卡片用不同图标与颜色区分范围和旧来源', async () => {
-    const personal = { id: 'personal-module', kind: 'module', version: 1, status: 'active', access: 'task', createdAt: null, updatedAt: null,
-      source: { kind: 'user', label: '用户确认' }, name: '个人规则', description: '', scope: { kind: 'personal' } };
-    const workspace = { id: 'workspace-module', kind: 'module', version: 1, status: 'active', access: 'task', createdAt: null, updatedAt: null,
-      source: { kind: 'user', label: '用户确认' }, name: '团队知识', description: '', scope: { kind: 'workspace', id: 'w-1' } };
-    const legacy = { id: 'legacy-module', kind: 'module', version: 1, status: 'active', access: 'task', createdAt: null, updatedAt: null,
-      source: { kind: 'legacy', label: '旧个人本体', recordId: 'legacy-group' }, name: '旧记录', description: '', scope: { kind: 'personal' } };
-    const f = pageHarness({ [personal.id]: personal, [workspace.id]: workspace, [legacy.id]: legacy });
-    await f.context.window.mountCognitionOntology(f.container);
-    expect(f.container.innerHTML).toContain('ontology-ws-module-icon--project');
-    expect(f.container.innerHTML).toContain('is-folder');
-    expect(f.container.innerHTML).toContain('ontology-ws-module-icon--personal');
-    expect(f.container.innerHTML).toContain('is-user');
-    expect(f.container.innerHTML).toContain('ontology-ws-module-icon--workspace');
-    expect(f.container.innerHTML).toContain('is-users');
-    expect(f.container.innerHTML).toContain('ontology-ws-module-icon--legacy');
-    expect(f.container.innerHTML).toContain('is-archive');
-    expect(f.container.innerHTML).toContain('ontology-ws-scope--legacy');
-    expect(f.container.innerHTML).toContain('旧来源');
+    expect(f.container.innerHTML).toContain('ont-directory-compact');
+    expect(f.container.innerHTML).toContain('data-ontology-action="import"');
+    expect(f.container.innerHTML).toContain('data-ontology-action="create-module"');
+    expect(f.container.innerHTML).toContain('role="link" tabindex="0" data-card-module="personal-module"');
+    expect(f.container.innerHTML).toContain('个人规则');
+    expect(f.container.innerHTML).not.toContain('第二句话');
+    expect(f.container.innerHTML).not.toContain('data-ontology-action="module-menu"');
+    click(f.container, 'directory-scope', '', { scope: 'personal' });
+    expect(f.container.innerHTML).toContain('data-card-module="personal-module"');
+    expect(f.container.innerHTML).not.toContain('data-card-module="project-module"');
+    click(f.container, 'directory-scope', '', { scope: 'all' });
+    expect(f.container.innerHTML).toContain('data-card-module="project-module"');
   });
   it('候选整理入口先展示来源并按项目范围选本体，手工新增记录经候选交接 IPC 保存', async () => {
     const personType = { id: 'person-type', kind: 'definition', moduleId: 'project-module', version: 1, status: 'active', access: 'task',
@@ -313,40 +390,66 @@ describe('本体工作台页面层级与接线', () => {
     expect(f.calls.some(call => call.channel === 'cognition.ontology.command.commit')).toBe(false);
     expect(f.toasts.some(toast => toast.options?.variant === 'success')).toBe(true);
   });
-  it('从全局图谱进入本体再返回时恢复图谱层级、缩放和选中对象', async () => {
+  it('从全局图谱进入本体后展示同一主档文档，返回仍是全局图谱', async () => {
     const f = pageHarness();
     await f.context.window.mountCognitionOntology(f.container);
-    f.container.tabGroups.find((group: any) => group.dataset.ontologyTabs === 'workspace').fire('graph');
+    click(f.container, 'directory-view', '', { view: 'graph' });
     await new Promise(resolve => setTimeout(resolve, 0));
-    expect(f.container.innerHTML).toContain('role="group" aria-label="本体关系图谱"');
-    click(f.container, 'graph-zoom-in');
-    const viewBox = f.container.innerHTML.match(/viewBox="([^"]+)"/)?.[1];
+    expect(f.graphMounts.at(-1)?.moduleId).toBe('');
     click(f.container, 'open-module', f.module.id);
     await new Promise(resolve => setTimeout(resolve, 0));
-    expect(f.container.innerHTML).toContain('返回全局图谱');
+    expect(f.container.innerHTML).toContain('data-ontology-module-view="project-module"');
+    expect(f.container.innerHTML).toContain('id="ontology-doc-tbox"');
     click(f.container, 'back-list');
     await new Promise(resolve => setTimeout(resolve, 0));
-    expect(f.container.innerHTML).toContain('ontology-ws-node-panel');
-    expect(f.container.innerHTML).toContain('本体关系图谱');
-    expect(f.container.innerHTML.match(/viewBox="([^"]+)"/)?.[1]).toBe(viewBox);
+    expect(f.graphMounts.at(-1)?.moduleId).toBe('');
   });
-  it('进入具体本体后，三个盒子与本体图谱位于同一层级并请求模块范围图', async () => {
+  it('具体本体在单页完整展示 T/R/A，关系图谱切换使用同一份主档', async () => {
     const f = pageHarness();
     await f.context.window.mountCognitionOntology(f.container);
     click(f.container, 'open-module', f.module.id);
     await new Promise(resolve => setTimeout(resolve, 0));
-    expect(f.container.innerHTML).toContain('TBox');
-    expect(f.container.innerHTML).toContain('ABox');
-    expect(f.container.innerHTML).toContain('RBox');
-    f.container.tabGroups.find((group: any) => group.dataset.ontologyTabs === 'module').fire('graph');
+    for (const box of ['tbox', 'rbox', 'abox']) expect(f.container.innerHTML).toContain(`id="ontology-doc-${box}"`);
+    expect(f.container.tabGroups.some((group: any) => group.dataset.ontologyTabs === 'module')).toBe(false);
+    click(f.container, 'document-view-toggle');
     await new Promise(resolve => setTimeout(resolve, 0));
-    expect(f.calls.some(call => call.channel === 'cognition.ontology.graph.query' && call.payload.moduleId === f.module.id)).toBe(true);
-    expect(f.container.innerHTML).toContain('ontology-ws-graph-shell');
-    expect(f.container.innerHTML).toContain('? = 生效时间待确认');
-    expect(f.container.innerHTML).toContain('1/240');
-    expect(f.container.innerHTML).toContain('1/600');
+    expect(f.graphMounts.at(-1)?.moduleId).toBe(f.module.id);
+    expect(f.graphMounts.at(-1)?.records).toBeDefined();
+    expect(f.calls.some(call => call.channel === 'cognition.ontology.graph.query')).toBe(false);
+    click(f.container, 'document-view-toggle');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(f.container.innerHTML).toContain('id="ontology-doc-abox"');
   });
-  it('旧本体逐条送审时保留来源与项目范围，并排除仅本人可见的关联事实', async () => {
+  it('采用文字建议后保存到主档，切换图谱读取保存后的同一值', async () => {
+    const entity = { id: 'person', kind: 'entity', moduleId: 'project-module', typeId: 'type', name: '甲', description: '旧说明', aliases: [], identityStatus: 'confirmed',
+      version: 1, status: 'active', access: 'task', source: { kind: 'user', label: '用户确认' }, createdAt: null, updatedAt: null };
+    const type = { id: 'type', kind: 'definition', moduleId: 'project-module', name: '人物', description: '', definitionKind: 'type', subjectTypes: [], objectTypes: [], valueType: 'entity', cardinality: 'many', cardinalityAnchor: 'subject',
+      version: 1, status: 'active', access: 'task', source: { kind: 'user', label: '用户确认' }, createdAt: null, updatedAt: null };
+    const f = pageHarness({ person: entity, type });
+    let adopt: any;
+    f.context.window.CogOntologySelection = { mount(_container: any, options: any) { adopt = options.save; return { hasDraft: () => false, refresh() {}, destroy() {} }; } };
+    await f.context.window.mountCognitionOntology(f.container);
+    click(f.container, 'open-module', f.module.id);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(f.container.innerHTML).toContain('data-ontology-edit="description" data-record-id="person"');
+    expect(f.calls.some(call => call.channel === 'cognition.ontology.document.edit')).toBe(false);
+    await adopt('person', 'description', '新说明');
+    click(f.container, 'document-view-toggle');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const saved = f.calls.find(call => call.channel === 'cognition.ontology.document.edit');
+    expect(saved?.payload).toMatchObject({ recordId: 'person', expectedRevision: 0, expectedVersion: 1, changes: { description: '新说明' } });
+    expect(f.graphMounts.at(-1)?.records.person).toMatchObject({ description: '新说明', version: 2 });
+    click(f.container, 'document-view-toggle');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(f.container.innerHTML).toContain('>新说明</span>');
+    click(f.container, 'record-details', 'person');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(f.calls.some(call => call.channel === 'cognition.ontology.history.get')).toBe(true);
+    expect(f.container.innerHTML).toContain('ontology-ws-history');
+    expect(f.container.innerHTML).toContain('data-ontology-action="merge-identity"');
+    expect(f.container.innerHTML).toContain('data-ontology-action="delete-record"');
+  });
+  it('旧本体展开详情后逐条送审保留来源与项目范围，并排除仅本人可见的关联事实', async () => {
     const legacyModule = { id: 'legacy-module', kind: 'module', version: 1, status: 'active', access: 'task', createdAt: null, updatedAt: null,
       source: { kind: 'legacy', label: '旧图谱', recordId: 'graph-module' }, name: '旧项目本体', description: '', scope: { kind: 'project', id: 'project-1' } };
     const type = { id: 'legacy-person-type', kind: 'definition', moduleId: legacyModule.id, name: '人物', description: '', definitionKind: 'type', subjectTypes: [], objectTypes: [], valueType: 'entity', cardinality: 'many', cardinalityAnchor: 'subject',
@@ -363,10 +466,10 @@ describe('本体工作台页面层级与接线', () => {
     await f.context.window.mountCognitionOntology(f.container);
     click(f.container, 'open-module', legacyModule.id);
     await new Promise(resolve => setTimeout(resolve, 0));
-    expect(f.container.innerHTML).toContain('逐项送入待我处理');
-    expect(f.container.innerHTML).not.toContain('data-ontology-action="legacy-candidate"');
-    click(f.container, 'open-record', entity.id);
-    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(f.container.innerHTML).toContain('旧来源内容以只读方式展示');
+    click(f.container, 'document-disclosure', entity.id);
+    expect(f.container.innerHTML).toMatch(/data-ontology-action="legacy-candidate"[^>]*data-record-id="legacy-person"/);
+    expect(f.container.innerHTML).not.toMatch(/data-ontology-action="legacy-candidate"[^>]*data-record-id="legacy-private"/);
     click(f.container, 'legacy-candidate', entity.id);
     await new Promise(resolve => setTimeout(resolve, 0));
     const saved = f.calls.find(call => call.channel === 'recall.candidates.save');
@@ -376,19 +479,17 @@ describe('本体工作台页面层级与接线', () => {
     expect(saved?.payload.value).toContain('林青');
     expect(saved?.payload.value).toContain('项目负责人');
     expect(saved?.payload.value).not.toContain('私密值不得外送');
-    click(f.container, 'open-record', privateFact.id);
-    await new Promise(resolve => setTimeout(resolve, 0));
-    expect(f.container.innerHTML).not.toContain('data-ontology-action="legacy-candidate"');
+    expect(f.container.innerHTML).toContain('仅自己查看，不提供给任务');
     click(f.container, 'legacy-candidate', privateFact.id);
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(f.calls.filter(call => call.channel === 'recall.candidates.save')).toHaveLength(1);
     expect(f.toasts.some(toast => toast.options?.variant === 'warning')).toBe(true);
   });
-  it('大量本体与盒内记录分页显示，切换 T/A/R 标签会同步切换对应盒子', async () => {
+  it('大量本体仍分页，单页文档同时展示全部定义', async () => {
     const extra: Record<string, any> = {};
     for (let index = 0; index < 62; index++) {
       const id = `page-module-${index}`;
-      extra[id] = { id, kind: 'module', version: 1, status: 'active', access: 'task', createdAt: null, updatedAt: `2026-10-${String(index + 1).padStart(2, '0')}T00:00:00Z`,
+      extra[id] = { id, kind: 'module', version: 1, status: 'active', access: 'task', createdAt: null, updatedAt: null,
         source: { kind: 'user', label: '用户确认' }, name: `分页本体 ${index}`, description: '', scope: { kind: 'personal' } };
     }
     for (let index = 0; index < 105; index++) {
@@ -398,100 +499,56 @@ describe('本体工作台页面层级与接线', () => {
     }
     const f = pageHarness(extra);
     await f.context.window.mountCognitionOntology(f.container);
-    expect(f.container.innerHTML.match(/data-ontology-action="open-module"/g)).toHaveLength(50);
-    expect(f.container.innerHTML).toContain('1–50 / 63');
+    expect(f.container.innerHTML.match(/data-card-module=/g)).toHaveLength(20);
     click(f.container, 'change-page', '', { pageKind: 'modules', page: '1' });
-    expect(f.container.innerHTML.match(/data-ontology-action="open-module"/g)).toHaveLength(13);
-    expect(f.container.innerHTML).toContain('51–63 / 63');
-
+    expect(f.container.innerHTML.match(/data-card-module=/g)).toHaveLength(20);
     click(f.container, 'open-module', 'project-module');
     await new Promise(resolve => setTimeout(resolve, 0));
-    f.container.tabGroups.find((group: any) => group.dataset.ontologyTabs === 'module').fire('A');
-    await new Promise(resolve => setTimeout(resolve, 0));
-    f.container.tabGroups.find((group: any) => group.dataset.ontologyTabs === 'module').fire('T');
-    await new Promise(resolve => setTimeout(resolve, 0));
-    expect(f.container.innerHTML.match(/data-ontology-action="open-record"/g)).toHaveLength(100);
-    expect(f.container.innerHTML).toContain('1–100 / 105');
-    expect(f.container.innerHTML).toContain('定义 0');
-    click(f.container, 'change-page', '', { pageKind: 'records', page: '1' });
-    expect(f.container.innerHTML.match(/data-ontology-action="open-record"/g)).toHaveLength(5);
-    expect(f.container.innerHTML).toContain('101–105 / 105');
+    expect(f.container.innerHTML.match(/<tr data-record-id="page-definition-/g)).toHaveLength(105);
     expect(f.container.innerHTML).toContain('定义 104');
+    expect(f.container.innerHTML).not.toContain('data-ontology-tabs="module"');
   });
-  it('搜索对象可聚焦图谱，点击关系线打开同一条事实详情', async () => {
+  it('搜索对象直接定位到同一本体文档中的记录', async () => {
     const entity = { id: 'focus-person', kind: 'entity', moduleId: 'project-module', typeId: 'person-type', name: '林青', description: '交付负责人', aliases: [], identityStatus: 'confirmed',
       version: 1, status: 'active', access: 'task', source: { kind: 'user', label: '用户确认' }, createdAt: null, updatedAt: null };
     const type = { id: 'person-type', kind: 'definition', moduleId: 'project-module', name: '人物', description: '', definitionKind: 'type', subjectTypes: [], objectTypes: [], valueType: 'entity', cardinality: 'many', cardinalityAnchor: 'subject',
       version: 1, status: 'active', access: 'task', source: { kind: 'user', label: '用户确认' }, createdAt: null, updatedAt: null };
-    const relation = { id: 'owner-definition', kind: 'definition', moduleId: 'project-module', name: '负责人', description: '', definitionKind: 'relation', subjectTypes: [type.id], objectTypes: [type.id], valueType: 'entity', cardinality: 'one', cardinalityAnchor: 'subject',
-      version: 1, status: 'active', access: 'task', source: { kind: 'user', label: '用户确认' }, createdAt: null, updatedAt: null };
-    const fact = { id: 'project-fact', kind: 'assertion', moduleId: 'project-module', subjectId: entity.id, definitionId: relation.id, object: { kind: 'entity', id: entity.id }, validity: { from: null, until: null, precision: 'day', timezone: 'UTC' },
-      version: 1, status: 'active', access: 'task', source: { kind: 'user', label: '用户确认' }, createdAt: null, updatedAt: null };
-    const f = pageHarness({ [entity.id]: entity, [type.id]: type, [relation.id]: relation, [fact.id]: fact });
+    const f = pageHarness({ [entity.id]: entity, [type.id]: type });
     await f.context.window.mountCognitionOntology(f.container);
-    click(f.container, 'open-module', 'project-module');
+    click(f.container, 'search-result', entity.id, { moduleId: 'project-module' });
     await new Promise(resolve => setTimeout(resolve, 0));
-    f.container.tabGroups.find((group: any) => group.dataset.ontologyTabs === 'module').fire('graph');
-    await new Promise(resolve => setTimeout(resolve, 0));
-    input(f.container, 'graphSearch', '林青');
-    await new Promise(resolve => setTimeout(resolve, 220));
-    expect(f.container.innerHTML).toContain('focus-record');
-    click(f.container, 'focus-record', entity.id);
-    await new Promise(resolve => setTimeout(resolve, 0));
-    expect(f.calls.some(call => call.channel === 'cognition.ontology.graph.query' && call.payload.focusId === entity.id)).toBe(true);
-    expect(f.container.innerHTML).toContain('返回本体图谱全景');
-    click(f.container, 'graph-layout', '', { layout: 'layers' });
-    expect(f.container.innerHTML).toContain('data-layout="layers"');
-    const normalViewBox = f.container.innerHTML.match(/viewBox="([^"]+)"/)?.[1];
-    click(f.container, 'graph-zoom', '', { zoomStep: '1' });
-    expect(f.container.innerHTML.match(/viewBox="([^"]+)"/)?.[1]).not.toBe(normalViewBox);
-    click(f.container, 'graph-zoom-reset');
-    expect(f.container.innerHTML.match(/viewBox="([^"]+)"/)?.[1]).toBe(normalViewBox);
-    click(f.container, 'graph-fullscreen');
-    expect(f.container.innerHTML).toContain('is-fullscreen');
-    expect(f.container.innerHTML).toContain('退出全屏');
-    expect(f.container.innerHTML.match(/viewBox="([^"]+)"/)?.[1]).toBe(normalViewBox);
-    for (const listener of f.context.window.listeners.get('keydown') || []) listener({ key: 'Escape', preventDefault() {}, target: { closest: () => null } });
-    expect(f.container.innerHTML).not.toContain('is-fullscreen');
-    expect(f.container.innerHTML).toContain('返回本体图谱全景');
-    f.failNextGraph();
-    click(f.container, 'graph-full');
-    await new Promise(resolve => setTimeout(resolve, 0));
-    expect(f.container.innerHTML).toContain('返回本体图谱全景');
-    expect(f.toasts.some(toast => toast.message === 'temporary graph failure')).toBe(true);
-    clickEdge(f.container, 'unknown-fact');
-    expect(f.container.innerHTML).toContain('data-ontology-action="open-graph-record"');
-    click(f.container, 'open-graph-record', fact.id);
-    await new Promise(resolve => setTimeout(resolve, 0));
-    expect(f.container.innerHTML).toContain('林青 · 负责人 · 林青');
-    click(f.container, 'back-module');
-    await new Promise(resolve => setTimeout(resolve, 0));
-    expect(f.container.innerHTML).toContain('ontology-ws-graph-shell');
-    expect(f.container.innerHTML).toContain('data-ontology-edge="unknown-fact"');
-    expect(f.calls.filter(call => call.channel === 'cognition.ontology.graph.query' && call.payload.focusId === entity.id).length).toBeGreaterThanOrEqual(2);
+    expect(f.container.innerHTML).toContain('data-ontology-module-view="project-module"');
+    expect(f.container.innerHTML).toContain('data-record-id="focus-person"');
+    expect(f.container.innerHTML).toContain('交付负责人');
+    expect(f.calls.some(call => call.channel === 'cognition.ontology.history.get')).toBe(false);
   });
-  it('同名对象的图谱搜索结果显示所属本体与可区分的说明', async () => {
-    const one = { id: 'person-research', kind: 'entity', moduleId: 'project-module', typeId: 'person-type', name: '张浩', description: '研发组', aliases: [], identityStatus: 'confirmed',
-      version: 1, status: 'active', access: 'task', source: { kind: 'user', label: '用户确认' }, createdAt: null, updatedAt: null };
-    const two = { ...one, id: 'person-customer', description: '客户组' };
-    const type = { id: 'person-type', kind: 'definition', moduleId: 'project-module', name: '人物', description: '', definitionKind: 'type', subjectTypes: [], objectTypes: [], valueType: 'entity', cardinality: 'many', cardinalityAnchor: 'subject',
-      version: 1, status: 'active', access: 'task', source: { kind: 'user', label: '用户确认' }, createdAt: null, updatedAt: null };
-    const f = pageHarness({ [one.id]: one, [two.id]: two, [type.id]: type }, [
-      { id: one.id, kind: 'entity', name: one.name, moduleId: one.moduleId, description: one.description },
-      { id: two.id, kind: 'entity', name: two.name, moduleId: two.moduleId, description: two.description },
-    ]);
+  it('按日期浏览时正文只读，返回当前后恢复修改入口', async () => {
+    const f = pageHarness();
     await f.context.window.mountCognitionOntology(f.container);
-    click(f.container, 'open-module', 'project-module');
+    click(f.container, 'open-module', f.module.id);
     await new Promise(resolve => setTimeout(resolve, 0));
-    f.container.tabGroups.find((group: any) => group.dataset.ontologyTabs === 'module').fire('graph');
-    await new Promise(resolve => setTimeout(resolve, 0));
-    input(f.container, 'graphSearch', '张浩');
-    await new Promise(resolve => setTimeout(resolve, 220));
-    expect(f.container.innerHTML).toContain('CogSeed项目');
-    expect(f.container.innerHTML).toContain('研发组');
-    expect(f.container.innerHTML).toContain('客户组');
-    expect(f.container.innerHTML.match(/data-ontology-action="focus-record"/g)).toHaveLength(2);
+    f.setFormValues({ documentAt: '2020-01-01' });
+    click(f.container, 'document-date');
+    await f.saveDialog();
+    expect(f.container.innerHTML).toContain('data-ontology-action="document-current-date"');
+    expect(f.container.innerHTML).not.toContain('data-ontology-edit="name"');
+    expect(f.calls.some(call => call.channel === 'cognition.ontology.document.edit')).toBe(false);
+    click(f.container, 'document-current-date');
+    expect(f.container.innerHTML).toContain('data-ontology-edit="name"');
   });
+  it('文档工具栏添加内容保留原有创建动作', async () => {
+    const f = pageHarness();
+    await f.context.window.mountCognitionOntology(f.container);
+    click(f.container, 'open-module', f.module.id);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    click(f.container, 'document-add-toggle');
+    expect(f.container.innerHTML).toContain('data-ontology-action="create-definition"');
+    expect(f.container.innerHTML).toContain('data-ontology-action="create-entity"');
+    expect(f.container.innerHTML).toContain('data-ontology-action="create-assertion"');
+    expect(f.container.innerHTML).toContain('data-ontology-action="create-rule"');
+    expect(f.container.innerHTML).toContain('data-ontology-action="create-reference"');
+  });
+
 });
 
 describe('i18n-change 在快照未落地时只重绘加载骨架（语言切换崩溃修复）', () => {
@@ -504,23 +561,25 @@ describe('i18n-change 在快照未落地时只重绘加载骨架（语言切换�
     // 修复前：此处抛 TypeError（listPage→modules 读 state.doc.records）；修复后只重绘骨架
     expect(container.innerHTML).toContain('ontology-ws-loading');
     expect(container.innerHTML).not.toContain('ontology-ws-stats');
-    expect(container.innerHTML).not.toContain('ontology-ws-module-grid');
+    expect(container.innerHTML).not.toContain('ont-module-cards');
     f.releaseSnapshot();
     await mounted;
     // 数据落地后：i18n-change 走全量 render，模块网格正常回来
     f.dispatchWindowEvent('i18n-change');
     await new Promise(resolve => setTimeout(resolve, 0));
-    expect(container.innerHTML).toContain('ontology-ws-module-grid');
+    expect(container.innerHTML).toContain('ont-module-cards');
   });
 });
 
 describe('本体导出（FR-015/AC-013）页面接线', () => {
-  it('首页与模块页都有导出按钮；成功后 toast 带路径，取消不提示', async () => {
+  it('导出收进模块更多菜单，成功后 toast 带路径', async () => {
     const f = pageHarness();
     await f.context.window.mountCognitionOntology(f.container);
-    expect(f.container.innerHTML).toContain('data-ontology-action="export"');
-    // 模块详情页也有
+    expect(f.container.innerHTML).not.toContain('data-ontology-action="export"');
+    // 模块详情页收进更多菜单
     click(f.container, 'open-module', 'project-module');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    click(f.container, 'document-add-toggle');
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(f.container.innerHTML).toContain('data-ontology-action="export"');
     // 成功导出（模块页 → 带 moduleId）
@@ -530,5 +589,29 @@ describe('本体导出（FR-015/AC-013）页面接线', () => {
     expect(call).toBeTruthy();
     expect(call?.payload).toEqual({ moduleId: 'project-module' });
     expect(f.toasts.some(t => String(t.message).includes('/tmp/cogseed-ontology-export.json'))).toBe(true);
+  });
+});
+
+describe('本体卡片操作', () => {
+  it('管理动作收进模块更多菜单，删除取消不会写入', async () => {
+    const h = pageHarness();
+    await h.context.window.mountCognitionOntology(h.container);
+    click(h.container, 'open-module', h.module.id);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(h.container.innerHTML).toContain('data-ontology-action="delete-module"');
+    expect(h.container.innerHTML).toContain('data-ontology-action="archive-module"');
+    h.setConfirmResult(false);
+    click(h.container, 'delete-module', h.module.id);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(h.calls.some(c => c.channel === 'cognition.ontology.module.lifecycle')).toBe(false);
+  });
+  it.each(['archive-module', 'delete-module'])( '%s 提交模块版本和主档版本并刷新', async action => {
+    const h = pageHarness();
+    await h.context.window.mountCognitionOntology(h.container);
+    click(h.container, action, h.module.id);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(h.calls.find(c => c.channel === 'cognition.ontology.module.lifecycle')?.payload).toMatchObject({
+      moduleId: h.module.id, intent: action === 'delete-module' ? 'delete' : 'archive', expectedRevision: 0, expectedVersion: 1,
+    });
   });
 });

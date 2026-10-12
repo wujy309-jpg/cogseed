@@ -20,6 +20,12 @@ const legacyBase = <K extends OntologyKind>(id: string, kind: K, sourceLabel: st
 });
 
 function addUnique(target: Record<string, OntologyRecord>, record: OntologyRecord): void {
+  const saved = target[record.id];
+  // 旧模块的生命周期单独落主档；投影继续提供原始名称、来源和内容。
+  if (record.kind === 'module' && saved?.kind === 'module' && saved.source.kind === 'legacy' && saved.source.recordId === record.id) {
+    target[record.id] = { ...record, status: saved.status, version: saved.version, updatedAt: saved.updatedAt };
+    return;
+  }
   if (target[record.id]) throw new OntologyError('store_corrupt', 'legacy ontology identity collides with the common store', { recordId: record.id });
   Object.defineProperty(target, record.id, { value: record, writable: true, enumerable: true, configurable: true });
 }

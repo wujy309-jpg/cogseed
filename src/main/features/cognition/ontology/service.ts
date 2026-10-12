@@ -1,4 +1,5 @@
 /** 本体提交与读取复用认知主档、transition → document锁和坏档拒写。 */
+import { randomUUID } from 'node:crypto';
 import { withCognitionTransition } from '../../cognition_bridge';
 import { cognitionStorePath, applyCognitionDeltas, loadCognitionStoreSync } from '../../cognition_kernel/store';
 import { corruptRecordFor } from '../../../util/corrupt-guard';
@@ -75,4 +76,30 @@ export async function retireOntologyModulePause(userId: string): Promise<{ migra
     pausedRecords += moduleRecords.length;
   }
   return { migratedModules, pausedRecords };
+}
+
+/** 卡片生命周期复用主档命令与版本校验。旧来源只保存模块状态，内容仍由只读投影提供。 */
+export async function changeOntologyModuleLifecycle(userId: string, input: {
+  moduleId: string; intent: 'archive' | 'delete' | 'restore'; expectedRevision: number; expectedVersion: number;
+}) {
+  const doc = readOntologyDocument(userId);
+  if (doc.revision !== input.expectedRevision) throw new OntologyError('baseline_changed', 'ontology revision changed');
+  const view = await readOntologyView(userId);
+  const module = view.records[input.moduleId];
+  if (!module || module.kind !== 'module') throw new OntologyError('not_found', 'ontology module not found');
+  if (module.version !== input.expectedVersion) throw new OntologyError('baseline_changed', 'ontology module version changed');
+  const legacy = !doc.records[module.id] && module.source.kind === 'legacy';
+  if (legacy && input.intent === 'restore') throw new OntologyError('invalid_intent', 'module is already active');
+  const sourceLabel = '用户确认本体生命周期';
+  const actions: import('./commands').OntologyAction[] = [];
+  if (legacy) actions.push({ intent: 'create', recordId: module.id, sourceLabel,
+    record: { kind: 'module', name: module.name, description: module.description, scope: module.scope, access: module.access } });
+  actions.push({ intent: input.intent, recordId: module.id, expectedVersion: legacy ? 1 : module.version, sourceLabel });
+  const result = await commitOntologyCommand(userId, {
+    commandId: `module-${randomUUID()}`, expectedRevision: input.expectedRevision, actions,
+  }, module.source.kind === 'legacy' ? { kind: 'legacy', recordId: module.id, label: sourceLabel } : undefined);
+  const saved = readOntologyDocument(userId).records[module.id];
+  if (!result.receipt.changedIds.includes(module.id) || saved?.status !== (input.intent === 'restore' ? 'active' : 'archived'))
+    throw new OntologyError('commit_failed', 'module lifecycle read-back failed');
+  return result;
 }

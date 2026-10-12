@@ -307,3 +307,40 @@ describe('停用恢复仍走语义校验', () => {
     expect(replacement.records.owner.status).toBe('archived');
   });
 });
+
+describe('本体卡片生命周期持久化', () => {
+  it('正式本体删除保留历史，拒绝旧版本，恢复后可再次归档', async () => {
+    const service = await import('../../../src/main/features/cognition/ontology/service');
+    await service.commitOntologyCommand(uid, { commandId: 'module-seed', expectedRevision: 0,
+      actions: [create('mod-card', { kind: 'module', name: '卡片本体', description: '', scope: { kind: 'personal' }, access: 'task' })] });
+    const input = { moduleId: 'mod-card', intent: 'delete' as const, expectedRevision: 1, expectedVersion: 1 };
+    const result = await service.changeOntologyModuleLifecycle(uid, input);
+    expect(result.receipt.changedIds).toContain('mod-card');
+    expect(service.readOntologyDocument(uid).records['mod-card'].status).toBe('archived');
+    await expect(service.changeOntologyModuleLifecycle(uid, input)).rejects.toThrow(/revision changed/);
+    await service.changeOntologyModuleLifecycle(uid, { ...input, intent: 'restore', expectedRevision: 2, expectedVersion: 2 });
+    expect(service.readOntologyDocument(uid).records['mod-card'].status).toBe('active');
+    await service.changeOntologyModuleLifecycle(uid, { ...input, intent: 'archive', expectedRevision: 3, expectedVersion: 3 });
+    expect(service.readOntologyDocument(uid).history.map(row => row.intent)).toEqual(['create', 'delete', 'restore', 'archive']);
+  });
+  it('旧来源归档/恢复持久化，刷新不复活，也不改写原始资料', async () => {
+    const graph = await import('../../../src/main/features/ontology_graph');
+    await graph.createOntologyCategory(uid, { domain: 'resources', name: '旧卡片', description: '', fields: [] });
+    const file = path.join(root, uid, 'cloud', 'cognition', 'ontology-graph.json');
+    const original = fs.readFileSync(file, 'utf8');
+    const service = await import('../../../src/main/features/cognition/ontology/service');
+    const view = await service.readOntologyView(uid);
+    const id = 'legacy-ontology-graph';
+    expect(view.records[id].status).toBe('active');
+    await service.changeOntologyModuleLifecycle(uid, { moduleId: id, intent: 'archive', expectedRevision: view.revision, expectedVersion: 1 });
+    let after = await service.readOntologyView(uid);
+    expect(after.records[id]).toMatchObject({ status: 'archived', version: 2, source: { kind: 'legacy' } });
+    expect(fs.readFileSync(file, 'utf8')).toBe(original);
+    await service.changeOntologyModuleLifecycle(uid, { moduleId: id, intent: 'restore', expectedRevision: after.revision, expectedVersion: 2 });
+    after = await service.readOntologyView(uid);
+    expect(after.records[id].status).toBe('active');
+    await service.changeOntologyModuleLifecycle(uid, { moduleId: id, intent: 'delete', expectedRevision: after.revision, expectedVersion: 3 });
+    expect((await service.readOntologyView(uid)).records[id].status).toBe('archived');
+    expect(fs.readFileSync(file, 'utf8')).toBe(original);
+  });
+});

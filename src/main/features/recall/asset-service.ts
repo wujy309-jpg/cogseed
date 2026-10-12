@@ -22,7 +22,7 @@ import { assertNotForbiddenToPersist } from '../../util/cognition-sensitivity';
 import { fileEditLock } from '../../util/locks';
 import { normalizeCausalRule } from './world-model-types';
 import { resolveExecutionEvidenceRefs } from './evidence-resolution';
-import { assertCompliantAbilityAssetTitle, recallTitleIssue } from './title-policy';
+import { assertCompliantAbilityAssetTitle, assertReviewedAbilityAssetTitle, isReviewedAbilityAssetTitle, recallTitleIssue } from './title-policy';
 import { createLogger } from '../../logger';
 
 const log = createLogger('recall.assets');
@@ -30,6 +30,11 @@ const log = createLogger('recall.assets');
 /** `'ai'` = 模型经资产管家工具发起的写操作（specs/008 US-402）。
  *  与 `'system'` 分开：system 是自动线（抽取/沉淀/迁移），它带自动评审交接；
  *  ai 是用户在场的一次对话指令或 AI 自主提议，二者在台账上要能分辨。 */
+/** Shared active-version comparison; the committing check must run under the asset record lock. */
+export function matchesAbilityAssetActiveVersion(asset: Pick<RecallAbilityAssetRecord, 'activeVersion' | 'version'>, expected: string | undefined): boolean {
+  return typeof expected === 'string' && expected.length > 0 && String(asset.activeVersion || asset.version) === expected;
+}
+
 export type AbilityAssetActor = 'user' | 'system' | 'ai';
 export type AbilityAssetRecommendedAction = 'pause' | 'rework';
 
@@ -127,6 +132,10 @@ export interface UpdateAbilityAssetInput {
    *  先读后写就会留下 TOCTOU 窗口，"比对通过"与"真的没被改过"变成两件事。
    *  资产管家工具在"用户可能正在手动编辑同一条"的场景下必须传它。 */
   expectedVersion?: string;
+  /** Optional active-version CAS for background writes; selecting a historical version does not bump version. */
+  expectedActiveVersion?: string;
+  /** Background writes must not change a target paused after their preflight. */
+  expectedStatus?: RecallAbilityAssetRecord['status'];
   acknowledgeRecommendation?: boolean;
   reviewDecisionId?: string;
   sourceCandidateId?: string;
@@ -291,6 +300,14 @@ function bounded(value: unknown, field: string, max: number): string {
   return text;
 }
 
+/** Body content is multiline text; single-line metadata normalization must not rewrite its structure. */
+function boundedStatement(value: unknown): string {
+  if (typeof value !== 'string') throw new Error('invalid ability asset statement');
+  const text = value.replace(/\r\n?/g, '\n').trim();
+  if (!text || text.length > 4_000) throw new Error('invalid ability asset statement');
+  return text;
+}
+
 function requireAssetAction(input: unknown): AbilityAssetUserActionInput {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('ability asset action requires an actor');
   const record = input as Record<string, unknown>;
@@ -311,10 +328,24 @@ function snapshot(asset: RecallAbilityAssetRecord): AbilityAssetVersionRecord['s
   return assetVersionSnapshot(asset) as AbilityAssetVersionRecord['snapshot'];
 }
 
+/** A copied source snapshot now belongs to the merge target. Relations back to
+ * that target become self references; content, evidence and access stay intact. */
+function mergedSnapshotForTarget(value: Record<string, unknown>, targetId: string): Record<string, unknown> {
+  return {
+    ...value,
+    ...(Array.isArray(value.relations) ? { relations: value.relations.filter(ref => !ref || typeof ref !== 'object' || ref.assetId !== targetId) } : {}),
+    ...(Array.isArray(value.derivedFrom) ? { derivedFrom: value.derivedFrom.filter(id => id !== targetId) } : {}),
+  };
+}
+
 function asVersion(value: RecallJsonRecord): AbilityAssetVersionRecord {
   const rawSnapshot = value.snapshot;
   if (typeof value.assetId !== 'string' || typeof value.version !== 'string' || typeof value.at !== 'string' || !rawSnapshot || typeof rawSnapshot !== 'object' || Array.isArray(rawSnapshot)) throw new Error('malformed recall ability asset version');
-  const versionSnapshot = rawSnapshot as Record<string, unknown>;
+  // Older merges copied source relations verbatim. Normalize that legacy shape
+  // on read without rewriting immutable stored snapshots or relaxing other rows.
+  const versionSnapshot = /^merged (?:from|active version from) [A-Za-z0-9_-]+$/.test(String(value.reason || ''))
+    ? mergedSnapshotForTarget(rawSnapshot as Record<string, unknown>, value.assetId)
+    : rawSnapshot as Record<string, unknown>;
   if (!Array.isArray(versionSnapshot.evidenceRefs)) throw new Error('malformed recall ability asset version evidence');
   const scopePolicy = normalizeAbilityAssetScopePolicy(versionSnapshot.scopePolicy);
   const relationContract = readAbilityAssetRelationContract(versionSnapshot, value.assetId);
@@ -604,7 +635,8 @@ export async function createAbilityAsset(
   // 归一（空白折叠、trim、≤120），随后过 3.1 判定。闸门放在收口处，任何调用方
   // （晋升、跨会话记忆、AI 管家、审批卡确认、未来新增）都无法绕过。
   input = { ...input, title: bounded(input.title, 'title', 120) };
-  assertCompliantAbilityAssetTitle(input.title, input.statement);
+  if (metadata.actor === 'user') assertReviewedAbilityAssetTitle(input.title);
+  else assertCompliantAbilityAssetTitle(input.title, input.statement);
   bounded(metadata.reason, 'reason', 1_000);
   assertNotForbiddenToPersist([
     input.title,
@@ -773,7 +805,7 @@ export async function listAbilityAssetsForSpace(userId: string, spaceId: string)
 /** tags-only 更新判定（specs/012 T004）：除 tags/reason/actor/expectedVersion 外
  *  没有别的字段 = 纯标签元数据更新，走不 bump 版本的路径；任何内容字段在场
  *  都走既有内容路径（版本照常 bump，标签随同写入但不进版本快照）。 */
-const TAGS_ONLY_METADATA_KEYS = new Set(['tags', 'reason', 'actor', 'expectedVersion']);
+const TAGS_ONLY_METADATA_KEYS = new Set(['tags', 'reason', 'actor', 'expectedVersion', 'expectedActiveVersion', 'expectedStatus']);
 
 function isTagsOnlyUpdate(input: UpdateAbilityAssetInput): boolean {
   return Object.keys(input).every((key) => TAGS_ONLY_METADATA_KEYS.has(key));
@@ -852,6 +884,12 @@ export async function updateAbilityAsset(userId: string, assetId: string, input:
         `ability asset version conflict: expected v${input.expectedVersion}, current v${current.version}`,
       );
     }
+    if (input.expectedActiveVersion !== undefined && !matchesAbilityAssetActiveVersion(current, input.expectedActiveVersion)) {
+      throw new Error(`ability asset active version conflict: expected v${input.expectedActiveVersion}, current v${current.activeVersion || current.version}`);
+    }
+    if (input.expectedStatus !== undefined && current.status !== input.expectedStatus) {
+      throw new Error(`ability asset status conflict: expected ${input.expectedStatus}, current ${current.status}`);
+    }
     // 标签元数据路径（specs/012 T004）：tags-only 更新**不 bump 内容版本**——
     // 标签是元数据不是内容（对齐 family.ts:232 的 familyName 直写先例）；
     // 版本快照不含 tags（见 snapshot()），version-diff 因此永远不出现标签项。
@@ -877,7 +915,7 @@ export async function updateAbilityAsset(userId: string, assetId: string, input:
     const next: RecallAbilityAssetRecord = {
       ...current,
       ...(input.title !== undefined ? { title: bounded(input.title, 'title', 120) } : {}),
-      ...(input.statement !== undefined ? { statement: bounded(input.statement, 'statement', 4_000) } : {}),
+      ...(input.statement !== undefined ? { statement: boundedStatement(input.statement) } : {}),
       ...(input.scope !== undefined ? { scope: bounded(input.scope, 'scope', 500) } : {}),
       ...(input.scopePolicy !== undefined && scopePolicy ? { scopePolicy } : {}),
       ...(input.type !== undefined ? { type: input.type } : {}),
@@ -916,7 +954,10 @@ export async function updateAbilityAsset(userId: string, assetId: string, input:
     // 标题一等化闸门（设计 3.2 / 深探 F1）：title 在场即过 3.1 判定，比对用的
     // 正文是写入后的最终值（本次未改正文 = 在用正文）。闸门拦的是**写入**：
     // 存量遗留的不合规标题只要本次不写 title 就不受影响，不会被这里卡死。
-    if (input.title !== undefined) assertCompliantAbilityAssetTitle(next.title, next.statement);
+    if (input.title !== undefined) {
+      if (input.actor === 'user') assertReviewedAbilityAssetTitle(next.title);
+      else assertCompliantAbilityAssetTitle(next.title, next.statement);
+    }
     return next;
   });
   const asset = asAsset(updated);
@@ -1625,7 +1666,7 @@ export async function rollbackAbilityAsset(
       : (normalizeAssetScopeValue(String(rbScope || '')) || current.scope);
     // 判定用正文 = 目标快照自己的正文（回滚后的最终正文）；标题合规才随快照
     // 回滚，不合规则留在用标题（...current 先铺，content 已不含 title）。
-    titleRetained = recallTitleIssue(String(rbTitle ?? ''), String(target.snapshot.statement ?? '')) !== undefined;
+    titleRetained = !isReviewedAbilityAssetTitle(String(rbTitle ?? ''));
     const reverted: Record<string, unknown> = {
       ...current,
       // 只回滚内容，不回滚治理状态与成熟度：暂停过的资产不该因为回滚就自己
@@ -1702,7 +1743,7 @@ export async function selectAbilityAssetVersion(
       ? String(snapshotScope)
       : (normalizeAssetScopeValue(String(snapshotScope || '')) || current.scope);
     // 判定用正文 = 所选快照自己的正文（切换后的最终正文）。
-    titleRetained = recallTitleIssue(String(selectedTitle ?? ''), String(target.snapshot.statement ?? '')) !== undefined;
+    titleRetained = !isReviewedAbilityAssetTitle(String(selectedTitle ?? ''));
     const selected: Record<string, unknown> = {
       ...current,
       ...content,
@@ -1712,6 +1753,10 @@ export async function selectAbilityAssetVersion(
       updatedAt: new Date().toISOString(),
     };
     clearFieldsAbsentFromSnapshot(selected, target.snapshot as unknown as Record<string, unknown>);
+    // Selecting content is not an authorization rollback. Historical references
+    // keep their original snapshots; future use keeps the current access boundary.
+    if (current.scopePolicy !== undefined) selected.scopePolicy = current.scopePolicy;
+    else delete selected.scopePolicy;
     return selected as RecallAbilityAssetRecord;
   });
   const asset = asAsset(updated);
@@ -1787,7 +1832,27 @@ export async function deleteAbilityAssetVersion(
  * target 在用内容切换为 source 在用内容。source 条目归档并记录去向
  * （mergedIntoAssetId），历史引用不回写——时间线/回执仍指向原条目可读。
  */
+/** A version-group merge may not silently combine different use/authorization boundaries. */
+function assertSameMergeBoundary(source: RecallAbilityAssetRecord, target: RecallAbilityAssetRecord): void {
+  const policy = (asset: RecallAbilityAssetRecord) => Object.fromEntries(Object.entries(asset.scopePolicy || {})
+    .map(([key, values]) => [key, [...values].sort()]));
+  if (source.scope !== target.scope || !isDeepStrictEqual(policy(source), policy(target))) {
+    throw new Error('ability asset merge requires the same scope and access policy');
+  }
+}
+
 export async function mergeAbilityAssets(
+  userId: string,
+  sourceAssetId: string,
+  targetAssetId: string,
+  input: AbilityAssetUserActionInput,
+): Promise<RecallAbilityAssetRecord> {
+  // Reuse the reentrant cognition transition rail so source/target permissions
+  // cannot change between the boundary check, version migration and commit.
+  return withCognitionTransition(userId, () => mergeAbilityAssetsInTransition(userId, sourceAssetId, targetAssetId, input));
+}
+
+async function mergeAbilityAssetsInTransition(
   userId: string,
   sourceAssetId: string,
   targetAssetId: string,
@@ -1803,6 +1868,7 @@ export async function mergeAbilityAssets(
   if (!target) throw new Error('recall ability asset not found');
   assertMutableAbilityAsset(target);
   if (source.type !== target.type) throw new Error('ability asset merge requires the same type');
+  assertSameMergeBoundary(source, target);
   const sourceVersions = (await listAbilityAssetVersions(userId, sourceAssetId))
     .sort((left, right) => String(left.at).localeCompare(String(right.at)));
   const sourceActiveVersion = String(source.activeVersion || source.version || '1');
@@ -1830,7 +1896,7 @@ export async function mergeAbilityAssets(
       at: entry.at,
       reason: `merged from ${sourceAssetId}`,
       actor: action.actor,
-      snapshot: entry.snapshot,
+      snapshot: mergedSnapshotForTarget(entry.snapshot, targetAssetId),
     } as AbilityAssetVersionRecord);
   }
   // source 在用内容的快照（版本流缺失的遗留资产用 source 记录状态兜底）。
@@ -1854,7 +1920,7 @@ export async function mergeAbilityAssets(
       at: new Date().toISOString(),
       reason: `merged active version from ${sourceAssetId}`,
       actor: action.actor,
-      snapshot: sourceActiveSnapshot,
+      snapshot: mergedSnapshotForTarget(sourceActiveSnapshot, targetAssetId),
     } as AbilityAssetVersionRecord);
   }
   // 归并前的 live source 重读：函数开头读的 source 经过版本流搬运（多次
@@ -1868,6 +1934,8 @@ export async function mergeAbilityAssets(
     // 锁内复核三终态（与 rollback/select/update 同款）：版本搬运多次 await，
     // 锁外预检后窗口期内被 delete/revoke 的 target 不许再被铺内容或 bump 版本。
     assertMutableAbilityAsset(current);
+    assertSameMergeBoundary(sourceLive, current);
+    assertSameMergeBoundary(source, sourceLive);
     beforeTarget = current;
     // 关系/溯源并入不挑 source 新旧：source 随即归档，不搬就净丢失（族成员
     // 凭空少）。过滤自指（same_family 互指时 source 带着指向 target 的关系，
@@ -1904,7 +1972,7 @@ export async function mergeAbilityAssets(
     // 标题闸门（设计 3.2 / 深探 F15）：source 在用标题不合规时不铺到 target
     // （保留 target 在用标题），其余内容照常并入——归并不走 updateAbilityAsset
     // 收口，这里就是它的判定点。
-    const { status: _s, maturity: _m, version: _v, relations: _r, derivedFrom: _d, scope: snapshotScope, title: snapshotTitle, ...content } = sourceActiveSnapshot;
+    const { status: _s, maturity: _m, version: _v, relations: _r, derivedFrom: _d, scope: snapshotScope, scopePolicy: _sourceSnapshotPolicy, title: snapshotTitle, ...content } = sourceActiveSnapshot;
     const mergedScope = isRecallScopeTerm(String(snapshotScope || ''))
       ? String(snapshotScope)
       : (normalizeAssetScopeValue(String(snapshotScope || '')) || current.scope);
@@ -1993,7 +2061,6 @@ export async function listAbilityAssetVersionsWithUsage(
 ): Promise<{
   versions: AbilityAssetVersionRecord[];
   usage: Array<{ version: string; applied: number; contradicted: number; total: number }>;
-  frozen: Array<{ version: string; count: number }>;
 }> {
   const versions = await listAbilityAssetVersions(userId, assetId);
   const { listAssetUsageReceipts } = await import('./asset-usage-receipt');
@@ -2012,26 +2079,9 @@ export async function listAbilityAssetVersionsWithUsage(
   } catch {
     // 回执读取失败只丢效果列，不阻断版本链。
   }
-  // 冻结引用按版本计数（specs/008 US-402 AC6 / T023「被引用过的历史版本」）：
-  // 权威判据是已确认投影的 assetVersions 映射——与 deleteAbilityAssetVersion 的
-  // 冻结段同一判据。**不能拿 KSTAR 采用回执（上面的 usage）顶替**：那记录的是
-  // "这一版被判为实际采用/被否定"，与"这一版被某个任务引用过"是两件事，回执为空
-  // 时提示永不出现（2026-09-25 合并态走查抓出：v1 被 8 条投影冻结，界面无标记）。
-  const frozenCounts = new Map<string, number>();
-  try {
-    const { listAllConfirmedProjections } = await import('./context-projection');
-    for (const projection of await listAllConfirmedProjections(userId)) {
-      const version = String(projection.assetVersions?.[assetId] || '');
-      if (!version) continue;
-      frozenCounts.set(version, (frozenCounts.get(version) || 0) + 1);
-    }
-  } catch {
-    // 投影读取失败只丢「已有更新的版本」标记，不阻断版本链。
-  }
   return {
     versions,
     usage: [...counts.entries()].map(([version, c]) => ({ version, ...c })),
-    frozen: [...frozenCounts.entries()].map(([version, count]) => ({ version, count })),
   };
 }
 

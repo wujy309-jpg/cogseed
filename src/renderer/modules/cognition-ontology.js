@@ -10,7 +10,7 @@
   const invoke = async (channel, payload = {}) => {
     const result = await root.cogseed.invoke(channel, payload);
     if (!result || result.ok !== true) {
-      const codes = ['baseline_changed', 'not_authorized', 'conflict', 'invalid_time', 'not_found', 'store_corrupt', 'capacity_exceeded', 'command_reused', 'import_partial', 'commit_failed', 'invalid_intent', 'invalid_reference', 'conflicting_facts', 'ambiguous_identity', 'invalid_type', 'invalid_input'];
+      const codes = ['legacy_read_only', 'baseline_changed', 'not_authorized', 'conflict', 'invalid_time', 'not_found', 'store_corrupt', 'capacity_exceeded', 'command_reused', 'import_partial', 'commit_failed', 'invalid_intent', 'invalid_reference', 'conflicting_facts', 'ambiguous_identity', 'invalid_type', 'invalid_input'];
       const message = codes.includes(result?.code) ? text(`error_${result.code}`, result?.error || '', { count: result?.details?.submitted ?? 0 }) : result?.error;
       const error = new Error(message || text('error', '操作未完成，请稍后重试。'));
       error.details = result?.details || {};
@@ -76,6 +76,11 @@
       .sort((a, b) => (String(b.updatedAt || '') > String(a.updatedAt || '') ? 1 : String(b.updatedAt || '') < String(a.updatedAt || '') ? -1 : 0)
         || a.name.localeCompare(b.name));
   }
+  function moduleMenu(module) {
+    const attrs = { 'data-record-id': module.id };
+    return `${button(text('deleteModule', '删除'), 'delete-module', 'danger', attrs)}${module.status === 'active' ? button(text('archiveModule', '归档'), 'archive-module', 'ghost', attrs) : button(text('resumeModule', '恢复'), 'resume-module', 'ghost', attrs)}`;
+  }
+
   function moduleDescription(module) {
     if (module.description) return module.description;
     return module.source.kind === 'legacy'
@@ -262,50 +267,89 @@
     const next = current < pages - 1 ? button(text('nextPage', '下一页'), 'change-page', 'secondary', { 'data-page-kind': kind, 'data-page': current + 1 }) : '';
     return `<nav class="ontology-ws-pagination" aria-label="${esc(text('pagination', '分页'))}">${previous}<span role="status" aria-live="polite">${esc(text('pageSummary', '{start}–{end} / {total}', { start, end, total: count }))}</span>${next}</nav>`;
   }
+  function revealDocument(element) {
+    const scroll = state?.root.querySelector?.('.ont-document-scroll');
+    if (!element || !scroll?.scrollTo) return;
+    const chapterHeight = scroll.querySelector('.ont-document-contents')?.getBoundingClientRect().height || 0;
+    const top = scroll.scrollTop + element.getBoundingClientRect().top - scroll.getBoundingClientRect().top - chapterHeight - 12;
+    scroll.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+  }
+  function keepDocumentAnchor(anchor, update) {
+    const scroll = state.root.querySelector?.('[data-ontology-scroll]');
+    const top = anchor?.getBoundingClientRect?.().top;
+    update();
+    if (scroll?.scrollTo && Number.isFinite(top) && anchor?.isConnected) {
+      // Closing an earlier panel can move this row. Keep the clicked control in place.
+      scroll.scrollTo({ top: scroll.scrollTop + anchor.getBoundingClientRect().top - top, left: scroll.scrollLeft, behavior: 'instant' });
+    }
+  }
+  function toggleDocumentDisclosure(id, target) {
+    const panels = [...state.root.querySelectorAll('[data-ontology-panel]')];
+    const panel = panels.find(node => node.dataset.ontologyPanel === id);
+    const expandedId = state.documentExpandedId === id ? '' : id;
+    state.documentExpandedId = expandedId;
+    state.recordId = id;
+    if (!panel) { render(); return; }
+    const controls = [...state.root.querySelectorAll('[data-ontology-action="document-disclosure"]')];
+    const trigger = controls.find(node => node.dataset.recordId === id && node.classList.contains('ont-record-disclosure'))
+      || controls.find(node => node.dataset.recordId === id && !node.closest('[data-ontology-panel]'));
+    const anchor = target.closest?.('[data-ontology-panel]') ? trigger : target;
+    keepDocumentAnchor(anchor, () => {
+      for (const node of panels) {
+        const open = node.dataset.ontologyPanel === expandedId;
+        if (open || !node.hidden) {
+          const body = node.tagName === 'TR' ? node.querySelector('td') : node;
+          body.innerHTML = open ? inlineInspector(state.doc.records[expandedId]) : '';
+          node.hidden = !open;
+        }
+      }
+      for (const control of controls) {
+        if (control.classList.contains('ont-record-disclosure')) control.setAttribute('aria-expanded', String(control.dataset.recordId === expandedId));
+      }
+    });
+    if (target.closest?.('[data-ontology-panel]') || !target.isConnected) trigger?.focus({ preventScroll: true });
+  }
   function listPage() {
-    const allModules = modules(state.showInactive).filter(m => !state.showInactive || m.status !== 'active'), modulePageSize = 50, modulePageCount = Math.max(1, Math.ceil(allModules.length / modulePageSize));
-    state.modulePage = Math.min(state.modulePage || 0, modulePageCount - 1);
-    const visibleModules = allModules.slice(state.modulePage * modulePageSize, (state.modulePage + 1) * modulePageSize);
-    const moduleIds = new Set(allModules.map(module => module.id));
-    const entities = Object.values(state.doc.records).filter(r => r.kind === 'entity' && moduleIds.has(r.moduleId) && (state.showInactive || r.status === 'active'));
-    const rules = Object.values(state.doc.records).filter(r => r.kind === 'rule' && moduleIds.has(r.moduleId) && (state.showInactive || r.status === 'active'));
-    return `${pageHeader({ kicker: 'ONTOLOGY WORKSPACE', title: text('title', '本体'), description: text('subtitle', '组织你理解世界的方式，连接人物、项目、事实与规则。'), actions: `${button(text('import', '导入资料'), 'import', 'secondary', {}, 'upload')}${button(text('supplement', '补充认知'), 'supplement', 'secondary', {}, 'sparkles')}${button(text('export', '导出本体'), 'export', 'secondary', {}, 'download')}${button(text('createModule', '创建本体'), 'create-module', 'primary', {}, 'plus')}` })}
-      <div class="ontology-ws-stats">${stat(text('modules', '本体'), allModules.length)}${stat(state.showInactive ? text('retainedObjects', '保留对象') : text('objects', '具体对象'), entities.length)}${stat(state.showInactive ? text('retainedRules', '保留规则') : text('rules', '有效规则'), rules.length)}${stat(text('pendingItems', '待处理事项'), state.pendingCount ?? '—')}${stat(text('revision', '版本'), state.doc.revision)}</div>
-      <div class="ontology-ws-search">${root.uiField({ id: 'ontology-search-input', label: text('search', '搜索本体、人物、项目或关系'), showRequirement: false, control: { kind: 'input', type: 'search', placeholder: text('searchPlaceholder', '输入名称、别名或内容'), value: state.searchQuery || '', attrs: { 'data-ontology-field': 'search' } } })}${state.searchResults?.length ? `<div class="ontology-ws-search-results">${searchResultRows(state.searchResults, 'search-result')}</div>` : state.searchQuery ? `<div class="ontology-ws-search-empty">${esc(text('noSearchResults', '没有找到匹配内容。'))}</div>` : ''}</div>
-      <div class="ontology-ws-list-heading"><h2>${esc(text('myModules', '我的本体'))}</h2>${button(state.showInactive ? text('showActive', '查看有效本体') : text('showInactive', '查看暂停或归档'), 'toggle-inactive')}${tabs([['list', text('list', '列表')], ['graph', text('globalGraph', '关系图谱')]], state.mode, text('viewMode', '查看方式'), { 'data-ontology-tabs': 'workspace' })}</div>
-      ${state.mode === 'graph' ? graphCanvas(state.graph, false) : `<div class="ontology-ws-module-grid">${allModules.length ? visibleModules.map(m => {
-        const count = Object.values(state.doc.records).filter(r => r.kind !== 'module' && r.moduleId === m.id && r.status === 'active').length;
-        const records = Object.values(state.doc.records).filter(record => record.moduleId === m.id && record.status === 'active');
-        const counts = `${text('definitions', '定义')} ${records.filter(record => record.kind === 'definition').length} · ${text('objects', '具体对象')} ${records.filter(record => record.kind === 'entity').length} · ${text('rules', '有效规则')} ${records.filter(record => record.kind === 'rule').length}`;
-        const references = records.filter(record => record.kind === 'reference').map(record => moduleName(record.targetModuleId)).join(' · ');
-        const visual = moduleVisual(m);
-        const icon = typeof root.uiIconHtml === 'function' ? root.uiIconHtml(visual.icon, 'ontology-ws-module-glyph') : '';
-        return `<article class="ontology-ws-module-card"><div class="ontology-ws-module-icon ontology-ws-module-icon--${visual.kind}" aria-hidden="true">${icon}</div><span class="ontology-ws-scope ontology-ws-scope--${visual.kind}">${esc(visual.label)}</span><h3>${esc(m.name)}</h3><p>${esc(moduleDescription(m))}</p><small>${esc(counts)}</small>${references ? `<p>${esc(text('reference', '引用'))}：${esc(references)}</p>` : ''}<div class="ontology-ws-card-meta"><span>${count} ${esc(text('records', '条内容'))}</span><span>v${m.version}</span></div><div class="ontology-ws-card-actions">${button(text('open', '打开本体'), 'open-module', 'secondary', { 'data-record-id': m.id }, 'arrow-right')}${m.status !== 'active' && m.source.kind !== 'legacy' ? button(text('resumeModule', '恢复本体'), 'resume-module', 'secondary', { 'data-record-id': m.id }) : ''}</div></article>`;
-      }).join('') : `<div class="ontology-ws-empty"><h2>${esc(text('emptyTitle', '还没有本体'))}</h2><p>${esc(text('emptyBody', '创建一个本体，开始整理人物、项目和事实。'))}</p>${button(text('createModule', '创建本体'), 'create-module', 'primary')}</div>`}</div>
-      ${pageControls('modules', state.modulePage, allModules.length, modulePageSize)}${state.pendingCount > 0 ? `<section class="ontology-ws-pending-note"><p>${esc(text('pendingNotFacts', '有尚未核实的建议；确认前不会改变长期事实。'))}</p>${button(text('viewPending', '查看待处理事项'), 'open-review')}</section>` : ''}${recentRecords().length ? `<section class="ontology-ws-recent"><h2>${esc(text('recentViewed', '最近查看'))}</h2>${renderRecordList(recentRecords().slice(0, 6))}</section>` : ''}`}`;
+    const allModules = modules(state.showInactive).filter(m => (!state.showInactive || m.status !== 'active')
+      && (!state.scopeFilter || state.scopeFilter === 'all' || m.scope.kind === state.scopeFilter));
+    const query = String(state.searchQuery || '').trim().toLocaleLowerCase();
+    const matching = query ? allModules.filter(m => [m.name, m.description, m.scope.id].join(' ').toLocaleLowerCase().includes(query)) : allModules;
+    const modulePageSize = 20, pageCount = Math.max(1, Math.ceil(matching.length / modulePageSize));
+    state.modulePage = Math.min(state.modulePage || 0, pageCount - 1);
+    const visibleModules = matching.slice(state.modulePage * modulePageSize, (state.modulePage + 1) * modulePageSize);
+    const toggle = (label, action, selected, attrs = {}) => `<button type="button" class="${selected ? 'active' : ''}" data-ontology-action="${action}" aria-pressed="${selected}" ${Object.entries(attrs).map(([key, value]) => `${key}="${esc(value)}"`).join(' ')}>${esc(label)}</button>`;
+    const heading = query ? text('searchResults', '搜索结果') : state.showInactive ? text('inactiveModules', '已停用本体') : text('title', '本体');
+    const card = m => {
+      const records = Object.values(state.doc.records).filter(r => r.moduleId === m.id && r.status === 'active');
+      const description = moduleDescription(m).split(/[。；\n]/)[0];
+      const scope = m.source.kind === 'legacy' ? text('legacyDocumentReadOnlyShort', '旧来源 · 只读')
+        : `${text(m.scope.kind === 'workspace' ? 'workspaceScopeLabel' : m.scope.kind, ({ personal: '个人', project: '项目', workspace: '工作空间' })[m.scope.kind])}${m.scope.id ? ` · ${m.scope.id}` : ''}`;
+      return `<article class="ont-module-card" role="link" tabindex="0" data-card-module="${esc(m.id)}" data-record-id="${esc(m.id)}" aria-label="${esc(text('openModuleDocument', '打开{name}本体文档', { name: m.name }))}"><h3>${esc(m.name)}</h3><p class="ont-card-purpose">${esc(description.length > 70 ? description.slice(0, 70) + '…' : description)}</p><div class="ont-card-footer"><span class="ont-card-scope-label">${esc(scope)}</span><div class="ont-card-counts">${[['definition', '定义'], ['rule', '规则'], ['entity', '对象'], ['assertion', '事实']].map(([kind, label]) => `<span><b>${records.filter(r => r.kind === kind).length}</b>${esc(text(kind + 'CountLabel', label))}</span>`).join('')}</div></div></article>`;
+    };
+    const results = (state.searchResults || []).filter(row => allModules.some(m => m.id === (row.moduleId || row.id)));
+    return `<section class="ontology-page ont-premium ont-directory-compact${state.mode === 'graph' ? ' ont-directory-graph' : ''}"><div class="ont-library-scroll" data-ontology-scroll>
+      <header class="ont-library-heading"><h1>${esc(heading)}<span>· ${query ? results.length + matching.filter(m => !results.some(r => r.id === m.id)).length : allModules.length}</span></h1><div class="ont-library-actions">${button(text('import', '导入资料'), 'import')}${button('＋ ' + text('createModule', '创建本体'), 'create-module', 'primary')}<details class="ont-overflow"><summary aria-label="${esc(text('directoryMore', '本体目录更多选项'))}">···</summary><div class="ont-menu">${button(state.mode === 'graph' ? text('backModules', '返回本体列表') : text('moduleReferences', '查看本体间引用'), 'directory-view', 'ghost', { 'data-view': state.mode === 'graph' ? 'list' : 'graph' })}${button(state.showInactive ? text('showActive', '返回有效本体') : text('showInactive', '查看停用本体'), 'toggle-inactive', 'ghost')}${button(text('refresh', '重新读取'), 'refresh-directory', 'ghost')}</div></details></div></header>
+      <div class="ont-library-command"><div class="ont-library-view-toggle" aria-label="${esc(text('viewMode', '本体展示方式'))}">${toggle(text('cards', '卡片'), 'directory-view', state.mode !== 'graph', { 'data-view': 'list' })}${toggle(text('graph', '关系图'), 'directory-view', state.mode === 'graph', { 'data-view': 'graph' })}</div><div class="ont-scope-tabs">${[['all', '全部'], ['personal', '个人'], ['project', '项目'], ['workspace', '工作空间']].map(([value, label]) => toggle(text(value === 'workspace' ? 'workspaceScopeLabel' : value, label), 'directory-scope', (state.scopeFilter || 'all') === value, { 'data-scope': value })).join('')}</div>
+      <div class="ont-search-line ontology-ws-search"><label class="sr-only" for="ontology-search-input">${esc(text('search', '搜索本体、人物、项目或关系'))}</label><div class="search"><span class="ont-search-glyph" aria-hidden="true">⌕</span><input id="ontology-search-input" type="search" data-ontology-field="search" value="${esc(state.searchQuery || '')}" placeholder="${esc(text('directorySearchPlaceholder', '搜索本体或其中的内容'))}"><button class="search-clear" data-ontology-action="directory-clear-search" aria-label="${esc(text('clearSearch', '清空本体搜索'))}" ${query ? '' : 'hidden'}>×</button></div></div></div>
+      <div data-ontology-directory-content>${state.mode === 'graph' ? graphCanvas(state.graph, false) : query ? `<div class="ont-search-results">${[...matching.filter(m => !results.some(r => r.id === m.id)).map(m => ({ id: m.id, name: m.name, kind: 'module', moduleId: m.id })), ...results].map(row => `<button class="ont-search-result" data-ontology-action="search-result" data-record-id="${esc(row.id)}" data-module-id="${esc(row.moduleId || row.id)}"><span class="ont-result-meta">${esc(text(row.kind, row.kind))} · ${esc(moduleName(row.moduleId || row.id))}</span><strong>${esc(row.name)}</strong><p>${esc(searchResultContext(row))}</p><span class="ont-result-arrow">${esc(text('open', '打开'))} ↗</span></button>`).join('') || `<div class="ontology-ws-search-empty">${esc(text('noSearchResults', '没有找到匹配内容。'))}</div>`}</div>` : `<div class="ont-module-cards">${visibleModules.map(card).join('') || `<div class="empty"><h3>${esc(text('emptyTitle', '从一个领域开始'))}</h3><p>${esc(text('directoryEmptyHint', '人物、项目、事实与规则，都可以从这里建立联系。'))}</p>${button(text('createModule', '创建本体'), 'create-module')}</div>`}</div>${pageControls('modules', state.modulePage, matching.length, modulePageSize)}`}</div>
+      </div></section>`;
   }
   function modulePage() {
-    const m = state.doc.records[state.moduleId];
-    if (!m || m.kind !== 'module') { state.page = 'list'; return listPage(); }
-    const all = Object.values(state.doc.records).filter(r => r.kind !== 'module' && r.moduleId === m.id && (r.status === 'active' || state.showRecordInactive));
-    const boxItems = state.box === 'T' ? all.filter(r => r.kind === 'definition' && r.definitionKind !== 'relation')
-      : state.box === 'A' ? all.filter(r => r.kind === 'entity' || r.kind === 'assertion')
-        : all.filter(r => r.kind === 'reference' || r.kind === 'rule' || (r.kind === 'definition' && r.definitionKind === 'relation'));
-    const boxName = state.box === 'T' ? text('tbox', 'TBox · 概念定义') : state.box === 'A' ? text('abox', 'ABox · 对象与事实') : text('rbox', 'RBox · 关系与规则');
-    const legacy = m.source.kind === 'legacy' || m.status !== 'active';
-    const exportButton = m.status === 'active' ? button(text('export', '导出本体'), 'export', 'secondary', {}, 'download') : '';
-    const actions = legacy ? exportButton
-      : `${exportButton}${button(text('addContent', '添加内容'), 'add-content', 'primary')}${button(text('editModule', '编辑本体'), 'edit-module')}${button(text('createReference', '引用其他本体'), 'create-reference')}${button(state.showRecordInactive ? text('showActive', '查看使用中的本体') : text('showInactiveRecords', '查看历史或停用内容'), 'toggle-inactive-records')}`;
-    const body = state.tab === 'graph' ? graphCanvas(state.graph, true) : state.tab === 'overview'
-      ? `<div class="ontology-ws-overview"><section class="ontology-ws-overview-card"><span>${esc(text('scope', '范围'))}</span><strong>${esc(m.scope.kind === 'personal' ? text('personal', '个人') : m.scope.kind === 'project' ? text('project', '项目') : text('workspace', '工作区'))}</strong><p>${esc(m.scope.id || '')}</p></section><section class="ontology-ws-overview-card"><span>${esc(text('description', '说明'))}</span><p>${esc(moduleDescription(m))}</p></section><section class="ontology-ws-overview-card"><span>${esc(text('threeBoxes', '三个基础盒子'))}</span><div class="ontology-ws-box-summary">${button(`TBox · ${all.filter(r => r.kind === 'definition' && r.definitionKind !== 'relation').length}`, 'select-box', 'secondary', { 'data-box': 'T' })}${button(`ABox · ${all.filter(r => r.kind === 'entity' || r.kind === 'assertion').length}`, 'select-box', 'secondary', { 'data-box': 'A' })}${button(`RBox · ${all.filter(r => r.kind === 'reference' || r.kind === 'rule' || (r.kind === 'definition' && r.definitionKind === 'relation')).length}`, 'select-box', 'secondary', { 'data-box': 'R' })}</div></section></div><section class="ontology-ws-recent"><h2>${esc(text('recentRecords', '最近整理的内容'))}</h2>${renderRecordList(all.slice(0, 8))}</section>`
-      : `<div class="ontology-ws-box-title"><div><span>${esc(boxName)}</span><p>${esc(state.box === 'T' ? text('tboxHint', '定义这个本体认识哪些类型和属性。') : state.box === 'A' ? text('aboxHint', '保存具体人物、项目以及它们当前或过去的事实。') : text('rboxHint', '查看关系、规则和本体之间的引用。'))}</p></div>${legacy ? '' : state.box === 'A'
-        ? `${button(text('addEntity', '添加对象'), 'create-entity', 'primary')}${button(text('addFact', '记录关系或事实'), 'create-assertion')}`
-        : state.box === 'T' ? button(text('addDefinition', '添加定义'), 'create-definition', 'primary')
-          : `${button(text('addRelation', '添加关系定义'), 'create-relation-definition', 'primary')}${button(text('addRule', '添加规则'), 'create-rule')}`}</div>${renderRecordList(boxItems)}`;
-    return `${pageHeader({ kicker: esc(m.scope.kind === 'personal' ? text('personal', '个人') : m.scope.kind === 'project' ? text('project', '项目') : text('workspace', '工作区')), title: m.name, description: m.description, back: button(state.workspaceReturn ? text('backGlobalGraph', '← 返回全局图谱') : text('backModules', '← 本体列表'), 'back-list'), actions })}
-      ${tabs([['overview', text('overview', '概览')], ['T', text('tbox', 'TBox')], ['A', text('abox', 'ABox')], ['R', text('rbox', 'RBox')], ['graph', text('moduleGraph', '本体图谱')]], state.tab, text('moduleViews', '本体内容视图'), { 'data-ontology-tabs': 'module' })}
-      ${legacy ? `<div class="ontology-ws-legacy-note"><p>${esc(text('legacyModuleHint', '旧本体以只读方式保留。请打开单条内容后逐项送入待我处理，核对后再决定是否保存；不会整批改写旧数据。'))}</p></div>` : ''}
-      ${body}`;
+    const module = state.doc.records[state.moduleId];
+    if (!module || module.kind !== 'module') { state.page = 'list'; return listPage(); }
+    const dateView = state.at !== root.CogOntologyDocument.today();
+    const readOnly = dateView || module.source.kind === 'legacy' || module.status !== 'active';
+    const isGraph = state.tab === 'graph';
+    const menu = `${button(text('history', '历史与版本'), 'module-history', 'ghost')}${button(text('queryDate', '按日期查看'), 'document-date', 'ghost')}${button(text('import', '导入资料'), 'import', 'ghost')}${button(text('viewSources', '查看来源'), 'document-section', 'ghost', { 'data-section': 'ontology-doc-references' })}${button(text('export', '导出本体'), 'export', 'ghost')}${module.source.kind === 'legacy' ? '' : moduleMenu(module)}${readOnly ? '' : `${button(text('addDefinition', '添加定义'), 'create-definition', 'ghost')}${button(text('addEntity', '添加对象'), 'create-entity', 'ghost')}${button(text('addFact', '记录关系或事实'), 'create-assertion', 'ghost')}${button(text('addRule', '添加规则'), 'create-rule', 'ghost')}${button(text('createReference', '引用其他本体'), 'create-reference', 'ghost')}`}`;
+    return `<section class="ontology-document-workspace ont-premium ${isGraph ? 'ont-is-graph' : 'ont-is-document'}" data-ontology-module-view="${esc(module.id)}"><div class="ont-workbar ontology-document-toolbar"><button class="ont-back-button" data-ontology-action="back-list">← <span>${esc(text('title', '本体'))}</span></button><span class="ont-breadcrumb-separator">/</span><span class="ont-breadcrumb-title">${esc(module.name)}</span><span class="grow"></span><div class="ont-document-view-toggle"><button data-ontology-action="document-view-toggle" data-view="document" aria-pressed="${!isGraph}">${esc(text('document', '文档'))}</button><button data-ontology-action="document-view-toggle" data-view="graph" aria-pressed="${isGraph}">${esc(text('graph', '关系图'))}</button></div><details class="ont-overflow"><summary aria-label="${esc(text('moduleMore', '本体更多操作'))}">···</summary><div class="ont-menu">${menu}</div></details></div><div data-document-error></div>
+      ${dateView ? `<div class="ont-state-notice">${esc(text('asOf', '截至'))} ${esc(state.at)} · ${esc(text('readonly', '只读'))}${button(text('viewCurrentVersion', '返回当前'), 'document-current-date', 'ghost')}</div>` : readOnly ? `<p class="ont-state-notice">${esc(module.source.kind === 'legacy' ? text('legacyDocumentReadOnly', '旧来源内容以只读方式展示，来源与原始记录保持不变。') : text('archivedDocumentReadOnly', '此本体已归档，恢复后可继续编辑。'))}</p>` : ''}
+      <div class="ont-workgrid"><div class="ont-document-scroll" data-ontology-scroll>${isGraph ? `<div class="ont-graph-title"><div><h1>${esc(module.name)}</h1></div><span>${esc(text('graphIntro', '从一个对象出发，逐步展开它的联系。'))}</span></div>${graphCanvas(null, true)}` : root.CogOntologyDocument.render({ doc: state.doc, moduleId: module.id, text, esc, drafts: state.editor?.getDrafts() || {}, editable: !readOnly, at: state.at, expandedId: state.documentExpandedId || '', inspector: inlineInspector })}</div></div></section>`;
+  }
+  function inlineInspector(record) {
+    const readonly = state.at !== root.CogOntologyDocument.today() || record.source?.kind === 'legacy' || record.status !== 'active' || state.doc.records[record.moduleId]?.status !== 'active';
+    const attrs = { 'data-record-id': record.id };
+    const actions = readonly ? (record.source?.kind === 'legacy' && record.access !== 'owner_only' && state.doc.records[record.moduleId]?.access !== 'owner_only' ? button(text('submitLegacy', '送入待我处理'), 'legacy-candidate', 'secondary', attrs) : '') : (record.kind === 'assertion' ? `${button(text('correctFact', '以前记错了 · 纠正'), 'correct-fact', 'primary', attrs)}${button(text('changeFact', '从某天起变化了'), 'change-fact', 'secondary', attrs)}` : button(text('editDetails', '编辑字段'), 'edit-record', 'secondary', attrs)) + button(text('archiveKeepHistory', '停用并保留历史'), 'archive-record', 'ghost', attrs);
+    return `<aside class="ont-inspector" role="region" aria-label="${esc(text('recordDetails', '本体记录详情'))}"><header class="detail-head"><div class="row between"><h2>${esc(recordName(record))}</h2><button data-ontology-action="document-disclosure" data-record-id="${esc(record.id)}" aria-label="${esc(text('closeDetails', '关闭记录详情'))}">×</button></div><p>${esc(text(record.kind, record.kind))} · v${record.version}</p></header><div class="detail-body">${detailRows(record)}${provenance(record)}${button(text('history', '查看版本与管理记录'), 'record-details', 'ghost', attrs)}${record.kind === 'entity' ? button(text('viewObjectGraph', '查看邻近关系'), 'object-graph', 'secondary', attrs) : ''}</div><footer class="detail-actions">${actions}</footer></aside>`;
   }
   function candidateScopeAllowsModule(candidate, module) {
     if (!module || module.kind !== 'module' || module.source.kind === 'legacy') return false;
@@ -382,83 +426,10 @@
     return `${pageHeader({ kicker: 'ONTOLOGY WORKSPACE', title: text('globalGraphTitle', '本体关系图谱'), description: text('globalGraphHint', '只展示本体之间明确建立的引用关系。'), back: button(text('backModules', '← 本体列表'), 'back-list'), actions: '' })}
       ${graphCanvas(graph, false)}`;
   }
-  function graphPositions(nodes, width, height, focusNodeId) {
-    const positions = new Map(), cx = width / 2, cy = height / 2;
-    if (state.graphLayout === 'layers' && !focusNodeId) {
-      const rank = { module: 0, definition: 1, entity: 2, rule: 3, value: 4, assertion: 5, reference: 6 };
-      const groups = new Map();
-      for (const node of nodes) {
-        const column = rank[node.kind] ?? 3;
-        groups.set(column, [...(groups.get(column) || []), node]);
-      }
-      const columns = [...groups.keys()].sort((a, b) => a - b), left = 90, right = width - 90;
-      columns.forEach((column, index) => {
-        const items = groups.get(column);
-        const x = columns.length === 1 ? cx : left + (right - left) * index / (columns.length - 1);
-        items.forEach((node, row) => positions.set(node.id, { x, y: height * (row + 1) / (items.length + 1) }));
-      });
-      return positions;
-    }
-    const radialNodes = nodes.filter(node => node.id !== focusNodeId);
-    if (focusNodeId && nodes.some(node => node.id === focusNodeId)) positions.set(focusNodeId, { x: cx, y: cy });
-    radialNodes.forEach((node, i) => {
-      const angle = -Math.PI / 2 + i * Math.PI * 2 / Math.max(1, radialNodes.length);
-      const radius = nodes.length === 1 ? 0 : Math.min(210, 85 + Math.sqrt(radialNodes.length) * 9);
-      positions.set(node.id, { x: cx + Math.cos(angle) * radius, y: cy + Math.sin(angle) * radius });
-    });
-    return positions;
+  function graphCanvas(_graph, local) {
+    return `<div class="ontology-document-graph" data-ontology-graph-mount data-module-id="${esc(local ? state.moduleId : '')}"></div>`;
   }
-  function graphEdgeLabel(edge) { return edge.labelKey ? text(edge.labelKey, edge.label) : edge.label; }
-  function graphCanvas(graph, local) {
-    if (!graph?.nodes) return `<div class="ontology-ws-empty">${esc(text('graphEmpty', '还没有可展示的关系。'))}</div>`;
-    const nodes = graph.nodes, width = 900, height = 560, cx = width / 2, cy = height / 2;
-    const totalNodes = Number.isInteger(graph.totalNodes) ? graph.totalNodes : nodes.length;
-    const totalEdges = Number.isInteger(graph.totalEdges) ? graph.totalEdges : graph.edges.length;
-    const nodeCount = graph.truncated ? `${nodes.length}/${totalNodes}` : String(nodes.length);
-    const edgeCount = graph.truncated ? `${graph.edges.length}/${totalEdges}` : String(graph.edges.length);
-    const focusNodeId = graph.focusNodeId || '';
-    const positions = graphPositions(nodes, width, height, focusNodeId);
-    const layoutKey = `${state.moduleId}:${state.graphScale}:${state.graphLayout}`;
-    for (const node of nodes) { const saved = state.graphPositions?.[layoutKey]?.[node.id]; if (saved) positions.set(node.id, saved); }
-    state.currentPositions = positions;
-    const edges = graph.edges.map(edge => {
-      const a = positions.get(edge.from), b = positions.get(edge.to); if (!a || !b) return '';
-      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-      return `<g class="ontology-ws-edge ontology-ws-edge--${esc(edge.kind)}${edge.truth === 'unknown' ? ' ontology-ws-edge--uncertain' : ''}${state.selectedEdgeId === edge.id ? ' is-selected' : ''}" role="button" tabindex="0" aria-label="${esc(`${graphEdgeLabel(edge)}${edge.truth === 'unknown' ? ' · ' + text('unknownDate', '开始时间未确认') : ''}`)}" data-ontology-edge="${esc(edge.id)}"><path d="M ${a.x} ${a.y} Q ${mx + (cy - my) * .14} ${my + (a.x - b.x) * .14} ${b.x} ${b.y}" marker-end="url(#ontology-arrow)"/><text x="${mx}" y="${my - 7}">${esc(graphEdgeLabel(edge))}${edge.truth === 'unknown' ? ' ?' : ''}</text></g>`;
-    }).join('');
-    const nodeHtml = nodes.map(node => {
-      const p = positions.get(node.id), active = state.selectedId === node.id || focusNodeId === node.id;
-      return `<g class="ontology-ws-node ontology-ws-node--${esc(node.kind)}${active ? ' is-selected' : ''}" transform="translate(${p.x} ${p.y})" role="button" tabindex="0" aria-label="${esc(node.label)}" data-ontology-node="${esc(node.id)}"><rect x="-74" y="-31" width="148" height="62" rx="14"/><text y="-1">${esc(node.label.slice(0, 22))}</text><text class="ontology-ws-node-sub" y="16">${esc(node.kind === 'module' ? moduleScope(node.id) : text(node.kind, node.kind === 'entity' ? '具体对象' : node.kind === 'rule' ? '规则' : node.kind === 'definition' ? '定义' : node.kind === 'value' ? '内容' : '关系'))}</text></g>`;
-    }).join('');
-    const selected = nodes.find(n => n.id === state.selectedId);
-    const selectedEdge = graph.edges.find(edge => edge.id === state.selectedEdgeId);
-    const graphSearchResults = local && state.graphSearchQuery ? `<div class="ontology-ws-graph-search-results">${state.graphSearchResults.length
-      ? searchResultRows(state.graphSearchResults, 'focus-record')
-      : `<span>${esc(text('noGraphSearchResults', '没有找到匹配内容。'))}</span>`}</div>` : '';
-    const graphSearch = local ? `<div class="ontology-ws-graph-search">${root.uiField({ id: 'ontology-graph-search', label: text('graphSearch', '在本体中查找对象或关系'), showRequirement: false,
-      control: { kind: 'input', type: 'search', placeholder: text('graphSearchPlaceholder', '输入人物、项目或关系'), value: state.graphSearchQuery || '', attrs: { 'data-ontology-field': 'graphSearch' } } })}${graphSearchResults}</div>` : '';
-    const layoutControl = local && typeof root.uiSegmentedControl === 'function' ? root.uiSegmentedControl({
-      ariaLabel: text('graphLayout', '图谱布局'), value: state.graphLayout,
-      items: [
-        { label: text('radialLayout', '圆形'), value: 'radial', attrs: { 'data-ontology-action': 'graph-layout', 'data-layout': 'radial' } },
-        { label: text('layeredLayout', '分层'), value: 'layers', attrs: { 'data-ontology-action': 'graph-layout', 'data-layout': 'layers' } },
-      ],
-    }) : '';
-    const scaleControl = local ? select(text('graphContent', '图谱内容'), 'ontology-graph-scale', [{ value: 'schema', label: text('schemaScale', '模型结构') }, { value: 'instances', label: text('instanceScale', '具体对象') }], state.graphScale || 'instances') : '';
-    const relationControl = local && state.graphScale !== 'schema' ? select(text('predicate', '关系或属性'), 'ontology-graph-relation', [{ value: '', label: text('allRelations', '所有关系') }, ...usableRecords('definition').filter(record => record.definitionKind !== 'type').map(record => ({ value: record.id, label: choiceLabel(record) }))], state.graphDefinitionId || '') : '';
-    const moreControl = graph.nextCursor ? button(text('loadMoreGraph', '继续加载图谱'), 'graph-more') : '';
-    const rulesControl = local ? button(state.graphRules === false ? text('showGraphRules', '显示规则') : text('hideGraphRules', '隐藏规则'), 'graph-rules') : '';
-    const fullscreenControl = button(state.graphFullscreen ? text('exitFullscreenGraph', '退出全屏') : text('fullscreenGraph', '全屏图谱'), 'graph-fullscreen');
-    const zoom = Math.round(state.graphZoom * 100);
-    const zoomControls = `<div class="ontology-ws-graph-zoom">${button(text('zoomOut', '缩小'), 'graph-zoom', 'secondary', { 'data-zoom-step': '-1' })}<span aria-live="polite">${zoom}%</span>${button(text('zoomIn', '放大'), 'graph-zoom', 'secondary', { 'data-zoom-step': '1' })}${button(text('zoomReset', '重置缩放'), 'graph-zoom-reset')}</div>`;
-    const viewWidth = width / state.graphZoom, viewHeight = height / state.graphZoom;
-    const viewX = (width - viewWidth) / 2 + (state.graphPan?.x || 0), viewY = (height - viewHeight) / 2 + (state.graphPan?.y || 0);
-    const selectedPanel = selectedEdge
-      ? `<aside class="ontology-ws-node-panel"><div class="ontology-ws-node-panel-top"><span>${esc(text(selectedEdge.kind, selectedEdge.kind))}</span>${button(text('closeDetails', '关闭'), 'clear-selection')}</div><h2>${esc(graphEdgeLabel(selectedEdge))}</h2><p>${esc(selectedEdge.truth === 'unknown' ? text('unknownDate', '开始时间未确认') : text('edgeCurrent', '当前有效'))}</p>${selectedEdge.recordId ? button(text('openDetails', '查看详情'), 'open-graph-record', 'primary', { 'data-record-id': selectedEdge.recordId }) : ''}${local ? button(text('focusConnections', '展开关联内容'), 'focus-record', 'secondary', { 'data-record-id': selectedEdge.recordId || selectedEdge.id }) : ''}</aside>`
-      : selected ? `<aside class="ontology-ws-node-panel"><div class="ontology-ws-node-panel-top"><span>${esc(text(selected.kind, selected.kind === 'module' ? '本体' : '本体内容'))}</span>${button(text('closeDetails', '关闭'), 'clear-selection')}</div><h2>${esc(selected.label)}</h2><p>${esc(selected.description || '')}</p>${local && selected.kind !== 'module' ? `${state.doc.records[selected.id] ? button(text('openDetails', '查看详情'), 'open-graph-record', 'primary', { 'data-record-id': selected.id }) : ''}${button(text('focusConnections', '展开关联内容'), 'focus-record', 'secondary', { 'data-record-id': selected.id })}` : selected.kind === 'module' ? button(text('openModule', '进入本体'), 'open-module', 'primary', { 'data-record-id': selected.id }) : ''}</aside>` : '';
-    return `<div class="ontology-ws-graph-shell${state.graphFullscreen ? ' is-fullscreen' : ''}${selected || selectedEdge ? ' has-selection' : ''}"><div class="ontology-ws-graph-tools"><span>${nodeCount} ${esc(text('nodes', '个节点'))} · ${edgeCount} ${esc(text('edges', '条关系'))}${graph.edges.some(edge => edge.truth === 'unknown') ? ` · ${esc(text('unknownEdgeLegend', '? = 生效时间待确认'))}` : ''}</span><div class="ontology-ws-graph-controls">${scaleControl}${relationControl}${layoutControl}${rulesControl}${moreControl}${fullscreenControl}${local && state.graphScale !== 'schema' ? `<label>${esc(text('queryDate', '查询日期'))} ${root.uiInput({ id: 'ontology-graph-date', type: 'date', value: state.at, attrs: { 'data-ontology-field': 'graphAt' } })}</label>${graph.focusId ? button(text('showFullGraph', '返回本体图谱全景'), 'graph-full') : ''}` : ''}${zoomControls}</div></div>${graphSearch}${!nodes.length ? `<p role="status">${esc(text('graphEmpty', '还没有可展示的关系。'))}</p>` : ''}${graph.truncated ? `<p class="ontology-ws-graph-limit-hint" role="status">${esc(text('graphTruncated', '图谱较大，当前显示 {shownNodes}/{totalNodes} 个节点、{shownEdges}/{totalEdges} 条关系。请用列表和搜索查找具体内容。', { shownNodes: nodes.length, totalNodes, shownEdges: graph.edges.length, totalEdges }))}</p>` : ''}<div class="ontology-ws-graph-content"><div class="ontology-ws-graph-canvas"><svg viewBox="${viewX} ${viewY} ${viewWidth} ${viewHeight}" role="group" aria-label="${esc(local ? text('moduleGraph', '本体图谱') : text('globalGraphTitle', '本体关系图谱'))}"><defs><marker id="ontology-arrow" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7"/></marker></defs>${edges}${nodeHtml}</svg></div>${selectedPanel}</div></div>`;
-  }
-  function moduleScope(id) { const m = state.doc.records[id]; return m ? text(m.scope.kind, m.scope.kind === 'personal' ? '个人本体' : m.scope.kind === 'project' ? '项目本体' : '工作区本体') : ''; }
+  function moduleScope(id) { const module = state.doc.records[id]; return module ? text(module.scope.kind, module.scope.kind === 'personal' ? '个人本体' : module.scope.kind === 'project' ? '项目本体' : '工作区本体') : ''; }
   function factAt(record, at) {
     if (record.status !== 'active') return false;
     const from = record.validity.from && (record.validity.precision === 'month' ? record.validity.from + '-01' : record.validity.from);
@@ -497,20 +468,13 @@
       ${!isLegacy && record.status === 'archived' ? merged ? button(text('undoMerge', '撤销身份合并'), 'undo-merge', 'secondary', {}, 'undo') : button(text('restoreRecord', '恢复停用内容'), 'restore-record', 'secondary') : ''}${state.recordVersion ? `<p role="status">${esc(text('historicalReadOnly', '正在查看当时版本，当前内容未改变。'))} v${record.version} ${button(text('viewCurrentVersion', '查看当前版本'), 'used-current', 'secondary', { 'data-record-id': record.id })}</p>` : ''}${record.kind === 'entity' && !state.recordVersion ? entityContent(record) : ''}${summary}${!isLegacy && record.status === 'active' ? `<div class="ontology-ws-detail-actions">${button(text('deleteRecoverable', '删除（可恢复）'), 'delete-record', 'danger', {}, 'trash-2')}</div>` : ''}${state.recordVersion ? '' : legacyAction}<section class="ontology-ws-history"><h2>${esc(text('history', '变更记录'))}</h2>${state.historyTruncated ? `<p role="status">${esc(text('historyTruncated', '当前显示最近100条变更，完整历史仍保留在主档。'))}</p>` : ''}${history.length ? history.map(entry => `<article><time>${esc(entry.recordedAt)}</time><strong>${esc(text(entry.intent, entry.intent))}</strong><p>${esc(entry.before ? recordName(entry.before) : text('created', '创建记录'))} → ${esc(recordName(entry.after))}</p><p>${esc(entry.after.source.label)} · v${entry.after.version}</p></article>`).join('') : `<p>${esc(isLegacy ? text('legacyHistory', '旧资料没有提供可验证的版本历史。') : text('noHistory', '暂无变更记录'))}</p>`}</section>`;
   }
 
-  async function loadGraph(moduleId, cursor) {
-    const current = state, request = ++current.graphRequest, at = current.at;
-    const result = await invoke('cognition.ontology.graph.query', { ...(moduleId ? { moduleId } : {}), ...(moduleId ? { at: state.at } : {}), ...(state.graphFocusId ? { focusId: state.graphFocusId } : {}), ...(moduleId ? { contentScale: state.graphScale || 'instances', includeRules: state.graphRules !== false, ...(state.graphDefinitionId ? { definitionId: state.graphDefinitionId } : {}) } : {}), ...(cursor ? { cursor } : {}) });
-    if (state !== current || request !== current.graphRequest || current.at !== at
-      || moduleId && current.moduleId !== moduleId) return;
-    state.graph = result.graph;
-    state.selectedEdgeId = result.graph.focusEdgeId || '';
+  async function loadGraph() {
+    // 兼容旧深链；图谱内容和文档始终来自同一份主档快照。
+    return state?.doc;
   }
   async function enterGraph(global) {
     state.page = global ? 'list' : 'module';
-    if (global) state.mode = 'graph';
-    if (!global) state.tab = 'graph';
-    state.selectedId = ''; state.selectedEdgeId = ''; state.graphFocusId = '';
-    await loadGraph(global ? '' : state.moduleId);
+    if (global) state.mode = 'graph'; else state.tab = 'graph';
     render();
   }
   async function commit(actions) {
@@ -762,7 +726,15 @@
       root.uiToast?.(text('candidateBatchSaved', '已送入“待我处理”，共 {count} 条。', { count: result.submitted }), { variant: 'success' });
     } });
   }
-  async function openRecord(recordId, version) {
+  async function openRecord(recordId, version, options = {}) {
+    const item = state.doc.records[recordId];
+    if (item && !version && !state.candidateDraft && !options.details) {
+      state.recordId = recordId; state.documentExpandedId = recordId; state.moduleId = item.kind === 'module' ? item.id : item.moduleId;
+      state.page = 'module'; state.tab = 'document'; render();
+      revealDocument(state.root.querySelector?.(`[data-record-id="${recordId}"]`));
+      return;
+    }
+
     const current = state, request = ++current.recordRequest;
     const previous = current.doc.records[current.recordId];
     if (!version && previous?.kind === 'entity' && current.page === 'record' && previous.id !== recordId) current.originObjectId = previous.id;
@@ -786,8 +758,62 @@
   async function handleAction(action, target) {
     if (!state) return;
     const current = state;
+    if (state.selectionController?.hasDraft() && !state.selectionController.close(false, () => { if (state === current) void handleAction(action, target).catch(showError); })) return;
     if (['back-list', 'back-module', 'open-module', 'open-record', 'search-result', 'select-box', 'candidate-back'].includes(action)) { state.graphRequest++; state.recordRequest++; }
     const id = target.dataset.recordId || target.closest('[data-record-id]')?.dataset.recordId || '';
+    if (action === 'selection-edit') { state.selectionController?.open(id, target.dataset.field); return; }
+    if (action === 'document-retry') { await state.editor?.retry(id); return; }
+    if (action === 'document-rebase') { await state.editor?.retry(id, true); return; }
+    if (action === 'document-discard') { state.editor?.discard(id); render(); return; }
+    if (action === 'document-add-toggle') { state.documentAddOpen = !state.documentAddOpen; render(); return; }
+    if (action === 'document-view-toggle') { await state.editor?.flush(); state.tab = target.dataset.view || (state.tab === 'graph' ? 'document' : 'graph'); state.documentAddOpen = false; render(); return; }
+    if (action === 'directory-view') { if (target.dataset.view === 'graph') await enterGraph(true); else { state.mode = 'list'; render(); } return; }
+    if (action === 'directory-scope') { state.scopeFilter = target.dataset.scope; state.modulePage = 0; render(); return; }
+    if (action === 'directory-clear-search') { state.searchQuery = ''; state.searchResults = []; state.modulePage = 0; render(); return; }
+    if (action === 'refresh-directory') return refresh();
+    if (action === 'document-source') {
+      const record = state.doc.records[id]; if (!record?.source) return;
+      const source = record.source;
+      const refs = (source.refs || []).map(ref => `<li>${esc(text(ref.kind, ref.kind))} · ${esc(ref.id)}${/^ontimport-[a-f0-9]{64}$/.test(ref.id) ? button(text('viewOriginalSource', '查看完整原文'), 'view-import-source', 'ghost', { 'data-source-id': ref.id }) : ''}</li>`).join('');
+      const modal = root.uiModal({ title: source.label || text('source', '来源'), closeLabel: text('close', '关闭'), bodyHtml: `<div class="ontology-ws-source-text"><p>${esc(text(source.kind, source.kind))}</p>${source.recordId ? `<p>${esc(text('sourceRecord', '来源记录'))}：${esc(source.recordId)}</p>` : ''}${refs ? `<ul>${refs}</ul>` : ''}${provenance(record)}</div>` });
+      modal.overlay?.addEventListener('click', event => {
+        const action = event.target.closest('[data-ontology-action]');
+        if (action) void handleAction(action.dataset.ontologyAction, action).catch(showError);
+      });
+      void modal.catch(() => {});
+      return;
+    }
+    if (action === 'document-section') {
+      const section = state.root.querySelector?.('#' + target.dataset.section);
+      let parent = section?.parentElement;
+      while (parent && parent !== state.root) { if (parent.tagName === 'DETAILS') parent.open = true; parent = parent.parentElement; }
+      revealDocument(section); return;
+    }
+    if (action === 'object-description' || action === 'object-description-close') {
+      const detail = state.root.querySelector?.('#ontology-object-detail-' + id.replace(/[^a-zA-Z0-9_-]/g, character => '\\' + character));
+      const trigger = state.root.querySelector?.('#ontology-object-trigger-' + id.replace(/[^a-zA-Z0-9_-]/g, character => '\\' + character));
+      keepDocumentAnchor(trigger, () => {
+        if (detail) { detail.open = action === 'object-description' ? !detail.open : false; trigger?.setAttribute('aria-expanded', String(detail.open)); }
+      });
+      if (action === 'object-description-close') trigger?.focus({ preventScroll: true }); return;
+    }
+    if (action === 'document-disclosure') {
+      toggleDocumentDisclosure(id, target);
+      return;
+    }
+    if (action === 'document-current-date') { state.at = root.CogOntologyDocument.today(); render(); return; }
+    if (action === 'document-date') {
+      openDialog({ title: text('queryDate', '按日期查看'), body: `${field(text('queryDate', '查询日期'), 'documentAt', state.at, 'date')}<p class="ontology-ws-form-note">${esc(text('dateViewHint', '按有效时间查看事实；未记录的起点保持未知。'))}</p>`, onSubmit: async data => {
+        const date = data.documentAt; if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) throw new Error(text('invalidDate', '请选择有效日期。'));
+        state.at = date; render(); return true;
+      }, trigger: target }); return;
+    }
+    if (action === 'module-history') {
+      const result = await invoke('cognition.ontology.history.get', { recordId: state.moduleId });
+      const rows = result.history || [];
+      void root.uiModal({ title: text('history', '历史与版本'), closeLabel: text('close', '关闭'), bodyHtml: `<div class="ontology-ws-history">${rows.map(row => `<article><time>${esc(row.recordedAt)}</time><strong>${esc(text(row.intent, row.intent))} · v${row.after?.version || '—'}</strong><p>${esc(row.after?.source?.label || '')}</p></article>`).join('') || `<p>${esc(text('noHistory', '暂无变更记录'))}</p>`}</div>` }).catch(() => {}); return;
+    }
+
     if (action === 'open-review') { root.CogAssets?.router?.go({ name: 'activity' }); return; }
     if (action === 'toggle-inactive-records') { state.showRecordInactive = !state.showRecordInactive; render(); return; }
     if (action === 'merge-identity') return openMergeDialog(target);
@@ -807,10 +833,23 @@
       const modal = root.uiModal({ title: result.name, closeLabel: text('close', '关闭'), size: 'lg', bodyHtml: `<pre class="ontology-ws-source-text">${esc(result.text)}</pre>` }); void modal.catch(() => {}); return;
     }
     if (action === 'toggle-inactive') { state.showInactive = !state.showInactive; state.mode = 'list'; render(); return; }
-    if (action === 'resume-module') {
-      const record = state.doc.records[id];
-      if (!await root.uiConfirm(text('resumeModuleConfirm', '恢复后，新任务可以按范围再次使用本体内容。是否继续？'))) return;
-      await commit([{ intent: 'update', recordId: record.id, expectedVersion: record.version, patch: { status: 'active' }, sourceLabel: sourceLabel() }]); render(); return;
+    if (action === 'module-menu') { state.moduleMenuId = state.moduleMenuId === id ? '' : id; render(); return; }
+    if (['delete-module', 'archive-module', 'resume-module'].includes(action)) {
+      const module = state.doc.records[id];
+      if (!module || module.kind !== 'module' || state.moduleLifecycleBusy) return;
+      const current = state;
+      current.moduleMenuId = ''; render();
+      const intent = action === 'delete-module' ? 'delete' : action === 'archive-module' ? 'archive' : 'restore';
+      if (intent === 'delete' && !await root.uiConfirm?.(text('deleteModuleConfirm', '确认删除本体「{name}」？删除后将从当前列表移除，新任务不再使用其中内容。原文、来源和历史仍保留，可从归档列表恢复。', { name: module.name }))) return;
+      if (state !== current) return;
+      current.moduleLifecycleBusy = true;
+      try {
+        await invoke('cognition.ontology.module.lifecycle', { moduleId: id, intent, expectedRevision: current.doc.revision, expectedVersion: module.version });
+        if (state !== current) return;
+        await refresh();
+        root.uiToast?.(text(intent === 'delete' ? 'moduleDeleted' : intent === 'archive' ? 'moduleArchived' : 'moduleRestored', intent === 'delete' ? '本体已删除，可从归档列表恢复。' : intent === 'archive' ? '本体已归档。' : '本体已恢复。'), { variant: 'success' });
+      } finally { current.moduleLifecycleBusy = false; }
+      return;
     }
     if (action === 'create-module') return openModuleDialog(target);
     if (action === 'import' || action === 'supplement') return openImportDialog(target, action === 'supplement');
@@ -844,41 +883,21 @@
       render(); return;
     }
     if (action === 'back-list') {
-      const previous = state.workspaceReturn;
-      state.workspaceReturn = null; state.page = 'list'; state.mode = previous ? 'graph' : 'list'; state.selectedId = ''; state.selectedEdgeId = '';
-      if (previous) {
-        state.moduleId = ''; state.graphZoom = previous.zoom; state.graphPan = previous.pan; state.graphLayout = previous.layout;
-        state.graphFullscreen = previous.fullscreen; state.showInactive = previous.showInactive; state.searchQuery = previous.searchQuery;
-        await loadGraph('');
-        state.selectedId = state.graph.nodes.some(node => node.id === previous.selectedId) ? previous.selectedId : '';
-        state.selectedEdgeId = state.graph.edges.some(edge => edge.id === previous.edgeId) ? previous.edgeId : '';
-        state.graphRestoreFocus = state.selectedId ? { node: state.selectedId } : null;
-      }
-      render(); return;
+      await state.editor?.flush();
+      state.page = 'list'; state.mode = state.workspaceReturn ? 'graph' : 'list';
+      state.workspaceReturn = null; render(); return;
     }
     if (action === 'back-module') {
       if (state.candidateDraft) { state.page = 'candidate-organize'; render(); return; }
-      if (state.graphReturn) {
-        const previous = state.graphReturn;
-        state.graphReturn = null;
-        state.moduleId = previous.moduleId;
-        state.page = 'module'; state.tab = 'graph'; state.graphFocusId = previous.focusId || '';
-        state.graphLayout = previous.layout; state.graphZoom = previous.zoom; state.at = previous.at;
-        state.graphScale = previous.scale || 'instances'; state.graphRules = previous.rules; state.graphPan = previous.pan; state.graphDefinitionId = previous.definitionId || '';
-        await loadGraph(state.moduleId);
-        state.selectedId = previous.selectedId && state.graph.nodes.some(node => node.id === previous.selectedId) ? previous.selectedId : '';
-        state.selectedEdgeId = previous.edgeId && state.graph.edges.some(edge => edge.id === previous.edgeId) ? previous.edgeId : '';
-        state.graphRestoreFocus = state.selectedId ? { node: state.selectedId } : state.selectedEdgeId ? { edge: state.selectedEdgeId } : null;
-        render(); return;
-      }
-      state.page = 'module'; state.tab = 'overview'; state.recordPage = 0; render(); return;
+      state.page = 'module'; state.tab = 'document'; render(); return;
     }
     if (action === 'open-module') {
+      await state.editor?.flush();
       if (state.page === 'list' && state.mode === 'graph') state.workspaceReturn = { zoom: state.graphZoom, pan: state.graphPan,
         layout: state.graphLayout, fullscreen: state.graphFullscreen, selectedId: state.selectedId || id, edgeId: state.selectedEdgeId,
         showInactive: state.showInactive, searchQuery: state.searchQuery };
       state.graphFullscreen = false;
-      state.moduleId = id; state.page = 'module'; state.tab = 'overview'; state.box = 'T'; state.recordPage = 0; state.graphFocusId = ''; state.graphSearchQuery = ''; state.graphSearchResults = []; state.graphZoom = 1; state.graphLayout = 'radial'; render(); return; }
+      state.moduleId = id; state.page = 'module'; state.tab = 'document'; state.box = 'T'; state.recordPage = 0; state.graphFocusId = ''; state.graphSearchQuery = ''; state.graphSearchResults = []; state.graphZoom = 1; state.graphLayout = 'radial'; render(); return; }
     if (action === 'change-page') {
       const page = Number(target.dataset.page);
       if (!Number.isInteger(page) || page < 0) return;
@@ -889,6 +908,7 @@
       render(); return;
     }
     if (action === 'open-record') return openRecord(id);
+    if (action === 'record-details') { await state.editor?.flush(); return openRecord(id, undefined, { details: true }); }
     if (action === 'used-version') return openRecord(id, Number(target.dataset.version));
     if (action === 'used-current') return openRecord(id);
     if (action === 'object-graph') { await enterGraph(false); state.graphFocusId = id; await loadGraph(state.moduleId); render(); return; }
@@ -916,54 +936,22 @@
       const moduleId = target.dataset.moduleId;
       if (moduleId) state.moduleId = moduleId;
       const record = state.doc.records[id];
-      if (record?.kind === 'module') { state.moduleId = record.id; state.page = 'module'; state.tab = 'overview'; render(); return; }
+      if (record?.kind === 'module') { state.moduleId = record.id; state.page = 'module'; state.tab = 'document'; render(); return; }
       return openRecord(id);
     }
-    if (action === 'clear-selection') { state.selectedId = ''; state.selectedEdgeId = ''; render(); return; }
-    if (action === 'graph-more') { await loadGraph(state.page === 'list' ? undefined : state.moduleId, state.graph?.nextCursor); render(); return; }
-    if (action === 'graph-full') {
-      const previousFocus = state.graphFocusId;
-      state.graphFocusId = ''; state.selectedId = ''; state.selectedEdgeId = '';
-      try { await loadGraph(state.moduleId); }
-      catch (error) { state.graphFocusId = previousFocus; throw error; }
-      render(); return;
-    }
-    if (action === 'focus-record') {
-      state.graphFocusId = id; state.selectedId = ''; state.selectedEdgeId = '';
-      try { await loadGraph(state.moduleId); }
-      catch (error) { state.graphFocusId = ''; throw error; }
-      render(); return;
-    }
-    if (action === 'graph-rules') { state.graphRules = state.graphRules === false; await loadGraph(state.moduleId); render(); return; }
-    if (action === 'graph-fullscreen') {
-      state.graphFullscreen = !state.graphFullscreen; render(); return;
-    }
-    if (action === 'graph-layout') { if (['radial', 'layers'].includes(target.dataset.layout)) state.graphLayout = target.dataset.layout; render(); return; }
-    if (action === 'graph-zoom') {
-      const step = Number(target.dataset.zoomStep);
-      if (![-1, 1].includes(step)) return;
-      state.graphZoom = Math.max(0.65, Math.min(1.8, state.graphZoom + step * 0.2)); render(); return;
-    }
-    if (action === 'graph-zoom-reset') { state.graphZoom = 1; render(); return; }
-    if (action === 'open-graph-record') {
-      const record = state.doc.records[id]; if (!record) return;
-      if (record.kind !== 'module' && record.moduleId) state.moduleId = record.moduleId;
-      state.graphReturn = { moduleId: state.moduleId, focusId: state.graphFocusId, edgeId: state.selectedEdgeId,
-        selectedId: state.selectedId, layout: state.graphLayout, zoom: state.graphZoom, at: state.at, scale: state.graphScale, rules: state.graphRules, pan: state.graphPan, definitionId: state.graphDefinitionId };
-      try { return await openRecord(id); }
-      catch (error) { state.graphReturn = null; throw error; }
-    }
     if (action === 'create-reference') return openReferenceDialog(target);
-    if (action === 'add-content') { state.box = 'A'; state.tab = 'A'; render(); return; }
+    if (action === 'add-content') { state.documentAddOpen = true; render(); return; }
     if (action === 'create-definition') return openDefinitionDialog(target);
     if (action === 'create-relation-definition') return openDefinitionDialog(target, 'relation');
     if (action === 'create-entity') return openEntityDialog(target);
     if (action === 'create-assertion') return openAssertionDialog(target);
     if (action === 'create-rule') return openRuleDialog(target);
-    if (action === 'select-box') { state.box = target.dataset.box; state.tab = target.dataset.box; state.recordPage = 0; render(); return; }
-    if (action === 'change-fact' || action === 'correct-fact') return openFactChange(target, action === 'change-fact');
+    if (action === 'select-box') { state.tab = 'document'; render(); return; }
+    if (action === 'change-fact' || action === 'correct-fact') { if (id) state.recordId = id; await state.editor?.flush(); return openFactChange(target, action === 'change-fact'); }
     if (action === 'edit-module') return openModuleDialog(target, state.doc.records[state.moduleId]);
     if (action === 'edit-record') {
+      if (id) state.recordId = id;
+      await state.editor?.flush();
       const record = state.doc.records[state.recordId];
       if (record?.kind === 'entity') return openEntityDialog(target, record);
       if (record?.kind === 'definition') return openDefinitionDialog(target, record.definitionKind, record);
@@ -971,17 +959,19 @@
       if (record?.kind === 'reference') return openReferenceDialog(target, record);
     }
     if (action === 'delete-record') {
+      if (id) state.recordId = id;
       const record = state.doc.records[state.recordId]; if (!record) return;
       if (!await root.uiConfirm?.(text('deleteBoundary', '删除会移出当前内容并停止新任务使用；原文、来源与历史仍保留，可从停用内容恢复。被其他有效内容依赖的对象不能直接删除。是否查看影响并继续？'))) return;
-      if (await commit([{ intent: 'delete', recordId: record.id, expectedVersion: record.version, sourceLabel: sourceLabel() }])) { state.page = 'module'; state.tab = 'overview'; render(); }
+      if (await commit([{ intent: 'delete', recordId: record.id, expectedVersion: record.version, sourceLabel: sourceLabel() }])) { state.page = 'module'; state.tab = 'document'; render(); }
       return;
     }
     if (action === 'archive-record') {
+      if (id) state.recordId = id;
       const record = state.doc.records[state.recordId]; if (!record) return;
       const confirmed = typeof root.uiConfirm === 'function' ? await root.uiConfirm(text('archiveConfirm', '停用后，任务将不再采用这条内容。是否继续？')) : false;
       if (!confirmed) return;
       await commit([{ intent: 'archive', recordId: record.id, expectedVersion: record.version, sourceLabel: sourceLabel() }]);
-      state.page = 'module'; state.tab = 'overview'; render(); return;
+      state.page = 'module'; state.tab = 'document'; render(); return;
     }
   }
   function openFactChange(trigger, change) {
@@ -1009,8 +999,100 @@
       return commit([{ intent: change ? 'change' : 'correct', recordId: fact.id, expectedVersion: fact.version, ...(change ? { effectiveFrom: data.effectiveFrom } : {}), object: value, sourceLabel: data.reason?.trim() || sourceLabel() }]);
     } });
   }
+  function updateDocumentSaveState(current, value, item) {
+    current.editorStatus = { value, item };
+    if (state !== current) return;
+    const label = current.root.querySelector?.('[data-document-save]');
+    if (label) label.textContent = text(value === 'saved' ? 'documentSaved' : value === 'saving' ? 'documentSaving' : value === 'error' ? 'documentUnsaved' : value === 'pending' ? 'documentPending' : 'documentEditHint', value === 'saved' ? '已保存到本体' : value === 'saving' ? '正在保存…' : value === 'error' ? '修改尚未保存' : value === 'pending' ? '有待保存的修改' : '点击正文直接编辑，自动保存');
+    const error = current.root.querySelector?.('[data-document-error]');
+    if (!error) return;
+    if (!item?.error) { error.innerHTML = ''; return; }
+    const conflict = item.error.code === 'baseline_changed';
+    const message = conflict ? text('documentConflict', '内容已被其他操作更新。你的修改已保留，请核对后选择如何保存。')
+      : text(`error_${item.error.code}`, item.error.message || text('error', '保存未完成，请重试。'));
+    error.innerHTML = `<div class="ontology-document-error" role="alert"><span>${esc(message)}</span>${button(conflict ? text('documentRebase', '按最新版本保存我的修改') : text('retry', '重试'), conflict ? 'document-rebase' : 'document-retry', 'secondary', { 'data-record-id': item.recordId })}${button(text('documentDiscard', '恢复已保存内容'), 'document-discard', 'secondary', { 'data-record-id': item.recordId })}</div>`;
+  }
+  function ensureDocumentEditor(current) {
+    if (current.editor || !current.doc || !root.CogOntologyEditor) return;
+    current.editor = root.CogOntologyEditor.create({
+      invoke, getDocument: () => current.doc, ownerId: current.doc.ownerId, storage: root.localStorage,
+      onStatus: (value, item) => updateDocumentSaveState(current, value, item),
+      onSnapshot(doc) { if (doc && doc.revision >= current.doc.revision) current.doc = doc; },
+      onCommit(result, { previousId }) {
+        if (result.ontology.revision >= current.doc.revision) current.doc = result.ontology;
+        if (current.recordId === previousId) current.recordId = result.recordId;
+        if (state !== current) return;
+        // correct 会新建事实身份；在当前编辑节点上更新 ID，保留输入光标。
+        if (previousId !== result.recordId) current.root.querySelectorAll?.('[data-record-id]').forEach(element => {
+          if (element.dataset.recordId === previousId) element.dataset.recordId = result.recordId;
+        });
+        if (current.graphController) current.graphController.update({ doc: current.doc, moduleId: current.page === 'module' ? current.moduleId : '', at: current.at });
+        const focused = document.activeElement;
+        if (current.documentPointerDown || focused && current.root.contains?.(focused) && focused.matches?.('[data-ontology-edit]')) current.documentNeedsRender = true;
+        else render();
+      },
+    });
+    current.editor.resume();
+  }
+  function documentEditValue(element) {
+    const raw = element.tagName === 'SELECT' || element.tagName === 'INPUT' ? element.value : element.textContent;
+    if (element.dataset.editType === 'number') {
+      if (!String(raw).trim() || !Number.isFinite(Number(raw))) throw new Error(text('invalidNumber', '请输入有效数字。'));
+      return Number(raw);
+    }
+    if (element.dataset.editType === 'boolean') return String(raw) === 'true';
+    if (element.dataset.editType === 'array') return [...new Set(String(raw).split(/[、,，\n]/).map(value => value.trim()).filter(Boolean))];
+    return String(raw ?? '');
+  }
+  function onDocumentInput(event) {
+    if (!state || event.isComposing || event.keyCode === 229) return;
+    const element = event.target.closest?.('[data-ontology-edit]'); if (!element) return;
+    try {
+      const value = documentEditValue(element), field = element.dataset.ontologyEdit;
+      if (field === 'name' && !value.trim()) throw new Error(text('documentNameRequired', '名称不能为空。'));
+      delete element.dataset.error;
+      state.editor?.enqueue(element.dataset.recordId, field, value);
+    } catch (error) { element.dataset.error = 'true'; updateDocumentSaveState(state, 'error', { recordId: element.dataset.recordId, error: { code: 'invalid_input', message: error.message } }); }
+  }
+  function onDocumentFocusOut(event) {
+    if (!event.target.closest?.('[data-ontology-edit]') || !event.target.isContentEditable || !state) return;
+    onDocumentInput(event);
+    const current = state;
+    // 等焦点落到下一控件，避免重画吞掉随后发生的点击。
+    setTimeout(() => {
+      if (state !== current) return;
+      void current.editor?.flush();
+      settleDocumentRender(current);
+    }, 0);
+  }
+  function settleDocumentRender(current) {
+    clearTimeout(current.documentRenderTimer);
+    current.documentRenderTimer = setTimeout(() => {
+      if (state !== current || !current.documentNeedsRender || current.documentPointerDown
+        || document.activeElement?.closest?.('[data-ontology-edit]')) return;
+      current.documentNeedsRender = false; render();
+    }, 100);
+  }
+  function onDocumentPointerStart(event) { if (state) { state.documentPointerDown = true; state.cardPointer = event.target.closest?.('[data-card-module]') ? { x: event.clientX, y: event.clientY, moved: false } : null; } }
+  function onDocumentPointerMove(event) { if (state?.cardPointer && Math.hypot(event.clientX - state.cardPointer.x, event.clientY - state.cardPointer.y) > 6) state.cardPointer.moved = true; }
+  function onDocumentPointerEnd() { if (state) { state.documentPointerDown = false; settleDocumentRender(state); } }
+  function mountDocumentGraph() {
+    const current = state;
+    const mount = current.root.querySelector?.('[data-ontology-graph-mount]');
+    if (!mount || !root.CogOntologyGraph) return;
+    const allowed = new Set(modules(current.showInactive).filter(module => (!current.showInactive || module.status !== 'active') && (!current.scopeFilter || current.scopeFilter === 'all' || module.scope.kind === current.scopeFilter)).map(module => module.id));
+    const graphDoc = mount.dataset.moduleId ? current.doc : { ...current.doc, records: Object.fromEntries(Object.entries(current.doc.records).filter(([id, record]) => allowed.has(record.kind === 'module' ? id : record.moduleId))) };
+    current.graphController = root.CogOntologyGraph.mount(mount, { prototype: true, doc: graphDoc, moduleId: mount.dataset.moduleId || '', at: current.at, text,
+      onSelect({ recordId, open }) { if (state !== current) return; current.recordId = recordId; if (open) void openRecord(recordId).catch(showError); },
+    });
+  }
   function render() {
     if (!state?.root || !state.root.isConnected) return;
+    state.documentNeedsRender = false;
+    const workspace = state.root.querySelector?.('[data-ontology-scroll]') || state.root.querySelector?.('.ontology-workspace');
+    const scrollTop = workspace?.scrollTop || 0;
+    const scrollLeft = workspace?.scrollLeft || 0;
+    state.graphController?.destroy(); state.graphController = null;
     const focused = document.activeElement;
     const focus = state.graphRestoreFocus || (focused?.dataset?.ontologyNode ? { node: focused.dataset.ontologyNode } : focused?.dataset?.ontologyEdge ? { edge: focused.dataset.ontologyEdge } : null);
     state.graphRestoreFocus = null;
@@ -1020,7 +1102,14 @@
     else if (state.page === 'record') content = recordPage();
     else if (state.page === 'candidate-organize') content = candidateOrganizePage();
     else content = listPage();
-    state.root.innerHTML = `<main class="ontology-workspace">${content}</main>`;
+    state.root.innerHTML = `<main class="ontology-workspace ont-prototype${state.page === 'module' ? ' ontology-workspace--document' : ''}">${content}</main>`;
+    const nextWorkspace = state.root.querySelector?.('[data-ontology-scroll]') || state.root.querySelector?.('.ontology-workspace');
+    // Restoration is immediate; only explicit chapter navigation should animate.
+    if (nextWorkspace?.scrollTo) nextWorkspace.scrollTo({ top: scrollTop, left: scrollLeft, behavior: 'instant' });
+    else if (nextWorkspace) { nextWorkspace.scrollTop = scrollTop; nextWorkspace.scrollLeft = scrollLeft; }
+    mountDocumentGraph();
+    state.selectionController?.refresh();
+    if (state.editorStatus) updateDocumentSaveState(state, state.editorStatus.value, state.editorStatus.item);
     if (focus) state.root.querySelector?.(`[data-ontology-${focus.node ? 'node' : 'edge'}="${focus.node || focus.edge}"]`)?.focus?.();
     if (typeof root.hydrateUiFormSelects === 'function') root.hydrateUiFormSelects(state.root, {
       'ontology-graph-relation': value => { if (!state || value === (state.graphDefinitionId || '')) return; state.graphDefinitionId = value; void loadGraph(state.moduleId).then(render).catch(showError); },
@@ -1036,11 +1125,6 @@
         state.mode = event.detail.value;
         state.graphRequest++;
         if (state.mode === 'graph') void enterGraph(true).catch(showError); else render();
-      } else if (group.dataset.ontologyTabs === 'module') {
-        state.tab = event.detail.value;
-        if (['T', 'A', 'R'].includes(state.tab)) { state.box = state.tab; state.recordPage = 0; }
-        state.graphRequest++; state.recordRequest++;
-        if (state.tab === 'graph') void enterGraph(false).catch(showError); else render();
       } else if (group.dataset.ontologyTabs === 'object') {
         state.objectTab = event.detail.value; render();
       } else if (group.dataset.ontologyTabs === 'candidateBoxes') {
@@ -1056,6 +1140,7 @@
     const result = await invoke('cognition.ontology.snapshot');
     if (state !== current || request !== current.snapshotRequest) return;
     state.doc = result.ontology;
+    ensureDocumentEditor(state);
     try { state.recentIds = JSON.parse(root.localStorage?.getItem(`ontology-recent:${state.doc.ownerId}`) || '[]'); if (!Array.isArray(state.recentIds)) state.recentIds = []; } catch (_) { state.recentIds = []; }
     void loadPending(current);
     if (!options.resetToOverview && options.candidateId) {
@@ -1069,7 +1154,7 @@
     }
     const moduleId = String(options.moduleId || '');
     if (!options.resetToOverview && moduleId && state.doc.records[moduleId]?.kind === 'module') {
-      state.moduleId = moduleId; state.page = 'module'; state.tab = 'overview';
+      state.moduleId = moduleId; state.page = 'module'; state.tab = 'document';
       if (options.recordId) { await openRecord(String(options.recordId), options.recordVersion ? Number(options.recordVersion) : undefined); return; }
     } else if (!options.resetToOverview && options.recordId) {
       await openRecord(String(options.recordId), options.recordVersion ? Number(options.recordVersion) : undefined); return;
@@ -1077,84 +1162,56 @@
     render();
   }
   async function mountCognitionOntology(container, options = {}) {
-    state = { snapshotRequest: 0, graphRequest: 0, recordRequest: 0, root: container, page: 'list', mode: 'list', moduleId: '', tab: 'overview', box: 'T', modulePage: 0, recordPage: 0,
-      selectedId: '', selectedEdgeId: '', graphFocusId: '', graphSearchQuery: '', graphSearchResults: [], graphZoom: 1, graphLayout: 'radial', graphScale: 'instances', graphRules: true, at: new Date().toISOString().slice(0, 10), graph: null, history: [] };
+    state = { snapshotRequest: 0, graphRequest: 0, recordRequest: 0, root: container, page: 'list', mode: 'list', moduleId: '', tab: 'document', box: 'T', modulePage: 0, recordPage: 0,
+      selectedId: '', selectedEdgeId: '', graphFocusId: '', graphSearchQuery: '', graphSearchResults: [], graphZoom: 1, graphLayout: 'radial', graphScale: 'instances', graphRules: true, at: root.CogOntologyDocument.today(), graph: null, history: [] };
+    state.selectionController = root.CogOntologySelection?.mount(container, { getDocument: () => state?.doc, text, esc, save: async (id, field, value, options = {}) => {
+      const current = state;
+      if (!current?.editor) throw new Error(text('documentEditorUnavailable', '文档编辑器尚未就绪。'));
+      const record = current.doc.records[id];
+      if (record?.kind === 'assertion' && options.intent === 'change') {
+        const object = field === 'object.id' ? { kind: 'entity', id: value } : { ...record.object, value };
+        const saved = await commit([{ intent: 'change', recordId: id, expectedVersion: record.version, effectiveFrom: options.effectiveFrom, object, sourceLabel: sourceLabel() }]);
+        if (!saved) throw new Error(text('documentUnsaved', '修改尚未保存'));
+        return;
+      }
+      current.editor.enqueue(id, field, value); await current.editor.flush();
+      const errors = Object.values(current.editor.getDrafts()).filter(draft => draft.changes && Object.keys(draft.changes).length);
+      if (errors.length) throw new Error(text('documentUnsaved', '修改尚未保存'));
+    } });
     state.root.addEventListener('click', onClick);
-    state.root.addEventListener('pointerdown', onGraphPointerDown);
-    state.root.addEventListener('pointermove', onGraphPointerMove);
-    state.root.addEventListener('pointerup', onGraphPointerUp);
-    state.root.addEventListener('pointercancel', onGraphPointerUp);
     state.root.addEventListener('input', onInput);
     state.root.addEventListener('compositionend', onInput);
     state.root.addEventListener('keydown', onKeydown);
     state.root.addEventListener('change', onChange);
+    state.root.addEventListener('focusout', onDocumentFocusOut);
+    state.root.addEventListener('pointerdown', onDocumentPointerStart, true);
+    state.root.addEventListener('pointermove', onDocumentPointerMove, true);
+    state.root.addEventListener('pointerup', onDocumentPointerEnd, true);
+    state.root.addEventListener('pointercancel', onDocumentPointerEnd, true);
     window.addEventListener('i18n-change', onI18nChange);
-    window.addEventListener('keydown', onFullscreenKey, true);
     state.root.innerHTML = `<main class="ontology-workspace"><div class="ontology-ws-loading" role="status">${esc(text('loading', '正在加载本体…'))}</div></main>`;
     const current = state;
     try { await loadInitial(options); }
     catch (error) { if (state !== current) return; state.root.innerHTML = `<main class="ontology-workspace"><div class="ontology-ws-error" role="alert"><h1>${esc(text('loadFailed', '本体暂时无法加载'))}</h1><p>${esc(error.message)}</p>${button(text('retry', '重试'), 'retry', 'primary')}</div></main>`; }
   }
   function onClick(event) {
-    if (!state || suppressGraphClick) return;
-    const edge = event.target.closest('[data-ontology-edge]');
-    if (edge) {
-      state.selectedEdgeId = edge.dataset.ontologyEdge;
-      state.selectedId = '';
-      render();
-      return;
+    const card = event.target.closest?.('[data-card-module]');
+    if (card && !event.target.closest?.('button,a,input,select,textarea,summary')) {
+      if (event.defaultPrevented || event.detail > 1 || event.button > 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || state?.cardPointer?.moved) return;
+      const selection = root.getSelection?.();
+      if (selection && !selection.isCollapsed && selection.rangeCount && selection.getRangeAt(0).intersectsNode(card)) return;
+      event.preventDefault(); void handleAction('open-module', card).catch(showError); return;
     }
-    const node = event.target.closest('[data-ontology-node]');
-    if (node) {
-      state.selectedId = node.dataset.ontologyNode;
-      state.selectedEdgeId = '';
-      const selected = state.graph.nodes.find(n => n.id === state.selectedId);
-      if (selected?.kind === 'module') {
-        const current = state, selectedId = current.selectedId;
-        void invoke('cognition.ontology.record.get', { recordId: selected.id }).then(({ record }) => {
-          if (state !== current || current.selectedId !== selectedId) return;
-          current.doc.records[record.id] = record; render();
-        }).catch(showError);
-      }
-      else render();
-      return;
-    }
-    const action = event.target.closest('[data-ontology-action]');
-    if (!action) return;
+    if (!state || event.target.closest?.('[data-ontology-edit]')) return;
+    const action = event.target.closest('[data-ontology-action]'); if (!action) return;
     event.preventDefault();
-    if (action.dataset.ontologyAction === 'retry') {
-      const current = state;
-      void loadInitial(current.mountOptions || {}).catch(error => {
-        if (state !== current) return;
-        current.root.innerHTML = `<main class="ontology-workspace"><div class="ontology-ws-error" role="alert"><h1>${esc(text('loadFailed', '本体暂时无法加载'))}</h1><p>${esc(error.message)}</p>${button(text('retry', '重试'), 'retry', 'primary')}</div></main>`;
-      });
-      return;
-    }
-    void handleAction(action.dataset.ontologyAction, action).catch(error => root.uiToast?.(error.message || text('error', '操作未完成，请稍后重试。'), { variant: 'error' }));
+    void handleAction(action.dataset.ontologyAction, action).catch(showError);
   }
   let searchTimer = null;
   function showError(error) { root.uiToast?.(error.message || text('error', '操作未完成，请稍后重试。'), { variant: 'error' }); }
   function onInput(event) {
+    if (event.target.closest?.('[data-ontology-edit]')) { onDocumentInput(event); return; }
     if (!state || event.isComposing || event.keyCode === 229) return;
-    const graphInput = event.target.closest('[data-ontology-field="graphSearch"]');
-    if (graphInput && state && state.page === 'module' && state.tab === 'graph') {
-      state.graphSearchQuery = graphInput.value.trim();
-      state.selectedId = ''; state.selectedEdgeId = '';
-      clearTimeout(searchTimer);
-      searchTimer = setTimeout(async () => {
-        if (!state || state.page !== 'module' || state.tab !== 'graph') return;
-        try {
-          const current = state, query = current.graphSearchQuery, moduleId = current.moduleId;
-          const result = state.graphSearchQuery
-            ? await invoke('cognition.ontology.search', { query: state.graphSearchQuery, moduleId: state.moduleId })
-            : { results: [] };
-          if (state !== current || current.graphSearchQuery !== query || current.moduleId !== moduleId || current.tab !== 'graph') return;
-          state.graphSearchResults = result.results.filter(row => row.kind !== 'module');
-          render();
-        } catch (error) { root.uiToast?.(error.message, { variant: 'error' }); }
-      }, 180);
-      return;
-    }
     const input = event.target.closest('[data-ontology-field="search"]');
     if (!input || !state || state.page !== 'list') return;
     state.searchQuery = input.value.trim();
@@ -1166,30 +1223,24 @@
         const result = state.searchQuery ? await invoke('cognition.ontology.search', { query: state.searchQuery }) : { results: [] };
         if (state !== current || current.searchQuery !== query || current.page !== 'list') return;
         state.searchResults = result.results;
-        const slot = state.root.querySelector('.ontology-ws-search-results,.ontology-ws-search-empty');
-        if (!state.searchQuery) { slot?.remove(); return; }
-        const replacement = document.createElement('div');
-        replacement.className = result.results.length ? 'ontology-ws-search-results' : 'ontology-ws-search-empty';
-        replacement.innerHTML = result.results.length ? searchResultRows(result.results, 'search-result') : esc(text('noSearchResults', '没有找到匹配内容。'));
-        if (slot) slot.replaceWith(replacement); else if (state.searchQuery) state.root.querySelector('.ontology-ws-search')?.appendChild(replacement);
-        else replacement.remove();
+        const focused = document.activeElement === input, caret = input.selectionStart;
+        state.modulePage = 0; render();
+        if (focused) { const next = state.root.querySelector?.('[data-ontology-field="search"]'); next?.focus(); try { next?.setSelectionRange(caret, caret); } catch (_) {} }
       } catch (error) { root.uiToast?.(error.message, { variant: 'error' }); }
     }, 180);
   }
-  function onFullscreenKey(event) {
-    if (event.key === 'Escape' && state?.graphFullscreen && !event.isComposing) { event.preventDefault(); event.stopPropagation?.(); state.graphFullscreen = false; render(); }
-  }
   function onKeydown(event) {
-    if (event.isComposing || event.keyCode === 229) return;
-    if (event.key === 'Escape' && state && (state.selectedId || state.selectedEdgeId)) {
-      state.selectedId = ''; state.selectedEdgeId = ''; render(); return;
+    const card = event.target.closest?.('[data-card-module]');
+    if (card && event.target === card && ['Enter', ' '].includes(event.key) && !event.repeat && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); void handleAction('open-module', card).catch(showError); return; }
+    if (event.key === 'Escape') {
+      if (event.defaultPrevented) return;
+      const objectId = event.target.closest?.('[data-ontology-action="object-description"]')?.dataset.recordId;
+      const detail = event.target.closest?.('.ont-scan-object-detail[open]') || (objectId && [...state.root.querySelectorAll('.ont-scan-object-detail[open]')].find(node => node.dataset.objectId === objectId));
+      if (detail) { event.preventDefault(); void handleAction('object-description-close', { dataset: { recordId: detail.dataset.objectId } }); return; }
     }
-    const edge = event.target.closest?.('[data-ontology-edge]');
-    if (edge && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); onClick({ target: edge }); return; }
-    const node = event.target.closest?.('[data-ontology-node]');
-    if (!node || (event.key !== 'Enter' && event.key !== ' ')) return;
-    event.preventDefault();
-    onClick({ target: node });
+    if (event.isComposing || event.keyCode === 229) return;
+    const edit = event.target.closest?.('[data-ontology-edit]');
+    if (edit?.isContentEditable && event.key === 'Enter' && !event.shiftKey && edit.tagName !== 'P') { event.preventDefault(); edit.blur?.(); }
   }
   // 数据未落地前（mount→snapshot 在途）i18n-change 只能重绘加载骨架；
   // 全量 render 会经 listPage→modules 读 state.doc.records 而崩溃。
@@ -1201,46 +1252,11 @@
     }
     render();
   }
-  let graphDrag = null, suppressGraphClick = false;
-  function onGraphPointerDown(event) {
-    if (!state || event.button !== 0) return;
-    const svg = event.target.closest('svg'); if (!svg || !svg.closest('.ontology-ws-graph-canvas')) return;
-    const node = event.target.closest('[data-ontology-node]');
-    const box = svg.getBoundingClientRect(), view = svg.viewBox.baseVal;
-    graphDrag = { state, svg, pointerId: event.pointerId, x: event.clientX, y: event.clientY, dx: 0, dy: 0,
-      unitX: view.width / box.width, unitY: view.height / box.height, nodeId: node?.dataset.ontologyNode,
-      position: node ? state.currentPositions.get(node.dataset.ontologyNode) : { ...(state.graphPan || { x: 0, y: 0 }) } };
-    svg.setPointerCapture?.(event.pointerId);
-  }
-  function onGraphPointerMove(event) {
-    const drag = graphDrag; if (!drag || state !== drag.state || event.pointerId !== drag.pointerId) return;
-    drag.dx = (event.clientX - drag.x) * drag.unitX; drag.dy = (event.clientY - drag.y) * drag.unitY;
-    if (Math.abs(event.clientX - drag.x) + Math.abs(event.clientY - drag.y) < 5) return;
-    suppressGraphClick = true;
-    if (drag.nodeId) {
-      const node = [...drag.svg.querySelectorAll('[data-ontology-node]')].find(el => el.dataset.ontologyNode === drag.nodeId);
-      node?.setAttribute('transform', `translate(${drag.position.x + drag.dx} ${drag.position.y + drag.dy})`);
-    } else {
-      const view = drag.svg.viewBox.baseVal;
-      const width = 900 / state.graphZoom, height = 560 / state.graphZoom;
-      drag.svg.setAttribute('viewBox', `${(900 - width) / 2 + drag.position.x - drag.dx} ${(560 - height) / 2 + drag.position.y - drag.dy} ${width} ${height}`);
-    }
-  }
-  function onGraphPointerUp(event) {
-    const drag = graphDrag; graphDrag = null;
-    if (suppressGraphClick) setTimeout(() => { suppressGraphClick = false; }, 0);
-    if (!drag || state !== drag.state || event.pointerId !== drag.pointerId || !suppressGraphClick) return;
-    if (drag.nodeId) {
-      const key = `${state.moduleId}:${state.graphScale}:${state.graphLayout}`;
-      state.graphPositions ??= {}; state.graphPositions[key] ??= {};
-      state.graphPositions[key][drag.nodeId] = { x: drag.position.x + drag.dx, y: drag.position.y + drag.dy };
-    } else state.graphPan = { x: drag.position.x - drag.dx, y: drag.position.y - drag.dy };
-    render();
-  }
   function onChange(event) {
+    if (event.target.closest?.('[data-ontology-edit]')) { onDocumentInput(event); void state?.editor?.flush(); return; }
     if (!state) return;
     const objectDate = event.target.closest('[data-ontology-field="objectAt"]');
-    if (objectDate) { state.at = objectDate.value || new Date().toISOString().slice(0, 10); render(); return; }
+    if (objectDate) { state.at = objectDate.value || root.CogOntologyDocument.today(); render(); return; }
     const input = event.target.closest('[data-ontology-field="graphAt"]'); if (!input) return;
     state.at = input.value;
     void loadGraph(state.moduleId).then(render).catch(error => root.uiToast?.(error.message, { variant: 'error' }));
@@ -1251,6 +1267,8 @@
     void loadPending(current);
     if (doc.revision <= current.doc.revision) return;
     current.doc = doc;
+    if (current.documentPointerDown || current.root.contains?.(document.activeElement) && document.activeElement?.matches?.('[data-ontology-edit]')) { current.documentNeedsRender = true; return; }
+    if (current.graphController) { current.graphController.update({ doc, moduleId: current.page === 'module' ? current.moduleId : '', at: current.at }); return; }
     if (current.tab === 'graph' || (current.page === 'list' && current.mode === 'graph')) {
       void loadGraph(current.page === 'list' ? undefined : current.moduleId).then(() => { if (state === current) render(); }).catch(showError);
     } else render();
@@ -1258,18 +1276,25 @@
   function unmountCognitionOntology() {
     if (!state?.root) return;
     state.root.removeEventListener('click', onClick);
-    state.root.removeEventListener('pointerdown', onGraphPointerDown);
-    state.root.removeEventListener('pointermove', onGraphPointerMove);
-    state.root.removeEventListener('pointerup', onGraphPointerUp);
-    state.root.removeEventListener('pointercancel', onGraphPointerUp);
-    graphDrag = null; suppressGraphClick = false;
     state.root.removeEventListener('input', onInput);
     state.root.removeEventListener('compositionend', onInput);
     clearTimeout(searchTimer);
     state.root.removeEventListener('keydown', onKeydown);
     state.root.removeEventListener('change', onChange);
+    state.root.removeEventListener('focusout', onDocumentFocusOut);
+    state.root.removeEventListener('pointerdown', onDocumentPointerStart, true);
+    state.root.removeEventListener('pointermove', onDocumentPointerMove, true);
+    state.root.removeEventListener('pointerup', onDocumentPointerEnd, true);
+    state.root.removeEventListener('pointercancel', onDocumentPointerEnd, true);
+    clearTimeout(state.documentRenderTimer);
+    const closing = state;
+    const closingEditor = closing.editor;
+    if (closingEditor) void closingEditor.flush().catch(error => {
+      if (state === closing) showError(error);
+    }).finally(() => closingEditor.destroy());
+    closing.graphController?.destroy();
+    closing.selectionController?.destroy();
     window.removeEventListener('i18n-change', onI18nChange);
-    window.removeEventListener('keydown', onFullscreenKey, true);
     state.root.innerHTML = '';
     state = null;
   }

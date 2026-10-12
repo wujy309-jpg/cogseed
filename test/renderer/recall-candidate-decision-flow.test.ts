@@ -258,7 +258,7 @@ describe('候选决定的收尾', () => {
   });
 
   it('未改动的证据引用连元数据一起留住，不被压成裸 kind:id', () => {
-    expect(adopt).toContain('sourceRefs: candidate.evidenceRefs || candidate.sourceRefs || []');
+    expect(adopt).toContain('sourceRefs: candidate.sourceRefs || candidate.evidenceRefs || []');
     expect(adopt).toContain('evidenceRefs: candidate.evidenceRefs || candidate.sourceRefs || []');
     expect(adopt).toContain('Object.assign({');
   });

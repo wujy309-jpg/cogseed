@@ -31,9 +31,9 @@ const coreSource = readFileSync(
 /** 抓两份键清单：route: { ... } 初始字面量 与 Object.assign({ ... }, target) 模板。 */
 function routeKeySets(): { initial: string[]; merged: string[] } {
   const initialMatch = coreSource.match(/route:\s*\{([^}]*)\}/);
-  const mergedMatch = coreSource.match(/Object\.assign\(\s*\{([^}]*)\},\s*target\)/);
+  const mergedMatch = coreSource.match(/const merged = Object\.assign\(\s*\{([^}]*)\},\s*target\)/);
   if (!initialMatch || !mergedMatch) throw new Error('route key literals not found');
-  const keys = (body: string) => [...body.matchAll(/([A-Za-z]+):\s*(?:''|'tree')/g)].map((m) => m[1]);
+  const keys = (body: string) => [...body.matchAll(/([A-Za-z]+):\s*(?:''|'overview')/g)].map((m) => m[1]);
   return { initial: keys(initialMatch[1]), merged: keys(mergedMatch[1]) };
 }
 

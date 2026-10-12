@@ -16,7 +16,7 @@
   const {
     btn, roleBtn, chip, hero, empty, CATEGORIES, categoryLabel,
     isKstarEvidenceRef, evidenceChip, evidenceGroupsHtml, stripMarkdown,
-    attributionLabel, sourceRefKind, resolveSourceRef, reviewOutcomeText,
+    attributionLabel, sourceRefKind, resolveSourceRef, reviewOutcomeText, otherActions,
     foldValue, kstarEpisodeSection,
   } = NS.ui;
 
@@ -642,7 +642,88 @@
       ? `<p class="note">${head}${esc(lines.join('；'))}</p>`
       : `<div class="note cand-block-note">${head}${lines.map((line) => `<br>· ${esc(line)}`).join('')}</div>`;
   };
-  function candidateFormBody(candidate) {
+
+  function candidateTaskChoices(scope) {
+    const choices = [
+      ['general', 'cognition.capture.scope_general', '跨任务通用'],
+      ['report', 'cognition.detail_scope_report', '报告与文档'],
+      ['code', 'cognition.detail_scope_code', '编程开发'],
+      ['review', 'cognition.capture.scope_review', '审查与评审'],
+      ['product', 'cognition.detail_scope_product', '产品与架构'],
+    ].map(([value, key, fallback]) => ({ value, label: T(key, fallback) }));
+    // 旧多值和自定义范围原样回写；打开表单绝不自动扩大到 general。
+    if (scope && !choices.some(choice => choice.value === scope)) {
+      const names = new Map(choices.map(choice => [choice.value, choice.label]));
+      const label = String(scope).split(',').map(value => names.get(value.trim()) || value.trim()).join('、');
+      choices.unshift({ value: scope, label: T('cognition.detail_scope_existing', '原有设置：{scope}', { scope: label }) });
+    }
+    if (!scope) choices.unshift({ value: '', label: T('cognition.detail_scope_choose', '请选择适用任务') });
+    return choices;
+  }
+  // 活动详情沿用 HTML 的阅读顺序；数据、版本和能力仍以真实服务返回为准。
+  function activityTarget(candidate) {
+    const targetId = candidate.targetAssetId || candidate.mergedIntoAssetId;
+    const target = S.assets.find(asset => String(asset.id) === String(targetId || ''));
+    const action = String(candidate.suggestedAction || 'create');
+    if (!targetId && action === 'create') return T('cognition.activity_target_create', '拟新建正式资产 · 无已有资产版本');
+    if (!target) return T('cognition.activity_target_missing', '未读到目标资产，无法核对当前版本；请刷新后核对。');
+    const conflict = candidateConflictState(candidate);
+    const active = String(conflict?.currentVersion || target.activeVersion || target.version || '');
+    const baseline = String(candidate.targetVersionUsed || '');
+    return T('cognition.activity_target_version', '目标：{name} · 当前在用 {current} · 候选基于 {baseline}', {
+      name: target.title || T('cognition.candidate_untitled', '未命名候选'),
+      current: active ? `v${active}` : T('cognition.activity_version_unknown', '版本未记录'),
+      baseline: baseline ? `v${baseline}` : T('cognition.activity_version_unknown', '版本未记录'),
+    });
+  }
+  function activityImpact(candidate) {
+    const action = String(candidate.suggestedAction || 'create');
+    if (action === 'pause') return T('cognition.activity_impact_pause', '确认后暂停目标资产的后续使用，保留正文、版本与历史记录；不会修改全局设置。');
+    if (action === 'limit_scope') return T('cognition.activity_impact_boundary', '保存后更新目标资产的适用边界，保留版本记录；不修改全局设置，也不自动扩大对象授权。');
+    if (candidate.targetAssetId || candidate.mergedIntoAssetId) return T('cognition.activity_impact_update', '保存后为目标资产生成新版本，保留旧版本；当前对象范围与授权仍受后端校验约束。');
+    return T('cognition.activity_impact_create', '正式保存后新建认知资产，仅按该任务范围、对象授权与状态使用；保存不代表已被任务采用。');
+  }
+  function activitySources(candidate) {
+    const refs = evidenceRefs(candidate);
+    const seen = new Set();
+    const rows = refs.filter(ref => {
+      const key = `${ref.kind}:${ref.id || ref.ref || ''}`;
+      if (seen.has(key)) return false;
+      seen.add(key); return true;
+    }).map(ref => {
+      const evidenceState = S.reviewEvidence?.['candidate:' + candidate.id];
+      const resolved = evidenceState?.items?.find(item => item.ref?.kind === ref.kind && item.ref?.id === ref.id);
+      const view = resolveSourceRef(resolved?.title ? { ...ref, title: resolved.title } : ref);
+      const unavailable = resolved?.state === 'unavailable' || view.state === 'unavailable' || ref.degraded === true;
+      const label = view.state === 'processing' ? T('cognition.evidence_source_processing', '来源整理中') : unavailable ? T('cognition.source_unavailable_label', '来源记录不可用')
+        : view.state === 'immediate' ? T('cognition.evidence_immediate_note', '对话中当场记（无独立会话出处）')
+          : view.name || T('cognition.evidence_fallback', '来源记录');
+      const open = !unavailable && view.openRoute === 'conversation'
+        ? btn(T('cognition.activity_view_source', '查看来源 ›'), 'open-conversation', { id: view.openTarget, small: true, className: 'rnm ca-review-source-link' })
+        : !unavailable && view.openRoute === 'kstar'
+          ? btn(T('cognition.activity_view_source', '查看来源 ›'), 'open-kstar-episode', { id: view.openTarget, small: true, className: 'rnm ca-review-source-link' }) : '';
+      // 摘录只能来自服务端保留的来源数据；不可用/撤权来源不展示旧摘录。
+      const excerpt = !unavailable && view.state !== 'processing' ? String(resolved ? resolved.excerpt || '' : ref.excerpt || '').trim() : '';
+      const sourceLabel = !unavailable && view.state === 'available' && view.openRoute === 'kstar' ? T('cognition.evidence_task_review', '任务复盘：{title}', { title: view.name || T('cognition.evidence_task_review_generic', '一次任务') }) : !unavailable && view.state === 'available' && view.kind === 'conversation' && view.name ? T('cognition.evidence_conversation_named', '对话：《{name}》', { name: view.name }) : label;
+      return `<div class="ca-review-source"><div class="ca-review-source-head"><span>${esc(sourceLabel)}</span>${open}</div>${excerpt ? `<blockquote class="ca-review-quote">${resolved?.excerptKind === 'conversation_context' ? `<span class="ca-review-excerpt-label">${esc(T('cognition.prototype_context_excerpt', '来源对话节选（供核对）'))}</span>` : ''}${esc(excerpt)}</blockquote>` : `<p class="note">${esc(unavailable ? T('cognition.activity_source_unavailable', '当前无法读取此来源，不能核对原文；其他可用来源仍可逐项查看。') : resolved?.state === 'read_failed' ? T('cognition.prototype_evidence_failed', '来源原文暂时无法读取，请重试或打开来源核对。') : T('cognition.activity_source_no_excerpt', '此来源未保留原文摘录，请打开来源核对。'))}</p>`}</div>`;
+    }).join('');
+    return rows || `<p class="note">${esc(candidate.origin === 'manual'
+      ? T('cognition.candidate_manual_evidence_note', '这条内容由你直接输入，可以确认保存；没有外部引用，保存不代表效果已验证。')
+      : T('cognition.candidate_no_evidence', '没有可追溯的证据引用；确认前建议先补证。'))}</p>`;
+  }
+  function activityHistory(candidate) {
+    const state = S.activityHistory?.[candidate.id];
+    const labels = {
+      accept: T('cognition.activity_history_accept', '确认保存'), modify: T('cognition.activity_history_modify', '修改后保存'),
+      defer: T('cognition.activity_defer', '稍后处理'), reject: T('cognition.inbox_action_reject', '拒绝'),
+      ignore: T('cognition.inbox_action_ignore', '忽略'), keep_current: T('cognition.activity_history_keep', '保留现有内容'),
+      trial: T('cognition.activity_history_trial', '试用'),
+    };
+    const records = state?.items || [];
+    const entries = records.map(item => `<li><strong>${esc(labels[item.decision_type] || T('cognition.activity_history_decision', '审查决定'))}</strong><time>${esc(NS.fmtDate(item.timestamp))}</time><p>${esc(item.actor === 'system' ? T('cognition.activity_history_system', '系统') : item.actor === 'user' ? T('cognition.activity_history_user', '你（人工）') : T('cognition.activity_actor_unknown', '历史记录未提供'))}${item.reason ? ` · ${esc(item.reason)}` : ''}</p>${item.outcome === 'asset_failed' ? `<p class="note">${esc(T('cognition.activity_history_failed', '正式保存未成功，不能视为已生效。'))}</p>` : ''}</li>`).join('');
+    return `<section class="ca-review-history">${btn(T('cognition.activity_history_toggle', '查看本条处理记录'), 'activity-history', { id: candidate.id, small: true, className: 'o', attrs: { 'aria-expanded': state?.open ? 'true' : 'false' } })}${state?.open ? `<div class="ca-review-history-body">${state.loading ? `<p class="note">${esc(T('common.loading', '加载中…'))}</p>` : state.error ? `<p role="alert" class="note">${esc(state.error)}</p>` : `<ol>${entries || `<li>${esc(T('cognition.activity_history_empty', '没有读到本条审查决定；不代表完整历史中从未发生过操作。'))}</li>`}</ol>`}${candidate.userModifiedAt ? `<p class="note">${esc(T('cognition.activity_history_last_edit', '最近候选修改：{at}', { at: NS.fmtDate(candidate.userModifiedAt) }))}</p>` : ''}${candidate.activityDeferredAt ? `<p class="note">${esc(T('cognition.activity_history_deferred', '标记稍后处理：{at}', { at: NS.fmtDate(candidate.activityDeferredAt) }))}</p>` : ''}</div>` : ''}</section>`;
+  }
+  function candidateFormBody(candidate, options = {}) {
     const refs = evidenceRefs(candidate);
     const broken = evidenceMostlyUnavailable(candidate);
     // 能力一律按主进程下发的 capability 判定，**缺失即视为只读**——与旧模块
@@ -651,7 +732,8 @@
     // `capabilities && …`、canPromote 用真值、canReject 用 `!== false`），
     // 于是"capabilities 缺失"时仍会渲染出「稍后处理 / 拒绝」——正是本 PR 要消灭的
     // 那类必然失败的按钮。
-    const caps = candidate.capabilities || {};
+    const terminal = !!candidate.capabilities?.isTerminal || ['confirmed', 'integrated', 'rejected', 'ignored', 'expired', 'superseded'].includes(String(candidate.status || ''));
+    const caps = terminal ? Object.assign({}, candidate.capabilities, { canEdit: false, canPromote: false, canReject: false, canContinueOntology: false }) : candidate.capabilities || {};
     const canEdit = !!caps.canEdit;
     const canPromote = !!caps.canPromote;
     const canReject = !!caps.canReject;
@@ -687,28 +769,90 @@
     const ontologyAction = canContinueOntology
       ? btn(T('cognition.candidate_continue_ontology', '继续整理到本体'), 'cand-organize-ontology', { id: candidate.id, className: 'o' })
       : edit ? btn(T('cognition.candidate_organize_ontology', '整理到本体'), 'cand-organize-ontology', { id: candidate.id, className: 'o' }) : '';
-    const actionsHtml = `<div class="actions actions-right">
-        ${canPromote ? btn(decisionLabels.promote, 'cand-adopt-with-form', { id: candidate.id, primary: true }) : ''}
-        ${ontologyAction}
-        ${canReject ? btn(decisionLabels.reject, 'cand-decide', { id: candidate.id, data: { action: 'reject' }, danger: true }) : ''}
-      </div>`;
+    const promoteLabel = options.compact && candidate.suggestedAction === 'pause' ? T('cognition.activity_confirm_pause', '确认暂停') : options.compact && candidate.suggestedAction === 'limit_scope' ? T('cognition.activity_save_boundary', '保存边界') : options.compact && !['update', 'limit_scope', 'pause'].includes(String(candidate.suggestedAction || 'create')) ? T('cognition.activity_formal_save', '修改并保存') : decisionLabels.promote;
+    const extraActions = (canReject ? btn(T('cognition.activity_defer', '稍后处理'), 'activity-defer', { id: candidate.id, className: 'o' }) : '') + ontologyAction + (options.compact ? btn(T('cognition.activity_next_item', '下一项'), 'activity-next', { className: 'o' }) : '');
+    const actionsHtml = `<div class="actions actions-right"${options.compact ? ' data-activity-primary-actions' : ''}>
+        ${canPromote || (options.compact && canEdit) ? btn(promoteLabel, 'cand-adopt-with-form', { id: candidate.id, primary: true, disabled: !canPromote }) : ''}
+        ${canEdit ? btn(T('cognition.activity_save_validate', '保存修改并校验'), 'activity-save-draft', { id: candidate.id, className: 'o' }) : ''}
+        ${canReject ? btn(options.compact ? T('cognition.inbox_action_reject', '拒绝') : decisionLabels.reject, 'cand-decide', { id: candidate.id, data: { action: 'reject' }, danger: true }) : ''}
+        ${!options.compact ? extraActions : ''}
+      </div>${options.compact ? otherActions(extraActions) : ''}`;
+
+    if (options.compact) {
+      const scope = String(candidate.suggestedScope || '');
+      const typeLabel = T('cognition.activity_type_label', '认知类型');
+      const taskLabel = edit ? T('cognition.activity_task_label', '任务范围 *') : T('cognition.activity_task_label', '任务范围 *').replace(/\s*\*$/, '');
+      const blockReasons = canPromote ? [] : (caps.ineligibleReasons || [])
+        .map(reason => NS.promotionBlockText ? NS.promotionBlockText(reason) : '').filter(Boolean);
+      const advisory = candidateAdvisoryHtml(candidate);
+      const read = (label, value) => `<div class="field"><span>${esc(label)}</span><div class="content-text">${esc(value || T('cognition.activity_not_recorded', '未记录'))}</div></div>`;
+      const input = (key, label, value, rows) => field(label, rows
+        ? window.uiTextarea({ id: `ca-cand-${key}-${candidate.id}`, value: value || '', attrs: { rows, 'data-f': key, maxlength: key === 'judgment' ? 4000 : key === 'uncertainty' ? 1000 : 4000 } })
+        : window.uiInput({ id: `ca-cand-${key}-${candidate.id}`, value: value || '', attrs: { maxlength: 80, 'data-f': key } }));
+      const boundary = String(candidate.suggestedAction || '') === 'limit_scope';
+      const boundaries = candidate.suggestedType === 'rule' || candidate.applicableWhen?.length || candidate.forbiddenWhen?.length || boundary;
+      const saved = S.activityDraftValidation?.[candidate.id];
+      return `
+        ${candidate.autoReview?.eligible === false && candidate.autoReview.reasons?.length ? `<div class="ca-review-notice"><strong>${esc(T('cognition.activity_manual_review', '保留人工确认'))}</strong><p>${esc(candidate.autoReview.reasons.join('；'))}</p></div>` : ''}
+        ${terminal ? '' : `<section class="ca-review-target">${read(T('cognition.activity_target_label', '目标 / 版本'), activityTarget(candidate))}</section>`}
+        ${conflictHtml}${conflictHtml ? `<p class="note">${esc(T('cognition.candidate_status_pending', '待确认'))}</p>` : ''}
+        ${candidate.activityDeferredAt ? `<p class="note">${esc(T('cognition.activity_deferred_hint', '已标记稍后处理，仍保留在需要关注中。'))}</p>` : ''}
+        <section class="ca-review-content">
+          ${edit ? input('summary', T('cognition.capture.name', '认知名称'), candidate.summary) : read(T('cognition.capture.name', '认知名称'), candidate.summary)}
+          ${edit ? input('judgment', T('cognition.activity_body_label', '可复用正文 *'), candidate.judgment, 5) : read(T('cognition.activity_body_read', '可复用正文'), candidate.judgment)}
+          ${statementWarningHtml(candidate)}
+        </section>
+        <div class="ca-activity-fields-two ca-review-usage">
+          ${edit ? field(taskLabel, window.uiInput({ id: `ca-cand-scope-${candidate.id}`, value: ({ general: T('cognition.capture.scope_general', '跨任务通用'), report: T('cognition.capture.scope_report', '报告'), code: T('cognition.capture.scope_code', '编程'), review: T('cognition.capture.scope_review', '审查与评审'), product: T('cognition.capture.scope_product', '产品工作') })[scope] || scope, ariaLabel: taskLabel, required: true, attrs: { 'data-f': 'scope', maxlength: 160 } })) : read(taskLabel, scope ? candidateTaskChoices(scope).find(item => item.value === scope)?.label : T('cognition.candidate_scope_domain_missing', '尚未填写适用任务范围；确认保存前需要补全。'))}
+          ${edit ? field(typeLabel, window.uiSelect({ id: `ca-cand-type-${candidate.id}`, native: true, className: 'ui-control ca-review-select', ariaLabel: typeLabel, value: candidate.suggestedType || '', options: CATEGORIES.map(([id, key, fb]) => ({ value: id, label: T(key, fb) })), attrs: { 'data-f': 'type' } })) : read(typeLabel, categoryLabel(candidate.suggestedType))}
+        </div>
+        <p class="note ca-review-help" id="ca-cand-scope-help-${esc(candidate.id)}">${esc(T('cognition.detail_scope_help', '适用任务帮助系统在合适的任务中选择这条认知；是否采用还取决于当前任务和使用权限。'))}</p>
+        ${boundaries ? `<${boundary ? 'section' : 'details'} class="details ca-review-boundaries">${boundary ? `<h3>${esc(T('cognition.activity_boundary_title', '适用与禁用边界'))}</h3>` : `<summary>${esc(T('cognition.activity_boundary_title', '适用与禁用边界'))}</summary>`}${edit ? input('applicable', T('cognition.asset_version_applicable', '适用场景'), (candidate.applicableWhen || []).join('\n'), 2) + input('forbidden', T('cognition.asset_version_forbidden', '禁用场景'), (candidate.forbiddenWhen || []).join('\n'), 2) : read(T('cognition.asset_version_applicable', '适用场景'), (candidate.applicableWhen || []).join('；')) + read(T('cognition.asset_version_forbidden', '禁用场景'), (candidate.forbiddenWhen || []).join('；'))}</${boundary ? 'section' : 'details'}>` : ''}
+        <details class="details ca-review-value"><summary>${esc(T('cognition.activity_value_title', '价值与不确定性'))}</summary>
+          ${edit ? input('value', T('cognition.activity_value_label', '复用价值'), candidate.value, 2) + input('uncertainty', T('cognition.activity_uncertainty_label', '不确定性说明'), candidate.uncertainty, 2) : read(T('cognition.activity_value_label', '复用价值'), candidate.value) + read(T('cognition.activity_uncertainty_label', '不确定性说明'), candidate.uncertainty)}
+        </details>
+        <section class="ca-review-evidence"><h3>${esc(T('cognition.activity_evidence_title', '来源与证据'))}</h3>
+          ${broken ? `<div class="ca-review-notice"><strong>${esc(T('cognition.candidate_evidence_weak', '来源待核对'))}</strong><p>${esc(T('cognition.detail_sources_warning_hint', '请先查看仍可打开的来源，确认内容可靠后再保存。'))}</p></div>` : ''}${activitySources(candidate)}
+          ${legacyEvidenceHtml}
+          ${chainHtml || reviewSignalBlock(candidate) ? `<details class="details ca-review-chain"><summary>${esc(T('cognition.activity_chain_title', '依据与版本对比'))}</summary>${chainHtml || reviewSignalBlock(candidate)}</details>` : ''}
+          ${kstarEpisodeSection(S.route)}
+        </section>
+        ${terminal ? '' : `<section class="ca-review-impact"><h3>${esc(T('cognition.activity_impact_title', '保存的影响'))}</h3>
+          <p class="note">${esc(activityImpact(candidate))}</p>
+          ${candidate.scopePolicy && Object.keys(candidate.scopePolicy).length ? `<details class="details ca-review-permissions"><summary>${esc(T('cognition.detail_permissions', '查看使用权限'))}</summary>${candidateScopeField(candidate, { includeTaskConditions: false })}</details>` : ''}
+          <p class="note ca-review-footnote">${esc(T('cognition.activity_save_explanation', '“保存修改并校验”只保留候选修改并更新校验结果；正式保存仍需通过内容、证据、权限与版本校验。'))}</p>
+          ${blockReasons.length ? `<div class="ca-review-notice" role="status"><strong>${esc(T('cognition.detail_block_title', '保存前还需要处理'))}</strong><p>${esc(blockReasons.join('；'))}</p></div>` : ''}
+          ${advisory}
+          ${saved ? `<div class="ca-review-notice${canPromote ? ' is-valid' : ''}" role="status" data-draft-validation>${esc(canPromote ? T('cognition.activity_draft_valid', '草稿已保存，当前校验允许正式保存；确认时仍会再次校验。') : T('cognition.activity_draft_invalid', '草稿已保存，仍有阻断项需要处理；尚未保存为正式资产。'))}</div>` : ''}
+        </section>`}
+        ${terminal ? candidateAdvisoryHtml(candidate, { inline: true }) : ''}
+        ${activityHistory(candidate)}
+        ${actionsHtml}`;
+    }
+
     return `
+      ${candidate.activityDeferredAt ? `<div class="note">${esc(T('cognition.activity_deferred_hint', '已标记稍后处理，仍保留在需要关注中。'))}</div>` : ''}
+      ${candidate.autoReview && candidate.autoReview.eligible === false && Array.isArray(candidate.autoReview.reasons) && candidate.autoReview.reasons.length ? `<div class="note ca-auto-review"><strong>${esc(T('cognition.activity_manual_review', '保留人工确认'))}</strong><p>${esc(candidate.autoReview.reasons.join('；'))}</p></div>` : ''}
       ${broken ? `<div class="warn">${esc(T('cognition.candidate_evidence_all_unavailable', '这条候选的大部分来源暂时无法核对。原会话可能仍然存在；请查看可打开的来源，补充依据或选择不保存。'))}</div>` : ''}
       ${candidate.mergedIntoAssetId ? `<div class="note">${esc(T('cognition.candidate_merged_into', '这条与已有资产相似：确认后会并入那条资产（融合出新版本），不会另开一条。'))}</div>` : ''}
       ${chainHtml ? '' : reviewSignalBlock(candidate)}
       ${chainHtml}
-      ${candidateScopeField(candidate, { includeTaskConditions: !chainHtml })}
+      ${options.compact && edit ? '' : candidateScopeField(candidate, { includeTaskConditions: !chainHtml })}
       ${conflictHtml}
       ${edit ? `
-        ${field(T('cognition.type', '类型'), `<div class="chips">${CATEGORIES.map(([id, key, fb]) => { const on = String(candidate.suggestedType || '') === id; return `<span class="ca-chip ca-chip-opt${on ? ' is-green' : ''}" data-act="cand-type" data-id="${esc(id)}" ${roleBtn(`aria-pressed="${on ? 'true' : 'false'}"`)}>${esc(T(key, fb))}</span>`; }).join('')}</div>`)}
+        ${options.compact ? field(T('cognition.capture.name', '认知名称'), window.uiInput({ id: `ca-cand-summary-${esc(candidate.id)}`, value: candidate.summary || '', attrs: { maxlength: 60, 'data-f': 'summary' } })) : ''}
+        ${options.compact ? '' : field(T('cognition.type', '类型'), `<div class="chips">${CATEGORIES.map(([id, key, fb]) => { const on = String(candidate.suggestedType || '') === id; return `<span class="ca-chip ca-chip-opt${on ? ' is-green' : ''}" data-act="cand-type" data-id="${esc(id)}" ${roleBtn(`aria-pressed="${on ? 'true' : 'false'}"`)}>${esc(T(key, fb))}</span>`; }).join('')}</div>`)}
         ${field(T('cognition.capture.summary', '可复用内容'), window.uiTextarea({ id: `ca-cand-judgment-${esc(candidate.id)}`, value: candidate.judgment || '', attrs: { 'data-f': 'judgment' } }))}
         ${statementWarningHtml(candidate)}
-        ${chainHtml ? '' : field(T('cognition.chain_value_label', '带来的价值'), window.uiTextarea({ id: `ca-cand-value-${esc(candidate.id)}`, value: candidate.value || '', attrs: { 'data-f': 'value' } }))}
+        ${options.compact ? `<div class="ca-activity-fields-two">${field(T('cognition.candidate_scope_domain', '适用任务范围'), window.uiInput({ id: `ca-cand-scope-${esc(candidate.id)}`, value: candidate.suggestedScope || '', attrs: { 'data-f': 'scope' } }))}${field(T('cognition.type', '类型'), window.uiSelect({ id: `ca-cand-type-${candidate.id}`, native: true, ariaLabel: T('cognition.type', '类型'), value: candidate.suggestedType || '', options: CATEGORIES.map(([id, key, fb]) => ({ value: id, label: T(key, fb) })), attrs: { 'data-f': 'type' } }))}</div>` : ''}
+        ${options.compact || chainHtml ? '' : field(T('cognition.chain_value_label', '带来的价值'), window.uiTextarea({ id: `ca-cand-value-${esc(candidate.id)}`, value: candidate.value || '', attrs: { 'data-f': 'value' } }))}
         <details class="details">
           <summary>${esc(T('cognition.candidate_advanced', '高级选项（通常不用改）'))}</summary>
-          ${field(T('cognition.candidate_scope_domain', '适用任务范围'), window.uiInput({ id: `ca-cand-scope-${esc(candidate.id)}`, value: candidate.suggestedScope || '', placeholder: T('cognition.candidate_scope_placeholder', '例如：仅产品工作空间'), attrs: { 'data-f': 'scope' } }))}
+          ${options.compact ? '' : field(T('cognition.candidate_scope_domain', '适用任务范围'), window.uiInput({ id: `ca-cand-scope-${esc(candidate.id)}`, value: candidate.suggestedScope || '', placeholder: T('cognition.candidate_scope_placeholder', '例如：仅产品工作空间'), attrs: { 'data-f': 'scope' } }))}
           <div class="note">${esc(T('cognition.candidate_scope_hint', '常用范围：跨对话通用（general）、报告（report）、编程（code）、审查（review）、产品（product）。其他写法可能匹配不上任务，建议从这里选一个。'))}</div>
-          ${field(T('cognition.capture.name', '认知名称'), window.uiInput({ id: `ca-cand-summary-${esc(candidate.id)}`, value: candidate.summary || '', attrs: { maxlength: 60, 'data-f': 'summary' } }))}
+          ${options.compact ? '' : field(T('cognition.capture.name', '认知名称'), window.uiInput({ id: `ca-cand-summary-${esc(candidate.id)}`, value: candidate.summary || '', attrs: { maxlength: 60, 'data-f': 'summary' } }))}
+          ${options.compact && (candidate.suggestedType === 'rule' || candidate.applicableWhen?.length || candidate.forbiddenWhen?.length) ? `${field(T('cognition.asset_version_applicable', '适用场景'), window.uiTextarea({ id: `ca-cand-applicable-${esc(candidate.id)}`, value: (candidate.applicableWhen || []).join('\n'), attrs: { 'data-f': 'applicable' } }))}${field(T('cognition.asset_version_forbidden', '禁用场景'), window.uiTextarea({ id: `ca-cand-forbidden-${esc(candidate.id)}`, value: (candidate.forbiddenWhen || []).join('\n'), attrs: { 'data-f': 'forbidden' } }))}` : ''}
+          ${options.compact && !chainHtml ? field(T('cognition.chain_value_label', '带来的价值'), window.uiTextarea({ id: `ca-cand-value-${esc(candidate.id)}`, value: candidate.value || '', attrs: { 'data-f': 'value' } })) : ''}
           ${chainHtml ? '' : field(T('cognition.chain_uncertainty_label', '仍不确定的地方'), window.uiTextarea({ id: `ca-cand-uncertainty-${esc(candidate.id)}`, value: candidate.uncertainty || '', attrs: { 'data-f': 'uncertainty' } }))}
         </details>
         <div class="ca-detail-foot">
@@ -773,7 +917,7 @@
     return { state, label: T(copy[0], copy[1]), tone: copy[2] };
   }
 
-  function candidateFormCard(candidate) {
+  function candidateFormCard(candidate, options = {}) {
     const broken = evidenceMostlyUnavailable(candidate);
     const status = candidateStatusPresentation(candidate);
     const isTerminal = Boolean((candidate.capabilities || {}).isTerminal)
@@ -807,12 +951,12 @@
     const fullTitle = String(candidate.summary || candidate.judgment || T('cognition.candidate_untitled', '未命名候选')).trim();
     return `
     <div class="card ca-candidate-detail" data-cand-id="${esc(candidate.id)}" data-cand-type="${esc(candidate.suggestedType || '')}">
-      <div class="cand-head">
-        ${chip(status.label, status.tone)}${chip(categoryLabel(candidate.suggestedType))}${candidateRiskBadge(candidate)}${broken ? chip(T('cognition.candidate_evidence_weak', '来源待核对'), 'amber') : ''}
-      </div>
-      <h2 class="cand-title">${esc(fullTitle)}</h2>
+      ${options.compact ? '' : `<div class="cand-head">
+        ${chip(status.label, status.tone)}${options.compact ? '' : chip(categoryLabel(candidate.suggestedType))}${!options.compact || ['medium', 'high'].includes(candidate.risk) ? candidateRiskBadge(candidate) : ''}${broken ? chip(T('cognition.candidate_evidence_weak', '来源待核对'), 'amber') : ''}
+      </div>`}
+      ${options.compact ? '' : `<h2 class="cand-title">${esc(fullTitle)}</h2>`}
       ${isTerminal ? `<div class="note ca-candidate-state-note">${esc(stateHint)}${nextStep ? `<div class="actions">${nextStep}</div>` : ''}</div>` : ''}
-      ${candidateFormBody(candidate)}
+      ${candidateFormBody(candidate, options)}
     </div>`;
   }
 
@@ -842,5 +986,8 @@
     sourceIssuesSection,
     taskFailedSection,
     viewCandidate,
+    formCard: candidateFormCard,
+    activityTarget, activityImpact, activityHistory,
+    statusPresentation: candidateStatusPresentation,
   };
 })();

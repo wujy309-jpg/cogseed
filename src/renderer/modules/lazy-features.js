@@ -53,9 +53,11 @@ const _rendererFeatureManifest = Object.freeze({
     { src: './modules/recall-information-architecture.js' },
     { src: './modules/cognition-assets/core.js' },
     { src: './modules/cognition-assets/vocabulary.js' },
+    { src: './modules/cognition-assets/settings.js' },
     { src: './modules/cognition-assets/views.js' },
     { src: './modules/cognition-assets/review-candidate.js' },
     { src: './modules/cognition-assets/review-views.js' },
+    { src: './modules/cognition-assets/library.js' },
     { src: './modules/cognition-assets/app.js' },
   ],
   'personal-ontology': [
@@ -65,6 +67,12 @@ const _rendererFeatureManifest = Object.freeze({
   ],
   'cognition-ontology': [
     { src: './modules/cognition-ontology.css', type: 'style' },
+    { src: './modules/cognition-ontology-document.css', type: 'style' },
+    { src: './modules/cognition-ontology-graph.css', type: 'style' },
+    { src: './modules/cognition-ontology-document.js' },
+    { src: './modules/cognition-ontology-editor.js' },
+    { src: './modules/cognition-ontology-graph.js' },
+    { src: './modules/cognition-ontology-selection.js' },
     { src: './modules/cognition-ontology.js' },
   ],
   workspace: [

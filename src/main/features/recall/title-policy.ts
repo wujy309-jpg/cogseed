@@ -75,3 +75,14 @@ export function assertCompliantAbilityAssetTitle(title: string, statement?: stri
   const issue = recallTitleIssue(title, statement);
   if (issue) throw new Error(`invalid ability asset title: ${ISSUE_REASONS[issue]}`);
 }
+
+/** Human-reviewed names follow the HTML editor's 80-character contract. The
+ * stricter generated-title policy above still governs model suggestions. */
+export function isReviewedAbilityAssetTitle(title: string): boolean {
+  const value = String(title ?? '').trim();
+  return value.length > 0 && value.length <= 80 && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+export function assertReviewedAbilityAssetTitle(title: string): void {
+  if (!isReviewedAbilityAssetTitle(title)) throw new Error('invalid ability asset title: reviewed title must contain 1 to 80 characters');
+}

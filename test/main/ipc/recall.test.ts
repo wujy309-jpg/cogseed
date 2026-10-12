@@ -8,6 +8,7 @@ const UID = 'uRecallIpc';
 
 const recallMock = vi.hoisted(() => ({
   listRecallCandidates: vi.fn(async () => []),
+  withRecallCandidateProcessingDetails: vi.fn(async (_uid: string, candidate: unknown) => candidate),
   readRecallCandidate: vi.fn(async (_uid: string, id: string) => ({ id })),
   saveRecallCandidate: vi.fn(async (_uid: string, input: unknown) => input),
   deferRecallCandidate: vi.fn(async (_uid: string, id: string, note?: string) => ({ id, note, status: 'deferred' })),
@@ -72,6 +73,9 @@ const recycleBinMock = vi.hoisted(() => ({
   createAppRecycleBatchForConversations: vi.fn(async () => ({ id: 'recycle-all' })),
 }));
 const captureMock = vi.hoisted(() => ({
+  readRecallCaptureModelRuntime: vi.fn<() => Promise<Record<string, unknown>>>(async () => ({
+    runtimeStatus: 'known', apiConfigured: true, available: true, channel: 'api', authorizationRequired: false,
+  })),
   listRecallCaptures: vi.fn(async () => []),
   queryRecallCaptures: vi.fn(async () => ({ captures: [], nextCursor: null, counts: { waiting: 0, processing: 0, review: 0, failed: 0, completed: 0, cancelled: 0 } })),
   readRecallCapture: vi.fn(async (_uid: string, id: string) => ({ id, status: 'queued' })),
@@ -442,7 +446,7 @@ describe('ipc › recall candidate governance', () => {
     await expect(call('recall.captures.settings.update', { executionPolicy: 'smart', quietMinutes: 30 }))
       .resolves.toMatchObject({ ok: true, settings: { executionPolicy: 'smart', quietMinutes: 30 } });
     await expect(call('recall.captures.settings.get'))
-      .resolves.toMatchObject({ ok: true, settings: { enabled: true }, model: { configured: expect.any(Boolean) } });
+      .resolves.toMatchObject({ ok: true, settings: { enabled: true }, model: { configured: true, runtimeStatus: 'known', channel: 'api', available: true } });
     expect(captureSettingsMock.readRecallCaptureSettings).toHaveBeenCalledWith(UID);
 
     await expect(call('recall.views.list', { purpose: 'conversation_capture', workspaceId: 'workspace-a', limit: 5 }))
@@ -464,6 +468,22 @@ describe('ipc › recall candidate governance', () => {
     await expect(call('recall.teaching.revoke', { signalId: 'teach-a' }))
       .resolves.toMatchObject({ ok: true, signal: { status: 'revoked' } });
     expect(teachingMock.revokeUserTeachingSignal).toHaveBeenCalledWith(UID, 'teach-a');
+  });
+
+  it('preserves CLI fallback and unknown runtime status through capture settings IPC', async () => {
+    captureMock.readRecallCaptureModelRuntime.mockResolvedValueOnce({
+      runtimeStatus: 'known', apiConfigured: false, cliAvailable: true, available: true, channel: 'cli', cliAgentId: 'codex',
+    });
+    await expect(call('recall.captures.settings.get')).resolves.toMatchObject({
+      ok: true, model: { configured: false, available: true, channel: 'cli', cliAgentId: 'codex' },
+    });
+    captureMock.readRecallCaptureModelRuntime.mockResolvedValueOnce({
+      runtimeStatus: 'unknown', apiConfigured: false, runtimeError: 'CLI detection failed',
+    });
+    const unknown = await call('recall.captures.settings.get') as { model: Record<string, unknown> };
+    expect(unknown).toMatchObject({ ok: true, model: { runtimeStatus: 'unknown', runtimeError: 'CLI detection failed' } });
+    expect(unknown.model.channel).not.toBe('unavailable');
+    expect(unknown.model.available).not.toBe(false);
   });
 
   it('writes a Recall source tombstone only after a conversation delete succeeds', async () => {

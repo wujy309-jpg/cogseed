@@ -974,8 +974,7 @@ async function _quickDisconnect(entry, instance) {
 
 // ─── Connector detail view (grid ⇄ detail) ─────────────────────────────
 //
-// Registered page-local structural composition: docs/renderer-structural-registry.md ›
-// CONN-PV-001. It exists for one business surface (the Tencent Meeting connector, whose
+// Page-local structural composition for one business surface (the Tencent Meeting connector, whose
 // connection is only half the job — the other half is creating an automation task), so it is
 // keyed by catalog id rather than extracted into a shared primitive. Only ids present in
 // `_CONNECTOR_DETAIL_PROFILES` get a detail entry point, which is what keeps the rest of the

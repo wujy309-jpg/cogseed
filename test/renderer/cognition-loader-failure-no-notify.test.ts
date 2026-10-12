@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 /**
- * 经验/标签/失败面通道的「失败自重试死循环」断环回归（P-r2-21 / P-r1-54 /
+ * 经验/失败面通道的「失败自重试死循环」断环回归（P-r2-21 / P-r1-54 /
  * P-r1-56，预审决策卡组 4「失败不 notify——保留自愈自重试，零 UI 改动」）。
  *
  * 环的构成（修前）：按需 loader 的守卫放行失败态（有意设计）+ 装载尾部
@@ -36,7 +36,6 @@ const NS = (() => {
     store: Record<string, unknown>;
     notify: () => void;
     onChange: (fn: () => void) => () => void;
-    loadTags: (options?: { force?: boolean }) => Promise<void>;
     loadExperiences: (force?: boolean) => Promise<void>;
     loadExperienceDetail: (id: string, force?: boolean) => Promise<void>;
     loadImprovementOutcomes: (force?: boolean) => Promise<void>;
@@ -49,25 +48,13 @@ async function settle() {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 
-describe('组4：经验/标签/失败面通道失败不 notify（P-r2-21 / P-r1-54）', () => {
-  it('loadTags 失败：只发起始 notify、显式记 failed；成功路径仍两次 notify（回归）', async () => {
-    let notifies = 0;
-    const off = NS.onChange(() => { notifies += 1; });
-    invokeImpl = async (channel) => (channel === 'recall.tags.list'
-      ? { ok: false, error: 'tags unreadable', code: 'E_IO' }
-      : { ok: true });
-    const before = notifies;
-    await NS.loadTags();
+describe('组4：经验/失败面通道失败不 notify（P-r2-21 / P-r1-54）', () => {
+  it('标签加载器已退役，重绘不请求标签库', async () => {
+    expect((NS as unknown as Record<string, unknown>).loadTags).toBeUndefined();
+    const before = count('recall.tags.list');
+    NS.notify();
     await settle();
-    expect(NS.store.tags).toMatchObject({ loading: false, failed: true });
-    expect(notifies).toBe(before + 1); // 修前：失败尾部再 notify = before+2（环的一环）
-    // 自愈保留：失败态不被守卫冻结，下一次调用（无 force）能重拉。
-    invokeImpl = async () => ({ ok: true, tags: [{ id: 't1' }] });
-    await NS.loadTags();
-    await settle();
-    expect(NS.store.tags).toMatchObject({ loading: false, failed: false });
-    expect(notifies).toBe(before + 3); // 成功路径：起始 + 结束两次 notify 照常
-    off();
+    expect(count('recall.tags.list')).toBe(before);
   });
 
   it('loadExperiences 失败：失败尾部不 notify（app.js 钩子每帧补拉的环被掐断）', async () => {

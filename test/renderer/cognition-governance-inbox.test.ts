@@ -18,14 +18,14 @@ describe('需要关注中的共同治理详情', () => {
     expect(html).toContain(conflict.title);
     expect(html).toContain('data-act="inbox-conflict-claim"');
     expect(html).toContain(conflict.id);
-    expect(html).not.toContain(other.title);
+    expect(html.slice(html.indexOf('<aside class="ca-activity-detail'))).not.toContain(other.title);
   });
   it('范围不清的详情保留条件输入，避免点击空操作直接失败', () => {
     const html = renderCognition({ name: 'activity', inboxId: other.id }, state());
     expect(html).toContain('data-inbox-boundary-form');
     expect(html).toContain('data-act="inbox-boundary-save"');
     expect(html).toContain('项目排查');
-    expect(html).not.toContain(conflict.title);
+    expect(html.slice(html.indexOf('<aside class="ca-activity-detail'))).not.toContain(conflict.title);
   });
   it('治理清单部分读失败仍可看到已读到的建议，不声称没有待办', () => {
     const html = renderCognition({ name: 'activity' }, { ...state(), inboxError: 'offline' });

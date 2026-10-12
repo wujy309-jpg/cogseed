@@ -151,6 +151,8 @@ Pinned runtime downloads are described and checksummed in `resources/runtime/man
 
 ## Repository Layout
 
+This checkout contains release source, tests, build tools, product resources and public documentation. Keep design drafts, historical plans, meeting records, private workflow tools and verification reports outside the repository. Downloaded dependencies, runtime binaries and generated output are local build material; prepare them when developing and remove them before handing off a source-only tree. Git metadata stays local and is never part of a source upload.
+
 | Path | Purpose |
 |---|---|
 | `bootstrap.cjs` | Electron entry shim, runtime identity selection, and TypeScript loader registration |

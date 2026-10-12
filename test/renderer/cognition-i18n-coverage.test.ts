@@ -101,39 +101,28 @@ describe('认知域词条覆盖', () => {
     expect(mismatches).toEqual([]);
   });
 
-  it('四语整理设置提供逐条确认说明，并移除自动保存开关', () => {
+  it('四语设置页区分增量发现与自动批准，并明确积压与授权边界', () => {
     for (const locale of LOCALES) {
-      expect(tables[locale]['cognition.manual_review_required']).toBeTruthy();
-      expect(tables[locale]['cognition.manual_review_required_hint']).toBeTruthy();
-      expect(tables[locale]['cognition.maint_hint_short']).toBeTruthy();
+      for (const key of ['settings_page_hint', 'settings_discovery_window', 'settings_auto_title', 'settings_auto_hint', 'settings_auto_default', 'settings_auto_boundary_copy', 'settings_pause_boundary']) expect(tables[locale]['cognition.' + key]).toBeTruthy();
     }
     const views = fs.readFileSync(path.join(root, 'src/renderer/modules/cognition-assets/views.js'), 'utf8');
-    expect(views).toContain("T('cognition.settings_wake_hint'");
+    const controller = fs.readFileSync(path.join(root, 'src/renderer/modules/cognition-assets/settings.js'), 'utf8');
+    expect(views).toContain("T('cognition.settings_discovery_window'");
+    expect(views).toContain("'auto-approval-toggle'");
+    expect(controller).toContain("T('cognition.settings_auto_boundary_copy'");
     expect(views).not.toContain('data-act="capture-review-toggle"');
   });
 
-  it('organize_settings_hint 词条与代码兜底同口径（a69d3ea0 删手动整理入口后词条曾滞后）', () => {
-    // T() 词条命中优先于兜底：代码兜底改成「自动维护」新口径而词条仍停在
-    // 旧口径时，四语用户看到的都是旧文案——只有缺词条的语言才会走兜底。
-    // 机械门禁：zh 词条必须逐字等于 views.js 里的兜底，兜底再改而词条
-    // 不动时这里会红。外语无法逐字对比译文，退而守旧口径关键词不回潮。
-    const views = fs.readFileSync(
-      path.join(root, 'src/renderer/modules/cognition-assets/views.js'),
-      'utf8',
-    );
-    const fallback = views.match(/T\('cognition\.organize_settings_hint',\s*'([^']*)'\)/)?.[1];
+  it('当前设置页标题说明与中文词条一致，四语不宣传已删除的手动整理入口', () => {
+    const views = fs.readFileSync(path.join(root, 'src/renderer/modules/cognition-assets/views.js'), 'utf8');
+    const fallback = views.match(/T\('cognition\.settings_page_hint',\s*'([^']*)'\)/)?.[1];
     expect(fallback).toBeTruthy();
-    expect(tables.zh['cognition.organize_settings_hint']).toBe(fallback);
-    // 手动整理入口已随 a69d3ea0 删除，任何语言不得再宣传它。
-    const staleTerms: Record<string, string> = {
-      zh: '手动整理', en: 'manual cleanup', ja: '手動整理', pt: 'manual',
-    };
-    const advertisingRemovedEntry = LOCALES
-      .filter((locale) => {
-        const text = tables[locale]['cognition.organize_settings_hint'];
-        return typeof text !== 'string' || text.includes(staleTerms[locale]);
-      })
-      .map((locale) => `${locale}: organize_settings_hint 仍宣传已删除的手动整理入口`);
+    expect(tables.zh['cognition.settings_page_hint']).toBe(fallback);
+    const staleTerms: Record<string, string> = { zh: '手动整理', en: 'manual cleanup', ja: '手動整理', pt: 'limpeza manual' };
+    const advertisingRemovedEntry = LOCALES.filter(locale => {
+      const text = tables[locale]['cognition.settings_page_hint'];
+      return typeof text !== 'string' || text.includes(staleTerms[locale]);
+    });
     expect(advertisingRemovedEntry).toEqual([]);
   });
 

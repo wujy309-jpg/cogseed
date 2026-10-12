@@ -3,7 +3,8 @@ import * as cognition from '../features/cognition';
 import { generateCognitionDraft } from '../features/cognition/capture-draft';
 import { extractOntologyImportFile, submitOntologyImport } from '../features/cognition/ontology/import-text';
 import { commitCandidateOntologyRecords, completeCandidateOntologyHandoff } from '../features/cognition/ontology/candidate-handoff';
-import { commitOntologyCommand, previewOntologyCommand, readOntologyDocument, readOntologyView } from '../features/cognition/ontology/service';
+import { changeOntologyModuleLifecycle, commitOntologyCommand, previewOntologyCommand, readOntologyDocument, readOntologyView } from '../features/cognition/ontology/service';
+import { editOntologyDocument } from '../features/cognition/ontology/document-edit';
 import { buildOntologyExport } from '../features/cognition/ontology/export';
 import { listOntologyUsageReceipts } from '../features/cognition/ontology/usage-receipt';
 import { extractOntologyImportCandidates } from '../features/cognition/ontology/import-extraction';
@@ -131,7 +132,15 @@ export const invokeHandlers = {
     };
   },
   // 本体页面直接消费统一认知主档；保存和预览共用同一领域命令，不再写旧图谱文件。
+  'cognition.ontology.module.lifecycle': async (payload: Payload, ctx: IpcContext) => {
+    if (typeof payload.moduleId !== 'string' || !safeId(payload.moduleId) || (payload.intent !== 'archive' && payload.intent !== 'delete' && payload.intent !== 'restore')
+      || typeof payload.expectedRevision !== 'number' || !Number.isSafeInteger(payload.expectedRevision) || payload.expectedRevision < 0
+      || typeof payload.expectedVersion !== 'number' || !Number.isSafeInteger(payload.expectedVersion) || payload.expectedVersion < 1)
+      throw new OntologyError('invalid_input', 'invalid module lifecycle request');
+    return changeOntologyModuleLifecycle(ctx.userId, { moduleId: payload.moduleId, intent: payload.intent, expectedRevision: payload.expectedRevision, expectedVersion: payload.expectedVersion });
+  },
   'cognition.ontology.snapshot': async (_payload: Payload, ctx: IpcContext) => ({ ontology: await readOntologyView(ctx.userId) }),
+  'cognition.ontology.document.edit': async (payload: Payload, ctx: IpcContext) => editOntologyDocument(ctx.userId, payload),
   'cognition.ontology.graph.query': async (payload: Payload, ctx: IpcContext) => ({
     graph: queryOntologyGraph(await readOntologyView(ctx.userId), {
       ...(typeof payload.moduleId === 'string' && payload.moduleId ? { moduleId: ontologyId(payload.moduleId, 'module id') } : {}),

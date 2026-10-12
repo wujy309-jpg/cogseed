@@ -115,7 +115,7 @@ describe('候选确认前的准入软提醒（soft_warning）', () => {
       eligibilityAdvisories: ['rule_missing_boundary'],
     });
 
-    expect(html).toContain(zh['cognition.candidate_error_promotion_blocked']);
+    expect(html).toContain(zh['cognition.detail_block_title']);
     expect(html).not.toContain(zh['cognition.candidate_advisory_prefix']);
   });
 

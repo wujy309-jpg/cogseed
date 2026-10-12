@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { loadCognitionAssets, renderCognition } from './helpers/cognition-renderer';
+import { loadCognitionAssets, renderCognitionWithDialogs as renderCognition } from './helpers/cognition-renderer';
 
 const BASE = {
   id: 'detail-1',
@@ -21,8 +21,8 @@ const renderDetail = (asset: Record<string, unknown> = BASE, state: Record<strin
 );
 
 const useCard = (html: string) => {
-  const start = html.indexOf('ca-asset-usage-card');
-  return html.slice(start, html.indexOf('</section>', start) + '</section>'.length);
+  const start = html.indexOf('ca-library-records');
+  return start < 0 ? '' : html.slice(start, html.indexOf('<footer class="ca-library-detail-footer">', start));
 };
 
 describe('正式认知资产详情页', () => {
@@ -31,22 +31,29 @@ describe('正式认知资产详情页', () => {
 
     expect((html.match(/<h1\b/g) || [])).toHaveLength(1);
     expect(html).toContain('ca-asset-page');
-    expect(html).toContain('ca-asset-stack');
+    expect(html).toContain('ca-library-detail-head');
+    expect(html).toContain('ca-library-detail-body');
+    expect(html).toContain('ca-library-detail-footer');
     expect(html).not.toContain('ca-detail-side');
     expect(html).toContain('ca-asset-body');
     expect(html).toContain('先确认受影响的用户。\n再核对回滚方案。');
-    expect(html).toContain('发布前检查');
-    expect(html).toContain('临时草稿');
-    expect(html).toContain('在用版本 v2');
+    if (type === 'rule') { expect(html).toContain('发布前检查'); expect(html).toContain('临时草稿'); }
+    else { expect(html).not.toContain('ca-prototype-boundaries'); }
+    expect(html).toContain('在用 v2');
     expect(html).toContain('2 条来源记录');
-    expect(html.indexOf('ca-asset-body')).toBeLessThan(html.indexOf('ca-detail-origin'));
-    expect(html.indexOf('ca-detail-origin')).toBeLessThan(html.indexOf('ca-asset-usage-card'));
-    expect(html.indexOf('ca-asset-usage-card')).toBeLessThan(html.indexOf('ca-detail-history'));
-    expect(html.indexOf('ca-detail-history')).toBeLessThan(html.indexOf('ca-asset-manage-card'));
-    expect(html).toContain('aria-label="允许后续任务使用"');
+    expect(html.indexOf('ca-asset-body')).toBeLessThan(html.indexOf('ca-library-sources'));
+    const scopeSection = html.indexOf('<section class="ca-library-scope">');
+    expect(scopeSection).toBeGreaterThan(-1);
+    expect(html.indexOf('ca-asset-body')).toBeLessThan(scopeSection);
+    expect(scopeSection).toBeLessThan(html.indexOf('ca-library-sources'));
+    expect(html.indexOf('ca-library-sources')).toBeLessThan(html.indexOf('ca-library-versions'));
+    expect(html.indexOf('ca-library-versions')).toBeLessThan(html.indexOf('ca-library-records'));
+    const footer = html.slice(html.indexOf('<footer class="ca-library-detail-footer">'));
+    expect(footer).toContain('data-action="pause"');
+    expect(footer).toContain('data-act="edit-asset"');
   });
 
-  it('「使用与版本」折叠区内：版本记录在上、使用记录在下（2026-10-01 走查定序）', () => {
+  it('版本与比较下钻先于使用与管理记录，两处保留真实版本和使用明细', () => {
     const html = renderDetail(BASE, {
       realUsageKinds: ['projection_confirmed'],
       assetTimeline: {
@@ -59,14 +66,16 @@ describe('正式认知资产详情页', () => {
         versions: [{ assetId: BASE.id, version: '1', at: '2026-09-14T01:00:00Z', snapshot: { title: 'T', statement: 'S', evidenceRefs: [] } }],
       },
     });
-    // 断言锚在折叠体内部标题上，不受折叠上方「用过吗」摘要卡的「使用记录读取中」干扰；
-    // 使用记录区在时间线为空时走无标题的空态块（views 早退），故必须带真实使用事件。
-    const fold = html.slice(html.indexOf('ca-detail-history'));
-    const versionsIdx = fold.indexOf('<div class="tt">版本记录</div>');
-    const usageIdx = fold.indexOf('<strong class="sect-t">使用记录</strong>');
-    expect(versionsIdx).toBeGreaterThan(-1);
-    expect(usageIdx).toBeGreaterThan(-1);
-    expect(versionsIdx).toBeLessThan(usageIdx);
+    const versionsStart = html.indexOf('ca-library-versions');
+    const recordsStart = html.indexOf('ca-library-records');
+    expect(versionsStart).toBeGreaterThan(-1);
+    expect(recordsStart).toBeGreaterThan(versionsStart);
+    const versions = html.slice(versionsStart, recordsStart);
+    const records = useCard(html);
+    expect(versions).toContain('选择历史版本');
+    expect(versions).toContain('data-prototype-version-select');
+    expect(records).toContain('<strong class="sect-t">使用记录</strong>');
+    expect(records).toContain('带入或读取 1 次');
   });
 
   it('未读到使用与采用数据时显示读取中，成功读取空结果后才显示零次', () => {
@@ -96,7 +105,7 @@ describe('正式认知资产详情页', () => {
     expect(html).not.toContain('其中模型确认采用 0 次');
   });
 
-  it('使用次数旁解释采用口径，旧版长期引用收起但仍可回到来源', () => {
+  it('使用次数旁保留采用口径，不再显示旧版长期引用提示', () => {
     const proof = {
       id: 'proof-1', kind: 'projection_confirmed', occurredAt: '2026-09-28T10:00:00Z',
       refs: { assetId: BASE.id, projectionId: 'proj-1', version: '1', authorization: 'user_confirmed', purpose: 'user_pinned', conversationId: 'conv-1' },
@@ -109,8 +118,8 @@ describe('正式认知资产详情页', () => {
     expect(useCard(html)).toContain('带入或读取 1 次');
     expect(useCard(html)).toContain('真正采用只计模型确认的回执');
     expect(useCard(html)).not.toContain('只记真实用过（实际采用）');
-    expect(html).toContain('<details class="ca-stale-pin-detail">');
-    expect(html).toContain('查看引用与处理办法');
+    expect(html).not.toContain('ca-stale-pin-detail');
+    expect(html).not.toContain('查看引用与处理办法');
     expect(html).toContain('data-act="open-conversation" data-id="conv-1"');
   });
 
@@ -119,7 +128,7 @@ describe('正式认知资产详情页', () => {
     expect(html).toContain('data-action="restore"');
     expect(html).not.toContain('data-act="edit-asset"');
     expect(html).not.toContain('data-action="delete"');
-    expect(html).toContain('data-action="purge"');
+    expect(html).not.toContain('data-action="purge"');
   });
 });
 

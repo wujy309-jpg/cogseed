@@ -19,7 +19,6 @@
 # Local multi-agent shared-file collaboration POC state
 task.md
 plan.md
-!specs/001-hub-skill-contribution/plan.md
 .collab-poc/
 
 # Local document/render outputs and workflow state
@@ -53,9 +52,8 @@ package.json.new
 /dist-dev
 build-info.json
 
-# Per-machine tool permissions. Plans under .claude/plans/ are shared
-# deliberately; this file is local state and would churn per developer.
-/.claude/settings.local.json
+# Local authoring tools and machine settings never belong to the release tree.
+/.claude/
 
 # Declares the intentional absence of the bundled deep scanner. Since the
 # engine itself is not distributed in this repository, the marker is tracked
@@ -79,11 +77,41 @@ build-info.json
 /updates-server/downloads/
 
 # Internal dev skills must not be tracked in the public repo.
-# Keep a local copy outside the checkout (e.g. ~/Desktop/cogseed-open-source-audit).
-.agents/skills/cogseed-open-source-audit/
+# Keep authoring tools outside the checkout.
+/.agents/
 .tmp-override-src-*/
 .tmp-skill-import-*/
 .tmp-skill-runner-*/
 
 # Local Python environment for Spec Kit template composition.
 /.venv-speckit/
+
+# Release-source boundary: private work products live outside this checkout.
+/.ai-product/
+/.specify/
+/specs/
+/design/
+/reports/
+/skills/
+/skills-lock.json
+/AGENTS.md
+/CLAUDE.md
+/.goal-loop-ledger.md
+/measure-baselines.cjs
+/开发流程速查.md
+/scripts/opensource/
+/.github/workflows/
+/.github/dependabot.yml
+/.github/CODEOWNERS
+/.gitleaks.toml
+/test/private/
+/community/PILOT_BACKLOG.zh-CN.md
+/docs/*
+!/docs/DEVELOPMENT.md
+!/docs/DEVELOPMENT.zh-CN.md
+
+# Generated caches, environments and build outputs.
+/.pytest_cache/
+/.venv*/
+/coverage/
+*.log
