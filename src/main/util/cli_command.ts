@@ -95,7 +95,9 @@ export function defaultCliInstallDir(platform: CliPlatform, env: NodeJS.ProcessE
   const home = env.HOME || os.homedir();
   const xdg = env.XDG_BIN_HOME;
   if (xdg) return xdg;
-  return path.join(home, '.local', 'bin');
+  // 必须用 posix 拼接：这个分支会在 Windows 主机上被单测/打包逻辑以 'darwin' 调用，
+  // 用宿主 `path.join` 会得到 `\Users\me\.local\bin`（真机验收抓到的实现缺陷）。
+  return path.posix.join(home, '.local', 'bin');
 }
 
 export interface CliInstallResult {

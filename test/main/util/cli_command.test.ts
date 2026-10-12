@@ -26,13 +26,21 @@ import {
 
 let tmpDir: string;
 
-function shimPath(dir: string, platform: NodeJS.Platform | string = process.platform): string {
+/**
+ * 夹具平台必须与"被测平台"一致：安装/卸载/冲突检查三者一旦混用
+ * （例如 install 用 darwin、uninstall 用 process.platform），在 Windows 上
+ * 安装写 `cogseed` 而卸载找 `cogseed.cmd`，用例会静默测不到东西——
+ * 这正是真机验收抓到的三处测试缺陷。
+ */
+const TEST_PLATFORM: string = process.platform;
+
+function shimPath(dir: string, platform: NodeJS.Platform | string = TEST_PLATFORM): string {
   return path.join(dir, cliShimFileName('cogseed', platform));
 }
 
 function spec(dir: string, overrides: Record<string, unknown> = {}) {
   return {
-    platform: 'darwin',
+    platform: TEST_PLATFORM,
     appRoot: '/opt/cogseed/app',
     runtimeBin: '/opt/cogseed/runtime/Electron',
     workspaceRoot: '/Users/me/.cogseed/data',
@@ -116,8 +124,11 @@ describe('cli_command · shim 内容', () => {
 });
 
 describe('cli_command · 安装位置', () => {
-  it('选用户级目录（不需要提权）', () => {
+  it('选用户级目录（不需要提权，且与宿主平台无关）', () => {
+    // 关键：在 Windows 主机上也要返回 posix 路径（曾用宿主 path.join → `\Users\me\.local\bin`）
     expect(defaultCliInstallDir('darwin', { HOME: '/Users/me' } as NodeJS.ProcessEnv)).toBe('/Users/me/.local/bin');
+    expect(defaultCliInstallDir('darwin', { HOME: '/Users/me' } as NodeJS.ProcessEnv)).not.toContain('\\');
+    expect(defaultCliInstallDir('linux', { HOME: '/home/me' } as NodeJS.ProcessEnv)).toBe('/home/me/.local/bin');
     expect(defaultCliInstallDir('linux', { HOME: '/home/me', XDG_BIN_HOME: '/home/me/bin' } as NodeJS.ProcessEnv)).toBe('/home/me/bin');
     expect(defaultCliInstallDir('win32', { LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local' } as NodeJS.ProcessEnv))
       .toBe(path.win32.join('C:\\Users\\me\\AppData\\Local', 'CogSeed', 'bin'));
@@ -150,11 +161,11 @@ describe('cli_command · 安装 / 卸载 / 状态', () => {
     expect(stale.installed).toBe(true);
     expect(stale.stale).toBe(true);
 
-    const removed = uninstallCliCommand({ dir: tmpDir, platform: process.platform });
+    const removed = uninstallCliCommand({ dir: tmpDir, platform: TEST_PLATFORM });
     expect(removed.removed).toEqual([first.path]);
     expect(fs.existsSync(first.path)).toBe(false);
     // 再卸载一次是 no-op
-    expect(uninstallCliCommand({ dir: tmpDir, platform: process.platform }).removed).toEqual([]);
+    expect(uninstallCliCommand({ dir: tmpDir, platform: TEST_PLATFORM }).removed).toEqual([]);
   });
 
   it('目标已存在且不是 CogSeed 写的 → 拒绝覆盖，也不删', () => {
@@ -163,7 +174,7 @@ describe('cli_command · 安装 / 卸载 / 状态', () => {
     expect(() => installCliCommand(spec(tmpDir))).toThrow(CliShimConflictError);
     expect(fs.readFileSync(foreign, 'utf8')).toContain('someone-elses-script');
     expect(cliCommandStatus(spec(tmpDir))).toMatchObject({ installed: false, conflict: true });
-    expect(uninstallCliCommand({ dir: tmpDir, platform: process.platform }).removed).toEqual([]);
+    expect(uninstallCliCommand({ dir: tmpDir, platform: TEST_PLATFORM }).removed).toEqual([]);
     expect(fs.existsSync(foreign)).toBe(true);
   });
 
@@ -192,6 +203,9 @@ describe('cli_command · 安装 / 卸载 / 状态', () => {
     // .cmd 必须经 ComSpec 执行（CreateProcess 不能直接跑脚本）
     const result = spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `"${installed.path}" list`], {
       encoding: 'utf8',
+      // 不带这个标志，libuv 会把内嵌引号转义成 \" ，cmd 收到 \"C:\…\cogseed.cmd\" →
+      // "不是内部或外部命令"。仓库自己的 resolveCliCommand 正是为此显式设置该标志。
+      windowsVerbatimArguments: true,
     });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout.trim()).toBe('["list"]|u-42');

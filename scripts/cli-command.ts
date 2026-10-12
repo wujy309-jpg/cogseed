@@ -22,6 +22,7 @@ import * as path from 'node:path';
 
 import {
   CLI_COMMAND_NAME,
+  CliShimConflictError,
   cliCommandStatus,
   defaultCliInstallDir,
   installCliCommand,
@@ -102,7 +103,19 @@ function main(): void {
   const spec = buildSpec();
 
   if (action === 'install') {
-    const result = installCliCommand(spec);
+    let result;
+    try {
+      result = installCliCommand(spec);
+    } catch (err) {
+      // 冲突是"用户需要处理"的状态，不是崩溃：给一行中文并正常退出码 1。
+      if (err instanceof CliShimConflictError) {
+        console.log(`冲突：${err.target} 已存在且不是 CogSeed 写入的，未做改动。`);
+        console.log('  如确认可以覆盖，请先自行删除该文件后重试。');
+        process.exitCode = 1;
+        return;
+      }
+      throw err;
+    }
     console.log(`${result.changed ? '已安装' : '已是最新'}：${result.path}`);
     console.log(`  运行时：${spec.runtimeBin}`);
     console.log(`  应用根：${spec.appRoot}`);
