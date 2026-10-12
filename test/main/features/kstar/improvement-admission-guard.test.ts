@@ -34,7 +34,7 @@
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createAssetStewardTools } from '../../../../src/main/model/core-agent/asset-steward-tools';
 import { createPersonalOntologyTools } from '../../../../src/main/model/core-agent/personal-ontology-tools';
@@ -542,19 +542,27 @@ describe('T046 ④ tool-catalog recall 组工具面受控扩展', () => {
     'rollback_ability_asset',
   ];
 
-  it('catalog 的 recall 组 = 三个工厂的实际工具面 = 冻结基线', () => {
+  it('catalog 的 recall 组 = 四个工厂的实际工具面 = 冻结基线', () => {
     const catalogRecall = TOOL_CATALOG.filter((entry) => entry.group === 'recall').map((entry) => entry.name);
-    const factoryNames = [
-      ...createRecallTools({ userId: 'admission-guard' }),
-      ...createAssetStewardTools({ userId: 'admission-guard' }),
-      ...createPersonalOntologyTools({ userId: 'admission-guard' }),
-      ...createExperienceTools({ userId: 'admission-guard' }),
-    ].map((tool) => tool.name);
+    // ontology_query is opt-in at runtime. This contract checks the complete
+    // catalog surface, so only its factory enumeration enables Semantica.
+    vi.stubEnv('COGSEED_SEMANTICA_ENABLED', '1');
+    let factoryNames: string[];
+    try {
+      factoryNames = [
+        ...createRecallTools({ userId: 'admission-guard' }),
+        ...createAssetStewardTools({ userId: 'admission-guard' }),
+        ...createPersonalOntologyTools({ userId: 'admission-guard' }),
+        ...createExperienceTools({ userId: 'admission-guard' }),
+      ].map((tool) => tool.name);
+    } finally {
+      vi.unstubAllEnvs();
+    }
 
     expect([...catalogRecall].sort(), 'recall 组新增/删除了工具——「不新增模型工具」是 specs/015 D15 的硬约束，确要变更先找 owner')
       .toEqual([...RECALL_GROUP_BASELINE].sort());
     expect(factoryNames.length, '工厂产出的工具名不得重复').toBe(new Set(factoryNames).size);
-    expect([...factoryNames].sort(), 'catalog 的 recall 组必须与三个工厂的实际工具面逐一对上（缺一行/多一行都要红）')
+    expect([...factoryNames].sort(), 'catalog 的 recall 组必须与四个工厂的实际工具面逐一对上（缺一行/多一行都要红）')
       .toEqual([...RECALL_GROUP_BASELINE].sort());
   });
 });

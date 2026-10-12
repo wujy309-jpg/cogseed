@@ -223,9 +223,9 @@ async function _settingsRunSemanticaDemo(action) {
 function _settingsRenderSemantica() {
   const host = document.getElementById('settings-semantica-host');
   if (!host) return;
-  const settings = _settingsState.semantica || { semanticaEnabled: false, semanticaStatus: 'disabled' };
+  const s = _settingsState.semantica || { semanticaEnabled: false, semanticaStatus: 'disabled' };
   const demo = _settingsState.semanticaDemo || { ready: false, assetCount: 0, expectedAssetCount: 14 };
-  const available = !!settings.semanticaEnabled;
+  const semanticaAvailable = !!s.semanticaEnabled;
   const demoStatus = demo.ready
     ? _settingsSemanticaText('settings.semantica.demo.ready', 'Ready')
     : `${demo.assetCount || 0}/${demo.expectedAssetCount || 14}`;
@@ -236,11 +236,11 @@ function _settingsRenderSemantica() {
           <div class="settings-group-title">${escapeHtml(_settingsSemanticaText('settings.semantica.title', 'Ability assets and ontology query'))}</div>
           <div class="settings-group-sub">${escapeHtml(_settingsSemanticaText('settings.semantica.sub', 'Use governed ontology relations to find reusable ability assets.'))}</div>
         </div>
-        <span class="settings-status">${escapeHtml(_settingsSemanticaStatusLabel(settings.semanticaStatus))}</span>
+        <span class="settings-status">${escapeHtml(_settingsSemanticaStatusLabel(s.semanticaStatus))}</span>
       </div>
       <div class="settings-semantica-switch-row">
         <div><strong>Semantica</strong><span>${escapeHtml(_settingsSemanticaText('settings.semantica.toggle_sub', 'Enable ontology-driven ability asset queries.'))}</span></div>
-        ${uiSwitch({ id: 'settings-semantica-enabled', label: 'Semantica', checked: !!settings.semanticaEnabled })}
+        ${uiSwitch({ id: 'settings-semantica-enabled', label: 'Semantica', checked: !!s.semanticaEnabled })}
       </div>
       <div class="settings-semantica-demo">
         <div class="settings-semantica-demo-head">
@@ -251,8 +251,8 @@ function _settingsRenderSemantica() {
           <span class="settings-status">${escapeHtml(demoStatus)}</span>
         </div>
         <div class="settings-semantica-actions">
-          ${uiButton({ label: _settingsSemanticaText('settings.semantica.demo.seed', 'Initialize demo assets'), role: 'primary', attrs: { id: 'settings-semantica-demo-seed' }, disabled: !available || !!demo.ready })}
-          ${uiButton({ label: _settingsSemanticaText('settings.semantica.demo.clear', 'Remove demo assets'), attrs: { id: 'settings-semantica-demo-clear' }, disabled: !available || !(demo.assetCount > 0) })}
+          ${uiButton({ label: _settingsSemanticaText('settings.semantica.demo.seed', 'Initialize demo assets'), role: 'primary', attrs: { id: 'settings-semantica-demo-seed' }, disabled: !semanticaAvailable || !!demo.ready })}
+          ${uiButton({ label: _settingsSemanticaText('settings.semantica.demo.clear', 'Remove demo assets'), attrs: { id: 'settings-semantica-demo-clear' }, disabled: !semanticaAvailable || !(demo.assetCount > 0) })}
           <span class="settings-status" id="settings-semantica-demo-action-status"></span>
         </div>
       </div>
