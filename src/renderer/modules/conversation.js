@@ -5353,9 +5353,10 @@ function _renderCognitionSaveReceiptsHtml(receipts) {
 
 
 
-// ── Recall 引用反馈 →「本次使用的记忆」合并卡（拍板项 #8）──────────────────
-// 2026-09-28 四病整改：引用卡（事后回执）与投影卡（事前面板）合并为一张
-// 「本次使用的记忆」卡。卡片的完整实现收在 recall-projection-card.js（同步
+// ── Recall 使用反馈 →「本轮资产检索与带入状态」合并卡（拍板项 #8）─────────
+// 2026-09-28 四病整改：带入回执与投影卡（事前面板）合并为一张状态卡；
+// 它证明资产被选中或进入提示词，不单独证明最终回答实际采用。卡片实现收在
+// recall-projection-card.js（同步
 // 骨架 recallMemoryCardHtml + 投影数据异步补全 mountRecallProjectionCard）；
 // 这里只保留同步入口与反馈绑定。旧互斥抑制（有投影卡就不出引用卡）已删。
 
@@ -9941,7 +9942,7 @@ function appendChatMessage(message, autoScroll = true, opts = {}) {
   const coalescedProjectionCard = coalescedProjectionMatch
     ? { projectionId: coalescedProjectionMatch.projectionId, authorization: 'model_selected' }
     : null;
-  // 两卡互斥抑制已删（拍板项 #8）：投影与引用合并进同一张「本次使用的记忆」
+  // 两卡互斥抑制已删（拍板项 #8）：投影与带入回执合并进同一张状态卡
   // 卡，引用行不再因投影卡在场而被抑制。
   const projectionCardForBubble = _projectionReceiptForMessage(message)
     || message.recall_projection_card
@@ -10177,7 +10178,7 @@ function appendChatMessage(message, autoScroll = true, opts = {}) {
     if (bubble) _mountAssetApprovalCard(bubble, message.asset_change_approval_card);
   }
 
-  // 「本次使用的记忆」合并卡补全（拍板项 #8，2026-09-28）：引用卡与投影卡
+  // 资产检索与带入状态卡补全（拍板项 #8，2026-09-28）：带入回执与投影卡
   // 合并为一张——有引用数据时同步骨架已随气泡渲染（recallCitationsHtml），
   // 这里把投影数据（带入/省略/状态/撤销口）补进同一张卡；没有骨架时（仅投影
   // 无引用）创建空 host 交给合并卡填充。其它授权维持"不挂卡"现状（2026-08-17
@@ -16658,6 +16659,50 @@ function _mountFinalEvidenceBlock(ph, gm) {
   if (typeof window.hydrateUiIcons === 'function') window.hydrateUiIcons(block);
 }
 
+// Streaming placeholders bypass appendChatMessage(), so the authoritative
+// final GroupMessage must mount its recall receipt here as well. Without this
+// step recall_citations are persisted correctly but remain invisible until a
+// history reload rebuilds the whole bubble.
+function _mountFinalRecallMemoryCard(ph, gm, cid) {
+  const bubble = ph?.querySelector('.chat-bubble');
+  if (!bubble) return;
+
+  let host = bubble.querySelector('.chat-recall-citations');
+  const citationsHtml = _renderRecallCitationsHtml(gm.recall_citations);
+  if (!host && citationsHtml) {
+    const template = document.createElement('template');
+    template.innerHTML = citationsHtml;
+    host = template.content.firstElementChild;
+    if (host) bubble.appendChild(host);
+  }
+  if (!host) return;
+
+  _hydrateRecallCitations(ph, cid, gm.id);
+
+  const explicitProjectionReceipt = _projectionReceiptForMessage(gm);
+  const container = document.getElementById('chat-history');
+  const coalescedProjectionMatch = explicitProjectionReceipt
+    ? null
+    : _findProjectionSidecar(container, gm);
+  const projectionCard = explicitProjectionReceipt
+    || gm.recall_projection_card
+    || (coalescedProjectionMatch
+      ? { projectionId: coalescedProjectionMatch.projectionId, authorization: 'model_selected' }
+      : null);
+
+  if (coalescedProjectionMatch?.sidecar) {
+    coalescedProjectionMatch.sidecar.hidden = true;
+    coalescedProjectionMatch.sidecar.classList.add('is-coalesced');
+  }
+  if (!projectionCard?.projectionId || typeof window.mountRecallProjectionCard !== 'function') return;
+  if (gm.recall_projection_card) host.dataset.recallProjectionTransport = 'sidecar';
+  window.mountRecallProjectionCard(host, projectionCard, {
+    cid,
+    onlyModelSelected: true,
+    citations: Array.isArray(gm.recall_citations) ? gm.recall_citations : [],
+  });
+}
+
 // Transform a streaming placeholder bubble into its finalized form:
 // freeze the process rail (keep visible + collapsed by default),
 // render markdown into [data-role="final"], append produced-files chip /
@@ -16723,6 +16768,7 @@ function _finalizeActorPlaceholder(ph, gm, cid, archive) {
   const failedAssistant = _isFailedAssistantContent(text, gm);
   _streamingSetFinal(ph, text, { archive: archive && !failedAssistant });
   _mountFinalEvidenceBlock(ph, gm);
+  _mountFinalRecallMemoryCard(ph, gm, cid);
   if (failedAssistant) {
     _attachFailedAssistantActions(ph, () => _messageTextForActions(ph, text));
     _handleModelOutputErrorForUi(cid, ph, _failedAssistantErrorText(ph) || text, {

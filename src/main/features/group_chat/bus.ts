@@ -285,6 +285,7 @@ import {
   evaluateRecallAssetRuntimeEligibility,
   type RecallPromptCitation,
 } from "../recall/prompt-injection";
+import type { OntologyAnswerEvidenceBundle } from '../recall/ontology-answer-validation';
 import { readAbilityAsset } from "../recall/asset-service";
 import {
   createProcessCollector,
@@ -5777,6 +5778,8 @@ async function runActorTurnBody(
   // 建成后与目录文本合成单一 <asset-context> 块一次追加（见目录段之后）。
   let recallAuthorizedBlock = '';
   let recallProfileBlock = '';
+  let recallAnswerEvidence: OntologyAnswerEvidenceBundle | undefined;
+  let recallTaskGoal = '';
   // Commander-granted assets actually injected into a delegated turn, kept for
   // the same usage ledger the Commander injection uses (outcome 'dispatched').
   let dispatchedUsage: Array<{ assetId: string; assetVersion: string }> = [];
@@ -5800,11 +5803,12 @@ async function runActorTurnBody(
         // 同一任务会跑两遍 listAbilityAssets + ranking）。无投影/无效时
         // buildRecallTurnPromptContext 自然回退 automatic projection。
         let committedProjectionId = item.committedProjectionId;
-        if (!committedProjectionId && !item.internalControl) {
+        if (!item.internalControl) {
           try {
             const { readKstarTaskLifecycle } = await import('../kstar/lifecycle-adapter');
             const lifecycle = await readKstarTaskLifecycle(uid, cid);
-            if (lifecycle.projection?.status === 'confirmed') {
+            recallTaskGoal = String(lifecycle.requirement?.goalText || '').trim().slice(0, 4_000);
+            if (!committedProjectionId && lifecycle.projection?.status === 'confirmed') {
               committedProjectionId = lifecycle.projection.id;
             }
           } catch {
@@ -5826,13 +5830,21 @@ async function runActorTurnBody(
           ...(committedProjectionId ? { committedProjectionId } : {}),
           ...(item.forecastId ? { forecastId: item.forecastId } : {}),
         });
-        if (recallContext.promptBlock) {
+        if (recallContext.promptBlock || recallContext.answerEvidence) {
           // 呈现面合一（2026-09-30）：不再在此处 append——授权块/画像块攒到
           // 目录建成后合成单一 <asset-context> 一次追加（见下方目录段之后）。
           recallCitations = recallContext.citations;
           recallProfileMemory = recallContext.profileMemoryEntries ?? [];
           recallAuthorizedBlock = recallContext.authorizedAssetsBlock ?? '';
           recallProfileBlock = recallContext.profileAssetsBlock ?? '';
+          const currentTaskText = String(item.sourceMessageText || item.llmPayload || '').trim().slice(0, 2_000);
+          const validationTaskText = [
+            recallTaskGoal,
+            currentTaskText && currentTaskText !== recallTaskGoal ? `当前补充：${currentTaskText}` : '',
+          ].filter(Boolean).join('\n');
+          recallAnswerEvidence = recallContext.answerEvidence
+            ? { ...recallContext.answerEvidence, ...(validationTaskText ? { taskText: validationTaskText } : {}) }
+            : undefined;
         }
         // PRD 3.6 Transfer Verified 闭环：投影资产真实注入时在同一处落
         // ContextReuseReceipt（key=turn-<turnId>），并登记到本次运行的
@@ -6826,6 +6838,7 @@ async function runActorTurnBody(
         message: messageText,
         sessionId,
         systemPrompt,
+        ...(recallAnswerEvidence ? { recallAnswerEvidence } : {}),
         workingDir,
         agentName: actor.name || actor.id,
         // User-selected thinking strength ('auto' = no override; let the

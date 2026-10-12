@@ -61,7 +61,8 @@ import { createLocalTools, createFileTools } from './local-tools';
 import { createOfficeTools } from './office-tools';
 import { officeCliAvailable } from '../../features/office/office_engine';
 import { createKbTools } from './kb-tools';
-import { createRecallTools } from './recall-tools';
+import { createRecallToolSuite } from './recall-tools';
+import type { OntologyAnswerEvidenceBundle } from '../../features/recall/ontology-answer-validation';
 import { createAssetStewardTools } from './asset-steward-tools';
 import { createExperienceTools } from './experience-tools';
 import { createPersonalOntologyTools } from './personal-ontology-tools';
@@ -217,6 +218,7 @@ export interface BuildRunnerParams {
   /** Current real user text, used by tools that must bind an approval action
    * to explicit user intent rather than merely to the existence of a turn. */
   userMessage?: string;
+  recallAnswerEvidence?: OntologyAnswerEvidenceBundle;
   sourceMessageId?: string;
   sourceMessageFromUser?: boolean;
   onCognitionSaveReceipt?: (receipt: CognitionSaveReceipt) => void | Promise<void>;
@@ -457,6 +459,9 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   /** UI-only agent display names collected once before the run.
    *  Not injected into model context; reused for process-log labels. */
   agentDisplayNameById: Map<string, string>;
+  /** Per-turn ontology evidence gate. It remains inactive until a tool reads
+   *  governed asset content or returns a persisted ontology relation. */
+  finalResponseGate?: import('./recall-tools').RecallFinalResponseGate;
 }> {
   if (params.agentId) await assertAgentChatDispatchable(
     params.userId || _safeActiveUserId() || '',
@@ -955,7 +960,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   // 2026-08-17: 注入只显示本空间资产，全局池的使用交给主动检索).
   // 2026-09-18：带上回合上下文——模型自己取用的资产要写 agent_read 注入回执
   // 与使用流水（turnId），并以当前消息文本做适用/禁用场景匹配（taskText）。
-  const recallTools = uid && !params.disableTools ? createRecallTools({
+  const recallToolSuite = uid && !params.disableTools ? createRecallToolSuite({
     userId: uid,
     ...(agentId ? { agentId } : {}),
     ...(params.turnId ? { turnId: params.turnId } : {}),
@@ -963,7 +968,9 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     ...(params.spaceId ? { spaceId: params.spaceId } : {}),
     ...(params.projectId ? { projectId: params.projectId } : {}),
     ...(params.userMessage ? { taskText: params.userMessage } : {}),
-  }) : [];
+    ...(params.recallAnswerEvidence ? { initialEvidence: params.recallAnswerEvidence } : {}),
+  }) : undefined;
+  const recallTools = recallToolSuite?.tools || [];
 
   // 资产管家工具（specs/008 US-401/402）：全量浏览、读全文、按用户指令改动。
   // 与 search_ability_assets 分开：那是任务执行期的取用（写 agent_read 回执与
@@ -1491,6 +1498,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     toolDefs,
     skillDisplayNameById,
     agentDisplayNameById,
+    finalResponseGate: recallToolSuite?.finalResponseGate,
   };
 }
 

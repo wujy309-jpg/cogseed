@@ -510,7 +510,7 @@ describe('T046 ③ 不存在第二处版本比对', () => {
   });
 });
 
-describe('T046 ④ tool-catalog 未新增 recall 组工具', () => {
+describe('T046 ④ tool-catalog recall 组工具面受控扩展', () => {
   /**
    * 冻结基线（= 2 个既有 + 资产管家 9 个 + 经验目录 2 个只读）。口径与
    * `asset-steward-tools.test.ts` 的「3 读 + 6 写」一致（那一份按工厂名清单钉死，
@@ -521,10 +521,13 @@ describe('T046 ④ tool-catalog 未新增 recall 组工具', () => {
    * 2026-09-28 +1：list_ontology_graph（本体图谱只读工具）——09-27 本体切片
    * 已在工厂（personal-ontology-tools）与 catalog 双侧注册、行为测试在
    * personal-ontology-tools.test.ts，本基线随树重算补登记。
+   * 2026-10-03 +1：ontology_query（受治理的能力资产关系查询）——只返回
+   * 关系证据与元数据，不读取资产正文；工厂、catalog 和专项测试同步登记。
    */
   const RECALL_GROUP_BASELINE = [
     'personal_ontology_fields',
     'search_ability_assets',
+    'ontology_query',
     'list_task_experiences',
     'read_task_experience',
     'list_ontology_graph',

@@ -173,6 +173,7 @@ import { invokeHandlers as hubAccountHandlers } from './hub-account';
 import { invokeHandlers as contributionHandlers } from './contribution';
 import { invokeHandlers as memoryHandlers } from './memory';
 import { invokeHandlers as ontologyGraphHandlers } from './ontology-graph';
+import { invokeHandlers as semanticaSettingsHandlers } from './semantica-settings';
 import { invokeHandlers as cognitionHandlers } from './cognition';
 import { invokeHandlers as transcriptHandlers } from './transcript';
 import { invokeHandlers as meetingHandlers } from './meeting';
@@ -7031,6 +7032,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // User-authored ontology categories, entities and relationships. Personal
   // profile facts and formal assets remain in their existing source stores.
   ...ontologyGraphHandlers,
+  ...semanticaSettingsHandlers,
 
   // Evidence-backed cognition assets. Confirmation reuses the canonical
   // memory write path; these handlers own only longitudinal evidence, review,

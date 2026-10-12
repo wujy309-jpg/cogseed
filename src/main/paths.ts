@@ -642,6 +642,9 @@ export const userRemoteConfigFile = (uid: string) => path.join(userLocalConfigDi
 // Machine-local defaults for external coding agents. Values are absolute
 // project directories, so they must not sync across devices.
 export const userAgentRuntimeConfigFile = (uid: string) => path.join(userLocalConfigDir(uid), 'agent-runtime.json');
+// Semantica/Jev credentials are machine-private. Non-secret feature settings
+// live in preferences.json; this file contains only an encrypted secret blob.
+export const userSemanticaSecretsFile = (uid: string) => path.join(userLocalConfigDir(uid), 'semantica-secrets.json');
 // Feishu credentials are machine-private and never enter cloud-synced chat data.
 export const userExpenseAgentConfigFile = (uid: string) =>
   path.join(userLocalConfigDir(uid), 'expense-agent.json');

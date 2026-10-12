@@ -9,6 +9,8 @@ afterEach(async () => {
   try {
     await drainMainRuntimeForTest('user-a');
   } finally {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
     if (previous === undefined) delete process.env.COGSEED_WORKSPACE_ROOT;
     else process.env.COGSEED_WORKSPACE_ROOT = previous;
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -625,6 +627,338 @@ describe('Recall projection auto-confirm and semantic Top-N', () => {
     expect(preview.assetIds).not.toContain(second.id);
     expect(preview.assetIds).not.toContain(third.id);
     expect(preview.omittedRefs.some((ref) => ref.assetId === third.id)).toBe(true);
+  });
+
+  it('keeps relationship expansion isolated when Semantica is disabled', async () => {
+    const { projection, assets } = await modules();
+    const entry = (await promoteAsset('周末买菜清单：先按一周菜单整理食材。', 'exec-sem-off-entry', 'review')).asset;
+    const related = (await promoteAsset('家庭一周晚餐计划：先确定每天的菜品。', 'exec-sem-off-related', 'review')).asset;
+    await assets.updateAbilityAsset('user-a', entry.id, {
+      relations: [{ kind: 'depends_on', assetId: related.id }],
+      reason: 'Semantica toggle isolation fixture',
+      actor: 'user',
+    });
+    vi.stubEnv('COGSEED_SEMANTICA_ENABLED', '0');
+    vi.stubEnv('COGSEED_JEV_ENABLED', '1');
+    vi.stubEnv('COGSEED_JEV_ENDPOINT', 'https://jev.invalid/v1/systemone');
+    vi.stubEnv('COGSEED_JEV_API_KEY', 'test-only-key');
+    const fetchSpy = vi.fn(async () => { throw new Error('Jev must not run while Semantica is disabled'); });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const preview = await projection.previewContextProjection('user-a', {
+      taskRunId: 'task-semantica-off-relation',
+      purpose: 'review',
+      taskText: '周末买菜',
+    }, {
+      minScore: 0.3,
+      embedTexts: async (texts: string[]) => texts.map((text) => (
+        text.includes('周末买菜') || text.includes('买菜清单') ? [1, 0] : [0, 1]
+      )),
+    });
+
+    expect(preview.assetIds).toEqual([entry.id]);
+    expect(preview.assetMatches).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ assetId: related.id, entryAssetId: entry.id }),
+    ]));
+    expect(preview.semanticaTrace).toBeUndefined();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('expands governed relations from one semantic entry when Semantica is enabled', async () => {
+    vi.stubEnv('COGSEED_SEMANTICA_ENABLED', '1');
+    const { projection, assets } = await modules();
+    const entry = (await promoteAsset('家庭一周晚餐计划：确定每天的菜品。', 'exec-sem-on-entry', 'review')).asset;
+    const shopping = (await promoteAsset('周末买菜清单：按晚餐计划整理食材。', 'exec-sem-on-shopping', 'review')).asset;
+    const prep = (await promoteAsset('工作日晚餐备餐：按买菜清单提前准备。', 'exec-sem-on-prep', 'review')).asset;
+    const unrelated = (await promoteAsset('旅行路线规划：安排周末交通。', 'exec-sem-on-unrelated', 'review')).asset;
+    for (const asset of [entry, shopping, prep, unrelated]) {
+      await assets.updateAbilityAsset('user-a', asset.id, {
+        relations: [],
+        reason: 'Clear automatic family relations for Semantica fixture',
+        actor: 'user',
+      });
+    }
+    await assets.updateAbilityAsset('user-a', shopping.id, {
+      relations: [{ kind: 'depends_on', assetId: entry.id }],
+      reason: 'Semantica expansion fixture',
+      actor: 'user',
+    });
+    await assets.updateAbilityAsset('user-a', prep.id, {
+      relations: [{ kind: 'depends_on', assetId: shopping.id }],
+      reason: 'Semantica expansion fixture',
+      actor: 'user',
+    });
+
+    const preview = await projection.previewContextProjection('user-a', {
+      taskRunId: 'task-semantica-on-relation',
+      purpose: 'review',
+      taskText: '家庭一周晚餐计划',
+    }, {
+      minScore: 0.3,
+      embedTexts: async (texts: string[]) => texts.map((text) => {
+        if (text.includes('家庭一周晚餐计划')) return [1, 0];
+        if (text.includes('旅行路线')) return [0, 1];
+        return [0.1, 1];
+      }),
+    });
+
+    expect(preview.assetIds).toEqual(expect.arrayContaining([entry.id, shopping.id, prep.id]));
+    expect(preview.assetIds).not.toContain(unrelated.id);
+    expect(preview.assetMatches).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        assetId: shopping.id,
+        matchMethod: 'ontology',
+        entryAssetId: entry.id,
+        distance: 1,
+        relationKind: 'depends_on',
+        evidencePath: [expect.objectContaining({ fromAssetId: shopping.id, toAssetId: entry.id, kind: 'depends_on' })],
+      }),
+      expect.objectContaining({
+        assetId: prep.id,
+        matchMethod: 'ontology',
+        entryAssetId: entry.id,
+        distance: 2,
+      }),
+    ]));
+  });
+
+  it('ignores legacy Jev environment settings and keeps local bounded relation expansion', async () => {
+    vi.stubEnv('COGSEED_SEMANTICA_ENABLED', '1');
+    vi.stubEnv('COGSEED_JEV_ENABLED', '1');
+    vi.stubEnv('COGSEED_JEV_GATES', 'intent');
+    vi.stubEnv('COGSEED_JEV_ENDPOINT', 'https://jev.invalid/v1/systemone');
+    vi.stubEnv('COGSEED_JEV_API_KEY', 'test-only-key');
+    vi.stubEnv('COGSEED_JEV_MAX_RETRIES', '0');
+    const fetchSpy = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      expect(body.state).toContain('关系=depends_on');
+      const criteria = body.questions.decision.criteria as Record<string, string>;
+      const directPlan = Object.entries(criteria).find(([, summary]) => (
+        summary.includes('关系=depends_on')
+        && summary.includes('方向=incoming')
+        && summary.includes('最大跳数=1')
+      ));
+      expect(directPlan).toBeDefined();
+      return new Response(JSON.stringify({
+        model: 'jev-test',
+        answers: {
+          decision: {
+            type: 'choice', choice: directPlan![0], confidence: 0.9,
+            probabilities: { [directPlan![0]]: 0.9, none: 0.1 },
+          },
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    const { projection, assets } = await modules();
+    const entry = (await promoteAsset('家庭一周晚餐计划：确定每天的菜品。', 'exec-intent-entry', 'review')).asset;
+    const shopping = (await promoteAsset('周末买菜清单：按晚餐计划整理食材。', 'exec-intent-shopping', 'review')).asset;
+    const prep = (await promoteAsset('工作日晚餐备餐：按买菜清单提前准备。', 'exec-intent-prep', 'review')).asset;
+    for (const asset of [entry, shopping, prep]) {
+      await assets.updateAbilityAsset('user-a', asset.id, { relations: [], reason: 'intent fixture reset', actor: 'user' });
+    }
+    await assets.updateAbilityAsset('user-a', shopping.id, {
+      relations: [{ kind: 'depends_on', assetId: entry.id }], reason: 'intent fixture', actor: 'user',
+    });
+    await assets.updateAbilityAsset('user-a', prep.id, {
+      relations: [{ kind: 'depends_on', assetId: shopping.id }], reason: 'intent fixture', actor: 'user',
+    });
+
+    const preview = await projection.previewContextProjection('user-a', {
+      taskRunId: 'task-jev-intent-one-hop', purpose: 'review', taskText: '家庭一周晚餐计划',
+    }, {
+      minScore: 0.3,
+      embedTexts: async (texts: string[]) => texts.map((text) => (
+        text.includes('家庭一周晚餐计划') ? [1, 0] : [0, 1]
+      )),
+    });
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(preview.assetIds).toContain(shopping.id);
+    expect(preview.assetIds).toContain(prep.id);
+    expect(preview.assetMatches).toEqual(expect.arrayContaining([
+      expect.objectContaining({ assetId: shopping.id, distance: 1, relationKind: 'depends_on' }),
+    ]));
+  });
+
+  it('persists a content-free local deterministic trace even when legacy Jev settings remain', async () => {
+    vi.stubEnv('COGSEED_SEMANTICA_ENABLED', '1');
+    vi.stubEnv('COGSEED_JEV_ENABLED', '1');
+    vi.stubEnv('COGSEED_JEV_GATES', 'intent');
+    vi.stubEnv('COGSEED_JEV_ENDPOINT', 'https://jev.invalid/v1/systemone');
+    vi.stubEnv('COGSEED_JEV_API_KEY', 'test-only-key-that-must-not-be-recorded');
+    vi.stubEnv('COGSEED_JEV_MAX_RETRIES', '0');
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      const criteria = body.questions.decision.criteria as Record<string, string>;
+      const semanticPlan = Object.entries(criteria).find(([, summary]) => summary.includes('路由=semantic'));
+      expect(semanticPlan).toBeDefined();
+      return new Response(JSON.stringify({
+        model: 'jev-test',
+        answers: {
+          decision: {
+            type: 'choice', choice: semanticPlan![0], confidence: 0.91,
+            probabilities: { [semanticPlan![0]]: 0.91, none: 0.09 },
+          },
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }));
+    const { projection, assets } = await modules();
+    const entry = (await promoteAsset('家庭一周晚餐计划入口。', 'exec-semantic-intent-entry', 'review')).asset;
+    const shopping = (await promoteAsset('周末买菜清单依赖晚餐计划。', 'exec-semantic-intent-shopping', 'review')).asset;
+    await assets.updateAbilityAsset('user-a', entry.id, { relations: [], reason: 'semantic route fixture reset', actor: 'user' });
+    await assets.updateAbilityAsset('user-a', shopping.id, {
+      relations: [{ kind: 'depends_on', assetId: entry.id }], reason: 'semantic route fixture', actor: 'user',
+    });
+
+    const preview = await projection.previewContextProjection('user-a', {
+      taskRunId: 'task-jev-intent-semantic', purpose: 'review', taskText: '家庭一周晚餐计划敏感查询标记',
+    }, {
+      minScore: 0.3,
+      embedTexts: async (texts: string[]) => texts.map((text) => (
+        text.includes('家庭一周晚餐计划') ? [1, 0] : [0, 1]
+      )),
+    });
+
+    expect(preview.assetIds).toContain(shopping.id);
+    expect(preview.semanticaTrace).toMatchObject({
+      enabled: true,
+      entryAssetIds: [entry.id],
+      deterministicExpansionCount: 1,
+      finalExpansionCount: 1,
+      intentGate: { status: 'selected', selectedRoute: 'hybrid', direction: 'both', maxHops: 2 },
+      candidateGate: { status: 'selected', inputCount: 2, outputCount: 2 },
+    });
+    const read = await projection.readContextProjection('user-a', preview.id);
+    expect(read.semanticaTrace).toEqual(preview.semanticaTrace);
+    const traceJson = JSON.stringify(read.semanticaTrace);
+    expect(traceJson).not.toContain('家庭一周晚餐计划敏感查询标记');
+    expect(traceJson).not.toContain('test-only-key-that-must-not-be-recorded');
+  });
+
+  it('does not let a legacy Jev none response affect local deterministic expansion', async () => {
+    vi.stubEnv('COGSEED_SEMANTICA_ENABLED', '1');
+    vi.stubEnv('COGSEED_JEV_ENABLED', '1');
+    vi.stubEnv('COGSEED_JEV_GATES', 'intent');
+    vi.stubEnv('COGSEED_JEV_ENDPOINT', 'https://jev.invalid/v1/systemone');
+    vi.stubEnv('COGSEED_JEV_API_KEY', 'test-only-key');
+    vi.stubEnv('COGSEED_JEV_MAX_RETRIES', '0');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      model: 'jev-test',
+      answers: { decision: { type: 'choice', choice: 'none', confidence: 0.8 } },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })));
+    const { projection, assets } = await modules();
+    const entry = (await promoteAsset('周末短途出行方案。', 'exec-none-entry', 'review')).asset;
+    const budget = (await promoteAsset('交通预算依赖短途出行方案。', 'exec-none-budget', 'review')).asset;
+    await assets.updateAbilityAsset('user-a', entry.id, { relations: [], reason: 'none fixture reset', actor: 'user' });
+    await assets.updateAbilityAsset('user-a', budget.id, {
+      relations: [{ kind: 'depends_on', assetId: entry.id }], reason: 'none fixture', actor: 'user',
+    });
+
+    const preview = await projection.previewContextProjection('user-a', {
+      taskRunId: 'task-jev-intent-none', purpose: 'review', taskText: '周末短途出行方案',
+    }, {
+      minScore: 0.3,
+      embedTexts: async (texts: string[]) => texts.map((text) => (
+        text.includes('周末短途出行方案') ? [1, 0] : [0, 1]
+      )),
+    });
+
+    expect(preview.assetIds).toContain(budget.id);
+    expect(preview.semanticaTrace).toMatchObject({
+      deterministicExpansionCount: 1,
+      finalExpansionCount: 1,
+      intentGate: { status: 'selected', selectedRoute: 'hybrid' },
+    });
+  });
+
+  it('does not contact a legacy Jev endpoint or mark local expansion degraded', async () => {
+    vi.stubEnv('COGSEED_SEMANTICA_ENABLED', '1');
+    vi.stubEnv('COGSEED_JEV_ENABLED', '1');
+    vi.stubEnv('COGSEED_JEV_GATES', 'intent');
+    vi.stubEnv('COGSEED_JEV_ENDPOINT', 'https://jev.invalid/v1/systemone');
+    vi.stubEnv('COGSEED_JEV_API_KEY', 'test-only-key');
+    vi.stubEnv('COGSEED_JEV_TIMEOUT_MS', '1');
+    vi.stubEnv('COGSEED_JEV_MAX_RETRIES', '0');
+    const fetchSpy = vi.fn((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+    }));
+    vi.stubGlobal('fetch', fetchSpy);
+    const { projection, assets } = await modules();
+    const entry = (await promoteAsset('家庭旅行行程入口。', 'exec-timeout-entry', 'review')).asset;
+    const booking = (await promoteAsset('住宿预订依赖旅行行程。', 'exec-timeout-booking', 'review')).asset;
+    await assets.updateAbilityAsset('user-a', entry.id, { relations: [], reason: 'timeout fixture reset', actor: 'user' });
+    await assets.updateAbilityAsset('user-a', booking.id, {
+      relations: [{ kind: 'depends_on', assetId: entry.id }], reason: 'timeout fixture', actor: 'user',
+    });
+
+    const preview = await projection.previewContextProjection('user-a', {
+      taskRunId: 'task-jev-intent-timeout', purpose: 'review', taskText: '家庭旅行行程',
+    }, {
+      minScore: 0.3,
+      embedTexts: async (texts: string[]) => texts.map((text) => (
+        text.includes('家庭旅行行程') ? [1, 0] : [0, 1]
+      )),
+    });
+
+    expect(preview.assetIds).toContain(booking.id);
+    expect(preview.selectionDegraded).toBeUndefined();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(preview.semanticaTrace).toMatchObject({
+      deterministicExpansionCount: 1,
+      finalExpansionCount: 1,
+      intentGate: { status: 'selected', selectedRoute: 'hybrid' },
+    });
+  });
+
+  it('does not restore a governance-rejected asset through Semantica relations', async () => {
+    vi.stubEnv('COGSEED_SEMANTICA_ENABLED', '1');
+    const { projection, assets } = await modules();
+    const entry = (await promoteAsset('家庭晚餐安排入口。', 'exec-sem-governed-entry', 'review')).asset;
+    const paused = (await promoteAsset('被暂停的备餐经验。', 'exec-sem-governed-paused', 'review')).asset;
+    await assets.updateAbilityAsset('user-a', entry.id, {
+      relations: [{ kind: 'depends_on', assetId: paused.id }],
+      reason: 'Semantica governance fixture',
+      actor: 'user',
+    });
+    await assets.pauseAbilityAsset('user-a', paused.id, { actor: 'user', reason: 'governance fixture' });
+
+    const preview = await projection.previewContextProjection('user-a', {
+      taskRunId: 'task-semantica-governance',
+      purpose: 'review',
+      taskText: '家庭晚餐安排',
+    }, {
+      embedTexts: async (texts: string[]) => texts.map((text) => (
+        text.includes('家庭晚餐安排') ? [1, 0] : [0, 1]
+      )),
+    });
+
+    expect(preview.assetIds).toEqual([entry.id]);
+    expect(preview.assetIds).not.toContain(paused.id);
+    expect(preview.omittedRefs).toContainEqual({ assetId: paused.id, reason: 'asset_paused' });
+  });
+
+  it('falls back to ordinary semantic results when the entry has no graph coverage', async () => {
+    vi.stubEnv('COGSEED_SEMANTICA_ENABLED', '1');
+    const { projection } = await modules();
+    const first = (await promoteAsset('OAuth 回调状态校验。', 'exec-sem-fallback-first', 'review')).asset;
+    const second = (await promoteAsset('OAuth 令牌刷新流程。', 'exec-sem-fallback-second', 'review')).asset;
+
+    const preview = await projection.previewContextProjection('user-a', {
+      taskRunId: 'task-semantica-no-graph',
+      purpose: 'review',
+      taskText: 'OAuth 登录流程检查',
+    }, {
+      embedTexts: async (texts: string[]) => texts.map((text) => (
+        text.toLocaleLowerCase().includes('oauth') ? [1, 0] : [0, 1]
+      )),
+    });
+
+    expect(preview.assetIds).toEqual(expect.arrayContaining([first.id, second.id]));
+    expect(preview.assetMatches).toEqual(expect.arrayContaining([
+      expect.objectContaining({ assetId: first.id, matchMethod: 'semantic' }),
+      expect.objectContaining({ assetId: second.id, matchMethod: 'semantic' }),
+    ]));
   });
 
   it('does not force-fill Top-N from a weak pool (relative-significance gate)', async () => {

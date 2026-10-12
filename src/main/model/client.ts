@@ -15,6 +15,7 @@
  */
 
 import type { AgentTool, HistoryResource } from '#core-agent';
+import type { OntologyAnswerEvidenceBundle } from '../features/recall/ontology-answer-validation';
 
 import {
   abortActiveSession as _abortActiveSession,
@@ -120,6 +121,9 @@ export interface ChatOptions {
    * Use this for conversation-level rules that must stay in context for every
    * turn (kept on the system channel, not duplicated into each user message). */
   systemPrompt?: string;
+  /** Governed, turn-local evidence attached to automatically injected
+   * Semantica assets. It is consumed only by the final response gate. */
+  recallAnswerEvidence?: OntologyAnswerEvidenceBundle;
   /** Human-readable actor name used in user-facing local permission prompts. */
   agentName?: string;
   /** Working directory for tool execution (list_files, read_file, bash, etc.).

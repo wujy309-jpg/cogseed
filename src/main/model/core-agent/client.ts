@@ -1079,6 +1079,7 @@ export async function* streamChatWithModel(opts: ChatOptions): AsyncGenerator<St
     sessionId = `anon-${genConversationId().slice(0, 8)}`,
     resumeActiveTurn = false,
     systemPrompt,
+    recallAnswerEvidence,
     agentName,
     workingDir,
     images,
@@ -1355,6 +1356,7 @@ export async function* streamChatWithModel(opts: ChatOptions): AsyncGenerator<St
       ...(sourceMessageFromUser ? { sourceMessageFromUser: true } : {}),
       ...(onCognitionSaveReceipt ? { onCognitionSaveReceipt } : {}),
       ...(sourceMessageText ? { userMessage: sourceMessageText } : message ? { userMessage: message } : {}),
+      ...(recallAnswerEvidence ? { recallAnswerEvidence } : {}),
       ...(projectId ? { projectId } : {}),
       ...(spaceId ? { spaceId } : {}),
       ...(skillList !== undefined ? { skillList } : {}),
@@ -1397,7 +1399,7 @@ export async function* streamChatWithModel(opts: ChatOptions): AsyncGenerator<St
         resolvedRuntimePublisher.publish(info);
       },
     });
-    const { runner, providerId, modelId, resolvedSystemPrompt, turnEphemeral, profileId, entryId, toolDefs, skillDisplayNameById, agentDisplayNameById } = built;
+    const { runner, providerId, modelId, resolvedSystemPrompt, turnEphemeral, profileId, entryId, toolDefs, skillDisplayNameById, agentDisplayNameById, finalResponseGate } = built;
     resolvedRuntimePublisher.setToolNames(toolDefs.map((tool) => tool.name));
     resolvedRuntimePublisher.publish({
       providerId,
@@ -1514,6 +1516,12 @@ export async function* streamChatWithModel(opts: ChatOptions): AsyncGenerator<St
       ...(cacheRetention ? { cacheRetention } : {}),
       ...(thinkingLevel ? { thinkingLevel } : {}),
       ...(drainSteer ? { drainSteer } : {}),
+      ...(finalResponseGate ? {
+        finalResponseGate: {
+          isRequired: finalResponseGate.isRequired,
+          validate: async ({ text, signal }) => finalResponseGate.validate({ text, ...(signal ? { signal } : {}) }),
+        },
+      } : {}),
     });
 
     // Wrap raw events to capture the AgentRunResult for post-run reflection.

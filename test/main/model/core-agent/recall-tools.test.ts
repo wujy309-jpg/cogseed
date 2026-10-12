@@ -31,9 +31,12 @@ beforeEach(async () => {
   vi.resetModules();
   const users = await import('../../../../src/main/features/users');
   users.activateUser(TEST_UID);
+  const config = await import('../../../../src/main/features/config');
+  config.writePreferences({ semantica_enabled: true });
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   process.env.COGSEED_WORKSPACE_ROOT = prevWs;
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
@@ -41,7 +44,7 @@ afterEach(() => {
 let _seedSeq = 0;
 async function seedAsset(
   judgment: string,
-  opts: { spaceId?: string; scope?: string; pause?: boolean } = {},
+  opts: { spaceId?: string; scope?: string; pause?: boolean; title?: string } = {},
 ) {
   const candidates = await import('../../../../src/main/features/recall/candidate-service');
   const assets = await import('../../../../src/main/features/recall/asset-service');
@@ -50,7 +53,7 @@ async function seedAsset(
     judgment,
     // 标题闸门（设计 3.2）：judgment 前缀兜底命中「与正文开头重复」，
     // 改为与正文首字不同的合规样本标题。
-    summary: `检索样本${_seedSeq}`,
+    summary: opts.title || `检索样本${_seedSeq}`,
     suggestedType: 'rule',
     applicableWhen: ['正式评审与架构决策时'],
     forbiddenWhen: ['内部快速对齐'],
@@ -66,6 +69,142 @@ async function seedAsset(
 }
 
 describe('recall search_ability_assets tool', () => {
+  it('ontology_query follows governed asset relations and excludes paused assets', async () => {
+    const gateway = await seedAsset('网关是服务调用的统一入口。', { scope: 'general', title: '本体查询示例：API网关' });
+    const auth = await seedAsset('认证服务通过网关对外提供能力。', { scope: 'general', title: '本体查询示例：认证服务' });
+    const client = await seedAsset('调用客户端先访问认证服务。', { scope: 'general', title: '本体查询示例：调用客户端' });
+    const paused = await seedAsset('旧认证服务已经停用。', { scope: 'general', title: '本体查询示例：旧认证' });
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    await assets.updateAbilityAsset(TEST_UID, auth.id, {
+      relations: [{ kind: 'depends_on', assetId: gateway.id }], actor: 'user', reason: 'test relation',
+    });
+    await assets.updateAbilityAsset(TEST_UID, client.id, {
+      relations: [{ kind: 'depends_on', assetId: auth.id }], actor: 'user', reason: 'test relation',
+    });
+    await assets.updateAbilityAsset(TEST_UID, paused.id, {
+      relations: [{ kind: 'depends_on', assetId: gateway.id }], actor: 'user', reason: 'test relation',
+    });
+    await assets.pauseAbilityAsset(TEST_UID, paused.id, { actor: 'user', reason: 'not available' });
+
+    const { createRecallToolSuite } = await import('../../../../src/main/model/core-agent/recall-tools');
+    const suite = createRecallToolSuite({
+      userId: TEST_UID, turnId: 'turn-ontology01', cid: 'chat-ontology01',
+    });
+    const ontologyTool = suite.tools.find((tool) => tool.name === 'ontology_query')!;
+    expect(suite.finalResponseGate.isRequired()).toBe(false);
+    const response = await ontologyTool.execute({
+      query: '哪些资产依赖 本体查询示例：API网关', maxHops: 2,
+    }, {} as never);
+    const result = JSON.parse(response.content);
+
+    expect(response.isError).not.toBe(true);
+    expect(result.status).toBe('ok');
+    expect(result.target.id).toBe(gateway.id);
+    expect(result.matches.map((match: { asset: { id: string }; distance: number }) => [match.asset.id, match.distance])).toEqual([
+      [auth.id, 1],
+      [client.id, 2],
+    ]);
+    expect(response.content).not.toContain(paused.id);
+    expect(response.content).not.toContain('网关是服务调用的统一入口');
+    expect(suite.finalResponseGate.isRequired()).toBe(true);
+  });
+
+  it('keeps the final response gate inactive for catalog and semantic-search modes', async () => {
+    await seedAsset('竞品调研应先明确可比维度再收集证据。', { scope: 'general' });
+    const { createRecallToolSuite } = await import('../../../../src/main/model/core-agent/recall-tools');
+    const suite = createRecallToolSuite({ userId: TEST_UID, turnId: 'turn-gate-search' });
+    const searchTool = suite.tools.find((tool) => tool.name === 'search_ability_assets')!;
+
+    await searchTool.execute({}, {} as never);
+    expect(suite.finalResponseGate.isRequired()).toBe(false);
+    await searchTool.execute({ query: '竞品调研' }, {} as never);
+    expect(suite.finalResponseGate.isRequired()).toBe(false);
+  });
+
+  it('activates final validation from automatic Semantica projection evidence', async () => {
+    const entry = await seedAsset('聚餐前先确认参与人数和忌口。', { title: '周末聚会安排' });
+    const venue = await seedAsset('餐厅选择依赖参与人数和忌口信息。', { title: '聚会地点筛选' });
+    const answerValidation = await import('../../../../src/main/features/recall/ontology-answer-validation');
+    const validateSpy = vi.spyOn(answerValidation, 'validateOntologyAnswer');
+    const { createRecallToolSuite } = await import('../../../../src/main/model/core-agent/recall-tools');
+    const initialEvidence = {
+      taskText: '原始任务：安排一次预算内的周末聚会。\n当前补充：改成周日下午。',
+      assets: [
+        { assetId: entry.id, title: entry.title, version: entry.version, statement: entry.statement },
+        { assetId: venue.id, title: venue.title, version: venue.version, statement: venue.statement },
+      ],
+      relations: [{
+        query: '下周聚餐怎么安排',
+        paths: [{
+          entryAssetId: entry.id,
+          entryTitle: entry.title,
+          assetId: venue.id,
+          assetTitle: venue.title,
+          distance: 1,
+          relationKind: 'depends_on' as const,
+          direction: 'incoming' as const,
+          maxHops: 1,
+          evidencePath: [{
+            fromAssetId: venue.id, fromTitle: venue.title, kind: 'depends_on' as const,
+            toAssetId: entry.id, toTitle: entry.title,
+          }],
+        }],
+      }],
+    };
+    const suite = createRecallToolSuite({
+      userId: TEST_UID,
+      taskText: '下周聚餐怎么安排',
+      turnId: 'turn-auto-evidence',
+      initialEvidence,
+    });
+
+    expect(suite.finalResponseGate.isRequired()).toBe(true);
+    const accepted = await suite.finalResponseGate.validate({
+      text: `${venue.title} [asset:${venue.id}] 直接依赖${entry.title} [asset:${entry.id}]。`,
+    });
+    expect(accepted.text).toContain('直接依赖');
+
+    const natural = await suite.finalResponseGate.validate({
+      text: '先确认参与人数和忌口，再据此筛选合适的聚餐地点。',
+    });
+    expect(natural.text).toBe('先确认参与人数和忌口，再据此筛选合适的聚餐地点。');
+    expect(natural.text).not.toContain('[asset:');
+    expect(validateSpy).toHaveBeenCalledWith(expect.objectContaining({
+      query: initialEvidence.taskText,
+    }), expect.objectContaining({ mode: 'observe' }));
+
+    const reversed = await suite.finalResponseGate.validate({
+      text: `${entry.title} [asset:${entry.id}] 直接依赖${venue.title} [asset:${venue.id}]。`,
+    });
+    expect(reversed.text).toContain('当前已确认可用的经验');
+    expect(reversed.text).toContain('先确认参与人数和忌口');
+    expect(reversed.text).not.toContain('[asset:');
+    expect(reversed.text).not.toContain('-depends_on->');
+    expect(reversed.text).not.toContain('跳');
+    expect(reversed.text).not.toBe(`${entry.title} [asset:${entry.id}] 直接依赖${venue.title} [asset:${venue.id}]。`);
+  });
+
+  it('ignores automatic initial evidence while Semantica is disabled', async () => {
+    const live = await seedAsset('关闭本体模式时仍可按原流程读取的经验。', { title: '传统检索经验' });
+    vi.stubEnv('COGSEED_SEMANTICA_ENABLED', '0');
+    const { createRecallToolSuite } = await import('../../../../src/main/model/core-agent/recall-tools');
+    const suite = createRecallToolSuite({
+      userId: TEST_UID,
+      initialEvidence: {
+        assets: [{ assetId: 'aa-hidden', title: '不应进入', version: '1', statement: '隐藏正文' }],
+        relations: [],
+      },
+    });
+    expect(suite.finalResponseGate.isRequired()).toBe(false);
+    expect(suite.tools.some((tool) => tool.name === 'ontology_query')).toBe(false);
+
+    const searchTool = suite.tools.find((tool) => tool.name === 'search_ability_assets')!;
+    await searchTool.execute({ assetIds: [live.id] }, {} as never);
+    expect(suite.finalResponseGate.isRequired()).toBe(false);
+    await expect(suite.finalResponseGate.validate({ text: '保留模型生成的完整回答。' }))
+      .resolves.toEqual({ text: '保留模型生成的完整回答。' });
+  });
+
   it('searches the GLOBAL pool (all spaces + general assets) and returns citation format', async () => {
     await seedAsset('发布类公告应包含背景、变更点、影响范围、生效时间、联系方式五段。', { spaceId: 'sp_a', scope: 'space' });
     await seedAsset('竞品调研应先明确可比维度（范围/功能/定价/体验）再收集证据。', { spaceId: 'sp_b', scope: 'space' });
@@ -153,10 +292,12 @@ describe('recall search_ability_assets tool', () => {
     const live = await seedAsset('性能类提问需用真实日志做分层归因，先给链路再给瓶颈。', { scope: 'general' });
     const paused = await seedAsset('已停用的经验。', { scope: 'general', pause: true });
 
-    const { createRecallTools } = await import('../../../../src/main/model/core-agent/recall-tools');
+    const { createRecallToolSuite } = await import('../../../../src/main/model/core-agent/recall-tools');
     const receipts = await import('../../../../src/main/features/recall/injection-receipt');
     const usage = await import('../../../../src/main/features/recall/usage-service');
-    const [tool] = createRecallTools({ userId: TEST_UID, turnId: 'turn-read0001' });
+    const suite = createRecallToolSuite({ userId: TEST_UID, turnId: 'turn-read0001' });
+    const tool = suite.tools.find((entry) => entry.name === 'search_ability_assets')!;
+    expect(suite.finalResponseGate.isRequired()).toBe(false);
 
     const read = await tool.execute({ assetIds: [live.id] }, {} as never);
     expect(read.isError).not.toBe(true);
@@ -165,6 +306,7 @@ describe('recall search_ability_assets tool', () => {
     expect(read.content).toContain('正文:');
     expect(read.content).toContain('先给链路再给瓶颈');
     expect(read.content).toMatch(/版本:v\d/);
+    expect(suite.finalResponseGate.isRequired()).toBe(true);
     // 生命周期元数据行已随出身收敛移除（2026-09-20）。
 
     // 留痕：模型自己取用也算一次真实带入（否则自选资产进不了升档链）。

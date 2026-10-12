@@ -37,6 +37,19 @@ import {
   type CatalogContext,
 } from '../../features/recall/catalog-engine';
 import { recordCatalogObservations } from '../../features/recall/catalog-observation';
+import {
+  queryOntologyAssets,
+  type OntologyAssetQueryDirection,
+} from '../../features/recall/ontology-asset-query';
+import type { AbilityAssetRelationKind } from '../../features/recall/asset-relations';
+import {
+  recordOntologyAnswerValidation,
+  validateOntologyAnswer,
+  type AnswerAssetEvidence,
+  type AnswerRelationEvidence,
+  type OntologyAnswerEvidenceBundle,
+} from '../../features/recall/ontology-answer-validation';
+import { isSemanticaEnabled } from '../../features/recall/semantica-settings';
 
 const log = createLogger('recall-tools');
 
@@ -55,6 +68,8 @@ export interface RecallToolsOpts {
   projectId?: string;
   /** 当前用户消息文本：适用/禁用场景匹配用。 */
   taskText?: string;
+  /** Evidence from assets already injected by the host before the model run. */
+  initialEvidence?: OntologyAnswerEvidenceBundle;
 }
 
 const DEFAULT_RESULTS = 8;
@@ -77,6 +92,21 @@ interface PoolEntry {
   spaceId?: string;
   /** 画像来源标记（user_profile / shared_memory）；正式资产为 undefined。 */
   profileSource?: string;
+}
+
+interface RecallTurnEvidence {
+  assets: Map<string, AnswerAssetEvidence>;
+  relations: AnswerRelationEvidence[];
+}
+
+export interface RecallFinalResponseGate {
+  isRequired(): boolean;
+  validate(input: { text: string; signal?: AbortSignal }): Promise<{ text: string }>;
+}
+
+export interface RecallToolSuite {
+  tools: AgentTool[];
+  finalResponseGate: RecallFinalResponseGate;
 }
 
 /** 返回给 LLM 的单条资产格式（含引用标记 [asset:<id>]）。 */
@@ -232,7 +262,7 @@ async function recordAgentReads(
   }
 }
 
-function createSearchAbilityAssetsTool(opts: RecallToolsOpts): AgentTool {
+function createSearchAbilityAssetsTool(opts: RecallToolsOpts, evidence: RecallTurnEvidence): AgentTool {
   const userId = opts.userId;
 
   const catalogContext = (): CatalogContext => ({
@@ -361,6 +391,12 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts): AgentTool {
       const version = String(asset.activeVersion || asset.version || '1');
       blocks.push(formatReadEntry(asset, version));
       readEntries.push({ assetId: asset.id, assetVersion: version });
+      evidence.assets.set(asset.id, {
+        assetId: asset.id,
+        title: asset.title,
+        version,
+        statement: String(asset.statement || '').slice(0, READ_STATEMENT_LIMIT),
+      });
     }
     await recordAgentReads(opts, readEntries);
     await recordCatalogObservations(userId, {
@@ -506,7 +542,169 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts): AgentTool {
   };
 }
 
-/** Read-only recall asset tools (currently one). No localExec needed. */
+function createOntologyQueryTool(opts: RecallToolsOpts, evidence: RecallTurnEvidence): AgentTool {
+  const relationKinds = new Set<AbilityAssetRelationKind>([
+    'refines', 'depends_on', 'replaces', 'conflicts_with', 'related_to', 'same_family',
+  ]);
+  const directions = new Set<OntologyAssetQueryDirection>(['incoming', 'outgoing', 'both']);
+
+  return {
+    name: 'ontology_query',
+    executionMode: 'parallel',
+    description: [
+      '按用户已沉淀的认知资产关系查询可复用资产，并返回可核对的关系证据路径。',
+      '适合“哪些资产依赖 X”“X 依赖哪些资产”“哪些资产替代/细化/冲突于 X”等问题；支持最多 4 跳。',
+      '查询只在当前回合资产目录已经通过状态、来源、Agent、项目、空间和使用规则准入的正式资产上执行，不会绕过治理边界。',
+      '结果只含资产元数据和关系路径；采用资产前仍用 search_ability_assets 的 assetIds 模式读取正文，长期使用再用 attach_assets_to_task。',
+    ].join(''),
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          maxLength: 500,
+          description: '自然语言关系问题，例如“哪些资产依赖 本体查询示例：API 网关”。',
+        },
+        target: {
+          type: 'string',
+          maxLength: 200,
+          description: '可选目标资产 ID 或准确标题；提供后优先于从 query 推断。',
+        },
+        relationKind: {
+          type: 'string',
+          enum: ['refines', 'depends_on', 'replaces', 'conflicts_with', 'related_to', 'same_family'],
+          description: '可选关系类型；省略时从 query 推断，无法推断则查询全部关系。',
+        },
+        direction: {
+          type: 'string',
+          enum: ['incoming', 'outgoing', 'both'],
+          description: 'incoming=谁指向目标，outgoing=目标指向谁，both=双向。省略时从 query 推断。',
+        },
+        maxHops: { type: 'integer', minimum: 1, maximum: 4, description: '最大关系跳数，默认 1。' },
+        limit: { type: 'integer', minimum: 1, maximum: 100, description: '最多返回多少个匹配资产，默认 30。' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    async execute(input: Record<string, unknown>) {
+      const query = typeof input.query === 'string' ? input.query.trim() : '';
+      if (!query || query.length > 500) return { content: 'ontology_query: query 必须是 1-500 字的文本', isError: true };
+      const target = input.target === undefined ? undefined : String(input.target || '').trim();
+      if (target !== undefined && (!target || target.length > 200)) {
+        return { content: 'ontology_query: target 必须是 1-200 字的资产 ID 或标题', isError: true };
+      }
+      const relationKind = input.relationKind as AbilityAssetRelationKind | undefined;
+      if (relationKind !== undefined && !relationKinds.has(relationKind)) {
+        return { content: 'ontology_query: relationKind 无效', isError: true };
+      }
+      const direction = input.direction as OntologyAssetQueryDirection | undefined;
+      if (direction !== undefined && !directions.has(direction)) {
+        return { content: 'ontology_query: direction 无效', isError: true };
+      }
+
+      try {
+        const snapshot = await catalogSnapshot(opts.userId, {
+          ...(opts.cid ? { cid: opts.cid } : {}),
+          ...(opts.turnId ? { turnId: opts.turnId } : {}),
+          ...(opts.taskText ? { taskText: opts.taskText } : {}),
+          ...(opts.agentId ? { agentId: opts.agentId } : {}),
+          scene: {
+            ...(opts.projectId ? { turnProjectId: opts.projectId } : {}),
+            ...(opts.spaceId ? { turnSpaceId: opts.spaceId } : {}),
+          },
+        });
+        const result = queryOntologyAssets(snapshot.assets, {
+          query,
+          ...(target ? { target } : {}),
+          ...(relationKind ? { relationKind } : {}),
+          ...(direction ? { direction } : {}),
+          ...(input.maxHops !== undefined ? { maxHops: Number(input.maxHops) } : {}),
+          ...(input.limit !== undefined ? { limit: Number(input.limit) } : {}),
+        });
+        if (result.status === 'ok') {
+          evidence.relations.push({ query, result });
+          await recordCatalogObservations(opts.userId, {
+            turnId: opts.turnId,
+            cid: opts.cid,
+            stage: 'search_result_shown',
+            assets: result.matches.map((match) => ({
+              id: match.asset.id,
+              version: String(match.asset.activeVersion || match.asset.version || '1'),
+            })),
+          });
+        }
+        return { content: JSON.stringify({ schemaVersion: 1, query, ...result }, null, 2) };
+      } catch (error) {
+        log.warn('ontology asset query failed', { userId: maskId(opts.userId), error: logErrorRef(error as Error) });
+        return { content: 'ontology_query: 本体资产关系查询暂不可用，请改用 search_ability_assets', isError: true };
+      }
+    },
+  };
+}
+
+/** Build the tools and the final-response gate over one shared turn evidence set. */
+export function createRecallToolSuite(opts: RecallToolsOpts): RecallToolSuite {
+  const semanticaEnabled = isSemanticaEnabled(opts.userId);
+  const evidence: RecallTurnEvidence = { assets: new Map(), relations: [] };
+  if (semanticaEnabled && opts.initialEvidence) {
+    for (const asset of opts.initialEvidence.assets) evidence.assets.set(asset.assetId, { ...asset });
+    evidence.relations.push(...opts.initialEvidence.relations.map((relation) => ({
+      ...relation,
+      ...(relation.paths ? {
+        paths: relation.paths.map((path) => ({
+          ...path,
+          evidencePath: path.evidencePath.map((edge) => ({ ...edge })),
+        })),
+      } : {}),
+    })));
+  }
+  const finalResponseGate: RecallFinalResponseGate = {
+    isRequired: () => semanticaEnabled && (evidence.assets.size > 0 || evidence.relations.length > 0),
+    validate: async ({ text, signal }) => {
+      // The legacy recall path must remain behaviorally unchanged while
+      // Semantica is off, even if search_ability_assets read asset bodies.
+      if (!semanticaEnabled) return { text };
+      const input = {
+        query: String(opts.initialEvidence?.taskText || opts.taskText || ''),
+        answer: text,
+        assets: [...evidence.assets.values()],
+        relations: [...evidence.relations],
+        ...(opts.turnId || opts.cid ? { requestId: String(opts.turnId || opts.cid) } : {}),
+      };
+      try {
+        const result = await validateOntologyAnswer(input, {
+          rolloutKey: opts.userId,
+          // Local deterministic checks are the authority for evidence,
+          // relationship direction and direct/indirect consistency.
+          mode: 'observe',
+          ...(signal ? { signal } : {}),
+        });
+        await recordOntologyAnswerValidation(opts.userId, input, result).catch((error) => {
+          log.warn('ontology answer validation receipt failed', {
+            userId: maskId(opts.userId), error: logErrorRef(error as Error),
+          });
+        });
+        return { text: result.answer };
+      } catch (error) {
+        log.warn('ontology answer validation failed open', {
+          userId: maskId(opts.userId), error: logErrorRef(error as Error),
+        });
+        // The validator is a judgment gate, not the source of truth. Runtime
+        // failures must not erase an answer or artifact the model completed.
+        return { text };
+      }
+    },
+  };
+  return {
+    tools: [
+      createSearchAbilityAssetsTool(opts, evidence),
+      ...(semanticaEnabled ? [createOntologyQueryTool(opts, evidence)] : []),
+    ],
+    finalResponseGate,
+  };
+}
+
+/** Read-only recall asset tools. No localExec needed. */
 export function createRecallTools(opts: RecallToolsOpts): AgentTool[] {
-  return [createSearchAbilityAssetsTool(opts)];
+  return createRecallToolSuite(opts).tools;
 }

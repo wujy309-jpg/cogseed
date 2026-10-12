@@ -112,7 +112,14 @@ function enumerateAllInjectedTools(): AgentTool[] {
   // recall 组的三个工厂都要枚举到，否则这一组工具整体漏在反漂移之外
   // （2026-09-25 补：此前 createRecallTools / createAssetStewardTools /
   //  createPersonalOntologyTools 都没被调用，catalog 少一行也不会变红）。
-  tools.push(...createRecallTools({ userId: 'testuid' }));
+  const previousSemantica = process.env.COGSEED_SEMANTICA_ENABLED;
+  process.env.COGSEED_SEMANTICA_ENABLED = '1';
+  try {
+    tools.push(...createRecallTools({ userId: 'testuid' }));
+  } finally {
+    if (previousSemantica === undefined) delete process.env.COGSEED_SEMANTICA_ENABLED;
+    else process.env.COGSEED_SEMANTICA_ENABLED = previousSemantica;
+  }
   tools.push(...createAssetStewardTools({ userId: 'testuid' }));
   tools.push(...createPersonalOntologyTools({ userId: 'testuid' }));
   // 经验目录工厂（specs/016 T024）：同样必须枚举，漏了它 catalog 少两行也不会红。
@@ -207,7 +214,7 @@ describe('tool-catalog', () => {
     // 枚举本身也要覆盖到 recall 组：工厂没被调用时这一组会整体隐身，
     // 反漂移就成了一句空话（2026-09-25 补的洞）。
     for (const name of [
-      'search_ability_assets', 'personal_ontology_fields',
+      'search_ability_assets', 'ontology_query', 'personal_ontology_fields',
       'list_ability_assets', 'read_ability_asset',
     ]) {
       expect(injected.has(name), `enumerateAllInjectedTools 漏了 ${name}`).toBe(true);

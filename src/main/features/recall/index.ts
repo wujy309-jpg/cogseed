@@ -19,6 +19,18 @@ export { normalizeAbilityAssetOntologyRefs } from './ontology-refs';
 export type { AbilityAssetOntologyRef } from './ontology-refs';
 export { normalizeAbilityAssetDerivedFrom, normalizeAbilityAssetRelations, readAbilityAssetRelationContract } from './asset-relations';
 export type { AbilityAssetRelation, AbilityAssetRelationContract, AbilityAssetRelationKind } from './asset-relations';
+export { parseOntologyAssetQuery, queryOntologyAssets } from './ontology-asset-query';
+export type { OntologyAssetQueryDirection, OntologyAssetQueryEvidenceEdge, OntologyAssetQueryIntent, OntologyAssetQueryMatch, OntologyAssetQueryRequest, OntologyAssetQueryResult } from './ontology-asset-query';
+export { buildOntologyQueryIntentCandidates, resolveOntologyQueryIntent } from './ontology-query-intent';
+export type { OntologyQueryIntentCandidate, OntologyQueryIntentInput, OntologyQueryIntentOptions, OntologyQueryIntentPlan, OntologyQueryIntentRelationScope, OntologyQueryIntentResult, OntologyQueryIntentRoute, OntologyQueryIntentTargetSource } from './ontology-query-intent';
+export { orchestrateOntologySemanticRecall } from './ontology-semantic-orchestrator';
+export type { GovernedRecallAsset, OntologySemanticIntent, OntologySemanticOrchestratorInput, OntologySemanticRouteMatch, UnifiedRecallCandidate, UnifiedRecallResult } from './ontology-semantic-orchestrator';
+export { assessOntologyCandidateSuitability } from './ontology-candidate-suitability';
+export type { CandidateSuitabilityInput, CandidateSuitabilityOptions, CandidateSuitabilityResult, SuitableRecallCandidate } from './ontology-candidate-suitability';
+export { recordOntologyAnswerValidation, validateOntologyAnswer } from './ontology-answer-validation';
+export type { AnswerAssetEvidence, AnswerRelationEvidence, AnswerRelationPathEvidence, OntologyAnswerEvidenceBundle, OntologyAnswerValidationChecks, OntologyAnswerValidationInput, OntologyAnswerValidationOptions, OntologyAnswerValidationReceipt, OntologyAnswerValidationResult } from './ontology-answer-validation';
+export { assessOntologyJevRollout, collectOntologyEvaluationDataset, DEFAULT_ONTOLOGY_ROLLOUT_THRESHOLDS, evaluateOntologyQueryDataset, ONTOLOGY_EVALUATION_ROUTES, ONTOLOGY_EVALUATION_SCENARIOS, ontologyEvaluationDatasetSchema } from './ontology-query-evaluation';
+export type { OntologyEvaluationCase, OntologyEvaluationDataset, OntologyEvaluationExecutor, OntologyEvaluationReport, OntologyEvaluationRoute, OntologyEvaluationRouteMetrics, OntologyEvaluationRun, OntologyEvaluationRunObservation, OntologyEvaluationScenario, OntologyRolloutAssessment, OntologyRolloutThresholds } from './ontology-query-evaluation';
 
 export { cancelRecallCapture, listRecallCaptures, pauseRecallCapture, queryRecallCaptures, queueManualRecallCaptureFromConversation, queueRecallCaptureFromTerminal, readRecallCapture, readRecallCaptureWorkflow, recoverRecallCaptures, resumeRecallCapture, retryRecallCapture, runRecallCapture, runRecallCaptureNow, scheduleRecallCapture, startHistoricalRecallCapture, startRecallCaptureOrchestrator } from './capture-service';
 export type { CapturePromptMessage, ListRecallCapturesQuery, RecallCaptureCandidatePromotion, RecallCaptureConfirmedAssetReceipt, RecallCaptureCounts, RecallCaptureModelUsage, RecallCaptureNextAction, RecallCapturePage, RecallCaptureQueryStatus, RecallCaptureRecord, RecallCaptureReviewSummary, RecallCaptureStage, RecallCaptureStatus, RecallCaptureWorkflowRecord, RecallCaptureWorkflowStatus } from './capture-service';
@@ -36,7 +48,7 @@ export { addWorkspaceAssetReference, listWorkspaceAssetReferenceHistory, listWor
 export type { WorkspaceAssetReference, WorkspaceAssetReferenceHistory } from './workspace-refs';
 
 export { buildRecallView, confirmContextProjection, createAutomaticContextProjection, isCommittedProjection, previewContextProjection, readContextProjection, validateCommittedProjectionAssetVersions } from './context-projection';
-export type { AutomaticProjectionInput, BuildRecallViewResult, ContextProjectionRecord, ContextProjectionStatus, OmittedAssetRef, ProjectionAuthorization, ProjectionInput, ProjectionKnowledgeErrorCode, ProjectionSemanticOptions, RecallAssetMatch, RecallAssetMatchMethod } from './context-projection';
+export type { AutomaticProjectionInput, BuildRecallViewResult, ContextProjectionRecord, ContextProjectionStatus, OmittedAssetRef, ProjectionAuthorization, ProjectionInput, ProjectionKnowledgeErrorCode, ProjectionSemanticOptions, RecallAssetMatch, RecallAssetMatchMethod, SemanticaGateTraceStatus, SemanticaSelectionTrace } from './context-projection';
 export { loadCommittedProjectionKnowledge } from './projection-knowledge';
 export type { CommittedProjectionKnowledge } from './projection-knowledge';
 export { createRecallView, isRecallViewExpired, listRecallViews, readRecallView } from './recall-view-service';

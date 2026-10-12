@@ -261,7 +261,7 @@ Jev 配置属于用户本地配置，API Key 使用现有本地密钥存储；�
   "version": 1,
   "enabled": true,
   "provider": "typesafe-jev",
-  "timeoutMs": 3000,
+  "timeoutMs": 5000,
   "maxCandidates": 8,
   "minConfidence": 0.7,
   "stages": {

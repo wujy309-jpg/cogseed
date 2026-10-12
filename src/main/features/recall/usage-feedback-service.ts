@@ -35,7 +35,13 @@ function isCitation(value: unknown): value is RecallMessageCitation {
     && citation.scope.length <= 500
     && typeof citation.projection_id === 'string'
     && safeId(citation.projection_id)
-    && (citation.match_method === 'semantic' || citation.match_method === 'manual')
+    && (
+      citation.match_method === 'semantic'
+      || citation.match_method === 'ontology'
+      || citation.match_method === 'semantic_ontology'
+      || citation.match_method === 'recency_fallback'
+      || citation.match_method === 'manual'
+    )
     && (citation.match_score === undefined
       || (typeof citation.match_score === 'number'
         && Number.isFinite(citation.match_score)
