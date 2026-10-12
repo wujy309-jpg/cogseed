@@ -39,9 +39,14 @@ export function unpackedResourcePath(p: string = PC_ROOT): string {
   return p.replace(/\bapp\.asar\b/, 'app.asar.unpacked');
 }
 
-/** Console scripts live under `bin/**`, which IS unpacked in packaged builds. */
-export function childWorkerScriptPath(scriptName: string): string {
-  return path.join(unpackedResourcePath(), 'bin', scriptName);
+/**
+ * Console scripts live under `bin/**`, which IS unpacked in packaged builds.
+ *
+ * `root` defaults to the live app root; tests pass a fake packaged layout so
+ * the asar → asar.unpacked mapping is covered without a real build.
+ */
+export function childWorkerScriptPath(scriptName: string, root: string = PC_ROOT): string {
+  return path.join(unpackedResourcePath(root), 'bin', scriptName);
 }
 
 const ESBUILD_PLATFORM_PACKAGES: Record<string, string[]> = {
@@ -58,11 +63,19 @@ const ESBUILD_PLATFORM_PACKAGES: Record<string, string[]> = {
  * Absolute path to the platform esbuild binary inside `app.asar.unpacked`,
  * or `undefined` when it is absent (dev, unsupported platform, or a build
  * that genuinely does not need tsx).
+ *
+ * `root` / `platform` / `arch` are injectable for the same reason as
+ * `childWorkerScriptPath`: the packaged branch is otherwise unreachable from
+ * tests, which is how the unpacked-root defect shipped in 1.2.0.
  */
-export function esbuildBinaryPath(): string | undefined {
-  const parts = ESBUILD_PLATFORM_PACKAGES[`${process.platform}:${process.arch}`];
+export function esbuildBinaryPath(
+  root: string = PC_ROOT,
+  platform: string = process.platform,
+  arch: string = process.arch,
+): string | undefined {
+  const parts = ESBUILD_PLATFORM_PACKAGES[`${platform}:${arch}`];
   if (!parts) return undefined;
-  const bin = path.join(unpackedResourcePath(), 'node_modules', ...parts);
+  const bin = path.join(unpackedResourcePath(root), 'node_modules', ...parts);
   return fs.existsSync(bin) ? bin : undefined;
 }
 
@@ -71,14 +84,19 @@ export function esbuildBinaryPath(): string | undefined {
  *
  * `process.env` is merged by the caller; this returns only the overrides so
  * call sites stay explicit about what they add.
+ *
+ * `COGSEED_PC_DIR` must stay on the **ASAR root** while the script path goes to
+ * `app.asar.unpacked`: the `.ts` entry only exists inside the archive, and the
+ * esbuild binary only exists outside it. Pointing both at the same root is the
+ * defect this module exists to prevent.
  */
-export function typescriptChildEnv(): Record<string, string> {
+export function typescriptChildEnv(root: string = PC_ROOT): Record<string, string> {
   const env: Record<string, string> = {
     ELECTRON_RUN_AS_NODE: '1',
     // ASAR root (NOT unpacked): tsx + the `.ts` entry resolve from here.
-    COGSEED_PC_DIR: PC_ROOT,
+    COGSEED_PC_DIR: root,
   };
-  const esbuild = esbuildBinaryPath();
+  const esbuild = esbuildBinaryPath(root);
   if (esbuild) env.ESBUILD_BINARY_PATH = esbuild;
   return env;
 }

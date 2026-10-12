@@ -2261,18 +2261,15 @@ function createBashTool(opts: LocalToolsOpts): AgentTool {
   return {
     name: 'bash',
     description:
-      'Execute a shell command on the user\'s local machine and return its output. ' +
-      'Use for installing CLIs (brew, npm, pip), running builds, converting files, ' +
-      'inspecting the filesystem, and any other host-side work. The shell runs in ' +
-      'the user\'s current workspace directory. Files generated under the conversation ' +
-      'workspace are surfaced as produced-file chips, except for files clearly created ' +
-      'by external download/clone commands such as git clone, gh repo clone, curl, or wget. ' +
-      outputDirDescription +
-      windowsShellDescription +
-      'Scratch/cache files should stay in temporary or cache directories. ' +
-      'For GUI apps, browsers, servers, watchers, or any command you would normally ' +
-      'background with `&`, set run_in_background=true instead of shell-backgrounding it; ' +
-      'inherited stdout/stderr can otherwise keep the tool waiting.',
+        'Execute a shell command on the user\'s local machine. Use for installing CLIs, builds, conversions, ' +
+        'filesystem inspection, and other host-side work. Runs in the current workspace directory. ' +
+        'Files created in the conversation workspace surface as produced-file chips, except those made by ' +
+        'download/clone commands (git clone, gh repo clone, curl, wget). ' +
+        outputDirDescription +
+        windowsShellDescription +
+        'Keep scratch/cache files in temp or cache directories. ' +
+        'For GUI apps, servers, watchers, or anything you would normally background with `&`, set ' +
+        'run_in_background=true: inherited stdout/stderr can otherwise keep the tool waiting.',
     inputSchema: {
       ...(coreBashTool.inputSchema as Record<string, unknown>),
       properties: {
@@ -3077,14 +3074,11 @@ function createMarkdownToPdfTool(opts: LocalToolsOpts): AgentTool {
   return {
     name: 'markdown_to_pdf',
     description:
-      'Render Markdown content to a PDF file at the given path. ' +
-      'Supports headings, paragraphs, bold, italic, inline code, fenced code blocks, ' +
-      'ordered and unordered lists, horizontal rules, and links. ' +
-      'For tables or custom styling, generate HTML yourself and call `html_to_pdf` instead. ' +
-      'No external tools required (no pandoc / wkhtmltopdf). ' +
-      'If the target path already exists and was not written by you earlier in this turn, ' +
-      'the basename is automatically suffixed (`-2 / -3 / ...`) to avoid clobbering, and ' +
-      'the rename is surfaced in a `<file-renamed>` block in the tool result.',
+        'Render Markdown to a PDF at `path`. ' +
+        'Supports headings, emphasis, inline/fenced code, ordered and unordered lists, rules, and links. ' +
+        'For tables or custom styling, build HTML and call `html_to_pdf` instead. No external tools needed. ' +
+        'A target you did not write earlier this turn is suffixed (`-2`, `-3`, ...) instead of clobbered; ' +
+        'the rename appears in a `<file-renamed>` block.',
     inputSchema: {
       type: 'object',
       properties: {
