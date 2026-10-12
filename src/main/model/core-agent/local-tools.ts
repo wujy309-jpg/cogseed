@@ -1534,6 +1534,34 @@ function bashEnvForPathResolution(ctx: ToolContext, workingDir: string): Record<
   };
 }
 
+/**
+ * 收集命令里**自己赋值**的字面变量（`DIR=/x/y; cat "$DIR/f"`）。
+ *
+ * 这类变量静态可验证：值就在同一条命令里，且不含 `$` / 反引号 / `%VAR%`。
+ * 此前它们被当作"未解析变量"一律拒绝，于是模型写
+ * `V=<workspace>/out; cat "$V/$f"` 这种自给自足的读命令也会被挡
+ * （2026-10-12 日志里的 `E_BASH_DYNAMIC_PATH_UNSUPPORTED ... "$V/$f"`）。
+ *
+ * 只收字面 RHS：`DIR=$OTHER` / `DIR=$(cmd)` / 反引号取值都不进，
+ * 避免把不可验证的值洗成可验证的。
+ */
+export function collectLiteralShellAssignments(command: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const pattern = /(?:^|[;&|(\s])(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s;&|()]+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(command)) !== null) {
+    const name = match[1];
+    let value = match[2];
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    if (!value) continue;
+    if (value.includes('$') || value.includes('`') || /%[A-Za-z_][A-Za-z0-9_]*%/.test(value)) continue;
+    out[name] = value;
+  }
+  return out;
+}
+
 export function expandKnownShellPathVars(raw: string, env: Record<string, string>): { value: string; dynamic: boolean } {
   let dynamic = false;
   const value = path.normalize(replaceKnownShellEnvTokens(raw, env, () => { dynamic = true; }));
@@ -1848,8 +1876,10 @@ async function guardBashPathCandidates(
             'E_BASH_DYNAMIC_PATH_UNSUPPORTED',
             `bash ${c.reason} target "${c.raw}" uses an unresolved variable, command substitution, or glob that the application cannot verify. `
             + (access === 'write'
-              ? 'Use an explicit path inside the workspace, or use write_file/edit_file/delete_file for file changes.'
-              : 'Use an explicit path inside the workspace, or ask the user to switch to an all-files access mode.'),
+              ? 'Use an explicit path inside the workspace, or use write_file/edit_file/delete_file for file changes. '
+              : 'Rewrite it one of these ways: give a literal path; use a glob with a literal base directory (dir/*.md); '
+                + 'pin the variable in the same command (DIR=<literal path>; cat "$DIR/name"); or `cd <literal dir>` first and use '
+                + 'a plain relative name. Otherwise ask the user to switch to an all-files access mode. '),
           ),
           isError: true,
         },
@@ -1886,7 +1916,12 @@ async function guardBashFilesystemTargets(
   workingDir: string,
 ): Promise<BashFilesystemGuardResult> {
   const command = String(input.command ?? '');
-  const env = bashEnvForPathResolution(ctx, workingDir);
+  // 命令内字面赋值参与解析：`DIR=<literal>; cat "$DIR/f"` 可验证，不该按
+  // "未解析变量"拒绝；变量 RHS（`DIR=$OTHER`）不会进这里。
+  const env = {
+    ...bashEnvForPathResolution(ctx, workingDir),
+    ...collectLiteralShellAssignments(command),
+  };
   const approvedReasons: LocalAccessRiskCategory[] = [];
   const mutation = await guardBashPathCandidates(
     opts,
