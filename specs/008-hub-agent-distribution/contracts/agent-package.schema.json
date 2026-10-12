@@ -1,0 +1,470 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cogseed.example/schemas/agent-package/agent-json.v1.draft.schema.json",
+  "title": "CogSeed Agent definition — agent.json in agent-package-v1 (DRAFT v1.1, not frozen)",
+  "description": "草案 v1（2026-10-11，据产品与 Hub 2026-10-10 答复修订，尚未联合冻结）：agent-package-v1 中 agent.json 的字段集，即作者原文。提交与发布物共用这一份：作者不得写 version / created_at / updated_at（出现即拒绝，沿用 C-02 的 UNEXPECTED_FIELD 严格口径）；版本与发布时间由 Hub 在发布时写入包内 _meta.json，不改 agent.json。每个字段的 x-source 指向代码出处；x-open 标出待定项。客户端读取时的归一化是宽松的，本 schema 面向「提交」，是严格的。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "workflow",
+    "category"
+  ],
+  "anyOf": [
+    {
+      "required": [
+        "description_zh"
+      ]
+    },
+    {
+      "required": [
+        "description_en"
+      ]
+    }
+  ],
+  "properties": {
+    "agent_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,64}$",
+      "description": "本机 Agent ID；提交时 Hub 分配稳定内容 ID，发布后以 Hub 为准。",
+      "x-source": "agents.ts Agent.agent_id；quality/rules/schema.ts agent_id_missing",
+      "x-open": "D-08：提交时是否携带、如何与 manifest 的 local_agent_id / target_content_id 对应"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_一-鿿-]+$",
+      "description": "仅字母、数字、下划线、连字符、中日韩汉字；不含空格；首尾不能有空白；显示宽度 ≤ 60 单位（schema 不可表达，需另行校验）；不得与保留名（指挥官 / commander / cogseed 等）冲突。 字符集以客户端规则（agents.ts NAME_TOKEN_RE）为准，Hub 复核必须执行同一字符集（Hub 现有 nameRules 只查非空与显示宽度，不查字符集）；显示宽度算法两端共用测试向量，见 agent-api-proposal.md §9。",
+      "x-source": "agents.ts NAME_TOKEN_RE、RESERVED_AGENT_NAMES；util/name-limit.ts NAME_DISPLAY_MAX_UNITS=60；quality/rules/schema.ts AGENT_NAME_RE"
+    },
+    "description_zh": {
+      "type": "string",
+      "maxLength": 800,
+      "description": "中文描述，是指挥官派工的唯一信号。",
+      "x-source": "agents.ts；quality/rules/schema.ts MAX_DESC_LEN=800（校验器里是 MEDIUM 提示，本 schema 取严格）"
+    },
+    "description_en": {
+      "type": "string",
+      "maxLength": 800,
+      "description": "英文描述；平台内容的主文本为英文（AGENTS.md）。",
+      "x-source": "同上；AGENTS.md「Platform agent/skill primary text is English」"
+    },
+    "workflow": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Markdown 工作流；LLM 管理的 Agent 必填。工作流里引用技能只能用技能名，不得嵌入脚本路径或安装路径。",
+      "x-source": "agents.ts；agent-creator SKILL.md「Agents invoke skills, never skill files」"
+    },
+    "icon": {
+      "type": "string",
+      "enum": [
+        "sparkle",
+        "rocket",
+        "brain",
+        "bulb",
+        "bot",
+        "atom",
+        "compass",
+        "search",
+        "flame",
+        "film",
+        "star",
+        "bolt",
+        "target",
+        "music",
+        "code",
+        "palette",
+        "document",
+        "spreadsheet",
+        "presentation",
+        "image",
+        "chart",
+        "graduation-cap",
+        "book-open",
+        "calculator",
+        "users",
+        "megaphone",
+        "shopping-bag",
+        "archive",
+        "activity",
+        "git-pull-request",
+        "briefcase",
+        "clipboard",
+        "cogseed",
+        "pen",
+        "doc",
+        "book",
+        "flag",
+        "globe",
+        "shield",
+        "scale",
+        "wrench",
+        "compare"
+      ],
+      "x-source": "src/main/data/avatars.json icons（43 个，含 crown：指挥官专用，建议提交时排除）",
+      "description": "43 个图标名中去掉 crown（指挥官专用，不可分发），共 42 个。注意：目录项 B-01 里这对字段以 avatar:{icon,color} 下发，避免与 Skill 的 C-06 icon 对象同名不同形。"
+    },
+    "color": {
+      "type": "string",
+      "enum": [
+        "gold",
+        "coral",
+        "mint",
+        "lavender",
+        "peach",
+        "sky",
+        "sunshine",
+        "rose",
+        "sage",
+        "periwinkle",
+        "butter",
+        "blush",
+        "cyan",
+        "violet",
+        "lime",
+        "salmon",
+        "emerald"
+      ],
+      "x-source": "src/main/data/avatars.json colors（17 个）"
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "education",
+        "ecommerce",
+        "rnd",
+        "creation",
+        "data",
+        "office",
+        "general"
+      ],
+      "description": "市场分类码，固定 7 个；写代码，不写显示名。",
+      "x-source": "agent-creator SKILL.md `<category>`；quality/rules/schema.ts CATEGORY_CODE_RE"
+    },
+    "skill_list": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "oneOf": [
+          {
+            "pattern": "^[a-f0-9]{12}$"
+          },
+          {
+            "pattern": "^builtin:[a-z][a-z0-9_-]*$"
+          },
+          {
+            "pattern": "^(?![a-f0-9]{12}$)[\\p{L}][\\p{L}\\p{N}_-]*$"
+          }
+        ]
+      },
+      "description": "依赖白名单上限：缺省=不过滤，[]=明确为零，非空=严格子集。提交时每项必为三类之一，互斥（Hub 2026-10-12 定）：(1) 恰为 12 位小写十六进制 = Hub 已发布 Skill 的 content_id（含随客户端预置的同款 ID），Hub 校验存在、已发布、未停用，客户端从 Hub 下载；(2) `builtin:<name>` = 客户端内置能力，Hub 查内置能力清单并校验目标客户端版本，客户端直接用本机能力、不下载；(3) 其他名字形式 = 随本 Agent 提交的私有 Skill，必须对应包内 skills/<名字>/SKILL.md，目录名不得是 12 位十六进制。",
+      "x-source": "AGENTS.md「agent.skill_list」；agents.ts Agent.skill_list；skill-registry.ts resolveSkillAllowlistRefs；skill_id.ts",
+      "x-open": "D-10：`builtin:<name>` 在客户端具体指什么尚未核实——系统 Skill（8 个名字形式）能否被 skill_list 引用未验证；随客户端预置的内容本身是 12 位十六进制的 Hub 内容，不属此类。内置能力清单格式待 Hub 下发。"
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/AgentInput"
+      },
+      "description": "事前表单。缺省=无需确认；[]=明确为零；非空=指挥官须先发出 agent-input-form。input id 在同一 Agent 内唯一。",
+      "x-source": "agents.ts AgentInput、validateAgentInputs"
+    },
+    "interactive": {
+      "type": "boolean",
+      "x-source": "agents.ts Agent.interactive"
+    },
+    "knowhow": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "每行一个稳定任务领域/核心能力，建议 2–5 条。",
+      "x-source": "agent-creator SKILL.md；agents.ts AgentProfile.knowhow（持久化为顶层字段）"
+    },
+    "standards": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "每行一个可观察的交付标准，建议 2–5 条。",
+      "x-source": "同上"
+    },
+    "output_format": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "text",
+        "dashboard",
+        "artifact"
+      ],
+      "description": "旧别名 markdown_only / allow_artifacts 不再接受。",
+      "x-source": "agents.ts OutputFormat"
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "const": "in_process"
+        }
+      },
+      "description": "可分发 Agent 只允许 in_process。cli / p3394-gateway 是本地外接 CLI Agent，依赖本机环境，不可分发。",
+      "x-source": "agents.ts AgentRuntime",
+      "x-open": "D-08 待确认"
+    }
+  },
+  "definitions": {
+    "AgentInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "type",
+        "default"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z_][a-z0-9_]{0,31}$"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "text",
+            "textarea",
+            "select",
+            "multiselect",
+            "number",
+            "boolean",
+            "file",
+            "directory"
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "default": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "default_by_ui_language": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "zh": {
+              "type": "string"
+            },
+            "en": {
+              "type": "string"
+            },
+            "ja": {
+              "type": "string"
+            },
+            "pt": {
+              "type": "string"
+            }
+          }
+        },
+        "options": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "type": "string",
+                "minLength": 1
+              },
+              "label": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "placeholder": {
+          "type": "string"
+        },
+        "min": {
+          "type": "number"
+        },
+        "max": {
+          "type": "number"
+        },
+        "multiple": {
+          "type": "boolean"
+        },
+        "accept": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": [
+                  "select",
+                  "multiselect"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "options"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "number"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "default": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "boolean"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "default": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": [
+                  "text",
+                  "textarea",
+                  "select",
+                  "directory"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "default": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "multiselect"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "default": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "x-source": "agents.ts AgentInput、INPUT_ID_RE、ALLOWED_INPUT_TYPES、validateAgentInputs"
+    }
+  },
+  "x-excluded": {
+    "说明": "以下 Agent 字段存在于代码里，但**不进入可分发协议**；schema 的 additionalProperties=false 会拒绝它们，客户端贡献时必须在本机处理掉（不上传，Hub 不需要知道）。",
+    "本机/用户相关": [
+      "enabled_connectors（连接器实例 ID）",
+      "default_model",
+      "default_thinking",
+      "create_uid"
+    ],
+    "宿主专有": [
+      "management_surface",
+      "reimbursement_entry_role",
+      "interaction_mode"
+    ],
+    "派生或只读形态": [
+      "interface_contract（加载时派生）",
+      "profile（归一化后的读形态；knowhow/standards 以顶层字段为准）",
+      "runtime_stats",
+      "enabled",
+      "source",
+      "seed_source",
+      "status",
+      "marketplace_published_at",
+      "marketplace_updated_at",
+      "default_install",
+      "is_open_source"
+    ],
+    "运行时形态": [
+      "runtime.kind = cli / p3394-gateway（本地外接 CLI Agent，不可分发）"
+    ]
+  }
+}
