@@ -144,6 +144,8 @@ gh run list -R "$PRIVATE_REPO" --workflow compliance.yml \
 
 ### 阶段 B.1：外部贡献归属回流
 
+从收到 PR 到完成接收的操作清单及记录模板见 [公仓外部贡献接收手册](./COMMUNITY-CONTRIBUTION-RUNBOOK.md)；门禁和发布顺序仍以本 SOP 为准。
+
 1. 定版前在同一私仓变更中登记每个已接受的外部 PR，保留作者、DCO、`Source-PR`
    和 `scripts/opensource/contributions.json` 的最终公开 head。登记表随完整树晋升
    cicd；检查与 develop 定版内容一致，不删减历史条目。手工复制贡献同样须登记。

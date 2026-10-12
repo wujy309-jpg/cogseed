@@ -27,6 +27,8 @@ RD 在 `bonc-ai/cogseed-internal` 开发；定版后从固定提交导出公开�
 
 ## 外部贡献归属门禁
 
+接收新的外部 PR 或修复历史贡献归属时，按 [公仓外部贡献接收手册](./COMMUNITY-CONTRIBUTION-RUNBOOK.md) 逐项执行；其中包含审批边界、异常处理和私仓接收记录模板。
+
 导入外部 PR 时保留作者、DCO 和 `Source-PR: https://github.com/bonc-ai/cogseed/pull/<编号>`
 尾注，并在同一私仓变更中更新 `contributions.json`：每条记录含 `pr` 和接受的最终
 公开 `headSha`（完整 40 位 SHA）。登记的是原始贡献 head，不是私仓 cherry-pick SHA、
