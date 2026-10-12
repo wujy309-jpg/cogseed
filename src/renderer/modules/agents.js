@@ -889,6 +889,7 @@ function renderAgentsGrid(agents) {
     // in the subtitle line under the card title, so marketplace only keeps
     // review status here when that UI is enabled.
     const provenanceChips = _isAgentPlatformSource(a.source) ? _agentPlatformStatusChipsHtml(a) : '';
+    const canContribute = _isAgentContributable(a) && !isMock;
     return `
       <div class="agent-card ui-resource-card${enabled ? '' : ' is-disabled'}" data-id="${escapeHtml(a.agent_id)}" data-source="${escapeHtml(a.source || '')}">
         <button type="button" class="agent-card-open" data-agent-open aria-label="${escapeHtml(openLabel)}"></button>
@@ -906,6 +907,13 @@ function renderAgentsGrid(agents) {
           ${_agentDeliveryChip(deliveryCount)}
           ${_agentExplicitCountChip(_agentLabel('agents.card_memory_count', '{n} 记忆', '{n} memory', '{n} 記憶'), memoryCount)}
           ${_agentExplicitCountChip(_agentLabel('agents.card_skill_count', '{n} 技能', '{n} skills', '{n} スキル'), skillCount)}
+          ${canContribute && typeof uiButton === 'function' ? uiButton({
+            label: t('agents.contribute'),
+            role: 'secondary',
+            size: 'sm',
+            className: 'agent-card-contribute',
+            attrs: { 'data-agent-contribute': true, title: t('agents.contribute_hint'), 'aria-label': t('agents.contribute_hint') },
+          }) : ''}
           ${typeof uiButton === 'function' ? uiButton({
             label: useLabel,
             role: 'primary',
@@ -950,6 +958,12 @@ function renderAgentsGrid(agents) {
     const id = card.dataset.id;
     const source = card.dataset.source;
     card.addEventListener('click', (e) => {
+      if (e.target.closest('[data-agent-contribute]')) {
+        e.stopPropagation();
+        const agent = _agentsCache?.find((x) => x.agent_id === id);
+        void _startAgentContribution(id, agent?.name || id);
+        return;
+      }
       if (e.target.closest('[data-agent-use]')) {
         e.stopPropagation();
         if (!card.classList.contains('is-disabled')) useAgent(id, 'agent_card');
@@ -991,7 +1005,49 @@ async function _flipAgentEnabled(agentId, nextEnabled) {
 
 // ─── View switching: grid ↔ detail ─────────────────────────────────────
 
+/** Only agents the user wrote themselves can be contributed: not the commander, not external CLI
+ *  agents, not host-only built-ins, not marketplace installs. Same idea as the Skill card's rule. */
+function _isAgentContributable(a) {
+  if (!a || _agentSource(a.source) !== 'custom') return false;
+  if (_isCommanderAgent(a) || _isExternalCliAgent(a)) return false;
+  if (a.management_surface || a.reimbursement_entry_role) return false;
+  return true;
+}
+
+/** Contribution modules ship with the Skills bundle (the Mine page lives there too), so make sure
+ *  it is loaded before handing over. */
+async function _ensureContributionFeature() {
+  if (typeof window.startAgentContribution === 'function') return true;
+  if (typeof window.loadRendererFeature === 'function') await window.loadRendererFeature('skills');
+  return typeof window.startAgentContribution === 'function';
+}
+
+async function _startAgentContribution(agentId, name, targetContentId) {
+  try {
+    if (!await _ensureContributionFeature()) throw new Error('contribution unavailable');
+    await window.startAgentContribution(agentId, name, targetContentId);
+  } catch (err) {
+    await uiAlert(t('agents.contribute_start_failed'));
+  }
+}
+
+async function _openAgentContributions() {
+  try {
+    if (!await _ensureContributionFeature()) throw new Error('contribution unavailable');
+    if (typeof activateConnectionsTab === 'function') activateConnectionsTab('skills');
+    await window.openMyContributions({ type: 'agent' });
+  } catch (err) {
+    await uiAlert(t('agents.contribute_start_failed'));
+  }
+}
+
+/** Candidates for "submit a new version" from My contributions. */
+window.getCustomContributionAgents = () => (_agentsCache || [])
+  .filter(_isAgentContributable)
+  .map((a) => ({ id: a.agent_id, name: a.name }));
+
 function _showAgentsGridView() {
+  if (typeof window.hideAgentContributionViews === 'function') window.hideAgentContributionViews();
   if (typeof closeExpenseWorkbench === 'function') closeExpenseWorkbench();
   const grid = document.getElementById('agents-grid-view');
   const detail = document.getElementById('agents-detail-view');

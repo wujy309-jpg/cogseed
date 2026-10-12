@@ -2172,6 +2172,51 @@ function _mpTrackInstallFailure(kind, item, err, surface = 'marketplace') {
   } catch (_) { /* telemetry must never affect install UX */ }
 }
 
+/** Before installing an Agent, show what will be installed together with it (product: dependencies
+ *  are completed automatically and the user is told which). Only a *preview*: the install itself
+ *  re-plans and re-checks, so a failed or unavailable preview never blocks it. Returns false when
+ *  the user cancelled or a dependency makes the install impossible (already explained). */
+async function _mpConfirmAgentInstall(item) {
+  let plan = null;
+  try {
+    const r = await window.cogseed.invoke('marketplace.agentInstallPlan', {
+      id: item.id, version: item.version, published_at: item.published_at, updated_at: item.updated_at,
+      min_app_version: _mpMinAppVersion(item),
+    });
+    plan = r && Array.isArray(r.items) ? r : null;
+  } catch (_) { plan = null; }
+  // The install path owns the "needs a newer CogSeed" prompt; do not duplicate it here.
+  if (!plan || plan.appUpdateRequired) return true;
+
+  const named = (entry) => escapeHtml(entry.name || entry.id);
+  const blocked = plan.items.filter((entry) => entry.action === 'blocked_disabled' || entry.action === 'blocked_builtin_unsupported');
+  if (blocked.length) {
+    const lines = blocked.map((entry) => `• ${entry.name || entry.id}: ${entry.action === 'blocked_disabled'
+      ? t('marketplace.agent_plan_blocked_disabled') : t('marketplace.agent_plan_blocked_builtin')}`).join('\n');
+    await uiAlert(`${t('marketplace.agent_plan_blocked_intro')}\n\n${lines}`);
+    return false;
+  }
+  const alongside = plan.items.filter((entry) => entry.action === 'install' || entry.action === 'bundled');
+  if (!alongside.length) return true;
+  const reused = plan.items.filter((entry) => entry.action === 'reuse');
+  const row = (entry, noteKey) => `<li><strong>${named(entry)}</strong> <span class="ui-modal__hint">${escapeHtml(t(noteKey))}</span></li>`;
+  const list = (entries, noteFor) => (entries.length ? `<ul class="ui-modal__list">${entries.map((entry) => row(entry, noteFor(entry))).join('')}</ul>` : '');
+  const bodyHtml = `<p>${escapeHtml(t('marketplace.agent_plan_intro').replace('{name}', item.name || item.id))}</p>`
+    + list(alongside, (entry) => (entry.action === 'bundled' ? 'marketplace.agent_plan_bundled' : 'marketplace.agent_plan_hub'))
+    + (reused.length ? `<p>${escapeHtml(t('marketplace.agent_plan_reuse_intro'))}</p>${list(reused, () => 'marketplace.agent_plan_reuse')}` : '')
+    + `<p>${escapeHtml(t('marketplace.agent_plan_safety'))}</p>`;
+  const result = await uiModal({
+    title: t('marketplace.agent_plan_title'),
+    bodyHtml,
+    closeLabel: t('common.close'),
+    actions: [
+      { id: 'cancel', label: t('common.cancel'), role: 'secondary' },
+      { id: 'install', label: t('marketplace.agent_plan_confirm'), role: 'primary' },
+    ],
+  });
+  return result && result.value === 'install';
+}
+
 async function _mpInstall(kind, id, itemOverride = null) {
   const item = itemOverride || (kind === 'agent' ? _mpState.agents : _mpState.skills).find((x) => x.id === id);
   if (!item) return;
@@ -2181,6 +2226,7 @@ async function _mpInstall(kind, id, itemOverride = null) {
   }
   const key = `${kind}:${id}`;
   if (_mpState.installing.has(key)) return;
+  if (kind === 'agent' && !await _mpConfirmAgentInstall(item)) return;
   _mpState.installing.add(key);
   _mpRender();
   const invokeInstall = async (acceptSecurityRisk = false) => {

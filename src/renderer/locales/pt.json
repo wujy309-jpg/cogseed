@@ -6881,5 +6881,16 @@
   "auto.tpl.meeting_digest.name": "Resumo de reuniões",
   "auto.tpl.meeting_digest.desc": "Organiza as transcrições depois da reunião e gera decisões, tarefas e responsáveis.",
   "auto.tpl.meeting_digest.title": "Resumo de reuniões",
-  "auto.tpl.meeting_digest.seed": "Organize as transcrições das reuniões de hoje: extraia as decisões principais, as tarefas e os responsáveis, e destaque o que eu preciso acompanhar."
+  "auto.tpl.meeting_digest.seed": "Organize as transcrições das reuniões de hoje: extraia as decisões principais, as tarefas e os responsáveis, e destaque o que eu preciso acompanhar.",
+  "marketplace.agent_plan_title": "Instalar junto com as habilidades necessárias",
+  "marketplace.agent_plan_intro": "“{name}” precisa destas habilidades. Elas serão instaladas junto com ele:",
+  "marketplace.agent_plan_hub": "Do Hub",
+  "marketplace.agent_plan_bundled": "Vem com este agente; só este agente pode usá-la",
+  "marketplace.agent_plan_reuse_intro": "Já estão neste dispositivo e serão reutilizadas como estão (sem atualização):",
+  "marketplace.agent_plan_reuse": "Já instalada",
+  "marketplace.agent_plan_safety": "Nada é alterado até que tudo esteja pronto. Se alguma etapa falhar, este agente não é instalado e seus outros agentes e tarefas em andamento não são afetados.",
+  "marketplace.agent_plan_confirm": "Instalar",
+  "marketplace.agent_plan_blocked_intro": "Este agente não pode ser instalado agora:",
+  "marketplace.agent_plan_blocked_disabled": "desativada pelo Hub. Peça ao publicador para restaurá-la ou instale outro agente.",
+  "marketplace.agent_plan_blocked_builtin": "referência a uma capacidade integrada que esta versão ainda não suporta."
 }

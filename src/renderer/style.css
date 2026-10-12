@@ -14115,6 +14115,9 @@ body.is-sidebar-resizing iframe { pointer-events: none; }
 /* When no chip is present, the play button still hugs the right edge.
    `margin-left: auto` plays nice with the absent-chip case. */
 .agent-card-actions > .agent-card-use { position: relative; z-index: 2; margin-left: auto; }
+/* The full-card `.agent-card-open` overlay (z-index 1) would swallow clicks on any other action
+   in this row, so the Contribute button sits above it exactly like Use does. */
+.agent-card-actions > .agent-card-contribute { position: relative; z-index: var(--z-raised); }
 
 /* `.agent-card-use` shared with `.skill-card-use` / `.btn-icon-use` above. */
 

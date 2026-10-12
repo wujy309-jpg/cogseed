@@ -10,6 +10,7 @@
   const STAGES = ['complete', 'check', 'preview', 'send'];
   const MINE_POLL_MS = 55_000;
   const MINE_FILTERS = ['all', 'pending', 'rejected', 'published', 'withdrawal'];
+  const MINE_TYPES = ['all', 'agent', 'skill'];
   const ORIGIN_TYPES = ['original', 'derived_from_hub', 'third_party'];
   const HUB_CONTENT_ID = /^[0-9a-f]{12}$/;
   const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
@@ -918,6 +919,17 @@
     });
   }
 
+  // Agents and Skills share this page; the type switch narrows the list (meeting conclusion 4).
+  function mineTypeControl() {
+    return root.uiSegmentedControl({
+      ariaLabel: tr('skills.contribute_mine_types', 'Filter by type'),
+      value: mine.type,
+      items: MINE_TYPES.map((value) => ({
+        value, label: tr(`skills.contribute_mine_type.${value}`, value), attrs: { 'data-hubc-type': value },
+      })),
+    });
+  }
+
   function mineDetailMessage(entry) {
     if (entry.status === 'PENDING_REVIEW' || entry.status === 'PENDING') {
       return tr('skills.contribute_mine_msg.pending', 'Operations is reviewing this submission. You can withdraw it before review.');
@@ -984,7 +996,7 @@
       <div class="hubc-row__name">${button({
     label: entry.title, role: 'ghost', size: 'sm',
     attrs: { 'data-hubc-action': 'select-row', 'data-hubc-key': entry.key, 'aria-pressed': selected ? 'true' : 'false' },
-  })}<small>${esc((entry.contentId || entry.submissionId || entry.key) + withdrawal)}</small></div>
+  })}<small>${esc(tr(`skills.contribute_mine_type.${entry.contentType}`, entry.contentType) + ' · ' + (entry.contentId || entry.submissionId || entry.key) + withdrawal)}</small></div>
       <div class="hubc-row__cell">${root.uiStatusPill(statusDescriptor(entry.status || tr('skills.contribute_status_unknown', 'Unknown')))}<small>${esc(formatTime(entry.submittedAt))}</small></div>
       <div class="hubc-row__cell">${esc(entry.publishedVersion ? `v${entry.publishedVersion}` : '—')}</div>
     </li>`;
@@ -992,7 +1004,7 @@
 
   function renderMineList() {
     const host = hostOf('mine');
-    const visible = model.filterHistory(mine.items, { filter: mine.filter, query: mine.query });
+    const visible = model.filterHistory(mine.items, { filter: mine.filter, query: mine.query, type: mine.type });
     if (!visible.some((entry) => entry.key === mine.selected)) mine.selected = visible[0]?.key || null;
     const list = host.querySelector('[data-hubc-list]');
     const detail = host.querySelector('[data-hubc-detail]');
@@ -1035,7 +1047,7 @@
         <span><strong>${esc(stats.published)}</strong>${esc(tr('skills.contribute_mine_published', 'published'))}</span>
         <small>${esc(synced ? fmt(tr('skills.contribute_mine_synced', 'Last synced {time}'), { time: synced }) : '')}</small>
       </div>
-      <div class="hubc-toolbar"><div data-hubc-filters>${mineFilterControl()}</div>
+      <div class="hubc-toolbar"><div data-hubc-types>${mineTypeControl()}</div><div data-hubc-filters>${mineFilterControl()}</div>
         <div class="hubc-search">${root.uiInput({ id: 'hubc-mine-search', type: 'search', value: mine.query, placeholder: tr('skills.contribute_mine_search', 'Search my contributions'), attrs: { 'aria-label': tr('skills.contribute_mine_search', 'Search my contributions') } })}</div></div>
       <div class="hubc-master">
         <section class="hubc-list" aria-label="${esc(tr('skills.contribute_mine_list', 'Contribution list'))}">
@@ -1083,7 +1095,10 @@
     try {
       if (!options?.skipIdentity && !await ensureIdentity(tr('skills.contribute_mine', 'My contributions'))) return;
       await endSession();
-      mine = { items: [], filter: 'all', query: '', selected: null, stale: false, generatedAt: '', loading: true };
+      mine = {
+        items: [], filter: 'all', query: '', selected: null, stale: false, generatedAt: '', loading: true,
+        type: MINE_TYPES.includes(options?.type) ? options.type : 'all',
+      };
       renderMine();
       if (!await loadMine()) {
         leaveToSkills();
@@ -1103,9 +1118,16 @@
 
   async function mineAction(action, key) {
     const entry = mine?.items.find((item) => item.key === key);
-    if (action === 'resubmit') return chooseLocalSkill();
+    if (action === 'resubmit') return typeof root.chooseLocalAgentContribution === 'function' && mine?.type === 'agent'
+      ? root.chooseLocalAgentContribution() : chooseLocalSkill();
     if (!entry) return undefined;
-    if (action === 'new-version') return chooseLocalSkill(entry.contentId, entry.origin || null);
+    if (action === 'new-version') {
+      // Agent entries are submitted through the Agent flow, never the Skill picker.
+      if (entry.contentType === 'agent' && typeof root.chooseLocalAgentContribution === 'function') {
+        return root.chooseLocalAgentContribution(entry.contentId);
+      }
+      return chooseLocalSkill(entry.contentId, entry.origin || null);
+    }
     if (action === 'withdraw-pending') {
       if (!await root.uiConfirmDanger({ message: tr('skills.contribute_withdraw_pending_confirm', 'Withdraw this pending submission?') })) return undefined;
       const result = await root.cogseed.invoke('contribution.withdrawPending', { submission_id: entry.submissionId });
@@ -1201,6 +1223,12 @@
   }
 
   function onFilterClick(event) {
+    const type = event.target.closest('[data-hubc-type]');
+    if (type && mine) {
+      mine.type = type.dataset.hubcType;
+      renderMine();
+      return;
+    }
     const filter = event.target.closest('[data-hubc-filter]');
     if (!filter || !mine) return;
     mine.filter = filter.dataset.hubcFilter;
@@ -1242,6 +1270,9 @@
     if (mine && viewVisible('mine')) renderMine();
   }
 
+  // Shared with hub-agent-contributions.js so the Agent flow reuses the identity gate,
+  // error text and Mine page instead of re-implementing them.
+  root.hubContributionsShared = { ensureIdentity, errorText, tr, fmt, esc, openMyContributions };
   root.startSkillContribution = startSkillContribution;
   root.openMyContributions = openMyContributions;
   root.hideContributionViews = hideContributionViews;

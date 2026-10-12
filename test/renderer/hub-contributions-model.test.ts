@@ -178,3 +178,71 @@ describe('Hub contribution view model: API error details', () => {
     expect(model.detailLines({ long: 'x'.repeat(500) })[0].length).toBeLessThanOrEqual(206);
   });
 });
+
+describe('Hub contribution view model: Agent', () => {
+  it('classifies Agent admission and never reads an unknown outcome as passed', () => {
+    expect(model.classifyAgentAdmission({ outcome: 'pass' })).toBe('passed');
+    expect(model.classifyAgentAdmission({ outcome: 'blocked' })).toBe('blocked');
+    expect(model.classifyAgentAdmission({ outcome: 'incomplete' })).toBe('incomplete');
+    expect(model.classifyAgentAdmission({ outcome: 'pending' })).toBe('unavailable');
+    expect(model.classifyAgentAdmission(null)).toBe('unavailable');
+    expect(model.classifyAgentAdmission({})).toBe('unavailable');
+  });
+
+  it('shows one row for the Agent and one per bundled Skill, naming the failing one', () => {
+    const rows = model.agentCheckRows({
+      outcome: 'blocked',
+      blocking: [{ code: 'PRIVATE_SKILL_CHECK_FAILED', rule: 'skill.declaration_absent', skill: 'invoice-ocr' }],
+      skills: [{ name: 'invoice-ocr', outcome: 'blocked', reason: 'declaration_absent' }, { name: 'other', outcome: 'pass' }],
+    });
+    expect(rows.map((r: { id: string; name?: string; state: string }) => [r.id, r.name, r.state])).toEqual([
+      ['agent', undefined, 'ok'], ['skill', 'invoice-ocr', 'blocked'], ['skill', 'other', 'ok'],
+    ]);
+  });
+
+  it('marks the Agent row blocked only for issues that are not about a bundled Skill', () => {
+    const rows = model.agentCheckRows({ blocking: [{ rule: 'agent.host_only' }], skills: [] });
+    expect(rows[0]).toEqual({ id: 'agent', state: 'blocked', count: 1 });
+    expect(model.agentCheckRows(null)).toEqual([{ id: 'agent', state: 'ok', count: 0 }]);
+  });
+
+  it('lists what is still missing before submit, including version and the bundled-Skill consent', () => {
+    const complete = {
+      origin: { type: 'original' }, version: '1.0.0', accepted: { terms: true, maintenance: true, skills: true }, hasBundled: true,
+    };
+    expect(model.agentMissing(complete)).toEqual([]);
+    expect(model.agentMissing({ ...complete, version: 'v1' })).toEqual(['version']);
+    expect(model.agentMissing({ ...complete, accepted: { terms: true, maintenance: true } })).toEqual(['skills']);
+    expect(model.agentMissing({ ...complete, hasBundled: false, accepted: { terms: true, maintenance: true } })).toEqual([]);
+    expect(model.agentMissing({ origin: { type: 'third_party', note: ' ' }, version: '1.0.0', accepted: {} }))
+      .toEqual(['origin_note', 'terms', 'maintenance']);
+    expect(model.agentMissing({})).toEqual(['origin', 'version', 'terms', 'maintenance']);
+  });
+});
+
+describe('Hub contribution view model: contribution type', () => {
+  const items = [
+    { entry_id: 'a', name: '报销助手', content_type: 'agent', latest_submission: { status: 'PENDING_REVIEW' } },
+    { entry_id: 's', name: '会议纪要', content_type: 'skill', latest_submission: { status: 'PENDING_REVIEW' } },
+    { entry_id: 'legacy', name: '旧数据', latest_submission: { status: 'PENDING_REVIEW' } },
+    { entry_id: 'odd', name: '未知类型', content_type: 'workspace', latest_submission: { status: 'PENDING_REVIEW' } },
+  ];
+
+  it('defaults entries without a recognised type to skill', () => {
+    const list = model.normalizeItems(items);
+    const byKey = Object.fromEntries(list.map((e: { key: string; contentType: string }) => [e.key, e.contentType]));
+    expect(byKey).toEqual({ a: 'agent', s: 'skill', legacy: 'skill', odd: 'skill' });
+  });
+
+  it('filters by type and keeps the other filters working with it', () => {
+    const list = model.normalizeItems(items);
+    const keys = (opts: object) => model.filterHistory(list, opts).map((e: { key: string }) => e.key).sort();
+    expect(keys({ type: 'agent' })).toEqual(['a']);
+    expect(keys({ type: 'skill' })).toEqual(['legacy', 'odd', 's']);
+    expect(keys({ type: 'all' })).toEqual(['a', 'legacy', 'odd', 's']);
+    expect(keys({})).toEqual(['a', 'legacy', 'odd', 's']);
+    expect(keys({ type: 'agent', filter: 'rejected' })).toEqual([]);
+    expect(keys({ type: 'agent', query: '报销' })).toEqual(['a']);
+    expect(keys({ type: 'bogus' })).toEqual(['a', 'legacy', 'odd', 's']);
+  });
+});

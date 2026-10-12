@@ -6881,5 +6881,16 @@
   "auto.tpl.meeting_digest.name": "会議の整理",
   "auto.tpl.meeting_digest.desc": "会議後に文字起こしを自動で整理し、決定事項・アクション項目・担当者を出力します。",
   "auto.tpl.meeting_digest.title": "会議の整理",
-  "auto.tpl.meeting_digest.seed": "今日の会議の文字起こしを整理してください：重要な決定事項、アクション項目、担当者を抽出し、私がフォローすべき点を明示してください。"
+  "auto.tpl.meeting_digest.seed": "今日の会議の文字起こしを整理してください：重要な決定事項、アクション項目、担当者を抽出し、私がフォローすべき点を明示してください。",
+  "marketplace.agent_plan_title": "依存するスキルと一緒にインストール",
+  "marketplace.agent_plan_intro": "「{name}」には次のスキルが必要です。一緒にインストールされます：",
+  "marketplace.agent_plan_hub": "Hub から",
+  "marketplace.agent_plan_bundled": "このエージェントに同梱され、このエージェントだけが使えます",
+  "marketplace.agent_plan_reuse_intro": "この端末にすでにあり、そのまま再利用されます（更新されません）：",
+  "marketplace.agent_plan_reuse": "インストール済み",
+  "marketplace.agent_plan_safety": "すべての準備が整うまで端末は変更されません。途中で失敗すると、このエージェントはインストールされず、既存のエージェントや実行中のタスクには影響しません。",
+  "marketplace.agent_plan_confirm": "インストール",
+  "marketplace.agent_plan_blocked_intro": "このエージェントは現在インストールできません：",
+  "marketplace.agent_plan_blocked_disabled": "Hub により無効化されています。公開者に復旧を依頼するか、別のエージェントをインストールしてください。",
+  "marketplace.agent_plan_blocked_builtin": "組み込み機能への参照があり、このバージョンではまだサポートされていません。"
 }

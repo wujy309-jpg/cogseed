@@ -82,6 +82,7 @@ describe('renderer lazy feature loader', () => {
       './hub-contributions.css',
       './modules/hub-contributions-model.js',
       './modules/hub-contributions.js',
+      './modules/hub-agent-contributions.js',
       './modules/skills-bindings.js',
     ]);
   });
