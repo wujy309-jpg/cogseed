@@ -4819,6 +4819,19 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     }, { force: force === true, name: typeof name === 'string' ? name : undefined, acceptSecurityRisk: acceptSecurityRisk === true });
   },
 
+  /** "将同时安装"确认框的只读预览；与安装共用同一份依赖规划。 */
+  'marketplace.agentInstallPlan': async ({ id, version, published_at, updated_at, min_app_version }) => {
+    if (!id || typeof id !== 'string') throw new Error('id required');
+    if (typeof version !== 'string' || typeof published_at !== 'number') {
+      throw new Error('version + published_at required');
+    }
+    return marketplace.previewAgentInstallPlan(id, {
+      version, published_at,
+      ...(typeof updated_at === 'number' ? { updated_at } : {}),
+      ...(typeof min_app_version === 'string' ? { min_app_version } : {}),
+    });
+  },
+
   'marketplace.installSkill': async ({ id, name, version, published_at, updated_at, min_app_version, minAppVersion, min_version, minVersion, min_pc_version, minPcVersion, force, acceptSecurityRisk }) => {
     if (!id || typeof id !== 'string') throw new Error('id required');
     if (typeof version !== 'string' || typeof published_at !== 'number') {

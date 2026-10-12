@@ -263,9 +263,12 @@ import {
   addAgentInstall, addSkillInstall, readInstalls, removeAgentInstall, removeSkillInstall,
 } from './marketplace_installs';
 import { withMarketplaceCacheLock, withMarketplaceInstallLock } from './marketplace_locks';
-import { agentPrivateSkillIdsFromBundle } from './marketplace_private_skills';
+import { agentPrivateSkillIdsFromBundle, stampPrivateSkillOwners } from './marketplace_private_skills';
 import { MarketplaceError } from './marketplace/errors';
 import { readContentStatus, readInstalledVersion } from './marketplace/installed-version';
+import {
+  agentReadiness, planAgentDependencies, type AgentReadiness, type DependencyItem, type LocalSkillState,
+} from './marketplace_agent_deps';
 import { hubContentStatus, isHubContentDisabled } from '../../shared/hub-content-status';
 import { observeHubSkillStatus, observeHubSkillStatusLocked } from './marketplace/content-status';
 import { getSkillMetadata, invalidateMetadataIndex, normalizeCatalogListRow, type CatalogListRow, type SkillMetadata } from './marketplace/metadata-adapter';
@@ -1024,6 +1027,51 @@ export async function installMarketplaceAgent(
   );
 }
 
+/** "将同时安装"确认框用的只读视图：不写本机，不改任何状态。 */
+export interface AgentInstallPlanView {
+  items: Array<DependencyItem & { name: string }>;
+  readiness: AgentReadiness;
+  /** 本机版本低于 Agent 要求：此时不能安装，界面显示"需 CogSeed x.y+"。 */
+  appUpdateRequired: boolean;
+  minAppVersion: string;
+}
+
+/**
+ * 预览安装一个 Agent 会同时装什么、复用什么、哪里被阻断。
+ *
+ * 与安装用同一份依赖规划（`planAgentDependencies`），所以确认框里列的就是真会发生的。
+ * 私有 Skill 的名字来自包本身（`_fetchAgentPrivateSkillsBundle` 走缓存，安装时不会再下一遍）；
+ * Hub Skill 的显示名取目录元数据，取不到时退回 id，不让预览因此失败。
+ */
+export async function previewAgentInstallPlan(agentId: string, expect: MarketplaceFreshness): Promise<AgentInstallPlanView> {
+  if (!agentId) throw new Error('agentId required');
+  const detail = await getAgentDetail(agentId, expect);
+  const agentName = _agentJsonName(detail.agent_json);
+  let appUpdateRequired = false;
+  try {
+    _assertMarketplaceAppCompatible('agent', agentId, agentName, detail.min_app_version || '');
+  } catch (err) {
+    if (err instanceof MarketplaceInstallError && err.appUpdateRequired) appUpdateRequired = true;
+    else throw err;
+  }
+  const rawList = (detail.agent_json as Record<string, unknown>).skill_list;
+  const skillList = Array.isArray(rawList)
+    ? rawList.map((x) => (typeof x === 'string' ? x.trim() : '')).filter((x) => x.length > 0)
+    : [];
+  const privateIds = agentPrivateSkillIdsFromBundle(
+    await _fetchAgentPrivateSkillsBundle(agentId, detail.agent_skills_bundle_url || ''),
+  );
+  const plan = planAgentDependencies(skillList, privateIds, _localSkillState);
+  const items = await Promise.all(plan.items.map(async (item) => {
+    let name = item.id;
+    if (item.action === 'install') {
+      try { name = (await getSkillMetadata(item.id))?.name || item.id; } catch { /* 取不到名字不影响预览 */ }
+    }
+    return { ...item, name };
+  }));
+  return { items, readiness: agentReadiness(plan), appUpdateRequired, minAppVersion: detail.min_app_version || '' };
+}
+
 async function _installMarketplaceAgentLocked(
   agentId: string, expect: MarketplaceFreshness, opts: MarketplaceInstallOpts = {},
 ): Promise<{ ok: true; id: string }> {
@@ -1071,9 +1119,17 @@ async function _installMarketplaceAgentLocked(
         .filter((x): x is string => x.length > 0)
       : [];
     const depSkillNames = _agentSkillDependencyDisplayNames(detail.agent_json, skillList);
-    const missingSkillIds = skillList.filter(
-      (sid) => !privateSkillIds.has(sid) && !_skillAlreadyOnDisk(sid),
-    );
+    // 依赖规划（复用/随包/阻断/需安装）见 marketplace_agent_deps.ts；"本机已有时怎么办"是其中
+    // 一个可替换的策略函数。阻断项在下载任何东西之前就拒绝，保证失败时本机原有状态不变。
+    const depPlan = planAgentDependencies(skillList, privateSkillIds, _localSkillState);
+    const firstBlocked = depPlan.blocked[0];
+    if (firstBlocked) {
+      throw new MarketplaceInstallError(
+        'skill', firstBlocked.id, depSkillNames.get(firstBlocked.id) || firstBlocked.id,
+        firstBlocked.action === 'blocked_disabled' ? 'status_not_approved:disabled' : 'builtin_unsupported',
+      );
+    }
+    const missingSkillIds = depPlan.toInstall;
     if (missingSkillIds.length > 0) {
       await Promise.all(missingSkillIds.map(async (sid) => {
         let depSkillName = depSkillNames.get(sid) || '';
@@ -1132,6 +1188,8 @@ async function _installMarketplaceAgentLocked(
       const privateSkillsDir = userMarketplaceAgentSkillsDir(getActiveUserId(), agentId);
       await fsp.mkdir(privateSkillsDir, { recursive: true });
       extractBundleSafely(privateSkillsZip, privateSkillsDir);
+      // 贡献的包里 ownerAgent 是贡献者本机 id；改写成本次安装的 Agent id，私有 Skill 才只对它可见
+      await stampPrivateSkillOwners(privateSkillsDir, agentId);
     }
     // 4b. Deep security scan for the agent's private skill bundle. Private
     //     skills bypass the standalone skill install path (and its deep scan),
@@ -1502,6 +1560,15 @@ async function _installMarketplaceSkillLocked(
 /** Check if a skill is already present in any local source — either as a custom skill under
  *  `<uid>/cloud/skills/<id>/` OR a marketplace install under `<uid>/local/marketplace/skills/<id>/`.
  *  Both are valid; cascade install only triggers when missing. */
+/** 规划用的本机状态：有没有、是否被 Hub 停用（只读本机记录，不联网）。 */
+function _localSkillState(skillId: string): LocalSkillState {
+  const present = _skillAlreadyOnDisk(skillId);
+  if (!present) return { present: false, disabled: false };
+  let disabled = false;
+  try { disabled = readContentStatus(getActiveUserId(), skillId).availability === 'disabled'; } catch { /* 无活动用户：按未停用 */ }
+  return { present: true, disabled };
+}
+
 function _skillAlreadyOnDisk(skillId: string): boolean {
   try {
     const customRoot = userSkillsDir(getActiveUserId());

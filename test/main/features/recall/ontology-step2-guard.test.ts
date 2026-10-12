@@ -70,6 +70,9 @@ describe('014 anti-drift（specs/014 T024）', () => {
       'skills.security.accept',
       'skills.security.revoke',
       'skills.security.export',
+      // 2026-10-12 Hub S3 Agent 分发：安装前「将同时安装」的只读预览（specs/008-hub-agent-distribution）。
+      // 与 installAgent 共用同一份依赖规划，不写本机。
+      'marketplace.agentInstallPlan',
     ];
     expect(sneaked.sort(), '出现未登记的新通道').toEqual([...registeredPost014].sort());
     expect(removed, '014 期间不应删除通道').toEqual([]);
