@@ -6904,6 +6904,8 @@
   "marketplace.agent_dep_state_builtin": "Não disponível neste dispositivo — atualize o CogSeed",
   "agents.deps_blocked_chip": "Habilidade desativada",
   "agents.deps_blocked_hint": "Uma habilidade de que este agente precisa foi desativada pelo Hub, então ele não pode ser usado por enquanto.",
+  "agents.hub_disabled_chip": "Desativado pelo Hub",
+  "agents.hub_disabled_hint": "Este agente foi desativado pelo Hub e não pode ser usado por enquanto. Ele volta a ficar disponível se o Hub o restaurar.",
   "agents.deps_missing_chip": "Habilidade ausente",
   "agents.deps_missing_hint": "Uma habilidade de que este agente precisa não está neste dispositivo. Reinstale o agente para restaurá-la.",
   "agents.community_chip": "Comunidade",

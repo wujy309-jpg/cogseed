@@ -919,9 +919,13 @@ function renderAgentsGrid(agents) {
     // dependency only warns, because stale refs in older agents were always tolerated at runtime.
     const depState = a.dependency_state && typeof a.dependency_state === 'object' ? a.dependency_state : null;
     const depsBlocked = depState?.status === 'deps_blocked';
-    const depsChip = depState && depState.status !== 'ready'
-      ? `<span class="agent-card-chip is-deps-warning" title="${escapeHtml(t(depsBlocked ? 'agents.deps_blocked_hint' : 'agents.deps_missing_hint'))}">${escapeHtml(t(depsBlocked ? 'agents.deps_blocked_chip' : 'agents.deps_missing_chip'))}</span>`
+    // 被 Hub 停用：本机不可用（`enabled` 已含此因素），卡片说明原因，不让用户以为是自己停用的
+    const hubDisabledChip = a.hub_disabled
+      ? `<span class="agent-card-chip is-deps-warning" title="${escapeHtml(t('agents.hub_disabled_hint'))}">${escapeHtml(t('agents.hub_disabled_chip'))}</span>`
       : '';
+    const depsChip = hubDisabledChip + (depState && depState.status !== 'ready'
+      ? `<span class="agent-card-chip is-deps-warning" title="${escapeHtml(t(depsBlocked ? 'agents.deps_blocked_hint' : 'agents.deps_missing_hint'))}">${escapeHtml(t(depsBlocked ? 'agents.deps_blocked_chip' : 'agents.deps_missing_chip'))}</span>`
+      : '');
     return `
       <div class="agent-card ui-resource-card${enabled ? '' : ' is-disabled'}" data-id="${escapeHtml(a.agent_id)}" data-source="${escapeHtml(a.source || '')}">
         <button type="button" class="agent-card-open" data-agent-open aria-label="${escapeHtml(openLabel)}"></button>
@@ -1250,7 +1254,8 @@ function _renderAgentRowMenuItems(menu, agentId, source = '') {
   if (typeof openMarketplaceUpload === 'function') {
     items.push(`<div class="agent-row-menu-item" data-action="upload-marketplace">${escapeHtml(t('marketplace.upload'))}</div>`);
   }
-  if (!isMock) items.push(`<div class="agent-row-menu-item" data-action="toggle-enabled">${escapeHtml(toggleLabel)}</div>`);
+  // 被 Hub 停用的 Agent，用户手动"启用"也不会生效，不提供这个入口，避免误导
+  if (!isMock && !a?.hub_disabled) items.push(`<div class="agent-row-menu-item" data-action="toggle-enabled">${escapeHtml(toggleLabel)}</div>`);
   if (canEditDefinition) {
     items.push(`<div class="agent-row-menu-item is-danger" data-action="delete">${escapeHtml(t('agents.delete'))}</div>`);
   }

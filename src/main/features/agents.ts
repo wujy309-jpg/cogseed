@@ -67,6 +67,7 @@ import {
   type SkillAllowlistRef,
 } from '../model/core-agent/skill-registry';
 import { readDisabledSets, setAgentEnabled } from './component_enabled';
+import { effectiveAgentEnabled as _effectiveEnabled, isHubDisabledMarketplaceAgent as _hubDisabled } from './agent_hub_status';
 import { renameAgentInMembers } from './group_chat/state';
 import { validateAgentSpec, ValidationReport as QualityReport } from '../quality';
 import { persistReport as persistQualityReport } from '../quality/report';
@@ -330,6 +331,8 @@ export interface Agent {
   author_tier?: 'official' | 'community';
   /** Derived on listing: set when an update of this installed marketplace agent failed; the installed version still works. */
   update_failure?: AgentUpdateFailure;
+  /** 市场 Agent 被 Hub 停用：本机不可用（`enabled` 已含此因素），界面据此提示原因。 */
+  hub_disabled?: boolean;
 }
 
 export interface AgentRaw {
@@ -1569,7 +1572,7 @@ export async function listAgentSummaries(): Promise<AgentSummary[]> {
     category: agent.category,
     runtime: agent.runtime,
     interaction_mode: agent.interaction_mode,
-    enabled: !disabledAgentIds.has(agent.agent_id),
+    enabled: _effectiveEnabled(agent, disabledAgentIds),
   }));
 }
 
@@ -1583,7 +1586,7 @@ export async function listAgentSearchListings(): Promise<AgentSearchListing[]> {
     description_zh: agent.description_zh,
     description_en: agent.description_en,
     interaction_mode: agent.interaction_mode,
-    enabled: !disabledAgentIds.has(agent.agent_id),
+    enabled: _effectiveEnabled(agent, disabledAgentIds),
   }));
 }
 
@@ -1597,7 +1600,7 @@ export async function listAgentDispatchSpecs(): Promise<Agent[]> {
   const { agents: disabledAgentIds } = readDisabledSets(getActiveUserId());
   return specs.map((agent) => ({
     ...agent,
-    enabled: !disabledAgentIds.has(agent.agent_id),
+    enabled: _effectiveEnabled(agent, disabledAgentIds),
   }));
 }
 
@@ -1616,7 +1619,8 @@ export async function listAgents(): Promise<Agent[]> {
   const updateFailures = readAgentUpdateFailures(uid);
   return enriched.map((agent) => ({
     ...agent,
-    enabled: !disabledAgentIds.has(agent.agent_id),
+    enabled: _effectiveEnabled(agent, disabledAgentIds),
+    ...(_hubDisabled(agent) ? { hub_disabled: true } : {}),
     // Installed marketplace agents only: custom agents reference the user's own skills and are not
     // governed by Hub status. Derived fresh each listing so a Hub disable shows up at once.
     ...(agent.source === 'marketplace' && agent.skill_list?.length
@@ -1680,7 +1684,7 @@ async function _readAgentSpec(
           _applyMarketplaceInstallMeta(norm, path.dirname(f));
         }
         const { agents: disabledAgentIds } = readDisabledSets(userId);
-        norm.enabled = !disabledAgentIds.has(norm.agent_id);
+        norm.enabled = _effectiveEnabled(norm, disabledAgentIds);
         return norm;
       }
     } catch { /* ignore */ }

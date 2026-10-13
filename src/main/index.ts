@@ -1118,11 +1118,17 @@ async function runMarketplaceInstallReconcile(reason: string): Promise<void> {
         return;
       }
 
-      await m.checkServerUpdatesForInstalls(uid, {
+      const serverCheck = await m.checkServerUpdatesForInstalls(uid, {
         shouldContinue,
         minIntervalMs: MARKETPLACE_SERVER_CHECK_INTERVAL_MS,
       });
       const result = await m.reconcileInstalls(uid, { shouldContinue });
+      // 只改状态（Hub 停用、要求的客户端版本变化）不会走"拉取新内容"，界面原来不刷新；
+      // 本机安装记录有任何变化都通知渲染进程重读列表，卡片才能及时显示"已停用"之类的状态。
+      const installsChanged = (serverCheck.updated_agents || 0) + (serverCheck.updated_skills || 0)
+        + result.pulled_agents + result.pulled_skills + result.pruned_agents + result.pruned_skills
+        + result.restored_agents + result.restored_skills + result.patched_agents + result.patched_skills;
+      if (installsChanged > 0) ipc.broadcastToRenderer('marketplace:installs-changed', { reason, changed: installsChanged });
       if (
         result.pulled_agents || result.pulled_skills
         || result.pruned_agents || result.pruned_skills

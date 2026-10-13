@@ -686,6 +686,10 @@ async function _mpInitReconcileWatch() {
     window.cogseed.onPushEvent('marketplace:reconcile-status', (status) => {
       _mpApplyReconcileStatus(status);
     });
+    // 本机安装记录发生了变化（含只改状态的同步，如 Hub 停用）：重读 Agent / Skill 列表。
+    window.cogseed.onPushEvent('marketplace:installs-changed', () => {
+      _mpRefreshInstalledCaches();
+    });
     window.cogseed.onPushEvent('marketplace:resource-sync-skipped', (payload) => {
       _mpShowResourceSyncSkippedToast(payload);
     });
@@ -721,28 +725,34 @@ function _mpApplyReconcileStatus(status) {
   // switch tabs. Force re-fetch (loadAgents(true) / loadSkills(true)) bypasses the renderer
   // module-level lists cache; the marketplace listed-state hydrates from those.
   if (status.state === 'done' && prevState === 'running' && status.pulled > 0) {
-    Promise.resolve().then(async () => {
-      try {
-        if (typeof refreshAgentsAfterMarketplaceReconcile === 'function') {
-          await refreshAgentsAfterMarketplaceReconcile();
-        } else if (typeof loadAgents === 'function') {
-          await loadAgents(true);
-        }
-      } catch { /* ignore */ }
-      try {
-        if (typeof refreshSkillsAfterMarketplaceReconcile === 'function') {
-          await refreshSkillsAfterMarketplaceReconcile();
-        } else if (typeof loadSkills === 'function') {
-          await loadSkills(true);
-        }
-      } catch { /* ignore */ }
-      // If marketplace panel is open right now, also re-run the install-state hydration
-      // so card buttons flip from Install to Installed without a tab switch.
-      if (isMarketplaceOpen()) {
-        try { await _mpLoadAll(); } catch { /* ignore */ }
-      }
-    }).catch(() => { /* ignore */ });
+    _mpRefreshInstalledCaches();
   }
+}
+
+/** Force re-fetch of the agents / skills lists (bypassing the module-level cache) and, when the
+ *  marketplace panel is open, re-hydrate its install state. */
+function _mpRefreshInstalledCaches() {
+  Promise.resolve().then(async () => {
+    try {
+      if (typeof refreshAgentsAfterMarketplaceReconcile === 'function') {
+        await refreshAgentsAfterMarketplaceReconcile();
+      } else if (typeof loadAgents === 'function') {
+        await loadAgents(true);
+      }
+    } catch { /* ignore */ }
+    try {
+      if (typeof refreshSkillsAfterMarketplaceReconcile === 'function') {
+        await refreshSkillsAfterMarketplaceReconcile();
+      } else if (typeof loadSkills === 'function') {
+        await loadSkills(true);
+      }
+    } catch { /* ignore */ }
+    // If marketplace panel is open right now, also re-run the install-state hydration
+    // so card buttons flip from Install to Installed without a tab switch.
+    if (isMarketplaceOpen()) {
+      try { await _mpLoadAll(); } catch { /* ignore */ }
+    }
+  }).catch(() => { /* ignore */ });
 }
 
 function _mpScheduleReconcileWatchInit(attempt = 0) {

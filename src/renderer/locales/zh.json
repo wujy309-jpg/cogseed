@@ -9320,6 +9320,8 @@
   "marketplace.agent_dep_state_builtin": "这台设备上不可用，请更新 CogSeed",
   "agents.deps_blocked_chip": "依赖已停用",
   "agents.deps_blocked_hint": "这个智能体需要的一个技能已被 Hub 停用，暂时无法使用。",
+  "agents.hub_disabled_chip": "已被 Hub 停用",
+  "agents.hub_disabled_hint": "这个智能体已被 Hub 停用，暂时无法使用；Hub 恢复后会自动恢复可用。",
   "agents.deps_missing_chip": "缺少依赖",
   "agents.deps_missing_hint": "这个智能体需要的一个技能不在本机。重新安装这个智能体即可补齐。",
   "agents.community_chip": "社区贡献",

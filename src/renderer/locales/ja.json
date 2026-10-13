@@ -6904,6 +6904,8 @@
   "marketplace.agent_dep_state_builtin": "この端末では利用できません。CogSeed を更新してください",
   "agents.deps_blocked_chip": "スキル無効",
   "agents.deps_blocked_hint": "このエージェントに必要なスキルが Hub により無効化されたため、当面使用できません。",
+  "agents.hub_disabled_chip": "Hub により無効化",
+  "agents.hub_disabled_hint": "このエージェントは Hub により無効化されたため、しばらく使用できません。Hub が復元すると再び使えるようになります。",
   "agents.deps_missing_chip": "スキル不足",
   "agents.deps_missing_hint": "このエージェントに必要なスキルがこの端末にありません。エージェントを再インストールすると復元されます。",
   "agents.community_chip": "コミュニティ",

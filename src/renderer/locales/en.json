@@ -9320,6 +9320,8 @@
   "marketplace.agent_dep_state_builtin": "Not available on this device — update CogSeed",
   "agents.deps_blocked_chip": "Skill disabled",
   "agents.deps_blocked_hint": "A skill this agent needs was disabled by Hub, so it cannot be used for now.",
+  "agents.hub_disabled_chip": "Disabled by Hub",
+  "agents.hub_disabled_hint": "This agent was disabled by Hub, so it cannot be used for now. It becomes available again if Hub restores it.",
   "agents.deps_missing_chip": "Skill missing",
   "agents.deps_missing_hint": "A skill this agent needs is not on this device. Reinstall the agent to restore it.",
   "agents.community_chip": "Community",
