@@ -274,7 +274,7 @@ import { clearAgentUpdateFailure } from './agent_update_failures';
 import {
   agentReadiness, planAgentDependencies, type AgentReadiness, type DependencyItem, type LocalSkillState,
 } from './marketplace_agent_deps';
-import { hubContentStatus, isHubContentDisabled } from '../../shared/hub-content-status';
+import { hubContentStatus, isHubContentDisabled, isHubContentInstallable } from '../../shared/hub-content-status';
 import { observeHubSkillStatus, observeHubSkillStatusLocked } from './marketplace/content-status';
 import { getSkillMetadata, invalidateMetadataIndex, normalizeCatalogListRow, type CatalogListRow, type SkillMetadata } from './marketplace/metadata-adapter';
 import { decideMarketplaceContentUpdate } from './marketplace-update-policy';
@@ -889,7 +889,7 @@ function _assertApprovedDependencySkill(
   row: { status?: string; state?: string },
 ): void {
   const status = _marketplaceStatus(row);
-  if (status !== 'approved') {
+  if (!isHubContentInstallable(row)) {
     throw new MarketplaceInstallError(
       'skill',
       skillId,

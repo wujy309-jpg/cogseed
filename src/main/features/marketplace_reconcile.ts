@@ -44,7 +44,7 @@ import {
 import { decideCurrentSwitch } from './marketplace/current-switch-policy';
 import { AGENT_PACKAGE_FORMAT } from './marketplace/agent-package';
 import { decideAgentUpdate } from './agent_catalog_update';
-import { hubContentStatus } from '../../shared/hub-content-status';
+import { hubContentStatus, isHubContentInstallable } from '../../shared/hub-content-status';
 import { observeHubSkillStatus } from './marketplace/content-status';
 import { readInstalledVersion } from './marketplace/installed-version';
 import { MarketplaceError } from './marketplace/errors';
@@ -977,7 +977,7 @@ function _assertApprovedDependencySkill(
   row: { status?: string; state?: string },
 ): void {
   const status = _marketplaceStatus(row);
-  if (status !== 'approved') {
+  if (!isHubContentInstallable(row)) {
     throw new Error(`dependency skill ${skillId} is not approved${status ? ` (${status})` : ''}`);
   }
 }
@@ -1008,7 +1008,7 @@ async function _ensureAgentSkillDependencies(
     _assertContinue(opts);
     if (_skillDependencySatisfied(uid, skillId)) continue;
     let row = manifestSkills.get(skillId) || null;
-    if (row && _marketplaceStatus(row) && _marketplaceStatus(row) !== 'approved') {
+    if (row && _marketplaceStatus(row) && !isHubContentInstallable(row)) {
       throw new Error(`dependency skill ${skillId} is not approved (${_marketplaceStatus(row)})`);
     }
     if (!row) {

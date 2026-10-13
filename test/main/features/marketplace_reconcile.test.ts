@@ -686,7 +686,7 @@ describe('marketplace reconcile', () => {
     expect(fs.existsSync(path.join(tmpDir, 'u1', 'local', 'marketplace', 'skills', 'cancelled-skill'))).toBe(false);
   });
 
-  it('pulls new skill_list dependencies while reconciling an updated agent', async () => {
+  it.each(['approved', 'published'])('pulls new skill_list dependencies while reconciling an updated agent (dependency status %s)', async (depStatus) => {
     const depZip = new AdmZip();
     depZip.addFile('SKILL.md', Buffer.from('---\nname: dep-skill\n---\n'));
     const base = await listen((req, res) => {
@@ -703,7 +703,7 @@ describe('marketplace reconcile', () => {
       res.end('not found');
     });
     postJsonMock.mockImplementation(async (p: string) => {
-      if (p === '/marketplace/skills/list') return { list: [catalogRow('dep-skill')], total: 1 };
+      if (p === '/marketplace/skills/list') return { list: [catalogRow('dep-skill', { status: depStatus })], total: 1 };
       throw new Error(`unexpected path ${p}`);
     });
     serveImmutableBytes(depZip.toBuffer());
@@ -732,7 +732,7 @@ describe('marketplace reconcile', () => {
         id: 'dep-skill',
         bundle_url: '',
         version: '1.0.0',
-        status: 'approved',
+        status: depStatus,
       }),
     ]);
     // 字节确实是按 {content_id, version} 从唯一取字节入口取的。
