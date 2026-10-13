@@ -34,7 +34,7 @@
 | B-03 | `POST /marketplace/contributions/submissions` | C-02 | 登录 | `content_type: 'agent'`；多出引用与私有 Skill 校验 |
 | B-04 | `GET /marketplace/contributions/mine` | C-04 | 登录 | 列表项带 `content_type`；可按类型筛选 |
 | B-05（**Hub 已采纳**） | `POST /marketplace/agents/detail` | 无 | 匿名 | 见 §6 |
-| B-06（Hub 新增） | `GET /marketplace/builtin-skills/manifest` | 无 | 匿名 | 内置能力清单 `{ id, introduced_in, current_version, capability, risk }`；字段待 Hub 契约 |
+| B-06（Hub 新增） | `GET /marketplace/builtin-capabilities/manifest` | 无 | 匿名 | 内置能力清单 `{ id, introduced_in, current_version, capability, risk }`；**路径名以 Hub 已实现的 `builtin-capabilities` 为准**，契约见 Hub `b04-builtin-capabilities.md`；当前返回空清单（合法稳定态，空清单时任何 `builtin:` 引用按 `builtin_ref.unknown` 拒绝） |
 | — | 提交状态读回、审核前撤回、已发布撤回申请、条款 | C-02/C-05/C-01 | 登录 | 不变，按 `content_type` 通用 |
 | — | 事件上报 | A-03 | — | **未覆盖** |
 

@@ -33,8 +33,7 @@
 ## 尚未做、需要后续
 
 - **与真实 Hub 联调**：Hub 的白名单扩充与 B-01/B-02/B-05 尚未就绪，所有 Hub 交互目前只用替身验证。
-- **Agent 市场详情页里的依赖清单分组**（Hub 分发 / 预置 / 随包）：安装前的「将同时安装」确认已接上（`marketplace.js::_mpConfirmAgentInstall`，调用 `marketplace.agentInstallPlan`），但详情页本身还没有静态的依赖清单区。
-- **智能体卡片上的依赖状态 chip、停用依赖时卡片显示「依赖已停用」**：规划里的 `agentReadiness` 已有，卡片展示未接。
+- ~~Agent 市场详情页里的依赖清单~~、~~智能体卡片上的依赖状态~~：**已补做**（T030、T031，见 `tasks.md`）。卡片规则：依赖被 Hub 停用 → 禁用「使用」并提示；本机缺依赖 → 只提示不禁用（存量 Agent 的失效旧引用运行时本来就被忽略，直接禁用会误伤）。
 - **「更新」流程**（装完后依赖更新、更新失败保留旧版）：本期只复用了现有 Skill 更新通道，未新增 Agent 更新界面。
 - **`ja` / `pt` 文案**：现有贡献文案本来就只有 `zh` / `en`，本期沿用。
 - **真实应用里的人工验证**：尚未重启应用目视确认（见下）。
@@ -57,3 +56,10 @@
 测试里踩到并已修复的两处（均由本期引起）：
 1. 全局通道登记测试（`ontology-step2-guard`）要求新 IPC 通道登记，已登记 `marketplace.agentInstallPlan`。
 2. `freeze-gates.test.ts` 会把 `test/fixtures/hub-contributions/` 下的一切当文件读取，我放进去的 `agent/` 子目录让它报 `EISDIR`；已把 Agent 夹具移到独立目录 `test/fixtures/hub-agent-contributions/`。
+
+
+## 2026-10-13 补充：预览高亮与更新判定
+
+- 预览高亮（AG-FR-064）：纯检测器 `agent-sensitive-hints.ts`，每文件最多 10 处、总计 50 处；流程门 `confirmAgentPreview(...,{acknowledgeHints})` 未勾选返回 `hints_unacknowledged`；页面逐行 `<mark>` 高亮。
+- 更新判定：`agent_catalog_update.ts` 为纯函数 + 注入式分页读取，**未接任何真实接口**；联调时只需提供 `fetchPage`。
+- 验证：typecheck、tokens:check、`eslint .` 通过；全量测试仍是基线同样的 13 个文件/41 个用例失败，无新增。真实应用目视与 Hub 联调 **not run**。

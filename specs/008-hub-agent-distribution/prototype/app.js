@@ -25,7 +25,7 @@
   const TONE = { success: 'success', pending: 'attention', review: 'attention', rejected: 'critical', neutral: 'neutral' };
   const pill = (kind, label, check) => W.uiStatusPill({ label, tone: TONE[kind] || 'neutral', check });
   const badge = (tone, label) => W.uiBadge({ label, tone });
-  const srcTag = (src) => W.uiTag({ label: src === 'hub' ? 'Hub 分发' : src === 'preset' ? 'Hub 分发 · 预置' : '随 Agent 提交', variant: src === 'hub' ? 'outline' : src === 'preset' ? 'accent' : 'solid' });
+  const srcTag = (src) => W.uiTag({ label: src === 'hub' ? 'Hub 分发' : src === 'preset' ? 'Hub 分发 · 预置' : '随智能体提供', variant: src === 'hub' ? 'outline' : src === 'preset' ? 'accent' : 'solid' });
   const chip = (t, extra) => `<span class="agent-card-chip${extra ? ' ' + extra : ''}">${esc(t)}</span>`;
   const DEP_BADGE = { ok: ['success', '已具备'], need: ['attention', '需安装'], bad: ['critical', '不可用'] };
   function note(kind, title, body) {
@@ -68,7 +68,7 @@
     { key: 'resubmit', label: '退回重提', view: 'mine', sel: 'c2', modal: 'resubmit' },
   ];
 
-  const s = { key: 'agents', view: 'agents', agent: 'expense', scn: '', auth: 'in', inst: new Set(), attempts: {}, tab: 'agents', cat: 'all', contrib: 'my-expense', file: '', sel: 'c1', type: 'all', filter: 'all', timers: [], modal: null, menu: false, pending: null, declared: { source: '', terms: false, share: false, skills: false } };
+  const s = { key: 'agents', view: 'agents', agent: 'expense', scn: '', auth: 'in', inst: new Set(), attempts: {}, tab: 'agents', cat: 'all', contrib: 'my-expense', file: '', sel: 'c1', type: 'all', filter: 'all', timers: [], modal: null, menu: false, pending: null, declared: { source: '', version: '', terms: false, share: false, skills: false } };
 
   /* ---------- 模拟数据 ---------- */
   const mk = (id, name, tone, desc, over) => Object.assign({
@@ -77,7 +77,7 @@
     flow: ['读取所选材料', '按规则处理', '输出结果与待办'], prereq: '需要在任务中选择材料文件。',
     compat: 'CogSeed 1.3.0+ · macOS / Windows', digest: `sha256:${id.slice(0, 4)}…e1f0`, scan: '已通过 · 低风险', updated: '1.0.0 · 首个发布版本', deps: [],
   }, over);
-  const QA = { src: 'preset', id: 'a3f09c21b7e4', name: '依据材料作答（示意）', req: '', state: 'ok', note: '本机已具备（随客户端预置的 Hub 内容），无需下载' };
+  const QA = { src: 'hub', id: 'a3f09c21b7e4', name: '依据材料作答（示意）', req: '', state: 'ok', note: '本机已具备（随客户端预置的 Hub 内容），无需下载' };
   const bundledDep = (dir, name) => ({ src: 'bundled', id: 'skills/' + dir + '/', name, req: '', state: 'need', note: '随 Agent 一起安装，仅该 Agent 使用' });
   const hubDep = (id, name, req) => ({ src: 'hub', id, name: `${name}（示意）`, req, state: 'need', note: '本机未安装，将从 Hub 获取' });
   const AGENTS = {
@@ -124,26 +124,24 @@
   }
 
   /* 贡献：按所点的 Agent 给出不同的提交副本 */
-  const BASE_REFS = (extra) => `[\n  { "kind": "preset", "id": "a3f09c21b7e4" },\n  { "kind": "hub",    "id": "5e1c8a02d9b3", "version_req": "^1.0" }${extra ? ',\n  ' + extra : ''}\n]`;
+  /* 提交副本：与 agent-package-v1 一致——agent.json（作者原文，不含 version / created_at / updated_at，
+     本机设置已移除）、可选 README.md、skills/<名字>/（随包私有 Skill，SKILL.md 带 ownerAgent）。 */
   function filesFor(id) {
     if (id === 'my-weekly') {
       return {
-        'agent.json': '{\n  "agent_id": "my-weekly",\n  "name": "周报整理助手",\n  "description": "把本周任务整理成周报草稿。",\n  "workflow": "1. 读取本周任务 2. 归类 3. 生成周报草稿",\n  "skills": ["a3f09c21b7e4"],\n  "enabled_connectors": "【已处理】"\n}',
-        'workflow.md': '# 工作流程\n\n1. 读取本周任务记录\n2. 按项目归类\n3. 生成周报草稿',
-        'references.json': '[\n  { "kind": "preset", "id": "a3f09c21b7e4" }\n]',
+        'agent.json': '{\n  "agent_id": "my-weekly",\n  "name": "周报整理助手",\n  "description_zh": "把本周任务整理成周报草稿。",\n  "workflow": "1. 读取本周任务 2. 归类 3. 生成周报草稿",\n  "category": "office",\n  "skill_list": ["a3f09c21b7e4"]\n}',
       };
     }
     return {
-      'agent.json': '{\n  "agent_id": "my-expense",\n  "name": "报销材料整理助手",\n  "description": "整理报销材料并按制度预检……",\n  "workflow": "1. 读取材料 2. 抽取发票字段 3. 按制度预检 4. 汇总补件清单",\n  "skills": ["a3f09c21b7e4", "5e1c8a02d9b3", "my-ocr-helper"],\n  "enabled_connectors": "【已处理】",\n  "default_model": "【已处理】"\n}',
-      'workflow.md': '# 工作流程\n\n1. 读取并归类用户选择的材料\n2. 抽取发票关键字段\n3. 按制度规则逐项预检\n4. 汇总补件清单与材料摘要\n\n示例材料路径：【本机路径已处理】',
-      'references.json': BASE_REFS('{ "kind": "bundled", "id": "my-ocr-helper" }'),
-      'skills/my-ocr-helper/SKILL.md': '---\nname: my-ocr-helper\ndescription: 识别发票图片中的文字\n---\n\n读取用户选择的发票图片，输出结构化文字。',
+      'agent.json': '{\n  "agent_id": "my-expense",\n  "name": "报销材料整理助手",\n  "description_zh": "整理报销材料并按制度预检，输出补件清单。",\n  "workflow": "1. 读取材料 2. 抽取发票字段 3. 按制度预检 4. 汇总补件清单",\n  "category": "office",\n  "skill_list": ["a3f09c21b7e4", "5e1c8a02d9b3", "my-ocr-helper"]\n}',
+      'skills/my-ocr-helper/SKILL.md': '---\nname: my-ocr-helper\ndescription: 识别发票图片中的文字\nownerAgent: my-expense\n---\n\n读取用户选择的发票图片，输出结构化文字。',
     };
   }
   const BUNDLED = { 'my-expense': ['my-ocr-helper'], 'my-weekly': [], 'my-mail': ['mail-tone'] };
+  /* 本机处理项：只给本机预览看，不上传，Hub 不需要知道处理了什么。只会移除字段，不改正文。 */
   const STRIPPED = {
-    'my-expense': [['连接器实例', 'enabled_connectors', 'agent.json'], ['模型偏好', 'default_model', 'agent.json'], ['本机路径', '/Users/…/发票2024/', 'workflow.md']],
-    'my-weekly': [['连接器实例', 'enabled_connectors', 'agent.json']],
+    'my-expense': [['版本与时间戳', 'created_at / updated_at'], ['连接器实例', 'enabled_connectors'], ['模型偏好', 'default_model']],
+    'my-weekly': [['版本与时间戳', 'created_at / updated_at'], ['连接器实例', 'enabled_connectors']],
   };
   const HISTORY = [
     { id: 'c1', type: 'agent', name: '报销材料整理助手', stable: 'agt_8f3a21', ver: '1.0.0', st: 'pending', stText: '待审核', pub: '—', at: '10-09 10:12', note: '已提交，等待审核。审核绑定本次提交版本 1.0.0；随 Agent 提交的技能 my-ocr-helper 一并审核。' },
@@ -265,7 +263,7 @@
           <div class="agents-detail-section"><div class="agents-detail-label">它能做什么</div><dl class="ap-kv"><dt>适用场景</dt><dd>${esc(a.scenario)}</dd><dt>输入</dt><dd>${esc(a.inputs)}</dd><dt>交付结果</dt><dd>${esc(a.deliver)}</dd><dt>使用前提</dt><dd>${esc(a.prereq)}</dd></dl></div>
           <div class="agents-detail-section agents-detail-section-workflow"><div class="agents-detail-label">工作流程</div><ol class="ap-steps">${a.flow.map((f) => `<li>${esc(f)}</li>`).join('')}</ol></div>
           <div class="agents-detail-section"><div class="agents-detail-label">依赖的技能</div><p class="ap-meta">按情形（需下载 / 预置）分别校验、分别提示。</p>${depList(deps, 'Hub 分发的 Skill')}</div></div>
-          <aside class="ap-section"><dl class="ap-kv"><dt>版本</dt><dd>${esc(a.ver)}（${esc(a.updated)}）</dd><dt>作者与来源</dt><dd>${esc(a.author)} · ${esc(a.source)}</dd><dt>客户端兼容</dt><dd>${esc(a.compat)}</dd><dt>发布物摘要</dt><dd class="ap-mono">${esc(a.digest)}</dd><dt>安全检查</dt><dd>${esc(a.scan)}</dd></dl><p class="ap-fine">审核标识不替代执行时的用户授权。</p></aside></div>
+          <aside class="ap-section"><dl class="ap-kv"><dt>版本</dt><dd>${esc(a.ver)}（${esc(a.updated)}）</dd><dt>作者与来源</dt><dd>${esc(a.author)} · ${esc(a.source)}</dd><dt>客户端兼容</dt><dd>${esc(a.compat)}</dd><dt>发布物摘要</dt><dd class="ap-mono">${esc(a.digest)}</dd><dt>安全检查</dt><dd>${esc(a.scan)}</dd></dl><p class="ap-fine">审核标识不替代执行时的用户授权。</p><p class="ap-fine">发布物摘要与安全检查结果需要 Hub 提供 Agent 的摘要字段（D-09），实现里暂未接入，这里仅作示意。</p></aside></div>
       </div></div></div></section>`;
   }
 
@@ -324,7 +322,7 @@
 
   /* ================= 贡献页（hubc-* 结构） ================= */
   function steps(current) {
-    const labels = ['选择与校验', '剥离与检查', '预览与声明', '提交审核'];
+    const labels = ['本机检查', '预览与声明', '提交审核'];
     return `<ol class="hubc-steps" aria-label="贡献流程">${labels.map((l, i) => { const st = i < current ? 'done' : i === current ? 'current' : 'todo'; return `<li class="hubc-step is-${st}"${st === 'current' ? ' aria-current="step"' : ''}><span class="hubc-step__mark" aria-hidden="true">${st === 'done' ? icon('check') : i + 1}</span><span class="hubc-step__label">${l}</span></li>`; }).join('')}</ol>`;
   }
   const checkRow = (tone, mark, name, detail) => `<li class="hubc-check-row is-${tone}">${icon(mark)}<strong>${esc(name)}</strong><span>${esc(detail)}</span></li>`;
@@ -334,12 +332,12 @@
   }
   function vContribute() {
     const id = s.contrib; const name = NAMES[id] || '报销材料整理助手';
-    const cur = s.scn === 'preview' ? 2 : (s.scn === 'sending' || s.scn === 'lost') ? 3 : 1;
-    const head = `${backline('贡献智能体', 'agents', '返回智能体')}${heading(`贡献智能体 · ${name}`, '先在本机检查，你确认预览后才会提交。本地原 Agent 不会被改写。', pill('neutral', '仅提交到待审核'))}${steps(cur)}`;
+    const cur = s.scn === 'blocked' ? 0 : s.scn === 'preview' ? 1 : 2;
+    const head = `${backline('贡献智能体', 'agents', '返回智能体')}${heading('贡献智能体', `把「${name}」贡献到 Hub。提交后先进入审核；审核通过后还需要发布才会出现在目录里。`, pill('neutral', '仅提交审核'))}${steps(cur)}`;
     const wrap = (body) => `<div class="hubc-page">${head}<div class="hubc-stage">${body}</div></div>`;
-    if (s.scn === 'blocked') return wrap(`<section class="hubc-panel"><div class="hubc-section-head"><div><h2>剥离与检查</h2><p>检查完成前，文件不会离开本机。只检查最明显的敏感内容，不保证识别所有隐私。</p></div>${pill('rejected', '已阻断')}</div>
-      <ul class="hubc-check-list">${checkRow('success', 'check-circle', '引用来源', '预置 1 · Hub 分发 1 · 随 Agent 提交 1')}${checkRow('success', 'check-circle', '连接器实例 / 模型偏好', '已处理')}${checkRow('critical', 'x-circle', 'skills/mail-tone/scripts/send.py', '含 SSH 私钥格式，不能提交')}</ul>
-      ${note('bad', '已阻断，未上传任何内容', '在 send.py 第 8 行发现私钥格式（-----BEGIN … PRIVATE KEY-----）。请删除后重新检查。你对提交的内容负责，客户端只拦截最明显的格式。')}
+    if (s.scn === 'blocked') return wrap(`<section class="hubc-panel"><div class="hubc-section-head"><div><h2>本机检查发现了阻断项</h2><p>检查完成前，没有任何文件离开本机。只拦最明显的密钥格式（私钥、pem），不保证识别所有隐私。</p></div>${pill('rejected', '已阻断')}</div>
+      <ul class="hubc-check-list">${checkRow('success', 'check-circle', '引用的技能', 'Hub 技能 1 · 随智能体提供 1')}${checkRow('success', 'check-circle', '本机设置', '已移除')}${checkRow('critical', 'x-circle', 'skills/mail-tone/scripts/send.py', '含 SSH 私钥格式，不能提交')}</ul>
+      ${note('bad', '已阻断，未上传任何内容', '在 skills/mail-tone/scripts/send.py 中发现私钥格式（规则 private_key_block）。请删除后重新检查。你对提交的内容负责，客户端只拦截最明显的格式。')}
       <div class="hubc-submit-actions">${btn('返回修改', { act: 'goto', arg: 'agents' })}</div></section>`);
     if (s.scn === 'sending') return wrap(`<section class="hubc-panel"><div class="hubc-section-head"><div><h2>正在提交</h2><p id="send-msg">正在上传已确认的提交内容……</p></div>${pill('pending', '提交中')}</div>
       <div id="send-bar">${W.uiProgressBar({ ariaLabel: '提交进度', value: 0, max: 100 })}</div><p class="ap-fine">提交固定版本 1.0.0 · 幂等键 idem-7f3a</p><div class="hubc-submit-actions">${btn('取消提交', { act: 'cancel-send' })}</div></section>`);
@@ -349,24 +347,24 @@
     const FILES = filesFor(id); const bundled = BUNDLED[id] || [];
     if (!FILES[s.file]) s.file = Object.keys(FILES)[0];
     const fileRows = Object.keys(FILES).map((f) => `<li class="hubc-file${f === s.file ? ' is-selected' : ''}">${W.uiButton({ label: f, role: 'ghost', size: 'sm', icon: 'file-text', attrs: { 'data-act': 'pick-file', 'data-arg': f, 'aria-pressed': f === s.file ? 'true' : 'false' } })}<span class="hubc-file__size">${FILES[f].length} B</span></li>`).join('');
-    const strip = (STRIPPED[id] || STRIPPED['my-weekly']).map((x) => `<li>${badge('critical', '已处理')}<span><strong>${esc(x[0])}</strong> <span class="ap-mono">${esc(x[1])}</span></span><span class="ap-mono">${esc(x[2])}</span></li>`).join('');
-    const refRows = [`<li class="ap-dep"><div><strong>依据材料作答（示意）</strong> ${srcTag('preset')}</div>${badge('success', '仅引用 · 不随包提交')}</li>`];
+    const strip = (STRIPPED[id] || STRIPPED['my-weekly']).map((x) => `<li>${badge('critical', '已移除')}<span><strong>${esc(x[0])}</strong> <span class="ap-mono">${esc(x[1])}</span></span></li>`).join('');
+    const refRows = [`<li class="ap-dep"><div><strong>依据材料作答（示意）</strong> ${srcTag('hub')}</div>${badge('success', '仅引用 · 不随包提交')}</li>`];
     if (id === 'my-expense') refRows.push(`<li class="ap-dep"><div><strong>发票字段抽取（示意）</strong> ${srcTag('hub')}</div>${badge('success', '仅引用 · 不随包提交')}</li>`);
-    bundled.forEach((b) => refRows.push(`<li class="ap-dep"><div><strong>${esc(b)}</strong> ${srcTag('bundled')}</div>${badge('attention', '将随 Agent 提交')}<small>你本机的自建技能，随这个 Agent 一起提交审核。提交后是作为 Agent 私有包，还是作为独立公开的技能，待产品确认（D-07）。</small></li>`));
-    const d = s.declared; const ok = d.source && d.terms && d.share && (bundled.length ? d.skills : true);
+    bundled.forEach((b) => refRows.push(`<li class="ap-dep"><div><strong>${esc(b)}</strong> ${srcTag('bundled')}</div>${badge('attention', '将随智能体提交')}<small>你本机的技能，随这个智能体一起提交审核，只有它能使用。</small></li>`));
+    const d = s.declared; const ok = d.source && /^\d+\.\d+\.\d+/.test(d.version || '') && d.terms && d.share && (bundled.length ? d.skills : true);
     return wrap(`<div class="hubc-preview-head hubc-section-head"><div><h2>提交预览</h2><p>下列内容会随这次贡献发给 Hub。实际提交与此逐项一致；预览之外的任何本机数据都不会发出。</p></div>${pill('success', '只读预览', true)}</div>
       <div class="hubc-preview"><section class="hubc-file-list" aria-label="将提交的文件"><div class="hubc-panel-head"><span>将提交的文件</span><span>${Object.keys(FILES).length} 个</span></div><ul>${fileRows}</ul><p class="hubc-panel-foot">已是处理后的最终副本</p></section>
         <section class="hubc-file-content" aria-label="文件内容" aria-live="polite"><div class="hubc-panel-head">${icon('file-text')}<strong>${esc(s.file)}</strong><span>只读</span></div><pre>${esc(FILES[s.file])}</pre></section></div>
-      <section class="hubc-panel"><h2>引用的技能</h2><p class="ap-meta">引用 Hub 分发的技能（含随客户端预置的）不需要额外确认${bundled.length ? '；本机自建的技能会随 Agent 一起提交' : ''}。</p><ul class="ap-deps">${refRows.join('')}</ul></section>
-      <section class="hubc-panel"><h2>已自动处理的内容</h2><p class="ap-meta">只作用于提交副本，你本机的原 Agent 没有被改动。客户端只处理最明显的敏感内容（如凭据、Connector 配置、本机路径），不保证识别所有隐私，内容由你自己负责。</p><ul class="ap-strip">${strip}</ul></section>
-      <section class="hubc-panel"><h2>提交声明</h2>
-        <div class="hubc-declaration"><div class="ui-field"><div class="ui-field__label-row"><span class="ui-field__label">来源声明</span><span class="ui-field__requirement">必填</span></div>
-          ${W.uiSegmentedControl({ ariaLabel: '来源声明', value: d.source, items: [['original', '原创'], ['hub', '派生自 Hub 内容'], ['third', '基于第三方材料']].map((x) => ({ value: x[0], label: x[1], attrs: { 'data-act': 'decl-source', 'data-arg': x[0] } })) })}</div>
+      <section class="hubc-panel"><h2>这个智能体用到的技能</h2><p class="ap-meta">引用 Hub 技能不需要额外确认${bundled.length ? '；你本机的技能会随这个智能体一起提交' : ''}。</p><ul class="ap-deps">${refRows.join('')}</ul></section>
+      <section class="hubc-panel"><h2>已在本机移除</h2><p class="ap-meta">这些字段已从提交副本中移除。你本机的智能体不变，Hub 也不会知道移除了什么。客户端只拦最明显的密钥格式（私钥、pem），其余内容请你在预览里自己确认。</p><ul class="ap-strip">${strip}</ul></section>
+      <section class="hubc-panel"><h2>版本与声明</h2>
+        <div class="hubc-declaration">${W.uiField({ id: 'ap-version', label: '版本号', required: true, requiredLabel: '必填', optionalLabel: '选填', hint: '语义化版本，例如 1.0.0。提交新版本时必须高于已发布的版本。', control: { kind: 'input', type: 'text', value: d.version || '', placeholder: '1.0.0', attrs: { 'data-act': 'decl-version' } } })}<div class="ui-field"><div class="ui-field__label-row"><span class="ui-field__label">来源声明</span><span class="ui-field__requirement">必填</span></div>
+          ${W.uiSegmentedControl({ ariaLabel: '来源声明', value: d.source, items: [['original', '原创'], ['third', '基于第三方材料']].map((x) => ({ value: x[0], label: x[1], attrs: { 'data-act': 'decl-source', 'data-arg': x[0] } })) })}</div>
           ${W.uiField({ id: 'ap-origin-note', label: '来源说明', optionalLabel: '选填', requiredLabel: '必填', control: { kind: 'textarea', placeholder: '补充来源说明（选填）', attrs: { rows: 2 } } })}</div>
         <div class="hubc-check"><span class="hubc-check__control">${W.uiCheckbox({ id: 'ap-accept-terms', label: '接受条款', checked: d.terms, attrs: { 'data-act': 'decl-terms' } })}</span><label for="ap-accept-terms">我已阅读并接受《CogSeed 社区贡献条款》v1.0（示意）</label></div>
-        <div class="hubc-check"><span class="hubc-check__control">${W.uiCheckbox({ id: 'ap-accept-share', label: '授权共享', checked: d.share, attrs: { 'data-act': 'decl-share' } })}</span><label for="ap-accept-share">我授权将上述预览内容共享到 Hub。</label></div>
-        ${bundled.length ? `<div class="hubc-check"><span class="hubc-check__control">${W.uiCheckbox({ id: 'ap-accept-skills', label: '随 Agent 提交技能', checked: d.skills, attrs: { 'data-act': 'decl-skills' } })}</span><label for="ap-accept-skills">我了解 ${esc(bundled.join('、'))} 会随这个 Agent 一起提交，并对其内容负责。</label></div>` : ''}
-        <p class="hubc-privacy">${icon('shield-check')}<span>任务历史、私人文件、私人实例信息和本机路径不会随本次提交发出。</span></p></section>
+        <div class="hubc-check"><span class="hubc-check__control">${W.uiCheckbox({ id: 'ap-accept-share', label: '授权共享', checked: d.share, attrs: { 'data-act': 'decl-share' } })}</span><label for="ap-accept-share">我确认负责维护这个智能体。</label></div>
+        ${bundled.length ? `<div class="hubc-check"><span class="hubc-check__control">${W.uiCheckbox({ id: 'ap-accept-skills', label: '随 Agent 提交技能', checked: d.skills, attrs: { 'data-act': 'decl-skills' } })}</span><label for="ap-accept-skills">这些技能也会同时贡献：${esc(bundled.join('、'))}（只能被这个智能体使用）。</label></div>` : ''}
+        <p class="hubc-privacy">${icon('shield-check')}<span>连接器设置、模型偏好、安装状态和其他智能体都不会被发送。</span></p></section>
       <div class="hubc-submit-bar"><div><strong>提交后进入待审核</strong><span>${bundled.length ? '一次提交同时包含 Agent 和自建技能；' : ''}审核通过后仍需发布，才会进入 Hub 市场。</span></div><div class="hubc-submit-actions">${btn('提交审核', { role: 'primary', icon: 'upload', act: 'submit', disabled: !ok })}</div></div>`);
   }
   function finishSend() {
@@ -515,6 +513,7 @@
     if (act === 'decl-terms') s.declared.terms = el.checked;
     if (act === 'decl-share') s.declared.share = el.checked;
     if (act === 'decl-skills') s.declared.skills = el.checked;
+    if (act === 'decl-version') s.declared.version = el.value;
     render();
   });
   const announce = () => { try { parent.postMessage({ type: 'ready', tour: TOUR.map((t) => ({ key: t.key, label: t.label, group: t.group || 'other' })) }, '*'); parent.postMessage({ type: 'state', key: s.key }, '*'); } catch (e) { /* 独立打开时忽略 */ } };

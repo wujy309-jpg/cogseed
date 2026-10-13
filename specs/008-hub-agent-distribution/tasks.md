@@ -69,20 +69,27 @@
 
 ## Phase 5: 客户端尚欠（不依赖 Hub）
 
-- [ ] T030 市场 Agent 详情页的静态依赖清单（Hub 分发 / 预置 / 随包三组）`src/renderer/modules/marketplace.js`
-- [ ] T031 智能体卡片依赖状态 chip；依赖被停用时显示「依赖已停用」（规划里的 `agentReadiness` 已有，展示未接）`src/renderer/modules/agents.js`
+- [X] T030 市场 Agent 详情页的依赖清单（Hub 分发：将安装 / 已安装 / 已停用；随 Agent 提供）`src/renderer/modules/marketplace.js`（`_mpAgentDependenciesHtml`，数据来自 `marketplace.agentInstallPlan`）；测试并入 `test/renderer/marketplace-agent-install-plan.test.ts`
+- [X] T031 智能体卡片依赖状态：依赖被 Hub 停用 → 「依赖已停用」chip 并禁用「使用」；本机缺依赖 → 仅提示。`src/main/features/agent_dependency_state.ts`（与安装共用依赖规划）、`agents.ts::listAgents` 派生 `dependency_state`、`agents.js` 卡片、`style.css`；测试 `test/main/features/agent_dependency_state.test.ts`（7 条）
 - [ ] T032 Agent 更新流程与失败保留旧版的界面（现仅复用 Skill 更新通道）
 - [ ] T033 整仓 `npm run lint`（本期只对改动与新增文件跑过 eslint）
 - [ ] T034 重启应用后在真实页面人工验证贡献与安装（`scripts/restart-cogseed.sh`；本机另有运行中的开发版，需先确认）
+
+- [X] T042 原型对齐实现（2026-10-12）：贡献预览页改为 3 步、包内只有 `agent.json` 与 `skills/`、版本号必填、来源声明为原创 / 第三方、「已在本机移除」只列真实会移除的字段、去掉 D-07 提示与「预置」区分、私钥拦截只指出规则与字段；重新生成 `prototype.standalone.html`；README 增「原型与实现的对应关系」
+- [X] T043 贡献预览里 Hub 依赖显示技能名：`src/main/features/contribution/skill-display-name.ts`（读本机 Skill 的 frontmatter `name`，取不到退回 ID）、`agent-contribution.ts` 返回 `hubRefNames`、`hub-agent-contributions.js` 显示；测试 `skill-display-name.test.ts`（6 条）并入 `agent-contribution.test.ts`
+- [X] T044 平台卡片「社区贡献」标识：`agents.ts` 由安装记录的作者 uid 派生 `author_tier`（`"0"` 为官方，其他为社区，无信息不猜）、`agents.js` 显示；测试并入 `test/main/features/agents.test.ts` 与 `test/renderer/agent-card-contribution-states.test.ts`
+- [X] T045 市场 Agent 详情页「客户端兼容」行：用已有的 `min_app_version` 显示「需 CogSeed x.y+」，缺省不显示；测试并入 `test/renderer/marketplace-agent-install-plan.test.ts`
 
 ---
 
 ## Phase 6: 依赖 Hub / 产品（阻塞项）
 
-- [ ] T035 对齐私有 Skill `ownerAgent` 约定（提交写本机 `agent_id`、安装时改写）与 Hub 的「必须指向本 Agent」校验口径
-- [ ] T036 核实 `builtin:<name>` 在客户端指哪些能力（D-10：31 个内置 Agent 无一引用系统 Skill），再决定是否实现
+- [ ] T035 对齐私有 Skill `ownerAgent` 约定（提交写本机 `agent_id`、安装时改写）与 Hub 的「必须指向本 Agent」校验口径——**说明已起草**（`给嘉宇-ownerAgent与builtin说明.md`），待你发送与嘉宇回复
+- [X] T036 核实 `builtin:<name>` 在客户端指什么（D-10）：**客户端目前没有任何机制能解析它**——Agent 的 `skill_list` 经 `resolveSkillAllowlistRefs` 只解析 Skill 注册表里的条目，而 `skills.ts` 注明注册表"不再加载随包内置 Skill"、系统 Skill 目录只作为个别对话的只读额外根；31 个内置 Agent 无一引用系统 Skill；随客户端预置的内容本来就是 12 位十六进制的 Hub 内容（Hub 的 `builtinSeedIds.ts` 已收 58 个）。结论与建议见 `给嘉宇-ownerAgent与builtin说明.md`；是否实现待 Hub 与产品回应
+- [X] T042 预览高亮本机路径/疑似凭据 + 勾选已知晓才可确认（AG-FR-064，`agent-sensitive-hints.ts`，测试 18 项 + 流程/IPC/模型）
+- [X] T043 更新检查判定函数（`agent_catalog_update.ts`）：只依据 B-01 目录、必须翻完全部分页、目录里查不到≠有更新、停用≠新版本、永不降级；测试 18 项；接入真实 B-01 待联调
 - [ ] T037 Hub 白名单扩充（`content_type:'agent'`、`local_agent_id`、`metadata`）与 B-01/B-02/B-05 就绪后做**最小联调**：提交一个最简 Agent → 审核 → 发布 → 另一客户端安装
-- [ ] T038 依赖版本规则（D-13）取得产品书面认可；不兼容时「无回退」的限制写进验收
+- [ ] T038 依赖版本规则（D-13）取得产品书面认可；不兼容时「无回退」的限制写进验收——**说明已起草**（`给中扬-需要产品确认的事项.md`，含更新流程、本机路径处理、Brief 同步、联调场景与 Windows），待你发送与中扬回复
 - [ ] T039 联合冻结记录：`agent-package.schema.json`、接口清单、夹具三样一起；Hub 与客户端各自签字，联调通过 ≠ 冻结
 - [ ] T040 验收记录（沿用 001 的 `acceptance-*.md` 分层写法：真实界面 / Hub HTTP 联调 / 自动化 / 未执行）
 - [ ] T041 提交与 PR：需用户另行明确授权；合并 `develop` 后重核对 renderer↔main IPC 并跑 `npm run typecheck`
