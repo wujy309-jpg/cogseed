@@ -4852,6 +4852,7 @@ async function runWorkerLoop(state: CidState, w: WorkerState): Promise<void> {
           log.warn(`run terminal persistence failed cid=${w.cid}: ${(ledgerErr as Error).message}`);
         }
       }
+        await maybeEnqueueActorReport(w.uid, w.cid, item.runId, item.actor.id, item.actor.name || "");
     } finally {
       w.currentTurnId = null;
       w.currentRunId = null;
@@ -4978,6 +4979,40 @@ type ActorTurnResult =
       terminalStatus: TaskTerminalStatus;
     };
 
+  /**
+   * R-11: ask the commander for exactly one reporting round once every actor of
+   * this run has reached a terminal. Shared by the normal actor-result path AND
+   * the worker-failure path — a failed worker must produce a *degradation* report
+   * ("X failed: reason") instead of dying silently, which is exactly what happened
+   * on 2026-10-13: a network failure ("fetch failed") left report_enqueued unset
+   * and the commander never said anything.
+   */
+  async function maybeEnqueueActorReport(
+    uid: string,
+    cid: string,
+    runId: string | undefined,
+    actorId: string,
+    actorName: string,
+  ): Promise<void> {
+    if (!runId) return;
+    try {
+      const runStore = await import("./run_store");
+      const run = await runStore.readRun(uid, cid, runId);
+      if (!runStore.shouldEnqueueActorReport(run)) return;
+      await runStore.markActorReportEnqueued(uid, cid, runId);
+      await enqueue({
+        uid,
+        cid,
+        fromActorId: actorId,
+        text: t("chat.actor_report_ready", { name: actorName || actorId }),
+        forceTo: [COMMANDER_ID],
+        dispatch: true,
+      });
+    } catch (err) {
+      log.warn(`actor report round enqueue failed cid=${cid}: ${(err as Error).message}`);
+    }
+  }
+
 async function recordMemberRunTurnResult(
   state: CidState,
   item: QueueItem,
@@ -5028,31 +5063,9 @@ async function recordMemberRunTurnResult(
     });
   }
     // R-11 (decision 2026-10-13): the commander waits for the actors it
-    // dispatched and then reports — the shape this agent uses for its own
-    // sub-agents (dispatch returns a handle, completion wakes the parent, the
-    // parent reports). Once every actor of this run has reached a terminal and at
-    // least one contributed, enqueue exactly one reporting round for the
-    // commander. The decision is clock-free (`shouldEnqueueActorReport`), so the
-    // existing idle/turn budgets remain the only time-based stops, and the latch
-    // keeps it to one round per dispatch batch.
-    try {
-      const runStore = await import('./run_store');
-      const run = await runStore.readRun(state.uid, state.cid, item.runId);
-      if (runStore.shouldEnqueueActorReport(run)) {
-        await runStore.markActorReportEnqueued(state.uid, state.cid, item.runId);
-        await enqueue({
-          uid: state.uid,
-          cid: state.cid,
-          fromActorId: actor.id,
-          text: t('chat.actor_report_ready', { name: actor.name || actor.id }),
-          forceTo: [COMMANDER_ID],
-          dispatch: true,
-        });
-      }
-    } catch (err) {
-      // Reporting must never break the actor's own bookkeeping.
-      log.warn(`actor report round enqueue failed cid=${state.cid}: ${(err as Error).message}`);
-    }
+    // dispatched and then reports. Shared with the worker-failure path so a failed
+    // worker produces a degradation report instead of dying silently.
+    await maybeEnqueueActorReport(state.uid, state.cid, item.runId, actor.id, actor.name || "");
 }
 
 type CoordinatorTurnContext = {
