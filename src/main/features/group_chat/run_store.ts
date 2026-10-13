@@ -141,6 +141,14 @@ export interface RunRecord {
   corrections: number;
   actors: RunActorRecord[];
   status: 'running' | 'completed' | 'failed' | 'blocked' | 'stopped';
+  /**
+   * Set once the "all actors finished → ask the commander to report" round has
+   * been enqueued. Required by the R-11 decision (2026-10-13): the commander must
+   * not hand in a final answer while its dispatched actors are still running, and
+   * the reporting round must happen **once per dispatch batch** so a
+   * report→dispatch→report cycle cannot flap.
+   */
+  actor_report_enqueued?: boolean;
   summary?: RunSummary;
   summary_publication?: RunSummaryPublication;
 }
@@ -594,6 +602,44 @@ export async function createRun(input: CreateRunInput): Promise<RunRecord | null
     sequential: record.input_snapshot.requires_sequential,
   });
   return record;
+}
+
+/**
+ * Whether the commander still owes a reporting round for this run (R-11).
+ *
+ * Rule chosen by the requirement owner on 2026-10-13: the commander waits for the
+ * actors **it dispatched**, and reports once they are finished — the mechanism
+ * this agent uses for its own sub-agents (dispatch returns a handle; completion
+ * wakes the parent; the parent reports). Therefore:
+ *
+ *   - any actor still `pending`  → not yet: keep waiting (the run is not owed a
+ *     report while a worker can still deliver);
+ *   - all actors terminal, but nothing contributed → nothing to report;
+ *   - all actors terminal and at least one contributed → report exactly once
+ *     (`actor_report_enqueued` is the anti-flap latch).
+ *
+ * Pure: takes the record, returns a decision. No clocks, so the caller stays free
+ * to apply the existing idle/turn budgets rather than a wall-clock timeout.
+ */
+export function shouldEnqueueActorReport(record: RunRecord | null | undefined): boolean {
+  if (!record || record.actor_report_enqueued) return false;
+  const actors = Array.isArray(record.actors) ? record.actors : [];
+  if (actors.length === 0) return false;
+  if (actors.some((actor) => actor.terminal === 'pending')) return false;
+  return actors.some((actor) => (
+    actor.terminal === 'done'
+    && ((actor.produced?.messages ?? 0) > 0 || (actor.produced?.artifacts?.length ?? 0) > 0)
+  ));
+}
+
+/** Latch the reporting round so one dispatch batch reports once (R-11). */
+export async function markActorReportEnqueued(
+  uid: string,
+  cid: string,
+  runId: string,
+  projectHint?: string | null,
+): Promise<RunRecord | null> {
+  return updateRun(uid, cid, runId, (record) => ({ ...record, actor_report_enqueued: true }), projectHint);
 }
 
 export async function readRun(
