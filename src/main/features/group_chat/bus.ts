@@ -9650,14 +9650,13 @@ async function gateNestedAgentWake(
   if (actor.kind !== "agent" || allowLegacyGroupChatFormalAgentExecutorForTest())
     return null;
 
-  // One-shot dispatch for members the user already brought in (2026-10-13): an
-  // explicit @ of an agent that is already a member of this conversation is an
-  // unambiguous instruction, so it must not be interrupted by a wake-approval
-  // prompt. The live run showed the cost of prompting anyway — the commander
-  // answered "需要你确认", the user had to approve, and the flow only finished after
-  // a manual retry. Approval therefore stays for agents that are NOT yet members
-  // (pulled in fresh, external instances, or anything the user has not already
-  // added). Failing to read members falls through to the gate, i.e. fails closed.
+  // Membership rule (requirement owner, 2026-10-13): an agent that has ALREADY
+  // joined this conversation is woken directly — a repeat @ of a known member is
+  // unambiguous. The FIRST time an agent enters the conversation, approval is
+  // required as before. Membership is therefore the criterion, not the run: the
+  // run's member list is empty at gate time (it is created from mentions), while
+  // the member table is written when the user approves the first wake. Failing to
+  // read members falls through to the gate, i.e. fails closed.
   try {
     // The run record already knows who this run is about (`member_agent_ids`),
     // and the 21:49 run logged `members: 1` — so consult it first: the member
@@ -9676,7 +9675,12 @@ async function gateNestedAgentWake(
         return null;
       }
     }
-    const members = await readMembers(state.uid, state.cid, null);
+    // Membership must be read with the conversation's project hint: passing null
+    // looked at the wrong layout on 2026-10-13 and missed an agent that had
+    // already joined, so the wake prompt appeared again.
+    const chatsFeature = await import("../chats");
+    const conversation = await chatsFeature.getConversation(state.uid, state.cid).catch(() => null);
+    const members = await readMembers(state.uid, state.cid, conversation?.project_id ?? null);
     if (members.actors.some((member) => member.kind === "agent" && member.id === actor.id)) {
       log.info("wake approval skipped: agent is already a member of this conversation", {
         cid: state.cid,
