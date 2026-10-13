@@ -98,15 +98,16 @@ function apiForProtocol(protocol: CustomProvider['protocol']): Api {
  * 上下文（模型层拿不到），先满足路由的最低要求。
  */
 export function customProviderHeaders(baseUrl: string, providerId: string): Record<string, string> | undefined {
-  // Host match must not require a trailing slash: a baseUrl configured as
-  // `https://opencode.ai` (no path) previously missed this branch, so the request
-  // went out without `x-opencode-session` and the endpoint answered
-  // 400 {"type":"MissingSessionID"} — exactly what killed the worker's first
-  // attempt twice on 2026-10-13 (cid 47131526c166, 4b23a22d5dcc).
-  if (/^https:\/\/(?:[a-z0-9-]+\.)*opencode\.ai(?::\d+)?(?:\/|$)/i.test(String(baseUrl || '').trim())) {
-    return { 'x-opencode-session': `cogseed-${providerId}` };
-  }
-  return undefined;
+  // Send the OpenCode routing header unconditionally.
+  //
+  // Relays in front of OpenCode Zen/Go answer 400 {"type":"MissingSessionID"}
+  // when it is absent — and the *configured* baseUrl is the relay, not
+  // opencode.ai, so a host-based match never fires for exactly the setups that
+  // need it (2026-10-13: provider cp-mv55dx7q-1 returned OpenCode's error while
+  // its baseUrl is not an opencode host; the earlier "trailing slash" fix could
+  // not help). Unknown request headers are ignored by other endpoints, and the
+  // value only has to be stable per provider for routing.
+  return { 'x-opencode-session': `cogseed-${providerId}` };
 }
 
 /**
