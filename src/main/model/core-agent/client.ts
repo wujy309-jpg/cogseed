@@ -535,6 +535,11 @@ function toolCounter(stats: ModelRunLogDiagnostics, rawName: unknown): ToolRunLo
   return stats.toolCounts[name];
 }
 
+/** A turn that takes longer than this before its first stream event is worth a
+ *  warn: it separates "endpoint/network stall before the response" from "slow
+ *  stream mid-turn" (N-05). Not a timeout — the provider SDK still owns that. */
+const FIRST_BYTE_SLOW_MS = 30_000;
+
 const MAX_TOOL_TIMELINE_LOG_ENTRIES = 80;
 const MAX_RUN_TIMELINE_LOG_ENTRIES = 120;
 
@@ -1651,12 +1656,31 @@ export async function* streamChatWithModel(opts: ChatOptions): AsyncGenerator<St
     // terminal final/error synthesis. We re-yield every event it produces,
     // resetting the idle timer on each one.
     let eventCount = 0;
+    // N-05 visibility: time to the first stream event. "Request timed out." is
+    // raised by the provider SDK, not by us, so the useful question is *where* a
+    // slow turn spends its time — before the first byte (endpoint/network or a
+    // pre-header stall) or between events mid-stream. The provider line below
+    // makes that answer retrievable from the log alone.
+    let firstStreamEventAt: number | null = null;
     const mappedEvents = mapCoreAgentEvents(captureResult(rawEvents), { userId, skillDisplayNameById, agentDisplayNameById });
     for await (const ev of stopStreamOnAbort(mappedEvents, controller.signal, turnTag)) {
       // The raw-event wrapper owns phase tracking. Reset here too because
       // mapped UI events can be synthesized from accumulated raw state.
       resetIdle();
       eventCount += 1;
+      if (firstStreamEventAt === null) {
+        firstStreamEventAt = Date.now();
+        const firstByteMs = firstStreamEventAt - runStartedAt;
+        log.info('model turn first byte', { ...turnLogContext, ms: firstByteMs });
+        if (firstByteMs >= FIRST_BYTE_SLOW_MS) {
+          log.warn('model turn slow to first byte', {
+            ...turnLogContext,
+            ms: firstByteMs,
+            provider: providerId,
+            model: modelId,
+          });
+        }
+      }
       let outgoing: StreamEvent = ev;
       if (ev.type === 'error' && !(ev as StreamEvent).aborted) {
         terminalFailureCode = (ev as StreamEvent).failureCode || 'model_stream_error';
