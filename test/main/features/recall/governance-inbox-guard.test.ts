@@ -71,12 +71,13 @@ describe('governance inbox anti-drift guards (specs/010 T038)', () => {
     expect(adapterSource).not.toContain('acknowledgedEscalations');
   });
 
-  it('④ 模型工具面未扩：全量工具名集合保持 72，治理动作不是模型工具', async () => {
+  it('④ 模型工具面仅按批准方案扩展：全量工具名集合保持 73，治理动作不是模型工具', async () => {
     // 从 catalog 常量派生（不抄名单——012 的 tag-ranking-guard 另有全量冻结）。
     const { TOOL_CATALOG } = await import('../../../../src/main/model/core-agent/tool-catalog');
     const names = TOOL_CATALOG.map((tool) => tool.name);
-    // 2026-09-28：71→72（09-27 本体图谱切片新增 list_ontology_graph，基线随功能更新）。
-    expect(names.length).toBe(72);
+    // 2026-09-28：71→72（新增 list_ontology_graph）；2026-10-03：72→73
+    //（新增受治理的 ontology_query，只返回关系证据，不读取资产正文）。
+    expect(names.length).toBe(73);
     // 本 feature 的新动作名是**用户的界面动作**，不得注册成模型工具。
     for (const notTool of ['classify_ability_assets', 'set_rule_boundary', 'claim_conflict']) {
       expect(names).not.toContain(notTool);

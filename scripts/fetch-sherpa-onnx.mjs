@@ -15,6 +15,7 @@ import * as https from 'node:https';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { pipeline } from 'node:stream/promises';
+import { createRequire } from 'node:module';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const pcRoot = path.resolve(here, '..');
@@ -78,11 +79,37 @@ function download(url, outPath) {
   });
 }
 
+function runExtraction(command, args, cwd, label) {
+  const r = spawnSync(command, args, {
+    cwd,
+    stdio: ['ignore', 'inherit', 'inherit'],
+    timeout: 120_000,
+  });
+  if (r.error) throw new Error(`${label} extraction failed (${r.error.code || r.error.message})`);
+  if (r.status !== 0) throw new Error(`${label} extraction failed (exit ${r.status}, signal ${r.signal || 'none'})`);
+}
+
 function extract(tarball, dstDir) {
   console.log(`[sherpa-onnx] extracting ${path.basename(tarball)}`);
-  // .tar.bz2 — 系统 tar（macOS / Linux / WSL / 现代 Windows 都有）。
-  const r = spawnSync('tar', ['-xjf', tarball, '-C', dstDir], { stdio: 'inherit' });
-  if (r.status !== 0) throw new Error(`tar extraction failed (exit ${r.status})`);
+  if (process.platform !== 'win32') {
+    runExtraction('tar', ['-xf', path.basename(tarball), '-C', dstDir], path.dirname(tarball), 'tar');
+    return;
+  }
+
+  // Windows bsdtar's external bzip2 pipe can stall even after the archive is
+  // closed. Reuse the existing 7zip-bin build dependency to decompress first;
+  // native tar then reads an ordinary local tar file without a filter process.
+  const staging = fs.mkdtempSync(path.join(dstDir, '.sherpa-extract-'));
+  try {
+    const { path7za } = createRequire(import.meta.url)('7zip-bin');
+    runExtraction(path7za, ['e', path.basename(tarball), `-o${staging}`, '-y', '-bd'], path.dirname(tarball), '7zip');
+    const plainTar = path.basename(tarball, '.bz2');
+    if (!fs.existsSync(path.join(staging, plainTar))) throw new Error('7zip extraction did not produce the tar archive');
+    const tar = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+    runExtraction(tar, ['-xf', plainTar, '-C', dstDir], staging, 'tar');
+  } finally {
+    fs.rmSync(staging, { recursive: true, force: true });
+  }
 }
 
 async function main() {

@@ -115,6 +115,7 @@ export const RUNTIME_HOST_TOOL_NAMES = Object.freeze([
   // Internal only: these are never exposed in the Runtime model tool catalog.
   // They let an isolated Worker wait for the main-process human approval gate
   // and append the eventual execution outcome to its local audit journal.
+  'desktop_connector_list_tools', 'desktop_connector_call_tool',
   'action_approval_request', 'action_approval_execution',
 ] as const);
 

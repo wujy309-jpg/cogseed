@@ -79,6 +79,34 @@ describe('Recall message usage feedback', () => {
     ]);
   });
 
+  it('accepts ontology-derived citations from Semantica feedback cards', async () => {
+    await appendMessage('cid-ontology', {
+      id: 'msg-ontology',
+      ts: new Date().toISOString(),
+      from: 'commander',
+      to: ['user'],
+      turn_id: 'turn-ontology',
+      text: 'Answer',
+      recall_citations: [{
+        asset_id: 'asset-ontology',
+        title: 'Relation-expanded rule',
+        type: 'rule',
+        version: '1',
+        scope: 'general',
+        projection_id: 'proj-ontology',
+        match_method: 'ontology',
+      }],
+    });
+    const feedback = await import('../../../../src/main/features/recall/usage-feedback-service');
+    const result = await feedback.recordRecallMessageFeedback('user-a', {
+      cid: 'cid-ontology',
+      messageId: 'msg-ontology',
+      feedback: 'positive',
+    });
+
+    expect(result).toMatchObject({ feedback: 'positive', citationCount: 1, recordedCount: 1 });
+  });
+
   it('rejects messages without verified assistant citations', async () => {
     await appendMessage('cid-a', {
       id: 'msg-no-citations', ts: new Date().toISOString(), from: 'commander', to: ['user'], text: 'Answer',

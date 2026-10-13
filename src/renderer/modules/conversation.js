@@ -2936,6 +2936,9 @@ function _forgetCidRecipient(cid) {
   if (_agentStatusPopoverCid === cid) _closeAgentStatusPopover();
   setGroupConversationBusy(cid, false);
   _latestInFlight.delete(cid);
+  // 会话被丢弃时要连"等批准"标记一起清：否则该 cid 的标签会留在内存里，
+  // 一旦同一 cid 再次进入列表就会顶着一个过期状态。
+  _latestWaitingApproval.delete(cid);
   _clearBackgroundGroupEvents(cid);
   const infoTimer = _conversationInfoFileRefreshTimers.get(cid);
   if (infoTimer) clearTimeout(infoTimer);
@@ -2956,6 +2959,10 @@ function _forgetCidRecipient(cid) {
 // state_changed events coalesce.
 const _autoEvalInflight = new Set(); // cid set
 const _latestInFlight = new Map();   // cid → string[] (mirrors state_changed.state.in_flight)
+// cid → true 当且仅当 main 的 /runtime 报 waiting_approval：该会话只剩「等用户点
+// 批准」这一件事（run 停在 running、actor 停在 pending，bus 不会收口，wake 也不会
+// 过期）。这时它不是"在跑"，不该转圈；侧栏改用共享状态标签如实说明在等谁。
+const _latestWaitingApproval = new Map(); // cid → boolean
 const _runtimeRecoveryTimers = new Map(); // cid → timeout id
 const _lastGroupWorkEventAt = new Map(); // cid → ms timestamp of process/artifact/assistant message
 const _groupObserverCtrls = new Map();   // cid → recovery observer controller
@@ -3237,6 +3244,8 @@ async function _syncPendingActorsFromRuntime(cid, opts = {}) {
   const hasActiveTurnsField = Array.isArray(data.active_turns);
   const activeTurns = _normaliseActiveTurns(data.active_turns);
   const processing = _conversationRuntimeIsActive(data);
+  // 等批准与"在跑"互斥：真在跑就转圈，只有等用户决定时才显示状态标签。
+  _setConvWaitingApproval(cid, data.waiting_approval === true && !processing);
   if (window.ConversationInfo) {
     try { window.ConversationInfo.refreshFiles(cid, { silent: true }); } catch (_) {}
   }
@@ -3278,6 +3287,7 @@ async function _syncPendingActorsFromRuntime(cid, opts = {}) {
     _observeConversationRunFromPlanAction(cid, {
       attachExisting: true,
       allowWithController: true,
+      source: 'sync_pending_actors_with_controller',
     });
   }
   if (!hasLiveController) {
@@ -3286,7 +3296,7 @@ async function _syncPendingActorsFromRuntime(cid, opts = {}) {
     // stale controller state, or reconnect), attach the group event stream
     // so plan-triggered agents keep streaming instead of only appearing
     // after the final history poll.
-    _observeConversationRunFromPlanAction(cid, { attachExisting: true });
+    _observeConversationRunFromPlanAction(cid, { attachExisting: true, source: 'sync_pending_actors' });
   }
   if (!inFlight.length && !activeTurns.length) return false;
 
@@ -5353,9 +5363,10 @@ function _renderCognitionSaveReceiptsHtml(receipts) {
 
 
 
-// ── Recall 引用反馈 →「本次使用的记忆」合并卡（拍板项 #8）──────────────────
-// 2026-09-28 四病整改：引用卡（事后回执）与投影卡（事前面板）合并为一张
-// 「本次使用的记忆」卡。卡片的完整实现收在 recall-projection-card.js（同步
+// ── Recall 使用反馈 →「本轮资产检索与带入状态」合并卡（拍板项 #8）─────────
+// 2026-09-28 四病整改：带入回执与投影卡（事前面板）合并为一张状态卡；
+// 它证明资产被选中或进入提示词，不单独证明最终回答实际采用。卡片实现收在
+// recall-projection-card.js（同步
 // 骨架 recallMemoryCardHtml + 投影数据异步补全 mountRecallProjectionCard）；
 // 这里只保留同步入口与反馈绑定。旧互斥抑制（有投影卡就不出引用卡）已删。
 
@@ -5881,6 +5892,8 @@ async function loadConversations(options = {}) {
       if (data.ok) {
         if (requestGeneration !== _conversationListLocalGeneration) return;
         conversations = data.conversations || [];
+        _applyWaitingApprovalFromRows(conversations);
+        _initWaitingApprovalSync();
         _conversationDeferredBuckets = startup
           ? { last30: Number(data.deferred_unprojected?.last30) || 0, older: Number(data.deferred_unprojected?.older) || 0 }
           : { last30: 0, older: 0 };
@@ -6195,14 +6208,99 @@ function _renderConversationSidebarItem(c, opts = {}) {
   `;
 }
 
-// SidebarTasks：只把真实 running > 0 显示成紧邻标题的旋转指示器。
-// 排队与计划数据仍保留在各自状态源中，不挤占紧凑的侧栏任务行。
+// SidebarTasks：三态互斥——真在跑 → 转圈；只剩「等用户批准」→ 共享状态标签
+// （uiStatusPill，见 ui-status.js）；其余 → 什么都不显示。排队与计划数据仍保留在
+// 各自状态源中，不挤占紧凑的侧栏任务行。
+// 列表/单条 hydrate 返回的 `waiting_approval` 直接落进映射：**陈旧会话不会被
+// 轮询**（闲置的会话没有 runtime 同步），它的"等批准"只能靠这条路标出来。
+// 只处理本次返回里出现的行，不动其它 cid。
+function _applyWaitingApprovalFromRows(rows) {
+  if (!Array.isArray(rows)) return;
+  for (const row of rows) {
+    const cid = row && row.conversation_id;
+    if (!cid) continue;
+    _setConvWaitingApproval(cid, row.waiting_approval === true);
+  }
+}
+
+// 绝对同步：以 main 的索引为准，对**全部已知行**增/删标记。只增不减会让标签在
+// 用户批准/中止之后一直挂着（真机反馈）。兜底轮询 60s 一次，且只在窗口可见时。
+let _waitingApprovalSyncTimer = null;
+async function _syncWaitingApprovalFlags() {
+  try {
+    const api = window.cogseed;
+    if (!api || typeof api.invoke !== 'function') return;
+    const res = await api.invoke('conversations.waitingApproval', {});
+    if (!res || res.ok === false) return;
+    const flagged = new Set(
+      (Array.isArray(res.conversations) ? res.conversations : []).map(String).filter(Boolean),
+    );
+    const known = new Set();
+    for (const conv of (Array.isArray(conversations) ? conversations : [])) {
+      if (conv && conv.conversation_id) known.add(String(conv.conversation_id));
+    }
+    if (currentCid) known.add(String(currentCid));
+    const changed = [];
+    for (const cid of known) {
+      const before = _latestWaitingApproval.has(cid);
+      _setConvWaitingApproval(cid, flagged.has(cid));
+      if (before !== _latestWaitingApproval.has(cid)) changed.push(cid);
+    }
+    for (const cid of [..._latestWaitingApproval.keys()]) {
+      if (!known.has(cid)) { _latestWaitingApproval.delete(cid); changed.push(cid); }
+    }
+    // 只增量刷新受影响的行：整树重绘会牵动分页/懒加载流程（测试与真机都验证过）。
+    for (const cid of changed) {
+      if (typeof _refreshConvTaskLine === 'function') _refreshConvTaskLine(cid);
+    }
+  } catch (_) { /* 同步失败不影响渲染 */ }
+}
+
+let _waitingApprovalSyncWired = false;
+function _initWaitingApprovalSync() {
+  if (!_waitingApprovalSyncWired) {
+    _waitingApprovalSyncWired = true;
+    // 控制中心批准/拒绝唤醒后广播：侧栏立刻重算，不等下一次列表拉取。
+    if (typeof window.addEventListener === 'function') {
+      window.addEventListener('wake-approval-change', () => { void _syncWaitingApprovalFlags(); });
+    }
+  }
+  if (_waitingApprovalSyncTimer) return;
+  // 宿主可能没有 setInterval（隔离渲染夹具就是这样，见
+  // "renders the list without throwing in a host that has no setInterval"）。
+  if (typeof setInterval !== 'function') return;
+  _waitingApprovalSyncTimer = setInterval(() => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    void _syncWaitingApprovalFlags();
+  }, 60_000);
+}
+
+function _setConvWaitingApproval(cid, waiting) {
+  if (!cid) return;
+  if (waiting) _latestWaitingApproval.set(cid, true);
+  else _latestWaitingApproval.delete(cid);
+}
+
 function _convTaskStatusLine(cid) {
   if (!cid) return '';
   const inFlight = (_latestInFlight.get(cid) || []).filter(Boolean).length;
-  if (inFlight <= 0) return '';
-  const runningLabel = escapeHtml(t('chat.status.running'));
-  return `<span class="conv-task-indicator" role="img" aria-label="${runningLabel}" title="${runningLabel}"></span>`;
+  if (inFlight > 0) {
+    const runningLabel = escapeHtml(t('chat.status.running'));
+    return `<span class="conv-task-indicator" role="img" aria-label="${runningLabel}" title="${runningLabel}"></span>`;
+  }
+  if (_latestWaitingApproval.get(cid)) {
+    const label = t('chat.status.waiting_approval');
+    // 共享状态组件（禁止页面自造状态样式）；ui-status 未加载时降级为不显示，
+    // 也不能退回字面 DOM。
+    if (typeof uiStatusPill !== 'function') return '';
+    return uiStatusPill({
+      label,
+      tone: 'attention',
+      className: 'conv-task-pill',
+      attrs: { title: label },
+    });
+  }
+  return '';
 }
 
 // state_changed 后只替换该行的运行指示器，不重绘任务树。
@@ -6210,7 +6308,9 @@ function _refreshConvTaskLine(cid) {
   if (!cid) return;
   const item = document.querySelector(`.conv-item[data-cid="${cid}"]`);
   if (!item) return;
+  // 转圈与「等批准」标签互斥：换状态前两者都要摘掉，避免同时出现两个指示器。
   item.querySelector('.conv-task-indicator')?.remove();
+  item.querySelector('.conv-task-pill')?.remove();
   const indicator = _convTaskStatusLine(cid);
   if (!indicator) return;
   const title = item.querySelector('.conv-item-title, .conv-item-title-input');
@@ -6362,7 +6462,6 @@ async function _saveConversationTitle(cid, raw, opts = {}) {
     renderConversationList();
     _refreshChatHeader();
     if (typeof renderProjectsSection === 'function') renderProjectsSection();
-    if (typeof _renderProjectAllTasks === 'function') _renderProjectAllTasks();
     if (window.ConversationInfo && typeof window.ConversationInfo.refresh === 'function') {
       window.ConversationInfo.refresh(cid, { silent: true });
     }
@@ -8868,7 +8967,7 @@ async function loadConversationHistory(cid, opts = {}) {
       // Opening/reloading into an already-running plan still needs the
       // group event stream; runtime polling can recover placeholders, but
       // it cannot replay live text deltas.
-      _observeConversationRunFromPlanAction(cid, { attachExisting: true });
+      _observeConversationRunFromPlanAction(cid, { attachExisting: true, source: 'load_history_running' });
       _startRuntimeActorRecovery(cid);
       _updateConvSendUI(cid);
     } else if (isConvPending(cid)) {
@@ -8910,7 +9009,7 @@ async function loadConversationHistory(cid, opts = {}) {
         // Same recovery path for a detached pending state: reconnect to the
         // live group event stream so the bubble streams instead of waiting
         // for the final history reconcile.
-        _observeConversationRunFromPlanAction(cid, { attachExisting: true });
+        _observeConversationRunFromPlanAction(cid, { attachExisting: true, source: 'load_history_pending' });
         _startRuntimeActorRecovery(cid);
       }
       state.needsIndicator = false;
@@ -9941,7 +10040,7 @@ function appendChatMessage(message, autoScroll = true, opts = {}) {
   const coalescedProjectionCard = coalescedProjectionMatch
     ? { projectionId: coalescedProjectionMatch.projectionId, authorization: 'model_selected' }
     : null;
-  // 两卡互斥抑制已删（拍板项 #8）：投影与引用合并进同一张「本次使用的记忆」
+  // 两卡互斥抑制已删（拍板项 #8）：投影与带入回执合并进同一张状态卡
   // 卡，引用行不再因投影卡在场而被抑制。
   const projectionCardForBubble = _projectionReceiptForMessage(message)
     || message.recall_projection_card
@@ -10177,7 +10276,7 @@ function appendChatMessage(message, autoScroll = true, opts = {}) {
     if (bubble) _mountAssetApprovalCard(bubble, message.asset_change_approval_card);
   }
 
-  // 「本次使用的记忆」合并卡补全（拍板项 #8，2026-09-28）：引用卡与投影卡
+  // 资产检索与带入状态卡补全（拍板项 #8，2026-09-28）：带入回执与投影卡
   // 合并为一张——有引用数据时同步骨架已随气泡渲染（recallCitationsHtml），
   // 这里把投影数据（带入/省略/状态/撤销口）补进同一张卡；没有骨架时（仅投影
   // 无引用）创建空 host 交给合并卡填充。其它授权维持"不挂卡"现状（2026-08-17
@@ -10775,7 +10874,7 @@ async function _resolveWakeRequest(card, request, cid, decision) {
   card.dataset.busy = '1';
   for (const button of card.querySelectorAll('button')) button.disabled = true;
   const observer = decision === 'approve'
-    ? _observeConversationRunFromPlanAction(cid, { attachExisting: true, allowWithController: true })
+    ? _observeConversationRunFromPlanAction(cid, { attachExisting: true, allowWithController: true, source: 'wake_request_approve' })
     : null;
   try {
     const res = await apiFetch(`/api/conversations/${encodeURIComponent(cid)}/wake-requests/${encodeURIComponent(request.id)}/decision`, {
@@ -14350,6 +14449,18 @@ function _observeConversationRunFromPlanAction(cid, opts = {}) {
   if (allowWithController && _groupObserverCtrls.has(cid)) return null;
   if (!attachExisting && (pendingConvs.has(cid) || isGroupConversationBusy(cid))) return null;
 
+  // The observer opens a second `groupChat.events` subscription for this cid,
+  // which runs alongside the primary `conversations.sendStream` and relays the
+  // same event volume. We could not tell from the logs which code path starts
+  // it in the common send flow (the 2s `_scheduleBackendRunRediscovery` debounce
+  // did not match the observed 229ms gap), so record the caller here.
+  _convLog.info('conversation run observer started', {
+    cid,
+    source: String(opts.source || 'unspecified'),
+    attach_existing: attachExisting,
+    allow_with_controller: allowWithController,
+  });
+
   const controller = new AbortController();
   let msgEl = null;
   let sawActivity = attachExisting;
@@ -14867,6 +14978,7 @@ function _createStreamingAssistantMessage(container, opts = {}) {
   // to where it belongs once we know the message's true timestamp).
   msg.dataset.ts = String(Date.now());
   _appendBeforeSpacer(container, msg);
+  _streamingUpdateActivity(msg, t('chat.activity_receiving'));
   return msg;
 }
 
@@ -15053,7 +15165,7 @@ function _eventProcessKind(evt, text) {
   if (stream === 'error') return 'err';
   if (stream === 'cli') {
     const type = String(data.type || '').toLowerCase();
-    if (type === 'tool-event') return 'tool';
+    if (type === 'tool-event') return data.isError === true || data.error ? 'err' : 'tool';
     if (type === 'process-info') return 'bound';
     if (type === 'stderr-line' || type === 'idle') return 'warn';
     if (type === 'permission-request') return 'info';
@@ -15246,7 +15358,10 @@ function _streamingUpdateActivity(msg, text) {
     );
   }
   const textEl = row.querySelector('[data-role="activity-text"]');
+  const meta = row.querySelector('[data-role="activity-meta"]');
   const label = String(text || '').replace(/\s+/g, ' ').trim();
+  row.classList.remove('is-terminal', 'is-completed', 'is-failed', 'is-cancelled');
+  row.dataset.activityState = 'running';
   if (textEl) {
     if (label) {
       textEl.textContent = label.length > 88 ? label.slice(0, 88) + '…' : label;
@@ -15256,6 +15371,7 @@ function _streamingUpdateActivity(msg, text) {
       textEl.textContent = t('chat.activity_working');
     }
   }
+  if (meta) meta.hidden = false;
   row.style.display = '';
   _streamingPaintActivityMeta(msg);
   _streamingEnsureActivityTimer(msg);
@@ -15277,6 +15393,26 @@ function _streamingEnsureActivityTimer(msg) {
     }
     _streamingPaintActivityMeta(msg);
   }, 1000);
+}
+
+function _streamingFinishActivity(msg, text, state) {
+  if (!msg) return;
+  msg.dataset.activityDone = '1';
+  if (msg._activityTimer) {
+    clearInterval(msg._activityTimer);
+    msg._activityTimer = null;
+  }
+  const row = msg.querySelector('[data-role="activity"]');
+  if (!row) return;
+  const textEl = row.querySelector('[data-role="activity-text"]');
+  if (textEl) textEl.textContent = String(text || '').replace(/\s+/g, ' ').trim();
+  row.classList.remove('is-terminal', 'is-completed', 'is-failed', 'is-cancelled');
+  row.classList.add('is-terminal', `is-${state || 'completed'}`);
+  row.dataset.activityState = state || 'completed';
+  row.style.display = '';
+  _streamingPaintActivityMeta(msg);
+  const meta = row.querySelector('[data-role="activity-meta"]');
+  if (meta) meta.hidden = true;
 }
 
 function _activityMonotonicNow() {
@@ -15308,40 +15444,211 @@ function _streamingPaintActivityMeta(msg) {
   meta.textContent = `${mm}:${ss}`;
 }
 
-function _streamingStopActivity(msg) {
-  if (!msg) return;
-  msg.dataset.activityDone = '1';
-  if (msg._activityTimer) {
-    clearInterval(msg._activityTimer);
-    msg._activityTimer = null;
-  }
-  const row = msg.querySelector('[data-role="activity"]');
-  if (row) row.style.display = 'none';
+function _activityToolAction(toolName) {
+  const name = String(toolName || '').toLowerCase();
+  if (/^(read|read_file|stat_file|list_dir|search_files|find_files|glob|grep|web_search|websearch|web_fetch|webfetch)$/.test(name)) return 'read';
+  if (/^(write|edit|multiedit|notebookedit|write_file|edit_file|create_file|delete_file|move_file|copy_file|apply_patch|patch_apply)$/.test(name)) return 'write';
+  if (/^(exec_command|run_command|bash|shell|run_worker)$/.test(name)) return 'run';
+  return 'use';
 }
 
-// Map one structured live event onto the concise activity strip. Retry is a
-// reliable explicit phase; every other process event stays at generic working
-// so incomplete event streams cannot overstate the exact current action.
-function _streamingUpdateActivityFromEvent(msg, evt) {
-  const data = (evt && evt.data) || {};
-  const stream = (evt && evt.stream) || '';
-  const cliType = stream === 'cli' ? String(data.type || '').toLowerCase() : '';
+function _activityDurationMs(msg) {
+  const elapsed = Number(msg && msg._activityClock && msg._activityClock.elapsedMs);
+  if (Number.isFinite(elapsed) && elapsed >= 0) return elapsed;
+  const started = Number(msg && msg.dataset && msg.dataset.activityStart);
+  return Number.isFinite(started) && started > 0 ? Math.max(0, Date.now() - started) : 0;
+}
+
+function _activityTerminalText(msg, state, errorDetail = '') {
+  const summary = msg && msg._activitySummary && typeof msg._activitySummary === 'object'
+    ? msg._activitySummary
+    : null;
+  const duration = _formatProcessDuration(_activityDurationMs(msg));
+  const target = summary && summary.detail ? summary.detail : '';
+  const tool = summary && summary.toolName ? summary.toolName : '';
+  const action = summary && summary.action ? summary.action : 'use';
+  if (state === 'completed') {
+    if (action === 'read' && target) return t('chat.activity_read_done', { target, duration });
+    if (action === 'write' && target) return t('chat.activity_write_done', { target, duration });
+    if (action === 'run' && target) return t('chat.activity_run_done', { target, duration });
+    if (tool) return t('chat.activity_tool_done', { tool, target: target ? ` · ${target}` : '', duration });
+    return t('chat.activity_reply_done', { duration });
+  }
+  if (state === 'cancelled') {
+    if (action === 'read' && target) return t('chat.activity_read_stopped', { target });
+    if (action === 'write' && target) return t('chat.activity_write_stopped', { target });
+    if (action === 'run' && target) return t('chat.activity_run_stopped', { target });
+    if (tool) return t('chat.activity_tool_stopped', { tool, target: target ? ` · ${target}` : '' });
+    return t('chat.activity_reply_stopped');
+  }
+  if (action === 'read' && target) return t('chat.activity_read_failed', { target, duration });
+  if (action === 'write' && target) return t('chat.activity_write_failed', { target, duration });
+  if (action === 'run' && target) return t('chat.activity_run_failed', { target, duration });
+  if (tool) return t('chat.activity_tool_failed', {
+    tool,
+    target: target ? ` · ${target}` : '',
+    duration,
+  });
+  return t('chat.activity_reply_failed', {
+    detail: errorDetail ? ` · ${errorDetail}` : '',
+    duration,
+  });
+}
+
+// Project one structured live event onto the concise activity strip. Main
+// remains the source of truth; the renderer exposes only safe execution phases.
+function _activityStatusFromEvent(evt) {
+  const data = evt && evt.data && typeof evt.data === 'object' ? evt.data : {};
+  const stream = String(evt && evt.stream || '').toLowerCase();
   const phase = String(data.phase || data.status || '').toLowerCase();
-  if (stream === 'runtime' && phase === 'retrying') {
-    const attempt = Math.max(1, Math.round(Number(data.attempt) || 1));
-    if (typeof window.chatStreamSetRuntimeStatus === 'function') {
-      window.chatStreamSetRuntimeStatus(msg?.dataset?.cid, msg, { type: 'retry', attempt });
+  const compact = (value, limit = 120) => String(value == null ? '' : value)
+    .replace(/\s+/g, ' ').trim().slice(0, limit);
+  const sensitiveDetail = (value) => /(?:\bBearer\b|\bBasic\b|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|passwd|secret|authorization)\b|\b(?:sk|rk)-[A-Za-z0-9_-]{8,})/i
+    .test(String(value || ''));
+  const compactDetail = (value) => {
+    if (value == null) return '';
+    if (typeof value === 'string') return sensitiveDetail(value) ? '' : compact(value);
+    if (typeof value === 'object') {
+      const preferred = value.path || value.file || value.command || value.url;
+      if (preferred != null) return sensitiveDetail(preferred) ? '' : compact(preferred);
+      return '';
     }
-    _streamingUpdateActivity(msg, attempt > 1
-      ? t('model.retrying_n', { attempt })
-      : t('model.retrying'));
-    return;
+    return compact(value);
+  };
+  const toolDetail = () => {
+    if (phase === 'progress' && data.message) return compact(data.message);
+    const args = data.arguments || data.args || data.input;
+    return compactDetail(args || data.path || data.file || data.command || '');
+  };
+  const toolName = compact(data.name || data.toolName || data.tool || 'tool', 80);
+  const action = _activityToolAction(toolName);
+  const decision = phase || String(data.decision || data.result || '').toLowerCase();
+
+  if (stream === 'assistant' && (data.text || data.delta)) return { key: 'generating' };
+  if (stream === 'runtime' && phase === 'retrying') {
+    return { key: 'retrying', attempt: Math.max(1, Math.round(Number(data.attempt) || 1)) };
   }
-  if (cliType === 'status' && phase === 'usage') {
-    _streamingUpdateActivity(msg, t('chat.activity_working'));
-    return;
+  if (stream === 'plan') return { key: 'planning' };
+  if (stream === 'approval') {
+    if (/^(approved|allowed|granted|allow)$/.test(decision)) return { key: 'permission_granted' };
+    if (/^(rejected|denied|deny|cancelled|canceled)$/.test(decision)) return { key: 'permission_denied' };
+    return { key: 'waiting_permission' };
   }
-  _streamingUpdateActivity(msg, t('chat.activity_working'));
+  if (stream === 'tool') {
+    if (/^(start|running|request|call|begin|progress)$/.test(phase)) {
+      return { key: 'tool_calling', toolName, detail: toolDetail(), action };
+    }
+    if (/^(error|failed)$/.test(phase) || data.isError === true) {
+      return {
+        key: 'failed',
+        toolName,
+        detail: compact(data.error || data.message || data.result_preview || ''),
+        action,
+      };
+    }
+    if (/^(end|result|success|completed|done)$/.test(phase)) {
+      return {
+        key: 'tool_completed',
+        toolName,
+        detail: toolDetail(),
+        action,
+        impact: action === 'read' ? 'unchanged' : action === 'write' ? 'modified' : 'unknown',
+        ...(Number.isFinite(Number(data.duration_ms)) ? { durationMs: Number(data.duration_ms) } : {}),
+      };
+    }
+    return { key: 'working' };
+  }
+  if (stream === 'cli') {
+    const cliType = String(data.type || '').toLowerCase();
+    if (cliType === 'permission-request') {
+      if (data.autoDecided === 'allow') return { key: 'permission_granted', toolName };
+      if (data.autoDecided === 'deny') return { key: 'permission_denied', toolName };
+      return { key: 'waiting_permission', toolName };
+    }
+    if (cliType === 'tool-event') {
+      const cliPhase = String(data.phase || '').toLowerCase();
+      if (cliPhase === 'result' && (data.isError === true || data.error)) {
+        return { key: 'failed', toolName, detail: compactDetail(data.error || data.output), action };
+      }
+      if (cliPhase === 'use') {
+        return { key: 'tool_calling', toolName, detail: compactDetail(data.input), action };
+      }
+      if (cliPhase === 'result') {
+        return {
+          key: 'tool_completed',
+          toolName,
+          detail: compactDetail(data.input),
+          action,
+          impact: action === 'read' ? 'unchanged' : action === 'write' ? 'modified' : 'unknown',
+        };
+      }
+      return { key: 'working' };
+    }
+    if (cliType === 'idle') return { key: 'waiting_output' };
+    if (cliType === 'status' && /^(error|failed|timeout)$/.test(phase)) {
+      return { key: 'failed', detail: compact(data.message || data.error || '') };
+    }
+  }
+  if (stream === 'error') return { key: 'failed', detail: compact(data.message || data.text || '') };
+  return { key: 'working' };
+}
+
+function _activityTextFromStatus(status) {
+  const item = status && typeof status === 'object' ? status : { key: 'working' };
+  switch (item.key) {
+    case 'tool_calling':
+      return t({
+        read: 'chat.activity_reading',
+        write: 'chat.activity_modifying',
+        run: 'chat.activity_running_command',
+      }[item.action] || 'chat.activity_calling_tool', {
+        tool: item.toolName || 'tool',
+        target: item.detail || item.toolName || 'tool',
+        detail: item.detail ? ` · ${item.detail}` : '',
+      });
+    case 'planning': return t('chat.activity_planning');
+    case 'waiting_permission': return t('chat.activity_waiting_permission');
+    case 'permission_granted': return t('chat.activity_permission_granted');
+    case 'permission_denied': return t('chat.activity_permission_denied', {
+      tool: item.toolName ? ` · ${item.toolName}` : '',
+    });
+    case 'generating': return t('chat.activity_writing');
+    case 'retrying':
+      return item.attempt > 1
+        ? t('model.retrying_n', { attempt: item.attempt })
+        : t('model.retrying');
+    case 'waiting_output': return t('chat.activity_waiting_output');
+    case 'failed': return t('chat.activity_failed', { detail: item.detail ? ` · ${item.detail}` : '' });
+    case 'tool_completed': return t('chat.activity_tool_result', {
+      tool: item.toolName || 'tool',
+      target: item.detail ? ` · ${item.detail}` : '',
+    });
+    default: return t('chat.activity_working');
+  }
+}
+
+function _streamingUpdateActivityFromEvent(msg, evt) {
+  const status = _activityStatusFromEvent(evt);
+  // 运行时重试提示条（retry chip）需要真实 msg，只能在这里挂：状态机本身是纯函数，
+  // 事件分支里既没有 msg 也没有 window（此前直接写在那里，重试事件会抛 ReferenceError）。
+  if (msg && status && status.key === 'retrying' && typeof window.chatStreamSetRuntimeStatus === 'function') {
+    window.chatStreamSetRuntimeStatus(msg.dataset && msg.dataset.cid, msg, { type: 'retry', attempt: status.attempt });
+  }
+  const previous = msg && msg._activitySummary;
+  if (msg && status && status.key === 'tool_calling') {
+    msg._activitySummary = { ...status };
+  } else if (msg && status && status.key === 'tool_completed') {
+    const sameTool = previous && previous.toolName === status.toolName;
+    const merged = { ...(sameTool ? previous : {}), ...status };
+    if (sameTool && !status.detail && previous.detail) merged.detail = previous.detail;
+    msg._activitySummary = merged;
+  } else if (msg && status && status.key === 'failed' && (status.toolName || previous?.toolName)) {
+    const sameTool = previous && (!status.toolName || previous.toolName === status.toolName);
+    const merged = { ...(sameTool ? previous : {}), ...status };
+    if (sameTool && previous.detail) merged.detail = previous.detail;
+    msg._activitySummary = merged;
+  }
+  _streamingUpdateActivity(msg, _activityTextFromStatus(status));
 }
 
 // Cancel any rAF queued by `_streamingAppendFinalDelta`. Callers that are
@@ -15367,7 +15674,7 @@ function _cancelPendingStreamRaf(msg) {
 // agent edit chats skip it by design).
 function _streamingSetFinal(msg, text, { archive = false } = {}) {
   _hideThinking(msg);
-  _streamingStopActivity(msg);
+  _streamingFinishActivity(msg, _activityTerminalText(msg, 'completed'), 'completed');
   const finalEl = msg.querySelector('[data-role="final"]');
   if (!finalEl) return;
   _cancelPendingStreamRaf(msg);
@@ -15414,7 +15721,7 @@ function _streamingSetFinal(msg, text, { archive = false } = {}) {
 
 function _streamingSetError(msg, text) {
   _hideThinking(msg);
-  _streamingStopActivity(msg);
+  _streamingFinishActivity(msg, _activityTerminalText(msg, 'failed', text), 'failed');
   _cancelPendingStreamRaf(msg);
   msg.dataset.failed = '1';
   // Freeze the live preview line so it stops looking like it's still streaming.
@@ -15432,7 +15739,10 @@ function _streamingSetError(msg, text) {
   if (details) {
     const body = details.querySelector('.stream-process-body');
     const hasProcess = !!body && body.children.length > 0;
-    if (hasProcess) details.style.display = '';
+    if (hasProcess) {
+      details.removeAttribute('open');
+      details.style.display = '';
+    }
   }
   const finalEl = msg.querySelector('[data-role="final"]');
   if (!finalEl) return;
@@ -15461,7 +15771,7 @@ function _streamingSetError(msg, text) {
 // content streamed into the process pane; just stamps a "stopped" note.
 function _streamingMarkAborted(msg) {
   _hideThinking(msg);
-  _streamingStopActivity(msg);
+  _streamingFinishActivity(msg, _activityTerminalText(msg, 'cancelled'), 'cancelled');
   // Freeze any live preview line so it's not misread as still generating.
   const live = msg.querySelector('.stream-process-live');
   if (live) {
@@ -15476,7 +15786,10 @@ function _streamingMarkAborted(msg) {
     bubble.appendChild(note);
   }
   const details = msg.querySelector('.stream-process');
-  if (details) details.style.display = '';
+  if (details) {
+    details.removeAttribute('open');
+    details.style.display = '';
+  }
 }
 
 /**
@@ -15568,7 +15881,7 @@ async function _rediscoverBackendRun(cid) {
   // Re-establish the run: pending state, streaming placeholder, group event
   // observer (untilIdle — ends when the Backend task's terminal projection
   // clears backendTurns and the bus goes quiescent) and history polling.
-  _observeConversationRunFromPlanAction(cid, { attachExisting: true, allowWithController: true });
+  _observeConversationRunFromPlanAction(cid, { attachExisting: true, allowWithController: true, source: 'rediscover_backend_run' });
 }
 
 // Scroll the given message to the top of the visible chat area.
@@ -16658,6 +16971,50 @@ function _mountFinalEvidenceBlock(ph, gm) {
   if (typeof window.hydrateUiIcons === 'function') window.hydrateUiIcons(block);
 }
 
+// Streaming placeholders bypass appendChatMessage(), so the authoritative
+// final GroupMessage must mount its recall receipt here as well. Without this
+// step recall_citations are persisted correctly but remain invisible until a
+// history reload rebuilds the whole bubble.
+function _mountFinalRecallMemoryCard(ph, gm, cid) {
+  const bubble = ph?.querySelector('.chat-bubble');
+  if (!bubble) return;
+
+  let host = bubble.querySelector('.chat-recall-citations');
+  const citationsHtml = _renderRecallCitationsHtml(gm.recall_citations);
+  if (!host && citationsHtml) {
+    const template = document.createElement('template');
+    template.innerHTML = citationsHtml;
+    host = template.content.firstElementChild;
+    if (host) bubble.appendChild(host);
+  }
+  if (!host) return;
+
+  _hydrateRecallCitations(ph, cid, gm.id);
+
+  const explicitProjectionReceipt = _projectionReceiptForMessage(gm);
+  const container = document.getElementById('chat-history');
+  const coalescedProjectionMatch = explicitProjectionReceipt
+    ? null
+    : _findProjectionSidecar(container, gm);
+  const projectionCard = explicitProjectionReceipt
+    || gm.recall_projection_card
+    || (coalescedProjectionMatch
+      ? { projectionId: coalescedProjectionMatch.projectionId, authorization: 'model_selected' }
+      : null);
+
+  if (coalescedProjectionMatch?.sidecar) {
+    coalescedProjectionMatch.sidecar.hidden = true;
+    coalescedProjectionMatch.sidecar.classList.add('is-coalesced');
+  }
+  if (!projectionCard?.projectionId || typeof window.mountRecallProjectionCard !== 'function') return;
+  if (gm.recall_projection_card) host.dataset.recallProjectionTransport = 'sidecar';
+  window.mountRecallProjectionCard(host, projectionCard, {
+    cid,
+    onlyModelSelected: true,
+    citations: Array.isArray(gm.recall_citations) ? gm.recall_citations : [],
+  });
+}
+
 // Transform a streaming placeholder bubble into its finalized form:
 // freeze the process rail (keep visible + collapsed by default),
 // render markdown into [data-role="final"], append produced-files chip /
@@ -16723,6 +17080,7 @@ function _finalizeActorPlaceholder(ph, gm, cid, archive) {
   const failedAssistant = _isFailedAssistantContent(text, gm);
   _streamingSetFinal(ph, text, { archive: archive && !failedAssistant });
   _mountFinalEvidenceBlock(ph, gm);
+  _mountFinalRecallMemoryCard(ph, gm, cid);
   if (failedAssistant) {
     _attachFailedAssistantActions(ph, () => _messageTextForActions(ph, text));
     _handleModelOutputErrorForUi(cid, ph, _failedAssistantErrorText(ph) || text, {
@@ -16889,9 +17247,9 @@ function _handleGroupBusEvent(cid, streamingMsg, evData, { archive = false } = {
     // 主进程叠加整树遍历（每次消息 → 一次全量快照），还会反复闪加载态。
     // 180ms 合并一次 + silent 刷新，数据到达延迟不可感知，行为不变。
     _scheduleConversationInfoFileRefresh(cid);
-    // Mark commander as "in chat" the moment it speaks here, so the
-    // sidebar/header badges add the commander avatar without waiting for
-    // the next `listConversations` to re-derive it from <cid>.jsonl.
+    // Mark commander as "in chat" the moment it speaks here, so the chat
+    // header adds the commander avatar without waiting for the next
+    // `listConversations` to re-derive it from <cid>.jsonl.
     if (evData.msg.from === 'commander' && Array.isArray(conversations)) {
       const conv = conversations.find((x) => x && x.conversation_id === cid);
       if (conv && !conv.commander_in_chat) {
@@ -17526,14 +17884,55 @@ function _stripDashboardBlocksForStream(buf) {
 // `_streamingSetFinal` is still called at the terminal `final` event to
 // guarantee a clean final render.
 //
-// Render throttling: every delta accumulates into `dataset.streamBuf`
-// synchronously, but the actual `renderMarkdownFull` + DOM swap only runs
-// once per animation frame (via `requestAnimationFrame`). Each delta in
-// the wild is ~2-4 chars and they can arrive ~50/sec; without throttling
-// we'd run renderMarkdown × 500 in one event loop turn (each O(n) on the
-// growing buffer = O(n²) total ≈ multi-second sync stall) and the user
-// would see nothing until the stall ended. With rAF throttling the
-// reader loop stays cheap and the browser paints between frames.
+// Render throttling: deltas accumulate into `dataset.streamBuf`
+// synchronously; only the `renderMarkdownFull` + DOM swap is gated.
+//
+// Each delta used to schedule a full `renderMarkdownFull` + subtree replace on
+// the next animation frame. A 3.4k-char reply arrives as ~1.4k deltas, i.e.
+// ~260 full pipeline runs over a growing buffer (O(n²) overall) on the main
+// thread — competing with the delta reader loop for the same frames.
+//
+// Two rules keep the text live without the churn:
+//   - a newline (paragraph / list / fence edge) paints on the next frame
+//   - anything else waits out STREAM_PAINT_MIN_INTERVAL_MS, with a trailing
+//     timer so a tail that stops mid-line still gets painted
+//
+// The terminal `final` event still calls `_streamingSetFinal`, which performs
+// a clean full render, so the settled frame is always exact.
+const STREAM_PAINT_MIN_INTERVAL_MS = 80;
+
+function _flushStreamingFinalPaint(msg, finalEl) {
+  msg._streamRafScheduled = false;
+  msg._streamRafHandle = null;
+  msg._streamLastPaintAt = Date.now();
+  const buf = msg.dataset.streamBuf || '';
+  const display = _stripSkillCreateBlocksForStream(
+    _stripAgentCreateBlocksForStream(
+      _stripAutoTaskBlocksForStream(
+        _stripAgentFormBlockForStream(
+          _stripExpenseCardBlockForStream(
+            _stripDashboardBlocksForStream(
+              _stripSkillFileBlocksForStream(buf),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+  msg.dataset.streamDisplay = display;
+  _paintStreamingFinalMarkdown(msg, finalEl, display, { stickBottom: true });
+}
+
+function _scheduleStreamingFinalPaint(msg, finalEl) {
+  if (msg._streamRafScheduled) return;
+  msg._streamRafScheduled = true;
+  if (typeof requestAnimationFrame === 'function') {
+    msg._streamRafHandle = requestAnimationFrame(() => _flushStreamingFinalPaint(msg, finalEl));
+  } else {
+    setTimeout(() => _flushStreamingFinalPaint(msg, finalEl), 0);
+  }
+}
+
 function _streamingAppendFinalDelta(msg, piece) {
   if (!piece) return;
   const finalEl = msg.querySelector('[data-role="final"]');
@@ -17543,33 +17942,24 @@ function _streamingAppendFinalDelta(msg, piece) {
   msg.dataset.streamBuf = next;
   msg.dataset.finalText = next;
   if (finalEl.style.display === 'none') finalEl.style.display = '';
-  if (msg._streamRafScheduled) return;
-  msg._streamRafScheduled = true;
-  const flush = () => {
-    msg._streamRafScheduled = false;
-    msg._streamRafHandle = null;
-    const buf = msg.dataset.streamBuf || '';
-    const display = _stripSkillCreateBlocksForStream(
-      _stripAgentCreateBlocksForStream(
-        _stripAutoTaskBlocksForStream(
-          _stripAgentFormBlockForStream(
-            _stripExpenseCardBlockForStream(
-              _stripDashboardBlocksForStream(
-                _stripSkillFileBlocksForStream(buf),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-    msg.dataset.streamDisplay = display;
-    _paintStreamingFinalMarkdown(msg, finalEl, display, { stickBottom: true });
-  };
-  if (typeof requestAnimationFrame === 'function') {
-    msg._streamRafHandle = requestAnimationFrame(flush);
-  } else {
-    setTimeout(flush, 0);
+
+  const sinceLastPaint = Date.now() - (msg._streamLastPaintAt || 0);
+  const atBoundary = piece.indexOf('\n') >= 0;
+  if (!atBoundary && sinceLastPaint < STREAM_PAINT_MIN_INTERVAL_MS) {
+    if (!msg._streamTrailTimer) {
+      msg._streamTrailTimer = setTimeout(() => {
+        msg._streamTrailTimer = null;
+        if (msg.isConnected === false) return;
+        _scheduleStreamingFinalPaint(msg, finalEl);
+      }, Math.max(16, STREAM_PAINT_MIN_INTERVAL_MS - sinceLastPaint));
+    }
+    return;
   }
+  if (msg._streamTrailTimer) {
+    clearTimeout(msg._streamTrailTimer);
+    msg._streamTrailTimer = null;
+  }
+  _scheduleStreamingFinalPaint(msg, finalEl);
 }
 
 // Format a raw openclaw event into one process-pane line. Returns null for
@@ -18133,6 +18523,8 @@ function _renderConvDisabledBanner(cid) {
 
 function _refreshTaskSurfacesAfterAbort(cid) {
   if (!cid) return;
+  // 用户中止 → 该 run 的 pending 唤醒会被判死/执行，标记必须立刻重算。
+  void _syncWaitingApprovalFlags();
   try {
     if (window.ConversationInfo) window.ConversationInfo.refreshFiles(cid, { silent: true });
   } catch (_) {}

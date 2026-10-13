@@ -661,6 +661,9 @@ export class AgentRunner {
     /** Disable builtin, caller-supplied, and evolution tools for a strictly
      * text-only utility call such as an independent benchmark judge. */
     disableTools?: boolean;
+    /** Final runtime allowlist. When present it filters builtins, execution
+     * plan, caller tools, and evolution tools before registration. */
+    toolAllowlist?: readonly string[];
     /** Restrict learned-skill index to this subset (undefined = all). */
     skillAllowlist?: string[];
     /** Fires after skill_manage(create) with the new skill id — CogSeed
@@ -716,8 +719,9 @@ export class AgentRunner {
     if (this.skillStore && !opts.disableTools) {
       allTools.push(createSkillManageTool(this.skillStore, opts.onSkillCreated));
     }
+    const allowedTools = opts.toolAllowlist ? new Set(opts.toolAllowlist) : null;
     for (const tool of allTools) {
-      this.tools.set(tool.name, tool);
+      if (!allowedTools || allowedTools.has(tool.name)) this.tools.set(tool.name, tool);
     }
   }
 
@@ -953,6 +957,8 @@ export class AgentRunner {
           planStepCount: this.session.getExecutionPlan()?.steps.length || 0,
         });
 
+        const responseGateRequired = params.finalResponseGate?.isRequired() === true;
+
         // Consume the provider stream token-by-token so callers (UI) can
         // paint partial text as it arrives. We still assemble a full
         // `CompletionResult`-shaped object at the end for the tool loop.
@@ -997,15 +1003,25 @@ export class AgentRunner {
         let streamModel = modelId;
         let streamingToolSeq = 0;
         let streamingTool: { id: string; name?: string; inputBytes: number } | null = null;
+        let withheldText = "";
+        const flushWithheldText = function* (): Generator<AgentRunEvent> {
+          if (!withheldText) return;
+          const text = withheldText;
+          withheldText = "";
+          yield { type: "text_delta", text };
+        };
         for await (const ev of streamIter) {
           if (ev.type === "text_delta") {
             streamText += ev.text;
-            // Forward to callers so UI can render incrementally.
-            yield { type: "text_delta", text: ev.text };
+            if (responseGateRequired) withheldText += ev.text;
+            else yield { type: "text_delta", text: ev.text };
           } else if (ev.type === "thinking_delta") {
             // 思考流透传（交互设计 2026-09-08：思考过程展示链路补全）。
             if (ev.delta) yield { type: "thinking_delta", delta: ev.delta };
           } else if (ev.type === "tool_use_start") {
+            // This is an intermediate tool-using turn, not the terminal
+            // response. Preserve its commentary before surfacing the tool.
+            yield* flushWithheldText();
             const id = ev.id || `stream_tool_${++streamingToolSeq}`;
             streamingTool = { id, name: ev.name, inputBytes: 0 };
             yield { type: "tool_delta", id, name: ev.name, inputDelta: "", inputBytes: 0 };
@@ -1069,10 +1085,10 @@ export class AgentRunner {
         // include `content` in message_end (older providers / custom stream
         // implementations). Tool-using turns won't reach this branch from
         // those providers — we still require content for the tool loop.
-        const finalContent: import("../shared/types.js").MessageContent[] =
+        let finalContent: import("../shared/types.js").MessageContent[] =
           streamContent ?? (streamText ? [{ type: "text", text: streamText }] : []);
 
-        const result: CompletionResult = {
+        let result: CompletionResult = {
           content: finalContent,
           stopReason: streamStopReason,
           usage: streamUsage,
@@ -1096,17 +1112,45 @@ export class AgentRunner {
           );
         }
 
-        // Add assistant response to session
-        this.session.addAssistantMessage(result.content);
-
         // Turn text — used for the "final" snapshot if this turn ends the run.
-        const turnText = result.content
+        let turnText = result.content
           .filter((c) => c.type === "text")
           .map((c) => (c as { text: string }).text)
           .join("");
 
         // Check for tool use
-        const toolCalls = result.content.filter((c) => c.type === "tool_use");
+        let toolCalls = result.content.filter((c) => c.type === "tool_use");
+
+        if (responseGateRequired && (toolCalls.length === 0 || result.stopReason !== "tool_use")) {
+          try {
+            const validated = await params.finalResponseGate!.validate({
+              text: turnText,
+              content: finalContent,
+              ...(params.signal ? { signal: params.signal } : {}),
+            });
+            const approvedText = String(validated.text || "").trim();
+            finalContent = validated.content || [{ type: "text", text: approvedText }];
+            result = { ...result, content: finalContent };
+            turnText = approvedText;
+            toolCalls = result.content.filter((c) => c.type === "tool_use");
+            withheldText = "";
+            if (approvedText) yield { type: "text_delta", text: approvedText };
+          } catch (error) {
+            log.warn(`final response gate failed closed: ${formatError(error)}`);
+            const fallbackText = "The evidence check could not be completed, so the unverified answer was not returned.";
+            finalContent = [{ type: "text", text: fallbackText }];
+            result = { ...result, content: finalContent };
+            turnText = fallbackText;
+            toolCalls = [];
+            withheldText = "";
+            yield { type: "text_delta", text: fallbackText };
+          }
+        } else {
+          yield* flushWithheldText();
+        }
+
+        // Only the approved terminal response is persisted to the session.
+        this.session.addAssistantMessage(result.content);
 
         if (toolCalls.length === 0 || result.stopReason !== "tool_use") {
           // interrupt-steer (G9): a user message can land while the model is

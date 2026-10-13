@@ -148,6 +148,14 @@ import {
 } from "../../util/project-layout";
 import { cachedConversationSpace } from "../chat_attachments";
 import * as agentsFeat from "../agents";
+import {
+  AGENT_BUILDER_IDS,
+  applyAgentBuilderFields,
+} from "./agent-builder";
+import {
+  continueGovernedAgentBuilderFlow,
+  startGovernedAgentBuilderFlow,
+} from "./agent-builder-governed-flow";
 import * as commanderRuntimeStats from "../commander_runtime_stats";
 import { getThinkingLevel } from "../config";
 import {
@@ -237,7 +245,7 @@ import {
   normalizeLang,
   t,
 } from "../../i18n";
-import { getLanguage } from "../config";
+import { getLanguage, getUiLanguage } from "../config";
 import * as marketplaceFeat from "../marketplace";
 import { readInstalls } from "../marketplace_installs";
 import {
@@ -248,12 +256,17 @@ import {
 import {
   compactPromptDescription,
   listAgentOwnedSkillIds,
-  listSkillSpecs,
+  listSkillSpecsForUser,
   openSkillReadRoots,
   resolveSkillAllowlistRefs,
   searchOpenTierSkills,
   type SkillAllowlistRef,
 } from "../../model/core-agent/skill-registry";
+import { readCreatorAgentBinding } from "../creator/agent-binding-store";
+import {
+  creatorRuntimeExecutionOptions,
+  getAgentDispatchPolicy,
+} from "../agent-dispatch-policy";
 import { buildRuntimeDatetimeBlock } from "../../prompts/runtime_context";
 import {
   buildMemberScopeBlock, isExternalRecipient, MEMBER_SCOPE_TEMPLATE,
@@ -285,6 +298,7 @@ import {
   evaluateRecallAssetRuntimeEligibility,
   type RecallPromptCitation,
 } from "../recall/prompt-injection";
+import type { OntologyAnswerEvidenceBundle } from '../recall/ontology-answer-validation';
 import { readAbilityAsset } from "../recall/asset-service";
 import {
   createProcessCollector,
@@ -603,9 +617,21 @@ async function _runtimeSkillListForAgent(
   uid: string,
   agent: agentsFeat.Agent,
 ): Promise<string[]> {
+  const creatorBinding = agent.creator_binding;
+  let creatorAllowedSkills: Set<string> | null = null;
+  if (creatorBinding) {
+    try {
+      const binding = await readCreatorAgentBinding(uid, creatorBinding.presetId, creatorBinding.version);
+      if (!binding || binding.agentId !== agent.agent_id || binding.manifestDigest !== creatorBinding.manifestDigest
+          || binding.materializationRevision !== creatorBinding.materializationRevision) return [];
+      creatorAllowedSkills = new Set(binding.policy.skillIds);
+    } catch {
+      return [];
+    }
+  }
   // Owner-scoped: a private (`ownerAgent`) skill of another agent never
   // resolves here, so it can't enter this agent's runtime skill list.
-  const specs = await listSkillSpecs({ forAgentId: agent.agent_id }).catch(
+  const specs = await listSkillSpecsForUser(uid, { forAgentId: agent.agent_id }).catch(
     (err) => {
       log.warn(
         `skill allowlist resolution failed agent=${agent.agent_id}: ${(err as Error).message}`,
@@ -619,7 +645,8 @@ async function _runtimeSkillListForAgent(
       ? resolveSkillAllowlistRefs(specs, refs).ids
       : refs.filter(
           (id): id is string => typeof id === "string" && !!id.trim(),
-        );
+    );
+  if (creatorAllowedSkills) return resolved.filter((skill) => creatorAllowedSkills!.has(skill));
   const owned = await listAgentOwnedSkillIds(uid, agent.agent_id).catch(
     (err) => {
       log.warn(
@@ -640,6 +667,8 @@ async function _findDisabledSkillUseRequest(
   if (!_hasSkillUseIntent(text) && !selected.size) return null;
   let skills: skillsFeat.SkillListing[];
   try {
+    // develop 新版：listSkills() 的每一项自带 enabled 与 marketplace 来源，
+    // 因此不再需要单独取 disabled 集合过滤（creator 侧的旧写法已由它取代）。
     skills = await skillsFeat.listSkills();
   } catch (err) {
     log.warn(
@@ -3146,7 +3175,7 @@ async function _enqueueBody(
     // doc on `ResolveOpts` in router.ts.
     const agentDisplayNames: string[] = [];
     try {
-      const all = await agentsFeat.listAgents();
+      const all = await agentsFeat.listChatDispatchableAgentsForUser(uid);
       for (const a of all) {
         if (a.enabled === false) continue;
         if (a.name) {
@@ -3191,7 +3220,7 @@ async function _enqueueBody(
   for (const token of unknown.slice()) {
     if (!safeId(token)) continue;
     try {
-      const ag = await agentsFeat.getAgent(token);
+      const ag = await agentsFeat.getAgentForChatDispatch(uid, token);
       if (ag && isAgentEnabled(uid, ag.agent_id)) {
         to.push(ag.agent_id);
         unknown = unknown.filter((u) => u !== token);
@@ -3229,7 +3258,7 @@ async function _enqueueBody(
             continue;
           }
           try {
-            const ag = await agentsFeat.getAgent(id);
+            const ag = await agentsFeat.getAgentForChatDispatch(uid, id);
             if (agentsFeat.isCliAgent(ag) || agentsFeat.isP3394GatewayAgent(ag)) {
               kept.push(id);
               continue;
@@ -3290,7 +3319,7 @@ async function _enqueueBody(
         continue;
       }
       try {
-        const agent = await agentsFeat.getAgent(recipientId);
+        const agent = await agentsFeat.getAgentForChatDispatch(uid, recipientId);
         if (!agent || !isAgentEnabled(uid, recipientId)) continue;
         const decision = await evaluateWake(uid, {
           conversationId: cid,
@@ -3403,7 +3432,7 @@ async function _enqueueBody(
   for (const recipientId of to) {
     if (RESERVED_IDS.has(recipientId)) continue;
     try {
-      const ag = await agentsFeat.getAgent(recipientId);
+      const ag = await agentsFeat.getAgentForChatDispatch(uid, recipientId);
       if (!ag || !isAgentEnabled(uid, ag.agent_id)) continue;
       if (ag.name) idToName.set(ag.agent_id, ag.name);
       const added = await ensureAgentMember(uid, cid, ag.agent_id, ag.name);
@@ -5485,6 +5514,34 @@ async function runActorTurnBody(
 
   if (kstarExpectationPreface) messageText = `${kstarExpectationPreface}${messageText}`;
 
+  // A pending governed Agent Builder flow is host-owned. Handle the user's
+  // confirmation/cancellation before dispatching another model turn so plain
+  // text cannot bypass its lifecycle gates.
+  if (item.fromActorId === USER_ID && cid) {
+    const governed = await continueGovernedAgentBuilderFlow(
+      uid,
+      cid,
+      item.sourceMessageText ?? "",
+      w.abortController?.signal,
+    );
+    if (governed.handled) {
+      const reply = governed.message || "治理流程已处理当前消息。";
+      await markInFlight(uid, cid, actor.id, false);
+      await emitStateChanged(state);
+      await enqueue({
+        uid,
+        cid,
+        fromActorId: actor.id,
+        text: reply,
+        forceTo: [USER_ID],
+        turn_end: true,
+        turn_id: item.turnId,
+      });
+      await _syncStateStatus(state);
+      return { kind: "early" };
+    }
+  }
+
   if (isCommander && item.fromActorId === USER_ID) {
     const disabledSkill = await _findDisabledSkillUseRequest(
       uid,
@@ -5673,7 +5730,7 @@ async function runActorTurnBody(
       workingDir,
     );
   } else {
-    const agent = await agentsFeat.getAgent(actor.id);
+    const agent = await agentsFeat.getAgentForChatDispatch(uid, actor.id);
     if (!agent) {
       log.warn(`agent ${actor.id} disappeared mid-turn`);
       // User-visible signal — without this the user's @-dispatch hangs
@@ -5755,10 +5812,10 @@ async function runActorTurnBody(
       // Runtime skills start from the agent-authored skill_list and append
       // agent-owned private/self-evolved skills. User-explicit picker choices
       // are appended at the tail even if they are outside the authored list.
-      skillList = _appendSkillRefs(
-        await _runtimeSkillListForAgent(uid, agent),
-        selectedSkillRefs,
-      );
+      const authoredSkills = await _runtimeSkillListForAgent(uid, agent);
+      skillList = agent.creator_binding
+        ? authoredSkills
+        : _appendSkillRefs(authoredSkills, selectedSkillRefs);
       extraTools = [buildSkillSearchTool(uid)];
     }
   }
@@ -5777,6 +5834,8 @@ async function runActorTurnBody(
   // 建成后与目录文本合成单一 <asset-context> 块一次追加（见目录段之后）。
   let recallAuthorizedBlock = '';
   let recallProfileBlock = '';
+  let recallAnswerEvidence: OntologyAnswerEvidenceBundle | undefined;
+  let recallTaskGoal = '';
   // Commander-granted assets actually injected into a delegated turn, kept for
   // the same usage ledger the Commander injection uses (outcome 'dispatched').
   let dispatchedUsage: Array<{ assetId: string; assetVersion: string }> = [];
@@ -5800,11 +5859,12 @@ async function runActorTurnBody(
         // 同一任务会跑两遍 listAbilityAssets + ranking）。无投影/无效时
         // buildRecallTurnPromptContext 自然回退 automatic projection。
         let committedProjectionId = item.committedProjectionId;
-        if (!committedProjectionId && !item.internalControl) {
+        if (!item.internalControl) {
           try {
             const { readKstarTaskLifecycle } = await import('../kstar/lifecycle-adapter');
             const lifecycle = await readKstarTaskLifecycle(uid, cid);
-            if (lifecycle.projection?.status === 'confirmed') {
+            recallTaskGoal = String(lifecycle.requirement?.goalText || '').trim().slice(0, 4_000);
+            if (!committedProjectionId && lifecycle.projection?.status === 'confirmed') {
               committedProjectionId = lifecycle.projection.id;
             }
           } catch {
@@ -5826,13 +5886,21 @@ async function runActorTurnBody(
           ...(committedProjectionId ? { committedProjectionId } : {}),
           ...(item.forecastId ? { forecastId: item.forecastId } : {}),
         });
-        if (recallContext.promptBlock) {
+        if (recallContext.promptBlock || recallContext.answerEvidence) {
           // 呈现面合一（2026-09-30）：不再在此处 append——授权块/画像块攒到
           // 目录建成后合成单一 <asset-context> 一次追加（见下方目录段之后）。
           recallCitations = recallContext.citations;
           recallProfileMemory = recallContext.profileMemoryEntries ?? [];
           recallAuthorizedBlock = recallContext.authorizedAssetsBlock ?? '';
           recallProfileBlock = recallContext.profileAssetsBlock ?? '';
+          const currentTaskText = String(item.sourceMessageText || item.llmPayload || '').trim().slice(0, 2_000);
+          const validationTaskText = [
+            recallTaskGoal,
+            currentTaskText && currentTaskText !== recallTaskGoal ? `当前补充：${currentTaskText}` : '',
+          ].filter(Boolean).join('\n');
+          recallAnswerEvidence = recallContext.answerEvidence
+            ? { ...recallContext.answerEvidence, ...(validationTaskText ? { taskText: validationTaskText } : {}) }
+            : undefined;
         }
         // PRD 3.6 Transfer Verified 闭环：投影资产真实注入时在同一处落
         // ContextReuseReceipt（key=turn-<turnId>），并登记到本次运行的
@@ -6704,6 +6772,15 @@ async function runActorTurnBody(
     };
     try {
       const actorMaxToolLoops = maxToolLoopsForActorKind(actor.kind);
+      const creatorPolicyPromise = turnAgentSpec?.creator_binding && actor.kind === 'agent'
+        ? getAgentDispatchPolicy(uid, actor.id)
+        : null;
+      const creatorRuntime = creatorPolicyPromise
+        ? (await creatorPolicyPromise)?.creator_runtime
+        : undefined;
+      const creatorExecutionOptions = creatorRuntime
+        ? creatorRuntimeExecutionOptions(creatorRuntime)
+        : null;
       const { createLifecycleSink } = await import("../execution-records");
       const { getLocalExecMode } = await import("../permissions");
       // Vision fallback seam (2026-08-27, product call): if this turn carries
@@ -6738,10 +6815,10 @@ async function runActorTurnBody(
           images: enrichedImages,
           resolveAbilities: async () => {
             const auth = await import("../auth");
-            const { entries } = await auth.listEntries();
+            const { entries } = await auth.listEntriesForUser(uid);
             const current = entries && entries[0];
             if (!current || !current.provider || !current.model) return null;
-            const res = await auth.listModels(current.provider);
+            const res = await auth.listModelsForUser(uid, current.provider);
             const hit = (res.models || []).find((m) => m && m.id === current.model);
             return hit
               ? { providerId: current.provider, modelId: current.model, ...(hit.vision !== undefined ? { vision: hit.vision } : {}) }
@@ -6792,11 +6869,13 @@ async function runActorTurnBody(
       // Effective model override priority: per-task override > agent
       // default (`default_model`). Commander / in-process agents only —
       // CLI turns apply their own model below (runtime.model + override).
-      const turnModelOverride = item.execConfig?.provider && item.execConfig?.model
-        ? { provider: item.execConfig.provider, model: item.execConfig.model }
-        : turnAgentSpec?.default_model
-          ? { ...turnAgentSpec.default_model }
-          : undefined;
+      const turnModelOverride = turnAgentSpec?.creator_binding
+        ? (turnAgentSpec.default_model ? { ...turnAgentSpec.default_model } : undefined)
+        : item.execConfig?.provider && item.execConfig?.model
+          ? { provider: item.execConfig.provider, model: item.execConfig.model }
+          : turnAgentSpec?.default_model
+            ? { ...turnAgentSpec.default_model }
+            : undefined;
       // 多模态降级提示（2026-09-13）：回合带图但实际执行模型（任务级覆盖
       // 优先于界面选择）不支持视觉时，图片内容块会被 provider 层按
       // input modality 丢弃，模型只能靠文件路径 + OCR 读图。此前零提示，
@@ -6826,6 +6905,7 @@ async function runActorTurnBody(
         message: messageText,
         sessionId,
         systemPrompt,
+        ...(recallAnswerEvidence ? { recallAnswerEvidence } : {}),
         workingDir,
         agentName: actor.name || actor.id,
         // User-selected thinking strength ('auto' = no override; let the
@@ -6913,6 +6993,13 @@ async function runActorTurnBody(
         abortSignal: w.abortController.signal,
         ...(actorMaxToolLoops != null
           ? { maxToolLoops: actorMaxToolLoops }
+          : {}),
+        ...(creatorExecutionOptions
+          ? {
+            toolAccess: creatorExecutionOptions.toolAccess,
+            idleTimeout: creatorExecutionOptions.idleTimeout,
+            streamIdleTimeout: creatorExecutionOptions.streamIdleTimeout,
+          }
           : {}),
         ...(item.nested ? { nested: true } : {}),
         // interrupt-steer (G9): on the top-level turn, fold user messages the
@@ -7353,6 +7440,51 @@ async function runActorTurnBody(
         );
       }
     }
+
+    // Agent 创建师 is an agent actor, so its structured creation containers
+    // are handled inside the normal agent post-processing branch.
+    if (AGENT_BUILDER_IDS.has(actor.id) && workingText && !aborted) {
+      const parsed = extractAgentFieldBlocks(workingText);
+      if (parsed.blocks.length) {
+        workingText = parsed.cleanText;
+        for (const fields of parsed.blocks) {
+          if (!Object.keys(fields).length) continue;
+          if (fields.mode === "governed") {
+            try {
+              const governed = await startGovernedAgentBuilderFlow({
+                userId: uid,
+                cid,
+                agentId: actor.id,
+                fields,
+                sourceSessionId: actorSessionId(cid, actor),
+                ...(turnProjectId ? { projectId: turnProjectId } : {}),
+              });
+              if (governed.message) workingText = `${workingText}\n\n${governed.message}`;
+              if (governed.stage === "failed") markTurnFailure("validation", "agent_mutation_rejected");
+            } catch (err) {
+              log.error(`governed-agent-builder failed cid=${cid}: ${(err as Error).message}`);
+              markTurnFailure("validation", "agent_mutation_rejected");
+              workingText = `${workingText}\n\n<span style="color:var(--danger)">治理创建失败：${escapeHtmlForBubble((err as Error).message)}</span>`;
+            }
+            continue;
+          }
+          const direct = await applyAgentBuilderFields({
+            uid,
+            cid,
+            ...(turnProjectId ? { turnProjectId } : {}),
+            ...(turnSpaceId ? { turnSpaceId } : {}),
+            agentId: actor.id,
+          }, fields);
+          if (direct.rejected.length) {
+            markTurnFailure("validation", "agent_mutation_rejected");
+            workingText = `${workingText}\n\n<span style="color:var(--danger)">${direct.rejected.join(" ")}</span>`;
+          }
+          for (const created of direct.created) {
+            createdAgents.push({ agent_id: created.agent_id, name: created.name, kind: "created" });
+          }
+        }
+      }
+    }
   } else if (isCommander && workingText && !aborted) {
     // `!aborted`: a user Stop is the single stop path — never apply container
     // mutations (create/overwrite agent, write+validate skill, CRUD auto-task)
@@ -7372,7 +7504,7 @@ async function runActorTurnBody(
         const editId = fields.agent_id;
         try {
           if (editId) {
-            const target = await agentsFeat.getAgent(editId);
+            const target = await agentsFeat.getAgentForUser(uid, editId);
             if (!target) {
               markTurnFailure("validation", "agent_mutation_rejected");
               workingText = `${workingText}\n\n<span style="color:var(--danger)">⚠️ Agent edit failed: agent not found (id=${editId}).</span>`;
@@ -7385,7 +7517,7 @@ async function runActorTurnBody(
               // The open-source build only permits main-chat edits for
               // user-owned custom agents. Marketplace/external agents are
               // edited through their detail surfaces or forked first.
-              const updated = await agentsFeat.updateAgentSpec(editId, fields);
+              const updated = await agentsFeat.updateAgentSpecForUser(uid, editId, fields);
               if (updated) {
                 createdAgents.push({
                   agent_id: updated.agent_id,
@@ -7400,7 +7532,7 @@ async function runActorTurnBody(
           } else {
             // 带上出生上下文，新 Agent 才能承接前序项目的认知资产与会话来源；
             // 没有这一步生成出来的只有角色提示，被问到前序项目的术语只能瞎猜。
-            const ag = await agentsFeat.createAgentFromBlocks(fields, {
+            const ag = await agentsFeat.createAgentFromBlocks(uid, fields, {
               userId: uid,
               ...(cid ? { conversationId: cid } : {}),
               ...(turnProjectId ? { projectId: turnProjectId } : {}),
@@ -7469,7 +7601,7 @@ async function runActorTurnBody(
       for (const container of skillR.containers) {
         try {
           const result =
-            await skillsFeat.applySkillContainerFromCommander(container);
+            await skillsFeat.applySkillContainerFromCommander(uid, container);
           if (result.ok && result.skillId && result.name && result.kind) {
             createdSkills.push({
               skill_id: result.skillId,
@@ -8211,7 +8343,7 @@ async function runActorTurnBody(
   await _syncStateStatus(state);
   if (actor.kind === "agent") {
     try {
-      await agentsFeat.recordAgentRuntimeStats(actor.id, {
+      await agentsFeat.recordAgentRuntimeStats(uid, actor.id, {
         duration_ms: Math.max(0, Date.now() - turnStartedAt),
         status: actorRunStatus,
         aborted,
@@ -8397,14 +8529,16 @@ async function recordInheritedCognitionReuse(
 
 async function buildSpaceBuilderSystemPrompt(uid: string): Promise<string> {
   const { prompts } = await import("../../prompts/loader");
-  const [skillsFeat, agentsFeat, templatesFeat] = await Promise.all([
-    import("../skills"),
+  const [agentsFeat, templatesFeat] = await Promise.all([
     import("../agents"),
     import("../personal_ontology_contract"),
   ]);
   const [skills, agents, templates, scenarios] = await Promise.all([
-    skillsFeat.listSkills(),
-    agentsFeat.listAgents().catch(() => []),
+    listSkillSpecsForUser(uid).then((specs) => {
+      const disabled = readDisabledSets(uid).skills;
+      return specs.filter((s) => !s.ownerAgent && !disabled.has(s.id));
+    }),
+    agentsFeat.listChatDispatchableAgentsForUser(uid).catch(() => []),
     templatesFeat.listRoleTemplateCatalog(),
     templatesFeat.listRoleScenarios(),
   ]);
@@ -8414,10 +8548,9 @@ async function buildSpaceBuilderSystemPrompt(uid: string): Promise<string> {
   };
   const skillsBlock = skills.length
     ? skills
-        .filter((s) => s.enabled !== false)
         .map((s) => {
           const desc = s.description_zh || s.description_en || "";
-          return `- ${s.name || s.id}（id: ${s.id}${s.version ? `, v${s.version}` : ""}）— ${clip(desc)}`;
+          return `- ${s.name || s.id}（id: ${s.id}）— ${clip(desc)}`;
         })
         .join("\n")
     : "（暂无可用技能）";
@@ -8602,7 +8735,7 @@ export async function _renderPromptWithSharedRulesForTest(
 /** Put low-frequency language context at the head of the dynamic region, while
  *  keeping the date tail last because it can change between turns. */
 function appendLanguageDirective(prompt: string): string {
-  const language = buildLanguageDirective(getLanguage());
+  const language = buildLanguageDirective(getUiLanguage());
   const marker = "## Runtime injection";
   const idx = prompt.indexOf(marker);
   const withLanguage =
@@ -8671,7 +8804,7 @@ async function buildAgentsIndexBlock(
       allowedIds === null || allowedIds === undefined
         ? null
         : new Set(allowedIds);
-    const list = (await agentsFeat.listAgents())
+    const list = (await agentsFeat.listChatDispatchableAgentsForUser(uid))
       .filter((a: any) => a.enabled !== false)
       .filter((a: any) => (allow ? allow.has(a.agent_id) : true));
     if (!list.length) return `${header}(no agents)`;
@@ -8928,6 +9061,7 @@ function _toolJson(data: unknown): { content: string } {
  * Shared by `dispatch_to` and `run_worker` so both honour the same name-map
  * rules the router uses. */
 async function resolveDispatchTarget(
+  uid: string,
   cid: string,
   toRaw: string,
 ): Promise<string | null> {
@@ -8935,7 +9069,7 @@ async function resolveDispatchTarget(
   if (key === "commander" || key === "cogseed" || key === "指挥官") return COMMANDER_ID;
   if (key === "user" || key === "用户") return USER_ID;
   try {
-    const all = await agentsFeat.listAgents();
+    const all = await agentsFeat.listAgentDispatchSpecsForUser(uid);
     const matches = all
       .filter((a) => a.enabled !== false)
       .filter(
@@ -8946,7 +9080,10 @@ async function resolveDispatchTarget(
           agentsFeat.agentPriorityRank(a) - agentsFeat.agentPriorityRank(b);
         return byRank || a.agent_id.localeCompare(b.agent_id);
       });
-    if (matches[0]) return matches[0].agent_id;
+    if (matches[0]) {
+      const admitted = await agentsFeat.getAgentForChatDispatch(uid, matches[0].agent_id);
+      return admitted ? matches[0].agent_id : null;
+    }
   } catch (err) {
     log.warn(
       `resolveDispatchTarget listAgents failed cid=${cid}: ${(err as Error).message}`,
@@ -8954,7 +9091,7 @@ async function resolveDispatchTarget(
   }
   if (safeId(toRaw)) {
     try {
-      const ag = await agentsFeat.getAgent(toRaw);
+      const ag = await agentsFeat.getAgentForChatDispatch(uid, toRaw);
       if (ag && (ag as any).enabled !== false) return toRaw;
     } catch {
       /* ignore */
@@ -11043,7 +11180,7 @@ async function runCoordinatedNestedDispatchAdmitted(
         settledRunActorIds,
       );
       const members = await readMembers(input.state.uid, input.state.cid);
-      const agents = await agentsFeat.listAgents().catch(() => []);
+      const agents = await agentsFeat.listChatDispatchableAgentsForUser(input.state.uid).catch(() => []);
       const busyActorIds = new Set(
         [...input.state.nestedTurns.values()].map((turn) => turn.actor),
       );
@@ -11211,9 +11348,6 @@ function unwrapRoutingJudgement(parsed: Record<string, unknown>): { is_task?: un
   return null;
 }
 
-/** Default ceiling for the model-judged routing question. */
-export const CONTINUATION_JUDGE_TIMEOUT_MS = 20_000;
-
 export interface ModelRoutingVerdict {
   isTask: boolean;
   continuation: boolean;
@@ -11229,28 +11363,67 @@ const ROUTING_JUDGE_PROMPT = [
 ].join('\n');
 
 /**
+ * Why the routing judge produced no verdict.
+ *
+ * `unavailable` is a by-design state (no model configured): routing simply is
+ * not possible, and it is not an anomaly.
+ * `failed` is an anomaly — a timeout, runner error, unparsable output, or a
+ * throw on the way in. The caller must not treat it as "not a task": the
+ * message may well have been one, and swallowing that silently is how a task
+ * loses its governance with nothing recorded.
+ */
+type ModelRoutingJudgeOutcome =
+  | { status: 'verdict'; verdict: ModelRoutingVerdict }
+  | { status: 'unavailable' }
+  | { status: 'failed'; reason: 'timeout' | 'runner_error' | 'unparsable' | 'exception' };
+
+/**
  * Model-judged routing (mixed deterministic + model): for any non-trivial
  * user message, a dedicated runner (NOT the busy commander turn — a bus
  * enqueue would deadlock because the current turn holds the queue) judges
  * whether the message is a task and, when one is open, whether it continues
- * it. Returns the verdict, or null on model failure (caller applies the safe
- * default). Bounded by CONTINUATION_JUDGE_TIMEOUT_MS.
+ * it. Returns a discriminated outcome so the caller can tell "the model said
+ * no" apart from "we never got an answer".
+ *
+ * No wall-clock ceiling here, deliberately: the two real guards on an LLM call
+ * are the model-call idle watchdog (`client.ts`, 1800s with no event) and the
+ * SDK timeout, and AGENTS.md forbids adding a separate total wall-clock
+ * timeout. A 20s cap used to sit on this call, which was both inconsistent
+ * (the main turn has none) and harmful in the direction that matters: a slow
+ * provider failed the judge while the turn it was gating would have
+ * succeeded, costing that message its governance. The judge passes no external
+ * abort signal, so an `error.kind === 'timeout'` on its result can only be the
+ * idle watchdog.
  */
 async function judgeModelRouting(
   uid: string,
   cid: string,
   newMessage: string,
   openRequirement?: { requirementId: string; goalText: string },
-): Promise<ModelRoutingVerdict | null> {
+): Promise<ModelRoutingJudgeOutcome> {
   if (_hostRoutingJudgeForTest) {
-    return _hostRoutingJudgeForTest(newMessage, openRequirement);
+    const verdict = await _hostRoutingJudgeForTest(newMessage, openRequirement);
+    return verdict ? { status: 'verdict', verdict } : { status: 'failed', reason: 'runner_error' };
   }
+  // A0 instrumentation: the judge sits on the critical path (the main turn
+  // cannot start until the verdict lands), yet it previously logged only a
+  // total. Split it so the cost model is measurable before optimising:
+  //   auth   — dynamic import + configured-model check
+  //   build  — buildRunner (module load, session, skill block, tool assembly)
+  //   run    — the provider round trip
+  const startedAt = Date.now();
+  let authMs = 0;
+  let buildMs = 0;
+  let runMs = 0;
   try {
-    const { hasConfiguredModel } = await import('../auth');
-    if (!hasConfiguredModel().configured) {
+    const authStartedAt = Date.now();
+    const { hasConfiguredModelForUser } = await import('../auth');
+    if (!hasConfiguredModelForUser(uid).configured) {
       log.warn('kstar model routing skipped: no configured model', { cid: maskId(cid) });
-      return null;
+      return { status: 'unavailable' };
     }
+    authMs = Date.now() - authStartedAt;
+    const buildStartedAt = Date.now();
     const { buildRunner } = await import('../../model/core-agent/runner');
     const { runner } = await buildRunner({
       sessionId: `kstar-routing-${cid}`,
@@ -11260,25 +11433,35 @@ async function judgeModelRouting(
       ephemeralSession: true,
       skillList: [],
     });
-    const task = await Promise.race([
-      runner.run({
-        message: JSON.stringify({
-          newMessage: String(newMessage || '').slice(0, 2_000),
-          ...(openRequirement ? { openTaskGoal: String(openRequirement.goalText).slice(0, 1_000) } : {}),
-        }),
-        thinkingLevel: 'off',
-        cacheRetention: 'none',
+    buildMs = Date.now() - buildStartedAt;
+    const runStartedAt = Date.now();
+    const task = await runner.run({
+      message: JSON.stringify({
+        newMessage: String(newMessage || '').slice(0, 2_000),
+        ...(openRequirement ? { openTaskGoal: String(openRequirement.goalText).slice(0, 1_000) } : {}),
       }),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), CONTINUATION_JUDGE_TIMEOUT_MS)),
-    ]);
+      thinkingLevel: 'off',
+      cacheRetention: 'none',
+    });
+    runMs = Date.now() - runStartedAt;
     if (!task || task.meta.aborted || task.meta.error) {
-      log.warn('kstar model routing runner failed', { cid: maskId(cid), aborted: task?.meta.aborted, error: task?.meta.error });
-      return null;
+      const errorKind = task?.meta.error?.kind;
+      log.warn('kstar model routing runner failed', {
+        cid: maskId(cid),
+        aborted: task?.meta.aborted,
+        error: task?.meta.error?.message,
+        error_kind: errorKind,
+        auth_ms: authMs,
+        build_ms: buildMs,
+        run_ms: runMs,
+        total_ms: Date.now() - startedAt,
+      });
+      return { status: 'failed', reason: errorKind === 'timeout' ? 'timeout' : 'runner_error' };
     }
     const verdict = parseContinuationJudgement(task.text);
     if (!verdict) {
       log.warn('kstar model routing judge output unparsable', { cid: maskId(cid), text: String(task.text || '').slice(0, 200) });
-      return null;
+      return { status: 'failed', reason: 'unparsable' };
     }
     log.info('kstar model routing verdict', {
       cid: maskId(cid),
@@ -11286,11 +11469,15 @@ async function judgeModelRouting(
       continuation: verdict.continuation,
       hasOpenRequirement: !!openRequirement,
       messagePreview: String(newMessage || '').replace(/\s+/g, ' ').slice(0, 80),
+      auth_ms: authMs,
+      build_ms: buildMs,
+      run_ms: runMs,
+      total_ms: Date.now() - startedAt,
     });
-    return verdict;
+    return { status: 'verdict', verdict };
   } catch (error) {
     log.warn(`kstar model routing degraded cid=${cid}: ${(error as Error).message}`);
-    return null;
+    return { status: 'failed', reason: 'exception' };
   }
 }
 
@@ -11305,9 +11492,14 @@ async function hostRouteTaskTurn(
   // (greetings/status/emoji) with zero model calls and zero KStar writes;
   // everything else goes to the model judgement which decides is_task AND
   // continuation in one call with full conversation context.
-  const { isObviouslyTrivial, isClosingIntent } = await import('../kstar/task-intent');
-  const recordRouting = async (decision: import('../kstar/requirement-types').KstarRoutingDecision): Promise<void> => {
-    await import('../kstar/requirement-store').then((store) => store.recordKstarRoutingDecision(uid, cid, decision)).catch(() => undefined);
+  const { isObviouslyTrivial, isClosingIntent, isAnswerLikeConfirmation } = await import('../kstar/task-intent');
+  const recordRouting = async (
+    decision: import('../kstar/requirement-types').KstarRoutingDecision,
+    options?: { requireExistingState?: boolean },
+  ): Promise<void> => {
+    await import('../kstar/requirement-store')
+      .then((store) => store.recordKstarRoutingDecision(uid, cid, decision, options))
+      .catch(() => undefined);
   };
   if (isClosingIntent(messageText)) {
     await recordRouting({ at: nowIso(), kind: 'closing_intent', isTask: true, continuation: true, reason: 'closing intent', ...(sourceMessageId ? { sourceMessageId } : {}) });
@@ -11355,6 +11547,48 @@ async function hostRouteTaskTurn(
     return { openedTask: false };
   }
   if (isObviouslyTrivial(messageText)) {
+    // This gate used to short-circuit with no record and no log, so its hit
+    // count could not be measured at all — the cheapest gate was the only
+    // invisible one. Same rule as the answer-like gate below: a non-task
+    // message must never be what brings KStar state into existence, so the
+    // record lands only once the conversation already has state. The log
+    // covers the stateless case, where there is no open task to disturb.
+    await recordRouting(
+      {
+        at: nowIso(),
+        kind: 'obviously_trivial',
+        isTask: false,
+        reason: 'obviously trivial (greeting/status/emoji); no model call',
+        ...(sourceMessageId ? { sourceMessageId } : {}),
+      },
+      { requireExistingState: true },
+    );
+    log.info('kstar routing filtered an obviously trivial message', { cid: maskId(cid) });
+    return { openedTask: false };
+  }
+  // Answer-like confirmations ("1"、"第一个和第三个"、"是的"、"需要") answer a
+  // question the assistant just asked. They cannot start or switch a task, so
+  // the model round trip only re-derives "no task write". Suppressing them
+  // here also cannot disturb an open task: nothing below runs, so the task
+  // stays exactly as it was — the projection for this turn is resolved
+  // independently further down (committedProjectionId reads the lifecycle
+  // directly), so an open task still gets its recall context injected.
+  //
+  // The decision is recorded only when this conversation already has task
+  // state. A non-task message must not be what brings KStar state into
+  // existence; mid-task it still lands in the log so the trace can attribute
+  // which gate decided.
+  if (isAnswerLikeConfirmation(messageText)) {
+    await recordRouting(
+      {
+        at: nowIso(),
+        kind: 'answer_confirmation',
+        isTask: false,
+        reason: 'answer-like confirmation (selection/ack); no task write',
+        ...(sourceMessageId ? { sourceMessageId } : {}),
+      },
+      { requireExistingState: true },
+    );
     return { openedTask: false };
   }
   try {
@@ -11363,8 +11597,48 @@ async function hostRouteTaskTurn(
     const openRequirement = lifecycle.requirement && lifecycle.requirement.status === 'open'
       ? { requirementId: lifecycle.requirement.id, goalText: lifecycle.requirement.goalText }
       : undefined;
-    const verdict = await judgeModelRouting(uid, cid, messageText, openRequirement);
-    if (!verdict) return { openedTask: false }; // timeout/enqueue failure → no routing decision (safe no-op)
+    const outcome = await judgeModelRouting(uid, cid, messageText, openRequirement);
+    if (outcome.status === 'unavailable') {
+      // No configured model: routing is simply not possible. This is a normal
+      // configuration state, not an anomaly, so it is still not recorded as a
+      // failure — but it is now recorded at all. Otherwise a turn that skipped
+      // routing for lack of a model was indistinguishable in the trace from
+      // one that was actually judged, and the gate distribution was blind to
+      // the whole configuration.
+      await recordRouting(
+        {
+          at: nowIso(),
+          kind: 'routing_unavailable',
+          isTask: false,
+          reason: 'no configured model; routing not possible',
+          ...(sourceMessageId ? { sourceMessageId } : {}),
+        },
+        { requireExistingState: true },
+      );
+      return { openedTask: false };
+    }
+    if (outcome.status === 'failed') {
+      // The judge never answered, so we cannot tell a task from small talk.
+      // Returning quietly is how a task lost its governance with no trace: the
+      // message is answered, but it opens no task, gets no projection and never
+      // enters the learning loop. Record it so the gap is visible, and keep the
+      // safe default of opening nothing (guessing "task" could strand a task
+      // that the user never asked for).
+      await recordRouting({
+        at: nowIso(),
+        kind: 'routing_failed',
+        isTask: false,
+        reason: `routing judge unavailable (${outcome.reason})`,
+        ...(sourceMessageId ? { sourceMessageId } : {}),
+      });
+      log.warn('kstar model routing produced no verdict; this turn runs ungoverned', {
+        cid: maskId(cid),
+        reason: outcome.reason,
+        hadOpenRequirement: !!openRequirement,
+      });
+      return { openedTask: false };
+    }
+    const verdict = outcome.verdict;
     if (!verdict.isTask) return { openedTask: false }; // model says not a task → zero KStar writes
     await recordRouting({ at: nowIso(), kind: 'model_judged', isTask: true, continuation: verdict.continuation, reason: 'model routing verdict', ...(sourceMessageId ? { sourceMessageId } : {}) });
 
@@ -12572,7 +12846,7 @@ async function buildCommanderExtraTools(
       );
       if (blocked) return blocked;
       // Resolve `to` → actor id via the shared name-map resolver.
-      const resolvedId = await resolveDispatchTarget(cid, toRaw);
+      const resolvedId = await resolveDispatchTarget(uid, cid, toRaw);
       if (!resolvedId) {
         return {
           content: JSON.stringify({
@@ -12590,7 +12864,7 @@ async function buildCommanderExtraTools(
       // Run the agent's turn in-process and hand its FULL result back as this
       // tool's result; the agent also persists its own visible bubble and the
       // commander then synthesises (Option B). The commander stays in the loop.
-      const dispatchAgent = await agentsFeat.getAgent(resolvedId);
+      const dispatchAgent = await agentsFeat.getAgentForChatDispatch(uid, resolvedId);
       const dispatchActor: Actor = {
         kind: "agent",
         id: resolvedId,
@@ -12805,7 +13079,7 @@ async function buildCommanderExtraTools(
         currentRunId,
       );
       if (blocked) return blocked;
-      const resolvedId = await resolveDispatchTarget(cid, toRaw);
+      const resolvedId = await resolveDispatchTarget(uid, cid, toRaw);
       if (!resolvedId)
         return _toolError(t("errors.unknown_actor", { name: toRaw }));
       if (resolvedId === COMMANDER_ID || resolvedId === USER_ID) {
@@ -12813,7 +13087,7 @@ async function buildCommanderExtraTools(
           "hand_off_to target must be an agent (not commander / user)",
         );
       }
-      const handoffAgent = await agentsFeat.getAgent(resolvedId);
+      const handoffAgent = await agentsFeat.getAgentForChatDispatch(uid, resolvedId);
       const handoffActor: Actor = {
         kind: "agent",
         id: resolvedId,
@@ -12896,7 +13170,7 @@ async function buildCommanderExtraTools(
           const finalActor = outcome.actor;
           const finalAgent =
             finalActor.kind === "agent"
-              ? await agentsFeat.getAgent(finalActor.id).catch(() => null)
+              ? await agentsFeat.getAgentForChatDispatch(uid, finalActor.id).catch(() => null)
               : null;
           const finalActorId =
             finalActor.kind === "agent" ? finalActor.id : "anonymous";
@@ -13240,7 +13514,7 @@ async function buildCommanderExtraTools(
           return workerExecution.blocked!;
         return { content: workerExecution.value!.outcome.payload };
       }
-      const resolvedId = await resolveDispatchTarget(cid, toRaw);
+      const resolvedId = await resolveDispatchTarget(uid, cid, toRaw);
       if (!legacy) {
         return _toolError("Named run_worker is forbidden. Use dispatch_to for formal Agent work. Anonymous run_worker is read-only only.");
       }
@@ -13256,7 +13530,7 @@ async function buildCommanderExtraTools(
       // back as this tool's result (same single-layer dispatch as the anonymous
       // branch). The agent also persists its own visible bubble; the commander
       // then synthesises (Option B).
-      const namedAgent = await agentsFeat.getAgent(resolvedId);
+      const namedAgent = await agentsFeat.getAgentForChatDispatch(uid, resolvedId);
       const namedActor: Actor = {
         kind: "agent",
         id: resolvedId,
@@ -14583,7 +14857,7 @@ async function _buildCliPrompt(
         ).trim(),
         output_protocol_block: outputProtocolBlock,
         project_block: projectBlock,
-        language_block: buildLanguageDirective(getLanguage()),
+        language_block: buildLanguageDirective(getUiLanguage()),
         attachments_block: filesBlock,
         conversation_block: conversationBlock,
         shared_task_context_block: sharedContextBlock,

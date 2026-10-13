@@ -11181,6 +11181,12 @@ body.is-sidebar-resizing iframe { pointer-events: none; }
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
+.stream-activity.is-terminal .stream-activity-pulse {
+  animation: none;
+  opacity: 0.7;
+}
+.stream-activity.is-failed { color: var(--danger); }
+.stream-activity.is-cancelled { color: var(--muted); }
 
 /* 2026-09-11 需求变更：过程轨迹不再是 details 折叠卡——普通透明容器，
    行直接平铺为纯文本（行样式见 .stream-process-line），无竖线/summary。 */
@@ -16798,6 +16804,52 @@ body:has(#panel-settings.active) .main-top-actions {
   margin-bottom: 14px;
 }
 .settings-group-head { margin-bottom: 14px; }
+.settings-semantica-heading,
+.settings-semantica-switch-row,
+.settings-semantica-actions,
+.settings-semantica-status-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.settings-semantica-switch-row {
+  min-height: 48px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.settings-semantica-switch-row > div:first-child { display: grid; gap: 3px; }
+.settings-semantica-switch-row strong { font-size: 13px; font-weight: 600; }
+.settings-semantica-switch-row span { font-size: 12px; color: var(--muted); }
+.settings-semantica-demo {
+  padding: 12px 0 2px;
+  border-top: 1px solid var(--border);
+}
+.settings-semantica-demo-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.settings-semantica-demo-head > div:first-child { display: grid; gap: 3px; }
+.settings-semantica-demo-head strong { font-size: 13px; font-weight: 600; }
+.settings-semantica-demo-head span { font-size: 12px; color: var(--muted); }
+.settings-semantica-fields {
+  margin-top: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.settings-semantica-fields[aria-disabled="true"] { opacity: .58; }
+.settings-semantica-number-row > .ui-input { max-width: 140px; }
+.settings-semantica-gates { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 12px 0; }
+.settings-semantica-gate { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-2); }
+.settings-semantica-actions { justify-content: flex-start; margin: 14px 0 10px; }
+.settings-status.is-warning { color: var(--danger-hover); }
+@media (max-width: 720px) {
+  .settings-semantica-number-row { align-items: stretch; flex-direction: column; }
+  .settings-semantica-number-row > label { flex-basis: auto; }
+  .settings-semantica-number-row > .ui-input { max-width: none; }
+}
 .settings-group-head-main {
   min-width: 0;
 }
@@ -19542,10 +19594,7 @@ body:has(#panel-settings.active) .main-top-actions {
 .ui-modal.quality-report-dialog { width: min(640px, calc(100vw - 32px)); }
 .quality-report-body { max-height: 60vh; }
 
-/* Custom MCP server dialog — widens the base ui-dialog for the form rows;
-   the warning reuses the muted tone with a touch more separation. */
-.connector-custom-dialog { width: min(480px, 92vw); }
-.connector-custom-dialog .ui-form { gap: var(--space-4); }
+/* CONN-M-001: custom transport fields and consent content in uiFormModal. */
 .connector-custom-section { display: grid; gap: var(--space-4); }
 .connector-custom-section[hidden] { display: none; }
 .connector-custom-warning { font-size: 12px; margin: 4px 0 2px; }
@@ -19868,220 +19917,6 @@ body:has(#panel-settings.active) .main-top-actions {
   font-size: inherit;
   color: var(--muted);
 }
-/* Each task is its own bordered card. Inside `.auto-row-head`: expand
-   chevron on the far left, main content + chips in the middle, schedule
-   meta on the right, ⋯ menu pinned at the far right. Expanded state
-   reveals a nested conversation list under the head. */
-.auto-row {
-  padding: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  background: var(--surface);
-  border: 1px solid var(--line-default);
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-card);
-  cursor: pointer;
-  transition: border-color 0.15s, opacity 0.15s, box-shadow 0.15s;
-}
-.auto-row:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card-hover); }
-.auto-row.is-disabled { background: var(--surface-subtle); }
-.auto-row.is-disabled .auto-row-content,
-.auto-row.is-disabled .auto-row-schedule { color: var(--muted); }
-.auto-row-head {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: var(--space-3);
-}
-.auto-row-expand.ui-icon-button {
-  flex: 0 0 auto;
-  width: var(--control-height-sm);
-  height: var(--control-height-sm);
-  min-height: var(--control-height-sm);
-}
-.auto-row-expand .auto-row-expand-icon {
-  width: 16px;
-  height: 16px;
-  transition: transform 0.15s;
-}
-.auto-row.is-expanded .auto-row-expand .auto-row-expand-icon { transform: rotate(180deg); }
-
-/* Expanded panel: nested conv list under the task. Same `.conv-item`
-   styling as the sidebar — the renderer is shared. */
-.auto-row-convs {
-  border-top: 1px dashed var(--border);
-  padding-top: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-/* HTML `hidden` attribute → really hide. The author rule above sets
-   `display: flex`, which would otherwise override the UA stylesheet's
-   `[hidden] { display: none }` and leave the panel always visible (this
-   was the "无法收起" bug — chevron flipped but panel stayed). */
-.auto-row-convs[hidden] { display: none; }
-.auto-row-convs-head {
-  font-size: 12px;
-  font-weight: 500;
-}
-.auto-row-convs-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.auto-row-convs-empty {
-  font-size: 12px;
-  padding: 6px 4px;
-}
-
-.auto-row-main {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.auto-row-content {
-  font-size: var(--font-size-ui);
-  color: var(--text);
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
-  /* Clamp to two lines so a giant prompt doesn't blow up the row. */
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.auto-row-content-empty { font-style: italic; }
-.auto-row-title {
-  font-size: 12px;
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.auto-row-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: var(--space-1);
-}
-.auto-row-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  font-size: var(--font-size-2);
-  line-height: 1.3;
-  padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--line-default);
-  border-radius: var(--radius-pill);
-  background: var(--surface-subtle);
-  color: var(--text-secondary);
-  white-space: nowrap;
-  max-width: 240px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.auto-row-chip.is-agent {
-  color: var(--primary-text);
-  background: var(--primary-soft);
-  border-color: var(--primary-soft);
-}
-.auto-row-chip.is-attach { font-family: var(--font-mono); font-size: 11px; }
-.auto-row-chip.is-project {
-  font-family: inherit;
-  font-size: inherit;
-  color: var(--primary-text);
-  background: var(--primary-soft);
-  border-color: var(--primary-soft);
-}
-/* Device chip — "本机" or the creator's hostname. Remote-device chips are
-   visually quiet (default neutral chip) so the row reads as "lives on
-   another machine"; current-device chips use a subtle success tint so the
-   user can tell at a glance which tasks WILL fire from here. */
-.auto-row-chip.is-device-here {
-  font-size: 11px;
-  color: var(--success);
-  background: var(--success-soft);
-  border-color: var(--success-soft);
-}
-.auto-row-chip.is-device-remote {
-  font-family: inherit;
-  font-size: inherit;
-  color: var(--muted);
-}
-
-/* Right-aligned meta block: schedule summary above, last-run below. Sits
-   to the LEFT of the ⋯ button — that one stays flush against the card edge. */
-.auto-row-side {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: var(--space-1);
-  text-align: right;
-  min-width: 100px;
-}
-.auto-row-status {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  color: var(--text-secondary);
-  font-size: var(--font-size-1);
-  font-weight: var(--font-weight-medium);
-  white-space: nowrap;
-}
-.auto-row-status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: var(--radius-pill);
-  background: var(--text-faint);
-}
-.auto-row-status.is-enabled .auto-row-status-dot { background: var(--color-success); }
-.auto-row-schedule {
-  color: var(--text-heading);
-  font-size: var(--font-size-3);
-  font-weight: var(--font-weight-medium);
-  white-space: nowrap;
-}
-.auto-row-lastrun {
-  font-family: inherit;
-  font-size: inherit;
-  color: var(--muted);
-  white-space: nowrap;
-}
-.auto-row-more.ui-icon-button {
-  flex: 0 0 auto;
-  width: var(--control-height-sm);
-  height: var(--control-height-sm);
-  min-height: var(--control-height-sm);
-}
-.auto-row.is-menu-open .auto-row-more { background: var(--color-overlay-hover); color: var(--text-heading); }
-
-/* ⋯ popover menu — visual clone of `.agent-row-menu`. */
-.auto-row-menu {
-  position: fixed;
-  z-index: var(--z-popover);
-  min-width: 112px;
-  padding: var(--space-1) 0;
-  border: 1px solid var(--line-default);
-  border-radius: var(--radius-popover);
-  background: var(--surface-raised);
-  box-shadow: var(--shadow-card);
-}
-.auto-row-menu-item.ui-button {
-  display: flex;
-  width: 100%;
-  border: 0;
-  background: transparent;
-  justify-content: flex-start;
-  text-align: left;
-  user-select: none;
-}
-.auto-row-menu-item.ui-button:hover { background: var(--surface-2); }
-
 /* Project-detail auto card hint */
 .project-auto-hint {
   margin-top: 8px;
@@ -20093,7 +19928,7 @@ body:has(#panel-settings.active) .main-top-actions {
 /* The `.panel` base rule already sets display:none → flex toggle via `.active`; do NOT
    force `display: flex` on the grid view, that breaks the setView() gating
    (id selector beats the class rule → content stays visible regardless of `.active`). */
-.connectors-grid-view, .connectors-detail-view {
+.connectors-grid-view {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -20200,11 +20035,14 @@ body:has(#panel-settings.active) .main-top-actions {
   color: var(--muted);
 }
 
-/* Connector cards reuse the shared Card shell while retaining provider branding. */
+/* Connector cards retain the shared Card shell and provider branding. */
 .connector-card {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-3);
+  width: 100%;
+  max-width: var(--card-width-max);
+  min-height: 160px;
   min-width: 0;
   padding: var(--space-4);
   background: var(--surface-card);
@@ -20212,11 +20050,45 @@ body:has(#panel-settings.active) .main-top-actions {
   border-radius: var(--radius-card);
   box-shadow: var(--shadow-card);
   cursor: pointer;
-  transition: border-color 0.12s, box-shadow 0.12s;
+  transition: border-color var(--duration-control) var(--easing-ui), box-shadow var(--duration-control) var(--easing-ui);
 }
 .connector-card:hover {
   border-color: var(--line-strong);
   box-shadow: var(--shadow-card-hover);
+}
+/* CONN-PV-003: native title button owns the whole-card popup target; actions remain above it. */
+.connector-card.has-detail { position: relative; isolation: isolate; }
+.connector-card.has-detail .connector-card-name { overflow: visible; }
+.connector-card .connector-card-popup-entry,
+.connector-card .connector-card-popup-entry:hover,
+.connector-card .connector-card-popup-entry:active {
+  position: static;
+  max-width: 100%;
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+}
+.connector-card-popup-entry .ui-button__label { overflow: hidden; text-overflow: ellipsis; }
+.connector-card-popup-entry::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-base);
+  border-radius: var(--radius-card);
+  cursor: pointer;
+}
+.connector-card-popup-entry:focus-visible::after {
+  outline: var(--focus-width) solid var(--color-accent);
+  outline-offset: var(--focus-offset);
+}
+.connector-card.has-detail .connector-card-menu-btn,
+.connector-card.has-detail .connector-card-foot button {
+  position: relative;
+  z-index: var(--z-raised);
 }
 .connector-card-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .connector-card-icon {
@@ -20234,6 +20106,7 @@ body:has(#panel-settings.active) .main-top-actions {
 }
 .connector-card-icon.is-svg {
   padding: 6px;
+  color: var(--text-heading);
 }
 .connector-card[data-id="sentry"] .connector-card-icon.is-svg {
   padding: 4px;
@@ -20242,38 +20115,31 @@ body:has(#panel-settings.active) .main-top-actions {
   width: 100%;
   height: 100%;
   display: block;
-  /* SVG strokes/fills inherit from the white text color when designed for
-     monochrome glyphs; brand-tint background still shows through padding. */
+  /* Shared monochrome icons inherit readable text color; brand SVGs keep their own fills. */
 }
 .connector-card-headline { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .connector-card-name {
-  font-size: var(--font-size-title);
+  font-size: var(--font-size-4);
   font-weight: var(--font-weight-medium);
   color: var(--text-heading);
   overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .connector-card-account {
-  font-size: 11px;
-  color: var(--muted);
+  overflow: hidden;
+  max-width: 100%;
+}
+.connector-card-account .ui-status-dot__mark {
+  flex-shrink: 0;
+}
+.connector-card-account .ui-status-dot__label {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 180px;
 }
-.connector-card-account::before {
-  content: '';
-  display: inline-block;
-  width: 5px;
-  height: 5px;
-  border-radius: 99px;
-  background: var(--success);
-  margin-right: 4px;
-  vertical-align: middle;
-}
+.connector-card-cli-missing,
 .connector-card-error {
   display: block;
   font-size: 11px;
@@ -20308,9 +20174,9 @@ body:has(#panel-settings.active) .main-top-actions {
   vertical-align: middle;
 }
 .connector-card-desc {
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--text-2);
+  font-size: var(--font-size-3);
+  line-height: var(--line-height-body);
+  color: var(--text-secondary);
   min-height: 36px;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -20319,13 +20185,12 @@ body:has(#panel-settings.active) .main-top-actions {
   text-wrap: pretty;
 }
 /* Match skill / agent card ⋯ placement: compact, hover-only, nudged toward the card edge. */
-.connector-card-menu-btn.ui-icon-button {
+.connector-card-menu-btn {
   margin-left: auto;
   margin-top: -2px;
   margin-right: -4px;
-  width: 22px;
-  height: 22px;
-  color: var(--muted);
+  width: var(--control-height-sm);
+  height: var(--control-height-sm);
   flex-shrink: 0;
   align-self: flex-start;
   visibility: hidden;
@@ -20333,27 +20198,31 @@ body:has(#panel-settings.active) .main-top-actions {
 .connector-card:hover .connector-card-menu-btn,
 .connector-card:focus-within .connector-card-menu-btn,
 .connector-card.is-menu-open .connector-card-menu-btn { visibility: visible; }
-.connector-card-menu-btn.ui-icon-button:hover { background: rgba(20, 71, 55, 0.08); color: var(--color-ink-2); }
+.connector-card-menu-btn:hover { background: var(--color-overlay-hover); color: var(--text-body); }
 .connector-card-menu-popover {
   position: fixed;
   z-index: var(--z-popover);
-  background: var(--color-surface);
-  border: 1px solid rgba(20, 71, 55, 0.12);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(20, 71, 55, 0.12);
-  min-width: 120px;
-  padding: 4px;
+  min-width: 128px;
+  padding: var(--space-1);
+  background: var(--surface-card);
+  border: 1px solid var(--line-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card-hover);
 }
-.connector-card-menu-item.ui-button {
-  width: 100%;
-  height: auto;
-  justify-content: flex-start;
-  padding: 7px 10px;
-  font-size: 13px;
+.connector-card-menu-item {
+  min-height: var(--control-height-sm);
+  padding: 0 var(--space-3);
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-3);
+  color: var(--text-body);
+  cursor: pointer;
   user-select: none;
 }
-.connector-card-menu-item.ui-button--ghost:hover { background: rgba(20, 71, 55, 0.05); }
-.connector-card-menu-item.ui-button--danger:hover { background: rgba(220, 38, 38, 0.08); }
+.connector-card-menu-item:hover { background: var(--color-overlay-hover); }
+.connector-card-menu-item.is-danger { color: var(--color-danger); }
+.connector-card-menu-item.is-danger:hover { background: var(--color-danger-soft); }
 
 /* Disabled-but-connected card: muted look so the user can tell at a glance which connector
    they've turned off, without removing it from the "Connected" group. */
@@ -20362,16 +20231,20 @@ body:has(#panel-settings.active) .main-top-actions {
 
 .connector-card-foot {
   margin-top: auto;
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--line-hairline);
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
   min-width: 0;
 }
 .connector-card-foot .btn {
   flex: 0 0 auto;
+}
+
+@media (max-width: 700px) {
+  .connectors-page-header { align-items: flex-start; flex-wrap: wrap; }
+  .connectors-grid-scroll { gap: 40px; }
+  .connector-card { max-width: none; }
 }
 .connector-card-foot .btn-link {
   background: transparent;
@@ -20399,19 +20272,6 @@ body:has(#panel-settings.active) .main-top-actions {
 .connector-dot-connecting { background: #f59e0b; }
 .connector-dot-error { background: #ef4444; }
 
-/* Detail view */
-.connectors-detail-header {
-  padding: 14px 20px;
-  border-bottom: 1px solid var(--border);
-  background: var(--color-surface);
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-shrink: 0;
-}
-.connectors-detail-title { flex: 1; font-size: 15px; font-weight: 600; }
-.connectors-detail-actions { display: flex; gap: 8px; }
-.connectors-detail-body { flex: 1; overflow-y: auto; padding: 20px 24px 32px; }
 .connector-detail-row { display: flex; gap: 12px; padding: 6px 0; font-size: 13px; align-items: baseline; }
 .connector-detail-section { margin-top: 18px; }
 .connector-detail-section-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--text); }
@@ -20429,212 +20289,84 @@ body:has(#panel-settings.active) .main-top-actions {
 .connector-tool-name { font-family: ui-monospace, monospace; font-size: 12px; }
 .connector-tool-desc { font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
 
-/* ─── Connector detail view (registry CONN-PV-001) ───
-   Page-local structural composition for one business surface: the Tencent Meeting
-   connector detail. Proposed in docs/renderer-structural-registry.md; it must not grow
-   into a second visual variant of the card grid. Tokens only — no literal color,
-   font-size, radius or z-index. Layout only: the shared shells (ui-resource-card,
-   ui-button, ui-status-pill) keep their own visual identity, exactly as
-   `.connector-card` does today. */
-.connectors-detail-topbar {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-5) 0;
+/* Connector usage popup — CONN-PV-003, composed within the shared modal shell. */
+.connector-popup-icon { display: flex; flex: 0 0 var(--space-7); width: var(--space-7); height: var(--space-7); }
+.connector-popup-icon .ui-icon { width: 100%; height: 100%; }
+.connector-popup-content { display: flex; flex-direction: column; gap: var(--space-4); }
+.connector-popup-description, .connector-popup-note { margin: 0; color: var(--text-secondary); }
+.connector-popup-note { font-size: var(--font-size-caption); }
+.connector-popup-status, .connector-popup-enable { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); }
+.connector-popup-status { overflow-wrap: anywhere; }
+.connector-popup-enable { justify-content: space-between; }
+.connector-popup-examples { display: flex; flex-direction: column; gap: var(--space-3); }
+.connector-popup-examples h3 { margin: 0; font-size: var(--font-size-title); font-weight: var(--font-weight-medium); }
+.connector-popup-example.ui-button { width: 100%; height: auto; min-height: var(--control-height-lg); padding: var(--space-3); justify-content: space-between; text-align: left; white-space: normal; line-height: var(--line-height-body); }
+.connector-popup-example .ui-button__label { min-width: 0; overflow-wrap: anywhere; }
+.connector-popup-example .ui-button__icon { flex-shrink: 0; }
+.connector-popup-more { position: relative; margin-right: auto; }
+.connector-popup-more .ui-modal__popover { bottom: 100%; left: 0; min-width: max-content; }
+.connector-popup .connectors-detail-auth-url { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.connector-popup .connectors-detail-auth-url-label { margin: 0; }
+.connector-popup .connectors-detail-auth-url-value { max-width: 100%; overflow-wrap: anywhere; }
+
+/* CONN-PV-002: token onboarding content inside the shared modal and form. */
+.connector-token-guidance { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-3); }
+.connector-token-guidance .connectors-detail-setup-steps { margin: 0; }
+
+/* Onboarding guidance (catalog `setup`): what to install, what will happen, where the credential
+   comes from. Deliberately plain and readable — this is the block a first-time user reads before
+   they can connect anything, so it carries the most text in the panel. */
+.connectors-detail-setup {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border-soft);
 }
-.connectors-detail-info-btn { flex: 0 0 auto; }
-.connectors-detail-column {
-  width: 100%;
-  max-width: var(--layout-resource-detail-width);
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-.connectors-detail-identity {
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  min-width: 0;
-}
-.connectors-detail-identity-icon {
-  width: 56px;
-  height: 56px;
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-2);
-  border: 1px solid var(--line-hairline);
-  border-radius: var(--radius-card);
-  background: var(--surface-card);
-}
-.connectors-detail-identity-icon svg { width: 100%; height: 100%; display: block; }
-.connectors-detail-identity-icon.is-fallback {
-  color: var(--color-surface);
-  font-size: var(--font-size-heading);
-  font-weight: var(--font-weight-bold);
-}
-.connectors-detail-identity-heading { min-width: 0; }
-.connectors-detail-identity-name {
-  margin: 0;
+.connectors-detail-setup-title {
+  margin: 0 0 var(--space-2);
   color: var(--text);
-  font-size: var(--font-size-heading);
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--line-height-title);
-}
-.connectors-detail-identity-subtitle {
-  margin: var(--space-1) 0 0;
-  color: var(--text-secondary);
   font-size: var(--font-size-body);
-  line-height: var(--line-height-body);
-}
-
-/* Three-step progress indicator. Native <ol> semantics + aria-current; the connector
-   line between steps is decorative and carries no information of its own. */
-.connectors-detail-steps {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.connectors-detail-step {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-  color: var(--text-secondary);
-  font-size: var(--font-size-ui-sm);
-  line-height: var(--line-height-row);
-}
-.connectors-detail-step + .connectors-detail-step::before {
-  content: '';
-  flex: 0 0 auto;
-  width: var(--space-5);
-  height: 1px;
-  background: var(--line-hairline);
-}
-.connectors-detail-step-mark { display: inline-flex; align-items: center; }
-.connectors-detail-step.is-done { color: var(--color-success); }
-.connectors-detail-step.is-current { color: var(--text); font-weight: var(--font-weight-medium); }
-.connectors-detail-step-dot {
-  display: inline-block;
-  width: var(--space-2);
-  height: var(--space-2);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-pill);
-}
-
-/* Both panels adopt the shared `ui-resource-card` shell. They only relax its 400px card-grid
-   width cap for this page's layout — the same page-scoped width override the card grid already
-   does with `.connectors-grid > .connector-card`. The shell's border, radius, background and
-   shadow are deliberately left alone. The direct-child selector is required: `ui-components.css`
-   loads after `style.css`, so a single-class rule would lose to `.ui-resource-card`. */
-.connectors-detail-column > .connectors-detail-panel {
-  width: 100%;
-  max-width: 100%;
-  padding: var(--space-5);
-  box-sizing: border-box;
-}
-.connectors-detail-hero {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  gap: var(--space-3);
-}
-/* Icon sizing goes through the documented `uiIconHtml(name, className)` seam: the page sizes its
-   own class rather than overriding the shared `.ui-icon` from page CSS. Colour is inherited from
-   the host (`--color-success` on `.is-ok` / `.is-done`) via the icon's `currentColor` stroke. */
-.connectors-detail-hero-icon { display: inline-flex; color: var(--text-secondary); }
-.connectors-detail-hero-icon.is-ok { color: var(--color-success); }
-.connectors-detail-hero-icon .connectors-detail-hero-glyph { width: 40px; height: 40px; }
-.connectors-detail-step-mark .connectors-detail-step-glyph { width: 14px; height: 14px; }
-.connectors-detail-hero-title {
-  margin: 0;
-  color: var(--text);
-  font-size: var(--font-size-heading);
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--line-height-title);
-}
-.connectors-detail-hero-desc {
-  margin: 0;
-  max-width: 52ch;
-  color: var(--text-secondary);
-  font-size: var(--font-size-body);
-  line-height: var(--line-height-body);
-}
-.connectors-detail-hero-actions {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-2);
-  margin-top: var(--space-1);
-}
-.connectors-detail-hero-note {
-  margin: 0;
-  color: var(--text-muted);
-  font-size: var(--font-size-meta);
-}
-
-.connectors-detail-panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  margin-bottom: var(--space-2);
-}
-.connectors-detail-panel-title {
-  margin: 0;
-  color: var(--text);
-  font-size: var(--font-size-title);
   font-weight: var(--font-weight-medium);
 }
-.connectors-detail-panel-scope {
+.connectors-detail-setup-steps {
   margin: 0 0 var(--space-3);
+  padding-left: var(--space-5);
   color: var(--text-secondary);
   font-size: var(--font-size-body);
   line-height: var(--line-height-body);
 }
-.connectors-detail-panel-actions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-.connectors-detail-soon-hint {
-  color: var(--text-muted);
-  font-size: var(--font-size-meta);
-}
-
-.connectors-detail-auth-url {
+.connectors-detail-setup-steps > li { margin-bottom: var(--space-1); }
+.connectors-detail-setup-install {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
   gap: var(--space-2);
-  padding: var(--space-3);
-  border: 1px solid var(--line-hairline);
-  border-radius: var(--radius-control);
-  background: var(--surface-subtle);
-  text-align: left;
+  align-items: flex-start;
+  margin-bottom: var(--space-3);
 }
-.connectors-detail-auth-url-label {
+.connectors-detail-setup-install-label {
   margin: 0;
   color: var(--text-secondary);
-  font-size: var(--font-size-meta);
+  font-size: var(--font-size-caption);
 }
-.connectors-detail-auth-url-value {
-  max-width: 100%;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-meta);
+.connectors-detail-setup-install-value {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
   color: var(--text);
-  word-break: break-all;
-  user-select: all;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.connectors-detail-setup-docs { margin-bottom: var(--space-2); }
+.connectors-detail-setup-note {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-body);
 }
 
 /* Connect / configure modal (minimal scoped styles for the connectors flow; if the project
@@ -20642,7 +20374,7 @@ body:has(#panel-settings.active) .main-top-actions {
 #connectors-connect-modal.modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(20, 71, 55, 0.45);
+  background: rgba(23, 24, 28, 0.45);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -20755,49 +20487,38 @@ body:has(#panel-settings.active) .main-top-actions {
 .chat-md-drawer-body .ctx-viewer-editor { flex: 1 1 auto; min-height: 0; padding: 12px 16px; border: 0; outline: 0; resize: none; }
 
 /* ── Generic right-click context menu (modules/context-menu.js) ─────── */
+/* Shared cursor and button-anchored menus. */
 .context-menu {
   position: fixed;
-  /* 右键菜单是普通弹层，必须低于标准弹窗（--z-modal），否则会盖住弹窗。 */
   z-index: var(--z-popover);
   min-width: 160px;
-  padding: 4px;
-  background: var(--color-surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(20, 71, 55, 0.12);
+  max-width: calc(100vw - var(--space-4));
+  max-height: calc(100vh - var(--space-4));
+  overflow-y: auto;
+  padding: var(--space-1);
+  background: var(--surface-card);
+  border: 1px solid var(--line-default);
+  border-radius: var(--radius-control);
+  box-shadow: var(--shadow-card-hover);
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: var(--space-1);
 }
-.context-menu-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.context-menu-item.ui-button {
+  width: 100%;
+  justify-content: flex-start;
   text-align: left;
   border: 0;
   background: transparent;
-  padding: 7px 10px;
-  border-radius: 6px;
-  font-size: 13px;
-  font-family: inherit;
-  color: var(--text);
-  cursor: pointer;
+  box-shadow: none;
 }
-.context-menu-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  color: var(--text-2);
-  flex: 0 0 auto;
-}
-.context-menu-icon .ui-icon { width: 16px; height: 16px; }
-.context-menu-label { min-width: 0; }
-.context-menu-item:hover,
-.context-menu-item.is-active { background: var(--accent-soft, var(--color-brand-soft)); }
-.context-menu-item.is-disabled { color: #94a3b8; cursor: not-allowed; }
-.context-menu-item.is-disabled:hover { background: transparent; }
+.context-menu-item.ui-button:hover,
+.context-menu-item.ui-button.is-active { background: var(--color-brand-soft); }
+.context-menu-item.ui-button--danger:hover,
+.context-menu-item.ui-button--danger.is-active { background: var(--color-danger-soft); }
+.context-menu-item.ui-button.is-disabled { cursor: not-allowed; color: var(--text-muted); }
+.context-menu-item.ui-button.is-disabled:hover { background: transparent; }
+.context-menu-separator { height: 1px; background: var(--line-hairline); margin: var(--space-1); flex: 0 0 auto; }
 
 /* ───────────────────────────── Memory ─────────────────────────────────────
    Personal cross-session memory page (#panel-memory) + the Settings › 数据

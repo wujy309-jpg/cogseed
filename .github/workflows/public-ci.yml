@@ -122,6 +122,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci --foreground-scripts
+        timeout-minutes: 10
       - run: npm run test:resources:setup
       - run: npm run test:js -- --maxWorkers=1 --shard=${{ matrix.shard }}/4
       - if: matrix.shard == 1
@@ -161,6 +162,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci --foreground-scripts
+        timeout-minutes: 10
       - run: node scripts/write-build-info.cjs --channel=ci
       - run: npm run build:win
       - run: npm run verify:package:build-info -- --channel=ci

@@ -103,14 +103,26 @@ describe('conversation Recall citations', () => {
     expect(source).toContain('window.recallMemoryCardHtml(citations)');
   });
 
+  it('mounts persisted recall citations when a live streaming bubble is finalized', () => {
+    // Live placeholders do not pass through appendChatMessage. The finalizer
+    // must mount the same memory card immediately instead of requiring a
+    // conversation reload before cited assets become visible.
+    expect(source).toContain('function _mountFinalRecallMemoryCard(ph, gm, cid)');
+    expect(source).toContain('_renderRecallCitationsHtml(gm.recall_citations)');
+    expect(source).toContain('_hydrateRecallCitations(ph, cid, gm.id)');
+    expect(source).toContain('citations: Array.isArray(gm.recall_citations) ? gm.recall_citations : []');
+    expect(source).toContain('_mountFinalRecallMemoryCard(ph, gm, cid);');
+  });
+
   it('lets users open a cited asset from the answer memory card', () => {
     const html = renderCitations([{ asset_id: 'asset-1', title: '项目复盘规则', type: 'rule', scope: 'project' }]);
 
     expect(html).toContain('data-asset-citation="asset-1"');
     expect(html).toContain('chat-recall-citation-open');
     expect(html).toContain('>项目复盘规则</button>');
-    // 合并卡：被实际引用的行带「已引用」标记（带入未引用行没有）。
-    expect(html).toContain('已引用');
+    // 运行回执只证明资产已进入模型上下文，不证明最终回答实际采用了它。
+    expect(html).toContain('已进入模型上下文');
+    expect(html).toContain('进入模型上下文不代表最终回答实际采用');
     expect(source).toContain("closest('[data-asset-citation]')");
     expect(source).toContain('window.openCognitionAssetById(assetId)');
   });

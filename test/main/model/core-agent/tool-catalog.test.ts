@@ -112,7 +112,14 @@ function enumerateAllInjectedTools(): AgentTool[] {
   // recall 组的三个工厂都要枚举到，否则这一组工具整体漏在反漂移之外
   // （2026-09-25 补：此前 createRecallTools / createAssetStewardTools /
   //  createPersonalOntologyTools 都没被调用，catalog 少一行也不会变红）。
-  tools.push(...createRecallTools({ userId: 'testuid' }));
+  const previousSemantica = process.env.COGSEED_SEMANTICA_ENABLED;
+  process.env.COGSEED_SEMANTICA_ENABLED = '1';
+  try {
+    tools.push(...createRecallTools({ userId: 'testuid' }));
+  } finally {
+    if (previousSemantica === undefined) delete process.env.COGSEED_SEMANTICA_ENABLED;
+    else process.env.COGSEED_SEMANTICA_ENABLED = previousSemantica;
+  }
   tools.push(...createAssetStewardTools({ userId: 'testuid' }));
   tools.push(...createPersonalOntologyTools({ userId: 'testuid' }));
   // 经验目录工厂（specs/016 T024）：同样必须枚举，漏了它 catalog 少两行也不会红。
@@ -207,7 +214,7 @@ describe('tool-catalog', () => {
     // 枚举本身也要覆盖到 recall 组：工厂没被调用时这一组会整体隐身，
     // 反漂移就成了一句空话（2026-09-25 补的洞）。
     for (const name of [
-      'search_ability_assets', 'personal_ontology_fields',
+      'search_ability_assets', 'ontology_query', 'personal_ontology_fields',
       'list_ability_assets', 'read_ability_asset',
     ]) {
       expect(injected.has(name), `enumerateAllInjectedTools 漏了 ${name}`).toBe(true);
@@ -410,5 +417,49 @@ describe('isToolVisibleToAgent (ownerAgent gate)', () => {
     expect(isToolVisibleToAgent('research_rerank', '')).toBe(false);
     expect(isToolVisibleToAgent('research_rerank', 'sample-agent')).toBe(false);
     expect(isToolVisibleToAgent('research_rerank', 'some-other-agent')).toBe(false);
+  });
+
+  /**
+   * 软预算此前只告警（见上一个用例），于是描述一路变胖：本次精简前有 12 条超 480 字符，
+   * 其中 `cross_session_memory` 已达 2431——每回合都要随工具表发给模型。
+   *
+   * 这里加一道**棘轮**：新增超预算条目直接失败；已收敛的不得回退；
+   * 冻结清单里的条目一旦回到预算内，必须从清单删除（棘轮只朝收紧方向转）。
+   */
+  it('keeps the over-budget description set frozen and shrinking', () => {
+    const FROZEN_OVER_BUDGET: Record<string, string> = {
+      cross_session_memory: '描述在 vendored core-agent 包内（改它会与上游分叉）',
+      metacognition: '同上：vendored core-agent 包内',
+      bash: '平台条件文本不可删（输出目录约定 + Windows shell 规则），已从 919 精简到 ~740',
+      edit_office: 'operations 三态表是调用契约，已从 747 精简到 ~566',
+      office_read: '元素路径语法说明（/body/p[3] 等）',
+      grep_files: 'output_mode 语义需要展开',
+      kb_search: '检索范围与命中口径说明',
+      material_search: '与 kb_search 的范围差异需说明',
+      search_ability_assets: '资产检索的范围与分页说明',
+      messaging_send: '渠道与投递语义说明',
+      edit_ability_asset: '资产编辑的确认语义说明',
+    };
+    // 本次收敛到预算内：回归即失败。
+    const SHRUNK_TO_BUDGET = ['research_rerank', 'markdown_to_pdf'];
+
+    const over = new Set<string>();
+    for (const tool of enumerateAllInjectedTools()) {
+      if (normalizedDescription(tool.description).length > TOOL_DESCRIPTION_SOFT_BUDGET_CHARS) {
+        over.add(tool.name);
+      }
+    }
+
+    const added = [...over].filter((name) => !(name in FROZEN_OVER_BUDGET));
+    expect(
+      added,
+      `新增超预算工具（>${TOOL_DESCRIPTION_SOFT_BUDGET_CHARS} 字符）：先精简，或写进冻结清单并说明理由`,
+    ).toEqual([]);
+
+    const stale = Object.keys(FROZEN_OVER_BUDGET).filter((name) => !over.has(name));
+    expect(stale, '这些已回到软预算内 → 从冻结清单移除，别让棘轮空转').toEqual([]);
+
+    const regressed = SHRUNK_TO_BUDGET.filter((name) => over.has(name));
+    expect(regressed, '这些描述本次已收敛到预算内，不得回退').toEqual([]);
   });
 });

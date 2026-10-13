@@ -44,12 +44,17 @@ function fixture(t) {
   fs.writeFileSync(path.join(source, 'src/app.js'), 'export const publicVersion = 1;\n');
   fs.writeFileSync(path.join(source, 'secret.txt'), 'private\n');
   git(source, 'add', '.');
+  fs.mkdirSync(path.join(source, 'scripts/opensource'), { recursive: true });
+  fs.writeFileSync(path.join(source, 'scripts/opensource/contributions.json'), JSON.stringify({
+    schemaVersion: 1, repository: 'bonc-ai/cogseed', contributions: [],
+  }));
+  git(source, 'add', '.');
   git(source, 'commit', '-qm', 'private source');
   const sourceSha = git(source, 'rev-parse', 'HEAD');
   const policy = {
     schemaVersion: 1, status: 'reviewed', sourceRepository: 'bonc-ai/cogseed-internal',
     targetRepository: 'bonc-ai/cogseed', publicFiles: ['src/app.js'],
-    neverPublic: ['secret.txt'], privatePaths: [],
+    neverPublic: ['secret.txt'], privatePaths: ['scripts/opensource/'],
     reviewedReferenceHintsSha256: sha256(JSON.stringify([])),
   };
   const policyPath = path.join(base, 'policy.json');

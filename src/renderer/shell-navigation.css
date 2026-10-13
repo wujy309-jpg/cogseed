@@ -84,7 +84,8 @@ body.sidebar-collapsed .sidebar > * {
   display: none;
 }
 
-/* Make room for the recovery entry without pushing normal expanded headers. */
+/* Make room for the recovery entry without pushing normal expanded headers.
+ * The KB workbench header (KB-PV-002) uses the same shell recovery gutter. */
 body.shell-sidebar-hidden .main-content :is(
   .ui-page-header,
   .chat-header,
@@ -94,6 +95,7 @@ body.shell-sidebar-hidden .main-content :is(
   .marketplace-header,
   .agents-grid-header,
   .skills-grid-header,
+  .kb-eco-topnav,
   .contexts-page-header
 ) {
   box-sizing: border-box;
@@ -122,6 +124,7 @@ html.is-macos body.shell-sidebar-hidden .main-content :is(
   .marketplace-header,
   .agents-grid-header,
   .skills-grid-header,
+  .kb-eco-topnav,
   .contexts-page-header
 ) {
   -webkit-app-region: no-drag;
@@ -130,6 +133,7 @@ html.is-macos body.shell-sidebar-hidden .main-content :is(
 html.is-macos body.shell-sidebar-hidden .main-content :is(
   .ui-page-header__body,
   .chat-header-main,
+  .kb-eco-tabs,
   .ws-space-heading
 ),
 html.is-macos body.shell-sidebar-hidden .main-content :is(

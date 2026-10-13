@@ -14,7 +14,18 @@ import {
   rankOntologyMatches,
   mergeHybridMatches,
   type HybridMatchMethod,
+  type HybridRouteMatch,
 } from './hybrid-retrieval';
+import { orchestrateOntologySemanticRecall } from './ontology-semantic-orchestrator';
+import {
+  queryOntologyAssets,
+  type OntologyAssetQueryDirection,
+  type OntologyAssetQueryEvidenceEdge,
+} from './ontology-asset-query';
+import type { OntologyQueryIntentRoute } from './ontology-query-intent';
+import type { AbilityAssetRelationKind } from './asset-relations';
+import { isSemanticaEnabled } from './semantica-settings';
+import type { JevFallbackReason } from '../jev/types';
 import { readRecallJsonRecord, updateRecallJsonRecord, writeRecallJsonRecord } from './store';
 import type { RecallJsonRecord } from './types';
 import type { RecallAbilityAssetRecord } from './candidate-service';
@@ -93,6 +104,12 @@ export interface RecallAssetMatch {
   assetId: string;
   matchScore: number;
   matchMethod: RecallAssetMatchMethod;
+  /** Semantica automatic-recall provenance. */
+  entryAssetId?: string;
+  distance?: number;
+  relationKind?: AbilityAssetRelationKind;
+  evidencePath?: OntologyAssetQueryEvidenceEdge[];
+  degraded?: boolean;
 }
 
 export interface ModelSelectionEvent {
@@ -100,6 +117,37 @@ export interface ModelSelectionEvent {
   assetIds: string[];
   addedAssetIds: string[];
   addedAt: string;
+}
+
+export type SemanticaGateTraceStatus = 'disabled' | 'selected' | 'fallback' | 'clarify' | 'none';
+
+export interface SemanticaSelectionTrace {
+  enabled: true;
+  entryAssetIds: string[];
+  /** Relation candidates found by the local deterministic traversal. */
+  deterministicExpansionCount: number;
+  /** Relation candidates left after the optional intent plan is applied. */
+  finalExpansionCount: number;
+  intentGate: {
+    status: SemanticaGateTraceStatus;
+    selectedRoute?: OntologyQueryIntentRoute;
+    relationKind?: AbilityAssetRelationKind;
+    direction?: OntologyAssetQueryDirection;
+    maxHops?: number;
+    jevStatus?: 'ok' | 'fallback';
+    fallbackReason?: JevFallbackReason;
+    jevAttempts?: number;
+    jevLatencyMs?: number;
+  };
+  candidateGate: {
+    status: SemanticaGateTraceStatus;
+    inputCount: number;
+    outputCount: number;
+    jevStatus?: 'ok' | 'fallback';
+    fallbackReason?: JevFallbackReason;
+    jevAttempts?: number;
+    jevLatencyMs?: number;
+  };
 }
 
 /** 投影冻结的内容副本形态：资产版本快照 + **可选** `evidenceRefs`
@@ -141,6 +189,8 @@ export interface ContextProjectionRecord extends RecallJsonRecord {
   expiresAt?: string;
   /** True when semantic retrieval degraded; reliable ontology matches may remain. */
   selectionDegraded?: boolean;
+  /** Bounded, content-free receipt for the automatic Semantica/Jev path. */
+  semanticaTrace?: SemanticaSelectionTrace;
   status: ContextProjectionStatus;
   createdAt: string;
   confirmedAt?: string;
@@ -210,6 +260,7 @@ export interface BuildRecallViewResult {
   omittedRefs: OmittedAssetRef[];
   /** Semantic embedding was unavailable; selection retained ontology matches only. */
   degraded?: boolean;
+  semanticaTrace?: SemanticaSelectionTrace;
 }
 
 export interface ProjectionRevisionInput {
@@ -344,8 +395,135 @@ function validateAssetMatches(value: unknown): RecallAssetMatch[] | undefined {
     if (typeof match.assetId !== 'string' || !safeId(match.assetId)) throw new Error('malformed context projection matches');
     if (typeof match.matchScore !== 'number' || !Number.isFinite(match.matchScore) || match.matchScore < 0 || match.matchScore > 1) throw new Error('malformed context projection matches');
     if (match.matchMethod !== 'semantic' && match.matchMethod !== 'ontology' && match.matchMethod !== 'semantic_ontology' && match.matchMethod !== 'recency_fallback' && match.matchMethod !== 'manual') throw new Error('malformed context projection matches');
-    return { assetId: match.assetId, matchScore: match.matchScore, matchMethod: match.matchMethod } as RecallAssetMatch;
+    if (match.entryAssetId !== undefined && (typeof match.entryAssetId !== 'string' || !safeId(match.entryAssetId))) throw new Error('malformed context projection match entry');
+    if (match.distance !== undefined && (typeof match.distance !== 'number' || !Number.isInteger(match.distance) || match.distance < 0 || match.distance > 32)) throw new Error('malformed context projection match distance');
+    const relationKinds = new Set<AbilityAssetRelationKind>(['refines', 'depends_on', 'replaces', 'conflicts_with', 'related_to', 'same_family']);
+    if (match.relationKind !== undefined && !relationKinds.has(match.relationKind as AbilityAssetRelationKind)) throw new Error('malformed context projection match relation');
+    if (match.degraded !== undefined && typeof match.degraded !== 'boolean') throw new Error('malformed context projection match degraded status');
+    let evidencePath: OntologyAssetQueryEvidenceEdge[] | undefined;
+    if (match.evidencePath !== undefined) {
+      if (!Array.isArray(match.evidencePath) || match.evidencePath.length > 32) throw new Error('malformed context projection match evidence');
+      evidencePath = match.evidencePath.map((rawEdge) => {
+        if (!rawEdge || typeof rawEdge !== 'object' || Array.isArray(rawEdge)) throw new Error('malformed context projection match evidence');
+        const edge = rawEdge as Record<string, unknown>;
+        const edgeKinds = new Set<AbilityAssetRelationKind>(['refines', 'depends_on', 'replaces', 'conflicts_with', 'related_to', 'same_family']);
+        if (typeof edge.fromAssetId !== 'string' || !safeId(edge.fromAssetId) || typeof edge.toAssetId !== 'string' || !safeId(edge.toAssetId) || typeof edge.fromTitle !== 'string' || typeof edge.toTitle !== 'string' || !edgeKinds.has(edge.kind as AbilityAssetRelationKind)) throw new Error('malformed context projection match evidence');
+        return { fromAssetId: edge.fromAssetId, fromTitle: edge.fromTitle, kind: edge.kind as AbilityAssetRelationKind, toAssetId: edge.toAssetId, toTitle: edge.toTitle };
+      });
+    }
+    return {
+      assetId: match.assetId,
+      matchScore: match.matchScore,
+      matchMethod: match.matchMethod,
+      ...(match.entryAssetId ? { entryAssetId: match.entryAssetId } : {}),
+      ...(match.distance !== undefined ? { distance: match.distance } : {}),
+      ...(match.relationKind ? { relationKind: match.relationKind as AbilityAssetRelationKind } : {}),
+      ...(evidencePath ? { evidencePath } : {}),
+      ...(match.degraded === true ? { degraded: true } : {}),
+    } as RecallAssetMatch;
   });
+}
+
+const SEMANTICA_TRACE_STATUSES = new Set<SemanticaGateTraceStatus>([
+  'disabled',
+  'selected',
+  'fallback',
+  'clarify',
+  'none',
+]);
+const SEMANTICA_TRACE_ROUTES = new Set<OntologyQueryIntentRoute>([
+  'ontology',
+  'semantic',
+  'hybrid',
+  'clarify',
+]);
+const SEMANTICA_TRACE_DIRECTIONS = new Set<OntologyAssetQueryDirection>([
+  'incoming',
+  'outgoing',
+  'both',
+]);
+const SEMANTICA_TRACE_RELATIONS = new Set<AbilityAssetRelationKind>([
+  'refines',
+  'depends_on',
+  'replaces',
+  'conflicts_with',
+  'related_to',
+  'same_family',
+]);
+const JEV_FALLBACK_REASONS = new Set<JevFallbackReason>([
+  'disabled',
+  'unconfigured',
+  'invalid_request',
+  'timeout',
+  'aborted',
+  'rate_limited',
+  'http_error',
+  'http_rejected',
+  'network_error',
+  'invalid_response',
+]);
+
+function validateTraceCount(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 10_000) {
+    throw new Error('malformed Semantica trace count');
+  }
+  return value;
+}
+
+function validateSemanticaTrace(value: unknown): SemanticaSelectionTrace | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('malformed Semantica trace');
+  const trace = value as Record<string, unknown>;
+  if (trace.enabled !== true || !Array.isArray(trace.entryAssetIds) || trace.entryAssetIds.length > SEMANTICA_ENTRY_TOP_K) {
+    throw new Error('malformed Semantica trace');
+  }
+  const entryAssetIds = trace.entryAssetIds.map((id) => {
+    if (typeof id !== 'string' || !safeId(id)) throw new Error('malformed Semantica trace entry');
+    return id;
+  });
+  const validateGate = (raw: unknown, candidate: boolean) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('malformed Semantica gate trace');
+    const gate = raw as Record<string, unknown>;
+    if (!SEMANTICA_TRACE_STATUSES.has(gate.status as SemanticaGateTraceStatus)) throw new Error('malformed Semantica gate trace status');
+    if (gate.jevStatus !== undefined && gate.jevStatus !== 'ok' && gate.jevStatus !== 'fallback') throw new Error('malformed Semantica Jev status');
+    if (gate.fallbackReason !== undefined && !JEV_FALLBACK_REASONS.has(gate.fallbackReason as JevFallbackReason)) throw new Error('malformed Semantica fallback reason');
+    if (gate.jevAttempts !== undefined && (typeof gate.jevAttempts !== 'number' || !Number.isInteger(gate.jevAttempts) || gate.jevAttempts < 0 || gate.jevAttempts > 3)) throw new Error('malformed Semantica Jev attempts');
+    if (gate.jevLatencyMs !== undefined && (typeof gate.jevLatencyMs !== 'number' || !Number.isFinite(gate.jevLatencyMs) || gate.jevLatencyMs < 0 || gate.jevLatencyMs > 60_000)) throw new Error('malformed Semantica Jev latency');
+    if (candidate) {
+      return {
+        status: gate.status as SemanticaGateTraceStatus,
+        inputCount: validateTraceCount(gate.inputCount),
+        outputCount: validateTraceCount(gate.outputCount),
+        ...(gate.jevStatus ? { jevStatus: gate.jevStatus as 'ok' | 'fallback' } : {}),
+        ...(gate.fallbackReason ? { fallbackReason: gate.fallbackReason as JevFallbackReason } : {}),
+        ...(gate.jevAttempts !== undefined ? { jevAttempts: gate.jevAttempts } : {}),
+        ...(gate.jevLatencyMs !== undefined ? { jevLatencyMs: gate.jevLatencyMs } : {}),
+      };
+    }
+    if (gate.selectedRoute !== undefined && !SEMANTICA_TRACE_ROUTES.has(gate.selectedRoute as OntologyQueryIntentRoute)) throw new Error('malformed Semantica route');
+    if (gate.relationKind !== undefined && !SEMANTICA_TRACE_RELATIONS.has(gate.relationKind as AbilityAssetRelationKind)) throw new Error('malformed Semantica relation');
+    if (gate.direction !== undefined && !SEMANTICA_TRACE_DIRECTIONS.has(gate.direction as OntologyAssetQueryDirection)) throw new Error('malformed Semantica direction');
+    if (gate.maxHops !== undefined && (typeof gate.maxHops !== 'number' || !Number.isInteger(gate.maxHops) || gate.maxHops < 1 || gate.maxHops > 4)) throw new Error('malformed Semantica max hops');
+    return {
+      status: gate.status as SemanticaGateTraceStatus,
+      ...(gate.selectedRoute ? { selectedRoute: gate.selectedRoute as OntologyQueryIntentRoute } : {}),
+      ...(gate.relationKind ? { relationKind: gate.relationKind as AbilityAssetRelationKind } : {}),
+      ...(gate.direction ? { direction: gate.direction as OntologyAssetQueryDirection } : {}),
+      ...(gate.maxHops !== undefined ? { maxHops: gate.maxHops } : {}),
+      ...(gate.jevStatus ? { jevStatus: gate.jevStatus as 'ok' | 'fallback' } : {}),
+      ...(gate.fallbackReason ? { fallbackReason: gate.fallbackReason as JevFallbackReason } : {}),
+      ...(gate.jevAttempts !== undefined ? { jevAttempts: gate.jevAttempts } : {}),
+      ...(gate.jevLatencyMs !== undefined ? { jevLatencyMs: gate.jevLatencyMs } : {}),
+    };
+  };
+  return {
+    enabled: true,
+    entryAssetIds,
+    deterministicExpansionCount: validateTraceCount(trace.deterministicExpansionCount),
+    finalExpansionCount: validateTraceCount(trace.finalExpansionCount),
+    intentGate: validateGate(trace.intentGate, false) as SemanticaSelectionTrace['intentGate'],
+    candidateGate: validateGate(trace.candidateGate, true) as SemanticaSelectionTrace['candidateGate'],
+  };
 }
 
 function validateAssetVersions(value: unknown): Record<string, string> | undefined {
@@ -457,6 +635,10 @@ function automaticProjectionId(taskRunId: string, workspaceId?: string): string 
   return `proj-auto-${digest}`;
 }
 
+function stableProjectionHash(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 24);
+}
+
 async function hasEnabledAutomaticSources(userId: string, asset: RecallAbilityAssetRecord): Promise<boolean> {
   for (const source of asset.evidenceRefs) {
     if (source.taxonomyVersion !== 2) continue;
@@ -486,7 +668,7 @@ function normalizeProjectionAssetIds(value: unknown, field: string): string[] {
  *  其余 scope（review/report/自定义词条）走软匹配（scopeIncludes）。 */
 function scopeAppliesToPurpose(scope: string, purpose: string): boolean {
   const terms = scope.split(',').map((term) => term.trim().toLowerCase()).filter(Boolean);
-  if (terms.includes('*') || terms.includes('general') || terms.includes('space')) return true;
+  if (terms.includes('*') || terms.includes('general') || terms.includes('global') || terms.includes('space')) return true;
   return scopeIncludes(scope, purpose);
 }
 
@@ -610,11 +792,13 @@ function asProjection(value: RecallJsonRecord): ContextProjectionRecord {
   const assetVersionSnapshots = validateAssetVersionSnapshots(value.assetVersionSnapshots);
   const modelSelectedAssetIds = validateModelSelectedAssetIds(value.modelSelectedAssetIds);
   const modelSelectionEvents = validateModelSelectionEvents(value.modelSelectionEvents);
+  const semanticaTrace = validateSemanticaTrace(value.semanticaTrace);
   return { ...value, status: validateProjectionStatus(value.status), sourceRefs: normalizeCognitionSourceRefs(value.sourceRefs), ...(assetMatches ? { assetMatches } : {}), ...(assetVersions ? { assetVersions } : {}), ...(assetVersionSnapshots ? { assetVersionSnapshots } : {}),
     ...(agentId ? { agentId } : {}), ...(roleId ? { roleId } : {}),
     ...(conversationKind ? { conversationKind } : {}), ...(fileKinds !== undefined ? { fileKinds } : {}),
     ...(modelSelectedAssetIds ? { modelSelectedAssetIds } : {}),
     ...(modelSelectionEvents ? { modelSelectionEvents } : {}),
+    ...(semanticaTrace ? { semanticaTrace } : {}),
   } as ContextProjectionRecord;
 }
 
@@ -638,6 +822,76 @@ interface SemanticSelection {
   assets: RecallAbilityAssetRecord[];
   assetMatches?: RecallAssetMatch[];
   degraded: boolean;
+  semanticaTrace?: SemanticaSelectionTrace;
+}
+
+const SEMANTICA_ENTRY_TOP_K = 1;
+const SEMANTICA_RELATION_MAX_HOPS = 2;
+const SEMANTICA_RELATION_LIMIT_PER_ENTRY = 8;
+const SEMANTICA_RELATION_KINDS: AbilityAssetRelationKind[] = [
+  'depends_on',
+  'refines',
+  'related_to',
+  'same_family',
+];
+
+function automaticRelationMatch(
+  entry: { assetId: string; matchScore: number },
+  match: { asset: { id: string }; distance: number; evidencePath: OntologyAssetQueryEvidenceEdge[] },
+): HybridRouteMatch & {
+  entryAssetId: string;
+  distance: number;
+  relationKind?: AbilityAssetRelationKind;
+  evidencePath: OntologyAssetQueryEvidenceEdge[];
+} {
+  const relationKinds = [...new Set(match.evidencePath.map((edge) => edge.kind))];
+  return {
+    assetId: match.asset.id,
+    // Relation evidence decays with distance but never pretends to be the
+    // semantic score of the entry asset.
+    matchScore: Number((entry.matchScore * (0.8 ** Math.max(1, match.distance))).toFixed(6)),
+    entryAssetId: entry.assetId,
+    distance: match.distance,
+    ...(relationKinds.length === 1 ? { relationKind: relationKinds[0] } : {}),
+    evidencePath: match.evidencePath,
+  };
+}
+
+function expandSemanticEntries(
+  assets: readonly RecallAbilityAssetRecord[],
+  semanticMatches: readonly { assetId: string; matchScore: number }[],
+  minScore: number,
+  relativeSignificance: number,
+  intent?: {
+    relationKind?: AbilityAssetRelationKind;
+    direction?: OntologyAssetQueryDirection;
+    maxHops?: number;
+  },
+): { entries: HybridRouteMatch[]; expansions: Array<HybridRouteMatch & { entryAssetId: string; distance: number; relationKind?: AbilityAssetRelationKind; evidencePath: OntologyAssetQueryEvidenceEdge[] }>; covered: boolean } {
+  const bestScore = semanticMatches.reduce((best, match) => Math.max(best, match.matchScore), 0);
+  const relativeFloor = bestScore * relativeSignificance;
+  const entries = semanticMatches
+    .filter((match) => match.matchScore >= minScore && (bestScore <= minScore || match.matchScore >= relativeFloor))
+    .slice(0, SEMANTICA_ENTRY_TOP_K)
+    .map((match) => ({ assetId: match.assetId, matchScore: match.matchScore }));
+  const expansions: Array<HybridRouteMatch & { entryAssetId: string; distance: number; relationKind?: AbilityAssetRelationKind; evidencePath: OntologyAssetQueryEvidenceEdge[] }> = [];
+  const assetById = new Map(assets.map((asset) => [asset.id, asset]));
+  for (const entry of entries) {
+    const result = queryOntologyAssets(assets, {
+      target: entry.assetId,
+      direction: intent?.direction || 'both',
+      maxHops: intent?.maxHops || SEMANTICA_RELATION_MAX_HOPS,
+      limit: SEMANTICA_RELATION_LIMIT_PER_ENTRY,
+      relationKinds: intent?.relationKind ? [intent.relationKind] : SEMANTICA_RELATION_KINDS,
+      query: entry.assetId,
+    });
+    if (result.status !== 'ok') continue;
+    for (const match of result.matches) {
+      if (!assetById.has(match.asset.id)) continue;
+      expansions.push(automaticRelationMatch(entry, match));
+    }
+  }
+  return { entries, expansions, covered: expansions.length > 0 };
 }
 
 /** Shared hybrid selection: rank already-eligible assets against semantic and
@@ -682,12 +936,59 @@ async function applySemanticSelection(
     degraded = true;
   }
 
-  const merged = mergeHybridMatches(assets, semanticMatches, ontologyMatches);
-  const semanticOnly = merged.assetMatches.filter((match) => match.matchMethod === 'semantic');
+  const semanticaEnabled = isSemanticaEnabled(userId);
+  let mergedAssetMatches: RecallAssetMatch[];
+  let semanticaTrace: SemanticaSelectionTrace | undefined;
+  if (!semanticaEnabled) {
+    // Compatibility path: adding Semantica must not change ordinary recall.
+    // In particular, do not invoke relationship traversal or the Jev gate.
+    const legacy = mergeHybridMatches(assets, semanticMatches, ontologyMatches);
+    mergedAssetMatches = legacy.assetMatches;
+  } else {
+    const expanded = expandSemanticEntries(assets, semanticMatches, minScore, relativeSignificance);
+    const relationMatches = expanded.covered ? expanded.expansions : [];
+    const deterministicExpansionCount = relationMatches.length;
+    const intentTrace: SemanticaSelectionTrace['intentGate'] = {
+      status: 'selected',
+      selectedRoute: relationMatches.length ? 'hybrid' : 'semantic',
+      direction: 'both',
+      maxHops: SEMANTICA_RELATION_MAX_HOPS,
+    };
+    const merged = orchestrateOntologySemanticRecall({
+      assets,
+      semanticMatches: relationMatches.length ? expanded.entries : semanticMatches,
+      ontologyMatches: [...ontologyMatches, ...relationMatches],
+      semanticDegraded: degraded,
+    });
+    mergedAssetMatches = merged.candidates.map((candidate) => ({
+      assetId: candidate.assetId,
+      matchScore: candidate.matchScore,
+      matchMethod: candidate.source,
+      ...(candidate.entryAssetId ? { entryAssetId: candidate.entryAssetId } : {}),
+      ...(candidate.distance !== undefined ? { distance: candidate.distance } : {}),
+      ...(candidate.relationKind ? { relationKind: candidate.relationKind } : {}),
+      ...(candidate.evidencePath?.length ? { evidencePath: candidate.evidencePath } : {}),
+      ...(degraded ? { degraded: true } : {}),
+    }));
+    const candidateTrace: SemanticaSelectionTrace['candidateGate'] = {
+      status: merged.candidates.length ? 'selected' : 'none',
+      inputCount: merged.candidates.length,
+      outputCount: merged.candidates.length,
+    };
+    semanticaTrace = {
+      enabled: true,
+      entryAssetIds: expanded.entries.map((entry) => entry.assetId),
+      deterministicExpansionCount,
+      finalExpansionCount: relationMatches.length,
+      intentGate: intentTrace,
+      candidateGate: candidateTrace,
+    };
+  }
+  const semanticOnly = mergedAssetMatches.filter((match) => match.matchMethod === 'semantic');
   const bestScore = semanticOnly.reduce((best, match) => Math.max(best, match.matchScore), 0);
   const relativeFloor = bestScore * relativeSignificance;
   const acceptedIds = new Set<string>();
-  for (const match of merged.assetMatches) {
+  for (const match of mergedAssetMatches) {
     if (match.matchMethod === 'semantic') {
       const score = match.matchScore;
       if (score < minScore || (bestScore > minScore && score < relativeFloor)) {
@@ -708,7 +1009,7 @@ async function applySemanticSelection(
   // M5 type diversity: guarantee one highest-ranked asset per type before
   // filling the remaining slots. The hybrid module already gives dual-route
   // evidence priority, so this pass only applies the existing Top-N policy.
-  const acceptedMatches = merged.assetMatches.filter((match) => acceptedIds.has(match.assetId));
+  const acceptedMatches = mergedAssetMatches.filter((match) => acceptedIds.has(match.assetId));
   const acceptedById = new Map(acceptedAssets.map((asset) => [asset.id, asset]));
   const orderedMatches = acceptedMatches.filter((match) => acceptedById.has(match.assetId));
   const selectedMatches: typeof orderedMatches = [];
@@ -737,6 +1038,7 @@ async function applySemanticSelection(
     assets: selectedMatches.map((match) => acceptedById.get(match.assetId)!),
     assetMatches: selectedMatches,
     degraded,
+    ...(semanticaTrace ? { semanticaTrace } : {}),
   };
 }
 
@@ -799,6 +1101,7 @@ export async function buildRecallView(userId: string, input: ProjectionInput, op
     sourceRefs,
     omittedRefs,
     ...(selection.degraded ? { degraded: true as const } : {}),
+    ...(selection.semanticaTrace ? { semanticaTrace: selection.semanticaTrace } : {}),
   };
 }
 
@@ -847,7 +1150,11 @@ function explicitBlockError(
  *  作用域、目标 Agent、敏感级、来源撤权全都不拦，且失败只抛英文原文，
  *  界面无法说明是哪条规则。失败一律码化（`ProjectionKnowledgeErrorCode`），
  *  渲染层按码翻四语规则名，不上屏原文、不泄露正文。 */
-async function buildExplicitAssetView(userId: string, assetIds: string[], context: AssetRuntimeContext) {
+async function buildExplicitAssetView(
+  userId: string,
+  assetIds: string[],
+  context: AssetRuntimeContext,
+): Promise<BuildRecallViewResult> {
   const ids = [...new Set(assetIds)].slice(0, 12);
   if (!ids.length) throw new Error('explicit projection requires at least one asset');
   const { readAbilityAsset } = await import('./asset-service');
@@ -961,6 +1268,7 @@ export async function previewContextProjection(userId: string, input: Projection
     assetIds: view.assetIds, ...(view.assetVersions ? { assetVersions: view.assetVersions } : {}), ...(view.assetMatches ? { assetMatches: view.assetMatches } : {}), sourceRefs: view.sourceRefs, omittedRefs: view.omittedRefs,
     ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
     ...(view.degraded ? { selectionDegraded: true } : {}),
+    ...(view.semanticaTrace ? { semanticaTrace: view.semanticaTrace } : {}),
     status: confirmedAt ? 'confirmed' : 'preview',
     ...(confirmedAt ? { confirmedAt, decidedAt: confirmedAt } : {}),
     createdAt: now,
@@ -1068,7 +1376,12 @@ export async function createAutomaticContextProjection(
   const baselineTopEnv = process.env.COGSEED_RECALL_BASELINE_TOP;
   const baselineTop = baselineTopEnv === undefined || baselineTopEnv.trim() === '' ? Number.NaN : Number(baselineTopEnv);
   const baselineEnabled = Number.isFinite(baselineTop) && baselineTop > 0;
-  const selection = baselineEnabled
+  // Semantica is an explicit user opt-in to automatic governed reuse. It must
+  // not remain inert merely because the older baseline-injection experiment
+  // is off. With Semantica disabled, the legacy baseline switch keeps its
+  // exact behavior.
+  const automaticSelectionEnabled = baselineEnabled || isSemanticaEnabled(userId);
+  const selection = automaticSelectionEnabled
     ? await applySemanticSelection(userId, eligibleAssets, taskText, options, [], input.taskText, workspaceId, projectId)
     : { assets: [] as RecallAbilityAssetRecord[], degraded: false };
   const selectedAssets = selection.assets;
@@ -1089,6 +1402,7 @@ export async function createAutomaticContextProjection(
     ...(fileKinds !== undefined ? { fileKinds } : {}),
     ...(conversationId ? { conversationId } : {}),
     ...(selection.degraded ? { selectionDegraded: true } : {}),
+    ...(selection.semanticaTrace ? { semanticaTrace: selection.semanticaTrace } : {}),
     purpose: 'conversation_reply',
     authorization: 'not_required',
     assetIds: selectedAssets.map((asset) => asset.id),

@@ -14,6 +14,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   if (previous === undefined) delete process.env.COGSEED_WORKSPACE_ROOT;
   else process.env.COGSEED_WORKSPACE_ROOT = previous;
   await fs.rm(tmp, { recursive: true, force: true });
@@ -59,13 +61,13 @@ async function createAsset() {
   return promoted;
 }
 
-async function createAssetWith(input: { judgment: string; summary: string; sourceId: string }) {
+async function createAssetWith(input: { judgment: string; summary: string; sourceId: string; applicableWhen?: string[] }) {
   const { candidates } = await modules();
   const candidate = await candidates.saveRecallCandidate('user-a', {
     judgment: input.judgment,
     summary: input.summary,
     suggestedType: 'rule',
-    applicableWhen: ['OAuth', 'database', 'architecture review', 'rules'],
+    applicableWhen: input.applicableWhen || ['OAuth', 'database', 'architecture review', 'rules'],
     forbiddenWhen: ['Unrelated casual conversation'],
     suggestedScope: 'global',
     spaceId: 'workspace-a',
@@ -228,6 +230,80 @@ describe('confirmed Recall projection prompt injection', () => {
     expect(result.citations.map((citation) => citation.assetId)).not.toContain(database.asset.id);
   });
 
+  it('carries only rendered automatic Semantica relations into answer validation evidence', async () => {
+    vi.stubEnv('COGSEED_SEMANTICA_ENABLED', '1');
+    const entry = await createAssetWith({
+      judgment: '家庭一周晚餐计划：先确定每天的菜品。',
+      summary: 'Dinner planning workflow',
+      sourceId: 'conversation-dinner-entry',
+      applicableWhen: ['帮我安排家庭一周晚餐和周末准备'],
+    });
+    const shopping = await createAssetWith({
+      judgment: '周末买菜清单：按晚餐计划整理食材。',
+      summary: 'Weekend grocery workflow',
+      sourceId: 'conversation-dinner-shopping',
+      applicableWhen: ['帮我安排家庭一周晚餐和周末准备'],
+    });
+    const unrelated = await createAssetWith({
+      judgment: '旅行路线规划：安排周末交通。',
+      summary: 'Travel route workflow',
+      sourceId: 'conversation-travel-route',
+      applicableWhen: ['帮我安排家庭一周晚餐和周末准备'],
+    });
+    const { assets, promptInjection } = await modules();
+    for (const item of [entry.asset, shopping.asset, unrelated.asset]) {
+      await assets.updateAbilityAsset('user-a', item.id, {
+        relations: [], reason: 'Semantica prompt evidence fixture reset', actor: 'user',
+      });
+    }
+    await assets.updateAbilityAsset('user-a', shopping.asset.id, {
+      relations: [{ kind: 'depends_on', assetId: entry.asset.id }],
+      reason: 'Semantica prompt evidence fixture',
+      actor: 'user',
+    });
+
+    const result = await promptInjection.buildRecallTurnPromptContext('user-a', {
+      cid: 'cid-semantica-evidence',
+      taskRunId: 'turn-semantica-evidence',
+      taskText: '帮我安排家庭一周晚餐和周末准备',
+      workspaceId: 'workspace-a',
+    }, {
+      minScore: 0.3,
+      embedTexts: async (texts: string[]) => texts.map((text) => (
+        text.includes('家庭一周晚餐') ? [1, 0] : [0, 1]
+      )),
+    });
+
+    const renderedIds = new Set(result.citations.map((citation) => citation.assetId));
+    expect(renderedIds).toEqual(new Set([entry.asset.id, shopping.asset.id]));
+    expect(renderedIds.has(unrelated.asset.id)).toBe(false);
+    expect(result.answerEvidence?.assets.map((asset) => asset.assetId).sort()).toEqual(
+      [...renderedIds].sort(),
+    );
+    expect(result.answerEvidence?.relations).toEqual([
+      expect.objectContaining({
+        paths: [expect.objectContaining({
+          entryAssetId: entry.asset.id,
+          assetId: shopping.asset.id,
+          distance: 1,
+          relationKind: 'depends_on',
+          direction: 'incoming',
+          evidencePath: [expect.objectContaining({
+            fromAssetId: shopping.asset.id,
+            toAssetId: entry.asset.id,
+            kind: 'depends_on',
+          })],
+        })],
+      }),
+    ]);
+    for (const relation of result.answerEvidence?.relations || []) {
+      for (const relationPath of relation.paths) {
+        expect(renderedIds.has(relationPath.entryAssetId)).toBe(true);
+        expect(renderedIds.has(relationPath.assetId)).toBe(true);
+      }
+    }
+  });
+
   it('keeps explicitly confirmed conversation assets ahead of automatic matches and deduplicates them', async () => {
     const oauth = await createAssetWith({
       judgment: 'Review OAuth callback and token exchange security.',
@@ -317,6 +393,105 @@ describe('confirmed Recall projection prompt injection', () => {
     expect(result.promptBlock).toContain('applicable_when');
     expect(result.promptBlock).toContain('forbidden_when');
     expect(result.promptBlock).toContain('Unrelated casual conversation');
+  });
+
+  it('preserves Semantica relation evidence for a governed KSTAR workspace projection', async () => {
+    vi.stubEnv('COGSEED_SEMANTICA_ENABLED', '1');
+    const entry = await createAssetWith({
+      judgment: '家庭一周晚餐计划：先确定每天的菜品。',
+      summary: 'Dinner planning workflow',
+      sourceId: 'conversation-kstar-dinner-entry',
+      applicableWhen: ['工作日晚餐', '周末准备', '家庭一周晚餐'],
+    });
+    const shopping = await createAssetWith({
+      judgment: '周末买菜清单：按晚餐计划整理食材。',
+      summary: 'Weekend grocery workflow',
+      sourceId: 'conversation-kstar-dinner-shopping',
+      applicableWhen: ['工作日晚餐', '周末准备', '家庭一周晚餐'],
+    });
+    const { assets, refs, projection, promptInjection } = await modules();
+    await assets.updateAbilityAsset('user-a', entry.asset.id, {
+      relations: [],
+      scope: 'general',
+      scopePolicy: {},
+      reason: 'KSTAR Semantica fixture reset',
+      actor: 'user',
+    });
+    await assets.updateAbilityAsset('user-a', shopping.asset.id, {
+      relations: [{ kind: 'depends_on', assetId: entry.asset.id }],
+      scope: 'general',
+      scopePolicy: {},
+      reason: 'KSTAR Semantica fixture',
+      actor: 'user',
+    });
+    await refs.addWorkspaceAssetReference('user-a', {
+      assetId: entry.asset.id, workspaceId: 'workspace-a', scope: 'general',
+    });
+    await refs.addWorkspaceAssetReference('user-a', {
+      assetId: shopping.asset.id, workspaceId: 'workspace-a', scope: 'general',
+    });
+    const storedEntry = await assets.readAbilityAsset('user-a', entry.asset.id);
+    const workspaceRefs = await refs.listWorkspaceAssetReferences('user-a');
+    expect({ scope: storedEntry.scope, scopePolicy: storedEntry.scopePolicy }).toEqual({
+      scope: 'general', scopePolicy: undefined,
+    });
+    expect(workspaceRefs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ assetId: entry.asset.id, workspaceId: 'workspace-a', scope: 'global' }),
+      expect.objectContaining({ assetId: shopping.asset.id, workspaceId: 'workspace-a', scope: 'global' }),
+    ]));
+
+    const committed = await projection.previewContextProjection('user-a', {
+      taskRunId: 'task-kstar-semantica',
+      workspaceId: 'workspace-a',
+      purpose: 'conversation_task',
+      taskText: '请安排工作日晚餐和周末准备',
+      authorization: 'workspace_policy',
+      confirm: true,
+    }, {
+      minScore: 0.3,
+      embedTexts: async (texts: string[]) => texts.map((text) => {
+        if (text.includes('工作日晚餐') || text.includes('家庭一周晚餐计划')) return [1, 0];
+        return [0, 1];
+      }),
+    });
+    expect(committed.omittedRefs).toEqual([]);
+    expect(committed.assetIds).toEqual(expect.arrayContaining([entry.asset.id, shopping.asset.id]));
+    expect(committed.assetMatches).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        assetId: shopping.asset.id,
+        matchMethod: 'ontology',
+        entryAssetId: entry.asset.id,
+        distance: 1,
+        evidencePath: [expect.objectContaining({
+          fromAssetId: shopping.asset.id,
+          toAssetId: entry.asset.id,
+          kind: 'depends_on',
+        })],
+      }),
+    ]));
+
+    const result = await promptInjection.buildRecallTurnPromptContext('user-a', {
+      cid: 'cid-kstar-semantica',
+      taskRunId: 'turn-kstar-semantica',
+      taskText: '请安排工作日晚餐和周末准备',
+      workspaceId: 'workspace-a',
+      committedProjectionId: committed.id,
+    });
+
+    expect(result.citations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ assetId: shopping.asset.id, matchMethod: 'ontology' }),
+    ]));
+    expect(result.answerEvidence?.relations).toEqual([
+      expect.objectContaining({
+        query: '请安排工作日晚餐和周末准备',
+        paths: [expect.objectContaining({
+          entryAssetId: entry.asset.id,
+          assetId: shopping.asset.id,
+          distance: 1,
+          relationKind: 'depends_on',
+        })],
+      }),
+    ]);
   });
 
   it('rejects committed injection when a frozen asset version changed', async () => {

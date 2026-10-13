@@ -87,3 +87,6 @@ build-info.json
 
 # Local Python environment for Spec Kit template composition.
 /.venv-speckit/
+
+# Verified provider CLI assets provisioned by scripts/fetch-tmeet.cjs
+/resources/tencent-meeting/

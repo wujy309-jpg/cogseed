@@ -272,8 +272,10 @@ these instructions do not assert that a particular remote check is enabled.
 
 Submit external PRs against public `main`. Reviewed patches are imported into
 private development, preserving author attribution and DCO sign-offs. The
-public PR is closed with the import result; accepted changes appear in a later
-release snapshot. See [Contributing](../CONTRIBUTING.md#contribution-integration).
+public PR stays open after import. Once the source candidate passes its release
+gates, required CI and CODEOWNERS approval precede a merge commit that retains
+the contributor commits. The next snapshot uses that updated public history.
+See [Contributing](../CONTRIBUTING.md#contribution-integration).
 
 The public test suite covers application and build-tool contracts. The private
 repository additionally runs its internal governance checks under `test/private/`;
@@ -292,9 +294,10 @@ those checks and the internal records they verify are not part of public exports
   - Feedback and decisions: `uiEmptyState(...)`, `uiToast(...)`, `uiAlert(...)`, `uiConfirm(...)`, `uiConfirmDanger(...)`, `uiChoice(...)`, and `uiPrompt(...)`.
   - Navigation and shell: `uiSegmentedControl(...)` for compact filters, `uiTabs(...)` plus `hydrateUiTabs(...)` for same-object views, `uiPageHeader(...)`, `uiSidebarTools(...)`, `uiUserMenuTrigger(...)`, and `uiUserMenuPanel(...)`.
   - Data and status: `uiTag(...)` for non-interactive metadata, `uiChip(...)` for interactive filters, `uiBadge(...)` for compact counts or labels, `uiStatusPill(...)` and `uiStatusDot(...)` for state, `uiProgressBar(...)` for measurable work, and `uiSkeleton(...)` for unknown-duration content loading.
-  - Structure: `uiCard(...)` adopts business-owned card content into the shared shell, `uiResourceCard(...)` renders the standard titled resource card, and `uiResourceGrid(...)` owns the responsive card grid.
+  - Structure: `uiCard(...)` adopts business-owned card content into the shared shell, `uiResourceCard(...)` renders the standard titled resource card (`layout: 'compact-row'` accepts one title, one description and a `menu` trigger; no body or footer), and `uiResourceGrid(...)` owns the responsive card grid.
   - Structured data: `uiDataTable(...)` for native tabular data, `uiAccordion(...)` for independent disclosure sections, and `uiTree(...)` plus `hydrateUiTrees(...)` for hierarchical navigation with shared keyboard behavior. Business-specific graph or mind-map canvases remain page-owned.
-  - Overlays: `uiModal(...)` for new decision dialogs and `uiModalController(...)` when adopting existing business-owned dialog DOM; `uiDrawer(...)` for new side panels and `uiDrawerController(...)` when adopting an existing business-owned drawer without changing its data or event wiring.
+  - Menus: `uiDropdownMenu({ trigger, items })` reuses the `showContextMenu(...)` runtime for anchored actions, separators, disabled/loading/destructive states, keyboard navigation and focus return. `items` may be a function for current state; destroy controllers before removing their triggers.
+  - Overlays: `uiModal(...)` for new decision dialogs and `uiModalController(...)` when adopting existing business-owned dialog DOM; `uiFormModal(...)` for async form dialogs with shared submission, busy state and inline errors; `uiDrawer(...)` for new side panels and `uiDrawerController(...)` when adopting an existing business-owned drawer without changing its data or event wiring.
   - Icons: `uiIconHtml(...)` for generated markup and `hydrateUiIcons(...)` for existing DOM placeholders.
 
 - Keep IPC handlers focused on validation and feature delegation.

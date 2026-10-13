@@ -46,6 +46,9 @@ function fixture(t, { status = 'reviewed', reference = false, badHintReview = fa
     put(privateRepo, 'docs/public.md', '[Internal](internal.md)\n');
     put(privateRepo, 'docs/internal.md', 'private document\n');
   }
+  put(privateRepo, 'scripts/opensource/contributions.json', JSON.stringify({
+    schemaVersion: 1, repository: 'bonc-ai/cogseed', contributions: [],
+  }));
   const sourceSha = commit(privateRepo);
   put(publicRepo, 'obsolete.txt', 'delete me\n');
   put(publicRepo, 'src/app.js', 'old public\n');
@@ -53,7 +56,7 @@ function fixture(t, { status = 'reviewed', reference = false, badHintReview = fa
   const policy = {
     schemaVersion: 1, status, sourceRepository: 'bonc-ai/cogseed-internal', targetRepository: 'bonc-ai/cogseed',
     publicFiles: reference ? ['src/app.js', 'bin/run.sh', 'docs/public.md'] : ['src/app.js', 'bin/run.sh'],
-    neverPublic: ['secret.txt'], privatePaths: reference ? ['docs/internal.md'] : [],
+    neverPublic: ['secret.txt'], privatePaths: reference ? ['docs/internal.md', 'scripts/opensource/'] : ['scripts/opensource/'],
     reviewedReferenceHintsSha256: badHintReview ? '0'.repeat(64) : sha256(JSON.stringify(reference
       ? [{ path: 'docs/public.md', references: ['docs/internal.md'] }] : [])),
   };
@@ -149,6 +152,28 @@ test('one-time emergency authorization creates a reviewed snapshot before its de
   assert.equal(mapping.authorizationExpiresAt, '2026-10-01T00:00:00+08:00');
   assert.equal(mapping.authorizationReference, fs.realpathSync(reference));
   assert.equal(mapping.authorizationReferenceSha256, sha256(fs.readFileSync(reference)));
+});
+
+test('refuses snapshots whose imported public PR history is missing even when bytes match', (t) => {
+  const f = fixture(t);
+  f.git(f.publicRepo, 'checkout', '-qb', 'external');
+  f.put(f.publicRepo, 'src/app.js', 'public v1\n');
+  f.git(f.publicRepo, 'add', '.');
+  f.git(f.publicRepo, 'commit', '-qm', 'external contribution', '--author=External <external@example.invalid>');
+  const headSha = f.git(f.publicRepo, 'rev-parse', 'HEAD');
+  f.git(f.publicRepo, 'checkout', '--detach', f.publicBase);
+  f.put(f.privateRepo, 'scripts/opensource/contributions.json', JSON.stringify({
+    schemaVersion: 1, repository: 'bonc-ai/cogseed', contributions: [{ pr: 406, headSha }],
+  }));
+  fs.writeFileSync(f.policyFile, JSON.stringify(f.policy));
+  const sourceSha = f.commit(f.privateRepo);
+  fs.rmSync(f.candidate, { recursive: true });
+  command(process.execPath, [exporter, '--repo', f.privateRepo, '--source', sourceSha,
+    '--out', f.candidate, '--policy', f.policyFile]);
+  const rejected = f.invoke(['--allow-review-required-local']);
+  assert.equal(rejected.status, 1, 'snapshot must refuse to absorb an external contribution without its history');
+  assert.match(rejected.stderr, /#406.*public.*history/i);
+  assert.equal(fs.existsSync(rejected.mapping), false);
 });
 
 test('emergency authorization rejects malformed, expired, or workflow-backed approvals', (t) => {

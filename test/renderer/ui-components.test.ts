@@ -33,6 +33,18 @@ function loadFactories() {
 }
 
 describe('first-version renderer components', () => {
+  it('keeps compact cards to two escaped text lines and one menu trigger', () => {
+    const { uiResourceCard } = loadFactories();
+    const html = uiResourceCard({ layout: 'compact-row', title: '<邮件>', description: '<每天 09:10>', menu: { label: '更多操作' } });
+    expect(html).toContain('ui-resource-card--compact-row');
+    expect(html).toContain('&lt;邮件&gt;');
+    expect(html).toContain('&lt;每天 09:10&gt;');
+    expect(html).toContain('aria-haspopup="menu"');
+    expect(html.match(/<button /g)).toHaveLength(1);
+    expect(html).not.toContain('ui-resource-card__footer');
+    expect(() => uiResourceCard({ layout: 'compact-row', title: '标题', action: { label: '运行' } })).toThrow(/without a footer/);
+  });
+
   it('keeps Button roles and sizes enumerable while escaping product copy', () => {
     const { uiButton } = loadFactories();
 
@@ -555,7 +567,8 @@ const modal = read('src/renderer/modules/ui-modal.js');
     expect(rendererCss).toContain('max-width: var(--layout-card-grid-width);');
     expect(rendererCss).toContain('border-color: var(--line-strong);');
     expect(rendererCss).toContain('box-shadow: var(--shadow-composer);');
-    expect(rendererCss).toContain('.auto-row:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card-hover); }');
+    expect(read('src/renderer/ui-components.css')).toContain('.ui-resource-card--compact-row');
+    expect(read('src/renderer/modules/auto.js')).toContain("layout: 'compact-row'");
     expect(rendererCss).toContain('.skill-card.is-menu-open');
     expect(rendererCss).toContain('max-width: var(--layout-card-grid-width);');
     expect(workspaceCss).toContain('--ws-accent: var(--color-brand);');

@@ -1955,9 +1955,26 @@
       else if (event.key === 'Escape' && state.detailOpen) closeDetails();
     });
     rootWindow.addEventListener('i18n-change', () => render());
+    // Tearing the watch down on every hidden→visible toggle churned the IPC
+    // stream (dozens of rebuilds per day, some living under a second) with no
+    // benefit: `startWatch()` is idempotent and the stream is cheap while
+    // idle. Defer the teardown instead and cancel it if the panel returns.
+    const HIDDEN_STOP_DELAY_MS = 30000;
+    let hiddenStopTimer = null;
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden) stopWatch();
-      else if (panel()?.closest('.panel')?.classList.contains('active')) { startWatch(); scheduleRefresh(); }
+      if (document.hidden) {
+        if (hiddenStopTimer) rootWindow.clearTimeout(hiddenStopTimer);
+        hiddenStopTimer = rootWindow.setTimeout(() => {
+          hiddenStopTimer = null;
+          stopWatch();
+        }, HIDDEN_STOP_DELAY_MS);
+        return;
+      }
+      if (hiddenStopTimer) {
+        rootWindow.clearTimeout(hiddenStopTimer);
+        hiddenStopTimer = null;
+      }
+      if (panel()?.closest('.panel')?.classList.contains('active')) { startWatch(); scheduleRefresh(); }
     });
   }
   function applyRequestedView(view) {

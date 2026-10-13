@@ -119,6 +119,37 @@ export const userRoot       = (uid: string) => path.join(WS_ROOT, uid);
 export const userCloudRoot  = (uid: string) => path.join(userRoot(uid), 'cloud');
 export const userLocalRoot  = (uid: string) => path.join(userRoot(uid), 'local');
 
+// Creator Mode control-plane data. Cloud stores user-authored drafts, immutable
+// versions, state pointers, and audit history; local is reserved for machine-
+// private simulation/verification artifacts. Keep every path construction here.
+export const userCreatorCloudDir = (uid: string) => path.join(userCloudRoot(assertCreatorPathSegment(uid, 'user id')), 'creator');
+export const userCreatorLocalDir = (uid: string) => path.join(userLocalRoot(assertCreatorPathSegment(uid, 'user id')), 'creator');
+export const userCreatorDraftsDir = (uid: string) => path.join(userCreatorCloudDir(uid), 'drafts');
+export const userCreatorPresetsDir = (uid: string) => path.join(userCreatorCloudDir(uid), 'presets');
+export const userCreatorAuditFile = (uid: string) => path.join(userCreatorCloudDir(uid), 'audit.jsonl');
+export const userCreatorOperationJournalFile = (uid: string) => path.join(userCreatorCloudDir(uid), 'operations.jsonl');
+export const userCreatorAgentBindingsDir = (uid: string) => path.join(userCreatorLocalDir(uid), 'agent-bindings');
+
+function assertCreatorPathSegment(value: string, label: string): string {
+  if (!value || value === '.' || value === '..' || value.includes('/') || value.includes('\\') || value.includes('\0')) {
+    throw new Error(`invalid creator ${label}`);
+  }
+  return value;
+}
+
+export const userCreatorDraftFile = (uid: string, draftId: string) =>
+  path.join(userCreatorDraftsDir(uid), `${assertCreatorPathSegment(draftId, 'draft id')}.json`);
+export const userCreatorPresetDir = (uid: string, presetId: string) =>
+  path.join(userCreatorPresetsDir(uid), assertCreatorPathSegment(presetId, 'preset id'));
+export const userCreatorPresetVersionsDir = (uid: string, presetId: string) =>
+  path.join(userCreatorPresetDir(uid, presetId), 'versions');
+export const userCreatorPresetVersionFile = (uid: string, presetId: string, version: string) =>
+  path.join(userCreatorPresetVersionsDir(uid, presetId), `${assertCreatorPathSegment(version, 'preset version')}.json`);
+export const userCreatorPresetStateFile = (uid: string, presetId: string) =>
+  path.join(userCreatorPresetDir(uid, presetId), 'state.json');
+export const userCreatorAgentBindingFile = (uid: string, presetId: string) =>
+  path.join(userCreatorAgentBindingsDir(uid), `${assertCreatorPathSegment(presetId, 'preset id')}.json`);
+
 // ── Cloud-synced per-user ────────────────────────────────────────────────
 export const cogseedAgentCloudRoot    = (uid: string) => path.join(userCloudRoot(uid), 'cogseed');
 export const cogseedAgentTasksDir     = (uid: string) => path.join(cogseedAgentCloudRoot(uid), 'tasks');
@@ -135,7 +166,6 @@ export const cogseedAgentWorkerStateDir = (uid: string) => path.join(cogseedAgen
 export const cogseedAgentRecoveryStateFile = (uid: string) => path.join(cogseedAgentWorkerStateDir(uid), 'last-recovery.json');
 export const cogseedAgentCoordinationsDir = (uid: string) => path.join(cogseedAgentCloudRoot(uid), 'coordinations');
 export const cogseedAgentReviewDecisionsDir = (uid: string) => path.join(cogseedAgentCloudRoot(uid), 'review-decisions');
-export const cogseedAgentCostTelemetryDir = (uid: string) => path.join(cogseedAgentLocalRoot(uid), 'cost-telemetry');
 export const cogseedAgentSkillLifecycleDir = (uid: string) => path.join(cogseedAgentCloudRoot(uid), 'skill-lifecycle');
 // ── 转写纠错词表 / 清理产物（transcript glossary & correction runs）──────
 // 词表 = 用户可复核的私人资产 → cloud 域（账号体系落地后可同步）。
@@ -182,6 +212,7 @@ export const groupChatDir            = (uid: string, cid: string) => path.join(u
 export const groupChatMembersFile    = (uid: string, cid: string) => path.join(groupChatDir(uid, cid), 'members.json');
 export const groupChatStateFile      = (uid: string, cid: string) => path.join(groupChatDir(uid, cid), 'state.json');
 export const groupChatPlanFile       = (uid: string, cid: string) => path.join(groupChatDir(uid, cid), 'plan.json');
+export const groupChatBuilderFlowFile = (uid: string, cid: string) => path.join(groupChatDir(uid, cid), 'builder-flow.json');
 export const groupChatVisibilityDir  = (uid: string, cid: string) => path.join(groupChatDir(uid, cid), 'visibility');
 export const groupChatVisibilityFile = (uid: string, cid: string, actorId: string) =>
   path.join(groupChatVisibilityDir(uid, cid), `${actorId}.jsonl`);
@@ -642,6 +673,9 @@ export const userRemoteConfigFile = (uid: string) => path.join(userLocalConfigDi
 // Machine-local defaults for external coding agents. Values are absolute
 // project directories, so they must not sync across devices.
 export const userAgentRuntimeConfigFile = (uid: string) => path.join(userLocalConfigDir(uid), 'agent-runtime.json');
+// Semantica/Jev credentials are machine-private. Non-secret feature settings
+// live in preferences.json; this file contains only an encrypted secret blob.
+export const userSemanticaSecretsFile = (uid: string) => path.join(userLocalConfigDir(uid), 'semantica-secrets.json');
 // Feishu credentials are machine-private and never enter cloud-synced chat data.
 export const userExpenseAgentConfigFile = (uid: string) =>
   path.join(userLocalConfigDir(uid), 'expense-agent.json');
@@ -1002,6 +1036,20 @@ export function runtimeResourcesDir(): string {
   return path.join(PC_ROOT, 'resources', 'runtime');
 }
 
+/** Official Tencent Meeting runtime; sibling of the other packaged native resources. */
+export const userTencentMeetingConfigDir = (uid: string) => path.join(userLocalConfigDir(uid), 'tencent-meeting');
+export const userTencentMeetingDataDir = (uid: string) => path.join(userLocalRoot(uid), 'connectors', 'tencent-meeting');
+
+/** Managed connector executables and vendor-owned credentials never cross account roots. */
+export const userConnectorRuntimeDir = (uid: string) => path.join(userLocalRoot(uid), 'connectors', 'runtimes');
+export const userConnectorCliStateDir = (uid: string, id: string) => path.join(userLocalRoot(uid), 'connectors', id, 'cli-state');
+
+export function tencentMeetingBinaryPath(): string | null {
+  const manifest = require('../../bin/tencent-meeting-runtime.cjs');
+  const asset = manifest.assets[`${process.platform}-${process.arch}`];
+  return asset ? path.join(path.dirname(runtimeResourcesDir()), 'tencent-meeting', asset.name) : null;
+}
+
 /** `${process.platform}-${process.arch}` → vendored OfficeCLI asset name.
  *  Mirrors `scripts/fetch-officecli.cjs`. Desktop targets only (mac + win). */
 const OFFICECLI_ASSETS: Readonly<Record<string, string>> = {
@@ -1064,6 +1112,8 @@ export function ensureUserLayout(uid: string): void {
     userKbDir(uid),
     userMemoryDir(uid),
     userCognitionDir(uid),
+    userCreatorCloudDir(uid),
+    userCreatorLocalDir(uid),
     userAgentsDir(uid),
     userSkillsDir(uid),
     userProjectsDir(uid),

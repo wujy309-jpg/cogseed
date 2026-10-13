@@ -30,7 +30,7 @@ const legacyRawControlBaseline: Record<string, number> = {
   'chat-lightbox.js': 3,
   'cognition/pages.js': 5,
   'connectors.js': 2,
-  'context-menu.js': 1,
+  'context-menu.js': 0,
   'contexts.js': 0,
   'continue-work.js': 3,
   'conversation-info.js': 6,

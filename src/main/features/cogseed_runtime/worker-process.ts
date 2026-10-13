@@ -1,11 +1,11 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import * as path from 'node:path';
 import { createInterface } from 'node:readline';
 
-import { PC_ROOT, WS_ROOT } from '../../paths';
+import { WS_ROOT } from '../../paths';
 import { createLogger } from '../../logger';
 import { logErrorRef } from '../../util/log-redact';
+import { childWorkerScriptPath, typescriptChildEnv } from '../../util/packaged-child-env';
 import {
   COGSEED_AGENT_RUNTIME_PROTOCOL_VERSION,
   isRuntimeTerminalEvent,
@@ -63,14 +63,12 @@ interface PendingRun {
 }
 
 function defaultSpawnWorker(): RuntimeWorkerChild {
-  const pcDir = PC_ROOT.replace(/\bapp\.asar\b/, 'app.asar.unpacked');
-  const script = path.join(pcDir, 'bin', 'cogseed-runtime-worker.cjs');
+  const script = childWorkerScriptPath('cogseed-runtime-worker.cjs');
   return spawn(process.execPath, [script], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
-      ELECTRON_RUN_AS_NODE: '1',
-      COGSEED_PC_DIR: pcDir,
+      ...typescriptChildEnv(),
       COGSEED_WORKSPACE_ROOT: WS_ROOT,
     },
   });

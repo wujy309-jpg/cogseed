@@ -1567,7 +1567,11 @@ describe("group_chat bus integration › structured user recipient", () => {
     });
 
     const auth = await import("../../../../src/main/features/auth");
-    vi.spyOn(auth, "hasConfiguredModel").mockReturnValue({ configured: false });
+    const users = await import("../../../../src/main/features/users");
+    vi.spyOn(auth, "hasConfiguredModel").mockReturnValue({ configured: true });
+    vi.spyOn(auth, "hasConfiguredModelForUser").mockImplementation((userId) => (
+      userId === TEST_UID ? { configured: false } : { configured: true }
+    ));
     const registry = await import("../../../../src/main/features/local_agents/registry");
     vi.spyOn(registry, "detectAll").mockResolvedValue([
       {
@@ -1581,19 +1585,25 @@ describe("group_chat bus integration › structured user recipient", () => {
       },
     ] as Awaited<ReturnType<typeof registry.detectAll>>);
 
-    const groupChat = await import("../../../../src/main/features/group_chat");
-    const result = await groupChat.send({
-      userId: TEST_UID,
-      cid,
-      text: "在吗",
-      recipient_agent_id: gatewayAgentId,
-      recipient_origin: "cli_fallback",
-    });
+    try {
+      users.activateUser("group-fallback-other-user");
+      const groupChat = await import("../../../../src/main/features/group_chat");
+      const result = await groupChat.send({
+        userId: TEST_UID,
+        cid,
+        text: "在吗",
+        recipient_agent_id: gatewayAgentId,
+        recipient_origin: "cli_fallback",
+      });
 
-    expect(result).toMatchObject({
-      ok: true,
-      msg: { text: "在吗", to: [gatewayAgentId] },
-    });
+      expect(result).toMatchObject({
+        ok: true,
+        msg: { text: "在吗", to: [gatewayAgentId] },
+      });
+      expect(auth.hasConfiguredModelForUser).toHaveBeenCalledWith(TEST_UID);
+    } finally {
+      users.activateUser(TEST_UID);
+    }
   });
 
   it("refuses to launch the external Agent when the user denies the confirm dialog", async () => {
@@ -6900,7 +6910,8 @@ describe("group_chat bus integration › deterministic host routing (task turn)"
     expect(projection.status).toBe("confirmed");
   }, BUS_TEST_TIMEOUT_MS);
 
-  it("leaves greetings untouched — zero KStar writes", async () => {
+  it("leaves greetings untouched — the trivial gate opens nothing and writes no task state", async () => {
+    process.env.COGSEED_KSTAR_HOST_ROUTING = "1";
     const cid = newCid();
     const state = await import("../../../../src/main/features/group_chat/state");
     const bus = await import("../../../../src/main/features/group_chat/bus");
@@ -6914,6 +6925,127 @@ describe("group_chat bus integration › deterministic host routing (task turn)"
     const store = await import("../../../../src/main/features/kstar/requirement-store");
     const taskState = await store.readConversationTaskState(TEST_UID, cid);
     expect(taskState?.currentTaskId).toBeFalsy();
+    // The gate now records its decision, but only once the conversation has
+    // state: a greeting must never be what brings KStar state into existence.
+    const paths = await import("../../../../src/main/features/kstar/paths");
+    expect(fs.existsSync(paths.kstarConversationTaskStatePath(TEST_UID, cid))).toBe(false);
+  }, BUS_TEST_TIMEOUT_MS);
+
+  it("records an obviously trivial mid-task message without disturbing the open task", async () => {
+    process.env.COGSEED_KSTAR_HOST_ROUTING = "1";
+    const cid = newCid();
+    const state = await import("../../../../src/main/features/group_chat/state");
+    const bus = await import("../../../../src/main/features/group_chat/bus");
+    const store = await import("../../../../src/main/features/kstar/requirement-store");
+
+    // Open a governed task first; the beforeEach stub judges it a task.
+    _setScript(state.buildGconvSessionId(cid), [{ type: "final", text: "I will review it." }]);
+    await bus.enqueue({ uid: TEST_UID, cid, fromActorId: "user", text: "审查一下 bus.ts 的守卫实现" });
+    await waitForQuiescent(TEST_UID, cid);
+    const opened = await store.readConversationTaskState(TEST_UID, cid);
+    expect(opened?.currentTaskId).toBeTruthy();
+
+    // A greeting mid-task. This gate used to short-circuit with no record and
+    // no log, so its hit count could not be measured at all.
+    _setScript(state.buildGconvSessionId(cid), [{ type: "final", text: "不客气。" }]);
+    await bus.enqueue({ uid: TEST_UID, cid, fromActorId: "user", text: "谢谢" });
+    await waitForQuiescent(TEST_UID, cid);
+
+    const after = await store.readConversationTaskState(TEST_UID, cid);
+    const kinds = (after?.routingDecisions ?? []).map((decision) => decision.kind);
+    expect(kinds).toContain("obviously_trivial");
+    // Recording the gate must not change what the gate does: nothing opens and
+    // the tracked task stays exactly as it was.
+    expect(after?.currentTaskId).toBe(opened?.currentTaskId);
+  }, BUS_TEST_TIMEOUT_MS);
+
+  it("still governs a task-shaped request that merely mentions progress", async () => {
+    process.env.COGSEED_KSTAR_HOST_ROUTING = "1";
+    const cid = newCid();
+    const state = await import("../../../../src/main/features/group_chat/state");
+    const bus = await import("../../../../src/main/features/group_chat/bus");
+
+    // The status pattern is unanchored, so "进度" matched anywhere in the
+    // message and this request was filtered as obvious trivia: no model call,
+    // no governed task, no requirement. It carries a goal verb, so it has to
+    // reach the judge.
+    _setScript(state.buildGconvSessionId(cid), [{ type: "final", text: "I will compile it." }]);
+    await bus.enqueue({ uid: TEST_UID, cid, fromActorId: "user", text: "整理一下这个季度的进度报告" });
+    await waitForQuiescent(TEST_UID, cid);
+
+    const store = await import("../../../../src/main/features/kstar/requirement-store");
+    const taskState = await store.readConversationTaskState(TEST_UID, cid);
+    expect(taskState?.currentTaskId).toBeTruthy();
+    const kinds = (taskState?.routingDecisions ?? []).map((decision) => decision.kind);
+    expect(kinds).not.toContain("obviously_trivial");
+  }, BUS_TEST_TIMEOUT_MS);
+
+  it("records an unavailable judge mid-task instead of leaving the skipped turn invisible", async () => {
+    const prevKey = process.env.ANTHROPIC_API_KEY;
+    // `hasConfiguredModel()` also counts an ambient key, so the test pins the
+    // "no model configured" state instead of inheriting the developer's shell.
+    delete process.env.ANTHROPIC_API_KEY;
+    try {
+      process.env.COGSEED_KSTAR_HOST_ROUTING = "1";
+      const cid = newCid();
+      const state = await import("../../../../src/main/features/group_chat/state");
+      const bus = await import("../../../../src/main/features/group_chat/bus");
+      const store = await import("../../../../src/main/features/kstar/requirement-store");
+
+      _setScript(state.buildGconvSessionId(cid), [{ type: "final", text: "I will review it." }]);
+      await bus.enqueue({ uid: TEST_UID, cid, fromActorId: "user", text: "审查一下 bus.ts 的守卫实现" });
+      await waitForQuiescent(TEST_UID, cid);
+      const opened = await store.readConversationTaskState(TEST_UID, cid);
+      expect(opened?.currentTaskId).toBeTruthy();
+
+      // The judge cannot answer: no configured model. That is a normal
+      // configuration state, not a failure — but the skipped turn has to be
+      // visible, otherwise it looks identical in the trace to a judged one.
+      bus._setHostRoutingJudgeForTest(null);
+      _setScript(state.buildGconvSessionId(cid), [{ type: "final", text: "Still here." }]);
+      await bus.enqueue({ uid: TEST_UID, cid, fromActorId: "user", text: "再检查一下 recall 的投影实现" });
+      await waitForQuiescent(TEST_UID, cid, 6000);
+
+      const after = await store.readConversationTaskState(TEST_UID, cid);
+      const unavailable = (after?.routingDecisions ?? []).filter((decision) => decision.kind === "routing_unavailable");
+      expect(unavailable).toHaveLength(1);
+      expect(unavailable[0].reason).toContain("no configured model");
+      // The safe default is preserved: an unjudged turn opens nothing and
+      // leaves the tracked task alone.
+      expect(after?.currentTaskId).toBe(opened?.currentTaskId);
+    } finally {
+      if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = prevKey;
+    }
+  }, BUS_TEST_TIMEOUT_MS);
+
+
+  it("records a judge failure instead of dropping the turn's governance silently", async () => {
+    process.env.COGSEED_KSTAR_HOST_ROUTING = "1";
+    const cid = newCid();
+    const state = await import("../../../../src/main/features/group_chat/state");
+    const bus = await import("../../../../src/main/features/group_chat/bus");
+
+    // The judge never answers (runner error / timeout). This used to return
+    // `openedTask:false` with nothing recorded, so a task-shaped message lost
+    // its governance with no trace anywhere.
+    bus._setHostRoutingJudgeForTest(async () => null);
+
+    _setScript(state.buildGconvSessionId(cid), [
+      { type: "final", text: "Answered anyway." },
+    ]);
+    await bus.enqueue({ uid: TEST_UID, cid, fromActorId: "user", text: "审查一下 bus.ts 的守卫实现" });
+    await waitForQuiescent(TEST_UID, cid, 6000);
+
+    const store = await import("../../../../src/main/features/kstar/requirement-store");
+    const taskState = await store.readConversationTaskState(TEST_UID, cid);
+
+    // No task is opened — guessing "task" could strand a task the user never
+    // asked for — but the gap is now visible to the trace.
+    expect(taskState?.currentTaskId).toBeFalsy();
+    const failed = (taskState?.routingDecisions ?? []).filter((decision) => decision.kind === "routing_failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0].reason).toContain("routing judge unavailable");
   }, BUS_TEST_TIMEOUT_MS);
 });
 

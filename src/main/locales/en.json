@@ -34,6 +34,7 @@
   "component.skill_hub_disabled_request": "Skill \"{name}\" is disabled by Hub. New use is blocked until Hub restores it. Your local copy and tasks already started are retained.",
   "connectors.inline_text": "{connector} connector",
   "connectors.use_prefix": "Use {connector} connector: {content}",
+    "auto_tasks.fire_prefix": "Automated task \"{task}\": sent by a schedule, not typed by the user just now.\n\n",
   "contexts.index.dirs_heading": "Folders",
   "contexts.index.empty_kb": "(Library is empty)",
   "contexts.index.empty_section": "(empty)",
@@ -321,5 +322,16 @@
   "tray.status.idle": "No tasks running",
   "tray.status.running": "{count} task(s) running",
   "tray.background_hint.title": "CogSeed is still running in the background",
-  "tray.background_hint.content": "Long-running tasks keep going. Use \"Quit CogSeed\" in the tray menu to exit completely."
+  "tray.background_hint.content": "Long-running tasks keep going. Use \"Quit CogSeed\" in the tray menu to exit completely.",
+  "connectors.tencent.approval.create_meeting": "Schedule Tencent Meeting",
+  "connectors.tencent.approval.update_meeting": "Update Tencent Meeting",
+  "connectors.tencent.approval.cancel_meeting": "Cancel Tencent Meeting",
+  "connectors.tencent.approval.subject": "Subject",
+  "connectors.tencent.approval.start": "Start (with timezone)",
+  "connectors.tencent.approval.end": "End (with timezone)",
+  "connectors.tencent.approval.meeting_id": "Meeting ID",
+  "connectors.tencent.approval.sub_meeting_id": "Occurrence ID",
+  "connectors.tencent.approval.meeting_type": "Meeting type (0 regular, 1 recurring series)",
+  "connectors.tencent.approval.scope": "Apply only the changes shown above; other fields remain unchanged.",
+  "connectors.tencent.approval.cancel_scope": "Cancel the specified meeting. Type 1 without an occurrence ID cancels the entire recurring series."
 }

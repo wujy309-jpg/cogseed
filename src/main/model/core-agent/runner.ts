@@ -22,11 +22,17 @@ import * as path from 'node:path';
 
 import {
   pickChatEntryGroup,
+  pickChatEntryGroupForUser,
   pickChatEntryGroupForModelOverride,
+  pickChatEntryGroupForModelOverrideForUser,
   bumpEntryLastUsed,
+  bumpEntryLastUsedForUser,
   hasConfiguredModel,
+  hasConfiguredModelForUser,
   getConfiguredModelCooldown,
+  getConfiguredModelCooldownForUser,
   getConfiguredModelOAuthExpiredMessage,
+  getConfiguredModelOAuthExpiredMessageForUser,
   type ChatEntryChoice,
 } from '../../features/auth';
 import { getSystemPromptBlock, getSystemSkillsPromptBlock } from './skill-registry';
@@ -55,14 +61,20 @@ import {
 } from '../../features/spaces';
 import { formatRoleProfileForSystemPrompt } from '../../features/spaces';
 import * as metacognition from '../../features/metacognition';
-import { assertAgentChatDispatchable } from '../../features/agent-dispatch-policy';
-import { appendAgentSkill, listAgentSummaries } from '../../features/agents';
+import {
+  assertAgentChatDispatchable,
+  creatorRuntimeExecutionOptions,
+  getAgentDispatchPolicy,
+  isAgentChatDispatchable,
+} from '../../features/agent-dispatch-policy';
+import { appendAgentSkill, listAgentSummariesForUser } from '../../features/agents';
 const log = createLogger('model/runner');
 import { createLocalTools, createFileTools } from './local-tools';
 import { createOfficeTools } from './office-tools';
 import { officeCliAvailable } from '../../features/office/office_engine';
 import { createKbTools } from './kb-tools';
-import { createRecallTools } from './recall-tools';
+import { createRecallToolSuite } from './recall-tools';
+import type { OntologyAnswerEvidenceBundle } from '../../features/recall/ontology-answer-validation';
 import { createAssetStewardTools } from './asset-steward-tools';
 import { createExperienceTools } from './experience-tools';
 import { createPersonalOntologyTools } from './personal-ontology-tools';
@@ -96,7 +108,7 @@ import {
   createOpenAICompatibleProvider,
 } from './external-providers';
 import { createRotatingProvider, type RotatingCandidate } from './rotating-provider';
-import { clearCooldown } from './profile-cooldown';
+import { clearCooldown, clearCooldownForUser } from './profile-cooldown';
 import {
   buildCustomProviderModelMeta,
   createCustomProvider,
@@ -148,13 +160,18 @@ function buildExternalProviderModel(userId: string | null, providerId: string, m
 
 function modelCatalogEntryFromModel(
   model: { contextWindow?: number; maxTokens?: number } | null | undefined,
+  maxOutputTokens?: number,
 ): { contextWindow?: number; maxOutputTokens?: number } | null {
-  if (!model) return null;
   const entry: { contextWindow?: number; maxOutputTokens?: number } = {};
-  if (typeof model.contextWindow === 'number' && model.contextWindow > 0) {
+  if (typeof model?.contextWindow === 'number' && model.contextWindow > 0) {
     entry.contextWindow = model.contextWindow;
   }
-  if (typeof model.maxTokens === 'number' && model.maxTokens > 0) {
+  if (typeof maxOutputTokens === 'number' && maxOutputTokens > 0) {
+    entry.maxOutputTokens = Math.min(
+      maxOutputTokens,
+      typeof model?.maxTokens === 'number' && model.maxTokens > 0 ? model.maxTokens : maxOutputTokens,
+    );
+  } else if (typeof model?.maxTokens === 'number' && model.maxTokens > 0) {
     entry.maxOutputTokens = model.maxTokens;
   }
   return Object.keys(entry).length ? entry : null;
@@ -218,6 +235,7 @@ export interface BuildRunnerParams {
   /** Current real user text, used by tools that must bind an approval action
    * to explicit user intent rather than merely to the existence of a turn. */
   userMessage?: string;
+  recallAnswerEvidence?: OntologyAnswerEvidenceBundle;
   sourceMessageId?: string;
   sourceMessageFromUser?: boolean;
   onCognitionSaveReceipt?: (receipt: CognitionSaveReceipt) => void | Promise<void>;
@@ -458,11 +476,25 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   /** UI-only agent display names collected once before the run.
    *  Not injected into model context; reused for process-log labels. */
   agentDisplayNameById: Map<string, string>;
+  /** Per-turn ontology evidence gate. It remains inactive until a tool reads
+   *  governed asset content or returns a persisted ontology relation. */
+  finalResponseGate?: import('./recall-tools').RecallFinalResponseGate;
 }> {
+  const earlyUid = params.userId || _safeActiveUserId();
+  let creatorExecution: ReturnType<typeof creatorRuntimeExecutionOptions> | null = null;
   if (params.agentId) await assertAgentChatDispatchable(
-    params.userId || _safeActiveUserId() || '',
+    earlyUid || '',
     params.agentId,
   );
+  if (params.agentId) {
+    const dispatchPolicy = await getAgentDispatchPolicy(earlyUid || '', params.agentId);
+    if (!isAgentChatDispatchable(dispatchPolicy)) {
+      await assertAgentChatDispatchable(earlyUid || '', params.agentId);
+    }
+    if (dispatchPolicy?.creator_runtime) {
+      creatorExecution = creatorRuntimeExecutionOptions(dispatchPolicy.creator_runtime);
+    }
+  }
 
   // Auth gate first — if no group has any usable candidate, fail before
   // loading core-agent / scanning skills / opening a session file. Gives
@@ -473,10 +505,12 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   // entry (credentials removed, cooled down) falls back to the default
   // priority group rather than failing the turn — the runtime resolution
   // callback then reports what actually ran, keeping the UI honest.
-  let group = await pickChatEntryGroup();
+  let group = earlyUid ? await pickChatEntryGroupForUser(earlyUid) : await pickChatEntryGroup();
   if (params.modelOverride) {
     try {
-      const overridden = await pickChatEntryGroupForModelOverride(params.modelOverride);
+      const overridden = earlyUid
+        ? await pickChatEntryGroupForModelOverrideForUser(earlyUid, params.modelOverride)
+        : await pickChatEntryGroupForModelOverride(params.modelOverride);
       if (overridden && overridden.length) {
         group = overridden;
         log.info(`model override applied provider=${params.modelOverride.provider} model=${params.modelOverride.model}`);
@@ -489,14 +523,16 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   }
   const primary: ChatEntryChoice | undefined = group[0];
   if (!primary && !process.env.ANTHROPIC_API_KEY) {
-    const oauthExpiredMessage = getConfiguredModelOAuthExpiredMessage();
+    const oauthExpiredMessage = earlyUid
+      ? getConfiguredModelOAuthExpiredMessageForUser(earlyUid)
+      : getConfiguredModelOAuthExpiredMessage();
     if (oauthExpiredMessage) throw new Error(oauthExpiredMessage);
-    const cooldown = getConfiguredModelCooldown();
+    const cooldown = earlyUid ? getConfiguredModelCooldownForUser(earlyUid) : getConfiguredModelCooldown();
     if (cooldown) {
       const seconds = Math.max(1, Math.ceil((cooldown.cooledUntil - Date.now()) / 1000));
       throw new Error(t('errors.model_temporarily_unavailable', { seconds }));
     }
-    if (hasConfiguredModel().configured) {
+    if ((earlyUid ? hasConfiguredModelForUser(earlyUid) : hasConfiguredModel()).configured) {
       throw new Error(t('errors.model_config_unavailable'));
     }
     throw new Error(t('errors.no_model_configured'));
@@ -508,7 +544,6 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   // carries the uid (CLAUDE.md §5), so callers that don't pass `params.userId`
   // fall through to the active-user singleton. Wrapped in a try/catch so ad-hoc
   // test paths that activate no user just see a null uid → empty disabled set.
-  const earlyUid = params.userId || _safeActiveUserId();
   const disabledSkillIds = earlyUid ? readDisabledSets(earlyUid).skills : new Set<string>();
 
   // System A render allowlist = intersect(skillList, project bindings).
@@ -538,6 +573,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
         ? getSystemSkillsPromptBlock(earlyUid || undefined, { only: agentBuiltinNames })
         : Promise.resolve(''),
     getSystemPromptBlock({
+      ...(earlyUid ? { userId: earlyUid } : {}),
       ...(renderAllowlist === undefined ? {} : { allowlist: [...renderAllowlist] }),
       disabledIds: disabledSkillIds,
       // Acting agent id gates agent-private (`ownerAgent`) skills: an agent's
@@ -557,7 +593,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   // Build tools array: memory tool + metacognition tool. Assembly stays
   // above the system-prompt build because finalToolNames is still snapshotted
   // for the dev archive after this section.
-  const uid = params.userId || _safeActiveUserId();
+  const uid = earlyUid;
   const agentId = params.agentId || '';
   // Cross-session memory eligibility + per-agent scope (null = not eligible →
   // no tool, no injection). See memoryScopeForSession for the per-kind rule.
@@ -571,7 +607,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   const agentDisplayNameById = new Map<string, string>();
   if (uid) {
     try {
-      for (const agent of await listAgentSummaries()) {
+      for (const agent of await listAgentSummariesForUser(uid)) {
         if (agent?.agent_id) agentDisplayNameById.set(agent.agent_id, agent.name || agent.agent_id);
       }
     } catch (err) {
@@ -884,12 +920,14 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
       agentEvolvedSkillsDir(uid, agentId),
     ]
     : [];
-  const fileReadOnlyExtraRoots = [
-    ...(params.fileReadOnlyExtraRoots || []),
-    ...(params.readOnlyExtraRoots || []),
-    ...systemSkillReadRoots,
-    ...agentPrivateSkillReadRoots,
-  ];
+  const fileReadOnlyExtraRoots = creatorExecution
+    ? []
+    : [
+      ...(params.fileReadOnlyExtraRoots || []),
+      ...(params.readOnlyExtraRoots || []),
+      ...systemSkillReadRoots,
+      ...agentPrivateSkillReadRoots,
+    ];
   const toolResultsDir = uid && !params.disableTools
     ? toolResultsDirForSession(uid, params.sessionId)
     : '';
@@ -906,7 +944,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     ...(agentId ? { agentId } : {}),
     ...(agentName ? { agentName } : {}),
     ...(params.projectId ? { projectId: params.projectId } : {}),
-    ...(params.extraRoots?.length ? { extraRoots: params.extraRoots } : {}),
+    ...(!creatorExecution && params.extraRoots?.length ? { extraRoots: params.extraRoots } : {}),
     // Read-only roots intentionally stay out of localTools. `delete_file`,
     // `write_file`, PDF tools, and bash-adjacent local execution only get the
     // writable lane (`extraRoots`), while read-only roots are visible through
@@ -927,12 +965,13 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   const fileTools = uid && !params.disableTools
     ? createFileTools({
         userId: uid,
+        ...(creatorExecution ? { workspaceOnly: true } : {}),
         ...(params.cid ? { cid: params.cid } : {}),
         ...(params.permissionMode ? { permissionMode: params.permissionMode } : {}),
         ...(agentId ? { agentId } : {}),
         ...(agentName ? { agentName } : {}),
         ...(params.projectId ? { projectId: params.projectId } : {}),
-        ...(params.extraRoots?.length ? { extraRoots: params.extraRoots } : {}),
+        ...(!creatorExecution && params.extraRoots?.length ? { extraRoots: params.extraRoots } : {}),
         ...(fileReadOnlyExtraRoots.length || toolResultsDir
           ? { readOnlyExtraRoots: [...fileReadOnlyExtraRoots, ...(toolResultsDir ? [toolResultsDir] : [])] }
           : {}),
@@ -963,7 +1002,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   // 2026-08-17: 注入只显示本空间资产，全局池的使用交给主动检索).
   // 2026-09-18：带上回合上下文——模型自己取用的资产要写 agent_read 注入回执
   // 与使用流水（turnId），并以当前消息文本做适用/禁用场景匹配（taskText）。
-  const recallTools = uid && !params.disableTools ? createRecallTools({
+  const recallToolSuite = uid && !params.disableTools ? createRecallToolSuite({
     userId: uid,
     ...(agentId ? { agentId } : {}),
     ...(params.turnId ? { turnId: params.turnId } : {}),
@@ -971,7 +1010,9 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     ...(params.spaceId ? { spaceId: params.spaceId } : {}),
     ...(params.projectId ? { projectId: params.projectId } : {}),
     ...(params.userMessage ? { taskText: params.userMessage } : {}),
-  }) : [];
+    ...(params.recallAnswerEvidence ? { initialEvidence: params.recallAnswerEvidence } : {}),
+  }) : undefined;
+  const recallTools = recallToolSuite?.tools || [];
 
   // 资产管家工具（specs/008 US-401/402）：全量浏览、读全文、按用户指令改动。
   // 与 search_ability_assets 分开：那是任务执行期的取用（写 agent_read 回执与
@@ -1052,7 +1093,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
         userId: uid,
         ...(params.cid ? { cid: params.cid } : {}),
         ...(params.projectId ? { projectId: params.projectId } : {}),
-        ...(params.extraRoots?.length ? { extraRoots: params.extraRoots } : {}),
+        ...(!creatorExecution && params.extraRoots?.length ? { extraRoots: params.extraRoots } : {}),
         ...(params.turnId ? { turnId: params.turnId } : {}),
       })
     : [];
@@ -1090,7 +1131,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
         userId: uid,
         ...(params.cid ? { cid: params.cid } : {}),
         ...(params.projectId ? { projectId: params.projectId } : {}),
-        ...(params.extraRoots?.length ? { extraRoots: params.extraRoots } : {}),
+        ...(!creatorExecution && params.extraRoots?.length ? { extraRoots: params.extraRoots } : {}),
         ...(params.onFileWritten ? { onFileWritten: params.onFileWritten } : {}),
         ...(params.hasProducedPath ? { hasProducedPath: params.hasProducedPath } : {}),
       })
@@ -1176,14 +1217,24 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   // never reach another actor's tools[] regardless of which injection path
   // produced it. Caller-supplied extraTools / core-agent builtins aren't in the
   // catalog, so `isToolVisibleToAgent` returns true for them (unaffected).
+  const effectiveToolAllowlist = creatorExecution?.toolAllowlist;
   let visibleTools = params.disableTools
     ? []
     : allTools.filter((tool) => isToolVisibleToAgent(tool.name, agentId));
+  if (!params.disableTools && effectiveToolAllowlist) {
+    // creator preset 的工具清单是**额外收窄**，不替代 agent 可见性与只读门禁。
+    const allowed = new Set(effectiveToolAllowlist);
+    visibleTools = visibleTools.filter((tool) => allowed.has(tool.name));
+  }
   if (!params.disableTools && params.toolAccess === 'read-only') {
     visibleTools = visibleTools.filter((tool) => READ_ONLY_TOOL_ALLOWLIST.has(tool.name));
   }
   const visibleToolNameSet = new Set(visibleTools.map((tool) => tool.name));
   let builtinTools = params.disableTools ? [] : mod.getBuiltinTools();
+  if (!params.disableTools && effectiveToolAllowlist) {
+    const allowed = new Set(effectiveToolAllowlist);
+    builtinTools = builtinTools.filter((t) => allowed.has(t.name));
+  }
   if (!params.disableTools && params.toolAccess === 'read-only') {
     builtinTools = builtinTools.filter((t) => READ_ONLY_BUILTIN_ALLOWLIST.has(t.name));
   }
@@ -1403,8 +1454,21 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
       ...(typeof model?.contextWindow === 'number' ? { contextWindow: model.contextWindow } : {}),
       ...(typeof model?.maxTokens === 'number' ? { maxTokens: model.maxTokens } : {}),
     });
-    const entry = modelCatalogEntryFromModel(overridden);
+    // B 的 Creator 输出上限要经同一个目录项生效；同时保留私仓 2026-09-14 的
+    // 预设覆盖结果（`overridden`），否则设置页改的窗口/输出在 pi-ai 目录路径上丢失。
+    const entry = modelCatalogEntryFromModel(overridden, creatorExecution?.maxOutputTokens);
     if (entry) modelCatalog[choice.model] = { provider: choice.provider, model: choice.model, ...entry };
+  }
+  // A development environment may use the SDK's environment-key fallback,
+  // which has no auth entry in `group`. The Creator cap still belongs on the
+  // selected model in that path; otherwise the policy would disappear merely
+  // because the provider was resolved from the environment.
+  if (creatorExecution?.maxOutputTokens !== undefined && !modelCatalog[modelId]) {
+    modelCatalog[modelId] = {
+      provider: providerId,
+      model: modelId,
+      maxOutputTokens: creatorExecution.maxOutputTokens,
+    };
   }
   const config: CoreAgentConfig = mod.createConfig({
     agent: {
@@ -1412,6 +1476,9 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
       defaultModel: modelId,
       ...(resolvedSystemPrompt ? { systemPrompt: resolvedSystemPrompt } : {}),
       ...(params.maxToolLoops ? { maxToolLoops: params.maxToolLoops } : {}),
+      ...(creatorExecution
+        ? { toolIdleTimeoutMs: creatorExecution.idleTimeout * 1000 }
+        : {}),
     },
     evolution: evolutionConfig,
     ...(Object.keys(modelCatalog).length ? { models: { catalog: modelCatalog } } : {}),
@@ -1442,6 +1509,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
       params.onNativeSearchInjected,
       params.onCandidateChosen,
       params.providerFirstEventTimeoutMs,
+      creatorExecution?.maxOutputTokens,
     );
     // Inject the rotating provider into BOTH the factory slot AND the
     // pre-built instance cache. ProviderRegistry.get() short-circuits on
@@ -1458,9 +1526,9 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   // filter, which would drop the new id — System B (SkillStore) skills aren't
   // in System A's SkillLoader spec list. No-op when agentId is empty or when
   // the agent has no explicit dependency list.
-  const onSkillCreated = agentId
+  const onSkillCreated = agentId && uid
     ? (skillId: string) => {
-        appendAgentSkill(agentId, skillId)
+        appendAgentSkill(uid, agentId, skillId)
           .catch((err) => log.warn('skill_list sync failed', {
             agent_id: maskId(agentId),
             skill_id: maskId(skillId),
@@ -1481,6 +1549,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     providers,
     session,
     ...(params.disableTools ? { disableTools: true } : {}),
+    ...(effectiveToolAllowlist ? { toolAllowlist: effectiveToolAllowlist } : {}),
     ...(visibleTools.length ? { tools: visibleTools } : {}),    ...(transformToolResult ? { transformToolResult } : {}),
     ...(toolResultsDir ? { toolContextState: { toolResultSpoolDir: toolResultsDir } } : {}),
     ...(params.skillList !== undefined ? { skillAllowlist: params.skillList } : {}),
@@ -1499,6 +1568,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     toolDefs,
     skillDisplayNameById,
     agentDisplayNameById,
+    finalResponseGate: recallToolSuite?.finalResponseGate,
   };
 }
 
@@ -1630,6 +1700,7 @@ async function buildRotatingProvider(
   onNativeSearchInjected?: (info: NativeSearchInjectedInfo) => void,
   onCandidateChosen?: (info: { profileId: string; providerId: string; modelId: string; entryId?: string }) => void,
   firstEventTimeoutMs?: number,
+  maxOutputTokensCeiling?: number,
 ): Promise<LLMProvider> {
   const candidates: RotatingCandidate[] = group.map((choice) => {
     const candProviderId = choice.provider;
@@ -1643,16 +1714,23 @@ async function buildRotatingProvider(
     const candMaxOutputTokens = rotatingCandidateMaxTokens(
       userId, candProviderId, candModelId, isExternal, resolvedModel, choice.maxOutputTokens,
     );
+    // [rebase 合并] B 线的输出上限意图：钳制私仓的轮换取值（不采用其旧表达式）。
+    const effectiveCandMaxOutputTokens = typeof candMaxOutputTokens === 'number'
+      && candMaxOutputTokens > 0
+      && typeof maxOutputTokensCeiling === 'number'
+      && maxOutputTokensCeiling > 0
+      ? Math.min(candMaxOutputTokens, maxOutputTokensCeiling)
+      : candMaxOutputTokens;
     return {
       profileId: choice.profileId,
       providerId: candProviderId,
       modelId: candModelId,
-      ...(typeof candMaxOutputTokens === 'number' && candMaxOutputTokens > 0
-        ? { maxOutputTokens: candMaxOutputTokens }
+      ...(typeof effectiveCandMaxOutputTokens === 'number' && effectiveCandMaxOutputTokens > 0
+        ? { maxOutputTokens: effectiveCandMaxOutputTokens }
         : {}),
       build: async () => {
         if (isExternal) {
-          return buildExternalProvider(userId, candProviderId, choice.apiKey, candModelId, choice.baseUrl, choice.maxOutputTokens);
+          return buildExternalProvider(userId, candProviderId, choice.apiKey, candModelId, choice.baseUrl, effectiveCandMaxOutputTokens);
         }
         if (resolvedModel?.isConfiguredFallback) {
           log.info('using configured model fallback', {
@@ -1673,12 +1751,17 @@ async function buildRotatingProvider(
   });
 
   return createRotatingProvider({
+    ...(userId ? { userId } : {}),
     providerId,
     candidates,
     onSuccess: (profileId) => {
       const winner = group.find((c) => c.profileId === profileId);
-      if (winner) bumpEntryLastUsed(winner.entryId);
-      clearCooldown(profileId);
+      if (winner) {
+        if (userId) bumpEntryLastUsedForUser(userId, winner.entryId);
+        else bumpEntryLastUsed(winner.entryId);
+      }
+      if (userId) clearCooldownForUser(userId, profileId);
+      else clearCooldown(profileId);
     },
     ...(onCandidateChosen ? {
       onCandidateChosen: (info) => {
@@ -1690,6 +1773,9 @@ async function buildRotatingProvider(
       },
     } : {}),
     ...(Number.isFinite(firstEventTimeoutMs) ? { firstEventTimeoutMs } : {}),
+    ...(typeof maxOutputTokensCeiling === 'number' && maxOutputTokensCeiling > 0
+      ? { maxOutputTokensCeiling }
+      : {}),
   });
 }
 

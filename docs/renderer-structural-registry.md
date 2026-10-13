@@ -91,13 +91,17 @@ written here until `@bonc-ai/reviewers` promotes, narrows or rejects it.
   reachable from the `腾讯会议` card in the 连接 › MCP与工具 tab (`#connections-pane-mcp`). Covers
   the connector identity header, the three-step progress indicator (`接入前` / `发起连接` /
   `连接成功`), the main status card with its `创建会议自动化` action, and the `连接状态` panel.
-- **Status**: `Proposed`
+- **Status**: `Superseded` — replaced by `CONN-PV-003` on 2026-10-12; retained as history.
 - **Allowed boundary** (the boundary this proposal asks to keep page-local; nothing here is
   approved yet): one detail view keyed by connector id, entered only from that connector's own card
   action (`data-act="open-detail"`), and only for connectors with a row in
-  `_CONNECTOR_DETAIL_PROFILES` — today the Tencent Meeting connector alone. It must not become a
-  second visual variant of the card grid, must not add a whole-card click target (the module header
-  records why), and must not be generalised to other connectors without a new review. Both panels
+  `_CONNECTOR_DETAIL_PROFILES` — today the Tencent Meeting connector alone. The explicit user
+  request on 2026-10-12 activates a whole-card detail entry: a shared `uiButton(...)` title with a
+  stretched hit target, native keyboard activation, and focus return to that title after exit.
+  Existing action buttons sit above that target; card clicks never initiate authorization.
+  This request authorizes the scoped implementation, not code-owner approval of this proposal.
+  It must not become a second visual variant of the card grid, and must not be generalised to
+  other connectors without a new review. Both panels
   reuse the shared `ui-resource-card` shell and add page-owned padding/width only; the shared
   shell's border, radius, background and shadow are not overridden.
 - **Required shared seams**: `uiButton(...)` and `uiIconButton(...)` for every control (the
@@ -185,8 +189,96 @@ written here until `@bonc-ai/reviewers` promotes, narrows or rejects it.
 | `HUBC-PV-002` | `hub-contributions.js` 提交预览双栏（`hubc-preview` / `hubc-file-list` / `hubc-file-content`，原型 `preview-layout`） | Proposed | 预览阶段可保持页内双栏组合：左栏为本次提交的文件清单（逐项 `uiButton(...)` ghost 选择，`aria-pressed` 标记当前文件），右栏只读显示所选文件内容（经 `contribution.readFile` 按需读取，二进制只显示大小）。清单来自 `contribution.start/complete/recheck` 的 `preview`，不接受任意路径。**不新增叶子控件**；内容区是只读 `<pre>`。 | `uiButton(...)`、`uiEmptyState(...)`、`uiIconHtml(...)`、`uiStatusPill(...)`、设计 token；数据来自 `contribution.readFile`（路径必须在预览清单内）。 | `@bonc-ai/reviewers`, TBD | 第二个界面需要同一套「文件清单 + 只读内容」稳定契约时，提案共享 `uiFileBrowser(...)`（与 `KB-PV-003` 阅读器评估是否合并）。 |
 | `HUBC-PV-003` | `hub-contributions.js` 「我的贡献」整页统计条与列表/详情布局（`#skills-contributions-view` / `hubc-summary` / `hubc-list` / `hubc-detail`，原型 `view-contributions`） | Proposed | 「我的贡献」可保持页内整页组合：统计条（总数/待审核/已发布/最近同步）、状态筛选与搜索、左侧列表加右侧详情的主从布局。列表行由 `uiButton(...)` ghost 承担选择与键盘行为（`aria-pressed`），状态用 `uiStatusPill(...)`；统计、筛选与搜索全部在前端对 `contribution.mine` 的账号隔离缓存做纯函数计算（`hub-contributions-model.js`），不改变缓存、刷新或离线语义。**不新增叶子控件**；撤回、新版本、历史动作沿用既有 `contribution.*` 通道与共享确认/提示。 | `uiButton(...)`、`uiSegmentedControl(...)`、`uiInput(...)`、`uiStatusPill(...)`、`uiEmptyState(...)`、`uiModal(...)`、`uiConfirm(...)`/`uiConfirmDanger(...)`/`uiPrompt(...)`、设计 token；纯函数桥 `HubContributionsModel`。 | `@bonc-ai/reviewers`, TBD | 第二个界面需要同一套「统计条 + 主从列表详情」稳定契约时，提案共享 `uiMasterDetail(...)`。 |
 | `HUBC-PV-004` | `hub-agent-contributions.js` Agent 贡献整页（`#agents-contribute-view`，复用 `hubc-steps` / `hubc-panel` / `hubc-preview` / `hubc-file-list` / `hubc-check-list` 结构，specs/008-hub-agent-distribution 原型 `contribute-preview`；预览含「可能含本机信息」提示面板与逐行 `hubc-hint-line` 高亮，需勾选「已知晓」才可确认；智能体页进入的「我的贡献」挂在 `#agents-contributions-view`，与技能页的 `#skills-contributions-view` 为同一页面逻辑，页签保持「智能体」） | Proposed | 与 `HUBC-PV-001`/`HUBC-PV-002` 同一整页组合，但属于智能体页：与 `agents-grid-view`、`agents-detail-view` 同级的一个视图，由「本机检查 → 预览与声明 → 提交审核」三步组成（Agent 的检查在开始时一次完成，没有补齐资料步骤）。检查步骤逐行列出智能体本体与每个随包技能；预览步骤在文件清单之外多出「已在本机移除的字段」与「这个智能体用到的技能」两个只读区，声明区多一个版本号输入和「这些技能也会同时贡献」勾选。全部控件仍用 `uiButton` / `uiField` / `uiCheckbox` / `uiSegmentedControl` / `uiModal`，没有新增原始控件或页内弹层；唯一新增的类名是智能体卡片上的 `.agent-card-contribute`，它只补一条层级规则（`position: relative; z-index: var(--z-raised)`），否则会被整卡覆盖层 `.agent-card-open` 盖住而点不了。「我的贡献」仍是 `HUBC-PV-003` 的同一页，只多一个类型切换（`uiSegmentedControl`）。 |
+| `SIDEBAR-PV-001` | Conversation sidebar task row activity indicator (`conv-task-indicator`, `conv-task-pill`) | Proposed | The single activity slot before a task-row title may stay page-local composition across three mutually exclusive states: live work (spinning indicator), waiting for the user's wake-approval decision (shared status pill built with `uiStatusPill(...)`, tone `attention`), and nothing. The slot is a query/refresh hook only (`_convTaskStatusLine` / `_refreshConvTaskLine`); state meaning comes from `/runtime` (`in_flight`, `waiting_approval`) and row layout stays page-owned. **Decided (product owner, this change): the indicator stays status-only** — no click target and no navigation on the row; acting on a pending wake stays in the dashboard control center (`wake-approvals.js`), so this entry is not extended into an action seam. | `uiStatusPill(...)`, `uiIconHtml(...)`, tokens, `t(...)` copy, native `role`/`aria-label` semantics. | `@bonc-ai/reviewers`, `TBD` | Propose a shared `uiTaskActivityIndicator(...)` (or a `uiStatusPill` slot contract) once a second surface needs the same running/pending-approval states; revisit if the wake-approval surface gets its own shared status component. |
+
+## Shared form dialog migration
+
+### `CONN-M-001` — Async form modal
+
+- **ID**: `CONN-M-001`
+- **Scope**: `modules/ui-modal.js`, production component gallery, and `connectors.js` Tencent
+  Docs token, 163/QQ/Enterprise email and custom MCP connection forms.
+- **Status**: `Migrated` for this local structural implementation. The user's 2026-10-12 request
+  explicitly activates extraction and page integration; code-owner review/related PR remain `TBD`.
+  `CONN-PV-002` retains its Proposed business-content boundary and historical record.
+- **Allowed boundary**: `uiFormModal(...)` composes `uiModal(...)` and one business-supplied
+  `uiForm(...)` without form actions. It owns a standard footer, native form-associated submit,
+  optional cancellation, text-only inline error feedback, and visible submit progress.
+  Submission never auto-closes; the business callback decides when to close after success.
+  Busy state blocks duplicate submit, disables controls and preserves previously disabled fields.
+  `update(...)` refreshes localized title, close/submit/busy/cancel labels and optionally body HTML;
+  the caller restores field values and hydrates selects after body replacement. Feedback and busy
+  state survive updates. Escape, focus trapping/return and scroll locking belong to `uiModal`.
+- **API**: Required `title`, `closeLabel`, `bodyHtml`, `submitLabel`, `busyLabel`; optional
+  `size`, `initialFocus`, `cancelLabel`, `submitIcon`, `submitAttrs`, `feedbackAttrs`, `onSubmit`.
+  Returns the existing modal Promise/`close`/`dialog`/`overlay` plus `setBusy(boolean)`,
+  `setFeedback(text)` and `update(options)`. No provider copy, credentials, IPC or validation lives
+  in the shared component.
+- **Required shared seams**: `uiModal`, `uiButton`, `uiForm`, `uiField`, tokens and shared select
+  hydration. No raw-control baseline increase or duplicated keyboard behavior.
+- **Rationale**: Token, email and custom transport forms share the same async submit/recovery
+  contract. Fields, authorization instructions, saved-password reuse, transport parsing, consent
+  warning and requests remain business-owned. The gallery demonstrates default, pending and retry
+  states using the production component.
+- **Product contract**: No live separate product checklist is available. This source-side API
+  follows the current user request; formal product-contract acceptance is unconfirmed.
+- **Decision owner/date**: `@bonc-ai/reviewers` / `TBD`.
+- **Review trigger**: Code-owner review or a change to form submission/lifecycle semantics.
+- **Related PR/issue**: `TBD` (local implementation).
 
 ## PR notation
+
+### `CONN-PV-002` — Migrated connector onboarding and meeting recovery content
+
+- **ID**: `CONN-PV-002`
+- **Scope**: `connectors.js`, the ten migrated connector cards, email/token onboarding forms,
+  runtime preparation feedback, and Tencent Meeting authorization recovery content.
+- **Status**: `Proposed`; implementation is local and awaits code-owner review.
+- **Allowed boundary**: Business fields, provider instructions, connected-account labels,
+  cancel/retry state and task routing remain owned by the connector page. Email and pasted-token
+  forms now compose `uiFormModal(...)`; see `CONN-M-001` for the shared structural slice. The user's 2026-10-12 request activates local
+  token-dialog layout correction: medium shared modal, compact provider guidance, standard shared
+  footer with a native form-associated submit button, and no space reserved for empty feedback.
+  Async validation errors keep the form open for correction; existing credential handling remains.
+  Tencent Meeting recovery replaces the former
+  three-step/detail status content with current connection status and task usage examples;
+  it remains keyed only to Tencent Meeting, without expanding detail profiles to other providers.
+- **Required shared seams**: `uiCard`, `uiStatusDot`, `uiStatusPill`, `uiButton`, `uiIconButton`,
+  `uiModal`, `uiForm`, `uiField`, shared select hydration, `uiToast`, `uiConfirmDanger`,
+  `uiIconHtml`, i18n and design tokens. No raw-control baseline increase.
+- **Rationale**: Provider-specific connection fields and authorization state are business content;
+  this migration creates no additional control or overlay primitive. This record proposes the
+  replacement of the detail-content boundary in `CONN-PV-001`, whose history remains intact.
+- **Decision owner/date**: `@bonc-ai/reviewers` / `TBD`.
+- **Review trigger**: Code-owner review of the migration, or a second page requiring the same
+  provider onboarding contract.
+- **Related PR/issue**: `TBD`.
+
+### `CONN-PV-003` — Connector usage popup
+
+- **ID**: `CONN-PV-003`
+- **Status**: `Proposed`; the user's 2026-10-12 request explicitly activates local implementation.
+  Code-owner approval remains pending.
+- **Scope**: Usage popups for Tencent Meeting, 163 Mail, Enterprise Mail, QQ Mail, WPS, WeCom,
+  Tencent Docs, Tencent Survey, DingTalk and Feishu, as explicitly requested by the user on
+  2026-10-12. Replaces the full-page entry in `CONN-PV-001`. Other providers retain existing behavior.
+- **Allowed boundary**: A stretched native card title button opens the usage popup without changing
+  the current page. Content includes identity, capability description, live status/account,
+  conversation enable switch, three examples, authorization/runtime recovery and collapsed setup
+  guidance. Examples select this connector and prefill a new conversation without sending.
+  Unconnected cards also open the popup; their primary action connects (or installs and connects).
+  Each provider owns its examples and guidance. Credential and pasted-token actions transfer to
+  the existing shared form dialog, then return to the popup with live connection state.
+  The connected primary action opens a new conversation with empty text. Disable keeps the connection;
+  disconnect still uses the existing confirmation and connector-removal flow.
+- **Required shared seams**: `uiModal`, `uiButton`, `uiIconButton`, `uiSwitch`, `uiStatusPill`,
+  `uiAccordion`, existing connector task selection and recovery APIs, icons, i18n and tokens.
+  No new modal shell, keyboard trap, IPC channel or raw-control baseline increase.
+- **Rationale**: The popup's connection lifecycle and examples are connector business content.
+  Shared controls own their behavior; no new shared component contract is introduced.
+- **Decision owner/date**: `@bonc-ai/reviewers` / `TBD`.
+- **Review trigger**: Code-owner review or extension beyond the ten providers listed above.
+- **Related PR/issue**: `TBD` (local implementation).
 
 Renderer PRs that touch structure should include one of the following:
 

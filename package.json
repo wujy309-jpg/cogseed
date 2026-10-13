@@ -26,6 +26,8 @@
     "test": "npm run test:js && npm run test:resources",
     "test:js": "node scripts/run-tests.mjs run",
     "test:resources": "node scripts/run-python-tests.mjs resources/builtin resources/test resources/guardrail/skill-sentry/tests resources/guardrail/skill-sentry/runtime_trust -q",
+    "session:inspect": "node scripts/inspect-session.mjs",
+    "check:line-endings": "node scripts/check-line-endings.mjs",
     "test:coverage": "node scripts/run-tests.mjs run --coverage",
     "test:watch": "node scripts/run-tests.mjs",
     "test:local-agents:live": "tsx scripts/test-local-agents-live.ts",
@@ -49,6 +51,8 @@
     "test:resources:setup": "node scripts/setup-python-test-env.mjs",
     "audit:workspace": "node scripts/audit-local-workspace.mjs",
     "diagnose:agents": "node scripts/diagnose-local-agents.mjs",
+    "eval:ontology": "tsx scripts/evaluate-ontology-query.ts",
+    "replay:ontology-demo": "tsx scripts/replay-semantic-ontology-demo.ts",
     "package:dev:mac": "node scripts/package-dev-mac.cjs",
     "verify:package:dev:mac": "node scripts/verify-packaged-dev.cjs",
     "audit:branch": "node scripts/audit-branch-diff.mjs",
@@ -65,7 +69,10 @@
     "build:win": "electron-builder --win --x64 --publish never",
     "verify:package:launch": "node scripts/verify-packaged-launch.cjs",
     "verify:package:stt:win": "node scripts/verify-packaged-stt-win.cjs",
-    "verify:package:build-info": "node scripts/verify-packaged-build-info.cjs"
+    "verify:package:build-info": "node scripts/verify-packaged-build-info.cjs",
+    "cli:install": "tsx scripts/cli-command.ts install",
+    "cli:uninstall": "tsx scripts/cli-command.ts uninstall",
+    "cli:status": "tsx scripts/cli-command.ts status"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
@@ -94,7 +101,9 @@
     "esbuild": "~0.28.2",
     "fastembed": "^2.1.0",
     "get-tsconfig": "^4.7.5",
+    "imapflow": "2.3.0",
     "jimp": "^1.6.1",
+    "mailparser": "3.9.37",
     "mammoth": "^1.12.1",
     "node-pty": "^1.1.0",
     "pdfjs-dist": "^6.2.108",
@@ -273,6 +282,14 @@
           "en.lproj/InfoPlist.strings",
           "ja.lproj/InfoPlist.strings",
           "zh-Hans.lproj/InfoPlist.strings"
+        ]
+      },
+      {
+        "from": "resources/tencent-meeting",
+        "to": "tencent-meeting",
+        "filter": [
+          "tmeet-*",
+          "LICENSE"
         ]
       }
     ],
