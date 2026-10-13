@@ -82,13 +82,16 @@ describe('P3394 wake approval placement', () => {
     expect(mountSource).not.toContain('document.querySelector(selector)');
   });
 
-  it('removes composer wake cards after an approval decision instead of leaving stale completed cards', () => {
+  it('settles the composer wake card with its outcome instead of removing it silently', () => {
     const start = conversationSource.indexOf('async function _resolveWakeRequest');
-    const end = conversationSource.indexOf('\nfunction _mountMarketplaceInstallRequests', start);
+    const end = conversationSource.indexOf('\n// ── 外接智能体', start);
     const resolveSource = conversationSource.slice(start, end);
 
-    expect(resolveSource).toContain('card.remove()');
-    expect(resolveSource).toContain('_pruneWakeRequestHost(_wakeRequestHost(cid, { create: false }))');
-    expect(resolveSource).not.toContain('_renderWakeRequestCard(card, data.request');
+    // 需求变更（2026-10-14 需求方反馈）：此前点了「允许」卡片直接消失，而气泡文案
+    // 仍写着「需要你点允许」——用户拿不到"我的点击生效了"的回执。改为就地定格为
+    // 已批准/已拒绝。
+    expect(resolveSource).toContain('_renderWakeRequestCard(card, settled, cid)');
+    expect(resolveSource).toContain("status: decision === 'approve' ? 'approved' : 'rejected'");
+    expect(resolveSource).not.toContain('card.remove()');
   });
 });

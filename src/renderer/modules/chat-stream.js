@@ -246,6 +246,7 @@ function _csUpgradeFlowForLive(flow, startedAtMs) {
     flow.classList.remove('done', 'failed', 'cancelled');
     flow.classList.add('running');
   }
+  _csSetBadgeLive(flow, true);
   _csStartTicker(flow, startedAtMs);
 }
 
@@ -303,6 +304,26 @@ function _csExpandIfCollapsed(flow) {
   if (flow && flow.dataset.csCollapsed === '1') _csSetCollapsed(flow, false);
 }
 
+/** 徽章上的「在跑」指示：真机 2026-10-14 反馈——worker 回合默认折叠后，
+ *  唯一的动效（`.cs-loading`）随折叠区一起被隐藏，折叠状态下**什么都看不出
+ *  它在运行**。把同一个 loader 图标挂到徽章上（消息头常显），
+ *  终态/移交时移除，话权回来时恢复。 */
+function _csSetBadgeLive(flow, live) {
+  const badge = flow && flow._csBadge;
+  if (!badge) return;
+  const existing = badge.querySelector('.cs-badge-live');
+  if (!live) {
+    if (existing) existing.remove();
+    return;
+  }
+  if (existing) return;
+  const el = document.createElement('span');
+  el.className = 'cs-badge-live';
+  el.setAttribute('aria-hidden', 'true');
+  el.innerHTML = `<span class="cs-loading-spinner">${_csIco('loader')}</span>`;
+  badge.insertBefore(el, badge.firstChild);
+}
+
 /** 计时/收起徽章：消息头里 cogseed 名字右侧，点击收起下方工具调用区。
  *  运行中 label=工作中（实时计时），终态定格 label=已完成；历史无计时
  *  数据只显示「已完成」（不编造时长）。 */
@@ -336,6 +357,8 @@ function _csCreateBadge(flow, opts) {
     _csSetCollapsed(flow, flow.dataset.csCollapsed !== '1');
   });
   flow._csBadge = badge;
+  // 运行态徽章自带旋转指示（历史/终态徽章没有）。
+  if (!(opts && opts.terminalLabel)) _csSetBadgeLive(flow, true);
   return badge;
 }
 
@@ -519,6 +542,7 @@ function _csSetFlowState(flow, status, error, endedAtMs, opts) {
   flow.classList.remove('running', 'done', 'failed', 'cancelled');
   flow.classList.add(status === 'completed' ? 'done' : status);
   _csStopTicker(flow);
+  _csSetBadgeLive(flow, false);
   // 加载指示随终态退场（过程已结束，没有"还有下一步"）。
   const loading = flow.querySelector('.cs-loading');
   if (loading) loading.remove();
@@ -595,6 +619,7 @@ function _csMarkHandedOff(flow) {
   flow.classList.remove('running', 'failed', 'cancelled');
   flow.classList.add('done');
   _csStopTicker(flow);
+  _csSetBadgeLive(flow, false);
   const loading = flow.querySelector('.cs-loading');
   if (loading) loading.remove();
   const badge = flow._csBadge;
@@ -623,6 +648,7 @@ function _csResumeFromHandoff(flow) {
     flow.classList.remove('done', 'failed', 'cancelled');
     flow.classList.add('running');
   }
+  _csSetBadgeLive(flow, true);
   const badge = flow._csBadge;
   if (badge) {
     const label = badge.querySelector('.cs-badge-label');

@@ -10885,8 +10885,14 @@ async function _resolveWakeRequest(card, request, cid, decision) {
     });
     const data = await res.json();
     if (!data || data.ok === false) throw new Error(data?.error || 'wake decision failed');
-    card.remove();
-    _pruneWakeRequestHost(_wakeRequestHost(cid, { create: false }));
+    // 批准/拒绝之后不要说"卡在启动确认上"又说没下文：卡片就地定格为终态
+    // （已批准 / 已拒绝），而不是直接消失——用户需要一条"我的点击生效了"的回执
+    // （真机 2026-10-14：点了允许后卡片消失，气泡文案仍写着"需要你点允许"）。
+    const settled = data.request && typeof data.request === 'object'
+      ? data.request
+      : { ...request, status: decision === 'approve' ? 'approved' : 'rejected' };
+    card.dataset.busy = '';
+    _renderWakeRequestCard(card, settled, cid);
   } catch (err) {
     observer?.abort?.();
     card.dataset.busy = '';
