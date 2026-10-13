@@ -132,17 +132,29 @@
 
   // ── View plumbing ──
 
+  const SKILLS_MINE_HOST = 'skills-contributions-view';
+  const AGENTS_MINE_HOST = 'agents-contributions-view';
+
+  /** 「我的贡献」同一页面：由智能体页进入时挂在智能体页签的容器里（页签保持「智能体」），否则挂在技能页签里。 */
+  function mineHost() {
+    return document.getElementById(mine?.returnTo === 'agents' ? AGENTS_MINE_HOST : SKILLS_MINE_HOST);
+  }
+
   function hostOf(kind) {
-    return document.getElementById(kind === 'mine' ? 'skills-contributions-view' : 'skills-contribute-view');
+    return kind === 'mine' ? mineHost() : document.getElementById('skills-contribute-view');
   }
 
   function showView(kind) {
-    const grid = document.getElementById('skills-grid-view');
-    const detail = document.getElementById('skills-detail-view');
-    if (grid) grid.style.display = 'none';
-    if (detail) detail.style.display = 'none';
+    const fromAgents = kind === 'mine' && mine?.returnTo === 'agents';
+    for (const id of fromAgents ? ['agents-grid-view', 'agents-detail-view', 'agents-contribute-view'] : ['skills-grid-view', 'skills-detail-view']) {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    }
     hostOf('contribute').style.display = kind === 'contribute' ? 'flex' : 'none';
-    hostOf('mine').style.display = kind === 'mine' ? 'flex' : 'none';
+    for (const id of [SKILLS_MINE_HOST, AGENTS_MINE_HOST]) {
+      const el = document.getElementById(id);
+      if (el) el.style.display = kind === 'mine' && el === mineHost() ? 'flex' : 'none';
+    }
   }
 
   function viewVisible(kind) {
@@ -169,8 +181,8 @@
     stopMinePoll();
     mine = null;
     void endSession();
-    for (const kind of ['contribute', 'mine']) {
-      const host = hostOf(kind);
+    for (const id of ['skills-contribute-view', SKILLS_MINE_HOST, AGENTS_MINE_HOST]) {
+      const host = document.getElementById(id);
       if (host) {
         host.style.display = 'none';
         host.innerHTML = '';
@@ -191,7 +203,6 @@
   function leaveFromMine() {
     if (mine?.returnTo === 'agents' && typeof _showAgentsGridView === 'function') {
       hideContributionViews();
-      if (typeof activateConnectionsTab === 'function') activateConnectionsTab('agents');
       _showAgentsGridView();
     } else leaveToSkills();
   }
@@ -1260,8 +1271,8 @@
   }
 
   function bindViews() {
-    for (const kind of ['contribute', 'mine']) {
-      const host = hostOf(kind);
+    for (const id of ['skills-contribute-view', SKILLS_MINE_HOST, AGENTS_MINE_HOST]) {
+      const host = document.getElementById(id);
       if (!host || host.dataset.hubcBound === 'true') continue;
       host.dataset.hubcBound = 'true';
       host.addEventListener('click', (event) => { void onClick(event); });

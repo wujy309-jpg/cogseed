@@ -51,6 +51,8 @@
   // Called by agents.js whenever the grid or detail view takes over again.
   function hideAgentContributionViews() {
     void endSession();
+    // 从智能体页进入的「我的贡献」也在智能体页签里，一并收起（该模块为懒加载，可能尚未加载）
+    if (typeof root.hideContributionViews === 'function') root.hideContributionViews();
     const el = host();
     if (el) {
       el.style.display = 'none';
