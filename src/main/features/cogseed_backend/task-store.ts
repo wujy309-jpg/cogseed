@@ -702,7 +702,10 @@ const TERMINALS = new Set<CogSeedTaskRecord['status']>(['completed', 'failed', '
  * The wake request id and the CogSeed task request id are *different namespaces*
  * (`076f0627f697` vs `req-…`, live 2026-10-14 00:30: `wake approval task resume
  * failed: invalid CogSeed request id`), so a foreign id must fall back to the
- * wake's own identity — conversation + agent — instead of throwing.
+ * wake's own identity instead of throwing. A group-chat turn task carries no
+ * `agentId` (it belongs to the conversation, not one worker — live task
+ * `cogseed-task-4d6dfae30cae`: `agentId: null`, `status: waiting_user`), so the
+ * last resort is the conversation's own attention-state task.
  */
 export async function resumeCogSeedTaskAfterWakeApproval(
   userId: string,
@@ -711,14 +714,15 @@ export async function resumeCogSeedTaskAfterWakeApproval(
   assertCogSeedUserId(userId);
   const ref = typeof wake === 'string' ? { requestId: wake } : (wake || {});
   const requestId = String(ref.requestId || '').trim();
+  const conversationId = String(ref.conversationId || '').trim();
+  const agentId = String(ref.agentId || '').trim();
   let task: CogSeedTaskRecord | null = null;
   if (isCogSeedRequestId(requestId)) task = await readCogSeedTaskByRequestId(userId, requestId);
-  if (!task) {
-    const conversationId = String(ref.conversationId || '').trim();
-    const agentId = String(ref.agentId || '').trim();
-    if (safeId(conversationId) && safeId(agentId)) {
-      task = await readLatestCogSeedTaskForAgent(userId, conversationId, agentId);
-    }
+  if (!task && safeId(conversationId) && safeId(agentId)) {
+    task = await readLatestCogSeedTaskForAgent(userId, conversationId, agentId);
+  }
+  if (!task && safeId(conversationId)) {
+    task = await readAttentionCogSeedTaskForConversation(userId, conversationId);
   }
   if (!task) return null;
   if (TERMINALS.has(task.status)) return null;
@@ -734,6 +738,22 @@ export async function resumeCogSeedTaskAfterWakeApproval(
     { type: 'task.started', payload: { requestId, source: 'wake-approval' } },
   );
   return { taskId: resumed.taskId, status: resumed.status };
+}
+
+/** The conversation's own task that is waiting on the user (newest first).
+ *  Group-chat turn tasks are conversation-scoped (`agentId` null), so an
+ *  agent-scoped lookup cannot see the task a wake approval has to clear. */
+async function readAttentionCogSeedTaskForConversation(
+  userId: string,
+  conversationId: string,
+): Promise<CogSeedTaskRecord | null> {
+  const safeConversationId = assertCogSeedConversationId(conversationId);
+  const waiting = (await listCogSeedTasks(userId)).filter((task) => (
+    task.conversationId === safeConversationId
+    && (task.status === 'waiting_user' || task.status === 'planned')
+  ));
+  waiting.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+  return waiting[0] ?? null;
 }
 
 /** Same rule as `assertCogSeedRequestId`, without the throw — callers hand us

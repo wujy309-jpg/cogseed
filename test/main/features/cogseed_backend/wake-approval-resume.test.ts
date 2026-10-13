@@ -119,4 +119,69 @@ describe('wake approval resumes its task', () => {
       agentId: 'agent-absent',
     })).resolves.toBeNull();
   });
+
+  // 真机 2026-10-14 00:37：群聊回合任务是**会话级**的（`agentId: null`，
+  // `cogseed-task-4d6dfae30cae` 在 hand_off_to 之后进入 waiting_user），按 agent
+  // 查不到 → 批准后任务不收敛，侧栏继续显示「等待批准」。
+  it('falls back to the conversation\'s own waiting task when the task has no agent', async () => {
+    const tasks = await store();
+    const turnTask = await tasks.createCogSeedTask(USER, {
+      requestId: 'req-groupchat-turn-turn-submit-x',
+      task: 'Group chat commander turn waiting for a worker wake.',
+      executionKind: 'group-chat',
+      conversationId: 'conv-turn-level',
+      groupChatRunId: 'run-turn-level',
+    });
+    await tasks.updateCogSeedTaskWithEvent(
+      USER,
+      turnTask.task.taskId,
+      (current) => ({ ...current, status: 'waiting_user', updatedAt: new Date().toISOString() }),
+      { type: 'task.waiting_user', payload: { source: 'group-chat' } },
+    );
+
+    const resumed = await tasks.resumeCogSeedTaskAfterWakeApproval(USER, {
+      requestId: '076f0627f697',
+      conversationId: 'conv-turn-level',
+      agentId: 'agent-2a2d',
+    });
+
+    expect(resumed).toMatchObject({ taskId: turnTask.task.taskId, status: 'running' });
+  });
+
+  it('prefers the agent-scoped task over another conversation task', async () => {
+    const tasks = await store();
+    const other = await tasks.createCogSeedTask(USER, {
+      requestId: 'req-other-turn',
+      task: 'Another turn in the same conversation.',
+      executionKind: 'group-chat',
+      conversationId: 'conv-two-tasks',
+      groupChatRunId: 'run-other',
+    });
+    await tasks.updateCogSeedTaskWithEvent(
+      USER, other.task.taskId,
+      (current) => ({ ...current, status: 'planned', updatedAt: new Date(Date.now() + 1000).toISOString() }),
+      { type: 'task.created', payload: { source: 'test-setup' } },
+    );
+    const mine = await tasks.createCogSeedTask(USER, {
+      requestId: 'req-agent-task',
+      task: 'The agent awaiting its wake approval.',
+      executionKind: 'group-chat',
+      conversationId: 'conv-two-tasks',
+      agentId: 'agent-2a2d',
+      groupChatRunId: 'run-mine',
+    });
+    await tasks.updateCogSeedTaskWithEvent(
+      USER, mine.task.taskId,
+      (current) => ({ ...current, status: 'waiting_user', updatedAt: new Date().toISOString() }),
+      { type: 'task.waiting_user', payload: { source: 'group-chat' } },
+    );
+
+    const resumed = await tasks.resumeCogSeedTaskAfterWakeApproval(USER, {
+      requestId: '076f0627f697',
+      conversationId: 'conv-two-tasks',
+      agentId: 'agent-2a2d',
+    });
+
+    expect(resumed).toMatchObject({ taskId: mine.task.taskId, status: 'running' });
+  });
 });
