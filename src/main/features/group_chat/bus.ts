@@ -4852,6 +4852,12 @@ async function runWorkerLoop(state: CidState, w: WorkerState): Promise<void> {
           log.warn(`run terminal persistence failed cid=${w.cid}: ${(ledgerErr as Error).message}`);
         }
       }
+        log.info("worker turn failed; considering degradation report", {
+          cid: w.cid,
+          runId: item.runId || null,
+          actorId: item.actor.id,
+          reason: userAborted ? "user_stopped" : "runtime_failed",
+        });
         await maybeEnqueueActorReport(w.uid, w.cid, item.runId, item.actor.id, item.actor.name || "");
     } finally {
       w.currentTurnId = null;
@@ -4998,7 +5004,9 @@ type ActorTurnResult =
     try {
       const runStore = await import("./run_store");
       const run = await runStore.readRun(uid, cid, runId);
-      if (!runStore.shouldEnqueueActorReport(run)) return;
+      const shouldReport = runStore.shouldEnqueueActorReport(run);
+      log.info(`actor report decision run=${runId} should=${shouldReport}`, { cid });
+      if (!shouldReport) return;
       await runStore.markActorReportEnqueued(uid, cid, runId);
       await enqueue({
         uid,

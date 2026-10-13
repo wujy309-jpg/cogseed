@@ -448,6 +448,18 @@ export function createPiProvider(config: {
               // (2026-10-13, three attempts: the header was set on the Model all along).
               ...(model.headers ? { headers: model.headers as Record<string, string> } : {}),
               ...(config.onPayload ? { onPayload: config.onPayload as any } : {}),
+              // Diagnostics (2026-10-13): identify WHICH request the endpoint rejects.
+              // pi-ai calls this once per HTTP response with the status, so a 400 can be
+              // tied to a concrete call instead of the whole turn.
+              onResponse: (info: any) => {
+                try {
+                  log.info(
+                    `stream response ${providerId}/${model.id}`
+                    + ` status=${info?.status ?? "-"}`
+                    + ` baseUrl=${String((model as any).baseUrl || config.baseUrl || "-")}`,
+                  );
+                } catch { /* diagnostics must never break the stream */ }
+              },
             })
           : piStream(model, context, {
               apiKey: config.apiKey,
@@ -463,6 +475,18 @@ export function createPiProvider(config: {
               // (2026-10-13, three attempts: the header was set on the Model all along).
               ...(model.headers ? { headers: model.headers as Record<string, string> } : {}),
               ...(config.onPayload ? { onPayload: config.onPayload as any } : {}),
+              // Diagnostics (2026-10-13): identify WHICH request the endpoint rejects.
+              // pi-ai calls this once per HTTP response with the status, so a 400 can be
+              // tied to a concrete call instead of the whole turn.
+              onResponse: (info: any) => {
+                try {
+                  log.info(
+                    `stream response ${providerId}/${model.id}`
+                    + ` status=${info?.status ?? "-"}`
+                    + ` baseUrl=${String((model as any).baseUrl || config.baseUrl || "-")}`,
+                  );
+                } catch { /* diagnostics must never break the stream */ }
+              },
             });
 
         for await (const event of eventStream) {
