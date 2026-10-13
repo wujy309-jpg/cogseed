@@ -6918,6 +6918,7 @@
   "agents.update_failed_reason.dependency_disabled": "Uma habilidade de que ele precisa foi desativada pelo Hub.",
   "agents.update_failed_reason.dependency_missing": "Uma habilidade de que ele precisa não foi encontrada.",
   "agents.update_failed_reason.builtin_unavailable": "Ele precisa de uma capacidade integrada que este CogSeed não tem.",
+  "agents.update_failed_reason.package_invalid": "O conteúdo baixado não passou na verificação.",
   "agents.update_failed_reason.network": "A rede estava indisponível.",
   "agents.update_failed_reason.unknown": "Algo deu errado.",
   "agents.contribute_hints_title": "Pode conter informações deste dispositivo",

@@ -9333,6 +9333,7 @@
   "agents.update_failed_reason.dependency_disabled": "它需要的一个技能已被 Hub 停用。",
   "agents.update_failed_reason.dependency_missing": "找不到它需要的一个技能。",
   "agents.update_failed_reason.builtin_unavailable": "它需要的内置能力当前 CogSeed 不具备。",
+  "agents.update_failed_reason.package_invalid": "下载的内容没有通过校验。",
   "agents.update_failed_reason.network": "网络不可用。",
   "agents.update_failed_reason.unknown": "出了点问题。",
   "agents.contribute_hints_title": "可能含有本机信息",

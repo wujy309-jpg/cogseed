@@ -88,6 +88,8 @@
 - [X] T036 核实 `builtin:<name>` 在客户端指什么（D-10）：**客户端目前没有任何机制能解析它**——Agent 的 `skill_list` 经 `resolveSkillAllowlistRefs` 只解析 Skill 注册表里的条目，而 `skills.ts` 注明注册表"不再加载随包内置 Skill"、系统 Skill 目录只作为个别对话的只读额外根；31 个内置 Agent 无一引用系统 Skill；随客户端预置的内容本来就是 12 位十六进制的 Hub 内容（Hub 的 `builtinSeedIds.ts` 已收 58 个）。结论与建议见 `给嘉宇-ownerAgent与builtin说明.md`；是否实现待 Hub 与产品回应
 - [X] T042 预览高亮本机路径/疑似凭据 + 勾选已知晓才可确认（AG-FR-064，`agent-sensitive-hints.ts`，测试 18 项 + 流程/IPC/模型）
 - [X] T043 更新检查判定函数（`agent_catalog_update.ts`）：只依据 B-01 目录、必须翻完全部分页、目录里查不到≠有更新、停用≠新版本、永不降级；测试 18 项；接入真实 B-01 待联调
+- [X] T044 安装接入新发布物 `agent-package-v1`（B-02）：`marketplace/agent-package.ts`（读包、版本与 `_meta.json` 校验、符号链接/穿越拒绝、私有技能检查、`agent_id` 改写）+ `source-fetch.ts` 的 B-02 取字节 + 安装/预览/详情分流（目录行带 artifact 即走新路径，旧格式不动）；测试 14 项 + 列表归一化 4 项；**已在真实应用连假 Hub 装通**
+- [X] T045 新格式 Agent 的自动更新：同步流程按 B-01 目录行（版本 + `artifact.sha256`）判定，走完整安装（整体替换、失败回滚并记录原因、停用状态与 `min_app_version` 仍同步）；更新判定函数已被调用；测试 6 项；**已在真实应用验证自动更新与"摘要不符→保留旧版"**
 - [ ] T037 Hub 白名单扩充（`content_type:'agent'`、`local_agent_id`、`metadata`）与 B-01/B-02/B-05 就绪后做**最小联调**：提交一个最简 Agent → 审核 → 发布 → 另一客户端安装
 - [ ] T038 依赖版本规则（D-13）取得产品书面认可；不兼容时「无回退」的限制写进验收——**说明已起草**（`给中扬-需要产品确认的事项.md`，含更新流程、本机路径处理、Brief 同步、联调场景与 Windows），待你发送与中扬回复
 - [ ] T039 联合冻结记录：`agent-package.schema.json`、接口清单、夹具三样一起；Hub 与客户端各自签字，联调通过 ≠ 冻结

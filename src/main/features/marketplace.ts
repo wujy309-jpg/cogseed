@@ -279,6 +279,7 @@ import { observeHubSkillStatus, observeHubSkillStatusLocked } from './marketplac
 import { getSkillMetadata, invalidateMetadataIndex, normalizeCatalogListRow, type CatalogListRow, type SkillMetadata } from './marketplace/metadata-adapter';
 import { decideMarketplaceContentUpdate } from './marketplace-update-policy';
 import { fetchImmutableSource } from './marketplace/source-fetch';
+import { AGENT_PACKAGE_FORMAT, fetchAgentPackage, type AgentPackage } from './marketplace/agent-package';
 import { writeVersionCopy } from './marketplace/version-store';
 import {
   downloadMarketplaceBundle,
@@ -444,13 +445,27 @@ export interface SkillDetail {
 export async function listMarketplaceAgents(
   opts: { category?: string; status?: string; q?: string; page?: number; size?: number } = {},
 ): Promise<{ list: MarketplaceAgent[]; total: number }> {
-  return await postJson('/marketplace/agents/list', {
+  const res = await postJson<{ list?: unknown; total?: number }>('/marketplace/agents/list', {
     category: opts.category || null,
     status: opts.status || null,
     q: opts.q || null,
     page: opts.page || 1,
     size: opts.size || 50,
   });
+  // 新格式（B-01）下发 `content_id`、RFC 3339 时间与 `avatar{icon,color}`：在接口边界归一，上层继续按
+  // `id`、毫秒与 `icon`/`color` 读取。旧格式的行（只有 `id`）原样透传。
+  const list = (Array.isArray(res.list) ? res.list : []).flatMap((raw) => {
+    if (!raw || typeof raw !== 'object' || !('content_id' in raw)) return [raw];
+    const row = normalizeCatalogListRow(raw);
+    if (!row) return [];
+    const avatar = (row as { avatar?: { icon?: unknown; color?: unknown } }).avatar;
+    return [{
+      ...row,
+      icon: typeof row.icon === 'string' && row.icon ? row.icon : String(avatar?.icon ?? ''),
+      color: typeof row.color === 'string' && row.color ? row.color : String(avatar?.color ?? ''),
+    }];
+  }) as unknown as MarketplaceAgent[];
+  return { ...res, list, total: typeof res.total === 'number' ? res.total : list.length } as { list: MarketplaceAgent[]; total: number };
 }
 
 export async function listMarketplaceSkills(
@@ -884,6 +899,65 @@ function _assertApprovedDependencySkill(
   }
 }
 
+/**
+ * B-01 目录里这个 Agent 的 `agent-package-v1` 发布物行；旧格式 Agent（目录行没有 artifact）返回 `null`。
+ *
+ * 目录查询失败也返回 `null`：走旧格式路径，由它自己报错，一次目录抖动不应让本可成功的安装失败。
+ * 找到的行是权威：版本、摘要、要求的客户端版本都以它为准，不用界面传来的（可能已过期的）值。
+ */
+async function _findAgentPackageRow(agentId: string): Promise<(CatalogListRow & { artifact: NonNullable<CatalogListRow['artifact']> }) | null> {
+  try {
+    for (let page = 1; page <= 20; page++) {
+      const r = await postJson<{ list?: unknown[] }>('/marketplace/agents/list', { page, size: 100, ids: [agentId] });
+      const list = Array.isArray(r.list) ? r.list : [];
+      for (const raw of list) {
+        const row = normalizeCatalogListRow(raw);
+        if (!row || row.id !== agentId) continue;
+        return row.artifact && row.artifact.format === AGENT_PACKAGE_FORMAT && row.artifact.sha256
+          ? (row as CatalogListRow & { artifact: NonNullable<CatalogListRow['artifact']> })
+          : null;
+      }
+      if (list.length < 100) break;
+    }
+  } catch (err) {
+    log.warn('agent package lookup failed; falling back to the legacy path', { agentId, error: String((err as Error)?.message || err) });
+  }
+  return null;
+}
+
+/** 目录行里的引用清单（B-01 的 `skill_refs` / `builtin_refs` / `bundled_skills`）；任一缺席返回 `null`，调用方改为读包。 */
+function _skillListFromCatalogRow(row: CatalogListRow): { skillList: string[]; bundled: Set<string> } | null {
+  const refs = (v: unknown, pick: (x: Record<string, unknown>) => unknown): string[] | null => {
+    if (!Array.isArray(v)) return null;
+    return v.map((x) => (x && typeof x === 'object' ? pick(x as Record<string, unknown>) : null))
+      .filter((x): x is string => typeof x === 'string' && x.length > 0);
+  };
+  const hub = refs(row.skill_refs, (x) => x.content_id);
+  const builtin = refs(row.builtin_refs, (x) => x.id);
+  const bundled = refs(row.bundled_skills, (x) => x.name);
+  if (!hub || !builtin || !bundled) return null;
+  return { skillList: [...hub, ...builtin, ...bundled], bundled: new Set(bundled) };
+}
+
+/** 把读出的发布物与目录行拼成安装流程用的 `AgentDetail`。`agent_json_url` 为空：新格式的字节只经 B-02 取。 */
+function _agentDetailFromPackage(
+  agentId: string, row: CatalogListRow, pkg: AgentPackage,
+): AgentDetail {
+  const minAppVersion = _normalizeMarketplaceMinAppVersion(row, pkg.agentJson);
+  const category = typeof row.category === 'string' && row.category ? row.category : String(pkg.agentJson.category || '');
+  return {
+    id: agentId, version: pkg.version, category,
+    published_at: pkg.publishedAt ?? row.published_at,
+    ...(typeof row.updated_at === 'number' ? { updated_at: row.updated_at } : {}),
+    agent_json: pkg.agentJson, agent_json_url: '', agent_skills_bundle_url: '',
+    create_uid: typeof row.create_uid === 'string' ? row.create_uid : '',
+    default_install: row.default_install === true,
+    is_open_source: row.is_open_source === true,
+    status: row.status || '',
+    ...(minAppVersion ? { min_app_version: minAppVersion } : {}),
+  };
+}
+
 export async function getAgentDetail(
   agentId: string, expect: MarketplaceFreshness,
 ): Promise<AgentDetail> {
@@ -901,6 +975,22 @@ export async function getAgentDetail(
         ...(_normalizeMarketplaceMinAppVersion(expect, cached) ? { min_app_version: _normalizeMarketplaceMinAppVersion(expect, cached) } : {}),
       };
     }
+  }
+  // 新格式：详情（展示用字段）取 B-05；Hub 还没提供该接口时退回读包里的 agent.json。不写旧缓存。
+  const packageRow = await _findAgentPackageRow(agentId);
+  if (packageRow) {
+    let agentJson: Record<string, unknown>;
+    try {
+      const display = await postJson<Record<string, unknown>>('/marketplace/agents/detail', { content_id: agentId, version: packageRow.version });
+      const inner = display && typeof display === 'object' ? (display as Record<string, unknown>).agent_json : null;
+      agentJson = inner && typeof inner === 'object' && !Array.isArray(inner) ? inner as Record<string, unknown> : { ...display };
+    } catch (err) {
+      log.info('agent detail endpoint unavailable; reading the package instead', { agentId, error: String((err as Error)?.message || err) });
+      agentJson = (await fetchAgentPackage({ contentId: agentId, version: packageRow.version as string, artifact: packageRow.artifact })).agentJson;
+    }
+    return _agentDetailFromPackage(agentId, packageRow, {
+      agentJson, version: packageRow.version as string, publishedAt: null, privateSkills: null, hasReadme: false,
+    });
   }
   // Miss → fetch + repopulate.
   const data = await postJson<{ agent_json: Record<string, unknown>; version: string; category: string; published_at: number; updated_at?: number; agent_json_url: string; agent_skills_bundle_url?: string; create_uid: string; default_install?: boolean; is_open_source?: boolean; status?: string; state?: string; min_app_version?: string; minAppVersion?: string }>(
@@ -1050,22 +1140,45 @@ export interface AgentInstallPlanView {
  */
 export async function previewAgentInstallPlan(agentId: string, expect: MarketplaceFreshness): Promise<AgentInstallPlanView> {
   if (!agentId) throw new Error('agentId required');
-  const detail = await getAgentDetail(agentId, expect);
-  const agentName = _agentJsonName(detail.agent_json);
+  let agentName: string;
+  let minAppVersion: string;
+  let skillList: string[];
+  let privateIds: Set<string>;
+  const packageRow = await _findAgentPackageRow(agentId);
+  if (packageRow) {
+    // 新格式：优先用目录行里的引用清单（不下载包）；Hub 还没给齐这些字段时才读包
+    agentName = typeof packageRow.name === 'string' ? packageRow.name : '';
+    minAppVersion = _normalizeMarketplaceMinAppVersion(packageRow) || '';
+    const fromCatalog = _skillListFromCatalogRow(packageRow);
+    if (fromCatalog) {
+      skillList = fromCatalog.skillList;
+      privateIds = fromCatalog.bundled;
+    } else {
+      const pkg = await fetchAgentPackage({ contentId: agentId, version: packageRow.version as string, artifact: packageRow.artifact });
+      const rawList = pkg.agentJson.skill_list;
+      skillList = Array.isArray(rawList) ? rawList.map((x) => (typeof x === 'string' ? x.trim() : '')).filter((x) => x.length > 0) : [];
+      privateIds = agentPrivateSkillIdsFromBundle(pkg.privateSkills);
+      agentName = agentName || _agentJsonName(pkg.agentJson);
+    }
+  } else {
+    const detail = await getAgentDetail(agentId, expect);
+    agentName = _agentJsonName(detail.agent_json);
+    minAppVersion = detail.min_app_version || '';
+    const rawList = (detail.agent_json as Record<string, unknown>).skill_list;
+    skillList = Array.isArray(rawList)
+      ? rawList.map((x) => (typeof x === 'string' ? x.trim() : '')).filter((x) => x.length > 0)
+      : [];
+    privateIds = agentPrivateSkillIdsFromBundle(
+      await _fetchAgentPrivateSkillsBundle(agentId, detail.agent_skills_bundle_url || ''),
+    );
+  }
   let appUpdateRequired = false;
   try {
-    _assertMarketplaceAppCompatible('agent', agentId, agentName, detail.min_app_version || '');
+    _assertMarketplaceAppCompatible('agent', agentId, agentName, minAppVersion);
   } catch (err) {
     if (err instanceof MarketplaceInstallError && err.appUpdateRequired) appUpdateRequired = true;
     else throw err;
   }
-  const rawList = (detail.agent_json as Record<string, unknown>).skill_list;
-  const skillList = Array.isArray(rawList)
-    ? rawList.map((x) => (typeof x === 'string' ? x.trim() : '')).filter((x) => x.length > 0)
-    : [];
-  const privateIds = agentPrivateSkillIdsFromBundle(
-    await _fetchAgentPrivateSkillsBundle(agentId, detail.agent_skills_bundle_url || ''),
-  );
   const plan = planAgentDependencies(
     skillList, privateIds, _localSkillState,
     (name) => builtinCapabilityAvailable(getActiveUserId(), name, _currentAppVersion()),
@@ -1079,7 +1192,7 @@ export async function previewAgentInstallPlan(agentId: string, expect: Marketpla
     }
     return { ...item, name };
   }));
-  return { items, readiness: agentReadiness(plan), appUpdateRequired, minAppVersion: detail.min_app_version || '' };
+  return { items, readiness: agentReadiness(plan), appUpdateRequired, minAppVersion };
 }
 
 async function _installMarketplaceAgentLocked(
@@ -1088,35 +1201,50 @@ async function _installMarketplaceAgentLocked(
   if (!agentId) throw new Error('agentId required');
   let agentName = opts.name || '';
   try {
-    // Ensure cache is hot (and pick up agent_json_url for the manifest).
-    let detail = await getAgentDetail(agentId, expect);
-    agentName = agentName || _agentJsonName(detail.agent_json);
-    if (!detail.agent_json_url) {
-      // Cache-hit path returns url='' (and create_uid=''); re-fetch via detail endpoint to
-      // capture both — needed for manifest + `_install.json` author badge.
-      const fresh = await postJson<{ agent_json: Record<string, unknown>; version: string; category: string; published_at: number; updated_at?: number; agent_json_url: string; agent_skills_bundle_url?: string; create_uid: string; default_install?: boolean; is_open_source?: boolean; status?: string; state?: string; min_app_version?: string; minAppVersion?: string }>(
-        '/marketplace/agents/detail', { id: agentId },
-      );
-      const minAppVersion = _normalizeMarketplaceMinAppVersion(fresh, fresh.agent_json);
-      detail = {
-        id: agentId, version: fresh.version, category: fresh.category,
-        published_at: fresh.published_at, updated_at: fresh.updated_at,
-        agent_json: fresh.agent_json, agent_json_url: fresh.agent_json_url || '',
-        agent_skills_bundle_url: fresh.agent_skills_bundle_url || '',
-        create_uid: fresh.create_uid || '',
-        default_install: fresh.default_install === true,
-        is_open_source: fresh.is_open_source === true,
-        status: fresh.status || fresh.state || '',
-        ...(minAppVersion ? { min_app_version: minAppVersion } : {}),
-      };
+    // 新格式（`agent-package-v1`）：目录行带 artifact 时走 B-02 取包；否则走原有的 detail + 私有技能地址。
+    const packageRow = await _findAgentPackageRow(agentId);
+    let detail: AgentDetail;
+    let privateSkillsZip: Awaited<ReturnType<typeof _fetchAgentPrivateSkillsBundle>>;
+    let installedPackage: { sha256: string } | null = null;
+    if (packageRow) {
+      agentName = agentName || (typeof packageRow.name === 'string' ? packageRow.name : '');
+      // 要求的客户端版本以目录为准，先于下载检查：不够就不下载。
+      _assertMarketplaceAppCompatible('agent', agentId, agentName, _normalizeMarketplaceMinAppVersion(packageRow) || '');
+      const pkg = await fetchAgentPackage({ contentId: agentId, version: packageRow.version as string, artifact: packageRow.artifact });
+      detail = _agentDetailFromPackage(agentId, packageRow, pkg);
       agentName = agentName || _agentJsonName(detail.agent_json);
-    }
-    _assertMarketplaceAppCompatible('agent', agentId, agentName, detail.min_app_version || '');
+      privateSkillsZip = pkg.privateSkills;
+      installedPackage = { sha256: packageRow.artifact.sha256 };
+    } else {
+      detail = await getAgentDetail(agentId, expect);
+      agentName = agentName || _agentJsonName(detail.agent_json);
+      if (!detail.agent_json_url) {
+        // Cache-hit path returns url='' (and create_uid=''); re-fetch via detail endpoint to
+        // capture both — needed for manifest + `_install.json` author badge.
+        const fresh = await postJson<{ agent_json: Record<string, unknown>; version: string; category: string; published_at: number; updated_at?: number; agent_json_url: string; agent_skills_bundle_url?: string; create_uid: string; default_install?: boolean; is_open_source?: boolean; status?: string; state?: string; min_app_version?: string; minAppVersion?: string }>(
+          '/marketplace/agents/detail', { id: agentId },
+        );
+        const minAppVersion = _normalizeMarketplaceMinAppVersion(fresh, fresh.agent_json);
+        detail = {
+          id: agentId, version: fresh.version, category: fresh.category,
+          published_at: fresh.published_at, updated_at: fresh.updated_at,
+          agent_json: fresh.agent_json, agent_json_url: fresh.agent_json_url || '',
+          agent_skills_bundle_url: fresh.agent_skills_bundle_url || '',
+          create_uid: fresh.create_uid || '',
+          default_install: fresh.default_install === true,
+          is_open_source: fresh.is_open_source === true,
+          status: fresh.status || fresh.state || '',
+          ...(minAppVersion ? { min_app_version: minAppVersion } : {}),
+        };
+        agentName = agentName || _agentJsonName(detail.agent_json);
+      }
+      _assertMarketplaceAppCompatible('agent', agentId, agentName, detail.min_app_version || '');
 
-    // 1. Download the private bundle first so ids materialized by that bundle are not
-    //    misclassified as standalone marketplace dependencies. `skill_list` doubles as the
-    //    runtime allowlist and may contain both private and public skill ids.
-    const privateSkillsZip = await _fetchAgentPrivateSkillsBundle(agentId, detail.agent_skills_bundle_url || '');
+      // 1. Download the private bundle first so ids materialized by that bundle are not
+      //    misclassified as standalone marketplace dependencies. `skill_list` doubles as the
+      //    runtime allowlist and may contain both private and public skill ids.
+      privateSkillsZip = await _fetchAgentPrivateSkillsBundle(agentId, detail.agent_skills_bundle_url || '');
+    }
     const privateSkillIds = agentPrivateSkillIdsFromBundle(privateSkillsZip);
 
     // 2. Install dependent standalone skills FIRST, in parallel. Any failure throws — the agent body
@@ -1282,6 +1410,7 @@ async function _installMarketplaceAgentLocked(
           ...(detail.min_app_version ? { min_app_version: detail.min_app_version } : {}),
           ...(installContentSha ? { content_sha: installContentSha } : {}),
           ...(installTreeHash ? { content_tree_hash: installTreeHash } : {}),
+          ...(installedPackage ? { package_format: AGENT_PACKAGE_FORMAT, artifact_sha256: installedPackage.sha256 } : {}),
         }, null, 2), 'utf8');
       await touchCacheEntry('agent', agentId);
 
@@ -1295,6 +1424,7 @@ async function _installMarketplaceAgentLocked(
         ...(typeof detail.default_install === 'boolean' ? { default_install: detail.default_install } : {}),
         ...(detail.status ? { status: detail.status } : {}),
         min_app_version: detail.min_app_version || '',
+        ...(installedPackage ? { package_format: AGENT_PACKAGE_FORMAT, artifact_sha256: installedPackage.sha256 } : {}),
       });
       invalidateCoreAgentSkills();
       log.info('installed marketplace agent', { agentId, version: detail.version, target: logPathRef(target) });

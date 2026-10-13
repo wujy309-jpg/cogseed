@@ -9333,6 +9333,7 @@
   "agents.update_failed_reason.dependency_disabled": "A skill it needs was disabled by Hub.",
   "agents.update_failed_reason.dependency_missing": "A skill it needs could not be found.",
   "agents.update_failed_reason.builtin_unavailable": "It needs a built-in capability this CogSeed does not have.",
+  "agents.update_failed_reason.package_invalid": "The downloaded content failed verification.",
   "agents.update_failed_reason.network": "The network was unavailable.",
   "agents.update_failed_reason.unknown": "Something went wrong.",
   "agents.contribute_hints_title": "May contain information from this device",

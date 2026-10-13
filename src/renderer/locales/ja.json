@@ -6918,6 +6918,7 @@
   "agents.update_failed_reason.dependency_disabled": "必要なスキルが Hub により無効化されました。",
   "agents.update_failed_reason.dependency_missing": "必要なスキルが見つかりません。",
   "agents.update_failed_reason.builtin_unavailable": "必要な組み込み機能がこの CogSeed にありません。",
+  "agents.update_failed_reason.package_invalid": "ダウンロードした内容の検証に失敗しました。",
   "agents.update_failed_reason.network": "ネットワークが利用できませんでした。",
   "agents.update_failed_reason.unknown": "問題が発生しました。",
   "agents.contribute_hints_title": "この端末の情報が含まれている可能性があります",

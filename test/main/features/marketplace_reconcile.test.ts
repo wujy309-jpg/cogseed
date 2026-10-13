@@ -15,6 +15,7 @@ const loggerMocks = vi.hoisted(() => ({
   debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
 }));
 const fetchImmutableSourceMock = vi.hoisted(() => vi.fn());
+const installAgentMock = vi.hoisted(() => vi.fn());
 
 /** 合成一条 A-01 目录行（含 artifact 身份）。 */
 function catalogRow(id: string, over: Record<string, unknown> = {}): Record<string, unknown> {
@@ -43,6 +44,7 @@ function serveImmutableBytes(bytes: Buffer, before?: () => void): void {
 
 vi.mock('../../../src/main/features/marketplace', () => ({
   postJson: postJsonMock,
+  installMarketplaceAgent: installAgentMock,
   extractBundleSafely: extractBundleSafelyMock,
   // 临时区 / trash 的命名是纯字符串函数，用真实实现——mock 掉会让原子提升与
   // 崩溃恢复的命名契约在本用例里失真。
@@ -87,6 +89,7 @@ beforeEach(() => {
   process.env.COGSEED_WORKSPACE_ROOT = tmpDir;
   vi.resetModules();
   postJsonMock.mockReset();
+  installAgentMock.mockReset();
   extractBundleSafelyMock.mockReset();
   loggerMocks.debug.mockClear();
   loggerMocks.info.mockClear();
@@ -1027,6 +1030,76 @@ describe('marketplace content update monotonicity', () => {
       default_install: false,    // 其余元数据也不动
       status: 'disabled',        // 停用状态要同步
       min_app_version: '9.0.0',
+    });
+  });
+
+  describe('新格式（agent-package-v1）Agent 的更新', () => {
+    const PKG = { sha256: 'a'.repeat(64), size_bytes: 10, format: 'agent-package-v1' };
+    async function seed(over: Record<string, unknown> = {}) {
+      const installs = await import('../../../src/main/features/marketplace_installs');
+      await installs.addAgentInstall('u1', {
+        id: 'pkg-agent', version: '1.0.0', published_at: 100, updated_at: 100,
+        agent_json_url: '', create_uid: 'u', status: 'approved',
+        package_format: 'agent-package-v1', artifact_sha256: PKG.sha256, ...over,
+      });
+      return installs;
+    }
+    async function run() {
+      const reconcile = await import('../../../src/main/features/marketplace_reconcile');
+      return reconcile.checkServerUpdatesForInstalls('u1');
+    }
+
+    it('目录版本更高 → 走完整安装（带目录给的版本），不重写 manifest 行', async () => {
+      const installs = await seed();
+      catalog([catalogRow('pkg-agent', { version: '1.1.0', artifact: PKG })], 'agents');
+      installAgentMock.mockResolvedValue({ ok: true, id: 'pkg-agent' });
+      const result = await run();
+      expect(installAgentMock).toHaveBeenCalledTimes(1);
+      expect(installAgentMock.mock.calls[0][0]).toBe('pkg-agent');
+      expect(installAgentMock.mock.calls[0][1]).toMatchObject({ version: '1.1.0' });
+      expect(result.updated_agents).toBe(1);
+      expect((await installs.readInstalls('u1')).agents[0].version).toBe('1.0.0'); // 行由安装本身写，这里没动
+    });
+
+    it('同版本但发布物摘要不同（重新发布）→ 也更新', async () => {
+      await seed();
+      catalog([catalogRow('pkg-agent', { version: '1.0.0', artifact: { ...PKG, sha256: 'b'.repeat(64) } })], 'agents');
+      installAgentMock.mockResolvedValue({ ok: true, id: 'pkg-agent' });
+      await run();
+      expect(installAgentMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('同版本同摘要 → 不动', async () => {
+      await seed();
+      catalog([catalogRow('pkg-agent', { version: '1.0.0', artifact: PKG })], 'agents');
+      await run();
+      expect(installAgentMock).not.toHaveBeenCalled();
+    });
+
+    it('目录版本更低 → 永不降级', async () => {
+      await seed({ version: '2.0.0' });
+      catalog([catalogRow('pkg-agent', { version: '1.9.0', artifact: PKG })], 'agents');
+      await run();
+      expect(installAgentMock).not.toHaveBeenCalled();
+    });
+
+    it('更新失败 → 不抛出，记录失败原因，旧版 manifest 行保持不变', async () => {
+      const installs = await seed();
+      catalog([catalogRow('pkg-agent', { version: '1.1.0', artifact: PKG })], 'agents');
+      installAgentMock.mockRejectedValue(new Error('network down'));
+      const result = await run();
+      expect(result.updated_agents).toBe(0);
+      expect((await installs.readInstalls('u1')).agents[0].version).toBe('1.0.0');
+      const failures = await import('../../../src/main/features/agent_update_failures');
+      expect(failures.readAgentUpdateFailures('u1')['pkg-agent']).toMatchObject({ target_version: '1.1.0' });
+    });
+
+    it('要求的客户端版本更高 → 不安装，但停用状态仍同步', async () => {
+      const installs = await seed();
+      catalog([catalogRow('pkg-agent', { version: '2.0.0', artifact: PKG, status: 'disabled', min_app_version: '9.0.0' })], 'agents');
+      await run();
+      expect(installAgentMock).not.toHaveBeenCalled();
+      expect((await installs.readInstalls('u1')).agents[0]).toMatchObject({ version: '1.0.0', status: 'disabled' });
     });
   });
 

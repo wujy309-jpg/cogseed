@@ -18,6 +18,7 @@ export type AgentUpdateFailureReason =
   | 'dependency_disabled'
   | 'dependency_missing'
   | 'builtin_unavailable'
+  | 'package_invalid'
   | 'network'
   | 'unknown';
 
@@ -35,6 +36,9 @@ export function classifyUpdateFailure(err: unknown): AgentUpdateFailureReason {
   const msg = String((err as { message?: unknown })?.message ?? err ?? '').toLowerCase();
   if (msg.includes('requires cogseed')) return 'app_too_old';
   if (msg.includes('built-in capability')) return 'builtin_unavailable';
+  // 下载的内容没通过校验：摘要/大小不符、不是字节流、包格式不合法。重试同一版本也会得到同样结果，
+  // 与"网络不可用"区分开，不让用户以为过会儿就好。
+  if (msg.includes('digest_mismatch') || msg.includes('size_mismatch') || msg.includes('unexpected_content_type') || msg.includes('agent_package_')) return 'package_invalid';
   if (msg.includes('not approved') || msg.includes('status_not_approved') || msg.includes('disabled')) return 'dependency_disabled';
   if (msg.includes('content_not_found') || msg.includes('not_found')) return 'dependency_missing';
   if (msg.includes('http ') || msg.includes('fetch') || msg.includes('timed out') || msg.includes('network') || msg.includes('econn')) return 'network';

@@ -63,3 +63,21 @@
 - 预览高亮（AG-FR-064）：纯检测器 `agent-sensitive-hints.ts`，每文件最多 10 处、总计 50 处；流程门 `confirmAgentPreview(...,{acknowledgeHints})` 未勾选返回 `hints_unacknowledged`；页面逐行 `<mark>` 高亮。
 - 更新判定：`agent_catalog_update.ts` 为纯函数 + 注入式分页读取，**未接任何真实接口**；联调时只需提供 `fetchPage`。
 - 验证：typecheck、tokens:check、`eslint .` 通过；全量测试仍是基线同样的 13 个文件/41 个用例失败，无新增。真实应用目视与 Hub 联调 **not run**。
+
+
+## 2026-10-13 补充：安装与更新接入新发布物（T044、T045）
+
+**做了什么**：Agent 目录行（B-01）带 `artifact{format:'agent-package-v1'}` 时，安装改走 B-02：按 `{content_id, version}` 取字节 → 校验 `sha256` 与大小 → 读包（`agent.json`、`_meta.json`、`skills/`）→ 拆成现有安装流程需要的两样（`agent.json` 内容 + 私有技能 zip），下游的依赖规划、深度扫描、回执、`ownerAgent` 改写、替换与回滚原样复用。目录行没有 artifact（旧格式，含 31 个内置 Agent）完全走原路径。
+
+**真实应用验证（连本机假 Hub，空的临时数据目录）**：列表归一化 → 安装预览（只用目录里的引用清单，不下载包）→ 安装（包仅下载一次；`agent_id` 改写成安装后的 id；`_meta.json` 与 README 不落地；随包技能 `ownerAgent` 被改写；`_install.json` 记 `package_format` 与 `artifact_sha256`）→ 假 Hub 发布 1.1.0 后启动自动更新到 1.1.0（目录无残留备份）→ 发布摘要不符的 1.2.0，更新被拒、1.1.0 完好可用、失败原因记录为"下载的内容没有通过校验"。
+
+**依赖 Hub 确认的假设（草案里没写死，客户端按下面实现）**：
+1. B-01 接受 `ids` 过滤；不接受时客户端按页翻（最多 20 页 × 100）找到该 Agent。
+2. B-02 回 `application/octet-stream`，`artifact.sha256` 为整个 zip 字节的摘要。
+3. `_meta.json` 为 `{ "version": "<SemVer>", "published_at": "<RFC 3339 或毫秒>" }`；`version` 必须等于请求的版本，否则拒绝。
+4. B-05（详情）响应既可是 `{agent_json: {...}}` 也可是展示字段直接铺在顶层；调用失败时客户端退回读包。
+5. 目录行的 `skill_refs[]`、`builtin_refs[]`、`bundled_skills[]` 都给出时，安装预览不下载包；缺任一则读包。
+
+**已知限制**：新格式 Agent 没有 `agent_json_url`，清单被云同步到另一台设备后，那台设备**不会自动还原**这个 Agent（旧格式靠 URL 还原）。需要时可改为按目录行走安装，联调后决定要不要做。
+
+**验证**：typecheck、eslint 通过；市场相关测试通过；全量测试剩余失败均为基线已有的 PDF 解析、文件索引、自动任务等，与本次无关。

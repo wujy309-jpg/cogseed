@@ -39,9 +39,11 @@ import {
 } from './marketplace_installs';
 import { invalidateSkills as invalidateCoreAgentSkills } from '../model/core-agent/skill-registry';
 import {
-  extractBundleSafely, postJson, quarantineStagingName, quarantineTrashName,
+  extractBundleSafely, installMarketplaceAgent, postJson, quarantineStagingName, quarantineTrashName,
 } from './marketplace';
 import { decideCurrentSwitch } from './marketplace/current-switch-policy';
+import { AGENT_PACKAGE_FORMAT } from './marketplace/agent-package';
+import { decideAgentUpdate } from './agent_catalog_update';
 import { hubContentStatus } from '../../shared/hub-content-status';
 import { observeHubSkillStatus } from './marketplace/content-status';
 import { readInstalledVersion } from './marketplace/installed-version';
@@ -303,7 +305,23 @@ export async function checkServerUpdatesForInstalls(
     // 本机客户端版本不够新时不更新内容，但 Hub 的停用状态仍要同步：否则被停用的 Agent 在旧客户端上
     // 会一直显示可用（Skill 一侧在跳过之前就记录了状态，这里与之对齐）。
     const incompatible = !_isInstallRowAppCompatible({ id: a.id, min_app_version: server.min_app_version }, 'agent');
-    const contentDecision = decideMarketplaceContentUpdate(a, server);
+    // 新格式 Agent：是否有新版本只看 B-01 目录行的版本与发布物摘要（见 agent_catalog_update.ts）
+    const isPackage = a.package_format === AGENT_PACKAGE_FORMAT || server.artifact?.format === AGENT_PACKAGE_FORMAT;
+    const packageDecision = isPackage
+      ? decideAgentUpdate(
+        { id: a.id, version: a.version, ...(a.artifact_sha256 ? { artifactSha256: a.artifact_sha256 } : {}) },
+        { complete: true, rows: new Map([[a.id, {
+          content_id: a.id, version: server.version,
+          ...(server.artifact?.sha256 ? { artifactSha256: server.artifact.sha256 } : {}),
+          ...(server.status ? { status: server.status } : {}),
+        }]]) },
+      )
+      : null;
+    const contentDecision: ReturnType<typeof decideMarketplaceContentUpdate> = packageDecision
+      ? (packageDecision.action === 'update'
+        ? { action: 'replace_content', reason: 'newer_version' }
+        : { action: 'preserve_content', reason: 'stale_freshness' })
+      : decideMarketplaceContentUpdate(a, server);
     const contentChanged = !incompatible && contentDecision.action === 'replace_content';
     const defaultInstallChanged = !incompatible && typeof server.default_install === 'boolean'
       && a.default_install !== server.default_install;
@@ -321,6 +339,22 @@ export async function checkServerUpdatesForInstalls(
         log.info(`server-update agent ${a.id}: v${a.version} → v${server.version} (freshness ${_freshnessAt(a)} → ${_freshnessAt(server)})`);
       }
       try { _assertContinue(opts); } catch { return { updated_agents, updated_skills }; }
+      if (isPackage && contentChanged) {
+        // 新格式没有可重拉的 URL：直接走完整安装（整体替换、失败回滚到旧版、依赖按同一套规则）。
+        // 失败不抛出：旧版保持可用，卡片上提示"更新失败，仍可使用"。
+        try {
+          await installMarketplaceAgent(a.id, {
+            version: server.version, published_at: server.published_at,
+            ...(typeof server.updated_at === 'number' ? { updated_at: server.updated_at } : {}),
+            ...(server.min_app_version ? { min_app_version: server.min_app_version } : {}),
+          });
+          updated_agents++;
+        } catch (err) {
+          log.warn(`package agent ${a.id} update failed: ${(err as Error).message}`);
+          recordAgentUpdateFailure(uid, a.id, { targetVersion: server.version, reason: classifyUpdateFailure(err) });
+        }
+        continue;
+      }
       // Replace the row in the manifest; reconcile will detect the version/freshness
       // mismatch against `_install.json` and re-pull. On preserve decisions the local
       // version/freshness is kept — the server version never downgrades content.
@@ -455,6 +489,8 @@ interface _CatalogRow {
   status?: string;
   agent_skills_bundle_url?: string;
   min_app_version?: string;
+  /** 新格式 Agent 目录行的发布物（`agent-package-v1`）。 */
+  artifact?: { sha256: string; size_bytes: number; format: string };
 }
 
 /** Paginate the public `/marketplace/{kind}/list` endpoint and collapse to (id → version + ts).
@@ -466,12 +502,12 @@ async function _fetchServerCatalogMap(kind: 'agents' | 'skills', ids: string[]):
   const PAGE_SIZE = 100;
   const wanted = new Set(ids.filter(Boolean));
   for (let page = 1; page <= 20; page++) {
-    const r = await postJson<{ list: Array<{ id?: string; version?: string; published_at?: number; updated_at?: number; default_install?: boolean | number; status?: string; state?: string; agent_skills_bundle_url?: string; min_app_version?: string; minAppVersion?: string }>; total?: number }>(
+    const r = await postJson<{ list: Array<{ id?: string; version?: string; published_at?: number; updated_at?: number; default_install?: boolean | number; status?: string; state?: string; agent_skills_bundle_url?: string; min_app_version?: string; minAppVersion?: string; artifact?: { sha256: string; size_bytes: number; format: string } }>; total?: number }>(
       `/marketplace/${kind}/list`, { page, size: PAGE_SIZE, ids: [...wanted] },
     );
     const list = r.list || [];
     for (const raw of list) {
-      const row = kind === 'skills' ? normalizeCatalogListRow(raw) : raw;
+      const row = kind === 'skills' || (raw && typeof raw === 'object' && 'content_id' in raw) ? normalizeCatalogListRow(raw) : raw;
       if (!row) continue;
       if (typeof row.id !== 'string' || !wanted.has(row.id)) continue;
       if (typeof row.version === 'string' && typeof row.published_at === 'number') {
@@ -489,6 +525,9 @@ async function _fetchServerCatalogMap(kind: 'agents' | 'skills', ids: string[]):
             ? { agent_skills_bundle_url: row.agent_skills_bundle_url }
             : {}),
           ...(_normalizeMinAppVersion(row) ? { min_app_version: _normalizeMinAppVersion(row) } : {}),
+          ...(kind === 'agents' && row.artifact && typeof row.artifact === 'object' && (row.artifact as { format?: string }).format
+            ? { artifact: row.artifact as { sha256: string; size_bytes: number; format: string } }
+            : {}),
         });
       }
     }
