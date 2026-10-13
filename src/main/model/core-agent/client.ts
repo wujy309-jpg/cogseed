@@ -1503,6 +1503,29 @@ export async function* streamChatWithModel(opts: ChatOptions): AsyncGenerator<St
       })
       : undefined);
     transitionLiveRunTimings(liveRunTimings, 'provider');
+    // R-09 mitigation (host side): run the session's tool-protocol repair
+    // *before* the provider sees the session, not only in the post-turn finally.
+    // A chain left broken by a previous turn (orphan tool_use, unmatched
+    // tool_result, duplicated tool_call_id — the image-as-user-message shape the
+    // vendored provider emits) otherwise surfaces as a hard provider 400 on the
+    // very first attempt of the next turn; the 2026-10-13 run shows exactly that
+    // ("CogSeed model provider request failed (400)" on the worker's first try,
+    // while the post-turn log still reported changed: true).
+    try {
+      const cachedForHeal = await _getCachedSession(sessionId);
+      const heal = (cachedForHeal as { healAndPersist?: () => boolean } | null | undefined)?.healAndPersist;
+      if (typeof heal === 'function' && heal.call(cachedForHeal)) {
+        const report = typeof (cachedForHeal as { getLastToolProtocolRepairReport?: () => unknown })
+          .getLastToolProtocolRepairReport === 'function'
+          ? (cachedForHeal as { getLastToolProtocolRepairReport: () => Record<string, unknown> })
+            .getLastToolProtocolRepairReport()
+          : {};
+        log.warn('repaired tool protocol before provider call', { session_id: maskedSessionId, ...report });
+      }
+    } catch (err) {
+      // Advisory: a heal failure must not block the turn.
+      log.warn('pre-turn tool protocol heal failed', { ...turnLogContext, error: logErrorRef(err) });
+    }
     const rawEvents = runner.runStream({
       message,
       ...(resumeActiveTurn ? { resumeActiveTurn: true } : {}),
