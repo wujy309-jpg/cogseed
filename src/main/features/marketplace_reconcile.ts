@@ -300,16 +300,16 @@ export async function checkServerUpdatesForInstalls(
       }
       continue;
     }
-    if (!_isInstallRowAppCompatible({ id: a.id, min_app_version: server.min_app_version }, 'agent')) {
-      continue;
-    }
+    // 本机客户端版本不够新时不更新内容，但 Hub 的停用状态仍要同步：否则被停用的 Agent 在旧客户端上
+    // 会一直显示可用（Skill 一侧在跳过之前就记录了状态，这里与之对齐）。
+    const incompatible = !_isInstallRowAppCompatible({ id: a.id, min_app_version: server.min_app_version }, 'agent');
     const contentDecision = decideMarketplaceContentUpdate(a, server);
-    const contentChanged = contentDecision.action === 'replace_content';
-    const defaultInstallChanged = typeof server.default_install === 'boolean'
+    const contentChanged = !incompatible && contentDecision.action === 'replace_content';
+    const defaultInstallChanged = !incompatible && typeof server.default_install === 'boolean'
       && a.default_install !== server.default_install;
     const currentStatus = a.status || a.state;
     const statusChanged = typeof server.status === 'string' && currentStatus !== server.status;
-    const privateSkillsUrlChanged = typeof server.agent_skills_bundle_url === 'string'
+    const privateSkillsUrlChanged = !incompatible && typeof server.agent_skills_bundle_url === 'string'
       && a.agent_skills_bundle_url !== server.agent_skills_bundle_url;
     const minAppVersionChanged = typeof server.min_app_version === 'string'
       && a.min_app_version !== server.min_app_version;
@@ -332,10 +332,10 @@ export async function checkServerUpdatesForInstalls(
         published_at: contentChanged ? server.published_at : a.published_at,
         updated_at: contentChanged ? server.updated_at : a.updated_at,
         agent_json_url: a.agent_json_url, create_uid: a.create_uid,
-        ...(typeof server.agent_skills_bundle_url === 'string'
+        ...(!incompatible && typeof server.agent_skills_bundle_url === 'string'
           ? { agent_skills_bundle_url: server.agent_skills_bundle_url }
           : (typeof a.agent_skills_bundle_url === 'string' ? { agent_skills_bundle_url: a.agent_skills_bundle_url } : {})),
-        ...(typeof server.default_install === 'boolean' ? { default_install: server.default_install } : {}),
+        ...(!incompatible && typeof server.default_install === 'boolean' ? { default_install: server.default_install } : {}),
         ...(typeof server.status === 'string' ? { status: server.status } : {}),
         ...(typeof server.min_app_version === 'string' ? { min_app_version: server.min_app_version } : {}),
       });

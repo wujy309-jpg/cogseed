@@ -1005,6 +1005,31 @@ describe('marketplace content update monotonicity', () => {
     });
   });
 
+  it('客户端版本不够新时 Agent 内容不更新，但 Hub 的停用状态仍同步', async () => {
+    const installs = await import('../../../src/main/features/marketplace_installs');
+    await installs.addAgentInstall('u1', {
+      id: 'old-client-agent', version: '1.0.0', published_at: 100, updated_at: 100,
+      agent_json_url: 'https://example.test/agent.json', create_uid: '0', status: 'approved', default_install: false,
+    });
+    // 本机 1.5.1；Hub 上这个 Agent 已是 2.0.0、要求 9.0.0、并被停用
+    catalog([{
+      id: 'old-client-agent', version: '2.0.0', published_at: 999, updated_at: 999,
+      status: 'disabled', default_install: true, min_app_version: '9.0.0',
+    }], 'agents');
+
+    const reconcile = await import('../../../src/main/features/marketplace_reconcile');
+    await reconcile.checkServerUpdatesForInstalls('u1');
+
+    const manifest = await installs.readInstalls('u1');
+    expect(manifest.agents[0]).toMatchObject({
+      version: '1.0.0',          // 内容不升级
+      published_at: 100,
+      default_install: false,    // 其余元数据也不动
+      status: 'disabled',        // 停用状态要同步
+      min_app_version: '9.0.0',
+    });
+  });
+
   it('pulls a same-version newer republish exactly once', async () => {
     const installs = await import('../../../src/main/features/marketplace_installs');
     await installs.addSkillInstall('u1', {
