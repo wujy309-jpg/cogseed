@@ -184,7 +184,19 @@ function createPersonalOntologyFieldsTool(opts: PersonalOntologyToolsOpts): Agen
       }
 
       if (!targets.length) {
-        return { content: '用户尚未安装任何角色模板，没有可填字段。不要猜测字段名。' };
+        // Deterministic and non-retryable: with no role template installed this
+        // channel can never succeed, and guessing field names is exactly what
+        // must not happen. It has to carry `isError: true` so the runner counts
+        // it as a permanent tool error (runner.ts: `isError && !recoverable`)
+        // instead of feeding it back as ordinary evidence — a mis-routed write
+        // otherwise keeps "searching" for a channel that cannot exist
+        // (2026-10-12 ontology_candidates incident).
+        return {
+          content: '用户尚未安装任何角色模板，没有可填字段。不要猜测字段名。'
+            + '这是确定性错误：换字段名或重试都不会成功；请改走规则与偏好资产通道，'
+            + '或先请用户安装角色模板后再写入个人本体。',
+          isError: true,
+        };
       }
 
       const byTemplate = new Map<string, typeof targets>();
