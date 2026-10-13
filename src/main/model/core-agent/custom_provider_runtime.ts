@@ -97,8 +97,13 @@ function apiForProtocol(protocol: CustomProvider['protocol']): Api {
  * 值取 provider 级稳定 id：服务端要求"稳定"即可；逐对话一一对应需要请求级
  * 上下文（模型层拿不到），先满足路由的最低要求。
  */
-function customProviderHeaders(baseUrl: string, providerId: string): Record<string, string> | undefined {
-  if (/^https:\/\/(?:[a-z0-9-]+\.)?opencode\.ai\//i.test(String(baseUrl || ''))) {
+export function customProviderHeaders(baseUrl: string, providerId: string): Record<string, string> | undefined {
+  // Host match must not require a trailing slash: a baseUrl configured as
+  // `https://opencode.ai` (no path) previously missed this branch, so the request
+  // went out without `x-opencode-session` and the endpoint answered
+  // 400 {"type":"MissingSessionID"} — exactly what killed the worker's first
+  // attempt twice on 2026-10-13 (cid 47131526c166, 4b23a22d5dcc).
+  if (/^https:\/\/(?:[a-z0-9-]+\.)*opencode\.ai(?::\d+)?(?:\/|$)/i.test(String(baseUrl || '').trim())) {
     return { 'x-opencode-session': `cogseed-${providerId}` };
   }
   return undefined;
