@@ -53,6 +53,12 @@
   user-select: none;
 }
 .cs-badge:hover { background: var(--color-stream-hover-2); color: var(--color-stream-muted); }
+/* 归属段：折叠条必须写明这是谁的执行过程（2026-10-13 需求 B），
+   否则派单链里会被误读成主 Agent 的任务执行过程。可截断不撑宽消息头。 */
+.cs-badge-owner {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+  max-width: 15em;
+}
 .cs-badge-label {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
 }

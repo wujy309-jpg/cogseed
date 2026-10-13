@@ -2933,6 +2933,7 @@ function _forgetCidRecipient(cid) {
   _autoRecipientByCid.delete(cid);
   _serverFloorByCid.delete(cid);
   _pendingFloorResetByCid.delete(cid);
+  _forgetChatStreamAnchors(cid);
   if (_agentStatusPopoverCid === cid) _closeAgentStatusPopover();
   setGroupConversationBusy(cid, false);
   _latestInFlight.delete(cid);
@@ -11707,6 +11708,7 @@ function _removeRenderedHistoryFrom(msgDiv) {
   for (const key of Array.from(_groupPlaceholders.keys())) {
     if (key.startsWith(`${currentCid}:`)) _groupPlaceholders.delete(key);
   }
+  _forgetChatStreamAnchors(currentCid);
 }
 
 async function _confirmUserMessageEdit() {
@@ -13508,6 +13510,7 @@ function _makeConvChatController(cid, options = {}) {
         for (const k of Array.from(_groupPlaceholders.keys())) {
           if (k.startsWith(`${id}:`)) _groupPlaceholders.delete(k);
         }
+        _forgetChatStreamAnchors(id);
         // Bridge the controller's abort into the existing pendingConvs
         // state shape so legacy code (abortConvStream, sidebar badge,
         // polling recovery) keeps working untouched.
@@ -16424,7 +16427,7 @@ function createChatController(config) {
             // skip the render while off-view — do NOT abort (that would stop the
             // agent's turn). Scene hooks still run so edit-scene state is intact.
             if (id === config.getCurrentId()) {
-              _handleStreamEvent(id, msgEl, ev, { archive: features.archive });
+              _handleStreamEvent(id, msgEl, ev, { archive: features.archive, actorIdentity: !!features.actorIdentity });
             }
             if (hooks.onStreamEvent) hooks.onStreamEvent(ev, msgEl, id);
             if (ev.type === 'final' && hooks.onFinal) hooks.onFinal(ev, msgEl, id);
@@ -16580,7 +16583,7 @@ function createChatController(config) {
   return { loadHistory, send, abort, clear, isBusy, enqueue, renderQueue };
 }
 
-function _handleStreamEvent(cid, msg, ev, { archive = false } = {}) {
+function _handleStreamEvent(cid, msg, ev, { archive = false, actorIdentity = false } = {}) {
   if (ev.type === 'progress') {
     const evt = ev.event && ev.event.stream ? ev.event : null;
     const line = evt ? (_formatEventLine(evt) || ev.text) : ev.text;
@@ -16595,8 +16598,20 @@ function _handleStreamEvent(cid, msg, ev, { archive = false } = {}) {
     // arrives, then on the most-recent rendered bubble for that actor.
     if (inner.stream === 'chat' && inner.data && typeof window.chatStreamHandleEvent === 'function') {
       // conv-core 结构化事件：chat-stream 过程面板（工具卡/思考/Diff/用量），
-      // 与下方 group 老协议并行渲染。
-      window.chatStreamHandleEvent(cid, msg, inner.data);
+      // 与下方 group 老协议并行渲染。锚点按 actor 解析（一个 actor 一条气泡），
+      // 否则派单链的 worker 过程会落进 commander 的气泡。
+      const chatEvent = inner.data;
+      const chatAnchor = _resolveChatStreamAnchor(cid, chatEvent, msg, chatEvent.turnId);
+      const chatActorId = String(chatEvent.actorId || '');
+      window.chatStreamHandleEvent(cid, chatAnchor, chatEvent, {
+        actorId: chatActorId,
+        actorName: chatActorId ? _knownGroupActorLabel(cid, chatActorId) : '',
+        // 当前话权方：运行指示 = 持有 floor（话权回到某 actor 时它的流复活）。
+        floorActor: _serverFloorByCid.get(cid) || '',
+        // 群聊派单链：commander 是主 Agent，其过程保持展开可跟踪；worker 的
+        // 执行过程默认折叠（页面高度不增长），点徽章才展开。
+        collapseByDefault: !!actorIdentity && !!chatActorId && chatActorId !== 'commander',
+      });
       return;
     }
     if (inner.stream === 'group' && inner.data) {
@@ -16653,6 +16668,44 @@ function _phKey(cid, actorId, turnId) {
 
 function _eventTurnId(evData) {
   return _normaliseTurnId(evData && (evData.turn_id || evData.turnId));
+}
+
+// chat.* 结构化事件（conv-core）的过程折叠条锚点。一个 actor 一条气泡：
+// `chat.turn.started` 带 actorId，据此把活动流挂到**该 actor 自己的**占位气泡
+// 上（而不是共用的发送占位）；后续 `chat.item` / `chat.turn.completed` 只带
+// turnId，用本表回查同一锚点。不这么做时派单链里 commander 与 worker 的活动
+// 流会同挂发送占位 → 折叠条归属错（看起来像主 Agent 在执行）、一次任务画成
+// 两条并行线（2026-10-13 需求方截图）。
+const _chatStreamAnchors = new Map(); // key = `${cid}::turn:${turnId}` → 消息元素
+
+function _chatAnchorKey(cid, turnId) {
+  const tid = _normaliseTurnId(turnId);
+  return tid ? `${cid}::turn:${tid}` : '';
+}
+
+function _forgetChatStreamAnchors(cid) {
+  const prefix = `${cid}::turn:`;
+  for (const key of Array.from(_chatStreamAnchors.keys())) {
+    if (key.startsWith(prefix)) _chatStreamAnchors.delete(key);
+  }
+}
+
+function _resolveChatStreamAnchor(cid, chatEvent, fallbackEl, turnIdHint) {
+  if (!cid || !chatEvent || typeof chatEvent !== 'object') return fallbackEl;
+  const key = _chatAnchorKey(cid, turnIdHint || chatEvent.turnId);
+  if (chatEvent.type === 'chat.turn.started') {
+    const actorId = String(chatEvent.actorId || '');
+    const ph = actorId ? _ensureActorPlaceholder(cid, actorId, fallbackEl, chatEvent.turnId) : null;
+    const anchor = (ph && ph.parentElement) ? ph : fallbackEl;
+    if (key && anchor) _chatStreamAnchors.set(key, anchor);
+    return anchor;
+  }
+  if (key) {
+    const known = _chatStreamAnchors.get(key);
+    if (known && known.parentElement) return known;
+    if (known) _chatStreamAnchors.delete(key);
+  }
+  return fallbackEl;
 }
 
 function _normaliseActiveTurns(raw) {
@@ -17566,6 +17619,14 @@ function _handleGroupBusEvent(cid, streamingMsg, evData, { archive = false } = {
     // be current for THIS event or the commander bubble flickers during the
     // handed-off agent's reply.
     _serverFloorByCid.set(cid, typeof st.active_recipient === 'string' ? st.active_recipient : '');
+    // 话权一旦交给某个 agent，交出方（commander）的气泡必须**立即终态化**：
+    // 它的回合还挂着（R-11 等齐汇报），但此刻它没有在跑——不摘掉 spinner/计时
+    // 就变成「两个执行」并行（2026-10-13 需求方截图）。
+    const _floorNow = String(st.active_recipient || '');
+    if (_floorNow && _floorNow !== 'commander' && _floorNow !== 'user'
+        && typeof window.chatStreamYieldFloor === 'function') {
+      try { window.chatStreamYieldFloor(cid, _floorNow); } catch (_) { /* 终态化失败不阻塞状态同步 */ }
+    }
     setGroupConversationBusy(cid, st.status === 'running' || inFlight.length > 0 || activeTurns.length > 0);
     if (hasActiveTurnsField) {
       for (const turn of activeTurns) {
