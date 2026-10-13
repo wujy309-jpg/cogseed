@@ -693,6 +693,34 @@ export async function convergeCogSeedTaskForRun(
 
 const TERMINALS = new Set<CogSeedTaskRecord['status']>(['completed', 'failed', 'cancelled']);
 
+/**
+ * A wake approval *is* the user's answer to `waiting_user`. Leaving the task in an
+ * attention status made the sidebar keep showing "等待批准" after the user had
+ * already approved (2026-10-13: run-center badge counts `counts.attention`, which
+ * includes `waiting_user`). Resuming the task is what makes the badge truthful.
+ */
+export async function resumeCogSeedTaskAfterWakeApproval(
+  userId: string,
+  requestId: string,
+): Promise<{ taskId: string; status: CogSeedTaskRecord['status'] } | null> {
+  assertCogSeedUserId(userId);
+  const task = await readCogSeedTaskByRequestId(userId, requestId);
+  if (!task) return null;
+  if (TERMINALS.has(task.status)) return null;
+  // Only an attention state is ours to clear; never resurrect a running task.
+  if (task.status !== 'waiting_user' && task.status !== 'planned') return null;
+  const now = new Date().toISOString();
+  const resumed = await updateCogSeedTaskWithEvent(
+    userId,
+    task.taskId,
+    (current) => (TERMINALS.has(current.status) || current.status === 'running'
+      ? current
+      : { ...current, status: 'running', updatedAt: now }),
+    { type: 'task.started', payload: { requestId, source: 'wake-approval' } },
+  );
+  return { taskId: resumed.taskId, status: resumed.status };
+}
+
 export async function readCogSeedTaskByRequestId(userId: string, requestId: string): Promise<CogSeedTaskRecord | null> {
   assertCogSeedUserId(userId);
   const claimFile = cogseedRequestClaimFile(userId, assertCogSeedRequestId(requestId));

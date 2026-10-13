@@ -579,6 +579,18 @@ export async function approveWakeRequest(
     log.info(
       `wake-request-approved user=${userId} request=${requestId} agent=${request.agent_id}`,
     );
+    // The approval answers the task's `waiting_user`: converge it out of the attention
+    // set, or the sidebar keeps claiming "等待批准" after the user already approved
+    // (2026-10-13). Fire-and-forget so the state mutation keeps its sync contract; the
+    // approval result never depends on this.
+    void import('../cogseed_backend/task-store')
+      .then(({ resumeCogSeedTaskAfterWakeApproval }) => resumeCogSeedTaskAfterWakeApproval(userId, request.id))
+      .then((resumed) => {
+        if (resumed) log.info(`wake approval resumed task ${resumed.taskId} status=${resumed.status}`);
+      })
+      .catch((err) => {
+        log.warn(`wake approval task resume failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
     return { request, approval };
   });
 }
