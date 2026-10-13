@@ -23,6 +23,7 @@ import { stageAgent } from '../src/main/features/contribution/agent-staging';
 import { acceptTerms, confirmMaintenance, declareOrigin } from '../src/main/features/contribution/declarations';
 import { buildPackage } from '../src/main/features/contribution/package';
 import { buildPreview } from '../src/main/features/contribution/preview';
+import { BUILTIN_CAPABILITIES_ENABLE_ENV } from '../src/main/features/agent_builtin_capabilities';
 
 const REPO = path.resolve(__dirname, '..');
 const SAMPLE_SKILL_DIR = path.join(REPO, 'resources', 'guardrail', 'skill-declaration-core', 'fixtures', 'sample-skill');
@@ -54,6 +55,9 @@ export interface SampleResult {
 }
 
 export async function buildAgentContributionSample(opts: SampleOptions): Promise<SampleResult> {
+  // 样例里带 `builtin:coding`，用来对着内置能力清单已开放的 Hub 联调。客户端的总开关默认关闭，
+  // 这里显式打开（只影响本脚本所在进程），否则本机检查会把它当成"客户端不认识"。
+  process.env[BUILTIN_CAPABILITIES_ENABLE_ENV] = '1';
   const version = opts.version ?? '1.0.0';
   if (opts.hubSkillId !== undefined && !/^[a-f0-9]{12}$/.test(opts.hubSkillId)) {
     throw new Error('--hub-skill must be a 12-character lowercase hex Hub content id');
