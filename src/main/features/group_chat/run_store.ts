@@ -735,7 +735,36 @@ export async function recordRunActorTerminal(
 }
 
 /** 按真实终态收口 run，生成可持久化的贡献/缺失清单。 */
+/**
+ * Finalize a run and make its group-chat task follow the run's derived terminal,
+ * so a finished run never leaves a task reported as executing. Kept as a thin
+ * wrapper around `finalizeRunRecord` because run finalization has several
+ * callers and the convergence must apply to every one of them.
+ */
 export async function finalizeRun(
+  uid: string,
+  cid: string,
+  runId: string,
+  projectHint?: string | null,
+): Promise<RunRecord | null> {
+  const finalized = await finalizeRunRecord(uid, cid, runId, projectHint);
+  if (finalized) {
+    const waitingForUser = finalized.actors.some((actor) => actor.reason === 'waiting_user');
+    const outcome = finalized.status === 'completed' ? 'completed' : 'failed';
+    // Dynamic import: group_chat must not gain a static dependency on the
+    // cogseed backend at module load (the backend already imports this layer).
+    const { convergeCogSeedTaskForRun } = await import('../cogseed_backend/task-store');
+    await convergeCogSeedTaskForRun(uid, {
+      runId: (finalized as { run_id?: string }).run_id || runId,
+      outcome,
+      waitingForUser,
+      errorCode: `run_${finalized.status}`,
+    }).catch(() => null);
+  }
+  return finalized;
+}
+
+async function finalizeRunRecord(
   uid: string,
   cid: string,
   runId: string,

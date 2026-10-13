@@ -631,6 +631,68 @@ export async function appendCogSeedTaskEventIfActive(
 }
 
 
+/**
+ * Converge the group-chat task owned by a finished run.
+ *
+ * A task used to keep its non-terminal status after its run had finished: the
+ * 2026-10-12 evidence shows a task created 17:14:22 still `waiting_user` at
+ * 17:17:23 while its turn had already ended (`turn_end=1`), so the sidebar kept
+ * reporting the run as executing. When a run reaches its derived terminal, the
+ * task must follow it:
+ *
+ *   - run completed          → task completed (with a `task.completed` event)
+ *   - run failed/blocked/... → task failed, carrying the run status as errorCode
+ *   - waiting for the human  → left alone: `waiting_user` is a legitimate state,
+ *                              not a stuck one (the read side reports it as
+ *                              attention instead of progress).
+ *
+ * Returns the converged task, or null when there was nothing to converge.
+ */
+export async function convergeCogSeedTaskForRun(
+  userId: string,
+  input: {
+    runId: string;
+    outcome: 'completed' | 'failed';
+    /** True when the run is blocked only because it awaits the user. */
+    waitingForUser?: boolean;
+    errorCode?: string;
+  },
+): Promise<{ taskId: string; status: CogSeedTaskRecord['status'] } | null> {
+  assertCogSeedUserId(userId);
+  if (input.waitingForUser) return null;
+
+  const tasks = await listCogSeedTasks(userId);
+  const open = tasks.filter((task) => (
+    task.executionKind === 'group-chat'
+    && task.groupChatRunId === input.runId
+    && !TERMINALS.has(task.status)
+  ));
+  if (!open.length) return null;
+  // A run owns one task; if several ever matched, converge the most recent.
+  const target = open.slice().sort((a, b) => String(a.updatedAt).localeCompare(String(b.updatedAt))).at(-1)!;
+
+  const now = new Date().toISOString();
+  const converged = await updateCogSeedTaskWithEvent(
+    userId,
+    target.taskId,
+    (current) => ({
+      ...current,
+      status: input.outcome === 'completed' ? 'completed' : 'failed',
+      updatedAt: now,
+      ...(input.outcome === 'completed'
+        ? {}
+        : { errorCode: input.errorCode || 'run_failed' }),
+    }),
+    {
+      type: input.outcome === 'completed' ? 'task.completed' : 'task.failed',
+      payload: { runId: input.runId, source: 'run-finalize' },
+    },
+  );
+  return { taskId: converged.taskId, status: converged.status };
+}
+
+const TERMINALS = new Set<CogSeedTaskRecord['status']>(['completed', 'failed', 'cancelled']);
+
 export async function readCogSeedTaskByRequestId(userId: string, requestId: string): Promise<CogSeedTaskRecord | null> {
   assertCogSeedUserId(userId);
   const claimFile = cogseedRequestClaimFile(userId, assertCogSeedRequestId(requestId));
