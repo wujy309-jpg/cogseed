@@ -8029,6 +8029,33 @@ async function runActorTurnBody(
       ...(citation.matchScore !== undefined ? { match_score: citation.matchScore } : {}),
       match_method: citation.matchMethod,
     }));
+      // R-11 gate (decision 2026-10-13): never present this as the end of the
+      // turn while the actors this run dispatched are still running. The commander
+      // waits for them and reports once they finish — recordMemberRunTurnResult
+      // then wakes it for exactly one reporting round, and that turn ends
+      // normally. Without this gate the user reads a finished answer while workers
+      // still spin, which is the 2026-10-12 shape (commander concluded 17:13,
+      // literature-review worker still running).
+      let awaitingDispatchedActors: string[] = [];
+      if (item.runId && actor.kind === 'commander') {
+        try {
+          const { readRun } = await import('./run_store');
+          const run = await readRun(uid, cid, item.runId);
+          awaitingDispatchedActors = (run?.actors || [])
+            .filter((candidate) => candidate.terminal === 'pending')
+            .map((candidate) => candidate.agent_id);
+        } catch (err) {
+          // The gate is advisory: a read failure must not block the turn.
+          log.warn(`awaiting-actor gate read failed cid=${cid}: ${(err as Error).message}`);
+        }
+        if (awaitingDispatchedActors.length) {
+          log.warn('commander turn ending while dispatched actors still run', {
+            cid,
+            runId: item.runId,
+            awaitingActorIds: awaitingDispatchedActors,
+          });
+        }
+      }
     persistedMsg = await enqueue({
       uid,
       cid,
@@ -8084,7 +8111,9 @@ async function runActorTurnBody(
       // consumes the streaming placeholder + finalizes in place. Without
       // this flag, mid-turn tool-emitted messages (plan_executor's
       // dispatch) would also wrongly consume the placeholder.
-      turn_end: true,
+      // R-11: with actors still pending this is an interim answer, not the
+      // end of the turn; the reporting round after the last worker closes it.
+      turn_end: awaitingDispatchedActors.length === 0,
       ...(item.runId ? { runId: item.runId } : {}),
       turn_id: item.turnId,
       ...(replyMetrics ? { metrics: replyMetrics } : {}),
