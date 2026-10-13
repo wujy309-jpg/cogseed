@@ -79,4 +79,44 @@ describe('wake approval resumes its task', () => {
     expect((await tasks.readCogSeedTask(USER, runningId))?.status).toBe('running');
     expect(await tasks.resumeCogSeedTaskAfterWakeApproval(USER, 'req-wake-absent')).toBeNull();
   });
+
+  // 真机 2026-10-14 00:30：p3394 唤醒请求 id（`076f0627f697`）不是 CogSeed 任务
+  // 请求 id（`req-…`），旧实现直接 throw `invalid CogSeed request id` → 批准后任务
+  // 仍停在 waiting_user，「等待批准」徽标不收敛。
+  it("a p3394 wake id is resolved by the wake's own conversation + agent", async () => {
+    const tasks = await store();
+    const created = await tasks.createCogSeedTask(USER, {
+      requestId: 'req-wake-group-chat',
+      task: 'Group chat worker waiting for wake approval.',
+      executionKind: 'group-chat',
+      conversationId: 'conv-wake-1',
+      agentId: 'agent-wake-1',
+      groupChatRunId: 'run-wake-1',
+    });
+    await tasks.updateCogSeedTaskWithEvent(
+      USER,
+      created.task.taskId,
+      (current) => ({ ...current, status: 'waiting_user', updatedAt: new Date().toISOString() }),
+      { type: 'task.started', payload: { source: 'test-setup' } },
+    );
+
+    const resumed = await tasks.resumeCogSeedTaskAfterWakeApproval(USER, {
+      requestId: '076f0627f697',
+      conversationId: 'conv-wake-1',
+      agentId: 'agent-wake-1',
+    });
+
+    expect(resumed).toMatchObject({ taskId: created.task.taskId, status: 'running' });
+    expect((await tasks.readCogSeedTask(USER, created.task.taskId))?.status).toBe('running');
+  });
+
+  it('a foreign id without wake context is a silent no-op, never a throw', async () => {
+    const tasks = await store();
+    await expect(tasks.resumeCogSeedTaskAfterWakeApproval(USER, '076f0627f697')).resolves.toBeNull();
+    await expect(tasks.resumeCogSeedTaskAfterWakeApproval(USER, {
+      requestId: '076f0627f697',
+      conversationId: 'conv-absent',
+      agentId: 'agent-absent',
+    })).resolves.toBeNull();
+  });
 });

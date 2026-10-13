@@ -16676,7 +16676,7 @@ function _eventTurnId(evData) {
 // turnId，用本表回查同一锚点。不这么做时派单链里 commander 与 worker 的活动
 // 流会同挂发送占位 → 折叠条归属错（看起来像主 Agent 在执行）、一次任务画成
 // 两条并行线（2026-10-13 需求方截图）。
-const _chatStreamAnchors = new Map(); // key = `${cid}::turn:${turnId}` → 消息元素
+const _chatStreamAnchors = new Map(); // key = `${cid}::turn:${turnId}` → { el, actorId }
 
 function _chatAnchorKey(cid, turnId) {
   const tid = _normaliseTurnId(turnId);
@@ -16692,18 +16692,33 @@ function _forgetChatStreamAnchors(cid) {
 
 function _resolveChatStreamAnchor(cid, chatEvent, fallbackEl, turnIdHint) {
   if (!cid || !chatEvent || typeof chatEvent !== 'object') return fallbackEl;
-  const key = _chatAnchorKey(cid, turnIdHint || chatEvent.turnId);
+  const tid = _normaliseTurnId(turnIdHint || chatEvent.turnId);
+  const key = _chatAnchorKey(cid, tid);
+  const live = (el) => !!(el && el.parentElement);
+  const bind = (anchor, actorId) => {
+    if (key) _chatStreamAnchors.set(key, { el: anchor, actorId });
+    return anchor;
+  };
+  // 轮询/历史回放会把原锚点（或发送占位）摘出 DOM：这时必须按 actor 重新领养/新建，
+  // 否则活动流会画进脱树的节点——用户看不到过程，而 `chatStreamHasPanel` 仍为 true，
+  // 连老过程 rail 也被去重掉（真机 2026-10-14 00:30 的 30 条丢弃）。
+  const remint = (actorId) => {
+    if (!actorId) return fallbackEl;
+    const ph = _ensureActorPlaceholder(cid, actorId, fallbackEl, tid, undefined, undefined, { contentBearing: true });
+    return live(ph) ? ph : fallbackEl;
+  };
   if (chatEvent.type === 'chat.turn.started') {
     const actorId = String(chatEvent.actorId || '');
-    const ph = actorId ? _ensureActorPlaceholder(cid, actorId, fallbackEl, chatEvent.turnId) : null;
-    const anchor = (ph && ph.parentElement) ? ph : fallbackEl;
-    if (key && anchor) _chatStreamAnchors.set(key, anchor);
-    return anchor;
+    return bind(remint(actorId), actorId);
   }
-  if (key) {
-    const known = _chatStreamAnchors.get(key);
-    if (known && known.parentElement) return known;
-    if (known) _chatStreamAnchors.delete(key);
+  const known = key ? _chatStreamAnchors.get(key) : null;
+  if (known) {
+    if (live(known.el)) return known.el;
+    _chatStreamAnchors.delete(key);
+    const actorId = String(known.actorId || '');
+    const anchor = remint(actorId);
+    if (live(anchor)) return bind(anchor, actorId);
+    return fallbackEl;
   }
   return fallbackEl;
 }
@@ -16804,7 +16819,7 @@ function _refreshActorPlaceholders(cid, actorId) {
   }
 }
 
-function _ensureActorPlaceholder(cid, actorId, fallbackPh, turnId, triggerMsgId, startedAtMs) {
+function _ensureActorPlaceholder(cid, actorId, fallbackPh, turnId, triggerMsgId, startedAtMs, opts = {}) {
   const tid = _normaliseTurnId(turnId);
   const sourceMsgId = _normaliseTurnId(triggerMsgId);
   const k = _phKey(cid, actorId, tid);
@@ -16838,7 +16853,14 @@ function _ensureActorPlaceholder(cid, actorId, fallbackPh, turnId, triggerMsgId,
       // fallback placeholder when it is live; only truly targetless events are
       // dropped. The bubble still belongs to the commander, so its steps stay its
       // own — no worker step is ever rendered into it.
-      return (fallbackPh && fallbackPh.parentElement) ? fallbackPh : null;
+      if (fallbackPh && fallbackPh.parentElement) return fallbackPh;
+      // 真机 2026-10-14 00:30：commander 派单后，它的 seg 气泡会被历史回放/轮询
+      // 重建摘掉（`_finalizeActorPlaceholder` 遇到同签名已渲染消息会 remove 占位），
+      // 于是 fallback 脱树 → 收尾综合的 process 事件再次被丢（30 条）。
+      // 带内容的事件不能丢：落到下面的常规路径，按该 actor 的活占位/兜底重建一条
+      // 真实气泡来承载它的过程（空事件流仍由上面的 return null 拦住，mint 不出
+      // 空气泡来闪）。这是「空泡防闪」与「过程不可丢」的分界：有没有内容。
+      if (!opts.contentBearing) return null;
     }
   }
 
@@ -17504,7 +17526,8 @@ function _handleGroupBusEvent(cid, streamingMsg, evData, { archive = false } = {
       startPolling(cid);
       if (cid === currentCid) _updateConvSendUI(cid);
     }
-    const target = _ensureActorPlaceholder(cid, actor, streamingMsg, turnId);
+    const target = _ensureActorPlaceholder(cid, actor, streamingMsg, turnId, undefined, undefined,
+      { contentBearing: true });
     if (!target) {
       _convLog.warn('group process target missing', {
         cid,
@@ -17608,7 +17631,8 @@ function _handleGroupBusEvent(cid, streamingMsg, evData, { archive = false } = {
       startPolling(cid);
       if (cid === currentCid) _updateConvSendUI(cid);
     }
-    const target = _ensureActorPlaceholder(cid, actor, streamingMsg, turnId);
+    const target = _ensureActorPlaceholder(cid, actor, streamingMsg, turnId, undefined, undefined,
+      { contentBearing: true });
     const bubble = target?.querySelector?.('.chat-bubble');
     if (bubble && typeof window.mountMessageArtifacts === 'function') {
       window.mountMessageArtifacts(bubble, [artifact], cid);

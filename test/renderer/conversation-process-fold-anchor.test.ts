@@ -41,7 +41,7 @@ function extractConst(name: string): string {
 }
 
 interface AnchorEl { id: string; parentElement: { id: string } | null }
-interface EnsureCall { cid: string; actorId: string; turnId: unknown; fallback: AnchorEl | null }
+interface EnsureCall { cid: string; actorId: string; turnId: unknown; fallback: AnchorEl | null; contentBearing: boolean }
 
 function makeEl(id: string, attached = true): AnchorEl {
   return { id, parentElement: attached ? { id: `${id}-host` } : null };
@@ -67,8 +67,8 @@ function loadResolver() {
     calls,
     placeholders,
     currentCid: 'c-1',
-    _ensureActorPlaceholder: (cid: string, actorId: string, fallback: AnchorEl | null, turnId: unknown) => {
-      calls.push({ cid, actorId, turnId, fallback });
+    _ensureActorPlaceholder: (cid: string, actorId: string, fallback: AnchorEl | null, turnId: unknown, _msg?: unknown, _started?: unknown, opts?: { contentBearing?: boolean }) => {
+      calls.push({ cid, actorId, turnId, fallback, contentBearing: !!opts?.contentBearing });
       return placeholders[actorId] ?? null;
     },
   };
@@ -77,7 +77,7 @@ function loadResolver() {
     resolve: (cid: string, ev: unknown, fallback: AnchorEl | null, turnIdHint?: unknown) => AnchorEl | null;
     forget: (cid: string) => void;
     yielded: (state: unknown) => string;
-    anchors: Map<string, AnchorEl>;
+    anchors: Map<string, { el: AnchorEl; actorId: string }>;
     calls: EnsureCall[];
     placeholders: Record<string, AnchorEl | null>;
   };
@@ -89,8 +89,8 @@ describe('chat.* 过程折叠锚点（按 actor 归属）', () => {
     const fallback = makeEl('send-placeholder');
     const got = r.resolve('c-1', { type: 'chat.turn.started', turnId: 'T1', actorId: 'w1' }, fallback);
     expect(got).toBe(r.placeholders.w1);
-    expect(r.calls).toEqual([{ cid: 'c-1', actorId: 'w1', turnId: 'T1', fallback }]);
-    expect(r.anchors.get('c-1::turn:T1')).toBe(r.placeholders.w1);
+    expect(r.calls).toEqual([{ cid: 'c-1', actorId: 'w1', turnId: 'T1', fallback, contentBearing: true }]);
+    expect(r.anchors.get('c-1::turn:T1')).toEqual({ el: r.placeholders.w1, actorId: 'w1' });
   });
 
   it('后续 chat.item / turn.completed 只带 turnId 也回查同一锚点（不再领养）', () => {
@@ -123,8 +123,37 @@ describe('chat.* 过程折叠锚点（按 actor 归属）', () => {
     expect(r.resolve('c-1', { type: 'chat.turn.started', turnId: 'T10', actorId: 'detached' }, fallback)).toBe(fallback);
   });
 
-  it('未知 turnId 与其它 cid 落回兜底锚点（跨会话不串流）', () => {
+  it('锚点被历史重建摘出 DOM：按 actor 重新领养/新建，不把活动流画进脱树节点', () => {
+    // 真机 2026-10-14 00:30：commander 派单后 seg 气泡被历史回放重建摘掉，
+    // 发送占位同时脱树 → 收尾综合的 30 条 process 事件全被丢弃。
     const r = loadResolver();
+    const fallback = makeEl('send-placeholder');
+    r.resolve('c-1', { type: 'chat.turn.started', turnId: 'T1', actorId: 'commander' }, fallback);
+    expect(r.calls).toHaveLength(1);
+    r.placeholders.commander!.parentElement = null;
+    fallback.parentElement = null;
+    r.placeholders.commander = makeEl('ph-commander-rebuilt');
+    const again = r.resolve('c-1',
+      { type: 'chat.item', turnId: 'T1', itemId: 'i1', kind: 'text', status: 'inProgress', payload: { delta: 'x' } },
+      fallback);
+    expect(again).toBe(r.placeholders.commander);
+    expect(again).not.toBe(fallback);
+    // 重新领养必须标记「带内容」：空内容的状态扫描仍不许 mint 出闪空气泡。
+    expect(r.calls).toHaveLength(2);
+    expect(r.calls[1]).toMatchObject({ actorId: 'commander', contentBearing: true });
+    expect(r.anchors.get('c-1::turn:T1')).toEqual({ el: r.placeholders.commander, actorId: 'commander' });
+  });
+
+  it('重新领养也拿不到活气泡时才退回兜底（不制造第二个锚点）', () => {
+    const r = loadResolver();
+    const fallback = makeEl('send-placeholder');
+    r.resolve('c-1', { type: 'chat.turn.started', turnId: 'T1', actorId: 'w1' }, fallback);
+    r.placeholders.w1!.parentElement = null;
+    fallback.parentElement = null;
+    expect(r.resolve('c-1', { type: 'chat.item', turnId: 'T1' }, fallback)).toBe(fallback);
+  });
+
+  it('未知 turnId 与其它 cid 落回兜底锚点（跨会话不串流）', () => {    const r = loadResolver();
     const fallback = makeEl('send-placeholder');
     r.resolve('c-1', { type: 'chat.turn.started', turnId: 'T1', actorId: 'w1' }, fallback);
     expect(r.resolve('c-1', { type: 'chat.item', turnId: 'T-other' }, fallback)).toBe(fallback);

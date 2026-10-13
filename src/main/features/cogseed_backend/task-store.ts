@@ -698,13 +698,28 @@ const TERMINALS = new Set<CogSeedTaskRecord['status']>(['completed', 'failed', '
  * attention status made the sidebar keep showing "等待批准" after the user had
  * already approved (2026-10-13: run-center badge counts `counts.attention`, which
  * includes `waiting_user`). Resuming the task is what makes the badge truthful.
+ *
+ * The wake request id and the CogSeed task request id are *different namespaces*
+ * (`076f0627f697` vs `req-…`, live 2026-10-14 00:30: `wake approval task resume
+ * failed: invalid CogSeed request id`), so a foreign id must fall back to the
+ * wake's own identity — conversation + agent — instead of throwing.
  */
 export async function resumeCogSeedTaskAfterWakeApproval(
   userId: string,
-  requestId: string,
+  wake: string | { requestId?: string; conversationId?: string; agentId?: string },
 ): Promise<{ taskId: string; status: CogSeedTaskRecord['status'] } | null> {
   assertCogSeedUserId(userId);
-  const task = await readCogSeedTaskByRequestId(userId, requestId);
+  const ref = typeof wake === 'string' ? { requestId: wake } : (wake || {});
+  const requestId = String(ref.requestId || '').trim();
+  let task: CogSeedTaskRecord | null = null;
+  if (isCogSeedRequestId(requestId)) task = await readCogSeedTaskByRequestId(userId, requestId);
+  if (!task) {
+    const conversationId = String(ref.conversationId || '').trim();
+    const agentId = String(ref.agentId || '').trim();
+    if (safeId(conversationId) && safeId(agentId)) {
+      task = await readLatestCogSeedTaskForAgent(userId, conversationId, agentId);
+    }
+  }
   if (!task) return null;
   if (TERMINALS.has(task.status)) return null;
   // Only an attention state is ours to clear; never resurrect a running task.
@@ -719,6 +734,12 @@ export async function resumeCogSeedTaskAfterWakeApproval(
     { type: 'task.started', payload: { requestId, source: 'wake-approval' } },
   );
   return { taskId: resumed.taskId, status: resumed.status };
+}
+
+/** Same rule as `assertCogSeedRequestId`, without the throw — callers hand us
+ *  ids from other namespaces (p3394 wake requests) and silence is the answer. */
+function isCogSeedRequestId(requestId: string): boolean {
+  return !!requestId && safeId(requestId) && requestId.startsWith('req-');
 }
 
 export async function readCogSeedTaskByRequestId(userId: string, requestId: string): Promise<CogSeedTaskRecord | null> {
