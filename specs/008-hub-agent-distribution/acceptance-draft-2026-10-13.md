@@ -69,7 +69,7 @@
 4. 依赖技能状态为 `published`（真 Hub 的写法）时被判为"未批准"而拒装。改为 `published` 与 `approved` 均可安装。
 
 **待 Hub 侧处理（已核对 Hub 代码）：**
-- `GET /marketplace/contributions/mine` 的条目**没有 `content_type`**，带 `?content_type=` 参数返回 **400**。后果：客户端按"智能体"筛选时，已提交的 Agent 不显示；缺类型的条目被默认当作 Skill。该接口仍是 Skill 一轮的 C-04 实现。
+- `GET /marketplace/contributions/mine` 仍是 Skill 一轮的 C-04 实现：条目**没有 `content_type`**，`?content_type=` 参数被**忽略**（本机实测返回 200、内容不变；此前写的“返回 400”不准确，已更正）；并且只聚合能力侧内容，已接受的 Agent 贡献显示为 `content_id: null`。后果：客户端按类型筛选时，条目缺类型会被当作 Skill。本机已做出补丁（2026-10-13，未合入 Hub）：条目带 `content_type`、聚合 Agent 内容与版本、支持 `?content_type=skill|agent`（其它值 400）。
 - `skill_list` 缺省应视为空数组（与协议"可选"一致）。
 
 **新发现（影响本期目标）：**
