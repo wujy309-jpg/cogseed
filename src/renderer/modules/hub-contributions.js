@@ -187,9 +187,18 @@
     }
   }
 
-  function backline(label) {
+  /** 从「我的贡献」返回：由智能体页进入的回智能体页，其余回技能页。 */
+  function leaveFromMine() {
+    if (mine?.returnTo === 'agents' && typeof _showAgentsGridView === 'function') {
+      hideContributionViews();
+      if (typeof activateConnectionsTab === 'function') activateConnectionsTab('agents');
+      _showAgentsGridView();
+    } else leaveToSkills();
+  }
+
+  function backline(label, backLabel) {
     return `<div class="hubc-backline">${button({
-      label: tr('skills.contribute_back', 'Back to Skills'), role: 'ghost', size: 'sm', icon: 'chevron-left',
+      label: backLabel || tr('skills.contribute_back', 'Back to Skills'), role: 'ghost', size: 'sm', icon: 'chevron-left',
       attrs: { 'data-hubc-action': 'back' },
     })}<span class="hubc-backline__sep" aria-hidden="true">/</span><span>${esc(label)}</span></div>`;
   }
@@ -1036,9 +1045,11 @@
     const synced = formatTime(mine.generatedAt);
     const searchFocused = document.activeElement?.id === 'hubc-mine-search';
     host.innerHTML = `<div class="hubc-page" data-hubc-page="mine">
-      ${backline(tr('skills.contribute_mine', 'My contributions'))}
+      ${backline(tr('skills.contribute_mine', 'My contributions'), mine.returnTo === 'agents' ? tr('agents.contribute_back', 'Back to agents') : undefined)}
       <header class="hubc-heading hubc-heading--center"><div><h1>${esc(tr('skills.contribute_mine', 'My contributions'))}</h1>
-        <p>${esc(tr('skills.contribute_mine_desc', 'See submissions and review status, and look after published Skills.'))}</p></div>
+        <p>${esc(mine.returnTo === 'agents'
+    ? tr('agents.contribute_mine_desc', 'See submissions and review status, and look after published Agents.')
+    : tr('skills.contribute_mine_desc', 'See submissions and review status, and look after published Skills.'))}</p></div>
         ${button({ label: tr('common.refresh', 'Refresh'), icon: 'refresh', loading: mine.loading, attrs: { 'data-hubc-action': 'mine-refresh' } })}</header>
       ${mine.stale ? `<p class="hubc-alert" role="status">${esc(tr('skills.contribute_mine_stale', 'Hub could not be refreshed; showing the last saved result.'))}</p>` : ''}
       <div class="hubc-summary">
@@ -1051,7 +1062,7 @@
         <div class="hubc-search">${root.uiInput({ id: 'hubc-mine-search', type: 'search', value: mine.query, placeholder: tr('skills.contribute_mine_search', 'Search my contributions'), attrs: { 'aria-label': tr('skills.contribute_mine_search', 'Search my contributions') } })}</div></div>
       <div class="hubc-master">
         <section class="hubc-list" aria-label="${esc(tr('skills.contribute_mine_list', 'Contribution list'))}">
-          <div class="hubc-list__head"><span>${esc(tr('skills.contribute_mine_col_skill', 'Skill'))}</span><span>${esc(tr('skills.contribute_mine_col_latest', 'Latest submission'))}</span><span>${esc(tr('skills.contribute_published_version', 'Published version'))}</span></div>
+          <div class="hubc-list__head"><span>${esc(mine.type === 'agent' ? tr('skills.contribute_mine_col_agent', 'Agent') : mine.type === 'skill' ? tr('skills.contribute_mine_col_skill', 'Skill') : tr('skills.contribute_mine_col_content', 'Content'))}</span><span>${esc(tr('skills.contribute_mine_col_latest', 'Latest submission'))}</span><span>${esc(tr('skills.contribute_published_version', 'Published version'))}</span></div>
           <div data-hubc-list></div>
         </section>
         <aside class="hubc-detail" aria-label="${esc(tr('skills.contribute_mine_detail', 'Contribution details'))}" data-hubc-detail></aside>
@@ -1098,10 +1109,11 @@
       mine = {
         items: [], filter: 'all', query: '', selected: null, stale: false, generatedAt: '', loading: true,
         type: MINE_TYPES.includes(options?.type) ? options.type : 'all',
+        returnTo: options?.returnTo === 'agents' ? 'agents' : 'skills',
       };
       renderMine();
       if (!await loadMine()) {
-        leaveToSkills();
+        leaveFromMine();
         return;
       }
       stopMinePoll();
@@ -1112,7 +1124,7 @@
       }, MINE_POLL_MS);
     } catch (error) {
       await root.uiAlert(tr('skills.contribute_start_failed', 'Could not load contributions.'));
-      if (mine) leaveToSkills();
+      if (mine) leaveFromMine();
     }
   }
 
@@ -1183,7 +1195,7 @@
     const action = target.dataset.hubcAction || 'select-row';
     const key = target.dataset.hubcKey || target.dataset.hubcRow || '';
     try {
-      if (action === 'back') leaveToSkills();
+      if (action === 'back') { if (viewVisible('mine')) leaveFromMine(); else leaveToSkills(); }
       else if (action === 'complete-save') await saveComplete();
       else if (action === 'cancel-check') session?.cancelCheck?.();
       else if (action === 'recheck') await runCheck();

@@ -1067,7 +1067,7 @@ async function _openAgentContributions() {
   try {
     if (!await _ensureContributionFeature()) throw new Error('contribution unavailable');
     if (typeof activateConnectionsTab === 'function') activateConnectionsTab('skills');
-    await window.openMyContributions({ type: 'agent' });
+    await window.openMyContributions({ type: 'agent', returnTo: 'agents' });
   } catch (err) {
     await uiAlert(t('agents.contribute_start_failed'));
   }
