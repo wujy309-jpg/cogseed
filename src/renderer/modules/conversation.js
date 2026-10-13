@@ -16768,7 +16768,16 @@ function _ensureActorPlaceholder(cid, actorId, fallbackPh, turnId, triggerMsgId,
   // while the floor points elsewhere.
   if (actorId === 'commander') {
     const floor = _serverFloorByCid.get(cid) || '';
-    if (floor && floor !== 'commander' && floor !== 'user') return null;
+    if (floor && floor !== 'commander' && floor !== 'user') {
+      // The floor moving to an agent must not make the commander's own process
+      // events vanish: dropping them left the user with an empty-looking bubble and
+      // no execution detail at all (578 'group process target missing' warnings on
+      // 2026-10-13, nearly all of them actor=commander). Attach to the existing
+      // fallback placeholder when it is live; only truly targetless events are
+      // dropped. The bubble still belongs to the commander, so its steps stay its
+      // own — no worker step is ever rendered into it.
+      return (fallbackPh && fallbackPh.parentElement) ? fallbackPh : null;
+    }
   }
 
   // Wake→task→exec 两级系统的 turn_id 会中途更换（cogseed-task-* →
