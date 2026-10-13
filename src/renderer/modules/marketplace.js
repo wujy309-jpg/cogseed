@@ -1697,6 +1697,7 @@ async function _mpOpenDetail(kind, item, opts = {}) {
   _mpState.detailLoading = true;
   _mpState.detailError = '';
   _mpState.detailAgentJson = null;
+  _mpState.detailAgentPlan = null;
   _mpState.detailSkillFiles = [];
   _mpState.detailSkillSelected = prevSelected;
   _mpState.detailSkillFileText = '';
@@ -1714,6 +1715,7 @@ async function _mpOpenDetail(kind, item, opts = {}) {
       });
       if (!detail || detail.ok === false) throw _mpErrorFromResponse(detail, 'detail failed');
       _mpState.detailAgentJson = detail.agent_json;
+      void _mpLoadAgentPlan(item);
     } else {
       try {
         const detail = await window.cogseed.invoke('marketplace.detailSkill', {
@@ -1993,6 +1995,66 @@ function _mpAgentInputOutputHtml(agent) {
 
 // Agent body mirrors the installed agent detail style, but marketplace previews are
 // install-time content only: no runtime data and no user-specific memory.
+/** Best-effort: the dependency list on the detail page. A failed preview just means no list. */
+async function _mpLoadAgentPlan(item) {
+  try {
+    const r = await window.cogseed.invoke('marketplace.agentInstallPlan', {
+      id: item.id, version: item.version, published_at: item.published_at, updated_at: item.updated_at,
+      min_app_version: _mpMinAppVersion(item),
+    });
+    if (!r || !Array.isArray(r.items)) return;
+    // The user may have moved on to another item while this was loading.
+    if (_mpState.detailKind !== 'agent' || _mpState.detailItem?.id !== item.id) return;
+    _mpState.detailAgentPlan = r;
+    _mpRenderDetail();
+  } catch (_) { /* informational only */ }
+}
+
+const _MP_PLAN_GROUPS = [
+  { kinds: ['install', 'reuse', 'blocked_disabled'], key: 'marketplace.agent_dep_group_hub' },
+  { kinds: ['builtin', 'blocked_builtin_unsupported'], key: 'marketplace.agent_dep_group_builtin' },
+  { kinds: ['bundled'], key: 'marketplace.agent_dep_group_bundled' },
+];
+const _MP_PLAN_STATE_KEY = {
+  install: 'marketplace.agent_dep_state_install',
+  reuse: 'marketplace.agent_dep_state_reuse',
+  bundled: 'marketplace.agent_dep_state_bundled',
+  blocked_disabled: 'marketplace.agent_dep_state_disabled',
+  builtin: 'marketplace.agent_dep_state_builtin_ok',
+  blocked_builtin_unsupported: 'marketplace.agent_dep_state_builtin',
+};
+
+/** "Skills this agent needs": Hub skills (will install / already here / disabled) and skills that
+ *  ship inside the agent, so the user knows before pressing Install what comes along. */
+function _mpAgentDependenciesHtml(plan) {
+  if (!plan || !Array.isArray(plan.items) || !plan.items.length) return '';
+  const groups = _MP_PLAN_GROUPS.map((group) => {
+    const rows = plan.items.filter((entry) => group.kinds.includes(entry.action));
+    if (!rows.length) return '';
+    return `<div class="agents-detail-label">${escapeHtml(t(group.key))}</div>
+      <div class="agents-detail-list">${rows.map((entry) => `
+        <div class="agents-detail-list-item" data-dep-state="${escapeHtml(entry.action)}">
+          <span class="agents-detail-list-text"><strong>${escapeHtml(entry.name || entry.id)}</strong>
+            <span class="muted"> · ${escapeHtml(t(_MP_PLAN_STATE_KEY[entry.action] || 'marketplace.agent_dep_state_install'))}</span></span>
+        </div>`).join('')}</div>`;
+  }).join('');
+  return `<div class="agents-detail-section" data-agent-dependencies>
+      <div class="agents-detail-label">${escapeHtml(t('marketplace.agent_dep_title'))}</div>
+      <p class="agents-detail-section-desc">${escapeHtml(t('marketplace.agent_dep_desc'))}</p>
+      ${groups}
+    </div>`;
+}
+
+/** "Works with CogSeed x.y+": only when the item declares a minimum version (absent = no floor). */
+function _mpAgentCompatibilityHtml(item) {
+  const minimum = item ? _mpMinAppVersion(item) : '';
+  if (!minimum) return '';
+  return `<div class="agents-detail-section" data-agent-compat>
+      <div class="agents-detail-label">${escapeHtml(t('marketplace.agent_compat_title'))}</div>
+      <p class="agents-detail-section-desc">${escapeHtml(t('marketplace.requires_app').replace('{version}', minimum))}</p>
+    </div>`;
+}
+
 function _mpAgentDetailHtml(agentJson) {
   if (!agentJson) return `<div class="empty">${escapeHtml(t('marketplace.empty'))}</div>`;
   const lang = getLang();
@@ -2008,6 +2070,8 @@ function _mpAgentDetailHtml(agentJson) {
         <div class="agents-detail-desc">${desc ? escapeHtml(desc) : placeholderHtml}</div>
       </div>
     </div>
+    ${_mpAgentDependenciesHtml(_mpState.detailAgentPlan)}
+    ${_mpAgentCompatibilityHtml(_mpState.detailItem)}
     ${knowhow.length ? `
       <div class="agents-detail-section">
         <div class="agents-detail-label">${escapeHtml(t('agents.label_knowhow'))}</div>

@@ -31,7 +31,9 @@ import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { createLogger } from '../logger';
-import { agentDir, marketplaceCacheSkillsDir, userSkillsDir } from '../paths';
+import * as nodePath from 'node:path';
+import { agentDir, marketplaceCacheSkillsDir, userMarketplaceSkillDir, userSkillsDir } from '../paths';
+import { readSkillDisplayName } from '../features/contribution/skill-display-name';
 import {
   createStaging, cleanupOrphanedStaging, type ContributionStaging,
 } from '../features/contribution/staging';
@@ -91,6 +93,10 @@ const agentContributionDeps: AgentContributionDeps = {
     stagingRoot: marketplaceCacheSkillsDir(uid),
   }),
   cleanupOrphans: cleanupOrphanedStaging,
+  skillDisplayName: (uid, skillId) => readSkillDisplayName([
+    userMarketplaceSkillDir(uid, skillId),
+    nodePath.join(userSkillsDir(uid), skillId),
+  ]),
   fetchTerms,
   createSubmission: (uid, args) => createSubmission(uid, { ...args, manifest: args.manifest as AgentSubmissionManifest }),
   contributionTarget,
@@ -248,9 +254,13 @@ export const invokeHandlers = {
   'contribution.agent.start': async (payload: { agent_id?: unknown }, ctx: { userId: string }) =>
     startAgentContribution(ctx.userId, assertAgentId(payload?.agent_id), agentContributionDeps),
 
-  'contribution.agent.confirm': async (payload: { token?: unknown; digest?: unknown }, ctx: { userId: string }) =>
+  'contribution.agent.confirm': async (
+    payload: { token?: unknown; digest?: unknown; acknowledge_hints?: unknown },
+    ctx: { userId: string },
+  ) =>
     confirmAgentPreview(
       ctx.userId, assertToken(payload?.token), typeof payload?.digest === 'string' ? payload.digest : '', agentContributionDeps,
+      { acknowledgeHints: payload?.acknowledge_hints === true },
     ),
 
   'contribution.agent.submit': async (

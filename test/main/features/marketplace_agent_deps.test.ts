@@ -53,10 +53,26 @@ describe('planAgentDependencies', () => {
     expect(plan.blocked).toEqual([]);
   });
 
-  it('builtin: 本期不支持 → 阻断，不尝试下载', () => {
+  it('builtin: 本机具备 → 直接使用，不下载；不具备 → 阻断，也不下载', () => {
+    const have = planAgentDependencies(['builtin:coding'], none, localFrom({}), (name) => name === 'coding');
+    expect(have.items).toEqual([{ id: 'builtin:coding', kind: 'builtin', action: 'builtin' }]);
+    expect(have.builtin).toEqual(['builtin:coding']);
+    expect(have.toInstall).toEqual([]);
+    expect(have.blocked).toEqual([]);
+
+    const lack = planAgentDependencies(['builtin:coding'], none, localFrom({}), () => false);
+    expect(lack.blocked.map((i) => i.action)).toEqual(['blocked_builtin_unsupported']);
+    expect(lack.toInstall).toEqual([]);
+  });
+
+  it('builtin: 没传可用性判断时一律不具备（失败关闭）', () => {
     const plan = planAgentDependencies(['builtin:grounded-material-qa'], none, localFrom({}));
     expect(plan.blocked.map((i) => i.action)).toEqual(['blocked_builtin_unsupported']);
-    expect(plan.toInstall).toEqual([]);
+  });
+
+  it('形态不对的 builtin: 引用即使"可用性"恒真也不放行', () => {
+    const plan = planAgentDependencies(['builtin:Bad Name'], none, localFrom({}), () => true);
+    expect(plan.blocked.map((i) => i.action)).toEqual(['blocked_builtin_unsupported']);
   });
 
   it('存量写法（既非十六进制也不在包内的名字）保持旧行为：按 Hub Skill 处理', () => {

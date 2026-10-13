@@ -19302,6 +19302,17 @@ body:has(#panel-settings.active) .main-top-actions {
   background: color-mix(in srgb, var(--warn) 8%, var(--surface));
   color: var(--status-warning-text);
 }
+/* Dependency warning chip (installed agent whose skills are disabled or missing). Same warning
+   hue as the update chip; semantic tokens only. */
+/* "Update failed, still usable" note in the agent detail header (same warning hue as the card chip). */
+.agents-detail-source.is-update-failed {
+  color: var(--status-warning-text);
+}
+.agent-card-chip.is-deps-warning {
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+  background: color-mix(in srgb, var(--warn) 8%, var(--surface));
+  color: var(--status-warning-text);
+}
 /* Space gate status chip — green ready / red not ready / grey pending review. */
 .agent-card-chip.spaces-gate.is-gate-passed {
   border-color: rgba(16, 185, 129, 0.24);

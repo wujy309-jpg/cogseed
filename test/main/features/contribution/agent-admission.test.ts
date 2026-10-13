@@ -114,11 +114,22 @@ describe('阻断路径（任何一项都不得提交）', () => {
     expect(r.blocking.map((i) => i.rule)).toContain('skill_ref.local_missing');
   });
 
-  it('skill_list 出现 builtin: 条目 → 阻断（本期不支持）', async () => {
+  it('skill_list 里 builtin: 在开放清单内 → 通过（不随包、不阻断）', async () => {
     write('cloud/agents/my-expense/agent.json', JSON.stringify({ ...agent, skill_list: ['builtin:grounded-material-qa'] }));
+    const d = deps();
+    const s = await stageAgent('my-expense', sources());
+    expect(s.builtinRefs).toEqual(['builtin:grounded-material-qa']);
+    expect(s.bundledSkills).toEqual([]);
+    const r = await admitAgentContribution(s, d);
+    expect(r.outcome).toBe('pass');
+    expect(d.admitSkill).not.toHaveBeenCalled();
+  });
+
+  it('skill_list 里 builtin: 不在开放清单内 → 阻断，原因是清单外而不是笼统的不支持', async () => {
+    write('cloud/agents/my-expense/agent.json', JSON.stringify({ ...agent, skill_list: ['builtin:package-installer'] }));
     const r = await admitAgentContribution(await stageAgent('my-expense', sources()), deps());
     expect(r.outcome).toBe('blocked');
-    expect(r.blocking.map((i) => i.rule)).toContain('skill_ref.builtin_unsupported');
+    expect(r.blocking.map((i) => i.rule)).toContain('skill_ref.builtin_unknown');
   });
 
   it('Agent 本体红线（EXTREME）→ 阻断；上行信息不含命中原文', async () => {

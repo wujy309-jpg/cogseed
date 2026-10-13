@@ -170,12 +170,37 @@
   function referencesHtml() {
     const hub = Array.isArray(session.hubRefs) ? session.hubRefs : [];
     const bundled = Array.isArray(session.bundledSkills) ? session.bundledSkills : [];
-    if (!hub.length && !bundled.length) return '';
-    const hubRows = hub.map((id) => `<li><code>${esc(id)}</code> <span>${esc(tr('agents.contribute_ref_hub', 'Hub skill — linked, not submitted'))}</span></li>`).join('');
+    const builtin = Array.isArray(session.builtinRefs) ? session.builtinRefs : [];
+    if (!hub.length && !bundled.length && !builtin.length) return '';
+    const names = session.hubRefNames || {};
+    const hubRows = hub.map((id) => `<li>${names[id] ? `<strong>${esc(names[id])}</strong> ` : ''}<code>${esc(id)}</code> <span>${esc(tr('agents.contribute_ref_hub', 'Hub skill — linked, not submitted'))}</span></li>`).join('');
+    const builtinRows = builtin.map((ref) => `<li><strong>${esc(String(ref).replace(/^builtin:/, ''))}</strong> <span>${esc(tr('agents.contribute_ref_builtin', 'Built-in capability — provided by CogSeed, not submitted'))}</span></li>`).join('');
     const bundledRows = bundled.map((name) => `<li><strong>${esc(name)}</strong> <span>${esc(tr('agents.contribute_ref_bundled', 'Your local skill — submitted with this agent'))}</span></li>`).join('');
     return `<section class="hubc-panel" aria-labelledby="hubc-agent-refs-title">
       <div class="hubc-section-head"><div><h2 id="hubc-agent-refs-title">${esc(tr('agents.contribute_refs_title', 'Skills this agent uses'))}</h2></div></div>
-      <ul class="hubc-issues">${hubRows}${bundledRows}</ul></section>`;
+      <ul class="hubc-issues">${hubRows}${builtinRows}${bundledRows}</ul></section>`;
+  }
+
+  // Spots in the files that may contain local paths or credential-like text. Highlight only: nothing is
+  // rewritten, and the user confirms what will be sent (Hub spec US3 scenario 3a).
+  function hintsHtml() {
+    const grouped = model.hintsByFile(session.hints);
+    if (!grouped.size) return '';
+    const rows = [...grouped.values()].map((entry) => {
+      const index = previewFiles().findIndex((f) => f.path === entry.file);
+      const items = entry.items.map((item) => `<li><span class="hubc-hint-kind">${esc(tr(`agents.contribute_hint_kind.${item.kind}`, item.kind))}</span> `
+        + `<code>${esc(item.excerpt)}</code> <span class="hubc-hint-where">${esc(fmt(tr('agents.contribute_hint_line', 'line {line}'), { line: item.line }))}</span></li>`).join('');
+      const open = index >= 0 ? button({
+        label: entry.file, role: 'ghost', size: 'sm', icon: 'file-text',
+        attrs: { 'data-hubc-agent-action': 'select-file', 'data-hubc-file-index': index },
+      }) : `<strong>${esc(entry.file)}</strong>`;
+      return `<li class="hubc-hint-file">${open}<ul class="hubc-issues">${items}</ul></li>`;
+    }).join('');
+    return `<section class="hubc-panel" aria-labelledby="hubc-agent-hints-title" data-hubc-agent-hints>
+      <div class="hubc-section-head"><div><h2 id="hubc-agent-hints-title">${esc(tr('agents.contribute_hints_title', 'May contain information from this device'))}</h2>
+        <p>${esc(tr('agents.contribute_hints_hint', 'These places look like a local path or a secret. Nothing was changed — they are highlighted so you can check them. What you see in the preview is exactly what will be sent.'))}</p></div>
+        ${root.uiStatusPill({ label: fmt(tr('agents.contribute_hints_count', '{count} places'), { count: session.hints.length }), tone: 'attention' })}</div>
+      <ul class="hubc-hint-files">${rows}</ul></section>`;
   }
 
   function previewHtml() {
@@ -205,9 +230,10 @@
         </section>
         <section class="hubc-file-content" aria-label="${esc(tr('skills.contribute_file_content_label', 'File content'))}" aria-live="polite">
           <div class="hubc-panel-head">${icon('file-text')}<strong>${esc(selected?.path || '')}</strong></div>
-          <pre data-hubc-file-content>${esc(s.fileCache[s.selectedFile] ?? '')}</pre>
+          <pre data-hubc-file-content>${highlighted(s.selectedFile)}</pre>
         </section>
       </div>
+      ${hintsHtml()}
       ${referencesHtml()}
       ${handledHtml()}
       <section class="hubc-panel" aria-labelledby="hubc-agent-declarations-title">
@@ -228,6 +254,9 @@
     control: { kind: 'textarea', value: draft.origin.note, placeholder: tr('skills.contribute_origin_note_optional', 'Add an origin note (optional)'), attrs: { rows: 2 }, disabled: sending },
   })}
         </div>
+        ${session.hints.length ? `<div class="hubc-check"><span class="hubc-check__control">${root.uiCheckbox({
+    id: 'hubc-agent-accept-hints', label: tr('agents.contribute_hints_accept', 'I have checked the highlighted places and want to send them as they are'), checked: draft.accepted.hints, disabled: sending,
+  })}</span><label for="hubc-agent-accept-hints">${esc(tr('agents.contribute_hints_accept', 'I have checked the highlighted places and want to send them as they are'))}</label></div>` : ''}
         ${hasBundled ? `<div class="hubc-check"><span class="hubc-check__control">${root.uiCheckbox({
     id: 'hubc-agent-accept-skills', label: tr('agents.contribute_skills_accept', 'These skills will be contributed too'), checked: draft.accepted.skills, disabled: sending,
   })}</span><label for="hubc-agent-accept-skills">${esc(fmt(tr('agents.contribute_skills_notice', 'These skills are contributed together with this agent and can only be used by it: {names}'), { names: s.bundledSkills.join(', ') }))}</label></div>` : ''}
@@ -255,6 +284,19 @@
   }
 
   // Same helper the Skill page uses: hydrate shared selects and index their APIs by host id.
+  // File text with the flagged lines marked. The text itself is untouched.
+  function highlighted(index) {
+    const file = previewFiles()[index];
+    const lines = file ? (model.hintsByFile(session.hints).get(file.path)?.lines || new Set()) : new Set();
+    // A flagged line is a block (it carries the highlight), so it already ends the line: adding "\n" after
+    // it would show an empty line. Plain lines keep their newline.
+    const all = model.flagLines(session.fileCache[index] ?? '', lines);
+    return all.map((line, i) => {
+      if (line.flagged) return `<mark class="hubc-hint-line">${esc(line.text)}</mark>`;
+      return i < all.length - 1 ? `${esc(line.text)}\n` : esc(line.text);
+    }).join('');
+  }
+
   function hydrateSelects(container) {
     const apis = {};
     if (typeof root.hydrateUiFormSelects !== 'function') return apis;
@@ -277,12 +319,14 @@
     d.accepted.terms = field('hubc-agent-accept-terms')?.checked === true;
     d.accepted.maintenance = field('hubc-agent-accept-maintenance')?.checked === true;
     if (session.bundledSkills.length) d.accepted.skills = field('hubc-agent-accept-skills')?.checked === true;
+    if (session.hints.length) d.accepted.hints = field('hubc-agent-accept-hints')?.checked === true;
   }
 
   function missing() {
     const d = session.draft;
     return model.agentMissing({
       origin: d.origin, version: d.version, accepted: d.accepted, hasBundled: session.bundledSkills.length > 0,
+      hintCount: session.hints.length,
     });
   }
 
@@ -337,7 +381,7 @@
     s.fileCache[index] = content;
     if (s.selectedFile === index) {
       const pre = host().querySelector('[data-hubc-file-content]');
-      if (pre) pre.textContent = content;
+      if (pre) pre.innerHTML = highlighted(index);
     }
   }
 
@@ -373,7 +417,9 @@
     await root.cogseed.invoke('contribution.declare', { token, kind: 'origin', origin_type: d.origin.type, note: d.origin.note });
     await root.cogseed.invoke('contribution.declare', { token, kind: 'terms' });
     await root.cogseed.invoke('contribution.declare', { token, kind: 'maintenance' });
-    const confirmed = await root.cogseed.invoke('contribution.agent.confirm', { token, digest: s.preview?.digest });
+    const confirmed = await root.cogseed.invoke('contribution.agent.confirm', {
+      token, digest: s.preview?.digest, ...(s.hints.length ? { acknowledge_hints: s.draft.accepted.hints === true } : {}),
+    });
     if (confirmed?.confirmed !== true) {
       await root.uiAlert(confirmedReason(confirmed));
       // Content or terms changed under us: start over so the preview is rebuilt from the current copy.
@@ -387,6 +433,7 @@
     if (result?.reason === 'package_limits') {
       return tr('agents.contribute_package_limits', 'The package is larger than Hub allows. Remove files or bundled skills and try again.');
     }
+    if (result?.reason === 'hints_unacknowledged') return tr('agents.contribute_hints_unacknowledged', 'Check the highlighted places and confirm before submitting.');
     if (result?.reason === 'terms_stale') return tr('skills.contribute_terms_stale', 'The terms changed. Read and accept them again.');
     return tr('skills.contribute_snapshot_changed', 'The submission no longer matches the preview. Check and preview it again.');
   }
@@ -498,8 +545,11 @@
         handled: state.handled || [],
         bundledSkills: state.bundledSkills || [],
         hubRefs: state.hubRefs || [],
+        hubRefNames: state.hubRefNames || {},
+        builtinRefs: state.builtinRefs || [],
+        hints: Array.isArray(state.hints) ? state.hints : [],
         stage: passed ? 'preview' : 'check',
-        draft: { version: '', origin: { type: '', note: '' }, accepted: { terms: false, maintenance: false, skills: false } },
+        draft: { version: '', origin: { type: '', note: '' }, accepted: { terms: false, maintenance: false, skills: false, hints: false } },
         selectedFile: 0,
         fileCache: {},
         sending: false,

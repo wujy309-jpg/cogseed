@@ -48,7 +48,7 @@ import { randomBytes } from 'node:crypto';
 
 import { sha256OfFile } from '../util/sha256';
 import { marketplaceContentTreeHash } from '../util/marketplace-tree-hash';
-import { writeInstallReceipt } from './skill_trust';
+import { restoreAgentReceipts, snapshotAgentReceipts, writeInstallReceipt } from './skill_trust';
 import { topViolationOf } from './skill_reverify';
 import {
   scanSkillDir, scanVerdictBlocksInstall, scanVerdictAllowsOverride,
@@ -228,6 +228,8 @@ function _restoreCrashedPromote(uid: string, root: string, name: string, full: s
 registerDeferred('marketplace:cleanup-staging', () => {
   try {
     cleanupOrphanedStagingDirs(getActiveUserId());
+    // An agent update interrupted between parking the old version and finishing the new one.
+    recoverInterruptedAgentReplaces(userMarketplaceAgentsDir(getActiveUserId()));
   } catch {
     // No active user yet — nothing to clean.
   }
@@ -266,6 +268,9 @@ import { withMarketplaceCacheLock, withMarketplaceInstallLock } from './marketpl
 import { agentPrivateSkillIdsFromBundle, stampPrivateSkillOwners } from './marketplace_private_skills';
 import { MarketplaceError } from './marketplace/errors';
 import { readContentStatus, readInstalledVersion } from './marketplace/installed-version';
+import { builtinCapabilityAvailable } from './agent_dependency_state';
+import { beginAgentReplace, recoverInterruptedAgentReplaces } from './marketplace_agent_replace';
+import { clearAgentUpdateFailure } from './agent_update_failures';
 import {
   agentReadiness, planAgentDependencies, type AgentReadiness, type DependencyItem, type LocalSkillState,
 } from './marketplace_agent_deps';
@@ -1061,11 +1066,16 @@ export async function previewAgentInstallPlan(agentId: string, expect: Marketpla
   const privateIds = agentPrivateSkillIdsFromBundle(
     await _fetchAgentPrivateSkillsBundle(agentId, detail.agent_skills_bundle_url || ''),
   );
-  const plan = planAgentDependencies(skillList, privateIds, _localSkillState);
+  const plan = planAgentDependencies(
+    skillList, privateIds, _localSkillState,
+    (name) => builtinCapabilityAvailable(getActiveUserId(), name, _currentAppVersion()),
+  );
   const items = await Promise.all(plan.items.map(async (item) => {
     let name = item.id;
     if (item.action === 'install') {
       try { name = (await getSkillMetadata(item.id))?.name || item.id; } catch { /* 取不到名字不影响预览 */ }
+    } else if (item.kind === 'builtin') {
+      name = item.id.replace(/^builtin:/, '');
     }
     return { ...item, name };
   }));
@@ -1121,7 +1131,10 @@ async function _installMarketplaceAgentLocked(
     const depSkillNames = _agentSkillDependencyDisplayNames(detail.agent_json, skillList);
     // 依赖规划（复用/随包/阻断/需安装）见 marketplace_agent_deps.ts；"本机已有时怎么办"是其中
     // 一个可替换的策略函数。阻断项在下载任何东西之前就拒绝，保证失败时本机原有状态不变。
-    const depPlan = planAgentDependencies(skillList, privateSkillIds, _localSkillState);
+    const depPlan = planAgentDependencies(
+      skillList, privateSkillIds, _localSkillState,
+      (name) => builtinCapabilityAvailable(getActiveUserId(), name, _currentAppVersion()),
+    );
     const firstBlocked = depPlan.blocked[0];
     if (firstBlocked) {
       throw new MarketplaceInstallError(
@@ -1180,106 +1193,119 @@ async function _installMarketplaceAgentLocked(
     //    on other devices to skip a re-pull when their local copy already matches the manifest's
     //    (version, freshness timestamp).
     const target = userMarketplaceAgentDir(getActiveUserId(), agentId);
-    await fsp.rm(target, { recursive: true, force: true });
-    await fsp.mkdir(target, { recursive: true });
-    const agentJsonFile = path.join(target, 'agent.json');
-    await fsp.writeFile(agentJsonFile, JSON.stringify(detail.agent_json, null, 2), 'utf8');
-    if (privateSkillsZip) {
-      const privateSkillsDir = userMarketplaceAgentSkillsDir(getActiveUserId(), agentId);
-      await fsp.mkdir(privateSkillsDir, { recursive: true });
-      extractBundleSafely(privateSkillsZip, privateSkillsDir);
-      // 贡献的包里 ownerAgent 是贡献者本机 id；改写成本次安装的 Agent id，私有 Skill 才只对它可见
-      await stampPrivateSkillOwners(privateSkillsDir, agentId);
-    }
-    // 4b. Deep security scan for the agent's private skill bundle. Private
-    //     skills bypass the standalone skill install path (and its deep scan),
-    //     so they are scanned here, before the success marker (`_install.json`)
-    //     is written. Same contract as the skill path: `blocked` / `unknown`
-    //     roll the whole agent install back, and the refusal is reported as the
-    //     worst verdict seen. `restricted` / `pass` admit.
-    //
-    //     Receipts for private skills are deliberately NOT written here: their
-    //     trust keys need `(agentId, skillId)` disambiguation (a private skill
-    //     id can shadow a standalone install), which lands with the private
-    //     load-gate work — writing standard-keyed receipts now would verify the
-    //     wrong bytes later.
-    if (privateSkillsZip) {
-      const privateSkillsDir = userMarketplaceAgentSkillsDir(getActiveUserId(), agentId);
-      const sourceTier: SkillSource = String(detail.create_uid || '') === '0'
-        ? 'official'
-        : 'community';
-      const entries = await fsp.readdir(privateSkillsDir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
-        const skillDir = path.join(privateSkillsDir, entry.name);
-        const scan = await scanSkillDir(skillDir, sourceTier);
-        if (scanVerdictBlocksInstall(scan.outcome)) {
-          // Roll back before throwing: a rejected agent leaves nothing on disk,
-          // the same rule as the skill path ("formal assets unchanged").
-          await fsp.rm(target, { recursive: true, force: true });
-          await fsp.rm(privateSkillsDir, { recursive: true, force: true });
-          throw _securityInstallError(agentId, agentName || agentId, scan, 'agent');
-        }
-        // W3: receipt keyed by (agentId, skillId) so the private load gate
-        // verifies THIS tree, never a same-named standalone install.
-        const privateTreeHash = marketplaceContentTreeHash(skillDir);
-        if (privateTreeHash) {
-          const privateReport = validateSkillDir(skillDir, { enforceSkillRunner: false });
-          const top = topViolationOf(privateReport.violations);
-          writeInstallReceipt(
-            getActiveUserId(), entry.name, privateTreeHash, scan,
-            {
-              violationCount: privateReport.violations.length,
-              ...(top?.rule ? { topRule: top.rule } : {}),
-              ...(top?.level ? { topLevel: top.level } : {}),
-            },
-            agentId,
-            skillDir,
-          );
-        }
-        log.info('agent private skill scanned', {
-          agentId, skill: entry.name, outcome: scan.outcome, score: scan.score ?? null,
-        });
+    // Park the installed version before writing the new one, so any failure from here on (a
+    // rejected private-skill scan, a bad bundle, a write error) puts it back instead of leaving
+    // the user without the agent they could use a moment ago. Receipts follow the same rule.
+    const replace = await beginAgentReplace(target, agentId);
+    const receiptSnapshot = replace.hadPrevious ? snapshotAgentReceipts(getActiveUserId(), agentId) : [];
+    try {
+      await fsp.mkdir(target, { recursive: true });
+      const agentJsonFile = path.join(target, 'agent.json');
+      await fsp.writeFile(agentJsonFile, JSON.stringify(detail.agent_json, null, 2), 'utf8');
+      if (privateSkillsZip) {
+        const privateSkillsDir = userMarketplaceAgentSkillsDir(getActiveUserId(), agentId);
+        await fsp.mkdir(privateSkillsDir, { recursive: true });
+        extractBundleSafely(privateSkillsZip, privateSkillsDir);
+        // 贡献的包里 ownerAgent 是贡献者本机 id；改写成本次安装的 Agent id，私有 Skill 才只对它可见
+        await stampPrivateSkillOwners(privateSkillsDir, agentId);
       }
-    }
-    // `_install.json` stores everything the in-app UI needs without re-hitting the network:
-    // version/freshness timestamp for reconcile; create_uid for the author badge on the
-    // agent detail page; `content_sha` for the dev-mode local-edit guard in
-    // `marketplace_reconcile._agentNeedsPull` (see that function's header).
-    const installContentSha = sha256OfFile(agentJsonFile);
-    const installTreeHash = marketplaceContentTreeHash(target);
-    const installedAt = Date.now();
-    await fsp.writeFile(path.join(target, '_install.json'),
-      JSON.stringify({
-        version: detail.version,
-        published_at: detail.published_at,
+      // 4b. Deep security scan for the agent's private skill bundle. Private
+      //     skills bypass the standalone skill install path (and its deep scan),
+      //     so they are scanned here, before the success marker (`_install.json`)
+      //     is written. Same contract as the skill path: `blocked` / `unknown`
+      //     roll the whole agent install back, and the refusal is reported as the
+      //     worst verdict seen. `restricted` / `pass` admit.
+      //
+      //     Receipts for private skills are deliberately NOT written here: their
+      //     trust keys need `(agentId, skillId)` disambiguation (a private skill
+      //     id can shadow a standalone install), which lands with the private
+      //     load-gate work — writing standard-keyed receipts now would verify the
+      //     wrong bytes later.
+      if (privateSkillsZip) {
+        const privateSkillsDir = userMarketplaceAgentSkillsDir(getActiveUserId(), agentId);
+        const sourceTier: SkillSource = String(detail.create_uid || '') === '0'
+          ? 'official'
+          : 'community';
+        const entries = await fsp.readdir(privateSkillsDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          const skillDir = path.join(privateSkillsDir, entry.name);
+          const scan = await scanSkillDir(skillDir, sourceTier);
+          if (scanVerdictBlocksInstall(scan.outcome)) {
+            // Roll back before throwing: a rejected agent leaves nothing on disk,
+            // the same rule as the skill path ("formal assets unchanged").
+            await fsp.rm(target, { recursive: true, force: true });
+            await fsp.rm(privateSkillsDir, { recursive: true, force: true });
+            throw _securityInstallError(agentId, agentName || agentId, scan, 'agent');
+          }
+          // W3: receipt keyed by (agentId, skillId) so the private load gate
+          // verifies THIS tree, never a same-named standalone install.
+          const privateTreeHash = marketplaceContentTreeHash(skillDir);
+          if (privateTreeHash) {
+            const privateReport = validateSkillDir(skillDir, { enforceSkillRunner: false });
+            const top = topViolationOf(privateReport.violations);
+            writeInstallReceipt(
+              getActiveUserId(), entry.name, privateTreeHash, scan,
+              {
+                violationCount: privateReport.violations.length,
+                ...(top?.rule ? { topRule: top.rule } : {}),
+                ...(top?.level ? { topLevel: top.level } : {}),
+              },
+              agentId,
+              skillDir,
+            );
+          }
+          log.info('agent private skill scanned', {
+            agentId, skill: entry.name, outcome: scan.outcome, score: scan.score ?? null,
+          });
+        }
+      }
+      // `_install.json` stores everything the in-app UI needs without re-hitting the network:
+      // version/freshness timestamp for reconcile; create_uid for the author badge on the
+      // agent detail page; `content_sha` for the dev-mode local-edit guard in
+      // `marketplace_reconcile._agentNeedsPull` (see that function's header).
+      const installContentSha = sha256OfFile(agentJsonFile);
+      const installTreeHash = marketplaceContentTreeHash(target);
+      const installedAt = Date.now();
+      await fsp.writeFile(path.join(target, '_install.json'),
+        JSON.stringify({
+          version: detail.version,
+          published_at: detail.published_at,
+          ...(typeof detail.updated_at === 'number' ? { updated_at: detail.updated_at } : {}),
+          agent_json_url: detail.agent_json_url,
+          agent_skills_bundle_url: detail.agent_skills_bundle_url || '',
+          installed_at: installedAt,
+          create_uid: detail.create_uid || '',
+          ...(typeof detail.default_install === 'boolean' ? { default_install: detail.default_install } : {}),
+          ...(typeof detail.is_open_source === 'boolean' ? { is_open_source: detail.is_open_source } : {}),
+          ...(detail.status ? { status: detail.status } : {}),
+          ...(detail.min_app_version ? { min_app_version: detail.min_app_version } : {}),
+          ...(installContentSha ? { content_sha: installContentSha } : {}),
+          ...(installTreeHash ? { content_tree_hash: installTreeHash } : {}),
+        }, null, 2), 'utf8');
+      await touchCacheEntry('agent', agentId);
+
+      // 4. Record in the cloud-synced manifest so other devices reconcile this install.
+      await addAgentInstall(getActiveUserId(), {
+        id: agentId, version: detail.version, published_at: detail.published_at,
         ...(typeof detail.updated_at === 'number' ? { updated_at: detail.updated_at } : {}),
-        agent_json_url: detail.agent_json_url,
+        agent_json_url: detail.agent_json_url, create_uid: detail.create_uid || '',
         agent_skills_bundle_url: detail.agent_skills_bundle_url || '',
         installed_at: installedAt,
-        create_uid: detail.create_uid || '',
         ...(typeof detail.default_install === 'boolean' ? { default_install: detail.default_install } : {}),
-        ...(typeof detail.is_open_source === 'boolean' ? { is_open_source: detail.is_open_source } : {}),
         ...(detail.status ? { status: detail.status } : {}),
-        ...(detail.min_app_version ? { min_app_version: detail.min_app_version } : {}),
-        ...(installContentSha ? { content_sha: installContentSha } : {}),
-        ...(installTreeHash ? { content_tree_hash: installTreeHash } : {}),
-      }, null, 2), 'utf8');
-    await touchCacheEntry('agent', agentId);
-
-    // 4. Record in the cloud-synced manifest so other devices reconcile this install.
-    await addAgentInstall(getActiveUserId(), {
-      id: agentId, version: detail.version, published_at: detail.published_at,
-      ...(typeof detail.updated_at === 'number' ? { updated_at: detail.updated_at } : {}),
-      agent_json_url: detail.agent_json_url, create_uid: detail.create_uid || '',
-      agent_skills_bundle_url: detail.agent_skills_bundle_url || '',
-      installed_at: installedAt,
-      ...(typeof detail.default_install === 'boolean' ? { default_install: detail.default_install } : {}),
-      ...(detail.status ? { status: detail.status } : {}),
-      min_app_version: detail.min_app_version || '',
-    });
-    invalidateCoreAgentSkills();
-    log.info('installed marketplace agent', { agentId, version: detail.version, target: logPathRef(target) });
+        min_app_version: detail.min_app_version || '',
+      });
+      invalidateCoreAgentSkills();
+      log.info('installed marketplace agent', { agentId, version: detail.version, target: logPathRef(target) });
+      await replace.commit();
+      clearAgentUpdateFailure(getActiveUserId(), agentId);
+    } catch (replaceErr) {
+      await replace.rollback().catch((rollbackErr) => log.warn('agent replace rollback failed', { agentId, error: String(rollbackErr) }));
+      if (replace.hadPrevious) restoreAgentReceipts(getActiveUserId(), agentId, receiptSnapshot);
+      invalidateCoreAgentSkills();
+      throw replaceErr;
+    }
 
     return { ok: true, id: agentId };
   } catch (err) {
@@ -1963,6 +1989,7 @@ export async function uninstallMarketplaceAgent(agentId: string): Promise<{ ok: 
       await fsp.rm(marketplaceCacheAgentDir(uid, agentId), { recursive: true, force: true });
     });
     await removeAgentInstall(uid, agentId);
+    clearAgentUpdateFailure(uid, agentId);
     log.info(`uninstalled marketplace agent ${agentId} (local + cache + manifest)`);
     return { ok: true, id: agentId };
   });

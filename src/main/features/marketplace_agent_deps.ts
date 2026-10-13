@@ -14,11 +14,12 @@
  * 会影响不相干的使用。升级走 Skill 自己的更新通道（"在途任务固定版本"机制）。
  *
  * ## 与 skill_list 三类写法的关系
- * 12 位十六进制 = Hub Skill；名字形式且在包内 = 随包私有 Skill；`builtin:` = 客户端内置能力，
- * 本期不支持（指向未核实，D-10）：规划里直接判为阻断，不尝试下载。
+ * 12 位十六进制 = Hub Skill；名字形式且在包内 = 随包私有 Skill；`builtin:` = 客户端内置能力：
+ * 本机具备（开放清单内、系统 Skill 已就位、客户端版本够）就直接用，不下载；不具备则阻断，也不尝试下载。
  * 存量 Agent 的 `skill_list` 可能出现不符合这三类的写法，保持旧行为：按 Hub Skill 处理，不在此拒绝。
  */
 import { classifySkillRef } from './contribution/agent-package-rules';
+import { parseBuiltinRef } from './agent_builtin_capabilities';
 
 /** 本机对某个 Skill 的已知状态。 */
 export interface LocalSkillState {
@@ -50,7 +51,9 @@ export type DependencyAction =
   | 'bundled'
   /** 本机有但被 Hub 停用，Agent 不可用。 */
   | 'blocked_disabled'
-  /** 客户端内置能力，本期不支持。 */
+  /** 客户端内置能力，本机具备，直接使用，不下载。 */
+  | 'builtin'
+  /** 客户端内置能力，但本机不具备（不在开放清单内、系统 Skill 未就位或客户端版本不够）。 */
   | 'blocked_builtin_unsupported';
 
 export interface DependencyItem {
@@ -67,6 +70,8 @@ export interface DependencyPlan {
   reused: string[];
   /** 随包安装的私有 Skill id。 */
   bundled: string[];
+  /** 本机具备的客户端内置能力（`builtin:<name>` 原样）。 */
+  builtin: string[];
   /** 阻断项；非空时 Agent 不可安装/不可用。 */
   blocked: DependencyItem[];
 }
@@ -82,6 +87,8 @@ export function planAgentDependencies(
   skillList: readonly string[] | undefined,
   privateIds: ReadonlySet<string>,
   local: (skillId: string) => LocalSkillState,
+  /** 客户端内置能力在本机是否具备；缺省一律不具备（失败关闭）。 */
+  builtinAvailable: (name: string) => boolean = () => false,
 ): DependencyPlan {
   const items: DependencyItem[] = [];
   const seen = new Set<string>();
@@ -96,7 +103,8 @@ export function planAgentDependencies(
       continue;
     }
     if (classifySkillRef(id) === 'builtin') {
-      items.push({ id, kind: 'builtin', action: 'blocked_builtin_unsupported' });
+      const name = parseBuiltinRef(id);
+      items.push({ id, kind: 'builtin', action: name !== null && builtinAvailable(name) ? 'builtin' : 'blocked_builtin_unsupported' });
       continue;
     }
     const state = local(id);
@@ -111,6 +119,7 @@ export function planAgentDependencies(
     toInstall: items.filter((i) => i.action === 'install').map((i) => i.id),
     reused: items.filter((i) => i.action === 'reuse').map((i) => i.id),
     bundled: items.filter((i) => i.action === 'bundled').map((i) => i.id),
+    builtin: items.filter((i) => i.action === 'builtin').map((i) => i.id),
     blocked: items.filter((i) => i.action === 'blocked_disabled' || i.action === 'blocked_builtin_unsupported'),
   };
 }

@@ -6,10 +6,12 @@
  * 与 `agent-api-proposal.md` v3。枚举与该 schema 保持一致，`agent-package-rules.test.ts` 会读 schema
  * 逐项比对，防止两边漂移。仓库没有 `ajv` 运行时依赖，所以这里用已有的 `zod` 手写等价校验。
  *
- * 边界（本期不做）：`skill_list` 里 `builtin:<name>` 在客户端没有已知指向对象（D-10 未核实），
- * 一律判为「本期不支持」，不实现任何内置能力解析。
+ * `skill_list` 里 `builtin:<name>`（客户端内置能力，产品 2026-10-13 决定做）：名字在 `agent_builtin_capabilities`
+ * 的开放清单内才通过，清单外的拒绝（与 Hub 对清单外引用的口径一致）。
  */
 import { z } from 'zod';
+
+import { isKnownBuiltinRef, parseBuiltinRef } from '../agent_builtin_capabilities';
 
 // ── 枚举（与 agent-package.schema.json 对齐；crown 不可分发，已排除）─────────────
 
@@ -235,7 +237,11 @@ export function validateAgentJson(raw: unknown): ValidateAgentJsonResult {
     seen.add(ref);
     const kind = classifySkillRef(ref);
     if (kind === 'builtin') {
-      issues.push({ code: 'AGENT_SCHEMA_INVALID', rule: 'skill_ref.builtin_unsupported', path, message: `builtin refs are not supported yet: ${ref}` });
+      if (parseBuiltinRef(ref) === null) {
+        issues.push({ code: 'AGENT_SCHEMA_INVALID', rule: 'skill_ref.format', path, message: `invalid builtin ref: ${ref}` });
+      } else if (!isKnownBuiltinRef(ref)) {
+        issues.push({ code: 'AGENT_SCHEMA_INVALID', rule: 'skill_ref.builtin_unknown', path, message: `not an open built-in capability: ${ref}` });
+      }
     } else if (kind === 'invalid') {
       issues.push({ code: 'AGENT_SCHEMA_INVALID', rule: 'skill_ref.format', path, message: `invalid skill ref: ${ref}` });
     }
@@ -245,16 +251,18 @@ export function validateAgentJson(raw: unknown): ValidateAgentJsonResult {
   return { ok: true, agent: parsed.data as DistributableAgentJson };
 }
 
-/** 把 `skill_list` 拆成 Hub 依赖与随包私有 Skill（调用前应已通过 {@link validateAgentJson}）。 */
-export function splitSkillRefs(skillList: readonly string[] | undefined): { hub: string[]; bundled: string[] } {
+/** 把 `skill_list` 拆成 Hub 依赖、随包私有 Skill 与客户端内置能力（调用前应已通过 {@link validateAgentJson}）。 */
+export function splitSkillRefs(skillList: readonly string[] | undefined): { hub: string[]; bundled: string[]; builtin: string[] } {
   const hub: string[] = [];
   const bundled: string[] = [];
+  const builtin: string[] = [];
   for (const ref of skillList ?? []) {
     const kind = classifySkillRef(ref);
     if (kind === 'hub') hub.push(ref);
     else if (kind === 'bundled') bundled.push(ref);
+    else if (kind === 'builtin') builtin.push(ref);
   }
-  return { hub, bundled };
+  return { hub, bundled, builtin };
 }
 
 // ── 本机处理（剥离）──────────────────────────────────────────────────────────

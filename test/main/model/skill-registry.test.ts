@@ -398,6 +398,41 @@ describe('skill-registry › getSystemSkillsPromptBlock', () => {
     expect(regularText).not.toContain('skill-creator');
   });
 
+  it('with `only`: shows just the built-in capabilities an agent references, under its own heading', async () => {
+    writeSkill(systemDir(), 'agent-creator', 'agent-creator', 'Create agents');
+    writeSkill(systemDir(), 'coding', 'coding', 'Change project code');
+    writeSkill(systemDir(), 'package-installer', 'package-installer', 'Install packages');
+    writeSkill(systemDir(), 'kb-mindmap', 'kb-mindmap', 'Mind maps');
+    const { getSystemSkillsPromptBlock } = await loadRegistry();
+
+    const text = await getSystemSkillsPromptBlock(undefined, { only: ['coding', 'kb-mindmap'] });
+    expect(text).toContain('## Built-in capabilities');
+    expect(text).not.toContain('## System skills');
+    expect(text).toContain('**coding**');
+    expect(text).toContain('**kb-mindmap**');
+    // Everything not named stays hidden — including the powerful ones.
+    expect(text).not.toContain('agent-creator');
+    expect(text).not.toContain('package-installer');
+    // The same read-only root and "only when it matches" rule apply.
+    expect(text).toContain('SYSTEM_SKILLS_ROOT');
+    expect(text).toContain('Do not load system skills that do not match.');
+  });
+
+  it('with `only`: a name that is not installed on this machine renders nothing for it, and an empty result is an empty block', async () => {
+    writeSkill(systemDir(), 'coding', 'coding', 'Change project code');
+    const { getSystemSkillsPromptBlock } = await loadRegistry();
+    expect(await getSystemSkillsPromptBlock(undefined, { only: ['kb-mindmap'] })).toBe('');
+    const text = await getSystemSkillsPromptBlock(undefined, { only: ['coding', 'kb-mindmap'] });
+    expect(text).toContain('**coding**');
+    expect(text).not.toContain('kb-mindmap');
+  });
+
+  it('with an empty `only` list: nothing is shown (not "everything")', async () => {
+    writeSkill(systemDir(), 'coding', 'coding', 'Change project code');
+    const { getSystemSkillsPromptBlock } = await loadRegistry();
+    expect(await getSystemSkillsPromptBlock(undefined, { only: [] })).toBe('');
+  });
+
   it('uses an explicit user id for SYSTEM_SKILLS_ROOT', async () => {
     const otherUid = 'u2';
     const systemSkills = await import('../../../src/main/features/system_skills');

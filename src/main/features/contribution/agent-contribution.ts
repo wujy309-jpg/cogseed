@@ -23,6 +23,7 @@ import * as path from 'node:path';
 import type { AgentAdmission, AgentAdmissionDeps } from './agent-admission';
 import { admitAgentContribution } from './agent-admission';
 import { checkPackageLimits, DEFAULT_PACKAGE_LIMITS, type PackageLimits } from './agent-package-rules';
+import { scanFilesForHints, type SensitiveHint } from './agent-sensitive-hints';
 import { buildAgentSubmissionManifest } from './agent-submission-request';
 import {
   stageAgent, type AgentStaging, type AgentStagingSources,
@@ -55,6 +56,8 @@ export interface AgentContributionDeps {
     currentVersion: string; pendingSubmissionId: string | null;
   } | null;
   localAgentUuid: (userId: string, accountId: string, agentId: string) => string;
+  /** 本机已装的 Skill 显示名；取不到返回 null（预览退回显示 ID）。 */
+  skillDisplayName?: (uid: string, skillId: string) => string | null;
   clientVersion: () => string;
   newIdempotencyKey: () => string;
   /** 包上限，来自契约；缺省用契约默认值，不在业务代码里写死。 */
@@ -76,6 +79,12 @@ export type StartResult =
     handled: AgentStaging['handled'];
     bundledSkills: string[];
     hubRefs: string[];
+    /** 客户端内置能力（`builtin:<name>`），不随包提交。 */
+    builtinRefs: string[];
+    /** 预览里可能含本机路径或疑似凭据的位置，只提示不改；有提示时确认预览须明确确认已看过。 */
+    hints: SensitiveHint[];
+    /** Hub 依赖的显示名（仅本机已装的有），键为 12 位 ID。 */
+    hubRefNames: Record<string, string>;
   };
 
 /**
@@ -91,15 +100,27 @@ export async function startAgentContribution(uid: string, agentId: string, deps:
   const session = createSession(uid, { dir: staging.dir, sourceSkillId: agentId, token: staging.token }, staging);
   const admission = await admitAgentContribution(staging, { ...deps.admission, limits: deps.limits ?? deps.admission?.limits });
   session.agent!.admission = admission;
+  const preview = admission.outcome === 'pass' ? buildPreview(staging) : null;
+  // Look only at what would actually be sent. A read failure just means no hint for that file.
+  const hints = preview
+    ? scanFilesForHints(preview.files, (rel) => fs.readFileSync(path.join(staging.dir, ...rel.split('/'))))
+    : [];
+  session.agent!.hints = hints;
   return {
     identity,
     token: session.token,
     declarations: session.declarations,
     admission,
-    preview: admission.outcome === 'pass' ? buildPreview(staging) : null,
+    preview,
     handled: staging.handled,
     bundledSkills: staging.bundledSkills,
     hubRefs: staging.hubRefs,
+    builtinRefs: staging.builtinRefs,
+    hints,
+    hubRefNames: Object.fromEntries(staging.hubRefs.flatMap((id) => {
+      const name = deps.skillDisplayName?.(uid, id);
+      return name ? [[id, name]] : [];
+    })),
   };
 }
 
@@ -108,7 +129,9 @@ export type ConfirmResult =
   | { confirmed: false; reason: 'declarations_missing'; missing: DeclarationKind[] }
   | { confirmed: false; reason: 'terms_stale'; terms_state: TermsState }
   | { confirmed: false; reason: 'digest_mismatch'; preview: PreviewManifest }
-  | { confirmed: false; reason: 'package_limits'; violations: ReturnType<typeof checkPackageLimits> };
+  | { confirmed: false; reason: 'package_limits'; violations: ReturnType<typeof checkPackageLimits> }
+  /** 预览里有可能含本机信息的位置，用户还没明确确认已看过。 */
+  | { confirmed: false; reason: 'hints_unacknowledged'; count: number };
 
 function requireAgentSession(uid: string, token: string): ContributionSession {
   const session = getSession(uid, token);
@@ -120,12 +143,20 @@ function requireAgentSession(uid: string, token: string): ContributionSession {
  * 贡献者确认预览：确认的是**一份具体的 digest**，不是"我看过了"这个动作。
  * 确认时就打包并绑定字节，提交只发这份字节（同键同字节重试的前提）。
  */
-export async function confirmAgentPreview(uid: string, token: string, digest: string, deps: AgentContributionDeps): Promise<ConfirmResult> {
+export async function confirmAgentPreview(
+  uid: string, token: string, digest: string, deps: AgentContributionDeps,
+  opts: { acknowledgeHints?: boolean } = {},
+): Promise<ConfirmResult> {
   const session = requireAgentSession(uid, token);
   if (session.agent!.admission?.outcome !== 'pass') throw new Error('admission not passed');
 
   const missing = missingDeclarations(session.declarations);
   if (missing.length) return { confirmed: false, reason: 'declarations_missing', missing };
+
+  // Content that may carry local paths or credential-like text is sent only after the user has
+  // said they looked at those spots. Nothing is rewritten for them: what they confirm is what goes.
+  const hintCount = session.agent!.hints.length;
+  if (hintCount > 0 && opts.acknowledgeHints !== true) return { confirmed: false, reason: 'hints_unacknowledged', count: hintCount };
 
   const termsState = await deps.fetchTerms();
   const currentTerms: ContributionTerms | null = termsState.status === 'open' ? termsState.terms : null;

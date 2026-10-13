@@ -44,6 +44,7 @@ function makeDeps(over: Partial<AgentContributionDeps> = {}): AgentContributionD
     fetchTerms: async () => ({ status: 'open', terms: TERMS }) as never,
     createSubmission: async (_u, args) => { submitted.push(args as never); return { submission_id: 'sub_1', status: 'PENDING_REVIEW' }; },
     contributionTarget: () => null,
+    skillDisplayName: (_u, id) => (id === 'a3f09c21b7e4' ? '依据材料作答' : null),
     localAgentUuid: () => '00000000-0000-4000-8000-0000000000aa',
     clientVersion: () => '1.2.3',
     newIdempotencyKey: () => `key-${++keyN}`,
@@ -97,6 +98,9 @@ describe('开始', () => {
     expect(start.handled.map((h) => h.field)).toEqual(['created_at']);
     expect(start.bundledSkills).toEqual(['invoice-ocr']);
     expect(start.hubRefs).toEqual(['a3f09c21b7e4']);
+    expect(start.builtinRefs).toEqual([]);
+    // 本机装着的 Hub 技能显示名字；没装的不编造，由页面退回显示 ID
+    expect(start.hubRefNames).toEqual({ 'a3f09c21b7e4': '依据材料作答' });
     expect(JSON.stringify(start.preview)).not.toContain('created_at');
   });
 
@@ -106,6 +110,74 @@ describe('开始', () => {
     expect(start.admission.outcome).toBe('blocked');
     expect(start.preview).toBeNull();
     expect(getSession(UID, token)).not.toBeNull();
+  });
+});
+
+describe('预览里的本机信息提示（只提示，不改正文）', () => {
+  const withPath = (extra: Record<string, unknown> = {}) => write(
+    'cloud/agents/my-expense/agent.json',
+    JSON.stringify({ ...agent, workflow: '1. 读 /Users/lin/Documents/发票2024/ 下的材料', ...extra }),
+  );
+
+  it('正文里有本机路径：开始时给出提示，指出文件与行；正文原样保留', async () => {
+    withPath();
+    const { start } = await startPassing();
+    expect(start.hints).toHaveLength(1);
+    expect(start.hints[0]).toMatchObject({ kind: 'local_path', file: 'agent.json' });
+    expect(start.hints[0].excerpt).toBe('/Users/lin/Documents/发票2024/');
+    expect(start.hints[0].line).toBeGreaterThan(0);
+    // 客户端没有替用户改一个字：预览里的 agent.json 仍含原路径
+    const staged = fs.readFileSync(path.join(getSession(UID, start.token)!.staging.dir, 'agent.json'), 'utf8');
+    expect(staged).toContain('/Users/lin/Documents/发票2024/');
+  });
+
+  it('随包技能里的路径与凭据也提示，文件路径带上 skills/ 前缀', async () => {
+    write('cloud/skills/invoice-ocr/scripts/run.py', "KEY = 'sk-abcdefghijklmnopqrstuvwx'\nprint(1)\n");
+    const { start } = await startPassing();
+    const h = start.hints.find((x) => x.kind === 'credential_like');
+    expect(h?.file).toBe('skills/invoice-ocr/scripts/run.py');
+    expect(h?.excerpt).not.toContain('abcdefghijklmnopqrstuvwx');
+  });
+
+  it('有提示而用户没明确确认：不确认预览，并告知有几处', async () => {
+    withPath();
+    const { token, start, deps } = await startPassing();
+    declareAll(token);
+    expect(await confirmAgentPreview(UID, token, start.preview!.digest, deps)).toEqual({ confirmed: false, reason: 'hints_unacknowledged', count: 1 });
+    expect(getSession(UID, token)!.confirmedPackage).toBeNull();
+    expect(getSession(UID, token)!.idempotencyKey).toBeNull();
+  });
+
+  it('用户明确确认已看过：按预览里的原样确认，提交的字节含原路径（不被替换）', async () => {
+    withPath();
+    const { token, start, deps } = await startPassing();
+    declareAll(token);
+    expect(await confirmAgentPreview(UID, token, start.preview!.digest, deps, { acknowledgeHints: true })).toEqual({ confirmed: true });
+    await submitAgentContribution(UID, token, { version: '1.0.0', targetContentId: null }, deps);
+    const zip = new AdmZip(deps.submitted[0].packageBytes);
+    expect(zip.readAsText('agent.json')).toContain('/Users/lin/Documents/发票2024/');
+  });
+
+  it('没有提示时不要求确认，行为与以前一致', async () => {
+    const { token, start, deps } = await startPassing();
+    expect(start.hints).toEqual([]);
+    declareAll(token);
+    expect(await confirmAgentPreview(UID, token, start.preview!.digest, deps)).toEqual({ confirmed: true });
+  });
+
+  it('准入被阻断时不扫描、不给提示（也不给预览）', async () => {
+    withPath();
+    const deps = makeDeps({ admission: { admitSkill: async () => ({ outcome: 'blocked' }) as unknown as ContributionAdmission, validateAgentSpec: () => okReport } });
+    const { start } = await startPassing(deps);
+    expect(start.preview).toBeNull();
+    expect(start.hints).toEqual([]);
+  });
+
+  it('其他必填项缺失时先报缺项，不因为提示掩盖它', async () => {
+    withPath();
+    const { token, start, deps } = await startPassing();
+    expect(await confirmAgentPreview(UID, token, start.preview!.digest, deps, { acknowledgeHints: true }))
+      .toMatchObject({ confirmed: false, reason: 'declarations_missing' });
   });
 });
 

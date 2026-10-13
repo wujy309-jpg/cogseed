@@ -20,8 +20,7 @@ const fixtureNames = (prefix: string): string[] =>
  * 夹具与 `specs/008-hub-agent-distribution/contracts/fixtures/agent-package/` 同源；Hub 侧读同一组。
  */
 describe('Agent 包夹具', () => {
-  // pos-builtin-ref 在契约层是合法的（Hub 定的第二类），客户端本期明确不实现，单独断言
-  const clientPositive = fixtureNames('pos-').filter((n) => n !== 'pos-builtin-ref.agent.json');
+  const clientPositive = fixtureNames('pos-');
   it.each(clientPositive)('%s 通过', (name) => {
     const result = validateAgentJson(readFixture(name));
     expect(result.ok, JSON.stringify(result)).toBe(true);
@@ -40,11 +39,14 @@ describe('Agent 包夹具', () => {
     }
   });
 
-  it('builtin:<name> 本期不支持，不是被当成私有 Skill', () => {
-    const r = validateAgentJson(readFixture('pos-builtin-ref.agent.json'));
-    // 夹具名为 pos- 是契约层（Hub 定的三类）；客户端本期明确不实现该类
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.issues.map((i) => i.rule)).toContain('skill_ref.builtin_unsupported');
+  it('builtin:<name> 开放清单内的通过；清单外的、形态不对的被拒，原因不同', () => {
+    expect(validateAgentJson(readFixture('pos-builtin-ref.agent.json')).ok).toBe(true);
+    const unknown = validateAgentJson(readFixture('neg-builtin-not-open.agent.json'));
+    expect(unknown.ok).toBe(false);
+    if (!unknown.ok) expect(unknown.issues.map((i) => i.rule)).toContain('skill_ref.builtin_unknown');
+    const badForm = validateAgentJson(readFixture('neg-builtin-uppercase.agent.json'));
+    expect(badForm.ok).toBe(false);
+    if (!badForm.ok) expect(badForm.issues.map((i) => i.rule)).toContain('skill_ref.format');
   });
 });
 
@@ -104,11 +106,11 @@ describe('skill_list 分类', () => {
     expect(classifySkillRef('a/b')).toBe('invalid');
   });
 
-  it('splitSkillRefs 只分出两类可用依赖', () => {
-    expect(splitSkillRefs(['a3f09c21b7e4', 'my-ocr-helper', 'builtin:x'])).toEqual({
-      hub: ['a3f09c21b7e4'], bundled: ['my-ocr-helper'],
+  it('splitSkillRefs 分出三类', () => {
+    expect(splitSkillRefs(['a3f09c21b7e4', 'my-ocr-helper', 'builtin:coding'])).toEqual({
+      hub: ['a3f09c21b7e4'], bundled: ['my-ocr-helper'], builtin: ['builtin:coding'],
     });
-    expect(splitSkillRefs(undefined)).toEqual({ hub: [], bundled: [] });
+    expect(splitSkillRefs(undefined)).toEqual({ hub: [], bundled: [], builtin: [] });
   });
 
   it('重复条目被拒', () => {

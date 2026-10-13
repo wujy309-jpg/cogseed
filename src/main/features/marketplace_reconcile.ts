@@ -55,7 +55,11 @@ import {
   scanSkillDir, scanVerdictBlocksInstall, type SentryScanResult, type SkillSource,
 } from './security/sentry-adapter';
 import { topViolationOf } from './skill_reverify';
-import { writeInstallReceipt, writeReceipt } from './skill_trust';
+import { restoreAgentReceipts, snapshotAgentReceipts, writeInstallReceipt, writeReceipt } from './skill_trust';
+import { beginAgentReplace } from './marketplace_agent_replace';
+import { classifyUpdateFailure, clearAgentUpdateFailure, recordAgentUpdateFailure } from './agent_update_failures';
+import { builtinCapabilityAvailable } from './agent_dependency_state';
+import { isBuiltinRef, parseBuiltinRef } from './agent_builtin_capabilities';
 import { withMarketplaceInstallLock } from './marketplace_locks';
 import { agentPrivateSkillIdsFromBundle } from './marketplace_private_skills';
 import { downloadMarketplaceBundle, parseMarketplaceBundle } from './marketplace_bundle';
@@ -584,12 +588,18 @@ export async function reconcileInstalls(
     try {
       _assertContinue(opts);
       await _pullAgent(uid, row, opts);
+      clearAgentUpdateFailure(uid, row.id);
       pulled_agents++;
       bumpProgress();
     } catch (err) {
       if (err instanceof ReconcileCancelled) return;
       log.warn(`agent ${row.id} pull failed: ${(err as Error).message}`);
       failed.push(`agent:${row.id}`);
+      // Only an update of something installed counts: the old version is still there and usable,
+      // and the card should say a newer one did not make it.
+      if (fs.existsSync(path.join(userMarketplaceAgentDir(uid, row.id), 'agent.json'))) {
+        recordAgentUpdateFailure(uid, row.id, { targetVersion: row.version, reason: classifyUpdateFailure(err) });
+      }
     }
   });
   const skillTasks = skillsNeedingPull.map(async (row) => {
@@ -940,8 +950,18 @@ async function _ensureAgentSkillDependencies(
   privateSkillIds: ReadonlySet<string> = new Set(),
   opts: MarketplaceReconcileOptions = {},
 ): Promise<void> {
-  const skillList = _skillListFromAgentJson(agentJson)
-    .filter((skillId) => !privateSkillIds.has(skillId));
+  const allRefs = _skillListFromAgentJson(agentJson).filter((skillId) => !privateSkillIds.has(skillId));
+  // `builtin:<name>` is a capability the client already carries: nothing to download. One this
+  // client cannot provide (not offered, or an older client) makes the agent unusable here, so the
+  // pull fails and the installed version stays — never a download attempt for a non-Skill id.
+  for (const ref of allRefs) {
+    if (!isBuiltinRef(ref)) continue;
+    const name = parseBuiltinRef(ref);
+    if (name === null || !builtinCapabilityAvailable(uid, name, _currentAppVersion())) {
+      throw new Error(`agent ${agentId} needs the built-in capability ${ref}, which this client does not provide`);
+    }
+  }
+  const skillList = allRefs.filter((skillId) => !isBuiltinRef(skillId));
   if (skillList.length === 0) return;
   const manifest = await readInstalls(uid);
   const manifestSkills = new Map(manifest.skills.map((s) => [s.id, s]));
@@ -1324,38 +1344,47 @@ async function _pullAgentLocked(uid: string, row: AgentInstall, opts: Marketplac
 
   const dir = userMarketplaceAgentDir(uid, row.id);
   _assertContinue(opts);
-  await fsp.rm(dir, { recursive: true, force: true });
-  _assertContinue(opts);
-  await fsp.mkdir(dir, { recursive: true });
-  const agentJsonFile = path.join(dir, 'agent.json');
-  _assertContinue(opts);
-  await fsp.writeFile(agentJsonFile, text, 'utf8');
-  if (privateSkillsZip) {
+  // Park the installed version first: if anything below fails (or the pass is cancelled) the
+  // version the user can use today is put back, receipts included, instead of being wiped.
+  const replace = await beginAgentReplace(dir, row.id);
+  const receiptSnapshot = replace.hadPrevious ? snapshotAgentReceipts(uid, row.id) : [];
+  try {
+    await fsp.mkdir(dir, { recursive: true });
+    const agentJsonFile = path.join(dir, 'agent.json');
     _assertContinue(opts);
-    const privateSkillsDir = userMarketplaceAgentSkillsDir(uid, row.id);
-    await fsp.mkdir(privateSkillsDir, { recursive: true });
-    extractBundleSafely(privateSkillsZip, privateSkillsDir);
+    await fsp.writeFile(agentJsonFile, text, 'utf8');
+    if (privateSkillsZip) {
+      _assertContinue(opts);
+      const privateSkillsDir = userMarketplaceAgentSkillsDir(uid, row.id);
+      await fsp.mkdir(privateSkillsDir, { recursive: true });
+      extractBundleSafely(privateSkillsZip, privateSkillsDir);
+    }
+    _assertContinue(opts);
+    await _writeInstallMeta(dir, {
+      version: current.version, published_at: current.published_at,
+      ...(typeof current.updated_at === 'number' ? { updated_at: current.updated_at } : {}),
+      agent_json_url: current.agent_json_url,
+      agent_skills_bundle_url: current.agent_skills_bundle_url || '',
+      installed_at: current.installed_at,
+      create_uid: current.create_uid || '',
+      ...(typeof current.default_install === 'boolean' ? { default_install: current.default_install } : {}),
+      ...((current.status || current.state) ? { status: current.status || current.state } : {}),
+      ...(minAppVersion ? { min_app_version: minAppVersion } : {}),
+      ...(((): { content_sha?: string } => {
+        const sha = sha256OfFile(agentJsonFile);
+        return sha ? { content_sha: sha } : {};
+      })()),
+      ...(((): { content_tree_hash?: string } => {
+        const hash = marketplaceContentTreeHash(dir);
+        return hash ? { content_tree_hash: hash } : {};
+      })()),
+    });
+    await replace.commit();
+  } catch (err) {
+    await replace.rollback().catch((rollbackErr) => log.warn('agent replace rollback failed', { agentId: row.id, error: String(rollbackErr) }));
+    if (replace.hadPrevious) restoreAgentReceipts(uid, row.id, receiptSnapshot);
+    throw err;
   }
-  _assertContinue(opts);
-  await _writeInstallMeta(dir, {
-    version: current.version, published_at: current.published_at,
-    ...(typeof current.updated_at === 'number' ? { updated_at: current.updated_at } : {}),
-    agent_json_url: current.agent_json_url,
-    agent_skills_bundle_url: current.agent_skills_bundle_url || '',
-    installed_at: current.installed_at,
-    create_uid: current.create_uid || '',
-    ...(typeof current.default_install === 'boolean' ? { default_install: current.default_install } : {}),
-    ...((current.status || current.state) ? { status: current.status || current.state } : {}),
-    ...(minAppVersion ? { min_app_version: minAppVersion } : {}),
-    ...(((): { content_sha?: string } => {
-      const sha = sha256OfFile(agentJsonFile);
-      return sha ? { content_sha: sha } : {};
-    })()),
-    ...(((): { content_tree_hash?: string } => {
-      const hash = marketplaceContentTreeHash(dir);
-      return hash ? { content_tree_hash: hash } : {};
-    })()),
-  });
 }
 
 /** Fetch the skill bundle zip from cloud URL + extract. Same wipe-and-replace semantics.

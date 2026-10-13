@@ -26,6 +26,19 @@ function load(invoke: (channel: string, payload: unknown) => Promise<unknown>, m
     'marketplace.agent_plan_blocked_intro': 'BLOCKED-INTRO',
     'marketplace.agent_plan_blocked_disabled': 'DISABLED',
     'marketplace.agent_plan_blocked_builtin': 'BUILTIN',
+    'marketplace.agent_dep_title': 'DEP-TITLE',
+    'marketplace.agent_dep_desc': 'DEP-DESC',
+    'marketplace.agent_dep_group_hub': 'GROUP-HUB',
+    'marketplace.agent_dep_group_bundled': 'GROUP-BUNDLED',
+    'marketplace.agent_dep_state_install': 'STATE-INSTALL',
+    'marketplace.agent_dep_state_reuse': 'STATE-REUSE',
+    'marketplace.agent_dep_state_bundled': 'STATE-BUNDLED',
+    'marketplace.agent_dep_state_disabled': 'STATE-DISABLED',
+    'marketplace.agent_dep_state_builtin': 'STATE-BUILTIN',
+    'marketplace.agent_dep_group_builtin': 'GROUP-BUILTIN',
+    'marketplace.agent_dep_state_builtin_ok': 'STATE-BUILTIN-OK',
+    'marketplace.agent_compat_title': 'COMPAT',
+    'marketplace.requires_app': 'REQ {version}',
   };
   const context: any = {
     console,
@@ -123,5 +136,72 @@ describe('Agent 安装前确认', () => {
     const ctx = load(invoke);
     await vm.runInContext('_mpConfirmAgentInstall', ctx)(item);
     expect(invoke).toHaveBeenCalledWith('marketplace.agentInstallPlan', expect.objectContaining({ id: 'abcdef123456', version: '1.0.0', published_at: 1, updated_at: 2 }));
+  });
+});
+
+describe('Agent 详情页的依赖清单', () => {
+  const html = (p: Plan | null) => vm.runInContext('_mpAgentDependenciesHtml', load(async () => ({})))(p) as string;
+
+  it('分组展示：Hub 技能（将安装 / 已安装 / 已停用）与随包技能', () => {
+    const out = html(plan([
+      { id: 'a3f09c21b7e4', name: '依据材料作答', kind: 'hub', action: 'reuse' },
+      { id: '5e1c8a02d9b3', name: '发票字段抽取', kind: 'hub', action: 'install' },
+      { id: '9b27f4a1c0e6', name: '报销制度预检', kind: 'hub', action: 'blocked_disabled' },
+      { id: 'invoice-ocr', name: 'invoice-ocr', kind: 'bundled', action: 'bundled' },
+    ]));
+    expect(out).toContain('DEP-TITLE');
+    expect(out).toContain('GROUP-HUB');
+    expect(out).toContain('GROUP-BUNDLED');
+    expect(out).toMatch(/依据材料作答[\s\S]*STATE-REUSE/);
+    expect(out).toMatch(/发票字段抽取[\s\S]*STATE-INSTALL/);
+    expect(out).toMatch(/报销制度预检[\s\S]*STATE-DISABLED/);
+    expect(out).toMatch(/invoice-ocr[\s\S]*STATE-BUNDLED/);
+  });
+
+  it('没有依赖 / 没有预览结果：不渲染这一区', () => {
+    expect(html(plan([]))).toBe('');
+    expect(html(null)).toBe('');
+  });
+
+  it('内置能力单独一组：具备时「由 CogSeed 提供」，不具备时提示更新', () => {
+    const ok = html(plan([{ id: 'builtin:coding', name: 'coding', kind: 'builtin', action: 'builtin' }]));
+    expect(ok).toContain('GROUP-BUILTIN');
+    expect(ok).toContain('STATE-BUILTIN-OK');
+    expect(ok).not.toContain('GROUP-HUB');
+    const lack = html(plan([{ id: 'builtin:coding', name: 'coding', kind: 'builtin', action: 'blocked_builtin_unsupported' }]));
+    expect(lack).toContain('GROUP-BUILTIN');
+    expect(lack).toContain('STATE-BUILTIN');
+    expect(lack).not.toContain('STATE-BUILTIN-OK');
+  });
+
+  it('只有随包技能时不出现 Hub 分组', () => {
+    const out = html(plan([{ id: 'x', name: 'x', kind: 'bundled', action: 'bundled' }]));
+    expect(out).toContain('GROUP-BUNDLED');
+    expect(out).not.toContain('GROUP-HUB');
+  });
+
+  it('名称中的 HTML 被转义', () => {
+    const out = html(plan([{ id: 'x', name: '<b>x</b>', kind: 'hub', action: 'install' }]));
+    expect(out).not.toContain('<b>x');
+    expect(out).toContain('&lt;b>');
+  });
+});
+
+describe('Agent 详情页的客户端兼容行', () => {
+  const html = (item: unknown) => vm.runInContext('_mpAgentCompatibilityHtml', load(async () => ({})))(item) as string;
+
+  it('声明了最低版本：显示「需 CogSeed x.y+」', () => {
+    const out = html({ id: 'a', min_app_version: '1.4.0' });
+    expect(out).toContain('COMPAT');
+    expect(out).toContain('REQ 1.4.0');
+  });
+
+  it('兼容旧字段名', () => {
+    expect(html({ id: 'a', minAppVersion: '1.2.0' })).toContain('REQ 1.2.0');
+  });
+
+  it('没有最低版本（缺席 = 无下限）或没有条目：不渲染', () => {
+    expect(html({ id: 'a' })).toBe('');
+    expect(html(null)).toBe('');
   });
 });

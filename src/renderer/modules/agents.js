@@ -177,8 +177,33 @@ function _agentCardMetaHtml(a, lang) {
   return parts.join('');
 }
 
+/** "Update failed, you can keep using vX" — shown when a newer version of an installed marketplace
+ *  agent could not be applied. The installed version is untouched and still usable. */
+function _agentUpdateFailureText(a) {
+  const f = a && a.update_failure && typeof a.update_failure === 'object' ? a.update_failure : null;
+  if (!f) return null;
+  const reasonKey = `agents.update_failed_reason.${String(f.reason || 'unknown')}`;
+  const reason = t(reasonKey);
+  const keep = String(a.version || '').trim();
+  return {
+    chip: t('agents.update_failed_chip'),
+    hint: t(keep ? 'agents.update_failed_hint' : 'agents.update_failed_hint_no_version')
+      .replace('{target}', String(f.target_version || ''))
+      .replace('{version}', keep)
+      .replace('{reason}', reason && reason !== reasonKey ? reason : t('agents.update_failed_reason.unknown')),
+  };
+}
+
 function _agentPlatformStatusChipsHtml(a) {
-  return '';
+  // Community contributions are marked so users can tell them from official content at a glance.
+  const community = a && a.author_tier === 'community'
+    ? `<span class="agent-card-chip is-community">${escapeHtml(t('agents.community_chip'))}</span>`
+    : '';
+  const failed = _agentUpdateFailureText(a);
+  const updateFailed = failed
+    ? `<span class="agent-card-chip is-deps-warning" title="${escapeHtml(failed.hint)}">${escapeHtml(failed.chip)}</span>`
+    : '';
+  return community + updateFailed;
 }
 
 function _agentLabel(key, zh, en, ja) {
@@ -890,6 +915,13 @@ function renderAgentsGrid(agents) {
     // review status here when that UI is enabled.
     const provenanceChips = _isAgentPlatformSource(a.source) ? _agentPlatformStatusChipsHtml(a) : '';
     const canContribute = _isAgentContributable(a) && !isMock;
+    // Dependencies Hub disabled make the agent unusable (same rule as install); a merely missing
+    // dependency only warns, because stale refs in older agents were always tolerated at runtime.
+    const depState = a.dependency_state && typeof a.dependency_state === 'object' ? a.dependency_state : null;
+    const depsBlocked = depState?.status === 'deps_blocked';
+    const depsChip = depState && depState.status !== 'ready'
+      ? `<span class="agent-card-chip is-deps-warning" title="${escapeHtml(t(depsBlocked ? 'agents.deps_blocked_hint' : 'agents.deps_missing_hint'))}">${escapeHtml(t(depsBlocked ? 'agents.deps_blocked_chip' : 'agents.deps_missing_chip'))}</span>`
+      : '';
     return `
       <div class="agent-card ui-resource-card${enabled ? '' : ' is-disabled'}" data-id="${escapeHtml(a.agent_id)}" data-source="${escapeHtml(a.source || '')}">
         <button type="button" class="agent-card-open" data-agent-open aria-label="${escapeHtml(openLabel)}"></button>
@@ -903,7 +935,7 @@ function renderAgentsGrid(agents) {
         </div>
         <div class="${descClass}">${escapeHtml(descText)}</div>
         <div class="agent-card-actions">
-          ${cliChip}${provenanceChips}
+          ${cliChip}${provenanceChips}${depsChip}
           ${_agentDeliveryChip(deliveryCount)}
           ${_agentExplicitCountChip(_agentLabel('agents.card_memory_count', '{n} 记忆', '{n} memory', '{n} 記憶'), memoryCount)}
           ${_agentExplicitCountChip(_agentLabel('agents.card_skill_count', '{n} 技能', '{n} skills', '{n} スキル'), skillCount)}
@@ -919,8 +951,8 @@ function renderAgentsGrid(agents) {
             role: 'primary',
             size: 'sm',
             className: 'agent-card-use',
-            disabled: !(enabled && !isMock),
-            attrs: { 'data-agent-use': true, title: useTitle },
+            disabled: !(enabled && !isMock && !depsBlocked),
+            attrs: { 'data-agent-use': true, title: depsBlocked ? t('agents.deps_blocked_hint') : useTitle },
           }) : ''}
         </div>
       </div>
@@ -1294,6 +1326,10 @@ function _renderSourceMetaHtml(item) {
   if (item.version) {
     const versionLabel = t('marketplace.version').replace('{version}', String(item.version));
     parts.push(`<span class="agents-detail-source is-version">${escapeHtml(versionLabel)}</span>`);
+  }
+  const updateFailed = _agentUpdateFailureText(item);
+  if (updateFailed) {
+    parts.push(`<span class="agents-detail-source is-update-failed" role="status" title="${escapeHtml(updateFailed.hint)}">${escapeHtml(updateFailed.hint)}</span>`);
   }
   if (_agentSource(item.source) !== 'custom') {
     const lang = (typeof getLang === 'function') ? getLang() : 'en';

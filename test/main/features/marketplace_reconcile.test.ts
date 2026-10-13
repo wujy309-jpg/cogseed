@@ -741,6 +741,125 @@ describe('marketplace reconcile', () => {
     expect(agentJson.skill_list).toEqual(['dep-skill']);
   });
 
+  /**
+   * 更新已装 Agent 失败必须保留旧版（产品 2026-10-13）。
+   * 以前这里是先 rm 旧目录再写新的，更新途中失败就把用户能用的旧版一起弄丢了。
+   */
+  describe('updating an installed agent', () => {
+    const agentDir = () => path.join(tmpDir, 'u1', 'local', 'marketplace', 'agents', 'agent-updated');
+    const failuresFile = () => path.join(tmpDir, 'u1', 'local', 'marketplace', '_agent_update_failures.json');
+    const manifestRow = (base: string) => ({
+      id: 'agent-updated', version: '2.0.0', published_at: 100, updated_at: 200,
+      agent_json_url: `${base}/agent.json`, installed_at: 300,
+    });
+    const serveAgent = (body: Record<string, unknown>) => listen((req, res) => {
+      if (req.url === '/agent.json') {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify(body));
+        return;
+      }
+      res.statusCode = 404;
+      res.end('not found');
+    });
+    const installOldVersion = (): void => {
+      const dir = writeLocalAgent('agent-updated', { version: '1.0.0', published_at: 50, updated_at: 60, installed_at: 70 });
+      fs.writeFileSync(path.join(dir, 'agent.json'), JSON.stringify({ agent_id: 'agent-updated', name: 'Old Agent', skill_list: [] }), 'utf8');
+      fs.mkdirSync(path.join(dir, 'skills', 'old-private'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'skills', 'old-private', 'SKILL.md'), '---\nname: old-private\n---\n', 'utf8');
+    };
+
+    it('keeps the old version, with its private skills, when the update fails halfway', async () => {
+      installOldVersion();
+      const base = await serveAgent({ agent_id: 'agent-updated', name: 'New Agent', skill_list: ['dep-skill'] });
+      postJsonMock.mockImplementation(async (p: string) => {
+        // The dependency cannot be resolved: the update must fail as a whole.
+        if (p === '/marketplace/skills/list') return { list: [], total: 0 };
+        throw new Error(`unexpected path ${p}`);
+      });
+      writeManifest({ version: 1, agents: [manifestRow(base)], skills: [] });
+
+      const reconcile = await import('../../../src/main/features/marketplace_reconcile');
+      const result = await reconcile.reconcileInstalls('u1') as any;
+
+      expect(result.pulled_agents).toBe(0);
+      expect(result.failed).toHaveLength(1);
+      const kept = JSON.parse(fs.readFileSync(path.join(agentDir(), 'agent.json'), 'utf8'));
+      expect(kept.name).toBe('Old Agent');
+      expect(fs.existsSync(path.join(agentDir(), 'skills', 'old-private', 'SKILL.md'))).toBe(true);
+      expect(JSON.parse(fs.readFileSync(path.join(agentDir(), '_install.json'), 'utf8')).version).toBe('1.0.0');
+      // No backup directory is left behind to confuse the agent list.
+      const leftovers = fs.readdirSync(path.dirname(agentDir())).filter((n) => n.startsWith('.prev-'));
+      expect(leftovers).toEqual([]);
+      // The failure is remembered (reason code only) so the card can say a newer version did not make it.
+      const recorded = JSON.parse(fs.readFileSync(failuresFile(), 'utf8'));
+      expect(recorded['agent-updated']).toMatchObject({ target_version: '2.0.0', reason: 'dependency_missing' });
+    });
+
+    it('replaces the old version completely when the update succeeds (nothing of the old tree leaks in)', async () => {
+      installOldVersion();
+      const base = await serveAgent({ agent_id: 'agent-updated', name: 'New Agent', skill_list: [] });
+      writeManifest({ version: 1, agents: [manifestRow(base)], skills: [] });
+
+      const reconcile = await import('../../../src/main/features/marketplace_reconcile');
+      const result = await reconcile.reconcileInstalls('u1') as any;
+
+      expect(result.pulled_agents).toBe(1);
+      expect(JSON.parse(fs.readFileSync(path.join(agentDir(), 'agent.json'), 'utf8')).name).toBe('New Agent');
+      expect(fs.existsSync(path.join(agentDir(), 'skills', 'old-private'))).toBe(false);
+      expect(JSON.parse(fs.readFileSync(path.join(agentDir(), '_install.json'), 'utf8')).version).toBe('2.0.0');
+      expect(fs.readdirSync(path.dirname(agentDir())).filter((n) => n.startsWith('.prev-'))).toEqual([]);
+      // A success clears any earlier failure note.
+      expect(fs.existsSync(failuresFile())).toBe(false);
+    });
+
+    it('a later successful update clears the failure note left by an earlier failed one', async () => {
+      installOldVersion();
+      fs.writeFileSync(failuresFile(), JSON.stringify({ 'agent-updated': { target_version: '2.0.0', at: 1, reason: 'network' } }));
+      const base = await serveAgent({ agent_id: 'agent-updated', name: 'New Agent', skill_list: [] });
+      writeManifest({ version: 1, agents: [manifestRow(base)], skills: [] });
+
+      const reconcile = await import('../../../src/main/features/marketplace_reconcile');
+      const result = await reconcile.reconcileInstalls('u1') as any;
+
+      expect(result.pulled_agents).toBe(1);
+      expect(fs.existsSync(failuresFile())).toBe(false);
+    });
+
+    it('does not try to download a builtin:<name> reference as a Skill, and the update succeeds', async () => {
+      fetchImmutableSourceMock.mockClear(); // calls recorded by earlier tests are not this test's
+      const systemSkill = path.join(tmpDir, 'u1', 'local', 'system', 'skills', 'coding');
+      fs.mkdirSync(systemSkill, { recursive: true });
+      fs.writeFileSync(path.join(systemSkill, 'SKILL.md'), '---\nname: coding\n---\n', 'utf8');
+      installOldVersion();
+      const base = await serveAgent({ agent_id: 'agent-updated', name: 'New Agent', skill_list: ['builtin:coding'] });
+      postJsonMock.mockImplementation(async (p: string) => { throw new Error(`unexpected network call ${p}`); });
+      writeManifest({ version: 1, agents: [manifestRow(base)], skills: [] });
+
+      const reconcile = await import('../../../src/main/features/marketplace_reconcile');
+      const result = await reconcile.reconcileInstalls('u1') as any;
+
+      expect(result.pulled_agents).toBe(1);
+      expect(result.failed).toEqual([]);
+      expect(fetchImmutableSourceMock).not.toHaveBeenCalled();
+      expect(JSON.parse(fs.readFileSync(path.join(agentDir(), 'agent.json'), 'utf8')).skill_list).toEqual(['builtin:coding']);
+    });
+
+    it('fails the update, keeping the old version, when a referenced built-in capability is not available here', async () => {
+      installOldVersion();
+      // `coding` is offered by the client but its system skill is not installed on this machine.
+      const base = await serveAgent({ agent_id: 'agent-updated', name: 'New Agent', skill_list: ['builtin:coding'] });
+      postJsonMock.mockImplementation(async (p: string) => { throw new Error(`unexpected network call ${p}`); });
+      writeManifest({ version: 1, agents: [manifestRow(base)], skills: [] });
+
+      const reconcile = await import('../../../src/main/features/marketplace_reconcile');
+      const result = await reconcile.reconcileInstalls('u1') as any;
+
+      expect(result.pulled_agents).toBe(0);
+      expect(result.failed).toHaveLength(1);
+      expect(JSON.parse(fs.readFileSync(path.join(agentDir(), 'agent.json'), 'utf8')).name).toBe('Old Agent');
+    });
+  });
+
   it('emits a visible status while default installs are being seeded', async () => {
     const reconcile = await import('../../../src/main/features/marketplace_reconcile');
     const statuses: any[] = [];

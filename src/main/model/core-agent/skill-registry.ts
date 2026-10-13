@@ -1189,19 +1189,24 @@ export async function getSystemPromptBlock(opts: SystemPromptBlockOptions = {}):
   return block;
 }
 
-export async function getSystemSkillsPromptBlock(uid?: string): Promise<string> {
+export async function getSystemSkillsPromptBlock(uid?: string, opts: { only?: readonly string[] } = {}): Promise<string> {
   const resolvedUid = uid || getActiveUserId();
   const root = path.resolve(userSystemSkillsDir(resolvedUid));
   const loaderMod = await import('#core-agent');
   const loader = new loaderMod.SkillLoader({ dirs: [root] });
-  const specs = loader.list();
+  // `only`: the agent references these client built-in capabilities (`builtin:<name>` in its
+  // skill_list) — show just those instead of every system skill.
+  const onlySet = opts.only ? new Set(opts.only) : null;
+  const specs = onlySet ? loader.list().filter((s) => onlySet.has(s.id)) : loader.list();
   if (!specs.length) return '';
   const lang = descriptionLang(getCurrentLang());
   const pick = await getPickDescription();
   const lines = [
-    '## System skills',
+    onlySet ? '## Built-in capabilities' : '## System skills',
     '',
-    'System skills are product protocols. They are not marketplace or custom skills.',
+    onlySet
+      ? 'These built-in capabilities ship with CogSeed and this agent is set up to use them. They are not marketplace or custom skills.'
+      : 'System skills are product protocols. They are not marketplace or custom skills.',
     '',
     'When the task or the work you decide to perform clearly matches a description below, use that system skill by reading its SKILL.md. Do not load system skills that do not match.',
     '',

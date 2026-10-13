@@ -246,3 +246,48 @@ describe('Hub contribution view model: contribution type', () => {
     expect(keys({ type: 'bogus' })).toEqual(['a', 'legacy', 'odd', 's']);
   });
 });
+
+describe('Hub contribution view model: local-information hints', () => {
+  const hints = [
+    { kind: 'local_path', file: 'agent.json', line: 4, excerpt: '/Users/lin/x' },
+    { kind: 'credential_like', file: 'agent.json', line: 6, excerpt: 'sk-a…****' },
+    { kind: 'local_path', file: 'skills/ocr/SKILL.md', line: 2, excerpt: '/home/u/y' },
+  ];
+
+  it('groups hints by file with the set of flagged lines', () => {
+    const grouped = model.hintsByFile(hints);
+    expect([...grouped.keys()]).toEqual(['agent.json', 'skills/ocr/SKILL.md']);
+    expect([...grouped.get('agent.json').lines].sort()).toEqual([4, 6]);
+    expect(grouped.get('agent.json').items).toHaveLength(2);
+  });
+
+  it('ignores malformed hints and non-arrays', () => {
+    expect(model.hintsByFile(null).size).toBe(0);
+    expect(model.hintsByFile([{ kind: 'x' }, null, 'oops', { file: '' }]).size).toBe(0);
+    const grouped = model.hintsByFile([{ file: 'a', line: 'NaN', kind: 'local_path', excerpt: 'e' }]);
+    expect(grouped.get('a').lines.size).toBe(0);
+  });
+
+  it('flagLines marks only the flagged lines, and joining them gives the content back unchanged', () => {
+    const content = 'one\ntwo /Users/x\nthree';
+    const lines = model.flagLines(content, new Set([2]));
+    expect(lines).toEqual([
+      { text: 'one', flagged: false }, { text: 'two /Users/x', flagged: true }, { text: 'three', flagged: false },
+    ]);
+    // Nothing was rewritten: only marked.
+    expect(lines.map((l: { text: string }) => l.text).join('\n')).toBe(content);
+  });
+
+  it('flagLines accepts an array of line numbers; no flagged lines or no content is harmless', () => {
+    expect(model.flagLines('a\nb', [1]).map((l: { flagged: boolean }) => l.flagged)).toEqual([true, false]);
+    expect(model.flagLines('a\nb', new Set()).every((l: { flagged: boolean }) => !l.flagged)).toBe(true);
+    expect(model.flagLines(undefined, undefined)).toEqual([{ text: '', flagged: false }]);
+  });
+
+  it('with hints, submit stays unavailable until the user says they looked', () => {
+    const base = { origin: { type: 'original' }, version: '1.0.0', accepted: { terms: true, maintenance: true }, hintCount: 3 };
+    expect(model.agentMissing(base)).toEqual(['hints']);
+    expect(model.agentMissing({ ...base, accepted: { ...base.accepted, hints: true } })).toEqual([]);
+    expect(model.agentMissing({ ...base, hintCount: 0 })).toEqual([]);
+  });
+});

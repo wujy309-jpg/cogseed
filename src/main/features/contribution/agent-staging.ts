@@ -58,6 +58,8 @@ export interface AgentStaging {
   blockers: AgentBlocker[];
   /** `skill_list` 里的 Hub Skill（本机无需随包）。 */
   hubRefs: string[];
+  /** `skill_list` 里的客户端内置能力（`builtin:<name>`，不随包提交，只写在 `agent.json` 里）。 */
+  builtinRefs: string[];
   /** 已随包复制的私有 Skill 名字。 */
   bundledSkills: string[];
   /** 暂存阶段发现的问题（本机缺少被引用的私有 Skill 等）。 */
@@ -117,7 +119,7 @@ export async function stageAgent(agentId: string, src: AgentStagingSources): Pro
 
   const { agent, handled, blockers } = toDistributableAgent(raw);
   const skillList = Array.isArray(agent.skill_list) ? agent.skill_list.filter((x): x is string => typeof x === 'string') : [];
-  const { hub, bundled } = splitSkillRefs(skillList);
+  const { hub, bundled, builtin } = splitSkillRefs(skillList);
 
   await fsp.mkdir(src.stagingRoot, { recursive: true });
   const token = randomBytes(6).toString('hex');
@@ -172,7 +174,7 @@ export async function stageAgent(agentId: string, src: AgentStagingSources): Pro
     throw err;
   }
 
-  return { dir, sourceAgentId: agentId, token, handled, blockers, hubRefs: hub, bundledSkills: bundledCopied, issues };
+  return { dir, sourceAgentId: agentId, token, handled, blockers, hubRefs: hub, builtinRefs: builtin, bundledSkills: bundledCopied, issues };
 }
 
 /** 销毁副本；不抛错。 */

@@ -381,6 +381,15 @@ describe('agents › normalizeAgent', () => {
     expect(norm?.skill_list).toEqual([]);
   });
 
+  it('keeps well-formed builtin:<name> entries on load (safeId alone would drop them)', async () => {
+    const a = await loadAgents();
+    const norm = a.normalizeAgent({
+      agent_id: 'x', name: 'N',
+      skill_list: ['ok-one', 'builtin:coding', 'builtin:Bad', 'builtin:', 'builtin:a b', 'builtin:kb-mindmap'],
+    } as any, 'custom');
+    expect(norm?.skill_list).toEqual(['ok-one', 'builtin:coding', 'builtin:kb-mindmap']);
+  });
+
   it('filters non-string and non-safeId entries from skill_list', async () => {
     const a = await loadAgents();
     const norm = a.normalizeAgent({
@@ -1553,6 +1562,25 @@ describe('agents › updateCustomAgent', () => {
     expect(raw).not.toHaveProperty('description');
   });
 
+  it('keeps open built-in capabilities on update, drops ones the client does not offer, and dedupes', async () => {
+    writeSkillOnDisk('efb0fe5d9664', 'skill-creator');
+    writeCustomAgent('abc', { name: 'Old', workflow: 'wf' });
+    const a = await loadAgents();
+    const updated = await a.updateCustomAgent('abc', {
+      skill_list: ['efb0fe5d9664', 'builtin:coding', 'builtin:coding', 'builtin:package-installer', 'builtin:Bad'],
+    } as any);
+    expect(updated?.skill_list).toEqual(['efb0fe5d9664', 'builtin:coding']);
+    const raw = JSON.parse(fs.readFileSync(path.join(customAgentsDir(), 'abc', 'agent.json'), 'utf8'));
+    expect(raw.skill_list).toEqual(['efb0fe5d9664', 'builtin:coding']);
+  });
+
+  it('a skill_list that only names a built-in capability is not the same as an empty list', async () => {
+    writeCustomAgent('abc', { name: 'Old', workflow: 'wf' });
+    const a = await loadAgents();
+    const updated = await a.updateCustomAgent('abc', { skill_list: ['builtin:grounded-material-qa'] } as any);
+    expect(updated?.skill_list).toEqual(['builtin:grounded-material-qa']);
+  });
+
   it('normalizes workflow skill references on update', async () => {
     writeSkillOnDisk('efb0fe5d9664', 'skill-creator');
     writeCustomAgent('abc', { name: 'Old', workflow: 'wf' });
@@ -2378,6 +2406,51 @@ describe('agents › list cache invalidation', () => {
     expect(found?.marketplace_published_at).toBe(1747066800000);
     expect(found?.marketplace_updated_at).toBe(1747067800000);
     expect(found?.default_install).toBe(true);
+  });
+
+  it('surfaces a failed update on an installed marketplace agent only while the local version is still behind', async () => {
+    const dir = path.join(builtinAgentsDir(), 'platform-agent');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'agent.json'), JSON.stringify({ agent_id: 'platform-agent', name: 'Platform agent', description: '', workflow: '' }));
+    fs.writeFileSync(path.join(dir, '_install.json'), JSON.stringify({ version: '1.0.0' }));
+    const failuresFile = path.join(path.dirname(builtinAgentsDir()), '_agent_update_failures.json');
+    const a = await loadAgents();
+
+    fs.writeFileSync(failuresFile, JSON.stringify({ 'platform-agent': { target_version: '2.0.0', at: 1, reason: 'dependency_disabled' } }));
+    const behind = (await a.listAgents()).find((x) => x.agent_id === 'platform-agent');
+    expect(behind?.update_failure).toEqual({ target_version: '2.0.0', at: 1, reason: 'dependency_disabled' });
+    expect(behind?.version).toBe('1.0.0'); // the installed version is untouched and still the one in use
+
+    // The local version has caught up (e.g. installed by hand later): the note no longer applies.
+    fs.writeFileSync(failuresFile, JSON.stringify({ 'platform-agent': { target_version: '1.0.0', at: 1, reason: 'network' } }));
+    expect((await a.listAgents()).find((x) => x.agent_id === 'platform-agent')?.update_failure).toBeUndefined();
+
+    // No record at all, or a custom agent with the same id in the record: nothing is attached.
+    fs.rmSync(failuresFile, { force: true });
+    expect((await a.listAgents()).find((x) => x.agent_id === 'platform-agent')?.update_failure).toBeUndefined();
+  });
+
+  it('tells official from community agents by the install record author uid', async () => {
+    const write = (id: string, installMeta: Record<string, unknown> | null) => {
+      const dir = path.join(builtinAgentsDir(), id);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'agent.json'), JSON.stringify({ agent_id: id, name: id, description: '', workflow: '' }));
+      if (installMeta) fs.writeFileSync(path.join(dir, '_install.json'), JSON.stringify({ version: '1.0.0', ...installMeta }));
+    };
+    write('official-agent', { create_uid: '0' });
+    write('community-agent', { create_uid: '8f3a21' });
+    write('blank-author-agent', { create_uid: '  ' });
+    write('no-author-agent', {});
+    write('no-install-record-agent', null);
+
+    const a = await loadAgents();
+    const byId = new Map((await a.listAgents()).map((x) => [x.agent_id, x]));
+    expect(byId.get('official-agent')?.author_tier).toBe('official');
+    expect(byId.get('community-agent')?.author_tier).toBe('community');
+    // No author information: do not guess either way.
+    expect(byId.get('blank-author-agent')?.author_tier).toBeUndefined();
+    expect(byId.get('no-author-agent')?.author_tier).toBeUndefined();
+    expect(byId.get('no-install-record-agent')?.author_tier).toBeUndefined();
   });
 });
 

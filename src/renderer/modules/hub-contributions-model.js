@@ -272,10 +272,37 @@
     if (!(isRecord(d.accepted) && d.accepted.terms === true)) missing.push('terms');
     if (!(isRecord(d.accepted) && d.accepted.maintenance === true)) missing.push('maintenance');
     if (d.hasBundled === true && !(isRecord(d.accepted) && d.accepted.skills === true)) missing.push('skills');
+    // Spots that may hold local paths or credential-like text: the user must say they looked.
+    if (Number(d.hintCount) > 0 && !(isRecord(d.accepted) && d.accepted.hints === true)) missing.push('hints');
     return missing;
   }
 
+  // Group the main process's hint list by file, with the set of 1-based lines per file, so the
+  // preview can mark those lines in the file view and list them in the hints panel.
+  function hintsByFile(hints) {
+    const out = new Map();
+    for (const hint of Array.isArray(hints) ? hints : []) {
+      if (!isRecord(hint) || !text(hint.file)) continue;
+      const entry = out.get(hint.file) || { file: hint.file, lines: new Set(), items: [] };
+      const line = Number(hint.line);
+      if (Number.isInteger(line) && line > 0) entry.lines.add(line);
+      entry.items.push({ kind: text(hint.kind), line, excerpt: text(hint.excerpt) });
+      out.set(hint.file, entry);
+    }
+    return out;
+  }
+
+  // Split file content into lines and say which are flagged. The page decides how to render them (the
+  // model stays markup-free). Joining the `text` fields with "\n" gives back the content unchanged:
+  // nothing is rewritten, only marked.
+  function flagLines(content, lines) {
+    const flagged = lines instanceof Set ? lines : new Set(Array.isArray(lines) ? lines : []);
+    return text(content).split('\n').map((line, index) => ({ text: line, flagged: flagged.has(index + 1) }));
+  }
+
   const api = {
+    hintsByFile,
+    flagLines,
     classifyAgentAdmission,
     agentCheckRows,
     agentMissing,

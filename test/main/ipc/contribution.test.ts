@@ -32,6 +32,15 @@ describe('contribution IPC validation boundary', () => {
       .rejects.toThrow('invalid target_content_id');
   });
 
+  it('the hints acknowledgement is forwarded only when it is exactly true', async () => {
+    // Without a session the handler fails on the session lookup either way; what matters is that
+    // truthy-but-not-true values (strings, numbers) are not accepted as an acknowledgement before that.
+    for (const value of ['true', 1, {}, null, undefined]) {
+      await expect(invokeHandlers['contribution.agent.confirm']({ token: 'aaaaaaaaaaaa', digest: 'd', acknowledge_hints: value }, { userId: 'nobody' }))
+        .rejects.toThrow('session not found');
+    }
+  });
+
   it('does not reveal whether another account owns an Agent contribution session', async () => {
     await expect(invokeHandlers['contribution.agent.confirm']({ token: 'aaaaaaaaaaaa', digest: 'd' }, { userId: 'other-account' }))
       .rejects.toThrow('session not found');
