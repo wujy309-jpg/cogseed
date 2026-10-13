@@ -422,6 +422,13 @@ export function createPiProvider(config: {
       const reasoning = effectiveReasoning(params.reasoning);
       const sessionId = cacheSafeSessionId(params.sessionId);
 
+      // Request identity + whether the routing headers actually ride along. The
+      // 2026-10-13 pattern was "first attempt 400 MissingSessionID, retry fine", so the
+      // next step is comparing these two lines instead of guessing again.
+      log.info(
+        `stream ${providerId}/${model.id} customModel=${config.customModel ? 'yes' : 'no'}`
+        + ` headers=${model.headers ? Object.keys(model.headers).sort().join(',') : '-'}`,
+      );
       log.debug(`stream ${providerId}/${model.id}`);
 
       try {
