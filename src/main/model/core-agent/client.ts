@@ -1671,7 +1671,10 @@ export async function* streamChatWithModel(opts: ChatOptions): AsyncGenerator<St
       if (firstStreamEventAt === null) {
         firstStreamEventAt = Date.now();
         const firstByteMs = firstStreamEventAt - runStartedAt;
-        log.info('model turn first byte', { ...turnLogContext, ms: firstByteMs });
+        // Compact, greppable line. The structured variant buried `ms` at the end of a
+        // very long context spread, so the one number that answers "network or model?"
+        // could not be extracted from the log (2026-10-13). Detail stays on the slow path.
+        log.info(`model turn first byte ms=${firstByteMs}`);
         if (firstByteMs >= FIRST_BYTE_SLOW_MS) {
           log.warn('model turn slow to first byte', {
             ...turnLogContext,
