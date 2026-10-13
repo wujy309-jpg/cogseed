@@ -93,7 +93,7 @@
 - [ ] T037 Hub 白名单扩充（`content_type:'agent'`、`local_agent_id`、`metadata`）与 B-01/B-02/B-05 就绪后做**最小联调**：提交一个最简 Agent → 审核 → 发布 → 另一客户端安装
 - [ ] T038 依赖版本规则（D-13）取得产品书面认可；不兼容时「无回退」的限制写进验收——**说明已起草**（`给中扬-需要产品确认的事项.md`，含更新流程、本机路径处理、Brief 同步、联调场景与 Windows），待你发送与中扬回复
 - [ ] T039 联合冻结记录：`agent-package.schema.json`、接口清单、夹具三样一起；Hub 与客户端各自签字，联调通过 ≠ 冻结
-- [ ] T040 验收记录（沿用 001 的 `acceptance-*.md` 分层写法：真实界面 / Hub HTTP 联调 / 自动化 / 未执行）
+- [~] T040 验收记录（沿用 001 的 `acceptance-*.md` 分层写法：真实界面 / Hub HTTP 联调 / 自动化 / 未执行）（**底稿已出**：`acceptance-draft-2026-10-13.md`，真实应用 7 项通过 + 联调 36/36、53/53；贡献的真实端到端、依赖场景、Windows 仍欠）
 - [ ] T041 提交与 PR：需用户另行明确授权；合并 `develop` 后重核对 renderer↔main IPC 并跑 `npm run typecheck`
 
 ---
