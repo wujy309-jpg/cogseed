@@ -171,6 +171,28 @@ describe('本机处理（toDistributableAgent）', () => {
     expect(crown.blockers.map((b) => b.rule)).toContain('agent.icon_not_distributable');
   });
 
+  it('本机自建 Agent（真实落盘形态：带 _v 与派生的 in_process interface_contract）可贡献，两者被剥离', () => {
+    const local = {
+      agent_id: '619bf57c0638', name: 'ExpenseHelper', description_zh: '核对报销材料并给出预检意见', description_en: '',
+      workflow: '1. 读取材料', created_at: '2026-10-12T20:54:25', updated_at: '2026-10-12T21:26:25', _v: 2,
+      status: 'approved', category: 'office', icon: 'bot', color: 'coral',
+      interface_contract: { version: 1, role: 'cogseed_core', runtime: { kind: 'in_process' }, io: { input: 'task_message', output: 'final_message' } },
+    };
+    const out = toDistributableAgent(local);
+    expect(out.blockers).toEqual([]);
+    expect(out.agent).not.toHaveProperty('_v');
+    expect(out.agent).not.toHaveProperty('interface_contract');
+    expect(out.handled.map((h) => h.field)).toEqual(expect.arrayContaining(['_v', 'interface_contract']));
+    expect(validateAgentJson(out.agent).ok).toBe(true);
+  });
+
+  it('interface_contract 声明了非 in_process 运行时（外接 CLI）或形态不对 → 仍然阻断', () => {
+    for (const ic of [{ runtime: { kind: 'cli' } }, {}, 'x', null]) {
+      const out = toDistributableAgent({ ...real, interface_contract: ic });
+      expect(out.blockers.map((b) => b.rule)).toContain('agent.runtime_not_distributable');
+    }
+  });
+
   it('未知字段不被静默丢弃，由校验拒绝', () => {
     const out = toDistributableAgent({ ...real, brand_new_field: 1 });
     expect(out.agent).toHaveProperty('brand_new_field');

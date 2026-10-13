@@ -274,7 +274,7 @@ const LOCAL_FIELDS = ['enabled_connectors', 'default_model', 'default_thinking',
 /** 运行时派生与安装态：不属于作者定义。 */
 const DERIVED_FIELDS = [
   'enabled', 'source', 'marketplace_published_at', 'marketplace_updated_at', 'default_install',
-  'is_open_source', 'status', 'seed_source', 'runtime_stats', 'profile',
+  'is_open_source', 'status', 'seed_source', 'runtime_stats', 'profile', '_v',
 ] as const;
 /** 宿主专有：只有内置宿主 Agent 才有，出现即不可贡献。 */
 const HOST_ONLY_FIELDS = ['management_surface', 'reimbursement_entry_role', 'interaction_mode'] as const;
@@ -333,14 +333,21 @@ export function toDistributableAgent(raw: Record<string, unknown>): Distributabl
   if (runtime && runtime.kind !== 'in_process') {
     blockers.push({ rule: 'agent.runtime_not_distributable', field: 'runtime', message: 'only in_process agents can be distributed' });
   }
+  // 本机自建 Agent 的 `interface_contract` 由运行时自动派生（`in_process`），不是作者定义，剥离即可；
+  // 只有它声明了 `in_process` 以外的运行时（外接 CLI Agent）才阻断。
   if ('interface_contract' in agent) {
-    blockers.push({ rule: 'agent.runtime_not_distributable', field: 'interface_contract', message: 'external agents cannot be distributed' });
+    const contract = agent.interface_contract as { runtime?: { kind?: unknown } } | null | undefined;
+    if (contract && typeof contract === 'object' && contract.runtime?.kind === 'in_process') {
+      delete agent.interface_contract;
+      handled.push({ kind: 'derived', field: 'interface_contract' });
+    } else {
+      blockers.push({ rule: 'agent.runtime_not_distributable', field: 'interface_contract', message: 'external agents cannot be distributed' });
+    }
   }
   if (agent.icon === 'crown') {
     blockers.push({ rule: 'agent.icon_not_distributable', field: 'icon', message: 'the commander icon cannot be distributed' });
   }
   strip(DERIVED_FIELDS, 'derived');
-  // interface_contract 已作为阻断项登记，不再重复进 handled
   return { agent, handled, blockers };
 }
 
