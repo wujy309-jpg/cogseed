@@ -436,7 +436,7 @@ async function repairTaskCreationArtifacts(
   if (!firstEvent) {
     await appendCogSeedTaskEvent(userId, task.taskId, task.sessionId, creationEventType, {
       requestId: task.requestId,
-    });
+    }, taskEventRefs(task));
   }
 }
 
@@ -526,7 +526,9 @@ export async function ensureCogSeedTaskLifecycleArtifact(
       task.sessionId,
       expectedType,
       repairPayloadForTask(task, payload),
-    );
+    
+        taskEventRefs(task),
+      );
     return true;
   });
 }
@@ -582,7 +584,7 @@ export async function updateCogSeedTaskWithEvent(
     const validated = validateTask(userId, next, taskId);
     await writeJson(file, validated);
     try {
-      await appendCogSeedTaskEvent(userId, taskId, validated.sessionId, event.type, event.payload);
+      await appendCogSeedTaskEvent(userId, taskId, validated.sessionId, event.type, event.payload, taskEventRefs(current));
       return validated;
     } catch (error) {
       await writeJson(file, current);
@@ -594,6 +596,20 @@ export async function updateCogSeedTaskWithEvent(
 /** Append an execution-progress event only while the task is still active.
  * Taking the task lock before the event lock matches lifecycle transitions and
  * prevents a late Runtime callback from being written after a terminal event. */
+/** Traceability refs for the task event stream (N-09). Pure: callers already
+ *  hold the task record, so this costs no extra read. */
+function taskEventRefs(task: {
+  conversationId?: string;
+  agentId?: string;
+  groupChatRunId?: string;
+}): { conversationId?: string; agentId?: string; runId?: string } {
+  return {
+    ...(task.conversationId ? { conversationId: task.conversationId } : {}),
+    ...(task.agentId ? { agentId: task.agentId } : {}),
+    ...(task.groupChatRunId ? { runId: task.groupChatRunId } : {}),
+  };
+}
+
 export async function appendCogSeedTaskEventIfActive(
   userId: string,
   taskId: string,
@@ -610,7 +626,7 @@ export async function appendCogSeedTaskEventIfActive(
     // state. Lifecycle events for created/queued/recoverable use the separate
     // atomic task+event transition path and must not be appended here.
     if (task.status !== 'running' && task.status !== 'waiting_user') return null;
-    return appendCogSeedTaskEvent(userId, taskId, task.sessionId, type, payload);
+    return appendCogSeedTaskEvent(userId, taskId, task.sessionId, type, payload, taskEventRefs(task));
   });
 }
 
