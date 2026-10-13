@@ -1218,6 +1218,24 @@ async function _renderCommanderAgentDetail(editing = false) {
   _renderAgentDetail(agent, editing);
 }
 
+// 本机安装记录发生了变化（含只改状态的同步，如 Hub 停用/恢复）：重读 Agent 列表，卡片才能及时显示状态。
+// 监听放在这里而不是 marketplace.js：后者是懒加载的，没打开过市场的会话里没人听这个事件。
+// marketplace.js 已加载时由它统一刷新（Agent、Skill 与市场面板），这里不重复。
+let _agentsInstallsChangedTimer = null;
+function _initAgentsInstallsChangedWatch() {
+  if (!window.cogseed || typeof window.cogseed.onPushEvent !== 'function') return;
+  try {
+    window.cogseed.onPushEvent('marketplace:installs-changed', () => {
+      if (typeof _mpRefreshInstalledCaches === 'function') return;
+      clearTimeout(_agentsInstallsChangedTimer);
+      _agentsInstallsChangedTimer = setTimeout(() => {
+        void refreshAgentsAfterMarketplaceReconcile().catch(() => { /* ignore */ });
+      }, 400);
+    });
+  } catch { /* preload not ready; the next list load still shows the current state */ }
+}
+_initAgentsInstallsChangedWatch();
+
 async function refreshAgentsAfterMarketplaceReconcile() {
   await loadAgents(true);
   if (_agentEditing) return;

@@ -17,12 +17,26 @@ describe('marketplace:installs-changed 链路', () => {
     expect(main).toMatch(/serverCheck\.updated_agents/);
     expect(main).toMatch(/serverCheck\.updated_skills/);
     expect(main).toMatch(/broadcastToRenderer\('marketplace:installs-changed'/);
+    // patched_* 每轮都非零（幂等补丁），计入会让事件刷屏
+    const sum = main.slice(main.indexOf('const installsChanged'), main.indexOf('broadcastToRenderer(\'marketplace:installs-changed\''));
+    expect(sum).not.toMatch(/patched_/);
   });
 
   it('预加载白名单按 marketplace: 前缀放行，无需另行登记', () => {
     const preload = read('src/main/preload.js');
     const line = preload.split('\n').find((l) => l.includes('PUSH_EVENT_PREFIXES ='));
     expect(line).toContain("'marketplace:'");
+  });
+
+  it('Agent 页（启动即加载）自己订阅该事件：marketplace.js 是懒加载的，不能只靠它', () => {
+    const agents = read('src/renderer/modules/agents.js');
+    expect(agents).toMatch(/onPushEvent\('marketplace:installs-changed'/);
+    expect(agents).toMatch(/refreshAgentsAfterMarketplaceReconcile\(\)/);
+    // marketplace.js 已加载时交给它，避免重复刷新
+    expect(agents).toMatch(/typeof _mpRefreshInstalledCaches === 'function'\) return/);
+    const lazy = read('src/renderer/modules/lazy-features.js');
+    expect(lazy).toContain("./modules/marketplace.js");
+    expect(fs.readFileSync(path.resolve(__dirname, '../../src/renderer/index.html'), 'utf8')).toContain('./modules/agents.js');
   });
 
   it('渲染进程：订阅该事件并复用同一份刷新逻辑；原有"拉取新内容后刷新"仍走它', () => {
