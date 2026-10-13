@@ -526,7 +526,7 @@ export async function ensureCogSeedTaskLifecycleArtifact(
       task.sessionId,
       expectedType,
       repairPayloadForTask(task, payload),
-    
+
         taskEventRefs(task),
       );
     return true;
