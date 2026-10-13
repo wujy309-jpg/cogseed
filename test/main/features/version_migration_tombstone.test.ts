@@ -76,6 +76,20 @@ describe('version migration · retired CLI agents are tombstoned, never deleted'
     expect(local.disabled_at).toBeUndefined();
 
     expect(result.clearedAgents).toBe(2);
+
+    // Read side: the agent lists derive `enabled` from the component sets, so a
+    // tombstoned agent must be reported disabled (rebuildable) rather than usable.
+    const components = await import('../../../src/main/features/component_enabled');
+    const { agents: disabledAgentIds } = components.readDisabledSets(UID);
+    expect(disabledAgentIds.has('a1')).toBe(true);
+    expect(disabledAgentIds.has('a2')).toBe(true);
+    expect(disabledAgentIds.has('a3')).toBe(false);
+
+    const agentFeature = await import('../../../src/main/features/agents');
+    const summaries = await agentFeature.listAgentSummariesForUser(UID);
+    const byId = new Map(summaries.map((row) => [row.agent_id, row]));
+    expect(byId.get('a1')?.enabled).toBe(false);
+    expect(byId.get('a3')?.enabled).toBe(true);
   });
 
   it('is idempotent: a second run leaves the tombstone intact', async () => {

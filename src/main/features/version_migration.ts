@@ -9,6 +9,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { WS_ROOT, userAgentsDir, SRC_ROOT } from '../paths';
 import { createLogger } from '../logger';
+import { setAgentEnabled } from './component_enabled';
 import { getActiveUserId } from './users';
 
 const log = createLogger('version-migration');
@@ -133,6 +134,19 @@ function clearCliAgents(): number {
             ...(runtime.cli ? { disabled_runtime_cli: runtime.cli } : {}),
           };
           fs.writeFileSync(agentJsonPath, JSON.stringify(tombstoned, null, 2), 'utf8');
+          // Also flip the component-level enabled flag: the agent lists derive
+          // `enabled` from it (agents.ts reads readDisabledSets), so a tombstoned
+          // agent is presented as disabled instead of looking usable and then
+          // failing when the user picks it.
+          try {
+            setAgentEnabled(userId, agentDir.name, false);
+          } catch (err) {
+            log.warn('failed to disable tombstoned agent in component sets', {
+              userId,
+              agentId: agentDir.name,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
           clearedCount++;
           log.info('disabled CLI agent (tombstoned, not deleted)', {
             userId,
