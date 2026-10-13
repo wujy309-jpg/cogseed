@@ -1317,6 +1317,10 @@ export async function* streamChatWithModel(opts: ChatOptions): AsyncGenerator<St
   let abortedFlag = false;
   let terminalFailureCode = '';
   let terminalFailurePhase: StreamEvent['failurePhase'];
+  /** Reporting half of the deterministic-failure breaker. Hoisted because the
+   *  terminal-status block runs in `finally`, where `built` is out of scope. */
+  let toolFailureProbe: (() => { kind: string; code: string; reason: string; failures: number; tool: string } | null)
+    | null = null;
   // Set only after runner construction and all host-side preflight gates pass.
   // This is the taxonomy boundary between setup/config failures and failures
   // produced by an attempted model run; do not replace it with text matching.
@@ -1400,6 +1404,7 @@ export async function* streamChatWithModel(opts: ChatOptions): AsyncGenerator<St
       },
     });
     const { runner, providerId, modelId, resolvedSystemPrompt, turnEphemeral, profileId, entryId, toolDefs, skillDisplayNameById, agentDisplayNameById, finalResponseGate } = built;
+    toolFailureProbe = built.toolFailure;
     resolvedRuntimePublisher.setToolNames(toolDefs.map((tool) => tool.name));
     resolvedRuntimePublisher.publish({
       providerId,
@@ -1769,6 +1774,23 @@ export async function* streamChatWithModel(opts: ChatOptions): AsyncGenerator<St
     }
     releaseSlotOnce('finally');
     releaseSessionOnce('finally');
+    // Reporting half of the deterministic-failure breaker: the breaker already
+    // ended the turn (`endTurn: true` via tool-failure-guard.ts); here the turn
+    // records *why*, so the failure is a named state instead of an internal
+    // maintenance state ("organising context"). Only when the turn did not
+    // already fail for another reason — a model/idle error keeps precedence.
+    const toolFailureTrip = toolFailureProbe?.() ?? null;
+    if (toolFailureTrip && !errText && !abortedFlag) {
+      terminalFailureCode = toolFailureTrip.code;
+      log.warn('model turn ended after repeated deterministic tool failures', {
+        ...turnLogContext,
+        tool: toolFailureTrip.tool,
+        failureCode: toolFailureTrip.code,
+        failureKind: toolFailureTrip.kind,
+        countedFailures: toolFailureTrip.failures,
+        reason: toolFailureTrip.reason,
+      });
+    }
     const doneEvent: StreamEvent = { type: 'done' };
     recordModelStreamEventForLog(diagnostics, doneEvent);
     const terminalStatus = abortedFlag
