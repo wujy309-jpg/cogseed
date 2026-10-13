@@ -54,7 +54,8 @@ function loadResolver() {
     extractFunction('_chatAnchorKey'),
     extractFunction('_forgetChatStreamAnchors'),
     extractFunction('_resolveChatStreamAnchor'),
-    '({ resolve: _resolveChatStreamAnchor, forget: _forgetChatStreamAnchors, anchors: _chatStreamAnchors, calls, placeholders })',
+    extractFunction('_yieldedFloorActor'),
+    '({ resolve: _resolveChatStreamAnchor, forget: _forgetChatStreamAnchors, yielded: _yieldedFloorActor, anchors: _chatStreamAnchors, calls, placeholders })',
   ].join('\n');
   const calls: EnsureCall[] = [];
   const placeholders: Record<string, AnchorEl | null> = {
@@ -75,6 +76,7 @@ function loadResolver() {
   return vm.runInContext(combined, ctx) as {
     resolve: (cid: string, ev: unknown, fallback: AnchorEl | null, turnIdHint?: unknown) => AnchorEl | null;
     forget: (cid: string) => void;
+    yielded: (state: unknown) => string;
     anchors: Map<string, AnchorEl>;
     calls: EnsureCall[];
     placeholders: Record<string, AnchorEl | null>;
@@ -139,5 +141,20 @@ describe('chat.* 过程折叠锚点（按 actor 归属）', () => {
     expect(r.anchors.has('c-1::turn:T1')).toBe(false);
     expect(r.anchors.has('c-2::turn:T2')).toBe(true);
     expect(r.resolve('c-1', { type: 'chat.item', turnId: 'T1' }, fallback)).toBe(fallback);
+  });
+});
+
+describe('话权归属判定（交出方终态化的触发条件）', () => {
+  // 「运行指示 = 持有 floor」：只有话权落到**某个 agent** 时才需要把交出方
+  // 终态化；空 / commander / user 都不触发（否则主 Agent 一开局就被冻结）。
+  it('只有 floor 落到 agent 时返回该 agent，其余一律不触发', () => {
+    const r = loadResolver();
+    expect(r.yielded({ active_recipient: 'w1' })).toBe('w1');
+    expect(r.yielded({ active_recipient: 'agent-2a2d' })).toBe('agent-2a2d');
+    expect(r.yielded({ active_recipient: '' })).toBe('');
+    expect(r.yielded({ active_recipient: 'commander' })).toBe('');
+    expect(r.yielded({ active_recipient: 'user' })).toBe('');
+    expect(r.yielded({})).toBe('');
+    expect(r.yielded(undefined)).toBe('');
   });
 });

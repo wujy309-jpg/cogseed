@@ -16708,6 +16708,15 @@ function _resolveChatStreamAnchor(cid, chatEvent, fallbackEl, turnIdHint) {
   return fallbackEl;
 }
 
+/** 话权交给「某个 agent」时返回该 agent id，其余（空 / commander / user）返回 ''。
+ *  交出方（commander）据此立即终态化：它的回合还挂着（R-11 等齐汇报），但此刻
+ *  它没有在跑——不摘掉 spinner/计时就成了「两个执行」并行（2026-10-13 需求）。 */
+function _yieldedFloorActor(state) {
+  const floor = String((state && state.active_recipient) || '');
+  if (!floor || floor === 'commander' || floor === 'user') return '';
+  return floor;
+}
+
 function _normaliseActiveTurns(raw) {
   if (!Array.isArray(raw)) return [];
   return raw
@@ -17622,9 +17631,8 @@ function _handleGroupBusEvent(cid, streamingMsg, evData, { archive = false } = {
     // 话权一旦交给某个 agent，交出方（commander）的气泡必须**立即终态化**：
     // 它的回合还挂着（R-11 等齐汇报），但此刻它没有在跑——不摘掉 spinner/计时
     // 就变成「两个执行」并行（2026-10-13 需求方截图）。
-    const _floorNow = String(st.active_recipient || '');
-    if (_floorNow && _floorNow !== 'commander' && _floorNow !== 'user'
-        && typeof window.chatStreamYieldFloor === 'function') {
+    const _floorNow = _yieldedFloorActor(st);
+    if (_floorNow && typeof window.chatStreamYieldFloor === 'function') {
       try { window.chatStreamYieldFloor(cid, _floorNow); } catch (_) { /* 终态化失败不阻塞状态同步 */ }
     }
     setGroupConversationBusy(cid, st.status === 'running' || inFlight.length > 0 || activeTurns.length > 0);
