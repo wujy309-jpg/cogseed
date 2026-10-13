@@ -1094,6 +1094,23 @@ describe('marketplace content update monotonicity', () => {
       expect(failures.readAgentUpdateFailures('u1')['pkg-agent']).toMatchObject({ target_version: '1.1.0' });
     });
 
+    it('状态同步改写本机 _install.json 时，保留发布物身份（package_format / artifact_sha256）', async () => {
+      await seed();
+      const dir = path.join(tmpDir, 'u1', 'local', 'marketplace', 'agents', 'pkg-agent');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'agent.json'), JSON.stringify({ agent_id: 'pkg-agent', name: 'P' }), 'utf8');
+      fs.writeFileSync(path.join(dir, '_install.json'), JSON.stringify({
+        version: '1.0.0', published_at: 100, updated_at: 100, agent_json_url: '', create_uid: 'u', status: 'published',
+        package_format: 'agent-package-v1', artifact_sha256: PKG.sha256, artifact_size_bytes: 10,
+      }), 'utf8');
+      // 触发一次只改元数据的同步：客户端版本不够新 + Hub 已停用
+      catalog([catalogRow('pkg-agent', { version: '2.0.0', artifact: PKG, status: 'disabled', min_app_version: '9.0.0' })], 'agents');
+      await run();
+      const meta = JSON.parse(fs.readFileSync(path.join(dir, '_install.json'), 'utf8'));
+      expect(meta.status).toBe('disabled');
+      expect(meta).toMatchObject({ package_format: 'agent-package-v1', artifact_sha256: PKG.sha256, artifact_size_bytes: 10 });
+    });
+
     it('要求的客户端版本更高 → 不安装，但停用状态仍同步', async () => {
       const installs = await seed();
       catalog([catalogRow('pkg-agent', { version: '2.0.0', artifact: PKG, status: 'disabled', min_app_version: '9.0.0' })], 'agents');

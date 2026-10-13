@@ -1111,6 +1111,8 @@ interface InstallMeta {
   /** 发布物字节摘要（`artifact.sha256`）。与 `content_sha`（SKILL.md 单文件摘要）不同。 */
   artifact_sha256?: string;
   artifact_size_bytes?: number;
+  /** 发布物格式（`agent-package-v1`）。新格式 Agent 没有 `agent_json_url`。 */
+  package_format?: string;
   installed_at?: number;
   create_uid?: string;
   default_install?: boolean;
@@ -1229,6 +1231,10 @@ function _readInstallMeta(dir: string): InstallMeta | null {
       ...(minAppVersion ? { min_app_version: minAppVersion } : {}),
       ...(typeof j.content_sha === 'string' ? { content_sha: j.content_sha } : {}),
       ...(typeof j.content_tree_hash === 'string' ? { content_tree_hash: j.content_tree_hash } : {}),
+      // 读—改—写（状态同步等）会经过这里：不认识的字段会被丢掉，发布物身份必须保留
+      ...(typeof j.artifact_sha256 === 'string' ? { artifact_sha256: j.artifact_sha256 } : {}),
+      ...(typeof j.artifact_size_bytes === 'number' ? { artifact_size_bytes: j.artifact_size_bytes } : {}),
+      ...(typeof j.package_format === 'string' ? { package_format: j.package_format } : {}),
     };
   } catch { return null; }
 }
