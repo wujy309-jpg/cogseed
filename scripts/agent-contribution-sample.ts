@@ -34,6 +34,14 @@ export interface SampleOptions {
   /** Hub 上真实存在的 Skill ID（12 位十六进制）；缺省则样例不引用 Hub Skill。 */
   hubSkillId?: string;
   version?: string;
+  /**
+   * 目标内容 ID（12 位十六进制）：给了就是「给已有内容发新版本」，缺省是「新建内容」。
+   *
+   * 为什么要这个开关：客户端在「已装 Agent 有新版本」时走的是新版本提交路径
+   * （请求体带 `target_content_id`），缺省的 `null` 只覆盖首次贡献。联调要验证
+   * 「新版本 / 版本不更高 / 同名内容守卫」这几条，就必须能发出带目标的请求。
+   */
+  targetContentId?: string;
 }
 
 export interface SampleResult {
@@ -49,6 +57,9 @@ export async function buildAgentContributionSample(opts: SampleOptions): Promise
   const version = opts.version ?? '1.0.0';
   if (opts.hubSkillId !== undefined && !/^[a-f0-9]{12}$/.test(opts.hubSkillId)) {
     throw new Error('--hub-skill must be a 12-character lowercase hex Hub content id');
+  }
+  if (opts.targetContentId !== undefined && !/^[a-f0-9]{12}$/.test(opts.targetContentId)) {
+    throw new Error('--target-content must be a 12-character lowercase hex Hub content id');
   }
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-contribution-sample-'));
   try {
@@ -91,7 +102,7 @@ export async function buildAgentContributionSample(opts: SampleOptions): Promise
       localCheck: { checker: { side: 'client', version: '0.0.0-sample' }, blocking: [], warnings: [] },
       packageDigest: pkg.digest,
       packageSize: pkg.size,
-      targetContentId: null,
+      targetContentId: opts.targetContentId ?? null,
       version,
     });
 
@@ -133,12 +144,16 @@ function argValue(argv: string[], name: string): string | undefined {
 if (require.main === module) {
   const out = argValue(process.argv, '--out');
   if (!out) {
-    process.stderr.write('usage: npx tsx scripts/agent-contribution-sample.ts --out <dir> [--hub-skill <12-hex>] [--version 1.0.0]\n');
+    process.stderr.write(
+      'usage: npx tsx scripts/agent-contribution-sample.ts --out <dir> [--hub-skill <12-hex>] ' +
+        '[--target-content <12-hex>] [--version 1.0.0]\n',
+    );
     process.exit(2);
   }
   buildAgentContributionSample({
     outDir: path.resolve(out),
     hubSkillId: argValue(process.argv, '--hub-skill'),
+    targetContentId: argValue(process.argv, '--target-content'),
     version: argValue(process.argv, '--version'),
   }).then((r) => {
     process.stdout.write(`${JSON.stringify({ ...r, note: 'sample only; nothing was sent' }, null, 2)}\n`);

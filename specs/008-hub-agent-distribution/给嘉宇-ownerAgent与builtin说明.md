@@ -5,6 +5,21 @@
 - **日期**：2026-10-12
 - **背景**：客户端第一阶段（不依赖 Hub 的部分）已按 v3 契约做完。做的过程中发现两处需要和 Hub 对齐，都在 Hub 开工写校验之前对一下，免得联调第一次提交就被拒。
 
+> ## ⚠️ 阅读提示（2026-10-13 补，**正文保留原样以便追溯**）
+>
+> **第二节的结论已作废。** 产品于 **2026-10-13** 决定做 `builtin:`，客户端**已实现**：
+>
+> | 项 | 现状 |
+> |---|---|
+> | 客户端实现 | `src/main/features/agent_builtin_capabilities.ts`（本地镜像 Hub 清单，当前开放 3 个：`grounded-material-qa` / `kb-mindmap` / `coding`） |
+> | 清单本体 | `specs/008-hub-agent-distribution/contracts/builtin-capabilities-initial-manifest.json` |
+> | Hub 端点 | **`GET /marketplace/builtin-capabilities/manifest`**（本文第二节写的 `builtin-skills/manifest` 是旧路径名，已废） |
+> | 归属 | 清单**成员与起始版本由产品（中扬）定**；Hub 侧改 `HUB_BUILTIN_CAPABILITY_MANIFEST` 一处即同步 |
+>
+> 因此**第三节第 3 问（「`builtin:` 先不做，你们同意吗？」）已由产品决定关闭**，不要再按它执行。
+> 第一节（`ownerAgent` 约定）**仍然有效**，且 Hub 侧已按该口径实现并在联调中实测（不符即
+> `private_skill.owner` 拒绝）。
+
 ## 一、私有 Skill 的 `ownerAgent` 怎么写
 
 ### 现状（客户端现有机制）
