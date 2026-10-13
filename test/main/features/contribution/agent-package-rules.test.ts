@@ -193,6 +193,27 @@ describe('本机处理（toDistributableAgent）', () => {
     }
   });
 
+  it('可选文本字段为空串 → 提交前移除并登记（Hub 对空串直接拒绝）；有值的不动', () => {
+    const out = toDistributableAgent({ ...real, description_en: '', icon: '  ', color: 'violet' });
+    expect(out.agent).not.toHaveProperty('description_en');
+    expect(out.agent).not.toHaveProperty('icon');
+    expect(out.agent.color).toBe('violet');
+    expect(out.handled).toEqual(expect.arrayContaining([{ kind: 'empty', field: 'description_en' }, { kind: 'empty', field: 'icon' }]));
+    expect(validateAgentJson(out.agent).ok).toBe(true);
+  });
+
+  it('中英文描述都为空 → 移除后校验以"至少其一必填"拒绝，而不是放行空描述', () => {
+    const out = toDistributableAgent({ ...real, description_zh: '', description_en: '' });
+    expect(validateAgentJson(out.agent).ok).toBe(false);
+  });
+
+  it('没有 skill_list 的 Agent 提交前补空数组（Hub 把缺省也当"不是数组"拒绝）；已有的不动', () => {
+    const { skill_list: _drop, ...noSkills } = real as Record<string, unknown>;
+    expect(toDistributableAgent(noSkills).agent.skill_list).toEqual([]);
+    expect(toDistributableAgent({ ...noSkills, skill_list: ['a3f09c21b7e4'] }).agent.skill_list).toEqual(['a3f09c21b7e4']);
+    expect(validateAgentJson(toDistributableAgent(noSkills).agent).ok).toBe(true);
+  });
+
   it('未知字段不被静默丢弃，由校验拒绝', () => {
     const out = toDistributableAgent({ ...real, brand_new_field: 1 });
     expect(out.agent).toHaveProperty('brand_new_field');

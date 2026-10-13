@@ -9271,6 +9271,7 @@
   "agents.contribute_handled.lifecycle": "Version and timestamps",
   "agents.contribute_handled.local_pref": "Local settings",
   "agents.contribute_handled.derived": "Runtime state",
+  "agents.contribute_handled.empty": "Empty fields",
   "agents.contribute_handled_title": "Removed on this device",
   "agents.contribute_handled_hint": "These fields were removed from the copy before submission. Your local agent is unchanged, and Hub is not told what was removed.",
   "agents.contribute_refs_title": "Skills this agent uses",

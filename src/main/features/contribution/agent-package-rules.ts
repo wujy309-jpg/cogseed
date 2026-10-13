@@ -276,10 +276,15 @@ const DERIVED_FIELDS = [
   'enabled', 'source', 'marketplace_published_at', 'marketplace_updated_at', 'default_install',
   'is_open_source', 'status', 'seed_source', 'runtime_stats', 'profile', '_v',
 ] as const;
+/**
+ * 可选文本字段：值为空串时等同于"没写"。Hub 对"出现了但为空串"直接拒绝（`agent.description.empty`、
+ * `agent.icon.invalid` 等），而本机创建的 Agent 常常把英文描述落成空串，所以提交前移除。
+ */
+const OPTIONAL_TEXT_FIELDS = ['description_zh', 'description_en', 'icon', 'color', 'output_format'] as const;
 /** 宿主专有：只有内置宿主 Agent 才有，出现即不可贡献。 */
 const HOST_ONLY_FIELDS = ['management_surface', 'reimbursement_entry_role', 'interaction_mode'] as const;
 
-export type HandledKind = 'lifecycle' | 'local_pref' | 'derived';
+export type HandledKind = 'lifecycle' | 'local_pref' | 'derived' | 'empty';
 
 /** 本机处理项：只给本机预览看，**不上传**，Hub 不需要知道处理了什么。 */
 export interface HandledItem {
@@ -348,6 +353,16 @@ export function toDistributableAgent(raw: Record<string, unknown>): Distributabl
     blockers.push({ rule: 'agent.icon_not_distributable', field: 'icon', message: 'the commander icon cannot be distributed' });
   }
   strip(DERIVED_FIELDS, 'derived');
+  // 协议里 `skill_list` 可选，但 Hub 的引用解析把"缺省"也当成"不是数组"而拒绝（真 Hub 联调发现）。
+  // 没有技能的 Agent 补一个空数组：语义完全等价，也不影响内容摘要之外的任何东西。
+  if (!('skill_list' in agent)) agent.skill_list = [];
+  for (const field of OPTIONAL_TEXT_FIELDS) {
+    const value = agent[field];
+    if (typeof value === 'string' && value.trim() === '') {
+      delete agent[field];
+      handled.push({ kind: 'empty', field });
+    }
+  }
   return { agent, handled, blockers };
 }
 

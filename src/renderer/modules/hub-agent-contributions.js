@@ -512,10 +512,10 @@
     return '';
   }
 
-  // The Mine page is shared with Skills and lives in the Skills panel; open it filtered to Agents.
+  // The Mine page is shared with Skills. Opened from the Agent flow it renders inside the Agents tab
+  // (tab stays on 智能体, back returns to the Agent grid), filtered to Agents.
   async function openMine(type) {
-    if (typeof root.activateConnectionsTab === 'function') root.activateConnectionsTab('skills');
-    await shared.openMyContributions({ skipIdentity: true, type });
+    await shared.openMyContributions({ skipIdentity: true, type, returnTo: 'agents' });
   }
 
   // ── Start ──

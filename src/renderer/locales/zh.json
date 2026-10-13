@@ -9271,6 +9271,7 @@
   "agents.contribute_handled.lifecycle": "版本与时间戳",
   "agents.contribute_handled.local_pref": "本机设置",
   "agents.contribute_handled.derived": "运行时状态",
+  "agents.contribute_handled.empty": "空字段",
   "agents.contribute_handled_title": "已在本机移除",
   "agents.contribute_handled_hint": "下列字段已在提交副本中移除。你本机的智能体不变，Hub 也不会知道移除了什么。",
   "agents.contribute_refs_title": "这个智能体用到的技能",
