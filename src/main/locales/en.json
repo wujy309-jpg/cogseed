@@ -34,6 +34,7 @@
   "component.skill_hub_disabled_request": "Skill \"{name}\" is disabled by Hub. New use is blocked until Hub restores it. Your local copy and tasks already started are retained.",
   "connectors.inline_text": "{connector} connector",
   "connectors.use_prefix": "Use {connector} connector: {content}",
+    "auto_tasks.fire_prefix": "Automated task \"{task}\": sent by a schedule, not typed by the user just now.\n\n",
   "contexts.index.dirs_heading": "Folders",
   "contexts.index.empty_kb": "(Library is empty)",
   "contexts.index.empty_section": "(empty)",

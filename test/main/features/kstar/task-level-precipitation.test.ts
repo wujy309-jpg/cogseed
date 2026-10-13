@@ -145,18 +145,7 @@ const learningReview = {
 };
 
 describe('KStar task-level precipitation (B5)', () => {
-  it('does not import ownerless P3394 updates from user A into user B while retaining B local precipitation', async () => {
-    const p3394Episodes = await import('../../../../src/main/features/p3394_bridge/kstar-episodes');
-    p3394Episodes.recordP3394Episode({
-      session_id: 'ses-user-a',
-      task_id: 'tsk-user-a',
-      goal: '用户 A 的协作任务',
-      agent_id: 'hermes',
-      status: 'completed',
-      actions: [],
-      proposed_updates: [{ goal: '用户 A 的私有工作流' }],
-    });
-
+  it('precipitates a B-local experience without any ownerless external update', async () => {
     const epB = episode('kse-b5-ownerless-p3394', 'Build the report', [{ name: 'read_file' }, { name: 'write_file' }]);
     await seedEpisode(epB);
     await seedReview(epB, learningReview);
@@ -166,8 +155,9 @@ describe('KStar task-level precipitation (B5)', () => {
     const result = await precipitation.precipitateRequirementLevel('user-b5', requirement);
 
     expect(result.proposals).toHaveLength(1);
+    // 并行 episode store 已删除（它没有 uid 作用域、读侧从未接线）：不再存在"外部无主更新"
+    // 这一输入通道，因此这里断言的是 B 本地沉淀本身不引入任何外部来源。
     expect(result.proposals[0].sourceRefs.some((ref) => ref.kind === 'authorized_external_system')).toBe(false);
-    expect(JSON.stringify(result.proposals)).not.toContain('用户 A 的私有工作流');
     // specs/016 T014：B 本地沉淀改道写经验条目（原「资产」断言 → 经验断言）。
     expect(result.experienceIds).toHaveLength(1);
     const experiences = await import('../../../../src/main/features/recall/experience-service');

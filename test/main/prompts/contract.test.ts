@@ -561,6 +561,51 @@ describe('prompts ↔ code contract', () => {
     expect(skills).toMatch(/buildLanguageDirective\([^)]*\)[\s\S]+buildRuntimeDatetimeBlock\(\)/);
     expect(bus).toMatch(/language_block:\s*buildLanguageDirective\(getLanguage\(\)\)/);
     expect(cliPrompt).toContain('$language_block');
-    expect(cliPrompt).toMatch(/\$task_body\n\n\$runtime_datetime_block\s*$/);
+    // 该模板的易变尾部必须收尾。审计 2026-10-08 把静态的 `## Your task` 挪到了易变段之前，
+    // 所以这里不再断言"$task_body 紧跟 datetime"，改为断言 datetime 仍是最后一个块。
+    expect(cliPrompt).toContain('$task_body');
+    expect(cliPrompt).toMatch(/\$runtime_datetime_block\s*$/);
+  });
+});
+
+// 缓存前缀不变量（对齐 DSH 的 prefix-stability 教训，见 AGENTS.md「Prompt Files」）：
+// 易变内容必须垫在最后，否则它后面的一切都落在缓存前缀的分歧点之后、每回合被重算重计费。
+// 既有断言只覆盖"共享规则在 marker 之前 + marker 唯一"；这里补上"marker 之后不得再出现
+// 新的二级标题"——即易变段之后不能又冒出静态章节。
+describe('prompts › cache prefix stability', () => {
+  const render = async (template: 'chat_commander' | 'chat_agent_in_group' | 'chat_cli_agent', args: Record<string, string | number | boolean>, general: boolean) => {
+    const bus = await import('../../../src/main/features/group_chat/bus');
+    const hook = (bus as unknown as {
+      _renderPromptWithSharedRulesForTest?: (
+        t: typeof template, a: Record<string, string | number | boolean>, g: boolean,
+      ) => Promise<string>;
+    })._renderPromptWithSharedRulesForTest;
+    expect(typeof hook).toBe('function');
+    return hook!(template, args, general);
+  };
+
+  it.each(['chat_commander', 'chat_agent_in_group', 'chat_cli_agent'] as const)(
+    '%s keeps every level-2 section before the runtime-injection tail',
+    async (template) => {
+      // chat_cli_agent 是不带通用共享规则的那一个（见上方参数化用例）
+      const rendered = await render(template, {}, template !== 'chat_cli_agent');
+      const marker = rendered.indexOf('## Runtime injection');
+      expect(marker, 'marker must exist').toBeGreaterThan(-1);
+      const tail = rendered.slice(marker);
+      // marker 之后只允许是它自己的 ### 子节；出现新的 ## 章节即意味着静态内容排在了易变段之后
+      const level2AfterMarker = [...tail.matchAll(/^## (?!#).+$/gm)].map((m) => m[0]);
+      expect(level2AfterMarker.slice(1), `${template} sections after the runtime tail`).toEqual([]);
+    },
+  );
+
+  it('chat_cli_agent keeps the static task section ahead of the runtime tail', async () => {
+    // 2026-10-08 审计把该模板的 `## Your task` 挪到易变段之前（AGENTS.md：静态在前、
+    // 易变字段只放末尾的 `## Runtime injection`）。位置本身也要锁住，避免以后又被挪回去。
+    const rendered = await render('chat_cli_agent', {}, false);
+    const taskIdx = rendered.indexOf('## Your task');
+    const marker = rendered.indexOf('## Runtime injection');
+    expect(taskIdx).toBeGreaterThan(-1);
+    expect(marker).toBeGreaterThan(-1);
+    expect(taskIdx).toBeLessThan(marker);
   });
 });

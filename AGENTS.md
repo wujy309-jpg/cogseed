@@ -6,7 +6,7 @@ Prompt context only: keep hard constraints, short rationale, and traps already h
 
 CogSeed desktop companion agent (Electron). Main is TypeScript under `src/main`, renderer is vanilla HTML/CSS/JS under `src/renderer`.
 
-- Quick gates: `npm run typecheck` (tsc --noEmit), `npm test` (js + resources), `./run.sh` to start.
+- Quick gates: `npm run typecheck` (tsc --noEmit), `npm test` (js + resources), `npm run check:line-endings` (CRLF/LF 混用；已有 12 个历史文件冻结在 `scripts/line-endings-baseline.json`，只对**新增**违规失败), `./run.sh` to start.
 
 ## Boundary
 
@@ -63,6 +63,23 @@ All user-scoped data lives under `<container>/data/<uid>/{cloud,local}/`.
 - Never cache uid-derived paths as module-level constants. Get the active uid at use time.
 - Project membership is an index field on a conversation. Do not encode `project_id` into paths, cids, or session ids.
 - Project lists are directory scans; do not restore an aggregate `projects/_index.json`.
+
+## Data Migrations
+
+One-shot user-data migrations live in `src/main/util/migrate-*.ts` and are driven from `features/users.ts` at boot. Two infrastructures exist; pick deliberately:
+
+- Single-file renames / relocations → the `migrate-*.ts` marker convention (`<uid>/local/.migrations` tag, or a per-migration marker file such as `project-layout-v5.json`) with a lock beside it.
+- Destructive or multi-step moves → `features/cogseed_backend/migration-journal.ts` (checkpoint / phase / decision / mapping + `fileEditLock`), not another hand-rolled marker.
+
+Rules that keep them honest:
+
+- Idempotent by construction: check the stamp/marker first, take a lock (never steal a live one), and make a re-run a no-op.
+- Never delete user data to make progress: sideline (`*.legacy-<ts>`) or write a tombstone (`deleted_at`); a log line is not a substitute.
+- Rewrite **every** stored reference, not just the file name — a rename without its index/inline references self-reverts the next time the row is opened.
+- Synthesized identity must be reproducible (`<kind>:<sid>:<turn>:<step>:<index>`); never `randomUUID`/`Date.now` in an id.
+- Absence is semantic: never substitute `''`/`{}`/`0` to satisfy a validator — decide whether the field is missing or empty.
+- Record failed items in the completion stamp and retry them next launch; stamping after a failure silently abandons that data.
+- Every migration needs a contract test over the edge cases its own header promises, plus a real-shape end-to-end case where data crosses generations.
 
 ## Conversations And Group Chat
 

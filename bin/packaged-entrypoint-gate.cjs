@@ -61,6 +61,8 @@ const PACKAGED_BIN_ENTRYPOINTS = Object.freeze([
 // surfaces themselves. App-owned connector entrypoints load this proxy
 // bootstrap so their fetch can follow the route selected by Electron main.
 const PACKAGED_BIN_HELPERS = Object.freeze([
+  // Inert `electron` stand-in aliased by the TS-loading child workers.
+  'child-electron-stub.cjs',
   'proxy-bootstrap.cjs',
   // Windows-aware CLI launch resolution, required by the Tencent Meeting adapter. It ships beside
   // the entrypoint because the adapter `require`s it at runtime, but it is not a spawn surface.

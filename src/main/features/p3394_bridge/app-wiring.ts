@@ -30,7 +30,6 @@ import { missingP3394ChannelCapabilities } from './channel-adapter';
 import { P3394OutboundHub } from './outbound-hub';
 import { P3394PeerRegistry, type P3394Locality, type P3394NodeKind } from './registry';
 import type { P3394Envelope } from './envelope';
-import { recordP3394Episode } from './kstar-episodes';
 import { projectP3394NodeToTeam, projectedTeamAgentId, removeProjection, suppressNodeProjection } from './team-projection';
 import { buildP3394WiringDoctorInput, runP3394BridgeDoctor, type P3394DoctorReport } from './doctor';
 import { loadP3394EventCursors, persistP3394EventCursors, recordP3394EventCursor } from './event-cursor-store';
@@ -259,14 +258,6 @@ async function buildBridge(port: number, token: string, conversation: boolean): 
       allowEndpoint: (endpoint) => {
         return bridge.registry.list().some((peer) => (peer.endpoints ?? []).includes(endpoint));
       },
-    },
-    recordEpisode: (episode) => {
-      // KSTAR 闭环（guide §5.4）：任务终态落盘 episode（含自动 AAR）。
-      try {
-        recordP3394Episode(episode);
-      } catch (error) {
-        log.warn('P3394 KSTAR episode record failed', { error: error instanceof Error ? error.message : String(error) });
-      }
     },
     onEvent: (sessionId, event) => {
       const line = redactP3394Secrets(JSON.stringify({ at: new Date().toISOString(), session_id: sessionId, event }));

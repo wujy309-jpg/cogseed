@@ -34,6 +34,7 @@
   "component.skill_hub_disabled_request": "A habilidade \"{name}\" foi desativada pelo Hub. Novos usos ficam bloqueados até o Hub restaurá-la. A cópia local e as tarefas já iniciadas são preservadas.",
   "connectors.inline_text": "conector {connector}",
   "connectors.use_prefix": "Use o conector {connector}: {content}",
+    "auto_tasks.fire_prefix": "Tarefa automática \"{task}\": enviada por agendamento, não digitada pelo usuário agora.\n\n",
   "contexts.index.dirs_heading": "Pastas",
   "contexts.index.empty_kb": "(Biblioteca está vazia)",
   "contexts.index.empty_section": "(vazio)",

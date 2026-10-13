@@ -164,7 +164,8 @@ describe('seed text composition', () => {
       },
     );
     const text = _buildSeedTextForTest(task);
-    expect(text).toBe('@Codex 使用 GitHub 连接器：使用 深度研究 技能：查看 CogSeed 项目最近 24h 新增的 issue。包括新建和回复。');
+    expect(text).toBe('自动任务「at_00000001」：本条由计划任务自动发送，不是用户此刻的输入。\n\n'
+        + '@Codex 使用 GitHub 连接器：使用 深度研究 技能：查看 CogSeed 项目最近 24h 新增的 issue。包括新建和回复。');
     expect(text).not.toContain('connectors.use_prefix');
     expect(text).not.toContain('skills.use_prefix');
   });
@@ -188,8 +189,29 @@ describe('seed text composition', () => {
     );
 
     expect(_buildSeedTextForTest(task)).toBe(
-      'brand-research 技能 鸟 content-writer 技能 水电费 GitHub 连接器',
+      '自动任务「at_00000001」：本条由计划任务自动发送，不是用户此刻的输入。\n\n'
+      + 'brand-research 技能 鸟 content-writer 技能 水电费 GitHub 连接器',
     );
+  });
+});
+
+describe('seed text composition › fire framing', () => {
+  it('states the schedule origin with the task title', () => {
+    setCurrentLang('zh');
+    const named = makeTask({ type: 'daily', hour: 9, minute: 0 }, { title: '每日构建检查', content: '检查构建' });
+    expect(_buildSeedTextForTest(named)).toBe(
+      '自动任务「每日构建检查」：本条由计划任务自动发送，不是用户此刻的输入。\n\n检查构建',
+    );
+    // 无标题时回退到任务 id，来源行永远不空
+    const anonymous = makeTask({ type: 'daily', hour: 9, minute: 0 }, { content: '检查构建' });
+    expect(_buildSeedTextForTest(anonymous)).toContain('「at_00000001」');
+  });
+
+  it('carries no timestamp, so identical fires stay identical', () => {
+    setCurrentLang('zh');
+    const task = makeTask({ type: 'daily', hour: 9, minute: 0 }, { title: 't', content: 'c' });
+    expect(_buildSeedTextForTest(task)).toBe(_buildSeedTextForTest({ ...task }));
+    expect(_buildSeedTextForTest(task)).not.toMatch(/\d{2}:\d{2}/);
   });
 });
 
@@ -647,7 +669,7 @@ describe('scheduler dispatch', () => {
     expect(autoRuntime.send).toHaveBeenCalledWith({
       userId: TEST_UID,
       cid: 'cid_auto',
-      text: '@Codex send the morning report',
+      text: expect.stringContaining('@Codex send the morning report'),
       attachments: ['brief.md'],
     });
     expect(autoRuntime.deleteConversation).not.toHaveBeenCalled();
@@ -1006,7 +1028,7 @@ describe('auto_tasks › messaging recipient（方案 A：主页会话投递）'
 
     expect(dispatchRuntime.dispatchToFeishuHome).toHaveBeenCalledWith(TEST_UID, {
       instanceId: 'inst_feishu_1',
-      text: 'hello from auto task',
+      text: expect.stringContaining('hello from auto task'),
       sourceKey: 'auto-task:at_a1b2c3d1:2026-05-22',
     });
     expect(dispatchRuntime.assembleBriefingText).not.toHaveBeenCalled();
@@ -1115,7 +1137,7 @@ describe('auto_tasks › messaging recipient（方案 A：主页会话投递）'
     expect(autoRuntime.send).toHaveBeenCalledWith({
       userId: TEST_UID,
       cid: 'cid_compat',
-      text: 'legacy commander task',
+      text: expect.stringContaining('legacy commander task'),
     });
     expect(dispatchRuntime.dispatchToFeishuHome).not.toHaveBeenCalled();
     expect(events[0]).toMatchObject({ type: 'conv_created', task_id: taskId });

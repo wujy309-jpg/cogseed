@@ -538,6 +538,50 @@ describe('local-tools › bash filesystem mutation scope', () => {
     expect(res.content).toContain('E_BASH_DYNAMIC_PATH_UNSUPPORTED');
   });
 
+  it('resolves variables the command pins to a literal path, so self-contained reads are allowed', async () => {
+    const { lt, perm } = await loadModules();
+    perm.grantLocalExec();
+    await setTmpWorkspace();
+    const dir = path.join(tmpDir, 'pinned');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'note.txt'), 'pinned-ok');
+    const bash = lt.createLocalTools({ userId: 'u1', cid: 'c1' }).find((t) => t.name === 'bash')!;
+    const res = await bash.execute({
+      command: `DIR=${dir}; cat "$DIR/note.txt"`,
+      timeoutMs: 5000,
+    }, makeCtx());
+    // 变量值就在同一条命令里，静态可验证 → 不该按"未解析变量"拒绝。
+    expect(res.isError).toBeFalsy();
+    expect(res.content).toContain('pinned-ok');
+  });
+
+  it('still refuses a variable whose value is not a literal in the same command', async () => {
+    const { lt, perm } = await loadModules();
+    perm.grantLocalExec();
+    await setTmpWorkspace();
+    const bash = lt.createLocalTools({ userId: 'u1', cid: 'c1' }).find((t) => t.name === 'bash')!;
+    for (const command of [
+      'cat "$UNKNOWN_DIR/note.txt"',
+      'DIR="$OTHER"; cat "$DIR/note.txt"',
+      'DIR=$(pwd); cat "$DIR/note.txt"',
+    ]) {
+      const res = await bash.execute({ command, timeoutMs: 5000 }, makeCtx());
+      expect(res.isError, command).toBe(true);
+      expect(res.content, command).toContain('E_BASH_DYNAMIC_PATH_UNSUPPORTED');
+    }
+  });
+
+  it('tells the model how to rewrite a dynamic read target instead of only refusing', async () => {
+    const { lt, perm } = await loadModules();
+    perm.grantLocalExec();
+    await setTmpWorkspace();
+    const bash = lt.createLocalTools({ userId: 'u1', cid: 'c1' }).find((t) => t.name === 'bash')!;
+    const res = await bash.execute({ command: 'cat "$UNKNOWN_DIR/x"', timeoutMs: 5000 }, makeCtx());
+    expect(res.content).toContain('literal path');
+    expect(res.content).toContain('glob with a literal base directory');
+    expect(res.content).toContain('pin the variable in the same command');
+  });
+
   it('blocks interpreter-internal writes outside the writable scope on macOS', async () => {
     if (process.platform !== 'darwin' || !fs.existsSync('/usr/bin/sandbox-exec')) return;
     const { lt, perm } = await loadModules();

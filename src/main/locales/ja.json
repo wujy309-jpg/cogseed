@@ -34,6 +34,7 @@
   "component.skill_hub_disabled_request": "スキル「{name}」は Hub により無効化されています。Hub が復元するまで新しい利用はできません。ローカルのコピーと開始済みのタスクは保持されます。",
   "connectors.inline_text": "{connector} コネクター",
   "connectors.use_prefix": "{connector} コネクターを使用: {content}",
+    "auto_tasks.fire_prefix": "自動タスク「{task}」：スケジュールにより自動送信されたもので、ユーザーが今入力したものではありません。\n\n",
   "contexts.index.dirs_heading": "フォルダ",
   "contexts.index.empty_kb": "（ライブラリは空です）",
   "contexts.index.empty_section": "（空）",
