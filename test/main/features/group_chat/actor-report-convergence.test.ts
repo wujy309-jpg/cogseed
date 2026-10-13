@@ -57,6 +57,18 @@ describe('actor report convergence (R-11)', () => {
     ]))).toBe(true);
   });
 
+  it('asks for a degradation report when a blocked or failed actor produced something', async () => {
+    // 2026-10-13: the worker ended blocked/waiting_user after a successful retry,
+    // so a 'done'-only predicate never asked the commander to report at all.
+    const { shouldEnqueueActorReport } = await runStore();
+    expect(shouldEnqueueActorReport(run([
+      { agent_id: 'worker', terminal: 'blocked', reason: 'waiting_user', produced: { messages: 1, artifacts: [] } },
+    ]))).toBe(true);
+    expect(shouldEnqueueActorReport(run([
+      { agent_id: 'worker', terminal: 'failed', reason: 'provider_400', produced: { messages: 1, artifacts: [] } },
+    ]))).toBe(true);
+  });
+
   it('does not ask when the finished actors produced nothing', async () => {
     const { shouldEnqueueActorReport } = await runStore();
     expect(shouldEnqueueActorReport(run([

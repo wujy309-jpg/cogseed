@@ -626,9 +626,15 @@ export function shouldEnqueueActorReport(record: RunRecord | null | undefined): 
   const actors = Array.isArray(record.actors) ? record.actors : [];
   if (actors.length === 0) return false;
   if (actors.some((actor) => actor.terminal === 'pending')) return false;
+  // Any produced result counts, including a blocked or failed actor: the report
+  // then carries the *degradation* ("X needs your input" / "X failed: reason"),
+  // which is exactly what the requirement owner asked for — degradation must
+  // exist, but the happy path (every actor `done`) must not need it. Requiring
+  // `terminal === 'done'` here silently dropped the blocked case: on 2026-10-13
+  // the worker ended `blocked/waiting_user` after a successful retry, so no
+  // report round was ever enqueued and the commander stayed silent.
   return actors.some((actor) => (
-    actor.terminal === 'done'
-    && ((actor.produced?.messages ?? 0) > 0 || (actor.produced?.artifacts?.length ?? 0) > 0)
+    (actor.produced?.messages ?? 0) > 0 || (actor.produced?.artifacts?.length ?? 0) > 0
   ));
 }
 

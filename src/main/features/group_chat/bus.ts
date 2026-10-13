@@ -8037,10 +8037,15 @@ async function runActorTurnBody(
       // still spin, which is the 2026-10-12 shape (commander concluded 17:13,
       // literature-review worker still running).
       let awaitingDispatchedActors: string[] = [];
-      if (item.runId && actor.kind === 'commander') {
+      // The commander's own turn is not always tagged with the run: on
+      // 2026-10-13 the run belonged to the dispatch (mentions: 0), so requiring
+      // `item.runId` here skipped the gate exactly when it was needed. Fall back
+      // to the run this conversation is currently tracking.
+      const gateRunId = item.runId || state.memberRunId;
+      if (gateRunId && actor.kind === 'commander') {
         try {
           const { readRun } = await import('./run_store');
-          const run = await readRun(uid, cid, item.runId);
+          const run = await readRun(uid, cid, gateRunId);
           awaitingDispatchedActors = (run?.actors || [])
             .filter((candidate) => candidate.terminal === 'pending')
             .map((candidate) => candidate.agent_id);
@@ -8051,7 +8056,7 @@ async function runActorTurnBody(
         if (awaitingDispatchedActors.length) {
           log.warn('commander turn ending while dispatched actors still run', {
             cid,
-            runId: item.runId,
+            runId: gateRunId,
             awaitingActorIds: awaitingDispatchedActors,
           });
         }
@@ -9644,6 +9649,29 @@ async function gateNestedAgentWake(
 ): Promise<WakeRequestSummary | null> {
   if (actor.kind !== "agent" || allowLegacyGroupChatFormalAgentExecutorForTest())
     return null;
+
+  // One-shot dispatch for members the user already brought in (2026-10-13): an
+  // explicit @ of an agent that is already a member of this conversation is an
+  // unambiguous instruction, so it must not be interrupted by a wake-approval
+  // prompt. The live run showed the cost of prompting anyway — the commander
+  // answered "需要你确认", the user had to approve, and the flow only finished after
+  // a manual retry. Approval therefore stays for agents that are NOT yet members
+  // (pulled in fresh, external instances, or anything the user has not already
+  // added). Failing to read members falls through to the gate, i.e. fails closed.
+  try {
+    const members = await readMembers(state.uid, state.cid, null);
+    if (members.actors.some((member) => member.kind === "agent" && member.id === actor.id)) {
+      log.info("wake approval skipped: agent is already a member of this conversation", {
+        cid: state.cid,
+        agentId: actor.id,
+        source,
+      });
+      return null;
+    }
+  } catch (err) {
+    log.warn(`wake gate member lookup failed cid=${state.cid}: ${(err as Error).message}`);
+  }
+
   const decision = await evaluateWake(state.uid, {
     conversationId: state.cid,
     agentId: actor.id,
