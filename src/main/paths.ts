@@ -1036,6 +1036,20 @@ export function runtimeResourcesDir(): string {
   return path.join(PC_ROOT, 'resources', 'runtime');
 }
 
+/** Official Tencent Meeting runtime; sibling of the other packaged native resources. */
+export const userTencentMeetingConfigDir = (uid: string) => path.join(userLocalConfigDir(uid), 'tencent-meeting');
+export const userTencentMeetingDataDir = (uid: string) => path.join(userLocalRoot(uid), 'connectors', 'tencent-meeting');
+
+/** Managed connector executables and vendor-owned credentials never cross account roots. */
+export const userConnectorRuntimeDir = (uid: string) => path.join(userLocalRoot(uid), 'connectors', 'runtimes');
+export const userConnectorCliStateDir = (uid: string, id: string) => path.join(userLocalRoot(uid), 'connectors', id, 'cli-state');
+
+export function tencentMeetingBinaryPath(): string | null {
+  const manifest = require('../../bin/tencent-meeting-runtime.cjs');
+  const asset = manifest.assets[`${process.platform}-${process.arch}`];
+  return asset ? path.join(path.dirname(runtimeResourcesDir()), 'tencent-meeting', asset.name) : null;
+}
+
 /** `${process.platform}-${process.arch}` → vendored OfficeCLI asset name.
  *  Mirrors `scripts/fetch-officecli.cjs`. Desktop targets only (mac + win). */
 const OFFICECLI_ASSETS: Readonly<Record<string, string>> = {

@@ -22,6 +22,8 @@ describe('014 anti-drift（specs/014 T024）', () => {
     const sneaked = [...new Set(current)].filter((name) => !baseline.includes(name));
     const removed = baseline.filter((name) => !current.includes(name));
     const registeredPost014 = [
+      // Manual automation execution uses the existing authenticated IPC router.
+      'autoTasks.runNow',
       'recall.scopedMemoryMigration.preview',
       'recall.scopedMemoryMigration.run',
       // 2026-09-29 个人本体 v2 重构：po.* 干净通道（JSON 单文档存储上的

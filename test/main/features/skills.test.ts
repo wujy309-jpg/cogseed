@@ -1876,6 +1876,18 @@ describe('skills › listSkillTree', () => {
 });
 
 describe('skills › buildSkillEditSystemPrompt', () => {
+  it('injects the live interface language as fallback independently of the legacy Agent language', async () => {
+    const { setLanguage, setUiLanguage } = await import('../../../src/main/features/config');
+    writeCustomSkill('alpha');
+    const s = await loadSkills();
+    const skill = (await s.getCustomSkill('alpha'))!;
+    setLanguage('en');
+    setUiLanguage('zh');
+    expect(await s.buildSkillEditSystemPrompt(TEST_UID, skill)).toContain('fallback response language: **Chinese (简体中文)**');
+    setUiLanguage('en');
+    expect(await s.buildSkillEditSystemPrompt(TEST_UID, skill)).toContain('fallback response language: **English**');
+  });
+
   it('renders template with skill metadata + file list, no leftover placeholders', async () => {
     writeCustomSkill('alpha', 'name: "Alpha"\ndescription: "a demo"\ncategory: "writing"', 'body text');
     const s = await loadSkills();

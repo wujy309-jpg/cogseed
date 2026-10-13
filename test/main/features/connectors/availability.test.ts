@@ -59,14 +59,14 @@ describe('Google connector remote switches', () => {
     const catalog = await import('../../../../src/main/features/connectors/catalog');
     const availability = await import('../../../../src/main/features/connectors/availability');
 
-    const out = availability.catalogWithAvailability(catalog.CONNECTOR_CATALOG);
+    const out = availability.catalogWithAvailability('test-runtime-user', catalog.CONNECTOR_CATALOG);
     const outIds = ids(out);
 
     expect(outIds).not.toEqual(expect.arrayContaining(releasedGoogleIds));
     expect(outIds).toContain('github');
-    expect(availability.connectorAvailabilityForId('gmail')).toBe('hidden');
-    expect(availability.connectorAvailabilityForId('gsearch-console')).toBe('hidden');
-    expect(availability.connectorAvailabilityForId('github')).toBe('enabled');
+    expect(availability.connectorAvailabilityForId('test-runtime-user', 'gmail')).toBe('hidden');
+    expect(availability.connectorAvailabilityForId('test-runtime-user', 'gsearch-console')).toBe('hidden');
+    expect(availability.connectorAvailabilityForId('test-runtime-user', 'github')).toBe('enabled');
   });
 
   it('lets the direct remote switch re-enable every Google connector', async () => {
@@ -74,12 +74,12 @@ describe('Google connector remote switches', () => {
     const catalog = await import('../../../../src/main/features/connectors/catalog');
     const availability = await import('../../../../src/main/features/connectors/availability');
 
-    const out = availability.catalogWithAvailability(catalog.CONNECTOR_CATALOG);
+    const out = availability.catalogWithAvailability('test-runtime-user', catalog.CONNECTOR_CATALOG);
     const outIds = ids(out);
 
     expect(outIds).toEqual(expect.arrayContaining(releasedGoogleIds));
-    expect(availability.connectorAvailabilityForId('gmail')).toBe('enabled');
-    expect(() => availability.assertConnectorRuntimeEnabled('gmail')).not.toThrow();
+    expect(availability.connectorAvailabilityForId('test-runtime-user', 'gmail')).toBe('enabled');
+    expect(() => availability.assertConnectorRuntimeEnabled('test-runtime-user', 'gmail')).not.toThrow();
   });
 
   it('hides every Google connector when the overall switch is disabled', async () => {
@@ -87,12 +87,12 @@ describe('Google connector remote switches', () => {
     const catalog = await import('../../../../src/main/features/connectors/catalog');
     const availability = await import('../../../../src/main/features/connectors/availability');
 
-    const out = availability.catalogWithAvailability(catalog.CONNECTOR_CATALOG);
+    const out = availability.catalogWithAvailability('test-runtime-user', catalog.CONNECTOR_CATALOG);
     const outIds = ids(out);
 
     expect(outIds).not.toEqual(expect.arrayContaining(releasedGoogleIds));
     expect(outIds).toContain('github');
-    expect(() => availability.assertConnectorRuntimeEnabled('gmail')).toThrow(/connector_unsupported/);
+    expect(() => availability.assertConnectorRuntimeEnabled('test-runtime-user', 'gmail')).toThrow(/connector_unsupported/);
   });
 
   it('hides every Google connector when the overall switch is visible_disabled', async () => {
@@ -100,10 +100,10 @@ describe('Google connector remote switches', () => {
     const catalog = await import('../../../../src/main/features/connectors/catalog');
     const availability = await import('../../../../src/main/features/connectors/availability');
 
-    const out = availability.catalogWithAvailability(catalog.CONNECTOR_CATALOG);
+    const out = availability.catalogWithAvailability('test-runtime-user', catalog.CONNECTOR_CATALOG);
 
     expect(ids(out)).not.toEqual(expect.arrayContaining(releasedGoogleIds));
-    expect(availability.connectorAvailabilityForId('gmail')).toBe('hidden');
+    expect(availability.connectorAvailabilityForId('test-runtime-user', 'gmail')).toBe('hidden');
   });
 
   it('lets the Gmail switch hide Gmail and Google Workspace while other Google services remain enabled', async () => {
@@ -111,7 +111,7 @@ describe('Google connector remote switches', () => {
     const catalog = await import('../../../../src/main/features/connectors/catalog');
     const availability = await import('../../../../src/main/features/connectors/availability');
 
-    const out = availability.catalogWithAvailability(catalog.CONNECTOR_CATALOG);
+    const out = availability.catalogWithAvailability('test-runtime-user', catalog.CONNECTOR_CATALOG);
     const outIds = ids(out);
 
     expect(outIds).not.toContain('gmail');
@@ -124,7 +124,7 @@ describe('Google connector remote switches', () => {
     const catalog = await import('../../../../src/main/features/connectors/catalog');
     const availability = await import('../../../../src/main/features/connectors/availability');
 
-    const out = availability.catalogWithAvailability(catalog.CONNECTOR_CATALOG);
+    const out = availability.catalogWithAvailability('test-runtime-user', catalog.CONNECTOR_CATALOG);
 
     expect(out.find((entry) => entry.id === 'gmail')).toMatchObject({ availability: 'visible_disabled' });
     expect(out.find((entry) => entry.id === 'google-workspace')).toMatchObject({ availability: 'visible_disabled' });
@@ -174,6 +174,7 @@ describe('Google connector remote switches', () => {
         { name: 'start_login', description: '', input_schema: {} },
         { name: 'check_login', description: '', input_schema: {} },
         { name: 'stop_login', description: '', input_schema: {} },
+        ...['prepare_meeting_change', 'commit_meeting_change', 'discard_meeting_change'].map((name) => ({ name, description: '', input_schema: {} })),
       ],
     };
     vi.doMock('../../../../src/main/features/connectors/manager', () => ({

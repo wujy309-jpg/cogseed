@@ -2108,6 +2108,11 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { task: result.task };
   },
 
+  'autoTasks.runNow': async ({ taskId } = {}, ctx) => {
+    if (typeof taskId !== 'string' || !taskId) throw new Error('invalid taskId');
+    return autoTasks.runTaskNow(ctx.userId, taskId);
+  },
+
   // ── Group chat (replaces legacy conversations.send / .stream / .markFormSubmitted) ──
   // 任务级引用合并（@ 产物/资产 → task_references）已下沉到 groupChat.send() 核心——
   // conversations.sendStream（标准 composer 实际走的流式路径）与 groupChat.send 都汇聚

@@ -33,7 +33,7 @@ import { evictSession } from '../model/core-agent/session-store';
 import { getActiveUserId } from './users';
 import { createLogger } from '../logger';
 import { t, buildLanguageDirective, descriptionLang } from '../i18n';
-import { getLanguage } from './config';
+import { getLanguage, getUiLanguage } from './config';
 import { getWorkspacePath } from './user_workspace';
 import { buildAttachmentManifest } from './chat_attachments';
 import { addAgentEntry, listAgentEntries, removeAgentEntry, replaceAgentEntry } from './memory';
@@ -3154,7 +3154,7 @@ export function buildAgentEditSystemPrompt(agent: {
         category: agent.category || '(not provided)',
         interactive: agent.interactive === true ? 'true' : 'false',
       });
-  const tail = buildLanguageDirective(getLanguage());
+  const tail = buildLanguageDirective(getUiLanguage());
   return `${body}\n\n---\n\n${tail}\n\n---\n\n${buildRuntimeDatetimeBlock()}`;
 }
 

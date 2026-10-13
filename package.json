@@ -101,7 +101,9 @@
     "esbuild": "~0.28.2",
     "fastembed": "^2.1.0",
     "get-tsconfig": "^4.7.5",
+    "imapflow": "2.3.0",
     "jimp": "^1.6.1",
+    "mailparser": "3.9.37",
     "mammoth": "^1.12.1",
     "node-pty": "^1.1.0",
     "pdfjs-dist": "^6.2.108",
@@ -280,6 +282,14 @@
           "en.lproj/InfoPlist.strings",
           "ja.lproj/InfoPlist.strings",
           "zh-Hans.lproj/InfoPlist.strings"
+        ]
+      },
+      {
+        "from": "resources/tencent-meeting",
+        "to": "tencent-meeting",
+        "filter": [
+          "tmeet-*",
+          "LICENSE"
         ]
       }
     ],

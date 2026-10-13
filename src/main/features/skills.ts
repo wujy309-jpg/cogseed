@@ -32,7 +32,7 @@ import { getActiveUserId } from './users';
 import { createLogger } from '../logger';
 import { t, buildLanguageDirective, descriptionLang } from '../i18n';
 import { buildAttachmentManifest } from './chat_attachments';
-import { getLanguage } from './config';
+import { getLanguage, getUiLanguage } from './config';
 
 // Custom skills live per-user at `<uid>/cloud/skills/`. Resolved lazily
 // from the active uid.
@@ -3965,7 +3965,7 @@ export async function buildSkillEditSystemPrompt(userId: string, skill: {
     skill_dir: skill.dir || '',
     skill_files: skillFilesBlock(files),
   });
-  const tail = buildLanguageDirective(getLanguage());
+  const tail = buildLanguageDirective(getUiLanguage());
   return `${body}\n\n---\n\n${tail}\n\n---\n\n${buildRuntimeDatetimeBlock()}`;
 }
 

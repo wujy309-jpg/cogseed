@@ -2372,6 +2372,16 @@ describe('agents › deleteCustomAgent', () => {
 });
 
 describe('agents › buildAgentEditSystemPrompt', () => {
+  it('injects the live interface language as fallback independently of the legacy Agent language', async () => {
+    const { setLanguage, setUiLanguage } = await import('../../../src/main/features/config');
+    const a = await loadAgents();
+    setLanguage('en');
+    setUiLanguage('zh');
+    expect(a.buildAgentEditSystemPrompt({})).toContain('fallback response language: **Chinese (简体中文)**');
+    setUiLanguage('en');
+    expect(a.buildAgentEditSystemPrompt({})).toContain('fallback response language: **English**');
+  });
+
   it('substitutes agent fields and drops the removed skills_list placeholder', async () => {
     const a = await loadAgents();
     const sys = await a.buildAgentEditSystemPrompt({

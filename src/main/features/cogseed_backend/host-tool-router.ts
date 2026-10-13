@@ -39,6 +39,14 @@ export function createCogSeedHostToolRouter(deps: CogSeedHostToolRouterDeps = {}
         readOnlyRoots: request.read_only_roots ?? [], writableRoots: request.writable_roots ?? [],
         ...(request.working_dir ? { workingDir: request.working_dir } : {}),
       };
+      if (call.name === 'desktop_connector_list_tools' || call.name === 'desktop_connector_call_tool') {
+        try {
+          const { runDesktopConnectorTool } = await import('./desktop-connectors');
+          return cap(await runDesktopConnectorTool(request.user_id, call.name, call.input, request, context.signal));
+        } catch (error) {
+          return { content: error instanceof Error ? error.message : 'Connector request failed', isError: true };
+        }
+      }
       // Internal Worker-only approval bridge. The model never sees these as
       // Runtime tools; the host receives the original request/session from the
       // JSONL envelope and does not trust any user/session identity in input.

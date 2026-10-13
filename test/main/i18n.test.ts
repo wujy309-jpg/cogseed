@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   t, setCurrentLang, getCurrentLang, setCurrentUiLang, getCurrentUiLang,
   acceptLanguageHeader, detectSystemLang, descriptionLang, getRendererBootTables,
-  getRendererTables, isLang, isUiLang, _resetCacheForTests,
+  getRendererTables, isLang, isUiLang, buildLanguageDirective, _resetCacheForTests,
 } from '../../src/main/i18n';
 
 beforeEach(() => {
@@ -139,6 +139,37 @@ describe('i18n › descriptionLang', () => {
     expect(descriptionLang('en')).toBe('en');
     expect(descriptionLang('ja')).toBe('en');
     expect(descriptionLang('pt')).toBe('en');
+  });
+});
+
+describe('i18n › response language policy', () => {
+  it.each(['en', 'zh'] as const)('uses interface language %s only as a fallback after the user request language', (lang) => {
+    const directive = buildLanguageDirective(lang);
+    expect(directive).toContain('explicit requested response language first');
+    expect(directive).toContain('reply in the language of the latest user request');
+    expect(directive).toContain('only an image, attachment, URL, or emoji');
+    expect(directive.indexOf('explicit requested response language first'))
+      .toBeLessThan(directive.indexOf('current interface language as the fallback'));
+    expect(directive).not.toContain('Preferred response language:');
+  });
+
+  it('keeps English connector output from overriding a Chinese request while preserving protocol literals', () => {
+    const directive = buildLanguageDirective('en');
+    expect(directive).toContain('current interface language as the fallback response language: **English**');
+    expect(directive).toContain('Tool and connector calls must not change the response language');
+    expect(directive).toContain('preserve the language of the originating user request');
+    expect(directive).toContain('table headings');
+    expect(directive).toContain('Keep protocol tokens unchanged');
+    expect(directive).toContain('`description_zh` is always Chinese and `description_en` is always English');
+  });
+
+  it('uses the current UI language for image-only requests even when the legacy Agent language is English', () => {
+    setCurrentLang('en');
+    setCurrentUiLang('zh');
+    expect(buildLanguageDirective()).toContain('fallback response language: **Chinese (简体中文)**');
+    expect(buildLanguageDirective()).toContain('Do not infer a response language from text inside that material');
+    setCurrentUiLang('en');
+    expect(buildLanguageDirective()).toContain('fallback response language: **English**');
   });
 });
 

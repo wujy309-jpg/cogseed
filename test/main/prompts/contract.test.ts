@@ -217,14 +217,16 @@ describe('prompts ↔ code contract', () => {
     expect(readFile('src/main/features/group_chat/bus.ts')).toMatch(/promptLoader\.load\(["']chat_shared_rules["']/);
   });
 
-  it('group-chat system prompts inject the preferred Agent response language directive', () => {
+  it('group-chat system prompts follow the user request language with an interface-language fallback', () => {
     const bus = readFile('src/main/features/group_chat/bus.ts');
     const i18n = readFile('src/main/i18n.ts');
 
-    expect(i18n).toContain('Preferred response language: **${name}**');
-    expect(i18n).toContain('Write all human-readable prose in ${name}');
+    expect(i18n).toContain('reply in the language of the latest user request');
+    expect(i18n).toContain('current interface language as the fallback response language: **${name}**');
+    expect(i18n).not.toContain('Write all human-readable prose in ${name}');
     expect(bus).toContain('appendLanguageDirective');
-    expect(bus).toContain('buildLanguageDirective(getLanguage())');
+    expect(bus).toContain('buildLanguageDirective(getUiLanguage())');
+    expect(bus).not.toContain('buildLanguageDirective(getLanguage())');
     expect(bus).toContain('chat_commander');
     expect(bus).toContain('chat_agent_in_group');
   });
@@ -559,7 +561,9 @@ describe('prompts ↔ code contract', () => {
     expect(runner).not.toMatch(/parts\.push\(volatileTail\)/);
     expect(agents).toMatch(/buildLanguageDirective\([^)]*\)[\s\S]+buildRuntimeDatetimeBlock\(\)/);
     expect(skills).toMatch(/buildLanguageDirective\([^)]*\)[\s\S]+buildRuntimeDatetimeBlock\(\)/);
-    expect(bus).toMatch(/language_block:\s*buildLanguageDirective\(getLanguage\(\)\)/);
+    expect(bus).toMatch(/language_block:\s*buildLanguageDirective\(getUiLanguage\(\)\)/);
+    expect(agents).toContain('buildLanguageDirective(getUiLanguage())');
+    expect(skills).toContain('buildLanguageDirective(getUiLanguage())');
     expect(cliPrompt).toContain('$language_block');
     // 该模板的易变尾部必须收尾。审计 2026-10-08 把静态的 `## Your task` 挪到了易变段之前，
     // 所以这里不再断言"$task_body 紧跟 datetime"，改为断言 datetime 仍是最后一个块。

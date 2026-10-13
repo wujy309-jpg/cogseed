@@ -111,15 +111,19 @@ export function createRuntimeToolRunner(options: RuntimeToolRunnerOptions): Runt
         });
       }
       if (name === 'list_connector_tools') {
-        if (callContext.toolPolicy.connectors !== 'enabled' || !options.connectorManager) return { content: '[E_RUNTIME_CONNECTOR_DISABLED] CogSeed connectors are disabled', isError: true };
+        if (callContext.toolPolicy.connectors !== 'enabled' || (!options.connectorManager && !options.hostToolClient)) return { content: '[E_RUNTIME_CONNECTOR_DISABLED] CogSeed connectors are disabled', isError: true };
+        if (options.hostToolClient) return capRuntimeResult(name, await options.hostToolClient.call({
+          requestId: options.requestId ?? `req-${options.runtimeSessionId.replace(/^mruntime-/, '')}`,
+          runtimeSessionId: options.runtimeSessionId, name: 'desktop_connector_list_tools', input, signal: _opts.signal,
+        }));
         const connectorId = typeof input.connector_id === 'string' ? input.connector_id : undefined;
         const tools = connectorId
-          ? await options.connectorManager.listTools(options.userId, connectorId, _opts)
-          : await options.connectorManager.listAllTools(options.userId, _opts);
+          ? await options.connectorManager!.listTools(options.userId, connectorId, _opts)
+          : await options.connectorManager!.listAllTools(options.userId, _opts);
         return capRuntimeResult('list_connector_tools', { content: JSON.stringify(tools.map((tool) => ({ connector_id: tool.connectorId, tool_name: tool.name, exposed_name: tool.exposedName, description: tool.description, input_schema: tool.input_schema }))) });
       }
       if (name === 'call_connector_tool') {
-        if (callContext.toolPolicy.connectors !== 'enabled' || !options.connectorManager) return { content: '[E_RUNTIME_CONNECTOR_DISABLED] CogSeed connectors are disabled', isError: true };
+        if (callContext.toolPolicy.connectors !== 'enabled' || (!options.connectorManager && !options.hostToolClient)) return { content: '[E_RUNTIME_CONNECTOR_DISABLED] CogSeed connectors are disabled', isError: true };
         if (typeof input.connector_id !== 'string' || typeof input.tool_name !== 'string' || !input.arguments || typeof input.arguments !== 'object' || Array.isArray(input.arguments)) return { content: '[E_RUNTIME_CONNECTOR_INPUT] connector_id, tool_name, and arguments are required', isError: true };
         const connectorId = input.connector_id.trim();
         const toolName = input.tool_name.trim();
@@ -136,6 +140,10 @@ export function createRuntimeToolRunner(options: RuntimeToolRunnerOptions): Runt
           execution: { connector_id: connectorId, tool_name: toolName, arguments: args },
         }, async () => {
           try {
+            if (options.hostToolClient) return capRuntimeResult(name, await options.hostToolClient.call({
+              requestId: options.requestId ?? `req-${options.runtimeSessionId.replace(/^mruntime-/, '')}`,
+              runtimeSessionId: options.runtimeSessionId, name: 'desktop_connector_call_tool', input, signal: _opts.signal,
+            }));
             return capRuntimeResult('call_connector_tool', { content: JSON.stringify(await options.connectorManager!.callTool(options.userId, connectorId, toolName, args, _opts)) });
           } catch (error) {
             return { content: (error instanceof Error ? error.message : String(error)), isError: true };

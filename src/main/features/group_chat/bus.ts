@@ -245,7 +245,7 @@ import {
   normalizeLang,
   t,
 } from "../../i18n";
-import { getLanguage } from "../config";
+import { getLanguage, getUiLanguage } from "../config";
 import * as marketplaceFeat from "../marketplace";
 import { readInstalls } from "../marketplace_installs";
 import {
@@ -8735,7 +8735,7 @@ export async function _renderPromptWithSharedRulesForTest(
 /** Put low-frequency language context at the head of the dynamic region, while
  *  keeping the date tail last because it can change between turns. */
 function appendLanguageDirective(prompt: string): string {
-  const language = buildLanguageDirective(getLanguage());
+  const language = buildLanguageDirective(getUiLanguage());
   const marker = "## Runtime injection";
   const idx = prompt.indexOf(marker);
   const withLanguage =
@@ -14857,7 +14857,7 @@ async function _buildCliPrompt(
         ).trim(),
         output_protocol_block: outputProtocolBlock,
         project_block: projectBlock,
-        language_block: buildLanguageDirective(getLanguage()),
+        language_block: buildLanguageDirective(getUiLanguage()),
         attachments_block: filesBlock,
         conversation_block: conversationBlock,
         shared_task_context_block: sharedContextBlock,

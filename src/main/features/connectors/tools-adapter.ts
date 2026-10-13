@@ -77,7 +77,7 @@ export async function resolveVisibleConnectors(
   // deliberately separate from what the UI renders: `isConnectorVerifiedLive` gates the green card,
   // `isConnectorUsable` gates routing. Conflating them is what let a six-day-dead connector show
   // as connected while `callTool` failed every time.
-  const connected = all.filter((i) => isConnectorUsable(i.status) && isConnectorRuntimeEnabled(i.id));
+  const connected = all.filter((i) => isConnectorUsable(i.status) && isConnectorRuntimeEnabled(uid, i.id));
   if (!connected.length) return [];
   // Per-user soft-disable filter (Connectors panel "停用" button). Separate from `agent.enabled_connectors`:
   // this filter applies to every actor including the commander; even a disconnected-by-user instance
@@ -104,7 +104,7 @@ export async function resolveVisibleConnectors(
  *  provider data. Filtered here instead of by seeding `enabled_subtools`: the tool list is only
  *  known after the adapter's first `list_tools`, and a stored whitelist would silently hide any
  *  read tool added later. A deny-list of named tools needs no bookkeeping as the adapter grows. */
-const AUTH_SESSION_TOOL_NAMES = new Set(['start_login', 'check_login', 'stop_login']);
+const AUTH_SESSION_TOOL_NAMES = new Set(['start_login', 'check_login', 'stop_login', 'prepare_meeting_change', 'commit_meeting_change', 'discard_meeting_change']);
 
 async function _enabledInstancesForActor(
   uid: string,
