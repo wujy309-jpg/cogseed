@@ -87,11 +87,12 @@ describe('P3394 wake approval placement', () => {
     const end = conversationSource.indexOf('\n// ── 外接智能体', start);
     const resolveSource = conversationSource.slice(start, end);
 
-    // 需求变更（2026-10-14 需求方反馈）：此前点了「允许」卡片直接消失，而气泡文案
-    // 仍写着「需要你点允许」——用户拿不到"我的点击生效了"的回执。改为就地定格为
-    // 已批准/已拒绝。
+    // 需求口径（2026-10-14 需求方）：批准后卡片退场（授权已生效，回执交给工人气泡上
+    // 的运行指示）；拒绝保留定格回执（没有别的信号能说明这次拒绝）。
+    expect(resolveSource).toContain("if (decision === 'approve')");
+    expect(resolveSource).toContain('card.remove()');
+    expect(resolveSource).toContain('_pruneWakeRequestHost(_wakeRequestHost(cid, { create: false }))');
     expect(resolveSource).toContain('_renderWakeRequestCard(card, settled, cid)');
     expect(resolveSource).toContain("status: decision === 'approve' ? 'approved' : 'rejected'");
-    expect(resolveSource).not.toContain('card.remove()');
   });
 });
