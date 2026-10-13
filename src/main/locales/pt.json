@@ -315,7 +315,5 @@
   "touchpoints.card.button.revoke_grant": "Revogar concessão",
   "touchpoints.card.resolved": "Processado",
   "dashboard.retry_user_message": "(tentar novamente)",
-  "chat": {
-    "actor_report_ready": "@%{name} concluiu — resuma e reporte."
-  }
+  "chat.actor_report_ready": "@%{name} concluiu — resuma e reporte."
 }

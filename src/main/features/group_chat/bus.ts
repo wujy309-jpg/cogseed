@@ -9659,6 +9659,23 @@ async function gateNestedAgentWake(
   // (pulled in fresh, external instances, or anything the user has not already
   // added). Failing to read members falls through to the gate, i.e. fails closed.
   try {
+    // The run record already knows who this run is about (`member_agent_ids`),
+    // and the 21:49 run logged `members: 1` — so consult it first: the member
+    // *file* read below needs the conversation's project hint, and passing null
+    // silently missed the member on 2026-10-13 (wake prompt still appeared).
+    if (runId) {
+      const { readRun } = await import("./run_store");
+      const run = await readRun(state.uid, state.cid, runId);
+      if ((run?.member_agent_ids || []).includes(actor.id)) {
+        log.info("wake approval skipped: agent is a member of this run", {
+          cid: state.cid,
+          agentId: actor.id,
+          source,
+          runId,
+        });
+        return null;
+      }
+    }
     const members = await readMembers(state.uid, state.cid, null);
     if (members.actors.some((member) => member.kind === "agent" && member.id === actor.id)) {
       log.info("wake approval skipped: agent is already a member of this conversation", {

@@ -315,7 +315,5 @@
   "touchpoints.card.button.revoke_grant": "認可を取り消す",
   "touchpoints.card.resolved": "処理済み",
   "dashboard.retry_user_message": "（再試行）",
-  "chat": {
-    "actor_report_ready": "@%{name} が完了しました。集約して報告してください。"
-  }
+  "chat.actor_report_ready": "@%{name} が完了しました。集約して報告してください。"
 }

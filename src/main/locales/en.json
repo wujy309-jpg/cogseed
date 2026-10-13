@@ -334,7 +334,5 @@
   "connectors.tencent.approval.meeting_type": "Meeting type (0 regular, 1 recurring series)",
   "connectors.tencent.approval.scope": "Apply only the changes shown above; other fields remain unchanged.",
   "connectors.tencent.approval.cancel_scope": "Cancel the specified meeting. Type 1 without an occurrence ID cancels the entire recurring series.",
-  "chat": {
-    "actor_report_ready": "@%{name} finished — please summarise and report."
-  }
+  "chat.actor_report_ready": "@%{name} finished — please summarise and report."
 }
