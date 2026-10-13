@@ -34,7 +34,7 @@
   "component.skill_hub_disabled_request": "A habilidade \"{name}\" foi desativada pelo Hub. Novos usos ficam bloqueados até o Hub restaurá-la. A cópia local e as tarefas já iniciadas são preservadas.",
   "connectors.inline_text": "conector {connector}",
   "connectors.use_prefix": "Use o conector {connector}: {content}",
-    "auto_tasks.fire_prefix": "Tarefa automática \"{task}\": enviada por agendamento, não digitada pelo usuário agora.\n\n",
+  "auto_tasks.fire_prefix": "Tarefa automática \"{task}\": enviada por agendamento, não digitada pelo usuário agora.\n\n",
   "contexts.index.dirs_heading": "Pastas",
   "contexts.index.empty_kb": "(Biblioteca está vazia)",
   "contexts.index.empty_section": "(vazio)",
@@ -314,5 +314,8 @@
   "touchpoints.card.button.forget_source": "Esquecer fonte",
   "touchpoints.card.button.revoke_grant": "Revogar concessão",
   "touchpoints.card.resolved": "Processado",
-  "dashboard.retry_user_message": "(tentar novamente)"
+  "dashboard.retry_user_message": "(tentar novamente)",
+  "chat": {
+    "actor_report_ready": "@%{name} concluiu — resuma e reporte."
+  }
 }

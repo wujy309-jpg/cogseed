@@ -5027,6 +5027,32 @@ async function recordMemberRunTurnResult(
       artifacts,
     });
   }
+    // R-11 (decision 2026-10-13): the commander waits for the actors it
+    // dispatched and then reports — the shape this agent uses for its own
+    // sub-agents (dispatch returns a handle, completion wakes the parent, the
+    // parent reports). Once every actor of this run has reached a terminal and at
+    // least one contributed, enqueue exactly one reporting round for the
+    // commander. The decision is clock-free (`shouldEnqueueActorReport`), so the
+    // existing idle/turn budgets remain the only time-based stops, and the latch
+    // keeps it to one round per dispatch batch.
+    try {
+      const runStore = await import('./run_store');
+      const run = await runStore.readRun(state.uid, state.cid, item.runId);
+      if (runStore.shouldEnqueueActorReport(run)) {
+        await runStore.markActorReportEnqueued(state.uid, state.cid, item.runId);
+        await enqueue({
+          uid: state.uid,
+          cid: state.cid,
+          fromActorId: actor.id,
+          text: t('chat.actor_report_ready', { name: actor.name || actor.id }),
+          forceTo: [COMMANDER_ID],
+          dispatch: true,
+        });
+      }
+    } catch (err) {
+      // Reporting must never break the actor's own bookkeeping.
+      log.warn(`actor report round enqueue failed cid=${state.cid}: ${(err as Error).message}`);
+    }
 }
 
 type CoordinatorTurnContext = {
