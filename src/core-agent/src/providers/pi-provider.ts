@@ -435,6 +435,11 @@ export function createPiProvider(config: {
               reasoning,
               cacheRetention: params.cacheRetention,
               sessionId,
+              // pi-ai reads request headers from these per-call options, NOT from the
+              // Model object — omitting them silently dropped `x-opencode-session`, so
+              // OpenCode-fronting endpoints answered 400 {"type":"MissingSessionID"}
+              // (2026-10-13, three attempts: the header was set on the Model all along).
+              ...(model.headers ? { headers: model.headers as Record<string, string> } : {}),
               ...(config.onPayload ? { onPayload: config.onPayload as any } : {}),
             })
           : piStream(model, context, {
@@ -445,6 +450,11 @@ export function createPiProvider(config: {
               temperature: params.temperature,
               cacheRetention: params.cacheRetention,
               sessionId,
+              // pi-ai reads request headers from these per-call options, NOT from the
+              // Model object — omitting them silently dropped `x-opencode-session`, so
+              // OpenCode-fronting endpoints answered 400 {"type":"MissingSessionID"}
+              // (2026-10-13, three attempts: the header was set on the Model all along).
+              ...(model.headers ? { headers: model.headers as Record<string, string> } : {}),
               ...(config.onPayload ? { onPayload: config.onPayload as any } : {}),
             });
 
