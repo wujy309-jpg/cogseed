@@ -1436,14 +1436,17 @@ export class AgentRunner {
         let endTurnRequested = false;
         let terminalBatchIndex = -1;
         const terminalSkipMessage = "A prior terminal tool ended this turn before this tool could run.";
-        const deferredToolImages: NonNullable<ToolResult["images"]>[] = [];
+        const deferredToolImages: Array<{ toolUseId: string; images: NonNullable<ToolResult["images"]> }> = [];
         const commitToolResult = (call: ToolUseCall, toolResult: ToolResult) => {
           this.session.addToolResult(call.id, toolResult.content, undefined, toolResult.isError);
-          if (toolResult.images?.length) deferredToolImages.push(toolResult.images);
+          // Keep the producing call id with the deferred images (C1/R-09): flushing
+          // them bare loses which tool_use they answer, and the session's image
+          // externalization needs that attribution to replace exactly these images.
+          if (toolResult.images?.length) deferredToolImages.push({ toolUseId: call.id, images: toolResult.images });
         };
         const flushDeferredToolImages = () => {
-          for (const images of deferredToolImages.splice(0)) {
-            this.session.addToolImages(images);
+          for (const deferred of deferredToolImages.splice(0)) {
+            this.session.addToolImages(deferred.images, deferred.toolUseId);
           }
         };
 
