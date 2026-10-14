@@ -365,7 +365,7 @@
     if (action === 'open-handling') return !!context.hasCollaboration || !!context.conversationId;
     if (action === 'start') return !!set.start;
     if (action === 'retry') return !!set.retry;
-    if (action === 'resume') return !!set.resume;
+    if (action === 'resume') return !!set.resume || context.resumable === true;
     if (action === 'recover-result') return !!set.recoverResult;
     return false;
   }
@@ -417,7 +417,7 @@
         <strong>${esc(display.title)}</strong>
         ${userState.attention ? `<span class="run-center-queue-reason">${esc(text(userState.reasonKey))}</span>` : ''}
         <span class="run-center-queue-meta"><span>${esc(sequenceLabel)}</span><span>${icon('terminal')}${esc(agent)}</span>${display.shortId ? `<span>${esc(display.shortId)}</span>` : ''}</span>
-        ${userState.actionKey && recommendedActionAvailable(task.actions, userState, { conversationId: task.conversationId }) ? `<span class="run-center-queue-recommendation">${esc(text('run_center.recommended_action'))}<b>${esc(text(userState.actionKey))}</b>${icon('chevron-right')}</span>` : ''}
+        ${userState.actionKey && recommendedActionAvailable(task.actions, userState, { conversationId: task.conversationId, resumable: task.resumable === true }) ? `<span class="run-center-queue-recommendation">${esc(text('run_center.recommended_action'))}<b>${esc(text(userState.actionKey))}</b>${icon('chevron-right')}</span>` : ''}
         </button>
         ${quickArchiveButton(task, options)}
       </div>`;

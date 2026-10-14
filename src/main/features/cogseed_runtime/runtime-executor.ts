@@ -15,6 +15,7 @@ import type { RuntimeHostToolClient } from './kernel/tools/host-tools';
 import type { RuntimeEventEnvelope, RuntimeRunRequest } from './protocol';
 
 export type RuntimeExecutor = (request: RuntimeRunRequest, opts?: { signal?: AbortSignal | null }) => AsyncIterable<RuntimeEventEnvelope>;
+export const LIGHT_RUNTIME_MAX_TOOL_ROUNDS = 24;
 
 export interface NativeRuntimeExecutorDeps {
   modelAdapter?: RuntimeModelAdapter;
@@ -50,6 +51,15 @@ export function runtimeKernelRequestFromProtocol(request: RuntimeRunRequest): Ru
     ...(request.model_profile ? { modelProfile: request.model_profile } : {}),
     ...(request.working_dir ? { workingDir: request.working_dir } : {}),
   };
+}
+
+export function maxToolRoundsForRuntimeRequest(request: RuntimeRunRequest): number {
+  if (request.execution_kind && request.execution_kind !== 'cogseed-native') return DEFAULT_RUNTIME_KERNEL_CONFIG.maxToolRounds;
+  if (request.agent_id) return DEFAULT_RUNTIME_KERNEL_CONFIG.maxToolRounds;
+  if ((request.allowed_skill_ids ?? []).length > 0) return DEFAULT_RUNTIME_KERNEL_CONFIG.maxToolRounds;
+  if ((request.writable_roots ?? []).length > 0) return DEFAULT_RUNTIME_KERNEL_CONFIG.maxToolRounds;
+  if (request.tool_policy?.fileWrite && request.tool_policy.fileWrite !== 'none') return DEFAULT_RUNTIME_KERNEL_CONFIG.maxToolRounds;
+  return LIGHT_RUNTIME_MAX_TOOL_ROUNDS;
 }
 
 export function kernelEventToRuntimeEnvelope(event: RuntimeKernelEvent): RuntimeEventEnvelope {
@@ -89,7 +99,7 @@ export function createNativeRuntimeExecutor(deps: NativeRuntimeExecutorDeps = {}
     const kernel = kernelFactory({
       ...(deps.modelAdapter ? { modelAdapter: deps.modelAdapter } : {}),
       ...(toolRunner ? { toolRunner } : {}),
-      maxToolRounds: deps.maxToolRounds ?? DEFAULT_RUNTIME_KERNEL_CONFIG.maxToolRounds,
+      maxToolRounds: deps.maxToolRounds ?? maxToolRoundsForRuntimeRequest(request),
     });
     for await (const event of kernel.run(kernelRequest, opts)) {
       yield kernelEventToRuntimeEnvelope(event);
@@ -123,6 +133,5 @@ export function createDefaultNativeRuntimeExecutor(
       ...(deps.hostToolClient ? { hostToolClient: deps.hostToolClient } : {}),
       maxInlineToolResultTokens: DEFAULT_RUNTIME_KERNEL_CONFIG.maxInlineToolResultChars,
     }),
-    maxToolRounds: DEFAULT_RUNTIME_KERNEL_CONFIG.maxToolRounds,
   });
 }

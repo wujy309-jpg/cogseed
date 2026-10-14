@@ -317,10 +317,17 @@ function _csSetBadgeLive(flow, live) {
     return;
   }
   if (existing) return;
+  // 真机 2026-10-14：活跃态此前只有一个 aria-hidden 的转圈图标，用户反馈"运行中
+  // 不太明显"。这里补上**可见文字**（复用既有 run_center.action_working 文案，
+  // 不新增 locale key），并去掉 aria-hidden，让读屏也能读到运行中。
   const el = document.createElement('span');
   el.className = 'cs-badge-live';
-  el.setAttribute('aria-hidden', 'true');
-  el.innerHTML = `<span class="cs-loading-spinner">${_csIco('loader')}</span>`;
+  el.setAttribute('role', 'status');
+  el.setAttribute('aria-label', _csT('run_center.action_working', '工作中'));
+  // 2026-10-14 需求：执行中的状态与**折叠入口合成同一条**，整条落在头像下方
+  // （见 chat-stream.css 里 `.chat-msg-header .cs-badge { flex-basis:100% }`），
+  // 不再与名字并排、也不再出现"头像下一个孤零零的标签"。
+  el.innerHTML = `<span class="cs-loading-spinner">${_csIco('loader')}</span><span class="cs-badge-live-label">${_csT('run_center.action_working', '工作中')}</span>`;
   badge.insertBefore(el, badge.firstChild);
 }
 

@@ -434,6 +434,7 @@ function normalizeRecord(raw: unknown, expected?: { cid: string; runId: string }
     if (!actor || actors.some((item) => item.agent_id === actor.agent_id)) return null;
     actors.push(actor);
   }
+  if (raw.actor_report_enqueued !== undefined && typeof raw.actor_report_enqueued !== 'boolean') return null;
   let summary: RunSummary | undefined;
   if (raw.summary !== undefined) {
     const decoded = normalizeSummary(raw.summary);
@@ -475,6 +476,7 @@ function normalizeRecord(raw: unknown, expected?: { cid: string; runId: string }
     corrections: Number(raw.corrections),
     actors,
     status: raw.status as RunRecord['status'],
+    ...(raw.actor_report_enqueued === true ? { actor_report_enqueued: true } : {}),
     ...(summary ? { summary } : {}),
     ...(summaryPublication ? { summary_publication: summaryPublication } : {}),
   };

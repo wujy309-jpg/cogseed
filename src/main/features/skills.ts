@@ -26,6 +26,7 @@ import {
   userSkillsDir, userSkillChatDir, userSessionFile, WS_ROOT, SRC_ROOT,
   userMarketplaceSkillsDir, userSystemSkillsDir, userSkillCatalogCacheFile,
 } from '../paths';
+import { currentAppVersion } from './marketplace';
 import { chatAttachmentDirForConversation } from '../util/project-layout';
 import { evictSession } from '../model/core-agent/session-store';
 import { getActiveUserId } from './users';
@@ -703,6 +704,7 @@ function _readPersistedSkillCatalog(
     const raw = JSON.parse(fs.readFileSync(_skillCatalogCacheFile(userId), 'utf8'));
     if (
       raw?.version !== SKILL_CATALOG_CACHE_VERSION
+      || raw?.appVersion !== currentAppVersion()
       || raw?.rootStamp !== rootStamp
       || typeof raw?.stamp !== 'string'
       || !Array.isArray(raw?.data)
@@ -722,6 +724,7 @@ function _writePersistedSkillCatalog(
   try {
     writeJsonSync(_skillCatalogCacheFile(userId), {
       version: SKILL_CATALOG_CACHE_VERSION,
+      appVersion: currentAppVersion(),
       rootStamp,
       stamp,
       data,

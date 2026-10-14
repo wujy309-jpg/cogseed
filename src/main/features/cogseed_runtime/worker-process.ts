@@ -17,6 +17,8 @@ import {
 } from './protocol';
 
 const log = createLogger('cogseed-runtime:worker-process');
+const MAX_CONSECUTIVE_INVALID_JSONL = 3;
+const MAX_INVALID_JSONL_PREVIEW = 200;
 
 export interface RuntimeWorkerChild {
   stdin: NodeJS.WritableStream;
@@ -150,10 +152,30 @@ export function createRuntimeWorkerService(options: RuntimeWorkerServiceOptions 
   function attach(next: RuntimeWorkerChild): void {
     child = next;
     const rl = createInterface({ input: next.stdout });
+    let consecutiveInvalidJsonl = 0;
     rl.on('line', (line) => {
       if (!line.trim()) return;
-      try { handleMessage(JSON.parse(line)); }
-      catch (err) { log.warn('invalid runtime worker json', { error: logErrorRef(err) }); }
+      try {
+        handleMessage(JSON.parse(line));
+        consecutiveInvalidJsonl = 0;
+      } catch (err) {
+        consecutiveInvalidJsonl += 1;
+        log.warn('invalid runtime worker json', {
+          error: logErrorRef(err),
+          invalidCount: consecutiveInvalidJsonl,
+          raw: String(line || '').replace(/\s+/g, ' ').slice(0, MAX_INVALID_JSONL_PREVIEW),
+          ...((next as { pid?: number }).pid ? { pid: (next as { pid?: number }).pid } : {}),
+        });
+        if (consecutiveInvalidJsonl >= MAX_CONSECUTIVE_INVALID_JSONL) {
+          const error = new Error('CogSeed Runtime worker emitted invalid JSON protocol output');
+          if (child === next) {
+            child = null;
+            handshake = null;
+          }
+          rejectAll(error);
+          try { next.kill(); } catch {}
+        }
+      }
     });
     next.stderr.on?.('data', (chunk: Buffer) => {
       const text = String(chunk || '').trim();

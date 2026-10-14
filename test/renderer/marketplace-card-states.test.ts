@@ -12,6 +12,8 @@ import { describe, expect, it } from 'vitest';
 
 const LABELS: Record<string, string> = {
   'marketplace.state_update_available': '有更新',
+  'marketplace.state_app_update_required': '需更新客户端',
+  'marketplace.requires_app': '需 CogSeed {version}+',
   'marketplace.category_uncategorized': '未分类',
   'marketplace.category_unknown': '未知',
   'marketplace.detail_published_at': '发布于 {date}',
@@ -347,6 +349,78 @@ describe('Phase 12 目录页卡片状态与本地过滤', () => {
 
       expect(body.innerHTML).toContain('加载失败');
       expect(body.innerHTML).toContain('boom');
+    });
+  });
+
+  describe('⭐ C5/N-06 被客户端版本门跳过的内容显示「需更新客户端」', () => {
+    /** 主进程列表接口对 reconcile 跳过项附加的字段（字段名同 MarketplaceInstallError）。 */
+    const ANNOTATED = {
+      ...SKILL,
+      appUpdateRequired: true,
+      minAppVersion: '9.0.0',
+      currentAppVersion: '1.5.1',
+    };
+
+    it('跳过项带上本地化状态，且安装动作被禁用', () => {
+      const ctx = loadMarketplaceRenderer();
+      setState(ctx, {});
+
+      const html = ctx._mpCardHtml(ANNOTATED, 'zh');
+
+      expect(html).toContain('data-mp-state="app-update-required"');
+      expect(html).toContain('需更新客户端');
+      expect(html).toMatch(/<button[^>]* disabled/);
+    });
+
+    it('兼容条目（响应里没有该字段）不挂这个状态', () => {
+      const ctx = loadMarketplaceRenderer();
+      setState(ctx, {});
+
+      const html = ctx._mpCardHtml(SKILL, 'zh');
+
+      expect(html).not.toContain('app-update-required');
+      expect(html).not.toContain('需更新客户端');
+    });
+
+    it('⚠️ 收集被清空后主进程不再附字段，同一张卡片的状态随之消失', () => {
+      const ctx = loadMarketplaceRenderer();
+      setState(ctx, {});
+      expect(ctx._mpCardHtml(ANNOTATED, 'zh')).toContain('data-mp-state="app-update-required"');
+
+      // 清空发生在主进程收集侧（clearAppIncompatibleSkips），列表响应回到
+      // 「兼容条目原样返回」的形状——渲染层只看字段在不在。
+      const { appUpdateRequired, minAppVersion, currentAppVersion, ...compatible } = ANNOTATED;
+      expect(ctx._mpCardHtml(compatible, 'zh')).not.toContain('app-update-required');
+    });
+
+    it('⚠️ 只标了 appUpdateRequired、没有最低版本时，按钮退回状态文案而不是拼空版本号', () => {
+      const ctx = loadMarketplaceRenderer();
+      setState(ctx, {});
+
+      const html = ctx._mpCardHtml({ ...SKILL, appUpdateRequired: true }, 'zh');
+
+      expect(html).toContain('需更新客户端');
+      expect(html).not.toContain('需 CogSeed +');
+    });
+
+    it('⚠️ 同一张卡片不同时挂「有更新」：客户端升不上去，那个更新拿不到', () => {
+      const ctx = loadMarketplaceRenderer();
+      setState(ctx, {
+        installedSkillIds: new Set([SKILL.id]),
+        installedSkillMeta: new Map([[SKILL.id, { id: SKILL.id, version: '1.0.0' }]]),
+      });
+
+      const html = ctx._mpCardHtml(ANNOTATED, 'zh');
+
+      expect(html).toContain('app-update-required');
+      expect(html).not.toContain('update-available');
+    });
+
+    it('⚠️ 本地版本判不出（appVersion 缺席）也不会把兼容条目误标成需更新', () => {
+      const ctx = loadMarketplaceRenderer();
+      setState(ctx, { appVersion: '' });
+
+      expect(ctx._mpCardHtml(SKILL, 'zh')).not.toContain('app-update-required');
     });
   });
 

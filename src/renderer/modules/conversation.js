@@ -1624,11 +1624,18 @@ function setExecOverride(target, patch) {
 function _executionConfigForSend(target, snapshot) {
   const snap = snapshot || _activeRecipient(target);
   const ov = _activeExecOverride(target) || {};
+  // Option C：该模型持久化的档位是比全局偏好更具体的一层。发送侧只在没有任务级
+  // 覆盖时用它，且**不**把全局偏好写进 execution_config（否则全局会盖过 agent
+  // 默认）。外接 CLI 来源读不到（模型设置不适用于 CLI 协商的强度）。
+  const persistedEffort = (typeof window !== 'undefined' && typeof window.getPersistedModelEffort === 'function')
+    ? (window.getPersistedModelEffort(target) || '')
+    : '';
+  const effectiveEffort = ov.effort || persistedEffort;
   if (snap && snap.kind === 'model' && snap.provider && snap.model) {
     return {
       provider: snap.provider,
       model: snap.model,
-      ...(ov.effort ? { effort: ov.effort } : {}),
+      ...(effectiveEffort ? { effort: effectiveEffort } : {}),
     };
   }
   const cfg = {};
@@ -1651,7 +1658,7 @@ function _executionConfigForSend(target, snapshot) {
   // effort：CLI 智能体按网关协商（effort_controllable，自建智能体经
   // P3394_AGENT_EFFORT_ARGS 声明即 true）下发；未协商走兜底表（未知 CLI
   // 乐观放开）。网关无模板时信封字段安全忽略——与 model 同一模式。
-  if (ov.effort && (!isCliAgentRecipient || cliExec)) cfg.effort = ov.effort;
+  if (effectiveEffort && (!isCliAgentRecipient || cliExec)) cfg.effort = effectiveEffort;
   return Object.keys(cfg).length ? cfg : undefined;
 }
 // The conversation "floor": server-authoritative `StateFile.active_recipient`,
@@ -3304,14 +3311,30 @@ async function _syncPendingActorsFromRuntime(cid, opts = {}) {
   // Names/avatars are local data; warm members before revealing so the
   // placeholder does not flash as an unknown agent.
   try { await _refreshGroupMembers(cid); } catch (_) { /* best effort */ }
+  // 活跃回合是**服务端/运行时事实**，不该被"本地发送流还在跑"的 pending 门否决：
+  // 唤醒派发的工人在本地 pending 窗口之外执行（真机 2026-10-14 17:02:58–17:03:15：
+  // commander 回合 17:02:59 收尾，工人在 17:02:58–17:03:15 跑），此前这里直接
+  // return false，3313 那行永不执行 —— 工人没有任何可见占位，结果消息一次性出现
+  // （"没显示工人 agent 在执行"）。这里只补建占位，其余 pending 语义保持原样，
+  // 避免把调用方对 pending 的判断一起改掉。
+  if (hasActiveTurnsField && activeTurns.length > 0 && cid === currentCid) {
+    // 只补建活跃回合的占位，**不在这里清理 commander 的空占位**：清理是 pending
+    // 生命周期（下面那段）的职责，脱离 pending 门去做会把 commander 上一轮的执行
+    // 过程气泡一并摘掉（真机回归 2026-10-14 17:3x：工人显示正常了，但 cogseed 之前
+    // 的执行过程消失）。这里保持纯增量。
+    for (const turn of activeTurns) {
+      const ph = _ensureActorPlaceholder(cid, turn.actor, loadingEl, turn.turn_id, turn.msg_id, turn.started_at_ms);
+      // 2026-10-14：占位随时可能被 stream-end 的悬空清理摘掉，而服务端仍说这个 actor
+      // 在跑。每次扫描（state_changed 频率 <1s）重新点亮一次运行态，于是状态会自愈，
+      // 且不干预节点生命周期 —— 过程内容照旧能并进来。
+      _reassertActorLive(ph);
+    }
+  }
   if (!isConvPending(cid) || pendingConvs.get(cid)?.aborted) return false;
   if (cid !== currentCid) return true;
   if (hasActiveTurnsField) {
     const activeCommander = activeTurns.some((t) => t.actor === 'commander');
     if (!activeCommander) _removeEmptyActorPlaceholder(cid, 'commander');
-    for (const turn of activeTurns) {
-      _ensureActorPlaceholder(cid, turn.actor, loadingEl, turn.turn_id, turn.msg_id, turn.started_at_ms);
-    }
   } else {
     if (!inFlight.includes('commander')) _removeEmptyActorPlaceholder(cid, 'commander');
     for (const actorId of inFlight) {
@@ -14347,6 +14370,22 @@ function _removeEmptyStreamingPlaceholder(ph) {
     if (val === ph) _groupPlaceholders.delete(key);
   }
   ph.remove();
+}
+
+/** 幂等地把"运行中"重新点亮到该 actor 占位的折叠入口上（活跃回合每拍调用一次）。
+ *  与 chat-stream 的活跃态共用同一套类名与文案 key，不新造第二套视觉。 */
+function _reassertActorLive(ph) {
+  try {
+    if (!ph || !ph.parentElement || !ph.querySelector) return;
+    const badge = ph.querySelector('.cs-badge');
+    if (!badge || badge.querySelector('.cs-badge-live')) return;
+    const el = document.createElement('span');
+    el.className = 'cs-badge-live';
+    el.setAttribute('role', 'status');
+    el.innerHTML = '<span class="cs-loading-spinner"></span>'
+      + `<span class="cs-badge-live-label">${text('run_center.action_working')}</span>`;
+    badge.insertBefore(el, badge.firstChild);
+  } catch (_) { /* 运行态是提示，不允许它打断渲染 */ }
 }
 
 function _removeEmptyActorPlaceholder(cid, actorId, turnId) {

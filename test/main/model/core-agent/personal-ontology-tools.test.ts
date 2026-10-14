@@ -58,4 +58,21 @@ describe('Personal Ontology agent tools', () => {
     await expect(graphTool.execute({ query: 'x'.repeat(201) })).resolves.toMatchObject({ isError: true });
     expect(graphMock.readOntologyGraph).not.toHaveBeenCalled();
   });
+
+  it('flags the missing-role-template guard as a deterministic error', async () => {
+    // Regression for the 2026-10-12 mis-routed write: the guard used to return
+    // plain content, so the runner fed it back as ordinary evidence and the
+    // model kept searching channels. It must carry `isError: true` (the runner
+    // counts `isError && !recoverable` as permanent) and must say out loud that
+    // retrying/guessing cannot succeed.
+    const fieldsTool = createPersonalOntologyTools({ userId: 'user-a' })
+      .find((tool) => tool.name === 'personal_ontology_fields')!;
+
+    const result = await fieldsTool.execute({});
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain('没有可填字段');
+    expect(result.content).toContain('确定性错误');
+    expect(result.content).toContain('规则与偏好资产通道');
+  });
 });

@@ -84,6 +84,7 @@ import { createFeishuTools } from './feishu-tools';
 import { createImageGenTool } from './image-gen-tool';
 import { createResearchRerankTool } from './research-rerank-tool';
 import { isToolVisibleToAgent } from './tool-catalog';
+import { createToolFailureGuard, guardToolsWithFailureBreaker } from './tool-failure-guard';
 import { createWebSearchOverrideTool } from './search-tools';
 import {
   agentEvolvedSkillsDir,
@@ -475,6 +476,17 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   /** UI-only agent display names collected once before the run.
    *  Not injected into model context; reused for process-log labels. */
   agentDisplayNameById: Map<string, string>;
+  /** Last deterministic-failure breaker trip of this run, or `null`. The
+   *  breaker ends the turn itself (`endTurn: true`); this accessor is the
+   *  reporting half, consulted after `runner.run()` so the turn carries a real
+   *  failure kind/code instead of an internal maintenance state. */
+  toolFailure: () => {
+    kind: string;
+    code: string;
+    reason: string;
+    failures: number;
+    tool: string;
+  } | null;
   /** Per-turn ontology evidence gate. It remains inactive until a tool reads
    *  governed asset content or returns a persisted ontology relation. */
   finalResponseGate?: import('./recall-tools').RecallFinalResponseGate;
@@ -1222,6 +1234,46 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     visibleTools = visibleTools.filter((tool) => READ_ONLY_TOOL_ALLOWLIST.has(tool.name));
   }
   const visibleToolNameSet = new Set(visibleTools.map((tool) => tool.name));
+
+  // Turn-level failure breaker. core-agent counts `isError && !recoverable`
+  // results into `permanentToolErrors` (agent/runner.ts:1500-1502) and client.ts
+  // collects the count, but nothing acted on it: a deterministic dead end (no
+  // role template, invalid args, denied policy) simply returned to the model as
+  // evidence and the turn kept trying variations of it. The breaker ends the
+  // turn on repeated same-kind failures using turn-count semantics only — the
+  // idle/watchdog path stays the owner of time-based stops. See
+  // tool-failure-guard.ts for the contract.
+  const toolFailureGuard = createToolFailureGuard();
+  // Last breaker trip of this run, surfaced through the builder's return so the
+  // turn owner (client.ts builds the runner and owns the failureCode channel at
+  // `terminalFailureCode` / `failureKind`) can report a real cause instead of the
+  // internal maintenance state ("organising context").
+  let lastToolFailure: {
+    kind: string;
+    code: string;
+    reason: string;
+    failures: number;
+    tool: string;
+  } | null = null;
+  visibleTools = guardToolsWithFailureBreaker(visibleTools, {
+    guard: toolFailureGuard,
+    onTrip: (event) => {
+      lastToolFailure = {
+        kind: event.kind,
+        code: event.code,
+        reason: event.reason,
+        failures: event.countedFailures,
+        tool: event.tool,
+      };
+      log.warn('tool failure breaker tripped', {
+        sessionId: params.sessionId,
+        sessionKind: sessionKindOf(params.sessionId) || undefined,
+        tool: event.tool,
+        failureCode: event.code,
+        failures: event.countedFailures,
+      });
+    },
+  });
   let builtinTools = params.disableTools ? [] : mod.getBuiltinTools();
   if (!params.disableTools && effectiveToolAllowlist) {
     const allowed = new Set(effectiveToolAllowlist);
@@ -1561,6 +1613,14 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     skillDisplayNameById,
     agentDisplayNameById,
     finalResponseGate: recallToolSuite?.finalResponseGate,
+    /**
+     * Last deterministic-failure breaker trip of this run, or `null`.
+     * Consulted after `runner.run()` resolves so the turn can carry a real
+     * failure kind/code (see `client.ts` `terminalFailureCode`). The breaker
+     * itself already ended the turn via `endTurn: true`; this is the reporting
+     * half of the same signal.
+     */
+    toolFailure: () => lastToolFailure,
   };
 }
 

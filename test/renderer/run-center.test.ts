@@ -474,6 +474,15 @@ describe('Run Center renderer contract', () => {
     expect(board.userStateForTask({ status: 'failed', errorCode: 'provider_error' }).action).toBe('configure-model');
     expect(board.userStateForTask({ status: 'failed', errorCode: 'model_preflight' }).action).toBe('configure-model');
     expect(board.userStateForTask({ status: 'failed', errorCode: 'task_failed' }).action).toBe('retry');
+    expect(board.userStateForTask({ status: 'failed', errorCode: 'idle_timeout', resumable: true }).action).toBe('resume');
+    expect(board.userStateForTask({ status: 'failed', errorCode: 'provider_timeout', actions: { resume: true } }).action).toBe('resume');
+    expect(board.userStateForTask({ status: 'failed', errorCode: 'provider_no_first_event', actions: { resume: true } }).action).toBe('resume');
+    expect(board.userStateForTask({ status: 'failed', errorCode: 'runtime_stream_ended', actions: { resume: true } }).action).toBe('resume');
+    expect(board.userStateForTask({ status: 'failed', errorCode: 'runtime_worker_error', actions: { resume: true } }).action).toBe('resume');
+    expect(board.userStateForTask({ status: 'failed', errorCode: 'provider_timeout' }).action).toBe('retry');
+    expect(board.userStateForTask({ status: 'failed', errorCode: 'provider_timeout', actions: { resume: false, retry: true } }).action).toBe('retry');
+    const resumableTimeout = board.userStateForTask({ status: 'failed', errorCode: 'idle_timeout', resumable: true });
+    expect(board.recommendedActionAvailable({}, resumableTimeout, { resumable: true })).toBe(true);
     expect(board.userStateForTask({ status: 'running', column: 'running' }).attention).toBe(false);
     expect(board.userStateForTask({ status: 'planned', column: 'pending' })).toMatchObject({
       kind: 'planned', attention: false, action: 'start', actionKey: 'run_center.start_planned',
@@ -593,6 +602,7 @@ describe('Run Center renderer contract', () => {
     let html = '';
     let created = false;
     let richCollaboration = false;
+    let preApprovalCollaboration = false;
     let repeatedSessionMode = false;
     const worktreeName = 'cogseed-worktree-dev-renderer-test';
     const task = {
@@ -648,8 +658,8 @@ describe('Run Center renderer contract', () => {
     const timeline = [
       { eventId: 'event-a', taskId: 'child-a', type: 'task.started', toolName: 'runner', createdAt: '2026-08-27T00:00:02.000Z' },
       { eventId: 'event-b', taskId: 'child-b', type: 'task.started', toolName: 'runner', createdAt: '2026-08-27T00:00:03.000Z' },
-      { eventId: 'event-c', taskId: task.taskId, type: 'task.completed', errorCode: 'provider_error', createdAt: '2026-08-27T00:01:02.000Z' },
-      { eventId: 'event-d', taskId: task.taskId, type: 'task.completed', errorCode: 'provider_error', createdAt: '2026-08-27T00:01:03.000Z' },
+      { eventId: 'event-c', taskId: task.taskId, type: 'task.failed', errorCode: 'provider_error', failureReason: 'Provider timed out after 180 seconds.', createdAt: '2026-08-27T00:01:02.000Z' },
+      { eventId: 'event-d', taskId: task.taskId, type: 'task.failed', errorCode: 'provider_error', failureReason: 'Provider timed out after 180 seconds.', createdAt: '2026-08-27T00:01:03.000Z' },
     ];
     const documentState: any = { hidden: false, activeElement: null };
     const dataProperty = (name: string) => name.replace(/-([a-z])/g, (_match, letter) => letter.toUpperCase());
@@ -970,16 +980,54 @@ describe('Run Center renderer contract', () => {
             activity: [], timeline: [], recovery: { recoverable: false, taskIds: [] }, actions: requestedTask.actions,
           },
         };
+        if (preApprovalCollaboration) {
+          // R-03/R-12 复现门：唤醒审批**之前**的投影——目标 Agent 只有 idle，
+          // 只有一条 wake_approval_requested 活动记录。
+          const waitingTask = { ...task, status: 'waiting_user', column: 'attention', errorCode: '' };
+          return {
+            session: { ...session, participantCount: 2 },
+            collaboration: {
+              schemaVersion: 1, sessionId: task.sessionId,
+              session: { ...session, participantCount: 2 },
+              task: { ...waitingTask, participantCount: 2 },
+              actors: [
+                { actorId: 'commander', role: 'commander', displayName: 'Commander', sessionId: 'cogseed-session-gconv-a', taskId: task.taskId, status: 'waiting_user' },
+                { actorId: 'agent-review', role: 'member_agent', displayName: 'Reviewer', sessionId: 'cogseed-session-gworker-a', taskId: 'cogseed-task-child', status: 'idle' },
+              ],
+              tasks: [{ ...waitingTask, participantCount: 2 }],
+              workflow: { childTaskIds: [], steps: [] },
+              reviews: [], conflicts: [],
+              activity: [{ eventId: 'wevt-wake', type: 'wake_approval_requested', actorId: 'agent-review', createdAt: '2026-08-27T00:01:00.000Z' }],
+              timeline: [], recovery: { recoverable: false, taskIds: [] }, actions: waitingTask.actions,
+            },
+          };
+        }
         const collaboration = richCollaboration ? {
           schemaVersion: 1, sessionId: task.sessionId, session: { ...session, participantCount: 2 }, task: { ...task, participantCount: 2 },
           actors: [
             { actorId: 'actor-private', displayName: 'Reviewer', role: 'member_agent', status: 'running' },
             { actorId: 'actor-private-2', displayName: 'Builder', role: 'child_agent', status: 'completed' },
           ], tasks: detailTasks,
-          workflow: { childTaskIds: ['child-a', 'child-b'], steps: [{ stepId: 'step-private', status: 'failed', failureCode: 'failure-private', dependsOn: ['dependency-private'], attemptCount: 2 }] },
+          workflow: { childTaskIds: ['child-a', 'child-b'], steps: [
+            { stepId: 'step-private', status: 'failed', failureCode: 'failure-private', dependsOn: ['dependency-private'], attemptCount: 2, actionable: true },
+            { stepId: 'workflow-step-unavailable', titleKey: 'run_center.workflow_step_unavailable', actorId: null, type: 'review', status: 'failed', dependsOn: [], attemptCount: 0, actionable: false },
+          ] },
           reviews: [{ gateId: 'gate-private', status: 'needs_review', reviewDecision: 'approve' }],
           conflicts: [{ conflictId: 'conflict-private', type: 'quality', status: 'detected', affectedStepIds: ['step-private'] }],
-          activity: [], timeline, recovery: { recoverable: false, taskIds: [] }, actions: task.actions,
+          activity: [], timeline, recovery: { recoverable: false, taskIds: [] },
+          lastProgress: {
+            eventId: 'event-progress',
+            taskId: 'cogseed-task-child',
+            createdAt: '2026-08-27T00:01:01.000Z',
+            labelKey: 'run_center.progress_tool_finished',
+            toolName: 'read_file',
+          },
+          recoveryAdvice: {
+            kind: 'inspect',
+            reasonKey: 'run_center.recovery_child_degraded',
+            taskId: 'cogseed-task-child',
+          },
+          actions: task.actions,
         } : {
           schemaVersion: 1, sessionId: task.sessionId, session, task, actors: [], tasks: detailTasks,
           workflow: { childTaskIds: ['child-a', 'child-b'], steps: [] }, reviews: [], conflicts: [], activity: [], timeline,
@@ -1480,6 +1528,7 @@ describe('Run Center renderer contract', () => {
     await waitFor(() => html.includes('data-run-center-configure-model'));
     let failedSummary = html.match(/<div class="run-center-summary-flow">([\s\S]*?)<\/div>\s*<\/div><\/main>/)?.[1] || '';
     expect(failedSummary).toContain('data-run-center-configure-model');
+    expect(failedSummary).toContain('Provider timed out after 180 seconds.');
     expect(failedSummary).toContain('class="btn ui-button ui-button--primary ui-button--sm');
     expect(failedSummary).not.toContain('data-run-center-action="retry"');
     click({ runCenterConfigureModel: '' });
@@ -1531,6 +1580,7 @@ describe('Run Center renderer contract', () => {
     expect(timelineHtml).toContain('run_center.timeline_related_tasks:{&quot;count&quot;:2}');
     expect(timelineHtml.match(/run_center\.timeline_related_tasks/g)).toHaveLength(1);
     expect(timelineHtml).toContain('<small>CogSeed task</small>');
+    expect(timelineHtml).toContain('Provider timed out after 180 seconds.');
     expect(timelineHtml).not.toContain('provider_error');
     task.status = 'failed';
     task.column = 'attention';
@@ -1577,6 +1627,14 @@ describe('Run Center renderer contract', () => {
       runCenterQueueTask: task.taskId,
     });
     await waitFor(() => html.includes('data-run-center-detail-tab="collaboration"'));
+    // R-08 / R-04：摘要必须把"发生了什么 / 最后进展 / 恢复"三块分开呈现。
+    expect(html).toContain('run_center.summary_last_progress');
+    expect(html).toContain('run_center.progress_tool_finished');
+    expect(html).toContain('read_file');
+    expect(html).toContain('run_center.summary_recovery');
+    expect(html).toContain('run_center.recovery_child_degraded');
+    expect(html).not.toContain('/Users/alice');
+    expect(html).not.toContain('secret-token');
     click({ runCenterDetailTab: 'collaboration' });
     await waitFor(() => html.includes('run_center.dependencies_count'));
     const collaborationPanel = html.match(/<div class="run-center-detail-content"[^>]*role="tabpanel"[^>]*>([\s\S]*?)<\/div>\s*<\/div><\/main>/)?.[1] || '';
@@ -1588,8 +1646,14 @@ describe('Run Center renderer contract', () => {
     expect(collaborationText).toContain('run_center.affected_steps_count:{&quot;count&quot;:1}');
     expect(collaborationPanel).toContain('class="btn ui-button');
 
+    // C-09：缺 target 的步骤只渲染不可点的占位行，且即使收到陈旧点击也不得发 IPC。
+    expect(html).toContain('run_center.workflow_step_unavailable');
+    expect(html).not.toContain('data-run-center-collaboration-target="workflow-step-unavailable"');
+
     const actionsBeforeInvalidTarget = calls.filter((call) => call.channel === 'cogseed.collaboration.action').length;
     click({ runCenterCollaborationAction: 'retry-step', runCenterCollaborationTarget: 'missing-step' });
+    expect(calls.filter((call) => call.channel === 'cogseed.collaboration.action')).toHaveLength(actionsBeforeInvalidTarget);
+    click({ runCenterCollaborationAction: 'retry-step', runCenterCollaborationTarget: 'workflow-step-unavailable' });
     expect(calls.filter((call) => call.channel === 'cogseed.collaboration.action')).toHaveLength(actionsBeforeInvalidTarget);
 
     context.window.confirm.mockImplementationOnce(() => {
@@ -1638,6 +1702,21 @@ describe('Run Center renderer contract', () => {
     finishLateCollaborationAction?.();
     await waitFor(() => collaborationActionsSettled === 2);
     expect(html).not.toContain('late collaboration failure');
+
+    // R-03/R-12：批准前目标 Agent 不得被画成"运行中"。
+    preApprovalCollaboration = true;
+    click({
+      runCenterQueueRunKey: `execution:${task.executionId}`,
+      runCenterQueueSession: task.sessionId,
+      runCenterQueueTask: task.taskId,
+    });
+    await waitFor(() => html.includes('data-run-center-detail-tab="collaboration"'));
+    click({ runCenterDetailTab: 'collaboration' });
+    await waitFor(() => html.includes('Reviewer'));
+    expect(html).toContain('Reviewer');
+    expect(html).not.toMatch(/Reviewer[\s\S]*run_center\.status_running/);
+    expect(html).not.toContain('data-run-center-running-agent="agent-review"');
+    preApprovalCollaboration = false;
 
     hiddenTaskId = '';
     groupedRunMode = true;
