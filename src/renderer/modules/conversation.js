@@ -3316,7 +3316,11 @@ async function _syncPendingActorsFromRuntime(cid, opts = {}) {
     // 过程气泡一并摘掉（真机回归 2026-10-14 17:3x：工人显示正常了，但 cogseed 之前
     // 的执行过程消失）。这里保持纯增量。
     for (const turn of activeTurns) {
-      _ensureActorPlaceholder(cid, turn.actor, loadingEl, turn.turn_id, turn.msg_id, turn.started_at_ms);
+      const ph = _ensureActorPlaceholder(cid, turn.actor, loadingEl, turn.turn_id, turn.msg_id, turn.started_at_ms);
+      // 2026-10-14：占位随时可能被 stream-end 的悬空清理摘掉，而服务端仍说这个 actor
+      // 在跑。每次扫描（state_changed 频率 <1s）重新点亮一次运行态，于是状态会自愈，
+      // 且不干预节点生命周期 —— 过程内容照旧能并进来。
+      _reassertActorLive(ph);
     }
   }
   if (!isConvPending(cid) || pendingConvs.get(cid)?.aborted) return false;
@@ -14359,6 +14363,22 @@ function _removeEmptyStreamingPlaceholder(ph) {
     if (val === ph) _groupPlaceholders.delete(key);
   }
   ph.remove();
+}
+
+/** 幂等地把"运行中"重新点亮到该 actor 占位的折叠入口上（活跃回合每拍调用一次）。
+ *  与 chat-stream 的活跃态共用同一套类名与文案 key，不新造第二套视觉。 */
+function _reassertActorLive(ph) {
+  try {
+    if (!ph || !ph.parentElement || !ph.querySelector) return;
+    const badge = ph.querySelector('.cs-badge');
+    if (!badge || badge.querySelector('.cs-badge-live')) return;
+    const el = document.createElement('span');
+    el.className = 'cs-badge-live';
+    el.setAttribute('role', 'status');
+    el.innerHTML = '<span class="cs-loading-spinner"></span>'
+      + `<span class="cs-badge-live-label">${text('run_center.action_working')}</span>`;
+    badge.insertBefore(el, badge.firstChild);
+  } catch (_) { /* 运行态是提示，不允许它打断渲染 */ }
 }
 
 function _removeEmptyActorPlaceholder(cid, actorId, turnId) {
