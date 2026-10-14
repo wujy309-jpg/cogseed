@@ -2705,33 +2705,42 @@
           ? T('cognition.settings_discovery_in_progress', '正在检查前一完整日的新会话与新增消息，完整建议经价值判断和提取后进入需要关注。')
           : T('cognition.settings_discovery_waiting', '尚无夜间运行记录。到夜间检查前一完整日的新会话与新增消息，不会白天补扫。');
     const switchHtml = (label, checked, act, disabled) => window.uiSwitch({ label, checked, disabled, attrs: { 'data-act': act } });
+    const discoveryPill = window.uiStatusPill({
+      label: discovery.state === 'running' ? T('cognition.settings_discovery_running', '运行中')
+        : stateUnknown ? T('cognition.settings_policy_unknown', '状态未知')
+          : nightlyOn ? T('cognition.settings_discovery_allowed', '允许') : T('cognition.settings_status_off', '已暂停'),
+      tone: discovery.state === 'running' ? 'attention' : !stateUnknown && nightlyOn ? 'success' : 'neutral',
+    });
+    const runtimePill = window.uiStatusPill({
+      label: discoveryLabels[discovery.state],
+      tone: discovery.state === 'failed' || discovery.state === 'running' ? 'attention' : discovery.state === 'completed' ? 'success' : 'neutral',
+    });
+    const runtimeCard = NS.assetSettings.settingCard({
+      title: T('cognition.settings_recent_discovery', '最近夜间扫描'),
+      hint: discovery.at ? fmtDate(discovery.at) : '',
+      controls: `${runtimePill}${btn(discovery.state === 'running'
+        ? T('cognition.settings_discovery_scanning', '扫描中…') : T('cognition.settings_discovery_scan_now', '立即扫描'),
+      'nightly-scan-now', { small: true, disabled: stateUnknown || !nightlyOn || discovery.state === 'running' })}`,
+      bodyHtml: `<p class="note">${esc(discoveryNote)}</p>${budget ? window.uiProgressBar({
+        ariaLabel: T('cognition.settings_budget_bar', '夜间窗口模型调度额度'),
+        value: budget.calls, max: budget.limits.calls,
+        tone: budget.calls >= budget.limits.calls ? 'attention' : 'ink',
+      }) : ''}${budgetNote ? `<p class="note">${esc(budgetNote)}</p>` : ''}`,
+    });
     return `<section class="ca-settings-page">${hero(
       T('cognition.organize_settings_title', '资产设置'),
       T('cognition.settings_nightly_confirmation_flow', '夜间检查前一天的新会话和新增消息，经筛选、摘要、价值判断和提取后，按确认规则保存完整建议。'),
     )}<div class="ca-settings-shell">
-      <section class="ca-policy-list" aria-label="${esc(T('cognition.settings_policy_label', '认知资产设置'))}">
-        <div class="ca-policy-row"><div class="ca-policy-copy">
-          <div class="tt">${esc(T('cognition.settings_discovery_title', '夜间发现'))}</div>
-          <div class="sub">${esc(T('cognition.settings_discovery_hint', '在夜间检查前一完整日的新会话与新增消息，发现可复用的认知建议。'))}</div>
-          <div class="note">${esc(T('cognition.settings_nightly_window', '{start}–{end} · 应用需运行 · 会消耗模型额度；仅夜间运行，不会白天补扫。', { start: settings.nightlyStart || '02:00', end: settings.nightlyEnd || '06:00' }))}</div>
-          ${budgetNote ? `<p class="note">${esc(budgetNote)}</p>` : ''}
-        </div><div class="ca-policy-switch ca-discovery-actions"><span class="note">${esc(stateUnknown ? T('cognition.settings_policy_unknown', '状态未知') : nightlyOn ? T('cognition.settings_discovery_allowed', '允许') : T('cognition.settings_status_off', '已暂停'))}</span>
-          ${switchHtml(T('cognition.settings_discovery_switch', '允许夜间发现'), nightlyOn, 'nightly-toggle', stateUnknown)}
-          ${btn(discovery.state === 'running'
-            ? T('cognition.settings_discovery_scanning', '扫描中…') : T('cognition.settings_discovery_scan_now', '立即扫描'),
-          'nightly-scan-now', { small: true, disabled: stateUnknown || !nightlyOn || discovery.state === 'running' })}
-        </div></div>
+      <div class="ca-settings-cards" aria-label="${esc(T('cognition.settings_policy_label', '认知资产设置'))}">
+        ${NS.assetSettings.settingCard({
+          title: T('cognition.settings_discovery_title', '夜间发现'),
+          hint: T('cognition.settings_discovery_hint', '在夜间检查前一完整日的新会话与新增消息，发现可复用的认知建议。'),
+          controls: `${discoveryPill}${switchHtml(T('cognition.settings_discovery_switch', '允许夜间发现'), nightlyOn, 'nightly-toggle', stateUnknown)}`,
+          bodyHtml: `<p class="note">${esc(T('cognition.settings_nightly_window', '{start}–{end} · 应用需运行 · 会消耗模型额度；仅夜间运行，不会白天补扫。', { start: settings.nightlyStart || '02:00', end: settings.nightlyEnd || '06:00' }))}</p>${NS.assetSettings.modelControls()}`,
+        })}
         ${NS.assetSettings.autoApprovalControls()}
-        ${NS.assetSettings.modelControls()}
-      </section>
-      <p class="note ca-settings-note">${esc(settings.autoApproval === true && NS.assetSettings.supportsAutoApproval()
-        ? T('cognition.settings_nightly_auto_review_hint', '符合自动确认规则的完整建议保存后进入“已处理”；其余完整建议留在“需要关注”，由你决定。')
-        : T('cognition.settings_nightly_review_hint', '完整建议进入“需要关注”，由你确认后保存到“我的认知”。'))}</p>
-      <section class="ca-discovery-status" aria-label="${esc(T('cognition.settings_recent_discovery', '最近夜间扫描'))}">
-        <div class="ca-settings-row-copy"><div class="ca-discovery-heading"><div class="tt">${esc(T('cognition.settings_recent_discovery', '最近夜间扫描'))}</div>
-          ${discovery.at ? `<span class="note">${esc(fmtDate(discovery.at))}</span>` : ''}${chip(discoveryLabels[discovery.state], discovery.state === 'failed' ? 'amber' : discovery.state === 'completed' ? 'green' : 'line')}
-        </div><p class="note">${esc(discoveryNote)}</p></div>
-      </section>
+        ${runtimeCard}
+      </div>
     </div></section>`;
   }
 

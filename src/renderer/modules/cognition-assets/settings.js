@@ -45,6 +45,14 @@
     return !NS.store.captureModelError && !!NS.store.captureSettings
       && NS.store.captureCapabilities?.autoApproval === true;
   }
+  function settingCard({ title, hint, controls, bodyHtml }) {
+    const { esc } = NS;
+    return window.uiCard({
+      tag: 'section',
+      className: 'ca-setting-card',
+      bodyHtml: `<div class="ca-setting-head"><div class="ca-setting-head-copy"><div class="tt">${esc(title)}</div>${hint ? `<p class="note">${esc(hint)}</p>` : ''}</div><div class="ca-setting-head-ctl">${controls || ''}</div></div>${bodyHtml ? `<div class="ca-setting-body">${bodyHtml}</div>` : ''}`,
+    });
+  }
   function autoApprovalControls() {
     const { T, esc } = NS;
     const known = !NS.store.captureModelError && !!NS.store.captureSettings;
@@ -53,15 +61,20 @@
     const status = autoApprovalSaving ? T('cognition.settings_auto_confirmation_saving', '保存中…') : !known
       ? T('cognition.settings_policy_unknown', '状态未知') : on
         ? T('cognition.settings_discovery_allowed', '允许') : T('cognition.settings_auto_confirmation_off', '需逐条确认');
-    return `<div class="ca-policy-row"><div class="ca-policy-copy">
-      <div class="tt">${esc(T('cognition.settings_auto_confirmation_title', '自动确认'))}</div>
-      <p class="sub">${esc(T('cognition.settings_auto_confirmation_hint', '默认关闭。开启后，原文依据完整、范围明确且无冲突的认知和 A/R 更新可自动保存；T 结构变化、冲突和不确定内容仍需人工确认。'))}</p>
-      <p class="note">${esc(T('cognition.settings_auto_confirmation_history', '自动保存也会留下处理依据、来源和版本；可在系统活动的“已处理”查看，再到认知详情修改、暂停或撤回。'))}</p>
-      ${known && !supported ? `<p class="note" role="status">${esc(T('cognition.settings_auto_confirmation_unavailable', '当前运行版本尚不支持自动确认；请保持逐条确认。'))}</p>` : ''}
-    </div><div class="ca-policy-switch"><span class="note" role="status">${esc(status)}</span>${window.uiSwitch({
-      label: T('cognition.settings_auto_confirmation_switch', '允许自动确认'), checked: on,
-      disabled: !supported || autoApprovalSaving, attrs: { 'data-act': 'auto-approval-toggle' },
-    })}</div></div>`;
+    const flowNote = NS.store.captureSettings?.autoApproval === true && supported
+      ? T('cognition.settings_nightly_auto_review_hint', '符合自动确认规则的完整建议保存后进入“已处理”；其余完整建议留在“需要关注”，由你决定。')
+      : T('cognition.settings_nightly_review_hint', '完整建议进入“需要关注”，由你确认后保存到“我的认知”。');
+    return settingCard({
+      title: T('cognition.settings_auto_confirmation_title', '自动确认'),
+      controls: `${window.uiStatusPill({ label: status, tone: on ? 'success' : 'neutral' })}${window.uiSwitch({
+        label: T('cognition.settings_auto_confirmation_switch', '允许自动确认'), checked: on,
+        disabled: !supported || autoApprovalSaving, attrs: { 'data-act': 'auto-approval-toggle' },
+      })}`,
+      bodyHtml: `<p class="note">${esc(T('cognition.settings_auto_confirmation_hint', '默认关闭。开启后，原文依据完整、范围明确且无冲突的认知和 A/R 更新可自动保存；T 结构变化、冲突和不确定内容仍需人工确认。'))}</p>
+        <p class="note">${esc(T('cognition.settings_auto_confirmation_history', '自动保存也会留下处理依据、来源和版本；可在系统活动的“已处理”查看，再到认知详情修改、暂停或撤回。'))}</p>
+        ${known && !supported ? `<p class="note" role="status">${esc(T('cognition.settings_auto_confirmation_unavailable', '当前运行版本尚不支持自动确认；请保持逐条确认。'))}</p>` : ''}
+        <p class="note">${esc(flowNote)}</p>`,
+    });
   }
   async function toggleAutoApproval() {
     if (!supportsAutoApproval() || autoApprovalSaving) return;
@@ -139,13 +152,19 @@
     const systemCurrent = NS.store.captureModelError ? T('cognition.settings_nightly_model_system_unknown', '暂未读到系统首选模型。') : systemName ? T('cognition.settings_nightly_model_system_first', '系统首选：{model}', { model: systemName })
       : system.channel === 'cli' ? T('cognition.settings_nightly_model_system_cli', '未配置系统模型，将使用可用的本地助手；具体模型由本地助手决定。')
       : T('cognition.settings_nightly_model_system_unknown', '暂未读到系统首选模型。');
-    return `<div class="ca-policy-row"><div class="ca-policy-copy ca-nightly-model-controls"><div class="tt">${esc(label)}</div>
-      <p class="sub">${esc(T(selected.length ? 'cognition.settings_nightly_model_custom' : 'cognition.settings_nightly_model_system', selected.length ? '使用夜间专用顺序' : '跟随系统模型顺序'))}</p>
-      ${selected.length ? `<ol class="ca-nightly-model-list">${rows}</ol>` : `<p class="note">${esc(systemCurrent)}</p>`}
+    const body = `<div class="ca-nightly-model-controls">${selected.length ? `<ol class="ca-nightly-model-list">${rows}</ol>` : `<p class="note">${esc(systemCurrent)}</p>`}
       <p class="note">${esc(T(selected.length ? 'cognition.settings_nightly_model_hint' : 'cognition.settings_nightly_model_system_hint', selected.length ? '摘要、价值判断和提取都按保存的顺序尝试。前一个模型重试后仍无法调用，才尝试下一个；内容不合格不会靠换模型跳过检查。思考强度等参数沿用系统设置。' : '摘要、价值判断和提取沿用系统设置的模型顺序与调用参数。选择专用首选模型后，可另设备用顺序。'))}</p>
       <div class="ca-nightly-model-picker-row">${picker}<div class="actions">${button(saving ? 'cognition.settings_nightly_model_saving' : selected.length ? 'cognition.settings_nightly_model_add' : 'cognition.settings_nightly_model_primary', saving ? '正在保存…' : selected.length ? '添加备用模型' : '设为首选模型', 'nightly-model-add', undefined, blocked || catalog.status !== 'ready' || !pickerValue || selected.length >= 32)}</div></div>
       <div class="actions">${selected.length ? button('cognition.settings_nightly_model_reset', '恢复跟随系统', 'nightly-model-reset') : ''}${catalog.status === 'error' || catalog.partial ? button('cognition.settings_nightly_model_retry', '重试读取', 'nightly-model-retry', undefined, saving) : ''}</div>
-      ${state ? `<p class="note" role="status">${esc(state)}</p>` : ''}</div></div>`;
+      ${state ? `<p class="note" role="status">${esc(state)}</p>` : ''}</div>`;
+    return window.uiAccordion({
+      defaultOpen: [],
+      items: [{
+        title: label,
+        meta: T(selected.length ? 'cognition.settings_nightly_model_custom' : 'cognition.settings_nightly_model_system', selected.length ? '使用夜间专用顺序' : '跟随系统模型顺序'),
+        bodyHtml: body,
+      }],
+    });
   }
   function modelInput(event, root) {
     if (event.target?.id !== 'ca-nightly-model-picker') return;
@@ -186,5 +205,5 @@
     finally { saving = false; NS.notify(); }
   }
   window.addEventListener?.('cogseed:model-entries-changed', () => { if (NS.store.route?.name === 'settings') void loadModels(true); else catalog.status = 'idle'; });
-  NS.assetSettings = { discoveryStatus, captureDisclosures, restoreDisclosures, loadModels, modelControls, modelAction, modelInput, supportsAutoApproval, autoApprovalControls, toggleAutoApproval };
+  NS.assetSettings = { discoveryStatus, captureDisclosures, restoreDisclosures, loadModels, modelControls, modelAction, modelInput, supportsAutoApproval, autoApprovalControls, toggleAutoApproval, settingCard };
 })();

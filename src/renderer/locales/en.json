@@ -10279,6 +10279,7 @@
   "cognition.ontology_proposal_saved": "Ontology changes saved",
   "cognition.settings_model_budget_unrecorded": "This version has no usage record for this night window yet. Up to {limit} dispatches per night and {stageLimit} per stage; exhausted work keeps its progress for the next night. Billing unavailable.",
   "cognition.settings_model_budget": "Night window {night}: {calls}/{limit} model dispatches, {tokens} reported tokens, usage unknown for {unknown} dispatches. Up to {stageLimit} per stage; exhausted work keeps its progress for the next night. Billing unavailable.",
+  "cognition.settings_budget_bar": "Nightly window model dispatch budget",
   "cognition.ontology_meaning_unresolved": "The ontology proposal still has unresolved meaning and was not saved. Review Value and uncertainty, clarify it, save the edits, and recheck the proposal.",
   "cognition.ontology_proposal_target": "Ontology proposal · Review the records and versions below",
   "cognition.ontology_proposal_impact": "Confirmation saves the listed ontology changes with sources, dates and versions together. Later use still requires scope and permission checks; saving does not prove adoption.",

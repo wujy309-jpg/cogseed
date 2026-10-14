@@ -8011,6 +8011,7 @@
   "cognition.ontology_proposal_saved": "Alterações da ontologia salvas",
   "cognition.settings_model_budget_unrecorded": "Esta versão ainda não tem registro de uso desta janela noturna. Até {limit} chamadas por noite e {stageLimit} por etapa; o progresso é preservado para a próxima noite. Custo indisponível.",
   "cognition.settings_model_budget": "Janela noturna {night}: {calls}/{limit} chamadas de modelo, {tokens} tokens informados, uso desconhecido em {unknown} chamadas. Até {stageLimit} por etapa; ao esgotar, o progresso é preservado para a próxima noite. Custo indisponível.",
+  "cognition.settings_budget_bar": "Cota de chamadas de modelo da janela noturna",
   "cognition.ontology_meaning_unresolved": "A proposta da ontologia ainda tem significado não esclarecido e não foi salva. Revise Valor e incerteza, esclareça, salve as alterações e verifique a proposta novamente.",
   "cognition.ontology_proposal_target": "Proposta de ontologia · Revise os registros e versões abaixo",
   "cognition.ontology_proposal_impact": "A confirmação salva juntas as alterações com fontes, datas e versões. O uso posterior ainda exige verificar escopo e permissões; salvar não comprova adoção.",

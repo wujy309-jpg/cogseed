@@ -46,7 +46,10 @@ function settingsHtml(patch: Record<string, unknown> = {}) {
     uiSelect: (options: any) => `<select id="${options.id}"${options.disabled ? ' disabled' : ''}>${options.options.map((item: any) => `<option value='${item.value}'>${item.label}</option>`).join('')}</select>`,
     uiButton: (options: any) => `<button data-act="${options.attrs?.['data-act'] || ''}"${options.disabled ? ' disabled' : ''}>${options.label}</button>`,
     uiSwitch: (options: any) => `<button role="switch" data-act="${options.attrs?.['data-act']}"${options.disabled ? ' disabled' : ''}></button>`,
-    uiAccordion: (options: any) => options.items.map((item: any) => `<details>${item.title}${item.bodyHtml}</details>`).join(''),
+    uiAccordion: (options: any) => options.items.map((item: any) => `<details${item.open ? ' open' : ''}>${item.title}${item.meta || ''}${item.bodyHtml}</details>`).join(''),
+    uiCard: (options: any) => `<section class="${options.className || ''}">${options.bodyHtml || ''}</section>`,
+    uiStatusPill: (options: any) => `<span role="status">${options.label}</span>`,
+    uiProgressBar: (options: any) => `<div role="progressbar" aria-label="${options.ariaLabel}" aria-valuenow="${options.value}" aria-valuemax="${options.max}"></div>`,
   };
   runInNewContext(buttonSource, { window });
   runInNewContext(formSource, { window });
@@ -69,7 +72,8 @@ describe('资产设置只承接夜间发现', () => {
   it('立即扫描入口随夜间发现卡呈现，自动确认卡排在模型卡之前', () => {
     const html = settingsHtml({ captureSettings: { enabled: true } });
     expect(html).toContain('data-act="nightly-scan-now"');
-    expect(html.indexOf('自动确认')).toBeLessThan(html.indexOf('夜间发现模型'));
+    expect(html.indexOf('夜间发现模型')).toBeLessThan(html.indexOf('自动确认'));
+    expect(html).toContain('<details>夜间发现模型');
     expect(settingsHtml({ captureSettings: { enabled: false } }))
       .toMatch(/<button[^>]*disabled[^>]*data-act="nightly-scan-now"/);
     const running = settingsHtml({
@@ -177,6 +181,7 @@ function modelSettingsHarness() {
     CogAssets: NS, cogseed: { invoke },
     uiButton: (value: any) => `<button data-act="${value.attrs['data-act']}"${value.disabled ? ' disabled' : ''}>${value.label}</button>`,
     uiSelect: (value: any) => `<select id="${value.id}">${value.options.map((item: any) => `<option>${item.label}</option>`).join('')}</select>`,
+    uiAccordion: (value: any) => value.items.map((item: any) => `<details${item.open ? ' open' : ''}>${item.title}${item.meta || ''}${item.bodyHtml}</details>`).join(''),
   };
   runInNewContext(buttonSource, { window });
   runInNewContext(formSource, { window });

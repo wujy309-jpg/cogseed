@@ -2,25 +2,24 @@
 #ca-root .ca-layout-settings { container-type: inline-size; }
 #ca-root .ca-app .ca-settings-shell { width: 100%; min-width: 0; }
 #ca-root .ca-app .ca-settings-heading { margin: 0 0 var(--space-3); font-size: var(--font-size-4); font-weight: 600; color: var(--ca-ink2); }
-#ca-root .ca-app .ca-policy-list { border: 1px solid var(--ca-line); border-radius: var(--radius-card); background: var(--ca-card); overflow: hidden; }
-#ca-root .ca-app .ca-policy-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-5); padding: var(--space-5); }
-#ca-root .ca-app .ca-policy-row + .ca-policy-row { border-top: 1px solid var(--ca-line); }
-#ca-root .ca-app .ca-policy-copy { flex: 1; min-width: 0; }
+#ca-root .ca-app .ca-settings-cards { display: flex; flex-direction: column; gap: var(--space-4); }
+#ca-root .ca-app .ca-setting-card { padding: var(--space-5); max-width: none; }
+#ca-root .ca-app .ca-setting-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); }
+#ca-root .ca-app .ca-setting-head-copy { flex: 1; min-width: 0; }
+#ca-root .ca-app .ca-setting-head-copy .note { margin-top: var(--space-2); }
+#ca-root .ca-app .ca-setting-head-ctl { display: flex; align-items: center; gap: var(--space-2); flex-shrink: 0; }
+#ca-root .ca-app .ca-setting-body { margin-top: var(--space-3); }
+#ca-root .ca-app .ca-setting-body > * + * { margin-top: var(--space-2); }
+#ca-root .ca-app .ca-setting-body > .ui-accordion { margin-top: var(--space-4); }
+#ca-root .ca-app .ca-setting-body .ui-progress { margin-top: var(--space-3); height: 4px; background: var(--ca-line); }
 #ca-root .ca-app .ca-settings-shell .tt { font-size: var(--font-size-4); font-weight: 600; }
 #ca-root .ca-app .ca-settings-shell .sub { margin-top: var(--space-2); line-height: 1.65; font-size: var(--font-size-3); }
-#ca-root .ca-app .ca-policy-copy .note { margin-top: var(--space-2); }
-#ca-root .ca-app .ca-policy-copy > button { margin-top: var(--space-2); padding-inline: 0; }
-#ca-root .ca-app .ca-policy-switch { display: flex; align-items: center; gap: var(--space-2); white-space: nowrap; flex-shrink: 0; }
-#ca-root .ca-app .ca-policy-switch.ca-discovery-actions { flex-direction: column; align-items: flex-end; }
-#ca-root .ca-app .ca-settings-note { margin: var(--space-3) 0 var(--space-5); padding-inline: var(--space-1); }
 #ca-root .ca-app .ca-settings-records { border: 1px solid var(--ca-line); border-radius: var(--radius-card); background: var(--ca-card); overflow: hidden; }
 #ca-root .ca-app .ca-settings-model,
-#ca-root .ca-app .ca-discovery-status,
 #ca-root .ca-app .ca-settings-link { display: flex; align-items: center; justify-content: space-between; gap: var(--space-5); width: 100%; padding: var(--space-4) var(--space-5); }
 #ca-root .ca-app .ca-settings-records > * + * { border-top: 1px solid var(--ca-line); }
 #ca-root .ca-app .ca-settings-row-copy { flex: 1; min-width: 0; }
 #ca-root .ca-app .ca-settings-model.is-warning { background: var(--ca-amber-bg); }
-#ca-root .ca-app .ca-discovery-heading { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); }
 #ca-root .ca-app .ca-settings-records p.note { margin: var(--space-2) 0 0; }
 #ca-root .ca-app .ca-settings-records .actions { flex: 0 0 auto; justify-content: flex-end; gap: var(--space-4); }
 #ca-root .ca-app .ca-settings-records .rnm { padding-inline: 0; }
@@ -43,8 +42,9 @@
   #ca-root .ca-app .ca-settings-records .actions { margin-left: auto; flex-wrap: wrap; max-width: 100%; }
 }
 @container (max-width: 520px) {
-  #ca-root .ca-app .ca-policy-row { padding: var(--space-4); gap: var(--space-3); }
-  #ca-root .ca-app .ca-policy-switch { flex-direction: column-reverse; gap: var(--space-1); }
+  #ca-root .ca-app .ca-setting-card { padding: var(--space-4); }
+  #ca-root .ca-app .ca-setting-head { flex-direction: column; align-items: stretch; }
+  #ca-root .ca-app .ca-setting-head-ctl { justify-content: flex-end; }
 }
 
 /* Correct the existing settings composition without the generic two-column .field layout. */

@@ -238,3 +238,13 @@ Review trigger: ...
 - **Required shared seams**: `uiCard`、`uiField`、`uiButton`、已有反馈与路由、i18n、设计 token。
 - **Decision owner/date**: `@bonc-ai/reviewers` / TBD。
 - **Review trigger**: 第二类业务需要相同的版本化修改审批布局时再评估共享审批详情组件。
+
+
+### `COG-PV-020` — 认知资产设置页四卡拆分与卡头行（`ca-setting-card` / `ca-setting-head` / `ca-setting-head-copy` / `ca-setting-head-ctl` / `ca-setting-body`）
+
+- **Status**: Proposed
+- **Scope**: 资产设置页的夜间发现、确认规则、运行状态三张卡（模型顺序作为夜间发现卡内默认收缩的 `uiAccordion` 折叠节，收缩条 meta 显示当前顺序来源），以及三卡共用的卡头行组合（左：标题+说明；右：状态 pill 与开关/按钮）。
+- **Boundary**: 卡片外壳一律 `uiCard`、状态一律 `uiStatusPill`、额度一律 `uiProgressBar`、模型区折叠一律 `uiAccordion`；开关/按钮/选择器分别走 `uiSwitch`/`uiButton`/`uiField`。页内仅保留卡头行与正文块的布局类（flex 分区与间距），不新增叶子控件、无内联 SVG、无字面 z-index；旧 `ca-policy-*` 单卡三行组合本轮整体退役。运行状态卡只投影 `recall.captures.stats` 读模型，「立即扫描」复用已登记 `nightly-scan-now` 委托。
+- **Required shared seams**: `uiCard`、`uiStatusPill`、`uiProgressBar`、`uiAccordion`、`uiSwitch`、`uiButton`、`uiField`、i18n、设计 token。
+- **Decision owner/date**: `@bonc-ai/reviewers` / TBD。
+- **Review trigger**: 第二个设置类页面需要同一「卡头行=左标题说明+右状态与控件」稳定合同时，提议抽取共享 `uiSettingCard(...)`；此前该组合仅本页保留。

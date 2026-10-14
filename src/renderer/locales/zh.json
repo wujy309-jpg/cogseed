@@ -10279,6 +10279,7 @@
   "cognition.ontology_proposal_saved": "本体变化已保存",
   "cognition.settings_model_budget_unrecorded": "本版本尚无该夜间窗口的用量记录。每夜最多调度 {limit} 次、每阶段最多 {stageLimit} 次；额度用完保留进度，次夜续接。费用未提供。",
   "cognition.settings_model_budget": "夜间窗口 {night}：模型调度 {calls}/{limit} 次，已报告 {tokens} token，{unknown} 次用量未知。每阶段最多 {stageLimit} 次；额度用完保留进度，次夜续接。费用未提供。",
+  "cognition.settings_budget_bar": "夜间窗口模型调度额度",
   "cognition.ontology_meaning_unresolved": "本体建议仍有未明确的含义，本次没有保存。请核对“价值与不确定性”，明确说明后保存修改并重新核对建议。",
   "cognition.ontology_proposal_target": "本体变更建议 · 确认前核对下面的记录与版本",
   "cognition.ontology_proposal_impact": "确认后一起保存所列本体变化及来源、时间和版本。后续使用仍须满足范围与权限；保存不代表实际采用。",

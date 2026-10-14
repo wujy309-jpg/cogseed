@@ -8011,6 +8011,7 @@
   "cognition.ontology_proposal_saved": "本体の変更を保存しました",
   "cognition.settings_model_budget_unrecorded": "このバージョンには、この夜間枠の使用量記録がまだありません。毎夜最大 {limit} 回、各段階最大 {stageLimit} 回。進捗を保存し、次の夜に続行します。料金は未取得です。",
   "cognition.settings_model_budget": "夜間枠 {night}：モデル呼出し {calls}/{limit} 回、報告済み {tokens} token、使用量不明 {unknown} 回。各段階は最大 {stageLimit} 回。上限に達した処理は進捗を保存し、次の夜に続行します。料金は未取得です。",
+  "cognition.settings_budget_bar": "夜間ウィンドウのモデル呼出し枠",
   "cognition.ontology_meaning_unresolved": "本体の提案には未解決の意味があるため、保存していません。「価値と不確実性」を確認し、明確にしてから変更を保存し、提案を再確認してください。",
   "cognition.ontology_proposal_target": "本体の変更提案 · 以下の記録と版を確認してください",
   "cognition.ontology_proposal_impact": "確認後、記載された本体の変更と出典、日時、版を一緒に保存します。利用には範囲と権限の確認が必要です。保存は採用の証明ではありません。",
