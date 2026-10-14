@@ -1750,6 +1750,8 @@
   "model_effort.label": "思考：{level}",
   "model_effort.menu_title": "思考强度",
   "model_effort.auto": "自动",
+  "model_effort.auto_follows_default": "自动（跟随默认）",
+  "model_effort.default_effective": "当前默认：{level}",
   "model_effort.off": "关闭",
   "model_effort.low": "低",
   "model_effort.high": "高",

@@ -1625,6 +1625,8 @@
   "model_effort.label": "Pensar: {level}",
   "model_effort.menu_title": "Intensidade de raciocínio",
   "model_effort.auto": "Automático",
+  "model_effort.auto_follows_default": "Automático (seguir padrão)",
+  "model_effort.default_effective": "Padrão atual: {level}",
   "model_effort.off": "Desligado",
   "model_effort.low": "Baixo",
   "model_effort.high": "Alto",

@@ -1753,6 +1753,8 @@
   "model_effort.label": "Think: {level}",
   "model_effort.menu_title": "Thinking strength",
   "model_effort.auto": "Auto",
+  "model_effort.auto_follows_default": "Auto (follow default)",
+  "model_effort.default_effective": "Current default: {level}",
   "model_effort.off": "Off",
   "model_effort.low": "Low",
   "model_effort.high": "High",

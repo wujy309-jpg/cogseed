@@ -1625,6 +1625,8 @@
   "model_effort.label": "思考：{level}",
   "model_effort.menu_title": "思考の強さ",
   "model_effort.auto": "自動",
+  "model_effort.auto_follows_default": "自動（デフォルトに従う）",
+  "model_effort.default_effective": "現在のデフォルト：{level}",
   "model_effort.off": "オフ",
   "model_effort.low": "低",
   "model_effort.high": "高",
