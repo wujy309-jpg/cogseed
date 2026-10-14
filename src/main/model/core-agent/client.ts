@@ -535,6 +535,11 @@ function toolCounter(stats: ModelRunLogDiagnostics, rawName: unknown): ToolRunLo
   return stats.toolCounts[name];
 }
 
+/** A turn that takes longer than this before its first stream event is worth a
+ *  warn: it separates "endpoint/network stall before the response" from "slow
+ *  stream mid-turn" (N-05). Not a timeout — the provider SDK still owns that. */
+const FIRST_BYTE_SLOW_MS = 30_000;
+
 const MAX_TOOL_TIMELINE_LOG_ENTRIES = 80;
 const MAX_RUN_TIMELINE_LOG_ENTRIES = 120;
 
@@ -1508,6 +1513,29 @@ export async function* streamChatWithModel(opts: ChatOptions): AsyncGenerator<St
       })
       : undefined);
     transitionLiveRunTimings(liveRunTimings, 'provider');
+    // R-09 mitigation (host side): run the session's tool-protocol repair
+    // *before* the provider sees the session, not only in the post-turn finally.
+    // A chain left broken by a previous turn (orphan tool_use, unmatched
+    // tool_result, duplicated tool_call_id — the image-as-user-message shape the
+    // vendored provider emits) otherwise surfaces as a hard provider 400 on the
+    // very first attempt of the next turn; the 2026-10-13 run shows exactly that
+    // ("CogSeed model provider request failed (400)" on the worker's first try,
+    // while the post-turn log still reported changed: true).
+    try {
+      const cachedForHeal = await _getCachedSession(sessionId);
+      const heal = (cachedForHeal as { healAndPersist?: () => boolean } | null | undefined)?.healAndPersist;
+      if (typeof heal === 'function' && heal.call(cachedForHeal)) {
+        const report = typeof (cachedForHeal as { getLastToolProtocolRepairReport?: () => unknown })
+          .getLastToolProtocolRepairReport === 'function'
+          ? (cachedForHeal as { getLastToolProtocolRepairReport: () => Record<string, unknown> })
+            .getLastToolProtocolRepairReport()
+          : {};
+        log.warn('repaired tool protocol before provider call', { session_id: maskedSessionId, ...report });
+      }
+    } catch (err) {
+      // Advisory: a heal failure must not block the turn.
+      log.warn('pre-turn tool protocol heal failed', { ...turnLogContext, error: logErrorRef(err) });
+    }
     const rawEvents = runner.runStream({
       message,
       ...(resumeActiveTurn ? { resumeActiveTurn: true } : {}),
@@ -1633,12 +1661,34 @@ export async function* streamChatWithModel(opts: ChatOptions): AsyncGenerator<St
     // terminal final/error synthesis. We re-yield every event it produces,
     // resetting the idle timer on each one.
     let eventCount = 0;
+    // N-05 visibility: time to the first stream event. "Request timed out." is
+    // raised by the provider SDK, not by us, so the useful question is *where* a
+    // slow turn spends its time — before the first byte (endpoint/network or a
+    // pre-header stall) or between events mid-stream. The provider line below
+    // makes that answer retrievable from the log alone.
+    let firstStreamEventAt: number | null = null;
     const mappedEvents = mapCoreAgentEvents(captureResult(rawEvents), { userId, skillDisplayNameById, agentDisplayNameById });
     for await (const ev of stopStreamOnAbort(mappedEvents, controller.signal, turnTag)) {
       // The raw-event wrapper owns phase tracking. Reset here too because
       // mapped UI events can be synthesized from accumulated raw state.
       resetIdle();
       eventCount += 1;
+      if (firstStreamEventAt === null) {
+        firstStreamEventAt = Date.now();
+        const firstByteMs = firstStreamEventAt - runStartedAt;
+        // Compact, greppable line. The structured variant buried `ms` at the end of a
+        // very long context spread, so the one number that answers "network or model?"
+        // could not be extracted from the log (2026-10-13). Detail stays on the slow path.
+        log.info(`model turn first byte ms=${firstByteMs}`);
+        if (firstByteMs >= FIRST_BYTE_SLOW_MS) {
+          log.warn('model turn slow to first byte', {
+            ...turnLogContext,
+            ms: firstByteMs,
+            provider: providerId,
+            model: modelId,
+          });
+        }
+      }
       let outgoing: StreamEvent = ev;
       if (ev.type === 'error' && !(ev as StreamEvent).aborted) {
         terminalFailureCode = (ev as StreamEvent).failureCode || 'model_stream_error';

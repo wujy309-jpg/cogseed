@@ -150,6 +150,8 @@ export interface CogSeedRendererSessionSummary {
   updatedAt: string;
   taskCount: number;
   activeTaskCount: number;
+  /** Tasks waiting for the human: not executing, so never counted as active. */
+  waitingTaskCount: number;
   latestStatus: CogSeedTaskStatus | 'idle';
   hasRecovery: boolean;
   executionId?: string;
@@ -552,8 +554,15 @@ function normalizeWorktreeRemoveInput(payload: unknown): CogSeedWorktreeRemoveIn
 
 
 
-const TERMINAL_TASK_STATUSES = new Set<CogSeedTaskStatus>(['completed', 'failed', 'cancelled']);
-const ACTIVE_TASK_STATUSES = new Set<CogSeedTaskStatus>(['created', 'queued', 'running', 'waiting_user']);
+import {
+  COGSEED_ACTIVE_TASK_STATUSES,
+  COGSEED_ATTENTION_TASK_STATUSES,
+  COGSEED_TERMINAL_TASK_STATUSES,
+} from './task-status-buckets';
+
+const TERMINAL_TASK_STATUSES = new Set<CogSeedTaskStatus>(COGSEED_TERMINAL_TASK_STATUSES);
+const ACTIVE_TASK_STATUSES = new Set<CogSeedTaskStatus>(COGSEED_ACTIVE_TASK_STATUSES);
+const ATTENTION_TASK_STATUSES = new Set<CogSeedTaskStatus>(COGSEED_ATTENTION_TASK_STATUSES);
 
 function rendererSafeIdentifier(value: unknown, max = 120): string {
   const text = typeof value === 'string' ? value.trim() : '';
@@ -738,6 +747,7 @@ function sessionSummary(
     updatedAt: [session.updatedAt, ...tasks.map((task) => task.updatedAt)].sort().at(-1) ?? session.updatedAt,
     taskCount: tasks.length,
     activeTaskCount: tasks.filter((task) => ACTIVE_TASK_STATUSES.has(task.status)).length,
+      waitingTaskCount: tasks.filter((task) => task.status === 'waiting_user').length,
     latestStatus: latest?.status ?? 'idle',
     hasRecovery: tasks.some((task) => task.status === 'recoverable'),
     ...(latestSummary?.executionId ? { executionId: latestSummary.executionId } : {}),
@@ -1378,14 +1388,14 @@ export function createCogSeedIpcService(deps: CogSeedIpcServiceDeps = {}) {
         statusCounts[summary.status] = (statusCounts[summary.status] ?? 0) + 1;
         if (summary.errorCode) errors.set(summary.errorCode, (errors.get(summary.errorCode) ?? 0) + 1);
       }
-      const activeTaskCount = summaries.filter((task) => ['created', 'queued', 'running', 'waiting_user'].includes(task.status)).length;
+      const activeTaskCount = summaries.filter((task) => ACTIVE_TASK_STATUSES.has(task.status)).length;
       return {
         schemaVersion: 1,
         generatedAt: new Date().toISOString(),
         taskCount: summaries.length,
         sessionCount: new Set(summaries.map((task) => task.sessionId)).size,
         activeTaskCount,
-        attentionTaskCount: summaries.filter((task) => task.status === 'failed' || task.status === 'recoverable' || task.status === 'waiting_user').length,
+        attentionTaskCount: summaries.filter((task) => ATTENTION_TASK_STATUSES.has(task.status)).length,
         sourceCounts,
         statusCounts,
         errorCodes: Array.from(errors, ([code, count]) => ({ code, count })).sort((left, right) => right.count - left.count || left.code.localeCompare(right.code)),

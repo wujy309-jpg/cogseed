@@ -964,4 +964,163 @@ describe('chat-stream module', () => {
     expect(keptRows).toHaveLength(1);
     expect(keptRows[0].innerHTML).toContain('运行');
   });
+
+  // ── 过程折叠第二刀（2026-10-13）：归属 + 默认折叠 + 移交终态化 ──────────
+
+  it('worker 回合：折叠条写明归属且默认折叠，点击展开可见步骤（需求 B/断言 2、3）', () => {
+    const handleW = g.window.chatStreamHandleEvent as (c: string, m: unknown, e: unknown, o?: unknown) => void;
+    const workerAnchor = makeEl('div');
+    root.appendChild(workerAnchor);
+    const header = makeEl('div');
+    header.className = 'chat-msg-header';
+    workerAnchor.appendChild(header);
+
+    handleW('c-1', workerAnchor, { type: 'chat.turn.started', turnId: 'TW', cid: 'c-1', actorId: 'w1', startedAt: '' },
+      { actorId: 'w1', actorName: '内容创作Agent', collapseByDefault: true });
+    handleW('c-1', workerAnchor, { type: 'chat.item', turnId: 'TW', itemId: 'TW:tool:1', kind: 'toolExecution', status: 'completed', payload: { toolName: 'bash', argsSummary: 'ls' } });
+
+    const flow = workerAnchor.children.find((c) => (c.dataset as Record<string, string>).csTurn === 'TW')!;
+    expect(flow).toBeTruthy();
+    expect(flow.dataset.csActor).toBe('w1');
+    const badge = header.querySelector('.cs-badge')!;
+    // 归属标题：折叠条写明是「谁」的执行过程，不再是无人称的「工作中」。
+    expect(badge.querySelector('.cs-badge-owner')!.textContent).toBe('内容创作Agent 的执行过程');
+    // 默认折叠：页面高度不因 worker 过程增长。
+    expect(flow.dataset.csCollapsed).toBe('1');
+    expect(flow.querySelector('.cs-flow-body')!.style.display).toBe('none');
+    expect(badge.getAttribute('aria-expanded')).toBe('false');
+    // 点击展开 → 可见该 actor 的步骤；再点折叠。
+    (badge.handlers.click!)();
+    expect(flow.querySelector('.cs-flow-body')!.style.display).not.toBe('none');
+    expect(flow.dataset.csCollapsed).toBe('0');
+    const rows = (flow.querySelector('.cs-flow-body')!.children as unknown as Array<{ innerHTML: string }>)
+      .filter((c) => String((c as unknown as { className: string }).className).includes('cs-toolExecution'));
+    expect(rows).toHaveLength(1);
+    (badge.handlers.click!)();
+    expect(flow.dataset.csCollapsed).toBe('1');
+  });
+
+  it('主 Agent 回合不默认折叠（collapseByDefault 缺省）：展开跟踪不受影响', () => {
+    const handleW = g.window.chatStreamHandleEvent as (c: string, m: unknown, e: unknown, o?: unknown) => void;
+    handleW('c-1', anchor, { type: 'chat.turn.started', turnId: 'TC', cid: 'c-1', actorId: 'commander', startedAt: '' },
+      { actorId: 'commander', actorName: 'cogseed', collapseByDefault: false });
+    const flow = inserts[0].node;
+    expect(flow.querySelector('.cs-flow-body')!.style.display).not.toBe('none');
+    expect(flow.querySelector('.cs-badge')!.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('话权交给 agent 后交出方立即终态化：去运行态/去计时/折叠为「已移交」（需求 A/断言 1）', () => {
+    const handleW = g.window.chatStreamHandleEvent as (c: string, m: unknown, e: unknown, o?: unknown) => void;
+    handleW('c-1', anchor, { type: 'chat.turn.started', turnId: 'TC', cid: 'c-1', actorId: 'commander', startedAt: '' },
+      { actorId: 'commander', actorName: 'cogseed' });
+    handleW('c-1', anchor, { type: 'chat.item', turnId: 'TC', itemId: 'TC:tool:1', kind: 'toolExecution', status: 'completed', payload: { toolName: 'bash', argsSummary: 'ls' } });
+    const cmdFlow = inserts[0].node;
+    expect(cmdFlow.className).toContain('running');
+
+    (g.window.chatStreamYieldFloor as (c: string, f: string) => void)('c-1', 'w1');
+
+    expect(cmdFlow.className).not.toContain('running');
+    expect(cmdFlow.dataset.csHandedOff).toBe('1');
+    const badge = cmdFlow.querySelector('.cs-badge')!;
+    expect(badge.querySelector('.cs-badge-label')!.textContent).toBe('已移交');
+    // 计时停：ticker 不再存活（stub setInterval 返回 0，用折叠态与文案判定）。
+    expect(cmdFlow.dataset.csCollapsed).toBe('1');
+    // loading 指示随运行态撤除。
+    expect(cmdFlow.querySelector('.cs-loading')).toBeNull();
+    // 移交后到达的迟到 item 不复活运行态（只有真正在跑的 actor 是活动元素）。
+    handleW('c-1', anchor, { type: 'chat.item', turnId: 'TC', itemId: 'TC:tool:2', kind: 'toolExecution', status: 'completed', payload: { toolName: 'bash', argsSummary: 'ls -la' } });
+    expect(cmdFlow.className).not.toContain('running');
+    expect(badge.querySelector('.cs-badge-label')!.textContent).toBe('已移交');
+  });
+
+  it('移交终态化只作用于非新话权方，且重复调用幂等', () => {
+    const handleW = g.window.chatStreamHandleEvent as (c: string, m: unknown, e: unknown, o?: unknown) => void;
+    const workerAnchor = makeEl('div');
+    root.appendChild(workerAnchor);
+    handleW('c-1', anchor, { type: 'chat.turn.started', turnId: 'TC', cid: 'c-1', actorId: 'commander', startedAt: '' }, { actorId: 'commander' });
+    handleW('c-1', workerAnchor, { type: 'chat.turn.started', turnId: 'TW', cid: 'c-1', actorId: 'w1', startedAt: '' }, { actorId: 'w1' });
+    const cmdFlow = inserts.find((i) => (i.node.dataset as Record<string, string>).csTurn === 'TC')!.node;
+    const workerFlow = workerAnchor.children.find((c) => (c.dataset as Record<string, string>).csTurn === 'TW')!;
+
+    const yieldFloor = g.window.chatStreamYieldFloor as (c: string, f: string) => void;
+    yieldFloor('c-1', 'w1');
+    yieldFloor('c-1', 'w1');
+    // 交出方冻结，新话权方保持运行态。
+    expect(cmdFlow.dataset.csHandedOff).toBe('1');
+    expect(workerFlow.className).toContain('running');
+    expect(workerFlow.dataset.csHandedOff).toBeUndefined();
+  });
+
+  it('折叠态也看得出「在跑」：徽章常显旋转指示，终态/移交才移除（真机 2026-10-14）', () => {
+    const handleW = g.window.chatStreamHandleEvent as (c: string, m: unknown, e: unknown, o?: unknown) => void;
+    const workerAnchor = makeEl('div');
+    root.appendChild(workerAnchor);
+    const header = makeEl('div');
+    header.className = 'chat-msg-header';
+    workerAnchor.appendChild(header);
+
+    handleW('c-1', workerAnchor, { type: 'chat.turn.started', turnId: 'TW', cid: 'c-1', actorId: 'w1', startedAt: '' },
+      { actorId: 'w1', actorName: '内容创作Agent', collapseByDefault: true });
+    const flow = workerAnchor.children.find((c) => (c.dataset as Record<string, string>).csTurn === 'TW')!;
+    const badge = header.querySelector('.cs-badge')!;
+    // 折叠：过程区不可见；但徽章上的运行指示必须还在，否则用户看不到任何"在跑"的证据。
+    expect(flow.dataset.csCollapsed).toBe('1');
+    expect(flow.querySelector('.cs-flow-body')!.style.display).toBe('none');
+    expect(badge.querySelector('.cs-badge-live')).toBeTruthy();
+    // stub 不解析 innerHTML，按标记断言（同既有「加载中指示」用例）。
+    expect(badge.querySelector('.cs-badge-live')!.innerHTML).toContain('cs-loading-spinner');
+
+    // 终态：指示移除、徽章定格。
+    handleW('c-1', workerAnchor, { type: 'chat.item', turnId: 'TW', itemId: 'TW:t1', kind: 'toolExecution', status: 'completed', payload: { toolName: 'bash', argsSummary: 'ls' } });
+    handleW('c-1', workerAnchor, { type: 'chat.turn.completed', turnId: 'TW', status: 'completed', endedAt: '' });
+    expect(badge.querySelector('.cs-badge-live')).toBeNull();
+    expect(badge.querySelector('.cs-badge-label')!.textContent).toBe('已完成');
+  });
+
+  it('移交冻结时移除运行指示，话权回来再恢复', () => {
+    const handleW = g.window.chatStreamHandleEvent as (c: string, m: unknown, e: unknown, o?: unknown) => void;
+    const yieldFloor = g.window.chatStreamYieldFloor as (c: string, f: string) => void;
+    handleW('c-1', anchor, { type: 'chat.turn.started', turnId: 'TC', cid: 'c-1', actorId: 'commander', startedAt: '' }, { actorId: 'commander' });
+    const cmdFlow = inserts[0].node;
+    const badge = cmdFlow.querySelector('.cs-badge')!;
+    expect(badge.querySelector('.cs-badge-live')).toBeTruthy();
+
+    yieldFloor('c-1', 'w1');
+    expect(badge.querySelector('.cs-badge-live')).toBeNull();
+
+    handleW('c-1', anchor, { type: 'chat.item', turnId: 'TC', itemId: 'TC:t2', kind: 'toolExecution', status: 'completed', payload: { toolName: 'bash', argsSummary: 'pwd' } }, { actorId: 'commander', floorActor: 'commander' });
+    expect(badge.querySelector('.cs-badge-live')).toBeTruthy();
+  });
+
+  it('历史重放的终态徽章没有运行指示（不编造「在跑」）', () => {
+    const render = g.window.chatStreamRenderPersisted as (c: string, m: unknown, i: unknown, o?: unknown) => boolean;
+    const msgDiv = makeEl('div');
+    root.appendChild(msgDiv);
+    render('c-hist', msgDiv, [
+      { type: 'turn', turn: { type: 'chat.turn.started', turnId: 'H1', cid: 'c-hist', actorId: 'commander', startedAt: '' } },
+      { type: 'turn', turn: { type: 'chat.turn.completed', turnId: 'H1', status: 'completed', endedAt: '' } },
+      { type: 'chatItem', item: { type: 'chat.item', turnId: 'H1', itemId: 'H1:t1', kind: 'toolExecution', status: 'completed', payload: { toolName: 'bash', argsSummary: 'ls' } } },
+    ], {});
+    const badge = msgDiv.querySelector('.cs-badge');
+    expect(badge).toBeTruthy();
+    expect(badge!.querySelector('.cs-badge-live')).toBeNull();
+  });
+
+  it('话权回到交出方：撤销「已移交」冻结并恢复运行态（运行指示 = 持有 floor）', () => {    const handleW = g.window.chatStreamHandleEvent as (c: string, m: unknown, e: unknown, o?: unknown) => void;
+    handleW('c-1', anchor, { type: 'chat.turn.started', turnId: 'TC', cid: 'c-1', actorId: 'commander', startedAt: '' }, { actorId: 'commander' });
+    handleW('c-1', anchor, { type: 'chat.item', turnId: 'TC', itemId: 'TC:tool:1', kind: 'toolExecution', status: 'completed', payload: { toolName: 'bash', argsSummary: 'ls' } }, { floorActor: 'w1' });
+    const cmdFlow = inserts[0].node;
+    (g.window.chatStreamYieldFloor as (c: string, f: string) => void)('c-1', 'w1');
+    expect(cmdFlow.dataset.csHandedOff).toBe('1');
+    const badge = cmdFlow.querySelector('.cs-badge')!;
+    expect(badge.querySelector('.cs-badge-label')!.textContent).toBe('已移交');
+
+    // 工人结束、话权回到 commander，它继续产出 → 恢复运行态与计时。
+    handleW('c-1', anchor, { type: 'chat.item', turnId: 'TC', itemId: 'TC:tool:2', kind: 'toolExecution', status: 'completed', payload: { toolName: 'bash', argsSummary: 'pwd' } }, { actorId: 'commander', floorActor: 'commander' });
+    expect(cmdFlow.dataset.csHandedOff).toBeUndefined();
+    expect(cmdFlow.className).toContain('running');
+    expect(cmdFlow.querySelector('.cs-loading')).toBeNull();
+    // 展开状态保持用户/上一次收尾的选择（这里移交时被收成摘要行）。
+    expect(cmdFlow.dataset.csCollapsed).toBe('1');
+  });
 });
