@@ -40,6 +40,7 @@ import * as fs from 'node:fs';
 import * as paths from '../../paths';
 import { getCurrentLang } from '../../i18n';
 import { bundledRuntimeEnv, bundledRuntimePathEntries } from '../../util/bundled-runtime';
+import { validateReasoningEffort } from '../reasoning_effort';
 
 interface NoopRecorder {
   record(event: unknown): void;
@@ -1120,6 +1121,7 @@ export async function* streamChatWithModel(opts: ChatOptions): AsyncGenerator<St
     onSkillInvoked,
     cacheRetention,
     thinkingLevel,
+    supportedReasoningLevels,
     modelOverride,
     nested = false,
     drainSteer,
@@ -1496,6 +1498,25 @@ export async function* streamChatWithModel(opts: ChatOptions): AsyncGenerator<St
     });
 
     const sandboxEnv = buildSkillSandboxEnv(userId, agentId);
+
+    // Option C preflight (before `modelRunStarted`, so the taxonomy stays
+    // model_preflight): refuse an explicit tier the effective model does not
+    // declare. Only fires when the caller resolved a declaration — an absent
+    // list means "unknown", not "none", so third-party callers keep today's
+    // behavior.
+    const effortVerdict = validateReasoningEffort({
+      model: `${providerId || ''}/${modelId || ''}`,
+      supported: supportedReasoningLevels,
+      requested: thinkingLevel,
+    });
+    if (!effortVerdict.ok) {
+      log.warn('reasoning effort refused before provider call', {
+        ...turnLogContext,
+        requested_thinking_level: thinkingLevel,
+        supported_thinking_levels: supportedReasoningLevels,
+      });
+      throw new Error(`unsupported reasoning effort '${thinkingLevel}' for ${providerId || ''}/${modelId || ''}`);
+    }
 
     log.info('model turn run start', turnLogContext);
     const requestMetadata = attachmentMetadata ? { attachmentMetadata } : {};

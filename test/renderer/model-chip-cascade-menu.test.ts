@@ -227,10 +227,11 @@ function buildHarness(options: { override?: Record<string, unknown> } = {}) {
   ];
   const modelsByProvider: Record<string, Array<Record<string, unknown>>> = {
     'cp:cp-1': [
-      { id: 'deepseek/deepseek-v4.1-flash', name: 'deepseek/deepseek-v4.1-flash', reasoning: true },
+      // Option C：菜单只暴露 auth.listModels 标注的 reasoningLevels。
+      { id: 'deepseek/deepseek-v4.1-flash', name: 'deepseek/deepseek-v4.1-flash', reasoning: true, reasoningLevels: ['off', 'low', 'high'] },
       { id: 'deepseek-v4.1-lite', name: 'deepseek-v4.1-lite', reasoning: false },
     ],
-    anthropic: [{ id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', reasoning: true }],
+    anthropic: [{ id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', reasoning: true, reasoningLevels: ['off', 'low', 'high'] }],
   };
   const overrides: Array<Record<string, unknown> | null> = [];
   const invoke = vi.fn(async (channel: string, payload?: any) => {
@@ -363,11 +364,15 @@ describe('exec-config chip — provider → model → thinking-strength cascade'
     const levelRows = levels!.querySelectorAll('.model-chip-menu-item');
     expect(levelRows.map((row) => row.querySelector('.model-chip-menu-name')!.textContent))
       .toEqual(['model_effort.auto', 'model_effort.off', 'model_effort.low', 'model_effort.high']);
-    // 不支持推理的模型只有自动/关闭可选（低/高置灰，无点击行为）。
+    // Option C：没声明推理能力的模型只列 Auto（不再画置灰的假开关），并给出原因。
     await modelRows[1].hover();
     await afterOpen();
     const liteLevels = h.registry.get('model-chip-flyout-levels')!;
-    expect(liteLevels.querySelectorAll('.model-chip-menu-item.is-disabled')).toHaveLength(2);
+    expect(liteLevels.querySelectorAll('.model-chip-menu-item')
+      .map((row) => row.querySelector('.model-chip-menu-name')!.textContent))
+      .toEqual(['model_effort.auto']);
+    expect(liteLevels.querySelectorAll('.model-chip-menu-item.is-disabled')).toHaveLength(0);
+    expect(liteLevels.innerHTML).toContain('model_effort.unsupported_hint');
   });
 
   it('writes the task override and collapses every level when a strength is picked', async () => {

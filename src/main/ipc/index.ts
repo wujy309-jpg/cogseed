@@ -5878,6 +5878,15 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // Thinking strength (reasoning effort) for chat model calls.
   'prefs.getThinkingLevel': async () => ({ level: appConfig.getThinkingLevel() }),
   'prefs.setThinkingLevel': async ({ level }) => ({ level: appConfig.setThinkingLevel(level) }),
+  // Per-model thinking strength (Option C): the explicit tier belongs to the model
+  // it was chosen for, so switching models falls back to Auto by construction.
+  'prefs.getModelThinkingLevels': async () => {
+    const stored = appConfig.readPreferences().model_thinking_levels;
+    return { levels: stored && typeof stored === 'object' ? { ...stored } : {} };
+  },
+  'prefs.setModelThinkingLevel': async ({ provider, model, level }) => ({
+    level: appConfig.setModelThinkingLevel(provider, model, level),
+  }),
 
   // First-run onboarding marker (machine-local, NOT cloud-synced — stored
   // under WS_ROOT/onboarding-state.json, shared across uids). The renderer's

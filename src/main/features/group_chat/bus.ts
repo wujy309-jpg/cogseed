@@ -217,6 +217,35 @@ export function _targetsDeepSeekOfficialApi(uid: unknown, providerId: unknown): 
     return false;
   }
 }
+
+/** Option C（推理强度按模型声明的档位）：解析有效模型声明的思考档位（宿主
+ *  可表达的子集 off|low|high）。**解析不出就返回 undefined**——"不知道"不等于
+ *  "没有档位"，调用方据此跳过校验，绝不因为一次能力查询失败或模型没有声明而
+ *  拒掉一个本来能跑的回合。判定本身在 model/reasoning_effort.ts，与 auth 的
+ *  列表标注共用同一份口径。 */
+export async function _declaredReasoningLevelsFor(
+  uid: string,
+  modelOverride?: { provider?: string; model?: string },
+): Promise<string[] | undefined> {
+  try {
+    const auth = await import("../auth");
+    let provider = String(modelOverride?.provider || "").trim();
+    let model = String(modelOverride?.model || "").trim();
+    if (!provider || !model) {
+      const { entries } = await auth.listEntriesForUser(uid);
+      const current = entries && entries[0];
+      if (!current?.provider || !current?.model) return undefined;
+      provider = String(current.provider);
+      model = String(current.model);
+    }
+    const res = await auth.listModelsForUser(uid, provider);
+    const hit = (res.models || []).find((m) => m && m.id === model);
+    const levels = hit && Array.isArray(hit.reasoningLevels) ? hit.reasoningLevels : undefined;
+    return levels && levels.length ? levels : undefined;
+  } catch {
+    return undefined;
+  }
+}
 import type { AgentRunStatus } from "../agent_runtime_stats";
 import {
   activityFromLocalEvent,
@@ -6967,6 +6996,10 @@ async function runActorTurnBody(
         = item.execConfig?.effort
           ?? turnAgentSpec?.default_thinking
           ?? thinkingLevelForRun();
+      // Option C：显式档位（任务级 / agent 默认 / 全局偏好）在自动兜底**之前**
+      // 记下——只有显式选择才受"模型声明的档位"约束；下面给已知 reasoning
+      // 模型自动补 low 是展示兜底，不是用户的档位选择，不能被同一个门拒掉。
+      const explicitThinkingLevel = turnThinkingLevel;
       // 思考展示兜底（交互设计 2026-09-08：思考过程展示需求）：'auto' 时不传
       // thinkingLevel，pi-ai 对 openai 兼容端点不会带 reasoning_effort，
       // DeepSeek 中转端点缺该参数时思考模式默认关闭 → 全程无
@@ -6988,6 +7021,18 @@ async function runActorTurnBody(
           : turnAgentSpec?.default_model
             ? { ...turnAgentSpec.default_model }
             : undefined;
+      // Option C preflight：显式档位要先对得上有效模型声明的档位。解析出声明
+      // 才传下去（client.ts 在 provider 调用前拒绝并落 model_preflight）；
+      // 解析不出 = 不校验，行为与之前完全一致。
+      const supportedReasoningLevels = explicitThinkingLevel !== "auto"
+        ? await _declaredReasoningLevelsFor(uid, turnModelOverride)
+        : undefined;
+      if (supportedReasoningLevels && !supportedReasoningLevels.includes(explicitThinkingLevel)) {
+        log.warn("explicit thinking level not declared by the effective model", {
+          uid, cid, actor_id: actor.id, requested: explicitThinkingLevel,
+          supported: supportedReasoningLevels,
+        });
+      }
       // 多模态降级提示（2026-09-13）：回合带图但实际执行模型（任务级覆盖
       // 优先于界面选择）不支持视觉时，图片内容块会被 provider 层按
       // input modality 丢弃，模型只能靠文件路径 + OCR 读图。此前零提示，
@@ -7023,6 +7068,9 @@ async function runActorTurnBody(
         // User-selected thinking strength ('auto' = no override; let the
         // provider default / model decide).
         ...(turnThinkingLevel !== "auto" ? { thinkingLevel: turnThinkingLevel } : {}),
+        // Option C：显式档位带着模型声明的档位一起下发，client.ts 在
+        // provider 调用前用它拒绝越档（model_preflight）。
+        ...(supportedReasoningLevels ? { supportedReasoningLevels } : {}),
         ...(turnModelOverride ? { modelOverride: turnModelOverride } : {}),
         ...(actor.kind === "agent" ? { agentId: actor.id } : {}),
         cid,

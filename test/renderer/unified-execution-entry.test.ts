@@ -165,6 +165,22 @@ describe('unified execution entry — send path and bubble meta', () => {
     // …and the end-of-turn message persists exec_meta.
     expect(bus).toMatch(/turnExecMeta \? \{ exec_meta: turnExecMeta \}/);
   });
+
+  it('Option C：显式档位带着模型声明的档位下发，越档在 provider 调用前被拒', () => {
+    const bus = read('src/main/features/group_chat/bus.ts');
+    const client = read('src/main/model/core-agent/client.ts');
+    // 自动兜底注入的 low 不算"显式选择"：记下显式值再注入。
+    expect(bus).toMatch(/const explicitThinkingLevel = turnThinkingLevel;[\s\S]*?turnThinkingLevel = "low";/);
+    // 只有显式档位才去解析声明。
+    expect(bus).toMatch(/explicitThinkingLevel !== "auto"[\s\S]*?_declaredReasoningLevelsFor\(uid, turnModelOverride\)/);
+    expect(bus).toMatch(/supportedReasoningLevels \? \{ supportedReasoningLevels \}/);
+    // 拒绝点必须在 modelRunStarted 之前——那段 throw 才会被归类为 model_preflight。
+    const guard = client.indexOf('validateReasoningEffort({');
+    const runStarted = client.indexOf('modelRunStarted = true');
+    expect(guard).toBeGreaterThan(-1);
+    expect(runStarted).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(runStarted);
+  });
 });
 
 describe('unified execution entry — agent defaults and settings', () => {

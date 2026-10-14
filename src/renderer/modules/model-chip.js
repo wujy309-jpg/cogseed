@@ -31,6 +31,17 @@ let _modelChipBound = false;
 // reasoning capability). Unknown ids fall back to the name heuristic.
 const _modelReasoningByProvider = new Map();
 
+// provider → { [modelId]: string[] }：模型**声明**的思考档位（宿主可表达的子集
+// auto 之外的 off|low|high）。列表菜单只暴露这里面的档位——模型没声明就只给
+// Auto（Option C：按模型可支持的来）。来源与后端校验同一份标注
+// （auth.listModels 的 reasoningLevels），菜单与门不可能各说一套。
+const _modelEffortLevelsByProvider = new Map();
+
+// `${provider}\u0000${model}` → 'off'|'low'|'high'：用户为**这个模型**持久化的
+// 档位选择。切模型时按新模型查表，没有记录就是 Auto——这正是「切模型回落
+// Auto」的实现，不靠额外的清理步骤。
+const _persistedModelEffort = new Map();
+
 // provider → models[]（auth.listModels 原样结果）：一级菜单悬停 provider 时
 // 立刻弹二级模型清单用它，与能力表来自同一次请求（同一数据源，不重复拉）。
 const _modelListByProvider = new Map();
@@ -54,10 +65,14 @@ async function _prefetchReasoningForEntries(force = false) {
       const res = await window.cogseed.invoke('auth.listModels', { provider });
       if (!(res && res.ok && Array.isArray(res.models))) continue;
       const table = {};
+      const levelsTable = {};
       for (const m of res.models) {
         if (m && typeof m === 'object' && typeof m.reasoning === 'boolean') table[String(m.id)] = m.reasoning;
+        const levels = _declaredLevelsOf(m);
+        if (levels) levelsTable[String(m?.id || '')] = levels;
       }
       _modelReasoningByProvider.set(String(provider), table);
+      _modelEffortLevelsByProvider.set(String(provider), levelsTable);
       _modelListByProvider.set(String(provider), res.models);
       changed = true;
     } catch { /* 下次打开菜单重试 */ }
@@ -100,6 +115,70 @@ function _configuredLevelsFor(provider, model) {
   return Array.isArray(levels) ? levels : [];
 }
 
+/** 主进程 auth.listModels 对单个模型的声明档位标注（缺席 = 没声明）。只认宿主
+ *  可表达的三档，顺序固定 off→low→high，避免菜单顺序漂移。 */
+function _declaredLevelsOf(model) {
+  const raw = model && Array.isArray(model.reasoningLevels) ? model.reasoningLevels : null;
+  if (!raw) return null;
+  const declared = new Set(raw.map((level) => String(level || '').trim().toLowerCase()));
+  const levels = ['off', 'low', 'high'].filter((level) => declared.has(level));
+  return levels.length ? levels : null;
+}
+
+/** 模型声明的档位；undefined = 查不到（与"声明为空"区分：查不到不改变旧行为，
+ *  声明为空只给 Auto）。 */
+function _modelEffortLevels(provider, model) {
+  const table = _modelEffortLevelsByProvider.get(String(provider || ''));
+  const levels = table ? table[String(model || '')] : undefined;
+  return Array.isArray(levels) && levels.length ? levels : undefined;
+}
+
+/** 菜单要渲染的档位清单：Auto 永远在，其余只列模型声明支持的（Option C）。 */
+function _modelEffortOptionsFor(provider, model) {
+  const levels = _modelEffortLevels(provider, model);
+  return levels ? ['auto', ...levels] : ['auto'];
+}
+
+function _persistedEffortKey(provider, model) {
+  const p = String(provider || '').trim();
+  const m = String(model || '').trim();
+  return p && m ? `${p}\u0000${m}` : '';
+}
+
+function _persistedEffortFor(provider, model) {
+  const key = _persistedEffortKey(provider, model);
+  return key ? (_persistedModelEffort.get(key) || '') : '';
+}
+
+/** 预取用户为各模型持久化的档位（cloud config）。失败静默——记忆是增强信息，
+ *  缺了退回 Auto，不影响选择本身。 */
+async function refreshModelChipModelEffort() {
+  try {
+    const res = await window.cogseed.invoke('prefs.getModelThinkingLevels');
+    const levels = res && res.levels && typeof res.levels === 'object' ? res.levels : {};
+    _persistedModelEffort.clear();
+    for (const [key, level] of Object.entries(levels)) {
+      if (level === 'off' || level === 'low' || level === 'high') _persistedModelEffort.set(String(key), level);
+    }
+  } catch (err) {
+    _modelChipLog.warn('model thinking levels refresh failed', { error: (err && err.message) || String(err) });
+  }
+}
+
+/** 把用户为某个模型选的档位写回该模型的设置（auto = 清除记录）。 */
+function _persistModelEffort(provider, model, level) {
+  const key = _persistedEffortKey(provider, model);
+  if (!key) return;
+  const next = level === 'off' || level === 'low' || level === 'high' ? level : '';
+  if (next) _persistedModelEffort.set(key, next);
+  else _persistedModelEffort.delete(key);
+  try {
+    window.cogseed.invoke('prefs.setModelThinkingLevel', {
+      provider, model, level: next || 'auto',
+    }).catch(() => { /* 落盘失败不回滚界面：下次打开会重新读盘 */ });
+  } catch { /* ignore */ }
+}
+
 /** 某个 provider 的模型清单：命中缓存直接返回，否则拉一次并入表（能力表
  *  同步填充——二级/三级与顶层菜单共用同一份标注）。 */
 async function _loadProviderModels(provider) {
@@ -110,10 +189,14 @@ async function _loadProviderModels(provider) {
     const res = await window.cogseed.invoke('auth.listModels', { provider: key });
     if (!(res && res.ok && Array.isArray(res.models))) return [];
     const table = {};
+    const levelsTable = {};
     for (const m of res.models) {
       if (m && typeof m === 'object' && typeof m.reasoning === 'boolean') table[String(m.id)] = m.reasoning;
+      const levels = _declaredLevelsOf(m);
+      if (levels) levelsTable[String(m?.id || '')] = levels;
     }
     _modelReasoningByProvider.set(key, table);
+    _modelEffortLevelsByProvider.set(key, levelsTable);
     _modelListByProvider.set(key, res.models);
     return res.models;
   } catch (err) {
@@ -153,6 +236,8 @@ async function refreshModelChipEntries() {
       _modelChipEntries = res.entries;
       _modelChipRenderAll();
       void _prefetchReasoningForEntries();
+      // Option C：各模型持久化的档位选择与条目一起预取（切模型回落 Auto 靠它）。
+      void refreshModelChipModelEffort();
     }
   } catch (err) {
     _modelChipLog.warn('model entries refresh failed', { error: (err && err.message) || String(err) });
@@ -716,8 +801,9 @@ function _renderMemberSourceBody(container, target, group, opts) {
           },
           // 外接来源支持模型下发时同样要有竖排思考强度（FR-010/FR-013）：
           // 之前在模型清单之后直接 return，菜单底部没有强度入口（MA-05）。
+          // 档位由网关协商（effortControllableFor），不套用 API 模型的目录声明。
           afterRender: () => _renderMemberEffortRows(host, target, group, conf, {
-            supported: ctl ? ctl.effortControllableFor(cli) : false,
+            levels: ['auto', 'off', 'low', 'high'],
             rerender,
           }),
         },
@@ -807,10 +893,14 @@ function _renderMemberSourceBody(container, target, group, opts) {
     note.textContent = t('model_chip.loading_models');
     host.appendChild(note);
   }
+  // Option C（按模型声明的档位）只约束**内进程 API 模型**。外接 CLI 的强度由
+  // 网关协商（effortControllableFor / --effort 模板）决定，不是模型目录声明，
+  // 因此保持既有四档。
+  const external = !!(group && group.external);
   _renderMemberEffortRows(host, target, group, conf, {
-    supported: (conf.provider && conf.model)
-      ? _modelReasoningCapability(conf.provider, conf.model)
-      : true,
+    levels: external ? ['auto', 'off', 'low', 'high'] : _modelEffortOptionsFor(conf.provider, conf.model),
+    // 声明为空时给一句说明；查不到声明不解释（沿用旧行为）。
+    undeclared: !external && !!(conf.provider && conf.model) && !_modelEffortLevels(conf.provider, conf.model),
     rerender: () => _renderMemberSourceBody(container, target, group, opts),
   });
 }
@@ -821,26 +911,20 @@ function _renderMemberEffortRows(container, target, group, conf, opts) {
   section.className = 'model-chip-menu-section';
   section.textContent = t('model_effort.menu_title');
   container.appendChild(section);
-  _EFFORT_OPTIONS.forEach((level) => {
-    const unavailable = (level === 'low' || level === 'high') && opts.supported === false;
+  const options = Array.isArray(opts.levels) && opts.levels.length ? opts.levels : ['auto'];
+  options.forEach((level) => {
     const active = (conf.effort || 'auto') === level;
     const item = document.createElement('div');
-    item.className = 'model-chip-menu-item'
-      + (active ? ' is-default' : '')
-      + (unavailable ? ' is-disabled' : '');
-    item.tabIndex = unavailable ? -1 : 0;
+    item.className = 'model-chip-menu-item' + (active ? ' is-default' : '');
+    item.tabIndex = 0;
     item.setAttribute('aria-pressed', active ? 'true' : 'false');
     item.dataset.memberEffort = level;
     item.innerHTML = '<span class="model-chip-menu-main">'
       + `<span class="model-chip-menu-name">${escapeHtml(t('model_effort.' + level))}</span></span>`
       + (active ? `<span class="model-chip-menu-default">${escapeHtml(t('exec_config.current_badge'))}</span>` : '');
-    if (unavailable) {
-      item.title = t('model_effort.unsupported_title');
-      container.appendChild(item);
-      return;
-    }
     const apply = () => {
       _memberSourceWrite(target, group.id, { effort: level === 'auto' ? '' : level });
+      _persistModelEffort(conf.provider, conf.model, level);
       // 强度点选保持当前层打开并显示选中态（FR-010）。
       if (typeof opts.rerender === 'function') opts.rerender();
     };
@@ -850,6 +934,12 @@ function _renderMemberEffortRows(container, target, group, conf, opts) {
     });
     container.appendChild(item);
   });
+  if (opts.undeclared) {
+    const note = document.createElement('div');
+    note.className = 'model-chip-menu-note';
+    note.textContent = t('model_effort.unsupported_hint');
+    container.appendChild(note);
+  }
 }
 
 function _clampMenuLeft(preferredLeft, menuWidth) {
@@ -1074,6 +1164,10 @@ function _clearModelOverride(target) {
 
 function _setTaskEffort(target, level) {
   try {
+    const cfg = (typeof _effectiveExecConfig === 'function') ? _effectiveExecConfig(target) : null;
+    // Option C：档位属于它被选中的那个模型——写进该模型的设置，切到别的模型
+    // 自然回到 Auto（查不到记录）。
+    if (cfg && cfg.provider && cfg.model) _persistModelEffort(cfg.provider, cfg.model, level);
     if (typeof setExecOverride !== 'function') return;
     if (level === 'auto') {
       // Drop only the effort part of the override; keep a model pair if set.
@@ -1429,24 +1523,18 @@ function _openLevelsFlyout(target, cfg, entry, modelId, modelLabel, rowEl, pin) 
   const flyout = _ensureFlyout('levels');
   flyout.innerHTML = '';
   _flyoutHeader(flyout, t('model_effort.menu_title'), modelLabel || modelId);
-  const supported = _modelReasoningCapability(entry.provider, modelId);
+  const declared = _modelEffortLevels(entry.provider, modelId);
   const isCurrentModel = cfg.provider === entry.provider && cfg.model === modelId;
   const activeEffort = isCurrentModel ? (cfg.effort || 'auto') : '';
-  _EFFORT_OPTIONS.forEach((level) => {
-    const unavailable = (level === 'low' || level === 'high') && !supported;
+  const options = declared ? ['auto', ...declared] : ['auto'];
+  options.forEach((level) => {
     const item = document.createElement('div');
-    item.className = 'model-chip-menu-item'
-      + (activeEffort === level ? ' is-default' : '')
-      + (unavailable ? ' is-disabled' : '');
-    item.tabIndex = unavailable ? -1 : 0;
+    item.className = 'model-chip-menu-item' + (activeEffort === level ? ' is-default' : '');
+    item.tabIndex = 0;
     item.innerHTML = `<span class="model-chip-menu-main"><span class="model-chip-menu-name">${escapeHtml(t('model_effort.' + level))}</span></span>`
       + (activeEffort === level
         ? `<span class="model-chip-menu-default">${escapeHtml(t('exec_config.current_badge'))}</span>`
         : '');
-    if (unavailable) {
-      item.title = t('model_effort.unsupported_title');
-      return flyout.appendChild(item);
-    }
     const pick = () => {
       // 对非当前模型选档位 = 「用这个模型跑这个强度」：先落模型，再落强度。
       if (!isCurrentModel) _applyModelPick(target, cfg, entry.provider, modelId, modelLabel, entry.providerLabel);
@@ -1466,7 +1554,7 @@ function _openLevelsFlyout(target, cfg, entry, modelId, modelLabel, rowEl, pin) 
     note.textContent = t('exec_config.model_levels_configured', { levels: levels.join(' · ') });
     flyout.appendChild(note);
   }
-  if (!supported) {
+  if (!declared) {
     const note = document.createElement('div');
     note.className = 'model-chip-menu-note';
     note.textContent = t('model_effort.unsupported_hint');
@@ -1479,6 +1567,9 @@ function _openLevelsFlyout(target, cfg, entry, modelId, modelLabel, rowEl, pin) 
  *  execution target), task override everywhere else. */
 function _applyModelPick(target, cfg, provider, model, modelLabel, providerLabel) {
   try {
+    // Option C：换模型不继承上一个模型的档位。新模型有持久化选择就用它，
+    // 没有就清掉 override 的 effort → 回落 Auto。
+    const restored = _persistedEffortFor(provider, model);
     const recipient = (typeof getChatRecipient === 'function') ? getChatRecipient(target) : null;
     if (recipient && recipient.kind === 'model') {
       if (typeof setChatRecipient === 'function') {
@@ -1488,13 +1579,15 @@ function _applyModelPick(target, cfg, provider, model, modelLabel, providerLabel
           providerLabel: providerLabel || provider,
         });
       }
-    } else if (typeof setExecOverride === 'function') {
+    }
+    if (typeof setExecOverride === 'function') {
       const ov = getExecOverride(target) || {};
-      setExecOverride(target, {
-        ...ov,
-        provider, model,
-        modelLabel: modelLabel || model,
-      });
+      const next = (recipient && recipient.kind === 'model')
+        ? { ...ov }
+        : { ...ov, provider, model, modelLabel: modelLabel || model };
+      if (restored) next.effort = restored;
+      else delete next.effort;
+      setExecOverride(target, Object.keys(next).length ? next : null);
     }
     _modelChipRenderAll();
   } catch (err) {
