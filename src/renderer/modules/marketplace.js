@@ -1611,15 +1611,6 @@ function _mpCardHtml(item, lang) {
   const hubDisabled = kind === 'skill' && HubContentStatus.isHubContentDisabled(item);
   const statusLabel = hubDisabled ? t('marketplace.state_disabled') : '';
   const versionLabel = t('marketplace.version').replace('{version}', String(item.version || ''));
-  // specs/010 FR-067：目录页卡片状态「有更新」——本机**实际版本**（`skills.list` 的 version，
-  // 经主进程 `installed-version.ts` 单一入口判定）低于目录版本时出现。呈现由客户端自定，
-  // 这里是一枚 chip；按钮文案仍是既有的「更新」。只挂 Skill tab（FR-070：Agents tab 不动）。
-  const updateChip = kind === 'skill' && !hubDisabled && status.updateAvailable
-    ? `<span class="marketplace-card-chip is-update" data-mp-state="update-available">${escapeHtml(t('marketplace.state_update_available'))}</span>`
-    : '';
-  const avatar = kind === 'agent'
-    ? renderAvatarHtml(item.icon, item.color, { size: 32, seed: item.id, extraClass: 'marketplace-card-avatar' })
-    : '';
   // C5/N-06：被版本门跳过（主进程显式附 appUpdateRequired）的条目显示本地化「需更新客户端」
   // 状态；兼容条目没有该字段，因此不挂这个状态。Hub 停用优先——已停用的内容本身不可用，
   // 不再叠加第二条状态（与既有的「有更新」chip 同一取舍）。
@@ -1630,6 +1621,16 @@ function _mpCardHtml(item, lang) {
       tone: 'attention',
       attrs: { 'data-mp-state': 'app-update-required' },
     })
+    : '';
+  // specs/010 FR-067：目录页卡片状态「有更新」——本机**实际版本**（`skills.list` 的 version，
+  // 经主进程 `installed-version.ts` 单一入口判定）低于目录版本时出现。呈现由客户端自定，
+  // 这里是一枚 chip；按钮文案仍是既有的「更新」。只挂 Skill tab（FR-070：Agents tab 不动）。
+  // 「需更新客户端」时不再叠「有更新」：客户端升不上去，那个更新拿不到，两枚并列只会互相削弱。
+  const updateChip = kind === 'skill' && !hubDisabled && !appUpdateRequired && status.updateAvailable
+    ? `<span class="marketplace-card-chip is-update" data-mp-state="update-available">${escapeHtml(t('marketplace.state_update_available'))}</span>`
+    : '';
+  const avatar = kind === 'agent'
+    ? renderAvatarHtml(item.icon, item.color, { size: 32, seed: item.id, extraClass: 'marketplace-card-avatar' })
     : '';
   const appCompatible = !appUpdateRequired
     && (status.installed || status.updateAvailable || _mpItemAppCompatible(item));

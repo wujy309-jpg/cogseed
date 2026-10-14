@@ -99,13 +99,23 @@ describe('unified execution entry — task-scoped exec-config chip', () => {
 
   it('resolves the effective config with the same priority as the main process', () => {
     const chip = read('src/renderer/modules/model-chip.js');
-    // task override > agent default > global — mirrored from bus.ts.
+    // task override > agent default > per-model persisted (Option C) > global.
     expect(chip).toMatch(/override\.provider && override\.model[\s\S]*?agentDefaultModel[\s\S]*?defaultEntry/);
-    expect(chip).toMatch(/override\.effort \|\| agentDefaultEffort \|\| _modelChipGlobalEffort/);
+    expect(chip).toMatch(/override\.effort \|\| agentDefaultEffort \|\| persistedEffort \|\| _modelChipGlobalEffort/);
     // CLI agents surface the CLI badge instead of an effort value.
     expect(chip).toContain("t('exec_config.cli_badge')");
     // Unsupported models disable the effort options with the reason shown.
     expect(chip).toMatch(/model_effort\.unsupported_hint/);
+  });
+
+  it('Option C：该模型持久化的档位在发送侧也生效（新会话不必先重选模型）', () => {
+    const chip = read('src/renderer/modules/model-chip.js');
+    const conv = read('src/renderer/modules/conversation.js');
+    expect(chip).toContain('window.getPersistedModelEffort = _persistedEffortForTarget');
+    expect(conv).toMatch(/window\.getPersistedModelEffort/);
+    expect(conv).toMatch(/const effectiveEffort = ov\.effort \|\| persistedEffort/);
+    // 外接 CLI 的强度仍只按网关协商，不读模型设置。
+    expect(conv).toMatch(/if \(effectiveEffort && \(!isCliAgentRecipient \|\| cliExec\)\)/);
   });
 
   it('re-renders the anchor chip at menu-open so chip and menu can never disagree', () => {

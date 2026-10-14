@@ -30,6 +30,17 @@ describe('validateReasoningEffort（后端调用前的安全门）', () => {
       .toEqual({ ok: true });
   });
 
+  it('⚠️ off 永远放行：它的语义是「不发参数」，不是「发 off 给 provider」', () => {
+    // 110+ 个 pi 目录模型把 off 标成 null（不能关闭推理）。若这里拒绝，全局
+    // 「关闭思考」偏好会让这些模型的每个回合都以 model_preflight 失败。
+    expect(validateReasoningEffort({ model: 'model-a', supported: ['low', 'high'], requested: 'off' }))
+      .toEqual({ ok: true });
+    expect(validateReasoningEffort({ model: 'model-a', supported: [], requested: 'off' }))
+      .toEqual({ ok: true });
+    expect(validateReasoningEffort({ model: 'model-a', requested: 'off' }))
+      .toEqual({ ok: true });
+  });
+
   it('宿主表达不了的取值（如 pi 的 xhigh）一律拒绝，不就近降级', () => {
     expect(validateReasoningEffort({ requested: 'xhigh' })).toEqual({ ok: false, code: 'model_preflight' });
     expect(validateReasoningEffort({ requested: 'medium' })).toEqual({ ok: false, code: 'model_preflight' });

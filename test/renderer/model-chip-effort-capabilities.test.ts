@@ -156,3 +156,34 @@ describe('exec-config chip — 选择持久化到该模型设置', () => {
     expect(overrides[0].effort).toBe('high');
   });
 });
+
+describe('exec-config chip — 持久化档位进入有效配置与发送侧', () => {
+  it('⭐ 优先级：任务级覆盖 > 该模型持久化 > 全局偏好', async () => {
+    const ctx = loadModelChip();
+    ctx.__invokeResult = () => ({ levels: { 'cp:a\u0000m1': 'high' } });
+    await ctx.refreshModelChipModelEffort();
+    ctx.getChatRecipient = () => ({ kind: 'model', provider: 'cp:a', model: 'm1' });
+    vm.runInContext("_modelChipGlobalEffort = 'low'", ctx);
+
+    ctx.getExecOverride = () => null;
+    expect(ctx._effectiveExecConfig('conversation').effort).toBe('high');
+
+    ctx.getExecOverride = () => ({ effort: 'off' });
+    expect(ctx._effectiveExecConfig('conversation').effort).toBe('off');
+
+    // 没有持久化记录的模型仍回落到全局偏好。
+    ctx.getChatRecipient = () => ({ kind: 'model', provider: 'cp:a', model: 'other' });
+    ctx.getExecOverride = () => null;
+    expect(ctx._effectiveExecConfig('conversation').effort).toBe('low');
+  });
+
+  it('发送侧读的就是这个模型的持久化档位（不含全局偏好）', async () => {
+    const ctx = loadModelChip();
+    ctx.__invokeResult = () => ({ levels: { 'cp:a\u0000m1': 'high' } });
+    await ctx.refreshModelChipModelEffort();
+    ctx.getChatRecipient = () => ({ kind: 'model', provider: 'cp:a', model: 'm1' });
+    vm.runInContext("_modelChipGlobalEffort = 'low'", ctx);
+
+    expect(ctx._persistedEffortForTarget('conversation')).toBe('high');
+  });
+});

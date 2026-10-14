@@ -80,6 +80,13 @@ export function declaredReasoningLevelsFromCustomDeclarations(
  * to be authoritative; `null`/`undefined` means "no declaration available", and that is
  * not a licence to refuse (the send-time capability gate already covers a model with no
  * reasoning at all).
+ *
+ * `'off'` is always allowed, and deliberately so: in this codebase it means "omit the
+ * reasoning parameter" (`pi-provider::effectiveReasoning` maps it to `undefined`), never
+ * "send the value `off`". A model that marks `off: null` in `thinkingLevelMap` therefore
+ * still *runs* under `off` — it just keeps its provider default. Refusing it would turn a
+ * benign no-op into a hard `model_preflight` turn failure, which is exactly what would
+ * happen to the global "off" preference on the 110+ catalog models that mark it null.
  */
 export function validateReasoningEffort(input: {
   model?: string;
@@ -90,6 +97,7 @@ export function validateReasoningEffort(input: {
   if (requested === undefined || requested === null || requested === '' || requested === 'auto') {
     return { ok: true };
   }
+  if (requested === 'off') return { ok: true };
   if (!isHostReasoningLevel(requested)) {
     return { ok: false, code: 'model_preflight' };
   }

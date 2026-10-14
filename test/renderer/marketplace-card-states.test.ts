@@ -403,6 +403,19 @@ describe('Phase 12 目录页卡片状态与本地过滤', () => {
       expect(html).not.toContain('需 CogSeed +');
     });
 
+    it('⚠️ 同一张卡片不同时挂「有更新」：客户端升不上去，那个更新拿不到', () => {
+      const ctx = loadMarketplaceRenderer();
+      setState(ctx, {
+        installedSkillIds: new Set([SKILL.id]),
+        installedSkillMeta: new Map([[SKILL.id, { id: SKILL.id, version: '1.0.0' }]]),
+      });
+
+      const html = ctx._mpCardHtml(ANNOTATED, 'zh');
+
+      expect(html).toContain('app-update-required');
+      expect(html).not.toContain('update-available');
+    });
+
     it('⚠️ 本地版本判不出（appVersion 缺席）也不会把兼容条目误标成需更新', () => {
       const ctx = loadMarketplaceRenderer();
       setState(ctx, { appVersion: '' });

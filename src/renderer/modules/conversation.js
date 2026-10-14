@@ -1624,11 +1624,18 @@ function setExecOverride(target, patch) {
 function _executionConfigForSend(target, snapshot) {
   const snap = snapshot || _activeRecipient(target);
   const ov = _activeExecOverride(target) || {};
+  // Option C：该模型持久化的档位是比全局偏好更具体的一层。发送侧只在没有任务级
+  // 覆盖时用它，且**不**把全局偏好写进 execution_config（否则全局会盖过 agent
+  // 默认）。外接 CLI 来源读不到（模型设置不适用于 CLI 协商的强度）。
+  const persistedEffort = (typeof window !== 'undefined' && typeof window.getPersistedModelEffort === 'function')
+    ? (window.getPersistedModelEffort(target) || '')
+    : '';
+  const effectiveEffort = ov.effort || persistedEffort;
   if (snap && snap.kind === 'model' && snap.provider && snap.model) {
     return {
       provider: snap.provider,
       model: snap.model,
-      ...(ov.effort ? { effort: ov.effort } : {}),
+      ...(effectiveEffort ? { effort: effectiveEffort } : {}),
     };
   }
   const cfg = {};
@@ -1651,7 +1658,7 @@ function _executionConfigForSend(target, snapshot) {
   // effort：CLI 智能体按网关协商（effort_controllable，自建智能体经
   // P3394_AGENT_EFFORT_ARGS 声明即 true）下发；未协商走兜底表（未知 CLI
   // 乐观放开）。网关无模板时信封字段安全忽略——与 model 同一模式。
-  if (ov.effort && (!isCliAgentRecipient || cliExec)) cfg.effort = ov.effort;
+  if (effectiveEffort && (!isCliAgentRecipient || cliExec)) cfg.effort = effectiveEffort;
   return Object.keys(cfg).length ? cfg : undefined;
 }
 // The conversation "floor": server-authoritative `StateFile.active_recipient`,

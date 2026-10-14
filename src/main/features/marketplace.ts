@@ -2086,6 +2086,18 @@ export function listAppIncompatibleSkips(): AppIncompatibleSkip[] {
   return [..._appIncompatibleSkips];
 }
 
+/** 撤销一条旧标记：同一 id+kind 上一轮因版本不足被跳过、这一轮已经兼容时调用。
+ *  没有它，内容端下调 `min_app_version` 后卡片会永远停在「需更新客户端」——
+ *  标记是进程内累积的，只有显式撤销才会消失。 */
+export function clearAppIncompatibleSkip(row: { id?: string }, kind: 'agent' | 'skill'): void {
+  const id = String(row?.id || '').trim();
+  if (!id) return;
+  for (let i = _appIncompatibleSkips.length - 1; i >= 0; i -= 1) {
+    const item = _appIncompatibleSkips[i];
+    if (item.id === id && item.kind === kind) _appIncompatibleSkips.splice(i, 1);
+  }
+}
+
 /** 清空收集（版本满足后或新一轮扫描前调用，避免陈旧状态留在界面上）。 */
 export function clearAppIncompatibleSkips(): void {
   _appIncompatibleSkips.length = 0;

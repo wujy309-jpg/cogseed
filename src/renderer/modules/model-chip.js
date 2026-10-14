@@ -345,15 +345,17 @@ function _effectiveExecConfig(target) {
   }
 
   // API-connection model recipient: the pick IS the execution target; only
-  // effort can be overridden on top.
+  // effort can be overridden on top. Option C：该模型持久化的档位（用户为这个
+  // 模型选过）排在任务级覆盖之后、全局偏好之前——单模型的选择比全局偏好更具体。
   if (recipient.kind === 'model' && recipient.provider && recipient.model) {
+    const persistedEffort = _persistedEffortFor(recipient.provider, recipient.model);
     return {
       mode: 'api',
       model: recipient.model,
       modelLabel: recipient.name || recipient.model,
       provider: recipient.provider,
       providerLabel: recipient.providerLabel || recipient.provider,
-      effort: override.effort || _modelChipGlobalEffort,
+      effort: override.effort || persistedEffort || _modelChipGlobalEffort,
       effortOverridden: !!override.effort,
       modelOverridden: false,
       reasoning: _modelReasoningCapability(recipient.provider, recipient.model),
@@ -371,7 +373,9 @@ function _effectiveExecConfig(target) {
         ? { provider: defaultEntry.provider, model: defaultEntry.model, label: defaultEntry.modelName || defaultEntry.model }
         : null;
   const agentDefaultEffort = (agent && agent.default_thinking) ? agent.default_thinking : null;
-  const effort = override.effort || agentDefaultEffort || _modelChipGlobalEffort;
+  // Option C：任务级覆盖 > agent 默认 > **该模型持久化的档位** > 全局偏好。
+  const persistedEffort = modelChoice ? _persistedEffortFor(modelChoice.provider, modelChoice.model) : '';
+  const effort = override.effort || agentDefaultEffort || persistedEffort || _modelChipGlobalEffort;
   return {
     mode: 'api',
     model: modelChoice ? modelChoice.model : '',
@@ -386,6 +390,20 @@ function _effectiveExecConfig(target) {
     reasoning: modelChoice ? _modelReasoningCapability(modelChoice.provider, modelChoice.model) : true,
     agent,
   };
+}
+
+/** Option C：该 target 当前有效 API 模型上**持久化**的档位（没有则空串）。
+ *  只回"该模型设置"里的值，**不含**全局偏好——发送侧要把它当作比全局更具体的
+ *  一层，而不是把全局偏好写死进 execution_config（那会让全局盖过 agent 默认）。
+ *  外接 CLI 来源恒为空串：它的强度由网关协商，不走模型设置。 */
+function _persistedEffortForTarget(target) {
+  try {
+    const cfg = _effectiveExecConfig(target);
+    if (!cfg || cfg.mode !== 'api' || !cfg.provider || !cfg.model) return '';
+    return _persistedEffortFor(cfg.provider, cfg.model);
+  } catch {
+    return '';
+  }
 }
 
 // ─── Chip DOM ─────────────────────────────────────────────────────────────
@@ -803,7 +821,7 @@ function _renderMemberSourceBody(container, target, group, opts) {
           // 之前在模型清单之后直接 return，菜单底部没有强度入口（MA-05）。
           // 档位由网关协商（effortControllableFor），不套用 API 模型的目录声明。
           afterRender: () => _renderMemberEffortRows(host, target, group, conf, {
-            levels: ['auto', 'off', 'low', 'high'],
+            ..._cliMemberEffortOptions(cli),
             rerender,
           }),
         },
@@ -845,7 +863,7 @@ function _renderMemberSourceBody(container, target, group, opts) {
       }
     }
     _renderMemberEffortRows(host, target, group, conf, {
-      supported: modelSupported && (ctl ? ctl.effortControllableFor(cli) : false),
+      ..._cliMemberEffortOptions(cli),
       rerender,
     });
     return;
@@ -895,33 +913,59 @@ function _renderMemberSourceBody(container, target, group, opts) {
   }
   // Option C（按模型声明的档位）只约束**内进程 API 模型**。外接 CLI 的强度由
   // 网关协商（effortControllableFor / --effort 模板）决定，不是模型目录声明，
-  // 因此保持既有四档。
+  // 因此保持既有四档与既有置灰语义。
   const external = !!(group && group.external);
   _renderMemberEffortRows(host, target, group, conf, {
-    levels: external ? ['auto', 'off', 'low', 'high'] : _modelEffortOptionsFor(conf.provider, conf.model),
+    ...(external
+      ? _cliMemberEffortOptions((_memberAgentRecord(group.id)?.runtime || {}).cli || '')
+      : { levels: _modelEffortOptionsFor(conf.provider, conf.model) }),
     // 声明为空时给一句说明；查不到声明不解释（沿用旧行为）。
     undeclared: !external && !!(conf.provider && conf.model) && !_modelEffortLevels(conf.provider, conf.model),
     rerender: () => _renderMemberSourceBody(container, target, group, opts),
   });
 }
 
-/** 竖排思考强度：每项一行，点选保持当前层打开（FR-010）。 */
+/** 外接来源的强度档位由网关协商，不是模型目录声明：`low`/`high` 需要
+ *  `effortControllableFor`，否则置灰并给出原因（FR-013，不放假开关）。`off`
+ *  沿用外接来源的既有行为（模型段里始终可见）。 */
+function _cliMemberEffortOptions(cli) {
+  const ctl = (typeof window !== 'undefined' && window.cliExecControl) ? window.cliExecControl : null;
+  const effortSupported = ctl ? ctl.effortControllableFor(cli) : false;
+  return {
+    levels: _EFFORT_OPTIONS,
+    unavailable: (level) => (level === 'low' || level === 'high') && !effortSupported,
+  };
+}
+
+/** 竖排思考强度：每项一行，点选保持当前层打开（FR-010）。
+ *  `levels` 决定**渲染哪些**档位（Option C：API 模型只列声明的）；
+ *  `unavailable(level)` 决定哪些渲染出来但置灰（外接 CLI 的既有 FR-013 语义：
+ *  网关没有强度通道时不放假开关）。 */
 function _renderMemberEffortRows(container, target, group, conf, opts) {
   const section = document.createElement('div');
   section.className = 'model-chip-menu-section';
   section.textContent = t('model_effort.menu_title');
   container.appendChild(section);
-  const options = Array.isArray(opts.levels) && opts.levels.length ? opts.levels : ['auto'];
+  const options = Array.isArray(opts.levels) && opts.levels.length ? opts.levels : _EFFORT_OPTIONS;
+  const unavailableFor = typeof opts.unavailable === 'function' ? opts.unavailable : () => false;
   options.forEach((level) => {
+    const unavailable = unavailableFor(level) === true;
     const active = (conf.effort || 'auto') === level;
     const item = document.createElement('div');
-    item.className = 'model-chip-menu-item' + (active ? ' is-default' : '');
-    item.tabIndex = 0;
+    item.className = 'model-chip-menu-item'
+      + (active ? ' is-default' : '')
+      + (unavailable ? ' is-disabled' : '');
+    item.tabIndex = unavailable ? -1 : 0;
     item.setAttribute('aria-pressed', active ? 'true' : 'false');
     item.dataset.memberEffort = level;
     item.innerHTML = '<span class="model-chip-menu-main">'
       + `<span class="model-chip-menu-name">${escapeHtml(t('model_effort.' + level))}</span></span>`
       + (active ? `<span class="model-chip-menu-default">${escapeHtml(t('exec_config.current_badge'))}</span>` : '');
+    if (unavailable) {
+      item.title = t('model_effort.unsupported_title');
+      container.appendChild(item);
+      return;
+    }
     const apply = () => {
       _memberSourceWrite(target, group.id, { effort: level === 'auto' ? '' : level });
       _persistModelEffort(conf.provider, conf.model, level);
@@ -1876,6 +1920,9 @@ function initModelChip() {
 window.initModelChip = initModelChip;
 window.refreshExecConfigChip = _modelChipRenderAll;
 window.getModelChipEntries = getModelChipEntries;
+// 发送侧（conversation.js::_executionConfigForSend）要读"该模型持久化的档位"，
+// 才能让用户为某模型选过的强度在新会话里也生效（Option C 的持久化语义）。
+window.getPersistedModelEffort = _persistedEffortForTarget;
 // 顶层拖拽区等外部表面需要在视口/视图变化时收起悬浮菜单（boot.js 防御性
 // 调用；top-drag-regions 契约测试钉住此导出）。
 window.closeModelChipMenu = _closeModelMenu;

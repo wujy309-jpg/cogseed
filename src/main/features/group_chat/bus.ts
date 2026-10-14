@@ -22,6 +22,7 @@
 
 import type { AgentTool, HistoryResource } from "#core-agent";
 import type { ChatResolvedRuntime, CognitionSaveReceipt } from "../../model/client";
+import { validateReasoningEffort } from "../../model/reasoning_effort";
 
 import { createLogger } from "../../logger";
 import { logErrorRef, logPathRef, maskId } from "../../util/log-redact";
@@ -7023,11 +7024,13 @@ async function runActorTurnBody(
             : undefined;
       // Option C preflight：显式档位要先对得上有效模型声明的档位。解析出声明
       // 才传下去（client.ts 在 provider 调用前拒绝并落 model_preflight）；
-      // 解析不出 = 不校验，行为与之前完全一致。
+      // 解析不出 = 不校验，行为与之前完全一致。预警同样走共用判定，避免
+      // 「日志说会拒绝、client 却放行」（例如 off 是"不发参数"，永远放行）。
       const supportedReasoningLevels = explicitThinkingLevel !== "auto"
         ? await _declaredReasoningLevelsFor(uid, turnModelOverride)
         : undefined;
-      if (supportedReasoningLevels && !supportedReasoningLevels.includes(explicitThinkingLevel)) {
+      if (supportedReasoningLevels
+        && !validateReasoningEffort({ supported: supportedReasoningLevels, requested: explicitThinkingLevel }).ok) {
         log.warn("explicit thinking level not declared by the effective model", {
           uid, cid, actor_id: actor.id, requested: explicitThinkingLevel,
           supported: supportedReasoningLevels,

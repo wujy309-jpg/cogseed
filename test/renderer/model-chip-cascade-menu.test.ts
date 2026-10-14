@@ -548,4 +548,47 @@ describe('member source menu effort rows (MA-05)', () => {
     walk(container);
     expect(effortRows.map((row) => row.dataset.memberEffort)).toEqual(['auto', 'off', 'low', 'high']);
   });
+
+  it('⚠️ 网关没有强度通道时低/高置灰（不放假开关），但四档仍在清单里', async () => {
+    const h = buildHarness();
+    h.windowObj.cliExecControl = {
+      cachedCliModels: () => ({ models: [{ id: 'gpt-6-astra', name: 'gpt-6-astra' }] }),
+      mergedCliModels: (_cli: string, scan: any) => (scan && scan.models) || [],
+      modelControllableFor: () => true,
+      // 该 CLI 没有 effort 通道：模型可控但强度不可控。
+      effortControllableFor: () => false,
+      loadCliModels: async () => ({ models: [{ id: 'gpt-6-astra', name: 'gpt-6-astra' }] }),
+      scanInFlight: () => false,
+      execControlFor: () => ({ effortOff: false }),
+    };
+    h.context._agentsCache = [
+      { agent_id: 'agent-codex', name: 'Codex', runtime: { kind: 'cli', cli: 'codex' } },
+    ];
+    h.windowObj.composerMembers = {
+      getSourceConfig: () => ({}),
+      setSourceConfig: () => {},
+      isMember: () => true,
+    };
+    h.context._memberSourceWrite = () => {};
+
+    const container = h.context.document.createElement('div');
+    h.context.document.body.appendChild(container);
+    vm.runInContext(
+      '_renderMemberSourceBody(__container, "conversation", { id: "agent-codex", external: true }, {})',
+      Object.assign(h.context, { __container: container }),
+    );
+    await sleep(50);
+
+    const effortRows: FakeElement[] = [];
+    const walk = (el: FakeElement) => {
+      for (const child of el.children) {
+        if (child.dataset.memberEffort) effortRows.push(child);
+        walk(child);
+      }
+    };
+    walk(container);
+    expect(effortRows.map((row) => row.dataset.memberEffort)).toEqual(['auto', 'off', 'low', 'high']);
+    expect(effortRows.filter((row) => row.classList.contains('is-disabled')).map((row) => row.dataset.memberEffort))
+      .toEqual(['low', 'high']);
+  });
 });
