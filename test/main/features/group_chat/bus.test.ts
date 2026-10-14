@@ -57,6 +57,9 @@ vi.mock('../../../../src/main/model/client', () => ({
     streamProbe.idleTimeouts.push(typeof _opts?.idleTimeout === 'number' ? _opts.idleTimeout : undefined);
     streamProbe.streamIdleTimeouts.push(typeof _opts?.streamIdleTimeout === 'number' ? _opts.streamIdleTimeout : undefined);
     streamProbe.lifecycleSeen.push(!!_opts?.executionLifecycle);
+    if (_opts?.agentId && String(_opts?.message || '').includes('FORCED_AGENT_STREAM_THROW')) {
+      throw new Error('forced worker stream failure');
+    }
     if (String(_opts?.message || '').includes('REAL_CREATOR_TOOL_CONSTRUCTION_TEST')) {
       const { buildRunner } = await import('../../../../src/main/model/core-agent/runner');
       const built = await buildRunner({
@@ -1482,6 +1485,39 @@ describe('group_chat bus › enqueue routing + persistence', () => {
     expect(stats.deliveries).toBe(0);
     expect(stats.failures).toBe(1);
     expect(stats.errors).toBe(0);
+  });
+
+  it('enqueues a commander degradation report when a dispatched agent stream throws', async () => {
+    const bus = await import('../../../../src/main/features/group_chat/bus');
+    const state = await import('../../../../src/main/features/group_chat/state');
+    const runStore = await import('../../../../src/main/features/group_chat/run_store');
+    const cid = 'cid-forced-degradation-report';
+    await state.addMember(TEST_UID, cid, { kind: 'agent', id: AGENT_ID, name: AGENT_NAME });
+    const run = await runStore.createRun({
+      uid: TEST_UID,
+      cid,
+      submittedText: 'force a dispatched agent failure',
+      memberAgentIds: [AGENT_ID],
+      mentionAgentIds: [AGENT_ID],
+    });
+
+    await bus.enqueue({
+      uid: TEST_UID, cid, fromActorId: 'commander',
+      text: 'FORCED_AGENT_STREAM_THROW',
+      forceTo: [AGENT_ID],
+      dispatch: true,
+      runId: run!.run_id,
+    });
+    await waitForQuiescent(TEST_UID, cid);
+
+    const agentRun = await runStore.readRun(TEST_UID, cid, run!.run_id);
+    expect(agentRun?.actors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agent_id: AGENT_ID, terminal: 'failed' }),
+    ]));
+    expect(agentRun?.actor_report_enqueued).toBe(true);
+    expect(streamProbe.messages.some((message) => (
+      message.includes(`@${AGENT_NAME}`) && message.includes('汇总汇报')
+    ))).toBe(true);
   });
 
   it('records markerless agent completions as success when no runtime error occurs', async () => {

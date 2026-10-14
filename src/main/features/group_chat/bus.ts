@@ -75,7 +75,7 @@ import type {
   OrchestrationLedgerInput,
   StateFile,
 } from "./state";
-import { maxToolLoopsForActorKind } from "./actor-budgets";
+import { maxToolLoopsForActorTurn } from "./actor-budgets";
 import {
   GroupMessage,
   appendVisible,
@@ -6818,7 +6818,7 @@ async function runActorTurnBody(
       coordinatorLease?.stop();
     };
     try {
-      const actorMaxToolLoops = maxToolLoopsForActorKind(actor.kind);
+      const actorMaxToolLoops = maxToolLoopsForActorTurn(actor.kind);
       const creatorPolicyPromise = turnAgentSpec?.creator_binding && actor.kind === 'agent'
         ? getAgentDispatchPolicy(uid, actor.id)
         : null;
@@ -9322,6 +9322,20 @@ async function guardKstarPrivilegedDispatch(
     // advisory for execution gating — if generation failed (model
     // unavailable, no candidates), the dispatch still proceeds rather than
     // demanding a kstar_control call the Commander no longer has.
+    try {
+      const { markMissingForecastForExecution } = await import('../kstar/auto-forecast');
+      await markMissingForecastForExecution(
+        state.uid,
+        lifecycle.requirement.id,
+        'auto-forecast unavailable before dispatch',
+      );
+    } catch (error) {
+      log.warn('kstar missing forecast marker failed', {
+        cid: maskId(state.cid),
+        requirementId: lifecycle.requirement.id,
+        error: logErrorRef(error),
+      });
+    }
     log.warn('kstar execution without forecast record (auto-forecast unavailable)', {
       cid: maskId(state.cid),
       requirementId: lifecycle.requirement.id,

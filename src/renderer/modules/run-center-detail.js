@@ -53,9 +53,10 @@
           ? text('run_center.timeline_related_tasks', { count: taskIds.length })
           : task ? localizedTitle(task, text('run_center.task_kind_cogseed')) : '';
         const failure = index === failureIndex;
+        const failureReason = group.events.map((item) => String(item.failureReason || '').trim()).find(Boolean) || '';
         return `<li${failure ? ' class="is-failure" data-run-center-timeline-failure tabindex="-1"' : ''}>
         <time datetime="${esc(event.createdAt)}">${esc(group.time)}</time><div class="run-center-timeline-content"><span class="run-center-timeline-title">${esc(dynamicLabel('run_center.event_', event.type, 'run_center.event_unknown'))}${context ? `<small>${esc(context)}</small>` : ''}</span>
-        ${event.toolName ? `<span class="run-center-timeline-meta"><code>${esc(event.toolName)}</code></span>` : ''}</div>
+        ${event.toolName ? `<span class="run-center-timeline-meta"><code>${esc(event.toolName)}</code></span>` : ''}${failureReason ? `<span class="run-center-timeline-meta">${esc(failureReason)}</span>` : ''}</div>
       </li>`; }).join('')}</ol></div>`;
     }
 
@@ -106,7 +107,7 @@
           <span><b>${esc(displayedParticipantCount)}</b>${esc(text('run_center.summary_agents'))}</span><span><b>${esc(steps.length)}</b>${esc(text('run_center.summary_steps'))}</span><span><b>${esc(reviews.length)}</b>${esc(text('run_center.summary_gates'))}</span><span><b>${esc(conflicts.length)}</b>${esc(text('run_center.summary_conflicts'))}</span>
         </div>
         <section class="is-team"><h2>${esc(text('run_center.team'))}</h2>${actors.length ? `<ul class="run-center-actors">${actors.map((actor) => `<li><strong>${esc(actorNameById.get(actor.actorId))}</strong><span>${esc(text(`run_center.actor_${actor.role}`))}</span><span class="${statusClass(actor.status)}">${esc(text(statusKey(actor.status)))}</span></li>`).join('')}</ul>` : `<div class="run-center-compact-empty">${esc(text('run_center.agents_empty'))}</div>`}</section>
-        ${steps.length ? `<section class="is-workflow"><h2>${esc(text('run_center.workflow'))}</h2><ol class="run-center-steps">${steps.map((step) => `<li><div><strong>${esc(localizedTitle(step, text('run_center.workflow_step')))}</strong><span class="${statusClass(step.status)}">${esc(text(statusKey(step.status)))}</span></div><small>${esc(text('run_center.attempt_count', { count: step.attemptCount || 0 }))}</small>${step.dependsOn?.length ? `<small>${esc(text('run_center.dependencies_count', { count: step.dependsOn.length }))}</small>` : ''}${nativeWorkflow && (step.status === 'failed' || step.status === 'skipped') ? `<div class="run-center-inline-actions">${actionButton('retry-step', step.stepId, 'run_center.retry_step')}</div>` : ''}${nativeWorkflow && ['pending', 'blocked', 'failed'].includes(step.status) ? `<div class="run-center-inline-actions">${actionButton('skip-step', step.stepId, 'run_center.skip_step', true)}</div>` : ''}</li>`).join('')}</ol></section>` : ''}
+        ${steps.length ? `<section class="is-workflow"><h2>${esc(text('run_center.workflow'))}</h2><ol class="run-center-steps">${steps.map((step) => { const stepActionable = step.actionable !== false; return `<li><div><strong>${esc(!stepActionable ? text(step.titleKey || 'run_center.workflow_step_unavailable') : localizedTitle(step, text('run_center.workflow_step')))}</strong><span class="${statusClass(step.status)}">${esc(text(statusKey(step.status)))}</span></div><small>${esc(text('run_center.attempt_count', { count: step.attemptCount || 0 }))}</small>${stepActionable ? '' : `<small>${esc(text('run_center.workflow_step_unavailable_detail'))}</small>`}${step.dependsOn?.length ? `<small>${esc(text('run_center.dependencies_count', { count: step.dependsOn.length }))}</small>` : ''}${stepActionable && nativeWorkflow && (step.status === 'failed' || step.status === 'skipped') ? `<div class="run-center-inline-actions">${actionButton('retry-step', step.stepId, 'run_center.retry_step')}</div>` : ''}${stepActionable && nativeWorkflow && ['pending', 'blocked', 'failed'].includes(step.status) ? `<div class="run-center-inline-actions">${actionButton('skip-step', step.stepId, 'run_center.skip_step', true)}</div>` : ''}</li>`; }).join('')}</ol></section>` : ''}
         ${reviews.length ? `<section class="is-controls"><h2>${esc(text('run_center.review_gates'))}</h2><ul class="run-center-control-list">${reviews.map((review) => { const open = review.status === 'needs_review' || review.status === 'failed'; return `<li><div><strong>${esc(text('run_center.review_gate'))}</strong><span class="${statusClass(review.status)}">${esc(text(statusKey(review.status)))}</span></div>${review.reviewDecision ? `<small>${esc(text('run_center.reviewed'))}: ${esc(dynamicLabel('run_center.review_decision_', review.reviewDecision, 'run_center.review_decision_unknown'))}</small>` : ''}${open ? `<div class="run-center-inline-actions">${actionButton('approve-gate', review.gateId, 'run_center.approve_gate')}${actionButton('reject-gate', review.gateId, 'run_center.reject_gate', true)}</div>` : ''}</li>`; }).join('')}</ul></section>` : ''}
         ${conflicts.length ? `<section class="is-controls"><h2>${esc(text('run_center.conflicts'))}</h2><ul class="run-center-control-list">${conflicts.map((conflict) => { const active = conflict.status !== 'resolved' && conflict.status !== 'dismissed'; return `<li><div><strong>${esc(dynamicLabel('run_center.conflict_type_', conflict.type, 'run_center.conflict'))}</strong><span class="${statusClass(conflict.status)}">${esc(dynamicLabel('run_center.conflict_status_', conflict.status, 'run_center.conflict_active'))}</span></div>${conflict.affectedStepIds?.length ? `<small>${esc(text('run_center.affected_steps_count', { count: conflict.affectedStepIds.length }))}</small>` : ''}${active ? `<div class="run-center-inline-actions">${actionButton('dismiss-conflict', conflict.conflictId, 'run_center.dismiss_conflict', true)}</div>` : ''}</li>`; }).join('')}</ul></section>` : ''}
         ${activity.length ? `<section class="is-activity"><h2>${esc(text('run_center.collaboration_activity'))}</h2><ol class="run-center-timeline">${activity.map((event) => `<li><time>${esc(formatDate(event.createdAt))}</time><div class="run-center-timeline-content"><span class="run-center-timeline-title">${esc(dynamicLabel('run_center.activity_', event.type, 'run_center.activity_unknown'))}${event.actorId && actorNameById.has(event.actorId) ? `<small>${esc(actorNameById.get(event.actorId))}</small>` : ''}</span></div></li>`).join('')}</ol></section>` : ''}
@@ -177,6 +178,24 @@
         : text('run_center.destination_conversation');
     }
 
+    function latestFailureReason(timeline, task, run) {
+      const ids = new Set([
+        task?.taskId,
+        run?.aggregateTask?.taskId,
+        run?.representative?.taskId,
+        ...(Array.isArray(run?.members) ? run.members.map((member) => member.taskId) : []),
+      ].filter(Boolean).map(String));
+      const events = Array.isArray(timeline) ? timeline : [];
+      for (let index = events.length - 1; index >= 0; index -= 1) {
+        const event = events[index];
+        const reason = String(event?.failureReason || '').trim();
+        if (!reason) continue;
+        const eventTaskId = String(event?.taskId || '');
+        if (!ids.size || !eventTaskId || ids.has(eventTaskId)) return reason;
+      }
+      return '';
+    }
+
     function recommendedActionHtml(model, userState, hasCollaboration) {
       const { task, actions } = model;
       const busy = state.busyAction;
@@ -204,7 +223,7 @@
         });
       }
       const allowed = board.recommendedActionAvailable(
-        actions, userState, { conversationId: task?.conversationId, hasCollaboration },
+        actions, userState, { conversationId: task?.conversationId, hasCollaboration, resumable: task?.resumable === true },
       );
       if (!allowed) return '';
       const iconName = action === 'start' || action === 'resume' ? 'play-triangle' : 'refresh';
@@ -229,13 +248,20 @@
         ...aggregateTask,
         resultDeliveryState: task.resultDeliveryState || aggregateTask.resultDeliveryState,
         errorCode: task.errorCode || aggregateTask.errorCode,
+        actions,
+        resumable: task.resumable === true || aggregateTask.resumable === true,
       }, { hasReview, hasConflict });
       const hasCollaboration = collaborationAvailable(collaboration, task);
       const destination = resultDestination(task);
       const worktree = task.worktreeName || text('run_center.current_workspace_short');
       const effect = text(`run_center.action_effect_${String(userState.action || 'none').replace(/-/g, '_')}`, { worktree, destination });
       const primaryAction = recommendedActionHtml(model, userState, hasCollaboration);
-      const impact = task.errorCode ? text(errorHelpKey(task.errorCode)) : text(userState.reasonKey);
+      const failureReason = userState.attention ? latestFailureReason(collaboration?.timeline, task, run) : '';
+      // R-08 / R-04：失败原因之外的独立两块——"最后进展"与"恢复类别"，都来自
+      // 后端已脱敏的安全投影（只渲染 labelKey / toolName，不渲染原始文本）。
+      const lastProgress = collaboration?.lastProgress;
+      const recoveryAdvice = collaboration?.recoveryAdvice;
+      const impact = failureReason || (task.errorCode ? text(errorHelpKey(task.errorCode)) : text(userState.reasonKey));
       const progress = run?.progress;
       const isPlanned = aggregateTask.status === 'planned';
       const completion = progress?.total ? Math.round((Number(progress.completed || 0) / Number(progress.total)) * 100) : 0;
@@ -263,6 +289,8 @@
         ${state.actionError ? `<div class="run-center-action-feedback is-error" role="alert">${icon('warning')}<span>${esc(state.actionError)}</span></div>` : ''}
         <section class="run-center-summary-row is-event"><span class="run-center-summary-row-icon">${icon(userState.attention ? 'warning' : userState.kind === 'running' ? 'activity' : 'check-circle')}</span><div><small>${esc(text('run_center.summary_what_happened'))}</small><h3>${esc(text(userState.stateKey))}</h3><p>${esc(text(userState.reasonKey))}</p></div></section>
         <section class="run-center-summary-row"><span class="run-center-summary-row-icon">${icon('activity')}</span><div><small>${esc(text('run_center.summary_impact'))}</small><h3>${esc(userState.attention ? text('run_center.summary_attention_impact') : text('run_center.summary_no_blocking_impact'))}</h3><p>${esc(impact)}</p>${progress?.total ? `<div class="run-center-inspector-progress"><span><b>${esc(text('run_center.group_progress'))}</b><strong>${esc(progress.completed)}/${esc(progress.total)}</strong></span><progress value="${completion}" max="100">${completion}%</progress></div>` : ''}</div></section>
+        ${lastProgress ? `<section class="run-center-summary-row"><span class="run-center-summary-row-icon">${icon('activity')}</span><div><small>${esc(text('run_center.summary_last_progress'))}</small><h3>${esc(text(lastProgress.labelKey))}</h3>${lastProgress.toolName ? `<p><code>${esc(lastProgress.toolName)}</code></p>` : ''}</div></section>` : ''}
+        ${recoveryAdvice ? `<section class="run-center-summary-row"><span class="run-center-summary-row-icon">${icon('refresh')}</span><div><small>${esc(text('run_center.summary_recovery'))}</small><h3>${esc(text(recoveryAdvice.reasonKey))}</h3></div></section>` : ''}
         <section class="run-center-summary-row is-action"><span class="run-center-summary-row-icon">${icon('play-triangle')}</span><div><small>${esc(text('run_center.summary_next_action'))}</small><h3>${esc(primaryAction ? text(userState.actionKey) : text('run_center.no_action_required'))}</h3><p>${esc(effect)}</p><div class="run-center-summary-actions">${primaryAction}${secondary}</div></div></section>
         <section class="run-center-summary-row"><span class="run-center-summary-row-icon">${icon('send')}</span><div><small>${esc(text('run_center.summary_destination'))}</small><h3>${esc(destination)}</h3><p>${esc(text('run_center.summary_destination_detail'))}</p></div></section>
         <dl class="run-center-summary-context"><div><dt>${esc(text('run_center.label_agent'))}</dt><dd>${esc(agentDisplayName(task.agentId) || text('run_center.commander'))}</dd></div><div><dt>${esc(text('run_center.label_execution_source'))}</dt><dd>${esc(text(`run_center.source_${task.sourceKind || 'cogseed'}`))}</dd></div><div><dt>${esc(text('run_center.label_worktree'))}</dt><dd>${esc(worktree)}</dd></div><div><dt>${esc(text('run_center.label_updated'))}</dt><dd>${esc(formatDate(task.updatedAt))}</dd></div>${workflow.phase ? `<div><dt>${esc(text('run_center.label_phase'))}</dt><dd>${esc(workflow.phase)}</dd></div>` : ''}</dl>

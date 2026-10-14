@@ -158,6 +158,11 @@ describe('KStar world-model auto-forecast', () => {
     const res = await af.autoForecastForRequirement('user-a', 'cid-b2', req.id);
     expect(res.ok).toBe(false);
     expect(res.reason).toMatch(/projection/);
+    const reread = await store.readKstarRequirement('user-a', req.id);
+    expect(reread).toMatchObject({
+      forecastStatus: 'skipped',
+      forecastError: 'projection not confirmed yet',
+    });
   });
 
   it('returns ok:false when the generator produces no candidates (never blocks execution)', async () => {
@@ -168,6 +173,27 @@ describe('KStar world-model auto-forecast', () => {
     const res = await af.autoForecastForRequirement('user-a', 'cid-a1', seeded.requirementId);
     expect(res.ok).toBe(false);
     expect(res.reason).toMatch(/candidates/);
+
+    const store = await import('../../../../src/main/features/kstar/requirement-store');
+    const requirement = await store.readKstarRequirement('user-a', seeded.requirementId);
+    expect(requirement).toMatchObject({
+      forecastStatus: 'failed',
+      forecastError: 'no candidates generated',
+    });
+  });
+
+  it('marks execution without a forecast as an explicit skipped forecast without blocking dispatch', async () => {
+    const seeded = await seedConfirmedRequirement('cid-af-dispatch-missing');
+    const af = await import('../../../../src/main/features/kstar/auto-forecast');
+
+    await af.markMissingForecastForExecution('user-a', seeded.requirementId, 'auto-forecast unavailable before dispatch');
+
+    const store = await import('../../../../src/main/features/kstar/requirement-store');
+    const requirement = await store.readKstarRequirement('user-a', seeded.requirementId);
+    expect(requirement).toMatchObject({
+      forecastStatus: 'skipped',
+      forecastError: 'auto-forecast unavailable before dispatch',
+    });
   });
 
   it('parses tagged and bare JSON forecast output tolerantly', async () => {

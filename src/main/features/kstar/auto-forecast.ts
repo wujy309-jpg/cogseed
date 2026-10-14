@@ -93,6 +93,10 @@ let _autoForecastGeneratorForTest: AutoForecastOptions['generate'] | null = null
 type AutoForecastResult = { ok: boolean; forecastId?: string; reason?: string };
 const autoForecastInFlight = new Map<string, Promise<AutoForecastResult>>();
 
+function boundedForecastError(error: unknown): string {
+  return String(error || '').replace(/\s+/g, ' ').slice(0, 2_000);
+}
+
 export function _setAutoForecastGeneratorForTest(
   generate: AutoForecastOptions['generate'] | null,
 ): void {
@@ -118,7 +122,7 @@ async function runAutoForecastForRequirement(
       await replaceKstarRequirement(userId, {
         ...current,
         forecastStatus: status,
-        ...(error ? { forecastError: String(error).replace(/\s+/g, ' ').slice(0, 2_000) } : { forecastError: undefined }),
+        ...(error ? { forecastError: boundedForecastError(error) } : { forecastError: undefined }),
         updatedAt: new Date().toISOString(),
       });
     } catch { /* observability must not block execution */ }
@@ -316,6 +320,36 @@ export function autoForecastForRequirement(
     () => { if (autoForecastInFlight.get(key) === current) autoForecastInFlight.delete(key); },
   );
   return current;
+}
+
+/**
+ * Execution is allowed to proceed when host-side auto-forecast is unavailable,
+ * but the requirement must still say so durably. This marks only the previously
+ * unmarked gap; pending/failed/skipped/committed forecast states remain owned
+ * by the auto-forecast pipeline.
+ */
+export async function markMissingForecastForExecution(
+  userId: string,
+  requirementId: string,
+  reason = 'auto-forecast unavailable before execution',
+): Promise<void> {
+  try {
+    const { readKstarRequirement, replaceKstarRequirement } = await import('./requirement-store');
+    const current = await readKstarRequirement(userId, requirementId);
+    if (!current || current.forecastId || current.forecastStatus) return;
+    await replaceKstarRequirement(userId, {
+      ...current,
+      forecastStatus: 'skipped',
+      forecastError: boundedForecastError(reason),
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    log.warn('kstar missing forecast marker degraded', {
+      userId,
+      requirementId,
+      error: (error as Error).message,
+    });
+  }
 }
 
 /** Test-only: trigger the forecast generation for a requirement whose

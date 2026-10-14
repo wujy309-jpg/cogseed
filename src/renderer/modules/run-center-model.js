@@ -4,6 +4,13 @@
   'use strict';
 
   const RUNNING_STATUS = new Set(['created', 'queued', 'pending', 'running']);
+  const RESUMABLE_FAILURE_CODES = new Set([
+    'idle_timeout',
+    'provider_timeout',
+    'provider_no_first_event',
+    'runtime_stream_ended',
+    'runtime_worker_error',
+  ]);
   const LOGICAL_ACTIVE_STATE_PRIORITY = ['attention', 'running', 'pending'];
 
   function safeTime(value) {
@@ -81,11 +88,19 @@
       stateKey: 'run_center.user_state_recoverable', reasonKey: 'run_center.user_reason_recoverable',
     };
     if (status === 'failed' || task?.column === 'attention') {
-      const configureModel = ['model_preflight', 'provider_error'].includes(String(task?.errorCode || ''));
+      const errorCode = String(task?.errorCode || '');
+      const configureModel = ['model_preflight', 'provider_error'].includes(errorCode);
+      const resumeTimeout = RESUMABLE_FAILURE_CODES.has(errorCode)
+        && (task?.actions?.resume === true || task?.resumable === true);
+      const action = configureModel ? 'configure-model'
+        : resumeTimeout ? 'resume'
+          : status === 'failed' ? 'retry' : 'open-handling';
       return {
         kind: status === 'failed' ? 'failed' : 'review', attention: true,
-        action: configureModel ? 'configure-model' : status === 'failed' ? 'retry' : 'open-handling',
-        actionKey: configureModel ? 'run_center.configure_model' : status === 'failed' ? 'run_center.retry' : 'run_center.open_handling',
+        action,
+        actionKey: action === 'configure-model' ? 'run_center.configure_model'
+          : action === 'resume' ? 'run_center.resume'
+            : action === 'retry' ? 'run_center.retry' : 'run_center.open_handling',
         priority: status === 'failed' ? 3 : 1,
         stateKey: status === 'failed' ? 'run_center.user_state_failed' : 'run_center.user_state_review',
         reasonKey: status === 'failed' ? 'run_center.user_reason_failed' : 'run_center.user_reason_review',

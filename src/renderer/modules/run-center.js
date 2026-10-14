@@ -1463,7 +1463,8 @@
     if (!detail || !targetId) return false;
     const workflow = detail.workflow || {};
     return [
-      ...(Array.isArray(workflow.steps) ? workflow.steps.map((item) => item.stepId) : []),
+      // C-09：占位步骤（actionable:false）不是合法动作目标；否则陈旧点击会真的发 IPC。
+      ...(Array.isArray(workflow.steps) ? workflow.steps.filter((item) => item.actionable !== false).map((item) => item.stepId) : []),
       ...(Array.isArray(detail.reviews) ? detail.reviews.map((item) => item.gateId) : []),
       ...(Array.isArray(detail.conflicts) ? detail.conflicts.map((item) => item.conflictId) : []),
     ].includes(targetId);
