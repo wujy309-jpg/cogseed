@@ -6997,10 +6997,15 @@ async function runActorTurnBody(
         = item.execConfig?.effort
           ?? turnAgentSpec?.default_thinking
           ?? thinkingLevelForRun();
-      // Option C：显式档位（任务级 / agent 默认 / 全局偏好）在自动兜底**之前**
-      // 记下——只有显式选择才受"模型声明的档位"约束；下面给已知 reasoning
-      // 模型自动补 low 是展示兜底，不是用户的档位选择，不能被同一个门拒掉。
-      const explicitThinkingLevel = turnThinkingLevel;
+      // Option C：只有**针对这个模型做出的显式选择**（任务级覆盖 / agent 默认）
+      // 才受"模型声明的档位"约束，且要在自动兜底**之前**记下——下面给已知
+      // reasoning 模型自动补 low 是展示兜底，不是用户的档位选择，不能被同一个门拒掉。
+      // 全局偏好（设置页的"思考强度"）是**跨模型的默认**，不是对某个模型的选择：
+      // 它越档时静默降级（pi-ai 按 provider 默认处理），绝不因此把整个回合判成
+      // model_preflight——否则用户改一次全局设置就会在若干模型上"开不了工"。
+      const explicitThinkingLevel = item.execConfig?.effort
+        ?? turnAgentSpec?.default_thinking
+        ?? "auto";
       // 思考展示兜底（交互设计 2026-09-08：思考过程展示需求）：'auto' 时不传
       // thinkingLevel，pi-ai 对 openai 兼容端点不会带 reasoning_effort，
       // DeepSeek 中转端点缺该参数时思考模式默认关闭 → 全程无

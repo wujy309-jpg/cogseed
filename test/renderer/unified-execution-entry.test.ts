@@ -187,8 +187,9 @@ describe('unified execution entry — send path and bubble meta', () => {
   it('Option C：显式档位带着模型声明的档位下发，越档在 provider 调用前被拒', () => {
     const bus = read('src/main/features/group_chat/bus.ts');
     const client = read('src/main/model/core-agent/client.ts');
-    // 自动兜底注入的 low 不算"显式选择"：记下显式值再注入。
-    expect(bus).toMatch(/const explicitThinkingLevel = turnThinkingLevel;[\s\S]*?turnThinkingLevel = "low";/);
+    // ⚠️ 只有"针对这个模型的选择"（任务级 / agent 默认）才算显式；全局偏好是跨模型
+    // 默认，越档时静默降级而不是把回合判死。自动兜底注入的 low 同样不算。
+    expect(bus).toMatch(/const explicitThinkingLevel = item\.execConfig\?\.effort\s*\?\? turnAgentSpec\?\.default_thinking\s*\?\? "auto";[\s\S]*?turnThinkingLevel = "low";/);
     // 只有显式档位才去解析声明。
     expect(bus).toMatch(/explicitThinkingLevel !== "auto"[\s\S]*?_declaredReasoningLevelsFor\(uid, turnModelOverride\)/);
     expect(bus).toMatch(/supportedReasoningLevels \? \{ supportedReasoningLevels \}/);
