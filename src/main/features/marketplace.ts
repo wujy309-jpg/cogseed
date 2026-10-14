@@ -437,7 +437,10 @@ export interface SkillDetail {
 export async function listMarketplaceAgents(
   opts: { category?: string; status?: string; q?: string; page?: number; size?: number } = {},
 ): Promise<{ list: MarketplaceAgent[]; total: number }> {
+  // 2026-10-14（C5/N-06，按 owner 决定"市场内容与客户端同步"）：把本机客户端版本
+  // 随目录请求发出，服务端可按版本下发兼容内容；老服务端忽略该字段，无副作用。
   return await postJson('/marketplace/agents/list', {
+    app_version: _currentAppVersion(),
     category: opts.category || null,
     status: opts.status || null,
     q: opts.q || null,
@@ -451,6 +454,7 @@ export async function listMarketplaceSkills(
 ): Promise<{ list: MarketplaceSkill[]; total: number }> {
   const uid = getActiveUserId();
   const res = await postJson<{ list?: unknown; total?: number }>('/marketplace/skills/list', {
+    app_version: _currentAppVersion(),
     category: opts.category || null,
     status: opts.status || null,
     q: opts.q || null,
