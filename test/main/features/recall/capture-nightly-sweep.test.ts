@@ -370,7 +370,7 @@ describe('the sole nightly cognition pipeline', () => {
     expect(mocks.runModel).toHaveBeenCalledTimes(1);
     expect(capture.captureBucket(result)).toBe('silent');
   });
-  it('submits all complete long messages to summary chunks and merges before value judgment', async () => {
+  it('submits all complete long messages and resumes budget-limited merges before value judgment', async () => {
     const capture = await api();
     const source = Array.from({ length: 41 }, (_, index) => row(`full-${index}`, 11,
       index === 0 ? 'user' : 'assistant', `${index}:` + 'Complete source material. '.repeat(1_600)
@@ -381,7 +381,17 @@ describe('the sole nightly cognition pipeline', () => {
     expect(record.messageIds).toEqual(source.map(message => message.id));
     expect(await records()).toHaveLength(1);
     mocks.runModel.mockResolvedValue(answer({ eligible: false, reason: 'No durable value', evidence: [] }));
+    const held = await capture.runRecallCapture(USER, record.id);
+    expect(held).toMatchObject({ status: 'queued', summaryCheckpoint: { chunks: expect.any(Array) } });
+    expect(held.contextSummary).toBeUndefined();
+    const budgets = await import('../../../../src/main/features/recall/capture-model-budget');
+    expect(await budgets.readCaptureModelBudget(USER)).toMatchObject({
+      stages: { summary: { calls: budgets.CAPTURE_NIGHT_LIMITS.stageCalls } },
+    });
+    expect(mocks.runModel).not.toHaveBeenCalled();
+    vi.setSystemTime(new Date(2026, 9, 13, 3));
     const result = await capture.runRecallCapture(USER, record.id);
+    expect(result.status).toBe('no_candidate');
     const inputs = mocks.runSummary.mock.calls.map(call => JSON.parse(call[0].message));
     const segments = inputs.filter(input => input.stage === 'chunk').flatMap(input => input.segments);
     for (const message of source) {
