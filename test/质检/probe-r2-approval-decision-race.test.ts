@@ -1,3 +1,4 @@
+import { seedStoredAbilityAsset } from '../helpers/stored-ability-asset';
 /**
  * 探针 r2（红队-越权与状态，新一轮 r2）：审批决定的 check-then-act 竞态——
  * 用户「拒绝」的 AI 变更提议被并发「确认」覆盖，内容照样生效。
@@ -65,7 +66,7 @@ describe('probe r2 › 审批决定 check-then-act 竞态', () => {
 
     const id = 'aa-ap-race';
     const now = new Date().toISOString();
-    await createAbilityAsset(UID, {
+    await seedStoredAbilityAsset(UID, {
       schemaVersion: 2, ownerId: UID, id, candidateId: `cand-${id}`,
       sourceCandidateIds: [`cand-${id}`], reviewDecisionId: 'rd_probeapract',
       type: 'personal', title: '演示资产', statement: '改前正文',

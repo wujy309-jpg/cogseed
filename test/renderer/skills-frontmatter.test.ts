@@ -1,10 +1,11 @@
+import { nightlyFormation } from './helpers/nightly-candidate';
 import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vm from 'node:vm';
 
 import { getRecallCandidateCapabilities } from '../../src/main/features/recall/candidate-capabilities';
-import { renderCognition } from './helpers/cognition-renderer';
+import { renderCognition, renderCognitionWithDialogs, loadCognitionAssets } from './helpers/cognition-renderer';
 
 /** 候选桩的能力取自主进程的真实映射，测试桩与 IPC DTO 用同一套判据。 */
 const CAPS = (status: string, risk?: 'low' | 'medium' | 'high') =>
@@ -12,14 +13,13 @@ const CAPS = (status: string, risk?: 'low' | 'medium' | 'high') =>
 
 function cognitionCandidate(overrides: Record<string, unknown> = {}) {
   return {
-    id: 'cand-review',
+    ...nightlyFormation(), id: 'cand-review',
     status: 'pending_review',
     capabilities: CAPS('pending_review'),
     judgment: 'Keep every approval tied to source evidence.',
     summary: 'Traceable review rule',
     suggestedType: 'rule',
     suggestedScope: 'project,review',
-    sourceRefs: [],
     ...overrides,
   };
 }
@@ -303,13 +303,14 @@ describe('skills renderer frontmatter parsing', () => {
     expect(detail).toContain('data-action="reject"');
   });
 
-  it('keeps deferred Recall candidates actionable in their detail while quiet in the daily list', () => {
+  it('keeps deferred Recall candidates findable in attention and actionable in their detail', () => {
     const html = renderCognition(
       { name: 'review' },
       { candidates: [cognitionCandidate({ id: 'cand-deferred', status: 'deferred', capabilities: CAPS('deferred'), judgment: 'Add invariant checks.' })] },
     );
 
-    expect(html).not.toContain('data-id="candidate:cand-deferred"');
+    expect(html).toContain('data-id="candidate:cand-deferred"');
+    expect(visibleText(html)).toContain('稍后 · 待处理');
     const detail = renderCognition({ name: 'activity', candidateId: 'cand-deferred' }, { candidates: [cognitionCandidate({ id: 'cand-deferred', status: 'deferred', capabilities: CAPS('deferred'), judgment: 'Add invariant checks.' })] });
     expect(visibleText(detail)).toContain('Add invariant checks.');
     expect(detail).toContain('data-act="cand-adopt-with-form"');
@@ -321,6 +322,7 @@ describe('skills renderer frontmatter parsing', () => {
       {
         candidates: [cognitionCandidate({
           sourceRefs: [
+            ...nightlyFormation().sourceRefs,
             { kind: 'execution', id: 'run-1', title: '运行证据' },
             { kind: 'memory', id: 'experience-1', title: '记忆证据' },
           ],
@@ -340,7 +342,7 @@ describe('skills renderer frontmatter parsing', () => {
 
   it('renders current proof counts and usage records in asset detail', () => {
     const asset = cognitionAsset();
-    const html = renderCognition(
+    const html = renderCognitionWithDialogs(
       { name: 'overview', assetId: 'asset-rule' },
       {
         assets: [asset],
@@ -367,9 +369,9 @@ describe('skills renderer frontmatter parsing', () => {
     );
 
     expect(html).not.toContain('tree-stage');
-    expect(html).toContain('data-act="filter-cat"');
-    expect(html).toContain('data-go-asset="asset-rule"');
-    expect(html).toContain('data-go-asset="asset-template"');
+    expect(html).toContain('id="ca-library-filter-contentCategory"');
+    expect(html).toContain('data-act="library-select" data-id="asset-rule"');
+    expect(html).toContain('data-act="library-select" data-id="asset-template"');
     expect(html).not.toContain('cognition-asset-card');
   });
 
@@ -390,27 +392,24 @@ describe('skills renderer frontmatter parsing', () => {
   it('renders ability assets with PRD categories and without marketplace skill promotion', () => {
     const html = renderCognition({ name: 'overview' }, { assets: [] });
 
-    for (const category of ['个人信息', '规则与偏好', '模板与范例', '技能与方法']) {
-      expect(visibleText(html)).toContain(category);
+    for (const category of ['规则', '偏好', '模板', '方法', '经验教训']) {
+      expect(html).toContain(category);
     }
     expect(html).not.toContain('marketplace');
     expect(html).not.toContain('office-excel');
   });
 
-  it('lets users view empty ability asset categories from the accounting cards', () => {
-    // 2026-09-21 五页签迁移:空分类的可达入口在两处——「我的认知」的筛选 chips
-    // 与「认知树」页的分类块(空分类标 is-empty,仍可点进列表)。
-    const html = renderCognition({ name: 'overview' }, { assets: [] });
-    const treePage = renderCognition({ name: 'tree' }, { assets: [] });
-
-    expect(html.match(/data-act="filter-cat"/g)?.length || 0).toBeGreaterThanOrEqual(4);
-    for (const categoryId of ['personal', 'rule', 'template', 'skill_method']) {
-      expect(html).toContain(`data-act="filter-cat" data-id="${categoryId}"`);
+  it('keeps empty content categories selectable in the shared category filter', () => {
+    const loaded = loadCognitionAssets({ assets: [] }, { name: 'overview' });
+    const html = loaded.render();
+    expect(html).toContain('id="ca-library-filter-contentCategory"');
+    for (const category of ['rule', 'preference', 'template', 'method', 'lesson']) {
+      loaded.ns.library.state.contentCategory = category;
+      const filtered = loaded.render();
+      expect(filtered).toContain('没有匹配内容');
+      expect(filtered).toContain('data-act="library-clear"');
     }
-    // 空分类在树上照常出枝（计数 0，标签与光斑照画），不会消失——原型口径。
-    for (const categoryId of ['skill_method', 'fact', 'rule', 'template']) {
-      expect(treePage).toContain(`data-id="${categoryId}"`);
-    }
+    expect(renderCognition({ name: 'tree' }, { assets: [] })).not.toContain('tree-stage');
   });
 
   it('renders the selected ability asset detail instead of always using the first asset', () => {
@@ -424,12 +423,12 @@ describe('skills renderer frontmatter parsing', () => {
       },
     );
 
-    expect(html).toContain('<h1>Second Method</h1>');
-    expect(visibleText(html)).not.toContain('First Rule');
+    expect(html).toContain('<h2>Second Method</h2>');
+    expect(visibleText(html.split('<aside class="ca-library-detail"')[1])).not.toContain('First Rule');
   });
 
   it('normalizes structured evidence refs and only marks longer audit histories as truncated', () => {
-    const html = renderCognition(
+    const html = renderCognitionWithDialogs(
       { name: 'overview', assetId: 'asset-rule' },
       {
         assets: [cognitionAsset({
@@ -452,13 +451,14 @@ describe('skills renderer frontmatter parsing', () => {
     expect(visibleText(html)).not.toContain('kse-episode-1');
     expect(visibleText(html)).not.toContain('conversation-1');
     expect(visibleText(html)).toContain('任务复盘：一次任务');
-    expect(visibleText(html)).toContain('来源记录不可用');
+    expect(visibleText(html)).toContain('不可读取');
+    expect(html).not.toContain('data-act="open-conversation" data-id="conversation-1"');
     expect(visibleText(html)).not.toContain('[object Object]');
     expect(visibleText(html)).not.toContain('仅显示最近 12 条');
   });
 
   it('shows the ledger four (actor / time / before-after / reason) and the one-step rollback entry', () => {
-    const html = renderCognition(
+    const html = renderCognitionWithDialogs(
       { name: 'overview', assetId: 'asset-rule' },
       {
         assets: [cognitionAsset({
@@ -490,17 +490,13 @@ describe('skills renderer frontmatter parsing', () => {
     expect(html).not.toContain('data-act="rollback-asset"');
   });
 
-  it('filters the integrated asset list by the selected tree category', () => {
-    const html = renderCognition(
-      { name: 'overview', category: 'rule' },
-      {
-        assets: [
-          cognitionAsset({ id: 'asset-rule', title: 'Rule asset', type: 'rule' }),
-          cognitionAsset({ id: 'asset-template', title: 'Template asset', type: 'template' }),
-        ],
-      },
-    );
-
+  it('filters the integrated asset list by content category', () => {
+    const loaded = loadCognitionAssets({ assets: [
+      cognitionAsset({ id: 'asset-rule', title: 'Rule asset', contentCategory: 'rule' }),
+      cognitionAsset({ id: 'asset-template', title: 'Template asset', contentCategory: 'template' }),
+    ] }, { name: 'overview' });
+    loaded.ns.library.state.contentCategory = 'rule';
+    const html = loaded.render();
     expect(visibleText(html)).toContain('Rule asset');
     expect(visibleText(html)).not.toContain('Template asset');
   });
@@ -532,10 +528,14 @@ describe('skills renderer frontmatter parsing', () => {
       // 「撤回使用」已随界面按钮删除（审计 R3，2026-09-28：0 使用＋终态危险）；
       // audit_revoked 台账标签与 status==='revoked' 过滤逻辑保留（历史展示）。
       expect(html).not.toContain('data-action="revoke"');
-      expect(html).toContain('data-action="purge"');
+      expect(html).not.toContain('data-action="purge"');
     }
     expect(archived).not.toContain('data-action="delete"');
-    expect(archived).toContain('data-action="purge"');
+    expect(archived).not.toContain('data-action="purge"');
+    const deleted = renderStatus('deleted');
+    expect(deleted).toContain('尚未读到有效的删除保留期记录');
+    expect(deleted).toMatch(/disabled[^>]*data-action="restore"/);
+    expect(deleted).not.toContain('data-act="purge-deleted-asset"');
   });
 });
 

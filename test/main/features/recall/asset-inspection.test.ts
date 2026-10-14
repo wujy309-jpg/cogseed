@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 /**
  * 后台巡检（specs/008 US-405 / T047–T050）。
  *
@@ -46,7 +47,7 @@ let seedSeq = 0;
 async function seedAsset(uid: string, judgment: string) {
   const { candidates } = await modules();
   seedSeq += 1;
-  const candidate = await candidates.saveRecallCandidate(uid, {
+  const candidate = await createNightlyCandidateFixture(uid, {
     judgment,
     // 标题闸门（设计 3.2）：无 summary 兜底＝正文首句，过不了闸门。
     summary: '巡检基线样本',

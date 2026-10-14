@@ -179,7 +179,8 @@ describe('Recall cognition workspace layout', () => {
     const views = ['views.js', 'review-candidate.js', 'review-views.js']
       .map((file) => fs.readFileSync(path.join(__dirname, `../../src/renderer/modules/cognition-assets/${file}`), 'utf-8'))
       .join('\n');
-    expect(views).toContain('sourceIssueOpen');
+    expect(views).not.toContain('sourceIssuesSection');
+    expect(views).not.toContain('taskFailedSection');
   });
 
   // 技能市场与外部 Skill 库是「可用资源」，安装/导入不等于用户已确认拥有，
@@ -306,7 +307,8 @@ describe('Recall cognition workspace layout', () => {
     const views = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/views.js'), 'utf-8');
     const zh = JSON.parse(fs.readFileSync(path.join(__dirname, '../../src/renderer/locales/zh.json'), 'utf-8'));
     // 一级页面标题由 hero() 渲染（overview_title），不再有 eyebrow/subtitle 头。
-    expect(views).toContain("T('cognition.overview_title'");
+    const library = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/library.js'), 'utf-8');
+    expect(library).toContain("T('cognition.tab_overview'");
     expect(zh['cognition.title']).toBe('认知资产');
     expect(views).not.toContain('eyebrow');
     const css = fs.readFileSync(path.join(__dirname, '../../src/renderer/cognition-assets.css'), 'utf-8');
@@ -334,7 +336,7 @@ describe('Recall cognition workspace layout', () => {
     expect(core).toContain('sourceIssues');
     expect(core).toContain("router.go({ name: 'activity', candidateId: '' })");
     // 沉淀重试能力仍在（review 失败候选 → organize 任务重试）。
-    expect(core).toContain("recall.captures.retry");
+    expect(core).not.toContain("'recall.captures.retry'");
     // 旧页面函数已删，无并行渲染路径。
     const skills = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/skills.js'), 'utf-8');
     expect(skills).not.toContain('function renderSkillsCognitionSources');
@@ -364,7 +366,8 @@ describe('Recall cognition workspace layout', () => {
     // overview 空态给共享 EmptyState 的「去处理」入口，不自动跳页。
     const views = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/views.js'), 'utf-8');
     expect(views).toContain("throw new Error('cognition assets require uiEmptyState')");
-    expect(views).toContain("'data-act': 'go-review'");
+    const library = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/cognition-assets/library.js'), 'utf-8');
+    expect(library).toContain("'go-review'");
   });
 
   it('routes retired deep links into the new views', () => {

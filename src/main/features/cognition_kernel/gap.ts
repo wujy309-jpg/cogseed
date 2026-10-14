@@ -1,31 +1,13 @@
-/**
- * cognition_kernel/gap — 缺口引擎与回填（S2）。
- *
- * 一次任务开工前的一圈：
- *   任务包声明要哪些字段 → 取件窗口（resolve.ts）算"已有/缺" → 缺的转成一次提问
- *   → 用户答完 → 按来源回填档案（正式资产/手编本体交给其拥有者，普通内核字段用
- *     origin='gap'、status='applied' 的 Delta）
- *   → 同一个任务再跑，缺口消失。
- *
- * 分工：本文件只做"算缺口 + 回填"；取值的规则全在 resolve.ts，受管来源不能
- * 直接通过 Delta 改写。统一存储桥保持正式业务记录与派生对象一致；普通回填
- * 断言按 fieldName 寻址。来源、版本或治理状态变化时要求重新检查。
- */
+/** Read-only task field gaps; answers are used in the current task. */
 
-import { createHash } from 'node:crypto';
-import { buildDelta } from './delta';
 import { resolvePersonalFields } from './resolve';
 import { resolveAssetSlots, resolveOntologySlots, type AssetSlotResolution, type OntologySlotResolution } from './slots';
 import type { TaskFieldPack } from './task_field_packs';
 import type {
-  CognitionDelta,
-  DeltaEvidenceRef,
   MissingReason,
   PersonalFieldResolution,
   ResolvePersonalFieldsRequest,
 } from './types';
-
-import { withCognitionTransition } from '../cognition_bridge';
 
 export interface FieldGap {
   /** 缺的是哪一轴的槽位（asset 轴缺资产不算缺口，不进此列表）。 */
@@ -128,114 +110,4 @@ export async function checkTaskFields(
     boundCount: resolution.bound.length + (ontology?.bound.length ?? 0) + (assets?.bound.length ?? 0),
     totalCount: pack.fields.length + ontologyCount + assetCount,
   };
-}
-
-export interface BackfillFieldInput {
-  fieldName: string;
-  value: string;
-  /** 默认写进「关于我」分组；显式指定则用指定的。 */
-  groupTitle?: string;
-  expectedVersion?: string;
-  expectedUpdatedAt?: string;
-  expectedValue?: string;
-  sourceId?: string;
-  context?: ResolvePersonalFieldsRequest['context'];
-  /** 回答来自哪次任务 / 哪张卡（进 delta.evidenceRefs）。 */
-  evidenceRefs?: readonly DeltaEvidenceRef[];
-}
-
-export interface BackfillFieldResult {
-  ok: boolean;
-  error?: string;
-  /** 落地的那条改动记录（origin='gap' + status='applied'）。 */
-  delta?: CognitionDelta;
-  /** 写入来源编号：正式资产、本体值或内核对象。 */
-  objectId?: string;
-  /** 值本来就在（重复回答）——幂等，不算失败。 */
-  duplicate?: boolean;
-  version?: string;
-}
-
-/**
- * 把用户对缺口的一次回答写进档案。
- *
- * 幂等：同字段同内容重复回答返回 duplicate=true 且不改数据（对齐 poAddValue 的
- * duplicate value 拒绝），用户不会因为多点一次看到报错。
- */
-export async function backfillFieldValue(uid: string, input: BackfillFieldInput): Promise<BackfillFieldResult> {
-  const fieldName = String(input?.fieldName ?? '').trim().slice(0, 200);
-  const value = String(input?.value ?? '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 2000);
-  if (!fieldName) return { ok: false, error: 'field name required' };
-  if (!value) return { ok: false, error: 'empty value' };
-  void input.groupTitle; // 兼容入参保留：回填断言按 fieldName 全局寻址，不再选 po 分组
-
-  const { loadCognitionStoreSync, applyCognitionDeltas } = await import('./store');
-
-  const delta = buildDelta({
-    op: 'set',
-    target: { home: 'personal_fact', fieldName },
-    origin: 'gap',
-    after: value,
-    evidenceRefs: input.evidenceRefs?.length ? input.evidenceRefs : [{ kind: 'user_input', id: `backfill-${createHash('sha256').update(JSON.stringify([uid, fieldName, value])).digest('hex')}`, title: value.slice(0, 200) }],
-    status: 'applied',
-  });
-
-  return withCognitionTransition(uid, async () => {
-    const resolution = await resolvePersonalFields(uid, { fields: [{ fieldName }], context: input.context });
-    const missing = resolution.missing[0];
-    if (missing && missing.reason !== 'no_value') return { ok: false, error: missing.reason };
-    const bound = resolution.bound[0];
-    if (input.sourceId && bound?.sourceId !== input.sourceId) return { ok: false, error: 'field source changed; check again' };
-    if (input.expectedUpdatedAt && bound?.updatedAt !== input.expectedUpdatedAt) return { ok: false, error: 'field changed; check again' };
-    if (input.expectedValue !== undefined && bound?.value !== input.expectedValue) return { ok: false, error: 'field changed; check again' };
-    const doc = loadCognitionStoreSync(uid);
-    const slot = (bound ? doc.objects[bound.sourceId] : undefined) ?? Object.values(doc.objects).find(o => o.kind === 'assertion' && o.fieldName === fieldName && o.status !== 'deleted'
-      && (bound ? o.managedSource?.endsWith(`:${bound.sourceId}`) : !o.groupId));
-    if (bound?.disputed && !input.sourceId) return { ok: false, error: 'field conflict; choose source before updating' };
-    if (slot && (slot.status !== 'active' || slot.restricted)) return { ok: false, error: slot.restricted ? 'restricted' : 'not_authorized' };
-    if (bound?.source === 'personal_asset' || slot?.managedSource?.startsWith('recall:')) {
-      const { readAbilityAsset, updateAbilityAsset } = await import('../recall/asset-service');
-      const asset = await readAbilityAsset(uid, bound?.source === 'personal_asset' ? bound.sourceId : slot!.managedSource!.slice('recall:'.length));
-      if (input.expectedVersion && asset.version !== input.expectedVersion) return { ok: false, error: 'field version conflict; check again' };
-      const { evaluateRecallAssetAgentReadEligibility, recallAssetAgentReadBlockReasons } = await import('../recall/prompt-injection');
-      if (asset.type !== 'personal' || asset.status !== 'active' || recallAssetAgentReadBlockReasons(await evaluateRecallAssetAgentReadEligibility(uid, asset, input.context)).length) return { ok: false, error: 'not_authorized' };
-      if (asset.statement === value) return { ok: true, duplicate: true, objectId: asset.id, version: asset.version };
-      const updated = await updateAbilityAsset(uid, asset.id, { statement: value, expectedVersion: input.expectedVersion ?? asset.version,
-        actor: 'user', reason: 'User explicitly corrected this personal field in conversation' });
-      return { ok: true, objectId: updated.id, version: updated.version };
-    }
-    if (bound?.source === 'ontology_value' && !doc.objects[bound.sourceId]) {
-      const { loadPoDocSync } = await import('../po/store');
-      const { poUpdateValue } = await import('../po/api');
-      const group = loadPoDocSync(uid).groups.find(g => g.values.some(v => v.id === bound.sourceId));
-      if (!group) return { ok: false, error: 'field source missing' };
-      const original = group.values.find(v => v.id === bound.sourceId)!;
-      if (original.restricted) return { ok: false, error: 'restricted' };
-      if (input.expectedUpdatedAt && original.updatedAt !== input.expectedUpdatedAt) return { ok: false, error: 'field changed; check again' };
-      if (original.text === value) return { ok: true, duplicate: true, objectId: bound.sourceId };
-      const result = await poUpdateValue(uid, group.id, bound.sourceId, { text: value });
-      return { ...result, objectId: bound.sourceId };
-    }
-    if (slot?.managedSource?.startsWith('po:')) {
-      // The compatibility object is derived; mutate the owning ontology value only.
-      const { loadPoDocSync } = await import('../po/store');
-      const { poUpdateValue } = await import('../po/api');
-      for (const group of loadPoDocSync(uid).groups) {
-        const original = group.values.find(v => slot.managedSource === `po:${group.id}:${v.id}`);
-        if (!original) continue;
-        if (original.restricted) return { ok: false, error: 'restricted' };
-        if (input.expectedUpdatedAt && original.updatedAt !== input.expectedUpdatedAt) return { ok: false, error: 'field changed; check again' };
-        if (original.text === value) return { ok: true, duplicate: true, objectId: slot.id };
-        return { ...await poUpdateValue(uid, group.id, original.id, { text: value }), objectId: slot.id };
-      }
-      return { ok: false, error: 'field source missing' };
-    }
-    if (slot?.managedSource) return { ok: false, error: 'field source unavailable' };
-    if (slot?.statement === value) return { ok: true, duplicate: true, delta, objectId: slot.id };
-    const result = await applyCognitionDeltas(uid, [delta]);
-    if (!result.ok) return { ok: false, error: result.error ?? 'backfill failed' };
-    const first = result.results[0];
-    if (first.applied === false) return { ok: false, error: first.reason };
-    return { ok: true, delta, objectId: first.objectId };
-  });
 }

@@ -114,7 +114,8 @@
    *  同词，不另造第三种叫法。 */
   function _citationTypeLabel(type) {
     const normalized = String(type || '').trim().toLowerCase();
-    const key = normalized === 'personal' ? 'chat.recall.type_personal'
+    const key = normalized === 'cognition' ? 'chat.recall.type_cognition'
+      : normalized === 'personal' ? 'chat.recall.type_personal'
       : normalized === 'rule' ? 'chat.recall.type_rule'
       : normalized === 'template' ? 'chat.recall.type_template'
       : normalized === 'skill_method' ? 'chat.recall.type_skill_method'
@@ -122,7 +123,7 @@
       : '';
     if (!key) return String(type || '').trim();
     const value = typeof t === 'function' ? t(key) : key;
-    return value && value !== key ? value : String(type || '').trim();
+    return value && value !== key ? value : normalized === 'cognition' ? '认知' : String(type || '').trim();
   }
 
   /** 范围有两套取值：现行契约五枚（prompts/recall_candidate_contract.md：

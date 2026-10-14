@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../helpers/nightly-formation-fixture';
 /**
  * 回归（批次 b6 · P-r2-6）：decideWithoutAsset 跨文件半提交的补偿回填。
  *
@@ -67,7 +68,7 @@ async function modules() {
 
 async function pendingCandidate() {
   const candidates = await modules();
-  return candidates.saveRecallCandidate('user-a', {
+  return createNightlyCandidateFixture('user-a', {
     judgment: 'Keep a rollback plan before releasing any boundary change.',
     summary: 'Rollback plan before releases',
     suggestedType: 'rule',

@@ -1,10 +1,13 @@
-import { readRecallCaptureSettings, withRecallAutoApprovalLock } from './capture-settings';
-import { evaluateAutomaticCandidateApproval, type AutomaticCandidateReview, type NightlyApprovalContext } from './automatic-approval-policy';
-const AUTOMATIC_APPROVAL = Symbol('nightly-low-risk-approval');
+import { isDeepStrictEqual } from 'node:util';
+import { bindOntologyFormationPlan, normalizeOntologyFormationPlan, withOntologyFormationPromotion, type OntologyFormationPlan } from './ontology-formation';
+import { withRecallAutoApprovalLock } from './capture-settings';
+import { evaluateNightlyAutomaticApproval, NightlyAutomaticApprovalHeldError, requireNightlyAutomaticApproval } from './nightly-automatic-approval';
+import { requireContentCategory, readContentCategory, type CognitionContentCategory, type StoredCognitionContentCategory } from './content-category';
+import type { AutomaticCandidateReview } from './automatic-review-history';
+import { CaptureFormationSourceUnavailableError, normalizeCaptureProvenance, verifyCaptureProvenanceForWrite, verifyCaptureProvenanceForPromotion, type RecallCaptureProvenance } from './capture-provenance';
 import { unifiedCognitionRecordIds } from '../cognition_bridge';
 import * as fs from 'node:fs/promises';
 import { describeRoleTemplateFieldRef } from '../personal_ontology_contract';
-import * as personalOntologyCandidates from '../personal_ontology_candidates';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 
@@ -49,13 +52,14 @@ import {
   updateAbilityAsset,
   type AbilityAssetActor,
 } from './asset-service';
-import { fuseStatements, makeDisplayTitle } from './statement-fusion';
+import { makeDisplayTitle } from './statement-fusion';
 import { recallTitleIssue } from './title-policy';
 import { recallStatementIssues } from './statement-policy';
 import { evaluateCandidate, isCandidateBlocked } from '../cognition/gate';
 import { isCognitionSourceEnabled } from './source-control';
 import {
   readReviewDecision,
+  listReviewDecisions,
   recordReviewDecisionOutcome,
   reviewDecisionLogPath,
   writeReviewDecision,
@@ -90,7 +94,7 @@ export type RecallCandidateStatus =
   | 'expired'
   | 'failed'
   | 'superseded';
-export type AbilityAssetType = 'personal' | 'rule' | 'template' | 'skill_method' | 'fact';
+export type AbilityAssetType = 'cognition' | 'personal' | 'rule' | 'template' | 'skill_method' | 'fact';
 export type RecallCandidateAction = 'create' | 'update' | 'limit_scope' | 'pause' | 'keep_current' | 'reject';
 export type RecallCandidateRisk = 'low' | 'medium' | 'high';
 export type RecallAbilityAssetLifecycleStatus = 'user_confirmed_unverified' | 'automatically_extracted_unverified' | 'system_precipitated_unverified';
@@ -112,6 +116,7 @@ export interface RecallCandidateRecord extends RecallJsonRecord {
   evidenceSummary?: string;
   summary: string;
   uncertainty?: string;
+  contentCategory?: StoredCognitionContentCategory;
   suggestedType: AbilityAssetType;
   suggestedScope: string;
   sourceRefs: CognitionSourceRef[];
@@ -124,6 +129,7 @@ export interface RecallCandidateRecord extends RecallJsonRecord {
   learningSignal?: KstarLearningSignal;
   learningProvenance?: KstarLearningProvenance;
   captureKey?: string;
+  captureProvenance?: RecallCaptureProvenance;
   /** 统一来源标记（2026-09-19 候选归一化）：读取时由 learningProvenance/
    *  captureKey 前缀/教学信号引用惰性推导，不再靠调用方拿前缀猜——
    *  'kstar'（KStar 沉淀）/ 'teaching'（用户教学）/ 'capture'（复盘·整理·
@@ -137,6 +143,7 @@ export interface RecallCandidateRecord extends RecallJsonRecord {
   ontologyHandoff?: RecallCandidateOntologyHandoff;
   reviewDecisionId?: string;
   autoReview?: AutomaticCandidateReview;
+  ontologyFormation?: OntologyFormationPlan;
   decisionNote?: string;
   /** 空间归属：候选来自哪个空间（空间绘画/任务产出的认知）。资产随 recall 全局存储，
    *  空间资产 tab 按此字段过滤显示；空间可读全局资产但显示只显示本空间产生的。 */
@@ -183,7 +190,10 @@ export interface RecallAbilityAssetRecord extends RecallJsonRecord {
   sourceCandidateIds?: string[];
   appliedReviewDecisionIds?: string[];
   reviewDecisionId: string;
+  /** Host-issued continuation proof; no candidate/model/IPC input accepts it. */
+  standingPreferenceAuthority?: import('./standing-preference-authority').StandingPreferenceAuthority;
   type: AbilityAssetType;
+  contentCategory?: StoredCognitionContentCategory;
   title: string;
   statement: string;
   evidenceRefs: CognitionSourceRef[];
@@ -258,11 +268,13 @@ export interface RecallAbilityAssetRecord extends RecallJsonRecord {
 }
 
 export interface SaveRecallCandidateInput {
+  ontologyFormation?: OntologyFormationPlan;
   judgment: string;
   value?: string;
   evidenceSummary?: string;
   summary?: string;
   uncertainty?: string;
+  contentCategory?: CognitionContentCategory;
   suggestedType: AbilityAssetType;
   suggestedScope: string;
   sourceRefs: unknown[];
@@ -278,6 +290,7 @@ export interface SaveRecallCandidateInput {
   learningSignal?: KstarLearningSignal;
   learningProvenance?: KstarLearningProvenance;
   captureKey?: string;
+  captureProvenance?: RecallCaptureProvenance;
   /** 「记一条」手动新建标记（2026-09-28 拍板项豁免）：手动候选没有对话
    *  来源，sourceRefs 只能为空——证据闸防的是自动提炼线编造来源，对用户
    *  亲自输入不适用；manual=true 时跳过"空证据落 weak_observation"判定、
@@ -467,7 +480,6 @@ interface StoredRecallAssetHandoffReceipt extends RecallJsonRecord, RecallAssetH
 export type RecallPromotionProvenance = 'capture' | 'kstar';
 
 export interface PromoteRecallCandidateOptions extends AbilityAssetSemantics {
-  [AUTOMATIC_APPROVAL]?: NightlyApprovalContext;
   /** 评审决定的 actor：只有人与自动线两种。资产管家的 AI 工具**不能**晋升候选
    *  ——记忆的出生必须来自人确认或自动抽取线，所以这里不接受 'ai'
    *  （与 ReviewDecisionActor 同域，specs/008 未开这个口子）。 */
@@ -493,8 +505,8 @@ export interface PromoteRecallCandidateOptions extends AbilityAssetSemantics {
    *  值来自用户看过差异之后，代表他这次认可哪一版。
    *
    *  主进程在 `updateAbilityAsset` **锁内**再核一次 `X === 当前在用版`（唯一
-   *  一处比对）：不成立仍按结构化冲突返回（零改动），成立才用**当前正文**重新
-   *  融合落库，并在决定账本记 `rebasedFrom`（原锚，与 X 不同才记）。
+   *  一处比对）：不成立仍按结构化冲突返回（零改动），成立才准确保存用户
+   *  重新核对过的完整建议，并在决定账本记 `rebasedFrom`（原锚，与 X 不同才记）。
    *  缺省 = 老行为（比 `targetVersionUsed`），存量候选的语义一个字不变。
    *  只对更新型候选（`update` / `limit_scope`）有意义（见
    *  `candidateVersionRecheckPlan`）。 */
@@ -591,7 +603,7 @@ function normalizePersonalProfileTarget(value: PersonalProfileTarget | undefined
 function sourceSessionIdsFrom(refs: CognitionSourceRef[]): string[] {
   const ids: string[] = [];
   for (const ref of refs) {
-    if (ref.kind !== 'conversation' || ids.includes(ref.id)) continue;
+    if (ref.kind !== 'conversation' || ref.subtype === 'message' || ids.includes(ref.id)) continue;
     ids.push(ref.id);
     if (ids.length >= MAX_SOURCE_SESSION_IDS) break;
   }
@@ -646,7 +658,7 @@ async function resolvePromotionAssetTitle(
 }
 
 function requireAssetType(value: unknown): AbilityAssetType {
-  if (value === 'personal' || value === 'rule' || value === 'template' || value === 'skill_method' || value === 'fact') return value;
+  if (value === 'cognition' || value === 'personal' || value === 'rule' || value === 'template' || value === 'skill_method' || value === 'fact') return value;
   throw new Error('invalid suggested type');
 }
 
@@ -709,215 +721,6 @@ function normalizeOntologyHandoff(value: unknown): RecallCandidateOntologyHandof
   }
   return { status: raw.status, commandId: raw.commandId, moduleIds: [...raw.moduleIds], recordIds: [...raw.recordIds],
     ontologyRevision: Number(raw.ontologyRevision), committedAt: requireIsoTimestamp(raw.committedAt, 'ontology handoff committed at') };
-}
-
-/**
- * **系统自动沉淀**的准入门禁——不是"用户能不能处理"。
- *
- * 消费方全是自动路径（capture-service 的自动捕获、autoApplyRecallCandidate）。
- * 用户侧可操作面在 candidate-capabilities.ts；那边把 weak_observation 放开是
- * 产品要的，这里放开则等于让系统跳过用户确认自动晋升弱证据候选。两条线
- * 必须分开，不要因为 UI 收敛顺手合并。
- */
-export type ImmediateIngestMode = 'created' | 'already-confirmed' | 'merged' | 'fused-update-pending' | 'pending-review';
-
-export interface ImmediateIngestResult {
-  mode: ImmediateIngestMode;
-  /** created 或 already-confirmed 时可用的正式资产 id。 */
-  assetId?: string;
-  /** 候选 id（各模式都有——即时直投也留候选痕迹，可审计可撤销）。 */
-  candidateId: string;
-}
-
-/** 即时模式直投（2026-09-19 方案甲·清单 #3）：模型对话中主动记的知识不再
- *  写记忆文件，直投第二段入库——存候选 → 统一晋升出口（autoApply 自带查重
- *  金字塔 L1/L2、判族挂族、正规 ReviewDecision），产出「模型记的·未验证」
- *  资产，入库即可用。
- *  类型约定：即时记忆是画像/偏好/身份类（原记忆 USER/共享档的语义），统一
- *  personal；rule/template/skill_method 留给批量线（提取器补边界）。
- *  embedding 不可用等异常不抛给对话——候选留在「待我处理」，返回
- *  pending-review。requireUserReview 用于调用方无法证明措辞逐字来自当前用户
- *  消息的场景：保留候选，但跳过自动晋升。 */
-export async function ingestImmediateKnowledge(
-  userId: string,
-  input: {
-    text: string;
-    conversationId?: string;
-    messageId?: string;
-    requireUserReview?: boolean;
-    spaceId?: string;
-    scopePolicy?: RecallAbilityAssetScopePolicy;
-  },
-): Promise<ImmediateIngestResult> {
-  const text = boundedText(String(input.text || '').trim(), 'immediate knowledge', 4_000, true);
-  if (!text) throw new Error('immediate knowledge text is required');
-  const { scanForInjection } = await import('../memory');
-  const threat = scanForInjection(text);
-  if (threat) throw new Error(`immediate knowledge blocked: suspicious content (${threat})`);
-  const { makeDisplayTitle } = await import('./statement-fusion');
-  // 来源引用直接用真实会话 id（来源目录会话级条目按裸 cid 命中）——此前拼
-  // `immediate-` 前缀合成 id，目录永远查不到，候选被渲染层误标「来源已删」
-  // （2026-09-20 修复）。证据粒度到会话：目录消息级条目用另一套 stableId
-  // 编码，不在此拼。无会话场景保留内容哈希 id（无独立出处，由渲染层如实
-  // 标注「对话中当场记」）。
-  const refs = input.conversationId
-    ? [{
-      kind: 'conversation' as const,
-      id: String(input.conversationId).slice(0, 160),
-      scope: 'conversation' as const,
-      subtype: 'session' as const,
-    }]
-    : [{
-      kind: 'conversation' as const,
-      id: `immediate-${createHash('sha256').update(text).digest('hex').slice(0, 12)}`,
-    }];
-  // captureKey：候选池确定幂等 + 「对话中记」的身份标记（safeId 白名单不许
-  // 冒号，统一 immediate- 连字符前缀；渲染层徽章与证据文案据此识别，并兼容
-  // 存量 immediate- 引用 id）。
-  const scopePolicy = normalizeAbilityAssetScopePolicy(input.scopePolicy);
-  const scopeIdentity = scopePolicyIdentity(scopePolicy);
-  const immediateCaptureKey = `immediate-${createHash('sha256')
-    .update(scopeIdentity ? `${text}\0${scopeIdentity}` : text)
-    .digest('hex').slice(0, 24)}`;
-  const candidate = await saveRecallCandidate(userId, {
-    judgment: text,
-    // 用户当场口述原文：豁免入池正文闸门（机器改写用户亲写=篡改）。
-    rawStatement: true,
-    value: text,
-    summary: makeDisplayTitle(text),
-    suggestedType: 'personal',
-    suggestedScope: 'general',
-    suggestedAction: 'create',
-    sourceRefs: refs,
-    evidenceRefs: refs,
-    captureKey: immediateCaptureKey,
-    ...(input.spaceId && safeId(input.spaceId) ? { spaceId: input.spaceId } : {}),
-    ...(scopePolicy ? { scopePolicy } : {}),
-  });
-  // Callers handling model-authored wording can force the ordinary user review
-  // path. A new candidate is durable and visible, but it is not active until
-  // the user confirms or edits it in To Review.
-  // 去重可能命中早已确认的候选。不能再将它报告为“等待审核”，否则用户会
-  // 看到一个不存在的待确认入口，并误以为正式资产尚未生效。
-  if (candidate.status === 'confirmed') {
-    return {
-      mode: 'already-confirmed',
-      candidateId: candidate.id,
-      ...(candidate.promotedAssetId ? { assetId: candidate.promotedAssetId } : {}),
-    };
-  }
-  if (input.requireUserReview) return { mode: 'pending-review', candidateId: candidate.id };
-  try {
-    const applied = await promoteRecallCandidate(userId, candidate.id, { actor: 'user', decisionType: 'accept', decisionReason: 'User explicitly requested saving this exact content.' });
-    if (applied.asset?.id) return { mode: 'created', assetId: applied.asset.id, candidateId: candidate.id };
-    return { mode: 'pending-review', candidateId: candidate.id };
-  } catch (error) {
-    // 自动晋升受阻不等于候选写入失败：内容已经进入候选池，交给「待我处理」
-    // 让用户补充边界/修改类型。项目事实误入个人档就是这类准入阻塞。
-    if (error instanceof PromotionBlockedError
-      || (error as { code?: string }).code === 'promotion_blocked'
-      || error instanceof SemanticDedupUnavailableError
-      || (error as { code?: string }).code === 'semantic_dedup_unavailable') {
-      return { mode: 'pending-review', candidateId: candidate.id };
-    }
-    throw error;
-  }
-}
-
-/** Import one user-selected legacy memory entry without inventing a conversation
- * source. The user has explicitly selected and confirmed this exact entry in
- * the migration review UI; preserve that history as a stable legacy-memory
- * evidence reference on the resulting asset. */
-export async function ingestLegacyMemoryKnowledge(
-  userId: string,
-  input: {
-    text: string;
-    scope?: 'user' | 'shared';
-    contentHash: string;
-    target?: { kind: 'agent' | 'space' | 'project'; id: string; spaceId?: string };
-    sourceRefs?: unknown[];
-  },
-): Promise<ImmediateIngestResult> {
-  const text = boundedText(String(input.text || '').trim(), 'legacy memory entry', 4_000, true);
-  if (!text) throw new Error('legacy memory entry is required');
-  if (input.scope !== undefined && input.scope !== 'user' && input.scope !== 'shared') throw new Error('invalid legacy memory scope');
-  if ((!input.scope && !input.target) || (input.scope && input.target)) throw new Error('legacy memory target is required');
-  if (!/^[a-f0-9]{64}$/.test(String(input.contentHash || ''))) throw new Error('invalid legacy memory content hash');
-  if (input.target && (!['agent', 'space', 'project'].includes(input.target.kind) || !safeId(input.target.id)
-    || (input.target.spaceId !== undefined && !safeId(input.target.spaceId)))) {
-    throw new Error('invalid legacy memory target');
-  }
-
-  const { scanForInjection } = await import('../memory');
-  const threat = scanForInjection(text);
-  if (threat) throw new Error(`legacy memory entry blocked: suspicious content (${threat})`);
-  const { makeDisplayTitle } = await import('./statement-fusion');
-  const fileLabel = input.target
-    ? input.target.kind === 'agent' ? `旧 Agent 记忆 · ${input.target.id}`
-      : input.target.kind === 'space' ? `旧 Space 记忆 · ${input.target.id}`
-        : `旧 Project 记忆 · ${input.target.id}`
-    : input.scope === 'user' ? '旧 USER.md 个人记忆' : '旧 MEMORY.md 共享记忆';
-  const sourceRef = input.sourceRefs?.length
-    ? undefined
-    : {
-      kind: 'memory' as const,
-      id: `legacy-${input.scope || input.target?.kind}-${input.contentHash.slice(0, 32)}`,
-      title: fileLabel,
-      excerpt: text,
-    };
-  const sourceRefs = input.sourceRefs?.length ? input.sourceRefs : [sourceRef];
-  const scopePolicy = input.target?.kind === 'agent'
-    ? { agentIds: [input.target.id] }
-    : input.target?.kind === 'space'
-      ? { workspaceIds: [input.target.id] }
-      : input.target?.kind === 'project'
-        ? {
-          ...(input.target.spaceId ? { workspaceIds: [input.target.spaceId] } : {}),
-          projectIds: [input.target.id],
-        }
-        : undefined;
-  const spaceId = input.target?.kind === 'space'
-    ? input.target.id
-    : input.target?.kind === 'project' ? input.target.spaceId : undefined;
-  const captureKey = input.target
-    ? `legacy-memory-scoped-${createHash('sha256').update(JSON.stringify({ target: input.target, scopePolicy, hash: input.contentHash })).digest('hex').slice(0, 32)}`
-    : `legacy-memory-${input.scope}-${input.contentHash.slice(0, 32)}`;
-  const candidate = await saveRecallCandidate(userId, {
-    judgment: text,
-    // 旧记忆迁移=忠实搬运历史原文：豁免闸门，警示与治理轮兜底。
-    rawStatement: true,
-    value: text,
-    summary: makeDisplayTitle(text),
-    suggestedType: 'personal',
-    suggestedScope: 'general',
-    suggestedAction: 'create',
-    sourceRefs,
-    evidenceRefs: sourceRefs,
-    captureKey,
-    ...(scopePolicy ? { scopePolicy } : {}),
-    ...(spaceId ? { spaceId } : {}),
-  });
-
-  if (candidate.status === 'confirmed' && candidate.promotedAssetId) {
-    return { mode: 'created', assetId: candidate.promotedAssetId, candidateId: candidate.id };
-  }
-  try {
-    const promoted = await promoteRecallCandidate(userId, candidate.id, {
-      actor: 'user',
-      decisionType: 'accept',
-      decisionReason: `User explicitly migrated this entry from ${fileLabel}.`,
-    });
-    return { mode: 'created', assetId: promoted.asset.id, candidateId: candidate.id };
-  } catch (error) {
-    // A semantic duplicate, security gate, or other review-only condition must
-    // leave the source note in place. The persisted candidate remains visible
-    // to the user; migration cleanup only occurs after a confirmed asset.
-    const latest = await readRecallCandidate(userId, candidate.id).catch(() => undefined);
-    if (latest && ['pending_review', 'deferred', 'observed', 'weak_observation'].includes(latest.status)) {
-      return { mode: 'pending-review', candidateId: candidate.id };
-    }
-    throw error;
-  }
 }
 
 export function isAutoCaptureEligible(candidate: Pick<RecallCandidateRecord, 'status'>): boolean {
@@ -1064,6 +867,7 @@ function asCandidate(value: RecallJsonRecord): RecallCandidateRecord {
   const learningProvenance = normalizeLearningProvenance(value.learningProvenance);
   const scopePolicy = normalizeAbilityAssetScopePolicy(value.scopePolicy);
   const ontologyHandoff = normalizeOntologyHandoff(value.ontologyHandoff);
+  const captureProvenance = normalizeCaptureProvenance(value.captureProvenance);
   if ((status === 'integrated') !== (ontologyHandoff?.status === 'integrated')
     || (ontologyHandoff?.status === 'in_progress' && isTerminalCandidate(status))) {
     throw new Error('malformed recall candidate ontology handoff state');
@@ -1093,10 +897,12 @@ function asCandidate(value: RecallJsonRecord): RecallCandidateRecord {
     ...value,
     contentFormatVersion: 1,
     taxonomyVersion: 2,
+    ontologyFormation: normalizeOntologyFormationPlan(value.ownerId, value.id, value.ontologyFormation),
     status,
     value: candidateValue,
     summary: candidateSummary,
     ...(evidenceSummary ? { evidenceSummary } : {}),
+    ...(value.contentCategory !== undefined ? { contentCategory: readContentCategory(value.contentCategory) } : {}),
     suggestedType: requireAssetType(value.suggestedType),
     suggestedAction: requireCandidateAction(value.suggestedAction),
     risk: requireCandidateRisk(value.risk),
@@ -1108,6 +914,7 @@ function asCandidate(value: RecallJsonRecord): RecallCandidateRecord {
     ...(learningProvenance ? { learningProvenance } : {}),
     ...(scopePolicy ? { scopePolicy } : {}),
     ...(ontologyHandoff ? { ontologyHandoff } : {}),
+    ...(captureProvenance ? { captureProvenance } : {}),
     ...(origin ? { origin } : {}),
     // 正文规范警示（2026-09-29）：读时派生、不落盘——只给人看与治理轮圈选，
     // 不拦截写入（正文是知识本体，把关权在人，设计定稿）。无条件权威覆盖：
@@ -1394,41 +1201,22 @@ export async function readRecallCandidate(userId: string, candidateId: string): 
   return asCandidate(record);
 }
 
-export async function importPersonalOntologyCandidate(userId: string, legacyCandidateId: string): Promise<RecallCandidateRecord> {
-  if (!safeId(userId) || !safeId(legacyCandidateId)) throw new Error('invalid personal ontology candidate id');
-  const captureKey = `po-candidate-${createHash('sha256').update(`${userId}\n${legacyCandidateId}`).digest('hex').slice(0, 32)}`;
-  const existing = (await listRecallCandidates(userId)).find((candidate) => candidate.captureKey === captureKey);
-  if (existing) return existing;
-  const data = await personalOntologyCandidates.listCandidates(userId);
-  const legacy = (data.candidate_updates || []).find((candidate) => candidate.candidate_id === legacyCandidateId);
-  if (!legacy) throw new Error('personal ontology candidate not found');
-  if (legacy.sensitivity && legacy.sensitivity !== 'standard') {
-    throw Object.assign(new Error('restricted personal ontology candidates cannot be transferred to task-visible review'), { code: 'legacy_candidate_restricted' });
-  }
-  const suggestedType: AbilityAssetType = legacy.kind === 'preference' ? 'personal' : legacy.kind === 'rule' ? 'rule' : 'fact';
-  return saveRecallCandidate(userId, {
-    judgment: legacy.memory_text || legacy.summary,
-    // 旧本体候选导入=历史原文搬运：豁免闸门。
-    rawStatement: true,
-    summary: legacy.summary,
-    suggestedType,
-    suggestedScope: legacy.memory_scope === 'user' ? 'global' : 'project',
-    sourceRefs: legacy.source_memory_refs.map((id) => ({ kind: 'memory', id })),
-    captureKey,
-    ...(legacy.project_id && safeId(legacy.project_id) ? { scopePolicy: { projectIds: [legacy.project_id] } } : {}),
-  });
-}
-
 export async function saveRecallCandidate(userId: string, input: SaveRecallCandidateInput): Promise<RecallCandidateRecord> {
+  if (input.manual === true || input.learningSignal !== undefined || input.learningProvenance !== undefined) {
+    throw new Error('retired candidate producer cannot create a nightly suggestion');
+  }
+  await verifyCaptureProvenanceForWrite(userId, input.captureProvenance, normalizeCognitionSourceRefsForWrite(input.sourceRefs));
   // 入池正文闸门（2026-09-29 根治冗长正文）：机器生成线的不合规正文先经
   // suggestAbilityAssetStatement 改写（见 candidate-statement-gate.ts 头注）。
   // 必须在文件锁外——改写是 LLM 调用，锁内跑模型会阻塞整池写入。
   const gatedJudgment = await gateCandidateStatement(userId, {
     judgment: input.judgment,
     suggestedType: requireAssetType(input.suggestedType),
-    skip: input.rawStatement === true || input.manual === true,
+    skip: input.rawStatement === true,
   });
-  const gatedInput = gatedJudgment === input.judgment ? input : { ...input, judgment: gatedJudgment };
+  const gatedInput = gatedJudgment === input.judgment ? input : { ...input, judgment: gatedJudgment,
+    ...(input.ontologyFormation ? { ontologyFormation: { ...input.ontologyFormation,
+      blockedReasons: [...new Set([...input.ontologyFormation.blockedReasons, 'candidate_edited_requires_ontology_review'])] } } : {}) };
   const lockPath = recallJsonRecordPath(userId, 'candidate-locks', 'save');
   return fileEditLock(lockPath).runExclusive(() => saveRecallCandidateUnlocked(userId, gatedInput));
 }
@@ -1445,7 +1233,9 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
   const scopePolicy = normalizeAbilityAssetScopePolicy(input.scopePolicy);
   const sourceRefs = normalizeCognitionSourceRefsForWrite(input.sourceRefs);
   const evidenceRefs = normalizeCognitionSourceRefsForWrite(input.evidenceRefs || input.sourceRefs);
+  const contentCategory = input.contentCategory === undefined ? undefined : requireContentCategory(input.contentCategory);
   const suggestedType = requireAssetType(input.suggestedType);
+  const captureProvenance = await verifyCaptureProvenanceForWrite(userId, input.captureProvenance, sourceRefs);
   const hasExplicitValue = Object.prototype.hasOwnProperty.call(input, 'value');
   const hasExplicitAction = Object.prototype.hasOwnProperty.call(input, 'suggestedAction');
   const suggestedAction = requireCandidateAction(input.suggestedAction);
@@ -1462,20 +1252,12 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
     JSON.stringify(evidenceRefs),
     learningSignal ? JSON.stringify(learningSignal) : undefined,
     learningProvenance ? JSON.stringify(learningProvenance) : undefined,
+    captureProvenance ? JSON.stringify(captureProvenance) : undefined,
   ]);
   const captureKey = input.captureKey === undefined
     ? undefined
     : boundedText(input.captureKey, 'capture key', 160, true);
-  const persistedOrigin = input.manual === true
-    ? 'manual'
-    : deriveCandidateOrigin(
-      {
-        captureKey,
-        learningProvenance,
-        sourceRefs,
-      } as unknown as RecallJsonRecord,
-      learningProvenance !== undefined,
-    );
+  const persistedOrigin = 'capture' as const; // Every new suggestion has verified nightly extraction evidence.
   if (captureKey && !safeId(captureKey)) throw new Error('invalid capture key');
   if (captureKey) {
     const captured = (await listRecallCandidates(userId)).find((candidate) => candidate.captureKey === captureKey);
@@ -1513,7 +1295,10 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
     && hasReviewableCandidateEvidence({ origin: input.manual === true ? 'manual' : undefined, sourceRefs, evidenceRefs })
     && Boolean(suggestedScope) && (hasExplicitAction || !hasExplicitValue)
     && (!candidateActionNeedsTarget(suggestedAction) || Boolean(targetAssetId));
-  let existing = (await listRecallCandidates(userId)).find((candidate) => {
+  const existing = (await listRecallCandidates(userId)).find((candidate) => {
+    // Retired manual/teaching waits must not absorb a freshly completed nightly suggestion.
+    if (captureProvenance && !isTerminalCandidate(candidate.status)
+      && (candidate.origin !== 'capture' || candidate.captureProvenance?.captureId !== captureProvenance.captureId)) return false;
     if (fingerprint(candidate) !== fingerprint(candidateDraft)) return false;
     const hasNewEvidence = hasNewSourceRefs(candidate.evidenceRefs, evidenceRefs);
     const riskIncreased = maxCandidateRisk(candidate.risk, risk) !== candidate.risk;
@@ -1521,34 +1306,18 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
     if (candidate.status === 'confirmed') return !riskIncreased;
     return true;
   });
-  if (existing?.status === 'confirmed' && existing.promotedAssetId) {
-    const hasNewProvenance = hasNewSourceRefs(existing.sourceRefs, sourceRefs)
-      || hasNewSourceRefs(existing.evidenceRefs, evidenceRefs);
-    if (hasNewProvenance) {
-      const asset = await readAbilityAsset(userId, existing.promotedAssetId);
-      // 软删除（status='deleted'）与 revoked/purged 同为终态：mergeAbilityAssetEvidence
-      // 的 assertMutableAbilityAsset 对 deleted 抛 'deleted ability asset cannot be
-      // changed'，会打挂整条 saveRecallCandidate。三态一并走 existing=undefined
-      // 新建候选（查重池 loadDedupPools 本就把三态并列排除）。
-      if (asset.status === 'revoked' || asset.status === 'purged' || asset.status === 'deleted') {
-        existing = undefined;
-      } else {
-        await appendAssetEvidence(userId, asset, {
-          ...existing,
-          sourceRefs: mergeSourceRefs(existing.sourceRefs, sourceRefs),
-          evidenceRefs: mergeSourceRefs(existing.evidenceRefs, evidenceRefs),
-        });
-      }
-    }
-  }
   if (existing) {
     // 相同内容命中既有候选（追加依据而非新增近义资产）：夜间统计记账。
     void bumpRecallCaptureStats(userId, { duplicatesSuppressed: 1 }).catch(() => {
       // 统计失败不影响候选合并主流程。
     });
+    // Extraction may recognize an already saved idea, but it cannot append
+    // evidence to its formal asset or rewrite the committed candidate proof.
+    if (existing.status === 'confirmed') return existing;
     const merged = await updateRecallJsonRecord(userId, 'candidates', existing.id, (current) => {
       if (!current) return existing;
       const candidate = asCandidate(current);
+      if (candidate.status === 'confirmed') return candidate;
       const hasNewEvidence = hasNewSourceRefs(candidate.evidenceRefs, evidenceRefs);
       const riskIncreased = maxCandidateRisk(candidate.risk, risk) !== candidate.risk;
       const shouldReopen = (hasNewEvidence || riskIncreased) && (
@@ -1562,6 +1331,8 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
         sourceRefs: mergeSourceRefs(candidate.sourceRefs, sourceRefs),
         evidenceRefs: mergeSourceRefs(candidate.evidenceRefs, evidenceRefs),
         risk: maxCandidateRisk(candidate.risk, risk),
+        ...(captureProvenance ? { captureProvenance } : {}),
+        ...(input.ontologyFormation ? { ontologyFormation: normalizeOntologyFormationPlan(userId, candidate.id, bindOntologyFormationPlan(candidate.id, input.ontologyFormation)) } : {}),
         ...(candidateBoundaries.applicableWhen !== undefined
           ? { applicableWhen: candidateBoundaries.applicableWhen }
           : {}),
@@ -1592,6 +1363,7 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
     summary,
     ...(evidenceSummary ? { evidenceSummary } : {}),
     ...(uncertainty ? { uncertainty } : {}),
+    ...(contentCategory !== undefined ? { contentCategory } : {}),
     suggestedType,
     suggestedScope,
     sourceRefs,
@@ -1603,6 +1375,7 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
     ...(learningSignal ? { learningSignal } : {}),
     ...(learningProvenance ? { learningProvenance } : {}),
     ...(captureKey ? { captureKey } : {}),
+    ...(captureProvenance ? { captureProvenance } : {}),
     // 写入侧显式落 origin（2026-09-19 归一化第二步）：新记录落盘即带统一
     // 来源标记，读时推导只服务旧记录；与推导规则同源（provenance > 前缀 >
     // 教学引用 > capture），两处规则由 deriveCandidateOrigin 单点维护。
@@ -1616,6 +1389,7 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
     createdAt: now,
     updatedAt: now,
   };
+  if (input.ontologyFormation) record.ontologyFormation = normalizeOntologyFormationPlan(userId, record.id, bindOntologyFormationPlan(record.id, input.ontologyFormation));
   if (captureKey) {
     return asCandidate(await updateRecallJsonRecord(
       userId,
@@ -1678,6 +1452,38 @@ async function assertResolvableNewSourceRefs(
   }
 }
 
+/** Partial ontology commits must finish through their existing handoff. */
+function assertCandidateNotInOntologyHandoff(candidate: RecallCandidateRecord): void {
+  if (candidate.ontologyHandoff?.status === 'in_progress') {
+    throw recallCandidateError('recall_candidate_handoff_incomplete',
+      'candidate has an incomplete ontology handoff; continue ontology review before another decision');
+  }
+}
+
+/** Find the existing confirmation even if a process stopped before saving its ID. */
+async function readCandidateConfirmationDecision(userId: string, candidate: RecallCandidateRecord): Promise<ReviewDecision | undefined> {
+  const targetRef = `recall_candidate:${candidate.id}`;
+  if (candidate.reviewDecisionId) return readReviewDecision(userId, targetRef, candidate.reviewDecisionId);
+  const key = confirmationIdempotencyKey(candidate);
+  const matches = (await listReviewDecisions(userId, targetRef)).filter(entry =>
+    entry.idempotency_key === key || entry.idempotency_key === `automatic-${key}`);
+  // A system commit can precede the final candidate write. Protect that handoff
+  // from edits/rejections even when its decision ID was not stored yet.
+  for (const decision of matches) {
+    if (await readAppliedHandoffAsset(userId, candidate, decision.decision_id)) return decision;
+  }
+  return matches.find(entry => entry.asset_id || entry.outcome === 'asset_created') || matches[0];
+}
+
+/** Once content was committed, only confirmation recovery can close this review. */
+async function assertCandidateHasNoAppliedHandoff(userId: string, candidate: RecallCandidateRecord): Promise<void> {
+  const decision = await readCandidateConfirmationDecision(userId, candidate);
+  if (decision && await readAppliedHandoffAsset(userId, candidate, decision.decision_id)) {
+    throw recallCandidateError('recall_candidate_handoff_incomplete',
+      'candidate has an incomplete asset handoff; retry confirmation before another decision');
+  }
+}
+
 export async function updateRecallCandidate(userId: string, candidateId: string, input: SaveRecallCandidateInput): Promise<RecallCandidateRecord> {
   const judgment = boundedText(input.judgment, 'judgment', 4_000, true, true)!;
   // value 上限与 judgment 对齐（2026-09-19）：value 缺省兜底改为 judgment 全文，
@@ -1686,6 +1492,7 @@ export async function updateRecallCandidate(userId: string, candidateId: string,
   const summary = boundedText(input.summary, 'summary', 1_000) || fallbackCandidateTitle(judgment);
   const uncertainty = boundedText(input.uncertainty, 'uncertainty', 1_000);
   const suggestedScope = boundedText(input.suggestedScope, 'suggested scope', 500) || '';
+  const contentCategory = input.contentCategory === undefined ? undefined : requireContentCategory(input.contentCategory);
   const suggestedType = requireAssetType(input.suggestedType);
   const sourceRefs = normalizeCognitionSourceRefsForWrite(input.sourceRefs);
   const evidenceRefs = normalizeCognitionSourceRefsForWrite(input.evidenceRefs || input.sourceRefs);
@@ -1697,19 +1504,6 @@ export async function updateRecallCandidate(userId: string, candidateId: string,
     ? currentCandidate.scopePolicy
     : normalizeAbilityAssetScopePolicy(input.scopePolicy);
   await assertResolvableNewSourceRefs(userId, currentCandidate, [...sourceRefs, ...evidenceRefs]);
-  if (currentCandidate.status === 'failed' && currentCandidate.reviewDecisionId) {
-    const appliedAsset = await readAppliedHandoffAsset(
-      userId,
-      currentCandidate,
-      currentCandidate.reviewDecisionId,
-    );
-    if (appliedAsset) {
-      throw recallCandidateError(
-        'recall_candidate_handoff_incomplete',
-        'candidate has an incomplete asset handoff; retry confirmation before editing',
-      );
-    }
-  }
   const suggestedAction = input.suggestedAction === undefined
     ? currentCandidate.suggestedAction
     : requireCandidateAction(input.suggestedAction);
@@ -1776,12 +1570,14 @@ export async function updateRecallCandidate(userId: string, candidateId: string,
     ...(candidateBoundaries.forbiddenWhen ? { forbiddenWhen: candidateBoundaries.forbiddenWhen } : {}),
     ...(conflictScan.get(candidateId)?.length ? { conflictingTypes: conflictScan.get(candidateId)! } : {}),
   }, { actor: 'user' }).ok;
-  const updated = await updateRecallJsonRecord(userId, 'candidates', candidateId, (raw) => {
+  const updated = await updateRecallJsonRecord(userId, 'candidates', candidateId, async (raw) => {
     if (!raw) throw new Error('recall candidate not found');
     const current = asCandidate(raw);
     if (isTerminalCandidate(current.status)) {
       throw new RecallCandidateStateError(RECALL_CANDIDATE_TERMINAL_ERROR_CODE, 'recall candidate is terminal', current.status);
     }
+    assertCandidateNotInOntologyHandoff(current);
+    await assertCandidateHasNoAppliedHandoff(userId, current);
     // 字段齐全 **且** 内容过得了正式资产准入门槛，才允许迁到 pending_review。
     //
     // 少了后半句就是"洗白"：抽取期因为分类不合格被 forceWeakObservation 压成
@@ -1796,14 +1592,25 @@ export async function updateRecallCandidate(userId: string, candidateId: string,
       && Boolean(suggestedScope) && (!candidateActionNeedsTarget(suggestedAction) || Boolean(targetAssetId))
       && promotionEligible;
     const now = new Date().toISOString();
+    const ontologyChanged = current.ontologyFormation && (current.judgment !== judgment || current.value !== resolvedValue
+      || current.suggestedType !== suggestedType || current.suggestedScope !== suggestedScope
+      || current.suggestedAction !== suggestedAction || current.targetAssetId !== targetAssetId
+      || !isDeepStrictEqual(current.sourceRefs, sourceRefs) || !isDeepStrictEqual(current.evidenceRefs, evidenceRefs)
+      || !isDeepStrictEqual(current.scopePolicy, scopePolicy)
+      || (input.applicableWhen !== undefined && !isDeepStrictEqual(current.applicableWhen, candidateBoundaries.applicableWhen))
+      || (input.forbiddenWhen !== undefined && !isDeepStrictEqual(current.forbiddenWhen, candidateBoundaries.forbiddenWhen)));
+    const ontologyFormation = ontologyChanged ? { ...current.ontologyFormation!,
+      blockedReasons: [...new Set([...current.ontologyFormation!.blockedReasons, 'candidate_edited_requires_ontology_review'])] } : current.ontologyFormation;
     return {
       ...current,
+      ...(ontologyFormation ? { ontologyFormation } : {}),
       contentFormatVersion: 1,
       judgment,
       value: resolvedValue,
       ...(evidenceSummary ? { evidenceSummary } : {}),
       ...(summary ? { summary } : {}),
       ...(uncertainty ? { uncertainty } : {}),
+      ...(contentCategory !== undefined ? { contentCategory } : {}),
       suggestedType,
       suggestedScope,
       sourceRefs,
@@ -1821,6 +1628,7 @@ export async function updateRecallCandidate(userId: string, candidateId: string,
       failedAt: undefined,
       promotedAssetId: undefined,
       reviewDecisionId: undefined,
+      autoReview: undefined,
       promotionErrorCode: undefined,
       promotionErrorMessage: undefined,
       promotionFailedAt: undefined,
@@ -1833,9 +1641,48 @@ export async function updateRecallCandidate(userId: string, candidateId: string,
   return asCandidate(updated);
 }
 
+/** Stores a held automatic review as an observation, never saving authority.
+ * The comparison runs inside the actual candidate record lock because edits
+ * can occur independently of the wider promotion pool lock. */
+export async function recordRecallCandidateAutomaticHold(userId: string, expected: RecallCandidateRecord,
+  review: AutomaticCandidateReview): Promise<RecallCandidateRecord> {
+  if (review.eligible) throw new Error('automatic hold cannot authorize promotion');
+  const content = (candidate: RecallCandidateRecord) => {
+    const { autoReview: _review, updatedAt: _updatedAt, ...snapshot } = candidate;
+    return snapshot;
+  };
+  return withRecallCandidateReviewLock(userId, async () => {
+    const saved = await updateRecallJsonRecord(userId, 'candidates', expected.id, raw => {
+      if (!raw) throw new Error('recall candidate not found');
+      const current = asCandidate(raw);
+      if (current.status !== 'pending_review' || !isDeepStrictEqual(content(current), content(expected))) return raw;
+      return { ...raw, autoReview: review };
+    });
+    return asCandidate(saved);
+  });
+}
+
 /** Record an independent execution outcome without changing the candidate's
  * lifecycle. Promotion and asset governance remain responsible for status;
  * this counter is only the evidence ledger used to decide maturity or pause. */
+/** Replace only the explicitly rechecked dependency preview. The model runs
+ * outside locks; changed candidates or an already committed handoff cannot be rebased. */
+export async function replaceRecallCandidateOntologyFormation(
+  userId: string, candidateId: string, plan: OntologyFormationPlan, expectedCandidate: RecallCandidateRecord,
+): Promise<RecallCandidateRecord> {
+  return withRecallCandidatePromotionLock(userId, async () => asCandidate(await updateRecallJsonRecord(userId, 'candidates', candidateId, async raw => {
+    if (!raw) throw recallCandidateError('recall_candidate_not_found', 'recall candidate not found');
+    const current = asCandidate(raw);
+    if (isTerminalCandidate(current.status)) throw new RecallCandidateStateError(RECALL_CANDIDATE_TERMINAL_ERROR_CODE, 'recall candidate is terminal', current.status);
+    assertCandidateNotInOntologyHandoff(current);
+    await assertCandidateHasNoAppliedHandoff(userId, current);
+    if (!isDeepStrictEqual(current, expectedCandidate)) throw Object.assign(new Error('candidate changed while its ontology preview was being rechecked'), { code: 'ontology_recheck_candidate_changed' });
+    const now = new Date().toISOString();
+    return { ...current, ontologyFormation: normalizeOntologyFormationPlan(userId, candidateId, bindOntologyFormationPlan(candidateId, plan)),
+      reviewDecisionId: undefined, userModifiedAt: current.userModifiedAt || now, updatedAt: now };
+  })));
+}
+
 export async function recordRecallCandidateValidation(
   userId: string,
   candidateId: string,
@@ -1963,6 +1810,8 @@ async function decideWithoutAsset(
       if (!current) throw new Error('recall candidate not found');
       const candidate = asCandidate(current);
       if (isTerminalCandidate(candidate.status)) return candidate;
+      assertCandidateNotInOntologyHandoff(candidate);
+      await assertCandidateHasNoAppliedHandoff(userId, candidate);
       // 同上：拒绝 / 稍后 / 忽略 是用户对一条弱候选最基本的处置权，不能因为
       // 证据弱就把它锁死在待办里。系统 actor 仍然不许替用户下这个决定，
       // refs 为空的候选也仍然出不去（否则写出的记录读不回来）。
@@ -2039,38 +1888,6 @@ export async function withRecallCandidateProcessingDetails(candidateUserId: stri
   }
 }
 
-/** Called only by the nightly capture producer, never by IPC/model tool arguments. */
-export async function approveNewNightlyRecallCandidate(userId: string, candidateId: string, context: NightlyApprovalContext): Promise<RecallCandidateRecord> {
-  return withRecallAutoApprovalLock(userId, async () => {
-    let candidate = await readRecallCandidate(userId, candidateId);
-    let review: AutomaticCandidateReview;
-    try {
-      const settings = await readRecallCaptureSettings(userId);
-      const capture = await readRecallJsonRecord(userId, 'captures', context.captureId);
-      const target = candidate.targetAssetId ? await readAbilityAsset(userId, candidate.targetAssetId) : undefined;
-      review = evaluateAutomaticCandidateApproval(candidate, settings, context, target);
-      if (!capture || capture.executionPolicy !== 'nightly' || capture.status !== 'extracting'
-        || capture.autoApprovalEpoch !== context.policyEpoch || capture.createdAt !== context.captureCreatedAt
-        || capture.startedAt !== context.startedAt) review.reasons.push('夜间批次校验失败');
-      review.eligible = review.reasons.length === 0;
-      if (review.eligible) {
-        const result = await promoteRecallCandidate(userId, candidateId, {
-          actor: 'system', provenance: 'capture', [AUTOMATIC_APPROVAL]: context,
-          decisionReason: '自动批准策略 v1：本轮新夜间建议；证据已核对；明确低风险；无冲突；来源授权与使用范围不扩大；更新基准版本一致。',
-        });
-        candidate = result.candidate;
-      }
-    } catch (error) {
-      review = { policyVersion: 1, eligible: false, reasons: [`自动批准未完成，保留人工处理：${String((error as Error).message).slice(0, 500)}`], checkedAt: new Date().toISOString(), policyEpoch: context.policyEpoch };
-      candidate = await readRecallCandidate(userId, candidateId);
-    }
-    return asCandidate(await updateRecallJsonRecord(userId, 'candidates', candidateId, current => {
-      if (!current) throw new Error('recall candidate not found');
-      return { ...current, autoReview: review };
-    }));
-  });
-}
-
 /** 系统只核验已确认候选的现有资产；缺失资产留给用户处理，系统不得重新发布。 */
 export async function autoApplyRecallCandidate(
   userId: string,
@@ -2131,21 +1948,6 @@ async function readAbilityAssetSafe(userId: string, assetId: string): Promise<Re
   }
 }
 
-/** 证据并入资产：内容变化时 bump 版本 + 快照 + 审计（走 asset-service 的
- *  导出边界，旧实现不 bump 版本导致冻结快照与实时 evidenceRefs 分叉）。 */
-async function appendAssetEvidence(
-  userId: string,
-  asset: RecallAbilityAssetRecord,
-  candidate: RecallCandidateRecord,
-): Promise<RecallAbilityAssetRecord> {
-  const { mergeAbilityAssetEvidence } = await import('./asset-service');
-  return mergeAbilityAssetEvidence(userId, asset.id, candidate.evidenceRefs || [], {
-    reason: 'evidence merged from candidate dedup',
-    actor: 'system',
-    sourceSessionIds: sourceSessionIdsFrom(candidate.sourceRefs || []),
-  });
-}
-
 export async function batchPromoteRecallCandidates(
   userId: string,
   candidateIds: string[],
@@ -2190,6 +1992,8 @@ function confirmationIdempotencyKey(candidate: RecallCandidateRecord): string {
     candidateId: candidate.id,
     judgment: candidate.judgment,
     value: candidate.value,
+    ...(candidate.contentCategory !== undefined ? { contentCategory: candidate.contentCategory } : {}),
+    ...(candidate.ontologyFormation ? { ontologyFormation: candidate.ontologyFormation } : {}),
     type: candidate.suggestedType,
     scope: candidate.suggestedScope,
     action: candidate.suggestedAction,
@@ -2214,14 +2018,18 @@ async function readAppliedHandoffAsset(
   let asset: RecallAbilityAssetRecord;
   try {
     asset = await readAbilityAsset(userId, assetId);
-  } catch {
-    return undefined;
+  } catch (error) {
+    if (error instanceof Error && error.message === 'recall ability asset not found') return undefined;
+    throw error; // Unreadable is not proof that no content was committed.
   }
   const belongsToCandidate = asset.candidateId === candidate.id
     || asset.sourceCandidateIds?.includes(candidate.id);
   if (!belongsToCandidate) return undefined;
   if (candidate.suggestedAction === 'create') {
-    return asset.reviewDecisionId === reviewDecisionId ? asset : undefined;
+    if (asset.reviewDecisionId === reviewDecisionId) return asset;
+    return (await listAbilityAssetVersions(userId, asset.id))
+      .some(entry => entry.version === '1' && versionHasReviewDecision(entry.reason, reviewDecisionId))
+      ? asset : undefined;
   }
   return asset.reviewDecisionId === reviewDecisionId
     || asset.appliedReviewDecisionIds?.includes(reviewDecisionId)
@@ -2286,6 +2094,7 @@ export async function readRecallAssetHandoffReceipt(
   userId: string,
   candidateId: string,
   reviewDecisionId: string,
+  options: { recovery?: 'allow' | 'none' } = {},
 ): Promise<RecallAssetHandoffReceipt | undefined> {
   if (!safeId(candidateId) || !/^rd_[A-Za-z0-9_-]{8,64}$/.test(reviewDecisionId)) {
     throw new Error('invalid recall asset handoff receipt identity');
@@ -2299,6 +2108,7 @@ export async function readRecallAssetHandoffReceipt(
   if (stored) {
     receipt = asStoredHandoffReceipt(stored, candidateId, reviewDecisionId);
   } else {
+    if (options.recovery === 'none') return undefined;
     const candidateRecord = await readRecallJsonRecord(userId, 'candidates', candidateId);
     if (!candidateRecord) return undefined;
     const candidate = asCandidate(candidateRecord);
@@ -2349,6 +2159,11 @@ async function persistHandoffReceipt(
   };
 }
 
+/** Fusion adds a suffix; only the exact decision token identifies the commit. */
+function versionHasReviewDecision(reason: string | undefined, reviewDecisionId: string): boolean {
+  return reason?.split(';', 1)[0] === `review_decision:${reviewDecisionId}`;
+}
+
 async function recoverHandoffReceipt(
   userId: string,
   candidate: RecallCandidateRecord,
@@ -2357,12 +2172,14 @@ async function recoverHandoffReceipt(
 ): Promise<RecallAssetHandoffReceipt | undefined> {
   const belongsToCandidate = asset.candidateId === candidate.id
     || asset.sourceCandidateIds?.includes(candidate.id);
-  if (!belongsToCandidate || asset.type !== candidate.suggestedType) return undefined;
-  if (asset.reviewDecisionId === reviewDecisionId) {
+  if (!belongsToCandidate) return undefined;
+  // Current reviewDecisionId survives ordinary asset edits, so it cannot prove
+  // the current version was the reviewed version. Prefer the immutable commit.
+  const version = (await listAbilityAssetVersions(userId, asset.id))
+    .find(entry => versionHasReviewDecision(entry.reason, reviewDecisionId));
+  if (!version && asset.version === '1' && asset.type === candidate.suggestedType && asset.reviewDecisionId === reviewDecisionId) {
     return persistHandoffReceipt(userId, candidate.id, handoffReceipt(asset, reviewDecisionId));
   }
-  const version = (await listAbilityAssetVersions(userId, asset.id))
-    .find((entry) => entry.reason === `review_decision:${reviewDecisionId}`);
   if (!version || version.snapshot.type !== candidate.suggestedType) return undefined;
   return persistHandoffReceipt(userId, candidate.id, {
     assetId: asset.id,
@@ -2375,10 +2192,76 @@ async function recoverHandoffReceipt(
   });
 }
 
+/** Finish only a proven existing commit before gates for a new content write. */
+async function recoverCommittedCandidatePromotion(userId: string, candidateId: string): Promise<RecallCandidatePromotionResult | undefined> {
+  const preliminary = await readRecallCandidate(userId, candidateId);
+  if (preliminary.ontologyHandoff?.status === 'in_progress'
+    || (isTerminalCandidate(preliminary.status) && preliminary.status !== 'confirmed')) return undefined;
+  const previousDecision = await readCandidateConfirmationDecision(userId, preliminary);
+  if (!previousDecision) return undefined;
+  const committedAsset = await readAppliedHandoffAsset(userId, preliminary, previousDecision.decision_id);
+  if (!committedAsset) {
+    if (preliminary.status === 'confirmed' || previousDecision.asset_id || previousDecision.outcome === 'asset_created') {
+      throw new Error('committed ability asset is unavailable; recovery cannot grant a new content write');
+    }
+    return undefined;
+  }
+  let result: RecallCandidatePromotionResult | undefined;
+  await updateRecallJsonRecord(userId, 'candidates', candidateId, async raw => {
+    if (!raw) throw recallCandidateError('recall_candidate_not_found', 'recall candidate not found');
+    const candidate = asCandidate(raw);
+    assertCandidateNotInOntologyHandoff(candidate);
+    if (isTerminalCandidate(candidate.status) && candidate.status !== 'confirmed') return candidate;
+    let decision = await readCandidateConfirmationDecision(userId, candidate);
+    if (!decision) return candidate;
+    const asset = await readAppliedHandoffAsset(userId, candidate, decision.decision_id);
+    if (!asset) return candidate;
+    const receipt = await readRecallAssetHandoffReceipt(userId, candidate.id, decision.decision_id)
+      || await recoverHandoffReceipt(userId, candidate, decision.decision_id, asset);
+    if (!receipt || receipt.assetId !== asset.id || receipt.assetType !== candidate.suggestedType
+      || receipt.reviewDecisionId !== decision.decision_id
+      || (decision.asset_id && decision.asset_id !== asset.id)) {
+      throw recallCandidateError('recall_candidate_handoff_incomplete', 'immutable handoff receipt cannot be recovered safely');
+    }
+    decision = await recordReviewDecisionOutcome(userId, `recall_candidate:${candidate.id}`, decision.decision_id, { assetId: asset.id });
+    const confirmed: RecallCandidateRecord = candidate.status === 'confirmed'
+      && candidate.promotedAssetId === asset.id && candidate.reviewDecisionId === decision.decision_id ? candidate : {
+      ...candidate, status: 'confirmed', promotedAssetId: asset.id, reviewDecisionId: decision.decision_id,
+      failureCode: undefined, failureMessage: undefined, failedAt: undefined, updatedAt: new Date().toISOString(),
+    };
+    result = { candidate: confirmed, asset, decision, receipt };
+    return confirmed;
+  });
+  return result;
+}
+
+/** Existing commits may close an interrupted candidate journal after opt-out.
+ * This entry cannot grant any new asset write authority. */
+export function recoverRecallCandidatePromotion(userId: string, candidateId: string): Promise<RecallCandidatePromotionResult | undefined> {
+  return withRecallCandidatePromotionLock(userId, () => recoverCommittedCandidatePromotion(userId, candidateId));
+}
+
 export async function promoteRecallCandidate(
   userId: string,
   candidateId: string,
   options: PromoteRecallCandidateOptions & AbilityAssetRelationContract = {},
+): Promise<RecallCandidatePromotionResult> {
+  if (options.actor === 'system') {
+    // Repair an existing commit without granting new work or spending model
+    // calls after opt-out. Fresh semantic assessment happens before the grant
+    // lock; the locked write path accepts only its unchanged proof.
+    const recovered = await recoverRecallCandidatePromotion(userId, candidateId);
+    if (recovered) return recovered;
+    const candidate = await readRecallCandidate(userId, candidateId);
+    const review = await evaluateNightlyAutomaticApproval(userId, candidate);
+    if (!review.eligible) throw new NightlyAutomaticApprovalHeldError(review.reasons);
+    return withRecallAutoApprovalLock(userId, () => promoteRecallCandidateWithGrant(userId, candidateId, options));
+  }
+  return promoteRecallCandidateWithGrant(userId, candidateId, options);
+}
+
+async function promoteRecallCandidateWithGrant(
+  userId: string, candidateId: string, options: PromoteRecallCandidateOptions & AbilityAssetRelationContract,
 ): Promise<RecallCandidatePromotionResult> {
   if (options.actor !== 'user' && options.actor !== 'system') {
     throw new Error('recall candidate promotion requires a user actor or system actor');
@@ -2387,8 +2270,47 @@ export async function promoteRecallCandidate(
   const profileTarget = normalizePersonalProfileTarget(options.profileTarget);
   const relationContract = readAbilityAssetRelationContract(options as Record<string, unknown>);
   const optionSemantics = readAbilityAssetSemantics(options as unknown as Record<string, unknown>);
+  const recovered = await withRecallCandidatePromotionLock(userId, () => recoverCommittedCandidatePromotion(userId, candidateId));
+  if (recovered) {
+    if (recovered.asset.type === 'personal') {
+      try {
+        const { schedulePersonalProfileSync } = await import('./personal-profile-sync');
+        recovered.profileProjection = await schedulePersonalProfileSync(userId, { assetId: recovered.asset.id, ...(profileTarget ? { target: profileTarget } : {}) });
+      } catch (error) {
+        log.warn('personal profile projection after recovery degraded', { userId, assetId: recovered.asset.id, error: (error as Error).message });
+      }
+    }
+    return recovered;
+  }
   const preflight = await readRecallCandidate(userId, candidateId);
-  if (options.actor === 'system' && preflight.status !== 'confirmed' && !options[AUTOMATIC_APPROVAL]) throw new PromotionPausedError('user_confirmation_required');
+  if (isTerminalCandidate(preflight.status) && preflight.status !== 'confirmed') {
+    throw new RecallCandidateStateError(RECALL_CANDIDATE_TERMINAL_ERROR_CODE, 'recall candidate is terminal', preflight.status);
+  }
+  try {
+    await verifyCaptureProvenanceForPromotion(userId, preflight);
+  } catch (error) {
+    if (error instanceof CaptureFormationSourceUnavailableError) {
+      await updateRecallJsonRecord(userId, 'candidates', candidateId, async current => {
+        if (!current) throw error;
+        const latest = asCandidate(current);
+        if (isTerminalCandidate(latest.status) || latest.ontologyHandoff?.status === 'in_progress') return latest;
+        // Recheck the current refs while locked: an edit may have removed the
+        // revoked supplementary source since preflight read it.
+        try { await verifyCaptureProvenanceForPromotion(userId, latest); return latest; }
+        catch (latestError) { if (!(latestError instanceof CaptureFormationSourceUnavailableError)) return latest; }
+        const now = new Date().toISOString();
+        return { ...latest, status: 'failed', failureCode: 'source_unavailable',
+          failureMessage: error.message, failedAt: now, updatedAt: now };
+      });
+    }
+    throw error;
+  }
+  if (options.actor === 'system') {
+    if (options.forceCreateSimilar || options.confirmBaselineVersion || options.decisionType === 'modify'
+      || options.ontologyRefs || options.scopePolicy || options.causalRule || options.profileTarget
+      || Object.keys(optionSemantics).length || Object.keys(relationContract).length) throw new PromotionPausedError('automatic_confirmation_cannot_override_candidate');
+    await requireNightlyAutomaticApproval(userId, preflight);
+  }
   // 版本组防分裂闸门（2026-09-16）：用户确认 create 候选时若与现有资产语义
   // 高度相似，先问一句（专用错误码）——前端提示"新条目还是改为更新"，确认
   // 新条目后带 forceCreateSimilar 重试。带 update 目标/自动线不经过这里；
@@ -2488,22 +2410,19 @@ export async function promoteRecallCandidate(
       preferredTitle: preflight.summary || '',
       statement: plannedCreateStatement,
       type: preflight.suggestedType,
-        reviewedTitle: options.actor !== 'system' && !options[AUTOMATIC_APPROVAL] && (preflight.origin === 'manual' || Boolean(preflight.userModifiedAt)),
+        reviewedTitle: options.actor !== 'system' && (preflight.origin === 'manual' || Boolean(preflight.userModifiedAt)),
     })
     : undefined;
   let plannedUpdate: { statement: string; title: string } | undefined;
   if (preflightTarget && (preflight.suggestedAction === 'update' || preflight.suggestedAction === 'limit_scope')) {
-    const plannedFused = preflight.suggestedAction === 'update' && String(preflightTarget.statement || '').trim()
-      ? fuseStatements(String(preflightTarget.statement), String(preflight.judgment || ''))
-      : null;
-    const plannedUpdateStatement = plannedFused ? plannedFused.statement : preflight.judgment;
+    const plannedUpdateStatement = preflight.judgment;
     plannedUpdate = {
       statement: plannedUpdateStatement,
       title: await resolvePromotionAssetTitle(userId, {
         preferredTitle: preflight.summary || '',
         statement: plannedUpdateStatement,
         type: preflight.suggestedType,
-        reviewedTitle: options.actor !== 'system' && !options[AUTOMATIC_APPROVAL] && (preflight.origin === 'manual' || Boolean(preflight.userModifiedAt)),
+        reviewedTitle: options.actor !== 'system' && (preflight.origin === 'manual' || Boolean(preflight.userModifiedAt)),
       }),
     };
   }
@@ -2517,21 +2436,16 @@ export async function promoteRecallCandidate(
   let updated: RecallJsonRecord;
   try {
     updated = await promotePoolLock.runExclusive(() => (async () => {
+      const concurrentRecovery = await recoverCommittedCandidatePromotion(userId, candidateId);
+      if (concurrentRecovery) {
+        decision = concurrentRecovery.decision;
+        receipt = concurrentRecovery.receipt;
+        return concurrentRecovery.candidate;
+      }
       // 锁内新鲜读：preflight 是锁外快照，窗口期内候选可能被编辑（换类型/改
       // 正文都会改变冲突扫描的键）。扫不到（记录被删）时 updater 自会报
       // not found，这里退回 preflight 让闸门照常先跑。
       const scanBase = (await readRecallCandidate(userId, candidateId)) || preflight;
-      if (options[AUTOMATIC_APPROVAL] && scanBase.suggestedAction === 'create') {
-        const { findSemanticDuplicate } = await import('./similarity');
-        const { listAbilityAssets } = await import('./asset-service');
-        const [poolCandidates, poolAssets] = await Promise.all([listRecallCandidates(userId), listAbilityAssets(userId)]);
-        const duplicate = await findSemanticDuplicate(userId, {
-          text: scanBase.judgment,
-          candidateTexts: poolCandidates.filter(entry => entry.id !== scanBase.id && !isTerminalCandidate(entry.status)).map(entry => ({ id: entry.id, text: entry.judgment })),
-          assetTexts: poolAssets.filter(entry => entry.status === 'active').map(entry => ({ id: entry.id, text: String(entry.statement || '') })),
-        });
-        if (duplicate.status !== 'no_match' || duplicate.related) throw new PromotionPausedError('无法确认不存在相似内容或分类冲突');
-      }
       {
         // 同一句话被分成两类，说明至少一边分错了。扫一遍候选池：只看同文本、
         // 未被否决的条目，收集它们的类型。
@@ -2568,17 +2482,13 @@ export async function promoteRecallCandidate(
           throw new PromotionBlockedError(validation.reasons);
         }
       }
-      return await updateRecallJsonRecord(userId, 'candidates', candidateId, async (current) => {
+      return await withOntologyFormationPromotion(userId, scanBase.ontologyFormation, options.actor!, () => updateRecallJsonRecord(userId, 'candidates', candidateId, async (current) => {
     if (!current) throw new Error('recall candidate not found');
     const candidate = asCandidate(current);
-    if (options[AUTOMATIC_APPROVAL]) {
-      const context = options[AUTOMATIC_APPROVAL]!;
-      const settings = await readRecallCaptureSettings(userId);
-      const target = candidate.targetAssetId ? await readAbilityAsset(userId, candidate.targetAssetId) : undefined;
-      const review = evaluateAutomaticCandidateApproval(candidate, settings, context, target);
-      if (!review.eligible) throw new PromotionPausedError(review.reasons.join('；'));
-    }
-    if (candidate.status === 'confirmed') return candidate;
+    if (candidate.status === 'confirmed') throw new Error('confirmed candidate has no recoverable committed asset');
+    await verifyCaptureProvenanceForPromotion(userId, candidate);
+    const automaticReview = options.actor === 'system' ? await requireNightlyAutomaticApproval(userId, candidate) : undefined;
+    assertCandidateNotInOntologyHandoff(candidate);
     if (isTerminalCandidate(candidate.status)) {
       throw new RecallCandidateStateError(RECALL_CANDIDATE_TERMINAL_ERROR_CODE, 'recall candidate is terminal', candidate.status);
     }
@@ -2633,32 +2543,33 @@ export async function promoteRecallCandidate(
         updatedAt: new Date().toISOString(),
       };
     }
+    if (candidate.contentCategory !== undefined) requireContentCategory(candidate.contentCategory);
     const targetRef = `recall_candidate:${candidate.id}`;
-    decision = candidate.status === 'failed' && candidate.reviewDecisionId
+    const previousDecision = candidate.status === 'failed' && candidate.reviewDecisionId
       ? await readReviewDecision(userId, targetRef, candidate.reviewDecisionId)
       : undefined;
-    if (candidate.status === 'failed' && candidate.reviewDecisionId && !decision) {
+    if (candidate.status === 'failed' && candidate.reviewDecisionId && !previousDecision) {
       throw new Error('previous review decision is unavailable; confirmation cannot be retried safely');
     }
+    decision = previousDecision?.actor === options.actor ? previousDecision : undefined;
     decision = decision || await writeReviewDecision(userId, {
       targetRef,
       decisionType: options.decisionType || (candidate.userModifiedAt ? 'modify' : 'accept'),
       decision: options.actor === 'system'
-        ? options[AUTOMATIC_APPROVAL] ? 'automatic low-risk approval' : 'automatic capture'
+        ? 'automatic low-risk approval'
         : options.decisionType === 'modify' || candidate.userModifiedAt ? 'modify and save' : 'accept',
       antecedentRef: candidate.id,
       scope: candidate.suggestedScope,
-      reason: options.decisionReason,
+      reason: automaticReview ? `nightly automatic confirmation; policy_epoch:${automaticReview.policyEpoch}; effectiveness unverified` : options.decisionReason,
       actor: options.actor,
       modifiedContent: candidate.userModifiedAt ? candidate.judgment : undefined,
-      idempotencyKey: confirmationIdempotencyKey(candidate),
+      idempotencyKey: `${options.actor === 'system' ? 'automatic-' : ''}${confirmationIdempotencyKey(candidate)}`,
       decisionId: options.decisionId,
     });
     const handoffActor: AbilityAssetActor = decision.actor === 'system' ? 'system' : 'user';
-    // 出身收敛（2026-09-20 拍板）：模型记下来的=已确定——晋升一律落
-    // user_confirmed_unverified（=确定、未实证），不再区分 user/kstar/auto
-    // 三条出身线；provenance 保留为审计提示，不产生任何行为差异。
-    const handoffLifecycleStatus: RecallAbilityAssetLifecycleStatus = 'user_confirmed_unverified';
+    // Permission to save is separate from human review and effectiveness evidence.
+    const handoffLifecycleStatus: RecallAbilityAssetLifecycleStatus = handoffActor === 'system'
+      ? 'automatically_extracted_unverified' : 'user_confirmed_unverified';
     const now = new Date().toISOString();
     let stored: RecallAbilityAssetRecord;
     const handoffReason = `review_decision:${decision.decision_id}`;
@@ -2714,7 +2625,7 @@ export async function promoteRecallCandidate(
           preferredTitle: candidate.summary || '',
           statement: createStatement,
           type: candidate.suggestedType,
-        reviewedTitle: options.actor !== 'system' && !options[AUTOMATIC_APPROVAL] && (candidate.origin === 'manual' || Boolean(candidate.userModifiedAt)),
+        reviewedTitle: options.actor !== 'system' && (candidate.origin === 'manual' || Boolean(candidate.userModifiedAt)),
         });
       stored = await createAbilityAsset(userId, {
         schemaVersion: 2,
@@ -2724,6 +2635,7 @@ export async function promoteRecallCandidate(
         sourceCandidateIds: [candidate.id],
         reviewDecisionId: decision.decision_id,
         type: candidate.suggestedType,
+        ...(candidate.contentCategory !== undefined ? { contentCategory: requireContentCategory(candidate.contentCategory) } : {}),
         title: promotionTitle,
         // Substantive statement: judgment (what to retain) + value (why it
         // matters / future value) when present — the value clause is the
@@ -2765,15 +2677,7 @@ export async function promoteRecallCandidate(
       } catch {
         // 挂族失败不影响入库。
       }
-      // 学习回流本体（2026-09-19 本体增强）：新资产投本体候选池等用户确认
-      // （蓝图 R13 提议-确认）。只挂 create 落点——融合/更新路径（merged/
-      // fused）内容已在资产里，回流只会重复。白名单与防洪在 backflow 模块内。
-      try {
-        const { backflowAssetToOntologyPool } = await import('./ontology-backflow');
-        await backflowAssetToOntologyPool(userId, stored);
-      } catch {
-        // 回流失败不影响入库。
-      }
+
     } else {
       if (!candidate.targetAssetId) throw new Error('candidate target asset is required');
       const target = await readAbilityAsset(userId, candidate.targetAssetId);
@@ -2786,31 +2690,23 @@ export async function promoteRecallCandidate(
           sourceCandidateId: candidate.id,
         });
       } else if (candidate.suggestedAction === 'update' || candidate.suggestedAction === 'limit_scope') {
-        // 融合而非覆盖（2026-09-19 刀二）：update 的正文 = 旧正文为主体 +
-        // 候选判断按句级三档融入（重述留更长/改写新替旧/增量追加）。选择
-        // "融合错了可回退"兜底而不是放弃融合——版本快照保证旧版随时可切回。
-        // 主体取的是**刚才读到的当前正文**（`target` 在候选记录的锁内读、紧接着
-        // 交给资产锁比对）：显式重锚时融合的就是用户看过的那一版正文，绝不拿
-        // 候选原锚版本的旧正文去糊当前版。若正文在两次读之间又变了，资产锁内
-        // 的版本比对会拦住（零改动），不会把旧内容套上去。
-        // limit_scope（范围收窄）不融合：它的判断文本通常是对范围的完整重写。
-        const fused = candidate.suggestedAction === 'update' && String(target.statement || '').trim()
-          ? fuseStatements(String(target.statement), String(candidate.judgment || ''))
-          : null;
-        const updateStatement = fused ? fused.statement : candidate.judgment;
-        // 与 create 分支同款（P-r2-17）：标题已在锁外按 preflight 目标正文+
-        // 候选判断预融合预计算；融合结果与预计算依据一致时直接沿用，并发改过
-        // 才退回锁内按原口径重算。
+        // Extraction/review prepares the complete merged revision. Save exactly
+        // the approved body; recombining sentences after confirmation could
+        // restore a corrected claim or introduce unreviewed meaning. Prior
+        // content is checked during semantic review and retained in history.
+        const updateStatement = candidate.judgment;
+        // The title is prepared from this same full body outside the pool lock.
         const updateTitle = plannedUpdate && plannedUpdate.statement === updateStatement
           ? plannedUpdate.title
           : await resolvePromotionAssetTitle(userId, {
             preferredTitle: candidate.summary || '',
             statement: updateStatement,
             type: candidate.suggestedType,
-        reviewedTitle: options.actor !== 'system' && !options[AUTOMATIC_APPROVAL] && (candidate.origin === 'manual' || Boolean(candidate.userModifiedAt)),
+        reviewedTitle: options.actor !== 'system' && (candidate.origin === 'manual' || Boolean(candidate.userModifiedAt)),
           });
         try {
-          stored = await updateAbilityAsset(userId, target.id, {
+          const commitUpdate = () => updateAbilityAsset(userId, target.id, {
+            ...(candidate.contentCategory !== undefined ? { contentCategory: requireContentCategory(candidate.contentCategory) } : {}),
             title: updateTitle,
             statement: updateStatement,
             scope: candidate.suggestedScope,
@@ -2825,12 +2721,16 @@ export async function promoteRecallCandidate(
             // 重锚后的当前在用版）交给资产服务，在它的锁内与当前在用版比对
             // ——不在本文件写第二处比对。
             ...(versionPlan.expectedVersion ? { expectedVersion: versionPlan.expectedVersion } : {}),
-            ...(options[AUTOMATIC_APPROVAL] ? { expectedActiveVersion: candidate.targetVersionUsed, expectedStatus: 'active' as const } : {}),
+            ...(handoffActor === 'system' ? { expectedActiveVersion: candidate.targetVersionUsed, expectedStatus: 'active' as const } : {}),
             actor: handoffActor,
-            reason: fused ? `${handoffReason};semantic-fusion` : handoffReason,
+            reason: handoffReason,
             reviewDecisionId: decision.decision_id,
             sourceCandidateId: candidate.id,
           });
+          if (handoffActor === 'system' && automaticReview?.policyEpoch) {
+            const { withAutomaticStandingPreferenceUpdate } = await import('./standing-preference-authority');
+            stored = await withAutomaticStandingPreferenceUpdate(userId, candidate, decision.decision_id, automaticReview.policyEpoch, commitUpdate);
+          } else stored = await commitUpdate();
         } catch (error) {
           const conflict = abilityAssetVersionConflict(error, versionPlan.expectedVersion, candidate.targetVersionUsed);
           throw conflict ? new RecallCandidateVersionConflictError(conflict) : error;
@@ -2884,14 +2784,14 @@ export async function promoteRecallCandidate(
       ...candidate,
       status: 'confirmed',
       promotedAssetId: stored.id,
+      ...(automaticReview ? { autoReview: automaticReview } : {}),
       reviewDecisionId: decision.decision_id,
-      ...(options[AUTOMATIC_APPROVAL] ? { decisionNote: options.decisionReason } : {}),
       failureCode: undefined,
       failureMessage: undefined,
       failedAt: undefined,
       updatedAt: now,
     };
-    });
+    }));
     })());
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -2900,14 +2800,15 @@ export async function promoteRecallCandidate(
     // 锁内，不通过就没写）。台账只记一次"未生效的确认尝试"，与 specs/008 的
     // approval_confirmed「未生效」行同口径；不写 failed，也不改资产。
     const versionConflict = recallCandidateVersionConflictOf(error);
+    const reviewHeld = ['nightly_automatic_approval_held', 'baseline_changed', 'formation_blocked', 't_review_required', 'shared_body_mismatch', 'shared_body_owner_conflict', 'invalid_reference'].includes(String((error as { code?: string }).code || ''));
     if (decision) {
       await recordReviewDecisionOutcome(
         userId,
         `recall_candidate:${candidateId}`,
         decision.decision_id,
-        { failureCode: versionConflict ? 'version_conflict' : 'asset_write_failed' },
+        { failureCode: versionConflict ? 'version_conflict' : reviewHeld ? String((error as { code?: string }).code) : 'asset_write_failed' },
       ).catch(() => undefined);
-      if (versionConflict) throw error;
+      if (versionConflict || reviewHeld) throw error;
       await updateRecallJsonRecord(userId, 'candidates', candidateId, (current) => {
         if (!current) throw error;
         const candidate = asCandidate(current);

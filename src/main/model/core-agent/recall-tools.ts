@@ -79,7 +79,6 @@ const DEFAULT_RESULTS = 8;
 const MAX_RESULTS = 30;
 /** 正文模式单次取用上限：一次取太多等于绕回"整块塞正文"，目录化的意义就没了。 */
 const MAX_READ_IDS = 6;
-const READ_STATEMENT_LIMIT = 2_000;
 const CATALOG_PAGE_DEFAULT = 30;
 const CATALOG_PAGE_MAX = 50;
 
@@ -175,7 +174,7 @@ function formatReadEntry(asset: RecallAbilityAssetRecord, version: string, paylo
     forbids ? `禁用: ${forbids}` : '',
     '结构: ' + JSON.stringify(payload),
     '正文:',
-    (asset.statement || '').slice(0, READ_STATEMENT_LIMIT),
+    asset.statement || '',
   ].filter(Boolean).join('\n');
 }
 
@@ -352,7 +351,7 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts, evidence: RecallTu
         assetId: asset.id,
         title: asset.title,
         version,
-        statement: String(asset.statement || '').slice(0, READ_STATEMENT_LIMIT),
+        statement: String(asset.statement || ''),
       });
     }
     await recordAgentReads(opts, readEntries);

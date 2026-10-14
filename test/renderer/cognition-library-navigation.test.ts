@@ -44,10 +44,10 @@ describe('我的认知外部导航与范围草稿委托', () => {
   it.each(['data-go-asset', 'open-asset', 'go-inbox-asset'])('%s显式资产入口清除旧筛选、定位分页并打开窄屏抽屉', async action => {
     const loaded = delegatedFixture();
     loaded.store.assets = [...Array.from({ length: 25 }, (_, index) => asset(`asset-${String(index).padStart(2, '0')}`)), asset('zz-target')];
-    Object.assign(loaded.ns.library.state, { query: '排除全部', type: 'rule', scope: 'restricted', page: 5, closed: true, drawer: false });
+    Object.assign(loaded.ns.library.state, { query: '排除全部', scope: 'restricted', page: 5, closed: true, drawer: false });
     await loaded.click(action, 'zz-target');
     expect(loaded.store.route).toMatchObject({ name: 'overview', assetId: 'zz-target' });
-    expect(loaded.ns.library.state).toMatchObject({ query: '', type: '', scope: '', page: 2, closed: false, drawer: true });
+    expect(loaded.ns.library.state).toMatchObject({ query: '', scope: '', page: 2, closed: false, drawer: true });
     const html = loaded.render();
     expect(html).toContain('ca-library-detail is-drawer-open');
     expect(html).toContain('role="dialog" aria-modal="true"');
@@ -60,12 +60,12 @@ describe('我的认知外部导航与范围草稿委托', () => {
     loaded.ns.reload = vi.fn(async () => {
       loaded.store.assets = [...Array.from({ length: 25 }, (_, index) => asset(`asset-${String(index).padStart(2, '0')}`)), asset('zz-created')];
     });
-    Object.assign(loaded.ns.library.state, { query: '旧搜索', type: 'rule', drawer: false });
+    Object.assign(loaded.ns.library.state, { query: '旧搜索', drawer: false });
     expect(loaded.window.openCognitionAssetById('zz-created')).toBe(true);
     await Promise.resolve();
     expect(loaded.ns.reload).toHaveBeenCalledOnce();
     expect(loaded.store.route).toMatchObject({ name: 'overview', assetId: 'zz-created' });
-    expect(loaded.ns.library.state).toMatchObject({ query: '', type: '', page: 2, drawer: true });
+    expect(loaded.ns.library.state).toMatchObject({ query: '', page: 2, drawer: true });
     expect(loaded.render()).toContain('data-act="library-select" data-id="zz-created"');
   });
 

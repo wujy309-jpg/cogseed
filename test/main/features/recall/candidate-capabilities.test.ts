@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 /**
  * Phase 1 状态矩阵 + 跨入口一致性。
  *
@@ -125,7 +126,7 @@ describe('Recall candidate capability — cross-entry consistency', () => {
     const candidates = await service();
     const weak = [];
     for (const n of [1, 2, 3]) {
-      weak.push(await candidates.saveRecallCandidate(userId, {
+      weak.push(await createNightlyCandidateFixture(userId, {
         judgment: `弱证据判断 ${n}`,
         summary: `证据弱样本${n}`,
         suggestedType: 'rule',
@@ -143,7 +144,7 @@ describe('Recall candidate capability — cross-entry consistency', () => {
     }
     const settled = [];
     for (const n of [4, 5]) {
-      const saved = await candidates.saveRecallCandidate(userId, {
+      const saved = await createNightlyCandidateFixture(userId, {
         judgment: `已处理判断 ${n}`,
         summary: `处理过样本${n}`,
         suggestedType: 'rule',
@@ -207,7 +208,7 @@ describe('Recall candidate capability — cross-entry consistency', () => {
 
     // 系统不得替用户把弱证据候选变成资产。
     await expect(candidates.promoteRecallCandidate(userId, weak[1].id, { actor: 'system' }))
-      .rejects.toThrow('user_confirmation_required');
+      .rejects.toMatchObject({ code: 'nightly_automatic_approval_held', reasons: expect.arrayContaining(['candidate_requires_individual_review']) });
 
     // 用户显式确认后可以沉淀，并且候选进入 confirmed 终态、能力随之收敛。
     const { getRecallCandidateCapabilities } = await caps();
@@ -243,7 +244,7 @@ describe('Recall candidate capability — normalize and persistence', () => {
     const { getRecallCandidateCapabilities } = await caps();
     const candidates = await service();
     const userId = 'u-legacy';
-    const saved = await candidates.saveRecallCandidate(userId, {
+    const saved = await createNightlyCandidateFixture(userId, {
       judgment: '旧数据候选',
       suggestedType: 'rule',
       suggestedScope: 'product',
@@ -268,7 +269,7 @@ describe('Recall candidate capability — normalize and persistence', () => {
     const { getRecallCandidateCapabilities } = await caps();
     const candidates = await service();
     const userId = 'u-restart';
-    const saved = await candidates.saveRecallCandidate(userId, {
+    const saved = await createNightlyCandidateFixture(userId, {
       judgment: '重启后仍应可处理',
       suggestedType: 'rule',
       suggestedScope: 'product',
@@ -290,7 +291,7 @@ describe('Recall candidate capability — normalize and persistence', () => {
     const { getRecallCandidateCapabilities, withRecallCandidateCapabilities } = await caps();
     const candidates = await service();
     const userId = 'u-dto';
-    const saved = await candidates.saveRecallCandidate(userId, {
+    const saved = await createNightlyCandidateFixture(userId, {
       judgment: 'DTO 投影不落盘',
       suggestedType: 'rule',
       suggestedScope: 'product',

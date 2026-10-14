@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -39,7 +40,7 @@ describe('P-r3-39 版本提取失败兜底重读', () => {
   it('正则失配（措辞漂移）时 currentVersion 来自资产记录的真实版本，不是空串', async () => {
     const candidates = await import('../../../../src/main/features/recall/candidate-service');
     const approval = await import('../../../../src/main/features/recall/asset-approval-service');
-    const candidate = await candidates.saveRecallCandidate(UID, {
+    const candidate = await createNightlyCandidateFixture(UID, {
       judgment: '发布前必须核对回滚方案。',
       summary: '兜底重读基线',
       suggestedType: 'rule', ...RULE_BOUNDARY, suggestedScope: 'architecture',

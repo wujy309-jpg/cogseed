@@ -23,7 +23,6 @@ vi.mock('../../../../src/main/features/cognition_kernel', async (importOriginal)
     ...actual,
     checkTaskFields: vi.fn(),
     getTaskFieldPack: vi.fn(),
-    backfillFieldValue: vi.fn(),
     recordCognitionBoundReceipt: vi.fn(
       (uid: string, turnId: string | undefined, packId: string, check: import('../../../../src/main/features/cognition_kernel').TaskFieldCheck) =>
         actual.recordCognitionBoundReceipt(uid, turnId, packId, check),

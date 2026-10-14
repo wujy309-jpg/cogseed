@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
@@ -48,7 +49,7 @@ async function modules() {
 
 async function pendingCandidate() {
   const { candidates } = await modules();
-  return candidates.saveRecallCandidate('user-a', {
+  return createNightlyCandidateFixture('user-a', {
     judgment: 'Keep architecture decisions in a decision log before changing runtime boundaries.',
     summary: 'Use decision logs for architecture changes',
     suggestedType: 'rule',

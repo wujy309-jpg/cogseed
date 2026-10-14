@@ -1,3 +1,4 @@
+import { seedStoredAbilityAsset } from '../helpers/stored-ability-asset';
 /**
  * 探针（状态机审计员 · 本轮，sm6）：asAsset 对 updatedAt 只查 typeof 不查
  * Date.parse（对照 deletedAt :197-198 / lastValidatedAt :221 均有格式门），
@@ -51,7 +52,7 @@ afterEach(() => {
 async function mkAsset(id: string, statement: string) {
   const assets = await import('../../src/main/features/recall/asset-service');
   const now = new Date().toISOString();
-  return assets.createAbilityAsset(UID, {
+  return seedStoredAbilityAsset(UID, {
     schemaVersion: 2, ownerId: UID, id, candidateId: `cand-${id}`,
     sourceCandidateIds: [`cand-${id}`], reviewDecisionId: `rd_prob${id.slice(-6)}`.padEnd(16, 'x'),
     type: 'personal', title: `资产 ${id}`, statement,

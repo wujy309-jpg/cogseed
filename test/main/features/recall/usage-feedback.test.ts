@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
@@ -165,7 +166,7 @@ describe('Recall message usage feedback', () => {
     const candidates = await import('../../../../src/main/features/recall/candidate-service');
     const assets = await import('../../../../src/main/features/recall/asset-service');
     // 真实资产（治理建议写在资产记录上，不能用裸 id）。
-    const candidate = await candidates.saveRecallCandidate('user-a', {
+    const candidate = await createNightlyCandidateFixture('user-a', {
       judgment: 'Prefer concise answers.', summary: 'Concise answer habit', suggestedType: 'personal',
       suggestedScope: 'general', sourceRefs: [{ kind: 'execution', id: 'exec-neg' }],
     });
@@ -240,11 +241,11 @@ describe('Recall message usage feedback', () => {
     const injections = await import('../../../../src/main/features/recall/injection-receipt');
     const candidates = await import('../../../../src/main/features/recall/candidate-service');
     const assets = await import('../../../../src/main/features/recall/asset-service');
-    const target = await candidates.promoteRecallCandidate('user-a', (await candidates.saveRecallCandidate('user-a', {
+    const target = await candidates.promoteRecallCandidate('user-a', (await createNightlyCandidateFixture('user-a', {
       judgment: 'Prefer tables.', summary: 'Table habit', suggestedType: 'personal',
       suggestedScope: 'general', sourceRefs: [{ kind: 'execution', id: 'exec-s1' }],
     })).id, { actor: 'user' });
-    const bystander = await candidates.promoteRecallCandidate('user-a', (await candidates.saveRecallCandidate('user-a', {
+    const bystander = await candidates.promoteRecallCandidate('user-a', (await createNightlyCandidateFixture('user-a', {
       judgment: 'Prefer lists.', summary: 'List habit', suggestedType: 'personal',
       suggestedScope: 'general', sourceRefs: [{ kind: 'execution', id: 'exec-s2' }],
     })).id, { actor: 'user' });
@@ -287,4 +288,39 @@ describe('Recall message usage feedback', () => {
     })).rejects.toThrow(/not cited/i);
     expect(await usage.listRecallUsage('user-a', 'asset-a')).toEqual([]);
   });
+
+  it.each(['two-old', 'mixed-then-two-current'] as const)('差评建议严格属于实际引用版本：%s', async scenario => {
+    const candidates = await import('../../../../src/main/features/recall/candidate-service');
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    const feedback = await import('../../../../src/main/features/recall/usage-feedback-service');
+    const injections = await import('../../../../src/main/features/recall/injection-receipt');
+    const usage = await import('../../../../src/main/features/recall/usage-service');
+    const candidate = await createNightlyCandidateFixture('user-a', { judgment: '复杂问题先给结论，再说明理由。', value: '表达顺序偏好。', summary: '复杂问题结论先行', suggestedType: 'cognition', contentCategory: 'preference', suggestedScope: 'general' });
+    const { asset } = await candidates.promoteRecallCandidate('user-a', candidate.id, { actor: 'user' });
+    const append = async (key: string, version: string) => {
+      const messageId = 'message-' + key, turn = 'turn-' + key, projection = 'projection-' + key;
+      await appendMessage('version-feedback-chat', { id: messageId, ts: new Date().toISOString(), from: 'commander', to: ['user'], turn_id: turn, text: '隔离测试中已保存的回答',
+        recall_citations: [{ asset_id: asset.id, title: asset.title, type: 'cognition', version, scope: 'general', projection_id: projection, match_method: 'manual' }] });
+      await injections.recordInjectionReceipt('user-a', { taskRunId: turn, projectionId: projection, assetId: asset.id, assetVersion: version, boundary: 'real', status: 'injected', channel: 'projection', messageId });
+      return () => feedback.recordRecallMessageFeedback('user-a', { cid: 'version-feedback-chat', messageId, feedback: 'negative' });
+    };
+    const oldFirst = await append('old-first', '1'), oldSecond = await append('old-second', '1');
+    if (scenario === 'mixed-then-two-current') await oldFirst();
+    await assets.updateAbilityAsset('user-a', asset.id, { statement: '复杂问题先说明假设，再给结论及原因。', actor: 'user', reason: '实际修改用户偏好正文', expectedVersion: '1', expectedActiveVersion: '1' });
+    const auditBefore = await assets.listAbilityAssetAudit('user-a', asset.id);
+    if (scenario === 'two-old') {
+      await oldFirst(); await oldSecond();
+      expect((await usage.listRecallUsage('user-a', asset.id)).filter(row => row.outcome === 'feedback_negative')).toHaveLength(2);
+      expect((await assets.readAbilityAsset('user-a', asset.id)).recommendedAction).toBeUndefined();
+      expect(await assets.listAbilityAssetAudit('user-a', asset.id)).toEqual(auditBefore);
+    } else {
+      await (await append('new-first', '2'))();
+      expect((await assets.readAbilityAsset('user-a', asset.id)).recommendedAction).toBeUndefined();
+      await (await append('new-second', '2'))();
+      expect(await assets.readAbilityAsset('user-a', asset.id)).toMatchObject({ version: '2', recommendedAction: 'pause', status: 'active' });
+      const versions = (await usage.listRecallUsage('user-a', asset.id)).filter(row => row.outcome === 'feedback_negative').map(row => row.assetVersion);
+      expect(versions).toEqual(['1', '2', '2']);
+    }
+  });
+
 });

@@ -1,3 +1,4 @@
+import { seedStoredAbilityAsset } from '../../../helpers/stored-ability-asset';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -31,7 +32,7 @@ async function seedActiveAsset(
   extra: Partial<Parameters<typeof assets.createAbilityAsset>[1]> = {},
 ) {
   const now = new Date().toISOString();
-  return assets.createAbilityAsset(UID, {
+  return seedStoredAbilityAsset(UID, {
     schemaVersion: 2, ownerId: UID, id, candidateId: `cand-${id}`,
     sourceCandidateIds: [`cand-${id}`], reviewDecisionId: `rd_${id.slice(3)}padpadpad`,
     // 标题闸门（设计 3.2）：正文前缀当标题过不了闸门，取尾部片段。

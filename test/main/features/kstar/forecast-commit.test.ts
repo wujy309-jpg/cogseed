@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -72,7 +73,8 @@ async function seedForecastBoundary(options: { confirmed: boolean; projectId?: s
     },
   });
 
-  const savedCandidate = await candidates.saveRecallCandidate('user-a', {
+  const savedCandidate = await createNightlyCandidateFixture('user-a', {
+    rawStatement: true,
     judgment: `Validate OAuth callback state. ${'x'.repeat(2_100)}`,
     summary: 'OAuth callback validation',
     suggestedType: 'rule',

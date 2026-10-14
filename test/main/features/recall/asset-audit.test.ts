@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 /**
  * 台账扩展（specs/008 T003/T004）：actor='ai'、before/after、reason、failureCategory。
  *
@@ -47,7 +48,7 @@ async function auditFileText(uid: string, assetId: string): Promise<string> {
 
 async function seed(uid: string) {
   const { candidates, assets } = await modules();
-  const candidate = await candidates.saveRecallCandidate(uid, {
+  const candidate = await createNightlyCandidateFixture(uid, {
     judgment: 'Prefer append-only audit trails.',
     // 标题闸门（设计 3.2）：无 summary 兜底＝正文首句，过不了闸门。
     summary: 'Append-only audit habit',

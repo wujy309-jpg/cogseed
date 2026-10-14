@@ -23,6 +23,7 @@ import * as path from 'node:path';
 import {
   pickChatEntryGroup,
   pickChatEntryGroupForModelOverride,
+  pickChatEntryGroupForModelCandidates,
   bumpEntryLastUsed,
   hasConfiguredModel,
   getConfiguredModelCooldown,
@@ -36,14 +37,9 @@ import { t } from '../../i18n';
 // future targeted use; runtime no longer renders the prompt block from it.
 import { getSession, memoryScopeForSession, sessionKindOf, toolResultsDirForSession } from './session-store';
 import {
-  addEntryTransactional,
-  replaceEntryTransactional,
-  removeEntryTransactional,
   listEntries,
   listSpaceEntriesWithProjectFallback,
-  backfillProjectMemoryToSpaceForWrite,
   formatForSystemPrompt as formatMemoryForSystemPrompt,
-  type MemoryOpResult,
   type MemoryScope,
 } from '../../features/memory';
 import { listActiveCognitionSourceIds } from '../../features/cognition';
@@ -108,6 +104,7 @@ import { EXTERNAL_API_PROVIDERS, resolveConfiguredPiModel } from '../provider_ca
 import { applyModelAbilityOverride, modelAbilityOverrideFor } from '../model_ability_overrides';
 import { readDisabledSets } from '../../features/component_enabled';
 import { nativeSearchToolForApi, nativeSearchToolName } from './native-search-tools';
+import { assertUtilityResponseFormat, composeUtilityResponseFormatOnPayload, type UtilityResponseFormatOptions } from './utility-response-format';
 import { hasAnySearchProfile } from '../../features/search_auth';
 import { createConnectorMetaTools, getConnectorPromptBlock } from './connector-meta-tools';
 import { createLogger } from '../../logger';
@@ -115,11 +112,7 @@ import { logErrorSummary, maskId } from '../../util/log-redact';
 import type { MemoryToolHandler } from '../../../core-agent/src/tools/memory-tool';
 import type { MetacognitionToolHandler } from '../../../core-agent/src/tools/metacognition-tool';
 import type { CognitionSaveReceipt } from '../client';
-import {
-  recordTeachingSignalAfterMemoryWrite,
-  teachingMemoryRef,
-  type UserTeachingScope,
-} from '../../features/recall/teaching-service';
+
 
 const runnerLog = createLogger('runner');
 
@@ -204,8 +197,13 @@ export interface BuildRunnerParams {
    *  entry the default group runs and the resolved runtime reports the
    *  model that actually executed. */
   modelOverride?: { provider: string; model: string };
+  /** Explicit task route. Uses the normal rotating provider; no global fallback. */
+  modelCandidates?: readonly { provider: string; model: string }[];
   /** Use an in-memory Session so utility model calls leave no resumable transcript. */
   ephemeralSession?: boolean;
+  /** Explicit syntax-only JSON mode for tool-free ephemeral utility calls.
+   * Supported adapters opt in; ordinary chats keep their existing payload. */
+  responseFormat?: 'json_object';
   /** Conversation id. Used by file-tools to scope read_file / search_file
    *  / process_file_full calls whose path targets the attachment dir of the
    *  current conv. */
@@ -476,6 +474,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
    *  governed asset content or returns a persisted ontology relation. */
   finalResponseGate?: import('./recall-tools').RecallFinalResponseGate;
 }> {
+  assertUtilityResponseFormat(params);
   if (params.agentId) await assertAgentChatDispatchable(
     params.userId || _safeActiveUserId() || '',
     params.agentId,
@@ -490,8 +489,12 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   // entry (credentials removed, cooled down) falls back to the default
   // priority group rather than failing the turn — the runtime resolution
   // callback then reports what actually ran, keeping the UI honest.
-  let group = await pickChatEntryGroup();
-  if (params.modelOverride) {
+  const explicitRoute = !!params.modelCandidates?.length;
+  let group = explicitRoute
+    ? await pickChatEntryGroupForModelCandidates(params.modelCandidates!)
+    : await pickChatEntryGroup();
+  if (explicitRoute && !group.length) throw Object.assign(new Error(t('errors.model_config_unavailable')), { code: 'PROVIDER_AUTH_EXHAUSTED' });
+  if (!explicitRoute && params.modelOverride) {
     try {
       const overridden = await pickChatEntryGroupForModelOverride(params.modelOverride);
       if (overridden && overridden.length) {
@@ -650,184 +653,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
       : tier === 'space'
         ? { kind: 'space' as const, id: spaceScopeId }
         : { kind: 'global' as const };
-    const teachingScope = (tier: 'agent' | 'space' | 'shared' | 'user'): UserTeachingScope => (
-      tier === 'agent' ? 'agent' : tier === 'space' ? 'project' : 'personal'
-    );
-    const recordTeaching = async (
-      tier: 'agent' | 'space' | 'shared' | 'user',
-      content: string,
-      result: Awaited<ReturnType<typeof addEntryTransactional>>,
-    ) => {
-      if (
-        !result.ok
-        || !isCommander
-        || !params.cid
-        || !params.sourceMessageId
-        || !params.sourceMessageFromUser
-        || !params.userMessage
-      ) return result;
-      try {
-        const scope = teachingScope(tier);
-        const signal = await recordTeachingSignalAfterMemoryWrite(uid, {
-          conversationId: params.cid,
-          messageId: params.sourceMessageId,
-          userMessage: params.userMessage,
-          memoryContent: content,
-          memoryScope: scope,
-          memoryRef: teachingMemoryRef(scope, content),
-        });
-        // 教学回执并入保存回执链（2026-09-28 四病整改 7.0 修7 / F39）：教学
-        // 信号落库时必建候选，回执以 candidate+taught-pending-review 走同一条
-        // onCognitionSaveReceipt 收集口径，渲染层不再有独立教学卡。
-        if (signal && signal.candidateIds.length > 0) {
-          const receipt: CognitionSaveReceipt = {
-            target: 'candidate',
-            id: signal.candidateIds[0],
-            summary: signal.summary,
-            outcome: 'taught-pending-review',
-          };
-          await params.onCognitionSaveReceipt?.(receipt);
-        }
-      } catch (error) {
-        log.warn('teaching signal persistence failed after memory write', {
-          conversation_id: maskId(params.cid),
-          error: logErrorSummary(error),
-        });
-      }
-      return result;
-    };
-    // All four memory tiers now use the same user-authorized asset/candidate
-    // path. Agent and Space targets carry hard scope-policy allowlists so the
-    // saved item cannot widen beyond the legacy store it replaces.
-    const ingestImmediate = async (tier: 'agent' | 'space' | 'shared' | 'user', content: string): Promise<MemoryOpResult> => {
-      try {
-        const { classifyMemorySaveIntent } = await import('../../features/recall/memory-save-intent');
-        const saveIntent = classifyMemorySaveIntent(
-          params.userMessage,
-          content,
-          params.sourceMessageFromUser === true,
-        );
-        if (saveIntent === 'none') {
-          return {
-            ok: false,
-            error: 'A current user save request or confirmation is required before saving cross-session memory. Nothing was persisted.',
-            entries: [],
-            usage: { current: 0, limit: 0 },
-          };
-        }
-        const { ingestImmediateKnowledge } = await import('../../features/recall/candidate-service');
-        const scopePolicy = tier === 'agent'
-          ? { agentIds: [scopeId] }
-          : tier === 'space'
-            ? { workspaceIds: [spaceScopeId] }
-            : undefined;
-        const saved = await ingestImmediateKnowledge(uid, {
-          text: content,
-          requireUserReview: saveIntent !== 'direct',
-          // 真实会话 id 是 cid（消息所在聊天会话；来源目录按裸 cid 命中）——
-          // 此前误传 runner 内部 sessionId，拼出的合成引用 id 永远查不到，
-          // 候选被误标「来源已删」（2026-09-20 修复）。传法与上方 teaching 线同款。
-          ...(params.cid ? { conversationId: String(params.cid) } : {}),
-          ...(params.cid && params.sourceMessageId ? { messageId: String(params.sourceMessageId) } : {}),
-          ...(tier === 'space' && spaceScopeId ? { spaceId: spaceScopeId } : {}),
-          ...(scopePolicy ? { scopePolicy } : {}),
-        });
-        let receipt: CognitionSaveReceipt;
-        if (saved.mode === 'created') {
-          receipt = saved.assetId
-            ? { target: 'asset', id: saved.assetId, summary: content, outcome: 'created' }
-            : { target: 'candidate', id: saved.candidateId, summary: content, outcome: 'pending-review' };
-        } else if (saved.mode === 'already-confirmed') {
-          receipt = saved.assetId
-            ? { target: 'asset', id: saved.assetId, summary: content, outcome: 'already-confirmed' }
-            : { target: 'candidate', id: saved.candidateId, summary: content, outcome: 'already-confirmed' };
-        } else {
-          receipt = { target: 'candidate', id: saved.candidateId, summary: content, outcome: saved.mode };
-        }
-        try {
-          await params.onCognitionSaveReceipt?.(receipt);
-        } catch (receiptError) {
-          log.warn('cognition save receipt callback failed after persistence', {
-            conversation_id: maskId(params.cid),
-            error: logErrorSummary(receiptError),
-          });
-        }
-        const exactWording = JSON.stringify(content);
-        const resultMessage = saved.mode === 'already-confirmed'
-          ? 'This exact memory already has a confirmed cognition record [candidate:' + saved.candidateId + ']'
-            + (saved.assetId ? ' and asset [asset:' + saved.assetId + ']' : '')
-            + '. No new review was created, and the existing asset lifecycle state was preserved. Source evidence may have been added. The asset may be active, paused, or otherwise unavailable; ask the user to open it in My Cognition to inspect its current state.'
-          : saved.mode === 'created'
-          ? `Saved as active cognition asset [asset:${saved.assetId}]. Exact wording: ${exactWording}. It remains subject to scope and runtime rules; the user can edit, pause, or archive it in My Cognition. Include the exact [asset:${saved.assetId}] marker in your user-facing reply so the user can open it.`
-          : saved.mode === 'fused-update-pending'
-            ? `Proposed update [candidate:${saved.candidateId}] is awaiting review. Exact proposed wording: ${exactWording}. The existing cognition asset has not changed; the user can review or edit it in To Review. Include the exact [candidate:${saved.candidateId}] marker in your user-facing reply so the user can open this proposal.`
-            : saved.mode === 'merged'
-              ? `This memory matched an existing suggestion [candidate:${saved.candidateId}]. Its evidence was merged, but no active asset was changed. Exact wording received: ${exactWording}. The user can review it in To Review. Include the exact [candidate:${saved.candidateId}] marker in your user-facing reply so the user can open it.`
-              : `Suggestion [candidate:${saved.candidateId}] is awaiting review and is not active memory yet. Exact proposed wording: ${exactWording}. The user can review or edit it in To Review. Include the exact [candidate:${saved.candidateId}] marker in your user-facing reply so the user can open it.`;
-        return { ok: true, entries: [resultMessage], usage: { current: 0, limit: 0 } };
-      } catch (error) {
-        // L3 敏感内容（凭据等）绝不落盘——资产管线的敏感闸拒绝的内容，不能
-        // 经由回退路径用更松的闸（旧记忆文件只有注入扫描）收下，否则两条写入
-        // 线的处置纪律互相矛盾。正式资产写入失败也不再偷偷降级写进旧记忆文件：
-        // 新内容只能进入认知资产/候选流程，避免形成用户看不到的第二份数据。
-        const messageText = error instanceof Error ? error.message : String(error);
-        if (messageText.includes('forbidden to persist')) {
-          log.warn('immediate ingest rejected: sensitive content not persisted', {
-            conversation_id: maskId(params.cid),
-            error: logErrorSummary(error),
-          });
-          return { ok: false, error: messageText, entries: [], usage: { current: 0, limit: 0 } };
-        }
-        log.warn('immediate cognition save failed; legacy memory fallback skipped', {
-          conversation_id: maskId(params.cid),
-          error: logErrorSummary(error),
-        });
-        return {
-          ok: false,
-          error: 'The cognition save did not complete. A draft may still be waiting in To Review; check there before retrying.',
-          entries: [],
-          usage: { current: 0, limit: 0 },
-        };
-      }
-    };
     const memoryHandler: MemoryToolHandler = {
-      add: async (tier, content) => ingestImmediate(tier, content),
-      replace: async (tier, oldText, content) => {
-        const { classifyMemoryReplaceIntent } = await import('../../features/recall/memory-save-intent');
-        if (classifyMemoryReplaceIntent(params.userMessage, content, params.sourceMessageFromUser === true) !== 'direct') {
-          return {
-            ok: false,
-            error: 'A current user edit request with exact replacement wording is required. Nothing was changed.',
-            entries: [],
-            usage: { current: 0, limit: 0 },
-          };
-        }
-        const { replaceCrossSessionMemoryAsset } = await import('../../features/recall/cross-session-memory-assets');
-        const assetEdit = await replaceCrossSessionMemoryAsset(uid, oldText, content, memoryAssetContext, assetTarget(tier));
-        if (assetEdit.handled) return assetEdit.result;
-        if (tier === 'space') {
-          backfillProjectMemoryToSpaceForWrite(uid, spaceScopeId, legacyProjectScopeId);
-        }
-        return recordTeaching(tier, content, await replaceEntryTransactional(uid, toScope(tier), oldText, content));
-      },
-      remove: async (tier, oldText) => {
-        const { classifyMemoryRemoveIntent } = await import('../../features/recall/memory-save-intent');
-        if (classifyMemoryRemoveIntent(params.userMessage, params.sourceMessageFromUser === true) !== 'direct') {
-          return {
-            ok: false,
-            error: 'A current user request to forget or remove this memory is required. Nothing was changed.',
-            entries: [],
-            usage: { current: 0, limit: 0 },
-          };
-        }
-        const { removeCrossSessionMemoryAsset } = await import('../../features/recall/cross-session-memory-assets');
-        const assetRemoval = await removeCrossSessionMemoryAsset(uid, oldText, memoryAssetContext, assetTarget(tier));
-        if (assetRemoval.handled) return assetRemoval.result;
-        if (tier === 'space') {
-          backfillProjectMemoryToSpaceForWrite(uid, spaceScopeId, legacyProjectScopeId);
-        }
-        return removeEntryTransactional(uid, toScope(tier), oldText);
-      },
       list: async (tier) => {
         const legacy = tier === 'space'
           ? listSpaceEntriesWithProjectFallback(uid, spaceScopeId, legacyProjectScopeId)
@@ -845,10 +671,9 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
       },
     };
     const { createCrossSessionMemoryTool } = await import('../../../core-agent/src/tools/memory-tool');
-    // Space memory: commander read+write, sub-agents read-only (list only).
+    // Every actor reads existing memory only; no chat-time formation path.
     injectedTools.push(createCrossSessionMemoryTool(memoryHandler, {
       includeProjectTier: !!spaceScopeId,
-      projectTierReadOnly: !!spaceScopeId && !isCommander,
     }));
   }
 
@@ -954,6 +779,15 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
 
   const localTools = params.disableTools ? [] : createLocalTools({
     ...(uid ? { userId: uid } : {}),
+    ...(uid ? { beforeMarkdownWrite: async input => {
+      const { checkOntologyMarkdownWrite } = await import('../../features/cognition/ontology/operation-guard');
+      return checkOntologyMarkdownWrite(uid, { ...input, context: {
+        ...(agentId ? { agentId } : {}),
+        ...(params.projectId ? { projectId: params.projectId } : {}),
+        ...(params.spaceId ? { workspaceId: params.spaceId } : {}),
+        ...(params.userMessage ? { taskText: params.userMessage } : {}),
+      } });
+    } } : {}),
     ...(params.cid ? { cid: params.cid } : {}),
     ...(params.permissionMode ? { permissionMode: params.permissionMode } : {}),
     ...(params.turnId ? { turnId: params.turnId } : {}),
@@ -1037,8 +871,6 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   // 同样注入给主会话与 group_chat 各 actor，且**不进只读白名单**（见下）。
   const assetStewardTools = uid && !params.disableTools ? createAssetStewardTools({
     userId: uid,
-    ...(params.sourceMessageId ? { sourceMessageId: params.sourceMessageId } : {}),
-    ...(params.onCognitionSaveReceipt ? { onCognitionSaveReceipt: params.onCognitionSaveReceipt } : {}),
     ...(agentId ? { agentId } : {}),
     ...(params.projectId ? { projectId: params.projectId } : {}),
     ...(params.turnId ? { turnId: params.turnId } : {}),
@@ -1068,12 +900,10 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     userId: uid,
   }) : [];
 
-  // 个人字段取件/记住工具（personal_fields_check / personal_field_remember，2026-10-02）：
-  // 任务开工前缺的字段在**对话里**问、在**对话里**答，不另设填写界面。
+  // 任务字段读取与缺口检查；对话答案仅用于当前任务。
   const cognitionKernelTools = uid && !params.disableTools ? createCognitionKernelTools({
     userId: uid,
-    allowConversationWrite: isCommander && params.sourceMessageFromUser === true,
-    onCognitionSaveReceipt: params.onCognitionSaveReceipt,
+    allowTranscriptRead: isCommander,
     turnId: params.turnId, cid: params.cid, spaceId: params.spaceId,
     ...(params.taskRunId ? { taskRunId: params.taskRunId } : {}),
     context: { agentId, workspaceId: params.spaceId, projectId: params.projectId, taskText: params.userMessage },
@@ -1353,7 +1183,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     ? formatSpaceInstructionsForSystemPrompt(uid, params.spaceId)
     : '';
   if (projectInstructionsBlock) parts.push(projectInstructionsBlock);
-  if (isCommander && params.cid) parts.push('Ontology task completion contract: when the user asks to create, save, correct or backfill an ontology, use cognition_ontology_query then cognition_ontology_save with verified sourceMessages evidence. Writing or publishing a Markdown document is not ontology creation. Read back the saved records and report the formal save receipt and entry separately from file outputs. Read transcript_corrections_query before transcript revision; persist explicit human correction pairs with transcript_remember_correction. Unknown identities and meanings stay pending. Never invent a save receipt or promise automatic backfill from a text checklist.');
+  if (isCommander && params.cid) parts.push('Read existing ontology and confirmed transcript corrections when they help the current task. User answers and current document corrections do not directly create long-term cognition. Long-term formation follows the nightly extraction and user confirmation workflow.');
   if (runtimeInjectionBlock) parts.push(runtimeInjectionBlock);
   // Cross-session memory (read side): the user's stored profile + notes as
   // background context. It is more turn-volatile than resource indexes, so
@@ -1514,6 +1344,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
       params.onNativeSearchInjected,
       params.onCandidateChosen,
       params.providerFirstEventTimeoutMs,
+      params,
     );
     // Inject the rotating provider into BOTH the factory slot AND the
     // pre-built instance cache. ProviderRegistry.get() short-circuits on
@@ -1703,6 +1534,7 @@ async function buildRotatingProvider(
   onNativeSearchInjected?: (info: NativeSearchInjectedInfo) => void,
   onCandidateChosen?: (info: { profileId: string; providerId: string; modelId: string; entryId?: string }) => void,
   firstEventTimeoutMs?: number,
+  utilityOptions: UtilityResponseFormatOptions = {},
 ): Promise<LLMProvider> {
   const candidates: RotatingCandidate[] = group.map((choice) => {
     const candProviderId = choice.provider;
@@ -1739,7 +1571,8 @@ async function buildRotatingProvider(
           provider: candProviderId,
           ...(resolvedModel?.needsCustomModel ? { customModel: resolvedModel.model } : { model: candModelId }),
           apiKey: choice.apiKey,
-          onPayload: buildNativeSearchOnPayload(candProviderId, candModelId, onNativeSearchInjected),
+          onPayload: composeUtilityResponseFormatOnPayload(candProviderId, utilityOptions.responseFormat,
+            utilityOptions.disableTools ? undefined : buildNativeSearchOnPayload(candProviderId, candModelId, onNativeSearchInjected)),
         });
       },
     };

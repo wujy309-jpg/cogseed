@@ -87,7 +87,7 @@ describe('资产目录视图', () => {
     expect(empty).not.toContain('这里还没有内容');
   });
 
-  it('统一表格显示内容、类型、对象范围和状态，在用版本与完整正文在详情核对', () => {
+  it('统一表格显示内容、对象范围和状态，在用版本与完整正文在详情核对', () => {
     const loaded = loadCognitionAssets({ assets: [asset], proofs: [
       { kind: 'projection_confirmed', refs: { assetId: asset.id, projectionId: 'proj-cat' } },
       { kind: 'usage_recorded', refs: { assetId: asset.id, projectionId: 'proj-cat', usageOutcome: 'injected' } },
@@ -95,7 +95,8 @@ describe('资产目录视图', () => {
     const html = loaded.render();
     const table = html.match(/<table class="ca-library-table"[\s\S]*?<\/table>/)?.[0] || '';
     expect(table).toContain(asset.title);
-    expect(table).toContain('规则与偏好');
+    expect(table).not.toContain('规则与偏好');
+    expect(table).not.toContain('<th>类型</th>');
     expect(table).toContain('未限定使用对象');
     expect(table).toContain('启用');
     expect(table).toContain('data-act="library-select" data-id="aa-cat0001"');
@@ -139,10 +140,12 @@ describe('资产目录视图', () => {
     expect(html).not.toContain('模型挂着');
   });
 
-  it('空目录给出明确空态和手动添加入口，不显示空白表头', () => {
+  it('空目录给出夜间发现说明和确认结果入口，不显示空白表头', () => {
     const html = renderCognition({ name: 'overview', assetView: 'catalog' }, { assets: [], proofs: [] });
     expect(html).toContain('这里还没有已保存的认知');
-    expect(html).toContain('data-act="cand-create"');
+    expect(html).not.toContain('data-act="cand-create"');
+    expect(html).toContain('data-act="go-review"');
+    expect(html).toContain('夜间发现的完整建议');
     expect(html).not.toContain('data-act="library-select"');
     expect(html).not.toContain('<table class="ca-library-table"');
   });
@@ -162,13 +165,13 @@ describe('资产目录视图', () => {
     expect(loaded.ns.library.filtered()).toHaveLength(35);
   });
 
-  it('分类深链映射到真实类型下拉，旧视图参数不能清除类型限制', () => {
+  it('旧分类深链进入统一列表，旧视图参数不再按类型隐藏内容', () => {
     const template = { ...asset, id: 'aa-cat0002', title: '复盘模板', type: 'template' };
     for (const assetView of ['catalog', '']) {
       const html = renderCognition({ name: 'overview', assetView, category: 'rule' }, { assets: [asset, template] });
-      expect(html).toContain('id="ca-library-type"');
+      expect(html).not.toContain('id="ca-library-type"');
       expect(html).toContain('性能归因规则');
-      expect(html).not.toContain('复盘模板');
+      expect(html).toContain('复盘模板');
       expect(html).not.toContain('data-act="filter-cat"');
     }
   });

@@ -86,12 +86,11 @@ describe('组7：模型主快照读失败的分区错误标记（P-r3-25）', ()
     expect(NS.store.captureModel).not.toHaveProperty('channel');
   });
 
-  it('视图侧接线：模型通道未知与不可用采用不同说明并提供刷新', () => {
-    expect(viewsSource).toContain('NS.assetSettings.modelStatus(S.captureModel, S.captureModelError)');
-    expect(viewsSource).toContain('这不代表模型未配置');
-    expect(viewsSource).toContain("'cognition.settings_channel_unknown'");
-    expect(viewsSource).toContain("'cognition.settings_channel_unavailable'");
-    expect(viewsSource).toContain("'refresh'");
-    expect(viewsSource).not.toContain('modelNeedsAttention = !model || !model.configured');
+  it('视图不再消费模型配置提醒，读取失败仍保持设置未知', () => {
+    expect(viewsSource).not.toContain('NS.assetSettings.modelStatus');
+    expect(viewsSource).not.toContain('ca-settings-model');
+    expect(viewsSource).not.toContain("'cognition.settings_channel_unknown'");
+    expect(viewsSource).not.toContain("'cognition.settings_channel_unavailable'");
+    expect(viewsSource).toContain('const stateUnknown = Boolean(S.captureModelError) || !S.captureSettings');
   });
 });

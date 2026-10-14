@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../helpers/nightly-formation-fixture';
 /**
  * 探针（状态机审计员 · 本轮，sm4）：inbox 冲突选边 claim 的 sibling 拒绝失败
  * 被降级吞掉（inbox-adapter.ts rejectRecallCandidate(...).catch(log.warn)），
@@ -70,7 +71,7 @@ const JUDGMENT = 'Keep architecture decisions in a decision log before changing 
 async function seedPair() {
   const svc = await candidates();
   // A：正常候选（rule、有证据）→ pending_review。
-  const a = await svc.saveRecallCandidate('user-a', {
+  const a = await createNightlyCandidateFixture('user-a', {
     judgment: JUDGMENT,
     summary: 'Use decision logs for architecture changes',
     suggestedType: 'rule',

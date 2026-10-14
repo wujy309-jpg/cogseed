@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -165,7 +166,7 @@ afterEach(async () => {
 
 async function createAsset(type: 'rule' | 'skill_method' = 'skill_method') {
   const candidates = await import('../../../../src/main/features/recall/candidate-service');
-  const candidate = await candidates.saveRecallCandidate(UID, {
+  const candidate = await createNightlyCandidateFixture(UID, {
     // 两种类型必须用不同正文：同一句话同时落成 rule 和 skill_method 会被
     // 晋升闸门判为分类冲突（谁都不晋升），而本用例考的是 skill-draft 的类型
     // 过滤，不是分类冲突。
@@ -207,7 +208,7 @@ describe('Recall skill draft service', () => {
     expect(preview.fileCount).toBe(15);
     expect(preview.status).toBe('draft');
     if (preview.status !== 'draft') throw new Error('expected draft preview');
-    expect(preview.recallContext).toMatchObject({ assetCount: 1, relatedAssetCount: 0, sourceCount: 1 });
+    expect(preview.recallContext).toMatchObject({ assetCount: 1, relatedAssetCount: 0, sourceCount: 3 });
     expect(preview.draftHash).toMatch(/^[a-f0-9]{64}$/);
     expect(draft?.files.every((file) => file.contentHash?.match(/^[a-f0-9]{64}$/))).toBe(true);
     expect(draft?.files.map((file) => file.path)).toEqual(expect.arrayContaining([
@@ -236,7 +237,7 @@ describe('Recall skill draft service', () => {
     });
     // 原投影把 recallContext 换算成计数；活读口给原始形状，按长度断言等价信息。
     expect(stored?.recallContext?.assetIds).toEqual([asset.id]);
-    expect(stored?.recallContext?.sourceRefs).toHaveLength(1);
+    expect(stored?.recallContext?.sourceRefs).toHaveLength(3);
     expect(stored?.files).toHaveLength(15);
     expect(stored?.validation.ok).toBe(true);
   });
@@ -263,9 +264,10 @@ describe('Recall skill draft service', () => {
     expect(Object.keys(input.recallContext.assets[0]).sort()).toEqual([
       'id', 'maturity', 'ontologyRefs', 'scope', 'statement', 'title', 'type', 'version',
     ]);
-    expect(input.recallContext.sourceRefs).toEqual([
+    expect(input.recallContext.sourceRefs).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'artifact_file', id: 'context-skill_method' }),
-    ]);
+    ]));
+    expect(input.recallContext.sourceRefs).toHaveLength(3);
     expect(modelMocks.runCalls[0].message).not.toContain('excerpt');
     expect(modelMocks.runCalls[0].message).not.toContain('candidateId');
     expect(modelMocks.runCalls[0].message).not.toContain('learningSignal');
@@ -281,12 +283,12 @@ describe('Recall skill draft service', () => {
     const input = JSON.parse(modelMocks.runCalls[0].message);
 
     expect(input.recallContext.assets.map((item: any) => item.id)).toEqual([method.id, relatedRule.id]);
-    expect(input.recallContext.sourceRefs).toHaveLength(2);
+    expect(input.recallContext.sourceRefs).toHaveLength(6);
     expect(preview.recallContext).toMatchObject({
       projectionId: 'proj-auto-skill-context',
       assetCount: 2,
       relatedAssetCount: 1,
-      sourceCount: 2,
+      sourceCount: 6,
     });
     await expect(service.readRecallSkillDraft(UID, method.id)).resolves.toMatchObject({
       recallContext: {

@@ -69,6 +69,8 @@ function ensureModule(): Ns {
       },
     },
     uiButton: require('../../src/renderer/modules/ui-button.js').uiButton,
+    uiCard: require('../../src/renderer/modules/ui-card.js').uiCard,
+    uiField: require('../../src/renderer/modules/ui-form.js').uiField,
     uiIconButton: require('../../src/renderer/modules/ui-button.js').uiIconButton,
     uiInput: require('../../src/renderer/modules/ui-form.js').uiInput,
     uiSwitch: require('../../src/renderer/modules/ui-form.js').uiSwitch,
@@ -131,12 +133,21 @@ function updateCandidate(over: Record<string, unknown> = {}) {
     suggestedAction: 'update', targetAssetId: 'aa-t1', targetVersionUsed: '1', taskRunId: 'taskrun-1',
     applicableWhen: ['写并行批次工具时'], forbiddenWhen: ['涉及外部合规文档时'],
     evidenceRefs: [{ kind: 'execution', id: 'kse-ep1' }],
-    learningProvenance: { episodeId: 'kse-ep1', attribution: 'execution_gap' },
+    captureProvenance: { pipeline: 'nightly_conversation', captureId: 'capture-a', messageIds: ['message-a'], extractionCompletedAt: '2026-10-12T01:00:00Z', valueJudgment: { eligible: true, reason: '可重复使用', judgedAt: '2026-10-12T00:59:00Z', evidence: [{ messageId: 'message-a', sourceId: 'source-a', quote: '这是真实来源原文' }] } }, sourceRefs: [{ kind: 'conversation', subtype: 'message', id: 'source-a', excerpt: '真实原文' }],
     capabilities: {
       canEdit: true, canPromote: true, canDefer: true, canReject: true,
       countsAsPending: true, isSnoozed: false, isTerminal: false, displayState: 'needs_review',
     },
     ...over,
+  };
+}
+
+function successfulPromotion(candidate = updateCandidate(), extra: Record<string, unknown> = {}) {
+  return {
+    ok: true,
+    candidate: { ...candidate, status: 'confirmed', promotedAssetId: targetAsset.id },
+    asset: { ...targetAsset, statement: candidate.judgment, version: '4', activeVersion: '4' },
+    ...extra,
   };
 }
 
@@ -204,7 +215,7 @@ describe('确认更新撞版本冲突的处置（T022 / US-702）', () => {
       // 重锚有记录：任何带 confirmBaselineVersion 的调用都不该出现在"撞冲突"这一步。
       if (channel === 'recall.candidates.promote') {
         const confirm = (payload as Record<string, unknown>).confirmBaselineVersion;
-        if (confirm) return { ok: true, assetId: 'aa-t1' };
+        if (confirm) return successfulPromotion(candidate);
         return { ok: false, state: 'pending', versionConflict: rawConflict, message: '这条资产在你确认之前被改过…' };
       }
       return defaultInvoke(candidate)(channel, payload);
@@ -360,7 +371,7 @@ describe('确认更新撞版本冲突的处置（T022 / US-702）', () => {
     // ② 确认期：主进程返回 versionCheckSkipped → 如实提示，不假装核过。
     TOASTS.length = 0;
     invokeImpl = (channel, payload) => {
-      if (channel === 'recall.candidates.promote') return { ok: true, assetId: 'aa-t1', versionCheckSkipped: true };
+      if (channel === 'recall.candidates.promote') return successfulPromotion(updateCandidate({ targetVersionUsed: '', learningProvenance: {} }), { versionCheckSkipped: true });
       return defaultInvoke()(channel, payload);
     };
     await ns.actions.adoptCandidate('rcand-u', undefined);

@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -22,10 +23,10 @@ afterEach(async () => {
 async function fixture() {
   const candidates = await import('../../../../src/main/features/recall/candidate-service');
   const { deferRecallCandidate } = await import('../../../../src/main/features/recall/candidate-defer');
-  const candidate = await candidates.saveRecallCandidate('activity-user', {
+  const candidate = await createNightlyCandidateFixture('activity-user', {
     judgment: '每次项目周报按本周进展、风险与下周计划组织，并为每项行动标注负责人。',
     summary: '项目周报组织模板', value: '让后续周报保持一致的结构和可追踪的行动责任。',
-    suggestedType: 'template', suggestedScope: '项目周报', manual: true, sourceRefs: [],
+    suggestedType: 'template', suggestedScope: '项目周报', sourceRefs: [],
   });
   return { candidates, deferRecallCandidate, candidate };
 }

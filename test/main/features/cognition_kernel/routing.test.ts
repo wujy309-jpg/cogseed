@@ -18,7 +18,7 @@ describe('cognition_kernel/routing — 归属契约（不含判定规则）', ()
       expect(entry.definition.length).toBeGreaterThan(8);
       expect(entry.examples.length).toBeGreaterThan(0);
     }
-    expect(homes).toHaveLength(6);
+    expect(homes).toHaveLength(7);
     expect(UNCLASSIFIED).toBe('unclassified');
   });
 
@@ -26,6 +26,7 @@ describe('cognition_kernel/routing — 归属契约（不含判定规则）', ()
     for (const entry of HOME_DEFINITIONS) {
       expect(['ontology', 'recall', 'experience', 'task_local']).toContain(POOL_BY_HOME[entry.home]);
     }
+    expect(POOL_BY_HOME.cognition).toBe('recall');
     expect(POOL_BY_HOME.personal_fact).toBe('ontology');
     expect(POOL_BY_HOME.rule).toBe('recall');
     expect(POOL_BY_HOME.template).toBe('recall');

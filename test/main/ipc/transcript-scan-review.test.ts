@@ -124,7 +124,7 @@ describe('扫描并入模型复核', () => {
     expect(scan.review).toMatchObject({ modelCandidates: 0, failedChunks: 2, skipped: 'model_failed' });
   });
 
-  it('合并后的清单能被 apply 直接使用：勾 model_0 才替换，且记入词表', async () => {
+  it('合并后的清单能被 apply 直接使用：勾 model_0 才替换，长期词表保持不变', async () => {
     mockReview();
     const { invokeHandlers } = await import('../../../src/main/ipc/transcript');
     const scan = await (invokeHandlers['transcript.correct.scan'] as any)({ text: TEXT, docId: 'd1', includeReview: true }, ctx());
@@ -135,13 +135,12 @@ describe('扫描并入模型复核', () => {
       acceptedIds: ['model_0'],
     }, ctx());
     expect(applied.result.text).toContain('傅平');
-    expect(applied.glossaryWrites).toMatchObject({ created: 1 });
+    expect(applied.glossaryWrites).toMatchObject({ created: 0, updated: 0 });
     const glossary = await import('../../../src/main/features/transcript_glossary');
-    // 复核建议落成了词表规则（本文档作用域），词表命中那条不受影响
+    // 模型建议只更正当前材料，已有词条不受影响
     const entries = glossary.listEntries(TEST_UID, { status: 'active' });
     expect(entries.map((e: any) => [e.wrong, e.correct, e.source])).toEqual([
       ['coxy', 'Cogseed', 'manual'],
-      ['付平', '傅平', 'meeting_accept'],
     ]);
   });
 });

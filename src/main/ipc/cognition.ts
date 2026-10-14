@@ -1,13 +1,10 @@
 import * as cognitionKernel from '../features/cognition_kernel';
 import * as cognition from '../features/cognition';
-import { generateCognitionDraft } from '../features/cognition/capture-draft';
-import { extractOntologyImportFile, submitOntologyImport } from '../features/cognition/ontology/import-text';
-import { commitCandidateOntologyRecords, completeCandidateOntologyHandoff } from '../features/cognition/ontology/candidate-handoff';
+import { extractOntologyImportFile } from '../features/cognition/ontology/import-text';
 import { changeOntologyModuleLifecycle, commitOntologyCommand, previewOntologyCommand, readOntologyDocument, readOntologyView } from '../features/cognition/ontology/service';
 import { editOntologyDocument } from '../features/cognition/ontology/document-edit';
 import { buildOntologyExport } from '../features/cognition/ontology/export';
 import { listOntologyUsageReceipts } from '../features/cognition/ontology/usage-receipt';
-import { extractOntologyImportCandidates } from '../features/cognition/ontology/import-extraction';
 import { readOntologyImportSource } from '../features/cognition/ontology/import-source';
 import { moduleCanUse } from '../features/cognition/ontology/commands';
 import { ontologyRecordsKnownAt, queryOntologyFacts, queryOntologyGraph, queryOntologyRules, searchOntologyRecords } from '../features/cognition/ontology/query';
@@ -50,10 +47,7 @@ function ontologyText(value: unknown, field: string, max = 500): string {
   if (typeof value !== 'string' || value.trim().length > max) throw new OntologyError('invalid_input', `invalid ${field}`);
   return value.trim();
 }
-function ontologyRawText(value: unknown, field: string, max: number): string {
-  if (typeof value !== 'string' || value.length > max || !value.trim()) throw new OntologyError('invalid_input', `invalid ${field}`);
-  return value;
-}
+
 function ontologyRevision(value: unknown): number {
   const parsed = typeof value === 'number' ? value : Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 0) throw new OntologyError('invalid_input', 'invalid knowledge revision');
@@ -78,12 +72,6 @@ function ontologyBox(doc: OntologyDocument, moduleId: string, box: string) {
 // 正式候选生产者走 recall.candidates.save 主链；遗留 store 只保留读用途
 // （renderer 分页 + memory 可见性门控）。
 export const invokeHandlers = {
-  'cognition.capture.draft': async (payload: Payload, ctx: IpcContext) => {
-    const conversationId = requiredId(payload.conversationId, 'conversation id');
-    const messageId = requiredId(payload.messageId, 'message id');
-    return generateCognitionDraft(ctx.userId, { conversationId, messageId });
-  },
-
   'cognition.assets.page': async (payload: Payload, ctx: IpcContext) => ({
     page: await cognition.listCognitionAssetPage(
       ctx.userId,
@@ -91,8 +79,8 @@ export const invokeHandlers = {
       pageSize(payload.pageSize),
     ),
   }),
-  // ── 认知内核契约层（S2，2026-10-02）：合并收件箱 / 任务字段缺口 / 回填 ──
-  // 只读聚合 + 缺值回填：回填走 po 的统一写路径，并回一张改动记录单（Delta）。
+  // ── 认知内核契约层（S2，2026-10-02）：合并收件箱 / 任务字段缺口 ──
+  // 只读聚合与当前任务缺口检查；长期资料走夜间提取和确认。
   // （总览通道随「总览页签」一并撤回：既有页面已各自承载那些信息，不另开页面。）
   'cognition.kernel.inbox': async (_payload: Payload, ctx: IpcContext) => cognitionKernel.readMergedInbox(ctx.userId),
   'cognition.kernel.taskFields': async ({ packId }: any = {}, ctx: IpcContext) => {
@@ -100,15 +88,7 @@ export const invokeHandlers = {
     if (!pack) throw new Error('unknown task field pack');
     return cognitionKernel.checkTaskFields(ctx.userId, pack);
   },
-  'cognition.kernel.backfill': async ({ fieldName, value, groupTitle }: any = {}, ctx: IpcContext) => {
-    if (typeof fieldName !== 'string' || !fieldName.trim()) throw new Error('invalid field name');
-    if (typeof value !== 'string' || !value.trim()) throw new Error('invalid value');
-    return cognitionKernel.backfillFieldValue(ctx.userId, {
-      fieldName,
-      value,
-      ...(typeof groupTitle === 'string' && groupTitle.trim() ? { groupTitle } : {}),
-    });
-  },
+
 
   // ── 统一认知库（S3/S4-a）：存储快照、统一池、家注册表、迁移 ──────────────
   'cognition.store.snapshot': async (_payload: Payload, ctx: IpcContext) => {
@@ -210,19 +190,6 @@ export const invokeHandlers = {
       changes: outcome.receipt.changedIds.map(id => outcome.document.records[id]) };
   },
   'cognition.ontology.command.commit': async (payload: Payload, ctx: IpcContext) => commitOntologyCommand(ctx.userId, payload.command),
-  'cognition.ontology.candidate.commit': async (payload: Payload, ctx: IpcContext) => {
-    if (payload.riskAcknowledged !== undefined && typeof payload.riskAcknowledged !== 'boolean')
-      throw new OntologyError('invalid_input', 'risk acknowledgment must be boolean');
-    return commitCandidateOntologyRecords(ctx.userId, {
-      candidateId: ontologyId(payload.candidateId, 'candidate id'),
-      moduleId: ontologyId(payload.moduleId, 'module id'),
-      batchId: ontologyId(payload.batchId, 'candidate batch id'),
-      ...(payload.riskAcknowledged === true ? { riskAcknowledged: true } : {}),
-      command: payload.command,
-    });
-  },
-  'cognition.ontology.candidate.complete': async (payload: Payload, ctx: IpcContext) =>
-    completeCandidateOntologyHandoff(ctx.userId, ontologyId(payload.candidateId, 'candidate id')),
   'cognition.ontology.import.file': async (payload: Payload, ctx: IpcContext) => {
     if (payload.sourceId !== undefined) return { cancelled: false, ...await readOntologyImportSource(ctx.userId, ontologyId(payload.sourceId, 'source id')) };
     const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
@@ -233,20 +200,6 @@ export const invokeHandlers = {
     if (result.canceled || !result.filePaths[0]) return { cancelled: true };
     const imported = await extractOntologyImportFile(result.filePaths[0]);
     return { cancelled: false, ...imported };
-  },
-  'cognition.ontology.import.submit': async (payload: Payload, ctx: IpcContext) => {
-    try {
-    if (payload.mode !== undefined && !['source', 'extract'].includes(String(payload.mode))) throw new OntologyError('invalid_input', 'invalid import mode');
-    if (payload.mode === 'extract') return extractOntologyImportCandidates(ctx.userId, ontologyText(payload.name, 'file name', 240), ontologyRawText(payload.text, 'import text', 100000));
-    const allowedTypes = ['personal', 'fact', 'rule', 'template', 'skill_method'];
-    if (payload.suggestedType !== undefined && !allowedTypes.includes(String(payload.suggestedType)))
-      throw new OntologyError('invalid_input', 'unsupported ontology import type');
-    return submitOntologyImport(ctx.userId, ontologyText(payload.name, 'file name', 240), ontologyRawText(payload.text, 'import text', 100_000),
-      (payload.suggestedType || 'fact') as 'personal' | 'fact' | 'rule' | 'template' | 'skill_method');
-    } catch (error) {
-      if (error instanceof OntologyError) return { ok: false, code: error.code, error: error.message, details: error.details };
-      throw error;
-    }
   },
   'cognition.ontology.export': async (payload: Payload, ctx: IpcContext) => {
     const moduleId = payload.moduleId !== undefined ? ontologyId(payload.moduleId, 'ontology module id') : undefined;

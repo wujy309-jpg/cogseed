@@ -1355,7 +1355,7 @@ describe('messaging manager adapter flow', () => {
         expect(instances[0]?.status.kind).toBe('connected');
       });
 
-      // 批准路径：候选离开池、卡片更新为终态。
+      // 旧批准卡片退役：不消费候选，不伪造成功卡片。
       // （P-r1-31 改写：批量 addCandidates 已删，改用单条 addCandidate 等价
       //   入池——原映射 template → instance / user。）
       const { candidate } = await ontology.addCandidate('user-1', {
@@ -1373,10 +1373,10 @@ describe('messaging manager adapter flow', () => {
         receivedAt: new Date().toISOString(),
       });
       const pool = await ontology.listCandidates('user-1');
-      expect(pool.candidate_updates.find((c) => c.candidate_id === candidateId)).toBeUndefined();
-      await vi.waitFor(() => expect(adapter.updateCard).toHaveBeenCalledTimes(1));
+      expect(pool.candidate_updates.find((c) => c.candidate_id === candidateId)).toBeDefined();
+      expect(adapter.updateCard).not.toHaveBeenCalled();
 
-      // 拒绝路径：候选直接移除。
+      // 旧拒绝卡片同样退役，历史候选保持原样。
       const { candidate: candidate2 } = await ontology.addCandidate('user-1', {
         summary: '日程：另一课', kind: 'instance', memory_scope: 'user',
       });
@@ -1391,7 +1391,8 @@ describe('messaging manager adapter flow', () => {
         receivedAt: new Date().toISOString(),
       });
       const pool2 = await ontology.listCandidates('user-1');
-      expect(pool2.candidate_updates.find((c) => c.candidate_id === candidate2.candidate_id)).toBeUndefined();
+      expect(pool2.candidate_updates.find((c) => c.candidate_id === candidate2.candidate_id)).toBeDefined();
+      expect(adapter.updateCard).not.toHaveBeenCalled();
 
       // 缺 candidate_id 的卡片动作被拒绝。
       const rejected = await manager.ingestCardAction('user-1', {
@@ -1404,7 +1405,7 @@ describe('messaging manager adapter flow', () => {
         payload: {},
         receivedAt: new Date().toISOString(),
       });
-      expect(rejected).toMatchObject({ accepted: false, reason: 'invalid_card_action' });
+      expect(rejected).toMatchObject({ accepted: false, reason: 'unsupported_card_action' });
     } finally {
       vi.doUnmock('../../../src/main/features/messaging/adapters');
       vi.doUnmock('../../../src/main/features/group_chat');

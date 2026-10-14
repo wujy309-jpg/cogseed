@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -95,7 +96,7 @@ describe('2026-08-17 修复集场景（边界单路径 + 回执并集 + 语言�
   it('C. 迁移证明回执并集覆盖：多回合分散注入仍升档（B4）', async () => {
     // 两条真实资产（带规则边界，与 KStar 聚合产出的候选一致），经统一晋升出口
     const candidates = await import('../../../../src/main/features/recall/candidate-service');
-    const c1 = await candidates.saveRecallCandidate(UID, {
+    const c1 = await createNightlyCandidateFixture(UID, {
       judgment: '资产一：跨回合注入的第一条经验。',
       value: '资产一：跨回合注入的第一条经验。',
       summary: '跨回合经验一',
@@ -107,7 +108,7 @@ describe('2026-08-17 修复集场景（边界单路径 + 回执并集 + 语言�
       evidenceRefs: [{ kind: 'execution', id: 'exec-c1' }],
     });
     const p1 = await candidates.promoteRecallCandidate(UID, c1.id, { actor: 'user', provenance: 'kstar' });
-    const c2 = await candidates.saveRecallCandidate(UID, {
+    const c2 = await createNightlyCandidateFixture(UID, {
       judgment: '资产二：另一个回合注入的第二条经验。',
       value: '资产二：另一个回合注入的第二条经验。',
       summary: '跨回合经验二',
@@ -222,7 +223,7 @@ describe('2026-08-17 修复集场景（边界单路径 + 回执并集 + 语言�
     // 一条 general 资产 + 一条 review 资产，走 KSTAR 的投影创建路径
     // （purpose='review'，与 control-service/bus 宿主自动路径一致）。
     const candidates = await import('../../../../src/main/features/recall/candidate-service');
-    const c1 = await candidates.saveRecallCandidate(UID, {
+    const c1 = await createNightlyCandidateFixture(UID, {
       judgment: '通用经验：写资料类任务应先收集数据再成文。',
       value: '通用经验：写资料类任务应先收集数据再成文。',
       summary: '资料先行经验',

@@ -32,6 +32,7 @@ export const MAX_NOTE_CHARS = 300;
 export const MAX_STATEMENT_CHARS = 500;
 
 const HOMES: ReadonlySet<string> = new Set<ContentHome>([
+  'cognition',
   'personal_fact',
   'rule',
   'template',

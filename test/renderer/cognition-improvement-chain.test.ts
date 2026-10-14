@@ -83,6 +83,8 @@ function ensureModule(): { cogAssets: Record<string, unknown>; domRoot: { innerH
   globalScope.window = {
     CogAssets: cogAssets,
     uiButton: require('../../src/renderer/modules/ui-button.js').uiButton,
+    uiCard: require('../../src/renderer/modules/ui-card.js').uiCard,
+    uiField: require('../../src/renderer/modules/ui-form.js').uiField,
     uiIconButton: require('../../src/renderer/modules/ui-button.js').uiIconButton,
     uiIconHtml: (() => {
       require('../../src/renderer/modules/icons.js');

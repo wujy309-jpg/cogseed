@@ -709,9 +709,9 @@ describe('模型建议并入候选列表', () => {
     expect(src).toMatch(/kb-atc__badge--model/);
   });
 
-  it('应用后必须说出"词表被写了"——改了词表却不说，用户无从察觉', () => {
-    expect(src).toMatch(/apply_wrote_glossary/);
-    expect(src).toMatch(/glossaryWrites/);
+  it('应用当前材料不会展示长期词表学习的提示', () => {
+    expect(src).not.toMatch(/apply_wrote_glossary/);
+    expect(src).not.toMatch(/glossaryWrites/);
   });
 });
 
@@ -1822,202 +1822,17 @@ describe('会议引用层：渲染契约补充（specs/013）', () => {
 
 // ── specs/013 T047：「提出为候选」面板入口（页面级）─────────────────────────
 
-describe('会议引用层：提出为候选面板入口（T047）', () => {
-  function recElement(): any {
-    const el: any = {
-      _text: '', children: [], innerHTML: '', hidden: false, value: '', checked: false,
-      dataset: {}, style: {}, title: '',
-      classList: { add: () => {}, remove: () => {}, contains: () => false, toggle: () => false },
-      appendChild: (child: any) => { el.children.push(child); return child; },
-      append: (...kids: any[]) => { kids.forEach((k) => el.children.push(k)); },
-      addEventListener: () => {}, removeEventListener: () => {},
-      querySelector: () => null, querySelectorAll: () => [], closest: () => null,
-      setAttribute: () => {}, getAttribute: () => null, removeAttribute: () => {},
-      insertBefore: () => {}, insertAdjacentHTML: () => {},
-      focus: () => {}, remove: () => {}, replaceWith: () => {},
-    };
-    Object.defineProperty(el, 'textContent', {
-      get: () => el._text,
-      set: (v: any) => { el._text = String(v ?? ''); el.children = []; el.innerHTML = ''; },
-      configurable: true,
-    });
-    return el;
-  }
-
-  const descendants = (el: any): any[] => {
-    const out: any[] = [];
-    const walk = (node: any) => {
-      for (const child of node?.children || []) { out.push(child); walk(child); }
-    };
-    walk(el);
-    return out;
-  };
-  const markupOf = (el: any): string => {
-    let out = `${el._text ?? ''}${el.innerHTML ?? ''}`;
-    for (const child of el.children || []) out += markupOf(child);
-    return out;
-  };
-  const attrEl = (attrs: Record<string, string>) => ({
-    getAttribute: (n: string) => (n in attrs ? attrs[n] : null),
-  });
-
-  const scanResult = () => ({
-    candidates: [
-      {
-        entryRef: 'g_low', wrong: 'coxy', correct: 'Cogseed', action: 'replace', riskLevel: 'low',
-        confidence: 1, context: '', span: { start: 0, end: 4 }, ignoredCount: 0, contextAllow: [],
-        channel: 'exact',
-        refs: [{ source: 'glossary', entryId: 'g_low', kind: 'product', freq: 3 }],
-      },
-      {
-        entryRef: 'g_model', wrong: 'coxyx', correct: 'Cogseed', action: 'replace', riskLevel: 'medium',
-        confidence: 0.6, context: '模型理由', span: { start: 20, end: 25 }, ignoredCount: 0, contextAllow: [],
-        fromModel: true,
-      },
-      {
-        // 有依据（过 T026 的 withBasisOnly）但依据里没有词条来源：runPropose 拿不到
-        // 词条 kind，应如实提示无法提出、不发起调用（不猜 kind）。
-        entryRef: 'g_nokind', wrong: '无类词', correct: '目标词', action: 'replace', riskLevel: 'low',
-        confidence: 1, context: '', span: { start: 30, end: 36 }, ignoredCount: 0, contextAllow: [],
-        channel: 'exact',
-        refs: [{ source: 'ontology', name: '目标词' }],
-      },
-    ],
-    denied: [],
-    stats: { entriesScanned: 2, candidates: 3, denied: 0, truncated: false, byChannel: { exact: 2, recall: 0, model: 1 }, quotedExample: 0, suppressed: 0 },
-    degraded: [],
-    recall: undefined,
-    review: null,
-  });
-
-  /** 带 proposeCandidate 分支的挂载 harness（其余照页面级 describe 的同款形态）。 */
-  function mountProposePanel(proposeResult: Record<string, unknown>) {
-    const nodes = new Map<string, any>();
-    const clickHandlers: Array<(ev: unknown) => void> = [];
-    const container = recElement();
-    container.querySelector = (selector: string) => {
-      if (!nodes.has(selector)) nodes.set(selector, recElement());
-      return nodes.get(selector);
-    };
-    container.addEventListener = (name: string, fn: (ev: unknown) => void) => {
-      if (name === 'click') clickHandlers.push(fn);
-    };
-    const calls: Array<{ channel: string; payload: any }> = [];
-    const context: any = {
-      console, setTimeout, clearTimeout, Map, Set, Array, Object, String, Number, JSON, Boolean, Promise,
-      document: { createElement: () => recElement(), body: recElement(), addEventListener: () => {}, removeEventListener: () => {} },
-      cogseed: {
-        invoke: async (channel: string, payload: any) => {
-          calls.push({ channel, payload });
-          if (channel === 'transcript.correct.scan') return scanResult();
-          if (channel === 'transcript.correct.proposeCandidate') return proposeResult;
-          return {};
-        },
-      },
-      addEventListener: () => {}, removeEventListener: () => {},
-      t: () => '',
-      uiButton: (o: any) => '<button type="button" class="ui-button" '
-        + Object.entries(o?.attrs || {}).map(([k, v]) => `${k}="${v}"`).join(' ')
-        + `>${String(o?.label || '')}</button>`,
-      uiCheckbox: (o: any) => `<input type="checkbox" aria-label="${String(o?.label || '')}">`,
-      uiEmptyState: (o: any) => `<div class="ui-empty-state">${String(o?.title || '')}</div>`,
-    };
-    context.window = context;
-    context.globalThis = context;
-    vm.createContext(context);
-    vm.runInContext(panelSrc, context, { filename: 'kb-transcript-correct.js' });
-    context.KbTranscriptCorrect.mount(container, {
-      text: '甲 2026-09-05 19:31:32\n一会儿叫 coxy。',
-      docId: 'doc-propose',
-      displayPath: '1/9.15站会.txt',
-    });
-    const fire = (matches: Record<string, ReturnType<typeof attrEl>>) => {
-      const target = { closest: (sel: string) => matches[sel] || null };
-      for (const fn of [...clickHandlers]) fn({ target });
-    };
-    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
-    const rowMenuMarkup = (entryRef: string): string => {
-      const rowEl = descendants(nodes.get('[data-atc-body]')).find((el) => el.dataset && el.dataset.atcRow === entryRef);
-      return rowEl ? markupOf(rowEl) : '';
-    };
-    return { nodes, fire, flush, calls, rowMenuMarkup };
-  }
-
-  it('词表行的行菜单含「提出为候选」按钮；模型建议行不提供该入口', async () => {
-    const env = mountProposePanel({ candidateId: 'cand_1', created: true });
-    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
-    await env.flush();
-    env.fire({ '[data-atc-rowmenu]': attrEl({ 'data-atc-rowmenu': 'g_low' }) });
-    await env.flush();
-    const menu = env.rowMenuMarkup('g_low');
-    expect(menu).toContain('data-atc-propose="g_low"');
-    expect(menu).toContain('提出为候选');
-    // 模型行（model_*，非词表词条）不出现该按钮
-    env.fire({ '[data-atc-rowmenu]': attrEl({ 'data-atc-rowmenu': 'g_model' }) });
-    await env.flush();
-    expect(env.rowMenuMarkup('g_model')).not.toContain('data-atc-propose');
-  });
-
-  it('点击 ⇒ 调 transcript.correct.proposeCandidate（entryId + 词条 kind + 当前面板 docId）', async () => {
-    const env = mountProposePanel({ candidateId: 'cand_1', created: true });
-    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
-    await env.flush();
-    env.fire({ '[data-atc-rowmenu]': attrEl({ 'data-atc-rowmenu': 'g_low' }) });
-    await env.flush();
-    env.fire({ '[data-atc-propose]': attrEl({ 'data-atc-propose': 'g_low' }) });
-    await env.flush();
-    const call = env.calls.find((c) => c.channel === 'transcript.correct.proposeCandidate');
-    expect(call).toBeTruthy();
-    expect(call?.payload).toMatchObject({ entryId: 'g_low', entryKind: 'product', docId: 'doc-propose' });
-    expect(env.nodes.get('[data-atc-status]')._text).toContain('已提出为候选');
-    expect(env.nodes.get('[data-atc-status]')._text).toContain('coxy');
-  });
-
-  it('幂等提示：created:false ⇒ 说明已在候选池（不再说"已提出"）', async () => {
-    const env = mountProposePanel({ candidateId: 'cand_1', created: false });
-    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
-    await env.flush();
-    env.fire({ '[data-atc-rowmenu]': attrEl({ 'data-atc-rowmenu': 'g_low' }) });
-    await env.flush();
-    env.fire({ '[data-atc-propose]': attrEl({ 'data-atc-propose': 'g_low' }) });
-    await env.flush();
-    expect(env.calls.filter((c) => c.channel === 'transcript.correct.proposeCandidate')).toHaveLength(1);
-    const status = env.nodes.get('[data-atc-status]')._text;
-    expect(status).toContain('已在候选池');
-    expect(status).not.toContain('已提出为候选');
-  });
-
-  it('缺词条 kind 的行不发起调用（不猜 kind），如实提示无法提出', async () => {
-    const env = mountProposePanel({ candidateId: 'cand_1', created: true });
-    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
-    await env.flush();
-    env.fire({ '[data-atc-rowmenu]': attrEl({ 'data-atc-rowmenu': 'g_nokind' }) });
-    await env.flush();
-    expect(env.rowMenuMarkup('g_nokind')).toContain('data-atc-propose="g_nokind"');
-    env.fire({ '[data-atc-propose]': attrEl({ 'data-atc-propose': 'g_nokind' }) });
-    await env.flush();
-    expect(env.calls.filter((c) => c.channel === 'transcript.correct.proposeCandidate')).toHaveLength(0);
-    expect(env.nodes.get('[data-atc-status]')._text).toContain('无法提出为候选');
-  });
-
-  it('源码契约：按钮文案走 kb.meetingRef.propose_* 四语键（对齐前缀，不新造命名空间）', () => {
-    expect(panelSrc).toContain("t('kb.meetingRef.propose_candidate', '提出为候选')");
-    expect(panelSrc).toContain("t('kb.meetingRef.propose_exists'");
-    expect(panelSrc).toContain("t('kb.meetingRef.propose_done'");
-    expect(panelSrc).toContain("t('kb.meetingRef.propose_failed'");
+describe('纠错面板独立认知形成入口退休', () => {
+  it('不再提供词条提出为认知建议，正常转写纠错与保存保留', () => {
+    const src = panelSrc;
+    expect(src).not.toContain('data-atc-propose');
+    expect(src).not.toContain('runPropose');
+    expect(src).not.toContain('transcript.correct.proposeCandidate');
+    expect(src).toContain('transcript.correct.apply');
+    expect(src).toContain('transcript.glossary.upsert');
   });
 });
 
-/**
- * 「更多 → 改写法」点了没反应，且展开后大面积错位（2026-09-23 真机反馈）。
- *
- * 两个根因，各自钉一条：
- *   1. 候选里混着**不在词表**的行（`model_<i>` 模型建议），而忽略/加白/改写法都是词表操作，
- *      主进程对合成 id 返回 0/null；面板此前不看回执，照样弹"已改为：X" —— 看起来能用，
- *      实际什么都没发生。现在：这些动作只给词表行 + 所有回执都校验。
- *   2. 行是 `display:flex`（不换行），而「更多」菜单与展开的表单都声明 `flex: 1 0 100%`，
- *      于是它们挤在同一行、把原文区压成 0 宽 —— 这就是"大面积错位"。
- */
 describe('词表操作与模型建议：动作分流（每行都有接受/忽略/更多，落点按行类型不同）', () => {
   it('识别词表行：g_* 是词表命中；model_* / fromModel 是模型建议，不是词表行', () => {
     expect(panel.isGlossaryRow({ entryRef: 'g_8056893a079bdf09' })).toBe(true);
@@ -2204,6 +2019,24 @@ describe('busy 纪律（P-r1-68/P-r2-31/P-r2-33/P-r2-36）', () => {
     receipts: [],
     glossaryWrites: {},
   };
+
+  it('真实面板应用只显示当前材料结果，旧返回字段不能触发长期学习提示', async () => {
+    const { instance, nodes, clickAction } = loadPanelForBusy(async channel => {
+      if (channel === 'transcript.correct.apply') return {
+        ...APPLY_RESULT, glossaryWrites: { created: 2, updated: 1 }, droppedModels: 1,
+      };
+      return {};
+    });
+    instance.getState().accepted = new Set(['model_0']);
+    clickAction('apply');
+    await flush();
+    expect(instance.getState().cleanedText).toBe('清理后的正文');
+    const status = nodes.get('[data-atc-status]').textContent;
+    expect(status).toContain('清理版已生成');
+    expect(status).toContain('位置对不上被丢弃');
+    expect(status).not.toContain('词表');
+    instance.destroy();
+  });
 
   it('apply 进行中打开「对照」不再提前解锁：diff 只清自己的 diffBusy（P-r1-68/P-r2-33）', async () => {
     const calls: string[] = [];

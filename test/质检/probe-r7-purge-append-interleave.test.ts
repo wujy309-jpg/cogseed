@@ -1,3 +1,4 @@
+import { seedStoredAbilityAsset } from '../helpers/stored-ability-asset';
 /**
  * 探针 r7（边界测试员 · 本遍循环第 2 轮，编号顺延 r6）→ 主题：并发与时序（迁移与写入交错 / 删除后复活）。
  *
@@ -98,7 +99,7 @@ function versionStreamFile(id: string): string {
 async function seedAtV2() {
   const assets = await loadAssets();
   const now = new Date().toISOString();
-  await assets.createAbilityAsset(UID, {
+  await seedStoredAbilityAsset(UID, {
     schemaVersion: 2, ownerId: UID, id: ASSET_ID, candidateId: `cand-${ASSET_ID}`,
     sourceCandidateIds: [`cand-${ASSET_ID}`], reviewDecisionId: 'rd_prober7seed01',
     type: 'personal', title: '资产 r7', statement: '第一版正文（回滚目标）。',

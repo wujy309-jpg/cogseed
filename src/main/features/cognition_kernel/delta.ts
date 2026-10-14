@@ -28,6 +28,7 @@ export const DELTA_ID_PREFIX = 'delta-';
 export const MAX_DELTA_TEXT = 2000;
 
 const HOMES: ReadonlySet<string> = new Set<ContentHome>([
+  'cognition',
   'personal_fact',
   'rule',
   'template',

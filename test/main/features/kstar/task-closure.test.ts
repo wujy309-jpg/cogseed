@@ -815,13 +815,7 @@ describe('KSTAR task closure', () => {
     const teaching = await import('../../../../src/main/features/recall/teaching-service');
     // Seed an active teaching signal bound to this conversation (a "记住"
     // intent message produces a user_teaching_signal source).
-    await teaching.recordTeachingSignalAfterMemoryWrite('closure-user', {
-      conversationId: 'cid-evidence',
-      messageId: 'msg-teach-five',
-      userMessage: '记住：Always validate OAuth state before exchanging the code.',
-      memoryContent: 'Always validate OAuth state before exchanging the code.',
-      memoryScope: 'personal',
-    });
+    await seedHistoricalTeaching("cid-evidence", "msg-teach-five", "Always validate OAuth state before exchanging the code.");
 
     const inferred = async (_userId: string, builtEpisode: any) => ({
       review: {
@@ -867,13 +861,7 @@ describe('KSTAR task closure', () => {
   it('precipitated assets carry the full five-source evidence context', async () => {
     const closure = await import('../../../../src/main/features/kstar/task-closure');
     const teaching = await import('../../../../src/main/features/recall/teaching-service');
-    await teaching.recordTeachingSignalAfterMemoryWrite('closure-user', {
-      conversationId: 'cid-five-evidence',
-      messageId: 'msg-five-evi',
-      userMessage: '记住：OAuth 回调必须先校验 state。',
-      memoryContent: 'OAuth 回调必须先校验 state。',
-      memoryScope: 'personal',
-    });
+    await seedHistoricalTeaching("cid-five-evidence", "msg-five-evi", "OAuth 回调必须先校验 state。");
     const inferred = async (_userId: string, builtEpisode: any) => ({
       review: {
         expectedResult: builtEpisode.t.userGoal,
@@ -1427,3 +1415,14 @@ describe('KSTAR extraction reconciliation', () => {
     expect(optionsSeen[0]?.forecast?.forecast).toBeUndefined();
   });
 });
+
+/** Persist historical input fixtures without retaining a product writer. */
+async function seedHistoricalTeaching(conversationId: string, messageId: string, summary: string) {
+  const store = await import('../../../../src/main/features/recall/store');
+  const id = `legacy-teaching-${messageId}`;
+  return store.updateRecallJsonRecord('closure-user', 'teaching-signals', id, () => ({
+    schemaVersion: 1, taxonomyVersion: 2, ownerId: 'closure-user', id,
+    conversationId, messageId, summary, intent: 'remember', scope: 'personal',
+    status: 'active', candidateIds: [], createdAt: '2026-09-04T00:00:00.000Z',
+  }));
+}

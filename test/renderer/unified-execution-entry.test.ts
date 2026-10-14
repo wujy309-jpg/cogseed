@@ -16,11 +16,14 @@
 import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import vm from 'node:vm';
 
 const root = path.join(__dirname, '../..');
 const read = (relativePath: string) => fs.readFileSync(path.join(root, relativePath), 'utf8');
 
 const LOCALE_KEYS = [
+  'model_effort.auto_follows_default',
+  'model_effort.default_effective',
   'exec_config.menu_title',
   'exec_config.section_model',
   'exec_config.section_effort',
@@ -191,5 +194,31 @@ describe('unified execution entry — locales', () => {
         expect(table[key], `${lang} missing ${key}`).toBeTruthy();
       }
     }
+  });
+});
+
+// Exercise the actual send builder with the same override state as the chip.
+// No module test export is added to this DOM/IPC production script.
+describe('task effort on the execution send payload', () => {
+  it.each(['commander', 'model'])('sends explicit high and omits inherited effort for %s', (kind) => {
+    const source = read('src/renderer/modules/conversation.js');
+    const start = source.indexOf('function _executionConfigForSend(');
+    const end = source.indexOf('// The conversation "floor"', start);
+    let override: Record<string, string> | null = { effort: 'high' };
+    const recipient = kind === 'model'
+      ? { kind, provider: 'deepseek', model: 'deepseek-flash' } : { kind };
+    const context = vm.createContext({
+      _activeRecipient: () => recipient,
+      _activeExecOverride: () => override,
+      window: {},
+    });
+    vm.runInContext(source.slice(start, end), context);
+    const send = () => vm.runInContext('_executionConfigForSend("conversation")', context);
+    expect(send()).toMatchObject({ effort: 'high' });
+    override = null;
+    if (kind === 'model') expect(send()).toEqual({ provider: 'deepseek', model: 'deepseek-flash' });
+    else expect(send()).toBeUndefined();
+    override = { effort: 'off' };
+    expect(send()).toMatchObject({ effort: 'off' });
   });
 });

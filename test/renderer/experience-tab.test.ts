@@ -59,7 +59,9 @@ describe('经验入口：「我的认知」下的分类档（specs/017 整改一
     expect(ids).toEqual(['tree', 'overview', 'ontology', 'activity', 'settings']);
     expect(html).not.toContain('data-act="tab" data-id="experiences"');
     // 旧深链 { name: 'experiences' } 归一到「我的认知」：经验档选中、目录在页面内。
-    expect(html).toContain('data-act="filter-cat" data-id="experiences"');
+    const loaded = loadCognitionAssets();
+    loaded.ns.router.go({ name: 'experiences' });
+    expect(loaded.store.route).toMatchObject({ name: 'overview', category: 'experiences' });
     expect(html).toContain('经验目录');
     // KSTAR 独立筛选档退役（出身徽章与「KSTAR 任务复盘」证据组保留，
     // 见 cognition-capture-log.test.ts）。

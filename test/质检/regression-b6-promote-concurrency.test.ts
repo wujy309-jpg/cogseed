@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../helpers/nightly-formation-fixture';
 /**
  * 回归（批次 b6 · P-r1-78 + P-r2-17）：promoteRecallCandidate 的并发收口。
  *
@@ -88,7 +89,7 @@ async function modules() {
 
 async function seedCandidate(type: 'rule' | 'fact') {
   const { candidates } = await modules();
-  return candidates.saveRecallCandidate('user-a', {
+  return createNightlyCandidateFixture('user-a', {
     judgment: SAME_TEXT,
     summary: `Migration ledger habit (${type})`,
     suggestedType: type,
@@ -155,7 +156,7 @@ describe('regression b6 › promote 并发收口（P-r1-78 / P-r2-17）', () => 
   it('P-r2-17：起标题（LLM）在候选记录锁之外调用', async () => {
     const { candidates, paths } = await modules();
     // 无 summary → 兜底正文首句对正文不合规 → 必走起标题链。
-    const saved = await candidates.saveRecallCandidate('user-a', {
+    const saved = await createNightlyCandidateFixture('user-a', {
       judgment: 'Capture the incident timeline before restarting a failed service.',
       suggestedType: 'rule',
       applicableWhen: ['Incident review'],

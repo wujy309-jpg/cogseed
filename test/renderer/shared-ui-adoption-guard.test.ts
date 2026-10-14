@@ -28,7 +28,6 @@ const legacyRawControlBaseline: Record<string, number> = {
   'chat-file-viewer.js': 3,
   'chat-input-form.js': 2,
   'chat-lightbox.js': 3,
-  'cognition/pages.js': 5,
   'connectors.js': 2,
   'context-menu.js': 1,
   'contexts.js': 0,
@@ -190,7 +189,6 @@ const inlineSvgBaseline: Record<string, number> = {
   // （`SEC-PV-001`）。数值为 1，任何第二处内联 SVG 都会直接红。
   'settings-security.js': 1,
   'avatar.js': 4,
-  'cognition/pages.js': 0,
   'cognition-assets/views.js': 1,
   // cognition-ontology-graph.js：从主模块迁出的同一个本体关系网络业务画布（ONTO-PV-001）。SVG 只绘制查询结果中的显式节点与边，不承载叶子图标。
   'cognition-ontology-graph.js': 1,

@@ -71,11 +71,14 @@ function fnBlock(marker: string): string {
 describe('cognition-assets snapshot and routing', () => {
   it('loads snapshot channels in parallel and gives assets/candidates/settings explicit read-error states', () => {
     // 资产、候选和设置采用显式错误态；资产读失败保留缓存，不伪装成空目录。
-    // 对话整理与来源目录继续使用独立软降级，不能把一个失败扩大成整页清空。
+    // 整理失败会产生需要关注，因此必须明确读取错误；来源目录仍独立降级。
     for (const channel of [
-      'recall.captures.list',
       'recall.sources.list',
     ]) expect(core).toContain(`api.soft('${channel}'`);
+    const captures = fnBlock('async captures()');
+    expect(captures).toContain("api.call('recall.captures.list'");
+    expect(captures).toContain('store.capturesError');
+    expect(captures).not.toMatch(/store\.captures\s*=\s*\[\]/);
     const assets = fnBlock('async assets()');
     expect(assets).toContain("api.call('recall.assets.list'");
     expect(assets).toContain('store.assetsError');
@@ -216,13 +219,15 @@ describe('candidate pool rendering', () => {
     expect(views).not.toContain("T('cognition.candidate_evidence_ok'");
   });
 
-  it('keeps completed, rejected, ignored, and ontology-integrated candidates in the processed fold only', () => {
-    expect(views).toContain("['confirmed', 'integrated', 'rejected', 'ignored']");
-    expect(views).toContain('fold-processed');
-    expect(views).toContain("T('cognition.candidate_status_promoted'");
-    expect(views).toContain("T('cognition.candidate_status_rejected'");
-    expect(views).toContain("T('cognition.candidate_status_ignored'");
-    expect(views).toContain("integrated: T('cognition.candidate_status_integrated'");
+  it('keeps all completed outcomes in processed history only', () => {
+    const statuses = ['confirmed', 'integrated', 'rejected', 'ignored', 'expired', 'superseded'];
+    const fixture = loadCognitionAssets({ candidates: statuses.map((status, index) => ({
+      id: 'history-' + index, status, summary: '已处理记录' + index,
+      judgment: '此前已经处理的完整内容', suggestedScope: 'report', suggestedType: 'rule',
+      ...(status === 'confirmed' ? { promotedAssetId: 'asset-kept' } : {}),
+    })) }, { name: 'activity', activityView: 'done' });
+    expect(fixture.ns.activityModel().attention).toHaveLength(0);
+    expect(fixture.ns.activityModel().done.map((row: any) => row.route.candidateId)).toEqual(statuses.map((_status, index) => 'history-' + index));
   });
 
   it('reads capabilities from the main-process mapping before rendering actions', () => {
@@ -239,28 +244,18 @@ describe('candidate pool rendering', () => {
   });
 });
 
-describe('source issues', () => {
-  it('only surfaces sources that need attention', () => {
-    // 用户主动暂停的来源不算异常；failed 与异常 paused 才算。
-    expect(views).toContain("item.statusReason || ''") !== undefined ? true : false;
-    expect(views).toContain('sourceItemNeedsAttention');
-    expect(views).toContain("item.status === 'failed'");
-    expect(views).toContain("String(item.statusReason || '') !== 'source_paused'");
-  });
-
-  it('renders source issues with localized reasons and typed actions', () => {
-    expect(views).toContain('sourceReasonText');
-    expect(views).toContain("'source-action'");
-    expect(views).toContain("action: 'retry'");
-    expect(views).toContain("action: 'resume'");
-    expect(views).toContain("T('cognition.source_issues_more'");
+describe('来源异常与后台任务提醒已退役', () => {
+  it('不存在旧提醒的视图函数或候选族导出', () => {
+    for (const name of ['sourceItemNeedsAttention', 'sourceIssueItems', 'sourceIssuesSection', 'taskFailedSection']) {
+      expect(views).not.toContain('function ' + name);
+    }
   });
 });
 
 describe('capture tasks', () => {
-  it('maps capture actions to typed channels', () => {
-    expect(core).toContain("retry: 'recall.captures.retry'");
-    expect(core).toContain('recall.captures.batchRetry');
+  it('removes all user capture controls while keeping read-only formation history', () => {
+    expect(core).not.toContain("'recall.captures.retry'");
+    expect(core).not.toContain('recall.captures.batchRetry');
     // 批量「立即整理」前端不暴露(2026-09-21 原型 v7 定调):后端能力保留,
     // 渲染层不再触达 batchRunNow。
     expect(core).not.toContain("'recall.captures.batchRunNow'");

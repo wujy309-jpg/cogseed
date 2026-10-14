@@ -18,23 +18,28 @@ describe('我的认知列表工作台', () => {
     }
   });
 
-  it('五种正式类型与启用暂停归档删除筛选均按资产真实状态计算', async () => {
-    const types = ['personal', 'rule', 'template', 'skill_method', 'fact'];
+  it('新认知与历史类型混合显示，分类只是目录筛选且状态筛选保留', async () => {
+    const types = ['cognition', 'personal', 'rule', 'template', 'skill_method', 'fact'];
     const assets = types.flatMap(type => ['active', 'paused', 'archived', 'deleted'].map(status => asset(`${type}-${status}`, { type, status })));
-    const loaded = loadCognitionAssets({ assets: [...assets, asset('purged', { status: 'purged' }), asset('revoked', { status: 'revoked' }), asset('unsupported', { type: 'experience' })] }, { name: 'overview' });
-    expect(loaded.ns.library.filtered()).toHaveLength(10);
-    for (const type of types) {
-      await loaded.ns.library.handleInput({ target: { dataset: { libraryFilter: 'type' }, value: type } });
-      expect(loaded.ns.library.filtered().map((a: any) => a.id).sort()).toEqual([`${type}-active`, `${type}-paused`]);
-    }
-    await loaded.ns.library.handleInput({ target: { dataset: { libraryFilter: 'type' }, value: '' } });
+    const loaded = loadCognitionAssets({ assets: [...assets, asset('purged', { status: 'purged' }), asset('revoked', { status: 'revoked' }), asset('unsupported', { type: 'experience' })] }, { name: 'overview', category: 'fact' });
+    expect(loaded.ns.library.filtered()).toHaveLength(12);
+    const html = loaded.render();
+    expect(html).not.toContain('data-library-filter="type"');
+    expect(html).not.toContain('<th>类型</th>');
+    expect(html).not.toContain('事实与知识');
+    expect(html).toContain('data-library-filter-key="scope"');
+    const filters = html.slice(html.indexOf('<div class="ca-library-filters"'), html.indexOf('<div class="ca-library-layout"'));
+    expect(filters.match(/data-ui-select /g)).toHaveLength(4);
+    expect(filters).not.toContain('<select');
+    expect(filters).toContain('ca-library-filter-contentCategory');
+    expect(filters).not.toContain('ca-library-filter-popover');
     for (const status of ['active', 'paused', 'archived', 'deleted']) {
       await loaded.ns.library.handleInput({ target: { dataset: { libraryFilter: 'status' }, value: status } });
-      expect(loaded.ns.library.filtered()).toHaveLength(5);
+      expect(loaded.ns.library.filtered()).toHaveLength(6);
       expect(loaded.ns.library.filtered().every((a: any) => a.status === status)).toBe(true);
     }
     await loaded.ns.library.handleInput({ target: { dataset: { libraryFilter: 'status' }, value: 'all' } });
-    expect(loaded.ns.library.filtered()).toHaveLength(20);
+    expect(loaded.ns.library.filtered()).toHaveLength(24);
   });
 
   it('中文输入法组合输入期间不重绘或导航，确认文字后再执行搜索', async () => {
@@ -159,17 +164,46 @@ describe('我的认知列表工作台', () => {
   });
 });
 
-describe('原型手动表单的未保存状态', () => {
-  it('后台重新渲染不清空标题、正文或类型', async () => {
-    const loaded = loadCognitionAssets({}, { name: 'overview', candCreate: '1' });
-    const form = { dataset: { candType: 'personal' }, querySelector: () => null };
-    await loaded.ns.library.handleInput({ target: { id: 'ca-manual-summary', dataset: { f: 'summary' }, value: '项目周报交付模板', closest: () => form } });
-    await loaded.ns.library.handleInput({ target: { id: 'ca-manual-judgment', dataset: { f: 'judgment' }, value: '先核对进展。\n再核对风险与计划。', closest: () => form } });
-    await loaded.ns.library.handleInput({ target: { id: 'ca-manual-type', dataset: { f: 'type' }, value: 'template', closest: () => form } });
+describe('正式库不会将异常或读取失败伪装成已保存的正常认知', () => {
+  it('缺失状态、候选状态、非法类型和无对象标识不进入任何正式筛选，深链保留只读内容', () => {
+    const invalid = [asset('missing', { status: undefined }), asset('candidate', { status: 'pending_review' }), asset('bad-type', { type: 'unknown' }), asset('', { title: '没有对象标识' })];
+    const loaded = loadCognitionAssets({ assets: [asset('saved'), ...invalid] }, { name: 'overview', assetId: 'missing', assetEdit: '1' });
+    loaded.ns.library.state.status = 'all';
+    expect(loaded.ns.library.filtered().map((a: any) => a.id)).toEqual(['saved']);
     const html = loaded.render();
-    expect(html).toContain('value="项目周报交付模板"');
-    expect(html).toContain('先核对进展。\n再核对风险与计划。');
-    expect(html).toContain('value="template" selected');
-    expect(loaded.store.libraryView.dirty).toBe(true);
+    expect(html).toContain('4 条记录的信息不完整');
+    expect(html).toContain('正文 missing');
+    expect(html).toContain('当前仅可查看原文与记录');
+    expect(html).not.toContain('data-act="asset-edit-save"');
+    expect(html).not.toContain('data-act="edit-asset"');
+    expect(html).not.toContain('data-action="resume"');
+  });
+
+  it('读取失败且无缓存时总数不可用，有缓存也不能编辑、暂停或删除', () => {
+    const failed = loadCognitionAssets({ assets: [], assetsError: 'failed' }, { name: 'overview' }).render();
+    expect(failed).toContain('总数暂不可用');
+    expect(failed).not.toContain('0–0 / 0');
+    const cached = loadCognitionAssets({ assets: [asset('cached')], assetsError: 'failed' }, { name: 'overview', assetId: 'cached', assetEdit: '1' }).render();
+    expect(cached).toContain('当前显示上次读取的内容');
+    expect(cached).not.toContain('data-act="asset-edit-save"');
+    expect(cached).not.toContain('data-action="pause"');
+    expect(cached).not.toContain('data-action="delete"');
+    expect(cached).not.toContain('重启 CogSeed');
+  });
+
+  it('错误范围数据不导致目录渲染崩溃或显示为无使用限制', () => {
+    const loaded = loadCognitionAssets({ assets: [asset('bad-scope', { scopePolicy: { workspaceIds: 'bad', agentIds: [] } })] }, { name: 'overview' });
+    expect(loaded.render()).toContain('范围信息不完整，请核对');
+    loaded.ns.library.state.scope = 'ws-a';
+    expect(loaded.ns.library.filtered()).toHaveLength(0);
+  });
+
+  it('输入法组合期间保存快捷键不提交尚未确认的正文', async () => {
+    const loaded = loadCognitionAssets({ assets: [asset('a')] }, { name: 'overview', assetId: 'a', assetEdit: '1' });
+    const save = { click: vi.fn() };
+    loaded.context.document.querySelector = () => save;
+    await loaded.ns.library.handleKeydown({ key: 's', ctrlKey: true, isComposing: true, preventDefault: vi.fn() });
+    await loaded.ns.library.handleKeydown({ key: 's', ctrlKey: true, keyCode: 229, preventDefault: vi.fn() });
+    expect(save.click).not.toHaveBeenCalled();
   });
 });

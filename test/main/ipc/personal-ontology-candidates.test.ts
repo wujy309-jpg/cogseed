@@ -49,48 +49,25 @@ function call(channel: string, payload: unknown = {}) {
 }
 
 describe('ipc › personal ontology templates', () => {
-  it('re-exposes single-item candidate channels for backflow confirmation while keeping batch channels retired', async () => {
-    // 旧本体候选由个人本体工作台生成；现由过渡入口送入 Recall 共同审核，
-    // 不再直接确认写入旧全局记忆。list 用于兼容旧候选队列展示。
-    const liveChannels = [
-      'personalOntology.candidates.list',
-      'personalOntology.candidates.transferToRecall',
-    ];
-    for (const channel of liveChannels) {
-      const res = await call(channel);
-      expect(res).not.toEqual({ ok: false, error: `unknown channel: ${channel}` });
-    }
-
-    const retiredChannels = [
-      'personalOntology.candidates.confirm',
-      'personalOntology.candidates.reject',
-      'personalOntology.candidates.confirmBatch',
-      'personalOntology.candidates.rejectBatch',
-      'personalOntology.candidates.addFromOnboarding',
-    ];
-    for (const channel of retiredChannels) {
-      await expect(call(channel)).resolves.toEqual({
-        ok: false,
-        error: `unknown channel: ${channel}`,
-      });
-    }
-  });
-
-  it('transfers a legacy candidate into common Recall review before removing the old row', async () => {
+  it('旧候选列表保留只读，完整合法输入也不能恢复确认或转移通道', async () => {
+    const live = await call('personalOntology.candidates.list');
+    expect(live).not.toEqual({ ok: false, error: 'unknown channel: personalOntology.candidates.list' });
     const po = await import('../../../src/main/features/personal_ontology_candidates');
     const old = await po.addCandidate(TEST_UID, { candidate_id: 'legacy-po-ipc', kind: 'relation', confidence: 'high',
-      summary: '项目负责人', memory_scope: 'shared', memory_text: 'CogSeed 项目的负责人是林青。', source_memory_refs: ['legacy-memory-1'] });
+      summary: '项目负责人', memory_scope: 'shared', memory_text: '项目负责人需核对来源。', source_memory_refs: ['legacy-memory-1'] });
     expect(old.ok).toBe(true);
-    const first = await call('personalOntology.candidates.transferToRecall', { candidateId: 'legacy-po-ipc' });
-    expect(first).toMatchObject({ ok: true, candidate: { suggestedType: 'fact' }, sourceRemoved: true });
-    expect((await po.listCandidates(TEST_UID)).candidate_updates).toEqual([]);
-    const candidateId = first.candidate.id;
-    await expect(call('recall.candidates.read', { candidateId })).resolves.toMatchObject({ ok: true, candidate: { status: 'pending_review' } });
-
-    const retry = await call('personalOntology.candidates.transferToRecall', { candidateId: 'legacy-po-ipc' });
-    expect(retry.candidate.id).toBe(candidateId);
-    expect(retry.sourceRemoved).toBe(false);
-    expect((await po.listCandidates(TEST_UID)).candidate_updates).toEqual([]);
+    const before = fs.readFileSync(po.candidatesMdPath(TEST_UID), 'utf8');
+    const payload = { candidateId: 'legacy-po-ipc', candidate_id: 'legacy-po-ipc', candidateIds: ['legacy-po-ipc'],
+      toGlobalMemory: true, toGroupIds: ['group-one'], targetField: '负责人', projectId: 'project-one' };
+    for (const channel of ['personalOntology.candidates.transferToRecall', 'recall.candidates.importPersonalOntology',
+      'personalOntology.candidates.confirm', 'personalOntology.candidates.reject',
+      'personalOntology.candidates.confirmBatch', 'personalOntology.candidates.rejectBatch', 'personalOntology.candidates.addFromOnboarding']) {
+      await expect(call(channel, payload)).resolves.toEqual({ ok: false, error: `unknown channel: ${channel}` });
+      expect(fs.readFileSync(po.candidatesMdPath(TEST_UID), 'utf8')).toBe(before);
+    }
+    expect((await po.listCandidates(TEST_UID)).candidate_updates.some(row => row.candidate_id === 'legacy-po-ipc')).toBe(true);
+    const recall = await import('../../../src/main/features/recall/candidate-service');
+    expect((await recall.listRecallCandidates(TEST_UID)).some(row => row.captureKey?.startsWith('po-candidate-'))).toBe(false);
   });
 
   it('preserves template restore and archive options across IPC', async () => {

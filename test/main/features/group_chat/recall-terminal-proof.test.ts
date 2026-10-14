@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -32,7 +33,7 @@ const RULE_BOUNDARY = { applicableWhen: ['reviewing governed work'], forbiddenWh
 async function confirmedTurnProjection(userId: string, turnId: string) {
   const candidates = await import('../../../../src/main/features/recall/candidate-service');
   const projection = await import('../../../../src/main/features/recall/context-projection');
-  const candidate = await candidates.saveRecallCandidate(userId, {
+  const candidate = await createNightlyCandidateFixture(userId, {
     judgment: 'Use confirmed evidence in task reviews.',
     summary: 'Confirmed evidence habit',
     suggestedType: 'rule',

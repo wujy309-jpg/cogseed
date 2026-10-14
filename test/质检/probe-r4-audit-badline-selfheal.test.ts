@@ -1,3 +1,4 @@
+import { seedStoredAbilityAsset } from '../helpers/stored-ability-asset';
 /**
  * 探针（本轮红队-越权与状态 · 数据完整性）：ability-asset-audit JSONL 一条坏行
  * 让该资产的审计整流拒绝——除 timeline 断外，更重的是 createAbilityAsset 幂等
@@ -83,7 +84,7 @@ describe('探针 r4 › audit 流坏行：timeline 断 + 幂等重放自愈阻�
   it('对照组：好 audit 流下同 id 重放幂等成功，不追加重复 created 行', async () => {
     const { assets } = await setup();
     const now = new Date().toISOString();
-    const first = await assets.createAbilityAsset(UID, payload(now), { actor: 'user', reason: '探针创建' });
+    const first = await seedStoredAbilityAsset(UID, payload(now), { actor: 'user', reason: '探针创建' });
     expect(first.id).toBe(ASSET);
     const audit1 = await assets.listAbilityAssetAudit(UID, ASSET);
     expect(audit1.length).toBeGreaterThanOrEqual(1);
@@ -97,7 +98,7 @@ describe('探针 r4 › audit 流坏行：timeline 断 + 幂等重放自愈阻�
   it.skip('【待议 P-r4-14】漏洞：撕裂 audit 尾行后同 id 重放 rejects——主记录在盘、初始化永不完成、timeline 同断', async () => {
     const { assets, recallJsonlPath, recallJsonRecordPath } = await setup();
     const now = new Date().toISOString();
-    await assets.createAbilityAsset(UID, payload(now), { actor: 'user', reason: '探针创建' });
+    await seedStoredAbilityAsset(UID, payload(now), { actor: 'user', reason: '探针创建' });
 
     // 模拟云同步撕裂 audit 流尾（appendFile 直拼无换行的半行——P-r1-87 同构触发面）。
     const auditPath = recallJsonlPath(UID, 'ability-asset-audit', ASSET);
@@ -121,7 +122,7 @@ describe('探针 r4 › audit 流坏行：timeline 断 + 幂等重放自愈阻�
   it.skip('【待议 P-r4-13/P-r4-14】同构面：撕裂版本流尾行同样阻断幂等重放（initializeAbilityAsset 另一行整读 versions 流）', async () => {
     const { assets, recallJsonlPath } = await setup();
     const now = new Date().toISOString();
-    await assets.createAbilityAsset(UID, payload(now), { actor: 'user', reason: '探针创建' });
+    await seedStoredAbilityAsset(UID, payload(now), { actor: 'user', reason: '探针创建' });
 
     const versionsPath = recallJsonlPath(UID, 'ability-asset-versions', ASSET);
     expect(fs.existsSync(versionsPath)).toBe(true);

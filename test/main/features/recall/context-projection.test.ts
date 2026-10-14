@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -25,14 +26,14 @@ async function elevateToTransferVerified(assetId: string) {
 }
 
 async function modules() { const [candidates, assets, refs, projection] = await Promise.all([import('../../../../src/main/features/recall/candidate-service'), import('../../../../src/main/features/recall/asset-service'), import('../../../../src/main/features/recall/workspace-refs'), import('../../../../src/main/features/recall/context-projection')]); return { candidates, assets, refs, projection }; }
-async function createAsset(spaceId?: string) { const { candidates } = await modules(); const candidate = await candidates.saveRecallCandidate('user-a', { judgment: 'Preserve source evidence in reviews.', summary: 'Evidence preservation rule', suggestedType: 'rule', applicableWhen: ['Formal review with traceable evidence'], forbiddenWhen: ['Informal discussion without a review decision'], suggestedScope: 'review,project', ...(spaceId ? { spaceId } : {}), sourceRefs: [{ kind: 'execution', id: 'exec-a' }, { kind: 'memory', id: 'mem-a' }] }); const promoted = await candidates.promoteRecallCandidate('user-a', candidate.id, { actor: 'user', forceCreateSimilar: true });
+async function createAsset(spaceId?: string) { const { candidates } = await modules(); const candidate = await createNightlyCandidateFixture('user-a', { judgment: 'Preserve source evidence in reviews.', summary: 'Evidence preservation rule', suggestedType: 'rule', applicableWhen: ['Formal review with traceable evidence'], forbiddenWhen: ['Informal discussion without a review decision'], suggestedScope: 'review,project', ...(spaceId ? { spaceId } : {}), sourceRefs: [{ kind: 'execution', id: 'exec-a' }, { kind: 'memory', id: 'mem-a' }] }); const promoted = await candidates.promoteRecallCandidate('user-a', candidate.id, { actor: 'user', forceCreateSimilar: true });
 
   await elevateToTransferVerified(promoted.asset.id);
   return promoted; }
 
 async function createAssetWith(input: { judgment: string; summary: string; scope?: string; sourceId: string; spaceId?: string }) {
   const { candidates } = await modules();
-  const candidate = await candidates.saveRecallCandidate('user-a', {
+  const candidate = await createNightlyCandidateFixture('user-a', {
     judgment: input.judgment,
     summary: input.summary,
     suggestedType: 'rule',
@@ -57,7 +58,7 @@ async function createAutomaticAssetWith(input: {
 }) {
   const { candidates } = await modules();
   const sourceKind = input.sourceKind || 'conversation';
-  const candidate = await candidates.saveRecallCandidate('user-a', {
+  const candidate = await createNightlyCandidateFixture('user-a', {
     judgment: input.judgment,
     summary: input.summary,
     suggestedType: 'rule',
@@ -89,7 +90,7 @@ const fakeSemanticOptions = {
 describe('Recall context projection scope policy', () => {
   async function promoteScopedAsset(judgment: string, sourceId: string) {
     const { candidates } = await modules();
-    const candidate = await candidates.saveRecallCandidate('user-a', {
+    const candidate = await createNightlyCandidateFixture('user-a', {
       judgment,
       summary: 'Review knowledge fixture',
       suggestedType: 'rule',
@@ -200,14 +201,15 @@ describe('RecallView and ContextProjection', () => {
     const { asset } = await createAsset('workspace-a');
     const { refs, assets, projection } = await modules();
     await refs.addWorkspaceAssetReference('user-a', { assetId: asset.id, workspaceId: 'workspace-a', scope: 'review' });
-    const otherCandidate = await (await modules()).candidates.saveRecallCandidate('user-a', { judgment: 'Only use archived data with confirmation.', summary: 'Archived data confirmation', suggestedType: 'rule', applicableWhen: ['Archive restoration and audit'], forbiddenWhen: ['Live operational changes'], suggestedScope: 'archive', sourceRefs: [{ kind: 'memory', id: 'mem-b' }] });
+    const otherCandidate = await createNightlyCandidateFixture('user-a', { judgment: 'Only use archived data with confirmation.', summary: 'Archived data confirmation', suggestedType: 'rule', applicableWhen: ['Archive restoration and audit'], forbiddenWhen: ['Live operational changes'], suggestedScope: 'archive', sourceRefs: [{ kind: 'memory', id: 'mem-b' }] });
     const other = await (await modules()).candidates.promoteRecallCandidate('user-a', otherCandidate.id, { actor: 'user' });
     await assets.pauseAbilityAsset('user-a', other.asset.id, { actor: 'user', reason: 'not ready' });
 
     const preview = await projection.previewContextProjection('user-a', { taskRunId: 'task-a', workspaceId: 'workspace-a', purpose: 'review', authorization: 'user_confirmed' });
     expect(preview.status).toBe('preview');
     expect(preview.assetIds).toEqual([asset.id]);
-    expect(preview.sourceRefs.map((ref) => ref.id)).toEqual(['exec-a', 'mem-a']);
+    expect(preview.sourceRefs.map((ref) => ref.id)).toEqual(asset.evidenceRefs.map(ref => ref.id));
+    expect(preview.sourceRefs.map((ref) => ref.id)).toEqual(expect.arrayContaining(['exec-a', 'mem-a']));
     expect(preview.omittedRefs).toEqual(expect.arrayContaining([expect.objectContaining({ assetId: other.asset.id, reason: 'asset_paused' })]));
   });
 
@@ -599,7 +601,7 @@ describe('RecallView and ContextProjection', () => {
 describe('Recall projection auto-confirm and semantic Top-N', () => {
   async function promoteAsset(judgment: string, sourceId: string, scope: string) {
     const { candidates } = await modules();
-    const candidate = await candidates.saveRecallCandidate('user-a', {
+    const candidate = await createNightlyCandidateFixture('user-a', {
       judgment,
       summary: 'Fixture lesson',
       suggestedType: 'rule',
@@ -1035,7 +1037,7 @@ describe('Recall projection auto-confirm and semantic Top-N', () => {
 describe('Recall retrieval quality regression', () => {
   async function promoteAsset(judgment: string, sourceId: string, scope: string) {
     const { candidates } = await modules();
-    const candidate = await candidates.saveRecallCandidate('user-a', {
+    const candidate = await createNightlyCandidateFixture('user-a', {
       judgment,
       summary: 'Fixture lesson',
       suggestedType: 'rule',
@@ -1158,7 +1160,7 @@ describe('Recall ontology-assisted hybrid retrieval', () => {
     sourceId: string;
   }) {
     const { candidates } = await modules();
-    const candidate = await candidates.saveRecallCandidate('user-a', {
+    const candidate = await createNightlyCandidateFixture('user-a', {
       judgment: input.judgment,
       summary: `${input.field}守则`,
       suggestedType: 'rule',
@@ -1212,7 +1214,7 @@ describe('Recall ontology-assisted hybrid retrieval', () => {
       judgment: '验证 OAuth 回调目标。',
       sourceId: 'exec-dual',
     });
-    const semanticOnly = await (await modules()).candidates.saveRecallCandidate('user-a', {
+    const semanticOnly = await createNightlyCandidateFixture('user-a', {
       judgment: '验证 OAuth token exchange。',
       summary: 'OAuth token exchange',
       suggestedType: 'rule',
@@ -1244,7 +1246,7 @@ describe('Recall ontology-assisted hybrid retrieval', () => {
 describe('Recall retrieval refinement', () => {
   async function promoteAsset(judgment: string, sourceId: string, scope: string, type: 'rule' | 'template' | 'skill_method' | 'personal' = 'rule') {
     const { candidates } = await modules();
-    const candidate = await candidates.saveRecallCandidate('user-a', {
+    const candidate = await createNightlyCandidateFixture('user-a', {
       judgment,
       summary: 'Fixture lesson',
       suggestedType: type,
@@ -1289,7 +1291,7 @@ describe('Recall retrieval refinement', () => {
     const { candidates, projection } = await modules();
     const groups = await import('../../../../src/main/features/personal_ontology_groups');
     const group = await groups.createGroup('user-a', '代码审查规范');
-    const candidate = await candidates.saveRecallCandidate('user-a', {
+    const candidate = await createNightlyCandidateFixture('user-a', {
       judgment: 'OAuth callback review must check state.',
       summary: 'Callback review checklist',
       suggestedType: 'rule',
@@ -1400,7 +1402,7 @@ describe('committed projection knowledge boundary', () => {
 
   it('includes a space-attributed asset in its own workspace without an explicit workspace reference', async () => {
     const { candidates, projection, refs } = await modules();
-    const candidate = await candidates.saveRecallCandidate('user-a', {
+    const candidate = await createNightlyCandidateFixture('user-a', {
       judgment: 'Space-owned OAuth lesson injects in its own space.',
       summary: 'Lesson scoped by space',
       suggestedType: 'rule',
@@ -1426,7 +1428,7 @@ describe('committed projection knowledge boundary', () => {
 
   it('includes assets from OTHER workspaces in a space conversation (资产池全局共享)', async () => {
     const { candidates, projection, refs } = await modules();
-    const candidate = await candidates.saveRecallCandidate('user-a', {
+    const candidate = await createNightlyCandidateFixture('user-a', {
       judgment: 'Workspace-B lesson is part of the shared pool for workspace-a.',
       summary: 'Shared pool lesson',
       suggestedType: 'rule',
@@ -1453,7 +1455,7 @@ describe('committed projection knowledge boundary', () => {
   it('real-world shape: scope=space / scope=general assets pass the purpose gate in previews', async () => {
     const { candidates, projection, refs } = await modules();
     // 真实资产形态：suggestedScope='space'（发布公告五段式、信息架构四层法）
-    const spaceAsset = await candidates.saveRecallCandidate('user-a', {
+    const spaceAsset = await createNightlyCandidateFixture('user-a', {
       judgment: '发布类公告应包含：背景、变更点、影响范围、生效时间、联系方式五段。',
       summary: '公告五段式规范',
       suggestedType: 'rule',
@@ -1465,7 +1467,7 @@ describe('committed projection knowledge boundary', () => {
     await elevateToTransferVerified(spacePromoted.asset.id);
     await refs.removeWorkspaceAssetReference('user-a', `war-${spacePromoted.asset.id}-workspace-a`);
     // 真实资产形态：scope='general'（KSTAR gap 资产，无空间归属）
-    const generalAsset = await candidates.saveRecallCandidate('user-a', {
+    const generalAsset = await createNightlyCandidateFixture('user-a', {
       judgment: '编号/短码缺少项目上下文时应先向用户确认所指目标。',
       summary: '待修正经验：短码缺上下文',
       suggestedType: 'rule',
@@ -1495,7 +1497,7 @@ describe('committed projection knowledge boundary', () => {
 
   it('a disabled workspace reference still blocks a space-attributed asset', async () => {
     const { candidates, projection, refs } = await modules();
-    const candidate = await candidates.saveRecallCandidate('user-a', {
+    const candidate = await createNightlyCandidateFixture('user-a', {
       judgment: 'Disabled lesson stays out.',
       summary: 'Lesson that stays out',
       suggestedType: 'rule',
@@ -1555,7 +1557,7 @@ describe('撤销在时间线里可见（2026-09-18）', () => {
     const timeline = await import('../../../../src/main/features/recall/timeline-service');
     const candidates = await import('../../../../src/main/features/recall/candidate-service');
 
-    const candidate = await candidates.saveRecallCandidate('user-a', {
+    const candidate = await createNightlyCandidateFixture('user-a', {
       judgment: '撤销可见性用例：这条资产要被挂上一次再撤销。',
       summary: 'revoke-visibility',
       suggestedType: 'rule',
@@ -1650,7 +1652,7 @@ describe('注入体量对比（2026-09-18，可用高效）：模型自选的增
 
     // 造一条有正文体积的资产
     const body = '性能类提问必须用真实日志做分层归因：先拆链路、再定位瓶颈、最后只给一个可优化项。'.repeat(8);
-    const candidate = await candidates.saveRecallCandidate('user-a', {
+    const candidate = await createNightlyCandidateFixture('user-a', {
       judgment: `${body}（体积对比用例）`,
       summary: 'volume',
       suggestedType: 'rule',

@@ -1,3 +1,4 @@
+import { seedStoredAbilityAsset } from '../helpers/stored-ability-asset';
 /**
  * 回归 r7（P-r2-3 根治落地，配套 probe-r7-purge-append-interleave 的产品链路
  * 主用例）：purge 与版本流追加纳入同一把锁后，三道防线各自的确定性验证。
@@ -93,7 +94,7 @@ function assetFile(id: string): string {
 async function mkAsset(id: string, statement = SECRET) {
   const { createAbilityAsset } = await import('../../src/main/features/recall/asset-service');
   const now = new Date().toISOString();
-  return createAbilityAsset(UID, {
+  return seedStoredAbilityAsset(UID, {
     schemaVersion: 2, ownerId: UID, id, candidateId: `cand-${id}`,
     sourceCandidateIds: [`cand-${id}`], reviewDecisionId: `rd_reg${id.slice(-6)}`.padEnd(16, 'x'),
     type: 'rule', title: '演示纪律', statement,

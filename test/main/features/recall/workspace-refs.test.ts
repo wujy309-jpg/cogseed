@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -10,7 +11,7 @@ async function modules() { const [candidates, refs] = await Promise.all([import(
 describe('Recall workspace asset references', () => {
   it('references one asset from multiple workspaces without copying ownership', async () => {
     const { candidates, refs } = await modules();
-    const candidate = await candidates.saveRecallCandidate('user-a', { judgment: 'Preserve source evidence.', summary: 'Evidence preservation rule', suggestedType: 'rule', suggestedScope: 'project,review', sourceRefs: [{ kind: 'execution', id: 'exec-a' }] });
+    const candidate = await createNightlyCandidateFixture('user-a', { judgment: 'Preserve source evidence.', summary: 'Evidence preservation rule', suggestedType: 'rule', suggestedScope: 'project,review', sourceRefs: [{ kind: 'execution', id: 'exec-a' }] });
     const { asset } = await candidates.promoteRecallCandidate('user-a', candidate.id, { actor: 'user' });
     const first = await refs.addWorkspaceAssetReference('user-a', { assetId: asset.id, workspaceId: 'workspace-a', scope: 'project,review' });
     const duplicate = await refs.addWorkspaceAssetReference('user-a', { assetId: asset.id, workspaceId: 'workspace-a', scope: 'project,review' });
@@ -22,7 +23,7 @@ describe('Recall workspace asset references', () => {
 
   it('permits scope narrowing and preserves removal history', async () => {
     const { candidates, refs } = await modules();
-    const candidate = await candidates.saveRecallCandidate('user-a', { judgment: 'Use source evidence.', summary: 'Evidence usage rule', suggestedType: 'rule', suggestedScope: 'project,review', sourceRefs: [{ kind: 'memory', id: 'mem-a' }] });
+    const candidate = await createNightlyCandidateFixture('user-a', { judgment: 'Use source evidence.', summary: 'Evidence usage rule', suggestedType: 'rule', suggestedScope: 'project,review', sourceRefs: [{ kind: 'memory', id: 'mem-a' }] });
     const { asset } = await candidates.promoteRecallCandidate('user-a', candidate.id, { actor: 'user' });
     const reference = await refs.addWorkspaceAssetReference('user-a', { assetId: asset.id, workspaceId: 'workspace-a', scope: 'project,review' });
     const narrowed = await refs.updateWorkspaceAssetReference('user-a', reference.id, { scope: 'project' });
@@ -35,7 +36,7 @@ describe('Recall workspace asset references', () => {
 
   it('坏档逐条降级（r4）：一条坏引用 JSON 不炸整份引用列表，好引用照常列出（对齐 listExperiences / listAbilityAssets / listRecallCandidates 口径）', async () => {
     const { candidates, refs } = await modules();
-    const candidate = await candidates.saveRecallCandidate('user-a', { judgment: 'Keep source evidence.', summary: 'Evidence keeping rule', suggestedType: 'rule', suggestedScope: 'project', sourceRefs: [{ kind: 'memory', id: 'mem-w' }] });
+    const candidate = await createNightlyCandidateFixture('user-a', { judgment: 'Keep source evidence.', summary: 'Evidence keeping rule', suggestedType: 'rule', suggestedScope: 'project', sourceRefs: [{ kind: 'memory', id: 'mem-w' }] });
     const { asset } = await candidates.promoteRecallCandidate('user-a', candidate.id, { actor: 'user' });
     const good = await refs.addWorkspaceAssetReference('user-a', { assetId: asset.id, workspaceId: 'workspace-a', scope: 'project' });
     const unreadable = await refs.addWorkspaceAssetReference('user-a', { assetId: asset.id, workspaceId: 'workspace-b', scope: 'project' });

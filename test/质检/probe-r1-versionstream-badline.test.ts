@@ -1,3 +1,4 @@
+import { seedStoredAbilityAsset } from '../helpers/stored-ability-asset';
 /**
  * 探针（本轮红队-数据与注入）：资产版本流（JSONL）一条坏行让该资产的版本管理全灭。
  *
@@ -61,7 +62,7 @@ const ACT = { actor: 'user' as const, reason: 'probe' };
 async function mkRuleAsset(id: string, statement: string) {
   const { createAbilityAsset } = await import('../../src/main/features/recall/asset-service');
   const now = new Date().toISOString();
-  return createAbilityAsset(UID, {
+  return seedStoredAbilityAsset(UID, {
     schemaVersion: 2, ownerId: UID, id, candidateId: `cand-${id}`,
     sourceCandidateIds: [`cand-${id}`], reviewDecisionId: `rd_probe${id.slice(-6)}`.padEnd(16, 'x'),
     type: 'rule', title: '演示纪律', statement,

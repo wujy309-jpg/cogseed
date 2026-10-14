@@ -1,3 +1,4 @@
+import { requireContentCategory } from '../features/recall/content-category';
 /**
  * IPC wiring — replaces `bridge/routes.py` for the Electron era.
  *
@@ -873,21 +874,6 @@ async function ensureKstarWakeProjectionConfirmed(
   const confirmed = await recallProjection.confirmAndApproveWake(userId, { cid, projectionId, wakeRequestId: requestId });
   if (confirmed.ok !== true) return { ok: false, error: confirmed.error || 'projection wake confirmation failed' };
   return null;
-}
-
-/** 整理记录批量入口的公共校验：id 数组、逐条 safeId、上限 100。 */
-function batchRecallCaptures(
-  ctx: { userId: string },
-  captureIds: unknown,
-  run: (userId: string, ids: string[]) => Promise<{ succeeded: string[]; failed: Array<{ id: string; error: string }> }>,
-): Promise<{ succeeded: string[]; failed: Array<{ id: string; error: string }> }> {
-  if (!Array.isArray(captureIds)
-    || captureIds.length < 1
-    || captureIds.length > 100
-    || captureIds.some((id) => typeof id !== 'string' || !safeId(id))) {
-    throw new Error('invalid recall capture ids');
-  }
-  return run(ctx.userId, captureIds);
 }
 
 function _isRecipientOrigin(value: unknown): value is 'user_selection' | 'cli_fallback' | 'active_floor' {
@@ -2347,6 +2333,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // 细分（broken/weak/ready）仍由渲染层按 capabilities 做。
   'recall.candidates.list': async ({ view } = {}, ctx) => ({
     ok: true,
+    ...(view === 'activity-queue' ? { assetApprovals: await recallAssetApproval.listAssetChangeProposals(ctx.userId) } : {}),
     candidates: await (async () => {
       const all = await recallCandidates.listRecallCandidates(ctx.userId);
       // 冲突是跨候选判断，只有全量读口算得出来。不传的话列表会说"能确认"，
@@ -2506,57 +2493,6 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true, context: await recallCaptures.readRecallCaptureContext(ctx.userId, captureId) };
   },
 
-  'recall.captures.retry': async ({ captureId } = {}, ctx) => {
-    if (!safeId(captureId)) throw new Error('invalid recall capture id');
-    return { ok: true, capture: await recallCaptures.retryRecallCapture(ctx.userId, captureId) };
-  },
-
-  'recall.captures.pause': async ({ captureId } = {}, ctx) => {
-    if (!safeId(captureId)) throw new Error('invalid recall capture id');
-    return { ok: true, capture: await recallCaptures.pauseRecallCapture(ctx.userId, captureId) };
-  },
-
-  'recall.captures.resume': async ({ captureId } = {}, ctx) => {
-    if (!safeId(captureId)) throw new Error('invalid recall capture id');
-    return { ok: true, capture: await recallCaptures.resumeRecallCapture(ctx.userId, captureId) };
-  },
-
-  'recall.captures.cancel': async ({ captureId } = {}, ctx) => {
-    if (!safeId(captureId)) throw new Error('invalid recall capture id');
-    return { ok: true, capture: await recallCaptures.cancelRecallCapture(ctx.userId, captureId) };
-  },
-
-  'recall.captures.runNow': async ({ captureId } = {}, ctx) => {
-    if (!safeId(captureId)) throw new Error('invalid recall capture id');
-    return { ok: true, capture: await recallCaptures.runRecallCaptureNow(ctx.userId, captureId) };
-  },
-
-  'recall.captures.batchRetry': async ({ captureIds } = {}, ctx) => {
-    return { ok: true, result: await batchRecallCaptures(ctx, captureIds, recallCaptures.retryRecallCapturesBatch) };
-  },
-
-  'recall.captures.batchRunNow': async ({ captureIds } = {}, ctx) => {
-    // 每条都是一次模型额度消耗：入口只收 id 列表，条数确认由前端弹窗负责
-    //（写死具体数字），这里不再二次拦截。
-    return { ok: true, result: await batchRecallCaptures(ctx, captureIds, recallCaptures.runRecallCapturesNowBatch) };
-  },
-
-  'recall.captures.manualCreate': async ({ conversationId } = {}, ctx) => {
-    if (!safeId(conversationId)) throw new Error('invalid conversation id');
-    return {
-      ok: true,
-      capture: await recallCaptures.queueManualRecallCaptureFromConversation(ctx.userId, conversationId),
-    };
-  },
-
-  'recall.captures.historicalAutoStart': async ({ conversationId } = {}, ctx) => {
-    if (!safeId(conversationId)) throw new Error('invalid conversation id');
-    return {
-      ok: true,
-      capture: await recallCaptures.startHistoricalRecallCapture(ctx.userId, conversationId),
-    };
-  },
-
   // 存量记忆迁移：dryRun 只读盘点；真实迁移必须带用户逐条确认的内容 hash
   // 与预览时源文件指纹。没有显式选择不执行；启动阶段不再自动迁移。
   // 族改名（2026-09-22 快赢·族可命名）：锚资产起按 same_family 连通分量批量写。
@@ -2565,29 +2501,6 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     const { renameAssetFamily } = await import('../features/recall/family');
     const updated = await renameAssetFamily(ctx.userId, anchorAssetId.trim(), String(name ?? ''));
     return { ok: true, updated };
-  },
-  'recall.memory.migrate': async (payload = {}, ctx) => {
-    if (payload?.dryRun === true) {
-      const { previewLegacyMemoryMigration } = await import('../features/recall/memory-migration');
-      return previewLegacyMemoryMigration(ctx.userId);
-    }
-    const { selectedEntries, expectedFingerprints } = payload;
-    if (!Array.isArray(selectedEntries) || selectedEntries.length === 0) {
-      throw new Error('explicit migration selection is required');
-    }
-    const { migrateLegacyMemoryToAssets } = await import('../features/recall/memory-migration');
-    return migrateLegacyMemoryToAssets(ctx.userId, { selectedEntries, expectedFingerprints });
-  },
-  'recall.scopedMemoryMigration.preview': async (_payload, ctx) => {
-    const { previewLegacyScopedMemoryMigration } = await import('../features/recall/scoped-memory-migration');
-    return previewLegacyScopedMemoryMigration(ctx.userId);
-  },
-  'recall.scopedMemoryMigration.run': async ({ selectedEntries, expectedFingerprints } = {}, ctx) => {
-    if (!Array.isArray(selectedEntries) || selectedEntries.length === 0) {
-      throw new Error('explicit scoped memory migration selection is required');
-    }
-    const { migrateLegacyScopedMemoryToAssets } = await import('../features/recall/scoped-memory-migration');
-    return migrateLegacyScopedMemoryToAssets(ctx.userId, { selectedEntries, expectedFingerprints });
   },
   'recall.captures.settings.get': async (_input, ctx) => {
     const [settings, model, runtime] = await Promise.all([
@@ -2621,11 +2534,6 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true, settings };
   },
 
-  'recall.candidates.importPersonalOntology': async ({ candidateId } = {}, ctx) => {
-    if (!safeId(candidateId)) throw new Error('invalid personal ontology candidate id');
-    return { ok: true, candidate: withRecallCandidateCapabilities(await recallCandidates.importPersonalOntologyCandidate(ctx.userId, candidateId)) };
-  },
-
   'recall.candidates.read': async ({ candidateId } = {}, ctx) => {
     if (!safeId(candidateId)) throw new Error('invalid recall candidate id');
     return { ok: true, candidate: withRecallCandidateCapabilities(await recallCandidates.withRecallCandidateProcessingDetails(ctx.userId, await recallCandidates.readRecallCandidate(ctx.userId, candidateId))) };
@@ -2649,31 +2557,8 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     })) };
   },
 
-  'recall.candidates.save': async ({ judgment, value, summary, uncertainty, suggestedType, suggestedScope, suggestedAction, risk, sourceRefs, evidenceRefs, expiresAt, taskRunId, targetAssetId, targetVersionUsed, spaceId, scopePolicy, applicableWhen, forbiddenWhen, manual } = {}, ctx) => {
-    if (typeof judgment !== 'string' || judgment.length > 4_000) throw new Error('invalid recall candidate judgment');
-    if (manual !== undefined && typeof manual !== 'boolean') throw new Error('invalid recall candidate manual flag');
-    if (summary !== undefined && (typeof summary !== 'string' || summary.length > 1_000)) throw new Error('invalid recall candidate summary');
-    if (value !== undefined && (typeof value !== 'string' || value.length > 4_000)) throw new Error('invalid recall candidate value');
-    if (uncertainty !== undefined && (typeof uncertainty !== 'string' || uncertainty.length > 1_000)) throw new Error('invalid recall candidate uncertainty');
-    if (suggestedType !== 'personal' && suggestedType !== 'rule' && suggestedType !== 'template' && suggestedType !== 'skill_method' && suggestedType !== 'fact') throw new Error('invalid recall candidate type');
-    if (typeof suggestedScope !== 'string' || suggestedScope.length > 500) throw new Error('invalid recall candidate scope');
-    if (!Array.isArray(sourceRefs) || sourceRefs.length > 100) throw new Error('invalid recall candidate source refs');
-    if (spaceId !== undefined && !safeId(spaceId)) throw new Error('invalid space id');
-    if (scopePolicy !== undefined && (!scopePolicy || typeof scopePolicy !== 'object' || Array.isArray(scopePolicy))) throw new Error('invalid recall candidate scope policy');
-    if (evidenceRefs !== undefined && (!Array.isArray(evidenceRefs) || evidenceRefs.length > 100)) throw new Error('invalid recall candidate evidence refs');
-    if (suggestedAction !== undefined && !['create', 'update', 'limit_scope', 'pause', 'keep_current', 'reject'].includes(suggestedAction)) throw new Error('invalid recall candidate action');
-    if (targetVersionUsed !== undefined && (typeof targetVersionUsed !== 'string' || !/^[0-9]{1,9}$/.test(targetVersionUsed))) throw new Error('invalid recall candidate target version');
-    if (risk !== undefined && !['low', 'medium', 'high'].includes(risk)) throw new Error('invalid recall candidate risk');
-    if (expiresAt !== undefined && (typeof expiresAt !== 'string' || !Number.isFinite(Date.parse(expiresAt)))) throw new Error('invalid recall candidate expiry');
-    if (taskRunId !== undefined && !safeId(taskRunId)) throw new Error('invalid recall candidate task run id');
-    if (targetAssetId !== undefined && !safeId(targetAssetId)) throw new Error('invalid recall candidate target asset id');
-    if (applicableWhen !== undefined && (!Array.isArray(applicableWhen) || applicableWhen.length > 32)) throw new Error('invalid recall candidate applicable range');
-    if (forbiddenWhen !== undefined && (!Array.isArray(forbiddenWhen) || forbiddenWhen.length > 32)) throw new Error('invalid recall candidate forbidden range');
-    return { ok: true, candidate: withRecallCandidateCapabilities(await recallCandidates.saveRecallCandidate(ctx.userId, { judgment, ...(value !== undefined ? { value } : {}), ...(summary !== undefined ? { summary } : {}), ...(uncertainty !== undefined ? { uncertainty } : {}), suggestedType, suggestedScope, ...(suggestedAction !== undefined ? { suggestedAction } : {}), ...(risk !== undefined ? { risk } : {}), sourceRefs, ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(expiresAt !== undefined ? { expiresAt } : {}), ...(taskRunId !== undefined ? { taskRunId } : {}), ...(targetAssetId !== undefined ? { targetAssetId } : {}), ...(targetVersionUsed !== undefined ? { targetVersionUsed } : {}), ...(spaceId ? { spaceId } : {}), ...(scopePolicy !== undefined ? { scopePolicy } : {}), ...(applicableWhen !== undefined ? { applicableWhen } : {}), ...(forbiddenWhen !== undefined ? { forbiddenWhen } : {}), ...(manual !== undefined ? { manual } : {}) })) };
-  },
-
-  'recall.candidates.update': async ({ candidateId, judgment, value, evidenceSummary, summary, uncertainty, suggestedType, suggestedScope, suggestedAction, risk, sourceRefs, evidenceRefs, expiresAt, taskRunId, targetAssetId, scopePolicy, applicableWhen, forbiddenWhen } = {}, ctx) => {
-    if (!safeId(candidateId) || typeof judgment !== 'string' || judgment.length > 4_000 || (value !== undefined && (typeof value !== 'string' || value.length > 4_000)) || (summary !== undefined && (typeof summary !== 'string' || summary.length > 1_000)) || (uncertainty !== undefined && (typeof uncertainty !== 'string' || uncertainty.length > 1_000)) || (suggestedType !== 'personal' && suggestedType !== 'rule' && suggestedType !== 'template' && suggestedType !== 'skill_method' && suggestedType !== 'fact') || typeof suggestedScope !== 'string' || suggestedScope.length > 500 || !Array.isArray(sourceRefs) || sourceRefs.length > 100) throw new Error('invalid recall candidate update');
+  'recall.candidates.update': async ({ candidateId, judgment, value, evidenceSummary, summary, uncertainty, contentCategory, suggestedType, suggestedScope, suggestedAction, risk, sourceRefs, evidenceRefs, expiresAt, taskRunId, targetAssetId, scopePolicy, applicableWhen, forbiddenWhen } = {}, ctx) => {
+    if (!safeId(candidateId) || typeof judgment !== 'string' || judgment.length > 4_000 || (value !== undefined && (typeof value !== 'string' || value.length > 4_000)) || (summary !== undefined && (typeof summary !== 'string' || summary.length > 1_000)) || (uncertainty !== undefined && (typeof uncertainty !== 'string' || uncertainty.length > 1_000)) || (suggestedType !== 'cognition' && suggestedType !== 'personal' && suggestedType !== 'rule' && suggestedType !== 'template' && suggestedType !== 'skill_method' && suggestedType !== 'fact') || typeof suggestedScope !== 'string' || suggestedScope.length > 500 || !Array.isArray(sourceRefs) || sourceRefs.length > 100) throw new Error('invalid recall candidate update');
     if (evidenceRefs !== undefined && (!Array.isArray(evidenceRefs) || evidenceRefs.length > 100)) throw new Error('invalid recall candidate evidence refs');
     if (evidenceSummary !== undefined && (typeof evidenceSummary !== 'string' || evidenceSummary.length > 4_000)) throw new Error('invalid recall candidate evidence summary');
     if (scopePolicy !== undefined && (!scopePolicy || typeof scopePolicy !== 'object' || Array.isArray(scopePolicy))) throw new Error('invalid recall candidate scope policy');
@@ -2684,12 +2569,21 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (targetAssetId !== undefined && !safeId(targetAssetId)) throw new Error('invalid recall candidate target asset id');
     if (applicableWhen !== undefined && (!Array.isArray(applicableWhen) || applicableWhen.length > 32)) throw new Error('invalid recall candidate applicable range');
     if (forbiddenWhen !== undefined && (!Array.isArray(forbiddenWhen) || forbiddenWhen.length > 32)) throw new Error('invalid recall candidate forbidden range');
-    const updatedCandidate = await recallCandidates.updateRecallCandidate(ctx.userId, candidateId, { judgment, ...(value !== undefined ? { value } : {}), ...(evidenceSummary !== undefined ? { evidenceSummary } : {}), ...(summary !== undefined ? { summary } : {}), ...(uncertainty !== undefined ? { uncertainty } : {}), suggestedType, suggestedScope, ...(suggestedAction !== undefined ? { suggestedAction } : {}), ...(risk !== undefined ? { risk } : {}), sourceRefs, ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(expiresAt !== undefined ? { expiresAt } : {}), ...(taskRunId !== undefined ? { taskRunId } : {}), ...(targetAssetId !== undefined ? { targetAssetId } : {}), ...(scopePolicy !== undefined ? { scopePolicy } : {}), ...(applicableWhen !== undefined ? { applicableWhen } : {}), ...(forbiddenWhen !== undefined ? { forbiddenWhen } : {}) });
+    if (contentCategory !== undefined) requireContentCategory(contentCategory);
+    const updatedCandidate = await recallCandidates.updateRecallCandidate(ctx.userId, candidateId, { judgment, ...(contentCategory !== undefined ? { contentCategory } : {}), ...(value !== undefined ? { value } : {}), ...(evidenceSummary !== undefined ? { evidenceSummary } : {}), ...(summary !== undefined ? { summary } : {}), ...(uncertainty !== undefined ? { uncertainty } : {}), suggestedType, suggestedScope, ...(suggestedAction !== undefined ? { suggestedAction } : {}), ...(risk !== undefined ? { risk } : {}), sourceRefs, ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(expiresAt !== undefined ? { expiresAt } : {}), ...(taskRunId !== undefined ? { taskRunId } : {}), ...(targetAssetId !== undefined ? { targetAssetId } : {}), ...(scopePolicy !== undefined ? { scopePolicy } : {}), ...(applicableWhen !== undefined ? { applicableWhen } : {}), ...(forbiddenWhen !== undefined ? { forbiddenWhen } : {}) });
     const conflicts = recallCandidates.recallCandidateConflictingTypes(await recallCandidates.listRecallCandidates(ctx.userId));
     return { ok: true, candidate: withRecallCandidateCapabilities(updatedCandidate, conflicts.get(updatedCandidate.id)) };
   },
 
 
+
+  'recall.candidates.recheckOntologyFormation': async ({ candidateId } = {}, ctx) => {
+    if (!safeId(candidateId)) throw new Error('invalid recall candidate id');
+    const { recheckOntologyFormation } = await import('../features/recall/ontology-formation-recheck');
+    const candidate = await recheckOntologyFormation(ctx.userId, candidateId);
+    const conflicts = recallCandidates.recallCandidateConflictingTypes(await recallCandidates.listRecallCandidates(ctx.userId));
+    return { ok: true, candidate: withRecallCandidateCapabilities(candidate, conflicts.get(candidate.id)) };
+  },
 
   'recall.candidates.reject': async ({ candidateId, note } = {}, ctx) => {
     if (!safeId(candidateId)) throw new Error('invalid recall candidate id');
@@ -2797,17 +2691,18 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (!asset) throw new Error('recall ability asset not found');
     return { ok: true, asset: asset.record, payload: asset.payload };
   },
-  'recall.assets.update': async ({ assetId, title, statement, scope, scopePolicy, type, evidenceRefs, ontologyRefs, relations, derivedFrom, applicableWhen, forbiddenWhen, reason, acknowledgeRecommendation, tags, expectedVersion, expectedActiveVersion } = {}, ctx) => {
+  'recall.assets.update': async ({ assetId, title, statement, scope, scopePolicy, type, contentCategory, evidenceRefs, ontologyRefs, relations, derivedFrom, applicableWhen, forbiddenWhen, reason, acknowledgeRecommendation, tags, expectedVersion, expectedActiveVersion, reviewedDetails } = {}, ctx) => {
     if (!safeId(assetId)) throw new Error('invalid recall asset id');
     const note = boundedText(reason, 'recall asset update reason', 1_000);
     for (const version of [expectedVersion, expectedActiveVersion]) {
       if (version !== undefined && (typeof version !== 'string' || !/^[0-9]{1,9}$/.test(version))) throw new Error('invalid recall asset expected version');
     }
+    if (contentCategory !== undefined) requireContentCategory(contentCategory);
     if (title !== undefined && (typeof title !== 'string' || title.length > 120)) throw new Error('invalid recall asset title');
     if (statement !== undefined && (typeof statement !== 'string' || statement.length > 4_000)) throw new Error('invalid recall asset statement');
     if (scope !== undefined && (typeof scope !== 'string' || scope.length > 500)) throw new Error('invalid recall asset scope');
     if (scopePolicy !== undefined && (!scopePolicy || typeof scopePolicy !== 'object' || Array.isArray(scopePolicy))) throw new Error('invalid recall asset scope policy');
-    if (type !== undefined && !['personal', 'rule', 'template', 'skill_method', 'fact'].includes(type)) throw new Error('invalid recall asset type');
+    if (type !== undefined && !['cognition', 'personal', 'rule', 'template', 'skill_method', 'fact'].includes(type)) throw new Error('invalid recall asset type');
     if (evidenceRefs !== undefined && !Array.isArray(evidenceRefs)) throw new Error('invalid recall asset evidence');
     if (ontologyRefs !== undefined && !Array.isArray(ontologyRefs)) throw new Error('invalid recall asset ontology refs');
     if (relations !== undefined && !Array.isArray(relations)) throw new Error('invalid recall asset relations');
@@ -2815,11 +2710,22 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (applicableWhen !== undefined && (!Array.isArray(applicableWhen) || applicableWhen.length > 32)) throw new Error('invalid recall asset applicable range');
     if (forbiddenWhen !== undefined && (!Array.isArray(forbiddenWhen) || forbiddenWhen.length > 32)) throw new Error('invalid recall asset forbidden range');
     if (acknowledgeRecommendation !== undefined && typeof acknowledgeRecommendation !== 'boolean') throw new Error('invalid recall asset recommendation acknowledgment');
+    if (reviewedDetails !== undefined && typeof reviewedDetails !== 'boolean') throw new Error('invalid recall asset details review');
+    if (reviewedDetails === true && (typeof statement !== 'string' || !Array.isArray(applicableWhen) || !Array.isArray(forbiddenWhen) || expectedVersion === undefined || expectedActiveVersion === undefined)) {
+      throw new Error('reviewed recall asset details require complete content, conditions and both expected versions');
+    }
     // 标签（specs/012 T009，contracts/ipc.md §四）：只做形状闸（数组 + 每条
     // 字符串 + ≤12 条），逐条 trim/长度/去重由 ability-tag-service 的规范化
     // 唯一处判定；不传 = 不改标签（省略不是清空）。
     if (tags !== undefined && (!Array.isArray(tags) || tags.some((entry) => typeof entry !== 'string') || tags.length > abilityTags.ABILITY_ASSET_TAGS_MAX)) throw new Error('invalid recall asset tags');
-    return { ok: true, asset: await recallAssets.updateAbilityAsset(ctx.userId, assetId, { ...(title !== undefined ? { title } : {}), ...(statement !== undefined ? { statement } : {}), ...(scope !== undefined ? { scope } : {}), ...(scopePolicy !== undefined ? { scopePolicy } : {}), ...(type !== undefined ? { type } : {}), ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(ontologyRefs !== undefined ? { ontologyRefs } : {}), ...(relations !== undefined ? { relations } : {}), ...(derivedFrom !== undefined ? { derivedFrom } : {}), ...(applicableWhen !== undefined ? { applicableWhen } : {}), ...(forbiddenWhen !== undefined ? { forbiddenWhen } : {}), ...(tags !== undefined ? { tags } : {}), reason: note, actor: 'user', ...(expectedVersion !== undefined ? { expectedVersion } : {}), ...(expectedActiveVersion !== undefined ? { expectedActiveVersion } : {}), ...(acknowledgeRecommendation !== undefined ? { acknowledgeRecommendation } : {}) }) };
+    const update: recallAssets.UpdateAbilityAssetInput = { ...(contentCategory !== undefined ? { contentCategory } : {}), ...(title !== undefined ? { title } : {}), ...(statement !== undefined ? { statement } : {}), ...(scope !== undefined ? { scope } : {}), ...(scopePolicy !== undefined ? { scopePolicy } : {}), ...(type !== undefined ? { type } : {}), ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(ontologyRefs !== undefined ? { ontologyRefs } : {}), ...(relations !== undefined ? { relations } : {}), ...(derivedFrom !== undefined ? { derivedFrom } : {}), ...(applicableWhen !== undefined ? { applicableWhen } : {}), ...(forbiddenWhen !== undefined ? { forbiddenWhen } : {}), ...(tags !== undefined ? { tags } : {}), reason: note, actor: 'user', ...(expectedVersion !== undefined ? { expectedVersion } : {}), ...(expectedActiveVersion !== undefined ? { expectedActiveVersion } : {}), ...(acknowledgeRecommendation !== undefined ? { acknowledgeRecommendation } : {}) };
+    // Only the complete details-save entry point can attest to a newly reviewed
+    // body. The feature still checks the real locked baseline and semantic diff;
+    // a renderer flag or a generic actor/reason cannot create that authority.
+    const asset = reviewedDetails === true
+      ? await recallAssets.saveUserStandingPreferenceDetails(ctx.userId, assetId, { ...update, statement, applicableWhen, forbiddenWhen, expectedVersion, expectedActiveVersion, reason: note })
+      : await recallAssets.updateAbilityAsset(ctx.userId, assetId, update);
+    return { ok: true, asset };
   },
   'recall.assets.pause': async ({ assetId, note } = {}, ctx) => { if (!safeId(assetId) || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall asset pause'); return { ok: true, asset: await recallAssets.pauseAbilityAsset(ctx.userId, assetId, { actor: 'user', reason: note ?? 'user pause' }) }; },
   'recall.assets.resume': async ({ assetId, note } = {}, ctx) => { if (!safeId(assetId) || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall asset resume'); return { ok: true, asset: await recallAssets.resumeAbilityAsset(ctx.userId, assetId, { actor: 'user', reason: note ?? 'user resume' }) }; },
@@ -4211,11 +4117,6 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     // 键：老消费方读 candidates 不受影响，横幅恢复可用。
     const list = view === 'activity-queue' ? projectLegacyActivityCandidates(data.candidate_updates || []) : data.candidate_updates || [];
     return { ok: true, candidates: list, candidate_updates: list, ...(data.corrupt ? { corrupt: data.corrupt } : {}) };
-  },
-  'personalOntology.candidates.transferToRecall': async ({ candidateId }, ctx) => {
-    if (!safeId(candidateId)) throw new Error('invalid personal ontology candidate id');
-    const transferred = await personalOntologyCandidates.transferCandidateToRecall(ctx.userId, candidateId);
-    return { ok: true, candidate: withRecallCandidateCapabilities(transferred.candidate), sourceRemoved: transferred.sourceRemoved };
   },
   // 旧版 personalOntology.candidates.confirm/reject 批量入口已退役；过渡候选
   // 通过 transferToRecall 进入 Recall 共同审核，之后由统一资产/本体流程处理。

@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture, prepareNightlyCandidateInput } from '../../helpers/nightly-formation-fixture';
 import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -18,56 +19,6 @@ beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'cogseed-stable-
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); if (previous === undefined) delete process.env.COGSEED_WORKSPACE_ROOT; else process.env.COGSEED_WORKSPACE_ROOT = previous; fs.rmSync(root, { recursive: true, force: true }); });
 async function activate() { const m = await import('../../../src/main/features/cognition_migration'); expect((await m.migrateLegacyCognition(uid, { activate: true })).errors).toEqual([]); }
 describe('认知稳定化：真实业务边界', () => {
- it('手编本体读取后被改值或改为仅自己可见，旧观察不能覆盖', async () => {
-  const dir = path.join(root, uid, 'cloud/cognition');
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'personal-ontology.json'), JSON.stringify({ schemaVersion: 2, ownerId: uid, trash: [], groups: [{
-   id: 'g-manual', kind: 'user', title: '虚构验收', createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z',
-   fields: [{ id: 'f-manual', name: '部门', origin: 'user', createdAt: '2026-10-01T00:00:00Z' }],
-   values: [{ id: 'v-manual', fieldId: 'f-manual', text: '旧部门', source: 'manual', createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z' }],
-  }] }));
-  const { createCognitionKernelTools } = await import('../../../src/main/model/core-agent/cognition-kernel-tools');
-  const tools = createCognitionKernelTools({ userId: uid });
-  await tools.find(t => t.name === 'personal_fields_check')!.execute({ pack: 'expense' });
-  const po = await import('../../../src/main/features/po/api');
-  vi.useFakeTimers({ toFake: ['Date'] });
-  vi.setSystemTime(new Date('2026-10-04T05:00:00Z'));
-  expect(await po.poUpdateValue(uid, 'g-manual', 'v-manual', { text: '他处更新的部门' })).toMatchObject({ ok: true });
-  const remember = tools.find(t => t.name === 'personal_field_remember')!;
-  expect(await remember.execute({ field: '部门', value: '旧观察覆盖' })).toMatchObject({ isError: true });
-  const store = await import('../../../src/main/features/po/store');
-  expect(store.loadPoDocSync(uid).groups[0].values[0].text).toBe('他处更新的部门');
-  await tools.find(t => t.name === 'personal_fields_check')!.execute({ pack: 'expense' });
-  const sameSecond = store.loadPoDocSync(uid).groups[0].values[0].updatedAt;
-  await po.poUpdateValue(uid, 'g-manual', 'v-manual', { text: '同秒再次修改的部门' });
-  expect(store.loadPoDocSync(uid).groups[0].values[0].updatedAt).toBe(sameSecond);
-  expect(await remember.execute({ field: '部门', value: '不应覆盖同秒更新' })).toMatchObject({ isError: true });
-  expect(store.loadPoDocSync(uid).groups[0].values[0].text).toBe('同秒再次修改的部门');
-  await tools.find(t => t.name === 'personal_fields_check')!.execute({ pack: 'expense' });
-  expect(await remember.execute({ field: '部门', value: '用户确认的新部门' })).not.toMatchObject({ isError: true });
-  await po.poUpdateValue(uid, 'g-manual', 'v-manual', { sensitivity: 'restricted' });
-  expect(await remember.execute({ field: '部门', value: '用户确认的新部门' })).toMatchObject({ isError: true });
-  expect(store.loadPoDocSync(uid).groups[0].values[0]).toMatchObject({ text: '用户确认的新部门', restricted: true });
- });
- it('受管个人字段更新生成 v2，v1 保留，不创建影子槽位；旧基线拒绝', async () => {
-  seed(); await activate();
-  const gap = await import('../../../src/main/features/cognition_kernel/gap');
-  const assets = await import('../../../src/main/features/recall/asset-service');
-  await assets.initializeAbilityAsset(uid, await assets.readAbilityAsset(uid, id));
-  expect(await gap.backfillFieldValue(uid, { fieldName: '部门', value: '测试新部门', expectedVersion: '1', sourceId: id })).toMatchObject({ ok: true, objectId: id, version: '2' });
-  expect((await assets.readAbilityAssetVersionSnapshot(uid, id, '1'))?.statement).toBe('测试旧部门');
-  expect((await assets.readAbilityAsset(uid, id)).statement).toBe('测试新部门');
-  expect(await gap.backfillFieldValue(uid, { fieldName: '部门', value: '不应覆盖', expectedVersion: '1', sourceId: id })).toMatchObject({ ok: false });
- });
- it.each(['paused', 'archived', 'revoked'])('同值重复回答不能恢复 %s 资产或冒充可用', async status => {
-  seed({ status }); await activate(); const gap = await import('../../../src/main/features/cognition_kernel/gap');
-  expect(await gap.backfillFieldValue(uid, { fieldName: '部门', value: '测试旧部门' })).toMatchObject({ ok: false });
- });
- it('受限字段不能通过回填绕过；未知新字段仍可保存', async () => {
-  seed({ restricted: true }); await activate(); const gap = await import('../../../src/main/features/cognition_kernel/gap');
-  expect(await gap.backfillFieldValue(uid, { fieldName: '部门', value: '测试新部门' })).toMatchObject({ ok: false });
-  expect(await gap.backfillFieldValue(uid, { fieldName: '办公城市', value: '虚构测试城' })).toMatchObject({ ok: true });
- });
  it('字段工具返回来源与版本，重复读只记一次读取；读取不算采用', async () => {
   seed(); await activate();
   const { createCognitionKernelTools } = await import('../../../src/main/model/core-agent/cognition-kernel-tools');
@@ -90,7 +41,7 @@ describe('认知稳定化：真实业务边界', () => {
  it('分类后进入正式候选池，长正文保真，重复提交不新建实验池', async () => {
   const { submitCognitionCandidate } = await import('../../../src/main/features/cognition/candidate-submission');
   const statement = '# 验收模板\n\n' + '准备事项\n'.repeat(200);
-  const input = { judgment: statement, summary: '稳定化测试模板', value: statement, suggestedType: 'template' as const, suggestedScope: 'global', sourceRefs: [], manual: true, captureKey: 'manual-stable-test' };
+  const input = await prepareNightlyCandidateInput(uid, { judgment: statement, summary: '稳定化测试模板', value: statement, suggestedType: 'template' as const, suggestedScope: 'global', sourceRefs: [], rawStatement: true, captureKey: 'nightly-stable-test' });
   const one = await submitCognitionCandidate(uid, input); const two = await submitCognitionCandidate(uid, input);
   expect(one.id).toBe(two.id); expect(one.judgment).toBe(statement.trim()); expect(one.suggestedType).toBe('template');
   expect(fs.existsSync(path.join(root, uid, 'cloud/cognition/cognition-pool.json'))).toBe(false);
@@ -197,8 +148,8 @@ describe('认知稳定化：真实业务边界', () => {
  it('正式候选晋升的模板在正文读取工具中填槽，缺值不新增读取证据', async () => {
   const submission = await import('../../../src/main/features/cognition/candidate-submission');
   const candidates = await import('../../../src/main/features/recall/candidate-service');
-  const candidate = await submission.submitCognitionCandidate(uid, { judgment: '# {{活动}}\n责任人：{{负责人}}', summary: '活动验收模板',
-    suggestedType: 'template', suggestedScope: 'global', sourceRefs: [], manual: true });
+  const candidate = await createNightlyCandidateFixture(uid, { judgment: '# {{活动}}\n责任人：{{负责人}}', summary: '活动验收模板',
+    suggestedType: 'template', suggestedScope: 'global', sourceRefs: [], rawStatement: true });
   const { asset } = await candidates.promoteRecallCandidate(uid, candidate.id, { actor: 'user' });
   const { createRecallTools } = await import('../../../src/main/model/core-agent/recall-tools');
   const tool = createRecallTools({ userId: uid, turnId: 'turn-template-fill' }).find(t => t.name === 'search_ability_assets')!;

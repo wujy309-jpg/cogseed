@@ -68,7 +68,6 @@ cognition.extractFromSession
 cognition.homes.replace
 cognition.inbox.list
 cognition.inbox.resolve
-cognition.kernel.backfill
 cognition.kernel.inbox
 cognition.kernel.taskFields
 cognition.migration.run

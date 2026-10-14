@@ -10,7 +10,7 @@ export type { CognitionCatalogKind, CognitionCatalogSource, CognitionSourceActio
 export { cognitionSourceControlId, isCognitionSourceEnabled, listCognitionSourceControls, readCognitionSourceControl } from './source-control';
 export type { CognitionSourceAvailability, CognitionSourceControlRecord, CognitionSourceRemovalImpact, RemoveCognitionSourceResult } from './source-control';
 
-export { importPersonalOntologyCandidate, listRecallCandidates, promoteRecallCandidate, recallCandidateConflictingTypes, readRecallAssetHandoffReceipt, readRecallCandidate, rejectRecallCandidate, updateRecallCandidate, saveRecallCandidate, recordRecallCandidateValidation } from './candidate-service';
+export { listRecallCandidates, promoteRecallCandidate, recallCandidateConflictingTypes, readRecallAssetHandoffReceipt, readRecallCandidate, rejectRecallCandidate, updateRecallCandidate, saveRecallCandidate, recordRecallCandidateValidation } from './candidate-service';
 export { recordInjectionReceipt, listInjectionReceipts } from './injection-receipt';
 export { recordValidation, listValidationRecords, recoverValidationApplications } from './validation-service';
 export { evaluatePromotionPolicy } from './promotion-policy';
@@ -32,7 +32,7 @@ export type { AnswerAssetEvidence, AnswerRelationEvidence, AnswerRelationPathEvi
 export { assessOntologyJevRollout, collectOntologyEvaluationDataset, DEFAULT_ONTOLOGY_ROLLOUT_THRESHOLDS, evaluateOntologyQueryDataset, ONTOLOGY_EVALUATION_ROUTES, ONTOLOGY_EVALUATION_SCENARIOS, ontologyEvaluationDatasetSchema } from './ontology-query-evaluation';
 export type { OntologyEvaluationCase, OntologyEvaluationDataset, OntologyEvaluationExecutor, OntologyEvaluationReport, OntologyEvaluationRoute, OntologyEvaluationRouteMetrics, OntologyEvaluationRun, OntologyEvaluationRunObservation, OntologyEvaluationScenario, OntologyRolloutAssessment, OntologyRolloutThresholds } from './ontology-query-evaluation';
 
-export { cancelRecallCapture, listRecallCaptures, pauseRecallCapture, queryRecallCaptures, queueManualRecallCaptureFromConversation, queueRecallCaptureFromTerminal, readRecallCapture, readRecallCaptureWorkflow, readRecallNightlySweep, recoverRecallCaptures, resumeRecallCapture, retryRecallCapture, runNightlyCaptureSweep, runRecallCapture, runRecallCaptureNow, scheduleRecallCapture, startHistoricalRecallCapture, startNightlyCaptureSweepLoop, startRecallCaptureOrchestrator } from './capture-service';
+export { listRecallCaptures, queryRecallCaptures, readRecallCapture, readRecallCaptureWorkflow, readRecallNightlySweep, recoverRecallCaptures, runNightlyCaptureSweep, runRecallCapture, scheduleRecallCapture, startNightlyCaptureSweepLoop, startRecallCaptureOrchestrator } from './capture-service';
 export type { CapturePromptMessage, ListRecallCapturesQuery, RecallCaptureCandidatePromotion, RecallCaptureConfirmedAssetReceipt, RecallCaptureCounts, RecallCaptureModelUsage, RecallCaptureNextAction, RecallCapturePage, RecallCaptureQueryStatus, RecallCaptureRecord, RecallCaptureReviewSummary, RecallCaptureStage, RecallCaptureStatus, RecallCaptureWorkflowRecord, RecallCaptureWorkflowStatus, RecallNightlySweepCursor, RecallNightlySweepCursorState, RecallNightlySweepRecord, RecallNightlySweepResult, RecallNightlySweepRun } from './capture-service';
 export { readRecallCaptureStats } from './capture-stats';
 export type { RecallCaptureStatsRecord, RecallCaptureStatsTotals } from './capture-stats';
@@ -55,8 +55,8 @@ export { loadCommittedProjectionKnowledge } from './projection-knowledge';
 export type { CommittedProjectionKnowledge } from './projection-knowledge';
 export { createRecallView, isRecallViewExpired, listRecallViews, readRecallView } from './recall-view-service';
 export type { CreateRecallViewInput, ListRecallViewsQuery, RecallViewPurpose, RecallViewRecord } from './recall-view-service';
-export { classifyTeachingIntent, listUserTeachingSignals, readUserTeachingSignal, recordTeachingSignalAfterMemoryWrite, revokeUserTeachingSignal, teachingMemoryRef, teachingSignalId } from './teaching-service';
-export type { RecordTeachingSignalInput, UserTeachingIntent, UserTeachingScope, UserTeachingSignalRecord, UserTeachingStatus } from './teaching-service';
+export { listUserTeachingSignals, readUserTeachingSignal, revokeUserTeachingSignal } from './teaching-service';
+export type { UserTeachingIntent, UserTeachingScope, UserTeachingSignalRecord, UserTeachingStatus } from './teaching-service';
 
 export { completeTransferProof, evaluateEffectivenessProof, prepareTransferProof } from './proof-service';
 export type { EffectivenessOutcome, EffectivenessProofRecord, TransferProofRecord, TransferProofStatus } from './proof-service';

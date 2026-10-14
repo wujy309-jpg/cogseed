@@ -132,6 +132,9 @@ describe('candidate titles never degrade into candidate ids', () => {
     );
 
     expect(visibleText(html)).toContain('未命名候选');
+    expect(visibleText(html)).not.toContain('undefined');
+    expect(html).not.toContain('data-act="cand-adopt-with-form"');
+    expect(html).not.toContain('data-act="activity-defer"');
     expect(visibleText(html)).not.toContain('cand-xyz');
   });
 });

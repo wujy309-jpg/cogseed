@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../helpers/nightly-formation-fixture';
 /** 后台自动整理不处置候选：并发用户拒绝必须保持终态，不能重新进入待办。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
@@ -42,7 +43,7 @@ async function modules() {
 
 async function pendingCandidate() {
   const candidates = await import('../../src/main/features/recall/candidate-service');
-  return candidates.saveRecallCandidate('user-a', {
+  return createNightlyCandidateFixture('user-a', {
     judgment: 'Keep architecture decisions in a decision log before changing runtime boundaries.',
     summary: 'Use decision logs for architecture changes',
     suggestedType: 'rule',

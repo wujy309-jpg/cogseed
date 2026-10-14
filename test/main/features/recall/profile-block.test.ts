@@ -1,3 +1,4 @@
+import { seedStoredAbilityAsset } from '../../../helpers/stored-ability-asset';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -40,7 +41,7 @@ describe('loadAssetProfileEntries', () => {
 
     const mk = async (text: string, id: string) => {
       const now = new Date().toISOString();
-      return assets.createAbilityAsset(UID, {
+      return seedStoredAbilityAsset(UID, {
         schemaVersion: 2, ownerId: UID, id, candidateId: `cand-${id}`,
         sourceCandidateIds: [`cand-${id}`], reviewDecisionId: `rd_profileblock${id.replace(/-/g, '')}`.padEnd(16, 'x'),
         // 标题闸门（设计 3.2）：正文前缀当标题过不了闸门，取尾部片段。
@@ -86,7 +87,7 @@ describe('profile ordering + origin prefix (2026-09-19 三小修)', () => {
     users.activateUser('user-pb-rank');
     const assets = await import('../../../../src/main/features/recall/asset-service');
     const profile = await import('../../../../src/main/features/recall/profile-block');
-    const mk = async (id: string, statement: string, updatedAt: string, lifecycle: string) => assets.createAbilityAsset('user-pb-rank', {
+    const mk = async (id: string, statement: string, updatedAt: string, lifecycle: string) => seedStoredAbilityAsset('user-pb-rank', {
       schemaVersion: 2, ownerId: 'user-pb-rank', id, candidateId: `cand-${id}`,
       sourceCandidateIds: [`cand-${id}`], reviewDecisionId: `rd_${id.slice(3)}padpadpad`,
       // 标题闸门（设计 3.2）：正文前缀当标题过不了闸门，取尾部片段。

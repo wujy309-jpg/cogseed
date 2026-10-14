@@ -1,5 +1,4 @@
 import { getRecallCandidateCapabilities } from './candidate-capabilities';
-import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 
@@ -8,7 +7,6 @@ import { createLogger } from '../../logger';
 import {
   readRecallCandidate,
   rejectRecallCandidate,
-  saveRecallCandidate,
 } from './candidate-service';
 import { removeCognitionSource } from './source-control';
 import { recallJsonRecordPath } from './paths';
@@ -36,22 +34,8 @@ export interface UserTeachingSignalRecord extends RecallJsonRecord {
   revokedAt?: string;
 }
 
-export interface RecordTeachingSignalInput {
-  conversationId: string;
-  messageId: string;
-  userMessage: string;
-  memoryContent: string;
-  memoryScope: UserTeachingScope;
-  memoryRef?: string;
-}
-
 function teachingDirectory(userId: string): string {
   return path.dirname(recallJsonRecordPath(userId, TEACHING_COLLECTION, 'placeholder'));
-}
-
-function stableId(prefix: string, ...parts: string[]): string {
-  const digest = createHash('sha256').update(parts.join('\0')).digest('hex').slice(0, 24);
-  return `${prefix}-${digest}`;
 }
 
 function compact(value: unknown, field: string, max: number): string {
@@ -106,79 +90,6 @@ function asTeachingSignal(value: RecallJsonRecord): UserTeachingSignalRecord {
     summary,
     candidateIds: [...new Set(value.candidateIds as string[])],
   } as UserTeachingSignalRecord;
-}
-
-export function classifyTeachingIntent(userMessage: string): UserTeachingIntent | undefined {
-  const text = String(userMessage || '').trim();
-  if (!text) return undefined;
-  if (/纠正|更正|不是.{0,30}(?:而是|是)|\b(?:correct|correction|actually)\b|訂正|corrig/i.test(text)) return 'correct';
-  if (/避免|不要再|别再|請勿|\b(?:avoid|do not|don't|never)\b|避け|não\s+(?:faça|use)/i.test(text)) return 'avoid';
-  if (/偏好|更喜欢|我喜欢|\b(?:prefer|preference)\b|好み|prefir/i.test(text)) return 'prefer';
-  if (/记住|記住|请记|請記|\bremember\b|覚えて|lembre/i.test(text)) return 'remember';
-  return undefined;
-}
-
-export function teachingSignalId(input: Pick<RecordTeachingSignalInput, 'conversationId' | 'messageId' | 'memoryContent'> & { intent: UserTeachingIntent }): string {
-  return stableId('teach', input.conversationId, input.messageId, input.intent, input.memoryContent.trim());
-}
-
-export function teachingMemoryRef(scope: string, content: string): string {
-  return stableId('mem', scope, content.trim());
-}
-
-export async function recordTeachingSignalAfterMemoryWrite(
-  userId: string,
-  input: RecordTeachingSignalInput,
-): Promise<UserTeachingSignalRecord | undefined> {
-  const intent = classifyTeachingIntent(input.userMessage);
-  if (!intent) return undefined;
-  const conversationId = requireSafeId(input.conversationId, 'conversation id');
-  const messageId = requireSafeId(input.messageId, 'message id');
-  const memoryContent = compact(input.memoryContent, 'memory content', 4_000);
-  const scope = requireScope(input.memoryScope);
-  const memoryRef = input.memoryRef || teachingMemoryRef(scope, memoryContent);
-  requireSafeId(memoryRef, 'memory ref');
-  const id = teachingSignalId({ conversationId, messageId, memoryContent, intent });
-  // 标题与会话整理线统一（2026-09-29 子安拍板「两条线统一」）：短标题用
-  // makeDisplayTitle（正文首句、≤60 字，与当场记/旧记忆迁移线同款），不再
-  // 拿正文前 239 字截断当标题——那会让待我处理里的教学候选顶着半行正文。
-  const { makeDisplayTitle } = await import('./statement-fusion');
-  const summary = makeDisplayTitle(memoryContent) || `${memoryContent.slice(0, 239)}…`;
-
-  const candidate = await saveRecallCandidate(userId, {
-    judgment: memoryContent,
-    summary,
-    suggestedType: intent === 'remember' ? 'personal' : 'rule',
-    suggestedScope: scope,
-    captureKey: `teaching-${id}`,
-    sourceRefs: [
-      { kind: 'conversation', id: conversationId, subtype: 'session', scope: 'conversation' },
-      { kind: 'conversation', id: stableId('msg', conversationId, messageId), subtype: 'message', scope: 'conversation' },
-      { kind: 'user_teaching_signal', id, subtype: 'teaching', scope },
-    ],
-  });
-  const now = new Date().toISOString();
-  const record: UserTeachingSignalRecord = {
-    schemaVersion: 1,
-    taxonomyVersion: 2,
-    ownerId: userId,
-    id,
-    conversationId,
-    messageId,
-    intent,
-    scope,
-    status: 'active',
-    summary,
-    memoryRef,
-    candidateIds: [candidate.id],
-    createdAt: now,
-  };
-  return asTeachingSignal(await updateRecallJsonRecord(
-    userId,
-    TEACHING_COLLECTION,
-    id,
-    (current) => current || record,
-  ));
 }
 
 export async function readUserTeachingSignal(userId: string, signalId: string): Promise<UserTeachingSignalRecord> {

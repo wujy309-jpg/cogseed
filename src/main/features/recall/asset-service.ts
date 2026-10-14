@@ -1,3 +1,6 @@
+import { requireContentCategory, readContentCategory, type CognitionContentCategory } from './content-category';
+import { verifyNightlyAssetCreation } from './formation-creation-gate';
+import { attachStandingPreferenceAuthority, readStandingPreferenceAuthorityBaseline, withHumanStandingPreferenceDetailsSave } from './standing-preference-authority';
 import { unifiedCognitionRecordIds, withCognitionTransition, persistCognitionSource } from '../cognition_bridge';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
@@ -11,7 +14,7 @@ import {
   removeRecallJsonlStream, removeRecallJsonlRecords, updateRecallJsonRecord,
 } from './store';
 import type { RecallJsonRecord } from './types';
-import { assetVersionSnapshot, pendingAssetVersions } from './asset-version-journal';
+import { assetVersionSnapshot, pendingAssetVersions, withAssetVersionMetadata } from './asset-version-journal';
 import { normalizeAbilityAssetOntologyRefs } from './ontology-refs';
 import type { RecallAbilityAssetRecord, RecallAbilityAssetLifecycleStatus } from './candidate-service';
 import { ensureAbilityTags, normalizeAbilityTagList } from './ability-tag-service';
@@ -54,10 +57,11 @@ export interface AbilityAssetVersionRecord extends RecallJsonRecord {
   // 版本流不版本化敏感性；受限语义在主记录与读取投影层判定。
   snapshot: Pick<
     RecallAbilityAssetRecord,
-    | 'title' | 'statement' | 'type' | 'scope' | 'scopePolicy' | 'evidenceRefs'
+    | 'title' | 'statement' | 'type' | 'contentCategory' | 'scope' | 'scopePolicy' | 'evidenceRefs'
     | 'status' | 'maturity' | 'version' | 'learningSignal' | 'learningProvenance'
     | 'ontologyRefs' | 'relations' | 'derivedFrom'
     | 'applicableWhen' | 'forbiddenWhen' | 'sourceSessionIds'
+    | 'standingPreferenceAuthority'
   >;
 }
 
@@ -106,6 +110,7 @@ export interface AbilityAssetAuditRecord extends RecallJsonRecord {
 export interface UpdateAbilityAssetInput {
   // 转正字段已随出身收敛退役（2026-09-20）：「模型记的=已确定」，不再有
   // 出身升格动作；调用方传入的 lifecycleStatus 一律忽略（字段已删）。
+  contentCategory?: CognitionContentCategory;
   title?: string;
   statement?: string;
   scope?: string;
@@ -142,6 +147,23 @@ export interface UpdateAbilityAssetInput {
   id?: never;
   ownerId?: never;
 }
+export type SaveUserStandingPreferenceDetailsInput = Omit<UpdateAbilityAssetInput, 'actor' | 'reviewDecisionId' | 'sourceCandidateId'> & {
+  statement: string; applicableWhen: string[]; forbiddenWhen: string[]; expectedVersion: string; expectedActiveVersion: string;
+};
+/** A complete, actual user editor save can renew an existing human standing
+ * intent. Generic updates and model tools never enter this host-only boundary. */
+export async function saveUserStandingPreferenceDetails(userId: string, assetId: string,
+  input: SaveUserStandingPreferenceDetailsInput): Promise<RecallAbilityAssetRecord> {
+  if (!input || typeof input.statement !== 'string' || !Array.isArray(input.applicableWhen) || !Array.isArray(input.forbiddenWhen)
+    || !/^\d+$/.test(input.expectedVersion || '') || !/^\d+$/.test(input.expectedActiveVersion || ''))
+    throw new Error('standing preference details save requires complete fields and both version baselines');
+  // Strip caller-supplied authority/handoff/actor fields even at this internal
+  // boundary; only the fixed explicit editor contract is forwarded.
+  const { actor: _actor, reviewDecisionId: _decision, sourceCandidateId: _candidate, standingPreferenceAuthority: _proof,
+    ...safeInput } = input as SaveUserStandingPreferenceDetailsInput & Record<string, unknown>;
+  const current = await readAbilityAsset(userId, assetId);
+  return withHumanStandingPreferenceDetailsSave(userId, current, () => updateAbilityAsset(userId, assetId, { ...safeInput, actor: 'user' }));
+}
 
 export interface AbilityAssetUserActionInput {
   actor: AbilityAssetActor;
@@ -153,12 +175,39 @@ export interface AbilityAssetUserActionInput {
 }
 
 export interface RecommendAbilityAssetActionInput {
+  /** Bind automated proof recommendations to the exact observed head. */
+  expectedVersion?: string;
   action: AbilityAssetRecommendedAction;
   reason: string;
   actor: AbilityAssetActor;
 }
 
 export interface CreateAbilityAssetInput extends RecallAbilityAssetRecord {}
+
+/** Version-independent metadata is excluded; the remaining canonical snapshot
+ * binds verified outcomes to the actual body, conditions and source/access contract. */
+function proofGuidanceIdentity(asset: RecallAbilityAssetRecord): unknown {
+  const fields = { ...assetVersionSnapshot(asset) };
+  for (const key of ['title', 'contentCategory', 'status', 'maturity', 'version', 'standingPreferenceAuthority',
+    'relations', 'derivedFrom', 'learningSignal', 'learningProvenance', 'sourceSessionIds']) delete fields[key];
+  fields.scope = resolveScopeForAsset(asset.scope);
+  fields.scopePolicy = normalizeAbilityAssetScopePolicy(asset.scopePolicy);
+  const terms = (values?: string[]) => [...new Set((values || []).map(value => value.trim().replace(/\s+/g, ' ')))].sort();
+  fields.applicableWhen = terms(asset.applicableWhen); fields.forbiddenWhen = terms(asset.forbiddenWhen);
+  fields.evidenceRefs = normalizeCognitionSourceRefs(asset.evidenceRefs).map(value => JSON.stringify(value)).sort();
+  fields.ontologyRefs = (asset.ontologyRefs || []).map(value => JSON.stringify(value)).sort();
+  return fields;
+}
+function resetChangedGuidanceOutcomes(current: RecallAbilityAssetRecord, next: RecallAbilityAssetRecord): RecallAbilityAssetRecord {
+  if (isDeepStrictEqual(proofGuidanceIdentity(current), proofGuidanceIdentity(next))) return next;
+  next.maturity = next.lifecycleStatus === 'user_confirmed_unverified' ? 'bud' : 'seed';
+  next.validationCount = 0; next.consecutiveFailures = 0;
+  delete next.lastValidatedAt;
+  delete next.recommendedAction; delete next.recommendationReason; delete next.recommendationAt;
+  // Retain applied IDs and all version/proof ledgers: an old observation cannot
+  // be replayed as a new independent outcome after content changes or rollback.
+  return next;
+}
 
 function assetsDirectory(userId: string): string {
   return path.dirname(recallJsonRecordPath(userId, 'ability-assets', 'placeholder'));
@@ -177,7 +226,7 @@ const ABILITY_ASSET_MATURITIES = new Set<RecallAbilityAssetRecord['maturity']>([
  *  同源）。单列常量而不 import 对方函数：那边 requireAssetType 未导出，
  *  为此扩导出面不如两处各持一份白名单（枚举变化时 typecheck 双向可见）。 */
 const ABILITY_ASSET_TYPES = new Set<RecallAbilityAssetRecord['type']>([
-  'personal', 'rule', 'template', 'skill_method', 'fact',
+  'cognition', 'personal', 'rule', 'template', 'skill_method', 'fact',
 ]);
 
 /**
@@ -225,6 +274,7 @@ function asAsset(value: RecallJsonRecord): RecallAbilityAssetRecord {
   if (value.status === 'purged') {
     return { ...value, evidenceRefs: [] } as unknown as RecallAbilityAssetRecord;
   }
+  if (value.contentCategory !== undefined) readContentCategory(value.contentCategory);
   const evidenceRefs = normalizeCognitionSourceRefs(value.evidenceRefs);
   // 手动新建资产（「记一条」晋升）没有对话证据，空证据合法——与 purged 的
   // 空证据同款豁免口径，靠落盘的 origin='manual' 识别（2026-09-28 拍板项）。
@@ -346,6 +396,7 @@ function asVersion(value: RecallJsonRecord): AbilityAssetVersionRecord {
   const versionSnapshot = /^merged (?:from|active version from) [A-Za-z0-9_-]+$/.test(String(value.reason || ''))
     ? mergedSnapshotForTarget(rawSnapshot as Record<string, unknown>, value.assetId)
     : rawSnapshot as Record<string, unknown>;
+  if (versionSnapshot.contentCategory !== undefined) readContentCategory(versionSnapshot.contentCategory);
   if (!Array.isArray(versionSnapshot.evidenceRefs)) throw new Error('malformed recall ability asset version evidence');
   const scopePolicy = normalizeAbilityAssetScopePolicy(versionSnapshot.scopePolicy);
   const relationContract = readAbilityAssetRelationContract(versionSnapshot, value.assetId);
@@ -434,7 +485,7 @@ const AUDIT_VALUE_MAX_CHARS = 80;
 /** 参与台账前后值比对的字段：只取用户/模型能改的那几维，治理派生量
  *  （validationCount、recommendedAction 等）由各自的 audit action 表达。 */
 const AUDIT_DIFF_FIELDS = [
-  'title', 'statement', 'type', 'scope', 'status', 'maturity', 'version',
+  'title', 'statement', 'type', 'contentCategory', 'scope', 'status', 'maturity', 'version',
   'applicableWhen', 'forbiddenWhen', 'evidenceRefs', 'deletedAt',
 ] as const;
 
@@ -587,7 +638,7 @@ export async function recordAbilityAssetAudit(
  * 治理状态与成熟度**不在其列**：按设计不随内容回滚（暂停过的不该因回滚变回在用）。
  */
 const VERSION_REVERT_CLEARABLE_FIELDS = [
-  'scopePolicy', 'applicableWhen', 'forbiddenWhen',
+  'contentCategory', 'scopePolicy', 'applicableWhen', 'forbiddenWhen',
   'ontologyRefs', 'relations', 'derivedFrom', 'learningSignal',
   'learningProvenance', 'sourceSessionIds',
 ] as const;
@@ -669,46 +720,27 @@ export async function createAbilityAsset(
   // degraded——写入照常，但不让"造出来的 id"冒充 KSTAR 血统（渲染层据此
   // 显示「来源记录不可用」并排除出归边）。
   validated.evidenceRefs = (await resolveExecutionEvidenceRefs(userId, validated.evidenceRefs)) || [];
-  const stored = asAsset(await updateRecallJsonRecord(
+  const stored = asAsset(await withAssetVersionMetadata(metadata, () => updateRecallJsonRecord(
     userId,
     'ability-assets',
     validated.id,
-    (current) => current || validated,
-  ));
+    async (current) => {
+      if (current) {
+        if (current.ownerId !== userId || current.candidateId !== validated.candidateId
+          || current.reviewDecisionId !== validated.reviewDecisionId) {
+          throw new Error('ability asset idempotency identity mismatch');
+        }
+        return current;
+      }
+      if (validated.contentCategory !== undefined) requireContentCategory(validated.contentCategory);
+      await verifyNightlyAssetCreation(userId, validated, metadata.actor);
+      return validated;
+    },
+  )));
   if (stored.candidateId !== validated.candidateId || stored.reviewDecisionId !== validated.reviewDecisionId) {
     throw new Error('ability asset idempotency identity mismatch');
   }
   await initializeAbilityAsset(userId, stored, metadata);
-  return stored;
-}
-
-// createSystemAbilityAsset（2026-09-20 出身收敛后保留）：产品代码零调用，
-// 但 run-evidence 等 12 处测试用它建 KStar 历史版本快照（断言版本冻结与证
-// 据链，与出身值无关）。校验从「只许自动线两值」放宽为三值合法——读旧兼容；
-// 新写入单值由 promote 单值化保证。
-
-/** System-authored formal asset boundary (KStar direct experience line).
- *  Content-addressed and idempotent: the same asset id is never duplicated. */
-export async function createSystemAbilityAsset(
-  userId: string,
-  input: RecallAbilityAssetRecord,
-  reason: string,
-): Promise<RecallAbilityAssetRecord> {
-  if (!safeId(userId) || !safeId(input.id) || !safeId(input.candidateId || '')) throw new Error('invalid system ability asset identity');
-  if (typeof reason !== 'string' || !reason.trim() || reason.length > 1_000) throw new Error('invalid system ability asset reason');
-  const validated = asAsset(input);
-  if (validated.ownerId !== userId) throw new Error('ability asset owner mismatch');
-  validated.evidenceRefs = (await resolveExecutionEvidenceRefs(userId, validated.evidenceRefs)) || [];
-  const stored = asAsset(await updateRecallJsonRecord(
-    userId,
-    'ability-assets',
-    validated.id,
-    (current) => current || validated,
-  ));
-  if (stored.candidateId !== validated.candidateId || stored.reviewDecisionId !== validated.reviewDecisionId) {
-    throw new Error('ability asset idempotency identity mismatch');
-  }
-  await initializeAbilityAsset(userId, stored, { reason: reason.trim(), actor: 'system' });
   return stored;
 }
 
@@ -821,6 +853,7 @@ function formatTagNames(names: readonly string[]): string {
 }
 
 export async function updateAbilityAsset(userId: string, assetId: string, input: UpdateAbilityAssetInput): Promise<RecallAbilityAssetRecord> {
+  if (input.contentCategory !== undefined) requireContentCategory(input.contentCategory);
   if ('id' in input || 'ownerId' in input) throw new Error('ability asset identity is immutable');
   // P-r3-12 写侧五枚举闸：type 此前在写侧（:832 直写）与读侧（asAsset 校验
   // 清单）双向缺席，任意字符串落盘透传——伪造 type='personal' 可把任意资产
@@ -872,7 +905,7 @@ export async function updateAbilityAsset(userId: string, assetId: string, input:
   let changed = false;
   let tagsChanged = false;
   let beforeAsset: RecallAbilityAssetRecord | undefined;
-  const updated = await updateRecallJsonRecord(userId, 'ability-assets', assetId, (raw) => {
+  const updated = await withAssetVersionMetadata({ actor: action.actor, reason: action.reason }, () => updateRecallJsonRecord(userId, 'ability-assets', assetId, (raw) => {
     if (!raw) throw new Error('recall ability asset not found');
     const current = asAsset(raw);
     // 统一终态守卫（2026-09-17 对齐）：此前只挡 purged/revoked，已删除资产
@@ -919,6 +952,7 @@ export async function updateAbilityAsset(userId: string, assetId: string, input:
       ...(input.scope !== undefined ? { scope: bounded(input.scope, 'scope', 500) } : {}),
       ...(input.scopePolicy !== undefined && scopePolicy ? { scopePolicy } : {}),
       ...(input.type !== undefined ? { type: input.type } : {}),
+      ...(input.contentCategory !== undefined ? { contentCategory: input.contentCategory } : {}),
       ...(evidenceRefs !== undefined ? { evidenceRefs } : {}),
       ...(ontologyRefs !== undefined ? { ontologyRefs } : {}),
       ...relationContract,
@@ -958,8 +992,14 @@ export async function updateAbilityAsset(userId: string, assetId: string, input:
       if (input.actor === 'user') assertReviewedAbilityAssetTitle(next.title);
       else assertCompliantAbilityAssetTitle(next.title, next.statement);
     }
+    const standingBaseline = readStandingPreferenceAuthorityBaseline(userId, current.id);
+    if (standingBaseline && (current.version !== standingBaseline.version || String(current.activeVersion || current.version) !== standingBaseline.activeVersion)) {
+      throw new Error('standing preference authority baseline changed');
+    }
+    resetChangedGuidanceOutcomes(current, next);
+    attachStandingPreferenceAuthority(userId, current, next);
     return next;
-  });
+  }));
   const asset = asAsset(updated);
   if (changed || tagsChanged) {
     // 标签是元数据：tags-only 改动不进版本流（不 appendVersion）、不 bump
@@ -1386,6 +1426,7 @@ export async function setAbilityAssetCrossScopeConfirmation(
 }
 
 export async function recommendAbilityAssetAction(userId: string, assetId: string, input: RecommendAbilityAssetActionInput): Promise<RecallAbilityAssetRecord> {
+  if (input.expectedVersion !== undefined && !/^[0-9]{1,9}$/.test(input.expectedVersion)) throw new Error('invalid ability asset expected version');
   if (input.action !== 'pause' && input.action !== 'rework') throw new Error('invalid ability asset recommendation');
   const reason = bounded(input.reason, 'recommendation reason', 1_000);
   const actor = input.actor === 'system' ? 'system' : input.actor === 'user' ? 'user' : undefined;
@@ -1394,6 +1435,7 @@ export async function recommendAbilityAssetAction(userId: string, assetId: strin
   const updated = await updateRecallJsonRecord(userId, 'ability-assets', assetId, (raw) => {
     if (!raw) throw new Error('recall ability asset not found');
     const current = asAsset(raw);
+    if (input.expectedVersion !== undefined && (current.version !== input.expectedVersion || String(current.activeVersion || current.version) !== input.expectedVersion)) return current;
     // 2026-09-28 红队补齐：推荐卡只对可变更资产有意义（与内容写路径同口径）。
     assertMutableAbilityAsset(current);
     if (current.recommendedAction === input.action && current.recommendationReason === reason) return current;
@@ -1514,7 +1556,7 @@ export async function purgeAbilityAsset(
  *     流里带着 assetId 与版本，是"这条资产被用过"的可识别痕迹；
  *   - 投影里的 `assetVersionSnapshots` 是「版本真删」时冻结的**内容副本**
  *     （见 deleteAbilityAssetVersion），正文就在里面；
- *   - 本体回流候选池的 `asset-backflow-<assetId>` 候选（见 ontology-backflow）
+ *   - 本体回流候选池的 `asset-backflow-<assetId>` 候选（仅清理历史副本）
  *     的 memory_text 就是 statement 全文——候选确认不查来源资产存活性，
  *     留着它等于留了一条「确认即复活」的通道。
  * 留下任何一处，「内容与记录一并清除、搜索不可见、不可恢复」都不成立。
@@ -1532,13 +1574,12 @@ async function cascadePurgeAssetReferences(userId: string, assetId: string, purg
   if (cleared > 0) {
     log.info(`purge cascade cleared frozen asset copies from projections assetId=${assetId} projections=${cleared}`);
   }
-  // 动态 import 同上先例：候选池模块（personal_ontology_candidates /
-  // ontology-backflow）静态互引同样会牵出成环依赖。rejectCandidate 按
+  // 动态读取旧候选池，只为清理历史副本。rejectCandidate 按
   // candidate_id 精确移除这一条回流候选、不动池内其他候选；候选不存在时
   // 仅告警并返回 {ok:false}，不抛错不写新账——与上面各步同口径满足幂等。
   const { rejectCandidate, rejectCandidatesByText } = await import('../personal_ontology_candidates');
-  const { backflowCandidateIdFor } = await import('./ontology-backflow');
-  const rejected = await rejectCandidate(userId, backflowCandidateIdFor(assetId), 'asset purged');
+  // The writer is retired; historical IDs remain part of purge compatibility.
+  const rejected = await rejectCandidate(userId, `asset-backflow-${assetId}`, 'asset purged');
   if (rejected.ok) {
     log.info(`purge cascade rejected ontology backflow candidate assetId=${assetId}`);
   }
@@ -1669,8 +1710,7 @@ export async function rollbackAbilityAsset(
     titleRetained = !isReviewedAbilityAssetTitle(String(rbTitle ?? ''));
     const reverted: Record<string, unknown> = {
       ...current,
-      // 只回滚内容，不回滚治理状态与成熟度：暂停过的资产不该因为回滚就自己
-      // 变回 active，验证过的成熟度也不该被一次内容回滚抹掉。
+      // 保留治理状态；实质内容回滚不能沿用当前版本的效果和成败计数。
       ...content,
       ...(titleRetained ? {} : { title: String(rbTitle ?? '') }),
       scope,
@@ -1679,7 +1719,7 @@ export async function rollbackAbilityAsset(
       updatedAt: new Date().toISOString(),
     };
     clearFieldsAbsentFromSnapshot(reverted, target.snapshot as unknown as Record<string, unknown>);
-    return reverted as RecallAbilityAssetRecord;
+    return resetChangedGuidanceOutcomes(current, reverted as unknown as RecallAbilityAssetRecord);
   });
   const asset = asAsset(updated);
   await appendVersion(userId, asset, { reason: action.reason, actor: action.actor });
@@ -1733,7 +1773,7 @@ export async function selectAbilityAssetVersion(
     if (!(await listAbilityAssetVersions(userId, assetId)).some((record) => record.version === toVersion)) {
       throw new Error('recall ability asset version not found');
     }
-    // 内容同步为所选快照（治理状态与成熟度不动，与 rollback 同口径）。
+    // 内容同步为所选快照，治理状态不变；效果成熟度绑定实际内容。
     // scope 单独摘出且不倒退（2026-09-17 修）：旧快照可能带着词表化之前的
     // 自由文本 scope——原样写回会让 legacy scope 迁移在下次启动时再 bump
     // 一个内容不变的新版本（实机 aa-34b688 连产 v4/v5）。选用旧版只回内容，
@@ -1757,7 +1797,7 @@ export async function selectAbilityAssetVersion(
     // keep their original snapshots; future use keeps the current access boundary.
     if (current.scopePolicy !== undefined) selected.scopePolicy = current.scopePolicy;
     else delete selected.scopePolicy;
-    return selected as RecallAbilityAssetRecord;
+    return resetChangedGuidanceOutcomes(current, selected as unknown as RecallAbilityAssetRecord);
   });
   const asset = asAsset(updated);
   await appendAudit(userId, asset.id, 'version_selected', {
@@ -1977,7 +2017,7 @@ async function mergeAbilityAssetsInTransition(
       ? String(snapshotScope)
       : (normalizeAssetScopeValue(String(snapshotScope || '')) || current.scope);
     const sourceTitleCompliant = recallTitleIssue(String(snapshotTitle ?? ''), String(sourceActiveSnapshot.statement ?? '')) === undefined;
-    return {
+    const merged: RecallAbilityAssetRecord = {
       ...current,
       ...content,
       ...(sourceTitleCompliant ? { title: String(snapshotTitle ?? '') } : {}),
@@ -1989,6 +2029,7 @@ async function mergeAbilityAssetsInTransition(
       activeVersion: activeCursor,
       updatedAt: new Date().toISOString(),
     };
+    return resetChangedGuidanceOutcomes(current, merged);
   }));
   // 归并最终写盘会经 store 层 withPendingAssetVersion 为 activeCursor 再记一条
   // pending 版本快照（快照=合并后主记录），而该号版本行已在上面直接入流（快照
@@ -2149,7 +2190,8 @@ export function describeDeletedAbilityAsset(
   };
 }
 
-export async function setAbilityAssetMaturity(userId: string, assetId: string, maturity: RecallAbilityAssetRecord['maturity']): Promise<RecallAbilityAssetRecord> {
+export async function setAbilityAssetMaturity(userId: string, assetId: string, maturity: RecallAbilityAssetRecord['maturity'], expectedVersion?: string): Promise<RecallAbilityAssetRecord> {
+  if (expectedVersion !== undefined && !/^[0-9]{1,9}$/.test(expectedVersion)) throw new Error('invalid ability asset expected version');
   if (!ABILITY_ASSET_MATURITIES.has(maturity)) {
     throw new Error('invalid ability asset maturity');
   }
@@ -2163,6 +2205,8 @@ export async function setAbilityAssetMaturity(userId: string, assetId: string, m
   const updated = await updateRecallJsonRecord(userId, 'ability-assets', assetId, (raw) => {
     if (!raw) throw new Error('recall ability asset not found');
     const current = asAsset(raw);
+    // The proof remains valid history, but only its exact head can mature.
+    if (expectedVersion !== undefined && (current.version !== expectedVersion || String(current.activeVersion || current.version) !== expectedVersion)) return current;
     // 2026-09-28 红队补齐：终态/保留期资产不再推进成熟度（回执驱动的调用在
     // 资产被删后仍可能到达）。
     assertMutableAbilityAsset(current);
@@ -2190,13 +2234,16 @@ export async function recordAbilityAssetValidation(
   assetId: string,
   outcome: 'success' | 'failure',
   validationId?: string,
+  expectedVersion?: string,
 ): Promise<RecallAbilityAssetRecord> {
+  if (expectedVersion !== undefined && !/^[0-9]{1,9}$/.test(expectedVersion)) throw new Error('invalid ability asset expected version');
   if (!safeId(assetId)) throw new Error('invalid ability asset id');
   let maturityAdvanced: { from: RecallAbilityAssetRecord['maturity']; to: RecallAbilityAssetRecord['maturity'] } | undefined;
   let paused = false;
   const updated = await updateRecallJsonRecord(userId, 'ability-assets', assetId, (raw) => {
     if (!raw) throw new Error('recall ability asset not found');
     const current = asAsset(raw);
+    if (expectedVersion !== undefined && (current.version !== expectedVersion || String(current.activeVersion || current.version) !== expectedVersion)) return current;
     if (current.status === 'purged' || current.status === 'deleted' || current.status === 'revoked') return current;
     const appliedValidationIds = current.appliedValidationIds || [];
     if (validationId && appliedValidationIds.includes(validationId)) return current;

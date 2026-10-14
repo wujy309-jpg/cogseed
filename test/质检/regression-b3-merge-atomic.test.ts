@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../helpers/nightly-formation-fixture';
 /**
  * 回归（wo-b3 · 组2 merge 非原子族，拍板执行 2026-10-01）：
  *  - P-r2-12 审批 confirm 半提交：资产已改而提议卡 pending → 重试按资产版本流
@@ -54,7 +55,7 @@ async function approvalModules() {
 
 async function seedAsset(uid: string) {
   const { candidates } = await approvalModules();
-  const candidate = await candidates.saveRecallCandidate(uid, {
+  const candidate = await createNightlyCandidateFixture(uid, {
     judgment: '回归基线：发布前必须核对回滚方案。',
     summary: 'merge 非原子回归样本',
     suggestedType: 'rule', ...RULE_BOUNDARY, suggestedScope: 'architecture',

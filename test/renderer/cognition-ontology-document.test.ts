@@ -5,13 +5,13 @@ import { resolve } from 'node:path';
 
 function render(records: Record<string, any>, drafts: Record<string, any> = {}) {
   const window: Record<string, any> = {};
-  for (const moduleName of ['ui-button.js', 'ui-form.js']) {
+  for (const moduleName of ['icons.js', 'ui-button.js', 'ui-form.js']) {
     runInNewContext(readFileSync(resolve('src/renderer/modules', moduleName), 'utf8'), { window });
   }
   runInNewContext(readFileSync(resolve('src/renderer/modules/cognition-ontology-document.js'), 'utf8'), { window });
   return window.CogOntologyDocument.render({
     doc: { records }, moduleId: 'module', drafts,
-    text: (_key: string, fallback: string) => fallback,
+    text: (_key: string, fallback: string, vars: Record<string, string> = {}) => String(fallback || _key).replace(/\{(\w+)\}/g, (match, key) => vars[key] ?? match),
     esc: (value: string) => value.replace(/[&<>"']/g, character => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
     })[character]!),
@@ -80,5 +80,19 @@ describe('ontology document projection', () => {
     expect(html).toMatch(/data-ontology-panel="relation" hidden><td colspan="5">/);
     expect(html).toMatch(/data-ontology-panel="rule" hidden><td colspan="4">/);
     expect(html).toMatch(/class="ont-object-record-extra"[^>]*data-ontology-panel="a" hidden/);
+  });
+
+  it('shared disclosure and edit controls preserve action routing, accessible names and their panel IDs', () => {
+    const html = render(fixture());
+    const disclosure = html.match(/<button[^>]*data-ontology-action="document-disclosure"[^>]*aria-controls="ontology-record-panel-rule"[^>]*>/)?.[0] || '';
+    expect(disclosure).toContain('aria-expanded="false"');
+    expect(disclosure).toContain('aria-label=');
+    expect(html).toContain('id="ontology-record-panel-a"');
+    const edit = html.match(/<button[^>]*data-ontology-action="selection-edit"[^>]*data-record-id="a"[^>]*data-field="description"[^>]*>/)?.[0] || '';
+    expect(edit).toContain('aria-label=');
+    expect(html).toContain('is-sparkles');
+    const objectToggle = html.match(/<button[^>]*data-ontology-action="object-description"[^>]*id="ontology-object-trigger-a"[^>]*>/)?.[0] || '';
+    expect(objectToggle).toContain('aria-controls="ontology-object-detail-a"');
+    expect(html).toContain('id="ontology-object-detail-a"');
   });
 });

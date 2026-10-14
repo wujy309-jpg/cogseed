@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -85,7 +86,7 @@ async function modules() {
 /** 目标方法（改进对象）：真实资产，v1 生效。 */
 async function seedTargetAsset(): Promise<string> {
   const { candidates } = await modules();
-  const seeded = await candidates.saveRecallCandidate(USER, {
+  const seeded = await createNightlyCandidateFixture(USER, {
     judgment: 'Keep the report verification rule.',
     value: 'Keep report verification consistent across runs.',
     suggestedType: 'rule',

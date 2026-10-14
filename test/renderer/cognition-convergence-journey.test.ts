@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { createNightlyCandidateFixture } from '../helpers/nightly-formation-fixture';
 import { loadCognitionAssets, renderCognition } from './helpers/cognition-renderer';
 
 let root: string;
@@ -28,15 +29,17 @@ describe('明确保存到任务读取再暂停的完整链路', () => {
     const injections = await import('../../src/main/features/recall/injection-receipt');
     const usage = await import('../../src/main/features/recall/asset-usage-receipt');
     const uid = 'journey-user';
-    const invoke = async (channel: string, args: any) => {
-      if (channel === 'recall.candidates.save') return { ok: true, candidate: await candidates.saveRecallCandidate(uid, args) };
+    const candidate = await createNightlyCandidateFixture(uid, { summary: '报告文件格式', judgment: '团队报告统一使用 Markdown 格式。',
+      value: '后续报告沿用统一格式', suggestedType: 'fact', suggestedScope: 'general', suggestedAction: 'create', sourceRefs: [] });
+    const invoke = vi.fn(async (channel: string, args: any) => {
       if (channel === 'recall.candidates.promote') return { ok: true, ...await candidates.promoteRecallCandidate(uid, args.candidateId, { actor: 'user' }) };
       return { ok: true };
-    };
-    const loaded = loadCognitionAssets({}, { name: 'overview', candCreate: '1' }, { cogseed: { invoke } });
+    });
+    const loaded = loadCognitionAssets({ candidates: [{ ...candidate, capabilities: { countsAsPending: true, canEdit: true, canPromote: true, canReject: true } }] }, { name: 'activity', candidateId: candidate.id }, { cogseed: { invoke } });
     loaded.ns.reload = async () => {};
-    await loaded.ns.actions.saveManualCandidate({ summary: '报告文件格式', judgment: '团队报告统一使用 Markdown 格式。', suggestedType: 'fact' });
-    const assetId = loaded.store.route.assetId;
+    await loaded.ns.actions.adoptCandidate(candidate.id);
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'recall.candidates.promote')).toHaveLength(1);
+    const assetId = (await candidates.readRecallCandidate(uid, candidate.id)).promotedAssetId!;
     expect(assetId).toBeTruthy();
     const asset = await assets.readAbilityAsset(uid, assetId);
     expect(asset.statement).toBe('团队报告统一使用 Markdown 格式。');

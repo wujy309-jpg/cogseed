@@ -384,7 +384,7 @@ describe('T050：relatedMeetingRefs（确定性、零语义、零模型）', () 
       assetIds: ['ast_cogseed'],
       matchedBy: 'asset',
     });
-    // title 是展示名（文档模型缺失时回退文件名段，与 buildConclusionCandidateInput 同一表达式）
+    // title 是展示名（文档模型缺失时回退文件名段）
     expect(related[0].title).toBe('9.01周会.txt');
     // 只读：查询不写任何文件（引用包前后逐字节一致）
     const file = path.join(userMeetingRefsDir(uid), `${docKeyForDocId('meetings/9.01周会.txt')}.json`);

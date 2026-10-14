@@ -130,7 +130,7 @@ describe('cognition change rail', () => {
     expect(store.treeRequested).toBeUndefined();
   });
 
-  it('routes ontology candidate changes into the shared review-inbox block after po page retirement', async () => {
+  it('ontology notices cannot reload the retired candidate pool', async () => {
     const handlers = new Map<string, (notice: Notice) => void>();
     const invoke = vi.fn(async (channel: string) => (
       channel === 'recall.candidates.list' ? { ok: true, candidates: [] }
@@ -151,6 +151,6 @@ describe('cognition change rail', () => {
     handlers.get('cognition:changed')!({ collection: 'ontology-candidates', generation: 1 });
     await ns.flushPendingRefresh();
     expect(invoke).toHaveBeenCalledWith('recall.candidates.list', { view: 'activity-queue' });
-    expect(invoke).toHaveBeenCalledWith('personalOntology.candidates.list', { view: 'activity-queue' });
+    expect(invoke.mock.calls.some(([channel]) => channel === 'personalOntology.candidates.list')).toBe(false);
   });
 });

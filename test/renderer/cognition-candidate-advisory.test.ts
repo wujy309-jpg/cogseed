@@ -1,3 +1,4 @@
+import { nightlyFormation } from './helpers/nightly-candidate';
 /**
  * 准入软提醒可见性（F-r3-6，2026-10-01 第 3 轮修复）。
  *
@@ -29,7 +30,7 @@ const ACTIONABLE = {
 
 function candidate(capabilities: Record<string, unknown>) {
   return {
-    id: 'cand-soft',
+    ...nightlyFormation(), id: 'cand-soft',
     status: 'pending_review',
     summary: '带软提醒的候选',
     judgment: '发布前用双清单核对交付物。',
@@ -37,7 +38,7 @@ function candidate(capabilities: Record<string, unknown>) {
     suggestedScope: 'product',
     suggestedAction: 'create',
     risk: 'low',
-    sourceRefs: [{ kind: 'memory', id: 'mem-1' }],
+    sourceRefs: [...nightlyFormation().sourceRefs, { kind: 'memory', id: 'mem-1' }],
     evidenceRefs: [{ kind: 'memory', id: 'mem-1' }],
     capabilities,
   };

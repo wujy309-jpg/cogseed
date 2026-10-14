@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 /**
  * 资产生命周期状态机 · 红队压力测试（2026-09-28 全量 debug 任务）。
  *
@@ -48,7 +49,7 @@ async function modules() {
 /** 走正式链路建一条 active 资产（与产品路径一致：候选→确认→转正）。 */
 async function seedAsset(userId: string, statement = '先给结论再给解释。') {
   const { candidates, assets } = await modules();
-  const candidate = await candidates.saveRecallCandidate(userId, {
+  const candidate = await createNightlyCandidateFixture(userId, {
     judgment: statement,
     // 标题闸门（设计 3.2）：无 summary 兜底＝正文首句，过不了闸门。
     summary: '红队基线样本',

@@ -919,7 +919,7 @@ export function ensureCognitionMemoryEntry(
  * P-r1-42：画像投影桥已退役（2026-09-22 清单 #11）——生产默认走
  * personal-profile-sync 的 no-op 桩，本实现仅剩两个活消费：作为该模块
  * `writeProfileEntry` 依赖项的类型签名，以及投影桥测试注入。USER.md 的
- * 读侧（projection-knowledge / memory-migration / transcript 桥）仍活跃。
+ * 读侧（projection-knowledge / transcript 桥）仍活跃。
  */
 export function ensurePersonalProfileEntry(
   userId: string,

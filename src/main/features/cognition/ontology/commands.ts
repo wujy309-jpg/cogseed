@@ -292,7 +292,8 @@ export function applyOntologyCommand(current: OntologyDocument, input: unknown, 
       }
       for (const entry of entries) save({ ...entry.before, source, version: entry.after.version + 1, updatedAt: recordedAt }, 'undo_merge', entry.after);
     } else if (action.intent === 'update') {
-      if (before.kind === 'assertion') throw new OntologyError('invalid_intent', 'facts require change or correction, not overwrite');
+      if (before.kind === 'assertion' && Object.keys(action.patch).some(key => key !== 'access'))
+        throw new OntologyError('invalid_intent', 'facts require change or correction, not overwrite');
       if (['id', 'kind', 'moduleId', 'version', 'createdAt', 'updatedAt', 'source'].some(key => Object.hasOwn(action.patch, key)))
         throw new OntologyError('invalid_input', 'record identity cannot be patched');
       if (action.patch.status === 'corrected') throw new OntologyError('invalid_intent', 'corrected status requires a correction command');
@@ -301,7 +302,7 @@ export function applyOntologyCommand(current: OntologyDocument, input: unknown, 
       // retireOntologyModulePause 迁移（恢复 active 方向不受此限）。
       if (before.kind === 'module' && action.patch.status === 'paused')
         throw new OntologyError('invalid_intent', 'module-level pause is retired; archive individual records instead');
-      save({ ...before, ...action.patch, source, version: before.version + 1, updatedAt: recordedAt }, action.intent, before);
+      save({ ...before, ...action.patch, source: { ...source, ...(before.source.refs ? { refs: before.source.refs } : {}) }, version: before.version + 1, updatedAt: recordedAt }, action.intent, before);
     } else if (action.intent === 'restore') {
       if (before.status !== 'archived') throw new OntologyError('invalid_intent', 'only archived records can be restored; corrections retain their history');
       if ([...doc.history].reverse().find(row => row.after.id === before.id)?.intent === 'merge_source')
@@ -314,8 +315,8 @@ export function applyOntologyCommand(current: OntologyDocument, input: unknown, 
       const successorId = newId(String(index) + '-successor');
       if (doc.records[successorId]) throw new OntologyError('already_exists', 'successor id is already in use');
       if (action.intent === 'change') {
-        if (!isCalendarDate(action.effectiveFrom, before.validity.precision) || before.validity.from === null
-          || action.effectiveFrom <= before.validity.from || (before.validity.until !== null && action.effectiveFrom >= before.validity.until))
+        if (!isCalendarDate(action.effectiveFrom, before.validity.precision)
+          || (before.validity.from !== null && action.effectiveFrom <= before.validity.from) || (before.validity.until !== null && action.effectiveFrom >= before.validity.until))
           throw new OntologyError('invalid_time', 'change date must be inside the known fact interval');
         save({ ...before, validity: { ...before.validity, until: action.effectiveFrom }, version: before.version + 1, updatedAt: recordedAt }, 'close_validity', before);
       } else save({ ...before, status: 'corrected', version: before.version + 1, updatedAt: recordedAt }, 'mark_corrected', before);

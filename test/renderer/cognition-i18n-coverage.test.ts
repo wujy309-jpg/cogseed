@@ -101,29 +101,20 @@ describe('认知域词条覆盖', () => {
     expect(mismatches).toEqual([]);
   });
 
-  it('四语设置页区分增量发现与自动批准，并明确积压与授权边界', () => {
-    for (const locale of LOCALES) {
-      for (const key of ['settings_page_hint', 'settings_discovery_window', 'settings_auto_title', 'settings_auto_hint', 'settings_auto_default', 'settings_auto_boundary_copy', 'settings_pause_boundary']) expect(tables[locale]['cognition.' + key]).toBeTruthy();
-    }
+  it('四语完整覆盖夜间形成说明与实际窗口，占位符一致', () => {
+    for (const locale of LOCALES) for (const key of ['settings_nightly_confirmation_flow', 'settings_nightly_window', 'settings_nightly_review_hint', 'settings_nightly_auto_review_hint', 'settings_nightly_failure_review_hint', 'library_nightly_empty_hint']) expect(tables[locale]['cognition.' + key]).toBeTruthy();
     const views = fs.readFileSync(path.join(root, 'src/renderer/modules/cognition-assets/views.js'), 'utf8');
-    const controller = fs.readFileSync(path.join(root, 'src/renderer/modules/cognition-assets/settings.js'), 'utf8');
-    expect(views).toContain("T('cognition.settings_discovery_window'");
-    expect(views).toContain("'auto-approval-toggle'");
-    expect(controller).toContain("T('cognition.settings_auto_boundary_copy'");
-    expect(views).not.toContain('data-act="capture-review-toggle"');
+    expect(views).toContain("T('cognition.settings_nightly_window'");
+    expect(views).not.toContain("'auto-approval-toggle'");
+    expect(placeholders(tables.zh['cognition.settings_nightly_window'])).toEqual(['{end}', '{start}']);
   });
-
-  it('当前设置页标题说明与中文词条一致，四语不宣传已删除的手动整理入口', () => {
+  it('当前设置说明与中文词条一致，四语不宣传旧手动形成', () => {
     const views = fs.readFileSync(path.join(root, 'src/renderer/modules/cognition-assets/views.js'), 'utf8');
-    const fallback = views.match(/T\('cognition\.settings_page_hint',\s*'([^']*)'\)/)?.[1];
+    const fallback = views.match(/T\('cognition\.settings_nightly_confirmation_flow',\s*'([^']*)'\)/)?.[1];
     expect(fallback).toBeTruthy();
-    expect(tables.zh['cognition.settings_page_hint']).toBe(fallback);
+    expect(tables.zh['cognition.settings_nightly_confirmation_flow']).toBe(fallback);
     const staleTerms: Record<string, string> = { zh: '手动整理', en: 'manual cleanup', ja: '手動整理', pt: 'limpeza manual' };
-    const advertisingRemovedEntry = LOCALES.filter(locale => {
-      const text = tables[locale]['cognition.settings_page_hint'];
-      return typeof text !== 'string' || text.includes(staleTerms[locale]);
-    });
-    expect(advertisingRemovedEntry).toEqual([]);
+    for (const locale of LOCALES) expect(tables[locale]['cognition.settings_nightly_confirmation_flow']).not.toContain(staleTerms[locale]);
   });
 
   it('已删功能的死键不得回潮，仍活跃的近邻键不得误删（maint_run / cleanup / inspection 家族）', () => {

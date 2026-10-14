@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 /**
  * 大扫除与整理报告（specs/008 US-403 / T041–T046；标题重起轮＝四病整改设计 3.3）。
  *
@@ -64,7 +65,7 @@ let seedSeq = 0;
 async function seedAsset(uid: string, judgment: string, title?: string) {
   const { candidates, store } = await modules();
   seedSeq += 1;
-  const candidate = await candidates.saveRecallCandidate(uid, {
+  const candidate = await createNightlyCandidateFixture(uid, {
     judgment,
     // 标题闸门（设计 3.2）后晋升 title 必须合规：给一份与正文开头不同的合规
     // summary，不再吃「正文首句」兜底；需要"不规范标题"夹具的用例用第三个
@@ -136,7 +137,17 @@ describe('统一只检查维护契约', () => {
     const uid = 'check-legacy-entry';
     const { assets, cleanup, candidates } = await modules();
     const asset = await seedAsset(uid, '发布前必须核对回滚方案', '  旧标题。  ');
-    const pending = await candidates.saveRecallCandidate(uid, { judgment: '保留用户亲写内容', summary: '亲写样本', suggestedType: 'fact', suggestedScope: 'general', sourceRefs: [], manual: true });
+    // Preserve an explicitly historical manual draft; the retired producer remains closed.
+    const { writeRecallJsonRecord } = await import('../../../../src/main/features/recall/store');
+    const legacyId = 'legacy-manual-cleanup';
+    const timestamp = new Date().toISOString();
+    await writeRecallJsonRecord(uid, 'candidates', legacyId, {
+      schemaVersion: 2, ownerId: uid, id: legacyId, contentFormatVersion: 1, taxonomyVersion: 2,
+      judgment: '保留用户亲写内容', value: '', summary: '亲写样本', suggestedType: 'fact', suggestedScope: 'general',
+      sourceRefs: [], evidenceRefs: [], origin: 'manual', suggestedAction: 'create', risk: 'low', status: 'pending_review',
+      createdAt: timestamp, updatedAt: timestamp, expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    const pending = await candidates.readRecallCandidate(uid, legacyId);
     const before = await assets.readAbilityAsset(uid, asset.id);
     titleRegenModel.configured = false;
     const report = await cleanup[entry](uid);

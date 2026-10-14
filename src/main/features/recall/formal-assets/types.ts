@@ -66,6 +66,7 @@ export interface FormalAssetEnvelope {
 
 /** 分类型 payload。规则边界、模板槽位及方法步骤均从已持久化内容生成；没有写过的结构不猜测。 */
 export type FormalAssetPayload =
+  | { kind: 'cognition' }
   | { kind: 'personal' }
   | { kind: 'rule'; action: string; applicableWhen: string[]; forbiddenWhen: string[]; boundaryRecorded: boolean; causalRule?: RecallAbilityAssetRecord['causalRule'] }
   | { kind: 'template'; body: string; slots: Array<{ name: string; required: true }>; structureError?: string }
@@ -90,7 +91,7 @@ export interface ListFormalAssetsFilter {
  *  唯一判据——Personal Ontology 分组、Memory、Evidence、Receipt、
  *  RelationshipAssertion、Workspace state、原始文件都进不来。 */
 export const FORMAL_ASSET_TYPES: ReadonlySet<FormalAssetType> = new Set<FormalAssetType>([
-  'personal', 'rule', 'template', 'skill_method', 'fact',
+  'cognition', 'personal', 'rule', 'template', 'skill_method', 'fact',
 ]);
 
 export function isFormalAssetType(value: unknown): value is FormalAssetType {

@@ -13,6 +13,7 @@ describe('v17 本地文字修改建议', () => {
     expect(parse('改为「新的说明」', '旧说明')).toEqual({ replacement: '新的说明' });
     expect(parse('在后面补充「，需要核对」', '说明')).toEqual({ replacement: '说明，需要核对' });
     expect(parse('删除所选文字', '需要删除')).toEqual({ replacement: '' });
+    expect(parse('change to "new wording"', 'old wording')).toEqual({ replacement: 'new wording' });
   });
   it('重复原文与超出模拟范围的指令不会生成修改', () => {
     for (const [request, original] of [['把「甲」改为「乙」', '甲与甲'], ['把「甲」改为「乙」', '丙'], ['请优化并发布这些内容', '原文']]) {

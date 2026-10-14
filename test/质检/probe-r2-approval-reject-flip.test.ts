@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../helpers/nightly-formation-fixture';
 /**
  * 探针（本轮红队-数据与注入，主题：并发与时序）：decideAssetChangeProposal 的
  * 终态预检在锁外——reject 与 confirm 交错时，已拒绝的 AI 提议内容仍被写进资产，
@@ -68,7 +69,7 @@ async function modules() {
 
 async function seedAsset() {
   const { candidates } = await modules();
-  const candidate = await candidates.saveRecallCandidate(UID, {
+  const candidate = await createNightlyCandidateFixture(UID, {
     judgment: '发布前必须核对回滚方案。',
     summary: '审批竞态基线样本',
     suggestedType: 'rule', ...RULE_BOUNDARY, suggestedScope: 'architecture',

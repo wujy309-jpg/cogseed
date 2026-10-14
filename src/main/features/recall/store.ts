@@ -106,6 +106,25 @@ export async function readRecallJsonRecord(
   return readExistingRecallRecord(userId, recordPath, recordId);
 }
 
+/** Explicit cleanup of obsolete, untouched manual waits. Never removes a
+ * conversation, a candidate, a processed capture or a managed cognition record. */
+export async function discardUnstartedRecallCaptureWait(userId: string, recordId: string): Promise<boolean> {
+  const recordPath = recallJsonRecordPath(userId, 'captures', recordId);
+  const removed = await fileEditLock(recordPath).runExclusive(async () => {
+    const current = await readRecallJsonRecord(userId, 'captures', recordId);
+    if (!current) return false;
+    if (current.status !== 'waiting_manual' || current.executionPolicy !== 'manual'
+      || !Array.isArray(current.candidateIds) || current.candidateIds.length
+      || current.startedAt || current.stage || current.writingCandidateId || current.promotedAssetId) {
+      throw new Error('only an untouched manual capture wait can be discarded');
+    }
+    await fs.unlink(recordPath);
+    return true;
+  });
+  if (removed) notifyCognitionWrite(userId, 'captures', 'remove', recordId);
+  return removed;
+}
+
 export async function writeRecallJsonRecord(
   userId: string,
   collection: string,

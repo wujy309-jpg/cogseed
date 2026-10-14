@@ -1,6 +1,6 @@
 /* 我的认知：同一目录中搜索、阅读、编辑；详情在窄屏变为抽屉。 */
 #ca-root .ca-app .ca-library-page { display:flex; flex-direction:column; min-height:0; height:calc(100dvh - 110px); gap:var(--space-3); }
-#ca-root .ca-app .ca-library-page > .hero { flex:none; margin:0; padding:0; border:0; background:transparent; }
+#ca-root .ca-app .ca-library-page > .hero { display:block; flex:none; margin:0; padding:0; border:0; background:transparent; }
 #ca-root .ca-app .ca-library-topline,
 #ca-root .ca-app .ca-library-toolbar,
 #ca-root .ca-app .ca-library-filters { display:flex; align-items:center; gap:var(--space-3); flex-wrap:wrap; flex:none; }
@@ -8,6 +8,8 @@
 #ca-root .ca-app .ca-library-toolbar input { flex:1; min-width:200px; max-width:600px; }
 #ca-root .ca-app .ca-library-toolbar > .note { margin-left:auto; }
 #ca-root .ca-app .ca-library-filter { display:flex; align-items:center; gap:var(--space-2); font-size:var(--font-size-2); color:var(--ca-ink2); }
+#ca-root #ca-scroll.ca-layout-overview .ca-library-page > .hero { display:block; flex:none; margin:0; padding:0; border:0; background:transparent; }
+#ca-root .ca-app .ca-library-filter .ui-select-host { min-width:148px; }
 #ca-root .ca-app .ca-library-select { min-width:130px; max-width:220px; height:34px; border:1px solid var(--ca-line); border-radius:var(--radius-control); background:var(--ca-card); padding:0 var(--space-2); color:var(--ca-ink); font:inherit; }
 #ca-root .ca-app .ca-library-layout { display:grid; grid-template-columns:minmax(0,1fr) 400px; gap:var(--space-5); flex:1; min-height:0; }
 #ca-root .ca-app .ca-library-list,

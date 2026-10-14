@@ -29,7 +29,7 @@ function isCitation(value: unknown): value is RecallMessageCitation {
     && typeof citation.title === 'string'
     && citation.title.trim().length > 0
     && citation.title.length <= 160
-    && (citation.type === 'personal' || citation.type === 'rule' || citation.type === 'template' || citation.type === 'skill_method' || citation.type === 'fact')
+    && (citation.type === 'cognition' || citation.type === 'personal' || citation.type === 'rule' || citation.type === 'template' || citation.type === 'skill_method' || citation.type === 'fact')
     && typeof citation.version === 'string'
     && citation.version.trim().length > 0
     && citation.version.length <= 40
@@ -44,6 +44,7 @@ function isCitation(value: unknown): value is RecallMessageCitation {
       || citation.match_method === 'semantic_ontology'
       || citation.match_method === 'recency_fallback'
       || citation.match_method === 'manual'
+      || citation.match_method === 'standing_preference'
     )
     && (citation.match_score === undefined
       || (typeof citation.match_score === 'number'
@@ -144,11 +145,12 @@ export async function recordRecallMessageFeedback(
       const { recommendAbilityAssetAction } = await import('./asset-service');
       for (const citation of targets) {
         const negatives = allUsage.filter((record) => (
-          record.assetId === citation.asset_id && record.outcome === 'feedback_negative'
+          record.assetId === citation.asset_id && record.assetVersion === citation.version && record.outcome === 'feedback_negative'
         )).length;
         if (negatives < 2) continue;
         await recommendAbilityAssetAction(userId, citation.asset_id, {
           action: 'pause',
+          expectedVersion: citation.version,
           reason: `累计 ${negatives} 次用户负反馈（「需改进」），建议暂停注入并复核内容`,
           actor: 'system',
         }).catch(() => undefined);

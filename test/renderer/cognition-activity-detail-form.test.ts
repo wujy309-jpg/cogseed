@@ -1,3 +1,4 @@
+import { nightlyFormation } from './helpers/nightly-candidate';
 import { describe, expect, it } from 'vitest';
 import { loadCognitionAssets } from './helpers/cognition-renderer';
 
@@ -5,25 +6,30 @@ function renderCandidate(extra: Record<string, unknown> = {}) {
   const candidate = {
     id: 'detail-a', summary: '周报模板', judgment: '周报包含进展、风险和计划，每项行动说明负责人。',
     value: '减少重复整理', suggestedType: 'template', suggestedScope: 'general',
-    status: 'pending_review', origin: 'manual', sourceRefs: [], createdAt: '2026-10-11T08:00:00Z',
+    status: 'pending_review', ...nightlyFormation(), createdAt: '2026-10-11T08:00:00Z',
     capabilities: { countsAsPending: true, canEdit: true, canPromote: true, canReject: true }, ...extra,
   };
   return loadCognitionAssets({ candidates: [candidate] }, { name: 'activity', ...(extra.status === 'confirmed' ? { activityView: 'done' } : {}) }).render();
 }
 
 describe('建议详情的内容与适用任务表单', () => {
-  it('以中文解释任务选择，保留底层值并统一两种选择控件的样式', () => {
+  it('以中文解释任务范围，编辑选择内容分类而已处理详情只读', () => {
     const html = renderCandidate();
-    expect(html).toContain('认知类型');
+    expect(html).toContain('data-f="contentCategory"');
+    expect(html).not.toContain('认知类型');
+    expect(html).not.toContain('data-f="type"');
+    expect(html).not.toContain('模板与范例');
+    expect(renderCandidate({ suggestedType: 'cognition' })).toContain('可复用正文');
+    expect(renderCandidate({ status: 'confirmed', capabilities: { isTerminal: true } })).not.toContain('认知类型');
     expect(html).toContain('适用任务帮助系统在合适的任务中选择这条认知');
     expect(html).toContain('type="text" value="跨任务通用"');
     expect(html).not.toContain('type="text" value="general"');
     expect(html).not.toContain('作用域');
-    expect(html.match(/class="ui-native-select ui-control ca-review-select"/g)).toHaveLength(1);
+    expect(html).not.toContain('ca-cand-type-');
   });
 
-  it('缺范围时必须明确选择，旧多值范围展示中文但不静默改成通用', () => {
-    expect(renderCandidate({ suggestedScope: '' })).toMatch(/type="text"[^>]*required[^>]*data-f="scope"/);
+  it('缺范围不进入关注；完整建议的旧多值范围不静默改成通用', () => {
+    expect(renderCandidate({ suggestedScope: '' })).toContain('当前没有需要关注的认知变化');
     const legacy = renderCandidate({ suggestedScope: 'review,code' });
     expect(legacy).toContain('value="review,code"');
     expect(legacy).not.toContain('<option value="general" selected>');
@@ -51,7 +57,8 @@ describe('HTML 原型的完整审核详情与真实状态', () => {
     const name = '这是一条超过列表截断长度的完整项目周报交付认知模板';
     const html = renderCandidate({ summary: name });
     expect(html).toContain(`<h2>${name}</h2>`);
-    expect(html).toContain('建议新增 · 模板与范例');
+    expect(html).toContain('建议新增');
+    expect(html).not.toContain('模板与范例');
     const markers = ['ca-review-target', 'ca-review-content', 'ca-review-usage', 'ca-review-value', 'ca-review-evidence', 'ca-review-impact', 'ca-review-history'];
     const positions = markers.map(marker => html.indexOf(marker));
     expect(positions.every(position => position >= 0)).toBe(true);
@@ -62,7 +69,7 @@ describe('HTML 原型的完整审核详情与真实状态', () => {
     expect(html).not.toContain('<h3>使用方式</h3>');
   });
   it('更新型显示真实在用版本与候选基线；缺失时不编造版本', () => {
-    const loaded = loadCognitionAssets({ candidates: [{ id: 'a', summary: '更新周报', suggestedAction: 'update', targetAssetId: 'asset-a', targetVersionUsed: '2', capabilities: { canEdit: true, canPromote: true, canReject: true, countsAsPending: true } }], assets: [{ id: 'asset-a', title: '当前周报', version: '5', activeVersion: '4', statement: '当前正文' }] }, { name: 'activity' });
+    const loaded = loadCognitionAssets({ candidates: [{ ...nightlyFormation(), judgment: '周报按进展风险和计划组织。', suggestedType: 'template', suggestedScope: 'general', status: 'pending_review', id: 'a', summary: '更新周报', suggestedAction: 'update', targetAssetId: 'asset-a', targetVersionUsed: '2', capabilities: { canEdit: true, canPromote: true, canReject: true, countsAsPending: true } }], assets: [{ id: 'asset-a', title: '当前周报', version: '5', activeVersion: '4', statement: '当前正文' }] }, { name: 'activity' });
     const html = loaded.render();
     expect(html).toContain('目标：当前周报 · 当前在用 v4 · 候选基于 v2');
     expect(html).toContain('依据与版本对比');
@@ -96,7 +103,7 @@ describe('HTML 原型的完整审核详情与真实状态', () => {
     expect(html).toContain('不修改全局设置');
   });
   it('版本冲突的重新确认留在冲突区，正式操作固定在底部', () => {
-    const loaded = loadCognitionAssets({ candidates: [{ id: 'a', summary: '更新周报', suggestedAction: 'update', targetAssetId: 'asset-a', targetVersionUsed: '2', capabilities: { canEdit: true, canPromote: true, canReject: true, countsAsPending: true } }], assets: [{ id: 'asset-a', title: '周报', activeVersion: '3', version: '3' }], candidateVersionConflict: { candidateId: 'a', baselineVersion: '2', currentVersion: '3', currentStatement: '当前正文', currentSnapshot: { statement: '当前正文' } } }, { name: 'activity' });
+    const loaded = loadCognitionAssets({ candidates: [{ ...nightlyFormation(), judgment: '周报按进展风险和计划组织。', suggestedType: 'template', suggestedScope: 'general', status: 'pending_review', id: 'a', summary: '更新周报', suggestedAction: 'update', targetAssetId: 'asset-a', targetVersionUsed: '2', capabilities: { canEdit: true, canPromote: true, canReject: true, countsAsPending: true } }], assets: [{ id: 'asset-a', title: '周报', activeVersion: '3', version: '3' }], candidateVersionConflict: { candidateId: 'a', baselineVersion: '2', currentVersion: '3', currentStatement: '当前正文', currentSnapshot: { statement: '当前正文' } } }, { name: 'activity' });
     const html = loaded.render();
     const footer = html.slice(html.indexOf('<footer class="ca-activity-detail-footer">'));
     expect(footer).toContain('保存更新');

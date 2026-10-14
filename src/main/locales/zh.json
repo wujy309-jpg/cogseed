@@ -1,4 +1,7 @@
 {
+  "ontology.operation.required_sections_missing": "本次没有写入文件：内容缺少必须包含且有正文的章节「{sections}」。请补齐内容后重试。",
+  "ontology.operation.conditions_unresolved": "本次没有写入文件：适用于此操作的必要条件或例外尚未核清。请先核对规则，不能把未写入的内容称为已保存。",
+  "ontology.operation.preflight_unavailable": "本次没有写入文件：暂时无法核对适用规则。请稍后重试，不能绕过检查后声称已保存。",
   "recall.usage_claim_output_missing_notice": "采用登记未生成回执：报告的产出片段没有出现在本条最终回复中。请把实际成果写在这条回复里，再重新报告采用。",
   "agent.cli.project_dir.label": "项目目录",
   "agent.default_name": "未命名智能体",
@@ -312,6 +315,5 @@
   "tray.status.idle": "当前没有运行中的任务",
   "tray.status.running": "正在运行 {count} 个任务",
   "tray.background_hint.title": "CogSeed 仍在后台运行",
-  "tray.background_hint.content": "长任务会继续执行。要彻底退出，请用托盘菜单里的「退出 CogSeed」。",
-  "chat.ontology_save_missing": "本体保存未完成：本轮没有正式本体保存回执。以下文件或分析产出不能视为本体已创建或更新。"
+  "tray.background_hint.content": "长任务会继续执行。要彻底退出，请用托盘菜单里的「退出 CogSeed」。"
 }

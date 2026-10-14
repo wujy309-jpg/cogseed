@@ -1,4 +1,7 @@
 {
+  "ontology.operation.required_sections_missing": "ファイルは書き込まれていません。本文のある必須セクションが不足しています：{sections}。内容を補って再試行してください。",
+  "ontology.operation.conditions_unresolved": "ファイルは書き込まれていません。この操作の必須条件または例外が未確認です。先にルールを確認し、保存済みと報告しないでください。",
+  "ontology.operation.preflight_unavailable": "ファイルは書き込まれていません。適用ルールを確認できませんでした。後で再試行し、検査を回避したり保存済みと報告したりしないでください。",
   "recall.usage_claim_output_missing_notice": "採用レシートは記録されませんでした。報告された成果の抜粋がこの最終返信に含まれていません。実際の成果をこの返信に記載してから、もう一度採用を報告してください。",
   "agent.cli.project_dir.label": "プロジェクトディレクトリ",
   "agent.default_name": "無題のエージェント",
@@ -304,6 +307,5 @@
   "touchpoints.card.button.forget_source": "ソースを忘れる",
   "touchpoints.card.button.revoke_grant": "認可を取り消す",
   "touchpoints.card.resolved": "処理済み",
-  "dashboard.retry_user_message": "（再試行）",
-  "chat.ontology_save_missing": "本体の保存は未完了です。このターンには正式な保存記録がありません。以下のファイル・分析は本体の作成や更新を意味しません。"
+  "dashboard.retry_user_message": "（再試行）"
 }

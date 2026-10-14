@@ -26,6 +26,22 @@ describe('我的认知：同区资产详情与编辑', () => {
     expect(footer).toContain('data-act="library-show-merge"');
   });
 
+  it('统一认知的详情和编辑保留范围、边界、管理动作及独立内容分类', () => {
+    const unified = { ...asset, type: 'cognition' };
+    const loaded = loadCognitionAssets({ assets: [unified], assetCapabilities: { versionedUpdate: true }, assetScopeOptions: { status: 'ready', agents: [], spaces: [] } });
+    const html = loaded.ns.renderLibraryAssetDetail(unified, {});
+    expect(html).toContain('审核时');
+    expect(html).toContain('来源失效');
+    expect(html).toContain('data-act="edit-asset"');
+    expect(html).not.toContain('规则与偏好');
+    const edit = loaded.ns.renderLibraryAssetDetail(unified, { assetEdit: '1' });
+    expect(edit).toContain('data-act="asset-edit-save"');
+    expect(edit).not.toContain('修改不切换类型');
+    expect(edit).not.toContain('data-f="type"');
+    expect(edit).toContain('data-f="contentCategory"');
+    expect(edit).toContain('<option value="unclassified" selected>');
+  });
+
   it('没有额外对象限制时显示任务范围摘要，避免重复四行未限定', () => {
     const loaded = loadCognitionAssets({ assets: [asset] });
     const html = loaded.ns.renderLibraryAssetDetail({ ...asset, type: 'fact', scope: 'code', scopePolicy: undefined }, {});
@@ -70,19 +86,7 @@ describe('我的认知：同区资产详情与编辑', () => {
     for (const action of ['asset-use-in-chat', 'edit-asset', 'select-asset-version', 'edit-from-version', 'merge-asset-version', 'delete-asset-version']) expect(html).not.toContain(`data-act="${action}"`);
   });
 
-  it('紧凑手动添加使用原生类型和中文任务范围，规则边界和真实提交控件都在表单内', () => {
-    const loaded = loadCognitionAssets();
-    const html = loaded.ns.renderLibraryManualForm();
-    expect(html).toContain('data-manual-candidate');
-    expect(html).toContain('id="ca-manual-type"');
-    expect(html).toContain('data-f="type"');
-    expect(html).toMatch(/type="hidden"[^>]*data-f="scope"/);
-    expect(html).toContain('value="general"');
-    expect(html).toContain('data-manual-rule-boundaries');
-    expect(html).toContain('data-f="applicable"');
-    expect(html).toContain('data-f="forbidden"');
-    expect(html.slice(html.indexOf('<footer'))).toContain('data-act="cand-create-save"');
-  });
+
 
   it('保存冲突提供核对最新版本入口，并保持草稿正文和初始编辑基线', () => {
     const loaded = loadCognitionAssets({ assets: [asset], assetEditDrafts: { [asset.id]: { statement: '我的草稿', baseVersion: '2', baseActiveVersion: '1', saveConflict: true, saveError: '在用版本变化' } } });
@@ -133,7 +137,12 @@ describe('我的认知：同区资产详情与编辑', () => {
     expect(html).toContain('核对重复条目');
     expect(html).toContain('data-act="library-open-inbox"');
     expect(html).toContain('范围需要核对');
-    expect(html).not.toContain('已完成变化');
+    const pendingSection = html.split('<h3>相关待确认变化</h3>')[1]?.split('</section>')[0] || '';
+    const formationSection = html.split('<h3>形成与保存记录</h3>')[1]?.split('</section>')[0] || '';
+    expect(pendingSection).toContain('修改现有规则');
+    expect(pendingSection).not.toContain('已完成变化');
+    expect(formationSection).toContain('已完成变化');
+    expect(formationSection).not.toContain('修改现有规则');
     expect(html).not.toContain('其他变化');
   });
 
@@ -154,42 +163,51 @@ describe('我的认知：同区资产详情与编辑', () => {
     }
   });
 
-  it('手动添加从真实目录展示使用对象，默认不额外限制且不虚构个人工作空间', () => {
-    const loaded = loadCognitionAssets({ assetScopeOptions: { status: 'ready', agents: [{ agent_id: 'agent-real', name: '评审助手' }], spaces: [{ space_id: 'ws-real', name: '产品团队' }] } });
-    const html = loaded.ns.renderLibraryManualForm();
-    expect(html).toContain('评审助手');
-    expect(html).toContain('产品团队');
-    expect(html).toContain('data-manual-scope-mode="agentIds"');
-    expect(html).toContain('data-manual-scope-mode="workspaceIds"');
-    expect(html.match(/value="keep" selected/g)).toHaveLength(2);
-    expect(html.match(/<select[^>]*data-manual-scope-kind="agentIds"[^>]*>/)?.[0]).toContain('disabled');
-    expect(html.match(/<select[^>]*data-manual-scope-kind="workspaceIds"[^>]*>/)?.[0]).toContain('disabled');
-    expect(html).not.toContain('ws-personal');
-    expect(html).not.toContain('value="commander"');
-    expect(html).not.toContain('data-f="spaceId"');
+
+
+
+
+
+});
+
+describe('正式资产状态与形成记录', () => {
+  it('合法撤回和清除记录深链显示真实历史状态，版本读取中不冒充没有快照', () => {
+    for (const [status, label] of [['revoked', '已撤回'], ['purged', '已清除']]) {
+      const historic = { ...asset, status };
+      const loaded = loadCognitionAssets({ assets: [historic], assetVersions: { assetId: asset.id, loading: true } }, { name: 'overview', assetId: asset.id });
+      const html = loaded.render();
+      expect(html).toContain(label);
+      expect(html).not.toContain('类型或状态无法核对');
+      expect(html).not.toContain('条记录的类型、状态或对象标识不完整');
+      expect(html).not.toContain('data-action="resume"');
+      const dialog = loaded.ns.renderLibraryDialog('versions', asset.id);
+      expect(dialog).toContain('加载中');
+      expect(dialog).not.toContain('没有版本快照');
+    }
   });
 
-  it('手动范围草稿重绘后保持restrict和真实ID选择，两维分别处理', () => {
-    const loaded = loadCognitionAssets({ assetScopeOptions: { status: 'ready', agents: [{ agent_id: 'agent-a', name: '助手 A' }, { agent_id: 'agent-b', name: '助手 B' }], spaces: [{ space_id: 'ws-a', name: '团队 A' }] } });
-    loaded.store.libraryView.manualScope = { agentIds: { mode: 'restrict', ids: ['agent-b'] }, workspaceIds: { mode: 'keep', ids: [] } };
-    const html = loaded.ns.renderLibraryManualForm();
-    expect(html).toContain('class="details ca-manual-scope-editor" open');
-    expect(html).toMatch(/option value="agent-b" selected/);
-    expect(html).toContain('<option value="agent-a">');
-    expect(html.match(/<select[^>]*data-manual-scope-kind="agentIds"[^>]*>/)?.[0]).not.toContain('disabled');
-    expect(html.match(/<select[^>]*data-manual-scope-kind="workspaceIds"[^>]*>/)?.[0]).toContain('disabled');
-    expect(loaded.ns.renderLibraryManualForm()).toBe(html);
+  it('归档不会冒充归并或在用版本，确认后的候选仍可回看', () => {
+    const archived = { ...asset, status: 'archived' };
+    const loaded = loadCognitionAssets({ assets: [archived], candidates: [{ id: 'confirmed-candidate', status: 'confirmed', promotedAssetId: asset.id, summary: '保存时的判断' }] });
+    const html = loaded.ns.renderLibraryAssetDetail(archived, {});
+    expect(html).toContain('已归档：这条认知不会供后续任务使用');
+    expect(html).not.toContain('已并入另一条资产');
+    expect(html).toContain('保存版本 v2');
+    expect(html).not.toContain('在用 v2');
+    expect(html).toContain('形成与保存记录');
+    expect(html).toContain('data-id="confirmed-candidate"');
+    expect(html).toContain('保存时的判断');
   });
 
-  it('目录未就绪时禁用所有对象模式和复选框，提供真实重试入口且保留范围草稿', () => {
-    const loaded = loadCognitionAssets({ assetScopeOptions: { status: 'error', agents: [{ agent_id: 'agent-old', name: '上次的助手' }], spaces: [{ space_id: 'ws-old', name: '上次的团队' }] } });
-    loaded.store.libraryView.manualScope = { agentIds: { mode: 'restrict', ids: ['agent-old'] }, workspaceIds: { mode: 'restrict', ids: ['ws-old'] } };
-    const html = loaded.ns.renderLibraryManualForm();
-    expect(html).toContain('data-act="asset-scope-options-retry"');
-    expect(html).toContain('对象目录尚未就绪');
-    const controls = [...html.matchAll(/<(?:select|input)[^>]*data-manual-scope-(?:mode|kind)=[^>]*>/g)].map(match => match[0]);
-    expect(controls).toHaveLength(4);
-    expect(controls.every(control => control.includes('disabled'))).toBe(true);
-    expect(loaded.store.libraryView.manualScope.agentIds.ids).toEqual(['agent-old']);
+  it('非法类型或缺失状态的旧对象只读，不能伪装正常启用或恢复使用', () => {
+    const loaded = loadCognitionAssets();
+    for (const invalid of [{ ...asset, status: undefined }, { ...asset, type: 'unknown' }]) {
+      const html = loaded.ns.renderLibraryAssetDetail(invalid, { assetEdit: '1' });
+      expect(html).toContain('类型或状态无法核对');
+      expect(html).not.toContain('data-act="asset-edit-save"');
+      expect(html).not.toContain('data-act="edit-asset"');
+      expect(html).not.toContain('data-action="resume"');
+      expect(html).not.toContain('data-action="pause"');
+    }
   });
 });

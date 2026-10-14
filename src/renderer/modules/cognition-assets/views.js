@@ -153,6 +153,38 @@
     return hit ? T(hit[1], hit[2]) : T('cognition.asset_category_other', '其他');
   };
 
+  // 内容分类仅用于查找与展示；不改变资产类型、准入或使用权限。
+  const CONTENT_CATEGORIES = [
+    ['rule', 'cognition.content_category_rule', '规则'],
+    ['preference', 'cognition.content_category_preference', '偏好'],
+    ['template', 'cognition.content_category_template', '模板'],
+    ['method', 'cognition.content_category_method', '方法'],
+    ['lesson', 'cognition.content_category_lesson', '经验教训'],
+    ['unclassified', 'cognition.content_category_unclassified', '待分类'],
+  ];
+  const contentCategoryOf = (item) => {
+    if (CONTENT_CATEGORIES.some(([id]) => id === item?.contentCategory)) return item.contentCategory;
+    // 旧抽象分类也只能按明确旧类型兼容读取，不生成新的抽象分类。
+    if (item?.contentCategory != null && !['understanding', 'experience_method', 'fact'].includes(item.contentCategory)) return 'unclassified';
+    const legacyType = item?.type || item?.suggestedType;
+    if (legacyType === 'rule') {
+      // 仅识别历史规则中明确命名的偏好/习惯；新 cognition 不参与标题推断。
+      const title = String(item?.title || item?.summary || '').trim();
+      return /^(?:偏好|习惯|preferences?\b|habits?\b)|(?:偏好|习惯|\bpreferences?|\bhabits?)$/i.test(title) ? 'preference' : 'rule';
+    }
+    return legacyType === 'template' ? 'template' : legacyType === 'skill_method' ? 'method' : 'unclassified';
+  };
+  const contentCategoryLabel = item => {
+    const [, key, fallback] = CONTENT_CATEGORIES.find(([id]) => id === contentCategoryOf(item));
+    return T(key, fallback);
+  };
+  const contentCategorySelect = (id, item, value) => window.uiSelect({
+    id, native: true, ariaLabel: T('cognition.content_category', '分类'),
+    value: value == null ? contentCategoryOf(item) : value,
+    options: CONTENT_CATEGORIES.map(([value, key, fallback]) => ({ value, label: T(key, fallback) })),
+    attrs: { 'data-f': 'contentCategory' },
+  });
+
   // 状态章（2026-09-22 快赢）：active 从「已确认」改为「生效中」——与出身章
   // 「模型记的」并置时旧词读起来像"被确认过"，实际语义只是"当前在用"。
   // 顺带走 T() 补四语（此前硬编码中文，四语界面也显示中文）。
@@ -165,7 +197,7 @@
     revoked: [() => T('cognition.asset_status.revoked', '已撤回'), 'red'],
   };
   const assetStatusChip = (asset) => {
-    const entry = ASSET_STATUS[String(asset.status || 'active')];
+    const entry = ASSET_STATUS[String(asset.status || '')];
     const [label, tone] = entry ? [entry[0](), entry[1]] : [T('cognition.asset_status_unknown', '状态未知'), ''];
     // 成功加载不等于效果得到验证，两种证据分别展示。
     const maturity = asset.maturity === 'effectiveness_validated'
@@ -491,30 +523,6 @@
     });
   }
 
-  /* 整理任务行内动作（整理记录行与整理详情共用）：主按钮按优先级取一个，
-   * 暂停/取消作次级；导航类动作（去确认/配置模型）在 app.js 分流，控制类走
-   * capture-action（与后端 actions 语义 id 一字不差）。 */
-  const CAPTURE_PRIMARY_ORDER = ['review_candidates', 'run_now', 'resume', 'retry', 'configure_model', 'view_assets'];
-  const CAPTURE_NAV_ACTS = { review_candidates: 'go-review', configure_model: 'go-configure-model' };
-  function captureActionButtons(capture) {
-    const vocab = NS.vocabulary;
-    const actions = Array.isArray(capture.actions) ? capture.actions : [];
-    const primary = CAPTURE_PRIMARY_ORDER.find((action) => actions.includes(action));
-    const primaryBtn = primary === 'view_assets'
-      ? btn(T('cognition.capture_action_view_assets', '查看资产'), 'open-asset', { id: (capture.linkedAssetIds || [])[0] || '', small: true, primary: true })
-      : primary && CAPTURE_NAV_ACTS[primary]
-        ? btn(vocab ? vocab.captureActionText(primary) : primary, CAPTURE_NAV_ACTS[primary], { small: true, primary: true })
-        : primary
-          ? btn(vocab ? vocab.captureActionText(primary) : primary, 'capture-action', { id: capture.id, data: { action: primary }, small: true, primary: true })
-          : '';
-    const secondaryBtns = ['pause', 'cancel'].filter((action) => actions.includes(action)).map((action) => btn(
-      vocab ? vocab.captureActionText(action) : action,
-      'capture-action',
-      { id: capture.id, data: { action }, small: true, danger: action === 'cancel' },
-    )).join('');
-    return primaryBtn + secondaryBtns;
-  }
-
   /* ────────────────────────── 认知树 v4（光斑有机版） ────────────────────────── */
   /* 垂直轴 = 处理梯度：土壤（来源与整理）→ 根（待确认候选）→ 干（本体总览）
      → 枝（四类资产）→ 冠（已验证）。层级语义（2026-09-21 原型 v7 契约）：
@@ -749,7 +757,7 @@
       <rect x="${cx - 7}" y="${groundY - 24}" width="14" height="26" class="root-collar"/>`;
 
     /* 土壤：会话与采集记录的来源层（点开=系统活动的时间流，018 T021）。 */
-    g += `<g class="spot" ${roleBtn(`data-act="go-organize" data-title="${esc(T('cognition.tree_soil_title', '系统活动：整理过程与结果都在这里'))}" data-sub="${esc(T('cognition.tree_soil_hint', '会话与记录在这里生根'))}" aria-label="${esc(T('cognition.tree_soil_label', '土壤 · 记录 {s} · 整理 {c}', { s: String(Number(info.sources || 0)), c: String(Number(info.captures || 0)) }))}"`)}>
+    g += `<g class="spot" ${roleBtn(`data-act="go-review" data-title="${esc(T('cognition.tree_soil_title', '系统活动：整理过程与结果都在这里'))}" data-sub="${esc(T('cognition.tree_soil_hint', '会话与记录在这里生根'))}" aria-label="${esc(T('cognition.tree_soil_label', '土壤 · 记录 {s} · 整理 {c}', { s: String(Number(info.sources || 0)), c: String(Number(info.captures || 0)) }))}"`)}>
       <rect x="${cx - 330}" y="${groundY + 2}" width="660" height="58" rx="12" class="soil-band"/>
       <text x="${cx}" y="${groundY + 27}" text-anchor="middle" class="soil-title">${esc(T('cognition.tree_soil_label', '土壤 · 记录 {s} · 整理 {c}', { s: String(Number(info.sources || 0)), c: String(Number(info.captures || 0)) }))}</text>
       <text x="${cx}" y="${groundY + 46}" text-anchor="middle" class="soil-sub">${esc(T('cognition.tree_soil_hint', '会话与记录在这里生根'))}</text>
@@ -988,9 +996,16 @@
       const evidenceLine = names.length
         ? `<div class="sub">${esc(T('cognition.adoption_evidence_line', '证据：{names}', { names: names.join('、') }))}</div>`
         : '';
+      const observationLabel = T('cognition.usage_model_assisted', '模型辅助检查');
+      const observationHint = T('cognition.usage_model_assisted_hint', '这是对本次回答遵守情况的观察，不是改善效果的证明。');
+      const observation = receipt.observationMethod === 'model_assisted' ? window.uiTag({
+        label: observationLabel, variant: 'outline',
+        attrs: { title: observationHint, 'aria-label': observationLabel + ' · ' + observationHint },
+      }) : '';
       return `<div class="ca-proof-row">
         <div class="ca-proof-body">
           <strong class="ca-proof-sentence">${esc(statusLabel(String(receipt.status || '')))}</strong>
+          ${observation}
           ${meta ? `<span class="note">${esc(meta)}</span>` : ''}
         </div>
         ${evidenceLine}
@@ -1134,7 +1149,6 @@
       return out || '—';
     };
     const rows = [
-      [T('cognition.type', '类型'), categoryLabel(a.type), categoryLabel(b.type)],
       [T('cognition.asset_edit_field_applicable', '适用场景'), text(a.applicableWhen), text(b.applicableWhen)],
       [T('cognition.asset_edit_field_forbidden', '禁用场景'), text(a.forbiddenWhen), text(b.forbiddenWhen)],
       [T('cognition.asset_version_diff_scope', '适用范围'), text(a.scope), text(b.scope)],
@@ -1241,6 +1255,7 @@
    *  读失败显式标记 + 重试（2026-09-30 r3 补齐，与使用/采用记录同口径）：
    *  不把「没读到」伪装成「没有版本」。 */
   function assetVersionsSection(asset, options = {}) {
+    options = { ...options, readOnly: options.readOnly || !!S.assetsError || !(asset.type === 'cognition' || CATEGORIES.some(([type]) => type === asset.type)) || !['active', 'paused'].includes(asset.status) };
     const state = S.assetVersions;
     if (state && state.assetId === String(asset.id) && state.failed) {
       return `<div class="ca-asset-usage-feedback">
@@ -1460,6 +1475,18 @@
       } });
     }
     const editDraft = S.assetEditDrafts[draftId];
+    // Freeze the contents the user opened, not only its CAS versions. A later
+    // broadcast must never replace an unedited body while the user changes a title.
+    if (!editDraft.baseReviewDetails && String(editDraft.baseVersion) === String(asset.version)
+      && String(editDraft.baseActiveVersion) === String(asset.activeVersion || asset.version)) {
+      editDraft.baseReviewDetails = { statement: String(asset.statement || ''),
+        applicableWhen: [...(asset.applicableWhen || [])], forbiddenWhen: [...(asset.forbiddenWhen || [])] };
+      editDraft.baseScopePolicy = JSON.parse(JSON.stringify(asset.scopePolicy || {}));
+      for (const [key, value] of Object.entries({ title: String(asset.title || ''), statement: String(asset.statement || ''),
+        contentCategory: contentCategoryOf(asset), applicable: joinList(asset.applicableWhen), forbidden: joinList(asset.forbiddenWhen) })) {
+        if (!Object.prototype.hasOwnProperty.call(editDraft, key)) editDraft[key] = value;
+      }
+    }
     const draftValue = (key, fallback) => Object.prototype.hasOwnProperty.call(editDraft, key) ? editDraft[key] : fallback;
     const fid = (name) => `ca-asset-edit-${name}-${esc(asset.id)}`;
     // 治理类信息（边界编辑、scopePolicy 可见范围）收「高级」折叠（五区骨架，
@@ -1467,26 +1494,26 @@
     // 用户只改标题/正文，边界与范围按需展开；折叠内能力不变。
     const boundaryFields = `${fieldHtml(T('cognition.asset_edit_field_applicable', '适用场景（多条用顿号分隔）'), window.uiInput({ id: fid('applicable'), value: String(draftValue('applicable', joinList(asset.applicableWhen)) || ''), attrs: { 'data-f': 'applicable' } }))}
       ${fieldHtml(T('cognition.asset_edit_field_forbidden', '禁用场景（多条用顿号分隔）'), window.uiInput({ id: fid('forbidden'), value: String(draftValue('forbidden', joinList(asset.forbiddenWhen)) || ''), attrs: { 'data-f': 'forbidden' } }))}`;
-    const ruleBoundaryVisible = options.compact && asset.type === 'rule';
+    const ruleBoundaryVisible = true; // Full detail save reviews both conditions alongside the body.
     const advancedFold = `<details class="details ca-asset-edit-advanced">
       <summary>${esc(T('cognition.library_manual_scope_title', '限定使用对象'))}</summary>
-      ${options.compact ? '' : boundaryFields}
-      ${options.compact ? prototypeScopeEditor(asset, editDraft) : assetScopeEditor(asset, editDraft)}
+      ${options.compact ? prototypeScopeEditor({ ...asset, scopePolicy: editDraft.baseScopePolicy || asset.scopePolicy }, editDraft) : assetScopeEditor({ ...asset, scopePolicy: editDraft.baseScopePolicy || asset.scopePolicy }, editDraft)}
     </details>`;
     const content = `
       ${editDraft.saveError ? `<p class="warn" role="alert">${esc(String(editDraft.saveError))}</p>` : ''}
       ${editDraft.saveConflict ? `<div class="actions">${btn(T('cognition.library_review_conflict', '核对最新版本'), 'library-review-conflict', { id: asset.id, small: true })}</div>` : ''}
       <p class="note">${esc(T('cognition.asset_edit_hint', '修改内容或适用范围会生成新版本；来源和证据会保留，旧版本也可回滚。'))}</p>
-      ${options.compact ? `<span class="tag">${esc(categoryLabel(asset.type))} · ${esc(T('cognition.prototype_type_locked', '修改不切换类型'))}</span>` : ''}
+      <p class="note">${esc(T('cognition.asset_edit_review_details_hint', '修改正文或条件后保存，表示你已核对下方完整内容。只改标题或分类不代表再次审阅正文；已有范围和来源规则继续适用。'))}</p>
       ${fieldHtml(options.compact ? T('cognition.prototype_title_required', '标题 *') : T('cognition.asset_edit_field_title', '标题'), window.uiInput({ id: fid('title'), value: String(draftValue('title', asset.title || '') || ''), attrs: { 'data-f': 'title' } }))}
       ${fieldHtml(options.compact ? T('cognition.prototype_content_required', '内容 *') : T('cognition.asset_edit_field_statement', '正文'), window.uiTextarea({ id: fid('statement'), value: String(draftValue('statement', asset.statement || '') || ''), attrs: { 'data-f': 'statement', rows: options.compact ? 9 : 5 } }))}
+      ${fieldHtml(T('cognition.content_category', '分类'), contentCategorySelect(fid('contentCategory'), asset, draftValue('contentCategory', contentCategoryOf(asset))))}
       ${ruleBoundaryVisible ? boundaryFields : ''}
       ${advancedFold}<span class="note" data-library-dirty-marker${S.libraryView?.dirty ? '' : ' hidden'}>${esc(T('cognition.prototype_unsaved_marker', '有未保存修改'))}</span>`;
     const actions = `
         ${btn(T('common.cancel', '取消'), 'asset-edit-cancel', { id: asset.id })}
         ${btn(options.compact ? T('cognition.prototype_save_version', '保存新版本') : T('cognition.asset_edit_save', '保存为新版本'), 'asset-edit-save', { id: asset.id, primary: true })}`;
     if (options.compact) return `<div class="ca-asset-page ca-library-asset-detail ca-asset-edit" data-asset-edit-id="${esc(asset.id)}">
-      <header class="ca-library-detail-head"><div class="ca-library-detail-title"><h2>${esc(T('cognition.prototype_edit_title', '修改认知'))}</h2>${btn(T('common.close', '关闭'), 'asset-edit-cancel', { id: asset.id, small: true })}</div><p class="note">${esc(categoryLabel(asset.type))} · ${esc(T('cognition.library_edit_base', '基于在用版本 v{n}', { n: String(editDraft.baseActiveVersion || asset.activeVersion || asset.version || '') }))}</p></header>
+      <header class="ca-library-detail-head"><div class="ca-library-detail-title"><h2>${esc(T('cognition.prototype_edit_title', '修改认知'))}</h2>${btn(T('common.close', '关闭'), 'asset-edit-cancel', { id: asset.id, small: true })}</div><p class="note">${esc(T('cognition.library_edit_base', '基于在用版本 v{n}', { n: String(editDraft.baseActiveVersion || asset.activeVersion || asset.version || '') }))}</p></header>
       <div class="ca-library-detail-body">${content}</div><footer class="ca-library-detail-footer">${actions}</footer>
     </div>`;
     return `<div class="sect-block ca-asset-edit" data-asset-edit-id="${esc(asset.id)}">
@@ -1503,11 +1530,12 @@
     // 资产级状态与开关贴着标题（2026-09-17 二改，子安红线口径）：标题右侧
     // 放总开关、标题下方一句实时生效说明——资产级信息归顶部（正文是内容、
     // 不是状态说明的挂载点）。异常态（删除/归并）仍走下方独立块。
-    const editing = !!route.assetEdit && ['active', 'paused'].includes(String(asset.status || 'active'));
+    const verifiedAsset = (asset.type === 'cognition' || CATEGORIES.some(([type]) => type === asset.type)) && ['active', 'paused', 'archived', 'deleted', 'revoked', 'purged'].includes(String(asset.status || ''));
+    const editing = !!route.assetEdit && verifiedAsset && !S.assetsError && ['active', 'paused'].includes(String(asset.status || ''));
     if (editing && options.compact) return assetEditForm(asset, options);
-    const statusKind = String(asset.status || 'active');
+    const statusKind = String(asset.status || '');
     const statusOn = statusKind === 'active';
-    const switchable = statusKind === 'active' || statusKind === 'paused';
+    const switchable = verifiedAsset && (statusKind === 'active' || statusKind === 'paused');
     const switchEl = window.uiSwitch({
       label: T('cognition.asset_switch_label', '允许后续任务使用'),
       checked: statusOn,
@@ -1523,7 +1551,7 @@
     const topControl = statusKind === 'deleted'
       ? `<div class="sect-block"><p class="note">${esc(T('cognition.asset_deleted_hint', '已删除的资产在保留期内可恢复；恢复后重新出现在常用资产。'))}</p><div class="actions">${btn(T('cognition.asset_restore_deleted', '恢复'), 'asset-action', { id: asset.id, data: { action: 'restore' }, primary: true, small: true })}</div></div>`
       : statusKind === 'archived'
-        ? `<div class="sect-block"><p class="note">${esc(T('cognition.asset_archived_note', '已归并：这条资产已并入另一条资产，历史版本完整保留在并入目标的版本记录中。'))}</p></div>`
+        ? `<div class="sect-block"><p class="note">${esc(asset.mergedInto ? T('cognition.asset_archived_note', '已归并：这条资产已并入另一条资产，历史版本完整保留在并入目标的版本记录中。') : T('cognition.asset_archived_unavailable', '已归档：这条认知不会供后续任务使用，来源与历史仍可查看。'))}</p></div>`
         : '';
     // 详细信息与证据已按版本下沉（2026-09-17 子安口径）：范围/怎么来的/证据
     // 各版不同、存于各版快照——归版本展开块显示，顶部不再放资产级副本。
@@ -1598,7 +1626,7 @@
      * 整体删除，2026-09-28。） */
     const currentVersion = String(asset.activeVersion || asset.version || '').trim();
     const factsLine = `<div class="sub ca-detail-facts">
-      ${chip(categoryLabel(asset.type))}
+
       ${assetStatusChip(asset)}
       ${currentVersion && switchable ? `<span class="ca-asset-version-label">${esc(T('cognition.asset_current_version', '在用版本 v{n}', { n: currentVersion }))}</span>` : ''}
     </div>`;
@@ -1731,7 +1759,7 @@
     const dangerActions = `${switchable ? moreRow(T('cognition.asset_delete', '删除'), T('cognition.asset_delete_hint', '从资产列表移除，历史记录保留'), 'delete') : ''}
       ${statusKind !== 'purged' ? moreRow(T('cognition.asset_purge', '彻底清除'), T('cognition.asset_purge_hint', '删除全部历史与证据，不可恢复'), 'purge') : ''}`;
     if (options.compact) {
-      const mutationReady = S.assetCapabilities?.versionedUpdate === true;
+      const mutationReady = !S.assetsError && S.assetCapabilities?.versionedUpdate === true;
       const more = switchable && mutationReady ? assetMergeSection(asset) : '';
       S.libraryDialogBodies = { assetId: asset.id, records: `${usedSection}${assetUsageSection(asset, route)}${assetAdoptionSection(asset)}${lifecycleBlock}`, merge: more };
       const deletedState = S.deletedAssets;
@@ -1744,10 +1772,13 @@
           : restoreAllowed ? T('cognition.library_restore_days', '保留期还剩 {n} 天。', { n: String(deletedRecord.retentionDaysLeft) })
             : T('cognition.library_restore_expired', '已超过保留期，不能恢复。');
       const placeholders = [...new Set(String(asset.statement || '').match(/\{\{[^{}\r\n]+\}\}/g) || [])];
-      const prototypeBoundary = asset.type === 'rule' ? `<section class="field ca-prototype-boundaries"><span>${esc(T('cognition.prototype_applicable', '适用情形'))}</span><p>${esc(applicable.join('；') || T('cognition.activity_not_recorded', '未记录'))}</p><span class="mt">${esc(T('cognition.prototype_forbidden', '禁用与例外'))}</span><p>${esc(forbidden.join('；') || T('cognition.activity_not_recorded', '未记录'))}</p></section>` : '';
+      const prototypeBoundary = applicable.length || forbidden.length ? `<section class="ca-prototype-boundaries"><h3>${esc(T('cognition.asset_boundary_section', '使用边界'))}</h3><dl><dt>${esc(T('cognition.prototype_applicable', '适用情形'))}</dt><dd>${esc(applicable.join('；') || T('cognition.activity_not_recorded', '未记录'))}</dd><dt>${esc(T('cognition.prototype_forbidden', '禁用与例外'))}</dt><dd>${esc(forbidden.join('；') || T('cognition.activity_not_recorded', '未记录'))}</dd></dl></section>` : '';
       const typeHint = asset.type === 'template' && placeholders.length ? `<p class="note ca-prototype-notice ca-library-template-slots">${esc(T('cognition.prototype_template_notice', '可填写字段：{slots}', { slots: placeholders.length ? placeholders.join('、') : T('cognition.prototype_no_slots', '此模板未定义槽位') }))}</p>`
         : asset.type === 'skill_method' ? `<p class="note">${esc(T('cognition.library_method_note', '这里保存方法与步骤；内容说明不代表已安装可执行技能。'))}</p>` : '';
-      const referencesAsset = item => String(item.targetAssetId || '') === String(asset.id)
+      const referencesAsset = item => String(item.promotedAssetId || '') === String(asset.id)
+        || String(item.id || '') === String(asset.candidateId || '')
+        || (Array.isArray(asset.sourceCandidateIds) && asset.sourceCandidateIds.some(id => String(id) === String(item.id)))
+        || String(item.targetAssetId || '') === String(asset.id)
         || String(item.mergedIntoAssetId || '') === String(asset.id)
         || String(item.assetId || '') === String(asset.id)
         || (Array.isArray(item.assetIds) && item.assetIds.some(id => String(id) === String(asset.id)))
@@ -1755,24 +1786,26 @@
       const relatedCandidates = (S.candidates || []).filter(item => referencesAsset(item) && NS.candidate?.awaiting(item)
         && !['confirmed', 'integrated', 'rejected', 'ignored', 'expired', 'superseded'].includes(String(item.status || '')));
       const relatedInbox = (S.inbox || []).filter(item => referencesAsset(item) && !['resolved', 'rejected', 'ignored', 'closed'].includes(String(item.status || '')));
+      const formationCandidates = (S.candidates || []).filter(item => referencesAsset(item) && ['confirmed', 'integrated'].includes(String(item.status || '')));
+      const formationSection = formationCandidates.length ? `<section class="ca-library-related"><h3>${esc(T('cognition.library_formation_records', '形成与保存记录'))}</h3>${formationCandidates.map(item => btn(item.summary || item.judgment || T('cognition.activity_check', '需要核对'), 'open-candidate', { id: item.id, className: 'rnm', small: true })).join('')}</section>` : '';
       const relatedSection = relatedCandidates.length || relatedInbox.length ? `<section class="ca-library-related"><h3>${esc(T('cognition.library_related_changes', '相关待确认变化'))}</h3>${relatedCandidates.map(item => btn(item.summary || item.judgment || T('cognition.activity_check', '需要核对'), 'open-candidate', { id: item.id, className: 'rnm', small: true })).join('')}${relatedInbox.map(item => btn(item.title || item.summary || T('cognition.activity_check', '需要核对'), 'library-open-inbox', { id: item.id, className: 'rnm', small: true })).join('')}</section>` : '';
       const leftActions = statusKind === 'deleted'
-        ? btn(T('cognition.asset_restore_deleted', '恢复'), 'asset-action', { id: asset.id, data: { action: 'restore' }, primary: true, disabled: !restoreAllowed })
+        ? btn(T('cognition.asset_restore_deleted', '恢复'), 'asset-action', { id: asset.id, data: { action: 'restore' }, primary: true, disabled: !verifiedAsset || !restoreAllowed || !!S.assetsError })
         : switchable ? `${btn(T('cognition.prototype_edit', '修改'), 'edit-asset', { id: asset.id, primary: true, disabled: !mutationReady })}${mutationReady ? btn(T('cognition.prototype_merge', '合并'), 'library-show-merge', { id: asset.id }) : ''}` : '';
-      const rightActions = switchable ? `${btn(T(statusOn ? 'cognition.asset_pause' : 'cognition.asset_resume', statusOn ? '暂停使用' : '恢复使用'), 'asset-action', { id: asset.id, data: { action: statusOn ? 'pause' : 'resume' } })}${btn(T('cognition.asset_delete', '删除'), 'asset-action', { id: asset.id, data: { action: 'delete' }, className: 'd' })}` : '';
-      return `<div class="ca-asset-page ca-library-asset-detail" data-library-asset-id="${esc(asset.id)}">
-        <header class="ca-library-detail-head"><div class="ca-library-detail-title"><h2>${esc(asset.title || asset.id)}</h2>${btn(T('common.close', '关闭'), 'library-close', { small: true })}</div><div class="ca-library-facts">${chip(categoryLabel(asset.type), 'line')}${chip(statusKind === 'active' ? T('cognition.library_active', '启用') : statusKind === 'paused' ? T('cognition.library_paused', '暂停') : statusKind === 'deleted' ? T('cognition.library_deleted', '已删除') : T('cognition.library_archived', '归档'), 'line')}<span class="note">${esc(T('cognition.prototype_active_version', '在用 v{n}', { n: String(asset.activeVersion || asset.version || T('cognition.activity_version_unknown', '版本未记录')) }))}</span></div></header>
+      const rightActions = switchable && !S.assetsError ? `${btn(T(statusOn ? 'cognition.asset_pause' : 'cognition.asset_resume', statusOn ? '暂停使用' : '恢复使用'), 'asset-action', { id: asset.id, data: { action: statusOn ? 'pause' : 'resume' } })}${btn(T('cognition.asset_delete', '删除'), 'asset-action', { id: asset.id, data: { action: 'delete' }, className: 'd' })}` : '';
+      return window.uiCard({ tag: 'div', readonly: true, className: 'ca-asset-page ca-library-asset-detail', attrs: { 'data-library-asset-id': asset.id }, bodyHtml: `
+        <header class="ca-library-detail-head"><div class="ca-library-detail-title"><h2>${esc(asset.title || asset.id)}</h2>${btn(T('common.close', '关闭'), 'library-close', { small: true })}</div><div class="ca-library-facts">${window.uiTag({ label: contentCategoryLabel(asset) })}${chip(!verifiedAsset ? T('cognition.asset_status_unknown', '状态未知') : statusKind === 'active' ? T('cognition.library_active', '启用') : statusKind === 'paused' ? T('cognition.library_paused', '暂停') : statusKind === 'deleted' ? T('cognition.library_deleted', '已删除') : statusKind === 'archived' ? (asset.mergedInto ? T('cognition.library_merged', '已归并') : T('cognition.library_archived', '归档')) : statusKind === 'revoked' ? T('cognition.asset_status.revoked', '已撤回') : statusKind === 'purged' ? T('cognition.asset_status.purged', '已清除') : T('cognition.asset_status_unknown', '状态未知'), 'line')}<span class="note">${esc(T(switchable ? 'cognition.prototype_active_version' : 'cognition.library_saved_version', switchable ? '在用 v{n}' : '保存版本 v{n}', { n: String(asset.activeVersion || asset.version || T('cognition.activity_version_unknown', '版本未记录')) }))}</span></div></header>
         <div class="ca-library-detail-body">
-          ${topControl && statusKind !== 'deleted' ? topControl : ''}${recommendWarn}
+          ${topControl && statusKind !== 'deleted' ? topControl : ''}${recommendWarn}${!verifiedAsset ? `<p class="note" role="alert">${esc(T('cognition.library_invalid_readonly', '这条记录的类型或状态无法核对，未计入正式库；当前仅可查看原文与记录。'))}</p>` : ''}${S.assetsError ? `<p class="note" role="alert">${esc(T('cognition.library_stale_readonly', '当前显示上次读取的内容；请刷新核对后再修改。'))}</p>` : ''}
           <section class="ca-library-content"><h3>${esc(T('cognition.asset_content_section', '内容'))}</h3><p class="content-text ca-asset-body">${esc(asset.statement || T('cognition.asset_content_empty', '这条资产还没有正文。'))}</p></section>${prototypeBoundary}${typeHint}
           ${assetLibraryScopeSection(asset)}
-          ${switchable && !mutationReady ? `<p class="note">${esc(T('cognition.library_restart_hint', '当前后台版本较旧，重启 CogSeed 后可修改内容。'))}</p>` : ''}
-          ${relatedSection}
+          ${switchable && !mutationReady && !S.assetsError ? `<p class="note">${esc(T('cognition.library_restart_hint', '当前后台版本较旧，重启 CogSeed 后可修改内容。'))}</p>` : ''}
+          ${formationSection}${relatedSection}
           <div class="ca-library-deep-links">${btn(T('cognition.library_sources', '来源与证据'), 'library-show-sources', { id: asset.id })}${btn(T('cognition.library_versions', '版本与比较'), 'library-show-versions', { id: asset.id })}${btn(T('cognition.library_records', '使用与管理记录'), 'library-show-records', { id: asset.id })}</div>
           ${statusKind === 'deleted' ? `<p class="note" role="status">${esc(restoreHint)}</p>` : ''}
         </div>
         <footer class="ca-library-detail-footer">${leftActions ? `<div class="ca-library-footer-left">${leftActions}</div>` : ''}${rightActions ? `<div class="ca-library-footer-right">${rightActions}</div>` : ''}</footer>
-      </div>`;
+      ` });
     }
     return `<div class="ca-asset-page">
       ${btn(T('cognition.asset_back', '← 返回列表'), 'go-back', { className: 'backlink' })}
@@ -1853,18 +1886,20 @@
   }
   function libraryVersionDialog(asset, selectedVersion) {
     const state = S.assetVersions;
-    if (state?.failed) return `<p role="alert">${esc(T('cognition.asset_versions_failed', '版本记录暂不可用'))}</p>${btn(T('common.retry', '重试'), 'asset-versions-retry', { id: asset.id })}`;
+    if (!state || state.assetId !== asset.id || state.loading) return `<p role="status">${esc(T('common.loading', '加载中…'))}</p>`;
+    if (state.failed) return `<p role="alert">${esc(T('cognition.asset_versions_failed', '版本记录暂不可用'))}</p>${btn(T('common.retry', '重试'), 'asset-versions-retry', { id: asset.id })}`;
     const versions = state?.assetId === asset.id && Array.isArray(state.versions) ? state.versions : [];
     if (!versions.length) return `<p class="ca-prototype-notice">${esc(T('cognition.prototype_no_snapshots', '旧记录没有版本快照，无法补造历史版本。'))}</p>`;
     const active = String(asset.activeVersion || asset.version || '');
+    const available = (asset.type === 'cognition' || CATEGORIES.some(([type]) => type === asset.type)) && ['active', 'paused'].includes(asset.status);
     const selected = versions.find(item => String(item.version) === String(selectedVersion)) || versions.find(item => String(item.version) !== active) || versions[0];
     const snap = selected.snapshot || {};
     const snapshot = (title, body) => `<div><strong>${esc(title)}</strong><div class="ca-prototype-source-block">${esc(body.statement || T('cognition.activity_not_recorded', '未记录'))}</div>${body.applicableWhen?.length || body.forbiddenWhen?.length ? `<p>${esc(T('cognition.asset_version_applicable', '适用场景'))}：${esc((body.applicableWhen || []).join('；'))}<br>${esc(T('cognition.asset_version_forbidden', '禁用场景'))}：${esc((body.forbiddenWhen || []).join('；'))}</p>` : ''}<details><summary>${esc(T('cognition.prototype_snapshot_scope', '当时范围与来源'))}</summary>${assetLibraryScopeSection(body)}<p class="note">${esc(T('cognition.prototype_task_scope', '任务范围：{scope}', { scope: scopeLabelText(body.scope) }))}</p><p class="note">${esc(snapshotOriginText(body.learningSignal, body.learningProvenance))}</p>${evidenceGroupsHtml(body.evidenceRefs || [])}${kstarEpisodeSection(S.route)}</details></div>`;
     const current = versions.find(item => String(item.version) === active)?.snapshot || asset;
     const titleDiff = snap.title !== current.title ? T('cognition.prototype_title_diff', '标题：{before} → {after}', { before: snap.title || '', after: current.title || '' }) + '；' : '';
     const pickerLabel = T('cognition.prototype_choose_version', '选择历史版本');
-    const picker = window.uiSelect({ id: `ca-proto-version-${asset.id}`, native: true, ariaLabel: pickerLabel, value: String(selected.version), options: versions.map(item => ({ value: String(item.version), label: `v${item.version} · ${versionSourceLabel(item)}${String(item.version) === active ? '（' + T('cognition.prototype_in_use', '在用') + '）' : ''}` })), attrs: { 'data-prototype-version-select': 'true' } });
-    return `<label class="field"><span>${esc(pickerLabel)}</span>${picker}</label><div class="ca-prototype-pair">${snapshot(T('cognition.prototype_selected_version', '所选 v{n}', { n: selected.version }), snap)}${snapshot(T('cognition.prototype_current_version', '当前在用 v{n}', { n: active }), current)}</div><div class="ca-prototype-notice"><strong>${esc(T('cognition.prototype_diff_summary', '差异摘要'))}</strong><p>${esc(titleDiff)}${esc(String(snap.statement || '') === String(current.statement || '') ? T('cognition.asset_version_diff_same', '两版内容一致。') : T('cognition.prototype_diff_changed', '正文不同，请对照两侧内容核对；适用边界与来源跟随各自快照展示。'))}</p></div><div class="ca-prototype-notice">${esc(T('cognition.prototype_version_guarantee', '切换历史正文与边界时，当前范围与来源权限不会回退。已有对话引用和使用记录保留当时快照。'))}</div>`;
+    const picker = window.uiSelect({ id: `ca-proto-version-${asset.id}`, native: true, ariaLabel: pickerLabel, value: String(selected.version), options: versions.map(item => ({ value: String(item.version), label: `v${item.version} · ${versionSourceLabel(item)}${String(item.version) === active && available ? '（' + T('cognition.prototype_in_use', '在用') + '）' : ''}` })), attrs: { 'data-prototype-version-select': 'true' } });
+    return `<label class="field"><span>${esc(pickerLabel)}</span>${picker}</label><div class="ca-prototype-pair">${snapshot(T('cognition.prototype_selected_version', '所选 v{n}', { n: selected.version }), snap)}${snapshot(T(available ? 'cognition.prototype_current_version' : 'cognition.library_saved_version', available ? '当前在用 v{n}' : '保存版本 v{n}', { n: active }), current)}</div><div class="ca-prototype-notice"><strong>${esc(T('cognition.prototype_diff_summary', '差异摘要'))}</strong><p>${esc(titleDiff)}${esc(String(snap.statement || '') === String(current.statement || '') ? T('cognition.asset_version_diff_same', '两版内容一致。') : T('cognition.prototype_diff_changed', '正文不同，请对照两侧内容核对；适用边界与来源跟随各自快照展示。'))}</p></div><div class="ca-prototype-notice">${esc(T('cognition.prototype_version_guarantee', '切换历史正文与边界时，当前范围与来源权限不会回退。已有对话引用和使用记录保留当时快照。'))}</div>`;
   }
   NS.renderLibraryDialog = function renderLibraryDialog(kind, assetId, selectedVersion) {
     const asset = S.assets.find(item => String(item.id) === String(assetId));
@@ -1887,9 +1922,9 @@
     const versions = S.assetVersions?.assetId === asset.id ? S.assetVersions.versions || [] : [];
     const active = String(asset.activeVersion || asset.version || '');
     let selected = String((versions.find(item => String(item.version) !== active) || versions[0])?.version || '');
-    const mutable = ['active', 'paused'].includes(asset.status) && S.assetCapabilities?.versionedUpdate === true;
+    const mutable = !S.assetsError && (asset.type === 'cognition' || CATEGORIES.some(([type]) => type === asset.type)) && ['active', 'paused'].includes(asset.status) && S.assetCapabilities?.versionedUpdate === true;
     const dialog = window.uiModal({
-      title: titles[kind], description: kind === 'versions' ? asset.title + ' · ' + T('cognition.prototype_current_version', '当前在用 v{n}', { n: active }) : asset.title,
+      title: titles[kind], description: kind === 'versions' ? asset.title + ' · ' + T(['active', 'paused'].includes(asset.status) ? 'cognition.prototype_current_version' : 'cognition.library_saved_version', ['active', 'paused'].includes(asset.status) ? '当前在用 v{n}' : '保存版本 v{n}', { n: active }) : asset.title,
       size: kind === 'versions' || kind === 'merge' ? 'lg' : 'md', closeLabel: T('common.close', '关闭'),
       bodyHtml: NS.renderLibraryDialog(kind, asset.id, selected),
       actions: [{ id: 'close', label: T('common.close', '关闭') }, ...(kind === 'versions' && versions.length && mutable ? [{ id: 'use-version', label: T('cognition.prototype_switch_version', '切换为在用版本'), role: 'primary', disabled: selected === active }] : [])],
@@ -2064,71 +2099,6 @@
   function viewOntology() {
     return '<div id="ca-ontology-mount" class="ca-ontology-mount"></div>';
   }
-
-  /** 手动确认保存表单；主要内容在首屏，价值与条件按需补充，规则需真实边界。 */
-  function manualCandidateForm(options = {}) {
-    const manualDraft = options.compact ? S.libraryView?.manualDraft || {} : {};
-    const defaultType = manualDraft.type || 'personal';
-    const field = (label, inner) => `<label class="field"><span>${esc(label)}</span>${inner}</label>`;
-    const typeOptions = CATEGORIES.map(([id, key, fb]) => ({ value: id, label: T(key, fb) }));
-    const scopeOptions = [
-      { value: 'general', label: T('cognition.capture.scope_general', '跨任务通用') },
-      { value: 'report', label: T('cognition.capture.scope_report', '报告') },
-      { value: 'code', label: T('cognition.capture.scope_code', '编程') },
-      { value: 'review', label: T('cognition.capture.scope_review', '审查与评审') },
-      { value: 'product', label: T('cognition.capture.scope_product', '产品工作') },
-    ];
-    const manualScope = S.libraryView?.manualScope || {};
-    const directories = S.assetScopeOptions || {};
-    const directoryReady = directories.status === 'ready';
-    const manualScopeGroup = (key, label, available, idField) => {
-      const draft = manualScope[key] || {};
-      const mode = draft.mode === 'restrict' ? 'restrict' : 'keep';
-      const selected = new Set(Array.isArray(draft.ids) ? draft.ids.map(String) : []);
-      const objects = (Array.isArray(available) ? available : []).filter(item => item && typeof item[idField] === 'string' && item[idField])
-        .map(item => ({ id: String(item[idField]), label: String(item.name || item.displayName || item[idField]) }));
-      return `<div class="ca-manual-scope-group"><div class="field"><span>${esc(label)}</span>${window.uiSelect({ id: `ca-manual-scope-mode-${key}`, native: true, className: 'ui-control ca-review-select', ariaLabel: label, value: mode, disabled: !directoryReady, options: [
-        { value: 'keep', label: T('cognition.library_manual_scope_keep', '不添加额外限制') },
-        { value: 'restrict', label: T('cognition.library_manual_scope_restrict', '仅所选对象') },
-      ], attrs: { 'data-manual-scope-mode': key } })}</div>${window.uiSelect({ id: `ca-manual-multi-${key}`, native: true, multiple: true, size: 3, ariaLabel: label, value: [...selected], disabled: !directoryReady || mode !== 'restrict', options: objects.map(item => ({ value: item.id, label: item.label })), attrs: { 'data-manual-scope-kind': key } })}</div>`;
-    };
-    const manualScopeEditor = options.compact ? `<details class="details ca-manual-scope-editor"${Object.values(manualScope).some(draft => draft?.mode === 'restrict') ? ' open' : ''}>
-      <summary>${esc(T('cognition.library_manual_scope_title', '限定使用对象'))}</summary>
-      <p class="note">${esc(T('cognition.library_manual_scope_hint', '不添加限制不会指定个人工作空间。选择“仅所选对象”后，至少选一个；项目、用途和来源权限仍分别校验。'))}</p>
-      ${!directoryReady ? `<p class="note" role="status">${esc(T('cognition.library_manual_scope_unavailable', '对象目录尚未就绪；当前不能更改对象限制。'))}</p>${btn(T('cognition.asset_scope_retry', '重试读取'), 'asset-scope-options-retry', { small: true })}` : ''}
-      ${manualScopeGroup('agentIds', T('cognition.asset_scope_visible_agents', '可使用的智能体'), directories.agents, 'agent_id')}
-      ${manualScopeGroup('workspaceIds', T('cognition.asset_scope_visible_spaces', '可使用的工作空间'), directories.spaces, 'space_id')}
-    </details>` : '';
-    const ruleFields = `<div data-manual-rule-boundaries${defaultType === 'rule' ? '' : ' hidden'}>${field(T('cognition.manual_rule_applicable', '规则在什么情况下适用（每行一个条件）'), window.uiTextarea({ id: 'ca-manual-applicable', value: manualDraft.applicable || '', attrs: { 'data-f': 'applicable' } }))}${field(T('cognition.manual_rule_forbidden', '规则在什么情况下不适用（每行一个条件）'), window.uiTextarea({ id: 'ca-manual-forbidden', value: manualDraft.forbidden || '', attrs: { 'data-f': 'forbidden' } }))}</div>`;
-    if (options.compact) {
-      const content = `${field(T('cognition.activity_type_label', '认知类型'), window.uiSelect({ id: 'ca-manual-type', native: true, ariaLabel: T('cognition.activity_type_label', '认知类型'), value: defaultType, options: typeOptions, attrs: { 'data-f': 'type' } }))}
-        ${field(T('cognition.prototype_title_required', '标题 *'), window.uiInput({ id: 'ca-manual-summary', value: manualDraft.summary || '', attrs: { maxlength: 80, 'data-f': 'summary' } }))}
-        ${field(T('cognition.prototype_content_required', '内容 *'), window.uiTextarea({ id: 'ca-manual-judgment', value: manualDraft.judgment || '', attrs: { rows: 9, 'data-f': 'judgment', maxlength: 4000 } }))}
-        ${ruleFields}${manualScopeEditor}${window.uiInput({ id: 'ca-manual-scope', type: 'hidden', value: 'general', attrs: { 'data-f': 'scope' } })}<span class="note" data-library-dirty-marker${S.libraryView?.dirty ? '' : ' hidden'}>${esc(T('cognition.prototype_unsaved_marker', '有未保存修改'))}</span>`;
-      return `<div class="ca-library-asset-detail ca-candidate-detail ca-manual-candidate" data-cand-type="${esc(defaultType)}" data-manual-candidate><header class="ca-library-detail-head"><div class="ca-library-detail-title"><h2>${esc(T('cognition.prototype_manual_title', '手动添加认知'))}</h2>${btn(T('common.cancel', '取消'), 'cand-create-cancel', { small: true })}</div><p class="note">${esc(T('cognition.prototype_manual_hint', '可能直接保存，也可能进入系统活动等待确认。'))}</p></header><div class="ca-library-detail-body">${content}</div><footer class="ca-library-detail-footer">${btn(T('cognition.prototype_manual_save', '保存并确认结果'), 'cand-create-save', { primary: true })}${btn(T('common.cancel', '取消'), 'cand-create-cancel')}</footer></div>`;
-    }
-    const content = `
-      <p class="note">${esc(T('cognition.cand_create_hint', '填写要长期保存的内容；点击确认保存后可直接打开详情。重复内容或不完整的保存条件会留在待我处理。'))}</p>
-      ${field(T('cognition.type', '类型'), options.compact ? window.uiSelect({ id: 'ca-manual-type', native: true, className: 'ui-control ca-review-select', ariaLabel: T('cognition.type', '类型'), value: defaultType, options: typeOptions, attrs: { 'data-f': 'type' } }) : `<div class="chips">${CATEGORIES.map(([id, key, fb]) => { const on = id === defaultType; return `<span class="ca-chip ca-chip-opt${on ? ' is-green' : ''}" data-act="cand-type" data-id="${esc(id)}" ${roleBtn(`aria-pressed="${on ? 'true' : 'false'}"`)}>${esc(T(key, fb))}</span>`; }).join('')}</div>`)}
-      ${field(T('cognition.capture.name', '认知名称'), window.uiInput({ id: 'ca-manual-summary', value: manualDraft.summary || '', attrs: { maxlength: 60, 'data-f': 'summary', placeholder: T('cognition.cand_create_title_placeholder', '一句话标题，建议 16 字以内') } }))}
-      ${field(T('cognition.capture.summary', '可复用内容'), window.uiTextarea({ id: 'ca-manual-judgment', value: manualDraft.judgment || '', attrs: { 'data-f': 'judgment' } }))}
-      ${options.compact ? ruleFields : ''}
-      <details class="details">
-        <summary>${esc(T('cognition.candidate_advanced', '高级选项（通常不用改）'))}</summary>
-        ${field(T('cognition.chain_value_label', '带来的价值'), window.uiTextarea({ id: 'ca-manual-value', value: '', attrs: { 'data-f': 'value' } }))}
-        ${field(T('cognition.candidate_scope_domain', '适用任务范围'), options.compact ? window.uiSelect({ id: 'ca-manual-scope', native: true, className: 'ui-control ca-review-select', ariaLabel: T('cognition.candidate_scope_domain', '适用任务范围'), value: 'general', options: scopeOptions, attrs: { 'data-f': 'scope' } }) : window.uiInput({ id: 'ca-manual-scope', value: '', placeholder: T('cognition.candidate_scope_placeholder', '例如：仅产品工作空间'), attrs: { 'data-f': 'scope' } }))}
-        ${options.compact ? `<div class="note">${esc(T('cognition.library_scope_hint', '启用后仍按任务匹配、使用范围和来源权限判断是否使用。'))}</div>` : `<div class="note">${esc(T('cognition.candidate_scope_hint', '常用范围：跨对话通用（general）、报告（report）、编程（code）、审查（review）、产品（product）。其他写法可能匹配不上任务，建议从这里选一个。'))}</div>${ruleFields}`}
-        ${manualScopeEditor}
-        ${field(T('cognition.chain_uncertainty_label', '仍不确定的地方'), window.uiTextarea({ id: 'ca-manual-uncertainty', value: '', attrs: { 'data-f': 'uncertainty' } }))}
-      </details>`;
-    const actions = `
-        ${btn(T('common.cancel', '取消'), 'cand-create-cancel', { small: true })}
-        ${btn(T('cognition.cand_create_save', '确认保存'), 'cand-create-save', { small: true, primary: true })}`;
-    return `<div class="${options.compact ? 'ca-library-asset-detail' : 'card'} ca-candidate-detail ca-manual-candidate" data-cand-type="${esc(defaultType)}" data-manual-candidate>
-      ${options.compact ? `<header class="ca-library-detail-head"><div class="ca-library-detail-title"><h2>${esc(T('cognition.cand_create_entry', '手动添加'))}</h2>${btn(T('common.close', '关闭'), 'cand-create-cancel', { small: true })}</div></header><div class="ca-library-detail-body">${content}</div><footer class="ca-library-detail-footer">${actions}</footer>` : `<div class="tt">${esc(T('cognition.cand_create_entry', '手动添加'))}</div>${content}<div class="actions actions-right">${actions}</div>`}
-    </div>`;
-  }
-  NS.renderLibraryManualForm = () => manualCandidateForm({ compact: true });
 
   function ontologyDirectorySection(activity = false) {
     const doc = S.ontologySnapshot;
@@ -2614,268 +2584,6 @@
     return `<div class="sect-block ca-improvement-empty">${sectionHead(title)}${body}</div>`;
   }
 
-  function migrationCheckboxAriaLabel(label, text, contentHash) {
-    const excerpt = String(text || '').replace(/\s+/g, ' ').trim();
-    const summary = excerpt.length > 120 ? `${excerpt.slice(0, 120).trimEnd()}…` : excerpt;
-    const shortHash = String(contentHash || '').slice(0, 8);
-    return [label, summary, shortHash].filter(Boolean).join('：');
-  }
-
-  /** 旧记忆核对是一次性兼容入口（2026-09-28 两页重整自「待我处理」页尾挪入
-   *  设置页，与「大扫除」「巡检」同层工具卡）；默认折叠，不盖过日常事项。 */
-  function legacyMemoryMigrationSection() {
-    const state = S.legacyMemoryMigration;
-    const preview = state && state.preview;
-    const items = preview && Array.isArray(preview.items) ? preview.items : [];
-    const selected = new Set(state && state.selectionKeys || []);
-    const userSource = preview && preview.sources && preview.sources.user || {};
-    const sharedSource = preview && preview.sources && preview.sources.shared || {};
-    const selectedCount = items
-      .filter((item) => selected.has(`${item.scope}:${item.contentHash}`))
-      .reduce((total, item) => total + Math.max(1, Number(item.occurrences) || 1), 0);
-    const retainedTemplates = Number(userSource.retainedTemplateRecords || 0) + Number(sharedSource.retainedTemplateRecords || 0);
-    const retainedAssets = Number(userSource.retainedAssetRecords || 0) + Number(sharedSource.retainedAssetRecords || 0);
-    const retainedNonIndependent = Number(userSource.retainedNonIndependentRecords || 0) + Number(sharedSource.retainedNonIndependentRecords || 0);
-    const sourceLabel = (scope) => T(scope === 'user' ? 'memory.legacy_migration_user_source' : 'memory.legacy_migration_shared_source', scope === 'user' ? '个人记忆 · USER.md' : '共享记忆 · MEMORY.md');
-    const sourceWarning = (scope, source) => {
-      if (!['blocked', 'unavailable'].includes(String(source.status || ''))) return '';
-      const key = source.status === 'blocked'
-        ? 'memory.legacy_migration_source_blocked'
-        : 'memory.legacy_migration_source_unavailable';
-      const fallback = source.status === 'blocked'
-        ? '{source} 的来源标记损坏或内容与记录不符。为避免误迁移，整份文件暂不处理，原文保留。'
-        : '目前读不了 {source}。没有执行迁移。';
-      return `<p class="note">${esc(T(key, fallback, { source: sourceLabel(scope) }))}</p>`;
-    };
-    const report = state && state.lastRun;
-    const reportHtml = report ? `<div class="sect-block" role="status">
-      <p class="note">${esc(T('memory.legacy_migration_result', '处理完成：迁入 {migrated} 条，待审核 {pending} 条，失败 {failed} 条；有 {changed} 份源文件发生变化，{stale} 项选择已失效。', {
-        migrated: String(Number(report.migrated || 0)), pending: String(Number(report.pendingReview || 0)),
-        failed: String(Number(report.failed || 0)), changed: String(Number(report.sourceChangedFiles || 0)),
-        stale: String(Number(report.staleSelections || 0)),
-      }))}</p>
-      ${report.backupFailed ? `<p class="note">${esc(T('memory.legacy_migration_backup_failed', '原文备份未能核验，源文件未清理。请保留原文并稍后重试。'))}</p>` : ''}
-      ${Number(report.cleanupFailedFiles || 0) ? `<p class="note">${esc(T('memory.legacy_migration_cleanup_failed', '内容已写入认知资产，但旧文件未能更新；原文仍保留，请重新检查。', { n: String(Number(report.cleanupFailedFiles)) }))}</p>` : ''}
-    </div>` : '';
-
-    // 2026-09-29 子安「看不懂」整改：说明大段撤下（合并区顶部已有一句人话）；
-    // 条目全文折叠三行（悬浮看全文）。
-    let body = '';
-    if (!state || state.loading) {
-      body += `<p class="note">${esc(T('memory.legacy_migration_loading', '正在检查两份旧记忆文件…'))}</p>`;
-    } else if (state.failed || !preview) {
-      body += `<p class="note">${esc(T('memory.legacy_migration_load_failed', '暂时无法检查旧记忆；没有执行迁移，原文仍保留。'))}</p>
-        ${btn(T('memory.legacy_migration_refresh', '重新检查'), 'legacy-memory-refresh', { small: true, className: 'o' })}`;
-    } else {
-      body += sourceWarning('user', userSource) + sourceWarning('shared', sharedSource);
-      if (reportHtml) body += reportHtml;
-      if (items.length) {
-        // 保留类说明只在非零时念（2026-09-29：满屏 0 条是噪音）。
-        const retainedBits = [
-          [retainedTemplates, T('memory.migration_retained_templates', '由角色模板管理')],
-          [retainedAssets, T('memory.migration_retained_assets', '已关联认知资产')],
-          [retainedNonIndependent, T('memory.migration_retained_orphan', '来源关系不完整')],
-        ].filter(([count]) => Number(count) > 0);
-        if (retainedBits.length) {
-          body += `<p class="note">${esc(T('memory.migration_retained_note', '另有 {n} 条不会由此迁移：{reasons}。', {
-            n: String(retainedBits.reduce((total, [count]) => total + Number(count), 0)),
-            reasons: retainedBits.map(([count, label]) => `${label} ${Number(count)} 条`).join('、'),
-          }))}</p>`;
-        }
-        body += items.map((item) => {
-          const scope = item.scope === 'shared' ? 'shared' : 'user';
-          const hash = String(item.contentHash || '');
-          const key = `${scope}:${hash}`;
-          const checkboxId = `ca-legacy-memory-${scope}-${hash}`;
-          const selectionLabel = T('memory.legacy_migration_select', '选择来自 {source} 的这条记忆', { source: sourceLabel(scope) });
-          return `<div class="sect-block">
-            <div class="rowline">
-              ${window.uiCheckbox({
-                id: checkboxId,
-                label: migrationCheckboxAriaLabel(selectionLabel, item.text, hash),
-                checked: selected.has(key),
-                disabled: Boolean(state.running),
-                attrs: { 'data-act': 'legacy-memory-toggle', 'data-scope': scope, 'data-hash': hash },
-              })}
-              <label for="${esc(checkboxId)}" class="note">${esc(selectionLabel)}</label>
-              ${chip(sourceLabel(scope), 'line')}
-              ${Number(item.occurrences || 1) > 1 ? `<span class="note">${esc(T('memory.legacy_migration_duplicates', '相同内容 {n} 条', { n: String(Number(item.occurrences)) }))}</span>` : ''}
-            </div>
-            <div class="content-text ca-mig-text" title="${esc(String(item.text || ''))}">${esc(String(item.text || ''))}</div>
-          </div>`;
-        }).join('');
-        body += `<div class="actions">
-          ${btn(T('memory.legacy_migration_refresh', '重新检查'), 'legacy-memory-refresh', { small: true, className: 'o', disabled: Boolean(state.running) })}
-          ${btn(state.running
-    ? T('memory.legacy_migration_running', '正在迁入已选记忆…')
-    : T('memory.legacy_migration_run', '迁入已选 {n} 条', { n: String(selectedCount) }), 'legacy-memory-run', {
-            small: true, primary: true, disabled: selectedCount === 0 || Boolean(state.running),
-          })}
-        </div>`;
-      } else {
-        const sourceNeedsReview = ['blocked', 'unavailable'].includes(String(userSource.status || ''))
-          || ['blocked', 'unavailable'].includes(String(sharedSource.status || ''));
-        if (!sourceNeedsReview) {
-          body += `<p class="note">${esc(T('memory.legacy_migration_empty', '没有可迁移的未归属条目。角色模板管理的 {templates} 条、已关联认知资产的 {assets} 条和来源关系不完整的 {orphan} 条记录会继续留在原处。', {
-            templates: String(retainedTemplates), assets: String(retainedAssets), orphan: String(retainedNonIndependent),
-          }))}</p>`;
-        }
-        body += btn(T('memory.legacy_migration_refresh', '重新检查'), 'legacy-memory-refresh', { small: true, className: 'o' });
-      }
-    }
-    // 2026-09-29 子安拍板（两迁移区合并+没活自动隐藏）：返回内层 body 与
-    // 状态，由设置页组装进单个「旧记忆迁移」折叠区；pending=真正待迁条数
-    //（保留类残留不计入角标）；hasReport=有上次结果要展示。
-    return {
-      body,
-      pending: items.length,
-      hasReport: Boolean(state && state.lastRun),
-      loaded: Boolean(state && !state.loading && preview),
-    };
-  }
-
-  /** Agent / Space / Project 历史记忆迁移入口。逐项展示原范围；项目旧文件
-   *  若正作为 Space 回退来源或已被 Space 文件遮蔽，必须在用户选择前说明。 */
-  function legacyScopedMemoryMigrationSection() {
-    const state = S.legacyScopedMemoryMigration;
-    const preview = state && state.preview;
-    const sources = preview && Array.isArray(preview.sources) ? preview.sources : [];
-    const items = preview && Array.isArray(preview.items) ? preview.items : [];
-    const selected = new Set(state && state.selectionKeys || []);
-    const selectedRows = items.filter((item) => selected.has(`${item.kind}:${item.id}:${item.contentHash}`));
-    const selectedCount = selectedRows.reduce((total, item) => total + Math.max(1, Number(item.occurrences) || 1), 0);
-    const sourceByKey = new Map(sources.map((source) => [String(source.sourceKey || ''), source]));
-    const kindLabel = (kind) => T(`memory.scoped_migration_kind_${kind}`, ({
-      agent: 'Agent', space: '工作空间', project: 'Project',
-    })[kind] || String(kind || ''));
-    const locationLabel = (sourceKey) => String(sourceKey || '').endsWith(':legacy')
-      ? T('memory.scoped_migration_source_legacy', '历史位置')
-      : T('memory.scoped_migration_source_canonical', '当前位置');
-    const sourceLabel = (source) => `${kindLabel(source.kind)} · ${String(source.label || source.id || '')} · ${locationLabel(source.sourceKey)}`;
-    const statusLabel = (status) => T(`memory.scoped_migration_status_${status}`, ({
-      ready: '有可迁入条目', empty: '没有可迁入条目', blocked: '元数据异常，已保留', unavailable: '无法读取，已保留',
-    })[status] || '状态未知');
-    const sourceCard = (source) => {
-      const visibility = source.runtimeVisibility === 'project_fallback'
-        ? T('memory.scoped_migration_project_fallback', '当前正作为工作空间记忆的回退来源；迁入后资产仍限于这个项目。')
-        : source.runtimeVisibility === 'shadowed'
-          ? T('memory.scoped_migration_project_shadowed', '对应工作空间记忆文件已存在，这份旧项目记忆当前不会被运行时读取。')
-          : source.runtimeVisibility === 'legacy_only'
-            ? T('memory.scoped_migration_project_legacy_only', '没有关联工作空间；迁入后资产只限于这个项目。')
-            : '';
-      const retained = Number(source.retainedTemplateRecords || 0)
-        + Number(source.retainedAssetRecords || 0)
-        + Number(source.retainedNonIndependentRecords || 0)
-        + Number(source.retainedOversizedRecords || 0);
-      // 计数行只念有信息量的（2026-09-29：满屏 0 条是噪音）；retained 非零才补一句。
-      const recordsLine = Number(source.eligibleRecords || 0) > 0
-        ? T('memory.scoped_migration_source_counts_short', '可迁入 {records} 条。', { records: String(Number(source.eligibleRecords)) })
-        : T('memory.scoped_migration_source_counts_none', '没有可直接迁入的条目。');
-      return `<div class="sect-block">
-        <div class="rowline">${chip(kindLabel(source.kind), 'line')}<strong>${esc(sourceLabel(source))}</strong>${chip(statusLabel(source.status), source.status === 'ready' ? 'green' : source.status === 'blocked' || source.status === 'unavailable' ? 'amber' : 'line')}</div>
-        <p class="note">${esc(recordsLine)}${retained > 0 ? esc(T('memory.scoped_migration_source_retained', '另有 {n} 条特殊记录继续保留。', { n: String(retained) })) : ''}</p>
-        ${visibility ? `<p class="note">${esc(visibility)}</p>` : ''}
-        ${source.status === 'blocked' ? `<p class="note">${esc(T('memory.scoped_migration_blocked', '来源标记异常或正文校验失败；为防止归属错误，整份文件都不会迁移。'))}</p>` : ''}
-        ${source.status === 'unavailable' ? `<p class="note">${esc(T('memory.scoped_migration_unavailable', '当前无法读取此文件；没有执行迁移，源内容仍保留。'))}</p>` : ''}
-      </div>`;
-    };
-    const policyText = (item) => {
-      const policy = item.scopePolicy && typeof item.scopePolicy === 'object' ? item.scopePolicy : {};
-      const dimensions = [
-        ['agentIds', 'agent', 'memory.scoped_migration_policy_agent'],
-        ['workspaceIds', 'space', 'memory.scoped_migration_policy_space'],
-        ['projectIds', 'project', 'memory.scoped_migration_policy_project'],
-      ];
-      const lines = dimensions.flatMap(([field, kind, key]) => {
-        if (!Object.prototype.hasOwnProperty.call(policy, field)) return [];
-        const ids = Array.isArray(policy[field]) ? policy[field].map(String) : [];
-        const names = ids.map((id) => {
-          const found = sources.find((source) => source.kind === kind && String(source.id) === id);
-          return found ? String(found.label || id) : id;
-        });
-        return [`${T(key, ({ agent: '仅限 Agent', space: '仅限工作空间', project: '仅限 Project' })[kind])}：${names.length ? names.join('、') : T('memory.scoped_migration_policy_none', '不允许任何对象')}`];
-      });
-      return lines.length ? lines.join('；') : T('memory.scoped_migration_policy_unrestricted', '未声明额外对象范围');
-    };
-
-    // 2026-09-29 子安「看不懂」整改：说明段撤下（合并区顶部已有一句）。
-    let body = '';
-    if (!state || state.loading) {
-      body += `<p class="note">${esc(T('memory.scoped_migration_loading', '正在扫描旧记忆来源…'))}</p>`;
-    } else if (state.failed || !preview) {
-      body += `<p class="note">${esc(T('memory.scoped_migration_load_failed', '暂时无法读取旧记忆清单；没有执行迁移，源文件仍保留。'))}</p>
-        ${btn(T('memory.scoped_migration_refresh', '重新扫描'), 'legacy-scoped-memory-refresh', { small: true, className: 'o' })}`;
-    } else {
-      if (state.runFailed) body += `<p class="note">${esc(T('memory.scoped_migration_failed', '迁移没有完成；旧文件仍保留，请重新扫描后重试。'))}</p>`;
-      if (state.lastRun) {
-        const report = state.lastRun;
-        const pendingCandidateIds = Array.isArray(report.pendingCandidateIds)
-          ? [...new Set(report.pendingCandidateIds.map(String).filter(Boolean))]
-          : [];
-        body += `<div class="sect-block" role="status">
-          <p class="note">${esc(T('memory.scoped_migration_result', '上次结果：迁入 {migrated} 条，待审核 {pending} 条，失败 {failed} 条；变化来源 {changed} 份，失效选择 {stale} 项，未清理 {cleanup} 份，损坏 {corrupt} 份，读取失败 {readFailed} 份。', {
-            migrated: String(Number(report.migrated || 0)), pending: String(Number(report.pendingReview || 0)), failed: String(Number(report.failed || 0)),
-            changed: String(Number(report.sourceChangedFiles || 0)), stale: String(Number(report.staleSelections || 0)),
-            cleanup: String(Number(report.cleanupFailedFiles || 0)), corrupt: String(Number(report.corruptFiles || 0)), readFailed: String(Number(report.readFailedFiles || 0)),
-          }))}</p>
-          ${pendingCandidateIds.length ? `<p class="note">${esc(T('memory.scoped_migration_pending_followup', '待审核条目仍保留在旧记忆文件中。若候选还未处理，请先打开并修改或确认；然后（或候选已确认时）回到此处重新扫描、勾选对应条目并再次迁移。只有正式资产保存成功后才会清理旧记录。'))}</p>
-            <div class="actions">${pendingCandidateIds.map((candidateId) => btn(T('memory.scoped_migration_open_candidate', '查看候选'), 'open-candidate', { id: candidateId, small: true, className: 'o' })).join('')}</div>` : ''}
-          ${report.backupFailed ? `<p class="note">${esc(T('memory.scoped_migration_backup_failed', '原文备份未能完整核验，源文件没有清理。'))}</p>` : ''}
-          ${report.backupDir ? `<p class="note">${esc(T('memory.scoped_migration_backup_location', '原文备份目录：'))}<code>${esc(String(report.backupDir))}</code></p>` : ''}
-        </div>`;
-      }
-      if (sources.length) {
-        body += `<div class="ca-migration-sources">${sources.map(sourceCard).join('')}</div>`;
-      } else {
-        body += `<p class="note">${esc(T('memory.scoped_migration_no_sources', '没有找到 Agent、工作空间或旧项目记忆文件。'))}</p>`;
-      }
-      if (items.length) {
-        // 超长记录非零才念（2026-09-29）；「边界/组」术语换人话。
-        const oversized = sources.reduce((count, source) => count + Number(source.retainedOversizedRecords || 0), 0);
-        body += `<p class="note">${esc(T('memory.scoped_migration_selection_hint_short', '同一条记忆在多个地方出现的会合并成一组，勾一次一起搬。'))}${oversized > 0 ? esc(T('memory.scoped_migration_oversized_note', '另有 {n} 条超长记录不会由此迁移。', { n: String(oversized) })) : ''}</p>`;
-        body += items.map((item) => {
-          const key = `${item.kind}:${item.id}:${item.contentHash}`;
-          const checkboxId = `ca-scoped-memory-${item.kind}-${item.id}-${item.contentHash}`;
-          const refs = (Array.isArray(item.sourceKeys) ? item.sourceKeys : []).map((sourceKey) => sourceByKey.get(String(sourceKey))).filter(Boolean);
-          const selectionLabel = T('memory.scoped_migration_select', '迁入这条 {kind} 记忆', { kind: kindLabel(item.kind) });
-          return `<div class="sect-block ca-scoped-memory-item">
-            <div class="rowline">
-              ${window.uiCheckbox({
-                id: checkboxId,
-                label: migrationCheckboxAriaLabel(selectionLabel, item.text, item.contentHash),
-                checked: selected.has(key),
-                disabled: Boolean(state.running),
-                attrs: { 'data-act': 'legacy-scoped-memory-toggle', 'data-scope-kind': item.kind, 'data-scope-id': item.id, 'data-hash': item.contentHash },
-              })}
-              <label for="${esc(checkboxId)}" class="note">${esc(selectionLabel)}</label>
-              ${refs.map((source) => chip(sourceLabel(source), 'line')).join('')}
-            </div>
-            <p class="note">${esc(policyText(item))}</p>
-            <div class="content-text ca-mig-text" title="${esc(String(item.text || ''))}">${esc(String(item.text || ''))}</div>
-          </div>`;
-        }).join('');
-        body += `<div class="actions">
-          ${btn(T('memory.scoped_migration_refresh', '重新扫描'), 'legacy-scoped-memory-refresh', { small: true, className: 'o', disabled: Boolean(state.running) })}
-          ${btn(state.running
-    ? T('memory.scoped_migration_running', '正在迁入所选记忆…')
-    : T('memory.scoped_migration_run', '迁入所选 {n} 条', { n: String(selectedCount) }), 'legacy-scoped-memory-run', {
-            small: true, primary: true, disabled: selectedCount === 0 || Boolean(state.running),
-          })}
-        </div>`;
-      } else {
-        body += `<p class="note">${esc(T('memory.scoped_migration_empty', '当前没有可直接迁入的条目。异常来源、已关联记录、来源不完整或超长内容都会继续留在原文件。'))}</p>
-          ${btn(T('memory.scoped_migration_refresh', '重新扫描'), 'legacy-scoped-memory-refresh', { small: true, className: 'o', disabled: Boolean(state.running) })}`;
-      }
-    }
-    // 同上（2026-09-29 两迁移区合并）：返回内层 body 与状态。
-    return {
-      body,
-      pending: items.length,
-      hasReport: Boolean(state && state.lastRun),
-      loaded: Boolean(state && !state.loading && preview),
-    };
-  }
-
   /* ────────────────────────── 使用记录零件（2026-09-15 自独立页迁入资产详情） ────────────────────────── */
 
   const PROOF_FEEDBACKS = [
@@ -2933,39 +2641,10 @@
     && (String(report.trigger || '') === 'title_regen'
       || (Array.isArray(report.items) && report.items.some((item) => String(item.kind || '') === 'title_regen')));
 
-  /** 资产设置中的手动整理入口；报告页继续复用既有 viewCleanup 路由。 */
-  function cognitionStorageUpgradeSection() {
-    const state = S.cognitionStorageUpgrade || {};
-    const report = state.report;
-    const running = Boolean(state.running);
-    const unified = report && report.mode === 'unified';
-    const checked = Boolean(report && !state.failed && !report.errors?.length);
-    const issue = Boolean(state.failed || report?.errors?.length || report?.projectionPending);
-    const summary = running ? T('cognition.storage_upgrade_running', '正在核对和处理，请稍候…')
-      : report?.projectionPending ? T('cognition.settings_storage_pending', '兼容副本待恢复')
-        : issue ? T('cognition.settings_storage_issue', '需要核对')
-          : unified ? T('cognition.settings_storage_ready', '统一存储 · 正常')
-            : T('cognition.settings_storage_optional', '兼容存储 · 可选升级');
-    const body = `<p class="note">${esc(T('cognition.storage_upgrade_hint', '升级认知数据存储，保留资产正文、版本引用、候选和个人本体。升级前自动备份，升级后可恢复兼容存储。'))}</p>
-      ${running ? `<p role="status">${esc(T('cognition.storage_upgrade_running', '正在核对和处理，请稍候…'))}</p>` : ''}
-      ${report ? `<p role="status">${esc(T(unified ? 'cognition.storage_mode_unified' : 'cognition.storage_mode_compatible', unified ? '当前使用统一存储。' : '当前使用兼容存储。'))}</p>` : ''}
-      ${report && report.assets && report.candidates && report.poValues ? `<p>${esc(T('cognition.storage_upgrade_counts', '已核对：资产 {assets} 条、候选 {candidates} 条、本体值 {values} 条。', { assets: String(report.assets.total), candidates: String(report.candidates.recallMigrated + report.candidates.poMigrated), values: String(report.poValues.total) }))}</p>` : ''}
-      ${state.failed || report?.errors?.length ? `<p role="alert">${esc(state.action === 'check' || !state.action ? T('cognition.settings_storage_check_failed', '数据检查未完成，请重试。当前存储方式未改变。') : T('cognition.storage_upgrade_failed', '数据维护未完成，请保留现有数据并重试。'))}</p>` : ''}
-      ${report && report.projectionPending ? `<p role="status">${esc(T('cognition.storage_projection_pending', '统一存储已生效，兼容副本仍待恢复。'))}</p>` : ''}
-      <div class="actions">${btn(T('cognition.storage_upgrade_check', '检查认知数据'), 'storage-check', { disabled: running })}
-      ${!unified ? btn(T('cognition.storage_upgrade_activate', '升级存储'), 'storage-activate', { disabled: running || !checked }) : ''}
-      ${report && report.projectionPending ? btn(T('cognition.storage_upgrade_recover', '恢复兼容副本'), 'storage-recover', { disabled: running }) : ''}
-      ${unified ? btn(T('cognition.storage_upgrade_rollback', '恢复兼容存储'), 'storage-rollback', { disabled: running }) : ''}</div>`;
-    return window.uiAccordion({ className: 'ca-settings-maintenance-item', attrs: { 'data-settings-disclosure': 'storage' }, defaultOpen: [], items: [{ title: T('cognition.settings_storage_title', '认知数据维护'), meta: summary, bodyHtml: body }] });
-  }
-
   function viewOrganizeSettingsPage() {
     const settings = S.captureSettings || {};
     const stateUnknown = Boolean(S.captureModelError) || !S.captureSettings;
-    const nightlyOn = settings.enabled !== false && String(settings.executionPolicy || 'manual') === 'nightly';
-    const autoOn = settings.autoApproval === true;
-    const autoUnsupported = !stateUnknown && !NS.assetSettings.supportsAutoApproval();
-    const modelStatus = NS.assetSettings.modelStatus(S.captureModel, S.captureModelError);
+    const nightlyOn = settings.enabled !== false;
     const discovery = NS.assetSettings.discoveryStatus(S.captureStats, S.captureStatsError);
     const discoveryLabels = {
       unknown: T('cognition.settings_discovery_unknown', '状态暂时无法读取'),
@@ -2975,91 +2654,40 @@
       completed: T('cognition.settings_discovery_completed', '最近扫描已完成'),
     };
     const discoveryNote = ['completed', 'failed'].includes(discovery.state)
-      ? [T('cognition.settings_discovery_counts', '检查 {scanned} 场对话 · 新增排队 {queued} 场。', { scanned: String(discovery.scanned), queued: String(discovery.queued) }),
+      ? [T('cognition.settings_discovery_counts', '检查 {day} 的 {scanned} 场对话 · 初筛保留 {queued} 场继续价值判断。', { day: discovery.reviewDay || T('cognition.settings_discovery_previous_day', '前一完整日'), scanned: String(discovery.scanned), queued: String(discovery.queued) }),
         discovery.deferred ? T('cognition.settings_discovery_deferred', '延后 {count} 场。', { count: String(discovery.deferred) }) : '',
         discovery.failed ? T('cognition.settings_discovery_errors', '失败 {count} 场。', { count: String(discovery.failed) }) : '',
-        discovery.state === 'failed' ? T('cognition.settings_discovery_incomplete', '本轮扫描未全部完成，请在系统活动中核对记录。') : '',
+        discovery.state === 'failed' ? T('cognition.settings_nightly_failure_review_hint', '本轮扫描未全部完成，后台会记录原因；完整建议按确认规则处理。') : '',
       ].filter(Boolean).join(' ')
       : discovery.state === 'unknown'
-        ? T('cognition.settings_discovery_read_failed', '暂时无法核实最近发现结果，请刷新重试。')
+        ? T('cognition.settings_discovery_read_failed', '暂时无法核实最近发现结果。')
         : discovery.state === 'running'
-          ? T('cognition.settings_discovery_in_progress', '正在检查新增或更新的对话，结果以系统活动中的实际记录为准。')
-          : T('cognition.settings_discovery_waiting', '首次开启后从当前基线增量检查，尚无已完成的夜间扫描记录。');
-    const modelCopy = modelStatus === 'unknown'
-      ? T('cognition.settings_channel_unknown', '暂时无法读取模型运行状态，请重试；这不代表模型未配置。')
-      : modelStatus === 'authorization'
-        ? T('cognition.settings_channel_authorization', '模型通道授权未完成，发现任务暂时无法使用模型，请在应用设置中完成授权。')
-      : modelStatus === 'unavailable'
-        ? T('cognition.settings_channel_unavailable', '当前 API 与 CLI 回退均不可用，需要模型的发现任务将等待可用通道。')
-        : '';
-    const cleanupReports = S.cleanupReports && Array.isArray(S.cleanupReports.reports) ? S.cleanupReports.reports : [];
-    const cleanupLatest = cleanupReports[0];
-    const legacy = legacyMemoryMigrationSection();
-    const scoped = legacyScopedMemoryMigrationSection();
-    const pending = legacy.pending + scoped.pending;
-    const legacySources = S.legacyMemoryMigration && S.legacyMemoryMigration.preview && S.legacyMemoryMigration.preview.sources;
-    const scopedSources = S.legacyScopedMemoryMigration && S.legacyScopedMemoryMigration.preview && S.legacyScopedMemoryMigration.preview.sources;
-    const sourceProblem = (source) => source && ['blocked', 'unavailable'].includes(String(source.status || ''));
-    const legacyReadFailed = Boolean(S.legacyMemoryMigration?.failed || S.legacyScopedMemoryMigration?.failed);
-    const legacyProblem = legacyReadFailed || legacySources && Object.values(legacySources).some(sourceProblem)
-      || Array.isArray(scopedSources) && scopedSources.some(sourceProblem);
-    const legacySummary = legacyReadFailed ? T('cognition.settings_legacy_check_failed', '检查未完成')
-      : legacyProblem ? T('cognition.settings_legacy_source_issue', '来源需核对')
-        : T('cognition.settings_legacy_pending', '{count} 条待迁移', { count: String(pending) });
-    const legacyVisible = pending > 0 || Boolean(legacyProblem);
-    const storageState = S.cognitionStorageUpgrade || {};
-    const storageReport = storageState.report;
-    const storageProblem = Boolean(storageState.failed || storageReport?.projectionPending || storageReport?.errors?.length);
-    const storageVisible = Boolean(storageState.running || storageProblem);
+          ? T('cognition.settings_discovery_in_progress', '正在检查前一完整日的新会话与新增消息，完整建议经价值判断和提取后进入需要关注。')
+          : T('cognition.settings_discovery_waiting', '尚无夜间运行记录。到夜间检查前一完整日的新会话与新增消息，不会白天补扫。');
     const switchHtml = (label, checked, act, disabled) => window.uiSwitch({ label, checked, disabled, attrs: { 'data-act': act } });
     return `<section class="ca-settings-page">${hero(
       T('cognition.organize_settings_title', '资产设置'),
-      T('cognition.settings_page_hint', '决定何时发现建议，以及哪些建议可以自动批准。'),
+      T('cognition.settings_nightly_confirmation_flow', '夜间检查前一天的新会话和新增消息，经筛选、摘要、价值判断和提取后，按确认规则保存完整建议。'),
     )}<div class="ca-settings-shell">
       <section class="ca-policy-list" aria-label="${esc(T('cognition.settings_policy_label', '认知资产设置'))}">
         <div class="ca-policy-row"><div class="ca-policy-copy">
           <div class="tt">${esc(T('cognition.settings_discovery_title', '夜间发现'))}</div>
-          <div class="sub">${esc(T('cognition.settings_discovery_hint', '在夜间增量检查新对话，发现可复用的认知建议。'))}</div>
-          <div class="note">${esc(T('cognition.settings_discovery_window', '默认 02:00–06:00 · 应用需运行 · 会消耗模型额度；首次开启不回扫全部历史。'))}</div>
+          <div class="sub">${esc(T('cognition.settings_discovery_hint', '在夜间检查前一完整日的新会话与新增消息，发现可复用的认知建议。'))}</div>
+          <div class="note">${esc(T('cognition.settings_nightly_window', '{start}–{end} · 应用需运行 · 会消耗模型额度；仅夜间运行，不会白天补扫。', { start: settings.nightlyStart || '02:00', end: settings.nightlyEnd || '06:00' }))}</div>
         </div><div class="ca-policy-switch"><span class="note">${esc(stateUnknown ? T('cognition.settings_policy_unknown', '状态未知') : nightlyOn ? T('cognition.settings_discovery_allowed', '允许') : T('cognition.settings_status_off', '已暂停'))}</span>
           ${switchHtml(T('cognition.settings_discovery_switch', '允许夜间发现'), nightlyOn, 'nightly-toggle', stateUnknown)}
         </div></div>
-        <div class="ca-policy-row"><div class="ca-policy-copy">
-          <div class="tt">${esc(T('cognition.settings_auto_title', '自动批准低风险建议'))}</div>
-          <div class="sub">${esc(T('cognition.settings_auto_hint', '只处理证据完整、无冲突、低风险且不扩大使用授权的新建议。仅限授权范围可核实的项目或工作空间，其余仍由你确认。'))}</div>
-          <div class="note">${esc(autoUnsupported ? T('cognition.settings_auto_restart_required', '当前运行版本尚不支持自动批准。请完全退出并重新打开 CogSeed 后再开启；仅刷新页面不会更新后台服务。') : T('cognition.settings_auto_default', '默认关闭。开启不会处理当前积压；关闭后，新建议全部保留人工确认。'))}</div>
-          ${btn(T('cognition.settings_auto_boundary', '查看批准边界 ›'), 'auto-approval-boundary', { small: true, className: 'rnm' })}
-        </div><div class="ca-policy-switch"><span class="note">${esc(stateUnknown ? T('cognition.settings_policy_unknown', '状态未知') : autoUnsupported ? T('cognition.settings_auto_restart_label', '重启后可用') : autoOn ? T('cognition.settings_auto_on', '已开启') : T('cognition.settings_auto_off', '已关闭'))}</span>
-          ${switchHtml(T('cognition.settings_auto_title', '自动批准低风险建议'), autoOn, 'auto-approval-toggle', stateUnknown || autoUnsupported || Boolean(S.autoApprovalSaving))}
-        </div></div>
+        ${NS.assetSettings.modelControls()}
+        ${NS.assetSettings.autoApprovalControls()}
       </section>
-      <p class="note ca-settings-note">${esc(T('cognition.settings_pause_boundary', '暂停夜间发现不改变已有认知的使用状态，也不切换资产巡检。已确认内容仍按各自范围与逐条授权使用。'))}</p>
+      <p class="note ca-settings-note">${esc(settings.autoApproval === true && NS.assetSettings.supportsAutoApproval()
+        ? T('cognition.settings_nightly_auto_review_hint', '符合自动确认规则的完整建议保存后进入“已处理”；其余完整建议留在“需要关注”，由你决定。')
+        : T('cognition.settings_nightly_review_hint', '完整建议进入“需要关注”，由你确认后保存到“我的认知”。'))}</p>
       <section class="ca-discovery-status" aria-label="${esc(T('cognition.settings_recent_discovery', '最近夜间扫描'))}">
         <div class="ca-settings-row-copy"><div class="ca-discovery-heading"><div class="tt">${esc(T('cognition.settings_recent_discovery', '最近夜间扫描'))}</div>
           ${discovery.at ? `<span class="note">${esc(fmtDate(discovery.at))}</span>` : ''}${chip(discoveryLabels[discovery.state], discovery.state === 'failed' ? 'amber' : discovery.state === 'completed' ? 'green' : 'line')}
         </div><p class="note">${esc(discoveryNote)}</p></div>
-        <div class="actions">${btn(T('cognition.settings_activity_link', '查看系统活动 ›'), 'go-review', { small: true, className: 'rnm' })}
-        ${discovery.state === 'unknown' ? btn(T('common.retry', '重试'), 'refresh', { small: true, className: 'o' }) : ''}</div>
       </section>
-      ${modelCopy ? `      <section class="ca-settings-model${['authorization', 'unavailable'].includes(modelStatus) ? ' is-warning' : ''}">
-        <div class="ca-settings-row-copy"><div class="tt">${esc(T('cognition.model_state_title', '模型状态'))}</div>
-          <p class="note">${esc(modelCopy || (modelStatus === 'configured' ? T('cognition.settings_channel_configured', '已读取 API 配置。当前运行的应用尚未提供通道状态，重启应用后可核实。') : T(modelStatus === 'api' ? 'cognition.settings_channel_api' : 'cognition.settings_channel_cli', modelStatus === 'api' ? 'API 通道可用' : 'CLI 回退可用')))}</p>
-        </div><div class="actions">
-          ${chip(T(`cognition.settings_model_${modelStatus}`, modelStatus === 'api' || modelStatus === 'cli' ? '可用' : modelStatus === 'configured' ? '已配置' : modelStatus === 'unknown' ? '待核实' : '需要处理'), modelStatus === 'api' || modelStatus === 'cli' ? 'green' : ['authorization', 'unavailable'].includes(modelStatus) ? 'amber' : 'line')}
-          ${modelCopy ? `${modelStatus === 'unknown' ? btn(T('common.retry', '重试'), 'refresh', { small: true, className: 'o' }) : ''}${btn(T('cognition.model_state_open', '去应用设置'), 'go-configure-model', { small: true, className: 'rnm' })}` : ''}
-        </div>
-      </section>` : ''}
-      <div class="ca-settings-link"><div class="ca-settings-row-copy"><div class="tt">${esc(T('cognition.settings_existing_title', '已有认知与整理'))}</div><div class="sub">${esc(T('cognition.settings_existing_hint', '在“我的认知”查看内容；整理报告中未解决的发现会进入系统活动。'))}</div>
-        ${cleanupLatest ? `<div class="note">${esc(T('cognition.settings_latest_report', '最近整理报告：{when}', { when: fmtDate(cleanupLatest.createdAt) }))}</div>` : ''}
-      </div><div class="actions">${btn(T('cognition.settings_assets_link', '打开我的认知 ›'), 'settings-open-assets', { small: true, className: 'rnm' })}
-        ${btn(T('cognition.cleanup_open_report', '查看整理报告'), 'open-cleanup', { small: true, className: 'rnm' })}</div>
-      </div>
-
-      ${storageVisible || legacyVisible ? `<section class="ca-settings-tools" aria-label="${esc(T('cognition.settings_maintenance_title', '数据维护'))}"><div class="ca-settings-tools-heading"><h2 class="ca-settings-heading">${esc(T('cognition.settings_needs_attention', '需要处理'))}</h2>${storageProblem || legacyProblem ? chip(T('cognition.settings_needs_attention', '需要处理'), 'amber') : ''}</div>
-        <p class="note ca-settings-tools-hint">${esc(storageProblem || legacyProblem ? T('cognition.settings_maintenance_issue', '检测到数据问题，请展开对应项目查看并处理。') : T('cognition.settings_maintenance_hint', '维护与旧数据迁移按需操作，不影响日常使用。'))}</p>
-        ${storageVisible ? cognitionStorageUpgradeSection() : ''}
-        ${legacyVisible ? window.uiAccordion({ className: 'ca-settings-maintenance-item', attrs: { 'data-settings-disclosure': 'legacy' }, defaultOpen: [], items: [{ title: T('memory.migration_merged_title', '旧记忆迁移'), meta: legacySummary, bodyHtml: `<p class="note">${esc(T('memory.migration_merged_desc', '老版本记忆文件里还没搬进认知资产的内容在这里逐条迁移；都搬完后这个区会自动消失。'))}</p><div class="sect-block"><div class="tt">${esc(T('memory.legacy_migration_title', '旧记忆归属与迁移'))}</div>${legacy.body}</div><div class="sect-block"><div class="tt">${esc(T('memory.scoped_migration_title', 'Agent / 工作空间 / Project 旧记忆迁移'))}</div>${scoped.body}</div>` }] }) : ''}
-      </section>` : ''}
     </div></section>`;
   }
 
@@ -3094,10 +2722,7 @@
     ${heroRow(
       T('cognition.cleanup_title', '整理报告'),
       T('cognition.cleanup_page_hint', '检查建议与历史整理记录；当前检查不会修改资产或候选。'),
-      btn(loading ? T('cognition.cleanup_running', '正在维护…') : T('cognition.maint_run', '立即维护'), 'run-maintenance', {
-        disabled: loading,
-        title: T('cognition.maint_run_title_hint', '检查资产库并生成建议，不批量修改标题、正文、标签或合并资产。'),
-      }),
+
     )}`;
     // 导语按轮次区分：完整整理轮（round:'full'，2026-09-29 三轮合一后的常态）
     // 用合并导语；旧规则轮/标题重起轮的历史报告沿用各自原文案。
@@ -3275,7 +2900,7 @@
       const judgment = String(candidate.judgment || '').trim();
       return `<div class="ca-result-item${clickable ? ' is-clickable' : ''}"${clickable ? ` data-act="open-candidate" data-id="${esc(candidate.id)}" ${roleBtn()}` : ''}>
           <div class="ca-result-head">
-            ${chip(categoryLabel(candidate.suggestedType))}
+
             ${scope ? `<span class="note">${esc(scope)}</span>` : ''}
             <span class="right">${chip(statusChip.label, statusChip.tone)}</span>
           </div>
@@ -3481,7 +3106,6 @@
    *  动线=先看状态与内容，最后是过程与操作。 */
   function captureActionButtonsHtml(capture) {
     return `<div class="actions actions-right">
-      ${captureActionButtons({ ...capture, actions: (capture.actions || []).filter((action) => action !== 'review_candidates' && action !== 'view_assets') })}
       ${btn(T('cognition.capture_action_open_conversation', '打开会话'), 'open-conversation', { id: capture.conversationId || '', small: true })}
     </div>`;
   }
@@ -3515,6 +3139,7 @@
     const previousScroll = document.getElementById('ca-scroll');
     const activityRenderState = route.name === 'activity' ? NS.activityController?.captureRenderState(previousScroll) : null;
     const libraryRenderState = route.name === 'overview' ? NS.library?.captureRenderState(previousScroll) : null;
+    NS.library?.closeFilters();
     const sameRoute = lastRenderKey === key && !!previousScroll;
     const restoreScroll = sameRoute ? previousScroll.scrollTop : 0;
     const disclosureSelectors = ['.ca-asset-page .ca-detail-history', '.ca-asset-page .ca-detail-governance', '.ca-asset-page .ca-asset-edit-advanced'];
@@ -3589,21 +3214,8 @@
     const bannerSlot = document.getElementById('ca-banner-slot');
     const main = document.getElementById('ca-scroll');
     const settingsDisclosures = route.name === 'settings' ? NS.assetSettings.captureDisclosures(main) : null;
-    // Background refresh must not erase a manual candidate being composed.
-    // Keep this draft only across a redraw of the same open form; cancel/save
-    // removes that form, so a later new draft starts empty.
-    const oldManual = route.candCreate === '1' ? main?.querySelector?.('[data-manual-candidate]') : null;
     const oldSearch = route.name === 'activity' && !route.candidateId ? main?.querySelector?.('#ca-activity-search') : null;
     const searchSelection = oldSearch && oldSearch === document.activeElement ? { start: oldSearch.selectionStart, end: oldSearch.selectionEnd } : null;
-    const manualDraft = oldManual ? {
-      type: oldManual.dataset.candType,
-      fields: Array.from(oldManual.querySelectorAll('[data-f]')).map(input => ({
-        name: input.dataset.f, value: input.value,
-        ...(input === document.activeElement && typeof input.selectionStart === 'number'
-          ? { start: input.selectionStart, end: input.selectionEnd } : {}),
-      })),
-      expanded: oldManual.querySelector('details')?.open === true,
-    } : null;
     // 树页/本体页是「整页高度」型：滚动容器不收滚动、改由页面自己占满
     //（原型 .tree-stage/.onto-page 都是整屏高度，不随内容滚）。
     const stageScroll = route.name === 'tree' || route.name === 'ontology';
@@ -3646,28 +3258,6 @@
       newSearch.focus();
       if (typeof newSearch.setSelectionRange === 'function') newSearch.setSelectionRange(searchSelection.start, searchSelection.end);
     }
-    const newManual = manualDraft ? scrollRoot?.querySelector?.('[data-manual-candidate]') : null;
-    if (newManual) {
-      newManual.dataset.candType = manualDraft.type;
-      const manualBoundaries = newManual.querySelector('[data-manual-rule-boundaries]');
-      if (manualBoundaries) manualBoundaries.hidden = manualDraft.type !== 'rule';
-      for (const input of newManual.querySelectorAll('[data-f]')) {
-        const draft = manualDraft.fields.find(field => field.name === input.dataset.f);
-        if (!draft) continue;
-        input.value = draft.value;
-        if (draft.start !== undefined && typeof input.setSelectionRange === 'function') {
-          if (typeof input.focus === 'function') input.focus();
-          input.setSelectionRange(draft.start, draft.end);
-        }
-      }
-      for (const chip of newManual.querySelectorAll('[data-act="cand-type"]')) {
-        const selected = chip.dataset.id === manualDraft.type;
-        chip.classList.toggle('is-green', selected);
-        chip.setAttribute('aria-pressed', selected ? 'true' : 'false');
-      }
-      const details = newManual.querySelector('details');
-      if (details) details.open = manualDraft.expanded;
-    }
     if (route.assetId && scrollRoot && typeof scrollRoot.querySelector === 'function') {
       for (const selector of openDisclosures) {
         const disclosure = scrollRoot.querySelector(selector);
@@ -3677,7 +3267,10 @@
     if (scrollRoot && restoreScroll) scrollRoot.scrollTop = restoreScroll;
     else if (scrollRoot && ['activity', 'overview'].includes(route.name)) scrollRoot.scrollTop = 0;
     if (route.name === 'activity') NS.activityController?.restoreRenderState(scrollRoot, activityRenderState);
-    if (route.name === 'overview') NS.library?.restoreRenderState(scrollRoot, libraryRenderState);
+    if (route.name === 'overview') {
+      NS.library?.hydrateFilters(scrollRoot);
+      NS.library?.restoreRenderState(scrollRoot, libraryRenderState);
+    }
     // 树的出图尺寸按容器实测像素定（见 treeViewport）：首帧容器里还没有
     // svg，只知占位尺寸；挂载后量真值，不一致就重画一次收敛（最多两跳，
     // 防抖动循环）。横幅出现/消失改变内容区高度时也靠这一步跟上。
@@ -3715,5 +3308,5 @@
   // render 内部（闭包捕获每帧状态），不在此列。
   // resolveSourceRef 一并导出（2026-09-25 US-603）：五处来源展示与用例都
   // 认这一份解析结果，避免测试各自复制一套判据。
-  NS.ui = { broughtInCountFor, chip, assetStatusChip, resolveSourceRef, evidenceChip, btn, roleBtn, hero, empty, sectionHead, termNote, otherActions, CATEGORIES, categoryLabel, evidenceChipParts, isKstarEvidenceRef, isLiveKstarEvidenceRef, evidenceGroupsHtml, stripMarkdown, attributionLabel, sourceRefKind, sourceIndex, reviewOutcomeText, stripInternalIds, foldValue, kstarEpisodeSection };
+  NS.ui = { broughtInCountFor, chip, assetStatusChip, resolveSourceRef, evidenceChip, btn, roleBtn, hero, empty, sectionHead, termNote, otherActions, CATEGORIES, categoryLabel, CONTENT_CATEGORIES, contentCategoryOf, contentCategoryLabel, contentCategorySelect, evidenceChipParts, isKstarEvidenceRef, isLiveKstarEvidenceRef, evidenceGroupsHtml, stripMarkdown, attributionLabel, sourceRefKind, sourceIndex, reviewOutcomeText, stripInternalIds, foldValue, kstarEpisodeSection };
 })();

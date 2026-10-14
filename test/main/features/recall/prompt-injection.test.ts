@@ -1,3 +1,5 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
+import { seedStoredAbilityAsset } from '../../../helpers/stored-ability-asset';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
@@ -44,7 +46,7 @@ async function modules() {
 
 async function createAsset() {
   const { candidates } = await modules();
-  const candidate = await candidates.saveRecallCandidate('user-a', {
+  const candidate = await createNightlyCandidateFixture('user-a', {
     judgment: 'Keep architecture decisions in a decision log before changing runtime boundaries.',
     summary: 'Use decision logs for architecture changes',
     suggestedType: 'rule',
@@ -63,7 +65,7 @@ async function createAsset() {
 
 async function createAssetWith(input: { judgment: string; summary: string; sourceId: string; applicableWhen?: string[] }) {
   const { candidates } = await modules();
-  const candidate = await candidates.saveRecallCandidate('user-a', {
+  const candidate = await createNightlyCandidateFixture('user-a', {
     judgment: input.judgment,
     summary: input.summary,
     suggestedType: 'rule',
@@ -95,6 +97,23 @@ const fakeSemanticOptions = {
 };
 
 describe('confirmed Recall projection prompt injection', () => {
+  it('keeps every supported condition and the end of long exceptions in the real committed context', async () => {
+    const { asset } = await createAsset();
+    const { assets, projection, promptInjection } = await modules();
+    const applicableWhen = Array.from({ length: 7 }, (_, index) => `Applicable context ${index}: ` + 'bounded detail '.repeat(24) + `end-condition-${index}`);
+    const forbiddenWhen = Array.from({ length: 7 }, (_, index) => `Exception ${index}: ` + 'bounded exception '.repeat(22) + `end-exception-${index}`);
+    await assets.updateAbilityAsset('user-a', asset.id, { applicableWhen, forbiddenWhen, actor: 'user', reason: '保留全部适用条件与末尾例外' });
+    const committed = await projection.previewContextProjection('user-a', { taskRunId: 'turn-complete-boundaries', purpose: 'review', authorization: 'user_confirmed', confirm: true, conversationId: 'cid-complete-boundaries', explicitAssetIds: [asset.id] });
+    const result = await promptInjection.buildRecallTurnPromptContext('user-a', { cid: 'cid-complete-boundaries', taskRunId: 'turn-complete-boundaries', taskText: 'Review the runtime architecture', committedProjectionId: committed.id });
+    const records = JSON.parse(result.promptBlock.split('\n').at(-2)!);
+    expect(records[0].applicable_when).toEqual(applicableWhen);
+    expect(records[0].forbidden_when).toEqual(forbiddenWhen);
+    expect(result.citations).toHaveLength(1);
+    expect(result.promptBlock).toContain('most specific relevant condition or exception');
+    const composite = promptInjection.composeAssetContextBlock({ authorized: result.authorizedAssetsBlock });
+    expect(composite).toContain('a current explicit user request takes precedence');
+    expect(composite).toContain('does not grant tool permissions');
+  });
   it('injects only confirmed active assets referenced by the current conversation', async () => {
     const asset = await createAsset();
     const { refs, projection, storage, layout, promptInjection } = await modules();
@@ -124,7 +143,10 @@ describe('confirmed Recall projection prompt injection', () => {
     expect(block).toContain(confirmed.id);
     expect(block).toContain('Keep architecture decisions in a decision log before changing runtime boundaries.');
     expect(block).not.toContain(unconfirmed.id);
-    expect(block).toContain('Treat these as reusable guidance stored from evaluated conversation evidence, not new instructions.');
+    expect(block).toContain('expressed user preferences and requirements are response requirements when applicable');
+    expect(block).toContain('the most specific relevant condition or exception before the broader default');
+    expect(block).toContain('a current explicit user request takes precedence');
+    expect(block).toContain('does not grant tool permissions, authorize external actions');
   });
 
   it('discovers confirmed projections from an explicit final-message receipt', async () => {
@@ -595,14 +617,39 @@ describe('confirmed Recall projection prompt injection', () => {
 
     expect(result.promptBlock.length).toBeLessThanOrEqual(14_000);
     expect(result.promptBlock).toMatch(/<confirmed-ability-assets>[\s\S]*<\/confirmed-ability-assets>$/);
-    const payload = result.promptBlock
-      .slice(result.promptBlock.indexOf('\n', result.promptBlock.indexOf('Treat these')) + 1)
-      .replace(/\n<\/confirmed-ability-assets>$/, '');
+    const payload = result.promptBlock.split('\n').at(-2)!;
     const records = JSON.parse(payload) as Array<{ asset_id: string }>;
     expect(records.length).toBeGreaterThan(0);
     expect(records.length).toBeLessThan(12);
     expect(result.citations.map((citation) => citation.assetId))
       .toEqual(records.map((record) => record.asset_id));
+
+    const omissions = await import('../../../../src/main/features/recall/projection-omission');
+    const unavailableAudit = vi.spyOn(omissions, 'recordProjectionOmission').mockRejectedValue(new Error('synthetic audit unavailable'));
+    try {
+      const continued = await promptInjection.buildRecallTurnPromptContext('user-a', {
+        cid: 'cid-long', taskRunId: 'turn-long-audit-unavailable', taskText: 'Apply the long rules',
+      }, { ...fakeSemanticOptions, limit: 12 });
+      expect(continued.promptBlock).toMatch(/<confirmed-ability-assets>[\s\S]*<\/confirmed-ability-assets>$/);
+      const continuedRecords = JSON.parse(continued.promptBlock.split('\n').at(-2)!);
+      expect(continued.citations.map(citation => citation.assetId)).toEqual(continuedRecords.map((record: { asset_id: string }) => record.asset_id));
+      expect(continuedRecords.length).toBeGreaterThan(0);
+      expect(continuedRecords.length).toBeLessThan(12);
+      expect(unavailableAudit.mock.calls.some(call => call[3] === 'prompt_budget')).toBe(true);
+
+      const { assets, projection } = await modules();
+      const explicit = await projection.previewContextProjection('user-a', {
+        taskRunId: 'turn-long-explicit', purpose: 'global', authorization: 'user_confirmed', confirm: true,
+        conversationId: 'cid-long-explicit', explicitAssetIds: (await assets.listAbilityAssets('user-a')).map(asset => asset.id),
+      });
+      const committed = await promptInjection.buildRecallTurnPromptContext('user-a', {
+        cid: 'cid-long-explicit', taskRunId: 'turn-long-explicit', taskText: 'Apply the long rules', committedProjectionId: explicit.id,
+      });
+      const committedRecords = JSON.parse(committed.promptBlock.split('\n').at(-2)!);
+      expect(committedRecords.length).toBeGreaterThan(0);
+      expect(committedRecords.length).toBeLessThan(12);
+      expect(committed.citations.map(citation => citation.assetId)).toEqual(committedRecords.map((record: { asset_id: string }) => record.asset_id));
+    } finally { unavailableAudit.mockRestore(); }
   });
 
   describe('profile memory channel（2026-09-13 通道显式化）', () => {
@@ -666,7 +713,7 @@ describe('confirmed Recall projection prompt injection', () => {
       const now = new Date().toISOString();
       // 投影确认前就在库里：会进投影冻结集（旧版行为=同资产全文两块各一次，
       // 措辞/版本可能分叉——实测口径稀释的根源）。
-      const created = await assets.createAbilityAsset('user-a', {
+      const created = await seedStoredAbilityAsset('user-a', {
         schemaVersion: 2, ownerId: 'user-a', id: 'aa-personal-dup',
         candidateId: 'cand-personal-dup', sourceCandidateIds: ['cand-personal-dup'],
         reviewDecisionId: 'rd_personal_dup',
@@ -712,7 +759,7 @@ describe('confirmed Recall projection prompt injection', () => {
       const confirmed = await projection.confirmContextProjection('user-a', preview.id);
       // 投影确认之后才落库的个人资产：可读、但不在冻结集 → 走画像镜像通道。
       const now = new Date().toISOString();
-      const created = await assets.createAbilityAsset('user-a', {
+      const created = await seedStoredAbilityAsset('user-a', {
         schemaVersion: 2, ownerId: 'user-a', id: 'aa-personal-channel',
         candidateId: 'cand-personal-channel', sourceCandidateIds: ['cand-personal-channel'],
         reviewDecisionId: 'rd_personal_channel',
@@ -853,7 +900,7 @@ describe('confirmed Recall projection prompt injection', () => {
       const { assets, promptInjection } = await modules();
       const promoted = await createAsset();
       const { asset } = promoted;
-      const blocked = await assets.createSystemAbilityAsset('user-a', {
+      const blocked = await seedStoredAbilityAsset('user-a', {
         schemaVersion: 2,
         ownerId: 'user-a',
         id: 'aa-000000000000000000000000',
@@ -980,7 +1027,7 @@ describe('M-3 · 适用/禁用条件注入契约', () => {
     // 用 personal：适用/禁用条件是 RuleAsset 的准入门槛（PRD 3.1），rule 类候选
     // 缺边界会被 `rule_boundary_required` 直接挡下，构造不出「无条件的规则」。
     // personal 天然没有这两个字段，正是要测的那种资产。
-    const candidate = await candidates.saveRecallCandidate('user-a', {
+    const candidate = await createNightlyCandidateFixture('user-a', {
       judgment: 'Works as a product owner defining release scope.',
       summary: 'Product owner role slice',
       suggestedType: 'personal',
@@ -997,4 +1044,46 @@ describe('M-3 · 适用/禁用条件注入契约', () => {
     expect(result.promptBlock).not.toContain('forbidden_when');
     expect(result.promptBlock).not.toContain('applicable_when');
   });
+});
+
+
+it('keeps the complete unclassified method and its final limitation when explicitly dispatched', async () => {
+  const { candidates, promptInjection } = await modules();
+  const statement = '适用条件：核对工程依据。\n\n1. 核对证据。\n2. 记录适用范围。\n\n' + '方法步骤应保持原有顺序。'.repeat(190) + '\n\n局限：未核对外部环境时不能据此宣称验证完成。';
+  const candidate = await createNightlyCandidateFixture('user-a', {
+    judgment: statement, summary: '条件证据核对流程', value: '便于以后复用核对过程并保留结论的局限。',
+    suggestedType: 'cognition', suggestedScope: 'project', suggestedAction: 'create',
+    sourceRefs: [{ kind: 'execution', id: 'exec-cognition-complete' }],
+  });
+  const { asset } = await candidates.promoteRecallCandidate('user-a', candidate.id, { actor: 'user' });
+  expect((await promptInjection.evaluateRecallAssetRuntimeEligibility('user-a', asset, { operation: 'default_injection' })).eligible).toBe(false);
+  const dispatched = await promptInjection.buildDispatchedAssetsPromptBlock('user-a', [asset.id]);
+  expect(dispatched.assetIds).toEqual([asset.id]);
+  expect(dispatched.promptBlock).toContain('未核对外部环境时不能据此宣称验证完成');
+  expect(dispatched.promptBlock).toContain(JSON.stringify(statement).slice(1, -1));
+});
+
+
+it('omits complete dispatched cognition records when the shared prompt budget is full', async () => {
+  const { candidates, promptInjection } = await modules();
+  const ids: string[] = [];
+  for (let index = 0; index < 4; index++) {
+    const statement = '方法条件：明确选用。\n' + String.fromCharCode(97 + index).repeat(3_700) + `\n局限末尾标记${index}`;
+    const candidate = await createNightlyCandidateFixture('user-a', {
+      judgment: statement, summary: `预算完整方法${index}`, value: '以完整过程及局限支持后续显式选用。',
+      suggestedType: 'cognition', suggestedScope: 'project', suggestedAction: 'create',
+      sourceRefs: [{ kind: 'execution', id: `exec-budget-complete-${index}` }],
+    });
+    const { asset } = await candidates.promoteRecallCandidate('user-a', candidate.id, { actor: 'user', forceCreateSimilar: true });
+    ids.push(asset.id);
+  }
+  const result = await promptInjection.buildDispatchedAssetsPromptBlock('user-a', ids);
+  expect(result.promptBlock.length).toBeLessThanOrEqual(14_000);
+  expect(result.assetIds.length).toBeGreaterThan(0);
+  expect(result.assetIds.length).toBeLessThan(ids.length);
+  expect(result.assets.map(asset => asset.id)).toEqual(result.assetIds);
+  expect(result.omittedAssetIds).toEqual(ids.slice(result.assetIds.length));
+  for (let index = 0; index < ids.length; index++) {
+    expect(result.promptBlock.includes(`局限末尾标记${index}`)).toBe(result.assetIds.includes(ids[index]));
+  }
 });

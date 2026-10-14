@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 /**
  * specs/015 T035（US-704）：`kstar.review.confirm` 处置后 review 落终态，并沿
  * **同一条**改进分析链路继续——即需求级沉淀入口 `precipitateRequirementLevel`
@@ -68,7 +69,7 @@ async function modules() {
 /** 改进对象：真实资产 v1（KStar 沉淀的目标方法）。 */
 async function seedTargetAsset(userId: string): Promise<string> {
   const { candidates } = await modules();
-  const seeded = await candidates.saveRecallCandidate(userId, {
+  const seeded = await createNightlyCandidateFixture(userId, {
     judgment: 'Keep the report verification rule.',
     value: 'Keep report verification consistent across runs.',
     summary: 'Report verification rule',

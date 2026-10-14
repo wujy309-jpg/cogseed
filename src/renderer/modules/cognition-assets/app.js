@@ -18,11 +18,11 @@
   /** 写操作集合：点击后按钮进入 pending（禁用+变淡），完成或重画后还原。 */
   const WRITE_ACTIONS = new Set([
     'storage-check', 'storage-activate', 'storage-rollback', 'storage-recover',
-    'refresh', 'cand-adopt-with-form', 'cand-decide',
-    'po-cand-transfer',
+    'refresh', 'cand-adopt-with-form', 'cand-decide', 'formation-recheck',
+
     'asset-action', 'asset-recommend-ack', 'select-asset-version', 'delete-asset-version',
     'rollback-cleanup-item', 'cleanup-uncertain-dismiss', 'cleanup-uncertain-defer',
-    'run-maintenance', 'purge-deleted-asset', 'inbox-resolve', 'asset-edit-save', 'edit-from-version', 'merge-asset-version', 'merge-asset', 'source-action', 'capture-action', 'organize-conv',
+    'run-maintenance', 'purge-deleted-asset', 'asset-edit-save', 'edit-from-version', 'merge-asset-version', 'merge-asset', 'source-action',
     // A5（2026-09-29）：候选清单读失败的显式重试。
     'retry-candidates',
     // 治理待办就地处断（specs/010 T010）：冲突选边、巡检选边/合并、补边界。
@@ -30,18 +30,18 @@
     // 定级两类动作已随敏感级机制整体删除（2026-09-28）；「补条件」就地表单
     // 已随 T028 恢复（2026-09-29，review-views.js boundaryFormRow 渲染，
     // case 见委托层 inbox-boundary-save），不再是待清理的死码。
-    'inbox-conflict-claim',
-    'inbox-inspection-keep', 'inbox-inspection-merge',
-    'inbox-boundary-save',
-    'capture-review-toggle', 'proof-rate',
-    'nightly-toggle', 'auto-approval-toggle',
-    'capture-batch',
+
+
+
+    'proof-rate',
+    'nightly-toggle', 'auto-approval-toggle', 'nightly-model-add', 'nightly-model-remove', 'nightly-model-up', 'nightly-model-down', 'nightly-model-reset',
+
     // 经验目录管理（specs/016 US-803）：四个管理动作 + 迁移执行；preview/status
     // 是只读扫描，不进 pending 集（与 refresh 的口径不同：它们有各自的载入态）。
     'experience-status-toggle', 'experience-set-type', 'experience-merge', 'experience-archive', 'experience-migration-run',
-    'legacy-memory-run', 'legacy-scoped-memory-run',
+
     // 「记一条」保存（设计 7.2）：走 recall.candidates.save 产生候选。
-    'cand-create-save',
+
     // ranking-weights-save 已随权重卡彻底移除删除（G1 拍板项 #3，2026-09-28）。
   ]);
 
@@ -61,22 +61,12 @@
       const el = card.querySelector(`[data-f="${name}"]`);
       return el ? String(el.value || '') : '';
     };
-    const scopePolicy = {};
-    for (const mode of card.querySelectorAll?.('[data-manual-scope-mode]') || []) {
-      if (mode.value !== 'restrict') continue;
-      const field = mode.dataset.manualScopeMode;
-      if (!['agentIds', 'workspaceIds'].includes(field) || S.assetScopeOptions?.status !== 'ready') throw new Error(T('cognition.library_scope_read_failed', '对象目录未能读取，请重试后再限定使用对象。'));
-      const ids = Array.from(card.querySelectorAll(`[data-manual-scope-kind="${field}"]`)).flatMap(input => input.multiple ? Array.from(input.selectedOptions).map(option => String(option.value)) : input.checked ? [String(input.value)] : []);
-      const known = new Set(field === 'agentIds' ? (S.assetScopeOptions.agents || []).map(item => item.agent_id) : (S.assetScopeOptions.spaces || []).map(item => item.space_id));
-      if (!ids.length || ids.some(id => !known.has(id))) throw new Error(T('cognition.library_scope_selection_required', '选择“仅所选对象”后，请至少选择一个仍可用的对象。'));
-      scopePolicy[field] = ids;
-    }
     return {
       suggestedType: String(card.dataset.candType || ''),
       suggestedScope: value('scope'),
       summary: value('summary'),
       judgment: value('judgment'),
-      ...(Object.keys(scopePolicy).length ? { scopePolicy } : {}),
+      ...(card.querySelector('[data-f="contentCategory"]') ? { contentCategory: value('contentCategory') } : {}),
       ...(card.querySelector('[data-f="value"]') ? { value: value('value') } : {}),
       ...(card.querySelector('[data-f="uncertainty"]') ? { uncertainty: value('uncertainty') } : {}),
       ...(card.querySelector('[data-f="applicable"]') ? { applicableWhen: value('applicable').split(/\r?\n/).map(v => v.trim()).filter(Boolean) } : {}),
@@ -138,25 +128,6 @@
             router.go({ name, category });
             break;
           }
-          case 'cand-type': {
-            // 类型选择是纯前端态：只更新 chip 选中与卡片 dataset，不触发重画
-            // （整页重画会丢失其他字段未保存的输入）。
-            const card = el.closest('.ca-candidate-detail');
-            if (card) {
-              card.dataset.candType = id;
-              const boundaries = card.querySelector('[data-manual-rule-boundaries]');
-              if (boundaries) {
-                boundaries.hidden = id !== 'rule';
-                if (id === 'rule') boundaries.closest('details').open = true;
-              }
-            }
-            el.parentElement.querySelectorAll('.ca-chip-opt').forEach((chipEl) => {
-              const on = chipEl === el;
-              chipEl.classList.toggle('is-green', on);
-              chipEl.setAttribute('aria-pressed', on ? 'true' : 'false');
-            });
-            break;
-          }
           case 'toggle-asset-more': {
             const wrap = el.closest('.ca-more-wrap');
             const menu = wrap ? wrap.querySelector('[data-asset-more]') : null;
@@ -174,14 +145,6 @@
             ]);
             break;
           // 旧个人本体候选先转入 Recall 共同审核；不再直写 USER.md / MEMORY.md。
-          case 'po-cand-transfer': {
-            const res = await NS.api.call('personalOntology.candidates.transferToRecall', { candidateId: id }, {});
-            if (!res || res.ok === false) { NS.toast(T('cognition.review_ontology_failed', '没处理成功，请重试。'), 'error'); break; }
-            NS.toast(T('cognition.review_ontology_transferred', '已转入「待我处理」。它还没有保存为正式认知。'), 'success');
-            await NS.reload();
-            if (res.candidate?.id) router.go({ name: 'activity', candidateId: String(res.candidate.id) });
-            break;
-          }
           case 'po-cand-reject': {
             const res = await NS.api.call('po.candidates.reject', { candidateId: id }, {});
             if (!res || res.ok === false) { NS.toast(T('cognition.review_ontology_failed', '没处理成功，请重试。'), 'error'); break; }
@@ -210,7 +173,6 @@
             }));
             break;
           }
-          case 'go-review': router.go({ name: 'activity' }); break;
           case 'activity-view': router.go({ name: 'activity', activityView: id, activityDone: id === 'done' ? '1' : '', captureBucket: '' }); break;
           // 导语可点数字（specs/018 T010）：滚动到本页对应分区（纯呈现，
           // 不动路由栈——这是页内锚点跳转，不是导航）。
@@ -219,7 +181,7 @@
             if (target && typeof target.scrollIntoView === 'function') target.scrollIntoView({ behavior: 'smooth', block: 'start' });
             break;
           }
-          case 'go-organize': router.go({ name: 'activity' }); break;
+          case 'go-review': router.go({ name: 'activity' }); break;
           case 'go-configure-model': {
             // configuration_required 的处理出口：模型配置在应用设置页
             // 「设置 → 配置」的模型区。与 model-chip.js / kb-workbench.js 同一条缝：
@@ -232,57 +194,29 @@
             }
             break;
           }
-          case 'toggle-source-issues': {
-            // 来源异常就地展开（异常驱动：健康时无入口，无常态页）。
-            router.go({
-              name: 'activity',
-              sourceIssueOpen: String(S.route.sourceIssueOpen || '') === 'open' ? '' : 'open',
-            });
-            break;
-          }
-          case 'toggle-task-failed': {
-            // 任务执行失败就地展开（A4，2026-09-29）：逐条列出并给「回到会话」
-            // 入口——不再跳系统活动页（那边是低价值排除行，处理不了）。
-            router.go({
-              name: 'activity',
-              taskFailedOpen: String(S.route.taskFailedOpen || '') === 'open' ? '' : 'open',
-            });
-            break;
-          }
           case 'retry-candidates': {
             // A5（2026-09-29）：候选清单读失败后的显式重试入口。
             await NS.reload();
             break;
           }
-          case 'inbox-boundary-save': {
-            // A1（2026-09-29）：缺边界规则的就地补条件表单（specs/010 T028 恢复）。
-            // 值就近读本行输入，多值按顿号/逗号拆；空数组也如实提交——后端用
-            // 同一道规则闸门判合法性，不通过会带着原因拒绝（不落库）。
-            const row = el.closest('.notice-row');
-            const readList = (fieldName) => {
-              const input = row ? row.querySelector(`[data-f="${fieldName}"]`) : null;
-              return String((input && input.value) || '')
-                .split(/[、,，;；]/).map((part) => part.trim()).filter(Boolean);
-            };
-            await A.resolveInboxItem(id, 'set_boundary', {
-              applicableWhen: readList('boundary-applicable'),
-              forbiddenWhen: readList('boundary-forbidden'),
-            });
-            break;
-          }
           case 'go-organize-settings': router.go({ name: 'settings' }); break;
-          case 'auto-approval-toggle': await NS.assetSettings.toggleAutoApproval(); break;
-          case 'auto-approval-boundary': await NS.alertUser(NS.assetSettings.autoApprovalBoundary()); break;
           case 'settings-open-assets': router.go({ name: 'overview' }); break;
+          case 'auto-approval-toggle':
+            await NS.assetSettings.toggleAutoApproval();
+            break;
+          case 'nightly-model-add': case 'nightly-model-remove': case 'nightly-model-up':
+          case 'nightly-model-down': case 'nightly-model-reset': case 'nightly-model-retry':
+            await NS.assetSettings.modelAction(act, el, root);
+            break;
           case 'nightly-toggle': {
             // 夜间发现只管理新对话发现，不改已有资产使用状态或独立巡检策略。
-            const on = !(S.captureSettings && S.captureSettings.enabled !== false && String(S.captureSettings.executionPolicy || '') === 'nightly');
+            const on = !(S.captureSettings && S.captureSettings.enabled !== false);
             if (on) {
               const ok = await NS.confirmUser(T('cognition.nightly_discovery_confirm', '开启后，系统会在夜间增量检查新对话，消耗模型额度；首次开启不会回扫全部历史。确认开启？'));
               if (!ok) break;
             }
             const previous = S.captureSettings;
-            const patch = { executionPolicy: on ? 'nightly' : 'manual', ...(on ? { enabled: true } : {}) };
+            const patch = { enabled: on };
             S.captureSettings = Object.assign({}, previous, patch);
             NS.notify();
             try {
@@ -294,7 +228,6 @@
             }
             break;
           }
-          case 'capture-filter': router.go({ name: 'activity', captureBucket: id }); break;
           case 'open-capture-detail': {
             router.go({ name: 'activity', captureId: id });
             void NS.loadCaptureContext(id);
@@ -304,32 +237,11 @@
           case 'asset-timeline-retry': await NS.loadAssetTimeline(id, true); break;
           case 'asset-adoption-retry': await NS.loadAdoptionReceipts(id, true); break;
           case 'asset-versions-retry': await NS.loadAssetVersions(id, true); break;
-          case 'capture-batch': {
-            // 批量动作的条数在渲染时写死进按钮（只数当前已加载且该动作可执行
-            // 的行）；这里再次从 store 收敛同一口径，防止路由/数据在确认弹窗
-            // 与执行之间变动后多发。只保留批量重试（2026-09-21 原型 v7 定调：
-            // 批量「立即整理」入口不迁移，单条任务行的立即整理保留）。
-            const runnable = (S.captures || []).filter((capture) => (
-              Array.isArray(capture.actions) && capture.actions.includes(el.dataset.batch || '')
-            ));
-            if (!runnable.length || el.dataset.batch !== 'retry') break;
-            const ok = await NS.confirmUser(T('cognition.capture_batch_retry_confirm', '确认重试 {n} 条失败的整理任务？', { n: String(runnable.length) }));
-            if (!ok) break;
-            await A.captureBatch('retry', runnable.map((capture) => capture.id));
-            break;
-          }
           case 'activity-row': { const row = (S.activityRows || []).find(item => item.key === id); if (row) router.go(Object.assign({ name: 'activity', activityView: S.route.activityView || 'attention' }, row.route)); break; }
           case 'activity-page': router.go({ name: 'activity', activityView: S.route.activityView, activityQuery: S.route.activityQuery, activityPage: id }, { replace: true }); break;
           case 'open-candidate': router.go({ name: 'activity', candidateId: id }); break;
-          case 'cand-organize-ontology': await NS.openPersonalOntology({ candidateId: id }); break;
           // 「记一条」（设计 7.2）：手动新建候选——列表页头/空态入口，表单卡
           // 就地展开（candCreate 路由参数），保存走 recall.candidates.save。
-          case 'cand-create': router.go({ name: 'overview', candCreate: '1' }); break;
-          case 'cand-create-cancel': router.go({ name: 'overview', candCreate: '' }, { replace: true }); break;
-          case 'cand-create-save':
-            await A.saveManualCandidate(readCandidateForm(el) || undefined);
-            if (S.route.name === 'overview' && S.route.assetId && !S.route.candCreate) NS.library?.revealAsset(S.route.assetId);
-            break;
           case 'open-ontology': await NS.openPersonalOntology({ moduleId: el.dataset.moduleId || '', recordId: el.dataset.recordId || '', recordVersion: el.dataset.recordVersion || '' }); break;
           case 'open-asset': router.go({ name: 'overview', assetId: id }); NS.library?.revealAsset(id); break;
           case 'open-overview': router.go({ name: 'overview' }); break;
@@ -348,10 +260,6 @@
             if (ok) await A.purgeDeletedAsset(id);
             break;
           }
-          case 'inbox-resolve': await A.resolveInboxItem(id, el.dataset.action || ''); break;
-          case 'inbox-conflict-claim': await A.resolveInboxItem(id, 'claim'); break;
-          case 'inbox-inspection-keep': await A.resolveInboxItem(id, 'keep', { targetAssetId: el.dataset.anchor || '' }); break;
-          case 'inbox-inspection-merge': await A.resolveInboxItem(id, 'merge', { targetAssetId: el.dataset.anchor || '' }); break;
           case 'go-inbox-asset': router.go({ name: 'overview', assetId: id }); NS.library?.revealAsset(id); break;
           // 进入整理报告页是页面级导航，必须入栈（2026-09-29 返回跳错根因）：
           // 此前两处带 replace:true，来源页（系统活动/资产设置）没进栈，返回
@@ -468,47 +376,7 @@
           case 'storage-activate': await A.cognitionStorageUpgrade('activate'); break;
           case 'storage-recover': await A.cognitionStorageUpgrade('recover'); break;
           case 'storage-rollback': await A.cognitionStorageUpgrade('rollback'); break;
-          case 'legacy-memory-refresh': await NS.loadLegacyMemoryMigrationPreview(true); break;
-          case 'legacy-memory-run': await A.legacyMemoryMigrationRun(); break;
-          case 'legacy-scoped-memory-refresh': await NS.loadLegacyScopedMemoryMigrationPreview(true); break;
-          case 'legacy-scoped-memory-run': await A.legacyScopedMemoryMigrationRun(); break;
           case 'source-action': await A.sourceAction(el.dataset.kind || '', id, el.dataset.action); break;
-          case 'capture-action': await A.captureAction(id, el.dataset.action); break;
-          case 'organize-conv': await A.organizeConversation(id); break;
-          // ranking-weights-reset / ranking-weights-save 两 case 已随权重卡
-          // 彻底移除删除（G1 拍板项 #3，2026-09-28）；recall.catalog.weights.*
-          // 读写通道后端保留。
-          case 'capture-review-toggle': {
-            // 单选组按所点项设置；点已选中项不重复提交；同样乐观更新。
-            const auto = String((S.captureSettings || {}).reviewPolicy || 'auto') === 'auto';
-            const next = id === 'auto' ? 'auto' : 'manual';
-            if ((next === 'auto') !== auto) {
-              const previous = S.captureSettings;
-              S.captureSettings = Object.assign({}, previous, { reviewPolicy: next });
-              NS.notify();
-              try {
-                await A.updateCaptureSettings({ reviewPolicy: next });
-              } catch (error) {
-                S.captureSettings = previous;
-                NS.notify();
-                throw error;
-              }
-            }
-            break;
-          }
-          case 'inbox-form-toggle': {
-            // 补边界表单展开/收起（specs/018 v2）：纯前端态，不触发重画
-            //（重画会丢同页其他未保存输入）。
-            const row = el.closest('.inbox-governance-form');
-            const body = row ? row.querySelector('[data-inbox-boundary-body]') : null;
-            if (body) body.hidden = !body.hidden;
-            break;
-          }
-          case 'toggle-organize-list': {
-            S.organizeListExpanded = !S.organizeListExpanded;
-            NS.notify();
-            break;
-          }
           case 'proof-toggle':
             // 使用记录已并入资产详情（2026-09-15）：事件展开/收起保持在
             // 当前资产详情页内切换。
@@ -577,6 +445,12 @@
       });
     });
     root.addEventListener('change', (event) => {
+      NS.assetSettings?.modelInput?.(event, root);
+      const categoryField = event.target.closest?.('.ca-asset-edit select[data-f="contentCategory"]');
+      const categoryAssetId = categoryField?.closest('.ca-asset-edit')?.dataset.assetEditId;
+      if (categoryAssetId) {
+        S.assetEditDrafts = { ...S.assetEditDrafts, [categoryAssetId]: { ...S.assetEditDrafts?.[categoryAssetId], contentCategory: categoryField.value } };
+      }
       if (NS.library) void NS.library.handleInput(event);
       const field = event.target.closest && event.target.closest('.ca-asset-edit input[data-scope-kind]');
       const form = field && field.closest('.ca-asset-edit');
@@ -667,21 +541,6 @@
           : (idx + (event.key === 'ArrowRight' ? 1 : -1) + items.length) % items.length;
       if (items[next] && typeof items[next].focus === 'function') items[next].focus();
     });
-    // 表单类控件的 change 委托（time input 等）：与 click 同一套 data-act 语义。
-    root.addEventListener('change', (event) => {
-      const el = event.target.closest && event.target.closest('[data-act="legacy-memory-toggle"]');
-      if (!el) return;
-      void A.legacyMemoryMigrationToggle(el.dataset.scope, el.dataset.hash, Boolean(el.checked));
-    });
-    root.addEventListener('change', (event) => {
-      const el = event.target.closest && event.target.closest('[data-act="legacy-scoped-memory-toggle"]');
-      if (!el) return;
-      void A.legacyScopedMemoryMigrationToggle(
-        el.dataset.scopeKind, el.dataset.scopeId, el.dataset.hash, Boolean(el.checked),
-      );
-    });
-    // nightly-time（调度时间控件）已随 2026-10-08 U02 日常调度控制退役：
-    // 用户不管理开始时间/静默时长，设置页不再渲染该控件。
   }
 
   /* ────────────────────────── 生命周期 ────────────────────────── */
@@ -817,6 +676,7 @@
   // 详情页兜底加载上下文：返回栈回退/深链进入时没有经过 open-capture-detail
   // 分流，这里按当前路由补拉（loadCaptureContext 内部有缓存判重）。
   NS.onChange(() => {
+    if (S.route.name === 'settings') void NS.assetSettings.loadModels();
     const captureId = String(S.route.captureId || '');
     const experienceRouteId = String(S.route.experienceId || '');
     if (captureId && (!S.captureContext || S.captureContext.captureId !== captureId)) {

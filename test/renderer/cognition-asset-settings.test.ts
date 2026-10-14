@@ -2,14 +2,15 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
-import { loadCognitionAssets } from './helpers/cognition-renderer';
 
+const buttonSource = readFileSync(resolve(__dirname, '../../src/renderer/modules/ui-button.js'), 'utf8');
+const formSource = readFileSync(resolve(__dirname, '../../src/renderer/modules/ui-form.js'), 'utf8');
 const source = readFileSync(resolve(__dirname, '../../src/renderer/modules/cognition-assets/settings.js'), 'utf8');
 function setup(settings = { autoApproval: false }) {
   const confirmUser = vi.fn().mockResolvedValue(true);
   const updateCaptureSettings = vi.fn().mockResolvedValue(undefined);
   const NS: any = {
-    T: (_key: string, fallback: string) => fallback,
+    T: (_key: string, fallback: string, args: Record<string, string> = {}) => fallback.replace(/\{([^}]+)\}/g, (_match, key) => args[key] ?? `{${key}}`),
     store: { captureSettings: settings, captureCapabilities: { autoApproval: true }, captureModelError: '' },
     confirmUser, alertUser: vi.fn(), notify: vi.fn(), actions: { updateCaptureSettings },
   };
@@ -18,18 +19,6 @@ function setup(settings = { autoApproval: false }) {
 }
 
 describe('资产设置真实状态', () => {
-  it('未知状态不误报通道不可用，CLI 回退可用时不要求配置 API', () => {
-    const { policy } = setup();
-    expect(policy.modelStatus({ configured: false, channel: 'cli', cliAvailable: true })).toBe('cli');
-    expect(policy.modelStatus({ channel: 'api', runtimeStatus: 'unknown' })).toBe('unknown');
-    expect(policy.modelStatus(null, 'read_failed')).toBe('unknown');
-    expect(policy.modelStatus({ configured: false })).toBe('unknown');
-    expect(policy.modelStatus({ runtimeStatus: 'legacy', apiConfigured: true })).toBe('configured');
-    expect(policy.modelStatus({ runtimeStatus: 'legacy', apiConfigured: true, authorizationRequired: true })).toBe('authorization');
-    expect(policy.modelStatus({ channel: 'unavailable' })).toBe('unavailable');
-    expect(policy.modelStatus({ channel: 'unavailable', authorizationRequired: true })).toBe('authorization');
-  });
-
   it('读取失败与从未运行区分；扫描排队不能冒充已发现建议', () => {
     const { policy } = setup();
     expect(policy.discoveryStatus(null).state).toBe('unknown');
@@ -39,86 +28,6 @@ describe('资产设置真实状态', () => {
     expect(state).not.toHaveProperty('suggestions');
     expect(policy.discoveryStatus({ sweep: { lastResult: { error: 'network error', failed: 1 } } }).state).toBe('failed');
     expect(policy.discoveryStatus({ sweep: {} }, 'timeout').state).toBe('unknown');
-  });
-});
-
-describe('自动批准授权', () => {
-  it('旧后端即使返回了同名设置，也必须明确声明支持后才允许确认开启', async () => {
-    const { policy, NS, confirmUser, updateCaptureSettings } = setup();
-    NS.store.captureCapabilities = null;
-    await policy.toggleAutoApproval();
-    expect(confirmUser).not.toHaveBeenCalled();
-    expect(updateCaptureSettings).not.toHaveBeenCalled();
-    expect(NS.alertUser.mock.calls[0][0]).toContain('完全退出并重新打开');
-    NS.store.captureCapabilities = { autoApproval: true };
-    await policy.toggleAutoApproval();
-    expect(updateCaptureSettings).toHaveBeenCalledExactlyOnceWith({ autoApproval: true });
-  });
-
-  it('后端忽略设置或未提供批准凭据时，不显示保存成功或修改本地状态', async () => {
-    let saved: Record<string, unknown> = { autoApproval: false };
-    const toast = vi.fn();
-    const fixture = loadCognitionAssets({ captureSettings: { autoApproval: false } }, { name: 'settings' }, {
-      cogseed: { invoke: async () => ({ ok: true, settings: saved }) }, uiToast: toast,
-    });
-    fixture.ns.reload = vi.fn();
-    await expect(fixture.ns.actions.updateCaptureSettings({ autoApproval: true })).rejects.toThrow('有效保存结果');
-    saved = { autoApproval: true };
-    await expect(fixture.ns.actions.updateCaptureSettings({ autoApproval: true })).rejects.toThrow('有效保存结果');
-    expect(fixture.store.captureSettings.autoApproval).toBe(false);
-    expect(toast).not.toHaveBeenCalled();
-    expect(fixture.ns.reload).not.toHaveBeenCalled();
-    saved = { autoApproval: true, autoApprovalEpoch: 'new-policy', autoApprovalEnabledAt: '2026-10-11T03:20:00.000Z' };
-    await fixture.ns.actions.updateCaptureSettings({ autoApproval: true });
-    expect(fixture.store.captureSettings).toEqual(saved);
-    expect(fixture.ns.reload).toHaveBeenCalledOnce();
-  });
-
-  it('开启必须确认，且只更新独立批准策略', async () => {
-    const { policy, confirmUser, updateCaptureSettings } = setup();
-    await policy.toggleAutoApproval();
-    expect(confirmUser).toHaveBeenCalledOnce();
-    expect(confirmUser.mock.calls[0][0]).toContain('当前积压不会被批量批准');
-    expect(updateCaptureSettings).toHaveBeenCalledExactlyOnceWith({ autoApproval: true });
-  });
-
-  it('取消授权和读取失败都不保存', async () => {
-    const { policy, confirmUser, updateCaptureSettings, NS } = setup();
-    confirmUser.mockResolvedValue(false);
-    await policy.toggleAutoApproval();
-    NS.store.captureModelError = 'failed';
-    await policy.toggleAutoApproval();
-    expect(updateCaptureSettings).not.toHaveBeenCalled();
-    expect(NS.store.autoApprovalSaving).toBe(false);
-  });
-
-  it('关闭立即停止后续自动批准，无需再次确认', async () => {
-    const { policy, confirmUser, updateCaptureSettings } = setup({ autoApproval: true });
-    await policy.toggleAutoApproval();
-    expect(confirmUser).not.toHaveBeenCalled();
-    expect(updateCaptureSettings).toHaveBeenCalledExactlyOnceWith({ autoApproval: false });
-  });
-
-  it('保存失败不篡改策略，恢复交互并允许重试', async () => {
-    const { policy, updateCaptureSettings, NS } = setup();
-    updateCaptureSettings.mockRejectedValueOnce(new Error('offline'));
-    await expect(policy.toggleAutoApproval()).rejects.toThrow('offline');
-    expect(NS.store.captureSettings.autoApproval).toBe(false);
-    expect(NS.store.autoApprovalSaving).toBe(false);
-    await policy.toggleAutoApproval();
-    expect(updateCaptureSettings).toHaveBeenCalledTimes(2);
-  });
-
-  it('确认未完成时阻止重复开启', async () => {
-    const { policy, confirmUser, updateCaptureSettings } = setup();
-    let resolveConfirmation!: (value: boolean) => void;
-    confirmUser.mockImplementation(() => new Promise(resolve => { resolveConfirmation = resolve; }));
-    const first = policy.toggleAutoApproval();
-    await policy.toggleAutoApproval();
-    resolveConfirmation(true);
-    await first;
-    expect(confirmUser).toHaveBeenCalledOnce();
-    expect(updateCaptureSettings).toHaveBeenCalledOnce();
   });
 });
 
@@ -134,88 +43,221 @@ function settingsHtml(patch: Record<string, unknown> = {}) {
   NS.fmtDate = NS.esc;
   const window = {
     CogAssets: NS,
+    uiSelect: (options: any) => `<select id="${options.id}"${options.disabled ? ' disabled' : ''}>${options.options.map((item: any) => `<option value='${item.value}'>${item.label}</option>`).join('')}</select>`,
     uiButton: (options: any) => `<button data-act="${options.attrs?.['data-act'] || ''}">${options.label}</button>`,
     uiSwitch: (options: any) => `<button role="switch" data-act="${options.attrs?.['data-act']}"${options.disabled ? ' disabled' : ''}></button>`,
     uiAccordion: (options: any) => options.items.map((item: any) => `<details>${item.title}${item.bodyHtml}</details>`).join(''),
   };
+  runInNewContext(buttonSource, { window });
+  runInNewContext(formSource, { window });
+  runInNewContext(source, { window });
   runInNewContext(viewsSource.replace('NS.render = render;', 'NS.__settingsView = viewOrganizeSettingsPage; NS.render = render;'), { window });
   return NS.__settingsView();
 }
 
-describe('资产设置条件入口', () => {
-  it('旧后端禁用自动批准并明确要求重启，不影响夜间发现开关', () => {
-    const html = settingsHtml({ captureCapabilities: null });
-    expect(html).toContain('重启后可用');
-    expect(html).toContain('data-act="auto-approval-toggle" disabled');
-    expect(html).not.toContain('data-act="nightly-toggle" disabled');
-  });
-  it('健康或尚未检测时隐藏维护迁移，CLI 可用时无错误指引', () => {
-    const html = settingsHtml();
-    expect(html).not.toContain('ca-settings-model');
-    expect(html).not.toContain('data-act="go-configure-model"');
-    expect(html).not.toContain('data-act="storage-check"');
+describe('资产设置只承接夜间发现', () => {
+  it('提供夜间开关和模型顺序，不支持自动确认的运行版本禁用开关', () => {
+    const html = settingsHtml({ captureSettings: { enabled: true, nightlyStart: '01:00', nightlyEnd: '05:00' }, captureCapabilities: null,
+      cognitionStorageUpgrade: { report: { mode: 'unified', projectionPending: true, errors: [] } },
+      legacyMemoryMigration: { preview: { items: [{ id: 'legacy' }], sources: {} } } });
+    expect(html).toContain('data-act="nightly-toggle"');
+    expect(html).toMatch(/<button[^>]*disabled[^>]*data-act="auto-approval-toggle"/);
+    for (const action of ['auto-approval-boundary', 'run-maintenance', 'open-cleanup', 'storage-check', 'storage-recover']) expect(html).not.toContain(`data-act="${action}"`);
+    expect(html).toContain('完整建议进入');
     expect(html).not.toContain('旧记忆迁移');
-    const unloaded = settingsHtml({ legacyMemoryMigration: null, legacyScopedMemoryMigration: null });
-    expect(unloaded).not.toContain('旧记忆迁移');
   });
-
-  it('底层发现总开关关闭时不把 nightly 策略误报为允许', () => {
-    const html = settingsHtml({ captureSettings: { enabled: false, executionPolicy: 'nightly' } });
-    expect(html).toContain('已暂停');
-    expect(html).not.toContain('<span class="note">允许</span>');
-  });
-
-  it('未知模型状态如实说明，重试入口可用', () => {
-    const html = settingsHtml({ captureModelError: 'timeout', captureStatsError: 'timeout' });
-    expect(html).toContain('这不代表模型未配置');
-    expect(html).toContain('状态暂时无法读取');
-    expect(html).toContain('data-act="refresh"');
-    expect(html).toContain('data-act="nightly-toggle" disabled');
-  });
-
-  it('正常兼容与统一存储可按需维护，不能仅凭存储模式标为问题', () => {
-    for (const mode of ['mirror', 'unified']) {
-      const html = settingsHtml({ cognitionStorageUpgrade: { report: { mode, errors: [] } } });
-      expect(html).not.toContain('ca-settings-tools');
-      expect(html).not.toContain('检测到数据问题');
-      expect(html).not.toContain('需要处理');
+  it('模型授权未完成和通道不可用也不展示旧配置提醒', () => {
+    for (const captureModel of [{ channel: 'unavailable', authorizationRequired: true }, { channel: 'api', configured: false }, { channel: 'cli', available: false }]) {
+      const html = settingsHtml({ captureModel });
+      for (const text of ['ca-settings-model', '模型状态', '授权', 'API', 'CLI', '去应用设置']) expect(html).not.toContain(text);
+      expect(html).toContain('nightly-toggle');
     }
-    expect(settingsHtml({ cognitionStorageUpgrade: { report: { mode: 'unified', projectionPending: true, errors: [] } } })).toContain('data-act="storage-recover"');
   });
-
-  it('旧主进程已读取配置时不伪造通道可用，也不提示读取失败', () => {
-    const html = settingsHtml({ captureModel: { runtimeStatus: 'legacy', apiConfigured: true } });
-    expect(html).not.toContain('ca-settings-model');
-    expect(html).not.toContain('CLI 回退可用');
-    expect(html).not.toContain('CLI 回退可用');
-    expect(html).not.toContain('这不代表模型未配置');
-  });
-
-  it('扫描异常但尚未记录单场失败时，说明未完成且不呈现失败0场', () => {
-    const html = settingsHtml({ captureStats: { sweep: { lastResult: { error: 'interrupted', scanned: 4, queued: 0, failed: 0 } } } });
-    expect(html).toContain('本轮扫描未全部完成');
-    expect(html).not.toContain('失败 0 场');
+  it('关闭和读取失败如实显示，模型配置提醒彻底下线', () => {
+    expect(settingsHtml({ captureSettings: { enabled: false } })).toContain('已暂停');
+    const html = settingsHtml({ captureModelError: 'timeout', captureStatsError: 'timeout' });
+    for (const text of ['ca-settings-model', '模型状态', '模型未配置', '授权', 'API', 'CLI', '去应用设置']) expect(html).not.toContain(text);
+    expect(html).toContain('状态暂时无法读取');
+    expect(html).not.toContain('data-act="refresh"');
+    expect(html).toMatch(/<button[^>]*disabled[^>]*data-act="nightly-toggle"/);
+    const failed = settingsHtml({ captureStats: { sweep: { lastResult: { error: 'interrupted', scanned: 4, queued: 0, failed: 0 } } } });
+    expect(failed).toContain('本轮扫描未全部完成');
+    expect(failed).not.toContain('失败 0 场');
+    expect(failed).not.toContain('data-act="capture-action"');
   });
 });
 
-describe('设置存储检测生命周期', () => {
-  it('仅首次进入设置执行只读检查，失败 notify 和重复切页不形成循环', async () => {
+describe('设置不再触发旧迁移或自动批准流程', () => {
+  it('进入页面和重复变化只读取已加载的运行状态', () => {
     const { NS } = setup();
-    let listener!: () => void;
-    NS.onChange = (fn: () => void) => { listener = fn; };
-    NS.store.route = { name: 'overview' };
-    NS.actions.cognitionStorageUpgrade = vi.fn(async (action: string) => {
-      expect(action).toBe('check');
-      NS.store.cognitionStorageUpgrade = { failed: true };
-      listener();
-    });
+    NS.onChange = vi.fn();
+    NS.store.route = { name: 'settings' };
+    NS.actions.cognitionStorageUpgrade = vi.fn();
     runInNewContext(source, { window: { CogAssets: NS } });
     expect(NS.actions.cognitionStorageUpgrade).not.toHaveBeenCalled();
-    NS.store.route.name = 'settings';
-    listener();
-    listener();
-    NS.store.route.name = 'overview'; listener();
-    NS.store.route.name = 'settings'; listener();
-    expect(NS.actions.cognitionStorageUpgrade).toHaveBeenCalledOnce();
+    expect(NS.actions.updateCaptureSettings).not.toHaveBeenCalled();
+  });
+});
+
+describe('自动确认设置的真实页面闭环', () => {
+  it('默认关闭；只有运行能力明确支持才允许开启，读取失败不伪装为已开启', () => {
+    const defaultHtml = settingsHtml();
+    expect(defaultHtml).toContain('默认关闭');
+    expect(defaultHtml).toMatch(/aria-checked="false"[^>]*data-act="auto-approval-toggle"/);
+    expect(defaultHtml).not.toMatch(/disabled[^>]*data-act="auto-approval-toggle"/);
+    const missing = settingsHtml({ captureCapabilities: null, captureSettings: { autoApproval: true } });
+    expect(missing).toMatch(/aria-checked="false"[^>]*disabled[^>]*data-act="auto-approval-toggle"/);
+    expect(missing).toContain('尚不支持自动确认');
+    const error = settingsHtml({ captureModelError: 'timeout', captureSettings: { autoApproval: true } });
+    expect(error).toMatch(/aria-checked="false"[^>]*disabled[^>]*data-act="auto-approval-toggle"/);
+    const enabled = settingsHtml({ captureSettings: { autoApproval: true } });
+    expect(enabled).toMatch(/aria-checked="true"[^>]*data-act="auto-approval-toggle"/);
+    expect(enabled).toContain('其余完整建议留在');
+    expect(enabled).toContain('T 结构变化、冲突和不确定内容仍需人工确认');
+  });
+  it('开启需说明确认范围，取消不写入，重复点击不会产生两次授权', async () => {
+    const { NS, policy, confirmUser, updateCaptureSettings } = setup();
+    let approve!: (value: boolean) => void;
+    confirmUser.mockImplementationOnce(() => new Promise(resolve => { approve = resolve; }));
+    const first = policy.toggleAutoApproval();
+    await policy.toggleAutoApproval();
+    expect(confirmUser).toHaveBeenCalledOnce();
+    expect(confirmUser.mock.calls[0][0]).toContain('T 结构变化');
+    expect(updateCaptureSettings).not.toHaveBeenCalled();
+    approve(false);
+    await first;
+    expect(updateCaptureSettings).not.toHaveBeenCalled();
+    await policy.toggleAutoApproval();
+    expect(updateCaptureSettings).toHaveBeenCalledOnce();
+    expect(updateCaptureSettings).toHaveBeenCalledWith({ autoApproval: true });
+    expect(NS.store.captureSettings.autoApproval).toBe(false);
+  });
+  it('关闭直接保存，保存失败维持后端已确认的值并恢复可重试状态', async () => {
+    const { NS, policy, confirmUser, updateCaptureSettings } = setup({ autoApproval: true });
+    updateCaptureSettings.mockRejectedValueOnce(new Error('disk unavailable'));
+    await expect(policy.toggleAutoApproval()).rejects.toThrow('disk unavailable');
+    expect(NS.store.captureSettings.autoApproval).toBe(true);
+    expect(confirmUser).not.toHaveBeenCalled();
+    await policy.toggleAutoApproval();
+    expect(updateCaptureSettings).toHaveBeenLastCalledWith({ autoApproval: false });
+    expect(updateCaptureSettings).toHaveBeenCalledTimes(2);
+  });
+  it('后端没有返回所请求的设置时不冒充保存成功', async () => {
+    const { loadCognitionAssets } = await import('./helpers/cognition-renderer');
+    const invoke = vi.fn().mockResolvedValue({ ok: true, settings: { autoApproval: false } });
+    const toast = vi.fn();
+    const loaded = loadCognitionAssets({ captureSettings: { autoApproval: false } }, {}, { cogseed: { invoke }, uiToast: toast });
+    await expect(loaded.ns.actions.updateCaptureSettings({ autoApproval: true })).rejects.toThrow('有效保存结果');
+    expect(loaded.store.captureSettings.autoApproval).toBe(false);
+    expect(toast).not.toHaveBeenCalled();
+  });
+});
+
+function modelSettingsHarness() {
+  const { NS } = setup({ enabled: true, modelCandidates: [] } as any);
+  NS.store.route = { name: 'settings' };
+  NS.esc = (value: unknown) => String(value ?? '');
+  const invoke = vi.fn(async (channel: string, args: any) => channel === 'auth.listEntries'
+    ? { ok: true, entries: [{ provider: 'cp:one', providerLabel: 'One' }, { provider: 'expired', providerLabel: 'Expired', oauthExpired: true, modelAvailable: false }] }
+    : { ok: true, models: args.provider === 'cp:one' ? [{ id: 'first', name: 'First', reasoning: true }, { id: 'second', name: 'Second' }] : [{ id: 'gone', name: 'Gone' }] });
+  const window = {
+    CogAssets: NS, cogseed: { invoke },
+    uiButton: (value: any) => `<button data-act="${value.attrs['data-act']}"${value.disabled ? ' disabled' : ''}>${value.label}</button>`,
+    uiSelect: (value: any) => `<select id="${value.id}">${value.options.map((item: any) => `<option>${item.label}</option>`).join('')}</select>`,
+  };
+  runInNewContext(buttonSource, { window });
+  runInNewContext(formSource, { window });
+  runInNewContext(source, { window });
+  NS.actions.updateCaptureSettings.mockImplementation(async (patch: any) => { Object.assign(NS.store.captureSettings, patch); });
+  return { NS, policy: NS.assetSettings, invoke, pick: (provider: string, model: string) => ({ querySelector: () => ({ value: JSON.stringify([provider, model]) }) }), el: (index = 0) => ({ dataset: { index: String(index) } }) };
+}
+
+describe('夜间模型页面顺序与系统目录', () => {
+  it('空配置默认跟随系统，复用系统目录且重复添加不产生重复备用项', async () => {
+    const { NS, policy, invoke, pick, el } = modelSettingsHarness();
+    expect(policy.modelControls()).toContain('跟随系统模型');
+    await policy.loadModels();
+    expect(invoke).toHaveBeenCalledWith('auth.listEntries', { includeUnavailable: true });
+    expect(policy.modelControls()).toContain('One · First');
+    expect(policy.modelControls()).not.toContain('Expired · Gone');
+    await policy.modelAction('nightly-model-add', el(), pick('cp:one', 'first'));
+    await policy.modelAction('nightly-model-add', el(), pick('cp:one', 'first'));
+    await policy.modelAction('nightly-model-add', el(), pick('cp:one', 'second'));
+    expect(NS.store.captureSettings.modelCandidates).toEqual([{ provider: 'cp:one', model: 'first' }, { provider: 'cp:one', model: 'second' }]);
+    await policy.modelAction('nightly-model-up', el(1), pick('', ''));
+    expect(NS.store.captureSettings.modelCandidates[0].model).toBe('second');
+    await policy.modelAction('nightly-model-remove', el(1), pick('', ''));
+    expect(NS.store.captureSettings.modelCandidates).toHaveLength(1);
+    await policy.modelAction('nightly-model-reset', el(), pick('', ''));
+    expect(NS.store.captureSettings.modelCandidates).toEqual([]);
+  });
+  it('已删除模型保留可辨认状态，保存失败与目录失败均不丢顺序且可以重试', async () => {
+    const { NS, policy, invoke, pick, el } = modelSettingsHarness();
+    NS.store.captureSettings.modelCandidates = [{ provider: 'cp:removed', model: 'saved' }];
+    await policy.loadModels();
+    expect(policy.modelControls()).toContain('系统配置中已停用或移除');
+    NS.actions.updateCaptureSettings.mockRejectedValueOnce(new Error('save failed'));
+    await expect(policy.modelAction('nightly-model-reset', el(), pick('', ''))).rejects.toThrow('save failed');
+    expect(NS.store.captureSettings.modelCandidates).toEqual([{ provider: 'cp:removed', model: 'saved' }]);
+    invoke.mockRejectedValueOnce(new Error('directory offline'));
+    await policy.loadModels(true);
+    expect(policy.modelControls()).toContain('模型列表读取失败');
+    expect(NS.store.captureSettings.modelCandidates[0].model).toBe('saved');
+    await policy.modelAction('nightly-model-retry', el(), pick('', ''));
+    expect(policy.modelControls()).not.toContain('模型列表读取失败');
+    expect(policy.modelControls()).toContain('系统配置中已停用或移除');
+  });
+});
+
+
+describe('夜间模型设置与实际配置一致', () => {
+  it('显示系统首选，但不把配置首选说成已成功调用的模型', async () => {
+    const { NS, policy } = modelSettingsHarness();
+    NS.store.captureModel = { provider: 'cp:one', model: 'first', available: false };
+    await policy.loadModels();
+    const html = policy.modelControls();
+    expect(html).toContain('系统首选：One · First');
+    expect(html).toContain('跟随系统模型顺序');
+    expect(html).not.toContain('调用成功');
+    expect(html).toMatch(/<button[^>]*disabled[^>]*data-act="nightly-model-add"/);
+  });
+  it('保留手输绑定模型，登录过期但可以刷新的配置仍可选择', async () => {
+    const { policy, invoke } = modelSettingsHarness();
+    invoke.mockImplementation(async (channel: string) => channel === 'auth.listEntries'
+      ? { ok: true, entries: [{ provider: 'manual', providerLabel: 'Manual', model: 'custom-id', modelName: 'Custom', oauthExpired: true }] }
+      : { ok: true, models: [] });
+    await policy.loadModels();
+    expect(policy.modelControls()).toContain('Manual · Custom');
+    expect(policy.modelControls()).not.toContain('系统配置中已停用或移除');
+  });
+  it('部分目录失败时保留已绑定模型和重试入口', async () => {
+    const { NS, policy, invoke } = modelSettingsHarness();
+    NS.store.captureSettings.modelCandidates = [{ provider: 'manual', model: 'custom-id' }];
+    invoke.mockImplementation(async (channel: string) => {
+      if (channel === 'auth.listEntries') return { ok: true, entries: [{ provider: 'manual', model: 'custom-id' }] };
+      throw new Error('offline');
+    });
+    await policy.loadModels();
+    const html = policy.modelControls();
+    expect(html).toContain('manual · custom-id');
+    expect(html).toContain('部分模型目录未读到');
+    expect(html).toContain('nightly-model-retry');
+    expect(html).not.toContain('系统配置中已停用或移除');
+  });
+  it('选择前不能保存，重画保留选择；保存后明确首选与备用顺序', async () => {
+    const { NS, policy, pick, el } = modelSettingsHarness();
+    await policy.loadModels();
+    const add = { disabled: true, classList: { toggle: vi.fn() } };
+    policy.modelInput({ target: { id: 'ca-nightly-model-picker', value: JSON.stringify(['cp:one', 'first']) } }, { querySelector: () => add });
+    expect(add.disabled).toBe(false);
+    expect(add.classList.toggle).toHaveBeenCalledWith('is-disabled', false);
+    expect(policy.modelControls()).toContain('selected');
+    await policy.modelAction('nightly-model-add', el(), pick('cp:one', 'first'));
+    await policy.modelAction('nightly-model-add', el(), pick('cp:one', 'second'));
+    const html = policy.modelControls();
+    expect(html).toContain('首选模型');
+    expect(html).toContain('备用 1');
+    expect(html).toMatch(/<button[^>]*disabled[^>]*data-act="nightly-model-add"/);
+    expect(NS.actions.updateCaptureSettings).toHaveBeenLastCalledWith({ modelCandidates: [{ provider: 'cp:one', model: 'first' }, { provider: 'cp:one', model: 'second' }] });
   });
 });

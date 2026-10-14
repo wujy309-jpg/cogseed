@@ -23,6 +23,7 @@ const TEST_UID = 'uApprovalIpc';
 const ATTACKER_UID = 'attacker';
 
 const approvalFeature = {
+  listAssetChangeProposals: vi.fn(async () => [{ id: 'ap-listed', state: 'pending' }]),
   readAssetChangeProposal: vi.fn(async () => ({ id: 'ap-x', state: 'pending' })),
   decideAssetChangeProposal: vi.fn(async () => ({ ok: true, state: 'confirmed', appliedVersion: 'v3' })),
 };
@@ -60,6 +61,19 @@ function call(channel: string, payload: unknown = {}) {
 const PID = 'ap-0123456789abcdef01234567';
 
 describe('ipc › recall.assets.approval.* 两通道（薄层契约）', () => {
+  it('活动队列同时返回同一用户的真实审批提议，读取失败不伪装为空列表', async () => {
+    approvalFeature.listAssetChangeProposals.mockClear();
+    const result = await call('recall.candidates.list', { view: 'activity-queue', uid: ATTACKER_UID });
+    expect(result.ok).toBe(true);
+    expect(result.assetApprovals).toEqual([{ id: 'ap-listed', state: 'pending' }]);
+    expect(approvalFeature.listAssetChangeProposals).toHaveBeenCalledWith(TEST_UID);
+    approvalFeature.listAssetChangeProposals.mockRejectedValueOnce(new Error('approval read failed'));
+    const failed = await call('recall.candidates.list', { view: 'activity-queue' });
+    expect(failed.ok).toBe(false);
+    expect(failed.error).toContain('approval read failed');
+    expect(failed.assetApprovals).toBeUndefined();
+  });
+
   it('两通道已注册（不是 unknown channel）', async () => {
     const read = await call('recall.assets.approval.read', { proposalId: PID });
     expect(read.ok).toBe(true);

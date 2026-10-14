@@ -13,18 +13,12 @@ describe('资产设置认知数据升级真实页面集成', () => {
     expect(checked).not.toContain('data-act="storage-activate"');
     expect(checked).not.toMatch(/disabled[^>]*data-act="storage-activate"|data-act="storage-activate"[^>]*disabled/);
   });
-  it('处理中禁用动作，失败保留检查入口，兼容副本失败明确显示主档已生效', () => {
-    const running = renderCognition({ name: 'settings' }, { cognitionStorageUpgrade: { report, running: true } });
-    expect(running).toContain('正在核对和处理');
-    const failed = renderCognition({ name: 'settings' }, { cognitionStorageUpgrade: { report: { ...report, errors: ['blocked'] }, failed: true } });
-    expect(failed).toContain('数据检查未完成');
-    expect(failed).toContain('需要核对');
-    expect(failed).toMatch(/disabled[^>]*data-act="storage-activate"|data-act="storage-activate"[^>]*disabled/);
-    const pending = renderCognition({ name: 'settings' }, { cognitionStorageUpgrade: { report: { ...report, mode: 'unified', projectionPending: true } } });
-    expect(pending).toContain('统一存储已生效'); expect(pending).toContain('data-act="storage-recover"'); expect(pending).toContain('data-act="storage-rollback"');
-    const partial = renderCognition({ name: 'settings' }, { cognitionStorageUpgrade: { report: { mode: 'mirror', errors: ['blocked'], assets: { total: 0 } }, failed: true } });
-    expect(partial).toContain('数据检查未完成');
-    expect(partial).not.toContain('已核对：');
+  it('存储运行和失败状态不恢复已退役设置卡片', () => {
+    for (const state of [{ report, running: true }, { report: { ...report, errors: ['blocked'] }, failed: true }, { report: { ...report, mode: 'unified', projectionPending: true } }]) {
+      const html = renderCognition({ name: 'settings' }, { cognitionStorageUpgrade: state });
+      for (const action of ['storage-check', 'storage-activate', 'storage-recover', 'storage-rollback']) expect(html).not.toContain(`data-act="${action}"`);
+      expect(html).toContain('nightly-toggle');
+    }
   });
   it('检查零写入，激活与回退转发既有 IPC，失败不能伪造成功', async () => {
     const calls: Array<[string, unknown]> = [];
@@ -41,15 +35,6 @@ describe('资产设置认知数据升级真实页面集成', () => {
     fixture.window.cogseed.invoke = async () => { throw new Error('storage failure'); };
     await fixture.ns.actions.cognitionStorageUpgrade('activate');
     expect(fixture.store.cognitionStorageUpgrade.failed).toBe(true);
-    expect(fixture.render()).toContain('数据维护未完成');
-  });
-  it('旧记忆整体读取失败保留重试；来源异常不冒充零条待迁移', () => {
-    const failed = renderCognition({ name: 'settings' }, { legacyMemoryMigration: { failed: true } });
-    expect(failed).toContain('检查未完成');
-    expect(failed).toContain('data-act="legacy-memory-refresh"');
-    expect(failed).not.toContain('0 条待迁移');
-    const unavailable = renderCognition({ name: 'settings' }, { legacyMemoryMigration: { preview: { items: [], sources: { memory: { status: 'unavailable' } } } } });
-    expect(unavailable).toContain('来源需核对');
-    expect(unavailable).not.toContain('0 条待迁移');
+    expect(fixture.render()).not.toContain('data-act="storage-activate"');
   });
 });

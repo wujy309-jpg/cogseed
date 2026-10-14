@@ -6,7 +6,7 @@ import os from 'node:os';
 const enabled=process.env.COGSEED_LIVE_MEETING_TEST==='1';
 const suite=enabled?describe:describe.skip;
 let root='',oldRoot:string|undefined,uid='',report:any={};
-suite('真实模型：会议本体创建、纠正与后续使用',()=>{
+suite('真实模型：对话临时信息不形成长期认知',()=>{
  beforeAll(async()=>{
   const source=process.env.COGSEED_LIVE_SOURCE_CONFIG_DIR;uid=process.env.COGSEED_LIVE_SOURCE_UID||'';
   if(!source||!uid)throw new Error('explicit source config directory and UID required');
@@ -20,7 +20,7 @@ suite('真实模型：会议本体创建、纠正与后续使用',()=>{
   if(oldRoot===undefined)delete process.env.COGSEED_WORKSPACE_ROOT;else process.env.COGSEED_WORKSPACE_ROOT=oldRoot;
   if(root)fs.rmSync(root,{recursive:true,force:true});
  });
- it('自然语言指令必须产生正式对象与保存回执，不能只生成文件',async()=>{
+ it('自然语言资料和纠错回答不能绕过夜间提取确认形成长期记录',async()=>{
   const {appendVisible}=await import('../../src/main/features/group_chat/visibility');
   const {streamChatWithModel}=await import('../../src/main/model/core-agent/client');
   const {readOntologyDocument}=await import('../../src/main/features/cognition/ontology/service');
@@ -48,10 +48,12 @@ suite('真实模型：会议本体创建、纠正与后续使用',()=>{
    await appendVisible(uid,cid,{id:`live-reply-${index}`,ts:new Date().toISOString(),from:'commander',to:['user'],text:result.text},['commander']);
    const doc=readOntologyDocument(uid);
    const modules=Object.values(doc.records).filter(r=>r.kind==='module'&&r.status==='active');
-   expect(modules).toHaveLength(1);
+   expect(modules).toHaveLength(0);
+   expect(receipts).toHaveLength(0);
+   const { loadGlossary } = await import('../../src/main/features/transcript_glossary');
+   expect(loadGlossary(uid).entries).toHaveLength(0);
+   expect(toolInputs.some(tool => ['personal_field_remember', 'ontology_slot_remember', 'cognition_ontology_save', 'transcript_remember_correction'].includes(tool.name))).toBe(false);
    report={...report,records:doc.records};
-   if(index===0){expect(receipts.some(r=>r.target==='ontology')).toBe(true);expect(Object.values(doc.records).some(r=>r.certainty==='unknown'&&JSON.stringify(r).includes('procedure'))).toBe(true);}
-   if(index===1){expect(Object.values(doc.records).some(r=>r.kind==='assertion'&&r.status==='active'&&r.certainty==='confirmed'&&r.object.kind==='literal'&&r.object.value==='发布流程')).toBe(true);const {loadGlossary}=await import('../../src/main/features/transcript_glossary');expect(loadGlossary(uid).entries.some(e=>e.wrong==='包智能体'&&e.correct==='报销智能体'&&!e.scope.global)).toBe(true);}
   }
   report={...report,passed:true,formalRecordCount:Object.keys(readOntologyDocument(uid).records).length};
  },0);

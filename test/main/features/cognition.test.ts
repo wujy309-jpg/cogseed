@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../helpers/nightly-formation-fixture';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -37,7 +38,7 @@ describe('cognition feature aggregate layer', () => {
     expect(memory.addEntry(UID, 'user', 'Prefers local-first memory flows.').ok).toBe(true);
     const created = await groups.createGroup(UID, 'Research ontology');
     expect(created.ok).toBe(true);
-    const recallCandidate = await recallCandidates.saveRecallCandidate(UID, {
+    const recallCandidate = await createNightlyCandidateFixture(UID, {
       judgment: 'Keep review evidence traceable.', summary: 'Traceable evidence habit',
       suggestedType: 'rule',
       suggestedScope: 'project',

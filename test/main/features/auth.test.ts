@@ -996,3 +996,26 @@ describe('auth › getConfig', () => {
     expect(await a.getConfig()).toEqual({ provider: 'anthropic', model: 'claude-opus-4-8' });
   });
 });
+
+
+describe('auth › ordered task model candidates', () => {
+  it('uses configured credentials in explicit model order and excludes disabled custom models', async () => {
+    const a = await import('../../../src/main/features/auth');
+    const providers = await import('../../../src/main/features/custom_providers');
+    const custom = providers.addCustomProvider(TEST_UID, {
+      name: 'Nightly Relay', protocol: 'openai', baseUrl: 'https://nightly-relay.example/v1',
+      apiKey: ['synthetic', TEST_UID].join('-'),
+      models: [{ id: 'first' }, { id: 'second' }, { id: 'disabled', enabled: false }],
+    });
+    if (!custom.ok) throw new Error(custom.error);
+    const provider = `cp:${custom.id}`;
+    await a.addEntry({ provider, model: 'first', profileId: provider });
+    const choices = await a.pickChatEntryGroupForModelCandidates([
+      { provider, model: 'second' }, { provider: 'unconfigured', model: 'x' },
+      { provider, model: 'disabled' }, { provider, model: 'first' }, { provider, model: 'second' },
+    ]);
+    expect(choices.map(choice => [choice.provider, choice.model])).toEqual([[provider, 'second'], [provider, 'first']]);
+    expect(choices.every(choice => choice.baseUrl === 'https://nightly-relay.example/v1')).toBe(true);
+    expect(await a.pickChatEntryGroupForModelCandidates([{ provider: 'unconfigured', model: 'x' }])).toEqual([]);
+  });
+});

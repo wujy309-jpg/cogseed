@@ -9,6 +9,7 @@ export function templateSlotNames(statement: string): string[] {
 }
 export function buildFormalAssetPayload(record: RecallAbilityAssetRecord): FormalAssetPayload {
   switch (record.type) {
+    case 'cognition': return { kind: 'cognition' };
     case 'rule': return { kind: 'rule', action: record.statement, applicableWhen: record.applicableWhen ?? [],
       forbiddenWhen: record.forbiddenWhen ?? [], boundaryRecorded: record.applicableWhen !== undefined && record.forbiddenWhen !== undefined,
       ...(record.causalRule ? { causalRule: record.causalRule } : {}) };

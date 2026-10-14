@@ -33,6 +33,11 @@ export interface HomeRegistryEntry {
 /** 内置六家：出厂默认（判据文案与 2026-10-02 拍板的归属表一致）。 */
 export const DEFAULT_HOME_REGISTRY: readonly HomeRegistryEntry[] = [
   {
+    home: 'cognition', label: '认知',
+    definition: '由可核对来源形成的独立认识或做法，保留条件和局限，暂不分类。',
+    examples: ['部署决定应记录适用条件和证据，条件变化后重新核对。'], pool: 'recall', store: { kind: 'assertion' }, builtin: true,
+  },
+  {
     home: 'personal_fact',
     label: '关于我',
     definition: '关于用户本人的、跨任务长期成立的短句事实（身份、归属、联系方式、稳定偏好与边界）。',

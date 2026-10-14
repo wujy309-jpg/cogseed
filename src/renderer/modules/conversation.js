@@ -12151,40 +12151,6 @@ function _syncBubbleReferenceActionState(msgDiv) {
 // Attach small action buttons below the bubble. Kept outside the bubble so
 // they never overlap content. `getContent` is a callback so it can return the
 // latest text after streaming completes.
-async function _openCognitionCaptureFromBubble(msgDiv, getContent, cognitionBtn) {
-  const text = typeof getContent === 'function' ? String(getContent() || '') : '';
-  const messageId = String(msgDiv?.dataset?.msgId || '').trim();
-  if (!cognitionBtn || !text.trim() || !messageId || cognitionBtn.disabled) return false;
-
-  // The feature can load after the user has navigated elsewhere. Preserve the
-  // source task at click time so the evidence is never attributed to that
-  // later task.
-  const sourceCid = currentCid;
-  const loader = typeof loadRendererFeature === 'function'
-    ? loadRendererFeature
-    : window.loadRendererFeature;
-  if (typeof window.openCognitionCapture !== 'function' && typeof loader === 'function') {
-    cognitionBtn.disabled = true;
-    try {
-      await loader('personal-ontology');
-    } catch (error) {
-      _convLog.warn('cognition capture feature load failed', { error: error?.message || String(error) });
-    } finally {
-      cognitionBtn.disabled = false;
-    }
-  }
-  if (typeof window.openCognitionCapture !== 'function') return false;
-  try {
-    return window.openCognitionCapture({
-      conversationId: sourceCid,
-      messageId,
-    }) !== false;
-  } catch (error) {
-    _convLog.warn('cognition capture open failed', { error: error?.message || String(error) });
-    return false;
-  }
-}
-
 function _attachBubbleActions(msgDiv, getContent, opts = {}) {
   const includeArchive = opts.archive !== false;
   const includeRetry = opts.retry === true;
@@ -12217,7 +12183,6 @@ function _attachBubbleActions(msgDiv, getContent, opts = {}) {
   const copyButton = uiIconButton({ label: copyLabel, icon: 'copy', className: 'bubble-action-btn bubble-copy-btn' });
   const asideButton = uiIconButton({ label: asideLabel, icon: 'message-square', className: 'bubble-action-btn bubble-aside-btn' });
   const overflowItems = `${uiButton({ label: t('chat.message_select'), role: 'ghost', size: 'sm', icon: 'list', className: 'chat-bubble-menu-item bubble-select-btn', attrs: { role: 'menuitem', title: t('chat.message_select_title') } })}
-    ${includeArchive && !includeRetry ? uiButton({ label: t('cognition.capture.menu'), role: 'ghost', size: 'sm', icon: 'brain-circuit', className: 'chat-bubble-menu-item bubble-cognition-btn', attrs: { role: 'menuitem', title: t('cognition.capture.menu_title') } }) : ''}
     ${includeArchive ? uiButton({ label: t('chat.archive_btn'), role: 'ghost', size: 'sm', icon: 'book-open', className: 'chat-bubble-menu-item bubble-archive-btn', attrs: { role: 'menuitem', title: t('chat.archive_btn_title') } }) : ''}`;
   actions.innerHTML = `
     <span class="chat-bubble-direct-actions">${copyButton}${quoteButton}${asideButton}</span>
@@ -12231,7 +12196,6 @@ function _attachBubbleActions(msgDiv, getContent, opts = {}) {
   const copyBtn = actions.querySelector('.bubble-copy-btn');
   const quoteBtn = actions.querySelector('.bubble-quote-btn');
   const selectBtn = actions.querySelector('.bubble-select-btn');
-  const cognitionBtn = actions.querySelector('.bubble-cognition-btn');
   const asideBtn = actions.querySelector('.bubble-aside-btn');
   if (includeRetry) _attachBubbleRetryBtn(directActions, msgDiv);
   _wireBubbleActionMenu(actions);
@@ -12309,10 +12273,6 @@ function _attachBubbleActions(msgDiv, getContent, opts = {}) {
     e.stopPropagation();
     if (selectBtn.disabled) return;
     _enterMessageSelection(msgDiv);
-  });
-  cognitionBtn?.addEventListener('click', (e) => {
-    e.stopPropagation();
-    void _openCognitionCaptureFromBubble(msgDiv, getContent, cognitionBtn);
   });
   copyBtn?.addEventListener('click', async (e) => {
     e.stopPropagation();

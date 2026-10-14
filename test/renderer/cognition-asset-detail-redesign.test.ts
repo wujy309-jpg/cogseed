@@ -26,7 +26,7 @@ const useCard = (html: string) => {
 };
 
 describe('正式认知资产详情页', () => {
-  it.each(['personal', 'rule', 'template', 'skill_method', 'fact'])('%s 使用同一阅读骨架，正文和当前版边界完整可见', (type) => {
+  it.each(['cognition', 'personal', 'rule', 'template', 'skill_method', 'fact'])('%s 使用同一阅读骨架，正文和当前版边界完整可见', (type) => {
     const html = renderDetail({ ...BASE, type });
 
     expect((html.match(/<h1\b/g) || [])).toHaveLength(1);
@@ -37,8 +37,10 @@ describe('正式认知资产详情页', () => {
     expect(html).not.toContain('ca-detail-side');
     expect(html).toContain('ca-asset-body');
     expect(html).toContain('先确认受影响的用户。\n再核对回滚方案。');
-    if (type === 'rule') { expect(html).toContain('发布前检查'); expect(html).toContain('临时草稿'); }
-    else { expect(html).not.toContain('ca-prototype-boundaries'); }
+    expect(html).toContain('发布前检查');
+    expect(html).toContain('临时草稿');
+    expect(html).toContain('ca-prototype-boundaries');
+    expect(html).not.toContain('data-f="type"');
     expect(html).toContain('在用 v2');
     expect(html).toContain('2 条来源记录');
     expect(html.indexOf('ca-asset-body')).toBeLessThan(html.indexOf('ca-library-sources'));

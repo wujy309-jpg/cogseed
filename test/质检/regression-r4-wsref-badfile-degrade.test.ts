@@ -1,3 +1,4 @@
+import { seedStoredAbilityAsset } from '../helpers/stored-ability-asset';
 /**
  * 探针（本轮红队-越权与状态 · 数据完整性）：workspace-refs 单文件集合一条坏
  * JSON 让整个引用列表 throw——「一条坏档断一面」的第三处（F-r4-1 cognition
@@ -57,7 +58,7 @@ async function setup() {
   // 探针按真实链路先建资产。
   const now = new Date().toISOString();
   for (const suffix of ['1', '2']) {
-    await assets.createAbilityAsset(UID, {
+    await seedStoredAbilityAsset(UID, {
       schemaVersion: 2,
       ownerId: UID,
       id: `ast-good-${suffix}`,

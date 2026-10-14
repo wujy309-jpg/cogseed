@@ -24,6 +24,9 @@
   function button(label, action, role = 'secondary', attrs = {}, icon = '') {
     return root.uiButton({ label, role, className: 'ontology-ws-button', ...(icon ? { icon } : {}), attrs: { 'data-ontology-action': action, ...attrs } });
   }
+  function pageControl(label, action, className = '', attrs = {}, icon = '') {
+    return root.uiButton({ label, role: 'ghost', size: 'sm', className, ...(icon ? { icon } : {}), attrs: { 'data-ontology-action': action, ...attrs } });
+  }
   function tabs(items, selected, label, attrs = {}) {
     return root.uiTabs({ items: items.map(([value, itemLabel]) => ({ value, label: itemLabel })), value: selected, ariaLabel: label, attrs });
   }
@@ -198,58 +201,6 @@
     ].join('');
     return '';
   }
-  function legacyCandidateText(record) {
-    const lines = [`${text('name', '名称')}：${recordName(record)}`];
-    if (record.kind === 'entity') {
-      const type = state.doc.records[record.typeId];
-      if (type?.kind === 'definition') lines.push(`${text('type', '类型')}：${type.name}`);
-      if (record.description) lines.push(`${text('description', '说明')}：${record.description}`);
-      if (record.aliases.length) lines.push(`${text('aliases', '别名')}：${record.aliases.join('、')}`);
-      const related = Object.values(state.doc.records).filter(item => {
-        if (item.kind !== 'assertion' || item.status !== 'active' || item.access === 'owner_only' || item.moduleId !== record.moduleId) return false;
-        const target = item.object.kind === 'entity' ? state.doc.records[item.object.id] : null;
-        if (target?.access === 'owner_only') return false;
-        return item.subjectId === record.id || item.object.kind === 'entity' && item.object.id === record.id;
-      }).slice(0, 40);
-      if (related.length) lines.push(`${text('relatedFacts', '相关公开事实')}：\n${related.map(item => `${recordName(item)}（${item.validity.from || text('unknownDate', '开始时间未确认')} → ${item.validity.until || text('ongoing', '持续有效')}）`).join('\n')}`);
-    } else if (record.kind === 'assertion') {
-      const definition = state.doc.records[record.definitionId], subject = state.doc.records[record.subjectId];
-      lines.push(`${text('subject', '对象')}：${subject?.kind === 'entity' ? subject.name : record.subjectId}`);
-      lines.push(`${text('predicate', '关系或属性')}：${definition?.kind === 'definition' ? definition.name : record.definitionId}`);
-      lines.push(`${text('value', '事实值')}：${valueLabel(record.object)}`);
-      lines.push(`${text('validity', '有效时间')}：${record.validity.from || text('unknownDate', '开始时间未确认')} → ${record.validity.until || text('ongoing', '持续有效')}`);
-    } else if (record.kind === 'definition') {
-      if (record.description) lines.push(`${text('description', '说明')}：${record.description}`);
-      lines.push(`${text('definitionKind', '定义类型')}：${text(record.definitionKind, record.definitionKind)}`);
-      lines.push(`${text('subjectTypes', '起点类型')}：${record.subjectTypes.map(id => state.doc.records[id]?.name || id).join('、') || text('noTypeLimit', '不限定')}`);
-      lines.push(`${text('objectType', '终点类型')}：${record.objectTypes.map(id => state.doc.records[id]?.name || id).join('、') || text('noTypeLimit', '不限定')}`);
-      lines.push(`${text('valueType', '值类型')}：${text(record.valueType, record.valueType)}`);
-      lines.push(`${text('cardinality', '数量')}：${text(record.cardinality, record.cardinality)}`);
-    } else if (record.kind === 'rule') {
-      lines.push(`${text('requirement', '要求')}：${record.requirement}`);
-      lines.push(`${text('strength', '强度')}：${text(record.strength, record.strength)}`);
-      lines.push(`${text('condition', '条件')}：${conditionLabel(record.condition)}`);
-      const effect = record.effect.kind === 'include_recipient'
-        ? `${text('includeRecipient', '加入接收人')}：${state.doc.records[record.effect.entityId]?.name || record.effect.entityId}`
-        : record.effect.kind === 'required_section' ? `${text('requiredSection', '必需章节')}：${record.effect.name}`
-          : record.effect.kind === 'choice' ? `${record.effect.key}：${record.effect.value}` : text('noteOnly', '显示说明');
-      lines.push(`${text('effect', '效果')}：${effect}`);
-      if (record.exception) lines.push(`${text('exception', '例外')}：${record.exception}`);
-    } else if (record.kind === 'reference') {
-      lines.push(`${text('targetModule', '引用本体')}：${state.doc.records[record.targetModuleId]?.name || record.targetModuleId}`);
-      if (record.targetRecordId) lines.push(`${text('targetRecord', '引用内容')}：${recordName(state.doc.records[record.targetRecordId])}`);
-    }
-    const refs = record.source.refs || [];
-    if (refs.length) lines.push(`${text('source', '原来源关联')}：${refs.map(ref => `${ref.kind}:${ref.id}`).join('、')}`);
-    return lines.join('\n').slice(0, 4000);
-  }
-  function legacyCandidateScope(record) {
-    const module = record.moduleId ? state.doc.records[record.moduleId] : null;
-    if (module?.kind !== 'module') return {};
-    if (module.scope.kind === 'project' && module.scope.id) return { scopePolicy: { projectIds: [module.scope.id] } };
-    if (module.scope.kind === 'workspace' && module.scope.id) return { scopePolicy: { workspaceIds: [module.scope.id] } };
-    return {};
-  }
   function provenance(record) {
     const refs = record.source.refs || [];
     return `<div class="ontology-ws-provenance"><b>${esc(text('source', '来源'))}</b><span>${esc(record.source.label)}</span>${refs.length ? `<ul>${refs.map(ref => `<li>${esc(text(ref.kind, ref.kind))} · ${esc(ref.id)}</li>`).join('')}</ul>` : ''}</div>`;
@@ -317,7 +268,7 @@
     const modulePageSize = 20, pageCount = Math.max(1, Math.ceil(matching.length / modulePageSize));
     state.modulePage = Math.min(state.modulePage || 0, pageCount - 1);
     const visibleModules = matching.slice(state.modulePage * modulePageSize, (state.modulePage + 1) * modulePageSize);
-    const toggle = (label, action, selected, attrs = {}) => `<button type="button" class="${selected ? 'active' : ''}" data-ontology-action="${action}" aria-pressed="${selected}" ${Object.entries(attrs).map(([key, value]) => `${key}="${esc(value)}"`).join(' ')}>${esc(label)}</button>`;
+    const toggle = (label, action, selected, attrs = {}) => pageControl(label, action, selected ? 'active' : '', { 'aria-pressed': String(selected), ...attrs });
     const heading = query ? text('searchResults', '搜索结果') : state.showInactive ? text('inactiveModules', '已停用本体') : text('title', '本体');
     const card = m => {
       const records = Object.values(state.doc.records).filter(r => r.moduleId === m.id && r.status === 'active');
@@ -328,10 +279,10 @@
     };
     const results = (state.searchResults || []).filter(row => allModules.some(m => m.id === (row.moduleId || row.id)));
     return `<section class="ontology-page ont-premium ont-directory-compact${state.mode === 'graph' ? ' ont-directory-graph' : ''}"><div class="ont-library-scroll" data-ontology-scroll>
-      <header class="ont-library-heading"><h1>${esc(heading)}<span>· ${query ? results.length + matching.filter(m => !results.some(r => r.id === m.id)).length : allModules.length}</span></h1><div class="ont-library-actions">${button(text('import', '导入资料'), 'import')}${button('＋ ' + text('createModule', '创建本体'), 'create-module', 'primary')}<details class="ont-overflow"><summary aria-label="${esc(text('directoryMore', '本体目录更多选项'))}">···</summary><div class="ont-menu">${button(state.mode === 'graph' ? text('backModules', '返回本体列表') : text('moduleReferences', '查看本体间引用'), 'directory-view', 'ghost', { 'data-view': state.mode === 'graph' ? 'list' : 'graph' })}${button(state.showInactive ? text('showActive', '返回有效本体') : text('showInactive', '查看停用本体'), 'toggle-inactive', 'ghost')}${button(text('refresh', '重新读取'), 'refresh-directory', 'ghost')}</div></details></div></header>
+      <header class="ont-library-heading"><h1>${esc(heading)}<span>· ${query ? results.length + matching.filter(m => !results.some(r => r.id === m.id)).length : allModules.length}</span></h1><div class="ont-library-actions">${button('＋ ' + text('createModule', '创建本体'), 'create-module', 'primary')}<details class="ont-overflow"><summary aria-label="${esc(text('directoryMore', '本体目录更多选项'))}">···</summary><div class="ont-menu">${button(state.mode === 'graph' ? text('backModules', '返回本体列表') : text('moduleReferences', '查看本体间引用'), 'directory-view', 'ghost', { 'data-view': state.mode === 'graph' ? 'list' : 'graph' })}${button(state.showInactive ? text('showActive', '返回有效本体') : text('showInactive', '查看停用本体'), 'toggle-inactive', 'ghost')}${button(text('refresh', '重新读取'), 'refresh-directory', 'ghost')}</div></details></div></header>
       <div class="ont-library-command"><div class="ont-library-view-toggle" aria-label="${esc(text('viewMode', '本体展示方式'))}">${toggle(text('cards', '卡片'), 'directory-view', state.mode !== 'graph', { 'data-view': 'list' })}${toggle(text('graph', '关系图'), 'directory-view', state.mode === 'graph', { 'data-view': 'graph' })}</div><div class="ont-scope-tabs">${[['all', '全部'], ['personal', '个人'], ['project', '项目'], ['workspace', '工作空间']].map(([value, label]) => toggle(text(value === 'workspace' ? 'workspaceScopeLabel' : value, label), 'directory-scope', (state.scopeFilter || 'all') === value, { 'data-scope': value })).join('')}</div>
-      <div class="ont-search-line ontology-ws-search"><label class="sr-only" for="ontology-search-input">${esc(text('search', '搜索本体、人物、项目或关系'))}</label><div class="search"><span class="ont-search-glyph" aria-hidden="true">⌕</span><input id="ontology-search-input" type="search" data-ontology-field="search" value="${esc(state.searchQuery || '')}" placeholder="${esc(text('directorySearchPlaceholder', '搜索本体或其中的内容'))}"><button class="search-clear" data-ontology-action="directory-clear-search" aria-label="${esc(text('clearSearch', '清空本体搜索'))}" ${query ? '' : 'hidden'}>×</button></div></div></div>
-      <div data-ontology-directory-content>${state.mode === 'graph' ? graphCanvas(state.graph, false) : query ? `<div class="ont-search-results">${[...matching.filter(m => !results.some(r => r.id === m.id)).map(m => ({ id: m.id, name: m.name, kind: 'module', moduleId: m.id })), ...results].map(row => `<button class="ont-search-result" data-ontology-action="search-result" data-record-id="${esc(row.id)}" data-module-id="${esc(row.moduleId || row.id)}"><span class="ont-result-meta">${esc(text(row.kind, row.kind))} · ${esc(moduleName(row.moduleId || row.id))}</span><strong>${esc(row.name)}</strong><p>${esc(searchResultContext(row))}</p><span class="ont-result-arrow">${esc(text('open', '打开'))} ↗</span></button>`).join('') || `<div class="ontology-ws-search-empty">${esc(text('noSearchResults', '没有找到匹配内容。'))}</div>`}</div>` : `<div class="ont-module-cards">${visibleModules.map(card).join('') || `<div class="empty"><h3>${esc(text('emptyTitle', '从一个领域开始'))}</h3><p>${esc(text('directoryEmptyHint', '人物、项目、事实与规则，都可以从这里建立联系。'))}</p>${button(text('createModule', '创建本体'), 'create-module')}</div>`}</div>${pageControls('modules', state.modulePage, matching.length, modulePageSize)}`}</div>
+      <div class="ont-search-line ontology-ws-search"><label class="sr-only" for="ontology-search-input">${esc(text('search', '搜索本体、人物、项目或关系'))}</label><div class="search">${root.uiIconHtml('search', 'ont-search-glyph')}${root.uiInput({ id: 'ontology-search-input', type: 'search', value: state.searchQuery || '', placeholder: text('directorySearchPlaceholder', '搜索本体或其中的内容'), attrs: { 'data-ontology-field': 'search' } })}<span${query ? '' : ' hidden'}>${pageControl(text('clearSearch', '清空本体搜索'), 'directory-clear-search', 'search-clear')}</span></div></div></div>
+      <div data-ontology-directory-content>${state.mode === 'graph' ? graphCanvas(state.graph, false) : query ? `<div class="ont-search-results">${[...matching.filter(m => !results.some(r => r.id === m.id)).map(m => ({ id: m.id, name: m.name, kind: 'module', moduleId: m.id })), ...results].map(row => root.uiCard({ readonly: true, className: 'ont-search-result', bodyHtml: `<span class="ont-result-meta">${esc(text(row.kind, row.kind))} · ${esc(moduleName(row.moduleId || row.id))}</span><strong>${esc(row.name)}</strong><p>${esc(searchResultContext(row))}</p>${pageControl(text('open', '打开'), 'search-result', 'ont-result-arrow', { 'data-record-id': row.id, 'data-module-id': row.moduleId || row.id }, 'external-link')}` })).join('') || `<div class="ontology-ws-search-empty">${esc(text('noSearchResults', '没有找到匹配内容。'))}</div>`}</div>` : `<div class="ont-module-cards">${visibleModules.map(card).join('') || `<div class="empty"><h3>${esc(text('emptyTitle', '从一个领域开始'))}</h3><p>${esc(text('directoryEmptyHint', '人物、项目、事实与规则，都可以从这里建立联系。'))}</p>${button(text('createModule', '创建本体'), 'create-module')}</div>`}</div>${pageControls('modules', state.modulePage, matching.length, modulePageSize)}`}</div>
       </div></section>`;
   }
   function modulePage() {
@@ -340,16 +291,16 @@
     const dateView = state.at !== root.CogOntologyDocument.today();
     const readOnly = dateView || module.source.kind === 'legacy' || module.status !== 'active';
     const isGraph = state.tab === 'graph';
-    const menu = `${button(text('history', '历史与版本'), 'module-history', 'ghost')}${button(text('queryDate', '按日期查看'), 'document-date', 'ghost')}${button(text('import', '导入资料'), 'import', 'ghost')}${button(text('viewSources', '查看来源'), 'document-section', 'ghost', { 'data-section': 'ontology-doc-references' })}${button(text('export', '导出本体'), 'export', 'ghost')}${module.source.kind === 'legacy' ? '' : moduleMenu(module)}${readOnly ? '' : `${button(text('addDefinition', '添加定义'), 'create-definition', 'ghost')}${button(text('addEntity', '添加对象'), 'create-entity', 'ghost')}${button(text('addFact', '记录关系或事实'), 'create-assertion', 'ghost')}${button(text('addRule', '添加规则'), 'create-rule', 'ghost')}${button(text('createReference', '引用其他本体'), 'create-reference', 'ghost')}`}`;
-    return `<section class="ontology-document-workspace ont-premium ${isGraph ? 'ont-is-graph' : 'ont-is-document'}" data-ontology-module-view="${esc(module.id)}"><div class="ont-workbar ontology-document-toolbar"><button class="ont-back-button" data-ontology-action="back-list">← <span>${esc(text('title', '本体'))}</span></button><span class="ont-breadcrumb-separator">/</span><span class="ont-breadcrumb-title">${esc(module.name)}</span><span class="grow"></span><div class="ont-document-view-toggle"><button data-ontology-action="document-view-toggle" data-view="document" aria-pressed="${!isGraph}">${esc(text('document', '文档'))}</button><button data-ontology-action="document-view-toggle" data-view="graph" aria-pressed="${isGraph}">${esc(text('graph', '关系图'))}</button></div><details class="ont-overflow"><summary aria-label="${esc(text('moduleMore', '本体更多操作'))}">···</summary><div class="ont-menu">${menu}</div></details></div><div data-document-error></div>
+    const menu = `${button(text('history', '历史与版本'), 'module-history', 'ghost')}${button(text('queryDate', '按日期查看'), 'document-date', 'ghost')}${button(text('viewSources', '查看来源'), 'document-section', 'ghost', { 'data-section': 'ontology-doc-references' })}${button(text('export', '导出本体'), 'export', 'ghost')}${module.source.kind === 'legacy' ? '' : moduleMenu(module)}${readOnly ? '' : `${button(text('addDefinition', '添加定义'), 'create-definition', 'ghost')}${button(text('addEntity', '添加对象'), 'create-entity', 'ghost')}${button(text('addFact', '记录关系或事实'), 'create-assertion', 'ghost')}${button(text('addRule', '添加规则'), 'create-rule', 'ghost')}${button(text('createReference', '引用其他本体'), 'create-reference', 'ghost')}`}`;
+    return `<section class="ontology-document-workspace ont-premium ${isGraph ? 'ont-is-graph' : 'ont-is-document'}" data-ontology-module-view="${esc(module.id)}"><div class="ont-workbar ontology-document-toolbar">${pageControl(text('title', '本体'), 'back-list', 'ont-back-button', {}, 'arrow-left')}<span class="ont-breadcrumb-separator">/</span><span class="ont-breadcrumb-title">${esc(module.name)}</span><span class="grow"></span><div class="ont-document-view-toggle">${pageControl(text('document', '文档'), 'document-view-toggle', '', { 'data-view': 'document', 'aria-pressed': String(!isGraph) })}${pageControl(text('graph', '关系图'), 'document-view-toggle', '', { 'data-view': 'graph', 'aria-pressed': String(isGraph) })}</div><details class="ont-overflow"><summary aria-label="${esc(text('moduleMore', '本体更多操作'))}">···</summary><div class="ont-menu">${menu}</div></details></div><div data-document-error></div>
       ${dateView ? `<div class="ont-state-notice">${esc(text('asOf', '截至'))} ${esc(state.at)} · ${esc(text('readonly', '只读'))}${button(text('viewCurrentVersion', '返回当前'), 'document-current-date', 'ghost')}</div>` : readOnly ? `<p class="ont-state-notice">${esc(module.source.kind === 'legacy' ? text('legacyDocumentReadOnly', '旧来源内容以只读方式展示，来源与原始记录保持不变。') : text('archivedDocumentReadOnly', '此本体已归档，恢复后可继续编辑。'))}</p>` : ''}
       <div class="ont-workgrid"><div class="ont-document-scroll" data-ontology-scroll>${isGraph ? `<div class="ont-graph-title"><div><h1>${esc(module.name)}</h1></div><span>${esc(text('graphIntro', '从一个对象出发，逐步展开它的联系。'))}</span></div>${graphCanvas(null, true)}` : root.CogOntologyDocument.render({ doc: state.doc, moduleId: module.id, text, esc, drafts: state.editor?.getDrafts() || {}, editable: !readOnly, at: state.at, expandedId: state.documentExpandedId || '', inspector: inlineInspector })}</div></div></section>`;
   }
   function inlineInspector(record) {
     const readonly = state.at !== root.CogOntologyDocument.today() || record.source?.kind === 'legacy' || record.status !== 'active' || state.doc.records[record.moduleId]?.status !== 'active';
     const attrs = { 'data-record-id': record.id };
-    const actions = readonly ? (record.source?.kind === 'legacy' && record.access !== 'owner_only' && state.doc.records[record.moduleId]?.access !== 'owner_only' ? button(text('submitLegacy', '送入待我处理'), 'legacy-candidate', 'secondary', attrs) : '') : (record.kind === 'assertion' ? `${button(text('correctFact', '以前记错了 · 纠正'), 'correct-fact', 'primary', attrs)}${button(text('changeFact', '从某天起变化了'), 'change-fact', 'secondary', attrs)}` : button(text('editDetails', '编辑字段'), 'edit-record', 'secondary', attrs)) + button(text('archiveKeepHistory', '停用并保留历史'), 'archive-record', 'ghost', attrs);
-    return `<aside class="ont-inspector" role="region" aria-label="${esc(text('recordDetails', '本体记录详情'))}"><header class="detail-head"><div class="row between"><h2>${esc(recordName(record))}</h2><button data-ontology-action="document-disclosure" data-record-id="${esc(record.id)}" aria-label="${esc(text('closeDetails', '关闭记录详情'))}">×</button></div><p>${esc(text(record.kind, record.kind))} · v${record.version}</p></header><div class="detail-body">${detailRows(record)}${provenance(record)}${button(text('history', '查看版本与管理记录'), 'record-details', 'ghost', attrs)}${record.kind === 'entity' ? button(text('viewObjectGraph', '查看邻近关系'), 'object-graph', 'secondary', attrs) : ''}</div><footer class="detail-actions">${actions}</footer></aside>`;
+    const actions = readonly ? '' : (record.kind === 'assertion' ? `${button(text('correctFact', '以前记错了 · 纠正'), 'correct-fact', 'primary', attrs)}${button(text('changeFact', '从某天起变化了'), 'change-fact', 'secondary', attrs)}` : button(text('editDetails', '编辑字段'), 'edit-record', 'secondary', attrs)) + button(text('archiveKeepHistory', '停用并保留历史'), 'archive-record', 'ghost', attrs);
+    return `<aside class="ont-inspector" role="region" aria-label="${esc(text('recordDetails', '本体记录详情'))}"><header class="detail-head"><div class="row between"><h2>${esc(recordName(record))}</h2>${pageControl(text('closeDetails', '关闭记录详情'), 'document-disclosure', '', { 'data-record-id': record.id })}</div><p>${esc(text(record.kind, record.kind))} · v${record.version}</p></header><div class="detail-body">${detailRows(record)}${provenance(record)}${button(text('history', '查看版本与管理记录'), 'record-details', 'ghost', attrs)}${record.kind === 'entity' ? button(text('viewObjectGraph', '查看邻近关系'), 'object-graph', 'secondary', attrs) : ''}</div><footer class="detail-actions">${actions}</footer></aside>`;
   }
   function candidateScopeAllowsModule(candidate, module) {
     if (!module || module.kind !== 'module' || module.source.kind === 'legacy') return false;
@@ -377,42 +328,14 @@
     const sourceText = String(candidate.value || candidate.judgment || '').slice(0, 4000);
     const sourceRefs = Array.isArray(candidate.sourceRefs) ? candidate.sourceRefs : [];
     const originalSources = sourceRefs.filter(ref => /^ontimport-[a-f0-9]{64}$/.test(ref.id || '')).map(ref => button(text('viewOriginalSource', '查看完整原文'), 'view-import-source', 'secondary', { 'data-source-id': ref.id })).join('');
-    const sourceHtml = `<section class="ontology-ws-candidate-source"><div class="ontology-ws-candidate-source-meta"><span>${esc(text('candidateSource', '待我处理候选'))}</span>${esc(candidate.suggestedType || '')} · ${esc(candidate.suggestedScope || '')}</div><h2>${esc(candidate.summary || candidate.judgment || text('unknown', '未命名候选'))}</h2><pre>${esc(sourceText)}</pre>${originalSources}${sourceRefs.length ? `<small>${esc(text('source', '来源'))}：${sourceRefs.slice(0, 5).map(ref => esc(ref.title || `${ref.kind}:${ref.id}`)).join(' · ')}</small>` : ''}<p>${esc(text('candidateOrganizeHint', '原文仍保留在待我处理。只有你在下面明确添加并确认的记录才会进入本体；尚未结构化的内容不会被视为已保存。'))}</p></section>`;
+    const sourceHtml = `<section class="ontology-ws-candidate-source"><div class="ontology-ws-candidate-source-meta"><span>${esc(text('candidateSource', '待我处理候选'))}</span>${esc(candidate.suggestedType || '')} · ${esc(candidate.suggestedScope || '')}</div><h2>${esc(candidate.summary || candidate.judgment || text('unknown', '未命名候选'))}</h2><pre>${esc(sourceText)}</pre>${originalSources}${sourceRefs.length ? `<small>${esc(text('source', '来源'))}：${sourceRefs.slice(0, 5).map(ref => esc(ref.title || `${ref.kind}:${ref.id}`)).join(' · ')}</small>` : ''}</section>`;
     const back = button(text('backToReview', '← 返回待我处理'), 'candidate-back');
     if (completed) {
       return `${pageHeader({ kicker: text('candidateSource', '待我处理候选'), title: text('candidateIntegratedTitle', '已整理到本体'), description: text('candidateIntegratedHint', '候选已转成结构化本体记录；来源与记录链接已保留。'), back, actions: '' })}${sourceHtml}<section class="ontology-ws-candidate-linked"><h2>${esc(text('candidateLinkedRecords', '整理到本体的记录'))}</h2>${renderRecordList(linked)}</section>`;
     }
-    if (!candidate.capabilities?.canEdit && !candidate.capabilities?.canContinueOntology) {
-      const finish = linked.length ? button(text('candidateFinish', '完成整理'), 'candidate-finish', 'primary') : '';
-      return `${pageHeader({ kicker: text('candidateSource', '待我处理候选'), title: text('candidateUnavailableTitle', '这条候选目前不能继续整理'), description: text('candidateUnavailableHint', '请先回到待我处理查看它的状态。'), back, actions: finish })}${sourceHtml}${linked.length ? `<section class="ontology-ws-candidate-linked"><h2>${esc(text('candidateLinkedRecords', '整理到本体的记录'))}</h2>${renderRecordList(linked)}</section>` : ''}`;
-    }
-    if (!module || module.kind !== 'module' || !candidateScopeAllowsModule(candidate, module)) {
-      const availableModules = modules().filter(item => candidateScopeAllowsModule(candidate, item)
-        && (!linkedModuleIds.length || linkedModuleIds.includes(item.id)));
-      const pageSize = 50, pageCount = Math.max(1, Math.ceil(availableModules.length / pageSize));
-      state.candidateModulePage = Math.min(state.candidateModulePage || 0, pageCount - 1);
-      const visible = availableModules.slice(state.candidateModulePage * pageSize, (state.candidateModulePage + 1) * pageSize);
-      const choices = visible.length ? `<div class="ontology-ws-module-grid">${visible.map(item => `<article class="ontology-ws-module-card"><span class="ontology-ws-scope">${esc(moduleScope(item.id))}</span><h3>${esc(item.name)}</h3><p>${esc(item.description || text('noDescription', '还没有填写简介。'))}</p><div class="ontology-ws-card-actions">${button(text('useTargetModule', '整理到此本体'), 'candidate-select-module', 'primary', { 'data-record-id': item.id })}</div></article>`).join('')}</div>${pageControls('candidateModules', state.candidateModulePage, availableModules.length, pageSize)}`
-        : `<div class="ontology-ws-empty"><h2>${esc(text('noCandidateTargetModules', '还没有可用的本体'))}</h2><p>${esc(text('candidateNoTargetHint', '请先创建目标本体，再回到此候选继续整理。'))}</p>${button(text('createModule', '创建本体'), 'create-module', 'primary')}</div>`;
-      const finish = linked.length ? button(text('candidateFinish', '完成整理'), 'candidate-finish', 'primary') : '';
-      return `${pageHeader({ kicker: text('candidateSource', '待我处理候选'), title: text('chooseTargetModule', '选择目标本体'), description: text('candidateTargetModuleHint', '先选一个有权限维护的本体，再逐条整理定义、对象、事实或规则。'), back, actions: finish })}${sourceHtml}${linked.length ? `<section class="ontology-ws-candidate-linked"><h2>${esc(text('candidateLinkedRecords', '已整理的记录'))}</h2>${renderRecordList(linked)}</section>` : ''}${choices}`;
-    }
-    const writableModule = module.status === 'active' && module.source.kind !== 'legacy';
-    const rows = linked.filter(record => record.kind !== 'module' && record.moduleId === module.id);
-    const box = state.candidateBox || 'A';
-    const addActions = box === 'T'
-      ? button(text('addDefinition', '添加定义'), 'create-definition', 'primary')
-      : box === 'A'
-        ? `${button(text('addEntity', '添加对象'), 'create-entity', 'primary')}${button(text('addFact', '记录关系或事实'), 'create-assertion')}`
-        : `${button(text('addRelation', '添加关系定义'), 'create-relation-definition', 'primary')}${button(text('addRule', '添加规则'), 'create-rule')}${button(text('createReference', '引用其他本体'), 'create-reference')}`;
-    const done = linked.length ? button(text('candidateFinish', '完成整理'), 'candidate-finish', 'primary') : '';
-    return `${pageHeader({ kicker: text('candidateSource', '待我处理候选'), title: `${text('candidateOrganizeTitle', '整理到本体')} · ${candidate.summary || ''}`, description: `${text('targetModule', '目标本体')}：${module.name}`, back, actions: `${linkedModuleIds.length ? '' : button(text('changeTargetModule', '更换目标'), 'candidate-change-module')}${done}` })}${sourceHtml}
-      <div class="ontology-ws-candidate-progress"><span>${esc(text('candidateProgress', '已整理 {count} 条本体记录', { count: linked.length }))}</span></div>
-      ${!writableModule ? `<div class="ontology-ws-legacy-note" role="status"><p>${esc(text('candidateModuleReadOnly', '目标本体目前不可继续写入。你仍可查看已整理记录并完成这个候选。'))}</p></div>` : ''}
-      <div class="ontology-ws-candidate-boxes">${tabs([['T', text('tbox', 'TBox · 概念定义')], ['A', text('abox', 'ABox · 对象与事实')], ['R', text('rbox', 'RBox · 关系与规则')]], box, text('moduleViews', '本体内容视图'), { 'data-ontology-tabs': 'candidateBoxes' })}</div>
-      <div class="ontology-ws-box-title"><div><p>${esc(text('candidateManualMappingHint', '每次保存一条或一组明确记录；可以继续补充，全部完成后再点“完成整理”。'))}</p></div>${writableModule ? addActions : ''}</div>
-      <section class="ontology-ws-candidate-linked"><h2>${esc(text('candidateLinkedRecords', '已整理的记录'))}</h2>${renderRecordList(rows)}</section>`;
+    return `${pageHeader({ kicker: text('candidateSource', '待我处理候选'), title: text('candidateUnavailableTitle', '这条候选目前不能继续整理'), description: text('candidateUnavailableHint', '请先回到待我处理查看它的状态。'), back, actions: '' })}${sourceHtml}${linked.length ? `<section class="ontology-ws-candidate-linked"><h2>${esc(text('candidateLinkedRecords', '整理到本体的记录'))}</h2>${renderRecordList(linked)}</section>` : ''}`;
   }
+
   function renderRecordList(rows) {
     if (!rows.length) return `<div class="ontology-ws-empty-inline">${esc(text('boxEmpty', '这里还没有内容。'))}</div>`;
     const pageSize = 100, pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
@@ -456,11 +379,7 @@
     const history = state.history || [];
     const merged = [...(state.doc.history || [])].reverse().find(entry => entry.after.id === record.id)?.intent === 'merge_source';
     const isLegacy = record.source.kind === 'legacy' || Boolean(state.recordVersion) || state.doc.records[record.moduleId]?.status !== 'active';
-    const legacyPrivate = record.access === 'owner_only';
-    const legacyAction = record.source.kind === 'legacy' ? `<section class="ontology-ws-legacy-note"><p>${esc(record.kind === 'module'
-      ? text('legacyModuleHint', '旧本体以只读方式保留。请打开单条内容后逐项送入待我处理，核对后再决定是否保存；不会整批改写旧数据。')
-      : legacyPrivate ? text('legacyPrivateBlocked', '这条内容仅本人可见，不能送入任务候选。请先在个人本体中重新整理它。')
-        : text('legacyReadOnly', '这条内容来自旧本体，只读展示。你可以先送入“待我处理”核对，再决定是否保存为新的认知资产。'))}</p>${record.kind === 'module' || legacyPrivate ? '' : button(text('submitLegacy', '送入待我处理'), 'legacy-candidate', 'primary', { 'data-record-id': record.id })}</section>` : '';
+    const legacyAction = record.source.kind === 'legacy' ? `<section class="ontology-ws-legacy-note"><p>${esc(text('legacyReadOnly', '这条内容来自旧本体，只读展示并保留原始数据。'))}</p></section>` : '';
     const summary = record.kind === 'assertion'
       ? `<section class="ontology-ws-detail-section"><h2>${esc(record.status === 'corrected' || record.status === 'archived' || record.validity.until && state.at >= record.validity.until ? text('historicalFact', '历史事实') : text('currentFact', '当前事实'))}</h2><p>${esc(recordName(record))}</p><p>${esc(record.validity.from || text('unknownDate', '开始时间未确认'))} → ${esc(record.validity.until || text('ongoing', '持续有效'))}</p>${provenance(record)}<p>${esc(text(record.status, record.status))}</p>${isLegacy || record.status !== 'active' ? '' : `<div class="ontology-ws-detail-actions">${button(text('changeFact', '从某天起变更'), 'change-fact', 'primary')}${button(text('correctFact', '纠正记错的事实'), 'correct-fact')}</div>`}</section>`
       : `<section class="ontology-ws-detail-section"><h2>${esc(text('details', '详情'))}</h2>${record.kind === 'entity' && !state.recordVersion ? '' : detailRows(record)}${provenance(record)}</section><div class="ontology-ws-detail-actions">${!isLegacy && !merged && ['entity', 'definition', 'rule', 'reference'].includes(record.kind) ? button(text('edit', '编辑'), 'edit-record', 'primary') : ''}${!isLegacy && record.status === 'active' ? button(text('archive', '停用'), 'archive-record', 'danger') : ''}${!isLegacy && record.kind === 'entity' && record.status === 'active' ? button(text('mergeIdentity', '合并确认为同一对象的身份'), 'merge-identity', 'secondary', {}, 'git-merge') : ''}</div>`;
@@ -479,10 +398,7 @@
   }
   async function commit(actions) {
     if (state.rebaseApproved) actions = actions.map(action => action.expectedVersion && state.doc.records[action.recordId] ? { ...action, expectedVersion: state.doc.records[action.recordId].version } : action);
-    const candidate = state.page === 'candidate-organize' ? state.candidateDraft : null;
-    const candidateCreate = candidate && state.candidateModuleId && actions.length > 0
-      && actions.every(action => action.intent === 'create' && action.record?.kind !== 'module'
-        && action.record?.moduleId === state.candidateModuleId);
+    if (state.page === 'candidate-organize') return false;
     const current = state;
     const fingerprint = JSON.stringify(actions);
     if (!current.pendingCommand || current.pendingCommand.fingerprint !== fingerprint) {
@@ -499,27 +415,7 @@
       if (!approved || state !== current) return false;
       current.pendingCommand.approved = true; current.rebaseApproved = false;
     }
-    let result;
-    if (candidateCreate) {
-      if (candidate.risk === 'high' && !state.candidateRiskAcknowledged) {
-        const confirmed = typeof root.uiConfirm === 'function'
-          ? await root.uiConfirm(text('candidateHighRiskConfirm', '这条候选被标记为高风险。请确认你已核对原始来源，再继续写入本体。'))
-          : false;
-        if (!confirmed) return false;
-        state.candidateRiskAcknowledged = true;
-      }
-      state.candidateBatchId = state.candidateBatchId || `batch-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-      result = await invoke('cognition.ontology.candidate.commit', {
-        candidateId: candidate.id, moduleId: state.candidateModuleId, batchId: state.candidateBatchId,
-        ...(candidate.risk === 'high' ? { riskAcknowledged: state.candidateRiskAcknowledged === true } : {}),
-        command,
-      });
-      if (state === current) { current.candidateDraft = result.candidate; current.candidateBatchId = ''; }
-    } else {
-      result = await invoke('cognition.ontology.command.commit', {
-        command,
-      });
-    }
+    const result = await invoke('cognition.ontology.command.commit', { command });
     if (state !== current) return result;
     state.modulePage = 0; state.recordPage = 0;
     await refresh();
@@ -553,17 +449,6 @@
       if (action === 'dialog-cancel') { dialogState.pendingCommand = null; dialogState.rebaseApproved = false; dialogState.candidateBatchId = ''; modal.close('cancel', 'close'); return; }
       if (action === 'view-import-source') return handleAction(action, control);
       if (action === 'open-review') { modal.close('cancel', 'close'); return handleAction(action, control); }
-      if (action === 'choose-import-file') {
-        const error = form.querySelector('.ontology-ws-form-error');
-        try {
-          const imported = await invoke('cognition.ontology.import.file');
-          if (imported.cancelled) return;
-          const title = form.querySelector('[data-ontology-field="title"]'), content = form.querySelector('[data-ontology-field="content"]');
-          if (title) title.value = imported.name;
-          if (content) content.value = imported.text;
-        } catch (err) { error.hidden = false; error.textContent = err.message || text('error', '操作未完成，请稍后重试。'); }
-        return;
-      }
       if (action !== 'dialog-save' || control.disabled) return;
       if (state !== dialogState) { modal.close('cancel', 'close'); return; }
       event.preventDefault();
@@ -714,18 +599,6 @@
         : { intent: 'create', record: { kind: 'reference', moduleId: state.moduleId, ...patch, access: moduleAccess() }, sourceLabel: sourceLabel() }]);
     } });
   }
-  function openImportDialog(trigger, supplement) {
-    const body = `${field(text('importSourceTitle', '资料或认知标题'), 'title')}${select(text('importMode', '处理方式'), 'importMode', [{ value: 'source', label: text('manualSourceReview', '保留原文，手动整理') }, { value: 'extract', label: text('modelSourceReview', '模型提取建议，逐条审核') }], supplement ? 'extract' : 'source')}${select(text('suggestedType', '整理为'), 'suggestedType', [
-      { value: 'fact', label: text('factAsset', '事实') }, { value: 'personal', label: text('personalAsset', '个人认知') },
-      { value: 'rule', label: text('ruleAsset', '规则') }, { value: 'template', label: text('templateAsset', '模板') }, { value: 'skill_method', label: text('methodAsset', '方法') },
-    ], 'fact')}${supplement ? '' : button(text('chooseImportFile', '选择本机文件'), 'choose-import-file')}<p class="ontology-ws-form-note">${esc(text('fileImportHint', '支持 Markdown、TXT、PDF 和 DOCX；文件只在本机解析，整理结果会进入“待我处理”。'))}</p>${textarea(supplement ? text('supplementText', '补充内容') : text('pasteContent', '粘贴资料内容'), 'content', '', text('candidateHint', '提交后会进入“待我处理”，确认前不会变成本体事实。'))}<p class="ontology-ws-form-note">${esc(text('candidateHint', '提交后会进入“待我处理”，确认前不会变成本体事实。'))}</p>`;
-    return openDialog({ title: supplement ? text('supplement', '补充认知') : text('import', '导入资料'), body, trigger, onSubmit: async data => {
-      if (!data.title.trim() || !data.content.trim()) throw new Error(text('requiredImport', '请填写标题和内容。'));
-      const result = await invoke('cognition.ontology.import.submit', { name: data.title.trim(), text: data.content, suggestedType: data.suggestedType, mode: data.importMode || 'source' });
-      await loadPending(state);
-      root.uiToast?.(text('candidateBatchSaved', '已送入“待我处理”，共 {count} 条。', { count: result.submitted }), { variant: 'success' });
-    } });
-  }
   async function openRecord(recordId, version, options = {}) {
     const item = state.doc.records[recordId];
     if (item && !version && !state.candidateDraft && !options.details) {
@@ -852,7 +725,6 @@
       return;
     }
     if (action === 'create-module') return openModuleDialog(target);
-    if (action === 'import' || action === 'supplement') return openImportDialog(target, action === 'supplement');
     if (action === 'export') {
       const result = await invoke('cognition.ontology.export', state.page === 'module' ? { moduleId: state.moduleId } : {});
       if (result.canceled) return;
@@ -863,24 +735,6 @@
       const candidateId = state.candidateDraft?.id;
       if (candidateId) root.CogAssets?.router?.go({ name: 'activity', candidateId });
       return;
-    }
-    if (action === 'candidate-select-module') {
-      const module = state.doc.records[id];
-      if (!candidateScopeAllowsModule(state.candidateDraft, module))
-        throw new Error(text('candidateTargetModuleHint', '请选择范围允许且可维护的本体。'));
-      state.candidateModuleId = module.id; state.moduleId = module.id; state.recordPage = 0; render(); return;
-    }
-    if (action === 'candidate-change-module') { state.candidateModuleId = ''; state.moduleId = ''; render(); return; }
-    if (action === 'candidate-finish') {
-      if (!candidateLinkedRecords(state.candidateDraft).length) return;
-      const confirmed = typeof root.uiConfirm === 'function'
-        ? await root.uiConfirm(text('candidateFinishConfirm', '完成后，这条候选会从待处理中关闭。已整理的本体记录仍可在本体页继续编辑。'))
-        : false;
-      if (!confirmed) return;
-      const result = await invoke('cognition.ontology.candidate.complete', { candidateId: state.candidateDraft.id });
-      if (state === current) { current.candidateDraft = result.candidate; current.candidateBatchId = ''; }
-      root.uiToast?.(text('candidateFinished', '已完成整理，候选和本体记录的来源链接已保留。'), { variant: 'success' });
-      render(); return;
     }
     if (action === 'back-list') {
       await state.editor?.flush();
@@ -912,26 +766,6 @@
     if (action === 'used-version') return openRecord(id, Number(target.dataset.version));
     if (action === 'used-current') return openRecord(id);
     if (action === 'object-graph') { await enterGraph(false); state.graphFocusId = id; await loadGraph(state.moduleId); render(); return; }
-    if (action === 'legacy-candidate') {
-      const record = state.doc.records[id]; if (!record || record.source.kind !== 'legacy') return;
-      if (record.kind === 'module') {
-        root.uiToast?.(text('legacyModuleHint', '旧本体以只读方式保留。请打开单条内容后逐项送入待我处理，核对后再决定是否保存；不会整批改写旧数据。'), { variant: 'info' });
-        return;
-      }
-      const module = record.moduleId ? state.doc.records[record.moduleId] : null;
-      if (record.access === 'owner_only' || module?.kind === 'module' && module.access === 'owner_only') {
-        root.uiToast?.(text('legacyPrivateBlocked', '这条内容仅本人可见，不能送入任务候选。请先在个人本体中重新整理它。'), { variant: 'warning' });
-        return;
-      }
-      const rawSourceId = record.source.recordId;
-      const sourceId = typeof rawSourceId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(rawSourceId) ? rawSourceId : record.id;
-      const sourceRef = { kind: 'ontology', id: sourceId, title: recordName(record), ...(module?.kind === 'module' ? { scope: module.scope.kind } : {}) };
-      const suggestedType = record.kind === 'rule' ? 'rule' : 'fact';
-      await invoke('recall.candidates.save', { judgment: recordName(record).slice(0, 1000), value: legacyCandidateText(record), summary: text('legacyCandidateSummary', '来自旧本体的资料，等待用户核对。'),
-        suggestedType, suggestedScope: 'general', sourceRefs: [sourceRef], evidenceRefs: [sourceRef], ...legacyCandidateScope(record), manual: true });
-      root.uiToast?.(text('candidateSaved', '已送入“待我处理”，等待你确认。'), { variant: 'success' });
-      return;
-    }
     if (action === 'search-result') {
       const moduleId = target.dataset.moduleId;
       if (moduleId) state.moduleId = moduleId;

@@ -1,4 +1,7 @@
 {
+  "ontology.operation.required_sections_missing": "O arquivo não foi gravado: faltam seções obrigatórias com conteúdo: {sections}. Complete o conteúdo e tente novamente.",
+  "ontology.operation.conditions_unresolved": "O arquivo não foi gravado: uma condição obrigatória ou exceção desta operação ainda não foi esclarecida. Verifique a regra antes e não informe que o conteúdo foi salvo.",
+  "ontology.operation.preflight_unavailable": "O arquivo não foi gravado: não foi possível verificar as regras aplicáveis. Tente novamente mais tarde; não ignore a verificação nem informe que o arquivo foi salvo.",
   "recall.usage_claim_output_missing_notice": "Nenhum recibo de adoção foi registrado: o trecho de saída informado não apareceu nesta resposta final. Inclua aqui o resultado real antes de relatar a adoção novamente.",
   "agent.cli.project_dir.label": "Diretório do projeto",
   "agent.default_name": "Agente sem título",
@@ -304,6 +307,5 @@
   "touchpoints.card.button.forget_source": "Esquecer fonte",
   "touchpoints.card.button.revoke_grant": "Revogar concessão",
   "touchpoints.card.resolved": "Processado",
-  "dashboard.retry_user_message": "(tentar novamente)",
-  "chat.ontology_save_missing": "A gravação da ontologia está incompleta: não existe recibo formal nesta interação. Os ficheiros ou análises abaixo não comprovam a criação ou atualização."
+  "dashboard.retry_user_message": "(tentar novamente)"
 }

@@ -1,3 +1,4 @@
+import { seedStoredAbilityAsset } from '../helpers/stored-ability-asset';
 /**
  * 探针（本轮红队-越权与状态）：runExperienceMigration 判据→物理迁出窗口不复核资产状态。
  *
@@ -62,11 +63,11 @@ async function setup() {
 }
 
 /** KSTAR 经验类资产夹具（照 experience-migration.test.ts 同款：带
- *  learningProvenance 的判据正例，走 createSystemAbilityAsset 真实写入）。 */
+ *  learningProvenance 的判据正例，以测试 helper 预置历史记录）。 */
 async function seedAsset(status: 'active' | 'deleted') {
   const { assets } = await setup();
   const now = new Date().toISOString();
-  return assets.createSystemAbilityAsset(UID, {
+  return seedStoredAbilityAsset(UID, {
     schemaVersion: 1,
     ownerId: UID,
     id: ASSET,

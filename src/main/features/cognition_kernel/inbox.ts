@@ -52,6 +52,7 @@ const ONTOLOGY_KIND_TO_FORM: Record<string, InboxItemKind> = {
 };
 
 const ASSET_TYPE_TO_FORM: Record<string, InboxItemKind> = {
+  cognition: 'cognition',
   personal: 'personal_fact',
   rule: 'rule',
   template: 'template',

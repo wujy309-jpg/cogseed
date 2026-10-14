@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 /**
  * 治理待办就地处断（specs/010 T021 / T028 / T031 / T032）。
  *
@@ -54,7 +55,7 @@ const JUDGMENTS = [
 async function seedRule(overrides: Record<string, unknown> = {}) {
   const { candidates } = await modules();
   seedSeq += 1;
-  const candidate = await candidates.saveRecallCandidate(UID, {
+  const candidate = await createNightlyCandidateFixture(UID, {
     judgment: JUDGMENTS[seedSeq % JUDGMENTS.length],
     // 标题闸门（设计 3.2）：无 summary 兜底＝正文首句，过不了闸门。
     summary: `治理样本${seedSeq}`,
@@ -83,7 +84,7 @@ describe('governance resolve paths (specs/010)', () => {
   it('T028 set_boundary passes the same gate, retires the item, and refuses (untouched) on failure', async () => {
     const { adapter, assets, candidates } = await modules();
     // 无边界规则（user 线晋升允许缺边界，之后由待办补齐——正是这条链路）。
-    const candidate = await candidates.saveRecallCandidate(UID, {
+    const candidate = await createNightlyCandidateFixture(UID, {
       judgment: '接口变更要先发公告再动实现，两者不得同一天。',
       summary: '公告先行纪律',
       suggestedType: 'rule', suggestedScope: 'architecture',
@@ -119,8 +120,8 @@ describe('governance resolve paths (specs/010)', () => {
       sourceRefs: [{ kind: 'execution', id: 'exec-gov-conflict' }],
       ...BOUNDARY,
     };
-    const ruleSide = await candidates.saveRecallCandidate(UID, { ...base, suggestedType: 'rule' });
-    const factSide = await candidates.saveRecallCandidate(UID, { ...base, suggestedType: 'fact' });
+    const ruleSide = await createNightlyCandidateFixture(UID, { ...base, suggestedType: 'rule' });
+    const factSide = await createNightlyCandidateFixture(UID, { ...base, suggestedType: 'fact' });
     const { found } = await findItem(`conflict:${ruleSide.id}`);
 
     const result = await adapter.resolveCognitionInboxItem(UID, { id: found.id, action: 'claim' });
@@ -143,10 +144,10 @@ describe('governance resolve paths (specs/010)', () => {
       sourceRefs: [{ kind: 'execution', id: 'exec-gov-punct' }],
       ...BOUNDARY,
     };
-    const ruleSide = await candidates.saveRecallCandidate(UID, {
+    const ruleSide = await createNightlyCandidateFixture(UID, {
       ...base, judgment: `周报要在周五下班前提交：附风险清单${seedSeq}`, suggestedType: 'rule',
     });
-    const factSide = await candidates.saveRecallCandidate(UID, {
+    const factSide = await createNightlyCandidateFixture(UID, {
       ...base, judgment: `周报要在周五下班前提交 附风险清单${seedSeq}`, suggestedType: 'fact',
     });
     // ① 待办分组也是严口径：标点变体照样产出 conflict 待办。
@@ -174,13 +175,13 @@ describe('governance resolve paths (specs/010)', () => {
       sourceRefs: [{ kind: 'execution', id: 'exec-gov-r2-type' }],
       ...BOUNDARY,
     };
-    const ruleA = await candidates.saveRecallCandidate(UID, {
+    const ruleA = await createNightlyCandidateFixture(UID, {
       ...base, judgment: `跨团队依赖要在排期前书面确认接口归属：第${seedSeq}版`, suggestedType: 'rule',
     });
-    const factB = await candidates.saveRecallCandidate(UID, {
+    const factB = await createNightlyCandidateFixture(UID, {
       ...base, judgment: `跨团队依赖要在排期前书面确认接口归属：第${seedSeq}版`, suggestedType: 'fact',
     });
-    const ruleC = await candidates.saveRecallCandidate(UID, {
+    const ruleC = await createNightlyCandidateFixture(UID, {
       ...base, judgment: `跨团队依赖要在排期前书面确认接口归属 第${seedSeq}版`, suggestedType: 'rule',
     });
     const { found } = await findItem(`conflict:${ruleA.id}`);
@@ -207,8 +208,8 @@ describe('governance resolve paths (specs/010)', () => {
       sourceRefs: [{ kind: 'execution', id: 'exec-gov-r3-terminal' }],
       ...BOUNDARY,
     };
-    const ruleSide = await candidates.saveRecallCandidate(UID, { ...base, suggestedType: 'rule' });
-    const factSide = await candidates.saveRecallCandidate(UID, { ...base, suggestedType: 'fact' });
+    const ruleSide = await createNightlyCandidateFixture(UID, { ...base, suggestedType: 'rule' });
+    const factSide = await createNightlyCandidateFixture(UID, { ...base, suggestedType: 'fact' });
     await candidates.rejectRecallCandidate(UID, ruleSide.id, '别处先处置了');
 
     await expect(adapter.resolveCognitionInboxItem(UID, { id: `conflict:${ruleSide.id}`, action: 'claim' }))
@@ -226,8 +227,8 @@ describe('governance resolve paths (specs/010)', () => {
       sourceRefs: [{ kind: 'execution', id: 'exec-gov-r3-lock' }],
       ...BOUNDARY,
     };
-    const ruleSide = await candidates.saveRecallCandidate(UID, { ...base, suggestedType: 'rule' });
-    await candidates.saveRecallCandidate(UID, { ...base, suggestedType: 'fact' });
+    const ruleSide = await createNightlyCandidateFixture(UID, { ...base, suggestedType: 'rule' });
+    await createNightlyCandidateFixture(UID, { ...base, suggestedType: 'fact' });
     // 读后写前的窗口：主进程读到的 mine 还非终态，promote 进锁才发现已被
     // 处置——一次性 spy 模拟锁内 RecallCandidateStateError（T021 同款手法）。
     const spy = vi.spyOn(candidates, 'promoteRecallCandidate').mockRejectedValueOnce(
@@ -300,7 +301,7 @@ describe('governance resolve paths (specs/010)', () => {
     expect((await adapter.listCognitionInbox(UID)).some((item) => item.id === found.id)).toBe(false);
 
     // 不同类型合并：既有闸门拒绝，如实转 unsupported_action（不偷偷改类型）。
-    const factCandidate = await (await modules()).candidates.saveRecallCandidate(UID, {
+    const factCandidate = await createNightlyCandidateFixture(UID, {
       judgment: '值班表要在每月 25 号前排定下月轮值并抄送全员。',
       summary: '轮值排定纪律',
       suggestedType: 'fact', suggestedScope: 'architecture',
@@ -507,8 +508,8 @@ describe('governance resolve paths (specs/010)', () => {
       sourceRefs: [{ kind: 'execution', id: 'exec-gov-r1-10-map' }],
       ...BOUNDARY,
     };
-    const ruleSide = await candidates.saveRecallCandidate(UID, { ...base, suggestedType: 'rule' });
-    await candidates.saveRecallCandidate(UID, { ...base, suggestedType: 'fact' });
+    const ruleSide = await createNightlyCandidateFixture(UID, { ...base, suggestedType: 'rule' });
+    await createNightlyCandidateFixture(UID, { ...base, suggestedType: 'fact' });
     // promote 抛的不是晋升闸门（PromotionBlockedError）而是候选服务自己的
     // 结构化错误码（高风险未独立确认）——修复前被一刀切包成
     // promotion_gate_rejected「没通过晋升检查」，误导用户去改内容。
@@ -534,8 +535,8 @@ describe('governance resolve paths (specs/010)', () => {
       judgment, summary: `全拒分支样本${seedSeq}`, suggestedScope: 'architecture',
       sourceRefs: [{ kind: 'execution', id: 'exec-gov-r2-1-count' }],
     };
-    const ruleSide = await candidates.saveRecallCandidate(UID, { ...base, suggestedType: 'rule' });
-    const factSide = await candidates.saveRecallCandidate(UID, { ...base, suggestedType: 'fact' });
+    const ruleSide = await createNightlyCandidateFixture(UID, { ...base, suggestedType: 'rule' });
+    const factSide = await createNightlyCandidateFixture(UID, { ...base, suggestedType: 'fact' });
     const { found } = await findItem(`conflict:${ruleSide.id}`);
 
     const rejection = await adapter.resolveCognitionInboxItem(UID, { id: found.id, action: 'claim' })

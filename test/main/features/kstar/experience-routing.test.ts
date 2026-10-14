@@ -106,9 +106,11 @@ describe('KSTAR 沉淀分流（specs/016 T010）', () => {
       { ...base, suggestedAction: 'reject' as const },
     ]);
 
-    // 无经验无资产；仍走原路落候选（决策档），分流不吞掉它们。
+    // 兼容入口不写经验、资产或候选；任务决策留在KSTAR自己的记录中。
     expect(keep.experienceIds).toEqual([]);
     expect(reject.experienceIds).toEqual([]);
+    expect(keep.candidateIds).toEqual([]);
+    expect(reject.candidateIds).toEqual([]);
     const experiences = await import('../../../../src/main/features/recall/experience-service');
     expect(await experiences.listExperiences('route-user')).toHaveLength(0);
     const assets = await import('../../../../src/main/features/recall/asset-service');

@@ -1,5 +1,5 @@
 {
-  "comment": "认知资产迁移动作契约。转录自 design/认知资产-原型按钮IPC施工矩阵-20260921.md(92 行)。module=cognition-assets 的 entry 用 data-act 名断言 app.js handler;module=personal-ontology 的 entry 用 IPC 通道名断言 personal-ontology.js 调用点。write=写操作;pending=必须进 app.js WRITE_ACTIONS(pending 态);phase=迁移阶段。",
+  "comment": "认知资产现役动作契约。2026-10-12：形成统一夜间两阶段，移除手动创建、后台任务控制、独立治理待办和旧内容迁移动作。现役动作仍必须具备委托与写入pending保护。",
   "actions": [
     {
       "act": "tab",
@@ -50,14 +50,6 @@
       "phase": 4
     },
     {
-      "act": "go-organize",
-      "module": "cognition-assets",
-      "ipc": null,
-      "write": false,
-      "pending": false,
-      "phase": 3
-    },
-    {
       "act": "go-organize-settings",
       "module": "cognition-assets",
       "ipc": null,
@@ -74,28 +66,12 @@
       "phase": 7
     },
     {
-      "act": "toggle-source-issues",
-      "module": "cognition-assets",
-      "ipc": null,
-      "write": false,
-      "pending": false,
-      "phase": 7
-    },
-    {
       "act": "toggle-asset-more",
       "module": "cognition-assets",
       "ipc": null,
       "write": false,
       "pending": false,
       "phase": 5
-    },
-    {
-      "act": "toggle-organize-list",
-      "module": "cognition-assets",
-      "ipc": null,
-      "write": false,
-      "pending": false,
-      "phase": 7
     },
     {
       "act": "toggle-asset-versions-noise",
@@ -138,30 +114,6 @@
       "phase": 6
     },
     {
-      "act": "cand-create",
-      "module": "cognition-assets",
-      "ipc": null,
-      "write": false,
-      "pending": false,
-      "phase": 11
-    },
-    {
-      "act": "cand-create-cancel",
-      "module": "cognition-assets",
-      "ipc": null,
-      "write": false,
-      "pending": false,
-      "phase": 11
-    },
-    {
-      "act": "cand-create-save",
-      "module": "cognition-assets",
-      "ipc": "recall.candidates.save",
-      "write": true,
-      "pending": true,
-      "phase": 11
-    },
-    {
       "act": "open-capture-detail",
       "module": "cognition-assets",
       "ipc": null,
@@ -200,30 +152,6 @@
       "write": false,
       "pending": false,
       "phase": 5
-    },
-    {
-      "act": "capture-filter",
-      "module": "cognition-assets",
-      "ipc": null,
-      "write": false,
-      "pending": false,
-      "phase": 7
-    },
-    {
-      "act": "organize-conv",
-      "module": "cognition-assets",
-      "ipc": null,
-      "write": false,
-      "pending": false,
-      "phase": 7
-    },
-    {
-      "act": "cand-type",
-      "module": "cognition-assets",
-      "ipc": null,
-      "write": false,
-      "pending": false,
-      "phase": 6
     },
     {
       "act": "edit-asset",
@@ -338,14 +266,6 @@
       "phase": 9
     },
     {
-      "act": "inbox-resolve",
-      "module": "cognition-assets",
-      "ipc": "cognition.inbox.resolve",
-      "write": true,
-      "pending": true,
-      "phase": 9
-    },
-    {
       "act": "go-inbox-asset",
       "module": "cognition-assets",
       "ipc": null,
@@ -394,23 +314,39 @@
       "phase": 7
     },
     {
-      "act": "capture-action",
+      "act": "nightly-model-add",
       "module": "cognition-assets",
-      "ipc": "recall.captures",
+      "ipc": "recall.captures.settings.update",
       "write": true,
       "pending": true,
       "phase": 7
     },
     {
-      "act": "capture-batch",
+      "act": "nightly-model-remove",
       "module": "cognition-assets",
-      "ipc": "recall.captures.batchRetry",
+      "ipc": "recall.captures.settings.update",
       "write": true,
       "pending": true,
       "phase": 7
     },
     {
-      "act": "capture-review-toggle",
+      "act": "nightly-model-up",
+      "module": "cognition-assets",
+      "ipc": "recall.captures.settings.update",
+      "write": true,
+      "pending": true,
+      "phase": 7
+    },
+    {
+      "act": "nightly-model-down",
+      "module": "cognition-assets",
+      "ipc": "recall.captures.settings.update",
+      "write": true,
+      "pending": true,
+      "phase": 7
+    },
+    {
+      "act": "nightly-model-reset",
       "module": "cognition-assets",
       "ipc": "recall.captures.settings.update",
       "write": true,
@@ -504,70 +440,6 @@
       "write": false,
       "pending": false,
       "phase": 10
-    },
-    {
-      "act": "inbox-boundary-save",
-      "module": "cognition-assets",
-      "ipc": "cognition.inbox.resolve",
-      "write": true,
-      "pending": true,
-      "phase": 12
-    },
-    {
-      "act": "inbox-conflict-claim",
-      "module": "cognition-assets",
-      "ipc": "cognition.inbox.resolve",
-      "write": true,
-      "pending": true,
-      "phase": 12
-    },
-    {
-      "act": "inbox-inspection-keep",
-      "module": "cognition-assets",
-      "ipc": "cognition.inbox.resolve",
-      "write": true,
-      "pending": true,
-      "phase": 12
-    },
-    {
-      "act": "inbox-inspection-merge",
-      "module": "cognition-assets",
-      "ipc": "cognition.inbox.resolve",
-      "write": true,
-      "pending": true,
-      "phase": 12
-    },
-    {
-      "act": "legacy-memory-refresh",
-      "module": "cognition-assets",
-      "ipc": "recall.memory.migrate",
-      "write": false,
-      "pending": false,
-      "phase": 13
-    },
-    {
-      "act": "legacy-memory-toggle",
-      "module": "cognition-assets",
-      "ipc": null,
-      "write": false,
-      "pending": false,
-      "phase": 13
-    },
-    {
-      "act": "legacy-memory-run",
-      "module": "cognition-assets",
-      "ipc": "recall.memory.migrate",
-      "write": true,
-      "pending": true,
-      "phase": 13
-    },
-    {
-      "act": "legacy-scoped-memory-run",
-      "module": "cognition-assets",
-      "ipc": "recall.scopedMemoryMigration.run",
-      "write": true,
-      "pending": true,
-      "phase": 13
     },
     {
       "act": "po.values.update",
@@ -722,28 +594,12 @@
       "phase": 8
     },
     {
-      "act": "po-cand-transfer",
-      "module": "cognition-assets",
-      "ipc": "personalOntology.candidates.transferToRecall",
-      "write": true,
-      "pending": true,
-      "phase": 8
-    },
-    {
       "act": "po.candidates.reject",
       "module": "personal-ontology",
       "ipc": "po.candidates.reject",
       "write": true,
       "pending": false,
       "phase": 8
-    },
-    {
-      "act": "toggle-task-failed",
-      "module": "cognition-assets",
-      "ipc": null,
-      "write": false,
-      "pending": false,
-      "phase": 13
     },
     {
       "act": "retry-candidates",
@@ -856,15 +712,25 @@
       "write": true,
       "pending": true,
       "phase": 8
-    },
-    {
-      "act": "auto-approval-toggle",
-      "module": "cognition-assets",
-      "ipc": "recall.capture.settings.update",
-      "write": true,
-      "pending": true,
-      "phase": 8
     }
+,
+{
+    "act": "auto-approval-toggle",
+    "module": "cognition-assets",
+    "ipc": "recall.captures.settings.update",
+    "write": true,
+    "pending": true,
+    "phase": 8
+}
+,
+{
+    "act": "formation-recheck",
+    "module": "cognition-assets",
+    "ipc": "recall.candidates.recheckOntologyFormation",
+    "write": true,
+    "pending": true,
+    "phase": 8
+}
   ],
   "forbidden": [
     {

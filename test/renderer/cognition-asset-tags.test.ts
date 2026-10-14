@@ -82,7 +82,7 @@ function loadCognition(options: {
   context.globalThis = context;
   vm.createContext(context);
   for (const file of [
-    'ui-button.js', 'ui-status.js', 'ui-form.js', 'ui-empty.js', 'ui-segmented-control.js', 'ui-structure.js',
+    'ui-button.js', 'ui-card.js', 'ui-status.js', 'ui-form.js', 'ui-empty.js', 'ui-segmented-control.js', 'ui-structure.js',
     'cognition-assets/core.js', 'cognition-assets/views.js',
     'cognition-assets/review-candidate.js', 'cognition-assets/review-views.js', 'cognition-assets/library.js',
   ]) {

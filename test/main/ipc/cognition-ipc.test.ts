@@ -66,21 +66,6 @@ vi.mock('../../../src/main/features/cognition', () => ({
   })),
 }));
 
-vi.mock('../../../src/main/features/cognition/capture-draft', () => ({
-  generateCognitionDraft: vi.fn(async (_uid: string, request: { conversationId: string; messageId: string }) => ({
-    status: 'ready',
-    draft: {
-      title: '模型草稿',
-      summary: '可复用方法',
-      evidenceSummary: '本次证据',
-      sourceLabel: '当前会话',
-      conversationId: request.conversationId,
-      messageId: request.messageId,
-    },
-    context: { messageCount: 3, characterCount: 100 },
-  })),
-}));
-
 beforeEach(async () => {
   // Keep the isolated workspace assigned by test/setup-env.ts.
   invokeHandler = null;
@@ -104,15 +89,11 @@ function call(channel: string, payload: unknown = {}): Promise<InvokeResult> {
 }
 
 describe('ipc cognition channels', () => {
-  it('只接受会话和消息 ID，并把生成请求交给主进程 feature', async () => {
-    expect((await call('cognition.capture.draft', { conversationId: 'conv_1' })).ok).toBe(false);
-    const result = await call('cognition.capture.draft', {
-      conversationId: 'conv_1',
-      messageId: 'msg_2',
-      text: 'renderer 不应提交对话正文',
-    });
-    expect(result.ok).toBe(true);
-    expect(result.draft).toEqual(expect.objectContaining({ conversationId: 'conv_1', messageId: 'msg_2' }));
+  it('手动认知草稿与保存通道退休，完整参数也无法重新触发形成', async () => {
+    for (const channel of ['cognition.capture.draft', 'cognition.capture.save', 'recall.candidates.save', 'cognition.ontology.import.submit']) {
+      const result = await call(channel, { conversationId: 'conv_1', messageId: 'msg_2', text: '旧手动草稿请求', judgment: '可复用方法', summary: '方法', suggestedType: 'personal', suggestedScope: 'general' });
+      expect(result.ok).toBe(false);
+    }
   });
 
   it('能力资产列表返回当前用户数据', async () => {

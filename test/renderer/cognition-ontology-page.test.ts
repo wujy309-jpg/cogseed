@@ -89,24 +89,8 @@ function pageHarness(extraRecords: Record<string, any> = {}, customSearchResults
       if (channel === 'cognition.ontology.command.preview') return { ok: true, changes: [] };
       if (channel === 'cognition.ontology.history.get') return { ok: true, history: [] };
       if (channel === 'cognition.ontology.import.file') return { ok: true, cancelled: false, ...importFile };
-      if (channel === 'cognition.ontology.import.submit') return { ok: true, submitted: 1, total: 1, candidateIds: ['candidate-imported'] };
       if (channel === 'recall.candidates.save') return { ok: true, candidate: { id: 'candidate-1' } };
       if (channel === 'recall.candidates.read') return candidate ? { ok: true, candidate: structuredClone(candidate) } : { ok: false, error: 'candidate unavailable' };
-      if (channel === 'cognition.ontology.candidate.commit') {
-        const action = (payload.command as any).actions[0];
-        const recordId = `candidate-record-${Object.keys(doc.records).length}`;
-        const record = { ...action.record, id: recordId, version: 1, status: 'active',
-          source: { kind: 'candidate', recordId: candidate.id, label: candidate.summary }, createdAt: null, updatedAt: null };
-        doc.records[recordId] = record; doc.revision += 1;
-        candidate = { ...candidate, ontologyHandoff: { status: 'in_progress', moduleIds: [String(payload.moduleId)], recordIds: [recordId] },
-          capabilities: { ...candidate.capabilities, canEdit: false, canContinueOntology: true } };
-        return { ok: true, candidate: structuredClone(candidate), handoff: candidate.ontologyHandoff, duplicate: false };
-      }
-      if (channel === 'cognition.ontology.candidate.complete') {
-        candidate = { ...candidate, status: 'integrated', ontologyHandoff: { ...candidate.ontologyHandoff, status: 'integrated' },
-          capabilities: { ...candidate.capabilities, canEdit: false, canContinueOntology: false } };
-        return { ok: true, candidate: structuredClone(candidate), handoff: candidate.ontologyHandoff, duplicate: false };
-      }
       throw new Error(`unexpected channel ${channel}`);
     } },
     uiButton(options: any) {
@@ -164,7 +148,7 @@ function pageHarness(extraRecords: Record<string, any> = {}, customSearchResults
     bodySelects.length = 0;
   };
   const context: any = { window: root, document: {}, console, Date, Intl, Map, Set, String, Number, Math, JSON, setTimeout, clearTimeout };
-  for (const name of ['cognition-ontology-document.js', 'cognition-ontology-editor.js']) {
+  for (const name of ['ui-card.js', 'cognition-ontology-document.js', 'cognition-ontology-editor.js']) {
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../src/renderer/modules', name), 'utf8'), context, { filename: name });
   }
   vm.runInNewContext(source, context, { filename: file });
@@ -297,29 +281,12 @@ describe('本体工作台页面层级与接线', () => {
     expect(f.container.innerHTML).not.toContain('ontology-ws-stats');
     expect(f.container.innerHTML).toContain('ont-directory-compact');
   });
-  it('拒绝白话保存预览时不提交候选记录，保留表单供再次核对', async () => {
-    const type = { id: 'person-type', kind: 'definition', moduleId: 'project-module', version: 1, status: 'active', access: 'task',
-      source: { kind: 'user', label: '用户确认' }, name: '人物', definitionKind: 'type', subjectTypes: [], objectTypes: [], valueType: 'entity', cardinality: 'many' };
-    const candidate = { id: 'candidate-preview', status: 'pending_review', summary: '负责人', value: '林青是负责人', risk: 'low', capabilities: { canEdit: true } };
-    const f = pageHarness({ [type.id]: type }, undefined, candidate);
-    await f.context.window.mountCognitionOntology(f.container, { candidateId: candidate.id });
-    click(f.container, 'candidate-select-module', f.module.id);
-    f.setFormValues({ name: '林青', description: '', aliases: '' });
-    click(f.container, 'create-entity');
-    f.setConfirmResult(false);
-    await f.saveDialog();
-    expect(f.calls.some(call => call.channel === 'cognition.ontology.command.preview')).toBe(true);
-    expect(f.calls.some(call => call.channel === 'cognition.ontology.candidate.commit')).toBe(false);
-    f.setConfirmResult(true);
-    await f.saveDialog();
-    expect(f.calls.filter(call => call.channel === 'cognition.ontology.candidate.commit')).toHaveLength(1);
-  });
-  it('v17 目录提供创建、导入及范围筛选，卡片只有一个可键盘访问的入口', async () => {
+  it('v17 目录保留创建和范围筛选，资料形成入口退休，卡片只有一个可键盘访问的入口', async () => {
     const personal = { id: 'personal-module', kind: 'module', version: 1, status: 'active', access: 'task', source: { kind: 'user', label: '用户确认' }, name: '个人规则', description: '用途说明。第二句话', scope: { kind: 'personal' } };
     const f = pageHarness({ [personal.id]: personal });
     await f.context.window.mountCognitionOntology(f.container);
     expect(f.container.innerHTML).toContain('ont-directory-compact');
-    expect(f.container.innerHTML).toContain('data-ontology-action="import"');
+    expect(f.container.innerHTML).not.toContain('data-ontology-action="import"');
     expect(f.container.innerHTML).toContain('data-ontology-action="create-module"');
     expect(f.container.innerHTML).toContain('role="link" tabindex="0" data-card-module="personal-module"');
     expect(f.container.innerHTML).toContain('个人规则');
@@ -331,64 +298,24 @@ describe('本体工作台页面层级与接线', () => {
     click(f.container, 'directory-scope', '', { scope: 'all' });
     expect(f.container.innerHTML).toContain('data-card-module="project-module"');
   });
-  it('候选整理入口先展示来源并按项目范围选本体，手工新增记录经候选交接 IPC 保存', async () => {
-    const personType = { id: 'person-type', kind: 'definition', moduleId: 'project-module', version: 1, status: 'active', access: 'task',
-      source: { kind: 'user', label: '用户确认' }, name: '人物', description: '', definitionKind: 'type', subjectTypes: [], objectTypes: [],
-      valueType: 'entity', cardinality: 'many', cardinalityAnchor: 'subject', createdAt: null, updatedAt: null };
-    const otherModule = { id: 'other-project-module', kind: 'module', version: 1, status: 'active', access: 'task', createdAt: null, updatedAt: null,
-      source: { kind: 'user', label: '用户确认' }, name: '另一个项目', description: '', scope: { kind: 'project', id: 'p-2' } };
-    const candidate = { id: 'candidate-1', status: 'pending_review', summary: '项目负责人变更', judgment: '最新周报确认林青负责项目。', value: '项目负责人由张浩变更为林青。', risk: 'low',
-      scopePolicy: { projectIds: ['p-1'] }, sourceRefs: [{ kind: 'conversation', id: 'conv-1', title: '周报讨论' }],
-      capabilities: { canEdit: true, canContinueOntology: false } };
-    const f = pageHarness({ [personType.id]: personType, [otherModule.id]: otherModule }, undefined, candidate);
+  it('候选整理旧路由只读，陈旧完成事件不写候选也不提示成功', async () => {
+    const candidate = { id: 'retired-handoff', status: 'pending_review', summary: '保留候选内容', value: '保留来源正文', capabilities: { canEdit: true } };
+    const f = pageHarness({}, undefined, candidate);
     await f.context.window.mountCognitionOntology(f.container, { candidateId: candidate.id });
-    expect(f.calls.some(call => call.channel === 'recall.candidates.read' && call.payload.candidateId === candidate.id)).toBe(true);
-    expect(f.container.innerHTML).toContain('项目负责人由张浩变更为林青');
-    expect(f.container.innerHTML).toContain('周报讨论');
-    expect(f.container.innerHTML).not.toContain('另一个项目');
-
-    click(f.container, 'candidate-select-module', f.module.id);
-    expect(f.container.innerHTML).toContain('已整理 0 条本体记录');
-    f.setFormValues({ name: '林青', description: '当前项目负责人', aliases: '小林' });
-    click(f.container, 'create-entity');
-    await f.saveDialog();
-    const commit = f.calls.find(call => call.channel === 'cognition.ontology.candidate.commit');
-    expect(commit?.payload).toMatchObject({ candidateId: candidate.id, moduleId: f.module.id });
-    expect((commit?.payload.command as any).actions[0].record).toMatchObject({ kind: 'entity', name: '林青', moduleId: f.module.id, typeId: personType.id });
-    expect(f.calls.some(call => call.channel === 'cognition.ontology.command.commit')).toBe(false);
-    expect(f.container.innerHTML).toContain('林青');
+    expect(f.container.innerHTML).toContain('保留来源正文');
+    expect(f.container.innerHTML).not.toContain('data-ontology-action="candidate-select-module"');
+    expect(f.container.innerHTML).not.toContain('data-ontology-action="candidate-finish"');
+    click(f.container, 'candidate-finish');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(f.calls.some(call => /^cognition\.ontology\.candidate\.(commit|complete)$/.test(call.channel))).toBe(false);
+    expect(f.toasts.some(toast => toast.options?.variant === 'success')).toBe(false);
   });
-  it('高风险候选在用户拒绝确认时不写入，确认后才提交风险回执', async () => {
-    const personType = { id: 'person-type', kind: 'definition', moduleId: 'project-module', version: 1, status: 'active', access: 'task',
-      source: { kind: 'user', label: '用户确认' }, name: '人物', description: '', definitionKind: 'type', subjectTypes: [], objectTypes: [],
-      valueType: 'entity', cardinality: 'many', cardinalityAnchor: 'subject', createdAt: null, updatedAt: null };
-    const candidate = { id: 'candidate-high', status: 'pending_review', summary: '重要负责人', judgment: '原文内容', value: '请核对负责人信息。', risk: 'high',
-      capabilities: { canEdit: true, canContinueOntology: false } };
-    const f = pageHarness({ [personType.id]: personType }, undefined, candidate);
-    await f.context.window.mountCognitionOntology(f.container, { candidateId: candidate.id });
-    click(f.container, 'candidate-select-module', f.module.id);
-    f.setFormValues({ name: '林青', description: '', aliases: '' });
-    click(f.container, 'create-entity');
-    f.setConfirmResult(false);
-    await f.saveDialog();
-    expect(f.calls.some(call => call.channel === 'cognition.ontology.candidate.commit')).toBe(false);
-    f.setConfirmResult(true);
-    await f.saveDialog();
-    const commit = f.calls.find(call => call.channel === 'cognition.ontology.candidate.commit');
-    expect(commit?.payload.riskAcknowledged).toBe(true);
-  });
-  it('文件选择后把原文送入共同候选入口，不直写本体', async () => {
+  it('旧导入动作不再打开形成表单或提交Recall建议', async () => {
     const f = pageHarness();
     await f.context.window.mountCognitionOntology(f.container);
     click(f.container, 'import');
-    await f.clickDialog('choose-import-file');
-    await f.saveDialog();
-    expect(f.calls.some(call => call.channel === 'cognition.ontology.import.file')).toBe(true);
-    expect(f.calls.find(call => call.channel === 'cognition.ontology.import.submit')?.payload).toMatchObject({
-      name: 'project-notes.md', text: '项目负责人由张浩变更为林青。', suggestedType: 'fact',
-    });
-    expect(f.calls.some(call => call.channel === 'cognition.ontology.command.commit')).toBe(false);
-    expect(f.toasts.some(toast => toast.options?.variant === 'success')).toBe(true);
+    expect(f.calls.some(call => call.channel === 'cognition.ontology.import.submit')).toBe(false);
+    expect(f.container.innerHTML).not.toContain('data-ontology-action="import"');
   });
   it('从全局图谱进入本体后展示同一主档文档，返回仍是全局图谱', async () => {
     const f = pageHarness();
@@ -449,7 +376,7 @@ describe('本体工作台页面层级与接线', () => {
     expect(f.container.innerHTML).toContain('data-ontology-action="merge-identity"');
     expect(f.container.innerHTML).toContain('data-ontology-action="delete-record"');
   });
-  it('旧本体展开详情后逐条送审保留来源与项目范围，并排除仅本人可见的关联事实', async () => {
+  it('旧本体保留只读内容且不再提供写入新候选的入口', async () => {
     const legacyModule = { id: 'legacy-module', kind: 'module', version: 1, status: 'active', access: 'task', createdAt: null, updatedAt: null,
       source: { kind: 'legacy', label: '旧图谱', recordId: 'graph-module' }, name: '旧项目本体', description: '', scope: { kind: 'project', id: 'project-1' } };
     const type = { id: 'legacy-person-type', kind: 'definition', moduleId: legacyModule.id, name: '人物', description: '', definitionKind: 'type', subjectTypes: [], objectTypes: [], valueType: 'entity', cardinality: 'many', cardinalityAnchor: 'subject',
@@ -468,22 +395,15 @@ describe('本体工作台页面层级与接线', () => {
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(f.container.innerHTML).toContain('旧来源内容以只读方式展示');
     click(f.container, 'document-disclosure', entity.id);
-    expect(f.container.innerHTML).toMatch(/data-ontology-action="legacy-candidate"[^>]*data-record-id="legacy-person"/);
-    expect(f.container.innerHTML).not.toMatch(/data-ontology-action="legacy-candidate"[^>]*data-record-id="legacy-private"/);
-    click(f.container, 'legacy-candidate', entity.id);
-    await new Promise(resolve => setTimeout(resolve, 0));
-    const saved = f.calls.find(call => call.channel === 'recall.candidates.save');
-    expect(saved?.payload.sourceRefs).toEqual([expect.objectContaining({ kind: 'ontology', id: 'person-17' })]);
-    expect(saved?.payload.evidenceRefs).toEqual(saved?.payload.sourceRefs);
-    expect(saved?.payload.scopePolicy).toEqual({ projectIds: ['project-1'] });
-    expect(saved?.payload.value).toContain('林青');
-    expect(saved?.payload.value).toContain('项目负责人');
-    expect(saved?.payload.value).not.toContain('私密值不得外送');
+    expect(f.container.innerHTML).toContain('林青');
+    expect(f.container.innerHTML).not.toContain('data-ontology-action="legacy-candidate"');
     expect(f.container.innerHTML).toContain('仅自己查看，不提供给任务');
+    // Stale renderer events must not call a retired IPC or report success.
+    click(f.container, 'legacy-candidate', entity.id);
     click(f.container, 'legacy-candidate', privateFact.id);
     await new Promise(resolve => setTimeout(resolve, 0));
-    expect(f.calls.filter(call => call.channel === 'recall.candidates.save')).toHaveLength(1);
-    expect(f.toasts.some(toast => toast.options?.variant === 'warning')).toBe(true);
+    expect(f.calls.filter(call => call.channel === 'recall.candidates.save')).toHaveLength(0);
+    expect(f.toasts.some(toast => toast.options?.variant === 'success')).toBe(false);
   });
   it('大量本体仍分页，单页文档同时展示全部定义', async () => {
     const extra: Record<string, any> = {};

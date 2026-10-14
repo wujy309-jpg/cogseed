@@ -39,7 +39,7 @@ export interface RecallCaptureCandidateQualityInput {
   value: string;
   summary: string;
   uncertainty?: string;
-  suggestedType: 'personal' | 'rule' | 'template' | 'skill_method' | 'fact';
+  suggestedType: 'cognition' | 'personal' | 'rule' | 'template' | 'skill_method' | 'fact';
   suggestedScope: string;
   suggestedAction?: 'create' | 'update' | 'limit_scope' | 'pause' | 'keep_current' | 'reject';
   risk?: 'low' | 'medium' | 'high';
@@ -57,7 +57,8 @@ export type RecallCaptureCandidateQualityReason =
   | 'candidate_too_short'
   | 'value_not_explanatory'
   | 'candidate_not_reusable'
-  | 'platitude_no_specifics';
+  | 'platitude_no_specifics'
+  | 'operation_report_without_insight';
 
 export type RecallCaptureAutomaticIneligibilityReason =
   | RecallCaptureCandidateQualityReason
@@ -323,11 +324,26 @@ function candidateScopeSupportedByUserIntent(
   const scope = normalized(candidate.suggestedScope);
   const requestsGlobalScope = GLOBAL_SCOPE_PATTERN.test(scope) || scope === 'global';
   if (!requestsGlobalScope) return true;
-  if (candidate.suggestedType === 'personal'
+  if ((candidate.suggestedType === 'personal' || candidate.suggestedType === 'cognition')
     && userMessages.some((message) => STABLE_PREFERENCE_PATTERN.test(message.text) || STABLE_PERSONAL_FACT_PATTERN.test(message.text))) {
     return true;
   }
   return userMessages.some((message) => GLOBAL_SCOPE_PATTERN.test(message.text));
+}
+
+/** Human-reviewed proposals still need factual support and correct scope. They
+ * do not need the explicit long-term authorization required by automatic writes. */
+export function isRecallCaptureCandidateGrounded(
+  candidate: RecallCaptureCandidateQualityInput,
+  evidenceMessages: readonly RecallCaptureScreeningMessage[],
+): boolean {
+  const users = evidenceMessages.filter(message => message.role === 'user');
+  const supporting = supportingUserMessages(candidate, users);
+  return supporting.length > 0
+    && !supporting.every(message => candidateConflictsWithUserMessage(candidate.judgment, message.text))
+    && candidateScopeSupportedByUserIntent(candidate, users)
+    && !normalized(candidate.uncertainty || '')
+    && !isTaskLocalRuleProposal(candidate, users);
 }
 
 function assessAutomaticEligibility(
@@ -352,7 +368,7 @@ function assessAutomaticEligibility(
       }
     } else {
       const supportingMessages = supportingUserMessages(candidate, userMessages);
-      if (!durableKinds.includes(candidate.suggestedType) || !supportingMessages.length) {
+      if ((candidate.suggestedType !== 'cognition' && !durableKinds.includes(candidate.suggestedType)) || !supportingMessages.length) {
         pushUnique(reasons, 'candidate_not_supported_by_user_intent');
       } else if (supportingMessages.every((message) => (
         candidateConflictsWithUserMessage(candidate.judgment, message.text)
@@ -370,46 +386,146 @@ function assessAutomaticEligibility(
   return reasons;
 }
 
+// Initial screening is a shortlist, not a semantic judgment or permission to
+// save. Keep its evidence checks separate from candidate typing/write gates.
+const SCREEN_TEMPORARY_PATTERN = /(?:这一次|这次|本次|仅(?:限)?本(?:轮|次)|临时|只(?:限)?这次|\b(?:this time|for this (?:task|request|report)|temporary|one[- ]off)\b)/i;
+const SCREEN_EXPLICIT_FUTURE_PATTERN = /(?:以后|今后|后续|未来|从(?:今天|现在)起|每次|长期|一直|通常|经常|习惯|默认|始终|一律|反复|复用|重复使用|今後|これから|以後|毎回|常に|デフォルト|\b(?:from now on|in future|future|every time|always|by default|default|usually|reus(?:e|able)|repeat(?:ed|able)? use|long[- ]term|daqui em diante|de agora em diante|no futuro|toda vez|cada vez|sempre|por padrão)\b)/i;
+const SCREEN_QUERY_PATTERN = /^(?:请)?(?:查询|查一下|查看|搜索|检索|告诉我|复述|提醒我).*(?:已有|已经|之前|记住|保存|收录|要求|语言|偏好)|^(?:以后|今后)?[^。！？\n]{0,60}(?:是什么|有哪些|用什么|用哪些|怎么样|如何|多少|在哪)[^。！？\n]*[?？]$|^(?:what|which|where|how|do you remember|have you saved)\b/i;
+const SCREEN_REQUIREMENT_PATTERN = /(?:要|请|希望|记住|改用|使用|采用|保持|附|交给|审核|回答|解释|讲|核对|区分|需(?:找|由|向|与|给|确认|签字)|不要|不必|不用|必须|禁止|默认|更正|纠正|记错|\b(?:use|keep|remember|must|never|prefer|prepare|create|generate|respond|answer|explain|review|required|correct)\b|してください|必ず|prefiro|deve)/i;
+const SCREEN_CORRECTION_PATTERN = /(?:之前|以前|原来|先前).{0,24}(?:记错|说错|理解错)|(?:不是.{1,40}而是|更正|纠正).{1,80}|\b(?:correction|previously mistaken|you (?:misremembered|got .{1,20}wrong))\b/i;
+const SCREEN_METHOD_SEQUENCE_PATTERN = /(?:先.{2,50}(?:再|然后|接着).{2,50}|第一步.{2,50}第二步|\b(?:first.{3,60}then|review .{3,60}apply .{3,60}validat)\w*)/i;
+const SCREEN_METHOD_CONDITION_PATTERN = /(?:当.{1,40}(?:时|时候)|遇到|如果|若|排查.{1,30}时|适用于|\b(?:when|whenever|if|applies to)\b)/i;
+const SCREEN_PRACTICE_PATTERN = /(?:实际|试过|用了|使用后|验证|运行|解决|有效|成功|失败|遗漏|\b(?:tested|worked|resolved|succeeded|failed|after using)\b)/i;
+const SCREEN_FEEDBACK_ADOPTION_PATTERN = /(?:采用|改用|决定|以后|反复|经常|限制|只能|不能|不要|\b(?:adopt|decided|recurring|repeated|only|must not)\b)/i;
+
+function screeningUserFragments(text: string): string[] {
+  return text.split(/(?<=[。！？])|(?<=[.!?])(?=\s|$)|[\n;；]+/)
+    .map(fragment => fragment.trim().replace(/[。！.!]+$/, '')).filter(Boolean);
+}
+
+function isScreeningQuery(text: string): boolean {
+  return SCREEN_QUERY_PATTERN.test(text)
+    || /^(?:who|whose|quem|qual)\b|^谁(?:是|负责|签字)/i.test(text)
+    || /(?:是谁|由谁|找谁|向谁|是何人)(?:确认|审批|签字|负责|审核|对接)*[\s?？]*$/.test(text)
+    || /(?:是|为|由|需找|需要找)[^。！？\n]{1,40}吗[?？]*$/.test(text)
+    || /(?:是谁|由谁|找谁|向谁|哪个(?:人|部门)|是不是|是否|是何人|誰(?:が|に|ですか)|\b(?:who|whose|whether|quem|qual)\b)[^。！？\n]*[?？]$/i.test(text)
+    || /^(?:请|麻烦|帮我)?(?:查询|查一下|查看|搜索|检索|告诉我|复述|提醒我)[^。！？\n]*(?:负责人|联系人|接收人|签字人|情况|已有|之前)/.test(text)
+    || /(?:喜欢什么|偏好是什么)/.test(text);
+}
+function isInitialOneOffRequest(text: string): boolean {
+  return ONE_OFF_REQUEST_PATTERN.test(text)
+    || /\b(?:please|can you|could you|help me)\b.{0,80}\bprepare\b/i.test(text);
+}
+function futureRequirementIsExplicit(text: string): boolean {
+  const future = text.match(SCREEN_EXPLICIT_FUTURE_PATTERN), requirement = text.match(SCREEN_REQUIREMENT_PATTERN);
+  if (!future || !requirement) return false;
+  // "cover future maintenance costs" describes the current requested output,
+  // whereas "future reports need X" declares how later work should proceed.
+  const recurring = /(?:经常|反复|复用|重复(?:使用|调用)|长期(?:保留|保存|记住|使用|采用|遵循)|毎回|再利用|\b(?:reus(?:e|able)|repeat(?:ed|able)? use|every time|keep .{0,24}long[- ]term)\b)/i.test(text);
+  if ((future.index ?? 0) > (requirement.index ?? 0) && !recurring
+    && /^(?:后续|未来|future|no futuro)$/i.test(future[0])) return false;
+  return !isInitialOneOffRequest(text)
+    || /^(?:以后|今后|后续|未来|从(?:今天|现在)起|每次|今後|これから|from now on|in future|every time)/i.test(text)
+    || recurring;
+}
+
+// Keep concrete user assertions and their stated future role together inside
+// one message. This is a model shortlist, never proof of the fact or authority
+// to save it; it intentionally imposes no "must be permanent" type boundary.
+const SCREEN_FACT_SUBJECT_PATTERN = /(?:项目|团队|服务|系统|环境|工具链|仓库|组织|部门|负责人|联系人|プロジェクト|チーム|サービス|システム|担当者|\b(?:project|team|service|system|environment|repository|organization|department|projeto|equipe|serviço|sistema)\b)/i;
+const SCREEN_ASSERTED_RELATION_PATTERN = /(?:(?:负责人|联系人|审批人|接收人|签字人|责任人|版本|接口|入口|地址)(?:是|为|由|改为|变更为|换成)(?!谁|哪|什么|啥)[^。！？\n]{1,80}|由[^。！？\n]{1,32}(?:负责|审核|签字|审批)|[^。！？\n]{1,24}负责[^。！？\n]{1,60}|\b(?:owner|lead|approver|reviewer|recipient|contact|signatory|version|endpoint)\b[^.!?\n]{0,60}\b(?:is|are|became|changed to)\s+(?!who\b|what\b|which\b)\S|\b(?:is|are)\s+(?:the\s+)?(?:owner|lead|responsible for)\b|(?:担当者|責任者|連絡先|承認者|受信者|バージョン)(?:は|が)[^。！？\n]{1,80}(?:です|である|になった|に変更)|\b(?:responsável|contato|aprovador|destinatário|versão|proprietário)\b[^.!?\n]{0,60}(?:é|são|passou a ser|mudou para)\s+\S)/i;
+const SCREEN_FUTURE_FACT_USE_PATTERN = /(?:准备|对接|验收材料|确认签字|签字|办理|审批|据此|以此|参照|联系|安排|使用|采用|核对|依据|担当者.{0,20}確認|確認|参照|使用|\b(?:prepare|contact|sign|signoff|sign-off|confirm|refer|use|follow|consult|preparar|contatar|confirmar|consultar|usar|utilizar|assinatura)\b)/i;
+function userFactWithFutureUse(fragments: readonly string[]): string[] {
+  const substantive = fragments.filter(fragment => !isScreeningQuery(fragment) && !SCREEN_TEMPORARY_PATTERN.test(fragment)
+    && !isInitialOneOffRequest(fragment) && !isTrivialUserText(fragment) && !/[?？]|(?:吗|ですか)$/.test(fragment));
+  const assertion = substantive.find(fragment => SCREEN_FACT_SUBJECT_PATTERN.test(fragment) && SCREEN_ASSERTED_RELATION_PATTERN.test(fragment));
+  const futureUse = substantive.find(fragment => SCREEN_EXPLICIT_FUTURE_PATTERN.test(fragment) && SCREEN_FUTURE_FACT_USE_PATTERN.test(fragment)
+    && meaningfulLength(fragment.replace(SCREEN_EXPLICIT_FUTURE_PATTERN, '')) >= 6);
+  return assertion && futureUse ? [assertion, futureUse] : [];
+}
+
+function fragmentHasCaptureEvidence(fragment: string): boolean {
+  // Queries can quote a durable rule without asserting or correcting it.
+  if (isScreeningQuery(fragment)
+    || /^(?:你(?:还)?(?:记得|记住|知道)|我是否|我是不是)/.test(fragment)
+    || /(?:喜欢什么|偏好是什么)/.test(fragment)) return false;
+  if (isTrivialUserText(fragment) || /^(?:默认|以后|今后|请记住|记住|from now on|remember)[\s，,:：]*(?:请|要)?$/i.test(fragment)) return false;
+  let text = fragment;
+  if (SCREEN_TEMPORARY_PATTERN.test(text)) {
+    // A separate future clause may coexist with a one-off request. Restrict
+    // checking to that clause rather than widening the temporary instruction.
+    const futureClause = text.match(/[,，](?:\s*)(以后|今后|从(?:今天|现在)起|每次|长期|from now on|in future|every time).*/i);
+    if (!futureClause) return false;
+    text = futureClause[0].replace(/^[,，]\s*/, '');
+  }
+  if (STABLE_PERSONAL_FACT_PATTERN.test(text) && !/[?？]|吗$|么$/.test(text)) return true;
+  if (SCREEN_CORRECTION_PATTERN.test(text) && SCREEN_REQUIREMENT_PATTERN.test(text)) return true;
+  if (STABLE_PREFERENCE_PATTERN.test(text) && meaningfulLength(text.replace(STABLE_PREFERENCE_PATTERN, '')) > 0) return true;
+  // A user can declare a recurring template without an imperative verb:
+  // "the template I use for future weekly reviews" is not a one-off request.
+  if (SCREEN_EXPLICIT_FUTURE_PATTERN.test(text) && TEMPLATE_PATTERN.test(text)
+    && /(?:我(?:们)?.{0,48}(?:都用|使用|采用)|\bi (?:will )?use\b|私.{0,32}(?:使う|使用)|\b(?:eu uso|eu utilizo)\b)/i.test(text)
+    && !isInitialOneOffRequest(text)) return true;
+  if (futureRequirementIsExplicit(text)) return true;
+  if (/(?:所有|每(?:次|个)|任何|\b(?:every|always|any)\b)/i.test(text)
+    && /(?:必须|务必|不要|禁止|一律|都要|\b(?:must|never|required|always)\b)/i.test(text)) return true;
+  if (/(?:记住|記憶して|覚えて|\bremember\b|\blembre\b)/i.test(text)
+    && (SCREEN_REQUIREMENT_PATTERN.test(text.replace(/(?:记住|記憶して|覚えて|\bremember\b|\blembre\b)/ig, ''))
+      || STABLE_PERSONAL_FACT_PATTERN.test(text))) return true;
+
+  // User-stated methods and practice feedback need a condition/object plus
+  // concrete actions or adoption. A long requested output is not evidence.
+  if (isInitialOneOffRequest(text)) return false;
+  if (SCREEN_METHOD_CONDITION_PATTERN.test(text) && SCREEN_METHOD_SEQUENCE_PATTERN.test(text)) return true;
+  if (/(?:失败.{1,80}成功|failed.{3,100}(?:worked|succeeded))/i.test(text)
+    && /(?:运行器|环境|工具|脚本|参数|\b(?:runner|environment|tool|script|parameter)\b)/i.test(text)
+    && /(?:去掉|改成|移除|改用|\b(?:remove|without|changed)\b)/i.test(text)) return true;
+  return SCREEN_PRACTICE_PATTERN.test(text)
+    && SCREEN_FEEDBACK_ADOPTION_PATTERN.test(text)
+    && (METHOD_PATTERN.test(text) || TEMPLATE_PATTERN.test(text) || SCREEN_METHOD_SEQUENCE_PATTERN.test(text));
+}
+
+/** A user may select source norms for examination without adopting them as
+ * facts. Require that selection plus concrete recurring/normative material;
+ * a save request or an attachment alone is insufficient. */
+function selectedNormativeFragments(fragments: readonly string[]): string[] {
+  const selection = fragments.find(fragment =>
+    /(?:请|希望|帮我|需要).{0,48}(?:整理|导入|收录|保存).{0,24}(?:认知|资产|知识)/i.test(fragment)
+    && !/(?:不要|不用|不必).{0,8}(?:整理|导入|收录|保存)/.test(fragment)
+    && !SCREEN_QUERY_PATTERN.test(fragment));
+  if (!selection) return [];
+  return fragments.filter(fragment =>
+    !SCREEN_TEMPORARY_PATTERN.test(fragment)
+    && !SCREEN_QUERY_PATTERN.test(fragment)
+    && /(?:规范|规则|标准|每(?:周|月|年|天|日|次)|\b(?:policy|standard|weekly|monthly|annually|daily|every)\b)/i.test(fragment)
+    && /(?:(?:使用|采用|提交|交给|审核|必须|禁止|不得).{1,64}|\b(?:use|submit|review|must|never)\b.{3,64})/i.test(fragment));
+}
+
 export function screenRecallCaptureValue(
   messages: readonly RecallCaptureScreeningMessage[],
 ): RecallCaptureValueScreeningResult {
-  const userMessages = messages.filter((message) => message.role === 'user');
-  const assistantMessages = messages.filter((message) => message.role === 'assistant');
-  if (!userMessages.length || !assistantMessages.length) {
-    return { eligible: false, signals: [], reason: 'low_reuse_value' };
+  const userMessages = messages.filter(message => message.role === 'user');
+  if (!userMessages.length) return { eligible: false, signals: [], reason: 'low_reuse_value' };
+  const nonTrivialUsers = userMessages.filter(message => !isTrivialUserText(message.text));
+  if (!nonTrivialUsers.length) return { eligible: false, signals: [], reason: 'trivial_exchange' };
+
+  const evidence = nonTrivialUsers.flatMap(message => {
+    const fragments = screeningUserFragments(message.text);
+    return [...fragments.filter(fragmentHasCaptureEvidence), ...selectedNormativeFragments(fragments), ...userFactWithFutureUse(fragments)];
+  });
+  if (evidence.length) {
+    const signals = collectSignals(evidence.map(text => ({ role: 'user', text })));
+    if (messages.some(message => (message.artifacts?.length || 0) > 0)) pushUnique(signals, 'artifact');
+    if (!signals.length) signals.push('substantive_exchange');
+    return { eligible: true, signals };
   }
 
-  const nonTrivialUsers = userMessages.filter((message) => !isTrivialUserText(message.text));
-  if (!nonTrivialUsers.length) {
-    return { eligible: false, signals: [], reason: 'trivial_exchange' };
-  }
-
-  const signals = collectSignals(messages);
-  const lastAssistant = assistantMessages.at(-1)!;
-  if (
-    NO_RESULT_PATTERN.test(lastAssistant.text)
-    && !signals.includes('artifact')
-    && !signals.includes('reusable_outcome')
-  ) {
-    return { eligible: false, signals, reason: 'no_result' };
-  }
-
-  if (nonTrivialUsers.some(message => STABLE_PERSONAL_FACT_PATTERN.test(message.text) && !/[?？]/.test(message.text))) return { eligible: true, signals: ['substantive_exchange'] };
-  const durable = nonTrivialUsers.some(message => FUTURE_OR_REUSE_INTENT_PATTERN.test(message.text) || STABLE_PREFERENCE_PATTERN.test(message.text) || /(?:记住|記憶して|覚えて|\bremember\b|\blembre\b)/i.test(message.text));
-  if (nonTrivialUsers.some(message => STABLE_FACT_SUBJECT_PATTERN.test(message.text) && STABLE_FACT_CHANGE_PATTERN.test(message.text))) return { eligible: true, signals: [...signals, 'decision'] };
-  if (durable && nonTrivialUsers.some(message => /(?:解释|回答|输出|表达|表格|\b(?:explain|respond|answer|format)\b)/i.test(message.text))) return { eligible: true, signals: [...new Set([...signals, 'preference' as const])] };
-  if (durable && signals.some(signal => ['preference', 'rule', 'template', 'method', 'decision'].includes(signal))) return { eligible: true, signals };
-
-  const userLength = nonTrivialUsers.reduce((total, message) => total + meaningfulLength(message.text), 0);
-  const totalLength = messages.reduce((total, message) => total + meaningfulLength(message.text), 0);
-  const substantive = nonTrivialUsers.length >= 4 && assistantMessages.length >= 4
-    && userLength >= 300 && totalLength >= 1500
-    && signals.some(signal => ['template', 'method', 'decision'].includes(signal))
-    && signals.includes('reusable_outcome');
-  if (substantive) {
-    return { eligible: true, signals: ['substantive_exchange'] };
-  }
-  return { eligible: false, signals: [], reason: 'low_reuse_value' };
+  const lastAssistant = messages.filter(message => message.role === 'assistant').at(-1);
+  return {
+    eligible: false,
+    signals: [],
+    reason: lastAssistant && NO_RESULT_PATTERN.test(lastAssistant.text) ? 'no_result' : 'low_reuse_value',
+  };
 }
 
 /** 归类校验：候选自称的 suggestedType 是否真的成立（PRD 3.1 四类边界）。
@@ -437,7 +553,7 @@ export function assessRecallCandidateClassification(
 
   // 同一 judgment 已经以别的类型存在：两边至少有一边分错了，谁都不该晋升，
   // 留给人判断这句话到底属于哪一类。
-  const conflicting = (boundaries.conflictingTypes || []).filter((type) => type && type !== candidate.suggestedType);
+  const conflicting = (boundaries.conflictingTypes || []).filter((type) => type && type !== 'cognition' && candidate.suggestedType !== 'cognition' && type !== candidate.suggestedType);
   if (conflicting.length) pushUnique(blockingReasons, 'type_conflicts_with_existing');
 
   if (candidate.suggestedType === 'personal') {
@@ -555,6 +671,14 @@ export function assessRecallCaptureCandidateQuality(
     reasons.push('platitude_no_specifics');
   }
 
+  // A pure operation receipt is not a learned understanding, even when its
+  // title/value add template or method words. Bounded explanations and lessons
+  // remain eligible for the semantic value stage rather than this narrow gate.
+  const explainsInsight = /(?:因为|因此|说明|发现|导致|由此|否则|条件|仅在|\b(?:because|therefore|shows? that|found that|caused|only if)\b)/i.test(candidate.judgment);
+  if (!explainsInsight && (/^(?:(?:本次|这次|今天|刚才)[，,:： ]*)?(?:已(?:经)?|成功|顺利)(?:使用[^。！？\n]{0,40})?(?:完成|生成|保存|导出|执行|调用|处理|安装)[^。！？\n]*[。.!！]?$/i.test(candidate.judgment.trim())
+    || /^(?:successfully\s+)?(?:completed|generated|saved|exported|executed|installed)\b[^.!?\n]*[.!]?$/i.test(candidate.judgment.trim()))) {
+    reasons.push('operation_report_without_insight');
+  }
   const uniqueReasons = [...new Set(reasons)];
   const automaticIneligibilityReasons = assessAutomaticEligibility(candidate, evidenceMessages, uniqueReasons);
   return {
@@ -570,7 +694,7 @@ export function isTaskLocalRuleProposal(
   candidate: RecallCaptureCandidateQualityInput,
   messages: readonly RecallCaptureScreeningMessage[],
 ): boolean {
-  if (candidate.suggestedType !== 'rule' || (candidate.suggestedAction && candidate.suggestedAction !== 'create')) return false;
+  if ((candidate.suggestedType !== 'rule' && candidate.suggestedType !== 'cognition') || (candidate.suggestedAction && candidate.suggestedAction !== 'create')) return false;
   const users = messages.filter(message => message.role === 'user');
   if (!users.length) return false;
   const localBoundary = /(?:本次|这次|当前(?:回合|任务|对话)|この(?:タスク|会話)|今回|\b(?:this (?:task|turn|conversation)|for this run|nesta (?:tarefa|conversa))\b).{0,80}(?:只|仅|不要|禁止|不(?:得|允许|使用|执行)|だけ|のみ|禁止|\b(?:only|do not|must not|apenas|somente|não))|仅限(?:本次|这次)/i;

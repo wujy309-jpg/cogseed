@@ -1,13 +1,4 @@
-/**
- * 三轴槽位（438 P1）与本体轴缺值闭环（P2）测试：
- *   ① resolveOntologySlots：fact 绑定／主体未定／同名拒绝／范围外 not_authorized／
- *      rule 槽位绑定且无规则不算缺；
- *   ② resolveAssetSlots：绑定／无资产 no_value（非缺口）；
- *   ③ rememberOntologySlotAnswer：create 经本体命令落库（版本+来源+幂等）、
- *      同答重复幂等、同名主体拒绝并列候选、单值关系 change 换人不覆盖历史；
- *   ④ checkTaskFields 三轴合并 + recordCognitionBoundReceipt 三轴回执 +
- *      recordCognitionFilledReceipt 闭环记账。
- */
+/** Read-only task slot resolution, three-axis checked receipts, and legacy filled receipt compatibility. */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
@@ -106,65 +97,6 @@ describe('resolveAssetSlots（方法资产轴只读解析）', () => {
   });
 });
 
-describe('rememberOntologySlotAnswer（P2 本体轴缺口落库闭环）', () => {
-  it('create 经本体命令落库：带版本、来源为用户回答、幂等重试不重复', async () => {
-    await seedOntology();
-    const { rememberOntologySlotAnswer } = await import('../../../../src/main/features/cognition_kernel');
-    const { readOntologyDocument } = await import('../../../../src/main/features/cognition/ontology/service');
-    const before = readOntologyDocument(userId).revision;
-    const first = await rememberOntologySlotAnswer(userId, {
-      slot: '周报-固定接收人', subjectName: '项目甲', relationName: '接收周报', objectName: '研发部李明', context: projectContext,
-    });
-    expect(first.ok).toBe(true);
-    expect(first.duplicate).toBeUndefined();
-    expect(readOntologyDocument(userId).revision).toBe(before + 1);
-    const record = readOntologyDocument(userId).records[first.recordId!];
-    expect(record).toMatchObject({ kind: 'assertion', source: { kind: 'user', label: '用户在任务对话中的回答' } });
-
-    const again = await rememberOntologySlotAnswer(userId, {
-      slot: '周报-固定接收人', subjectName: '项目甲', relationName: '接收周报', objectName: '研发部李明', context: projectContext,
-    });
-    expect(again).toMatchObject({ ok: true, duplicate: true });
-    expect(readOntologyDocument(userId).revision).toBe(before + 1);
-  });
-
-  it('同名主体拒绝且列出候选，不自动合并；找不到主体如实报错', async () => {
-    await seedOntology();
-    const { rememberOntologySlotAnswer } = await import('../../../../src/main/features/cognition_kernel');
-    const ambiguous = await rememberOntologySlotAnswer(userId, {
-      slot: 's', subjectName: '李明', relationName: '接收周报', objectName: '王芳', context: projectContext,
-    });
-    expect(ambiguous.ok).toBe(false);
-    expect(ambiguous.error).toContain('ambiguous_subject');
-    const missing = await rememberOntologySlotAnswer(userId, {
-      slot: 's', subjectName: '张三', relationName: '接收周报', objectName: '王芳', context: projectContext,
-    });
-    expect(missing.ok).toBe(false);
-    expect(missing.error).toContain('subject_not_found');
-  });
-
-  it('单值关系换负责人走 change：旧断言按生效日闭合，历史不覆盖', async () => {
-    await seedOntology();
-    const { commitOntologyCommand } = await import('../../../../src/main/features/cognition/ontology/service');
-    const { rememberOntologySlotAnswer } = await import('../../../../src/main/features/cognition_kernel');
-    const { readOntologyDocument } = await import('../../../../src/main/features/cognition/ontology/service');
-    await commitOntologyCommand(userId, { commandId: 'seed-owner', expectedRevision: readOntologyDocument(userId).revision, actions: [
-      { intent: 'create', recordId: 'owner-1', sourceLabel: '用户确认', record: { kind: 'assertion', moduleId: 'project-module',
-        subjectId: 'project-object', definitionId: 'owner-definition', object: { kind: 'entity', id: 'li-dev' },
-        validity: { from: '2026-09-01', until: null, precision: 'day', timezone: 'Asia/Shanghai' } } },
-    ] });
-    const changed = await rememberOntologySlotAnswer(userId, {
-      slot: '周报-负责人', subjectName: '项目甲', relationName: '负责', objectName: '王芳', from: '2026-10-01', intent: 'change', context: projectContext,
-    });
-    expect(changed.ok).toBe(true);
-    const doc = readOntologyDocument(userId);
-    expect(doc.records['owner-1']).toMatchObject({ status: 'active', validity: { until: '2026-10-01' } });
-    const successor = doc.records[changed.recordId!];
-    expect(successor).toMatchObject({ kind: 'assertion', subjectId: 'project-object', object: { kind: 'entity', id: 'wang-person' },
-      validity: { from: '2026-10-01' }, supersedesId: 'owner-1' });
-  });
-});
-
 describe('checkTaskFields 三轴体检与回执（P1）', () => {
   it('三轴合并：本体轴缺口进 gaps，资产缺失不进 gaps；回执覆盖三轴；filled 事件闭环可读', async () => {
     await seedOntology();
@@ -190,10 +122,12 @@ describe('checkTaskFields 三轴体检与回执（P1）', () => {
     expect(stored[0].bound.find(ref => ref.axis === 'ontology')).toMatchObject({ moduleId: 'project-module', sourceId: 'wang-recipient', version: '1' });
     expect(stored[0].bound.find(ref => ref.axis === 'asset')).toMatchObject({ source: 'recall_asset', sourceId: 'asset-template-1' });
 
-    const filled = await kernel.recordCognitionFilledReceipt(userId, 'turn-77', {
-      slot: '周报-固定接收人', axis: 'ontology', sourceId: 'wang-recipient', moduleId: 'project-module', version: '1', packId: 'weekly_report',
+    // Previously saved filled events remain readable without a production writer.
+    const { appendRecallJsonlRecord } = await import('../../../../src/main/features/recall/store');
+    await appendRecallJsonlRecord(userId, 'cognition-bound-receipts', 'events', {
+      ...receipt!, id: 'cbound-history77', status: 'filled', missing: [],
+      bound: [receipt!.bound.find(ref => ref.axis === 'ontology')!], boundCount: 1, totalCount: 1,
     });
-    expect(filled?.status).toBe('filled');
     const all = await kernel.listCognitionBoundReceipts(userId, 'turn-77');
     expect(all.filter(record => record.status === 'filled')).toHaveLength(1);
     expect(all.filter(record => record.status === 'checked')).toHaveLength(1);

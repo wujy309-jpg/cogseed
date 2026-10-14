@@ -38,7 +38,7 @@ describe('资产库读取与编辑基准', () => {
     const fields = { title: '我的修改', statement: '正在编辑且不可被覆盖的内容', applicable: '产品', forbidden: '审查' };
     context.document = { querySelector: () => ({ querySelector: (selector: string) => ({ value: fields[selector.match(/"([^"]+)"/)![1] as keyof typeof fields] }) }) };
     NS.notify = vi.fn();
-    NS.store.assets = [{ id: 'asset-1', version: '8', activeVersion: '6', title: '他处更新', statement: '他处正文' }];
+    NS.store.assets = [{ id: 'asset-1', type: 'rule', status: 'active', version: '8', activeVersion: '6', title: '他处更新', statement: '他处正文' }];
     NS.store.assetCapabilities = { versionedUpdate: true };
     NS.store.assetEditDrafts = { 'asset-1': { baseVersion: '5', baseActiveVersion: '3', scopeSelection: { agentIds: ['agent-1'] } } };
     NS.store.route = { name: 'overview', assetId: 'asset-1', assetEdit: '1' };

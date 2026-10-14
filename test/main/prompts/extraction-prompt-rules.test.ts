@@ -16,17 +16,14 @@ describe('提取 prompt 规则钉子（Mem0 采纳项②）', () => {
     );
     expect(source, '通读整段防首题主导').toMatch(/Read the entire bounded run before deciding candidates/);
     expect(source, '相对时间锚定消息时间戳').toMatch(/anchor it against the message timestamp/);
-    expect(source, '否定保义记转变后状态').toMatch(/Preserve negation and reversal meaning/);
+    expect(source, '保留明确否定与变化').toMatch(/Preserve explicit negation and reversal/);
+    expect(source, '历史陈述不足以推断当前状态').toMatch(/A historical statement alone does not establish the current state/);
     expect(source, '转变记新旧两态').toMatch(/record B as the current state and note the superseded prior state/);
   });
 
-  it('手动捕获 prompt（cognition_capture.md）含时间锚与否定保义', () => {
-    const prompt = fs.readFileSync(
-      path.join(__dirname, '../../../src/main/prompts/cognition_capture.md'),
-      'utf8',
-    );
-    expect(prompt, '相对时间锚定').toMatch(/anchored against that message's timestamp/);
-    expect(prompt, '否定保义').toMatch(/Preserve negation and reversal meaning/);
-    expect(prompt, '转变记 B 为当前').toMatch(/record B as current and note the superseded A/);
+  it('手动草稿模块和专属提示词已删除，现役夜间提示词保留', () => {
+    expect(fs.existsSync(path.join(__dirname, '../../../src/main/features/cognition/capture-draft.ts'))).toBe(false);
+    expect(fs.existsSync(path.join(__dirname, '../../../src/main/prompts/cognition_capture.md'))).toBe(false);
+    expect(fs.existsSync(path.join(__dirname, '../../../src/main/prompts/cognition_capture_value.md'))).toBe(true);
   });
 });

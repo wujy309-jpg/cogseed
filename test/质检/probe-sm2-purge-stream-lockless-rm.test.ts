@@ -1,3 +1,4 @@
+import { seedStoredAbilityAsset } from '../helpers/stored-ability-asset';
 /**
  * 探针（状态机审计员 · 新循环第 2 轮）：purge 删整流与并发 append 无互斥 +
  * 行数缓存不失效。
@@ -62,7 +63,7 @@ async function loadAssets() {
 async function mkAsset(id: string) {
   const assets = await loadAssets();
   const now = new Date().toISOString();
-  return assets.createAbilityAsset(UID, {
+  return seedStoredAbilityAsset(UID, {
     schemaVersion: 2, ownerId: UID, id, candidateId: `cand-${id}`,
     sourceCandidateIds: [`cand-${id}`], reviewDecisionId: `rd_probe${id.slice(-6)}`.padEnd(16, 'x'),
     type: 'personal', title: `资产 ${id}`, statement: `陈述 ${id}。`,

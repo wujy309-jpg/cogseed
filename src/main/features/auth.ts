@@ -2786,6 +2786,30 @@ export async function pickChatEntryGroupForModelOverride(
   return matching.map((c) => ({ ...c, model: modelId }));
 }
 
+/** Resolve an explicit ordered task route using the global credential and model gates.
+ * Empty routes are handled by the caller as "follow global settings". Unavailable
+ * explicit candidates are skipped; never substitute an unrelated default model. */
+export async function pickChatEntryGroupForModelCandidates(
+  candidates: readonly { provider: string; model: string }[],
+): Promise<ChatEntryChoice[]> {
+  const store = loadProfilesForActiveUserOrEmpty();
+  const group = await pickChatEntryGroup();
+  const seen = new Set<string>();
+  const choices: ChatEntryChoice[] = [];
+  for (const candidate of candidates) {
+    for (const choice of group) {
+      if (choice.provider !== candidate.provider) continue;
+      const entry = store.entries.find(entry => entry.entryId === choice.entryId);
+      if (!entry || !isEntryAllowed(store, { ...entry, model: candidate.model })) continue;
+      const key = JSON.stringify([choice.profileId, candidate.provider, candidate.model]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      choices.push({ ...choice, model: candidate.model });
+    }
+  }
+  return choices;
+}
+
 /**
  * Pick the next chat entry respecting user priority. Thin wrapper over
  * `pickChatEntryGroup` that returns the top candidate (first group,

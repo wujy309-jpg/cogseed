@@ -4,8 +4,10 @@ import { withCognitionTransition } from '../../cognition_bridge';
 import { cognitionStorePath, applyCognitionDeltas, loadCognitionStoreSync } from '../../cognition_kernel/store';
 import { corruptRecordFor } from '../../../util/corrupt-guard';
 import { notifyCognitionWrite } from '../../recall/store-events';
-import { applyOntologyCommand, type OntologyCommandOutcome, type OntologyCommandSourceOverride } from './commands';
+import { applyOntologyCommand, validateOntologyCommand, type OntologyCommandOutcome, type OntologyCommandSourceOverride } from './commands';
 import { emptyOntologyDocument, OntologyError, validateOntologyDocument, type OntologyDocument, type OntologyRecord } from './model';
+import { ontologyScopeViolations } from './cognition-scope';
+import type { RecallAbilityAssetScopePolicy } from '../../recall/scope-policy';
 
 export function readOntologyDocument(userId: string): OntologyDocument {
   const empty = emptyOntologyDocument(userId);
@@ -27,7 +29,36 @@ export function previewOntologyCommand(userId: string, input: unknown): Ontology
 export async function commitOntologyCommand(userId: string, input: unknown, sourceOverride?: OntologyCommandSourceOverride): Promise<Omit<OntologyCommandOutcome, 'document'>> {
   let result: OntologyCommandOutcome;
   try {
-    const outcome = await withCognitionTransition(userId, () => applyCognitionDeltas(userId, { kind: 'ontology', command: input, sourceOverride }));
+    const outcome = await withCognitionTransition(userId, () => {
+      const current = readOntologyDocument(userId);
+      const command = validateOntologyCommand(input);
+      for (const action of command.actions) {
+        if (action.intent === 'create') continue;
+        const rule = current.records[action.recordId];
+        if (rule?.kind === 'rule' && rule.source.refs?.some(ref => ref.kind === 'asset')
+          && ((action.intent === 'update' && ['requirement', 'status'].some(key => Object.hasOwn(action.patch, key)))
+            || ['archive', 'delete', 'restore'].includes(action.intent)))
+          throw new OntologyError('shared_body_requires_cognition', 'shared rule text and lifecycle must be changed with its cognition');
+      }
+      const compatibility = loadCognitionStoreSync(userId).compatibility;
+      if (compatibility && command.actions.some(action => action.intent !== 'create' && action.intent !== 'change' && action.intent !== 'correct')) {
+        const previewOutcome = applyOntologyCommand(current, command, new Date().toISOString(), sourceOverride);
+        const preview = previewOutcome.document;
+        const changed = new Set(previewOutcome.receipt.changedIds);
+        const changedModules = new Set(previewOutcome.receipt.changedIds.filter(id => preview.records[id].kind === 'module'));
+        for (const record of Object.values(preview.records)) {
+          if (!changed.has(record.id) && !(record.kind !== 'module' && changedModules.has(record.moduleId))) continue;
+          const assetId = record.source.refs?.find(ref => ref.kind === 'asset')?.id
+            ?? (record.source.kind === 'candidate' && record.source.recordId
+              ? compatibility.records.candidates[record.source.recordId]?.promotedAssetId : undefined);
+          if (typeof assetId !== 'string') continue;
+          const policy = compatibility.records['ability-assets'][assetId]?.scopePolicy as RecallAbilityAssetScopePolicy | undefined;
+          if (ontologyScopeViolations(preview, [record], policy).length)
+            throw new OntologyError('formation_blocked', 'ontology edits would exceed the linked cognition scope');
+        }
+      }
+      return applyCognitionDeltas(userId, { kind: 'ontology', command: input, sourceOverride });
+    });
     if (corruptRecordFor(cognitionStorePath(userId))) throw new OntologyError('store_corrupt', 'cognition store corrupt; write refused');
     if (!outcome.ok && outcome.error === 'cognition store capacity exceeded') throw new OntologyError('capacity_exceeded', outcome.error);
     if (!outcome.ok || !outcome.ontology) throw new OntologyError('commit_failed', outcome.error || 'ontology commit failed');

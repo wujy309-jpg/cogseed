@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 /**
  * 审批提议（specs/008 US-406 / T033–T040）。
  *
@@ -45,7 +46,7 @@ async function modules() {
 
 async function seedAsset(uid: string, judgment = '发布前必须核对回滚方案。') {
   const { candidates } = await modules();
-  const candidate = await candidates.saveRecallCandidate(uid, {
+  const candidate = await createNightlyCandidateFixture(uid, {
     judgment,
     // 标题闸门（设计 3.2）：无 summary 兜底＝正文首句，过不了闸门。
     summary: '审批基线样本',
@@ -422,7 +423,7 @@ describe('与 008 口径一致性（specs/015 T027）', () => {
     expect(eight.versionConflict).toEqual({ baselineVersion: '1', currentVersion: '2' });
 
     // 候选侧：更新型候选锚定 v2 → 资产再被改到 v3 → 确认 → 结构化冲突。
-    const candidate = await candidates.saveRecallCandidate(uid, {
+    const candidate = await createNightlyCandidateFixture(uid, {
       judgment: '候选想改成的新正文。', summary: '改文候选样本',
       suggestedType: 'rule',
       ...RULE_BOUNDARY,
@@ -477,7 +478,7 @@ describe('与 008 口径一致性（specs/015 T027）', () => {
     }
 
     // 候选侧：同一条资产上的三条候选（一条确认、一条稍后、一条拒绝）。
-    const saveCandidate = (judgment: string, sourceId: string) => candidates.saveRecallCandidate(uid, {
+    const saveCandidate = (judgment: string, sourceId: string) => createNightlyCandidateFixture(uid, {
       judgment,
       summary: '三态对齐样本',
       suggestedType: 'rule',
@@ -515,7 +516,7 @@ describe('与 008 口径一致性（specs/015 T027）', () => {
     expect((await approval.readAssetChangeProposal(uid, proposal.id))!.state).toBe('rejected');
 
     // 候选侧：拒绝 → 同一个含义（保持原版）+ 留档（决定账本）。
-    const candidate = await candidates.saveRecallCandidate(uid, {
+    const candidate = await createNightlyCandidateFixture(uid, {
       judgment: '不该生效的正文（候选）。', summary: '保持原版用例',
       suggestedType: 'rule',
       ...RULE_BOUNDARY,
@@ -537,7 +538,7 @@ describe('与 008 口径一致性（specs/015 T027）', () => {
     const { assets, approval, candidates } = await modules();
     const asset = await seedAsset(uid, '并发口径的基线正文。');
     const { proposal } = await proposeStatementChange(uid, asset.id, asset.version, '008 并发想改成的正文。');
-    const candidate = await candidates.saveRecallCandidate(uid, {
+    const candidate = await createNightlyCandidateFixture(uid, {
       judgment: '候选并发想改成的正文。', summary: '并发改文用例',
       suggestedType: 'rule',
       ...RULE_BOUNDARY,

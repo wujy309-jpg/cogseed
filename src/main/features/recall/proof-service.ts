@@ -133,7 +133,14 @@ export async function prepareTransferProof(userId: string, input: { projectionId
   if (projection.status !== 'confirmed') throw new Error('transfer proof requires a confirmed projection');
   // 资产事实默认取投影冻结清单；调用方可覆盖为"真实加载"的资产（以回执为准）。
   const assetIds = input.assetIds && input.assetIds.length ? input.assetIds : projection.assetIds;
-  const assetVersions = await Promise.all(assetIds.map(async (assetId) => { const asset = await readAbilityAsset(userId, assetId); return { assetId, version: asset.version }; }));
+  const assetVersions = await Promise.all(assetIds.map(async (assetId) => {
+    const asset = await readAbilityAsset(userId, assetId);
+    // New projections already freeze the supplied version. Preserve that
+    // historical identity rather than labeling an old pinned load as today's head.
+    const frozen = projection.assetVersions?.[assetId];
+    if (frozen !== undefined && !/^[0-9]{1,9}$/.test(frozen)) throw new Error('invalid projected asset version');
+    return { assetId, version: frozen || asset.activeVersion || asset.version };
+  }));
   const now = new Date().toISOString();
   const record: TransferProofRecord = { schemaVersion: 1, ownerId: userId, id: `tp-${genId12()}`, projectionId: projection.id, executionId: text(input.executionId, 'execution id', 160), expectedResultSnapshot: text(input.expectedResultSnapshot, 'expected result snapshot', 4000), assetVersions, status: 'prepared', ...(input.wakeRequestId ? { wakeRequestId: text(input.wakeRequestId, 'wake request id', 160) } : {}), createdAt: now };
   await writeRecallJsonRecord(userId, 'transfer-proofs', record.id, record);
@@ -166,7 +173,7 @@ async function completeTransferProofRecord(
     const validReceipt = await transferReceiptIsProven(userId, proof.receiptExecutionId, proof.receiptId, proof.assetVersions);
     for (const item of proof.assetVersions) {
       const advanced = validReceipt ? maturityForTransferOutcome(proof.status) : undefined;
-      if (advanced) await setAbilityAssetMaturity(userId, item.assetId, advanced);
+      if (advanced) await setAbilityAssetMaturity(userId, item.assetId, advanced, item.version);
       await recordRecallUsage(userId, { assetId: item.assetId, assetVersion: item.version, taskRunId: projection.taskRunId, projectionId: projection.id, ...(projection.workspaceId ? { workspaceId: projection.workspaceId } : {}), outcome: proof.status });
     }
     if (!validReceipt) {
@@ -276,6 +283,7 @@ export async function evaluateEffectivenessProof(userId: string, input: { transf
         await recordValidation(userId, {
           assetId: asset.id,
           candidateId: asset.candidateId,
+          assetVersion: item.version,
           taskRunId: transfer.executionId,
           outcome: validationOutcome,
           evidenceRefs: refs,
@@ -286,7 +294,7 @@ export async function evaluateEffectivenessProof(userId: string, input: { transf
     }
   }
   if (effectivenessMaturity) {
-    for (const item of transfer.assetVersions) await setAbilityAssetMaturity(userId, item.assetId, effectivenessMaturity);
+    for (const item of transfer.assetVersions) await setAbilityAssetMaturity(userId, item.assetId, effectivenessMaturity, item.version);
   }
   return asEffectiveness(record);
 }

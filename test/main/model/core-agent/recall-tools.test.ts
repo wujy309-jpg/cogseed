@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -49,8 +50,9 @@ async function seedAsset(
   const candidates = await import('../../../../src/main/features/recall/candidate-service');
   const assets = await import('../../../../src/main/features/recall/asset-service');
   _seedSeq += 1;
-  const candidate = await candidates.saveRecallCandidate(TEST_UID, {
+  const candidate = await createNightlyCandidateFixture(TEST_UID, {
     judgment,
+    rawStatement: true,
     // 标题闸门（设计 3.2）：judgment 前缀兜底命中「与正文开头重复」，
     // 改为与正文首字不同的合规样本标题。
     summary: opts.title || `检索样本${_seedSeq}`,
@@ -69,6 +71,45 @@ async function seedAsset(
 }
 
 describe('recall search_ability_assets tool', () => {
+  it('returns and validates the complete long cognition including its final restrictions before recording a full-version read', async () => {
+    const tail = '末尾限制：仅用于人工审核，不授权发布；证据不足时应停止判断。';
+    const body = '逐项保存本次判断的原始依据，并标明不能确定的部分。'.repeat(110) + tail;
+    expect(body.length).toBeGreaterThan(2000); expect(body.length).toBeLessThanOrEqual(4000);
+    const candidates = await import('../../../../src/main/features/recall/candidate-service');
+    const candidate = await createNightlyCandidateFixture(TEST_UID, { judgment: body, rawStatement: true,
+      summary: '完整判断依据', suggestedType: 'cognition', contentCategory: 'method', suggestedScope: 'general',
+      sourceRefs: [], value: '以后人工审核时按完整依据和停止条件作出判断。' });
+    const { asset } = await candidates.promoteRecallCandidate(TEST_UID, candidate.id, { actor: 'user' });
+    const validation = await import('../../../../src/main/features/recall/ontology-answer-validation');
+    const inspect = vi.spyOn(validation, 'validateOntologyAnswer');
+    const { createRecallToolSuite } = await import('../../../../src/main/model/core-agent/recall-tools');
+    const suite = createRecallToolSuite({ userId: TEST_UID, turnId: 'turn-complete-body', taskText: '人工审核这次判断依据' });
+    const tool = suite.tools.find(tool => tool.name === 'search_ability_assets')!;
+    const result = await tool.execute({ assetIds: [asset.id] }, {} as never);
+    expect(result.content).toContain(body);
+    expect(result.content).toContain(tail);
+    await suite.finalResponseGate.validate({ text: '证据不足时停止判断，不发布。' });
+    expect(inspect).toHaveBeenCalledWith(expect.objectContaining({ assets: [expect.objectContaining({
+      assetId: asset.id, version: asset.version, statement: body,
+    })] }), expect.any(Object));
+    const receipts = await import('../../../../src/main/features/recall/injection-receipt');
+    expect(await receipts.listInjectionReceipts(TEST_UID, 'turn-complete-body')).toEqual([
+      expect.objectContaining({ channel: 'agent_read', assetId: asset.id, assetVersion: asset.version, status: 'injected' }),
+    ]);
+    // The shared runner budget can spill a whole result when context is full;
+    // it keeps exact bytes and a read-chunk reference rather than cutting the
+    // cognition locally or needing another recall-specific quota.
+    const { capToolResult, DEFAULT_INLINE_RESULT_TOKENS } = await import('../../../../src/main/util/tool-result-cap');
+    const spilled = capToolResult('search_ability_assets', result, { state: {
+      toolResultInlineLedger: { initialTokens: 0, remainingTokens: 0 },
+    } } as never, { maxInlineTokens: DEFAULT_INLINE_RESULT_TOKENS, toolResultsDir: path.join(tmpDir, 'complete-read-results') });
+    expect(spilled.persistedOutput?.path).toBeTruthy();
+    expect(fs.readFileSync(spilled.persistedOutput!.path, 'utf8')).toBe(result.content);
+    expect(spilled.content).toContain('tool_result_read_chunk');
+    expect(spilled.content).toContain('source_truncated="false"');
+    inspect.mockRestore();
+  });
+
   it('ontology_query follows governed asset relations and excludes paused assets', async () => {
     const gateway = await seedAsset('网关是服务调用的统一入口。', { scope: 'general', title: '本体查询示例：API网关' });
     const auth = await seedAsset('认证服务通过网关对外提供能力。', { scope: 'general', title: '本体查询示例：认证服务' });

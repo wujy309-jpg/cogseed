@@ -3,6 +3,8 @@
   'use strict';
   const parseRequest = (request, base) => {
     const value = request.trim();
+    const english = value.match(/^(?:please\s+)?change to [“\"]([\s\S]*?)[”\"]\s*[.!]?$/i);
+    if (english) return { replacement: english[1] };
     let match = value.match(/^(?:请)?(?:把|将)[“「"]([\s\S]*?)[”」"]\s*(?:替换为|改为|改成)[“「"]([\s\S]*?)[”」"]\s*[。！!]?$/);
     if (match) return match[1] && base.split(match[1]).length === 2 ? { replacement: base.replace(match[1], match[2]) } : { error: '要替换的原文须在当前建议中恰好出现一次。' };
     match = value.match(/^(?:请)?(?:从\s*\d{4}-\d{2}-\d{2}\s*起\s*)?(?:改为|改成|替换为|纠正为)[“「"]([\s\S]*?)[”」"]\s*[。！!]?$/);
@@ -18,6 +20,7 @@
     const displayValue = value => Array.isArray(value) ? value.join('、') : String(value ?? '');
     const getValue = (record, path) => path.split('.').reduce((value, key) => value?.[key], record);
     const t = (key, fallback) => text(key, fallback);
+    const control = (label, action, attrs = {}, options = {}) => root.uiButton({ label, size: 'sm', role: options.primary ? 'primary' : 'ghost', className: options.className || '', disabled: !!options.disabled, attrs: { 'data-selection-action': action, ...attrs } });
     function clear() { popup?.remove(); popup = null; container.querySelectorAll('.ont-ai-preview').forEach(node => node.remove()); container.querySelectorAll('.ont-ai-target').forEach(node => node.classList.remove('ont-ai-target')); }
     function close(force = false, next) {
       if (!draft) return true;
@@ -42,18 +45,18 @@
       popup = document.createElement('section'); popup.className = 'ont-ai-popup'; popup.setAttribute('role', 'dialog'); popup.setAttribute('aria-label', t('selectionEditTitle', '请求 AI 修改选中文字')); popup.tabIndex = -1;
       const proposal = d.proposal, isFact = getDocument()?.records[d.id]?.kind === 'assertion';
       const disabled = d.saving || (isFact && (!d.intent || (d.intent === 'change' && !d.effectiveFrom)));
-      popup.innerHTML = `<header><span>✦ ${esc(t('editSelection', '修改选中文字'))} <small>${esc(t('localSuggestion', '本地模拟建议'))}</small></span><button data-selection-action="close" aria-label="${esc(t('close', '关闭'))}">×</button></header>
-        <div class="ont-ai-popup-body">${d.dismiss ? `<p class="ont-ai-error">${esc(t('discardSelectionQuestion', '有尚未采用的建议，要放弃吗？'))}</p><div class="ont-ai-controls"><button data-selection-action="stay">${esc(t('continueEditing', '继续编辑'))}</button><button data-selection-action="discard">${esc(t('discard', '放弃修改'))}</button></div>` : `
+      popup.innerHTML = `<header><span>${root.uiIconHtml('sparkles')} ${esc(t('editSelection', '修改选中文字'))} <small>${esc(t('localSuggestion', '本地模拟建议'))}</small></span>${control(t('close', '关闭'), 'close')}</header>
+        <div class="ont-ai-popup-body">${d.dismiss ? `<p class="ont-ai-error">${esc(t('discardSelectionQuestion', '有尚未采用的建议，要放弃吗？'))}</p><div class="ont-ai-controls">${control(t('continueEditing', '继续编辑'), 'stay')}${control(t('discard', '放弃修改'), 'discard')}</div>` : `
         <p class="ont-ai-context">${esc(d.name)} · ${esc(text(d.field.split('.').at(-1), d.field))}</p>
         <blockquote>${esc(d.selected || t('emptyText', '（空白字段）'))}</blockquote>
         ${d.error ? `<p class="ont-ai-error" role="alert">${esc(d.error)}</p>` : ''}
         ${proposal ? `<div class="ont-ai-proposed"><span>${esc(t('selectionAfter', '修改后'))}</span><p>${esc(proposal.replacement || t('deleteText', '（删除所选文字）'))}</p></div><p class="ont-ai-impact">${esc(t('selectionOnly', '仅替换所选部分。'))}${isFact ? esc(t('selectionFactHistory', '旧事实与时间区间将按下方意图保留。')) : ''}</p>` : ''}
-        ${isFact && proposal ? `<div class="ont-ai-intent"><span>${esc(t('selectionIntentQuestion', '这是哪一种变化？'))}</span><div class="row"><button data-selection-action="intent" data-intent="correct" aria-pressed="${d.intent === 'correct'}">${esc(t('selectionCorrect', '以前记错了'))}</button><button data-selection-action="intent" data-intent="change" aria-pressed="${d.intent === 'change'}">${esc(t('selectionChange', '现实发生变化'))}</button></div>${d.intent === 'change' ? `<label>${esc(t('effectiveFrom', '生效日期'))}<input id="ontology-selection-effective-date" type="date" value="${esc(d.effectiveFrom)}"></label>` : ''}</div>` : ''}
+        ${isFact && proposal ? `<div class="ont-ai-intent"><span>${esc(t('selectionIntentQuestion', '这是哪一种变化？'))}</span><div class="row">${control(t('selectionCorrect', '以前记错了'), 'intent', { 'data-intent': 'correct', 'aria-pressed': String(d.intent === 'correct') })}${control(t('selectionChange', '现实发生变化'), 'intent', { 'data-intent': 'change', 'aria-pressed': String(d.intent === 'change') })}</div>${d.intent === 'change' ? `${root.uiField({ id: 'ontology-selection-effective-date', label: t('effectiveFrom', '生效日期'), showRequirement: false, control: { kind: 'input', type: 'date', value: d.effectiveFrom } })}` : ''}</div>` : ''}
         <label class="ont-ai-request-label" for="ontology-selection-request">${esc(proposal ? t('selectionContinueRequest', '继续告诉我怎么调整') : t('selectionTellRequest', '告诉我怎么改'))}</label>
         ${d.choices.length ? `<p class="ont-ai-limit">${d.choices.map(option => esc(option.label)).join(' / ')}</p>` : ''}
-        <textarea id="ontology-selection-request" rows="2" placeholder="${esc(t('selectionRequestPlaceholder', '例如：改为「新的表述」'))}">${esc(d.request)}</textarea>
-        ${proposal ? '' : `<button class="ont-ai-example" data-selection-action="example">${esc(t('tryExample', '试试示例'))}</button>`}
-        <div class="ont-ai-controls"><button data-selection-action="generate">${esc(proposal ? t('selectionAdjust', '调整建议') : t('selectionGenerate', '生成修改'))}</button>${proposal ? `<button class="primary" data-selection-action="adopt" ${disabled ? 'disabled' : ''}>${esc(d.saving ? t('saving', '正在保存…') : t('adopt', '采用修改'))}</button>` : ''}</div>
+        ${root.uiTextarea({ id: 'ontology-selection-request', value: d.request, placeholder: t('selectionRequestPlaceholder', '例如：改为「新的表述」'), attrs: { rows: 2 } })}
+        ${proposal ? '' : `${control(t('tryExample', '试试示例'), 'example', {}, { className: 'ont-ai-example' })}`}
+        <div class="ont-ai-controls">${control(proposal ? t('selectionAdjust', '调整建议') : t('selectionGenerate', '生成修改'), 'generate')}${proposal ? `${control(d.saving ? t('saving', '正在保存…') : t('adopt', '采用修改'), 'adopt', {}, { primary: true, disabled })}` : ''}</div>
         <p class="ont-ai-limit">${esc(t('selectionLocalHint', '本地模拟 · 支持引号内替换、追加、删除 · 文本不外发'))}</p>`}</div>`;
       if (d.saving) popup.querySelectorAll('button,input,textarea').forEach(node => { node.disabled = true; });
       (container.querySelector('.ontology-workspace') || container).append(popup); position();

@@ -61,8 +61,6 @@ const _rendererFeatureManifest = Object.freeze({
     { src: './modules/cognition-assets/app.js' },
   ],
   'personal-ontology': [
-    { src: './modules/cognition/pages.js' },
-    { src: './modules/cognition/cognition.js' },
     { src: './modules/personal-context-review.js' },
   ],
   'cognition-ontology': [

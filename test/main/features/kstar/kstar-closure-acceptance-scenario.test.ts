@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
@@ -86,7 +87,7 @@ async function modules() {
 
 async function createTransferValidatedAsset(): Promise<Awaited<ReturnType<(typeof import('../../../../src/main/features/recall/asset-service'))['readAbilityAsset']>>> {
   const { candidates, assets, refs } = await modules();
-  const candidate = await candidates.saveRecallCandidate(USER_ID, {
+  const candidate = await createNightlyCandidateFixture(USER_ID, {
     judgment: LOCKED_ASSET_STATEMENT,
     value: LOCKED_ASSET_STATEMENT,
     summary: 'Preserve verified file evidence',

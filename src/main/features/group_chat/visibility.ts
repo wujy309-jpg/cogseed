@@ -35,13 +35,13 @@ export interface ChatUseSelection {
 export interface RecallMessageCitation {
   asset_id: string;
   title: string;
-  type: 'personal' | 'rule' | 'template' | 'skill_method' | 'fact';
+  type: 'cognition' | 'personal' | 'rule' | 'template' | 'skill_method' | 'fact';
   version: string;
   scope: string;
   projection_id: string;
   forecast_id?: string;
   match_score?: number;
-  match_method: 'semantic' | 'ontology' | 'semantic_ontology' | 'recency_fallback' | 'manual';
+  match_method: 'semantic' | 'ontology' | 'semantic_ontology' | 'recency_fallback' | 'manual' | 'standing_preference';
 }
 
 /** Immutable snapshot of one visible message referenced from another task.

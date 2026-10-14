@@ -48,7 +48,7 @@ export const MAX_MEETING_ASSET_REFS = 100;
 const MAX_TITLE_CHARS = 120;
 
 export type MeetingRefVia = 'attach' | 'conclusion' | 'action_draft';
-export type MeetingAssetType = 'personal' | 'rule' | 'template' | 'skill_method' | 'fact';
+export type MeetingAssetType = 'cognition' | 'personal' | 'rule' | 'template' | 'skill_method' | 'fact';
 
 /**
  * 会议侧引用包错误（失败一律码化 + 归因，见 `contracts/tool-contract.md` §5；

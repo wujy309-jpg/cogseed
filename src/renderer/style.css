@@ -16797,7 +16797,6 @@ body:has(#panel-settings.active) .main-top-actions {
 .settings-group-head { margin-bottom: 14px; }
 .settings-semantica-heading,
 .settings-semantica-switch-row,
-.settings-semantica-actions,
 .settings-semantica-status-control {
   display: flex;
   align-items: center;
@@ -16812,19 +16811,6 @@ body:has(#panel-settings.active) .main-top-actions {
 .settings-semantica-switch-row > div:first-child { display: grid; gap: 3px; }
 .settings-semantica-switch-row strong { font-size: 13px; font-weight: 600; }
 .settings-semantica-switch-row span { font-size: 12px; color: var(--muted); }
-.settings-semantica-demo {
-  padding: 12px 0 2px;
-  border-top: 1px solid var(--border);
-}
-.settings-semantica-demo-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.settings-semantica-demo-head > div:first-child { display: grid; gap: 3px; }
-.settings-semantica-demo-head strong { font-size: 13px; font-weight: 600; }
-.settings-semantica-demo-head span { font-size: 12px; color: var(--muted); }
 .settings-semantica-fields {
   margin-top: 12px;
   padding-top: 14px;
@@ -16834,7 +16820,6 @@ body:has(#panel-settings.active) .main-top-actions {
 .settings-semantica-number-row > .ui-input { max-width: 140px; }
 .settings-semantica-gates { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 12px 0; }
 .settings-semantica-gate { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-2); }
-.settings-semantica-actions { justify-content: flex-start; margin: 14px 0 10px; }
 .settings-status.is-warning { color: var(--danger-hover); }
 @media (max-width: 720px) {
   .settings-semantica-number-row { align-items: stretch; flex-direction: column; }
@@ -22453,14 +22438,6 @@ body:has(#panel-settings.active) .main-top-actions {
   overflow: hidden;
 }
 
-.cognition-capture-modal { width: min(600px, calc(100vw - 32px)); }
-.cognition-capture-body { display: grid; gap: var(--space-3); }
-.cognition-capture-status { margin: 0; border-left: var(--focus-width) solid var(--status-success-text); background: var(--status-success-bg); color: var(--status-success-text); padding: var(--space-2) var(--space-3); font-size: var(--font-size-2); line-height: var(--line-height-body); }
-.cognition-capture-status-error { border-left-color: var(--status-danger-text); background: var(--status-danger-bg); color: var(--status-danger-text); }
-.cognition-capture-body label { display: grid; gap: var(--space-2); color: var(--text-secondary); font-size: var(--font-size-2); }
-.cognition-capture-body textarea { min-height: 74px; resize: vertical; line-height: var(--line-height-body); }
-.cognition-capture-note { margin: 0; border-left: var(--focus-width) solid var(--status-warning-text); background: var(--status-warning-bg); color: var(--status-warning-text); padding: var(--space-2) var(--space-3); font-size: var(--font-size-2); line-height: var(--line-height-body); }
-.cognition-capture-error { margin: 0; border: 1px solid var(--color-danger-line); background: var(--status-danger-bg); color: var(--status-danger-text); padding: var(--space-2) var(--space-3); font-size: var(--font-size-2); line-height: var(--line-height-body); }
 /* Expense workbench: dense operational surface with bounded responsive tracks. */
 .expense-workbench {
   --ew-bg: var(--surface-2, #f6f7f9);

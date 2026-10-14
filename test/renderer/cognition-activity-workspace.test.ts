@@ -1,6 +1,7 @@
+import { nightlyFormation } from './helpers/nightly-candidate';
 import { describe, expect, it, vi } from 'vitest';
 import { loadCognitionAssets } from './helpers/cognition-renderer';
-const candidate = (id: string, extra = {}) => ({ id, summary: `建议 ${id}`, judgment: `长期内容 ${id}`, suggestedType: 'template', suggestedScope: 'general', status: 'pending_review', createdAt: `2026-10-11T0${id === 'a' ? 2 : 1}:00:00Z`, sourceRefs: [], capabilities: { countsAsPending: true, canEdit: true, canPromote: true, canReject: true }, ...extra });
+const candidate = (id: string, extra = {}) => ({ ...nightlyFormation(), id, summary: `建议 ${id}`, judgment: `长期内容 ${id}`, suggestedType: 'template', suggestedScope: 'general', status: 'pending_review', createdAt: `2026-10-11T0${id === 'a' ? 2 : 1}:00:00Z`, capabilities: { countsAsPending: true, canEdit: true, canPromote: true, canReject: true }, ...extra });
 const button = (act: string, id = '', card: any = null) => ({ dataset: { act, id }, disabled: false, getAttribute: () => null, setAttribute: vi.fn(), removeAttribute: vi.fn(), closest: () => card });
 describe('系统活动列表与逐项审核', () => {
   it('默认打开首条、保留 50 条分页，详情使用紧凑编辑字段和固定操作栏', () => {
@@ -9,7 +10,7 @@ describe('系统活动列表与逐项审核', () => {
     expect(loaded.store.activityRows).toHaveLength(50);
     expect(html).toContain('每页 50 条');
     expect(html).toContain('data-f="summary"');
-    expect(html).toContain('data-f="type"');
+    expect(html).not.toContain('data-f="type"');
     const footer = html.slice(html.indexOf('<footer class="ca-activity-detail-footer">'));
     expect(footer).toContain('data-act="cand-adopt-with-form"');
     expect(footer).toContain('data-act="activity-save-draft"');
@@ -38,7 +39,7 @@ describe('系统活动列表与逐项审核', () => {
     expect(loaded.ns.router.go).toHaveBeenCalledWith(expect.objectContaining({ candidateId: 'b' }), { replace: true });
   });
   it('保存修改调用真实候选更新通道，保持证据、边界与使用授权并消费服务端校验', async () => {
-    const original = candidate('a', { sourceRefs: [{ kind: 'conversation', id: 'source-session' }], evidenceRefs: [{ kind: 'conversation', id: 'conversation-a' }], applicableWhen: ['报告'], forbiddenWhen: ['法律'], scopePolicy: { agentIds: ['commander'] } });
+    const original = candidate('a', { sourceRefs: [...nightlyFormation().sourceRefs, { kind: 'conversation', id: 'source-session' }], evidenceRefs: [{ kind: 'conversation', id: 'conversation-a' }], applicableWhen: ['报告'], forbiddenWhen: ['法律'], scopePolicy: { agentIds: ['commander'] } });
     const invoke = vi.fn(async () => ({ ok: true, candidate: { ...original, judgment: '编辑后的正文', capabilities: { ...original.capabilities, canPromote: false, ineligibleReasons: ['evidence_missing'] } } }));
     const loaded = loadCognitionAssets({ candidates: [original] }, { name: 'activity' }, { cogseed: { invoke } });
     loaded.render();
@@ -90,23 +91,24 @@ describe('系统活动列表与逐项审核', () => {
     expect(row.focus).toHaveBeenCalled();
     expect(loaded.ns.router.go).toHaveBeenCalledWith(expect.objectContaining({ candidateId: '' }), { replace: true });
   });
-  it('只改类型也会触发脏草稿确认，拒绝丢弃时不执行拒绝操作', async () => {
+  it('修改正文会触发脏草稿确认，拒绝丢弃时不执行拒绝操作', async () => {
     const loaded = loadCognitionAssets({ candidates: [candidate('a')] }, { name: 'activity' });
     loaded.render();
     const card = { dataset: { candId: 'a', candType: 'template' } };
-    await loaded.ns.activityController.handleClick(button('cand-type', 'rule', card));
+    loaded.ns.activityController.handleInput({ target: { dataset: { f: 'judgment' }, value: '修改正文', closest: () => card } });
     loaded.ns.confirmUser = vi.fn(async () => false);
     expect(await loaded.ns.activityController.handleClick(button('cand-decide', 'a'))).toBe(true);
     expect(loaded.ns.confirmUser).toHaveBeenCalledOnce();
   });
-  it('原生类型选择写入候选草稿，后台更新保留新类型且离开时提示未保存', async () => {
-    const loaded = loadCognitionAssets({ candidates: [candidate('a')] }, { name: 'activity' });
+  it('新认知编辑保留正文草稿与内部类型，离开时提示未保存', async () => {
+    const loaded = loadCognitionAssets({ candidates: [candidate('a', { suggestedType: 'cognition' })] }, { name: 'activity' });
     loaded.render();
-    const card = { dataset: { candId: 'a', candType: 'template' } };
-    expect(loaded.ns.activityController.handleInput({ target: { dataset: { f: 'type' }, value: 'rule', closest: () => card } })).toBe(true);
-    expect(card.dataset.candType).toBe('rule');
+    const card = { dataset: { candId: 'a', candType: 'cognition' } };
+    expect(loaded.ns.activityController.handleInput({ target: { dataset: { f: 'judgment' }, value: '保留修改正文', closest: () => card } })).toBe(true);
+    expect(card.dataset.candType).toBe('cognition');
     const html = loaded.render();
-    expect(html).toContain('value="rule" selected');
+    expect(html).toContain('保留修改正文');
+    expect(html).not.toContain('data-f="type"');
     loaded.ns.confirmUser = vi.fn(async () => false);
     expect(await loaded.ns.activityController.handleClick(button('activity-next'))).toBe(true);
     expect(loaded.ns.confirmUser).toHaveBeenCalledOnce();
@@ -239,14 +241,15 @@ describe('活动详情的真实处理记录', () => {
     expect(loaded.render()).toContain('人工核对');
     expect(loaded.render()).toContain('正式保存未成功');
   });
-  it('候选保存后使用服务端能力显示校验结果，继续编辑则清除过期提示', async () => {
+  it('保存后的质量阻断退出关注，历史深链保留服务端校验回执', async () => {
     const original = candidate('a');
     const invoke = vi.fn(async () => ({ ok: true, candidate: { ...original, capabilities: { ...original.capabilities, canPromote: false, ineligibleReasons: ['evidence_missing'] } } }));
-    const loaded = loadCognitionAssets({ candidates: [original] }, { name: 'activity' }, { cogseed: { invoke } });
+    const loaded = loadCognitionAssets({ candidates: [original] }, { name: 'activity', candidateId: 'a' }, { cogseed: { invoke } });
     const card = { dataset: { candId: 'a', candType: 'template' }, querySelector: () => null };
     await loaded.ns.activityController.handleClick(button('activity-save-draft', 'a', card));
     expect(loaded.render()).toContain('草稿已保存，仍有阻断项需要处理');
-    loaded.ns.activityController.handleInput({ target: { dataset: { f: 'judgment' }, value: '继续修改', closest: () => card } });
-    expect(loaded.render()).not.toContain('草稿已保存，仍有阻断项需要处理');
+    expect(loaded.ns.activityModel().attention).toHaveLength(0);
+    expect(loaded.store.candidates[0].capabilities.ineligibleReasons).toEqual(['evidence_missing']);
+    expect(loaded.render()).not.toContain('data-act="cand-adopt-with-form"');
   });
 });

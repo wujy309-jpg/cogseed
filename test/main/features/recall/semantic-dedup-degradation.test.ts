@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -28,7 +29,7 @@ afterEach(() => {
 });
 
 async function reviewableCandidate(candidates: typeof import('../../../../src/main/features/recall/candidate-service')) {
-  return candidates.saveRecallCandidate(UID, {
+  return createNightlyCandidateFixture(UID, {
     judgment: '正式评审必须先讲产品模型，再谈实现细节。', summary: '评审次序纪律',
     value: '避免评审跑偏到实现细节上。',
     suggestedType: 'rule',
@@ -68,7 +69,7 @@ describe('semantic dedup degradation', () => {
     const users = await import('../../../../src/main/features/users');
     users.activateUser(UID);
     const candidates = await import('../../../../src/main/features/recall/candidate-service');
-    await candidates.saveRecallCandidate(UID, {
+    await createNightlyCandidateFixture(UID, {
       judgment: '架构评审应先说明产品模型，再进入代码细节。', summary: '产品模型先行',
       value: '避免架构评审过早陷入实现讨论。',
       suggestedType: 'rule',

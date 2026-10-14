@@ -6,11 +6,6 @@ import { ontologyModuleVisibleToTask, queryOntologyFacts, queryOntologyRules, se
 import { resolveOntologyRecordForModule } from '../../features/cognition/ontology/commands';
 import { recordOntologyQueryReadReceipt, type OntologyQueryReadRef } from '../../features/cognition/ontology/query-receipt';
 import type { ResolvePersonalFieldsRequest } from '../../features/cognition_kernel/types';
-import type { CognitionSaveReceipt } from '../client';
-import { readOntologyDocument } from '../../features/cognition/ontology/service';
-import { readSlice } from '../../features/group_chat/visibility';
-import { saveConversationOntologyDraft } from '../../features/cognition/ontology/conversation-draft';
-import { saveConversationOntology } from '../../features/cognition/ontology/conversation-commands';
 import { createLogger } from '../../logger';
 import { logErrorRef, maskId } from '../../util/log-redact';
 
@@ -28,9 +23,6 @@ function queryReadRef(row: Record<string, unknown>, kind: OntologyQueryReadRef['
 export interface OntologyToolsOptions {
   userId: string;
   turnId?: string;
-  cid?: string;
-  allowConversationWrite?: boolean;
-  onCognitionSaveReceipt?: (receipt: CognitionSaveReceipt) => void | Promise<void>;
   context?: ResolvePersonalFieldsRequest['context'];
 }
 type ToolInput = Record<string, unknown>;
@@ -163,8 +155,7 @@ export function createOntologyTools(options: OntologyToolsOptions): AgentTool[] 
             log.warn('ontology query read receipt failed', { userId: maskId(options.userId), turnId: maskId(options.turnId), error: logErrorRef(error as Error) });
           }
         }
-        const sourceMessages = options.cid && options.allowConversationWrite ? (await readSlice(options.userId, options.cid, 'commander')).filter(message => message.from === 'user').slice(-8).map(message => ({ messageId: message.id, text: (message.text || '').slice(0, 2000), truncated: (message.text || '').length > 2000, attachments: message.attachments || [] })) : [];
-        return { content: JSON.stringify({ query, at, sourceMessages, modules: targetModules.slice(0, 50).map(m => ({ id: m.id, name: m.name, scope: m.scope })),
+        return { content: JSON.stringify({ query, at, modules: targetModules.slice(0, 50).map(m => ({ id: m.id, name: m.name, scope: m.scope })),
           revision: doc.revision, records: Object.values(doc.records).filter(record => targetModules.some(module => (record.kind === 'module' ? record.id : record.moduleId) === module.id) && record.access === 'task' && record.status === 'active' && (record.kind !== 'assertion' || [...visibleFacts, ...visibleUncertainFacts].some(fact => (fact.source as { recordId?: string }).recordId === record.id))).slice(0, 100),
           facts: visibleFacts, uncertainFacts: visibleUncertainFacts, rules: visibleRules, conflicts, conflictsComplete: rules.length <= ruleLimit && targetModules.length <= 50,
           readReceipt: { status: readReceiptStatus, ...(readReceiptId ? { id: readReceiptId } : {}) },
@@ -176,30 +167,5 @@ export function createOntologyTools(options: OntologyToolsOptions): AgentTool[] 
       }
     },
   };
-  const tools = [tool];
-  if (options.cid && options.allowConversationWrite) tools.push({
-    name: 'cognition_ontology_save', executionMode: 'sequential',
-    description: '创建本体推荐提交 draft：只写 module、types、entities、facts 和原话 evidence；服务自动生成稳定ID和本体规范字段，自动区分指向对象的关系和文字/数字属性。draft实体key/type及事实subject/target使用你自己选的短键（可中文），不用拼底层记录。纠正既有事实时用 command correct/change。所有 evidence.quote 必须逐字复制查询返回的 sourceMessages.text 或原附件，不能改写成摘要。未知含义用 certainty=unknown；facts.value可写未确认。 用户明确要求创建、保存、修正或回填本体时，将内容正式保存到本体页面同一主档。先查询获得 sourceMessages 中真实用户 messageId、revision 与记录 ID/version，再提交一个原子命令（最多50动作）；不能用写 Markdown 替代。每个动作都要 evidence：真实用户 messageId、来源逐字 quote、certainty=confirmed/inferred/unknown；附件证据加 attachmentName。用户未确认的身份/解释必须 inferred 或 unknown，不得写成 confirmed。创建 record 需显式 recordId，先建 module，再 definition(type/relation/attribute)，再 entity、assertion/rule；字段与本体编辑器一致。更新普通对象用 update+expectedVersion；事实纠正用 correct，现实变化用 change+effectiveFrom。不会自动合并身份或改变授权。调用成功且 saved=true、回读有记录之后才可说本体已创建，返回 moduleIds 和 citation 给用户；文件交付和本体保存分别报告。',
-    inputSchema: { type: 'object', properties: {
-      draft: { type: 'object', description: '推荐创建格式：{requestId,expectedRevision,module:{id?(更新已有模块时),name,description?},evidence:{messageId,quote,certainty},types:[{key,name}],entities:[{key,name,type:类型key,aliases?:[],evidence}],facts:[{key,subject:实体key,relation:属性或关系名,value:文字/数字/布尔值 或 target:实体key,from:YYYY-MM-DD或null,until:null,evidence}]}。value和target二选一；schema定义由服务生成。每条事实和实体都有自己的精确原话证据。requestId可用中文短名，持久化ID由服务生成。', properties: { requestId: { type: 'string' }, expectedRevision: { type: 'integer' }, module: { type: 'object' }, evidence: { type: 'object' }, types: { type: 'array', items: { type: 'object' } }, entities: { type: 'array', items: { type: 'object' } }, facts: { type: 'array', items: { type: 'object' } } }, required: ['requestId','expectedRevision','module','evidence'] },
-      command: { type: 'object', description: '命令字段：commandId稳定幂等键、expectedRevision查询返回值、actions数组。create动作含recordId/record/sourceLabel。record的kind及必填字段：module(name,description,scope:{kind:personal|project|workspace,id?}); definition(moduleId,name,description,definitionKind:type|relation|attribute,subjectTypes:[],objectTypes:[],valueType:entity|text|number|boolean|date,cardinality:one|many,cardinalityAnchor:subject|object); entity(moduleId,typeId,name,description,aliases:[],identityStatus:confirmed|unresolved); assertion(moduleId,subjectId,definitionId,object:{kind:entity,id}或{kind:literal,valueType,value},validity:{from:YYYY-MM-DD或null,until:null,precision:day,timezone:Asia/Shanghai}); rule(moduleId,name,requirement,strength:required|default|suggestion|logic,condition:null或条件表达式,effect:{kind:note},exception)。不要提供id/version/status/source/createdAt元数据。update含recordId/expectedVersion/patch/sourceLabel，事实correct/change含recordId/expectedVersion/object/sourceLabel，change另需effectiveFrom。', properties: { commandId: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,80}$', description: 'ASCII idempotency key only, e.g. meeting-create-1. Never use Chinese, spaces, colon, slash or timestamps with colons.' }, expectedRevision: { type: 'integer', minimum: 0 }, actions: { type: 'array', minItems: 1, maxItems: 50, items: { type: 'object', properties: { intent: { type: 'string', enum: ['create','update','correct','change'] }, recordId: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,160}$', description: 'ASCII stable record ID; display names go in record.name. Cross references use these IDs.' }, expectedVersion: { type: 'integer', minimum: 1 }, sourceLabel: { type: 'string', minLength: 1, maxLength: 200 }, record: { type: 'object', description: 'Required for create. Fields described above. Do not include metadata id/version/status/source.' }, patch: { type: 'object', description: 'Required for update, which cannot overwrite assertion facts.' }, object: { type: 'object', description: 'Required for correct/change: {kind:literal,valueType:text,value:...} or {kind:entity,id:...}.' }, effectiveFrom: { type: 'string', description: 'change only: YYYY-MM-DD.' } }, required: ['intent','recordId','sourceLabel'], additionalProperties: false } } }, required: ['commandId', 'expectedRevision', 'actions'] },
-      evidence: { type: 'array', minItems: 1, maxItems: 50, items: { type: 'object', properties: { messageId: { type: 'string' }, quote: { type: 'string', maxLength: 2000 }, attachmentName: { type: 'string' }, certainty: { type: 'string', enum: ['confirmed', 'inferred', 'unknown'] } }, required: ['messageId', 'quote', 'certainty'], additionalProperties: false } },
-    }, anyOf: [{ required: ['draft'] }, { required: ['command', 'evidence'] }], additionalProperties: false },
-    async execute(input) {
-      try {
-        const result = input.draft ? await saveConversationOntologyDraft(options.userId, input.draft, { cid: options.cid!, context: options.context }) : await saveConversationOntology(options.userId, input, { cid: options.cid!, context: options.context });
-        const doc = readOntologyDocument(options.userId);
-        let receiptSurface = 'recorded';
-        for (const moduleId of result.moduleIds) {
-          const module = doc.records[moduleId];
-          try { await options.onCognitionSaveReceipt?.({ target: 'ontology', id: moduleId, moduleId, version: module.version,
-            summary: module.kind === 'module' ? module.name : moduleId, outcome: result.pendingIds.length ? 'ontology-pending' : 'ontology-saved' }); }
-          catch { receiptSurface = 'unavailable'; }
-        }
-        return { content: JSON.stringify({ ...result, receiptSurface }) };
-      }
-      catch (error) { return { content: JSON.stringify({ saved: false, code: error instanceof OntologyError ? error.code : 'invalid_input', error: error instanceof Error ? error.message : 'save failed', ...(error instanceof OntologyError ? { details: error.details } : {}) }), isError: true }; }
-    },
-  });
-  return tools;
+  return [tool];
 }

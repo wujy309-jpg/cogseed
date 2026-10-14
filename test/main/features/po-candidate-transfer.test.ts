@@ -21,38 +21,43 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-describe('旧个人本体候选转入 Recall 共同审核', () => {
-  it('用户请求后才转移，重复请求幂等，之后仍要在共同审核里确认', async () => {
+describe('旧个人本体候选仅保留历史，不再转入认知生产链', () => {
+  it('旧确认与转移导出不存在，读取不会消费候选或生成新认知', async () => {
     const po = await import('../../../src/main/features/personal_ontology_candidates');
     const recall = await import('../../../src/main/features/recall/candidate-service');
     const candidate = { candidate_id: 'legacy-po-relation', kind: 'relation' as const, confidence: 'high' as const,
-      summary: '项目负责人', memory_scope: 'shared' as const, memory_text: 'CogSeed 项目的负责人是林青。',
-      source_memory_refs: ['source-note-1'], project_id: 'project-a', write_actor: 'skill' as const };
+      summary: '项目负责人', memory_scope: 'shared' as const, memory_text: '项目负责人需核对来源。', source_memory_refs: ['source-note-1'] };
     await po.addCandidate(userId, candidate);
-
-    const first = await po.transferCandidateToRecall(userId, candidate.candidate_id);
-    expect(first.sourceRemoved).toBe(true);
-    expect(first.candidate).toMatchObject({ status: 'pending_review', suggestedType: 'fact', judgment: candidate.memory_text,
-      scopePolicy: { projectIds: ['project-a'] }, captureKey: expect.stringMatching(/^po-candidate-/) });
-    expect((await po.listCandidates(userId)).candidate_updates).toEqual([]);
-    expect((await recall.readRecallCandidate(userId, first.candidate.id)).status).toBe('pending_review');
-
-    const retry = await po.transferCandidateToRecall(userId, candidate.candidate_id);
-    expect(retry.candidate.id).toBe(first.candidate.id);
-    expect(retry.sourceRemoved).toBe(false);
-    expect((await recall.listRecallCandidates(userId)).filter(row => row.captureKey === first.candidate.captureKey)).toHaveLength(1);
+    const before = fs.readFileSync(po.candidatesMdPath(userId), 'utf8');
+    expect(po).not.toHaveProperty('confirmCandidate');
+    expect(po).not.toHaveProperty('transferCandidateToRecall');
+    expect((await po.listCandidates(userId)).candidate_updates[0].candidate_id).toBe(candidate.candidate_id);
+    expect(fs.readFileSync(po.candidatesMdPath(userId), 'utf8')).toBe(before);
+    expect(await recall.listRecallCandidates(userId)).toEqual([]);
+    expect(await (await import('../../../src/main/features/recall/asset-service')).listAbilityAssets(userId)).toEqual([]);
   });
 
-  it('受限旧候选不会转成可能进入任务的 Recall 候选，也不从旧池移除', async () => {
+  it('legacy JSON所有状态原样保留，只读历史不补写memory、不rename源文件', async () => {
     const po = await import('../../../src/main/features/personal_ontology_candidates');
     const recall = await import('../../../src/main/features/recall/candidate-service');
-    const candidate = { candidate_id: 'legacy-po-private', kind: 'preference' as const, confidence: 'medium' as const,
-      summary: '私人健康资料', memory_scope: 'user' as const, memory_text: '私人健康资料正文。',
-      source_memory_refs: [], sensitivity: 'restricted' as const, write_actor: 'user' as const };
-    await po.addCandidate(userId, candidate);
-
-    await expect(po.transferCandidateToRecall(userId, candidate.candidate_id)).rejects.toMatchObject({ code: 'legacy_candidate_restricted' });
-    expect((await po.listCandidates(userId)).candidate_updates.map(row => row.candidate_id)).toEqual([candidate.candidate_id]);
-    expect(await recall.listRecallCandidates(userId)).toEqual([]);
+    const paths = await import('../../../src/main/paths');
+    const legacyFile = path.join(path.dirname(po.candidatesMdPath(userId)), 'candidates.json');
+    const legacy = { candidate_updates: ['pending', 'confirmed', 'rejected'].map(status => ({ candidate_id: 'legacy-'+status,
+      kind: 'preference', confidence: 'high', status, diff_summary: '旧版偏好原文 '+status, identity_scope_decision: 'personal_global' })) };
+    fs.mkdirSync(path.dirname(legacyFile), { recursive: true });
+    const before = JSON.stringify(legacy, null, 2); fs.writeFileSync(legacyFile, before);
+    expect((await po.listCandidates(userId)).candidate_updates.map(row => row.candidate_id)).toEqual(['legacy-pending', 'legacy-confirmed', 'legacy-rejected']);
+    expect(fs.readFileSync(legacyFile, 'utf8')).toBe(before);
+    expect(fs.existsSync(legacyFile+'.bak')).toBe(false);
+    expect(fs.existsSync(po.candidatesMdPath(userId))).toBe(false);
+    expect(fs.existsSync(paths.userProfileFile(userId))).toBe(false);
+    expect(fs.existsSync(paths.userMemoryFile(userId))).toBe(false);
+    expect(await (await import('../../../src/main/features/recall/asset-service')).listAbilityAssets(userId)).toEqual([]);
   });
+  it('旧个人上下文审批与拒绝函数明确关闭，不走任何候选写回', async () => {
+    const application = await import('../../../src/main/features/personal_context/application');
+    await expect(application.approveReviewItem(userId, 'old-candidate')).rejects.toThrow('legacy_candidate_approval_retired');
+    await expect(application.rejectReviewItem(userId, 'old-candidate')).rejects.toThrow('legacy_candidate_review_retired');
+  });
+
 });

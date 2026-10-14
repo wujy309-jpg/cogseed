@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 /** 旧候选批量改写入口兼容测试：只读检查，不调用模型、不改候选正文、状态、范围或历史。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
@@ -43,7 +44,7 @@ const LONG_RULE_ALT = '另一条也超长的规则正文用于终态样本'.repe
 
 async function seedCandidate(id: string, overrides: Record<string, unknown> = {}) {
   const { saveRecallCandidate } = await import('../../../../src/main/features/recall/candidate-service');
-  const saved = await saveRecallCandidate(UID, {
+  const saved = await createNightlyCandidateFixture(UID, {
     judgment: String(overrides.judgment ?? LONG_RULE),
     summary: String(overrides.summary ?? `候选-${id}`),
     suggestedType: String(overrides.suggestedType ?? 'rule'),
@@ -69,8 +70,8 @@ describe('旧候选批量改写入口退役', () => {
   it('超长、合规和已拒绝候选都保留原文；旧入口只能返回检查报告', async () => {
     const { readRecallCandidate, rejectRecallCandidate } = await import('../../../../src/main/features/recall/candidate-service');
     const long = await seedCandidate('long');
-    const clean = await seedCandidate('clean', { judgment: '短而合规的规则正文。', manual: true });
-    const settled = await seedCandidate('settled', { judgment: LONG_RULE_ALT, manual: true });
+    const clean = await seedCandidate('clean', { judgment: '短而合规的规则正文。', rawStatement: true });
+    const settled = await seedCandidate('settled', { judgment: LONG_RULE_ALT, rawStatement: true });
     await rejectRecallCandidate(UID, settled.id);
     const before = await Promise.all([long, clean, settled].map(c => readRecallCandidate(UID, c.id)));
     rewriteMock.mockClear();

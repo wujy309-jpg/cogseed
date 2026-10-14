@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 /**
  * 保留期清理链（specs/008 T005/T006 · US-306 交付项，验收归 specs/010）。
  *
@@ -69,7 +70,7 @@ const JUDGMENTS: Record<string, string> = {
 async function seedAsset(uid: string, marker: string) {
   const { candidates } = await modules();
   const judgment = JUDGMENTS[marker] || `Record the lesson behind ${marker} before shipping.`;
-  const candidate = await candidates.saveRecallCandidate(uid, {
+  const candidate = await createNightlyCandidateFixture(uid, {
     judgment,
     // 标题闸门（设计 3.2）：无 summary 兜底＝正文首句，过不了闸门。
     summary: 'Cascade fixture lesson',

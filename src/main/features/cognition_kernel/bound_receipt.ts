@@ -13,9 +13,7 @@
  *   - 写时严格校验、读时宽松跳过坏档（P0 的 axis=personal 历史记录继续可读）；
  *   - 回执失败只 warn，不阻断工具结果（接线处保证）。
  *
- * P2 的 filled 事件：缺口问答回填落地后追加 status='filled' 的回执（指向写入
- * 产物），checked→filled 两点齐了，闭环转化才可度量（P3 的大门）。填写回执是
- * 记账，不是准入——不证明投影、采用或执行。
+ * 历史 filled 回执继续可读；对话缺口回答不再生产回填事件。
  */
 
 import { genId12, safeId } from '../../storage';
@@ -193,62 +191,6 @@ export async function recordCognitionBoundReceipt(
     missing,
     boundCount: check.boundCount,
     totalCount: check.totalCount,
-    createdAt: new Date().toISOString(),
-  };
-  await appendRecallJsonlRecord(userId, COLLECTION, FILE_KEY, receipt);
-  return receipt;
-}
-
-export interface FilledSlotInput {
-  slot: string;
-  axis: BoundSlotAxis;
-  sourceId: string;
-  /** personal 轴的落点来源（资产或本体值）；缺省按资产记。 */
-  source?: PersonalFieldSource;
-  moduleId?: string;
-  version?: string;
-  packId: string;
-  policyVersion?: string;
-}
-
-/** P2：缺口问答回填落地后追加 filled 回执（指向写入产物，不存值）。 */
-export async function recordCognitionFilledReceipt(
-  userId: string,
-  turnId: string | undefined,
-  input: FilledSlotInput,
-  taskRunId?: string,
-): Promise<CognitionBoundReceipt | undefined> {
-  const runId = taskRunId ?? turnId;
-  if (!runId) return undefined;
-  if (!safeId(userId) || !safeId(runId)) throw new Error('invalid cognition bound receipt owner');
-  if (!validSlot(input.slot) || !validSlot(input.sourceId) || !validSlot(input.packId)
-    || !AXES.includes(input.axis)) throw new Error('invalid filled slot reference');
-  const source = input.axis === 'personal'
-    ? (input.source ?? 'personal_asset')
-    : input.axis === 'ontology' ? 'ontology_record' : 'recall_asset';
-  if (!validSlot(source)) throw new Error('invalid filled slot reference');
-  if (input.axis === 'ontology' && !validSlot(input.moduleId)) throw new Error('invalid filled slot reference');
-  const bound: BoundSlotRef[] = [{
-    slot: input.slot,
-    axis: input.axis,
-    source,
-    sourceId: input.sourceId,
-    ...(input.moduleId ? { moduleId: input.moduleId } : {}),
-    ...(input.version ? { version: input.version } : {}),
-  }];
-  const receipt: CognitionBoundReceipt = {
-    schemaVersion: 1,
-    ownerId: userId,
-    id: `cbound-${genId12()}`,
-    taskRunId: runId,
-    ...(turnId && turnId !== runId ? { turnId } : {}),
-    packId: input.packId,
-    status: 'filled',
-    policyVersion: typeof input.policyVersion === 'string' ? input.policyVersion : '',
-    bound,
-    missing: [],
-    boundCount: 1,
-    totalCount: 1,
     createdAt: new Date().toISOString(),
   };
   await appendRecallJsonlRecord(userId, COLLECTION, FILE_KEY, receipt);

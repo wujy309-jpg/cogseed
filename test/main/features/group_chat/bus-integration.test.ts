@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -379,7 +380,7 @@ async function createDelegatedAbilityAsset(
   scopePolicy?: { purposeTags?: string[] },
 ) {
   const candidates = await import("../../../../src/main/features/recall/candidate-service");
-  const promoted = await candidates.saveRecallCandidate(TEST_UID, {
+  const promoted = await createNightlyCandidateFixture(TEST_UID, {
     judgment: `Use the confirmed delegated asset for ${label}.`,
     summary: `Delegated asset ${label}`,
     suggestedType: "rule",
@@ -3055,7 +3056,7 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
     // only the explicit dispatch grant. Pin the projection explicitly so this
     // dispatch-boundary test does not depend on semantic-ranking heuristics.
 
-    const candidate = await candidates.saveRecallCandidate(TEST_UID, {
+    const candidate = await createNightlyCandidateFixture(TEST_UID, {
       judgment: "Never leak asset context into delegated turns unless the Commander grants it.",
       summary: "Commander-gated asset grant rule",
       suggestedType: "rule",
@@ -3160,7 +3161,7 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
     const candidates = await import("../../../../src/main/features/recall/candidate-service");
     const assetService = await import("../../../../src/main/features/recall/asset-service");
 
-    const candidate = await candidates.saveRecallCandidate(TEST_UID, {
+    const candidate = await createNightlyCandidateFixture(TEST_UID, {
       judgment: "Delegated turns can use any catalog asset the Commander picks.",
       summary: "catalog-wide dispatch grant",
       suggestedType: "rule",
@@ -6831,7 +6832,7 @@ describe("group_chat bus integration › Recall asset usage receipt", () => {
     const candidates = await import("../../../../src/main/features/recall/candidate-service");
     const projections = await import("../../../../src/main/features/recall/context-projection");
 
-    const candidate = await candidates.saveRecallCandidate(TEST_UID, {
+    const candidate = await createNightlyCandidateFixture(TEST_UID, {
       judgment: "Keep OAuth state checks before token exchange.",
       summary: "OAuth state check rule",
       suggestedType: "rule",
@@ -11556,7 +11557,7 @@ describe("group_chat bus integration › model-selected asset attachment (2026-0
   async function seedCatalogAsset(tag: string) {
     const candidates = await import("../../../../src/main/features/recall/candidate-service");
     const assetService = await import("../../../../src/main/features/recall/asset-service");
-    const candidate = await candidates.saveRecallCandidate(TEST_UID, {
+    const candidate = await createNightlyCandidateFixture(TEST_UID, {
       judgment: `Catalog asset for ${tag}: keep the attached set small and justified.`,
       summary: `catalog-${tag}`,
       suggestedType: "rule",
@@ -11684,7 +11685,7 @@ describe("group_chat bus integration › experience catalog hint (specs/016 T025
     const bus = await import("../../../../src/main/features/group_chat/bus");
     // 一条在用资产（资产目录可见）+ 一条同类型经验（"报告"命中消息文本的任务类型）。
     const candidates = await import("../../../../src/main/features/recall/candidate-service");
-    const candidate = await candidates.saveRecallCandidate(TEST_UID, {
+    const candidate = await createNightlyCandidateFixture(TEST_UID, {
       judgment: "Report asset: lead with the conclusion, then evidence.",
       summary: "report-first rule",
       suggestedType: "rule",

@@ -17,6 +17,8 @@ import { createLogger } from '../logger';
 import { cognitionStorePath, loadCognitionStoreSync, editCognitionCompatibility } from './cognition_kernel/store';
 import type { CognitionCompatibilityState, CognitionObject, CognitionStoreDocument } from './cognition_kernel/object-model';
 import type { PoDocument } from './po/model';
+import { synchronizeOntologyRuleBodies } from './cognition/ontology/shared-body';
+import { refreshPendingAssetVersion } from './recall/asset-version-journal';
 
 const log = createLogger('cognition-bridge');
 export const MANAGED_COLLECTIONS = ['ability-assets', 'candidates'] as const;
@@ -24,6 +26,15 @@ export function isManagedCognitionCollection(collection: string): boolean {
   return (MANAGED_COLLECTIONS as readonly string[]).includes(collection);
 }
 const transitionContext = new AsyncLocalStorage<{ uid: string; active: boolean }>();
+type SourceDependency = { uid: string; collection: string; active: boolean;
+  edit: (doc: CognitionStoreDocument, record: Record<string, unknown>) => void };
+const sourceDependencyContext = new AsyncLocalStorage<SourceDependency>();
+/** A business dependency is applied inside the same fresh main-file draft as its source. */
+export async function withCognitionSourceDependency<T>(uid: string, collection: string,
+  edit: SourceDependency['edit'], work: () => Promise<T>): Promise<T> {
+  const context: SourceDependency = { uid, collection, edit, active: true };
+  try { return await sourceDependencyContext.run(context, work); } finally { context.active = false; }
+}
 export function withCognitionTransition<T>(uid: string, work: () => Promise<T>): Promise<T> {
   if (!safeId(uid)) throw new Error('invalid uid');
   const held = transitionContext.getStore();
@@ -62,7 +73,7 @@ function objectIdForPo(groupId: string, valueId: string): string {
 /** 完整记录留兼容契约，规范对象用于统一读取；字段不猜测、不改写正文、不按正文去重。 */
 function sourceObjects(c: CognitionCompatibilityState, includePoValues = true): CognitionObject[] {
   const out: CognitionObject[] = [];
-  const homes: Record<string, CognitionObject['home']> = { personal: 'personal_fact', fact: 'personal_fact', rule: 'rule', template: 'template', skill_method: 'method' };
+  const homes: Record<string, CognitionObject['home']> = { cognition: 'cognition', personal: 'personal_fact', fact: 'personal_fact', rule: 'rule', template: 'template', skill_method: 'method' };
   const po = c.po as unknown as PoDocument | undefined;
   const projected = new Map<string, { g: PoDocument['groups'][number]; v: PoDocument['groups'][number]['values'][number] }>();
   for (const g of po?.groups ?? []) for (const v of g.values) if (v.assetId && !projected.has(v.assetId)) projected.set(v.assetId, { g, v });
@@ -76,7 +87,7 @@ function sourceObjects(c: CognitionCompatibilityState, includePoValues = true): 
     const projection = projected.get(String(a.id));
     const fieldName = projection?.g.fields.find(f => f.id === projection.v.fieldId)?.name;
     out.push({
-      id: String(a.id), kind: home === 'personal_fact' ? 'assertion' : home === 'rule' ? 'rule' : 'bundle', home,
+      id: String(a.id), kind: home === 'cognition' || home === 'personal_fact' ? 'assertion' : home === 'rule' ? 'rule' : 'bundle', home,
       title: String(a.title ?? ''), statement: String(a.statement ?? ''), origin: String(a.origin ?? 'import'),
       status: status === 'revoked' ? 'paused' : status === 'purged' ? 'deleted' : status as CognitionObject['status'],
       version, createdAt: String(a.createdAt ?? ''), updatedAt: String(a.updatedAt ?? ''),
@@ -104,12 +115,12 @@ function sourceObjects(c: CognitionCompatibilityState, includePoValues = true): 
 }
 function rebuildObjects(doc: CognitionStoreDocument, c: CognitionCompatibilityState): void {
   const objects = sourceObjects(c);
-  const unmanagedSlots = new Map(Object.values(doc.objects).filter(x => !x.managedSource && x.kind === 'assertion' && x.status !== 'deleted')
+  const unmanagedSlots = new Map(Object.values(doc.objects).filter(x => !x.managedSource && x.home !== 'cognition' && x.kind === 'assertion' && x.status !== 'deleted')
     .map(x => [JSON.stringify([x.groupId ?? '', x.fieldName]), x.id]));
   for (const o of objects) {
     const old = Object.hasOwn(doc.objects, o.id) ? doc.objects[o.id] : undefined;
     if (old && !old.managedSource) throw new Error(`unmanaged cognition object conflicts with source: ${o.id}`);
-    const conflict = o.kind === 'assertion' ? unmanagedSlots.get(JSON.stringify([o.groupId ?? '', o.fieldName])) : undefined;
+    const conflict = o.home !== 'cognition' && o.kind === 'assertion' ? unmanagedSlots.get(JSON.stringify([o.groupId ?? '', o.fieldName])) : undefined;
     if (conflict) throw new Error(`unmanaged cognition slot conflicts with source: ${conflict}`);
   }
   for (const [id, o] of Object.entries(doc.objects)) if (o.managedSource) delete doc.objects[id];
@@ -120,9 +131,22 @@ export async function replaceCognitionSources(uid: string, c: CognitionCompatibi
 }
 /** mirror 失写不能让已提交的旧库操作变成假失败；完整旧记录就是重放日志。
  * 切权威必须再次全量核对。unified 失写则直接失败，绝不回落旧库。 */
-async function commitSourceChange(uid: string, change: (c: CognitionCompatibilityState) => void, dirty: NonNullable<CognitionCompatibilityState['projectionChanges']>): Promise<void> {
+async function commitSourceChange(uid: string, change: (c: CognitionCompatibilityState) => void, dirty: NonNullable<CognitionCompatibilityState['projectionChanges']>, dependencyRecord?: Record<string, unknown>): Promise<void> {
   await editCognitionCompatibility(uid, doc => {
     if (!doc.compatibility) throw new Error('missing compatibility state');
+    const committingAssetVersion = Boolean(dependencyRecord && dirty.records['ability-assets']?.length
+      && doc.compatibility.records['ability-assets']?.[String(dependencyRecord.id)]?.version !== dependencyRecord.version);
+    const dependency = sourceDependencyContext.getStore();
+    if (dependency?.active && dependency.uid === uid && dirty.records[dependency.collection]?.length && dependencyRecord) {
+      if (doc.compatibility.mode !== 'unified') throw new Error('atomic cognition dependencies require unified storage');
+      dependency.edit(doc, dependencyRecord);
+    }
+    if (dependencyRecord && dirty.records['ability-assets']?.length) synchronizeOntologyRuleBodies(doc, dependencyRecord);
+    // Joint ontology edits can add canonical references to the actual asset.
+    // Queue that final snapshot in this same atomic draft, so interrupted ledger
+    // appends recover the saved version exactly. Metadata-only writes must never
+    // rewrite an already queued historical snapshot.
+    if (committingAssetVersion && dependencyRecord) refreshPendingAssetVersion(dependencyRecord);
     // editCognitionCompatibility loads a fresh draft under the document lock.
     const next = doc.compatibility;
     if (next.mode === 'unified') {
@@ -142,7 +166,7 @@ async function commitSourceChange(uid: string, change: (c: CognitionCompatibilit
       if (!object) throw new Error('asset source object missing');
       const old = Object.hasOwn(doc.objects, id) ? doc.objects[id] : undefined;
       if (old && !old.managedSource) throw new Error(`unmanaged cognition object conflicts with source: ${id}`);
-      if (object.kind === 'assertion' && Object.values(doc.objects).some(x => !x.managedSource && x.kind === 'assertion' && x.status !== 'deleted'
+      if (object.home !== 'cognition' && object.kind === 'assertion' && Object.values(doc.objects).some(x => !x.managedSource && x.home !== 'cognition' && x.kind === 'assertion' && x.status !== 'deleted'
         && (x.groupId ?? '') === (object.groupId ?? '') && x.fieldName === object.fieldName)) throw new Error('unmanaged cognition slot conflicts with source');
       Object.defineProperty(doc.objects, id, { value: object, enumerable: true, configurable: true, writable: true });
     }
@@ -150,8 +174,15 @@ async function commitSourceChange(uid: string, change: (c: CognitionCompatibilit
 }
 export async function persistCognitionSource(uid: string, collection: string, id: string, record: Record<string, unknown>, legacyWrite: () => Promise<void>): Promise<void> {
   const c = cognitionCompatibility(uid);
+  const dependency = sourceDependencyContext.getStore();
+  if (dependency?.active && dependency.uid === uid && dependency.collection === collection && c?.mode !== 'unified')
+    throw new Error('atomic cognition dependencies require unified storage');
+  if (collection === 'ability-assets' && c?.mode !== 'unified'
+    && [record, c?.records['ability-assets']?.[id]].some(source => Array.isArray(source?.ontologyRefs)
+      && source.ontologyRefs.some(ref => ref && typeof ref === 'object' && (ref as Record<string, unknown>).sharedBody === true)))
+    throw new Error('shared ontology bodies require unified storage');
   if (!c) { await legacyWrite(); return; }
-  const commit = () => commitSourceChange(uid, next => { Object.defineProperty(next.records[collection] ??= {}, id, { value: record, writable: true, enumerable: true, configurable: true }); }, { records: { [collection]: [id] } });
+  const commit = () => commitSourceChange(uid, next => { Object.defineProperty(next.records[collection] ??= {}, id, { value: record, writable: true, enumerable: true, configurable: true }); }, { records: { [collection]: [id] } }, record);
   if (c.mode === 'mirror') {
     await legacyWrite();
     try { await commit(); } catch { log.warn('cognition mirror needs reconciliation', { collection, id }); }

@@ -72,6 +72,7 @@ async function applyRecommendedAssetAction(
     try {
       await recommendAbilityAssetAction(userId, item.assetId, {
         actor: 'system',
+        expectedVersion: item.version,
         action,
         reason,
       });

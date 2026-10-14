@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { safeId } from '../../storage';
 import { createLogger } from '../../logger';
 import { listInjectionReceipts, type InjectionReceipt } from './injection-receipt';
@@ -95,6 +96,8 @@ export async function finalizeAssetUsageClaims(userId: string, input: {
       taskRunId: input.taskRunId, projectionId,
       assetId: injection.assetId, assetVersion: injection.assetVersion, injectionReceiptId: injection.id,
       status: 'applied', evidenceKind: 'final_output', boundary: 'real',
+      observationMethod: 'agent_reported', messageId: input.messageId,
+      outputHash: createHash('sha256').update(input.finalText).digest('hex'),
       evidenceRefs: [{ kind: 'message', id: input.messageId, title: 'Asset-specific final output' }],
       reason: viaAgentRead
         ? 'Model-reported adoption tied to a host-recorded agent_read snapshot of this asset version and the persisted final output; not effectiveness verification.'

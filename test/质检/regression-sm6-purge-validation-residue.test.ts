@@ -1,3 +1,4 @@
+import { seedStoredAbilityAsset } from '../helpers/stored-ability-asset';
 /**
  * 探针（状态机审计员 · 本轮，sm6）：purge 墓碑漏清「验证三件套」
  * （validationCount / consecutiveFailures / lastValidatedAt）——P-r1-4（前遍，
@@ -60,7 +61,7 @@ describe('回归 sm6 › purge 墓碑清验证三件套（F-r4-7 已修）', () 
     const assets = await import('../../src/main/features/recall/asset-service');
     const now = new Date().toISOString();
     const id = 'aa-pv-purge01';
-    await assets.createAbilityAsset(UID, {
+    await seedStoredAbilityAsset(UID, {
       schemaVersion: 2, ownerId: UID, id, candidateId: `cand-${id}`,
       sourceCandidateIds: [`cand-${id}`], reviewDecisionId: 'rd_probepv00001x',
       type: 'personal', title: '资产 pv', statement: '可验证的陈述。',

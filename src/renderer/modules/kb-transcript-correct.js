@@ -184,8 +184,7 @@
    * 这一行背后**是否有真的词表条目**。
    *
    * 候选有两个来源（见主进程 scan）：词表命中（`entryRef: g_*`）与**模型读正文的建议**
-   * （`entryRef: model_<i>`、`fromModel: true`）。后者**不在词表里**——它只有在用户
-   * 「勾选 + 生成清理版」时才被记进词表（`source: meeting_accept`）。
+   * （`entryRef: model_<i>`、`fromModel: true`）。后者只更正当前材料，不写入词表。
    *
    * 为什么必须区分：忽略（降权）/ 加白 / 改写法都是**词表操作**，对 `model_*` 这种
    * 合成 id 主进程找不到条目、返回 0/null。面板此前不看回执，照样弹"已改为：X""已忽略"，
@@ -237,11 +236,10 @@
 
   /**
    * 取出**被勾选**的模型建议，转成主进程 `apply` 需要的形状（纯函数）。
-   * 只取勾选的：没勾的一条都不该进正文，也不该被记进词表。
+   * 只取勾选的：没勾的一条都不该进正文。
    *
    * `entryRef` 必须一起带上：面板 acceptedIds 里放的就是**扫描期**这个 ref，
-   * 主进程若按数组下标重编 `model_<i>`，只勾第 2 条时两边编号就错位——候选没被应用、
-   * 也就不会被记进词表，而且一声不响（真机：模型建议"接受了却进不了词汇表"）。
+   * 主进程若按数组下标重编 `model_<i>`，只勾第 2 条时两边编号就错位，候选不会被应用且无法察觉。
    */
   function checkedModelCandidates(rows, acceptedIds) {
     const accepted = acceptedIds instanceof Set ? acceptedIds : new Set(acceptedIds || []);
@@ -354,7 +352,6 @@
       linked: Number(raw.linked || 0),
       alignments,
       missing,
-      contributed: Number(raw.contributed || 0),
       canonicalNames,
       /**
        * 本体与记忆都为空：本次同步什么都没改，界面必须如实说，不能装作做了事。
@@ -863,10 +860,9 @@
      *
      * 菜单内容按行类型分流：
      *   - 「加白」**只给词表行**：白名单是挂在词表条目上的字段（`contextAllow`），
-     *     模型建议还没有条目可挂——先「接受 + 生成清理版」把它记进词表，下次扫描它就成了
-     *     词表行，那时再加白。给个点了必然失败（`updated: 0`）的按钮才是坑。
+     *     模型建议没有长期词表条目，不提供这类词表管理动作。
      *   - 「改写法」两种行都给：词表行走主进程改条目；模型建议行改的是"这条建议要替换成
-     *     什么"，本地生效、勾选并生成清理版时按改后的写法替换（那也是它进词表的时刻）。
+     *     什么"，本地生效、勾选并生成清理版时按改后的写法替换。
      *   - 「依据 / 拒绝 / 提出为候选」（specs/013）：依据与拒绝两种行都给；「提出为候选」
      *     只给词表行（模型建议还不是词条，没有 captureKey 可沉淀）。
      *   - 「重新审视」= 恢复：词表行走词表降权还原，模型建议行走"本次不采纳"的还原。
@@ -912,19 +908,6 @@
           'data-atc-rejected': state.rejected.has(row.entryRef) ? '1' : '0',
         },
       }));
-      if (isGlossaryRow(row)) {
-        parts.push(button({
-          // 【specs/013 T047】「提出为候选」：把这条词条确定性沉淀进 recall 候选池
-          // （captureKey=glossary-<entryId> 幂等；不是个人本体回流那条池子）。
-          // 模型建议行（model_*）不是词表词条，不提供此入口。
-          label: t('kb.meetingRef.propose_candidate', '提出为候选'),
-          role: 'ghost',
-          size: 'sm',
-          className: 'kb-atc__btn',
-          disabled: state.busy,
-          attrs: { 'data-atc-propose': row.entryRef },
-        }));
-      }
       if (isIgnoredRow) {
         parts.push(button({
           label: t('kb.transcriptCorrect.reopen_row', '重新审视'),
@@ -1401,7 +1384,6 @@
         t('kb.transcriptCorrect.sync_linked', '挂上本体引用 {count} 条', { count: info.linked }),
         t('kb.transcriptCorrect.sync_align', '写法对齐 {count}', { count: info.alignments.length }),
         t('kb.transcriptCorrect.sync_missing', '待补词条 {count}', { count: info.missing.length }),
-        t('kb.transcriptCorrect.sync_contributed', '投递候选 {count}', { count: info.contributed }),
       ].join(' · ');
       body.appendChild(stats);
 
@@ -1802,12 +1784,8 @@
         state.cleanedText = String(result?.result?.text || '');
         // 【specs/013 T030】回执上屏：apply 返回的 receipts（entryRef + decisionId）。
         state.receipts = Array.isArray(result?.receipts) ? result.receipts : [];
-        // 勾选并应用 = 确认：主进程会把被应用的模型建议记进词表（source: meeting_accept，
-        // 只对本文档生效）。这件事必须说出来——否则用户不知道词表被改了。
-        const written = Number(result?.glossaryWrites?.created || 0) + Number(result?.glossaryWrites?.updated || 0);
         const dropped = Number(result?.droppedModels || 0);
         setStatus(t('kb.transcriptCorrect.apply_done', '清理版已生成（原文未改动）', {})
-          + (written ? t('kb.transcriptCorrect.apply_wrote_glossary', '；已把 {count} 条模型建议记入词表（仅本文档生效）', { count: written }) : '')
           + (dropped ? t('kb.transcriptCorrect.apply_dropped_models', '；{count} 条模型建议因位置对不上被丢弃', { count: dropped }) : ''), '');
       } catch (error) {
         log?.warn('transcript apply failed', { error: error?.message || String(error) });
@@ -2151,8 +2129,7 @@
     }
 
     /**
-     * 同步本体/记忆。主进程是唯一写入方：本面板只传 `contribute` 开关，
-     * 不自己决定"投递什么候选"（幂等键在 bridge 里算）。
+     * 对齐词表与已有本体引用，不从纠错记录生成认知候选。
      */
     async function runSyncOntology() {
       if (state.syncBusy) return;
@@ -2160,7 +2137,7 @@
       state.syncError = '';
       render();
       try {
-        state.sync = await root.cogseed.invoke('transcript.glossary.syncOntology', { contribute: true });
+        state.sync = await root.cogseed.invoke('transcript.glossary.syncOntology', {});
         setStatus(t('kb.transcriptCorrect.sync_done', '已与本体/记忆对齐（原文未改动）'), '');
       } catch (error) {
         log?.warn('ontology sync failed', { error: error?.message || String(error) });
@@ -2382,47 +2359,6 @@
       }
     }
 
-    /**
-     * 【specs/013 T047】提出为候选：把词表词条沉淀进 recall 候选池
-     * （`transcript.correct.proposeCandidate`；captureKey=glossary-<entryId>
-     * 幂等——created:false = 已在候选池，不重复建账，界面如实提示）。
-     * 词条 kind 从依据里的 glossary ref 读（扫描时主进程已带上）；读不到
-     * （旧载荷）就不发起，不猜。
-     */
-    async function runPropose(entryRef) {
-      if (state.busy) return;
-      const row = state.rows.find((item) => item.entryRef === entryRef);
-      const glossaryRef = (Array.isArray(row?.refs) ? row.refs : [])
-        .find((ref) => ref && typeof ref === 'object' && ref.source === 'glossary');
-      const entryKind = glossaryRef ? String(glossaryRef.kind || '') : '';
-      if (!entryKind) {
-        setStatus(t('kb.meetingRef.propose_no_kind', '这条记录缺少词条类别，无法提出为候选。'), 'warning');
-        return;
-      }
-      // 【P-r2-31 补锁】proposeCandidate 是写操作（建候选账），对齐文件惯例持锁。
-      state.busy = true;
-      render();
-      try {
-        const result = await root.cogseed.invoke('transcript.correct.proposeCandidate', {
-          entryId: entryRef,
-          entryKind,
-          // 面板上下文：用户此刻在这份文档里提出（主进程据此填 sourceRefs）。
-          ...(ctx.docId ? { docId: ctx.docId } : {}),
-        });
-        if (result && result.created === false) {
-          setStatus(t('kb.meetingRef.propose_exists', '「{wrong}」已在候选池，不重复建账。', { wrong: row?.wrong || '' }), '');
-        } else {
-          setStatus(t('kb.meetingRef.propose_done', '已提出为候选：「{wrong}」（确认后才会进入资产库）', { wrong: row?.wrong || '' }), '');
-        }
-      } catch (error) {
-        log?.warn('propose candidate failed', { error: error?.message || String(error) });
-        setStatus(t('kb.meetingRef.propose_failed', '提出为候选失败，请稍后重试。'), 'warning');
-      } finally {
-        state.busy = false;
-        render();
-      }
-    }
-
     /** 加白：把用户填的上下文词加入白名单，之后该语境静默（需重扫生效）。 */
     async function runAddAllow(entryRef) {
       if (state.busy) return;
@@ -2487,8 +2423,7 @@
      *   - 词表行：主进程 `applyAlignment` 改条目（`entry: null` = 没改成功，必须如实报）；
      *   - 模型建议行：它不在词表里，改的是**这条建议的目标写法**——就地改本行，
      *     勾选并生成清理版时按改后的写法替换（`checkedModelCandidates` 读的就是 row.correct），
-     *     那一刻主进程才会把这条确认过的写法记进词表。所以本地改就够了，不必写盘，
-     *     也不该报"已写入词表"。
+     *     本地修改只用于本次材料，不写盘到词表，也不报告长期学习。
      */
     async function runRename(entryRef) {
       if (state.busy) return;
@@ -2649,12 +2584,6 @@
           setStatus(t('kb.meetingRef.reject_marked', '已标记拒绝：{wrong}（生成清理版时记入回执，此后不再重复建议）', { wrong: row?.wrong || '' }), '');
         }
         render();
-        return;
-      }
-      // 【specs/013 T047】提出为候选（幂等：created:false 时提示已在候选池）。
-      const propose = event.target.closest('[data-atc-propose]');
-      if (propose) {
-        void runPropose(propose.getAttribute('data-atc-propose'));
         return;
       }
       const allowRemove = event.target.closest('[data-atc-allow-remove]');

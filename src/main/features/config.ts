@@ -279,8 +279,8 @@ export function setCommanderAvatar(avatar: CommanderAvatar): CommanderAvatar {
 
 export type ThinkingLevelPreference = 'auto' | 'off' | 'low' | 'high';
 
-export function getThinkingLevel(): ThinkingLevelPreference {
-  const v = readPreferences().thinking_level;
+export function getThinkingLevel(userId?: string): ThinkingLevelPreference {
+  const v = (userId ? readJsonSync<UserPreferences>(userPreferencesFile(userId)) : readPreferences()).thinking_level;
   return v === 'off' || v === 'low' || v === 'high' ? v : 'auto';
 }
 

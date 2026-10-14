@@ -81,19 +81,19 @@ describe('P-r2-20 › 区块读取世代号：drain 与 reload 双飞乱序，�
     expect(store.assets.map((a: { id: string }) => a.id)).toEqual(['aa-only']);
   });
 
-  it('错误响应同样受世代守卫：旧请求的失败不把新成功盖成错误态（inbox 分区）', async () => {
+  it('错误响应同样受世代守卫：旧请求的失败不把新成功盖成错误态（候选分区）', async () => {
     const firstTrip = deferred();
     let inboxCalls = 0;
     let pushEvent: ((notice: unknown) => void) | null = null;
     const { ns, store } = loadCognitionAssets({}, {}, {
       cogseed: {
         invoke: vi.fn(async (channel: string) => {
-          if (channel === 'cognition.inbox.list') {
+          if (channel === 'recall.candidates.list') {
             inboxCalls += 1;
             // 第一次（旧请求）挂起，最终以失败返回。
             if (inboxCalls === 1) return firstTrip.promise;
             // 第二次（新请求）立刻成功。
-            return { ok: true, items: [{ id: 'in-1' }] };
+            return { ok: true, candidates: [{ id: 'in-1' }] };
           }
           return { ok: true };
         }),
@@ -102,21 +102,21 @@ describe('P-r2-20 › 区块读取世代号：drain 与 reload 双飞乱序，�
     });
     ns.setupChangeRail(() => true);
     // cleanup-reports 映射 inbox 区块：drain 发起旧请求（gen=1，挂起）。
-    pushEvent!({ collection: 'cleanup-reports' });
+    pushEvent!({ collection: 'candidates' });
     await settle();
     expect(inboxCalls).toBe(1);
     // reload/snapshot 再发 inbox 请求（gen=2）：立刻成功落地。
     const reloading = ns.reload();
     await settle();
     expect(inboxCalls).toBe(2);
-    expect(store.inbox.map((row: { id: string }) => row.id)).toEqual(['in-1']);
+    expect(store.candidates.map((row: { id: string }) => row.id)).toEqual(['in-1']);
     // 旧请求此刻以失败返回（ok:false）：世代已过，作废——不落错误态、不清数据。
     firstTrip.resolve({ ok: false, error: 'stale failure' });
     await settle();
     await reloading;
     await settle();
-    expect(store.inboxError).toBe('');
-    expect(store.inbox.map((row: { id: string }) => row.id)).toEqual(['in-1']);
+    expect(store.candidatesError).toBe('');
+    expect(store.candidates.map((row: { id: string }) => row.id)).toEqual(['in-1']);
   });
 });
 

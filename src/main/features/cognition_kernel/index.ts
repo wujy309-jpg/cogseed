@@ -1,10 +1,9 @@
 /**
  * cognition_kernel — 认知内核契约层（S2，2026-10-02）。
  *
- * 对外只暴露四件事：
+ * 核心任务读取契约：
  *   resolvePersonalFields  取件窗口：任务要的个人字段只走这一个口
  *   checkTaskFields        缺口引擎：任务包 → 已有/缺（缺的带问法与动作）
- *   backfillFieldValue     回填：用户答完 → 写档案 + 一张改动记录单
  *   readMergedInbox        合并收件箱：两个候选池 → 一个队列（供「待我处理」用）
  *
  * 设计约束见 types.ts 头注；本层不改变既有存储与既有通道的行为。
@@ -58,18 +57,16 @@ export { loadPersonalSourceSnapshot, resolveFromSnapshot, resolvePersonalFields 
 export { TASK_FIELD_PACKS, getTaskFieldPack } from './task_field_packs';
 export type { AssetSlotRef, OntologySlotRef, TaskFieldPack } from './task_field_packs';
 
-export { backfillFieldValue, checkTaskFields } from './gap';
-export type { BackfillFieldInput, BackfillFieldResult, FieldGap, TaskFieldCheck } from './gap';
+export { checkTaskFields } from './gap';
+export type { FieldGap, TaskFieldCheck } from './gap';
 
 export {
   listCognitionBoundReceipts,
   recordCognitionBoundReceipt,
-  recordCognitionFilledReceipt,
 } from './bound_receipt';
-export type { BoundSlotAxis, BoundSlotRef, CognitionBoundReceipt, FilledSlotInput, MissingSlotRef } from './bound_receipt';
+export type { BoundSlotAxis, BoundSlotRef, CognitionBoundReceipt, MissingSlotRef } from './bound_receipt';
 
 export {
-  rememberOntologySlotAnswer,
   resolveAssetSlots,
   resolveOntologySlots,
 } from './slots';
@@ -80,8 +77,6 @@ export type {
   OntologySlotBound,
   OntologySlotMissing,
   OntologySlotResolution,
-  RememberOntologySlotInput,
-  RememberOntologySlotResult,
   ResolveSlotOptions,
   SlotAxis,
 } from './slots';
@@ -155,5 +150,3 @@ export type {
 } from './pool';
 
 // S3-d：判定→池 总装线（一条内容进门的唯一入口）。
-export { routeAndSubmit } from './pipeline';
-export type { RouteAndSubmitOptions, RouteAndSubmitResult } from './pipeline';

@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../helpers/nightly-formation-fixture';
 /**
  * 探针（本轮红队-数据与注入，主题：契约对齐/导入接口注入非法结构）：
  * recall.assets.update 通道对 type 字段零枚举校验——AbilityAssetType 五枚举
@@ -64,7 +65,7 @@ const ACT = { actor: 'user' as const, reason: 'probe' };
 
 async function seedRuleAsset() {
   const candidates = await import('../../src/main/features/recall/candidate-service');
-  const candidate = await candidates.saveRecallCandidate(UID, {
+  const candidate = await createNightlyCandidateFixture(UID, {
     judgment: '发布前必须核对回滚方案。',
     summary: 'type 枚举探针基线',
     suggestedType: 'rule', ...RULE_BOUNDARY, suggestedScope: 'architecture',

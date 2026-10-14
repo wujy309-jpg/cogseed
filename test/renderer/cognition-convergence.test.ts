@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderCognition, loadCognitionAssets } from './helpers/cognition-renderer';
 import { getRecallCandidateCapabilities, projectReviewQueueCandidates } from '../../src/main/features/recall/candidate-capabilities';
-const candidate = (id: string, status = 'pending_review') => ({ id, status, judgment: '以后方案比较优先使用表格。', value: '便于反复比较方案差异。', summary: '方案比较格式', suggestedScope: '方案比较', suggestedType: 'personal', suggestedAction: 'create', sourceRefs: [], capabilities: getRecallCandidateCapabilities({ status: status as never }), updatedAt: '2026-10-08T01:00:00Z' });
+const candidate = (id: string, status = 'pending_review') => ({ id, status, judgment: '以后方案比较优先使用表格。', value: '便于反复比较方案差异。', summary: '方案比较格式', suggestedScope: '方案比较', suggestedType: 'personal', suggestedAction: 'create', captureProvenance: { pipeline: 'nightly_conversation', captureId: 'capture-a', messageIds: ['message-a'], extractionCompletedAt: '2026-10-12T01:00:00Z', valueJudgment: { eligible: true, reason: '可重复使用', judgedAt: '2026-10-12T00:59:00Z', evidence: [{ messageId: 'message-a', sourceId: 'source-a', quote: '这是真实来源原文' }] } }, sourceRefs: [{ kind: 'conversation', subtype: 'message', id: 'source-a', excerpt: '真实原文' }], capabilities: getRecallCandidateCapabilities({ status: status as never }), updatedAt: '2026-10-08T01:00:00Z' });
 describe('认知收敛后的单一治理入口', () => {
   it('五个入口；旧待处理深链进入系统活动并保留建议身份', () => {
     const { ns } = loadCognitionAssets();
@@ -34,10 +34,15 @@ describe('认知收敛后的单一治理入口', () => {
     expect(html).not.toContain('全部聊天历史');
   });
   it('已保存或拒绝的建议移入已处理，列表不直接放确认按钮', () => {
-    const records = [candidate('c1'), candidate('c2', 'confirmed')];
+    const records = [candidate('c1'), { ...candidate('c2', 'confirmed'), promotedAssetId: 'asset-c2' }, candidate('c3', 'rejected')];
     expect(renderCognition({ name: 'activity' }, { candidates: records })).not.toContain('data-act="candidate-promote"');
     const done = renderCognition({ name: 'activity', activityView: 'done' }, { candidates: records });
     expect(done).toContain('已保存');
+    expect(done).toContain('已拒绝');
+    expect(done).toContain('data-act="go-inbox-asset"');
+    const { ns } = loadCognitionAssets({ candidates: records });
+    expect(ns.activityModel().attention.map((row: any) => row.key)).toEqual(['candidate:c1']);
+    expect(ns.activityModel().done).toHaveLength(2);
     expect(done).toContain('data-act="activity-select"');
     expect(done).toContain('ca-activity-detail');
   });
@@ -47,11 +52,11 @@ describe('认知收敛后的单一治理入口', () => {
     expect(html).toContain('部分变化未能读取，请重试');
     expect(html).not.toContain('这条建议已不在');
   });
-  it('新设置独立管理夜间发现和自动批准，移除联动维护和 KSTAR 展示', () => {
+  it('设置保留夜间发现主线，确认规则默认人工且能力未读到时禁用自动确认', () => {
     const html = renderCognition({ name: 'settings' }, { captureSettings: { enabled: true, executionPolicy: 'nightly' }, captureModel: { configured: true } });
     expect(html).toContain('夜间发现');
-    expect(html).toContain('data-act="auto-approval-toggle"');
-    expect(html).toContain('仅限授权范围可核实的项目或工作空间');
+    expect(html).toMatch(/aria-checked="false"[^>]*disabled[^>]*data-act="auto-approval-toggle"/);
+    expect(html).toContain('完整建议进入');
     expect(html).toContain('data-act="nightly-toggle"');
     expect(html).not.toContain('data-act="nightly-time"');
     expect(html).not.toContain('KSTAR');
@@ -72,10 +77,10 @@ describe('认知收敛后的单一治理入口', () => {
     expect(html).toContain('<h2>方案比较格式</h2>');
     expect(html).toContain('ca-activity-detail-footer');
   });
-  it('临时记录退出待办，重复建议合并且计数与顶部一致，冲突仍保留', () => {
+  it('临时记录退出待办，重复建议合并且计数与顶部一致，孤立治理不入列', () => {
     const { ns } = loadCognitionAssets({ candidates: [candidate('c1'), candidate('c2'), { ...candidate('test'), activityExclusionReason: 'task_local' }], inbox: [{ id: 'test-inbox', kind: 'candidate_pending_review', candidateId: 'test' }, { id: 'conflict', kind: 'type_conflict', title: '需要判断类型' }] });
     const model = ns.activityModel();
-    expect(model.attention).toHaveLength(2);
+    expect(model.attention).toHaveLength(1);
     expect(model.attention[0].candidateIds).toHaveLength(2);
     expect(ns.stats().pending).toBe(model.attention.length);
     expect(ns.viewActivity({ name: 'activity', candidateId: 'c1' })).toContain('相同建议已在列表合并');
@@ -93,11 +98,16 @@ describe('认知收敛后的单一治理入口', () => {
     expect(ns.viewActivity({ name: 'activity', activityView: 'done', activityQuery: '不存在的词' })).toContain('没有匹配的变化');
   });
 
-  it('同候选的不同治理冲突分别保留，静音候选不进入待办', () => {
+  it('治理镜像不独立入列，完整稍后建议仍可找回且只出现一次', () => {
     const { ns } = loadCognitionAssets({ candidates: [candidate('c1'), { ...candidate('snoozed'), capabilities: { countsAsPending: true, isSnoozed: true } }], inbox: [{ id: 'conflict1', kind: 'type_conflict', candidateId: 'c1' }, { id: 'conflict2', kind: 'version_conflict', candidateId: 'c1' }] });
     const rows = ns.activityModel().attention;
     expect(rows).toHaveLength(2);
-    expect(rows.map((row: any) => row.route.inboxId)).toEqual(['conflict1', 'conflict2']);
+    expect(rows.filter((row: any) => row.route.inboxId).map((row: any) => row.route.inboxId)).toEqual([]);
+    const later = rows.filter((row: any) => row.candidateIds.includes('snoozed'));
+    expect(later).toHaveLength(1);
+    expect(later[0].route).toEqual({ candidateId: 'snoozed' });
+    expect(later[0].result).toContain('稍后');
+    expect(ns.stats().pending).toBe(rows.length);
   });
 
 });

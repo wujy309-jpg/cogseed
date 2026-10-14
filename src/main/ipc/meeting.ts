@@ -234,11 +234,8 @@ export const invokeHandlers = {
     return { conclusion };
   },
 
-  // 2026-09-29 第 5 批·退役：`meeting.conclusions.precipitate` 通道移除——渲染层
-  // 零调用（注册后从未接线），且与既有红线冲突：会议纪要不进认知主线（capture
-  // 侧 personal 明确排除会议内容；kb-meeting-refs 引用链只依赖资产 id/版本/标题
-  // /摘要）。服务函数 precipitateMeetingConclusion 保留在 features 层，随
-  // 「通道退役大批」统一处置；contracts/ipc.md §1.3 的对应条目同步作废。
+  // Meeting conclusions remain document content. The former candidate-production
+  // channel and its feature writer have both been removed; historical refs remain readable.
 
   // ── 待办草稿（T040~T042：默认 draft、状态机封闭、外发闸唯一处）──────────
   /** `meeting.actions.list`：本会议的待办草稿清单（只读；draft 态照常返回，可续办）。 */

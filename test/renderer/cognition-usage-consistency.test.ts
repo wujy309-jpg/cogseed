@@ -263,6 +263,29 @@ describe('实际采用记录（US-602 AC5/AC6）', () => {
     expect(html).not.toContain('art-1');
   });
 
+  it('模型辅助逐条观察显示共享标签和明确的效果证明边界，不渲染内部检查坐标', () => {
+    const html = detail({ adoptionReceipts: { assetId: ASSET.id, items: [
+      { ...appliedReceipt, observationMethod: 'model_assisted', outputHash: 'private-output-hash', checkID: 'private-check-id' },
+      { ...appliedReceipt, id: 'legacy-observation', status: 'usage_unknown', observationMethod: 'agent_reported' },
+    ] } });
+    expect(html).toContain('模型辅助检查');
+    expect(html).toContain('title="这是对本次回答遵守情况的观察，不是改善效果的证明。"');
+    expect(html).toContain('aria-label="模型辅助检查 · 这是对本次回答遵守情况的观察，不是改善效果的证明。"');
+    const tag = html.match(/<span[^>]*class="ui-tag[^>]*>模型辅助检查<\/span>/g) || [];
+    expect(tag).toHaveLength(1);
+    expect(html).not.toContain('private-output-hash');
+    expect(html).not.toContain('private-check-id');
+    expect(visibleText(html)).toContain('已实际采用');
+    expect(visibleText(html)).toContain('证据不足 · 未知');
+  });
+
+  it('助手自述和没有方法标记的历史采用记录保持相同展示，不误标模型辅助', () => {
+    const legacy = detail({ adoptionReceipts: { assetId: ASSET.id, items: [appliedReceipt] } });
+    const reported = detail({ adoptionReceipts: { assetId: ASSET.id, items: [{ ...appliedReceipt, observationMethod: 'agent_reported' }] } });
+    expect(reported).toBe(legacy);
+    expect(reported).not.toContain('模型辅助检查');
+  });
+
   it('usage_unknown 如实标「证据不足 · 未知」且不计入实际采用', () => {
     const html = visibleText(detail({
       adoptionReceipts: {

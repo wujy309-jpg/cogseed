@@ -38,7 +38,7 @@ describe('Recall capture settings', () => {
       quietMinutes: 10,
       nightlyStart: '02:00',
       nightlyEnd: '06:00',
-      catchUpMissed: true,
+      catchUpMissed: false,
     });
 
     await expect(updateRecallCaptureSettings('capture-user', {
@@ -47,7 +47,6 @@ describe('Recall capture settings', () => {
       quietMinutes: 30,
       nightlyStart: '23:30',
       nightlyEnd: '05:15',
-      catchUpMissed: false,
     })).resolves.toMatchObject({
       executionPolicy: 'nightly',
       reviewPolicy: 'manual',
@@ -65,6 +64,19 @@ describe('Recall capture settings', () => {
     });
   });
 
+  it('persists an ordered task model route, preserving it on partial updates and clearing to global defaults', async () => {
+    expect((await readRecallCaptureSettings('capture-user')).modelCandidates).toEqual([]);
+    const route = [{ provider: 'openai', model: 'first' }, { provider: 'cp:custom', model: 'second' }];
+    await updateRecallCaptureSettings('capture-user', { modelCandidates: route });
+    await updateRecallCaptureSettings('capture-user', { nightlyStart: '01:00' });
+    expect((await readRecallCaptureSettings('capture-user')).modelCandidates).toEqual(route);
+    await updateRecallCaptureSettings('capture-user', { modelCandidates: [] });
+    expect((await readRecallCaptureSettings('capture-user')).modelCandidates).toEqual([]);
+    for (const invalid of [null, [{ provider: '', model: 'x' }], [route[0], route[0]], [{ ...route[0], apiKey: 'secret' }]]) {
+      await expect(updateRecallCaptureSettings('capture-user', { modelCandidates: invalid } as never)).rejects.toThrow(/model candidate/);
+    }
+  });
+
   it('rejects unknown fields, malformed times, and an empty nightly window', async () => {
     await expect(updateRecallCaptureSettings('capture-user', { nightlyStart: '2:00' })).rejects.toThrow(/nightly start/i);
     await expect(updateRecallCaptureSettings('capture-user', { unknown: true } as never)).rejects.toThrow(/field/i);
@@ -76,7 +88,7 @@ describe('Recall capture settings', () => {
     await expect(updateRecallCaptureSettings('capture-user', { reviewPolicy: 'sometimes' as never })).rejects.toThrow(/review policy/i);
   });
 
-  it('migrates legacy immediate settings to smart capture without rewriting the source record', async () => {
+  it('normalizes legacy execution policies to nightly without rewriting historical settings', async () => {
     // 2026-09-16 B3 收窄：存量 smart/immediate 不做归一（waiting_quiet 路径
     // 仍是活代码），仅默认值改为 manual。
     const store = await import('../../../../src/main/features/recall/store');
@@ -88,12 +100,12 @@ describe('Recall capture settings', () => {
       executionPolicy: 'immediate',
       nightlyStart: '02:00',
       nightlyEnd: '06:00',
-      catchUpMissed: true,
+      catchUpMissed: false,
       updatedAt: new Date().toISOString(),
     }));
 
     await expect(readRecallCaptureSettings('capture-user')).resolves.toMatchObject({
-      executionPolicy: 'smart',
+      executionPolicy: 'nightly',
       reviewPolicy: 'manual',
       quietMinutes: 10,
     });
@@ -105,22 +117,53 @@ describe('Recall capture settings', () => {
     await store.updateRecallJsonRecord('capture-user', 'capture-settings', 'settings', () => ({ ...settings, reviewPolicy: 'auto' }));
     expect((await readRecallCaptureSettings('capture-user')).reviewPolicy).toBe('manual');
     expect((await store.readRecallJsonRecord('capture-user', 'capture-settings', 'settings'))?.reviewPolicy).toBe('auto');
-    expect((await updateRecallCaptureSettings('capture-user', { reviewPolicy: 'auto' })).reviewPolicy).toBe('manual');
+    await expect(updateRecallCaptureSettings('capture-user', { reviewPolicy: 'auto' })).rejects.toThrow(/automatic approval/);
   });
 
-  it('requires explicit automatic approval opt-in and rotates authorization epoch on every toggle', async () => {
+  it('defaults automatic confirmation off and creates a fresh explicit grant only on opt-in', async () => {
     expect((await readRecallCaptureSettings('capture-user')).autoApproval).toBe(false);
     const enabled = await updateRecallCaptureSettings('capture-user', { autoApproval: true });
     expect(enabled.autoApproval).toBe(true);
-    expect(enabled.autoApprovalEpoch).toBeTruthy();
-    expect(enabled.autoApprovalEnabledAt).toBeTruthy();
-    const unchanged = await updateRecallCaptureSettings('capture-user', { quietMinutes: 11 });
+    expect(enabled.autoApprovalPolicyVersion).toBe(2);
+    expect(enabled.autoApprovalEpoch).toMatch(/^[a-f0-9-]{36}$/);
+    const unchanged = await updateRecallCaptureSettings('capture-user', { nightlyStart: '01:00' });
     expect(unchanged.autoApprovalEpoch).toBe(enabled.autoApprovalEpoch);
-    const disabled = await updateRecallCaptureSettings('capture-user', { autoApproval: false });
-    expect(disabled.autoApprovalEnabledAt).toBeUndefined();
-    const reenabled = await updateRecallCaptureSettings('capture-user', { autoApproval: true });
-    expect(reenabled.autoApprovalEpoch).not.toBe(enabled.autoApprovalEpoch);
+    await updateRecallCaptureSettings('capture-user', { autoApproval: false });
+    const enabledAgain = await updateRecallCaptureSettings('capture-user', { autoApproval: true });
+    expect(enabledAgain.autoApprovalEpoch).not.toBe(enabled.autoApprovalEpoch);
+    for (const executionPolicy of ['manual', 'smart', 'immediate'] as const) {
+      await expect(updateRecallCaptureSettings('capture-user', { executionPolicy })).rejects.toThrow(/only nightly/);
+    }
+    const store = await import('../../../../src/main/features/recall/store');
+    await store.updateRecallJsonRecord('capture-user', 'capture-settings', 'settings', () => ({
+      ...enabled, autoApproval: true, autoApprovalPolicyVersion: undefined, reviewPolicy: 'auto', executionPolicy: 'manual',
+    }));
+    await expect(readRecallCaptureSettings('capture-user')).resolves.toMatchObject({
+      autoApproval: false, executionPolicy: 'nightly', reviewPolicy: 'manual',
+    });
     await expect(updateRecallCaptureSettings('capture-user', { autoApproval: 'yes' } as never)).rejects.toThrow(/auto approval/);
+  });
+
+  it('preserves a legacy manual opt-out until the user explicitly enables nightly capture', async () => {
+    const store = await import('../../../../src/main/features/recall/store');
+    const initial = await updateRecallCaptureSettings('capture-user', { autoApproval: true });
+    await store.writeRecallJsonRecord('capture-user', 'capture-settings', 'settings', { ...initial, enabled: true, executionPolicy: 'manual' });
+    expect(await readRecallCaptureSettings('capture-user')).toMatchObject({ enabled: false, executionPolicy: 'nightly' });
+    const changed = await updateRecallCaptureSettings('capture-user', { modelCandidates: [{ provider: 'configured', model: 'replacement' }] });
+    expect(changed.enabled).toBe(false);
+    expect((await readRecallCaptureSettings('capture-user')).enabled).toBe(false);
+    const enabled = await updateRecallCaptureSettings('capture-user', { enabled: true, executionPolicy: 'nightly' });
+    expect(enabled.enabled).toBe(true);
+    expect(enabled.autoApprovalEpoch).not.toBe(initial.autoApprovalEpoch);
+    expect((await readRecallCaptureSettings('capture-user')).enabled).toBe(true);
+  });
+
+  it('does not offer daytime catch-up even when reading a historical true field', async () => {
+    const store = await import('../../../../src/main/features/recall/store');
+    const settings = await readRecallCaptureSettings('capture-user');
+    await store.updateRecallJsonRecord('capture-user', 'capture-settings', 'settings', () => ({ ...settings, catchUpMissed: true }));
+    expect((await readRecallCaptureSettings('capture-user')).catchUpMissed).toBe(false);
+    await expect(updateRecallCaptureSettings('capture-user', { catchUpMissed: true } as never)).rejects.toThrow(/field/);
   });
 
   it('computes same-day and cross-midnight windows in local time', () => {

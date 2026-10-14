@@ -10,9 +10,6 @@
  */
 
 import type { AgentTool } from '#core-agent';
-import type { CognitionSaveReceipt } from '../client';
-import { type AbilityAssetType } from '../../features/recall/candidate-service';
-import { classifyMemorySaveIntent } from '../../features/recall/memory-save-intent';
 import { createLogger } from '../../logger';
 import { t } from '../../i18n';
 import {
@@ -48,7 +45,6 @@ import { safeId } from '../../storage';
 import { logErrorRef, maskId } from '../../util/log-redact';
 import { classifyMemoryReplaceIntent } from '../../features/recall/memory-save-intent';
 
-import { submitCognitionCandidate } from '../../features/cognition/candidate-submission';
 const log = createLogger('asset-steward-tools');
 
 export interface AssetStewardToolsOpts {
@@ -65,68 +61,8 @@ export interface AssetStewardToolsOpts {
   taskText?: string;
   /** 只有当前可见来源行确实由用户发出时，才能把原话当作直写授权。 */
   sourceMessageFromUser?: boolean;
-  sourceMessageId?: string;
-  onCognitionSaveReceipt?: (receipt: CognitionSaveReceipt) => void | Promise<void>;
 }
 
-function createProposeAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
-  return {
-    name: 'propose_ability_asset',
-    description: '用户要求保存一份模板、方法、规则、事实或个人信息时，直接调用本工具创建真实待确认候选。必须明确 type，不要把模板或方法转成个人偏好，也不要用本体候选替代。只创建候选，不批准生效；用户已要求保存时不必再次请求创建候选的许可。只有工具返回真实 candidate 编号才能说已提交。更新已有资产用 edit_ability_asset 的 mode=propose。',
-    inputSchema: {
-      type: 'object', properties: {
-        title: { type: 'string', minLength: 1, maxLength: 160 },
-        statement: { type: 'string', minLength: 1, maxLength: 4000 },
-        value: { type: 'string', minLength: 1, maxLength: 1000 },
-        type: { type: 'string', enum: ['personal', 'rule', 'template', 'skill_method', 'fact'] },
-        applicableWhen: { type: 'array', items: { type: 'string' }, maxItems: 12 },
-        forbiddenWhen: { type: 'array', items: { type: 'string' }, maxItems: 12 },
-      }, required: ['title', 'statement', 'value', 'type'], additionalProperties: false,
-    },
-    async execute(input: Record<string, unknown>) {
-      const statement = typeof input.statement === 'string' ? input.statement.trim() : '';
-      if (!opts.cid || !safeId(opts.cid) || !opts.sourceMessageId || !safeId(opts.sourceMessageId)
-        || classifyMemorySaveIntent(opts.taskText, statement, opts.sourceMessageFromUser === true) === 'none') {
-        return { content: '未提交：需要当前用户的保存指令及真实来源消息；没有创建候选或资产。', isError: true };
-      }
-      const title = typeof input.title === 'string' ? input.title.trim() : '';
-      const value = typeof input.value === 'string' ? input.value.trim() : '';
-      if (!title || title.length > 160 || !statement || statement.length > 4000 || !value || value.length > 1000
-        || !['personal', 'rule', 'template', 'skill_method', 'fact'].includes(String(input.type))) {
-        return { content: '未提交：需要明确的类型、标题、正文和保存价值；没有创建候选或资产。', isError: true };
-      }
-      const arrays = [input.applicableWhen, input.forbiddenWhen];
-      if (arrays.some((items) => items !== undefined && (!Array.isArray(items) || items.length > 12
-        || items.some((item) => typeof item !== 'string' || !item.trim() || item.length > 500)))) {
-        return { content: '未提交：适用与禁用场景必须是至多12条的非空文字数组。', isError: true };
-      }
-      try {
-        const candidate = await submitCognitionCandidate(opts.userId, {
-          judgment: statement, summary: title, value, suggestedType: input.type as AbilityAssetType,
-          suggestedScope: 'general', suggestedAction: 'create',
-          sourceRefs: [{ kind: 'conversation', id: opts.cid, scope: 'conversation', title: '用户保存指令所在对话' }],
-          captureKey: `user-save-${opts.sourceMessageId}`,
-          ...(opts.turnId ? { taskRunId: opts.turnId } : {}),
-          ...(opts.spaceId ? { spaceId: opts.spaceId, scopePolicy: { workspaceIds: [opts.spaceId] } } : {}),
-          ...(Array.isArray(input.applicableWhen) ? { applicableWhen: input.applicableWhen as string[] } : {}),
-          ...(Array.isArray(input.forbiddenWhen) ? { forbiddenWhen: input.forbiddenWhen as string[] } : {}),
-        });
-        const confirmed = candidate.status === 'confirmed';
-        let receiptDelivered = false;
-        try {
-          if (opts.onCognitionSaveReceipt) {
-            await opts.onCognitionSaveReceipt({ target: 'candidate', id: candidate.id, summary: candidate.summary,
-              outcome: confirmed ? 'already-confirmed' : 'pending-review' });
-            receiptDelivered = true;
-          }
-        } catch { log.warn('candidate persisted but save receipt callback failed'); }
-        return { content: `[candidate:${candidate.id}] 类型：${candidate.suggestedType}；状态：${candidate.status}。${confirmed ? '命中已确认记录，没有重复创建或重新启用。' : '候选已真实入池，尚未成为生效资产，请在待我处理检查并确认。'}${receiptDelivered ? '已发送保存回执。' : '保存回执未送达，请通过候选编号查询；持久记录已保留。'}` };
-      } catch {
-        return { content: '未提交成功：候选保存未返回成功记录，不能声称已保存。', isError: true };
-      }
-    },
-  };
-}
 
 /** 列表分页默认与上限，对齐既有目录工具量级（一页 30、最多 50）。 */
 const LIST_PAGE_DEFAULT = 30;
@@ -1064,7 +1000,7 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
           type: 'object',
           description: '要改的字段对象，至少给一个；没给的字段不动。必须传**对象**（例如 {"statement":"新正文"}），不要传 JSON 字符串。正文的键名是 statement（别名 body）。',
           properties: {
-            title: { type: 'string', description: '标题（命名规范化）：非空；含汉字时 ≤16 个字，其他语言 ≤60 字符；不得与正文开头重复（第一个字都不能与正文相同）；不以标点结尾。不合规会被拒绝。' },
+            title: { type: 'string', description: '标题（命名规范化）：非空；含汉字时 ≤16 个字，其他语言 ≤60 字符；不要整句照抄正文或截断成标题，可以保留相同的项目名、人名和术语；不以标点结尾。不合规会被拒绝。' },
             statement: { type: 'string', description: '正文（上限 4000 字）。' },
             scope: { type: 'string', description: '适用范围。' },
             applicableWhen: { type: 'array', items: { type: 'string' }, description: '适用场景（整体替换；传空数组=清空）。' },
@@ -1507,7 +1443,6 @@ function createRollbackAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool 
  *  属权限扩张。由 `test/main/model/core-agent/asset-steward-tools.test.ts` 钉住。 */
 export function createAssetStewardTools(opts: AssetStewardToolsOpts): AgentTool[] {
   return [
-    createProposeAbilityAssetTool(opts),
     createListAbilityAssetsTool(opts),
     createReadAbilityAssetTool(opts),
     createListAssetChangeProposalsTool(opts),

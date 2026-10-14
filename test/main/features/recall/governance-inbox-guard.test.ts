@@ -57,7 +57,9 @@ describe('governance inbox anti-drift guards (specs/010 T038)', () => {
     for (const [name, source] of [['views.js', viewsSource], ['core.js', coreSource]] as const) {
       expect(source, `${name} 不得调用门禁判据`).not.toContain('validatePromotionByAssetType');
     }
-    expect(viewsSource).not.toContain('rule_boundary_required');
+    // Translating an already-computed reason into a readable label is allowed;
+    // recomputing whether boundaries are sufficient in the Renderer is not.
+    expect(viewsSource).not.toMatch(/function\s+hasBoundary\s*\(/);
   });
 
   it('③ 无第二处「已处理标记位」：退场只有既有三套机制', () => {
@@ -71,20 +73,14 @@ describe('governance inbox anti-drift guards (specs/010 T038)', () => {
     expect(adapterSource).not.toContain('acknowledgedEscalations');
   });
 
-  it('④ 模型工具名集合保持已登记的81件，治理动作不是模型工具', async () => {
+  it('④ 模型工具名集合保持已登记的76件，治理动作不是模型工具', async () => {
     // 从 catalog 常量派生（不抄名单——012 的 tag-ranking-guard 另有全量冻结）。
     const { TOOL_CATALOG } = await import('../../../../src/main/model/core-agent/tool-catalog');
     const names = TOOL_CATALOG.map((tool) => tool.name);
-    // 2026-09-28：71→72（09-27 本体图谱切片新增 list_ontology_graph，基线随功能更新）。
-    // 2026-10-02：72→74（本体总线 S2 新增 personal_fields_check / personal_field_remember，
-    // owner 拍板「缺值改对话提问」的功能性扩张，基线随功能更新）。
-    // 2026-10-03：候选提交与逐资产采用报告；2026-10-05：通用范围查询替代旧无范围图谱读取。
-    // 2026-10-07：438 P2 新增 ontology_slot_remember（本体轴缺口对话回填，走本体命令提交口）。
-    // 治理动作仍不进工具面。
-    // 上游 Semantica 的 ontology_query 与本地工具面合并，净增一件。
-    expect(names.length).toBe(81);
+    // 2026-10-13：保留已有对象管理和只读工具，移除四个对话即时形成工具。
+    expect(names.length).toBe(76);
     // 本 feature 的新动作名是**用户的界面动作**，不得注册成模型工具。
-    for (const notTool of ['classify_ability_assets', 'set_rule_boundary', 'claim_conflict']) {
+    for (const notTool of ['classify_ability_assets', 'set_rule_boundary', 'claim_conflict', 'propose_ability_asset']) {
       expect(names).not.toContain(notTool);
     }
   });

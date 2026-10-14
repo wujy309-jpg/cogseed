@@ -136,11 +136,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: 'ontology_query', group: 'recall', summary: 'Navigate governed ability-asset relations with bounded hops and return auditable evidence paths.' },
   // 个人字段取件/记住（2026-10-02）：任务开工前缺的字段在对话里问、在对话里答。
   { name: 'personal_fields_check', group: 'recall', summary: 'Read which cognition slots a task type needs across three axes (personal fields / ontology facts and rules / method assets), which are bound, and which are missing (packs: expense / bid / weekly_report). Ask the user in the conversation for the missing ones.' },
-  { name: 'personal_field_remember', group: 'recall', summary: 'Persist a personal field the user just stated in the conversation, so the same task will not ask again. Only after an explicit answer; never invent a value.' },
-  { name: 'ontology_slot_remember', group: 'recall', summary: 'Persist an ontology fact the user just answered in the conversation, through the governed ontology command path (exact names only; same-name entities are never auto-merged). Only after an explicit answer; never invent a value.' },
   { name: 'transcript_corrections_query', group: 'recall', summary: 'Read confirmed conversation/ontology-scene transcript corrections and canonical names before revising a transcript; exclude uncertain identities.' },
-  { name: 'transcript_remember_correction', group: 'recall', summary: 'Persist only explicitly user-confirmed transcript corrections, with verified original attachment and human quote, scoped to the conversation document.' },
-  { name: 'cognition_ontology_save', group: 'recall', summary: 'Save explicitly requested ontology creation/correction through governed commands; verify human evidence and return read-back receipts. A document is not a saved ontology.' },
   { name: 'cognition_ontology_query', group: 'recall', summary: 'Read time-aware ontology facts and applicable rules through explicit module references, with source/version citations and private-scope filtering.' },
 
   // 任务经验（specs/016 T024 / US-802）：与资产**完全隔离**的第二套集合（exp- 前缀）。
@@ -158,7 +154,6 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: 'list_ability_assets', group: 'recall', summary: 'Page through EVERY ability asset the user owns (title/type/status/tags + total), with optional type/status/space filters — deliberately not capped by the UI catalog page size.' },
   { name: 'read_ability_asset', group: 'recall', summary: 'Read one ability asset by id in ≤2000-character chunks (use `chunk` to continue); reports deleted/paused/blocked state honestly instead of pretending it is missing.' },
   { name: 'report_ability_asset_usage', group: 'recall', summary: 'Report adoption of one supplied asset version with an exact final-output excerpt; the host verifies the persisted message before recording adoption, never effectiveness.' },
-  { name: 'propose_ability_asset', group: 'recall', summary: 'Persist a user-requested, explicitly typed cognition candidate with a real save receipt; templates and methods do not default to personal facts, and confirmation remains separate.' },
   { name: 'list_asset_change_proposals', group: 'recall', summary: 'List AI-proposed asset changes still awaiting the user (approval cards): proposed values, current values, reason, state — read-only, because only the user may confirm/reject.' },
   { name: 'edit_ability_asset', group: 'recall', summary: 'Submit a pending asset improvement with mode=propose (writes a real approval proposal, keeps the current version); or edit on verified user instruction. Only a returned proposal receipt establishes submission; listing proposals is read-only.' },
   { name: 'merge_ability_assets', group: 'recall', summary: 'Merge a duplicate ability asset into a target asset: both share one version group, the source is archived with a pointer, history stays traceable.' },
@@ -209,7 +204,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
 
   // Task-local and cross-session state
   { name: 'manage_execution_plan', group: 'meta', summary: 'Manage the durable current-task objective and milestone statuses for long/tool-heavy work; session-local and independent of context summaries.' },
-  { name: 'cross_session_memory', group: 'meta', summary: 'Read/write user profile, shared facts, and agent memory that persist across sessions.' },
+  { name: 'cross_session_memory', group: 'meta', summary: 'Read existing user profile, shared facts, and caller-scoped agent memory.' },
   { name: 'project_instructions', group: 'meta', summary: "Replace the project's standing goal + rules (COGSEED.md, the Project instructions block); commander-only, project sessions." },
   { name: 'metacognition',        group: 'meta', summary: 'Read/write metacognition (COMPETENCE / LEARNING_STRATEGIES); env-flag gated.' },
 

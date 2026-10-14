@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createNightlyCandidateFixture } from '../../helpers/nightly-formation-fixture';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -28,14 +29,35 @@ async function modules() {
   ]); return { migration, bridge, store, kernel };
 }
 describe('认知主档切换与恢复', () => {
-  it('统一模式真实业务服务贯通手动模板确认、版本更新、暂停和历史读取', async () => {
+  it('不分类认识不会与缺少字段名的既有断言争用个人槽位', async () => {
+    seed(asset('aa-cognition', { type: 'cognition', statement: '来源支持的认识。' }));
+    const { migration, kernel } = await modules();
+    const { buildDelta } = await import('../../../src/main/features/cognition_kernel/delta');
+    await kernel.applyCognitionDeltas(uid, [buildDelta({ op: 'add', target: { home: 'personal_fact', objectId: 'native-assertion' }, origin: 'user', after: '原有字段断言。', status: 'applied' })]);
+    expect((await migration.migrateLegacyCognition(uid, { activate: true })).errors).toEqual([]);
+    expect(kernel.loadCognitionStoreSync(uid).objects['native-assertion'].statement).toBe('原有字段断言。');
+    const assets = await import('../../../src/main/features/recall/asset-service');
+    await assets.pauseAbilityAsset(uid, 'aa-cognition', { actor: 'user', reason: '暂停复核' });
+    expect(kernel.loadCognitionStoreSync(uid).objects['aa-cognition'].status).toBe('paused');
+  });
+  it('统一主档支持不分类认知且不投影到个人本体字段', async () => {
+    seed(asset('aa-cognition', { type: 'cognition', statement: '有依据的认识保留条件和局限。' }));
+    const { migration, kernel, store } = await modules();
+    expect((await migration.migrateLegacyCognition(uid, { activate: true })).errors).toEqual([]);
+    expect(kernel.loadCognitionStoreSync(uid).objects['aa-cognition']).toMatchObject({
+      kind: 'assertion', home: 'cognition', statement: '有依据的认识保留条件和局限。',
+    });
+    expect(kernel.loadCognitionStoreSync(uid).objects['aa-cognition'].fieldName).toBeUndefined();
+    expect(await store.readRecallJsonRecord(uid, 'ability-assets', 'aa-cognition')).toMatchObject({ type: 'cognition' });
+  });
+  it('统一模式真实业务服务贯通夜间模板确认、版本更新、暂停和历史读取', async () => {
     const { migration, bridge } = await modules();
     expect((await migration.migrateLegacyCognition(uid, { activate: true })).errors).toEqual([]);
     const candidates = await import('../../../src/main/features/recall/candidate-service');
     const assets = await import('../../../src/main/features/recall/asset-service');
-    const candidate = await candidates.saveRecallCandidate(uid, {
+    const candidate = await createNightlyCandidateFixture(uid, {
       judgment: '准备活动时逐项列出事项和验收条件。', summary: '活动准备验收清单',
-      suggestedType: 'template', suggestedScope: 'general', suggestedAction: 'create', sourceRefs: [], manual: true,
+      suggestedType: 'template', suggestedScope: 'general', suggestedAction: 'create', sourceRefs: [], value: '活动验收清单可供后续同类活动复用。',
     });
     const { asset: created } = await candidates.promoteRecallCandidate(uid, candidate.id, { actor: 'user', forceCreateSimilar: true });
     expect(created.type).toBe('template');
