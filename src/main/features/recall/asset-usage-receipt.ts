@@ -29,7 +29,7 @@ export type AssetUsageBoundary = 'real' | 'degraded' | 'test-double';
 /** Optional for historical receipts. Model reports and persisted-result checks
  * have distinct authority; hashes bind both observations to the same output. */
 export interface AssetUsageObservation {
-  observationMethod?: 'agent_reported' | 'model_assisted';
+  observationMethod?: 'agent_reported' | 'model_assisted' | 'result_coverage';
   messageId?: string;
   outputHash?: string;
   outputCheckReceiptId?: string;
@@ -110,7 +110,7 @@ function assertObservation(input: RecordAssetUsageReceiptInput): void {
     }
     return;
   }
-  if (!['agent_reported', 'model_assisted'].includes(input.observationMethod)
+  if (!['agent_reported', 'model_assisted', 'result_coverage'].includes(input.observationMethod)
     || typeof input.messageId !== 'string' || !safeId(input.messageId)
     || typeof input.outputHash !== 'string' || !/^[a-f0-9]{64}$/.test(input.outputHash)
     || input.evidenceKind !== 'final_output' || input.boundary !== 'real'
@@ -134,8 +134,9 @@ function validCheckCoordinates(value: unknown): boolean {
 }
 
 async function verifyOutputObservation(userId: string, input: RecordAssetUsageReceiptInput): Promise<void> {
-  if (input.observationMethod !== 'model_assisted') return;
+  if (!['model_assisted', 'result_coverage'].includes(String(input.observationMethod))) return;
   const check = await readRecallJsonRecord(userId, 'output-checks', input.outputCheckReceiptId!);
+  const resultCoverage = check?.resultCoverage as { complete?: boolean; totalFiles?: number } | undefined;
   const rows = Array.isArray(check?.checks) ? check.checks : [];
   const matching = rows.filter(row => row && typeof row === 'object'
     && row.assetId === input.assetId && row.version === input.assetVersion);
@@ -154,12 +155,16 @@ async function verifyOutputObservation(userId: string, input: RecordAssetUsageRe
         || row.status === 'unknown'
         || (row.status === 'not_applicable' && validCheckCoordinates(row.taskEvidence)));
   if (!check || check.schemaVersion !== 1 || check.ownerId !== userId
-    || check.method !== 'model_assisted' || check.modelCompleted !== true
+    || check.method !== 'model_assisted'
+    || (input.observationMethod === 'result_coverage'
+      ? input.status !== 'usage_unknown' || row?.status !== 'unknown' || resultCoverage?.complete !== false
+      : check.modelCompleted !== true)
     || check.taskRunId !== input.taskRunId || check.messageId !== input.messageId
     || check.outputHash !== input.outputHash || typeof check.taskHash !== 'string'
     || !/^[a-f0-9]{64}$/.test(check.taskHash)
     || check.id !== `coc-${createHash('sha256').update(JSON.stringify([
       input.taskRunId, input.messageId, input.outputHash, check.taskHash,
+      ...(resultCoverage?.totalFiles ? [createHash('sha256').update(JSON.stringify([check.resultRefs, check.resultCoverage])).digest('hex')] : []),
     ])).digest('hex').slice(0, 24)}` || matching.length !== 1
     || !validRow) {
     throw new Error('asset usage output check does not match observation');
@@ -267,9 +272,10 @@ export async function recordAssetUsageReceipt(
       // self-report, and only for the same injected version and exact output.
       // Legacy receipts have no provenance and must not be guessed from prose.
       if (existing.status === 'applied' && existing.observationMethod === 'agent_reported'
-        && input.observationMethod === 'model_assisted' && input.status === 'usage_unknown'
+        && ['model_assisted', 'result_coverage'].includes(String(input.observationMethod)) && input.status === 'usage_unknown'
         && existing.injectionReceiptId === input.injectionReceiptId
-        && existing.messageId === input.messageId && existing.outputHash === input.outputHash) {
+        && existing.messageId === input.messageId
+        && (existing.outputHash === input.outputHash || input.observationMethod === 'result_coverage')) {
         await appendRecallJsonlRecord(userId, 'asset-usage-receipts', 'events', record);
         return record;
       }
@@ -278,7 +284,7 @@ export async function recordAssetUsageReceipt(
       if (existing.status === 'usage_unknown' && input.status === 'applied'
         && input.evidenceKind === 'final_output' && input.boundary === 'real'
         // A delayed self-report cannot erase a completed independent check.
-        && existing.observationMethod !== 'model_assisted') {
+        && !['model_assisted', 'result_coverage'].includes(String(existing.observationMethod))) {
         await appendRecallJsonlRecord(userId, 'asset-usage-receipts', 'events', record);
         return record;
       }

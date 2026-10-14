@@ -69,6 +69,7 @@ export interface RecallAssetTimelineItem {
    * "Effectiveness recorded / User feedback: rework"。
    */
   outcome?: string;
+  comparison?: { reason: string; baselineQuote?: string; resultQuote?: string };
   refs?: {
     assetId?: string;
     version?: string;
@@ -414,6 +415,9 @@ export async function listAbilityAssetTimeline(userId: string, assetId: string):
       summary: proof.observedResult,
       status: proof.status,
       outcome: proof.outcome,
+      ...(proof.comparison ? { comparison: { reason: proof.comparison.reason,
+        baselineQuote: proof.comparison.evidence.find(item => item.assetId === asset.id)?.baselineQuote,
+        resultQuote: proof.comparison.evidence.find(item => item.assetId === asset.id)?.resultQuote } } : {}),
       refs: {
         assetId: asset.id,
         // 只带自己这条记录真正持有的引用。回执号属于**迁移证明**，效果证明是

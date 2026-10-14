@@ -34,10 +34,13 @@ export async function commitOntologyCommand(userId: string, input: unknown, sour
       const command = validateOntologyCommand(input);
       for (const action of command.actions) {
         if (action.intent === 'create') continue;
+        if (action.intent === 'undo_command' && current.history.some(row => row.commandId === action.originalCommandId
+          && row.after.kind === 'rule' && current.records[row.after.id]?.source.refs?.some(ref => ref.kind === 'asset')))
+          throw new OntologyError('shared_body_requires_cognition', 'shared rule undo requires its cognition in the same commit');
         const rule = current.records[action.recordId];
         if (rule?.kind === 'rule' && rule.source.refs?.some(ref => ref.kind === 'asset')
           && ((action.intent === 'update' && ['requirement', 'status'].some(key => Object.hasOwn(action.patch, key)))
-            || ['archive', 'delete', 'restore'].includes(action.intent)))
+            || ['archive', 'delete', 'restore', 'undo_command'].includes(action.intent)))
           throw new OntologyError('shared_body_requires_cognition', 'shared rule text and lifecycle must be changed with its cognition');
       }
       const compatibility = loadCognitionStoreSync(userId).compatibility;

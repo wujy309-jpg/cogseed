@@ -577,7 +577,9 @@ function assetMatchText(asset: RecallAbilityAssetRecord, groupTitles: Map<string
   // inflated baseline similarity for every asset of the same type (M2).
   return [
     asset.title,
-    asset.statement.slice(0, 1_200),
+    asset.statement,
+    ...(asset.applicableWhen || []),
+    ...(asset.forbiddenWhen || []),
     ontology,
   ].filter(Boolean).join('\n');
 }
@@ -597,9 +599,15 @@ function cosineScore(left: number[], right: number[]): number {
   return Math.max(0, Math.min(1, Number(score.toFixed(6))));
 }
 
-async function defaultEmbedTexts(texts: string[]): Promise<number[][]> {
-  const embed = await import('../kb_embed');
-  return embed.embedTexts(texts);
+async function defaultEmbedTexts(userId: string, texts: string[]): Promise<number[][]> {
+  const { embedForDedup } = await import('./similarity');
+  const vectors: number[][] = [];
+  for (const text of texts) {
+    const vector = await embedForDedup(userId, text);
+    if (!vector) throw new Error('complete recall embedding unavailable');
+    vectors.push(vector);
+  }
+  return vectors;
 }
 
 async function rankAssetsBySemanticMatch(
@@ -608,7 +616,7 @@ async function rankAssetsBySemanticMatch(
   assets: RecallAbilityAssetRecord[],
   options: ProjectionSemanticOptions,
 ): Promise<{ assets: RecallAbilityAssetRecord[]; assetMatches: RecallAssetMatch[] }> {
-  const embedTexts = options.embedTexts || defaultEmbedTexts;
+  const embedTexts = options.embedTexts || ((texts: string[]) => defaultEmbedTexts(userId, texts));
   const groupTitles = loadOntologyGroupTitleMap(userId);
   const vectors = await embedTexts([taskText, ...assets.map((asset) => assetMatchText(asset, groupTitles))]);
   if (vectors.length !== assets.length + 1) throw new Error('semantic embedding count mismatch');
@@ -1044,7 +1052,7 @@ async function applySemanticSelection(
 
 export async function buildRecallView(userId: string, input: ProjectionInput, options: ProjectionSemanticOptions = {}): Promise<BuildRecallViewResult> {
   const purpose = normalizeTerm(input.purpose, 'purpose', 120);
-  const taskText = normalizeOptionalTerm(input.taskText, 'task text');
+  const taskText = normalizeOptionalTerm(input.taskText, 'task text', Number.MAX_SAFE_INTEGER);
   const purposeContext = [purpose, taskText].filter(Boolean).join('\n');
   const assets = await listAbilityAssets(userId);
   const refs = input.workspaceId ? await listWorkspaceAssetReferences(userId) : [];
@@ -1219,7 +1227,7 @@ export async function previewContextProjection(userId: string, input: Projection
     ? conversationContext.conversationKind
     : normalizeOptionalScopeId(input.conversationKind, 'conversation kind');
   const fileKinds = normalizeProjectionFileKinds(input.fileKinds);
-  const taskText = normalizeOptionalTerm(input.taskText, 'task text');
+  const taskText = normalizeOptionalTerm(input.taskText, 'task text', Number.MAX_SAFE_INTEGER);
   const authorization: ProjectionAuthorization = input.authorization || 'user_confirmed';
   if (authorization !== 'user_confirmed' && authorization !== 'workspace_policy' && authorization !== 'not_required' && authorization !== 'model_selected') throw new Error('invalid projection authorization');
   if (input.expiresAt !== undefined && Number.isNaN(Date.parse(input.expiresAt))) throw new Error('invalid projection expiry');
@@ -1272,7 +1280,7 @@ export async function createAutomaticContextProjection(
   standingOnly = false,
 ): Promise<ContextProjectionRecord | undefined> {
   const taskRunId = normalizeTerm(input.taskRunId, 'task run id', 160);
-  const taskText = normalizeTerm(input.taskText, 'task text', 2_000);
+  const taskText = normalizeTerm(input.taskText, 'task text', Number.MAX_SAFE_INTEGER);
   const conversationId = input.conversationId === undefined
     ? undefined
     : normalizeTerm(input.conversationId, 'conversation id', 160);
@@ -1367,7 +1375,7 @@ export async function createAutomaticContextProjection(
   if (!eligibleAssets.length && !standingPreferences.length) return undefined;
 
   const selection: SemanticSelection = eligibleAssets.length
-    ? await applySemanticSelection(userId, eligibleAssets, taskText, options, [], input.taskText, workspaceId, projectId)
+    ? await applySemanticSelection(userId, eligibleAssets, taskText, options, omittedRefs, input.taskText, workspaceId, projectId)
     : { assets: [], degraded: false };
   standingPreferences.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id));
   const combined = [...standingPreferences, ...selection.assets];

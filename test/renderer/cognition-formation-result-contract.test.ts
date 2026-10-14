@@ -122,3 +122,27 @@ describe('形成结果必须能对应真实确认与资产身份', () => {
     expect(f.invoke.mock.calls.filter(([channel]) => channel === 'recall.captures.list')).toHaveLength(1);
   });
 });
+
+
+describe('独立本体保存的真实结果身份', () => {
+  const ontologyPending = { ...pending, proposalTarget: 'ontology' };
+  const handoff = { status: 'integrated', commandId: 'ontology-command', recordIds: ['ontology-record'], moduleIds: ['personal'], ontologyRevision: 3 };
+  const integrated = { ...ontologyPending, status: 'integrated', ontologyHandoff: handoff };
+  it('用真实本体回执确认保存，更新已处理状态并不生成资产入口', async () => {
+    const f = fixture({ candidate: integrated, ontologyHandoff: handoff });
+    f.store.candidates = [ontologyPending];
+    f.store.lastPromoted = { assetId: 'older-asset' };
+    await f.ns.actions.adoptCandidate(pending.id);
+    expect(f.store.candidates[0].status).toBe('integrated');
+    expect(f.store.lastPromoted).toBeNull();
+    expect(JSON.stringify(f.toast.mock.calls)).toContain('本体变化已保存');
+    expect(JSON.stringify(f.toast.mock.calls)).not.toContain('已成为正式资产');
+  });
+  it('不接受另一个本体命令的成功回执替代当前变化', async () => {
+    const f = fixture({ candidate: integrated, ontologyHandoff: { ...handoff, commandId: 'another-command' } });
+    f.store.candidates = [ontologyPending];
+    await f.ns.actions.adoptCandidate(pending.id);
+    expect(f.store.candidates[0].status).toBe('pending_review');
+    expect(JSON.stringify(f.toast.mock.calls)).not.toContain('本体变化已保存');
+  });
+});

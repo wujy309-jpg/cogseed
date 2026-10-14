@@ -34,13 +34,14 @@ describe('asset runtime gate', () => {
       { silentDefaultInjection: true },
     ).eligible).toBe(true);
 
-    // 适合度否决仍然生效：applicableWhen 声明却对不上任务 → 不注入。
+    // 未命中自由文本不等于证明不适用；成熟度门禁仍独立执行。
     const notApplicable = evaluateAssetRuntimeEligibility(
       { ...active, maturity: 'seed', applicableWhen: ['写代码'] },
       { silentDefaultInjection: true, taskText: '写一份城市资料' },
     );
     expect(notApplicable.eligible).toBe(false);
-    expect(notApplicable.reasons).toContain('not_applicable_context');
+    expect(notApplicable.relevance).toBe('unknown');
+    expect(notApplicable.reasons).toContain('maturity_below_default_use');
   });
 
   it('lets governance status veto any maturity', () => {
@@ -69,12 +70,13 @@ describe('asset runtime gate', () => {
     expect(result.reasons).toContain('forbidden_context');
   });
 
-  it('requires a declared applicable range to match before silent injection', () => {
+  it('six-node closure: leaves unmatched natural-language conditions unknown for semantic selection without inventing a match', () => {
     const asset = { ...active, maturity: 'transfer_validated' as const, applicableWhen: ['架构评审'] };
     expect(evaluateAssetRuntimeEligibility(asset, { silentDefaultInjection: true, taskText: '做一次架构评审' }).eligible).toBe(true);
     const offTopic = evaluateAssetRuntimeEligibility(asset, { silentDefaultInjection: true, taskText: '写周报' });
-    expect(offTopic.eligible).toBe(false);
-    expect(offTopic.reasons).toContain('not_applicable_context');
+    expect(offTopic.eligible).toBe(true);
+    expect(offTopic.relevance).toBe('unknown');
+    expect(offTopic.reasons).not.toContain('not_applicable_context');
     // 人工挑选不受适用范围自动匹配的限制。
     expect(evaluateAssetRuntimeEligibility(asset, { taskText: '写周报' }).eligible).toBe(true);
   });

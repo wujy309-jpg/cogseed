@@ -7,6 +7,7 @@ import type { RecallAbilityAssetRecord } from './candidate-service';
 import type { CaptureContextSummary } from './capture-context-summary';
 import { isAssetScopeAllowed, type AssetScopeContext } from './scope-policy';
 import { tokenize } from '../search/tokenize';
+import { cosineScore, embedForDedup, SEMANTIC_RELATED_THRESHOLD } from './similarity';
 
 export interface CaptureExistingAssetsInput {
   summary?: Pick<CaptureContextSummary, 'topics'>;
@@ -25,7 +26,8 @@ export interface CaptureExistingAssetsResult {
   /** Total means active heads admitted by the current source context, before
    * count/character budgets. Unavailable active snapshots are counted separately;
    * excluded scopes and disabled sources are never disclosed. */
-  coverage: { total: number; selected: number; truncated: boolean; unavailable: number };
+  coverage: { total: number; selected: number; truncated: boolean; unavailable: number;
+    semantic?: 'complete' | 'unavailable' | 'not_needed' };
 }
 
 const terms = (text: string): Set<string> => new Set(tokenize(text.normalize('NFKC')).filter(token => token.length > 1));
@@ -91,8 +93,27 @@ export async function selectCaptureExistingAssets(userId: string, input: Capture
   const weight = (term: string): number => Math.log(1 + (readable.length + 1) / ((frequency.get(term) || 0) + 1));
   const score = (item: typeof readable[number]): number => [...queryTerms].reduce((sum, term) => sum
     + weight(term) * ((item.titleTerms.has(term) ? 2 : 0) + (item.bodyTerms.has(term) ? 1 : 0)), 0);
-  const ranked = readable.map(item => ({ ...item, score: score(item) }))
-    .sort((a, b) => b.score - a.score || recent(a.record, b.record));
+  const semanticScores = new Map<string, number>();
+  let semantic: NonNullable<CaptureExistingAssetsResult['coverage']['semantic']> = 'not_needed';
+  // When the entire readable pool fits, comparing all complete records needs
+  // no embedding. Otherwise reuse the source-safe, full-body cached embedding
+  // seam; lexical fallback remains explicitly incomplete semantic comparison.
+  const poolChars = readable.reduce((total, item) => total + JSON.stringify(item.snapshot).length + 1, 2);
+  if (queryTerms.size && (readable.length > maxAssets || poolChars > maxChars)) {
+    semantic = 'complete';
+    const queryVector = await embedForDedup(userId, query);
+    if (!queryVector) semantic = 'unavailable';
+    else for (const item of readable) {
+      const vector = await embedForDedup(userId, JSON.stringify({ statement: item.snapshot.statement,
+        applicableWhen: item.snapshot.applicableWhen, forbiddenWhen: item.snapshot.forbiddenWhen, scope: item.snapshot.scope }));
+      if (!vector) { semantic = 'unavailable'; continue; }
+      semanticScores.set(item.snapshot.id, cosineScore(queryVector, vector));
+    }
+  }
+  const ranked = readable.map(item => ({ ...item, score: score(item), semanticScore: semanticScores.get(item.snapshot.id) || 0 }))
+    .sort((a, b) => Number(b.semanticScore >= SEMANTIC_RELATED_THRESHOLD) - Number(a.semanticScore >= SEMANTIC_RELATED_THRESHOLD)
+      || (a.semanticScore >= SEMANTIC_RELATED_THRESHOLD && b.semanticScore >= SEMANTIC_RELATED_THRESHOLD ? b.semanticScore - a.semanticScore : 0)
+      || b.score - a.score || recent(a.record, b.record));
   const assets: CaptureExistingAsset[] = [];
   let chars = 2;
   for (const item of ranked) {
@@ -103,5 +124,5 @@ export async function selectCaptureExistingAssets(userId: string, input: Capture
   }
   const total = active.length - sourceExcludedAfterSnapshot;
   return { assets, coverage: { total, selected: assets.length,
-    truncated: assets.length < total, unavailable } };
+    truncated: assets.length < total, unavailable, semantic } };
 }

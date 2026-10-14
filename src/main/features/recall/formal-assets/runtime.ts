@@ -81,7 +81,7 @@ export interface AssetRuntimeCandidate extends AssetPolicyInput {
 
 /** 查阅不等于选用，显式选用不等于允许后台自动带入。 */
 export type AssetRuntimeOperation = 'inspect' | 'explicit_use' | 'default_injection';
-export type AssetRuntimeRelevance = 'unspecified' | 'matched' | 'mismatched';
+export type AssetRuntimeRelevance = 'unspecified' | 'matched' | 'mismatched' | 'unknown';
 
 export interface AssetRuntimeContext extends AssetScopeContext {
   /** 新消费者必须明确操作；旧调用以 silentDefaultInjection 映射兼容。 */
@@ -145,11 +145,16 @@ export function evaluateAssetRuntimeEligibility(
 
   const declaredApplicable = (asset.applicableWhen?.length || 0) > 0;
   const relevance: AssetRuntimeRelevance = !declaredApplicable ? 'unspecified'
-    : matchesAnyCondition(asset.applicableWhen, context.taskText) ? 'matched' : 'mismatched';
+    : matchesAnyCondition(asset.applicableWhen, context.taskText) ? 'matched' : 'unknown';
+  // These are free-text guidance conditions, not a typed operation predicate.
+  // Missing the exact wording does not establish non-applicability: semantic
+  // retrieval may find a paraphrase, and the answering model receives the full
+  // condition/exception text for actual use and persisted-result assessment.
+  // Scope, grants, explicit prohibitions and typed required operation checks
+  // remain independent hard gates; unknown never means a condition was met.
   const accessAllowed = reasons.length === 0;
 
   if (operation === 'default_injection') {
-    if (relevance === 'mismatched') reasons.push('not_applicable_context');
     // 证明带入成功不等于效果成功；自动使用仍服从共同默认策略。
     // 跨场景确认只授权明确使用，不把 prompt/confirm 偷升为 auto。
     if (asset.status === 'active' && defaultUsePolicy !== 'auto') {
@@ -161,7 +166,7 @@ export function evaluateAssetRuntimeEligibility(
   // seed 是未验证内容，不是“禁止查原文”。明确选用可带着未验证标签
   // 进入任务；所有硬边界仍成立，且不能据此将默认策略或成熟度升档。
   const usePolicy = !accessAllowed ? 'never'
-    : operation !== 'default_injection' && (defaultUsePolicy === 'never' || relevance === 'mismatched') ? 'prompt'
+    : operation !== 'default_injection' && defaultUsePolicy === 'never' ? 'prompt'
       : defaultUsePolicy;
   const uniqueReasons = [...new Set(reasons)];
   const eligible = uniqueReasons.length === 0;

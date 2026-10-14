@@ -2,6 +2,7 @@
 import type { AgentTool } from '#core-agent';
 import { OntologyError, validateOntologyId } from '../../features/cognition/ontology/model';
 import { readOntologyView } from '../../features/cognition/ontology/service';
+import { assessOntologySources, ontologyWithAdmittedSources } from '../../features/cognition/ontology/source-admission';
 import { ontologyModuleVisibleToTask, queryOntologyFacts, queryOntologyRules, searchOntologyRecords } from '../../features/cognition/ontology/query';
 import { resolveOntologyRecordForModule } from '../../features/cognition/ontology/commands';
 import { recordOntologyQueryReadReceipt, type OntologyQueryReadRef } from '../../features/cognition/ontology/query-receipt';
@@ -64,7 +65,9 @@ export function createOntologyTools(options: OntologyToolsOptions): AgentTool[] 
         if (!query || query.length > 200) throw new OntologyError('invalid_input', '请输入不超过200字的查询主题');
         for (const field of ['purpose', 'taskKind'] as const) if (typeof input[field] === 'string' && input[field]!.length > 200) throw new OntologyError('invalid_input', `${field} is too long`);
         const at = typeof input.at === 'string' && input.at ? input.at : todayLocal();
-        const doc = await readOntologyView(options.userId);
+        let doc = await readOntologyView(options.userId);
+        const sourceStatuses = await assessOntologySources(options.userId, doc, options.context);
+        doc = ontologyWithAdmittedSources(doc, sourceStatuses);
         const candidateRows = searchOntologyRecords(doc, query);
         const modules = Object.values(doc.records).filter((r): r is Extract<typeof r, { kind: 'module' }> => r.kind === 'module'
           && r.status === 'active' && ontologyModuleVisibleToTask(r, options.context));
@@ -161,7 +164,8 @@ export function createOntologyTools(options: OntologyToolsOptions): AgentTool[] 
           readReceipt: { status: readReceiptStatus, ...(readReceiptId ? { id: readReceiptId } : {}) },
           usageReceiptPolicy: 'If a fact or rule materially informs the final answer, copy its citation marker exactly into that answer. The host records use only when the same-turn query returned that exact version and the marker appears in the persisted reply. This does not prove external action execution or effectiveness.',
           truncated: { facts: Math.max(0, facts.length - factLimit), uncertainFacts: Math.max(0, uncertain.length - factLimit), rules: Math.max(0, rules.length - ruleLimit), modules: Math.max(0, targetModules.length - 50) },
-          useBoundary: 'The read receipt means this tool produced a result containing the cited record versions; it does not prove adoption or execution. A rule match does not mean rule execution. If any truncated count is nonzero, this result is incomplete and cannot certify that all requirements were checked.' }, null, 2) };
+          sourceCoverage: { complete: ![...sourceStatuses.values()].includes('unavailable') },
+          useBoundary: 'The read receipt means this tool produced a result containing the cited record versions; it does not prove adoption or execution. A rule match does not mean rule execution. If any truncated count is nonzero or sourceCoverage.complete is false, this result is incomplete and cannot certify that all requirements were checked.' }, null, 2) };
       } catch (error) {
         return { content: `cognition_ontology_query: ${error instanceof Error ? error.message : '本体查询失败'}`, isError: true };
       }

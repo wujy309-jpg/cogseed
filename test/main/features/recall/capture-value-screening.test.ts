@@ -28,6 +28,19 @@ describe('grounded human review after independent value judgment', () => {
 });
 
 describe('Recall capture value screening', () => {
+  it('admits a concrete observation without reuse keywords to semantic value judgment, without granting retention', () => {
+    expect(screenRecallCaptureValue([{ role: 'user', text: '大屏上频繁翻页会打断讲述的节奏。' }]))
+      .toEqual({ eligible: true, signals: ['substantive_exchange'] });
+    expect(screenRecallCaptureValue([{ role: 'user', text: 'Only static screenshots hide the state changes that explain this problem.' }]).eligible).toBe(true);
+  });
+  it('admits an explicit decision about the preceding assistant proposal but does not treat a bare acknowledgment as approval', () => {
+    const proposal = { role: 'assistant' as const, text: '可以把风险、负责人和下一步安排在同一页。' };
+    expect(screenRecallCaptureValue([proposal, { role: 'user', text: '这个结构符合我们的需要，就定这个报告架子。' }]).eligible).toBe(true);
+    expect(screenRecallCaptureValue([proposal, { role: 'user', text: '收到，继续。' }]).eligible).toBe(false);
+  });
+  it('admits an independent fact without inventing an accompanying cognition', () => {
+    expect(screenRecallCaptureValue([{ role: 'user', text: '青岚项目的验收负责人是陈河。' }]).eligible).toBe(true);
+  });
   it.each([
     ['你好', '你好，有什么可以帮你？'],
     ['谢谢', '不客气。'],
@@ -58,16 +71,16 @@ describe('Recall capture value screening', () => {
     ]));
   });
 
-  it('does not treat the assistant restating a rule as user intent', () => {
+  it('admits an exchange without treating assistant rules as retention evidence', () => {
     const result = screenRecallCaptureValue([
       { role: 'user', text: '帮我看一下这个问题。' },
       { role: 'assistant', text: '以后所有架构决定必须记录来源，并使用固定评审模板。' },
     ]);
 
-    expect(result).toEqual({ eligible: false, signals: [], reason: 'low_reuse_value' });
+    expect(result).toEqual({ eligible: true, signals: ['substantive_exchange'] });
   });
 
-  it('filters a long exchange when the assistant produced no result', () => {
+  it('admits failed attempts for complete-context value judgment', () => {
     const result = screenRecallCaptureValue([
       {
         role: 'user',
@@ -79,10 +92,10 @@ describe('Recall capture value screening', () => {
       },
     ]);
 
-    expect(result).toMatchObject({ eligible: false, reason: 'no_result' });
+    expect(result).toMatchObject({ eligible: true, signals: ['substantive_exchange'] });
   });
 
-  it('does not retain an ordinary comparison merely because it is long', () => {
+  it('admits a substantive comparison without granting retention', () => {
     const result = screenRecallCaptureValue([
       {
         role: 'user',
@@ -98,7 +111,7 @@ describe('Recall capture value screening', () => {
       },
     ]);
 
-    expect(result).toEqual({ eligible: false, signals: [], reason: 'low_reuse_value' });
+    expect(result).toEqual({ eligible: true, signals: ['substantive_exchange'] });
   });
 });
 
@@ -110,8 +123,8 @@ describe('认知初筛按用户证据逐段判断', () => {
     // sentence containing a save/remember instruction.
     expect(screenRecallCaptureValue([{ role: 'user', text: actual.split('。')[0] }]).eligible).toBe(true);
     expect(screenRecallCaptureValue([{ role: 'user', text: '以后每周的交付复盘采用固定模板：本周目标、已完成事项、风险与负责人、下周行动和截止时间。缺信息时写待确认，不编造。' }]).eligible).toBe(true);
-    expect(screenRecallCaptureValue([{ role: 'user', text: '请生成本周复盘模板，字段包括目标、风险与负责人、下周行动和截止日期。' }]).eligible).toBe(false);
-    expect(screenRecallCaptureValue([{ role: 'user', text: '请查询之前保存的每周复盘模板，缺数据时写待确认的规则是什么？' }]).eligible).toBe(false);
+    expect(screenRecallCaptureValue([{ role: 'user', text: '请生成本周复盘模板，字段包括目标、风险与负责人、下周行动和截止日期。' }]).eligible).toBe(true);
+    expect(screenRecallCaptureValue([{ role: 'user', text: '请查询之前保存的每周复盘模板，缺数据时写待确认的规则是什么？' }]).eligible).toBe(true);
   });
   it.each([
     '青岚项目的交付验收负责人是陈河。以后准备青岚项目验收材料时，需找陈河确认签字；这是长期有效的项目情况，其他项目不能套用。',
@@ -141,18 +154,18 @@ describe('认知初筛按用户证据逐段判断', () => {
     'Who is responsible for project Aurora. Future acceptance documents refer to this owner.',
     '今後、プロジェクト蒼の検収書類は誰に確認すればよいですか？',
     'No futuro, quem é o responsável pelo projeto Aurora?',
-  ])('查既有关系、猜测问题、一次性操作和状态单据不进入事实初筛：%s', text => {
-    expect(screenRecallCaptureValue([{ role: 'user', text }, { role: 'assistant', text: '陈河是验收负责人，以后都交给他签字。已保存长期规则。' }]).eligible).toBe(false);
+  ])('查询和一次性内容交给价值判断，不充当收录依据：%s', text => {
+    expect(screenRecallCaptureValue([{ role: 'user', text }, { role: 'assistant', text: '陈河是验收负责人，以后都交给他签字。已保存长期规则。' }]).eligible).toBe(true);
   });
   it('跨句关系只能来自同一条用户原文，不能借助手断言或无关未来片段拼事实', () => {
     expect(screenRecallCaptureValue([
       { role: 'assistant', text: '青岚项目的验收负责人是陈河。' },
       { role: 'user', text: '后续验收材料据此确定对接人。' },
-    ]).eligible).toBe(false);
+    ]).eligible).toBe(true);
     expect(screenRecallCaptureValue([
       { role: 'user', text: '青岚项目的验收负责人是陈河。' },
       { role: 'user', text: '后续验收材料据此确定对接人。' },
-    ]).eligible).toBe(false);
+    ]).eligible).toBe(true);
   });
   it.each([
     '默认中文。',
@@ -202,11 +215,11 @@ describe('认知初筛按用户证据逐段判断', () => {
     'Prepare a migration rollback checklist.',
     '请记住。',
     '默认。',
-  ])('操作、临时范围、查询和材料长度不构成收录依据：%s', text => {
+  ])('除明确状态噪声外保留完整上下文判断机会：%s', text => {
     expect(screenRecallCaptureValue([
       { role: 'user', text },
       { role: 'assistant', text: '已完成。以后所有任务采用通用模板，先定义输入再执行验证。'.repeat(60), artifacts: [{ id: 'long-method' }] },
-    ]).eligible).toBe(false);
+    ]).eligible).toBe(text !== '现在进展如何？');
   });
 
   it('仅有模型自述或继续确认不能支持模型推断的偏好', () => {
@@ -252,7 +265,7 @@ describe('认知初筛按用户证据逐段判断', () => {
     '查询已经保存的周报规范：每周五提交周报给王经理。',
     '请分析这份较长的模板，说明它的格式。'.repeat(40),
   ])('保存词或规范查询不会独立使内容进入核对：%s', text => {
-    expect(screenRecallCaptureValue([{ role: 'user', text }]).eligible).toBe(false);
+    expect(screenRecallCaptureValue([{ role: 'user', text }]).eligible).toBe(true);
   });
 
   it('英文独立语句中的临时话题不能否决前面的持续要求', () => {

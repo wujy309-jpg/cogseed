@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 /** Pure orchestration: caller owns model dispatch, prompt loading and persistence.
  * Coverage proves that every source slice was submitted and validated, not that
  * the model understood it. Literal evidence validation cannot prove semantics. */
-export interface CaptureContextMessage { id: string; role: string; text: string; discovery?: boolean }
+export interface CaptureContextMessage { id: string; role: string; text: string; discovery?: boolean; observations?: readonly unknown[] }
 export interface CaptureContextEvidence { messageId: string; quote: string; role: string; start: number; end: number }
 export interface CaptureContextTopic {
   title: string;
@@ -54,7 +54,7 @@ export class CaptureContextInterruptedError extends Error {
     this.name = 'CaptureContextInterruptedError';
   }
 }
-type Segment = { id: string; messageId: string; role: string; discovery: boolean; start: number; end: number; text: string };
+type Segment = { id: string; messageId: string; role: string; discovery: boolean; start: number; end: number; text: string; observations?: readonly unknown[] };
 type Node = { id: string; topics: CaptureContextTopic[] };
 const MAX_OUTPUT_CHARS = 16_000;
 function fail(reason: string): never { throw new Error(`invalid capture context summary: ${reason}`); }
@@ -139,7 +139,7 @@ export function captureContextSourceDigest(messages: readonly CaptureContextMess
     if (typeof message.text !== 'string' || (message.discovery !== undefined && typeof message.discovery !== 'boolean') || seen.has(message.id)) fail('messages');
     seen.add(message.id);
   }
-  return createHash('sha256').update(JSON.stringify(messages.map(({ id, role, text, discovery }) => ({ id, role, text, discovery: !!discovery })))).digest('hex');
+  return createHash('sha256').update(JSON.stringify(messages.map(({ id, role, text, discovery, observations }) => ({ id, role, text, discovery: !!discovery, ...(observations?.length ? { observations } : {}) })))).digest('hex');
 }
 
 function sourceSegments(messages: readonly CaptureContextMessage[], maxInputChars: number): Segment[] {
@@ -154,7 +154,7 @@ function sourceSegments(messages: readonly CaptureContextMessage[], maxInputChar
       // Preserve UTF-16 coordinates, while avoiding broken astral characters.
       if (end < message.text.length && /[\uD800-\uDBFF]/.test(message.text[end - 1])) end--;
       segments.push({ id: `m${index}:${start}`, messageId: message.id, role: message.role, discovery: !!message.discovery,
-        start, end, text: message.text.slice(start, end) });
+        start, end, text: message.text.slice(start, end), ...(start === 0 && message.observations?.length ? { observations: message.observations } : {}) });
       if (end < start + sliceSize) start = end - sliceSize;
       if (!message.text.length) break;
     }

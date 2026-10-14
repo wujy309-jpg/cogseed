@@ -179,3 +179,15 @@ describe('认知与本体共同确认的真实详情', () => {
     expect(invoke).toHaveBeenCalledOnce();
   });
 });
+
+
+describe('独立本体建议的同一审阅页面', () => {
+  it('展示本体变更说明与正式保存出口，不要求认知分类或伪造认知资产', () => {
+    const item = candidate({ proposalTarget: 'ontology', judgment: '项目负责人从下个月改为李四。' });
+    const html = loadCognitionAssets({ candidates: [item], ontologySnapshot: snapshot }, { name: 'activity' }).render();
+    for (const text of ['变更名称', '完整变更说明', '保存本体变化', '不会另存为认知资产', '本体变更建议']) expect(html).toContain(text);
+    expect(html).not.toContain('data-f="contentCategory"');
+    expect(html).not.toContain('拟新建正式资产');
+    expect(html.match(/data-act="cand-adopt-with-form"/g)).toHaveLength(1);
+  });
+});

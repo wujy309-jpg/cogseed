@@ -777,8 +777,27 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     ...(toolResultsDir ? [toolResultsDir] : []),
   ];
 
+  const ontologyActionPreflight = uid ? async (toolName: string, input: Record<string, unknown>, finalMarkdownAdapter = false, trustedImplementation = true): Promise<ToolResult | undefined> => {
+    const { ontologyActionCapability } = await import('./ontology-action-capabilities');
+    const capability = ontologyActionCapability(toolName, input, { finalMarkdownAdapter, trustedImplementation });
+    if (capability.coverage !== 'unverified_effect') return undefined;
+    try {
+      const { checkOntologyUnverifiedAction } = await import('../../features/cognition/ontology/operation-guard');
+      const result = await checkOntologyUnverifiedAction(uid, { operationKinds: capability.operationKinds, context: {
+        ...(agentId ? { agentId } : {}), ...(params.projectId ? { projectId: params.projectId } : {}),
+        ...(params.spaceId ? { workspaceId: params.spaceId } : {}), ...(params.userMessage ? { taskText: params.userMessage } : {}),
+      } });
+      if (result.allowed) return undefined;
+      return { content: JSON.stringify({ code: result.code, checks: result.checks,
+        instruction: 'A bound required condition has no verified adapter for this action. Use a structured tool that can check its final payload, or request an explicit review of the unresolved condition.' }), isError: true };
+    } catch {
+      return { content: 'E_ONTOLOGY_OPERATION_PRECONDITION_UNAVAILABLE: The current bound conditions could not be checked. Do not execute or route around this action.', isError: true };
+    }
+  } : undefined;
+
   const localTools = params.disableTools ? [] : createLocalTools({
     ...(uid ? { userId: uid } : {}),
+    ...(ontologyActionPreflight ? { beforeUnverifiedAction: ontologyActionPreflight } : {}),
     ...(uid ? { beforeMarkdownWrite: async input => {
       const { checkOntologyMarkdownWrite } = await import('../../features/cognition/ontology/operation-guard');
       return checkOntologyMarkdownWrite(uid, { ...input, context: {
@@ -928,6 +947,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   const messagingTools: AgentTool[] = uid && !params.disableTools && isCommander && params.cid
     ? createMessagingTools({
         userId: uid,
+        ...(ontologyActionPreflight ? { beforeAction: ontologyActionPreflight } : {}),
         cid: params.cid,
         ...(params.turnId ? { turnId: params.turnId } : {}),
       })
@@ -950,6 +970,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   const feishuTools: AgentTool[] = uid && !params.disableTools && isCommander
     ? createFeishuTools({
         userId: uid,
+        ...(ontologyActionPreflight ? { beforeAction: ontologyActionPreflight } : {}),
         ...(params.cid ? { cid: params.cid } : {}),
         ...(params.projectId ? { projectId: params.projectId } : {}),
         ...(params.extraRoots?.length ? { extraRoots: params.extraRoots } : {}),
@@ -988,6 +1009,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   const officeTools: AgentTool[] = uid && !params.disableTools && officeCliAvailable()
     ? createOfficeTools({
         userId: uid,
+        ...(ontologyActionPreflight ? { beforeAction: ontologyActionPreflight } : {}),
         ...(params.cid ? { cid: params.cid } : {}),
         ...(params.projectId ? { projectId: params.projectId } : {}),
         ...(params.extraRoots?.length ? { extraRoots: params.extraRoots } : {}),
@@ -1041,6 +1063,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     ? await createConnectorMetaTools(
         {
           userId: uid,
+          ...(ontologyActionPreflight ? { beforeConnectorDispatch: (input: Record<string, unknown>) => ontologyActionPreflight('call_connector_tool', input) } : {}),
           ...(params.cid ? { cid: params.cid } : {}),
         },
         exposure === 'discover+block' ? 'discover' : 'full',
@@ -1384,6 +1407,11 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     providers,
     session,
     ...(params.disableTools ? { disableTools: true } : {}),
+    ...(ontologyActionPreflight ? { beforeToolExecute: async (toolName: string, input: Record<string, unknown>) => {
+      const winner = [...visibleTools].reverse().find(tool => tool.name === toolName);
+      // A caller overriding a local tool does not inherit its final-write adapter.
+      return ontologyActionPreflight(toolName, input, Boolean(winner && localTools.includes(winner)), !(winner && params.extraTools?.includes(winner)));
+    } } : {}),
     ...(visibleTools.length ? { tools: visibleTools } : {}),    ...(transformToolResult ? { transformToolResult } : {}),
     ...(toolResultsDir ? { toolContextState: { toolResultSpoolDir: toolResultsDir } } : {}),
     ...(params.skillList !== undefined ? { skillAllowlist: params.skillList } : {}),

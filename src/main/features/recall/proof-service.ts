@@ -14,13 +14,17 @@ import { normalizeCognitionSourceRefs, type CognitionSourceRef } from './source-
 import { readReceipt, type ContextReuseReceipt } from '../p3394/context-reuse-receipt';
 import { abilityAssetReferenceMatches } from './asset-reference';
 import { recordValidation } from './validation-service';
+import type { EffectivenessComparison } from './effectiveness-comparison';
 
 const log = createLogger('recall.proofs');
 
 export type TransferProofStatus = 'prepared' | 'succeeded' | 'degraded' | 'rejected';
 export type EffectivenessOutcome = 'better' | 'no_improvement' | 'worse' | 'insufficient_evidence' | 'invalid' | 'rework';
 export interface TransferProofRecord extends RecallJsonRecord { projectionId: string; executionId: string; expectedResultSnapshot: string; assetVersions: Array<{ assetId: string; version: string }>; status: TransferProofStatus; receiptId?: string; receiptExecutionId?: string; observedTransfer?: string; wakeRequestId?: string; createdAt: string; completedAt?: string; }
-export interface EffectivenessProofRecord extends RecallJsonRecord { transferProofId: string; outcome: EffectivenessOutcome; status: 'valid' | 'invalid'; observedResult: string; evidenceRefs: CognitionSourceRef[]; recommendedAction?: 'pause' | 'narrow_scope' | 'rework' | 'rollback_to_version'; createdAt: string; }
+export interface EffectivenessProofRecord extends RecallJsonRecord { transferProofId: string; outcome: EffectivenessOutcome; status: 'valid' | 'invalid'; observedResult: string; evidenceRefs: CognitionSourceRef[]; recommendedAction?: 'pause' | 'narrow_scope' | 'rework' | 'rollback_to_version'; createdAt: string;
+  comparison?: EffectivenessComparison;
+  nightlyFeedback?: { feedback: 'positive' | 'neutral' | 'negative' | 'invalid' | 'rework'; note?: string; status: 'pending' | 'queued' };
+}
 function text(value: unknown, field: string, max: number): string { if (typeof value !== 'string') throw new Error(`invalid ${field}`); const out = value.replace(/\s+/g, ' ').trim(); if (!out || out.length > max) throw new Error(`invalid ${field}`); return out; }
 function asTransfer(value: RecallJsonRecord): TransferProofRecord { if (typeof value.projectionId !== 'string' || typeof value.executionId !== 'string' || typeof value.expectedResultSnapshot !== 'string' || !Array.isArray(value.assetVersions) || typeof value.status !== 'string' || typeof value.createdAt !== 'string' || (value.receiptExecutionId !== undefined && typeof value.receiptExecutionId !== 'string') || (value.wakeRequestId !== undefined && typeof value.wakeRequestId !== 'string')) throw new Error('malformed transfer proof'); return value as TransferProofRecord; }
 function asEffectiveness(value: RecallJsonRecord): EffectivenessProofRecord {
@@ -259,20 +263,65 @@ export async function completeTransferProofWithReceipt(
   }
   return proof;
 }
-export async function evaluateEffectivenessProof(userId: string, input: { transferProofId: string; outcome: EffectivenessOutcome; observedResult: string; evidenceRefs: unknown[] }): Promise<EffectivenessProofRecord> {
+/** Availability and attribution precede any positive effect weighting. */
+async function positiveEvidenceQualified(userId: string, transfer: TransferProofRecord, refs: CognitionSourceRef[], baselineExecutionId?: string): Promise<boolean> {
+  if (!refs.length || !transfer.receiptExecutionId) return false;
+  try {
+    const records = await import('../execution-records');
+    const { cognitionEvaluationSourceId } = await import('./source-catalog');
+    const { isCognitionSourceEnabled } = await import('./source-control');
+    const record = await records.read(userId, transfer.receiptExecutionId);
+    const receipt = await readReceipt(userId, transfer.receiptExecutionId);
+    if (record.status !== 'completed' || record.boundary !== 'real' || !record.resultRef
+      || !receipt || receipt.receiptId !== transfer.receiptId
+      || !transfer.assetVersions.every(asset => (receipt.reusedRefs || []).some(ref => abilityAssetReferenceMatches(ref, asset)))) return false;
+    const baseline = baselineExecutionId ? await records.read(userId, baselineExecutionId) : undefined;
+    if (baseline && (baseline.boundary !== 'real' || baseline.status !== 'completed' || !baseline.resultRef)) return false;
+    for (const ref of refs) {
+      const target = baseline && (ref.id === baseline.executionId || ref.id === cognitionEvaluationSourceId(baseline.executionId)) ? baseline : record;
+      if (ref.degraded || ref.kind !== 'execution_evaluation'
+        || !(ref.subtype === 'execution' && ref.id === target.executionId
+          || ref.subtype === 'evaluation' && ref.id === cognitionEvaluationSourceId(target.executionId))
+        || ref.sourceVersion && ![target.updatedAt, target.completedAt].includes(ref.sourceVersion)
+        || !await isCognitionSourceEnabled(userId, ref)) return false;
+    }
+    if (!(await records.readResult(userId, record.executionId, record.resultRef)).trim()) return false;
+    const current = await records.read(userId, record.executionId);
+    if (current.status !== record.status || current.resultRef !== record.resultRef || current.updatedAt !== record.updatedAt) return false;
+    for (const ref of refs) if (!await isCognitionSourceEnabled(userId, ref)) return false;
+    return true;
+  } catch { return false; }
+}
+
+export async function evaluateEffectivenessProof(userId: string, input: { transferProofId: string; outcome: EffectivenessOutcome; observedResult: string; evidenceRefs: unknown[]; baselineExecutionId?: string; nightlyFeedback?: Omit<NonNullable<EffectivenessProofRecord['nightlyFeedback']>, 'status'> }): Promise<EffectivenessProofRecord> {
   const raw = await readRecallJsonRecord(userId, 'transfer-proofs', input.transferProofId); if (!raw) throw new Error('transfer proof not found'); const transfer = asTransfer(raw); if (transfer.status !== 'succeeded') throw recallProofError('E_RECALL_TRANSFER_NOT_SUCCEEDED', 'effectiveness proof requires a successful transfer');
   if (!await transferReceiptIsProven(userId, transfer.receiptExecutionId, transfer.receiptId, transfer.assetVersions)) throw recallProofError('E_RECALL_TRANSFER_RECEIPT_MISSING', 'effectiveness proof requires a verified transfer receipt');
   if (!['better','no_improvement','worse','insufficient_evidence','invalid','rework'].includes(input.outcome)) throw new Error('invalid effectiveness outcome');
-  const refs = normalizeCognitionSourceRefs(input.evidenceRefs);
+  if (input.baselineExecutionId !== undefined && !safeId(input.baselineExecutionId)) throw new Error('invalid effectiveness baseline');
+  const observation = text(input.observedResult, 'observed result', 4000);
+  const refs = normalizeCognitionSourceRefs([...input.evidenceRefs, ...(input.baselineExecutionId && transfer.receiptExecutionId ? [
+    { kind: 'execution_evaluation', subtype: 'execution', id: transfer.receiptExecutionId },
+    { kind: 'execution_evaluation', subtype: 'execution', id: input.baselineExecutionId },
+  ] : [])]);
   // A positive click is useful feedback, but without a traceable comparison it
   // is not proof that the asset improved the outcome. Preserve the record and
   // downgrade its conclusion instead of silently promoting maturity.
-  const outcome = input.outcome === 'better' && refs.length === 0
-    ? 'insufficient_evidence'
-    : input.outcome;
+  let comparison: EffectivenessComparison | undefined;
+  if (input.outcome === 'better' && input.baselineExecutionId
+    && await positiveEvidenceQualified(userId, transfer, refs, input.baselineExecutionId)) {
+    const { compareEffectivenessResults } = await import('./effectiveness-comparison');
+    comparison = await compareEffectivenessResults(userId, transfer, input.baselineExecutionId, observation, refs);
+  }
+  const evidenceQualified = input.outcome !== 'better' || !!comparison && comparison.outcome !== 'insufficient_evidence';
+  const outcome = input.outcome === 'better' ? comparison?.outcome || 'insufficient_evidence' : input.outcome;
   const valid = outcome !== 'invalid';
   const recommendedAction = outcome === 'worse' ? 'pause' : outcome === 'rework' ? 'rework' : undefined;
-  const record: EffectivenessProofRecord = { schemaVersion: 1, ownerId: userId, id: `ep-${genId12()}`, transferProofId: transfer.id, outcome, status: valid ? 'valid' : 'invalid', observedResult: text(input.observedResult, 'observed result', 4000), evidenceRefs: refs, ...(recommendedAction ? { recommendedAction } : {}), createdAt: new Date().toISOString() };
+  const record: EffectivenessProofRecord = { schemaVersion: 1, ownerId: userId, id: `ep-${genId12()}`, transferProofId: transfer.id, outcome, ...(input.outcome !== outcome ? { reportedOutcome: input.outcome } : {}), evidenceQualification: { qualified: evidenceQualified, basis: comparison ? 'persisted_result_comparison' : 'feedback_without_comparison', causalEffectEstablished: false }, ...(comparison ? { comparison } : {}), status: valid ? 'valid' : 'invalid', observedResult: observation, evidenceRefs: refs, ...(recommendedAction ? { recommendedAction } : {}), createdAt: new Date().toISOString() };
+  if (input.nightlyFeedback) {
+    if (!['positive', 'neutral', 'negative', 'invalid', 'rework'].includes(input.nightlyFeedback.feedback)
+      || (input.nightlyFeedback.note !== undefined && (typeof input.nightlyFeedback.note !== 'string' || input.nightlyFeedback.note.length > 4000))) throw new Error('invalid nightly feedback');
+    record.nightlyFeedback = { ...input.nightlyFeedback, status: 'pending' };
+  }
   await writeRecallJsonRecord(userId, 'effectiveness-proofs', record.id, record);
   const effectivenessMaturity = maturityForEffectivenessOutcome(record.outcome, record.status === 'valid');
   const validationOutcome = record.outcome === 'better' ? 'success' : record.outcome === 'worse' || record.outcome === 'rework' ? 'failure' : undefined;

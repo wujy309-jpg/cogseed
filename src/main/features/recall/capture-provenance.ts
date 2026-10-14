@@ -140,7 +140,9 @@ async function verifyCurrentCaptureSourceDigest(userId: string, proof: RecallCap
     if (current.length !== wanted.size) throw new CaptureFormationSourceUnavailableError();
     const digest = captureContextSourceDigest(current.map(message => ({ id: message.id,
       role: isRecallAssistantMessage(message) ? 'assistant' : 'user', text: message.text,
-      discovery: proof.messageIds.includes(message.id) })));
+      discovery: proof.messageIds.includes(message.id),
+      ...((capture.feedbackObservations as Array<{ messageId: string }> | undefined)?.some(item => item.messageId === message.id)
+        ? { observations: (capture.feedbackObservations as Array<{ messageId: string }>).filter(item => item.messageId === message.id) } : {}) })));
     if (digest !== summary.sourceDigest) throw new CaptureFormationSourceUnavailableError();
   } catch { throw new CaptureFormationSourceUnavailableError(); }
 }
@@ -170,10 +172,13 @@ export async function verifyCaptureProvenanceForPromotion(
  * confirmed candidates remain forbidden at the promotion entry point. */
 export async function verifyCaptureProvenanceForCommittedCandidate(
   userId: string, candidate: Pick<RecallCandidateRecord,
-    'id' | 'ownerId' | 'status' | 'captureProvenance' | 'sourceRefs' | 'evidenceRefs' | 'promotedAssetId' | 'reviewDecisionId'>,
+    'id' | 'ownerId' | 'status' | 'captureProvenance' | 'sourceRefs' | 'evidenceRefs' | 'promotedAssetId' | 'reviewDecisionId' | 'proposalTarget' | 'ontologyHandoff'>,
 ): Promise<RecallCaptureProvenance> {
-  if (candidate.ownerId !== userId || !safeId(candidate.id) || candidate.status !== 'confirmed'
-    || !safeId(candidate.promotedAssetId) || typeof candidate.reviewDecisionId !== 'string'
+  const committedAsset = candidate.status === 'confirmed' && safeId(candidate.promotedAssetId);
+  const committedOntology = candidate.status === 'integrated' && candidate.proposalTarget === 'ontology'
+    && candidate.ontologyHandoff?.status === 'integrated' && safeId(candidate.ontologyHandoff.commandId)
+    && candidate.ontologyHandoff.recordIds?.length > 0;
+  if (candidate.ownerId !== userId || !safeId(candidate.id) || (!committedAsset && !committedOntology) || typeof candidate.reviewDecisionId !== 'string'
     || !/^rd_[A-Za-z0-9_-]{8,64}$/.test(candidate.reviewDecisionId)) {
     throw new Error('candidate has no committed formation evidence');
   }

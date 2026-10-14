@@ -92,7 +92,7 @@
     if (typeof window.uiModal === 'function' && typeof document !== 'undefined' && document.getElementById('ca-root')) {
       const dialog = window.uiModal({ title: String(message).split('\n')[0], closeLabel: T('common.close', '关闭'), bodyHtml: `<div class="ca-prototype-source-block">${esc(message)}</div>`, size: 'md', actions: [{ id: 'cancel', label: T('common.cancel', '取消') }, { id: 'confirm', label: T('common.confirm', '确认'), role: danger ? 'danger' : 'primary' }] });
       dialog.overlay.classList.add('ca-prototype-modal'); document.getElementById('ca-root').appendChild(dialog.overlay);
-      return await dialog === 'confirm';
+      return (await dialog).value === 'confirm';
     }
     if (danger && typeof window.uiConfirmDanger === 'function') {
       return !!(await window.uiConfirmDanger({ message, dangerLabel: T('common.confirm', '确认'), cancelLabel: T('common.cancel', '取消') }));
@@ -662,6 +662,7 @@
     'captures': ['captures'],
     'capture-settings': ['settings', 'captureStats'],
     'capture-sweep': ['captureStats'],
+    'capture-model-budgets': ['captureStats'],
     'usage-records': ['timeline'],
     'asset-usage-receipts': ['timeline'],
     'injection-receipts': ['timeline'],
@@ -1399,6 +1400,9 @@
     if (code === 'model_not_configured') {
       return T('cognition.candidate_error_model_required', '当前没有可用模型，自动整理步骤无法完成，本次正式保存未完成。候选修改仍保留，可调整认知名称或在应用设置中配置模型后重试。');
     }
+    if (code === 'ontology_meaning_unresolved') {
+      return T('cognition.ontology_meaning_unresolved', '本体建议仍有未明确的含义，本次没有保存。请核对“价值与不确定性”，明确说明后保存修改并重新核对建议。');
+    }
     if (code === 'invalid_boundary') {
       return T('cognition.inbox_error_boundary_invalid', '条件没有通过规则门禁——没有保存，请补齐后再试。');
     }
@@ -1519,6 +1523,14 @@
 
   function confirmedPromotion(result, candidateId) {
     const candidate = result?.candidate;
+    if (String(candidate?.id || '') === String(candidateId) && candidate?.proposalTarget === 'ontology'
+      && candidate.status === 'integrated' && !candidate.promotedAssetId) {
+      const handoff = candidate.ontologyHandoff, receipt = result.ontologyHandoff;
+      if (handoff?.status === 'integrated' && handoff.commandId && handoff.recordIds?.length
+        && receipt?.commandId === handoff.commandId && receipt.ontologyRevision === handoff.ontologyRevision
+        && JSON.stringify(receipt.recordIds) === JSON.stringify(handoff.recordIds)) return { candidate, ontologyHandoff: handoff };
+      return null;
+    }
     const assetId = String(candidate?.promotedAssetId || '');
     if (String(candidate?.id || '') !== String(candidateId) || candidate?.status !== 'confirmed' || !assetId) return null;
     if (String(result?.asset?.id || '') !== assetId) return null;
@@ -1533,6 +1545,15 @@
     try {
       const read = await api.call('recall.candidates.read', { candidateId });
       const candidate = read?.candidate;
+      if (String(candidate?.id || '') === String(candidateId) && candidate?.proposalTarget === 'ontology' && candidate.status === 'integrated') {
+        const snapshot = await api.call('cognition.ontology.snapshot');
+        const handoff = candidate.ontologyHandoff;
+        const receipt = snapshot?.ontology?.receipts?.[handoff?.commandId];
+        if (!receipt || receipt.revision !== handoff.ontologyRevision
+          || JSON.stringify(receipt.changedIds) !== JSON.stringify(handoff.recordIds)
+          || receipt.changedIds.some(id => !snapshot.ontology.records?.[id])) return null;
+        return confirmedPromotion({ candidate, ontologyHandoff: handoff }, candidateId);
+      }
       if (String(candidate?.id || '') !== String(candidateId) || candidate.status !== 'confirmed' || !candidate.promotedAssetId) return null;
       const saved = await api.call('recall.assets.read', { assetId: candidate.promotedAssetId });
       return confirmedPromotion({ candidate, asset: saved?.asset }, candidateId);
@@ -1742,6 +1763,10 @@
       // 兼容保留）。拿得到才发去向提示并直落资产详情；拿不到不发——认知树没有
       // 资产级节点，宁可不给入口也不往树跳。
       const promotedAssetId = confirmed.assetId;
+      if (confirmed.ontologyHandoff) {
+        store.lastPromoted = null;
+        toast(T('cognition.ontology_proposal_saved', '本体变化已保存'), 'success');
+      }
       if (promotedAssetId) {
         toast(T('cognition.candidate_promoted', '已成为正式资产'), 'success');
         // 检修剪：update 候选确认会 bump 目标资产版本——曾缓存的版本链失效。
@@ -1799,9 +1824,42 @@
       NS.notify();
     },
     async rateProof(proofId, feedback, extra) {
-      await api.call('recall.proofs.effectiveness.feedback', Object.assign({ transferProofId: proofId, feedback }, extra || {}));
-      toast(T('cognition.proof_rating_done', '已记下这次评价'));
+      const busy = store.proofRatingsBusy || (store.proofRatingsBusy = {});
+      if (busy[proofId]) return;
+      busy[proofId] = true;
+      try {
+      const details = Object.assign({}, extra || {});
+      if (feedback === 'positive' && !details.baselineExecutionId && typeof window.uiChoice === 'function') {
+        const [history, runs] = await Promise.all([
+          api.call('recall.proofs.list', { assetId: String(store.route.assetId || '') }),
+          api.call('p3394.execution.list', {}),
+        ]);
+        const transfer = (history.proofs || []).find(item => item.transfer?.id === proofId)?.transfer;
+        const current = (runs.executions || []).find(item => item.executionId === transfer?.receiptExecutionId);
+        const baselines = (runs.executions || []).filter(item => item.status === 'completed' && item.boundary === 'real'
+          && item.resultRef && item.executionId !== current?.executionId && current && item.kind === current.kind
+          && item.agentId === current.agentId && item.permissionMode === current.permissionMode
+          && String(item.completedAt || '') < String(current.completedAt || ''))
+          .sort((a, b) => String(b.completedAt || '').localeCompare(String(a.completedAt || ''))).slice(0, 12);
+        const choice = await window.uiChoice({
+          title: T('cognition.effect_compare_title', '核对是否有帮助'),
+          message: T('cognition.effect_compare_hint', '可选择一份先前成果作对照（最近十二项）。系统按同一目标核对实际结果；无法比较时只保留评价，不提升验证程度。比较会调用模型。'),
+          leadingChoices: [{ id: 'feedback_only', label: T('cognition.effect_feedback_only', '仅记录评价'), style: '' }],
+          choices: baselines.map(item => ({ id: item.executionId, style: '', label:
+            `${store.conversationTitles?.[item.conversationId] || T('cognition.effect_prior_result', '先前任务成果')} · ${new Date(item.completedAt).toLocaleString()}` })),
+        });
+        if (!choice) return;
+        if (choice !== 'feedback_only') {
+          details.baselineExecutionId = choice;
+          toast(T('cognition.effect_comparing', '正在核对两份实际成果…'));
+        }
+      }
+      const result = await api.call('recall.proofs.effectiveness.feedback', Object.assign({ transferProofId: proofId, feedback }, details));
+      toast(result?.proof?.outcome === 'insufficient_evidence'
+        ? T('cognition.effect_insufficient', '评价已记录；证据不足，未提升验证程度。') : T('cognition.proof_rating_done', '已记下这次评价'));
       await NS.reload();
+      return result;
+      } finally { delete busy[proofId]; }
     },
     async assetAction(assetId, action) {
       // 'revoke'（撤回使用）已随界面按钮删除（审计 R3，2026-09-28：0 使用＋

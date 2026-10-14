@@ -1,5 +1,6 @@
 /** 纯命令落地：提交前在草稿上检查身份、引用、基线和时间；失败不改变输入。 */
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import {
   OntologyError, boundedJson, isCalendarDate, validateOntologyDocument, validateOntologyId,
@@ -13,6 +14,7 @@ export type OntologyAction =
   | { intent: 'update'; recordId: string; expectedVersion: number; patch: Record<string, unknown>; sourceLabel: string }
   | { intent: 'restore'; recordId: string; expectedVersion: number; sourceLabel: string }
   | { intent: 'merge'; recordId: string; expectedVersion: number; targetId: string; expectedTargetVersion: number; sourceLabel: string }
+  | { intent: 'undo_command'; recordId: string; expectedVersion: number; originalCommandId: string; sourceLabel: string }
   | { intent: 'undo_merge'; recordId: string; expectedVersion: number; mergeCommandId: string; sourceLabel: string }
   | { intent: 'archive'; recordId: string; expectedVersion: number; sourceLabel: string }
   | { intent: 'delete'; recordId: string; expectedVersion: number; sourceLabel: string }
@@ -31,6 +33,7 @@ const commandSchema = z.object({ commandId: key, expectedRevision: z.number().in
     z.object({ intent: z.literal('delete'), ...target }).strict(),
     z.object({ intent: z.literal('restore'), ...target }).strict(),
     z.object({ intent: z.literal('merge'), ...target, targetId: key, expectedTargetVersion: z.number().int().positive() }).strict(),
+    z.object({ intent: z.literal('undo_command'), ...target, originalCommandId: key }).strict(),
     z.object({ intent: z.literal('undo_merge'), ...target, mergeCommandId: key }).strict(),
     z.object({ intent: z.literal('change'), ...target, effectiveFrom: z.string(), certainty: z.enum(['confirmed', 'inferred', 'unknown']).optional(), object: ontologyValueSchema.optional(), subjectId: key.optional() }).strict(),
     z.object({ intent: z.literal('correct'), ...target, certainty: z.enum(['confirmed', 'inferred', 'unknown']).optional(), object: ontologyValueSchema.optional(), subjectId: key.optional() }).strict(),
@@ -43,7 +46,7 @@ export function validateOntologyCommand(raw: unknown): OntologyCommand {
   if (!serialized || Buffer.byteLength(serialized, 'utf8') > 1024 * 1024) throw new OntologyError('invalid_input', 'ontology command too large');
   const parsed = commandSchema.safeParse(raw);
   if (!parsed.success) throw new OntologyError('invalid_input', 'invalid ontology command: ' + parsed.error.issues.slice(0,8).map(issue => issue.path.join('.') + ' ' + issue.message).join('; '), { issues: parsed.error.issues.slice(0,8).map(issue => ({ path: issue.path, message: issue.message })) });
-  if (parsed.data.actions.length !== 1 && parsed.data.actions.some(a => a.intent === 'merge' || a.intent === 'undo_merge'))
+  if (parsed.data.actions.length !== 1 && parsed.data.actions.some(a => a.intent === 'merge' || a.intent === 'undo_merge' || a.intent === 'undo_command'))
     throw new OntologyError('invalid_input', 'identity merge must be reviewed as one standalone operation');
   if (parsed.data.actions.some(a => (a.intent === 'change' || a.intent === 'correct') && !a.object && !a.subjectId))
     throw new OntologyError('invalid_input', 'fact change requires a new subject or object');
@@ -235,7 +238,30 @@ export function applyOntologyCommand(current: OntologyDocument, input: unknown, 
     if (before.status === 'archived' && [...doc.history].reverse().find(row => row.after.id === before.id)?.intent === 'merge_source'
       && action.intent !== 'undo_merge')
       throw new OntologyError('invalid_intent', 'merged identities require undo_merge to restore their references');
-    if (action.intent === 'merge') {
+    if (action.intent === 'undo_command') {
+      // The inverse comes exclusively from immutable committed history, never
+      // from caller-supplied snapshots. Preserve newer edits and dependencies.
+      if (sourceOverride) throw new OntologyError('invalid_intent', 'candidate formation cannot undo a saved command');
+      const original = doc.receipts[action.originalCommandId];
+      const entries = doc.history.filter(row => row.commandId === action.originalCommandId);
+      if (!original || !entries.length || !original.changedIds.includes(action.recordId)
+        || entries.some(row => row.intent.startsWith('undo_')))
+        throw new OntologyError('invalid_intent', 'a committed forward command is required');
+      const first = new Map<string, typeof entries[number]>(), last = new Map<string, typeof entries[number]>();
+      for (const row of entries) { if (!first.has(row.after.id)) first.set(row.after.id, row); last.set(row.after.id, row); }
+      for (const [id, row] of last) if (!isDeepStrictEqual(doc.records[id], row.after))
+        throw new OntologyError('baseline_changed', 'saved impact has subsequent changes; compare again', { recordId: id });
+      for (const record of Object.values(doc.records)) if (record.status === 'active' && record.kind === 'reference'
+        && !last.has(record.id) && (last.has(record.targetModuleId) || record.targetRecordId && last.has(record.targetRecordId)))
+        throw new OntologyError('invalid_reference', 'another module now references the saved impact; compare again', { recordId: record.id });
+      for (const [id, row] of first) {
+        const latest = last.get(id)!.after;
+        // New records remain as historical tombstones; existing records gain
+        // a new version restoring their former content and attribution.
+        save({ ...(row.before || latest), ...(row.before ? {} : { status: 'archived' }),
+          version: latest.version + 1, updatedAt: recordedAt }, 'undo_command', latest);
+      }
+    } else if (action.intent === 'merge') {
       const targetRecord = structuredClone(requireRecord(doc, action.targetId, 'entity'));
       if (targetRecord.version !== action.expectedTargetVersion) throw new OntologyError('baseline_changed', 'merge target version changed');
       if (before.kind !== 'entity' || targetRecord.kind !== 'entity' || before.id === targetRecord.id

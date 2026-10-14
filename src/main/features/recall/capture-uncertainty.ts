@@ -6,6 +6,7 @@ import { prompts } from '../../prompts/loader';
 import { runRecallCaptureModel } from './capture-model-routing';
 import { parseCaptureAssessmentJson, parseCaptureGroundingAssessment, type CaptureGroundingAssessment, type GroundingCandidate, type GroundingSource } from './capture-grounding';
 import type { RecallCaptureModelCandidate } from './capture-settings';
+import type { CaptureModelBudgetContext } from './capture-model-budget';
 
 export type CaptureUncertaintyDisposition = 'effect_unverified' | 'outside_claim_scope' | 'source_attribution_only' | 'content_unresolved';
 export interface CaptureUncertaintyContextMessage { label: string; id?: string; role: 'user' | 'assistant'; text: string; timestamp?: string }
@@ -14,6 +15,7 @@ export interface CaptureUncertaintyInput {
   contextMessages: CaptureUncertaintyContextMessage[]; summary: unknown;
   existingTarget?: { id: string; statement: string; scope: string; version: string };
   modelCandidates: readonly RecallCaptureModelCandidate[]; signal?: AbortSignal; shouldContinue?: () => Promise<boolean>;
+  budget?: CaptureModelBudgetContext;
 }
 export interface CaptureUncertaintyAssessment {
   method: 'model_assisted'; modelCompleted: boolean; nonBlocking: boolean;
@@ -94,7 +96,7 @@ export async function assessRecallCaptureUncertainty(userId: string, input: Capt
     try {
       const { result } = await runRecallCaptureModel(userId, { sessionId: input.sessionId,
         systemPrompt: prompts.load('cognition_capture_uncertainty'), message, modelCandidates: input.modelCandidates,
-        signal: input.signal, shouldContinue: input.shouldContinue });
+        signal: input.signal, shouldContinue: input.shouldContinue, budget: input.budget });
       if (result.meta.aborted || input.signal?.aborted || (input.shouldContinue && !await input.shouldContinue())) {
         return { ...held, interrupted: true, reason: 'uncertainty_model_unavailable' };
       }

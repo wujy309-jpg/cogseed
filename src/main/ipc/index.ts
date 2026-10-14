@@ -2522,11 +2522,12 @@ const invokeHandlers: Record<string, InvokeHandler> = {
 
   // 夜间筛选统计（U01/N-07）：聚合计数与原因码，不含任何原文。
   'recall.captures.stats': async (_input, ctx) => {
-    const [totals, sweep] = await Promise.all([
+    const [totals, sweep, budget] = await Promise.all([
       readRecallCaptureStats(ctx.userId),
       recallCaptures.readRecallNightlySweep(ctx.userId),
+      (await import('../features/recall/capture-model-budget')).readCaptureModelBudget(ctx.userId),
     ]);
-    return { ok: true, totals, sweep, runtime: recallCaptures.readRecallNightlySweepRuntime(ctx.userId) };
+    return { ok: true, totals, sweep, budget, runtime: recallCaptures.readRecallNightlySweepRuntime(ctx.userId) };
   },
 
   'recall.captures.settings.update': async (input = {}, ctx) => {
@@ -2606,6 +2607,17 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (!safeId(candidateId)) throw new Error('invalid recall candidate id');
     if (note !== undefined && (typeof note !== 'string' || note.length > 1_000)) throw new Error('invalid recall candidate note');
     return { ok: true, candidate: withRecallCandidateCapabilities(await recallCandidates.withRecallCandidateProcessingDetails(ctx.userId, await recallCandidates.keepCurrentRecallCandidate(ctx.userId, candidateId, note))) };
+  },
+
+  'recall.candidates.undoAutomaticPreview': async ({ candidateId } = {}, ctx) => {
+    if (!safeId(candidateId)) throw new Error('invalid recall candidate id');
+    const service = await import('../features/recall/automatic-formation-undo');
+    return { ok: true, preview: await service.previewAutomaticFormationUndo(ctx.userId, candidateId) };
+  },
+  'recall.candidates.undoAutomatic': async ({ candidateId, previewToken } = {}, ctx) => {
+    if (!safeId(candidateId) || typeof previewToken !== 'string' || !/^[a-f0-9]{64}$/.test(previewToken)) throw new Error('invalid automatic undo request');
+    const service = await import('../features/recall/automatic-formation-undo');
+    return { ok: true, ...(await service.undoAutomaticFormation(ctx.userId, candidateId, previewToken)) };
   },
 
   'recall.candidates.promoteBatch': async ({ candidateIds } = {}, ctx) => {
@@ -3370,10 +3382,10 @@ const invokeHandlers: Record<string, InvokeHandler> = {
 
   'recall.proofs.transfer.prepare': async ({ projectionId, executionId, expectedResultSnapshot } = {}, ctx) => { if (!safeId(projectionId) || !safeId(executionId) || typeof expectedResultSnapshot !== 'string' || expectedResultSnapshot.length > 4_000) throw new Error('invalid transfer proof'); return { ok: true, proof: await recallProofs.prepareTransferProof(ctx.userId, { projectionId, executionId, expectedResultSnapshot }) }; },
   'recall.proofs.transfer.complete': async ({ proofId, status, receiptId, observedTransfer } = {}, ctx) => { if (!safeId(proofId) || (status !== 'succeeded' && status !== 'degraded' && status !== 'rejected') || receiptId !== undefined || typeof observedTransfer !== 'string' || observedTransfer.length > 4_000) throw new Error('invalid transfer completion'); return { ok: true, proof: await recallProofs.completeTransferProof(ctx.userId, proofId, { status, observedTransfer }) }; },
-  'recall.proofs.effectiveness.evaluate': async ({ transferProofId, outcome, observedResult, evidenceRefs } = {}, ctx) => { if (!safeId(transferProofId) || !['better','no_improvement','worse','insufficient_evidence','invalid','rework'].includes(outcome) || typeof observedResult !== 'string' || observedResult.length > 4_000 || !Array.isArray(evidenceRefs) || evidenceRefs.length > 100) throw new Error('invalid effectiveness proof'); return { ok: true, proof: await recallProofs.evaluateEffectivenessProof(ctx.userId, { transferProofId, outcome, observedResult, evidenceRefs }) }; },
+  'recall.proofs.effectiveness.evaluate': async ({ transferProofId, outcome, observedResult, evidenceRefs, baselineExecutionId } = {}, ctx) => { if (!safeId(transferProofId) || !['better','no_improvement','worse','insufficient_evidence','invalid','rework'].includes(outcome) || typeof observedResult !== 'string' || observedResult.length > 4_000 || !Array.isArray(evidenceRefs) || evidenceRefs.length > 100 || (baselineExecutionId !== undefined && !safeId(baselineExecutionId))) throw new Error('invalid effectiveness proof'); return { ok: true, proof: await recallProofs.evaluateEffectivenessProof(ctx.userId, { transferProofId, outcome, observedResult, evidenceRefs, ...(baselineExecutionId !== undefined ? { baselineExecutionId } : {}) }) }; },
 
-  'recall.proofs.effectiveness.feedback': async ({ transferProofId, feedback, note, evidenceRefs } = {}, ctx) => { if (!safeId(transferProofId) || !['positive', 'neutral', 'negative', 'invalid', 'rework'].includes(feedback) || (note !== undefined && typeof note !== 'string') || (evidenceRefs !== undefined && !Array.isArray(evidenceRefs))) throw new Error('invalid effectiveness feedback'); return { ok: true, proof: await effectivenessFeedback.recordEffectivenessFeedback(ctx.userId, { transferProofId, feedback, ...(note !== undefined ? { note } : {}), ...(evidenceRefs !== undefined ? { evidenceRefs } : {}) }) }; },
-  'recall.proofs.effectiveness.feedbackForTask': async ({ taskRunId, feedback, note, evidenceRefs } = {}, ctx) => { if (!safeId(taskRunId) || !['positive', 'neutral', 'negative', 'invalid', 'rework'].includes(feedback) || (note !== undefined && typeof note !== 'string') || (evidenceRefs !== undefined && !Array.isArray(evidenceRefs))) throw new Error('invalid effectiveness feedback'); return { ok: true, ...(await effectivenessFeedback.recordTaskEffectivenessFeedback(ctx.userId, { taskRunId, feedback, ...(note !== undefined ? { note } : {}), ...(evidenceRefs !== undefined ? { evidenceRefs } : {}) })) }; },
+  'recall.proofs.effectiveness.feedback': async ({ transferProofId, feedback, note, evidenceRefs, baselineExecutionId } = {}, ctx) => { if (!safeId(transferProofId) || !['positive', 'neutral', 'negative', 'invalid', 'rework'].includes(feedback) || (note !== undefined && typeof note !== 'string') || (evidenceRefs !== undefined && !Array.isArray(evidenceRefs)) || (baselineExecutionId !== undefined && !safeId(baselineExecutionId))) throw new Error('invalid effectiveness feedback'); return { ok: true, proof: await effectivenessFeedback.recordEffectivenessFeedback(ctx.userId, { transferProofId, feedback, ...(note !== undefined ? { note } : {}), ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(baselineExecutionId !== undefined ? { baselineExecutionId } : {}) }) }; },
+  'recall.proofs.effectiveness.feedbackForTask': async ({ taskRunId, feedback, note, evidenceRefs, baselineExecutionId } = {}, ctx) => { if (!safeId(taskRunId) || !['positive', 'neutral', 'negative', 'invalid', 'rework'].includes(feedback) || (note !== undefined && typeof note !== 'string') || (evidenceRefs !== undefined && !Array.isArray(evidenceRefs)) || (baselineExecutionId !== undefined && !safeId(baselineExecutionId))) throw new Error('invalid effectiveness feedback'); return { ok: true, ...(await effectivenessFeedback.recordTaskEffectivenessFeedback(ctx.userId, { taskRunId, feedback, ...(note !== undefined ? { note } : {}), ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(baselineExecutionId !== undefined ? { baselineExecutionId } : {}) })) }; },
   // 跨作用域使用的确认与撤回。规范 10.2 要求「确认」，这里是确认真正发生的地方
   // ——没有它，confirm 档只会永远停在等待里。撤回后立刻回到需要确认的状态。
   'recall.assets.crossScope': async ({ assetId, confirmed, reason } = {}, ctx) => {

@@ -168,6 +168,65 @@ describe('the sole nightly cognition pipeline', () => {
     mocks.isQuiescent.mockReturnValue(true);
     expect(await capture.runNightlyCaptureSweep(USER, WINDOW, capture.settings)).toMatchObject({ queued: 1 });
   });
+  it('resumes a busy range next night without admitting other historical conversations', async () => {
+    let capture = await api();
+    mocks.isQuiescent.mockReturnValue(false);
+    await capture.runNightlyCaptureSweep(USER, WINDOW, capture.settings);
+    expect((await capture.readRecallNightlySweep(USER))?.pendingRanges).toMatchObject({
+      '2026-10-11:cid': { start: new Date(2026, 9, 11).toISOString(), end: new Date(2026, 9, 12).toISOString() },
+    });
+    capture.startRecallCaptureOrchestrator()();
+    vi.resetModules();
+    capture = await api();
+    vi.setSystemTime(new Date(2026, 9, 13, 3));
+    mocks.isQuiescent.mockReturnValue(true);
+    mocks.listConversations.mockResolvedValue([conversation('unadmitted', 10)]);
+    mocks.getMessagesPage.mockResolvedValue({ history: [row('u1'), row('a1', 11, 'assistant'), row('later', 12)], nextCursor: null });
+    expect(await capture.runNightlyCaptureSweep(USER, at(13, 3), capture.settings)).toMatchObject({ queued: 1 });
+    expect(await records()).toEqual([expect.objectContaining({
+      conversationId: 'cid', reviewDay: '2026-10-11', messageIds: ['u1', 'a1'],
+      reviewDayStart: new Date(2026, 9, 11).toISOString(), reviewDayEnd: new Date(2026, 9, 12).toISOString(),
+    })]);
+    expect((await capture.readRecallNightlySweep(USER))?.pendingRanges).toEqual({});
+    expect(mocks.getMessagesPage).toHaveBeenCalledTimes(1);
+    expect(mocks.buildRunner).not.toHaveBeenCalled();
+  });
+  it('keeps unreadable admitted ranges across a failed next-night inventory read', async () => {
+    const capture = await api();
+    mocks.getMessagesPage.mockRejectedValueOnce(new Error('source temporarily unreadable'));
+    expect(await capture.runNightlyCaptureSweep(USER, WINDOW, capture.settings)).toMatchObject({ deferred: 1 });
+    vi.setSystemTime(new Date(2026, 9, 13, 3));
+    mocks.listConversations.mockRejectedValueOnce(new Error('inventory unavailable'));
+    expect(await capture.runNightlyCaptureSweep(USER, at(13, 3), capture.settings)).toMatchObject({ error: 'sweep_failed' });
+    expect((await capture.readRecallNightlySweep(USER))?.pendingRanges).toHaveProperty('2026-10-11:cid');
+    mocks.listConversations.mockResolvedValue([]);
+    expect(await capture.runNightlyCaptureSweep(USER, at(13, 3), capture.settings)).toMatchObject({ queued: 1 });
+    expect((await records())[0].messageIds).toEqual(['u1', 'a1']);
+  });
+  it('does not admit a range after the sweep is cancelled during its source read', async () => {
+    const capture = await api();
+    const controller = new AbortController();
+    mocks.getMessagesPage.mockImplementationOnce(async () => {
+      controller.abort();
+      return { history: [row('u1')], nextCursor: null };
+    });
+    await capture.runNightlyCaptureSweep(USER, WINDOW, capture.settings, controller.signal);
+    expect(await records()).toHaveLength(0);
+    expect((await capture.readRecallNightlySweep(USER))?.pendingRanges).toHaveProperty('2026-10-11:cid');
+    expect(mocks.buildRunner).not.toHaveBeenCalled();
+  });
+  it('uses the persisted absolute window when a resumed window has different local calendar boundaries', async () => {
+    const capture = await api();
+    const start = at(10, 16), end = at(11, 16);
+    await capture.updateRecallJsonRecord(USER, 'capture-sweep', 'nightly', () => ({
+      schemaVersion: 1, ownerId: USER, id: 'nightly', baselineAt: start, cursors: {},
+      reviewWindow: { reviewDay: '2026-10-11', start, end, ranForWindow: WINDOW },
+    }));
+    mocks.getMessagesPage.mockResolvedValue({ history: [row('in-frozen-day', 11), row('outside-frozen-day', 11, 'assistant', 'Always use the source.')
+      ].map((message, index) => index ? { ...message, ts: at(11, 18) } : message), nextCursor: null });
+    await capture.runNightlyCaptureSweep(USER, WINDOW, capture.settings);
+    expect((await records())[0]).toMatchObject({ messageIds: ['in-frozen-day'], reviewDayStart: start, reviewDayEnd: end });
+  });
   it('handles more than 2000 messages by paging only until the day boundary and loses no batch IDs', async () => {
     const capture = await api();
     const all = Array.from({ length: 2050 }, (_, i) => row(`m${i}`, 11, i % 2 ? 'assistant' : 'user'));
@@ -218,6 +277,73 @@ describe('the sole nightly cognition pipeline', () => {
       valueJudgment: { eligible: true, evidence: [{ messageId: 'u1', sourceId: expect.any(String), quote: 'Always keep decisions traceable.' }] },
     });
     expect(result.autoApprovalEpoch).toBeUndefined();
+  });
+  it('retains extraction proof and group identity when persistence resumes after a partial save', async () => {
+    const capture = await api();
+    await capture.runNightlyCaptureSweep(USER, WINDOW, capture.settings);
+    const proposal = { judgment: 'Always keep decisions traceable.', summary: 'Traceable decisions',
+      value: 'Future decisions remain auditable.', suggestedType: 'rule', suggestedScope: 'project',
+      suggestedAction: 'create', risk: 'low', evidence: ['m1'],
+      applicableWhen: ['When recording decisions'], forbiddenWhen: ['Without original evidence'] };
+    mocks.runModel.mockResolvedValueOnce(answer(positive)).mockResolvedValueOnce(answer({ candidates: [proposal] }));
+    let saved: any;
+    mocks.saveCandidate.mockImplementation(async (_user, input) => {
+      saved = { ...input, id: 'first-group', status: 'pending_review' };
+      throw new Error('interrupted after candidate commit but before return');
+    });
+    const failed = await capture.runRecallCapture(USER, (await records())[0].id);
+    expect(failed).toMatchObject({ status: 'failed', errorCode: 'candidate_save_failed' });
+    const store = await import('../../../../src/main/features/recall/store');
+    await store.updateRecallJsonRecord(USER, 'captures', failed.id, raw => ({ ...raw!, status: 'queued' }));
+    vi.setSystemTime(new Date(at(12, 4)));
+    mocks.runModel.mockResolvedValue(answer({ candidates: [proposal] }));
+    mocks.saveCandidate.mockImplementation(async () => saved);
+    const resumed = await capture.runRecallCapture(USER, failed.id);
+    expect(resumed).toMatchObject({ status: 'review_ready', candidateIds: ['first-group'],
+      extractionCompletedAt: saved.captureProvenance.extractionCompletedAt });
+    expect(mocks.saveCandidate.mock.calls[1][1].captureKey).toBe(saved.captureKey);
+    expect(mocks.saveCandidate.mock.calls[1][1].captureProvenance).toEqual(saved.captureProvenance);
+    expect(mocks.runSummary).toHaveBeenCalledTimes(1);
+  });
+  it('admits feedback on an already-covered historical answer through the same next-night pipeline', async () => {
+    const capture = await api(); await capture.runNightlyCaptureSweep(USER, WINDOW, capture.settings);
+    mocks.runModel.mockResolvedValue(answer({ eligible: false, reason: 'No new durable understanding.', evidence: [] }));
+    await capture.runRecallCapture(USER, (await records())[0].id);
+    const feedback = await import('../../../../src/main/features/recall/nightly-feedback');
+    await feedback.queueNightlyFeedback(USER, { conversationId: 'cid', messageId: 'a1', assetId: 'aa-test-feedback', assetVersion: '1', taskRunId: 'synthetic-turn', feedback: 'negative' });
+    vi.setSystemTime(new Date(at(13, 3)));
+    await capture.runNightlyCaptureSweep(USER, at(13, 3), capture.settings);
+    const feedbackCapture = (await records()).find(record => record.feedbackRevision);
+    expect(feedbackCapture).toMatchObject({ status: 'queued', reviewDay: '2026-10-11', feedbackObservations: [expect.objectContaining({ feedback: 'negative', assetVersion: '1' })] });
+    const result = await capture.runRecallCapture(USER, feedbackCapture.id);
+    expect(result.status).toBe('no_candidate');
+    expect(result.autoApprovalEpoch).toBeUndefined();
+    const summaryInput = JSON.parse(mocks.runSummary.mock.calls.at(-1)![0].message);
+    expect(summaryInput.segments.find((segment: any) => segment.messageId === 'a1').observations).toEqual([expect.objectContaining({ feedback: 'negative' })]);
+    expect(await feedback.queuedNightlyFeedback(USER)).toEqual([]);
+    expect(mocks.saveCandidate).not.toHaveBeenCalled();
+  });
+  it('extracts an explicit ontology-only group through the same nightly evidence gates', async () => {
+    const capture = await api();
+    await capture.runNightlyCaptureSweep(USER, WINDOW, capture.settings);
+    mocks.runModel.mockResolvedValueOnce(answer(positive)).mockResolvedValueOnce(answer({ proposalVersion: 2, proposals: [{
+      id: 'traceability', target: 'ontology',
+      explanation: { description: 'Always keep decisions traceable.', summary: 'Traceable decision records',
+        value: 'Future project decisions can be checked against their original evidence.', suggestedScope: 'project', risk: 'low', evidence: ['m1'] },
+      ontologyChanges: { reason: 'The user explicitly requires source checks for project decisions.', evidence: ['m1'], actions: [
+        { intent: 'create', recordId: 'project-module', sourceLabel: 'Explicit project traceability requirement',
+          record: { kind: 'module', name: 'Project decisions', description: '', scope: { kind: 'project', id: 'project-1' } } },
+        { intent: 'create', recordId: 'traceability-rule', sourceLabel: 'Explicit project traceability requirement',
+          record: { kind: 'rule', moduleId: 'project-module', name: 'Traceable decisions', requirement: 'Always keep decisions traceable.',
+            strength: 'suggestion', condition: null, effect: { kind: 'note' }, exception: '' } },
+      ] },
+    }] }));
+    mocks.saveCandidate.mockImplementation(async (_user, input) => ({ ...input, id: 'ontology-candidate', status: 'pending_review' }));
+    const result = await capture.runRecallCapture(USER, (await records())[0].id);
+    expect(result).toMatchObject({ status: 'review_ready', candidateIds: ['ontology-candidate'] });
+    expect(mocks.saveCandidate.mock.calls[0][1]).toMatchObject({ proposalTarget: 'ontology', formationProposalId: 'traceability',
+      judgment: 'Always keep decisions traceable.', ontologyFormation: { blockedReasons: [], requiresTReview: true } });
+    expect(mocks.saveCandidate.mock.calls[0][1].ontologyFormation.refs.some(ref => ref.sharedBody)).toBe(false);
   });
   it('keeps invalid/fabricated value decisions internal and does not invoke extraction', async () => {
     const capture = await api(); await capture.runNightlyCaptureSweep(USER, WINDOW, capture.settings);
@@ -592,6 +718,47 @@ describe('the sole nightly cognition pipeline', () => {
     expect(mocks.runSummary).toHaveBeenCalledTimes(1);
     expect(mocks.runModel).toHaveBeenCalledTimes(1);
     expect(mocks.saveCandidate).not.toHaveBeenCalled();
+  });
+  it('keeps the completed summary checkpoint when its stage budget is exhausted and resumes next night', async () => {
+    const capture = await api();
+    const text = 'Always keep decisions traceable. ' + 'Synthetic bounded context sentence. '.repeat(1_500);
+    mocks.getMessagesPage.mockResolvedValue({ history: [row('u1', 11, 'user', text), row('a1', 11, 'assistant')], nextCursor: null });
+    await capture.runNightlyCaptureSweep(USER, WINDOW, capture.settings);
+    const budgets = await import('../../../../src/main/features/recall/capture-model-budget');
+    const store = await import('../../../../src/main/features/recall/store');
+    const key = 'night-' + budgets.captureBudgetWindowKey(new Date(), capture.settings.nightlyStart);
+    await store.writeRecallJsonRecord(USER, 'capture-model-budgets', key, { schemaVersion: 1, ownerId: USER, id: key,
+      calls: budgets.CAPTURE_NIGHT_LIMITS.stageCalls - 1, inputChars: 0, reportedTokens: 0, unknownUsageCalls: budgets.CAPTURE_NIGHT_LIMITS.stageCalls - 1, billingStatus: 'unavailable', updatedAt: new Date().toISOString(),
+      stages: { summary: { calls: budgets.CAPTURE_NIGHT_LIMITS.stageCalls - 1, inputChars: 0, reportedTokens: 0 } } });
+    const record = (await records())[0];
+    const held = await capture.runRecallCapture(USER, record.id);
+    expect(held).toMatchObject({ status: 'queued', summaryCheckpoint: { chunks: [expect.any(Object)] } });
+    expect(held.contextSummary).toBeUndefined();
+    expect(mocks.runSummary).toHaveBeenCalledTimes(1);
+    expect(mocks.runModel).not.toHaveBeenCalled();
+    expect(mocks.saveCandidate).not.toHaveBeenCalled();
+    const spent = await budgets.readCaptureModelBudget(USER);
+    expect(spent).toMatchObject({ calls: budgets.CAPTURE_NIGHT_LIMITS.stageCalls, unknownUsageCalls: budgets.CAPTURE_NIGHT_LIMITS.stageCalls, billingStatus: 'unavailable' });
+    vi.setSystemTime(new Date(2026, 9, 13, 3));
+    mocks.runModel.mockResolvedValue(answer({ eligible: false, reason: 'No durable value', evidence: [] }));
+    const resumed = await capture.runRecallCapture(USER, record.id);
+    expect(resumed).toMatchObject({ status: 'no_candidate', contextSummary: { completedAt: expect.any(String) } });
+    expect(mocks.runSummary.mock.calls.length).toBeGreaterThan(1);
+    expect(mocks.runModel).toHaveBeenCalledTimes(1);
+  });
+  it('refuses an inconsistent budget ledger before model dispatch instead of treating it as an empty budget', async () => {
+    const capture = await api(); await capture.runNightlyCaptureSweep(USER, WINDOW, capture.settings);
+    const budgets = await import('../../../../src/main/features/recall/capture-model-budget');
+    const store = await import('../../../../src/main/features/recall/store');
+    const key = 'night-' + budgets.captureBudgetWindowKey(new Date(), capture.settings.nightlyStart);
+    await store.writeRecallJsonRecord(USER, 'capture-model-budgets', key, { schemaVersion: 1, ownerId: USER, id: key,
+      calls: 0, inputChars: 0, reportedTokens: 0, unknownUsageCalls: 0, billingStatus: 'unavailable', updatedAt: new Date().toISOString(),
+      stages: { summary: { calls: 1, inputChars: 0, reportedTokens: 0 } } });
+    const result = await capture.runRecallCapture(USER, (await records())[0].id);
+    expect(result).toMatchObject({ status: 'failed', errorCode: 'summary_failed' });
+    expect(mocks.runSummary).not.toHaveBeenCalled();
+    expect(mocks.runModel).not.toHaveBeenCalled();
+    expect(await store.readRecallJsonRecord(USER, 'capture-model-budgets', key)).toMatchObject({ calls: 0, stages: { summary: { calls: 1 } } });
   });
   it('terminal completion never creates a capture or subscribes an automatic producer', async () => {
     const capture = await api();

@@ -115,7 +115,7 @@ export const RUNTIME_HOST_TOOL_NAMES = Object.freeze([
   // Internal only: these are never exposed in the Runtime model tool catalog.
   // They let an isolated Worker wait for the main-process human approval gate
   // and append the eventual execution outcome to its local audit journal.
-  'action_approval_request', 'action_approval_execution',
+  'action_approval_request', 'action_approval_execution', 'ontology_operation_preflight',
 ] as const);
 
 export type RuntimeHostToolName = typeof RUNTIME_HOST_TOOL_NAMES[number];

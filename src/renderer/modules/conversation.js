@@ -5451,7 +5451,7 @@ function _hydrateRecallCitations(messageEl, cid, messageId) {
     // 也带 data-recall-asset-id，closest 从按钮起会只命中按钮自己）。
     const assetId = String(button.dataset.recallAssetId || '');
     if (!cid || !resolvedMessageId || !assetId || (feedback !== 'positive' && feedback !== 'negative')) return;
-    const row = button.closest('.chat-recall-citation.is-cited');
+    const row = button.closest('.chat-recall-citation[data-recall-asset-id]');
     if (!row) return;
     if (row.dataset.feedbackBusy === '1' || row.dataset.feedbackSent === '1') return;
     row.dataset.feedbackBusy = '1';
@@ -5473,7 +5473,7 @@ function _hydrateRecallCitations(messageEl, cid, messageId) {
       // 整卡可能在请求期间被投影补全重画：按 assetId 重查当前渲染的行再落
       // 状态，不依赖请求前捕获的节点（CodeRabbit 校正）；行不在（极端重画）
       // 时 dataset 已记账，重画自然呈现已反馈态。
-      const currentRow = host.querySelector(`.chat-recall-citation.is-cited[data-recall-asset-id="${assetId}"]`);
+      const currentRow = host.querySelector(`.chat-recall-citation[data-recall-asset-id="${assetId}"]`);
       const targetRow = currentRow || row;
       targetRow.dataset.feedbackSent = '1';
       targetRow.classList.add('is-feedback-sent');

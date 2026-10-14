@@ -57,13 +57,18 @@ export async function evaluateNightlyAutomaticApproval(userId: string, candidate
       if (ids.some(id => !existing.has(id))) reasons.push('source_record_unavailable');
     }
   }
-  const validation = validatePromotionByAssetType(candidate, { actor: 'system' });
+  const validation = candidate.proposalTarget === 'ontology' ? { ok: true, advisories: [] }
+    : validatePromotionByAssetType(candidate, { actor: 'system' });
   // Length is explicitly a soft display budget, not missing content. Keep
   // completeness/identity/scope advisories manual and verify the whole body.
   if (!validation.ok || validation.advisories.some(reason => reason !== 'statement_over_soft_budget')) reasons.push('formal_asset_requirements_incomplete');
   // Perform policy checks before optional semantic infrastructure; blocked work
   // must not call models merely to discover another reason to hold it.
-  if (!reasons.length) {
+  if (!reasons.length && candidate.proposalTarget === 'ontology') {
+    const { independentOntologyComparisonReasons } = await import('./ontology-automatic-comparison');
+    reasons.push(...await independentOntologyComparisonReasons(userId, candidate));
+  }
+  if (!reasons.length && candidate.proposalTarget !== 'ontology') {
     const { readAbilityAsset, listAbilityAssets } = await import('./asset-service');
     const { listRecallCandidates, comparableJudgmentText } = await import('./candidate-service');
     const [assets, candidates] = await Promise.all([listAbilityAssets(userId), listRecallCandidates(userId)]);
@@ -80,6 +85,7 @@ export async function evaluateNightlyAutomaticApproval(userId: string, candidate
       }
     } else if (candidate.targetAssetId || candidate.targetVersionUsed) reasons.push('create_baseline_conflict');
     const peers = candidates.filter(other => other.id !== candidate.id
+      && other.proposalTarget !== 'ontology'
       && !['rejected', 'ignored', 'expired', 'failed', 'superseded', 'integrated', 'confirmed'].includes(other.status));
     const comparableAssets = assets.filter(asset => asset.status === 'active' && asset.id !== candidate.targetAssetId);
     const text = comparableJudgmentText(candidate.judgment);
@@ -131,14 +137,18 @@ async function recordAutomaticHold(userId: string, expected: RecallCandidateReco
 export async function tryAutomaticallyApproveRecallCandidate(userId: string, candidateId: string): Promise<{
   candidate: RecallCandidateRecord; approved: boolean; reasons: string[]; asset?: RecallCandidatePromotionResult['asset'];
 }> {
-  const { readRecallCandidate, promoteRecallCandidate, recoverRecallCandidatePromotion } = await import('./candidate-service');
+  const { readRecallCandidate, promoteRecallCandidate, recoverRecallCandidatePromotion, confirmRecallOntologyCandidate } = await import('./candidate-service');
   let candidate = await readRecallCandidate(userId, candidateId);
   const recovered = await recoverRecallCandidatePromotion(userId, candidateId);
   if (recovered) return { candidate: recovered.candidate, asset: recovered.asset, approved: false, reasons: ['existing_commit_recovered'] };
-  if (candidate.status === 'confirmed') return { candidate, approved: false, reasons: ['already_confirmed'] };
+  if (candidate.status === 'confirmed' || candidate.status === 'integrated') return { candidate, approved: false, reasons: ['already_confirmed'] };
   const review = await evaluateNightlyAutomaticApproval(userId, candidate);
   if (!review.eligible) return { candidate: await recordAutomaticHold(userId, candidate, review), approved: false, reasons: review.reasons };
   try {
+    if (candidate.proposalTarget === 'ontology') {
+      const result = await confirmRecallOntologyCandidate(userId, candidateId, { actor: 'system' });
+      return { candidate: result.candidate, approved: true, reasons: [] };
+    }
     const result = await promoteRecallCandidate(userId, candidateId, { actor: 'system', provenance: 'capture' });
     return { candidate: result.candidate, asset: result.asset, approved: true, reasons: [] };
   } catch (error) {

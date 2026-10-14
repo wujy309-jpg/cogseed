@@ -26,6 +26,30 @@ async function elevateToTransferVerified(assetId: string) {
 }
 
 async function modules() { const [candidates, assets, refs, projection] = await Promise.all([import('../../../../src/main/features/recall/candidate-service'), import('../../../../src/main/features/recall/asset-service'), import('../../../../src/main/features/recall/workspace-refs'), import('../../../../src/main/features/recall/context-projection')]); return { candidates, assets, refs, projection }; }
+it('six-node closure: retrieves full asset content and accepts a long ordinary task without losing its final condition', async () => {
+  vi.stubEnv('COGSEED_RECALL_BASELINE_TOP', '1');
+  const { candidates, assets, projection } = await modules();
+  const judgment = 'Review evidence carefully. '.repeat(65) + 'Keep the signed decision and rollback evidence together.';
+  const candidate = await createNightlyCandidateFixture('user-a', { judgment, summary: 'Evidence review', value: 'Reusable source review guidance.',
+    suggestedType: 'cognition', suggestedAction: 'create', suggestedScope: 'general', sourceRefs: [],
+    applicableWhen: ['governed review'], forbiddenWhen: ['discarding a signed decision'] });
+  const saved = await candidates.promoteRecallCandidate('user-a', candidate.id, { actor: 'user' });
+  await assets.setAbilityAssetMaturity('user-a', saved.asset.id, 'transfer_validated');
+  const unrelated = await createNightlyCandidateFixture('user-a', { judgment: 'Plan mountain routes before climbing.', summary: 'Mountain navigation',
+    value: 'Reusable route guidance.', suggestedType: 'cognition', suggestedScope: 'general', suggestedAction: 'create', sourceRefs: [], applicableWhen: ['mountain journeys'] });
+  const other = await candidates.promoteRecallCandidate('user-a', unrelated.id, { actor: 'user' });
+  await assets.setAbilityAssetMaturity('user-a', other.asset.id, 'transfer_validated');
+  const task = 'Read the supplied context. '.repeat(100) + 'Review the signed decision; preserve rollback evidence.';
+  const embedTexts = vi.fn(async (texts: string[]) => texts.map(text => text.includes('Plan mountain routes') ? [0, 1] : [1, 0]));
+  const result = await projection.createAutomaticContextProjection('user-a', { taskRunId: 'long-task', taskText: task }, { embedTexts });
+  expect(result?.assetIds).toEqual([saved.asset.id]);
+  expect(result?.omittedRefs).toContainEqual({ assetId: other.asset.id, reason: 'low_relevance' });
+  const embedded = embedTexts.mock.calls[0][0];
+  expect(embedded[0]).toBe(task);
+  const relevantProfile = embedded.find(text => text.includes('Keep the signed decision and rollback evidence together.'));
+  expect(relevantProfile).toContain('Keep the signed decision and rollback evidence together.');
+  expect(relevantProfile).toContain('discarding a signed decision');
+});
 async function createAsset(spaceId?: string) { const { candidates } = await modules(); const candidate = await createNightlyCandidateFixture('user-a', { judgment: 'Preserve source evidence in reviews.', summary: 'Evidence preservation rule', suggestedType: 'rule', applicableWhen: ['Formal review with traceable evidence'], forbiddenWhen: ['Informal discussion without a review decision'], suggestedScope: 'review,project', ...(spaceId ? { spaceId } : {}), sourceRefs: [{ kind: 'execution', id: 'exec-a' }, { kind: 'memory', id: 'mem-a' }] }); const promoted = await candidates.promoteRecallCandidate('user-a', candidate.id, { actor: 'user', forceCreateSimilar: true });
 
   await elevateToTransferVerified(promoted.asset.id);

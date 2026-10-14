@@ -17,15 +17,15 @@ async function setup(actions: ReturnType<typeof create>[] = [create('required-ri
   return { guard, service, doc: service.readOntologyDocument(uid) };
 }
 const write = (content: string, operation: 'write_file' | 'edit_file' = 'write_file') => ({ operation, path: '/isolated/report.md', content });
-async function localFixture(beforeMarkdownWrite: (input: Pick<OntologyMarkdownWriteInput, 'operation' | 'path' | 'content'>) => Promise<OntologyOperationDecision>) {
+async function localFixture(beforeMarkdownWrite: (input: Pick<OntologyMarkdownWriteInput, 'operation' | 'path' | 'content'>) => Promise<OntologyOperationDecision>, beforeUnverifiedAction?: (toolName: string, input: Record<string, unknown>) => Promise<any>) {
   const { activateUser } = await import('../../../src/main/features/users'); activateUser(uid);
   const { grantLocalExec } = await import('../../../src/main/features/permissions'); grantLocalExec();
   const workspace = path.join(root, 'workspace'); fs.mkdirSync(workspace, { recursive: true });
   const { setWorkspacePath } = await import('../../../src/main/features/user_workspace'); expect(setWorkspacePath(uid, workspace).ok).toBe(true);
   const { createLocalTools } = await import('../../../src/main/model/core-agent/local-tools');
   const outputs = new Set<string>(), onWritten = vi.fn((file: string) => { outputs.add(file); });
-  const tools = createLocalTools({ userId: uid, cid: 'synthetic-operation', beforeMarkdownWrite, hasProducedPath: file => outputs.has(file), onFileWritten: onWritten });
-  return { writeTool: tools.find(tool => tool.name === 'write_file')!, editTool: tools.find(tool => tool.name === 'edit_file')!, workspace,
+  const tools = createLocalTools({ userId: uid, cid: 'synthetic-operation', permissionMode: 'full', beforeUnverifiedAction, beforeMarkdownWrite, hasProducedPath: file => outputs.has(file), onFileWritten: onWritten });
+  return { bashTool: tools.find(tool => tool.name === 'bash')!, writeTool: tools.find(tool => tool.name === 'write_file')!, editTool: tools.find(tool => tool.name === 'edit_file')!, workspace,
     context: { workingDir: workspace, state: {} } as any, onWritten };
 }
 function barrier() {
@@ -33,6 +33,23 @@ function barrier() {
   const reached = new Promise<void>(resolve => { entered = resolve; }), waiting = new Promise<void>(resolve => { release = resolve; });
   return { reached, release, async pause() { entered(); await waiting; } };
 }
+
+it('six-node closure: enforces unconditional typed sections at the real write boundary and rejects an opaque bypass', async () => {
+  const f = await setup([create('required-risks', rule({ condition: null }))]);
+  const preflight = async (name: string, input: Record<string, unknown>) => {
+    const { ontologyActionCapability } = await import('../../../src/main/model/core-agent/ontology-action-capabilities');
+    const decision = await f.guard.checkOntologyUnverifiedAction(uid, { operationKinds: ontologyActionCapability(name, input).operationKinds });
+    return decision.allowed ? undefined : { isError: true, content: decision.code };
+  };
+  const local = await localFixture(input => f.guard.checkOntologyMarkdownWrite(uid, input), preflight);
+  const output = path.join(local.workspace, 'report.md');
+  expect(await local.writeTool.execute({ path: output, content: '# 进展\n已完成。' }, local.context)).toMatchObject({ isError: true });
+  expect(fs.existsSync(output)).toBe(false);
+  expect(await local.writeTool.execute({ path: output, content: '# 风险\n需要核对部署窗口。' }, local.context)).not.toMatchObject({ isError: true });
+  expect(fs.readFileSync(output, 'utf8')).toContain('需要核对部署窗口。');
+  expect(await local.bashTool.execute({ command: 'printf bypass > alternate.md' }, local.context)).toMatchObject({ isError: true });
+  expect(fs.existsSync(path.join(local.workspace, 'alternate.md'))).toBe(false);
+});
 async function sourceFixture() {
   const evidence = { kind: 'conversation' as const, id: 'synthetic-source', taxonomyVersion: 2 as const, subtype: 'session' as const, scope: 'conversation' as const };
   const at = new Date().toISOString();
@@ -47,6 +64,83 @@ async function sourceFixture() {
     fs.writeFileSync(recallJsonRecordPath(uid, 'source-controls', controls.cognitionSourceControlId(evidence)), '{invalid-json');
   } };
 }
+
+describe('bound conditions at alternate execution entrances', () => {
+  it('rejects an opaque shell alternate while preserving unrelated read tools and scopes', async () => {
+    const f = await setup();
+    const { ontologyActionCapability } = await import('../../../src/main/model/core-agent/ontology-action-capabilities');
+    expect(ontologyActionCapability('read_file', {})).toMatchObject({ coverage: 'read_only' });
+    expect(ontologyActionCapability('read_file', {}, { trustedImplementation: false })).toMatchObject({ coverage: 'unverified_effect' });
+    expect(ontologyActionCapability('write_file', { path: 'report.md' })).toMatchObject({ coverage: 'unverified_effect' });
+    const preflight = async (name: string, input: Record<string, unknown>) => {
+      const decision = await f.guard.checkOntologyUnverifiedAction(uid, { operationKinds: ontologyActionCapability(name, input).operationKinds });
+      return decision.allowed ? undefined : { content: decision.code, isError: true };
+    };
+    const local = await localFixture(input => f.guard.checkOntologyMarkdownWrite(uid, input), preflight);
+    const targetPath = path.join(local.workspace, 'bypass.md');
+    const result = await local.bashTool.execute({ command: `printf bypass > '${targetPath}'` }, local.context);
+    expect(result).toMatchObject({ isError: true });
+    expect(result.content).toContain('E_ONTOLOGY_OPERATION_PRECONDITION');
+    expect(fs.existsSync(targetPath)).toBe(false);
+    expect(await f.guard.checkOntologyUnverifiedAction(uid, { operationKinds: ['send_message'] })).toMatchObject({ allowed: true });
+  });
+  it('runs the host denial before both core builtins and injected tool implementations', async () => {
+    const { AgentRunner } = await import('../../../src/core-agent/src/agent/runner');
+    const { createConfig } = await import('../../../src/core-agent/src/config/loader');
+    const { ProviderRegistry } = await import('../../../src/core-agent/src/providers/registry');
+    const responses: any[] = [
+      { content: [{ type: 'tool_use', id: 'read-call', name: 'read_file', input: { path: path.join(root, 'fixture.txt') } },
+        { type: 'tool_use', id: 'opaque-call', name: 'opaque_action', input: {} }], stopReason: 'tool_use', model: 'mock', usage: { inputTokens: 1, outputTokens: 1 } },
+      { content: [{ type: 'text', text: 'The required conditions prevented execution.' }], stopReason: 'end_turn', model: 'mock', usage: { inputTokens: 1, outputTokens: 1 } },
+    ];
+    const take = () => responses.shift() || { content: [{ type: 'text', text: 'Stopped.' }], stopReason: 'end_turn' };
+    const registry = new ProviderRegistry();
+    registry.registerFactory('mock', () => ({ id: 'mock', name: 'Synthetic provider', validateAuth: async () => true, complete: async () => take(),
+      async *stream() {
+        const result = take(); yield { type: 'message_start' as const };
+        for (const item of result.content) {
+          if (item.type === 'text') yield { type: 'text_delta' as const, text: item.text };
+          else { yield { type: 'tool_use_start' as const, id: item.id, name: item.name };
+            yield { type: 'tool_use_delta' as const, id: item.id, input: JSON.stringify(item.input) };
+            yield { type: 'tool_use_end' as const, id: item.id }; }
+        }
+        yield { type: 'message_end' as const, ...result };
+      } }));
+    const execute = vi.fn(async () => ({ content: 'This side effect must never happen.' }));
+    const preflight = vi.fn(async (_name: string) => ({ content: 'E_ONTOLOGY_OPERATION_PRECONDITION: synthetic denial', isError: true }));
+    const runner = new AgentRunner({ config: createConfig({ agent: { defaultProvider: 'mock', defaultModel: 'mock' } }), providers: registry,
+      beforeToolExecute: preflight, tools: [{ name: 'opaque_action', description: 'Synthetic effect', inputSchema: { type: 'object' }, execute }] });
+    await runner.run({ message: 'Attempt the two synthetic actions.' });
+    expect(preflight.mock.calls.map(call => call[0])).toEqual(['read_file', 'opaque_action']);
+    expect(execute).not.toHaveBeenCalled();
+  });
+  it('checks the final isolated edit payload and refuses an external file change during that check', async () => {
+    const { RUNTIME_FILE_TOOLS } = await import('../../../src/main/features/cogseed_runtime/kernel/tools/file-tools');
+    const edit = RUNTIME_FILE_TOOLS.find(tool => tool.name === 'edit_file')!;
+    const targetPath = path.join(root, 'isolated-report.md');
+    fs.writeFileSync(targetPath, '# 风险\n已记录风险。\n');
+    const ctx: any = { userId: uid, runtimeSessionId: 'mruntime-boundary', pcDir: root, allowedRoots: [root], writableRoots: [root],
+      toolPolicy: { fileWrite: 'explicit_writable_roots' }, beforeAction: vi.fn(async (_name, input) => {
+        expect(input.content).toBe('# 风险\n替换后的风险。\n');
+        fs.writeFileSync(targetPath, '# 风险\n用户在检查期间修改了内容。\n');
+        return undefined;
+      }) };
+    const result = await edit.execute({ path: targetPath, old_string: '已记录风险。', new_string: '替换后的风险。' }, ctx);
+    expect(result).toMatchObject({ isError: true });
+    expect(result.content).toContain('E_RUNTIME_FILE_BASELINE_CHANGED');
+    expect(fs.readFileSync(targetPath, 'utf8')).toContain('用户在检查期间修改了内容');
+    expect(ctx.beforeAction).toHaveBeenCalledTimes(1);
+  });
+  it('refuses isolated writes when the host condition channel is unavailable', async () => {
+    const { RUNTIME_FILE_TOOLS } = await import('../../../src/main/features/cogseed_runtime/kernel/tools/file-tools');
+    const writeTool = RUNTIME_FILE_TOOLS.find(tool => tool.name === 'write_file')!;
+    const targetPath = path.join(root, 'unverified.md');
+    const result = await writeTool.execute({ path: targetPath, content: '# 风险\n记录。' }, { userId: uid, runtimeSessionId: 'mruntime-boundary',
+      pcDir: root, allowedRoots: [root], writableRoots: [root], toolPolicy: { fileWrite: 'explicit_writable_roots' } } as any);
+    expect(result.content).toContain('E_ONTOLOGY_OPERATION_PRECONDITION_UNAVAILABLE');
+    expect(fs.existsSync(targetPath)).toBe(false);
+  });
+});
 
 describe('本体规则在实际Markdown操作前的确定性条件', () => {
   it('真实来源控制损坏不能让required规则消失：实际write拒绝且不输出未知来源内容', async () => {

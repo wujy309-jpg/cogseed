@@ -109,7 +109,7 @@
   NS.activityModel = activityModel;
 
   const ACTIVITY_PAGE_SIZE = 50;
-  const ACTIVITY_ACTIONS = Object.freeze(['activity-select', 'activity-tab', 'activity-clear', 'activity-page-select', 'activity-close', 'activity-next', 'activity-save-draft', 'activity-defer', 'activity-history', 'activity-approval', 'formation-recheck']);
+  const ACTIVITY_ACTIONS = Object.freeze(['activity-select', 'activity-tab', 'activity-clear', 'activity-page-select', 'activity-close', 'activity-next', 'activity-save-draft', 'activity-defer', 'activity-history', 'activity-undo-automatic', 'activity-approval', 'formation-recheck']);
   const ACTIVITY_WRITE_ACTIONS = Object.freeze(['activity-save-draft', 'activity-defer']);
   const activityDrafts = new Map();
   let activitySelection = '';
@@ -329,6 +329,36 @@
           NS.notify();
         } catch (error) { await NS.alertUser(NS.recallErrorText ? NS.recallErrorText(error) : String(error.message || error)); }
         finally { el.removeAttribute('aria-busy'); el.removeAttribute('disabled'); }
+        return true;
+      }
+      if (act === 'activity-undo-automatic') {
+        const candidate = S.candidates.find(item => String(item.id) === id);
+        if (!candidate?.capabilities?.canUndoAutomatic || el.getAttribute('aria-busy') === 'true') return true;
+        el.setAttribute('aria-busy', 'true'); el.setAttribute('disabled', 'disabled');
+        try {
+          const result = await NS.api.call('recall.candidates.undoAutomaticPreview', { candidateId: id });
+          const preview = result.preview;
+          if (!result.ok || !preview?.token || !Array.isArray(preview.ontologyChanges)) throw new Error(T('cognition.automatic_undo_changed', '保存内容已有变化，请刷新后重新核对。'));
+          if (preview.alreadyUndone) { await NS.reload(); return true; }
+          const note = T('cognition.automatic_undo_preserves_history', '原决定和版本历史继续保留。有后续修改或引用时，系统会要求重新核对。');
+          const change = preview.assetChange;
+          const assetHtml = change ? `<section class="ca-review-notice"><h3>${esc(change.title)}</h3><h4>${esc(T('cognition.automatic_undo_before', '当前内容：'))}</h4><p class="content-text">${esc(change.before)}</p><h4>${esc(T('cognition.automatic_undo_after', '恢复后的内容：'))}</h4><p class="content-text">${esc(change.action === 'delete' ? T('cognition.automatic_undo_delete', '撤销新增：移入已删除，保留历史。') : change.after)}</p></section>` : '';
+          const ontologyHtml = preview.ontologyChanges.length ? NS.candidate.formationPreviewHtml({ ...candidate,
+            ontologyFormation: { schemaVersion: 1, reason: note, blockedReasons: [], requiresTReview: false,
+              previewChanges: preview.ontologyChanges.map(item => ({ ...item, intent: 'undo_command', recordId: item.after.id,
+                box: item.after.kind === 'rule' ? 'R' : ['module', 'definition', 'reference'].includes(item.after.kind) ? 'T' : 'A' })) } }, true) : '';
+          if (typeof window.uiModal !== 'function' || !document.getElementById('ca-root')) throw new Error(T('cognition.automatic_undo_changed', '保存内容已有变化，请刷新后重新核对。'));
+          const dialog = window.uiModal({ title: T('cognition.automatic_undo_title', '撤销本次自动保存'), size: 'md',
+            closeLabel: T('common.close', '关闭'), bodyHtml: `<p>${esc(note)}</p>${assetHtml}${ontologyHtml}`,
+            actions: [{ id: 'cancel', label: T('common.cancel', '取消') }, { id: 'confirm', label: T('common.confirm', '确认'), role: 'danger' }] });
+          document.getElementById('ca-root').appendChild(dialog.overlay);
+          if ((await dialog).value !== 'confirm') return true;
+          const saved = await NS.api.call('recall.candidates.undoAutomatic', { candidateId: id, previewToken: preview.token });
+          if (!saved.ok || !saved.candidate?.automaticUndo) throw new Error(T('cognition.automatic_undo_changed', '保存内容已有变化，请刷新后重新核对。'));
+          delete (S.activityHistory || {})[id];
+          await NS.reload();
+        } catch (error) { await NS.alertUser(NS.recallErrorText ? NS.recallErrorText(error) : String(error.message || error)); }
+        finally { el.removeAttribute('aria-busy'); el.removeAttribute('disabled'); NS.notify(); }
         return true;
       }
       if (act === 'activity-history') {

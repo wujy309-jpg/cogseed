@@ -938,6 +938,13 @@
               ${window.uiTextarea({ id: `ca-proof-note-${esc(proof.id)}`, placeholder: T('cognition.proof_note_optional_placeholder', '可补充一句你观察到的变化（可选；先写再点评，说明会随评价一起附上）'), attrs: { 'data-f': 'note' } })}
             </div>
           </div>`;
+        } else if (kind === 'effectiveness_recorded') {
+          const outcome = String(proof.outcome || 'insufficient_evidence');
+          ratingHtml = `<div class="ca-rating"><strong>${esc(T(`cognition.effect_outcome_${outcome}`, '证据不足'))}</strong>
+            <p class="note">${esc(proof.summary || '')}</p>
+            ${proof.comparison ? `<p class="note">${esc(proof.comparison.reason)}</p>
+              <p class="content-text">${esc(T('cognition.effect_baseline', '对照成果'))}：${esc(proof.comparison.baselineQuote || '')}</p>
+              <p class="content-text">${esc(T('cognition.effect_actual', '本次成果'))}：${esc(proof.comparison.resultQuote || '')}</p>` : ''}</div>`;
         } else {
           ratingHtml = `<div class="ca-rating"><p class="note">${esc(T('cognition.proof_rating_blocked_no_transfer', '这次还没有形成可评价的使用记录。'))}</p></div>`;
         }
@@ -1901,12 +1908,12 @@
     const picker = window.uiSelect({ id: `ca-proto-version-${asset.id}`, native: true, ariaLabel: pickerLabel, value: String(selected.version), options: versions.map(item => ({ value: String(item.version), label: `v${item.version} · ${versionSourceLabel(item)}${String(item.version) === active && available ? '（' + T('cognition.prototype_in_use', '在用') + '）' : ''}` })), attrs: { 'data-prototype-version-select': 'true' } });
     return `<label class="field"><span>${esc(pickerLabel)}</span>${picker}</label><div class="ca-prototype-pair">${snapshot(T('cognition.prototype_selected_version', '所选 v{n}', { n: selected.version }), snap)}${snapshot(T(available ? 'cognition.prototype_current_version' : 'cognition.library_saved_version', available ? '当前在用 v{n}' : '保存版本 v{n}', { n: active }), current)}</div><div class="ca-prototype-notice"><strong>${esc(T('cognition.prototype_diff_summary', '差异摘要'))}</strong><p>${esc(titleDiff)}${esc(String(snap.statement || '') === String(current.statement || '') ? T('cognition.asset_version_diff_same', '两版内容一致。') : T('cognition.prototype_diff_changed', '正文不同，请对照两侧内容核对；适用边界与来源跟随各自快照展示。'))}</p></div><div class="ca-prototype-notice">${esc(T('cognition.prototype_version_guarantee', '切换历史正文与边界时，当前范围与来源权限不会回退。已有对话引用和使用记录保留当时快照。'))}</div>`;
   }
-  NS.renderLibraryDialog = function renderLibraryDialog(kind, assetId, selectedVersion) {
+  NS.renderLibraryDialog = function renderLibraryDialog(kind, assetId, selectedVersion, proofEventId) {
     const asset = S.assets.find(item => String(item.id) === String(assetId));
     if (!asset) return '';
     if (kind === 'sources') return `<section class="ca-library-sources">${libraryEvidenceDialog(asset)}</section>`;
     if (kind === 'versions') return `<section class="ca-library-versions">${libraryVersionDialog(asset, selectedVersion)}</section>`;
-    assetDetail(asset, S.route, { compact: true });
+    assetDetail(asset, proofEventId === undefined ? S.route : { ...S.route, assetId, proofEventId }, { compact: true });
     return `<section class="ca-library-${kind}">${S.libraryDialogBodies?.[kind] || ''}</section>`;
   };
   NS.showLibraryDialog = async function showLibraryDialog(kind, assetId) {
@@ -1922,6 +1929,7 @@
     const versions = S.assetVersions?.assetId === asset.id ? S.assetVersions.versions || [] : [];
     const active = String(asset.activeVersion || asset.version || '');
     let selected = String((versions.find(item => String(item.version) !== active) || versions[0])?.version || '');
+    let openedProofId = String(S.route.proofEventId || '');
     const mutable = !S.assetsError && (asset.type === 'cognition' || CATEGORIES.some(([type]) => type === asset.type)) && ['active', 'paused'].includes(asset.status) && S.assetCapabilities?.versionedUpdate === true;
     const dialog = window.uiModal({
       title: titles[kind], description: kind === 'versions' ? asset.title + ' · ' + T(['active', 'paused'].includes(asset.status) ? 'cognition.prototype_current_version' : 'cognition.library_saved_version', ['active', 'paused'].includes(asset.status) ? '当前在用 v{n}' : '保存版本 v{n}', { n: active }) : asset.title,
@@ -1931,6 +1939,31 @@
     });
     dialog.overlay.classList.add('ca-prototype-modal');
     dialog.overlay.addEventListener('click', event => {
+      // The shared modal contains click bubbling. Record actions therefore
+      // belong to this dialog; routing the background page cannot repaint it.
+      const proofToggle = kind === 'records' && event.target.closest('[data-act="proof-toggle"]');
+      if (proofToggle) {
+        event.stopPropagation();
+        openedProofId = openedProofId === proofToggle.dataset.id ? '' : String(proofToggle.dataset.id || '');
+        dialog.dialog.querySelector('.ui-modal__body').innerHTML = NS.renderLibraryDialog(kind, asset.id, selected, openedProofId);
+        Array.from(dialog.dialog.querySelectorAll('[data-act="proof-toggle"]')).find(item => item.dataset.id === proofToggle.dataset.id)?.focus();
+        return;
+      }
+      const proofRate = kind === 'records' && event.target.closest('[data-act="proof-rate"]');
+      if (proofRate) {
+        event.stopPropagation();
+        const note = String(proofRate.closest('.ca-rating')?.querySelector('textarea[data-f="note"]')?.value || '').trim();
+        if (proofRate.disabled) return;
+        proofRate.disabled = true;
+        void NS.actions.rateProof(proofRate.dataset.id, proofRate.dataset.feedback, note ? { note } : undefined)
+          .then(async result => {
+            if (!result) return;
+            await Promise.all([NS.loadAssetTimeline(asset.id, true), NS.loadAdoptionReceipts(asset.id, true)]);
+            dialog.dialog.querySelector('.ui-modal__body').innerHTML = NS.renderLibraryDialog(kind, asset.id, selected, openedProofId);
+          }).catch(error => NS.alertUser(NS.recallErrorText(error)))
+          .finally(() => { proofRate.disabled = false; });
+        return;
+      }
       const episode = event.target.closest('[data-act="open-kstar-episode"]');
       if (episode) {
         event.stopPropagation(); dialog.close(null, 'navigate');
@@ -2646,6 +2679,13 @@
     const stateUnknown = Boolean(S.captureModelError) || !S.captureSettings;
     const nightlyOn = settings.enabled !== false;
     const discovery = NS.assetSettings.discoveryStatus(S.captureStats, S.captureStatsError);
+    const budget = !S.captureStatsError && S.captureStats?.budget;
+    const budgetNote = budget?.recorded ? T('cognition.settings_model_budget', '夜间窗口 {night}：模型调度 {calls}/{limit} 次，已报告 {tokens} token，{unknown} 次用量未知。每阶段最多 {stageLimit} 次；额度用完保留进度，次夜续接。费用未提供。', {
+      night: budget.windowKey, calls: String(budget.calls), limit: String(budget.limits.calls), tokens: String(budget.reportedTokens),
+      unknown: String(budget.unknownUsageCalls), stageLimit: String(budget.limits.stageCalls),
+    }) : budget ? T('cognition.settings_model_budget_unrecorded', '本版本尚无该夜间窗口的用量记录。每夜最多调度 {limit} 次、每阶段最多 {stageLimit} 次；额度用完保留进度，次夜续接。费用未提供。', {
+      limit: String(budget.limits.calls), stageLimit: String(budget.limits.stageCalls),
+    }) : '';
     const discoveryLabels = {
       unknown: T('cognition.settings_discovery_unknown', '状态暂时无法读取'),
       never: T('cognition.settings_discovery_never', '尚无运行记录'),
@@ -2674,6 +2714,7 @@
           <div class="tt">${esc(T('cognition.settings_discovery_title', '夜间发现'))}</div>
           <div class="sub">${esc(T('cognition.settings_discovery_hint', '在夜间检查前一完整日的新会话与新增消息，发现可复用的认知建议。'))}</div>
           <div class="note">${esc(T('cognition.settings_nightly_window', '{start}–{end} · 应用需运行 · 会消耗模型额度；仅夜间运行，不会白天补扫。', { start: settings.nightlyStart || '02:00', end: settings.nightlyEnd || '06:00' }))}</div>
+          ${budgetNote ? `<p class="note">${esc(budgetNote)}</p>` : ''}
         </div><div class="ca-policy-switch"><span class="note">${esc(stateUnknown ? T('cognition.settings_policy_unknown', '状态未知') : nightlyOn ? T('cognition.settings_discovery_allowed', '允许') : T('cognition.settings_status_off', '已暂停'))}</span>
           ${switchHtml(T('cognition.settings_discovery_switch', '允许夜间发现'), nightlyOn, 'nightly-toggle', stateUnknown)}
         </div></div>

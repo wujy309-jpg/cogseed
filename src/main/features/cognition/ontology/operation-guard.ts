@@ -8,11 +8,9 @@ import { isDeepStrictEqual } from 'node:util';
 import { safeId } from '../../../storage';
 import { readOntologyDocument } from './service';
 import { ontologyModuleVisibleToTask, queryOntologyRules, type OntologyTaskScopeContext } from './query';
-import { OntologyError, type OntologyCondition, type OntologyDocument } from './model';
-import { evaluateAssetRuntimeEligibility, type AssetRuntimeContext } from '../../recall/formal-assets/runtime';
-import { readAbilityAsset } from '../../recall/asset-service';
-import { readRecallJsonRecord } from '../../recall/store';
-import { isCognitionSourceEnabled } from '../../recall/source-control';
+import { OntologyError, type OntologyCondition, type OntologyDocument, type OntologyRule } from './model';
+import { assessOntologySources } from './source-admission';
+import type { AssetRuntimeContext } from '../../recall/formal-assets/runtime';
 
 export interface OntologyMarkdownWriteInput {
   operation: 'write_file' | 'edit_file'; path: string; content: string;
@@ -23,7 +21,7 @@ export interface OntologyOperationCheck {
   moduleId: string; recordId: string; version: number;
   status: 'satisfied' | 'blocked' | 'not_machine_checkable';
   reasonCode: 'required_section_present' | 'required_section_missing' | 'rule_condition_unknown'
-    | 'rule_exception_requires_review' | 'operation_target_unbound' | 'effect_not_bound' | 'advisory_rule';
+    | 'rule_exception_requires_review' | 'operation_target_unbound' | 'effect_not_bound' | 'advisory_rule' | 'operation_adapter_missing';
   /** Only the typed requirement needed to repair this action, never full private rule text. */
   sectionName?: string;
 }
@@ -31,12 +29,27 @@ export interface OntologyOperationDecision {
   allowed: boolean; revision: number; checks: OntologyOperationCheck[];
   code?: 'E_ONTOLOGY_OPERATION_PRECONDITION';
 }
-function positiveOperationTarget(condition: OntologyCondition | null, operation: OntologyMarkdownWriteInput['operation'], positive = true): boolean {
+function positiveOperationTarget(condition: OntologyCondition | null, operation: string, positive = true): boolean {
   if (!condition) return false;
   if (condition.kind === 'task') return positive && condition.field === 'taskKind' && (condition.equals === operation || operation === 'edit_file' && condition.equals === 'write_file');
   if (condition.kind === 'not') return positiveOperationTarget(condition.condition, operation, !positive);
   if (condition.kind === 'all' || condition.kind === 'any') return condition.conditions.some(child => positiveOperationTarget(child, operation, positive));
   return false;
+}
+function hasOperationCondition(condition: OntologyCondition | null): boolean {
+  if (!condition) return false;
+  if (condition.kind === 'task') return condition.field === 'taskKind';
+  if (condition.kind === 'not') return hasOperationCondition(condition.condition);
+  return (condition.kind === 'all' || condition.kind === 'any') && condition.conditions.some(hasOperationCondition);
+}
+function boundToOperation(rule: OntologyRule, operation: string): boolean {
+  if (positiveOperationTarget(rule.condition, operation)) return true;
+  // A typed required section is already a file-content constraint. An
+  // unconditional/purpose/fact-conditioned rule must not silently disappear
+  // merely because it omitted a redundant taskKind=write_file clause. Explicit
+  // (including negated) operation conditions keep their ordinary semantics.
+  return rule.effect.kind === 'required_section' && ['write_file', 'edit_file'].includes(operation)
+    && !hasOperationCondition(rule.condition);
 }
 const headingName = (value: string) => value.trim().normalize('NFC');
 
@@ -106,7 +119,7 @@ export function evaluateOntologyMarkdownWrite(doc: OntologyDocument, input: Onto
   for (const moduleId of visibleModuleIds) for (const { rule, match } of queryOntologyRules(view, { moduleId, task: { at, taskKind: input.operation } })) {
     if (match === 'not_matched' || checks.has(rule.id)) continue;
     const checked: OntologyOperationCheck = { moduleId: rule.moduleId, recordId: rule.id, version: rule.version, status: 'not_machine_checkable', reasonCode: 'operation_target_unbound' };
-    if (!positiveOperationTarget(rule.condition, input.operation)) { checks.set(rule.id, checked); continue; }
+    if (!boundToOperation(rule, input.operation)) { checks.set(rule.id, checked); continue; }
     if (rule.strength !== 'required') checked.reasonCode = 'advisory_rule';
     else if (rule.effect.kind !== 'required_section') checked.reasonCode = 'effect_not_bound';
     else {
@@ -129,34 +142,10 @@ export function evaluateOntologyMarkdownWrite(doc: OntologyDocument, input: Onto
 export async function checkOntologyMarkdownWrite(userId: string, input: OntologyMarkdownWriteInput): Promise<OntologyOperationDecision> {
   if (!safeId(userId)) throw new Error('invalid ontology operation owner');
   const doc = readOntologyDocument(userId), blockedSources = new Set<string>(), unavailableSources = new Set<string>();
-  const sourceAccess = new Map<string, 'allowed' | 'disabled' | 'unavailable'>();
-  for (const record of Object.values(doc.records)) {
-    const sourceIds = record.source.refs?.filter(ref => ref.kind === 'asset').map(ref => ref.id) || [];
-    if (!sourceIds.length && record.source.kind === 'candidate' && record.source.recordId) {
-      try {
-        const candidate = await readRecallJsonRecord(userId, 'candidates', record.source.recordId);
-        if (typeof candidate?.promotedAssetId === 'string') sourceIds.push(candidate.promotedAssetId);
-        else { blockedSources.add(record.id); continue; }
-      } catch { unavailableSources.add(record.id); continue; }
-    }
-    for (const sourceId of sourceIds) {
-      if (!sourceAccess.has(sourceId)) {
-        try {
-          // A known missing/withdrawn source excludes its content. A failed
-          // source read is unknown, not proof that required rules disappeared.
-          const raw = await readRecallJsonRecord(userId, 'ability-assets', sourceId);
-          if (!raw) { sourceAccess.set(sourceId, 'disabled'); blockedSources.add(record.id); continue; }
-          const asset = await readAbilityAsset(userId, sourceId);
-          let sourceAvailable = input.context?.sourceAvailable !== false;
-          for (const evidence of asset.evidenceRefs) {
-            if (evidence.taxonomyVersion === 2 && !(await isCognitionSourceEnabled(userId, evidence))) { sourceAvailable = false; break; }
-          }
-          sourceAccess.set(sourceId, evaluateAssetRuntimeEligibility(asset, { ...input.context, sourceAvailable, operation: 'inspect' }).accessAllowed ? 'allowed' : 'disabled');
-        } catch { sourceAccess.set(sourceId, 'unavailable'); }
-      }
-      if (sourceAccess.get(sourceId) === 'disabled') blockedSources.add(record.id);
-      if (sourceAccess.get(sourceId) === 'unavailable') unavailableSources.add(record.id);
-    }
+  const sourceAccess = await assessOntologySources(userId, doc, input.context);
+  for (const [id, status] of sourceAccess) {
+    if (status === 'disabled') blockedSources.add(id);
+    if (status === 'unavailable') unavailableSources.add(id);
   }
   // Source checks yield to storage. Never approve the old R snapshot if a rule,
   // condition fact, visibility or lifecycle changed while those reads awaited.
@@ -171,7 +160,7 @@ export async function checkOntologyMarkdownWrite(userId: string, input: Ontology
     for (const record of Object.values(doc.records)) {
       if (record.kind !== 'rule' || record.status !== 'active' || record.access !== 'task'
         || record.strength !== 'required' || record.effect.kind !== 'required_section'
-        || !positiveOperationTarget(record.condition, input.operation) || blockedSources.has(record.id)) continue;
+        || !boundToOperation(record, input.operation) || blockedSources.has(record.id)) continue;
       const module = doc.records[record.moduleId];
       if (!module || module.kind !== 'module' || module.status !== 'active' || blockedSources.has(module.id)
         || !ontologyModuleVisibleToTask(module, input.context)
@@ -187,4 +176,47 @@ export async function checkOntologyMarkdownWrite(userId: string, input: Ontology
   // Missing/unknown condition facts remain three-valued; a bound required R
   // then returns rule_condition_unknown rather than treating absence as false.
   return evaluateOntologyMarkdownWrite(filtered, input, at);
+}
+
+
+/** Bound required conditions cannot be bypassed by an opaque alternate tool.
+ * This never certifies an unknown effect and never parses arbitrary scripts. */
+export async function checkOntologyUnverifiedAction(userId: string, input: {
+  operationKinds: readonly string[]; context?: OntologyMarkdownWriteInput['context'];
+}): Promise<OntologyOperationDecision> {
+  if (!safeId(userId)) throw new Error('invalid ontology operation owner');
+  const doc = readOntologyDocument(userId);
+  const visible = new Set(Object.values(doc.records).filter(row => row.kind === 'module' && row.status === 'active'
+    && ontologyModuleVisibleToTask(row, input.context)).map(row => row.id));
+  const bound = Object.values(doc.records).filter(row => row.kind === 'rule' && row.status === 'active'
+    && row.access === 'task' && row.strength === 'required' && visible.has(row.moduleId)
+    && input.operationKinds.some(kind => boundToOperation(row, kind)));
+  if (!bound.length) return { allowed: true, revision: doc.revision, checks: [] };
+  const access = await assessOntologySources(userId, doc, input.context);
+  const records = Object.fromEntries(Object.entries(doc.records).filter(([id]) => access.get(id) === 'allowed'));
+  const checks: OntologyOperationCheck[] = [];
+  for (const record of bound) {
+    if (record.kind !== 'rule' || access.get(record.id) === 'disabled' || access.get(record.moduleId) === 'disabled') continue;
+    const module = doc.records[record.moduleId];
+    // Only the rule and visible module are retained for applicability probes;
+    // unavailable assertions remain unknown rather than invented as false.
+    const probe = { ...doc, records: { ...records, [module.id]: module, [record.id]: record } };
+    for (const kind of input.operationKinds) {
+      if (!boundToOperation(record, kind)) continue;
+      const result = queryOntologyRules(probe, { moduleId: record.moduleId, task: { at: localDay(), taskKind: kind } })
+        .find(row => row.rule.id === record.id);
+      if (!result || result.match === 'not_matched') continue;
+      if (access.get(record.id) !== 'allowed' || access.get(record.moduleId) !== 'allowed')
+        throw new OntologyError('source_unavailable', 'a bound required operation condition could not be checked');
+      checks.push({ moduleId: record.moduleId, recordId: record.id, version: record.version, status: 'blocked',
+        reasonCode: result.match === 'unknown' ? 'rule_condition_unknown' : record.exception.trim()
+          ? 'rule_exception_requires_review' : 'operation_adapter_missing' });
+      break;
+    }
+  }
+  const current = readOntologyDocument(userId);
+  if (current.revision !== doc.revision || !isDeepStrictEqual(current.records, doc.records))
+    throw new OntologyError('baseline_changed', 'ontology changed during operation preflight; retry against current rules');
+  return { allowed: checks.length === 0, revision: doc.revision, checks,
+    ...(checks.length ? { code: 'E_ONTOLOGY_OPERATION_PRECONDITION' as const } : {}) };
 }

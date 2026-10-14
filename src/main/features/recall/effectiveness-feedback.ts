@@ -1,6 +1,7 @@
 import {
   evaluateEffectivenessProof,
   listTransferProofs,
+  listEffectivenessProofs,
   recallProofError,
   type EffectivenessOutcome,
   type EffectivenessProofRecord,
@@ -8,6 +9,7 @@ import {
 import { readContextProjection } from './context-projection';
 import { recommendAbilityAssetAction } from './asset-service';
 import { createLogger } from '../../logger';
+import { updateRecallJsonRecord } from './store';
 
 const log = createLogger('recall.effectiveness-feedback');
 
@@ -18,6 +20,7 @@ export interface RecordEffectivenessFeedbackInput {
   feedback: RecallEffectivenessFeedback;
   note?: string;
   evidenceRefs?: unknown[];
+  baselineExecutionId?: string;
 }
 
 export interface RecordTaskEffectivenessFeedbackInput {
@@ -25,6 +28,7 @@ export interface RecordTaskEffectivenessFeedbackInput {
   feedback: RecallEffectivenessFeedback;
   note?: string;
   evidenceRefs?: unknown[];
+  baselineExecutionId?: string;
 }
 
 function outcomeFor(feedback: RecallEffectivenessFeedback): EffectivenessOutcome {
@@ -40,16 +44,58 @@ function observedResult(input: { feedback: RecallEffectivenessFeedback; note?: s
   return note || `User feedback: ${input.feedback}`;
 }
 
+async function queueEffectFeedbackForNight(userId: string, transferProofId: string, input: {
+  feedback: RecallEffectivenessFeedback; note?: string; observedAt: string;
+}): Promise<boolean> {
+  const transfer = (await listTransferProofs(userId)).find(record => record.id === transferProofId);
+  if (!transfer) return false;
+  const projection = await readContextProjection(userId, transfer.projectionId);
+  if (!projection.conversationId) return false;
+  const { getMessagesPage } = await import('../chats');
+  const messages = (await getMessagesPage(userId, projection.conversationId, 1_000)).history;
+  const message = [...messages].reverse().find(row => row.from !== 'user' && !row.deleted_at
+    && (row.turn_id === projection.taskRunId || row.turn_id === transfer.executionId));
+  if (!message) return false; // Never attach a task's feedback to an unrelated answer.
+  const { queueNightlyFeedback } = await import('./nightly-feedback');
+  for (const asset of transfer.assetVersions) await queueNightlyFeedback(userId, { conversationId: projection.conversationId,
+    messageId: message.id, assetId: asset.assetId, assetVersion: asset.version, taskRunId: projection.taskRunId,
+    feedback: input.feedback, observedAt: input.observedAt, ...(input.note ? { note: input.note } : {}) });
+  return true;
+}
+
+async function enqueueProofFeedback(userId: string, proof: EffectivenessProofRecord): Promise<void> {
+  if (!proof.nightlyFeedback || proof.nightlyFeedback.status !== 'pending') return;
+  try {
+    if (!await queueEffectFeedbackForNight(userId, proof.transferProofId, { ...proof.nightlyFeedback, observedAt: proof.createdAt })) return;
+    await updateRecallJsonRecord(userId, 'effectiveness-proofs', proof.id, current => ({ ...current!,
+      nightlyFeedback: { ...proof.nightlyFeedback!, status: 'queued' } }));
+    proof.nightlyFeedback.status = 'queued';
+  } catch {
+    log.warn('nightly feedback enqueue deferred', { proofId: proof.id });
+  }
+}
+
+/** Recovery is part of the existing nightly sweep, never a daytime producer. */
+export async function recoverNightlyEffectivenessFeedback(userId: string): Promise<void> {
+  const pending = (await listEffectivenessProofs(userId)).filter(proof => proof.nightlyFeedback?.status === 'pending').slice(0, 20);
+  for (const proof of pending) await enqueueProofFeedback(userId, proof);
+}
+
 function evaluateFeedbackProof(
   userId: string,
   transferProofId: string,
-  input: { feedback: RecallEffectivenessFeedback; note?: string; evidenceRefs?: unknown[] },
+  input: { feedback: RecallEffectivenessFeedback; note?: string; evidenceRefs?: unknown[]; baselineExecutionId?: string },
 ): Promise<EffectivenessProofRecord> {
   return evaluateEffectivenessProof(userId, {
     transferProofId,
     outcome: outcomeFor(input.feedback),
     observedResult: observedResult(input),
     evidenceRefs: input.evidenceRefs || [],
+    ...(input.baselineExecutionId ? { baselineExecutionId: input.baselineExecutionId } : {}),
+    nightlyFeedback: { feedback: input.feedback, ...(input.note ? { note: input.note } : {}) },
+  }).then(async proof => {
+    await enqueueProofFeedback(userId, proof);
+    return proof;
   });
 }
 

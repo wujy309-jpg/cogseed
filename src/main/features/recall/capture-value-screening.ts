@@ -114,9 +114,9 @@ const TRIVIAL_USER_PATTERNS = [
   /^(?:好|好的|可以|行|没问题|收到|明白|知道了|嗯|嗯嗯|确认|同意|ok|okay|sure|got it|fine|yes|no)[\s!！,.，。?？]*$/i,
   /^(?:现在)?(?:到哪(?:个)?阶段(?:了)?|进展(?:如何|怎么样)?|状态(?:如何|怎么样)?|做完了吗|完成了吗|好了吗|还有多久)[\s!！,.，。?？]*$/i,
   /^(?:where are we|what(?:'s| is) the status|status|progress|is it done|are we done|how long)[\s!！,.，。?？]*$/i,
+  /^(?:(?:好(?:的)?|收到|明白|嗯)[，,\s]*)?(?:继续|接着(?:做|说)?|continue|go on)[\s!！,.，。?？]*$/i,
 ];
 
-const NO_RESULT_PATTERN = /(?:无法(?:完成|生成|获取|访问|处理)|不能(?:完成|生成|获取|访问|处理)|未能(?:完成|生成|获取|访问|处理)|没有(?:完成|生成|找到|获取)|执行失败|处理失败|生成失败|出错了|需要更多信息|无法继续|\b(?:could not|couldn't|cannot|can't|unable to|failed to|need more information|not completed)\b)/i;
 
 const SIGNAL_PATTERNS: ReadonlyArray<readonly [RecallCaptureValueSignal, RegExp]> = [
   ['preference', /(?:偏好|习惯|倾向|希望以后|以后请|我喜欢|我希望|好み|希望|今後.+してほしい|\b(?:prefer|preference|from now on|i like|i want future|minha preferência|prefiro|gosto de|não gosto de)\b)/i],
@@ -520,12 +520,15 @@ export function screenRecallCaptureValue(
     return { eligible: true, signals };
   }
 
-  const lastAssistant = messages.filter(message => message.role === 'assistant').at(-1);
-  return {
-    eligible: false,
-    signals: [],
-    reason: lastAssistant && NO_RESULT_PATTERN.test(lastAssistant.text) ? 'no_result' : 'low_reuse_value',
-  };
+  // Local patterns may recognize explicit value; their absence is not evidence
+  // that a substantive user observation or decision has no future use. Admit
+  // the remaining declarative content to the existing summary/value stages,
+  // which must still establish original support and usefulness before extraction.
+  // Questions, one-off requests and failed attempts can contain reusable
+  // explanations, corrections or lessons. Only the subsequent complete-context
+  // value/grounding stages can decide that. Admission is never retention or
+  // permission to attribute an assistant's suggestion to the user.
+  return { eligible: true, signals: ['substantive_exchange'] };
 }
 
 /** 归类校验：候选自称的 suggestedType 是否真的成立（PRD 3.1 四类边界）。

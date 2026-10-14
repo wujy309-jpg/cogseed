@@ -27,7 +27,7 @@ export function isManagedCognitionCollection(collection: string): boolean {
 }
 const transitionContext = new AsyncLocalStorage<{ uid: string; active: boolean }>();
 type SourceDependency = { uid: string; collection: string; active: boolean;
-  edit: (doc: CognitionStoreDocument, record: Record<string, unknown>) => void };
+  edit: (doc: CognitionStoreDocument, record: Record<string, unknown>) => void | { records: Record<string, string[]> } };
 const sourceDependencyContext = new AsyncLocalStorage<SourceDependency>();
 /** A business dependency is applied inside the same fresh main-file draft as its source. */
 export async function withCognitionSourceDependency<T>(uid: string, collection: string,
@@ -139,7 +139,11 @@ async function commitSourceChange(uid: string, change: (c: CognitionCompatibilit
     const dependency = sourceDependencyContext.getStore();
     if (dependency?.active && dependency.uid === uid && dirty.records[dependency.collection]?.length && dependencyRecord) {
       if (doc.compatibility.mode !== 'unified') throw new Error('atomic cognition dependencies require unified storage');
-      dependency.edit(doc, dependencyRecord);
+      const additional = dependency.edit(doc, dependencyRecord);
+      if (additional) for (const [collection, ids] of Object.entries(additional.records)) {
+        if (!isManagedCognitionCollection(collection) || ids.some(id => !safeId(id))) throw new Error('invalid atomic dependency source');
+        dirty.records[collection] = [...new Set([...(dirty.records[collection] || []), ...ids])];
+      }
     }
     if (dependencyRecord && dirty.records['ability-assets']?.length) synchronizeOntologyRuleBodies(doc, dependencyRecord);
     // Joint ontology edits can add canonical references to the actual asset.

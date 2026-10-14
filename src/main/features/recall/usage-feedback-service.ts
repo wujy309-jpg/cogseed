@@ -81,6 +81,7 @@ export async function recordRecallMessageFeedback(
     throw new Error('Recall feedback asset is not cited by this message');
   }
 
+  const { queueNightlyFeedback } = await import('./nightly-feedback');
   const outcome = `feedback_${input.feedback}`;
   const taskRunId = typeof message.turn_id === 'string' && safeId(message.turn_id)
     ? message.turn_id
@@ -88,6 +89,8 @@ export async function recordRecallMessageFeedback(
   const existing = await listRecallUsage(userId);
   const records: RecallUsageRecord[] = [];
   for (const citation of targets) {
+    await queueNightlyFeedback(userId, { conversationId: input.cid, messageId: input.messageId, assetId: citation.asset_id,
+      assetVersion: citation.version, taskRunId, feedback: input.feedback });
     const duplicate = existing.some((record) => (
       record.messageId === message.id
       && record.assetId === citation.asset_id

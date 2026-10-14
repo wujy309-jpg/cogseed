@@ -632,6 +632,10 @@ function completedWorkStatusForOutcome(
   return "succeeded";
 }
 
+/** Host-owned deny-only gate, including builtins and dynamically added tools. */
+export type ToolExecutionPreflight = (toolName: string, input: Record<string, unknown>, ctx: ToolContext)
+  => Promise<ToolResult | undefined> | ToolResult | undefined;
+
 type ToolResultTransformer = (
   toolName: string,
   result: ToolResult,
@@ -664,6 +668,7 @@ export class AgentRunner {
   private readonly onCompact: ((summary: string) => void) | null;
   private readonly onLearnedSkillAdvertised: ((id: string) => void) | null;
   private readonly transformToolResult: ToolResultTransformer | null;
+  private readonly beforeToolExecute: ToolExecutionPreflight | null;
   private readonly toolContextState: Record<string, unknown>;
 
   constructor(opts: {
@@ -693,6 +698,8 @@ export class AgentRunner {
      * including builtins and late-added evolution tools. Hosts use this for
      * lossless oversized-result persistence and per-round inline budgeting. */
     transformToolResult?: ToolResultTransformer;
+    /** Deny a tool before its implementation can begin; never grants permissions. */
+    beforeToolExecute?: ToolExecutionPreflight;
     /** Host-owned, run-invariant capabilities exposed to tools through
      * ToolContext.state. Reserved per-step ledgers below override collisions. */
     toolContextState?: Record<string, unknown>;
@@ -704,6 +711,7 @@ export class AgentRunner {
     this.skillAllowlist = opts.skillAllowlist;
     this.onLearnedSkillAdvertised = opts.onLearnedSkillAdvertised ?? null;
     this.transformToolResult = opts.transformToolResult ?? null;
+    this.beforeToolExecute = opts.beforeToolExecute ?? null;
     this.toolContextState = { ...(opts.toolContextState ?? {}) };
 
     // Set up evolution / skill store
@@ -1505,6 +1513,7 @@ export class AgentRunner {
               state: toolState,
               toolIdleTimeoutMs: this.config.agent.toolIdleTimeoutMs,
               transformResult: this.transformToolResult,
+              beforeExecute: this.beforeToolExecute,
               emitEvent: pushToolEvent,
             });
             const sequentialToolStartedAt = Date.now();
@@ -1598,6 +1607,7 @@ export class AgentRunner {
               state: toolState,
               toolIdleTimeoutMs: this.config.agent.toolIdleTimeoutMs,
               transformResult: this.transformToolResult,
+              beforeExecute: this.beforeToolExecute,
               emitEvent: (event) => {
                 pQueue.push(event);
                 pBump();
@@ -2614,6 +2624,7 @@ export class AgentRunner {
               toolState,
               signal,
               this.config.agent.toolIdleTimeoutMs,
+              this.beforeToolExecute,
             );
             reflectSession.addToolResult(call.id, toolResult.content, toolResult.images, toolResult.isError);
             if (toolResult.isError) {
@@ -2695,6 +2706,7 @@ async function runToolWithWatchdog(opts: {
   state: ToolContext["state"];
   toolIdleTimeoutMs: number;
   transformResult?: ToolResultTransformer | null;
+  beforeExecute?: ToolExecutionPreflight | null;
   emitEvent: (event: ToolExecutionEvent) => void;
 }): Promise<ToolExecutionOutcome> {
   const startedAt = Date.now();
@@ -2784,7 +2796,12 @@ async function runToolWithWatchdog(opts: {
     | { ok: true; result: ToolResult }
     | { ok: false; err: unknown };
   const toolPromise: Promise<ToolCompletion> = Promise.resolve()
-    .then(() => tool.execute(call.input, toolCtx))
+    .then(async () => {
+      const denial = await opts.beforeExecute?.(call.name, call.input, toolCtx);
+      if (denial) return { ...denial, isError: true };
+      if (toolCtx.signal?.aborted) return { content: abortedToolMessage, isError: true };
+      return tool.execute(call.input, toolCtx);
+    })
     .then(
       (result) => ({ ok: true as const, result }),
       (err) => ({ ok: false as const, err }),
@@ -2895,10 +2912,12 @@ async function executeReflectionTool(
   state: ToolContext["state"],
   signal: AbortSignal | undefined,
   toolIdleTimeoutMs: number,
+  beforeExecute?: ToolExecutionPreflight | null,
 ): Promise<ToolResult> {
   const outcome = await runToolWithWatchdog({
     call: { type: "tool_use", id: "reflection", name: tool.name, input },
     tool,
+    beforeExecute,
     signal,
     state,
     toolIdleTimeoutMs,

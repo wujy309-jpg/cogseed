@@ -1,4 +1,7 @@
+import { queuedNightlyFeedback, feedbackObservation, admitNightlyFeedback, type NightlyFeedbackObservation } from './nightly-feedback';
+import { withCaptureModelBudget } from './capture-model-budget';
 import { isContentCategory, type CognitionContentCategory } from './content-category';
+import { parseFormationProposalEnvelope } from './formation-proposal';
 import { captureValueJudgmentInput, parseCaptureValueJudgment, type CaptureValueJudgment } from './capture-value-judgment';
 import { captureSummaryDecisionDigest } from './capture-provenance';
 import { CaptureGroundingUnavailableError, semanticallyGroundCaptureCandidate } from './capture-grounding';
@@ -6,7 +9,7 @@ import { assessRecallCaptureUncertainty, type CaptureUncertaintyAssessment } fro
 import { selectCaptureExistingAssets, type CaptureExistingAssetsResult } from './capture-existing-assets';
 import { readOntologyDocument } from '../cognition/ontology/service';
 import {
-  buildOntologyFormationContext, ontologyFormationPromptContract, parseOntologyFormationProposal, validateOntologyFormationScope,
+  buildOntologyFormationContext, buildSourceQualifiedOntologyFormationContext, ontologyFormationPromptContract, parseOntologyFormationProposal, validateOntologyFormationScope,
 } from './ontology-formation';
 import {
   summarizeCaptureContext, captureContextSourceDigest, validateCaptureContextSummary,
@@ -40,6 +43,7 @@ import type { GroupMessage } from '../group_chat/visibility';
 import { readAbilityAsset } from './asset-service';
 import {
   isAutoCaptureEligible,
+  confirmRecallOntologyCandidate,
   promoteRecallCandidate,
   readRecallAssetHandoffReceipt,
   readRecallCandidate,
@@ -48,6 +52,7 @@ import {
   type RecallAbilityAssetRecord,
   type RecallCandidateRecord,
   type RecallCandidateStatus,
+  type RecallOntologyCandidateConfirmation,
 } from './candidate-service';
 import { submitCognitionCandidate } from '../cognition/candidate-submission';
 import { recallJsonRecordPath } from './paths';
@@ -180,7 +185,12 @@ export interface RecallCaptureRecord extends RecallJsonRecord {
   contextSummary?: CaptureContextSummary;
   summaryCheckpoint?: CaptureContextCheckpoint;
   extractionCompletedAt?: string;
+  feedbackRevision?: string;
+  feedbackObservations?: NightlyFeedbackObservation[];
   reviewDay?: string;
+  /** Absolute admission boundaries survive timezone changes and later retries. */
+  reviewDayStart?: string;
+  reviewDayEnd?: string;
   lastAttemptReviewDay?: string;
   createdAt: string;
   updatedAt: string;
@@ -254,6 +264,8 @@ function isSilentCapture(capture: RecallCaptureRecord): boolean {
  *  链、证据 chips、pending 过滤所需的 capabilities），与 confirmedAssetReceipts
  *  同一先例：详情页展示数据随 workflow 记录下发，不依赖队列窗口。 */
 export interface RecallCaptureCandidateOutcome {
+  proposalTarget?: RecallCandidateRecord['proposalTarget'];
+  automaticUndo?: RecallCandidateRecord['automaticUndo'];
   id: string;
   status: RecallCandidateStatus;
   summary: string;
@@ -342,6 +354,7 @@ export interface RecallCapturePage {
 }
 
 export interface CapturePromptMessage {
+  observations?: NightlyFeedbackObservation[];
   label: string;
   id: string;
   ts: string;
@@ -352,6 +365,8 @@ export interface CapturePromptMessage {
 }
 
 interface ParsedCandidate {
+  proposalTarget?: 'cognition' | 'ontology' | 'joint';
+  formationProposalId?: string;
   judgment: string;
   value: string;
   valueProvided: boolean;
@@ -473,6 +488,9 @@ function asCapture(value: RecallJsonRecord): RecallCaptureRecord {
     || value.messageIds.some((id) => typeof id !== 'string')
     || (value.contextMessageIds !== undefined && (!Array.isArray(value.contextMessageIds)
       || value.contextMessageIds.some(id => typeof id !== 'string')))
+    || ((value.reviewDayStart !== undefined || value.reviewDayEnd !== undefined)
+      && (!isIsoTimestamp(value.reviewDayStart) || !isIsoTimestamp(value.reviewDayEnd)
+        || Date.parse(value.reviewDayStart) >= Date.parse(value.reviewDayEnd)))
     || !Number.isInteger(value.attempt)
     || Number(value.attempt) < 1
     || !Array.isArray(value.candidateIds)
@@ -679,6 +697,20 @@ export function parseRecallCaptureResult(raw: string, validLabels: Set<string>):
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new CaptureFailure('invalid_model_output', 'model output must be an object');
   }
+  if (Object.hasOwn(parsed, 'proposalVersion') || Object.hasOwn(parsed, 'proposals')) {
+    try {
+      const envelope = parseFormationProposalEnvelope(parsed, validLabels);
+      return { emittedCount: envelope.proposals.length,
+        candidates: envelope.proposals.map(proposal => {
+          const body = proposal.target === 'ontology'
+            ? { ...proposal.explanation, judgment: proposal.explanation.description, suggestedAction: 'create' }
+            : proposal.cognition;
+          const candidate = parseOneCandidate({ ...body,
+            ...(proposal.target !== 'cognition' ? { ontologyChanges: proposal.ontologyChanges } : {}) }, validLabels);
+          return { ...candidate, proposalTarget: proposal.target, formationProposalId: proposal.id };
+        }), ...(envelope.reason ? { noCandidateReason: envelope.reason } : {}) };
+    } catch { throw new CaptureFailure('invalid_model_output', 'invalid versioned formation proposal'); }
+  }
   // A sibling plan has no candidate owner. Neither singleton assignment nor
   // dropping it can establish a complete jointly reviewed proposal; the
   // existing bounded extraction repair must regenerate the full response.
@@ -799,7 +831,8 @@ function extractionSystemPrompt(): string {
     'Read the entire bounded run before deciding candidates; the first user message provides context only and must not dominate what you extract.',
     'The context summary preserves the whole daily conversation, including later corrections, conditions and unresolved questions. Use it together with the original messages or labeled source excerpts. Never restore a superseded claim. Only form conclusions supported by approvedEvidence; the other material provides context, not approval to extract unrelated topics.',
     'A useful understanding can concern the user, other people, a project, a concept, a relationship, a goal, or a judgment. A useful practice can include a method, ordered steps, a reusable structure, or evaluation criteria. Meaningful experience keeps the relevant situation, observed result, lesson and limits; it is not merely a usage count or a success claim. These are possible contents, not required sections for every item. Propose contentCategory only after reading the complete content; it is browsing metadata independent of storage type and does not decide value or eligibility.',
-    `Return independently useful conclusions under the top-level candidates array, up to ${MAX_MODEL_CANDIDATES}. Do not stop after the first three. When no durable candidate is supported, return an empty array and a short reason.`,
+    `Return {"proposalVersion":2,"proposals":[...]}, up to ${MAX_MODEL_CANDIDATES} independently decidable groups. Each group has a unique safe ASCII id and target "cognition", "ontology" or "joint". Do not stop after the first three. When nothing durable is supported, return an empty proposals array and a short reason.`,
+    'A cognition group contains cognition:{judgment,value,summary,contentCategory,suggestedScope,suggestedAction,risk,evidence,applicableWhen?,forbiddenWhen?,uncertainty?,targetAssetId?}. A joint group contains the same cognition object plus its own ontologyChanges. An ontology-only group contains explanation:{description,value,summary,suggestedScope,risk,evidence,applicableWhen?,forbiddenWhen?,uncertainty?} plus nonempty ontologyChanges.actions. explanation describes the actual supported change, its future use and limits; it is not cognition and will not become a cognition asset. Do not invent a reusable insight merely to retain a new object or fact. Omit absent optional properties. Each dependent change must be inside the same group; do not use cross-group dependencies.',
     'Every candidate must cite at least one approved user message label from newly discovered content. Greetings, status checks, repeated queries and the mere completion or failure of one operation are not candidates. A failed operation may still yield a supported, bounded lesson; preserve that lesson without inventing causes or successful verification.',
     'Do not invent a new person or project for each mention, equate people by shared names, infer authority from roles, or widen a project-specific requirement to every project. Preserve exact subjects, time, conditions and uncertainty. Do not claim to have created ontology records or executable skills; this stage only prepares reviewable content.',
     'When a statement contains relative time ("last week", "from next quarter"), anchor it against the message timestamp and write the resolved absolute date into judgment; never store a bare relative phrase.',
@@ -851,6 +884,7 @@ function extractionInput(
       discovery: message.discovery !== false,
       ts: message.ts,
       text: message.text,
+      ...(message.observations?.length ? { observations: message.observations } : {}),
       ...(message.artifacts.length
         ? { artifacts: message.artifacts.map(({ id, title }) => ({ id, title })) }
         : {}),
@@ -931,9 +965,9 @@ async function extractCaptureViaCli(
   signal?.addEventListener('abort', relayAbort, { once: true });
   if (signal?.aborted) controller.abort();
   try {
-    const result = await runCliAgent({ uid: userId, cid: capture.conversationId,
+    const result = await withCaptureModelBudget(userId, { jobId: capture.id, stage: 'extraction' }, prompt.length, () => runCliAgent({ uid: userId, cid: capture.conversationId,
       agentId: 'recall-capture-extractor', agentName: 'Capture Extractor', cli: chosen.type,
-      prompt, cwd: os.tmpdir(), signal: controller.signal, skipDispatchCheck: true, onEvent: () => {} });
+      prompt, cwd: os.tmpdir(), signal: controller.signal, skipDispatchCheck: true, onEvent: () => {} }));
     if (signal?.aborted) return null;
     if (result.status !== 'completed' || typeof result.output !== 'string' || !result.output.trim()) {
       log.warn('recall capture CLI extraction did not complete', {
@@ -952,23 +986,23 @@ async function runCaptureAnalysisModel(
 ): Promise<string> {
   const errorCode = stage === 'summary' ? 'summary_failed' : 'value_judgment_failed';
   const { modelCandidates } = await readRecallCaptureSettings(userId);
-  const systemPrompt = prompts.load(stage === 'summary' ? 'cognition_capture_summary' : 'cognition_capture_value');
+  const systemPrompt = prompts.load(stage === 'summary' ? 'cognition_capture_summary' : 'cognition_capture_value') + (capture.feedbackObservations?.length ? '\nobservations are authenticated user feedback about a specific prior task and exact asset version, not verbatim chat text or a new standing instruction. Preserve that attribution. Do not fabricate an evidence quote for metadata, infer a current-version defect from historical-version feedback, or generalize one click into a durable rule.' : '');
   if (!systemPrompt.trim()) throw new CaptureFailure(errorCode, 'analysis prompt unavailable');
   if (!modelCandidates.length && !hasConfiguredModel().configured && !process.env.ANTHROPIC_API_KEY) {
     const entries = (await detectAll()).filter(entry => entry?.available);
     const chosen = entries.find(entry => entry.type === 'claude') || entries[0];
     if (!chosen) throw new CaptureFailure('model_not_configured', 'no value judgment model available');
-    const result = await runCliAgent({ uid: userId, cid: capture.conversationId,
+    const result = await withCaptureModelBudget(userId, { jobId: capture.id, stage }, systemPrompt.length + message.length, () => runCliAgent({ uid: userId, cid: capture.conversationId,
       agentId: `recall-capture-${stage}`, agentName: stage === 'summary' ? 'Context Summary' : 'Value Screening', cli: chosen.type,
       prompt: `${systemPrompt}\n\n${message}`, cwd: os.tmpdir(), signal,
-      skipDispatchCheck: true, onEvent: () => {} });
+      skipDispatchCheck: true, onEvent: () => {} }));
     if (result.status !== 'completed' || !result.output?.trim()) {
       throw new CaptureFailure(errorCode, 'capture analysis did not complete');
     }
     return result.output;
   }
   const { result } = await runRecallCaptureModel(userId, { sessionId: `memory-${stage}-recall-${capture.id}`,
-    systemPrompt, modelCandidates, message, signal, shouldContinue: () => nightlyCaptureCanStart(userId) });
+    systemPrompt, modelCandidates, message, signal, shouldContinue: () => nightlyCaptureCanStart(userId), budget: { jobId: capture.id, stage } });
   if (result.meta.aborted || result.meta.error) {
     throw new CaptureFailure(result.meta.error?.kind === 'auth' ? 'model_auth_required' : errorCode,
       'capture analysis did not complete');
@@ -1269,6 +1303,8 @@ async function summarizeRecallCaptures(
         summary: candidate.summary,
         judgment: candidate.judgment,
         suggestedType: candidate.suggestedType,
+        ...(candidate.proposalTarget ? { proposalTarget: candidate.proposalTarget } : {}),
+        ...(candidate.automaticUndo ? { automaticUndo: candidate.automaticUndo } : {}),
         ...(candidate.contentCategory !== undefined ? { contentCategory: candidate.contentCategory } : {}),
         suggestedScope: candidate.suggestedScope,
         sourceRefs: candidate.sourceRefs,
@@ -1418,9 +1454,7 @@ export async function readRecallCaptureContext(
   try {
     let allMessages: GroupMessage[];
   if (capture.reviewDay) {
-    const start = new Date(`${capture.reviewDay}T00:00:00`);
-    const end = new Date(start);
-    end.setDate(end.getDate() + 1);
+    const { start, end } = captureReviewDayBounds(capture);
     allMessages = await readReviewDayMessages(userId, capture.conversationId, start, end);
   } else {
     allMessages = await chats.getMessages(userId, capture.conversationId, 2_000);
@@ -1676,8 +1710,7 @@ async function loadStoredPromptMessages(
   userId: string,
   capture: RecallCaptureRecord,
 ): Promise<CapturePromptMessage[]> {
-  const start = new Date(`${capture.reviewDay}T00:00:00`);
-  const end = new Date(start); end.setDate(end.getDate() + 1);
+  const { start, end } = captureReviewDayBounds(capture);
   const allMessages = await readReviewDayMessages(userId, capture.conversationId, start, end, true);
   const byId = new Map(allMessages.filter(isRecallConversationMessage).map((message) => [message.id, message]));
   const wanted = new Set([...(capture.contextMessageIds || []), ...capture.messageIds]);
@@ -1688,6 +1721,7 @@ async function loadStoredPromptMessages(
   return selectCaptureMessages(selected, 0, Number.MAX_SAFE_INTEGER).map((message) => ({
     ...message,
     discovery: capture.messageIds.includes(message.id),
+    ...(capture.feedbackObservations?.some(item => item.messageId === message.id) ? { observations: capture.feedbackObservations.filter(item => item.messageId === message.id) } : {}),
     artifacts: message.artifacts.map((artifact) => ({
       ...artifact,
       conversationId: artifact.conversationId || capture.conversationId,
@@ -1728,7 +1762,7 @@ async function screenQueuedRecallCapture(
   const screenedAt = new Date().toISOString();
   const screened = await updateCapture(userId, id, (current) => current.status !== 'queued'
     ? current
-    : screening.eligible
+    : screening.eligible || current.feedbackRevision
       ? {
           ...current,
           screeningStatus: 'qualified',
@@ -1813,8 +1847,8 @@ export async function runRecallCapture(
         stage: 'model_check' as const,
         errorCode: undefined,
         startedAt,
-        autoApprovalEpoch: captureAutoApprovalAuthorization(executionSettings).autoApprovalEpoch,
-        autoApprovalEnabledAt: captureAutoApprovalAuthorization(executionSettings).autoApprovalEnabledAt,
+        autoApprovalEpoch: current.feedbackRevision ? undefined : captureAutoApprovalAuthorization(executionSettings).autoApprovalEpoch,
+        autoApprovalEnabledAt: current.feedbackRevision ? undefined : captureAutoApprovalAuthorization(executionSettings).autoApprovalEnabledAt,
         finishedAt: undefined,
         durationMs: undefined,
         modelUsage: undefined,
@@ -1872,7 +1906,7 @@ export async function runRecallCapture(
         catch { checkpoint = undefined; }
       }
       capture = await updateCapture(userId, id, current => current.status !== 'extracting' ? current : {
-        ...current, contextSummary: undefined, valueJudgment: undefined,
+        ...current, contextSummary: undefined, valueJudgment: undefined, extractionCompletedAt: undefined,
         summaryCheckpoint: checkpoint, updatedAt: new Date().toISOString(),
       });
       if (capture.status !== 'extracting') return capture;
@@ -1921,7 +1955,7 @@ export async function runRecallCapture(
       }
       if (signal?.aborted) return settleInterruptedCapture(userId, id);
       capture = await updateCapture(userId, id, current => current.status !== 'extracting' ? current : {
-        ...current, valueJudgment: judgment, updatedAt: judgment.judgedAt,
+        ...current, valueJudgment: judgment, extractionCompletedAt: undefined, updatedAt: judgment.judgedAt,
         ...(!judgment.eligible ? { status: 'no_candidate' as const, visibility: 'internal' as const,
           screeningStatus: 'filtered' as const, filterReason: 'low_reuse_value' as const,
           noCandidateReason: judgment.reason, finishedAt: judgment.judgedAt, stage: undefined } : {}),
@@ -2031,11 +2065,17 @@ export async function runRecallCapture(
       },
     });
     const ontologyDocument = readOntologyDocument(userId);
-    const ontologyContext = buildOntologyFormationContext(userId, ontologyDocument);
+    const ontologyContext = await buildSourceQualifiedOntologyFormationContext(userId, ontologyDocument, {
+      scopeBound: true,
+      queryText: [capture.contextSummary?.topics.map(topic => `${topic.title}\n${topic.content}`).join('\n'),
+        capture.valueJudgment?.evidence.map(item => item.quote).join('\n')].filter(Boolean).join('\n'),
+      ...(conversation.project_id ? { projectId: conversation.project_id } : {}),
+      ...(conversation.space_id ? { workspaceId: conversation.space_id } : {}),
+    });
     let extractionText: string;
     let extractionModelUsage: RecallCaptureModelUsage | undefined;
     const usesCli = !modelCandidates.length && !hasConfiguredModel().configured && !process.env.ANTHROPIC_API_KEY;
-    const schemaRepairInstruction = 'The previous extraction was not a complete parseable proposal. Re-read the same approved source and return one strict JSON object with a candidates array. Every candidate needs judgment, value, summary, contentCategory, suggestedScope, suggestedAction, risk and nonempty supplied evidence labels. Each justified ontologyChanges plan MUST be nested INSIDE the candidate it belongs to, NEVER beside the candidates array at the top level. A plan without a candidate owner grants no body, identity, date or reference; regenerate each complete source-supported candidate and its own plan rather than borrowing an unowned plan. Include supported conditions and exceptions. Do not guess a missing scope, identity, fact or source, and do not claim anything has been saved. If the source cannot support a complete proposal, return an empty candidates array and a short reason.';
+    const schemaRepairInstruction = 'The previous extraction was not a complete parseable proposal. Re-read the same approved source and return the explicit proposalVersion:2 envelope described above. Each group owns its complete cognition or ontology explanation and its evidence. ontologyChanges belongs only inside its owning ontology or joint proposal. Never borrow an unowned top-level plan or invent cognition for ontology-only changes. Include supported conditions and exceptions. Do not guess a missing scope, identity, fact or source, and do not claim anything has been saved. If the source cannot support a complete proposal, return an empty proposals array and a short reason.';
     const requestExtraction = async (repair = false): Promise<{ text: string; usage?: RecallCaptureModelUsage }> => {
       if (usesCli) {
         try {
@@ -2050,6 +2090,7 @@ export async function runRecallCapture(
       } else {
         const { result, chosen } = await runRecallCaptureModel(userId, {
           sessionId: `memory-extract-${repair ? 'repair' : 'recall'}-${capture.id}`,
+          budget: { jobId: capture.id, stage: 'extraction' },
           systemPrompt: extractionSystemPrompt() + (repair ? `\n\n${schemaRepairInstruction}` : ''), modelCandidates,
           message: extractionInput(conversation.title, promptMessages, recallView, extractionAssets,
             capture.contextSummary, capture.valueJudgment?.evidence, ontologyContext, {
@@ -2115,7 +2156,11 @@ export async function runRecallCapture(
     }
     if (!parseResult) throw initialParseError;
     const parsed = parseResult.candidates;
-    const extractionCompletedAt = new Date().toISOString();
+    // Replaying candidate persistence must retain the proof already attached to
+    // a saved group. A rebuilt summary/value decision clears this checkpoint.
+    const extractionCompletedAt = capture.extractionCompletedAt || new Date().toISOString();
+    const extractionIdentity = createHash('sha256').update(JSON.stringify({ sourceDigest,
+      summaryDigest: judgmentSummaryDigest, judgedAt: capture.valueJudgment!.judgedAt })).digest('hex').slice(0, 20);
     capture = await updateCapture(userId, id, current => current.status !== 'extracting' ? current : {
       ...current, extractionCompletedAt, updatedAt: extractionCompletedAt,
     });
@@ -2155,6 +2200,7 @@ export async function runRecallCapture(
         && assessRecallCandidateClassification(candidate).ok) {
         const assessment = await assessRecallCaptureUncertainty(userId, {
           sessionId: `memory-uncertainty-recall-${capture.id}-${index}`, candidate,
+          budget: { jobId: capture.id, stage: 'uncertainty' },
           sources: evidenceMessages.filter(message => message.role === 'user').map(message => ({ label: message.label,
             text: message.text, approvedQuotes: judgedEvidence.filter(ref => ref.messageId === message.id).map(ref => ref.quote) })),
           contextMessages: promptMessages.map(message => ({ label: message.label, id: message.id,
@@ -2205,6 +2251,7 @@ export async function runRecallCapture(
         try {
           grounded = await semanticallyGroundCaptureCandidate(userId, {
             sessionId: `memory-grounding-recall-${capture.id}-${index}`, candidate,
+            budget: { jobId: capture.id, stage: 'grounding' },
             sources: evidenceMessages.filter(message => message.role === 'user').map(message => ({ label: message.label,
               text: message.text, approvedQuotes: judgedEvidence.filter(ref => ref.messageId === message.id).map(ref => ref.quote) })),
             summary: capture.contextSummary?.topics,
@@ -2245,7 +2292,7 @@ export async function runRecallCapture(
       let ontologyFormation: ReturnType<typeof parseOntologyFormationProposal>;
       try {
         ontologyFormation = parseOntologyFormationProposal(ontologyDocument, `proposal-${capture.id}-${index}`,
-          candidate.ontologyChanges, candidate.judgment, extractionCompletedAt);
+          candidate.ontologyChanges, candidate.judgment, extractionCompletedAt, candidate.proposalTarget === 'ontology' ? 'ontology' : 'cognition');
         ontologyFormation = validateOntologyFormationScope(userId, ontologyDocument, ontologyFormation,
           Object.keys(sourceScopePolicy).length ? sourceScopePolicy : undefined);
       } catch (error) {
@@ -2262,12 +2309,17 @@ export async function runRecallCapture(
           ontologyFormation.blockedReasons.push('ontology_evidence_unapproved');
         }
         if (ontologyContext.truncated) ontologyFormation.blockedReasons.push('ontology_comparison_incomplete');
+        const comparedIds = new Set(ontologyContext.records.map(record => record.id));
+        if (ontologyFormation.actions.some(action => action.intent !== 'create' && !comparedIds.has(action.recordId)))
+          ontologyFormation.blockedReasons.push('ontology_target_not_compared');
       }
+      if (candidate.proposalTarget === 'ontology' && !ontologyFormation?.actions.length && !ontologyFormation?.blockedReasons.length) continue;
       try {
         const storedCandidate = await submitCognitionCandidate(userId, {
           judgment: candidate.judgment,
           value: candidate.value,
           summary: candidate.summary,
+          ...(candidate.proposalTarget ? { proposalTarget: candidate.proposalTarget, formationProposalId: candidate.formationProposalId } : {}),
           ...(ontologyFormation ? { ontologyFormation } : {}),
           ...(candidate.uncertainty ? { uncertainty: candidate.uncertainty } : {}),
           suggestedType: candidate.suggestedType,
@@ -2281,7 +2333,7 @@ export async function runRecallCapture(
           ...(candidate.applicableWhen ? { applicableWhen: candidate.applicableWhen } : {}),
           ...(candidate.forbiddenWhen ? { forbiddenWhen: candidate.forbiddenWhen } : {}),
           forceWeakObservation: !quality.reviewable || !classification.ok,
-          captureKey: `capture-${capture.id}-${index}`,
+          captureKey: `capture-${capture.id}-${extractionIdentity}-${candidate.formationProposalId ? `v2-${candidate.formationProposalId}` : `legacy-${index}`}`,
           ...(captureSpaceId ? { spaceId: captureSpaceId } : {}),
           taskRunId: capture.terminalRunId,
           captureProvenance: { pipeline: 'nightly_conversation', captureId: capture.id, messageIds: capture.messageIds,
@@ -2475,18 +2527,25 @@ export async function promoteRecallCaptureCandidate(
   userId: string,
   candidateId: string,
   options: { riskAcknowledged?: boolean; profileTarget?: PersonalProfileTarget; forceCreateSimilar?: boolean; confirmBaselineVersion?: string } = {},
-): Promise<RecallCaptureCandidatePromotion> {
+): Promise<RecallCaptureCandidatePromotion | RecallOntologyCandidateConfirmation> {
   if (!safeId(candidateId)) throw new Error('invalid recall candidate id');
   const similarRetry = options.forceCreateSimilar === true ? { forceCreateSimilar: true } : {};
   // 版本冲突后的显式重锚（specs/015 US-702，`contracts/ipc.md` §二）：本层只是
   // 把调用方声明的基线转发下去，不做任何版本判定——判定在
   // `updateAbilityAsset` 的锁内（唯一一处）。
   const rebase = options.confirmBaselineVersion ? { confirmBaselineVersion: options.confirmBaselineVersion } : {};
+  const confirm = async () => {
+    const candidate = await readRecallCandidate(userId, candidateId);
+    return candidate.proposalTarget === 'ontology'
+      ? confirmRecallOntologyCandidate(userId, candidateId, { riskAcknowledged: options.riskAcknowledged })
+      : promoteRecallCandidate(userId, candidateId, { actor: 'user', riskAcknowledged: options.riskAcknowledged,
+        ...similarRetry, ...rebase, ...(options.profileTarget ? { profileTarget: options.profileTarget } : {}) });
+  };
   const capture = (await listAllRecallCaptures(userId)).find((item) => item.candidateIds.includes(candidateId));
   if (!capture) {
     // Only committed-asset recovery can succeed without a live formation record.
     // The canonical promotion gate rejects any first publication of old input.
-    const promoted = await promoteRecallCandidate(userId, candidateId, { actor: 'user', riskAcknowledged: options.riskAcknowledged, ...similarRetry, ...rebase, ...(options.profileTarget ? { profileTarget: options.profileTarget } : {}) });
+    const promoted = await confirm();
     return promoted;
   }
 
@@ -2507,7 +2566,7 @@ export async function promoteRecallCaptureCandidate(
   });
 
   try {
-    const promoted = await promoteRecallCandidate(userId, candidateId, { actor: 'user', riskAcknowledged: options.riskAcknowledged, ...similarRetry, ...rebase, ...(options.profileTarget ? { profileTarget: options.profileTarget } : {}) });
+    const promoted = await confirm();
     await updateCapture(userId, capture.id, (current) => (
       current.status === 'writing' && current.writingCandidateId === candidateId
         ? {
@@ -2637,9 +2696,21 @@ export interface RecallNightlySweepRecord extends RecallJsonRecord {
   id: typeof NIGHTLY_SWEEP_ID;
   baselineAt: string;
   cursors: Record<string, RecallNightlySweepCursor>;
+  pendingRanges?: Record<string, RecallNightlyPendingRange>;
+  reviewWindow?: Omit<RecallNightlyPendingRange, 'conversationId'>;
   lastRunAt?: string;
   lastResult?: RecallNightlySweepResult;
   consecutiveErrors?: number;
+}
+
+export interface RecallNightlyPendingRange {
+  conversationId: string;
+  feedbackRevision?: string;
+  feedbackObservations?: NightlyFeedbackObservation[];
+  reviewDay: string;
+  start: string;
+  end: string;
+  ranForWindow: string;
 }
 
 export type RecallNightlySweepRun = RecallNightlySweepResult & { ran: true } | { ran: false; reason: string };
@@ -2663,12 +2734,33 @@ function asSweepRecord(value: RecallJsonRecord): RecallNightlySweepRecord {
   if (raw.cursors && typeof raw.cursors === 'object') {
     for (const [cid, cursor] of Object.entries(raw.cursors)) cursors[cid] = asSweepCursor(cursor);
   }
+  const pendingRanges: Record<string, RecallNightlyPendingRange> = {};
+  if (raw.pendingRanges !== undefined) {
+    if (!raw.pendingRanges || typeof raw.pendingRanges !== 'object' || Array.isArray(raw.pendingRanges)) {
+      throw new Error('malformed nightly pending ranges');
+    }
+    for (const [key, range] of Object.entries(raw.pendingRanges)) {
+      if (!range || !safeId(range.conversationId) || !/^\d{4}-\d{2}-\d{2}$/.test(range.reviewDay)
+        || key !== `${range.reviewDay}:${range.conversationId}${range.feedbackRevision ? `:feedback-${range.feedbackRevision}` : ''}`
+        || range.feedbackRevision && !/^[a-f0-9]{64}$/.test(range.feedbackRevision)
+        || !isIsoTimestamp(range.start) || !isIsoTimestamp(range.end) || !isIsoTimestamp(range.ranForWindow)
+        || Date.parse(range.start) >= Date.parse(range.end)) throw new Error('malformed nightly pending range');
+      pendingRanges[key] = range;
+    }
+  }
+  if (raw.reviewWindow && (!/^\d{4}-\d{2}-\d{2}$/.test(raw.reviewWindow.reviewDay)
+    || !isIsoTimestamp(raw.reviewWindow.start) || !isIsoTimestamp(raw.reviewWindow.end)
+    || !isIsoTimestamp(raw.reviewWindow.ranForWindow)
+    || Date.parse(raw.reviewWindow.start) >= Date.parse(raw.reviewWindow.end))) {
+    throw new Error('malformed nightly review window');
+  }
   return {
     ...value,
     id: NIGHTLY_SWEEP_ID,
     baselineAt: typeof raw.baselineAt === 'string' && isIsoTimestamp(raw.baselineAt)
       ? raw.baselineAt : new Date().toISOString(),
     cursors,
+    pendingRanges,
     ...(raw.lastRunAt ? { lastRunAt: raw.lastRunAt } : {}),
     ...(raw.lastResult ? { lastResult: raw.lastResult } : {}),
     ...(typeof raw.consecutiveErrors === 'number' ? { consecutiveErrors: raw.consecutiveErrors } : {}),
@@ -2724,6 +2816,17 @@ export function nightlyReviewDay(ranForWindow: string): { key: string; start: Da
   return { key, start, end };
 }
 
+function captureReviewDayBounds(capture: RecallCaptureRecord): { start: Date; end: Date } {
+  if (capture.reviewDayStart && capture.reviewDayEnd) {
+    return { start: new Date(capture.reviewDayStart), end: new Date(capture.reviewDayEnd) };
+  }
+  // Read compatibility for ranges admitted before absolute boundaries existed.
+  const start = new Date(`${capture.reviewDay}T00:00:00`);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  return { start, end };
+}
+
 /** Read the complete day and, when requested, the preceding user turn needed
  * to understand a cross-midnight continuation. Older context is never new work. */
 async function readReviewDayMessages(userId: string, cid: string, start: Date, end: Date, includeContext = false): Promise<GroupMessage[]> {
@@ -2760,12 +2863,13 @@ export function readRecallNightlySweepRuntime(userId: string) {
 }
 
 export async function runNightlyCaptureSweep(
-  userId: string, ranForWindow: string, settings: RecallCaptureSettingsRecord,
+  userId: string, ranForWindow: string, settings: RecallCaptureSettingsRecord, signal?: AbortSignal,
 ): Promise<RecallNightlySweepRun> {
+  if (signal?.aborted) return { ran: false, reason: 'cancelled' };
   if (!settings.enabled || settings.executionPolicy !== 'nightly') return { ran: false, reason: 'disabled' };
   if (!isWithinNightlyWindow(new Date(), settings.nightlyStart, settings.nightlyEnd)) return { ran: false, reason: 'outside_nightly_window' };
   if (nightlySweepsInFlight.has(userId)) return { ran: false, reason: 'sweep_in_flight' };
-  const day = nightlyReviewDay(ranForWindow);
+  let day = nightlyReviewDay(ranForWindow);
   nightlySweepsInFlight.add(userId);
   const startedAt = new Date().toISOString();
   nightlySweepStartedAt.set(userId, startedAt);
@@ -2776,9 +2880,14 @@ export async function runNightlyCaptureSweep(
   const currentDayCursors = (values: Record<string, RecallNightlySweepCursor>) => Object.fromEntries(
     Object.entries(values).filter(([key]) => /^\d{4}-\d{2}-\d{2}:/.test(key) && key.slice(0, 10) >= day.key));
   let cursors: Record<string, RecallNightlySweepCursor> = {};
+  let pendingRanges: Record<string, RecallNightlyPendingRange> = {};
+  let admissionLoaded = false;
+  const canContinue = async () => !signal?.aborted && captureSchedulingEnabled && await nightlyCaptureCanStart(userId);
   const persist = async (result?: RecallNightlySweepResult) => updateRecallJsonRecord(userId, SWEEP_COLLECTION, NIGHTLY_SWEEP_ID, current => ({
     ...(current || { schemaVersion: 1, ownerId: userId, id: NIGHTLY_SWEEP_ID, baselineAt: day.start.toISOString() }),
     cursors: { ...currentDayCursors((current as RecallNightlySweepRecord | undefined)?.cursors || {}), ...cursors },
+    ...(admissionLoaded ? { pendingRanges: { ...pendingRanges } } : {}),
+    ...(admissionLoaded ? { reviewWindow: { reviewDay: day.key, start: day.start.toISOString(), end: day.end.toISOString(), ranForWindow } } : {}),
     ...(result ? { lastRunAt: result.finishedAt, lastResult: result,
       consecutiveErrors: result.error ? Number(current?.consecutiveErrors || 0) + 1 : 0 } : {}),
   } as RecallJsonRecord));
@@ -2786,14 +2895,41 @@ export async function runNightlyCaptureSweep(
     const [conversations, captures, sweep] = await Promise.all([
       chats.listConversations(userId), listAllRecallCaptures(userId), readNightlySweepRecord(userId),
     ]);
+    if (sweep?.reviewWindow?.ranForWindow === ranForWindow) {
+      day = { key: sweep.reviewWindow.reviewDay, start: new Date(sweep.reviewWindow.start), end: new Date(sweep.reviewWindow.end) };
+    }
     cursors = currentDayCursors(sweep?.cursors || {});
+    pendingRanges = { ...sweep?.pendingRanges };
+    admissionLoaded = true;
+    if (!await canContinue()) return { ran: false, reason: 'cancelled' };
+    await (await import('./effectiveness-feedback')).recoverNightlyEffectivenessFeedback(userId)
+      .catch(() => log.warn('nightly effectiveness feedback recovery deferred'));
+    if (!await canContinue()) return { ran: false, reason: 'cancelled' };
+    for (const event of (await queuedNightlyFeedback(userId)).slice(0, 20)) {
+      if (!await canContinue()) break;
+      try {
+        const messages = (await chats.getMessagesPage(userId, event.conversationId, 1_000)).history;
+        const original = messages.find(message => message.id === event.messageId && !message.deleted_at);
+        if (!original || !Number.isFinite(Date.parse(original.ts))) continue;
+        const originalDate = new Date(original.ts), start = new Date(originalDate.getFullYear(), originalDate.getMonth(), originalDate.getDate());
+        const end = new Date(start); end.setDate(end.getDate() + 1);
+        const reviewDay = nightlyReviewDay(end.toISOString()).key;
+        const observation = feedbackObservation(event);
+        const revision = createHash('sha256').update(JSON.stringify(observation)).digest('hex');
+        const key = `${reviewDay}:${event.conversationId}:feedback-${revision}`;
+        pendingRanges[key] ||= { conversationId: event.conversationId, reviewDay, start: start.toISOString(), end: end.toISOString(),
+          ranForWindow, feedbackRevision: revision, feedbackObservations: [observation] };
+      } catch { /* A transient source failure preserves the queued feedback. */ }
+    }
     // Previously admitted ranges deferred by shutdown/window closure resume
     // only inside this night; no old conversation day is scanned again.
     for (const capture of captures.filter(item => item.reviewDay && item.executionPolicy === 'nightly' && item.status === 'queued')) {
+      if (!await canContinue()) break;
       await scheduleKnownRecallCapture(userId, capture);
     }
     // Retry diagnostics only for this day; no automatic historical catch-up.
     for (const capture of captures.filter(item => item.reviewDay && item.executionPolicy === 'nightly')) {
+      if (!await canContinue()) break;
       if (!['failed', 'configuration_required'].includes(capture.status) || capture.attempt >= NIGHTLY_AUTO_RETRY_ATTEMPT_LIMIT) continue;
       // Retry a persisted range on a subsequent night; never spend all attempts
       // during the same unavailable/configuration-failed window.
@@ -2804,13 +2940,25 @@ export async function runNightlyCaptureSweep(
       await scheduleKnownRecallCapture(userId, retried);
       counters.retried += 1;
     }
+    if (!await canContinue()) return { ran: false, reason: 'cancelled' };
     for (const conversation of conversations) {
-      const cid = conversation.conversation_id;
       if (timestampMs(String(conversation.updated_at)) < day.start.getTime()) continue;
+      const cid = conversation.conversation_id;
+      const key = `${day.key}:${cid}`;
+      pendingRanges[key] ||= { conversationId: cid, reviewDay: day.key,
+        start: day.start.toISOString(), end: day.end.toISOString(), ranForWindow };
+    }
+    // Admission is durable before quiescence/source reads; even an unreadable
+    // conversation can resume its exact range after this window or a restart.
+    await persist();
+    for (const [cursorKey, pending] of Object.entries(pendingRanges)) {
+      if (!await canContinue()) break;
+      const cid = pending.conversationId;
+      const rangeDay = { key: pending.reviewDay, start: new Date(pending.start), end: new Date(pending.end) };
       counters.scanned += 1;
-      const cursorKey = `${day.key}:${cid}`;
       const sourceControl = await readCognitionSourceControl(userId, { kind: 'conversation', id: cid });
       if (sourceControl && sourceControl.availability !== 'active') {
+        delete pendingRanges[cursorKey];
         cursors[cursorKey] = { state: 'ignored', updatedAt: startedAt }; await persist(); counters.skipped += 1; continue;
       }
       if (!isQuiescent(userId, cid)) {
@@ -2818,22 +2966,41 @@ export async function runNightlyCaptureSweep(
         await persist(); counters.deferred += 1; continue;
       }
       let dayMessages: GroupMessage[];
-      try { dayMessages = await readReviewDayMessages(userId, cid, day.start, day.end, true); }
+      let conversation;
+      try {
+        conversation = await chats.getConversation(userId, cid);
+        if (!conversation) {
+          delete pendingRanges[cursorKey];
+          cursors[cursorKey] = { state: 'ignored', errorCode: 'source_removed', updatedAt: startedAt };
+          await persist(); counters.skipped += 1; continue;
+        }
+        dayMessages = await readReviewDayMessages(userId, cid, rangeDay.start, rangeDay.end, true);
+      }
       catch {
         cursors[cursorKey] = { ...(cursors[cursorKey] || {}), state: 'deferred', errorCode: 'source_unavailable', updatedAt: startedAt };
         await persist(); counters.deferred += 1; continue;
       }
-      const contextMessages = dayMessages.filter(message => timestampMs(message.ts) < day.start.getTime());
-      dayMessages = dayMessages.filter(message => timestampMs(message.ts) >= day.start.getTime());
+      const contextMessages = dayMessages.filter(message => timestampMs(message.ts) < rangeDay.start.getTime());
+      dayMessages = dayMessages.filter(message => timestampMs(message.ts) >= rangeDay.start.getTime());
       const covered = new Set(captures.filter(capture => capture.conversationId === cid
-        && capture.executionPolicy === 'nightly' && capture.reviewDay === day.key).flatMap(capture => capture.messageIds));
+        && capture.executionPolicy === 'nightly' && capture.reviewDay === rangeDay.key
+        && (!pending.feedbackRevision || capture.feedbackRevision === pending.feedbackRevision)).flatMap(capture => capture.messageIds));
       const cursor = cursors[cursorKey];
       if (cursor?.throughMessageId) {
         const through = dayMessages.findIndex(message => message.id === cursor.throughMessageId);
         if (through >= 0) dayMessages.slice(0, through + 1).forEach(message => covered.add(message.id));
       }
       const fresh = dayMessages.filter(message => !covered.has(message.id));
-      if (!fresh.length) { counters.skipped += 1; continue; }
+      if (!fresh.length) {
+        const existing = pending.feedbackRevision && captures.find(item => item.feedbackRevision === pending.feedbackRevision && item.conversationId === cid);
+        if (existing) for (const observation of pending.feedbackObservations || []) await admitNightlyFeedback(userId, observation, existing.id);
+        delete pendingRanges[cursorKey]; await persist(); counters.skipped += 1; continue;
+      }
+      if (!await canContinue()) break;
+      const currentSourceControl = await readCognitionSourceControl(userId, { kind: 'conversation', id: cid });
+      if (currentSourceControl && currentSourceControl.availability !== 'active') {
+        delete pendingRanges[cursorKey]; await persist(); counters.skipped += 1; continue;
+      }
       // One frozen daily range keeps later corrections with earlier statements.
       // Model budgets are enforced by the complete-source summary chunker.
       {
@@ -2845,22 +3012,26 @@ export async function runNightlyCaptureSweep(
         const now = new Date().toISOString();
         const record: RecallCaptureRecord = {
           schemaVersion: 1, taxonomyVersion: 2, ownerId: userId,
-          id: `capture-${createHash('sha256').update(JSON.stringify([cid, range.map(message => message.id)])).digest('hex').slice(0, 32)}`,
+          id: `capture-${createHash('sha256').update(JSON.stringify([cid, range.map(message => message.id), ...(pending.feedbackRevision ? [pending.feedbackRevision] : [])])).digest('hex').slice(0, 32)}`,
           conversationId: cid, ...(conversation.title ? { conversationTitle: conversation.title } : {}),
-          terminalRunId: nightSweepRunId(ranForWindow), anchorMessageId: range[0].id,
-          messageIds: range.map(message => message.id), reviewDay: day.key, lastAttemptReviewDay: day.key,
+          terminalRunId: nightSweepRunId(pending.ranForWindow), anchorMessageId: range[0].id,
+          messageIds: range.map(message => message.id), reviewDay: rangeDay.key, lastAttemptReviewDay: day.key,
+          reviewDayStart: pending.start, reviewDayEnd: pending.end,
+          ...(pending.feedbackRevision ? { feedbackRevision: pending.feedbackRevision, feedbackObservations: pending.feedbackObservations } : {}),
           ...(contextMessages.length ? { contextMessageIds: contextMessages.map(message => message.id) } : {}),
-          status: screening.eligible ? 'queued' : 'no_candidate', visibility: 'internal',
-          screeningStatus: screening.eligible ? 'pending' : 'filtered', screeningSignals: screening.signals,
-          ...(screening.eligible ? {} : { filterReason: screening.reason || 'low_reuse_value', screenedAt: now, finishedAt: now }),
+          status: screening.eligible || pending.feedbackRevision ? 'queued' : 'no_candidate', visibility: 'internal',
+          screeningStatus: screening.eligible || pending.feedbackRevision ? 'pending' : 'filtered', screeningSignals: screening.signals,
+          ...(screening.eligible || pending.feedbackRevision ? {} : { filterReason: screening.reason || 'low_reuse_value', screenedAt: now, finishedAt: now }),
           executionPolicy: 'nightly', attempt: 1, candidateIds: [], createdAt: now, updatedAt: now,
         };
         const stored = asCapture(await updateRecallJsonRecord(userId, CAPTURE_COLLECTION, record.id, current => current || record));
         captures.push(stored);
+        for (const observation of pending.feedbackObservations || []) await admitNightlyFeedback(userId, observation, stored.id);
         await scheduleKnownRecallCapture(userId, stored);
-        if (screening.eligible) counters.queued += 1; else counters.skipped += 1;
+        if (screening.eligible || pending.feedbackRevision) counters.queued += 1; else counters.skipped += 1;
       }
       const latest = fresh.at(-1)!;
+      delete pendingRanges[cursorKey];
       cursors[cursorKey] = { state: 'covered', throughMessageId: latest.id, throughTs: latest.ts, updatedAt: startedAt };
       // Persist each admission's progress. A crash after capture save is deduped
       // by the immutable message IDs even if the cursor write has not happened.
@@ -2886,7 +3057,7 @@ export interface RecallCaptureSweepLoopHandle {
 }
 
 /** Low-frequency nightly admission; persistent message ranges prevent rework
- * while deferred/unreadable conversations can resume within the selected day. */
+ * while deferred/unreadable conversations resume their frozen range next night. */
 export function startNightlyCaptureSweepLoop(userId: string): RecallCaptureSweepLoopHandle {
   let scheduled: ScheduledBootBackgroundTask | null = null;
   let stopped = false;
@@ -2902,7 +3073,7 @@ export function startNightlyCaptureSweepLoop(userId: string): RecallCaptureSweep
           && Date.now() - Date.parse(record.lastRunAt) < 24 * 60 * 60_000) return;
         const windowKey = dueNightlyWindow(new Date(), settings, record);
         if (!windowKey) return;
-        await runNightlyCaptureSweep(userId, windowKey, settings);
+        await runNightlyCaptureSweep(userId, windowKey, settings, signal);
       } catch (error) {
         log.warn('recall nightly sweep tick failed', {
           error: error instanceof Error ? error.message : String(error),

@@ -9,7 +9,7 @@ import { resolveRuntimeCapabilities } from './messaging-capability-policy';
 import { grantAutoActionApproval, recordActionApprovalExecution, requestActionApproval } from '../action_approval';
 import { shouldAutoApproveRuntimeAction } from './runtime-tool-policy';
 
-interface HostAdapter { run(name: any, input: Record<string, unknown>, scope: CogSeedHostToolScope, opts?: { signal?: AbortSignal | null }): Promise<CogSeedHostToolResult> }
+interface HostAdapter { run(name: any, input: Record<string, unknown>, scope: CogSeedHostToolScope, opts?: { signal?: AbortSignal | null; beforeAction?: () => Promise<void> }): Promise<CogSeedHostToolResult> }
 export interface CogSeedHostToolRouterDeps { office?: HostAdapter; browser?: HostAdapter; coordinator?: CogSeedCoordinator }
 
 export function createCogSeedHostToolRouter(deps: CogSeedHostToolRouterDeps = {}) {
@@ -39,6 +39,41 @@ export function createCogSeedHostToolRouter(deps: CogSeedHostToolRouterDeps = {}
         readOnlyRoots: request.read_only_roots ?? [], writableRoots: request.writable_roots ?? [],
         ...(request.working_dir ? { workingDir: request.working_dir } : {}),
       };
+      const ontologyPreflight = async (toolName: string, input: Record<string, unknown>, finalPayload = false): Promise<CogSeedHostToolResult | undefined> => {
+        const { readCogSeedTaskByRequestId } = await import('./task-store');
+        const { readCogSeedSession } = await import('./session-store');
+        const task = await readCogSeedTaskByRequestId(request.user_id, request.request_id);
+        const session = task ? await readCogSeedSession(request.user_id, task.sessionId) : undefined;
+        if (!task || task.runtimeSessionId !== request.runtime_session_id || !session || session.ownerId !== request.user_id
+          || session.lifecycleState !== 'active' || session.runtimeSessionId !== request.runtime_session_id || session.activeTaskId !== task.taskId)
+          return { content: '[E_ONTOLOGY_OPERATION_PRECONDITION_UNAVAILABLE] current task scope unavailable', isError: true };
+        const { getConversation } = await import('../chats');
+        const conversation = task.conversationId ? await getConversation(request.user_id, task.conversationId) : undefined;
+        if (task.conversationId && !conversation) return { content: '[E_ONTOLOGY_OPERATION_PRECONDITION_UNAVAILABLE] current conversation scope unavailable', isError: true };
+        const taskContext = { ...(task.agentId ? { agentId: task.agentId } : {}), taskText: task.task,
+          ...(conversation?.project_id ? { projectId: conversation.project_id } : {}),
+          ...(conversation?.space_id || task.spaceId ? { workspaceId: conversation?.space_id || task.spaceId } : {}) };
+        const { ontologyActionCapability } = await import('../../model/core-agent/ontology-action-capabilities');
+        const capability = ontologyActionCapability(toolName, input, { finalMarkdownAdapter: finalPayload });
+        const guard = await import('../cognition/ontology/operation-guard');
+        const decision = capability.coverage === 'read_only' ? undefined
+          : capability.coverage === 'final_markdown_adapter' && typeof input.path === 'string' && typeof input.content === 'string'
+            ? await guard.checkOntologyMarkdownWrite(request.user_id, { operation: toolName as 'write_file' | 'edit_file', path: input.path, content: input.content, context: taskContext })
+            : await guard.checkOntologyUnverifiedAction(request.user_id, { operationKinds: capability.operationKinds, context: taskContext });
+        if (context.signal?.aborted) return { content: '[E_ONTOLOGY_OPERATION_PRECONDITION_UNAVAILABLE] action cancelled', isError: true };
+        return decision && !decision.allowed ? { content: JSON.stringify({ code: decision.code, checks: decision.checks }), isError: true } : undefined;
+      };
+      // This bridge is internal, absent from the model's tool catalog. Owner,
+      // project and current request are re-derived from persisted host records.
+      if (call.name === 'ontology_operation_preflight') {
+        const toolName = typeof call.input.tool_name === 'string' ? call.input.tool_name : '';
+        if (!toolName || !call.input.arguments || typeof call.input.arguments !== 'object' || Array.isArray(call.input.arguments))
+          return { content: '[E_ONTOLOGY_OPERATION_PRECONDITION_UNAVAILABLE] invalid action payload', isError: true };
+        try {
+          return await ontologyPreflight(toolName, call.input.arguments as Record<string, unknown>, true)
+            || { content: JSON.stringify({ allowed: true }) };
+        } catch { return { content: '[E_ONTOLOGY_OPERATION_PRECONDITION_UNAVAILABLE] current required conditions unavailable', isError: true }; }
+      }
       // Internal Worker-only approval bridge. The model never sees these as
       // Runtime tools; the host receives the original request/session from the
       // JSONL envelope and does not trust any user/session identity in input.
@@ -90,8 +125,12 @@ export function createCogSeedHostToolRouter(deps: CogSeedHostToolRouterDeps = {}
           ? { content: JSON.stringify({ ok: true }) }
           : { content: '[E_ACTION_APPROVAL_NOT_ACTIVE] approval is not active for this Runtime action', isError: true };
       }
-      if (call.name.startsWith('office_')) return cap(await office.run(call.name as any, call.input, scope, { signal: context.signal }));
-      if (call.name.startsWith('browser_')) return cap(await browser.run(call.name as any, call.input, scope, { signal: context.signal }));
+      try {
+        const denied = await ontologyPreflight(call.name, call.input || {});
+        if (denied) return denied;
+      } catch { return { content: '[E_ONTOLOGY_OPERATION_PRECONDITION_UNAVAILABLE] current required conditions unavailable', isError: true }; }
+      if (call.name.startsWith('office_')) return cap(await office.run(call.name as any, call.input, scope, { signal: context.signal, beforeAction: async () => { const denied = await ontologyPreflight(call.name, call.input || {}); if (denied) throw new Error(denied.content); } }));
+      if (call.name.startsWith('browser_')) return cap(await browser.run(call.name as any, call.input, scope, { signal: context.signal, beforeAction: async () => { const denied = await ontologyPreflight(call.name, call.input || {}); if (denied) throw new Error(denied.content); } }));
       // Proactive messaging: the capability must be re-derived from the
       // persisted task/session on every call — the worker's own capability
       // claims are never trusted. Denied scopes are hard errors so the run
@@ -106,6 +145,7 @@ export function createCogSeedHostToolRouter(deps: CogSeedHostToolRouterDeps = {}
           userId: request.user_id,
           sourceKey: `${request.request_id}:${call.call_id}`,
           signal: context.signal,
+          beforeDispatch: async () => { const denied = await ontologyPreflight(call.name, call.input || {}); if (denied) throw new Error(denied.content); },
         }));
       }
       // P3394 agent interop (outbound): Commander-only, capability re-derived

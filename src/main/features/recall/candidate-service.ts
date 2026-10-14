@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import { bindOntologyFormationPlan, normalizeOntologyFormationPlan, withOntologyFormationPromotion, type OntologyFormationPlan } from './ontology-formation';
+import { bindOntologyFormationPlan, normalizeOntologyFormationPlan, withOntologyFormationPromotion, withOntologyOnlyFormation, type OntologyFormationPlan } from './ontology-formation';
 import { withRecallAutoApprovalLock } from './capture-settings';
 import { evaluateNightlyAutomaticApproval, NightlyAutomaticApprovalHeldError, requireNightlyAutomaticApproval } from './nightly-automatic-approval';
 import { requireContentCategory, readContentCategory, type CognitionContentCategory, type StoredCognitionContentCategory } from './content-category';
@@ -105,6 +105,8 @@ const CANDIDATE_CONTENT_FORMAT_MIGRATION_ID = 'candidate-content-v1';
 
 export interface RecallCandidateRecord extends RecallJsonRecord {
   id: string;
+  proposalTarget?: 'cognition' | 'ontology' | 'joint';
+  formationProposalId?: string;
   /** Canonical content fields below are stable across every candidate producer. */
   contentFormatVersion: 1;
   taxonomyVersion: 2;
@@ -143,6 +145,8 @@ export interface RecallCandidateRecord extends RecallJsonRecord {
   ontologyHandoff?: RecallCandidateOntologyHandoff;
   reviewDecisionId?: string;
   autoReview?: AutomaticCandidateReview;
+  automaticUndo?: { decisionId: string; originalDecisionId: string; commandId: string; committedAt: string };
+
   ontologyFormation?: OntologyFormationPlan;
   decisionNote?: string;
   /** 空间归属：候选来自哪个空间（空间绘画/任务产出的认知）。资产随 recall 全局存储，
@@ -268,6 +272,8 @@ export interface RecallAbilityAssetRecord extends RecallJsonRecord {
 }
 
 export interface SaveRecallCandidateInput {
+  proposalTarget?: 'cognition' | 'ontology' | 'joint';
+  formationProposalId?: string;
   ontologyFormation?: OntologyFormationPlan;
   judgment: string;
   value?: string;
@@ -342,6 +348,66 @@ export interface RecallCandidatePromotionResult {
    *  `confirmBaselineVersion` 不同）且这次确认**已生效**时出现——冲突路径
    *  不带它（没生效就谈不上重锚）。 */
   rebasedFrom?: string;
+}
+
+export interface RecallOntologyCandidateConfirmation {
+  candidate: RecallCandidateRecord;
+  ontologyHandoff: RecallCandidateOntologyHandoff;
+}
+
+/** Individual confirmation uses the existing pool mutex and source checks;
+ * candidate completion and all T/R/A changes are one authoritative commit. */
+export async function confirmRecallOntologyCandidate(userId: string, candidateId: string,
+  options: { riskAcknowledged?: boolean; actor?: 'user' | 'system' } = {}): Promise<RecallOntologyCandidateConfirmation> {
+  if (options.actor === 'system') {
+    const candidate = await readRecallCandidate(userId, candidateId);
+    if (candidate.status === 'integrated' && candidate.ontologyHandoff) return { candidate, ontologyHandoff: candidate.ontologyHandoff };
+    const review = await evaluateNightlyAutomaticApproval(userId, candidate);
+    if (!review.eligible) throw new NightlyAutomaticApprovalHeldError(review.reasons);
+    return withRecallAutoApprovalLock(userId, () => confirmRecallOntologyCandidateWithGrant(userId, candidateId, options));
+  }
+  return confirmRecallOntologyCandidateWithGrant(userId, candidateId, options);
+}
+
+async function confirmRecallOntologyCandidateWithGrant(userId: string, candidateId: string,
+  options: { riskAcknowledged?: boolean; actor?: 'user' | 'system' }): Promise<RecallOntologyCandidateConfirmation> {
+  return withRecallCandidatePromotionLock(userId, async () => {
+    let saved: RecallCandidateRecord | undefined;
+    const preliminary = await readRecallCandidate(userId, candidateId);
+    if (preliminary.proposalTarget !== 'ontology') throw new Error('candidate is not an ontology-only proposal');
+    if (preliminary.status === 'integrated' && preliminary.ontologyHandoff) return { candidate: preliminary, ontologyHandoff: preliminary.ontologyHandoff };
+    if (isTerminalCandidate(preliminary.status)) throw new RecallCandidateStateError(RECALL_CANDIDATE_TERMINAL_ERROR_CODE, 'candidate is terminal', preliminary.status);
+    await verifyCaptureProvenanceForPromotion(userId, preliminary);
+    if (!preliminary.value.trim() || !preliminary.suggestedScope.trim() || !preliminary.summary.trim())
+      throw new Error('ontology proposal explanation, future use and scope are required');
+    if (!preliminary.ontologyFormation) throw new Error('ontology plan is missing');
+    await withOntologyOnlyFormation(userId, preliminary.ontologyFormation, () => updateRecallJsonRecord(userId, 'candidates', candidateId, async raw => {
+      if (!raw) throw new Error('candidate is unavailable');
+      const candidate = asCandidate(raw);
+      if (!isDeepStrictEqual(candidate, preliminary)) throw new Error('candidate changed; review the current proposal');
+      await verifyCaptureProvenanceForPromotion(userId, candidate);
+      if (Date.parse(candidate.expiresAt) <= Date.now()) throw new Error('candidate expired');
+      if (candidate.uncertainty?.trim()) throw recallCandidateError('ontology_meaning_unresolved', 'ontology proposal has unresolved meaning');
+      if (candidate.risk === 'high' && !options.riskAcknowledged) throw new Error('high-risk ontology changes require individual acknowledgment');
+      const automaticReview = options.actor === 'system' ? await requireNightlyAutomaticApproval(userId, candidate) : undefined;
+      const decision = await writeReviewDecision(userId, { targetRef: `recall_candidate:${candidate.id}`, decisionType: 'modify',
+        decision: 'integrate_to_ontology', antecedentRef: candidate.id, scope: candidate.suggestedScope,
+        reason: options.actor === 'system' ? 'Explicit nightly grant and independent source checks permit this ontology change.'
+          : 'User confirmed the complete source-grounded independent ontology proposal.', actor: options.actor === 'system' ? 'system' : 'user',
+        modifiedContent: candidate.judgment, idempotencyKey: `ontology-${candidate.ontologyFormation!.commandId}` });
+      const now = new Date().toISOString();
+      saved = { ...candidate, status: 'integrated', reviewDecisionId: decision.decision_id,
+        ...(automaticReview ? { autoReview: automaticReview } : {}),
+        ontologyHandoff: { status: 'integrated', commandId: candidate.ontologyFormation!.commandId,
+          moduleIds: [], recordIds: [], ontologyRevision: candidate.ontologyFormation!.baselineRevision,
+          committedAt: now }, cooldownUntil: undefined, failureCode: undefined, failureMessage: undefined, failedAt: undefined, updatedAt: now };
+      return saved;
+    }), options.actor === 'system' ? 'system' : 'user');
+    if (!saved?.ontologyHandoff) throw new Error('ontology confirmation did not commit');
+    const candidate = await readRecallCandidate(userId, candidateId);
+    notifyCognitionWrite(userId, 'ontology', 'update', candidate.ontologyHandoff!.commandId);
+    return { candidate, ontologyHandoff: candidate.ontologyHandoff! };
+  });
 }
 
 /** 版本重检不一致的结构化冲突（specs/015 D6~D9）。
@@ -837,6 +903,12 @@ function normalizeLearningSignal(value: unknown): KstarLearningSignal | undefine
 }
 
 function asCandidate(value: RecallJsonRecord): RecallCandidateRecord {
+  if (value.proposalTarget !== undefined && !['cognition', 'ontology', 'joint'].includes(String(value.proposalTarget)))
+    throw new Error('malformed formation proposal target');
+  if (value.formationProposalId !== undefined && (!safeId(value.formationProposalId) || String(value.formationProposalId).length > 160))
+    throw new Error('malformed formation proposal identity');
+  if (value.proposalTarget === 'ontology' && (!value.ontologyFormation || value.promotedAssetId || value.targetAssetId))
+    throw new Error('malformed ontology-only candidate');
   if (value.contentFormatVersion !== undefined && value.contentFormatVersion !== 1) {
     throw new Error('unsupported recall candidate content format');
   }
@@ -986,11 +1058,12 @@ function candidateDirectory(userId: string): string {
 }
 
 function fingerprint(input: Pick<RecallCandidateRecord, 'judgment' | 'value' | 'suggestedType' | 'suggestedScope' | 'suggestedAction' | 'targetAssetId'>
-  & Pick<RecallCandidateRecord, 'scopePolicy' | 'spaceId'>): string {
+  & Pick<RecallCandidateRecord, 'scopePolicy' | 'spaceId' | 'proposalTarget' | 'ontologyFormation'>): string {
   const scopePolicy = scopePolicyIdentity(input.scopePolicy);
   return [input.judgment, input.value, input.suggestedType, input.suggestedScope, input.suggestedAction, input.targetAssetId || '']
     .map((part) => part.trim().toLocaleLowerCase())
-    .concat([input.spaceId || '', scopePolicy])
+    .concat([input.spaceId || '', scopePolicy, input.proposalTarget || 'cognition',
+      input.ontologyFormation ? JSON.stringify({ actions: input.ontologyFormation.actions, refs: input.ontologyFormation.refs }) : ''])
     .join('\n');
 }
 
@@ -1212,7 +1285,7 @@ export async function saveRecallCandidate(userId: string, input: SaveRecallCandi
   const gatedJudgment = await gateCandidateStatement(userId, {
     judgment: input.judgment,
     suggestedType: requireAssetType(input.suggestedType),
-    skip: input.rawStatement === true,
+    skip: input.rawStatement === true || input.proposalTarget === 'ontology',
   });
   const gatedInput = gatedJudgment === input.judgment ? input : { ...input, judgment: gatedJudgment,
     ...(input.ontologyFormation ? { ontologyFormation: { ...input.ontologyFormation,
@@ -1222,6 +1295,11 @@ export async function saveRecallCandidate(userId: string, input: SaveRecallCandi
 }
 
 async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCandidateInput): Promise<RecallCandidateRecord> {
+  if (input.proposalTarget !== undefined && !['cognition', 'ontology', 'joint'].includes(input.proposalTarget)) throw new Error('invalid formation target');
+  if (input.formationProposalId !== undefined && (!safeId(input.formationProposalId) || input.formationProposalId.length > 160)) throw new Error('invalid formation identity');
+  if (input.proposalTarget === 'joint' && !input.ontologyFormation) throw new Error('joint suggestion requires ontology changes');
+  if (input.proposalTarget === 'ontology' && (!input.ontologyFormation || (!input.ontologyFormation.actions.length && !input.ontologyFormation.blockedReasons.length) || input.targetAssetId
+    || input.targetVersionUsed || input.ontologyFormation.refs.some(ref => ref.sharedBody))) throw new Error('invalid ontology-only suggestion');
   const judgment = boundedText(input.judgment, 'judgment', 4_000, true, true)!;
   // value 上限与 judgment 对齐（2026-09-19）：value 缺省兜底改为 judgment 全文，
   // 1000 上限会把长 judgment 挡在门外（forecast-commit 实测抓出）。
@@ -1287,6 +1365,8 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
   ]);
   const candidateDraft = {
     judgment, value: resolvedValue, suggestedType, suggestedScope, suggestedAction, targetAssetId,
+    ...(input.proposalTarget ? { proposalTarget: input.proposalTarget } : {}),
+    ...(input.ontologyFormation ? { ontologyFormation: input.ontologyFormation } : {}),
     ...(input.spaceId && safeId(input.spaceId) ? { spaceId: input.spaceId } : {}),
     ...(scopePolicy ? { scopePolicy } : {}),
   };
@@ -1303,7 +1383,7 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
     const hasNewEvidence = hasNewSourceRefs(candidate.evidenceRefs, evidenceRefs);
     const riskIncreased = maxCandidateRisk(candidate.risk, risk) !== candidate.risk;
     if (isSuppressedTerminalCandidate(candidate.status)) return !hasNewEvidence && !riskIncreased;
-    if (candidate.status === 'confirmed') return !riskIncreased;
+    if (['confirmed', 'integrated'].includes(candidate.status)) return !riskIncreased;
     return true;
   });
   if (existing) {
@@ -1313,11 +1393,11 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
     });
     // Extraction may recognize an already saved idea, but it cannot append
     // evidence to its formal asset or rewrite the committed candidate proof.
-    if (existing.status === 'confirmed') return existing;
+    if (['confirmed', 'integrated'].includes(existing.status)) return existing;
     const merged = await updateRecallJsonRecord(userId, 'candidates', existing.id, (current) => {
       if (!current) return existing;
       const candidate = asCandidate(current);
-      if (candidate.status === 'confirmed') return candidate;
+      if (['confirmed', 'integrated'].includes(candidate.status)) return candidate;
       const hasNewEvidence = hasNewSourceRefs(candidate.evidenceRefs, evidenceRefs);
       const riskIncreased = maxCandidateRisk(candidate.risk, risk) !== candidate.risk;
       const shouldReopen = (hasNewEvidence || riskIncreased) && (
@@ -1357,6 +1437,8 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
     taxonomyVersion: 2,
     ownerId: userId,
     id: captureKey ? candidateIdForCaptureKey(captureKey) : `cand-${genId12()}`,
+    ...(input.proposalTarget ? { proposalTarget: input.proposalTarget } : {}),
+    ...(input.formationProposalId ? { formationProposalId: input.formationProposalId } : {}),
     status: reviewReady ? 'pending_review' : 'weak_observation',
     judgment,
     value: resolvedValue,
@@ -1540,13 +1622,19 @@ export async function updateRecallCandidate(userId: string, candidateId: string,
   const targetAssetId = input.targetAssetId === undefined
     ? currentCandidate.targetAssetId
     : boundedText(input.targetAssetId, 'target asset id', 160, true);
+  if (currentCandidate.proposalTarget === 'ontology' && (targetAssetId || suggestedAction !== 'create' || suggestedType !== 'cognition'))
+    throw new Error('ontology-only edits cannot target cognition assets');
   if (targetAssetId && !safeId(targetAssetId)) throw new Error('invalid target asset id');
   const nextFingerprint = fingerprint({
     judgment, value: resolvedValue, suggestedType, suggestedScope, suggestedAction, targetAssetId,
     spaceId: currentCandidate.spaceId,
+    proposalTarget: currentCandidate.proposalTarget,
+    ontologyFormation: currentCandidate.ontologyFormation,
     ...(scopePolicy ? { scopePolicy } : {}),
   });
-  if (duplicates.some((candidate) => candidate.id !== candidateId && fingerprint(candidate) === nextFingerprint)) {
+  if (duplicates.some((candidate) => candidate.id !== candidateId
+    && !(currentCandidate.proposalTarget === 'ontology' && isTerminalCandidate(candidate.status))
+    && fingerprint(candidate) === nextFingerprint)) {
     throw recallCandidateError('recall_candidate_duplicate', 'duplicate recall candidate');
   }
   // 编辑后的**新内容**够不够格成为正式资产。跑的是晋升时那一个闸门，
@@ -1609,7 +1697,7 @@ export async function updateRecallCandidate(userId: string, candidateId: string,
       value: resolvedValue,
       ...(evidenceSummary ? { evidenceSummary } : {}),
       ...(summary ? { summary } : {}),
-      ...(uncertainty ? { uncertainty } : {}),
+      ...(Object.hasOwn(input, 'uncertainty') ? { uncertainty: uncertainty || undefined } : {}),
       ...(contentCategory !== undefined ? { contentCategory } : {}),
       suggestedType,
       suggestedScope,
@@ -1879,6 +1967,7 @@ export async function withRecallCandidateProcessingDetails(candidateUserId: stri
     const decision = await readReviewDecision(candidateUserId, `recall_candidate:${candidate.id}`, candidate.reviewDecisionId);
     if (!decision) return { ...candidate, processingActor: '处理者记录不可用', processingReason: candidate.decisionNote || '' };
     return { ...candidate,
+      ...(decision.actor === 'system' || decision.actor === 'user' ? { processingDecisionActor: decision.actor } : {}),
       processingActor: decision.actor === 'system' ? (decision.decision === 'automatic low-risk approval' ? '系统自动批准' : '系统')
         : decision.actor === 'user' ? '你（人工）' : '处理者未记录',
       processingReason: decision.reason || candidate.decisionNote || ({ accept: '人工核对后保存', modify: '人工修改后保存', reject: '人工拒绝此建议', ignore: '人工忽略此建议', keep_current: '人工确认保留现有内容', defer: '人工选择稍后处理', trial: '人工选择试用' }[decision.decision_type] || ''),
@@ -1931,7 +2020,7 @@ async function loadDedupPools(userId: string): Promise<{
     // 查重池 = 非终态候选。和用户侧 capability 是两个问题，但共用同一份
     // terminal policy，免得再长出第三套状态清单。
     candidateTexts: candidates
-      .filter((c) => !isTerminalCandidate(c.status))
+      .filter((c) => c.proposalTarget !== 'ontology' && !isTerminalCandidate(c.status))
       .map((c) => ({ id: c.id, text: String(c.judgment || ''), ...(c.scopePolicy ? { scopePolicy: c.scopePolicy } : {}) })),
     assetTexts: assets
       .filter((a) => a.status !== 'deleted' && a.status !== 'purged' && a.status !== 'revoked')
@@ -2283,6 +2372,7 @@ async function promoteRecallCandidateWithGrant(
     return recovered;
   }
   const preflight = await readRecallCandidate(userId, candidateId);
+  if (preflight.proposalTarget === 'ontology') throw new Error('ontology-only proposal must be confirmed into ontology');
   if (isTerminalCandidate(preflight.status) && preflight.status !== 'confirmed') {
     throw new RecallCandidateStateError(RECALL_CANDIDATE_TERMINAL_ERROR_CODE, 'recall candidate is terminal', preflight.status);
   }

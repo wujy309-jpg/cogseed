@@ -407,7 +407,9 @@
     const action = String((candidate || {}).suggestedAction || '');
     return (action === 'update' || action === 'limit_scope') && !!String((candidate || {}).targetAssetId || '');
   };
-  const candidateDecisionLabels = (candidate) => (candidateUpdateType(candidate)
+  const candidateDecisionLabels = (candidate) => (candidate?.proposalTarget === 'ontology'
+    ? { promote: T('cognition.ontology_proposal_save', '保存本体变化'), reject: T('cognition.candidate_reject', '不保存') }
+    : candidateUpdateType(candidate)
     ? {
       promote: T('recall.asset_approval.confirm', '保存更新'),
       reject: T('recall.asset_approval.reject', '拒绝'),
@@ -622,6 +624,7 @@
   }
   // 活动详情沿用 HTML 的阅读顺序；数据、版本和能力仍以真实服务返回为准。
   function activityTarget(candidate) {
+    if (candidate.proposalTarget === 'ontology') return T('cognition.ontology_proposal_target', '本体变更建议 · 确认前核对下面的记录与版本');
     const targetId = candidate.targetAssetId || candidate.mergedIntoAssetId;
     const target = S.assets.find(asset => String(asset.id) === String(targetId || ''));
     const action = String(candidate.suggestedAction || 'create');
@@ -637,6 +640,7 @@
     });
   }
   function activityImpact(candidate) {
+    if (candidate.proposalTarget === 'ontology') return T('cognition.ontology_proposal_impact', '确认后一起保存所列本体变化及来源、时间和版本。后续使用仍须满足范围与权限；保存不代表实际采用。');
     const action = String(candidate.suggestedAction || 'create');
     if (action === 'pause') return T('cognition.activity_impact_pause', '确认后暂停目标资产的后续使用，保留正文、版本与历史记录；不会修改全局设置。');
     if (action === 'limit_scope') return T('cognition.activity_impact_boundary', '保存后更新目标资产的适用边界，保留版本记录；不修改全局设置，也不自动扩大对象授权。');
@@ -809,7 +813,7 @@
       ${plan.requiresTReview ? `<p class="note" role="status">${esc(T('cognition.formation_t_manual', '包含 T 概念或结构变化，必须由你人工确认；请核对已有记录是否仍能正确理解。'))}</p>` : ''}
       ${blocked ? `<p class="note" role="alert">${esc(plan.blockedReasons.map(reasonText).join('；'))}</p>` : ''}
       ${recheckHtml}
-      <p class="note">${esc(T('cognition.formation_atomic_hint', '认知和相互依赖的本体变化作为一次决定共同保存，并在保存前重新核对版本；不会只保存其中一半。保存不代表任务已采用。'))}</p></section>`;
+      <p class="note">${esc(candidate.proposalTarget === 'ontology' ? T('cognition.ontology_proposal_atomic_hint', '这组本体变化作为一次决定共同保存，并在提交前重新核对来源与版本。独立本体建议不会另存为认知资产。') : T('cognition.formation_atomic_hint', '认知和相互依赖的本体变化作为一次决定共同保存，并在保存前重新核对版本；不会只保存其中一半。保存不代表任务已采用。'))}</p></section>`;
   }
   function autoReviewReasonText(reason) {
     const value = String(reason || '').trim();
@@ -827,6 +831,7 @@
     return value;
   }
   function candidateFormBody(candidate, options = {}) {
+    const ontologyOnly = candidate.proposalTarget === 'ontology';
     const refs = evidenceRefs(candidate);
     const broken = evidenceMostlyUnavailable(candidate);
     // 能力一律按主进程下发的 capability 判定，**缺失即视为只读**——与旧模块
@@ -869,7 +874,7 @@
     // 2026-09-15 #266 重写时没带过来。口径见函数开头：缺失 capabilities 即只读。
     // 按钮名按型分支（specs/015 T023；2026-09-28 词表统一）：更新型「保存更新」，新建型「保存」。
     const decisionLabels = candidateDecisionLabels(candidate);
-    const promoteLabel = options.compact && candidate.suggestedAction === 'pause' ? T('cognition.activity_confirm_pause', '确认暂停') : options.compact && candidate.suggestedAction === 'limit_scope' ? T('cognition.activity_save_boundary', '保存边界') : options.compact && !['update', 'limit_scope', 'pause'].includes(String(candidate.suggestedAction || 'create')) ? T('cognition.activity_formal_save', '修改并保存') : decisionLabels.promote;
+    const promoteLabel = ontologyOnly ? decisionLabels.promote : options.compact && candidate.suggestedAction === 'pause' ? T('cognition.activity_confirm_pause', '确认暂停') : options.compact && candidate.suggestedAction === 'limit_scope' ? T('cognition.activity_save_boundary', '保存边界') : options.compact && !['update', 'limit_scope', 'pause'].includes(String(candidate.suggestedAction || 'create')) ? T('cognition.activity_formal_save', '修改并保存') : decisionLabels.promote;
     const extraActions = (canReject && (!options.compact || attentionReady(candidate)) ? btn(T('cognition.activity_defer', '稍后处理'), 'activity-defer', { id: candidate.id, className: 'o' }) : '') + (options.compact ? btn(T('cognition.activity_next_item', '下一项'), 'activity-next', { className: 'o' }) : '');
     const actionsHtml = `<div class="actions actions-right"${options.compact ? ' data-activity-primary-actions' : ''}>
         ${canPromote || (options.compact && canEdit) ? btn(promoteLabel, 'cand-adopt-with-form', { id: candidate.id, primary: true, disabled: !canPromote }) : ''}
@@ -899,9 +904,9 @@
         ${conflictHtml}${conflictHtml ? `<p class="note">${esc(T('cognition.candidate_status_pending', '待确认'))}</p>` : ''}
         ${candidate.activityDeferredAt ? `<p class="note">${esc(T('cognition.activity_deferred_hint', '已标记稍后处理，仍保留在需要关注中。'))}</p>` : ''}
         <section class="ca-review-content">
-          ${edit ? input('summary', T('cognition.capture.name', '认知名称'), candidate.summary) : read(T('cognition.capture.name', '认知名称'), candidate.summary)}
-          ${edit ? input('judgment', T('cognition.activity_body_label', '可复用正文 *'), candidate.judgment, 5) : read(T('cognition.activity_body_read', '可复用正文'), candidate.judgment)}
-          ${edit ? window.uiField({ id: `ca-cand-category-${candidate.id}`, label: T('cognition.content_category', '分类'), showRequirement: false, control: { kind: 'select', native: true, value: NS.ui.contentCategoryOf(candidate), options: NS.ui.CONTENT_CATEGORIES.map(([value, key, fallback]) => ({ value, label: T(key, fallback) })), attrs: { 'data-f': 'contentCategory' } } }) : read(T('cognition.content_category', '分类'), contentCategoryLabel(candidate))}
+          ${edit ? input('summary', ontologyOnly ? T('cognition.ontology_proposal_name', '变更名称') : T('cognition.capture.name', '认知名称'), candidate.summary) : read(ontologyOnly ? T('cognition.ontology_proposal_name', '变更名称') : T('cognition.capture.name', '认知名称'), candidate.summary)}
+          ${edit ? input('judgment', ontologyOnly ? T('cognition.ontology_proposal_description', '完整变更说明') : T('cognition.activity_body_label', '可复用正文 *'), candidate.judgment, 5) : read(ontologyOnly ? T('cognition.ontology_proposal_description', '完整变更说明') : T('cognition.activity_body_read', '可复用正文'), candidate.judgment)}
+          ${ontologyOnly ? '' : edit ? window.uiField({ id: `ca-cand-category-${candidate.id}`, label: T('cognition.content_category', '分类'), showRequirement: false, control: { kind: 'select', native: true, value: NS.ui.contentCategoryOf(candidate), options: NS.ui.CONTENT_CATEGORIES.map(([value, key, fallback]) => ({ value, label: T(key, fallback) })), attrs: { 'data-f': 'contentCategory' } } }) : read(T('cognition.content_category', '分类'), contentCategoryLabel(candidate))}
           ${statementWarningHtml(candidate)}
         </section>
         <div class="ca-review-usage">
@@ -943,16 +948,16 @@
       ${options.compact && edit ? '' : candidateScopeField(candidate, { includeTaskConditions: !chainHtml })}
       ${conflictHtml}
       ${edit ? `
-        ${options.compact ? field(T('cognition.capture.name', '认知名称'), window.uiInput({ id: `ca-cand-summary-${esc(candidate.id)}`, value: candidate.summary || '', attrs: { maxlength: 60, 'data-f': 'summary' } })) : ''}
-        ${field(T('cognition.capture.summary', '可复用内容'), window.uiTextarea({ id: `ca-cand-judgment-${esc(candidate.id)}`, value: candidate.judgment || '', attrs: { 'data-f': 'judgment' } }))}
-        ${field(T('cognition.content_category', '分类'), contentCategorySelect(`ca-cand-category-${candidate.id}`, candidate))}
+        ${options.compact ? field(ontologyOnly ? T('cognition.ontology_proposal_name', '变更名称') : T('cognition.capture.name', '认知名称'), window.uiInput({ id: `ca-cand-summary-${esc(candidate.id)}`, value: candidate.summary || '', attrs: { maxlength: 60, 'data-f': 'summary' } })) : ''}
+        ${field(ontologyOnly ? T('cognition.ontology_proposal_description', '完整变更说明') : T('cognition.capture.summary', '可复用内容'), window.uiTextarea({ id: `ca-cand-judgment-${esc(candidate.id)}`, value: candidate.judgment || '', attrs: { 'data-f': 'judgment' } }))}
+        ${ontologyOnly ? '' : field(T('cognition.content_category', '分类'), contentCategorySelect(`ca-cand-category-${candidate.id}`, candidate))}
         ${statementWarningHtml(candidate)}
         ${options.compact || chainHtml ? '' : field(T('cognition.chain_value_label', '带来的价值'), window.uiTextarea({ id: `ca-cand-value-${esc(candidate.id)}`, value: candidate.value || '', attrs: { 'data-f': 'value' } }))}
         <details class="details">
           <summary>${esc(T('cognition.candidate_advanced', '高级选项（通常不用改）'))}</summary>
           ${options.compact ? '' : field(T('cognition.candidate_scope_domain', '适用任务范围'), window.uiInput({ id: `ca-cand-scope-${esc(candidate.id)}`, value: candidate.suggestedScope || '', placeholder: T('cognition.candidate_scope_placeholder', '例如：仅产品工作空间'), attrs: { 'data-f': 'scope' } }))}
           <div class="note">${esc(T('cognition.candidate_scope_hint', '常用范围：跨对话通用（general）、报告（report）、编程（code）、审查（review）、产品（product）。其他写法可能匹配不上任务，建议从这里选一个。'))}</div>
-          ${options.compact ? '' : field(T('cognition.capture.name', '认知名称'), window.uiInput({ id: `ca-cand-summary-${esc(candidate.id)}`, value: candidate.summary || '', attrs: { maxlength: 60, 'data-f': 'summary' } }))}
+          ${options.compact ? '' : field(ontologyOnly ? T('cognition.ontology_proposal_name', '变更名称') : T('cognition.capture.name', '认知名称'), window.uiInput({ id: `ca-cand-summary-${esc(candidate.id)}`, value: candidate.summary || '', attrs: { maxlength: 60, 'data-f': 'summary' } }))}
           ${options.compact && (candidate.suggestedType === 'rule' || candidate.applicableWhen?.length || candidate.forbiddenWhen?.length) ? `${field(T('cognition.asset_version_applicable', '适用场景'), window.uiTextarea({ id: `ca-cand-applicable-${esc(candidate.id)}`, value: (candidate.applicableWhen || []).join('\n'), attrs: { 'data-f': 'applicable' } }))}${field(T('cognition.asset_version_forbidden', '禁用场景'), window.uiTextarea({ id: `ca-cand-forbidden-${esc(candidate.id)}`, value: (candidate.forbiddenWhen || []).join('\n'), attrs: { 'data-f': 'forbidden' } }))}` : ''}
           ${options.compact && !chainHtml ? field(T('cognition.chain_value_label', '带来的价值'), window.uiTextarea({ id: `ca-cand-value-${esc(candidate.id)}`, value: candidate.value || '', attrs: { 'data-f': 'value' } })) : ''}
           ${chainHtml ? '' : field(T('cognition.chain_uncertainty_label', '仍不确定的地方'), window.uiTextarea({ id: `ca-cand-uncertainty-${esc(candidate.id)}`, value: candidate.uncertainty || '', attrs: { 'data-f': 'uncertainty' } }))}
@@ -1003,6 +1008,7 @@
 
   function candidateStatusPresentation(candidate) {
     const state = candidateDisplayState(candidate);
+    if (candidate.automaticUndo) return { state, label: T('cognition.automatic_undo_done', '已撤销自动保存'), tone: 'gray' };
     const copy = {
       needs_review: ['cognition.candidate_status_pending', '待确认', 'amber'],
       weak_evidence: ['cognition.candidate_status_weak_evidence', '证据不足', 'amber'],
@@ -1027,7 +1033,7 @@
     const status = candidateStatusPresentation(candidate);
     const isTerminal = Boolean((candidate.capabilities || {}).isTerminal)
       || ['confirmed', 'integrated', 'rejected', 'ignored', 'expired', 'superseded'].includes(status.state);
-    const stateHint = status.state === 'confirmed' && !candidate.promotedAssetId
+    const stateHint = candidate.automaticUndo ? T('cognition.automatic_undo_done_hint', '本次自动保存已撤销，原决定和版本历史继续保留。') : status.state === 'confirmed' && !candidate.promotedAssetId
       ? T('cognition.activity_result_unlocated_hint', '记录已标为保存，但没有提供可定位的资产结果；请刷新核对，暂不重复确认。')
       : status.state === 'confirmed'
       ? T('cognition.candidate_detail_saved_hint', '已保存为正式资产。后续修改或暂停，请到资产详情操作。')
@@ -1036,7 +1042,7 @@
       : status.state === 'integrated'
         ? T('cognition.candidate_detail_integrated_hint', '已整理到本体，没有另存为普通认知资产。')
         : T('cognition.candidate_detail_terminal_hint', '这条建议已处理，不能再次确认；原记录保留供查看。');
-    const nextStep = status.state === 'integrated' && candidate.ontologyHandoff?.recordIds?.length
+    const nextStep = candidate.automaticUndo ? '' : status.state === 'integrated' && candidate.ontologyHandoff?.recordIds?.length
       ? btn(T('cognition.candidate_detail_open_ontology', '查看本体记录'), 'open-ontology', {
         small: true, className: 'o', data: { 'module-id': String(candidate.ontologyHandoff.moduleIds?.[0] || ''), 'record-id': String(candidate.ontologyHandoff.recordIds[0]) },
       })
@@ -1057,6 +1063,7 @@
       ${options.compact ? '' : `<div class="cand-head">
         ${chip(status.label, status.tone)}${!options.compact || ['medium', 'high'].includes(candidate.risk) ? candidateRiskBadge(candidate) : ''}${broken ? chip(T('cognition.candidate_evidence_weak', '来源待核对'), 'amber') : ''}
       </div>`}
+      ${candidate.capabilities?.canUndoAutomatic ? btn(T('cognition.automatic_undo_preview', '查看撤销影响'), 'activity-undo-automatic', { id: candidate.id, small: true, className: 'o' }) : ''}
       ${options.compact ? '' : `<h2 class="cand-title">${esc(fullTitle)}</h2>`}
       ${isTerminal ? `<div class="note ca-candidate-state-note">${esc(stateHint)}${nextStep ? `<div class="actions">${nextStep}</div>` : ''}</div>` : ''}
       ${candidateFormBody(candidate, options)}
@@ -1092,5 +1099,6 @@
     formCard: candidateFormCard,
     activityTarget, activityImpact, activityHistory,
     statusPresentation: candidateStatusPresentation,
+    formationPreviewHtml: ontologyFormationHtml,
   };
 })();

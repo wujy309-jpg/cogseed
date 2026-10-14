@@ -5816,7 +5816,7 @@ async function runActorTurnBody(
             // 生命周期读取失败不阻断回合——回退 automatic projection。
           }
         }
-        const taskText = String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000);
+        const taskText = String(item.sourceMessageText || item.llmPayload || '');
         const recallContext = await buildRecallTurnPromptContext(uid, {
           cid,
           taskRunId: item.turnId,
@@ -5838,7 +5838,7 @@ async function runActorTurnBody(
           recallProfileMemory = recallContext.profileMemoryEntries ?? [];
           recallAuthorizedBlock = recallContext.authorizedAssetsBlock ?? '';
           recallProfileBlock = recallContext.profileAssetsBlock ?? '';
-          const currentTaskText = String(item.sourceMessageText || item.llmPayload || '').trim().slice(0, 2_000);
+          const currentTaskText = String(item.sourceMessageText || item.llmPayload || '').trim();
           const validationTaskText = [
             recallTaskGoal,
             currentTaskText && currentTaskText !== recallTaskGoal ? `当前补充：${currentTaskText}` : '',
@@ -5905,7 +5905,7 @@ async function runActorTurnBody(
           ...recallCitations.map((citation) => citation.assetId),
           ...recallProfileMemory.map((entry) => entry.id),
         ]);
-        const catalog = await assetCatalogForPromptWithRelevance(uid, cid, Date.now(), String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000), {
+        const catalog = await assetCatalogForPromptWithRelevance(uid, cid, Date.now(), String(item.sourceMessageText || item.llmPayload || ''), {
           ...(turnProjectId ? { turnProjectId } : {}),
           ...(turnSpaceId ? { turnSpaceId } : {}),
         }, actor.id, item.turnId, attachedAssetIds);
@@ -5962,7 +5962,7 @@ async function runActorTurnBody(
           uid,
           cid,
           Date.now(),
-          String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000),
+          String(item.sourceMessageText || item.llmPayload || ''),
           experienceMounted,
           {
             agentId: actor.id,
@@ -5990,8 +5990,8 @@ async function runActorTurnBody(
       try {
         const dispatched = await buildDispatchedAssetsPromptBlock(uid, item.dispatchedAssetIds, {
           ...(actor.kind === "agent" ? { agentId: actor.id } : {}),
-          taskText: String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000),
-          purpose: String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000),
+          taskText: String(item.sourceMessageText || item.llmPayload || ''),
+          purpose: String(item.sourceMessageText || item.llmPayload || ''),
           ...(turnProjectId ? { projectId: turnProjectId } : {}),
           ...(turnSpaceId ? { workspaceId: turnSpaceId } : {}),
           ...(turnConversationKind ? { conversationKind: turnConversationKind } : {}),
@@ -12278,7 +12278,7 @@ async function buildCommanderExtraTools(
             ...currentRecallScope,
             purpose: reason || "model_selected",
             ...(typeof currentSourceMessageText === "string" && currentSourceMessageText
-              ? { taskText: currentSourceMessageText.slice(0, 2_000) }
+              ? { taskText: currentSourceMessageText }
               : {}),
             operation: 'explicit_use',
           });

@@ -2,11 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RecallAbilityAssetRecord } from '../../../../src/main/features/recall/candidate-service';
 import { selectCaptureExistingAssets } from '../../../../src/main/features/recall/capture-existing-assets';
 
-const { list, readVersion, readableGate } = vi.hoisted(() => ({ list: vi.fn(), readVersion: vi.fn(), readableGate: vi.fn() }));
+const { list, readVersion, readableGate, embed } = vi.hoisted(() => ({ list: vi.fn(), readVersion: vi.fn(), readableGate: vi.fn(), embed: vi.fn() }));
 vi.mock('../../../../src/main/features/recall/asset-service', () => ({
   listAbilityAssets: list, readAbilityAssetVersionSnapshot: readVersion,
 }));
 vi.mock('../../../../src/main/features/recall/prompt-injection', () => ({ filterRecallAssetsForAgentRead: readableGate }));
+vi.mock('../../../../src/main/features/recall/similarity', () => ({ embedForDedup: embed,
+  cosineScore: (a: number[], b: number[]) => a.reduce((value, part, index) => value + part * b[index], 0), SEMANTIC_RELATED_THRESHOLD: 0.7 }));
 const user = 'comparison-user';
 function asset(id: string, patch: Partial<RecallAbilityAssetRecord> = {}): RecallAbilityAssetRecord {
   return { schemaVersion: 1, ownerId: user, id, candidateId: 'candidate-' + id, reviewDecisionId: 'decision-' + id,
@@ -16,17 +18,36 @@ function asset(id: string, patch: Partial<RecallAbilityAssetRecord> = {}): Recal
 }
 beforeEach(() => {
   list.mockReset(); readVersion.mockReset();
+  embed.mockReset().mockResolvedValue(null);
   readableGate.mockReset().mockImplementation(async (_user: string, records: RecallAbilityAssetRecord[]) => records);
 });
 
 describe('nightly existing-cognition comparison context', () => {
+  it('brings a differently worded relevant record into a limited comparison pool through full-body semantic ranking', async () => {
+    list.mockResolvedValue([asset('paraphrase', { title: '交流结构', statement: '把关键判断放在长篇背景的前面。', updatedAt: '2025-01-01T00:00:00Z' }),
+      asset('lexical-noise', { title: '结论与解释', statement: '这个标题只是历史术语，不提供表达要求。' })]);
+    embed.mockImplementation(async (_user, text: string) => text.includes('这个标题') ? [0, 1] : [1, 0]);
+    const result = await selectCaptureExistingAssets(user, { approvedEvidence: [{ quote: '说明复杂问题时结论应放在前面。' }], maxAssets: 1 });
+    expect(result.assets.map(item => item.id)).toEqual(['paraphrase']);
+    expect(result.coverage).toMatchObject({ truncated: true, semantic: 'complete' });
+    expect(embed.mock.calls.some(([, text]) => text.includes('把关键判断放在长篇背景的前面。'))).toBe(true);
+  });
+  it('declares unavailable semantic selection and avoids embedding when all complete records already fit', async () => {
+    list.mockResolvedValue([asset('a'), asset('b')]);
+    const bounded = await selectCaptureExistingAssets(user, { approvedEvidence: [{ quote: '项目决策来源' }], maxAssets: 1 });
+    expect(bounded.coverage.semantic).toBe('unavailable');
+    embed.mockClear();
+    const complete = await selectCaptureExistingAssets(user, { approvedEvidence: [{ quote: '项目决策来源' }] });
+    expect(complete.coverage).toMatchObject({ truncated: false, semantic: 'not_needed' });
+    expect(embed).not.toHaveBeenCalled();
+  });
   it('searches all active records so an old relevant cognition precedes the latest twenty unrelated entries', async () => {
     const oldest = asset('old-rule', { title: '周报汇报顺序', statement: '项目周报先列风险，然后列进展和计划。', updatedAt: '2025-01-01T00:00:00Z' });
     list.mockResolvedValue([...Array.from({ length: 25 }, (_, i) => asset('recent-' + i)), oldest]);
     const result = await selectCaptureExistingAssets(user, { approvedEvidence: [{ quote: '项目周报顺序需要纠正：风险与计划要说明负责人。' }], maxAssets: 3 });
     expect(result.assets[0].id).toBe(oldest.id);
     expect(result.assets[0].statement).toBe(oldest.statement);
-    expect(result.coverage).toEqual({ total: 26, selected: 3, truncated: true, unavailable: 0 });
+    expect(result.coverage).toEqual({ total: 26, selected: 3, truncated: true, unavailable: 0, semantic: 'unavailable' });
     expect(list).toHaveBeenCalledWith(user);
     expect(readVersion).not.toHaveBeenCalled();
   });
@@ -81,7 +102,7 @@ describe('nightly existing-cognition comparison context', () => {
     readVersion.mockResolvedValue(null);
     const result = await selectCaptureExistingAssets(user);
     expect(result.assets.map(a => a.id)).toEqual(['readable']);
-    expect(result.coverage).toEqual({ total: 2, selected: 1, truncated: true, unavailable: 1 });
+    expect(result.coverage).toEqual({ total: 2, selected: 1, truncated: true, unavailable: 1, semantic: 'not_needed' });
     readVersion.mockRejectedValueOnce(new Error('disk unavailable'));
     await expect(selectCaptureExistingAssets(user)).rejects.toThrow('disk unavailable');
     list.mockRejectedValueOnce(new Error('master list unavailable'));

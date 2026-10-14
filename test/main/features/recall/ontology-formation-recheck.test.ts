@@ -60,8 +60,8 @@ describe('explicit ontology dependency recheck', () => {
     expect(prompt).not.toContain('INSIDE that candidate object');
     expect(prompt).not.toContain('NEVER at the top level');
     const { ontologyFormationPromptContract } = await import('../../../../src/main/features/recall/ontology-formation');
-    expect(ontologyFormationPromptContract).toContain('INSIDE that candidate object');
-    expect(ontologyFormationPromptContract).toContain('NEVER at the top level');
+    expect(ontologyFormationPromptContract).toContain('proposalVersion:2');
+    expect(ontologyFormationPromptContract).toContain('joint proposal owns cognition and ontologyChanges');
     expect(model).toHaveBeenCalledTimes(1);
     const saved = await f.candidates.promoteRecallCandidate('alice', edited.id, { actor: 'user' });
     expect(saved.candidate.status).toBe('confirmed');

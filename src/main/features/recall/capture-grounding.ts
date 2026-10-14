@@ -1,6 +1,7 @@
 /** Semantic fallback for supported paraphrases and merged revisions. Lexical
  * similarity is a shortlist, not proof that a new statement is unsupported. */
 import { runRecallCaptureModel } from './capture-model-routing';
+import type { CaptureModelBudgetContext } from './capture-model-budget';
 import { prompts } from '../../prompts/loader';
 import type { RecallCaptureModelCandidate } from './capture-settings';
 
@@ -84,6 +85,7 @@ export async function semanticallyGroundCaptureCandidate(userId: string, input: 
   sessionId: string; candidate: GroundingCandidate; sources: GroundingSource[];
   summary: unknown; existingTarget?: { id: string; statement: string; scope: string; version: string };
   modelCandidates: readonly RecallCaptureModelCandidate[]; signal?: AbortSignal; shouldContinue?: () => Promise<boolean>;
+  budget?: CaptureModelBudgetContext;
 }): Promise<boolean> {
   if (!input.sources.length || input.candidate.uncertainty?.trim()) return false;
   if (input.candidate.targetAssetId && input.existingTarget?.id !== input.candidate.targetAssetId) return false;
@@ -95,7 +97,7 @@ export async function semanticallyGroundCaptureCandidate(userId: string, input: 
   try {
     const { result } = await runRecallCaptureModel(userId, { sessionId: input.sessionId,
       systemPrompt: prompts.load('cognition_capture_grounding'), message,
-      modelCandidates: input.modelCandidates, signal: input.signal, shouldContinue: input.shouldContinue });
+      modelCandidates: input.modelCandidates, signal: input.signal, shouldContinue: input.shouldContinue, budget: input.budget });
     if (result.meta.aborted || input.signal?.aborted) interrupted();
     if (result.meta.error) throw new CaptureGroundingUnavailableError('model_unavailable');
     text = result.text;

@@ -11,7 +11,15 @@ export function synchronizeOntologyRuleBodies(doc: CognitionStoreDocument, recor
   const previous = doc.compatibility?.records['ability-assets']?.[String(record.id)];
   const oldBindings = normalizeAbilityAssetOntologyRefs(previous?.ontologyRefs ?? []).filter(ref => ref.sharedBody);
   const refs = normalizeAbilityAssetOntologyRefs(record.ontologyRefs ?? []);
-  for (const old of oldBindings) if (!refs.some(ref => ref.recordId === old.recordId && ref.sharedBody)) refs.push(old);
+  for (const old of oldBindings) if (!refs.some(ref => ref.recordId === old.recordId && ref.sharedBody)) {
+    // An explicit atomic formation undo may retire a newly created binding.
+    // A generic rollback still keeps bindings and cannot silently unbind R.
+    const undoId = typeof record.formationUndoCommandId === 'string' ? record.formationUndoCommandId : undefined;
+    const undone = undoId && doc.ontology?.receipts[undoId]?.changedIds.includes(old.recordId!)
+      && doc.ontology.records[old.recordId!]?.status === 'archived'
+      && doc.ontology.history.some(row => row.commandId === undoId && row.after.id === old.recordId && row.intent === 'undo_command');
+    if (!undone) refs.push(old);
+  }
   if (refs.length) record.ontologyRefs = refs;
   const bindings = refs.filter(ref => ref.sharedBody);
   if (!bindings.length && !refs.some(ref => ref.recordId && record.scopePolicy)) return;

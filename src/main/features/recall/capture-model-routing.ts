@@ -3,6 +3,7 @@ import { classifyKeyFailure } from '../../model/core-agent/auth-error';
 import { createLogger } from '../../logger';
 import { getThinkingLevel } from '../config';
 import type { RecallCaptureModelCandidate } from './capture-settings';
+import { withCaptureModelBudget, type CaptureModelBudgetContext } from './capture-model-budget';
 
 const log = createLogger('recall.capture-model-routing');
 type ModelResult = Awaited<ReturnType<Awaited<ReturnType<typeof buildRunner>>['runner']['run']>>;
@@ -32,6 +33,7 @@ export async function runRecallCaptureModel(userId: string, options: {
   signal?: AbortSignal;
   shouldContinue?: () => Promise<boolean>;
   responseFormat?: 'json_object';
+  budget?: CaptureModelBudgetContext;
 }): Promise<{ result: ModelResult; chosen?: RecallCaptureModelCandidate }> {
   const routes: Array<RecallCaptureModelCandidate | undefined> = options.modelCandidates.length
     ? [...options.modelCandidates] : [undefined];
@@ -43,15 +45,21 @@ export async function runRecallCaptureModel(userId: string, options: {
     const route = routes[index];
     let chosen: RecallCaptureModelCandidate | undefined;
     try {
-      const { runner } = await buildRunner({ sessionId: options.sessionId, userId,
-        systemPrompt: options.systemPrompt, disableTools: true, ephemeralSession: true, skillList: [],
-        ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
-        ...(route ? { modelCandidates: [route] } : {}),
-        onCandidateChosen: info => { chosen = { provider: info.providerId, model: info.modelId }; },
-      });
-      const thinkingLevel = getThinkingLevel(userId);
-      const result = await runner.run({ message: options.message, signal: options.signal, cacheRetention: 'none',
-        ...(thinkingLevel === 'auto' ? {} : { thinkingLevel }) });
+      const dispatch = async () => {
+        if (options.signal?.aborted || options.budget && options.shouldContinue && !await options.shouldContinue())
+          throw Object.assign(new Error('Capture model run interrupted'), { code: 'ABORT_ERR' });
+        const { runner } = await buildRunner({ sessionId: options.sessionId, userId,
+          systemPrompt: options.systemPrompt, disableTools: true, ephemeralSession: true, skillList: [],
+          ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
+          ...(route ? { modelCandidates: [route] } : {}),
+          onCandidateChosen: info => { chosen = { provider: info.providerId, model: info.modelId }; },
+        });
+        const thinkingLevel = getThinkingLevel(userId);
+        return runner.run({ message: options.message, signal: options.signal, cacheRetention: 'none',
+          ...(thinkingLevel === 'auto' ? {} : { thinkingLevel }) });
+      };
+      const result = options.budget ? await withCaptureModelBudget(userId, options.budget,
+        options.systemPrompt.length + options.message.length, dispatch, result => result.meta.usage) : await dispatch();
       if (options.signal?.aborted || result.meta.aborted) return { result, chosen };
       if (!result.meta.error) {
         if (chosen) log.info('capture stage model completed', { provider: chosen.provider, model: chosen.model });

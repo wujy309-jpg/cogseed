@@ -32,6 +32,7 @@ function runner(
   return createRuntimeToolRunner({
     userId: UID,
     runtimeSessionId: SESSION,
+    requestId: 'req-tool-runtime',
     allowedRoots: [root],
     writableRoots: [root],
     toolPolicy: policy,
@@ -39,6 +40,7 @@ function runner(
     skillVersionPins,
     hostToolClient: {
       async call(call: { name: string }) {
+        if (call.name === 'ontology_operation_preflight') return { content: JSON.stringify({ allowed: true }) };
         if (call.name === 'action_approval_request') {
           return { content: JSON.stringify({ approved: true, request_id: 'approval-test-once', code: 'E_ACTION_APPROVAL_DENIED' }) };
         }

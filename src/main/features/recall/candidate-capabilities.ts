@@ -57,6 +57,7 @@ export type RecallCandidateBlockedReason =
   | 'candidate_superseded'
   | 'candidate_evidence_insufficient'
   | 'candidate_state_unknown'
+  | 'candidate_ontology_needs_single_review'
   | 'candidate_high_risk_needs_single_review';
 
 /**
@@ -68,6 +69,11 @@ export type RecallCandidateBlockedReason =
  * （外部构造、老 DTO）仍然可用，缺内容时不收紧，见 `assessEligibility`。
  */
 export interface RecallCandidateCapabilityInput {
+  proposalTarget?: string;
+  autoReview?: { eligible?: boolean };
+  processingDecisionActor?: 'user' | 'system';
+  automaticUndo?: unknown;
+  ontologyFormation?: { actions: readonly unknown[]; blockedReasons: readonly string[] };
   status: RecallCandidateStatus;
   origin?: string;
   risk?: RecallCandidateRisk;
@@ -91,6 +97,7 @@ export interface RecallCandidateCapabilityInput {
 }
 
 export interface RecallCandidateCapabilities {
+  canUndoAutomatic?: boolean;
   canView: boolean;
   canEdit: boolean;
   canConfirm: boolean;
@@ -223,6 +230,11 @@ function assessEligibility(candidate: RecallCandidateCapabilityInput): {
   ineligibleReasons: PromotionBlockReason[];
   advisories: RecallCandidateClassificationReason[];
 } {
+  if (candidate.proposalTarget === 'ontology') {
+    // Eligibility here describes the explanation, not formal cognition. The
+    // actual plan/source/version gates repeat at the atomic ontology commit.
+    return { eligibility: 'eligible', ineligibleReasons: [], advisories: [] };
+  }
   const judgment = typeof candidate.judgment === 'string' ? candidate.judgment.trim() : '';
   if (!judgment || !candidate.suggestedType) {
     return { eligibility: 'eligible', ineligibleReasons: [], advisories: [] };
@@ -302,11 +314,14 @@ export function getRecallCandidateCapabilities(
   const batchBlocked = base.canPromote && blocksBatch(candidate.risk);
   return {
     ...base,
+    ...(candidate.processingDecisionActor === 'system' && !candidate.automaticUndo && ['confirmed', 'integrated'].includes(candidate.status) ? { canUndoAutomatic: true } : {}),
     eligibility: eligibility.eligibility,
     ineligibleReasons: eligibility.ineligibleReasons,
     eligibilityAdvisories: eligibility.advisories,
-    canBatchSelect: base.canPromote && !batchBlocked,
-    ...(batchBlocked ? { batchBlockedReason: 'candidate_high_risk_needs_single_review' as const } : {}),
+    canBatchSelect: base.canPromote && !batchBlocked && candidate.proposalTarget !== 'ontology',
+    ...(candidate.proposalTarget === 'ontology' && base.canPromote
+      ? { batchBlockedReason: 'candidate_ontology_needs_single_review' as const }
+      : batchBlocked ? { batchBlockedReason: 'candidate_high_risk_needs_single_review' as const } : {}),
   };
 }
 
@@ -415,6 +430,7 @@ export type RecallCandidateErrorCode =
    *  决定"保存为新条目（forceCreateSimilar 重试）还是改为更新"。 */
   | 'recall_candidate_similar_asset'
   | 'recall_capture_not_review_ready'
+  | 'ontology_meaning_unresolved'
   | 'recall_capture_writing';
 
 /** 打码的候选错误。message 保持原样（日志/契约仍读它），code 供 UI 翻译。 */

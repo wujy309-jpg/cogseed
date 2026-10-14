@@ -46,6 +46,32 @@ afterEach(async () => {
   }
 });
 
+describe('agent delivery operation gates', () => {
+  it.each(['missing', 'blocked', 'allowed'])('checks every delivery attempt and holds unsafe recovery without retry (%s)', async mode => {
+    const ledger = await import('../../../src/main/features/messaging/ledger');
+    const { RuntimeInstance } = await import('../../../src/main/features/messaging/runtime');
+    const send = vi.fn(async () => ({ deliveryId: 'synthetic-delivery-id' }));
+    const runtime = new RuntimeInstance({ uid: 'user-1', instanceId: 'synthetic-guard', instance: {} as any,
+      adapter: { sendMessage: send } as any, isCurrent: () => true });
+    const key = 'synthetic-current-condition';
+    const begun = await ledger.beginDelivery('user-1', { key, instanceId: 'synthetic-guard', recipientId: 'synthetic-self',
+      recipientIdType: 'open_id', sourceMessageId: 'synthetic-source', text: 'Synthetic delivery; no real account is contacted.',
+      textHash: 'synthetic-text-hash', requiresOperationPreflight: true } as any);
+    const stored = await ledger.getDelivery('user-1', key);
+    expect(stored?.requiresOperationPreflight).toBe(true);
+    const gate = vi.fn(async () => {
+      if (mode === 'blocked') throw Object.assign(new Error('synthetic current condition is unresolved'), { code: 'E_ONTOLOGY_OPERATION_PRECONDITION' });
+    });
+    if (mode !== 'missing') runtime.setDeliveryPreflight(key, gate);
+    await runtime.attemptDelivery(key, begun.entry);
+    expect(send).toHaveBeenCalledTimes(mode === 'allowed' ? 1 : 0);
+    expect(gate).toHaveBeenCalledTimes(mode === 'missing' ? 0 : 1);
+    expect((await ledger.getDelivery('user-1', key))?.status).toBe(mode === 'allowed' ? 'sent' : 'failed');
+    expect(runtime.retryTimer).toBeNull();
+    runtime.controller.abort();
+  });
+});
+
 describe('messaging policy', () => {
   it('enforces user, group, mention and command policy in order', async () => {
     const { evaluateInboundPolicy } = await import('../../../src/main/features/messaging/policy');

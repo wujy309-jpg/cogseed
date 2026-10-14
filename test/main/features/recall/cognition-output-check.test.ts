@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+vi.mock('../../../../src/main/features/chats', () => ({ getConversation: async () => ({ conversation_id: 'cid-a' }) }));
 const runModel = vi.fn();
 const snapshot = vi.fn();
 const current = vi.fn();
@@ -50,6 +51,49 @@ async function supplied(overrides: Record<string, unknown> = {}, finalText = out
 const input = { cid: 'cid-a', taskRunId: 'turn-a', messageId: 'message-a', taskText: task };
 
 describe('model-assisted cognition compliance observations', () => {
+  it('checks the actual persisted file rather than the reply claiming completion, in the same model call', async () => {
+    const { setWorkspacePath } = await import('../../../../src/main/features/user_workspace');
+    expect(setWorkspacePath('user-a', root).ok).toBe(true);
+    const file = path.join(root, 'report.md');
+    await fs.writeFile(file, '实际文件只有背景说明，缺少要求的结论和依据。');
+    await supplied({}, '文件已完整生成，要求已经全部满足。');
+    const { appendJsonlAtomic } = await import('../../../../src/main/storage');
+    const { conversationMessageFile } = await import('../../../../src/main/util/project-layout');
+    await appendJsonlAtomic(conversationMessageFile('user-a', 'cid-a'), { id: 'message-a', from: 'commander', text: '文件已完整生成，要求已经全部满足。', turn_id: 'turn-a', produced: [file] });
+    runModel.mockImplementation(async (_user, request) => {
+      const payload = JSON.parse(request.message);
+      expect(payload.output).toContain('缺少要求的结论和依据');
+      return { result: { text: JSON.stringify({ checks: [{ assetId: asset.assetId, version: '1', status: 'not_complied',
+        outputEvidence: { quote: '实际文件只有背景说明，缺少要求的结论和依据。' } }] }), meta: {} } };
+    });
+    const { checkPersistedCognitionOutput } = await import('../../../../src/main/features/recall/cognition-output-check');
+    const receipt = await checkPersistedCognitionOutput('user-a', input);
+    expect(receipt).toMatchObject({ modelCompleted: true, resultCoverage: { complete: true, readableFiles: 1 }, checks: [{ status: 'not_complied' }] });
+    expect(runModel).toHaveBeenCalledTimes(1);
+    const { listAssetUsageReceipts } = await import('../../../../src/main/features/recall/asset-usage-receipt');
+    expect(await listAssetUsageReceipts('user-a')).toEqual([expect.objectContaining({ status: 'usage_unknown', observationMethod: 'model_assisted' })]);
+  });
+  it('holds actual use unverified for an unsupported final file without an additional model call', async () => {
+    await supplied();
+    const { appendJsonlAtomic } = await import('../../../../src/main/storage');
+    const { conversationMessageFile } = await import('../../../../src/main/util/project-layout');
+    await appendJsonlAtomic(conversationMessageFile('user-a', 'cid-a'), { id: 'message-a', from: 'commander', text: output, turn_id: 'turn-a', produced: [path.join(root, 'report.pdf')] });
+    const { checkPersistedCognitionOutput } = await import('../../../../src/main/features/recall/cognition-output-check');
+    expect(await checkPersistedCognitionOutput('user-a', input)).toMatchObject({ modelCompleted: false, resultCoverage: { complete: false }, checks: [{ status: 'unknown' }] });
+    expect(runModel).not.toHaveBeenCalled();
+    const { listAssetUsageReceipts } = await import('../../../../src/main/features/recall/asset-usage-receipt');
+    expect(await listAssetUsageReceipts('user-a')).toEqual([expect.objectContaining({ status: 'usage_unknown', observationMethod: 'result_coverage' })]);
+  });
+  it('does not adopt a file that changed while its complete result was being checked', async () => {
+    const { setWorkspacePath } = await import('../../../../src/main/features/user_workspace'); setWorkspacePath('user-a', root);
+    const file = path.join(root, 'changed.md'); await fs.writeFile(file, '原始完整结论与依据。'); await supplied();
+    const { appendJsonlAtomic } = await import('../../../../src/main/storage');
+    const { conversationMessageFile } = await import('../../../../src/main/util/project-layout');
+    await appendJsonlAtomic(conversationMessageFile('user-a', 'cid-a'), { id: 'message-a', from: 'commander', text: output, turn_id: 'turn-a', produced: [file] });
+    runModel.mockImplementation(async () => { await fs.writeFile(file, '用户在检查期间更改了正文。'); return { result: { text: JSON.stringify({ checks: [good] }), meta: {} } }; });
+    const { checkPersistedCognitionOutput } = await import('../../../../src/main/features/recall/cognition-output-check');
+    expect(await checkPersistedCognitionOutput('user-a', input)).toMatchObject({ modelCompleted: false, checks: [{ status: 'unknown' }] });
+  });
   it('checks the persisted final output and injected version without claiming an effectiveness proof', async () => {
     await supplied();
     const { checkPersistedCognitionOutput } = await import('../../../../src/main/features/recall/cognition-output-check');

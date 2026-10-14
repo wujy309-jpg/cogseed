@@ -119,6 +119,7 @@ const log = createLogger('local-tools');
 export interface LocalToolsOpts {
   /** Host-owned deny-only check after sandbox admission and before final bytes
    * are written. It neither changes the bytes nor grants filesystem access. */
+  beforeUnverifiedAction?: (toolName: string, input: Record<string, unknown>) => Promise<ToolResult | undefined>;
   beforeMarkdownWrite?: (input: Pick<OntologyMarkdownWriteInput, 'operation' | 'path' | 'content'>) => Promise<OntologyOperationDecision>;
   /** Host shell platform override for deterministic wrapper integration tests.
    *  Production callers omit this and use `process.platform`. */
@@ -1173,9 +1174,10 @@ async function executeCoreBashWithOutputTracking(
       || (process.platform === 'win32' && windowsStrongSandboxAvailable()))
       && Array.isArray(ctx.state.sandboxAllowedDirs)
       && ctx.state.sandboxAllowedDirs.length > 0;
-    const result = direct && !writeSandboxActive
+    const denied = await opts.beforeUnverifiedAction?.('bash', input);
+    const result = denied || (direct && !writeSandboxActive
       ? await executeDirectCogSeedCli(direct, input, ctx, workingDir)
-      : await coreBashTool.execute(input, ctx);
+      : await coreBashTool.execute(input, ctx));
 
     // Update execution record with result
     const updates: Partial<executionLog.ExecutionRecord> = {
@@ -2481,6 +2483,8 @@ function createBashTool(opts: LocalToolsOpts): AgentTool {
       //               bash on same cwd, ENOTEMPTY, EACCES) is silently
       //               swallowed.
       if (!ctx.workingDir) {
+        const denied = await opts.beforeUnverifiedAction?.('bash', input);
+        if (denied) return denied;
         return finalizeBrowserResult(translateFixedBashError(await coreBashTool.execute(input, ctx)));
       }
       const workingDir = path.resolve(ctx.workingDir);
@@ -2697,6 +2701,8 @@ function createInteractiveCliStartTool(opts: LocalToolsOpts): AgentTool {
       if (gate) return gate;
       try { fs.mkdirSync(workingDir, { recursive: true }); }
       catch { /* spawn will report the canonical error */ }
+      const denied = await opts.beforeUnverifiedAction?.('interactive_cli_start', input);
+      if (denied) return denied;
       const view = startInteractiveCliSession({
         uid: opts.userId ?? '',
         cid: opts.cid,
@@ -2769,6 +2775,8 @@ function createInteractiveCliSendTool(opts: LocalToolsOpts): AgentTool {
       const sessionId = String(input.session_id ?? '').trim();
       if (!sessionId) return { content: errText('E_BAD_INPUT', '`session_id` is required'), isError: true };
       try {
+        const denied = await opts.beforeUnverifiedAction?.('interactive_cli_send', input);
+        if (denied) return denied;
         const view = sendInteractiveCliInput(opts.userId ?? '', sessionId, String(input.input ?? ''), {
           addNewline: input.add_newline !== false,
           sensitive: false,

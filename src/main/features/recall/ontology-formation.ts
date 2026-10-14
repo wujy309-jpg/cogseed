@@ -8,6 +8,8 @@ import { readOntologyDocument } from '../cognition/ontology/service';
 import { normalizeAbilityAssetOntologyRefs, type CanonicalAbilityAssetOntologyRef } from './ontology-refs';
 import { assertNotForbiddenToPersist } from '../../util/cognition-sensitivity';
 import type { RecallAbilityAssetScopePolicy } from './scope-policy';
+import { ontologyModuleVisibleToTask } from '../cognition/ontology/query';
+import { tokenize } from '../search/tokenize';
 import { ontologyScopeViolations as scopeViolations } from '../cognition/ontology/cognition-scope';
 
 export interface OntologyFormationPlan {
@@ -155,7 +157,7 @@ export function validateOntologyFormationScope(userId: string, doc: OntologyDocu
 }
 /** Invalid proposals remain visible and block confirmation; they are never silently dropped. */
 export function parseOntologyFormationProposal(doc: OntologyDocument, candidateId: string, raw: unknown,
-  judgment = '', recordedAt = new Date().toISOString()): OntologyFormationPlan | undefined {
+  judgment = '', recordedAt = new Date().toISOString(), target: 'cognition' | 'ontology' = 'cognition'): OntologyFormationPlan | undefined {
   if (raw === undefined || raw === null) return undefined;
   assertSafeFormationPersistence(raw);
   validateOntologyId(candidateId);
@@ -168,6 +170,8 @@ export function parseOntologyFormationProposal(doc: OntologyDocument, candidateI
       if (!ref.moduleId || !ref.recordId || !ref.versionPolicy) throw new OntologyError('invalid_reference', 'formation requires canonical record references');
       return ref as CanonicalAbilityAssetOntologyRef;
     });
+    if (target === 'ontology' && plan.refs.some(ref => ref.sharedBody))
+      throw new OntologyError('shared_body_mismatch', 'ontology-only changes cannot claim a cognition body');
     if (new Set(plan.refs.map(ref => `${ref.moduleId}\0${ref.recordId}`)).size !== plan.refs.length)
       throw new OntologyError('invalid_reference', 'duplicate canonical formation references');
     if (proposal.actions.length) {
@@ -181,7 +185,7 @@ export function parseOntologyFormationProposal(doc: OntologyDocument, candidateI
     }
     plan.commandId = formationCommandId(candidateId, plan.baselineRevision, plan.actions);
     const outcome = plan.actions.length ? applyOntologyCommand(doc, { commandId: plan.commandId, expectedRevision: doc.revision, actions: plan.actions }, recordedAt,
-      { kind: 'candidate', recordId: candidateId, label: '认知形成关联本体' }) : undefined;
+      { kind: 'candidate', recordId: candidateId, label: target === 'ontology' ? '本体独立形成与更新' : '认知形成关联本体' }) : undefined;
     const preview = outcome?.document ?? doc;
     plan.previewChanges = (outcome?.document.history ?? []).filter(row => row.commandId === plan.commandId)
       .map(row => ({ intent: row.intent, recordId: row.after.id, box: box(row.after), ...(row.before ? { before: row.before } : {}), after: row.after }));
@@ -219,7 +223,7 @@ export function parseOntologyFormationProposal(doc: OntologyDocument, candidateI
         throw new OntologyError('shared_body_mismatch', 'shared rule must use the complete cognition body');
     }
     // Every proposed rule needs one cognition body binding, preventing parallel editable copies.
-    for (const row of plan.previewChanges) if (row.after.kind === 'rule' && row.after.status === 'active'
+    for (const row of plan.previewChanges) if (target === 'cognition' && row.after.kind === 'rule' && row.after.status === 'active'
       && !plan.refs.some(ref => ref.recordId === row.after.id && ref.sharedBody)) plan.blockedReasons.push('shared_rule_reference_required:' + row.after.id);
     const effective = plan.actions.find(action => action.intent === 'change');
     if (effective?.intent === 'change') plan.effectiveFrom = effective.effectiveFrom;
@@ -319,13 +323,99 @@ export async function withOntologyFormationPromotion<T>(userId: string, input: O
   }, work);
 }
 
-export function buildOntologyFormationContext(userId: string, doc = readOntologyDocument(userId)): { revision: number; records: OntologyRecord[]; truncated: boolean } {
+/** Commit an ontology-only group in the same authoritative draft as its
+ * candidate's terminal state. No ability asset or second transaction is made. */
+export async function withOntologyOnlyFormation<T>(userId: string, input: OntologyFormationPlan,
+  work: () => Promise<T>, actor: 'user' | 'system' = 'user'): Promise<T> {
+  const plan = normalizeOntologyFormationPlan(userId, input.candidateId, input)!;
+  if (plan.blockedReasons.length || !plan.actions.length || plan.refs.some(ref => ref.sharedBody))
+    throw new OntologyError('formation_blocked', 'ontology-only proposal requires a complete independent plan', { reasons: plan.blockedReasons });
+  return withCognitionSourceDependency(userId, 'candidates', (store, candidate) => {
+    if (candidate.id !== plan.candidateId || candidate.proposalTarget !== 'ontology' || candidate.status !== 'integrated')
+      throw new OntologyError('invalid_input', 'ontology-only commit must finalize its own candidate');
+    const current = store.ontology ?? emptyOntologyDocument(userId);
+    const receipt = current.receipts[plan.commandId];
+    if (!receipt && current.revision !== plan.baselineRevision) throw new OntologyError('baseline_changed', 'ontology changed; compare the proposal again');
+    for (const action of plan.actions) {
+      const record = action.intent === 'create' ? undefined : current.records[action.recordId];
+      if (actor === 'system' && ['module', 'definition', 'reference'].includes(action.intent === 'create' ? String(action.record.kind) : record?.kind))
+        throw new OntologyError('t_review_required', 'ontology structure requires user confirmation');
+      if (record?.kind === 'rule' && record.source.refs?.some(ref => ref.kind === 'asset'))
+        throw new OntologyError('shared_body_owner_conflict', 'bound rule changes require their cognition in the same group');
+    }
+    const now = new Date().toISOString();
+    const result = applyOntologyCommand(current, { commandId: plan.commandId, expectedRevision: plan.baselineRevision, actions: plan.actions }, now,
+      { kind: 'candidate', recordId: plan.candidateId, label: '本体独立形成与更新' });
+    const violations = scopeViolations(result.document, result.receipt.changedIds.map(id => result.document.records[id]),
+      candidate.scopePolicy as RecallAbilityAssetScopePolicy | undefined);
+    if (violations.length) throw new OntologyError('formation_blocked', 'ontology changes exceed source scope', { reasons: violations });
+    for (const ref of plan.refs) {
+      const record = result.document.records[ref.recordId];
+      if (!record || record.status !== 'active' || !moduleCanUse(result.document, ref.moduleId, record))
+        throw new OntologyError('invalid_reference', 'ontology formation reference changed');
+    }
+    if (Buffer.byteLength(JSON.stringify(result.document), 'utf8') > 16 * 1024 * 1024)
+      throw new OntologyError('capacity_exceeded', 'ontology document exceeds size limit');
+    store.ontology = result.document;
+    const moduleIds = [...new Set(result.receipt.changedIds.map(id => {
+        const record = result.document.records[id];
+        return record.kind === 'module' ? record.id : record.moduleId;
+      }))];
+    if (!result.receipt.changedIds.length || moduleIds.length > 20)
+      throw new OntologyError('capacity_exceeded', 'ontology group exceeds confirmation receipt bounds');
+    candidate.ontologyHandoff = { status: 'integrated', commandId: plan.commandId,
+      recordIds: result.receipt.changedIds, moduleIds, ontologyRevision: result.document.revision, committedAt: now };
+    if (!result.duplicate) {
+      store.pendingJournal ??= [];
+      store.pendingJournal.push({ key: `ontology-${plan.commandId}`, line: { at: now, kind: 'ontology', receipt: result.receipt } });
+    }
+  }, work);
+}
+
+export function buildOntologyFormationContext(userId: string, doc = readOntologyDocument(userId), input: {
+  queryText?: string; projectId?: string; workspaceId?: string; maxChars?: number; scopeBound?: boolean;
+} = {}): { revision: number; records: OntologyRecord[]; truncated: boolean } {
   if (doc.ownerId !== userId) throw new OntologyError('invalid_user', 'ontology context owner mismatch');
-  const active = Object.values(doc.records).filter(record => record.status === 'active' && (record.kind === 'module' || doc.records[record.moduleId]?.status === 'active'));
-  // Keep structures first. Omitted context is explicit; never claim a complete comparison.
-  active.sort((a, b) => Number(box(b) === 'T') - Number(box(a) === 'T'));
-  const records: OntologyRecord[] = []; let size = 0;
-  for (const record of active) { const length = JSON.stringify(record).length; if (size + length > 60000) break; records.push(record); size += length; }
+  const scoped = input.scopeBound || input.projectId !== undefined || input.workspaceId !== undefined;
+  const modules = new Set(Object.values(doc.records).filter(record => record.kind === 'module' && record.status === 'active'
+    && (!scoped || ontologyModuleVisibleToTask(record, input))).map(record => record.id));
+  const active = Object.values(doc.records).filter(record => record.status === 'active'
+    && modules.has(record.kind === 'module' ? record.id : record.moduleId));
+  const available = new Map(active.map(record => [record.id, record]));
+  const query = new Set(tokenize(input.queryText || '').filter(term => term.length > 1));
+  const score = (record: OntologyRecord) => {
+    const terms = new Set(tokenize(JSON.stringify(record)).filter(term => term.length > 1));
+    return [...query].reduce((value, term) => value + Number(terms.has(term)), 0);
+  };
+  const scores = new Map(active.map(record => [record.id, score(record)]));
+  active.sort((a, b) => scores.get(b.id)! - scores.get(a.id)! || Number(box(a) === 'T') - Number(box(b) === 'T') || a.id.localeCompare(b.id));
+  const records: OntologyRecord[] = [], selected = new Set<string>();
+  const maxChars = input.maxChars ?? 60_000;
+  if (!Number.isSafeInteger(maxChars) || maxChars < 1 || maxChars > 128_000) throw new OntologyError('invalid_input', 'invalid ontology comparison budget');
+  let size = 0;
+  const dependencies = (record: OntologyRecord, pending = new Map<string, OntologyRecord>()): Map<string, OntologyRecord> => {
+    if (selected.has(record.id) || pending.has(record.id)) return pending;
+    pending.set(record.id, record);
+    const visit = (value: unknown, key = '') => {
+      if (typeof value === 'string' && referenceKeys.has(key) && available.has(value)) dependencies(available.get(value)!, pending);
+      else if (Array.isArray(value)) value.forEach(child => visit(child, key));
+      else if (value && typeof value === 'object') {
+        const object = value as Record<string, unknown>;
+        if (object.kind === 'entity' && typeof object.id === 'string' && available.has(object.id)) dependencies(available.get(object.id)!, pending);
+        if (object.kind === 'task' && object.field === 'entityId' && typeof object.equals === 'string' && available.has(object.equals)) dependencies(available.get(object.equals)!, pending);
+        Object.entries(object).forEach(([field, child]) => visit(child, field));
+      }
+    };
+    visit(record);
+    return pending;
+  };
+  for (const record of active) {
+    const closure = [...dependencies(record).values()];
+    const length = closure.reduce((value, dependency) => value + JSON.stringify(dependency).length, 0);
+    if (size + length > maxChars) continue;
+    for (const dependency of closure) { records.push(dependency); selected.add(dependency.id); }
+    size += length;
+  }
   return { revision: doc.revision, records, truncated: records.length !== active.length };
 }
 
@@ -343,7 +433,21 @@ update requires recordId, expectedVersion, patch; use it for rules/scope, never 
 CanonicalRef = {moduleId,recordId,versionPolicy:'current'|'pinned',targetVersion? (required only for pinned),sharedBody?:true}. sharedBody:true is ONLY for a rule record reference. Assertion/entity/definition/module references MUST OMIT sharedBody; an A assertion is source-attributed evidence with explicit validity/history, not an independently editable copy of the R guidance body. Every proposed rule representing this cognition MUST resolve to the EXACT COMPLETE judgment and a current sharedBody:true ref. Use requirementSource:'cognition_body' to reference that one body; without an explicit selector, missing text cannot be guessed or filled. Its text, sources and future versions are shared with the cognition. Update existing cognition and its bound rule together; do not create a second contradictory body. Preferences preserve applicable conditions rather than become global obligations. T changes require manual confirmation; A/R changes still require complete source support and no conflict. Cross-module identities require explicit reference records {kind:'reference',moduleId,targetModuleId,targetRecordId?,versionPolicy:'current'|'pinned',targetVersion?} rather than copying identities. A scope update must retain applicable still-valid scope and show before/after via versioned update actions. Output proposals only; do not claim saved or executed effects.
 `;
 
+/** Production comparisons obey the same current source admission as task use. */
+export async function buildSourceQualifiedOntologyFormationContext(userId: string, doc: OntologyDocument,
+  input: Parameters<typeof buildOntologyFormationContext>[2] = {}): Promise<ReturnType<typeof buildOntologyFormationContext>> {
+  const { assessOntologySources, ontologyWithAdmittedSources } = await import('../cognition/ontology/source-admission');
+  const status = await assessOntologySources(userId, doc, { ...input, taskText: input.queryText });
+  const admitted = ontologyWithAdmittedSources(doc, status);
+  const context = buildOntologyFormationContext(userId, admitted, input);
+  const modules = new Set(Object.values(doc.records).filter(record => record.kind === 'module' && record.status === 'active'
+    && ontologyModuleVisibleToTask(record, input)).map(record => record.id));
+  if (Object.values(doc.records).some(record => record.status === 'active' && record.access === 'task'
+    && modules.has(record.kind === 'module' ? record.id : record.moduleId) && status.get(record.id) === 'unavailable')) context.truncated = true;
+  return context;
+}
+
 /** Conversation extraction owns each proposal inside its candidate. */
 export const ontologyFormationPromptContract = `
-For each cognition, optionally propose ontologyChanges INSIDE that candidate object in the candidates array, NEVER at the top level beside candidates. Each plan belongs only to its containing candidate; an unowned top-level plan cannot be assigned or reused.
+Use the explicit proposalVersion:2 envelope. A cognition proposal has no ontologyChanges. A joint proposal owns cognition and ontologyChanges. An ontology proposal owns explanation and ontologyChanges, without cognition. Never return ontologyChanges at the top level beside proposals or candidates, and never borrow another group's plan. For ontology-only groups, use explanation.description for the supported change and complete standalone rule.requirement when relevant; omit sharedBody and requirementSource:'cognition_body'. Rules already bound to a cognition must be changed jointly with that cognition. The cognition-body requirements below apply only to joint groups.
 ${ontologyFormationGrammar}`;

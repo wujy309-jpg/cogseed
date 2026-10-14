@@ -296,6 +296,7 @@ export async function sendProactive(
     card?: Record<string, JsonCompatibleValue>;
     sourceKey: string;
     signal?: AbortSignal | null;
+    beforeDispatch?: () => Promise<void>;
   },
 ): Promise<{ entry: DeliveryLedgerEntry }> {
   assertUserId(uid);
@@ -312,12 +313,14 @@ export async function sendProactive(
   const recipientId = typeof input.recipientId === 'string' ? input.recipientId.trim() : '';
   if (!recipientId || recipientId.length > 512) throw new Error('proactive recipient required');
   const key = ledger.deliveryKey(input.instanceId, sourceKey);
+  if (input.beforeDispatch) runtime.setDeliveryPreflight(key, input.beforeDispatch);
   const begun = await ledger.beginDelivery(uid, {
     key,
     instanceId: input.instanceId,
     recipientId,
     recipientIdType: 'open_id',
     sourceMessageId: sourceKey,
+    ...(input.beforeDispatch ? { requiresOperationPreflight: true } : {}),
     textHash: ledger.textHash(text),
     text,
     ...(input.card ? { card: input.card } : {}),
@@ -335,6 +338,7 @@ export async function sendProactive(
   }
   try {
     const terminal = await ledger.waitForDeliveryTerminal(uid, key, { signal: input.signal ?? null });
+    if (terminal.status === 'failed') throw new Error(terminal.error || 'proactive delivery failed');
     if (terminal.status === 'cancelled') {
       throw new Error('proactive delivery cancelled');
     }
@@ -362,6 +366,7 @@ export async function sendProactiveFile(
     fileName: string;
     sourceKey: string;
     signal?: AbortSignal | null;
+    beforeDispatch?: () => Promise<void>;
   },
 ): Promise<{ entry: DeliveryLedgerEntry }> {
   assertUserId(uid);
@@ -382,12 +387,14 @@ export async function sendProactiveFile(
   if (!recipientId || recipientId.length > 512) throw new Error('proactive recipient required');
   const text = `[文件] ${fileName}`;
   const key = ledger.deliveryKey(input.instanceId, sourceKey);
+  if (input.beforeDispatch) runtime.setDeliveryPreflight(key, input.beforeDispatch);
   const begun = await ledger.beginDelivery(uid, {
     key,
     instanceId: input.instanceId,
     recipientId,
     recipientIdType: 'open_id',
     sourceMessageId: sourceKey,
+    ...(input.beforeDispatch ? { requiresOperationPreflight: true } : {}),
     textHash: ledger.textHash(text),
     text,
     file: { path: filePath, name: fileName },
@@ -405,6 +412,7 @@ export async function sendProactiveFile(
   }
   try {
     const terminal = await ledger.waitForDeliveryTerminal(uid, key, { signal: input.signal ?? null });
+    if (terminal.status === 'failed') throw new Error(terminal.error || 'proactive delivery failed');
     if (terminal.status === 'cancelled') {
       throw new Error('proactive file delivery cancelled');
     }

@@ -13,7 +13,7 @@ async function realReceipt(assetId: string, executionId: string) { const receipt
 
 
 describe('Recall transfer and effectiveness proofs', () => {
-  it('freezes expected assets, completes transfer, and advances maturity only after better effectiveness evidence', async () => {
+  it('freezes expected assets and does not accept an unrelated artifact as better effectiveness evidence', async () => {
     const { asset, projection } = await confirmedProjection(); const { proofs, assets } = await modules();
     const prepared = await proofs.prepareTransferProof('user-a', { projectionId: projection.id, executionId: 'exec-a', expectedResultSnapshot: 'Decision includes evidence and rationale.' });
     expect(prepared.status).toBe('prepared'); expect(prepared.assetVersions).toEqual([{ assetId: asset.id, version: '1' }]);
@@ -22,8 +22,8 @@ describe('Recall transfer and effectiveness proofs', () => {
     expect(completed).toMatchObject({ status: 'succeeded', receiptId: receipt.receiptId, receiptExecutionId: receipt.executionId });
     expect((await assets.readAbilityAsset('user-a', asset.id)).maturity).toBe('transfer_validated');
     const evaluation = await proofs.evaluateEffectivenessProof('user-a', { transferProofId: prepared.id, outcome: 'better', observedResult: 'Review quality improved.', evidenceRefs: [{ kind: 'artifact', id: 'artifact-a' }] });
-    expect(evaluation.status).toBe('valid'); expect(evaluation.outcome).toBe('better');
-    expect((await assets.readAbilityAsset('user-a', asset.id)).maturity).toBe('effectiveness_validated');
+    expect(evaluation.status).toBe('valid'); expect(evaluation.outcome).toBe('insufficient_evidence');
+    expect((await assets.readAbilityAsset('user-a', asset.id)).maturity).toBe('transfer_validated');
   });
 
   it('rejects effectiveness before successful transfer and yields an explicit governance recommendation for negative outcomes', async () => {

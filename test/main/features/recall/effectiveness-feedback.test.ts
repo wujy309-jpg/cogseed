@@ -28,6 +28,34 @@ async function successfulAttemptTransfer() {
 }
 
 describe('Recall effectiveness feedback', () => {
+  it('preserves persisted feedback on enqueue failure and recovers it once in the next nightly sweep', async () => {
+    const { prepared: transfer, asset } = await successfulTransfer();
+    const { feedback } = await modules();
+    const store = await import('../../../../src/main/features/recall/store');
+    const nightly = await import('../../../../src/main/features/recall/nightly-feedback');
+    const candidate = await (await modules()).candidates.readRecallCandidate('user-a', asset.candidateId);
+    const cid = candidate.sourceRefs.find(ref => ref.subtype === 'session')!.id;
+    await store.updateRecallJsonRecord('user-a', 'projections', transfer.projectionId, current => ({ ...current!, conversationId: cid }));
+    const { conversationLayout } = await import('../../../../src/main/util/project-layout');
+    const { appendJsonlAtomic } = await import('../../../../src/main/storage');
+    await appendJsonlAtomic(conversationLayout('user-a', cid, null).messageFile, {
+      id: 'feedback-result-message', ts: new Date().toISOString(), from: 'commander', to: ['user'], turn_id: 'task-a', text: 'Synthetic actual persisted result.' });
+    const enqueue = vi.spyOn(nightly, 'queueNightlyFeedback').mockRejectedValueOnce(new Error('temporary write failure'));
+    const proof = await feedback.recordEffectivenessFeedback('user-a', { transferProofId: transfer.id, feedback: 'negative', note: 'The actual result missed evidence.' });
+    expect(proof.nightlyFeedback?.status).toBe('pending');
+    expect(await nightly.queuedNightlyFeedback('user-a')).toEqual([]);
+    await feedback.recoverNightlyEffectivenessFeedback('user-a');
+    expect(await nightly.queuedNightlyFeedback('user-a')).toEqual([expect.objectContaining({ conversationId: cid, messageId: 'feedback-result-message', assetId: asset.id, feedback: 'negative' })]);
+    await feedback.recoverNightlyEffectivenessFeedback('user-a');
+    expect(enqueue).toHaveBeenCalledTimes(2);
+    expect((await store.readRecallJsonRecord('user-a', 'effectiveness-proofs', proof.id))?.nightlyFeedback).toMatchObject({ status: 'queued' });
+    await nightly.queueNightlyFeedback('user-a', { conversationId: cid, messageId: 'feedback-result-message', assetId: asset.id,
+      assetVersion: asset.version, taskRunId: 'task-a', feedback: 'positive', note: 'Newer user feedback',
+      observedAt: new Date(Date.parse(proof.createdAt) + 1_000).toISOString() });
+    await store.updateRecallJsonRecord('user-a', 'effectiveness-proofs', proof.id, current => ({ ...current!, nightlyFeedback: { ...proof.nightlyFeedback!, status: 'pending' } }));
+    await feedback.recoverNightlyEffectivenessFeedback('user-a');
+    expect(await nightly.queuedNightlyFeedback('user-a')).toEqual([expect.objectContaining({ feedback: 'positive', note: 'Newer user feedback' })]);
+  });
   it('maps user feedback to effectiveness proof outcomes', async () => {
     const { prepared: transfer } = await successfulTransfer();
     const { feedback } = await modules();
@@ -39,20 +67,25 @@ describe('Recall effectiveness feedback', () => {
     expect(negative).toMatchObject({ outcome: 'worse', recommendedAction: 'pause' });
   });
 
-  it('accepts positive effectiveness only when traceable evidence is supplied', async () => {
+  it('does not mistake a completed adopted result for an improvement without a baseline', async () => {
     const { prepared: transfer, asset } = await successfulTransfer();
     const { feedback, assets } = await modules();
+    const before = await (await modules()).candidates.readRecallCandidate('user-a', asset.candidateId);
+
+    const executions = await import('../../../../src/main/features/execution-records');
+    await executions.create('user-a', { executionId: 'receipt-feedback-a', kind: 'core-agent', sessionId: 'session-effect', boundary: 'real', permissionMode: 'read-only' });
+    await executions.complete('user-a', 'receipt-feedback-a', { status: 'completed', output: 'Decision includes the applied evidence and its result.' });
 
     const positive = await feedback.recordEffectivenessFeedback('user-a', {
       transferProofId: transfer.id,
       feedback: 'positive',
       note: 'This improved the result.',
-      evidenceRefs: [{ kind: 'artifact', id: 'feedback-artifact-a' }],
+      evidenceRefs: [{ kind: 'execution_evaluation', subtype: 'execution', taxonomyVersion: 2, id: 'receipt-feedback-a' }],
     });
 
-    expect(positive).toMatchObject({ outcome: 'better', status: 'valid' });
-    expect((await assets.readAbilityAsset('user-a', asset.id)).maturity).toBe('effectiveness_validated');
-    await expect((await modules()).candidates.readRecallCandidate('user-a', asset.candidateId)).resolves.toMatchObject({ validationCount: 1, consecutiveFailures: 0, lastValidatedAt: expect.any(String) });
+    expect(positive).toMatchObject({ outcome: 'insufficient_evidence', status: 'valid' });
+    expect((await assets.readAbilityAsset('user-a', asset.id)).maturity).toBe('transfer_validated');
+    expect((await (await modules()).candidates.readRecallCandidate('user-a', asset.candidateId)).validationCount).toBe(before.validationCount);
   });
 
   it('records user feedback by taskRunId for successful transfer proofs', async () => {
@@ -67,7 +100,7 @@ describe('Recall effectiveness feedback', () => {
     });
 
     expect(result.proofs).toHaveLength(1);
-    expect(result.proofs[0]).toMatchObject({ outcome: 'better', status: 'valid' });
+    expect(result.proofs[0]).toMatchObject({ outcome: 'insufficient_evidence', status: 'valid' });
   });
 
 

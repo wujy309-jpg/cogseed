@@ -128,6 +128,40 @@ describe('explicit nightly automatic confirmation', () => {
     expect(held.reasons).toContain('update_baseline_conflict');
     expect(held.candidate.status).toBe('pending_review');
   });
+  it.each([false, true])('restores the prior version after an automatic update as one reviewed inverse (joint: %s)', async joint => {
+    const bridge = await import('../../../../src/main/features/cognition_bridge');
+    await bridge.replaceCognitionSources('alice', { mode: 'unified', revision: 1,
+      records: { 'ability-assets': {}, candidates: {} }, po: { groups: [], trash: [] }, pendingProjection: false, migratedAt: new Date().toISOString() });
+    const ontology = await import('../../../../src/main/features/cognition/ontology/service');
+    const formation = await import('../../../../src/main/features/recall/ontology-formation');
+    await ontology.commitOntologyCommand('alice', { commandId: 'seed-personal', expectedRevision: 0,
+      actions: [{ intent: 'create', recordId: 'personal', sourceLabel: 'Existing structure', record: { kind: 'module', name: '我的本体', description: '', scope: { kind: 'personal' } } }] });
+    const original = '以后回答时先给出结论，再说明关键理由和依据。';
+    const revised = '以后回答时先给出结论，再说明关键理由和依据，并标出尚未验证的部分。';
+    const refs = [{ moduleId: 'personal', recordId: 'answer-rule', versionPolicy: 'current', sharedBody: true }];
+    const initialPlan = joint ? formation.parseOntologyFormationProposal(ontology.readOntologyDocument('alice'), 'initial', {
+      reason: 'Preserve the approved answer preference as its shared rule.', evidence: ['m1'], refs, actions: [{ intent: 'create', recordId: 'answer-rule', sourceLabel: 'Approved preference',
+        record: { kind: 'rule', moduleId: 'personal', name: '回答结构偏好', requirement: original, strength: 'default', condition: { kind: 'task', field: 'purpose', equals: 'answer' }, effect: { kind: 'note' }, exception: '' } }] }, original) : undefined;
+    const f = await fixture(initialPlan ? { ontologyFormation: initialPlan } : {});
+    const first = await f.policy.tryAutomaticallyApproveRecallCandidate('alice', f.candidate.id);
+    expect(first.approved).toBe(true);
+    const current = ontology.readOntologyDocument('alice');
+    const updatePlan = joint ? formation.parseOntologyFormationProposal(current, 'revision', {
+      reason: 'The user has refined the same answer preference.', evidence: ['m1'], refs, actions: [{ intent: 'update', recordId: 'answer-rule', expectedVersion: current.records['answer-rule'].version,
+        patch: { requirement: revised }, sourceLabel: 'Approved refinement' }] }, revised) : undefined;
+    const update = await fixture({ judgment: revised, suggestedAction: 'update', targetAssetId: first.asset!.id, targetVersionUsed: '1',
+      ...(updatePlan ? { ontologyFormation: updatePlan } : {}) });
+    const result = await update.policy.tryAutomaticallyApproveRecallCandidate('alice', update.candidate.id);
+    expect(result).toMatchObject({ approved: true, asset: { version: '2' } });
+    const undo = await import('../../../../src/main/features/recall/automatic-formation-undo');
+    const preview = await undo.previewAutomaticFormationUndo('alice', update.candidate.id);
+    expect(preview.assetChange).toMatchObject({ action: 'rollback', toVersion: '1', after: first.asset!.statement });
+    await undo.undoAutomaticFormation('alice', update.candidate.id, preview.token);
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    expect(await assets.readAbilityAsset('alice', first.asset!.id)).toMatchObject({ version: '3', statement: first.asset!.statement });
+    if (joint) expect(ontology.readOntologyDocument('alice').records['answer-rule']).toMatchObject({ status: 'active', requirement: first.asset!.statement });
+    expect(await assets.listAbilityAssetVersions('alice', first.asset!.id)).toHaveLength(3);
+  });
   it('keeps a concurrent version conflict reviewable and gives a user rebase its own human audit', async () => {
     const f = await fixture();
     const first = await f.policy.tryAutomaticallyApproveRecallCandidate('alice', f.candidate.id);
