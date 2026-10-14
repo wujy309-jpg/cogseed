@@ -4147,6 +4147,7 @@
   "marketplace.redflag_intro": "A verificação encontrou padrões claramente perigosos em “{name}”. Não aparecem em habilidades normais:",
   "marketplace.redflag_type_name": "Para instalar mesmo assim, digite o nome “{name}”:",
   "marketplace.state_update_available": "Atualização disponível",
+  "marketplace.state_app_update_required": "Atualização do CogSeed necessária",
   "settings.cli_fallback.title": "Fallback de CLI do Commander",
   "settings.cli_fallback.sub": "Sem modelo com API Key configurado, o Commander roteia o chat para o seu agente CLI local conectado, em vez de falhar.",
   "settings.cli_fallback.label": "Agente de execução de fallback",

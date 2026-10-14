@@ -390,6 +390,16 @@ function _mpItemAppCompatible(item) {
   return _mpCompareVersions(current, min) >= 0;
 }
 
+/**
+ * C5/N-06：主进程 reconcile 在 `min_app_version` 门处跳过的内容，列表响应会显式附上
+ * `appUpdateRequired`（字段名同 MarketplaceInstallError）。这是**权威信号**——本地版本比较
+ * 可能因版本标记格式差异判错，所以命中该字段就直接判为不兼容，不再重算。兼容条目没有该
+ * 字段（不是 `false`），缺席即"无需更新客户端"。
+ */
+function _mpItemAppUpdateRequired(item) {
+  return item?.appUpdateRequired === true;
+}
+
 function _mpInstallMetaRows(kind) {
   const ids = kind === 'agent' ? _mpState.installedAgentIds : _mpState.installedSkillIds;
   const map = kind === 'agent' ? _mpState.installedAgentMeta : _mpState.installedSkillMeta;
@@ -1610,7 +1620,19 @@ function _mpCardHtml(item, lang) {
   const avatar = kind === 'agent'
     ? renderAvatarHtml(item.icon, item.color, { size: 32, seed: item.id, extraClass: 'marketplace-card-avatar' })
     : '';
-  const appCompatible = status.installed || status.updateAvailable || _mpItemAppCompatible(item);
+  // C5/N-06：被版本门跳过（主进程显式附 appUpdateRequired）的条目显示本地化「需更新客户端」
+  // 状态；兼容条目没有该字段，因此不挂这个状态。Hub 停用优先——已停用的内容本身不可用，
+  // 不再叠加第二条状态（与既有的「有更新」chip 同一取舍）。
+  const appUpdateRequired = _mpItemAppUpdateRequired(item);
+  const appUpdatePill = appUpdateRequired && !hubDisabled
+    ? uiStatusPill({
+      label: t('marketplace.state_app_update_required'),
+      tone: 'attention',
+      attrs: { 'data-mp-state': 'app-update-required' },
+    })
+    : '';
+  const appCompatible = !appUpdateRequired
+    && (status.installed || status.updateAvailable || _mpItemAppCompatible(item));
   let btnLabel = t('marketplace.install');
   let btnAttrs = `data-mp-install="${escapeHtml(kind)}" data-mp-id="${escapeHtml(item.id)}"`;
   if (hubDisabled) {
@@ -1620,7 +1642,12 @@ function _mpCardHtml(item, lang) {
     btnLabel = status.updateAvailable ? t('marketplace.updating') : t('marketplace.installing');
     btnAttrs = 'disabled';
   } else if (!appCompatible) {
-    btnLabel = t('marketplace.requires_app').replace('{version}', _mpMinAppVersion(item));
+    // 有下限就用既有的「需 CogSeed {version}+」；下限缺席（只凭 appUpdateRequired）时
+    // 退回状态文案，**不在按钮上拼一个空版本号**。
+    const min = _mpMinAppVersion(item);
+    btnLabel = min
+      ? t('marketplace.requires_app').replace('{version}', min)
+      : t('marketplace.state_app_update_required');
     btnAttrs = 'disabled title="' + escapeHtml(btnLabel) + '"';
   } else if (status.updateAvailable) {
     btnLabel = t('marketplace.update');
@@ -1640,6 +1667,7 @@ function _mpCardHtml(item, lang) {
           ${item.version && kind !== 'skill' ? `<span class="marketplace-card-chip is-version">${escapeHtml(versionLabel)}</span>` : ''}
           ${catLabel ? `<span class="marketplace-card-chip">${escapeHtml(catLabel)}</span>` : ''}
           ${updateChip}
+          ${appUpdatePill}
           ${statusLabel ? uiStatusPill({ label: statusLabel, tone: 'attention', attrs: { 'data-mp-state': 'disabled' } }) : ''}
         </div>
         <div class="marketplace-card-actions">
@@ -1823,8 +1851,12 @@ function _mpRenderDetail() {
     installBtn.classList.add('btn-danger', 'ui-button--danger');
     installBtn.disabled = false;
     installBtn.dataset.action = 'uninstall';
-  } else if (!_mpItemAppCompatible(item)) {
-    const label = t('marketplace.requires_app').replace('{version}', _mpMinAppVersion(item));
+  } else if (_mpItemAppUpdateRequired(item) || !_mpItemAppCompatible(item)) {
+    // 与列表卡片同一判据：主进程显式标注的 appUpdateRequired 优先于本地版本重算。
+    const min = _mpMinAppVersion(item);
+    const label = min
+      ? t('marketplace.requires_app').replace('{version}', min)
+      : t('marketplace.state_app_update_required');
     installBtn.textContent = label;
     installBtn.title = label;
     installBtn.classList.remove('btn-primary', 'btn-danger');

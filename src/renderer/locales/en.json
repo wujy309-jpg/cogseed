@@ -4442,6 +4442,7 @@
   "marketplace.redflag_intro": "The security check found definite dangerous patterns in “{name}”. These do not appear in normal skills:",
   "marketplace.redflag_type_name": "To install anyway, type the skill name “{name}”:",
   "marketplace.state_update_available": "Update available",
+  "marketplace.state_app_update_required": "CogSeed update required",
   "settings.cli_fallback.title": "Commander CLI fallback",
   "settings.cli_fallback.sub": "When no API-key model is configured, Commander routes chat to your signed-in local CLI agent instead of failing.",
   "settings.cli_fallback.label": "Fallback execution agent",

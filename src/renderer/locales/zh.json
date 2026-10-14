@@ -4445,6 +4445,7 @@
   "marketplace.redflag_intro": "安全检查在「{name}」中发现明确的危险模式。这类模式在正常技能里不会出现：",
   "marketplace.redflag_type_name": "如果你确认要安装，请输入技能名「{name}」：",
   "marketplace.state_update_available": "有更新",
+  "marketplace.state_app_update_required": "需更新客户端",
   "settings.cli_fallback.title": "cogseed CLI 降级",
   "settings.cli_fallback.sub": "未配置 API Key 模型时，cogseed 不会失败，而是把对话交给已登录的本机 CLI Agent 执行。",
   "settings.cli_fallback.label": "降级执行 Agent",

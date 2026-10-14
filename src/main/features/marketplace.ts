@@ -355,6 +355,11 @@ export interface MarketplaceAgent {
   minVersion?: string;
   min_pc_version?: string;
   minPcVersion?: string;
+  /** C5/N-06：本机客户端版本不足、reconcile 跳过该内容时由列表接口附加（兼容条目缺席，
+   *  不是 `false`）。字段名与 MarketplaceInstallError 一致，渲染层据此显示本地化状态。 */
+  appUpdateRequired?: boolean;
+  /** 标记成立时本机客户端版本（`currentAppVersion()`），供渲染层显示提示。 */
+  currentAppVersion?: string;
 }
 
 export interface MarketplaceSkill {
@@ -381,6 +386,10 @@ export interface MarketplaceSkill {
   min_pc_version?: string;
   minPcVersion?: string;
   artifact?: SkillMetadata['artifact'];
+  /** 同 `MarketplaceAgent.appUpdateRequired`。 */
+  appUpdateRequired?: boolean;
+  /** 同 `MarketplaceAgent.currentAppVersion`。 */
+  currentAppVersion?: string;
 }
 
 export interface AgentDetail {

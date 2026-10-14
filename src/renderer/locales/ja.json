@@ -4147,6 +4147,7 @@
   "marketplace.redflag_intro": "「{name}」に明確な危険パターンを検出しました。通常の技能には現れないものです:",
   "marketplace.redflag_type_name": "それでもインストールする場合は技能名「{name}」を入力してください:",
   "marketplace.state_update_available": "アップデートあり",
+  "marketplace.state_app_update_required": "CogSeed の更新が必要",
   "settings.cli_fallback.title": "コマンダー CLI フォールバック",
   "settings.cli_fallback.sub": "API キーが設定されていない場合、コマンダーは失敗せず、ログイン済みのローカル CLI エージェントにチャットを委ねます。",
   "settings.cli_fallback.label": "フォールバック実行エージェント",
