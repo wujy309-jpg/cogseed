@@ -733,12 +733,18 @@ function _renderMemberSourceBody(container, target, group, opts) {
   };
   const pickModel = (patch) => {
     // 换模型后原强度不受支持 → 恢复该来源的默认强度并提示（FR-013）。
+    // Option C：判据优先用模型**声明的档位**（与菜单、后端门同一份），声明查不到
+    // 时才回退旧的名称启发式。判错会让一个后端会拒绝的档位留在配置里，
+    // 下一轮直接变成 model_preflight——这里必须能提前清掉。
     const next = { ...(patch || {}) };
-    const supported = (next.provider && next.model)
-      ? _modelReasoningCapability(next.provider, next.model)
-      : null;
+    const hasModel = !!(next.provider && next.model);
+    const declaredLevels = hasModel ? _modelEffortLevels(next.provider, next.model) : null;
+    const heuristicSupported = hasModel ? _modelReasoningCapability(next.provider, next.model) : null;
     const currentEffort = conf.effort;
-    if (supported === false && (currentEffort === 'low' || currentEffort === 'high')) {
+    // 'off' 不在被判定的集合里：它的语义是"不发参数"，任何模型都不会因此被拒。
+    const effortUnsupported = (currentEffort === 'low' || currentEffort === 'high')
+      && (declaredLevels ? !declaredLevels.includes(currentEffort) : heuristicSupported === false);
+    if (effortUnsupported) {
       next.effort = '';
       if (typeof uiToast === 'function') {
         uiToast(t('composer.model.effort_reset_notice', { level: t(`model_effort.${currentEffort}`) }), {
@@ -911,16 +917,19 @@ function _renderMemberSourceBody(container, target, group, opts) {
     note.textContent = t('model_chip.loading_models');
     host.appendChild(note);
   }
-  // Option C（按模型声明的档位）只约束**内进程 API 模型**。外接 CLI 的强度由
-  // 网关协商（effortControllableFor / --effort 模板）决定，不是模型目录声明，
-  // 因此保持既有四档与既有置灰语义。
+  // Option C（按模型声明的档位）只约束**内进程 API 模型**，且要先有具体模型：
+  // 外接 CLI 的强度由网关协商（effortControllableFor / --effort 模板）；
+  // 内进程来源「跟随默认」（未选模型）时无从查声明，保持既有四档全开。
   const external = !!(group && group.external);
+  const hasModel = !!(conf.provider && conf.model);
   _renderMemberEffortRows(host, target, group, conf, {
     ...(external
       ? _cliMemberEffortOptions((_memberAgentRecord(group.id)?.runtime || {}).cli || '')
-      : { levels: _modelEffortOptionsFor(conf.provider, conf.model) }),
-    // 声明为空时给一句说明；查不到声明不解释（沿用旧行为）。
-    undeclared: !external && !!(conf.provider && conf.model) && !_modelEffortLevels(conf.provider, conf.model),
+      : hasModel
+        ? { levels: _modelEffortOptionsFor(conf.provider, conf.model) }
+        : { levels: _EFFORT_OPTIONS }),
+    // 声明为空时给一句说明；查不到声明（含"还没选模型"）不解释（沿用旧行为）。
+    undeclared: !external && hasModel && !_modelEffortLevels(conf.provider, conf.model),
     rerender: () => _renderMemberSourceBody(container, target, group, opts),
   });
 }

@@ -118,6 +118,14 @@ describe('unified execution entry — task-scoped exec-config chip', () => {
     expect(conv).toMatch(/if \(effectiveEffort && \(!isCliAgentRecipient \|\| cliExec\)\)/);
   });
 
+  it('Option C：换模型的"强度回落"判据与菜单/后端门同一份声明', () => {
+    const chip = read('src/renderer/modules/model-chip.js');
+    // 成员来源换模型时必须先按声明的档位清掉不受支持的低/高，否则会留下一个
+    // 后端必然拒绝的档位（下一轮 = model_preflight）。off 不在判定集合里。
+    expect(chip).toMatch(/declaredLevels \? !declaredLevels\.includes\(currentEffort\) : heuristicSupported === false/);
+    expect(chip).toMatch(/currentEffort === 'low' \|\| currentEffort === 'high'/);
+  });
+
   it('re-renders the anchor chip at menu-open so chip and menu can never disagree', () => {
     const chip = read('src/renderer/modules/model-chip.js');
     // chip 平时靠事件重渲染；事件丢失/时序错位会停在旧态（真机事故：
