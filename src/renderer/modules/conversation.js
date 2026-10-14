@@ -3311,8 +3311,10 @@ async function _syncPendingActorsFromRuntime(cid, opts = {}) {
   // （"没显示工人 agent 在执行"）。这里只补建占位，其余 pending 语义保持原样，
   // 避免把调用方对 pending 的判断一起改掉。
   if (hasActiveTurnsField && activeTurns.length > 0 && cid === currentCid) {
-    const activeCommanderForPlaceholders = activeTurns.some((t) => t.actor === 'commander');
-    if (!activeCommanderForPlaceholders) _removeEmptyActorPlaceholder(cid, 'commander');
+    // 只补建活跃回合的占位，**不在这里清理 commander 的空占位**：清理是 pending
+    // 生命周期（下面那段）的职责，脱离 pending 门去做会把 commander 上一轮的执行
+    // 过程气泡一并摘掉（真机回归 2026-10-14 17:3x：工人显示正常了，但 cogseed 之前
+    // 的执行过程消失）。这里保持纯增量。
     for (const turn of activeTurns) {
       _ensureActorPlaceholder(cid, turn.actor, loadingEl, turn.turn_id, turn.msg_id, turn.started_at_ms);
     }
