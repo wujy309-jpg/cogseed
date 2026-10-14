@@ -314,6 +314,10 @@ function _csSetBadgeLive(flow, live) {
   const existing = badge.querySelector('.cs-badge-live');
   if (!live) {
     if (existing) existing.remove();
+    // 头像下方那条状态文案也要随终态一起收掉，别让它留在头上。
+    const headOff = badge.closest ? badge.closest('.chat-msg-header') : null;
+    const stray = headOff ? headOff.querySelector('.cs-badge-live-label') : null;
+    if (stray) stray.remove();
     return;
   }
   if (existing) return;
@@ -324,8 +328,19 @@ function _csSetBadgeLive(flow, live) {
   el.className = 'cs-badge-live';
   el.setAttribute('role', 'status');
   el.setAttribute('aria-label', _csT('run_center.action_working', '工作中'));
-  el.innerHTML = `<span class="cs-loading-spinner">${_csIco('loader')}</span><span class="cs-badge-live-label">${_csT('run_center.action_working', '工作中')}</span>`;
+  el.innerHTML = `<span class="cs-loading-spinner">${_csIco('loader')}</span>`;
   badge.insertBefore(el, badge.firstChild);
+  // 2026-10-14 需求：执行中的状态文案挂到**头像下方**，不再与名字并排（badge 在
+  // 名字右侧）。找不到头像时退回徽章内，保证任何情况下都有可见文案。
+  const liveLabel = document.createElement('span');
+  liveLabel.className = 'cs-badge-live-label';
+  liveLabel.textContent = _csT('run_center.action_working', '工作中');
+  const head = badge.closest ? badge.closest('.chat-msg-header') : null;
+  const avatar = head
+    ? head.querySelector('.chat-msg-avatar, .cs-avatar, .chat-avatar, .avatar, [class*="avatar"]')
+    : null;
+  if (avatar && avatar.insertAdjacentElement) avatar.insertAdjacentElement('afterend', liveLabel);
+  else el.appendChild(liveLabel);
 }
 
 /** 计时/收起徽章：消息头里 cogseed 名字右侧，点击收起下方工具调用区。
