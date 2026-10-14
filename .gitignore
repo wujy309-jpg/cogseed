@@ -19,6 +19,7 @@
 # Local multi-agent shared-file collaboration POC state
 task.md
 plan.md
+!specs/001-hub-skill-contribution/plan.md
 .collab-poc/
 
 # Local document/render outputs and workflow state
@@ -52,8 +53,8 @@ package.json.new
 /dist-dev
 build-info.json
 
-# Local authoring tools and machine settings never belong to the release tree.
-/.claude/
+# Per-machine tool permissions. Shared plans remain tracked deliberately.
+/.claude/settings.local.json
 
 # Declares the intentional absence of the bundled deep scanner. Since the
 # engine itself is not distributed in this repository, the marker is tracked
@@ -76,9 +77,8 @@ build-info.json
 # updates-server/publish.cjs which copies them here)
 /updates-server/downloads/
 
-# Internal dev skills must not be tracked in the public repo.
-# Keep authoring tools outside the checkout.
-/.agents/
+# Keep the local audit tool outside the checkout; team skills stay tracked.
+.agents/skills/cogseed-open-source-audit/
 .tmp-override-src-*/
 .tmp-skill-import-*/
 .tmp-skill-runner-*/
@@ -86,29 +86,15 @@ build-info.json
 # Local Python environment for Spec Kit template composition.
 /.venv-speckit/
 
-# Release-source boundary: private work products live outside this checkout.
-/.ai-product/
-/.specify/
-/specs/
-/design/
-/reports/
-/skills/
-/skills-lock.json
-/AGENTS.md
-/CLAUDE.md
-/.goal-loop-ledger.md
-/measure-baselines.cjs
-/开发流程速查.md
-/scripts/opensource/
-/.github/workflows/
-/.github/dependabot.yml
-/.github/CODEOWNERS
-/.gitleaks.toml
-/test/private/
-/community/PILOT_BACKLOG.zh-CN.md
-/docs/*
-!/docs/DEVELOPMENT.md
-!/docs/DEVELOPMENT.zh-CN.md
+# One-off work products live outside this checkout. Public export boundaries
+# are maintained separately in scripts/opensource/policy.json; this private
+# repository keeps shared tooling, engineering rules and CI under version control.
+/HANDOFF.md
+/design/security-redesign/
+/design/evidence-0928/
+/docs/release-scan-remediation-20260923.md
+/docs/release-scan-readme-externals-20260923.md
+/docs/research-skill-scanner-security-20260930.md
 
 # Generated caches, environments and build outputs.
 /.pytest_cache/
