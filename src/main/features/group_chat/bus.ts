@@ -2438,6 +2438,68 @@ export interface ProjectedUserTaskMessageInput {
   text: string;
 }
 
+/**
+ * R-11: ask the commander for exactly one reporting round once every actor of this
+ * run has reached a terminal. Shared by the normal actor-result path, the
+ * worker-failure path, and the projected/backend (wake-dispatched) member path —
+ * a failed worker must produce a *degradation* report ("X failed: reason") instead
+ * of dying silently, which is exactly what happened on 2026-10-13: a network
+ * failure ("fetch failed") left report_enqueued unset and the commander never said
+ * anything.
+ *
+ * 2026-10-14 16:24 (cid 38591293f03a): a wake-dispatched worker delivered at
+ * 16:24:31 through the projection path, which never called this at all — no
+ * `actor report decision` line was ever logged, so the commander's last word stayed
+ * "等你批准" after the worker had already finished and the run summary said
+ * completed. The projected member terminal therefore owes the same check.
+ */
+async function enqueueActorReportIfOwed(
+  uid: string,
+  cid: string,
+  runId: string | undefined,
+  actorId: string,
+  actorName: string,
+): Promise<void> {
+  if (!runId) return;
+  try {
+    const runStore = await import("./run_store");
+    const run = await runStore.readRun(uid, cid, runId);
+    const shouldReport = runStore.shouldEnqueueActorReport(run);
+    log.info(`actor report decision run=${runId} should=${shouldReport}`, { cid });
+    if (!shouldReport) return;
+    await runStore.markActorReportEnqueued(uid, cid, runId);
+    await enqueue({
+      uid,
+      cid,
+      fromActorId: actorId,
+      text: t("chat.actor_report_ready", { name: actorName || actorId }),
+      forceTo: [COMMANDER_ID],
+      dispatch: true,
+    });
+  } catch (err) {
+    log.warn(`actor report round enqueue failed cid=${cid}: ${(err as Error).message}`);
+  }
+}
+
+/** 投影/后端派发路径的 actor 显示名：唤醒请求里带 agent_name，缺则退回 id。 */
+async function reportActorName(
+  uid: string,
+  cid: string,
+  runId: string | undefined,
+  actorId: string,
+): Promise<string> {
+  if (!runId) return actorId;
+  try {
+    const { listWakeRequests } = await import("../p3394/wake-service");
+    const request = (await listWakeRequests(uid, cid)).find((item) => (
+      item.dispatch_payload?.run_id === runId && item.agent_id === actorId
+    ));
+    return String(request?.agent_name || "").trim() || actorId;
+  } catch {
+    return actorId;
+  }
+}
+
 async function recordProjectedMemberRunTerminal(
   input: ProjectedAgentMessageInput,
   message: GroupMessage | null,
@@ -2555,6 +2617,15 @@ export async function appendProjectedAgentMessage(input: ProjectedAgentMessageIn
     _recordTaskRunOutcome(state, input.terminalStatus ?? (input.failureKind ? 'failed' : 'completed'));
     await recordProjectedMemberRunTerminal(input, null);
     await _syncStateStatus(state);
+    // R-11：工人（含唤醒派发）交付后把 commander 叫回来汇报一轮。必须放在
+    // _syncStateStatus 之后——收尾要求 isQuiescent，先入队会让运行一直不 finalize。
+    await enqueueActorReportIfOwed(
+      input.uid,
+      input.cid,
+      input.runId,
+      input.agentId,
+      await reportActorName(input.uid, input.cid, input.runId, input.agentId),
+    );
     return null;
   }
   const messageFile = conversationLayout(input.uid, input.cid, conversation.project_id || null).messageFile;
@@ -2645,6 +2716,15 @@ export async function appendProjectedAgentMessage(input: ProjectedAgentMessageIn
   await recordProjectedMemberRunTerminal(input, msg);
   if (state.taskRun) state.taskRun.lastMessageId = msg.id;
   await _syncStateStatus(state);
+  // R-11：同上——收尾之后再叫 commander 汇报（真机 2026-10-14 16:24：这条投影
+  // 路径此前从不触发汇报，工人的结果交付了，commander 的上一句还停在"等你批准"）。
+  await enqueueActorReportIfOwed(
+    input.uid,
+    input.cid,
+    input.runId,
+    input.agentId,
+    await reportActorName(input.uid, input.cid, input.runId, input.agentId),
+  );
   return msg;
 }
 
@@ -4858,7 +4938,7 @@ async function runWorkerLoop(state: CidState, w: WorkerState): Promise<void> {
           actorId: item.actor.id,
           reason: userAborted ? "user_stopped" : "runtime_failed",
         });
-        await maybeEnqueueActorReport(w.uid, w.cid, item.runId, item.actor.id, item.actor.name || "");
+        await enqueueActorReportIfOwed(w.uid, w.cid, item.runId, item.actor.id, item.actor.name || "");
     } finally {
       w.currentTurnId = null;
       w.currentRunId = null;
@@ -4985,41 +5065,6 @@ type ActorTurnResult =
       terminalStatus: TaskTerminalStatus;
     };
 
-  /**
-   * R-11: ask the commander for exactly one reporting round once every actor of
-   * this run has reached a terminal. Shared by the normal actor-result path AND
-   * the worker-failure path — a failed worker must produce a *degradation* report
-   * ("X failed: reason") instead of dying silently, which is exactly what happened
-   * on 2026-10-13: a network failure ("fetch failed") left report_enqueued unset
-   * and the commander never said anything.
-   */
-  async function maybeEnqueueActorReport(
-    uid: string,
-    cid: string,
-    runId: string | undefined,
-    actorId: string,
-    actorName: string,
-  ): Promise<void> {
-    if (!runId) return;
-    try {
-      const runStore = await import("./run_store");
-      const run = await runStore.readRun(uid, cid, runId);
-      const shouldReport = runStore.shouldEnqueueActorReport(run);
-      log.info(`actor report decision run=${runId} should=${shouldReport}`, { cid });
-      if (!shouldReport) return;
-      await runStore.markActorReportEnqueued(uid, cid, runId);
-      await enqueue({
-        uid,
-        cid,
-        fromActorId: actorId,
-        text: t("chat.actor_report_ready", { name: actorName || actorId }),
-        forceTo: [COMMANDER_ID],
-        dispatch: true,
-      });
-    } catch (err) {
-      log.warn(`actor report round enqueue failed cid=${cid}: ${(err as Error).message}`);
-    }
-  }
 
 async function recordMemberRunTurnResult(
   state: CidState,
@@ -5073,7 +5118,7 @@ async function recordMemberRunTurnResult(
     // R-11 (decision 2026-10-13): the commander waits for the actors it
     // dispatched and then reports. Shared with the worker-failure path so a failed
     // worker produces a degradation report instead of dying silently.
-    await maybeEnqueueActorReport(state.uid, state.cid, item.runId, actor.id, actor.name || "");
+    await enqueueActorReportIfOwed(state.uid, state.cid, item.runId, actor.id, actor.name || "");
 }
 
 type CoordinatorTurnContext = {
@@ -5301,6 +5346,26 @@ async function runActorTurn(
         });
       }
     }
+  }
+}
+
+/** 该运行自称的"等用户"是否已被唤醒记录回答过了。查不到记录/读盘失败时返回
+ *  false —— 宁可保留一次真实等待，也不凭空把等待抹掉。 */
+async function wakeDeclaredWaitAlreadyAnswered(
+  state: CidState,
+  runId: string | undefined,
+): Promise<boolean> {
+  if (!runId) return false;
+  try {
+    const { runWakeWaitAlreadyAnswered } = await import(
+      "../p3394/wake-service"
+    );
+    return await runWakeWaitAlreadyAnswered(state.uid, state.cid, runId);
+  } catch (err) {
+    log.warn(
+      `wake wait verdict unavailable cid=${maskId(state.cid)} run=${maskId(runId)}: ${(err as Error).message}`,
+    );
+    return false;
   }
 }
 
@@ -8469,9 +8534,23 @@ async function runActorTurnBody(
       (aborted ? " aborted=1" : ""),
   );
 
+  // 状态由**记录**决定，不由模型的话决定：模型可以自称 waiting_input，但若这条
+  // 等待所依据的唤醒请求已经有结论（approved/executed/rejected/expired），那这个
+  // "等用户"就是陈旧的。真机 2026-10-14 16:24（cid 38591293f03a）：唤醒 16:24:21
+  // 批准 + 工人 16:24:31 交付，commander 回合 16:24:36 才落盘并自称 waiting_input
+  // → 任务被打成 waiting_user 永久留在待办，R-11 汇报回合也不再触发（同一次运行
+  // 的 run_summary 写的是 completed）。只复核**模型自称**的等待；真表单
+  // （form / planInteraction === "open"）是货真价实的等人输入，不在复核范围。
+  const declaredWaitIsStale =
+    !aborted &&
+    !form &&
+    planInteraction !== "open" &&
+    actorTerminalOverride === "waiting_input" &&
+    (await wakeDeclaredWaitAlreadyAnswered(state, item.runId));
   const terminalStatus: TaskTerminalStatus = aborted
     ? "cancelled"
-    : form || planInteraction === "open" || actorTerminalOverride === "waiting_input"
+    : !declaredWaitIsStale &&
+        (form || planInteraction === "open" || actorTerminalOverride === "waiting_input")
       ? "waiting_input"
       : errText ||
           actorRunStatus === "failure" ||
