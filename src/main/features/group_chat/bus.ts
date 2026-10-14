@@ -22,6 +22,7 @@
 
 import type { AgentTool, HistoryResource } from "#core-agent";
 import type { ChatResolvedRuntime, CognitionSaveReceipt } from "../../model/client";
+import { validateReasoningEffort } from "../../model/reasoning_effort";
 
 import { createLogger } from "../../logger";
 import { logErrorRef, logPathRef, maskId } from "../../util/log-redact";
@@ -75,7 +76,7 @@ import type {
   OrchestrationLedgerInput,
   StateFile,
 } from "./state";
-import { maxToolLoopsForActorKind } from "./actor-budgets";
+import { maxToolLoopsForActorTurn } from "./actor-budgets";
 import {
   GroupMessage,
   appendVisible,
@@ -148,6 +149,14 @@ import {
 } from "../../util/project-layout";
 import { cachedConversationSpace } from "../chat_attachments";
 import * as agentsFeat from "../agents";
+import {
+  AGENT_BUILDER_IDS,
+  applyAgentBuilderFields,
+} from "./agent-builder";
+import {
+  continueGovernedAgentBuilderFlow,
+  startGovernedAgentBuilderFlow,
+} from "./agent-builder-governed-flow";
 import * as commanderRuntimeStats from "../commander_runtime_stats";
 import { getThinkingLevel } from "../config";
 import {
@@ -209,6 +218,35 @@ export function _targetsDeepSeekOfficialApi(uid: unknown, providerId: unknown): 
     return false;
   }
 }
+
+/** Option C（推理强度按模型声明的档位）：解析有效模型声明的思考档位（宿主
+ *  可表达的子集 off|low|high）。**解析不出就返回 undefined**——"不知道"不等于
+ *  "没有档位"，调用方据此跳过校验，绝不因为一次能力查询失败或模型没有声明而
+ *  拒掉一个本来能跑的回合。判定本身在 model/reasoning_effort.ts，与 auth 的
+ *  列表标注共用同一份口径。 */
+export async function _declaredReasoningLevelsFor(
+  uid: string,
+  modelOverride?: { provider?: string; model?: string },
+): Promise<string[] | undefined> {
+  try {
+    const auth = await import("../auth");
+    let provider = String(modelOverride?.provider || "").trim();
+    let model = String(modelOverride?.model || "").trim();
+    if (!provider || !model) {
+      const { entries } = await auth.listEntriesForUser(uid);
+      const current = entries && entries[0];
+      if (!current?.provider || !current?.model) return undefined;
+      provider = String(current.provider);
+      model = String(current.model);
+    }
+    const res = await auth.listModelsForUser(uid, provider);
+    const hit = (res.models || []).find((m) => m && m.id === model);
+    const levels = hit && Array.isArray(hit.reasoningLevels) ? hit.reasoningLevels : undefined;
+    return levels && levels.length ? levels : undefined;
+  } catch {
+    return undefined;
+  }
+}
 import type { AgentRunStatus } from "../agent_runtime_stats";
 import {
   activityFromLocalEvent,
@@ -237,7 +275,7 @@ import {
   normalizeLang,
   t,
 } from "../../i18n";
-import { getLanguage } from "../config";
+import { getLanguage, getUiLanguage } from "../config";
 import * as marketplaceFeat from "../marketplace";
 import { readInstalls } from "../marketplace_installs";
 import {
@@ -248,12 +286,17 @@ import {
 import {
   compactPromptDescription,
   listAgentOwnedSkillIds,
-  listSkillSpecs,
+  listSkillSpecsForUser,
   openSkillReadRoots,
   resolveSkillAllowlistRefs,
   searchOpenTierSkills,
   type SkillAllowlistRef,
 } from "../../model/core-agent/skill-registry";
+import { readCreatorAgentBinding } from "../creator/agent-binding-store";
+import {
+  creatorRuntimeExecutionOptions,
+  getAgentDispatchPolicy,
+} from "../agent-dispatch-policy";
 import { buildRuntimeDatetimeBlock } from "../../prompts/runtime_context";
 import {
   buildMemberScopeBlock, isExternalRecipient, MEMBER_SCOPE_TEMPLATE,
@@ -604,9 +647,21 @@ async function _runtimeSkillListForAgent(
   uid: string,
   agent: agentsFeat.Agent,
 ): Promise<string[]> {
+  const creatorBinding = agent.creator_binding;
+  let creatorAllowedSkills: Set<string> | null = null;
+  if (creatorBinding) {
+    try {
+      const binding = await readCreatorAgentBinding(uid, creatorBinding.presetId, creatorBinding.version);
+      if (!binding || binding.agentId !== agent.agent_id || binding.manifestDigest !== creatorBinding.manifestDigest
+          || binding.materializationRevision !== creatorBinding.materializationRevision) return [];
+      creatorAllowedSkills = new Set(binding.policy.skillIds);
+    } catch {
+      return [];
+    }
+  }
   // Owner-scoped: a private (`ownerAgent`) skill of another agent never
   // resolves here, so it can't enter this agent's runtime skill list.
-  const specs = await listSkillSpecs({ forAgentId: agent.agent_id }).catch(
+  const specs = await listSkillSpecsForUser(uid, { forAgentId: agent.agent_id }).catch(
     (err) => {
       log.warn(
         `skill allowlist resolution failed agent=${agent.agent_id}: ${(err as Error).message}`,
@@ -620,7 +675,8 @@ async function _runtimeSkillListForAgent(
       ? resolveSkillAllowlistRefs(specs, refs).ids
       : refs.filter(
           (id): id is string => typeof id === "string" && !!id.trim(),
-        );
+    );
+  if (creatorAllowedSkills) return resolved.filter((skill) => creatorAllowedSkills!.has(skill));
   const owned = await listAgentOwnedSkillIds(uid, agent.agent_id).catch(
     (err) => {
       log.warn(
@@ -641,6 +697,8 @@ async function _findDisabledSkillUseRequest(
   if (!_hasSkillUseIntent(text) && !selected.size) return null;
   let skills: skillsFeat.SkillListing[];
   try {
+    // develop 新版：listSkills() 的每一项自带 enabled 与 marketplace 来源，
+    // 因此不再需要单独取 disabled 集合过滤（creator 侧的旧写法已由它取代）。
     skills = await skillsFeat.listSkills();
   } catch (err) {
     log.warn(
@@ -2410,6 +2468,68 @@ export interface ProjectedUserTaskMessageInput {
   text: string;
 }
 
+/**
+ * R-11: ask the commander for exactly one reporting round once every actor of this
+ * run has reached a terminal. Shared by the normal actor-result path, the
+ * worker-failure path, and the projected/backend (wake-dispatched) member path —
+ * a failed worker must produce a *degradation* report ("X failed: reason") instead
+ * of dying silently, which is exactly what happened on 2026-10-13: a network
+ * failure ("fetch failed") left report_enqueued unset and the commander never said
+ * anything.
+ *
+ * 2026-10-14 16:24 (cid 38591293f03a): a wake-dispatched worker delivered at
+ * 16:24:31 through the projection path, which never called this at all — no
+ * `actor report decision` line was ever logged, so the commander's last word stayed
+ * "等你批准" after the worker had already finished and the run summary said
+ * completed. The projected member terminal therefore owes the same check.
+ */
+async function enqueueActorReportIfOwed(
+  uid: string,
+  cid: string,
+  runId: string | undefined,
+  actorId: string,
+  actorName: string,
+): Promise<void> {
+  if (!runId) return;
+  try {
+    const runStore = await import("./run_store");
+    const run = await runStore.readRun(uid, cid, runId);
+    const shouldReport = runStore.shouldEnqueueActorReport(run);
+    log.info(`actor report decision run=${runId} should=${shouldReport}`, { cid });
+    if (!shouldReport) return;
+    await runStore.markActorReportEnqueued(uid, cid, runId);
+    await enqueue({
+      uid,
+      cid,
+      fromActorId: actorId,
+      text: t("chat.actor_report_ready", { name: actorName || actorId }),
+      forceTo: [COMMANDER_ID],
+      dispatch: true,
+    });
+  } catch (err) {
+    log.warn(`actor report round enqueue failed cid=${cid}: ${(err as Error).message}`);
+  }
+}
+
+/** 投影/后端派发路径的 actor 显示名：唤醒请求里带 agent_name，缺则退回 id。 */
+async function reportActorName(
+  uid: string,
+  cid: string,
+  runId: string | undefined,
+  actorId: string,
+): Promise<string> {
+  if (!runId) return actorId;
+  try {
+    const { listWakeRequests } = await import("../p3394/wake-service");
+    const request = (await listWakeRequests(uid, cid)).find((item) => (
+      item.dispatch_payload?.run_id === runId && item.agent_id === actorId
+    ));
+    return String(request?.agent_name || "").trim() || actorId;
+  } catch {
+    return actorId;
+  }
+}
+
 async function recordProjectedMemberRunTerminal(
   input: ProjectedAgentMessageInput,
   message: GroupMessage | null,
@@ -2527,6 +2647,15 @@ export async function appendProjectedAgentMessage(input: ProjectedAgentMessageIn
     _recordTaskRunOutcome(state, input.terminalStatus ?? (input.failureKind ? 'failed' : 'completed'));
     await recordProjectedMemberRunTerminal(input, null);
     await _syncStateStatus(state);
+    // R-11：工人（含唤醒派发）交付后把 commander 叫回来汇报一轮。必须放在
+    // _syncStateStatus 之后——收尾要求 isQuiescent，先入队会让运行一直不 finalize。
+    await enqueueActorReportIfOwed(
+      input.uid,
+      input.cid,
+      input.runId,
+      input.agentId,
+      await reportActorName(input.uid, input.cid, input.runId, input.agentId),
+    );
     return null;
   }
   const messageFile = conversationLayout(input.uid, input.cid, conversation.project_id || null).messageFile;
@@ -2617,6 +2746,15 @@ export async function appendProjectedAgentMessage(input: ProjectedAgentMessageIn
   await recordProjectedMemberRunTerminal(input, msg);
   if (state.taskRun) state.taskRun.lastMessageId = msg.id;
   await _syncStateStatus(state);
+  // R-11：同上——收尾之后再叫 commander 汇报（真机 2026-10-14 16:24：这条投影
+  // 路径此前从不触发汇报，工人的结果交付了，commander 的上一句还停在"等你批准"）。
+  await enqueueActorReportIfOwed(
+    input.uid,
+    input.cid,
+    input.runId,
+    input.agentId,
+    await reportActorName(input.uid, input.cid, input.runId, input.agentId),
+  );
   return msg;
 }
 
@@ -3147,7 +3285,7 @@ async function _enqueueBody(
     // doc on `ResolveOpts` in router.ts.
     const agentDisplayNames: string[] = [];
     try {
-      const all = await agentsFeat.listAgents();
+      const all = await agentsFeat.listChatDispatchableAgentsForUser(uid);
       for (const a of all) {
         if (a.enabled === false) continue;
         if (a.name) {
@@ -3192,7 +3330,7 @@ async function _enqueueBody(
   for (const token of unknown.slice()) {
     if (!safeId(token)) continue;
     try {
-      const ag = await agentsFeat.getAgent(token);
+      const ag = await agentsFeat.getAgentForChatDispatch(uid, token);
       if (ag && isAgentEnabled(uid, ag.agent_id)) {
         to.push(ag.agent_id);
         unknown = unknown.filter((u) => u !== token);
@@ -3230,7 +3368,7 @@ async function _enqueueBody(
             continue;
           }
           try {
-            const ag = await agentsFeat.getAgent(id);
+            const ag = await agentsFeat.getAgentForChatDispatch(uid, id);
             if (agentsFeat.isCliAgent(ag) || agentsFeat.isP3394GatewayAgent(ag)) {
               kept.push(id);
               continue;
@@ -3291,7 +3429,7 @@ async function _enqueueBody(
         continue;
       }
       try {
-        const agent = await agentsFeat.getAgent(recipientId);
+        const agent = await agentsFeat.getAgentForChatDispatch(uid, recipientId);
         if (!agent || !isAgentEnabled(uid, recipientId)) continue;
         const decision = await evaluateWake(uid, {
           conversationId: cid,
@@ -3404,7 +3542,7 @@ async function _enqueueBody(
   for (const recipientId of to) {
     if (RESERVED_IDS.has(recipientId)) continue;
     try {
-      const ag = await agentsFeat.getAgent(recipientId);
+      const ag = await agentsFeat.getAgentForChatDispatch(uid, recipientId);
       if (!ag || !isAgentEnabled(uid, ag.agent_id)) continue;
       if (ag.name) idToName.set(ag.agent_id, ag.name);
       const added = await ensureAgentMember(uid, cid, ag.agent_id, ag.name);
@@ -4825,6 +4963,13 @@ async function runWorkerLoop(state: CidState, w: WorkerState): Promise<void> {
           log.warn(`run terminal persistence failed cid=${w.cid}: ${(ledgerErr as Error).message}`);
         }
       }
+        log.info("worker turn failed; considering degradation report", {
+          cid: w.cid,
+          runId: item.runId || null,
+          actorId: item.actor.id,
+          reason: userAborted ? "user_stopped" : "runtime_failed",
+        });
+        await enqueueActorReportIfOwed(w.uid, w.cid, item.runId, item.actor.id, item.actor.name || "");
     } finally {
       w.currentTurnId = null;
       w.currentRunId = null;
@@ -4951,6 +5096,7 @@ type ActorTurnResult =
       terminalStatus: TaskTerminalStatus;
     };
 
+
 async function recordMemberRunTurnResult(
   state: CidState,
   item: QueueItem,
@@ -5000,6 +5146,10 @@ async function recordMemberRunTurnResult(
       artifacts,
     });
   }
+    // R-11 (decision 2026-10-13): the commander waits for the actors it
+    // dispatched and then reports. Shared with the worker-failure path so a failed
+    // worker produces a degradation report instead of dying silently.
+    await enqueueActorReportIfOwed(state.uid, state.cid, item.runId, actor.id, actor.name || "");
 }
 
 type CoordinatorTurnContext = {
@@ -5227,6 +5377,26 @@ async function runActorTurn(
         });
       }
     }
+  }
+}
+
+/** 该运行自称的"等用户"是否已被唤醒记录回答过了。查不到记录/读盘失败时返回
+ *  false —— 宁可保留一次真实等待，也不凭空把等待抹掉。 */
+async function wakeDeclaredWaitAlreadyAnswered(
+  state: CidState,
+  runId: string | undefined,
+): Promise<boolean> {
+  if (!runId) return false;
+  try {
+    const { runWakeWaitAlreadyAnswered } = await import(
+      "../p3394/wake-service"
+    );
+    return await runWakeWaitAlreadyAnswered(state.uid, state.cid, runId);
+  } catch (err) {
+    log.warn(
+      `wake wait verdict unavailable cid=${maskId(state.cid)} run=${maskId(runId)}: ${(err as Error).message}`,
+    );
+    return false;
   }
 }
 
@@ -5487,6 +5657,34 @@ async function runActorTurnBody(
 
   if (kstarExpectationPreface) messageText = `${kstarExpectationPreface}${messageText}`;
 
+  // A pending governed Agent Builder flow is host-owned. Handle the user's
+  // confirmation/cancellation before dispatching another model turn so plain
+  // text cannot bypass its lifecycle gates.
+  if (item.fromActorId === USER_ID && cid) {
+    const governed = await continueGovernedAgentBuilderFlow(
+      uid,
+      cid,
+      item.sourceMessageText ?? "",
+      w.abortController?.signal,
+    );
+    if (governed.handled) {
+      const reply = governed.message || "治理流程已处理当前消息。";
+      await markInFlight(uid, cid, actor.id, false);
+      await emitStateChanged(state);
+      await enqueue({
+        uid,
+        cid,
+        fromActorId: actor.id,
+        text: reply,
+        forceTo: [USER_ID],
+        turn_end: true,
+        turn_id: item.turnId,
+      });
+      await _syncStateStatus(state);
+      return { kind: "early" };
+    }
+  }
+
   if (isCommander && item.fromActorId === USER_ID) {
     const disabledSkill = await _findDisabledSkillUseRequest(
       uid,
@@ -5675,7 +5873,7 @@ async function runActorTurnBody(
       workingDir,
     );
   } else {
-    const agent = await agentsFeat.getAgent(actor.id);
+    const agent = await agentsFeat.getAgentForChatDispatch(uid, actor.id);
     if (!agent) {
       log.warn(`agent ${actor.id} disappeared mid-turn`);
       // User-visible signal — without this the user's @-dispatch hangs
@@ -5757,10 +5955,10 @@ async function runActorTurnBody(
       // Runtime skills start from the agent-authored skill_list and append
       // agent-owned private/self-evolved skills. User-explicit picker choices
       // are appended at the tail even if they are outside the authored list.
-      skillList = _appendSkillRefs(
-        await _runtimeSkillListForAgent(uid, agent),
-        selectedSkillRefs,
-      );
+      const authoredSkills = await _runtimeSkillListForAgent(uid, agent);
+      skillList = agent.creator_binding
+        ? authoredSkills
+        : _appendSkillRefs(authoredSkills, selectedSkillRefs);
       extraTools = [buildSkillSearchTool(uid)];
     }
   }
@@ -6717,7 +6915,16 @@ async function runActorTurnBody(
       coordinatorLease?.stop();
     };
     try {
-      const actorMaxToolLoops = maxToolLoopsForActorKind(actor.kind);
+      const actorMaxToolLoops = maxToolLoopsForActorTurn(actor.kind);
+      const creatorPolicyPromise = turnAgentSpec?.creator_binding && actor.kind === 'agent'
+        ? getAgentDispatchPolicy(uid, actor.id)
+        : null;
+      const creatorRuntime = creatorPolicyPromise
+        ? (await creatorPolicyPromise)?.creator_runtime
+        : undefined;
+      const creatorExecutionOptions = creatorRuntime
+        ? creatorRuntimeExecutionOptions(creatorRuntime)
+        : null;
       const { createLifecycleSink } = await import("../execution-records");
       const { getLocalExecMode } = await import("../permissions");
       // Vision fallback seam (2026-08-27, product call): if this turn carries
@@ -6752,10 +6959,10 @@ async function runActorTurnBody(
           images: enrichedImages,
           resolveAbilities: async () => {
             const auth = await import("../auth");
-            const { entries } = await auth.listEntries();
+            const { entries } = await auth.listEntriesForUser(uid);
             const current = entries && entries[0];
             if (!current || !current.provider || !current.model) return null;
-            const res = await auth.listModels(current.provider);
+            const res = await auth.listModelsForUser(uid, current.provider);
             const hit = (res.models || []).find((m) => m && m.id === current.model);
             return hit
               ? { providerId: current.provider, modelId: current.model, ...(hit.vision !== undefined ? { vision: hit.vision } : {}) }
@@ -6792,6 +6999,15 @@ async function runActorTurnBody(
         = item.execConfig?.effort
           ?? turnAgentSpec?.default_thinking
           ?? thinkingLevelForRun();
+      // Option C：只有**针对这个模型做出的显式选择**（任务级覆盖 / agent 默认）
+      // 才受"模型声明的档位"约束，且要在自动兜底**之前**记下——下面给已知
+      // reasoning 模型自动补 low 是展示兜底，不是用户的档位选择，不能被同一个门拒掉。
+      // 全局偏好（设置页的"思考强度"）是**跨模型的默认**，不是对某个模型的选择：
+      // 它越档时静默降级（pi-ai 按 provider 默认处理），绝不因此把整个回合判成
+      // model_preflight——否则用户改一次全局设置就会在若干模型上"开不了工"。
+      const explicitThinkingLevel = item.execConfig?.effort
+        ?? turnAgentSpec?.default_thinking
+        ?? "auto";
       // 思考展示兜底（交互设计 2026-09-08：思考过程展示需求）：'auto' 时不传
       // thinkingLevel，pi-ai 对 openai 兼容端点不会带 reasoning_effort，
       // DeepSeek 中转端点缺该参数时思考模式默认关闭 → 全程无
@@ -6806,11 +7022,27 @@ async function runActorTurnBody(
       // Effective model override priority: per-task override > agent
       // default (`default_model`). Commander / in-process agents only —
       // CLI turns apply their own model below (runtime.model + override).
-      const turnModelOverride = item.execConfig?.provider && item.execConfig?.model
-        ? { provider: item.execConfig.provider, model: item.execConfig.model }
-        : turnAgentSpec?.default_model
-          ? { ...turnAgentSpec.default_model }
-          : undefined;
+      const turnModelOverride = turnAgentSpec?.creator_binding
+        ? (turnAgentSpec.default_model ? { ...turnAgentSpec.default_model } : undefined)
+        : item.execConfig?.provider && item.execConfig?.model
+          ? { provider: item.execConfig.provider, model: item.execConfig.model }
+          : turnAgentSpec?.default_model
+            ? { ...turnAgentSpec.default_model }
+            : undefined;
+      // Option C preflight：显式档位要先对得上有效模型声明的档位。解析出声明
+      // 才传下去（client.ts 在 provider 调用前拒绝并落 model_preflight）；
+      // 解析不出 = 不校验，行为与之前完全一致。预警同样走共用判定，避免
+      // 「日志说会拒绝、client 却放行」（例如 off 是"不发参数"，永远放行）。
+      const supportedReasoningLevels = explicitThinkingLevel !== "auto"
+        ? await _declaredReasoningLevelsFor(uid, turnModelOverride)
+        : undefined;
+      if (supportedReasoningLevels
+        && !validateReasoningEffort({ supported: supportedReasoningLevels, requested: explicitThinkingLevel }).ok) {
+        log.warn("explicit thinking level not declared by the effective model", {
+          uid, cid, actor_id: actor.id, requested: explicitThinkingLevel,
+          supported: supportedReasoningLevels,
+        });
+      }
       // 多模态降级提示（2026-09-13）：回合带图但实际执行模型（任务级覆盖
       // 优先于界面选择）不支持视觉时，图片内容块会被 provider 层按
       // input modality 丢弃，模型只能靠文件路径 + OCR 读图。此前零提示，
@@ -6846,6 +7078,9 @@ async function runActorTurnBody(
         // User-selected thinking strength ('auto' = no override; let the
         // provider default / model decide).
         ...(turnThinkingLevel !== "auto" ? { thinkingLevel: turnThinkingLevel } : {}),
+        // Option C：显式档位带着模型声明的档位一起下发，client.ts 在
+        // provider 调用前用它拒绝越档（model_preflight）。
+        ...(supportedReasoningLevels ? { supportedReasoningLevels } : {}),
         ...(turnModelOverride ? { modelOverride: turnModelOverride } : {}),
         ...(actor.kind === "agent" ? { agentId: actor.id } : {}),
         cid,
@@ -6935,6 +7170,13 @@ async function runActorTurnBody(
         abortSignal: w.abortController.signal,
         ...(actorMaxToolLoops != null
           ? { maxToolLoops: actorMaxToolLoops }
+          : {}),
+        ...(creatorExecutionOptions
+          ? {
+            toolAccess: creatorExecutionOptions.toolAccess,
+            idleTimeout: creatorExecutionOptions.idleTimeout,
+            streamIdleTimeout: creatorExecutionOptions.streamIdleTimeout,
+          }
           : {}),
         ...(item.nested ? { nested: true } : {}),
         // interrupt-steer (G9): on the top-level turn, fold user messages the
@@ -7375,6 +7617,51 @@ async function runActorTurnBody(
         );
       }
     }
+
+    // Agent 创建师 is an agent actor, so its structured creation containers
+    // are handled inside the normal agent post-processing branch.
+    if (AGENT_BUILDER_IDS.has(actor.id) && workingText && !aborted) {
+      const parsed = extractAgentFieldBlocks(workingText);
+      if (parsed.blocks.length) {
+        workingText = parsed.cleanText;
+        for (const fields of parsed.blocks) {
+          if (!Object.keys(fields).length) continue;
+          if (fields.mode === "governed") {
+            try {
+              const governed = await startGovernedAgentBuilderFlow({
+                userId: uid,
+                cid,
+                agentId: actor.id,
+                fields,
+                sourceSessionId: actorSessionId(cid, actor),
+                ...(turnProjectId ? { projectId: turnProjectId } : {}),
+              });
+              if (governed.message) workingText = `${workingText}\n\n${governed.message}`;
+              if (governed.stage === "failed") markTurnFailure("validation", "agent_mutation_rejected");
+            } catch (err) {
+              log.error(`governed-agent-builder failed cid=${cid}: ${(err as Error).message}`);
+              markTurnFailure("validation", "agent_mutation_rejected");
+              workingText = `${workingText}\n\n<span style="color:var(--danger)">治理创建失败：${escapeHtmlForBubble((err as Error).message)}</span>`;
+            }
+            continue;
+          }
+          const direct = await applyAgentBuilderFields({
+            uid,
+            cid,
+            ...(turnProjectId ? { turnProjectId } : {}),
+            ...(turnSpaceId ? { turnSpaceId } : {}),
+            agentId: actor.id,
+          }, fields);
+          if (direct.rejected.length) {
+            markTurnFailure("validation", "agent_mutation_rejected");
+            workingText = `${workingText}\n\n<span style="color:var(--danger)">${direct.rejected.join(" ")}</span>`;
+          }
+          for (const created of direct.created) {
+            createdAgents.push({ agent_id: created.agent_id, name: created.name, kind: "created" });
+          }
+        }
+      }
+    }
   } else if (isCommander && workingText && !aborted) {
     // `!aborted`: a user Stop is the single stop path — never apply container
     // mutations (create/overwrite agent, write+validate skill, CRUD auto-task)
@@ -7394,7 +7681,7 @@ async function runActorTurnBody(
         const editId = fields.agent_id;
         try {
           if (editId) {
-            const target = await agentsFeat.getAgent(editId);
+            const target = await agentsFeat.getAgentForUser(uid, editId);
             if (!target) {
               markTurnFailure("validation", "agent_mutation_rejected");
               workingText = `${workingText}\n\n<span style="color:var(--danger)">⚠️ Agent edit failed: agent not found (id=${editId}).</span>`;
@@ -7407,7 +7694,7 @@ async function runActorTurnBody(
               // The open-source build only permits main-chat edits for
               // user-owned custom agents. Marketplace/external agents are
               // edited through their detail surfaces or forked first.
-              const updated = await agentsFeat.updateAgentSpec(editId, fields);
+              const updated = await agentsFeat.updateAgentSpecForUser(uid, editId, fields);
               if (updated) {
                 createdAgents.push({
                   agent_id: updated.agent_id,
@@ -7422,7 +7709,7 @@ async function runActorTurnBody(
           } else {
             // 带上出生上下文，新 Agent 才能承接前序项目的认知资产与会话来源；
             // 没有这一步生成出来的只有角色提示，被问到前序项目的术语只能瞎猜。
-            const ag = await agentsFeat.createAgentFromBlocks(fields, {
+            const ag = await agentsFeat.createAgentFromBlocks(uid, fields, {
               userId: uid,
               ...(cid ? { conversationId: cid } : {}),
               ...(turnProjectId ? { projectId: turnProjectId } : {}),
@@ -7491,7 +7778,7 @@ async function runActorTurnBody(
       for (const container of skillR.containers) {
         try {
           const result =
-            await skillsFeat.applySkillContainerFromCommander(container);
+            await skillsFeat.applySkillContainerFromCommander(uid, container);
           if (result.ok && result.skillId && result.name && result.kind) {
             createdSkills.push({
               skill_id: result.skillId,
@@ -7901,6 +8188,38 @@ async function runActorTurnBody(
       ...(citation.matchScore !== undefined ? { match_score: citation.matchScore } : {}),
       match_method: citation.matchMethod,
     }));
+      // R-11 gate (decision 2026-10-13): never present this as the end of the
+      // turn while the actors this run dispatched are still running. The commander
+      // waits for them and reports once they finish — recordMemberRunTurnResult
+      // then wakes it for exactly one reporting round, and that turn ends
+      // normally. Without this gate the user reads a finished answer while workers
+      // still spin, which is the 2026-10-12 shape (commander concluded 17:13,
+      // literature-review worker still running).
+      let awaitingDispatchedActors: string[] = [];
+      // The commander's own turn is not always tagged with the run: on
+      // 2026-10-13 the run belonged to the dispatch (mentions: 0), so requiring
+      // `item.runId` here skipped the gate exactly when it was needed. Fall back
+      // to the run this conversation is currently tracking.
+      const gateRunId = item.runId || state.memberRunId;
+      if (gateRunId && actor.kind === 'commander') {
+        try {
+          const { readRun } = await import('./run_store');
+          const run = await readRun(uid, cid, gateRunId);
+          awaitingDispatchedActors = (run?.actors || [])
+            .filter((candidate) => candidate.terminal === 'pending')
+            .map((candidate) => candidate.agent_id);
+        } catch (err) {
+          // The gate is advisory: a read failure must not block the turn.
+          log.warn(`awaiting-actor gate read failed cid=${cid}: ${(err as Error).message}`);
+        }
+        if (awaitingDispatchedActors.length) {
+          log.warn('commander turn ending while dispatched actors still run', {
+            cid,
+            runId: gateRunId,
+            awaitingActorIds: awaitingDispatchedActors,
+          });
+        }
+      }
     persistedMsg = await enqueue({
       uid,
       cid,
@@ -7956,7 +8275,9 @@ async function runActorTurnBody(
       // consumes the streaming placeholder + finalizes in place. Without
       // this flag, mid-turn tool-emitted messages (plan_executor's
       // dispatch) would also wrongly consume the placeholder.
-      turn_end: true,
+      // R-11: with actors still pending this is an interim answer, not the
+      // end of the turn; the reporting round after the last worker closes it.
+      turn_end: awaitingDispatchedActors.length === 0,
       ...(item.runId ? { runId: item.runId } : {}),
       turn_id: item.turnId,
       ...(replyMetrics ? { metrics: replyMetrics } : {}),
@@ -8280,7 +8601,7 @@ async function runActorTurnBody(
   await _syncStateStatus(state);
   if (actor.kind === "agent") {
     try {
-      await agentsFeat.recordAgentRuntimeStats(actor.id, {
+      await agentsFeat.recordAgentRuntimeStats(uid, actor.id, {
         duration_ms: Math.max(0, Date.now() - turnStartedAt),
         status: actorRunStatus,
         aborted,
@@ -8325,9 +8646,23 @@ async function runActorTurnBody(
       (aborted ? " aborted=1" : ""),
   );
 
+  // 状态由**记录**决定，不由模型的话决定：模型可以自称 waiting_input，但若这条
+  // 等待所依据的唤醒请求已经有结论（approved/executed/rejected/expired），那这个
+  // "等用户"就是陈旧的。真机 2026-10-14 16:24（cid 38591293f03a）：唤醒 16:24:21
+  // 批准 + 工人 16:24:31 交付，commander 回合 16:24:36 才落盘并自称 waiting_input
+  // → 任务被打成 waiting_user 永久留在待办，R-11 汇报回合也不再触发（同一次运行
+  // 的 run_summary 写的是 completed）。只复核**模型自称**的等待；真表单
+  // （form / planInteraction === "open"）是货真价实的等人输入，不在复核范围。
+  const declaredWaitIsStale =
+    !aborted &&
+    !form &&
+    planInteraction !== "open" &&
+    actorTerminalOverride === "waiting_input" &&
+    (await wakeDeclaredWaitAlreadyAnswered(state, item.runId));
   const terminalStatus: TaskTerminalStatus = aborted
     ? "cancelled"
-    : form || planInteraction === "open" || actorTerminalOverride === "waiting_input"
+    : !declaredWaitIsStale &&
+        (form || planInteraction === "open" || actorTerminalOverride === "waiting_input")
       ? "waiting_input"
       : errText ||
           actorRunStatus === "failure" ||
@@ -8466,14 +8801,16 @@ async function recordInheritedCognitionReuse(
 
 async function buildSpaceBuilderSystemPrompt(uid: string): Promise<string> {
   const { prompts } = await import("../../prompts/loader");
-  const [skillsFeat, agentsFeat, templatesFeat] = await Promise.all([
-    import("../skills"),
+  const [agentsFeat, templatesFeat] = await Promise.all([
     import("../agents"),
     import("../personal_ontology_contract"),
   ]);
   const [skills, agents, templates, scenarios] = await Promise.all([
-    skillsFeat.listSkills(),
-    agentsFeat.listAgents().catch(() => []),
+    listSkillSpecsForUser(uid).then((specs) => {
+      const disabled = readDisabledSets(uid).skills;
+      return specs.filter((s) => !s.ownerAgent && !disabled.has(s.id));
+    }),
+    agentsFeat.listChatDispatchableAgentsForUser(uid).catch(() => []),
     templatesFeat.listRoleTemplateCatalog(),
     templatesFeat.listRoleScenarios(),
   ]);
@@ -8483,10 +8820,9 @@ async function buildSpaceBuilderSystemPrompt(uid: string): Promise<string> {
   };
   const skillsBlock = skills.length
     ? skills
-        .filter((s) => s.enabled !== false)
         .map((s) => {
           const desc = s.description_zh || s.description_en || "";
-          return `- ${s.name || s.id}（id: ${s.id}${s.version ? `, v${s.version}` : ""}）— ${clip(desc)}`;
+          return `- ${s.name || s.id}（id: ${s.id}）— ${clip(desc)}`;
         })
         .join("\n")
     : "（暂无可用技能）";
@@ -8671,7 +9007,7 @@ export async function _renderPromptWithSharedRulesForTest(
 /** Put low-frequency language context at the head of the dynamic region, while
  *  keeping the date tail last because it can change between turns. */
 function appendLanguageDirective(prompt: string): string {
-  const language = buildLanguageDirective(getLanguage());
+  const language = buildLanguageDirective(getUiLanguage());
   const marker = "## Runtime injection";
   const idx = prompt.indexOf(marker);
   const withLanguage =
@@ -8740,7 +9076,7 @@ async function buildAgentsIndexBlock(
       allowedIds === null || allowedIds === undefined
         ? null
         : new Set(allowedIds);
-    const list = (await agentsFeat.listAgents())
+    const list = (await agentsFeat.listChatDispatchableAgentsForUser(uid))
       .filter((a: any) => a.enabled !== false)
       .filter((a: any) => (allow ? allow.has(a.agent_id) : true));
     if (!list.length) return `${header}(no agents)`;
@@ -8997,6 +9333,7 @@ function _toolJson(data: unknown): { content: string } {
  * Shared by `dispatch_to` and `run_worker` so both honour the same name-map
  * rules the router uses. */
 async function resolveDispatchTarget(
+  uid: string,
   cid: string,
   toRaw: string,
 ): Promise<string | null> {
@@ -9004,7 +9341,7 @@ async function resolveDispatchTarget(
   if (key === "commander" || key === "cogseed" || key === "指挥官") return COMMANDER_ID;
   if (key === "user" || key === "用户") return USER_ID;
   try {
-    const all = await agentsFeat.listAgents();
+    const all = await agentsFeat.listAgentDispatchSpecsForUser(uid);
     const matches = all
       .filter((a) => a.enabled !== false)
       .filter(
@@ -9015,7 +9352,10 @@ async function resolveDispatchTarget(
           agentsFeat.agentPriorityRank(a) - agentsFeat.agentPriorityRank(b);
         return byRank || a.agent_id.localeCompare(b.agent_id);
       });
-    if (matches[0]) return matches[0].agent_id;
+    if (matches[0]) {
+      const admitted = await agentsFeat.getAgentForChatDispatch(uid, matches[0].agent_id);
+      return admitted ? matches[0].agent_id : null;
+    }
   } catch (err) {
     log.warn(
       `resolveDispatchTarget listAgents failed cid=${cid}: ${(err as Error).message}`,
@@ -9023,7 +9363,7 @@ async function resolveDispatchTarget(
   }
   if (safeId(toRaw)) {
     try {
-      const ag = await agentsFeat.getAgent(toRaw);
+      const ag = await agentsFeat.getAgentForChatDispatch(uid, toRaw);
       if (ag && (ag as any).enabled !== false) return toRaw;
     } catch {
       /* ignore */
@@ -9173,6 +9513,20 @@ async function guardKstarPrivilegedDispatch(
     // advisory for execution gating — if generation failed (model
     // unavailable, no candidates), the dispatch still proceeds rather than
     // demanding a kstar_control call the Commander no longer has.
+    try {
+      const { markMissingForecastForExecution } = await import('../kstar/auto-forecast');
+      await markMissingForecastForExecution(
+        state.uid,
+        lifecycle.requirement.id,
+        'auto-forecast unavailable before dispatch',
+      );
+    } catch (error) {
+      log.warn('kstar missing forecast marker failed', {
+        cid: maskId(state.cid),
+        requirementId: lifecycle.requirement.id,
+        error: logErrorRef(error),
+      });
+    }
     log.warn('kstar execution without forecast record (auto-forecast unavailable)', {
       cid: maskId(state.cid),
       requirementId: lifecycle.requirement.id,
@@ -9521,6 +9875,50 @@ async function gateNestedAgentWake(
 ): Promise<WakeRequestSummary | null> {
   if (actor.kind !== "agent" || allowLegacyGroupChatFormalAgentExecutorForTest())
     return null;
+
+  // Membership rule (requirement owner, 2026-10-13): an agent that has ALREADY
+  // joined this conversation is woken directly — a repeat @ of a known member is
+  // unambiguous. The FIRST time an agent enters the conversation, approval is
+  // required as before. Membership is therefore the criterion, not the run: the
+  // run's member list is empty at gate time (it is created from mentions), while
+  // the member table is written when the user approves the first wake. Failing to
+  // read members falls through to the gate, i.e. fails closed.
+  try {
+    // The run record already knows who this run is about (`member_agent_ids`),
+    // and the 21:49 run logged `members: 1` — so consult it first: the member
+    // *file* read below needs the conversation's project hint, and passing null
+    // silently missed the member on 2026-10-13 (wake prompt still appeared).
+    if (runId) {
+      const { readRun } = await import("./run_store");
+      const run = await readRun(state.uid, state.cid, runId);
+      if ((run?.member_agent_ids || []).includes(actor.id)) {
+        log.info("wake approval skipped: agent is a member of this run", {
+          cid: state.cid,
+          agentId: actor.id,
+          source,
+          runId,
+        });
+        return null;
+      }
+    }
+    // Membership must be read with the conversation's project hint: passing null
+    // looked at the wrong layout on 2026-10-13 and missed an agent that had
+    // already joined, so the wake prompt appeared again.
+    const chatsFeature = await import("../chats");
+    const conversation = await chatsFeature.getConversation(state.uid, state.cid).catch(() => null);
+    const members = await readMembers(state.uid, state.cid, conversation?.project_id ?? null);
+    if (members.actors.some((member) => member.kind === "agent" && member.id === actor.id)) {
+      log.info("wake approval skipped: agent is already a member of this conversation", {
+        cid: state.cid,
+        agentId: actor.id,
+        source,
+      });
+      return null;
+    }
+  } catch (err) {
+    log.warn(`wake gate member lookup failed cid=${state.cid}: ${(err as Error).message}`);
+  }
+
   const decision = await evaluateWake(state.uid, {
     conversationId: state.cid,
     agentId: actor.id,
@@ -11112,7 +11510,7 @@ async function runCoordinatedNestedDispatchAdmitted(
         settledRunActorIds,
       );
       const members = await readMembers(input.state.uid, input.state.cid);
-      const agents = await agentsFeat.listAgents().catch(() => []);
+      const agents = await agentsFeat.listChatDispatchableAgentsForUser(input.state.uid).catch(() => []);
       const busyActorIds = new Set(
         [...input.state.nestedTurns.values()].map((turn) => turn.actor),
       );
@@ -11280,9 +11678,6 @@ function unwrapRoutingJudgement(parsed: Record<string, unknown>): { is_task?: un
   return null;
 }
 
-/** Default ceiling for the model-judged routing question. */
-export const CONTINUATION_JUDGE_TIMEOUT_MS = 20_000;
-
 export interface ModelRoutingVerdict {
   isTask: boolean;
   continuation: boolean;
@@ -11298,28 +11693,67 @@ const ROUTING_JUDGE_PROMPT = [
 ].join('\n');
 
 /**
+ * Why the routing judge produced no verdict.
+ *
+ * `unavailable` is a by-design state (no model configured): routing simply is
+ * not possible, and it is not an anomaly.
+ * `failed` is an anomaly — a timeout, runner error, unparsable output, or a
+ * throw on the way in. The caller must not treat it as "not a task": the
+ * message may well have been one, and swallowing that silently is how a task
+ * loses its governance with nothing recorded.
+ */
+type ModelRoutingJudgeOutcome =
+  | { status: 'verdict'; verdict: ModelRoutingVerdict }
+  | { status: 'unavailable' }
+  | { status: 'failed'; reason: 'timeout' | 'runner_error' | 'unparsable' | 'exception' };
+
+/**
  * Model-judged routing (mixed deterministic + model): for any non-trivial
  * user message, a dedicated runner (NOT the busy commander turn — a bus
  * enqueue would deadlock because the current turn holds the queue) judges
  * whether the message is a task and, when one is open, whether it continues
- * it. Returns the verdict, or null on model failure (caller applies the safe
- * default). Bounded by CONTINUATION_JUDGE_TIMEOUT_MS.
+ * it. Returns a discriminated outcome so the caller can tell "the model said
+ * no" apart from "we never got an answer".
+ *
+ * No wall-clock ceiling here, deliberately: the two real guards on an LLM call
+ * are the model-call idle watchdog (`client.ts`, 1800s with no event) and the
+ * SDK timeout, and AGENTS.md forbids adding a separate total wall-clock
+ * timeout. A 20s cap used to sit on this call, which was both inconsistent
+ * (the main turn has none) and harmful in the direction that matters: a slow
+ * provider failed the judge while the turn it was gating would have
+ * succeeded, costing that message its governance. The judge passes no external
+ * abort signal, so an `error.kind === 'timeout'` on its result can only be the
+ * idle watchdog.
  */
 async function judgeModelRouting(
   uid: string,
   cid: string,
   newMessage: string,
   openRequirement?: { requirementId: string; goalText: string },
-): Promise<ModelRoutingVerdict | null> {
+): Promise<ModelRoutingJudgeOutcome> {
   if (_hostRoutingJudgeForTest) {
-    return _hostRoutingJudgeForTest(newMessage, openRequirement);
+    const verdict = await _hostRoutingJudgeForTest(newMessage, openRequirement);
+    return verdict ? { status: 'verdict', verdict } : { status: 'failed', reason: 'runner_error' };
   }
+  // A0 instrumentation: the judge sits on the critical path (the main turn
+  // cannot start until the verdict lands), yet it previously logged only a
+  // total. Split it so the cost model is measurable before optimising:
+  //   auth   — dynamic import + configured-model check
+  //   build  — buildRunner (module load, session, skill block, tool assembly)
+  //   run    — the provider round trip
+  const startedAt = Date.now();
+  let authMs = 0;
+  let buildMs = 0;
+  let runMs = 0;
   try {
-    const { hasConfiguredModel } = await import('../auth');
-    if (!hasConfiguredModel().configured) {
+    const authStartedAt = Date.now();
+    const { hasConfiguredModelForUser } = await import('../auth');
+    if (!hasConfiguredModelForUser(uid).configured) {
       log.warn('kstar model routing skipped: no configured model', { cid: maskId(cid) });
-      return null;
+      return { status: 'unavailable' };
     }
+    authMs = Date.now() - authStartedAt;
+    const buildStartedAt = Date.now();
     const { buildRunner } = await import('../../model/core-agent/runner');
     const { runner } = await buildRunner({
       sessionId: `kstar-routing-${cid}`,
@@ -11329,25 +11763,35 @@ async function judgeModelRouting(
       ephemeralSession: true,
       skillList: [],
     });
-    const task = await Promise.race([
-      runner.run({
-        message: JSON.stringify({
-          newMessage: String(newMessage || '').slice(0, 2_000),
-          ...(openRequirement ? { openTaskGoal: String(openRequirement.goalText).slice(0, 1_000) } : {}),
-        }),
-        thinkingLevel: 'off',
-        cacheRetention: 'none',
+    buildMs = Date.now() - buildStartedAt;
+    const runStartedAt = Date.now();
+    const task = await runner.run({
+      message: JSON.stringify({
+        newMessage: String(newMessage || '').slice(0, 2_000),
+        ...(openRequirement ? { openTaskGoal: String(openRequirement.goalText).slice(0, 1_000) } : {}),
       }),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), CONTINUATION_JUDGE_TIMEOUT_MS)),
-    ]);
+      thinkingLevel: 'off',
+      cacheRetention: 'none',
+    });
+    runMs = Date.now() - runStartedAt;
     if (!task || task.meta.aborted || task.meta.error) {
-      log.warn('kstar model routing runner failed', { cid: maskId(cid), aborted: task?.meta.aborted, error: task?.meta.error });
-      return null;
+      const errorKind = task?.meta.error?.kind;
+      log.warn('kstar model routing runner failed', {
+        cid: maskId(cid),
+        aborted: task?.meta.aborted,
+        error: task?.meta.error?.message,
+        error_kind: errorKind,
+        auth_ms: authMs,
+        build_ms: buildMs,
+        run_ms: runMs,
+        total_ms: Date.now() - startedAt,
+      });
+      return { status: 'failed', reason: errorKind === 'timeout' ? 'timeout' : 'runner_error' };
     }
     const verdict = parseContinuationJudgement(task.text);
     if (!verdict) {
       log.warn('kstar model routing judge output unparsable', { cid: maskId(cid), text: String(task.text || '').slice(0, 200) });
-      return null;
+      return { status: 'failed', reason: 'unparsable' };
     }
     log.info('kstar model routing verdict', {
       cid: maskId(cid),
@@ -11355,11 +11799,15 @@ async function judgeModelRouting(
       continuation: verdict.continuation,
       hasOpenRequirement: !!openRequirement,
       messagePreview: String(newMessage || '').replace(/\s+/g, ' ').slice(0, 80),
+      auth_ms: authMs,
+      build_ms: buildMs,
+      run_ms: runMs,
+      total_ms: Date.now() - startedAt,
     });
-    return verdict;
+    return { status: 'verdict', verdict };
   } catch (error) {
     log.warn(`kstar model routing degraded cid=${cid}: ${(error as Error).message}`);
-    return null;
+    return { status: 'failed', reason: 'exception' };
   }
 }
 
@@ -11374,9 +11822,14 @@ async function hostRouteTaskTurn(
   // (greetings/status/emoji) with zero model calls and zero KStar writes;
   // everything else goes to the model judgement which decides is_task AND
   // continuation in one call with full conversation context.
-  const { isObviouslyTrivial, isClosingIntent } = await import('../kstar/task-intent');
-  const recordRouting = async (decision: import('../kstar/requirement-types').KstarRoutingDecision): Promise<void> => {
-    await import('../kstar/requirement-store').then((store) => store.recordKstarRoutingDecision(uid, cid, decision)).catch(() => undefined);
+  const { isObviouslyTrivial, isClosingIntent, isAnswerLikeConfirmation } = await import('../kstar/task-intent');
+  const recordRouting = async (
+    decision: import('../kstar/requirement-types').KstarRoutingDecision,
+    options?: { requireExistingState?: boolean },
+  ): Promise<void> => {
+    await import('../kstar/requirement-store')
+      .then((store) => store.recordKstarRoutingDecision(uid, cid, decision, options))
+      .catch(() => undefined);
   };
   if (isClosingIntent(messageText)) {
     await recordRouting({ at: nowIso(), kind: 'closing_intent', isTask: true, continuation: true, reason: 'closing intent', ...(sourceMessageId ? { sourceMessageId } : {}) });
@@ -11424,6 +11877,48 @@ async function hostRouteTaskTurn(
     return { openedTask: false };
   }
   if (isObviouslyTrivial(messageText)) {
+    // This gate used to short-circuit with no record and no log, so its hit
+    // count could not be measured at all — the cheapest gate was the only
+    // invisible one. Same rule as the answer-like gate below: a non-task
+    // message must never be what brings KStar state into existence, so the
+    // record lands only once the conversation already has state. The log
+    // covers the stateless case, where there is no open task to disturb.
+    await recordRouting(
+      {
+        at: nowIso(),
+        kind: 'obviously_trivial',
+        isTask: false,
+        reason: 'obviously trivial (greeting/status/emoji); no model call',
+        ...(sourceMessageId ? { sourceMessageId } : {}),
+      },
+      { requireExistingState: true },
+    );
+    log.info('kstar routing filtered an obviously trivial message', { cid: maskId(cid) });
+    return { openedTask: false };
+  }
+  // Answer-like confirmations ("1"、"第一个和第三个"、"是的"、"需要") answer a
+  // question the assistant just asked. They cannot start or switch a task, so
+  // the model round trip only re-derives "no task write". Suppressing them
+  // here also cannot disturb an open task: nothing below runs, so the task
+  // stays exactly as it was — the projection for this turn is resolved
+  // independently further down (committedProjectionId reads the lifecycle
+  // directly), so an open task still gets its recall context injected.
+  //
+  // The decision is recorded only when this conversation already has task
+  // state. A non-task message must not be what brings KStar state into
+  // existence; mid-task it still lands in the log so the trace can attribute
+  // which gate decided.
+  if (isAnswerLikeConfirmation(messageText)) {
+    await recordRouting(
+      {
+        at: nowIso(),
+        kind: 'answer_confirmation',
+        isTask: false,
+        reason: 'answer-like confirmation (selection/ack); no task write',
+        ...(sourceMessageId ? { sourceMessageId } : {}),
+      },
+      { requireExistingState: true },
+    );
     return { openedTask: false };
   }
   try {
@@ -11432,8 +11927,48 @@ async function hostRouteTaskTurn(
     const openRequirement = lifecycle.requirement && lifecycle.requirement.status === 'open'
       ? { requirementId: lifecycle.requirement.id, goalText: lifecycle.requirement.goalText }
       : undefined;
-    const verdict = await judgeModelRouting(uid, cid, messageText, openRequirement);
-    if (!verdict) return { openedTask: false }; // timeout/enqueue failure → no routing decision (safe no-op)
+    const outcome = await judgeModelRouting(uid, cid, messageText, openRequirement);
+    if (outcome.status === 'unavailable') {
+      // No configured model: routing is simply not possible. This is a normal
+      // configuration state, not an anomaly, so it is still not recorded as a
+      // failure — but it is now recorded at all. Otherwise a turn that skipped
+      // routing for lack of a model was indistinguishable in the trace from
+      // one that was actually judged, and the gate distribution was blind to
+      // the whole configuration.
+      await recordRouting(
+        {
+          at: nowIso(),
+          kind: 'routing_unavailable',
+          isTask: false,
+          reason: 'no configured model; routing not possible',
+          ...(sourceMessageId ? { sourceMessageId } : {}),
+        },
+        { requireExistingState: true },
+      );
+      return { openedTask: false };
+    }
+    if (outcome.status === 'failed') {
+      // The judge never answered, so we cannot tell a task from small talk.
+      // Returning quietly is how a task lost its governance with no trace: the
+      // message is answered, but it opens no task, gets no projection and never
+      // enters the learning loop. Record it so the gap is visible, and keep the
+      // safe default of opening nothing (guessing "task" could strand a task
+      // that the user never asked for).
+      await recordRouting({
+        at: nowIso(),
+        kind: 'routing_failed',
+        isTask: false,
+        reason: `routing judge unavailable (${outcome.reason})`,
+        ...(sourceMessageId ? { sourceMessageId } : {}),
+      });
+      log.warn('kstar model routing produced no verdict; this turn runs ungoverned', {
+        cid: maskId(cid),
+        reason: outcome.reason,
+        hadOpenRequirement: !!openRequirement,
+      });
+      return { openedTask: false };
+    }
+    const verdict = outcome.verdict;
     if (!verdict.isTask) return { openedTask: false }; // model says not a task → zero KStar writes
     await recordRouting({ at: nowIso(), kind: 'model_judged', isTask: true, continuation: verdict.continuation, reason: 'model routing verdict', ...(sourceMessageId ? { sourceMessageId } : {}) });
 
@@ -12641,7 +13176,7 @@ async function buildCommanderExtraTools(
       );
       if (blocked) return blocked;
       // Resolve `to` → actor id via the shared name-map resolver.
-      const resolvedId = await resolveDispatchTarget(cid, toRaw);
+      const resolvedId = await resolveDispatchTarget(uid, cid, toRaw);
       if (!resolvedId) {
         return {
           content: JSON.stringify({
@@ -12659,7 +13194,7 @@ async function buildCommanderExtraTools(
       // Run the agent's turn in-process and hand its FULL result back as this
       // tool's result; the agent also persists its own visible bubble and the
       // commander then synthesises (Option B). The commander stays in the loop.
-      const dispatchAgent = await agentsFeat.getAgent(resolvedId);
+      const dispatchAgent = await agentsFeat.getAgentForChatDispatch(uid, resolvedId);
       const dispatchActor: Actor = {
         kind: "agent",
         id: resolvedId,
@@ -12874,7 +13409,7 @@ async function buildCommanderExtraTools(
         currentRunId,
       );
       if (blocked) return blocked;
-      const resolvedId = await resolveDispatchTarget(cid, toRaw);
+      const resolvedId = await resolveDispatchTarget(uid, cid, toRaw);
       if (!resolvedId)
         return _toolError(t("errors.unknown_actor", { name: toRaw }));
       if (resolvedId === COMMANDER_ID || resolvedId === USER_ID) {
@@ -12882,7 +13417,7 @@ async function buildCommanderExtraTools(
           "hand_off_to target must be an agent (not commander / user)",
         );
       }
-      const handoffAgent = await agentsFeat.getAgent(resolvedId);
+      const handoffAgent = await agentsFeat.getAgentForChatDispatch(uid, resolvedId);
       const handoffActor: Actor = {
         kind: "agent",
         id: resolvedId,
@@ -12965,7 +13500,7 @@ async function buildCommanderExtraTools(
           const finalActor = outcome.actor;
           const finalAgent =
             finalActor.kind === "agent"
-              ? await agentsFeat.getAgent(finalActor.id).catch(() => null)
+              ? await agentsFeat.getAgentForChatDispatch(uid, finalActor.id).catch(() => null)
               : null;
           const finalActorId =
             finalActor.kind === "agent" ? finalActor.id : "anonymous";
@@ -13309,7 +13844,7 @@ async function buildCommanderExtraTools(
           return workerExecution.blocked!;
         return { content: workerExecution.value!.outcome.payload };
       }
-      const resolvedId = await resolveDispatchTarget(cid, toRaw);
+      const resolvedId = await resolveDispatchTarget(uid, cid, toRaw);
       if (!legacy) {
         return _toolError("Named run_worker is forbidden. Use dispatch_to for formal Agent work. Anonymous run_worker is read-only only.");
       }
@@ -13325,7 +13860,7 @@ async function buildCommanderExtraTools(
       // back as this tool's result (same single-layer dispatch as the anonymous
       // branch). The agent also persists its own visible bubble; the commander
       // then synthesises (Option B).
-      const namedAgent = await agentsFeat.getAgent(resolvedId);
+      const namedAgent = await agentsFeat.getAgentForChatDispatch(uid, resolvedId);
       const namedActor: Actor = {
         kind: "agent",
         id: resolvedId,
@@ -14652,7 +15187,7 @@ async function _buildCliPrompt(
         ).trim(),
         output_protocol_block: outputProtocolBlock,
         project_block: projectBlock,
-        language_block: buildLanguageDirective(getLanguage()),
+        language_block: buildLanguageDirective(getUiLanguage()),
         attachments_block: filesBlock,
         conversation_block: conversationBlock,
         shared_task_context_block: sharedContextBlock,

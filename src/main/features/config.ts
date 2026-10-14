@@ -73,9 +73,20 @@ export interface UserPreferences {
    * only an explicit false closes the window for real. Stored per-uid in the
    * same preferences file as every other settings toggle. */
   close_to_tray_enabled?: boolean;
+  /** Creator Mode control-plane UI and draft generation. Default false. */
+  creator_mode_enabled?: boolean;
+  /** Publishing/materializing Creator presets. Requires Creator Mode. Default false. */
+  creator_mode_publish_enabled?: boolean;
   /** Thinking strength for chat model calls: 'auto' (model default),
    *  'off' | 'low' | 'high' forwarded to the runner's thinkingLevel. */
   thinking_level?: 'auto' | 'off' | 'low' | 'high';
+  /** Per-model thinking strength (Option C): the user's explicit tier for one
+   *  provider+model pair, remembered so the composer can restore it. Key is
+   *  `${provider}/${model}`; a missing entry means 'auto' — that is what makes
+   *  switching to a different model fall back to Auto instead of carrying the
+   *  previous model's choice over. Only models that declare the tier ever get
+   *  an entry (enforced at the call site). */
+  model_thinking_levels?: Record<string, 'off' | 'low' | 'high'>;
   /** Whether machine-global skill roots such as ~/.codex/skills are visible
    * to commander open-tier skill search. Missing means enabled, preserving
    * the historical open-source behavior. */
@@ -103,6 +114,11 @@ function systemLanguage(): Lang {
 
 export function readPreferences(): UserPreferences {
   return readJsonSync<UserPreferences>(preferencesFile());
+}
+
+/** Read one user's preferences without consulting the mutable active-user singleton. */
+export function readPreferencesForUser(userId: string): UserPreferences {
+  return readJsonSync<UserPreferences>(userPreferencesFile(userId));
 }
 
 /** Merge `partial` into the on-disk preferences and atomically rewrite. */
@@ -288,6 +304,50 @@ export function setThinkingLevel(level: unknown): ThinkingLevelPreference {
   const next: ThinkingLevelPreference =
     level === 'off' || level === 'low' || level === 'high' ? level : 'auto';
   writePreferences({ thinking_level: next });
+  return next;
+}
+
+// ── Per-model thinking strength (Option C) ───────────────────────────────
+// The explicit tier belongs to the model it was chosen for. Keying by
+// provider+model is what makes 「切模型回落 Auto」 true by construction rather
+// than by a renderer cleanup step.
+
+export type ModelThinkingLevel = 'off' | 'low' | 'high';
+
+/** Collision-safe map key: model ids may themselves contain `/` (e.g. `openai/gpt-5`),
+ *  so the provider/model boundary cannot be a bare slash. NUL is impossible in both. */
+function modelThinkingLevelKey(provider: unknown, model: unknown): string {
+  const p = String(provider || '').trim();
+  const m = String(model || '').trim();
+  if (!p || !m) return '';
+  return `${p}\u0000${m}`;
+}
+
+export function getModelThinkingLevel(provider: unknown, model: unknown): ModelThinkingLevel | 'auto' {
+  const key = modelThinkingLevelKey(provider, model);
+  if (!key) return 'auto';
+  const stored = readPreferences().model_thinking_levels;
+  const level = stored && typeof stored === 'object' ? stored[key] : undefined;
+  return level === 'off' || level === 'low' || level === 'high' ? level : 'auto';
+}
+
+export function setModelThinkingLevel(
+  provider: unknown,
+  model: unknown,
+  level: unknown,
+): ModelThinkingLevel | 'auto' {
+  const key = modelThinkingLevelKey(provider, model);
+  if (!key) return 'auto';
+  // `auto`/anything unrecognized clears the entry instead of inventing a tier:
+  // absence is the stored form of "let the model decide".
+  const next: ModelThinkingLevel | 'auto' =
+    level === 'off' || level === 'low' || level === 'high' ? level : 'auto';
+  const current = readPreferences().model_thinking_levels;
+  const map: Record<string, ModelThinkingLevel> = (current && typeof current === 'object')
+    ? { ...current } : {};
+  if (next === 'auto') delete map[key];
+  else map[key] = next;
+  writePreferences({ model_thinking_levels: map });
   return next;
 }
 

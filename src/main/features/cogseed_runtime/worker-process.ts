@@ -1,11 +1,11 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import * as path from 'node:path';
 import { createInterface } from 'node:readline';
 
-import { PC_ROOT, WS_ROOT } from '../../paths';
+import { WS_ROOT } from '../../paths';
 import { createLogger } from '../../logger';
 import { logErrorRef } from '../../util/log-redact';
+import { childWorkerScriptPath, typescriptChildEnv } from '../../util/packaged-child-env';
 import {
   COGSEED_AGENT_RUNTIME_PROTOCOL_VERSION,
   isRuntimeTerminalEvent,
@@ -17,6 +17,8 @@ import {
 } from './protocol';
 
 const log = createLogger('cogseed-runtime:worker-process');
+const MAX_CONSECUTIVE_INVALID_JSONL = 3;
+const MAX_INVALID_JSONL_PREVIEW = 200;
 
 export interface RuntimeWorkerChild {
   stdin: NodeJS.WritableStream;
@@ -63,14 +65,12 @@ interface PendingRun {
 }
 
 function defaultSpawnWorker(): RuntimeWorkerChild {
-  const pcDir = PC_ROOT.replace(/\bapp\.asar\b/, 'app.asar.unpacked');
-  const script = path.join(pcDir, 'bin', 'cogseed-runtime-worker.cjs');
+  const script = childWorkerScriptPath('cogseed-runtime-worker.cjs');
   return spawn(process.execPath, [script], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
-      ELECTRON_RUN_AS_NODE: '1',
-      COGSEED_PC_DIR: pcDir,
+      ...typescriptChildEnv(),
       COGSEED_WORKSPACE_ROOT: WS_ROOT,
     },
   });
@@ -152,10 +152,30 @@ export function createRuntimeWorkerService(options: RuntimeWorkerServiceOptions 
   function attach(next: RuntimeWorkerChild): void {
     child = next;
     const rl = createInterface({ input: next.stdout });
+    let consecutiveInvalidJsonl = 0;
     rl.on('line', (line) => {
       if (!line.trim()) return;
-      try { handleMessage(JSON.parse(line)); }
-      catch (err) { log.warn('invalid runtime worker json', { error: logErrorRef(err) }); }
+      try {
+        handleMessage(JSON.parse(line));
+        consecutiveInvalidJsonl = 0;
+      } catch (err) {
+        consecutiveInvalidJsonl += 1;
+        log.warn('invalid runtime worker json', {
+          error: logErrorRef(err),
+          invalidCount: consecutiveInvalidJsonl,
+          raw: String(line || '').replace(/\s+/g, ' ').slice(0, MAX_INVALID_JSONL_PREVIEW),
+          ...((next as { pid?: number }).pid ? { pid: (next as { pid?: number }).pid } : {}),
+        });
+        if (consecutiveInvalidJsonl >= MAX_CONSECUTIVE_INVALID_JSONL) {
+          const error = new Error('CogSeed Runtime worker emitted invalid JSON protocol output');
+          if (child === next) {
+            child = null;
+            handshake = null;
+          }
+          rejectAll(error);
+          try { next.kill(); } catch {}
+        }
+      }
     });
     next.stderr.on?.('data', (chunk: Buffer) => {
       const text = String(chunk || '').trim();

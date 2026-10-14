@@ -74,6 +74,19 @@ export function createCogSeedHostToolRouter(deps: CogSeedHostToolRouterDeps = {}
             || { content: JSON.stringify({ allowed: true }) };
         } catch { return { content: '[E_ONTOLOGY_OPERATION_PRECONDITION_UNAVAILABLE] current required conditions unavailable', isError: true }; }
       }
+      if (call.name === 'desktop_connector_list_tools' || call.name === 'desktop_connector_call_tool') {
+        try {
+          const { runDesktopConnectorTool } = await import('./desktop-connectors');
+          const beforeDispatch = async () => {
+            const denied = await ontologyPreflight('call_connector_tool', call.input || {});
+            if (denied) throw new Error(denied.content);
+          };
+          return cap(await runDesktopConnectorTool(request.user_id, call.name, call.input, request, context.signal,
+            call.name === 'desktop_connector_call_tool' ? beforeDispatch : undefined));
+        } catch (error) {
+          return { content: error instanceof Error ? error.message : 'Connector request failed', isError: true };
+        }
+      }
       // Internal Worker-only approval bridge. The model never sees these as
       // Runtime tools; the host receives the original request/session from the
       // JSONL envelope and does not trust any user/session identity in input.

@@ -159,6 +159,7 @@ import {
   registerImmediate,
   runBootPhases,
 } from './util/boot_init';
+import { primeLoginShellPathDirs } from './util/login-shell-env';
 import { getBootDeviceProfile } from './util/boot-device-profile';
 import * as updaterClient from './features/updater/client';
 import { evaluateBootGuard, markBootHealthy } from './features/updater/boot_guard';
@@ -1116,7 +1117,18 @@ async function runMarketplaceInstallReconcile(reason: string): Promise<void> {
       });
       if (seeded.failed) {
         clearDefaultSeedStatus();
-        scheduleMarketplaceDefaultsRetry(runKey, uid, seeded.error || 'unknown error');
+        const seedError = seeded.error || 'unknown error';
+        if (mp.isRetryableMarketplaceError(seedError)) {
+          scheduleMarketplaceDefaultsRetry(runKey, uid, seedError);
+        } else {
+          // Permanent failure (e.g. HTTP 403): the fixed [3s,3s,3s] schedule
+          // would burn three more requests and dozens of log lines on every
+          // launch for an error that cannot succeed by retrying.
+          marketplaceBootLog.warn('marketplace default installs not retried (permanent error)', {
+            error: seedError,
+          });
+          clearMarketplaceDefaultsRetry(runKey);
+        }
       } else {
         clearMarketplaceDefaultsRetry(runKey);
       }
@@ -1809,6 +1821,8 @@ if (!gotLock) {
       const { installModelOverrideResolver } = await import('./features/model_overrides');
       installModelOverrideResolver();
     }, 'serial');
+    // 登录 shell 的 PATH 探测：只影响 CLI 子进程环境，失败即回落约定目录。
+    registerImmediate('local-agents:login-shell-path', () => primeLoginShellPathDirs());
     registerImmediate('skills:version-recovery', async () => {
       const { recoverSkillVersionMutations } = await import('./features/skills/version-mutation-service');
       const result = await recoverSkillVersionMutations(users.getActiveUserId());

@@ -92,7 +92,8 @@ describe('open-source shared foundation polish', () => {
     };
 
     expect(sources.workspace).toContain('ws-space-card ui-resource-card');
-    expect(sources.automation).toContain('auto-row ui-resource-card ui-resource-card--row');
+    expect(sources.automation).toContain('uiResourceCard({');
+    expect(sources.automation).toContain("layout: 'compact-row'");
     expect(sources.automation).toContain('auto-tpl-card ui-resource-card');
     expect(sources.agents).toContain('agent-card ui-resource-card');
     expect(sources.skills).toContain('skill-card ui-resource-card');

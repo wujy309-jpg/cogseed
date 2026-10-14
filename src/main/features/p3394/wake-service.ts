@@ -528,6 +528,34 @@ export async function getWakeRequest(
   return state.requests.find((request) => request.id === requestId) || null;
 }
 
+/**
+ * DSH 口径（状态由**记录**决定，不由模型的话决定）：某次协作运行的唤醒请求
+ * 是否已全部有结论。true = 该运行没有任何仍 `pending` 的唤醒请求，也就是
+ * "等用户批准"这件事已经被回答过了。
+ *
+ * 真机事故 2026-10-14 16:24（cid 38591293f03a）：唤醒 16:24:21 批准、工人
+ * 16:24:31 交付，commander 回合 16:24:36 才落盘并自称 `waiting_input` ——
+ * 任务被打成 `waiting_user` 永久留在待办里，同一个运行的 run_summary 却写
+ * `completed`，用户看到"commander 还在等你批准、实际工人早干完了"。
+ *
+ * 该运行**没有任何**唤醒请求时返回 false：与唤醒无关的等待（真表单、模型
+ * 主动追问）不能被这条判据吃掉。
+ */
+export async function runWakeWaitAlreadyAnswered(
+  userId: string,
+  conversationId: string,
+  runId: string,
+): Promise<boolean> {
+  const safeRunId = String(runId || "").trim();
+  if (!safeRunId) return false;
+  const requests = await listWakeRequests(userId, conversationId);
+  const runRequests = requests.filter(
+    (request) => request.dispatch_payload?.run_id === safeRunId,
+  );
+  if (!runRequests.length) return false;
+  return !runRequests.some((request) => request.status === "pending");
+}
+
 export async function approveWakeRequest(
   userId: string,
   requestId: string,
@@ -579,6 +607,25 @@ export async function approveWakeRequest(
     log.info(
       `wake-request-approved user=${userId} request=${requestId} agent=${request.agent_id}`,
     );
+    // The approval answers the task's `waiting_user`: converge it out of the attention
+    // set, or the sidebar keeps claiming "等待批准" after the user already approved
+    // (2026-10-13). Fire-and-forget so the state mutation keeps its sync contract; the
+    // approval result never depends on this. The wake request id is not a CogSeed task
+    // request id, so the wake's own identity (conversation + agent) is passed along —
+    // without it the resume threw `invalid CogSeed request id` and the badge stayed
+    // (live 2026-10-14 00:30).
+    void import('../cogseed_backend/task-store')
+      .then(({ resumeCogSeedTaskAfterWakeApproval }) => resumeCogSeedTaskAfterWakeApproval(userId, {
+        requestId: request.id,
+        conversationId: request.conversation_id,
+        agentId: request.agent_id,
+      }))
+      .then((resumed) => {
+        if (resumed) log.info(`wake approval resumed task ${resumed.taskId} status=${resumed.status}`);
+      })
+      .catch((err) => {
+        log.warn(`wake approval task resume failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
     return { request, approval };
   });
 }

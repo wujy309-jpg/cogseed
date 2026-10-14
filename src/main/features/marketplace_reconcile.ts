@@ -39,7 +39,7 @@ import {
 } from './marketplace_installs';
 import { invalidateSkills as invalidateCoreAgentSkills } from '../model/core-agent/skill-registry';
 import {
-  extractBundleSafely, postJson, quarantineStagingName, quarantineTrashName,
+  extractBundleSafely, postJson, recordAppIncompatibleSkip, clearAppIncompatibleSkip, quarantineStagingName, quarantineTrashName,
 } from './marketplace';
 import { decideCurrentSwitch } from './marketplace/current-switch-policy';
 import { hubContentStatus } from '../../shared/hub-content-status';
@@ -85,7 +85,13 @@ function _isAppCompatible(minAppVersion: string): boolean {
 
 function _isInstallRowAppCompatible(row: ({ id?: string } & MinAppVersionSource), kind: 'agent' | 'skill'): boolean {
   const min = minAppVersionFrom(row);
-  if (!min || _isAppCompatible(min)) return true;
+  if (!min || _isAppCompatible(min)) {
+    // 上一轮因版本不足被跳过、这一轮已经兼容（内容端下调了 min_app_version，
+    // 或换了满足条件的客户端）→ 撤掉旧标记，否则列表会一直显示「需更新客户端」。
+    clearAppIncompatibleSkip(row, kind);
+    return true;
+  }
+  recordAppIncompatibleSkip(row, kind, min);
   log.info(`skip ${kind} ${row.id || ''}; requires CogSeed >= ${min} (current ${_currentAppVersion() || 'unknown'})`);
   return false;
 }

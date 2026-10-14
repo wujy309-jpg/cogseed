@@ -425,6 +425,19 @@
 .ui-status-pill--attention { background: var(--status-warning-bg); color: var(--status-warning-text); }
 .ui-status-pill--critical { background: var(--status-danger-bg); color: var(--status-danger-text); }
 .ui-status-pill__icon { width: 13px; height: 13px; }
+.ui-connector-brand-icon {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+.ui-connector-brand-icon > img {
+  position: absolute;
+  max-width: none;
+  max-height: none;
+}
+
 .ui-status-dot { color: var(--text-secondary); font-size: var(--font-size-2); }
 .ui-status-dot__mark { width: 6px; height: 6px; border-radius: var(--radius-pill); background: var(--text-faint); }
 .ui-status-dot--success .ui-status-dot__mark { background: var(--color-success); }
@@ -594,6 +607,29 @@
   min-width: 0;
   margin-left: auto;
 }
+
+/* Compact resource row: one title, one metadata line, one menu trigger. */
+.ui-resource-card--compact-row {
+  max-width: none;
+  padding: var(--space-3) var(--space-4);
+  box-shadow: none;
+}
+.ui-resource-card--compact-row .ui-resource-card__header { align-items: center; }
+.ui-resource-card--compact-row .ui-resource-card__title,
+.ui-resource-card--compact-row .ui-resource-card__description {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.ui-resource-card--compact-row .ui-resource-card__description {
+  min-height: 0;
+  margin: var(--space-1) 0 0;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.ui-resource-card--compact-row[data-state="error"] .ui-resource-card__description { color: var(--color-danger); }
+.ui-resource-card--compact-row .ui-icon-button { flex: 0 0 auto; }
 
 /* SettingsSection. It is intentionally flat: hierarchy comes from spacing
  * and a hairline, never an extra page-level shadow. */
@@ -788,6 +824,16 @@ body.ui-modal-open { overflow: hidden; }
   justify-content: flex-end;
   gap: var(--space-2);
 }
+/* Async form dialogs keep the action bar visible while their fields scroll. */
+.ui-form-modal .ui-modal__header,
+.ui-form-modal .ui-modal__footer { flex: 0 0 auto; }
+.ui-form-modal__feedback {
+  margin: var(--space-3) 0 0;
+  color: var(--status-danger-text);
+  overflow-wrap: anywhere;
+}
+.ui-form-modal__feedback[hidden],
+.ui-form-modal .ui-button__icon[hidden] { display: none; }
 .ui-modal--danger .ui-modal__title { color: var(--status-danger-text); }
 .ui-modal__popover {
   position: absolute;

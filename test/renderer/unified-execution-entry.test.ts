@@ -102,13 +102,31 @@ describe('unified execution entry — task-scoped exec-config chip', () => {
 
   it('resolves the effective config with the same priority as the main process', () => {
     const chip = read('src/renderer/modules/model-chip.js');
-    // task override > agent default > global — mirrored from bus.ts.
+    // task override > agent default > per-model persisted (Option C) > global.
     expect(chip).toMatch(/override\.provider && override\.model[\s\S]*?agentDefaultModel[\s\S]*?defaultEntry/);
-    expect(chip).toMatch(/override\.effort \|\| agentDefaultEffort \|\| _modelChipGlobalEffort/);
+    expect(chip).toMatch(/override\.effort \|\| agentDefaultEffort \|\| persistedEffort \|\| _modelChipGlobalEffort/);
     // CLI agents surface the CLI badge instead of an effort value.
     expect(chip).toContain("t('exec_config.cli_badge')");
     // Unsupported models disable the effort options with the reason shown.
     expect(chip).toMatch(/model_effort\.unsupported_hint/);
+  });
+
+  it('Option C：该模型持久化的档位在发送侧也生效（新会话不必先重选模型）', () => {
+    const chip = read('src/renderer/modules/model-chip.js');
+    const conv = read('src/renderer/modules/conversation.js');
+    expect(chip).toContain('window.getPersistedModelEffort = _persistedEffortForTarget');
+    expect(conv).toMatch(/window\.getPersistedModelEffort/);
+    expect(conv).toMatch(/const effectiveEffort = ov\.effort \|\| persistedEffort/);
+    // 外接 CLI 的强度仍只按网关协商，不读模型设置。
+    expect(conv).toMatch(/if \(effectiveEffort && \(!isCliAgentRecipient \|\| cliExec\)\)/);
+  });
+
+  it('Option C：换模型的"强度回落"判据与菜单/后端门同一份声明', () => {
+    const chip = read('src/renderer/modules/model-chip.js');
+    // 成员来源换模型时必须先按声明的档位清掉不受支持的低/高，否则会留下一个
+    // 后端必然拒绝的档位（下一轮 = model_preflight）。off 不在判定集合里。
+    expect(chip).toMatch(/declaredLevels \? !declaredLevels\.includes\(currentEffort\) : heuristicSupported === false/);
+    expect(chip).toMatch(/currentEffort === 'low' \|\| currentEffort === 'high'/);
   });
 
   it('re-renders the anchor chip at menu-open so chip and menu can never disagree', () => {
@@ -167,6 +185,23 @@ describe('unified execution entry — send path and bubble meta', () => {
     expect(bus).toMatch(/opts\.item\.execConfig\?\.model \|\| runtime\.model/);
     // …and the end-of-turn message persists exec_meta.
     expect(bus).toMatch(/turnExecMeta \? \{ exec_meta: turnExecMeta \}/);
+  });
+
+  it('Option C：显式档位带着模型声明的档位下发，越档在 provider 调用前被拒', () => {
+    const bus = read('src/main/features/group_chat/bus.ts');
+    const client = read('src/main/model/core-agent/client.ts');
+    // ⚠️ 只有"针对这个模型的选择"（任务级 / agent 默认）才算显式；全局偏好是跨模型
+    // 默认，越档时静默降级而不是把回合判死。自动兜底注入的 low 同样不算。
+    expect(bus).toMatch(/const explicitThinkingLevel = item\.execConfig\?\.effort\s*\?\? turnAgentSpec\?\.default_thinking\s*\?\? "auto";[\s\S]*?turnThinkingLevel = "low";/);
+    // 只有显式档位才去解析声明。
+    expect(bus).toMatch(/explicitThinkingLevel !== "auto"[\s\S]*?_declaredReasoningLevelsFor\(uid, turnModelOverride\)/);
+    expect(bus).toMatch(/supportedReasoningLevels \? \{ supportedReasoningLevels \}/);
+    // 拒绝点必须在 modelRunStarted 之前——那段 throw 才会被归类为 model_preflight。
+    const guard = client.indexOf('validateReasoningEffort({');
+    const runStarted = client.indexOf('modelRunStarted = true');
+    expect(guard).toBeGreaterThan(-1);
+    expect(runStarted).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(runStarted);
   });
 });
 

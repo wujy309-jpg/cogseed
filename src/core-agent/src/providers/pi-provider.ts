@@ -28,6 +28,10 @@ import type { Message, MessageContent, StreamEvent, StopReason, Usage } from "..
 import { AuthError, ProviderError, RateLimitError, ContextOverflowError } from "../shared/errors.js";
 import { createLogger } from "../shared/logger.js";
 import type { CompletionParams, CompletionResult, LLMProvider, ToolDefinition } from "./base.js";
+import {
+  TOOL_RESULT_IMAGE_BUDGET,
+  externalizeToolResultImages,
+} from "../shared/tool-result-images.js";
 
 const log = createLogger("pi-provider");
 
@@ -57,8 +61,11 @@ function cacheSafeSessionId(s: string | undefined): string | undefined {
 
 // ─── Type conversion helpers ──────────────────────────────────────────────
 
-/** Convert our internal Message[] to pi-ai Context. */
-function buildPiContext(
+/** Convert our internal Message[] to pi-ai Context.
+ *  Exported for the C1/R-09 contract test: tool-result image externalization happens
+ *  here, and pinning it through the real conversion is the only way to prove images
+ *  never leak back into a request whose model cannot take them. */
+export function buildPiContext(
   messages: Message[],
   systemPrompt?: string,
   tools?: ToolDefinition[],
@@ -85,11 +92,24 @@ function buildPiContext(
    * we accept that mid-chat switch may produce a turn the new model
    * rejects. Per-message stamping is the proper long-term fix.
    */
-  model?: { api: string; provider: string; id: string },
+  model?: { api: string; provider: string; id: string; input?: readonly string[] },
 ): PiContext {
   const piMessages: PiContext["messages"] = [];
 
-  for (const msg of messages) {
+  // C1/R-09 — tool-result image externalization (the DSH route). Images a tool
+  // produced stay attributed blocks in the session, but once a request exceeds the
+  // image budget they become text handles naming the read-only copy. A route whose
+  // model does not accept images externalizes all of them: sending them is either
+  // dropped by the converter or a 400, and the handle still tells the model how to
+  // read the file. User attachments keep their existing vision path — only blocks
+  // carrying the producing `tool_use` id take part.
+  const acceptsImages = model?.input ? model.input.includes("image") : true;
+  const projectedMessages = externalizeToolResultImages(
+    messages,
+    acceptsImages ? TOOL_RESULT_IMAGE_BUDGET : { maxImages: 0 },
+  );
+
+  for (const msg of projectedMessages) {
     if (msg.role === "system") continue;
 
     if (msg.role === "user") {
@@ -398,6 +418,13 @@ export function createPiProvider(config: {
       const reasoning = effectiveReasoning(params.reasoning);
       const sessionId = cacheSafeSessionId(params.sessionId);
 
+      // Request identity + whether the routing headers actually ride along. The
+      // 2026-10-13 pattern was "first attempt 400 MissingSessionID, retry fine", so the
+      // next step is comparing these two lines instead of guessing again.
+      log.info(
+        `stream ${providerId}/${model.id} customModel=${config.customModel ? 'yes' : 'no'}`
+        + ` headers=${model.headers ? Object.keys(model.headers).sort().join(',') : '-'}`,
+      );
       log.debug(`stream ${providerId}/${model.id}`);
 
       try {
@@ -411,7 +438,24 @@ export function createPiProvider(config: {
               reasoning,
               cacheRetention: params.cacheRetention,
               sessionId,
+              // pi-ai reads request headers from these per-call options, NOT from the
+              // Model object — omitting them silently dropped `x-opencode-session`, so
+              // OpenCode-fronting endpoints answered 400 {"type":"MissingSessionID"}
+              // (2026-10-13, three attempts: the header was set on the Model all along).
+              ...(model.headers ? { headers: model.headers as Record<string, string> } : {}),
               ...(config.onPayload ? { onPayload: config.onPayload as any } : {}),
+              // Diagnostics (2026-10-13): identify WHICH request the endpoint rejects.
+              // pi-ai calls this once per HTTP response with the status, so a 400 can be
+              // tied to a concrete call instead of the whole turn.
+              onResponse: (info: any) => {
+                try {
+                  log.info(
+                    `stream response ${providerId}/${model.id}`
+                    + ` status=${info?.status ?? "-"}`
+                    + ` baseUrl=${String((model as any).baseUrl || config.baseUrl || "-")}`,
+                  );
+                } catch { /* diagnostics must never break the stream */ }
+              },
             })
           : piStream(model, context, {
               apiKey: config.apiKey,
@@ -421,7 +465,24 @@ export function createPiProvider(config: {
               temperature: params.temperature,
               cacheRetention: params.cacheRetention,
               sessionId,
+              // pi-ai reads request headers from these per-call options, NOT from the
+              // Model object — omitting them silently dropped `x-opencode-session`, so
+              // OpenCode-fronting endpoints answered 400 {"type":"MissingSessionID"}
+              // (2026-10-13, three attempts: the header was set on the Model all along).
+              ...(model.headers ? { headers: model.headers as Record<string, string> } : {}),
               ...(config.onPayload ? { onPayload: config.onPayload as any } : {}),
+              // Diagnostics (2026-10-13): identify WHICH request the endpoint rejects.
+              // pi-ai calls this once per HTTP response with the status, so a 400 can be
+              // tied to a concrete call instead of the whole turn.
+              onResponse: (info: any) => {
+                try {
+                  log.info(
+                    `stream response ${providerId}/${model.id}`
+                    + ` status=${info?.status ?? "-"}`
+                    + ` baseUrl=${String((model as any).baseUrl || config.baseUrl || "-")}`,
+                  );
+                } catch { /* diagnostics must never break the stream */ }
+              },
             });
 
         for await (const event of eventStream) {

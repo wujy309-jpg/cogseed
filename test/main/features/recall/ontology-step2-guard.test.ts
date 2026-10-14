@@ -42,6 +42,8 @@ describe('014 anti-drift（specs/014 T024）', () => {
       'cognition.ontology.rules.query',
       'cognition.ontology.search',
       'cognition.ontology.snapshot',
+      // Manual automation execution uses the existing authenticated IPC router.
+      'autoTasks.runNow',
       // 2026-09-29 个人本体 v2 重构：po.* 干净通道（JSON 单文档存储上的
       // 全 id 寻址业务 API，见 src/main/features/po/api.ts；旧通道保留）。
       'po.snapshot',
@@ -74,6 +76,10 @@ describe('014 anti-drift（specs/014 T024）', () => {
       // 2026-09-30 托盘常驻：关闭到托盘的偏好通道（7c04fded 加入 handler 表，
       // 按字母序排在 po.* 之后、recall.* 之前）。
       'prefs.getCloseToTray',
+      // 2026-10-12 合并登记：creator 线新增的"等待用户批准"通道。渲染层用它把
+      // "只剩等用户点批准"与"仍在执行"区分开（处理态字段 waiting_approval），
+      // 只回会话 id 列表以便对全部已知行做绝对同步。
+      'conversations.waitingApproval',
       'prefs.setCloseToTray',
       // 2026-09-30 合并 origin/develop（#389 KB 另存本地）：转写清理版
       // 「另存到本地文件夹…」的落盘通道，随 develop 正常演进登记。
@@ -90,6 +96,10 @@ describe('014 anti-drift（specs/014 T024）', () => {
       'skills.security.export',
       // 2026-10-08 认知资产全量重构（U01/N-07）：夜间筛选聚合计数只读通道。
       'recall.captures.stats',
+      // Nightly formation undo and the explicit manual sweep share canonical handlers.
+      'recall.candidates.undoAutomatic',
+      'recall.candidates.undoAutomaticPreview',
+      'recall.captures.sweep.run',
       // 2026-10-11 系统活动原型：用户显式标记稍后，候选仍保留在需要关注中。
       // 独立 candidate-defer 服务保留生命周期与来源，不恢复旧 deferred 静音语义。
       'recall.candidates.defer',
@@ -98,6 +108,10 @@ describe('014 anti-drift（specs/014 T024）', () => {
       'recall.reviewEvidence.read',
       // 2026-10-14：编辑现有夜间候选后重核关联本体，仅更新完整预览，仍待确认。
       'recall.candidates.recheckOntologyFormation',
+      // 2026-10-14 推理强度 Option C：档位按模型声明的能力暴露，用户的选择持久化到
+      // 该模型（切模型回落 Auto）。读全量小表用于渲染层预取，写单条用于点选落盘。
+      'prefs.getModelThinkingLevels',
+      'prefs.setModelThinkingLevel',
     ];
     expect(sneaked.sort(), '出现未登记的新通道').toEqual([...registeredPost014].sort());
     // 2026-10-12 用户明确退役旧形成入口；其他基线通道仍禁止无登记删除。

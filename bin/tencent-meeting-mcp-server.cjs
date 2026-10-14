@@ -15,13 +15,11 @@ require('./proxy-bootstrap.cjs');
 // spawns us). This adapter's own `tmeet` subprocess is the layer that rule does not cover —
 // **reviewed exception, recorded in the PR description**, not an accident.
 //
-// ── Read-only surface ────────────────────────────────────────────────────────
-// COGSEED-314.4 is "只读接入适配". We expose records/transcripts and the *preview* half of the
-// recording-permission application only. No `meeting create|update|cancel`, no
-// `record permission-apply-commit`. Tencent's own docs require a self-built agent to implement
-// write confirmation itself; shipping no write tool satisfies that by construction and keeps the
-// `bridge_permissions` always-allow grant (which is per (agent, connector), not per tool) from
-// silently covering a mutation.
+// Meeting writes use a host-only prepare/commit protocol. Public mutation names cannot
+// execute directly. Main presents validated arguments through action_approval and only
+// then consumes the adapter's random one-use receipt. Read tools remain directly callable.
+// The CLI is bundled as a pinned native resource; globally installed copies are a legacy fallback.
+// Auth and data directories are scoped to the active user's local storage by the host.
 //
 // ── Two traps from the real CLI (verified against v1.0.18, not just the docs) ──
 // 1. TWO DIFFERENT IDS. Transcript tools need `--record-file-id`; `record address` and
@@ -63,6 +61,8 @@ const { resolveCliLaunch } = require('./cli-launch.cjs');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
+const meetingActions = require('./tencent-meeting-actions.cjs');
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const {
@@ -176,6 +176,12 @@ const MAX_TRANSCRIPT_CHARS = 200000;
 // ── Tool definitions ──────────────────────────────────────────────────
 
 const TOOLS = [
+  ...meetingActions.TOOLS,
+  ...[...meetingActions.INTERNAL_NAMES].map((name) => ({
+    name,
+    description: 'Host-only meeting approval protocol. Never expose this action to the model.',
+    inputSchema: { type: 'object' },
+  })),
   {
     name: 'list_recordings',
     description:
@@ -363,10 +369,9 @@ function _execTmeet(args) {
         const detail = String(stderr || '').trim() || String(stdout || '').trim() || err.message;
         let hint = '';
         if (err.code === 'ENOENT') {
-          hint = ` (the Tencent Meeting CLI was not found at "${bin}". Install it with ` +
-            '`npm install -g @tencentcloud/tmeet`, or point COGSEED_TMEET_BIN at the binary.)';
+          hint = ' (the bundled Tencent Meeting component is unavailable; repair or update the desktop client)';
         } else if (/not logged in|auth login|user config is empty/i.test(detail)) {
-          hint = ' (the Tencent Meeting account is not connected — the user must run `tmeet auth login` first)';
+          hint = ' (the Tencent Meeting account needs authorization — reconnect it in the Connectors panel)';
         }
         reject(new Error(`tmeet ${args[0]} ${args[1] || ''} failed: ${detail.slice(0, 400)}${hint}`));
         return;
@@ -413,8 +418,7 @@ function _execTmeetText(args) {
         const detail = String(stderr || '').trim() || String(stdout || '').trim() || err.message;
         let hint = '';
         if (err.code === 'ENOENT') {
-          hint = ` (the Tencent Meeting CLI was not found at "${bin}". Install it with ` +
-            '`npm install -g @tencentcloud/tmeet`, or point COGSEED_TMEET_BIN at the binary.)';
+          hint = ' (the bundled Tencent Meeting component is unavailable; repair or update the desktop client)';
         }
         reject(new Error(`tmeet ${args.join(' ')} failed: ${detail.slice(0, 400)}${hint}`));
         return;
@@ -694,7 +698,32 @@ function _normalizeRecord(row) {
 
 // ── Tool dispatch ─────────────────────────────────────────────────────
 
+const pendingChanges = new Map();
 async function callTool(name, args = {}) {
+  if (name === 'prepare_meeting_change') {
+    if (!meetingActions.WRITE_NAMES.has(args.tool_name)) throw new Error('Unknown meeting mutation');
+    const action = meetingActions.normalizeAction(args.tool_name, args.arguments);
+    for (const [key, draft] of pendingChanges) if (draft.expires <= Date.now()) pendingChanges.delete(key);
+    if (pendingChanges.size >= 32) throw new Error('Too many pending meeting changes');
+    const token = crypto.randomBytes(32).toString('hex');
+    pendingChanges.set(token, { ...action, expires: Date.now() + 10 * 60 * 1000 });
+    return { token, arguments: action.args };
+  }
+  if (name === 'discard_meeting_change') {
+    pendingChanges.delete(args.token);
+    return { discarded: true };
+  }
+  if (name === 'commit_meeting_change') {
+    const draft = pendingChanges.get(args.token);
+    // Consume before execution. A timeout or failed response must never replay a mutation.
+    pendingChanges.delete(args.token);
+    if (!draft || draft.expires <= Date.now()) throw new Error('Meeting approval is missing, expired or already used');
+    return tmeet(...draft.argv);
+  }
+  if (meetingActions.WRITE_NAMES.has(name)) throw new Error('Meeting changes require host human approval');
+  if (meetingActions.TOOLS.some((tool) => tool.name === name)) {
+    return tmeet(...meetingActions.normalizeAction(name, args).argv);
+  }
   if (name === 'start_login') {
     const authorization_url = await startLogin();
     return {

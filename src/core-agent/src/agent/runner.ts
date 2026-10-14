@@ -681,6 +681,9 @@ export class AgentRunner {
     /** Disable builtin, caller-supplied, and evolution tools for a strictly
      * text-only utility call such as an independent benchmark judge. */
     disableTools?: boolean;
+    /** Final runtime allowlist. When present it filters builtins, execution
+     * plan, caller tools, and evolution tools before registration. */
+    toolAllowlist?: readonly string[];
     /** Restrict learned-skill index to this subset (undefined = all). */
     skillAllowlist?: string[];
     /** Fires after skill_manage(create) with the new skill id — CogSeed
@@ -739,8 +742,9 @@ export class AgentRunner {
     if (this.skillStore && !opts.disableTools) {
       allTools.push(createSkillManageTool(this.skillStore, opts.onSkillCreated));
     }
+    const allowedTools = opts.toolAllowlist ? new Set(opts.toolAllowlist) : null;
     for (const tool of allTools) {
-      this.tools.set(tool.name, tool);
+      if (!allowedTools || allowedTools.has(tool.name)) this.tools.set(tool.name, tool);
     }
   }
 
@@ -1455,14 +1459,17 @@ export class AgentRunner {
         let endTurnRequested = false;
         let terminalBatchIndex = -1;
         const terminalSkipMessage = "A prior terminal tool ended this turn before this tool could run.";
-        const deferredToolImages: NonNullable<ToolResult["images"]>[] = [];
+        const deferredToolImages: Array<{ toolUseId: string; images: NonNullable<ToolResult["images"]> }> = [];
         const commitToolResult = (call: ToolUseCall, toolResult: ToolResult) => {
           this.session.addToolResult(call.id, toolResult.content, undefined, toolResult.isError);
-          if (toolResult.images?.length) deferredToolImages.push(toolResult.images);
+          // Keep the producing call id with the deferred images (C1/R-09): flushing
+          // them bare loses which tool_use they answer, and the session's image
+          // externalization needs that attribution to replace exactly these images.
+          if (toolResult.images?.length) deferredToolImages.push({ toolUseId: call.id, images: toolResult.images });
         };
         const flushDeferredToolImages = () => {
-          for (const images of deferredToolImages.splice(0)) {
-            this.session.addToolImages(images);
+          for (const deferred of deferredToolImages.splice(0)) {
+            this.session.addToolImages(deferred.images, deferred.toolUseId);
           }
         };
 

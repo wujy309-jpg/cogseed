@@ -31,6 +31,17 @@ let _modelChipBound = false;
 // reasoning capability). Unknown ids fall back to the name heuristic.
 const _modelReasoningByProvider = new Map();
 
+// provider → { [modelId]: string[] }：模型**声明**的思考档位（宿主可表达的子集
+// auto 之外的 off|low|high）。列表菜单只暴露这里面的档位——模型没声明就只给
+// Auto（Option C：按模型可支持的来）。来源与后端校验同一份标注
+// （auth.listModels 的 reasoningLevels），菜单与门不可能各说一套。
+const _modelEffortLevelsByProvider = new Map();
+
+// `${provider}\u0000${model}` → 'off'|'low'|'high'：用户为**这个模型**持久化的
+// 档位选择。切模型时按新模型查表，没有记录就是 Auto——这正是「切模型回落
+// Auto」的实现，不靠额外的清理步骤。
+const _persistedModelEffort = new Map();
+
 // provider → models[]（auth.listModels 原样结果）：一级菜单悬停 provider 时
 // 立刻弹二级模型清单用它，与能力表来自同一次请求（同一数据源，不重复拉）。
 const _modelListByProvider = new Map();
@@ -54,10 +65,14 @@ async function _prefetchReasoningForEntries(force = false) {
       const res = await window.cogseed.invoke('auth.listModels', { provider });
       if (!(res && res.ok && Array.isArray(res.models))) continue;
       const table = {};
+      const levelsTable = {};
       for (const m of res.models) {
         if (m && typeof m === 'object' && typeof m.reasoning === 'boolean') table[String(m.id)] = m.reasoning;
+        const levels = _declaredLevelsOf(m);
+        if (levels) levelsTable[String(m?.id || '')] = levels;
       }
       _modelReasoningByProvider.set(String(provider), table);
+      _modelEffortLevelsByProvider.set(String(provider), levelsTable);
       _modelListByProvider.set(String(provider), res.models);
       changed = true;
     } catch { /* 下次打开菜单重试 */ }
@@ -100,6 +115,70 @@ function _configuredLevelsFor(provider, model) {
   return Array.isArray(levels) ? levels : [];
 }
 
+/** 主进程 auth.listModels 对单个模型的声明档位标注（缺席 = 没声明）。只认宿主
+ *  可表达的三档，顺序固定 off→low→high，避免菜单顺序漂移。 */
+function _declaredLevelsOf(model) {
+  const raw = model && Array.isArray(model.reasoningLevels) ? model.reasoningLevels : null;
+  if (!raw) return null;
+  const declared = new Set(raw.map((level) => String(level || '').trim().toLowerCase()));
+  const levels = ['off', 'low', 'high'].filter((level) => declared.has(level));
+  return levels.length ? levels : null;
+}
+
+/** 模型声明的档位；undefined = 查不到（与"声明为空"区分：查不到不改变旧行为，
+ *  声明为空只给 Auto）。 */
+function _modelEffortLevels(provider, model) {
+  const table = _modelEffortLevelsByProvider.get(String(provider || ''));
+  const levels = table ? table[String(model || '')] : undefined;
+  return Array.isArray(levels) && levels.length ? levels : undefined;
+}
+
+/** 菜单要渲染的档位清单：Auto 永远在，其余只列模型声明支持的（Option C）。 */
+function _modelEffortOptionsFor(provider, model) {
+  const levels = _modelEffortLevels(provider, model);
+  return levels ? ['auto', ...levels] : ['auto'];
+}
+
+function _persistedEffortKey(provider, model) {
+  const p = String(provider || '').trim();
+  const m = String(model || '').trim();
+  return p && m ? `${p}\u0000${m}` : '';
+}
+
+function _persistedEffortFor(provider, model) {
+  const key = _persistedEffortKey(provider, model);
+  return key ? (_persistedModelEffort.get(key) || '') : '';
+}
+
+/** 预取用户为各模型持久化的档位（cloud config）。失败静默——记忆是增强信息，
+ *  缺了退回 Auto，不影响选择本身。 */
+async function refreshModelChipModelEffort() {
+  try {
+    const res = await window.cogseed.invoke('prefs.getModelThinkingLevels');
+    const levels = res && res.levels && typeof res.levels === 'object' ? res.levels : {};
+    _persistedModelEffort.clear();
+    for (const [key, level] of Object.entries(levels)) {
+      if (level === 'off' || level === 'low' || level === 'high') _persistedModelEffort.set(String(key), level);
+    }
+  } catch (err) {
+    _modelChipLog.warn('model thinking levels refresh failed', { error: (err && err.message) || String(err) });
+  }
+}
+
+/** 把用户为某个模型选的档位写回该模型的设置（auto = 清除记录）。 */
+function _persistModelEffort(provider, model, level) {
+  const key = _persistedEffortKey(provider, model);
+  if (!key) return;
+  const next = level === 'off' || level === 'low' || level === 'high' ? level : '';
+  if (next) _persistedModelEffort.set(key, next);
+  else _persistedModelEffort.delete(key);
+  try {
+    window.cogseed.invoke('prefs.setModelThinkingLevel', {
+      provider, model, level: next || 'auto',
+    }).catch(() => { /* 落盘失败不回滚界面：下次打开会重新读盘 */ });
+  } catch { /* ignore */ }
+}
+
 /** 某个 provider 的模型清单：命中缓存直接返回，否则拉一次并入表（能力表
  *  同步填充——二级/三级与顶层菜单共用同一份标注）。 */
 async function _loadProviderModels(provider) {
@@ -110,10 +189,14 @@ async function _loadProviderModels(provider) {
     const res = await window.cogseed.invoke('auth.listModels', { provider: key });
     if (!(res && res.ok && Array.isArray(res.models))) return [];
     const table = {};
+    const levelsTable = {};
     for (const m of res.models) {
       if (m && typeof m === 'object' && typeof m.reasoning === 'boolean') table[String(m.id)] = m.reasoning;
+      const levels = _declaredLevelsOf(m);
+      if (levels) levelsTable[String(m?.id || '')] = levels;
     }
     _modelReasoningByProvider.set(key, table);
+    _modelEffortLevelsByProvider.set(key, levelsTable);
     _modelListByProvider.set(key, res.models);
     return res.models;
   } catch (err) {
@@ -153,6 +236,8 @@ async function refreshModelChipEntries() {
       _modelChipEntries = res.entries;
       _modelChipRenderAll();
       void _prefetchReasoningForEntries();
+      // Option C：各模型持久化的档位选择与条目一起预取（切模型回落 Auto 靠它）。
+      void refreshModelChipModelEffort();
     }
   } catch (err) {
     _modelChipLog.warn('model entries refresh failed', { error: (err && err.message) || String(err) });
@@ -260,15 +345,17 @@ function _effectiveExecConfig(target) {
   }
 
   // API-connection model recipient: the pick IS the execution target; only
-  // effort can be overridden on top.
+  // effort can be overridden on top. Option C：该模型持久化的档位（用户为这个
+  // 模型选过）排在任务级覆盖之后、全局偏好之前——单模型的选择比全局偏好更具体。
   if (recipient.kind === 'model' && recipient.provider && recipient.model) {
+    const persistedEffort = _persistedEffortFor(recipient.provider, recipient.model);
     return {
       mode: 'api',
       model: recipient.model,
       modelLabel: recipient.name || recipient.model,
       provider: recipient.provider,
       providerLabel: recipient.providerLabel || recipient.provider,
-      effort: override.effort || _modelChipGlobalEffort,
+      effort: override.effort || persistedEffort || _modelChipGlobalEffort,
       effortOverridden: !!override.effort,
       modelOverridden: false,
       reasoning: _modelReasoningCapability(recipient.provider, recipient.model),
@@ -286,7 +373,9 @@ function _effectiveExecConfig(target) {
         ? { provider: defaultEntry.provider, model: defaultEntry.model, label: defaultEntry.modelName || defaultEntry.model }
         : null;
   const agentDefaultEffort = (agent && agent.default_thinking) ? agent.default_thinking : null;
-  const effort = override.effort || agentDefaultEffort || _modelChipGlobalEffort;
+  // Option C：任务级覆盖 > agent 默认 > **该模型持久化的档位** > 全局偏好。
+  const persistedEffort = modelChoice ? _persistedEffortFor(modelChoice.provider, modelChoice.model) : '';
+  const effort = override.effort || agentDefaultEffort || persistedEffort || _modelChipGlobalEffort;
   return {
     mode: 'api',
     model: modelChoice ? modelChoice.model : '',
@@ -301,6 +390,20 @@ function _effectiveExecConfig(target) {
     reasoning: modelChoice ? _modelReasoningCapability(modelChoice.provider, modelChoice.model) : true,
     agent,
   };
+}
+
+/** Option C：该 target 当前有效 API 模型上**持久化**的档位（没有则空串）。
+ *  只回"该模型设置"里的值，**不含**全局偏好——发送侧要把它当作比全局更具体的
+ *  一层，而不是把全局偏好写死进 execution_config（那会让全局盖过 agent 默认）。
+ *  外接 CLI 来源恒为空串：它的强度由网关协商，不走模型设置。 */
+function _persistedEffortForTarget(target) {
+  try {
+    const cfg = _effectiveExecConfig(target);
+    if (!cfg || cfg.mode !== 'api' || !cfg.provider || !cfg.model) return '';
+    return _persistedEffortFor(cfg.provider, cfg.model);
+  } catch {
+    return '';
+  }
 }
 
 // ─── Chip DOM ─────────────────────────────────────────────────────────────
@@ -631,12 +734,18 @@ function _renderMemberSourceBody(container, target, group, opts) {
   };
   const pickModel = (patch) => {
     // 换模型后原强度不受支持 → 恢复该来源的默认强度并提示（FR-013）。
+    // Option C：判据优先用模型**声明的档位**（与菜单、后端门同一份），声明查不到
+    // 时才回退旧的名称启发式。判错会让一个后端会拒绝的档位留在配置里，
+    // 下一轮直接变成 model_preflight——这里必须能提前清掉。
     const next = { ...(patch || {}) };
-    const supported = (next.provider && next.model)
-      ? _modelReasoningCapability(next.provider, next.model)
-      : null;
+    const hasModel = !!(next.provider && next.model);
+    const declaredLevels = hasModel ? _modelEffortLevels(next.provider, next.model) : null;
+    const heuristicSupported = hasModel ? _modelReasoningCapability(next.provider, next.model) : null;
     const currentEffort = conf.effort;
-    if (supported === false && (currentEffort === 'low' || currentEffort === 'high')) {
+    // 'off' 不在被判定的集合里：它的语义是"不发参数"，任何模型都不会因此被拒。
+    const effortUnsupported = (currentEffort === 'low' || currentEffort === 'high')
+      && (declaredLevels ? !declaredLevels.includes(currentEffort) : heuristicSupported === false);
+    if (effortUnsupported) {
       next.effort = '';
       if (typeof uiToast === 'function') {
         uiToast(t('composer.model.effort_reset_notice', { level: t(`model_effort.${currentEffort}`) }), {
@@ -717,8 +826,9 @@ function _renderMemberSourceBody(container, target, group, opts) {
           },
           // 外接来源支持模型下发时同样要有竖排思考强度（FR-010/FR-013）：
           // 之前在模型清单之后直接 return，菜单底部没有强度入口（MA-05）。
+          // 档位由网关协商（effortControllableFor），不套用 API 模型的目录声明。
           afterRender: () => _renderMemberEffortRows(host, target, group, conf, {
-            supported: ctl ? ctl.effortControllableFor(cli) : false,
+            ..._cliMemberEffortOptions(cli),
             rerender,
           }),
         },
@@ -760,7 +870,7 @@ function _renderMemberSourceBody(container, target, group, opts) {
       }
     }
     _renderMemberEffortRows(host, target, group, conf, {
-      supported: modelSupported && (ctl ? ctl.effortControllableFor(cli) : false),
+      ..._cliMemberEffortOptions(cli),
       rerender,
     });
     return;
@@ -808,22 +918,48 @@ function _renderMemberSourceBody(container, target, group, opts) {
     note.textContent = t('model_chip.loading_models');
     host.appendChild(note);
   }
+  // Option C（按模型声明的档位）只约束**内进程 API 模型**，且要先有具体模型：
+  // 外接 CLI 的强度由网关协商（effortControllableFor / --effort 模板）；
+  // 内进程来源「跟随默认」（未选模型）时无从查声明，保持既有四档全开。
+  const external = !!(group && group.external);
+  const hasModel = !!(conf.provider && conf.model);
   _renderMemberEffortRows(host, target, group, conf, {
-    supported: (conf.provider && conf.model)
-      ? _modelReasoningCapability(conf.provider, conf.model)
-      : true,
+    ...(external
+      ? _cliMemberEffortOptions((_memberAgentRecord(group.id)?.runtime || {}).cli || '')
+      : hasModel
+        ? { levels: _modelEffortOptionsFor(conf.provider, conf.model) }
+        : { levels: _EFFORT_OPTIONS }),
+    // 声明为空时给一句说明；查不到声明（含"还没选模型"）不解释（沿用旧行为）。
+    undeclared: !external && hasModel && !_modelEffortLevels(conf.provider, conf.model),
     rerender: () => _renderMemberSourceBody(container, target, group, opts),
   });
 }
 
-/** 竖排思考强度：每项一行，点选保持当前层打开（FR-010）。 */
+/** 外接来源的强度档位由网关协商，不是模型目录声明：`low`/`high` 需要
+ *  `effortControllableFor`，否则置灰并给出原因（FR-013，不放假开关）。`off`
+ *  沿用外接来源的既有行为（模型段里始终可见）。 */
+function _cliMemberEffortOptions(cli) {
+  const ctl = (typeof window !== 'undefined' && window.cliExecControl) ? window.cliExecControl : null;
+  const effortSupported = ctl ? ctl.effortControllableFor(cli) : false;
+  return {
+    levels: _EFFORT_OPTIONS,
+    unavailable: (level) => (level === 'low' || level === 'high') && !effortSupported,
+  };
+}
+
+/** 竖排思考强度：每项一行，点选保持当前层打开（FR-010）。
+ *  `levels` 决定**渲染哪些**档位（Option C：API 模型只列声明的）；
+ *  `unavailable(level)` 决定哪些渲染出来但置灰（外接 CLI 的既有 FR-013 语义：
+ *  网关没有强度通道时不放假开关）。 */
 function _renderMemberEffortRows(container, target, group, conf, opts) {
   const section = document.createElement('div');
   section.className = 'model-chip-menu-section';
   section.textContent = t('model_effort.menu_title');
   container.appendChild(section);
-  _EFFORT_OPTIONS.forEach((level) => {
-    const unavailable = (level === 'low' || level === 'high') && opts.supported === false;
+  const options = Array.isArray(opts.levels) && opts.levels.length ? opts.levels : _EFFORT_OPTIONS;
+  const unavailableFor = typeof opts.unavailable === 'function' ? opts.unavailable : () => false;
+  options.forEach((level) => {
+    const unavailable = unavailableFor(level) === true;
     const active = (conf.effort || 'auto') === level;
     const item = document.createElement('div');
     item.className = 'model-chip-menu-item'
@@ -844,6 +980,7 @@ function _renderMemberEffortRows(container, target, group, conf, opts) {
     const apply = (restoreFocus = false) => {
       if (typeof opts.onPick === 'function') opts.onPick(level);
       else _memberSourceWrite(target, group.id, { effort: level === 'auto' ? '' : level });
+      if (typeof opts.onPick !== 'function') _persistModelEffort(conf.provider, conf.model, level);
       // 强度点选保持当前层打开并显示选中态（FR-010）。
       if (typeof opts.rerender === 'function') opts.rerender();
       if (restoreFocus) {
@@ -858,7 +995,7 @@ function _renderMemberEffortRows(container, target, group, conf, opts) {
     });
     container.appendChild(item);
   });
-  if (opts.supported === false) {
+  if (opts.undeclared) {
     const note = document.createElement('div');
     note.className = 'model-chip-menu-note';
     note.textContent = t('model_effort.unsupported_hint');
@@ -1044,7 +1181,8 @@ function _renderExecConfigMenu(menu, anchor) {
     _renderProviderRows(menu, anchor, target, cfg);
   }
   _renderMemberEffortRows(menu, target, null, { effort: cfg.effortOverridden ? cfg.effort : '' }, {
-    supported: cfg.reasoning,
+    levels: _modelEffortOptionsFor(cfg.provider, cfg.model),
+    undeclared: !_modelEffortLevels(cfg.provider, cfg.model),
     onPick: (level) => {
       _closeFlyouts();
       _setTaskEffort(target, level);
@@ -1103,6 +1241,10 @@ function _clearModelOverride(target) {
 
 function _setTaskEffort(target, level) {
   try {
+    const cfg = (typeof _effectiveExecConfig === 'function') ? _effectiveExecConfig(target) : null;
+    // Option C：档位属于它被选中的那个模型——写进该模型的设置，切到别的模型
+    // 自然回到 Auto（查不到记录）。
+    if (cfg && cfg.provider && cfg.model) _persistModelEffort(cfg.provider, cfg.model, level);
     if (typeof setExecOverride !== 'function') return;
     if (level === 'auto') {
       // Drop only the effort part of the override; keep a model pair if set.
@@ -1437,6 +1579,9 @@ async function _openProviderFlyout(target, cfg, entry, rowEl, options = {}) {
  *  execution target), task override everywhere else. */
 function _applyModelPick(target, cfg, provider, model, modelLabel, providerLabel) {
   try {
+    // Option C：换模型不继承上一个模型的档位。新模型有持久化选择就用它，
+    // 没有就清掉 override 的 effort → 回落 Auto。
+    const restored = _persistedEffortFor(provider, model);
     const recipient = (typeof getChatRecipient === 'function') ? getChatRecipient(target) : null;
     if (recipient && recipient.kind === 'model') {
       if (typeof setChatRecipient === 'function') {
@@ -1446,13 +1591,15 @@ function _applyModelPick(target, cfg, provider, model, modelLabel, providerLabel
           providerLabel: providerLabel || provider,
         });
       }
-    } else if (typeof setExecOverride === 'function') {
+    }
+    if (typeof setExecOverride === 'function') {
       const ov = getExecOverride(target) || {};
-      setExecOverride(target, {
-        ...ov,
-        provider, model,
-        modelLabel: modelLabel || model,
-      });
+      const next = (recipient && recipient.kind === 'model')
+        ? { ...ov }
+        : { ...ov, provider, model, modelLabel: modelLabel || model };
+      if (restored) next.effort = restored;
+      else delete next.effort;
+      setExecOverride(target, Object.keys(next).length ? next : null);
     }
     _modelChipRenderAll();
   } catch (err) {
@@ -1750,6 +1897,9 @@ function initModelChip() {
 window.initModelChip = initModelChip;
 window.refreshExecConfigChip = _modelChipRenderAll;
 window.getModelChipEntries = getModelChipEntries;
+// 发送侧（conversation.js::_executionConfigForSend）要读"该模型持久化的档位"，
+// 才能让用户为某模型选过的强度在新会话里也生效（Option C 的持久化语义）。
+window.getPersistedModelEffort = _persistedEffortForTarget;
 // 顶层拖拽区等外部表面需要在视口/视图变化时收起悬浮菜单（boot.js 防御性
 // 调用；top-drag-regions 契约测试钉住此导出）。
 window.closeModelChipMenu = _closeModelMenu;

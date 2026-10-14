@@ -101,3 +101,6 @@ build-info.json
 /.venv*/
 /coverage/
 *.log
+
+# Verified provider CLI assets provisioned by scripts/fetch-tmeet.cjs
+/resources/tencent-meeting/

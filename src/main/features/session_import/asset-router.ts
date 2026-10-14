@@ -1,6 +1,7 @@
 /** Import transcripts and materialize continuable conversations. Cognition
  * candidates are formed only by the independent nightly conversation pipeline. */
 
+import { basename } from 'node:path';
 import { readClaudeSessionTranscript } from '../local_agents/claude_sessions';
 import { listClaudeDesktopSessions } from '../local_agents/claude_desktop_sessions';
 import { parseClaudeTranscript, parseWorkbuddyTranscript, type NormalizedTranscript } from './transcript-normalize';
@@ -209,9 +210,28 @@ async function prepareClaudeSession(userId: string, filePath: string): Promise<P
   const read = await readClaudeSessionTranscript(filePath);
   if (!read.ok) return { ok: false, reason: read.reason || 'unreadable' };
   const transcript = parseClaudeTranscript(read.body, read.sessionId);
+  logTranscriptSkips(transcript, filePath);
   if (!transcript.turns.length) return { ok: false, reason: 'empty_transcript' };
   const extraction = await extractSession(userId, transcript);
   return { ok: true, prepared: { source: 'claude', transcript, extraction, truncated: !!read.truncated } };
+}
+
+/** Normalization is best-effort and drops lines by design; the accounting has to
+ *  leave a trace, otherwise a partial conversation gets summarised as if it were
+ *  whole. Only `malformed` (unparseable data) is a warning — dropping tool noise,
+ *  queue rows and empty turns is expected. Never log the full path or any line
+ *  content: the filename is enough to locate the session. */
+function logTranscriptSkips(transcript: NormalizedTranscript, filePath: string): void {
+  const skipped = transcript.skipped;
+  if (!skipped || skipped.malformed <= 0) return;
+  log.warn('transcript normalisation dropped malformed lines', {
+    source: transcript.source,
+    file: basename(filePath),
+    turns: transcript.turns.length,
+    malformed: skipped.malformed,
+    internal: skipped.internal,
+    empty: skipped.empty,
+  });
 }
 
 /** read → normalize → extract for a WorkBuddy session (no writes). */
@@ -219,6 +239,7 @@ async function prepareWorkbuddySession(userId: string, filePath: string): Promis
   const read = await readWorkbuddySessionTranscript(filePath);
   if (!read.ok) return { ok: false, reason: read.reason || 'unreadable' };
   const transcript = parseWorkbuddyTranscript(read.body, read.sessionId);
+  logTranscriptSkips(transcript, filePath);
   if (!transcript.turns.length) return { ok: false, reason: 'empty_transcript' };
   const extraction = await extractSession(userId, transcript);
   return { ok: true, prepared: { source: 'workbuddy', transcript, extraction, truncated: !!read.truncated } };
@@ -337,6 +358,7 @@ export async function importClaudeSession(input: ImportClaudeSessionInput): Prom
     return { ok: false, cognitions: zeroCounts, degraded: true, reason: read.reason || 'unreadable' };
   }
   const transcript = parseClaudeTranscript(read.body, read.sessionId);
+  logTranscriptSkips(transcript, input.filePath);
   if (!transcript.turns.length) {
     return { ok: false, cognitions: zeroCounts, degraded: true, reason: 'empty_transcript' };
   }
@@ -386,6 +408,7 @@ export async function importWorkbuddySession(input: ImportWorkbuddySessionInput)
     return { ok: false, cognitions: zeroCounts, degraded: true, reason: read.reason || 'unreadable' };
   }
   const transcript = parseWorkbuddyTranscript(read.body, read.sessionId);
+  logTranscriptSkips(transcript, input.filePath);
   if (!transcript.turns.length) {
     return { ok: false, cognitions: zeroCounts, degraded: true, reason: 'empty_transcript' };
   }

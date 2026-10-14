@@ -30,8 +30,12 @@ describe('Private engineering records', () => {
     expect(registry).toContain('`kb-eco` switches product modules');
   });
 
-  it('records the connector detail proposal', () => {
-    expect(registry).toContain('`CONN-PV-001`');
-    expect(registry).toContain('**Status**: `Proposed`');
+  it('retains connector detail history and records its popup replacement', () => {
+    const detail = registry.slice(registry.indexOf('### `CONN-PV-001`'), registry.indexOf('### `SEC-PV-001`'));
+    expect(detail).toContain('**Status**: `Superseded`');
+    expect(detail).toContain('`CONN-PV-003`');
+    const popup = registry.slice(registry.indexOf('### `CONN-PV-003`'));
+    expect(popup).toContain('**Status**: `Proposed`');
+    expect(popup).toContain('`uiModal`');
   });
 });

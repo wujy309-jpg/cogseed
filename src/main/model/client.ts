@@ -312,6 +312,15 @@ export interface ChatOptions {
    *  preserving). Set `'off'` to suppress thinking even on a reasoner;
    *  set `'low'` / `'high'` to override. */
   thinkingLevel?: 'off' | 'low' | 'high';
+  /**
+   * Option C preflight: the thinking tiers the effective model declares (host
+   * vocabulary `off` | `low` | `high`). When provided and `thinkingLevel` is an
+   * explicit tier outside the list, the call is refused **before** the provider
+   * sees it — the throw lands while the run has not started, so it is classified
+   * `model_preflight` rather than an opaque provider 400. Omit the field when no
+   * declaration could be resolved: absent means "not validated", never "no tiers".
+   */
+  supportedReasoningLevels?: readonly string[];
   /** Per-task model override from the unified execution entry (user picked a
    *  specific provider+model for this conversation, or temporarily switched
    *  an in-process agent's model). Resolved against the user's configured

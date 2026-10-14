@@ -112,6 +112,21 @@ describe('session_import › transcript-normalize', () => {
   });
 });
 
+describe('session_import › transcript-normalize drop accounting', () => {
+  it('counts malformed, internal and empty lines so a partial import is visible', async () => {
+    const { parseClaudeTranscript } = await import('../../../src/main/features/session_import/transcript-normalize');
+    const body = [
+      'not json',                                                                 // malformed
+      JSON.stringify({ type: 'queue-operation', operation: 'enqueue' }),           // internal
+      JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [] } }), // empty
+      JSON.stringify({ type: 'user', message: { role: 'user', content: '你好' } }),
+    ].join('\n');
+    const parsed = parseClaudeTranscript(body, 'sess');
+    expect(parsed.turns.map((t) => t.text)).toEqual(['你好']);
+    expect(parsed.skipped).toEqual({ malformed: 1, internal: 1, empty: 1 });
+  });
+});
+
 describe('session_import › extractor', () => {
   it('parses strict JSON from a single pass with full candidate fields', async () => {
     __nextChat = () => ({

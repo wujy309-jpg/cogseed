@@ -58,7 +58,7 @@ describe('explicit utility JSON response format', () => {
       { entryId: 'first-entry', profileId: 'first-profile', provider: 'openai', model: 'gpt-4o', apiKey: 'synthetic-first-key' },
       { entryId: 'zai-entry', profileId: 'zai-profile', provider: 'zai', model: 'glm-5.2', apiKey: 'synthetic-second-key' },
     ];
-    vi.spyOn(auth, 'pickChatEntryGroup').mockResolvedValue(group);
+    vi.spyOn(auth, 'pickChatEntryGroupForUser').mockResolvedValue(group);
     vi.spyOn(auth, 'bumpEntryLastUsed').mockImplementation(() => undefined);
     const nativeInjected = vi.fn();
     const chosen = vi.fn();
@@ -103,7 +103,7 @@ describe('explicit utility JSON response format', () => {
   });
   it('preserves the existing native-search payload hook for ordinary calls without JSON opt-in', async () => {
     const auth = await import('../../../../src/main/features/auth');
-    vi.spyOn(auth, 'pickChatEntryGroup').mockResolvedValue([
+    vi.spyOn(auth, 'pickChatEntryGroupForUser').mockResolvedValue([
       { entryId: 'ordinary-entry', profileId: 'ordinary-profile', provider: 'openai', model: 'gpt-4o', apiKey: 'synthetic-key' },
     ]);
     const users = await import('../../../../src/main/features/users');

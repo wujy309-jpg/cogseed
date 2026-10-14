@@ -224,10 +224,11 @@ function buildHarness(options: { override?: Record<string, unknown>; globalEffor
   ];
   const modelsByProvider: Record<string, Array<Record<string, unknown>>> = {
     'cp:cp-1': [
-      { id: 'deepseek/deepseek-v4.1-flash', name: 'deepseek/deepseek-v4.1-flash', reasoning: true },
+      // Option C：菜单只暴露 auth.listModels 标注的 reasoningLevels。
+      { id: 'deepseek/deepseek-v4.1-flash', name: 'deepseek/deepseek-v4.1-flash', reasoning: true, reasoningLevels: ['off', 'low', 'high'] },
       { id: 'deepseek-v4.1-lite', name: 'deepseek-v4.1-lite', reasoning: false },
     ],
-    anthropic: [{ id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', reasoning: true }],
+    anthropic: [{ id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', reasoning: true, reasoningLevels: ['off', 'low', 'high'] }],
   };
   const overrides: Array<Record<string, unknown> | null> = [];
   const invoke = vi.fn(async (channel: string, payload?: any) => {
@@ -401,7 +402,7 @@ describe('exec-config chip — provider → model + direct thinking strength', (
     expect(anchor.focusCalls).toBe(1);
   });
 
-  it('disables unsupported thinking levels after changing to a non-reasoning model', async () => {
+  it('shows only auto after changing to a model without declared reasoning levels', async () => {
     const h = buildHarness();
     const anchor = await openMenu(h);
     await h.registry.get('model-chip-menu')!.querySelectorAll('.model-chip-menu-item--provider')[0].click();
@@ -409,9 +410,9 @@ describe('exec-config chip — provider → model + direct thinking strength', (
     await h.registry.get('model-chip-flyout-models')!.querySelectorAll('.model-chip-menu-item--provider')[1].click();
     h.context._toggleExecConfigMenu(anchor);
     const menu = h.registry.get('model-chip-menu')!;
-    const disabled = menu.querySelectorAll('.model-chip-menu-item.is-disabled');
-    expect(disabled.map((row) => row.dataset.memberEffort)).toEqual(['low', 'high']);
-    await disabled[1].click();
+    const efforts = menu.querySelectorAll('.model-chip-menu-item').filter((row) => row.dataset.memberEffort);
+    expect(efforts.map((row) => row.dataset.memberEffort)).toEqual(['auto']);
+    expect(menu.querySelectorAll('.model-chip-menu-item.is-disabled')).toHaveLength(0);
     expect(h.overrides.at(-1)).not.toHaveProperty('effort');
     expect(menu.innerHTML).toContain('model_effort.unsupported_hint');
   });
@@ -579,5 +580,48 @@ describe('member source menu effort rows (MA-05)', () => {
     expect(sourceConfig.effort).toBe('');
     currentRows = container.querySelectorAll('.model-chip-menu-item').filter((row) => row.dataset.memberEffort);
     expect(currentRows.filter((row) => row.classList.contains('is-default')).map((row) => row.dataset.memberEffort)).toEqual(['auto']);
+  });
+
+  it('⚠️ 网关没有强度通道时低/高置灰（不放假开关），但四档仍在清单里', async () => {
+    const h = buildHarness();
+    h.windowObj.cliExecControl = {
+      cachedCliModels: () => ({ models: [{ id: 'gpt-6-astra', name: 'gpt-6-astra' }] }),
+      mergedCliModels: (_cli: string, scan: any) => (scan && scan.models) || [],
+      modelControllableFor: () => true,
+      // 该 CLI 没有 effort 通道：模型可控但强度不可控。
+      effortControllableFor: () => false,
+      loadCliModels: async () => ({ models: [{ id: 'gpt-6-astra', name: 'gpt-6-astra' }] }),
+      scanInFlight: () => false,
+      execControlFor: () => ({ effortOff: false }),
+    };
+    h.context._agentsCache = [
+      { agent_id: 'agent-codex', name: 'Codex', runtime: { kind: 'cli', cli: 'codex' } },
+    ];
+    h.windowObj.composerMembers = {
+      getSourceConfig: () => ({}),
+      setSourceConfig: () => {},
+      isMember: () => true,
+    };
+    h.context._memberSourceWrite = () => {};
+
+    const container = h.context.document.createElement('div');
+    h.context.document.body.appendChild(container);
+    vm.runInContext(
+      '_renderMemberSourceBody(__container, "conversation", { id: "agent-codex", external: true }, {})',
+      Object.assign(h.context, { __container: container }),
+    );
+    await sleep(50);
+
+    const effortRows: FakeElement[] = [];
+    const walk = (el: FakeElement) => {
+      for (const child of el.children) {
+        if (child.dataset.memberEffort) effortRows.push(child);
+        walk(child);
+      }
+    };
+    walk(container);
+    expect(effortRows.map((row) => row.dataset.memberEffort)).toEqual(['auto', 'off', 'low', 'high']);
+    expect(effortRows.filter((row) => row.classList.contains('is-disabled')).map((row) => row.dataset.memberEffort))
+      .toEqual(['low', 'high']);
   });
 });

@@ -572,7 +572,12 @@ export class Session {
    * content blocks is appended *after* the tool_result message. This fallback
    * shape works across providers whose native tool_result channel does not
    * accept images (OpenAI, Gemini) — the model sees "tool returned text,
-   * then the very next user turn is the associated image(s)". */
+   * then the very next user turn is the associated image(s)".
+   *
+   * The images are stamped with the producing `tool_use` id (C1/R-09): the
+   * positional shape loses the association once results are batched or the
+   * session is replayed, and the id is what lets the request builder externalize
+   * exactly these images to text handles when the image budget is exceeded. */
   addToolResult(
     toolUseId: string,
     result: string,
@@ -580,16 +585,21 @@ export class Session {
     isError?: boolean,
   ): void {
     this.addMessage("user", [{ type: "tool_result", toolUseId, content: result, isError }]);
-    this.addToolImages(images);
+    this.addToolImages(images, toolUseId);
   }
 
-  /** Append images produced by tools without inserting another tool result. */
-  addToolImages(images?: ToolResultImage[]): void {
+  /** Append images produced by tools without inserting another tool result.
+   *  `toolUseId` attributes them to their call when the caller still knows it. */
+  addToolImages(images?: ToolResultImage[], toolUseId?: string): void {
     if (!images?.length) return;
+    const attributedTo = String(toolUseId || "").trim();
     const imageBlocks: ImageContent[] = images.map((img) => ({
       type: "image",
       data: img.data,
       mediaType: img.mediaType as ImageContent["mediaType"],
+      ...(attributedTo ? { toolUseId: attributedTo } : {}),
+      ...(img.name ? { name: img.name } : {}),
+      ...(img.readonlyPath ? { readonlyPath: img.readonlyPath } : {}),
     }));
     this.addMessage("user", imageBlocks);
   }

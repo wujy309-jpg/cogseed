@@ -27,7 +27,7 @@ import { assertNotForbiddenToPersist } from '../../util/cognition-sensitivity';
 import { runRecallCaptureModel } from './capture-model-routing';
 import { safeId } from '../../storage';
 import { scheduleBootBackground, type ScheduledBootBackgroundTask } from '../../util/boot_init';
-import { getConfiguredModelOAuthExpiredMessage, hasConfiguredModel } from '../auth';
+import { getConfiguredModelOAuthExpiredMessage, getConfiguredModelOAuthExpiredMessageForUser, hasConfiguredModel, hasConfiguredModelForUser } from '../auth';
 import * as chats from '../chats';
 import { run as runCliAgent } from '../local_agents/runner';
 import { detectAll } from '../local_agents/registry';
@@ -924,9 +924,10 @@ function extractionInput(
  *  dispatch a one-shot print-mode turn with the extraction prompt + input, and
  *  return the CLI's final text. Returns null when no CLI is usable. */
 /** Same channel selection as the extraction runner; never infer outage from a failed read. */
-export async function readRecallCaptureModelRuntime() {
-  const apiConfigured = hasConfiguredModel().configured || Boolean(process.env.ANTHROPIC_API_KEY);
-  const authorizationRequired = apiConfigured && Boolean(getConfiguredModelOAuthExpiredMessage());
+export async function readRecallCaptureModelRuntime(userId?: string) {
+  const apiConfigured = (userId ? hasConfiguredModelForUser(userId) : hasConfiguredModel()).configured || Boolean(process.env.ANTHROPIC_API_KEY);
+  const authorizationRequired = apiConfigured && Boolean(userId
+    ? getConfiguredModelOAuthExpiredMessageForUser(userId) : getConfiguredModelOAuthExpiredMessage());
   if (apiConfigured) return { runtimeStatus: 'known' as const, apiConfigured, available: !authorizationRequired,
     channel: authorizationRequired ? 'unavailable' as const : 'api' as const, authorizationRequired };
   try {

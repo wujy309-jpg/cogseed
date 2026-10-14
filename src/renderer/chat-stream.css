@@ -53,6 +53,16 @@
   user-select: none;
 }
 .cs-badge:hover { background: var(--color-stream-hover-2); color: var(--color-stream-muted); }
+/* 归属段：折叠条必须写明这是谁的执行过程（2026-10-13 需求 B），
+   否则派单链里会被误读成主 Agent 的任务执行过程。可截断不撑宽消息头。 */
+.cs-badge-owner {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+  max-width: 15em;
+}
+/* 折叠态也必须能看出「在跑」（真机 2026-10-14：worker 默认折叠后，唯一的动效
+   随折叠区一起被隐藏，界面上没有任何运行迹象）。旋转指示常显在徽章上。 */
+.cs-badge-live { display: inline-flex; align-items: center; flex: none; }
+.cs-badge-live .cs-loading-spinner svg { width: 11px; height: 11px; }
 .cs-badge-label {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
 }
@@ -282,4 +292,22 @@
   .cs-interaction-detail { background: var(--color-stream-dark-deep); }
   .cs-card.cs-interaction { background: var(--color-stream-dark-card); }
   .cs-btn { background: var(--color-stream-dark-hover); }
+}
+
+/* 2026-10-14 需求：执行中的状态文案挂到**头像下方**，不再与名字并排。
+   DOM 上它紧跟 `.avatar-circle` 之后；这里让它另起一行（整行占满，即落在
+   头像+名字那一行之下），字号走既有 token，颜色用 currentColor 不硬编码。 */
+/* 折叠入口整条落到头像/名字那一行之下（不再并排）。 */
+.chat-msg-header .cs-badge {
+  flex-basis: 100%;
+  order: 9;
+}
+
+/* 状态文案与折叠入口同一条：转圈 + 「工作中」，小巧、不做成第二行。 */
+.cs-badge-live-label {
+  margin-left: 6px;
+  font-size: var(--text-xs, 11px);
+  line-height: 1.2;
+  color: currentColor;
+  opacity: .85;
 }

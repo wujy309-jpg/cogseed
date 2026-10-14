@@ -145,6 +145,25 @@ const learningReview = {
 };
 
 describe('KStar task-level precipitation (B5)', () => {
+  it('builds a B-local proposal without any ownerless external update', async () => {
+    const epB = episode('kse-b5-ownerless-p3394', 'Build the report', [{ name: 'read_file' }, { name: 'write_file' }]);
+    await seedEpisode(epB);
+    await seedReview(epB, learningReview);
+    const requirement = await seedRequirement([epB.id]);
+
+    const precipitation = await import('../../../../src/main/features/kstar/task-level-precipitation');
+    const result = await precipitation.precipitateRequirementLevel('user-b5', requirement);
+
+    expect(result.proposals).toHaveLength(1);
+    // 并行 episode store 已删除（它没有 uid 作用域、读侧从未接线）：不再存在"外部无主更新"
+    // 这一输入通道，因此这里断言的是 B 本地沉淀本身不引入任何外部来源。
+    expect(result.proposals[0].sourceRefs.some((ref) => ref.kind === 'authorized_external_system')).toBe(false);
+    expect(result.proposals[0].sourceRefs).toContainEqual(expect.objectContaining({ kind: 'execution', id: epB.id }));
+    expect(result.createdAssetIds).toEqual([]);
+    expect(result.candidateIds).toEqual([]);
+    expect(result.experienceIds).toEqual([]);
+  });
+
 
   it('carries persisted Projection, Forecast, Episode, Review and delta provenance into candidates', async () => {
     const ep = {

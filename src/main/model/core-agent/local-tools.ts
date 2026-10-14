@@ -1582,6 +1582,34 @@ function bashEnvForPathResolution(ctx: ToolContext, workingDir: string): Record<
   };
 }
 
+/**
+ * 收集命令里**自己赋值**的字面变量（`DIR=/x/y; cat "$DIR/f"`）。
+ *
+ * 这类变量静态可验证：值就在同一条命令里，且不含 `$` / 反引号 / `%VAR%`。
+ * 此前它们被当作"未解析变量"一律拒绝，于是模型写
+ * `V=<workspace>/out; cat "$V/$f"` 这种自给自足的读命令也会被挡
+ * （2026-10-12 日志里的 `E_BASH_DYNAMIC_PATH_UNSUPPORTED ... "$V/$f"`）。
+ *
+ * 只收字面 RHS：`DIR=$OTHER` / `DIR=$(cmd)` / 反引号取值都不进，
+ * 避免把不可验证的值洗成可验证的。
+ */
+export function collectLiteralShellAssignments(command: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const pattern = /(?:^|[;&|(\s])(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s;&|()]+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(command)) !== null) {
+    const name = match[1];
+    let value = match[2];
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    if (!value) continue;
+    if (value.includes('$') || value.includes('`') || /%[A-Za-z_][A-Za-z0-9_]*%/.test(value)) continue;
+    out[name] = value;
+  }
+  return out;
+}
+
 export function expandKnownShellPathVars(raw: string, env: Record<string, string>): { value: string; dynamic: boolean } {
   let dynamic = false;
   const value = path.normalize(replaceKnownShellEnvTokens(raw, env, () => { dynamic = true; }));
@@ -1896,8 +1924,10 @@ async function guardBashPathCandidates(
             'E_BASH_DYNAMIC_PATH_UNSUPPORTED',
             `bash ${c.reason} target "${c.raw}" uses an unresolved variable, command substitution, or glob that the application cannot verify. `
             + (access === 'write'
-              ? 'Use an explicit path inside the workspace, or use write_file/edit_file/delete_file for file changes.'
-              : 'Use an explicit path inside the workspace, or ask the user to switch to an all-files access mode.'),
+              ? 'Use an explicit path inside the workspace, or use write_file/edit_file/delete_file for file changes. '
+              : 'Rewrite it one of these ways: give a literal path; use a glob with a literal base directory (dir/*.md); '
+                + 'pin the variable in the same command (DIR=<literal path>; cat "$DIR/name"); or `cd <literal dir>` first and use '
+                + 'a plain relative name. Otherwise ask the user to switch to an all-files access mode. '),
           ),
           isError: true,
         },
@@ -1934,7 +1964,12 @@ async function guardBashFilesystemTargets(
   workingDir: string,
 ): Promise<BashFilesystemGuardResult> {
   const command = String(input.command ?? '');
-  const env = bashEnvForPathResolution(ctx, workingDir);
+  // 命令内字面赋值参与解析：`DIR=<literal>; cat "$DIR/f"` 可验证，不该按
+  // "未解析变量"拒绝；变量 RHS（`DIR=$OTHER`）不会进这里。
+  const env = {
+    ...bashEnvForPathResolution(ctx, workingDir),
+    ...collectLiteralShellAssignments(command),
+  };
   const approvedReasons: LocalAccessRiskCategory[] = [];
   const mutation = await guardBashPathCandidates(
     opts,
@@ -2090,7 +2125,7 @@ async function guardUntrustedSkillBash(opts: LocalToolsOpts, command: string): P
     // `listSkillSpecsForAgentMetadata` is deliberately not trust-filtered (it
     // backs spec writes), which makes it the right source here: we need the
     // full id/name map to resolve what the command names, then ask about trust.
-    blocked = await registry.blockedSkillIds(specs.map((s) => s.id));
+    blocked = await registry.blockedSkillIdsForUser(uid, specs.map((s) => s.id));
   } catch {
     return null;
   }
@@ -2309,18 +2344,15 @@ function createBashTool(opts: LocalToolsOpts): AgentTool {
   return {
     name: 'bash',
     description:
-      'Execute a shell command on the user\'s local machine and return its output. ' +
-      'Use for installing CLIs (brew, npm, pip), running builds, converting files, ' +
-      'inspecting the filesystem, and any other host-side work. The shell runs in ' +
-      'the user\'s current workspace directory. Files generated under the conversation ' +
-      'workspace are surfaced as produced-file chips, except for files clearly created ' +
-      'by external download/clone commands such as git clone, gh repo clone, curl, or wget. ' +
-      outputDirDescription +
-      windowsShellDescription +
-      'Scratch/cache files should stay in temporary or cache directories. ' +
-      'For GUI apps, browsers, servers, watchers, or any command you would normally ' +
-      'background with `&`, set run_in_background=true instead of shell-backgrounding it; ' +
-      'inherited stdout/stderr can otherwise keep the tool waiting.',
+        'Execute a shell command on the user\'s local machine. Use for installing CLIs, builds, conversions, ' +
+        'filesystem inspection, and other host-side work. Runs in the current workspace directory. ' +
+        'Files created in the conversation workspace surface as produced-file chips, except those made by ' +
+        'download/clone commands (git clone, gh repo clone, curl, wget). ' +
+        outputDirDescription +
+        windowsShellDescription +
+        'Keep scratch/cache files in temp or cache directories. ' +
+        'For GUI apps, servers, watchers, or anything you would normally background with `&`, set ' +
+        'run_in_background=true: inherited stdout/stderr can otherwise keep the tool waiting.',
     inputSchema: {
       ...(coreBashTool.inputSchema as Record<string, unknown>),
       properties: {
@@ -3178,14 +3210,11 @@ function createMarkdownToPdfTool(opts: LocalToolsOpts): AgentTool {
   return {
     name: 'markdown_to_pdf',
     description:
-      'Render Markdown content to a PDF file at the given path. ' +
-      'Supports headings, paragraphs, bold, italic, inline code, fenced code blocks, ' +
-      'ordered and unordered lists, horizontal rules, and links. ' +
-      'For tables or custom styling, generate HTML yourself and call `html_to_pdf` instead. ' +
-      'No external tools required (no pandoc / wkhtmltopdf). ' +
-      'If the target path already exists and was not written by you earlier in this turn, ' +
-      'the basename is automatically suffixed (`-2 / -3 / ...`) to avoid clobbering, and ' +
-      'the rename is surfaced in a `<file-renamed>` block in the tool result.',
+        'Render Markdown to a PDF at `path`. ' +
+        'Supports headings, emphasis, inline/fenced code, ordered and unordered lists, rules, and links. ' +
+        'For tables or custom styling, build HTML and call `html_to_pdf` instead. No external tools needed. ' +
+        'A target you did not write earlier this turn is suffixed (`-2`, `-3`, ...) instead of clobbered; ' +
+        'the rename appears in a `<file-renamed>` block.',
     inputSchema: {
       type: 'object',
       properties: {

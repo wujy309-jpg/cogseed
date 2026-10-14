@@ -4,7 +4,10 @@ import * as fs from 'node:fs';
 import * as paths from '../../../../src/main/paths';
 import { COGSEED_RUNTIME_TOOL_POLICY } from '../../../../src/main/features/cogseed_runtime/kernel/config';
 import {
+  createNativeRuntimeExecutor,
   kernelEventToRuntimeEnvelope,
+  LIGHT_RUNTIME_MAX_TOOL_ROUNDS,
+  maxToolRoundsForRuntimeRequest,
   runtimeKernelRequestFromProtocol,
   type RuntimeExecutor,
 } from '../../../../src/main/features/cogseed_runtime/runtime-executor';
@@ -83,5 +86,31 @@ describe('CogSeed Runtime native executor', () => {
       .toEqual({ type: 'result', request_id: 'req-executor', runtime_session_id: 'mruntime-executor', status: 'completed', text: 'done' });
     expect(kernelEventToRuntimeEnvelope({ type: 'cancelled', requestId: 'req-executor', runtimeSessionId: 'mruntime-executor' }))
       .toEqual({ type: 'error', request_id: 'req-executor', runtime_session_id: 'mruntime-executor', status: 'cancelled', error: 'cancelled' });
+  });
+
+  it('classifies only simple native user requests as lightweight tool-round work', () => {
+    expect(LIGHT_RUNTIME_MAX_TOOL_ROUNDS).toBe(24);
+    expect(maxToolRoundsForRuntimeRequest(request())).toBe(24);
+    expect(maxToolRoundsForRuntimeRequest(request({ agent_id: 'agent-a' }))).toBe(80);
+    expect(maxToolRoundsForRuntimeRequest(request({ allowed_skill_ids: ['skill-a'] }))).toBe(80);
+    expect(maxToolRoundsForRuntimeRequest(request({ writable_roots: [paths.userLocalRoot(UID)] }))).toBe(80);
+    expect(maxToolRoundsForRuntimeRequest(request({ execution_kind: 'local-cli' }))).toBe(80);
+  });
+
+  it('passes the lightweight runtime budget into the native kernel while preserving explicit overrides', async () => {
+    const seen: number[] = [];
+    const kernelFactory = (deps: any) => ({
+      async *run(req: any) {
+        seen.push(deps.maxToolRounds);
+        yield { type: 'result', requestId: req.requestId, runtimeSessionId: req.runtimeSessionId, text: 'done' };
+      },
+    });
+
+    const lightExecutor = createNativeRuntimeExecutor({ kernelFactory });
+    await collect(lightExecutor(request()));
+    const explicitExecutor = createNativeRuntimeExecutor({ kernelFactory, maxToolRounds: 7 });
+    await collect(explicitExecutor(request()));
+
+    expect(seen).toEqual([24, 7]);
   });
 });

@@ -11,11 +11,25 @@
 // src/main/features/chat_events/schema.ts。
 //
 // 接入点：conversation.js `_handleStreamEvent` 的 stream:'chat' 分支调用
-// window.chatStreamHandleEvent(cid, anchorEl, chatEvent)。
+// window.chatStreamHandleEvent(cid, anchorEl, chatEvent, { actorId, actorName })。
+// 锚点是**该 actor 自己的**消息元素（conversation.js 按 turnId 解析），
+// 因此一枚徽章 / 一条活动流只属于一个 actor。
 
 const _csLog = typeof createLogger === 'function'
   ? createLogger('chat-stream')
   : { info() {}, warn() {}, error() {} };
+
+/** renderer i18n：本模块历史上是字面量文案，新文案走 t()，i18n 未加载
+ *  （单测/极端启动序）时退回字面量，不让文案变成 key。 */
+function _csT(key, fallback, vars) {
+  try {
+    if (typeof t === 'function') {
+      const out = t(key, vars);
+      if (out && out !== key) return out;
+    }
+  } catch (_) { /* i18n 不可用时用兜底文案 */ }
+  return fallback;
+}
 
 function _csEscapeHtml(text) {
   return String(text == null ? '' : text)
@@ -200,6 +214,8 @@ function _csStartTicker(flow, startedAtMs) {
 function _csReviveTicker(flow) {
   if (!flow || flow._csTicker != null) return;
   if (flow.dataset.csTerminal === '1') return;
+  // 已把话权交出去的 actor 不重启计时——它此刻没在跑（见 _csMarkHandedOff）。
+  if (flow.dataset.csHandedOff === '1') return;
   const label = flow._csBadge && flow._csBadge.querySelector('.cs-badge-elapsed');
   if (!label) return;
   const t0 = Number(flow.dataset.csT0) || Number(flow._csLocalSendMs) || Date.now();
@@ -214,6 +230,7 @@ function _csUpgradeFlowForLive(flow, startedAtMs) {
   if (!flow || !flow._csBadge) return;
   if (_csReplayDepth > 0) return; // 历史重放自己喂的条目不算 live
   if (flow.dataset.csTerminal === '1') return; // 仅 live 终态挡复活；重放终态可复活
+  if (flow.dataset.csHandedOff === '1') return; // 话权在别处：等 floor 回来再复活
   const badge = flow._csBadge;
   const hasElapsed = !!badge.querySelector('.cs-badge-elapsed');
   if (hasElapsed && flow._csTicker != null) return; // 已是活跃运行态，事件密集时不重启
@@ -229,28 +246,43 @@ function _csUpgradeFlowForLive(flow, startedAtMs) {
     flow.classList.remove('done', 'failed', 'cancelled');
     flow.classList.add('running');
   }
+  _csSetBadgeLive(flow, true);
   _csStartTicker(flow, startedAtMs);
 }
 
-/** 收起/展开时间线正文（徽章点击唯一入口；aria 同步）。 */
-function _csUpdateRunningBadge(flow, label) {
-  if (!flow || flow.dataset.csTerminal === '1' || !flow._csBadge) return;
-  const labelEl = flow._csBadge.querySelector('.cs-badge-label');
-  if (labelEl && label) labelEl.textContent = String(label);
-  let tools = flow._csBadge.querySelector('.cs-badge-tools');
+/** 活动流里的工具调用行数——徽章「N 次工具调用」的唯一口径。 */
+function _csBadgeToolCount(flow) {
+  const body = flow && flow.querySelector('.cs-flow-body');
+  let count = 0;
+  if (body && body.children) {
+    for (let i = 0; i < body.children.length; i += 1) {
+      if (String(body.children[i].className || '').includes('cs-toolExecution')) count += 1;
+    }
+  }
+  return count;
+}
+
+/** 工具数与状态拆开展示（交互设计 2026-09-08：「已完成 4个工具」混杂不清，
+ *  拆为独立「N 次工具调用」段，无工具行时整段不显示）。 */
+function _csPaintBadgeTools(flow) {
+  const badge = flow && flow._csBadge;
+  if (!badge) return;
+  let tools = badge.querySelector('.cs-badge-tools');
   if (!tools) {
     tools = document.createElement('span');
     tools.className = 'cs-badge-tools';
-    flow._csBadge.appendChild(tools);
+    badge.appendChild(tools);
   }
-  const body = flow.querySelector('.cs-flow-body');
-  let toolCount = 0;
-  if (body && body.children) {
-    for (let i = 0; i < body.children.length; i += 1) {
-      if (String(body.children[i].className || '').includes('cs-toolExecution')) toolCount += 1;
-    }
-  }
-  tools.textContent = toolCount > 0 ? `${toolCount} 次工具调用` : '';
+  const count = _csBadgeToolCount(flow);
+  tools.textContent = count > 0 ? `${count} 次工具调用` : '';
+}
+
+function _csUpdateRunningBadge(flow, label) {
+  if (!flow || flow.dataset.csTerminal === '1' || !flow._csBadge) return;
+  if (flow.dataset.csHandedOff === '1') return; // 话权已交出：状态行不再自更新
+  const labelEl = flow._csBadge.querySelector('.cs-badge-label');
+  if (labelEl && label) labelEl.textContent = String(label);
+  _csPaintBadgeTools(flow);
 }
 
 function _csSetCollapsed(flow, collapsed) {
@@ -272,6 +304,33 @@ function _csExpandIfCollapsed(flow) {
   if (flow && flow.dataset.csCollapsed === '1') _csSetCollapsed(flow, false);
 }
 
+/** 徽章上的「在跑」指示：真机 2026-10-14 反馈——worker 回合默认折叠后，
+ *  唯一的动效（`.cs-loading`）随折叠区一起被隐藏，折叠状态下**什么都看不出
+ *  它在运行**。把同一个 loader 图标挂到徽章上（消息头常显），
+ *  终态/移交时移除，话权回来时恢复。 */
+function _csSetBadgeLive(flow, live) {
+  const badge = flow && flow._csBadge;
+  if (!badge) return;
+  const existing = badge.querySelector('.cs-badge-live');
+  if (!live) {
+    if (existing) existing.remove();
+    return;
+  }
+  if (existing) return;
+  // 真机 2026-10-14：活跃态此前只有一个 aria-hidden 的转圈图标，用户反馈"运行中
+  // 不太明显"。这里补上**可见文字**（复用既有 run_center.action_working 文案，
+  // 不新增 locale key），并去掉 aria-hidden，让读屏也能读到运行中。
+  const el = document.createElement('span');
+  el.className = 'cs-badge-live';
+  el.setAttribute('role', 'status');
+  el.setAttribute('aria-label', _csT('run_center.action_working', '工作中'));
+  // 2026-10-14 需求：执行中的状态与**折叠入口合成同一条**，整条落在头像下方
+  // （见 chat-stream.css 里 `.chat-msg-header .cs-badge { flex-basis:100% }`），
+  // 不再与名字并排、也不再出现"头像下一个孤零零的标签"。
+  el.innerHTML = `<span class="cs-loading-spinner">${_csIco('loader')}</span><span class="cs-badge-live-label">${_csT('run_center.action_working', '工作中')}</span>`;
+  badge.insertBefore(el, badge.firstChild);
+}
+
 /** 计时/收起徽章：消息头里 cogseed 名字右侧，点击收起下方工具调用区。
  *  运行中 label=工作中（实时计时），终态定格 label=已完成；历史无计时
  *  数据只显示「已完成」（不编造时长）。 */
@@ -283,6 +342,15 @@ function _csCreateBadge(flow, opts) {
   badge.setAttribute('aria-expanded', 'true');
   badge.setAttribute('aria-label', '收起过程');
   badge.setAttribute('title', '收起/展开过程');
+  // 归属标题（2026-10-13 需求）：折叠条必须写明这是**谁的**执行过程，
+  // 否则派单链里会被误读成主 Agent 的任务执行过程。
+  const owner = (opts && opts.actorName) ? String(opts.actorName).trim() : '';
+  if (owner) {
+    const ownerEl = document.createElement('span');
+    ownerEl.className = 'cs-badge-owner';
+    ownerEl.textContent = _csT('chat.stream.process_owner', `${owner} 的执行过程`, { name: owner });
+    badge.appendChild(ownerEl);
+  }
   const label = document.createElement('span');
   label.className = 'cs-badge-label';
   label.textContent = (opts && opts.terminalLabel) ? '已完成' : '工作中';
@@ -296,6 +364,8 @@ function _csCreateBadge(flow, opts) {
     _csSetCollapsed(flow, flow.dataset.csCollapsed !== '1');
   });
   flow._csBadge = badge;
+  // 运行态徽章自带旋转指示（历史/终态徽章没有）。
+  if (!(opts && opts.terminalLabel)) _csSetBadgeLive(flow, true);
   return badge;
 }
 
@@ -355,6 +425,7 @@ function _csCreateFlow(cid, turnId, opts) {
   flow.className = 'cs-flow running';
   flow.dataset.csTurn = turnId;
   if (cid) flow.dataset.csCid = cid;
+  if (opts && opts.actorId) flow.dataset.csActor = String(opts.actorId);
 
   const body = document.createElement('div');
   body.className = 'cs-flow-body';
@@ -478,6 +549,7 @@ function _csSetFlowState(flow, status, error, endedAtMs, opts) {
   flow.classList.remove('running', 'done', 'failed', 'cancelled');
   flow.classList.add(status === 'completed' ? 'done' : status);
   _csStopTicker(flow);
+  _csSetBadgeLive(flow, false);
   // 加载指示随终态退场（过程已结束，没有"还有下一步"）。
   const loading = flow.querySelector('.cs-loading');
   if (loading) loading.remove();
@@ -490,20 +562,7 @@ function _csSetFlowState(flow, status, error, endedAtMs, opts) {
     }
     // 工具数与状态拆开展示（交互设计 2026-09-08：「已完成 4个工具」混杂不清，
     // 拆为独立「N 次工具调用」段，无工具行时整段不显示）。
-    let tools = badge.querySelector('.cs-badge-tools');
-    if (!tools) {
-      tools = document.createElement('span');
-tools.className = 'cs-badge-tools';
-      badge.appendChild(tools);
-    }
-    let toolCount = 0;
-    const bodyEl = flow.querySelector('.cs-flow-body');
-    if (bodyEl && bodyEl.children) {
-      for (let i = 0; i < bodyEl.children.length; i++) {
-        if (String(bodyEl.children[i].className || '').includes('cs-toolExecution')) toolCount++;
-      }
-    }
-    tools.textContent = toolCount > 0 ? `${toolCount} 次工具调用` : '';
+    _csPaintBadgeTools(flow);
     // 失败详情被徽章省略号截断时，悬停 title 兜底看全文。
     if (status === 'failed' && error && label) badge.setAttribute('title', label.textContent);
     // 终态耗时：csT0 有权威值时补建 elapsed 元素（历史重放的 noStatus 徽章
@@ -539,6 +598,87 @@ tools.className = 'cs-badge-tools';
     _csRemoveFlow(flow);
   }
 }
+
+/** 归属标签（2026-10-13 需求）：`chat.turn.started` 带上 actor 显示名后写入
+ *  徽章；复用/接管（prewarm 迁移、历史态流升级）时补写一次。徽章缺 owner 段
+ *  才补，事件密集时不重排 DOM。 */
+function _csApplyFlowOwner(flow, opts) {
+  if (!flow || !flow._csBadge) return;
+  if (opts && opts.actorId && !flow.dataset.csActor) flow.dataset.csActor = String(opts.actorId);
+  const owner = (opts && opts.actorName) ? String(opts.actorName).trim() : '';
+  if (!owner) return;
+  if (flow._csBadge.querySelector('.cs-badge-owner')) return;
+  const ownerEl = document.createElement('span');
+  ownerEl.className = 'cs-badge-owner';
+  ownerEl.textContent = _csT('chat.stream.process_owner', `${owner} 的执行过程`, { name: owner });
+  flow._csBadge.insertBefore(ownerEl, flow._csBadge.firstChild);
+}
+
+/** 交出话权（2026-10-13 需求 A）：commander 把 floor 交给某个 agent 后，它的
+ *  回合还没结束（R-11 等齐汇报），但此刻它没有在跑——必须立刻终态化，否则
+ *  主 Agent 与 worker 同时显示运行态，看起来像两个执行。
+ *  只冻结「运行中且不是新 floor」的流：新 floor 的 actor 自己不动。
+ *  「运行指示 = 当前持有 floor」——话权回到该 actor 时由
+ *  `_csResumeFromHandoff` 复活，所以这里不写 csTerminal（那是真终态）。 */
+function _csMarkHandedOff(flow) {
+  if (!flow || flow.dataset.csTerminal === '1' || flow.dataset.csHandedOff === '1') return;
+  flow.dataset.csHandedOff = '1';
+  flow.classList.remove('running', 'failed', 'cancelled');
+  flow.classList.add('done');
+  _csStopTicker(flow);
+  _csSetBadgeLive(flow, false);
+  const loading = flow.querySelector('.cs-loading');
+  if (loading) loading.remove();
+  const badge = flow._csBadge;
+  if (badge) {
+    const label = badge.querySelector('.cs-badge-label');
+    if (label) label.textContent = _csT('chat.stream.handed_off', '已移交');
+    _csPaintBadgeTools(flow);
+    const elapsed = badge.querySelector('.cs-badge-elapsed');
+    const t0 = Number(flow.dataset.csT0);
+    if (elapsed && Number.isFinite(t0) && t0 > 0) {
+      elapsed.textContent = _csFmtTaskDur(Math.max(0, Date.now() - t0));
+    }
+  }
+  // 收成摘要行：主 Agent 的移交过程不占版面，只有真正在跑的 actor 是活动元素。
+  if (flow.dataset.csCollapsed !== '1') _csSetCollapsed(flow, true);
+}
+
+/** 话权回到该 actor（它又开始产出了）：撤掉「已移交」冻结，恢复运行态与计时。
+ *  loading 行不重建（它是「还有下一步」的指示，这里只是续跑），折叠状态也保持
+ *  用户/上一次收尾的选择，不强行展开。 */
+function _csResumeFromHandoff(flow) {
+  if (!flow || flow.dataset.csHandedOff !== '1') return;
+  if (flow.dataset.csTerminal === '1') return;
+  delete flow.dataset.csHandedOff;
+  if (!flow.classList.contains('running')) {
+    flow.classList.remove('done', 'failed', 'cancelled');
+    flow.classList.add('running');
+  }
+  _csSetBadgeLive(flow, true);
+  const badge = flow._csBadge;
+  if (badge) {
+    const label = badge.querySelector('.cs-badge-label');
+    if (label) label.textContent = '工作中';
+    // 续跑沿用本回合原起点（csT0），不重开一段计时。
+    _csStartTicker(flow, Number(flow.dataset.csT0) || Date.now());
+  }
+}
+
+window.chatStreamYieldFloor = function chatStreamYieldFloor(cid, floorActorId) {
+  const floor = String(floorActorId || '');
+  if (!cid || !floor) return;
+  for (const [key, flow] of Array.from(_csPanels.entries())) {
+    if (!key.startsWith(`${cid}::`)) continue;
+    const actor = String(flow.dataset.csActor || '');
+    if (actor && actor === floor) {
+      _csResumeFromHandoff(flow);
+      continue;
+    }
+    if (!flow.classList.contains('running')) continue;
+    _csMarkHandedOff(flow);
+  }
+};
 
 // ── 行渲染（无边框：一行一动作） ──────────────────────────────────────────
 
@@ -985,8 +1125,9 @@ window.chatStreamSetRuntimeStatus = function chatStreamSetRuntimeStatus(cid, anc
   }
 };
 
-window.chatStreamHandleEvent = function chatStreamHandleEvent(cid, anchor, chatEvent) {
+window.chatStreamHandleEvent = function chatStreamHandleEvent(cid, anchor, chatEvent, opts) {
   if (!chatEvent || typeof chatEvent !== 'object') return;
+  const streamOpts = (opts && typeof opts === 'object') ? opts : {};
   try {
     // 注意：不要在这里按 anchor.isConnected 拦截——历史渲染在尚未挂入
     // 文档的 msgDiv 上重放（detached 是合法中间态），拦截会把全部条目
@@ -1001,14 +1142,25 @@ window.chatStreamHandleEvent = function chatStreamHandleEvent(cid, anchor, chatE
       const startedAtMs = (Number.isFinite(localSend) && localSend > 0)
         ? localSend
         : (chatEvent.startedAt ? Date.parse(chatEvent.startedAt) : Date.now());
-      const { flow } = _csEnsureFlow(cid, anchor, chatEvent.turnId, { startedAtMs });
+      const actorId = String(streamOpts.actorId || chatEvent.actorId || '');
+      const flowOpts = { startedAtMs, actorId, actorName: streamOpts.actorName };
+      const { flow } = _csEnsureFlow(cid, anchor, chatEvent.turnId, flowOpts);
       // 复用历史态流（切换会话后重放先建流）时升级回运行形态并启动计时。
       _csUpgradeFlowForLive(flow, startedAtMs);
+      // 归属标题（折叠条写明是谁的执行过程）。
+      _csApplyFlowOwner(flow, flowOpts);
+      // 工人回合的过程默认折叠（2026-10-13 需求）：页面高度不因别人的执行
+      // 过程增长，点徽章才展开；主 Agent 的运行过程保持展开可跟踪。
+      // 由调用方决定（群聊里非 commander 的 actor），单聊/技能编辑器不传。
+      if (streamOpts.collapseByDefault) _csSetCollapsed(flow, true);
       return;
     }
     if (chatEvent.type === 'chat.item') {
       const { kind, status, itemId, payload, turnId } = chatEvent;
       const { flow, body } = _csEnsureFlow(cid, anchor, turnId);
+      // 话权回到该 actor（它又开始产出）→ 撤掉「已移交」冻结，恢复运行态。
+      const floorNow = String(streamOpts.floorActor || '');
+      if (floorNow && floorNow === String((flow && flow.dataset.csActor) || '')) _csResumeFromHandoff(flow);
       // 事件仍在到达 = 回合仍活跃：历史态流补上计时位并启动（终态流不升级）。
       _csUpgradeFlowForLive(flow, Number(flow && flow.dataset && flow.dataset.csT0) || undefined);
       if (kind === 'text') {

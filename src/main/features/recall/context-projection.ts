@@ -1466,6 +1466,13 @@ async function validateFrozenProjectionAssets(
       // context, so omit the out-of-scope item while keeping other frozen
       // assets usable. Preview/confirmation still reject an ineligible asset.
       if (requireCommitted) continue;
+      // 2026-10-14 真机（cid 0ed97b36eea4）：唤醒审批走确认路径，此前把"作用域
+      // 不匹配"升级成整单硬拒 -> 用户点三次审批三次 projection_asset_ineligible，
+      // 且无任何出路（同一条资产在 committed 路径下只是被逐条跳过）。已确认的投影
+      // 不该因为审批时刻的临时作用域被全盘否掉：与 committed 口径一致地逐条收敛，
+      // 其余冻结资产照常可用。**预览/未确认**的投影仍保持严格拒绝（安全门不放宽）；
+      // 资产缺失/停用/版本漂移仍按各自错误码拒绝。
+      if (isCommittedProjection(projection)) continue;
       throw projectionKnowledgeError('projection_asset_ineligible');
     }
     for (const source of asset.evidenceRefs) {
@@ -1479,11 +1486,23 @@ async function validateFrozenProjectionAssets(
   return out;
 }
 
+/** 确认/预览口径的资产校验。
+ *
+ * 2026-10-14 真机事故（cid 0ed97b36eea4）：唤醒审批走这条路径，而它此前**没有
+ * 作用域形参**，`isAssetEligibleForProjection` 拿到的是默认空作用域 `{}` —— 任何
+ * "资格依赖当前 project/space/task"的资产都被判成不合格，抛
+ * `projection_asset_ineligible`，用户点三次审批三次同码失败，且没有任何出路。
+ * 资产在确认时是合格的，就该按**确认时/调用方传入的**作用域复核。
+ *
+ * 形参保持可选、默认空对象：不传作用域的老调用点行为**一字不变**（向后兼容），
+ * 只有显式传入作用域的调用点才按真实上下文判定——不会放宽任何既有校验。
+ */
 export function validateProjectionAssetVersions(
   userId: string,
   projection: ContextProjectionRecord,
+  runtimeScope: AssetScopeContext = {},
 ): Promise<Record<string, string>> {
-  return validateFrozenProjectionAssets(userId, projection, false);
+  return validateFrozenProjectionAssets(userId, projection, false, runtimeScope);
 }
 
 export function validateCommittedProjectionAssetVersions(

@@ -291,3 +291,59 @@ describe('features/config › close to tray preference', () => {
     expect(second.appConfig.getCloseToTrayEnabled()).toBe(true);
   });
 });
+
+describe('features/config › per-model thinking strength (Option C)', () => {
+  it('persists an explicit tier for one model and reads it back', async () => {
+    const { appConfig } = await load();
+    expect(appConfig.getModelThinkingLevel('cp:a', 'm1')).toBe('auto');
+    expect(appConfig.setModelThinkingLevel('cp:a', 'm1', 'high')).toBe('high');
+    expect(appConfig.getModelThinkingLevel('cp:a', 'm1')).toBe('high');
+    // Raw read: absence would mean the write never landed (the getter's
+    // 'auto' fallback would otherwise mask it).
+    expect(Object.values(appConfig.readPreferences().model_thinking_levels)).toEqual(['high']);
+  });
+
+  it('⭐ 切到另一个模型回落 Auto：档位属于它被选中的那个模型', async () => {
+    const { appConfig } = await load();
+    appConfig.setModelThinkingLevel('cp:a', 'm1', 'high');
+    expect(appConfig.getModelThinkingLevel('cp:a', 'm1')).toBe('high');
+    // Same provider, different model → no record → Auto.
+    expect(appConfig.getModelThinkingLevel('cp:a', 'm2')).toBe('auto');
+    // Same model id under a different provider is also a different model.
+    expect(appConfig.getModelThinkingLevel('cp:b', 'm1')).toBe('auto');
+  });
+
+  it('model ids containing "/" do not collide across provider/model boundaries', async () => {
+    const { appConfig } = await load();
+    appConfig.setModelThinkingLevel('openai', 'org/gpt-5', 'low');
+    expect(appConfig.getModelThinkingLevel('openai', 'org/gpt-5')).toBe('low');
+    expect(appConfig.getModelThinkingLevel('openai/org', 'gpt-5')).toBe('auto');
+  });
+
+  it('⚠️ auto / 畸形取值清除记录（缺席即"让模型自己决定"），不写一个假档位', async () => {
+    const { appConfig } = await load();
+    appConfig.setModelThinkingLevel('cp:a', 'm1', 'high');
+    expect(appConfig.setModelThinkingLevel('cp:a', 'm1', 'auto')).toBe('auto');
+    expect(appConfig.getModelThinkingLevel('cp:a', 'm1')).toBe('auto');
+    expect(appConfig.readPreferences().model_thinking_levels).toEqual({});
+    appConfig.setModelThinkingLevel('cp:a', 'm1', 'medium' as unknown);
+    expect(appConfig.getModelThinkingLevel('cp:a', 'm1')).toBe('auto');
+  });
+
+  it('provider/model 缺席时不落任何键（键必须有模型身份）', async () => {
+    const { appConfig } = await load();
+    expect(appConfig.setModelThinkingLevel('', 'm1', 'high')).toBe('auto');
+    expect(appConfig.setModelThinkingLevel('cp:a', '', 'high')).toBe('auto');
+    expect(appConfig.readPreferences().model_thinking_levels).toBeUndefined();
+  });
+
+  it('survives a module reload (cloud config on disk, not memory)', async () => {
+    const first = await load();
+    first.appConfig.setModelThinkingLevel('cp:a', 'm1', 'low');
+    vi.resetModules();
+    const users = await import('../../../src/main/features/users');
+    users.activateUser(TEST_UID);
+    const second = await load();
+    expect(second.appConfig.getModelThinkingLevel('cp:a', 'm1')).toBe('low');
+  });
+});
