@@ -87,17 +87,16 @@ English · [简体中文](./DEVELOPMENT.zh-CN.md)
 
 ## Cognition and Recall
 
-CogSeed treats reusable experience as governed state rather than automatically promoting every conversation summary.
+Nightly discovery reads new conversation content, summarizes its context, judges
+future value, and proposes complete cognition and related ontology changes.
+Human confirmation, or the configured automatic-confirmation policy, precedes
+formal saving. Content retains its identity, source, scope, and version.
 
-| Stage | Meaning |
-|---|---|
-| Candidate | A captured lesson or reusable pattern waiting for review. |
-| Confirmed asset | A user-approved capability asset with stable identity, version, scope, and provenance. |
-| Projection | A prepared asset reference made available to a later task. |
-| Transfer evidence | Evidence that the projected asset entered the target execution. |
-| Effectiveness evidence | Feedback or outcome information used to assess whether the reuse helped. |
-
-Assets can be paused, resumed, revised, or rolled back through the established Cognition workflows. Personal Ontology organizes confirmed concepts and relationships without granting agents unrestricted access to private data directories.
+Task-time selection independently checks whether saved content may be used.
+Reading, actual adoption, output checks, and demonstrated effectiveness are
+separate records; saving a rule does not grant tool permissions or prove that it
+has been applied. Related cognition and ontology changes share the established
+storage and version checks.
 
 ## Data and Security
 
@@ -161,7 +160,7 @@ This checkout contains release source, tests, build tools, product resources and
 | `src/core-agent/` | Core Agent sessions, providers, tool orchestration, and execution loop |
 | `src/main/features/group_chat/` | Conversation bus, plan execution, worker scheduling, and abort handling |
 | `src/main/features/local_agents/` | Supported CLI detection, adapters, sessions, and centralized runner |
-| `src/main/features/recall/` | Candidate capture, formal assets, projections, proofs, and effectiveness feedback |
+| `src/main/features/recall/` | Nightly discovery, proposals, assets, task-time selection, and usage evidence |
 | `src/main/features/connectors/` | Connector metadata, authorization state, MCP clients, and tool exposure |
 | `resources/builtin/` | Platform agents, skills, and marketplace seed content |
 | `resources/runtime/` | Pinned runtime manifests and platform assets |
@@ -267,10 +266,17 @@ and resource suites reliably.
 
 ### Pull Request Verification
 
-Run `npm run typecheck`, `npm run lint`, `npm test`, and `npm run readme:check`,
-plus the checks relevant to your change. Describe results and unverified
-platforms in the PR. Public CI is governed by its actual repository settings;
-these instructions do not assert that a particular remote check is enabled.
+Follow the verification necessity and cost rules in `AGENTS.md`. Before running
+a check, identify the uncertainty, why existing evidence is insufficient, the
+smallest useful scope, expected cost, and how the result will affect the work.
+Reuse applicable results and prefer focused checks. A full regression needs a
+specific cross-module risk that focused checks cannot resolve; do not repeat
+runs without a relevant change or diagnosis. A user's stop request remains in
+effect until they explicitly authorize verification again.
+
+Describe the checks actually run and unverified platforms in the PR. Public CI
+is governed by its actual repository settings; this guide does not assert that
+a particular remote check is enabled.
 
 Submit external PRs against public `main`. Reviewed patches are imported into
 private development, preserving author attribution and DCO sign-offs. The
