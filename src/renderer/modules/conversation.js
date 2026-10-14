@@ -3304,14 +3304,24 @@ async function _syncPendingActorsFromRuntime(cid, opts = {}) {
   // Names/avatars are local data; warm members before revealing so the
   // placeholder does not flash as an unknown agent.
   try { await _refreshGroupMembers(cid); } catch (_) { /* best effort */ }
+  // 活跃回合是**服务端/运行时事实**，不该被"本地发送流还在跑"的 pending 门否决：
+  // 唤醒派发的工人在本地 pending 窗口之外执行（真机 2026-10-14 17:02:58–17:03:15：
+  // commander 回合 17:02:59 收尾，工人在 17:02:58–17:03:15 跑），此前这里直接
+  // return false，3313 那行永不执行 —— 工人没有任何可见占位，结果消息一次性出现
+  // （"没显示工人 agent 在执行"）。这里只补建占位，其余 pending 语义保持原样，
+  // 避免把调用方对 pending 的判断一起改掉。
+  if (hasActiveTurnsField && activeTurns.length > 0 && cid === currentCid) {
+    const activeCommanderForPlaceholders = activeTurns.some((t) => t.actor === 'commander');
+    if (!activeCommanderForPlaceholders) _removeEmptyActorPlaceholder(cid, 'commander');
+    for (const turn of activeTurns) {
+      _ensureActorPlaceholder(cid, turn.actor, loadingEl, turn.turn_id, turn.msg_id, turn.started_at_ms);
+    }
+  }
   if (!isConvPending(cid) || pendingConvs.get(cid)?.aborted) return false;
   if (cid !== currentCid) return true;
   if (hasActiveTurnsField) {
     const activeCommander = activeTurns.some((t) => t.actor === 'commander');
     if (!activeCommander) _removeEmptyActorPlaceholder(cid, 'commander');
-    for (const turn of activeTurns) {
-      _ensureActorPlaceholder(cid, turn.actor, loadingEl, turn.turn_id, turn.msg_id, turn.started_at_ms);
-    }
   } else {
     if (!inFlight.includes('commander')) _removeEmptyActorPlaceholder(cid, 'commander');
     for (const actorId of inFlight) {
