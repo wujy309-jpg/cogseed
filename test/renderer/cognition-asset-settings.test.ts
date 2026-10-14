@@ -44,7 +44,7 @@ function settingsHtml(patch: Record<string, unknown> = {}) {
   const window = {
     CogAssets: NS,
     uiSelect: (options: any) => `<select id="${options.id}"${options.disabled ? ' disabled' : ''}>${options.options.map((item: any) => `<option value='${item.value}'>${item.label}</option>`).join('')}</select>`,
-    uiButton: (options: any) => `<button data-act="${options.attrs?.['data-act'] || ''}">${options.label}</button>`,
+    uiButton: (options: any) => `<button data-act="${options.attrs?.['data-act'] || ''}"${options.disabled ? ' disabled' : ''}>${options.label}</button>`,
     uiSwitch: (options: any) => `<button role="switch" data-act="${options.attrs?.['data-act']}"${options.disabled ? ' disabled' : ''}></button>`,
     uiAccordion: (options: any) => options.items.map((item: any) => `<details>${item.title}${item.bodyHtml}</details>`).join(''),
   };
@@ -65,6 +65,19 @@ describe('资产设置只承接夜间发现', () => {
     for (const action of ['auto-approval-boundary', 'run-maintenance', 'open-cleanup', 'storage-check', 'storage-recover']) expect(html).not.toContain(`data-act="${action}"`);
     expect(html).toContain('完整建议进入');
     expect(html).not.toContain('旧记忆迁移');
+  });
+  it('立即扫描入口随夜间发现卡呈现，自动确认卡排在模型卡之前', () => {
+    const html = settingsHtml({ captureSettings: { enabled: true } });
+    expect(html).toContain('data-act="nightly-scan-now"');
+    expect(html.indexOf('自动确认')).toBeLessThan(html.indexOf('夜间发现模型'));
+    expect(settingsHtml({ captureSettings: { enabled: false } }))
+      .toMatch(/<button[^>]*disabled[^>]*data-act="nightly-scan-now"/);
+    const running = settingsHtml({
+      captureSettings: { enabled: true },
+      captureStats: { sweep: { lastResult: { finishedAt: '2026-10-14T02:00:00Z', scanned: 2, queued: 0, failed: 0 } }, runtime: { running: true, startedAt: '2026-10-14T02:00:00Z' } },
+    });
+    expect(running).toContain('扫描中…');
+    expect(running).toMatch(/<button[^>]*disabled[^>]*data-act="nightly-scan-now"/);
   });
   it('模型授权未完成和通道不可用也不展示旧配置提醒', () => {
     for (const captureModel of [{ channel: 'unavailable', authorizationRequired: true }, { channel: 'api', configured: false }, { channel: 'cli', available: false }]) {

@@ -2375,6 +2375,9 @@
       toast(T('common.saved', '已保存'));
       await NS.reload();
     },
+    async runNightlyScanNow() {
+      await api.call('recall.captures.sweep.run', {});
+    },
   };
   NS.actions = actions;
 

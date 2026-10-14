@@ -34,7 +34,7 @@
 
 
     'proof-rate',
-    'nightly-toggle', 'auto-approval-toggle', 'nightly-model-add', 'nightly-model-remove', 'nightly-model-up', 'nightly-model-down', 'nightly-model-reset',
+    'nightly-toggle', 'nightly-scan-now', 'auto-approval-toggle', 'nightly-model-add', 'nightly-model-remove', 'nightly-model-up', 'nightly-model-down', 'nightly-model-reset',
 
     // 经验目录管理（specs/016 US-803）：四个管理动作 + 迁移执行；preview/status
     // 是只读扫描，不进 pending 集（与 refresh 的口径不同：它们有各自的载入态）。
@@ -226,6 +226,12 @@
               NS.notify();
               throw error;
             }
+            break;
+          }
+          case 'nightly-scan-now': {
+            const ok = await NS.confirmUser(T('cognition.settings_discovery_scan_confirm', '立即跑一轮发现扫描，检查尚未覆盖的新会话与新增消息；会消耗模型额度，扫描在后台进行。确认开始？'));
+            if (!ok) break;
+            await A.runNightlyScanNow();
             break;
           }
           case 'open-capture-detail': {

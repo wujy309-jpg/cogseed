@@ -11,6 +11,7 @@
 #ca-root .ca-app .ca-policy-copy .note { margin-top: var(--space-2); }
 #ca-root .ca-app .ca-policy-copy > button { margin-top: var(--space-2); padding-inline: 0; }
 #ca-root .ca-app .ca-policy-switch { display: flex; align-items: center; gap: var(--space-2); white-space: nowrap; flex-shrink: 0; }
+#ca-root .ca-app .ca-policy-switch.ca-discovery-actions { flex-direction: column; align-items: flex-end; }
 #ca-root .ca-app .ca-settings-note { margin: var(--space-3) 0 var(--space-5); padding-inline: var(--space-1); }
 #ca-root .ca-app .ca-settings-records { border: 1px solid var(--ca-line); border-radius: var(--radius-card); background: var(--ca-card); overflow: hidden; }
 #ca-root .ca-app .ca-settings-model,
