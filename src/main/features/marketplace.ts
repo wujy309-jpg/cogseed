@@ -434,12 +434,26 @@ export interface SkillDetail {
 }
 
 // ── listing ───────────────────────────────────────────────────────────────
+/** C5/N-06：给列表条目附上"需更新客户端"状态。只有**确实被版本门跳过**的内容才加
+ *  appUpdateRequired/minAppVersion/currentAppVersion；兼容条目原样返回（不加字段），
+ *  渲染层据此显示本地化提示。字段名与 MarketplaceInstallError 一致。 */
+function annotateAppIncompatible<T extends { id?: string }>(items: T[], kind: 'agent' | 'skill'): T[] {
+  const skips = listAppIncompatibleSkips().filter((item) => item.kind === kind);
+  if (!skips.length) return items;
+  return items.map((item) => {
+    const hit = skips.find((skip) => skip.id === String(item?.id || ''));
+    return (hit
+      ? { ...item, appUpdateRequired: true, minAppVersion: hit.minAppVersion, currentAppVersion: hit.currentAppVersion }
+      : item) as T;
+  });
+}
+
 export async function listMarketplaceAgents(
   opts: { category?: string; status?: string; q?: string; page?: number; size?: number } = {},
 ): Promise<{ list: MarketplaceAgent[]; total: number }> {
   // 2026-10-14（C5/N-06，按 owner 决定"市场内容与客户端同步"）：把本机客户端版本
   // 随目录请求发出，服务端可按版本下发兼容内容；老服务端忽略该字段，无副作用。
-  return await postJson('/marketplace/agents/list', {
+  const res = await postJson<{ list: MarketplaceAgent[]; total: number }>('/marketplace/agents/list', {
     app_version: currentAppVersion(),
     category: opts.category || null,
     status: opts.status || null,
@@ -447,6 +461,7 @@ export async function listMarketplaceAgents(
     page: opts.page || 1,
     size: opts.size || 50,
   });
+  return { ...res, list: annotateAppIncompatible(res.list, 'agent') };
 }
 
 export async function listMarketplaceSkills(
@@ -467,7 +482,11 @@ export async function listMarketplaceSkills(
     .filter((row): row is CatalogListRow => row !== null) as unknown as MarketplaceSkill[];
   invalidateMetadataIndex();
   await Promise.all(list.map((row) => observeHubSkillStatus(uid, row.id, row)));
-  return { ...res, list, total: typeof res.total === 'number' ? res.total : list.length };
+  return {
+    ...res,
+    list: annotateAppIncompatible(list, 'skill'),
+    total: typeof res.total === 'number' ? res.total : list.length,
+  };
 }
 
 // Open-source projects专区 — a curated, read-only catalog (config-as-code on
