@@ -2530,6 +2530,17 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true, totals, sweep, budget, runtime: recallCaptures.readRecallNightlySweepRuntime(ctx.userId) };
   },
 
+  // 手动触发立即返回；扫描在后台跑，进度经 sweep 集合的写通知推给渲染层。
+  'recall.captures.sweep.run': async (_input, ctx) => {
+    if (recallCaptures.readRecallNightlySweepRuntime(ctx.userId).running) {
+      return { ok: true, ran: false, reason: 'sweep_in_flight' };
+    }
+    void recallCaptures.runManualCaptureSweep(ctx.userId).catch((error) => {
+      log.warn('manual recall capture sweep failed', { error: (error as Error).message });
+    });
+    return { ok: true, ran: true };
+  },
+
   'recall.captures.settings.update': async (input = {}, ctx) => {
     const settings = await recallCaptureSettings.updateRecallCaptureSettings(ctx.userId, input);
     return { ok: true, settings };

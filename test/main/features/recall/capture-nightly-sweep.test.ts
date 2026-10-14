@@ -79,6 +79,23 @@ const answer = (value: unknown) => ({ text: JSON.stringify(value), meta: {} });
 const positive = { eligible: true, reason: 'A durable traceability rule', evidence: [{ messageId: 'u1', quote: 'Always keep decisions traceable.' }] };
 
 describe('the sole nightly cognition pipeline', () => {
+  it('manual sweep bypasses the nightly window and reviews the due day', async () => {
+    vi.setSystemTime(new Date(at(12, 20)));
+    const capture = await api();
+    const settingsMod = await import('../../../../src/main/features/recall/capture-settings');
+    const settings = await settingsMod.readRecallCaptureSettings(USER);
+    expect(await capture.runNightlyCaptureSweep(USER, at(12, 3), settings))
+      .toMatchObject({ ran: false, reason: 'outside_nightly_window' });
+    expect(await capture.runManualCaptureSweep(USER)).toMatchObject({ ran: true, reviewDay: '2026-10-12' });
+    expect(await capture.readRecallNightlySweep(USER)).toMatchObject({ reviewWindow: { reviewDay: '2026-10-12' } });
+    expect(await records()).toEqual([]);
+    vi.setSystemTime(new Date(at(12, 1)));
+    expect(await capture.runManualCaptureSweep(USER)).toMatchObject({ ran: true, reviewDay: '2026-10-11' });
+    expect((await records()).some(record => record.reviewDay === '2026-10-11')).toBe(true);
+    const captureTasks = mocks.scheduleBootBackground.mock.calls.filter(call => String(call[0]).startsWith('recall:capture:'));
+    expect(captureTasks.length).toBeGreaterThan(0);
+    expect(captureTasks.every(call => (call[3] as { preferIdle?: boolean }).preferIdle === false)).toBe(true);
+  });
   it('uses the same explicit model sequence in summary, judgment and extraction despite an unrelated expired OAuth account', async () => {
     const capture = await api();
     const settings = await import('../../../../src/main/features/recall/capture-settings');

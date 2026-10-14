@@ -2487,21 +2487,24 @@ const scheduledCaptures = new Map<string, ScheduledBootBackgroundTask>();
 const captureScheduleAdmissions = new Set<string>();
 let captureSchedulingEnabled = true;
 
-async function nightlyCaptureCanStart(userId: string): Promise<boolean> {
+async function nightlyCaptureCanStart(userId: string, allowOutsideWindow = false): Promise<boolean> {
   const settings = await readRecallCaptureSettings(userId);
   return settings.enabled && settings.executionPolicy === 'nightly'
-    && isWithinNightlyWindow(new Date(), settings.nightlyStart, settings.nightlyEnd);
+    && (allowOutsideWindow || isWithinNightlyWindow(new Date(), settings.nightlyStart, settings.nightlyEnd));
 }
 
 async function scheduleKnownRecallCapture(userId: string, capture: RecallCaptureRecord): Promise<void> {
   const schedulable = capture.status === 'queued' && capture.executionPolicy === 'nightly' && Boolean(capture.reviewDay);
-  if (!captureSchedulingEnabled || !schedulable || !await nightlyCaptureCanStart(userId)) return;
+  // Captures admitted by a manual run keep processing outside the window;
+  // scheduled admissions stay night-only.
+  const manualAdmitted = String(capture.terminalRunId || '').includes('-manual-');
+  if (!captureSchedulingEnabled || !schedulable || !await nightlyCaptureCanStart(userId, manualAdmitted)) return;
   const key = captureTaskKey(userId, capture.id);
   // Recheck after the settings read so concurrent admissions share one task.
   if (!captureSchedulingEnabled || scheduledCaptures.has(key)) return;
   const task = scheduleBootBackground(`recall:capture:${capture.id}`, signal => (
     runRecallCapture(userId, capture.id, signal).then(() => undefined)
-  ), 0, { resourceClass: 'model', preferIdle: true });
+  ), 0, { resourceClass: 'model', preferIdle: !manualAdmitted });
   scheduledCaptures.set(key, task);
   void task.promise.finally(() => {
     if (scheduledCaptures.get(key) === task) scheduledCaptures.delete(key);
@@ -2743,14 +2746,14 @@ function asSweepRecord(value: RecallJsonRecord): RecallNightlySweepRecord {
       if (!range || !safeId(range.conversationId) || !/^\d{4}-\d{2}-\d{2}$/.test(range.reviewDay)
         || key !== `${range.reviewDay}:${range.conversationId}${range.feedbackRevision ? `:feedback-${range.feedbackRevision}` : ''}`
         || range.feedbackRevision && !/^[a-f0-9]{64}$/.test(range.feedbackRevision)
-        || !isIsoTimestamp(range.start) || !isIsoTimestamp(range.end) || !isIsoTimestamp(range.ranForWindow)
+        || !isIsoTimestamp(range.start) || !isIsoTimestamp(range.end) || !isSweepWindowKey(range.ranForWindow)
         || Date.parse(range.start) >= Date.parse(range.end)) throw new Error('malformed nightly pending range');
       pendingRanges[key] = range;
     }
   }
   if (raw.reviewWindow && (!/^\d{4}-\d{2}-\d{2}$/.test(raw.reviewWindow.reviewDay)
     || !isIsoTimestamp(raw.reviewWindow.start) || !isIsoTimestamp(raw.reviewWindow.end)
-    || !isIsoTimestamp(raw.reviewWindow.ranForWindow)
+    || !isSweepWindowKey(raw.reviewWindow.ranForWindow)
     || Date.parse(raw.reviewWindow.start) >= Date.parse(raw.reviewWindow.end))) {
     throw new Error('malformed nightly review window');
   }
@@ -2765,6 +2768,13 @@ function asSweepRecord(value: RecallJsonRecord): RecallNightlySweepRecord {
     ...(raw.lastResult ? { lastResult: raw.lastResult } : {}),
     ...(typeof raw.consecutiveErrors === 'number' ? { consecutiveErrors: raw.consecutiveErrors } : {}),
   } as RecallNightlySweepRecord;
+}
+
+/** Manual runs tag their window key with `manual-` so on-demand and scheduled
+ * admissions stay distinguishable in persisted sweep state. */
+function isSweepWindowKey(value: unknown): boolean {
+  return isIsoTimestamp(value)
+    || (typeof value === 'string' && value.startsWith('manual-') && isIsoTimestamp(value.slice('manual-'.length)));
 }
 
 async function readNightlySweepRecord(userId: string): Promise<RecallNightlySweepRecord | undefined> {
@@ -2816,6 +2826,21 @@ export function nightlyReviewDay(ranForWindow: string): { key: string; start: Da
   return { key, start, end };
 }
 
+/** Manual runs do not wait for the window: they review the day the next due
+ * window would review — the in-progress local day once today's window has
+ * opened, otherwise the previous complete day. */
+function manualNightlyReviewDay(now: Date, settings: RecallCaptureSettingsRecord): { key: string; start: Date; end: Date } {
+  const [hours, minutes] = String(settings.nightlyStart || '02:00').split(':').map(Number);
+  const windowStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours || 0, minutes || 0, 0, 0);
+  const day = now >= windowStart
+    ? new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    : new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  const end = new Date(day);
+  end.setDate(end.getDate() + 1);
+  const key = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+  return { key, start: day, end };
+}
+
 function captureReviewDayBounds(capture: RecallCaptureRecord): { start: Date; end: Date } {
   if (capture.reviewDayStart && capture.reviewDayEnd) {
     return { start: new Date(capture.reviewDayStart), end: new Date(capture.reviewDayEnd) };
@@ -2864,12 +2889,13 @@ export function readRecallNightlySweepRuntime(userId: string) {
 
 export async function runNightlyCaptureSweep(
   userId: string, ranForWindow: string, settings: RecallCaptureSettingsRecord, signal?: AbortSignal,
+  options: { manual?: boolean; reviewDay?: { key: string; start: Date; end: Date } } = {},
 ): Promise<RecallNightlySweepRun> {
   if (signal?.aborted) return { ran: false, reason: 'cancelled' };
   if (!settings.enabled || settings.executionPolicy !== 'nightly') return { ran: false, reason: 'disabled' };
-  if (!isWithinNightlyWindow(new Date(), settings.nightlyStart, settings.nightlyEnd)) return { ran: false, reason: 'outside_nightly_window' };
+  if (!options.manual && !isWithinNightlyWindow(new Date(), settings.nightlyStart, settings.nightlyEnd)) return { ran: false, reason: 'outside_nightly_window' };
   if (nightlySweepsInFlight.has(userId)) return { ran: false, reason: 'sweep_in_flight' };
-  let day = nightlyReviewDay(ranForWindow);
+  let day = options.reviewDay || nightlyReviewDay(ranForWindow);
   nightlySweepsInFlight.add(userId);
   const startedAt = new Date().toISOString();
   nightlySweepStartedAt.set(userId, startedAt);
@@ -2882,7 +2908,7 @@ export async function runNightlyCaptureSweep(
   let cursors: Record<string, RecallNightlySweepCursor> = {};
   let pendingRanges: Record<string, RecallNightlyPendingRange> = {};
   let admissionLoaded = false;
-  const canContinue = async () => !signal?.aborted && captureSchedulingEnabled && await nightlyCaptureCanStart(userId);
+  const canContinue = async () => !signal?.aborted && captureSchedulingEnabled && await nightlyCaptureCanStart(userId, options.manual);
   const persist = async (result?: RecallNightlySweepResult) => updateRecallJsonRecord(userId, SWEEP_COLLECTION, NIGHTLY_SWEEP_ID, current => ({
     ...(current || { schemaVersion: 1, ownerId: userId, id: NIGHTLY_SWEEP_ID, baselineAt: day.start.toISOString() }),
     cursors: { ...currentDayCursors((current as RecallNightlySweepRecord | undefined)?.cursors || {}), ...cursors },
@@ -3050,6 +3076,17 @@ export async function runNightlyCaptureSweep(
     nightlySweepStartedAt.delete(userId);
     notifyCognitionWrite(userId, SWEEP_COLLECTION, 'update', NIGHTLY_SWEEP_ID);
   }
+}
+
+/** User-triggered discovery run: same admission, cursor and budget machinery
+ * as the nightly window, started on demand instead of waiting for it. */
+export async function runManualCaptureSweep(userId: string, signal?: AbortSignal): Promise<RecallNightlySweepRun> {
+  const settings = await readRecallCaptureSettings(userId);
+  if (!settings.enabled || settings.executionPolicy !== 'nightly') return { ran: false, reason: 'disabled' };
+  if (nightlySweepsInFlight.has(userId)) return { ran: false, reason: 'sweep_in_flight' };
+  const now = new Date();
+  return runNightlyCaptureSweep(userId, `manual-${now.toISOString()}`, settings, signal,
+    { manual: true, reviewDay: manualNightlyReviewDay(now, settings) });
 }
 
 export interface RecallCaptureSweepLoopHandle {
