@@ -3264,7 +3264,7 @@ async function _syncPendingActorsFromRuntime(cid, opts = {}) {
     _updateConvSidebarBadge(cid, false);
     if (cid === currentCid) {
       _scheduleHistoryReconcileAfterStream(cid, { force: true });
-      _settleDanglingActorPlaceholders(cid);
+      _settleDanglingActorPlaceholders(cid, { liveActors: new Set(activeTurns.map((t) => t.actor)) });
       if (loadingEl && loadingEl.parentElement) _removeEmptyStreamingPlaceholder(loadingEl);
       _updateConvSendUI(cid);
     }
@@ -14378,6 +14378,10 @@ function _removeEmptyActorPlaceholder(cid, actorId, turnId) {
 
 function _settleDanglingActorPlaceholders(cid, opts = {}) {
   if (!cid) return;
+  // 2026-10-14 真机：本地流结束时，仍被服务端 active_turns 列为活跃的 actor
+  // 不是 renderer-only ephemera —— 它只是还没有持久化消息。此前把工人刚亮起来的
+  // "工作中"占位一并清掉，用户看到"刚开始有、后边又灭了"。
+  const liveActors = opts.liveActors instanceof Set ? opts.liveActors : null;
   const preserveProcess = opts.preserveProcess === true;
   // Single source of truth: persisted jsonl. At stream-end any chat-message
   // that doesn't anchor to a `message` event (no `data-msg-id`) AND wasn't
@@ -14424,6 +14428,9 @@ function _settleDanglingActorPlaceholders(cid, opts = {}) {
       preserved.add(el);
       continue;
     }
+    // 该 actor 仍在服务端活跃：保留它的占位与运行态，等它真的终态再收。
+    if (liveActors && liveActors.has(String(el?.dataset?.fromActor || ''))) { preserved.add(el); continue; }
+
     el.remove();
   }
   // Map cleanup (state hygiene). Retain only connected process-bearing
