@@ -2019,3 +2019,46 @@ export async function uninstallMarketplaceSkillForUser(userId: string, skillId: 
     return { ok: true, id: skillId };
   });
 }
+
+// ── 因客户端版本不足被跳过的市场内容（C5/N-06）────────────────────────────
+/** 需要更新客户端才能安装/使用的内容。字段与 MarketplaceInstallError 的
+ *  appUpdateRequired / minAppVersion / currentAppVersion 对齐，渲染层可直接复用同一
+ *  套本地化提示。收集是进程内的；按用户过滤在投影/渲染侧进行。 */
+export interface AppIncompatibleSkip {
+  id: string;
+  kind: 'agent' | 'skill';
+  minAppVersion: string;
+  currentAppVersion: string;
+  at: string;
+}
+
+const _appIncompatibleSkips: AppIncompatibleSkip[] = [];
+
+/** 记录一条"因版本不足被跳过"的内容（幂等：同一 id+kind 只留一条）。由
+ *  marketplace_reconcile 在 min_app_version 门处回调；该方向已有导入，零新增环。 */
+export function recordAppIncompatibleSkip(
+  row: { id?: string },
+  kind: 'agent' | 'skill',
+  minAppVersion: string,
+): void {
+  const id = String(row?.id || '').trim();
+  if (!id) return;
+  if (_appIncompatibleSkips.some((item) => item.id === id && item.kind === kind)) return;
+  _appIncompatibleSkips.push({
+    id,
+    kind,
+    minAppVersion,
+    currentAppVersion: currentAppVersion(),
+    at: new Date().toISOString(),
+  });
+}
+
+/** 当前因客户端版本不足被跳过的内容（供列表投影/渲染层显示兼容状态）。 */
+export function listAppIncompatibleSkips(): AppIncompatibleSkip[] {
+  return [..._appIncompatibleSkips];
+}
+
+/** 清空收集（版本满足后或新一轮扫描前调用，避免陈旧状态留在界面上）。 */
+export function clearAppIncompatibleSkips(): void {
+  _appIncompatibleSkips.length = 0;
+}
