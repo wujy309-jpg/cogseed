@@ -23663,6 +23663,10 @@ body:has(#panel-settings.active) .main-top-actions {
 .chat-recall-citations.is-collapsed .chat-recall-projection-omitted {
   display: none;
 }
+/* 收起时只留卡头：证据提示随列表隐藏；feedback-actions 内的撤销说明是状态，保留。 */
+.chat-recall-citations.is-collapsed > .chat-recall-citations-note {
+  display: none;
+}
 .chat-recall-citations.is-collapsed .chat-recall-toggle .ui-icon { transform: none; }
 
 /* 教学卡样式已删（2026-09-28 四病整改 7.0 修7）：教学回执并入保存回执卡

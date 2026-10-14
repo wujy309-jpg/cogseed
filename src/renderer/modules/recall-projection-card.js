@@ -328,7 +328,7 @@
    */
   function recallMemoryCardHtml(citations) {
     if (!_validCitations(citations).length) return '';
-    return `<section class="chat-recall-citations">${_memoryCardInnerHtml(null, false, [], citations, new Set(), true)}</section>`;
+    return `<section class="chat-recall-citations is-collapsed">${_memoryCardInnerHtml(null, false, [], citations, new Set(), true)}</section>`;
   }
 
   // ── 旧预载草稿渲染分支（2026-08-17 起生产不可达：对话侧只挂模型自选与

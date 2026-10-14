@@ -102,6 +102,11 @@ describe('conversation Recall citations', () => {
     // 渲染实现收在 recall-projection-card.js，conversation.js 只留委托入口。
     expect(source).toContain('window.recallMemoryCardHtml(citations)');
   });
+  it('骨架认知回知卡默认收起，与挂载后的缺省折叠态一致', () => {
+    const html = renderCitations([{ asset_id: 'a1', title: 'Saved item', type: 'cognition', scope: 'general' }]);
+    expect(html).toContain('<section class="chat-recall-citations is-collapsed">');
+    expect(html).toContain('aria-expanded="false"');
+  });
 
   it('mounts persisted recall citations when a live streaming bubble is finalized', () => {
     // Live placeholders do not pass through appendChatMessage. The finalizer
