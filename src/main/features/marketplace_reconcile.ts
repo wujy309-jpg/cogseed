@@ -83,9 +83,53 @@ function _isAppCompatible(minAppVersion: string): boolean {
   return satisfiesMinAppVersion(_currentAppVersion(), minAppVersion);
 }
 
+/** C5/N-06：因客户端版本不足而被跳过的市场内容。此前只有一行 log（2026-10-14 实测
+ *  50 次），界面上看不到"有内容因为版本不够被忽略"。这里收集下来，供投影/渲染层显示
+ *  本地化兼容状态；字段与 `marketplace.ts::MarketplaceInstallError` 的
+ *  appUpdateRequired / minAppVersion / currentAppVersion 对齐。
+ *  说明：收集是**进程内**的，由调用侧（投影）在读取时按当前用户过滤即可 —— 本模块
+ *  没有现成的 active-uid 依赖，不为此新增 import 以免引入循环。 */
+export interface AppIncompatibleSkip {
+  id: string;
+  kind: 'agent' | 'skill';
+  minAppVersion: string;
+  currentAppVersion: string;
+  at: string;
+}
+
+const _appIncompatibleSkips: AppIncompatibleSkip[] = [];
+
+function _recordAppIncompatibleSkip(
+  row: { id?: string },
+  kind: 'agent' | 'skill',
+  minAppVersion: string,
+): void {
+  const id = String(row?.id || '').trim();
+  if (!id) return;
+  if (_appIncompatibleSkips.some((item) => item.id === id && item.kind === kind)) return; // 幂等
+  _appIncompatibleSkips.push({
+    id,
+    kind,
+    minAppVersion,
+    currentAppVersion: (() => { try { return _currentAppVersion(); } catch { return ''; } })(),
+    at: new Date().toISOString(),
+  });
+}
+
+/** 当前因客户端版本不足被跳过的市场内容（供投影/渲染层显示兼容状态）。 */
+export function listAppIncompatibleSkips(): AppIncompatibleSkip[] {
+  return [..._appIncompatibleSkips];
+}
+
+/** 清空收集（版本满足后或新一轮扫描前调用，避免陈旧状态留在界面上）。 */
+export function clearAppIncompatibleSkips(): void {
+  _appIncompatibleSkips.length = 0;
+}
+
 function _isInstallRowAppCompatible(row: ({ id?: string } & MinAppVersionSource), kind: 'agent' | 'skill'): boolean {
   const min = minAppVersionFrom(row);
   if (!min || _isAppCompatible(min)) return true;
+  _recordAppIncompatibleSkip(row, kind, min);
   log.info(`skip ${kind} ${row.id || ''}; requires CogSeed >= ${min} (current ${_currentAppVersion() || 'unknown'})`);
   return false;
 }
