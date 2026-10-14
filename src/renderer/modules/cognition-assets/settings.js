@@ -157,14 +157,7 @@
       <div class="ca-nightly-model-picker-row">${picker}<div class="actions">${button(saving ? 'cognition.settings_nightly_model_saving' : selected.length ? 'cognition.settings_nightly_model_add' : 'cognition.settings_nightly_model_primary', saving ? '正在保存…' : selected.length ? '添加备用模型' : '设为首选模型', 'nightly-model-add', undefined, blocked || catalog.status !== 'ready' || !pickerValue || selected.length >= 32)}</div></div>
       <div class="actions">${selected.length ? button('cognition.settings_nightly_model_reset', '恢复跟随系统', 'nightly-model-reset') : ''}${catalog.status === 'error' || catalog.partial ? button('cognition.settings_nightly_model_retry', '重试读取', 'nightly-model-retry', undefined, saving) : ''}</div>
       ${state ? `<p class="note" role="status">${esc(state)}</p>` : ''}</div>`;
-    return window.uiAccordion({
-      defaultOpen: [],
-      items: [{
-        title: label,
-        meta: T(selected.length ? 'cognition.settings_nightly_model_custom' : 'cognition.settings_nightly_model_system', selected.length ? '使用夜间专用顺序' : '跟随系统模型顺序'),
-        bodyHtml: body,
-      }],
-    });
+    return `<details class="settings-model-form__advanced ca-model-fold"><summary><span>${esc(label)}</span><span class="note ca-model-fold-meta">${esc(T(selected.length ? 'cognition.settings_nightly_model_custom' : 'cognition.settings_nightly_model_system', selected.length ? '使用夜间专用顺序' : '跟随系统模型顺序'))}</span></summary>${body}</details>`;
   }
   function modelInput(event, root) {
     if (event.target?.id !== 'ca-nightly-model-picker') return;

@@ -73,7 +73,7 @@ describe('资产设置只承接夜间发现', () => {
     const html = settingsHtml({ captureSettings: { enabled: true } });
     expect(html).toContain('data-act="nightly-scan-now"');
     expect(html.indexOf('夜间发现模型')).toBeLessThan(html.indexOf('自动确认'));
-    expect(html).toContain('<details>夜间发现模型');
+    expect(html).toContain('<details class="settings-model-form__advanced ca-model-fold">');
     expect(settingsHtml({ captureSettings: { enabled: false } }))
       .toMatch(/<button[^>]*disabled[^>]*data-act="nightly-scan-now"/);
     const running = settingsHtml({

@@ -10,7 +10,9 @@
 #ca-root .ca-app .ca-setting-head-ctl { display: flex; align-items: center; gap: var(--space-2); flex-shrink: 0; }
 #ca-root .ca-app .ca-setting-body { margin-top: var(--space-3); }
 #ca-root .ca-app .ca-setting-body > * + * { margin-top: var(--space-2); }
-#ca-root .ca-app .ca-setting-body > .ui-accordion { margin-top: var(--space-4); }
+#ca-root .ca-app .ca-setting-body > .ca-model-fold { margin-top: var(--space-4); }
+#ca-root .ca-app .ca-model-fold-meta { font-weight: 400; color: var(--ca-ink2); }
+#ca-root .ca-app .ca-model-fold .ca-nightly-model-controls { margin-top: var(--space-3); }
 #ca-root .ca-app .ca-setting-body .ui-progress { margin-top: var(--space-3); height: 4px; background: var(--ca-line); }
 #ca-root .ca-app .ca-settings-shell .tt { font-size: var(--font-size-4); font-weight: 600; }
 #ca-root .ca-app .ca-settings-shell .sub { margin-top: var(--space-2); line-height: 1.65; font-size: var(--font-size-3); }

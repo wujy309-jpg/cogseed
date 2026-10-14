@@ -2715,12 +2715,13 @@
       label: discoveryLabels[discovery.state],
       tone: discovery.state === 'failed' || discovery.state === 'running' ? 'attention' : discovery.state === 'completed' ? 'success' : 'neutral',
     });
+    const scanButton = btn(discovery.state === 'running'
+      ? T('cognition.settings_discovery_scanning', '扫描中…') : T('cognition.settings_discovery_scan_now', '立即扫描'),
+    'nightly-scan-now', { small: true, disabled: stateUnknown || !nightlyOn || discovery.state === 'running' });
     const runtimeCard = NS.assetSettings.settingCard({
       title: T('cognition.settings_recent_discovery', '最近夜间扫描'),
       hint: discovery.at ? fmtDate(discovery.at) : '',
-      controls: `${runtimePill}${btn(discovery.state === 'running'
-        ? T('cognition.settings_discovery_scanning', '扫描中…') : T('cognition.settings_discovery_scan_now', '立即扫描'),
-      'nightly-scan-now', { small: true, disabled: stateUnknown || !nightlyOn || discovery.state === 'running' })}`,
+      controls: runtimePill,
       bodyHtml: `<p class="note">${esc(discoveryNote)}</p>${budget ? window.uiProgressBar({
         ariaLabel: T('cognition.settings_budget_bar', '夜间窗口模型调度额度'),
         value: budget.calls, max: budget.limits.calls,
@@ -2735,7 +2736,7 @@
         ${NS.assetSettings.settingCard({
           title: T('cognition.settings_discovery_title', '夜间发现'),
           hint: T('cognition.settings_discovery_hint', '在夜间检查前一完整日的新会话与新增消息，发现可复用的认知建议。'),
-          controls: `${discoveryPill}${switchHtml(T('cognition.settings_discovery_switch', '允许夜间发现'), nightlyOn, 'nightly-toggle', stateUnknown)}`,
+          controls: `${discoveryPill}${switchHtml(T('cognition.settings_discovery_switch', '允许夜间发现'), nightlyOn, 'nightly-toggle', stateUnknown)}${scanButton}`,
           bodyHtml: `<p class="note">${esc(T('cognition.settings_nightly_window', '{start}–{end} · 应用需运行 · 会消耗模型额度；仅夜间运行，不会白天补扫。', { start: settings.nightlyStart || '02:00', end: settings.nightlyEnd || '06:00' }))}</p>${NS.assetSettings.modelControls()}`,
         })}
         ${NS.assetSettings.autoApprovalControls()}
