@@ -4852,6 +4852,13 @@ async function runWorkerLoop(state: CidState, w: WorkerState): Promise<void> {
           log.warn(`run terminal persistence failed cid=${w.cid}: ${(ledgerErr as Error).message}`);
         }
       }
+        log.info("worker turn failed; considering degradation report", {
+          cid: w.cid,
+          runId: item.runId || null,
+          actorId: item.actor.id,
+          reason: userAborted ? "user_stopped" : "runtime_failed",
+        });
+        await maybeEnqueueActorReport(w.uid, w.cid, item.runId, item.actor.id, item.actor.name || "");
     } finally {
       w.currentTurnId = null;
       w.currentRunId = null;
@@ -4978,6 +4985,42 @@ type ActorTurnResult =
       terminalStatus: TaskTerminalStatus;
     };
 
+  /**
+   * R-11: ask the commander for exactly one reporting round once every actor of
+   * this run has reached a terminal. Shared by the normal actor-result path AND
+   * the worker-failure path — a failed worker must produce a *degradation* report
+   * ("X failed: reason") instead of dying silently, which is exactly what happened
+   * on 2026-10-13: a network failure ("fetch failed") left report_enqueued unset
+   * and the commander never said anything.
+   */
+  async function maybeEnqueueActorReport(
+    uid: string,
+    cid: string,
+    runId: string | undefined,
+    actorId: string,
+    actorName: string,
+  ): Promise<void> {
+    if (!runId) return;
+    try {
+      const runStore = await import("./run_store");
+      const run = await runStore.readRun(uid, cid, runId);
+      const shouldReport = runStore.shouldEnqueueActorReport(run);
+      log.info(`actor report decision run=${runId} should=${shouldReport}`, { cid });
+      if (!shouldReport) return;
+      await runStore.markActorReportEnqueued(uid, cid, runId);
+      await enqueue({
+        uid,
+        cid,
+        fromActorId: actorId,
+        text: t("chat.actor_report_ready", { name: actorName || actorId }),
+        forceTo: [COMMANDER_ID],
+        dispatch: true,
+      });
+    } catch (err) {
+      log.warn(`actor report round enqueue failed cid=${cid}: ${(err as Error).message}`);
+    }
+  }
+
 async function recordMemberRunTurnResult(
   state: CidState,
   item: QueueItem,
@@ -5027,6 +5070,10 @@ async function recordMemberRunTurnResult(
       artifacts,
     });
   }
+    // R-11 (decision 2026-10-13): the commander waits for the actors it
+    // dispatched and then reports. Shared with the worker-failure path so a failed
+    // worker produces a degradation report instead of dying silently.
+    await maybeEnqueueActorReport(state.uid, state.cid, item.runId, actor.id, actor.name || "");
 }
 
 type CoordinatorTurnContext = {
@@ -8003,6 +8050,38 @@ async function runActorTurnBody(
       ...(citation.matchScore !== undefined ? { match_score: citation.matchScore } : {}),
       match_method: citation.matchMethod,
     }));
+      // R-11 gate (decision 2026-10-13): never present this as the end of the
+      // turn while the actors this run dispatched are still running. The commander
+      // waits for them and reports once they finish — recordMemberRunTurnResult
+      // then wakes it for exactly one reporting round, and that turn ends
+      // normally. Without this gate the user reads a finished answer while workers
+      // still spin, which is the 2026-10-12 shape (commander concluded 17:13,
+      // literature-review worker still running).
+      let awaitingDispatchedActors: string[] = [];
+      // The commander's own turn is not always tagged with the run: on
+      // 2026-10-13 the run belonged to the dispatch (mentions: 0), so requiring
+      // `item.runId` here skipped the gate exactly when it was needed. Fall back
+      // to the run this conversation is currently tracking.
+      const gateRunId = item.runId || state.memberRunId;
+      if (gateRunId && actor.kind === 'commander') {
+        try {
+          const { readRun } = await import('./run_store');
+          const run = await readRun(uid, cid, gateRunId);
+          awaitingDispatchedActors = (run?.actors || [])
+            .filter((candidate) => candidate.terminal === 'pending')
+            .map((candidate) => candidate.agent_id);
+        } catch (err) {
+          // The gate is advisory: a read failure must not block the turn.
+          log.warn(`awaiting-actor gate read failed cid=${cid}: ${(err as Error).message}`);
+        }
+        if (awaitingDispatchedActors.length) {
+          log.warn('commander turn ending while dispatched actors still run', {
+            cid,
+            runId: gateRunId,
+            awaitingActorIds: awaitingDispatchedActors,
+          });
+        }
+      }
     persistedMsg = await enqueue({
       uid,
       cid,
@@ -8058,7 +8137,9 @@ async function runActorTurnBody(
       // consumes the streaming placeholder + finalizes in place. Without
       // this flag, mid-turn tool-emitted messages (plan_executor's
       // dispatch) would also wrongly consume the placeholder.
-      turn_end: true,
+      // R-11: with actors still pending this is an interim answer, not the
+      // end of the turn; the reporting round after the last worker closes it.
+      turn_end: awaitingDispatchedActors.length === 0,
       ...(item.runId ? { runId: item.runId } : {}),
       turn_id: item.turnId,
       ...(replyMetrics ? { metrics: replyMetrics } : {}),
@@ -9589,6 +9670,50 @@ async function gateNestedAgentWake(
 ): Promise<WakeRequestSummary | null> {
   if (actor.kind !== "agent" || allowLegacyGroupChatFormalAgentExecutorForTest())
     return null;
+
+  // Membership rule (requirement owner, 2026-10-13): an agent that has ALREADY
+  // joined this conversation is woken directly — a repeat @ of a known member is
+  // unambiguous. The FIRST time an agent enters the conversation, approval is
+  // required as before. Membership is therefore the criterion, not the run: the
+  // run's member list is empty at gate time (it is created from mentions), while
+  // the member table is written when the user approves the first wake. Failing to
+  // read members falls through to the gate, i.e. fails closed.
+  try {
+    // The run record already knows who this run is about (`member_agent_ids`),
+    // and the 21:49 run logged `members: 1` — so consult it first: the member
+    // *file* read below needs the conversation's project hint, and passing null
+    // silently missed the member on 2026-10-13 (wake prompt still appeared).
+    if (runId) {
+      const { readRun } = await import("./run_store");
+      const run = await readRun(state.uid, state.cid, runId);
+      if ((run?.member_agent_ids || []).includes(actor.id)) {
+        log.info("wake approval skipped: agent is a member of this run", {
+          cid: state.cid,
+          agentId: actor.id,
+          source,
+          runId,
+        });
+        return null;
+      }
+    }
+    // Membership must be read with the conversation's project hint: passing null
+    // looked at the wrong layout on 2026-10-13 and missed an agent that had
+    // already joined, so the wake prompt appeared again.
+    const chatsFeature = await import("../chats");
+    const conversation = await chatsFeature.getConversation(state.uid, state.cid).catch(() => null);
+    const members = await readMembers(state.uid, state.cid, conversation?.project_id ?? null);
+    if (members.actors.some((member) => member.kind === "agent" && member.id === actor.id)) {
+      log.info("wake approval skipped: agent is already a member of this conversation", {
+        cid: state.cid,
+        agentId: actor.id,
+        source,
+      });
+      return null;
+    }
+  } catch (err) {
+    log.warn(`wake gate member lookup failed cid=${state.cid}: ${(err as Error).message}`);
+  }
+
   const decision = await evaluateWake(state.uid, {
     conversationId: state.cid,
     agentId: actor.id,

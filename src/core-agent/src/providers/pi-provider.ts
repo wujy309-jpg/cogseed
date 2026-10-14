@@ -422,6 +422,13 @@ export function createPiProvider(config: {
       const reasoning = effectiveReasoning(params.reasoning);
       const sessionId = cacheSafeSessionId(params.sessionId);
 
+      // Request identity + whether the routing headers actually ride along. The
+      // 2026-10-13 pattern was "first attempt 400 MissingSessionID, retry fine", so the
+      // next step is comparing these two lines instead of guessing again.
+      log.info(
+        `stream ${providerId}/${model.id} customModel=${config.customModel ? 'yes' : 'no'}`
+        + ` headers=${model.headers ? Object.keys(model.headers).sort().join(',') : '-'}`,
+      );
       log.debug(`stream ${providerId}/${model.id}`);
 
       try {
@@ -435,7 +442,24 @@ export function createPiProvider(config: {
               reasoning,
               cacheRetention: params.cacheRetention,
               sessionId,
+              // pi-ai reads request headers from these per-call options, NOT from the
+              // Model object — omitting them silently dropped `x-opencode-session`, so
+              // OpenCode-fronting endpoints answered 400 {"type":"MissingSessionID"}
+              // (2026-10-13, three attempts: the header was set on the Model all along).
+              ...(model.headers ? { headers: model.headers as Record<string, string> } : {}),
               ...(config.onPayload ? { onPayload: config.onPayload as any } : {}),
+              // Diagnostics (2026-10-13): identify WHICH request the endpoint rejects.
+              // pi-ai calls this once per HTTP response with the status, so a 400 can be
+              // tied to a concrete call instead of the whole turn.
+              onResponse: (info: any) => {
+                try {
+                  log.info(
+                    `stream response ${providerId}/${model.id}`
+                    + ` status=${info?.status ?? "-"}`
+                    + ` baseUrl=${String((model as any).baseUrl || config.baseUrl || "-")}`,
+                  );
+                } catch { /* diagnostics must never break the stream */ }
+              },
             })
           : piStream(model, context, {
               apiKey: config.apiKey,
@@ -445,7 +469,24 @@ export function createPiProvider(config: {
               temperature: params.temperature,
               cacheRetention: params.cacheRetention,
               sessionId,
+              // pi-ai reads request headers from these per-call options, NOT from the
+              // Model object — omitting them silently dropped `x-opencode-session`, so
+              // OpenCode-fronting endpoints answered 400 {"type":"MissingSessionID"}
+              // (2026-10-13, three attempts: the header was set on the Model all along).
+              ...(model.headers ? { headers: model.headers as Record<string, string> } : {}),
               ...(config.onPayload ? { onPayload: config.onPayload as any } : {}),
+              // Diagnostics (2026-10-13): identify WHICH request the endpoint rejects.
+              // pi-ai calls this once per HTTP response with the status, so a 400 can be
+              // tied to a concrete call instead of the whole turn.
+              onResponse: (info: any) => {
+                try {
+                  log.info(
+                    `stream response ${providerId}/${model.id}`
+                    + ` status=${info?.status ?? "-"}`
+                    + ` baseUrl=${String((model as any).baseUrl || config.baseUrl || "-")}`,
+                  );
+                } catch { /* diagnostics must never break the stream */ }
+              },
             });
 
         for await (const event of eventStream) {

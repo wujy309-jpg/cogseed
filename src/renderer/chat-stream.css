@@ -53,6 +53,16 @@
   user-select: none;
 }
 .cs-badge:hover { background: var(--color-stream-hover-2); color: var(--color-stream-muted); }
+/* 归属段：折叠条必须写明这是谁的执行过程（2026-10-13 需求 B），
+   否则派单链里会被误读成主 Agent 的任务执行过程。可截断不撑宽消息头。 */
+.cs-badge-owner {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+  max-width: 15em;
+}
+/* 折叠态也必须能看出「在跑」（真机 2026-10-14：worker 默认折叠后，唯一的动效
+   随折叠区一起被隐藏，界面上没有任何运行迹象）。旋转指示常显在徽章上。 */
+.cs-badge-live { display: inline-flex; align-items: center; flex: none; }
+.cs-badge-live .cs-loading-spinner svg { width: 11px; height: 11px; }
 .cs-badge-label {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
 }

@@ -34,7 +34,7 @@
   "component.skill_hub_disabled_request": "技能「{name}」已被 Hub 停用，恢复前不能开始新的使用。本机副本和已开始的任务会保留。",
   "connectors.inline_text": "{connector} 连接器",
   "connectors.use_prefix": "使用 {connector} 连接器：{content}",
-    "auto_tasks.fire_prefix": "自动任务「{task}」：本条由计划任务自动发送，不是用户此刻的输入。\n\n",
+  "auto_tasks.fire_prefix": "自动任务「{task}」：本条由计划任务自动发送，不是用户此刻的输入。\n\n",
   "contexts.index.dirs_heading": "目录",
   "contexts.index.empty_kb": "（资料库为空）",
   "contexts.index.empty_section": "（暂无内容）",
@@ -333,5 +333,6 @@
   "connectors.tencent.approval.sub_meeting_id": "子会议 ID",
   "connectors.tencent.approval.meeting_type": "会议类型（0 普通，1 周期会议）",
   "connectors.tencent.approval.scope": "仅执行以上变更；未列出的字段保持不变。",
-  "connectors.tencent.approval.cancel_scope": "取消上述会议；类型为 1 且未指定子会议时将取消整个周期会议。"
+  "connectors.tencent.approval.cancel_scope": "取消上述会议；类型为 1 且未指定子会议时将取消整个周期会议。",
+  "chat.actor_report_ready": "@{name} 已完成，请汇总汇报。"
 }

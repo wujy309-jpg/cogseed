@@ -2933,6 +2933,7 @@ function _forgetCidRecipient(cid) {
   _autoRecipientByCid.delete(cid);
   _serverFloorByCid.delete(cid);
   _pendingFloorResetByCid.delete(cid);
+  _forgetChatStreamAnchors(cid);
   if (_agentStatusPopoverCid === cid) _closeAgentStatusPopover();
   setGroupConversationBusy(cid, false);
   _latestInFlight.delete(cid);
@@ -10884,8 +10885,20 @@ async function _resolveWakeRequest(card, request, cid, decision) {
     });
     const data = await res.json();
     if (!data || data.ok === false) throw new Error(data?.error || 'wake decision failed');
-    card.remove();
-    _pruneWakeRequestHost(_wakeRequestHost(cid, { create: false }));
+    // 需求口径（2026-10-14 需求方）：批准之后这张卡就可以退场——授权已经生效，
+    // 「点击生效了」的回执由工人气泡上的运行指示给出（过程徽章常显旋转/计时），
+    // 留一张「已启动」的卡反而挡住输入区。拒绝没有别的信号能说明，保留定格回执
+    // （已拒绝），否则用户点完就再无痕迹。
+    const settled = data.request && typeof data.request === 'object'
+      ? data.request
+      : { ...request, status: decision === 'approve' ? 'approved' : 'rejected' };
+    if (decision === 'approve') {
+      card.remove();
+      _pruneWakeRequestHost(_wakeRequestHost(cid, { create: false }));
+    } else {
+      card.dataset.busy = '';
+      _renderWakeRequestCard(card, settled, cid);
+    }
   } catch (err) {
     observer?.abort?.();
     card.dataset.busy = '';
@@ -11707,6 +11720,7 @@ function _removeRenderedHistoryFrom(msgDiv) {
   for (const key of Array.from(_groupPlaceholders.keys())) {
     if (key.startsWith(`${currentCid}:`)) _groupPlaceholders.delete(key);
   }
+  _forgetChatStreamAnchors(currentCid);
 }
 
 async function _confirmUserMessageEdit() {
@@ -13508,6 +13522,7 @@ function _makeConvChatController(cid, options = {}) {
         for (const k of Array.from(_groupPlaceholders.keys())) {
           if (k.startsWith(`${id}:`)) _groupPlaceholders.delete(k);
         }
+        _forgetChatStreamAnchors(id);
         // Bridge the controller's abort into the existing pendingConvs
         // state shape so legacy code (abortConvStream, sidebar badge,
         // polling recovery) keeps working untouched.
@@ -16424,7 +16439,7 @@ function createChatController(config) {
             // skip the render while off-view — do NOT abort (that would stop the
             // agent's turn). Scene hooks still run so edit-scene state is intact.
             if (id === config.getCurrentId()) {
-              _handleStreamEvent(id, msgEl, ev, { archive: features.archive });
+              _handleStreamEvent(id, msgEl, ev, { archive: features.archive, actorIdentity: !!features.actorIdentity });
             }
             if (hooks.onStreamEvent) hooks.onStreamEvent(ev, msgEl, id);
             if (ev.type === 'final' && hooks.onFinal) hooks.onFinal(ev, msgEl, id);
@@ -16580,7 +16595,7 @@ function createChatController(config) {
   return { loadHistory, send, abort, clear, isBusy, enqueue, renderQueue };
 }
 
-function _handleStreamEvent(cid, msg, ev, { archive = false } = {}) {
+function _handleStreamEvent(cid, msg, ev, { archive = false, actorIdentity = false } = {}) {
   if (ev.type === 'progress') {
     const evt = ev.event && ev.event.stream ? ev.event : null;
     const line = evt ? (_formatEventLine(evt) || ev.text) : ev.text;
@@ -16595,8 +16610,20 @@ function _handleStreamEvent(cid, msg, ev, { archive = false } = {}) {
     // arrives, then on the most-recent rendered bubble for that actor.
     if (inner.stream === 'chat' && inner.data && typeof window.chatStreamHandleEvent === 'function') {
       // conv-core 结构化事件：chat-stream 过程面板（工具卡/思考/Diff/用量），
-      // 与下方 group 老协议并行渲染。
-      window.chatStreamHandleEvent(cid, msg, inner.data);
+      // 与下方 group 老协议并行渲染。锚点按 actor 解析（一个 actor 一条气泡），
+      // 否则派单链的 worker 过程会落进 commander 的气泡。
+      const chatEvent = inner.data;
+      const chatAnchor = _resolveChatStreamAnchor(cid, chatEvent, msg, chatEvent.turnId);
+      const chatActorId = String(chatEvent.actorId || '');
+      window.chatStreamHandleEvent(cid, chatAnchor, chatEvent, {
+        actorId: chatActorId,
+        actorName: chatActorId ? _knownGroupActorLabel(cid, chatActorId) : '',
+        // 当前话权方：运行指示 = 持有 floor（话权回到某 actor 时它的流复活）。
+        floorActor: _serverFloorByCid.get(cid) || '',
+        // 群聊派单链：commander 是主 Agent，其过程保持展开可跟踪；worker 的
+        // 执行过程默认折叠（页面高度不增长），点徽章才展开。
+        collapseByDefault: !!actorIdentity && !!chatActorId && chatActorId !== 'commander',
+      });
       return;
     }
     if (inner.stream === 'group' && inner.data) {
@@ -16653,6 +16680,68 @@ function _phKey(cid, actorId, turnId) {
 
 function _eventTurnId(evData) {
   return _normaliseTurnId(evData && (evData.turn_id || evData.turnId));
+}
+
+// chat.* 结构化事件（conv-core）的过程折叠条锚点。一个 actor 一条气泡：
+// `chat.turn.started` 带 actorId，据此把活动流挂到**该 actor 自己的**占位气泡
+// 上（而不是共用的发送占位）；后续 `chat.item` / `chat.turn.completed` 只带
+// turnId，用本表回查同一锚点。不这么做时派单链里 commander 与 worker 的活动
+// 流会同挂发送占位 → 折叠条归属错（看起来像主 Agent 在执行）、一次任务画成
+// 两条并行线（2026-10-13 需求方截图）。
+const _chatStreamAnchors = new Map(); // key = `${cid}::turn:${turnId}` → { el, actorId }
+
+function _chatAnchorKey(cid, turnId) {
+  const tid = _normaliseTurnId(turnId);
+  return tid ? `${cid}::turn:${tid}` : '';
+}
+
+function _forgetChatStreamAnchors(cid) {
+  const prefix = `${cid}::turn:`;
+  for (const key of Array.from(_chatStreamAnchors.keys())) {
+    if (key.startsWith(prefix)) _chatStreamAnchors.delete(key);
+  }
+}
+
+function _resolveChatStreamAnchor(cid, chatEvent, fallbackEl, turnIdHint) {
+  if (!cid || !chatEvent || typeof chatEvent !== 'object') return fallbackEl;
+  const tid = _normaliseTurnId(turnIdHint || chatEvent.turnId);
+  const key = _chatAnchorKey(cid, tid);
+  const live = (el) => !!(el && el.parentElement);
+  const bind = (anchor, actorId) => {
+    if (key) _chatStreamAnchors.set(key, { el: anchor, actorId });
+    return anchor;
+  };
+  // 轮询/历史回放会把原锚点（或发送占位）摘出 DOM：这时必须按 actor 重新领养/新建，
+  // 否则活动流会画进脱树的节点——用户看不到过程，而 `chatStreamHasPanel` 仍为 true，
+  // 连老过程 rail 也被去重掉（真机 2026-10-14 00:30 的 30 条丢弃）。
+  const remint = (actorId) => {
+    if (!actorId) return fallbackEl;
+    const ph = _ensureActorPlaceholder(cid, actorId, fallbackEl, tid, undefined, undefined, { contentBearing: true });
+    return live(ph) ? ph : fallbackEl;
+  };
+  if (chatEvent.type === 'chat.turn.started') {
+    const actorId = String(chatEvent.actorId || '');
+    return bind(remint(actorId), actorId);
+  }
+  const known = key ? _chatStreamAnchors.get(key) : null;
+  if (known) {
+    if (live(known.el)) return known.el;
+    _chatStreamAnchors.delete(key);
+    const actorId = String(known.actorId || '');
+    const anchor = remint(actorId);
+    if (live(anchor)) return bind(anchor, actorId);
+    return fallbackEl;
+  }
+  return fallbackEl;
+}
+
+/** 话权交给「某个 agent」时返回该 agent id，其余（空 / commander / user）返回 ''。
+ *  交出方（commander）据此立即终态化：它的回合还挂着（R-11 等齐汇报），但此刻
+ *  它没有在跑——不摘掉 spinner/计时就成了「两个执行」并行（2026-10-13 需求）。 */
+function _yieldedFloorActor(state) {
+  const floor = String((state && state.active_recipient) || '');
+  if (!floor || floor === 'commander' || floor === 'user') return '';
+  return floor;
 }
 
 function _normaliseActiveTurns(raw) {
@@ -16742,7 +16831,7 @@ function _refreshActorPlaceholders(cid, actorId) {
   }
 }
 
-function _ensureActorPlaceholder(cid, actorId, fallbackPh, turnId, triggerMsgId, startedAtMs) {
+function _ensureActorPlaceholder(cid, actorId, fallbackPh, turnId, triggerMsgId, startedAtMs, opts = {}) {
   const tid = _normaliseTurnId(turnId);
   const sourceMsgId = _normaliseTurnId(triggerMsgId);
   const k = _phKey(cid, actorId, tid);
@@ -16768,7 +16857,23 @@ function _ensureActorPlaceholder(cid, actorId, fallbackPh, turnId, triggerMsgId,
   // while the floor points elsewhere.
   if (actorId === 'commander') {
     const floor = _serverFloorByCid.get(cid) || '';
-    if (floor && floor !== 'commander' && floor !== 'user') return null;
+    if (floor && floor !== 'commander' && floor !== 'user') {
+      // The floor moving to an agent must not make the commander's own process
+      // events vanish: dropping them left the user with an empty-looking bubble and
+      // no execution detail at all (578 'group process target missing' warnings on
+      // 2026-10-13, nearly all of them actor=commander). Attach to the existing
+      // fallback placeholder when it is live; only truly targetless events are
+      // dropped. The bubble still belongs to the commander, so its steps stay its
+      // own — no worker step is ever rendered into it.
+      if (fallbackPh && fallbackPh.parentElement) return fallbackPh;
+      // 真机 2026-10-14 00:30：commander 派单后，它的 seg 气泡会被历史回放/轮询
+      // 重建摘掉（`_finalizeActorPlaceholder` 遇到同签名已渲染消息会 remove 占位），
+      // 于是 fallback 脱树 → 收尾综合的 process 事件再次被丢（30 条）。
+      // 带内容的事件不能丢：落到下面的常规路径，按该 actor 的活占位/兜底重建一条
+      // 真实气泡来承载它的过程（空事件流仍由上面的 return null 拦住，mint 不出
+      // 空气泡来闪）。这是「空泡防闪」与「过程不可丢」的分界：有没有内容。
+      if (!opts.contentBearing) return null;
+    }
   }
 
   // Wake→task→exec 两级系统的 turn_id 会中途更换（cogseed-task-* →
@@ -17433,7 +17538,8 @@ function _handleGroupBusEvent(cid, streamingMsg, evData, { archive = false } = {
       startPolling(cid);
       if (cid === currentCid) _updateConvSendUI(cid);
     }
-    const target = _ensureActorPlaceholder(cid, actor, streamingMsg, turnId);
+    const target = _ensureActorPlaceholder(cid, actor, streamingMsg, turnId, undefined, undefined,
+      { contentBearing: true });
     if (!target) {
       _convLog.warn('group process target missing', {
         cid,
@@ -17537,7 +17643,8 @@ function _handleGroupBusEvent(cid, streamingMsg, evData, { archive = false } = {
       startPolling(cid);
       if (cid === currentCid) _updateConvSendUI(cid);
     }
-    const target = _ensureActorPlaceholder(cid, actor, streamingMsg, turnId);
+    const target = _ensureActorPlaceholder(cid, actor, streamingMsg, turnId, undefined, undefined,
+      { contentBearing: true });
     const bubble = target?.querySelector?.('.chat-bubble');
     if (bubble && typeof window.mountMessageArtifacts === 'function') {
       window.mountMessageArtifacts(bubble, [artifact], cid);
@@ -17557,6 +17664,13 @@ function _handleGroupBusEvent(cid, streamingMsg, evData, { archive = false } = {
     // be current for THIS event or the commander bubble flickers during the
     // handed-off agent's reply.
     _serverFloorByCid.set(cid, typeof st.active_recipient === 'string' ? st.active_recipient : '');
+    // 话权一旦交给某个 agent，交出方（commander）的气泡必须**立即终态化**：
+    // 它的回合还挂着（R-11 等齐汇报），但此刻它没有在跑——不摘掉 spinner/计时
+    // 就变成「两个执行」并行（2026-10-13 需求方截图）。
+    const _floorNow = _yieldedFloorActor(st);
+    if (_floorNow && typeof window.chatStreamYieldFloor === 'function') {
+      try { window.chatStreamYieldFloor(cid, _floorNow); } catch (_) { /* 终态化失败不阻塞状态同步 */ }
+    }
     setGroupConversationBusy(cid, st.status === 'running' || inFlight.length > 0 || activeTurns.length > 0);
     if (hasActiveTurnsField) {
       for (const turn of activeTurns) {

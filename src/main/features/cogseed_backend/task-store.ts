@@ -436,7 +436,7 @@ async function repairTaskCreationArtifacts(
   if (!firstEvent) {
     await appendCogSeedTaskEvent(userId, task.taskId, task.sessionId, creationEventType, {
       requestId: task.requestId,
-    });
+    }, taskEventRefs(task));
   }
 }
 
@@ -526,7 +526,9 @@ export async function ensureCogSeedTaskLifecycleArtifact(
       task.sessionId,
       expectedType,
       repairPayloadForTask(task, payload),
-    );
+
+        taskEventRefs(task),
+      );
     return true;
   });
 }
@@ -582,7 +584,7 @@ export async function updateCogSeedTaskWithEvent(
     const validated = validateTask(userId, next, taskId);
     await writeJson(file, validated);
     try {
-      await appendCogSeedTaskEvent(userId, taskId, validated.sessionId, event.type, event.payload);
+      await appendCogSeedTaskEvent(userId, taskId, validated.sessionId, event.type, event.payload, taskEventRefs(current));
       return validated;
     } catch (error) {
       await writeJson(file, current);
@@ -594,6 +596,20 @@ export async function updateCogSeedTaskWithEvent(
 /** Append an execution-progress event only while the task is still active.
  * Taking the task lock before the event lock matches lifecycle transitions and
  * prevents a late Runtime callback from being written after a terminal event. */
+/** Traceability refs for the task event stream (N-09). Pure: callers already
+ *  hold the task record, so this costs no extra read. */
+function taskEventRefs(task: {
+  conversationId?: string;
+  agentId?: string;
+  groupChatRunId?: string;
+}): { conversationId?: string; agentId?: string; runId?: string } {
+  return {
+    ...(task.conversationId ? { conversationId: task.conversationId } : {}),
+    ...(task.agentId ? { agentId: task.agentId } : {}),
+    ...(task.groupChatRunId ? { runId: task.groupChatRunId } : {}),
+  };
+}
+
 export async function appendCogSeedTaskEventIfActive(
   userId: string,
   taskId: string,
@@ -610,10 +626,141 @@ export async function appendCogSeedTaskEventIfActive(
     // state. Lifecycle events for created/queued/recoverable use the separate
     // atomic task+event transition path and must not be appended here.
     if (task.status !== 'running' && task.status !== 'waiting_user') return null;
-    return appendCogSeedTaskEvent(userId, taskId, task.sessionId, type, payload);
+    return appendCogSeedTaskEvent(userId, taskId, task.sessionId, type, payload, taskEventRefs(task));
   });
 }
 
+
+/**
+ * Converge the group-chat task owned by a finished run.
+ *
+ * A task used to keep its non-terminal status after its run had finished: the
+ * 2026-10-12 evidence shows a task created 17:14:22 still `waiting_user` at
+ * 17:17:23 while its turn had already ended (`turn_end=1`), so the sidebar kept
+ * reporting the run as executing. When a run reaches its derived terminal, the
+ * task must follow it:
+ *
+ *   - run completed          → task completed (with a `task.completed` event)
+ *   - run failed/blocked/... → task failed, carrying the run status as errorCode
+ *   - waiting for the human  → left alone: `waiting_user` is a legitimate state,
+ *                              not a stuck one (the read side reports it as
+ *                              attention instead of progress).
+ *
+ * Returns the converged task, or null when there was nothing to converge.
+ */
+export async function convergeCogSeedTaskForRun(
+  userId: string,
+  input: {
+    runId: string;
+    outcome: 'completed' | 'failed';
+    /** True when the run is blocked only because it awaits the user. */
+    waitingForUser?: boolean;
+    errorCode?: string;
+  },
+): Promise<{ taskId: string; status: CogSeedTaskRecord['status'] } | null> {
+  assertCogSeedUserId(userId);
+  if (input.waitingForUser) return null;
+
+  const tasks = await listCogSeedTasks(userId);
+  const open = tasks.filter((task) => (
+    task.executionKind === 'group-chat'
+    && task.groupChatRunId === input.runId
+    && !TERMINALS.has(task.status)
+  ));
+  if (!open.length) return null;
+  // A run owns one task; if several ever matched, converge the most recent.
+  const target = open.slice().sort((a, b) => String(a.updatedAt).localeCompare(String(b.updatedAt))).at(-1)!;
+
+  const now = new Date().toISOString();
+  const converged = await updateCogSeedTaskWithEvent(
+    userId,
+    target.taskId,
+    (current) => ({
+      ...current,
+      status: input.outcome === 'completed' ? 'completed' : 'failed',
+      updatedAt: now,
+      ...(input.outcome === 'completed'
+        ? {}
+        : { errorCode: input.errorCode || 'run_failed' }),
+    }),
+    {
+      type: input.outcome === 'completed' ? 'task.completed' : 'task.failed',
+      payload: { runId: input.runId, source: 'run-finalize' },
+    },
+  );
+  return { taskId: converged.taskId, status: converged.status };
+}
+
+const TERMINALS = new Set<CogSeedTaskRecord['status']>(['completed', 'failed', 'cancelled']);
+
+/**
+ * A wake approval *is* the user's answer to `waiting_user`. Leaving the task in an
+ * attention status made the sidebar keep showing "等待批准" after the user had
+ * already approved (2026-10-13: run-center badge counts `counts.attention`, which
+ * includes `waiting_user`). Resuming the task is what makes the badge truthful.
+ *
+ * The wake request id and the CogSeed task request id are *different namespaces*
+ * (`076f0627f697` vs `req-…`, live 2026-10-14 00:30: `wake approval task resume
+ * failed: invalid CogSeed request id`), so a foreign id must fall back to the
+ * wake's own identity instead of throwing. A group-chat turn task carries no
+ * `agentId` (it belongs to the conversation, not one worker — live task
+ * `cogseed-task-4d6dfae30cae`: `agentId: null`, `status: waiting_user`), so the
+ * last resort is the conversation's own attention-state task.
+ */
+export async function resumeCogSeedTaskAfterWakeApproval(
+  userId: string,
+  wake: string | { requestId?: string; conversationId?: string; agentId?: string },
+): Promise<{ taskId: string; status: CogSeedTaskRecord['status'] } | null> {
+  assertCogSeedUserId(userId);
+  const ref = typeof wake === 'string' ? { requestId: wake } : (wake || {});
+  const requestId = String(ref.requestId || '').trim();
+  const conversationId = String(ref.conversationId || '').trim();
+  const agentId = String(ref.agentId || '').trim();
+  let task: CogSeedTaskRecord | null = null;
+  if (isCogSeedRequestId(requestId)) task = await readCogSeedTaskByRequestId(userId, requestId);
+  if (!task && safeId(conversationId) && safeId(agentId)) {
+    task = await readLatestCogSeedTaskForAgent(userId, conversationId, agentId);
+  }
+  if (!task && safeId(conversationId)) {
+    task = await readAttentionCogSeedTaskForConversation(userId, conversationId);
+  }
+  if (!task) return null;
+  if (TERMINALS.has(task.status)) return null;
+  // Only an attention state is ours to clear; never resurrect a running task.
+  if (task.status !== 'waiting_user' && task.status !== 'planned') return null;
+  const now = new Date().toISOString();
+  const resumed = await updateCogSeedTaskWithEvent(
+    userId,
+    task.taskId,
+    (current) => (TERMINALS.has(current.status) || current.status === 'running'
+      ? current
+      : { ...current, status: 'running', updatedAt: now }),
+    { type: 'task.started', payload: { requestId, source: 'wake-approval' } },
+  );
+  return { taskId: resumed.taskId, status: resumed.status };
+}
+
+/** The conversation's own task that is waiting on the user (newest first).
+ *  Group-chat turn tasks are conversation-scoped (`agentId` null), so an
+ *  agent-scoped lookup cannot see the task a wake approval has to clear. */
+async function readAttentionCogSeedTaskForConversation(
+  userId: string,
+  conversationId: string,
+): Promise<CogSeedTaskRecord | null> {
+  const safeConversationId = assertCogSeedConversationId(conversationId);
+  const waiting = (await listCogSeedTasks(userId)).filter((task) => (
+    task.conversationId === safeConversationId
+    && (task.status === 'waiting_user' || task.status === 'planned')
+  ));
+  waiting.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+  return waiting[0] ?? null;
+}
+
+/** Same rule as `assertCogSeedRequestId`, without the throw — callers hand us
+ *  ids from other namespaces (p3394 wake requests) and silence is the answer. */
+function isCogSeedRequestId(requestId: string): boolean {
+  return !!requestId && safeId(requestId) && requestId.startsWith('req-');
+}
 
 export async function readCogSeedTaskByRequestId(userId: string, requestId: string): Promise<CogSeedTaskRecord | null> {
   assertCogSeedUserId(userId);
