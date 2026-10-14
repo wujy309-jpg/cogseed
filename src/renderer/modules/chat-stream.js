@@ -336,9 +336,9 @@ function _csSetBadgeLive(flow, live) {
   liveLabel.className = 'cs-badge-live-label';
   liveLabel.textContent = _csT('run_center.action_working', '工作中');
   const head = badge.closest ? badge.closest('.chat-msg-header') : null;
-  const avatar = head
-    ? head.querySelector('.chat-msg-avatar, .cs-avatar, .chat-avatar, .avatar, [class*="avatar"]')
-    : null;
+  // 真机类名来自 avatar.js::renderAvatarHtml —— `.avatar-circle`（消息头里
+  // 与 `.chat-msg-from` 同级）。此前选择器没含它，所以文案根本没挂到头像上。
+  const avatar = head ? head.querySelector('.avatar-circle, .chat-msg-avatar, .cs-avatar') : null;
   if (avatar && avatar.insertAdjacentElement) avatar.insertAdjacentElement('afterend', liveLabel);
   else el.appendChild(liveLabel);
 }

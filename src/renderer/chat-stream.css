@@ -293,3 +293,15 @@
   .cs-card.cs-interaction { background: var(--color-stream-dark-card); }
   .cs-btn { background: var(--color-stream-dark-hover); }
 }
+
+/* 2026-10-14 需求：执行中的状态文案挂到**头像下方**，不再与名字并排。
+   DOM 上它紧跟 `.avatar-circle` 之后；这里让它另起一行（整行占满，即落在
+   头像+名字那一行之下），字号走既有 token，颜色用 currentColor 不硬编码。 */
+.cs-badge-live-label {
+  flex-basis: 100%;
+  order: 9;
+  font-size: var(--text-xs, 11px);
+  line-height: 1.2;
+  color: currentColor;
+  opacity: .85;
+}
