@@ -440,7 +440,7 @@ export async function listMarketplaceAgents(
   // 2026-10-14（C5/N-06，按 owner 决定"市场内容与客户端同步"）：把本机客户端版本
   // 随目录请求发出，服务端可按版本下发兼容内容；老服务端忽略该字段，无副作用。
   return await postJson('/marketplace/agents/list', {
-    app_version: _currentAppVersion(),
+    app_version: currentAppVersion(),
     category: opts.category || null,
     status: opts.status || null,
     q: opts.q || null,
@@ -454,7 +454,7 @@ export async function listMarketplaceSkills(
 ): Promise<{ list: MarketplaceSkill[]; total: number }> {
   const uid = getActiveUserId();
   const res = await postJson<{ list?: unknown; total?: number }>('/marketplace/skills/list', {
-    app_version: _currentAppVersion(),
+    app_version: currentAppVersion(),
     category: opts.category || null,
     status: opts.status || null,
     q: opts.q || null,
@@ -666,7 +666,9 @@ type MarketplaceInstallOpts = {
   acceptSecurityRisk?: boolean;
 };
 
-function _currentAppVersion(): string {
+/** 当前客户端版本。导出以便目录缓存按版本失效（C5/N-06：市场内容与客户端同步）——
+ *  agents.ts / skills.ts 的 catalog 缓存需要它，但这两个模块没有 electron 依赖。 */
+export function currentAppVersion(): string {
   try { return app.getVersion(); } catch { return ''; }
 }
 
@@ -677,7 +679,7 @@ function _normalizeMarketplaceMinAppVersion(...sources: Array<MinAppVersionSourc
 function _assertMarketplaceAppCompatible(kind: MarketplaceInstallKind, id: string, name: string | undefined, minAppVersion: string): void {
   const min = normalizeMinAppVersion(minAppVersion);
   if (!min) return;
-  const current = _currentAppVersion();
+  const current = currentAppVersion();
   if (satisfiesMinAppVersion(current, min)) return;
   throw new MarketplaceInstallError(
     kind,
@@ -689,7 +691,7 @@ function _assertMarketplaceAppCompatible(kind: MarketplaceInstallKind, id: strin
 }
 
 function _isMarketplaceAppCompatible(minAppVersion: string): boolean {
-  return satisfiesMinAppVersion(_currentAppVersion(), minAppVersion);
+  return satisfiesMinAppVersion(currentAppVersion(), minAppVersion);
 }
 
 export class MarketplaceInstallError extends Error {
@@ -1662,7 +1664,7 @@ async function _seedAgentSkillDependencies(
       _assertApprovedDependencySkill(sid, meta.name || sid, { status: meta.status });
       const minAppVersion = meta.min_app_version;
       if (!_isMarketplaceAppCompatible(minAppVersion)) {
-        throw new Error(`requires CogSeed >= ${minAppVersion}; current ${_currentAppVersion() || 'unknown'}`);
+        throw new Error(`requires CogSeed >= ${minAppVersion}; current ${currentAppVersion() || 'unknown'}`);
       }
       if (!shouldContinue()) return { seeded, blocked: true };
       await addSkillInstall(uid, {
