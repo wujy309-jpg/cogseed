@@ -1,6 +1,9 @@
 /**
  * 联调样例生成器：产出的就是客户端真实会发出的字节，所以要钉住它的形态——
- * manifest 与包一致、剥掉本机字段、私有 Skill 带归属、没有 Hub 才写的文件、三类依赖各一个。
+ * manifest 与包一致、剥掉本机字段、私有 Skill 带归属、没有 Hub 才写的文件、两类引用各一个。
+ *
+ * 样例刻意**不带** `builtin:` 引用：Hub 侧清单已清空（`DEC-HUB-OPEN3-ALIGN-001`），
+ * 空清单下任何内置引用都在导入期被拒，带它的样例走不到提交成功。
  */
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -42,10 +45,27 @@ describe('buildAgentContributionSample', () => {
     for (const k of ['created_at', 'updated_at', 'version', 'enabled_connectors', 'default_model']) expect(agent).not.toHaveProperty(k);
   });
 
-  it('三类依赖各一个：Hub Skill、随包私有 Skill、客户端内置能力', async () => {
+  it('两类引用各一个：Hub Skill、随包私有 Skill（不带内置能力）', async () => {
     const r = await buildAgentContributionSample({ outDir: out, hubSkillId: '5e1c8a02d9b3' });
     const agent = JSON.parse(new AdmZip(fs.readFileSync(r.packagePath)).readAsText('agent.json')) as { skill_list: string[] };
-    expect(agent.skill_list).toEqual(['5e1c8a02d9b3', 'sample-local-format', 'builtin:coding']);
+    expect(agent.skill_list).toEqual(['5e1c8a02d9b3', 'sample-local-format']);
+  });
+
+  it('样例 Agent 名可由 COGSEED_AGENT_SAMPLE_NAME / name 覆盖，缺省回到「联调样例Agent」', async () => {
+    const readName = (p: string) =>
+      (JSON.parse(new AdmZip(fs.readFileSync(p)).readAsText('agent.json')) as { name: string }).name;
+    const prev = process.env.COGSEED_AGENT_SAMPLE_NAME;
+    try {
+      process.env.COGSEED_AGENT_SAMPLE_NAME = '联调样例Agent-env';
+      expect(readName((await buildAgentContributionSample({ outDir: out })).packagePath)).toBe('联调样例Agent-env');
+      expect(readName((await buildAgentContributionSample({ outDir: out, name: '联调样例Agent-opt' })).packagePath))
+        .toBe('联调样例Agent-opt');
+      delete process.env.COGSEED_AGENT_SAMPLE_NAME;
+      expect(readName((await buildAgentContributionSample({ outDir: out })).packagePath)).toBe('联调样例Agent');
+    } finally {
+      if (prev === undefined) delete process.env.COGSEED_AGENT_SAMPLE_NAME;
+      else process.env.COGSEED_AGENT_SAMPLE_NAME = prev;
+    }
   });
 
   it('私有 Skill 随包、带归属与安全声明；包里没有 Hub 才写的 _meta.json', async () => {
@@ -60,7 +80,7 @@ describe('buildAgentContributionSample', () => {
   it('不传 Hub Skill 时样例里没有十六进制依赖', async () => {
     const r = await buildAgentContributionSample({ outDir: out });
     const agent = JSON.parse(new AdmZip(fs.readFileSync(r.packagePath)).readAsText('agent.json')) as { skill_list: string[] };
-    expect(agent.skill_list).toEqual(['sample-local-format', 'builtin:coding']);
+    expect(agent.skill_list).toEqual(['sample-local-format']);
   });
 
   it('Hub Skill ID 形态不对 → 直接报错，不生成半成品', async () => {

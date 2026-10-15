@@ -9,10 +9,23 @@
  *
  * 用法：
  *   npx tsx scripts/agent-contribution-sample.ts --out /path/to/out [--hub-skill 5e1c8a02d9b3] [--version 1.0.0]
+ *                                                [--name 联调样例Agent]
  *
- * 样例 Agent 引用三类依赖（各一个）：Hub Skill（`--hub-skill`，必须是 Hub 上真实存在的 ID，缺省则不带）、
- * 随包私有 Skill（取仓库里的声明检查样例 `sample-local-format`，含 `references/security-manifest.yaml`）、
- * 客户端内置能力（`builtin:coding`）。
+ * 样例 Agent 的**名字**默认取环境变量 `COGSEED_AGENT_SAMPLE_NAME`（Hub 侧联调脚本
+ * `scripts/joint-integration/agent-run.mts` 就是用它来决定"发新版本还是新建内容"的），
+ * 可用 `--name` 覆盖。名字必须与联调脚本看到的一致，否则会出现两边各说各话的死锁：
+ * 库里已有一个同名内容时，走"新建"会撞同名守卫（`REVIEW_NAME_CONFLICT`），走"发新版本"
+ * 又要求当前账号就是该内容的贡献者——而合成账号服务是内存库，重启后旧内容的贡献者账号
+ * 已经不存在（`403 NOT_CONTRIBUTOR`）。每次联调用一个新名字即可绕开这条历史行。
+ *
+ * 样例 Agent 引用两类依赖（各一个）：Hub Skill（`--hub-skill`，必须是 Hub 上真实存在的 ID，缺省则不带）、
+ * 随包私有 Skill（取仓库里的声明检查样例 `sample-local-format`，含 `references/security-manifest.yaml`）。
+ *
+ * 样例**不带** `builtin:` 引用：Hub 侧的内置能力清单已按裁定 `DEC-HUB-OPEN3-ALIGN-001` 清空，
+ * 而空清单下**任何**内置引用都会在导入期被拒（`builtin_ref.unknown`，失败关闭）；客户端的总开关
+ * 也默认关闭。两端因此一致——带内置引用的样例必然提交被拒，跑不到「提交 → 接受 → 发布」。
+ * 要联调内置能力，须先由产品定成员并**两端一起改**（Hub 加回条目 + 客户端把总开关默认打开），
+ * 届时这里再加回 `builtin:` 引用。负例（清单外的内置引用被拒）不受影响：联调脚本会自行注入一条。
  */
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -23,18 +36,23 @@ import { stageAgent } from '../src/main/features/contribution/agent-staging';
 import { acceptTerms, confirmMaintenance, declareOrigin } from '../src/main/features/contribution/declarations';
 import { buildPackage } from '../src/main/features/contribution/package';
 import { buildPreview } from '../src/main/features/contribution/preview';
-import { BUILTIN_CAPABILITIES_ENABLE_ENV } from '../src/main/features/agent_builtin_capabilities';
 
 const REPO = path.resolve(__dirname, '..');
 const SAMPLE_SKILL_DIR = path.join(REPO, 'resources', 'guardrail', 'skill-declaration-core', 'fixtures', 'sample-skill');
 const SAMPLE_SKILL_NAME = 'sample-local-format';
 const SAMPLE_AGENT_ID = 'sample-joint-test-agent';
+/** 样例 Agent 名字的缺省值；环境变量与 `--name` 都可覆盖。 */
+const SAMPLE_AGENT_NAME_DEFAULT = '联调样例Agent';
+/** 与 Hub 侧联调脚本 `agent-run.mts` 共用：它读同名环境变量决定"发新版本 / 新建内容"。 */
+const SAMPLE_AGENT_NAME_ENV = 'COGSEED_AGENT_SAMPLE_NAME';
 
 export interface SampleOptions {
   outDir: string;
   /** Hub 上真实存在的 Skill ID（12 位十六进制）；缺省则样例不引用 Hub Skill。 */
   hubSkillId?: string;
   version?: string;
+  /** 样例 Agent 的名字；缺省取 `COGSEED_AGENT_SAMPLE_NAME`，再缺省为「联调样例Agent」。 */
+  name?: string;
   /**
    * 目标内容 ID（12 位十六进制）：给了就是「给已有内容发新版本」，缺省是「新建内容」。
    *
@@ -55,10 +73,8 @@ export interface SampleResult {
 }
 
 export async function buildAgentContributionSample(opts: SampleOptions): Promise<SampleResult> {
-  // 样例里带 `builtin:coding`，用来对着内置能力清单已开放的 Hub 联调。客户端的总开关默认关闭，
-  // 这里显式打开（只影响本脚本所在进程），否则本机检查会把它当成"客户端不认识"。
-  process.env[BUILTIN_CAPABILITIES_ENABLE_ENV] = '1';
   const version = opts.version ?? '1.0.0';
+  const name = (opts.name ?? process.env[SAMPLE_AGENT_NAME_ENV] ?? '').trim() || SAMPLE_AGENT_NAME_DEFAULT;
   if (opts.hubSkillId !== undefined && !/^[a-f0-9]{12}$/.test(opts.hubSkillId)) {
     throw new Error('--hub-skill must be a 12-character lowercase hex Hub content id');
   }
@@ -74,12 +90,12 @@ export async function buildAgentContributionSample(opts: SampleOptions): Promise
     // 本机原 Agent：带着生命周期与本机字段，提交时会被剥掉
     fs.writeFileSync(path.join(agentDir, 'agent.json'), JSON.stringify({
       agent_id: SAMPLE_AGENT_ID,
-      name: '联调样例Agent',
+      name,
       description_zh: '联调用的最小样例：整理文本并按需写代码。',
       description_en: 'Smallest sample for joint testing: tidy text and write code when asked.',
       workflow: '1. 读取用户给的文本 2. 用随包技能整理格式 3. 需要时调用内置的 coding 能力',
       category: 'office',
-      skill_list: [...(opts.hubSkillId ? [opts.hubSkillId] : []), SAMPLE_SKILL_NAME, 'builtin:coding'],
+      skill_list: [...(opts.hubSkillId ? [opts.hubSkillId] : []), SAMPLE_SKILL_NAME],
       created_at: '2026-10-13T00:00:00Z',
       updated_at: '2026-10-13T00:00:00Z',
       enabled_connectors: ['local-connector'],
@@ -150,7 +166,7 @@ if (require.main === module) {
   if (!out) {
     process.stderr.write(
       'usage: npx tsx scripts/agent-contribution-sample.ts --out <dir> [--hub-skill <12-hex>] ' +
-        '[--target-content <12-hex>] [--version 1.0.0]\n',
+        '[--target-content <12-hex>] [--version 1.0.0] [--name <样例 Agent 名>]\n',
     );
     process.exit(2);
   }
@@ -159,6 +175,7 @@ if (require.main === module) {
     hubSkillId: argValue(process.argv, '--hub-skill'),
     targetContentId: argValue(process.argv, '--target-content'),
     version: argValue(process.argv, '--version'),
+    name: argValue(process.argv, '--name'),
   }).then((r) => {
     process.stdout.write(`${JSON.stringify({ ...r, note: 'sample only; nothing was sent' }, null, 2)}\n`);
   }, (err) => {
