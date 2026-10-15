@@ -432,7 +432,12 @@ async function doStartExternalGateway(input: {
     // GUI-launched apps see a minimal PATH; add the standard install roots
     // (~/.local/bin, /opt/homebrew/bin, ...) so the gateway's own children
     // (bare preset commands like `codebuddy`) resolve like in a terminal.
-    const childEnv = buildCliSpawnEnv(scriptPath, env);
+    //
+    // binPath 必须传被 spawn 的二进制（process.execPath），不是 gateway 脚本：
+    // buildCliSpawnEnv 只在 binPath === process.execPath 时保留
+    // ELECTRON_RUN_AS_NODE，传 scriptPath 会按「用户 CLI」剥离——子进程以 GUI
+    // 形态启动，每个托管网关在 Dock 多一个默认 Electron 图标。
+    const childEnv = buildCliSpawnEnv(process.execPath, env);
     child = spawn(process.execPath, [scriptPath], { env: childEnv, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
     let errLog = '';
     let outLog = '';
