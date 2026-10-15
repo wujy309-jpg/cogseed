@@ -826,7 +826,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   ];
 
   const ontologyActionPreflight = uid ? async (toolName: string, input: Record<string, unknown>, finalMarkdownAdapter = false, trustedImplementation = true): Promise<ToolResult | undefined> => {
-    const { ontologyActionCapability } = await import('./ontology-action-capabilities');
+    const { ontologyActionCapability } = await import('../../features/cognition/ontology/ontology-action-capabilities');
     const capability = ontologyActionCapability(toolName, input, { finalMarkdownAdapter, trustedImplementation });
     if (capability.coverage !== 'unverified_effect') return undefined;
     try {

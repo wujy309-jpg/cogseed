@@ -53,7 +53,7 @@ export function createCogSeedHostToolRouter(deps: CogSeedHostToolRouterDeps = {}
         const taskContext = { ...(task.agentId ? { agentId: task.agentId } : {}), taskText: task.task,
           ...(conversation?.project_id ? { projectId: conversation.project_id } : {}),
           ...(conversation?.space_id || task.spaceId ? { workspaceId: conversation?.space_id || task.spaceId } : {}) };
-        const { ontologyActionCapability } = await import('../../model/core-agent/ontology-action-capabilities');
+        const { ontologyActionCapability } = await import('../cognition/ontology/ontology-action-capabilities');
         const capability = ontologyActionCapability(toolName, input, { finalMarkdownAdapter: finalPayload });
         const guard = await import('../cognition/ontology/operation-guard');
         const decision = capability.coverage === 'read_only' ? undefined

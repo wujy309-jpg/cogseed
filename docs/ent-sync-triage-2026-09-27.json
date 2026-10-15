@@ -1,0 +1,889 @@
+{
+  "left": "gitlab/develop-ent",
+  "right": "origin/develop",
+  "mergeBase": "4d5c2fd9",
+  "mergedTree": "b22a0b9db095",
+  "conflictedCount": 51,
+  "byVerdict": {
+    "merge": 32,
+    "keep-ours": 9,
+    "mixed": 4,
+    "theirs+": 5,
+    "either": 1
+  },
+  "rows": [
+    {
+      "file": "package-lock.json",
+      "oursLines": 26,
+      "theirsLines": 4,
+      "ours": {
+        "ui": 0,
+        "feat": 0
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 0
+      },
+      "triage": "noise",
+      "policy": "merge",
+      "why": "通道/身份/脚本并集",
+      "verdict": "merge"
+    },
+    {
+      "file": "package.json",
+      "oursLines": 29,
+      "theirsLines": 7,
+      "ours": {
+        "ui": 0,
+        "feat": 2
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 0
+      },
+      "triage": "upstream-ui-only",
+      "policy": "merge",
+      "why": "通道/身份/脚本并集",
+      "verdict": "merge"
+    },
+    {
+      "file": "run.sh",
+      "oursLines": 33,
+      "theirsLines": 13,
+      "ours": {
+        "ui": 0,
+        "feat": 0
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 0
+      },
+      "triage": "noise",
+      "policy": "merge",
+      "why": "通道/身份/脚本并集",
+      "verdict": "merge"
+    },
+    {
+      "file": "scripts/audit-kstar-precipitation.mjs",
+      "oursLines": 6,
+      "theirsLines": 113,
+      "ours": {
+        "ui": 0,
+        "feat": 0
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 0
+      },
+      "triage": "noise",
+      "policy": "merge",
+      "why": "构建与运维脚本并集",
+      "verdict": "merge"
+    },
+    {
+      "file": "scripts/package-dev-mac.cjs",
+      "oursLines": 23,
+      "theirsLines": 35,
+      "ours": {
+        "ui": 0,
+        "feat": 1
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 0
+      },
+      "triage": "upstream-ui-only",
+      "policy": "merge",
+      "why": "构建与运维脚本并集",
+      "verdict": "merge"
+    },
+    {
+      "file": "scripts/restart-cogseed.sh",
+      "oursLines": 16,
+      "theirsLines": 70,
+      "ours": {
+        "ui": 0,
+        "feat": 0
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 0
+      },
+      "triage": "noise",
+      "policy": "merge",
+      "why": "构建与运维脚本并集",
+      "verdict": "merge"
+    },
+    {
+      "file": "scripts/verify-packaged-dev.cjs",
+      "oursLines": 4,
+      "theirsLines": 67,
+      "ours": {
+        "ui": 0,
+        "feat": 0
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 1
+      },
+      "triage": "absorb",
+      "policy": "merge",
+      "why": "构建与运维脚本并集",
+      "verdict": "merge"
+    },
+    {
+      "file": "src/main/features/api_base.ts",
+      "oursLines": 4,
+      "theirsLines": 63,
+      "ours": {
+        "ui": 0,
+        "feat": 0
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 0
+      },
+      "triage": "noise",
+      "policy": "merge",
+      "why": "主进程=功能主干，必须并集（含企业门禁接线）",
+      "verdict": "merge"
+    },
+    {
+      "file": "src/main/features/group_chat/index.ts",
+      "oursLines": 38,
+      "theirsLines": 1258,
+      "ours": {
+        "ui": 0,
+        "feat": 0
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 26
+      },
+      "triage": "absorb",
+      "policy": "merge",
+      "why": "主进程=功能主干，必须并集（含企业门禁接线）",
+      "verdict": "merge"
+    },
+    {
+      "file": "src/main/features/hub_account/client.ts",
+      "oursLines": 158,
+      "theirsLines": 41,
+      "ours": {
+        "ui": 0,
+        "feat": 4
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 0
+      },
+      "triage": "upstream-ui-only",
+      "policy": "merge",
+      "why": "主进程=功能主干，必须并集（含企业门禁接线）",
+      "verdict": "merge"
+    },
+    {
+      "file": "src/main/index.ts",
+      "oursLines": 34,
+      "theirsLines": 118,
+      "ours": {
+        "ui": 0,
+        "feat": 0
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 0
+      },
+      "triage": "noise",
+      "policy": "merge",
+      "why": "主进程=功能主干，必须并集（含企业门禁接线）",
+      "verdict": "merge"
+    },
+    {
+      "file": "src/main/util/build-identity.ts",
+      "oursLines": 36,
+      "theirsLines": 19,
+      "ours": {
+        "ui": 0,
+        "feat": 2
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 0
+      },
+      "triage": "upstream-ui-only",
+      "policy": "merge",
+      "why": "主进程=功能主干，必须并集（含企业门禁接线）",
+      "verdict": "merge"
+    },
+    {
+      "file": "src/renderer/component-gallery.html",
+      "oursLines": 163,
+      "theirsLines": 23,
+      "ours": {
+        "ui": 0,
+        "feat": 2
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 0
+      },
+      "triage": "upstream-ui-only",
+      "policy": "keep-ours",
+      "why": "组件演示页，非功能路径",
+      "verdict": "keep-ours"
+    },
+    {
+      "file": "src/renderer/component-gallery.js",
+      "oursLines": 499,
+      "theirsLines": 167,
+      "ours": {
+        "ui": 28,
+        "feat": 38
+      },
+      "theirs": {
+        "ui": 13,
+        "feat": 7
+      },
+      "triage": "mixed",
+      "policy": "keep-ours",
+      "why": "组件演示页，非功能路径",
+      "verdict": "keep-ours"
+    },
+    {
+      "file": "src/renderer/index.html",
+      "oursLines": 695,
+      "theirsLines": 44,
+      "ours": {
+        "ui": 0,
+        "feat": 200
+      },
+      "theirs": {
+        "ui": 1,
+        "feat": 6
+      },
+      "triage": "absorb",
+      "policy": "merge",
+      "why": "企业为基底 + 回补上游新增 script/link 引用",
+      "verdict": "merge"
+    },
+    {
+      "file": "src/renderer/locales/en.json",
+      "oursLines": 902,
+      "theirsLines": 1379,
+      "ours": {
+        "ui": 0,
+        "feat": 902
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 1371
+      },
+      "triage": "absorb",
+      "policy": "merge",
+      "why": "上游为基底 + 企业同名键覆盖（含 i18n key 化 breaking）",
+      "verdict": "merge"
+    },
+    {
+      "file": "src/renderer/locales/ja.json",
+      "oursLines": 812,
+      "theirsLines": 1148,
+      "ours": {
+        "ui": 0,
+        "feat": 812
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 1148
+      },
+      "triage": "absorb",
+      "policy": "merge",
+      "why": "上游为基底 + 企业同名键覆盖（含 i18n key 化 breaking）",
+      "verdict": "merge"
+    },
+    {
+      "file": "src/renderer/locales/pt.json",
+      "oursLines": 814,
+      "theirsLines": 1146,
+      "ours": {
+        "ui": 0,
+        "feat": 814
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 1146
+      },
+      "triage": "absorb",
+      "policy": "merge",
+      "why": "上游为基底 + 企业同名键覆盖（含 i18n key 化 breaking）",
+      "verdict": "merge"
+    },
+    {
+      "file": "src/renderer/locales/zh.json",
+      "oursLines": 920,
+      "theirsLines": 1399,
+      "ours": {
+        "ui": 0,
+        "feat": 920
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 1391
+      },
+      "triage": "absorb",
+      "policy": "merge",
+      "why": "上游为基底 + 企业同名键覆盖（含 i18n key 化 breaking）",
+      "verdict": "merge"
+    },
+    {
+      "file": "src/renderer/modules/agents.js",
+      "oursLines": 310,
+      "theirsLines": 216,
+      "ours": {
+        "ui": 30,
+        "feat": 36
+      },
+      "theirs": {
+        "ui": 8,
+        "feat": 1
+      },
+      "triage": "mixed",
+      "policy": "triage",
+      "why": "按功能/UI 占比判定（见 triage 字段）",
+      "verdict": "mixed"
+    },
+    {
+      "file": "src/renderer/modules/boot.js",
+      "oursLines": 52,
+      "theirsLines": 78,
+      "ours": {
+        "ui": 0,
+        "feat": 0
+      },
+      "theirs": {
+        "ui": 6,
+        "feat": 1
+      },
+      "triage": "mixed",
+      "policy": "triage",
+      "why": "按功能/UI 占比判定（见 triage 字段）",
+      "verdict": "mixed"
+    },
+    {
+      "file": "src/renderer/modules/connectors.js",
+      "oursLines": 364,
+      "theirsLines": 518,
+      "ours": {
+        "ui": 27,
+        "feat": 66
+      },
+      "theirs": {
+        "ui": 20,
+        "feat": 51
+      },
+      "triage": "absorb",
+      "policy": "triage",
+      "why": "按功能/UI 占比判定（见 triage 字段）",
+      "verdict": "theirs+"
+    },
+    {
+      "file": "src/renderer/modules/conversation.js",
+      "oursLines": 672,
+      "theirsLines": 1254,
+      "ours": {
+        "ui": 44,
+        "feat": 111
+      },
+      "theirs": {
+        "ui": 11,
+        "feat": 37
+      },
+      "triage": "absorb",
+      "policy": "triage",
+      "why": "按功能/UI 占比判定（见 triage 字段）",
+      "verdict": "theirs+"
+    },
+    {
+      "file": "src/renderer/modules/kb-discover.js",
+      "oursLines": 1065,
+      "theirsLines": 64,
+      "ours": {
+        "ui": 9,
+        "feat": 163
+      },
+      "theirs": {
+        "ui": 1,
+        "feat": 8
+      },
+      "triage": "absorb",
+      "policy": "triage",
+      "why": "按功能/UI 占比判定（见 triage 字段）",
+      "verdict": "theirs+"
+    },
+    {
+      "file": "src/renderer/modules/kb-eco.js",
+      "oursLines": 108,
+      "theirsLines": 54,
+      "ours": {
+        "ui": 7,
+        "feat": 14
+      },
+      "theirs": {
+        "ui": 4,
+        "feat": 6
+      },
+      "triage": "mixed",
+      "policy": "triage",
+      "why": "按功能/UI 占比判定（见 triage 字段）",
+      "verdict": "mixed"
+    },
+    {
+      "file": "src/renderer/modules/kb-notes.js",
+      "oursLines": 86,
+      "theirsLines": 517,
+      "ours": {
+        "ui": 10,
+        "feat": 17
+      },
+      "theirs": {
+        "ui": 20,
+        "feat": 193
+      },
+      "triage": "absorb",
+      "policy": "triage",
+      "why": "按功能/UI 占比判定（见 triage 字段）",
+      "verdict": "theirs+"
+    },
+    {
+      "file": "src/renderer/modules/kb-workbench.js",
+      "oursLines": 3211,
+      "theirsLines": 3327,
+      "ours": {
+        "ui": 230,
+        "feat": 243
+      },
+      "theirs": {
+        "ui": 124,
+        "feat": 669
+      },
+      "triage": "absorb",
+      "policy": "triage",
+      "why": "按功能/UI 占比判定（见 triage 字段）",
+      "verdict": "theirs+"
+    },
+    {
+      "file": "src/renderer/modules/model-guard.js",
+      "oursLines": 77,
+      "theirsLines": 25,
+      "ours": {
+        "ui": 18,
+        "feat": 8
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 0
+      },
+      "triage": "upstream-ui-only",
+      "policy": "triage",
+      "why": "按功能/UI 占比判定（见 triage 字段）",
+      "verdict": "keep-ours"
+    },
+    {
+      "file": "src/renderer/modules/settings.js",
+      "oursLines": 471,
+      "theirsLines": 83,
+      "ours": {
+        "ui": 75,
+        "feat": 104
+      },
+      "theirs": {
+        "ui": 8,
+        "feat": 3
+      },
+      "triage": "mixed",
+      "policy": "triage",
+      "why": "按功能/UI 占比判定（见 triage 字段）",
+      "verdict": "mixed"
+    },
+    {
+      "file": "src/renderer/modules/ui-button.js",
+      "oursLines": 20,
+      "theirsLines": 3,
+      "ours": {
+        "ui": 0,
+        "feat": 0
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 0
+      },
+      "triage": "noise",
+      "policy": "triage",
+      "why": "按功能/UI 占比判定（见 triage 字段）",
+      "verdict": "either"
+    },
+    {
+      "file": "src/renderer/modules/ui-sidebar-tools.js",
+      "oursLines": 44,
+      "theirsLines": 2,
+      "ours": {
+        "ui": 3,
+        "feat": 4
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 0
+      },
+      "triage": "upstream-ui-only",
+      "policy": "triage",
+      "why": "按功能/UI 占比判定（见 triage 字段）",
+      "verdict": "keep-ours"
+    },
+    {
+      "file": "src/renderer/shell-navigation.css",
+      "oursLines": 175,
+      "theirsLines": 5,
+      "ours": {
+        "ui": 4,
+        "feat": 1
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 0
+      },
+      "triage": "upstream-ui-only",
+      "policy": "keep-ours",
+      "why": "纯样式资产，本次不吸收上游 UI",
+      "verdict": "keep-ours"
+    },
+    {
+      "file": "src/renderer/style.css",
+      "oursLines": 65483,
+      "theirsLines": 65261,
+      "ours": {
+        "ui": 7874,
+        "feat": 195
+      },
+      "theirs": {
+        "ui": 7938,
+        "feat": 197
+      },
+      "triage": "mixed",
+      "policy": "keep-ours",
+      "why": "纯样式资产，本次不吸收上游 UI",
+      "verdict": "keep-ours"
+    },
+    {
+      "file": "src/renderer/tokens.css",
+      "oursLines": 235,
+      "theirsLines": 26,
+      "ours": {
+        "ui": 204,
+        "feat": 12
+      },
+      "theirs": {
+        "ui": 25,
+        "feat": 0
+      },
+      "triage": "upstream-ui-only",
+      "policy": "keep-ours",
+      "why": "纯样式资产，本次不吸收上游 UI",
+      "verdict": "keep-ours"
+    },
+    {
+      "file": "src/renderer/ui-components.css",
+      "oursLines": 615,
+      "theirsLines": 279,
+      "ours": {
+        "ui": 61,
+        "feat": 22
+      },
+      "theirs": {
+        "ui": 51,
+        "feat": 0
+      },
+      "triage": "upstream-ui-only",
+      "policy": "keep-ours",
+      "why": "纯样式资产，本次不吸收上游 UI",
+      "verdict": "keep-ours"
+    },
+    {
+      "file": "src/renderer/workspace.css",
+      "oursLines": 840,
+      "theirsLines": 25,
+      "ours": {
+        "ui": 247,
+        "feat": 0
+      },
+      "theirs": {
+        "ui": 19,
+        "feat": 1
+      },
+      "triage": "mixed",
+      "policy": "keep-ours",
+      "why": "纯样式资产，本次不吸收上游 UI",
+      "verdict": "keep-ours"
+    },
+    {
+      "file": "test/main/features/api_base.test.ts",
+      "oursLines": 2,
+      "theirsLines": 37,
+      "ours": {
+        "ui": 0,
+        "feat": 0
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 0
+      },
+      "triage": "noise",
+      "policy": "merge",
+      "why": "渠道化测试，两线同一套必须都过",
+      "verdict": "merge"
+    },
+    {
+      "file": "test/main/features/group_chat/execution-config.test.ts",
+      "oursLines": 34,
+      "theirsLines": 176,
+      "ours": {
+        "ui": 0,
+        "feat": 0
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 0
+      },
+      "triage": "noise",
+      "policy": "merge",
+      "why": "渠道化测试，两线同一套必须都过",
+      "verdict": "merge"
+    },
+    {
+      "file": "test/main/features/hub_account/account-events.test.ts",
+      "oursLines": 145,
+      "theirsLines": 2,
+      "ours": {
+        "ui": 0,
+        "feat": 5
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 2
+      },
+      "triage": "absorb",
+      "policy": "merge",
+      "why": "渠道化测试，两线同一套必须都过",
+      "verdict": "merge"
+    },
+    {
+      "file": "test/main/features/hub_account/auth-flow.test.ts",
+      "oursLines": 146,
+      "theirsLines": 8,
+      "ours": {
+        "ui": 0,
+        "feat": 17
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 4
+      },
+      "triage": "absorb",
+      "policy": "merge",
+      "why": "渠道化测试，两线同一套必须都过",
+      "verdict": "merge"
+    },
+    {
+      "file": "test/main/features/hub_account/channel-defaults.test.ts",
+      "oursLines": 10,
+      "theirsLines": 31,
+      "ours": {
+        "ui": 0,
+        "feat": 0
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 0
+      },
+      "triage": "noise",
+      "policy": "merge",
+      "why": "渠道化测试，两线同一套必须都过",
+      "verdict": "merge"
+    },
+    {
+      "file": "test/main/features/hub_account/client.test.ts",
+      "oursLines": 90,
+      "theirsLines": 2,
+      "ours": {
+        "ui": 0,
+        "feat": 3
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 2
+      },
+      "triage": "absorb",
+      "policy": "merge",
+      "why": "渠道化测试，两线同一套必须都过",
+      "verdict": "merge"
+    },
+    {
+      "file": "test/renderer/conversation-composer-layout.test.ts",
+      "oursLines": 15,
+      "theirsLines": 5,
+      "ours": {
+        "ui": 0,
+        "feat": 0
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 0
+      },
+      "triage": "noise",
+      "policy": "merge",
+      "why": "渠道化测试，两线同一套必须都过",
+      "verdict": "merge"
+    },
+    {
+      "file": "test/renderer/lazy-features.test.ts",
+      "oursLines": 15,
+      "theirsLines": 10,
+      "ours": {
+        "ui": 0,
+        "feat": 0
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 0
+      },
+      "triage": "noise",
+      "policy": "merge",
+      "why": "渠道化测试，两线同一套必须都过",
+      "verdict": "merge"
+    },
+    {
+      "file": "test/renderer/new-chat-home.test.ts",
+      "oursLines": 84,
+      "theirsLines": 5,
+      "ours": {
+        "ui": 2,
+        "feat": 4
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 0
+      },
+      "triage": "upstream-ui-only",
+      "policy": "merge",
+      "why": "渠道化测试，两线同一套必须都过",
+      "verdict": "merge"
+    },
+    {
+      "file": "test/renderer/recall-cognition-flow.test.ts",
+      "oursLines": 4744,
+      "theirsLines": 39,
+      "ours": {
+        "ui": 0,
+        "feat": 176
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 4
+      },
+      "triage": "absorb",
+      "policy": "merge",
+      "why": "渠道化测试，两线同一套必须都过",
+      "verdict": "merge"
+    },
+    {
+      "file": "test/renderer/run-center-global.test.ts",
+      "oursLines": 3,
+      "theirsLines": 2,
+      "ours": {
+        "ui": 0,
+        "feat": 0
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 0
+      },
+      "triage": "noise",
+      "policy": "merge",
+      "why": "渠道化测试，两线同一套必须都过",
+      "verdict": "merge"
+    },
+    {
+      "file": "test/renderer/settings-custom-providers.test.ts",
+      "oursLines": 56,
+      "theirsLines": 40,
+      "ours": {
+        "ui": 1,
+        "feat": 4
+      },
+      "theirs": {
+        "ui": 4,
+        "feat": 2
+      },
+      "triage": "mixed",
+      "policy": "merge",
+      "why": "渠道化测试，两线同一套必须都过",
+      "verdict": "merge"
+    },
+    {
+      "file": "test/renderer/skills-cognition-layout.test.ts",
+      "oursLines": 497,
+      "theirsLines": 51,
+      "ours": {
+        "ui": 1,
+        "feat": 143
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 4
+      },
+      "triage": "absorb",
+      "policy": "merge",
+      "why": "渠道化测试，两线同一套必须都过",
+      "verdict": "merge"
+    },
+    {
+      "file": "test/renderer/ui-components.test.ts",
+      "oursLines": 233,
+      "theirsLines": 133,
+      "ours": {
+        "ui": 22,
+        "feat": 2
+      },
+      "theirs": {
+        "ui": 6,
+        "feat": 2
+      },
+      "triage": "mixed",
+      "policy": "merge",
+      "why": "渠道化测试，两线同一套必须都过",
+      "verdict": "merge"
+    },
+    {
+      "file": "test/scripts/package-dev-mac.test.ts",
+      "oursLines": 22,
+      "theirsLines": 15,
+      "ours": {
+        "ui": 0,
+        "feat": 1
+      },
+      "theirs": {
+        "ui": 0,
+        "feat": 0
+      },
+      "triage": "upstream-ui-only",
+      "policy": "merge",
+      "why": "渠道化测试，两线同一套必须都过",
+      "verdict": "merge"
+    }
+  ],
+  "ipc": {
+    "referencedCount": 175,
+    "registeredCount": 798,
+    "ipcFilesScanned": 17,
+    "missing": []
+  }
+}

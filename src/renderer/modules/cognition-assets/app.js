@@ -633,9 +633,11 @@
     // 订阅主进程认知变更广播（唯一刷新入口，2026-09-27 重写）：可见性判定
     // 由 MutationObserver 注入，后台窗口零 IPC，回前台 flush 挂起区块。
     NS.setupChangeRail(panelVisible);
-    await NS.reload();
-    NS.notify();
+    await NS.loadRoute();
   }
+
+  // Route readiness is separate from the application-wide refresh state.
+  NS.onChange(() => { if (booted && panelVisible()) void NS.loadRoute(); });
 
   function scheduleBoot() {
     const panel = document.getElementById('panel-recall');
@@ -688,14 +690,11 @@
     if (captureId && (!S.captureContext || S.captureContext.captureId !== captureId)) {
       void NS.loadCaptureContext(captureId);
     }
-    // 资产详情版本链同理按需补拉（版本组 2026-09-16）；KSTAR 摘要随详情
-    // 一起（2026-09-17 资产侧溯源）。
+    // Compact details need only content/boundaries. Editing may need snapshots;
+    // versions/usage/ranking otherwise belong to their explicit dialog entry.
     const assetId = String(S.route.assetId || '');
-    if (assetId && (!S.assetVersions || S.assetVersions.assetId !== assetId)) {
+    if (assetId && S.route.assetEdit === '1' && (!S.assetVersions || S.assetVersions.assetId !== assetId)) {
       void NS.loadAssetVersions(assetId);
-    }
-    if (assetId && (!S.assetTimeline || S.assetTimeline.assetId !== assetId || S.assetTimeline.stale)) {
-      void NS.loadAssetTimeline(assetId);
     }
     // 整理报告：进整理相关页签就补拉一次（内部有缓存判重）。沉淀设置页的
     // 大扫除 section（specs/017 整改三）也要最近报告摘要，一并补拉。
@@ -709,15 +708,6 @@
     if (['cleanup', 'settings', 'activity'].includes(String(S.route.name || ''))) {
       void NS.loadInspection();
     }
-    // 采用回执（2026-09-25 US-602）：详情「实际采用记录」区的唯一数据源。
-    if (assetId) void NS.loadAdoptionReceipts(assetId);
-    // 排序依据（specs/012 T020 / US-202 AC4）：详情「为什么这一轮排在前面」
-    // 小节的数据源（recall.catalog.ranking 只读；app 层装载，见文件底部的
-    // 排序依据/权重装载器——core 不动）。
-    if (assetId) void loadRankingWhy(assetId);
-    // 权重卡数据装载已随权重卡彻底移除删除（G1 拍板项 #3，2026-09-28）；
-    // recall.catalog.weights.get 通道后端保留，详情「排序依据」解释仍读
-    // recall.catalog.ranking（loadRankingWhy，保留）。
     // 会话标题同理（2026-09-25 US-603）：证据来源与使用记录里的 cid 要翻成
     // 会话名，五处展示同名；来源目录 100 条窗口外的会话靠这个批量口补齐。
     if (assetId) void NS.loadConversationTitles(assetId);
@@ -735,16 +725,10 @@
         void NS.loadConversationTitlesByIds(candRefs);
       }
     }
-    // KSTAR 复盘折叠区（2026-09-17 二次定调）：复盘历史随「我的认知」页
-    // 懒加载一次（折叠区默认收起，数据先备好，展开即渲染）。
-    // 模型自选标记随「我的认知」一起刷新（2026-09-18）：目录视图据此标"模型挂着"。
-    if (String(S.route.name || '') === 'overview') void NS.loadModelSelectedAssets();
-    // 经验目录（specs/016；specs/017 整改一收编为「我的认知」经验档）：进
-    // overview（任何分类档）就拉一次——pillbox 经验档的计数要真实；旧深链
-    // name:'experiences' 同样兜住。详情深链补拉 E2；详情证据里的 kse 摘要与
-    // 会话标题同时候补——chip 要显示任务目标与会话名，与资产详情同一套批量口
-    //（loaders 自带缓存/在途守卫）。
-    if (['overview', 'experiences'].includes(String(S.route.name || ''))) {
+    // Only the legacy catalog exposes model-selected attachments.
+    if (S.route.assetView === 'catalog') void NS.loadModelSelectedAssets();
+    // The normal library has no experience counter; read its directory on demand.
+    if (S.route.category === 'experiences' || experienceRouteId) {
       void NS.loadExperiences();
       if (experienceRouteId) {
         void NS.loadExperienceDetail(experienceRouteId);
@@ -814,6 +798,8 @@
     NS.rankingWhy = next;
     NS.render();
   }
+
+  NS.loadRankingWhy = loadRankingWhy;
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', scheduleBoot, { once: true });

@@ -1919,7 +1919,9 @@
   NS.showLibraryDialog = async function showLibraryDialog(kind, assetId) {
     const asset = S.assets.find(item => String(item.id) === String(assetId));
     if (!asset || !['sources', 'versions', 'records', 'merge'].includes(kind)) return;
-    if (kind === 'versions' || kind === 'records') await Promise.all([NS.loadAssetVersions(asset.id), NS.loadAssetTimeline(asset.id)]);
+    if (kind === 'versions') await NS.loadAssetVersions(asset.id);
+    if (kind === 'records') await Promise.all([NS.loadAssetVersions(asset.id), NS.loadAssetTimeline(asset.id),
+      NS.loadAdoptionReceipts(asset.id), NS.loadRankingWhy?.(asset.id), NS.loadConversationTitles(asset.id)]);
     if (kind === 'sources') await NS.loadAssetEvidence?.(asset.id);
     assetDetail(asset, S.route, { compact: true });
     const titles = {
@@ -3235,7 +3237,7 @@
       return `<div class="ca-tab${active ? ' is-on' : ''}${tab.disabled ? ' is-disabled' : ''}" data-act="tab" data-id="${tab.id}"${extra} ${tab.disabled ? `role="button" aria-disabled="true" tabindex="-1" title="${esc(T('cognition.tree_coming_soon', '敬请期待'))}"` : roleBtn()}>${content}</div>`;
     }).join('');
     let body = '';
-    if (S.loading && !S.loaded) {
+    if (NS.isRouteLoading()) {
       // 首载骨架：结构化的三行占位（shimmer 由 CSS 驱动），比纯文字更快有页面感。
       body = `<div class="ca-loading"><div class="ca-skel-row"></div><div class="ca-skel-row"></div><div class="ca-skel-row"></div></div>`;
     } else if (route.name === 'ontology') body = viewOntology(route);

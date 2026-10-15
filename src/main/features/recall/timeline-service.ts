@@ -175,16 +175,12 @@ async function buildTransferProofIndex(userId: string, proofs: TransferProofReco
   return ids;
 }
 
-export async function listAbilityAssetTimeline(userId: string, assetId: string): Promise<RecallAssetTimelineItem[]> {
-  const asset = await readAbilityAsset(userId, assetId);
-  const items: RecallAssetTimelineItem[] = [];
-
-  // taskRunId → 会话 id：旧投影没有 conversationId 字段，用 KSTAR episode 的
-  // 会话归属回溯（sessionId 带 gconv- 前缀，去掉后与来源清单里的会话 id 对齐）。
-  // 注意：usage/投影事件里的 taskRunId 是**回合 run id**，落在 episode 的
-  // reuseTurnIds 数组里（episode.taskRunId 是 episode 自身 id，两者不同）——
-  // 两处都建索引，实测 bc8f09cc4d56 只在 reuseTurnIds 命中。
-  // 动态 import：recall 与 kstar 相互沉淀，静态 import 成环。
+/** Shared only by this timeline request. Writes and other users never share its read results. */
+function once<T>(read: () => Promise<T>): () => Promise<T> {
+  let result: Promise<T> | undefined;
+  return () => result ??= Promise.resolve().then(read);
+}
+async function readEpisodeConversations(userId: string): Promise<Map<string, string>> {
   const episodeConversationByRun = new Map<string, string>();
   try {
     const { listKstarEpisodes } = await import('../kstar/episode-store');
@@ -197,6 +193,39 @@ export async function listAbilityAssetTimeline(userId: string, assetId: string):
       }
     }
   } catch { /* kstar 不可用不阻断时间线 */ }
+  return episodeConversationByRun;
+}
+function createTimelineReads(userId: string) {
+  const transfers = once(() => readTimelineSet('transfer-proofs', () => listTransferProofs(userId)));
+  const projections = new Map<string, Promise<Awaited<ReturnType<typeof readContextProjection>>>>();
+  return {
+    episodes: once(() => readEpisodeConversations(userId)),
+    projections: once(() => listAllContextProjections(userId)),
+    injections: once(async () => {
+      try { return await (await import('./injection-receipt')).listInjectionReceipts(userId); }
+      catch { return []; } // Same optional audit source as the single-asset read.
+    }),
+    transfers,
+    transferIndex: once(async () => buildTransferProofIndex(userId, await transfers())),
+    transferById: once(async () => new Map((await transfers()).map(proof => [proof.id, proof]))),
+    effectiveness: once(() => readTimelineSet('effectiveness-proofs', () => listEffectivenessProofs(userId))),
+    usage: once(() => readTimelineSet('usage-records', () => listRecallUsage(userId))),
+    projection(id: string) {
+      let read = projections.get(id);
+      if (!read) { read = readContextProjection(userId, id); projections.set(id, read); }
+      return read;
+    },
+  };
+}
+
+export async function listAbilityAssetTimeline(userId: string, assetId: string): Promise<RecallAssetTimelineItem[]> {
+  return buildAssetTimeline(userId, await readAbilityAsset(userId, assetId), createTimelineReads(userId));
+}
+async function buildAssetTimeline(userId: string, asset: Awaited<ReturnType<typeof readAbilityAsset>>,
+  reads: ReturnType<typeof createTimelineReads>): Promise<RecallAssetTimelineItem[]> {
+  const assetId = asset.id;
+  const items: RecallAssetTimelineItem[] = [];
+  const episodeConversationByRun = await reads.episodes();
 
   for (const audit of await listAbilityAssetAudit(userId, assetId)) {
     const kind = auditTimelineKind(audit.action);
@@ -224,7 +253,7 @@ export async function listAbilityAssetTimeline(userId: string, assetId: string):
   }
 
   // 资产事实链不能只看最近 20 条投影：较早但仍有效的固定版本仍可能被后续任务读取。
-  for (const projection of await listAllContextProjections(userId)) {
+  for (const projection of await reads.projections()) {
     // 撤销的投影同样入时间线（2026-09-18 模型自选线；2026-09-25 补用户 @ 钉住线）：
     // 用户撤销后原本"这件事消失得无影无踪"，只剩注入回执——现在给一条"已撤销"
     // 事件，撤销动作可追溯（US-602 AC3）。
@@ -277,8 +306,7 @@ export async function listAbilityAssetTimeline(userId: string, assetId: string):
   // 漏取审计行（2026-09-19）：catalog_hint 回执（目录标★相关但该回合未被
   // 使用）→「相关而未被用」时间线行。只列该资产的，读回执流全量后过滤。
   try {
-    const { listInjectionReceipts } = await import('./injection-receipt');
-    for (const receipt of await listInjectionReceipts(userId)) {
+    for (const receipt of await reads.injections()) {
       if (receipt.channel !== 'catalog_hint' || receipt.status !== 'omitted') continue;
       if (String(receipt.assetId) !== asset.id) continue;
       pushSorted(items, {
@@ -306,7 +334,7 @@ export async function listAbilityAssetTimeline(userId: string, assetId: string):
     const cached = projectionConversations.get(projectionId);
     if (cached !== undefined) return cached || undefined;
     try {
-      const projection = await readContextProjection(userId, projectionId);
+      const projection = await reads.projection(projectionId);
       const conversationId = projection.conversationId || '';
       projectionConversations.set(projectionId, conversationId);
       return conversationId || undefined;
@@ -319,9 +347,9 @@ export async function listAbilityAssetTimeline(userId: string, assetId: string):
   // （下方 transfer 段复用同一份，避免重复全量扫描）。三处集合读取走
   // readTimelineSet 降级：单条坏证明/坏 usage 行只少对应事件行，不再拖垮
   // 全部资产时间线（与 kstar episodes / 回执段同款防护，此前唯独这三处裸读）。
-  const transferProofs = await readTimelineSet('transfer-proofs', () => listTransferProofs(userId));
-  const transferProofByProjection = await buildTransferProofIndex(userId, transferProofs);
-  for (const usage of await readTimelineSet('usage-records', () => listRecallUsage(userId, assetId))) {
+  const transferProofs = await reads.transfers();
+  const transferProofByProjection = await reads.transferIndex();
+  for (const usage of (await reads.usage()).filter(row => row.assetId === assetId)) {
     // 会话 id：新投影的 conversationId 优先；旧数据用 episode 的
     // taskRunId→sessionId 回溯——用户要求老记录也能看出"在哪个对话里被用"。
     const usageConversationId = (await conversationOfProjection(usage.projectionId))
@@ -367,7 +395,7 @@ export async function listAbilityAssetTimeline(userId: string, assetId: string):
     // 一条坏记录不该把整个时间线拖垮——降级为不带投影上下文的事件，而不是抛错。
     let projection: Awaited<ReturnType<typeof readContextProjection>> | undefined;
     try {
-      projection = await readContextProjection(userId, proof.projectionId);
+      projection = await reads.projection(proof.projectionId);
     } catch {
       projection = undefined;
     }
@@ -402,8 +430,8 @@ export async function listAbilityAssetTimeline(userId: string, assetId: string):
     }
   }
 
-  const effectivenessProofs = await readTimelineSet('effectiveness-proofs', () => listEffectivenessProofs(userId));
-  const transferById = new Map(transferProofs.map((proof) => [proof.id, proof]));
+  const effectivenessProofs = await reads.effectiveness();
+  const transferById = await reads.transferById();
   for (const proof of effectivenessProofs) {
     const transfer = transferById.get(proof.transferProofId);
     if (!transfer || !transfer.assetVersions.some((entry) => entry.assetId === asset.id)) continue;
@@ -437,7 +465,8 @@ export async function listAbilityAssetTimeline(userId: string, assetId: string):
 export async function listRecallTimeline(userId: string, limit = 500): Promise<RecallAssetTimelineItem[]> {
   const boundedLimit = Math.max(1, Math.min(Math.floor(Number(limit) || 500), 500));
   const assets = await listAbilityAssets(userId);
-  const timelines = await Promise.all(assets.map((asset) => listAbilityAssetTimeline(userId, asset.id)));
+  const reads = createTimelineReads(userId);
+  const timelines = await Promise.all(assets.map((asset) => buildAssetTimeline(userId, asset, reads)));
   return timelines.flat()
     .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt) || a.kind.localeCompare(b.kind) || a.id.localeCompare(b.id))
     .slice(0, boundedLimit);

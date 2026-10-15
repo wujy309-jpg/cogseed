@@ -357,6 +357,14 @@ describe('P3394 external-agent gateway host', () => {
       const listed = listExternalGateways().filter((g) => g.cli === 'hermes');
       expect(listed.length).toBe(1);
       expect(listed[0].alias).toBe('测试 Hermes');
+      // 托管网关子进程必须保留 ELECTRON_RUN_AS_NODE（Node 形态）。曾经的缺陷：
+      // buildCliSpawnEnv 收到脚本路径而非 process.execPath → 变量按「用户 CLI」
+      // 剥离 → 子进程以 GUI 形态启动，每个网关在 Dock 多一个默认 Electron 图标。
+      // ps -eww 是 POSIX 下唯一能看子进程环境的路径；Windows 无等价断言。
+      if (process.platform !== 'win32') {
+        const envText = spawnSync('ps', ['eww', '-p', String(started.value.pid)], { encoding: 'utf8' }).stdout || '';
+        expect(envText).toContain('ELECTRON_RUN_AS_NODE=1');
+      }
       await stopExternalGateway('hermes');
       expect(listExternalGateways().filter((g) => g.cli === 'hermes')).toHaveLength(0);
     } finally {
