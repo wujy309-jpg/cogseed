@@ -72,10 +72,12 @@ export interface ChatAttachmentMetadata {
  * `target: 'candidate'` + `outcome: 'taught-pending-review'` 装进同一回执链，
  * 渲染层不再有独立教学卡。 */
 export interface CognitionSaveReceipt {
-  target: 'asset' | 'candidate';
+  target: 'asset' | 'candidate' | 'ontology';
+    moduleId?: string;
+    version?: number;
   id: string;
   summary: string;
-  outcome: 'created' | 'already-confirmed' | 'pending-review' | 'merged' | 'fused-update-pending' | 'taught-pending-review';
+  outcome: 'created' | 'already-confirmed' | 'pending-review' | 'merged' | 'fused-update-pending' | 'taught-pending-review' | 'ontology-saved' | 'ontology-pending';
 }
 
 export interface ChatResolvedRuntime {
@@ -227,6 +229,8 @@ export interface ChatOptions {
    * this chain on 2026-09-28 (四病整改 7.0 修7): the runner emits
    * candidate+taught-pending-review here instead of a separate callback. */
   onCognitionSaveReceipt?: (receipt: CognitionSaveReceipt) => void | Promise<void>;
+  onAssetUsageClaim?: (claim: import('../features/recall/asset-usage-claim').AssetUsageClaim) => void | Promise<void>;
+  suppliedAbilityAssets?: Array<{ assetId: string; assetVersion: string }>;
   /** Host observation of the actual runtime candidate and final tool catalog. */
   onResolvedRuntime?: (runtime: ChatResolvedRuntime) => void;
   /** Project id of the conversation, when it belongs to one. Threaded
@@ -308,6 +312,15 @@ export interface ChatOptions {
    *  preserving). Set `'off'` to suppress thinking even on a reasoner;
    *  set `'low'` / `'high'` to override. */
   thinkingLevel?: 'off' | 'low' | 'high';
+  /**
+   * Option C preflight: the thinking tiers the effective model declares (host
+   * vocabulary `off` | `low` | `high`). When provided and `thinkingLevel` is an
+   * explicit tier outside the list, the call is refused **before** the provider
+   * sees it — the throw lands while the run has not started, so it is classified
+   * `model_preflight` rather than an opaque provider 400. Omit the field when no
+   * declaration could be resolved: absent means "not validated", never "no tiers".
+   */
+  supportedReasoningLevels?: readonly string[];
   /** Per-task model override from the unified execution entry (user picked a
    *  specific provider+model for this conversation, or temporarily switched
    *  an in-process agent's model). Resolved against the user's configured

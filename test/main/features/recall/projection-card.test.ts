@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -33,7 +34,7 @@ async function modules() {
 async function createAsset(input: { userId?: string; judgment: string; summary: string; scope?: string; sourceId: string }) {
   const { candidates } = await modules();
   const userId = input.userId || 'user-a';
-  const candidate = await candidates.saveRecallCandidate(userId, {
+  const candidate = await createNightlyCandidateFixture(userId, {
       spaceId: 'workspace-a',
     judgment: input.judgment,
     summary: input.summary,
@@ -80,7 +81,8 @@ describe('Recall projection chat card', () => {
       workspaceId: 'workspace-a',
       purpose: 'review',
       status: 'preview',
-      summary: { includedCount: 1, omittedCount: 1, sourceRefCount: 1 },
+      // Original execution reference plus the explicit synthetic nightly session and user message.
+      summary: { includedCount: 1, omittedCount: 1, sourceRefCount: 3 },
       includedAssetIds: [included.asset.id],
       availableActions: ['confirm', 'add_asset', 'modify_scope', 'defer', 'reject'],
     });

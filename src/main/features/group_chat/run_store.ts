@@ -141,6 +141,15 @@ export interface RunRecord {
   corrections: number;
   actors: RunActorRecord[];
   status: 'running' | 'completed' | 'failed' | 'blocked' | 'stopped';
+  interruption_reason?: 'application_interrupted';
+  /**
+   * Set once the "all actors finished → ask the commander to report" round has
+   * been enqueued. Required by the R-11 decision (2026-10-13): the commander must
+   * not hand in a final answer while its dispatched actors are still running, and
+   * the reporting round must happen **once per dispatch batch** so a
+   * report→dispatch→report cycle cannot flap.
+   */
+  actor_report_enqueued?: boolean;
   summary?: RunSummary;
   summary_publication?: RunSummaryPublication;
 }
@@ -426,6 +435,7 @@ function normalizeRecord(raw: unknown, expected?: { cid: string; runId: string }
     if (!actor || actors.some((item) => item.agent_id === actor.agent_id)) return null;
     actors.push(actor);
   }
+  if (raw.actor_report_enqueued !== undefined && typeof raw.actor_report_enqueued !== 'boolean') return null;
   let summary: RunSummary | undefined;
   if (raw.summary !== undefined) {
     const decoded = normalizeSummary(raw.summary);
@@ -467,6 +477,8 @@ function normalizeRecord(raw: unknown, expected?: { cid: string; runId: string }
     corrections: Number(raw.corrections),
     actors,
     status: raw.status as RunRecord['status'],
+    ...(raw.interruption_reason === 'application_interrupted' ? { interruption_reason: 'application_interrupted' as const } : {}),
+    ...(raw.actor_report_enqueued === true ? { actor_report_enqueued: true } : {}),
     ...(summary ? { summary } : {}),
     ...(summaryPublication ? { summary_publication: summaryPublication } : {}),
   };
@@ -593,7 +605,52 @@ export async function createRun(input: CreateRunInput): Promise<RunRecord | null
     external: externalAgentIds.length,
     sequential: record.input_snapshot.requires_sequential,
   });
+  await recoverAbandonedCommanderRuns(input.uid, input.cid, Date.now() - process.uptime() * 1000, runId, input.projectHint);
   return record;
+}
+
+/**
+ * Whether the commander still owes a reporting round for this run (R-11).
+ *
+ * Rule chosen by the requirement owner on 2026-10-13: the commander waits for the
+ * actors **it dispatched**, and reports once they are finished — the mechanism
+ * this agent uses for its own sub-agents (dispatch returns a handle; completion
+ * wakes the parent; the parent reports). Therefore:
+ *
+ *   - any actor still `pending`  → not yet: keep waiting (the run is not owed a
+ *     report while a worker can still deliver);
+ *   - all actors terminal, but nothing contributed → nothing to report;
+ *   - all actors terminal and at least one contributed → report exactly once
+ *     (`actor_report_enqueued` is the anti-flap latch).
+ *
+ * Pure: takes the record, returns a decision. No clocks, so the caller stays free
+ * to apply the existing idle/turn budgets rather than a wall-clock timeout.
+ */
+export function shouldEnqueueActorReport(record: RunRecord | null | undefined): boolean {
+  if (!record || record.actor_report_enqueued) return false;
+  const actors = Array.isArray(record.actors) ? record.actors : [];
+  if (actors.length === 0) return false;
+  if (actors.some((actor) => actor.terminal === 'pending')) return false;
+  // Any produced result counts, including a blocked or failed actor: the report
+  // then carries the *degradation* ("X needs your input" / "X failed: reason"),
+  // which is exactly what the requirement owner asked for — degradation must
+  // exist, but the happy path (every actor `done`) must not need it. Requiring
+  // `terminal === 'done'` here silently dropped the blocked case: on 2026-10-13
+  // the worker ended `blocked/waiting_user` after a successful retry, so no
+  // report round was ever enqueued and the commander stayed silent.
+  return actors.some((actor) => (
+    (actor.produced?.messages ?? 0) > 0 || (actor.produced?.artifacts?.length ?? 0) > 0
+  ));
+}
+
+/** Latch the reporting round so one dispatch batch reports once (R-11). */
+export async function markActorReportEnqueued(
+  uid: string,
+  cid: string,
+  runId: string,
+  projectHint?: string | null,
+): Promise<RunRecord | null> {
+  return updateRun(uid, cid, runId, (record) => ({ ...record, actor_report_enqueued: true }), projectHint);
 }
 
 export async function readRun(
@@ -735,7 +792,36 @@ export async function recordRunActorTerminal(
 }
 
 /** 按真实终态收口 run，生成可持久化的贡献/缺失清单。 */
+/**
+ * Finalize a run and make its group-chat task follow the run's derived terminal,
+ * so a finished run never leaves a task reported as executing. Kept as a thin
+ * wrapper around `finalizeRunRecord` because run finalization has several
+ * callers and the convergence must apply to every one of them.
+ */
 export async function finalizeRun(
+  uid: string,
+  cid: string,
+  runId: string,
+  projectHint?: string | null,
+): Promise<RunRecord | null> {
+  const finalized = await finalizeRunRecord(uid, cid, runId, projectHint);
+  if (finalized) {
+    const waitingForUser = finalized.actors.some((actor) => actor.reason === 'waiting_user');
+    const outcome = finalized.status === 'completed' ? 'completed' : 'failed';
+    // Dynamic import: group_chat must not gain a static dependency on the
+    // cogseed backend at module load (the backend already imports this layer).
+    const { convergeCogSeedTaskForRun } = await import('../cogseed_backend/task-store');
+    await convergeCogSeedTaskForRun(uid, {
+      runId: (finalized as { run_id?: string }).run_id || runId,
+      outcome,
+      waitingForUser,
+      errorCode: `run_${finalized.status}`,
+    }).catch(() => null);
+  }
+  return finalized;
+}
+
+async function finalizeRunRecord(
   uid: string,
   cid: string,
   runId: string,
@@ -959,4 +1045,25 @@ export async function prepareRunRetry(
     return record;
   }, projectHint);
   return run && retryAgentIds.length ? { run, retry_agent_ids: retryAgentIds } : null;
+}
+
+/** Close only pre-process ordinary commander runs; live/member runs and completed contributions are untouched. */
+export async function recoverAbandonedCommanderRuns(uid: string, cid: string, cutoffMs: number, keepRunId?: string, projectHint?: string | null): Promise<number> {
+  if (!Number.isFinite(cutoffMs)) return 0;
+  let recovered = 0;
+  for (const runId of await listRunIds(uid, cid, projectHint)) {
+    if (runId === keepRunId) continue;
+    const record = await readRun(uid, cid, runId, projectHint);
+    if (!record || record.status !== 'running' || record.actors.length || Date.parse(record.updated_at) >= cutoffMs) continue;
+    let changed = false;
+    const settled = await updateRun(uid, cid, runId, current => {
+      // Recheck under the record lock: a resumed or completed run always wins.
+      if (current.status === 'running' && !current.actors.length && Date.parse(current.updated_at) < cutoffMs) {
+        current.status = 'stopped'; current.interruption_reason = 'application_interrupted'; changed = true;
+      }
+      return current;
+    }, projectHint);
+    if (changed && settled?.status === 'stopped') recovered++;
+  }
+  return recovered;
 }

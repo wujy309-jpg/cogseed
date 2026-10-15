@@ -16,6 +16,8 @@ const loggerMocks = vi.hoisted(() => ({
 }));
 const fetchImmutableSourceMock = vi.hoisted(() => vi.fn());
 const installAgentMock = vi.hoisted(() => vi.fn());
+const recordAppIncompatibleSkipMock = vi.hoisted(() => vi.fn());
+const clearAppIncompatibleSkipMock = vi.hoisted(() => vi.fn());
 
 /** 合成一条 A-01 目录行（含 artifact 身份）。 */
 function catalogRow(id: string, over: Record<string, unknown> = {}): Record<string, unknown> {
@@ -46,6 +48,10 @@ vi.mock('../../../src/main/features/marketplace', () => ({
   postJson: postJsonMock,
   installMarketplaceAgent: installAgentMock,
   extractBundleSafely: extractBundleSafelyMock,
+  // C5/N-06 版本门的两个回调：兼容路径会撤销旧标记，所以两个都要在 mock 里存在，
+  // 否则 reconcile 走兼容分支时调用 undefined。
+  recordAppIncompatibleSkip: recordAppIncompatibleSkipMock,
+  clearAppIncompatibleSkip: clearAppIncompatibleSkipMock,
   // 临时区 / trash 的命名是纯字符串函数，用真实实现——mock 掉会让原子提升与
   // 崩溃恢复的命名契约在本用例里失真。
   quarantineStagingName: (hex: string) => `.staging-${hex}`,
@@ -91,6 +97,8 @@ beforeEach(() => {
   postJsonMock.mockReset();
   installAgentMock.mockReset();
   extractBundleSafelyMock.mockReset();
+  recordAppIncompatibleSkipMock.mockReset();
+  clearAppIncompatibleSkipMock.mockReset();
   loggerMocks.debug.mockClear();
   loggerMocks.info.mockClear();
   loggerMocks.warn.mockClear();
@@ -1152,5 +1160,50 @@ describe('marketplace content update monotonicity', () => {
       kind: 'skill', reason: 'unparsable_version',
     }));
     expect(JSON.stringify(loggerMocks.info.mock.calls)).not.toContain(tmpDir);
+  });
+});
+
+describe('marketplace app-compatibility gate (C5/N-06)', () => {
+  function catalog(rows: Array<Record<string, unknown>>, kind: 'agents' | 'skills') {
+    postJsonMock.mockImplementation(async (p: string) => {
+      if (p === `/marketplace/${kind}/list`) return { list: rows, total: rows.length };
+      if (p === `/marketplace/${kind === 'agents' ? 'skills' : 'agents'}/list`) return { list: [], total: 0 };
+      throw new Error(`unexpected path ${p}`);
+    });
+  }
+
+  it('records the content whose min_app_version this client cannot meet', async () => {
+    const installs = await import('../../../src/main/features/marketplace_installs');
+    await installs.addAgentInstall('u1', {
+      id: 'gate-agent', version: '1.0.0', published_at: 100, updated_at: 100,
+      agent_json_url: 'https://example.test/agent.json', create_uid: '0', status: 'approved',
+    });
+    catalog([{ id: 'gate-agent', version: '1.0.0', published_at: 100, updated_at: 100, status: 'approved', min_app_version: '9.0.0' }], 'agents');
+
+    const reconcile = await import('../../../src/main/features/marketplace_reconcile');
+    await reconcile.checkServerUpdatesForInstalls('u1');
+
+    expect(recordAppIncompatibleSkipMock).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'gate-agent' }), 'agent', '9.0.0',
+    );
+    expect(clearAppIncompatibleSkipMock).not.toHaveBeenCalled();
+  });
+
+  it('⚠️ 内容端下调 min_app_version 后旧标记被撤销（不再永远显示「需更新客户端」）', async () => {
+    const installs = await import('../../../src/main/features/marketplace_installs');
+    await installs.addAgentInstall('u1', {
+      id: 'gate-agent', version: '1.0.0', published_at: 100, updated_at: 100,
+      agent_json_url: 'https://example.test/agent.json', create_uid: '0', status: 'approved',
+    });
+    // 客户端 1.5.1（见 beforeEach）满足 1.0.0 → 走兼容分支。
+    catalog([{ id: 'gate-agent', version: '1.0.0', published_at: 100, updated_at: 100, status: 'approved', min_app_version: '1.0.0' }], 'agents');
+
+    const reconcile = await import('../../../src/main/features/marketplace_reconcile');
+    await reconcile.checkServerUpdatesForInstalls('u1');
+
+    expect(clearAppIncompatibleSkipMock).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'gate-agent' }), 'agent',
+    );
+    expect(recordAppIncompatibleSkipMock).not.toHaveBeenCalled();
   });
 });

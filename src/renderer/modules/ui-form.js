@@ -4,7 +4,7 @@
 (function initUiForm(root) {
   'use strict';
 
-  const INPUT_TYPES = new Set(['text', 'search', 'email', 'url', 'password', 'number', 'date', 'time']);
+  const INPUT_TYPES = new Set(['text', 'hidden', 'search', 'email', 'url', 'password', 'number', 'date', 'time']);
 
   function escapeText(value) {
     return String(value == null ? '' : value)
@@ -97,6 +97,16 @@
     const value = options || {};
     const id = String(value.id || '').trim();
     if (!id) throw new TypeError('uiSelect requires an id');
+    // 文档内的直接编辑保留原生 select 的键盘与 change 语义。
+    if (value.native === true) {
+      const label = String(value.ariaLabel || '').trim();
+      if (!label && !value.labelId) throw new TypeError('native uiSelect requires an accessible label');
+      const multiple = value.multiple === true;
+      const selected = new Set((multiple ? Array.isArray(value.value) ? value.value : [] : [value.value == null ? '' : value.value]).map(String));
+      const size = Number.isInteger(value.size) && value.size > 0 ? ` size="${Math.min(100, value.size)}"` : '';
+      return `<select id="${escapeText(id)}" class="${escapeText(['ui-native-select', value.className || ''].filter(Boolean).join(' '))}"${multiple ? ' multiple' : ''}${size}${label ? ` aria-label="${escapeText(label)}"` : ` aria-labelledby="${escapeText(value.labelId)}"`}${controlStateAttrs(value)}${renderAttrs(value.attrs)}>${(value.options || []).map(option => `<option value="${escapeText(option.value)}"${selected.has(String(option.value)) ? ' selected' : ''}>${escapeText(option.label)}</option>`).join('')}</select>`;
+    }
+
     const config = {
       value: String(value.value == null ? '' : value.value),
       placeholder: value.placeholder == null ? null : String(value.placeholder),

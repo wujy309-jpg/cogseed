@@ -1,12 +1,6 @@
-// Exec-config chip — provider → model → thinking-strength cascade (2026-09-14).
-//
-// 交互改造验收：卡片本身仍显示当前调用的模型名；展开后一级只列 provider；
-// 悬停 provider 弹二级（该 provider 配置的模型）；悬停模型弹三级（该模型可
-// 配置的思考强度）；点档位写入任务级 override 并整层收起。DOM 级用例（无
-// jsdom 依赖，与 settings-custom-providers.test.ts 同款手写 DOM 假体）。
-//
-// 覆盖的失败路径：飞出层抢焦点导致外部点击误关、异步模型清单回来时飞出层
-// 已换人/已收起、Escape 一次全关而不是逐级收。
+// Exec-config chip — provider → model menu plus direct task effort selection.
+// Uses the production classic script with a DOM double, including override
+// persistence and reopen paths. Real Electron verification is separate.
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -57,6 +51,8 @@ class FakeElement {
   title = '';
   textContent = '';
   type = '';
+  focusCalls = 0;
+  focus() { this.focusCalls += 1; }
   style: Record<string, string> = {};
   parentElement: FakeElement | null = null;
   readonly children: FakeElement[] = [];
@@ -216,7 +212,8 @@ class FakeElement {
   }
 }
 
-function buildHarness(options: { override?: Record<string, unknown> } = {}) {
+function buildHarness(options: { override?: Record<string, unknown>; globalEffort?: string; recipient?: Record<string, unknown> } = {}) {
+  let override = options.override || null;
   const registry = new Map<string, FakeElement>();
   const body = new FakeElement(registry, '', 'body');
   body.setAttribute('id', '');
@@ -227,10 +224,11 @@ function buildHarness(options: { override?: Record<string, unknown> } = {}) {
   ];
   const modelsByProvider: Record<string, Array<Record<string, unknown>>> = {
     'cp:cp-1': [
-      { id: 'deepseek/deepseek-v4.1-flash', name: 'deepseek/deepseek-v4.1-flash', reasoning: true },
+      // Option C：菜单只暴露 auth.listModels 标注的 reasoningLevels。
+      { id: 'deepseek/deepseek-v4.1-flash', name: 'deepseek/deepseek-v4.1-flash', reasoning: true, reasoningLevels: ['off', 'low', 'high'] },
       { id: 'deepseek-v4.1-lite', name: 'deepseek-v4.1-lite', reasoning: false },
     ],
-    anthropic: [{ id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', reasoning: true }],
+    anthropic: [{ id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', reasoning: true, reasoningLevels: ['off', 'low', 'high'] }],
   };
   const overrides: Array<Record<string, unknown> | null> = [];
   const invoke = vi.fn(async (channel: string, payload?: any) => {
@@ -245,7 +243,7 @@ function buildHarness(options: { override?: Record<string, unknown> } = {}) {
         }],
       };
     }
-    if (channel === 'prefs.getThinkingLevel') return { ok: true, level: 'auto' };
+    if (channel === 'prefs.getThinkingLevel') return { ok: true, level: options.globalEffort || 'auto' };
     return { ok: true };
   });
 
@@ -294,9 +292,9 @@ function buildHarness(options: { override?: Record<string, unknown> } = {}) {
     clearTimeout,
     setInterval,
     clearInterval,
-    getChatRecipient: () => ({ kind: 'commander' }),
-    getExecOverride: () => options.override || null,
-    setExecOverride: (target: string, value: Record<string, unknown> | null) => { overrides.push(value); },
+    getChatRecipient: () => options.recipient || ({ kind: 'commander' }),
+    getExecOverride: () => override,
+    setExecOverride: (target: string, value: Record<string, unknown> | null) => { override = value; overrides.push(value); },
   };
   vm.createContext(context);
   vm.runInContext(readFileSync(resolve(root, 'src/renderer/modules/model-chip.js'), 'utf8'), context, { filename: 'model-chip.js' });
@@ -310,11 +308,13 @@ async function openMenu(h: ReturnType<typeof buildHarness>) {
   h.context.document.body.appendChild(anchor);
   h.context.__anchor = anchor;
   vm.runInContext('_modelChipEntries = __entries;', Object.assign(h.context, { __entries: h.entries }));
+  await h.context.refreshModelChipEffort();
+  await h.context._prefetchReasoningForEntries();
   h.context._toggleExecConfigMenu(anchor);
   return anchor;
 }
 
-describe('exec-config chip — provider → model → thinking-strength cascade', () => {
+describe('exec-config chip — provider → model + direct thinking strength', () => {
   it('keeps the card itself showing the invoked model name', async () => {
     const h = buildHarness();
     const anchor = await openMenu(h);
@@ -338,55 +338,83 @@ describe('exec-config chip — provider → model → thinking-strength cascade'
     expect(menu.innerHTML).not.toContain('model-chip-menu-segmented');
   });
 
-  it('opens the provider model list on hover, and the model thinking strengths on hover', async () => {
+  it.each([1440, 760])('at width %s opens only model choices; thinking strength stays in the main menu', async (width) => {
     const h = buildHarness();
+    h.windowObj.innerWidth = width;
     await openMenu(h);
     const menu = h.registry.get('model-chip-menu')!;
-    const providerRow = menu.querySelectorAll('.model-chip-menu-item--provider')[0];
-    await providerRow.hover();
-    await afterOpen();
-
-    const models = h.registry.get('model-chip-flyout-models');
-    expect(models).toBeTruthy();
-    // 飞出层贴在触发行的右侧（460 = 行的 right）。
-    expect(Number(String(models!.style.left).replace('px', ''))).toBeGreaterThanOrEqual(460);
-    const modelRows = models!.querySelectorAll('.model-chip-menu-item--provider');
-    expect(modelRows.map((row) => row.querySelector('.model-chip-menu-name')!.textContent))
-      .toEqual(['deepseek/deepseek-v4.1-flash', 'deepseek-v4.1-lite']);
-    // 模型行带「已配置档位」标注（与模型配置页同源）。
-    expect(models!.innerHTML).toContain('exec_config.model_levels_configured');
-
-    await modelRows[0].hover();
-    await afterOpen();
-    const levels = h.registry.get('model-chip-flyout-levels');
-    expect(levels).toBeTruthy();
-    const levelRows = levels!.querySelectorAll('.model-chip-menu-item');
-    expect(levelRows.map((row) => row.querySelector('.model-chip-menu-name')!.textContent))
-      .toEqual(['model_effort.auto', 'model_effort.off', 'model_effort.low', 'model_effort.high']);
-    // 不支持推理的模型只有自动/关闭可选（低/高置灰，无点击行为）。
-    await modelRows[1].hover();
-    await afterOpen();
-    const liteLevels = h.registry.get('model-chip-flyout-levels')!;
-    expect(liteLevels.querySelectorAll('.model-chip-menu-item.is-disabled')).toHaveLength(2);
-  });
-
-  it('writes the task override and collapses every level when a strength is picked', async () => {
-    const h = buildHarness();
-    await openMenu(h);
-    const menu = h.registry.get('model-chip-menu')!;
+    expect(menu.querySelectorAll('.model-chip-menu-item').filter((row) => row.dataset.memberEffort)
+      .map((row) => row.dataset.memberEffort)).toEqual(['auto', 'off', 'low', 'high']);
     await menu.querySelectorAll('.model-chip-menu-item--provider')[0].hover();
     await afterOpen();
-    const modelRows = h.registry.get('model-chip-flyout-models')!.querySelectorAll('.model-chip-menu-item--provider');
+    const models = h.registry.get('model-chip-flyout-models')!;
+    const modelRows = models.querySelectorAll('.model-chip-menu-item--provider');
+    expect(modelRows.map((row) => row.dataset.model)).toEqual(['deepseek/deepseek-v4.1-flash', 'deepseek-v4.1-lite']);
+    expect(models.innerHTML).toContain('exec_config.model_levels_configured');
     await modelRows[0].hover();
     await afterOpen();
+    expect(h.registry.get('model-chip-flyout-levels')).toBeUndefined();
+  });
 
-    const high = h.registry.get('model-chip-flyout-levels')!.querySelectorAll('.model-chip-menu-item')[3];
-    await high.click();
-    expect(h.overrides).toEqual([{ effort: 'high' }]);
-    // 选完即整层收起：菜单与两级飞出层都不留悬浮残余。
+  it.each(['commander', 'model'])('distinguishes auto selection from low default for %s and keeps model selection when clearing effort', async (kind) => {
+    const h = buildHarness({ globalEffort: 'low', override: { provider: 'cp:cp-1', model: 'deepseek/deepseek-v4.1-flash' },
+      recipient: kind === 'model' ? { kind, provider: 'cp:cp-1', model: 'deepseek/deepseek-v4.1-flash' } : { kind } });
+    const anchor = await openMenu(h);
+    const effort = h.context.document.createElement('span');
+    effort.className = 'exec-config-effort';
+    anchor.appendChild(effort);
+    const selected = () => h.registry.get('model-chip-menu')!.querySelectorAll('.model-chip-menu-item')
+      .filter((row) => row.dataset.memberEffort && row.classList.contains('is-default')).map((row) => row.dataset.memberEffort);
+    expect(h.context._effectiveExecConfig('conversation').effort).toBe('low');
+    h.context._modelChipRenderChip(anchor);
+    expect(effort.textContent).toBe('model_effort.auto');
+    expect(selected()).toEqual(['auto']);
+    expect(h.registry.get('model-chip-menu')!.innerHTML).toContain('model_effort.auto_follows_default');
+    expect(h.registry.get('model-chip-menu')!.innerHTML).toContain('model_effort.default_effective');
+    const pick = async (level: string) => {
+      await h.registry.get('model-chip-menu')!.querySelectorAll('.model-chip-menu-item').find((row) => row.dataset.memberEffort === level)!.click();
+      h.context._modelChipRenderChip(anchor);
+    };
+    await pick('low');
+    expect(effort.textContent).toBe('model_effort.low');
+    expect(effort.classList.contains('is-override')).toBe(true);
+    expect(selected()).toEqual(['low']);
+    await pick('high');
+    expect(h.overrides.at(-1)).toMatchObject({ effort: 'high' });
+    expect(effort.textContent).toBe('model_effort.high');
+    expect(selected()).toEqual(['high']);
+    await pick('auto');
+    expect(h.overrides.at(-1)).toEqual({ provider: 'cp:cp-1', model: 'deepseek/deepseek-v4.1-flash' });
+    expect(effort.textContent).toBe('model_effort.auto');
+    expect(selected()).toEqual(['auto']);
+    expect(h.context._effectiveExecConfig('conversation').effort).toBe('low');
+    h.context._toggleExecConfigMenu(anchor);
+    h.context._toggleExecConfigMenu(anchor);
+    expect(selected()).toEqual(['auto']);
+    await h.registry.get('model-chip-menu')!.querySelectorAll('.model-chip-menu-item')
+      .find((row) => row.dataset.memberEffort === 'high')!.dispatch('keydown', { key: 'Enter' });
+    expect(selected()).toEqual(['high']);
+    expect(h.registry.get('model-chip-menu')!.querySelectorAll('.model-chip-menu-item')
+      .find((row) => row.dataset.memberEffort === 'high')!.focusCalls).toBe(1);
+    for (const handler of h.documentListeners.get('keydown') || []) await handler({ key: 'Escape', preventDefault() {} });
     expect(h.registry.get('model-chip-menu')).toBeUndefined();
     expect(h.registry.get('model-chip-flyout-models')).toBeUndefined();
-    expect(h.registry.get('model-chip-flyout-levels')).toBeUndefined();
+    expect(anchor.focusCalls).toBe(1);
+  });
+
+  it('shows only auto after changing to a model without declared reasoning levels', async () => {
+    const h = buildHarness();
+    const anchor = await openMenu(h);
+    await h.registry.get('model-chip-menu')!.querySelectorAll('.model-chip-menu-item--provider')[0].click();
+    await afterOpen();
+    await h.registry.get('model-chip-flyout-models')!.querySelectorAll('.model-chip-menu-item--provider')[1].click();
+    h.context._toggleExecConfigMenu(anchor);
+    const menu = h.registry.get('model-chip-menu')!;
+    const efforts = menu.querySelectorAll('.model-chip-menu-item').filter((row) => row.dataset.memberEffort);
+    expect(efforts.map((row) => row.dataset.memberEffort)).toEqual(['auto']);
+    expect(menu.querySelectorAll('.model-chip-menu-item.is-disabled')).toHaveLength(0);
+    expect(h.overrides.at(-1)).not.toHaveProperty('effort');
+    expect(menu.innerHTML).toContain('model_effort.unsupported_hint');
   });
 
   it('switches the level-2 list instead of stacking flyouts when the pointer moves across providers', async () => {
@@ -414,11 +442,9 @@ describe('exec-config chip — provider → model → thinking-strength cascade'
     await providerRow.hover();
     await afterOpen();
     const modelRow = h.registry.get('model-chip-flyout-models')!.querySelectorAll('.model-chip-menu-item--provider')[0];
-    await modelRow.hover();
-    await afterOpen();
-    expect(h.registry.get('model-chip-flyout-levels')).toBeTruthy();
+    expect(h.registry.get('model-chip-flyout-levels')).toBeUndefined();
 
-    await modelRow.unhover();
+    await h.registry.get('model-chip-flyout-models')!.unhover();
     await afterClose();
     expect(h.registry.get('model-chip-flyout-levels')).toBeUndefined();
     expect(h.registry.get('model-chip-flyout-models')).toBeUndefined();
@@ -490,7 +516,8 @@ describe('exec-config chip — provider → model → thinking-strength cascade'
     await modelRow.unhover();
     await models.dispatch('mouseenter');
     await afterClose();
-    expect(h.registry.get('model-chip-flyout-levels')).toBeTruthy();
+    expect(h.registry.get('model-chip-flyout-models')).toBeTruthy();
+    expect(h.registry.get('model-chip-flyout-levels')).toBeUndefined();
   });
 });
 
@@ -517,12 +544,12 @@ describe('member source menu effort rows (MA-05)', () => {
     ];
 
     // 来源配置读写来自 composer-members（真实页面里由该模块持有）。
+    let sourceConfig: Record<string, string> = {};
     h.windowObj.composerMembers = {
-      getSourceConfig: () => ({}),
-      setSourceConfig: () => {},
+      getSourceConfig: () => sourceConfig,
+      setSourceConfig: (_target: string, _source: string, patch: Record<string, string>) => { sourceConfig = { ...sourceConfig, ...patch }; },
       isMember: () => true,
     };
-    h.context._memberSourceWrite = () => {};
 
     const container = h.context.document.createElement('div');
     h.context.document.body.appendChild(container);
@@ -542,5 +569,59 @@ describe('member source menu effort rows (MA-05)', () => {
     };
     walk(container);
     expect(effortRows.map((row) => row.dataset.memberEffort)).toEqual(['auto', 'off', 'low', 'high']);
+    expect(effortRows[0].innerHTML).toContain('model_effort.auto_follows_default');
+    await effortRows[3].click();
+    await sleep(50);
+    expect(sourceConfig.effort).toBe('high');
+    let currentRows = container.querySelectorAll('.model-chip-menu-item').filter((row) => row.dataset.memberEffort);
+    expect(currentRows.filter((row) => row.classList.contains('is-default')).map((row) => row.dataset.memberEffort)).toEqual(['high']);
+    await currentRows[0].click();
+    await sleep(50);
+    expect(sourceConfig.effort).toBe('');
+    currentRows = container.querySelectorAll('.model-chip-menu-item').filter((row) => row.dataset.memberEffort);
+    expect(currentRows.filter((row) => row.classList.contains('is-default')).map((row) => row.dataset.memberEffort)).toEqual(['auto']);
+  });
+
+  it('⚠️ 网关没有强度通道时低/高置灰（不放假开关），但四档仍在清单里', async () => {
+    const h = buildHarness();
+    h.windowObj.cliExecControl = {
+      cachedCliModels: () => ({ models: [{ id: 'gpt-6-astra', name: 'gpt-6-astra' }] }),
+      mergedCliModels: (_cli: string, scan: any) => (scan && scan.models) || [],
+      modelControllableFor: () => true,
+      // 该 CLI 没有 effort 通道：模型可控但强度不可控。
+      effortControllableFor: () => false,
+      loadCliModels: async () => ({ models: [{ id: 'gpt-6-astra', name: 'gpt-6-astra' }] }),
+      scanInFlight: () => false,
+      execControlFor: () => ({ effortOff: false }),
+    };
+    h.context._agentsCache = [
+      { agent_id: 'agent-codex', name: 'Codex', runtime: { kind: 'cli', cli: 'codex' } },
+    ];
+    h.windowObj.composerMembers = {
+      getSourceConfig: () => ({}),
+      setSourceConfig: () => {},
+      isMember: () => true,
+    };
+    h.context._memberSourceWrite = () => {};
+
+    const container = h.context.document.createElement('div');
+    h.context.document.body.appendChild(container);
+    vm.runInContext(
+      '_renderMemberSourceBody(__container, "conversation", { id: "agent-codex", external: true }, {})',
+      Object.assign(h.context, { __container: container }),
+    );
+    await sleep(50);
+
+    const effortRows: FakeElement[] = [];
+    const walk = (el: FakeElement) => {
+      for (const child of el.children) {
+        if (child.dataset.memberEffort) effortRows.push(child);
+        walk(child);
+      }
+    };
+    walk(container);
+    expect(effortRows.map((row) => row.dataset.memberEffort)).toEqual(['auto', 'off', 'low', 'high']);
+    expect(effortRows.filter((row) => row.classList.contains('is-disabled')).map((row) => row.dataset.memberEffort))
+      .toEqual(['low', 'high']);
   });
 });

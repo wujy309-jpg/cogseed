@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -298,7 +299,7 @@ describe('跨作用域授权的落盘与撤回', () => {
   it('确认、撤回都留审计，且撤回后立刻回到需要确认', async () => {
     const candidates = await import('../../../../src/main/features/recall/candidate-service');
     const assets = await import('../../../../src/main/features/recall/asset-service');
-    const c = await candidates.saveRecallCandidate(UID, {
+    const c = await createNightlyCandidateFixture(UID, {
       judgment: '一条会被授权跨域的判断。', summary: '跨域授权样本', suggestedType: 'rule', suggestedScope: 'delivery',
       sourceRefs: [{ kind: 'execution', id: 'exec-cross' }],
     });
@@ -320,7 +321,7 @@ describe('跨作用域授权的落盘与撤回', () => {
   it('彻底清除时一并清掉授权——不给墓碑留一张跨域许可', async () => {
     const candidates = await import('../../../../src/main/features/recall/candidate-service');
     const assets = await import('../../../../src/main/features/recall/asset-service');
-    const c = await candidates.saveRecallCandidate(UID, {
+    const c = await createNightlyCandidateFixture(UID, {
       judgment: '会被彻底清除的判断。', summary: '清除授权样本', suggestedType: 'rule', suggestedScope: 'delivery',
       sourceRefs: [{ kind: 'execution', id: 'exec-purge-cross' }],
     });

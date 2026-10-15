@@ -34,10 +34,6 @@ import { QUOTE_MARKERS } from '../../../src/main/features/transcript_rewrite';
 import { isQuotedExampleSpan } from '../../../src/main/features/transcript_auto_correct';
 import { TOOL_CATALOG } from '../../../src/main/model/core-agent/tool-catalog';
 import {
-  buildConclusionCandidateInput,
-  precipitateMeetingConclusion,
-} from '../../../src/main/features/meeting_conclusions';
-import {
   saveActionDraft,
   confirmActionDraft,
   applyActionDraftTarget,
@@ -316,20 +312,35 @@ describe('T059③ 候选写口唯一（saveRecallCandidate）', () => {
     expect(impls.length).toBeGreaterThan(0);
     for (const impl of impls) {
       if (impl.file === 'src/main/features/recall/candidate-service.ts') continue; // 本体（含其同文件锁内助手）
-      // 别处的同名形态实现（如 kstar 桥）必须是**委托**：函数体（其后 4000 字内）
-      // 调用唯一写口，而不是绕开它自写一套。
+      // 非本体实现必须委托统一候选入口。
       const body = (files.get(impl.file) ?? '').slice(impl.index, impl.index + 4000);
-      expect(body, `${impl.file} 的 ${impl.name} 必须委托 saveRecallCandidate`).toContain('saveRecallCandidate(');
+      if (impl.file === 'src/main/features/kstar/recall-bridge.ts') {
+        expect(body).toContain('return []');
+        expect(body).not.toMatch(/(?:saveRecallCandidate|submitCognitionCandidate|createAbilityAsset)\s*\(/);
+        continue;
+      }
+      const delegates = body.includes('saveRecallCandidate(') || body.includes('submitCognitionCandidate(');
+      expect(delegates, `${impl.file} 的 ${impl.name} 必须委托 saveRecallCandidate（直接或经统一提取入口 submitCognitionCandidate）`).toBe(true);
     }
   });
 
-  it('候选池记录写 API（write/updateRecallJsonRecord）不出 features/recall/；会议线只经唯一写口', () => {
+  it('生产候选写入只存在于候选服务和夜间形成入口', () => {
+    const callSites = [...allSourceFiles()].filter(([file, source]) =>
+      file.startsWith('src/main/') && /\bsaveRecallCandidate\s*\(/.test(stripCommentLines(source)),
+    ).map(([file]) => file).sort();
+    expect(callSites).toEqual([
+      'src/main/features/cognition/candidate-submission.ts',
+      'src/main/features/recall/candidate-service.ts',
+    ]);
+  });
+
+  it('候选池记录写 API（write/updateRecallJsonRecord）不出 features/recall/；会议线不写候选', () => {
     const files = allSourceFiles();
     const writers = detectRecallRecordWriteUsers(files).filter((file) => !file.startsWith('src/main/features/recall/'));
     expect(writers).toEqual([]);
-    // 会议沉淀线（meeting_conclusions）import 唯一写口，而不是第二套池子。
     const conclusions = files.get('src/main/features/meeting_conclusions.ts') ?? '';
-    expect(conclusions).toMatch(/import\s*\{\s*saveRecallCandidate\s*\}\s*from\s*'\.\/recall\/candidate-service'/);
+    expect(conclusions).not.toContain('saveRecallCandidate');
+    expect(conclusions).not.toContain('precipitateMeetingConclusion');
   });
 });
 
@@ -338,18 +349,11 @@ describe('T059③ 候选写口唯一（saveRecallCandidate）', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('T059④ recall 组工具数（不新增会议模型工具）', () => {
-  it(`recall 组工具数 = 15，按源码常量 TOOL_CATALOG 计数`, () => {
-    // 计数从源码常量派生（import 后过滤 group），不是抄名单。
-    // 数值口径（git 可核）：tasks.md 立项时 recall 组 = 11（2 基础 + 008 资产管家 9）；
-    // 本合流分支上 016 经验目录（4d44add3，先于 013 首个提交 983ef317 落地）向同组
-    // 加了 list_task_experiences / read_task_experience 两件 ⇒ 13。013 会议线全程
-    // 未改 tool-catalog.ts（实现日志 T060 留证），自身新增 0。
-    // 2026-09-28：13⇒14——09-27 本体切片的 list_ontology_graph（工厂与 catalog
-    // 双侧注册），基线随树重算。
-    // 2026-10-12：14⇒15——Semantica 增加受治理的 ontology_query；该工具默认关闭，
-    // 仅在用户显式启用本体检索后注入。下一次变更仍须显式更新基线。
+  it(`recall 组工具数 = 18，按源码常量 TOOL_CATALOG 计数（2026-10-07 438 P2 +1）`, () => {
+    // 用户授权撤掉对话即时形成工具；已有认知查询、管理与使用记账继续冻结。
     const recallTools = TOOL_CATALOG.filter((entry) => entry.group === 'recall');
-    expect(recallTools).toHaveLength(15);
+    expect(recallTools).toHaveLength(18);
+    expect(recallTools.map(tool => tool.name)).not.toContain('propose_ability_asset');
   });
 
   it('TOOL_CATALOG 不出现会议线工具（013 不新增任何模型工具）', () => {
@@ -373,37 +377,6 @@ describe('T059⑤ 会议侧零 tags/category/familyName', () => {
     expect(detectHookCodeInMeetingLine(allSourceFiles())).toEqual([]);
   });
 
-  it('运行时派生：buildConclusionCandidateInput 组装结果不带 tags/category/familyName 键', () => {
-    const input = buildConclusionCandidateInput(
-      {
-        id: 'mc_guard_1',
-        docId: 'kb/guard-privacy.md',
-        summary: '结论摘要：排期改为下周三',
-        transcriptRefs: [{ utteranceId: 'U0001', blockIndex: 0, from: 0, to: 6 }],
-        assetRefs: [],
-        status: 'confirmed',
-        createdAt: '2026-09-25T00:00:00.000Z',
-        updatedAt: '2026-09-25T00:00:00.000Z',
-      },
-      { docId: 'kb/guard-privacy.md', title: '守卫会议' },
-    );
-    const keys = Object.keys(input);
-    expect(keys).toEqual(expect.arrayContaining([
-      'judgment', 'suggestedAction', 'sourceRefs', 'evidenceRefs', 'captureKey',
-    ]));
-    for (const banned of ['tags', 'category', 'familyName']) {
-      expect(input, `候选组装不得带 ${banned} 键`).not.toHaveProperty(banned);
-    }
-  });
-
-  it('运行时派生：precipitate 收到 tags / category ⇒ field_not_available（先于条目存在性检查）', async () => {
-    const uid = `u_guard_${Date.now()}`;
-    // T048 的键拒绝在读取条目之前——不需要存在真实的结论即可验证。
-    await expect(precipitateMeetingConclusion(uid, 'kb/guard-privacy.md', 'mc_missing', { tags: ['急'] }))
-      .rejects.toThrowError(expect.objectContaining({ code: 'field_not_available' }));
-    await expect(precipitateMeetingConclusion(uid, 'kb/guard-privacy.md', 'mc_missing', { category: '工作' }))
-      .rejects.toThrowError(expect.objectContaining({ code: 'field_not_available' }));
-  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -518,7 +491,7 @@ describe('T059 反向自证（检测器判别力，src/ 零改动）', () => {
       ...TOOL_CATALOG,
       { name: 'list_meeting_refs', group: 'recall' as const, summary: 'injected' },
     ];
-    expect(injected.filter((entry) => entry.group === 'recall')).toHaveLength(16); // 15 基线 + 1 注入 ⇒ 红
+    expect(injected.filter((entry) => entry.group === 'recall')).toHaveLength(19); // 18 current tools + one injected tool
     expect(injected.filter((entry) => /meeting/i.test(entry.name)).map((entry) => entry.name))
       .toEqual(['list_meeting_refs']);
   });

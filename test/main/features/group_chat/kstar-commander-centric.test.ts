@@ -142,7 +142,7 @@ describe('World-model-centric KStar (Commander tool surface removed)', () => {
     expect(modelCalls[0].toolNames).not.toContain('kstar_control');
   });
 
-  it('host routing opens task + projection + auto-forecast for a task-shaped message', async () => {
+  it('ordinary task execution completes without a shared-cognition KSTAR forecast', async () => {
     const cid = newCid();
     const bus = await import('../../../../src/main/features/group_chat/bus');
     const store = await import('../../../../src/main/features/kstar/requirement-store');
@@ -150,7 +150,7 @@ describe('World-model-centric KStar (Commander tool surface removed)', () => {
 
     await bus.enqueue({ uid: 'user-a', cid, fromActorId: 'user', text: '帮我修复登录问题' });
     await waitForQuiescent(bus, cid);
-    await vi.waitFor(() => expect(forecastFiles()).toHaveLength(1), { timeout: 4_000 });
+    await vi.waitFor(() => expect(forecastFiles()).toHaveLength(0), { timeout: 4_000 });
 
     expect(modelCalls).toHaveLength(1);
     // The Commander sees NO KStar tool — governance is host-side.
@@ -161,21 +161,13 @@ describe('World-model-centric KStar (Commander tool surface removed)', () => {
     const requirement = await store.readKstarRequirement('user-a', taskState!.currentRequirementId!);
     // Projection + world-model forecast are generated automatically.
     expect(requirement?.projectionId).toBeTruthy();
-    expect(requirement?.forecastId).toBeTruthy();
+    expect(requirement?.forecastId).toBeUndefined();
+    expect(requirement?.forecastStatus).toBe('skipped');
     expect(recordFiles('tasks')).toHaveLength(1);
     expect(recordFiles('requirements')).toHaveLength(1);
     expect(projectionFiles()).toHaveLength(1);
-    const forecast = JSON.parse(fs.readFileSync(path.join(
-      tmpDir,
-      'user-a',
-      'cloud',
-      'recall',
-      'records',
-      'world-model-forecasts',
-      forecastFiles()[0],
-    ), 'utf8'));
-    expect(forecast.input.s.execution.availableTools).toContain('read_file');
-    expect(forecast.input.s.environment.fileSystemAvailable).toBe(true);
+    expect(forecastFiles()).toHaveLength(0);
+    expect(modelCalls[0].toolNames.length).toBeGreaterThan(0);
   });
 
   it('does not mutate an existing Task when Commander makes no control call', async () => {

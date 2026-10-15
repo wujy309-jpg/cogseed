@@ -57,6 +57,9 @@ vi.mock('../../../../src/main/model/client', () => ({
     streamProbe.idleTimeouts.push(typeof _opts?.idleTimeout === 'number' ? _opts.idleTimeout : undefined);
     streamProbe.streamIdleTimeouts.push(typeof _opts?.streamIdleTimeout === 'number' ? _opts.streamIdleTimeout : undefined);
     streamProbe.lifecycleSeen.push(!!_opts?.executionLifecycle);
+    if (_opts?.agentId && String(_opts?.message || '').includes('FORCED_AGENT_STREAM_THROW')) {
+      throw new Error('forced worker stream failure');
+    }
     if (String(_opts?.message || '').includes('REAL_CREATOR_TOOL_CONSTRUCTION_TEST')) {
       const { buildRunner } = await import('../../../../src/main/model/core-agent/runner');
       const built = await buildRunner({
@@ -142,6 +145,12 @@ vi.mock('../../../../src/main/model/client', () => ({
     }
     if (String(_opts?.message || '').includes('COMMANDER_RESULT_FAILURE_TEST')) {
       yield { type: 'final', text: '没有完成调度。\n<commander-result status="failure" />' };
+      yield { type: 'done' };
+      return;
+    }
+    if (String(_opts?.message || '').includes('ONTOLOGY_CITATION_TEST')) {
+      // 本体引用采用回归：commander 最终答复携带 [[ontology: 稳定引用标记。
+      yield { type: 'final', text: '按负责人规则整理 [[ontology:project-module/owner-rule@3]]' };
       yield { type: 'done' };
       return;
     }
@@ -299,6 +308,65 @@ vi.mock('../../../../src/main/features/local_agents/launch_confirm', () => ({
   requestLaunchConfirm: vi.fn(async () => true),
 }));
 
+// P-r1-91 回归（画像通道落账 bus 侧容错）：两个可探单点——
+//  ① buildRecallTurnPromptContext：携带 PROFILE_MEMORY_LEDGER_TEST 标记的回合
+//     注入一条画像记忆条目（真实实现走不到画像分支：本文件 mock 掉了
+//     context-projection），其余回合原样透传真实实现；
+//  ② recordProfileMemoryInjection：按开关拒绝，模拟收据流一条坏记录/瞬时
+//     IO 错（其余导出保持真实实现）。
+const profileLedgerProbe = vi.hoisted(() => ({ calls: 0, failNext: false }));
+vi.mock('../../../../src/main/features/recall/prompt-injection', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../../src/main/features/recall/prompt-injection')>();
+  return {
+    ...actual,
+    buildRecallTurnPromptContext: async (uid: string, input: any) => {
+      try {
+        const result = await actual.buildRecallTurnPromptContext(uid, input);
+        if (!String(input?.taskText || '').includes('PROFILE_MEMORY_LEDGER_TEST')) return result;
+        return {
+          ...result,
+          promptBlock: result.promptBlock || '<asset-context>profile ledger probe</asset-context>',
+          profileMemoryEntries: [{ id: 'aa-profile-ledger-probe', source: 'USER.md', version: '1' }],
+        };
+      } catch {
+        if (!String(input?.taskText || '').includes('PROFILE_MEMORY_LEDGER_TEST')) throw new Error('no projection in routing tests');
+        return {
+          promptBlock: '<asset-context>profile ledger probe</asset-context>',
+          citations: [],
+          profileMemoryEntries: [{ id: 'aa-profile-ledger-probe', source: 'USER.md', version: '1' }],
+        } as any;
+      }
+    },
+  };
+});
+vi.mock('../../../../src/main/features/recall/injection-receipt', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../../src/main/features/recall/injection-receipt')>();
+  return {
+    ...actual,
+    recordProfileMemoryInjection: async (..._args: unknown[]) => {
+      profileLedgerProbe.calls += 1;
+      if (profileLedgerProbe.failNext) throw new Error('profile ledger IO error (regression-b6)');
+      return undefined;
+    },
+  };
+});
+
+// 本体采用回执消费侧探针：bus 在最终答复持久化后扫描 [[ontology: 引用标记并
+// 调用 finalizeOntologyUsageCitations。探针只捕获入参并支持注入失败；真实
+// 实现照常透传（隔离工作区里没有查询回执时它只会安静返回空数组）。
+const ontologyUsageProbe = vi.hoisted(() => ({ calls: [] as Array<{ uid: string; taskRunId: string; messageId: string; finalText: string }>, failNext: false }));
+vi.mock('../../../../src/main/features/cognition/ontology/usage-receipt', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../../src/main/features/cognition/ontology/usage-receipt')>();
+  return {
+    ...actual,
+    finalizeOntologyUsageCitations: async (uid: string, input: { taskRunId: string; messageId: string; finalText: string }) => {
+      ontologyUsageProbe.calls.push({ uid, ...input });
+      if (ontologyUsageProbe.failNext) throw new Error('ontology usage IO error (regression)');
+      return actual.finalizeOntologyUsageCitations(uid, input);
+    },
+  };
+});
+
 let tmpDir: string;
 let prevWs: string | undefined;
 let prevWakeGate: string | undefined;
@@ -318,6 +386,10 @@ beforeEach(async () => {
   gatewayTurnMock.calls.length = 0;
   cliRunMock.nextResult = null;
   cliRunMock.nextResults.length = 0;
+  profileLedgerProbe.calls = 0;
+  profileLedgerProbe.failNext = false;
+  ontologyUsageProbe.calls.length = 0;
+  ontologyUsageProbe.failNext = false;
   streamProbe.messages.length = 0;
   streamProbe.systemPrompts.length = 0;
   streamProbe.modelOverrides.length = 0;
@@ -1040,6 +1112,66 @@ describe('group_chat bus › enqueue routing + persistence', () => {
     ]));
   });
 
+  it('P-r1-91: profile-memory ledger failure does not fail the persisted turn (bus-side tolerance)', async () => {
+    const bus = await import('../../../../src/main/features/group_chat/bus');
+    const paths = await import('../../../../src/main/paths');
+    profileLedgerProbe.failNext = true;
+    await bus.enqueue({
+      uid: TEST_UID, cid: TEST_CID, fromActorId: 'user',
+      text: 'PROFILE_MEMORY_LEDGER_TEST 普通问题',
+    });
+    await waitForQuiescent(TEST_UID, TEST_CID);
+
+    // 画像落账确实被调用且确实失败（模拟收据流坏记录/瞬时 IO 错）。
+    expect(profileLedgerProbe.calls).toBe(1);
+    // 已持久化的回合不被误标失败：commander 运行统计仍是 success/零 error。
+    const stats = JSON.parse(fs.readFileSync(paths.commanderRuntimeStatsFile(TEST_UID), 'utf-8'));
+    expect(stats.attempts).toBe(1);
+    expect(stats.successes).toBe(1);
+    expect(stats.failures).toBe(0);
+    expect(stats.errors).toBe(0);
+    // 回合正常收尾：commander 回复真实落盘。
+    const mainFile = path.join(paths.userChatsDir(TEST_UID), `${TEST_CID}.jsonl`);
+    const lines = fs.readFileSync(mainFile, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(findCommanderReply(lines)).toBeTruthy();
+  });
+
+  it('finalizes ontology citations only for persisted replies carrying the marker and survives receipt failure', async () => {
+    const bus = await import('../../../../src/main/features/group_chat/bus');
+    const paths = await import('../../../../src/main/paths');
+    const marker = '[[ontology:project-module/owner-rule@3]]';
+    await bus.enqueue({ uid: TEST_UID, cid: TEST_CID, fromActorId: 'user', text: 'ONTOLOGY_CITATION_TEST 普通问题' });
+    await waitForQuiescent(TEST_UID, TEST_CID);
+
+    // 持久化后的最终答复带标记：宿主按 uid + 本回合 + 已落盘消息调用采用回执。
+    expect(ontologyUsageProbe.calls).toHaveLength(1);
+    const citationCall = ontologyUsageProbe.calls[0];
+    expect(citationCall.uid).toBe(TEST_UID);
+    expect(citationCall.taskRunId).toBeTruthy();
+    expect(citationCall.finalText).toContain(marker);
+    const mainFile = path.join(paths.userChatsDir(TEST_UID), `${TEST_CID}.jsonl`);
+    const lines = fs.readFileSync(mainFile, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
+    const reply = findCommanderReply(lines);
+    expect(reply?.text).toContain(marker);
+    expect(citationCall.messageId).toBe(reply?.id);
+
+    // 不带标记的普通答复不触发采用回执（用独立会话避免历史回显命中标记分支）。
+    const plainCid = 'cidbus-ontology-plain';
+    await bus.enqueue({ uid: TEST_UID, cid: plainCid, fromActorId: 'user', text: '再问一个' });
+    await waitForQuiescent(TEST_UID, plainCid);
+    expect(ontologyUsageProbe.calls).toHaveLength(1);
+
+    // 收据流写入失败只留 warn，不把已持久化回合标成失败。
+    ontologyUsageProbe.failNext = true;
+    const failCid = 'cidbus-ontology-fail';
+    await bus.enqueue({ uid: TEST_UID, cid: failCid, fromActorId: 'user', text: 'ONTOLOGY_CITATION_TEST 第三次' });
+    await waitForQuiescent(TEST_UID, failCid);
+    expect(ontologyUsageProbe.calls).toHaveLength(2);
+    const stats = JSON.parse(fs.readFileSync(paths.commanderRuntimeStatsFile(TEST_UID), 'utf-8'));
+    expect(stats.successes).toBe(3);
+    expect(stats.errors).toBe(0);
+  });
+
   it('ignores legacy Hermes commander backend config and runs the CogSeed commander', async () => {
     const config = await import('../../../../src/main/features/config');
     config.writePreferences({
@@ -1482,6 +1614,39 @@ describe('group_chat bus › enqueue routing + persistence', () => {
     expect(stats.deliveries).toBe(0);
     expect(stats.failures).toBe(1);
     expect(stats.errors).toBe(0);
+  });
+
+  it('enqueues a commander degradation report when a dispatched agent stream throws', async () => {
+    const bus = await import('../../../../src/main/features/group_chat/bus');
+    const state = await import('../../../../src/main/features/group_chat/state');
+    const runStore = await import('../../../../src/main/features/group_chat/run_store');
+    const cid = 'cid-forced-degradation-report';
+    await state.addMember(TEST_UID, cid, { kind: 'agent', id: AGENT_ID, name: AGENT_NAME });
+    const run = await runStore.createRun({
+      uid: TEST_UID,
+      cid,
+      submittedText: 'force a dispatched agent failure',
+      memberAgentIds: [AGENT_ID],
+      mentionAgentIds: [AGENT_ID],
+    });
+
+    await bus.enqueue({
+      uid: TEST_UID, cid, fromActorId: 'commander',
+      text: 'FORCED_AGENT_STREAM_THROW',
+      forceTo: [AGENT_ID],
+      dispatch: true,
+      runId: run!.run_id,
+    });
+    await waitForQuiescent(TEST_UID, cid);
+
+    const agentRun = await runStore.readRun(TEST_UID, cid, run!.run_id);
+    expect(agentRun?.actors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agent_id: AGENT_ID, terminal: 'failed' }),
+    ]));
+    expect(agentRun?.actor_report_enqueued).toBe(true);
+    expect(streamProbe.messages.some((message) => (
+      message.includes(`@${AGENT_NAME}`) && message.includes('汇总汇报')
+    ))).toBe(true);
   });
 
   it('records markerless agent completions as success when no runtime error occurs', async () => {

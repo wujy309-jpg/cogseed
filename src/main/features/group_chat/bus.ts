@@ -22,6 +22,7 @@
 
 import type { AgentTool, HistoryResource } from "#core-agent";
 import type { ChatResolvedRuntime, CognitionSaveReceipt } from "../../model/client";
+import { validateReasoningEffort } from "../../model/reasoning_effort";
 
 import { createLogger } from "../../logger";
 import { logErrorRef, logPathRef, maskId } from "../../util/log-redact";
@@ -75,7 +76,7 @@ import type {
   OrchestrationLedgerInput,
   StateFile,
 } from "./state";
-import { maxToolLoopsForActorKind } from "./actor-budgets";
+import { maxToolLoopsForActorTurn } from "./actor-budgets";
 import {
   GroupMessage,
   appendVisible,
@@ -215,6 +216,35 @@ export function _targetsDeepSeekOfficialApi(uid: unknown, providerId: unknown): 
     return !!cp && _isDeepSeekOfficialBaseUrl(cp.baseUrl);
   } catch {
     return false;
+  }
+}
+
+/** Option C（推理强度按模型声明的档位）：解析有效模型声明的思考档位（宿主
+ *  可表达的子集 off|low|high）。**解析不出就返回 undefined**——"不知道"不等于
+ *  "没有档位"，调用方据此跳过校验，绝不因为一次能力查询失败或模型没有声明而
+ *  拒掉一个本来能跑的回合。判定本身在 model/reasoning_effort.ts，与 auth 的
+ *  列表标注共用同一份口径。 */
+export async function _declaredReasoningLevelsFor(
+  uid: string,
+  modelOverride?: { provider?: string; model?: string },
+): Promise<string[] | undefined> {
+  try {
+    const auth = await import("../auth");
+    let provider = String(modelOverride?.provider || "").trim();
+    let model = String(modelOverride?.model || "").trim();
+    if (!provider || !model) {
+      const { entries } = await auth.listEntriesForUser(uid);
+      const current = entries && entries[0];
+      if (!current?.provider || !current?.model) return undefined;
+      provider = String(current.provider);
+      model = String(current.model);
+    }
+    const res = await auth.listModelsForUser(uid, provider);
+    const hit = (res.models || []).find((m) => m && m.id === model);
+    const levels = hit && Array.isArray(hit.reasoningLevels) ? hit.reasoningLevels : undefined;
+    return levels && levels.length ? levels : undefined;
+  } catch {
+    return undefined;
   }
 }
 import type { AgentRunStatus } from "../agent_runtime_stats";
@@ -2438,6 +2468,68 @@ export interface ProjectedUserTaskMessageInput {
   text: string;
 }
 
+/**
+ * R-11: ask the commander for exactly one reporting round once every actor of this
+ * run has reached a terminal. Shared by the normal actor-result path, the
+ * worker-failure path, and the projected/backend (wake-dispatched) member path —
+ * a failed worker must produce a *degradation* report ("X failed: reason") instead
+ * of dying silently, which is exactly what happened on 2026-10-13: a network
+ * failure ("fetch failed") left report_enqueued unset and the commander never said
+ * anything.
+ *
+ * 2026-10-14 16:24 (cid 38591293f03a): a wake-dispatched worker delivered at
+ * 16:24:31 through the projection path, which never called this at all — no
+ * `actor report decision` line was ever logged, so the commander's last word stayed
+ * "等你批准" after the worker had already finished and the run summary said
+ * completed. The projected member terminal therefore owes the same check.
+ */
+async function enqueueActorReportIfOwed(
+  uid: string,
+  cid: string,
+  runId: string | undefined,
+  actorId: string,
+  actorName: string,
+): Promise<void> {
+  if (!runId) return;
+  try {
+    const runStore = await import("./run_store");
+    const run = await runStore.readRun(uid, cid, runId);
+    const shouldReport = runStore.shouldEnqueueActorReport(run);
+    log.info(`actor report decision run=${runId} should=${shouldReport}`, { cid });
+    if (!shouldReport) return;
+    await runStore.markActorReportEnqueued(uid, cid, runId);
+    await enqueue({
+      uid,
+      cid,
+      fromActorId: actorId,
+      text: t("chat.actor_report_ready", { name: actorName || actorId }),
+      forceTo: [COMMANDER_ID],
+      dispatch: true,
+    });
+  } catch (err) {
+    log.warn(`actor report round enqueue failed cid=${cid}: ${(err as Error).message}`);
+  }
+}
+
+/** 投影/后端派发路径的 actor 显示名：唤醒请求里带 agent_name，缺则退回 id。 */
+async function reportActorName(
+  uid: string,
+  cid: string,
+  runId: string | undefined,
+  actorId: string,
+): Promise<string> {
+  if (!runId) return actorId;
+  try {
+    const { listWakeRequests } = await import("../p3394/wake-service");
+    const request = (await listWakeRequests(uid, cid)).find((item) => (
+      item.dispatch_payload?.run_id === runId && item.agent_id === actorId
+    ));
+    return String(request?.agent_name || "").trim() || actorId;
+  } catch {
+    return actorId;
+  }
+}
+
 async function recordProjectedMemberRunTerminal(
   input: ProjectedAgentMessageInput,
   message: GroupMessage | null,
@@ -2555,6 +2647,15 @@ export async function appendProjectedAgentMessage(input: ProjectedAgentMessageIn
     _recordTaskRunOutcome(state, input.terminalStatus ?? (input.failureKind ? 'failed' : 'completed'));
     await recordProjectedMemberRunTerminal(input, null);
     await _syncStateStatus(state);
+    // R-11：工人（含唤醒派发）交付后把 commander 叫回来汇报一轮。必须放在
+    // _syncStateStatus 之后——收尾要求 isQuiescent，先入队会让运行一直不 finalize。
+    await enqueueActorReportIfOwed(
+      input.uid,
+      input.cid,
+      input.runId,
+      input.agentId,
+      await reportActorName(input.uid, input.cid, input.runId, input.agentId),
+    );
     return null;
   }
   const messageFile = conversationLayout(input.uid, input.cid, conversation.project_id || null).messageFile;
@@ -2645,6 +2746,15 @@ export async function appendProjectedAgentMessage(input: ProjectedAgentMessageIn
   await recordProjectedMemberRunTerminal(input, msg);
   if (state.taskRun) state.taskRun.lastMessageId = msg.id;
   await _syncStateStatus(state);
+  // R-11：同上——收尾之后再叫 commander 汇报（真机 2026-10-14 16:24：这条投影
+  // 路径此前从不触发汇报，工人的结果交付了，commander 的上一句还停在"等你批准"）。
+  await enqueueActorReportIfOwed(
+    input.uid,
+    input.cid,
+    input.runId,
+    input.agentId,
+    await reportActorName(input.uid, input.cid, input.runId, input.agentId),
+  );
   return msg;
 }
 
@@ -3968,9 +4078,10 @@ async function _enqueueBody(
     // `docs/plans/expert-signals-phase0-wiring-gaps.md`): cancels pending
     // silence check + extracts text-class signals (accept / correction /
     // reject / edit) against the cached last agent message. Fire-and-
-    // forget; correctionDetected return value is intentionally unused
-    // here (runner.ts:665 does its own detectUserCorrection for
-    // RunMetrics — acceptable double-judgment for v0).
+    // forget; the correctionDetected return value is unused here — the
+    // live consumer is the `correction` signal extracted inside
+    // onUserMessage itself (the runner-side RunMetrics counter it once
+    // fed was removed with the reflection-trigger subsystem).
     onUserMessage({
       uid,
       cid,
@@ -4852,6 +4963,13 @@ async function runWorkerLoop(state: CidState, w: WorkerState): Promise<void> {
           log.warn(`run terminal persistence failed cid=${w.cid}: ${(ledgerErr as Error).message}`);
         }
       }
+        log.info("worker turn failed; considering degradation report", {
+          cid: w.cid,
+          runId: item.runId || null,
+          actorId: item.actor.id,
+          reason: userAborted ? "user_stopped" : "runtime_failed",
+        });
+        await enqueueActorReportIfOwed(w.uid, w.cid, item.runId, item.actor.id, item.actor.name || "");
     } finally {
       w.currentTurnId = null;
       w.currentRunId = null;
@@ -4978,6 +5096,7 @@ type ActorTurnResult =
       terminalStatus: TaskTerminalStatus;
     };
 
+
 async function recordMemberRunTurnResult(
   state: CidState,
   item: QueueItem,
@@ -5027,6 +5146,10 @@ async function recordMemberRunTurnResult(
       artifacts,
     });
   }
+    // R-11 (decision 2026-10-13): the commander waits for the actors it
+    // dispatched and then reports. Shared with the worker-failure path so a failed
+    // worker produces a degradation report instead of dying silently.
+    await enqueueActorReportIfOwed(state.uid, state.cid, item.runId, actor.id, actor.name || "");
 }
 
 type CoordinatorTurnContext = {
@@ -5254,6 +5377,26 @@ async function runActorTurn(
         });
       }
     }
+  }
+}
+
+/** 该运行自称的"等用户"是否已被唤醒记录回答过了。查不到记录/读盘失败时返回
+ *  false —— 宁可保留一次真实等待，也不凭空把等待抹掉。 */
+async function wakeDeclaredWaitAlreadyAnswered(
+  state: CidState,
+  runId: string | undefined,
+): Promise<boolean> {
+  if (!runId) return false;
+  try {
+    const { runWakeWaitAlreadyAnswered } = await import(
+      "../p3394/wake-service"
+    );
+    return await runWakeWaitAlreadyAnswered(state.uid, state.cid, runId);
+  } catch (err) {
+    log.warn(
+      `wake wait verdict unavailable cid=${maskId(state.cid)} run=${maskId(runId)}: ${(err as Error).message}`,
+    );
+    return false;
   }
 }
 
@@ -5871,7 +6014,7 @@ async function runActorTurnBody(
             // 生命周期读取失败不阻断回合——回退 automatic projection。
           }
         }
-        const taskText = String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000);
+        const taskText = String(item.sourceMessageText || item.llmPayload || '');
         const recallContext = await buildRecallTurnPromptContext(uid, {
           cid,
           taskRunId: item.turnId,
@@ -5893,7 +6036,7 @@ async function runActorTurnBody(
           recallProfileMemory = recallContext.profileMemoryEntries ?? [];
           recallAuthorizedBlock = recallContext.authorizedAssetsBlock ?? '';
           recallProfileBlock = recallContext.profileAssetsBlock ?? '';
-          const currentTaskText = String(item.sourceMessageText || item.llmPayload || '').trim().slice(0, 2_000);
+          const currentTaskText = String(item.sourceMessageText || item.llmPayload || '').trim();
           const validationTaskText = [
             recallTaskGoal,
             currentTaskText && currentTaskText !== recallTaskGoal ? `当前补充：${currentTaskText}` : '',
@@ -5960,7 +6103,7 @@ async function runActorTurnBody(
           ...recallCitations.map((citation) => citation.assetId),
           ...recallProfileMemory.map((entry) => entry.id),
         ]);
-        const catalog = await assetCatalogForPromptWithRelevance(uid, cid, Date.now(), String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000), {
+        const catalog = await assetCatalogForPromptWithRelevance(uid, cid, Date.now(), String(item.sourceMessageText || item.llmPayload || ''), {
           ...(turnProjectId ? { turnProjectId } : {}),
           ...(turnSpaceId ? { turnSpaceId } : {}),
         }, actor.id, item.turnId, attachedAssetIds);
@@ -6017,7 +6160,7 @@ async function runActorTurnBody(
           uid,
           cid,
           Date.now(),
-          String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000),
+          String(item.sourceMessageText || item.llmPayload || ''),
           experienceMounted,
           {
             agentId: actor.id,
@@ -6045,8 +6188,8 @@ async function runActorTurnBody(
       try {
         const dispatched = await buildDispatchedAssetsPromptBlock(uid, item.dispatchedAssetIds, {
           ...(actor.kind === "agent" ? { agentId: actor.id } : {}),
-          taskText: String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000),
-          purpose: String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000),
+          taskText: String(item.sourceMessageText || item.llmPayload || ''),
+          purpose: String(item.sourceMessageText || item.llmPayload || ''),
           ...(turnProjectId ? { projectId: turnProjectId } : {}),
           ...(turnSpaceId ? { workspaceId: turnSpaceId } : {}),
           ...(turnConversationKind ? { conversationKind: turnConversationKind } : {}),
@@ -6237,6 +6380,7 @@ async function runActorTurnBody(
   // 四病整改 7.0 修7): the runner emits candidate+taught-pending-review through
   // onCognitionSaveReceipt, so this turn keeps no separate teaching collector.
   const turnCognitionSaveReceipts: NonNullable<GroupMessage["cognition_save_receipts"]> = [];
+  const turnAssetUsageClaims: import('../recall/asset-usage-claim').AssetUsageClaim[] = [];
   const onArtifactCreated = (a: { id: string; title: string }) => {
     turnArtifacts.push(a);
     emit(state, {
@@ -6771,7 +6915,7 @@ async function runActorTurnBody(
       coordinatorLease?.stop();
     };
     try {
-      const actorMaxToolLoops = maxToolLoopsForActorKind(actor.kind);
+      const actorMaxToolLoops = maxToolLoopsForActorTurn(actor.kind);
       const creatorPolicyPromise = turnAgentSpec?.creator_binding && actor.kind === 'agent'
         ? getAgentDispatchPolicy(uid, actor.id)
         : null;
@@ -6855,6 +6999,15 @@ async function runActorTurnBody(
         = item.execConfig?.effort
           ?? turnAgentSpec?.default_thinking
           ?? thinkingLevelForRun();
+      // Option C：只有**针对这个模型做出的显式选择**（任务级覆盖 / agent 默认）
+      // 才受"模型声明的档位"约束，且要在自动兜底**之前**记下——下面给已知
+      // reasoning 模型自动补 low 是展示兜底，不是用户的档位选择，不能被同一个门拒掉。
+      // 全局偏好（设置页的"思考强度"）是**跨模型的默认**，不是对某个模型的选择：
+      // 它越档时静默降级（pi-ai 按 provider 默认处理），绝不因此把整个回合判成
+      // model_preflight——否则用户改一次全局设置就会在若干模型上"开不了工"。
+      const explicitThinkingLevel = item.execConfig?.effort
+        ?? turnAgentSpec?.default_thinking
+        ?? "auto";
       // 思考展示兜底（交互设计 2026-09-08：思考过程展示需求）：'auto' 时不传
       // thinkingLevel，pi-ai 对 openai 兼容端点不会带 reasoning_effort，
       // DeepSeek 中转端点缺该参数时思考模式默认关闭 → 全程无
@@ -6876,6 +7029,20 @@ async function runActorTurnBody(
           : turnAgentSpec?.default_model
             ? { ...turnAgentSpec.default_model }
             : undefined;
+      // Option C preflight：显式档位要先对得上有效模型声明的档位。解析出声明
+      // 才传下去（client.ts 在 provider 调用前拒绝并落 model_preflight）；
+      // 解析不出 = 不校验，行为与之前完全一致。预警同样走共用判定，避免
+      // 「日志说会拒绝、client 却放行」（例如 off 是"不发参数"，永远放行）。
+      const supportedReasoningLevels = explicitThinkingLevel !== "auto"
+        ? await _declaredReasoningLevelsFor(uid, turnModelOverride)
+        : undefined;
+      if (supportedReasoningLevels
+        && !validateReasoningEffort({ supported: supportedReasoningLevels, requested: explicitThinkingLevel }).ok) {
+        log.warn("explicit thinking level not declared by the effective model", {
+          uid, cid, actor_id: actor.id, requested: explicitThinkingLevel,
+          supported: supportedReasoningLevels,
+        });
+      }
       // 多模态降级提示（2026-09-13）：回合带图但实际执行模型（任务级覆盖
       // 优先于界面选择）不支持视觉时，图片内容块会被 provider 层按
       // input modality 丢弃，模型只能靠文件路径 + OCR 读图。此前零提示，
@@ -6911,6 +7078,9 @@ async function runActorTurnBody(
         // User-selected thinking strength ('auto' = no override; let the
         // provider default / model decide).
         ...(turnThinkingLevel !== "auto" ? { thinkingLevel: turnThinkingLevel } : {}),
+        // Option C：显式档位带着模型声明的档位一起下发，client.ts 在
+        // provider 调用前用它拒绝越档（model_preflight）。
+        ...(supportedReasoningLevels ? { supportedReasoningLevels } : {}),
         ...(turnModelOverride ? { modelOverride: turnModelOverride } : {}),
         ...(actor.kind === "agent" ? { agentId: actor.id } : {}),
         cid,
@@ -6927,6 +7097,13 @@ async function runActorTurnBody(
           }
           turnCognitionSaveReceipts.push({ ...receipt });
         },
+        onAssetUsageClaim: (claim) => {
+          const index = turnAssetUsageClaims.findIndex((item) => item.assetId === claim.assetId && item.assetVersion === claim.assetVersion);
+          if (index >= 0) turnAssetUsageClaims[index] = { ...claim };
+          else if (turnAssetUsageClaims.length < 12) turnAssetUsageClaims.push({ ...claim });
+          else throw new Error('asset usage report limit reached');
+        },
+        suppliedAbilityAssets: recallCitations.map((citation) => ({ assetId: citation.assetId, assetVersion: citation.version })),
         // Every in-process turn reports its resolved runtime (actual
         // provider/model after override / fallback). Commander keeps its
         // existing collector; all actors also emit the live execution-config
@@ -7927,7 +8104,15 @@ async function runActorTurnBody(
   }
 
   let persistedMsg: GroupMessage | null = null;
+  let finalOutputForUsage = '';
   if (outcome.kind === "persist") {
+    finalOutputForUsage = outcome.text;
+    if (!outcome.failureKind && !errText && !aborted && turnAssetUsageClaims.length) {
+      const { countClaimsMissingFromFinalOutput } = await import('../recall/asset-usage-claim');
+      if (countClaimsMissingFromFinalOutput(turnAssetUsageClaims, finalOutputForUsage) > 0) {
+        outcome.text = [outcome.text, t('recall.usage_claim_output_missing_notice')].filter(Boolean).join('\n\n');
+      }
+    }
     // Task 5: usage/timing metrics for this settled reply. CLI turns arrive
     // fully assembled from _runCliAgentTurn (runner attaches startedAt /
     // firstTokenAt to the terminal done event); internal model turns rebuild
@@ -8003,6 +8188,38 @@ async function runActorTurnBody(
       ...(citation.matchScore !== undefined ? { match_score: citation.matchScore } : {}),
       match_method: citation.matchMethod,
     }));
+      // R-11 gate (decision 2026-10-13): never present this as the end of the
+      // turn while the actors this run dispatched are still running. The commander
+      // waits for them and reports once they finish — recordMemberRunTurnResult
+      // then wakes it for exactly one reporting round, and that turn ends
+      // normally. Without this gate the user reads a finished answer while workers
+      // still spin, which is the 2026-10-12 shape (commander concluded 17:13,
+      // literature-review worker still running).
+      let awaitingDispatchedActors: string[] = [];
+      // The commander's own turn is not always tagged with the run: on
+      // 2026-10-13 the run belonged to the dispatch (mentions: 0), so requiring
+      // `item.runId` here skipped the gate exactly when it was needed. Fall back
+      // to the run this conversation is currently tracking.
+      const gateRunId = item.runId || state.memberRunId;
+      if (gateRunId && actor.kind === 'commander') {
+        try {
+          const { readRun } = await import('./run_store');
+          const run = await readRun(uid, cid, gateRunId);
+          awaitingDispatchedActors = (run?.actors || [])
+            .filter((candidate) => candidate.terminal === 'pending')
+            .map((candidate) => candidate.agent_id);
+        } catch (err) {
+          // The gate is advisory: a read failure must not block the turn.
+          log.warn(`awaiting-actor gate read failed cid=${cid}: ${(err as Error).message}`);
+        }
+        if (awaitingDispatchedActors.length) {
+          log.warn('commander turn ending while dispatched actors still run', {
+            cid,
+            runId: gateRunId,
+            awaitingActorIds: awaitingDispatchedActors,
+          });
+        }
+      }
     persistedMsg = await enqueue({
       uid,
       cid,
@@ -8058,7 +8275,9 @@ async function runActorTurnBody(
       // consumes the streaming placeholder + finalizes in place. Without
       // this flag, mid-turn tool-emitted messages (plan_executor's
       // dispatch) would also wrongly consume the placeholder.
-      turn_end: true,
+      // R-11: with actors still pending this is an interim answer, not the
+      // end of the turn; the reporting round after the last worker closes it.
+      turn_end: awaitingDispatchedActors.length === 0,
       ...(item.runId ? { runId: item.runId } : {}),
       turn_id: item.turnId,
       ...(replyMetrics ? { metrics: replyMetrics } : {}),
@@ -8112,16 +8331,45 @@ async function runActorTurnBody(
         });
       }));
     }
+    if (!outcome.failureKind && !errText && !aborted && turnAssetUsageClaims.length) {
+      try {
+        const { finalizeAssetUsageClaims } = await import('../recall/asset-usage-claim');
+        await finalizeAssetUsageClaims(uid, {
+          taskRunId: item.turnId, messageId: persistedMsg.id,
+          finalText: finalOutputForUsage, claims: turnAssetUsageClaims,
+        });
+      } catch {
+        log.warn('asset-specific adoption persistence failed; final message preserved');
+      }
+    }
+    if (!outcome.failureKind && !errText && !aborted && persistedMsg && String(outcome.text || '').includes('[[ontology:')) {
+      try {
+        const { finalizeOntologyUsageCitations } = await import('../cognition/ontology/usage-receipt');
+        await finalizeOntologyUsageCitations(uid, {
+          taskRunId: item.turnId, messageId: persistedMsg.id, finalText: String(outcome.text || ''),
+        });
+      } catch {
+        log.warn('ontology usage persistence failed; final message preserved');
+      }
+    }
     // 画像通道落账（2026-09-13 通道显式化 / 2026-09-30 修2）：回执逐条留
     // 痕；正式资产镜像（非 onto-*）同口径计入 usage——「画像不是资产」的
     // 旧口径只适用于已废弃的文件回退形态，统一入口见
     // injection-receipt.ts::recordProfileMemoryInjection。
     if (recallProfileMemory.length) {
       const { recordProfileMemoryInjection } = await import('../recall/injection-receipt');
-      await recordProfileMemoryInjection(uid, recallProfileMemory, {
-        taskRunId: item.turnId,
-        messageId: persistedMsg.id,
-      });
+      // P-r1-91 bus 侧容错：画像通道落账失败不阻断回合收尾——一条坏记录/瞬时
+      // IO 错上抛会把整批画像收据+usage 记账一起丢掉、已持久化的回合被误标
+      // failed、后面的漏取审计也被跳过。与上方 usage/回执的 allSettled、下方
+      // 漏取审计的 try/catch 同口径：warn 留痕后继续。
+      try {
+        await recordProfileMemoryInjection(uid, recallProfileMemory, {
+          taskRunId: item.turnId,
+          messageId: persistedMsg.id,
+        });
+      } catch (error) {
+        log.warn(`Recall profile-memory persistence failed cid=${cid} error=${(error as Error).message}`);
+      }
     }
     // 漏取审计（2026-09-19）：目录标了★（提示模型"这些相关"）但本回合既没
     // 注入也没被模型取用/派发的资产——每条记一条 omitted/catalog_hint 回执，
@@ -8205,6 +8453,16 @@ async function runActorTurnBody(
       status: 'dispatched',
       channel: 'projection',
     })));
+  }
+
+  if (persistedMsg && outcome.kind === 'persist' && !outcome.failureKind && !errText && !aborted) {
+    try {
+      const { checkPersistedCognitionOutput } = await import('../recall/cognition-output-check');
+      await checkPersistedCognitionOutput(uid, { cid, taskRunId: item.turnId, messageId: persistedMsg.id,
+        taskText: [recallTaskGoal, String(item.sourceMessageText || item.llmPayload || '')].filter(Boolean).join('\n') });
+    } catch {
+      log.warn('cognition result check unavailable; successful reply preserved');
+    }
   }
 
   // Ephemeral worker (anonymous run_worker, run via runNestedDispatch) is
@@ -8388,9 +8646,23 @@ async function runActorTurnBody(
       (aborted ? " aborted=1" : ""),
   );
 
+  // 状态由**记录**决定，不由模型的话决定：模型可以自称 waiting_input，但若这条
+  // 等待所依据的唤醒请求已经有结论（approved/executed/rejected/expired），那这个
+  // "等用户"就是陈旧的。真机 2026-10-14 16:24（cid 38591293f03a）：唤醒 16:24:21
+  // 批准 + 工人 16:24:31 交付，commander 回合 16:24:36 才落盘并自称 waiting_input
+  // → 任务被打成 waiting_user 永久留在待办，R-11 汇报回合也不再触发（同一次运行
+  // 的 run_summary 写的是 completed）。只复核**模型自称**的等待；真表单
+  // （form / planInteraction === "open"）是货真价实的等人输入，不在复核范围。
+  const declaredWaitIsStale =
+    !aborted &&
+    !form &&
+    planInteraction !== "open" &&
+    actorTerminalOverride === "waiting_input" &&
+    (await wakeDeclaredWaitAlreadyAnswered(state, item.runId));
   const terminalStatus: TaskTerminalStatus = aborted
     ? "cancelled"
-    : form || planInteraction === "open" || actorTerminalOverride === "waiting_input"
+    : !declaredWaitIsStale &&
+        (form || planInteraction === "open" || actorTerminalOverride === "waiting_input")
       ? "waiting_input"
       : errText ||
           actorRunStatus === "failure" ||
@@ -9241,6 +9513,20 @@ async function guardKstarPrivilegedDispatch(
     // advisory for execution gating — if generation failed (model
     // unavailable, no candidates), the dispatch still proceeds rather than
     // demanding a kstar_control call the Commander no longer has.
+    try {
+      const { markMissingForecastForExecution } = await import('../kstar/auto-forecast');
+      await markMissingForecastForExecution(
+        state.uid,
+        lifecycle.requirement.id,
+        'auto-forecast unavailable before dispatch',
+      );
+    } catch (error) {
+      log.warn('kstar missing forecast marker failed', {
+        cid: maskId(state.cid),
+        requirementId: lifecycle.requirement.id,
+        error: logErrorRef(error),
+      });
+    }
     log.warn('kstar execution without forecast record (auto-forecast unavailable)', {
       cid: maskId(state.cid),
       requirementId: lifecycle.requirement.id,
@@ -9589,6 +9875,50 @@ async function gateNestedAgentWake(
 ): Promise<WakeRequestSummary | null> {
   if (actor.kind !== "agent" || allowLegacyGroupChatFormalAgentExecutorForTest())
     return null;
+
+  // Membership rule (requirement owner, 2026-10-13): an agent that has ALREADY
+  // joined this conversation is woken directly — a repeat @ of a known member is
+  // unambiguous. The FIRST time an agent enters the conversation, approval is
+  // required as before. Membership is therefore the criterion, not the run: the
+  // run's member list is empty at gate time (it is created from mentions), while
+  // the member table is written when the user approves the first wake. Failing to
+  // read members falls through to the gate, i.e. fails closed.
+  try {
+    // The run record already knows who this run is about (`member_agent_ids`),
+    // and the 21:49 run logged `members: 1` — so consult it first: the member
+    // *file* read below needs the conversation's project hint, and passing null
+    // silently missed the member on 2026-10-13 (wake prompt still appeared).
+    if (runId) {
+      const { readRun } = await import("./run_store");
+      const run = await readRun(state.uid, state.cid, runId);
+      if ((run?.member_agent_ids || []).includes(actor.id)) {
+        log.info("wake approval skipped: agent is a member of this run", {
+          cid: state.cid,
+          agentId: actor.id,
+          source,
+          runId,
+        });
+        return null;
+      }
+    }
+    // Membership must be read with the conversation's project hint: passing null
+    // looked at the wrong layout on 2026-10-13 and missed an agent that had
+    // already joined, so the wake prompt appeared again.
+    const chatsFeature = await import("../chats");
+    const conversation = await chatsFeature.getConversation(state.uid, state.cid).catch(() => null);
+    const members = await readMembers(state.uid, state.cid, conversation?.project_id ?? null);
+    if (members.actors.some((member) => member.kind === "agent" && member.id === actor.id)) {
+      log.info("wake approval skipped: agent is already a member of this conversation", {
+        cid: state.cid,
+        agentId: actor.id,
+        source,
+      });
+      return null;
+    }
+  } catch (err) {
+    log.warn(`wake gate member lookup failed cid=${state.cid}: ${(err as Error).message}`);
+  }
+
   const decision = await evaluateWake(state.uid, {
     conversationId: state.cid,
     agentId: actor.id,
@@ -11867,10 +12197,10 @@ async function resolveDispatchedAbilityAssets(
       return { ok: false, error: DISPATCHED_ASSET_ERRORS.unauthorized };
     }
     if (!asset) return { ok: false, error: DISPATCHED_ASSET_ERRORS.unauthorized };
-    const gate = await evaluateRecallAssetRuntimeEligibility(uid, asset, context);
+    const gate = await evaluateRecallAssetRuntimeEligibility(uid, asset, { ...context, operation: 'explicit_use' });
     // 同 attach：模型明确点名的授予不做软提示否决（"适用场景"由模型在目录里
     // 自行判断），硬闸保留。
-    const hardBlocks = gate.reasons.filter((reason) => reason !== 'not_applicable_context');
+    const hardBlocks = gate.reasons;
     if (hardBlocks.length) {
       return { ok: false, error: DISPATCHED_ASSET_ERRORS.runtimeDenied };
     }
@@ -12483,11 +12813,11 @@ async function buildCommanderExtraTools(
             ...currentRecallScope,
             purpose: reason || "model_selected",
             ...(typeof currentSourceMessageText === "string" && currentSourceMessageText
-              ? { taskText: currentSourceMessageText.slice(0, 2_000) }
+              ? { taskText: currentSourceMessageText }
               : {}),
-            silentDefaultInjection: true,
+            operation: 'explicit_use',
           });
-          const hardBlocks = gate.reasons.filter((item) => item !== "not_applicable_context");
+          const hardBlocks = gate.reasons;
           if (hardBlocks.length) return _toolError(DISPATCHED_ASSET_ERRORS.runtimeDenied);
           granted.push(asset.id);
         }

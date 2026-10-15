@@ -364,6 +364,11 @@ export interface MarketplaceAgent {
   minVersion?: string;
   min_pc_version?: string;
   minPcVersion?: string;
+  /** C5/N-06：本机客户端版本不足、reconcile 跳过该内容时由列表接口附加（兼容条目缺席，
+   *  不是 `false`）。字段名与 MarketplaceInstallError 一致，渲染层据此显示本地化状态。 */
+  appUpdateRequired?: boolean;
+  /** 标记成立时本机客户端版本（`currentAppVersion()`），供渲染层显示提示。 */
+  currentAppVersion?: string;
 }
 
 export interface MarketplaceSkill {
@@ -390,6 +395,10 @@ export interface MarketplaceSkill {
   min_pc_version?: string;
   minPcVersion?: string;
   artifact?: SkillMetadata['artifact'];
+  /** 同 `MarketplaceAgent.appUpdateRequired`。 */
+  appUpdateRequired?: boolean;
+  /** 同 `MarketplaceAgent.currentAppVersion`。 */
+  currentAppVersion?: string;
 }
 
 export interface AgentDetail {
@@ -443,10 +452,27 @@ export interface SkillDetail {
 }
 
 // ── listing ───────────────────────────────────────────────────────────────
+/** C5/N-06：给列表条目附上"需更新客户端"状态。只有**确实被版本门跳过**的内容才加
+ *  appUpdateRequired/minAppVersion/currentAppVersion；兼容条目原样返回（不加字段），
+ *  渲染层据此显示本地化提示。字段名与 MarketplaceInstallError 一致。 */
+function annotateAppIncompatible<T extends { id?: string }>(items: T[], kind: 'agent' | 'skill'): T[] {
+  const skips = listAppIncompatibleSkips().filter((item) => item.kind === kind);
+  if (!skips.length) return items;
+  return items.map((item) => {
+    const hit = skips.find((skip) => skip.id === String(item?.id || ''));
+    return (hit
+      ? { ...item, appUpdateRequired: true, minAppVersion: hit.minAppVersion, currentAppVersion: hit.currentAppVersion }
+      : item) as T;
+  });
+}
+
 export async function listMarketplaceAgents(
   opts: { category?: string; status?: string; q?: string; page?: number; size?: number } = {},
 ): Promise<{ list: MarketplaceAgent[]; total: number }> {
+  // 2026-10-14（C5/N-06，按 owner 决定"市场内容与客户端同步"）：把本机客户端版本
+  // 随目录请求发出，服务端可按版本下发兼容内容；老服务端忽略该字段，无副作用。
   const res = await postJson<{ list?: unknown; total?: number }>('/marketplace/agents/list', {
+    app_version: currentAppVersion(),
     category: opts.category || null,
     status: opts.status || null,
     q: opts.q || null,
@@ -466,7 +492,7 @@ export async function listMarketplaceAgents(
       color: typeof row.color === 'string' && row.color ? row.color : String(avatar?.color ?? ''),
     }];
   }) as unknown as MarketplaceAgent[];
-  return { ...res, list, total: typeof res.total === 'number' ? res.total : list.length } as { list: MarketplaceAgent[]; total: number };
+  return { ...res, list: annotateAppIncompatible(list, 'agent'), total: typeof res.total === 'number' ? res.total : list.length } as { list: MarketplaceAgent[]; total: number };
 }
 
 export async function listMarketplaceSkills(
@@ -474,6 +500,7 @@ export async function listMarketplaceSkills(
 ): Promise<{ list: MarketplaceSkill[]; total: number }> {
   const uid = getActiveUserId();
   const res = await postJson<{ list?: unknown; total?: number }>('/marketplace/skills/list', {
+    app_version: currentAppVersion(),
     category: opts.category || null,
     status: opts.status || null,
     q: opts.q || null,
@@ -486,7 +513,11 @@ export async function listMarketplaceSkills(
     .filter((row): row is CatalogListRow => row !== null) as unknown as MarketplaceSkill[];
   invalidateMetadataIndex();
   await Promise.all(list.map((row) => observeHubSkillStatus(uid, row.id, row)));
-  return { ...res, list, total: typeof res.total === 'number' ? res.total : list.length };
+  return {
+    ...res,
+    list: annotateAppIncompatible(list, 'skill'),
+    total: typeof res.total === 'number' ? res.total : list.length,
+  };
 }
 
 // Open-source projects专区 — a curated, read-only catalog (config-as-code on
@@ -685,7 +716,9 @@ type MarketplaceInstallOpts = {
   acceptSecurityRisk?: boolean;
 };
 
-function _currentAppVersion(): string {
+/** 当前客户端版本。导出以便目录缓存按版本失效（C5/N-06：市场内容与客户端同步）——
+ *  agents.ts / skills.ts 的 catalog 缓存需要它，但这两个模块没有 electron 依赖。 */
+export function currentAppVersion(): string {
   try { return app.getVersion(); } catch { return ''; }
 }
 
@@ -696,7 +729,7 @@ function _normalizeMarketplaceMinAppVersion(...sources: Array<MinAppVersionSourc
 function _assertMarketplaceAppCompatible(kind: MarketplaceInstallKind, id: string, name: string | undefined, minAppVersion: string): void {
   const min = normalizeMinAppVersion(minAppVersion);
   if (!min) return;
-  const current = _currentAppVersion();
+  const current = currentAppVersion();
   if (satisfiesMinAppVersion(current, min)) return;
   throw new MarketplaceInstallError(
     kind,
@@ -708,7 +741,7 @@ function _assertMarketplaceAppCompatible(kind: MarketplaceInstallKind, id: strin
 }
 
 function _isMarketplaceAppCompatible(minAppVersion: string): boolean {
-  return satisfiesMinAppVersion(_currentAppVersion(), minAppVersion);
+  return satisfiesMinAppVersion(currentAppVersion(), minAppVersion);
 }
 
 export class MarketplaceInstallError extends Error {
@@ -1200,7 +1233,7 @@ export async function previewAgentInstallPlan(agentId: string, expect: Marketpla
   }
   const plan = planAgentDependencies(
     skillList, privateIds, (id) => _localSkillStateForUser(getActiveUserId(), id),
-    (name) => builtinCapabilityAvailable(getActiveUserId(), name, _currentAppVersion()),
+    (name) => builtinCapabilityAvailable(getActiveUserId(), name, currentAppVersion()),
   );
   const items = await Promise.all(plan.items.map(async (item) => {
     let name = item.id;
@@ -1280,7 +1313,7 @@ async function _installMarketplaceAgentLocked(
     // 一个可替换的策略函数。阻断项在下载任何东西之前就拒绝，保证失败时本机原有状态不变。
     const depPlan = planAgentDependencies(
       skillList, privateSkillIds, (id) => _localSkillStateForUser(uid, id),
-      (name) => builtinCapabilityAvailable(uid, name, _currentAppVersion()),
+      (name) => builtinCapabilityAvailable(uid, name, currentAppVersion()),
     );
     const firstBlocked = depPlan.blocked[0];
     if (firstBlocked) {
@@ -1881,7 +1914,7 @@ async function _seedAgentSkillDependencies(
       _assertApprovedDependencySkill(sid, meta.name || sid, { status: meta.status });
       const minAppVersion = meta.min_app_version;
       if (!_isMarketplaceAppCompatible(minAppVersion)) {
-        throw new Error(`requires CogSeed >= ${minAppVersion}; current ${_currentAppVersion() || 'unknown'}`);
+        throw new Error(`requires CogSeed >= ${minAppVersion}; current ${currentAppVersion() || 'unknown'}`);
       }
       if (!shouldContinue()) return { seeded, blocked: true };
       await addSkillInstall(uid, {
@@ -2236,4 +2269,59 @@ export async function uninstallMarketplaceSkillForUser(userId: string, skillId: 
     void runVersionGcAfterUninstall(userId);
     return { ok: true, id: skillId };
   });
+}
+
+// ── 因客户端版本不足被跳过的市场内容（C5/N-06）────────────────────────────
+/** 需要更新客户端才能安装/使用的内容。字段与 MarketplaceInstallError 的
+ *  appUpdateRequired / minAppVersion / currentAppVersion 对齐，渲染层可直接复用同一
+ *  套本地化提示。收集是进程内的；按用户过滤在投影/渲染侧进行。 */
+export interface AppIncompatibleSkip {
+  id: string;
+  kind: 'agent' | 'skill';
+  minAppVersion: string;
+  currentAppVersion: string;
+  at: string;
+}
+
+const _appIncompatibleSkips: AppIncompatibleSkip[] = [];
+
+/** 记录一条"因版本不足被跳过"的内容（幂等：同一 id+kind 只留一条）。由
+ *  marketplace_reconcile 在 min_app_version 门处回调；该方向已有导入，零新增环。 */
+export function recordAppIncompatibleSkip(
+  row: { id?: string },
+  kind: 'agent' | 'skill',
+  minAppVersion: string,
+): void {
+  const id = String(row?.id || '').trim();
+  if (!id) return;
+  if (_appIncompatibleSkips.some((item) => item.id === id && item.kind === kind)) return;
+  _appIncompatibleSkips.push({
+    id,
+    kind,
+    minAppVersion,
+    currentAppVersion: currentAppVersion(),
+    at: new Date().toISOString(),
+  });
+}
+
+/** 当前因客户端版本不足被跳过的内容（供列表投影/渲染层显示兼容状态）。 */
+export function listAppIncompatibleSkips(): AppIncompatibleSkip[] {
+  return [..._appIncompatibleSkips];
+}
+
+/** 撤销一条旧标记：同一 id+kind 上一轮因版本不足被跳过、这一轮已经兼容时调用。
+ *  没有它，内容端下调 `min_app_version` 后卡片会永远停在「需更新客户端」——
+ *  标记是进程内累积的，只有显式撤销才会消失。 */
+export function clearAppIncompatibleSkip(row: { id?: string }, kind: 'agent' | 'skill'): void {
+  const id = String(row?.id || '').trim();
+  if (!id) return;
+  for (let i = _appIncompatibleSkips.length - 1; i >= 0; i -= 1) {
+    const item = _appIncompatibleSkips[i];
+    if (item.id === id && item.kind === kind) _appIncompatibleSkips.splice(i, 1);
+  }
+}
+
+/** 清空收集（版本满足后或新一轮扫描前调用，避免陈旧状态留在界面上）。 */
+export function clearAppIncompatibleSkips(): void {
+  _appIncompatibleSkips.length = 0;
 }

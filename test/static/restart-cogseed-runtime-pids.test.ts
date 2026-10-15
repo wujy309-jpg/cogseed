@@ -30,6 +30,12 @@ const SNAPSHOT = [
   `200 ${nested}/node_modules/electron/dist/CogSeed.app/Contents/MacOS/Electron ${nested} --cogseed-runtime-variant=cogseed`,
   `300 node ${appDir}/p3394-gateway/gateway.cjs --port 0`,
   `301 node ${nested}/p3394-gateway/gateway.cjs --port 0`,
+  `102 ./node_modules/electron/dist/CogSeed.app/Contents/MacOS/Electron ${appDir} --cogseed-runtime-variant=cogseed --remote-debugging-port=9223`,
+  `500 ${exe} --require ${appDir}/scripts/test-env/convert-source-map-guard.cjs ${appDir}/node_modules/vitest/vitest.mjs run`,
+  `501 ${exe} --experimental-import-meta-resolve --require ${appDir}/node_modules/vitest/suppress-warnings.cjs`,
+  `502 ${nested}/node_modules/electron/dist/CogSeed.app/Contents/MacOS/Electron ${nested}/node_modules/vitest/vitest.mjs run`,
+  `503 ${nested}/node_modules/electron/dist/CogSeed.app/Contents/MacOS/Electron ${nested} --cogseed-runtime-variant=another`,
+  `504 ${nested}/node_modules/electron/dist/CogSeed.app/Contents/MacOS/Electron ${nested} --cogseed-runtime-variant=cogseed-other`,
   `400 /Applications/SomeOther.app/Contents/MacOS/SomeOther --flag`,
 ].join('\n');
 
@@ -41,7 +47,15 @@ function run(fn: 'worktree_runtime_pids' | 'other_worktree_runtime_pids'): strin
 
 describe('restart-cogseed worktree pid matching', () => {
   it('matches only this worktree main process and its gateway', () => {
-    expect(run('worktree_runtime_pids').sort()).toEqual(['100', '101', '300']);
+    expect(run('worktree_runtime_pids').sort()).toEqual(['100', '101', '102', '300']);
+  });
+
+  it('不停止 Electron 测试进程，也不把它们报告为另一工作区实例', () => {
+    expect(run('worktree_runtime_pids')).not.toContain('500');
+    expect(run('worktree_runtime_pids')).not.toContain('501');
+    expect(run('other_worktree_runtime_pids')).not.toContain('502');
+    expect(run('other_worktree_runtime_pids')).not.toContain('503');
+    expect(run('other_worktree_runtime_pids')).not.toContain('504');
   });
 
   it('never counts a nested worktree instance as this worktree', () => {

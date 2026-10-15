@@ -57,7 +57,9 @@ describe('governance inbox anti-drift guards (specs/010 T038)', () => {
     for (const [name, source] of [['views.js', viewsSource], ['core.js', coreSource]] as const) {
       expect(source, `${name} 不得调用门禁判据`).not.toContain('validatePromotionByAssetType');
     }
-    expect(viewsSource).not.toContain('rule_boundary_required');
+    // Translating an already-computed reason into a readable label is allowed;
+    // recomputing whether boundaries are sufficient in the Renderer is not.
+    expect(viewsSource).not.toMatch(/function\s+hasBoundary\s*\(/);
   });
 
   it('③ 无第二处「已处理标记位」：退场只有既有三套机制', () => {
@@ -71,15 +73,14 @@ describe('governance inbox anti-drift guards (specs/010 T038)', () => {
     expect(adapterSource).not.toContain('acknowledgedEscalations');
   });
 
-  it('④ 模型工具面仅按批准方案扩展：全量工具名集合保持 73，治理动作不是模型工具', async () => {
+  it('④ 模型工具名集合保持已登记的76件，治理动作不是模型工具', async () => {
     // 从 catalog 常量派生（不抄名单——012 的 tag-ranking-guard 另有全量冻结）。
     const { TOOL_CATALOG } = await import('../../../../src/main/model/core-agent/tool-catalog');
     const names = TOOL_CATALOG.map((tool) => tool.name);
-    // 2026-09-28：71→72（新增 list_ontology_graph）；2026-10-03：72→73
-    //（新增受治理的 ontology_query，只返回关系证据，不读取资产正文）。
-    expect(names.length).toBe(73);
+    // 2026-10-13：保留已有对象管理和只读工具，移除四个对话即时形成工具。
+    expect(names.length).toBe(76);
     // 本 feature 的新动作名是**用户的界面动作**，不得注册成模型工具。
-    for (const notTool of ['classify_ability_assets', 'set_rule_boundary', 'claim_conflict']) {
+    for (const notTool of ['classify_ability_assets', 'set_rule_boundary', 'claim_conflict', 'propose_ability_asset']) {
       expect(names).not.toContain(notTool);
     }
   });

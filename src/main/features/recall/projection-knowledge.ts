@@ -55,6 +55,11 @@ export async function loadOntologyFacts(
   context: { projectId?: string; workspaceId?: string; taskText?: string } = {},
 ): Promise<import('./world-model-types').WorldModelOntologyFact[]> {
   const facts: import('./world-model-types').WorldModelOntologyFact[] = [];
+  // P-r1-107 读侧按 id 去重：factKey 覆盖 (组, 字段, 归一值) 三元组，同字段
+  // 下两条空白变体值（"北京" vs " 北京 "）归一后生成**相同 id** 的事实——
+  // 此前不查重，重复计入 top-24 挤占预算，下游按 id 消费还会见到假重复。
+  // 写侧查重口径是写时归一，管不了存量盘上的空白变体，读侧兜住。
+  const seenFactIds = new Set<string>();
   let groups: ReturnType<typeof readGroups>;
   try {
     groups = readGroups(userId).slice(0, 48);
@@ -82,8 +87,11 @@ export async function loadOntologyFacts(
         const factKey = createHash('sha256')
           .update(`${group.group_id}\0${field.name}\0${value}`)
           .digest('hex');
+        const factId = `po-fact-${factKey.slice(0, 24)}`;
+        if (seenFactIds.has(factId)) continue;
+        seenFactIds.add(factId);
         facts.push({
-          id: `po-fact-${factKey.slice(0, 24)}`,
+          id: factId,
           groupTitle: String(group.title || group.group_id).slice(0, 200),
           field: String(field.name || '').trim().slice(0, 200),
           value,

@@ -40,6 +40,7 @@ import * as fs from 'node:fs';
 import * as paths from '../../paths';
 import { getCurrentLang } from '../../i18n';
 import { bundledRuntimeEnv, bundledRuntimePathEntries } from '../../util/bundled-runtime';
+import { validateReasoningEffort } from '../reasoning_effort';
 
 interface NoopRecorder {
   record(event: unknown): void;
@@ -534,6 +535,11 @@ function toolCounter(stats: ModelRunLogDiagnostics, rawName: unknown): ToolRunLo
   }
   return stats.toolCounts[name];
 }
+
+/** A turn that takes longer than this before its first stream event is worth a
+ *  warn: it separates "endpoint/network stall before the response" from "slow
+ *  stream mid-turn" (N-05). Not a timeout — the provider SDK still owns that. */
+const FIRST_BYTE_SLOW_MS = 30_000;
 
 const MAX_TOOL_TIMELINE_LOG_ENTRIES = 80;
 const MAX_RUN_TIMELINE_LOG_ENTRIES = 120;
@@ -1103,6 +1109,8 @@ export async function* streamChatWithModel(opts: ChatOptions): AsyncGenerator<St
     sourceMessageFromUser,
     sourceMessageText,
     onCognitionSaveReceipt,
+    onAssetUsageClaim,
+    suppliedAbilityAssets,
     onResolvedRuntime,
     projectId,
     spaceId,
@@ -1115,6 +1123,7 @@ export async function* streamChatWithModel(opts: ChatOptions): AsyncGenerator<St
     onSkillInvoked,
     cacheRetention,
     thinkingLevel,
+    supportedReasoningLevels,
     modelOverride,
     nested = false,
     drainSteer,
@@ -1317,6 +1326,10 @@ export async function* streamChatWithModel(opts: ChatOptions): AsyncGenerator<St
   let abortedFlag = false;
   let terminalFailureCode = '';
   let terminalFailurePhase: StreamEvent['failurePhase'];
+  /** Reporting half of the deterministic-failure breaker. Hoisted because the
+   *  terminal-status block runs in `finally`, where `built` is out of scope. */
+  let toolFailureProbe: (() => { kind: string; code: string; reason: string; failures: number; tool: string } | null)
+    | null = null;
   // Set only after runner construction and all host-side preflight gates pass.
   // This is the taxonomy boundary between setup/config failures and failures
   // produced by an attempted model run; do not replace it with text matching.
@@ -1355,6 +1368,8 @@ export async function* streamChatWithModel(opts: ChatOptions): AsyncGenerator<St
       ...(sourceMessageId ? { sourceMessageId } : {}),
       ...(sourceMessageFromUser ? { sourceMessageFromUser: true } : {}),
       ...(onCognitionSaveReceipt ? { onCognitionSaveReceipt } : {}),
+      ...(onAssetUsageClaim ? { onAssetUsageClaim } : {}),
+      ...(suppliedAbilityAssets ? { suppliedAbilityAssets } : {}),
       ...(sourceMessageText ? { userMessage: sourceMessageText } : message ? { userMessage: message } : {}),
       ...(recallAnswerEvidence ? { recallAnswerEvidence } : {}),
       ...(projectId ? { projectId } : {}),
@@ -1400,6 +1415,7 @@ export async function* streamChatWithModel(opts: ChatOptions): AsyncGenerator<St
       },
     });
     const { runner, providerId, modelId, resolvedSystemPrompt, turnEphemeral, profileId, entryId, toolDefs, skillDisplayNameById, agentDisplayNameById, finalResponseGate } = built;
+    toolFailureProbe = built.toolFailure;
     resolvedRuntimePublisher.setToolNames(toolDefs.map((tool) => tool.name));
     resolvedRuntimePublisher.publish({
       providerId,
@@ -1487,6 +1503,25 @@ export async function* streamChatWithModel(opts: ChatOptions): AsyncGenerator<St
 
     const sandboxEnv = buildSkillSandboxEnv(userId, agentId);
 
+    // Option C preflight (before `modelRunStarted`, so the taxonomy stays
+    // model_preflight): refuse an explicit tier the effective model does not
+    // declare. Only fires when the caller resolved a declaration — an absent
+    // list means "unknown", not "none", so third-party callers keep today's
+    // behavior.
+    const effortVerdict = validateReasoningEffort({
+      model: `${providerId || ''}/${modelId || ''}`,
+      supported: supportedReasoningLevels,
+      requested: thinkingLevel,
+    });
+    if (!effortVerdict.ok) {
+      log.warn('reasoning effort refused before provider call', {
+        ...turnLogContext,
+        requested_thinking_level: thinkingLevel,
+        supported_thinking_levels: supportedReasoningLevels,
+      });
+      throw new Error(`unsupported reasoning effort '${thinkingLevel}' for ${providerId || ''}/${modelId || ''}`);
+    }
+
     log.info('model turn run start', turnLogContext);
     const requestMetadata = attachmentMetadata ? { attachmentMetadata } : {};
 
@@ -1503,6 +1538,29 @@ export async function* streamChatWithModel(opts: ChatOptions): AsyncGenerator<St
       })
       : undefined);
     transitionLiveRunTimings(liveRunTimings, 'provider');
+    // R-09 mitigation (host side): run the session's tool-protocol repair
+    // *before* the provider sees the session, not only in the post-turn finally.
+    // A chain left broken by a previous turn (orphan tool_use, unmatched
+    // tool_result, duplicated tool_call_id — the image-as-user-message shape the
+    // vendored provider emits) otherwise surfaces as a hard provider 400 on the
+    // very first attempt of the next turn; the 2026-10-13 run shows exactly that
+    // ("CogSeed model provider request failed (400)" on the worker's first try,
+    // while the post-turn log still reported changed: true).
+    try {
+      const cachedForHeal = await _getCachedSession(sessionId);
+      const heal = (cachedForHeal as { healAndPersist?: () => boolean } | null | undefined)?.healAndPersist;
+      if (typeof heal === 'function' && heal.call(cachedForHeal)) {
+        const report = typeof (cachedForHeal as { getLastToolProtocolRepairReport?: () => unknown })
+          .getLastToolProtocolRepairReport === 'function'
+          ? (cachedForHeal as { getLastToolProtocolRepairReport: () => Record<string, unknown> })
+            .getLastToolProtocolRepairReport()
+          : {};
+        log.warn('repaired tool protocol before provider call', { session_id: maskedSessionId, ...report });
+      }
+    } catch (err) {
+      // Advisory: a heal failure must not block the turn.
+      log.warn('pre-turn tool protocol heal failed', { ...turnLogContext, error: logErrorRef(err) });
+    }
     const rawEvents = runner.runStream({
       message,
       ...(resumeActiveTurn ? { resumeActiveTurn: true } : {}),
@@ -1628,12 +1686,34 @@ export async function* streamChatWithModel(opts: ChatOptions): AsyncGenerator<St
     // terminal final/error synthesis. We re-yield every event it produces,
     // resetting the idle timer on each one.
     let eventCount = 0;
+    // N-05 visibility: time to the first stream event. "Request timed out." is
+    // raised by the provider SDK, not by us, so the useful question is *where* a
+    // slow turn spends its time — before the first byte (endpoint/network or a
+    // pre-header stall) or between events mid-stream. The provider line below
+    // makes that answer retrievable from the log alone.
+    let firstStreamEventAt: number | null = null;
     const mappedEvents = mapCoreAgentEvents(captureResult(rawEvents), { userId, skillDisplayNameById, agentDisplayNameById });
     for await (const ev of stopStreamOnAbort(mappedEvents, controller.signal, turnTag)) {
       // The raw-event wrapper owns phase tracking. Reset here too because
       // mapped UI events can be synthesized from accumulated raw state.
       resetIdle();
       eventCount += 1;
+      if (firstStreamEventAt === null) {
+        firstStreamEventAt = Date.now();
+        const firstByteMs = firstStreamEventAt - runStartedAt;
+        // Compact, greppable line. The structured variant buried `ms` at the end of a
+        // very long context spread, so the one number that answers "network or model?"
+        // could not be extracted from the log (2026-10-13). Detail stays on the slow path.
+        log.info(`model turn first byte ms=${firstByteMs}`);
+        if (firstByteMs >= FIRST_BYTE_SLOW_MS) {
+          log.warn('model turn slow to first byte', {
+            ...turnLogContext,
+            ms: firstByteMs,
+            provider: providerId,
+            model: modelId,
+          });
+        }
+      }
       let outgoing: StreamEvent = ev;
       if (ev.type === 'error' && !(ev as StreamEvent).aborted) {
         terminalFailureCode = (ev as StreamEvent).failureCode || 'model_stream_error';
@@ -1769,6 +1849,23 @@ export async function* streamChatWithModel(opts: ChatOptions): AsyncGenerator<St
     }
     releaseSlotOnce('finally');
     releaseSessionOnce('finally');
+    // Reporting half of the deterministic-failure breaker: the breaker already
+    // ended the turn (`endTurn: true` via tool-failure-guard.ts); here the turn
+    // records *why*, so the failure is a named state instead of an internal
+    // maintenance state ("organising context"). Only when the turn did not
+    // already fail for another reason — a model/idle error keeps precedence.
+    const toolFailureTrip = toolFailureProbe?.() ?? null;
+    if (toolFailureTrip && !errText && !abortedFlag) {
+      terminalFailureCode = toolFailureTrip.code;
+      log.warn('model turn ended after repeated deterministic tool failures', {
+        ...turnLogContext,
+        tool: toolFailureTrip.tool,
+        failureCode: toolFailureTrip.code,
+        failureKind: toolFailureTrip.kind,
+        countedFailures: toolFailureTrip.failures,
+        reason: toolFailureTrip.reason,
+      });
+    }
     const doneEvent: StreamEvent = { type: 'done' };
     recordModelStreamEventForLog(diagnostics, doneEvent);
     const terminalStatus = abortedFlag

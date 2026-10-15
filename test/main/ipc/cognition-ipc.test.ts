@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as fs from 'node:fs';
 import * as os from 'node:os';
+import * as path from 'node:path';
 import { trustedIpcSender } from '../../helpers/trusted-ipc-sender';
 
 type InvokeResult = { ok: boolean; error?: string } & Record<string, unknown>;
@@ -7,6 +9,7 @@ type InvokeFn = (event: unknown, req: { channel: string; payload?: unknown }) =>
 
 let invokeHandler: InvokeFn | null = null;
 const TEST_UID = 'uCognitionIpc';
+const dialogMock = vi.hoisted(() => vi.fn(async () => ({ canceled: true, filePaths: [] as string[] })));
 
 vi.mock('electron', () => ({
   ipcMain: {
@@ -17,7 +20,7 @@ vi.mock('electron', () => ({
   },
   shell: { openExternal: vi.fn(async () => undefined), showItemInFolder: vi.fn() },
   BrowserWindow: { getFocusedWindow: vi.fn(() => null), getAllWindows: vi.fn(() => []) },
-  dialog: { showOpenDialog: vi.fn(async () => ({ canceled: true, filePaths: [] })) },
+  dialog: { showOpenDialog: dialogMock },
   app: { getPath: vi.fn(() => os.tmpdir()), isPackaged: false },
 }));
 
@@ -41,7 +44,6 @@ vi.mock('../../../src/main/features/cognition', () => ({
     skillId,
     version: '2',
     baselineStatus: 'available',
-    pendingCandidateCount: 1,
     recentReceipts: [],
     versions: [{ version: '2', canRollback: true, rollbackScope: 'full_tree' }],
   })),
@@ -64,24 +66,10 @@ vi.mock('../../../src/main/features/cognition', () => ({
   })),
 }));
 
-vi.mock('../../../src/main/features/cognition/capture-draft', () => ({
-  generateCognitionDraft: vi.fn(async (_uid: string, request: { conversationId: string; messageId: string }) => ({
-    status: 'ready',
-    draft: {
-      title: '模型草稿',
-      summary: '可复用方法',
-      evidenceSummary: '本次证据',
-      sourceLabel: '当前会话',
-      conversationId: request.conversationId,
-      messageId: request.messageId,
-    },
-    context: { messageCount: 3, characterCount: 100 },
-  })),
-}));
-
 beforeEach(async () => {
   // Keep the isolated workspace assigned by test/setup-env.ts.
   invokeHandler = null;
+  dialogMock.mockReset().mockResolvedValue({ canceled: true, filePaths: [] });
   vi.resetModules();
   vi.clearAllMocks();
   vi.doMock('../../../src/main/ipc/local_agents', () => ({ invokeHandlers: {} }));
@@ -101,15 +89,11 @@ function call(channel: string, payload: unknown = {}): Promise<InvokeResult> {
 }
 
 describe('ipc cognition channels', () => {
-  it('只接受会话和消息 ID，并把生成请求交给主进程 feature', async () => {
-    expect((await call('cognition.capture.draft', { conversationId: 'conv_1' })).ok).toBe(false);
-    const result = await call('cognition.capture.draft', {
-      conversationId: 'conv_1',
-      messageId: 'msg_2',
-      text: 'renderer 不应提交对话正文',
-    });
-    expect(result.ok).toBe(true);
-    expect(result.draft).toEqual(expect.objectContaining({ conversationId: 'conv_1', messageId: 'msg_2' }));
+  it('手动认知草稿与保存通道退休，完整参数也无法重新触发形成', async () => {
+    for (const channel of ['cognition.capture.draft', 'cognition.capture.save', 'recall.candidates.save', 'cognition.ontology.import.submit']) {
+      const result = await call(channel, { conversationId: 'conv_1', messageId: 'msg_2', text: '旧手动草稿请求', judgment: '可复用方法', summary: '方法', suggestedType: 'personal', suggestedScope: 'general' });
+      expect(result.ok).toBe(false);
+    }
   });
 
   it('能力资产列表返回当前用户数据', async () => {
@@ -127,6 +111,25 @@ describe('ipc cognition channels', () => {
     }
     for (const stale of ['skill', 'knowledge', 'ontology', 'evaluation']) {
       expect((await call('cognition.assets.list', { type: stale })).ok).toBe(false);
+    }
+  });
+
+  it('本体文件导入只解析用户在原生选择器中选择的文件，并支持取消', async () => {
+    const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'cogseed-ontology-picker-'));
+    const file = path.join(folder, 'project-notes.md');
+    const body = '# 项目负责人\n\n负责人由张浩变更为林青。';
+    fs.writeFileSync(file, body, 'utf8');
+    try {
+      dialogMock.mockResolvedValueOnce({ canceled: false, filePaths: [file] });
+      const selected = await call('cognition.ontology.import.file');
+      expect(selected).toMatchObject({ ok: true, cancelled: false, name: 'project-notes.md', text: body });
+      expect(dialogMock).toHaveBeenCalledTimes(1);
+      expect(dialogMock.mock.calls[0][0]).toMatchObject({ properties: ['openFile'] });
+
+      dialogMock.mockResolvedValueOnce({ canceled: true, filePaths: [] });
+      expect(await call('cognition.ontology.import.file')).toMatchObject({ ok: true, cancelled: true });
+    } finally {
+      fs.rmSync(folder, { recursive: true, force: true });
     }
   });
 

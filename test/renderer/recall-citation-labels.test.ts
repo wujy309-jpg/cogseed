@@ -43,7 +43,7 @@ function parseContractScopes(): string[] {
  *  口径，存量资产里可能出现。 */
 const LEGACY_SCOPES = ['global', 'project', 'agent', 'personal'];
 
-function loadCard() {
+function loadCard(translations?: Record<string, string>) {
   const requested: string[] = [];
   const card: Record<string, unknown> = {
     kind: 'recall_projection_card',
@@ -74,7 +74,7 @@ function loadCard() {
     escapeHtml: (value: unknown) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'),
     // 记录 + 假译：返回值 ≠ key，让标签函数走出「取到译文」分支；命中词表与否
     // 由 requested 里有没有对应 key 断言，不依赖输出文本。
-    t: (key: string) => { requested.push(key); return `«${key}»`; },
+    t: (key: string) => { requested.push(key); return translations ? translations[key] || key : `«${key}»`; },
     uiAlert: () => {},
     console,
   };
@@ -122,6 +122,22 @@ describe('引用行标签词表（类型·范围）', () => {
     const seen = lab.hits();
     for (const type of types) expect(seen).toContain(`chat.recall.type_${type}`);
     for (const scope of contractScopes) expect(seen).toContain(`cognition.capture.scope_${scope}`);
+  });
+
+  it('新认知在引用和投影行使用四语自然名称，不泄漏内部类型或翻译键', async () => {
+    for (const locale of LOCALES) {
+      const lab = loadCard(locale.table);
+      const citation = lab.context.window.recallMemoryCardHtml([{ asset_id: 'new-a', title: 'Saved item', type: 'cognition', scope: 'general' }]);
+      expect(citation).toContain(locale.table['chat.recall.type_cognition']);
+      expect(citation).not.toContain('type_cognition');
+      lab.card.assetSummaries = [{ assetId: 'new-a', title: 'Saved item', type: 'cognition', status: 'active', scope: 'general', version: '1' }];
+      lab.card.totalAssetCount = 1;
+      await lab.context.window.mountRecallProjectionCard(lab.host, { projectionId: 'proj-labels' }, { cid: 'c1', onlyModelSelected: true });
+      expect(lab.host.innerHTML).toContain(locale.table['chat.recall.type_cognition']);
+      expect(lab.host.innerHTML).not.toContain('type_cognition');
+    }
+    const missing = loadCard({});
+    expect(missing.context.window.recallMemoryCardHtml([{ asset_id: 'new-a', title: 'Saved item', type: 'cognition', scope: 'general' }])).toContain('认知');
   });
 
   it('上述词表 key 四语齐全', () => {

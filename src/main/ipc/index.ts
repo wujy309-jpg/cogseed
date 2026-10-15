@@ -1,3 +1,4 @@
+import { requireContentCategory } from '../features/recall/content-category';
 /**
  * IPC wiring — replaces `bridge/routes.py` for the Electron era.
  *
@@ -54,6 +55,8 @@ import * as executionLog from '../features/execution_log';
 import * as workbench from '../features/workbench';
 import * as cognition from '../features/cognition';
 import * as recallCandidates from '../features/recall/candidate-service';
+import { deferRecallCandidate } from '../features/recall/candidate-defer';
+import { projectActivityCandidates, projectLegacyActivityCandidates } from '../features/recall/activity-projection';
 import { withRecallCandidateCapabilities, projectReviewQueueCandidates } from '../features/recall/candidate-capabilities';
 import * as recallAssets from '../features/recall/asset-service';
 import * as recallExperiences from '../features/recall/experience-service';
@@ -93,6 +96,7 @@ import * as effectivenessFeedback from '../features/recall/effectiveness-feedbac
 import * as recallSources from '../features/recall/source-catalog';
 import * as recallCaptures from '../features/recall/capture-service';
 import * as recallCaptureSettings from '../features/recall/capture-settings';
+import { readRecallCaptureStats } from '../features/recall/capture-stats';
 import * as recallViews from '../features/recall/recall-view-service';
 import * as recallTeaching from '../features/recall/teaching-service';
 import * as personalOntologyGroups from '../features/personal_ontology_groups';
@@ -875,21 +879,6 @@ async function ensureKstarWakeProjectionConfirmed(
   return null;
 }
 
-/** 整理记录批量入口的公共校验：id 数组、逐条 safeId、上限 100。 */
-function batchRecallCaptures(
-  ctx: { userId: string },
-  captureIds: unknown,
-  run: (userId: string, ids: string[]) => Promise<{ succeeded: string[]; failed: Array<{ id: string; error: string }> }>,
-): Promise<{ succeeded: string[]; failed: Array<{ id: string; error: string }> }> {
-  if (!Array.isArray(captureIds)
-    || captureIds.length < 1
-    || captureIds.length > 100
-    || captureIds.some((id) => typeof id !== 'string' || !safeId(id))) {
-    throw new Error('invalid recall capture ids');
-  }
-  return run(ctx.userId, captureIds);
-}
-
 function _isRecipientOrigin(value: unknown): value is 'user_selection' | 'cli_fallback' | 'active_floor' {
   return value === 'user_selection' || value === 'cli_fallback' || value === 'active_floor';
 }
@@ -938,6 +927,15 @@ function recallExperienceDetail(exp: recallExperiences.ExperienceRecord) {
     history: exp.history || [],
     createdAt: exp.createdAt,
   };
+}
+
+// 旧个人本体直写通道治理收口（2026-10-06）：po.* 写通道曾留给兼容层，但唯一
+// 渲染消费方（旧 personal-ontology 页）已停驻隐藏停车区，新本体工作台是唯一
+// 入口且把旧记录当只读投影＋送审候选。为防止绕过共同本体命令服务直改旧文档，
+// 与 po.candidates.confirm 同口径：结构化写通道一律拒绝并指向治理入口。
+// features 层函数不动——主进程内部合法流程（候选管道、语义审查等）照常直调。
+function legacyPoWriteClosed(): Promise<never> {
+  return Promise.reject(new Error('legacy personal ontology writes are closed; edit through the governed ontology workbench commands instead'));
 }
 
 const invokeHandlers: Record<string, InvokeHandler> = {
@@ -2371,12 +2369,15 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // 细分（broken/weak/ready）仍由渲染层按 capabilities 做。
   'recall.candidates.list': async ({ view } = {}, ctx) => ({
     ok: true,
+    ...(view === 'activity-queue' ? { assetApprovals: await recallAssetApproval.listAssetChangeProposals(ctx.userId) } : {}),
     candidates: await (async () => {
       const all = await recallCandidates.listRecallCandidates(ctx.userId);
       // 冲突是跨候选判断，只有全量读口算得出来。不传的话列表会说"能确认"，
       // 而晋升闸门按同一批数据判冲突并拒绝——又是一次假审批。
       const conflicts = recallCandidates.recallCandidateConflictingTypes(all);
-      const withCaps = all.map((candidate) => withRecallCandidateCapabilities(candidate, conflicts.get(candidate.id)));
+      const withDetails = await Promise.all(all.map(candidate => recallCandidates.withRecallCandidateProcessingDetails(ctx.userId, candidate)));
+      const withCaps = withDetails.map((candidate) => withRecallCandidateCapabilities(candidate, conflicts.get(candidate.id)));
+      if (view === 'activity-queue') return projectReviewQueueCandidates(projectActivityCandidates(withCaps, await recallAssets.listAbilityAssets(ctx.userId)), true);
       if (view === 'review-queue') return projectReviewQueueCandidates(withCaps);
       return withCaps;
     })(),
@@ -2528,57 +2529,6 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true, context: await recallCaptures.readRecallCaptureContext(ctx.userId, captureId) };
   },
 
-  'recall.captures.retry': async ({ captureId } = {}, ctx) => {
-    if (!safeId(captureId)) throw new Error('invalid recall capture id');
-    return { ok: true, capture: await recallCaptures.retryRecallCapture(ctx.userId, captureId) };
-  },
-
-  'recall.captures.pause': async ({ captureId } = {}, ctx) => {
-    if (!safeId(captureId)) throw new Error('invalid recall capture id');
-    return { ok: true, capture: await recallCaptures.pauseRecallCapture(ctx.userId, captureId) };
-  },
-
-  'recall.captures.resume': async ({ captureId } = {}, ctx) => {
-    if (!safeId(captureId)) throw new Error('invalid recall capture id');
-    return { ok: true, capture: await recallCaptures.resumeRecallCapture(ctx.userId, captureId) };
-  },
-
-  'recall.captures.cancel': async ({ captureId } = {}, ctx) => {
-    if (!safeId(captureId)) throw new Error('invalid recall capture id');
-    return { ok: true, capture: await recallCaptures.cancelRecallCapture(ctx.userId, captureId) };
-  },
-
-  'recall.captures.runNow': async ({ captureId } = {}, ctx) => {
-    if (!safeId(captureId)) throw new Error('invalid recall capture id');
-    return { ok: true, capture: await recallCaptures.runRecallCaptureNow(ctx.userId, captureId) };
-  },
-
-  'recall.captures.batchRetry': async ({ captureIds } = {}, ctx) => {
-    return { ok: true, result: await batchRecallCaptures(ctx, captureIds, recallCaptures.retryRecallCapturesBatch) };
-  },
-
-  'recall.captures.batchRunNow': async ({ captureIds } = {}, ctx) => {
-    // 每条都是一次模型额度消耗：入口只收 id 列表，条数确认由前端弹窗负责
-    //（写死具体数字），这里不再二次拦截。
-    return { ok: true, result: await batchRecallCaptures(ctx, captureIds, recallCaptures.runRecallCapturesNowBatch) };
-  },
-
-  'recall.captures.manualCreate': async ({ conversationId } = {}, ctx) => {
-    if (!safeId(conversationId)) throw new Error('invalid conversation id');
-    return {
-      ok: true,
-      capture: await recallCaptures.queueManualRecallCaptureFromConversation(ctx.userId, conversationId),
-    };
-  },
-
-  'recall.captures.historicalAutoStart': async ({ conversationId } = {}, ctx) => {
-    if (!safeId(conversationId)) throw new Error('invalid conversation id');
-    return {
-      ok: true,
-      capture: await recallCaptures.startHistoricalRecallCapture(ctx.userId, conversationId),
-    };
-  },
-
   // 存量记忆迁移：dryRun 只读盘点；真实迁移必须带用户逐条确认的内容 hash
   // 与预览时源文件指纹。没有显式选择不执行；启动阶段不再自动迁移。
   // 族改名（2026-09-22 快赢·族可命名）：锚资产起按 same_family 连通分量批量写。
@@ -2588,43 +2538,43 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     const updated = await renameAssetFamily(ctx.userId, anchorAssetId.trim(), String(name ?? ''));
     return { ok: true, updated };
   },
-  'recall.memory.migrate': async (payload = {}, ctx) => {
-    if (payload?.dryRun === true) {
-      const { previewLegacyMemoryMigration } = await import('../features/recall/memory-migration');
-      return previewLegacyMemoryMigration(ctx.userId);
-    }
-    const { selectedEntries, expectedFingerprints } = payload;
-    if (!Array.isArray(selectedEntries) || selectedEntries.length === 0) {
-      throw new Error('explicit migration selection is required');
-    }
-    const { migrateLegacyMemoryToAssets } = await import('../features/recall/memory-migration');
-    return migrateLegacyMemoryToAssets(ctx.userId, { selectedEntries, expectedFingerprints });
-  },
-  'recall.scopedMemoryMigration.preview': async (_payload, ctx) => {
-    const { previewLegacyScopedMemoryMigration } = await import('../features/recall/scoped-memory-migration');
-    return previewLegacyScopedMemoryMigration(ctx.userId);
-  },
-  'recall.scopedMemoryMigration.run': async ({ selectedEntries, expectedFingerprints } = {}, ctx) => {
-    if (!Array.isArray(selectedEntries) || selectedEntries.length === 0) {
-      throw new Error('explicit scoped memory migration selection is required');
-    }
-    const { migrateLegacyScopedMemoryToAssets } = await import('../features/recall/scoped-memory-migration');
-    return migrateLegacyScopedMemoryToAssets(ctx.userId, { selectedEntries, expectedFingerprints });
-  },
   'recall.captures.settings.get': async (_input, ctx) => {
-    const [settings, model] = await Promise.all([
+    const [settings, model, runtime] = await Promise.all([
       recallCaptureSettings.readRecallCaptureSettings(ctx.userId),
       auth.getConfigForUser(ctx.userId),
+      recallCaptures.readRecallCaptureModelRuntime(ctx.userId),
     ]);
     return {
       ok: true,
       settings,
+      capabilities: { autoApproval: true },
       model: {
         ...model,
-        configured: auth.hasConfiguredModelForUser(ctx.userId).configured,
-        authorizationRequired: Boolean(auth.getConfiguredModelOAuthExpiredMessageForUser(ctx.userId)),
+        configured: runtime.apiConfigured,
+        ...runtime,
       },
     };
+  },
+
+  // 夜间筛选统计（U01/N-07）：聚合计数与原因码，不含任何原文。
+  'recall.captures.stats': async (_input, ctx) => {
+    const [totals, sweep, budget] = await Promise.all([
+      readRecallCaptureStats(ctx.userId),
+      recallCaptures.readRecallNightlySweep(ctx.userId),
+      (await import('../features/recall/capture-model-budget')).readCaptureModelBudget(ctx.userId),
+    ]);
+    return { ok: true, totals, sweep, budget, runtime: recallCaptures.readRecallNightlySweepRuntime(ctx.userId) };
+  },
+
+  // 手动触发立即返回；扫描在后台跑，进度经 sweep 集合的写通知推给渲染层。
+  'recall.captures.sweep.run': async (_input, ctx) => {
+    if (recallCaptures.readRecallNightlySweepRuntime(ctx.userId).running) {
+      return { ok: true, ran: false, reason: 'sweep_in_flight' };
+    }
+    void recallCaptures.runManualCaptureSweep(ctx.userId).catch((error) => {
+      log.warn('manual recall capture sweep failed', { error: (error as Error).message });
+    });
+    return { ok: true, ran: true };
   },
 
   'recall.captures.settings.update': async (input = {}, ctx) => {
@@ -2632,41 +2582,31 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true, settings };
   },
 
-  'recall.candidates.importPersonalOntology': async ({ candidateId } = {}, ctx) => {
-    if (!safeId(candidateId)) throw new Error('invalid personal ontology candidate id');
-    return { ok: true, candidate: withRecallCandidateCapabilities(await recallCandidates.importPersonalOntologyCandidate(ctx.userId, candidateId)) };
-  },
-
   'recall.candidates.read': async ({ candidateId } = {}, ctx) => {
     if (!safeId(candidateId)) throw new Error('invalid recall candidate id');
-    return { ok: true, candidate: withRecallCandidateCapabilities(await recallCandidates.readRecallCandidate(ctx.userId, candidateId)) };
+    return { ok: true, candidate: withRecallCandidateCapabilities(await recallCandidates.withRecallCandidateProcessingDetails(ctx.userId, await recallCandidates.readRecallCandidate(ctx.userId, candidateId))) };
   },
 
-  'recall.candidates.save': async ({ judgment, value, summary, uncertainty, suggestedType, suggestedScope, suggestedAction, risk, sourceRefs, evidenceRefs, expiresAt, taskRunId, targetAssetId, targetVersionUsed, spaceId, scopePolicy, applicableWhen, forbiddenWhen, manual } = {}, ctx) => {
-    if (typeof judgment !== 'string' || judgment.length > 4_000) throw new Error('invalid recall candidate judgment');
-    if (manual !== undefined && typeof manual !== 'boolean') throw new Error('invalid recall candidate manual flag');
-    if (summary !== undefined && (typeof summary !== 'string' || summary.length > 1_000)) throw new Error('invalid recall candidate summary');
-    if (value !== undefined && (typeof value !== 'string' || value.length > 4_000)) throw new Error('invalid recall candidate value');
-    if (uncertainty !== undefined && (typeof uncertainty !== 'string' || uncertainty.length > 1_000)) throw new Error('invalid recall candidate uncertainty');
-    if (suggestedType !== 'personal' && suggestedType !== 'rule' && suggestedType !== 'template' && suggestedType !== 'skill_method' && suggestedType !== 'fact') throw new Error('invalid recall candidate type');
-    if (typeof suggestedScope !== 'string' || suggestedScope.length > 500) throw new Error('invalid recall candidate scope');
-    if (!Array.isArray(sourceRefs) || sourceRefs.length > 100) throw new Error('invalid recall candidate source refs');
-    if (spaceId !== undefined && !safeId(spaceId)) throw new Error('invalid space id');
-    if (scopePolicy !== undefined && (!scopePolicy || typeof scopePolicy !== 'object' || Array.isArray(scopePolicy))) throw new Error('invalid recall candidate scope policy');
-    if (evidenceRefs !== undefined && (!Array.isArray(evidenceRefs) || evidenceRefs.length > 100)) throw new Error('invalid recall candidate evidence refs');
-    if (suggestedAction !== undefined && !['create', 'update', 'limit_scope', 'pause', 'keep_current', 'reject'].includes(suggestedAction)) throw new Error('invalid recall candidate action');
-    if (targetVersionUsed !== undefined && (typeof targetVersionUsed !== 'string' || !/^[0-9]{1,9}$/.test(targetVersionUsed))) throw new Error('invalid recall candidate target version');
-    if (risk !== undefined && !['low', 'medium', 'high'].includes(risk)) throw new Error('invalid recall candidate risk');
-    if (expiresAt !== undefined && (typeof expiresAt !== 'string' || !Number.isFinite(Date.parse(expiresAt)))) throw new Error('invalid recall candidate expiry');
-    if (taskRunId !== undefined && !safeId(taskRunId)) throw new Error('invalid recall candidate task run id');
-    if (targetAssetId !== undefined && !safeId(targetAssetId)) throw new Error('invalid recall candidate target asset id');
-    if (applicableWhen !== undefined && (!Array.isArray(applicableWhen) || applicableWhen.length > 32)) throw new Error('invalid recall candidate applicable range');
-    if (forbiddenWhen !== undefined && (!Array.isArray(forbiddenWhen) || forbiddenWhen.length > 32)) throw new Error('invalid recall candidate forbidden range');
-    return { ok: true, candidate: withRecallCandidateCapabilities(await recallCandidates.saveRecallCandidate(ctx.userId, { judgment, ...(value !== undefined ? { value } : {}), ...(summary !== undefined ? { summary } : {}), ...(uncertainty !== undefined ? { uncertainty } : {}), suggestedType, suggestedScope, ...(suggestedAction !== undefined ? { suggestedAction } : {}), ...(risk !== undefined ? { risk } : {}), sourceRefs, ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(expiresAt !== undefined ? { expiresAt } : {}), ...(taskRunId !== undefined ? { taskRunId } : {}), ...(targetAssetId !== undefined ? { targetAssetId } : {}), ...(targetVersionUsed !== undefined ? { targetVersionUsed } : {}), ...(spaceId ? { spaceId } : {}), ...(scopePolicy !== undefined ? { scopePolicy } : {}), ...(applicableWhen !== undefined ? { applicableWhen } : {}), ...(forbiddenWhen !== undefined ? { forbiddenWhen } : {}), ...(manual !== undefined ? { manual } : {}) })) };
+  // 逐条历史按当前用户和已存在候选寻址，不接受任意账本 target_ref。
+  'recall.reviewEvidence.read': async ({ candidateId, assetId } = {}, ctx) => {
+    const { readReviewEvidence } = await import('../features/recall/review-evidence');
+    return { ok: true, items: await readReviewEvidence(ctx.userId, { candidateId, assetId }) };
   },
 
-  'recall.candidates.update': async ({ candidateId, judgment, value, evidenceSummary, summary, uncertainty, suggestedType, suggestedScope, suggestedAction, risk, sourceRefs, evidenceRefs, expiresAt, taskRunId, targetAssetId, scopePolicy, applicableWhen, forbiddenWhen } = {}, ctx) => {
-    if (!safeId(candidateId) || typeof judgment !== 'string' || judgment.length > 4_000 || (value !== undefined && (typeof value !== 'string' || value.length > 4_000)) || (summary !== undefined && (typeof summary !== 'string' || summary.length > 1_000)) || (uncertainty !== undefined && (typeof uncertainty !== 'string' || uncertainty.length > 1_000)) || (suggestedType !== 'personal' && suggestedType !== 'rule' && suggestedType !== 'template' && suggestedType !== 'skill_method' && suggestedType !== 'fact') || typeof suggestedScope !== 'string' || suggestedScope.length > 500 || !Array.isArray(sourceRefs) || sourceRefs.length > 100) throw new Error('invalid recall candidate update');
+  'recall.candidates.history': async ({ candidateId } = {}, ctx) => {
+    if (!safeId(candidateId)) throw new Error('invalid recall candidate id');
+    await recallCandidates.readRecallCandidate(ctx.userId, candidateId);
+    const { listReviewDecisions } = await import('../features/cognition/review-decision');
+    const decisions = await listReviewDecisions(ctx.userId, `recall_candidate:${candidateId}`);
+    return { ok: true, items: decisions.map(item => ({
+      decision_id: item.decision_id, decision_type: item.decision_type,
+      actor: item.actor, timestamp: item.timestamp, reason: item.reason,
+      outcome: item.outcome, asset_id: item.asset_id,
+    })) };
+  },
+
+  'recall.candidates.update': async ({ candidateId, judgment, value, evidenceSummary, summary, uncertainty, contentCategory, suggestedType, suggestedScope, suggestedAction, risk, sourceRefs, evidenceRefs, expiresAt, taskRunId, targetAssetId, scopePolicy, applicableWhen, forbiddenWhen } = {}, ctx) => {
+    if (!safeId(candidateId) || typeof judgment !== 'string' || judgment.length > 4_000 || (value !== undefined && (typeof value !== 'string' || value.length > 4_000)) || (summary !== undefined && (typeof summary !== 'string' || summary.length > 1_000)) || (uncertainty !== undefined && (typeof uncertainty !== 'string' || uncertainty.length > 1_000)) || (suggestedType !== 'cognition' && suggestedType !== 'personal' && suggestedType !== 'rule' && suggestedType !== 'template' && suggestedType !== 'skill_method' && suggestedType !== 'fact') || typeof suggestedScope !== 'string' || suggestedScope.length > 500 || !Array.isArray(sourceRefs) || sourceRefs.length > 100) throw new Error('invalid recall candidate update');
     if (evidenceRefs !== undefined && (!Array.isArray(evidenceRefs) || evidenceRefs.length > 100)) throw new Error('invalid recall candidate evidence refs');
     if (evidenceSummary !== undefined && (typeof evidenceSummary !== 'string' || evidenceSummary.length > 4_000)) throw new Error('invalid recall candidate evidence summary');
     if (scopePolicy !== undefined && (!scopePolicy || typeof scopePolicy !== 'object' || Array.isArray(scopePolicy))) throw new Error('invalid recall candidate scope policy');
@@ -2677,36 +2617,54 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (targetAssetId !== undefined && !safeId(targetAssetId)) throw new Error('invalid recall candidate target asset id');
     if (applicableWhen !== undefined && (!Array.isArray(applicableWhen) || applicableWhen.length > 32)) throw new Error('invalid recall candidate applicable range');
     if (forbiddenWhen !== undefined && (!Array.isArray(forbiddenWhen) || forbiddenWhen.length > 32)) throw new Error('invalid recall candidate forbidden range');
-    return { ok: true, candidate: withRecallCandidateCapabilities(await recallCandidates.updateRecallCandidate(ctx.userId, candidateId, { judgment, ...(value !== undefined ? { value } : {}), ...(evidenceSummary !== undefined ? { evidenceSummary } : {}), ...(summary !== undefined ? { summary } : {}), ...(uncertainty !== undefined ? { uncertainty } : {}), suggestedType, suggestedScope, ...(suggestedAction !== undefined ? { suggestedAction } : {}), ...(risk !== undefined ? { risk } : {}), sourceRefs, ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(expiresAt !== undefined ? { expiresAt } : {}), ...(taskRunId !== undefined ? { taskRunId } : {}), ...(targetAssetId !== undefined ? { targetAssetId } : {}), ...(scopePolicy !== undefined ? { scopePolicy } : {}), ...(applicableWhen !== undefined ? { applicableWhen } : {}), ...(forbiddenWhen !== undefined ? { forbiddenWhen } : {}) })) };
+    if (contentCategory !== undefined) requireContentCategory(contentCategory);
+    const updatedCandidate = await recallCandidates.updateRecallCandidate(ctx.userId, candidateId, { judgment, ...(contentCategory !== undefined ? { contentCategory } : {}), ...(value !== undefined ? { value } : {}), ...(evidenceSummary !== undefined ? { evidenceSummary } : {}), ...(summary !== undefined ? { summary } : {}), ...(uncertainty !== undefined ? { uncertainty } : {}), suggestedType, suggestedScope, ...(suggestedAction !== undefined ? { suggestedAction } : {}), ...(risk !== undefined ? { risk } : {}), sourceRefs, ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(expiresAt !== undefined ? { expiresAt } : {}), ...(taskRunId !== undefined ? { taskRunId } : {}), ...(targetAssetId !== undefined ? { targetAssetId } : {}), ...(scopePolicy !== undefined ? { scopePolicy } : {}), ...(applicableWhen !== undefined ? { applicableWhen } : {}), ...(forbiddenWhen !== undefined ? { forbiddenWhen } : {}) });
+    const conflicts = recallCandidates.recallCandidateConflictingTypes(await recallCandidates.listRecallCandidates(ctx.userId));
+    return { ok: true, candidate: withRecallCandidateCapabilities(updatedCandidate, conflicts.get(updatedCandidate.id)) };
   },
 
-  'recall.candidates.defer': async ({ candidateId, note } = {}, ctx) => {
-    if (!safeId(candidateId)) throw new Error('invalid recall candidate id');
-    if (note !== undefined && (typeof note !== 'string' || note.length > 1_000)) throw new Error('invalid recall candidate note');
-    return { ok: true, candidate: withRecallCandidateCapabilities(await recallCandidates.deferRecallCandidate(ctx.userId, candidateId, note)) };
-  },
 
-  'recall.candidates.resume': async ({ candidateId } = {}, ctx) => {
+
+  'recall.candidates.recheckOntologyFormation': async ({ candidateId } = {}, ctx) => {
     if (!safeId(candidateId)) throw new Error('invalid recall candidate id');
-    return { ok: true, candidate: withRecallCandidateCapabilities(await recallCandidates.resumeRecallCandidate(ctx.userId, candidateId)) };
+    const { recheckOntologyFormation } = await import('../features/recall/ontology-formation-recheck');
+    const candidate = await recheckOntologyFormation(ctx.userId, candidateId);
+    const conflicts = recallCandidates.recallCandidateConflictingTypes(await recallCandidates.listRecallCandidates(ctx.userId));
+    return { ok: true, candidate: withRecallCandidateCapabilities(candidate, conflicts.get(candidate.id)) };
   },
 
   'recall.candidates.reject': async ({ candidateId, note } = {}, ctx) => {
     if (!safeId(candidateId)) throw new Error('invalid recall candidate id');
     if (note !== undefined && (typeof note !== 'string' || note.length > 1_000)) throw new Error('invalid recall candidate note');
-    return { ok: true, candidate: withRecallCandidateCapabilities(await recallCandidates.rejectRecallCandidate(ctx.userId, candidateId, note)) };
+    return { ok: true, candidate: withRecallCandidateCapabilities(await recallCandidates.withRecallCandidateProcessingDetails(ctx.userId, await recallCandidates.rejectRecallCandidate(ctx.userId, candidateId, note))) };
   },
 
   'recall.candidates.ignore': async ({ candidateId, note } = {}, ctx) => {
     if (!safeId(candidateId)) throw new Error('invalid recall candidate id');
     if (note !== undefined && (typeof note !== 'string' || note.length > 1_000)) throw new Error('invalid recall candidate note');
-    return { ok: true, candidate: withRecallCandidateCapabilities(await recallCandidates.ignoreRecallCandidate(ctx.userId, candidateId, note)) };
+    return { ok: true, candidate: withRecallCandidateCapabilities(await recallCandidates.withRecallCandidateProcessingDetails(ctx.userId, await recallCandidates.ignoreRecallCandidate(ctx.userId, candidateId, note))) };
+  },
+
+  'recall.candidates.defer': async ({ candidateId } = {}, ctx) => {
+    if (!safeId(candidateId)) throw new Error('invalid recall candidate id');
+    return { ok: true, candidate: withRecallCandidateCapabilities(await deferRecallCandidate(ctx.userId, candidateId)) };
   },
 
   'recall.candidates.keepCurrent': async ({ candidateId, note } = {}, ctx) => {
     if (!safeId(candidateId)) throw new Error('invalid recall candidate id');
     if (note !== undefined && (typeof note !== 'string' || note.length > 1_000)) throw new Error('invalid recall candidate note');
-    return { ok: true, candidate: withRecallCandidateCapabilities(await recallCandidates.keepCurrentRecallCandidate(ctx.userId, candidateId, note)) };
+    return { ok: true, candidate: withRecallCandidateCapabilities(await recallCandidates.withRecallCandidateProcessingDetails(ctx.userId, await recallCandidates.keepCurrentRecallCandidate(ctx.userId, candidateId, note))) };
+  },
+
+  'recall.candidates.undoAutomaticPreview': async ({ candidateId } = {}, ctx) => {
+    if (!safeId(candidateId)) throw new Error('invalid recall candidate id');
+    const service = await import('../features/recall/automatic-formation-undo');
+    return { ok: true, preview: await service.previewAutomaticFormationUndo(ctx.userId, candidateId) };
+  },
+  'recall.candidates.undoAutomatic': async ({ candidateId, previewToken } = {}, ctx) => {
+    if (!safeId(candidateId) || typeof previewToken !== 'string' || !/^[a-f0-9]{64}$/.test(previewToken)) throw new Error('invalid automatic undo request');
+    const service = await import('../features/recall/automatic-formation-undo');
+    return { ok: true, ...(await service.undoAutomaticFormation(ctx.userId, candidateId, previewToken)) };
   },
 
   'recall.candidates.promoteBatch': async ({ candidateIds } = {}, ctx) => {
@@ -2776,6 +2734,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // 渲染层不需要再自己辨真假。返回底层记录形状以保持读兼容。
   'recall.assets.list': async (_args, ctx) => ({
     ok: true,
+    capabilities: { versionedUpdate: true },
     assets: (await formalAssets.listFormalAssets(ctx.userId)).map((asset) => asset.record),
   }),
   'recall.assets.listForSpace': async ({ spaceId } = {}, ctx) => {
@@ -2789,16 +2748,20 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (!safeId(assetId)) throw new Error('invalid recall asset id');
     const asset = await formalAssets.getFormalAsset(ctx.userId, assetId);
     if (!asset) throw new Error('recall ability asset not found');
-    return { ok: true, asset: asset.record };
+    return { ok: true, asset: asset.record, payload: asset.payload };
   },
-  'recall.assets.update': async ({ assetId, title, statement, scope, scopePolicy, type, evidenceRefs, ontologyRefs, relations, derivedFrom, applicableWhen, forbiddenWhen, reason, acknowledgeRecommendation, tags } = {}, ctx) => {
+  'recall.assets.update': async ({ assetId, title, statement, scope, scopePolicy, type, contentCategory, evidenceRefs, ontologyRefs, relations, derivedFrom, applicableWhen, forbiddenWhen, reason, acknowledgeRecommendation, tags, expectedVersion, expectedActiveVersion, reviewedDetails } = {}, ctx) => {
     if (!safeId(assetId)) throw new Error('invalid recall asset id');
     const note = boundedText(reason, 'recall asset update reason', 1_000);
+    for (const version of [expectedVersion, expectedActiveVersion]) {
+      if (version !== undefined && (typeof version !== 'string' || !/^[0-9]{1,9}$/.test(version))) throw new Error('invalid recall asset expected version');
+    }
+    if (contentCategory !== undefined) requireContentCategory(contentCategory);
     if (title !== undefined && (typeof title !== 'string' || title.length > 120)) throw new Error('invalid recall asset title');
     if (statement !== undefined && (typeof statement !== 'string' || statement.length > 4_000)) throw new Error('invalid recall asset statement');
     if (scope !== undefined && (typeof scope !== 'string' || scope.length > 500)) throw new Error('invalid recall asset scope');
     if (scopePolicy !== undefined && (!scopePolicy || typeof scopePolicy !== 'object' || Array.isArray(scopePolicy))) throw new Error('invalid recall asset scope policy');
-    if (type !== undefined && !['personal', 'rule', 'template', 'skill_method', 'fact'].includes(type)) throw new Error('invalid recall asset type');
+    if (type !== undefined && !['cognition', 'personal', 'rule', 'template', 'skill_method', 'fact'].includes(type)) throw new Error('invalid recall asset type');
     if (evidenceRefs !== undefined && !Array.isArray(evidenceRefs)) throw new Error('invalid recall asset evidence');
     if (ontologyRefs !== undefined && !Array.isArray(ontologyRefs)) throw new Error('invalid recall asset ontology refs');
     if (relations !== undefined && !Array.isArray(relations)) throw new Error('invalid recall asset relations');
@@ -2806,11 +2769,22 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (applicableWhen !== undefined && (!Array.isArray(applicableWhen) || applicableWhen.length > 32)) throw new Error('invalid recall asset applicable range');
     if (forbiddenWhen !== undefined && (!Array.isArray(forbiddenWhen) || forbiddenWhen.length > 32)) throw new Error('invalid recall asset forbidden range');
     if (acknowledgeRecommendation !== undefined && typeof acknowledgeRecommendation !== 'boolean') throw new Error('invalid recall asset recommendation acknowledgment');
+    if (reviewedDetails !== undefined && typeof reviewedDetails !== 'boolean') throw new Error('invalid recall asset details review');
+    if (reviewedDetails === true && (typeof statement !== 'string' || !Array.isArray(applicableWhen) || !Array.isArray(forbiddenWhen) || expectedVersion === undefined || expectedActiveVersion === undefined)) {
+      throw new Error('reviewed recall asset details require complete content, conditions and both expected versions');
+    }
     // 标签（specs/012 T009，contracts/ipc.md §四）：只做形状闸（数组 + 每条
     // 字符串 + ≤12 条），逐条 trim/长度/去重由 ability-tag-service 的规范化
     // 唯一处判定；不传 = 不改标签（省略不是清空）。
     if (tags !== undefined && (!Array.isArray(tags) || tags.some((entry) => typeof entry !== 'string') || tags.length > abilityTags.ABILITY_ASSET_TAGS_MAX)) throw new Error('invalid recall asset tags');
-    return { ok: true, asset: await recallAssets.updateAbilityAsset(ctx.userId, assetId, { ...(title !== undefined ? { title } : {}), ...(statement !== undefined ? { statement } : {}), ...(scope !== undefined ? { scope } : {}), ...(scopePolicy !== undefined ? { scopePolicy } : {}), ...(type !== undefined ? { type } : {}), ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(ontologyRefs !== undefined ? { ontologyRefs } : {}), ...(relations !== undefined ? { relations } : {}), ...(derivedFrom !== undefined ? { derivedFrom } : {}), ...(applicableWhen !== undefined ? { applicableWhen } : {}), ...(forbiddenWhen !== undefined ? { forbiddenWhen } : {}), ...(tags !== undefined ? { tags } : {}), reason: note, actor: 'user', ...(acknowledgeRecommendation !== undefined ? { acknowledgeRecommendation } : {}) }) };
+    const update: recallAssets.UpdateAbilityAssetInput = { ...(contentCategory !== undefined ? { contentCategory } : {}), ...(title !== undefined ? { title } : {}), ...(statement !== undefined ? { statement } : {}), ...(scope !== undefined ? { scope } : {}), ...(scopePolicy !== undefined ? { scopePolicy } : {}), ...(type !== undefined ? { type } : {}), ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(ontologyRefs !== undefined ? { ontologyRefs } : {}), ...(relations !== undefined ? { relations } : {}), ...(derivedFrom !== undefined ? { derivedFrom } : {}), ...(applicableWhen !== undefined ? { applicableWhen } : {}), ...(forbiddenWhen !== undefined ? { forbiddenWhen } : {}), ...(tags !== undefined ? { tags } : {}), reason: note, actor: 'user', ...(expectedVersion !== undefined ? { expectedVersion } : {}), ...(expectedActiveVersion !== undefined ? { expectedActiveVersion } : {}), ...(acknowledgeRecommendation !== undefined ? { acknowledgeRecommendation } : {}) };
+    // Only the complete details-save entry point can attest to a newly reviewed
+    // body. The feature still checks the real locked baseline and semantic diff;
+    // a renderer flag or a generic actor/reason cannot create that authority.
+    const asset = reviewedDetails === true
+      ? await recallAssets.saveUserStandingPreferenceDetails(ctx.userId, assetId, { ...update, statement, applicableWhen, forbiddenWhen, expectedVersion, expectedActiveVersion, reason: note })
+      : await recallAssets.updateAbilityAsset(ctx.userId, assetId, update);
+    return { ok: true, asset };
   },
   'recall.assets.pause': async ({ assetId, note } = {}, ctx) => { if (!safeId(assetId) || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall asset pause'); return { ok: true, asset: await recallAssets.pauseAbilityAsset(ctx.userId, assetId, { actor: 'user', reason: note ?? 'user pause' }) }; },
   'recall.assets.resume': async ({ assetId, note } = {}, ctx) => { if (!safeId(assetId) || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall asset resume'); return { ok: true, asset: await recallAssets.resumeAbilityAsset(ctx.userId, assetId, { actor: 'user', reason: note ?? 'user resume' }) }; },
@@ -2980,9 +2954,14 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (!safeId(proposalId)) throw new Error('invalid asset change proposal id');
     if (!['confirm', 'defer', 'reject'].includes(String(decision))) throw new Error('invalid asset approval decision');
     if (payload !== undefined && (!payload || typeof payload !== 'object' || Array.isArray(payload))) throw new Error('invalid asset approval payload');
-    return { ok: true, ...(await recallAssetApproval.decideAssetChangeProposal(ctx.userId, proposalId, decision, {
+    // P-r3-33 隐式契约显式化：ok 由 decideAssetChangeProposal 的返回自带
+    // （versionConflict/已处置时为 false），此前写死 { ok:true, ...spread } 纯靠
+    // spread 顺序把 false 覆盖回来——服务层改形状即把失败伪装成成功且零护栏。
+    // 现在直接透传 AssetApprovalDecisionResult，回执键集由
+    // test/main/ipc/asset-approval-channels.test.ts 钉住。
+    return await recallAssetApproval.decideAssetChangeProposal(ctx.userId, proposalId, decision, {
       ...(payload !== undefined ? { payload: payload as Record<string, unknown> } : {}),
-    })) };
+    });
   },
 
   // ── 经验目录（specs/016 契约 E1~E6）：与 recall.assets.* 平级的独立段，
@@ -3419,9 +3398,8 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   'recall.projections.previewAndPostCard': async ({ cid, taskRunId, workspaceId, purpose, taskText, authorization, expiresAt } = {}, ctx) => { if (!safeId(cid) || !safeId(taskRunId) || (workspaceId !== undefined && !safeId(workspaceId)) || typeof purpose !== 'string' || (taskText !== undefined && (typeof taskText !== 'string' || taskText.length > 2_000)) || (authorization !== undefined && authorization !== 'user_confirmed' && authorization !== 'workspace_policy' && authorization !== 'not_required') || (expiresAt !== undefined && typeof expiresAt !== 'string')) throw new Error('invalid projection message'); return { ok: true, ...(await recallProjectionMessage.previewAndPostProjectionCard(ctx.userId, { cid, taskRunId, ...(workspaceId !== undefined ? { workspaceId } : {}), purpose, ...(taskText !== undefined ? { taskText } : {}), ...(authorization !== undefined ? { authorization } : {}), ...(expiresAt !== undefined ? { expiresAt } : {}) }, { send: async (payload) => ({ id: (await groupChat.sendCommanderMessage({ userId: ctx.userId, cid, text: String(payload.text || ''), recall_projection_card: { projectionId: payload.card.projectionId, authorization: payload.card.authorization, presentation: 'sidecar' } })).msg?.id || '' }) })) }; },
   'recall.projections.previewAndPostForNextTask': async ({ cid, workspaceId, purpose, taskText, authorization, expiresAt } = {}, ctx) => { if (!safeId(cid) || (workspaceId !== undefined && !safeId(workspaceId)) || (purpose !== undefined && typeof purpose !== 'string') || (taskText !== undefined && (typeof taskText !== 'string' || taskText.length > 2_000)) || (authorization !== undefined && authorization !== 'user_confirmed' && authorization !== 'workspace_policy' && authorization !== 'not_required') || (expiresAt !== undefined && typeof expiresAt !== 'string')) throw new Error('invalid projection message'); return { ok: true, ...(await recallProjectionMessage.previewAndPostProjectionCardForNextTask(ctx.userId, { cid, ...(workspaceId !== undefined ? { workspaceId } : {}), ...(purpose !== undefined ? { purpose } : {}), ...(taskText !== undefined ? { taskText } : {}), ...(authorization !== undefined ? { authorization } : {}), ...(expiresAt !== undefined ? { expiresAt } : {}) }, { send: async (payload) => ({ id: (await groupChat.sendCommanderMessage({ userId: ctx.userId, cid, text: String(payload.text || ''), recall_projection_card: { projectionId: payload.card.projectionId, authorization: payload.card.authorization, presentation: 'sidecar' } })).msg?.id || '' }) })), }; },
   'recall.projections.reviseAndPostCard': async ({ cid, projectionId, purpose, addAssetIds, removeAssetIds, decisionNote } = {}, ctx) => { if (!safeId(cid) || !safeId(projectionId) || (purpose !== undefined && typeof purpose !== 'string') || (addAssetIds !== undefined && (!Array.isArray(addAssetIds) || addAssetIds.length > 100 || addAssetIds.some((id) => !safeId(id)))) || (removeAssetIds !== undefined && (!Array.isArray(removeAssetIds) || removeAssetIds.length > 100 || removeAssetIds.some((id) => !safeId(id)))) || (decisionNote !== undefined && typeof decisionNote !== 'string')) throw new Error('invalid projection message'); return { ok: true, ...(await recallProjectionMessage.reviseAndPostProjectionCard(ctx.userId, { cid, projectionId, ...(purpose !== undefined ? { purpose } : {}), ...(addAssetIds !== undefined ? { addAssetIds } : {}), ...(removeAssetIds !== undefined ? { removeAssetIds } : {}), ...(decisionNote !== undefined ? { decisionNote } : {}) }, { send: async (payload) => ({ id: (await groupChat.sendCommanderMessage({ userId: ctx.userId, cid, text: String(payload.text || ''), recall_projection_card: { projectionId: payload.card.projectionId, authorization: payload.card.authorization, presentation: 'sidecar' } })).msg?.id || '' }) })) }; },
-  // 用户主动使用（2026-09-19）：把用户钉住的资产以 confirmed 投影挂到指定会话
-  //  并发投影卡——下一轮起注入命中，卡上可撤销。显式资产模式（绕语义门、
-  //  过状态硬门），authorization=user_confirmed（IPC 白名单内）。
+  // 会话输入框的 @资产 共用此挂载接口；认知资产页已移除挂载入口。
+  // 保留已确认版本快照与会话卡，供下一轮注入及用户撤销。
   'recall.projections.attachToConversation': async ({ assetId, conversationId, agentId } = {}, ctx) => {
     if (!safeId(assetId) || !safeId(conversationId)) throw new Error('invalid recall projection attach');
     if (agentId !== undefined && !safeId(agentId)) throw new Error('invalid recall projection attach agent');
@@ -3451,10 +3429,10 @@ const invokeHandlers: Record<string, InvokeHandler> = {
 
   'recall.proofs.transfer.prepare': async ({ projectionId, executionId, expectedResultSnapshot } = {}, ctx) => { if (!safeId(projectionId) || !safeId(executionId) || typeof expectedResultSnapshot !== 'string' || expectedResultSnapshot.length > 4_000) throw new Error('invalid transfer proof'); return { ok: true, proof: await recallProofs.prepareTransferProof(ctx.userId, { projectionId, executionId, expectedResultSnapshot }) }; },
   'recall.proofs.transfer.complete': async ({ proofId, status, receiptId, observedTransfer } = {}, ctx) => { if (!safeId(proofId) || (status !== 'succeeded' && status !== 'degraded' && status !== 'rejected') || receiptId !== undefined || typeof observedTransfer !== 'string' || observedTransfer.length > 4_000) throw new Error('invalid transfer completion'); return { ok: true, proof: await recallProofs.completeTransferProof(ctx.userId, proofId, { status, observedTransfer }) }; },
-  'recall.proofs.effectiveness.evaluate': async ({ transferProofId, outcome, observedResult, evidenceRefs } = {}, ctx) => { if (!safeId(transferProofId) || !['better','no_improvement','worse','insufficient_evidence','invalid','rework'].includes(outcome) || typeof observedResult !== 'string' || observedResult.length > 4_000 || !Array.isArray(evidenceRefs) || evidenceRefs.length > 100) throw new Error('invalid effectiveness proof'); return { ok: true, proof: await recallProofs.evaluateEffectivenessProof(ctx.userId, { transferProofId, outcome, observedResult, evidenceRefs }) }; },
+  'recall.proofs.effectiveness.evaluate': async ({ transferProofId, outcome, observedResult, evidenceRefs, baselineExecutionId } = {}, ctx) => { if (!safeId(transferProofId) || !['better','no_improvement','worse','insufficient_evidence','invalid','rework'].includes(outcome) || typeof observedResult !== 'string' || observedResult.length > 4_000 || !Array.isArray(evidenceRefs) || evidenceRefs.length > 100 || (baselineExecutionId !== undefined && !safeId(baselineExecutionId))) throw new Error('invalid effectiveness proof'); return { ok: true, proof: await recallProofs.evaluateEffectivenessProof(ctx.userId, { transferProofId, outcome, observedResult, evidenceRefs, ...(baselineExecutionId !== undefined ? { baselineExecutionId } : {}) }) }; },
 
-  'recall.proofs.effectiveness.feedback': async ({ transferProofId, feedback, note, evidenceRefs } = {}, ctx) => { if (!safeId(transferProofId) || !['positive', 'neutral', 'negative', 'invalid', 'rework'].includes(feedback) || (note !== undefined && typeof note !== 'string') || (evidenceRefs !== undefined && !Array.isArray(evidenceRefs))) throw new Error('invalid effectiveness feedback'); return { ok: true, proof: await effectivenessFeedback.recordEffectivenessFeedback(ctx.userId, { transferProofId, feedback, ...(note !== undefined ? { note } : {}), ...(evidenceRefs !== undefined ? { evidenceRefs } : {}) }) }; },
-  'recall.proofs.effectiveness.feedbackForTask': async ({ taskRunId, feedback, note, evidenceRefs } = {}, ctx) => { if (!safeId(taskRunId) || !['positive', 'neutral', 'negative', 'invalid', 'rework'].includes(feedback) || (note !== undefined && typeof note !== 'string') || (evidenceRefs !== undefined && !Array.isArray(evidenceRefs))) throw new Error('invalid effectiveness feedback'); return { ok: true, ...(await effectivenessFeedback.recordTaskEffectivenessFeedback(ctx.userId, { taskRunId, feedback, ...(note !== undefined ? { note } : {}), ...(evidenceRefs !== undefined ? { evidenceRefs } : {}) })) }; },
+  'recall.proofs.effectiveness.feedback': async ({ transferProofId, feedback, note, evidenceRefs, baselineExecutionId } = {}, ctx) => { if (!safeId(transferProofId) || !['positive', 'neutral', 'negative', 'invalid', 'rework'].includes(feedback) || (note !== undefined && typeof note !== 'string') || (evidenceRefs !== undefined && !Array.isArray(evidenceRefs)) || (baselineExecutionId !== undefined && !safeId(baselineExecutionId))) throw new Error('invalid effectiveness feedback'); return { ok: true, proof: await effectivenessFeedback.recordEffectivenessFeedback(ctx.userId, { transferProofId, feedback, ...(note !== undefined ? { note } : {}), ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(baselineExecutionId !== undefined ? { baselineExecutionId } : {}) }) }; },
+  'recall.proofs.effectiveness.feedbackForTask': async ({ taskRunId, feedback, note, evidenceRefs, baselineExecutionId } = {}, ctx) => { if (!safeId(taskRunId) || !['positive', 'neutral', 'negative', 'invalid', 'rework'].includes(feedback) || (note !== undefined && typeof note !== 'string') || (evidenceRefs !== undefined && !Array.isArray(evidenceRefs)) || (baselineExecutionId !== undefined && !safeId(baselineExecutionId))) throw new Error('invalid effectiveness feedback'); return { ok: true, ...(await effectivenessFeedback.recordTaskEffectivenessFeedback(ctx.userId, { taskRunId, feedback, ...(note !== undefined ? { note } : {}), ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(baselineExecutionId !== undefined ? { baselineExecutionId } : {}) })) }; },
   // 跨作用域使用的确认与撤回。规范 10.2 要求「确认」，这里是确认真正发生的地方
   // ——没有它，confirm 档只会永远停在等待里。撤回后立刻回到需要确认的状态。
   'recall.assets.crossScope': async ({ assetId, confirmed, reason } = {}, ctx) => {
@@ -3545,13 +3523,16 @@ const invokeHandlers: Record<string, InvokeHandler> = {
       receipts: await listAssetUsageReceiptViews(ctx.userId, assetId, limit === undefined ? 50 : limit),
     };
   },
-  'recall.usage.feedback': async ({ cid, messageId, feedback } = {}, ctx) => {
+  'recall.usage.feedback': async ({ cid, messageId, feedback, assetId } = {}, ctx) => {
     if (!safeId(cid) || !safeId(messageId) || (feedback !== 'positive' && feedback !== 'negative')) {
       throw new Error('invalid Recall usage feedback');
     }
+    if (assetId !== undefined && !safeId(assetId)) throw new Error('invalid Recall usage feedback asset');
     return {
       ok: true,
-      result: await recallUsageFeedback.recordRecallMessageFeedback(ctx.userId, { cid, messageId, feedback }),
+      result: await recallUsageFeedback.recordRecallMessageFeedback(ctx.userId, {
+        cid, messageId, feedback, ...(assetId ? { assetId } : {}),
+      }),
     };
   },
 
@@ -3559,28 +3540,20 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // cognition.candidates.decide 三条通道移除——渲染层零调用（09-27 审计与 09-29
   // 探索双证），且 decide 的 accept 分支即时晋升、绕过「待我处理」确认闸，
   // 与 recall.candidates.importPersonalOntology（转待确认）语义相反（B4）。
-  // 服务函数保留：listCognitionCandidates 仍被 skill-summary/assets-adapter 内部
-  // 消费；dashboard/decideCognitionCandidate 的服务文件随「通道退役大批」处置。
+  // 服务函数处置（2026-10-01 死代码真删批更新）：skill-summary 与 assets-adapter
+  // 对 listCognitionCandidates 的两处内部消费已随 P-r1-1（归因死过滤恒空）与
+  // P-r3-1（每列表关联读删）删除，服务现为运行时零消费、仅测试直测（读取映射
+  // 与排序有 cognition.test.ts 钉着），按「有测试依赖保留并登记」留下；
+  // dashboard/decideCognitionCandidate 的服务文件已随通道退役删除（2026-10-01 F-r1-2 兑现）。
 
-  'cognition.receipts.list': async ({ status, agentId, conversationId, skillId, limit } = {}, ctx) => {
-    if (status !== undefined && status !== 'prepared' && status !== 'succeeded' && status !== 'degraded' && status !== 'rejected') throw new Error('invalid cognition receipt status');
-    if (agentId !== undefined && !safeId(agentId)) throw new Error('invalid agent id');
-    if (conversationId !== undefined && !safeId(conversationId)) throw new Error('invalid conversation id');
-    if (skillId !== undefined && !safeId(skillId)) throw new Error('invalid skill id');
-    const n = limit === undefined ? undefined : Number(limit);
-    return { ok: true, receipts: await cognition.listCognitionReuseReceipts(ctx.userId, {
-      ...(status !== undefined ? { status } : {}),
-      ...(agentId !== undefined ? { agentId } : {}),
-      ...(conversationId !== undefined ? { conversationId } : {}),
-      ...(skillId !== undefined ? { skillId } : {}),
-      ...(Number.isFinite(n) && n > 0 ? { limit: Math.min(n, 200) } : {}),
-    }) };
-  },
-
-  'cognition.receipts.read': async ({ executionId } = {}, ctx) => {
-    if (!safeId(executionId)) throw new Error('invalid execution id');
-    return { ok: true, receipt: await cognition.readCognitionReuseReceipt(ctx.userId, executionId) };
-  },
+  // 2026-10-01 组12·退役：cognition.receipts.list / cognition.receipts.read /
+  // cognition.reviewDecisions.list / cognition.skills.audit 四条通道移除——
+  // 渲染层零调用（回执 UI 实际读口是别的通道；已处理历史 UI 用另一数据源），
+  // 通道级测试零（2026-09-30 认知资产质检循环 P-r3-3/P-r3-4，预审决策卡拍板）。
+  // 服务函数处置：listCognitionReuseReceipts（skill-summary/assets-adapter 在用）与
+  // listRecentReviewDecisions（meeting_metrics 汇总在用）保留；唯一消费者就是
+  // 通道的 readCognitionReuseReceipt 与 getSkillVersionMigrationAudit 随通道一并
+  // 删除（真删原则，P-r1-20 的 legacy 双重计数根源随退消解）。
 
   'cognition.assets.list': async ({ type, limit } = {}, ctx) => {
     // N-6: 类型枚举必须与 `CognitionAssetType`（= 四类正式资产）一致。
@@ -3639,40 +3612,16 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     });
   },
 
-  // 「已处理历史」：跨全部候选列出真实落账的审查决定，按处理时间倒序。
-  // 决定账本此前只有按 targetRef 的单读口（存储就是一个 targetRef 一个 jsonl），
-  // 回答不了"我一共处理过什么"，那一段历史在界面上完全看不到。
-  //
-  // 只读既有权威存储，不新增模型、不改候选状态机；`items + total` 与认知资产
-  // 其余读口同一契约。
-  'cognition.reviewDecisions.list': async ({ limit } = {}, ctx) => {
-    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 200)) {
-      throw new Error('invalid review decision limit');
-    }
-    return {
-      ok: true,
-      ...(await cognition.listRecentReviewDecisions(ctx.userId, {
-        ...(limit !== undefined ? { limit } : {}),
-      })),
-    };
-  },
-
-  // 「版本与治理」问的是"这一版改了什么"。版本快照本来就存着全量内容，这里
-  // 只做比对，不新增持久化。没有 diff 的话，"回滚到此版本"对用户就是盲赌。
-  'cognition.assets.diff': async ({ assetId } = {}, ctx) => {
-    if (!safeId(assetId)) throw new Error('invalid cognition asset id');
-    return { ok: true, diffs: await cognition.listCognitionAssetDiffs(ctx.userId, assetId) };
-  },
+  // 2026-10-01 P-r1-23·退役：cognition.assets.diff 通道移除——渲染层零调用
+  // （「版本与治理」页的版本比对走 cognition.skills.diff，有通道级测试），
+  // 且服务读口 listCognitionAssetDiffs 吞一切读错误伪装成「没有变更」。
+  // 服务文件 version-diff-adapter.ts 随通道一并删除（真删原则）；
+  // recall 侧 buildAssetVersionDiffs 实现与其测试不受影响。
 
   'cognition.skills.summary': async ({ skillId } = {}, ctx) => {
     if (!safeId(skillId)) throw new Error('invalid skill id');
     return { ok: true, summary: await cognition.getSkillCognitionSummary(ctx.userId, skillId) };
   },
-
-  'cognition.skills.audit': async (_args, ctx) => ({
-    ok: true,
-    audit: await cognition.getSkillVersionMigrationAudit(ctx.userId),
-  }),
 
   'cognition.skills.diff': async ({ skillId, fromVersion, toVersion } = {}, ctx) => {
     if (!safeId(skillId) || typeof fromVersion !== 'string' || !fromVersion.trim()
@@ -4193,19 +4142,21 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { entries: await contract.listOntologyEntries(ctx.userId) };
   },
 
-  // 可写入的角色模板字段落点（已安装 ∩ T-box）。targets[].fieldRef 是 opaque
-  // 写入句柄，调用方只回传它；label 已拼好，渲染层不重组显示名。
-  'personalOntology.templates.fieldTargets': async (_payload, ctx) => {
-    const contract = await import('../features/personal_ontology_contract');
-    return { targets: await contract.listRoleTemplateFieldTargets(ctx.userId) };
-  },
+  // （P-r1-64，2026-10-01 拍板按前遍结论退役）旧 personalOntology.* 死通道
+  // 九条已删（渲染层零调用，契约审计 r1 矩阵 32 注册/20 活/12 死在册）：
+  // templates.fieldTargets / profile.syncRecall / candidates.confirm /
+  // candidates.reject / groups.fields.list / groups.history.list /
+  // groups.history.restore / groups.deleted.list / groups.fields.remove。
+  // 服务函数全部保留（各有活消费者：fieldTargets→core-agent 工具、
+  // syncRecall→candidate/asset 服务、confirm/reject→po.* 通道与个人上下文、
+  // fields.list→ontology-conflicts、history.restore→po.history.restore、
+  // deleted.list→po.snapshot、fields.remove/fields.list→回归测试钉住）。
+  // verify/cycleRuleKind/sensitivity 三条死通道按 P-r1-28 拍板保留待补
+  // 资产投影守卫，不在本批删除面内。
 
   // ── Personal Ontology Role Templates (角色模板) ──
   'personalOntology.templates.list': async (_payload, ctx) => {
     return { templates: await personalOntologyTemplateFiles.listTemplateStatus(ctx.userId) };
-  },
-  'personalOntology.profile.syncRecall': async (_payload, ctx) => {
-    return { ok: true, ...(await recallProfileSync.schedulePersonalProfileSync(ctx.userId)) };
   },
   // 冲突台账（2026-09-20 本体界面）：读取自带自愈——值已被用户删除的
   // 冲突行顺手清除，返回的每一条都仍然成立。
@@ -4214,34 +4165,26 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     const conflicts = await listConflicts(ctx.userId, typeof groupId === 'string' && groupId ? groupId : undefined);
     return { ok: true, conflicts };
   },
-  // ── 本体候选池（2026-09-20 首次暴露）：此前只有写入方（转写桥/onboarding/
-  // 资产回流），读取与确认零暴露零 UI——回流闭环的确认端在这里补齐。 ──
-  'personalOntology.candidates.list': async (_payload, ctx) => {
+  // ── 旧个人本体候选只作为过渡队列展示；接受必须先转入 Recall 共同审核，不能直写 USER.md / MEMORY.md。 ──
+  'personalOntology.candidates.list': async ({ view } = {}, ctx) => {
     const data = await personalOntologyCandidates.listCandidates(ctx.userId);
-    return { ok: true, candidates: data.candidate_updates || [] };
+    // corrupt（P-r2-7 读侧结构化错误）：池文件坏档时如实带回，渲染层据此
+    // 出「从备份恢复/重置」入口；写侧此时已被 corrupt-guard 拒绝。
+    // 契约漂移修复（2026-10-02 S2 取证）：本通道历史上返回 `candidates`，
+    // 而 rendered 侧 personal-ontology.js 读的是 `candidate_updates`——两边不一致
+    // 导致本体候选横幅在生产上恒报「加载失败」（死功能）。此处**同时**返回两个
+    // 键：老消费方读 candidates 不受影响，横幅恢复可用。
+    const list = view === 'activity-queue' ? projectLegacyActivityCandidates(data.candidate_updates || []) : data.candidate_updates || [];
+    return { ok: true, candidates: list, candidate_updates: list, ...(data.corrupt ? { corrupt: data.corrupt } : {}) };
   },
-  'personalOntology.candidates.confirm': async ({ candidateId, dest, acknowledgeConflict } = {}, ctx) => {
-    if (!candidateId || typeof candidateId !== 'string') throw new Error('missing candidateId');
-    // 冲突门越过标记（specs/014 T014）：布尔校验后透传；命中冲突时返回体带
-    // conflicts[]（渲染层弹「仍然写入」对话用）。
-    if (acknowledgeConflict !== undefined && typeof acknowledgeConflict !== 'boolean') {
-      throw new Error('invalid acknowledgeConflict');
-    }
-    return personalOntologyCandidates.confirmCandidate(
-      ctx.userId,
-      candidateId,
-      dest && typeof dest === 'object' ? dest : {},
-      acknowledgeConflict === true ? { acknowledgeConflict: true } : {},
-    );
-  },
-  'personalOntology.candidates.reject': async ({ candidateId, reason } = {}, ctx) => {
-    if (!candidateId || typeof candidateId !== 'string') throw new Error('missing candidateId');
-    return personalOntologyCandidates.rejectCandidate(
-      ctx.userId,
-      candidateId,
-      typeof reason === 'string' ? reason : undefined,
-    );
-  },
+  // 旧版 personalOntology.candidates.confirm/reject 批量入口已退役；过渡候选
+  // 通过 transferToRecall 进入 Recall 共同审核，之后由统一资产/本体流程处理。
+
+  // （2026-10-01 b2 回滚）cognition.corrupt.list/restore/reset 三通道曾随
+  // P-r1-88 坏档三件套落地，未登记进 014 anti-drift 白名单
+  //（test/main/features/recall/ontology-step2-guard.test.ts）致门禁新增
+  // 失败，已按回滚令移除；重新落地时须先登记该白名单。
+
   'personalOntology.templates.install': async ({ templateId, restoreData }, ctx) => {
     if (!templateId || typeof templateId !== 'string') throw new Error('missing templateId');
     return personalOntologyTemplateFiles.installTemplateFile(ctx.userId, templateId, restoreData === true);
@@ -4259,10 +4202,9 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   },
 
   // ── Personal Ontology Group Fields (挖空表单字段，兼容复合 id) ──
-  'personalOntology.groups.fields.list': async ({ groupId }, ctx) => {
-    if (!groupId || typeof groupId !== 'string') throw new Error('missing groupId');
-    return personalOntologyTemplateFiles.listFieldsByRef(ctx.userId, groupId);
-  },
+  // （P-r1-64 退役）groups.fields.list 与 groups.fields.remove 两条老通道
+  // 已删——渲染层零调用；fields.list 的服务面 listFieldsByRef 仍被
+  // ontology-conflicts 与候选确认消费。
   'personalOntology.groups.fields.append': async ({ groupId, fieldName, value, source, asOf, clearAsOf }, ctx) => {
     if (!groupId || typeof groupId !== 'string') throw new Error('missing groupId');
     if (!fieldName || typeof fieldName !== 'string') throw new Error('missing fieldName');
@@ -4307,21 +4249,18 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (typeof value !== 'string') throw new Error('invalid value');
     return personalOntologyGroups.cycleFieldValueRuleKind(ctx.userId, groupId, fieldName, value);
   },
-  // 组变更历史（spec 007 T304）：快照列表与恢复。
-  'personalOntology.groups.history.list': async ({ groupId }, ctx) => {
-    if (!groupId || typeof groupId !== 'string') throw new Error('missing groupId');
-    return { ok: true, history: personalOntologyGroups.listGroupHistory(ctx.userId, groupId) };
-  },
-  'personalOntology.groups.history.restore': async ({ groupId, snapshotId }, ctx) => {
-    if (!groupId || typeof groupId !== 'string') throw new Error('missing groupId');
-    if (!snapshotId || typeof snapshotId !== 'string') throw new Error('missing snapshotId');
-    return personalOntologyGroups.restoreGroupSnapshot(ctx.userId, groupId, snapshotId);
-  },
-  // 已删除分组列表（spec 009 D5b / T026，待总控确认第 7 条·选项②）：无参，
-  // 只校验转调 features（Constitution II）；恢复复用上面的 history.restore。
+  // 已删除分组列表（spec 009 D5b / T026）：无参，只校验转调 features
+  // （Constitution II）；恢复复用上面的 history.restore。
+  // 2026-10-02 收尾恢复：P-r1-64 判「渲染零调用」漏了协议层活测试
+  // （personal-ontology-deleted-groups.test.ts 三用例按通道名劫持——正是
+  // P-r1-94 指出的 grep 失明盲区），按 v2 判据「有测试依赖→保留」恢复注册；
+  // 原码自标「待总控确认第 7 条·选项②」，退役须先销该测试。
   'personalOntology.groups.deleted.list': async (_payload, ctx) => {
     return { ok: true, deleted: personalOntologyGroups.listDeletedGroups(ctx.userId) };
   },
+  // （P-r1-64 退役）组变更历史两条老通道已删（history.list /
+  // history.restore）——渲染层 v2 面走 po.history.list /
+  // po.history.restore（deleted 随 po.snapshot 下发）。
   // 敏感性（spec 007 T302）：restricted 不进任务自动注入与世界模型。
   'personalOntology.groups.fields.sensitivity': async ({ groupId, fieldName, value, restricted }, ctx) => {
     if (!groupId || typeof groupId !== 'string') throw new Error('missing groupId');
@@ -4336,11 +4275,6 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (!fieldName || typeof fieldName !== 'string') throw new Error('missing fieldName');
     if (typeof value !== 'string') throw new Error('missing value');
     return personalOntologyTemplateFiles.removeFieldValueToRef(ctx.userId, groupId, fieldName, value);
-  },
-  'personalOntology.groups.fields.remove': async ({ groupId, fieldName }, ctx) => {
-    if (!groupId || typeof groupId !== 'string') throw new Error('missing groupId');
-    if (!fieldName || typeof fieldName !== 'string') throw new Error('missing fieldName');
-    return personalOntologyTemplateFiles.removeFieldToRef(ctx.userId, groupId, fieldName);
   },
 
   // ── Personal Ontology Group Entries (流水区，兼容复合 id) ──
@@ -4361,97 +4295,28 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   //  通道保留（contract / @ 引用 / 候选管道等老消费方在用）。──
   'po.snapshot': async (_payload, ctx) => poApi.getPoSnapshot(ctx.userId),
 
-  'po.groups.create': async ({ title }, ctx) => {
-    if (typeof title !== 'string' || !title.trim()) throw new Error('missing title');
-    return poApi.poCreateGroup(ctx.userId, title);
-  },
-  'po.groups.rename': async ({ groupId, title }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (typeof title !== 'string' || !title.trim()) throw new Error('missing title');
-    return poApi.poRenameGroup(ctx.userId, groupId, title);
-  },
-  'po.groups.delete': async ({ groupId }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    return poApi.poDeleteGroup(ctx.userId, groupId);
-  },
-  'po.groups.restore': async ({ groupId }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    return poApi.poRestoreDeletedGroup(ctx.userId, groupId);
-  },
+  'po.groups.create': legacyPoWriteClosed,
+  'po.groups.rename': legacyPoWriteClosed,
+  'po.groups.delete': legacyPoWriteClosed,
+  'po.groups.restore': legacyPoWriteClosed,
   'po.deleted.list': async (_payload, ctx) => ({ deleted: poApi.poListDeletedGroups(ctx.userId) }),
 
-  'po.fields.create': async ({ groupId, name, isRelation, section }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (typeof name !== 'string' || !name.trim()) throw new Error('missing name');
-    return poApi.poCreateField(ctx.userId, groupId, name, {
-      isRelation: isRelation === true,
-      ...(typeof section === 'string' && section ? { section } : {}),
-    });
-  },
-  'po.fields.rename': async ({ groupId, fieldId, name }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (!safeId(fieldId)) throw new Error('missing fieldId');
-    if (typeof name !== 'string' || !name.trim()) throw new Error('missing name');
-    return poApi.poRenameField(ctx.userId, groupId, fieldId, name);
-  },
-  'po.fields.delete': async ({ groupId, fieldId }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (!safeId(fieldId)) throw new Error('missing fieldId');
-    return poApi.poDeleteField(ctx.userId, groupId, fieldId);
-  },
-  'po.fields.setRelation': async ({ groupId, fieldId, isRelation }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (!safeId(fieldId)) throw new Error('missing fieldId');
-    return poApi.poSetFieldRelationFlag(ctx.userId, groupId, fieldId, isRelation === true);
-  },
+  'po.fields.create': legacyPoWriteClosed,
+  'po.fields.rename': legacyPoWriteClosed,
+  'po.fields.delete': legacyPoWriteClosed,
+  'po.fields.setRelation': legacyPoWriteClosed,
 
-  'po.values.add': async ({ groupId, fieldId, text, asOf, ruleKind }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (!safeId(fieldId)) throw new Error('missing fieldId');
-    if (typeof text !== 'string' || !text.trim()) throw new Error('missing text');
-    if (ruleKind !== undefined && ruleKind !== null && ruleKind !== 'operation' && ruleKind !== 'preference' && ruleKind !== 'constraint') {
-      throw new Error('invalid ruleKind');
-    }
-    return poApi.poAddValue(ctx.userId, groupId, fieldId, { text, ...(typeof asOf === 'string' && asOf ? { asOf } : {}), ...(ruleKind ? { ruleKind } : {}) });
-  },
-  'po.values.update': async ({ groupId, valueId, patch }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (!safeId(valueId)) throw new Error('missing valueId');
-    if (!patch || typeof patch !== 'object') throw new Error('missing patch');
-    return poApi.poUpdateValue(ctx.userId, groupId, valueId, patch);
-  },
-  'po.values.delete': async ({ groupId, valueId }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (!safeId(valueId)) throw new Error('missing valueId');
-    return poApi.poDeleteValue(ctx.userId, groupId, valueId);
-  },
+  'po.values.add': legacyPoWriteClosed,
+  'po.values.update': legacyPoWriteClosed,
+  'po.values.delete': legacyPoWriteClosed,
 
-  'po.entries.add': async ({ groupId, text, section }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (typeof text !== 'string' || !text.trim()) throw new Error('missing text');
-    return poApi.poAddEntry(ctx.userId, groupId, text, { ...(typeof section === 'string' && section ? { section } : {}) });
-  },
-  'po.entries.delete': async ({ groupId, entryId }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (!safeId(entryId)) throw new Error('missing entryId');
-    return poApi.poDeleteEntry(ctx.userId, groupId, entryId);
-  },
-  'po.entries.promote': async ({ groupId, entryId, fieldName }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (!safeId(entryId)) throw new Error('missing entryId');
-    if (typeof fieldName !== 'string' || !fieldName.trim()) throw new Error('missing fieldName');
-    return poApi.poPromoteEntry(ctx.userId, groupId, entryId, fieldName);
-  },
+  'po.entries.add': legacyPoWriteClosed,
+  'po.entries.delete': legacyPoWriteClosed,
+  'po.entries.promote': legacyPoWriteClosed,
 
   'po.templates.status': async (_payload, ctx) => ({ templates: await poApi.poListTemplateStatus(ctx.userId) }),
-  'po.templates.install': async ({ templateId, restoreData }, ctx) => {
-    if (typeof templateId !== 'string' || !safeId(templateId)) throw new Error('missing templateId');
-    return poApi.poInstallTemplate(ctx.userId, templateId, restoreData === true);
-  },
-  'po.templates.uninstall': async ({ templateId, archiveMemory }, ctx) => {
-    if (typeof templateId !== 'string' || !safeId(templateId)) throw new Error('missing templateId');
-    return poApi.poUninstallTemplate(ctx.userId, templateId, archiveMemory === true);
-  },
+  'po.templates.install': legacyPoWriteClosed,
+  'po.templates.uninstall': legacyPoWriteClosed,
   'po.templates.archiveInfo': async ({ templateId }, ctx) => {
     if (typeof templateId !== 'string' || !safeId(templateId)) throw new Error('missing templateId');
     return poApi.poTemplateArchiveInfo(ctx.userId, templateId);
@@ -4461,16 +4326,11 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (!safeId(groupId)) throw new Error('missing groupId');
     return { history: poApi.poListHistory(ctx.userId, groupId) };
   },
-  'po.history.restore': async ({ groupId, snapshotId }, ctx) => {
-    if (!safeId(groupId)) throw new Error('missing groupId');
-    if (typeof snapshotId !== 'string' || !snapshotId) throw new Error('missing snapshotId');
-    const { restoreGroupSnapshot } = await import('../features/personal_ontology_groups');
-    return restoreGroupSnapshot(ctx.userId, groupId, snapshotId);
-  },
+  'po.history.restore': legacyPoWriteClosed,
 
   'po.candidates.confirm': async ({ candidateId, dest, acknowledgeConflict }, ctx) => {
-    if (typeof candidateId !== 'string' || !candidateId) throw new Error('missing candidateId');
-    return personalOntologyCandidates.confirmCandidate(ctx.userId, candidateId, dest, { acknowledgeConflict: acknowledgeConflict === true });
+    void candidateId; void dest; void acknowledgeConflict; void ctx;
+    throw new Error('legacy personal ontology candidate confirmation is disabled; transfer it to the common Recall review first');
   },
   'po.candidates.reject': async ({ candidateId }, ctx) => {
     if (typeof candidateId !== 'string' || !candidateId) throw new Error('missing candidateId');
@@ -4482,10 +4342,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (typeof text !== 'string') throw new Error('missing text');
     return poApi.poImportPreview(ctx.userId, text);
   },
-  'po.data.importApply': async ({ items }, ctx) => {
-    if (!Array.isArray(items)) throw new Error('missing items');
-    return poApi.poImportApply(ctx.userId, items);
-  },
+  'po.data.importApply': legacyPoWriteClosed,
 
   // ── 桥接注册：renderer 引用但漏注册的通道（纯转发到现成能力，
   //  零逻辑变更；功能等同 renderer 期望语义）。──
@@ -5441,24 +5298,17 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (typeof spaceId !== 'string' || !safeId(spaceId)) return { state: null };
     return { state: await shareFeishu.getFeishuShare(ctx.userId, spaceId) };
   },
-  'kb.share.needsUpdate': async ({ spaceId } = {}, ctx) => {
-    if (typeof spaceId !== 'string' || !safeId(spaceId)) return { needed: false };
-    return shareFeishu.shareNeedsUpdate(ctx.userId, spaceId);
-  },
+  // 2026-10-01 组12·退役：kb 域 6 条渲染零调用死通道移除（2026-09-30 认知资产
+  // 质检循环 P-r1-92，预审决策卡拍板）——kb.share.needsUpdate / kb.share.appConfig.get /
+  // kb.share.appConfig.clear / kb.share.cogseed.update / kb.share.cogseed.list /
+  // kb.share.cogseed.config.get。服务函数保留（shareNeedsUpdate、
+  // listCogseedShares 等有测试/服务内部消费）。
   // 分享应用配置（独立于消息机器人）：appId/appSecret 存本机，供分享 OAuth 使用。
-  'kb.share.appConfig.get': async (_payload, ctx) => {
-    const cfg = await personalContextManager.getFeishuShareAppConfig(ctx.userId);
-    return { configured: cfg !== null, ...(cfg ? { appId: cfg.appId } : {}) }; // 不回传 appSecret
-  },
   'kb.share.appConfig.set': async ({ appId, appSecret } = {}, ctx) => {
     const aid = typeof appId === 'string' ? appId.trim() : '';
     const secret = typeof appSecret === 'string' ? appSecret.trim() : '';
     if (!aid || !secret) return { ok: false, error: '请填写 App ID 与 App Secret' };
     await personalContextManager.setFeishuShareAppConfig(ctx.userId, { appId: aid, appSecret: secret });
-    return { ok: true };
-  },
-  'kb.share.appConfig.clear': async (_payload, ctx) => {
-    await personalContextManager.setFeishuShareAppConfig(ctx.userId, null);
     return { ok: true };
   },
   // 分享授权：用分享专用应用凭据（或回退机器人凭据）发起写权限 OAuth
@@ -5487,17 +5337,6 @@ const invokeHandlers: Record<string, InvokeHandler> = {
       description: sp?.description,
     }, { force: force === true });
   },
-  'kb.share.cogseed.update': async ({ spaceId } = {}, ctx) => {
-    if (typeof spaceId !== 'string' || !safeId(spaceId)) return { ok: false, code: 'publish_failed', error: 'invalid spaceId' };
-    const sp = await spaces.getSpace(ctx.userId, spaceId);
-    if (!sp) return { ok: false, code: 'publish_failed', error: 'space not found' };
-    return shareCogseed.publishSpaceToCogseedShare(ctx.userId, spaceId, {
-      name: sp.name || spaceId,
-      joinMode: sp.join_mode ?? 'direct',
-      memberPermission: sp.member_permission ?? 'view_export',
-      description: sp.description,
-    }, { force: true });
-  },
   'kb.share.cogseed.syncPolicy': async ({ spaceId } = {}, ctx) => {
     if (typeof spaceId !== 'string' || !safeId(spaceId)) return { ok: false, error: 'invalid spaceId' };
     const sp = await spaces.getSpace(ctx.userId, spaceId);
@@ -5511,14 +5350,9 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (typeof spaceId !== 'string' || !safeId(spaceId)) return { ok: false, error: 'invalid spaceId' };
     return shareCogseed.revokeCogseedShare(ctx.userId, spaceId);
   },
-  'kb.share.cogseed.list': async (_payload, ctx) => ({ items: await shareCogseed.listCogseedShares(ctx.userId) }),
   'kb.share.cogseed.get': async ({ spaceId } = {}, ctx) => {
     if (typeof spaceId !== 'string' || !safeId(spaceId)) return { state: null };
     return { state: await shareCogseed.getCogseedShare(ctx.userId, spaceId) };
-  },
-  'kb.share.cogseed.config.get': async (_payload, ctx) => {
-    const cfg = await shareCogseed.getCogseedShareConfig(ctx.userId);
-    return { configured: cfg !== null, ...(cfg ? { baseUrl: cfg.baseUrl } : {}) }; // 不回传 apiKey
   },
   'kb.share.cogseed.config.set': async ({ baseUrl, apiKey } = {}, ctx) => {
     const url = typeof baseUrl === 'string' ? baseUrl.trim() : '';
@@ -5891,6 +5725,15 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // Thinking strength (reasoning effort) for chat model calls.
   'prefs.getThinkingLevel': async () => ({ level: appConfig.getThinkingLevel() }),
   'prefs.setThinkingLevel': async ({ level }) => ({ level: appConfig.setThinkingLevel(level) }),
+  // Per-model thinking strength (Option C): the explicit tier belongs to the model
+  // it was chosen for, so switching models falls back to Auto by construction.
+  'prefs.getModelThinkingLevels': async () => {
+    const stored = appConfig.readPreferences().model_thinking_levels;
+    return { levels: stored && typeof stored === 'object' ? { ...stored } : {} };
+  },
+  'prefs.setModelThinkingLevel': async ({ provider, model, level }) => ({
+    level: appConfig.setModelThinkingLevel(provider, model, level),
+  }),
 
   // First-run onboarding marker (machine-local, NOT cloud-synced — stored
   // under WS_ROOT/onboarding-state.json, shared across uids). The renderer's

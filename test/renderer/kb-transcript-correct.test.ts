@@ -412,7 +412,7 @@ describe('locale 覆盖', () => {
     'sync_cancel', 'sync_seed_add', 'sync_seed_need_wrong', 'sync_seed_added',
     'sync_seed_skipped', 'sync_seed_failed', 'summary_concepts', 'sync_chips_more',
     'more', 'restore', 'reopen_row', 'restored',
-    'ignored_done', 'ignore_failed', 'group_ignored', 'denied',
+    'ignored_done', 'ignore_failed', 'group_ignored', 'denied', 'denied_more',
     'denied_reason_out_of_scope', 'denied_reason_context_denied', 'denied_reason_context_allowed', 'denied_reason_word_boundary',
     'denied_reason_overlapping_span', 'denied_reason_protected_region',
     'add_allow', 'add_allow_placeholder',
@@ -422,7 +422,7 @@ describe('locale 覆盖', () => {
     'confirm', 'cancel', 'no_context', 'diff',
     'diff_title', 'diff_bar', 'diff_before', 'diff_after',
     'diff_note', 'diff_failed', 'seed_fillers', 'seed_fillers_done',
-    'seed_fillers_failed', 'scan_truncated', 'merge_on', 'merge_off',
+    'seed_fillers_failed', 'scan_truncated', 'merge_on',
     'merged_blocks', 'notes', 'notes_title', 'notes_desc',
     'notes_save', 'notes_suffix', 'notes_saved', 'notes_duplicate',
     'notes_save_failed', 'notes_failed', 'sync_structure_only', 'headings_ask',
@@ -599,8 +599,9 @@ describe('查看器集成契约', () => {
     // 而是把 includeReview 交给 scan，模型建议并进同一个候选列表，仍带 docId 收窄作用域。
     expect(panelSrc).not.toContain("invoke('transcript.correct.flagCandidates'");
     expect(panelSrc).toMatch(/invoke\('transcript\.correct\.scan'[\s\S]{0,400}?includeReview: state\.scanWithReview === true/);
-    // destroy() 必须仍然注销点击监听（场景输入监听一并删除后不要漏掉它）
-    expect(panelSrc).toMatch(/destroy\(\) \{\n\s+container\.removeEventListener\('click', onClick\);/);
+    // destroy() 必须仍然注销点击监听（场景输入监听一并删除后不要漏掉它）；
+    // P-r2-36 在其前先置 disposed 标志（词表回调守卫），故不锚定首行。
+    expect(panelSrc).toMatch(/destroy\(\) \{[\s\S]{0,200}?container\.removeEventListener\('click', onClick\);/);
   });
 
   it('「检索对比」已删除（按钮、函数、状态与分支一并移除）', () => {
@@ -708,9 +709,9 @@ describe('模型建议并入候选列表', () => {
     expect(src).toMatch(/kb-atc__badge--model/);
   });
 
-  it('应用后必须说出"词表被写了"——改了词表却不说，用户无从察觉', () => {
-    expect(src).toMatch(/apply_wrote_glossary/);
-    expect(src).toMatch(/glossaryWrites/);
+  it('应用当前材料不会展示长期词表学习的提示', () => {
+    expect(src).not.toMatch(/apply_wrote_glossary/);
+    expect(src).not.toMatch(/glossaryWrites/);
   });
 });
 
@@ -1474,6 +1475,299 @@ describe('会议引用层：面板页面级（T025/T026/T030）', () => {
   });
 });
 
+describe('扫描失败后的状态清理（F-r1-20：失败分支不得残留旧接受集合/旧清理版）', () => {
+  // 极简 DOM（同「面板页面级」块）：够 render 走完、够点委托按钮即可。
+  function recElement(): any {
+    const el: any = {
+      _text: '', children: [], innerHTML: '', hidden: false, value: '', checked: false,
+      dataset: {}, style: {}, title: '',
+      classList: { add: () => {}, remove: () => {}, contains: () => false, toggle: () => false },
+      appendChild: (child: any) => { el.children.push(child); return child; },
+      append: (...kids: any[]) => { kids.forEach((k) => el.children.push(k)); },
+      addEventListener: () => {}, removeEventListener: () => {},
+      querySelector: () => null, querySelectorAll: () => [], closest: () => null,
+      setAttribute: () => {}, getAttribute: () => null, removeAttribute: () => {},
+      insertBefore: () => {}, insertAdjacentHTML: () => {},
+      focus: () => {}, remove: () => {}, replaceWith: () => {},
+    };
+    Object.defineProperty(el, 'textContent', {
+      get: () => el._text,
+      set: (v: any) => { el._text = String(v ?? ''); el.children = []; el.innerHTML = ''; },
+      configurable: true,
+    });
+    return el;
+  }
+  const attrEl = (attrs: Record<string, string>) => ({
+    getAttribute: (n: string) => (n in attrs ? attrs[n] : null),
+  });
+
+  // scanBehavior.fail 可在用例中翻转：先成功一轮、再失败一轮，复现"成功态残留到失败态"。
+  function mountPanel(scanBehavior: { fail: boolean }) {
+    const nodes = new Map<string, any>();
+    const clickHandlers: Array<(ev: unknown) => void> = [];
+    const container = recElement();
+    container.querySelector = (selector: string) => {
+      if (!nodes.has(selector)) nodes.set(selector, recElement());
+      return nodes.get(selector);
+    };
+    container.addEventListener = (name: string, fn: (ev: unknown) => void) => {
+      if (name === 'click') clickHandlers.push(fn);
+    };
+    const calls: Array<{ channel: string; payload: any }> = [];
+    const scanResult = () => ({
+      candidates: [
+        {
+          entryRef: 'g_low', wrong: 'coxy', correct: 'Cogseed', action: 'replace', riskLevel: 'low',
+          confidence: 1, context: '', span: { start: 0, end: 4 }, ignoredCount: 0, contextAllow: [],
+          channel: 'exact',
+          refs: [{ source: 'glossary', entryId: 'g_low', kind: 'product', freq: 1 }],
+        },
+        {
+          entryRef: 'g_rej', wrong: 'K 星', correct: 'KSTAR', action: 'replace', riskLevel: 'low',
+          confidence: 1, context: '', span: { start: 8, end: 11 }, ignoredCount: 0, contextAllow: [],
+          channel: 'exact',
+          refs: [{ source: 'glossary', entryId: 'g_rej', kind: 'term', freq: 1 }],
+        },
+      ],
+      denied: [],
+      stats: { entriesScanned: 2, candidates: 2, denied: 0, truncated: false },
+      degraded: [],
+      review: null,
+    });
+    const applyResult = () => ({
+      run: { runId: 'run_1', mergedBlocks: 0 },
+      result: { text: '清理后的正文', applied: [], retention: 1, status: 'applied' },
+      receipts: [],
+    });
+    const context: any = {
+      console, setTimeout, clearTimeout, Map, Set, Array, Object, String, Number, JSON, Boolean, Promise,
+      document: { createElement: () => recElement(), body: recElement(), addEventListener: () => {}, removeEventListener: () => {} },
+      cogseed: {
+        invoke: async (channel: string, payload: any) => {
+          calls.push({ channel, payload });
+          if (channel === 'transcript.correct.scan') {
+            if (scanBehavior.fail) throw new Error('scan boom');
+            return scanResult();
+          }
+          if (channel === 'transcript.correct.apply') return applyResult();
+          return {};
+        },
+      },
+      addEventListener: () => {}, removeEventListener: () => {},
+      t: () => '',
+      uiButton: (o: any) => '<button type="button" class="ui-button" '
+        + Object.entries(o?.attrs || {}).map(([k, v]) => `${k}="${v}"`).join(' ')
+        + `>${String(o?.label || '')}</button>`,
+      uiCheckbox: (o: any) => `<input type="checkbox" aria-label="${String(o?.label || '')}">`,
+      uiEmptyState: (o: any) => `<div class="ui-empty-state">${String(o?.title || '')}</div>`,
+    };
+    context.window = context;
+    context.globalThis = context;
+    vm.createContext(context);
+    vm.runInContext(panelSrc, context, { filename: 'kb-transcript-correct.js' });
+    const instance = context.KbTranscriptCorrect.mount(container, {
+      text: '一会儿叫 coxy。',
+      docId: 'doc-f',
+    });
+    const fire = (matches: Record<string, ReturnType<typeof attrEl>>) => {
+      const target = { closest: (sel: string) => matches[sel] || null };
+      for (const fn of [...clickHandlers]) fn({ target });
+    };
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+    return { instance, nodes, fire, flush, calls };
+  }
+
+  it('扫描失败清掉上一轮的接受勾选与清理版：失败空态不再挂「对照原文/另存」，再点生成也不会拿陈旧勾选去 apply', async () => {
+    const behavior = { fail: false };
+    const env = mountPanel(behavior);
+    // 第一轮：扫描成功（exact/confidence=1 候选默认预勾）→ 生成清理版成功
+    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
+    await env.flush();
+    await env.flush();
+    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'apply' }) });
+    await env.flush();
+    await env.flush();
+    const actions = env.nodes.get('[data-atc-actions]');
+    expect(actions.innerHTML).toContain('data-atc-action="diff"');
+    expect(actions.innerHTML).toContain('data-atc-action="save"');
+
+    // 第二轮：扫描失败（主进程/网络异常）
+    behavior.fail = true;
+    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
+    await env.flush();
+    await env.flush();
+    const body = env.nodes.get('[data-atc-body]');
+    expect(body.innerHTML).toContain('扫描失败，请稍后重试。');
+    // 旧清理版的按钮随失败一起清掉：「扫描失败」空态与「对照原文/另存到知识库」不得同屏
+    expect(actions.innerHTML).not.toContain('data-atc-action="diff"');
+    expect(actions.innerHTML).not.toContain('data-atc-action="save"');
+
+    // 旧勾选不再放行 apply：对着失败空态点「生成清理版」不会真的去调 apply
+    const applyCallsBefore = env.calls.filter((c) => c.channel === 'transcript.correct.apply').length;
+    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'apply' }) });
+    await env.flush();
+    await env.flush();
+    expect(env.calls.filter((c) => c.channel === 'transcript.correct.apply').length).toBe(applyCallsBefore);
+    env.instance.destroy();
+  });
+
+  it('拒绝过词条后扫描失败，仍可为写回执生成清理版（T030 放行 rejected-only），且成功后不残留「扫描失败」', async () => {
+    const behavior = { fail: false };
+    const env = mountPanel(behavior);
+    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
+    await env.flush();
+    await env.flush();
+    // 拒绝 g_rej：rejected 是跨轮回执账本（T030 有意设计），扫描失败也不清它
+    env.fire({ '[data-atc-rowmenu]': attrEl({ 'data-atc-rowmenu': 'g_rej' }) });
+    env.fire({ '[data-atc-reject]': attrEl({ 'data-atc-reject': 'g_rej' }) });
+
+    behavior.fail = true;
+    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
+    await env.flush();
+    await env.flush();
+    const body = env.nodes.get('[data-atc-body]');
+    expect(body.innerHTML).toContain('扫描失败，请稍后重试。');
+
+    // 有拒绝回执要写 → 生成清理版仍可用，rejectedIds 如实随请求走
+    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'apply' }) });
+    await env.flush();
+    await env.flush();
+    const applyCall = env.calls.find((c) => c.channel === 'transcript.correct.apply');
+    expect(applyCall?.payload.rejectedIds).toEqual(['g_rej']);
+    // 生成成功后，旧的失败提示不得残留（否则失败空态与成功回执同屏）
+    expect(body.innerHTML).not.toContain('扫描失败');
+    env.instance.destroy();
+  });
+});
+
+describe('被护栏拦截清单的截断披露（F-r4-5：只渲染前 50 条时不装作"就这么多"）', () => {
+  function recElement(): any {
+    const el: any = {
+      _text: '', children: [], innerHTML: '', hidden: false, value: '', checked: false,
+      dataset: {}, style: {}, title: '',
+      classList: { add: () => {}, remove: () => {}, contains: () => false, toggle: () => false },
+      appendChild: (child: any) => { el.children.push(child); return child; },
+      append: (...kids: any[]) => { kids.forEach((k) => el.children.push(k)); },
+      addEventListener: () => {}, removeEventListener: () => {},
+      querySelector: () => null, querySelectorAll: () => [], closest: () => null,
+      setAttribute: () => {}, getAttribute: () => null, removeAttribute: () => {},
+      insertBefore: () => {}, insertAdjacentHTML: () => {},
+      focus: () => {}, remove: () => {}, replaceWith: () => {},
+    };
+    Object.defineProperty(el, 'textContent', {
+      get: () => el._text,
+      set: (v: any) => { el._text = String(v ?? ''); el.children = []; el.innerHTML = ''; },
+      configurable: true,
+    });
+    return el;
+  }
+  const attrEl = (attrs: Record<string, string>) => ({
+    getAttribute: (n: string) => (n in attrs ? attrs[n] : null),
+  });
+  const descendants = (el: any): any[] => {
+    const out: any[] = [];
+    const walk = (node: any) => {
+      for (const child of node?.children || []) { out.push(child); walk(child); }
+    };
+    walk(el);
+    return out;
+  };
+
+  // denied 走主进程原样返回、无上限；这里按指定条数造被拦清单（候选给 1 条，
+  // rows 为空时 renderBody 会提前 return，denied 区不渲染）。
+  function mountDeniedPanel(deniedCount: number) {
+    const nodes = new Map<string, any>();
+    const clickHandlers: Array<(ev: unknown) => void> = [];
+    const container = recElement();
+    container.querySelector = (selector: string) => {
+      if (!nodes.has(selector)) nodes.set(selector, recElement());
+      return nodes.get(selector);
+    };
+    container.addEventListener = (name: string, fn: (ev: unknown) => void) => {
+      if (name === 'click') clickHandlers.push(fn);
+    };
+    const context: any = {
+      console, setTimeout, clearTimeout, Map, Set, Array, Object, String, Number, JSON, Boolean, Promise,
+      document: { createElement: () => recElement(), body: recElement(), addEventListener: () => {}, removeEventListener: () => {} },
+      cogseed: {
+        invoke: async (channel: string) => {
+          if (channel === 'transcript.correct.scan') {
+            return {
+              candidates: [
+                {
+                  entryRef: 'g_low', wrong: 'coxy', correct: 'Cogseed', action: 'replace', riskLevel: 'low',
+                  confidence: 1, context: '', span: { start: 0, end: 4 }, ignoredCount: 0, contextAllow: [],
+                  channel: 'exact',
+                  refs: [{ source: 'glossary', entryId: 'g_low', kind: 'product', freq: 1 }],
+                },
+              ],
+              denied: Array.from({ length: deniedCount }, (_, i) => ({
+                entryRef: `g_d${i}`, wrong: `错${i}`, correct: `对${i}`, reason: 'word_boundary',
+                span: { start: i + 10, end: i + 11 },
+              })),
+              stats: { entriesScanned: 1, candidates: 1, denied: deniedCount, truncated: false },
+              degraded: [],
+              review: null,
+            };
+          }
+          return {};
+        },
+      },
+      addEventListener: () => {}, removeEventListener: () => {},
+      t: () => '',
+      uiButton: (o: any) => '<button type="button" class="ui-button" '
+        + Object.entries(o?.attrs || {}).map(([k, v]) => `${k}="${v}"`).join(' ')
+        + `>${String(o?.label || '')}</button>`,
+      uiCheckbox: (o: any) => `<input type="checkbox" aria-label="${String(o?.label || '')}">`,
+      uiEmptyState: (o: any) => `<div class="ui-empty-state">${String(o?.title || '')}</div>`,
+    };
+    context.window = context;
+    context.globalThis = context;
+    vm.createContext(context);
+    vm.runInContext(panelSrc, context, { filename: 'kb-transcript-correct.js' });
+    const instance = context.KbTranscriptCorrect.mount(container, {
+      text: '一会儿叫 coxy。',
+      docId: 'doc-d',
+    });
+    const fire = (matches: Record<string, ReturnType<typeof attrEl>>) => {
+      const target = { closest: (sel: string) => matches[sel] || null };
+      for (const fn of [...clickHandlers]) fn({ target });
+    };
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+    return { instance, nodes, fire, flush };
+  }
+
+  it('52 处被拦只渲染前 50 条：组头报真实总数，末尾披露「还有 2 处未显示」', async () => {
+    const env = mountDeniedPanel(52);
+    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
+    await env.flush();
+    await env.flush();
+    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'toggle-denied' }) });
+
+    const body = env.nodes.get('[data-atc-body]');
+    const all = descendants(body);
+    // 组头计数用全集（52），可见数据行恰 50 条（截断是性能保护，保留）
+    expect(all.filter((el: any) => el.dataset?.denied === '1').length).toBe(50);
+    // 截断必须披露：剩余条数如实标出，数字与内容不再矛盾
+    const more = all.find((el: any) => el.dataset?.deniedMore === '1');
+    expect(more?._text).toBe('还有 2 处未显示');
+    env.instance.destroy();
+  });
+
+  it('被拦清单不超过 50 处时不出现披露行（不虚报）', async () => {
+    const env = mountDeniedPanel(50);
+    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
+    await env.flush();
+    await env.flush();
+    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'toggle-denied' }) });
+
+    const all = descendants(env.nodes.get('[data-atc-body]'));
+    expect(all.filter((el: any) => el.dataset?.denied === '1').length).toBe(50);
+    expect(all.some((el: any) => el.dataset?.deniedMore === '1')).toBe(false);
+    env.instance.destroy();
+  });
+});
+
 describe('会议引用层：空间库文档如实提示（T023，查看器侧）', () => {
   const viewer = readSrc('renderer/modules/anchored-source-view.js');
 
@@ -1528,202 +1822,17 @@ describe('会议引用层：渲染契约补充（specs/013）', () => {
 
 // ── specs/013 T047：「提出为候选」面板入口（页面级）─────────────────────────
 
-describe('会议引用层：提出为候选面板入口（T047）', () => {
-  function recElement(): any {
-    const el: any = {
-      _text: '', children: [], innerHTML: '', hidden: false, value: '', checked: false,
-      dataset: {}, style: {}, title: '',
-      classList: { add: () => {}, remove: () => {}, contains: () => false, toggle: () => false },
-      appendChild: (child: any) => { el.children.push(child); return child; },
-      append: (...kids: any[]) => { kids.forEach((k) => el.children.push(k)); },
-      addEventListener: () => {}, removeEventListener: () => {},
-      querySelector: () => null, querySelectorAll: () => [], closest: () => null,
-      setAttribute: () => {}, getAttribute: () => null, removeAttribute: () => {},
-      insertBefore: () => {}, insertAdjacentHTML: () => {},
-      focus: () => {}, remove: () => {}, replaceWith: () => {},
-    };
-    Object.defineProperty(el, 'textContent', {
-      get: () => el._text,
-      set: (v: any) => { el._text = String(v ?? ''); el.children = []; el.innerHTML = ''; },
-      configurable: true,
-    });
-    return el;
-  }
-
-  const descendants = (el: any): any[] => {
-    const out: any[] = [];
-    const walk = (node: any) => {
-      for (const child of node?.children || []) { out.push(child); walk(child); }
-    };
-    walk(el);
-    return out;
-  };
-  const markupOf = (el: any): string => {
-    let out = `${el._text ?? ''}${el.innerHTML ?? ''}`;
-    for (const child of el.children || []) out += markupOf(child);
-    return out;
-  };
-  const attrEl = (attrs: Record<string, string>) => ({
-    getAttribute: (n: string) => (n in attrs ? attrs[n] : null),
-  });
-
-  const scanResult = () => ({
-    candidates: [
-      {
-        entryRef: 'g_low', wrong: 'coxy', correct: 'Cogseed', action: 'replace', riskLevel: 'low',
-        confidence: 1, context: '', span: { start: 0, end: 4 }, ignoredCount: 0, contextAllow: [],
-        channel: 'exact',
-        refs: [{ source: 'glossary', entryId: 'g_low', kind: 'product', freq: 3 }],
-      },
-      {
-        entryRef: 'g_model', wrong: 'coxyx', correct: 'Cogseed', action: 'replace', riskLevel: 'medium',
-        confidence: 0.6, context: '模型理由', span: { start: 20, end: 25 }, ignoredCount: 0, contextAllow: [],
-        fromModel: true,
-      },
-      {
-        // 有依据（过 T026 的 withBasisOnly）但依据里没有词条来源：runPropose 拿不到
-        // 词条 kind，应如实提示无法提出、不发起调用（不猜 kind）。
-        entryRef: 'g_nokind', wrong: '无类词', correct: '目标词', action: 'replace', riskLevel: 'low',
-        confidence: 1, context: '', span: { start: 30, end: 36 }, ignoredCount: 0, contextAllow: [],
-        channel: 'exact',
-        refs: [{ source: 'ontology', name: '目标词' }],
-      },
-    ],
-    denied: [],
-    stats: { entriesScanned: 2, candidates: 3, denied: 0, truncated: false, byChannel: { exact: 2, recall: 0, model: 1 }, quotedExample: 0, suppressed: 0 },
-    degraded: [],
-    recall: undefined,
-    review: null,
-  });
-
-  /** 带 proposeCandidate 分支的挂载 harness（其余照页面级 describe 的同款形态）。 */
-  function mountProposePanel(proposeResult: Record<string, unknown>) {
-    const nodes = new Map<string, any>();
-    const clickHandlers: Array<(ev: unknown) => void> = [];
-    const container = recElement();
-    container.querySelector = (selector: string) => {
-      if (!nodes.has(selector)) nodes.set(selector, recElement());
-      return nodes.get(selector);
-    };
-    container.addEventListener = (name: string, fn: (ev: unknown) => void) => {
-      if (name === 'click') clickHandlers.push(fn);
-    };
-    const calls: Array<{ channel: string; payload: any }> = [];
-    const context: any = {
-      console, setTimeout, clearTimeout, Map, Set, Array, Object, String, Number, JSON, Boolean, Promise,
-      document: { createElement: () => recElement(), body: recElement(), addEventListener: () => {}, removeEventListener: () => {} },
-      cogseed: {
-        invoke: async (channel: string, payload: any) => {
-          calls.push({ channel, payload });
-          if (channel === 'transcript.correct.scan') return scanResult();
-          if (channel === 'transcript.correct.proposeCandidate') return proposeResult;
-          return {};
-        },
-      },
-      addEventListener: () => {}, removeEventListener: () => {},
-      t: () => '',
-      uiButton: (o: any) => '<button type="button" class="ui-button" '
-        + Object.entries(o?.attrs || {}).map(([k, v]) => `${k}="${v}"`).join(' ')
-        + `>${String(o?.label || '')}</button>`,
-      uiCheckbox: (o: any) => `<input type="checkbox" aria-label="${String(o?.label || '')}">`,
-      uiEmptyState: (o: any) => `<div class="ui-empty-state">${String(o?.title || '')}</div>`,
-    };
-    context.window = context;
-    context.globalThis = context;
-    vm.createContext(context);
-    vm.runInContext(panelSrc, context, { filename: 'kb-transcript-correct.js' });
-    context.KbTranscriptCorrect.mount(container, {
-      text: '甲 2026-09-05 19:31:32\n一会儿叫 coxy。',
-      docId: 'doc-propose',
-      displayPath: '1/9.15站会.txt',
-    });
-    const fire = (matches: Record<string, ReturnType<typeof attrEl>>) => {
-      const target = { closest: (sel: string) => matches[sel] || null };
-      for (const fn of [...clickHandlers]) fn({ target });
-    };
-    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
-    const rowMenuMarkup = (entryRef: string): string => {
-      const rowEl = descendants(nodes.get('[data-atc-body]')).find((el) => el.dataset && el.dataset.atcRow === entryRef);
-      return rowEl ? markupOf(rowEl) : '';
-    };
-    return { nodes, fire, flush, calls, rowMenuMarkup };
-  }
-
-  it('词表行的行菜单含「提出为候选」按钮；模型建议行不提供该入口', async () => {
-    const env = mountProposePanel({ candidateId: 'cand_1', created: true });
-    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
-    await env.flush();
-    env.fire({ '[data-atc-rowmenu]': attrEl({ 'data-atc-rowmenu': 'g_low' }) });
-    await env.flush();
-    const menu = env.rowMenuMarkup('g_low');
-    expect(menu).toContain('data-atc-propose="g_low"');
-    expect(menu).toContain('提出为候选');
-    // 模型行（model_*，非词表词条）不出现该按钮
-    env.fire({ '[data-atc-rowmenu]': attrEl({ 'data-atc-rowmenu': 'g_model' }) });
-    await env.flush();
-    expect(env.rowMenuMarkup('g_model')).not.toContain('data-atc-propose');
-  });
-
-  it('点击 ⇒ 调 transcript.correct.proposeCandidate（entryId + 词条 kind + 当前面板 docId）', async () => {
-    const env = mountProposePanel({ candidateId: 'cand_1', created: true });
-    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
-    await env.flush();
-    env.fire({ '[data-atc-rowmenu]': attrEl({ 'data-atc-rowmenu': 'g_low' }) });
-    await env.flush();
-    env.fire({ '[data-atc-propose]': attrEl({ 'data-atc-propose': 'g_low' }) });
-    await env.flush();
-    const call = env.calls.find((c) => c.channel === 'transcript.correct.proposeCandidate');
-    expect(call).toBeTruthy();
-    expect(call?.payload).toMatchObject({ entryId: 'g_low', entryKind: 'product', docId: 'doc-propose' });
-    expect(env.nodes.get('[data-atc-status]')._text).toContain('已提出为候选');
-    expect(env.nodes.get('[data-atc-status]')._text).toContain('coxy');
-  });
-
-  it('幂等提示：created:false ⇒ 说明已在候选池（不再说"已提出"）', async () => {
-    const env = mountProposePanel({ candidateId: 'cand_1', created: false });
-    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
-    await env.flush();
-    env.fire({ '[data-atc-rowmenu]': attrEl({ 'data-atc-rowmenu': 'g_low' }) });
-    await env.flush();
-    env.fire({ '[data-atc-propose]': attrEl({ 'data-atc-propose': 'g_low' }) });
-    await env.flush();
-    expect(env.calls.filter((c) => c.channel === 'transcript.correct.proposeCandidate')).toHaveLength(1);
-    const status = env.nodes.get('[data-atc-status]')._text;
-    expect(status).toContain('已在候选池');
-    expect(status).not.toContain('已提出为候选');
-  });
-
-  it('缺词条 kind 的行不发起调用（不猜 kind），如实提示无法提出', async () => {
-    const env = mountProposePanel({ candidateId: 'cand_1', created: true });
-    env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
-    await env.flush();
-    env.fire({ '[data-atc-rowmenu]': attrEl({ 'data-atc-rowmenu': 'g_nokind' }) });
-    await env.flush();
-    expect(env.rowMenuMarkup('g_nokind')).toContain('data-atc-propose="g_nokind"');
-    env.fire({ '[data-atc-propose]': attrEl({ 'data-atc-propose': 'g_nokind' }) });
-    await env.flush();
-    expect(env.calls.filter((c) => c.channel === 'transcript.correct.proposeCandidate')).toHaveLength(0);
-    expect(env.nodes.get('[data-atc-status]')._text).toContain('无法提出为候选');
-  });
-
-  it('源码契约：按钮文案走 kb.meetingRef.propose_* 四语键（对齐前缀，不新造命名空间）', () => {
-    expect(panelSrc).toContain("t('kb.meetingRef.propose_candidate', '提出为候选')");
-    expect(panelSrc).toContain("t('kb.meetingRef.propose_exists'");
-    expect(panelSrc).toContain("t('kb.meetingRef.propose_done'");
-    expect(panelSrc).toContain("t('kb.meetingRef.propose_failed'");
+describe('纠错面板独立认知形成入口退休', () => {
+  it('不再提供词条提出为认知建议，正常转写纠错与保存保留', () => {
+    const src = panelSrc;
+    expect(src).not.toContain('data-atc-propose');
+    expect(src).not.toContain('runPropose');
+    expect(src).not.toContain('transcript.correct.proposeCandidate');
+    expect(src).toContain('transcript.correct.apply');
+    expect(src).toContain('transcript.glossary.upsert');
   });
 });
 
-/**
- * 「更多 → 改写法」点了没反应，且展开后大面积错位（2026-09-23 真机反馈）。
- *
- * 两个根因，各自钉一条：
- *   1. 候选里混着**不在词表**的行（`model_<i>` 模型建议），而忽略/加白/改写法都是词表操作，
- *      主进程对合成 id 返回 0/null；面板此前不看回执，照样弹"已改为：X" —— 看起来能用，
- *      实际什么都没发生。现在：这些动作只给词表行 + 所有回执都校验。
- *   2. 行是 `display:flex`（不换行），而「更多」菜单与展开的表单都声明 `flex: 1 0 100%`，
- *      于是它们挤在同一行、把原文区压成 0 宽 —— 这就是"大面积错位"。
- */
 describe('词表操作与模型建议：动作分流（每行都有接受/忽略/更多，落点按行类型不同）', () => {
   it('识别词表行：g_* 是词表命中；model_* / fromModel 是模型建议，不是词表行', () => {
     expect(panel.isGlossaryRow({ entryRef: 'g_8056893a079bdf09' })).toBe(true);
@@ -1835,5 +1944,369 @@ describe('改写法后列表必须跟着变', () => {
     expect(source).toMatch(/row\.action === 'delete'[\s\S]{0,300}rename_delete_hint/);
     const zh = JSON.parse(readSrc('renderer/locales/zh.json'));
     expect(zh['kb.transcriptCorrect.rename_delete_hint']).toContain('替换');
+  });
+});
+
+/**
+ * KB 面板 busy 纪律（待议 P-r1-68/P-r2-31/P-r2-33/P-r2-36，预审决策卡组 10）。
+ *
+ * 行为级回归：真原语 + 假 DOM 挂面板，用可编排的 invoke 驱动真实点击链路，
+ * 钉住四件事：
+ *   1. 只读弹窗（对照）不再误清他方在途 busy——apply 进行中可安全打开对照；
+ *   2. 写操作持全局 busy 锁防重入（此前「加入词表」连守卫都没有）；
+ *   3. apply 在途时点「扫描」被守卫拦下（迟到 scan 覆写 apply 状态的主通路）；
+ *   4. 扫描在途期间有 apply 落地（applySeq 前进）时，迟到 scan 整段丢弃；
+ *   5. 面板销毁后词表管理器的 onChanged 回调不再对孤儿面板发起重扫。
+ */
+function loadPanelForBusy(invoke: (channel: string, payload: any) => Promise<any>) {
+  const nodes = new Map<string, any>();
+  const container = fakeElement();
+  container.querySelector = (selector: string) => {
+    if (!nodes.has(selector)) nodes.set(selector, fakeElement());
+    return nodes.get(selector);
+  };
+  const listeners: Record<string, (event: any) => void> = {};
+  container.addEventListener = (name: string, fn: (event: any) => void) => { listeners[name] = fn; };
+  const context: any = {
+    console, setTimeout, clearTimeout, Map, Set, Array, Object, String, Number, JSON,
+    document: {
+      createElement: () => fakeElement(),
+      body: fakeElement(),
+      addEventListener: () => {}, removeEventListener: () => {},
+    },
+    cogseed: { invoke },
+    addEventListener: () => {}, removeEventListener: () => {},
+  };
+  context.window = context;
+  context.globalThis = context;
+  vm.createContext(context);
+  for (const file of ['icons.js', 'ui-button.js', 'ui-form.js']) {
+    vm.runInContext(fs.readFileSync(path.join(root, 'src/renderer/modules', file), 'utf8'), context, { filename: file });
+  }
+  context.t = () => '';
+  vm.runInContext(panelSrc, context, { filename: 'kb-transcript-correct.js' });
+  const instance = context.KbTranscriptCorrect.mount(container, {
+    text: '甲 2026-09-05 19:31:32\n付平来了。',
+    docId: '1/9.15站会.txt',
+    displayPath: '1/9.15站会.txt',
+  });
+  const clickAction = (action: string) => {
+    listeners.click?.({
+      target: {
+        closest: (selector: string) => (selector === '[data-atc-action]'
+          ? { getAttribute: (name: string) => (name === 'data-atc-action' ? action : null) }
+          : null),
+      },
+    });
+  };
+  const clickAttr = (attr: string, value: string, extra: Record<string, string> = {}) => {
+    listeners.click?.({
+      target: {
+        closest: (selector: string) => (selector === `[${attr}]`
+          ? { getAttribute: (name: string) => (name === attr ? value : (extra[name] ?? null)) }
+          : null),
+      },
+    });
+  };
+  return { instance, nodes, context, clickAction, clickAttr };
+}
+
+describe('busy 纪律（P-r1-68/P-r2-31/P-r2-33/P-r2-36）', () => {
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const APPLY_RESULT = {
+    result: { text: '清理后的正文' },
+    run: { runId: 'run_2', mergedBlocks: 0 },
+    receipts: [],
+    glossaryWrites: {},
+  };
+
+  it('真实面板应用只显示当前材料结果，旧返回字段不能触发长期学习提示', async () => {
+    const { instance, nodes, clickAction } = loadPanelForBusy(async channel => {
+      if (channel === 'transcript.correct.apply') return {
+        ...APPLY_RESULT, glossaryWrites: { created: 2, updated: 1 }, droppedModels: 1,
+      };
+      return {};
+    });
+    instance.getState().accepted = new Set(['model_0']);
+    clickAction('apply');
+    await flush();
+    expect(instance.getState().cleanedText).toBe('清理后的正文');
+    const status = nodes.get('[data-atc-status]').textContent;
+    expect(status).toContain('清理版已生成');
+    expect(status).toContain('位置对不上被丢弃');
+    expect(status).not.toContain('词表');
+    instance.destroy();
+  });
+
+  it('apply 进行中打开「对照」不再提前解锁：diff 只清自己的 diffBusy（P-r1-68/P-r2-33）', async () => {
+    const calls: string[] = [];
+    let resolveApply!: (value: unknown) => void;
+    const { instance, clickAction } = loadPanelForBusy(async (channel) => {
+      calls.push(channel);
+      if (channel === 'transcript.correct.apply') return new Promise((done) => { resolveApply = done; });
+      if (channel === 'transcript.run.get') {
+        return { before: '甲说：付平来了。', after: '甲说：付平来。', offsetMap: [], run: {} };
+      }
+      return {};
+    });
+    const state = instance.getState();
+    state.accepted = new Set(['g_1']);
+    state.cleanedText = '上一轮清理版';
+    state.runId = 'run_1';
+
+    clickAction('apply');
+    await flush();
+    expect(state.busy).toBe(true); // apply 在途
+
+    clickAction('diff'); // 只读对照：允许打开（不抢全局锁）
+    await flush();
+    expect(calls).toContain('transcript.run.get');
+    // 核心断言：对照完成后，apply 的在途锁仍在（修复前这里被 finally 误清，
+    // 之后第二个 apply 能并发进来、产物被后完成者覆盖）
+    expect(state.busy).toBe(true);
+    expect(state.diffBusy).toBe(false);
+
+    resolveApply(APPLY_RESULT);
+    await flush();
+    expect(state.busy).toBe(false);
+    expect(state.cleanedText).toBe('清理后的正文');
+    instance.destroy();
+  });
+
+  it('「对照」弹窗自身防重入：diffBusy 在途时二次点击不发第二个 run.get（P-r1-68/P-r2-33）', async () => {
+    const calls: string[] = [];
+    let resolveGet!: (value: unknown) => void;
+    const { instance, clickAction } = loadPanelForBusy(async (channel) => {
+      calls.push(channel);
+      if (channel === 'transcript.run.get') return new Promise((done) => { resolveGet = done; });
+      return {};
+    });
+    const state = instance.getState();
+    state.cleanedText = '清理版';
+    state.runId = 'run_1';
+
+    clickAction('diff');
+    await flush();
+    expect(state.diffBusy).toBe(true);
+    clickAction('diff');
+    await flush();
+    expect(calls.filter((channel) => channel === 'transcript.run.get')).toHaveLength(1);
+
+    resolveGet({ before: 'a', after: 'b', offsetMap: [], run: {} });
+    await flush();
+    expect(state.diffBusy).toBe(false);
+    instance.destroy();
+  });
+
+  it('apply 在途时点「扫描」被 busy 守卫拦下（P-r2-31 迟到覆写的主通路）', async () => {
+    const calls: string[] = [];
+    let resolveApply!: (value: unknown) => void;
+    const { instance, clickAction } = loadPanelForBusy(async (channel) => {
+      calls.push(channel);
+      if (channel === 'transcript.correct.apply') return new Promise((done) => { resolveApply = done; });
+      return {};
+    });
+    const state = instance.getState();
+    state.accepted = new Set(['g_1']);
+
+    clickAction('apply');
+    await flush();
+    const callsAfterApply = calls.length;
+    clickAction('scan');
+    await flush();
+    expect(calls.slice(callsAfterApply)).not.toContain('transcript.correct.scan');
+    expect(state.busy).toBe(true);
+
+    resolveApply(APPLY_RESULT);
+    await flush();
+    expect(state.busy).toBe(false);
+    instance.destroy();
+  });
+
+  it('「加入词表」在途持锁防重入：busy=true、二连点不重发 upsert（P-r2-31）', async () => {
+    const upsertCalls: any[] = [];
+    const scanCalls: any[] = [];
+    let resolveUpsert!: (value: unknown) => void;
+    const { instance, nodes, clickAction } = loadPanelForBusy(async (channel, payload) => {
+      if (channel === 'transcript.glossary.upsert') {
+        upsertCalls.push(payload);
+        return new Promise((done) => { resolveUpsert = done; });
+      }
+      if (channel === 'transcript.correct.scan') { scanCalls.push(payload); return { candidates: [] }; }
+      return {};
+    });
+    nodes.set('#atc-wrong', { ...fakeElement(), value: 'coxy' });
+    nodes.set('#atc-correct', { ...fakeElement(), value: 'Cogseed' });
+    const state = instance.getState();
+
+    clickAction('add');
+    await flush();
+    expect(upsertCalls).toHaveLength(1);
+    expect(state.busy).toBe(true); // 在途持锁（修复前：既无守卫也不持锁）
+
+    clickAction('add'); // 在途二连点：守卫拦下
+    await flush();
+    expect(upsertCalls).toHaveLength(1);
+
+    resolveUpsert({});
+    await flush();
+    expect(state.busy).toBe(false);
+    expect(scanCalls).toHaveLength(1); // 成功后经 rescanAfterMutation 重扫
+    instance.destroy();
+  });
+
+  it('「忽略」词表行在途持全局 busy（P-r2-31）', async () => {
+    let resolveIgnore!: (value: unknown) => void;
+    const { instance, clickAttr } = loadPanelForBusy(async (channel) => {
+      if (channel === 'transcript.glossary.setIgnored') return new Promise((done) => { resolveIgnore = done; });
+      return {};
+    });
+    const state = instance.getState();
+    state.rows = [{ entryRef: 'g_1', wrong: 'coxy', correct: 'Cogseed' }];
+
+    clickAttr('data-atc-ignore', 'g_1', { 'data-atc-ignored': '0' });
+    await flush();
+    expect(state.busy).toBe(true);
+
+    resolveIgnore({ updated: 1 });
+    await flush();
+    expect(state.busy).toBe(false);
+    instance.destroy();
+  });
+
+  it('扫描在途期间有 apply 落地：迟到 scan 整段丢弃，不覆写清理版（P-r2-31 写前比对）', async () => {
+    let resolveScan!: (value: unknown) => void;
+    const { instance, clickAction } = loadPanelForBusy(async (channel) => {
+      if (channel === 'transcript.correct.scan') return new Promise((done) => { resolveScan = done; });
+      return {};
+    });
+    const state = instance.getState();
+    state.cleanedText = '用户刚拿到的清理版';
+    const candidate = {
+      entryRef: 'g_2', wrong: 'x', correct: 'y', action: 'replace', riskLevel: 'low',
+      confidence: 1, span: { start: 0, end: 1 },
+      refs: [{ source: 'glossary', entryId: 'g_2', kind: 'term' }],
+    };
+
+    clickAction('scan');
+    await flush();
+    expect(state.busy).toBe(true);
+    state.applySeq += 1; // 模拟「扫描在途期间有 apply 落地」
+    resolveScan({ candidates: [candidate] });
+    await flush();
+    // 迟到 scan 丢弃：不写 rows、不清清理版
+    expect(state.rows).toHaveLength(0);
+    expect(state.cleanedText).toBe('用户刚拿到的清理版');
+    expect(state.busy).toBe(false);
+
+    // 对照组：没有 apply 落地时，同一份扫描结果正常写入
+    let resolveScan2!: (value: unknown) => void;
+    const panel2 = loadPanelForBusy(async (channel) => {
+      if (channel === 'transcript.correct.scan') return new Promise((done) => { resolveScan2 = done; });
+      return {};
+    });
+    panel2.clickAction('scan');
+    await flush();
+    resolveScan2({ candidates: [candidate] });
+    await flush();
+    expect(panel2.instance.getState().rows).toHaveLength(1);
+    panel2.instance.destroy();
+    instance.destroy();
+  });
+
+  it('面板销毁后词表管理器 onChanged 不再对孤儿面板发起重扫（P-r2-36）', async () => {
+    const scanCalls: string[] = [];
+    const { instance, context, clickAction } = loadPanelForBusy(async (channel) => {
+      if (channel === 'transcript.correct.scan') { scanCalls.push(channel); return { candidates: [] }; }
+      return {};
+    });
+    let onChanged: (() => void) | undefined;
+    context.KbGlossaryManager = {
+      open: (options: any) => { onChanged = options.onChanged; },
+    };
+
+    clickAction('open-glossary');
+    expect(onChanged).toBeTypeOf('function');
+    onChanged!();
+    await flush();
+    expect(scanCalls).toHaveLength(1); // 面板活着：词表变更触发重扫
+
+    instance.destroy();
+    onChanged!();
+    await flush();
+    expect(scanCalls).toHaveLength(1); // 面板已销毁：不再重扫（IPC 不再照发）
+  });
+
+  // P-r2-32（2026-10-01 拍板：按钮补看 busy）：采纳建议/补错形的收尾会嵌套调
+  // runSyncOntology（先重跑同步让建议列表消失）。若动作在途时用户还能点出
+  // 第二个在途 syncBusy，嵌套调用会被 runSyncOntology 的防重入守卫静默吞掉
+  // ——采纳成功但建议列表不刷新。入口互斥后，嵌套调用永远落在 syncBusy=false。
+  // 注：同步按钮/补错形按钮的 DOM 均由面板内部 createElement 拼装（fake DOM
+  // 的 appendChild 不挂树，行为级够不着），按本文件既有源码级先例钉住双看口径。
+  it('源码级：同步按钮与「加入词表」按钮双看 busy||syncBusy（P-r2-32）', () => {
+    expect(panelSrc).toContain(`disabled: state.busy || state.syncBusy,
+        attrs: { 'data-atc-action': 'sync-ontology' }`);
+    expect(panelSrc).toContain(`disabled: state.busy || state.syncBusy,
+              attrs: { 'data-atc-seed-adopt'`);
+  });
+});
+
+describe('mount 幂等（P-r2-34：双击重入不再叠加监听与实例）', () => {
+  /** 装载面板并记录容器/root 两级监听的挂摘，供「只剩一份活监听」断言。 */
+  function mountTrackablePanel() {
+    const addCalls: Array<[string, unknown]> = [];
+    const removeCalls: Array<[string, unknown]> = [];
+    const nodes = new Map<string, any>();
+    const container = fakeElement();
+    container.querySelector = (selector: string) => {
+      if (!nodes.has(selector)) nodes.set(selector, fakeElement());
+      return nodes.get(selector);
+    };
+    container.addEventListener = (name: string, fn: unknown) => { addCalls.push([`container:${name}`, fn]); };
+    container.removeEventListener = (name: string, fn: unknown) => { removeCalls.push([`container:${name}`, fn]); };
+    const context: any = {
+      console, setTimeout, clearTimeout, Map, Set, Array, Object, String, Number, JSON,
+      document: {
+        createElement: () => fakeElement(),
+        body: fakeElement(),
+        addEventListener: () => {}, removeEventListener: () => {},
+      },
+      cogseed: { invoke: async () => ({}) },
+      addEventListener: (name: string, fn: unknown) => { addCalls.push([`root:${name}`, fn]); },
+      removeEventListener: (name: string, fn: unknown) => { removeCalls.push([`root:${name}`, fn]); },
+    };
+    context.window = context;
+    context.globalThis = context;
+    vm.createContext(context);
+    for (const file of ['icons.js', 'ui-button.js', 'ui-form.js']) {
+      vm.runInContext(fs.readFileSync(path.join(root, 'src/renderer/modules', file), 'utf8'), context, { filename: file });
+    }
+    context.t = () => '';
+    vm.runInContext(panelSrc, context, { filename: 'kb-transcript-correct.js' });
+    return { context, container, addCalls, removeCalls };
+  }
+
+  it('同容器二次 mount 先销毁旧实例：点击委托与 i18n 监听各只剩一份、销毁链闭合', () => {
+    const { context, container, addCalls, removeCalls } = mountTrackablePanel();
+    // 复刻挂载方双击重入（anchored-source-view 的 toggleCorrection 在 await
+    // 取全文窗口内被点两次）：同一容器背靠背 mount 两次。
+    const first = context.KbTranscriptCorrect.mount(container, {
+      text: '甲 2026-09-05 19:31:32\n付平来了。', docId: 'd1', displayPath: 'd1.txt',
+    });
+    expect(addCalls.filter(([tag]) => tag === 'container:click')).toHaveLength(1);
+    const second = context.KbTranscriptCorrect.mount(container, {
+      text: '乙 2026-09-05 19:31:34\n海云哥你到了吗？', docId: 'd1', displayPath: 'd1.txt',
+    });
+    expect(second).not.toBe(first);
+    // 第一份实例（含其点击委托与 root 级 i18n 监听）已被幂等销毁摘除，
+    // 修前它们会永久泄漏且双执行（destroy 只摘挂载方持有的最后一份）。
+    expect(removeCalls.filter(([tag]) => tag === 'container:click')).toHaveLength(1);
+    expect(removeCalls.filter(([tag]) => tag === 'root:i18n-change')).toHaveLength(1);
+    expect(addCalls.filter(([tag]) => tag === 'container:click')).toHaveLength(2);
+    expect(addCalls.filter(([tag]) => tag === 'root:i18n-change')).toHaveLength(2);
+    // 挂载方持有第二份：destroy 摘掉的是当前活面板的监听，链路闭合。
+    second.destroy();
+    expect(removeCalls.filter(([tag]) => tag === 'container:click')).toHaveLength(2);
+    expect(removeCalls.filter(([tag]) => tag === 'root:i18n-change')).toHaveLength(2);
   });
 });

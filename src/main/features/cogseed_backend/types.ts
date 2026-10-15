@@ -203,6 +203,13 @@ export interface CogSeedTaskEvent {
   sequence: number;
   type: CogSeedTaskEventType;
   createdAt: string;
+  /** Traceability refs, filled by the writer from the task record when known.
+   *  Absent on events written before 2026-10-13: until then a run could only be
+   *  attributed by parsing the `sessionId` string, which is why the 17:07
+   *  incident could not be traced from the event stream (N-09). */
+  conversationId?: string;
+  agentId?: string;
+  runId?: string;
   payload: Record<string, unknown>;
 }
 

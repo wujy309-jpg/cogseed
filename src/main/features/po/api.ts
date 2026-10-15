@@ -184,8 +184,12 @@ export async function poCreateField(
   const result = await editPoDoc(uid, (ctx) => {
     const group = ctx.touch(groupId);
     if (!group) return ctx.fail('group not found');
-    const section = opts?.section ? sanitizePoText(opts.section, 200) : group.kind === 'template' ? undefined : undefined;
+    const section = opts?.section ? sanitizePoText(opts.section, 200) : undefined;
     if (group.kind === 'template' && !section) return ctx.fail('template section required');
+    // 普通组无分节（model.ts 契约「普通组恒为 undefined」）：带 section 写成功
+    // 落盘后被渲染层跳过（view.ts）、原文保存整组替换时丢失——写侧直接拒。
+    // 判原始 opts?.section，防 sanitize 后空串边角漏网。
+    if (group.kind !== 'template' && opts?.section) return ctx.fail('section not allowed on user group');
     if (group.fields.some((f) => (f.section || '') === (section || '') && f.name === fieldName)) {
       return ctx.fail('field already exists');
     }

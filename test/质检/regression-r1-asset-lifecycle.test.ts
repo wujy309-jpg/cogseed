@@ -1,3 +1,4 @@
+import { seedStoredAbilityAsset } from '../helpers/stored-ability-asset';
 /**
  * 探针 r1（边界测试员）→ r1 收尾整理为混合回归文件（记账员，2026-09-30）：
  * - active 回归（锁定既有正确行为）：30 天整点边界、epoch 过期、deleted
@@ -52,7 +53,7 @@ async function loadAssets() {
 async function mkAsset(id: string) {
   const assets = await loadAssets();
   const now = new Date().toISOString();
-  return assets.createAbilityAsset(UID, {
+  return seedStoredAbilityAsset(UID, {
     schemaVersion: 2, ownerId: UID, id, candidateId: `cand-${id}`,
     sourceCandidateIds: [`cand-${id}`], reviewDecisionId: `rd_probe${id.slice(-6)}`.padEnd(16, 'x'),
     type: 'personal', title: `资产 ${id}`, statement: `陈述 ${id}。`,

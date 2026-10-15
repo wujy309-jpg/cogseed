@@ -28,6 +28,7 @@ import {
   userMarketplaceAgentsDir, userMarketplaceAgentDir, userMarketplaceSkillsDir,
   userAgentRuntimeConfigFile, userMemoryDir, userAgentCatalogCacheFile,
 } from '../paths';
+import { currentAppVersion } from './marketplace';
 import { chatAttachmentDirForConversation } from '../util/project-layout';
 import { evictSession } from '../model/core-agent/session-store';
 import { getActiveUserId } from './users';
@@ -1420,6 +1421,9 @@ function _readPersistedAgentCatalog(userId: string, stamp: string): Agent[] | nu
   try {
     const raw = JSON.parse(fs.readFileSync(_agentCatalogCacheFile(userId), 'utf8'));
     if (raw?.version !== AGENT_CATALOG_CACHE_VERSION || !Array.isArray(raw.data)) return null;
+    // C5/N-06：目录缓存按**客户端版本**失效 —— 升级后必须重取，否则新客户端会继续
+    // 用旧版本拉到的目录（内容与客户端不同步）。
+    if (raw?.appVersion !== currentAppVersion()) return null;
     if (raw.stamp !== stamp) {
       // Keep the last known-good snapshot when a source file was only left
       // malformed (the established cache contract); valid rewrites still
@@ -1451,6 +1455,7 @@ function _writePersistedAgentCatalog(userId: string, stamp: string, data: Agent[
   try {
     writeJsonSync(_agentCatalogCacheFile(userId), {
       version: AGENT_CATALOG_CACHE_VERSION,
+      appVersion: currentAppVersion(),
       stamp,
       data,
     });

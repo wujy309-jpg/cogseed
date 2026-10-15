@@ -86,6 +86,10 @@ import {
 } from '../model/provider_catalog';
 import { publicModelAbilitiesFor } from '../model/public_model_catalog';
 import {
+  declaredReasoningLevelsFromCustomDeclarations,
+  declaredReasoningLevelsFromPiModel,
+} from '../model/reasoning_effort';
+import {
   assertModelProviderAllowed,
   isModelProviderAllowed,
 } from '../model/provider_policy';
@@ -1347,7 +1351,7 @@ export async function listProviders(): Promise<{ providers: ProviderEntry[] }> {
  *      minor) version bands from pi-ai's raw list. Only used for
  *      uncurated providers.
  */
-export async function listModelsForUser(userId: string, providerId: string): Promise<{ models: { id: string; name: string; contextWindow?: number; vision?: boolean; reasoning?: boolean }[] }> {
+export async function listModelsForUser(userId: string, providerId: string): Promise<{ models: { id: string; name: string; contextWindow?: number; vision?: boolean; reasoning?: boolean; reasoningLevels?: string[] }[] }> {
   const id = String(providerId || '').trim();
   if (!id) return { models: [] };
   if (isCustomProviderId(id)) {
@@ -1361,7 +1365,7 @@ export async function listModelsForUser(userId: string, providerId: string): Pro
     // 模型级开关关闭的不进选择器（S2：隐藏 + 阻止新绑定；详情卡用的是
     // customProviders.list 的全量清单，开关本身仍然可见可拨回）。
     const models = (custom?.models || []).filter((model) => model.enabled !== false);
-    const out: { id: string; name: string; contextWindow?: number; vision?: boolean; reasoning?: boolean }[] = [];
+    const out: { id: string; name: string; contextWindow?: number; vision?: boolean; reasoning?: boolean; reasoningLevels?: string[] }[] = [];
     // contextWindow/vision 透传不依赖识别器（目录解析独立）。
     for (const model of models) {
       const abilities = publicModelAbilitiesFor(model.id);
@@ -1374,12 +1378,16 @@ export async function listModelsForUser(userId: string, providerId: string): Pro
         ? model.vision : abilities.vision;
       const declaredReasoning = (Array.isArray(model.reasoningLevels) && model.reasoningLevels.length > 0)
         || (model.reasoningParamsMap && Object.keys(model.reasoningParamsMap).length > 0);
+      // Option C：把「声明的档位」投影成宿主可表达的档位集合，UI 只暴露这些，
+      // 后端也据此拒绝显式越档（同一份判定，见 model/reasoning_effort.ts）。
+      const reasoningLevels = declaredReasoningLevelsFromCustomDeclarations(model);
       out.push({
         id: model.id,
         name: model.id,
         ...(resolvedWindow ? { contextWindow: resolvedWindow } : {}),
         ...(resolvedVision !== undefined ? { vision: resolvedVision } : {}),
         ...(declaredReasoning ? { reasoning: true } : {}),
+        ...(reasoningLevels.length ? { reasoningLevels } : {}),
       });
     }
     return { models: out };
@@ -1388,20 +1396,26 @@ export async function listModelsForUser(userId: string, providerId: string): Pro
   const allowed = (models: { id: string; name: string }[]) =>
     models.filter((m) => isModelProviderAllowed(id, m.id));
   const annotate = async (models: { id: string; name: string }[]) => {
-    const out: { id: string; name: string; reasoning?: boolean }[] = [];
+    const out: { id: string; name: string; reasoning?: boolean; reasoningLevels?: string[] }[] = [];
     let mod: Awaited<ReturnType<typeof ca>> | null = null;
     for (const m of models) {
       let reasoning: boolean | undefined;
+      let reasoningLevels: string[] | undefined;
       try {
         mod = mod || await ca();
         const resolved = resolveConfiguredPiModel(mod, id, m.id);
-        reasoning = resolved?.model && typeof (resolved.model as { reasoning?: unknown }).reasoning === 'boolean'
-          ? (resolved.model as { reasoning?: boolean }).reasoning
-          : undefined;
+        const piModel = resolved?.model as { reasoning?: unknown; thinkingLevelMap?: unknown } | undefined;
+        reasoning = typeof piModel?.reasoning === 'boolean' ? piModel.reasoning : undefined;
+        const levels = declaredReasoningLevelsFromPiModel(piModel);
+        if (levels.length) reasoningLevels = levels;
       } catch {
         reasoning = undefined;
       }
-      out.push(reasoning === undefined ? m : { ...m, reasoning });
+      out.push({
+        ...m,
+        ...(reasoning === undefined ? {} : { reasoning }),
+        ...(reasoningLevels ? { reasoningLevels } : {}),
+      });
     }
     return out;
   };
@@ -1419,7 +1433,7 @@ export async function listModelsForUser(userId: string, providerId: string): Pro
 }
 
 /** Active-user compatibility wrapper. User-scoped callers must use the explicit API. */
-export async function listModels(providerId: string): Promise<{ models: { id: string; name: string; contextWindow?: number; vision?: boolean; reasoning?: boolean }[] }> {
+export async function listModels(providerId: string): Promise<{ models: { id: string; name: string; contextWindow?: number; vision?: boolean; reasoning?: boolean; reasoningLevels?: string[] }[] }> {
   return listModelsForUser(getActiveUserId(), providerId);
 }
 
@@ -2938,6 +2952,40 @@ export async function pickChatEntryGroupForModelOverrideForUser(
   const matching = group.filter((c) => c.provider === providerId);
   if (!matching.length) return null;
   return matching.map((c) => ({ ...c, model: modelId }));
+}
+
+/** Resolve an explicit ordered task route using the requested user's credential and model gates.
+ * Empty routes are handled by the caller as "follow global settings". Unavailable
+ * explicit candidates are skipped; never substitute an unrelated default model. */
+export async function pickChatEntryGroupForModelCandidatesForUser(
+  userId: string,
+  candidates: readonly { provider: string; model: string }[],
+): Promise<ChatEntryChoice[]> {
+  const store = loadProfilesForUser(userId);
+  const group = await pickChatEntryGroupForUser(userId);
+  const seen = new Set<string>();
+  const choices: ChatEntryChoice[] = [];
+  for (const candidate of candidates) {
+    for (const choice of group) {
+      if (choice.provider !== candidate.provider) continue;
+      const entry = store.entries.find(entry => entry.entryId === choice.entryId);
+      if (!entry || !isEntryAllowed(store, { ...entry, model: candidate.model })) continue;
+      const key = JSON.stringify([choice.profileId, candidate.provider, candidate.model]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      choices.push({ ...choice, model: candidate.model });
+    }
+  }
+  return choices;
+}
+
+/** Active-user compatibility entry point. Background callers pass their user explicitly. */
+export async function pickChatEntryGroupForModelCandidates(
+  candidates: readonly { provider: string; model: string }[],
+): Promise<ChatEntryChoice[]> {
+  let userId: string;
+  try { userId = getActiveUserId(); } catch { return []; }
+  return pickChatEntryGroupForModelCandidatesForUser(userId, candidates);
 }
 
 export async function pickChatEntryGroupForModelOverride(

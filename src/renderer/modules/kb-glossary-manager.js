@@ -216,6 +216,9 @@
       importText: '',
       importMode: 'merge',
       importPreview: null,
+      /** 坏档三件套（P-r1-88）：词表文件损坏时主进程已 copy 备份并拒绝写，
+       *  这里持有 cognition.corrupt.list 回传的登记项，渲染「从备份恢复/重置」入口。 */
+      corrupt: null,
     };
 
     const modal = root.uiModal({
@@ -225,6 +228,7 @@
       bodyHtml: [
         '<div class="kb-glo">',
         '  <div class="kb-glo__meta" data-glo-meta></div>',
+        '  <div class="kb-glo__corrupt" data-glo-corrupt hidden></div>',
         '  <div class="kb-glo__metrics" data-glo-metrics></div>',
         '  <div class="kb-glo__filters" data-glo-filters></div>',
         '  <div class="kb-glo__status" data-glo-status hidden></div>',
@@ -699,11 +703,83 @@
 
     function render() {
       for (const step of [
-        renderMeta, renderMetrics, renderMeetingMetrics, renderFilters, renderStatus, renderBulk, renderList, renderIo,
+        renderMeta, renderCorrupt, renderMetrics, renderMeetingMetrics, renderFilters, renderStatus, renderBulk, renderList, renderIo,
       ]) {
         try { step(); } catch (error) {
           log?.warn('glossary manager render step failed', { step: step.name, error: error?.message || String(error) });
         }
+      }
+    }
+
+    // ── 坏档三件套·恢复入口（P-r1-88，B 段已批「从备份恢复/重置」一键）────
+
+    async function loadCorruptState() {
+      try {
+        const result = await root.cogseed.invoke('cognition.corrupt.list', {});
+        const items = Array.isArray(result?.items) ? result.items : [];
+        state.corrupt = items.find((it) => it && it.domain === 'transcript-glossary') || null;
+      } catch (error) {
+        log?.warn('corrupt state load failed', { error: error?.message || String(error) });
+        state.corrupt = null;
+      }
+    }
+
+    function renderCorrupt() {
+      const host = q('[data-glo-corrupt]');
+      if (!host) return;
+      const c = state.corrupt;
+      host.hidden = !c;
+      host.textContent = '';
+      if (!c) return;
+      const text = document.createElement('div');
+      text.className = 'kb-glo__corrupt-text';
+      text.textContent = t('kb.glossary.corrupt_banner', '词表文件损坏，已自动备份，写入已暂停。可从备份恢复或重置（备份文件保留）。');
+      const actions = document.createElement('div');
+      actions.className = 'kb-glo__corrupt-actions';
+      actions.innerHTML = [
+        button({
+          label: t('kb.glossary.corrupt_restore', '从备份恢复'),
+          role: 'primary', size: 'sm', disabled: state.busy,
+          attrs: { 'data-glo-corrupt-op': 'restore' },
+        }),
+        button({
+          label: t('kb.glossary.corrupt_reset', '重置词表'),
+          role: 'ghost', size: 'sm', disabled: state.busy,
+          attrs: { 'data-glo-corrupt-op': 'reset' },
+        }),
+      ].join('');
+      host.append(text, actions);
+    }
+
+    async function runCorruptRecovery(op) {
+      if (state.busy || !state.corrupt) return;
+      if (op === 'reset') {
+        // 重置丢弃损坏文件、从空表重来（.corrupt 备份保留）——破坏性动作须确认。
+        const ok = typeof uiConfirm === 'function'
+          ? await uiConfirm({ message: t('kb.glossary.corrupt_reset_confirm', '重置会丢弃当前损坏的词表文件、从空表重来（.corrupt 备份保留在原目录）。确定重置？') })
+          : true;
+        if (!ok) return;
+      }
+      state.busy = true;
+      try {
+        render();
+        const result = await root.cogseed.invoke(
+          op === 'restore' ? 'cognition.corrupt.restore' : 'cognition.corrupt.reset',
+          { domain: 'transcript-glossary' },
+        );
+        if (result && result.ok === false) {
+          setStatus(t('kb.glossary.corrupt_recover_failed', '操作失败：{error}', { error: result.error || '' }), 'warning');
+        } else if (op === 'restore') {
+          setStatus(t('kb.glossary.corrupt_restored', '已从备份恢复。若文件内容仍损坏，会再次提示。'), '');
+        } else {
+          setStatus(t('kb.glossary.corrupt_reset_done', '已重置。词表从空表开始，可正常写入。'), '');
+        }
+      } catch (error) {
+        log?.warn('corrupt recovery failed', { error: error?.message || String(error) });
+        setStatus(t('kb.glossary.corrupt_recover_failed', '操作失败：{error}', { error: error?.message || String(error) }), 'warning');
+      } finally {
+        state.busy = false;
+        await reload();
       }
     }
 
@@ -726,6 +802,9 @@
         log?.warn('glossary reload failed', { error: error?.message || String(error) });
         setStatus(t('kb.glossary.load_failed', '读取词表失败，请稍后重试。'), 'warning');
       } finally {
+        // 词表坏档时上面的 list 会失败（主进程拒读）——坏档登记仍然拉取，
+        // 让「从备份恢复/重置」入口出现在面板上（P-r1-88 恢复入口）。
+        await loadCorruptState();
         state.busy = false;
         render();
       }
@@ -1132,6 +1211,9 @@
       }
       const del = event.target.closest('[data-glo-delete]');
       if (del) { void deleteOne(del.getAttribute('data-glo-delete')); return; }
+      // 坏档三件套·恢复入口（P-r1-88）：从备份恢复 / 重置。
+      const corruptOp = event.target.closest('[data-glo-corrupt-op]');
+      if (corruptOp) { void runCorruptRecovery(corruptOp.getAttribute('data-glo-corrupt-op')); return; }
       // 候选区的采纳/丢弃入口已随「模型建议并入扫描」移除（候选在转写纠错面板里勾选即确认），
       // 这里不再有 data-glo-candidate-* 分支。
       const action = event.target.closest('[data-glo-action]');

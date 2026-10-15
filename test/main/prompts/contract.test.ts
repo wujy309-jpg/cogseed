@@ -184,37 +184,44 @@ describe('prompts ↔ code contract', () => {
     expect(creatorSkill).toContain('Do not emit JSON here');
   });
 
-  it('cross-session memory scopes are routed explicitly and written in the UI language', () => {
+  it('cross-session memory reads retain scope, literal wording, and real prompt injection without write guidance', async () => {
     const agentPrompt = fs.readFileSync(path.join(PROMPTS_DIR, 'chat_agent_in_group.md'), 'utf-8');
     const commanderPrompt = fs.readFileSync(path.join(PROMPTS_DIR, 'chat_commander.md'), 'utf-8');
     const sharedPrompt = fs.readFileSync(path.join(PROMPTS_DIR, 'chat_shared_rules.md'), 'utf-8');
     const memoryTool = readFile('src/core-agent/src/tools/memory-tool.ts');
-
-    // Tool description ships in two shapes: the legacy three-tier one and the
-    // space-session one that adds the `space` tier plus the belongs-where
-    // routing rule ("would this still hold in another space?").
-    expect(memoryTool).toContain("- agent (default): this agent's private lessons");
-    expect(memoryTool).toContain('- shared: stable facts that hold across spaces and matter to every agent');
-    expect(memoryTool).toContain('- user: stable user-wide profile/preferences every agent should know');
-    expect(memoryTool).toContain('- space: durable facts, decisions, outcomes, milestones, and conventions that belong to THIS space only');
-    expect(memoryTool).toContain('would this still hold in another space?');
-    // The space tier is schema-gated: offered only when the host marks the
-    // session as belonging to a space.
+    const runner = readFile('src/main/model/core-agent/runner.ts');
+    expect(memoryTool).toContain('Read the existing cross-session memory inventory');
+    expect(memoryTool).toContain("enum: ['list']");
     expect(memoryTool).toContain('includeProjectTier');
-    // Language rule: write in the user's current language, preserving literals.
-    expect(memoryTool).toContain("Write in the user's current language while preserving code, paths, commands, URLs");
-
-    expect(agentPrompt).toContain('`target: "agent"` = your own agent memory');
-    expect(agentPrompt).toContain('`target: "user"` = global user profile/preferences');
-    expect(agentPrompt).toContain('`target: "shared"` = global facts');
-    expect(agentPrompt).not.toContain('current response/UI language');
-
-    expect(commanderPrompt).toContain('`target: "agent"` = commander\'s own orchestration memory');
-    expect(commanderPrompt).toContain('commander-specific routing lessons');
-    expect(commanderPrompt).not.toContain('current response/UI language');
+    expect(memoryTool).toContain('caller');
+    expect(memoryTool).toContain('current response language');
+    expect(memoryTool).toContain('Preserve proper nouns, commands, file paths, URLs, and quoted wording');
+    for (const retired of ['handler.add', 'handler.replace', 'handler.remove']) expect(memoryTool).not.toContain(retired);
+    expect(runner).toContain('createCrossSessionMemoryTool(memoryHandler');
+    expect(runner).toContain('listCrossSessionMemoryAssets');
+    expect(runner).not.toContain('ingestImmediateKnowledge');
+    expect(runner).not.toContain('recordTeachingSignalAfterMemoryWrite');
+    for (const prompt of [agentPrompt, commanderPrompt]) {
+      expect(prompt).toContain('cross_session_memory');
+      expect(prompt).toMatch(/read-only/i);
+      for (const scope of ['agent', 'user', 'shared', 'space']) expect(prompt).toContain(`target: "${scope}"`);
+      expect(prompt).not.toContain('You and the user write space memory');
+      expect(prompt).not.toContain('Only the commander writes space memory');
+    }
     expect(sharedPrompt).toContain('current response/UI language');
     expect(sharedPrompt).toContain('Preserve proper nouns, commands, file paths, code identifiers, URLs');
-    expect(readFile('src/main/features/group_chat/bus.ts')).toMatch(/promptLoader\.load\(["']chat_shared_rules["']/);
+    expect(sharedPrompt).not.toContain('Before `add` / `replace`');
+    const bus = readFile('src/main/features/group_chat/bus.ts');
+    expect(bus).toMatch(/renderPromptWithSharedRules\(\s*prompts\s*,\s*["']chat_commander["']/);
+    expect(bus).toMatch(/renderPromptWithSharedRules\(\s*prompts\s*,\s*["']chat_agent_in_group["']/);
+    expect(bus).toMatch(/promptLoader\.load\(["']chat_shared_rules["']/);
+    const runtime = await import('../../../src/main/features/group_chat/bus');
+    for (const template of ['chat_commander', 'chat_agent_in_group'] as const) {
+      const rendered = await runtime._renderPromptWithSharedRulesForTest(template, {}, true);
+      expect(rendered).toContain('`cross_session_memory` is read-only for every actor');
+      expect(rendered).toContain('## Existing memory language');
+      expect(rendered).not.toContain('Before `add` / `replace`');
+    }
   });
 
   it('group-chat system prompts follow the user request language with an interface-language fallback', () => {
@@ -551,7 +558,14 @@ describe('prompts ↔ code contract', () => {
     // User-authored project instructions are low-churn configuration and sit
     // in the stable cache prefix: after the agents block, before the
     // runtime-injection region begins.
-    expect(runner).toMatch(/if \(agentsBlock\) parts\.push\(agentsBlock\);[\s\S]{0,1200}?if \(projectContextPolicyBlock\) parts\.push\(projectContextPolicyBlock\);[\s\S]{0,600}?if \(projectInstructionsBlock\) parts\.push\(projectInstructionsBlock\);\s+if \(runtimeInjectionBlock\) parts\.push\(runtimeInjectionBlock\);/);
+    // 任务认知只读边界也是稳定前缀；验证顺序，不要求配置块与 runtime 紧邻。
+    const stableOrder = ['if (agentsBlock) parts.push(agentsBlock);',
+      'if (projectContextPolicyBlock) parts.push(projectContextPolicyBlock);',
+      'if (projectInstructionsBlock) parts.push(projectInstructionsBlock);',
+      'Read existing ontology and confirmed transcript corrections',
+      'if (runtimeInjectionBlock) parts.push(runtimeInjectionBlock);'].map(block => runner.indexOf(block));
+    expect(stableOrder.every(index => index >= 0)).toBe(true);
+    expect(stableOrder).toEqual([...stableOrder].sort((a, b) => a - b));
     // memoryBlock is the LAST block pushed into the (cached) system prompt.
     expect(runner).toMatch(/if \(memoryBlock\) parts\.push\(memoryBlock\);/);
     // The volatile blocks feed turnEphemeral, NOT the system prompt parts.

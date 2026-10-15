@@ -149,6 +149,10 @@ describe('CogSeed Group Chat projection bridge', () => {
     });
 
     const settled = await store.readRun(userId, cid, run!.run_id);
+    // R-11（真机 2026-10-14 16:24 事故）：唤醒/后端派发的工人走的是这条投影
+    // 终态路径，此前**从不问**"commander 是否欠一次汇报"，于是工人交付后没有
+    // 汇报回合——commander 上一句仍停在"等你批准"，用户看到谁在执行的错觉。
+    expect(settled).toMatchObject({ actor_report_enqueued: true });
     expect(settled).toMatchObject({
       status: 'completed',
       actors: [{

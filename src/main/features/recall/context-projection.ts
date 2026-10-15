@@ -34,7 +34,6 @@ import { approveWakeRequest, getWakeRequest } from '../p3394/wake-service';
 import { normalizeCognitionSourceRefs, type CognitionSourceRef } from './source-service';
 import { isCognitionSourceEnabled } from './source-control';
 import {
-  evaluateAssetRuntimeEligibility,
   assetRuntimeBlockRule,
   type AssetRuntimeBlockReason,
   type AssetRuntimeContext,
@@ -88,7 +87,7 @@ export function projectionKnowledgeError(code: ProjectionKnowledgeErrorCode): Er
 
 export interface OmittedAssetRef {
   assetId: string;
-  reason: 'asset_paused' | 'asset_archived' | 'asset_deleted' | 'asset_purged' | 'asset_revoked' | 'workspace_not_referenced' | 'workspace_disabled' | 'scope_mismatch' | 'source_unavailable' | 'low_relevance' | 'maturity_requires_user_selection' | 'not_applicable_context' | 'forbidden_context' | 'target_agent_not_allowed';
+  reason: 'asset_paused' | 'asset_archived' | 'asset_deleted' | 'asset_purged' | 'asset_revoked' | 'workspace_not_referenced' | 'workspace_disabled' | 'scope_mismatch' | 'source_unavailable' | 'low_relevance' | 'maturity_requires_user_selection' | 'not_applicable_context' | 'forbidden_context' | 'target_agent_not_allowed' | 'prompt_budget';
 }
 
 function inactiveAssetOmissionReason(
@@ -98,7 +97,7 @@ function inactiveAssetOmissionReason(
   return `asset_${status}` as OmittedAssetRef['reason'];
 }
 
-export type RecallAssetMatchMethod = HybridMatchMethod;
+export type RecallAssetMatchMethod = HybridMatchMethod | 'standing_preference';
 
 export interface RecallAssetMatch {
   assetId: string;
@@ -394,7 +393,7 @@ function validateAssetMatches(value: unknown): RecallAssetMatch[] | undefined {
     const match = raw as Record<string, unknown>;
     if (typeof match.assetId !== 'string' || !safeId(match.assetId)) throw new Error('malformed context projection matches');
     if (typeof match.matchScore !== 'number' || !Number.isFinite(match.matchScore) || match.matchScore < 0 || match.matchScore > 1) throw new Error('malformed context projection matches');
-    if (match.matchMethod !== 'semantic' && match.matchMethod !== 'ontology' && match.matchMethod !== 'semantic_ontology' && match.matchMethod !== 'recency_fallback' && match.matchMethod !== 'manual') throw new Error('malformed context projection matches');
+    if (match.matchMethod !== 'semantic' && match.matchMethod !== 'ontology' && match.matchMethod !== 'semantic_ontology' && match.matchMethod !== 'recency_fallback' && match.matchMethod !== 'manual' && match.matchMethod !== 'standing_preference') throw new Error('malformed context projection matches');
     if (match.entryAssetId !== undefined && (typeof match.entryAssetId !== 'string' || !safeId(match.entryAssetId))) throw new Error('malformed context projection match entry');
     if (match.distance !== undefined && (typeof match.distance !== 'number' || !Number.isInteger(match.distance) || match.distance < 0 || match.distance > 32)) throw new Error('malformed context projection match distance');
     const relationKinds = new Set<AbilityAssetRelationKind>(['refines', 'depends_on', 'replaces', 'conflicts_with', 'related_to', 'same_family']);
@@ -578,7 +577,9 @@ function assetMatchText(asset: RecallAbilityAssetRecord, groupTitles: Map<string
   // inflated baseline similarity for every asset of the same type (M2).
   return [
     asset.title,
-    asset.statement.slice(0, 1_200),
+    asset.statement,
+    ...(asset.applicableWhen || []),
+    ...(asset.forbiddenWhen || []),
     ontology,
   ].filter(Boolean).join('\n');
 }
@@ -598,9 +599,15 @@ function cosineScore(left: number[], right: number[]): number {
   return Math.max(0, Math.min(1, Number(score.toFixed(6))));
 }
 
-async function defaultEmbedTexts(texts: string[]): Promise<number[][]> {
-  const embed = await import('../kb_embed');
-  return embed.embedTexts(texts);
+async function defaultEmbedTexts(userId: string, texts: string[]): Promise<number[][]> {
+  const { embedForDedup } = await import('./similarity');
+  const vectors: number[][] = [];
+  for (const text of texts) {
+    const vector = await embedForDedup(userId, text);
+    if (!vector) throw new Error('complete recall embedding unavailable');
+    vectors.push(vector);
+  }
+  return vectors;
 }
 
 async function rankAssetsBySemanticMatch(
@@ -609,7 +616,7 @@ async function rankAssetsBySemanticMatch(
   assets: RecallAbilityAssetRecord[],
   options: ProjectionSemanticOptions,
 ): Promise<{ assets: RecallAbilityAssetRecord[]; assetMatches: RecallAssetMatch[] }> {
-  const embedTexts = options.embedTexts || defaultEmbedTexts;
+  const embedTexts = options.embedTexts || ((texts: string[]) => defaultEmbedTexts(userId, texts));
   const groupTitles = loadOntologyGroupTitleMap(userId);
   const vectors = await embedTexts([taskText, ...assets.map((asset) => assetMatchText(asset, groupTitles))]);
   if (vectors.length !== assets.length + 1) throw new Error('semantic embedding count mismatch');
@@ -783,6 +790,7 @@ function asProjection(value: RecallJsonRecord): ContextProjectionRecord {
   if (value.projectId !== undefined && !safeId(value.projectId)) throw new Error('malformed context projection project id');
   if (value.workspaceId !== undefined && !safeId(value.workspaceId)) throw new Error('malformed context projection workspace id');
   if (value.selectionDegraded !== undefined && typeof value.selectionDegraded !== 'boolean') throw new Error('malformed context projection');
+  if (value.expiresAt !== undefined && (typeof value.expiresAt !== 'string' || Number.isNaN(Date.parse(value.expiresAt)))) throw new Error('malformed context projection expiry');
   const agentId = normalizeOptionalScopeId(value.agentId, 'agent id');
   const roleId = normalizeOptionalScopeId(value.roleId, 'role id');
   const conversationKind = normalizeOptionalScopeId(value.conversationKind, 'conversation kind');
@@ -1044,7 +1052,7 @@ async function applySemanticSelection(
 
 export async function buildRecallView(userId: string, input: ProjectionInput, options: ProjectionSemanticOptions = {}): Promise<BuildRecallViewResult> {
   const purpose = normalizeTerm(input.purpose, 'purpose', 120);
-  const taskText = normalizeOptionalTerm(input.taskText, 'task text');
+  const taskText = normalizeOptionalTerm(input.taskText, 'task text', Number.MAX_SAFE_INTEGER);
   const purposeContext = [purpose, taskText].filter(Boolean).join('\n');
   const assets = await listAbilityAssets(userId);
   const refs = input.workspaceId ? await listWorkspaceAssetReferences(userId) : [];
@@ -1175,25 +1183,13 @@ async function buildExplicitAssetView(
     if (asset.status !== 'active') {
       throw explicitBlockError(['status_not_active'], id, asset.status);
     }
-    const gate = evaluateAssetRuntimeEligibility({
-      status: asset.status,
-      maturity: asset.maturity,
-      lifecycleStatus: asset.lifecycleStatus,
-      scope: asset.scope,
-      ...(asset.crossScopeConfirmedAt ? { crossScopeConfirmedAt: asset.crossScopeConfirmedAt } : {}),
-      ...(asset.scopePolicy ? {
-        scopePolicy: projectionPurposeIsDeferred(undefined, context.purpose || '')
-          ? scopePolicyWithoutPurposeTags(asset.scopePolicy)
-          : asset.scopePolicy,
-      } : {}),
-      ...(asset.applicableWhen ? { applicableWhen: asset.applicableWhen } : {}),
-      ...(asset.forbiddenWhen ? { forbiddenWhen: asset.forbiddenWhen } : {}),
-    }, {
-      ...context,
-      // 用户主动挑选，不是静默默认注入：成熟度与适用条件不作硬门槛。
-      silentDefaultInjection: false,
-      sourceAvailable: await hasEnabledAutomaticSources(userId, asset),
-    });
+    const { evaluateRecallAssetRuntimeEligibility } = await import('./prompt-injection');
+    const gate = await evaluateRecallAssetRuntimeEligibility(userId, {
+      ...asset,
+      scopePolicy: projectionPurposeIsDeferred(undefined, context.purpose || '')
+        ? scopePolicyWithoutPurposeTags(asset.scopePolicy)
+        : asset.scopePolicy,
+    }, { ...context, operation: 'explicit_use' });
     const blocking = context.agentId
       ? gate.reasons
       : gate.reasons.filter((reason) => ATTACH_BLOCKING_REASONS.has(reason));
@@ -1231,7 +1227,7 @@ export async function previewContextProjection(userId: string, input: Projection
     ? conversationContext.conversationKind
     : normalizeOptionalScopeId(input.conversationKind, 'conversation kind');
   const fileKinds = normalizeProjectionFileKinds(input.fileKinds);
-  const taskText = normalizeOptionalTerm(input.taskText, 'task text');
+  const taskText = normalizeOptionalTerm(input.taskText, 'task text', Number.MAX_SAFE_INTEGER);
   const authorization: ProjectionAuthorization = input.authorization || 'user_confirmed';
   if (authorization !== 'user_confirmed' && authorization !== 'workspace_policy' && authorization !== 'not_required' && authorization !== 'model_selected') throw new Error('invalid projection authorization');
   if (input.expiresAt !== undefined && Number.isNaN(Date.parse(input.expiresAt))) throw new Error('invalid projection expiry');
@@ -1281,9 +1277,10 @@ export async function createAutomaticContextProjection(
   userId: string,
   input: AutomaticProjectionInput,
   options: ProjectionSemanticOptions = {},
+  standingOnly = false,
 ): Promise<ContextProjectionRecord | undefined> {
   const taskRunId = normalizeTerm(input.taskRunId, 'task run id', 160);
-  const taskText = normalizeTerm(input.taskText, 'task text', 2_000);
+  const taskText = normalizeTerm(input.taskText, 'task text', Number.MAX_SAFE_INTEGER);
   const conversationId = input.conversationId === undefined
     ? undefined
     : normalizeTerm(input.conversationId, 'conversation id', 160);
@@ -1304,12 +1301,26 @@ export async function createAutomaticContextProjection(
     ? conversationContext.conversationKind
     : normalizeOptionalScopeId(input.conversationKind, 'conversation kind');
   const fileKinds = normalizeProjectionFileKinds(input.fileKinds);
-  const id = automaticProjectionId(taskRunId, workspaceId);
+  const id = automaticProjectionId(standingOnly ? `${taskRunId}-standing-preferences` : taskRunId, workspaceId);
   const existing = await readRecallJsonRecord(userId, 'projections', id);
   if (existing) {
     const projection = asProjection(existing);
     if (projection.status === 'confirmed') return projection;
   }
+
+  // 基线开关（2026-09-22 起默认反转）：正文自动注入默认**关闭**——查重与
+  // 知识发现由常驻目录＋模型自取承担（A/B 对照实验：注入抑制自取 5↔10 次、
+  // 命中增益仅 5/12↔3/12，砍注入的决策依据）。COGSEED_RECALL_BASELINE_TOP=N>0
+  // 显式恢复旧的"自动挑 N 条塞正文"行为（回滚通道与实验复跑都保留）。
+  // 普通资产仍受原有两个自动选择开关约束。经过本人保存决定核对的长期
+  // 回答偏好独立按既定边界带入，不因此升级成熟度或取得工具执行授权。
+  const baselineTopEnv = process.env.COGSEED_RECALL_BASELINE_TOP;
+  const baselineTop = baselineTopEnv === undefined || baselineTopEnv.trim() === '' ? Number.NaN : Number(baselineTopEnv);
+  const baselineEnabled = Number.isFinite(baselineTop) && baselineTop > 0;
+  // Semantica is a separate explicit opt-in; skip qualification IO only when
+  // both automatic reuse paths are disabled.
+  const generalSelectionEnabled = !standingOnly && (baselineEnabled || isSemanticaEnabled(userId));
+  const { isStandingPreferenceAsset, hasUserAuthorizedStandingPreference } = await import('./standing-preference');
 
   const allAssets = await listAbilityAssets(userId);
   const workspaceRefs = workspaceId ? await listWorkspaceAssetReferences(userId) : [];
@@ -1319,8 +1330,10 @@ export async function createAutomaticContextProjection(
       .map((ref) => [ref.assetId, ref]),
   );
   const eligibleAssets: RecallAbilityAssetRecord[] = [];
+  const standingPreferences: RecallAbilityAssetRecord[] = [];
   const omittedRefs: OmittedAssetRef[] = [];
   for (const asset of allAssets) {
+    if (!generalSelectionEnabled && !isStandingPreferenceAsset(asset)) continue;
     const inactiveReason = inactiveAssetOmissionReason(asset.status);
     if (inactiveReason) {
       omittedRefs.push({ assetId: asset.id, reason: inactiveReason });
@@ -1337,21 +1350,12 @@ export async function createAutomaticContextProjection(
       omittedRefs.push({ assetId: asset.id, reason: 'source_unavailable' });
       continue;
     }
-    // 统一 Runtime 闸门。这条自动投影是"静默默认注入"：它自己把 status 置成
-    // confirmed、authorization 置成 not_required，不经用户挑选就进本轮提示词。
-    // 所以按 PRD 3.6 只接纳已经证明过能被正确带入的资产——User Confirmed /
-    // Unverified 仍然只能由用户主动带入（手动投影那条路不经过这里）。
-    const runtime = evaluateAssetRuntimeEligibility({
-      status: asset.status,
-      maturity: asset.maturity,
-      lifecycleStatus: asset.lifecycleStatus,
-      scope: asset.scope,
-      ...(asset.crossScopeConfirmedAt ? { crossScopeConfirmedAt: asset.crossScopeConfirmedAt } : {}),
-      ...(asset.scopePolicy ? { scopePolicy: asset.scopePolicy } : {}),
-      ...(asset.applicableWhen ? { applicableWhen: asset.applicableWhen } : {}),
-      ...(asset.forbiddenWhen ? { forbiddenWhen: asset.forbiddenWhen } : {}),
-    }, {
-      silentDefaultInjection: true,
+    // 普通资产的默认准入规则照旧。唯一窄例外是与完整来源和本人保存决定
+    // 绑定的长期回答偏好：携带完整条件作为待适用性判断的 guidance，
+    // 不冒称效果验证或本轮新点击，来源、权限与禁止范围仍走同一闸门。
+    const { evaluateRecallAssetRuntimeEligibility } = await import('./prompt-injection');
+    const runtime = await evaluateRecallAssetRuntimeEligibility(userId, asset, {
+      operation: 'default_injection',
       purpose: taskText,
       ...(taskText ? { taskText } : {}),
       ...(agentId ? { agentId } : {}),
@@ -1365,26 +1369,19 @@ export async function createAutomaticContextProjection(
       omittedRefs.push({ assetId: asset.id, reason: RUNTIME_OMISSION_REASON[runtime.reasons[0]] || 'source_unavailable' });
       continue;
     }
-    eligibleAssets.push(asset);
+    if (await hasUserAuthorizedStandingPreference(userId, asset)) standingPreferences.push(asset);
+    else if (generalSelectionEnabled) eligibleAssets.push(asset);
   }
-  if (!eligibleAssets.length) return undefined;
+  if (!eligibleAssets.length && !standingPreferences.length) return undefined;
 
-  // 基线开关（2026-09-22 起默认反转）：正文自动注入默认**关闭**——查重与
-  // 知识发现由常驻目录＋模型自取承担（A/B 对照实验：注入抑制自取 5↔10 次、
-  // 命中增益仅 5/12↔3/12，砍注入的决策依据）。COGSEED_RECALL_BASELINE_TOP=N>0
-  // 显式恢复旧的"自动挑 N 条塞正文"行为（回滚通道与实验复跑都保留）。
-  const baselineTopEnv = process.env.COGSEED_RECALL_BASELINE_TOP;
-  const baselineTop = baselineTopEnv === undefined || baselineTopEnv.trim() === '' ? Number.NaN : Number(baselineTopEnv);
-  const baselineEnabled = Number.isFinite(baselineTop) && baselineTop > 0;
-  // Semantica is an explicit user opt-in to automatic governed reuse. It must
-  // not remain inert merely because the older baseline-injection experiment
-  // is off. With Semantica disabled, the legacy baseline switch keeps its
-  // exact behavior.
-  const automaticSelectionEnabled = baselineEnabled || isSemanticaEnabled(userId);
-  const selection = automaticSelectionEnabled
-    ? await applySemanticSelection(userId, eligibleAssets, taskText, options, [], input.taskText, workspaceId, projectId)
-    : { assets: [] as RecallAbilityAssetRecord[], degraded: false };
-  const selectedAssets = selection.assets;
+  const selection: SemanticSelection = eligibleAssets.length
+    ? await applySemanticSelection(userId, eligibleAssets, taskText, options, omittedRefs, input.taskText, workspaceId, projectId)
+    : { assets: [], degraded: false };
+  standingPreferences.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id));
+  const combined = [...standingPreferences, ...selection.assets];
+  const selectedAssets = combined.slice(0, 12);
+  const overflow = combined.slice(12);
+  for (const asset of overflow) omittedRefs.push({ assetId: asset.id, reason: 'prompt_budget' });
   if (!selectedAssets.length) return undefined;
 
   const now = projectionNowIso();
@@ -1406,8 +1403,9 @@ export async function createAutomaticContextProjection(
     purpose: 'conversation_reply',
     authorization: 'not_required',
     assetIds: selectedAssets.map((asset) => asset.id),
-    assetVersions: Object.fromEntries(selectedAssets.map((asset) => [asset.id, asset.version])),
-    ...(selection.assetMatches ? { assetMatches: selection.assetMatches.filter((match) => selectedIds.has(match.assetId)) } : {}),
+    assetVersions: Object.fromEntries(selectedAssets.map((asset) => [asset.id, String(asset.activeVersion || asset.version)])),
+    assetMatches: [...standingPreferences.filter(asset => selectedIds.has(asset.id)).map(asset => ({ assetId: asset.id, matchScore: 1, matchMethod: 'standing_preference' as const })),
+      ...(selection.assetMatches || []).filter(match => selectedIds.has(match.assetId))],
     sourceRefs: sourceRefsForAssets(selectedAssets),
     omittedRefs,
     status: 'confirmed',
@@ -1416,7 +1414,18 @@ export async function createAutomaticContextProjection(
     decidedAt: now,
   };
   await writeRecallJsonRecord(userId, 'projections', record.id, record);
+  if (overflow.length) {
+    const { recordInjectionReceipt } = await import('./injection-receipt');
+    for (const asset of overflow) await recordInjectionReceipt(userId, { taskRunId, projectionId: record.id,
+      assetId: asset.id, assetVersion: String(asset.activeVersion || asset.version), status: 'omitted', boundary: 'real', channel: 'projection', reason: 'prompt_budget' });
+  }
   return record;
+}
+
+/** Standing intent comes from the earlier human save, not a fresh click or a
+ * maturity/effectiveness grant; the ordinary renderer retains exact citations. */
+export async function createStandingPreferenceContextProjection(userId: string, input: AutomaticProjectionInput): Promise<ContextProjectionRecord | undefined> {
+  return createAutomaticContextProjection(userId, input, {}, true);
 }
 
 async function validateFrozenProjectionAssets(
@@ -1457,6 +1466,13 @@ async function validateFrozenProjectionAssets(
       // context, so omit the out-of-scope item while keeping other frozen
       // assets usable. Preview/confirmation still reject an ineligible asset.
       if (requireCommitted) continue;
+      // 2026-10-14 真机（cid 0ed97b36eea4）：唤醒审批走确认路径，此前把"作用域
+      // 不匹配"升级成整单硬拒 -> 用户点三次审批三次 projection_asset_ineligible，
+      // 且无任何出路（同一条资产在 committed 路径下只是被逐条跳过）。已确认的投影
+      // 不该因为审批时刻的临时作用域被全盘否掉：与 committed 口径一致地逐条收敛，
+      // 其余冻结资产照常可用。**预览/未确认**的投影仍保持严格拒绝（安全门不放宽）；
+      // 资产缺失/停用/版本漂移仍按各自错误码拒绝。
+      if (isCommittedProjection(projection)) continue;
       throw projectionKnowledgeError('projection_asset_ineligible');
     }
     for (const source of asset.evidenceRefs) {
@@ -1470,11 +1486,23 @@ async function validateFrozenProjectionAssets(
   return out;
 }
 
+/** 确认/预览口径的资产校验。
+ *
+ * 2026-10-14 真机事故（cid 0ed97b36eea4）：唤醒审批走这条路径，而它此前**没有
+ * 作用域形参**，`isAssetEligibleForProjection` 拿到的是默认空作用域 `{}` —— 任何
+ * "资格依赖当前 project/space/task"的资产都被判成不合格，抛
+ * `projection_asset_ineligible`，用户点三次审批三次同码失败，且没有任何出路。
+ * 资产在确认时是合格的，就该按**确认时/调用方传入的**作用域复核。
+ *
+ * 形参保持可选、默认空对象：不传作用域的老调用点行为**一字不变**（向后兼容），
+ * 只有显式传入作用域的调用点才按真实上下文判定——不会放宽任何既有校验。
+ */
 export function validateProjectionAssetVersions(
   userId: string,
   projection: ContextProjectionRecord,
+  runtimeScope: AssetScopeContext = {},
 ): Promise<Record<string, string>> {
-  return validateFrozenProjectionAssets(userId, projection, false);
+  return validateFrozenProjectionAssets(userId, projection, false, runtimeScope);
 }
 
 export function validateCommittedProjectionAssetVersions(

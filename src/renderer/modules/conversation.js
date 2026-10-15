@@ -340,22 +340,29 @@ function _renderMessageMarkdown(text) {
   // marker was plain text. Protect it through markdown and turn it into an
   // actionable button below, beside the existing asset citation handling.
   const candidateRefIds = [];
-  const markdownInput = protectedText.replace(/\[candidate:([A-Za-z0-9_-]{1,64})\]/g, (m, id) => {
+  const candidateText = protectedText.replace(/\[candidate:([A-Za-z0-9_-]{1,64})\]/g, (m, id) => {
     const idx = candidateRefIds.length;
     candidateRefIds.push(id);
     return `\x00CANDIDATEREF${idx}\x00`;
+  });
+  const ontologyRefs = [];
+  const markdownInput = candidateText.replace(/\[\[ontology:([A-Za-z0-9_-]{1,160})\/([A-Za-z0-9_-]{1,160})@([1-9]\d{0,8})\]\]/g, (_marker, moduleId, recordId, version) => {
+    const index = ontologyRefs.length;
+    ontologyRefs.push({ moduleId, recordId, version: Number(version) });
+    return `\uE000ONTOLOGYREF${index}\uE001`;
   });
   const html = renderMarkdownFull(markdownInput);
   const needsSkillRewrite = _htmlMayContainKnownSkillIdForDisplay(html, skills);
   // Mention highlighting requires DOM walking — do it on a detached
   // container, then return its innerHTML for the bubble to embed.
-  if (!html || (html.indexOf('@') < 0 && !needsSkillRewrite && !assetRefIds.length && !candidateRefIds.length)) return html;
+  if (!html || (html.indexOf('@') < 0 && !needsSkillRewrite && !assetRefIds.length && !candidateRefIds.length && !ontologyRefs.length)) return html;
   const tmp = document.createElement('div');
   tmp.innerHTML = html;
   if (needsSkillRewrite) _replaceKnownSkillIdsIn(tmp, skills);
   _highlightMentionsIn(tmp);
   if (assetRefIds.length) _replaceAssetCitationsIn(tmp, assetRefIds);
   if (candidateRefIds.length) _replaceCandidateCitationsIn(tmp, candidateRefIds);
+  if (ontologyRefs.length) _replaceOntologyCitationsIn(tmp, ontologyRefs);
   return tmp.innerHTML;
 }
 
@@ -476,6 +483,44 @@ function _replaceCandidateCitationsIn(container, ids) {
     }
     if (last < node.nodeValue.length) frag.appendChild(document.createTextNode(node.nodeValue.slice(last)));
     node.parentNode.replaceChild(frag, node);
+  }
+}
+
+// 本体标记仅提供精确版本阅读入口，采用与效果仍以主进程回执为准。
+function _replaceOntologyCitationsIn(container, refs) {
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    const pattern = /\uE000ONTOLOGYREF(\d+)\uE001/g;
+    if (!pattern.test(node.nodeValue)) continue;
+    pattern.lastIndex = 0;
+    const fragment = document.createDocumentFragment();
+    let last = 0;
+    let match;
+    while ((match = pattern.exec(node.nodeValue))) {
+      if (match.index > last) fragment.appendChild(document.createTextNode(node.nodeValue.slice(last, match.index)));
+      const ref = refs[Number(match[1])];
+      if (ref && node.parentElement?.closest('pre, code')) {
+        fragment.appendChild(document.createTextNode(`[[ontology:${ref.moduleId}/${ref.recordId}@${ref.version}]]`));
+      } else if (ref) {
+        const key = 'chat.ontology_citation_open';
+        const translated = typeof t === 'function' ? t(key) : key;
+        const label = translated && translated !== key ? translated : 'View ontology record';
+        const template = document.createElement('template');
+        template.innerHTML = uiButton({ label: `${label} · v${ref.version}`, role: 'ghost', size: 'sm',
+          attrs: { 'data-ontology-citation': ref.recordId, 'data-ontology-module': ref.moduleId, 'data-ontology-version': String(ref.version) },
+        });
+        fragment.appendChild(template.content.cloneNode(true));
+      }
+      last = match.index + match[0].length;
+    }
+    if (last < node.nodeValue.length) fragment.appendChild(document.createTextNode(node.nodeValue.slice(last)));
+    node.parentNode.replaceChild(fragment, node);
   }
 }
 
@@ -1624,11 +1669,18 @@ function setExecOverride(target, patch) {
 function _executionConfigForSend(target, snapshot) {
   const snap = snapshot || _activeRecipient(target);
   const ov = _activeExecOverride(target) || {};
+  // Option C：该模型持久化的档位是比全局偏好更具体的一层。发送侧只在没有任务级
+  // 覆盖时用它，且**不**把全局偏好写进 execution_config（否则全局会盖过 agent
+  // 默认）。外接 CLI 来源读不到（模型设置不适用于 CLI 协商的强度）。
+  const persistedEffort = (typeof window !== 'undefined' && typeof window.getPersistedModelEffort === 'function')
+    ? (window.getPersistedModelEffort(target) || '')
+    : '';
+  const effectiveEffort = ov.effort || persistedEffort;
   if (snap && snap.kind === 'model' && snap.provider && snap.model) {
     return {
       provider: snap.provider,
       model: snap.model,
-      ...(ov.effort ? { effort: ov.effort } : {}),
+      ...(effectiveEffort ? { effort: effectiveEffort } : {}),
     };
   }
   const cfg = {};
@@ -1651,7 +1703,7 @@ function _executionConfigForSend(target, snapshot) {
   // effort：CLI 智能体按网关协商（effort_controllable，自建智能体经
   // P3394_AGENT_EFFORT_ARGS 声明即 true）下发；未协商走兜底表（未知 CLI
   // 乐观放开）。网关无模板时信封字段安全忽略——与 model 同一模式。
-  if (ov.effort && (!isCliAgentRecipient || cliExec)) cfg.effort = ov.effort;
+  if (effectiveEffort && (!isCliAgentRecipient || cliExec)) cfg.effort = effectiveEffort;
   return Object.keys(cfg).length ? cfg : undefined;
 }
 // The conversation "floor": server-authoritative `StateFile.active_recipient`,
@@ -2815,6 +2867,19 @@ document.addEventListener('click', (e) => {
   if (typeof loader === 'function') loader('recall').then(open).catch(() => {});
 });
 
+// [[ontology:module/record@version]] → 同一权威记录的只读历史版本。
+document.addEventListener('click', (event) => {
+  const el = event.target?.closest?.('[data-ontology-citation]');
+  if (!el) return;
+  const { ontologyCitation: recordId, ontologyModule: moduleId, ontologyVersion } = el.dataset;
+  if (!/^[A-Za-z0-9_-]{1,160}$/.test(recordId || '') || !/^[A-Za-z0-9_-]{1,160}$/.test(moduleId || '')
+    || !/^[1-9]\d{0,8}$/.test(ontologyVersion || '')) return;
+  const open = () => window.openCognitionOntologyRecord?.(moduleId, recordId, Number(ontologyVersion));
+  if (typeof window.openCognitionOntologyRecord === 'function') { open(); return; }
+  const loader = typeof loadRendererFeature === 'function' ? loadRendererFeature : window.loadRendererFeature;
+  if (typeof loader === 'function') loader('recall').then(open).catch(() => {});
+});
+
 async function _startSpaceBuilderConversation() {
   // 复用"进行中"的空间模式会话（用户再点卡片回到上次未完成的搭建）。
   // 已产出空间（space_builder_completed）或已删除的会话不复用——上次搭建
@@ -2933,6 +2998,7 @@ function _forgetCidRecipient(cid) {
   _autoRecipientByCid.delete(cid);
   _serverFloorByCid.delete(cid);
   _pendingFloorResetByCid.delete(cid);
+  _forgetChatStreamAnchors(cid);
   if (_agentStatusPopoverCid === cid) _closeAgentStatusPopover();
   setGroupConversationBusy(cid, false);
   _latestInFlight.delete(cid);
@@ -3303,14 +3369,30 @@ async function _syncPendingActorsFromRuntime(cid, opts = {}) {
   // Names/avatars are local data; warm members before revealing so the
   // placeholder does not flash as an unknown agent.
   try { await _refreshGroupMembers(cid); } catch (_) { /* best effort */ }
+  // 活跃回合是**服务端/运行时事实**，不该被"本地发送流还在跑"的 pending 门否决：
+  // 唤醒派发的工人在本地 pending 窗口之外执行（真机 2026-10-14 17:02:58–17:03:15：
+  // commander 回合 17:02:59 收尾，工人在 17:02:58–17:03:15 跑），此前这里直接
+  // return false，3313 那行永不执行 —— 工人没有任何可见占位，结果消息一次性出现
+  // （"没显示工人 agent 在执行"）。这里只补建占位，其余 pending 语义保持原样，
+  // 避免把调用方对 pending 的判断一起改掉。
+  if (hasActiveTurnsField && activeTurns.length > 0 && cid === currentCid) {
+    // 只补建活跃回合的占位，**不在这里清理 commander 的空占位**：清理是 pending
+    // 生命周期（下面那段）的职责，脱离 pending 门去做会把 commander 上一轮的执行
+    // 过程气泡一并摘掉（真机回归 2026-10-14 17:3x：工人显示正常了，但 cogseed 之前
+    // 的执行过程消失）。这里保持纯增量。
+    for (const turn of activeTurns) {
+      const ph = _ensureActorPlaceholder(cid, turn.actor, loadingEl, turn.turn_id, turn.msg_id, turn.started_at_ms);
+      // 2026-10-14：占位随时可能被 stream-end 的悬空清理摘掉，而服务端仍说这个 actor
+      // 在跑。每次扫描（state_changed 频率 <1s）重新点亮一次运行态，于是状态会自愈，
+      // 且不干预节点生命周期 —— 过程内容照旧能并进来。
+      _reassertActorLive(ph);
+    }
+  }
   if (!isConvPending(cid) || pendingConvs.get(cid)?.aborted) return false;
   if (cid !== currentCid) return true;
   if (hasActiveTurnsField) {
     const activeCommander = activeTurns.some((t) => t.actor === 'commander');
     if (!activeCommander) _removeEmptyActorPlaceholder(cid, 'commander');
-    for (const turn of activeTurns) {
-      _ensureActorPlaceholder(cid, turn.actor, loadingEl, turn.turn_id, turn.msg_id, turn.started_at_ms);
-    }
   } else {
     if (!inFlight.includes('commander')) _removeEmptyActorPlaceholder(cid, 'commander');
     for (const actorId of inFlight) {
@@ -5315,7 +5397,9 @@ function _renderCognitionSaveReceiptsHtml(receipts) {
   return `<div class="chat-cognition-save-receipts">${receipts.map((receipt) => {
     // taught-pending-review（2026-09-28 四病整改 7.0 修7）：教学回执并入保存
     // 回执后的新态——用户教了一条记忆，信号落库时建了候选、等审核。
-    const outcomeKey = receipt.outcome === 'created'
+    const outcomeKey = receipt.target === 'ontology'
+      ? receipt.outcome === 'ontology-pending' ? 'chat.cognition_save.ontology_pending' : 'chat.cognition_save.ontology_saved'
+      : receipt.outcome === 'created'
       ? 'chat.cognition_save.state_active'
       : receipt.outcome === 'already-confirmed'
         ? 'chat.cognition_save.state_existing'
@@ -5337,7 +5421,7 @@ function _renderCognitionSaveReceiptsHtml(receipts) {
           : receipt.outcome === 'taught-pending-review'
             ? '已记住 · 待审核'
             : 'Awaiting your review · not active yet';
-    const label = receipt.outcome === 'already-confirmed'
+    const label = receipt.target === 'ontology' ? copy('chat.cognition_save.open_ontology', '查看本体') : receipt.outcome === 'already-confirmed'
       ? copy('chat.cognition_save.open_existing', 'View record')
       : receipt.target === 'asset'
         ? copy('chat.cognition_save.open_asset', 'View and edit')
@@ -5347,7 +5431,9 @@ function _renderCognitionSaveReceiptsHtml(receipts) {
       role: 'ghost',
       size: 'sm',
       className: 'chat-cognition-save-open',
-      attrs: receipt.target === 'asset'
+      attrs: receipt.target === 'ontology'
+        ? { 'data-ontology-citation': receipt.id, 'data-ontology-module': receipt.moduleId || receipt.id, 'data-ontology-version': String(receipt.version || 1) }
+        : receipt.target === 'asset'
         ? { 'data-asset-citation': receipt.id }
         : { 'data-candidate-citation': receipt.id },
     });
@@ -5394,32 +5480,46 @@ function _hydrateRecallCitations(messageEl, cid, messageId) {
     const button = event.target?.closest?.('[data-recall-feedback]');
     if (!button || button.disabled) return;
     const feedback = button.dataset.recallFeedback;
-    if (!cid || !resolvedMessageId || (feedback !== 'positive' && feedback !== 'negative')) return;
-    if (host.dataset.feedbackBusy === '1' || host.dataset.feedbackSent === '1') return;
-    host.dataset.feedbackBusy = '1';
-    host.querySelectorAll('[data-recall-feedback]').forEach((item) => { item.disabled = true; });
+    // 逐行反馈（2026-10-03 待办#2）：按钮钉在自己行的资产上——反馈只记给用户
+    // 点的那条资产，不再连带同消息其他引用。行取包含按钮的已引用行（按钮自身
+    // 也带 data-recall-asset-id，closest 从按钮起会只命中按钮自己）。
+    const assetId = String(button.dataset.recallAssetId || '');
+    if (!cid || !resolvedMessageId || !assetId || (feedback !== 'positive' && feedback !== 'negative')) return;
+    const row = button.closest('.chat-recall-citation[data-recall-asset-id]');
+    if (!row) return;
+    if (row.dataset.feedbackBusy === '1' || row.dataset.feedbackSent === '1') return;
+    row.dataset.feedbackBusy = '1';
+    row.querySelectorAll('[data-recall-feedback]').forEach((item) => { item.disabled = true; });
     try {
       const result = await window.cogseed.invoke('recall.usage.feedback', {
         cid,
         messageId: resolvedMessageId,
         feedback,
+        assetId,
       });
       if (!result?.ok) throw new Error(result?.error || 'Recall feedback failed');
       // 负反馈后认知资产面板的刷新不再走 window CustomEvent（2026-09-27
       // 刷新机制重写）：主进程写回执时经 recall store 广播 cognition:changed
       // （asset-usage-receipts → timeline 区块），面板订阅中枢自己重拉。
-      host.dataset.feedbackSent = '1';
-      host.dataset.feedback = feedback;
-      host.classList.add('is-feedback-sent');
-      const status = host.querySelector('[data-recall-feedback-status]');
+      const sent = new Set(String(host.dataset.feedbackAssets || '').split(',').filter(Boolean));
+      sent.add(assetId);
+      host.dataset.feedbackAssets = [...sent].join(',');
+      // 整卡可能在请求期间被投影补全重画：按 assetId 重查当前渲染的行再落
+      // 状态，不依赖请求前捕获的节点（CodeRabbit 校正）；行不在（极端重画）
+      // 时 dataset 已记账，重画自然呈现已反馈态。
+      const currentRow = host.querySelector(`.chat-recall-citation[data-recall-asset-id="${assetId}"]`);
+      const targetRow = currentRow || row;
+      targetRow.dataset.feedbackSent = '1';
+      targetRow.classList.add('is-feedback-sent');
+      const status = targetRow.querySelector('[data-recall-feedback-status]');
       const key = 'chat.recall.feedback_thanks';
       const value = typeof t === 'function' ? t(key) : key;
       if (status) status.textContent = value && value !== key ? value : 'Thanks for the feedback';
     } catch (error) {
-      host.querySelectorAll('[data-recall-feedback]').forEach((item) => { item.disabled = false; });
+      row.querySelectorAll('[data-recall-feedback]').forEach((item) => { item.disabled = false; });
       if (typeof uiAlert === 'function') await uiAlert((error && error.message) || String(error));
     } finally {
-      host.dataset.feedbackBusy = '0';
+      row.dataset.feedbackBusy = '0';
     }
   });
   // 头部带 role="button"：键盘等效入口（Enter/Space 翻转折叠），忽略 IME 组合期。
@@ -10884,8 +10984,20 @@ async function _resolveWakeRequest(card, request, cid, decision) {
     });
     const data = await res.json();
     if (!data || data.ok === false) throw new Error(data?.error || 'wake decision failed');
-    card.remove();
-    _pruneWakeRequestHost(_wakeRequestHost(cid, { create: false }));
+    // 需求口径（2026-10-14 需求方）：批准之后这张卡就可以退场——授权已经生效，
+    // 「点击生效了」的回执由工人气泡上的运行指示给出（过程徽章常显旋转/计时），
+    // 留一张「已启动」的卡反而挡住输入区。拒绝没有别的信号能说明，保留定格回执
+    // （已拒绝），否则用户点完就再无痕迹。
+    const settled = data.request && typeof data.request === 'object'
+      ? data.request
+      : { ...request, status: decision === 'approve' ? 'approved' : 'rejected' };
+    if (decision === 'approve') {
+      card.remove();
+      _pruneWakeRequestHost(_wakeRequestHost(cid, { create: false }));
+    } else {
+      card.dataset.busy = '';
+      _renderWakeRequestCard(card, settled, cid);
+    }
   } catch (err) {
     observer?.abort?.();
     card.dataset.busy = '';
@@ -11707,6 +11819,7 @@ function _removeRenderedHistoryFrom(msgDiv) {
   for (const key of Array.from(_groupPlaceholders.keys())) {
     if (key.startsWith(`${currentCid}:`)) _groupPlaceholders.delete(key);
   }
+  _forgetChatStreamAnchors(currentCid);
 }
 
 async function _confirmUserMessageEdit() {
@@ -12173,40 +12286,6 @@ function _syncBubbleReferenceActionState(msgDiv) {
 // Attach small action buttons below the bubble. Kept outside the bubble so
 // they never overlap content. `getContent` is a callback so it can return the
 // latest text after streaming completes.
-async function _openCognitionCaptureFromBubble(msgDiv, getContent, cognitionBtn) {
-  const text = typeof getContent === 'function' ? String(getContent() || '') : '';
-  const messageId = String(msgDiv?.dataset?.msgId || '').trim();
-  if (!cognitionBtn || !text.trim() || !messageId || cognitionBtn.disabled) return false;
-
-  // The feature can load after the user has navigated elsewhere. Preserve the
-  // source task at click time so the evidence is never attributed to that
-  // later task.
-  const sourceCid = currentCid;
-  const loader = typeof loadRendererFeature === 'function'
-    ? loadRendererFeature
-    : window.loadRendererFeature;
-  if (typeof window.openCognitionCapture !== 'function' && typeof loader === 'function') {
-    cognitionBtn.disabled = true;
-    try {
-      await loader('personal-ontology');
-    } catch (error) {
-      _convLog.warn('cognition capture feature load failed', { error: error?.message || String(error) });
-    } finally {
-      cognitionBtn.disabled = false;
-    }
-  }
-  if (typeof window.openCognitionCapture !== 'function') return false;
-  try {
-    return window.openCognitionCapture({
-      conversationId: sourceCid,
-      messageId,
-    }) !== false;
-  } catch (error) {
-    _convLog.warn('cognition capture open failed', { error: error?.message || String(error) });
-    return false;
-  }
-}
-
 function _attachBubbleActions(msgDiv, getContent, opts = {}) {
   const includeArchive = opts.archive !== false;
   const includeRetry = opts.retry === true;
@@ -12239,7 +12318,6 @@ function _attachBubbleActions(msgDiv, getContent, opts = {}) {
   const copyButton = uiIconButton({ label: copyLabel, icon: 'copy', className: 'bubble-action-btn bubble-copy-btn' });
   const asideButton = uiIconButton({ label: asideLabel, icon: 'message-square', className: 'bubble-action-btn bubble-aside-btn' });
   const overflowItems = `${uiButton({ label: t('chat.message_select'), role: 'ghost', size: 'sm', icon: 'list', className: 'chat-bubble-menu-item bubble-select-btn', attrs: { role: 'menuitem', title: t('chat.message_select_title') } })}
-    ${includeArchive && !includeRetry ? uiButton({ label: t('cognition.capture.menu'), role: 'ghost', size: 'sm', icon: 'brain-circuit', className: 'chat-bubble-menu-item bubble-cognition-btn', attrs: { role: 'menuitem', title: t('cognition.capture.menu_title') } }) : ''}
     ${includeArchive ? uiButton({ label: t('chat.archive_btn'), role: 'ghost', size: 'sm', icon: 'book-open', className: 'chat-bubble-menu-item bubble-archive-btn', attrs: { role: 'menuitem', title: t('chat.archive_btn_title') } }) : ''}`;
   actions.innerHTML = `
     <span class="chat-bubble-direct-actions">${copyButton}${quoteButton}${asideButton}</span>
@@ -12253,7 +12331,6 @@ function _attachBubbleActions(msgDiv, getContent, opts = {}) {
   const copyBtn = actions.querySelector('.bubble-copy-btn');
   const quoteBtn = actions.querySelector('.bubble-quote-btn');
   const selectBtn = actions.querySelector('.bubble-select-btn');
-  const cognitionBtn = actions.querySelector('.bubble-cognition-btn');
   const asideBtn = actions.querySelector('.bubble-aside-btn');
   if (includeRetry) _attachBubbleRetryBtn(directActions, msgDiv);
   _wireBubbleActionMenu(actions);
@@ -12331,10 +12408,6 @@ function _attachBubbleActions(msgDiv, getContent, opts = {}) {
     e.stopPropagation();
     if (selectBtn.disabled) return;
     _enterMessageSelection(msgDiv);
-  });
-  cognitionBtn?.addEventListener('click', (e) => {
-    e.stopPropagation();
-    void _openCognitionCaptureFromBubble(msgDiv, getContent, cognitionBtn);
   });
   copyBtn?.addEventListener('click', async (e) => {
     e.stopPropagation();
@@ -13508,6 +13581,7 @@ function _makeConvChatController(cid, options = {}) {
         for (const k of Array.from(_groupPlaceholders.keys())) {
           if (k.startsWith(`${id}:`)) _groupPlaceholders.delete(k);
         }
+        _forgetChatStreamAnchors(id);
         // Bridge the controller's abort into the existing pendingConvs
         // state shape so legacy code (abortConvStream, sidebar badge,
         // polling recovery) keeps working untouched.
@@ -14332,6 +14406,22 @@ function _removeEmptyStreamingPlaceholder(ph) {
     if (val === ph) _groupPlaceholders.delete(key);
   }
   ph.remove();
+}
+
+/** 幂等地把"运行中"重新点亮到该 actor 占位的折叠入口上（活跃回合每拍调用一次）。
+ *  与 chat-stream 的活跃态共用同一套类名与文案 key，不新造第二套视觉。 */
+function _reassertActorLive(ph) {
+  try {
+    if (!ph || !ph.parentElement || !ph.querySelector) return;
+    const badge = ph.querySelector('.cs-badge');
+    if (!badge || badge.querySelector('.cs-badge-live')) return;
+    const el = document.createElement('span');
+    el.className = 'cs-badge-live';
+    el.setAttribute('role', 'status');
+    el.innerHTML = '<span class="cs-loading-spinner"></span>'
+      + `<span class="cs-badge-live-label">${text('run_center.action_working')}</span>`;
+    badge.insertBefore(el, badge.firstChild);
+  } catch (_) { /* 运行态是提示，不允许它打断渲染 */ }
 }
 
 function _removeEmptyActorPlaceholder(cid, actorId, turnId) {
@@ -16424,7 +16514,7 @@ function createChatController(config) {
             // skip the render while off-view — do NOT abort (that would stop the
             // agent's turn). Scene hooks still run so edit-scene state is intact.
             if (id === config.getCurrentId()) {
-              _handleStreamEvent(id, msgEl, ev, { archive: features.archive });
+              _handleStreamEvent(id, msgEl, ev, { archive: features.archive, actorIdentity: !!features.actorIdentity });
             }
             if (hooks.onStreamEvent) hooks.onStreamEvent(ev, msgEl, id);
             if (ev.type === 'final' && hooks.onFinal) hooks.onFinal(ev, msgEl, id);
@@ -16580,7 +16670,7 @@ function createChatController(config) {
   return { loadHistory, send, abort, clear, isBusy, enqueue, renderQueue };
 }
 
-function _handleStreamEvent(cid, msg, ev, { archive = false } = {}) {
+function _handleStreamEvent(cid, msg, ev, { archive = false, actorIdentity = false } = {}) {
   if (ev.type === 'progress') {
     const evt = ev.event && ev.event.stream ? ev.event : null;
     const line = evt ? (_formatEventLine(evt) || ev.text) : ev.text;
@@ -16595,8 +16685,20 @@ function _handleStreamEvent(cid, msg, ev, { archive = false } = {}) {
     // arrives, then on the most-recent rendered bubble for that actor.
     if (inner.stream === 'chat' && inner.data && typeof window.chatStreamHandleEvent === 'function') {
       // conv-core 结构化事件：chat-stream 过程面板（工具卡/思考/Diff/用量），
-      // 与下方 group 老协议并行渲染。
-      window.chatStreamHandleEvent(cid, msg, inner.data);
+      // 与下方 group 老协议并行渲染。锚点按 actor 解析（一个 actor 一条气泡），
+      // 否则派单链的 worker 过程会落进 commander 的气泡。
+      const chatEvent = inner.data;
+      const chatAnchor = _resolveChatStreamAnchor(cid, chatEvent, msg, chatEvent.turnId);
+      const chatActorId = String(chatEvent.actorId || '');
+      window.chatStreamHandleEvent(cid, chatAnchor, chatEvent, {
+        actorId: chatActorId,
+        actorName: chatActorId ? _knownGroupActorLabel(cid, chatActorId) : '',
+        // 当前话权方：运行指示 = 持有 floor（话权回到某 actor 时它的流复活）。
+        floorActor: _serverFloorByCid.get(cid) || '',
+        // 群聊派单链：commander 是主 Agent，其过程保持展开可跟踪；worker 的
+        // 执行过程默认折叠（页面高度不增长），点徽章才展开。
+        collapseByDefault: !!actorIdentity && !!chatActorId && chatActorId !== 'commander',
+      });
       return;
     }
     if (inner.stream === 'group' && inner.data) {
@@ -16653,6 +16755,68 @@ function _phKey(cid, actorId, turnId) {
 
 function _eventTurnId(evData) {
   return _normaliseTurnId(evData && (evData.turn_id || evData.turnId));
+}
+
+// chat.* 结构化事件（conv-core）的过程折叠条锚点。一个 actor 一条气泡：
+// `chat.turn.started` 带 actorId，据此把活动流挂到**该 actor 自己的**占位气泡
+// 上（而不是共用的发送占位）；后续 `chat.item` / `chat.turn.completed` 只带
+// turnId，用本表回查同一锚点。不这么做时派单链里 commander 与 worker 的活动
+// 流会同挂发送占位 → 折叠条归属错（看起来像主 Agent 在执行）、一次任务画成
+// 两条并行线（2026-10-13 需求方截图）。
+const _chatStreamAnchors = new Map(); // key = `${cid}::turn:${turnId}` → { el, actorId }
+
+function _chatAnchorKey(cid, turnId) {
+  const tid = _normaliseTurnId(turnId);
+  return tid ? `${cid}::turn:${tid}` : '';
+}
+
+function _forgetChatStreamAnchors(cid) {
+  const prefix = `${cid}::turn:`;
+  for (const key of Array.from(_chatStreamAnchors.keys())) {
+    if (key.startsWith(prefix)) _chatStreamAnchors.delete(key);
+  }
+}
+
+function _resolveChatStreamAnchor(cid, chatEvent, fallbackEl, turnIdHint) {
+  if (!cid || !chatEvent || typeof chatEvent !== 'object') return fallbackEl;
+  const tid = _normaliseTurnId(turnIdHint || chatEvent.turnId);
+  const key = _chatAnchorKey(cid, tid);
+  const live = (el) => !!(el && el.parentElement);
+  const bind = (anchor, actorId) => {
+    if (key) _chatStreamAnchors.set(key, { el: anchor, actorId });
+    return anchor;
+  };
+  // 轮询/历史回放会把原锚点（或发送占位）摘出 DOM：这时必须按 actor 重新领养/新建，
+  // 否则活动流会画进脱树的节点——用户看不到过程，而 `chatStreamHasPanel` 仍为 true，
+  // 连老过程 rail 也被去重掉（真机 2026-10-14 00:30 的 30 条丢弃）。
+  const remint = (actorId) => {
+    if (!actorId) return fallbackEl;
+    const ph = _ensureActorPlaceholder(cid, actorId, fallbackEl, tid, undefined, undefined, { contentBearing: true });
+    return live(ph) ? ph : fallbackEl;
+  };
+  if (chatEvent.type === 'chat.turn.started') {
+    const actorId = String(chatEvent.actorId || '');
+    return bind(remint(actorId), actorId);
+  }
+  const known = key ? _chatStreamAnchors.get(key) : null;
+  if (known) {
+    if (live(known.el)) return known.el;
+    _chatStreamAnchors.delete(key);
+    const actorId = String(known.actorId || '');
+    const anchor = remint(actorId);
+    if (live(anchor)) return bind(anchor, actorId);
+    return fallbackEl;
+  }
+  return fallbackEl;
+}
+
+/** 话权交给「某个 agent」时返回该 agent id，其余（空 / commander / user）返回 ''。
+ *  交出方（commander）据此立即终态化：它的回合还挂着（R-11 等齐汇报），但此刻
+ *  它没有在跑——不摘掉 spinner/计时就成了「两个执行」并行（2026-10-13 需求）。 */
+function _yieldedFloorActor(state) {
+  const floor = String((state && state.active_recipient) || '');
+  if (!floor || floor === 'commander' || floor === 'user') return '';
+  return floor;
 }
 
 function _normaliseActiveTurns(raw) {
@@ -16742,7 +16906,7 @@ function _refreshActorPlaceholders(cid, actorId) {
   }
 }
 
-function _ensureActorPlaceholder(cid, actorId, fallbackPh, turnId, triggerMsgId, startedAtMs) {
+function _ensureActorPlaceholder(cid, actorId, fallbackPh, turnId, triggerMsgId, startedAtMs, opts = {}) {
   const tid = _normaliseTurnId(turnId);
   const sourceMsgId = _normaliseTurnId(triggerMsgId);
   const k = _phKey(cid, actorId, tid);
@@ -16768,7 +16932,23 @@ function _ensureActorPlaceholder(cid, actorId, fallbackPh, turnId, triggerMsgId,
   // while the floor points elsewhere.
   if (actorId === 'commander') {
     const floor = _serverFloorByCid.get(cid) || '';
-    if (floor && floor !== 'commander' && floor !== 'user') return null;
+    if (floor && floor !== 'commander' && floor !== 'user') {
+      // The floor moving to an agent must not make the commander's own process
+      // events vanish: dropping them left the user with an empty-looking bubble and
+      // no execution detail at all (578 'group process target missing' warnings on
+      // 2026-10-13, nearly all of them actor=commander). Attach to the existing
+      // fallback placeholder when it is live; only truly targetless events are
+      // dropped. The bubble still belongs to the commander, so its steps stay its
+      // own — no worker step is ever rendered into it.
+      if (fallbackPh && fallbackPh.parentElement) return fallbackPh;
+      // 真机 2026-10-14 00:30：commander 派单后，它的 seg 气泡会被历史回放/轮询
+      // 重建摘掉（`_finalizeActorPlaceholder` 遇到同签名已渲染消息会 remove 占位），
+      // 于是 fallback 脱树 → 收尾综合的 process 事件再次被丢（30 条）。
+      // 带内容的事件不能丢：落到下面的常规路径，按该 actor 的活占位/兜底重建一条
+      // 真实气泡来承载它的过程（空事件流仍由上面的 return null 拦住，mint 不出
+      // 空气泡来闪）。这是「空泡防闪」与「过程不可丢」的分界：有没有内容。
+      if (!opts.contentBearing) return null;
+    }
   }
 
   // Wake→task→exec 两级系统的 turn_id 会中途更换（cogseed-task-* →
@@ -17433,7 +17613,8 @@ function _handleGroupBusEvent(cid, streamingMsg, evData, { archive = false } = {
       startPolling(cid);
       if (cid === currentCid) _updateConvSendUI(cid);
     }
-    const target = _ensureActorPlaceholder(cid, actor, streamingMsg, turnId);
+    const target = _ensureActorPlaceholder(cid, actor, streamingMsg, turnId, undefined, undefined,
+      { contentBearing: true });
     if (!target) {
       _convLog.warn('group process target missing', {
         cid,
@@ -17537,7 +17718,8 @@ function _handleGroupBusEvent(cid, streamingMsg, evData, { archive = false } = {
       startPolling(cid);
       if (cid === currentCid) _updateConvSendUI(cid);
     }
-    const target = _ensureActorPlaceholder(cid, actor, streamingMsg, turnId);
+    const target = _ensureActorPlaceholder(cid, actor, streamingMsg, turnId, undefined, undefined,
+      { contentBearing: true });
     const bubble = target?.querySelector?.('.chat-bubble');
     if (bubble && typeof window.mountMessageArtifacts === 'function') {
       window.mountMessageArtifacts(bubble, [artifact], cid);
@@ -17557,6 +17739,13 @@ function _handleGroupBusEvent(cid, streamingMsg, evData, { archive = false } = {
     // be current for THIS event or the commander bubble flickers during the
     // handed-off agent's reply.
     _serverFloorByCid.set(cid, typeof st.active_recipient === 'string' ? st.active_recipient : '');
+    // 话权一旦交给某个 agent，交出方（commander）的气泡必须**立即终态化**：
+    // 它的回合还挂着（R-11 等齐汇报），但此刻它没有在跑——不摘掉 spinner/计时
+    // 就变成「两个执行」并行（2026-10-13 需求方截图）。
+    const _floorNow = _yieldedFloorActor(st);
+    if (_floorNow && typeof window.chatStreamYieldFloor === 'function') {
+      try { window.chatStreamYieldFloor(cid, _floorNow); } catch (_) { /* 终态化失败不阻塞状态同步 */ }
+    }
     setGroupConversationBusy(cid, st.status === 'running' || inFlight.length > 0 || activeTurns.length > 0);
     if (hasActiveTurnsField) {
       for (const turn of activeTurns) {
