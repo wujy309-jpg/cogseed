@@ -26,6 +26,10 @@
     ".gitleaks.toml",
     "skills-lock.json",
     "measure-baselines.cjs",
+    "scripts/compare-enterprise-opensource.sh",
+    "scripts/ent-sync-apply-plan.mjs",
+    "scripts/ent-sync-conflict-blocks.mjs",
+    "scripts/ent-sync-triage.mjs",
     ".github/CODEOWNERS"
   ],
   "publicFiles": [
