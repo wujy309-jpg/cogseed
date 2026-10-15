@@ -1206,6 +1206,10 @@ async function buildExplicitAssetView(
   };
 }
 
+/** preview 态投影的缺省有效期：调用方不传 expiresAt 时按此兜底，
+ *  避免未 confirm 的预览投影无过期时间永久滞留（2026-10-15 审计发现）。 */
+const PREVIEW_PROJECTION_DEFAULT_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
+
 export async function previewContextProjection(userId: string, input: ProjectionInput, options: ProjectionSemanticOptions = {}): Promise<ContextProjectionRecord> {
   const taskRunId = normalizeTerm(input.taskRunId, 'task run id', 160);
   const conversationId = input.conversationId === undefined ? undefined : normalizeTerm(input.conversationId, 'conversation id', 160);
@@ -1255,6 +1259,8 @@ export async function previewContextProjection(userId: string, input: Projection
     }, options);
   const now = projectionNowIso();
   const confirmedAt = input.confirm ? now : undefined;
+  const expiresAt = input.expiresAt
+    ?? (confirmedAt ? undefined : new Date(Date.parse(now) + PREVIEW_PROJECTION_DEFAULT_EXPIRY_MS).toISOString());
   const record: ContextProjectionRecord = {
     schemaVersion: 2, ownerId: userId, id: `proj-${genId12()}`,
     taskRunId, ...(projectId ? { projectId } : {}), ...(workspaceId ? { workspaceId } : {}),
@@ -1262,7 +1268,7 @@ export async function previewContextProjection(userId: string, input: Projection
     ...(conversationKind ? { conversationKind } : {}), ...(fileKinds !== undefined ? { fileKinds } : {}),
     ...(conversationId ? { conversationId } : {}), purpose, authorization,
     assetIds: view.assetIds, ...(view.assetVersions ? { assetVersions: view.assetVersions } : {}), ...(view.assetMatches ? { assetMatches: view.assetMatches } : {}), sourceRefs: view.sourceRefs, omittedRefs: view.omittedRefs,
-    ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
+    ...(expiresAt ? { expiresAt } : {}),
     ...(view.degraded ? { selectionDegraded: true } : {}),
     ...(view.semanticaTrace ? { semanticaTrace: view.semanticaTrace } : {}),
     status: confirmedAt ? 'confirmed' : 'preview',
