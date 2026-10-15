@@ -19,6 +19,20 @@ describe('new-task host bridge reaches the connector page registry', () => {
   const out = await runDesktopConnectorTool('alice', 'desktop_connector_call_tool', { connector_id: 'tencent-survey', tool_name: 'get_survey', arguments: {} }, request);
   expect(out.isError).toBe(true); expect(m.call).not.toHaveBeenCalled(); expect(m.nativeCall).not.toHaveBeenCalled();
  });
+ it.each(['tencent-survey', 'native-survey'])('preserves the final dispatch gate for %s', async (id) => {
+  const beforeDispatch = vi.fn(async () => { throw new Error('task conditions changed'); });
+  const execute = vi.fn();
+  const manager = id === 'tencent-survey' ? m.call : m.nativeCall;
+  manager.mockImplementationOnce(async (_user, _id, _tool, _args, opts) => {
+   await opts.beforeDispatch();
+   execute();
+  });
+  await expect(runDesktopConnectorTool('alice', 'desktop_connector_call_tool',
+   { connector_id: id, tool_name: 'get_survey', arguments: {} }, request, undefined, beforeDispatch))
+   .rejects.toThrow('task conditions changed');
+  expect(beforeDispatch).toHaveBeenCalledOnce();
+  expect(execute).not.toHaveBeenCalled();
+ });
  it('denies internal actions, cross-user calls and disabled run policy', async () => {
   const input = { connector_id: 'tencent-survey', tool_name: 'start_login', arguments: {} };
   expect((await runDesktopConnectorTool('alice', 'desktop_connector_call_tool', input, request)).isError).toBe(true);

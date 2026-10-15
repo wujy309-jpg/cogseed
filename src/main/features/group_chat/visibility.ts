@@ -35,13 +35,13 @@ export interface ChatUseSelection {
 export interface RecallMessageCitation {
   asset_id: string;
   title: string;
-  type: 'personal' | 'rule' | 'template' | 'skill_method' | 'fact';
+  type: 'cognition' | 'personal' | 'rule' | 'template' | 'skill_method' | 'fact';
   version: string;
   scope: string;
   projection_id: string;
   forecast_id?: string;
   match_score?: number;
-  match_method: 'semantic' | 'ontology' | 'semantic_ontology' | 'recency_fallback' | 'manual';
+  match_method: 'semantic' | 'ontology' | 'semantic_ontology' | 'recency_fallback' | 'manual' | 'standing_preference';
 }
 
 /** Immutable snapshot of one visible message referenced from another task.
@@ -302,10 +302,12 @@ export interface GroupMessage {
    * CognitionSaveReceipt 同步扩枚举。上面的 teaching_receipts 字段仅作历史
    * 数据容忍保留（新消息不再写入，渲染层也不再消费）。 */
   cognition_save_receipts?: Array<{
-    target: 'asset' | 'candidate';
+    target: 'asset' | 'candidate' | 'ontology';
+    moduleId?: string;
+    version?: number;
     id: string;
     summary: string;
-    outcome: 'created' | 'already-confirmed' | 'pending-review' | 'merged' | 'fused-update-pending' | 'taught-pending-review';
+    outcome: 'created' | 'already-confirmed' | 'pending-review' | 'merged' | 'fused-update-pending' | 'taught-pending-review' | 'ontology-saved' | 'ontology-pending';
   }>;
   /** Commander-requested marketplace installs. The model can search the
    * official marketplace and request a user decision, but the install only

@@ -23,8 +23,6 @@ import {
   recallAssetAgentReadBlockReasons,
   type RecallAgentReadContext,
 } from '../../features/recall/prompt-injection';
-import { recordInjectionReceipt, listInjectionReceipts } from '../../features/recall/injection-receipt';
-import { recordRecallUsage } from '../../features/recall/usage-service';
 import { loadOntologyAssets } from '../../features/recall/projection-knowledge';
 import { formatCatalogEntries } from '../../features/recall/asset-catalog';
 import type { RecallAbilityAssetRecord } from '../../features/recall/candidate-service';
@@ -50,11 +48,16 @@ import {
   type OntologyAnswerEvidenceBundle,
 } from '../../features/recall/ontology-answer-validation';
 import { isSemanticaEnabled } from '../../features/recall/semantica-settings';
+import { prepareAssetUsageClaim, type AssetUsageClaim } from '../../features/recall/asset-usage-claim';
 
+import { buildFormalAssetPayload, instantiateAssetTemplate, resolveFormalAssetPayload } from '../../features/recall/formal-assets/payload';
+import { recordAssetAgentReads as recordAgentReads } from '../../features/recall/agent-read-accounting';
 const log = createLogger('recall-tools');
 
 export interface RecallToolsOpts {
   userId: string;
+  onAssetUsageClaim?: (claim: AssetUsageClaim) => void | Promise<void>;
+  suppliedAbilityAssets?: Array<{ assetId: string; assetVersion: string }>;
   /** 当前目标 Agent；用于资产 scopePolicy.agentIds 准入判断。 */
   agentId?: string;
   /** 当前回合 id：写 agent_read 注入回执/使用流水用；缺省时只读不记账。 */
@@ -76,7 +79,6 @@ const DEFAULT_RESULTS = 8;
 const MAX_RESULTS = 30;
 /** 正文模式单次取用上限：一次取太多等于绕回"整块塞正文"，目录化的意义就没了。 */
 const MAX_READ_IDS = 6;
-const READ_STATEMENT_LIMIT = 2_000;
 const CATALOG_PAGE_DEFAULT = 30;
 const CATALOG_PAGE_MAX = 50;
 
@@ -156,7 +158,7 @@ function agentReadRuntimeContext(opts: RecallToolsOpts): RecallAgentReadContext 
 }
 
 /** 正文模式的一条（含版本与范围，便于模型判断适用性）。 */
-function formatReadEntry(asset: RecallAbilityAssetRecord, version: string): string {
+function formatReadEntry(asset: RecallAbilityAssetRecord, version: string, payload = buildFormalAssetPayload(asset)): string {
   const meta = [
     `类型:${asset.type || '?'}`,
     `范围:${asset.scope || 'general'}`,
@@ -170,8 +172,9 @@ function formatReadEntry(asset: RecallAbilityAssetRecord, version: string): stri
     meta,
     applies ? `适用于: ${applies}` : '',
     forbids ? `禁用: ${forbids}` : '',
+    '结构: ' + JSON.stringify(payload),
     '正文:',
-    (asset.statement || '').slice(0, READ_STATEMENT_LIMIT),
+    asset.statement || '',
   ].filter(Boolean).join('\n');
 }
 
@@ -209,58 +212,6 @@ async function profilePoolEntries(
  *   - 使用流水按"该回合首次取用"记一次，避免同回合反复读把统计刷高；
  *   - 记账失败只告警，绝不影响工具结果（模型拿得到内容优先）。
  */
-async function recordAgentReads(
-  opts: RecallToolsOpts,
-  entries: Array<{ assetId: string; assetVersion: string }>,
-): Promise<void> {
-  const turnId = String(opts.turnId || '');
-  if (!entries.length) return;
-  if (!turnId) {
-    // 没有回合 id 就记不了账（taskRunId 必填）：如实告警而不是静默丢弃——
-    // 静默丢弃正是"模型自取等于升档黑洞"的成因（2026-09-18 诊断补）。
-    log.warn('agent_read not recorded: tool built without a turn id', { userId: maskId(opts.userId) });
-    return;
-  }
-  try {
-    // 「为什么排前」拆解随回执留痕（specs/012 T019，与 bus.ts 写侧同款）：
-    // 只查 asset-catalog-hint 当轮 ranked 视图（userId+cid 同键），不在记账
-    // 路径重算（排序唯一处）；没建过目录 / 会话对不上 → 空 Map，不带
-    // ranking（读取侧 explainable:false，如实说「没有记录」）。
-    const { lastCatalogRankedForTurn } = await import('../../features/recall/asset-catalog-hint');
-    const { explainRanking } = await import('../../features/recall/asset-ranking');
-    const rankedThisTurn: ReadonlyMap<string, import('../../features/recall/asset-ranking').RankedAsset>
-      = opts.cid ? lastCatalogRankedForTurn(opts.userId, opts.cid, opts.turnId) : new Map();
-    const seenThisTurn = new Set(
-      (await listInjectionReceipts(opts.userId, turnId))
-        .filter((row) => String(row.channel || '') === 'agent_read')
-        .map((row) => String(row.assetId || '')),
-    );
-    for (const entry of entries) {
-      const rankedRow = rankedThisTurn.get(entry.assetId);
-      await recordInjectionReceipt(opts.userId, {
-        taskRunId: turnId,
-        assetId: entry.assetId,
-        assetVersion: entry.assetVersion,
-        boundary: 'real',
-        status: 'injected',
-        channel: 'agent_read',
-        ...(rankedRow ? { ranking: explainRanking(rankedRow) } : {}),
-      });
-      if (seenThisTurn.has(entry.assetId)) continue;
-      seenThisTurn.add(entry.assetId);
-      await recordRecallUsage(opts.userId, {
-        assetId: entry.assetId,
-        assetVersion: entry.assetVersion,
-        taskRunId: turnId,
-        ...(opts.spaceId ? { workspaceId: opts.spaceId } : {}),
-        boundary: 'real',
-        outcome: 'agent_read',
-      });
-    }
-  } catch (err) {
-    log.warn('agent_read accounting failed', { userId: maskId(opts.userId), error: logErrorRef(err as Error) });
-  }
-}
 
 function createSearchAbilityAssetsTool(opts: RecallToolsOpts, evidence: RecallTurnEvidence): AgentTool {
   const userId = opts.userId;
@@ -354,6 +305,7 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts, evidence: RecallTu
     if (!uniqueIds.length) return { content: 'assetIds 为空', isError: true };
     const ids = uniqueIds.slice(0, MAX_READ_IDS);
     const skipped = uniqueIds.length - ids.length;
+    if (input.templateValues !== undefined && ids.length !== 1) return { content: '模板填写需要明确指定一条模板资产。', isError: true };
     const blocks: string[] = [];
     const readEntries: Array<{ assetId: string; assetVersion: string }> = [];
     for (const id of ids) {
@@ -389,13 +341,17 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts, evidence: RecallTu
         continue;
       }
       const version = String(asset.activeVersion || asset.version || '1');
-      blocks.push(formatReadEntry(asset, version));
+      const payload = await resolveFormalAssetPayload(userId, asset);
+      if (input.templateValues !== undefined) {
+        try { blocks.push(formatReadEntry(asset, version, payload) + '\n填充结果:\n' + instantiateAssetTemplate(asset, input.templateValues)); }
+        catch { blocks.push(`- [asset:${id}] 模板填写失败：请提供完整的槽位值；未登记读取。`); continue; }
+      } else blocks.push(formatReadEntry(asset, version, payload));
       readEntries.push({ assetId: asset.id, assetVersion: version });
       evidence.assets.set(asset.id, {
         assetId: asset.id,
         title: asset.title,
         version,
-        statement: String(asset.statement || '').slice(0, READ_STATEMENT_LIMIT),
+        statement: String(asset.statement || ''),
       });
     }
     await recordAgentReads(opts, readEntries);
@@ -404,6 +360,7 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts, evidence: RecallTu
       assets: readEntries.map((entry) => ({ id: entry.assetId, version: entry.assetVersion })),
     });
     return {
+      ...(input.templateValues !== undefined && readEntries.length === 0 ? { isError: true } : {}),
       content: [
         `已取出 ${readEntries.length} 条资产正文${skipped > 0 ? `（单次最多 ${MAX_READ_IDS} 条，忽略了多余的 ${skipped} 条）` : ''}：`,
         '',
@@ -494,6 +451,7 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts, evidence: RecallTu
       '②assetIds = 取某几条的完整正文（最多 6 条/次）——看到目录里有合适的，取正文再动手；',
       '③query = 语义、词面与专名混合检索（覆盖当前可用正式资产 + 遗留画像记忆；遗留记忆会标注来源并仅供参考）。',
       '目录很长时带 query 检索；搜索摘要只是线索，采用前须用 assetIds 读完整正文。',
+      '读到正文仍不算采用。若本轮有 report_ability_asset_usage 且你确实据此形成产出，在最终回复前报告具体资产版本和产出原文片段；只写“已采用”不会生成回执。',
       '如果这次任务确实要长期用到某几条，用 attach_assets_to_task 把它们挂到本任务上（用户会看到一张可撤销的卡）。',
       '引用格式 [asset:<id>]，例如 [asset:aa-xxx]。',
     ].join(''),
@@ -504,6 +462,7 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts, evidence: RecallTu
           type: 'string',
           description: '自然语言查询：想找的经验/规则/方法，如"发布公告怎么写"、"竞品调研的维度"。与 assetIds 二选一；两者都不给则返回全量目录。',
         },
+        templateValues: { type: 'object', additionalProperties: { type: 'string' }, description: 'Template slot values; only with one template asset id. All slots must be filled.' },
         assetIds: {
           type: 'array',
           items: { type: 'string' },
@@ -534,6 +493,7 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts, evidence: RecallTu
     },
     async execute(input: Record<string, unknown>) {
       const hasIds = Array.isArray(input.assetIds) && input.assetIds.some((value) => String(value || '').trim());
+      if (input.templateValues !== undefined && !hasIds) return { content: '模板填写需要明确指定一条模板资产。', isError: true };
       if (hasIds) return runRead(input);
       const query = String(input.query || '').trim();
       if (query) return runSearch(input);
@@ -699,6 +659,7 @@ export function createRecallToolSuite(opts: RecallToolsOpts): RecallToolSuite {
     tools: [
       createSearchAbilityAssetsTool(opts, evidence),
       ...(semanticaEnabled ? [createOntologyQueryTool(opts, evidence)] : []),
+      ...createAssetUsageReportTools(opts),
     ],
     finalResponseGate,
   };
@@ -707,4 +668,28 @@ export function createRecallToolSuite(opts: RecallToolsOpts): RecallToolSuite {
 /** Read-only recall asset tools. No localExec needed. */
 export function createRecallTools(opts: RecallToolsOpts): AgentTool[] {
   return createRecallToolSuite(opts).tools;
+}
+
+function createAssetUsageReportTools(opts: RecallToolsOpts): AgentTool[] {
+  const tools: AgentTool[] = [];
+  if (opts.onAssetUsageClaim && opts.turnId) tools.push({
+    name: 'report_ability_asset_usage',
+    description: '报告本轮确实采用的一条资产及读到的版本。完成产出后、最终回复前调用，outputExcerpt 必须是即将放入最终回复的原文片段（12至500字），具体体现这条资产如何影响产出。只读取、列目录、提及名称不算采用。此工具只登记待核验报告；主进程核对当轮供应或主动读取记录（search_ability_assets 的 assetIds 正文模式）和最终消息后才留下采用回执，不代表效果已验证。不采用则不要调用。多条资产分别报告，不要把同一工具成功算给所有引用。',
+    inputSchema: {
+      type: 'object', properties: {
+        assetId: { type: 'string' }, assetVersion: { type: 'string', description: '读到的版本，例如 1 或 v1。' },
+        outputExcerpt: { type: 'string', minLength: 12, maxLength: 500 },
+      }, required: ['assetId', 'assetVersion', 'outputExcerpt'], additionalProperties: false,
+    },
+    async execute(input: Record<string, unknown>) {
+      try {
+        const claim = await prepareAssetUsageClaim(opts.userId, opts.turnId!, input, opts.suppliedAbilityAssets || []);
+        await opts.onAssetUsageClaim!(claim);
+        return { content: '采用报告已登记，等待最终消息持久化后核验；尚未生成采用回执，也未验证效果。' };
+      } catch {
+        return { content: '未登记：需要本轮已供应或已读正文（search_ability_assets 的 assetIds 模式）的资产及版本、12至500字的最终产出原文片段；没有生成采用回执。', isError: true };
+      }
+    },
+  });
+  return tools;
 }

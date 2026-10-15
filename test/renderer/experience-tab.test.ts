@@ -56,10 +56,12 @@ describe('经验入口：「我的认知」下的分类档（specs/017 整改一
     const html = renderCognition({ name: 'experiences' }, { experiences: loadedExperiences([]) });
     const ids = [...html.matchAll(/class="ca-tab[^"]*" data-act="tab" data-id="([a-z-]+)"/g)].map((m) => m[1]);
     // specs/018 + 树恢复 + 2026-09-27 定序:六页签=认知树/我的认知/关于我/待我处理/系统活动/整理设置。
-    expect(ids).toEqual(['tree', 'overview', 'ontology', 'review', 'activity', 'settings']);
+    expect(ids).toEqual(['tree', 'overview', 'ontology', 'activity', 'settings']);
     expect(html).not.toContain('data-act="tab" data-id="experiences"');
     // 旧深链 { name: 'experiences' } 归一到「我的认知」：经验档选中、目录在页面内。
-    expect(html).toContain('data-act="filter-cat" data-id="experiences"');
+    const loaded = loadCognitionAssets();
+    loaded.ns.router.go({ name: 'experiences' });
+    expect(loaded.store.route).toMatchObject({ name: 'overview', category: 'experiences' });
     expect(html).toContain('经验目录');
     // KSTAR 独立筛选档退役（出身徽章与「KSTAR 任务复盘」证据组保留，
     // 见 cognition-capture-log.test.ts）。
@@ -293,6 +295,112 @@ describe('存量迁移区（T020）', () => {
     expect(html).toContain('旧经验资产一');
     expect(html).toContain('已迁入');
     expect(html).toContain('此前已迁移过');
+  });
+
+  it('迁移执行中两执行入口置灰；常态可点（F-r2-6，running 态驱动）', () => {
+    const runButtons = (html: string) => [...html.matchAll(/<button\b[^>]*>/g)]
+      .map((m) => m[0])
+      .filter((tag) => tag.includes('data-act="experience-migration-run"'));
+    const base = { experiences: loadedExperiences([]) };
+
+    // 常态（running 缺席）：预览 2 条 → 2 个逐条入口 + 1 个批量入口，全部可点。
+    const idle = renderCognition({ name: 'experiences' }, {
+      ...base,
+      experienceMigration: { preview, previewLoading: false, previewFailed: false, lastRun: null },
+    });
+    expect(runButtons(idle)).toHaveLength(3);
+    expect(runButtons(idle).every((tag) => !tag.includes(' disabled'))).toBe(true);
+
+    // 执行中：逐条与批量全部带 disabled——disabled 由 store.running
+    // 驱动，迁移写入广播 drain 重画换 DOM 后仍成立。
+    const running = renderCognition({ name: 'experiences' }, {
+      ...base,
+      experienceMigration: { preview, previewLoading: false, previewFailed: false, lastRun: null, running: true },
+    });
+    expect(runButtons(running)).toHaveLength(3);
+    expect(runButtons(running).every((tag) => tag.includes(' disabled'))).toBe(true);
+  });
+
+  it('入口判重：running 中再调不发 IPC、不弹确认（F-r2-6）', async () => {
+    let confirms = 0;
+    const { ns } = loadCognitionAssets(
+      { experienceMigration: { preview, previewLoading: false, previewFailed: false, lastRun: null, running: true } },
+      {},
+      {
+        uiConfirmDanger: async () => { confirms += 1; return true; },
+        uiAlert: async () => {},
+        cogseed: { invoke: async () => { throw new Error('running 中不得再发 IPC'); } },
+      },
+    );
+    await ns.actions.experienceMigrationRun(['aa-mig0001']);
+    expect(confirms).toBe(0);
+  });
+
+  it('confirm 通过置 running，成功整体重建后复位；confirm 取消不置位', async () => {
+    const release: { resolve?: (value: unknown) => void } = {};
+    const runStarted = new Promise((resolve) => { release.resolve = resolve; });
+    const channels: string[] = [];
+    const { ns, store } = loadCognitionAssets(
+      { experienceMigration: { preview, previewLoading: false, previewFailed: false, lastRun: null } },
+      {},
+      {
+        uiConfirmDanger: async () => true,
+        uiAlert: async () => {},
+        cogseed: {
+          invoke: async (channel: string) => {
+            channels.push(channel);
+            if (channel === 'recall.experiences.migration.run') {
+              await runStarted;
+              return { ok: true, migrated: 2, skipped: 0, failed: 0, details: [] };
+            }
+            return { ok: true };
+          },
+        },
+      },
+    );
+    const pending = ns.actions.experienceMigrationRun(['aa-mig0001']);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // IPC 挂起期间 running 已置位（store 态：drain 重画换 DOM 后仍有效）。
+    expect(store.experienceMigration.running).toBe(true);
+    release.resolve!(undefined);
+    await pending;
+    // 成功路径整体重建对象：无 running 字段 → 复位，按钮复活。
+    expect(store.experienceMigration.running).toBeFalsy();
+    expect(store.experienceMigration.lastRun).toMatchObject({ migrated: 2 });
+    expect(channels).toContain('recall.experiences.migration.run');
+
+    // confirm 取消：不置 running、不发 IPC。
+    let cancelledConfirms = 0;
+    const { ns: ns2, store: store2 } = loadCognitionAssets(
+      { experienceMigration: { preview, previewLoading: false, previewFailed: false, lastRun: null } },
+      {},
+      {
+        uiConfirmDanger: async () => { cancelledConfirms += 1; return false; },
+        uiAlert: async () => {},
+        cogseed: { invoke: async () => { throw new Error('取消后不得发 IPC'); } },
+      },
+    );
+    await ns2.actions.experienceMigrationRun(['aa-mig0001']);
+    expect(cancelledConfirms).toBe(1);
+    expect(store2.experienceMigration.running).toBeFalsy();
+  });
+
+  it('迁移失败复位 running 不锁死入口（rethrow 后可重试）', async () => {
+    let invokes = 0;
+    const { ns, store } = loadCognitionAssets(
+      { experienceMigration: { preview, previewLoading: false, previewFailed: false, lastRun: null } },
+      {},
+      {
+        uiConfirmDanger: async () => true,
+        uiAlert: async () => {},
+        cogseed: { invoke: async () => { invokes += 1; return { ok: false, error: 'migration exploded', code: 'E_IO' }; } },
+      },
+    );
+    await expect(ns.actions.experienceMigrationRun(['aa-mig0001'])).rejects.toThrow();
+    expect(store.experienceMigration.running).toBe(false);
+    // 复位后入口未锁死：再次调用会真的再走一次 IPC（而不是被 running 拦下）。
+    await expect(ns.actions.experienceMigrationRun(['aa-mig0001'])).rejects.toThrow();
+    expect(invokes).toBeGreaterThanOrEqual(2);
   });
 });
 

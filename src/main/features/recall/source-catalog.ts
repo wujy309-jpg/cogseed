@@ -329,6 +329,11 @@ async function contextFileStatuses(userId: string): Promise<Map<string, { status
 }
 
 async function artifactFileSources(userId: string, query: Parameters<SourceAdapter>[1]): Promise<DiscoveredSource[]> {
+  const { listOntologyImportSources } = await import('../cognition/ontology/import-source');
+  const imported = (await listOntologyImportSources(userId)).map(source => discovered({
+    kind: 'artifact_file', subtype: 'artifact', scope: 'personal', id: source.id, title: source.name, sourceVersion: source.fingerprint,
+  }));
+  if (imported.length >= query.limit) return imported.slice(0, query.limit);
   const files = await contextFilesForUser(userId);
   const statuses = await contextFileStatuses(userId);
   const contexts = files.slice(0, query.limit).map((node) => {
@@ -342,7 +347,7 @@ async function artifactFileSources(userId: string, query: Parameters<SourceAdapt
       sourceVersion: String(node.mtime),
     }, lifecycle.status, lifecycle.reason);
   });
-  if (contexts.length >= query.limit) return contexts;
+  if (imported.length + contexts.length >= query.limit) return [...imported, ...contexts].slice(0, query.limit);
 
   const rows = await loadRecentMessages(
     userId,
@@ -350,7 +355,7 @@ async function artifactFileSources(userId: string, query: Parameters<SourceAdapt
     Math.min(2_000, Math.max(100, (query.limit - contexts.length) * 20)),
     query.disabledConversationIds,
   );
-  const items = [...contexts];
+  const items = [...imported, ...contexts].slice(0, query.limit);
   const seen = new Set(items.map((item) => item.id));
   for (const { conversation, message } of rows) {
     for (const artifact of message.artifacts || []) {

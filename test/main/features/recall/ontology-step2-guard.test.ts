@@ -2,8 +2,8 @@
  * 014 反漂移守卫（specs/014 T024③）。
  *  本 spec 零新增 IPC 通道：当前通道名集合与开工基线（014 开工前提交
  *  660f82e8 的快照）做**集合比较**（顺序无关）——能抓住「偷偷加通道」。
- *  后续认知资产迁移为显式用户选择新增了两个登记通道；白名单只登记这两个，
- *  仍拒绝任何未登记的新增，同时继续检测基线通道删除（基线随通道退役同步，
+ *  后续认知资产演进新增通道须逐项登记在 registeredPost014；集合仍精确比较，
+ *  拒绝任何未登记的新增，同时继续检测基线通道删除（基线随通道退役同步，
  *  如 2026-09-28 敏感级机制删除时下线的 recall.assets.sensitivity.batch）。
  */
 import { describe, expect, it } from 'vitest';
@@ -11,7 +11,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 const ROOT = path.resolve(__dirname, '../../../..');
-const ipcSource = fs.readFileSync(path.join(ROOT, 'src/main/ipc/index.ts'), 'utf8');
+// Registered handlers may be moved to the cognition module without retiring channels.
+const ipcSource = ['index.ts', 'cognition.ts'].map(file => fs.readFileSync(path.join(ROOT, 'src/main/ipc', file), 'utf8')).join('\n');
 
 describe('014 anti-drift（specs/014 T024）', () => {
   it('③ IPC 通道与 014 基线一致，且只允许已登记的后续迁移通道', () => {
@@ -22,10 +23,27 @@ describe('014 anti-drift（specs/014 T024）', () => {
     const sneaked = [...new Set(current)].filter((name) => !baseline.includes(name));
     const removed = baseline.filter((name) => !current.includes(name));
     const registeredPost014 = [
+      // These already registered cognition-module handlers are now included in the scan.
+      'cognition.assets.page',
+      // 2026-10-05：本体模块查询、三盒、图谱、历史、规则、变更与本机文件候选入口。
+      // 2026-10-07：本体导出（FR-015/AC-013，JSON 时点快照，只读投影+原生保存框）。
+      'cognition.ontology.export',
+      'cognition.ontology.box.list',
+      'cognition.ontology.command.commit',
+      'cognition.ontology.command.preview',
+      // 2026-10-10：单页本体文档字段编辑走主档命令、回执与回读。
+      'cognition.ontology.document.edit',
+      'cognition.ontology.facts.query',
+      'cognition.ontology.graph.query',
+      'cognition.ontology.history.get',
+      'cognition.ontology.import.file',
+      'cognition.ontology.module.lifecycle',
+      'cognition.ontology.record.get',
+      'cognition.ontology.rules.query',
+      'cognition.ontology.search',
+      'cognition.ontology.snapshot',
       // Manual automation execution uses the existing authenticated IPC router.
       'autoTasks.runNow',
-      'recall.scopedMemoryMigration.preview',
-      'recall.scopedMemoryMigration.run',
       // 2026-09-29 个人本体 v2 重构：po.* 干净通道（JSON 单文档存储上的
       // 全 id 寻址业务 API，见 src/main/features/po/api.ts；旧通道保留）。
       'po.snapshot',
@@ -76,12 +94,28 @@ describe('014 anti-drift（specs/014 T024）', () => {
       'skills.security.accept',
       'skills.security.revoke',
       'skills.security.export',
+      // 2026-10-08 认知资产全量重构（U01/N-07）：夜间筛选聚合计数只读通道。
+      'recall.captures.stats',
+      // Nightly formation undo and the explicit manual sweep share canonical handlers.
+      'recall.candidates.undoAutomatic',
+      'recall.candidates.undoAutomaticPreview',
+      'recall.captures.sweep.run',
+      // 2026-10-11 系统活动原型：用户显式标记稍后，候选仍保留在需要关注中。
+      // 独立 candidate-defer 服务保留生命周期与来源，不恢复旧 deferred 静音语义。
+      'recall.candidates.defer',
+      // 同步时保留的系统活动重构：候选历史与审核依据的只读查询。
+      'recall.candidates.history',
+      'recall.reviewEvidence.read',
+      // 2026-10-14：编辑现有夜间候选后重核关联本体，仅更新完整预览，仍待确认。
+      'recall.candidates.recheckOntologyFormation',
       // 2026-10-14 推理强度 Option C：档位按模型声明的能力暴露，用户的选择持久化到
       // 该模型（切模型回落 Auto）。读全量小表用于渲染层预取，写单条用于点选落盘。
       'prefs.getModelThinkingLevels',
       'prefs.setModelThinkingLevel',
     ];
     expect(sneaked.sort(), '出现未登记的新通道').toEqual([...registeredPost014].sort());
-    expect(removed, '014 期间不应删除通道').toEqual([]);
+    // 2026-10-12 用户明确退役旧形成入口；其他基线通道仍禁止无登记删除。
+    const retiredFormationChannels = ["recall.captures.retry", "recall.captures.pause", "recall.captures.resume", "recall.captures.cancel", "recall.captures.runNow", "recall.captures.batchRetry", "recall.captures.batchRunNow", "recall.captures.manualCreate", "recall.captures.historicalAutoStart", "recall.candidates.save", "recall.memory.migrate", "recall.scopedMemoryMigration.preview", "recall.scopedMemoryMigration.run", "cognition.capture.draft", "recall.candidates.importPersonalOntology", "personalOntology.candidates.transferToRecall", "cognition.ontology.import.submit", "transcript.correct.proposeCandidate"];
+    expect(removed.sort()).toEqual(baseline.filter(name => retiredFormationChannels.includes(name)).sort());
   });
 });

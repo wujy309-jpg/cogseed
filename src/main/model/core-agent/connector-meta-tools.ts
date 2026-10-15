@@ -45,6 +45,7 @@ import type { ConnectorInstance, ToolSchema } from '../../features/connectors/ty
 const log = createLogger('connector-meta-tools');
 
 export interface ConnectorMetaToolsOpts {
+  beforeConnectorDispatch?: (input: Record<string, unknown>) => Promise<ToolResult | undefined>;
   /** Active uid. Required — without it the meta-tools have no scope. */
   userId: string;
   /** Optional actor filter. Empty / undefined = full task-session scope. */
@@ -206,7 +207,7 @@ function createCallConnectorToolTool(opts: ConnectorMetaToolsOpts): AgentTool {
       },
       required: ['connector_id', 'tool_name', 'args'],
     },
-    async execute(input) {
+    async execute(input, ctx) {
       const i = input as { connector_id?: unknown; tool_name?: unknown; args?: unknown };
       const cid = typeof i.connector_id === 'string' ? i.connector_id.trim() : '';
       const toolName = typeof i.tool_name === 'string' ? i.tool_name.trim() : '';
@@ -256,7 +257,10 @@ function createCallConnectorToolTool(opts: ConnectorMetaToolsOpts): AgentTool {
       }
 
       try {
-        const raw = await manager.callTool(opts.userId, cid, toolName, args);
+        const raw = await manager.callTool(opts.userId, cid, toolName, args, { signal: ctx.signal, beforeDispatch: async () => {
+          const denied = await opts.beforeConnectorDispatch?.(input);
+          if (denied) throw new Error(denied.content);
+        } });
         return { content: stringifyMcpResult(raw) };
       } catch (err) {
         const msg = (err as Error).message;

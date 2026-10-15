@@ -81,7 +81,8 @@ describe('认知域词条覆盖', () => {
     expect(keys).toContain('cognition.candidate_error_terminal');
     // 属性式（TABS 的 titleKey）与字面量兜底（EVENT_TITLES）都要真的扫到。
     expect(keys).toContain('recall.projection.title');
-    expect(keys).toContain('personalOntology.ontology_identity');
+    // 2026-10-07 旧停驻页退役：personalOntology.* 取词点随旧模块全部消失
+    //（剩余同名串都是 IPC 通道名，非词条），旧域哨兵撤下。
   });
 
   it('四语都有，缺一门就会退回代码里的中文兜底', () => {
@@ -100,18 +101,55 @@ describe('认知域词条覆盖', () => {
     expect(mismatches).toEqual([]);
   });
 
-  it('维护卡提示引用的节名必须逐字命中本语「是否自动保存」标题', () => {
-    // maint_hint_short 指引用户看同一张维护卡里 maint_review_title 渲染出的
-    // 那一节。词条改写时容易脱离 UI 现实，引用一个不存在的节名——代码兜底
-    // 里看不出来（T() 词条命中优先于兜底），四语用户看到的都是词条。机械
-    // 门禁：四语 hint 都必须逐字包含本语 title 的实际值。
-    const stale = LOCALES
-      .filter((locale) => {
-        const hint = tables[locale]['cognition.maint_hint_short'];
-        const title = tables[locale]['cognition.maint_review_title'];
-        return typeof hint !== 'string' || typeof title !== 'string' || !hint.includes(title);
-      })
-      .map((locale) => `${locale}: maint_hint_short 引用的节名与 maint_review_title 不一致`);
-    expect(stale).toEqual([]);
+  it('四语完整覆盖夜间形成说明与实际窗口，占位符一致', () => {
+    for (const locale of LOCALES) for (const key of ['settings_nightly_confirmation_flow', 'settings_nightly_window', 'settings_nightly_review_hint', 'settings_nightly_auto_review_hint', 'settings_nightly_failure_review_hint', 'library_nightly_empty_hint']) expect(tables[locale]['cognition.' + key]).toBeTruthy();
+    const views = fs.readFileSync(path.join(root, 'src/renderer/modules/cognition-assets/views.js'), 'utf8');
+    expect(views).toContain("T('cognition.settings_nightly_window'");
+    expect(views).not.toContain("'auto-approval-toggle'");
+    expect(placeholders(tables.zh['cognition.settings_nightly_window'])).toEqual(['{end}', '{start}']);
+  });
+  it('当前设置说明与中文词条一致，四语不宣传旧手动形成', () => {
+    const views = fs.readFileSync(path.join(root, 'src/renderer/modules/cognition-assets/views.js'), 'utf8');
+    const fallback = views.match(/T\('cognition\.settings_nightly_confirmation_flow',\s*'([^']*)'\)/)?.[1];
+    expect(fallback).toBeTruthy();
+    expect(tables.zh['cognition.settings_nightly_confirmation_flow']).toBe(fallback);
+    const staleTerms: Record<string, string> = { zh: '手动整理', en: 'manual cleanup', ja: '手動整理', pt: 'limpeza manual' };
+    for (const locale of LOCALES) expect(tables[locale]['cognition.settings_nightly_confirmation_flow']).not.toContain(staleTerms[locale]);
+  });
+
+  it('已删功能的死键不得回潮，仍活跃的近邻键不得误删（maint_run / cleanup / inspection 家族）', () => {
+    // a69d3ea0 删除手动整理入口后，maint_run_title / maint_run_hint /
+    // nightly_capture_hint 三个词条失去全部代码消费点（nightly_capture_hint
+    // 还停留在「检查只报告」的旧行为口径）。死词条留着会误导后续改文案的
+    // 人，机械门禁：死键四语必须不存在；真正的消费点四语必须在。
+    // F-r3-9 追加：d607b8e4「立即维护」合并删除三死 act 后，cleanup_*/inspection_*
+    // 家族 11 键 + cleanup_run_hint（无后缀版，代码只消费 cleanup_run_hint_legacy）
+    // 同型漏删，一并纳入防回潮清单。
+    const deadKeys = [
+      'cognition.maint_run_title',
+      'cognition.maint_run_hint',
+      'cognition.nightly_capture_hint',
+      'cognition.inspection_run_now',
+      'cognition.cleanup_entry',
+      'cognition.cleanup_none_yet',
+      'cognition.cleanup_run_title',
+      'cognition.cleanup_run_hint_statement_regen',
+      'cognition.cleanup_run_hint_title_regen',
+      'cognition.inspection_hint',
+      'cognition.inspection_round_meta',
+      'cognition.inspection_title',
+      'cognition.inspection_trigger_manual',
+      'cognition.inspection_trigger_scheduled',
+      'cognition.cleanup_run_hint',
+    ];
+    const revived = deadKeys.flatMap((key) => LOCALES
+      .filter((locale) => key in tables[locale])
+      .map((locale) => `${locale}:${key}`));
+    expect(revived).toEqual([]);
+    const aliveKeys = ['cognition.maint_run', 'cognition.maint_run_title_hint', 'cognition.cleanup_run_hint_legacy'];
+    const missing = aliveKeys.flatMap((key) => LOCALES
+      .filter((locale) => !(key in tables[locale]))
+      .map((locale) => `${locale}:${key}`));
+    expect(missing).toEqual([]);
   });
 });

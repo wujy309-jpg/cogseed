@@ -237,8 +237,20 @@ import * as messagingFeature from './features/messaging';
 import * as taskNotifications from './features/task_notifications';
 import { shouldHideOnClose, startBackgroundRun, type BackgroundRun, type TrayMenuItemSpec } from './features/background_run';
 import * as cogseedBackend from './features/cogseed_backend';
-import { recoverRecallCaptures, startRecallCaptureOrchestrator } from './features/recall/capture-service';
-import { startAutoCloseRecovery, startGroupKstarClosure } from './features/kstar/task-closure';
+import { recoverRecallCaptures, startNightlyCaptureSweepLoop, startRecallCaptureOrchestrator } from './features/recall/capture-service';
+// 2026-10-08 U09：KSTAR 收口编排动态导入——KSTAR 缺失不影响主进程启动
+// 与认知流程。
+type KstarClosureStoppers = Array<() => void>;
+let kstarClosureStoppers: KstarClosureStoppers = [];
+async function startKstarClosureOrchestrators(): Promise<KstarClosureStoppers> {
+  try {
+    const { startAutoCloseRecovery, startGroupKstarClosure } = await import('./features/kstar/task-closure');
+    return [startGroupKstarClosure(), startAutoCloseRecovery()];
+  } catch (error) {
+    log.warn('kstar closure orchestrators unavailable', { error: (error as Error).message });
+    return [];
+  }
+}
 import { startGroupChatRecallTerminalProofs } from './features/group_chat/recall-terminal-proof';
 import { startTaskAutoArchiveOrchestrator } from './features/kb_task_auto_archive';
 import * as notificationPermissions from './features/notification_permissions';
@@ -1725,10 +1737,10 @@ if (!gotLock) {
     }
     const stopRecallCapture = startRecallCaptureOrchestrator();
     app.once('before-quit', stopRecallCapture);
-    const stopGroupKstarClosure = startGroupKstarClosure();
-    app.once('before-quit', stopGroupKstarClosure);
-    const stopAutoCloseRecovery = startAutoCloseRecovery();
-    app.once('before-quit', stopAutoCloseRecovery);
+    void startKstarClosureOrchestrators().then((stoppers) => {
+      kstarClosureStoppers = stoppers;
+    });
+    app.once('before-quit', () => { for (const stop of kstarClosureStoppers) stop(); });
     const stopGroupChatRecallTerminalProofs = startGroupChatRecallTerminalProofs();
     app.once('before-quit', stopGroupChatRecallTerminalProofs);
     const stopTaskAutoArchive = startTaskAutoArchiveOrchestrator();
@@ -1928,6 +1940,23 @@ if (!gotLock) {
       const { migrateLegacyFreeTextScopes } = await import('./features/recall/asset-service');
       await migrateLegacyFreeTextScopes(users.getActiveUserId());
     }, 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
+    // P-r2-3（2026-10-01 根治）启动期清扫：purge 与版本追加已纳入同一把锁，
+    // 但修锁前泄漏已发生的现场（purged 资产名下被在途 append 重建的版本流）
+    // 无产品通道可清——启动时按「墓碑/记录已除名 ⇒ 流必不存」清一遍。幂等，
+    // 正常情况下空转；逐条容错不拦启动。
+    registerDeferred('cognition:compatibility-recovery', async () => {
+      const { recoverCognitionProjection } = await import('./features/cognition_bridge');
+      const { applyCognitionDeltas } = await import('./features/cognition_kernel/store');
+      const journal = await applyCognitionDeltas(users.getActiveUserId(), []);
+      if (!journal.ok || journal.pendingHistory) log.warn('cognition journal recovery incomplete', { error: journal.error || 'history projection pending' });
+      await recoverCognitionProjection(users.getActiveUserId());
+      const { recoverAbilityAssetVersionJournals } = await import('./features/recall/asset-service');
+      await recoverAbilityAssetVersionJournals(users.getActiveUserId());
+    }, 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
+    registerDeferred('recall:purge-version-stream-sweep', async () => {
+      const { sweepPurgedAbilityAssetVersionStreams } = await import('./features/recall/asset-service');
+      await sweepPurgedAbilityAssetVersionStreams(users.getActiveUserId());
+    }, 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
     // 旧 USER.md / MEMORY.md 是用户数据，不在启动时自动归属迁移。用户须先
     // 在记忆内容页查看来源和原文、逐条选择并确认；preview 是只读，只有确认
     // 后才备份、尝试写入资产，并仅清理已成功入库且源文件未变化的条目。
@@ -1968,6 +1997,19 @@ if (!gotLock) {
       const uid = users.getActiveUserId();
       if (uid) await recoverRecallCaptures(uid);
     }, 'parallel', BOOT_HEAVY_DISK_DELAY_MS, { resourceClass: 'disk', preferIdle: true });
+    // 夜间增量清扫（U01）：低频自续期；窗口内/错过补跑都由内部判定，
+    // 应用未运行不假装完成，恢复可运行后续办。
+    registerDeferred('recall:nightly-sweep', () => {
+      const uid = users.getActiveUserId();
+      if (uid) startNightlyCaptureSweepLoop(uid);
+    }, 'parallel', BOOT_HEAVY_DISK_DELAY_MS, { resourceClass: 'disk', preferIdle: true });
+    // 本体整体暂停退役迁移（U03/U07）：幂等 no-op 安全，逐版本入历史可恢复。
+    registerDeferred('recall:ontology-pause-retirement', async () => {
+      const uid = users.getActiveUserId();
+      if (!uid) return;
+      const { retireOntologyModulePause } = await import('./features/cognition/ontology/service');
+      await retireOntologyModulePause(uid);
+    }, 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
     registerDeferred('recall:validation-recovery', async () => {
       const uid = users.getActiveUserId();
       if (!uid) return;

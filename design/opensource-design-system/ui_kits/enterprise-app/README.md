@@ -14,7 +14,6 @@
 | 默认页面（首页） | [打开默认页面](index.html?page=home) |
 | 工作空间 | [打开工作空间](index.html?page=spaces) |
 | 工作空间详情 | [打开空间详情](index.html?page=space&space=space-0) |
-| 认知资产 | [打开认知资产](cognition.html) |
 | 自动化 | [打开自动化](index.html?page=automation) |
 | 智能体 / 技能 / 连接 | [打开能力管理](index.html?page=capabilities) |
 | 智能体管理工作台 | [打开管理工作台](index.html?page=capabilities&tab=agents&agent=credit) |
@@ -25,10 +24,6 @@
 入口共用现有组件和页面模板。`page` 参数决定初始页面；通用入口缺省或未知值进入登录页，独立 `task.html` 缺省直接进入任务对话详情。内部页面跳转同步更新地址，刷新保留当前页面，并支持浏览器前进、后退。`task.html` 由构建脚本复用通用入口生成，共用页面脚本与样式。任务页直达时使用已有示例任务，刷新后恢复示例数据，不持久化临时输入。页面样例均无需先完成登录或其他前置操作。
 
 工作空间的任务、产物、资产与设置见 [工作空间详情说明](SpaceDetailScreen.md)；智能体类型差异、管理与编辑边界见 [智能体管理工作台说明](AgentWorkbench.md)。
-
-认知资产覆盖一级任务视图与二级工作页。独立入口、源码映射和交互边界见 [认知资产样例说明](CognitionScreen.md)。默认显示正常页面；示例数据仅保存在本次预览内，未接入 IPC。
-
-页面主导航由 `PageLayout.jsx` 的 `PageTabs` 统一组合，认知资产与能力管理共用内容边距、单行滚动与右侧操作区；基础交互见 [Tabs 规范](../../components/navigation/Tabs.prompt.md)。
 
 ## 文件
 
@@ -43,7 +38,6 @@
 | `AgentWorkbench.jsx` / `agent-workbench.css` | 智能体管理与编辑，按自定义、平台、外接及主智能体区分 | 当前客户端智能体管理 |
 | `ResourcePage.jsx` | 三个资源页面共用的标题栏、检索布局和名称编辑区 | 本轮页面组合 |
 | `AutomationScreen.jsx` | 自动化管理、启停、运行记录与模板 | 共享卡片变体 |
-| `CognitionData.jsx` / `CognitionPanels.jsx` / `CognitionScreen.jsx` / `cognition.css` | 认知树、待办、复用与治理，以及资产、候选、个人本体、来源、沉淀、版本和复用记录二级页 | 当前 `skills.js` / `personal-ontology.js` |
 | `CapabilitiesScreen.jsx` | 同页五个 tab：智能体、MCP 与工具、技能、资料库、IM | 共享能力卡片 |
 | `MemorySettings.jsx` | 数据设置内的记忆详情：偏好、全局共享记忆与分组，支持样例新增、编辑和删除；无独立目录入口 | `src/renderer/modules/memory.js` |
 | `MemoryTransfer.jsx` | 记忆导入审核与导出内容，复用设置组件 | `modules/memory.js` |
@@ -93,7 +87,5 @@
 ## 一致性核验
 
 与安装版 CogSeed 的页面及主要动作对照见 [页面差异记录](PageComparison-2026-09-05.md)（保留比较时的观察；本轮已确认项见 [实施记录](Alignment-2026-09-05.md)）。
-
-页面与组件加载同一生成 bundle；组件目录由源注册表统一生成。运行 `node tools/build.cjs` 和 `node tools/verify.cjs`（设计系统根目录）重建并核验。工作空间与设置共用 InlineConfirm，认知资产共用 StatusPill 与 SegmentedControl。当前检查结果与浏览器缺口见 [验证记录](../../verification.md)。
 
 已确认范围的实施与复用关系见 [安装版对齐实施记录](Alignment-2026-09-05.md)，能力模块详见 [能力页实施记录](CapabilitiesAlignment.md)。

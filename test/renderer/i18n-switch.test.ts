@@ -195,10 +195,10 @@ describe('renderer UI language switching', () => {
     expect(workspaceSource).toContain('const name = (sp && _spaceDisplayName(sp)) || sid;');
   });
 
-  it('defaults to Chinese and exposes only Chinese and English', () => {
+  it('defaults to Chinese and exposes all four product languages', () => {
     const { api } = loadI18n();
     expect(api.getLang()).toBe('zh');
-    expect(api.getSupportedLanguages().map((item: { code: string }) => item.code)).toEqual(['zh', 'en']);
+    expect(api.getSupportedLanguages().map((item: { code: string }) => item.code)).toEqual(['zh', 'en', 'ja', 'pt']);
   });
 
   it('persists through UI IPC and refreshes text and accessible attributes', async () => {
@@ -217,10 +217,11 @@ describe('renderer UI language switching', () => {
     expect(events).toHaveLength(1);
   });
 
-  it('rejects hidden locale codes without changing the UI', async () => {
+  it('switches Japanese and Portuguese and rejects unknown codes', async () => {
     const { api } = loadI18n();
-    expect(await api.setLang('ja')).toBe('zh');
-    expect(await api.setLang('pt')).toBe('zh');
+    expect(await api.setLang('ja')).toBe('ja');
+    expect(await api.setLang('pt')).toBe('pt');
+    expect(await api.setLang('xx')).toBe('pt');
   });
 });
 

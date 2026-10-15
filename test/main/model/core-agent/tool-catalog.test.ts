@@ -85,9 +85,6 @@ function enumerateAllInjectedTools(): AgentTool[] {
   // injected (memory + metacognition)
   tools.push(
     createCrossSessionMemoryTool({
-      add: () => ({ ok: true, entries: [], usage: { current: 0, limit: 1 } }),
-      replace: () => ({ ok: true, entries: [], usage: { current: 0, limit: 1 } }),
-      remove: () => ({ ok: true, entries: [], usage: { current: 0, limit: 1 } }),
       list: () => ({ ok: true, entries: [], usage: { current: 0, limit: 1 } }),
     }),
   );
@@ -115,7 +112,7 @@ function enumerateAllInjectedTools(): AgentTool[] {
   const previousSemantica = process.env.COGSEED_SEMANTICA_ENABLED;
   process.env.COGSEED_SEMANTICA_ENABLED = '1';
   try {
-    tools.push(...createRecallTools({ userId: 'testuid' }));
+    tools.push(...createRecallTools({ userId: 'testuid', turnId: 'catalog-turn', onAssetUsageClaim: () => {} }));
   } finally {
     if (previousSemantica === undefined) delete process.env.COGSEED_SEMANTICA_ENABLED;
     else process.env.COGSEED_SEMANTICA_ENABLED = previousSemantica;
@@ -224,6 +221,16 @@ describe('tool-catalog', () => {
     expect(missing, `Injected tools missing from TOOL_CATALOG: ${missing.join(', ')}`).toEqual([]);
   });
 
+  it('retired conversation formation tools are absent from both catalog and factories', () => {
+    const names = TOOL_CATALOG.map(entry => entry.name);
+    const injected = enumerateAllInjectedToolNames();
+    expect(names).toHaveLength(76);
+    for (const retired of ['personal_field_remember', 'ontology_slot_remember', 'cognition_ontology_save', 'transcript_remember_correction']) {
+      expect(names).not.toContain(retired);
+      expect(injected.has(retired)).toBe(false);
+    }
+  });
+
   it('TOOL_CATALOG has no duplicate names', () => {
     const names = TOOL_CATALOG.map((e) => e.name);
     expect(names.length).toBe(new Set(names).size);
@@ -302,7 +309,7 @@ describe('tool-catalog', () => {
       create_docx: ['paragraphs', 'tables', 'images', 'path'],
       create_xlsx: ['rows', 'sheets', 'formula', 'path'],
       create_pptx: ['slides', 'shapes', 'images', 'path'],
-      cross_session_memory: ['remember', 'agent', 'shared', 'user', 'routing', 'language', 'proper nouns', 'add', 'replace', 'remove', 'list'],
+      cross_session_memory: ['read-only', 'agent', 'shared', 'user', 'language', 'proper nouns', 'list'],
       metacognition: ['competence', 'strategies', 'content limits', 'rejected', 'condense', 'read', 'write'],
       list_ability_assets: ['全量', 'offset', '总数', '已删除'],
       read_ability_asset: ['chunk', '2000', '不可用'],

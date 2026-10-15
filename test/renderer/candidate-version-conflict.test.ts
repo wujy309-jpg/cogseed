@@ -69,24 +69,26 @@ function ensureModule(): Ns {
       },
     },
     uiButton: require('../../src/renderer/modules/ui-button.js').uiButton,
+    uiCard: require('../../src/renderer/modules/ui-card.js').uiCard,
+    uiField: require('../../src/renderer/modules/ui-form.js').uiField,
     uiIconButton: require('../../src/renderer/modules/ui-button.js').uiIconButton,
     uiInput: require('../../src/renderer/modules/ui-form.js').uiInput,
     uiSwitch: require('../../src/renderer/modules/ui-form.js').uiSwitch,
     uiTextarea: require('../../src/renderer/modules/ui-form.js').uiTextarea,
+    uiSelect: require('../../src/renderer/modules/ui-form.js').uiSelect,
     uiEmptyState: require('../../src/renderer/modules/ui-empty.js').uiEmptyState,
     escapeHtml: esc,
     uiToast: (message: string, options: { variant?: string } = {}) => { TOASTS.push({ message, variant: options.variant }); },
     uiAlert: async (message: string) => { ALERTS.push(message); },
     uiConfirm: async () => true,
     uiConfirmDanger: async () => true,
-    refreshPersonalOntology: async () => {},
     t: (key: string, vars?: Record<string, string>) => localized(key, undefined, vars),
   };
   globalScope.window = windowStub;
   globalScope.document = { getElementById: () => domRoot, querySelector: () => null, querySelectorAll: () => [] };
   /* eslint-disable @typescript-eslint/no-require-imports */
   require('../../src/renderer/modules/icons.js');
-  windowStub.uiIconHtml = (globalThis as unknown as Record<string, unknown>).uiIconHtml;
+  windowStub.uiIconHtml ||= (globalThis as unknown as Record<string, unknown>).uiIconHtml;
   // ui-status.js / ui-page-header.js 是 index.html 里的静态共享层（真机先于
   // cognition-assets 就绪）：夹具的 window 必须和真机一样有这一层。
   require('../../src/renderer/modules/ui-status.js');
@@ -131,12 +133,21 @@ function updateCandidate(over: Record<string, unknown> = {}) {
     suggestedAction: 'update', targetAssetId: 'aa-t1', targetVersionUsed: '1', taskRunId: 'taskrun-1',
     applicableWhen: ['写并行批次工具时'], forbiddenWhen: ['涉及外部合规文档时'],
     evidenceRefs: [{ kind: 'execution', id: 'kse-ep1' }],
-    learningProvenance: { episodeId: 'kse-ep1', attribution: 'execution_gap' },
+    captureProvenance: { pipeline: 'nightly_conversation', captureId: 'capture-a', messageIds: ['message-a'], extractionCompletedAt: '2026-10-12T01:00:00Z', valueJudgment: { eligible: true, reason: '可重复使用', judgedAt: '2026-10-12T00:59:00Z', evidence: [{ messageId: 'message-a', sourceId: 'source-a', quote: '这是真实来源原文' }] } }, sourceRefs: [{ kind: 'conversation', subtype: 'message', id: 'source-a', excerpt: '真实原文' }],
     capabilities: {
       canEdit: true, canPromote: true, canDefer: true, canReject: true,
       countsAsPending: true, isSnoozed: false, isTerminal: false, displayState: 'needs_review',
     },
     ...over,
+  };
+}
+
+function successfulPromotion(candidate = updateCandidate(), extra: Record<string, unknown> = {}) {
+  return {
+    ok: true,
+    candidate: { ...candidate, status: 'confirmed', promotedAssetId: targetAsset.id },
+    asset: { ...targetAsset, statement: candidate.judgment, version: '4', activeVersion: '4' },
+    ...extra,
   };
 }
 
@@ -177,7 +188,7 @@ function resetWorld(candidate: Record<string, unknown> = updateCandidate()) {
     name: 'review', category: '', assetId: '', candidateId: 'rcand-u', proofEventId: '',
     captureBucket: '', captureId: '', sourceIssueOpen: '', kstarEpisodeId: '',
     assetVersionId: '', assetEdit: '', assetVersionDiff: '', assetVersionsExpanded: '',
-    assetView: '', familyRename: '', ontologyBox: '',
+    assetView: '',
   };
   return ns;
 }
@@ -204,7 +215,7 @@ describe('确认更新撞版本冲突的处置（T022 / US-702）', () => {
       // 重锚有记录：任何带 confirmBaselineVersion 的调用都不该出现在"撞冲突"这一步。
       if (channel === 'recall.candidates.promote') {
         const confirm = (payload as Record<string, unknown>).confirmBaselineVersion;
-        if (confirm) return { ok: true, assetId: 'aa-t1' };
+        if (confirm) return successfulPromotion(candidate);
         return { ok: false, state: 'pending', versionConflict: rawConflict, message: '这条资产在你确认之前被改过…' };
       }
       return defaultInvoke(candidate)(channel, payload);
@@ -260,7 +271,7 @@ describe('确认更新撞版本冲突的处置（T022 / US-702）', () => {
     // 数据来源：强制重拉版本链（带目标资产），没有写任何东西。
     expect(callsOf('recall.assets.versions.list').map((c) => c.payload.assetId)).toContain('aa-t1');
     expect(callsOf('recall.candidates.promote')).toHaveLength(1);
-    for (const write of ['recall.candidates.update', 'recall.candidates.reject', 'recall.candidates.defer', 'recall.candidates.ignore']) {
+    for (const write of ['recall.candidates.update', 'recall.candidates.reject', 'recall.candidates.ignore']) {
       expect(callsOf(write), write).toHaveLength(0);
     }
   });
@@ -334,17 +345,17 @@ describe('确认更新撞版本冲突的处置（T022 / US-702）', () => {
     const html = renderDetail();
     expect(html).toContain(zh['cognition.candidate_version_conflict_body_missing']);
     expect(html).not.toContain('data-rebase="1"');
-    // 控件回到可操作态：另外两条出口还在（不是禁用死锁）。
-    expect(html).toContain('data-action="defer"');
+    // 控件回到可操作态：拒绝出口还在（不是禁用死锁）；「稍后处理」已删除。
+    expect(html).not.toContain('data-action="defer"');
     expect(html).toContain('data-action="reject"');
   });
 
-  it('用户改「稍后处理 / 拒绝」后，冲突提示不再挂着', async () => {
+  it('用户改「拒绝」后，冲突提示不再挂着', async () => {
     const ns = await promoteIntoConflict();
     CALLS.length = 0;
-    await ns.actions.decideCandidate('rcand-u', 'defer');
+    await ns.actions.decideCandidate('rcand-u', 'reject');
     expect(ns.store.candidateVersionConflict).toBeNull();
-    expect(callsOf('recall.candidates.defer')).toHaveLength(1);
+    expect(callsOf('recall.candidates.reject')).toHaveLength(1);
     expect(renderDetail()).not.toContain(zh['cognition.candidate_version_conflict_not_applied_plain']);
   });
 
@@ -360,7 +371,7 @@ describe('确认更新撞版本冲突的处置（T022 / US-702）', () => {
     // ② 确认期：主进程返回 versionCheckSkipped → 如实提示，不假装核过。
     TOASTS.length = 0;
     invokeImpl = (channel, payload) => {
-      if (channel === 'recall.candidates.promote') return { ok: true, assetId: 'aa-t1', versionCheckSkipped: true };
+      if (channel === 'recall.candidates.promote') return successfulPromotion(updateCandidate({ targetVersionUsed: '', learningProvenance: {} }), { versionCheckSkipped: true });
       return defaultInvoke()(channel, payload);
     };
     await ns.actions.adoptCandidate('rcand-u', undefined);
@@ -392,11 +403,10 @@ describe('候选三态与按钮名按型分支（T023 / US-702）', () => {
     return visibleText(renderDetail());
   };
 
-  it('更新型（update / limit_scope 且有目标方法）：「保存更新 / 稍后处理 / 拒绝」，与 008 卡片同一批词条', () => {
+  it('更新与边界建议分别显示保存更新、保存边界，保留稍后与拒绝', () => {
     for (const action of ['update', 'limit_scope']) {
       const text = labelsOf(action);
-      expect(text, action).toContain(zh['recall.asset_approval.confirm']);
-      expect(text, action).toContain(zh['recall.asset_approval.defer']);
+      expect(text, action).toContain(zh[action === 'limit_scope' ? 'cognition.activity_save_boundary' : 'recall.asset_approval.confirm']);
       expect(text, action).toContain(zh['recall.asset_approval.reject']);
       // 更新型不说新建型的旧文案「保存并使用」（2026-09-29 A6 词根统一后
       // 新建=「保存」、更新=「保存更新」，同根不同缀——按完整旧词钉，不再
@@ -405,11 +415,13 @@ describe('候选三态与按钮名按型分支（T023 / US-702）', () => {
     }
   });
 
-  it('新建型保持既有措辞：「保存并使用 / 稍后处理 / 不保存」', () => {
+  it('新建型活动详情：「修改并保存 / 保存修改并校验 / 拒绝」，稍后保留在其他处理', () => {
     const text = labelsOf('create');
     expect(text).toContain(zh['cognition.candidate_save_and_use']);
-    expect(text).toContain(zh['cognition.candidate_defer_action']);
-    expect(text).toContain(zh['cognition.candidate_reject']);
+    expect(text).toContain(zh['cognition.activity_formal_save']);
+    expect(text).toContain(zh['cognition.activity_save_validate']);
+    expect(text).toContain(zh['cognition.inbox_action_reject']);
+    expect(text).toContain(zh['cognition.activity_defer']);
     expect(text).not.toContain(zh['recall.asset_approval.confirm']);
   });
 
@@ -418,7 +430,7 @@ describe('候选三态与按钮名按型分支（T023 / US-702）', () => {
     const text = labelsOf('update', { targetAssetId: '' });
     expect(text).not.toContain(zh['recall.asset_approval.confirm']);
     expect(text).toContain(zh['cognition.candidate_save_and_use']);
-    expect(text).not.toContain(zh['recall.asset_approval.reject']);
+    expect(text).toContain(zh['cognition.inbox_action_reject']);
   });
 
   it('pause 提案保持既有呈现：不走重锚路径、也没有版本冲突块', () => {

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import { loadCognitionAssets } from './helpers/cognition-renderer';
+
 import { getRecallCandidateCapabilities } from '../../src/main/features/recall/candidate-capabilities';
 
 /** 候选桩的能力必须来自主进程的真实映射，否则测试会绿在一套假判据上。 */
@@ -67,29 +69,36 @@ function fnBlock(marker: string): string {
 }
 
 describe('cognition-assets snapshot and routing', () => {
-  it('loads the five snapshot channels in parallel with soft fallbacks', () => {
-    // 五个读口并行拉取——四个走 api.soft 容错；候选清单例外（2026-09-29 A5）：
-    // 读失败进显式错误态（api.call+catch 置 store.candidatesError），不再把
-    // 「没读到」软降级成空数组伪装成「没有要你决定的」。
+  it('loads snapshot channels in parallel and gives assets/candidates/settings explicit read-error states', () => {
+    // 资产、候选和设置采用显式错误态；资产读失败保留缓存，不伪装成空目录。
+    // 整理失败会产生需要关注，因此必须明确读取错误；来源目录仍独立降级。
     for (const channel of [
-      'recall.assets.list', 'recall.captures.list',
-      'recall.captures.settings.get', 'recall.sources.list',
+      'recall.sources.list',
     ]) expect(core).toContain(`api.soft('${channel}'`);
+    const captures = fnBlock('async captures()');
+    expect(captures).toContain("api.call('recall.captures.list'");
+    expect(captures).toContain('store.capturesError');
+    expect(captures).not.toMatch(/store\.captures\s*=\s*\[\]/);
+    const assets = fnBlock('async assets()');
+    expect(assets).toContain("api.call('recall.assets.list'");
+    expect(assets).toContain('store.assetsError');
+    expect(assets).not.toMatch(/store\.assets\s*=\s*\[\]/);
     expect(core).toContain("api.call('recall.candidates.list'");
     expect(core).toContain('store.candidatesError');
+    expect(core).toContain("api.call('recall.captures.settings.get'");
+    expect(core).toContain('store.captureModelError');
     expect(core).toContain('Promise.all([');
     expect(core).toContain('async soft(channel, payload, fallback)');
     expect(core).toContain('return fallback;');
   });
 
   it('routes the five views through one router', () => {
-    // specs/018 后端驱动重构:五页签=待我处理/我的认知/个人本体/系统活动/设置,
-    // 默认落地待我处理;认知树是 overview 的视图投影(assetView='tree')。
+    // 树暂禁用，默认落地我的认知；旧 tree 深链归一到 overview。
     // 旧路由名(tree/organize/organize-settings/experiences)在 router.go 归一。
-    expect(core).toContain("route: { name: 'tree'");
-    expect(core).toContain("router.go({ name: 'review' })");
-    expect(core).toContain("{ id: 'tree', titleKey: 'cognition.tab_tree'");
-    expect(core).toContain("{ id: 'review', titleKey: 'cognition.tab_review'");
+    expect(core).toContain("route: { name: 'overview'");
+    expect(core).toContain("router.go({ name: 'activity', candidateId: String(candidateId) })");
+    expect(core).toContain("{ id: 'tree', titleKey: 'cognition.tab_tree', title: '认知树', disabled: true }");
+    expect(core).not.toContain("{ id: 'review', titleKey: 'cognition.tab_review'");
     expect(core).toContain("{ id: 'activity', titleKey: 'cognition.tab_activity'");
     expect(core).toContain("{ id: 'settings', titleKey: 'cognition.tab_settings'");
     // 旧名归一在入栈前完成(store 里恒为新名,onChange 钩子不做双名判断)。
@@ -111,9 +120,24 @@ describe('cognition-assets snapshot and routing', () => {
     expect(app).toContain("case 'open-cleanup-report': router.go({ name: 'cleanup', cleanupReportId: String(el.dataset.report || '') });");
   });
 
-  it('lands on the cognition tree without auto-redirecting when the inbox is empty', () => {
-    expect(core).toContain("Object.assign({ name: 'tree'");
+  it('lands on my cognition without auto-redirecting when the inbox is empty', () => {
+    expect(core).toContain("Object.assign({ name: 'overview'");
     expect(core).not.toContain('switchSkillsCognitionPage');
+  });
+
+  it('资产读取失败保留已读资产并展示明确错误，不能软降级成空目录', async () => {
+    const cached = { id: 'asset-cached', type: 'template', title: '已有汇报骨架', statement: '按目标、进展与下一步行动组织汇报。', status: 'active', version: '1' };
+    const { ns, render } = loadCognitionAssets({ assets: [cached] }, {}, {
+      cogseed: { invoke: async (channel: string) => channel === 'recall.assets.list'
+        ? { ok: false, error: 'asset read offline' } : { ok: true } },
+    });
+    await ns.reload();
+    expect(ns.store.assets).toEqual([cached]);
+    expect(ns.store.assetsError).toContain('asset read offline');
+    const html = render();
+    expect(html).toContain(cached.title);
+    expect(html).toContain('上次读取');
+    expect(html).not.toContain('这里还没有内容');
   });
 
   it('reloads in place after decisions and keeps partial-failure data', () => {
@@ -143,7 +167,7 @@ describe('candidate decisions', () => {
 
   it('keeps evidence refs and boundaries untouched by form edits', () => {
     const adopt = fnBlock('async adoptCandidate');
-    expect(adopt).toContain('sourceRefs: candidate.evidenceRefs || candidate.sourceRefs || []');
+    expect(adopt).toContain('sourceRefs: candidate.sourceRefs || candidate.evidenceRefs || []');
     expect(adopt).toContain('evidenceRefs: candidate.evidenceRefs || candidate.sourceRefs || []');
     expect(adopt).toContain('applicableWhen: candidate.applicableWhen || []');
     expect(adopt).toContain('forbiddenWhen: candidate.forbiddenWhen || []');
@@ -153,7 +177,9 @@ describe('candidate decisions', () => {
     expect(core).toContain("reject: 'recall.candidates.reject'");
     expect(core).toContain("ignore: 'recall.candidates.ignore'");
     expect(core).toContain("'keep-current': 'recall.candidates.keepCurrent'");
+    // 新“稍后”持久化处理顺序标记，仍留在需要关注，不恢复旧的静音生命周期。
     expect(core).toContain("defer: 'recall.candidates.defer'");
+    expect(core).not.toContain("recall.candidates.resume");
     const decide = fnBlock('async decideCandidate');
     expect(decide).toContain('await NS.reload()');
   });
@@ -186,15 +212,22 @@ describe('candidate pool rendering', () => {
     expect(views).toContain('evidenceMostlyUnavailable');
     expect(views).toContain('is-broken');
     expect(views).toContain("T('cognition.candidate_evidence_all_unavailable'");
-    expect(views).toContain("T('cognition.candidate_evidence_ok'");
+    // 有引用只表示可追溯，手动输入只表示用户提供；两者均不宣称效果已验证。
+    expect(views).toContain("T('cognition.candidate_user_provided'");
+    expect(views).toContain("T('cognition.candidate_has_refs'");
+    expect(views).toContain("T('cognition.candidate_missing_refs'");
+    expect(views).not.toContain("T('cognition.candidate_evidence_ok'");
   });
 
-  it('keeps confirmed/rejected/ignored candidates in the processed fold only', () => {
-    expect(views).toContain("['confirmed', 'rejected', 'ignored']");
-    expect(views).toContain('fold-processed');
-    expect(views).toContain("T('cognition.candidate_status_promoted'");
-    expect(views).toContain("T('cognition.candidate_status_rejected'");
-    expect(views).toContain("T('cognition.candidate_status_ignored'");
+  it('keeps all completed outcomes in processed history only', () => {
+    const statuses = ['confirmed', 'integrated', 'rejected', 'ignored', 'expired', 'superseded'];
+    const fixture = loadCognitionAssets({ candidates: statuses.map((status, index) => ({
+      id: 'history-' + index, status, summary: '已处理记录' + index,
+      judgment: '此前已经处理的完整内容', suggestedScope: 'report', suggestedType: 'rule',
+      ...(status === 'confirmed' ? { promotedAssetId: 'asset-kept' } : {}),
+    })) }, { name: 'activity', activityView: 'done' });
+    expect(fixture.ns.activityModel().attention).toHaveLength(0);
+    expect(fixture.ns.activityModel().done.map((row: any) => row.route.candidateId)).toEqual(statuses.map((_status, index) => 'history-' + index));
   });
 
   it('reads capabilities from the main-process mapping before rendering actions', () => {
@@ -202,39 +235,27 @@ describe('candidate pool rendering', () => {
     const caps = CAPS('pending_review');
     expect(caps.canPromote).toBe(true);
     expect(caps.canEdit).toBe(true);
-    expect(caps.canDefer).toBe(true);
     // 2026-09-20：晋升/编辑/决策入口统一读 views.js 里归一化的一组 canX 常量，
-    // **capabilities 缺失即只读**（终态候选的 canDefer/canReject 正是 false）。
+    // **capabilities 缺失即只读**（终态候选的 canReject 正是 false）。
     expect(views).toContain('const caps = candidate.capabilities || {}');
     expect(views).toContain('const canPromote = !!caps.canPromote');
-    expect(views).toContain('const canDefer = !!caps.canDefer');
     expect(views).toContain('const canReject = !!caps.canReject');
     expect(views).toContain('const canEdit = !!caps.canEdit');
   });
 });
 
-describe('source issues', () => {
-  it('only surfaces sources that need attention', () => {
-    // 用户主动暂停的来源不算异常；failed 与异常 paused 才算。
-    expect(views).toContain("item.statusReason || ''") !== undefined ? true : false;
-    expect(views).toContain('sourceItemNeedsAttention');
-    expect(views).toContain("item.status === 'failed'");
-    expect(views).toContain("String(item.statusReason || '') !== 'source_paused'");
-  });
-
-  it('renders source issues with localized reasons and typed actions', () => {
-    expect(views).toContain('sourceReasonText');
-    expect(views).toContain("'source-action'");
-    expect(views).toContain("action: 'retry'");
-    expect(views).toContain("action: 'resume'");
-    expect(views).toContain("T('cognition.source_issues_more'");
+describe('来源异常与后台任务提醒已退役', () => {
+  it('不存在旧提醒的视图函数或候选族导出', () => {
+    for (const name of ['sourceItemNeedsAttention', 'sourceIssueItems', 'sourceIssuesSection', 'taskFailedSection']) {
+      expect(views).not.toContain('function ' + name);
+    }
   });
 });
 
 describe('capture tasks', () => {
-  it('maps capture actions to typed channels', () => {
-    expect(core).toContain("retry: 'recall.captures.retry'");
-    expect(core).toContain('recall.captures.batchRetry');
+  it('removes all user capture controls while keeping read-only formation history', () => {
+    expect(core).not.toContain("'recall.captures.retry'");
+    expect(core).not.toContain('recall.captures.batchRetry');
     // 批量「立即整理」前端不暴露(2026-09-21 原型 v7 定调):后端能力保留,
     // 渲染层不再触达 batchRunNow。
     expect(core).not.toContain("'recall.captures.batchRunNow'");

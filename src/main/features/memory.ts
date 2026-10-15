@@ -15,7 +15,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { userMemoryFile, userProfileFile, agentMemoryFile, userAgentMemoryFile, projectMemoryFile, spaceMemoryFile } from '../paths';
-import { writeTextAtomicSync } from '../storage';
+import { writeTextAtomicSync, safeId } from '../storage';
 import { createLogger } from '../logger';
 import { notifyCognitionWrite } from './recall/store-events';
 import {
@@ -237,6 +237,17 @@ export function scanForInjection(content: string): string | null {
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
+// P-r1-43：memory 域写路径的 userId 入口校验——与同一事务另一半 cognition 的
+// assertUserId 同口径（safeId + 80 上限），消除「cognition 校验、memory 裸奔」
+// 的口径分裂。读路径不拦（与 cognition 读口行为一致，读侧由路径解析兜底）。
+const MEMORY_MAX_USER_ID_LENGTH = 80;
+
+function assertMemoryUserId(userId: string): void {
+  if (typeof userId !== 'string' || !safeId(userId) || userId.length > MEMORY_MAX_USER_ID_LENGTH) {
+    throw new Error('invalid memory user id');
+  }
+}
+
 function fileForTarget(userId: string, target: MemoryScope): string {
   if (target === 'user') return userProfileFile(userId);
   if (target === 'memory') return userMemoryFile(userId);
@@ -376,6 +387,7 @@ function addRoleTemplateMemoryToOwnFile(
   templateId: string,
   content: string,
 ): MemoryOpResult {
+  assertMemoryUserId(userId);
   const trimmed = content.trim();
   if (!trimmed) return buildResult(userId, 'memory', false, 'empty content');
   const invalid = validateMemoryText(trimmed);
@@ -477,6 +489,7 @@ export function removeRoleTemplateMemoryFromLive(
   userId: string,
   templateId: string,
 ): { userOk: boolean; memoryOk: boolean } {
+  assertMemoryUserId(userId);
   let userOk = true;
   let memoryOk = true;
   // 模板独立文件整体删除（2026-09-22 搬迁）；旧 live 记忆的残留按来源删。
@@ -591,6 +604,7 @@ function buildAgentResult(userId: string, agentId: string, ok: boolean, error?: 
 /** Synchronous primitive. Production callers targeting shared MEMORY use
  * `addEntryTransactional`; direct use is for tests or non-shared scopes. */
 export function addEntry(userId: string, target: MemoryScope, content: string): MemoryOpResult {
+  assertMemoryUserId(userId);
   const trimmed = content.trim();
   if (!trimmed) return buildResult(userId, target, false, 'empty content');
 
@@ -651,6 +665,7 @@ export function addAgentEntry(userId: string, agentId: string, content: string):
 
 /** Shared-MEMORY production callers use `replaceEntryTransactional`. */
 export function replaceEntry(userId: string, target: MemoryScope, oldText: string, content: string): MemoryOpResult {
+  assertMemoryUserId(userId);
   const trimmed = content.trim();
   if (!trimmed) return buildResult(userId, target, false, 'empty content');
 
@@ -750,6 +765,7 @@ export function replaceAgentEntry(userId: string, agentId: string, oldText: stri
 
 /** Shared-MEMORY production callers use `removeEntryTransactional`. */
 export function removeEntry(userId: string, target: MemoryScope, oldText: string): MemoryOpResult {
+  assertMemoryUserId(userId);
   const filePath = fileForTarget(userId, target);
   const limit = limitForTarget(target);
   if (target === 'memory') {
@@ -855,6 +871,7 @@ export function backfillProjectMemoryToSpaceForWrite(
   spaceId: string,
   legacyProjectId?: string,
 ): void {
+  assertMemoryUserId(userId);
   if (!legacyProjectId) return;
   const currentFile = spaceMemoryFile(userId, spaceId);
   if (fs.existsSync(currentFile)) return;
@@ -878,6 +895,7 @@ export function ensureCognitionMemoryEntry(
   sourceId: string,
   content: string,
 ): { ok: boolean; error?: string; record?: SourcedMemoryRecord } {
+  assertMemoryUserId(userId);
   const result = ensureSourcedMemoryRecord(
     userMemoryFile(userId),
     sourceId,
@@ -897,12 +915,18 @@ export function ensureCognitionMemoryEntry(
  *
  * Keeping the asset id in record metadata makes retries idempotent and lets a
  * later lifecycle operation detach the projection without fuzzy text matching.
+ *
+ * P-r1-42：画像投影桥已退役（2026-09-22 清单 #11）——生产默认走
+ * personal-profile-sync 的 no-op 桩，本实现仅剩两个活消费：作为该模块
+ * `writeProfileEntry` 依赖项的类型签名，以及投影桥测试注入。USER.md 的
+ * 读侧（projection-knowledge / transcript 桥）仍活跃。
  */
 export function ensurePersonalProfileEntry(
   userId: string,
   sourceId: string,
   content: string,
 ): { ok: boolean; error?: string; record?: SourcedMemoryRecord } {
+  assertMemoryUserId(userId);
   const trimmed = content.trim();
   const threat = scanForInjection(trimmed);
   if (threat) return { ok: false, error: `blocked: suspicious content (${threat})` };
@@ -920,15 +944,9 @@ export function ensurePersonalProfileEntry(
   };
 }
 
-export function findPersonalProfileEntry(userId: string, sourceId: string): SourcedMemoryRecord | null {
-  return findSourcedMemoryRecord(userProfileFile(userId), sourceId);
-}
-
-export function detachPersonalProfileEntry(userId: string, sourceId: string): MemoryOpResult {
-  const result = detachMemorySource(userProfileFile(userId), sourceId, USER_CHAR_LIMIT);
-  if (result.ok && result.detachedSourceIds.length) notifyMemoryDirty('user');
-  return buildResult(userId, 'user', result.ok, result.error);
-}
+// P-r1-42：findPersonalProfileEntry / detachPersonalProfileEntry 两个死导出
+// 已删——全仓零消费（投影退役后无人按 sourceId 查/摘 USER.md 记录；回滚走
+// git）。ensurePersonalProfileEntry 因测试与类型签名在用而保留（见上注）。
 
 export function ensureCognitionMemoryEntryLocked(
   userId: string,
@@ -958,7 +976,8 @@ export function findCognitionMemoryEntryLocked(
 /** Low-level synchronous helper for tests and callers already inside a
  * cognition-memory transaction. Production cognition calls the locked form. */
 export function detachCognitionMemoryEntry(userId: string, sourceId: string): MemoryOpResult {
-  const result = detachMemorySource(userMemoryFile(userId), sourceId, MEMORY_CHAR_LIMIT);
+  assertMemoryUserId(userId);
+  const result = detachMemorySource(userMemoryFile(userId), sourceId, MEMORY_CHAR_LIMIT, 'cognition_asset');
   if (!result.ok) return buildResult(userId, 'memory', false, result.error);
   if (result.detachedSourceIds.length) notifyMemoryDirty('memory');
   return {
@@ -983,6 +1002,7 @@ export function listAgentEntries(userId: string, agentId: string): MemoryOpResul
 /** Production shared-MEMORY clear flows use
  * `clearMemoryAndInvalidateCognition`. */
 export function clearMemory(userId: string, target: MemoryScope): ClearMemoryResult {
+  assertMemoryUserId(userId);
   const filePath = fileForTarget(userId, target);
   const detachedCognitionSourceIds = target === 'memory'
     ? Array.from(new Set(loadMemoryRecords(filePath).flatMap((record) => record.sources.map((source) => source.sourceId))))
