@@ -102,6 +102,11 @@ describe('conversation Recall citations', () => {
     // 渲染实现收在 recall-projection-card.js，conversation.js 只留委托入口。
     expect(source).toContain('window.recallMemoryCardHtml(citations)');
   });
+  it('骨架认知回知卡默认收起，与挂载后的缺省折叠态一致', () => {
+    const html = renderCitations([{ asset_id: 'a1', title: 'Saved item', type: 'cognition', scope: 'general' }]);
+    expect(html).toContain('<section class="chat-recall-citations is-collapsed">');
+    expect(html).toContain('aria-expanded="false"');
+  });
 
   it('mounts persisted recall citations when a live streaming bubble is finalized', () => {
     // Live placeholders do not pass through appendChatMessage. The finalizer
@@ -125,6 +130,31 @@ describe('conversation Recall citations', () => {
     expect(html).toContain('进入模型上下文不代表最终回答实际采用');
     expect(source).toContain("closest('[data-asset-citation]')");
     expect(source).toContain('window.openCognitionAssetById(assetId)');
+  });
+
+  it('feedback buttons live on each cited row and target that asset, not the whole message', () => {
+    // 逐行反馈（2026-10-03 待办#2）：每条已引用行一对 有帮助/需改进，按钮钉
+    // data-recall-asset-id；卡尾不再有整条消息级的反馈按钮。
+    const html = renderCitations([
+      { asset_id: 'asset-1', title: '项目复盘规则', type: 'rule', scope: 'project' },
+      { asset_id: 'asset-2', title: '周报模板', type: 'template', scope: 'global' },
+    ]);
+    const feedbackButtons = [...html.matchAll(/<button[^>]*data-recall-feedback=[^>]*>/g)].map((match) => match[0]);
+    const pairs = feedbackButtons.map((tag) => {
+      const feedback = tag.match(/data-recall-feedback="([^"]+)"/)![1];
+      const asset = tag.match(/data-recall-asset-id="([^"]+)"/)![1];
+      return `${asset}:${feedback}`;
+    });
+    expect(pairs).toEqual([
+      'asset-1:positive', 'asset-1:negative', 'asset-2:positive', 'asset-2:negative',
+    ]);
+    // 卡尾反馈区只剩提示句/投影操作的位置，不再承载消息级按钮。
+    const footer = html.match(/<div class="chat-recall-feedback-actions">[\s\S]*?(<\/div>)\s*(<\/section>|$)/);
+    expect(footer).toBeTruthy();
+    expect(footer![0]).not.toContain('data-recall-feedback');
+    // 逐行交互契约：conversation.js 侧按按钮自带的资产定向调用反馈通道。
+    expect(source).toContain("const assetId = String(button.dataset.recallAssetId || '')");
+    expect(source).toContain('recall.usage.feedback');
   });
 
   it('routes activation of the shared citation button to the existing asset detail opener', () => {

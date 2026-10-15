@@ -66,7 +66,9 @@ describe('open-source shared foundation polish', () => {
     expect(index).toContain('class="connections-tabs ui-tabs"');
     expect(index).toContain('class="connections-tab ui-tab is-active"');
     expect(index).toContain('id="ca-root"');
-    expect(cognitionAssetsView).toContain('class="ca-tab${active ? \' is-on\' : \'\'}"');
+    expect(cognitionAssetsView).toContain("const active = !tab.disabled && activeTab === tab.id");
+    expect(cognitionAssetsView).toContain("${tab.disabled ? ' is-disabled' : ''}");
+    expect(cognitionAssetsView).toContain('aria-disabled="true"');
     expect(cognitionAssetsView).toContain('data-act="tab" data-id="${tab.id}"');
     expect(index).toContain('class="settings-group ui-settings-section"');
     for (const hook of [

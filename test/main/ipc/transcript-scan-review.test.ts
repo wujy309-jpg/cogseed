@@ -124,7 +124,7 @@ describe('扫描并入模型复核', () => {
     expect(scan.review).toMatchObject({ modelCandidates: 0, failedChunks: 2, skipped: 'model_failed' });
   });
 
-  it('合并后的清单能被 apply 直接使用：勾 model_0 才替换，且记入词表', async () => {
+  it('合并后的清单能被 apply 直接使用：勾 model_0 才替换，长期词表保持不变', async () => {
     mockReview();
     const { invokeHandlers } = await import('../../../src/main/ipc/transcript');
     const scan = await (invokeHandlers['transcript.correct.scan'] as any)({ text: TEXT, docId: 'd1', includeReview: true }, ctx());
@@ -135,13 +135,12 @@ describe('扫描并入模型复核', () => {
       acceptedIds: ['model_0'],
     }, ctx());
     expect(applied.result.text).toContain('傅平');
-    expect(applied.glossaryWrites).toMatchObject({ created: 1 });
+    expect(applied.glossaryWrites).toMatchObject({ created: 0, updated: 0 });
     const glossary = await import('../../../src/main/features/transcript_glossary');
-    // 复核建议落成了词表规则（本文档作用域），词表命中那条不受影响
+    // 模型建议只更正当前材料，已有词条不受影响
     const entries = glossary.listEntries(TEST_UID, { status: 'active' });
     expect(entries.map((e: any) => [e.wrong, e.correct, e.source])).toEqual([
       ['coxy', 'Cogseed', 'manual'],
-      ['付平', '傅平', 'meeting_accept'],
     ]);
   });
 });
@@ -417,7 +416,7 @@ describe('拒绝回执与不再重复建议（T028/T029/T032 端到端）', () =
     expect(onDisk[0].decision_type).toBe('reject');
   });
 
-  it('T028：重试同动作（receiptRunId 复用原 run）不产生第二条；不同 run 的再次拒绝是新的一条', async () => {
+  it('T028/P-r1-67：重试同动作（receiptRunId 复用原 run）不产生第二条；不同 run 重发同批 rejectedIds 也幂等跳过（账本不膨胀）', async () => {
     const { invokeHandlers } = await import('../../../src/main/ipc/transcript');
     const entryId = await coxyEntryId();
     const first = await (invokeHandlers['transcript.correct.apply'] as any)({
@@ -430,11 +429,16 @@ describe('拒绝回执与不再重复建议（T028/T029/T032 端到端）', () =
     }, ctx());
     expect(retry.receipts[0].decisionId).toBe(first.receipts[0].decisionId);
     expect(await decisionsOf(targetRef)).toHaveLength(1);            // 仍只有一条
-    // 不同 run（不同文本）的再次拒绝 = 新动作 ⇒ 追加一条（T032④ 的前提）
-    await (invokeHandlers['transcript.correct.apply'] as any)({
+    // 【P-r1-67】渲染层的 rejected 是跨轮回执账本（T030 有意设计，apply 不清空），
+    // 每次「生成清理版」都全量重发 rejectedIds——旧实现幂等键含 runId 而 apply 每次
+    // 新 run，必产生第二条重复 reject 回执（账本膨胀、指标拒绝计数虚高）。
+    // 新语义（与 unreject 对称）：末条判定已是抑制态 ⇒ 幂等跳过，receipts 回填
+    // 既有末条决定 id，账本不增。不同文本（新 run）重发同批被拒 id 同样命中。
+    const repeat = await (invokeHandlers['transcript.correct.apply'] as any)({
       text: `${TEXT} `, docId: 'kb/r.md', acceptedIds: [], rejectedIds: [entryId],
     }, ctx());
-    expect(await decisionsOf(targetRef)).toHaveLength(2);
+    expect(repeat.receipts[0].decisionId).toBe(first.receipts[0].decisionId);
+    expect(await decisionsOf(targetRef)).toHaveLength(1);            // 幂等跳过：不产生第二条
   });
 
   it('T029：拒绝后重扫同一文本该形态不再出现（stats.suppressed 如实）；跨进程重启仍生效（账本落盘）；其他文档不受影响', async () => {

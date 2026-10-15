@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -67,14 +68,14 @@ describe('Recall source controls', () => {
 
   it('previews affected assets and revokes only matching assets after explicit confirmation', async () => {
     const { candidates, assets, controls } = await modules();
-    const matchingCandidate = await candidates.saveRecallCandidate('user-a', {
+    const matchingCandidate = await createNightlyCandidateFixture('user-a', {
       judgment: 'Record architecture decisions.', summary: 'Architecture decision log',
       suggestedType: 'rule',
       ...RULE_BOUNDARY,
       suggestedScope: 'architecture',
       sourceRefs: [conversationSource],
     });
-    const otherCandidate = await candidates.saveRecallCandidate('user-a', {
+    const otherCandidate = await createNightlyCandidateFixture('user-a', {
       judgment: 'Prefer concise status reports.', summary: 'Concise status habit',
       suggestedType: 'personal',
       suggestedScope: 'global',
@@ -99,7 +100,7 @@ describe('Recall source controls', () => {
 
   it('downgrades and pauses verified assets when their Evidence is removed without revoking the asset', async () => {
     const { candidates, assets, controls } = await modules();
-    const candidate = await candidates.saveRecallCandidate('user-a', {
+    const candidate = await createNightlyCandidateFixture('user-a', {
       judgment: 'Record architecture decisions.', summary: 'Architecture decision log',
       suggestedType: 'rule',
       ...RULE_BOUNDARY,

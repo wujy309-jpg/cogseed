@@ -23,6 +23,7 @@ export interface RuntimeToolResult {
 export interface RuntimeToolCallContext {
   userId: string;
   runtimeSessionId: string;
+  signal?: AbortSignal | null;
   allowedRoots: readonly string[];
   writableRoots: readonly string[];
   pcDir: string;
@@ -30,6 +31,7 @@ export interface RuntimeToolCallContext {
   allowedSkillIds?: readonly string[];
   skillVersionPins?: readonly RuntimeSkillVersionPin[];
   actionApproval?: RuntimeActionApprovalClient;
+  beforeAction?: (toolName: string, input: Record<string, unknown>, signal?: AbortSignal | null) => Promise<RuntimeToolResult | undefined>;
 }
 
 export interface RuntimeToolImplementation<TInput = Record<string, unknown>> {
@@ -268,6 +270,15 @@ function normalizeWritableRuntimePath(candidate: unknown, ctx: RuntimeToolCallCo
   return normalizeRuntimePath(String(candidate ?? ''), ctx.writableRoots);
 }
 
+function runtimeWriteFingerprint(target: string): string {
+  try {
+    const entry = fs.lstatSync(target, { bigint: true });
+    const actual = fs.statSync(target, { bigint: true });
+    return [fs.realpathSync(target), entry.dev, entry.ino, entry.size, entry.mtimeNs, entry.ctimeNs,
+      actual.dev, actual.ino, actual.size, actual.mtimeNs, actual.ctimeNs].join(':');
+  } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing'; throw error; }
+}
+
 function atomicWriteUtf8(target: string, content: string): void {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   const tmp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${Date.now()}.tmp`);
@@ -284,6 +295,13 @@ async function runWriteFile(input: { path: string; content?: string }, ctx: Runt
   try {
     const abs = normalizeWritableRuntimePath(input.path, ctx);
     const content = typeof input.content === 'string' ? input.content : '';
+    const baseline = runtimeWriteFingerprint(abs);
+    const denied = ctx.beforeAction ? await ctx.beforeAction('write_file', { path: abs, content }, ctx.signal)
+      : formatError('E_ONTOLOGY_OPERATION_PRECONDITION_UNAVAILABLE', 'current host conditions unavailable');
+    if (denied) return denied;
+    if (ctx.signal?.aborted) return formatError('E_RUNTIME_ABORTED', 'file action cancelled');
+    if (normalizeWritableRuntimePath(input.path, ctx) !== abs || runtimeWriteFingerprint(abs) !== baseline)
+      return formatError('E_RUNTIME_FILE_BASELINE_CHANGED', 'file target changed during preflight');
     atomicWriteUtf8(abs, content);
     return { content: `written path="${escapeAttr(abs)}" bytes="${Buffer.byteLength(content, 'utf8')}"` };
   } catch (err) {
@@ -306,6 +324,13 @@ async function runEditFile(input: { path: string; old_string?: string; new_strin
     const updated = input.replace_all === true
       ? current.split(oldString).join(newString)
       : current.replace(oldString, newString);
+    const baseline = runtimeWriteFingerprint(abs);
+    const denied = ctx.beforeAction ? await ctx.beforeAction('edit_file', { path: abs, content: updated }, ctx.signal)
+      : formatError('E_ONTOLOGY_OPERATION_PRECONDITION_UNAVAILABLE', 'current host conditions unavailable');
+    if (denied) return denied;
+    if (ctx.signal?.aborted) return formatError('E_RUNTIME_ABORTED', 'file action cancelled');
+    if (normalizeWritableRuntimePath(input.path, ctx) !== abs || runtimeWriteFingerprint(abs) !== baseline)
+      return formatError('E_RUNTIME_FILE_BASELINE_CHANGED', 'file target changed during preflight');
     atomicWriteUtf8(abs, updated);
     return { content: `edited path="${escapeAttr(abs)}" replacements="${input.replace_all === true ? occurrences : 1}"` };
   } catch (err) {

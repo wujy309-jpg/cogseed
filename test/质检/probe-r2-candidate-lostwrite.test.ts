@@ -100,18 +100,18 @@ describe('probe r2 › 候选池确认窗口丢写（待议项已 skip）', () =
   });
 
   // 保留 active（对照组）：无交错时不丢，修复 P-r2-1 后应持续绿。
-  it('对照组：addCandidate 先完成再确认——不丢（证明丢失是交错独有）', async () => {
+  it('对照组：旧确认writer已退役，不消费已有行或覆盖新增行', async () => {
     await seedPool(['cand-c']);
     const cands = await loadCands();
     await cands.addCandidate(UID, {
-      candidate_id: 'asset-backflow-x2',
-      kind: 'rule',
-      summary: '回流候选2',
-      memory_text: '回流内容2',
+      candidate_id: 'asset-backflow-x2', kind: 'rule', summary: '回流候选2', memory_text: '回流内容2',
     });
-    expect((await cands.confirmCandidate(UID, 'cand-c')).ok).toBe(true);
+    const before = fs.readFileSync(candidatesMd(), 'utf8');
+    expect(cands).not.toHaveProperty('confirmCandidate');
     const after = await cands.listCandidates(UID);
-    expect(after.candidate_updates.map((c) => c.candidate_id)).toEqual(['asset-backflow-x2']);
+    expect(after.candidate_updates.map(c => c.candidate_id)).toEqual(['cand-c', 'asset-backflow-x2']);
+    expect(fs.readFileSync(candidatesMd(), 'utf8')).toBe(before);
+    expect(fs.existsSync(path.join(tmpDir, UID, 'cloud', 'memory', 'USER.md'))).toBe(false);
   });
 
   // 保留 active（对比证据）：reject 全同步原子无交错窗口，修复后应持续绿。

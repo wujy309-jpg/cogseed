@@ -16803,7 +16803,6 @@ body:has(#panel-settings.active) .main-top-actions {
 .settings-group-head { margin-bottom: 14px; }
 .settings-semantica-heading,
 .settings-semantica-switch-row,
-.settings-semantica-actions,
 .settings-semantica-status-control {
   display: flex;
   align-items: center;
@@ -16818,19 +16817,6 @@ body:has(#panel-settings.active) .main-top-actions {
 .settings-semantica-switch-row > div:first-child { display: grid; gap: 3px; }
 .settings-semantica-switch-row strong { font-size: 13px; font-weight: 600; }
 .settings-semantica-switch-row span { font-size: 12px; color: var(--muted); }
-.settings-semantica-demo {
-  padding: 12px 0 2px;
-  border-top: 1px solid var(--border);
-}
-.settings-semantica-demo-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.settings-semantica-demo-head > div:first-child { display: grid; gap: 3px; }
-.settings-semantica-demo-head strong { font-size: 13px; font-weight: 600; }
-.settings-semantica-demo-head span { font-size: 12px; color: var(--muted); }
 .settings-semantica-fields {
   margin-top: 12px;
   padding-top: 14px;
@@ -16840,7 +16826,6 @@ body:has(#panel-settings.active) .main-top-actions {
 .settings-semantica-number-row > .ui-input { max-width: 140px; }
 .settings-semantica-gates { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 12px 0; }
 .settings-semantica-gate { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-2); }
-.settings-semantica-actions { justify-content: flex-start; margin: 14px 0 10px; }
 .settings-status.is-warning { color: var(--danger-hover); }
 @media (max-width: 720px) {
   .settings-semantica-number-row { align-items: stretch; flex-direction: column; }
@@ -22128,16 +22113,6 @@ body:has(#panel-settings.active) .main-top-actions {
   overflow: hidden;
 }
 
-.cognition-header > .ui-page-header { padding-inline: 0; background: transparent; }
-.cognition-header-subtitle { margin: var(--space-2) 0 0; color: var(--text-secondary); font-size: var(--font-size-3); line-height: var(--line-height-body); }
-.cognition-capture-modal { width: min(600px, calc(100vw - 32px)); }
-.cognition-capture-body { display: grid; gap: var(--space-3); }
-.cognition-capture-status { margin: 0; border-left: var(--focus-width) solid var(--status-success-text); background: var(--status-success-bg); color: var(--status-success-text); padding: var(--space-2) var(--space-3); font-size: var(--font-size-2); line-height: var(--line-height-body); }
-.cognition-capture-status-error { border-left-color: var(--status-danger-text); background: var(--status-danger-bg); color: var(--status-danger-text); }
-.cognition-capture-body label { display: grid; gap: var(--space-2); color: var(--text-secondary); font-size: var(--font-size-2); }
-.cognition-capture-body textarea { min-height: 74px; resize: vertical; line-height: var(--line-height-body); }
-.cognition-capture-note { margin: 0; border-left: var(--focus-width) solid var(--status-warning-text); background: var(--status-warning-bg); color: var(--status-warning-text); padding: var(--space-2) var(--space-3); font-size: var(--font-size-2); line-height: var(--line-height-body); }
-.cognition-capture-error { margin: 0; border: 1px solid var(--color-danger-line); background: var(--status-danger-bg); color: var(--status-danger-text); padding: var(--space-2) var(--space-3); font-size: var(--font-size-2); line-height: var(--line-height-body); }
 /* Expense workbench: dense operational surface with bounded responsive tracks. */
 .expense-workbench {
   --ew-bg: var(--surface-2, #f6f7f9);
@@ -23334,6 +23309,9 @@ body:has(#panel-settings.active) .main-top-actions {
   color: var(--muted);
   font-size: var(--font-size-1);
 }
+/* 逐行反馈（2026-10-03 待办#2）：按钮推到行尾，已反馈的行只留感谢态。 */
+.chat-recall-feedback-row { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; }
+.chat-recall-citation.is-feedback-sent .chat-recall-feedback-row .chat-recall-feedback-btn { display: none; }
 .chat-recall-citations.is-feedback-sent .chat-recall-feedback-btn { opacity: 0.55; pointer-events: none; }
 
 /* 折叠（2026-09-29 二轮）：头部即点击热区（cursor/悬停反馈在这层），箭头只是
@@ -23358,6 +23336,10 @@ body:has(#panel-settings.active) .main-top-actions {
 }
 .chat-recall-citations.is-collapsed .chat-recall-citation-list,
 .chat-recall-citations.is-collapsed .chat-recall-projection-omitted {
+  display: none;
+}
+/* 收起时只留卡头：证据提示随列表隐藏；feedback-actions 内的撤销说明是状态，保留。 */
+.chat-recall-citations.is-collapsed > .chat-recall-citations-note {
   display: none;
 }
 .chat-recall-citations.is-collapsed .chat-recall-toggle .ui-icon { transform: none; }
@@ -23795,6 +23777,35 @@ body:has(#panel-settings.active) .main-top-actions {
 
 .personal-onto-nav-section {
  display: flex; flex-direction: column;
+}
+
+/* 坏档三件套·恢复入口（P-r1-88/P-r2-7）：po 主档 / 候选池文件损坏横幅。 */
+.personal-onto-corrupt {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 8px 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-warning-text);
+  border-radius: var(--radius-2);
+  background: var(--color-warning-soft);
+}
+
+.personal-onto-corrupt-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.personal-onto-corrupt-text {
+  color: var(--color-warning-text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.personal-onto-corrupt-actions {
+  display: flex;
+  gap: 6px;
 }
 
 .personal-onto-profile-nav-section {
@@ -32967,6 +32978,29 @@ section.kb-wb-right { display: flex; flex-direction: column; min-width: 0; min-h
 .kb-glo__meta {
   color: var(--text-muted);
   font-size: var(--font-size-2);
+}
+/* 坏档三件套·恢复入口（P-r1-88）：词表文件损坏横幅（从备份恢复/重置）。 */
+.kb-glo__corrupt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-warning-text);
+  border-radius: var(--radius-2);
+  background: var(--color-warning-soft);
+}
+.kb-glo__corrupt[hidden] {
+  display: none;
+}
+.kb-glo__corrupt-text {
+  color: var(--color-warning-text);
+  font-size: var(--font-size-2);
+}
+.kb-glo__corrupt-actions {
+  display: flex;
+  gap: var(--space-1);
 }
 .kb-glo__filters {
   display: grid;

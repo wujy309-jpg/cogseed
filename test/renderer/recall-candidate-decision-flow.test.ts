@@ -224,7 +224,9 @@ describe('候选决定的收尾', () => {
 
   it('确认并限域成功后离开候选详情页，回到对应落点', () => {
     expect(adopt).toContain("router.go({ name: 'overview', assetId: promotedAssetId })");
-    expect(adopt).toContain("router.go({ name: 'review' })");
+    // 系统活动中确认就地消费回执；详情页确认定位真实正式对象。
+    expect(adopt).toContain("if (!activityRoute) router.go({ name: 'overview', assetId: promotedAssetId })");
+    expect(adopt).toContain('await verifyPromotion(result, candidateId)');
     expect(adopt).toContain("toast(T('cognition.candidate_promoted'");
     // 成功路径只有 toast 分支；scope 拦截的 alertUser 在 promote 之前 return。
     const gate = adopt.indexOf("alertUser(T('cognition.candidate_scope_required'");
@@ -232,13 +234,10 @@ describe('候选决定的收尾', () => {
   });
 
   it('在待我处理列表上做决定时不劫持页面', () => {
-    // 2026-09-16 子安口径例外：defer（稍后处理）在待我处理页内=处理完回
-    // 列表即反馈（router.go 复位列表）——守卫细化到"reject/ignore/adopt 不
-    // 劫持"，defer 的复位分支不受限。
+    // 2026-09-16 子安口径例外曾为 defer（稍后处理）放行 router 复位；defer
+    // 已整体删除（2026-10-02）——现在整段决定路径都不允许劫持页面。
     expect(decide).toContain('await NS.reload()');
-    const deferAt = decide.indexOf("if (action === 'defer')");
-    const beforeDefer = deferAt > 0 ? decide.slice(0, deferAt) : decide;
-    expect(beforeDefer).not.toContain('router.');
+    expect(decide).not.toContain('router.');
   });
 
   it('失败时弹中文、就地重画，并且不报成功', () => {
@@ -261,7 +260,7 @@ describe('候选决定的收尾', () => {
   });
 
   it('未改动的证据引用连元数据一起留住，不被压成裸 kind:id', () => {
-    expect(adopt).toContain('sourceRefs: candidate.evidenceRefs || candidate.sourceRefs || []');
+    expect(adopt).toContain('sourceRefs: candidate.sourceRefs || candidate.evidenceRefs || []');
     expect(adopt).toContain('evidenceRefs: candidate.evidenceRefs || candidate.sourceRefs || []');
     expect(adopt).toContain('Object.assign({');
   });

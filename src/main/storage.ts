@@ -215,6 +215,19 @@ export interface AtomicAppendResult<T = unknown> {
   msgIndex: number;
 }
 
+/** Options for {@link appendJsonlAtomic}. */
+export interface AtomicAppendOptions {
+  /**
+   * P-r1-87 防拼接（recall 版本流等只追加 JSONL 启用）：文件存在、非空且
+   * 末字节不是换行（云同步冲突/崩溃截断出的撕裂半行）时，先补一个换行把
+   * 撕裂行隔离成独立坏行再正常追加。不修复的话 appendFile 会把新记录直接
+   * 拼进坏行——坏行吞掉下一条合法记录（撕裂前的字节全部保留，读侧逐行
+   * 降级跳过）。默认关闭：行锁内多一次 stat+末字节读，只有需要该保证的
+   * 调用方付费。
+   */
+  repairTornTail?: boolean;
+}
+
 /**
  * Append one JSON record and return its zero-based line index atomically.
  *
@@ -222,10 +235,38 @@ export interface AtomicAppendResult<T = unknown> {
  * no "count after append" race. Used by chat/skill/agent message writers so
  * the search indexer can be told the exact position without re-scanning.
  */
-export async function appendJsonlAtomic<T>(filePath: string, record: T): Promise<AtomicAppendResult<T>> {
+export async function appendJsonlAtomic<T>(
+  filePath: string,
+  record: T,
+  options: AtomicAppendOptions = {},
+): Promise<AtomicAppendResult<T>> {
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
   const lock = _getLineLock(filePath);
   return lock.runExclusive(async () => {
+    if (options.repairTornTail) {
+      let size = 0;
+      let lastByte = 0x0a;
+      try {
+        const stat = await fsp.stat(filePath);
+        size = stat.size;
+        if (size > 0) {
+          const handle = await fsp.open(filePath, 'r');
+          try {
+            const tail = Buffer.alloc(1);
+            await handle.read(tail, 0, 1, size - 1);
+            lastByte = tail[0];
+          } finally {
+            await handle.close();
+          }
+        }
+      } catch {
+        // stat/open 失败按「无既有文件」处理：下面的 appendFile 自会建目录建文件。
+      }
+      if (size > 0 && lastByte !== 0x0a) {
+        await fsp.appendFile(filePath, '\n', 'utf8');
+        // 补的是换行不是内容行，行数缓存语义（非空行计数）不变。
+      }
+    }
     let count = _lineCounts.get(filePath);
     if (count === undefined) {
       count = await _loadLineCount(filePath);
@@ -244,6 +285,41 @@ export async function appendJsonlAtomic<T>(filePath: string, record: T): Promise
 export function invalidateLineCount(filePath: string): void {
   _lineCounts.delete(filePath);
   _lineLocks.delete(filePath);
+}
+
+/** Result of a locked whole-stream removal: whether the file existed. */
+export interface RemoveJsonlStreamResult {
+  existed: boolean;
+}
+
+/**
+ * Remove a whole JSONL stream under the same file lock as appendJsonlAtomic
+ * (P-r2-3 根治的物理层)：purge 删整流必须与在途 append 互斥——裸 fs.rm 会在
+ * 行锁排队中的 append 落地前把文件删掉，让那条 append 用 appendFile 重建流
+ * 文件（purged 资产的版本快照复活）。锁内删除后同步清掉行数缓存，下一次
+ * append 重新计数而不是复用已删文件的 stale 计数。文件不存在视为已达成
+ * 目标（清除要可重入），返回 existed=false 供调用方区分是否真的删过。
+ */
+export async function removeJsonlStream(
+  filePath: string,
+): Promise<RemoveJsonlStreamResult> {
+  const lock = _getLineLock(filePath);
+  let existed = true;
+  await lock.runExclusive(async () => {
+    try {
+      await fsp.rm(filePath);
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+        existed = false;
+        return;
+      }
+      throw error;
+    }
+    // 只清行数缓存、保留锁登记：锁表条目常驻与本仓其他文件锁同口径，
+    // 删锁反而会让排队中的等待者与新调用者分持两把锁失去互斥。
+    _lineCounts.delete(filePath);
+  });
+  return { existed };
 }
 
 /**

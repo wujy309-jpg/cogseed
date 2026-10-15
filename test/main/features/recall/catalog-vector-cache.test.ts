@@ -29,6 +29,21 @@ afterEach(() => {
 });
 
 describe('catalog vector cache', () => {
+  it('six-node closure: invalidates a changed tail and keeps full task and boundary profiles in catalog lookup', async () => {
+    const { catalogAssetProfile, catalogMatches } = await import('../../../../src/main/features/recall/catalog-relevance');
+    const cache = await import('../../../../src/main/features/recall/catalog-vector-cache');
+    const prefix = 'shared introduction '.repeat(160);
+    const profile = catalogAssetProfile({ id: 'aa-long', title: 'Project guidance', statement: prefix + 'retain the last exception',
+      applicableWhen: ['a', 'b', 'c', 'last applicable condition'], forbiddenWhen: ['x', 'y', 'last forbidden condition'] });
+    expect(profile).toContain('last applicable condition'); expect(profile).toContain('last forbidden condition');
+    await cache.catalogVectors('vectoruser', 'query', [{ id: 'aa-long', text: profile }]);
+    const changed = profile.replace('last exception', 'corrected final exception');
+    await cache.catalogVectors('vectoruser', 'query', [{ id: 'aa-long', text: changed }]);
+    expect(embeds.texts).toContain(changed);
+    const query = prefix + 'corrected final exception';
+    await catalogMatches('vectoruser', query, [{ id: 'aa-long', title: 'Project guidance', statement: changed }]);
+    expect(embeds.texts).toContain(query);
+  });
   it('reuses unchanged asset vectors, invalidates changed profiles, and prunes deleted assets', async () => {
     const cache = await import('../../../../src/main/features/recall/catalog-vector-cache');
     const first = await cache.catalogVectors('vectoruser', 'query', [{ id: 'aa-one', text: 'first private profile' }]);

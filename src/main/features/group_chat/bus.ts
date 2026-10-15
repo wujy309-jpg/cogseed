@@ -4078,9 +4078,10 @@ async function _enqueueBody(
     // `docs/plans/expert-signals-phase0-wiring-gaps.md`): cancels pending
     // silence check + extracts text-class signals (accept / correction /
     // reject / edit) against the cached last agent message. Fire-and-
-    // forget; correctionDetected return value is intentionally unused
-    // here (runner.ts:665 does its own detectUserCorrection for
-    // RunMetrics — acceptable double-judgment for v0).
+    // forget; the correctionDetected return value is unused here — the
+    // live consumer is the `correction` signal extracted inside
+    // onUserMessage itself (the runner-side RunMetrics counter it once
+    // fed was removed with the reflection-trigger subsystem).
     onUserMessage({
       uid,
       cid,
@@ -6013,7 +6014,7 @@ async function runActorTurnBody(
             // 生命周期读取失败不阻断回合——回退 automatic projection。
           }
         }
-        const taskText = String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000);
+        const taskText = String(item.sourceMessageText || item.llmPayload || '');
         const recallContext = await buildRecallTurnPromptContext(uid, {
           cid,
           taskRunId: item.turnId,
@@ -6035,7 +6036,7 @@ async function runActorTurnBody(
           recallProfileMemory = recallContext.profileMemoryEntries ?? [];
           recallAuthorizedBlock = recallContext.authorizedAssetsBlock ?? '';
           recallProfileBlock = recallContext.profileAssetsBlock ?? '';
-          const currentTaskText = String(item.sourceMessageText || item.llmPayload || '').trim().slice(0, 2_000);
+          const currentTaskText = String(item.sourceMessageText || item.llmPayload || '').trim();
           const validationTaskText = [
             recallTaskGoal,
             currentTaskText && currentTaskText !== recallTaskGoal ? `当前补充：${currentTaskText}` : '',
@@ -6102,7 +6103,7 @@ async function runActorTurnBody(
           ...recallCitations.map((citation) => citation.assetId),
           ...recallProfileMemory.map((entry) => entry.id),
         ]);
-        const catalog = await assetCatalogForPromptWithRelevance(uid, cid, Date.now(), String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000), {
+        const catalog = await assetCatalogForPromptWithRelevance(uid, cid, Date.now(), String(item.sourceMessageText || item.llmPayload || ''), {
           ...(turnProjectId ? { turnProjectId } : {}),
           ...(turnSpaceId ? { turnSpaceId } : {}),
         }, actor.id, item.turnId, attachedAssetIds);
@@ -6159,7 +6160,7 @@ async function runActorTurnBody(
           uid,
           cid,
           Date.now(),
-          String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000),
+          String(item.sourceMessageText || item.llmPayload || ''),
           experienceMounted,
           {
             agentId: actor.id,
@@ -6187,8 +6188,8 @@ async function runActorTurnBody(
       try {
         const dispatched = await buildDispatchedAssetsPromptBlock(uid, item.dispatchedAssetIds, {
           ...(actor.kind === "agent" ? { agentId: actor.id } : {}),
-          taskText: String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000),
-          purpose: String(item.sourceMessageText || item.llmPayload || '').slice(0, 2_000),
+          taskText: String(item.sourceMessageText || item.llmPayload || ''),
+          purpose: String(item.sourceMessageText || item.llmPayload || ''),
           ...(turnProjectId ? { projectId: turnProjectId } : {}),
           ...(turnSpaceId ? { workspaceId: turnSpaceId } : {}),
           ...(turnConversationKind ? { conversationKind: turnConversationKind } : {}),
@@ -6379,6 +6380,7 @@ async function runActorTurnBody(
   // 四病整改 7.0 修7): the runner emits candidate+taught-pending-review through
   // onCognitionSaveReceipt, so this turn keeps no separate teaching collector.
   const turnCognitionSaveReceipts: NonNullable<GroupMessage["cognition_save_receipts"]> = [];
+  const turnAssetUsageClaims: import('../recall/asset-usage-claim').AssetUsageClaim[] = [];
   const onArtifactCreated = (a: { id: string; title: string }) => {
     turnArtifacts.push(a);
     emit(state, {
@@ -7095,6 +7097,13 @@ async function runActorTurnBody(
           }
           turnCognitionSaveReceipts.push({ ...receipt });
         },
+        onAssetUsageClaim: (claim) => {
+          const index = turnAssetUsageClaims.findIndex((item) => item.assetId === claim.assetId && item.assetVersion === claim.assetVersion);
+          if (index >= 0) turnAssetUsageClaims[index] = { ...claim };
+          else if (turnAssetUsageClaims.length < 12) turnAssetUsageClaims.push({ ...claim });
+          else throw new Error('asset usage report limit reached');
+        },
+        suppliedAbilityAssets: recallCitations.map((citation) => ({ assetId: citation.assetId, assetVersion: citation.version })),
         // Every in-process turn reports its resolved runtime (actual
         // provider/model after override / fallback). Commander keeps its
         // existing collector; all actors also emit the live execution-config
@@ -8095,7 +8104,15 @@ async function runActorTurnBody(
   }
 
   let persistedMsg: GroupMessage | null = null;
+  let finalOutputForUsage = '';
   if (outcome.kind === "persist") {
+    finalOutputForUsage = outcome.text;
+    if (!outcome.failureKind && !errText && !aborted && turnAssetUsageClaims.length) {
+      const { countClaimsMissingFromFinalOutput } = await import('../recall/asset-usage-claim');
+      if (countClaimsMissingFromFinalOutput(turnAssetUsageClaims, finalOutputForUsage) > 0) {
+        outcome.text = [outcome.text, t('recall.usage_claim_output_missing_notice')].filter(Boolean).join('\n\n');
+      }
+    }
     // Task 5: usage/timing metrics for this settled reply. CLI turns arrive
     // fully assembled from _runCliAgentTurn (runner attaches startedAt /
     // firstTokenAt to the terminal done event); internal model turns rebuild
@@ -8314,16 +8331,45 @@ async function runActorTurnBody(
         });
       }));
     }
+    if (!outcome.failureKind && !errText && !aborted && turnAssetUsageClaims.length) {
+      try {
+        const { finalizeAssetUsageClaims } = await import('../recall/asset-usage-claim');
+        await finalizeAssetUsageClaims(uid, {
+          taskRunId: item.turnId, messageId: persistedMsg.id,
+          finalText: finalOutputForUsage, claims: turnAssetUsageClaims,
+        });
+      } catch {
+        log.warn('asset-specific adoption persistence failed; final message preserved');
+      }
+    }
+    if (!outcome.failureKind && !errText && !aborted && persistedMsg && String(outcome.text || '').includes('[[ontology:')) {
+      try {
+        const { finalizeOntologyUsageCitations } = await import('../cognition/ontology/usage-receipt');
+        await finalizeOntologyUsageCitations(uid, {
+          taskRunId: item.turnId, messageId: persistedMsg.id, finalText: String(outcome.text || ''),
+        });
+      } catch {
+        log.warn('ontology usage persistence failed; final message preserved');
+      }
+    }
     // 画像通道落账（2026-09-13 通道显式化 / 2026-09-30 修2）：回执逐条留
     // 痕；正式资产镜像（非 onto-*）同口径计入 usage——「画像不是资产」的
     // 旧口径只适用于已废弃的文件回退形态，统一入口见
     // injection-receipt.ts::recordProfileMemoryInjection。
     if (recallProfileMemory.length) {
       const { recordProfileMemoryInjection } = await import('../recall/injection-receipt');
-      await recordProfileMemoryInjection(uid, recallProfileMemory, {
-        taskRunId: item.turnId,
-        messageId: persistedMsg.id,
-      });
+      // P-r1-91 bus 侧容错：画像通道落账失败不阻断回合收尾——一条坏记录/瞬时
+      // IO 错上抛会把整批画像收据+usage 记账一起丢掉、已持久化的回合被误标
+      // failed、后面的漏取审计也被跳过。与上方 usage/回执的 allSettled、下方
+      // 漏取审计的 try/catch 同口径：warn 留痕后继续。
+      try {
+        await recordProfileMemoryInjection(uid, recallProfileMemory, {
+          taskRunId: item.turnId,
+          messageId: persistedMsg.id,
+        });
+      } catch (error) {
+        log.warn(`Recall profile-memory persistence failed cid=${cid} error=${(error as Error).message}`);
+      }
     }
     // 漏取审计（2026-09-19）：目录标了★（提示模型"这些相关"）但本回合既没
     // 注入也没被模型取用/派发的资产——每条记一条 omitted/catalog_hint 回执，
@@ -8407,6 +8453,16 @@ async function runActorTurnBody(
       status: 'dispatched',
       channel: 'projection',
     })));
+  }
+
+  if (persistedMsg && outcome.kind === 'persist' && !outcome.failureKind && !errText && !aborted) {
+    try {
+      const { checkPersistedCognitionOutput } = await import('../recall/cognition-output-check');
+      await checkPersistedCognitionOutput(uid, { cid, taskRunId: item.turnId, messageId: persistedMsg.id,
+        taskText: [recallTaskGoal, String(item.sourceMessageText || item.llmPayload || '')].filter(Boolean).join('\n') });
+    } catch {
+      log.warn('cognition result check unavailable; successful reply preserved');
+    }
   }
 
   // Ephemeral worker (anonymous run_worker, run via runNestedDispatch) is
@@ -12141,10 +12197,10 @@ async function resolveDispatchedAbilityAssets(
       return { ok: false, error: DISPATCHED_ASSET_ERRORS.unauthorized };
     }
     if (!asset) return { ok: false, error: DISPATCHED_ASSET_ERRORS.unauthorized };
-    const gate = await evaluateRecallAssetRuntimeEligibility(uid, asset, context);
+    const gate = await evaluateRecallAssetRuntimeEligibility(uid, asset, { ...context, operation: 'explicit_use' });
     // 同 attach：模型明确点名的授予不做软提示否决（"适用场景"由模型在目录里
     // 自行判断），硬闸保留。
-    const hardBlocks = gate.reasons.filter((reason) => reason !== 'not_applicable_context');
+    const hardBlocks = gate.reasons;
     if (hardBlocks.length) {
       return { ok: false, error: DISPATCHED_ASSET_ERRORS.runtimeDenied };
     }
@@ -12757,11 +12813,11 @@ async function buildCommanderExtraTools(
             ...currentRecallScope,
             purpose: reason || "model_selected",
             ...(typeof currentSourceMessageText === "string" && currentSourceMessageText
-              ? { taskText: currentSourceMessageText.slice(0, 2_000) }
+              ? { taskText: currentSourceMessageText }
               : {}),
-            silentDefaultInjection: true,
+            operation: 'explicit_use',
           });
-          const hardBlocks = gate.reasons.filter((item) => item !== "not_applicable_context");
+          const hardBlocks = gate.reasons;
           if (hardBlocks.length) return _toolError(DISPATCHED_ASSET_ERRORS.runtimeDenied);
           granted.push(asset.id);
         }

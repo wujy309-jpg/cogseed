@@ -202,4 +202,56 @@ describe('memory page entry mutations', () => {
 
     expect(vm.runInContext('_memData.user.entries', context)).toEqual([]);
   });
+
+  // P-r3-29（memory 面板错误契约）：主进程稳定错误码此前只有 blocked/empty
+  // 两条映射，字符超限等落通用「请重试」、分组四处直出英文原文。修后码表
+  // 对齐 src/main/features/memory.ts 与 personal_ontology_groups.ts 的实际
+  // 抛出值；本用例 t 返回 key 本身，可直接断言映射落点。
+  it('P-r3-29：_memErrorToText 覆盖主进程稳定错误码，未知码走 generic 不裸出英文', async () => {
+    const context = makeContext({
+      invoke: async () => ({ ok: true, files: { user: { count: 0 }, shared: { count: 0 } } }),
+    });
+    loadMemoryModule(context);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const map = (code: string) => vm.runInContext(`_memErrorToText(${JSON.stringify(code)})`, context);
+    // 既有两条映射保持不变。
+    expect(map('blocked: suspicious content (prompt-injection)')).toBe('memory.blocked_injection');
+    expect(map('empty content')).toBe('memory.error_empty');
+    // 新增码表：字符超限（headline：此前落通用文案）与其余可自救码。
+    expect(map('char_limit_exceeded')).toBe('memory.error_char_limit');
+    expect(map('reserved_separator')).toBe('memory.error_reserved_marker');
+    expect(map('reserved_metadata_marker')).toBe('memory.error_reserved_marker');
+    expect(map('old_text not found')).toBe('memory.error_old_text_stale');
+    expect(map('old_text is ambiguous')).toBe('memory.error_old_text_stale');
+    expect(map('content already exists')).toBe('memory.error_duplicate');
+    expect(map('group not found')).toBe('memory.error_group_missing');
+    expect(map('role_template_group')).toBe('memory.error_template_group');
+    // 未知码：走 generic，不把英文原文递给用户。
+    expect(map('some future code')).toBe('memory.error_generic');
+    expect(map('')).toBe('memory.error_generic');
+  });
+
+  it('P-r3-29：分组操作失败经映射出词条，四处不再直出英文错误原文', async () => {
+    const toasts: Array<{ text: string; kind: string }> = [];
+    const base = makeContext({
+      invoke: async (channel: string) => {
+        if (channel === 'memory.exportInfo') return { ok: true, files: { user: { count: 0 }, shared: { count: 0 } } };
+        if (channel === 'personalOntology.groups.create') return { ok: false, error: 'group not found' };
+        return { ok: false, error: 'group not found' };
+      },
+    });
+    // makeContext 不透传 uiToast/uiPrompt 覆写口，这里在同一 context 上替换。
+    (base as any).uiToast = (text: string, kind: string) => { toasts.push({ text, kind }); };
+    (base as any).uiPrompt = async () => '新分组';
+    loadMemoryModule(base);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await vm.runInContext(`(async () => {
+      _memGroups = [];
+      await _memCreateGroup();
+    })()`, base);
+    // 旧实现 toast 直出 'group not found' 英文原文；修后走映射词条（t 返回 key）。
+    expect(toasts.length).toBe(1);
+    expect(toasts[0].text).toBe('memory.error_group_missing');
+    expect(toasts[0].kind).toEqual({ variant: 'error' });
+  });
 });

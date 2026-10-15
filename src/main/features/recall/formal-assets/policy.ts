@@ -38,6 +38,8 @@ import type { FormalAssetMaturity, FormalAssetStatus } from './types';
 /** 策略判断需要的最小资产形状。用结构类型而不是完整记录，
  *  这样 runtime / UI / 证明链都能直接喂进来。 */
 export interface AssetPolicyInput {
+  /** 主进程核对真实个人记忆确认回执后提供；不是由模型或资产字段直接声明。 */
+  defaultUseAuthorized?: boolean;
   status: FormalAssetStatus;
   maturity: FormalAssetMaturity;
   lifecycleStatus?: RecallAbilityAssetLifecycleStatus;
@@ -76,7 +78,7 @@ export function isTransferVerified(asset: Pick<AssetPolicyInput, 'maturity'>): b
  * 成熟度 → 基础档位，再叠加跨作用域确认。
  *
  * 返回值语义：
- *   never    不得注入
+ *   never    不得自动注入（按需查阅／明确选用由 runtime 的操作契约判定）
  *   confirm  需要用户逐次确认
  *   prompt   可以提示，但不静默默认注入
  *   auto     可在同作用域权限内默认注入
@@ -85,6 +87,11 @@ export function resolveAssetUsePolicy(
   asset: AssetPolicyInput,
   sameScope: boolean,
 ): AbilityAssetUsePolicy {
+  // 明确保存个人记忆的用户授权可以允许范围内默认使用，
+  // 但不把成熟度或效果证明升档。seed 不通过这条历史兼容授权。
+  if (asset.defaultUseAuthorized && isUserConfirmed(asset) && asset.status === 'active' && asset.maturity !== 'seed') {
+    return sameScope ? 'auto' : asset.crossScopeConfirmedAt ? 'prompt' : 'confirm';
+  }
   const base = resolveDefaultUsePolicy(
     { status: asset.status, maturity: asset.maturity },
     sameScope,

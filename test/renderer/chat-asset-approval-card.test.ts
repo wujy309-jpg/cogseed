@@ -100,6 +100,15 @@ function fakePort(result: unknown) {
   return { invoke: vi.fn(async () => result), alert: vi.fn(async () => {}) };
 }
 
+/** 手控 promise：让 `recall.assets.approval.read` 想多晚回来就多晚回来，
+ *  才能摆出「用户已经处置、hydrate 结果才迟到」的竞态。 */
+function deferred<T = unknown>() {
+  let settled!: (value: T) => void;
+  let failed!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolve, reject) => { settled = resolve; failed = reject; });
+  return { promise, resolve: settled, reject: failed };
+}
+
 beforeEach(() => {
   warnCalls.length = 0;
   root.cogseed = { invoke: vi.fn(async () => ({ ok: true })) };
@@ -179,6 +188,26 @@ describe('chat asset approval card — 渲染', () => {
     expect(el.innerHTML).toContain(payloadFixture().diff.before);
     expect(el.innerHTML).toContain('AI 自主判断发起');
   });
+
+  // 2026-09-30 质检（F-r1-22）：AI 提议改 tags 走审批卡，但 FIELD_LABELS 没有
+  // tags 条目，字段标签裸显英文键名（四语用户都看到「tags」）。
+  it('AI 提议改 tags 时字段标签走词条，不裸显键名（2026-09-30 质检）', () => {
+    const el = fakeCard();
+    card.render(el, payloadFixture({
+      diff: { before: 'tags=2 项', after: 'tags=3 项', fields: ['tags'] },
+    }), viewFixture({
+      proposed: { tags: ['沟通', '决策'] },
+      current: { tags: ['沟通'] },
+    }));
+    // 四语词条存在（zh 在这里直接取用；en/ja/pt 由 cognition-i18n-coverage 门禁钉住）。
+    expect(locale['cognition.asset_edit_field_tags']).toBe('标签');
+    // 上屏标签与可编辑控件的 aria-label 都用译文，而不是裸键名。
+    expect(el.innerHTML).toContain('chat-asset-approval-label">标签</span>');
+    expect(el.innerHTML).toContain('aria-label="标签"');
+    expect(el.innerHTML).not.toContain('chat-asset-approval-label">tags</span>');
+    // tags 是字符串数组：照常作为可编辑字段渲染。
+    expect(el.innerHTML).toContain('data-asset-approval-field="tags"');
+  });
 });
 
 describe('chat asset approval card — 编辑回传', () => {
@@ -214,16 +243,24 @@ describe('chat asset approval card — 编辑回传', () => {
     expect(el.innerHTML).toContain('已按你确认的内容生效（v4）');
   });
 
-  it('版本重检不一致：卡片保持待处理并说明，不静默套用', async () => {
+  it('版本重检不一致：冲突即作废（P-r1-74）——卡片落作废终态并说明会重提，不再可确认', async () => {
     const el = fakeCard([]);
     card.render(el, payloadFixture(), viewFixture());
-    const port = fakePort({ ok: false, versionConflict: { baselineVersion: '3', currentVersion: '5' } });
+    const port = fakePort({ ok: false, state: 'superseded', versionConflict: { baselineVersion: '3', currentVersion: '5' } });
     await card.resolve(el, payloadFixture(), 'confirm', port);
 
-    expect(el.dataset.status).toBe('pending');
+    // 卡片落作废终态：没有再让用户「重新看一眼再决定」的死路按钮。
+    expect(el.dataset.status).toBe('superseded');
     expect(el.dataset.busy).toBe('');
-    expect(el.innerHTML).toContain('data-asset-approval-action="confirm"');
+    expect(el.innerHTML).not.toContain('data-asset-approval-action="confirm"');
+    expect(el.innerHTML).toContain(locale['recall.asset_approval.tag_superseded']);
+    expect(el.innerHTML).toContain(locale['recall.asset_approval.state_superseded']);
     expect(String(port.alert.mock.calls[0][0])).toContain('v3 → v5');
+    // 弹窗文案与词条同源：把 {a}/{b} 替换成同样的版本号后应完全一致。
+    const expectedAlert = locale['recall.asset_approval.version_conflict_superseded']
+      .split('{a}').join('3')
+      .split('{b}').join('5');
+    expect(String(port.alert.mock.calls[0][0])).toContain(expectedAlert);
   });
 
   it('处置失败如实说，不吞', async () => {
@@ -232,6 +269,66 @@ describe('chat asset approval card — 编辑回传', () => {
     const port = fakePort({ ok: false, error: 'proposal not found' });
     await card.resolve(el, payloadFixture(), 'reject', port);
     expect(String(port.alert.mock.calls[0][0])).toContain('proposal not found');
+    // P-r1-73（双层模板）：「处置失败：」前缀只包一次——旧实现 throw 里先包
+    // 一层、catch 再包一层，用户看到「处置失败：处置失败：」。
+    expect(String(port.alert.mock.calls[0][0])).not.toContain('处置失败：处置失败');
+  });
+
+  it('P-r1-73：已处置回执——卡片落终态不再可点、回执 message 不丢、提示单层', async () => {
+    const el = fakeCard([]);
+    card.render(el, payloadFixture(), viewFixture());
+    const port = fakePort({ ok: false, state: 'rejected', message: '这条提议已经处置过了。' });
+    await card.resolve(el, payloadFixture(), 'reject', port);
+    // 卡片按回执终态收口：dataset.status=rejected，按钮不再渲染（可再点=反复报错）。
+    expect(el.dataset.status).toBe('rejected');
+    expect(el.dataset.busy).toBe('');
+    expect(el.innerHTML).not.toContain('data-asset-approval-action="confirm"');
+    expect(el.innerHTML).not.toContain('data-asset-approval-action="reject"');
+    // message 不丢（旧实现读不存在的 result.error，弹的是「处置失败：」空尾巴），
+    // 且「处置失败：」只包一层。
+    const alertText = String(port.alert.mock.calls[0][0]);
+    expect(alertText).toContain('这条提议已经处置过了。');
+    expect(alertText).not.toContain('处置失败：处置失败');
+  });
+
+  it('P-r1-73：并发补偿回滚回执——state 与差异化 message 都如实呈现', async () => {
+    const el = fakeCard([]);
+    card.render(el, payloadFixture(), viewFixture());
+    const rollbackMessage = '这条提议在你确认的同时已被拒绝，刚应用的内容已按提议前的值回滚。';
+    const port = fakePort({ ok: false, state: 'rejected', message: rollbackMessage });
+    await card.resolve(el, payloadFixture(), 'confirm', port);
+    expect(el.dataset.status).toBe('rejected');
+    // 回滚说明有安全语义（内容已回滚），不能一刀切成「已经处置过了」。
+    expect(String(port.alert.mock.calls[0][0])).toContain(rollbackMessage);
+    expect(String(port.alert.mock.calls[0][0])).not.toContain('处置失败：处置失败');
+  });
+
+  it('P-r2-37：弹框机制自身同步抛错不升级——留痕后正常返回，处置流程不被二次炸掉', async () => {
+    const el = fakeCard([]);
+    card.render(el, payloadFixture(), viewFixture());
+    root.cogseed = { invoke: vi.fn(async () => ({ ok: false, error: 'decision channel down' })) };
+    root.uiAlert = () => { throw new Error('alert mechanism broken'); };
+    try {
+      // 旧实现：alertUser 同步 throw → resolve 的 catch 再弹一次又 throw →
+      // 冒到 void 调用点成 unhandled rejection。修后：机制失败只留痕。
+      await expect(card.resolve(el, payloadFixture(), 'reject')).resolves.toBeUndefined();
+      expect(warnCalls.some((args) => String(args[0]).includes('uiAlert threw'))).toBe(true);
+    } finally {
+      delete root.uiAlert;
+    }
+  });
+
+  it('P-r2-37：uiAlert 返回 rejected promise 同样兜住（.catch 全兜底半边）', async () => {
+    const el = fakeCard([]);
+    card.render(el, payloadFixture(), viewFixture());
+    root.cogseed = { invoke: vi.fn(async () => ({ ok: false, error: 'decision channel down' })) };
+    root.uiAlert = async () => { throw new Error('alert async broken'); };
+    try {
+      await expect(card.resolve(el, payloadFixture(), 'reject')).resolves.toBeUndefined();
+      expect(warnCalls.some((args) => String(args[0]).includes('uiAlert threw'))).toBe(true);
+    } finally {
+      delete root.uiAlert;
+    }
   });
 });
 
@@ -281,5 +378,129 @@ describe('chat asset approval card — 挂载', () => {
     expect(second).toBe(first);
     expect(host.children.length).toBe(1);
     expect(root.cogseed.invoke).toHaveBeenCalledTimes(1);
+  });
+
+  // 2026-09-30 质检（F-r1-21）：then/catch 回调此前无条件 render——用户已确认/已拒绝
+  // 的终态卡被迟到的 read 复活回 pending、按钮重新可点；处置进行中（busy）也被打断。
+  // 守卫口径与 conversation.js 的 kstar 复查卡一致：正忙或不待处理时不插手。
+  it('处置进行中（busy）：迟到的 read 不把卡重渲染、还原成可点', async () => {
+    const host = fakeHost();
+    root.document = { createElement: () => fakeCard() };
+    const readGate = deferred();
+    const decideGate = deferred();
+    root.cogseed = {
+      invoke: vi.fn((channel: string) => (
+        channel === 'recall.assets.approval.read' ? readGate.promise : decideGate.promise
+      )),
+    };
+    const el = card.mount(host, payloadFixture());
+    // 用户点了「保存更新」，decide 还挂起：卡片处于 busy。
+    const settling = card.resolve(el, payloadFixture(), 'confirm');
+    expect(el.dataset.busy).toBe('1');
+    // read 这时才回来（载荷齐全、状态 pending）：不许趁乱重渲染。
+    readGate.resolve({ proposal: recordFixture({ state: 'pending' }) });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(el.innerHTML).not.toContain('data-asset-approval-field');
+    decideGate.resolve({ ok: true, state: 'confirmed', appliedVersion: '4' });
+    await settling;
+    expect(el.dataset.status).toBe('confirmed');
+    expect(el.innerHTML).not.toContain('data-asset-approval-action');
+  });
+
+  it('已处置成终态（rejected）：迟到的 read 不把卡复活回 pending', async () => {
+    const host = fakeHost();
+    root.document = { createElement: () => fakeCard() };
+    const readGate = deferred();
+    root.cogseed = {
+      invoke: vi.fn((channel: string) => (
+        channel === 'recall.assets.approval.read' ? readGate.promise : Promise.resolve({ ok: true })
+      )),
+    };
+    const el = card.mount(host, payloadFixture());
+    // 用户已点了「拒绝」并落定：卡片是终态。
+    const port = fakePort({ ok: true, state: 'rejected' });
+    await card.resolve(el, payloadFixture(), 'reject', port);
+    expect(el.dataset.status).toBe('rejected');
+    // 迟到的 read 又回来说 pending：不许复活、按钮不许再点。
+    readGate.resolve({ proposal: recordFixture({ state: 'pending' }) });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(el.dataset.status).toBe('rejected');
+    expect(el.innerHTML).not.toContain('data-asset-approval-action');
+  });
+
+  it('已处置成终态（confirmed）：迟到的 read 失败也不把卡打回 pending', async () => {
+    const host = fakeHost();
+    root.document = { createElement: () => fakeCard() };
+    const readGate = deferred();
+    root.cogseed = {
+      invoke: vi.fn((channel: string) => (
+        channel === 'recall.assets.approval.read' ? readGate.promise : Promise.resolve({ ok: true })
+      )),
+    };
+    const el = card.mount(host, payloadFixture());
+    const port = fakePort({ ok: true, state: 'confirmed', appliedVersion: '4' });
+    await card.resolve(el, payloadFixture(), 'confirm', port);
+    expect(el.dataset.status).toBe('confirmed');
+    readGate.reject(new Error('late ipc failure'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(warnCalls.length).toBeGreaterThan(0);
+    expect(el.dataset.status).toBe('confirmed');
+    expect(el.innerHTML).not.toContain('data-asset-approval-action');
+    expect(el.innerHTML).not.toContain(locale['recall.asset_approval.read_failed']);
+  });
+
+  // P-r2-18（2026-10-01 待议拍板：守卫命中暂存回放）：busy 窗口内到达的 read
+  // 结果此前被守卫直接丢弃——处置失败回 pending 的卡片从此停在只有标题、
+  // 无内容、无提示、按钮可点的骨架态（空壳卡事故的竞态复活形态）。拍板修法
+  // =守卫命中暂存，处置失败回滚时回放；处置成功落终态则暂存作废不回放。
+  it('busy 窗口内到达的 hydrate 被暂存：处置失败回 pending 后回放，卡片不再停在骨架态（P-r2-18）', async () => {
+    const host = fakeHost();
+    root.document = { createElement: () => fakeCard() };
+    const readGate = deferred();
+    const decideGate = deferred();
+    root.cogseed = {
+      invoke: vi.fn((channel: string) => (
+        channel === 'recall.assets.approval.read' ? readGate.promise : decideGate.promise
+      )),
+    };
+    const el = card.mount(host, payloadFixture());
+    // 用户点了「保存更新」，decide 挂起：卡片处于 busy。
+    const settling = card.resolve(el, payloadFixture(), 'confirm');
+    expect(el.dataset.busy).toBe('1');
+    // read 在 busy 窗口内回来（载荷齐全、状态 pending）：不渲染但暂存。
+    readGate.resolve({ proposal: recordFixture({ state: 'pending' }) });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(el.innerHTML).not.toContain('data-asset-approval-field');
+    expect(el._assetApprovalPendingHydration).toBeTruthy();
+    // decide 失败：卡片回 pending，此刻回放暂存的拟生效内容。
+    decideGate.resolve({ ok: false, error: 'write failed' });
+    await settling;
+    expect(el.dataset.busy).toBe('');
+    expect(el.dataset.status).toBe('pending');
+    expect(el.innerHTML).toContain('<textarea');
+    expect(el.innerHTML).toContain(LONG_TEXT.slice(0, 60));
+    expect(el._assetApprovalPendingHydration).toBeFalsy();
+  });
+
+  it('busy 窗口内暂存的 hydrate 在处置成功后作废：终态卡不回放（P-r2-18）', async () => {
+    const host = fakeHost();
+    root.document = { createElement: () => fakeCard() };
+    const readGate = deferred();
+    const decideGate = deferred();
+    root.cogseed = {
+      invoke: vi.fn((channel: string) => (
+        channel === 'recall.assets.approval.read' ? readGate.promise : decideGate.promise
+      )),
+    };
+    const el = card.mount(host, payloadFixture());
+    const settling = card.resolve(el, payloadFixture(), 'reject');
+    readGate.resolve({ proposal: recordFixture({ state: 'pending' }) });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(el._assetApprovalPendingHydration).toBeTruthy();
+    decideGate.resolve({ ok: true, state: 'rejected' });
+    await settling;
+    expect(el.dataset.status).toBe('rejected');
+    expect(el.innerHTML).not.toContain('data-asset-approval-action');
+    expect(el._assetApprovalPendingHydration).toBeFalsy();
   });
 });

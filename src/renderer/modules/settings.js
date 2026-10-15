@@ -55,7 +55,6 @@ let _settingsState = {
   ccswitchPreviewGeneration: 0,
   ccswitchPreviewBound: false,
   semantica: null,
-  semanticaDemo: null,
   semanticaBusy: false,
 };
 
@@ -157,7 +156,6 @@ function _settingsSemanticaText(key, fallback) {
 async function _settingsRefreshSemantica() {
   const res = await window.cogseed.invoke('semantica.settings.get');
   _settingsState.semantica = res && res.ok && res.settings ? res.settings : null;
-  _settingsState.semanticaDemo = res && res.ok && res.demo ? res.demo : null;
 }
 
 function _settingsSemanticaStatusLabel(kind) {
@@ -192,43 +190,10 @@ async function _settingsSaveSemantica(host, patch) {
   }
 }
 
-async function _settingsRunSemanticaDemo(action) {
-  if (_settingsState.semanticaBusy) return;
-  _settingsState.semanticaBusy = true;
-  const channel = action === 'clear' ? 'semantica.demo.clear' : 'semantica.demo.seed';
-  const status = document.getElementById('settings-semantica-demo-action-status');
-  const button = document.getElementById(action === 'clear'
-    ? 'settings-semantica-demo-clear'
-    : 'settings-semantica-demo-seed');
-  if (button) button.disabled = true;
-  if (status) status.textContent = _settingsSemanticaText('settings.semantica.demo.working', 'Working...');
-  try {
-    const res = await window.cogseed.invoke(channel);
-    if (!res || !res.ok || !res.status) throw new Error((res && res.error) || 'demo action failed');
-    _settingsState.semanticaDemo = res.status;
-    _settingsRenderSemantica();
-    const nextStatus = document.getElementById('settings-semantica-demo-action-status');
-    if (nextStatus) nextStatus.textContent = action === 'clear'
-      ? _settingsSemanticaText('settings.semantica.demo.clear_success', 'Demo assets removed')
-      : _settingsSemanticaText('settings.semantica.demo.seed_success', 'Demo assets ready');
-  } catch (err) {
-    _settingsLog.warn('semantica demo action failed', { action, error: (err && err.message) || String(err) });
-    if (status) status.textContent = _settingsSemanticaText('settings.semantica.demo.failure', 'Operation failed');
-    if (button) button.disabled = false;
-  } finally {
-    _settingsState.semanticaBusy = false;
-  }
-}
-
 function _settingsRenderSemantica() {
   const host = document.getElementById('settings-semantica-host');
   if (!host) return;
   const s = _settingsState.semantica || { semanticaEnabled: false, semanticaStatus: 'disabled' };
-  const demo = _settingsState.semanticaDemo || { ready: false, assetCount: 0, expectedAssetCount: 14 };
-  const semanticaAvailable = !!s.semanticaEnabled;
-  const demoStatus = demo.ready
-    ? _settingsSemanticaText('settings.semantica.demo.ready', 'Ready')
-    : `${demo.assetCount || 0}/${demo.expectedAssetCount || 14}`;
   host.innerHTML = `
     <div class="settings-group ui-settings-section settings-semantica-group">
       <div class="settings-group-head settings-semantica-heading">
@@ -242,27 +207,11 @@ function _settingsRenderSemantica() {
         <div><strong>Semantica</strong><span>${escapeHtml(_settingsSemanticaText('settings.semantica.toggle_sub', 'Enable ontology-driven ability asset queries.'))}</span></div>
         ${uiSwitch({ id: 'settings-semantica-enabled', label: 'Semantica', checked: !!s.semanticaEnabled })}
       </div>
-      <div class="settings-semantica-demo">
-        <div class="settings-semantica-demo-head">
-          <div>
-            <strong>${escapeHtml(_settingsSemanticaText('settings.semantica.demo.title', 'Acceptance demo assets'))}</strong>
-            <span>${escapeHtml(_settingsSemanticaText('settings.semantica.demo.sub', 'Create 14 governed assets across three scenarios for relation-query and reuse testing.'))}</span>
-          </div>
-          <span class="settings-status">${escapeHtml(demoStatus)}</span>
-        </div>
-        <div class="settings-semantica-actions">
-          ${uiButton({ label: _settingsSemanticaText('settings.semantica.demo.seed', 'Initialize demo assets'), role: 'primary', attrs: { id: 'settings-semantica-demo-seed' }, disabled: !semanticaAvailable || !!demo.ready })}
-          ${uiButton({ label: _settingsSemanticaText('settings.semantica.demo.clear', 'Remove demo assets'), attrs: { id: 'settings-semantica-demo-clear' }, disabled: !semanticaAvailable || !(demo.assetCount > 0) })}
-          <span class="settings-status" id="settings-semantica-demo-action-status"></span>
-        </div>
-      </div>
     </div>`;
   const semanticaSwitch = host.querySelector('#settings-semantica-enabled');
   semanticaSwitch?.addEventListener('click', () => _settingsSaveSemantica(host, {
     semanticaEnabled: semanticaSwitch.getAttribute('aria-checked') !== 'true',
   }));
-  host.querySelector('#settings-semantica-demo-seed')?.addEventListener('click', () => _settingsRunSemanticaDemo('seed'));
-  host.querySelector('#settings-semantica-demo-clear')?.addEventListener('click', () => _settingsRunSemanticaDemo('clear'));
 }
 
 // ── Native task notifications ──
@@ -447,11 +396,31 @@ function _settingsRenderLocalExec() {
 async function _settingsRefreshMetacognition() {
   try {
     const res = await window.cogseed.invoke('prefs.getMetacognition');
-    _settingsState.metacognition = (res && res.ok)
-      ? { enabled: !!res.enabled, envForcedOff: !!res.envForcedOff }
-      : { enabled: true, envForcedOff: false };
-  } catch (_) {
+    if (res && res.ok) {
+      _settingsState.metacognition = { enabled: !!res.enabled, envForcedOff: !!res.envForcedOff };
+    } else {
+      // P-r3-42（2026-10-02 与写路径对称）：读回执不带 ok——此前与 throw 半边
+      // 一样静默回默认开。失败留日志+遥测（写路径的 rejected 分支同款），
+      // UI 形态不变（回默认开是既有兜底行为，卡上决策不加 readFailed 态）。
+      _settingsState.metacognition = { enabled: true, envForcedOff: false };
+      _settingsLog.warn('getMetacognition rejected', res);
+      _settingsTrackEvent('metacognition_read_result', { result: 'failure' });
+      _settingsTrackError('metacognition_read', {
+        error_type: 'operation',
+        error_message: 'metacognition_read_rejected',
+      });
+    }
+  } catch (err) {
+    // P-r3-42：读偏好失败此前连错误对象都不留（catch (_) 直接吞），UI 无线索
+    // 回退默认开——对照同域写失败有日志+遥测+回滚三件套。只补日志+遥测
+    // 让失败可查，不改 UI 形态。
     _settingsState.metacognition = { enabled: true, envForcedOff: false };
+    _settingsLog.warn('getMetacognition failed', err);
+    _settingsTrackEvent('metacognition_read_result', { result: 'failure' });
+    _settingsTrackError('metacognition_read', {
+      error_type: 'operation',
+      error_message: (err && err.message) || 'metacognition_read_failed',
+    });
   }
 }
 
