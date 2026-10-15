@@ -256,7 +256,7 @@ registerDeferred('marketplace:fork-recovery', async () => {
 import { withCommonHeaders } from './api_common';
 import { requireCogSeedApiBase } from './api_base';
 import { getLanguage } from './config';
-import { invalidateSkills as invalidateCoreAgentSkills } from '../model/core-agent/skill-registry';
+import { invalidateSkills as invalidateCoreAgentSkills, listSkillSpecsForUser } from '../model/core-agent/skill-registry';
 import {
   getSkillCacheDir, getSkillCacheDirForUser, isCacheFresh, isCacheFreshForUser,
   readAgentCache, readAgentCacheForUser, touchCacheEntry, touchCacheEntryForUser,
@@ -1197,6 +1197,22 @@ export interface AgentInstallPlanView {
  * 私有 Skill 的名字来自包本身（`_fetchAgentPrivateSkillsBundle` 走缓存，安装时不会再下一遍）；
  * Hub Skill 的显示名取目录元数据，取不到时退回 id，不让预览因此失败。
  */
+/**
+ * 安装预览里一项依赖的显示名。
+ * - `builtin:`：去掉前缀；
+ * - 要下载安装（`install`）：本机还没有，只能问目录；
+ * - 其它（复用 / 随包 / 被阻断）：技能就在本机，先读本机的名字，读不到再问目录，最后才回退成编号。
+ *   此前只有 `install` 会查名字，所以"复用"的技能一律显示成 12 位编号。
+ */
+export async function planItemDisplayName(
+  item: { id: string; kind: string; action: string },
+  lookups: { local: (id: string) => Promise<string>; catalog: (id: string) => Promise<string> },
+): Promise<string> {
+  if (item.kind === 'builtin') return item.id.replace(/^builtin:/, '');
+  if (item.action === 'install') return (await lookups.catalog(item.id)) || item.id;
+  return (await lookups.local(item.id)) || (await lookups.catalog(item.id)) || item.id;
+}
+
 export async function previewAgentInstallPlan(agentId: string, expect: MarketplaceFreshness): Promise<AgentInstallPlanView> {
   if (!agentId) throw new Error('agentId required');
   let agentName: string;
@@ -1242,15 +1258,22 @@ export async function previewAgentInstallPlan(agentId: string, expect: Marketpla
     skillList, privateIds, (id) => _localSkillStateForUser(getActiveUserId(), id),
     (name) => builtinCapabilityAvailable(getActiveUserId(), name, currentAppVersion()),
   );
-  const items = await Promise.all(plan.items.map(async (item) => {
-    let name = item.id;
-    if (item.action === 'install') {
-      try { name = (await getSkillMetadata(item.id))?.name || item.id; } catch { /* 取不到名字不影响预览 */ }
-    } else if (item.kind === 'builtin') {
-      name = item.id.replace(/^builtin:/, '');
+  // 本机已装技能的名字只读一次（"复用"的技能就在本机，预览里应显示名字而不是编号）。
+  let localNames: Map<string, string> | null = null;
+  const localName = async (id: string): Promise<string> => {
+    if (!localNames) {
+      try { localNames = new Map((await listSkillSpecsForUser(getActiveUserId())).map((spec) => [spec.id, spec.name])); }
+      catch { localNames = new Map(); }
     }
-    return { ...item, name };
-  }));
+    return localNames.get(id) || '';
+  };
+  const catalogName = async (id: string): Promise<string> => {
+    try { return (await getSkillMetadata(id))?.name || ''; } catch { return ''; /* 取不到名字不影响预览 */ }
+  };
+  const items = await Promise.all(plan.items.map(async (item) => ({
+    ...item,
+    name: await planItemDisplayName(item, { local: localName, catalog: catalogName }),
+  })));
   return { items, readiness: agentReadiness(plan), appUpdateRequired, minAppVersion };
 }
 
