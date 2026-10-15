@@ -2747,7 +2747,11 @@ async function promoteRecallCandidateWithGrant(
         ...(candidate.spaceId ? { spaceId: candidate.spaceId } : {}),
         status: 'active',
         lifecycleStatus: handoffLifecycleStatus,
-        maturity: handoffActor === 'system' ? 'seed' : 'bud',
+        // 2026-10-15 拍板（待拍板①·方案A）：系统线也直接建 bud。seed→usePolicy
+        // never→不注入→无验证回执 的环没有系统侧出口（自动线资产永久死锁）；未验
+        // 证语义由 lifecycleStatus=automatically_extracted_unverified 承担，个人
+        // 事实特权口仍被 lifecycleStatus 闸住（prompt-injection/standing-preference）。
+        maturity: 'bud',
         version: '1',
         ...(sourceSessionIds.length ? { sourceSessionIds } : {}),
         createdAt: now,

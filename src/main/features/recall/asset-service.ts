@@ -200,7 +200,9 @@ function proofGuidanceIdentity(asset: RecallAbilityAssetRecord): unknown {
 }
 function resetChangedGuidanceOutcomes(current: RecallAbilityAssetRecord, next: RecallAbilityAssetRecord): RecallAbilityAssetRecord {
   if (isDeepStrictEqual(proofGuidanceIdentity(current), proofGuidanceIdentity(next))) return next;
-  next.maturity = next.lifecycleStatus === 'user_confirmed_unverified' ? 'bud' : 'seed';
+  // 重置只清验证计数与推荐，成熟度统一降回 bud（不回 seed——那会重新进入
+  // usePolicy never 的死锁，2026-10-15 待拍板①同拍板）。
+  next.maturity = 'bud';
   next.validationCount = 0; next.consecutiveFailures = 0;
   delete next.lastValidatedAt;
   delete next.recommendedAction; delete next.recommendationReason; delete next.recommendationAt;
@@ -711,9 +713,10 @@ export async function createAbilityAsset(
   }
   // 出身收敛（2026-09-20）：lifecycle 不再有 actor 分支门（此前 system actor
   // 只许自动线两值）——模型记下来的=已确定，唯一新写入值 user_confirmed_
-  // unverified；maturity 门保留（system 创建仍走 seed 档）。
-  const expectedMaturity = metadata.actor === 'system' ? 'seed' : 'bud';
-  if (validated.maturity !== expectedMaturity || validated.version !== '1') {
+  // unverified。2026-10-15 拍板（待拍板①·方案A）：maturity 门同步取消 actor
+  // 分支——system 创建 seed → usePolicy never → 不注入 → 无验证回执的环没有
+  // 系统侧出口（自动线资产永久死锁）；未验证语义由 lifecycleStatus 承担。
+  if (validated.maturity !== 'bud' || validated.version !== '1') {
     throw new Error('invalid initial ability asset lifecycle');
   }
   // 执行类证据写入前解析（2026-09-18 乙档）：查无复盘记录的证据如实标
