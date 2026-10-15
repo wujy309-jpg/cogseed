@@ -106,15 +106,6 @@ xterm.js (xterm.js, xterm.css, addon-fit.js)
     (c) the xterm.js authors and Source/contributors, https://xtermjs.org/
     License: MIT
 
-d3-force 3.0.0 (d3-force.min.js, with d3-quadtree 3.0.1, d3-dispatch 3.0.1, d3-timer 3.0.1)
-    Copyright (c) 2010-2021 Mike Bostock, https://d3js.org/d3-force/
-    Source: https://cdn.jsdelivr.net/npm/d3-force@3.0.0/dist/d3-force.min.js
-    License: ISC
-    License text: third_party_licenses/d3-force/LICENSE.md
-    CogSeed vendors the unmodified UMD distributions for offline Renderer use;
-    they are loaded on demand by the ontology relation graph and only compute
-    node positions (rendering stays in CogSeed's own SVG layer).
-
 Chart.js 4.5.1 (chart.umd.min.js)
     Copyright (c) 2014-2024 Chart.js Contributors
     Source: https://www.npmjs.com/package/chart.js/v/4.5.1

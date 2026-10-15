@@ -9,13 +9,10 @@ import {
   respondActionApproval,
 } from '../../../../src/main/features/action_approval';
 
-const { resolveRuntimeCapabilities, runMessagingHostTool, shouldAutoApproveRuntimeAction, cogseedControlService, readTask, readSession, runDesktopConnectorTool } = vi.hoisted(() => ({
+const { resolveRuntimeCapabilities, runMessagingHostTool, shouldAutoApproveRuntimeAction, cogseedControlService } = vi.hoisted(() => ({
   resolveRuntimeCapabilities: vi.fn(),
   runMessagingHostTool: vi.fn(),
   shouldAutoApproveRuntimeAction: vi.fn(),
-  readTask: vi.fn(),
-  readSession: vi.fn(),
-  runDesktopConnectorTool: vi.fn(),
   cogseedControlService: {
     retryStep: vi.fn(),
     skipStep: vi.fn(),
@@ -23,16 +20,6 @@ const { resolveRuntimeCapabilities, runMessagingHostTool, shouldAutoApproveRunti
     workflow: vi.fn(),
   },
 }));
-
-vi.mock('../../../../src/main/features/cogseed_backend/task-store', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../../../../src/main/features/cogseed_backend/task-store')>(),
-  readCogSeedTaskByRequestId: readTask,
-}));
-vi.mock('../../../../src/main/features/cogseed_backend/session-store', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../../../../src/main/features/cogseed_backend/session-store')>(),
-  readCogSeedSession: readSession,
-}));
-vi.mock('../../../../src/main/features/cogseed_backend/desktop-connectors', () => ({ runDesktopConnectorTool }));
 
 vi.mock('../../../../src/main/features/cogseed_backend/messaging-capability-policy', () => ({
   resolveRuntimeCapabilities,
@@ -50,11 +37,6 @@ vi.mock('../../../../src/main/features/cogseed_backend/cogseed-control-service',
 const context: any = { request: { user_id: 'router-user', request_id: 'req-parent', runtime_session_id: 'mruntime-parent', read_only_roots: ['/tmp'], writable_roots: ['/tmp'], working_dir: '/tmp' }, signal: new AbortController().signal };
 
 beforeEach(() => {
-  readTask.mockReset().mockResolvedValue({ taskId: 'task-parent', sessionId: 'cogseed-session-parent',
-    runtimeSessionId: 'mruntime-parent', task: 'Use the host tools' });
-  readSession.mockReset().mockResolvedValue({ ownerId: 'router-user', lifecycleState: 'active',
-    runtimeSessionId: 'mruntime-parent', activeTaskId: 'task-parent' });
-  runDesktopConnectorTool.mockReset();
   resolveRuntimeCapabilities.mockReset();
   runMessagingHostTool.mockReset();
   shouldAutoApproveRuntimeAction.mockReset();
@@ -69,24 +51,6 @@ afterEach(() => {
 });
 
 describe('CogSeed host tool router', () => {
-  it('rechecks the persisted task scope at final desktop connector dispatch', async () => {
-    const execute = vi.fn();
-    runDesktopConnectorTool.mockImplementation(async (_user, _name, _input, _request, _signal, beforeDispatch) => {
-      readSession.mockResolvedValueOnce({ ownerId: 'router-user', lifecycleState: 'active',
-        runtimeSessionId: 'mruntime-parent', activeTaskId: 'other-task' });
-      await beforeDispatch();
-      execute();
-      return { content: 'sent' };
-    });
-    const router = createCogSeedHostToolRouter({});
-    const result = await router.handle({ type: 'host_tool_call', request_id: 'req-parent',
-      runtime_session_id: 'mruntime-parent', call_id: 'host-connector', name: 'desktop_connector_call_tool',
-      input: { connector_id: 'tencent-survey', tool_name: 'get_survey', arguments: {} } }, context);
-    expect(result).toMatchObject({ isError: true, content: expect.stringContaining('current task scope unavailable') });
-    expect(execute).not.toHaveBeenCalled();
-    expect(readTask).toHaveBeenCalledWith('router-user', 'req-parent');
-  });
-
   it('routes allowlisted capabilities with request scope and caps results', async () => {
     const office = { run: vi.fn(async () => ({ content: 'office-result' })) };
     const browser = { run: vi.fn(async () => ({ content: 'browser-result' })) };

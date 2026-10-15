@@ -1,4 +1,3 @@
-import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -37,7 +36,7 @@ async function modules() {
 
 async function promoteAsset(userId: string, statement: string, scope = 'review') {
   const { candidates } = await modules();
-  const candidate = await createNightlyCandidateFixture(userId, {
+  const candidate = await candidates.saveRecallCandidate(userId, {
     judgment: statement,
     // 标题闸门（设计 3.2）：无 summary 兜底＝正文首句，过不了闸门。
     summary: '时间线基线样本',

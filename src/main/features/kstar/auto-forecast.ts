@@ -1,9 +1,8 @@
-import { cognitionIntegrationIsolated } from '../cognition/integration-boundary';
 import { createLogger } from '../../logger';
 import { loadCommittedProjectionKnowledge } from '../recall/projection-knowledge';
 import { listAbilityAssets } from '../recall/asset-service';
 import {
-  filterRecallAssetsForDefaultInjection,
+  filterRecallAssetsForAgentRead,
   filterRecallAssetsForCommittedProjection,
 } from '../recall/prompt-injection';
 import {
@@ -128,7 +127,6 @@ async function runAutoForecastForRequirement(
       });
     } catch { /* observability must not block execution */ }
   };
-  if (cognitionIntegrationIsolated()) { await setStatus('skipped', 'ordinary cognition integration isolated'); return { ok: false, reason: 'ordinary cognition integration isolated' }; }
   try {
     const { readKstarRequirement } = await import('./requirement-store');
     const requirement = await readKstarRequirement(userId, requirementId);
@@ -164,7 +162,7 @@ async function runAutoForecastForRequirement(
       ...(workspaceId ? { workspaceId } : {}),
       taskText: requirement.goalText,
     };
-    const readablePersonalAssets = await filterRecallAssetsForDefaultInjection(
+    const readablePersonalAssets = await filterRecallAssetsForAgentRead(
       userId,
       allAssets.filter((asset) => asset.type === 'personal'),
       readContext,

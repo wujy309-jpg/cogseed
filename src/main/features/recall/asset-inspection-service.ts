@@ -126,16 +126,10 @@ export async function readInspectionSettings(userId: string): Promise<Inspection
 
 /** 开关（T049）：关掉之后不再自动运行；手动触发仍可用（那是用户自己要的）。 */
 export async function setInspectionEnabled(userId: string, enabled: boolean): Promise<InspectionSettings> {
-  // 原子 patch：只改 enabled/updatedAt 两键，其余（含处置数组）从锁内最新 raw
-  // 保留。先前「预读快照 + writeRecallJsonRecord 整写」会在开关切换与待办处置
-  // 并发时把 dismissed/deferred 整组覆盖掉，下轮巡检重复打扰。
-  const fallback = await readInspectionSettings(userId);
-  const updated = await updateRecallJsonRecord(userId, SETTINGS_COLLECTION, SETTINGS_ID, (raw) => ({
-    ...(raw || fallback),
-    enabled: Boolean(enabled),
-    updatedAt: new Date().toISOString(),
-  }));
-  return updated as InspectionSettings;
+  const current = await readInspectionSettings(userId);
+  const next: InspectionSettings = { ...current, enabled: Boolean(enabled), updatedAt: new Date().toISOString() };
+  await writeRecallJsonRecord(userId, SETTINGS_COLLECTION, SETTINGS_ID, next);
+  return next;
 }
 
 /**
@@ -148,44 +142,24 @@ export async function decideInspectionFinding(
   findingKey: string,
   decision: 'dismissed' | 'deferred',
 ): Promise<InspectionSettings> {
-  // 入口 throw 与 readInspectionRun 同款：非法入参宁可炸出来。否则拼错的
-  // decision（如 'dismiss'）会让下面双三元双双走反向 filter——已处置的 key
-  // 从两数组同时移除、待办静默复活；超长 key 则原样落盘。
-  if (decision !== 'dismissed' && decision !== 'deferred') {
-    throw new Error(`invalid inspection decision: ${decision}`);
-  }
-  // 宽松长度门而非形状正则：真实 key 是 `${category}:${assetId}+…`（含 : 与
-  // +，safeId 不可用），几十字符；1024 远超真实长度、远低于已实证的 10,000
-  // 字符滥用面。
-  if (typeof findingKey !== 'string' || !findingKey.length || findingKey.length > 1024) {
-    throw new Error('invalid inspection finding key');
-  }
-  // 读-算-写整段留在 updateRecallJsonRecord 的锁内（fileEditLock 按 recordPath
-  // 串行）：处置数组从锁内最新 raw 增量而来。先前锁外预读再整组覆盖会让两个
-  // 并发处置互相抹掉——已「不管它」的待办复活回清单。
-  const updated = await updateRecallJsonRecord(userId, SETTINGS_COLLECTION, SETTINGS_ID, (raw) => {
-    const base: RecallJsonRecord = raw || {
-      schemaVersion: 1,
-      ownerId: userId,
-      id: SETTINGS_ID,
-      enabled: DEFAULT_SETTINGS.enabled,
-    };
-    // 与 readInspectionSettings 同款容错归一：磁盘上的数组可能缺字段/混入非字符串。
-    const keysOf = (value: unknown): string[] => (Array.isArray(value)
-      ? (value as string[]).filter((key) => typeof key === 'string')
-      : []);
-    return {
-      ...base,
-      dismissedFindingKeys: decision === 'dismissed'
-        ? [...new Set([...keysOf(base.dismissedFindingKeys), findingKey])].slice(-500)
-        : keysOf(base.dismissedFindingKeys).filter((key) => key !== findingKey),
-      deferredFindingKeys: decision === 'deferred'
-        ? [...new Set([...keysOf(base.deferredFindingKeys), findingKey])].slice(-500)
-        : keysOf(base.deferredFindingKeys).filter((key) => key !== findingKey),
-      updatedAt: new Date().toISOString(),
-    };
-  });
-  return updated as InspectionSettings;
+  const current = await readInspectionSettings(userId);
+  const dismissed = decision === 'dismissed'
+    ? [...new Set([...current.dismissedFindingKeys, findingKey])].slice(-500)
+    : current.dismissedFindingKeys.filter((key) => key !== findingKey);
+  const deferred = decision === 'deferred'
+    ? [...new Set([...current.deferredFindingKeys, findingKey])].slice(-500)
+    : current.deferredFindingKeys.filter((key) => key !== findingKey);
+  const updated = await updateRecallJsonRecord(userId, SETTINGS_COLLECTION, SETTINGS_ID, (raw) => ({
+    ...(raw || current),
+    dismissedFindingKeys: dismissed,
+    deferredFindingKeys: deferred,
+    updatedAt: new Date().toISOString(),
+  }));
+  return {
+    ...(updated as InspectionSettings),
+    dismissedFindingKeys: dismissed,
+    deferredFindingKeys: deferred,
+  };
 }
 
 export async function readInspectionRun(userId: string, runId: string): Promise<InspectionRun | undefined> {
@@ -343,8 +317,10 @@ export async function runScheduledInspectionIfEnabled(
   const settings = await readInspectionSettings(userId);
   if (!settings.enabled) return undefined;
   const run = await runAssetInspection(userId, { trigger: 'scheduled', ...(options.signal ? { signal: options.signal } : {}) });
-  // 自动检查追加只读整理报告；规范化、归并、补标签均等待用户逐条确认。
-  // 同天只运行一次，报告失败不影响检查结果。
+  // 集成维护（2026-09-29 子安拍板「完全合并」）：自动维护开启时，检查轮之后
+  // 同天追加一轮完整清理（规范标题/合并重复/补标签/重写啰嗦正文，trigger
+  // =inspection，写前备份照旧）。当天已跑过则跳过（按最近一条清理报告的
+  // trigger+日期判重）；失败只记日志，不拖垮检查结果，也不影响返回值。
   try {
     const { listCleanupReports, runAssetCleanup } = await import('./cleanup-report-service');
     const reports = await listCleanupReports(userId, 1);

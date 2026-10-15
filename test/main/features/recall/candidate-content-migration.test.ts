@@ -1,4 +1,3 @@
-import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 /**
  * 候选内容 v1 迁移（migrateCandidateContentFormat）专测（2026-09-30 r4）。
  *
@@ -62,7 +61,7 @@ function markerFile(): string {
 describe('候选内容 v1 迁移（锁 + marker 幂等 + 单条坏候选容错）', () => {
   it('旧格式落盘 → list 触发：规范格式无损改写、marker 写入、幂等、坏候选不拖垮', async () => {
     const candidates = await service();
-    const good = await createNightlyCandidateFixture('user-a', {
+    const good = await candidates.saveRecallCandidate('user-a', {
       judgment: 'Always confirm the rollout scope before shipping a config change.',
       summary: 'Confirm rollout scope',
       value: '规范写入阶段的正文。',
@@ -70,7 +69,7 @@ describe('候选内容 v1 迁移（锁 + marker 幂等 + 单条坏候选容错�
       suggestedScope: 'product',
       sourceRefs: [{ kind: 'memory', id: 'mem-cm-good' }],
     });
-    const bad = await createNightlyCandidateFixture('user-a', {
+    const bad = await candidates.saveRecallCandidate('user-a', {
       judgment: 'Keep the staging database seeded before a demo run.',
       summary: 'Seed staging before demo',
       suggestedType: 'rule',

@@ -43,6 +43,21 @@ async function loadRunner() {
   return import('../../../src/main/model/core-agent/runner');
 }
 
+function mockImmediateKnowledgeIngest() {
+  const ingestImmediateKnowledge = vi.fn(async (_uid: string, input: { requireUserReview?: boolean }) => ({
+    mode: input.requireUserReview ? 'pending-review' as const : 'created' as const,
+    ...(input.requireUserReview ? {} : { assetId: 'asset-test' }),
+    candidateId: 'cand-test',
+  }));
+  vi.doMock('../../../src/main/features/recall/candidate-service', async () => {
+    const actual = await vi.importActual<typeof import('../../../src/main/features/recall/candidate-service')>(
+      '../../../src/main/features/recall/candidate-service',
+    );
+    return { ...actual, ingestImmediateKnowledge };
+  });
+  return ingestImmediateKnowledge;
+}
+
 async function addCrossSessionMemory(input: {
   userId: string;
   sessionId: string;
@@ -66,18 +81,71 @@ async function addCrossSessionMemory(input: {
 }
 
 describe('runner › buildRunner auth gate', () => {
-  it('removes chat-time writes even when the user explicitly requests saving', async () => {
+  it('activates cross-session memory only for a direct, verbatim user save request', async () => {
     process.env.ANTHROPIC_API_KEY = 'sk-ant-test-placeholder';
+    const ingest = mockImmediateKnowledgeIngest();
     const receipts: unknown[] = [];
-    const result = await addCrossSessionMemory({ userId: 'runner-memory-direct', sessionId: 'gconv-memory-direct',
-      userMessage: '请记住：以后所有结论都附来源。', content: '以后所有结论都附来源。',
-      onCognitionSaveReceipt: receipt => { receipts.push(receipt); } });
-    expect(JSON.parse(result.content)).toMatchObject({ ok: false, error: expect.stringContaining('read-only') });
-    expect(receipts).toEqual([]);
-    const candidates = await import('../../../src/main/features/recall/candidate-service');
-    const assets = await import('../../../src/main/features/recall/asset-service');
-    expect(await candidates.listRecallCandidates('runner-memory-direct')).toEqual([]);
-    expect(await assets.listAbilityAssets('runner-memory-direct')).toEqual([]);
+    const result = await addCrossSessionMemory({
+      userId: 'runner-memory-direct',
+      sessionId: 'gconv-memory-direct',
+      userMessage: '请记住：以后所有结论都附来源。',
+      content: '以后所有结论都附来源。',
+      onCognitionSaveReceipt: (receipt) => { receipts.push(receipt); },
+    });
+
+    expect(ingest).toHaveBeenCalledWith('runner-memory-direct', expect.objectContaining({
+      text: '以后所有结论都附来源。',
+      requireUserReview: false,
+    }));
+    expect(JSON.parse(result.content)).toMatchObject({
+      ok: true,
+      entries: [expect.stringContaining('Saved as active cognition asset')],
+    });
+    expect(receipts).toEqual([{
+      target: 'asset',
+      id: 'asset-test',
+      summary: '以后所有结论都附来源。',
+      outcome: 'created',
+    }]);
+  });
+
+  it('routes paraphrases and standalone confirmations to review', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test-placeholder';
+    const paraphraseIngest = mockImmediateKnowledgeIngest();
+    const receipts: unknown[] = [];
+    const paraphrase = await addCrossSessionMemory({
+      userId: 'runner-memory-paraphrase',
+      sessionId: 'gconv-memory-paraphrase',
+      userMessage: 'Please remember: I prefer concise answers with one example.',
+      content: 'The user prefers concise answers and one example.',
+      onCognitionSaveReceipt: (receipt) => { receipts.push(receipt); },
+    });
+    expect(paraphraseIngest).toHaveBeenCalledWith('runner-memory-paraphrase', expect.objectContaining({ requireUserReview: true }));
+    expect(JSON.parse(paraphrase.content)).toMatchObject({
+      ok: true,
+      entries: [expect.stringContaining('awaiting review')],
+    });
+    expect(receipts).toEqual([{
+      target: 'candidate',
+      id: 'cand-test',
+      summary: 'The user prefers concise answers and one example.',
+      outcome: 'pending-review',
+    }]);
+
+    vi.doUnmock('../../../src/main/features/recall/candidate-service');
+    vi.resetModules();
+    const confirmationIngest = mockImmediateKnowledgeIngest();
+    const confirmation = await addCrossSessionMemory({
+      userId: 'runner-memory-confirmation',
+      sessionId: 'gconv-memory-confirmation',
+      userMessage: '好的。',
+      content: 'I prefer concise answers.',
+    });
+    expect(confirmationIngest).toHaveBeenCalledWith('runner-memory-confirmation', expect.objectContaining({ requireUserReview: true }));
+    expect(JSON.parse(confirmation.content)).toMatchObject({
+      ok: true,
+      entries: [expect.stringContaining('awaiting review')],
+    });
   });
 
   it.each([
@@ -85,6 +153,7 @@ describe('runner › buildRunner auth gate', () => {
     ['a negative request', '请不要记住：我偏好简洁回答。'],
   ])('does not persist cross-session memory from %s', async (_label, userMessage) => {
     process.env.ANTHROPIC_API_KEY = 'sk-ant-test-placeholder';
+    const ingest = mockImmediateKnowledgeIngest();
     const result = await addCrossSessionMemory({
       userId: `runner-memory-reject-${_label.replace(/\W+/g, '-')}`,
       sessionId: `gconv-memory-reject-${_label.replace(/\W+/g, '-')}`,
@@ -92,9 +161,10 @@ describe('runner › buildRunner auth gate', () => {
       content: 'I prefer concise answers.',
     });
 
+    expect(ingest).not.toHaveBeenCalled();
     expect(JSON.parse(result.content)).toMatchObject({
       ok: false,
-      error: expect.stringContaining('read-only'),
+      error: expect.stringContaining('Nothing was persisted'),
     });
   });
 
@@ -222,6 +292,54 @@ describe('runner › buildRunner auth gate', () => {
     await expect(buildRunner({ sessionId: 'u1-gconv-x' })).rejects.toThrow(
       /No model configured/,
     );
+  });
+
+  it('returns the cognition save receipt for an exact user-authorized commander memory write', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test-placeholder';
+    const users = await import('../../../src/main/features/users');
+    users.activateUser('runner-teaching');
+    const receipts: any[] = [];
+    const { buildRunner } = await loadRunner();
+    const built = await buildRunner({
+      sessionId: 'gconv-teaching-success',
+      userId: 'runner-teaching',
+      cid: 'conv-teaching',
+      spaceId: 'space-a',
+      sourceMessageId: 'message-a',
+      sourceMessageFromUser: true,
+      userMessage: '请记住：以后所有结论都附来源。',
+      skillList: [],
+      onCognitionSaveReceipt: (receipt) => { receipts.push(receipt); },
+    });
+    const memoryTool = (built.runner as any).tools.get('cross_session_memory');
+    expect(memoryTool).toBeTruthy();
+
+    const result = await memoryTool.execute({
+      action: 'add',
+      target: 'space',
+      content: '以后所有结论都附来源。',
+    }, { state: {} });
+
+    expect(JSON.parse(result.content)).toMatchObject({ ok: true });
+    expect(receipts).toEqual([expect.objectContaining({
+      id: expect.stringMatching(/^aa-/),
+      target: 'asset',
+      summary: '以后所有结论都附来源。',
+      outcome: 'created',
+    })]);
+    const teaching = await import('../../../src/main/features/recall/teaching-service');
+    const candidates = await import('../../../src/main/features/recall/candidate-service');
+    await expect(teaching.listUserTeachingSignals('runner-teaching')).resolves.toEqual([]);
+    // 教学回执并入保存回执（2026-09-28 四病整改 7.0 修7）：直接保存成功的
+    // 走 created 资产回执，不再有独立教学回执回调。
+    await expect(candidates.listRecallCandidates('runner-teaching')).resolves.toEqual([
+      expect.objectContaining({ status: 'confirmed', captureKey: expect.stringMatching(/^immediate-/) }),
+    ]);
+    const assets = await import('../../../src/main/features/recall/asset-service');
+    await expect(assets.readAbilityAsset('runner-teaching', receipts[0].id)).resolves.toMatchObject({
+      statement: '以后所有结论都附来源。',
+      status: 'active',
+    });
   });
 
   it('does not create teaching state when the memory write is rejected', async () => {

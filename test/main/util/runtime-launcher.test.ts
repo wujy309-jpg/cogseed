@@ -36,8 +36,7 @@ describe('source runtime launchers', () => {
     expect(restart).toContain('ps_snapshot | other_worktree_runtime_pids "$APP_DIR" "$VARIANT"');
     expect(runtimePids).toContain('_RUNTIME_EXE_SUFFIX');
     expect(runtimePids).toContain('$app_dir/node_modules/.bin/electron .');
-    // 具体进程归属与 Vitest 排除由 restart-cogseed-runtime-pids 的行为回归验证。
-    expect(runtimePids).toContain('worktree_runtime_pids()');
+    expect(runtimePids).toContain('"$own_exe"|"$own_exe "*)');
     expect(runtimePids).toContain('$app_dir/p3394-gateway/gateway.cjs');
     expect(restart).toContain('if [ -n "$(worktree_pids)" ]; then');
     expect(restart).toContain('if [ -z "$(worktree_pids)" ]; then');

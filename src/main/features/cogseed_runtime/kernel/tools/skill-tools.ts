@@ -190,10 +190,6 @@ export async function runRuntimeSkillTool(
       if (!pin && isContentDisabled(ctx.userId, skillId)) {
         return formatError('E_RUNTIME_SKILL_DISABLED', `Hub skill "${skillId}" is disabled for new use`);
       }
-      const denied = ctx.beforeAction ? await ctx.beforeAction('run_skill', input as Record<string, unknown>, opts.signal)
-        : formatError('E_ONTOLOGY_OPERATION_PRECONDITION_UNAVAILABLE', 'current host conditions unavailable');
-      if (denied) return denied;
-      if (opts.signal?.aborted) return formatError('E_RUNTIME_ABORTED', 'action cancelled');
       const result = await runProcess([
         runSkillPath,
         skillId,

@@ -1,4 +1,3 @@
-import { nightlyFormation } from './helpers/nightly-candidate';
 /**
  * 认知资产：评分闸门与候选行内动作（行为测试）。
  *
@@ -27,7 +26,7 @@ const zh: Record<string, string> = JSON.parse(
 function installSharedUi(context: vm.Context) {
   // ui-status.js（uiTag 等）与 ui-segmented-control.js 同为 index.html 静态共享层——
   // 夹具必须与真机同构（specs/010 T026 起详情页有档位章，缺它整页渲染抛错）。
-  for (const file of ['icons.js', 'ui-button.js', 'ui-card.js', 'ui-form.js', 'ui-empty.js', 'ui-status.js', 'ui-segmented-control.js', 'ui-page-header.js', 'ui-structure.js']) {
+  for (const file of ['icons.js', 'ui-button.js', 'ui-form.js', 'ui-empty.js', 'ui-status.js', 'ui-segmented-control.js']) {
     vm.runInContext(fs.readFileSync(path.join(root, 'src/renderer/modules', file), 'utf8'), context, { filename: file });
   }
 }
@@ -52,7 +51,7 @@ function loadAssetsRenderer() {
   context.globalThis = context;
   vm.createContext(context);
   installSharedUi(context);
-  for (const file of ['vocabulary.js', 'core.js', 'views.js', 'review-candidate.js', 'review-views.js', 'library.js']) {
+  for (const file of ['vocabulary.js', 'core.js', 'views.js', 'review-candidate.js', 'review-views.js']) {
     vm.runInContext(
       fs.readFileSync(path.join(root, 'src/renderer/modules/cognition-assets', file), 'utf8'),
       context,
@@ -70,9 +69,8 @@ const ASSET = {
   activeVersion: 'v2',
   version: 2,
   maturity: 'practiced',
-  type: 'skill_method', scope: 'general',
-  suggestedType: 'skill_method',
-  category: 'skill_method',
+  suggestedType: 'method',
+  category: 'method',
 };
 
 /** 跑一次真实的 render()，返回面板产出的 HTML。 */
@@ -83,7 +81,6 @@ function renderAssets(route: Record<string, unknown>, patch: (store: any) => voi
   context.document.getElementById = (id: string) => (id === 'ca-root' ? host : null);
   NS.store.assets = [ASSET];
   NS.store.proofs = [];
-  NS.store.assetTimeline = { assetId: ASSET.id, loading: false, failed: false };
   // 白名单与真实载荷同默认（2026-09-25 US-602）：没有它使用记录区会被 fail-closed
   // 过滤空，评价入口自然测不到。
   NS.store.realUsageKinds = ['usage_recorded', 'projection_confirmed'];
@@ -94,7 +91,7 @@ function renderAssets(route: Record<string, unknown>, patch: (store: any) => voi
   NS.store.route = route;
   patch(NS.store);
   NS.render();
-  return String(host.innerHTML) + (route.name === 'overview' ? NS.renderLibraryDialog('records', ASSET.id) : '');
+  return String(host.innerHTML);
 }
 
 /** 一次「被实际使用」事件；`transferProofId` 即这条事件自己的迁移证明。 */
@@ -177,7 +174,7 @@ describe('认知资产 · 候选行的就地处理', () => {
 
   function candidate(id: string, status: string, capabilities?: Record<string, unknown>) {
     const base = {
-      ...nightlyFormation(), id,
+      id,
       status,
       summary: `候选 ${id}`,
       judgment: `判断 ${id}`,
@@ -185,7 +182,7 @@ describe('认知资产 · 候选行的就地处理', () => {
       suggestedScope: 'product',
       suggestedAction: 'create',
       risk: 'low',
-      sourceRefs: [...nightlyFormation().sourceRefs, { kind: 'memory', id: `mem-${id}` }],
+      sourceRefs: [{ kind: 'memory', id: `mem-${id}` }],
       evidenceRefs: [{ kind: 'memory', id: `mem-${id}` }],
     };
     // capabilities 传 undefined 时**整个字段不出现**：这是"缺失"与"空对象"两种形态
@@ -193,14 +190,16 @@ describe('认知资产 · 候选行的就地处理', () => {
     return capabilities ? { ...base, capabilities } : base;
   }
 
-  it('完成形成的候选详情提供拒绝和稍后处理，动作分别指向该建议', () => {
+  it('候选详情里就地提供「稍后处理 / 拒绝」，动作带候选 id（不跳页、走 IPC）', () => {
     const html = renderAssets({ name: 'review', candidateId: 'c-1' }, (store) => {
       store.candidates = [candidate('c-1', 'pending_review', CAPS)];
     });
-    expect(html).toContain('data-act="activity-defer"');
+    expect(html).toContain(zh['cognition.candidate_defer_action']);
+    const deferButtons = [...html.matchAll(/<button[^>]*data-action="defer"[^>]*>/g)].map((m) => m[0]);
     const rejectButtons = [...html.matchAll(/<button[^>]*data-action="reject"[^>]*>/g)].map((m) => m[0]);
+    expect(deferButtons.length).toBeGreaterThan(0);
     expect(rejectButtons.length).toBeGreaterThan(0);
-    for (const button of rejectButtons) expect(button).toContain('data-id="c-1"');
+    for (const button of [...deferButtons, ...rejectButtons]) expect(button).toContain('data-id="c-1"');
   });
 
   it('终态的候选详情渲染为只读记录，不再提供就地处理入口', () => {
@@ -232,32 +231,5 @@ describe('认知资产 · 候选行的就地处理', () => {
       // cand-adopt-with-form）。
       expect(html).not.toContain('data-act="cand-adopt-with-form"');
     }
-  });
-
-  it('旧手动候选保留历史原文和证据边界，不重新进入夜间建议审批', () => {
-    const manual = { ...candidate('c-manual', 'weak_observation', CAPS), origin: 'manual', sourceRefs: [], evidenceRefs: [] };
-    const context = loadAssetsRenderer();
-    const card = context.window.CogAssets.candidate.card(manual, false);
-    expect(card).toContain(zh['cognition.source_manual']);
-    expect(card).toContain(zh['cognition.candidate_user_provided']);
-    expect(card).not.toContain(zh['cognition.candidate_evidence_ok']);
-    const detail = renderAssets({ name: 'review', candidateId: manual.id }, (store) => {
-      store.candidates = [manual];
-    });
-    expect(detail).toContain(zh['cognition.candidate_manual_evidence_note']);
-    expect(detail).not.toContain('data-act="cand-adopt-with-form"');
-  });
-
-  it('自动候选只陈述有无引用，不把引用或失效来源宣称为证据充足', () => {
-    const context = loadAssetsRenderer();
-    const renderer = context.window.CogAssets.candidate;
-    const automatic = { ...candidate('c-auto', 'pending_review', CAPS), origin: 'conversation' };
-    expect(renderer.card(automatic, false)).toContain(zh['cognition.candidate_has_refs']);
-    const empty = renderer.card({ ...automatic, sourceRefs: [], evidenceRefs: [] }, false);
-    expect(empty).toContain(zh['cognition.candidate_missing_refs']);
-    const broken = renderer.card(automatic, true);
-    expect(broken).toContain(zh['cognition.candidate_evidence_all_unavailable']);
-    expect(broken).not.toContain(zh['cognition.candidate_has_refs']);
-    for (const html of [empty, broken]) expect(html).not.toContain(zh['cognition.candidate_evidence_ok']);
   });
 });

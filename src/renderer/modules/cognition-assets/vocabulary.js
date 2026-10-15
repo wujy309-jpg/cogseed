@@ -123,8 +123,6 @@
 
   /** 提炼阶段（后端 RecallCaptureStage 五值）：整理详情页讲「现在做到哪一步」。 */
   const CAPTURE_STAGE = {
-    context_summary: ['cognition.capture_stage_context_summary', '整理对话摘要'],
-    value_judgment: ['cognition.capture_stage_value_judgment', '判断是否值得提取'],
     model_check: ['cognition.capture_stage_model_check', '检查模型'],
     recall_view: ['cognition.capture_stage_recall_view', '读取会话内容'],
     model_extraction: ['cognition.capture_stage_model_extraction', '模型提炼中'],

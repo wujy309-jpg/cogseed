@@ -106,10 +106,6 @@ export async function runRuntimeBashTool(
       COGSEED_UID: ctx.userId,
       ELECTRON_RUN_AS_NODE: process.env.ELECTRON_RUN_AS_NODE || '1',
     };
-    const denied = ctx.beforeAction ? await ctx.beforeAction('bash', input as Record<string, unknown>, opts.signal)
-      : formatError('E_ONTOLOGY_OPERATION_PRECONDITION_UNAVAILABLE', 'current host conditions unavailable');
-    if (denied) return denied;
-    if (opts.signal?.aborted) return formatError('E_RUNTIME_ABORTED', 'action cancelled');
     const result = await runProcess(command, cwd, env, input.timeoutMs);
     if (result.timedOut) return formatError('E_RUNTIME_TIMEOUT', 'runtime bash timed out');
     if (result.code !== 0) {

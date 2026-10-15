@@ -40,7 +40,7 @@
     }).join('');
     const body = rows.map((row, rowIndex) => {
       const selected = Number(value.selectedIndex) === rowIndex;
-      const cells = columns.map((column) => `<td class="${column.align === 'right' ? 'is-right' : ''}${column.primary ? ' is-primary' : ''}">${(column.descriptionKey ? `<span class="ui-data-table__title">${escapeText(row[column.key])}</span><span class="ui-data-table__description">${escapeText(row[column.descriptionKey])}</span>` : escapeText(row[column.key] == null ? '' : row[column.key]))}</td>`).join('');
+      const cells = columns.map((column) => `<td class="${column.align === 'right' ? 'is-right' : ''}${column.primary ? ' is-primary' : ''}">${escapeText(row[column.key] == null ? '' : row[column.key])}</td>`).join('');
       return `<tr${selected ? ' class="is-selected" aria-selected="true"' : ''} data-ui-table-row="${rowIndex}">${cells}</tr>`;
     }).join('');
     const classes = ['ui-data-table-wrap', value.className || ''].filter(Boolean).join(' ');

@@ -203,7 +203,6 @@ function normalizeDelivery(raw: Partial<MessagingDeliveryLedgerFile>): Messaging
       recipientIdType: candidate.recipientIdType === 'open_id' ? 'open_id' : 'chat_id',
       ...(externalChatId ? { externalChatId } : {}),
       sourceMessageId: String(candidate.sourceMessageId || '').slice(0, 160),
-      ...(candidate.requiresOperationPreflight === true ? { requiresOperationPreflight: true } : {}),
       textHash: String(candidate.textHash || '').slice(0, 128),
       ...(text ? { text } : {}),
       ...(card ? { card } : {}),
@@ -380,7 +379,6 @@ export async function beginDelivery(
     }
     const next: DeliveryLedgerEntry = {
       ...(existing || entry),
-      ...(existing?.requiresOperationPreflight || entry.requiresOperationPreflight ? { requiresOperationPreflight: true } : {}),
       recipientId,
       recipientIdType,
       text: existing?.text || text,

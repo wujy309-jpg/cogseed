@@ -179,17 +179,12 @@ describe('features/config › UI language', () => {
     expect(i18n.getCurrentUiLang()).toBe('zh');
   });
 
-  it('persists all four supported UI languages', async () => {
+  it('persists only zh or en', async () => {
     const { appConfig, i18n } = await load();
     expect(appConfig.setUiLanguage('en')).toBe('en');
     expect(appConfig.readConfig().ui_language).toBe('en');
     expect(i18n.getCurrentUiLang()).toBe('en');
-    for (const lang of ['ja', 'pt'] as const) {
-      expect(appConfig.setUiLanguage(lang)).toBe(lang);
-      expect(appConfig.readConfig().ui_language).toBe(lang);
-      expect(i18n.getCurrentUiLang()).toBe(lang);
-    }
-    expect(() => appConfig.setUiLanguage('xx' as unknown as 'en')).toThrow();
+    expect(() => appConfig.setUiLanguage('ja' as unknown as 'en')).toThrow();
   });
 
   it('keeps UI and Commander/Agent languages independent', async () => {
@@ -209,7 +204,7 @@ describe('features/config › UI language', () => {
 
   it('repairs an unsupported persisted UI language to Chinese on boot', async () => {
     const { appConfig } = await load();
-    appConfig.writeConfig({ ui_language: 'xx' as unknown as 'en' });
+    appConfig.writeConfig({ ui_language: 'pt' as unknown as 'en' });
     expect(appConfig.initUiLanguage()).toBe('zh');
     expect(appConfig.readConfig().ui_language).toBe('zh');
   });

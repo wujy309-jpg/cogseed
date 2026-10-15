@@ -1,4 +1,3 @@
-import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 /**
  * 复用回执闭环：注入 → 回执 → reuse turn id → 终态证明绑定 → 资产可升档。
  *
@@ -77,7 +76,7 @@ async function bindProjection(projectionId: string, messageId: string) {
  *  所以这里保留 promote 后的原始成熟度，终态用例才能真正验证「升档」发生了。 */
 async function injectableAsset(seed: string, maturity?: 'transfer_validated') {
   const { candidates, assets } = await mods();
-  const saved = await createNightlyCandidateFixture(USER, {
+  const saved = await candidates.saveRecallCandidate(USER, {
     judgment: `改运行时边界前先写决策日志（${seed}）`,
     value: '让后续评审不必重建上下文',
     summary: '架构变更前先写决策日志',

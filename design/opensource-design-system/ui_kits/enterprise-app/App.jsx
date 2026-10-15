@@ -1,6 +1,6 @@
 const { Toast, CommandPalette } = window.CogSeedDesignSystem_f581b5;
 const TASKS = window.SIDEBAR_RECENT;
-const PREVIEW_ROUTES = ['login','home','spaces','space','space-task','automation','capabilities','task','settings'];
+const PREVIEW_ROUTES = ['login','home','spaces','space','space-task','cognition','automation','capabilities','task','settings'];
 function readPreviewRoute() {
   const page = new URLSearchParams(location.search).get('page') || document.getElementById('root')?.dataset.previewPage;
   return PREVIEW_ROUTES.includes(page) ? page : 'login';
@@ -74,6 +74,7 @@ function App() {
       {route==='spaces'&&<SpaceHubScreen spaces={spaces} setSpaces={setSpaces} collapsed={collapsed} onExpand={()=>setCollapsed(false)} onOpenTask={t=>go('space-task',t)} onOpenSpace={s=>go('space',s)}/>}
       {route==='space'&&<SpaceDetailScreen key={spaceId} space={spaces.find(s=>s.id===spaceId)} setSpaces={setSpaces} collapsed={collapsed} onExpand={()=>setCollapsed(false)} onBack={()=>go('spaces')} onOpenTask={t=>go('space-task',t)}/>}
       {(route==='task'||route==='space-task')&&taskView}
+      {route==='cognition'&&<CognitionScreen collapsed={collapsed} onExpand={()=>setCollapsed(false)} onHome={()=>go('home')}/>}
       {route==='automation'&&<AutomationScreen onOpenTask={t=>go('task',t)} collapsed={collapsed} onExpand={()=>setCollapsed(false)}/>}
       {route==='capabilities'&&<CapabilitiesScreen initialFilter={capabilityFilter} collapsed={collapsed} onExpand={()=>setCollapsed(false)} onUse={t=>go('task',t)} onSearch={()=>setCmd(true)}/>}
     </>}

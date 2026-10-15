@@ -350,7 +350,7 @@ async function _memCreateGroup() {
   if (!trimmed) return;
   const res = await _memInvoke('personalOntology.groups.create', { title: trimmed });
   if (!res || res.ok === false) {
-    _memToast(_memErrorToText(res && res.error), 'error');
+    _memToast((res && res.error) || t('memory.error_generic'), 'error');
     return;
   }
   await _memLoadGroups();
@@ -367,7 +367,7 @@ async function _memRenameGroup(groupId) {
   if (!trimmed) return;
   const res = await _memInvoke('personalOntology.groups.rename', { groupId, title: trimmed });
   if (!res || res.ok === false) {
-    _memToast(_memErrorToText(res && res.error), 'error');
+    _memToast((res && res.error) || t('memory.error_generic'), 'error');
     return;
   }
   await _memLoadGroups();
@@ -385,7 +385,7 @@ async function _memDeleteGroup(groupId) {
   if (!ok) return;
   const res = await _memInvoke('personalOntology.groups.delete', { groupId });
   if (!res || res.ok === false) {
-    _memToast(_memErrorToText(res && res.error), 'error');
+    _memToast((res && res.error) || t('memory.error_generic'), 'error');
     return;
   }
   if (_memGroupEditor && _memGroupEditor.groupId === groupId) _memGroupEditor = null;
@@ -400,7 +400,7 @@ async function _memSaveGroupContent(groupId) {
   const content = ta.value;
   const res = await _memInvoke('personalOntology.groups.write', { groupId, content });
   if (!res || res.ok === false) {
-    _memToast(_memErrorToText(res && res.error), 'error');
+    _memToast((res && res.error) || t('memory.error_generic'), 'error');
     return;
   }
   _memToast(t('memory.groups_saved'), 'success');
@@ -597,23 +597,10 @@ async function _memDelete(target, text) {
 }
 
 // Map the backend's English `{ok:false, error}` to a localized toast.
-// P-r3-29（2026-10-02 错误契约补全）：主进程 memory.* 与
-// personalOntology.groups.* 的稳定错误码此前只有两条映射（blocked/empty
-// content），其余全部落通用「请重试」——字符超限这类有明确自救动作的错误
-// 也得不到指引；分组操作四处更是直出英文原文。码表对齐
-// src/main/features/memory.ts（addEntry/replaceEntry/removeEntry/writeStrict
-// Entries 的 buildResult）与 personal_ontology_groups.ts 的实际抛出值；新增
-// 码配四语词条，未列码仍走 generic（新码不裸出英文）。
 function _memErrorToText(error) {
   const e = String(error || '');
   if (/^blocked/i.test(e)) return t('memory.blocked_injection');
   if (/empty content/i.test(e)) return t('memory.error_empty');
-  if (/char_limit_exceeded/i.test(e)) return t('memory.error_char_limit');
-  if (/reserved_separator|reserved_metadata_marker/i.test(e)) return t('memory.error_reserved_marker');
-  if (/old_text (not found|is ambiguous)/i.test(e)) return t('memory.error_old_text_stale');
-  if (/content already exists/i.test(e)) return t('memory.error_duplicate');
-  if (/group not found/i.test(e)) return t('memory.error_group_missing');
-  if (/role_template_group/i.test(e)) return t('memory.error_template_group');
   return t('memory.error_generic');
 }
 

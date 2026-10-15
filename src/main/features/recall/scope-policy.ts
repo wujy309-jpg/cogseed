@@ -8,7 +8,7 @@ import { safeId } from '../../storage';
 // 全部失效，只剩画像旁路在起作用（实机 09-12：proj-a3ae7e6a3646
 // assetIds=[]、两条身份资产 omittedRefs=scope_mismatch）。
 //
-// 词表与经验域共享词表（experience-taxonomy.scopeForTask）的五个任务类型词对齐，
+// 词表与 KStar 线（extraction-service.scopeForTask）的五个任务类型词对齐，
 // 另有 'space:<id>'（空间限定）与 '*'（显式通配）两个结构形态。词表是
 // **目标不是闸门**：产生线经 normalizeAssetScopeValue 尽力归一，归不了的
 // 保留原值（软着陆——匹配层的 token 软匹配本就兜底，硬拒会拦存量与
@@ -37,19 +37,18 @@ const GLOBAL_SCOPE_HINTS = [
  *  只在 create/update 的输入口调用；读取口（asAsset）不动——存量自由文本
  *  由既有 migrateLegacyFreeTextScopes 轨道处理，读时强归一会破坏词条语义。 */
 export function resolveScopeForAsset(raw: string): string {
+  const normalized = normalizeAssetScopeValue(raw);
+  if (normalized) return normalized;
   const text = String(raw || '').trim();
   if (!text) return 'general';
-  const aliases: Record<string, string> = {
-    '跨任务通用': 'general', '报告': 'report', '报告任务': 'report', '报告与文档': 'report',
-    '编程开发': 'code', '编程': 'code', '审查与评审': 'review', '产品与架构': 'product',
-  };
-  if (aliases[text]) return aliases[text];
-  if (isRecallScopeTerm(text.toLowerCase())) return text.toLowerCase();
-  // A free-text task boundary must never silently become a global boundary.
-  // Existing legacy normalization remains in normalizeAssetScopeValue below.
-  if (GLOBAL_SCOPE_HINTS.includes(text.toLowerCase())) return 'general';
-  if (text.length > 500) throw new Error('invalid ability asset task scope');
-  return text;
+  // 组合词条（'review,project'）是合法形态：按分隔符拆段，每段都是合法
+  // 词条（≤20 字、非"…时"句式、无句号）才整串保留；任一段不合格（如
+  // "新增、审核、晋升认知资产条目时"的末段是适用条件句）兜底 general。
+  const segments = text.split(/[、,，;；]/).map((segment) => segment.trim()).filter(Boolean);
+  if (segments.length === 0) return 'general';
+  const allTerms = segments.every((segment) =>
+    segment.length <= 20 && !segment.endsWith('时') && !/[。！？]/.test(segment));
+  return allTerms ? text : 'general';
 }
 
 /** 自由文本 scope → 词表值（软归一）。

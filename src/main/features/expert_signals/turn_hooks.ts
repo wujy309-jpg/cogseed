@@ -224,11 +224,9 @@ export function onAgentTurnEnd(args: {
  *   - run `detectUserCorrection` once and extract text-class signals against
  *     the cached last agent message
  *
- * Returns `correctionDetected` for callers that want the raw boolean.
- * (It used to have a second consumer — the runner-side RunMetrics
- * `userCorrections` counter — but that counter was removed together with
- * the reflection-trigger subsystem; the live consumer of the boolean is the
- * `correction` signal extracted inside this function.)
+ * Returns `correctionDetected` so the caller can wire it into the agent's
+ * RunMetrics.userCorrections (see plan §6.1: same boolean, two consumers,
+ * no double-judgment).
  */
 export async function onUserMessage(args: {
   uid: string;

@@ -194,16 +194,3 @@ describe('scope 受控词表与软归一（A 轨道 2026-09-13）', () => {
     expect(normalizeAssetScopeValue('')).toBeNull();
   });
 });
-
-describe('原型任务范围的自由文本写入', () => {
-  it('保留描述范围，只对明确的常用别名归一，禁止隐式扩展为全局', async () => {
-    const { resolveScopeForAsset, scopeIncludes } = await import('../../../../src/main/features/recall/scope-policy');
-    const scope = '项目周报、风险核对与后续行动安排';
-    expect(resolveScopeForAsset(scope)).toBe(scope);
-    expect(resolveScopeForAsset('跨任务通用')).toBe('general');
-    expect(resolveScopeForAsset('报告与文档')).toBe('report');
-    expect(resolveScopeForAsset('不跨任务通用的项目复盘')).not.toBe('general');
-    expect(scopeIncludes('项目周报', '请编写项目周报')).toBe(true);
-    expect(scopeIncludes('项目周报', '查询天气')).toBe(false);
-  });
-});

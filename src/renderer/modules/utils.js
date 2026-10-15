@@ -1259,8 +1259,8 @@ function _aiSelectMount(el, config) {
     }
   };
 
-  // Portal fixed-position popovers out of the widget to avoid scroll clipping.
-  // A modal owns its listbox; other pages use <body>.
+  // Portal the popover to <body> while open so an ancestor with
+  // `overflow: auto / hidden` (modals, settings panes) can't clip it.
   // We set `position: fixed` + viewport coords from the trigger's
   // bounding rect; on scroll/resize we re-measure. This replaces the
   // earlier "popover lives inside .ai-select" layout — the markup
@@ -1268,9 +1268,6 @@ function _aiSelectMount(el, config) {
   // open/close moves it back and forth.
   let portalParent = null;
   let portalNextSibling = null;
-  let focusTimer = null;
-  let outsideTimer = null;
-  let destroyed = false;
   const reposition = () => {
     if (!state.open) return;
     const rect = trigger.getBoundingClientRect();
@@ -1286,7 +1283,7 @@ function _aiSelectMount(el, config) {
     popover.style.zIndex = String(_aiSelectPopoverZIndexFor(el));
   };
   const open = () => {
-    if (state.open || destroyed) return;
+    if (state.open) return;
     state.open = true;
     state.query = state.initialQuery || '';
     el.classList.add('open');
@@ -1294,37 +1291,22 @@ function _aiSelectMount(el, config) {
     popover.hidden = false;
     portalParent = popover.parentNode;
     portalNextSibling = popover.nextSibling;
-    // aria-modal hides sibling portals from assistive technology. Keep a modal's
-    // fixed-position listbox inside its dialog while retaining body portals elsewhere.
-    (el.closest('[role="dialog"]') || document.body).appendChild(popover);
+    document.body.appendChild(popover);
     const visibleOptions = _aiSelectFilterOptions(state.options, state.query);
     const selectedIndex = visibleOptions.findIndex(o => o.value === state.value);
     state.activeIdx = visibleOptions.length ? Math.max(0, selectedIndex) : -1;
     renderPopover();
     reposition();
     if (state.searchable) {
-      focusTimer = setTimeout(() => {
-        focusTimer = null;
-        if (state.open && !destroyed) popover.querySelector('.ai-select-search-input')?.focus();
-      }, 0);
+      setTimeout(() => popover.querySelector('.ai-select-search-input')?.focus(), 0);
     }
-    outsideTimer = setTimeout(() => {
-      outsideTimer = null;
-      if (state.open && !destroyed) document.addEventListener('mousedown', onDocDown, true);
-    }, 0);
+    setTimeout(() => document.addEventListener('mousedown', onDocDown, true), 0);
     document.addEventListener('keydown', onKey, true);
     window.addEventListener('scroll', reposition, true);
     window.addEventListener('resize', reposition, true);
   };
 
   const close = (restoreFocus = false) => {
-    if (focusTimer != null) clearTimeout(focusTimer);
-    if (outsideTimer != null) clearTimeout(outsideTimer);
-    focusTimer = outsideTimer = null;
-    document.removeEventListener('mousedown', onDocDown, true);
-    document.removeEventListener('keydown', onKey, true);
-    window.removeEventListener('scroll', reposition, true);
-    window.removeEventListener('resize', reposition, true);
     if (!state.open) return;
     state.open = false;
     el.classList.remove('open');
@@ -1348,6 +1330,10 @@ function _aiSelectMount(el, config) {
       portalParent = null;
       portalNextSibling = null;
     }
+    document.removeEventListener('mousedown', onDocDown, true);
+    document.removeEventListener('keydown', onKey, true);
+    window.removeEventListener('scroll', reposition, true);
+    window.removeEventListener('resize', reposition, true);
     if (restoreFocus && trigger.isConnected && !trigger.disabled) trigger.focus();
   };
 
@@ -1379,8 +1365,7 @@ function _aiSelectMount(el, config) {
     }
   };
 
-  const onTriggerClick = () => state.open ? close() : open();
-  trigger.addEventListener('click', onTriggerClick);
+  trigger.addEventListener('click', () => state.open ? close() : open());
 
   const api = {
     el,
@@ -1422,21 +1407,6 @@ function _aiSelectMount(el, config) {
     },
     open,
     close,
-    // Rebuilt pages must release the instance as well as its visible portal.
-    // close() remains reusable; destroy() is terminal and safe to call twice.
-    destroy() {
-      if (destroyed) return;
-      destroyed = true;
-      close();
-      trigger.removeEventListener('click', onTriggerClick);
-      popover.remove();
-      state.onChange = () => {};
-      _aiSelectInstances.delete(api);
-      if (el._uiSelectApi === api) {
-        delete el._uiSelectApi;
-        delete el.dataset.uiSelectHydrated;
-      }
-    },
   };
 
   _aiSelectInstances.add(api);
@@ -1448,7 +1418,8 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
   window.addEventListener('i18n-change', () => {
     for (const api of _aiSelectInstances) {
       if (!api.el?.isConnected) {
-        api.destroy();
+        api.close();
+        _aiSelectInstances.delete(api);
         continue;
       }
       api.refreshI18n();

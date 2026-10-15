@@ -2045,7 +2045,7 @@ describe("AgentRunner", () => {
         if (seenMessages.length === 1) {
           return {
             content: [
-              { type: "tool_use", id: "call_1", name: "metacognition", input: {} },
+              { type: "tool_use", id: "call_1", name: "wedged_tool", input: {} },
             ],
             stopReason: "tool_use",
             usage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 },
@@ -2070,11 +2070,8 @@ describe("AgentRunner", () => {
     const registry = new ProviderRegistry();
     registry.registerFactory("mock", () => mockProvider);
     let capturedSignal: AbortSignal | undefined;
-    // Named `metacognition` so the tool is inside REFLECTION_TOOL_ALLOWLIST
-    // (P-r1-19): reflection executes only allowlisted tools, and this test
-    // locks the idle-watchdog conversion for exactly those.
     const wedgedTool = defineTool({
-      name: "metacognition",
+      name: "wedged_tool",
       description: "Never resolves",
       inputSchema: { type: "object", properties: {} },
       async execute(_input, ctx) {

@@ -2954,40 +2954,6 @@ export async function pickChatEntryGroupForModelOverrideForUser(
   return matching.map((c) => ({ ...c, model: modelId }));
 }
 
-/** Resolve an explicit ordered task route using the requested user's credential and model gates.
- * Empty routes are handled by the caller as "follow global settings". Unavailable
- * explicit candidates are skipped; never substitute an unrelated default model. */
-export async function pickChatEntryGroupForModelCandidatesForUser(
-  userId: string,
-  candidates: readonly { provider: string; model: string }[],
-): Promise<ChatEntryChoice[]> {
-  const store = loadProfilesForUser(userId);
-  const group = await pickChatEntryGroupForUser(userId);
-  const seen = new Set<string>();
-  const choices: ChatEntryChoice[] = [];
-  for (const candidate of candidates) {
-    for (const choice of group) {
-      if (choice.provider !== candidate.provider) continue;
-      const entry = store.entries.find(entry => entry.entryId === choice.entryId);
-      if (!entry || !isEntryAllowed(store, { ...entry, model: candidate.model })) continue;
-      const key = JSON.stringify([choice.profileId, candidate.provider, candidate.model]);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      choices.push({ ...choice, model: candidate.model });
-    }
-  }
-  return choices;
-}
-
-/** Active-user compatibility entry point. Background callers pass their user explicitly. */
-export async function pickChatEntryGroupForModelCandidates(
-  candidates: readonly { provider: string; model: string }[],
-): Promise<ChatEntryChoice[]> {
-  let userId: string;
-  try { userId = getActiveUserId(); } catch { return []; }
-  return pickChatEntryGroupForModelCandidatesForUser(userId, candidates);
-}
-
 export async function pickChatEntryGroupForModelOverride(
   override: { provider: string; model: string },
 ): Promise<ChatEntryChoice[] | null> {

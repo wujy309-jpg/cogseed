@@ -9,27 +9,26 @@
  *    渲染出来点了没反应的按钮。
  * 2. **禁入**:batchRunNow 不得出现在认知资产前端(批量立即整理入口
  *    确认不迁移,后端能力保留)。
- * 3. **必达**:fixture 里每个 cognition-assets 动作在 app.js handler 落地。
- *    旧 personal-ontology 模块已于 2026-10-07 退役删除,其 fixture 动作
- *    (module='personal-ontology')随模块一并移出本契约的落地断言。
+ * 3. **必达**:fixture 里每个动作在目标模块落地(cognition-assets 看
+ *    app.js handler;personal-ontology 看 IPC 通道调用点)。迁移分阶段
+ *    推进,该断言在 Phase 5-8 期间逐步由红转绿,是迁移完成的机械判据。
  * 4. **pending 态**:fixture 标 pending=true 的写动作必须在 app.js 的
  *    WRITE_ACTIONS 集合里(点击即禁用,防双击重复提交)。
  */
 import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { loadCognitionAssets } from './helpers/cognition-renderer';
 
 const root = path.join(__dirname, '../..');
 const read = (rel: string) => fs.readFileSync(path.join(root, rel), 'utf8');
 const core = read('src/renderer/modules/cognition-assets/core.js');
 // 2026-09-29 views.js 机械拆分:候选族/待我处理动作随函数迁入 review-candidate.js /
 // review-views.js,动作扫描按加载顺序合并三源(断言语义不变)。
-const views = ['views.js', 'settings.js', 'library.js', 'review-candidate.js', 'review-views.js']
+const views = ['views.js', 'review-candidate.js', 'review-views.js']
   .map((file) => read(`src/renderer/modules/cognition-assets/${file}`))
   .join('\n');
 const app = read('src/renderer/modules/cognition-assets/app.js');
-const activityController = loadCognitionAssets({}, { name: 'activity' }).ns.activityController;
+const ontology = read('src/renderer/modules/personal-ontology.js');
 const fixture = JSON.parse(read('test/renderer/fixtures/cognition-actions.json')) as {
   actions: { act: string; module: string; ipc: string | null; write: boolean; pending: boolean; phase: number }[];
   forbidden: { act: string; reason: string }[];
@@ -40,8 +39,6 @@ function handledActs(): Set<string> {
   const acts = new Set<string>();
   for (const m of app.matchAll(/case '([a-z0-9-]+)'/g)) acts.add(m[1]);
   for (const m of app.matchAll(/\[data-act="([a-z0-9-]+)"\]/g)) acts.add(m[1]);
-  for (const act of activityController.handledActions) acts.add(act);
-  for (const act of loadCognitionAssets().ns.library.handledActions) acts.add(act);
   return acts;
 }
 
@@ -70,18 +67,6 @@ describe('认知资产动作契约', () => {
     expect(orphan).toEqual([]);
   });
 
-  it('独立活动控制器由真实委托调用，登记的写动作都有内部 pending 与真实 IPC 路径', () => {
-    expect(app).toContain('NS.activityController.handleClick(el)');
-    expect(activityController.handleClick).toBeTypeOf('function');
-    const handler = String(activityController.handleClick);
-    expect(handler).toContain('ACTIVITY_ACTIONS.includes(act)');
-    expect(handler).toContain('ACTIVITY_WRITE_ACTIONS.includes(act)');
-    expect(handler).toContain("getAttribute('aria-busy') === 'true'");
-    expect(handler).toContain("setAttribute('disabled', 'disabled')");
-    expect(handler).toContain("removeAttribute('disabled')");
-    for (const entry of fixture.actions.filter(entry => activityController.writeActions.includes(entry.act))) expect(handler).toContain(entry.ipc);
-  });
-
   it('批量立即整理入口不进前端(batchRunNow 禁入)', () => {
     for (const banned of fixture.forbidden) {
       expect(views).not.toContain(`data-act="${banned.act}"`);
@@ -90,19 +75,12 @@ describe('认知资产动作契约', () => {
     expect(app).not.toContain('batchRunNow');
   });
 
-  it('app.js switch 的 case 名不得重复(重复时仅首个匹配执行,后续分支永不可达)', () => {
-    // 2026-10-01 修复回归:inbox-boundary-save 曾在同一 switch 出现两次,
-    // 第二分支永不可达且读的字段名与渲染层(boundary-applicable)不一致。
-    const names = [...app.matchAll(/case '([a-z0-9-]+)'/g)].map((m) => m[1]);
-    const seen = new Set<string>();
-    const dup = names.filter((name) => (seen.has(name) ? true : (seen.add(name), false)));
-    expect(dup, `app.js 存在重复 case(仅首个执行):${dup.join(', ')}`).toEqual([]);
-  });
-
   it('fixture 动作全部在目标模块落地(迁移完成的机械判据)', () => {
     const handled = handledActs();
-    const missing = fixture.actions.filter((entry) => entry.module === 'cognition-assets' && !handled.has(entry.act))
-      .map((entry) => `${entry.module}:${entry.act}`);
+    const missing = fixture.actions.filter((entry) => {
+      if (entry.module === 'cognition-assets') return !handled.has(entry.act);
+      return !ontology.includes(`'${entry.act}'`);
+    }).map((entry) => `${entry.module}:${entry.act}`);
     expect(missing).toEqual([]);
   });
 
@@ -110,14 +88,14 @@ describe('认知资产动作契约', () => {
     const pendingRequired = fixture.actions
       .filter((entry) => entry.module === 'cognition-assets' && entry.pending)
       .map((entry) => entry.act);
-    const missing = pendingRequired.filter((act) => !writeActionsBlock.includes(`'${act}'`) && !activityController.writeActions.includes(act));
+    const missing = pendingRequired.filter((act) => !writeActionsBlock.includes(`'${act}'`));
     expect(missing).toEqual([]);
   });
 
   it('fixture 覆盖了现役全部写通道,未静默漏掉新动作', () => {
     // 反向钳制:app.js WRITE_ACTIONS 里的动作都必须出现在 fixture 里——
     // 未来新增写动作若没登记进施工矩阵,这里会先红。
-    const inWriteSet = [...writeActionsBlock.matchAll(/'([a-z0-9-]+)'/g)].map((m) => m[1]).concat(activityController.writeActions);
+    const inWriteSet = [...writeActionsBlock.matchAll(/'([a-z0-9-]+)'/g)].map((m) => m[1]);
     const known = new Set(fixture.actions.filter((e) => e.module === 'cognition-assets').map((e) => e.act));
     const unregistered = inWriteSet.filter((act) => !known.has(act));
     expect(unregistered).toEqual([]);

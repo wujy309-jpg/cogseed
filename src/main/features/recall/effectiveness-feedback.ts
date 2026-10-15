@@ -1,17 +1,12 @@
 import {
   evaluateEffectivenessProof,
   listTransferProofs,
-  listEffectivenessProofs,
   recallProofError,
   type EffectivenessOutcome,
   type EffectivenessProofRecord,
 } from './proof-service';
 import { readContextProjection } from './context-projection';
 import { recommendAbilityAssetAction } from './asset-service';
-import { createLogger } from '../../logger';
-import { updateRecallJsonRecord } from './store';
-
-const log = createLogger('recall.effectiveness-feedback');
 
 export type RecallEffectivenessFeedback = 'positive' | 'neutral' | 'negative' | 'invalid' | 'rework';
 
@@ -20,7 +15,6 @@ export interface RecordEffectivenessFeedbackInput {
   feedback: RecallEffectivenessFeedback;
   note?: string;
   evidenceRefs?: unknown[];
-  baselineExecutionId?: string;
 }
 
 export interface RecordTaskEffectivenessFeedbackInput {
@@ -28,7 +22,6 @@ export interface RecordTaskEffectivenessFeedbackInput {
   feedback: RecallEffectivenessFeedback;
   note?: string;
   evidenceRefs?: unknown[];
-  baselineExecutionId?: string;
 }
 
 function outcomeFor(feedback: RecallEffectivenessFeedback): EffectivenessOutcome {
@@ -44,58 +37,16 @@ function observedResult(input: { feedback: RecallEffectivenessFeedback; note?: s
   return note || `User feedback: ${input.feedback}`;
 }
 
-async function queueEffectFeedbackForNight(userId: string, transferProofId: string, input: {
-  feedback: RecallEffectivenessFeedback; note?: string; observedAt: string;
-}): Promise<boolean> {
-  const transfer = (await listTransferProofs(userId)).find(record => record.id === transferProofId);
-  if (!transfer) return false;
-  const projection = await readContextProjection(userId, transfer.projectionId);
-  if (!projection.conversationId) return false;
-  const { getMessagesPage } = await import('../chats');
-  const messages = (await getMessagesPage(userId, projection.conversationId, 1_000)).history;
-  const message = [...messages].reverse().find(row => row.from !== 'user' && !row.deleted_at
-    && (row.turn_id === projection.taskRunId || row.turn_id === transfer.executionId));
-  if (!message) return false; // Never attach a task's feedback to an unrelated answer.
-  const { queueNightlyFeedback } = await import('./nightly-feedback');
-  for (const asset of transfer.assetVersions) await queueNightlyFeedback(userId, { conversationId: projection.conversationId,
-    messageId: message.id, assetId: asset.assetId, assetVersion: asset.version, taskRunId: projection.taskRunId,
-    feedback: input.feedback, observedAt: input.observedAt, ...(input.note ? { note: input.note } : {}) });
-  return true;
-}
-
-async function enqueueProofFeedback(userId: string, proof: EffectivenessProofRecord): Promise<void> {
-  if (!proof.nightlyFeedback || proof.nightlyFeedback.status !== 'pending') return;
-  try {
-    if (!await queueEffectFeedbackForNight(userId, proof.transferProofId, { ...proof.nightlyFeedback, observedAt: proof.createdAt })) return;
-    await updateRecallJsonRecord(userId, 'effectiveness-proofs', proof.id, current => ({ ...current!,
-      nightlyFeedback: { ...proof.nightlyFeedback!, status: 'queued' } }));
-    proof.nightlyFeedback.status = 'queued';
-  } catch {
-    log.warn('nightly feedback enqueue deferred', { proofId: proof.id });
-  }
-}
-
-/** Recovery is part of the existing nightly sweep, never a daytime producer. */
-export async function recoverNightlyEffectivenessFeedback(userId: string): Promise<void> {
-  const pending = (await listEffectivenessProofs(userId)).filter(proof => proof.nightlyFeedback?.status === 'pending').slice(0, 20);
-  for (const proof of pending) await enqueueProofFeedback(userId, proof);
-}
-
 function evaluateFeedbackProof(
   userId: string,
   transferProofId: string,
-  input: { feedback: RecallEffectivenessFeedback; note?: string; evidenceRefs?: unknown[]; baselineExecutionId?: string },
+  input: { feedback: RecallEffectivenessFeedback; note?: string; evidenceRefs?: unknown[] },
 ): Promise<EffectivenessProofRecord> {
   return evaluateEffectivenessProof(userId, {
     transferProofId,
     outcome: outcomeFor(input.feedback),
     observedResult: observedResult(input),
     evidenceRefs: input.evidenceRefs || [],
-    ...(input.baselineExecutionId ? { baselineExecutionId: input.baselineExecutionId } : {}),
-    nightlyFeedback: { feedback: input.feedback, ...(input.note ? { note: input.note } : {}) },
-  }).then(async proof => {
-    await enqueueProofFeedback(userId, proof);
-    return proof;
   });
 }
 
@@ -111,20 +62,11 @@ async function applyRecommendedAssetAction(
     ? `${proof.observedResult.slice(0, 997)}...`
     : proof.observedResult;
   for (const item of transfer.assetVersions) {
-    // 逐资产降级（照 usage-feedback-service 对同一 recommendAbilityAssetAction 的
-    // 先例）：负向反馈到达时资产可能已被删除/撤销/清除，assertMutableAbilityAsset
-    // 会抛错——效果证明已先行落盘，单条推荐失败只记日志，不炸整条反馈 API、
-    // 不中断剩余资产的推荐（重试也不会因此累积重复证明）。
-    try {
-      await recommendAbilityAssetAction(userId, item.assetId, {
-        actor: 'system',
-        expectedVersion: item.version,
-        action,
-        reason,
-      });
-    } catch (error) {
-      log.warn('effectiveness recommendation skipped', { assetId: item.assetId, action, error: (error as Error).message });
-    }
+    await recommendAbilityAssetAction(userId, item.assetId, {
+      actor: 'system',
+      action,
+      reason,
+    });
   }
 }
 

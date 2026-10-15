@@ -310,8 +310,7 @@
 /* 夜间自动沉淀条状卡：左说明 / 中时间 / 右开关。 */
 .ca-setting-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 14px 16px; }
 .ca-setting-copy { flex: 1 1 240px; min-width: 0; }
-.ca-setting-time { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 8px; color: var(--ca-ink2); font-size: var(--font-size-2); }
-.ca-setting-time > span { white-space: nowrap; }
+.ca-setting-time { display: inline-flex; align-items: center; gap: 8px; color: var(--ca-ink2); font-size: var(--font-size-2); }
 .ca-setting-time input[type="time"] {
   border: 1px solid var(--ca-line); border-radius: 8px; padding: 5px 8px;
   background: var(--ca-card); color: var(--ca-ink); font-family: inherit; font-size: var(--font-size-3);
@@ -518,8 +517,6 @@
   display: inline-flex; align-items: center; gap: 0;
 }
 #ca-root .ca-tab:hover { color: var(--ink); }
-#ca-root .ca-tab.is-disabled,
-#ca-root .ca-tab.is-disabled:hover { color: var(--ink2); opacity: 0.45; cursor: not-allowed; }
 #ca-root .ca-tab.is-on { color: var(--ink); font-weight: 600; }
 #ca-root .ca-tab.is-on::after {
   content: ''; position: absolute; left: 11px; right: 11px; bottom: -1px; height: 2.5px;
@@ -554,27 +551,20 @@
 #ca-root .stat .v.b { color: var(--blue); }
 #ca-root .stat .l { font-size: var(--font-size-2); color: var(--ink2); }
 
-/* 认知资产按钮：主操作改用浅品牌底色、描边和深色文字；次要操作用白底描边，
-   不再把同一片深绿实底铺满操作区。height/line-height 仍需覆盖共享按钮定高。 */
+/* 按钮：uiButton 工厂已带 .btn + .ui-button；这里给出原型的皮肤。
+   height/line-height 必须覆盖 .ui-button 的定高，否则按钮比原型矮一档。 */
 #ca-root .btn {
-  border: 1px solid color-mix(in srgb, var(--color-brand) 28%, var(--line)); border-radius: var(--rs); font-size: var(--font-size-3); font-weight: 650;
+  border: none; border-radius: var(--rs); font-size: var(--font-size-3); font-weight: 600;
   padding: 7px 16px; height: auto; line-height: 1.6;
-  background: var(--color-brand-soft); color: var(--color-accent); box-shadow: none; transition: all var(--duration-control);
+  /* WCAG：白字于 #189a5c 仅 3.61，常态即用 deep 绿（5.39）——hover 再深一档 */
+  background: var(--green-d); color: var(--color-white); transition: all var(--duration-control);
 }
-#ca-root .btn:hover { border-color: var(--color-brand); background: var(--color-surface-2); color: var(--color-accent); filter: none; }
+#ca-root .btn:hover { background: var(--green-text-deep, var(--green-d)); filter: brightness(.92); }
 #ca-root .btn.g { background: var(--green-bg); color: var(--green-t); }
-#ca-root .btn.g:hover { background: var(--green-fill); border-color: var(--green-line); }
+#ca-root .btn.g:hover { background: var(--green-fill); }
 #ca-root .btn.d { background: var(--red); color: var(--color-white); }
 #ca-root .btn.o { background: var(--color-white); color: var(--ink2); border: 1px solid var(--line); }
 #ca-root .btn.o:hover { border-color: var(--ink2); color: var(--ink); }
-#ca-root .btn.ui-button--secondary:not(.o):not(.d):not(.rnm):not(.chip) { border-color: var(--line-field); background: var(--surface-card); color: var(--color-ink-2); font-weight: 500; }
-#ca-root .btn.ui-button--secondary:not(.o):not(.d):not(.rnm):not(.chip):hover { border-color: var(--color-brand); background: var(--color-surface-2); color: var(--color-accent); }
-#ca-root .btn.ui-button--primary { border-color: color-mix(in srgb, var(--color-brand) 36%, var(--line)); background: var(--color-brand-soft); color: var(--color-accent); font-weight: 650; }
-#ca-root .btn.ui-button--primary:hover { border-color: var(--color-brand); background: color-mix(in srgb, var(--color-brand) 16%, var(--color-white)); }
-#ca-root .btn.ui-button--ghost { border-color: transparent; background: transparent; color: var(--color-ink-2); font-weight: 500; }
-#ca-root .btn.ui-button--ghost:hover { border-color: transparent; background: var(--color-brand-soft); color: var(--color-accent); }
-#ca-root .btn.ui-button--danger { border-color: var(--color-danger-line); background: var(--color-danger-soft); color: var(--color-danger); }
-#ca-root .btn:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 #ca-root .btn.sm { padding: 4px 12px; font-size: var(--font-size-2); height: auto; }
 
 #ca-root .chip {
@@ -866,6 +856,19 @@
 #ca-root .step.done { background: var(--green); }
 #ca-root .step.cur { background: var(--amber-dot); }
 
+/* ── 标签系统（specs/012 T010~T013）与排序依据/权重（T020）的最小排版 ──────
+ * 弹层外壳/进度条/分段控件/输入框全部走共享层（ui-modal / uiProgressBar /
+ * uiSegmentedControl / uiInput 的既有皮肤），这里只补业务排布；不使用
+ * var(--panel)（全库未定义）、零 z-index 字面量（层序只归 --z-*）。 */
+#ca-root .ca-tags-row { align-items: center; }
+#ca-root .ca-tag-item { display: inline-flex; align-items: center; gap: 5px; }
+#ca-root .ca-tag-candidates { display: inline-block; margin: 0; }
+#ca-root .ca-tag-candidates summary { padding: 7px 11px; }
+#ca-root .ca-tag-filter { align-items: center; }
+#ca-root .ca-batch-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; border: 1px solid var(--line); border-radius: var(--rm); background: var(--color-white); padding: 9px 12px; margin-bottom: 12px; }
+#ca-root .ca-batch-bar .sp { flex: 1; height: 1px; background: var(--line); }
+#ca-root .ca-tag-progress { display: flex; align-items: center; gap: 9px; flex: 1 1 100%; }
+#ca-root .ca-tag-failures { flex: 1 1 100%; border-top: 1px dashed var(--line); padding-top: 7px; }
 /* 排序依据小节（资产详情·使用记录区）与权重卡（沉淀设置页）。 */
 #ca-root .ca-rank-rows { display: grid; gap: 4px; margin-bottom: 7px; }
 #ca-root .ca-rank-row { display: flex; align-items: baseline; gap: 10px; font-size: var(--font-size-2); }
@@ -1995,103 +1998,3 @@
 .recall-personal-ontology-section .po2-field-hint {
   font-size: 12px;
 }
-
-/* ── 关系图谱（清单/图谱双呈现）────────────────────────────────────────── */
-#ca-root .personal-onto-relgraph-mode {
-  display: flex; align-items: center; gap: 10px; margin: 10px 0 4px;
-}
-#ca-root .personal-onto-relgraph {
-  display: flex; flex-direction: column; gap: 8px;
-  padding: 12px 0;
-}
-#ca-root .personal-onto-relgraph-toolbar {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
-}
-#ca-root .personal-onto-relgraph-zoom {
-  display: inline-flex; gap: 6px; flex-wrap: wrap;
-}
-#ca-root .personal-onto-relgraph-meta {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-}
-#ca-root .personal-onto-relgraph-chips {
-  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-}
-#ca-root .personal-onto-relgraph-canvas {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-card);
-  background: var(--color-white-92);
-  overflow: hidden;
-  touch-action: none;
-}
-#ca-root .personal-onto-relgraph-svg {
-  display: block; width: 100%; height: 460px; cursor: grab;
-}
-#ca-root .personal-onto-relgraph-canvas:active {
-  cursor: grabbing;
-}
-#ca-root .personal-onto-relgraph-node {
-  cursor: default;
-}
-#ca-root .personal-onto-relgraph-node.is-clickable {
-  cursor: pointer;
-}
-#ca-root .personal-onto-relgraph-node.is-dragging {
-  cursor: grabbing;
-}
-#ca-root .personal-onto-relgraph-node.is-hover rect {
-  stroke-width: 2.2;
-}
-#ca-root .personal-onto-relgraph-node:not(.is-hover),
-#ca-root .personal-onto-relgraph-edge-group {
-  transition: opacity 0.12s ease;
-}
-#ca-root .personal-onto-relgraph-canvas:hover .personal-onto-relgraph-edge-group:not(.is-hover) {
-  opacity: 0.45;
-}
-#ca-root .personal-onto-relgraph-edge-label {
-  font-size: var(--font-size-1); font-weight: 600;
-  paint-order: stroke; stroke: var(--color-white); stroke-width: 3px; stroke-linejoin: round;
-}
-#ca-root .personal-onto-relgraph-node-label {
-  user-select: none;
-}
-#ca-root .personal-onto-relgraph-legend {
-  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-  font-size: var(--font-size-caption); color: var(--ink2);
-}
-#ca-root .personal-onto-relgraph-legend-item {
-  display: inline-flex; align-items: center; gap: 5px;
-}
-#ca-root .personal-onto-relgraph-legend-item i {
-  display: inline-block; width: 10px; height: 10px; border-radius: var(--radius-pill); flex: none;
-}
-#ca-root .personal-onto-relgraph-legend-item i.is-bar {
-  width: 3px; height: 12px; border-radius: var(--radius-pill);
-}
-
-/* ── 待我处理 · 一行式条目（registry CA-PV-006，Proposed）────────────────
-   本体候选行与「任务还缺哪些字段」行共用：只排布内容与间距，控件走共享原语。 */
-#ca-root .ca-review-row {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 0; border-bottom: 1px solid var(--line);
-}
-#ca-root .ca-review-row:last-child { border-bottom: 0; }
-#ca-root .ca-review-row-text { flex: 1 1 auto; min-width: 0; color: var(--ink); }
-
-/* 维护设置在窄窗口中保留时间标签和动作的可读宽度。 */
-#ca-root .ca-layout-settings .rowline { flex-wrap: wrap; }
-#ca-root .ca-layout-settings .rowline > div:first-child { flex: 1 1 280px; min-width: 0; }
-#ca-root .ca-layout-settings .rowline > .right { flex: 0 1 auto; flex-wrap: wrap; }
-
-/* 变化列表以共享表格承载；条目进入独立详情，避免在列表堆放确认表单。 */
-.ca-activity-changes .ui-data-table td { padding-block:var(--space-2); cursor:pointer; }
-.ca-activity-changes .ui-data-table { table-layout:fixed; min-width:46rem; }
-.ca-activity-changes .ui-data-table th:first-child { width:50%; }
-.ca-activity-changes .ui-data-table th:nth-child(2) { width:15%; }
-.ca-activity-changes .ui-data-table th:nth-child(3) { width:17%; }
-.ca-activity-changes .ui-data-table th:nth-child(4) { width:10%; }
-.ca-activity-changes .ui-data-table th:nth-child(5) { width:8%; }
-.ca-activity-changes .ui-data-table td:not(:first-child) { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.ca-activity-changes .ui-data-table td:last-child { color:var(--accent); }
-#ca-root .ca-activity-search { display:block; width:min(100%, 30rem); margin-block:var(--space-3); }
-.ca-activity-changes tr[tabindex]:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }

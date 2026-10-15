@@ -1,23 +1,68 @@
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
-const root = resolve(__dirname, '../../src/renderer');
-const source = readFileSync(resolve(root, 'modules/conversation.js'), 'utf8');
-const lazy = readFileSync(resolve(root, 'modules/lazy-features.js'), 'utf8');
+import vm from 'node:vm';
+import { describe, expect, it, vi } from 'vitest';
 
-describe('对话认知形成入口统一为夜间发现', () => {
-  it('消息菜单不再手动生成认知，复制引用与原始归档操作保留', () => {
-    expect(source).not.toContain('bubble-cognition-btn');
-    expect(source).not.toContain('_openCognitionCaptureFromBubble');
-    expect(source).not.toContain('openCognitionCapture');
-    for (const action of ['bubble-copy-btn', 'bubble-quote-btn', 'bubble-select-btn', 'bubble-archive-btn']) expect(source).toContain(action);
-  });
-  it('不再懒加载手动草稿表单，既有资产与保存回执回看保持可达', () => {
-    expect(lazy).not.toContain('./modules/cognition/');
-    expect(lazy).toContain('./modules/personal-context-review.js');
-    expect(existsSync(resolve(root, 'modules/cognition/cognition.js'))).toBe(false);
-    expect(existsSync(resolve(root, 'modules/cognition/pages.js'))).toBe(false);
-    expect(source).toContain('data-asset-citation');
-    expect(source).toContain('chat-cognition-save-receipt');
+const source = readFileSync(
+  resolve(__dirname, '../../src/renderer/modules/conversation.js'),
+  'utf8',
+);
+
+function extractFunction(name: string): string {
+  const marker = `async function ${name}`;
+  const start = source.indexOf(marker);
+  if (start < 0) throw new Error(`missing function: ${name}`);
+  const bodyStart = source.indexOf('{', start);
+  let depth = 0;
+  for (let index = bodyStart; index < source.length; index += 1) {
+    if (source[index] === '{') depth += 1;
+    else if (source[index] === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, index + 1);
+    }
+  }
+  throw new Error(`unterminated function: ${name}`);
+}
+
+describe('conversation cognition capture', () => {
+  it('keeps the click-time conversation while the lazy feature loads', async () => {
+    let finishLoading: (() => void) | undefined;
+    const featureLoaded = new Promise<void>((resolve) => { finishLoading = resolve; });
+    const openCognitionCapture = vi.fn(() => true);
+    const sandbox: Record<string, unknown> = {
+      currentCid: 'cid-a',
+      loadRendererFeature: vi.fn(async () => {
+        await featureLoaded;
+        (sandbox.window as Record<string, unknown>).openCognitionCapture = openCognitionCapture;
+      }),
+      _convLog: { warn: vi.fn() },
+      window: {},
+    };
+    vm.runInNewContext(
+      `${extractFunction('_openCognitionCaptureFromBubble')}\nthis.openCapture = _openCognitionCaptureFromBubble;`,
+      sandbox,
+    );
+    const message = { dataset: { msgId: 'msg-1' } };
+    const button = { disabled: false };
+
+    const opening = (sandbox.openCapture as (
+      source: typeof message,
+      getContent: () => string,
+      target: typeof button,
+    ) => Promise<boolean>)(
+      message,
+      () => 'Reusable approach',
+      button,
+    );
+    expect(button.disabled).toBe(true);
+    sandbox.currentCid = 'cid-b';
+    finishLoading?.();
+
+    await expect(opening).resolves.toBe(true);
+    expect(button.disabled).toBe(false);
+    expect(openCognitionCapture).toHaveBeenCalledWith({
+      conversationId: 'cid-a',
+      messageId: 'msg-1',
+    });
   });
 });

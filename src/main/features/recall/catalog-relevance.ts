@@ -40,10 +40,10 @@ function tokens(text: string): Set<string> {
 export function catalogAssetProfile(asset: CatalogSearchAsset): string {
   return [
     asset.title,
-    asset.statement,
+    asset.statement.slice(0, 1_000),
     asset.type || '',
-    ...(asset.applicableWhen || []),
-    ...(asset.forbiddenWhen || []),
+    ...(asset.applicableWhen || []).slice(0, 3),
+    ...(asset.forbiddenWhen || []).slice(0, 2),
   ].filter(Boolean).join('\n');
 }
 
@@ -71,7 +71,7 @@ export async function catalogMatches(
   queryText: string,
   assets: readonly CatalogSearchAsset[],
 ): Promise<Map<string, CatalogMatch>> {
-  const query = queryText.trim();
+  const query = queryText.trim().slice(0, 2_000);
   if (!query) return new Map();
   const profiles = assets.map((asset) => ({ id: asset.id, text: catalogAssetProfile(asset) }));
   const profileById = new Map(profiles.map((item) => [item.id, item.text]));

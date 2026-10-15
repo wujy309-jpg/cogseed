@@ -44,7 +44,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fsp from 'node:fs/promises';
 
-import { addEntryTransactional, listEntries } from '../memory';
+import { addEntry, listEntries } from '../memory';
 import { createLogger } from '../../logger';
 
 const log = createLogger('session-import:memory-import');
@@ -431,9 +431,7 @@ export async function importClaudeMemories(
       const t = text.trim();
       if (!t) continue;
       if (existing.has(t)) { skipped += 1; continue; }
-      // P-r2-11：shared MEMORY.md 写入走事务通道，避免与 cognition-mem 事务的
-      // 整文件回滚交错时被静默抹掉。
-      const res = await addEntryTransactional(userId, 'memory', t);
+      const res = addEntry(userId, 'memory', t);
       if (res.ok) { added += 1; addedHere += 1; existing.add(t); }
       else { rejected += 1; }
     }

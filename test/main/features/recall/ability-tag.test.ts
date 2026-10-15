@@ -1,4 +1,3 @@
-import { seedStoredAbilityAsset } from '../../../helpers/stored-ability-asset';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -37,9 +36,9 @@ function decisionIdOf(assetId: string): string {
 
 /** 建一条 v1、无标签的种子资产（形状对齐 family.test.ts 的先例）。 */
 async function seedAsset(userId: string, assetId: string, title = `条目${assetId}`): Promise<void> {
-
+  const { createAbilityAsset } = await assetService();
   const now = new Date().toISOString();
-  await seedStoredAbilityAsset(userId, {
+  await createAbilityAsset(userId, {
     schemaVersion: 2,
     ownerId: userId,
     id: assetId,

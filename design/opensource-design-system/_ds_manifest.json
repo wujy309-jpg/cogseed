@@ -501,6 +501,13 @@
       "subtitle": "全局搜索 ⌘K · 日期区间 · 日历 · 文件上传"
     },
     {
+      "path": "ui_kits/enterprise-app/cognition.html",
+      "group": "CogSeed",
+      "viewport": "1440x900",
+      "name": "认知资产",
+      "subtitle": "登录 · 首页 · 工作空间 · 自动化 · 智能体 / 技能 / 连接 · 任务视图"
+    },
+    {
       "path": "ui_kits/enterprise-app/index.html",
       "group": "CogSeed",
       "viewport": "1440x900",
