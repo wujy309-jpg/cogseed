@@ -7701,6 +7701,10 @@ async function runActorTurnBody(
                   name: updated.name,
                   kind: "updated",
                 });
+                const droppedSkills = await agentsFeat.unresolvedSkillRefsForAgent(uid, updated.agent_id, fields.skill_list);
+                if (droppedSkills.length) {
+                  workingText = `${workingText}\n\n<span style="color:var(--danger)">${t("chat.agent_skills_dropped", { names: droppedSkills.join("、") })}</span>`;
+                }
               } else {
                 markTurnFailure("validation", "agent_mutation_rejected");
                 workingText = `${workingText}\n\n<span style="color:var(--danger)">⚠️ Agent update failed.</span>`;
@@ -7720,6 +7724,10 @@ async function runActorTurnBody(
                 name: ag.name,
                 kind: "created",
               });
+              const droppedSkills = await agentsFeat.unresolvedSkillRefsForAgent(uid, ag.agent_id, fields.skill_list);
+              if (droppedSkills.length) {
+                workingText = `${workingText}\n\n<span style="color:var(--danger)">${t("chat.agent_skills_dropped", { names: droppedSkills.join("、") })}</span>`;
+              }
               // Space-scoped conv: auto-add the new agent to the space's
               // extra_agents so it's actually reachable from this conversation
               // (commander picker filters by the space scope; LLM dispatch is

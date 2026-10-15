@@ -2476,6 +2476,10 @@ async function _applyAgentUpdates(
       else delete data.skill_list;
     } else if (Array.isArray(v)) {
       const raw = v.filter((x) => typeof x === 'string' && safeId(x));
+      // 按**名字**写的引用也要能解析：模型看到的技能名可能是中文（如 `AI产品构建评测`），`safeId` 只认 ASCII，
+      // 先按它过滤会让这类名字在解析前就被静默丢掉。解析结果落地的一定是安全的 id。
+      // 受管创建器是封闭清单，只能写清单里的 id，所以它仍然只用 `raw`（行为不变）。
+      const namedRefs = v.filter((x): x is string => typeof x === 'string' && x.trim() !== '' && !x.startsWith('builtin:'));
       // Open built-in capabilities are not in the skill registry (so the resolver below would drop
       // them as unknown); keep the ones the client actually offers, once each.
       const builtinKept = [...new Set(v.filter((x): x is string => typeof x === 'string' && isKnownBuiltinRef(x)))];
@@ -2491,7 +2495,7 @@ async function _applyAgentUpdates(
       // refs, so another agent's private (`ownerAgent`) skill resolves as
       // unknown and gets dropped.
       const specs = await listSkillSpecsForAgentMetadata(userId, { forAgentId: agentId });
-      const { ids, unknown } = resolveSkillAllowlistRefs(specs, raw);
+      const { ids, unknown } = resolveSkillAllowlistRefs(specs, creatorPolicy ? raw : namedRefs);
       if (unknown.length) {
         log.warn(`agent ${agentId}: unknown skills dropped: ${unknown.join(',')}`);
       }
@@ -3379,16 +3383,22 @@ export async function sendToAgentEditChat(
   // Inline edit chat is bound to one agent; apply only the first block.
   const fields = blocks[0] || {};
   const updated: ExtractedFields = {};
+  let dropped: string[] = [];
   if (Object.keys(fields).length) {
     await updateAgentSpecForUser(userId, agentId, fields);
     Object.assign(updated, fields);
+    // 本机找不到的技能名不会被保存：告诉用户，而不是只写日志。
+    dropped = await unresolvedSkillRefsForAgent(userId, agentId, fields.skill_list);
   }
+  const replyText = dropped.length
+    ? `${cleanText}\n\n${t('chat.agent_skills_dropped', { names: dropped.join('、') })}`
+    : cleanText;
 
   await _appendAgentChatMessage(userId, agentId,
-    { time: nowIso(), role: 'assistant', content: cleanText });
+    { time: nowIso(), role: 'assistant', content: replyText });
   await saveAgentChatMeta(userId, agentId, { session_id: sessionId });
 
-  return { ok: true, message: cleanText, updated };
+  return { ok: true, message: replyText, updated };
 }
 
 const MAX_AGENT_PROCESS_ITEMS = 300;
@@ -3478,6 +3488,10 @@ export async function* streamSendToAgentEditChat(
         if (Object.keys(fields).length) {
           await updateAgentSpecForUser(userId, agentId, fields);
           Object.assign(updated, fields);
+          const droppedSkills = await unresolvedSkillRefsForAgent(userId, agentId, fields.skill_list);
+          if (droppedSkills.length) {
+            synthesizedProgress.push(t('process.agent.skills_dropped', { names: droppedSkills.join('、') }));
+          }
           for (const k of ['name', 'workflow', 'category'] as const) {
             if (fields[k] !== undefined) {
               synthesizedProgress.push(t('process.agent.update_field', { field: k }));
@@ -3641,6 +3655,28 @@ async function recordBirthInheritance(
     });
   } catch (err) {
     log.warn(`agent inheritance not recorded for ${agent.agent_id}: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * 模型写进 `<skills>` 的名字里，本机解析不出来（因而不会保存）的那些。
+ * 供调用方给用户一条提示——此前这些只会写一条 warn 日志，用户和创建师都不知道少了技能。
+ * 与保存路径用同一份技能清单（`listSkillSpecsForAgentMetadata`）、同一个解析器。
+ * 内置能力（`builtin:`）有自己的规则，不在这里报。
+ */
+export async function unresolvedSkillRefsForAgent(
+  userId: string,
+  agentId: string,
+  requested: unknown,
+): Promise<string[]> {
+  if (!Array.isArray(requested)) return [];
+  const refs = requested.filter((x): x is string => typeof x === 'string' && x.trim() !== '' && !x.startsWith('builtin:'));
+  if (!refs.length) return [];
+  try {
+    const specs = await listSkillSpecsForAgentMetadata(userId, { forAgentId: agentId });
+    return resolveSkillAllowlistRefs(specs, refs).unknown;
+  } catch {
+    return [];
   }
 }
 
