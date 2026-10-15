@@ -1,37 +1,52 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
 
-const mocks = vi.hoisted(() => ({ view: vi.fn(), update: vi.fn() }));
-vi.mock('../../../src/main/features/recall/semantica-settings', () => ({
-  settingsView: mocks.view,
-  updateSemanticaSettings: mocks.update,
+const mocks = vi.hoisted(() => ({
+  readSettings: vi.fn(),
+  status: vi.fn(),
+  seed: vi.fn(),
+  clear: vi.fn(),
 }));
+
+vi.mock('../../../src/main/features/recall/semantica-settings', () => ({
+  readSemanticaSettings: mocks.readSettings,
+  settingsView: vi.fn(() => ({ semanticaEnabled: true })),
+  updateSemanticaSettings: vi.fn(() => ({})),
+}));
+
+vi.mock('../../../src/main/features/recall/semantica-demo-assets', () => ({
+  getSemanticaDemoStatus: mocks.status,
+  seedSemanticaDemoAssets: mocks.seed,
+  clearSemanticaDemoAssets: mocks.clear,
+}));
+
 import { invokeHandlers } from '../../../src/main/ipc/semantica-settings';
 
-describe('Semantica settings IPC', () => {
+describe('Semantica settings IPC demo assets', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.view.mockReturnValue({ semanticaEnabled: true, semanticaStatus: 'running' });
-    mocks.update.mockReturnValue({ semanticaEnabled: true });
+    mocks.readSettings.mockReturnValue({ semanticaEnabled: true });
+    mocks.status.mockResolvedValue({ ready: false, assetCount: 0, expectedAssetCount: 8, assets: [] });
+    mocks.seed.mockResolvedValue({ createdCount: 8, updatedCount: 0, status: { ready: true } });
+    mocks.clear.mockResolvedValue({ clearedCount: 8, status: { ready: false } });
   });
 
-  it('retires demo writes and their service without changing user assets', () => {
-    expect(Object.keys(invokeHandlers).sort()).toEqual(['semantica.settings.get', 'semantica.settings.save']);
-    expect(existsSync(resolve(__dirname, '../../../src/main/features/recall/semantica-demo-assets.ts'))).toBe(false);
+  it('includes demo status with the settings view', async () => {
+    const result = await invokeHandlers['semantica.settings.get']({}, { userId: 'user-a' });
+    expect(result).toMatchObject({ demo: { expectedAssetCount: 8 } });
+    expect(mocks.status).toHaveBeenCalledWith('user-a');
   });
 
-  it('reads the user settings without enumerating or modifying assets', async () => {
-    await expect(invokeHandlers['semantica.settings.get']({}, { userId: 'user-a' }))
-      .resolves.toEqual({ settings: { semanticaEnabled: true, semanticaStatus: 'running' } });
-    expect(mocks.view).toHaveBeenCalledWith('user-a');
-    expect(mocks.update).not.toHaveBeenCalled();
+  it('seeds and clears through explicit channels when Semantica is enabled', async () => {
+    await expect(invokeHandlers['semantica.demo.seed']({}, { userId: 'user-a' }))
+      .resolves.toMatchObject({ createdCount: 8 });
+    await expect(invokeHandlers['semantica.demo.clear']({}, { userId: 'user-a' }))
+      .resolves.toMatchObject({ clearedCount: 8 });
   });
 
-  it('preserves toggle save and ignores unrelated payload fields', async () => {
-    await invokeHandlers['semantica.settings.save']({ semanticaEnabled: false, demo: true }, { userId: 'user-a' });
-    expect(mocks.update).toHaveBeenCalledWith({ semanticaEnabled: false });
-    await invokeHandlers['semantica.settings.save']({ semanticaEnabled: 'true' }, { userId: 'user-a' });
-    expect(mocks.update).toHaveBeenLastCalledWith({});
+  it('rejects demo writes while Semantica is disabled', async () => {
+    mocks.readSettings.mockReturnValue({ semanticaEnabled: false });
+    await expect(invokeHandlers['semantica.demo.seed']({}, { userId: 'user-a' }))
+      .rejects.toThrow(/must be enabled/);
+    expect(mocks.seed).not.toHaveBeenCalled();
   });
 });

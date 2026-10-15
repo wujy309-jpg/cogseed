@@ -223,8 +223,6 @@ export function classifyInheritedAsset(
     else if (reason === 'maturity_below_default_use') reasons.push('use_policy_never');
   }
 
-  if (runtime.defaultUsePolicy === 'never' && !reasons.includes('use_policy_never')) reasons.push('use_policy_never');
-
   // 内容完整性：出生时冻结的是哪一版、哪一份内容，现在还对不对得上。
   if (ref.version !== asset.version) reasons.push('version_changed');
   if (ref.content_hash !== undefined && ref.content_hash !== inheritedAssetContentHash(asset)) {

@@ -7,7 +7,7 @@ import { getWorkspacePath } from '../user_workspace';
 import { loadCommittedProjectionKnowledge } from '../recall/projection-knowledge';
 import { listAbilityAssets } from '../recall/asset-service';
 import {
-  filterRecallAssetsForDefaultInjection,
+  filterRecallAssetsForAgentRead,
   filterRecallAssetsForCommittedProjection,
 } from '../recall/prompt-injection';
 import { evaluateRules } from '../recall/rule-engine';
@@ -315,7 +315,7 @@ async function commitCommanderForecastUnlocked(
     ...(effectiveWorkspaceId ? { workspaceId: effectiveWorkspaceId } : {}),
     taskText,
   };
-  const readablePersonalAssets = await filterRecallAssetsForDefaultInjection(
+  const readablePersonalAssets = await filterRecallAssetsForAgentRead(
     userId,
     allAssets.filter((asset) => asset.type === 'personal'),
     runtimeContext,

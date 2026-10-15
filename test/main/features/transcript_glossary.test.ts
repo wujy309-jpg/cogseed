@@ -34,6 +34,7 @@ import {
   discardCandidate,
   recordCandidates,
   recordReplacement,
+  rememberConfirmedPairs,
   removeContextAllow,
   retargetEntry,
   setIgnored,
@@ -402,18 +403,56 @@ describe('entryId', () => {
   });
 });
 
-describe('历史会议纠错词条继续按作用域读取和应用', () => {
-  it('原有 meeting_accept 词条只命中原文档，不改变词表', () => {
-    const original = upsertEntry(uid, { wrong: '付平', correct: '傅平', source: 'manual', docId: 'doc_1' }).entry!;
-    const file = loadGlossary(uid);
-    file.entries.find(entry => entry.id === original.id)!.source = 'meeting_accept';
-    saveGlossary(uid, file);
-    const before = JSON.stringify(loadGlossary(uid));
-    const entries = listEntries(uid);
+/**
+ * 「勾选并应用 = 确认」的落表路径（D1=B：模型建议被采纳后成为词表规则）。
+ *
+ * 这里钉的是一个**真实陷阱**：`upsertEntry` 里 `source === 'meeting_accept'`
+ * 只会把 `global` 置 false，却不动 `docIds` ⇒ 条目 `scopeAllows` 恒为 false，
+ * 是一条永不命中的死规则（'meeting_accept' 一直没有调用方的原因）。
+ */
+describe('rememberConfirmedPairs：确认的对才进词表，且只对本文档生效', () => {
+  it('按 meeting_accept 入册，作用域收窄到当前文档（不是全局）', () => {
+    const r = rememberConfirmedPairs(uid, [{ wrong: '付平', correct: '傅平' }], { docId: 'doc_1' });
+    expect(r).toMatchObject({ created: 1, skipped: 0 });
+    const entry = listEntries(uid, { status: 'active' })[0];
+    expect(entry).toMatchObject({ wrong: '付平', correct: '傅平', source: 'meeting_accept' });
+    expect(entry.scope.global).toBe(false);
+    expect(entry.scope.docIds).toEqual(['doc_1']);
+  });
+
+  it('该规则真的会命中本文档、且不影响别的文档（这条曾经是死规则）', () => {
+    rememberConfirmedPairs(uid, [{ wrong: '付平', correct: '傅平' }], { docId: 'doc_1' });
+    const entries = listEntries(uid, { status: 'active' });
     const text = '这个方案要付平老师确认。';
-    expect(scanText(text, entries, { docId: 'doc_1' }).candidates.map(c => [c.wrong, c.correct])).toEqual([['付平', '傅平']]);
-    expect(scanText(text, entries, { docId: 'doc_2' }).candidates).toEqual([]);
-    expect(JSON.stringify(loadGlossary(uid))).toBe(before);
+    const here = scanText(text, entries, { docId: 'doc_1' });
+    expect(here.candidates.map((c) => [c.wrong, c.correct])).toEqual([['付平', '傅平']]);
+    const other = scanText(text, entries, { docId: 'doc_2' });
+    expect(other.candidates).toEqual([]);
+  });
+
+  it('没有 docId 时如实跳过，不写"永不命中"的死条目', () => {
+    const r = rememberConfirmedPairs(uid, [{ wrong: 'a', correct: 'b' }], {});
+    expect(r).toMatchObject({ created: 0, skipped: 1 });
+    expect(listEntries(uid)).toEqual([]);
+  });
+
+  it('重复确认同一对是幂等更新，且同一批里的重复只算一条', () => {
+    rememberConfirmedPairs(uid, [{ wrong: '付平', correct: '傅平' }], { docId: 'doc_1' });
+    const again = rememberConfirmedPairs(uid, [
+      { wrong: '付平', correct: '傅平' },
+      { wrong: '付平', correct: '傅平' },
+    ], { docId: 'doc_1' });
+    expect(again).toMatchObject({ created: 0, updated: 1 });
+    expect(listEntries(uid, { status: 'active' })).toHaveLength(1);
+  });
+
+  it('空目标不写脏数据，且不因单条不合法让整批失败', () => {
+    const r = rememberConfirmedPairs(uid, [
+      { wrong: '', correct: 'x' },
+      { wrong: '付平', correct: '傅平' },
+    ], { docId: 'doc_1' });
+    expect(r).toMatchObject({ created: 1, skipped: 1 });
+    expect(listEntries(uid, { status: 'active' })).toHaveLength(1);
   });
 });
 

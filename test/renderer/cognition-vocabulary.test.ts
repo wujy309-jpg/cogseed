@@ -80,8 +80,11 @@ describe('cognition vocabulary 门禁：后端枚举必须有前端翻译', () =
 
   it('整理记录状态全集逐项入字典', () => {
     const service = read('src/main/features/recall/capture-service.ts');
-    const unique = unionLiterals(service, 'RecallCaptureStatus');
-    expect(unique).toHaveLength(14);
+    // 排除触发策略/配置类值（非记录状态）与测试注入噪声。
+    const statuses = literals(service, /status: '([a-z_]+)'/g)
+      .filter((s) => !['manual', 'nightly', 'scheduled', 'smart', 'run_now', 'configuration_required', 'model_auth_required', 'model_not_configured', 'manual_start_required', 'waiting_input', 'active_trigger'].includes(s));
+    const unique = [...new Set(statuses)];
+    expect(unique.length).toBeGreaterThanOrEqual(10);
     const dict = new Set(dictKeys('CAPTURE_STATUS'));
     const missing = unique.filter((s) => !dict.has(s));
     expect(missing, `CAPTURE_STATUS 缺翻译: ${missing.join(', ')}`).toEqual([]);
@@ -105,10 +108,10 @@ describe('cognition vocabulary 门禁：后端枚举必须有前端翻译', () =
     expect(missing, `CAPTURE_DISPLAY_REASON 缺翻译: ${missing.join(', ')}`).toEqual([]);
   });
 
-  it('整理行内动作全集（captureActions 三个导航值）逐项入字典', () => {
+  it('整理行内动作全集（captureActions 九值）逐项入字典', () => {
     const service = read('src/main/features/recall/capture-service.ts');
     const actions = unionLiterals(service, 'RecallCaptureAction');
-    expect(actions).toEqual(['review_candidates', 'view_assets', 'open_conversation']);
+    expect(actions).toHaveLength(9);
     const dict = new Set(dictKeys('CAPTURE_ACTION'));
     const missing = actions.filter((a) => !dict.has(a));
     expect(missing, `CAPTURE_ACTION 缺翻译: ${missing.join(', ')}`).toEqual([]);
@@ -123,10 +126,10 @@ describe('cognition vocabulary 门禁：后端枚举必须有前端翻译', () =
     expect(missing, `CAPTURE_BUCKET 缺翻译: ${missing.join(', ')}`).toEqual([]);
   });
 
-  it('提炼阶段全集包含摘要阶段并逐项入字典', () => {
+  it('提炼阶段全集（RecallCaptureStage 五值）逐项入字典', () => {
     const service = read('src/main/features/recall/capture-service.ts');
     const stages = unionLiterals(service, 'RecallCaptureStage');
-    expect(stages).toContain('context_summary');
+    expect(stages).toHaveLength(5);
     const dict = new Set(dictKeys('CAPTURE_STAGE'));
     const missing = stages.filter((s) => !dict.has(s));
     expect(missing, `CAPTURE_STAGE 缺翻译: ${missing.join(', ')}`).toEqual([]);

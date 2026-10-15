@@ -9,7 +9,6 @@ import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vm from 'node:vm';
-import { loadCognitionAssets } from './helpers/cognition-renderer';
 
 const skillsSource = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/skills.js'), 'utf8');
 const bindingsSource = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/skills-bindings.js'), 'utf8');
@@ -62,12 +61,12 @@ function loadSkillsRenderer() {
 
 const ACTIONABLE = {
   canView: true, canEdit: true, canConfirm: true, canPromote: true, canReject: true,
-  canRetry: false, canBatchSelect: true, needsUserAction: true,
+  canDefer: true, canRetry: false, canBatchSelect: true, needsUserAction: true,
   countsAsPending: true, isSnoozed: false, isTerminal: false,
 };
 const READ_ONLY = {
   canView: true, canEdit: false, canConfirm: false, canPromote: false, canReject: false,
-  canRetry: false, canBatchSelect: false, needsUserAction: false,
+  canDefer: false, canRetry: false, canBatchSelect: false, needsUserAction: false,
   countsAsPending: false, isSnoozed: false, isTerminal: true,
 };
 
@@ -134,15 +133,9 @@ describe('recall candidate pool renders from capability, not raw status', () => 
   });
 
   it('never renders decision actions for terminal candidates', () => {
-    for (const status of ['confirmed', 'integrated', 'rejected', 'ignored', 'expired', 'superseded']) {
-      const loaded = loadCognitionAssets({ candidates: [{ id: 'history', status, summary: '已处理建议', judgment: '保留原文', suggestedType: 'fact', suggestedScope: 'general', capabilities: { countsAsPending: true, canEdit: true, canPromote: true, canReject: true } }] }, { name: 'activity', activityView: 'done' });
-      const html = loaded.render();
-      expect(loaded.ns.activityModel().attention).toHaveLength(0);
-      expect(loaded.ns.activityModel().done).toHaveLength(1);
-      expect(html).toContain('本记录为只读');
-      expect(html).not.toContain('data-act="cand-adopt-with-form"');
-      expect(html).not.toContain('data-act="activity-defer"');
-    }
+    // 已处理（confirmed/rejected/ignored）只出现在处理记录折叠区，无决策按钮。
+    expect(viewsSource).toContain("['confirmed', 'rejected', 'ignored']");
+    expect(viewsSource).toContain('fold-processed');
   });
 
   it('treats a candidate without capabilities as read-only instead of guessing', () => {
@@ -154,6 +147,7 @@ describe('recall candidate pool renders from capability, not raw status', () => 
     expect(viewsSource).toContain('const caps = candidate.capabilities || {}');
     expect(viewsSource).toContain('const canEdit = !!caps.canEdit');
     expect(viewsSource).toContain('const canPromote = !!caps.canPromote');
+    expect(viewsSource).toContain('const canDefer = !!caps.canDefer');
     expect(viewsSource).toContain('const canReject = !!caps.canReject');
   });
 });
@@ -178,13 +172,9 @@ describe('recall candidate detail renders from capability', () => {
     expect(viewsSource).toContain('cognition.candidate_evidence_all_unavailable');
   });
 
-  it('候选编辑保留内容和任务范围，不再选择认知分类', () => {
-    const loaded = loadCognitionAssets({ candidates: [{ id: 'unclassified', suggestedType: 'cognition', summary: '长期认知', judgment: '核对原文后再总结。', suggestedScope: 'general', status: 'pending_review', capabilities: { canEdit: true, canPromote: true, canReject: true } }] });
-    const html = loaded.ns.candidate.formCard(loaded.store.candidates[0]);
-    expect(html).toContain('data-f="judgment"');
-    expect(html).toContain('data-f="scope"');
-    expect(html).not.toContain('data-act="cand-type"');
-    expect(html).not.toContain('data-f="type"');
+  it('选中之后立刻画成 chip——用户看到的就是保存后的样子', () => {
+    expect(viewsSource).toContain('ca-chip');
+    expect(viewsSource).toContain('data-act="cand-type"');
   });
 
   it('已被引用的来源不再出现在可选列表里，避免选出重复证据', () => {
@@ -226,22 +216,10 @@ describe('confirmed candidate exits into the formal asset version chain', () => 
     expect(coreSource).toContain("router.go({ name: 'overview', assetId: promotedAssetId })");
   });
 
-  it('keeps a confirmed record read-only and reports unknown result when no asset can be located', () => {
-    const loaded = loadCognitionAssets({ candidates: [{
-      id: 'unlocated-result', status: 'confirmed', summary: '结果需要核对', judgment: '保存内容', suggestedType: 'template',
-      capabilities: { countsAsPending: true, canPromote: true, canEdit: true, canReject: true },
-    }] }, { name: 'activity', activityView: 'done' });
-    const html = loaded.render();
-    expect(html).toContain('保存结果待核对');
-    expect(html).toContain('没有提供可定位的资产结果');
-    expect(html).not.toContain('data-act="go-inbox-asset"');
-    expect(html).not.toContain('data-act="cand-adopt-with-form"');
-    expect(html).not.toContain('data-act="cand-decide"');
-    expect(loaded.ns.activityModel().attention).toHaveLength(0);
-    loaded.store.candidates[0].promotedAssetId = 'real-result';
-    const resolved = loaded.render();
-    expect(resolved).toContain('data-act="go-inbox-asset"');
-    expect(resolved).toContain('data-id="real-result"');
+  it('offers no asset entry when the candidate never produced one', () => {
+    expect(coreSource).toContain('(result && result.asset && result.asset.id) || (result && result.assetId)');
+    expect(coreSource).toContain("router.go({ name: 'overview', assetId: promotedAssetId })");
+    expect(coreSource).toContain("router.go({ name: 'review' })");
   });
 });
 
@@ -259,7 +237,7 @@ describe('governance page carries the asset revision entry', () => {
   });
 
   it('refuses to open a blank form when the authoritative record is missing', () => {
-    expect(viewsSource).toContain('assetDetail(asset, route, { compact: true })');
+    expect(viewsSource).toContain('assetDetail(asset, route)');
     expect(viewsSource).not.toContain('blank form');
   });
 

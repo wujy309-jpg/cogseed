@@ -1,11 +1,10 @@
-import { nightlyFormation } from './helpers/nightly-candidate';
 import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vm from 'node:vm';
 
 import { getRecallCandidateCapabilities } from '../../src/main/features/recall/candidate-capabilities';
-import { renderCognition, renderCognitionWithDialogs, loadCognitionAssets } from './helpers/cognition-renderer';
+import { renderCognition } from './helpers/cognition-renderer';
 
 /** 候选桩的能力取自主进程的真实映射，测试桩与 IPC DTO 用同一套判据。 */
 const CAPS = (status: string, risk?: 'low' | 'medium' | 'high') =>
@@ -13,13 +12,14 @@ const CAPS = (status: string, risk?: 'low' | 'medium' | 'high') =>
 
 function cognitionCandidate(overrides: Record<string, unknown> = {}) {
   return {
-    ...nightlyFormation(), id: 'cand-review',
+    id: 'cand-review',
     status: 'pending_review',
     capabilities: CAPS('pending_review'),
     judgment: 'Keep every approval tied to source evidence.',
     summary: 'Traceable review rule',
     suggestedType: 'rule',
     suggestedScope: 'project,review',
+    sourceRefs: [],
     ...overrides,
   };
 }
@@ -283,16 +283,18 @@ describe('skills renderer frontmatter parsing', () => {
     ]);
   });
 
-  it('opens pending suggestions from compact activity rows and confirms only in detail', () => {
+  it('renders pending Recall candidates with a primary confirm on the card (specs/018 T011)', () => {
     const candidate = cognitionCandidate();
     const list = renderCognition({ name: 'review' }, { candidates: [candidate] });
     expect(visibleText(list)).toContain('Keep every approval tied to source evidence.');
-    expect(list).toContain('data-act="activity-select" data-id="candidate:cand-review"');
-    // 双栏视图默认选中首条；写操作只属于右侧详情，列表行不直接批准。
-    const table = list.match(/<table[\s\S]*?<\/table>/)?.[0] || '';
-    expect(table).not.toContain('data-act="cand-adopt-with-form"');
-    expect(table).not.toContain('data-act="cand-decide"');
-    expect(list).toContain('ca-activity-layout');
+    expect(list).toContain('data-act="open-candidate" data-id="cand-review"');
+    // specs/018 T011：卡片主按钮 = 推荐动作（确认），沿既有 cand-adopt-with-form
+    // 通道（卡片不在 .ca-candidate-detail 内 → 按未携带编辑确认）；
+    // 2026-09-29 子安标注整改：动作全部平铺右侧同一行，不再有「其他处理」折叠。
+    expect(list).toContain('data-act="cand-adopt-with-form"');
+    expect(list).toContain('data-act="cand-decide"');
+    expect(list).not.toContain('其他处理');
+    expect(list).toContain('ca-card-actions-flat');
 
     const detail = renderCognition(
       { name: 'review', candidateId: 'cand-review' },
@@ -303,17 +305,14 @@ describe('skills renderer frontmatter parsing', () => {
     expect(detail).toContain('data-action="reject"');
   });
 
-  it('keeps deferred Recall candidates findable in attention and actionable in their detail', () => {
+  it('keeps deferred Recall candidates actionable in the wait list after #266', () => {
     const html = renderCognition(
       { name: 'review' },
       { candidates: [cognitionCandidate({ id: 'cand-deferred', status: 'deferred', capabilities: CAPS('deferred'), judgment: 'Add invariant checks.' })] },
     );
 
-    expect(html).toContain('data-id="candidate:cand-deferred"');
-    expect(visibleText(html)).toContain('稍后 · 待处理');
-    const detail = renderCognition({ name: 'activity', candidateId: 'cand-deferred' }, { candidates: [cognitionCandidate({ id: 'cand-deferred', status: 'deferred', capabilities: CAPS('deferred'), judgment: 'Add invariant checks.' })] });
-    expect(visibleText(detail)).toContain('Add invariant checks.');
-    expect(detail).toContain('data-act="cand-adopt-with-form"');
+    expect(html).toContain('data-act="open-candidate" data-id="cand-deferred"');
+    expect(visibleText(html)).toContain('Add invariant checks.');
   });
 
   it('renders Recall candidate judgment, scope, evidence, and action set', () => {
@@ -322,7 +321,6 @@ describe('skills renderer frontmatter parsing', () => {
       {
         candidates: [cognitionCandidate({
           sourceRefs: [
-            ...nightlyFormation().sourceRefs,
             { kind: 'execution', id: 'run-1', title: '运行证据' },
             { kind: 'memory', id: 'experience-1', title: '记忆证据' },
           ],
@@ -342,7 +340,7 @@ describe('skills renderer frontmatter parsing', () => {
 
   it('renders current proof counts and usage records in asset detail', () => {
     const asset = cognitionAsset();
-    const html = renderCognitionWithDialogs(
+    const html = renderCognition(
       { name: 'overview', assetId: 'asset-rule' },
       {
         assets: [asset],
@@ -356,60 +354,69 @@ describe('skills renderer frontmatter parsing', () => {
     expect(visibleText(html)).toContain('Scoped review rule');
     // 2026-09-17 下沉改：「用过几次」随详细信息归版本展开块；顶部汇总在使用记录区。
     // 2026-09-28 词表统一：计量统一为「被任务用过 N 次」（四语词条已同步）。
-    expect(visibleText(html)).toContain('带入或读取 2 次');
+    expect(visibleText(html)).toContain('被任务用过 1 次');
     expect(visibleText(html)).not.toContain('被实际使用');
     expect(html).toContain('data-act="proof-toggle" data-id="proof-1"');
   });
 
-  it('renders assets as integrated rows in my cognition while the tree is disabled', () => {
-    // 树入口暂禁用；资产仍在「我的认知」里按整行展示。
+  it('renders assets as tree-first integrated rows instead of nested cards', () => {
+    // 2026-09-21 五页签迁移:树是独立页;「我的认知」页只保留列表/目录与筛选,
+    // 资产以整行(数据驱动导航)呈现,不再回到嵌套卡片。
     const html = renderCognition(
       { name: 'overview' },
       { assets: [cognitionAsset(), cognitionAsset({ id: 'asset-template', type: 'template', title: 'Review template' })] },
     );
 
+    const treePage = renderCognition(
+      { name: 'tree' },
+      { assets: [cognitionAsset(), cognitionAsset({ id: 'asset-template', type: 'template', title: 'Review template' })] },
+    );
+    // 树页是整页画布（原型 .tree-stage），不再是列表页里的卡片。
+    expect(treePage).toContain('tree-stage');
     expect(html).not.toContain('tree-stage');
-    expect(html).toContain('id="ca-library-filter-contentCategory"');
-    expect(html).toContain('data-act="library-select" data-id="asset-rule"');
-    expect(html).toContain('data-act="library-select" data-id="asset-template"');
+    expect(html).toContain('data-act="filter-cat"');
+    expect(html).toContain('data-go-asset="asset-rule"');
+    expect(html).toContain('data-go-asset="asset-template"');
     expect(html).not.toContain('cognition-asset-card');
   });
 
-  it('renders one stable detail entry per suggestion without inline publishing actions', () => {
+  it('renders Recall candidates as entry cards with exactly one primary action each (specs/018 T011)', () => {
     const html = renderCognition(
       { name: 'review' },
       { candidates: [cognitionCandidate(), cognitionCandidate({ id: 'cand-second', judgment: 'Second candidate' })] },
     );
 
-    expect(html.match(/data-act="activity-select"/g)).toHaveLength(2);
-    expect(html.match(/class="[^"]*\bca-candidate-detail\b/g)).toHaveLength(1);
-    const table = html.match(/<table[\s\S]*?<\/table>/)?.[0] || '';
-    expect(table).not.toContain('data-act="cand-adopt-with-form"');
-    expect(html).toContain('data-id="candidate:cand-review"');
-    expect(html).toContain('data-id="candidate:cand-second"');
+    expect(html.match(/class="cand"/g)).toHaveLength(2);
+    // 每卡恰好一个主按钮（确认），打开详情入口在标题行与动作行平铺区里
+    //（2026-09-29 起「其他处理」折叠已撤）。
+    expect(html.match(/data-act="cand-adopt-with-form"/g)).toHaveLength(2);
+    expect(html.match(/data-act="open-candidate"/g).length).toBeGreaterThanOrEqual(2);
   });
 
   it('renders ability assets with PRD categories and without marketplace skill promotion', () => {
     const html = renderCognition({ name: 'overview' }, { assets: [] });
 
-    for (const category of ['规则', '偏好', '模板', '方法', '经验教训']) {
-      expect(html).toContain(category);
+    for (const category of ['个人信息', '规则与偏好', '模板与范例', '技能与方法']) {
+      expect(visibleText(html)).toContain(category);
     }
     expect(html).not.toContain('marketplace');
     expect(html).not.toContain('office-excel');
   });
 
-  it('keeps empty content categories selectable in the shared category filter', () => {
-    const loaded = loadCognitionAssets({ assets: [] }, { name: 'overview' });
-    const html = loaded.render();
-    expect(html).toContain('id="ca-library-filter-contentCategory"');
-    for (const category of ['rule', 'preference', 'template', 'method', 'lesson']) {
-      loaded.ns.library.state.contentCategory = category;
-      const filtered = loaded.render();
-      expect(filtered).toContain('没有匹配内容');
-      expect(filtered).toContain('data-act="library-clear"');
+  it('lets users view empty ability asset categories from the accounting cards', () => {
+    // 2026-09-21 五页签迁移:空分类的可达入口在两处——「我的认知」的筛选 chips
+    // 与「认知树」页的分类块(空分类标 is-empty,仍可点进列表)。
+    const html = renderCognition({ name: 'overview' }, { assets: [] });
+    const treePage = renderCognition({ name: 'tree' }, { assets: [] });
+
+    expect(html.match(/data-act="filter-cat"/g)?.length || 0).toBeGreaterThanOrEqual(4);
+    for (const categoryId of ['personal', 'rule', 'template', 'skill_method']) {
+      expect(html).toContain(`data-act="filter-cat" data-id="${categoryId}"`);
     }
-    expect(renderCognition({ name: 'tree' }, { assets: [] })).not.toContain('tree-stage');
+    // 空分类在树上照常出枝（计数 0，标签与光斑照画），不会消失——原型口径。
+    for (const categoryId of ['skill_method', 'fact', 'rule', 'template']) {
+      expect(treePage).toContain(`data-id="${categoryId}"`);
+    }
   });
 
   it('renders the selected ability asset detail instead of always using the first asset', () => {
@@ -423,12 +430,12 @@ describe('skills renderer frontmatter parsing', () => {
       },
     );
 
-    expect(html).toContain('<h2>Second Method</h2>');
-    expect(visibleText(html.split('<aside class="ca-library-detail"')[1])).not.toContain('First Rule');
+    expect(html).toContain('<h1>Second Method</h1>');
+    expect(visibleText(html)).not.toContain('First Rule');
   });
 
   it('normalizes structured evidence refs and only marks longer audit histories as truncated', () => {
-    const html = renderCognitionWithDialogs(
+    const html = renderCognition(
       { name: 'overview', assetId: 'asset-rule' },
       {
         assets: [cognitionAsset({
@@ -451,14 +458,13 @@ describe('skills renderer frontmatter parsing', () => {
     expect(visibleText(html)).not.toContain('kse-episode-1');
     expect(visibleText(html)).not.toContain('conversation-1');
     expect(visibleText(html)).toContain('任务复盘：一次任务');
-    expect(visibleText(html)).toContain('不可读取');
-    expect(html).not.toContain('data-act="open-conversation" data-id="conversation-1"');
+    expect(visibleText(html)).toContain('来源记录不可用');
     expect(visibleText(html)).not.toContain('[object Object]');
     expect(visibleText(html)).not.toContain('仅显示最近 12 条');
   });
 
   it('shows the ledger four (actor / time / before-after / reason) and the one-step rollback entry', () => {
-    const html = renderCognitionWithDialogs(
+    const html = renderCognition(
       { name: 'overview', assetId: 'asset-rule' },
       {
         assets: [cognitionAsset({
@@ -490,13 +496,17 @@ describe('skills renderer frontmatter parsing', () => {
     expect(html).not.toContain('data-act="rollback-asset"');
   });
 
-  it('filters the integrated asset list by content category', () => {
-    const loaded = loadCognitionAssets({ assets: [
-      cognitionAsset({ id: 'asset-rule', title: 'Rule asset', contentCategory: 'rule' }),
-      cognitionAsset({ id: 'asset-template', title: 'Template asset', contentCategory: 'template' }),
-    ] }, { name: 'overview' });
-    loaded.ns.library.state.contentCategory = 'rule';
-    const html = loaded.render();
+  it('filters the integrated asset list by the selected tree category', () => {
+    const html = renderCognition(
+      { name: 'overview', category: 'rule' },
+      {
+        assets: [
+          cognitionAsset({ id: 'asset-rule', title: 'Rule asset', type: 'rule' }),
+          cognitionAsset({ id: 'asset-template', title: 'Template asset', type: 'template' }),
+        ],
+      },
+    );
+
     expect(visibleText(html)).toContain('Rule asset');
     expect(visibleText(html)).not.toContain('Template asset');
   });
@@ -528,14 +538,10 @@ describe('skills renderer frontmatter parsing', () => {
       // 「撤回使用」已随界面按钮删除（审计 R3，2026-09-28：0 使用＋终态危险）；
       // audit_revoked 台账标签与 status==='revoked' 过滤逻辑保留（历史展示）。
       expect(html).not.toContain('data-action="revoke"');
-      expect(html).not.toContain('data-action="purge"');
+      expect(html).toContain('data-action="purge"');
     }
     expect(archived).not.toContain('data-action="delete"');
-    expect(archived).not.toContain('data-action="purge"');
-    const deleted = renderStatus('deleted');
-    expect(deleted).toContain('尚未读到有效的删除保留期记录');
-    expect(deleted).toMatch(/disabled[^>]*data-action="restore"/);
-    expect(deleted).not.toContain('data-act="purge-deleted-asset"');
+    expect(archived).toContain('data-action="purge"');
   });
 });
 

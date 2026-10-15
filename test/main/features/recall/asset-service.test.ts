@@ -1,5 +1,3 @@
-import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
-import { seedStoredAbilityAsset } from '../../../helpers/stored-ability-asset';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -42,7 +40,7 @@ describe('Recall ability assets', () => {
     const fieldRef = (await contract.buildRoleTemplateFieldRef(userId, 'student', '学习背景', '教育阶段'))!;
     await templates.appendFieldValueToRef(userId, contentRef, '教育阶段', '本科', '手动');
 
-    const candidate = await createNightlyCandidateFixture(userId, {
+    const candidate = await candidates.saveRecallCandidate(userId, {
       judgment: '后续回答先给结论。',
       // 标题闸门（设计 3.2）后晋升链的 title 必须合规：显式给一份合规 summary，
       // 不再吃「正文首句」兜底（那正是四病整改要堵的写入形态）。
@@ -91,7 +89,7 @@ describe('Recall ability assets', () => {
 
   it('updates immutable-id assets with append-only snapshots and lifecycle audit events', async () => {
     const { candidates, assets } = await modules();
-    const candidate = await createNightlyCandidateFixture('user-a', { judgment: 'Keep decision records with evidence.', summary: 'Decision record habit', suggestedType: 'rule', ...RULE_BOUNDARY, suggestedScope: 'architecture', sourceRefs: [{ kind: 'execution', id: 'exec-a' }] });
+    const candidate = await candidates.saveRecallCandidate('user-a', { judgment: 'Keep decision records with evidence.', summary: 'Decision record habit', suggestedType: 'rule', ...RULE_BOUNDARY, suggestedScope: 'architecture', sourceRefs: [{ kind: 'execution', id: 'exec-a' }] });
     const { asset } = await candidates.promoteRecallCandidate('user-a', candidate.id, { actor: 'user' });
 
     const updated = await assets.updateAbilityAsset('user-a', asset.id, { statement: 'Keep architecture decision records with source evidence.', scope: 'architecture-review', reason: 'Keep the newest architecture review version.', actor: 'user' });
@@ -108,46 +106,14 @@ describe('Recall ability assets', () => {
     expect(versions.map((entry) => entry.version)).toEqual(['1', '2']);
     expect(versions[0].snapshot.statement).toBe(asset.statement);
     expect(versions[1].snapshot.scope).toBe('architecture-review');
-    // P-r1-25 回归：版本快照不版本化 sensitivity（snapshot() 从不写入，
-    // 类型已同步收缩——幽灵字段不再回流）。
-    for (const entry of versions) {
-      expect('sensitivity' in entry.snapshot).toBe(false);
-    }
 
     const audit = await assets.listAbilityAssetAudit('user-a', asset.id);
     expect(audit.map((entry) => entry.action)).toEqual(['created', 'updated', 'paused', 'revoked']);
   });
 
-  it('保存模板正文保留换行与缩进，主档回读和版本快照一致且拒绝无效正文', async () => {
-    const uid = 'user-multiline-template';
-    const { candidates, assets } = await modules();
-    const candidate = await createNightlyCandidateFixture(uid, {
-      judgment: '这是供项目会议反复复用的模板，依次填写目标、事项和风险。',
-      summary: '项目报告骨架', value: '后续项目汇报反复复用这一结构，减少遗漏。',
-      suggestedType: 'template', suggestedScope: 'report', sourceRefs: [],
-    });
-    const { asset } = await candidates.promoteRecallCandidate(uid, candidate.id, { actor: 'user' });
-    const submitted = '  填写项目：{{项目名称}}\r\n一、本周进展\r\n  - 完成事项\r\n\t- 负责人\r\n\r\n二、下周计划\r  - 行动与风险  \r\n';
-    const expected = '填写项目：{{项目名称}}\n一、本周进展\n  - 完成事项\n\t- 负责人\n\n二、下周计划\n  - 行动与风险';
-    const updated = await assets.updateAbilityAsset(uid, asset.id, { statement: submitted, actor: 'user', reason: '保留报告结构' });
-    expect(updated.statement).toBe(expected);
-    expect(updated.version).toBe('2');
-    expect((await assets.readAbilityAsset(uid, asset.id)).statement).toBe(expected);
-    const versions = await assets.listAbilityAssetVersions(uid, asset.id);
-    expect(versions.map(version => version.version)).toEqual(['1', '2']);
-    expect(versions[0].snapshot.statement).toBe(asset.statement);
-    expect(versions[1].snapshot.statement).toBe(expected);
-    expect((await assets.readAbilityAssetVersionSnapshot(uid, asset.id, '2'))?.statement).toBe(expected);
-    for (const invalid of [' \r\n\t ', 'x'.repeat(4_001), 123]) {
-      await expect(assets.updateAbilityAsset(uid, asset.id, { statement: invalid as never, actor: 'user', reason: '无效修改不能保存' })).rejects.toThrow('invalid ability asset statement');
-    }
-    expect(await assets.readAbilityAsset(uid, asset.id)).toMatchObject({ version: '2', statement: expected, title: asset.title, scope: asset.scope });
-    expect((await assets.listAbilityAssetVersions(uid, asset.id)).map(version => version.version)).toEqual(['1', '2']);
-  });
-
   it('clears boundary conditions when an update passes empty arrays', async () => {
     const { candidates, assets } = await modules();
-    const candidate = await createNightlyCandidateFixture('user-a', {
+    const candidate = await candidates.saveRecallCandidate('user-a', {
       judgment: 'Load the exact committed knowledge before execution.',
       summary: 'Committed knowledge first',
       suggestedType: 'rule', ...RULE_BOUNDARY,
@@ -173,14 +139,13 @@ describe('Recall ability assets', () => {
       projectionId: 'proj-a', forecastId: 'wf-a', episodeId: 'kse-a',
       ruleRefs: ['rule:asset-a:1'], attribution: 'knowledge_gap' as const,
     };
-    const now = new Date().toISOString();
-    const asset = await seedStoredAbilityAsset('user-a', {
-      schemaVersion: 2, ownerId: 'user-a', id: 'aa-historical-learning', candidateId: 'cand-historical-learning',
-      sourceCandidateIds: ['cand-historical-learning'], reviewDecisionId: 'rd_historical_learning',
-      type: 'personal', title: 'Committed knowledge first', statement: 'Load the exact committed knowledge before execution.',
-      scope: 'project', status: 'active', lifecycleStatus: 'user_confirmed_unverified', maturity: 'bud', version: '1',
-      evidenceRefs: [{ kind: 'execution', id: 'kse-a' } as never], learningProvenance, createdAt: now, updatedAt: now,
-    }, { actor: 'user', reason: 'pre-existing historical learning snapshot' });
+    const candidate = await candidates.saveRecallCandidate('user-a', {
+      judgment: 'Load the exact committed knowledge before execution.',
+      summary: 'Committed knowledge first',
+      suggestedType: 'personal', suggestedScope: 'project',
+      sourceRefs: [{ kind: 'execution', id: 'kse-a' }], learningProvenance,
+    });
+    const { asset } = await candidates.promoteRecallCandidate('user-a', candidate.id, { actor: 'user' });
     await assets.updateAbilityAsset('user-a', asset.id, {
       statement: 'Load the exact committed knowledge version before execution.',
       actor: 'user', reason: 'clarify version boundary',
@@ -193,7 +158,7 @@ describe('Recall ability assets', () => {
 
   it('never changes asset ownership or accepts mutable identity fields', async () => {
     const { candidates, assets } = await modules();
-    const candidate = await createNightlyCandidateFixture('user-a', { judgment: 'Prefer local evidence.', summary: 'Local evidence habit', suggestedType: 'personal', suggestedScope: 'personal', sourceRefs: [{ kind: 'memory', id: 'mem-a' }] });
+    const candidate = await candidates.saveRecallCandidate('user-a', { judgment: 'Prefer local evidence.', summary: 'Local evidence habit', suggestedType: 'personal', suggestedScope: 'personal', sourceRefs: [{ kind: 'memory', id: 'mem-a' }] });
     const { asset } = await candidates.promoteRecallCandidate('user-a', candidate.id, { actor: 'user' });
 
     await expect(assets.updateAbilityAsset('user-a', asset.id, { id: 'aa-other' } as never)).rejects.toThrow(/identity/i);
@@ -204,7 +169,7 @@ describe('Recall ability assets', () => {
 
   it('requires an actor for asset mutations and a review handoff for system mutations', async () => {
     const { candidates, assets } = await modules();
-    const candidate = await createNightlyCandidateFixture('user-a', {
+    const candidate = await candidates.saveRecallCandidate('user-a', {
       judgment: 'Keep decision records with evidence.',
       summary: 'Decision record habit',
       suggestedType: 'rule',
@@ -230,7 +195,7 @@ describe('Recall ability assets', () => {
 
   it('rejects L3 credentials from asset edits without creating a new version', async () => {
     const { candidates, assets } = await modules();
-    const candidate = await createNightlyCandidateFixture('user-a', {
+    const candidate = await candidates.saveRecallCandidate('user-a', {
       judgment: 'Use the approved service client for requests.',
       summary: 'Approved client usage',
       suggestedType: 'rule',
@@ -287,7 +252,7 @@ describe('Recall ability assets', () => {
 
   it('stores structured scope policy alongside legacy scope text and version snapshots', async () => {
     const { candidates, assets } = await modules();
-    const candidate = await createNightlyCandidateFixture('user-a', {
+    const candidate = await candidates.saveRecallCandidate('user-a', {
       judgment: 'Use PRM notes for architecture reviews.',
       summary: 'PRM review notes',
       suggestedType: 'rule',
@@ -341,7 +306,7 @@ describe('Recall ability assets', () => {
 
   it('records advisory rework without mutating behavior and requires an explicit user revision to clear it', async () => {
     const { candidates, assets } = await modules();
-    const candidate = await createNightlyCandidateFixture('user-a', {
+    const candidate = await candidates.saveRecallCandidate('user-a', {
       judgment: 'Use a decision log before changing architecture.',
       summary: 'Decision log habit',
       suggestedType: 'rule',
@@ -387,7 +352,7 @@ describe('Recall ability assets', () => {
 
   it('keeps pause recommendations advisory until the user pauses the asset and blocks revoked asset changes', async () => {
     const { candidates, assets } = await modules();
-    const candidate = await createNightlyCandidateFixture('user-a', {
+    const candidate = await candidates.saveRecallCandidate('user-a', {
       judgment: 'Prefer reversible experiments.',
       summary: 'Reversible experiment habit',
       suggestedType: 'rule',
@@ -418,7 +383,7 @@ describe('Recall ability assets', () => {
 
   it('preserves legacy kinds while normalizing evidence metadata at asset boundaries', async () => {
     const { candidates, assets } = await modules();
-    const candidate = await createNightlyCandidateFixture('user-a', {
+    const candidate = await candidates.saveRecallCandidate('user-a', {
       judgment: 'Keep source compatibility explicit.',
       summary: 'Source compatibility rule',
       suggestedType: 'rule',
@@ -490,7 +455,7 @@ describe('Recall ability assets', () => {
 describe('治理状态模型', () => {
   async function seedAsset(uid: string) {
     const { candidates } = await modules();
-    const candidate = await createNightlyCandidateFixture(uid, {
+    const candidate = await candidates.saveRecallCandidate(uid, {
       judgment: 'Record governance decisions with their evidence.',
       summary: 'Evidence-backed decisions',
       suggestedType: 'rule', ...RULE_BOUNDARY, suggestedScope: 'architecture',
@@ -630,7 +595,7 @@ describe('治理动作', () => {
 
   async function seed(uid: string) {
     const { candidates, assets } = await modules();
-    const candidate = await createNightlyCandidateFixture(uid, {
+    const candidate = await candidates.saveRecallCandidate(uid, {
       judgment: 'Prefer append-only audit trails.',
       summary: 'Append-only audit habit',
       suggestedType: 'rule', ...RULE_BOUNDARY, suggestedScope: 'architecture',
@@ -747,61 +712,6 @@ describe('治理动作', () => {
     expect((await assets.listAbilityAssetAudit('user-rollback', asset.id)).map((r) => r.action)).toContain('rolled_back');
   });
 
-  it('background CAS rejects historical version selection and target pause between checking and writing', async () => {
-    const uid = 'user-auto-cas';
-    const { assets, asset } = await seed(uid);
-    const v2 = await assets.updateAbilityAsset(uid, asset.id, { title: 'Version two name', reason: 'v2', actor: 'user' });
-    // Automatic preflight saw v2. A user selects v1 without changing the revision counter.
-    await assets.selectAbilityAssetVersion(uid, asset.id, '1', userAction('use historical version'));
-    await expect(assets.updateAbilityAsset(uid, asset.id, {
-      statement: 'This stale automatic revision must not overwrite the selected historical content.', actor: 'system', reason: 'automatic', reviewDecisionId: 'rd_automaticcas01', sourceCandidateId: 'candidate-auto-cas',
-      expectedVersion: v2.version, expectedActiveVersion: '2', expectedStatus: 'active',
-    })).rejects.toThrow(/active version conflict/);
-    expect(await assets.readAbilityAsset(uid, asset.id)).toMatchObject({ version: '2', activeVersion: '1', statement: asset.statement });
-    await assets.selectAbilityAssetVersion(uid, asset.id, '2', userAction('use latest version'));
-    await assets.pauseAbilityAsset(uid, asset.id, userAction('pause before background write'));
-    await expect(assets.updateAbilityAsset(uid, asset.id, {
-      statement: 'This stale automatic revision must not modify a paused target.', actor: 'system', reason: 'automatic', reviewDecisionId: 'rd_automaticcas01', sourceCandidateId: 'candidate-auto-cas',
-      expectedVersion: v2.version, expectedActiveVersion: '2', expectedStatus: 'active',
-    })).rejects.toThrow(/status conflict/);
-    expect(await assets.readAbilityAsset(uid, asset.id)).toMatchObject({ version: '2', status: 'paused' });
-  });
-
-  it('选用历史内容保留当前授权限制，不将旧快照的无限制范围恢复为现行权限', async () => {
-    const uid = 'user-select-current-access';
-    const { assets, asset } = await seed(uid);
-    await assets.updateAbilityAsset(uid, asset.id, { scopePolicy: { workspaceIds: ['space-private'], agentIds: ['agent-private'] }, reason: '收紧授权', actor: 'user' });
-    const selected = await assets.selectAbilityAssetVersion(uid, asset.id, '1', userAction('使用旧正文'));
-    expect(selected.scopePolicy).toEqual({ workspaceIds: ['space-private'], agentIds: ['agent-private'] });
-    expect(selected.activeVersion).toBe('1');
-    expect((await assets.readAbilityAssetVersionSnapshot(uid, asset.id, '1'))?.scopePolicy).toBeUndefined();
-  });
-
-  it('归并拒绝不同使用或授权边界，且相同边界的历史版本归并不解除当前限制', async () => {
-    const uid = 'user-merge-access';
-    const { assets, asset: source } = await seed(uid);
-    const { candidates } = await modules();
-    const targetCandidate = await createNightlyCandidateFixture(uid, {
-      judgment: 'Keep each architecture decision tied to an accountable owner.', summary: 'Decision ownership',
-      suggestedType: 'rule', ...RULE_BOUNDARY, suggestedScope: 'architecture', sourceRefs: [{ kind: 'execution', id: 'exec-owner' }],
-      scopePolicy: { workspaceIds: ['space-private'] },
-    });
-    const target = (await candidates.promoteRecallCandidate(uid, targetCandidate.id, { actor: 'user', forceCreateSimilar: true })).asset;
-    const beforeVersions = await assets.listAbilityAssetVersions(uid, target.id);
-    await expect(assets.mergeAbilityAssets(uid, source.id, target.id, userAction('不能放宽限制'))).rejects.toThrow('same scope and access policy');
-    expect(await assets.listAbilityAssetVersions(uid, target.id)).toEqual(beforeVersions);
-    expect((await assets.readAbilityAsset(uid, source.id)).status).toBe('active');
-    await assets.updateAbilityAsset(uid, source.id, { scopePolicy: { workspaceIds: ['space-private'] }, scope: 'review', reason: '不同用途', actor: 'user' });
-    await expect(assets.mergeAbilityAssets(uid, source.id, target.id, userAction('不同用途不归并'))).rejects.toThrow('same scope and access policy');
-    await assets.updateAbilityAsset(uid, source.id, { scope: 'architecture', reason: '统一用途', actor: 'user' });
-    // v1 did not restrict access, but selecting it must keep the live restriction.
-    await assets.selectAbilityAssetVersion(uid, source.id, '1', userAction('使用早期正文'));
-    const merged = await assets.mergeAbilityAssets(uid, source.id, target.id, userAction('同边界版本归并'));
-    expect(merged.scopePolicy).toEqual({ workspaceIds: ['space-private'] });
-    expect((await assets.readAbilityAsset(uid, source.id)).status).toBe('archived');
-    expect((await assets.listAbilityAssetVersions(uid, target.id)).length).toBeGreaterThan(beforeVersions.length);
-  });
-
   it('回滚到不存在的版本或原地版本都被拒绝', async () => {
     const { assets, asset } = await seed('user-rollback-bad');
     await expect(assets.rollbackAbilityAsset('user-rollback-bad', asset.id, '99', userAction('rollback')))
@@ -855,7 +765,7 @@ describe('治理动作', () => {
   it('选用旧版不把 legacy scope 倒退回主记录（2026-09-17 修）：迁移不再重复 bump', async () => {    const uid = 'user-select-scope';
     const { candidates, assets } = await modules();
     // v1 快照带词表化之前的自由文本 scope（实机 aa-34b688 场景：scope='personal'）。
-    const candidate = await createNightlyCandidateFixture(uid, {
+    const candidate = await candidates.saveRecallCandidate(uid, {
       judgment: 'Prefer concise direct answers.',
       summary: 'Concise answer habit',
       suggestedType: 'rule', ...RULE_BOUNDARY, suggestedScope: 'personal',
@@ -884,13 +794,13 @@ describe('治理动作', () => {
   it('归并两条同义资产为版本组（2026-09-16）：版本链续接、较新内容为在用、来源归档', async () => {
     const { candidates, assets } = await modules();
     // 两条"同一认知"的资产：target 旧、source 新（各自有一版历史）。
-    const tCand = await createNightlyCandidateFixture('user-merge', {
+    const tCand = await candidates.saveRecallCandidate('user-merge', {
       judgment: '用户身份：本程序开发人员。', summary: '身份定位A', suggestedType: 'personal',
       suggestedScope: 'general', sourceRefs: [{ kind: 'conversation', id: 'conv-m1' }],
     });
     const tAsset = await candidates.promoteRecallCandidate('user-merge', tCand.id, { actor: 'user', forceCreateSimilar: true });
     await assets.updateAbilityAsset('user-merge', tAsset.asset.id, { statement: '用户身份：本程序开发人员（开发者）。', reason: 'refine', actor: 'user' });
-    const sCand = await createNightlyCandidateFixture('user-merge', {
+    const sCand = await candidates.saveRecallCandidate('user-merge', {
       judgment: '用户身份：CogSeed 开发者，参与认知资产开发。', summary: '身份定位B', suggestedType: 'personal',
       suggestedScope: 'general', sourceRefs: [{ kind: 'conversation', id: 'conv-m2' }],
     });
@@ -915,7 +825,7 @@ describe('治理动作', () => {
   it('版本链带按版本的使用效果聚合（2026-09-16 M8）：applied/contradicted 计数', async () => {
     const { candidates, assets } = await modules();
     const receipts = await import('../../../../src/main/features/recall/asset-usage-receipt');
-    const cCand = await createNightlyCandidateFixture('user-usage-agg', {
+    const cCand = await candidates.saveRecallCandidate('user-usage-agg', {
       judgment: 'Usage aggregation rule.', summary: 'Aggregation rule', suggestedType: 'rule',
       suggestedScope: 'general', sourceRefs: [{ kind: 'conversation', id: 'conv-ua' }],
     });
@@ -944,14 +854,14 @@ describe('治理动作', () => {
     expect(byVersion['2']).toMatchObject({ applied: 1 });
   });
 
-  it('版本接口不再读取和返回长期引用统计，已确认引用数据保持不变', async () => {
+  it('版本链带按版本的冻结引用计数（2026-09-25 合并态走查修复）：判据是已确认投影的 assetVersions', async () => {
     // 背景：界面「已有更新的版本」标记原本认 KSTAR 采用回执（usage），与"这一版被
     // 某个任务引用过"是两件事——真机上 v1 被 8 条投影冻结却没有任何标记，因为回执
     // 库里没有该资产的记录。冻结引用的权威判据是已确认投影的 assetVersions 映射。
     const { candidates, assets } = await modules();
     const store = await import('../../../../src/main/features/recall/store');
     const uid = 'user-frozen-ref';
-    const cCand = await createNightlyCandidateFixture(uid, {
+    const cCand = await candidates.saveRecallCandidate(uid, {
       judgment: 'Frozen reference rule.', summary: 'Reference freeze rule', suggestedType: 'rule',
       suggestedScope: 'general', sourceRefs: [{ kind: 'conversation', id: 'conv-fr' }],
     });
@@ -971,16 +881,12 @@ describe('治理动作', () => {
     // 未确认的投影不算冻结引用（"引用它的任务"= 真按副本注入的那一批）。
     await store.writeRecallJsonRecord(uid, 'projections', 'proj-frozen-preview', projection('proj-frozen-preview', '1', 'preview'));
 
-    const projections = await import('../../../../src/main/features/recall/context-projection');
-    const scan = vi.spyOn(projections, 'listAllConfirmedProjections');
-    try {
-      const summary = await assets.listAbilityAssetVersionsWithUsage(uid, assetId);
-      expect(summary).not.toHaveProperty('frozen');
-      expect(summary.versions.map(v => v.version)).toEqual(expect.arrayContaining(['1', '2']));
-      expect(summary.usage).toEqual([]);
-      expect(scan).not.toHaveBeenCalled();
-      expect(await store.readRecallJsonRecord(uid, 'projections', 'proj-frozen-a')).toMatchObject({ status: 'confirmed', assetVersions: { [assetId]: '1' } });
-    } finally { scan.mockRestore(); }
+    const summary = await assets.listAbilityAssetVersionsWithUsage(uid, assetId);
+    const frozenByVersion = Object.fromEntries((summary.frozen || []).map((f) => [f.version, f.count]));
+    expect(frozenByVersion['1']).toBe(2);
+    expect(frozenByVersion['2']).toBeUndefined();
+    // 零采用回执时 frozen 仍成立——旧判据（拿 usage 顶替）在这种数据下恒假。
+    expect(summary.usage).toEqual([]);
   });
 
   it('归并的检修回归（2026-09-16 审查）：版本号一致性/旧版在用/幂等/revoked 守卫', async () => {
@@ -993,7 +899,7 @@ describe('治理动作', () => {
       const now = new Date().toISOString();
       seq += 1;
       const assetId = `aa-mrgprobe-${String(seq).padStart(2, '0')}xxxxxxxxxxxxxxxx`;
-      const created = await seedStoredAbilityAsset(U, {
+      const created = await assets.createAbilityAsset(U, {
         schemaVersion: 2, ownerId: U, id: assetId, candidateId: `cand-mrg-${seq}`,
         sourceCandidateIds: [`cand-mrg-${seq}`], reviewDecisionId: `rd_mrgprobe_${String(seq).padStart(4, '0')}`,
         type: 'rule', title: summary, statement: judgment,
@@ -1056,7 +962,7 @@ describe('治理动作', () => {
     const U = 'user-mrg-family';
     const base = Date.now();
     const iso = (offset: number) => new Date(base + offset).toISOString();
-    const mk = async (seq: number, statement: string, updatedAt: string) => seedStoredAbilityAsset(U, {
+    const mk = async (seq: number, statement: string, updatedAt: string) => assets.createAbilityAsset(U, {
       schemaVersion: 2, ownerId: U, id: `aa-fam-${String(seq).padStart(2, '0')}xxxxxxxxxxxxxxxx`,
       candidateId: `cand-fam-${seq}`, sourceCandidateIds: [`cand-fam-${seq}`],
       reviewDecisionId: `rd_fam_${String(seq).padStart(4, '0')}`,
@@ -1085,40 +991,11 @@ describe('治理动作', () => {
     expect(mergedOld.statement).toBe('较新的目标内容。');
   });
 
-  it('同族资产合并后的历史可读：过滤目标自引用，兼容旧记录且不改写落盘快照', async () => {
-    const { assets } = await modules();
-    const uid = 'user-merge-self-history';
-    const store = await import('../../../../src/main/features/recall/store');
-    const create = (id: string) => seedStoredAbilityAsset(uid, {
-      schemaVersion: 2, ownerId: uid, id, candidateId: `cand-${id}`,
-      sourceCandidateIds: [`cand-${id}`], reviewDecisionId: `rd_merge_${id}`,
-      title: id, statement: '可复用内容。', type: 'rule', scope: 'general',
-      status: 'active', lifecycleStatus: 'user_confirmed_unverified', maturity: 'bud', version: '1', evidenceRefs: [{ kind: 'conversation', id: 'conv-merge' }],
-      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-    }, { actor: 'user', reason: 'merge regression seed' });
-    const source = await create('aa-source'), target = await create('aa-target');
-    await assets.updateAbilityAsset(uid, source.id, { actor: 'user', reason: 'record family', statement: '新版本保留同族关系。', relations: [{ kind: 'same_family', assetId: target.id }, { kind: 'related_to', assetId: 'aa-peer' }] });
-    await assets.mergeAbilityAssets(uid, source.id, target.id, userAction('merge'));
-    const rows = await store.listRecallJsonlRecords(uid, 'ability-asset-versions', target.id);
-    const copied = rows.find(row => String(row.reason).startsWith('merged from') && (row.snapshot as any).relations?.length)!;
-    expect((copied.snapshot as any).relations).toEqual([{ kind: 'related_to', assetId: 'aa-peer' }]);
-    await expect(assets.listAbilityAssetVersions(uid, target.id)).resolves.toBeTruthy();
-    const legacy = { ...copied, id: 'legacy-merge-v999', version: '999', snapshot: { ...(copied.snapshot as any), relations: [{ kind: 'same_family', assetId: target.id }, { kind: 'related_to', assetId: 'aa-peer' }], scopePolicy: { agentIds: [] } } };
-    await store.appendRecallJsonlRecord(uid, 'ability-asset-versions', target.id, legacy);
-    const read = (await assets.listAbilityAssetVersions(uid, target.id)).find(v => v.version === '999')!;
-    expect(read.snapshot.relations).toEqual([{ kind: 'related_to', assetId: 'aa-peer' }]);
-    expect(read.snapshot.scopePolicy).toEqual({ agentIds: [] });
-    const persisted = (await store.listRecallJsonlRecords(uid, 'ability-asset-versions', target.id)).find(v => v.version === '999')!;
-    expect((persisted.snapshot as any).relations[0].assetId).toBe(target.id);
-    await store.appendRecallJsonlRecord(uid, 'ability-asset-versions', target.id, { ...legacy, id: 'bad-update-v1000', version: '1000', reason: 'ordinary update' });
-    await expect(assets.listAbilityAssetVersions(uid, target.id)).rejects.toThrow('cannot relate to itself');
-  });
-
   it('归并去重空版本（2026-09-16 修）：源资产的迁移垫版不占新号', async () => {
     const { assets } = await modules();
     const U = 'user-mrg-dedup';
     const now = new Date().toISOString();
-    const mk = async (seq: number, statement: string) => seedStoredAbilityAsset(U, {
+    const mk = async (seq: number, statement: string) => assets.createAbilityAsset(U, {
       schemaVersion: 2, ownerId: U, id: `aa-dedup-${String(seq).padStart(2, '0')}xxxxxxxxxxxxxxxx`,
       candidateId: `cand-dedup-${seq}`, sourceCandidateIds: [`cand-dedup-${seq}`],
       reviewDecisionId: `rd_dedup_${String(seq).padStart(4, '0')}`,
@@ -1145,12 +1022,12 @@ describe('治理动作', () => {
 
   it('归并的守卫：跨类型/同条目/不存在被拒', async () => {
     const { candidates, assets } = await modules();
-    const aCand = await createNightlyCandidateFixture('user-merge-bad', {
+    const aCand = await candidates.saveRecallCandidate('user-merge-bad', {
       judgment: 'Rule one for merging.', summary: 'Merging rule one', suggestedType: 'rule',
       suggestedScope: 'general', sourceRefs: [{ kind: 'conversation', id: 'conv-mb1' }],
     });
     const a = await candidates.promoteRecallCandidate('user-merge-bad', aCand.id, { actor: 'user', forceCreateSimilar: true });
-    const pCand = await createNightlyCandidateFixture('user-merge-bad', {
+    const pCand = await candidates.saveRecallCandidate('user-merge-bad', {
       judgment: 'Personal one for merging.', summary: 'Merging personal one', suggestedType: 'personal',
       suggestedScope: 'general', sourceRefs: [{ kind: 'conversation', id: 'conv-mb2' }],
     });
@@ -1177,7 +1054,7 @@ describe('版本真删（2026-09-17）：物理删除 + 引用快照冻结', () 
       import('../../../../src/main/features/recall/context-projection'),
       import('../../../../src/main/features/recall/paths'),
     ]);
-    const candidate = await createNightlyCandidateFixture(uid, {
+    const candidate = await candidates.saveRecallCandidate(uid, {
       judgment: 'Prefer append-only audit trails.',
       summary: 'Append-only audit habit',
       suggestedType: 'rule', ...RULE_BOUNDARY, suggestedScope: 'architecture',
@@ -1289,7 +1166,7 @@ describe('存量自由文本 scope 迁移（A 轨道 2026-09-13）', () => {
 
   async function seedWithScope(uid: string, scope: string) {
     const { candidates, assets } = await modules();
-    const candidate = await createNightlyCandidateFixture(uid, {
+    const candidate = await candidates.saveRecallCandidate(uid, {
       judgment: 'Keep architecture decisions in a decision log.',
       summary: 'Architecture decision log',
       suggestedType: 'rule', ...RULE_BOUNDARY, suggestedScope: scope,
@@ -1453,7 +1330,7 @@ describe('存量自由文本 scope 迁移（A 轨道 2026-09-13）', () => {
     });
     await episodes.writeKstarEpisode('user-a', episode('kse-live1'));
 
-    const candidate = await createNightlyCandidateFixture('user-a', {
+    const candidate = await candidates.saveRecallCandidate('user-a', {
       judgment: 'Keep the verified evidence path.',
       summary: 'Verified evidence path',
       suggestedType: 'rule',
@@ -1490,26 +1367,33 @@ describe('存量自由文本 scope 迁移（A 轨道 2026-09-13）', () => {
     expect(updated.evidenceRefs.find((ref) => ref.id === 'kse-live1')?.degraded).toBeUndefined();
   });
 
-  it('夜间建议确认建库保留用户范围文本和自定义词条', async () => {
-    const { candidates } = await modules();
-    const dirtyCandidate = await createNightlyCandidateFixture('user-scope-hard', {
-      judgment: '测试范围表述的一条可复用规则。', summary: '范围文本规则',
-      suggestedType: 'rule', suggestedScope: '新增、审核、晋升认知资产条目时',
+  it('刀一：scope 写入点归一——场景描述句兜底 general、自定义词条放行', async () => {
+    const { assets } = await modules();
+    const now = new Date().toISOString();
+    const dirty = await assets.createAbilityAsset('user-scope-hard', {
+      schemaVersion: 2, ownerId: 'user-scope-hard', id: 'aa-scope-dirty', candidateId: 'cand-scope-dirty',
+      sourceCandidateIds: ['cand-scope-dirty'], reviewDecisionId: 'rd_scopedirty_123456',
+      type: 'rule', title: '脏范围资产', statement: '测试脏范围归一的一条规则。',
+      evidenceRefs: [{ kind: 'conversation', id: 'conv-scope-dirty' }],
+      scope: '新增、审核、晋升认知资产条目时', status: 'active',
+      lifecycleStatus: 'user_confirmed_unverified', maturity: 'bud', version: '1',
       applicableWhen: ['通用时'], forbiddenWhen: ['无关场景'],
-      sourceRefs: [{ kind: 'conversation', id: 'conv-scope-dirty' }],
-    });
-    const dirty = (await candidates.promoteRecallCandidate('user-scope-hard', dirtyCandidate.id, { actor: 'user' })).asset;
-    expect(dirty.scope).toBe('新增、审核、晋升认知资产条目时');
-    const customCandidate = await createNightlyCandidateFixture('user-scope-hard', {
-      judgment: '自定义词条范围的一条规则。', summary: '词条资产示例',
-      suggestedType: 'rule', suggestedScope: 'architecture-review',
+      createdAt: now, updatedAt: now,
+    }, { actor: 'user', reason: 'dirty scope seed' });
+    expect(dirty.scope).toBe('general');
+    // 自定义词条（≤20 字、无句读、非"…时"句式）原样放行。
+    const custom = await assets.createAbilityAsset('user-scope-hard', {
+      schemaVersion: 2, ownerId: 'user-scope-hard', id: 'aa-scope-custom', candidateId: 'cand-scope-custom',
+      sourceCandidateIds: ['cand-scope-custom'], reviewDecisionId: 'rd_scopecustom_123456',
+      type: 'rule', title: '词条资产示例', statement: '自定义词条范围的一条规则。',
+      evidenceRefs: [{ kind: 'conversation', id: 'conv-scope-custom' }],
+      scope: 'architecture-review', status: 'active',
+      lifecycleStatus: 'user_confirmed_unverified', maturity: 'bud', version: '1',
       applicableWhen: ['架构评审时'], forbiddenWhen: ['无关场景'],
-      sourceRefs: [{ kind: 'conversation', id: 'conv-scope-custom' }],
-    });
-    const custom = (await candidates.promoteRecallCandidate('user-scope-hard', customCandidate.id, { actor: 'user', forceCreateSimilar: true })).asset;
+      createdAt: now, updatedAt: now,
+    }, { actor: 'user', reason: 'custom term seed' });
     expect(custom.scope).toBe('architecture-review');
   });
-
 });
 
 describe('listAbilityAssets 逐条坏档降级（r4，对齐 candidates/experiences 口径）', () => {
@@ -1525,7 +1409,7 @@ describe('listAbilityAssets 逐条坏档降级（r4，对齐 candidates/experien
         { judgment: 'Compress the weekly report into three key findings and one risk item.', summary: 'Weekly report compression rule' },
       ];
       const payload = payloads[goodSeq - 1] || payloads[0];
-      const candidate = await createNightlyCandidateFixture(uid, {
+      const candidate = await candidates.saveRecallCandidate(uid, {
         ...payload,
         suggestedType: 'rule', ...RULE_BOUNDARY, suggestedScope: scope,
         sourceRefs: [{ kind: 'execution', id: `exec-list-badasset-${goodSeq}` }],

@@ -53,7 +53,7 @@ const FAILURE_MESSAGES: Record<AbilityAssetTitleSuggestionFailureCode, string> =
 const ISSUE_HINTS: Record<string, string> = {
   empty: '标题为空',
   too_long: '含汉字时超过 16 字（不含汉字时超过 60 字符）',
-  prefix_overlap: '完整照抄了正文首句，应概括为独立可读的短标题；项目名、人名和术语可以保留',
+  prefix_overlap: '第一个字与正文第一个字相同（不得与正文开头重复）',
   punctuation_suffix: '以标点符号结尾',
 };
 
@@ -74,7 +74,6 @@ export interface AbilityAssetTitleSuggestion {
 }
 
 const TYPE_HINTS: Record<AbilityAssetType, string> = {
-  cognition: '独立可理解的认识或做法，保留条件、局限和知识内容，不要求分类结构',
   personal: '个人偏好或身份事实（如沟通偏好、工作习惯）',
   rule: '做事规则或约束（遇到什么情况该怎么做）',
   template: '可复用的产出模板或结构',
@@ -88,7 +87,7 @@ function titleSystemPrompt(): string {
     '要求：',
     '1. 标题是名词性短语，独立可读，不写成完整句子；',
     '2. 含汉字时不超过 16 个字；不含汉字时不超过 60 个字符；',
-    '3. 不要整句照抄正文或截断成标题；可以保留相同的项目名、人名和术语，不必为了首字相同而改写名称；',
+    '3. 不得与正文开头重复（第一个字都不能与正文第一个字相同）；',
     '4. 不以任何标点符号结尾；',
     '5. 概括正文的核心含义，可以换用正文里没有出现的词；',
     '6. 只输出严格 JSON：{"title":"标题"}，不要输出其他任何内容。',

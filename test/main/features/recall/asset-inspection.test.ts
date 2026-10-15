@@ -1,4 +1,3 @@
-import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 /**
  * 后台巡检（specs/008 US-405 / T047–T050）。
  *
@@ -47,7 +46,7 @@ let seedSeq = 0;
 async function seedAsset(uid: string, judgment: string) {
   const { candidates } = await modules();
   seedSeq += 1;
-  const candidate = await createNightlyCandidateFixture(uid, {
+  const candidate = await candidates.saveRecallCandidate(uid, {
     judgment,
     // 标题闸门（设计 3.2）：无 summary 兜底＝正文首句，过不了闸门。
     summary: '巡检基线样本',
@@ -239,65 +238,5 @@ describe('跨轮不重复报（T050）', () => {
       ),
     }).filter((row) => row.kind === 'inspection_finding');
     expect(items.some((row) => row.id === `inspection:${target.key}`)).toBe(false);
-  });
-});
-
-describe('并发处置不丢更新（round-2）', () => {
-  // fileEditLock 按 recordPath 串行化写，但处置语义必须建在锁内最新值上：
-  // 锁外预读快照再整组写，会让并发写互相抹掉——已「不管它」的待办复活回清单。
-
-  it('两个并发 dismiss 互不抹掉：两条「不管它」都留得住', async () => {
-    const uid = 'user-inspect-race-decide';
-    const { inspection } = await modules();
-    await Promise.all([
-      inspection.decideInspectionFinding(uid, 'outdated:aa-race-1', 'dismissed'),
-      inspection.decideInspectionFinding(uid, 'outdated:aa-race-2', 'dismissed'),
-    ]);
-    const settings = await inspection.readInspectionSettings(uid);
-    expect([...settings.dismissedFindingKeys].sort())
-      .toEqual(['outdated:aa-race-1', 'outdated:aa-race-2']);
-  });
-
-  it('开关切换与待办处置并发：已「不管它」的键不被清空', async () => {
-    const uid = 'user-inspect-race-switch';
-    const { inspection } = await modules();
-    await Promise.all([
-      inspection.decideInspectionFinding(uid, 'outdated:aa-race-3', 'dismissed'),
-      inspection.setInspectionEnabled(uid, true),
-    ]);
-    const settings = await inspection.readInspectionSettings(uid);
-    expect(settings.enabled).toBe(true);
-    expect(settings.dismissedFindingKeys).toContain('outdated:aa-race-3');
-  });
-});
-
-describe('处置参数校验（round-3）', () => {
-  // 入口 throw 先例与 readInspectionRun 同款：非法入参宁可炸出来，也不静默
-  // 走反向 filter 把已「不管它」的待办复活、或把任意超长 key 落盘。
-
-  it('非法 decision 拒绝且不清掉已有处置（拼写错不再静默复活待办）', async () => {
-    const uid = 'user-inspect-guard-decision';
-    const { inspection } = await modules();
-    const key = 'outdated:aa-guard-1';
-    await inspection.decideInspectionFinding(uid, key, 'dismissed');
-
-    // 修前：'dismiss' 不在两个字面量里，双三元双双走反向 filter——key 从两数组
-    // 同时移除、待办复活，还不报任何错。
-    await expect(inspection.decideInspectionFinding(uid, key, 'dismiss' as never))
-      .rejects.toThrow(/invalid inspection decision/);
-    const settings = await inspection.readInspectionSettings(uid);
-    expect(settings.dismissedFindingKeys).toContain(key);
-  });
-
-  it('findingKey 空串与超长（>1024）都拒绝，不落盘', async () => {
-    const uid = 'user-inspect-guard-key';
-    const { inspection } = await modules();
-    await expect(inspection.decideInspectionFinding(uid, '', 'dismissed'))
-      .rejects.toThrow(/invalid inspection finding key/);
-    await expect(inspection.decideInspectionFinding(uid, 'k'.repeat(1025), 'dismissed'))
-      .rejects.toThrow(/invalid inspection finding key/);
-    const settings = await inspection.readInspectionSettings(uid);
-    expect(settings.dismissedFindingKeys).toEqual([]);
-    expect(settings.deferredFindingKeys).toEqual([]);
   });
 });

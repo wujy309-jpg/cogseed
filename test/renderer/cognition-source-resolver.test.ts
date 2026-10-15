@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { loadCognitionAssets, renderCognitionWithDialogs as renderCognition } from './helpers/cognition-renderer';
+import { loadCognitionAssets, renderCognition } from './helpers/cognition-renderer';
 
 const RAW_ID_PATTERNS = [/immediate-[0-9a-f]/, /kse-[0-9a-z]/, /turn-\d/, /conv-[0-9a-z]/, /proj-[0-9a-z]/, /aur-[0-9a-z]/, /aa-[0-9a-z]/];
 

@@ -60,6 +60,7 @@ function Sidebar({ spaces = SPACES, route, onRoute, onCollapse, recent = SIDEBAR
       <nav style={{ padding: "0 var(--cs-space-3)", display: 'flex', flexDirection: 'column', gap: "var(--cs-space-1)", flex: 'none' }}>
         <NavItem icon={<Icon name="plus" />} label="新建任务" selected={route === 'home'} onClick={() => onRoute('home')} />
         <NavItem icon={<Icon name="space" />} label="工作空间" selected={route === 'spaces'} onClick={() => onRoute('spaces')} />
+        <NavItem icon={<Icon name="clock" />} label="认知资产" active={route === 'cognition'} onClick={() => onRoute('cognition')} />
         <NavItem icon={<Icon name="automation" />} label="自动化" selected={route === 'automation'} onClick={() => onRoute('automation')} />
         <NavItem icon={<Icon name="connector" />} label="智能体 / 技能 / 连接" selected={route === 'capabilities'} onClick={() => onRoute('capabilities')} />
       </nav>

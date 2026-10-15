@@ -284,12 +284,7 @@ export const userKbDiscoverFeishuConfigFile = (uid: string) => path.join(userLoc
 // refuses to touch it (hasHiddenContextPathSegment) — personal_ontology_groups.ts
 // owns its own path-safety + atomic-write logic instead of reusing
 // writeContextFile/resolveContextFileAbsPath.
-// Directory name exported separately: both retrieval walks (search/indexer.ts
-// `_scanContexts`, kb_indexer.ts `walk`) whitelist this one dot-dir so the po
-// render copies they index survive reconcile (P-r1-99) — single source of
-// truth for the name shared by path math and the walk whitelists.
-export const ONTOLOGY_GROUPS_DIR_NAME = '.personal_ontology_groups';
-export const userOntologyGroupsDir  = (uid: string) => path.join(userContextsDir(uid), ONTOLOGY_GROUPS_DIR_NAME);
+export const userOntologyGroupsDir  = (uid: string) => path.join(userContextsDir(uid), '.personal_ontology_groups');
 // Machine-private mirror of contexts/ — holds derived state that must NOT
 // cross devices (currently just the KB vector store; see `userKbDir` below).
 // **Why** mirror the cloud structure under local/ instead of an ad-hoc

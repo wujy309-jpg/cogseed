@@ -1,7 +1,9 @@
 import * as messagingManager from '../../messaging/manager';
 import * as autoTasks from '../../auto_tasks';
 import {
+  confirmCandidate,
   listCandidates,
+  rejectCandidate,
   type CandidateUpdate,
 } from '../../personal_ontology_candidates';
 import { buildDailyBriefing, type BriefingOutput } from '../briefing';
@@ -222,12 +224,18 @@ export async function listReviewItems(userId: string): Promise<{ dashboard: Pers
   };
 }
 
-export async function approveReviewItem(_userId: string, _candidateId: string): Promise<PersonalContextDashboard> {
-  throw new Error('legacy_candidate_approval_retired');
+export async function approveReviewItem(userId: string, candidateId: string): Promise<PersonalContextDashboard> {
+  const dashboard = await getDashboard(userId);
+  if (dashboard.mode === 'demo') return dashboard;
+  await confirmCandidate(userId, candidateId, { toGlobalMemory: true });
+  return getDashboard(userId);
 }
 
-export async function rejectReviewItem(_userId: string, _candidateId: string): Promise<PersonalContextDashboard> {
-  throw new Error('legacy_candidate_review_retired');
+export async function rejectReviewItem(userId: string, candidateId: string): Promise<PersonalContextDashboard> {
+  const dashboard = await getDashboard(userId);
+  if (dashboard.mode === 'demo') return dashboard;
+  await rejectCandidate(userId, candidateId, 'rejected in personal context review');
+  return getDashboard(userId);
 }
 
 

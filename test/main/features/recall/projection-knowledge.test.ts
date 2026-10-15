@@ -1,5 +1,3 @@
-import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
-import { seedStoredAbilityAsset } from '../../../helpers/stored-ability-asset';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -23,7 +21,7 @@ afterEach(() => {
 
 async function createAsset(input: { judgment: string; summary: string; causal?: boolean }) {
   const candidates = await import('../../../../src/main/features/recall/candidate-service');
-  const candidate = await createNightlyCandidateFixture('user-a', {
+  const candidate = await candidates.saveRecallCandidate('user-a', {
       spaceId: 'workspace-a',
     judgment: input.judgment,
     summary: input.summary,
@@ -92,7 +90,7 @@ describe('committed projection knowledge', () => {
   it('正式个人资产的画像镜像携带真实治理字段，不再伪造 onto-/bud/v1', async () => {
     const assetService = await import('../../../../src/main/features/recall/asset-service');
     const now = new Date().toISOString();
-    const created = await seedStoredAbilityAsset('user-a', {
+    const created = await assetService.createAbilityAsset('user-a', {
       schemaVersion: 2, ownerId: 'user-a', id: 'aa-personal-mirror',
       candidateId: 'cand-personal-mirror', sourceCandidateIds: ['cand-personal-mirror'],
       reviewDecisionId: 'rd_personal_mirror',
@@ -102,7 +100,7 @@ describe('committed projection knowledge', () => {
       maturity: 'bud', version: '1',
       createdAt: now, updatedAt: now,
     }, { actor: 'user', reason: 'mirror fidelity test' });
-    // 预存资产初始 maturity 为 bud；抬到 transfer_validated
+    // 初始 maturity 被 createAbilityAsset 强制为 bud；抬到 transfer_validated
     // 走 production 合法入口，制造「库内真实成熟度 ≠ 镜像伪造值」的场景。
     await assetService.setAbilityAssetMaturity('user-a', created.id, 'transfer_validated');
 

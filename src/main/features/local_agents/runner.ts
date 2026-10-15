@@ -895,20 +895,6 @@ export async function run(opts: RunCliAgentOpts): Promise<RunCliAgentResult> {
         env_keys: Object.keys(providerEnv).join(','),
       });
     }
-    // This executor can run arbitrary nested CLI/Skill actions. Derive scope
-    // from the host conversation, never from CLI-produced labels or prompts.
-    const { getConversation } = await import('../chats');
-    const conversation = opts.cid ? await getConversation(opts.uid, opts.cid) : undefined;
-    if (opts.cid && !conversation) throw new Error('current ontology operation scope unavailable');
-    const { checkOntologyUnverifiedAction } = await import('../cognition/ontology/operation-guard');
-    const decision = await checkOntologyUnverifiedAction(opts.uid, { operationKinds: ['local_agent', 'execute_shell', 'run_skill',
-      'write_file', 'edit_file', 'delete_file', 'connector_write', 'send_message', 'send_file'], context: {
-      agentId: opts.agentId, taskText: opts.prompt,
-      ...(conversation?.project_id ? { projectId: conversation.project_id } : {}),
-      ...(conversation?.space_id ? { workspaceId: conversation.space_id } : {}),
-    } });
-    if (!decision.allowed) throw new Error('E_ONTOLOGY_OPERATION_PRECONDITION: required conditions have no verified adapter for this CLI execution');
-    if (opts.signal.aborted) throw new Error('local action cancelled');
     await backend.run({
       binPath: entry.path,
       prompt: opts.prompt,

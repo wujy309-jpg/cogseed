@@ -1202,10 +1202,12 @@ export async function listSkillsForUser(userId: string): Promise<SkillListing[]>
 }
 
 /** Dev-only: the agent-private (`ownerAgent`) skills hidden from `listSkills`.
- *  P-r3-41（2026-10-01 拍板）：配套的渲染层合并函数与其 `skills.listPrivate`
- *  调用已按「死代码里的死通道」删除——通道从未注册、渲染守卫恒真使调用
- *  不可达，本导出随之退役（零消费零测试）。恢复 dev 检查区需两向一起做：
- *  注册 dev-gated 处理器 + 渲染层修活守卫。 */
+ *  Surfaced behind a dev-gated IPC so the skill panel can show an inspection
+ *  section in development; gated off in production. */
+export async function listAgentPrivateSkills(): Promise<SkillListing[]> {
+  const userId = getActiveUserId();
+  return _overlaySkillEnabled((await _allSkillListingsCached(userId)).filter((s) => !!s.ownerAgent), userId);
+}
 
 /** Toggle the active user's enabled override for a skill. Triggers the
  *  same invalidation chain as a custom-skill mutation so the next runner

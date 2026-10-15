@@ -204,7 +204,7 @@ function normalizeAnchors(value: unknown): MeetingTranscriptAnchor[] {
   return out;
 }
 
-const ASSET_TYPES: ReadonlySet<string> = new Set(['cognition', 'personal', 'rule', 'template', 'skill_method', 'fact']);
+const ASSET_TYPES: ReadonlySet<string> = new Set(['personal', 'rule', 'template', 'skill_method', 'fact']);
 
 function normalizeAssetRefs(value: unknown): Array<Pick<MeetingAssetRef, 'assetId' | 'version' | 'title' | 'type'>> {
   if (!Array.isArray(value)) return [];

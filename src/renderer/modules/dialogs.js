@@ -47,16 +47,7 @@ function _uiMountDialog({ title, ariaLabel, bodyHtml, actionsHtml, initialFocus,
         <footer class="ui-modal__footer">${actionsHtml}</footer>
       </section>
     `;
-    // Cognition's user-supplied prototype owns its dialog appearance too.
-    // Keep the shared focus/runtime behavior; other application panels retain
-    // their existing dialog host and theme.
-    const cognitionRoot = document.getElementById('ca-root');
-    const cognitionPanel = document.getElementById('panel-recall');
-    const cognitionRoute = window.CogAssets?.store?.route?.name;
-    const prototypeHost = cognitionRoot && cognitionPanel?.classList.contains('active')
-      && ['overview', 'activity', 'settings'].includes(cognitionRoute) ? cognitionRoot : null;
-    if (prototypeHost) overlay.classList.add('ca-prototype-modal');
-    (prototypeHost || document.body).appendChild(overlay);
+    document.body.appendChild(overlay);
 
     const dialog = overlay.querySelector('[role="dialog"]');
     let settled = false;

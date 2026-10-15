@@ -87,20 +87,19 @@ describe('kb-meeting-refs 骨架（T014）', () => {
     expect(typeof windowMock.KbMeetingRefs?.destroy).toBe('undefined'); // destroy 在实例上
   });
 
-  it('六个分区各渲染一条空态：资产引用/纪要条目/纪要正文/待办草稿/关联建议/回执', () => {
+  it('五个分区各渲染一条空态：资产引用/纪要条目/待办草稿/关联建议/回执', () => {
     const { nodes, instance } = mountPanel();
     const sectionsHost = nodes.get('[data-mrf-sections]');
     const sections = sectionsHost.children;
     expect(sections.map((s: any) => s.dataset.mrfSection))
-      .toEqual(['refs', 'conclusions', 'minutes', 'actions', 'related', 'receipts']);
+      .toEqual(['refs', 'conclusions', 'actions', 'related', 'receipts']);
 
     const empties = sections.map((s: any) => s.children[1].innerHTML);
     expect(empties[0]).toContain('暂无资产引用');
     expect(empties[1]).toContain('暂无纪要条目');
-    expect(empties[2]).toContain('尚未撰写纪要正文');
-    expect(empties[3]).toContain('暂无待办草稿');
-    expect(empties[4]).toContain('暂无关联建议');
-    expect(empties[5]).toContain('暂无回执');
+    expect(empties[2]).toContain('暂无待办草稿');
+    expect(empties[3]).toContain('暂无关联建议');
+    expect(empties[4]).toContain('暂无回执');
 
     // 标题与提示也渲染（面板标题/文件名尾段）
     expect(nodes.get('[data-mrf-title]')._text).toBe('会议引用');
@@ -128,28 +127,8 @@ describe('kb-meeting-refs 骨架（T014）', () => {
     expect(() => windowMock.KbMeetingRefs.mount(fakeElement(), {})).toThrow(/docId/);
   });
 
-  it('SECTION_KEYS 导出六个分区（后续任务按分区接线数据）', () => {
-    expect(exports.SECTION_KEYS).toEqual(['refs', 'conclusions', 'minutes', 'actions', 'related', 'receipts']);
-  });
-
-  it('buildMinutesDraft：确定性拼装，编号+资产缩进+缺引标注，无时间戳不编造', () => {
-    const draft = exports.buildMinutesDraft(
-      [
-        { summary: '确认 Q4 预算', assetRefs: [{ title: '预算表', version: 3 }] },
-        { summary: '迁移事项待定', assetRefs: [], unlinkable: true },
-        { summary: '' },
-      ],
-      '/kb/meetings/2026-10-02-评审.txt',
-    );
-    expect(draft).toContain('# 2026-10-02-评审.txt');
-    expect(draft).toContain('## 纪要条目');
-    expect(draft).toContain('1. 确认 Q4 预算');
-    expect(draft).toContain('   - 预算表 · v3');
-    // 空 summary 条目不产编号行（第 3 条被跳过，第 2 条编号仍是 2）
-    expect(draft).toContain('2. 迁移事项待定（部分引用暂缺）');
-    expect(draft).not.toMatch(/3\./);
-    // 无时间戳纪律：不伪造会议时间
-    expect(draft).not.toMatch(/\d{2}:\d{2}|\d{4}-\d{2}-\d{2}T/);
+  it('SECTION_KEYS 导出五个分区（后续任务按分区接线数据）', () => {
+    expect(exports.SECTION_KEYS).toEqual(['refs', 'conclusions', 'actions', 'related', 'receipts']);
   });
 });
 
@@ -307,7 +286,7 @@ describe('T038 双引用展开与冻结版对比', () => {
   it('③ 控件全走共享原语：按钮来自 uiButton、无裸控件（基线未上调由 guard 看守）', async () => {
     const { instance, sectionBody } = mountPanelWithData();
     await instance.ready;
-    const html = [sectionBody(0), sectionBody(1), sectionBody(3)].join('');
+    const html = [sectionBody(0), sectionBody(1), sectionBody(2)].join('');
     // 源码级「零裸控件」由上方既有断言看守；这里钉渲染产物也经共享原语
     expect(html).toContain('ui-button');
     expect(html).not.toMatch(/<button(?![^>]*ui-button)/);
@@ -334,7 +313,7 @@ describe('T043 草稿待办视图', () => {
   it('①② 草稿章可见；来源/资产引用/三动作齐；无裸英文动作名', async () => {
     const { instance, sectionBody } = mountPanelWithData();
     await instance.ready;
-    const html = sectionBody(3);
+    const html = sectionBody(2);
     // 状态章（草稿，经 uiTag）
     expect(html).toContain('data-mrf-action-status');
     expect(html).toContain('ui-tag');
@@ -360,12 +339,11 @@ describe('T043 草稿待办视图', () => {
   it('③ 空态恰一处：有数据的分区无空态，无数据的分区恰一条', async () => {
     const { instance, sectionBody } = mountPanelWithData();
     await instance.ready;
-    expect(sectionBody(3)).not.toContain('ui-empty-state');
+    expect(sectionBody(2)).not.toContain('ui-empty-state');
     expect(sectionBody(1)).not.toContain('ui-empty-state');
     expect(sectionBody(0)).not.toContain('ui-empty-state');
-    expect((sectionBody(2).match(/ui-empty-state/g) || []).length).toBe(1);
+    expect((sectionBody(3).match(/ui-empty-state/g) || []).length).toBe(1);
     expect((sectionBody(4).match(/ui-empty-state/g) || []).length).toBe(1);
-    expect((sectionBody(5).match(/ui-empty-state/g) || []).length).toBe(1);
     instance.destroy();
   });
 
@@ -417,7 +395,7 @@ describe('meeting.* 通道降级（renderer-seams §5）', () => {
       return {};
     });
     await instance.ready;
-    const html = sectionBody(4);
+    const html = sectionBody(3);
     expect((html.match(/ui-empty-state/g) || []).length).toBe(1);
     expect(html).toContain('资产标识不合法');
     expect(sectionBody(0)).toContain('发布检查单 · v2');
@@ -463,7 +441,7 @@ describe('T051 关联建议：列表渲染 + 点了才建立', () => {
     expect(relatedCall.payload.assetIds).toEqual(['a_1', 'a_2']);
     expect(relatedCall.payload.terms).toEqual(['发布检查单', '旧版资产']);
     // 列表内容（只有标识与摘要，不含资产正文）
-    const html = sectionBody(4);
+    const html = sectionBody(3);
     expect((html.match(/data-mrf-related=/g) || []).length).toBe(2);
     expect(html).toContain('data-mrf-related-summary');
     expect(html).toContain('发布流程要先过检查单');
@@ -547,137 +525,6 @@ describe('T051 关联建议：列表渲染 + 点了才建立', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     const status = nodes.get('[data-mrf-status]');
     expect(status._text).toContain('该资产已归档或暂停');
-    instance.destroy();
-  });
-});
-
-// ── P-r3-28（预审决策卡组 10 · KB busy 纪律）：写操作 in-flight 守卫 ──────────
-
-/** 可挂起的写通道 mock：confirm/attach 在手动放行前不返回，模拟「第一次还在途」。 */
-function mountWithGatedWrites() {
-  let confirmCalls = 0;
-  let attachCalls = 0;
-  const pending: Array<() => void> = [];
-  const gate = () => new Promise<void>((resolve) => { pending.push(resolve); });
-  const releaseAll = () => { while (pending.length) pending.shift()!(); };
-  const env = mountPanelWithData(async (channel: string) => {
-    if (channel === 'meeting.assets.list') return { ok: true, refs: REF_VIEWS };
-    if (channel === 'meeting.conclusions.list') return { ok: true, conclusions: [] };
-    if (channel === 'meeting.actions.list') return { ok: true, drafts: DRAFTS };
-    if (channel === 'meeting.refs.related') return { ok: true, related: [] };
-    if (channel === 'meeting.actions.confirm') {
-      confirmCalls += 1;
-      await gate();
-      return { ok: true };
-    }
-    if (channel === 'meeting.assets.attach') {
-      attachCalls += 1;
-      await gate();
-      return { ok: true };
-    }
-    return { ok: true };
-  });
-  return { ...env, getConfirmCalls: () => confirmCalls, getAttachCalls: () => attachCalls, releaseAll };
-}
-
-describe('P-r3-28 写操作 busy 守卫（组 10）', () => {
-  it('① 双击确认：第一次在途时第二次被守卫忽略（不发第二轮 IPC、不出现「状态已变更」误导回执）', async () => {
-    const { instance, fireClick, nodes, getConfirmCalls, releaseAll } = mountWithGatedWrites();
-    await instance.ready;
-    await fireClick('meeting-action-confirm', 'ma_1'); // 第一次进入在途（挂起中）
-    await fireClick('meeting-action-confirm', 'ma_1'); // 双击的第二次 → 守卫忽略
-    expect(getConfirmCalls()).toBe(1);
-    releaseAll();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    // 第一次成功后的回执是「已确认」，而不是把第二次被拒伪装成「状态已变更请刷新」
-    expect(nodes.get('[data-mrf-status]')._text).toContain('已确认');
-    expect(nodes.get('[data-mrf-status]')._text).not.toContain('状态已变更');
-    expect(getConfirmCalls()).toBe(1);
-    instance.destroy();
-  });
-
-  it('② 守卫完成后释放：放行后的下一次点击可正常再发（不是永久锁死）', async () => {
-    const { instance, fireClick, getConfirmCalls, releaseAll } = mountWithGatedWrites();
-    await instance.ready;
-    await fireClick('meeting-action-confirm', 'ma_1');
-    releaseAll();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(getConfirmCalls()).toBe(1);
-    await fireClick('meeting-action-confirm', 'ma_1'); // 在途已结束 → 正常发出
-    expect(getConfirmCalls()).toBe(2);
-    releaseAll();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    instance.destroy();
-  });
-
-  it('③ 连点「引用到本会议」：第一轮在途时第二轮被忽略（attach 不多发一轮）', async () => {
-    const nodes2 = new Map<string, any>();
-    const container = fakeElement();
-    container.querySelector = (selector: string) => {
-      if (!nodes2.has(selector)) nodes2.set(selector, fakeElement());
-      return nodes2.get(selector);
-    };
-    const clicks: Array<(event: unknown) => void> = [];
-    container.addEventListener = (name: string, fn: (event: unknown) => void) => {
-      if (name === 'click') clicks.push(fn);
-    };
-    container.removeEventListener = () => {};
-    let attachCalls = 0;
-    const pending: Array<() => void> = [];
-    const loaded = loadModule({
-      cogseed: {
-        invoke: async (channel: string) => {
-          if (channel === 'meeting.assets.list') return { ok: true, refs: REF_VIEWS };
-          if (channel === 'meeting.conclusions.list') return { ok: true, conclusions: [] };
-          if (channel === 'meeting.actions.list') return { ok: true, drafts: [] };
-          if (channel === 'meeting.refs.related') return { ok: true, related: RELATED };
-          if (channel === 'meeting.assets.attach') {
-            attachCalls += 1;
-            await new Promise<void>((resolve) => { pending.push(resolve); });
-            return { ok: true };
-          }
-          return { ok: true };
-        },
-      },
-      uiButton: (o: any) => `<button type="button" class="ui-button" data-act="${o?.attrs?.['data-act'] || ''}" data-mrf-id="${o?.attrs?.['data-mrf-id'] || ''}">${String(o?.label || '')}</button>`,
-      uiTag: (o: any) => `<span class="ui-tag">${String(o?.label || '')}</span>`,
-    });
-    const instance = loaded.windowMock.KbMeetingRefs.mount(container, {
-      docId: 'meetings/9.15站会.txt',
-      displayPath: 'meetings/9.15站会.txt',
-    });
-    await instance.ready;
-    const clickCite = () => {
-      for (const handler of clicks) {
-        handler({
-          target: {
-            closest: () => ({
-              getAttribute: (key: string) => (key === 'data-act' ? 'meeting-related-cite' : key === 'data-mrf-id' ? 'meetings/9.01周会.txt::mc_901' : ''),
-            }),
-          },
-        });
-      }
-    };
-    clickCite(); // 第一轮（attach 挂起中）
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    clickCite(); // 连点第二轮 → 守卫忽略
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(attachCalls).toBe(1);
-    while (pending.length) pending.shift()!();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    instance.destroy();
-  });
-
-  it('④ 只读操作不抢写守卫：confirm 在途时 toggleCompare 仍可展开（组 10「只读不抢全局锁」）', async () => {
-    const { instance, fireClick, nodes, releaseAll } = mountWithGatedWrites();
-    await instance.ready;
-    await fireClick('meeting-action-confirm', 'ma_1'); // 写在途（挂起）
-    await fireClick('meeting-ref-compare', 'a_1'); // 只读对比不受守卫影响
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const refsHtml = nodes.get('[data-mrf-sections]').children[0].children[1].innerHTML as string;
-    expect(refsHtml).toContain('data-mrf-ref-compare'); // 对比区已展开
-    releaseAll();
-    await new Promise((resolve) => setTimeout(resolve, 0));
     instance.destroy();
   });
 });

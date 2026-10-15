@@ -58,7 +58,6 @@
 
     return [
       `<button type="button" class="${escapeText(classes)}"${disabled ? ' disabled' : ''}${renderAttrs(attrs)}>`,
-      value.labelPrefix ? `<span class="ui-button__prefix">${escapeText(value.labelPrefix)}</span>` : '',
       loading ? '' : renderIcon(value.icon, 'ui-button__icon'),
       `<span class="ui-button__label">${escapeText(label)}</span>`,
       loading ? '' : renderIcon(value.iconEnd, 'ui-button__icon'),

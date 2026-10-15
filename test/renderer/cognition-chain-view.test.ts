@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { loadCognitionAssets } from './helpers/cognition-renderer';
 
 function readSrc(rel: string): string {
   return readFileSync(resolve(__dirname, `../../src/renderer/${rel}`), 'utf8');
@@ -221,11 +220,6 @@ describe('未知枚举不落到机器码', () => {
     // recordTitle 的契约是「绝不裸出 rcap- 内部 ID」；防御分支不能绕过它。
     expect(views).not.toContain('|| conv.id');
     expect(views).not.toContain('|| capture.id');
-    const loaded = loadCognitionAssets({ captures: [{ id: 'rcap-internal-only', status: 'failed', actions: ['retry'] }] }, { name: 'activity' });
-    loaded.ns.vocabulary = null;
-    const rows = loaded.ns.activityModel().attention;
-    expect(rows).toHaveLength(0);
-    expect(loaded.render()).not.toContain('rcap-internal-only');
-    expect(loaded.store.captures).toHaveLength(1);
+    expect(views).toContain('cognition.capture_untitled_record');
   });
 });

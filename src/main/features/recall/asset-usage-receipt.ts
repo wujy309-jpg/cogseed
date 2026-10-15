@@ -8,13 +8,8 @@ import {
   normalizeCognitionSourceRefsForWrite,
   type CognitionSourceRef,
 } from './source-service';
-import { appendRecallJsonlRecord, listRecallJsonlRecords, readRecallJsonRecord } from './store';
+import { appendRecallJsonlRecord, listRecallJsonlRecords } from './store';
 import type { RecallJsonRecord } from './types';
-
-/** 主动读取（agent_read）没有投影授权，采用回执的 projectionId 用这个常量
- *  占位：读取侧据此区分「投影供应」与「模型本轮主动读正文」两条带入通道，
- *  回执幂等键也保持确定。 */
-export const AGENT_READ_PROJECTION_ID = 'agent-read';
 
 export type AssetUsageStatus =
   | 'applied'
@@ -26,16 +21,7 @@ export type AssetUsageStatus =
 export type AssetUsageEvidenceKind = 'tool_call' | 'agent_action' | 'artifact' | 'final_output' | 'none';
 export type AssetUsageBoundary = 'real' | 'degraded' | 'test-double';
 
-/** Optional for historical receipts. Model reports and persisted-result checks
- * have distinct authority; hashes bind both observations to the same output. */
-export interface AssetUsageObservation {
-  observationMethod?: 'agent_reported' | 'model_assisted' | 'result_coverage';
-  messageId?: string;
-  outputHash?: string;
-  outputCheckReceiptId?: string;
-}
-
-export interface AssetUsageReceipt extends RecallJsonRecord, AssetUsageObservation {
+export interface AssetUsageReceipt extends RecallJsonRecord {
   schemaVersion: 1;
   taskRunId: string;
   projectionId: string;
@@ -50,7 +36,7 @@ export interface AssetUsageReceipt extends RecallJsonRecord, AssetUsageObservati
   createdAt: string;
 }
 
-export interface RecordAssetUsageReceiptInput extends AssetUsageObservation {
+export interface RecordAssetUsageReceiptInput {
   taskRunId: string;
   projectionId: string;
   assetId: string;
@@ -100,75 +86,6 @@ function assertSafeInput(userId: string, input: RecordAssetUsageReceiptInput): v
     || !EVIDENCE_KINDS.has(input.evidenceKind)
     || !BOUNDARIES.has(input.boundary)
   ) throw new Error('invalid asset usage receipt reference');
-  assertObservation(input);
-}
-
-function assertObservation(input: RecordAssetUsageReceiptInput): void {
-  if (input.observationMethod === undefined) {
-    if (input.messageId !== undefined || input.outputHash !== undefined || input.outputCheckReceiptId !== undefined) {
-      throw new Error('asset usage observation method is required');
-    }
-    return;
-  }
-  if (!['agent_reported', 'model_assisted', 'result_coverage'].includes(input.observationMethod)
-    || typeof input.messageId !== 'string' || !safeId(input.messageId)
-    || typeof input.outputHash !== 'string' || !/^[a-f0-9]{64}$/.test(input.outputHash)
-    || input.evidenceKind !== 'final_output' || input.boundary !== 'real'
-    || (input.observationMethod === 'agent_reported'
-      ? input.status !== 'applied' || input.outputCheckReceiptId !== undefined
-      : !['applied', 'usage_unknown'].includes(input.status)
-        || typeof input.outputCheckReceiptId !== 'string' || !/^coc-[a-f0-9]{24}$/.test(input.outputCheckReceiptId))) {
-    throw new Error('invalid asset usage observation');
-  }
-}
-
-/** A caller's label is insufficient: completed checks must already be stored by
- * the persisted-output checker and resolve this exact asset/version/result. */
-function validCheckCoordinates(value: unknown): boolean {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const coordinates = value as Record<string, unknown>;
-  return Object.keys(coordinates).length === 2
-    && Object.keys(coordinates).every(key => key === 'start' || key === 'end')
-    && Number.isSafeInteger(coordinates.start) && Number.isSafeInteger(coordinates.end)
-    && Number(coordinates.start) >= 0 && Number(coordinates.end) > Number(coordinates.start);
-}
-
-async function verifyOutputObservation(userId: string, input: RecordAssetUsageReceiptInput): Promise<void> {
-  if (!['model_assisted', 'result_coverage'].includes(String(input.observationMethod))) return;
-  const check = await readRecallJsonRecord(userId, 'output-checks', input.outputCheckReceiptId!);
-  const resultCoverage = check?.resultCoverage as { complete?: boolean; totalFiles?: number } | undefined;
-  const rows = Array.isArray(check?.checks) ? check.checks : [];
-  const matching = rows.filter(row => row && typeof row === 'object'
-    && row.assetId === input.assetId && row.version === input.assetVersion);
-  const row = matching[0];
-  // Coordinates were resolved against actual text before the completed checker
-  // proof was persisted. This ledger does not retain or invent task/output text.
-  // An evidence-free unknown only withdraws a self-report; it proves no absence
-  // of use, contradiction, or effectiveness.
-  const validRow = row && !Array.isArray(row)
-    && Object.keys(row).every(key => ['assetId', 'version', 'status', 'outputEvidence', 'taskEvidence'].includes(key))
-    && (row.outputEvidence === undefined || validCheckCoordinates(row.outputEvidence))
-    && (row.taskEvidence === undefined || validCheckCoordinates(row.taskEvidence))
-    && (input.status === 'applied'
-      ? row.status === 'complied' && validCheckCoordinates(row.outputEvidence)
-      : (row.status === 'not_complied' && validCheckCoordinates(row.outputEvidence))
-        || row.status === 'unknown'
-        || (row.status === 'not_applicable' && validCheckCoordinates(row.taskEvidence)));
-  if (!check || check.schemaVersion !== 1 || check.ownerId !== userId
-    || check.method !== 'model_assisted'
-    || (input.observationMethod === 'result_coverage'
-      ? input.status !== 'usage_unknown' || row?.status !== 'unknown' || resultCoverage?.complete !== false
-      : check.modelCompleted !== true)
-    || check.taskRunId !== input.taskRunId || check.messageId !== input.messageId
-    || check.outputHash !== input.outputHash || typeof check.taskHash !== 'string'
-    || !/^[a-f0-9]{64}$/.test(check.taskHash)
-    || check.id !== `coc-${createHash('sha256').update(JSON.stringify([
-      input.taskRunId, input.messageId, input.outputHash, check.taskHash,
-      ...(resultCoverage?.totalFiles ? [createHash('sha256').update(JSON.stringify([check.resultRefs, check.resultCoverage])).digest('hex')] : []),
-    ])).digest('hex').slice(0, 24)}` || matching.length !== 1
-    || !validRow) {
-    throw new Error('asset usage output check does not match observation');
-  }
 }
 
 function normalizeEvidence(input: RecordAssetUsageReceiptInput): CognitionSourceRef[] {
@@ -178,9 +95,6 @@ function normalizeEvidence(input: RecordAssetUsageReceiptInput): CognitionSource
   }
   if (input.evidenceKind === 'none' && evidenceRefs.length) {
     throw new Error('asset usage evidence kind does not match evidence');
-  }
-  if (input.observationMethod && !evidenceRefs.some(ref => ref.kind === 'message' && ref.id === input.messageId)) {
-    throw new Error('asset usage observation needs its final message evidence');
   }
   return evidenceRefs;
 }
@@ -223,23 +137,14 @@ export async function recordAssetUsageReceipt(
   if (!injection) throw new Error('injection receipt not found');
   if (
     injection.taskRunId !== input.taskRunId
+    || injection.projectionId !== input.projectionId
     || injection.assetId !== input.assetId
     || injection.assetVersion !== input.assetVersion
   ) throw new Error('injection receipt does not match asset usage');
-  // agent_read 回执在工具调用时写入，天然没有投影 id；只对这个通道放行
-  // 常量占位符，其余回执仍要求投影 id 逐字相等。
-  const projectionIdMatchesInjection = injection.channel === 'agent_read' && injection.projectionId === undefined
-    ? input.projectionId === AGENT_READ_PROJECTION_ID
-    : injection.projectionId === input.projectionId;
-  if (!projectionIdMatchesInjection) throw new Error('injection receipt does not match asset usage');
   if (injection.status !== 'injected' && injection.status !== 'dispatched') {
     throw new Error('injection receipt did not inject asset');
   }
   if (injection.boundary !== input.boundary) throw new Error('injection receipt boundary mismatch');
-  if (input.observationMethod && injection.channel !== 'agent_read' && injection.messageId !== input.messageId) {
-    throw new Error('injection receipt does not match final output observation');
-  }
-  await verifyOutputObservation(userId, input);
 
   const id = receiptId(input);
   const reasonText = compactReason(input.reason);
@@ -256,10 +161,6 @@ export async function recordAssetUsageReceipt(
     evidenceRefs,
     evidenceKind: input.evidenceKind,
     boundary: input.boundary,
-    ...(input.observationMethod ? {
-      observationMethod: input.observationMethod, messageId: input.messageId, outputHash: input.outputHash,
-      ...(input.outputCheckReceiptId ? { outputCheckReceiptId: input.outputCheckReceiptId } : {}),
-    } : {}),
     ...(reasonText ? { reason: reasonText } : {}),
     createdAt: nowIso(),
   };
@@ -268,26 +169,6 @@ export async function recordAssetUsageReceipt(
   return fileEditLock(streamPath).runExclusive(async () => {
     const existing = (await listAssetUsageReceipts(userId)).find((item) => item.id === id);
     if (existing) {
-      // Only an independently persisted check may correct the model's earlier
-      // self-report, and only for the same injected version and exact output.
-      // Legacy receipts have no provenance and must not be guessed from prose.
-      if (existing.status === 'applied' && existing.observationMethod === 'agent_reported'
-        && ['model_assisted', 'result_coverage'].includes(String(input.observationMethod)) && input.status === 'usage_unknown'
-        && existing.injectionReceiptId === input.injectionReceiptId
-        && existing.messageId === input.messageId
-        && (existing.outputHash === input.outputHash || input.observationMethod === 'result_coverage')) {
-        await appendRecallJsonlRecord(userId, 'asset-usage-receipts', 'events', record);
-        return record;
-      }
-      // A later message-bound explicit report can resolve an unknown event.
-      // Never override user contradiction, or manufacture an effect proof.
-      if (existing.status === 'usage_unknown' && input.status === 'applied'
-        && input.evidenceKind === 'final_output' && input.boundary === 'real'
-        // A delayed self-report cannot erase a completed independent check.
-        && !['model_assisted', 'result_coverage'].includes(String(existing.observationMethod))) {
-        await appendRecallJsonlRecord(userId, 'asset-usage-receipts', 'events', record);
-        return record;
-      }
       // 负反馈覆盖（2026-09-14）：KSTAR 收账先写过 applied/usage_unknown 的
       // 同键收据，用户随后点踩的 contradicted 会被幂等去重静默吞掉——
       // 「点踩进治理」在 KSTAR 路径失效。contradicted 是用户明确否定，
@@ -367,7 +248,6 @@ export async function listAppliedUsageReceipts(
  *  同一读法：全量读后过滤，量级相同）。**只透传 ref 的 kind/id/title**，不含
  *  excerpt、不含绝对路径、不含资产正文——可读名由渲染层唯一解析器负责。 */
 export interface AssetUsageReceiptView {
-  observationMethod?: AssetUsageObservation['observationMethod'];
   id: string;
   assetVersion: string;
   taskRunId: string;
@@ -394,7 +274,6 @@ export async function listAssetUsageReceiptViews(
       assetVersion: String(receipt.assetVersion || ''),
       taskRunId: String(receipt.taskRunId || ''),
       status: receipt.status,
-      ...(receipt.observationMethod ? { observationMethod: receipt.observationMethod } : {}),
       evidenceKind: receipt.evidenceKind,
       evidence: (receipt.evidenceRefs || []).slice(0, 5).map((ref) => ({
         kind: String(ref.kind || ''),

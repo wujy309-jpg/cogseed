@@ -67,18 +67,6 @@ export function createRuntimeToolRunner(options: RuntimeToolRunnerOptions): Runt
     skillVersionPins: options.skillVersionPins ?? [],
     actionApproval,
   };
-  callContext.beforeAction = async (toolName, input, signal) => {
-    if (!options.hostToolClient || !options.requestId)
-      return { content: '[E_ONTOLOGY_OPERATION_PRECONDITION_UNAVAILABLE] current host action scope unavailable', isError: true };
-    try {
-      const result = await options.hostToolClient.call({ requestId: options.requestId, runtimeSessionId: options.runtimeSessionId,
-        name: 'ontology_operation_preflight', input: { tool_name: toolName, arguments: input }, signal });
-      if (result.isError) return result;
-      if (JSON.parse(result.content)?.allowed !== true)
-        return { content: '[E_ONTOLOGY_OPERATION_PRECONDITION_UNAVAILABLE] no current action decision returned', isError: true };
-      return undefined;
-    } catch { return { content: '[E_ONTOLOGY_OPERATION_PRECONDITION_UNAVAILABLE] current required conditions unavailable', isError: true }; }
-  };
   const capTokens = options.maxInlineToolResultTokens ?? DEFAULT_INLINE_RESULT_TOKENS;
   const toolResultsDir = cogseedRuntimeSessionToolResultsDir(options.userId, options.runtimeSessionId);
   const capRuntimeResult = (name: string, result: RuntimeToolResult): RuntimeToolResult => capToolResult(
@@ -152,16 +140,11 @@ export function createRuntimeToolRunner(options: RuntimeToolRunnerOptions): Runt
           execution: { connector_id: connectorId, tool_name: toolName, arguments: args },
         }, async () => {
           try {
-            if (_opts.signal?.aborted) return { content: '[E_RUNTIME_ABORTED] connector action cancelled', isError: true };
             if (options.hostToolClient) return capRuntimeResult(name, await options.hostToolClient.call({
               requestId: options.requestId ?? `req-${options.runtimeSessionId.replace(/^mruntime-/, '')}`,
               runtimeSessionId: options.runtimeSessionId, name: 'desktop_connector_call_tool', input, signal: _opts.signal,
             }));
-            return capRuntimeResult('call_connector_tool', { content: JSON.stringify(await options.connectorManager!.callTool(options.userId, connectorId, toolName, args, { ..._opts, beforeDispatch: async () => {
-              const denied = await callContext.beforeAction!('call_connector_tool', input, _opts.signal);
-              if (denied) throw new Error(denied.content);
-              if (_opts.signal?.aborted) throw new Error('connector action cancelled');
-            } })) });
+            return capRuntimeResult('call_connector_tool', { content: JSON.stringify(await options.connectorManager!.callTool(options.userId, connectorId, toolName, args, _opts)) });
           } catch (error) {
             return { content: (error instanceof Error ? error.message : String(error)), isError: true };
           }
@@ -182,7 +165,7 @@ export function createRuntimeToolRunner(options: RuntimeToolRunnerOptions): Runt
       if (!isRuntimeFileTool(name)) {
         return { content: `[E_RUNTIME_UNKNOWN_TOOL] unknown runtime tool: ${name}`, isError: true };
       }
-      return runRuntimeFileTool(name, input, { ...callContext, signal: _opts.signal }, {
+      return runRuntimeFileTool(name, input, callContext, {
         userId: options.userId,
         runtimeSessionId: options.runtimeSessionId,
         maxInlineTokens: capTokens,

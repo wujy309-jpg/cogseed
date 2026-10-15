@@ -250,8 +250,24 @@ async function commitExtraction(input: BackgroundExtractionInput, extraction: Ex
     });
   }
 
-  // Import extraction prepares continuation context; it never writes cognition candidates.
-  const cognitions = { personal: 0, fact: 0, rule: 0, template: 0, skill_method: 0 };
+  // ③ Route cognitions to Recall (the asset side of the extraction).
+  // Dynamic import to avoid a cycle (asset-router imports this module).
+  let cognitions = { personal: 0, fact: 0, rule: 0, template: 0, skill_method: 0 };
+  try {
+    const { routeCognitions } = await import('./asset-router');
+    cognitions = await routeCognitions(
+      userId,
+      input.source,
+      input.sourceId,
+      cid,
+      extraction.candidates,
+    );
+  } catch (routeErr) {
+    log.warn('background extraction: cognition routing failed', {
+      cid,
+      error: (routeErr as Error)?.message || String(routeErr),
+    });
+  }
 
   // ④ Build the welcome payload the renderer swaps into the conversation.
   let welcome: WelcomeMessageData | undefined;

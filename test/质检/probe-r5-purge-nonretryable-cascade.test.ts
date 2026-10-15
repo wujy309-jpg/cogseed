@@ -1,4 +1,3 @@
-import { seedStoredAbilityAsset } from '../helpers/stored-ability-asset';
 /**
  * 探针 r5（边界测试员 · 第 5 轮）→ 主题：删除生命周期「彻底清除」的可重入性。
  *
@@ -66,7 +65,7 @@ async function loadAssets() {
 async function mkAsset(id: string) {
   const assets = await loadAssets();
   const now = new Date().toISOString();
-  return seedStoredAbilityAsset(UID, {
+  return assets.createAbilityAsset(UID, {
     schemaVersion: 2, ownerId: UID, id, candidateId: `cand-${id}`,
     sourceCandidateIds: [`cand-${id}`], reviewDecisionId: `rd_probe${id.slice(-6)}`.padEnd(16, 'x'),
     type: 'personal', title: `资产 ${id}`, statement: `陈述 ${id}。`,

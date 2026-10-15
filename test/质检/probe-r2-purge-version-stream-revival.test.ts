@@ -1,4 +1,3 @@
-import { seedStoredAbilityAsset } from '../helpers/stored-ability-asset';
 /**
  * 探针 r2（红队-越权与状态，新一轮 r2）：purge 与迟到的版本快照追加交错，
  * 已清除的版本流死灰复燃。
@@ -67,7 +66,7 @@ function versionStreamFile(id: string): string {
 async function mkAsset(id: string, statement: string) {
   const { createAbilityAsset } = await import('../../src/main/features/recall/asset-service');
   const now = new Date().toISOString();
-  return seedStoredAbilityAsset(UID, {
+  return createAbilityAsset(UID, {
     schemaVersion: 2, ownerId: UID, id, candidateId: `cand-${id}`,
     sourceCandidateIds: [`cand-${id}`], reviewDecisionId: `rd_probe${id.slice(-6)}`.padEnd(16, 'x'),
     type: 'personal', title: '演示资产', statement,

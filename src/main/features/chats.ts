@@ -2848,8 +2848,6 @@ export async function sweepStaleProcessing(activeUserId?: string): Promise<{ swe
         // live in-memory work always wins over disk maintenance.
         return;
       }
-      const { recoverAbandonedCommanderRuns } = await import('./group_chat/run_store');
-      await recoverAbandonedCommanderRuns(uid, cid, PROCESS_BOOT_CUTOFF_MS);
       await setStatus(uid, cid, 'idle');
       const interruptedActors = Array.isArray(raw.in_flight)
         ? raw.in_flight.filter((actorId: unknown): actorId is string => safeId(actorId))

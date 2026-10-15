@@ -258,6 +258,65 @@ describe('KSTAR review and Recall bridge', () => {
     ]));
   });
 
+  it('bridges an explicitly reviewed gap into a pending Recall candidate only', async () => {
+    const [{ saveKstarReview }, { proposeKstarCandidates }, { saveKstarCandidateProposals }] = await Promise.all([
+      import('../../../../src/main/features/kstar/review-service'),
+      import('../../../../src/main/features/kstar/extraction-service'),
+      import('../../../../src/main/features/kstar/recall-bridge'),
+    ]);
+    const current = episode();
+    const review = await saveKstarReview('review-user', current, {
+      deltaR: -0.8,
+      deltaA: 0.2,
+      outcome: 'worse_than_expected',
+      attribution: 'rule_gap',
+      reason: 'Check the report acceptance criteria before writing the final file.',
+      // 缺口候选必须有推理出的 lesson：只有 reason（诊断文本）时不再产候选。
+      lesson: 'Check the report acceptance criteria before writing the final file to avoid rework.',
+      confidence: 0.9,
+      evidenceRefs: current.evidenceRefs,
+    });
+    const proposals = proposeKstarCandidates(current, review).map((proposal) => ({
+      ...proposal,
+      learningProvenance: {
+        projectionId: 'proj-review', forecastId: 'wf-review', episodeId: current.id,
+        ruleRefs: ['rule:asset-review:1'], attribution: review.attribution,
+      },
+    }));
+    const candidates = await saveKstarCandidateProposals('review-user', proposals);
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      status: 'pending_review',
+      suggestedType: 'rule',
+      learningProvenance: {
+        projectionId: 'proj-review', forecastId: 'wf-review', episodeId: current.id,
+        ruleRefs: ['rule:asset-review:1'], attribution: 'rule_gap',
+      },
+      learningSignal: {
+        deltaR: -0.8,
+        deltaA: 0.2,
+        outcome: 'worse_than_expected',
+        confidence: 0.9,
+        source: 'review',
+      },
+    });
+    const promoted = await (await import('../../../../src/main/features/recall/candidate-service'))
+      .promoteRecallCandidate('review-user', candidates[0].id, { actor: 'user' });
+    expect(promoted.asset.learningProvenance).toMatchObject({
+      projectionId: 'proj-review', forecastId: 'wf-review', episodeId: current.id,
+      ruleRefs: ['rule:asset-review:1'], attribution: 'rule_gap',
+    });
+    expect(promoted.asset.causalRule).toBeUndefined();
+    expect(promoted.asset.learningSignal).toMatchObject({
+      deltaR: -0.8,
+      deltaA: 0.2,
+      outcome: 'worse_than_expected',
+      confidence: 0.9,
+      source: 'review',
+    });
+  });
+
   it('binds an outdated referenced asset to an explicit KSTAR update proposal', async () => {
     const [{ saveKstarReview }, { proposeKstarCandidates }] = await Promise.all([
       import('../../../../src/main/features/kstar/review-service'),
@@ -328,6 +387,24 @@ describe('KSTAR review and Recall bridge', () => {
       .toBe(true);
   });
 
+  it('persists an explicit KSTAR mutation action and target in the unified candidate pool', async () => {
+    const { saveKstarCandidateProposals } = await import('../../../../src/main/features/kstar/recall-bridge');
+    const candidates = await saveKstarCandidateProposals('review-user', [{
+      judgment: 'Update the report verification rule with the current acceptance check.',
+      suggestedType: 'rule',
+      suggestedScope: 'report',
+      suggestedAction: 'update',
+      targetAssetId: 'asset-kstar-existing',
+      sourceRefs: [{ kind: 'execution', id: 'exec-kstar-explicit-update' }],
+    }]);
+
+    expect(candidates[0]).toMatchObject({
+      suggestedAction: 'update',
+      targetAssetId: 'asset-kstar-existing',
+      status: 'pending_review',
+    });
+  });
+
   it('maps an explicitly non-applicable referenced asset to a scope-limiting proposal', async () => {
     const [{ saveKstarReview }, { proposeKstarCandidates }] = await Promise.all([
       import('../../../../src/main/features/kstar/review-service'),
@@ -361,8 +438,32 @@ describe('KSTAR review and Recall bridge', () => {
       expect.objectContaining({ suggestedAction: 'limit_scope', targetAssetId: 'asset-kstar-scope' }),
     ]));
   });
+
+  it('allows an explicit pause proposal only when it names a target asset', async () => {
+    const { saveKstarCandidateProposals } = await import('../../../../src/main/features/kstar/recall-bridge');
+    await expect(saveKstarCandidateProposals('review-user', [{
+      judgment: 'Pause the obsolete report verification rule pending revalidation.',
+      suggestedType: 'rule',
+      suggestedScope: 'report',
+      suggestedAction: 'pause',
+      targetAssetId: 'asset-kstar-pause',
+      sourceRefs: [{ kind: 'execution', id: 'exec-kstar-pause' }],
+    }])).resolves.toMatchObject([{ suggestedAction: 'pause', targetAssetId: 'asset-kstar-pause' }]);
+  });
+
+  it('rejects an explicit KSTAR mutation without a target before writing a candidate', async () => {
+    const { saveKstarCandidateProposals } = await import('../../../../src/main/features/kstar/recall-bridge');
+
+    await expect(saveKstarCandidateProposals('review-user', [{
+      judgment: 'Update the report verification rule with the current acceptance check.',
+      suggestedType: 'rule',
+      suggestedScope: 'report',
+      suggestedAction: 'update',
+      sourceRefs: [{ kind: 'execution', id: 'exec-kstar-invalid-update' }],
+    }])).rejects.toThrow(/target asset/i);
+  });
   it('maps CJK task goals to short scope tags (scopeForTask)', async () => {
-    const { scopeForTask } = await import('../../../../src/main/features/recall/experience-taxonomy');
+    const { scopeForTask } = await import('../../../../src/main/features/kstar/extraction-service');
     expect(scopeForTask('审查 Group Chat 消息路由')).toBe('review');
     expect(scopeForTask('修复 OAuth 回调函数缺陷')).toBe('code');
     expect(scopeForTask('生成一份架构审查报告')).toBe('report');
@@ -394,5 +495,23 @@ describe('KSTAR review and Recall bridge', () => {
     const legacyProposals = proposeKstarCandidates(legacy, review);
     expect(legacyProposals.find((p) => p.suggestedAction === 'update')).toMatchObject({ targetAssetId: 'asset-x' });
     expect(legacyProposals.find((p) => p.suggestedAction === 'update')).not.toHaveProperty('targetVersionUsed');
+  });
+
+  it('bridge passes targetVersionUsed through to the saved recall candidate', async () => {
+    const { saveKstarCandidateProposals } = await import('../../../../src/main/features/kstar/recall-bridge');
+    const [saved] = await saveKstarCandidateProposals('review-user-version', [{
+      judgment: 'Refine the report verification rule after the failed run.',
+      summary: '报告校验规则修订',
+      suggestedType: 'rule',
+      suggestedScope: 'report',
+      suggestedAction: 'update',
+      targetAssetId: 'asset-ver-1',
+      targetVersionUsed: '2',
+      sourceRefs: [{ kind: 'execution', id: 'exec-versioned-run' }],
+    }]);
+    expect(saved.targetVersionUsed).toBe('2');
+    const { listRecallCandidates } = await import('../../../../src/main/features/recall/candidate-service');
+    const reloaded = (await listRecallCandidates('review-user-version')).find((c) => c.id === saved.id);
+    expect(reloaded?.targetVersionUsed).toBe('2');
   });
 });

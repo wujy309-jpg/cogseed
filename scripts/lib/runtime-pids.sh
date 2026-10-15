@@ -23,8 +23,7 @@ worktree_runtime_pids() {
     case "$command" in
       # 主进程：`open` 启动时命令行以本 worktree 的可执行文件开头（后面跟 APP_DIR 与
       # --cogseed-runtime-variant）。前缀锚定，嵌套 worktree 的路径不会命中。
-      "$own_exe $app_dir"|"$own_exe $app_dir "*|"./$_RUNTIME_EXE_SUFFIX $app_dir"|"./$_RUNTIME_EXE_SUFFIX $app_dir "*|"$own_exe $gateway"|"$own_exe $gateway "*) printf '%s\n' "$pid" ;;
-      # Electron 也用于 Vitest：只有带本工作区应用目录或网关入口的进程才可停止。
+      "$own_exe"|"$own_exe "*) printf '%s\n' "$pid" ;;
       # npm start / 直接调用：命令里含本 worktree 的 electron 入口。
       *"$npm_exe"*) printf '%s\n' "$pid" ;;
       # 托管网关子进程：主进程停止后它若存活会成为孤儿。
@@ -36,18 +35,10 @@ worktree_runtime_pids() {
 # stdin: ps 输出。stdout: 同 variant、但属于其它 worktree 的 Electron 主进程 pid。
 other_worktree_runtime_pids() {
   local app_dir="$1"
-  local variant="${2:-cogseed}"
   local own_exe="$app_dir/$_RUNTIME_EXE_SUFFIX"
   local pid command exe
   while read -r pid command; do
     [ -n "$pid" ] || continue
-    case "$command" in
-      "./$_RUNTIME_EXE_SUFFIX $app_dir"|"./$_RUNTIME_EXE_SUFFIX $app_dir "*) continue ;;
-    esac
-    case "$command" in
-      *" --cogseed-runtime-variant=$variant"|*" --cogseed-runtime-variant=$variant "*) ;;
-      *) continue ;;
-    esac
     exe="${command%% *}"
     case "$exe" in
       "$own_exe"|"$app_dir/node_modules/.bin/electron") continue ;;

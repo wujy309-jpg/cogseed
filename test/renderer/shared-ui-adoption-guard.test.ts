@@ -28,6 +28,7 @@ const legacyRawControlBaseline: Record<string, number> = {
   'chat-file-viewer.js': 3,
   'chat-input-form.js': 2,
   'chat-lightbox.js': 3,
+  'cognition/pages.js': 5,
   'connectors.js': 2,
   'context-menu.js': 0,
   'contexts.js': 0,
@@ -70,6 +71,7 @@ const legacyRawControlBaseline: Record<string, number> = {
   'model-guard.js': 2,
   'onboarding.js': 21,
   'oss.js': 1,
+  'personal-ontology.js': 7, // 2026-09-20 盒子化：tab/库行/三盒 nav/模板行/库按钮
   'plugins.js': 2,
   'queue-draft.js': 5,
   'recall-projection-card.js': 4,
@@ -189,9 +191,8 @@ const inlineSvgBaseline: Record<string, number> = {
   // （`SEC-PV-001`）。数值为 1，任何第二处内联 SVG 都会直接红。
   'settings-security.js': 1,
   'avatar.js': 4,
+  'cognition/pages.js': 1,
   'cognition-assets/views.js': 1,
-  // cognition-ontology-graph.js：从主模块迁出的同一个本体关系网络业务画布（ONTO-PV-001）。SVG 只绘制查询结果中的显式节点与边，不承载叶子图标。
-  'cognition-ontology-graph.js': 1,
   'dashboard.js': 2,
   'import-check-modal.js': 1,
   // kb-workbench.js：4 → 2（2026-09-21）。删掉的 2 处是页面自带的一套 svg path 表

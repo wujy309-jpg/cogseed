@@ -1,8 +1,6 @@
 import * as fs from 'node:fs/promises';
-import { withPendingAssetVersion } from './asset-version-journal';
-import { isManagedCognitionCollection, readUnifiedCognitionRecord, persistCognitionSource, withCognitionTransition } from '../cognition_bridge';
 
-import { appendJsonlAtomic, removeJsonlRecords, removeJsonlStream, safeId, writeJson } from '../../storage';
+import { appendJsonlAtomic, removeJsonlRecords, safeId, writeJson } from '../../storage';
 import { fileEditLock } from '../../util/locks';
 import { notifyCognitionWrite } from './store-events';
 import {
@@ -101,28 +99,7 @@ export async function readRecallJsonRecord(
   recordId: string,
 ): Promise<RecallJsonRecord | undefined> {
   const recordPath = recallJsonRecordPath(userId, collection, recordId);
-  const unified = readUnifiedCognitionRecord(userId, collection, recordId);
-  if (unified.authoritative) return unified.record ? validateRecallRecord(userId, recordId, unified.record) : undefined;
   return readExistingRecallRecord(userId, recordPath, recordId);
-}
-
-/** Explicit cleanup of obsolete, untouched manual waits. Never removes a
- * conversation, a candidate, a processed capture or a managed cognition record. */
-export async function discardUnstartedRecallCaptureWait(userId: string, recordId: string): Promise<boolean> {
-  const recordPath = recallJsonRecordPath(userId, 'captures', recordId);
-  const removed = await fileEditLock(recordPath).runExclusive(async () => {
-    const current = await readRecallJsonRecord(userId, 'captures', recordId);
-    if (!current) return false;
-    if (current.status !== 'waiting_manual' || current.executionPolicy !== 'manual'
-      || !Array.isArray(current.candidateIds) || current.candidateIds.length
-      || current.startedAt || current.stage || current.writingCandidateId || current.promotedAssetId) {
-      throw new Error('only an untouched manual capture wait can be discarded');
-    }
-    await fs.unlink(recordPath);
-    return true;
-  });
-  if (removed) notifyCognitionWrite(userId, 'captures', 'remove', recordId);
-  return removed;
 }
 
 export async function writeRecallJsonRecord(
@@ -132,14 +109,12 @@ export async function writeRecallJsonRecord(
   record: RecallJsonRecord,
 ): Promise<RecallJsonRecord> {
   const recordPath = recallJsonRecordPath(userId, collection, recordId);
-  const work = () => fileEditLock(recordPath).runExclusive(async () => {
-    const current = await readRecallJsonRecord(userId, collection, recordId);
-    const result = validateRecallRecord(userId, recordId, collection === 'ability-assets' ? withPendingAssetVersion(current, record) : record);
-    if (isManagedCognitionCollection(collection)) await persistCognitionSource(userId, collection, recordId, result, () => writeJson(recordPath, result));
-    else await writeJson(recordPath, result);
+  const validated = await fileEditLock(recordPath).runExclusive(async () => {
+    await readExistingRecallRecord(userId, recordPath, recordId);
+    const result = validateRecallRecord(userId, recordId, record);
+    await writeJson(recordPath, result);
     return result;
   });
-  const validated = await (isManagedCognitionCollection(collection) ? withCognitionTransition(userId, work) : work());
   notifyCognitionWrite(userId, collection, 'write', recordId);
   return validated;
 }
@@ -151,15 +126,13 @@ export async function updateRecallJsonRecord(
   updater: RecallJsonRecordUpdater,
 ): Promise<RecallJsonRecord> {
   const recordPath = recallJsonRecordPath(userId, collection, recordId);
-  const work = () => fileEditLock(recordPath).runExclusive(async () => {
-    const current = await readRecallJsonRecord(userId, collection, recordId);
+  const validated = await fileEditLock(recordPath).runExclusive(async () => {
+    const current = await readExistingRecallRecord(userId, recordPath, recordId);
     const next = await updater(current);
-    const result = validateRecallRecord(userId, recordId, collection === 'ability-assets' ? withPendingAssetVersion(current, next) : next);
-    if (isManagedCognitionCollection(collection)) await persistCognitionSource(userId, collection, recordId, result, () => writeJson(recordPath, result));
-    else await writeJson(recordPath, result);
+    const result = validateRecallRecord(userId, recordId, next);
+    await writeJson(recordPath, result);
     return result;
   });
-  const validated = await (isManagedCognitionCollection(collection) ? withCognitionTransition(userId, work) : work());
   notifyCognitionWrite(userId, collection, 'update', recordId);
   return validated;
 }
@@ -173,12 +146,7 @@ export async function appendRecallJsonlRecord(
   const streamPath = recallJsonlPath(userId, collection, stream);
   const recordId = typeof record?.id === 'string' ? record.id : '';
   const validated = validateRecallRecord(userId, recordId, record);
-  // P-r1-87 防拼接：流尾撕裂半行（云同步冲突/崩溃截断）时先补换行隔离再追加，
-  // 新记录不拼进坏行（坏行吞掉下一条合法记录）；撕裂字节原样保留，读侧
-  // listRecallJsonlRecords 逐行降级跳过。注意是「拒绝拼接」而不是「拒绝写入」：
-  // 资产内容更新在追加版本前已 bump 主记录版本号，写侧死拒会把「记录已 v3、
-  // 流里无 v3」的半提交固化且产品内无出路。
-  await appendJsonlAtomic(streamPath, validated, { repairTornTail: true });
+  await appendJsonlAtomic(streamPath, validated);
   notifyCognitionWrite(userId, collection, 'append', recordId || undefined);
   return validated;
 }
@@ -190,11 +158,6 @@ export async function appendRecallJsonlRecord(
  * 留着就不算清除干净。除此之外没有理由调用它——普通删除走状态位，不动历史。
  *
  * 流不存在视为已达成目标，不报错：清除要可重入，半路失败后重试不该被绊住。
- *
- * 物理互斥（P-r2-3 根治）：删除走 removeJsonlStream——与 appendJsonlAtomic
- * 共享同一把行锁并失效行数缓存，排队中的在途 append 不会再于 rm 之后重建
- * 流文件（purged 资产的版本快照复活窗口）。记录层的互斥（追加侧锁内复核）
- * 在 asset-service 的版本追加收口处，两层合起来才是完整防线。
  */
 export async function removeRecallJsonlStream(
   userId: string,
@@ -202,8 +165,12 @@ export async function removeRecallJsonlStream(
   stream: string,
 ): Promise<void> {
   const streamPath = recallJsonlPath(userId, collection, stream);
-  const { existed } = await removeJsonlStream(streamPath);
-  if (!existed) return;
+  try {
+    await fs.rm(streamPath);
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return;
+    throw error;
+  }
   notifyCognitionWrite(userId, collection, 'remove');
 }
 
@@ -256,12 +223,6 @@ export async function listRecallJsonlRecords(
     throw error;
   }
 
-  // b6 回滚（P-r1-87 读侧降级 → 恢复整流拒绝）：坏行跳过把「corrupt 必须传播」
-  // 变成「当作缺失证据」，kstar 四件（admission/association/run-evidence/
-  // task-closure 的 fail-closed 与降级审计契约）相对基线翻红；store.test.ts 四例
-  // 与 probe-r1-versionstream-badline 已随本回滚恢复基线断言。append 侧的
-  // repairTornTail 防拼接保留（不依赖读侧降级）。重新落地读侧降级时须先裁决
-  // kstar fail-closed 契约（「证据不可读」与「证据缺失」必须可区分）。
   const context = `recall JSONL ${collection}/${stream}`;
   if (rawText === '') return [];
 

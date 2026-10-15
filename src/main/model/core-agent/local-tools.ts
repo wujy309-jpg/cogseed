@@ -49,7 +49,6 @@ import * as path from 'node:path';
 import { spawn } from 'node:child_process';
 
 import type { AgentTool, ToolContext, ToolResult } from '#core-agent';
-import type { OntologyMarkdownWriteInput, OntologyOperationDecision } from '../../features/cognition/ontology/operation-guard';
 import {
   BASH_PROGRESS_INTERVAL_MS,
   bashTool as coreBashTool,
@@ -74,7 +73,7 @@ import { classifyBashCommand } from './bash-risk';
 import { requestBashDecision } from './bash-permissions';
 import { markdownToPdf, htmlToPdf } from '../../util/md-to-pdf';
 import { uniquifyPath, renderRenameSignal } from '../../util/uniquify-path';
-import { canonicalizePath, isPathAllowed } from '../../util/path-sandbox';
+import { isPathAllowed } from '../../util/path-sandbox';
 import { kindOf } from '../../features/file_indexer';
 import { getWorkspacePath } from '../../features/user_workspace';
 import {
@@ -117,10 +116,6 @@ import {
 const log = createLogger('local-tools');
 
 export interface LocalToolsOpts {
-  /** Host-owned deny-only check after sandbox admission and before final bytes
-   * are written. It neither changes the bytes nor grants filesystem access. */
-  beforeUnverifiedAction?: (toolName: string, input: Record<string, unknown>) => Promise<ToolResult | undefined>;
-  beforeMarkdownWrite?: (input: Pick<OntologyMarkdownWriteInput, 'operation' | 'path' | 'content'>) => Promise<OntologyOperationDecision>;
   /** Host shell platform override for deterministic wrapper integration tests.
    *  Production callers omit this and use `process.platform`. */
   hostPlatform?: NodeJS.Platform;
@@ -208,48 +203,6 @@ function isMineFor(opts: LocalToolsOpts): (p: string) => boolean {
 
 function errText(code: string, msg: string): string {
   return `${code}: ${msg}`;
-}
-
-async function markdownWritePreflight(opts: LocalToolsOpts, operation: 'write_file' | 'edit_file', absPath: string, content: string): Promise<ToolResult | undefined> {
-  if (!opts.beforeMarkdownWrite || !['.md', '.markdown'].includes(path.extname(absPath).toLowerCase())) return undefined;
-  try {
-    const decision = await opts.beforeMarkdownWrite({ operation, path: absPath, content });
-    if (decision.allowed) return undefined;
-    const missing = decision.checks.filter(check => check.status === 'blocked' && check.reasonCode === 'required_section_missing')
-      .flatMap(check => check.sectionName ? [check.sectionName] : []);
-    const message = missing.length ? t('ontology.operation.required_sections_missing', { sections: [...new Set(missing)].join('、') })
-      : t('ontology.operation.conditions_unresolved');
-    return { content: errText('E_ONTOLOGY_OPERATION_PRECONDITION', message), isError: true };
-  } catch {
-    log.warn('markdown operation preflight unavailable', { operation, user_id: maskId(opts.userId) });
-    return { content: errText('E_ONTOLOGY_OPERATION_PRECONDITION_UNAVAILABLE', t('ontology.operation.preflight_unavailable')), isError: true };
-  }
-}
-
-function markdownWriteSnapshot(absPath: string): string {
-  try {
-    const entry = fs.lstatSync(absPath, { bigint: true });
-    const target = entry.isSymbolicLink() ? fs.statSync(absPath, { bigint: true }) : entry;
-    return [entry.dev, entry.ino, entry.size, entry.mtimeNs, entry.ctimeNs,
-      target.dev, target.ino, target.size, target.mtimeNs, target.ctimeNs].join(':');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'absent';
-    throw error;
-  }
-}
-
-function markdownAccessSnapshot(opts: LocalToolsOpts, absPath: string): string {
-  return JSON.stringify({ mode: getLocalExecMode(), path: canonicalizePath(absPath),
-    roots: allowedRootsFor(opts).map(root => canonicalizePath(root)) });
-}
-
-function markdownAccessChanged(opts: LocalToolsOpts, absPath: string, expected: string): ToolResult | undefined {
-  const scopeError = guardEditPath(opts, absPath);
-  if (scopeError) return { content: scopeError, isError: true };
-  if (markdownAccessSnapshot(opts, absPath) !== expected) {
-    return { content: errText('E_STALE', 'The path or local access settings changed during the rule check; retry using the current scope.'), isError: true };
-  }
-  return undefined;
 }
 
 function permissionWaitProgress(ctx: ToolContext | undefined, operation: string): (elapsedMs: number) => void {
@@ -1174,10 +1127,9 @@ async function executeCoreBashWithOutputTracking(
       || (process.platform === 'win32' && windowsStrongSandboxAvailable()))
       && Array.isArray(ctx.state.sandboxAllowedDirs)
       && ctx.state.sandboxAllowedDirs.length > 0;
-    const denied = await opts.beforeUnverifiedAction?.('bash', input);
-    const result = denied || (direct && !writeSandboxActive
+    const result = direct && !writeSandboxActive
       ? await executeDirectCogSeedCli(direct, input, ctx, workingDir)
-      : await coreBashTool.execute(input, ctx));
+      : await coreBashTool.execute(input, ctx);
 
     // Update execution record with result
     const updates: Partial<executionLog.ExecutionRecord> = {
@@ -2515,8 +2467,6 @@ function createBashTool(opts: LocalToolsOpts): AgentTool {
       //               bash on same cwd, ENOTEMPTY, EACCES) is silently
       //               swallowed.
       if (!ctx.workingDir) {
-        const denied = await opts.beforeUnverifiedAction?.('bash', input);
-        if (denied) return denied;
         return finalizeBrowserResult(translateFixedBashError(await coreBashTool.execute(input, ctx)));
       }
       const workingDir = path.resolve(ctx.workingDir);
@@ -2733,8 +2683,6 @@ function createInteractiveCliStartTool(opts: LocalToolsOpts): AgentTool {
       if (gate) return gate;
       try { fs.mkdirSync(workingDir, { recursive: true }); }
       catch { /* spawn will report the canonical error */ }
-      const denied = await opts.beforeUnverifiedAction?.('interactive_cli_start', input);
-      if (denied) return denied;
       const view = startInteractiveCliSession({
         uid: opts.userId ?? '',
         cid: opts.cid,
@@ -2807,8 +2755,6 @@ function createInteractiveCliSendTool(opts: LocalToolsOpts): AgentTool {
       const sessionId = String(input.session_id ?? '').trim();
       if (!sessionId) return { content: errText('E_BAD_INPUT', '`session_id` is required'), isError: true };
       try {
-        const denied = await opts.beforeUnverifiedAction?.('interactive_cli_send', input);
-        if (denied) return denied;
         const view = sendInteractiveCliInput(opts.userId ?? '', sessionId, String(input.input ?? ''), {
           addNewline: input.add_newline !== false,
           sensitive: false,
@@ -2901,34 +2847,7 @@ function createWriteFileTool(opts: LocalToolsOpts): AgentTool {
       const rewritten = finalPath !== inputAbs
         ? { ...input, path: finalPath }
         : input;
-      const checkedMarkdown = !!opts.beforeMarkdownWrite && ['.md', '.markdown'].includes(path.extname(finalPath).toLowerCase());
-      const accessSnapshot = checkedMarkdown ? markdownAccessSnapshot(opts, finalPath) : undefined;
-      let writeSnapshot: string | undefined;
-      if (checkedMarkdown) {
-        try { writeSnapshot = markdownWriteSnapshot(finalPath); }
-        catch { return { content: errText('E_STALE', 'The file could not be checked before writing; read it again before retrying.'), isError: true }; }
-      }
-      const preflight = await markdownWritePreflight(opts, 'write_file', finalPath, String(input.content ?? ''));
-      if (preflight) return preflight;
-      let result: ToolResult;
-      if (checkedMarkdown) {
-        // Avoid an additional async filesystem window after the host rule
-        // check; a new path is also created exclusively to protect late files.
-        try {
-          const accessChanged = markdownAccessChanged(opts, finalPath, accessSnapshot!);
-          if (accessChanged) return accessChanged;
-          if (markdownWriteSnapshot(finalPath) !== writeSnapshot) {
-            return { content: errText('E_STALE', 'The file changed during the rule check; the write was not performed.'), isError: true };
-          }
-          fs.mkdirSync(path.dirname(finalPath), { recursive: true });
-          fs.writeFileSync(finalPath, String(input.content ?? ''), { encoding: 'utf8', flag: writeSnapshot === 'absent' ? 'wx' : 'w' });
-          result = { content: `File written: ${finalPath}` };
-        } catch (error) {
-          result = { content: `Error writing file: ${(error as Error).message}`, isError: true };
-        }
-      } else {
-        result = await coreWriteFileTool.execute(rewritten, ctx);
-      }
+      const result = await coreWriteFileTool.execute(rewritten, ctx);
       if (!result.isError) {
         // Stamp the just-written bytes so a follow-up edit_file accepts an edit
         // without an intervening read_file (the model already knows the content
@@ -3083,26 +3002,6 @@ function createEditFileTool(opts: LocalToolsOpts): AgentTool {
         if (oauthClientMismatchErr) {
           log.warn('edit_file google oauth client/scope mismatch reject', { user_id: maskId(opts.userId), path: logPathRef(abs) });
           return { content: oauthClientMismatchErr, isError: true };
-        }
-
-        const checkedMarkdown = !!opts.beforeMarkdownWrite && ['.md', '.markdown'].includes(path.extname(abs).toLowerCase());
-        const accessSnapshot = checkedMarkdown ? markdownAccessSnapshot(opts, abs) : undefined;
-        const preflight = await markdownWritePreflight(opts, 'edit_file', abs, next);
-        if (preflight) return preflight;
-        // The async rule check can yield to an external editor. Our per-file
-        // mutex serializes app callers only, so verify the exact bytes again
-        // before committing the replacement.
-        if (checkedMarkdown) {
-          const accessChanged = markdownAccessChanged(opts, abs, accessSnapshot!);
-          if (accessChanged) return accessChanged;
-          let freshBody: string;
-          try { freshBody = fs.readFileSync(abs, 'utf8'); }
-          catch { return { content: errText('E_STALE', 'The file changed or disappeared during the rule check; read it again before retrying.'), isError: true }; }
-          const freshHash = editableFileHash(freshBody);
-          if (freshHash !== currentHash) {
-            recordRead(ctx, abs, undefined, freshHash);
-            return { content: `${errText('E_STALE', 'The file changed during the rule check; the edit was not written.')}\n${editRecoveryContext(freshBody, oldStr, freshHash)}`, isError: true };
-          }
         }
 
         try {

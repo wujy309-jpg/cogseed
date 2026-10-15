@@ -236,8 +236,6 @@ export interface MessagingInboundLedgerFile {
 }
 
 export interface DeliveryLedgerEntry {
-  /** New agent sends require a current host gate on every attempt; missing recovery context never permits delivery. */
-  requiresOperationPreflight?: boolean;
   key: string;
   instanceId: string;
   /** The platform id the message is delivered to. Ordinary chat replies use

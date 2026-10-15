@@ -1,4 +1,3 @@
-import { seedStoredAbilityAsset } from '../../../helpers/stored-ability-asset';
 /**
  * specs/016 T012：冻结副本读路径加固（prompt-injection.ts，data-model §4）。
  *
@@ -51,7 +50,7 @@ async function modules() {
 async function seedAsset(spec: { id: string; statement: string }) {
   const { assets } = await modules();
   const now = new Date().toISOString();
-  return seedStoredAbilityAsset(UID, {
+  return assets.createSystemAbilityAsset(UID, {
     schemaVersion: 1,
     ownerId: UID,
     id: spec.id,

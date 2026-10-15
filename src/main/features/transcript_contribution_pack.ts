@@ -48,22 +48,6 @@ export interface PackFilters {
   ownerScope?: OwnerScope;
 }
 
-/**
- * wrong/correct 长度上限：与 transcript_glossary.ts 的 MAX_WRONG_LEN=80 /
- * MAX_CORRECT_LEN=200（upsertEntry 的 bounded 入参校验）同口径；那边常量未
- * 导出，此处按同值复制。超长词条**整条跳过、不截断**——截断纠错对等于替
- * 用户写一条错的规则。
- */
-const MAX_WRONG_LEN = 80;
-const MAX_CORRECT_LEN = 200;
-
-/**
- * kind 白名单：与 transcript_glossary.ts normalizeKind 同款列表。非法 kind
- * 归一成 'term'：读侧 normalizeStoredEntry 会把白名单外的 kind 剥成 'term'，
- * 写侧不先归一就会"落盘成功、读回变形"（写读不对称的幽灵写）。
- */
-const GLOSSARY_KINDS: GlossaryKind[] = ['product', 'people', 'org', 'term', 'venue', 'course', 'filler'];
-
 function scopeRank(scope: OwnerScope): number {
   if (scope === 'org') return 3;
   if (scope === 'team') return 2;
@@ -136,15 +120,11 @@ export function parseContributionPack(raw: unknown): ContributionPack | null {
     const correct = action === 'delete' ? '' : String(row?.correct ?? '').trim();
     if (!wrong) continue;
     if (action === 'replace' && !correct) continue;
-    if (wrong.length > MAX_WRONG_LEN) continue;
-    if (correct.length > MAX_CORRECT_LEN) continue;
-    const kind: GlossaryKind =
-      typeof row?.kind === 'string' && (GLOSSARY_KINDS as string[]).includes(row.kind) ? row.kind : 'term';
     entries.push({
       wrong,
       correct,
       action,
-      kind,
+      kind: (row?.kind ?? 'term') as GlossaryKind,
       riskLevel: row?.riskLevel === 'high' || row?.riskLevel === 'medium' ? row.riskLevel : 'low',
       boundary: row?.boundary === 'word' ? 'word' : 'substring',
       contextDeny: Array.isArray(row?.contextDeny) ? row!.contextDeny!.map(String).slice(0, 50) : [],

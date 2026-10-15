@@ -1,8 +1,7 @@
 import { genId12, nowIso } from '../../storage';
 import { createLogger } from '../../logger';
 import { getWorkspacePath } from '../user_workspace';
-// 2026-10-08 U09：KSTAR 运行时收口动态导入——缺失时任务收口照常交付。
-import type { RuntimeKstarClosureInput } from '../kstar/task-closure';
+import { captureRuntimeKstarClosure, type RuntimeKstarClosureInput } from '../kstar/task-closure';
 import { defaultRuntimeWorkerService, type RuntimeWorkerService } from './worker-process';
 import {
   normalizeRuntimeRunRequest,
@@ -102,10 +101,7 @@ export function createCogSeedAgentRuntime(options: CogSeedAgentRuntimeOptions = 
     catch { return []; }
   });
   const projectResult = options.projectResult;
-  const captureClosure = options.captureClosure || (async (input: RuntimeKstarClosureInput) => {
-    const { captureRuntimeKstarClosure } = await import('../kstar/task-closure');
-    return captureRuntimeKstarClosure(input);
-  });
+  const captureClosure = options.captureClosure || captureRuntimeKstarClosure;
   const log = createLogger('cogseed-runtime');
 
   async function* run(uid: string, raw: CogSeedAgentRuntimeInput, opts: { signal?: AbortSignal | null } = {}): AsyncGenerator<RuntimeEventEnvelope, void, unknown> {
