@@ -47,6 +47,8 @@ const _rendererFeatureManifest = Object.freeze({
     { src: './hub-contributions.css', type: 'style' },
     { src: './modules/hub-contributions-model.js' },
     { src: './modules/hub-contributions.js' },
+    // Agent 贡献页（registry HUBC-PV-004）复用上面模块的身份门与「我的贡献」，必须排在其后。
+    { src: './modules/hub-agent-contributions.js' },
     { src: './modules/skills-bindings.js' },
   ],
   recall: [

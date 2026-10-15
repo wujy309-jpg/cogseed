@@ -1,0 +1,26 @@
+{
+  "_note": "客户端建议的初始清单（2026-10-13），与 src/main/features/agent_builtin_capabilities.ts 一致；introduced_in 目前是占位，发版前改成包含本改动的发布版本；成员产品可改，改后两边同步。",
+  "list": [
+    {
+      "id": "builtin:grounded-material-qa",
+      "introduced_in": "1.3.0",
+      "current_version": "1.3.0",
+      "capability": "Answer strictly from the user's imported materials, with evidence",
+      "risk": "low"
+    },
+    {
+      "id": "builtin:kb-mindmap",
+      "introduced_in": "1.3.0",
+      "current_version": "1.3.0",
+      "capability": "Generate a local multi-level mind map from knowledge-base documents",
+      "risk": "low"
+    },
+    {
+      "id": "builtin:coding",
+      "introduced_in": "1.3.0",
+      "current_version": "1.3.0",
+      "capability": "Implement or change code in an existing project, grounded in repository guidance",
+      "risk": "medium"
+    }
+  ]
+}

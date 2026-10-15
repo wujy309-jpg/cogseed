@@ -76,6 +76,7 @@ import {
   type SkillAllowlistRef,
 } from '../model/core-agent/skill-registry';
 import { readDisabledSets, setAgentEnabled } from './component_enabled';
+import { effectiveAgentEnabled as _effectiveEnabled, isHubDisabledMarketplaceAgent as _hubDisabled } from './agent_hub_status';
 import { renameAgentInMembers } from './group_chat/state';
 import { validateAgentSpec, ValidationReport as QualityReport } from '../quality';
 import { persistReport as persistQualityReport } from '../quality/report';
@@ -84,6 +85,10 @@ import {
   normalizeMarketplaceCategoryCode,
 } from './marketplace_biz';
 import { normalizeInstallVersion } from './marketplace_installs';
+import { app as electronApp } from 'electron';
+import { readAgentDependencyState, type AgentDependencyState } from './agent_dependency_state';
+import { isKnownBuiltinRef, parseBuiltinRef } from './agent_builtin_capabilities';
+import { activeUpdateFailure, readAgentUpdateFailures, type AgentUpdateFailure } from './agent_update_failures';
 import { NAME_DISPLAY_MAX_UNITS, nameDisplayWidth } from '../util/name-limit';
 import {
   getAgentDispatchPolicy,
@@ -341,6 +346,14 @@ export interface Agent {
    *  packaged fallback copy, which wins conflict arbitration over platform
    *  marketplace installs and custom agents. */
   seed_source?: string;
+  /** Derived on listing (not persisted): dependency state of an installed marketplace agent. */
+  dependency_state?: AgentDependencyState;
+  /** Derived from the install record's author uid: `"0"` is official, any other author is a community contribution. */
+  author_tier?: 'official' | 'community';
+  /** Derived on listing: set when an update of this installed marketplace agent failed; the installed version still works. */
+  update_failure?: AgentUpdateFailure;
+  /** 市场 Agent 被 Hub 停用：本机不可用（`enabled` 已含此因素），界面据此提示原因。 */
+  hub_disabled?: boolean;
 }
 
 export interface AgentRaw {
@@ -479,6 +492,10 @@ function _applyMarketplaceInstallMeta(agent: Agent, dir: string): void {
     if (typeof meta.status === 'string') agent.status = meta.status;
     else if (typeof meta.state === 'string') agent.status = meta.state;
     if (typeof meta.seed_source === 'string') agent.seed_source = meta.seed_source;
+    // Official content is published with author uid "0"; anything else came from a contributor.
+    if (typeof meta.create_uid === 'string' && meta.create_uid.trim()) {
+      agent.author_tier = meta.create_uid.trim() === '0' ? 'official' : 'community';
+    }
   } catch (err) {
     log.warn(`marketplace agent install metadata unreadable dir=${dir}: ${(err as Error).message}`);
   }
@@ -1046,8 +1063,10 @@ export function normalizeAgent(raw: AgentRaw | null | undefined, source: AgentSo
   // (string, object, null) is treated as "unset" so malformed JSON does not
   // produce misleading dependency metadata.
   if (Array.isArray(raw.skill_list)) {
+    // `builtin:<name>` (client built-in capability) is a valid ref form that `safeId` rejects;
+    // keep well-formed ones so a saved agent does not silently lose them on load.
     agent.skill_list = raw.skill_list.filter(
-      (v): v is string => typeof v === 'string' && safeId(v),
+      (v): v is string => typeof v === 'string' && (safeId(v) || parseBuiltinRef(v) !== null),
     );
   }
   // inputs follows the same three-state convention as skill_list. Only the
@@ -1679,7 +1698,7 @@ export async function listAgentSummariesForUser(userId: string): Promise<AgentSu
     category: agent.category,
     runtime: agent.runtime,
     interaction_mode: agent.interaction_mode,
-    enabled: !disabledAgentIds.has(agent.agent_id),
+    enabled: _effectiveEnabled(agent, disabledAgentIds),
   }));
 }
 
@@ -1698,7 +1717,7 @@ export async function listAgentSearchListingsForUser(userId: string): Promise<Ag
     description_zh: agent.description_zh,
     description_en: agent.description_en,
     interaction_mode: agent.interaction_mode,
-    enabled: !disabledAgentIds.has(agent.agent_id),
+    enabled: _effectiveEnabled(agent, disabledAgentIds),
   }));
 }
 
@@ -1717,8 +1736,12 @@ export async function listAgentDispatchSpecsForUser(userId: string): Promise<Age
   const { agents: disabledAgentIds } = readDisabledSets(userId);
   return specs.map((agent) => ({
     ...agent,
-    enabled: !disabledAgentIds.has(agent.agent_id),
+    enabled: _effectiveEnabled(agent, disabledAgentIds),
   }));
+}
+
+function _appVersionForDeps(): string {
+  try { return electronApp.getVersion() || ''; } catch { return ''; }
 }
 
 export async function listAgentDispatchSpecs(): Promise<Agent[]> {
@@ -1733,9 +1756,20 @@ export async function listAgentsForUser(userId: string): Promise<Agent[]> {
   // small JSON file read per call.
   const { agents: disabledAgentIds } = readDisabledSets(userId);
   const enriched = await _enrichAgentSpecs(userId, specs);
+  const uid = userId;
+  const updateFailures = readAgentUpdateFailures(uid);
   return enriched.map((agent) => ({
     ...agent,
-    enabled: !disabledAgentIds.has(agent.agent_id),
+    enabled: _effectiveEnabled(agent, disabledAgentIds),
+    ...(_hubDisabled(agent) ? { hub_disabled: true } : {}),
+    // Installed marketplace agents only: custom agents reference the user's own skills and are not
+    // governed by Hub status. Derived fresh each listing so a Hub disable shows up at once.
+    ...(agent.source === 'marketplace' && agent.skill_list?.length
+      ? { dependency_state: readAgentDependencyState(uid, agent.agent_id, agent.skill_list, _appVersionForDeps()) }
+      : {}),
+    ...(agent.source === 'marketplace'
+      ? ((f) => (f ? { update_failure: f } : {}))(activeUpdateFailure(updateFailures, agent.agent_id, agent.version))
+      : {}),
   }));
 }
 
@@ -1829,7 +1863,7 @@ async function _readAgentSpec(
           _applyMarketplaceInstallMeta(norm, path.dirname(f));
         }
         const { agents: disabledAgentIds } = readDisabledSets(userId);
-        norm.enabled = !disabledAgentIds.has(norm.agent_id);
+        norm.enabled = _effectiveEnabled(norm, disabledAgentIds);
         return norm;
       }
     } catch { /* ignore */ }
@@ -2442,18 +2476,33 @@ async function _applyAgentUpdates(
       else delete data.skill_list;
     } else if (Array.isArray(v)) {
       const raw = v.filter((x) => typeof x === 'string' && safeId(x));
+      // 按**名字**写的引用也要能解析：模型看到的技能名可能是中文（如 `AI产品构建评测`），`safeId` 只认 ASCII，
+      // 先按它过滤会让这类名字在解析前就被静默丢掉。解析结果落地的一定是安全的 id。
+      // 受管创建器是封闭清单，只能写清单里的 id，所以它仍然只用 `raw`（行为不变）。
+      const namedRefs = v.filter((x): x is string => typeof x === 'string' && x.trim() !== '' && !x.startsWith('builtin:'));
+      // Open built-in capabilities are not in the skill registry (so the resolver below would drop
+      // them as unknown); keep the ones the client actually offers, once each.
+      const builtinKept = [...new Set(v.filter((x): x is string => typeof x === 'string' && isKnownBuiltinRef(x)))];
+      const builtinDropped = v.filter((x) => typeof x === 'string' && x.startsWith('builtin:') && !isKnownBuiltinRef(x));
       if (creatorPolicy && raw.some((skill) => !creatorPolicy.skillIds.includes(skill))) {
+        throw new Error('creator_agent_skill_scope_invalid');
+      }
+      // 受管创建器的技能范围是封闭清单：内置能力同样不得超出，否则它能绕过范围拿到系统技能
+      if (creatorPolicy && builtinKept.some((ref) => !creatorPolicy.skillIds.includes(ref))) {
         throw new Error('creator_agent_skill_scope_invalid');
       }
       // Scope metadata to this agent while preserving enabled external-package
       // refs, so another agent's private (`ownerAgent`) skill resolves as
       // unknown and gets dropped.
       const specs = await listSkillSpecsForAgentMetadata(userId, { forAgentId: agentId });
-      const { ids, unknown } = resolveSkillAllowlistRefs(specs, raw);
+      const { ids, unknown } = resolveSkillAllowlistRefs(specs, creatorPolicy ? raw : namedRefs);
       if (unknown.length) {
         log.warn(`agent ${agentId}: unknown skills dropped: ${unknown.join(',')}`);
       }
-      data.skill_list = ids;
+      if (builtinDropped.length) {
+        log.warn(`agent ${agentId}: unknown built-in capabilities dropped: ${builtinDropped.join(',')}`);
+      }
+      data.skill_list = [...ids, ...builtinKept];
     }
     // any other value (undefined sneaking through) is a no-op
   }
@@ -2944,7 +2993,7 @@ function _parseAgentBlock(inner: string): ExtractedFields {
     fields.skill_list = skM[1]
       .split(/\r?\n/)
       .map((s) => s.trim())
-      .filter((s) => s.length > 0 && safeId(s));
+      .filter((s) => s.length > 0 && (safeId(s) || isKnownBuiltinRef(s)));
   }
   const inM = inner.match(AGENT_CHILD_RE('inputs'));
   if (inM) {
@@ -3334,16 +3383,22 @@ export async function sendToAgentEditChat(
   // Inline edit chat is bound to one agent; apply only the first block.
   const fields = blocks[0] || {};
   const updated: ExtractedFields = {};
+  let dropped: string[] = [];
   if (Object.keys(fields).length) {
     await updateAgentSpecForUser(userId, agentId, fields);
     Object.assign(updated, fields);
+    // 本机找不到的技能名不会被保存：告诉用户，而不是只写日志。
+    dropped = await unresolvedSkillRefsForAgent(userId, agentId, fields.skill_list);
   }
+  const replyText = dropped.length
+    ? `${cleanText}\n\n${t('chat.agent_skills_dropped', { names: dropped.join('、') })}`
+    : cleanText;
 
   await _appendAgentChatMessage(userId, agentId,
-    { time: nowIso(), role: 'assistant', content: cleanText });
+    { time: nowIso(), role: 'assistant', content: replyText });
   await saveAgentChatMeta(userId, agentId, { session_id: sessionId });
 
-  return { ok: true, message: cleanText, updated };
+  return { ok: true, message: replyText, updated };
 }
 
 const MAX_AGENT_PROCESS_ITEMS = 300;
@@ -3433,6 +3488,10 @@ export async function* streamSendToAgentEditChat(
         if (Object.keys(fields).length) {
           await updateAgentSpecForUser(userId, agentId, fields);
           Object.assign(updated, fields);
+          const droppedSkills = await unresolvedSkillRefsForAgent(userId, agentId, fields.skill_list);
+          if (droppedSkills.length) {
+            synthesizedProgress.push(t('process.agent.skills_dropped', { names: droppedSkills.join('、') }));
+          }
           for (const k of ['name', 'workflow', 'category'] as const) {
             if (fields[k] !== undefined) {
               synthesizedProgress.push(t('process.agent.update_field', { field: k }));
@@ -3596,6 +3655,28 @@ async function recordBirthInheritance(
     });
   } catch (err) {
     log.warn(`agent inheritance not recorded for ${agent.agent_id}: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * 模型写进 `<skills>` 的名字里，本机解析不出来（因而不会保存）的那些。
+ * 供调用方给用户一条提示——此前这些只会写一条 warn 日志，用户和创建师都不知道少了技能。
+ * 与保存路径用同一份技能清单（`listSkillSpecsForAgentMetadata`）、同一个解析器。
+ * 内置能力（`builtin:`）有自己的规则，不在这里报。
+ */
+export async function unresolvedSkillRefsForAgent(
+  userId: string,
+  agentId: string,
+  requested: unknown,
+): Promise<string[]> {
+  if (!Array.isArray(requested)) return [];
+  const refs = requested.filter((x): x is string => typeof x === 'string' && x.trim() !== '' && !x.startsWith('builtin:'));
+  if (!refs.length) return [];
+  try {
+    const specs = await listSkillSpecsForAgentMetadata(userId, { forAgentId: agentId });
+    return resolveSkillAllowlistRefs(specs, refs).unknown;
+  } catch {
+    return [];
   }
 }
 

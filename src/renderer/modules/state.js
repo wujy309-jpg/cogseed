@@ -427,6 +427,7 @@ function bindStaticHandlers() {
     if (typeof load !== 'function') return;
     load('marketplace').then(() => openMarketplace('agent')).catch(() => {});
   });
+  document.getElementById('agents-mine-btn')?.addEventListener('click', () => { void _openAgentContributions(); });
   document.getElementById('agents-back-btn')?.addEventListener('click', () => _showAgentsGridView());
   document.getElementById('agent-use-btn')?.addEventListener('click', () => {
     if (_selectedAgent && !_agentsCache?.some((a) => a.agent_id === _selectedAgent.id && a.enabled === false)) {

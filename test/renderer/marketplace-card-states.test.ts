@@ -25,6 +25,7 @@ const LABELS: Record<string, string> = {
   'marketplace.empty': '暂无内容',
   'marketplace.state_disabled': '已停用',
   'marketplace.disabled_hint': 'Hub 已停用此技能，不能新安装或使用。',
+  'marketplace.agent_disabled_hint': 'Hub 已停用此智能体，不能新安装或开始新的使用。',
   'marketplace.uninstall': '卸载',
   'marketplace.install': '安装',
   'marketplace.installed': '已安装',
@@ -520,5 +521,112 @@ describe('Hub disabled content in real catalog and detail renderers', () => {
     ctx.uiAlert = () => {};
     await ctx._mpInstall('skill', SKILL.id);
     expect(ctx._invoked.filter((call: any) => call.channel.includes("installSkill"))).toEqual([]);
+  });
+});
+
+/**
+ * 2026-10-15 实测缺陷：Hub 已停用「文本整理助手123」（`status=disabled` 与 `disabled=true`
+ * 同时下发，客户端 `normalizeCatalogListRow` 原样保留），但市场页三处判定都写成
+ * `kind === 'skill' && ...`，Agent 分支恒为 false —— 后果是已停用 Agent 在 Desktop 上
+ * 与可用内容**逐像素相同**（无「已停用」标、按钮「安装」可点），点下去还会真的装上。
+ *
+ * 这里钉住的是**判据不看 kind**：Hub 的停用治理对两类内容同一口径（b01 双表达）。
+ */
+const AGENT = {
+  id: '3c7e2419fc12',
+  name: '文本整理助手123',
+  version: '1.0.0',
+  category: 'creation',
+  published_at: Date.UTC(2026, 9, 10),
+  description_zh: '合成夹具 Agent',
+};
+
+describe('Hub disabled Agent is governed the same way as a disabled Skill', () => {
+  it.each(['disabled', ' DISABLED '])('market card marks a disabled Agent and disables its install action (%s)', (status) => {
+    const ctx = loadMarketplaceRenderer();
+    setState(ctx, { agents: [{ ...AGENT, status, disabled: true }], tab: 'agent' });
+    expect(ctx._mpVisibleItems()).toHaveLength(1);
+    const html = ctx._mpCardHtml({ ...AGENT, status }, 'zh');
+    expect(html).toContain('已停用');
+    expect(html).toContain('data-mp-state="disabled"');
+    expect(html).toMatch(/<button[^>]* disabled/);
+  });
+
+  it('detail marks a disabled Agent, blocks install and still allows removing an installed copy', () => {
+    const ctx = loadMarketplaceRenderer();
+    const fields = new Map<string, any>();
+    const field = (sel: string) => {
+      if (!fields.has(sel)) fields.set(sel, { innerHTML: '', textContent: '', style: {}, dataset: {}, classList: { add() {}, remove() {} }, querySelectorAll: () => [], querySelector: () => null });
+      return fields.get(sel);
+    };
+    // 详情正文用桩：真实正文要 `detailAgentJson`（渲染时才去取的远程结果）。桩的形状与真实
+    // 产出一致——`<div class="agents-detail-body">` 是 `.marketplace-detail-body` 的**唯一**
+    // flex 子项（style.css:19543-19545 只给这两个类 flex:1）。提示由 `insertAdjacentHTML`
+    // 插到它内部，这里把"插进去了什么"和"有没有退化成外层拼接"分别记下来。
+    const fakeDetailBody = '<div class="agents-detail-body"><div class="agents-detail-hero"></div></div>';
+    ctx._mpAgentDetailHtml = () => fakeDetailBody;
+    const insertedInside: string[] = [];
+    const pushNotice = (markup: string) => {
+      const marker = '>';
+      const at = fakeDetailBody.indexOf(marker) + 1;
+      insertedInside.push(fakeDetailBody.slice(0, at) + markup + fakeDetailBody.slice(at));
+    };
+    const hostStub = { insertAdjacentHTML: (_pos: string, markup: string) => pushNotice(markup) };
+    const bodyField = field('[data-mp-detail-body]');
+    bodyField.querySelector = (sel: string) => (sel === '.agents-detail-body' ? hostStub : null);
+    // 字段是取用时惰性建的；`getElementById` 每次返回一个能 querySelector 的容器。
+    ctx.document.getElementById = () => ({ querySelector: field });
+    setState(ctx, { view: 'detail', detailKind: 'agent', detailItem: { ...AGENT, status: 'disabled' }, installedAgentIds: new Set() });
+    ctx._mpRenderDetail();
+    expect(field('[data-mp-detail-meta]').innerHTML).toContain('已停用');
+    expect(field('[data-mp-detail-install]').disabled).toBe(true);
+    expect(field('[data-mp-detail-install]').dataset.action).toBe('');
+
+    // 详情页体里也要说清"为什么点不动"——只把按钮变灰，用户只会以为是坏了。
+    // 回归：提示必须**在正文容器内部**。曾经把它拼在外层，它就成了 flex 的第一个子项，
+    // 正文被挤成右侧一列窄栏（2026-10-15 截图为证）。
+    expect(insertedInside).toHaveLength(1);
+    expect(insertedInside[0]).toContain('不能新安装或开始新的使用');
+    expect(insertedInside[0]).toContain('<div class="agents-detail-empty">');
+    expect(insertedInside[0].indexOf('agents-detail-empty'))
+      .toBeGreaterThan(insertedInside[0].indexOf('<div class="agents-detail-body">'));
+    expect(insertedInside[0].indexOf('agents-detail-hero'))
+      .toBeGreaterThan(insertedInside[0].indexOf('agents-detail-empty'));
+    // 而且没有退化成"外层拼接"那条兜底路径。
+    expect(bodyField.innerHTML).toBe(fakeDetailBody);
+
+    const installed = loadMarketplaceRenderer();
+    const installedFields = new Map<string, any>();
+    const installedField = (sel: string) => {
+      if (!installedFields.has(sel)) installedFields.set(sel, { innerHTML: '', textContent: '', style: {}, dataset: {}, classList: { add() {}, remove() {} }, querySelectorAll: () => [], querySelector: () => null });
+      return installedFields.get(sel);
+    };
+    installed.document.getElementById = () => ({ querySelector: installedField });
+    setState(installed, {
+      view: 'detail',
+      detailKind: 'agent',
+      detailItem: { ...AGENT, status: 'disabled' },
+      installedAgentIds: new Set([AGENT.id]),
+      installedAgentMeta: new Map([[AGENT.id, { version: '1.0.0' }]]),
+    });
+    installed._mpRenderDetail();
+    expect(installedField('[data-mp-detail-install]').disabled).toBe(false);
+    expect(installedField('[data-mp-detail-install]').dataset.action).toBe('uninstall');
+  });
+
+  it('a programmatic install of a disabled Agent sends no IPC mutation', async () => {
+    const ctx = loadMarketplaceRenderer();
+    setState(ctx, { agents: [{ ...AGENT, status: 'disabled' }], tab: 'agent' });
+    ctx.uiAlert = () => {};
+    await ctx._mpInstall('agent', AGENT.id);
+    expect(ctx._invoked.filter((call: any) => call.channel.includes('installAgent'))).toEqual([]);
+  });
+
+  it('an approved Agent is untouched: install stays available', () => {
+    const ctx = loadMarketplaceRenderer();
+    setState(ctx, { agents: [{ ...AGENT, status: 'published' }], tab: 'agent' });
+    const html = ctx._mpCardHtml({ ...AGENT, status: 'published' }, 'zh');
+    expect(html).not.toContain('data-mp-state="disabled"');
+    expect(html).not.toMatch(/<button[^>]* disabled/);
   });
 });

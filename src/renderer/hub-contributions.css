@@ -520,3 +520,15 @@
   .hubc-file-list { border-right: 0; border-bottom: 1px solid var(--line-hairline); }
   .hubc-steps { flex-wrap: wrap; }
 }
+
+/* Agent preview: lines that may hold a local path or a secret are highlighted, never rewritten. */
+.hubc-file-content pre mark.hubc-hint-line {
+  display: block;
+  background: color-mix(in srgb, var(--warn) 14%, var(--surface));
+  color: inherit;
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--warn) 70%, var(--surface));
+}
+.hubc-hint-files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-3); }
+.hubc-hint-file > .ui-button { margin-bottom: var(--space-1); }
+.hubc-hint-kind { color: var(--status-warning-text); font-weight: 600; }
+.hubc-hint-where { color: var(--text-muted); }

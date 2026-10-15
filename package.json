@@ -19,6 +19,7 @@
     "smoke": "tsx src/main/smoke.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
+    "class-names:check": "node scripts/check-class-names.mjs",
     "readme:check": "node scripts/check-readme-links.mjs",
     "community:skills:check": "node scripts/check-community-skills.mjs",
     "tokens:check": "node scripts/check-design-tokens.mjs",

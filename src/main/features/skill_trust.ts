@@ -495,6 +495,36 @@ function _readUserOverride(raw: unknown): { userOverride?: SecurityReceipt['user
   return { userOverride: { outcome: o.outcome.slice(0, 64), at } };
 }
 
+/**
+ * 一个 Agent 的私有 Skill 回执（`<agentId>__<skillId>.json`）的快照与还原。
+ *
+ * 更新已装 Agent 时，新版本的深扫会按同一个键覆盖旧回执；更新中途失败要把旧版目录换回来，回执也必须
+ * 跟着换回去，否则旧私有 Skill 的树摘要与回执对不上，会被当成被篡改而拒绝加载（旧版"保留"了却用不了）。
+ */
+export function snapshotAgentReceipts(uid: string, agentId: string): Array<[string, Buffer]> {
+  const out: Array<[string, Buffer]> = [];
+  const dir = _receiptsDir(uid);
+  let names: string[];
+  try { names = fs.readdirSync(dir); } catch { return out; }
+  for (const name of names) {
+    if (!name.startsWith(`${agentId}__`) || !name.endsWith('.json')) continue;
+    try { out.push([name, fs.readFileSync(path.join(dir, name))]); } catch { /* 读不到就不还原这一份 */ }
+  }
+  return out;
+}
+
+export function restoreAgentReceipts(uid: string, agentId: string, snapshot: ReadonlyArray<[string, Buffer]>): void {
+  const dir = _receiptsDir(uid);
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      if (name.startsWith(`${agentId}__`) && name.endsWith('.json')) fs.rmSync(path.join(dir, name), { force: true });
+    }
+  } catch { /* 目录不存在：没有可清的 */ }
+  if (!snapshot.length) return;
+  fs.mkdirSync(dir, { recursive: true });
+  for (const [name, bytes] of snapshot) fs.writeFileSync(path.join(dir, name), bytes);
+}
+
 export function readReceipt(uid: string, skillId: string, agentId?: string): SecurityReceipt | null {
   if (!safeId(uid) || !skillIdToFileStem(skillId)) return null;
   if (agentId !== undefined && !safeId(agentId)) return null;

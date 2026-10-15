@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "content_tree_sha256": "f4e375f348934533f170d783f2a7ef8ef1ba9812a1fdfd7fccaf7b1789fb58d4",
+  "content_tree_sha256": "21943b8b48f4de62c906a74078bb7796c29d941b6fb00916e2ce7278e0daaeab",
   "files": [
     {
       "path": "marketplace/agents/0fdb4da8a080/agent.json",
@@ -5835,7 +5835,7 @@
     {
       "path": "marketplace/skills/ee99fbb42964/_meta.json",
       "bytes": 124,
-      "sha256": "8c00d2930cd862e732afaa93ab56372e74dea249cc1c20230f19ecd5309486de"
+      "sha256": "97dd24d07e08bfc6d5feb1dad56c531450a9d287024dca4f4a8f8ffa0e64a1ce"
     },
     {
       "path": "marketplace/skills/ee99fbb42964/agents/openai.yaml",
@@ -5969,8 +5969,8 @@
     },
     {
       "path": "marketplace/skills/ee99fbb42964/SKILL.md",
-      "bytes": 10565,
-      "sha256": "ef6dc78e7019c76bf9d95cf1ec942155765fa1504c12889e2e59611937825a6c"
+      "bytes": 11398,
+      "sha256": "c8322ffd988740ab805b885d23ac2452a6be300685fd6982300db1dad692a896"
     },
     {
       "path": "marketplace/skills/ee99fbb42964/test/test_academic.py",
@@ -7278,7 +7278,7 @@
       {
         "id": "ee99fbb42964",
         "name": "deep-research",
-        "version": "1.1.0",
+        "version": "1.1.1",
         "updated_at": "2026-08-16T12:00:00+08:00"
       },
       {

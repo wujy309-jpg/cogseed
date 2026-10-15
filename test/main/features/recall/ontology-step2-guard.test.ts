@@ -94,6 +94,9 @@ describe('014 anti-drift（specs/014 T024）', () => {
       'skills.security.accept',
       'skills.security.revoke',
       'skills.security.export',
+      // 2026-10-12 Hub S3 Agent 分发：安装前「将同时安装」的只读预览（specs/008-hub-agent-distribution）。
+      // 与 installAgent 共用同一份依赖规划，不写本机。
+      'marketplace.agentInstallPlan',
       // 2026-10-08 认知资产全量重构（U01/N-07）：夜间筛选聚合计数只读通道。
       'recall.captures.stats',
       // Nightly formation undo and the explicit manual sweep share canonical handlers.

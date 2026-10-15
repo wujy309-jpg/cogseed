@@ -23,6 +23,16 @@
 #
 #   Root cause + prevention for both: mergers and contributors must enable
 #   "Keep my email addresses private".
+#
+# VENDOR ADDRESS (2026-10-15) — `noreply@anthropic.com` is allowlisted for the
+# **message / Co-authored-by check only**, never for author headers. It is a
+# vendor's generic address, not a personal one: the AI assistant used in this
+# repo appends `Co-Authored-By: Claude <noreply@anthropic.com>` to the commits it
+# writes, so 17 commits in PR #110 carried it while every author header was a
+# clean noreply address. Personal addresses (*.local / qq / 163 / gmail) remain
+# blocked everywhere, and this entry does not widen the author-header allowlist.
+# Contributors who do not want the trailer can turn it off locally
+# (`includeCoAuthoredBy: false`).
 
 name: email-gate
 
@@ -71,17 +81,18 @@ jobs:
           # Co-authored-by trailers and free-text bodies are part of the public
           # commit record too (see #184: a personal QQ address slipped in via a
           # Co-authored-by line while every author email was noreply).
-          # Allowlist = noreply github addresses, the team address, and GitHub's
-          # own automation address.
+          # Allowlist = noreply github addresses, the team address, GitHub's
+          # own automation address, and the vendor address of the AI assistant
+          # that appends `Co-Authored-By` trailers (2026-10-15, see file header).
           bad=$(git log --format='%h|%B' "$BASE_SHA..$HEAD_SHA" 2>/dev/null \
             | grep -oE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' \
-            | grep -viE '^([0-9]+\+[^@]+@users\.noreply\.github\.com|business@bonc\.com\.cn|support@github\.com)$' \
+            | grep -viE '^([0-9]+\+[^@]+@users\.noreply\.github\.com|business@bonc\.com\.cn|support@github\.com|noreply@anthropic\.com)$' \
             | sort -u || true)
           if [ -n "$bad" ]; then
             echo "::error::Commit messages / Co-authored-by contain non-allowlisted emails:"
             echo "$bad"
             echo ""
-            echo "Allowed: {GitHubUserID}+{username}@users.noreply.github.com, business@bonc.com.cn, support@github.com"
+            echo "Allowed: {GitHubUserID}+{username}@users.noreply.github.com, business@bonc.com.cn, support@github.com, noreply@anthropic.com"
             echo "Personal addresses (*.local / qq / 163 / gmail) must not appear anywhere in a commit."
             exit 1
           fi

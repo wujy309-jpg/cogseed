@@ -543,6 +543,7 @@
               <div class="agents-search-field" id="agents-search-field"></div>
               <div class="header-actions">
                 <button type="button" class="btn ui-button ui-button--secondary ui-button--sm" id="create-agent-btn" data-i18n="agents.create_btn">+ Create</button>
+                <button type="button" class="btn ui-button ui-button--secondary ui-button--sm" id="agents-mine-btn" data-agents-contribution-mine data-i18n="agents.contribute_mine">My contributions</button>
                 <button type="button" class="btn ui-button ui-button--secondary ui-button--sm" id="agents-more-btn" data-i18n="agents.more_btn">More</button>
               </div>
             </div>
@@ -552,6 +553,13 @@
             <div class="agents-empty" id="agents-empty" data-i18n="agents.empty">No agents yet</div>
           </div>
         </div>
+
+        <!-- Hub Agent contribution page (hub-agent-contributions.js, registry HUBC-PV-004):
+             same-level view toggled like grid/detail; content is rendered by the module. -->
+        <div class="hubc-view" id="agents-contribute-view" style="display:none" data-i18n-aria-label="agents.contribute_page_label" aria-label="Contribute agent"></div>
+        <!-- "My contributions" opened from the Agent page renders here (same module/page as the Skill one,
+             hub-contributions.js) so the 智能体 tab stays highlighted. -->
+        <div class="hubc-view" id="agents-contributions-view" style="display:none" data-i18n-aria-label="skills.contribute_mine" aria-label="My contributions"></div>
 
         <!-- Detail view (replaces grid when a card is opened) -->
         <div class="agents-detail-view" id="agents-detail-view" style="display:none">

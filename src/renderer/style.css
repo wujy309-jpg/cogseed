@@ -14121,6 +14121,9 @@ body.is-sidebar-resizing iframe { pointer-events: none; }
 /* When no chip is present, the play button still hugs the right edge.
    `margin-left: auto` plays nice with the absent-chip case. */
 .agent-card-actions > .agent-card-use { position: relative; z-index: 2; margin-left: auto; }
+/* The full-card `.agent-card-open` overlay (z-index 1) would swallow clicks on any other action
+   in this row, so the Contribute button sits above it exactly like Use does. */
+.agent-card-actions > .agent-card-contribute { position: relative; z-index: var(--z-raised); }
 
 /* `.agent-card-use` shared with `.skill-card-use` / `.btn-icon-use` above. */
 
@@ -14337,6 +14340,16 @@ body.is-sidebar-resizing iframe { pointer-events: none; }
   text-transform: uppercase;
   letter-spacing: 0.6px;
   color: var(--primary-text);
+}
+
+/* 「没有带走的」这类子标题（`agents.js` 的 `is-sub`）：注释把它与区块标题区分开，
+   但此前没有规则，两者完全同级。这里降一级：不转大写、次级色、正文尺寸。 */
+.agents-detail-label.is-sub {
+  color: var(--text-secondary);
+  font-size: var(--font-size-meta);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: normal;
+  text-transform: none;
 }
 
 /* Workspaces 详情：区块标题字体与自动化 tab 统一（非 uppercase、16px 系） */
@@ -18802,6 +18815,19 @@ body:has(#panel-settings.active) .main-top-actions {
   white-space: nowrap;
   vertical-align: middle;
 }
+/* 社区贡献 chip（`agents.js` 的 `is-community`）：注释写明「一眼可辨」，但此前没有规则，
+   与普通分类 chip 完全同款。这里用中性底 + 次级文字色，与品牌色的 `.is-cli` 区分开。 */
+.agent-card-chip.is-community {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.06);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  vertical-align: middle;
+}
 /* Runtime selector lives at the top of the detail body; widget is
    wider than a chip so it sits on its own row. Capped width keeps
    the dropdown from spanning the entire body. */
@@ -18867,6 +18893,15 @@ body:has(#panel-settings.active) .main-top-actions {
 }
 .agent-project-dir-card.is-disabled {
   opacity: 0.72;
+}
+/* 目录来源的两种模式（`agents.js`：`mode === 'workspace' ? 'is-workspace' : 'is-custom'`）：
+   此前两者外观完全一致，用户看不出这个目录是「工作区」还是「自定义目录」。
+   只给自定义加虚线与次级文字色，工作区保持默认实线，避免把默认态做得更花。 */
+.agent-project-dir-card.is-custom {
+  border-style: dashed;
+}
+.agent-project-dir-card.is-custom .agent-project-dir-path {
+  color: var(--text-secondary);
 }
 .agent-project-dir-icon {
   flex: 0 0 auto;
@@ -19332,6 +19367,17 @@ body:has(#panel-settings.active) .main-top-actions {
 /* Update-available chip (specs/010 FR-067) — warning hue, so "there is something newer" reads as
    a prompt rather than the green "everything is fine" of `.is-status`. Semantic tokens only. */
 .marketplace-card-chip.is-update {
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+  background: color-mix(in srgb, var(--warn) 8%, var(--surface));
+  color: var(--status-warning-text);
+}
+/* Dependency warning chip (installed agent whose skills are disabled or missing). Same warning
+   hue as the update chip; semantic tokens only. */
+/* "Update failed, still usable" note in the agent detail header (same warning hue as the card chip). */
+.agents-detail-source.is-update-failed {
+  color: var(--status-warning-text);
+}
+.agent-card-chip.is-deps-warning {
   border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
   background: color-mix(in srgb, var(--warn) 8%, var(--surface));
   color: var(--status-warning-text);
@@ -33836,4 +33882,168 @@ section.kb-wb-right { display: flex; flex-direction: column; min-width: 0; min-h
   width: 20px;
   height: 20px;
   padding: 0;
+}
+/* ═══ 市场 → 智能体详情：信息层级与节奏 ═══════════════════════════════════
+   范围**只限** `.marketplace-detail-body` 之内：Agents 页（智能体库）用的是另一套外层
+   （`#agents-detail-view`），同一批 `.agents-detail-*` 类在那边不受影响。
+
+   改这几处的理由（2026-10-15 截图核对，`scripts/ui-preview-agent-detail.mts` 可复现）：
+   1. 正文此前继承 `.agents-detail-body { align-items: center }`，在 1240px 面板里被居中，
+      右侧空出约 500px；这里改为拉满后靠左、统一 1000px 上限。
+   2. 区块标题（15px/medium）与正文、说明几乎同一个重量，六块内容各自平铺；这里给标题
+      字号 + 字重 + 一条通栏分隔线，使"块间距 > 块内间距"。
+   3. 列表图标用 `align-items:start` + `margin-top:4px`，与首行文字悬空错位。
+   4. 「输入输出」原本只是一行飘着的标签，改成规整的定义列表。
+   5. 工作流块内行宽过宽、行距过密，读起来是一段灰字而不是步骤。 */
+.marketplace-detail-body > .agents-detail-body {
+  align-items: flex-start;
+  align-self: stretch;
+  width: 100%;
+  padding: var(--space-6) var(--space-7) var(--space-7);
+  gap: var(--space-6);
+}
+
+.marketplace-detail-body .agents-detail-body > .agents-detail-hero,
+.marketplace-detail-body .agents-detail-body > .agents-detail-section {
+  width: 100%;
+  max-width: min(1000px, 100%);
+  margin: 0;
+}
+
+.marketplace-detail-body .agents-detail-hero {
+  padding: 0;
+  border-bottom: 0;
+  align-items: stretch;
+  gap: 0;
+}
+
+.marketplace-detail-body .agents-detail-intro-section .agents-detail-desc {
+  max-width: none;
+  color: var(--text-heading);
+  font-size: var(--font-size-body-lg);
+  line-height: 1.7;
+}
+
+.marketplace-detail-body .agents-detail-body > .agents-detail-section > .agents-detail-label:not([data-dep-group]) {
+  display: block;
+  width: 100%;
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-heading);
+  font-size: var(--font-size-6);
+  line-height: var(--line-height-tight);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-title);
+}
+
+.marketplace-detail-body .agents-detail-body > .agents-detail-section > .agents-detail-section-desc {
+  max-width: 760px;
+  margin: var(--space-3) 0 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-body);
+}
+
+.marketplace-detail-body .agents-detail-list {
+  margin-top: var(--space-3);
+  gap: var(--space-3);
+  max-width: 860px;
+}
+
+.marketplace-detail-body .agents-detail-list-item {
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.marketplace-detail-body .agents-detail-list-icon {
+  margin-top: 3px;
+}
+
+.marketplace-detail-body .agents-detail-list-text {
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-body);
+}
+
+/* 依赖分组小标题（来自 Hub / 随这个智能体提供）降一级：次级色、不做通栏线，
+   并紧贴它下面的行，避免"区块标题 → 说明 → 分组 → 行"四层同重量堆叠。 */
+.marketplace-detail-body [data-agent-dependencies] > .agents-detail-label {
+  margin-top: var(--space-4);
+  padding-bottom: 0;
+  border-bottom: 0;
+  color: var(--text-body);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: var(--tracking-normal);
+}
+
+.marketplace-detail-body [data-agent-dependencies] > .agents-detail-label + .agents-detail-list {
+  margin-top: var(--space-2);
+}
+
+.marketplace-detail-body .agents-detail-io {
+  margin-top: var(--space-4);
+  gap: 0;
+  max-width: 860px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-2);
+  overflow: hidden;
+  background: var(--surface-card);
+}
+
+.marketplace-detail-body .agents-detail-io-row {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+}
+
+.marketplace-detail-body .agents-detail-io-row + .agents-detail-io-row {
+  border-top: 1px solid var(--border);
+}
+
+.marketplace-detail-body .agents-detail-io-label {
+  color: var(--text-secondary);
+  font-size: var(--font-size-ui-sm);
+  font-weight: var(--font-weight-medium);
+}
+
+.marketplace-detail-body .agents-detail-output-text {
+  color: var(--text-body);
+  font-size: var(--font-size-ui);
+}
+
+.marketplace-detail-body .agents-detail-tag-row {
+  gap: var(--space-2);
+}
+
+.marketplace-detail-body .agents-detail-workflow {
+  max-width: 760px;
+  margin-top: var(--space-4);
+  padding: var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-3);
+  background: var(--surface-card);
+  font-size: var(--font-size-body);
+  line-height: 1.8;
+}
+
+/* 停用提示：与首屏说明同级的一块提示条，而不是挤在标题下方的裸段落。
+   注意它必须是 `.agents-detail-body` **内部**的子项——放到外层会变成
+   `.marketplace-detail-body` 的 flex 兄弟节点，把正文挤成右侧一列（2026-10-15 实测）。 */
+.marketplace-detail-body .agents-detail-empty {
+  display: block;
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: min(1000px, 100%);
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius-2);
+  background: var(--surface-subtle);
+  color: var(--text-body);
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-body);
 }

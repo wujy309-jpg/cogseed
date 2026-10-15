@@ -177,8 +177,33 @@ function _agentCardMetaHtml(a, lang) {
   return parts.join('');
 }
 
+/** "Update failed, you can keep using vX" — shown when a newer version of an installed marketplace
+ *  agent could not be applied. The installed version is untouched and still usable. */
+function _agentUpdateFailureText(a) {
+  const f = a && a.update_failure && typeof a.update_failure === 'object' ? a.update_failure : null;
+  if (!f) return null;
+  const reasonKey = `agents.update_failed_reason.${String(f.reason || 'unknown')}`;
+  const reason = t(reasonKey);
+  const keep = String(a.version || '').trim();
+  return {
+    chip: t('agents.update_failed_chip'),
+    hint: t(keep ? 'agents.update_failed_hint' : 'agents.update_failed_hint_no_version')
+      .replace('{target}', String(f.target_version || ''))
+      .replace('{version}', keep)
+      .replace('{reason}', reason && reason !== reasonKey ? reason : t('agents.update_failed_reason.unknown')),
+  };
+}
+
 function _agentPlatformStatusChipsHtml(a) {
-  return '';
+  // Community contributions are marked so users can tell them from official content at a glance.
+  const community = a && a.author_tier === 'community'
+    ? `<span class="agent-card-chip is-community">${escapeHtml(t('agents.community_chip'))}</span>`
+    : '';
+  const failed = _agentUpdateFailureText(a);
+  const updateFailed = failed
+    ? `<span class="agent-card-chip is-deps-warning" title="${escapeHtml(failed.hint)}">${escapeHtml(failed.chip)}</span>`
+    : '';
+  return community + updateFailed;
 }
 
 function _agentLabel(key, zh, en, ja) {
@@ -889,6 +914,18 @@ function renderAgentsGrid(agents) {
     // in the subtitle line under the card title, so marketplace only keeps
     // review status here when that UI is enabled.
     const provenanceChips = _isAgentPlatformSource(a.source) ? _agentPlatformStatusChipsHtml(a) : '';
+    const canContribute = _isAgentContributable(a) && !isMock;
+    // Dependencies Hub disabled make the agent unusable (same rule as install); a merely missing
+    // dependency only warns, because stale refs in older agents were always tolerated at runtime.
+    const depState = a.dependency_state && typeof a.dependency_state === 'object' ? a.dependency_state : null;
+    const depsBlocked = depState?.status === 'deps_blocked';
+    // 被 Hub 停用：本机不可用（`enabled` 已含此因素），卡片说明原因，不让用户以为是自己停用的
+    const hubDisabledChip = a.hub_disabled
+      ? `<span class="agent-card-chip is-deps-warning" title="${escapeHtml(t('agents.hub_disabled_hint'))}">${escapeHtml(t('agents.hub_disabled_chip'))}</span>`
+      : '';
+    const depsChip = hubDisabledChip + (depState && depState.status !== 'ready'
+      ? `<span class="agent-card-chip is-deps-warning" title="${escapeHtml(t(depsBlocked ? 'agents.deps_blocked_hint' : 'agents.deps_missing_hint'))}">${escapeHtml(t(depsBlocked ? 'agents.deps_blocked_chip' : 'agents.deps_missing_chip'))}</span>`
+      : '');
     return `
       <div class="agent-card ui-resource-card${enabled ? '' : ' is-disabled'}" data-id="${escapeHtml(a.agent_id)}" data-source="${escapeHtml(a.source || '')}">
         <button type="button" class="agent-card-open" data-agent-open aria-label="${escapeHtml(openLabel)}"></button>
@@ -902,17 +939,24 @@ function renderAgentsGrid(agents) {
         </div>
         <div class="${descClass}">${escapeHtml(descText)}</div>
         <div class="agent-card-actions">
-          ${cliChip}${provenanceChips}
+          ${cliChip}${provenanceChips}${depsChip}
           ${_agentDeliveryChip(deliveryCount)}
           ${_agentExplicitCountChip(_agentLabel('agents.card_memory_count', '{n} 记忆', '{n} memory', '{n} 記憶'), memoryCount)}
           ${_agentExplicitCountChip(_agentLabel('agents.card_skill_count', '{n} 技能', '{n} skills', '{n} スキル'), skillCount)}
+          ${canContribute && typeof uiButton === 'function' ? uiButton({
+            label: t('agents.contribute'),
+            role: 'secondary',
+            size: 'sm',
+            className: 'agent-card-contribute',
+            attrs: { 'data-agent-contribute': true, title: t('agents.contribute_hint'), 'aria-label': t('agents.contribute_hint') },
+          }) : ''}
           ${typeof uiButton === 'function' ? uiButton({
             label: useLabel,
             role: 'primary',
             size: 'sm',
             className: 'agent-card-use',
-            disabled: !(enabled && !isMock),
-            attrs: { 'data-agent-use': true, title: useTitle },
+            disabled: !(enabled && !isMock && !depsBlocked),
+            attrs: { 'data-agent-use': true, title: depsBlocked ? t('agents.deps_blocked_hint') : useTitle },
           }) : ''}
         </div>
       </div>
@@ -950,6 +994,12 @@ function renderAgentsGrid(agents) {
     const id = card.dataset.id;
     const source = card.dataset.source;
     card.addEventListener('click', (e) => {
+      if (e.target.closest('[data-agent-contribute]')) {
+        e.stopPropagation();
+        const agent = _agentsCache?.find((x) => x.agent_id === id);
+        void _startAgentContribution(id, agent?.name || id);
+        return;
+      }
       if (e.target.closest('[data-agent-use]')) {
         e.stopPropagation();
         if (!card.classList.contains('is-disabled')) useAgent(id, 'agent_card');
@@ -991,7 +1041,48 @@ async function _flipAgentEnabled(agentId, nextEnabled) {
 
 // ─── View switching: grid ↔ detail ─────────────────────────────────────
 
+/** Only agents the user wrote themselves can be contributed: not the commander, not external CLI
+ *  agents, not host-only built-ins, not marketplace installs. Same idea as the Skill card's rule. */
+function _isAgentContributable(a) {
+  if (!a || _agentSource(a.source) !== 'custom') return false;
+  if (_isCommanderAgent(a) || _isExternalCliAgent(a)) return false;
+  if (a.management_surface || a.reimbursement_entry_role) return false;
+  return true;
+}
+
+/** Contribution modules ship with the Skills bundle (the Mine page lives there too), so make sure
+ *  it is loaded before handing over. */
+async function _ensureContributionFeature() {
+  if (typeof window.startAgentContribution === 'function') return true;
+  if (typeof window.loadRendererFeature === 'function') await window.loadRendererFeature('skills');
+  return typeof window.startAgentContribution === 'function';
+}
+
+async function _startAgentContribution(agentId, name, targetContentId) {
+  try {
+    if (!await _ensureContributionFeature()) throw new Error('contribution unavailable');
+    await window.startAgentContribution(agentId, name, targetContentId);
+  } catch (err) {
+    await uiAlert(t('agents.contribute_start_failed'));
+  }
+}
+
+async function _openAgentContributions() {
+  try {
+    if (!await _ensureContributionFeature()) throw new Error('contribution unavailable');
+    await window.openMyContributions({ type: 'agent', returnTo: 'agents' });
+  } catch (err) {
+    await uiAlert(t('agents.contribute_start_failed'));
+  }
+}
+
+/** Candidates for "submit a new version" from My contributions. */
+window.getCustomContributionAgents = () => (_agentsCache || [])
+  .filter(_isAgentContributable)
+  .map((a) => ({ id: a.agent_id, name: a.name }));
+
 function _showAgentsGridView() {
+  if (typeof window.hideAgentContributionViews === 'function') window.hideAgentContributionViews();
   if (typeof closeExpenseWorkbench === 'function') closeExpenseWorkbench();
   const grid = document.getElementById('agents-grid-view');
   const detail = document.getElementById('agents-detail-view');
@@ -1007,11 +1098,41 @@ function _showAgentsGridView() {
   if (detailContent) detailContent.style.display = 'none';
 }
 
+/**
+ * 详情容器（含返回按钮）在「加载中 / 读不到」时必须可见。
+ *
+ * 此前 `#agents-detail-content` 一直 `display:none`，只有 `_renderAgentDetail` 才打开它：
+ * 接口慢或失败时用户只看到一片灰底，**连返回按钮都点不到**，只能靠左侧导航离开
+ * （2026-10-15 实测）。提示做成容器内的独立槽位、渲染成功时移除 —— 不能整体重写
+ * `.agents-detail-body`，`_renderAgentDetail` 靠 id 找里面那些 section。
+ */
+function _showAgentDetailNotice(message) {
+  const content = document.getElementById('agents-detail-content');
+  if (!content) return;
+  content.style.display = '';
+  const body = content.querySelector('.agents-detail-body') || content;
+  let slot = document.getElementById('agents-detail-notice');
+  if (!slot) {
+    slot = document.createElement('div');
+    slot.id = 'agents-detail-notice';
+    slot.className = 'agents-detail-empty';
+    body.prepend(slot);
+  }
+  slot.textContent = message;
+}
+
+function _clearAgentDetailNotice() {
+  const slot = document.getElementById('agents-detail-notice');
+  if (slot && slot.parentNode) slot.parentNode.removeChild(slot);
+}
+
 async function _showAgentsDetailView(agentId) {
   const grid = document.getElementById('agents-grid-view');
   const detail = document.getElementById('agents-detail-view');
   if (grid) grid.style.display = 'none';
   if (detail) detail.style.display = 'flex';
+  // 先给出可见的「正在读取」与返回按钮，再发请求。
+  _showAgentDetailNotice(t('agents.detail_loading'));
   // Detail has a target-scoped API below. Do not refresh/enrich the complete
   // Agent catalog merely to open one agent.json.
   await selectAgent(agentId);
@@ -1127,6 +1248,24 @@ async function _renderCommanderAgentDetail(editing = false) {
   _renderAgentDetail(agent, editing);
 }
 
+// 本机安装记录发生了变化（含只改状态的同步，如 Hub 停用/恢复）：重读 Agent 列表，卡片才能及时显示状态。
+// 监听放在这里而不是 marketplace.js：后者是懒加载的，没打开过市场的会话里没人听这个事件。
+// marketplace.js 已加载时由它统一刷新（Agent、Skill 与市场面板），这里不重复。
+let _agentsInstallsChangedTimer = null;
+function _initAgentsInstallsChangedWatch() {
+  if (!window.cogseed || typeof window.cogseed.onPushEvent !== 'function') return;
+  try {
+    window.cogseed.onPushEvent('marketplace:installs-changed', () => {
+      if (typeof _mpRefreshInstalledCaches === 'function') return;
+      clearTimeout(_agentsInstallsChangedTimer);
+      _agentsInstallsChangedTimer = setTimeout(() => {
+        void refreshAgentsAfterMarketplaceReconcile().catch(() => { /* ignore */ });
+      }, 400);
+    });
+  } catch { /* preload not ready; the next list load still shows the current state */ }
+}
+_initAgentsInstallsChangedWatch();
+
 async function refreshAgentsAfterMarketplaceReconcile() {
   await loadAgents(true);
   if (_agentEditing) return;
@@ -1163,7 +1302,8 @@ function _renderAgentRowMenuItems(menu, agentId, source = '') {
   if (typeof openMarketplaceUpload === 'function') {
     items.push(`<div class="agent-row-menu-item" data-action="upload-marketplace">${escapeHtml(t('marketplace.upload'))}</div>`);
   }
-  if (!isMock) items.push(`<div class="agent-row-menu-item" data-action="toggle-enabled">${escapeHtml(toggleLabel)}</div>`);
+  // 被 Hub 停用的 Agent，用户手动"启用"也不会生效，不提供这个入口，避免误导
+  if (!isMock && !a?.hub_disabled) items.push(`<div class="agent-row-menu-item" data-action="toggle-enabled">${escapeHtml(toggleLabel)}</div>`);
   if (canEditDefinition) {
     items.push(`<div class="agent-row-menu-item is-danger" data-action="delete">${escapeHtml(t('agents.delete'))}</div>`);
   }
@@ -1213,7 +1353,11 @@ async function selectAgent(agentId) {
     if (typeof closeExpenseWorkbench === 'function') closeExpenseWorkbench();
     const res = await apiFetch(`/api/agents/${encodeURIComponent(agentId)}`);
     const data = await res.json();
-    if (!data.ok || !data.agent) return;
+    if (!data.ok || !data.agent) {
+      // 失败也要有可见文案与返回入口，不能把用户留在灰底上（失败原因仍进 console）。
+      _showAgentDetailNotice(t('agents.detail_load_failed'));
+      return;
+    }
     data.agent.source = _agentSource(data.agent.source);
     await _maybeLoadAgentSkillNames(_agentSkillIds(data.agent), data.agent.agent_id, { refresh: false });
     _selectedAgent = { id: data.agent.agent_id, name: data.agent.name, source: data.agent.source };
@@ -1226,6 +1370,7 @@ async function selectAgent(agentId) {
     _resetAgentDetailScroll();
   } catch (e) {
     _agentsLog.error('load agent failed', e);
+    _showAgentDetailNotice(t('agents.detail_load_failed'));
   }
 }
 
@@ -1238,6 +1383,10 @@ function _renderSourceMetaHtml(item) {
   if (item.version) {
     const versionLabel = t('marketplace.version').replace('{version}', String(item.version));
     parts.push(`<span class="agents-detail-source is-version">${escapeHtml(versionLabel)}</span>`);
+  }
+  const updateFailed = _agentUpdateFailureText(item);
+  if (updateFailed) {
+    parts.push(`<span class="agents-detail-source is-update-failed" role="status" title="${escapeHtml(updateFailed.hint)}">${escapeHtml(updateFailed.hint)}</span>`);
   }
   if (_agentSource(item.source) !== 'custom') {
     const lang = (typeof getLang === 'function') ? getLang() : 'en';
@@ -1794,8 +1943,13 @@ function _inheritanceExclusionLabel(reason) {
 }
 
 function _inheritanceItemHtml(title, meta, { excludedByUser = false } = {}) {
+  // 行首必须是图标单元：`.agents-detail-list-item` 是 `18px minmax(0,1fr) auto` 三列网格，
+  // 少了这一格，`.agents-detail-list-main` 会落进 18px 的第一列，标题被逐字折行成竖排
+  // （2026-10-15 实测：9 个字的「客户投诉分类标准」渲染成 18px 宽、176px 高）。
+  // 与 `agents.js` 另外几处（记忆行、只读行）以及市场依赖行同一结构。
   return `
     <div class="agents-detail-list-item">
+      <span class="agents-detail-list-icon is-ability" aria-hidden="true">${_agentDetailListIconHtml('ability')}</span>
       <div class="agents-detail-list-main">
         <span class="agents-detail-list-text">${escapeHtml(title)}</span>
         <span class="agents-detail-list-meta${excludedByUser ? ' is-user-choice' : ''}">${escapeHtml(meta)}</span>
@@ -1891,6 +2045,8 @@ function _renderAgentDetail(agent, editing) {
   agent = { ...agent, source: _agentSource(agent.source) };
   const isCommander = _isCommanderAgent(agent);
   document.getElementById('agents-detail-content').style.display = '';
+  // 真正渲染出内容了，撤掉「正在读取 / 读不到」的占位。
+  _clearAgentDetailNotice();
 
   const nameEl = document.getElementById('agents-detail-name');
   const nameInput = document.getElementById('agents-detail-name-input');

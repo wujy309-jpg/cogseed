@@ -39,6 +39,7 @@ jobs:
       - run: npm run readme:check
       - run: npm run community:skills:check
       - run: npm run tokens:check
+      - run: npm run class-names:check
       - run: npm run builtin:manifest:check
       - name: Email hygiene gate (release gate)
         if: github.event_name == 'push' || github.base_ref == 'cicd'

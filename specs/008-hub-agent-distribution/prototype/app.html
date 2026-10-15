@@ -1,0 +1,58 @@
+<!doctype html>
+<!-- 与客户端 src/renderer/index.html 同结构的原型页：一级侧栏 + 「智能体 / 技能 / 连接」页 + 二级菜单。
+     样式按 index.html 的真实顺序加载客户端 CSS；控件来自客户端 ui*.js 组件工厂；
+     只有 Agent 模块内部是本期新增/改动，其余二级菜单保持现状。
+     本文件由 prototype.html 以 iframe 载入；必须在仓库检出内运行（或使用 prototype.standalone.html）。 -->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CogSeed</title>
+  <link rel="stylesheet" href="../../../src/renderer/tokens.css">
+  <link rel="stylesheet" href="../../../src/renderer/style.css">
+  <link rel="stylesheet" href="../../../src/renderer/workspace.css">
+  <link rel="stylesheet" href="../../../src/renderer/recall-local.css">
+  <link rel="stylesheet" href="../../../src/renderer/cognition-assets.css">
+  <link rel="stylesheet" href="../../../src/renderer/ui-components.css">
+  <link rel="stylesheet" href="../../../src/renderer/shell-navigation.css">
+  <link rel="stylesheet" href="../../../src/renderer/plugins.css">
+  <link rel="stylesheet" href="../../../src/renderer/chat-stream.css">
+  <link rel="stylesheet" href="../../../src/renderer/resource-pages.css">
+  <link rel="stylesheet" href="../../../src/renderer/hub-contributions.css">
+  <link rel="stylesheet" href="./app.css">
+  <script src="../../../src/renderer/modules/icons.js" defer></script>
+  <script src="../../../src/renderer/modules/ui-button.js" defer></script>
+  <script src="../../../src/renderer/modules/ui-status.js" defer></script>
+  <script src="../../../src/renderer/modules/ui-card.js" defer></script>
+  <script src="../../../src/renderer/modules/ui-form.js" defer></script>
+  <script src="../../../src/renderer/modules/ui-modal.js" defer></script>
+  <script src="../../../src/renderer/modules/ui-tabs.js" defer></script>
+  <script src="../../../src/renderer/modules/ui-segmented-control.js" defer></script>
+  <script src="../../../src/renderer/modules/ui-empty.js" defer></script>
+  <script src="../../../src/renderer/modules/ui-page-header.js" defer></script>
+  <script src="../../../src/renderer/modules/ui-user-menu.js" defer></script>
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <div class="app-container">
+    <aside class="sidebar">
+      <div class="sidebar-logo">
+        <img class="logo-icon" src="../../../src/resources/icons/logo.png" alt="" draggable="false" />
+        <div class="logo-text">CogSeed</div>
+      </div>
+      <div class="sidebar-actions">
+        <button class="sidebar-btn primary" type="button"><span data-ui-icon="plus" data-ui-icon-class="sidebar-btn-icon"></span><span>新建任务</span></button>
+        <button class="sidebar-btn" type="button"><span data-ui-icon="folder" data-ui-icon-class="sidebar-btn-icon"></span><span>空间中心</span></button>
+        <button class="sidebar-btn" type="button"><span data-ui-icon="book-open" data-ui-icon-class="sidebar-btn-icon"></span><span>知识库</span></button>
+        <button class="sidebar-btn" type="button"><span data-ui-icon="git-branch" data-ui-icon-class="sidebar-btn-icon"></span><span>认知资产</span></button>
+        <button class="sidebar-btn" type="button"><span data-ui-icon="clock" data-ui-icon-class="sidebar-btn-icon"></span><span>自动化</span></button>
+        <button class="sidebar-btn active" type="button" id="connectors-btn"><span data-ui-icon="plug" data-ui-icon-class="sidebar-btn-icon"></span><span>智能体 / 技能 / 连接</span></button>
+      </div>
+      <div class="sidebar-conversation-nav"><div class="sidebar-section sidebar-conversations-section"><div class="conversation-list" id="conversation-list"></div></div></div>
+      <div class="sidebar-footer-actions"><div class="sidebar-footer-account" id="hub-account-chip-root"></div></div>
+    </aside>
+    <main class="main-content" id="main-content"></main>
+  </div>
+  <div class="ap-toast" id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

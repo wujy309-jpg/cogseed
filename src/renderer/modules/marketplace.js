@@ -696,6 +696,10 @@ async function _mpInitReconcileWatch() {
     window.cogseed.onPushEvent('marketplace:reconcile-status', (status) => {
       _mpApplyReconcileStatus(status);
     });
+    // 本机安装记录发生了变化（含只改状态的同步，如 Hub 停用）：重读 Agent / Skill 列表。
+    window.cogseed.onPushEvent('marketplace:installs-changed', () => {
+      _mpRefreshInstalledCaches();
+    });
     window.cogseed.onPushEvent('marketplace:resource-sync-skipped', (payload) => {
       _mpShowResourceSyncSkippedToast(payload);
     });
@@ -731,28 +735,34 @@ function _mpApplyReconcileStatus(status) {
   // switch tabs. Force re-fetch (loadAgents(true) / loadSkills(true)) bypasses the renderer
   // module-level lists cache; the marketplace listed-state hydrates from those.
   if (status.state === 'done' && prevState === 'running' && status.pulled > 0) {
-    Promise.resolve().then(async () => {
-      try {
-        if (typeof refreshAgentsAfterMarketplaceReconcile === 'function') {
-          await refreshAgentsAfterMarketplaceReconcile();
-        } else if (typeof loadAgents === 'function') {
-          await loadAgents(true);
-        }
-      } catch { /* ignore */ }
-      try {
-        if (typeof refreshSkillsAfterMarketplaceReconcile === 'function') {
-          await refreshSkillsAfterMarketplaceReconcile();
-        } else if (typeof loadSkills === 'function') {
-          await loadSkills(true);
-        }
-      } catch { /* ignore */ }
-      // If marketplace panel is open right now, also re-run the install-state hydration
-      // so card buttons flip from Install to Installed without a tab switch.
-      if (isMarketplaceOpen()) {
-        try { await _mpLoadAll(); } catch { /* ignore */ }
-      }
-    }).catch(() => { /* ignore */ });
+    _mpRefreshInstalledCaches();
   }
+}
+
+/** Force re-fetch of the agents / skills lists (bypassing the module-level cache) and, when the
+ *  marketplace panel is open, re-hydrate its install state. */
+function _mpRefreshInstalledCaches() {
+  Promise.resolve().then(async () => {
+    try {
+      if (typeof refreshAgentsAfterMarketplaceReconcile === 'function') {
+        await refreshAgentsAfterMarketplaceReconcile();
+      } else if (typeof loadAgents === 'function') {
+        await loadAgents(true);
+      }
+    } catch { /* ignore */ }
+    try {
+      if (typeof refreshSkillsAfterMarketplaceReconcile === 'function') {
+        await refreshSkillsAfterMarketplaceReconcile();
+      } else if (typeof loadSkills === 'function') {
+        await loadSkills(true);
+      }
+    } catch { /* ignore */ }
+    // If marketplace panel is open right now, also re-run the install-state hydration
+    // so card buttons flip from Install to Installed without a tab switch.
+    if (isMarketplaceOpen()) {
+      try { await _mpLoadAll(); } catch { /* ignore */ }
+    }
+  }).catch(() => { /* ignore */ });
 }
 
 function _mpScheduleReconcileWatchInit(attempt = 0) {
@@ -1608,7 +1618,10 @@ function _mpCardHtml(item, lang) {
   const installing = _mpState.installing.has(`${kind}:${item.id}`);
   const desc = pickDesc(item, lang) || '';
   const catLabel = _mpCategoryLabel(item.category, lang);
-  const hubDisabled = kind === 'skill' && HubContentStatus.isHubContentDisabled(item);
+  // Hub 停用治理**不分 kind**：b01 对 Agent 与 Skill 都下发 `status` / `disabled` 双表达，
+  // 客户端只读字符串表达。2026-10-15 缺陷：这里曾写作 `kind === 'skill' && ...`，于是已停用
+  // Agent 的卡片与可用内容逐像素相同、按钮仍可点（实测能把 Hub 已停用的 Agent 装到本机）。
+  const hubDisabled = HubContentStatus.isHubContentDisabled(item);
   const statusLabel = hubDisabled ? t('marketplace.state_disabled') : '';
   const versionLabel = t('marketplace.version').replace('{version}', String(item.version || ''));
   // C5/N-06：被版本门跳过（主进程显式附 appUpdateRequired）的条目显示本地化「需更新客户端」
@@ -1726,6 +1739,7 @@ async function _mpOpenDetail(kind, item, opts = {}) {
   _mpState.detailLoading = true;
   _mpState.detailError = '';
   _mpState.detailAgentJson = null;
+  _mpState.detailAgentPlan = null;
   _mpState.detailSkillFiles = [];
   _mpState.detailSkillSelected = prevSelected;
   _mpState.detailSkillFileText = '';
@@ -1743,6 +1757,7 @@ async function _mpOpenDetail(kind, item, opts = {}) {
       });
       if (!detail || detail.ok === false) throw _mpErrorFromResponse(detail, 'detail failed');
       _mpState.detailAgentJson = detail.agent_json;
+      void _mpLoadAgentPlan(item);
     } else {
       try {
         const detail = await window.cogseed.invoke('marketplace.detailSkill', {
@@ -1784,7 +1799,10 @@ function _mpRenderDetail() {
   const lang = getLang();
   const desc = pickDesc(item, lang) || '';
   const catLabel = _mpCategoryLabel(item.category, lang);
-  const hubDisabled = kind === 'skill' && HubContentStatus.isHubContentDisabled(item);
+  // Hub 停用治理**不分 kind**：b01 对 Agent 与 Skill 都下发 `status` / `disabled` 双表达，
+  // 客户端只读字符串表达。2026-10-15 缺陷：这里曾写作 `kind === 'skill' && ...`，于是已停用
+  // Agent 的卡片与可用内容逐像素相同、按钮仍可点（实测能把 Hub 已停用的 Agent 装到本机）。
+  const hubDisabled = HubContentStatus.isHubContentDisabled(item);
   const statusLabel = hubDisabled ? t('marketplace.state_disabled') : '';
   const versionLabel = t('marketplace.version').replace('{version}', String(item.version || ''));
   const status = _mpInstallStatus(kind, item);
@@ -1894,7 +1912,21 @@ function _mpRenderDetail() {
     return;
   }
   if (kind === 'agent') {
-    body.innerHTML = _mpAgentDetailHtml(_mpState.detailAgentJson);
+    // 已停用 Agent 的详情页此前只有一枚点不动的「已停用」按钮，用户看不出为什么。
+    //
+    // **必须插进 `.agents-detail-body` 里面**，不能当它的兄弟节点：`.marketplace-detail-body`
+    // 是 flex 容器，只有 `.agents-detail-body > .skills-detail-content` 那两个直接子项拿
+    // `flex:1`（style.css:19543-19545）。曾经把提示 `<p>` 放在外层，它就成了第一个 flex 子项，
+    // 正文被挤到右侧一列窄栏（2026-10-15 实测截图为证）。
+    const detailHtml = _mpAgentDetailHtml(_mpState.detailAgentJson);
+    body.innerHTML = detailHtml;
+    if (hubDisabled) {
+      // 与「读不到这个智能体」同一处提示位（`agents-detail-body` 的顶层子项）。
+      const host = typeof body.querySelector === 'function' ? body.querySelector('.agents-detail-body') : null;
+      const notice = `<div class="agents-detail-empty">${escapeHtml(t('marketplace.agent_disabled_hint'))}</div>`;
+      if (host) host.insertAdjacentHTML('afterbegin', notice);
+      else body.innerHTML = notice + detailHtml; // 正文结构变了也别把提示弄丢
+    }
   } else {
     body.innerHTML = (hubDisabled ? `<p>${escapeHtml(t('marketplace.disabled_hint'))}</p>` : '') + _mpSkillDetailHtml();
     // File-tree node click → fetch + re-render selected file
@@ -1942,15 +1974,22 @@ function _mpAgentTextList(agent, key) {
   }).filter(Boolean).slice(0, 20);
 }
 
+/** 详情页列表行的**首个单元格**（图标）。`.agents-detail-list-item` 是三列网格
+ *  `18px minmax(0,1fr) auto`：少了这一格，`agents-detail-list-text` 会落进 18px 的
+ *  图标列，渲染成一行一两个字（2026-10-15 在市场详情页的依赖行上实测到）。
+ *  缺图标助手（单测的 vm 沙箱）时用内联 SVG 兜底，保证结构不变。 */
+function _mpAgentListIconHtml(kind) {
+  const iconHtml = typeof _agentDetailListIconHtml === 'function'
+    ? _agentDetailListIconHtml(kind)
+    : '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="5" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>';
+  return `<span class="agents-detail-list-icon is-${escapeHtml(kind)}" aria-hidden="true">${iconHtml}</span>`;
+}
+
 function _mpAgentReadonlyListItemHtml(text, key) {
   if (!text) return '';
-  const iconKind = key === 'standards' ? 'standard' : 'ability';
-  const iconHtml = typeof _agentDetailListIconHtml === 'function'
-    ? _agentDetailListIconHtml(iconKind)
-    : '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="5" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>';
   return `
     <div class="agents-detail-list-item">
-      <span class="agents-detail-list-icon is-${escapeHtml(iconKind)}" aria-hidden="true">${iconHtml}</span>
+      ${_mpAgentListIconHtml(key === 'standards' ? 'standard' : 'ability')}
       <span class="agents-detail-list-text">${escapeHtml(text)}</span>
     </div>
   `;
@@ -2026,6 +2065,70 @@ function _mpAgentInputOutputHtml(agent) {
 
 // Agent body mirrors the installed agent detail style, but marketplace previews are
 // install-time content only: no runtime data and no user-specific memory.
+/** Best-effort: the dependency list on the detail page. A failed preview just means no list. */
+async function _mpLoadAgentPlan(item) {
+  try {
+    const r = await window.cogseed.invoke('marketplace.agentInstallPlan', {
+      id: item.id, version: item.version, published_at: item.published_at, updated_at: item.updated_at,
+      min_app_version: _mpMinAppVersion(item),
+    });
+    if (!r || !Array.isArray(r.items)) return;
+    // The user may have moved on to another item while this was loading.
+    if (_mpState.detailKind !== 'agent' || _mpState.detailItem?.id !== item.id) return;
+    _mpState.detailAgentPlan = r;
+    _mpRenderDetail();
+  } catch (_) { /* informational only */ }
+}
+
+const _MP_PLAN_GROUPS = [
+  { kinds: ['install', 'reuse', 'blocked_disabled'], key: 'marketplace.agent_dep_group_hub' },
+  { kinds: ['builtin', 'blocked_builtin_unsupported'], key: 'marketplace.agent_dep_group_builtin' },
+  { kinds: ['bundled'], key: 'marketplace.agent_dep_group_bundled' },
+];
+const _MP_PLAN_STATE_KEY = {
+  install: 'marketplace.agent_dep_state_install',
+  reuse: 'marketplace.agent_dep_state_reuse',
+  bundled: 'marketplace.agent_dep_state_bundled',
+  blocked_disabled: 'marketplace.agent_dep_state_disabled',
+  builtin: 'marketplace.agent_dep_state_builtin_ok',
+  blocked_builtin_unsupported: 'marketplace.agent_dep_state_builtin',
+};
+
+/** "Skills this agent needs": Hub skills (will install / already here / disabled) and skills that
+ *  ship inside the agent, so the user knows before pressing Install what comes along. */
+function _mpAgentDependenciesHtml(plan) {
+  if (!plan || !Array.isArray(plan.items) || !plan.items.length) return '';
+  const groups = _MP_PLAN_GROUPS.map((group) => {
+    const rows = plan.items.filter((entry) => group.kinds.includes(entry.action));
+    if (!rows.length) return '';
+    // `data-dep-group` 是给样式用的**判别标记**：这一行与区块标题共用 `agents-detail-label`
+    // 类，但不该拿到区块标题的字号 / 字重 / 通栏分隔线。没有它，样式层只能靠结构巧合去区分
+    // （2026-10-15 实测：分组标题被区块标题规则命中，六行标题全变成 20px 粗体带下划线）。
+    return `<div class="agents-detail-label" data-dep-group>${escapeHtml(t(group.key))}</div>
+      <div class="agents-detail-list">${rows.map((entry) => `
+        <div class="agents-detail-list-item" data-dep-state="${escapeHtml(entry.action)}">
+          ${_mpAgentListIconHtml('ability')}
+          <span class="agents-detail-list-text"><strong>${escapeHtml(entry.name || entry.id)}</strong>
+            <span class="muted"> · ${escapeHtml(t(_MP_PLAN_STATE_KEY[entry.action] || 'marketplace.agent_dep_state_install'))}</span></span>
+        </div>`).join('')}</div>`;
+  }).join('');
+  return `<div class="agents-detail-section" data-agent-dependencies>
+      <div class="agents-detail-label">${escapeHtml(t('marketplace.agent_dep_title'))}</div>
+      <p class="agents-detail-section-desc">${escapeHtml(t('marketplace.agent_dep_desc'))}</p>
+      ${groups}
+    </div>`;
+}
+
+/** "Works with CogSeed x.y+": only when the item declares a minimum version (absent = no floor). */
+function _mpAgentCompatibilityHtml(item) {
+  const minimum = item ? _mpMinAppVersion(item) : '';
+  if (!minimum) return '';
+  return `<div class="agents-detail-section" data-agent-compat>
+      <div class="agents-detail-label">${escapeHtml(t('marketplace.agent_compat_title'))}</div>
+      <p class="agents-detail-section-desc">${escapeHtml(t('marketplace.requires_app').replace('{version}', minimum))}</p>
+    </div>`;
+}
+
 function _mpAgentDetailHtml(agentJson) {
   if (!agentJson) return `<div class="empty">${escapeHtml(t('marketplace.empty'))}</div>`;
   const lang = getLang();
@@ -2041,6 +2144,8 @@ function _mpAgentDetailHtml(agentJson) {
         <div class="agents-detail-desc">${desc ? escapeHtml(desc) : placeholderHtml}</div>
       </div>
     </div>
+    ${_mpAgentDependenciesHtml(_mpState.detailAgentPlan)}
+    ${_mpAgentCompatibilityHtml(_mpState.detailItem)}
     ${knowhow.length ? `
       <div class="agents-detail-section">
         <div class="agents-detail-label">${escapeHtml(t('agents.label_knowhow'))}</div>
@@ -2205,15 +2310,63 @@ function _mpTrackInstallFailure(kind, item, err, surface = 'marketplace') {
   } catch (_) { /* telemetry must never affect install UX */ }
 }
 
+/** Before installing an Agent, show what will be installed together with it (product: dependencies
+ *  are completed automatically and the user is told which). Only a *preview*: the install itself
+ *  re-plans and re-checks, so a failed or unavailable preview never blocks it. Returns false when
+ *  the user cancelled or a dependency makes the install impossible (already explained). */
+async function _mpConfirmAgentInstall(item) {
+  let plan = null;
+  try {
+    const r = await window.cogseed.invoke('marketplace.agentInstallPlan', {
+      id: item.id, version: item.version, published_at: item.published_at, updated_at: item.updated_at,
+      min_app_version: _mpMinAppVersion(item),
+    });
+    plan = r && Array.isArray(r.items) ? r : null;
+  } catch (_) { plan = null; }
+  // The install path owns the "needs a newer CogSeed" prompt; do not duplicate it here.
+  if (!plan || plan.appUpdateRequired) return true;
+
+  const named = (entry) => escapeHtml(entry.name || entry.id);
+  const blocked = plan.items.filter((entry) => entry.action === 'blocked_disabled' || entry.action === 'blocked_builtin_unsupported');
+  if (blocked.length) {
+    const lines = blocked.map((entry) => `• ${entry.name || entry.id}: ${entry.action === 'blocked_disabled'
+      ? t('marketplace.agent_plan_blocked_disabled') : t('marketplace.agent_plan_blocked_builtin')}`).join('\n');
+    await uiAlert(`${t('marketplace.agent_plan_blocked_intro')}\n\n${lines}`);
+    return false;
+  }
+  const alongside = plan.items.filter((entry) => entry.action === 'install' || entry.action === 'bundled');
+  if (!alongside.length) return true;
+  const reused = plan.items.filter((entry) => entry.action === 'reuse');
+  const row = (entry, noteKey) => `<li><strong>${named(entry)}</strong> <span class="ui-modal__hint">${escapeHtml(t(noteKey))}</span></li>`;
+  const list = (entries, noteFor) => (entries.length ? `<ul class="ui-modal__list">${entries.map((entry) => row(entry, noteFor(entry))).join('')}</ul>` : '');
+  const bodyHtml = `<p>${escapeHtml(t('marketplace.agent_plan_intro').replace('{name}', item.name || item.id))}</p>`
+    + list(alongside, (entry) => (entry.action === 'bundled' ? 'marketplace.agent_plan_bundled' : 'marketplace.agent_plan_hub'))
+    + (reused.length ? `<p>${escapeHtml(t('marketplace.agent_plan_reuse_intro'))}</p>${list(reused, () => 'marketplace.agent_plan_reuse')}` : '')
+    + `<p>${escapeHtml(t('marketplace.agent_plan_safety'))}</p>`;
+  const result = await uiModal({
+    title: t('marketplace.agent_plan_title'),
+    bodyHtml,
+    closeLabel: t('common.close'),
+    actions: [
+      { id: 'cancel', label: t('common.cancel'), role: 'secondary' },
+      { id: 'install', label: t('marketplace.agent_plan_confirm'), role: 'primary' },
+    ],
+  });
+  return result && result.value === 'install';
+}
+
 async function _mpInstall(kind, id, itemOverride = null) {
   const item = itemOverride || (kind === 'agent' ? _mpState.agents : _mpState.skills).find((x) => x.id === id);
   if (!item) return;
-  if (kind === 'skill' && HubContentStatus.isHubContentDisabled(item)) {
-    uiAlert(t('marketplace.disabled_hint'));
+  // 与卡片同一判据，不再限定 kind：Agent 的停用同样拦在发起安装之前（主进程另有一道，
+  // 两道都在，任何一道被绕过都还有后手）。
+  if (HubContentStatus.isHubContentDisabled(item)) {
+    uiAlert(t(kind === 'agent' ? 'marketplace.agent_disabled_hint' : 'marketplace.disabled_hint'));
     return;
   }
   const key = `${kind}:${id}`;
   if (_mpState.installing.has(key)) return;
+  if (kind === 'agent' && !await _mpConfirmAgentInstall(item)) return;
   _mpState.installing.add(key);
   _mpRender();
   const invokeInstall = async (acceptSecurityRisk = false) => {

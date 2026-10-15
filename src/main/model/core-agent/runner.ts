@@ -38,6 +38,7 @@ import {
   type ChatEntryChoice,
 } from '../../features/auth';
 import { getSystemPromptBlock, getSystemSkillsPromptBlock } from './skill-registry';
+import { openBuiltinNamesOf } from '../../features/agent_builtin_capabilities';
 import { t } from '../../i18n';
 // tool-catalog.ts: TOOL_CATALOG kept as the source of truth for the drift
 // test (tool-catalog.test.ts asserts injected names ⊆ catalog) and for any
@@ -586,6 +587,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   const renderAllowlist = _intersectRenderAllowlist(params.skillList, params.projectAllowedSkillIds);
   const skillDisplayNameById = new Map<string, string>();
   const systemSkillsVisible = systemSkillsExposureFromSessionId(params.sessionId);
+  const agentBuiltinNames = openBuiltinNamesOf(params.skillList);
   const openSkillSourcesVisible = openSkillSourcesExposureFromSessionId(params.sessionId);
   const modPromise = ca();
   const sessionPromise = params.ephemeralSession
@@ -594,7 +596,13 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   const [mod, session, systemSkillsBlock, skillsBlock] = await Promise.all([
     modPromise,
     sessionPromise,
-    systemSkillsVisible ? getSystemSkillsPromptBlock(earlyUid || undefined) : Promise.resolve(''),
+    systemSkillsVisible
+      ? getSystemSkillsPromptBlock(earlyUid || undefined)
+      // Sessions that do not see every system skill still get the built-in capabilities this
+      // agent's skill_list names (`builtin:<name>`), limited to the ones the client offers.
+      : agentBuiltinNames.length
+        ? getSystemSkillsPromptBlock(earlyUid || undefined, { only: agentBuiltinNames })
+        : Promise.resolve(''),
     getSystemPromptBlock({
       ...(earlyUid ? { userId: earlyUid } : {}),
       ...(renderAllowlist === undefined ? {} : { allowlist: [...renderAllowlist] }),
