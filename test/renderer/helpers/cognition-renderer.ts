@@ -83,6 +83,8 @@ function loadModule(
   }
 
   Object.assign(context.window.CogAssets.store, storeDefaults, state, {
+    blockStatus: state.blockStatus || Object.fromEntries(['assets', 'ontology', 'candidates', 'captures', 'settings', 'captureStats', 'timeline']
+      .map(name => [name, { loaded: state.loaded !== false, loading: Boolean(state.loading) }])),
     route: { ...routeDefaults, ...route },
   });
   return { cogAssets: context.window.CogAssets, root, context };

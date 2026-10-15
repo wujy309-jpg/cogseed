@@ -17,6 +17,7 @@
   'use strict';
 
   const NS = window.CogAssets = window.CogAssets || {};
+  const loadLog = typeof createLogger === 'function' ? createLogger('cognition-assets') : null;
   NS.version = '2.0.0';
 
   /* ────────────────────────── i18n ────────────────────────── */
@@ -289,6 +290,7 @@
   const store = {
     loaded: false,
     loading: false,
+    blockStatus: {},
     errors: [],
     assets: [],
     assetsError: '',
@@ -430,14 +432,7 @@
       // （specs/008 T051）——动作入口齐了才回来；详见 BLOCK_FETCHERS.inbox。
       // 各区块独立命名函数（不再位置解构）——事件驱动刷新与冷启动共用同一份，
       // 新增区块只需在 BLOCK_FETCHERS 加一个具名条目，串位事故从结构上消失。
-      await Promise.all([
-        BLOCK_FETCHERS.assets(),
-        BLOCK_FETCHERS.candidates(),
-        BLOCK_FETCHERS.captures(),
-        BLOCK_FETCHERS.settings(),
-        BLOCK_FETCHERS.captureStats(),
-        BLOCK_FETCHERS.timeline(),
-      ]);
+      await loadBlocks(['assets', 'ontology', 'candidates', 'captures', 'settings', 'captureStats', 'timeline'], true);
       // 跨区块联动 stale（改复盘/沉淀/打标后回来别吃旧值）：按需加载器的
       // stale 守卫会跳过从未拉过的场景，这里只标记已存在的状态。
       if (store.improvementOutcomes) store.improvementOutcomes = { ...store.improvementOutcomes, stale: true };
@@ -533,13 +528,16 @@
         // 保留最近一次成功读到的内容；读取失败不能被当成空库。
         store.assetsError = String(error?.message || error || 'load_failed');
       }
+    },
+    async ontology() {
+      const gen = beginBlockRead('ontology');
       try {
         const snapshot = await api.call('cognition.ontology.snapshot', {}, {});
-        if (isStaleBlockRead('assets', gen)) return;
+        if (isStaleBlockRead('ontology', gen)) return;
         if (!snapshot.ontology?.records) throw new Error(T('ontologyWorkspace.loadFailed', '本体暂时无法加载'));
         store.ontologySnapshot = snapshot.ontology; store.ontologyError = '';
       } catch (error) {
-        if (isStaleBlockRead('assets', gen)) return;
+        if (isStaleBlockRead('ontology', gen)) return;
         store.ontologyError = String(error?.message || error);
       }
     },
@@ -648,6 +646,42 @@
     },
   };
 
+  // Route reads are request-local and independent. A full reload keeps its existing
+  // contract; first entry/tab switches only load their own blocks, once per mount.
+  const blockRequests = new Map();
+  function routeBlocks() {
+    const route = store.route || {};
+    if (route.name === 'ontology') return ['ontology'];
+    if (route.name === 'settings') return ['settings', 'captureStats'];
+    if (route.name === 'overview') return store.libraryView?.sort === 'used' ? ['assets', 'timeline'] : ['assets'];
+    return ['assets', 'candidates', 'captures', 'settings', 'captureStats', 'timeline'];
+  }
+  async function loadBlocks(names, force = false) {
+    let started = false;
+    const reads = names.map(name => {
+      if (!force && blockRequests.has(name)) return blockRequests.get(name);
+      if (!force && store.blockStatus[name]?.loaded) return Promise.resolve();
+      started = true;
+      pendingRefresh.delete(name);
+      const startedAt = Date.now();
+      store.blockStatus[name] = { loaded: Boolean(store.blockStatus[name]?.loaded), loading: true };
+      const pending = Promise.resolve().then(() => BLOCK_FETCHERS[name]()).finally(() => {
+        if (blockRequests.get(name) !== pending) return;
+        blockRequests.delete(name);
+        store.blockStatus[name] = { loaded: true, loading: false };
+        store.loaded = true;
+        loadLog?.info('block read completed', { block: name, ms: Date.now() - startedAt });
+        NS.notify();
+      });
+      blockRequests.set(name, pending);
+      return pending;
+    });
+    if (started) NS.notify();
+    await Promise.all(reads);
+  }
+  NS.loadRoute = () => loadBlocks(routeBlocks());
+  NS.isRouteLoading = () => routeBlocks().some(name => !store.blockStatus[name]?.loaded);
+
   /** collection → 需要刷新的区块/动作。没列出的 collection（world-model 等）
    *  面板没有对应区块，静默忽略——主进程广播所有认知写入，订阅端自取所需。 */
   const COLLECTION_BLOCKS = {
@@ -658,7 +692,7 @@
     // 2026-10-07 旧停驻页退役：po 候选与 Recall 候选同住「待我处理」收件箱，
     // 广播改刷 candidates 区块（两个列表一并重拉），旧页面刷新入口已删除。
     'ontology-candidates': ['candidates'],
-    'ontology': ['assets'],
+    'ontology': ['ontology', 'assets'],
     'captures': ['captures'],
     'capture-settings': ['settings', 'captureStats'],
     'capture-sweep': ['captureStats'],
@@ -692,7 +726,7 @@
   /** 区块 → 动作。一次 drain 串行合并正在读取时到达的新事件；非 fetch 类（树/经验/
    *  迁移预览）走各自的失效语义（懒重建或 stale 标记，loaders 的守卫防重入）。 */
   function applyBlock(block) {
-    if (BLOCK_FETCHERS[block]) return async () => { await BLOCK_FETCHERS[block](); };
+    if (BLOCK_FETCHERS[block]) return () => loadBlocks([block], true);
     if (block === 'experiences') return async () => {
       if (store.experiences) store.experiences = { ...store.experiences, stale: true };
     };
@@ -710,16 +744,23 @@
     if (apply) BLOCK_APPLIERS[name] = apply;
   }
 
+  // An unvisited tab retains its invalidation without doing hidden work. Already
+  // loaded blocks still refresh so counters/data stay current across tab switches.
+  function readablePendingBlocks() {
+    const needed = new Set(routeBlocks());
+    return [...pendingRefresh].filter(name => !BLOCK_FETCHERS[name] || needed.has(name) || store.blockStatus[name]?.loaded);
+  }
   function flushPendingRefresh() {
     if (refreshDrain) return refreshDrain;
-    if (!changeRailVisible() || pendingRefresh.size === 0) return Promise.resolve();
+    if (!changeRailVisible() || !readablePendingBlocks().length) return Promise.resolve();
     refreshDrain = (async () => {
       // Keep one drain in flight. Events arriving during a read stay in the set
       // and are consumed by the next pass instead of being discarded by a
       // per-block in-flight guard.
       while (pendingRefresh.size > 0 && changeRailVisible()) {
-        const blocks = [...pendingRefresh];
-        pendingRefresh.clear();
+        const blocks = readablePendingBlocks();
+        if (!blocks.length) break;
+        blocks.forEach(name => pendingRefresh.delete(name));
         await Promise.all(blocks.map((name) => {
           const apply = BLOCK_APPLIERS[name];
           return apply ? apply() : Promise.resolve();
@@ -730,7 +771,7 @@
       refreshDrain = null;
       // If visibility changed or another notice landed at the end of a pass,
       // schedule a new drain rather than leaving it stranded.
-      if (pendingRefresh.size > 0 && changeRailVisible()) void flushPendingRefresh();
+      if (readablePendingBlocks().length && changeRailVisible()) void flushPendingRefresh();
     });
     return refreshDrain;
   }

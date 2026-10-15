@@ -608,6 +608,7 @@
   function candidateTaskChoices(scope) {
     const choices = [
       ['general', 'cognition.capture.scope_general', '跨任务通用'],
+      ['personal', 'cognition.capture.scope_personal', '个人偏好与身份'],
       ['report', 'cognition.detail_scope_report', '报告与文档'],
       ['code', 'cognition.detail_scope_code', '编程开发'],
       ['review', 'cognition.capture.scope_review', '审查与评审'],
@@ -910,7 +911,7 @@
           ${statementWarningHtml(candidate)}
         </section>
         <div class="ca-review-usage">
-          ${edit ? field(taskLabel, window.uiInput({ id: `ca-cand-scope-${candidate.id}`, value: ({ general: T('cognition.capture.scope_general', '跨任务通用'), report: T('cognition.capture.scope_report', '报告'), code: T('cognition.capture.scope_code', '编程'), review: T('cognition.capture.scope_review', '审查与评审'), product: T('cognition.capture.scope_product', '产品工作') })[scope] || scope, ariaLabel: taskLabel, required: true, attrs: { 'data-f': 'scope', maxlength: 160 } })) : read(taskLabel, scope ? candidateTaskChoices(scope).find(item => item.value === scope)?.label : T('cognition.candidate_scope_domain_missing', '尚未填写适用任务范围；确认保存前需要补全。'))}
+          ${edit ? field(taskLabel, window.uiInput({ id: `ca-cand-scope-${candidate.id}`, value: ({ general: T('cognition.capture.scope_general', '跨任务通用'), personal: T('cognition.capture.scope_personal', '个人偏好与身份'), report: T('cognition.capture.scope_report', '报告'), code: T('cognition.capture.scope_code', '编程'), review: T('cognition.capture.scope_review', '审查与评审'), product: T('cognition.capture.scope_product', '产品工作') })[scope] || scope, ariaLabel: taskLabel, required: true, attrs: { 'data-f': 'scope', maxlength: 160 } })) : read(taskLabel, scope ? candidateTaskChoices(scope).find(item => item.value === scope)?.label : T('cognition.candidate_scope_domain_missing', '尚未填写适用任务范围；确认保存前需要补全。'))}
         </div>
         <p class="note ca-review-help" id="ca-cand-scope-help-${esc(candidate.id)}">${esc(T('cognition.detail_scope_help', '适用任务帮助系统在合适的任务中选择这条认知；是否采用还取决于当前任务和使用权限。'))}</p>
         ${boundaries ? `<${boundary ? 'section' : 'details'} class="details ca-review-boundaries">${boundary ? `<h3>${esc(T('cognition.activity_boundary_title', '适用与禁用边界'))}</h3>` : `<summary>${esc(T('cognition.activity_boundary_title', '适用与禁用边界'))}</summary>`}${edit ? input('applicable', T('cognition.asset_version_applicable', '适用场景'), (candidate.applicableWhen || []).join('\n'), 2) + input('forbidden', T('cognition.asset_version_forbidden', '禁用场景'), (candidate.forbiddenWhen || []).join('\n'), 2) : read(T('cognition.asset_version_applicable', '适用场景'), (candidate.applicableWhen || []).join('；')) + read(T('cognition.asset_version_forbidden', '禁用场景'), (candidate.forbiddenWhen || []).join('；'))}</${boundary ? 'section' : 'details'}>` : ''}
@@ -956,7 +957,7 @@
         <details class="details">
           <summary>${esc(T('cognition.candidate_advanced', '高级选项（通常不用改）'))}</summary>
           ${options.compact ? '' : field(T('cognition.candidate_scope_domain', '适用任务范围'), window.uiInput({ id: `ca-cand-scope-${esc(candidate.id)}`, value: candidate.suggestedScope || '', placeholder: T('cognition.candidate_scope_placeholder', '例如：仅产品工作空间'), attrs: { 'data-f': 'scope' } }))}
-          <div class="note">${esc(T('cognition.candidate_scope_hint', '常用范围：跨对话通用（general）、报告（report）、编程（code）、审查（review）、产品（product）。其他写法可能匹配不上任务，建议从这里选一个。'))}</div>
+          <div class="note">${esc(T('cognition.candidate_scope_hint', '常用范围：跨对话通用（general）、个人偏好与身份（personal）、报告（report）、编程（code）、审查（review）、产品（product）。其他写法可能匹配不上任务，建议从这里选一个。'))}</div>
           ${options.compact ? '' : field(ontologyOnly ? T('cognition.ontology_proposal_name', '变更名称') : T('cognition.capture.name', '认知名称'), window.uiInput({ id: `ca-cand-summary-${esc(candidate.id)}`, value: candidate.summary || '', attrs: { maxlength: 60, 'data-f': 'summary' } }))}
           ${options.compact && (candidate.suggestedType === 'rule' || candidate.applicableWhen?.length || candidate.forbiddenWhen?.length) ? `${field(T('cognition.asset_version_applicable', '适用场景'), window.uiTextarea({ id: `ca-cand-applicable-${esc(candidate.id)}`, value: (candidate.applicableWhen || []).join('\n'), attrs: { 'data-f': 'applicable' } }))}${field(T('cognition.asset_version_forbidden', '禁用场景'), window.uiTextarea({ id: `ca-cand-forbidden-${esc(candidate.id)}`, value: (candidate.forbiddenWhen || []).join('\n'), attrs: { 'data-f': 'forbidden' } }))}` : ''}
           ${options.compact && !chainHtml ? field(T('cognition.chain_value_label', '带来的价值'), window.uiTextarea({ id: `ca-cand-value-${esc(candidate.id)}`, value: candidate.value || '', attrs: { 'data-f': 'value' } })) : ''}

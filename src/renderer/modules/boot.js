@@ -351,8 +351,10 @@ function _loadViewFeature(feature, view, run) {
     return;
   }
   _clearLazyFeatureError(view);
+  const featureStartedAt = performance.now();
   Promise.resolve(loader(feature))
     .then(() => {
+      if (feature === 'recall') _bootLog.info('recall feature loaded', { ms: Math.round(performance.now() - featureStartedAt) });
       _clearLazyFeatureError(view);
       if (currentView === view) run();
     })

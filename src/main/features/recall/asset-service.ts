@@ -1,7 +1,7 @@
 import { requireContentCategory, readContentCategory, type CognitionContentCategory } from './content-category';
 import { verifyNightlyAssetCreation } from './formation-creation-gate';
 import { attachStandingPreferenceAuthority, readStandingPreferenceAuthorityBaseline, withHumanStandingPreferenceDetailsSave } from './standing-preference-authority';
-import { unifiedCognitionRecordIds, withCognitionTransition, persistCognitionSource } from '../cognition_bridge';
+import { withCognitionTransition, persistCognitionSource } from '../cognition_bridge';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -10,7 +10,7 @@ import { safeId, writeJson } from '../../storage';
 import { recallJsonlPath, recallJsonRecordPath } from './paths';
 import { normalizeCognitionSourceRefs, type CognitionSourceRef } from './source-service';
 import {
-  appendRecallJsonlRecord, listRecallJsonlRecords, readRecallJsonRecord,
+  appendRecallJsonlRecord, listRecallJsonlRecords, createRecallCollectionReader, readRecallJsonRecord,
   removeRecallJsonlStream, removeRecallJsonlRecords, updateRecallJsonRecord,
 } from './store';
 import type { RecallJsonRecord } from './types';
@@ -200,7 +200,9 @@ function proofGuidanceIdentity(asset: RecallAbilityAssetRecord): unknown {
 }
 function resetChangedGuidanceOutcomes(current: RecallAbilityAssetRecord, next: RecallAbilityAssetRecord): RecallAbilityAssetRecord {
   if (isDeepStrictEqual(proofGuidanceIdentity(current), proofGuidanceIdentity(next))) return next;
-  next.maturity = next.lifecycleStatus === 'user_confirmed_unverified' ? 'bud' : 'seed';
+  // 重置只清验证计数与推荐，成熟度统一降回 bud（不回 seed——那会重新进入
+  // usePolicy never 的死锁，2026-10-15 待拍板①同拍板）。
+  next.maturity = 'bud';
   next.validationCount = 0; next.consecutiveFailures = 0;
   delete next.lastValidatedAt;
   delete next.recommendedAction; delete next.recommendationReason; delete next.recommendationAt;
@@ -711,9 +713,10 @@ export async function createAbilityAsset(
   }
   // 出身收敛（2026-09-20）：lifecycle 不再有 actor 分支门（此前 system actor
   // 只许自动线两值）——模型记下来的=已确定，唯一新写入值 user_confirmed_
-  // unverified；maturity 门保留（system 创建仍走 seed 档）。
-  const expectedMaturity = metadata.actor === 'system' ? 'seed' : 'bud';
-  if (validated.maturity !== expectedMaturity || validated.version !== '1') {
+  // unverified。2026-10-15 拍板（待拍板①·方案A）：maturity 门同步取消 actor
+  // 分支——system 创建 seed → usePolicy never → 不注入 → 无验证回执的环没有
+  // 系统侧出口（自动线资产永久死锁）；未验证语义由 lifecycleStatus 承担。
+  if (validated.maturity !== 'bud' || validated.version !== '1') {
     throw new Error('invalid initial ability asset lifecycle');
   }
   // 执行类证据写入前解析（2026-09-18 乙档）：查无复盘记录的证据如实标
@@ -785,7 +788,8 @@ async function reconcilePersonalProfileProjection(
 
 export async function listAbilityAssets(userId: string): Promise<RecallAbilityAssetRecord[]> {
   let names: string[];
-  const unifiedIds = unifiedCognitionRecordIds(userId, 'ability-assets');
+  const reader = createRecallCollectionReader(userId, 'ability-assets');
+  const unifiedIds = reader.ids;
   try { names = unifiedIds ? unifiedIds.map(id => `${id}.json`) : await fs.readdir(assetsDirectory(userId)); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
@@ -803,7 +807,7 @@ export async function listAbilityAssets(userId: string): Promise<RecallAbilityAs
   // 照旧上抛：那种情况下静默少几条，等于把磁盘问题伪装成「资产变少了」。
   const reads = await Promise.all(ids.map(async (id) => {
     try {
-      return { id, record: await readRecallJsonRecord(userId, 'ability-assets', id) };
+      return { id, record: await reader.read(id) };
     } catch (error) {
       if (typeof (error as NodeJS.ErrnoException).code === 'string') throw error;
       return { id, error: error as Error };
