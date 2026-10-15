@@ -7684,12 +7684,12 @@ async function runActorTurnBody(
             const target = await agentsFeat.getAgentForUser(uid, editId);
             if (!target) {
               markTurnFailure("validation", "agent_mutation_rejected");
-              workingText = `${workingText}\n\n<span style="color:var(--danger)">⚠️ Agent edit failed: agent not found (id=${editId}).</span>`;
+              workingText = `${workingText}\n\n<span style="color:var(--danger)">${t("chat.agent_edit_not_found", { id: editId })}</span>`;
             } else if (target.source !== "custom") {
-              workingText = `${workingText}\n\n<span style="color:var(--danger)">⚠️ Marketplace agents can't be edited from the main chat; fork one in the right-hand detail panel and edit there.</span>`;
+              workingText = `${workingText}\n\n<span style="color:var(--danger)">${t("chat.agent_edit_marketplace_blocked")}</span>`;
             } else if (agentsFeat.isCliAgent(target)) {
               markTurnFailure("validation", "agent_mutation_rejected");
-              workingText = `${workingText}\n\n<span style="color:var(--danger)">⚠️ External agents can only be edited from the right-hand detail panel.</span>`;
+              workingText = `${workingText}\n\n<span style="color:var(--danger)">${t("chat.agent_edit_external_blocked")}</span>`;
             } else {
               // The open-source build only permits main-chat edits for
               // user-owned custom agents. Marketplace/external agents are
@@ -7707,7 +7707,7 @@ async function runActorTurnBody(
                 }
               } else {
                 markTurnFailure("validation", "agent_mutation_rejected");
-                workingText = `${workingText}\n\n<span style="color:var(--danger)">⚠️ Agent update failed.</span>`;
+                workingText = `${workingText}\n\n<span style="color:var(--danger)">${t("chat.agent_update_failed")}</span>`;
               }
             }
           } else {
@@ -7755,7 +7755,7 @@ async function runActorTurnBody(
               }
             } else {
               markTurnFailure("validation", "agent_mutation_rejected");
-              workingText = `${workingText}\n\n<span style="color:var(--danger)">⚠️ Agent creation failed: missing required field(s) (name / workflow).</span>`;
+              workingText = `${workingText}\n\n<span style="color:var(--danger)">${t("chat.agent_create_failed_missing_fields")}</span>`;
             }
           }
         } catch (err) {
@@ -7764,7 +7764,7 @@ async function runActorTurnBody(
             `${verb}-agent failed cid=${cid}: ${(err as Error).message}`,
           );
           markTurnFailure("validation", "agent_mutation_rejected");
-          workingText = `${workingText}\n\n<span style="color:var(--danger)">⚠️ Agent ${verb} failed: ${(err as Error).message}</span>`;
+          workingText = `${workingText}\n\n<span style="color:var(--danger)">${t(editId ? "chat.agent_edit_error" : "chat.agent_create_error", { message: (err as Error).message })}</span>`;
         }
       }
     }
