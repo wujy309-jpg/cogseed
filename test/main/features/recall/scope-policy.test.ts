@@ -184,11 +184,14 @@ describe('scope 受控词表与软归一（A 轨道 2026-09-13）', () => {
     expect(normalizeAssetScopeValue('用户全局画像')).toBe('general');
     expect(normalizeAssetScopeValue('该用户的身份与沟通定位（跨会话稳定）')).toBe('general');
     expect(normalizeAssetScopeValue('Global')).toBe('general');
-    expect(normalizeAssetScopeValue('personal')).toBe('general');
+    expect(normalizeAssetScopeValue('personal')).toBe('personal');
     // 词表词幂等
     expect(normalizeAssetScopeValue('general')).toBe('general');
     expect(normalizeAssetScopeValue('Review')).toBe('review');
     // 无法安全归一 → null（调用方保留原文，token 软匹配兜底）
+    // 拍板⑤：个人身份/偏好语义归自己的档；"用户全局画像"仍是全局（跨会话画像）。
+    expect(normalizeAssetScopeValue('个人偏好')).toBe('personal');
+    expect(normalizeAssetScopeValue('用户偏好：不用比喻')).toBe('personal');
     expect(normalizeAssetScopeValue('仅产品工作空间')).toBeNull();
     expect(normalizeAssetScopeValue('review,project')).toBeNull();
     expect(normalizeAssetScopeValue('')).toBeNull();
