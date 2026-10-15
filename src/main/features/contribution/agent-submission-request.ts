@@ -5,7 +5,7 @@
  * 「客户端发出什么」的最后一站。抽成叶模块后，联调脚本可以直接调用客户端的**真实组装代码**，
  * 而不是自己镜像一份（Skill 联调时镜像漂移导致缺陷长期未被发现，见 `upload-manifest.ts`）。
  *
- * 字段集对应 `specs/008-hub-agent-distribution/contracts/agent-api-proposal.md` v3 §5：
+ * 字段集对应 Agent 提交契约的字段规则（Hub 侧 b03）：
  * 与 Skill 的 C-02 同形，`local_skill_id` → `local_agent_id`。Hub 白名单是**拒绝而非忽略**，
  * 所以这里只投影契约允许的键，绝不把超集字段带出去。
  */
