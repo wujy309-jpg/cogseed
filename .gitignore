@@ -12,6 +12,8 @@
 /resources/runtime/python
 /resources/runtime/uv
 /resources/runtime/vc
+/resources/runtime/ffmpeg
+/resources/runtime/whisper
 /src/main/native/build/
 /userWorkSpace
 /venv
@@ -36,6 +38,9 @@ __pycache__/
 /.inspect-jiaoyu/
 /builds/
 
+# Local scratch space for one-off audits and scan artifacts (never commit)
+/tmp/
+
 # engine build artifacts
 packages/*/node_modules
 packages/*/dist
@@ -53,7 +58,8 @@ package.json.new
 /dist-dev
 build-info.json
 
-# Per-machine tool permissions. Shared plans remain tracked deliberately.
+# Per-machine tool permissions. Plans under .claude/plans/ are shared
+# deliberately; this file is local state and would churn per developer.
 /.claude/settings.local.json
 
 # Declares the intentional absence of the bundled deep scanner. Since the
@@ -77,7 +83,8 @@ build-info.json
 # updates-server/publish.cjs which copies them here)
 /updates-server/downloads/
 
-# Keep the local audit tool outside the checkout; team skills stay tracked.
+# Internal dev skills must not be tracked in the public repo.
+# Keep a local copy outside the checkout (e.g. ~/Desktop/cogseed-open-source-audit).
 .agents/skills/cogseed-open-source-audit/
 .tmp-override-src-*/
 .tmp-skill-import-*/
@@ -85,22 +92,3 @@ build-info.json
 
 # Local Python environment for Spec Kit template composition.
 /.venv-speckit/
-
-# One-off work products live outside this checkout. Public export boundaries
-# are maintained separately in scripts/opensource/policy.json; this private
-# repository keeps shared tooling, engineering rules and CI under version control.
-/HANDOFF.md
-/design/security-redesign/
-/design/evidence-0928/
-/docs/release-scan-remediation-20260923.md
-/docs/release-scan-readme-externals-20260923.md
-/docs/research-skill-scanner-security-20260930.md
-
-# Generated caches, environments and build outputs.
-/.pytest_cache/
-/.venv*/
-/coverage/
-*.log
-
-# Verified provider CLI assets provisioned by scripts/fetch-tmeet.cjs
-/resources/tencent-meeting/
