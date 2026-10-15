@@ -185,6 +185,22 @@ describe('the sole nightly cognition pipeline', () => {
     mocks.isQuiescent.mockReturnValue(true);
     expect(await capture.runNightlyCaptureSweep(USER, WINDOW, capture.settings)).toMatchObject({ queued: 1 });
   });
+  it('cancels legacy scheduled captures whose source was removed and leaves active ones untouched（2026-10-15 收口）', async () => {
+    const capture = await api();
+    const now = new Date().toISOString();
+    const seed = (id: string, conversationId: string) => capture.updateRecallJsonRecord(USER, 'captures', id, () => ({
+      schemaVersion: 1, taxonomyVersion: 2, ownerId: USER, id, conversationId,
+      terminalRunId: `run-${id}`, anchorMessageId: 'u1', messageIds: ['u1'],
+      executionPolicy: 'nightly', status: 'scheduled', attempt: 1, candidateIds: [],
+      visibility: 'internal', screeningStatus: 'pending', createdAt: now, updatedAt: now,
+    }));
+    await seed('legacy-ghost', 'ghost');
+    await seed('legacy-live', 'cid');
+    expect(await capture.runNightlyCaptureSweep(USER, WINDOW, capture.settings)).toMatchObject({ queued: 1 });
+    const byId = Object.fromEntries((await records()).map((record) => [record.id, record]));
+    expect(byId['legacy-ghost']).toMatchObject({ status: 'cancelled', errorCode: 'source_removed' });
+    expect(byId['legacy-live']).toMatchObject({ status: 'scheduled' });
+  });
   it('resumes a busy range next night without admitting other historical conversations', async () => {
     let capture = await api();
     mocks.isQuiescent.mockReturnValue(false);

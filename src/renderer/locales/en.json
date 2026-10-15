@@ -3223,6 +3223,7 @@
   "cognition.capture.source": "Source",
   "cognition.capture.scope_placeholder": "Select a task scope…",
   "cognition.capture.scope_general": "Cross-task general",
+  "cognition.capture.scope_personal": "Personal identity & preferences",
   "cognition.capture.scope_report": "Reports",
   "cognition.capture.scope_code": "Coding",
   "cognition.capture.scope_review": "Review",

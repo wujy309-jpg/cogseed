@@ -37,7 +37,7 @@ function barrier() {
 it('six-node closure: enforces unconditional typed sections at the real write boundary and rejects an opaque bypass', async () => {
   const f = await setup([create('required-risks', rule({ condition: null }))]);
   const preflight = async (name: string, input: Record<string, unknown>) => {
-    const { ontologyActionCapability } = await import('../../../src/main/model/core-agent/ontology-action-capabilities');
+    const { ontologyActionCapability } = await import('../../../src/main/features/cognition/ontology/ontology-action-capabilities');
     const decision = await f.guard.checkOntologyUnverifiedAction(uid, { operationKinds: ontologyActionCapability(name, input).operationKinds });
     return decision.allowed ? undefined : { isError: true, content: decision.code };
   };
@@ -68,7 +68,7 @@ async function sourceFixture() {
 describe('bound conditions at alternate execution entrances', () => {
   it('rejects an opaque shell alternate while preserving unrelated read tools and scopes', async () => {
     const f = await setup();
-    const { ontologyActionCapability } = await import('../../../src/main/model/core-agent/ontology-action-capabilities');
+    const { ontologyActionCapability } = await import('../../../src/main/features/cognition/ontology/ontology-action-capabilities');
     expect(ontologyActionCapability('read_file', {})).toMatchObject({ coverage: 'read_only' });
     expect(ontologyActionCapability('read_file', {}, { trustedImplementation: false })).toMatchObject({ coverage: 'unverified_effect' });
     expect(ontologyActionCapability('write_file', { path: 'report.md' })).toMatchObject({ coverage: 'unverified_effect' });

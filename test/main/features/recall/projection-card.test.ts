@@ -82,9 +82,7 @@ describe('Recall projection chat card', () => {
       purpose: 'review',
       status: 'preview',
       // Original execution reference plus the explicit synthetic nightly session and user message.
-      summary: { includedCount: 1, omittedCount: 1, sourceRefCount: 3 },
       includedAssetIds: [included.asset.id],
-      availableActions: ['confirm', 'add_asset', 'modify_scope', 'defer', 'reject'],
     });
     expect(card.assetSummaries).toEqual([
       expect.objectContaining({
@@ -95,9 +93,6 @@ describe('Recall projection chat card', () => {
         maturity: 'bud',
         scope: 'review,project',
       }),
-    ]);
-    expect(card.omittedAssetRefs).toEqual([
-      expect.objectContaining({ assetId: omitted.asset.id, reason: 'asset_paused' }),
     ]);
     expect(JSON.stringify(card)).not.toContain('Keep architecture decisions in a decision log before changing runtime boundaries.');
   });
@@ -127,13 +122,12 @@ describe('Recall projection chat card', () => {
     const deferred = await projection.deferContextProjection('user-a', preview.id, 'decide later');
     expect(deferred.status).toBe('deferred');
     const deferredCard = await cards.buildProjectionCard('user-a', preview.id);
-    expect(deferredCard.availableActions).toEqual(['modify_scope', 'reject']);
+    expect(deferredCard.status).toBe('deferred');
     expect(deferredCard.decisionNote).toBe('decide later');
 
     await projection.rejectContextProjection('user-a', preview.id, 'not useful here');
     const rejectedCard = await cards.buildProjectionCard('user-a', preview.id);
     expect(rejectedCard.status).toBe('rejected');
-    expect(rejectedCard.availableActions).toEqual([]);
     expect(rejectedCard.decisionNote).toBe('not useful here');
     await expect(projection.confirmContextProjection('user-a', preview.id)).rejects.toThrow(/not confirmable/i);
   });

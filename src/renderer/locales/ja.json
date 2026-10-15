@@ -3078,6 +3078,7 @@
   "cognition.capture.source": "出典",
   "cognition.capture.scope_placeholder": "タスク範囲を選択…",
   "cognition.capture.scope_general": "タスク横断",
+  "cognition.capture.scope_personal": "個人の設定と属性",
   "cognition.capture.scope_report": "レポート",
   "cognition.capture.scope_code": "コーディング",
   "cognition.capture.scope_review": "レビュー",

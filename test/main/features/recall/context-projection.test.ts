@@ -237,6 +237,20 @@ describe('RecallView and ContextProjection', () => {
     expect(preview.omittedRefs).toEqual(expect.arrayContaining([expect.objectContaining({ assetId: other.asset.id, reason: 'asset_paused' })]));
   });
 
+  it('gives unconfirmed previews a default 7-day expiry and leaves confirmed projections without one（2026-10-15 滞留修复）', async () => {
+    const { projection } = await modules();
+    const preview = await projection.previewContextProjection('user-a', { taskRunId: 'task-preview-default-expiry', purpose: 'review' });
+    expect(preview.status).toBe('preview');
+    expect(preview.expiresAt).toBeDefined();
+    const ttlMs = Date.parse(preview.expiresAt!) - Date.parse(preview.createdAt);
+    expect(ttlMs).toBeGreaterThan(6.9 * 864e5);
+    expect(ttlMs).toBeLessThan(7.1 * 864e5);
+
+    const confirmed = await projection.previewContextProjection('user-a', { taskRunId: 'task-confirmed-no-expiry', purpose: 'review', confirm: true });
+    expect(confirmed.status).toBe('confirmed');
+    expect(confirmed.expiresAt).toBeUndefined();
+  });
+
   it('excludes archived, deleted, and purged assets from a projection preview', async () => {
     const { assets, projection } = await modules();
     const archived = await createAssetWith({ judgment: 'Archive checklist knowledge.', summary: 'Checklist for archived data', sourceId: 'exec-archived' });
@@ -1275,7 +1289,9 @@ describe('Recall retrieval refinement', () => {
       summary: 'Fixture lesson',
       suggestedType: type,
       ...(type === 'rule' ? {
-        applicableWhen: ['OAuth review and callback validation'],
+        // applicableWhen 现已进入语义匹配文本（#98 设计：内容维度参与相似度），
+        // 措辞不能撞上 type/scope 标签词（rule/review），否则标签断言自相矛盾。
+        applicableWhen: ['OAuth callback and consent validation'],
         forbiddenWhen: ['Unrelated casual conversation'],
       } : {}),
       suggestedScope: scope,

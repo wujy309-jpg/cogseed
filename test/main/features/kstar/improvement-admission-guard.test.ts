@@ -58,6 +58,7 @@ const F = {
   automaticPolicy: 'src/main/features/recall/nightly-automatic-approval.ts',
   automaticSupport: 'src/main/features/recall/nightly-automatic-support.ts',
   standingAuthority: 'src/main/features/recall/standing-preference-authority.ts',
+  automaticFormationUndo: 'src/main/features/recall/automatic-formation-undo.ts',
   outputCheck: 'src/main/features/recall/cognition-output-check.ts',
   approvalService: 'src/main/features/recall/asset-approval-service.ts',
   profileSync: 'src/main/features/recall/personal-profile-sync.ts',
@@ -444,7 +445,12 @@ describe('T046 ③ 不存在第二处版本比对', () => {
     // Independent model observations bind their proof to the exact read target.
     // They cannot mutate assets or promote candidates; authoritative version
     // validation still runs once inside the asset service's write lock.
-    expect(expectationHits.every(hit => [F.assetService, F.automaticPolicy, F.automaticSupport, F.standingAuthority].includes(hit.file as typeof F.assetService)), hitSummary(expectationHits)).toBe(true);
+    // Undo 的版本比较只把候选记录的**历史锚点**与当前版比「是否同一版」：
+    // 回退目标必须严格早于当前版（回退到当前版不是撤销），它不校验任何
+    // 调用方提供的基线、不做准入重检，实际回退仍走资产 owner 的回退写锁。
+    const undoHits = expectationHits.filter(hit => hit.file === F.automaticFormationUndo);
+    expect(undoHits).toHaveLength(1);
+    expect(expectationHits.every(hit => [F.assetService, F.automaticPolicy, F.automaticSupport, F.standingAuthority, F.automaticFormationUndo].includes(hit.file as typeof F.assetService)), hitSummary(expectationHits)).toBe(true);
     const standingCode = stripComments(readSource(F.standingAuthority));
     expect(standingCode).not.toMatch(/\b(?:createAbilityAsset|updateAbilityAsset|promoteRecallCandidate|persistCognitionSource|writeRecallJsonRecord|updateRecallJsonRecord)\s*\(/);
     const supportCode = stripComments(readSource(F.automaticSupport));

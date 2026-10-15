@@ -1,6 +1,6 @@
 /** Explicit effect coverage. Unknown tools never acquire a read-only exemption. */
 import path from 'node:path';
-import { TOOL_CATALOG } from './tool-catalog';
+import { TOOL_CATALOG } from '../../../model/core-agent/tool-catalog';
 
 const readOnly = new Set([
   'read_file', 'stat_file', 'ocr_file', 'list_files', 'search_files', 'grep_files', 'tool_result_search', 'tool_result_read_chunk',

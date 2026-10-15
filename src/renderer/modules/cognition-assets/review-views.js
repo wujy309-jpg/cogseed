@@ -24,7 +24,7 @@
 
   const normalizeActivityText = value => String(value || '').normalize('NFKC').replace(/\s+/g, ' ').trim();
   function activityScope(scope) {
-    const key = ['general', 'report', 'code', 'review', 'product'].includes(scope) ? 'cognition.capture.scope_' + scope : '';
+    const key = ['general', 'personal', 'report', 'code', 'review', 'product'].includes(scope) ? 'cognition.capture.scope_' + scope : '';
     return key ? T(key, scope) : scope || T('cognition.activity_scope_unknown', '范围待核对');
   }
   const activityDecisionLabels = {
