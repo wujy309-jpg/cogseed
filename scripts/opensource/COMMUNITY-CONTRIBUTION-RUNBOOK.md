@@ -1,7 +1,7 @@
 # 公仓外部贡献接收手册（维护者）
 
 适用：接收 `bonc-ai/cogseed` 的外部 PR，以及恢复已被同步快照吸收的贡献归属。
-本文根据 #406、#410、#421、#422 的处理经验整理（2026-10-12）。
+本文根据 #406、#410、#421、#422 的处理经验整理；2026-10-15 补充独立社区贡献定向晋升。
 执行门禁以 [发布 SOP](./CICD-PLAN-C-RUNBOOK.md) 为准；本文把其中 A、B、B.1、C、D、E 阶段串成接收清单，不另设发布通道。
 本文件、贡献登记和审核证据均留在私仓，受 `policy.json` 的 `neverPublic` 约束。
 
@@ -14,7 +14,7 @@
 
 1. 审查公仓贡献内容、作者信息、DCO 和全部待合入历史。
 2. 私仓导入内容并登记原始贡献 head，经 PR 合入 `develop`。
-3. 按 SOP 将完整候选树晋升 `cicd`，固定源码 SHA，通过该 SHA 的 push CI 和 compliance。
+3. 按 SOP 阶段 B 整树晋升，或符合条件时按 B.0 定向晋升 `cicd`；固定源码 SHA，通过该 SHA 的 push CI 和 compliance。
 4. 原公仓 PR 的当前 head 通过全部必需 CI，取得正式 CODEOWNERS Approve，以 merge commit 合并。
 5. 确认登记的原始贡献 head 已是公仓 `main` 的祖先。
 6. 需要同步时，通过标准工作流创建快照 PR；完成快照 CI、正式审批、合并及同一 main SHA 的 push CI 验证。
@@ -42,7 +42,7 @@
 登记的 SHA **不是**私仓 cherry-pick SHA、同步快照 SHA，也不是仅为追上 main 新增的 merge SHA。
 登记表是累计记录；后续重构或撤销内容不删除、不替换历史条目，也不能用已有 main SHA 冒充贡献 head。
 
-随后按 SOP 阶段 B 创建到 `cicd` 的完整树晋升 PR。先处理 cicd 独有修复的回流，再核对候选树；不要覆盖掉仅存在于 cicd 的修复。
+随后选择晋升路径：常规版本按 SOP 阶段 B 创建到 `cicd` 的完整树晋升 PR，先处理 cicd 独有修复的回流；独立声明式社区贡献可按阶段 B.0 从固定 cicd 定向引入已在 develop 接收的业务提交、登记和精确公开清单。定向候选必须证明白名单之外逐文件等于 cicd，不能携入其他 develop 变动、删除历史登记或覆盖已有修复。适用条件、白名单和核验步骤以发布 SOP 为准。
 晋升后固定完整源码 SHA，确认该 SHA 最新的 `ci.yml` 和 `compliance.yml` **push** 运行成功；PR 检查成功不能替代合并后的检查。
 
 ## 三、公仓原 PR：先 CI，后正式审核，再保留历史合并
@@ -136,6 +136,7 @@ git merge-base --is-ancestor "$CONTRIBUTION_HEAD" origin/main
 作者、DCO、Source-PR 核验：
 私仓导入 PR / contributions.json / 公开文件分类：
 本地验证及尚未覆盖的平台：
+晋升路径（整树 / B.0 定向）/ cicd 基线 / develop 来源 / 逐文件白名单与隔离证据：
 cicd 晋升 PR / 固定源码 SHA / 候选树核对：
 同 SHA 最新 push CI / compliance 运行链接与结果：
 公仓待合并 head / 当前必需 CI：

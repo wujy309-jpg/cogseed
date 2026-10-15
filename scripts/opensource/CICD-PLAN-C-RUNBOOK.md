@@ -1,10 +1,10 @@
 # CogSeed 新版本发布 SOP：私仓 → 公仓 → 正式发布
 
-适用仓库：`bonc-ai/cogseed-internal`（私仓）与 `bonc-ai/cogseed`（公仓）。维护日期：2026-10-11。
+适用仓库：`bonc-ai/cogseed-internal`（私仓）与 `bonc-ai/cogseed`（公仓）。维护日期：2026-10-15。
 
 本手册是后续版本发布的统一入口，保留原文件名。所有版本号、SHA、PR 编号与 run ID 都必须取本次实际值，不复用历史候选。本文件和发布证据仅留私仓，不进入公开快照。
 
-> 标准顺序：私仓 develop 定版 → PR 晋升 cicd → 同 SHA 私仓 push 检查 → 外部贡献公仓 CI／审批／保留作者合并 → 标准导出同步 → 公仓 PR 完整 CI → 维护者批准 → 合并 main → 同 SHA main push CI → 负责人正式发版确认 → 创建 tag → 签名环境批准 → 自动构建并发布 → 下载、安装、升级与分发验收。
+> 标准顺序：私仓 develop 定版（独立社区贡献可按 B.0 定向准备候选）→ PR 晋升 cicd → 同 SHA 私仓 push 检查 → 外部贡献公仓 CI／审批／保留作者合并 → 标准导出同步 → 公仓 PR 完整 CI → 维护者批准 → 合并 main → 同 SHA main push CI → 负责人正式发版确认 → 创建 tag → 签名环境批准 → 自动构建并发布 → 下载、安装、升级与分发验收。
 
 ## 1. 角色、成本与不可越过的边界
 
@@ -109,7 +109,7 @@ git fetch origin refs/heads/cicd:refs/remotes/origin/cicd
 
 ### 阶段 B：经 PR 晋升 cicd
 
-从 cicd 建立晋升分支，使用已经定版的 develop **完整树**。以下操作会替换当前分支的文件，只能在刚创建且干净的晋升分支执行：
+常规版本从 cicd 建立晋升分支，使用已经定版的 develop **完整树**。仅满足下节 B.0 的独立社区贡献允许以固定 cicd 为基线定向晋升，不能把两种候选的一致性证明混用。以下操作会替换当前分支的文件，只能在刚创建且干净的晋升分支执行：
 
 ```bash
 git fetch origin refs/heads/develop:refs/remotes/origin/develop
@@ -142,14 +142,46 @@ gh run list -R "$PRIVATE_REPO" --workflow compliance.yml \
 
 注意本仓库 fetch 配置可能只跟踪 develop；`git fetch origin develop cicd` 不保证更新 `origin/cicd`。采用上面的完整 refspec。
 
+### 阶段 B.0：独立社区贡献定向晋升
+
+此路径用于已审查、可独立交付的声明式社区候选，避免将尚未定版的 develop 变更带入维护候选。它是阶段 B 的限定替代路径，不豁免阶段 B.1 的贡献归属、公仓 CI 或正式审批，也不直接授权应用发版。
+
+**适用条件：**
+
+- 贡献已按接收手册经私仓 PR 合入 develop，作者、DCO、Source-PR 及最终原始公开 head 的登记完整。
+- 本次贡献仅含独立的社区文本候选，不修改产品运行时、内置资源、依赖、版本、构建配置或工作流；不依赖尚未进入 cicd 的接口或功能。
+- 维护者确认定向范围，记录固定的 cicd 基线、develop 来源、公开 head、业务提交及逐文件白名单。白名单只包含该贡献目录、对应的 contributions.json 累计追加项、policy.json 的精确公开文件追加项，以及明确列出的私有 SOP 文档修订。
+- cicd 已有内容和累计贡献登记必须保留；不从最新 develop 整份复制登记表、导出策略或其他文件。贡献需要额外运行时／依赖修改时，停止此路径，回到常规版本定版或另行审查的维护修复流程。
+
+**操作与证据：**
+
+1. 获取最新 develop/cicd 和公仓 PR，固定三个来源的完整 SHA。在新建且干净的分支操作：
+
+   ```bash
+   git fetch origin refs/heads/develop:refs/remotes/origin/develop
+   git fetch origin refs/heads/cicd:refs/remotes/origin/cicd
+   DIRECTED_BASE="$(git rev-parse origin/cicd)"
+   DIRECTED_SOURCE="$(git rev-parse origin/develop)"
+   git switch -c "codex/community-<PR编号>-directed" "$DIRECTED_BASE"
+   ```
+
+2. 从已合入 develop 的接收 PR 逐个 cherry-pick 已审查业务提交及登记提交，保留原作者、DCO、来源提交及 Source-PR；需要时单独携入已合入 develop 的本路径 SOP 文档提交。只复制所需差异，不恢复 develop 完整树。发生冲突时逐项复核，不用 ours/theirs 整份覆盖登记或策略。
+3. 对固定 cicd 基线核验全部差异：路径必须与记录的白名单一致；白名单之外每个文件的 blob 和 mode 均与基线相同，包括原有 cicd 独有修复。逐文件核对候选内容与接受的公开 head 一致。登记表保留原有全部 pr/headSha，仅追加本次原始公开 head；策略保留原有分类及已审引用摘要，仅精确追加本次文件。发现额外变更、隐含依赖或来源 head 漂移即停止并重新审查。
+4. 保存差异清单、逐文件一致性结果及相关验证。导出检查针对本次固定候选，不把未纳入候选的 develop 分类问题当作候选结果，也不得忽略候选自身的缺项、未分类或未审引用。依既定必要性与成本要求选择最小验证；CI 门禁保持不变。
+5. 推送隔离分支，创建 base=cicd 的 PR。PR 说明明确标注“独立社区贡献定向晋升”，列出来源、白名单、依赖独立性和 cicd 基线保留证据；PR 当前 head 的检查成功后正常合并，不直推主线、不使用管理员绕过。
+6. 获取合并后的完整 cicd SHA，复核其完整树与审核过的定向候选一致。基线在准备期间变化时重新核验全部差异及有效修复，不沿用旧基线的检查结论。确认该 cicd SHA 最新的 ci.yml 与 compliance.yml **push** 运行均为 completed/success；PR 检查不能替代此项。
+7. 接阶段 B.1：当前公仓 head 必须通过全部必需检查和正式 CODEOWNER Approve，随后以 merge commit 合并原贡献历史，验证登记 head 是 main 祖先。需要源码快照时仍使用固定 cicd SHA 与标准同步工作流；tag、正式 Release、Hub 上架和随包发布均另行授权。
+
+**通过条件：** 本次完整候选树由固定 cicd 基线加白名单差异构成，白名单之外与 cicd 逐文件一致、候选文件与接受的公开 head 一致、累计登记及已有修复完整、相关验证通过，且合并后同 SHA push CI/compliance 均成功。本路径不要求候选树等于最新 develop；不能把任意删减 develop 内容包装成定向晋升。
+
 ### 阶段 B.1：外部贡献归属回流
 
 从收到 PR 到完成接收的操作清单及记录模板见 [公仓外部贡献接收手册](./COMMUNITY-CONTRIBUTION-RUNBOOK.md)；门禁和发布顺序仍以本 SOP 为准。
 
 1. 定版前在同一私仓变更中登记每个已接受的外部 PR，保留作者、DCO、`Source-PR`
-   和 `scripts/opensource/contributions.json` 的最终公开 head。登记表随完整树晋升
-   cicd；检查与 develop 定版内容一致，不删减历史条目。手工复制贡献同样须登记。
-2. 固定源码 SHA 通过阶段 B 门禁后，逐条核对对应公仓 PR：接受的内容已导入本次候选；
+   和 `scripts/opensource/contributions.json` 的最终公开 head。登记表随常规完整树或 B.0 定向候选晋升
+   cicd；核对接受范围及对应来源，不删减历史条目。手工复制贡献同样须登记。
+2. 固定源码 SHA 通过阶段 B 或 B.0 门禁后，逐条核对对应公仓 PR：接受的内容已导入本次候选；
    新增祖先全部属于当前清洁公开基线之后的已审核公开提交。旧基线 PR 须清洁迁移，
    不得接回旧私有历史。仅验证最终 tree 相同不足以替代逐提交历史审查。
 3. 导入后保持原 PR 打开；仅因导入而关闭的可重新打开。需要追上公仓 main 时正常
