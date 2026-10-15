@@ -72,14 +72,15 @@ async function install() { return api.installMarketplaceSkill(ID, { version: '1.
 async function create(requestId: string) {
   return (await tasks.createCogSeedTask(UID, { requestId: `req-${requestId}`, task: 'Use synthetic skill', allowedSkillIds: [ID] })).task;
 }
+// 运行时在执行技能脚本前会走本体前置检查（beforeAction）：需要 requestId，宿主须返回 allowed:true。
 async function runTask(task: { allowedSkillIds?: string[]; skillVersionPins?: any[] }) {
   const { createRuntimeToolRunner } = await import('../../../../src/main/features/cogseed_runtime/kernel/tools/runner');
   const { DEFAULT_RUNTIME_TOOL_POLICY } = await import('../../../../src/main/features/cogseed_runtime/kernel/config');
   return createRuntimeToolRunner({
-    userId: UID, runtimeSessionId: 'mruntime-disable-regression', allowedRoots: [root], writableRoots: [],
+    userId: UID, runtimeSessionId: 'mruntime-disable-regression', requestId: 'req-disable-regression', allowedRoots: [root], writableRoots: [],
     toolPolicy: { ...DEFAULT_RUNTIME_TOOL_POLICY, skillRun: 'allowlisted_skills' },
     allowedSkillIds: task.allowedSkillIds, skillVersionPins: task.skillVersionPins,
-    hostToolClient: { async call() { return { content: JSON.stringify({ approved: true, request_id: 'regression' }) }; } } as never,
+    hostToolClient: { async call() { return { content: JSON.stringify({ allowed: true, approved: true, request_id: 'regression' }) }; } } as never,
   }).run('run_skill', { skill_id: ID, script: 'echo', cwd: root });
 }
 function marker() {
