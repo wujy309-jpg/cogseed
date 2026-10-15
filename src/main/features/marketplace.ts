@@ -324,7 +324,14 @@ export async function postJson<T>(p: string, body: unknown): Promise<T> {
   const text = await res.text();
   let data: Envelope;
   try { data = JSON.parse(text); } catch { throw new Error(`bad response (${res.status}): ${text.slice(0, 200)}`); }
-  if (data.code !== 0) throw new Error(data.msg || `marketplace ${p} failed (code=${data.code})`);
+  if (data.code !== 0) {
+    // 带上 Hub 自己的错误码：调用方按码识别"本 Hub 不提供该接口"，而不是从文案里猜。
+    const hubErrorCode = (data as { error?: { code?: unknown } }).error?.code;
+    throw Object.assign(new Error(data.msg || `marketplace ${p} failed (code=${data.code})`), {
+      marketplaceCode: data.code,
+      ...(typeof hubErrorCode === 'string' ? { hubErrorCode } : {}),
+    });
+  }
   return data as unknown as T;
 }
 
@@ -1964,7 +1971,14 @@ export type DefaultInstallsSeedResult = {
   skipped?: boolean;
   failed?: boolean;
   error?: string;
+  /** Hub 明确回答"不提供默认安装推荐"（`NOT_SUPPORTED`）：不是失败，也不重试。 */
+  unsupported?: boolean;
 };
+
+/** Hub 对未实现的旧接口回 `NOT_SUPPORTED`（其文案本身建议"按 404 做有依据的降级"）。 */
+export function isMarketplaceEndpointUnsupported(err: unknown): boolean {
+  return !!err && typeof err === 'object' && (err as { hubErrorCode?: unknown }).hubErrorCode === 'NOT_SUPPORTED';
+}
 
 interface DefaultInstallMarker {
   seeded_at?: number;
@@ -2181,6 +2195,11 @@ export async function ensureDefaultInstalls(
     // will finish the rest.
     if (!canContinue()) return { seeded_agents: 0, seeded_skills: 0 };
     const message = (err as Error).message;
+    if (isMarketplaceEndpointUnsupported(err)) {
+      // 这个 Hub 没有"官方默认安装推荐"：属于预期降级，用户看不出区别，不写警告也不重试。
+      log.info('default installs not offered by this Hub (NOT_SUPPORTED); skipping');
+      return { seeded_agents: 0, seeded_skills: 0, unsupported: true };
+    }
     log.warn(`default installs incremental seed failed (will retry): ${message}`);
     return { seeded_agents: 0, seeded_skills: 0, failed: true, error: message };
   }
