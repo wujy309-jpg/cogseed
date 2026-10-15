@@ -897,9 +897,13 @@ export async function run(opts: RunCliAgentOpts): Promise<RunCliAgentResult> {
     }
     // This executor can run arbitrary nested CLI/Skill actions. Derive scope
     // from the host conversation, never from CLI-produced labels or prompts.
+    // 会话已删除/读不到时降级为无 project/space 作用域预检（守卫仍跑，只是
+    // 精度降低），不再整单硬拒——否则恢复旧任务、续跑已删会话的运行全部失败。
     const { getConversation } = await import('../chats');
     const conversation = opts.cid ? await getConversation(opts.uid, opts.cid) : undefined;
-    if (opts.cid && !conversation) throw new Error('current ontology operation scope unavailable');
+    if (opts.cid && !conversation) {
+      log.warn('local agent host conversation missing — ontology preflight runs unscoped', runLogContext);
+    }
     const { checkOntologyUnverifiedAction } = await import('../cognition/ontology/operation-guard');
     const decision = await checkOntologyUnverifiedAction(opts.uid, { operationKinds: ['local_agent', 'execute_shell', 'run_skill',
       'write_file', 'edit_file', 'delete_file', 'connector_write', 'send_message', 'send_file'], context: {

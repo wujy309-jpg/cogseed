@@ -1,6 +1,6 @@
 import * as fs from 'node:fs/promises';
 import { withPendingAssetVersion } from './asset-version-journal';
-import { isManagedCognitionCollection, readUnifiedCognitionRecord, persistCognitionSource, withCognitionTransition } from '../cognition_bridge';
+import { isManagedCognitionCollection, readUnifiedCognitionRecord, readUnifiedCognitionCollection, persistCognitionSource, withCognitionTransition } from '../cognition_bridge';
 
 import { appendJsonlAtomic, removeJsonlRecords, removeJsonlStream, safeId, writeJson } from '../../storage';
 import { fileEditLock } from '../../util/locks';
@@ -104,6 +104,22 @@ export async function readRecallJsonRecord(
   const unified = readUnifiedCognitionRecord(userId, collection, recordId);
   if (unified.authoritative) return unified.record ? validateRecallRecord(userId, recordId, unified.record) : undefined;
   return readExistingRecallRecord(userId, recordPath, recordId);
+}
+
+/** A list reads the unified file once, while retaining per-record validation and legacy IO errors. */
+export function createRecallCollectionReader(userId: string, collection: string) {
+  // Validate the scope before reading the main file, including empty collections.
+  recallJsonRecordPath(userId, collection, 'snapshot');
+  const snapshot = readUnifiedCognitionCollection(userId, collection);
+  return {
+    ids: snapshot.authoritative ? Object.keys(snapshot.records) : undefined,
+    async read(recordId: string): Promise<RecallJsonRecord | undefined> {
+      const file = recallJsonRecordPath(userId, collection, recordId);
+      if (!snapshot.authoritative) return readExistingRecallRecord(userId, file, recordId);
+      const record = Object.hasOwn(snapshot.records, recordId) ? snapshot.records[recordId] : undefined;
+      return record ? validateRecallRecord(userId, recordId, record) : undefined;
+    },
+  };
 }
 
 /** Explicit cleanup of obsolete, untouched manual waits. Never removes a

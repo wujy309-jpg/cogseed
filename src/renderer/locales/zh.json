@@ -3201,6 +3201,7 @@
   "cognition.capture.source": "来源",
   "cognition.capture.scope_placeholder": "请选择任务范围…",
   "cognition.capture.scope_general": "跨任务通用",
+  "cognition.capture.scope_personal": "个人偏好与身份",
   "cognition.capture.scope_report": "报告",
   "cognition.capture.scope_code": "编程",
   "cognition.capture.scope_review": "审查与评审",

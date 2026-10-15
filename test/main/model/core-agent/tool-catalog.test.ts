@@ -435,7 +435,6 @@ describe('isToolVisibleToAgent (ownerAgent gate)', () => {
    */
   it('keeps the over-budget description set frozen and shrinking', () => {
     const FROZEN_OVER_BUDGET: Record<string, string> = {
-      cross_session_memory: '描述在 vendored core-agent 包内（改它会与上游分叉）',
       metacognition: '同上：vendored core-agent 包内',
       bash: '平台条件文本不可删（输出目录约定 + Windows shell 规则），已从 919 精简到 ~740',
       edit_office: 'operations 三态表是调用契约，已从 747 精简到 ~566',
@@ -447,8 +446,9 @@ describe('isToolVisibleToAgent (ownerAgent gate)', () => {
       messaging_send: '渠道与投递语义说明',
       edit_ability_asset: '资产编辑的确认语义说明',
     };
-    // 本次收敛到预算内：回归即失败。
-    const SHRUNK_TO_BUDGET = ['research_rerank', 'markdown_to_pdf'];
+    // 本次收敛到预算内：回归即失败。cross_session_memory 的 summary 已由
+    // #98 reapply 从 'Read/write…' 收敛为 'Read existing…'（74 字），随批移入。
+    const SHRUNK_TO_BUDGET = ['research_rerank', 'markdown_to_pdf', 'cross_session_memory'];
 
     const over = new Set<string>();
     for (const tool of enumerateAllInjectedTools()) {

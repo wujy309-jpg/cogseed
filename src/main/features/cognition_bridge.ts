@@ -59,6 +59,14 @@ export function readUnifiedCognitionRecord(uid: string, collection: string, id: 
   const c = cognitionCompatibility(uid);
   return c?.mode === 'unified' ? { authoritative: true, record: Object.hasOwn(c.records[collection] ?? {}, id) ? c.records[collection][id] : undefined } : { authoritative: false };
 }
+/** One fresh, request-local collection snapshot; never reused by a later read/write. */
+export function readUnifiedCognitionCollection(uid: string, collection: string): {
+  authoritative: boolean; records: Record<string, Record<string, unknown>>;
+} {
+  if (!isManagedCognitionCollection(collection)) return { authoritative: false, records: {} };
+  const c = cognitionCompatibility(uid);
+  return { authoritative: c?.mode === 'unified', records: c?.mode === 'unified' ? c.records[collection] ?? {} : {} };
+}
 export function unifiedCognitionRecordIds(uid: string, collection: string): string[] | undefined {
   const c = cognitionCompatibility(uid);
   return c?.mode === 'unified' ? Object.keys(c.records[collection] ?? {}) : undefined;

@@ -2922,6 +2922,28 @@ export async function runNightlyCaptureSweep(
     const [conversations, captures, sweep] = await Promise.all([
       chats.listConversations(userId), listAllRecallCaptures(userId), readNightlySweepRecord(userId),
     ]);
+    // 2026-10-15 实例审计：'scheduled' 是退役管线的遗留状态——现行调度只处理
+    // 'queued'，存量 scheduled 记录永不进展（活跃实例 28 条，会话 100% 已被
+    // 认知源控制移除）。会话已删除或被移除/暂停的，在此收口为 cancelled
+    //（与 runRecallCapture 的 source_removed/source_paused 口径一致）。
+    const liveConversationIds = new Set(conversations.map((conversation) => conversation.conversation_id));
+    for (const legacy of captures.filter((capture) => capture.status === 'scheduled')) {
+      const availability = liveConversationIds.has(legacy.conversationId)
+        ? ((await readCognitionSourceControl(userId, { kind: 'conversation', id: legacy.conversationId }))?.availability ?? 'active')
+        : 'removed';
+      if (availability === 'active') continue;
+      await updateCapture(userId, legacy.id, (current) => current.status !== 'scheduled'
+        ? current
+        : {
+            ...current,
+            status: 'cancelled',
+            visibility: 'internal',
+            resumeStatus: undefined,
+            errorCode: availability === 'removed' ? 'source_removed' : 'source_paused',
+            updatedAt: new Date().toISOString(),
+          });
+      counters.skipped += 1;
+    }
     if (sweep?.reviewWindow?.ranForWindow === ranForWindow) {
       day = { key: sweep.reviewWindow.reviewDay, start: new Date(sweep.reviewWindow.start), end: new Date(sweep.reviewWindow.end) };
     }

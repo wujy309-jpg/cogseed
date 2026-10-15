@@ -186,7 +186,6 @@ describe('the projection card tells the user their confirmed version drifted', (
     const confirmed = await confirmedProjectionFor(promoted.asset.id, 'task-1', 'msg-1');
 
     const before = await cardModule.buildProjectionCard(USER, confirmed.id);
-    expect(before.staleAssetIds).toEqual([]);
     expect(before.assetSummaries[0]).toMatchObject({ version: '1', confirmedVersion: '1' });
     expect(before.assetSummaries[0].stale).toBeUndefined();
 
@@ -195,8 +194,8 @@ describe('the projection card tells the user their confirmed version drifted', (
     });
 
     const after = await cardModule.buildProjectionCard(USER, confirmed.id);
-    // 告知，但不改注入：确认的还是 v1，卡片同时给出 live 的 v2。
-    expect(after.staleAssetIds).toEqual([promoted.asset.id]);
+    // 告知，但不改注入：确认的还是 v1，卡片同时给出 live 的 v2
+    //（stale 提示在按资产摘要上；顶层 staleAssetIds 已随死数据退役）。
     expect(after.assetSummaries[0]).toMatchObject({ version: '2', confirmedVersion: '1', stale: true });
 
     // 投影本身不被改写——注入内容仍然锁在 v1。
@@ -218,7 +217,6 @@ describe('the projection card tells the user their confirmed version drifted', (
     });
 
     const card = await cardModule.buildProjectionCard(USER, preview.id);
-    expect(card.staleAssetIds).toEqual([]);
     expect(card.assetSummaries[0].stale).toBeUndefined();
   });
 });

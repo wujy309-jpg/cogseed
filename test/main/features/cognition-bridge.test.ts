@@ -9,7 +9,7 @@ vi.mock('../../../src/main/features/search', () => ({ upsertContext: () => {}, d
 let root: string; let previous: string | undefined;
 const uid = 'bridge-user';
 beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'cogseed-bridge-')); previous = process.env.COGSEED_WORKSPACE_ROOT; process.env.COGSEED_WORKSPACE_ROOT = root; vi.resetModules(); });
-afterEach(() => { process.env.COGSEED_WORKSPACE_ROOT = previous; fs.rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); process.env.COGSEED_WORKSPACE_ROOT = previous; fs.rmSync(root, { recursive: true, force: true }); });
 function asset(id = 'aa-template', extra: Record<string, unknown> = {}) {
   return { schemaVersion: 2, ownerId: uid, id, candidateId: 'candidate-one', reviewDecisionId: 'legacy-untracked', type: 'template',
     title: '验收测试模板', statement: '# 模板\n\n1. 准备\n2. 验收\n\n' + '长正文'.repeat(900), origin: 'manual', evidenceRefs: [],
@@ -146,6 +146,37 @@ describe('认知主档切换与恢复', () => {
     expect((await migration.migrateLegacyCognition(uid)).errors.length).toBeGreaterThan(0);
     fs.writeFileSync(sourceFile(), '{broken');
     expect((await migration.migrateLegacyCognition(uid)).errors.length).toBeGreaterThan(0);
+  });
+  it('批量读取只解析一次主档，后续读取及写入仍取新快照并隔离用户', async () => {
+    seed(asset('aa-first')); seed(asset('aa-second'));
+    const { migration, store, kernel } = await modules();
+    await migration.migrateLegacyCognition(uid, { activate: true });
+    const guard = await import('../../../src/main/util/corrupt-guard');
+    const reads = vi.spyOn(guard, 'readTextGuarded');
+    const assets = await import('../../../src/main/features/recall/asset-service');
+    expect((await assets.listAbilityAssets(uid)).map(row => row.id).sort()).toEqual(['aa-first', 'aa-second']);
+    expect(reads.mock.calls.filter(([file]) => file === kernel.cognitionStorePath(uid))).toHaveLength(1);
+    reads.mockClear();
+    const reader = store.createRecallCollectionReader(uid, 'ability-assets');
+    expect(reader.ids?.sort()).toEqual(['aa-first', 'aa-second']);
+    const records = await Promise.all(reader.ids!.map(id => reader.read(id)));
+    expect(records.map(row => row?.id).sort()).toEqual(['aa-first', 'aa-second']);
+    expect(reads.mock.calls.filter(([file]) => file === kernel.cognitionStorePath(uid))).toHaveLength(1);
+    await store.updateRecallJsonRecord(uid, 'ability-assets', 'aa-first', row => ({ ...row!, statement: 'new source' }));
+    expect((await reader.read('aa-first'))?.statement).not.toBe('new source'); // One coherent request snapshot.
+    expect((await store.createRecallCollectionReader(uid, 'ability-assets').read('aa-first'))?.statement).toBe('new source');
+    expect(await store.createRecallCollectionReader('other-user', 'ability-assets').read('aa-first')).toBeUndefined();
+  });
+  it('批量读取沿用 mirror 回退和逐条 owner 校验，不缓存坏档失败', async () => {
+    seed(); const { store, kernel } = await modules();
+    const legacy = store.createRecallCollectionReader(uid, 'ability-assets');
+    expect(legacy.ids).toBeUndefined();
+    expect((await legacy.read('aa-template'))?.status).toBe('paused');
+    fs.writeFileSync(sourceFile(), JSON.stringify(asset('aa-template', { ownerId: 'wrong-user' })));
+    await expect(legacy.read('aa-template')).rejects.toThrow('owner mismatch');
+    fs.mkdirSync(path.dirname(kernel.cognitionStorePath(uid)), { recursive: true });
+    fs.writeFileSync(kernel.cognitionStorePath(uid), '{broken');
+    expect(() => store.createRecallCollectionReader(uid, 'ability-assets')).toThrow('legacy fallback refused');
   });
   it('主档损坏绝不退回旧 active 内容', async () => {
     seed(); const { migration, store, kernel } = await modules(); await migration.migrateLegacyCognition(uid, { activate: true });

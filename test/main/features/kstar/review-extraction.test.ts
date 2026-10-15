@@ -396,3 +396,19 @@ describe('KSTAR review and Recall bridge', () => {
     expect(legacyProposals.find((p) => p.suggestedAction === 'update')).not.toHaveProperty('targetVersionUsed');
   });
 });
+
+describe('lessonTitleCore（2026-10-15 残片修复回归）', () => {
+  it('剥离「回答X时」引导前缀，不再产出「回答…时，」残片', async () => {
+    const { lessonTitleCore } = await import('../../../../src/main/features/kstar/extraction-service');
+    expect(lessonTitleCore('回答 GitHub 权限类问题时，优先查 token 作用域再查过期时间')).toBe('优先查 token 作用域再查过期时间');
+    expect(lessonTitleCore('答复客户咨询时，先确认对方要的是结论还是过程')).toBe('先确认对方要的是结论还是过程');
+  });
+
+  it('首标点截断不再保留标点尾巴', async () => {
+    const { lessonTitleCore } = await import('../../../../src/main/features/kstar/extraction-service');
+    expect(lessonTitleCore('验收类任务若中途被追加落盘/建候选请求，验收对象就从「文本结构」变成「文件产出」')).toBe('验收类任务若中途被追加落盘/建候选请求');
+    expect(lessonTitleCore('当模板填充报槽位错误时：先核对必填项')).toBe('先核对必填项');
+    // 全部剥完仍回落「通用经验」，不产出空串或孤立标点。
+    expect(lessonTitleCore('遇到同类情况时，应注意修正：')).toBe('通用经验');
+  });
+});

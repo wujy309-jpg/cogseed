@@ -3075,6 +3075,7 @@
   "cognition.capture.source": "Origem",
   "cognition.capture.scope_placeholder": "Selecione o escopo da tarefa…",
   "cognition.capture.scope_general": "Geral para várias tarefas",
+  "cognition.capture.scope_personal": "Identidade e preferências pessoais",
   "cognition.capture.scope_report": "Relatórios",
   "cognition.capture.scope_code": "Programação",
   "cognition.capture.scope_review": "Revisão",

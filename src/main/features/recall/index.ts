@@ -71,7 +71,7 @@ export type { CognitionTreeAssetNode, CognitionTreeAssetNodeId, CognitionTreeCan
 export { listAbilityAssetTimeline, listRecallTimeline, REAL_USAGE_KINDS } from './timeline-service';
 export type { RecallAssetTimelineItem, RecallAssetTimelineKind } from './timeline-service';
 export { buildProjectionCard } from './projection-card';
-export type { RecallProjectionCard, ProjectionCardAction, ProjectionCardAssetSummary, ProjectionCardPreview, ProjectionCardSummary } from './projection-card';
+export type { RecallProjectionCard, ProjectionCardAssetSummary } from './projection-card';
 export { postProjectionCardMessage, previewAndPostProjectionCard, previewAndPostProjectionCardForNextTask, reviseAndPostProjectionCard } from './projection-message';
 export type { PostProjectionCardMessageInput, PostProjectionCardMessageResult, PreviewAndPostNextTaskProjectionCardInput, PreviewAndPostProjectionCardInput, ProjectionCardMessage, ProjectionCardMessagePort, ReviseAndPostProjectionCardInput } from './projection-message';
 export { buildConfirmedProjectionPromptBlock, findConfirmedProjectionForTaskRun, listConfirmedProjectionIdsForConversation, projectionIdsForConversation } from './prompt-injection';
