@@ -108,7 +108,7 @@ function _uiMountDialog({ title, ariaLabel, bodyHtml, actionsHtml, initialFocus,
   });
 }
 
-function _uiShowDialog({ message, showCancel, okLabel, cancelLabel }) {
+function _uiShowDialog({ message, showCancel, okLabel, cancelLabel, title }) {
   const plainMessage = String(message || '');
   const msgHtml = escapeHtml(plainMessage).replace(/\n/g, '<br />');
   const cancelText = cancelLabel || _dialogLabel('common.cancel', 'Cancel');
@@ -123,6 +123,8 @@ function _uiShowDialog({ message, showCancel, okLabel, cancelLabel }) {
     actionsHtml,
     initialFocus: '[data-act="ok"]',
     cancelValue: false,
+    // `_uiMountDialog` 只在 title 为真时渲染标题栏；未传时行为与从前一致。
+    title,
   });
 }
 
@@ -138,13 +140,18 @@ function uiConfirm(arg) {
       showCancel: true,
       okLabel: arg.okLabel,
       cancelLabel: arg.cancelLabel,
+      title: arg.title,
     });
   }
   return _uiShowDialog({ message: arg, showCancel: true });
 }
 
-function uiAlert(message) {
-  return _uiShowDialog({ message, showCancel: false }).then(() => {});
+function uiAlert(message, title) {
+  // 第二参数是标题：安全拦截弹窗用它说明「为什么被拦」。此前该参数被静默丢弃，
+  // `marketplace.security_blocked_title` / `security_unavailable_title` 因此在四份
+  // 语言文件里成了死键，弹窗只剩正文、标题栏不渲染（2026-10-15 实测）。
+  // 不传标题时行为与从前一致（`_uiMountDialog` 只在 title 为真时输出标题栏）。
+  return _uiShowDialog({ message, showCancel: false, title }).then(() => {});
 }
 
 let _uiToastHost = null;

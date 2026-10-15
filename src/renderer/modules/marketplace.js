@@ -1618,7 +1618,10 @@ function _mpCardHtml(item, lang) {
   const installing = _mpState.installing.has(`${kind}:${item.id}`);
   const desc = pickDesc(item, lang) || '';
   const catLabel = _mpCategoryLabel(item.category, lang);
-  const hubDisabled = kind === 'skill' && HubContentStatus.isHubContentDisabled(item);
+  // Hub 停用治理**不分 kind**：b01 对 Agent 与 Skill 都下发 `status` / `disabled` 双表达，
+  // 客户端只读字符串表达。2026-10-15 缺陷：这里曾写作 `kind === 'skill' && ...`，于是已停用
+  // Agent 的卡片与可用内容逐像素相同、按钮仍可点（实测能把 Hub 已停用的 Agent 装到本机）。
+  const hubDisabled = HubContentStatus.isHubContentDisabled(item);
   const statusLabel = hubDisabled ? t('marketplace.state_disabled') : '';
   const versionLabel = t('marketplace.version').replace('{version}', String(item.version || ''));
   // C5/N-06：被版本门跳过（主进程显式附 appUpdateRequired）的条目显示本地化「需更新客户端」
@@ -1796,7 +1799,10 @@ function _mpRenderDetail() {
   const lang = getLang();
   const desc = pickDesc(item, lang) || '';
   const catLabel = _mpCategoryLabel(item.category, lang);
-  const hubDisabled = kind === 'skill' && HubContentStatus.isHubContentDisabled(item);
+  // Hub 停用治理**不分 kind**：b01 对 Agent 与 Skill 都下发 `status` / `disabled` 双表达，
+  // 客户端只读字符串表达。2026-10-15 缺陷：这里曾写作 `kind === 'skill' && ...`，于是已停用
+  // Agent 的卡片与可用内容逐像素相同、按钮仍可点（实测能把 Hub 已停用的 Agent 装到本机）。
+  const hubDisabled = HubContentStatus.isHubContentDisabled(item);
   const statusLabel = hubDisabled ? t('marketplace.state_disabled') : '';
   const versionLabel = t('marketplace.version').replace('{version}', String(item.version || ''));
   const status = _mpInstallStatus(kind, item);
@@ -1906,7 +1912,21 @@ function _mpRenderDetail() {
     return;
   }
   if (kind === 'agent') {
-    body.innerHTML = _mpAgentDetailHtml(_mpState.detailAgentJson);
+    // 已停用 Agent 的详情页此前只有一枚点不动的「已停用」按钮，用户看不出为什么。
+    //
+    // **必须插进 `.agents-detail-body` 里面**，不能当它的兄弟节点：`.marketplace-detail-body`
+    // 是 flex 容器，只有 `.agents-detail-body > .skills-detail-content` 那两个直接子项拿
+    // `flex:1`（style.css:19543-19545）。曾经把提示 `<p>` 放在外层，它就成了第一个 flex 子项，
+    // 正文被挤到右侧一列窄栏（2026-10-15 实测截图为证）。
+    const detailHtml = _mpAgentDetailHtml(_mpState.detailAgentJson);
+    body.innerHTML = detailHtml;
+    if (hubDisabled) {
+      // 与「读不到这个智能体」同一处提示位（`agents-detail-body` 的顶层子项）。
+      const host = typeof body.querySelector === 'function' ? body.querySelector('.agents-detail-body') : null;
+      const notice = `<div class="agents-detail-empty">${escapeHtml(t('marketplace.agent_disabled_hint'))}</div>`;
+      if (host) host.insertAdjacentHTML('afterbegin', notice);
+      else body.innerHTML = notice + detailHtml; // 正文结构变了也别把提示弄丢
+    }
   } else {
     body.innerHTML = (hubDisabled ? `<p>${escapeHtml(t('marketplace.disabled_hint'))}</p>` : '') + _mpSkillDetailHtml();
     // File-tree node click → fetch + re-render selected file
@@ -1954,15 +1974,22 @@ function _mpAgentTextList(agent, key) {
   }).filter(Boolean).slice(0, 20);
 }
 
+/** 详情页列表行的**首个单元格**（图标）。`.agents-detail-list-item` 是三列网格
+ *  `18px minmax(0,1fr) auto`：少了这一格，`agents-detail-list-text` 会落进 18px 的
+ *  图标列，渲染成一行一两个字（2026-10-15 在市场详情页的依赖行上实测到）。
+ *  缺图标助手（单测的 vm 沙箱）时用内联 SVG 兜底，保证结构不变。 */
+function _mpAgentListIconHtml(kind) {
+  const iconHtml = typeof _agentDetailListIconHtml === 'function'
+    ? _agentDetailListIconHtml(kind)
+    : '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="5" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>';
+  return `<span class="agents-detail-list-icon is-${escapeHtml(kind)}" aria-hidden="true">${iconHtml}</span>`;
+}
+
 function _mpAgentReadonlyListItemHtml(text, key) {
   if (!text) return '';
-  const iconKind = key === 'standards' ? 'standard' : 'ability';
-  const iconHtml = typeof _agentDetailListIconHtml === 'function'
-    ? _agentDetailListIconHtml(iconKind)
-    : '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="5" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>';
   return `
     <div class="agents-detail-list-item">
-      <span class="agents-detail-list-icon is-${escapeHtml(iconKind)}" aria-hidden="true">${iconHtml}</span>
+      ${_mpAgentListIconHtml(key === 'standards' ? 'standard' : 'ability')}
       <span class="agents-detail-list-text">${escapeHtml(text)}</span>
     </div>
   `;
@@ -2074,9 +2101,13 @@ function _mpAgentDependenciesHtml(plan) {
   const groups = _MP_PLAN_GROUPS.map((group) => {
     const rows = plan.items.filter((entry) => group.kinds.includes(entry.action));
     if (!rows.length) return '';
-    return `<div class="agents-detail-label">${escapeHtml(t(group.key))}</div>
+    // `data-dep-group` 是给样式用的**判别标记**：这一行与区块标题共用 `agents-detail-label`
+    // 类，但不该拿到区块标题的字号 / 字重 / 通栏分隔线。没有它，样式层只能靠结构巧合去区分
+    // （2026-10-15 实测：分组标题被区块标题规则命中，六行标题全变成 20px 粗体带下划线）。
+    return `<div class="agents-detail-label" data-dep-group>${escapeHtml(t(group.key))}</div>
       <div class="agents-detail-list">${rows.map((entry) => `
         <div class="agents-detail-list-item" data-dep-state="${escapeHtml(entry.action)}">
+          ${_mpAgentListIconHtml('ability')}
           <span class="agents-detail-list-text"><strong>${escapeHtml(entry.name || entry.id)}</strong>
             <span class="muted"> · ${escapeHtml(t(_MP_PLAN_STATE_KEY[entry.action] || 'marketplace.agent_dep_state_install'))}</span></span>
         </div>`).join('')}</div>`;
@@ -2327,8 +2358,10 @@ async function _mpConfirmAgentInstall(item) {
 async function _mpInstall(kind, id, itemOverride = null) {
   const item = itemOverride || (kind === 'agent' ? _mpState.agents : _mpState.skills).find((x) => x.id === id);
   if (!item) return;
-  if (kind === 'skill' && HubContentStatus.isHubContentDisabled(item)) {
-    uiAlert(t('marketplace.disabled_hint'));
+  // 与卡片同一判据，不再限定 kind：Agent 的停用同样拦在发起安装之前（主进程另有一道，
+  // 两道都在，任何一道被绕过都还有后手）。
+  if (HubContentStatus.isHubContentDisabled(item)) {
+    uiAlert(t(kind === 'agent' ? 'marketplace.agent_disabled_hint' : 'marketplace.disabled_hint'));
     return;
   }
   const key = `${kind}:${id}`;

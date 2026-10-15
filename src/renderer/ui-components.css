@@ -810,6 +810,20 @@ body.ui-modal-open { overflow: hidden; }
   font-size: var(--font-size-ui);
   line-height: 1.75;
 }
+/* 弹窗里的条目清单（安装确认的「将一并安装」）。此前这两个类全仓没有定义：
+   列表走 UA 默认的 40px 缩进 + 圆点，`.ui-modal__hint`（「将从 Hub 安装 / 随 Agent
+   一起安装」）与技能名同色同字重，读起来连成一句「发票字段抽取 将从 Hub 安装」
+   （2026-10-15 实测）。 */
+.ui-modal__list {
+  display: grid;
+  gap: var(--space-1);
+  margin: var(--space-2) 0 0;
+  padding-left: 1.2em;
+}
+.ui-modal__hint {
+  color: var(--text-secondary);
+  font-size: var(--font-size-meta);
+}
 .ui-modal__body {
   min-height: 0;
   padding: var(--space-4) var(--space-5) 0;

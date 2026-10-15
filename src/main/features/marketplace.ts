@@ -1277,14 +1277,67 @@ export async function previewAgentInstallPlan(agentId: string, expect: Marketpla
   return { items, readiness: agentReadiness(plan), appUpdateRequired, minAppVersion };
 }
 
+/**
+ * 安装前取 Agent 的**当前**目录行（2026-10-15 缺陷的安装侧一半）。
+ *
+ * 单独查一次而不是复用 `_findAgentPackageRow`：那个函数的返回值把「已停用」与
+ * 「没有可直接下载的包」压成同一个 `null`，安装路径无法据此区分，而这两件事的处置相反——
+ * 前者必须阻断，后者要走既有的 detail 兜底。
+ *
+ * 与 Skill 侧同一口径（`_installMarketplaceSkillLocked`）：停用只拦**新安装**；判据是
+ * Hub 这次返回的 `status` / `state` 字符串，**刻意不看**本机 `_install.json` 里的旧状态——
+ * 那是上一次检查的快照，用可能过期的状态拦新安装会拦错。恢复后 `status` 回到 `published`，
+ * 这里不做任何缓存。
+ *
+ * 边界：请求失败/换页异常返回 `null`（未知），由调用方继续原有流程并各按既有方式汇报；
+ * 只有**明确读到 `disabled`** 才拦。写死方向，免得日后有人把未知当停用。
+ */
+async function _findAgentCatalogRowForInstall(
+  agentId: string,
+): Promise<CatalogListRow | null> {
+  try {
+    for (let page = 1; page <= 20; page++) {
+      const r = await postJson<{ list?: unknown[] }>('/marketplace/agents/list', { page, size: 100, ids: [agentId] });
+      const list = Array.isArray(r.list) ? r.list : [];
+      for (const raw of list) {
+        const row = normalizeCatalogListRow(raw);
+        if (!row || row.id !== agentId) continue;
+        return row;
+      }
+      if (list.length < 100) break;
+    }
+  } catch (err) {
+    log.warn('agent catalog lookup failed; disable guard skipped for this attempt', {
+      agentId,
+      error: String((err as Error)?.message || err),
+    });
+  }
+  return null;
+}
+
 async function _installMarketplaceAgentLocked(
   uid: string, agentId: string, expect: MarketplaceFreshness, opts: MarketplaceInstallOpts = {},
 ): Promise<{ ok: true; id: string }> {
   if (!agentId) throw new Error('agentId required');
   let agentName = opts.name || '';
   try {
+    // Hub 已停用的 Agent 不新装。渲染层那道（市场卡片/详情的按钮）可以被绕过，这一道不行。
+    //
+    // **已知且刻意**：这道守卫对这个函数的所有调用方一视同仁，因此 reconcile 的「已有更高
+    // 版本就更新」对已停用 Agent 也不会发生——本机停在装好的那一版，Hub 恢复后由下一次
+    // 对账补上（版本更新不是新使用，`agent_catalog_update.ts` 也把「停用要不要更」明说为
+    // 本机策略）。与挂载顺序无关：这条判断发生在任何下载之前，所以被停用的内容**一个字节
+    // 都不会落盘**。Skill 侧的对账走自己的 `_pullSkillLocked`，不受此影响。
+    const catalogRow = await _findAgentCatalogRowForInstall(agentId);
+    if (catalogRow && isHubContentDisabled(catalogRow)) {
+      throw new MarketplaceInstallError(
+        'agent', agentId, agentName || (typeof catalogRow.name === 'string' ? catalogRow.name : ''), 'content_disabled',
+      );
+    }
     // 新格式（`agent-package-v1`）：目录行带 artifact 时走 B-02 取包；否则走原有的 detail + 私有技能地址。
-    const packageRow = await _findAgentPackageRow(agentId);
+    const packageRow = catalogRow && catalogRow.artifact && catalogRow.artifact.format === AGENT_PACKAGE_FORMAT && catalogRow.artifact.sha256
+      ? (catalogRow as CatalogListRow & { artifact: NonNullable<CatalogListRow['artifact']> })
+      : await _findAgentPackageRow(agentId);
     let detail: AgentDetail;
     let privateSkillsZip: Awaited<ReturnType<typeof _fetchAgentPrivateSkillsBundle>>;
     let installedPackage: { sha256: string } | null = null;

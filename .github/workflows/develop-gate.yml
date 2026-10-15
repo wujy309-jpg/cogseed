@@ -41,6 +41,8 @@ jobs:
       - run: npm run lint
       - name: Design-token gate
         run: npm run tokens:check
+      - name: Class-name consistency gate
+        run: npm run class-names:check
       - name: Builtin manifest gate
         run: npm run builtin:manifest:check
       - name: README link gate

@@ -163,6 +163,23 @@ describe('Agent 详情页的依赖清单', () => {
     expect(html(null)).toBe('');
   });
 
+  it('每行首个单元格是图标：文字不会被挤进 18px 的图标列', () => {
+    const out = html(plan([
+      { id: 'a3f09c21b7e4', name: '依据材料作答', kind: 'hub', action: 'reuse' },
+      { id: 'invoice-ocr', name: 'invoice-ocr', kind: 'bundled', action: 'bundled' },
+      { id: 'builtin:coding', name: 'coding', kind: 'builtin', action: 'builtin' },
+    ]));
+    // `.agents-detail-list-item` 是 `18px minmax(0,1fr) auto` 三列网格：行内第一个子元素
+    // 必须是图标单元，否则 `agents-detail-list-text` 落进 18px 那一列，渲染成一行一两个字。
+    const rows = out.match(/<div class="agents-detail-list-item"[\s\S]*?<\/div>/g) ?? [];
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      expect(row).toMatch(/^<div class="agents-detail-list-item"[^>]*>\s*<span class="agents-detail-list-icon/);
+      expect(row).toContain('agents-detail-list-icon');
+      expect(row).toContain('agents-detail-list-text');
+    }
+  });
+
   it('内置能力单独一组：具备时「由 CogSeed 提供」，不具备时提示更新', () => {
     const ok = html(plan([{ id: 'builtin:coding', name: 'coding', kind: 'builtin', action: 'builtin' }]));
     expect(ok).toContain('GROUP-BUILTIN');
