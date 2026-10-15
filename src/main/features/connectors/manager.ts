@@ -1313,7 +1313,7 @@ export async function callTool(
   id: string,
   name: string,
   args: Record<string, unknown>,
-  opts: { signal?: AbortSignal } = {},
+  opts: { signal?: AbortSignal; beforeDispatch?: () => Promise<void> } = {},
 ): Promise<unknown> {
   if (!uid) throw new Error('uid required');
   if (opts.signal?.aborted) throw _connectorCancelledError(opts.signal.reason);
@@ -1377,8 +1377,10 @@ export async function callTool(
   }
   const startedAt = Date.now();
   try {
+    await opts.beforeDispatch?.();
+    if (opts.signal?.aborted) throw _connectorCancelledError(opts.signal.reason);
     const result = id === 'tencent-meeting' && isTencentMeetingWrite(name)
-      ? await callApprovedTencentMeetingChange(uid, conn, name, args, opts.signal)
+      ? await callApprovedTencentMeetingChange(uid, conn, name, args, opts.signal, opts.beforeDispatch)
       : opts.signal
         ? await conn.callTool(name, args, { signal: opts.signal })
         : await conn.callTool(name, args);

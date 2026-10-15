@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
@@ -27,8 +28,9 @@ async function seedConfirmedProjection(userId: string, cid: string, judgment: st
     import('../../../../src/main/storage'),
     import('../../../../src/main/util/project-layout'),
   ]);
-  const candidate = await candidates.saveRecallCandidate(userId, {
+  const candidate = await createNightlyCandidateFixture(userId, {
     judgment,
+    rawStatement: true,
     summary,
     suggestedType: 'rule',
     suggestedScope: 'review,project',

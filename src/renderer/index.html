@@ -14,6 +14,10 @@
   <link rel="stylesheet" href="./workspace.css" />
   <link rel="stylesheet" href="./recall-local.css" />
   <link rel="stylesheet" href="./cognition-assets.css" />
+  <link rel="stylesheet" href="./modules/cognition-assets/settings.css" />
+  <link rel="stylesheet" href="./modules/cognition-activity.css" />
+  <link rel="stylesheet" href="./modules/cognition-assets/library.css" />
+  <link rel="stylesheet" href="./modules/cognition-assets/prototype.css" />
   <link rel="stylesheet" href="./ui-components.css" />
   <link rel="stylesheet" href="./shell-navigation.css" />
   <link rel="stylesheet" href="./plugins.css" />
@@ -457,64 +461,6 @@
       <!-- Cognitive assets -->
       <section class="panel ui-resource-page" id="panel-recall">
                   <div id="ca-root"></div>
-          <!-- 个人本体 section 的常驻停车场：本体路由激活时被移进 #ca-ontology-mount，
-               离开时归还这里——同一 DOM 节点往返，内部状态不销毁（2026-09-21 五页签迁移）。 -->
-          <div id="ca-ontology-parking" hidden>
-          <section class="recall-personal-ontology-section" id="skills-cognition-personal-ontology" hidden>
-            <!-- 个人本体（#panel-personal-ontology）整体内嵌：保留 id，渲染函数照常工作。 -->
-            <section class="panel skills-embedded-panel recall-personal-ontology-frame" id="panel-personal-ontology">
-              <div class="personal-onto-layout">
-                <!-- 左栏：文件列表（候选 / 角色模板 / 记忆分组）资料库风格 -->
-                <div class="personal-onto-sidebar" id="personal-onto-sidebar">
-                  <div class="personal-onto-sidebar-header">
-                    <span class="personal-onto-sidebar-title" data-i18n="personalOntology.title">本体</span>
-                    <span class="personal-onto-sidebar-actions" id="personal-onto-sidebar-actions"></span>
-                  </div>
-                  <div class="personal-onto-nav" id="personal-onto-nav"></div>
-                </div>
-                <!-- 右栏：内容（候选详情 / 分组 md 内容） -->
-                <div class="personal-onto-main">
-                  <div class="personal-onto-main-header" id="personal-onto-main-header"></div>
-                  <div class="personal-onto-main-body" id="personal-onto-main-body"></div>
-                </div>
-              </div>
-              <!-- Reject reason modal -->
-              <div class="personal-onto-modal-overlay" id="personal-onto-modal" style="display:none">
-                <div class="personal-onto-modal">
-                  <div class="personal-onto-modal-header">
-                    <span data-i18n="personalOntology.reject_reason_title">驳回原因</span>
-                  </div>
-                  <div class="personal-onto-modal-body">
-                    <textarea id="personal-onto-modal-reason" rows="3" placeholder="可选，填写驳回原因..." data-i18n-placeholder="personalOntology.reject_reason_placeholder"></textarea>
-                  </div>
-                  <div class="personal-onto-modal-footer">
-                    <button class="btn btn-sm" id="personal-onto-modal-cancel" data-i18n="common.cancel">取消</button>
-                    <button class="btn btn-sm btn-primary" id="personal-onto-modal-ok" data-i18n="personalOntology.reject_btn">驳回</button>
-                  </div>
-                </div>
-              </div>
-              <!-- 角色模板库弹窗：未安装模板列表 -->
-              <div class="personal-onto-modal-overlay" id="personal-onto-template-library-modal" style="display:none">
-                <div class="personal-onto-modal personal-onto-library-modal">
-                  <div class="personal-onto-modal-header">
-                    <span data-i18n="personalOntology.template_library">角色模板库</span>
-                    <button type="button" class="modal-close-btn" id="personal-onto-template-library-close" aria-label="Close">×</button>
-                  </div>
-                  <div class="personal-onto-modal-body">
-                    <div class="personal-onto-library-sub muted" data-i18n="personalOntology.template_library_sub">未安装的角色模板，安装后显示在左侧「角色模板」区（最多 3 个）</div>
-                    <div class="personal-onto-library-layout">
-                      <div class="personal-onto-library-list" id="personal-onto-template-library-list"></div>
-                      <div class="personal-onto-library-detail" id="personal-onto-template-library-detail"></div>
-                    </div>
-                  </div>
-                  <div class="personal-onto-modal-footer">
-                    <button class="btn btn-sm" id="personal-onto-template-library-cancel" data-i18n="common.close">关闭</button>
-                  </div>
-                </div>
-              </div>
-            </section>
-            </section>
-          </div>
 </section>
 
 
@@ -1944,6 +1890,7 @@
   <script src="./modules/artifact-security.js"></script>
   <script src="./modules/chat-artifact.js"></script>
   <script src="./modules/plan-rail.js"></script>
+  <script src="./modules/conversation-cognition-strip.js"></script>
   <script src="./modules/conversation-info.js"></script>
   <script src="./modules/run-center-model.js"></script>
   <script src="./modules/run-center-global.js"></script>

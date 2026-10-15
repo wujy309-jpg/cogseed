@@ -78,7 +78,7 @@ const MAX_TITLE_LENGTH = 120;
 const MAX_EXCERPT_LENGTH = 240;
 const SECRET_VALUE_RE = /(\b(?:authorization\s*:\s*bearer\s+|bearer\s+|token\s*[=:]\s*|api[_-]?key\s*[=:]\s*))([^\s,;]+)/gi;
 const SENSITIVE_KEY_VALUE_RE = /(\b(?:access[_-]?token|refresh[_-]?token|id[_-]?token|password|secret|cookie)\s*[=:]\s*)([^\s,;]+)/gi;
-const JSON_SECRET_VALUE_RE = /((?:[\"'])(?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|authorization|token|password|secret|cookie)(?:[\"'])\s*:\s*[\"'])(?:\\.|[^\"'])*(?=[\"'])/gi;
+const JSON_SECRET_VALUE_RE = /((?:[\"'])(?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|authorization|token|password|secret|cookie)(?:[\"'])\s*:\s*[\"'])(?:\\.|[^\"'\])*(?=[\"'])/gi;
 
 const DEFAULT_SUBTYPE: Record<CognitionSourceType, CognitionSourceSubtype> = {
   conversation: 'session',

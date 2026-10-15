@@ -340,22 +340,29 @@ function _renderMessageMarkdown(text) {
   // marker was plain text. Protect it through markdown and turn it into an
   // actionable button below, beside the existing asset citation handling.
   const candidateRefIds = [];
-  const markdownInput = protectedText.replace(/\[candidate:([A-Za-z0-9_-]{1,64})\]/g, (m, id) => {
+  const candidateText = protectedText.replace(/\[candidate:([A-Za-z0-9_-]{1,64})\]/g, (m, id) => {
     const idx = candidateRefIds.length;
     candidateRefIds.push(id);
     return `\x00CANDIDATEREF${idx}\x00`;
+  });
+  const ontologyRefs = [];
+  const markdownInput = candidateText.replace(/\[\[ontology:([A-Za-z0-9_-]{1,160})\/([A-Za-z0-9_-]{1,160})@([1-9]\d{0,8})\]\]/g, (_marker, moduleId, recordId, version) => {
+    const index = ontologyRefs.length;
+    ontologyRefs.push({ moduleId, recordId, version: Number(version) });
+    return `\uE000ONTOLOGYREF${index}\uE001`;
   });
   const html = renderMarkdownFull(markdownInput);
   const needsSkillRewrite = _htmlMayContainKnownSkillIdForDisplay(html, skills);
   // Mention highlighting requires DOM walking — do it on a detached
   // container, then return its innerHTML for the bubble to embed.
-  if (!html || (html.indexOf('@') < 0 && !needsSkillRewrite && !assetRefIds.length && !candidateRefIds.length)) return html;
+  if (!html || (html.indexOf('@') < 0 && !needsSkillRewrite && !assetRefIds.length && !candidateRefIds.length && !ontologyRefs.length)) return html;
   const tmp = document.createElement('div');
   tmp.innerHTML = html;
   if (needsSkillRewrite) _replaceKnownSkillIdsIn(tmp, skills);
   _highlightMentionsIn(tmp);
   if (assetRefIds.length) _replaceAssetCitationsIn(tmp, assetRefIds);
   if (candidateRefIds.length) _replaceCandidateCitationsIn(tmp, candidateRefIds);
+  if (ontologyRefs.length) _replaceOntologyCitationsIn(tmp, ontologyRefs);
   return tmp.innerHTML;
 }
 
@@ -476,6 +483,44 @@ function _replaceCandidateCitationsIn(container, ids) {
     }
     if (last < node.nodeValue.length) frag.appendChild(document.createTextNode(node.nodeValue.slice(last)));
     node.parentNode.replaceChild(frag, node);
+  }
+}
+
+// 本体标记仅提供精确版本阅读入口，采用与效果仍以主进程回执为准。
+function _replaceOntologyCitationsIn(container, refs) {
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    const pattern = /\uE000ONTOLOGYREF(\d+)\uE001/g;
+    if (!pattern.test(node.nodeValue)) continue;
+    pattern.lastIndex = 0;
+    const fragment = document.createDocumentFragment();
+    let last = 0;
+    let match;
+    while ((match = pattern.exec(node.nodeValue))) {
+      if (match.index > last) fragment.appendChild(document.createTextNode(node.nodeValue.slice(last, match.index)));
+      const ref = refs[Number(match[1])];
+      if (ref && node.parentElement?.closest('pre, code')) {
+        fragment.appendChild(document.createTextNode(`[[ontology:${ref.moduleId}/${ref.recordId}@${ref.version}]]`));
+      } else if (ref) {
+        const key = 'chat.ontology_citation_open';
+        const translated = typeof t === 'function' ? t(key) : key;
+        const label = translated && translated !== key ? translated : 'View ontology record';
+        const template = document.createElement('template');
+        template.innerHTML = uiButton({ label: `${label} · v${ref.version}`, role: 'ghost', size: 'sm',
+          attrs: { 'data-ontology-citation': ref.recordId, 'data-ontology-module': ref.moduleId, 'data-ontology-version': String(ref.version) },
+        });
+        fragment.appendChild(template.content.cloneNode(true));
+      }
+      last = match.index + match[0].length;
+    }
+    if (last < node.nodeValue.length) fragment.appendChild(document.createTextNode(node.nodeValue.slice(last)));
+    node.parentNode.replaceChild(fragment, node);
   }
 }
 
@@ -2818,6 +2863,19 @@ document.addEventListener('click', (e) => {
     return;
   }
   // recall feature 未加载：先懒加载（同上 asset 引用卡的 fallback），再打开评审详情。
+  const loader = typeof loadRendererFeature === 'function' ? loadRendererFeature : window.loadRendererFeature;
+  if (typeof loader === 'function') loader('recall').then(open).catch(() => {});
+});
+
+// [[ontology:module/record@version]] → 同一权威记录的只读历史版本。
+document.addEventListener('click', (event) => {
+  const el = event.target?.closest?.('[data-ontology-citation]');
+  if (!el) return;
+  const { ontologyCitation: recordId, ontologyModule: moduleId, ontologyVersion } = el.dataset;
+  if (!/^[A-Za-z0-9_-]{1,160}$/.test(recordId || '') || !/^[A-Za-z0-9_-]{1,160}$/.test(moduleId || '')
+    || !/^[1-9]\d{0,8}$/.test(ontologyVersion || '')) return;
+  const open = () => window.openCognitionOntologyRecord?.(moduleId, recordId, Number(ontologyVersion));
+  if (typeof window.openCognitionOntologyRecord === 'function') { open(); return; }
   const loader = typeof loadRendererFeature === 'function' ? loadRendererFeature : window.loadRendererFeature;
   if (typeof loader === 'function') loader('recall').then(open).catch(() => {});
 });
@@ -5339,7 +5397,9 @@ function _renderCognitionSaveReceiptsHtml(receipts) {
   return `<div class="chat-cognition-save-receipts">${receipts.map((receipt) => {
     // taught-pending-review（2026-09-28 四病整改 7.0 修7）：教学回执并入保存
     // 回执后的新态——用户教了一条记忆，信号落库时建了候选、等审核。
-    const outcomeKey = receipt.outcome === 'created'
+    const outcomeKey = receipt.target === 'ontology'
+      ? receipt.outcome === 'ontology-pending' ? 'chat.cognition_save.ontology_pending' : 'chat.cognition_save.ontology_saved'
+      : receipt.outcome === 'created'
       ? 'chat.cognition_save.state_active'
       : receipt.outcome === 'already-confirmed'
         ? 'chat.cognition_save.state_existing'
@@ -5361,7 +5421,7 @@ function _renderCognitionSaveReceiptsHtml(receipts) {
           : receipt.outcome === 'taught-pending-review'
             ? '已记住 · 待审核'
             : 'Awaiting your review · not active yet';
-    const label = receipt.outcome === 'already-confirmed'
+    const label = receipt.target === 'ontology' ? copy('chat.cognition_save.open_ontology', '查看本体') : receipt.outcome === 'already-confirmed'
       ? copy('chat.cognition_save.open_existing', 'View record')
       : receipt.target === 'asset'
         ? copy('chat.cognition_save.open_asset', 'View and edit')
@@ -5371,7 +5431,9 @@ function _renderCognitionSaveReceiptsHtml(receipts) {
       role: 'ghost',
       size: 'sm',
       className: 'chat-cognition-save-open',
-      attrs: receipt.target === 'asset'
+      attrs: receipt.target === 'ontology'
+        ? { 'data-ontology-citation': receipt.id, 'data-ontology-module': receipt.moduleId || receipt.id, 'data-ontology-version': String(receipt.version || 1) }
+        : receipt.target === 'asset'
         ? { 'data-asset-citation': receipt.id }
         : { 'data-candidate-citation': receipt.id },
     });
@@ -5418,32 +5480,46 @@ function _hydrateRecallCitations(messageEl, cid, messageId) {
     const button = event.target?.closest?.('[data-recall-feedback]');
     if (!button || button.disabled) return;
     const feedback = button.dataset.recallFeedback;
-    if (!cid || !resolvedMessageId || (feedback !== 'positive' && feedback !== 'negative')) return;
-    if (host.dataset.feedbackBusy === '1' || host.dataset.feedbackSent === '1') return;
-    host.dataset.feedbackBusy = '1';
-    host.querySelectorAll('[data-recall-feedback]').forEach((item) => { item.disabled = true; });
+    // 逐行反馈（2026-10-03 待办#2）：按钮钉在自己行的资产上——反馈只记给用户
+    // 点的那条资产，不再连带同消息其他引用。行取包含按钮的已引用行（按钮自身
+    // 也带 data-recall-asset-id，closest 从按钮起会只命中按钮自己）。
+    const assetId = String(button.dataset.recallAssetId || '');
+    if (!cid || !resolvedMessageId || !assetId || (feedback !== 'positive' && feedback !== 'negative')) return;
+    const row = button.closest('.chat-recall-citation[data-recall-asset-id]');
+    if (!row) return;
+    if (row.dataset.feedbackBusy === '1' || row.dataset.feedbackSent === '1') return;
+    row.dataset.feedbackBusy = '1';
+    row.querySelectorAll('[data-recall-feedback]').forEach((item) => { item.disabled = true; });
     try {
       const result = await window.cogseed.invoke('recall.usage.feedback', {
         cid,
         messageId: resolvedMessageId,
         feedback,
+        assetId,
       });
       if (!result?.ok) throw new Error(result?.error || 'Recall feedback failed');
       // 负反馈后认知资产面板的刷新不再走 window CustomEvent（2026-09-27
       // 刷新机制重写）：主进程写回执时经 recall store 广播 cognition:changed
       // （asset-usage-receipts → timeline 区块），面板订阅中枢自己重拉。
-      host.dataset.feedbackSent = '1';
-      host.dataset.feedback = feedback;
-      host.classList.add('is-feedback-sent');
-      const status = host.querySelector('[data-recall-feedback-status]');
+      const sent = new Set(String(host.dataset.feedbackAssets || '').split(',').filter(Boolean));
+      sent.add(assetId);
+      host.dataset.feedbackAssets = [...sent].join(',');
+      // 整卡可能在请求期间被投影补全重画：按 assetId 重查当前渲染的行再落
+      // 状态，不依赖请求前捕获的节点（CodeRabbit 校正）；行不在（极端重画）
+      // 时 dataset 已记账，重画自然呈现已反馈态。
+      const currentRow = host.querySelector(`.chat-recall-citation[data-recall-asset-id="${assetId}"]`);
+      const targetRow = currentRow || row;
+      targetRow.dataset.feedbackSent = '1';
+      targetRow.classList.add('is-feedback-sent');
+      const status = targetRow.querySelector('[data-recall-feedback-status]');
       const key = 'chat.recall.feedback_thanks';
       const value = typeof t === 'function' ? t(key) : key;
       if (status) status.textContent = value && value !== key ? value : 'Thanks for the feedback';
     } catch (error) {
-      host.querySelectorAll('[data-recall-feedback]').forEach((item) => { item.disabled = false; });
+      row.querySelectorAll('[data-recall-feedback]').forEach((item) => { item.disabled = false; });
       if (typeof uiAlert === 'function') await uiAlert((error && error.message) || String(error));
     } finally {
-      host.dataset.feedbackBusy = '0';
+      row.dataset.feedbackBusy = '0';
     }
   });
   // 头部带 role="button"：键盘等效入口（Enter/Space 翻转折叠），忽略 IME 组合期。
@@ -12210,40 +12286,6 @@ function _syncBubbleReferenceActionState(msgDiv) {
 // Attach small action buttons below the bubble. Kept outside the bubble so
 // they never overlap content. `getContent` is a callback so it can return the
 // latest text after streaming completes.
-async function _openCognitionCaptureFromBubble(msgDiv, getContent, cognitionBtn) {
-  const text = typeof getContent === 'function' ? String(getContent() || '') : '';
-  const messageId = String(msgDiv?.dataset?.msgId || '').trim();
-  if (!cognitionBtn || !text.trim() || !messageId || cognitionBtn.disabled) return false;
-
-  // The feature can load after the user has navigated elsewhere. Preserve the
-  // source task at click time so the evidence is never attributed to that
-  // later task.
-  const sourceCid = currentCid;
-  const loader = typeof loadRendererFeature === 'function'
-    ? loadRendererFeature
-    : window.loadRendererFeature;
-  if (typeof window.openCognitionCapture !== 'function' && typeof loader === 'function') {
-    cognitionBtn.disabled = true;
-    try {
-      await loader('personal-ontology');
-    } catch (error) {
-      _convLog.warn('cognition capture feature load failed', { error: error?.message || String(error) });
-    } finally {
-      cognitionBtn.disabled = false;
-    }
-  }
-  if (typeof window.openCognitionCapture !== 'function') return false;
-  try {
-    return window.openCognitionCapture({
-      conversationId: sourceCid,
-      messageId,
-    }) !== false;
-  } catch (error) {
-    _convLog.warn('cognition capture open failed', { error: error?.message || String(error) });
-    return false;
-  }
-}
-
 function _attachBubbleActions(msgDiv, getContent, opts = {}) {
   const includeArchive = opts.archive !== false;
   const includeRetry = opts.retry === true;
@@ -12276,7 +12318,6 @@ function _attachBubbleActions(msgDiv, getContent, opts = {}) {
   const copyButton = uiIconButton({ label: copyLabel, icon: 'copy', className: 'bubble-action-btn bubble-copy-btn' });
   const asideButton = uiIconButton({ label: asideLabel, icon: 'message-square', className: 'bubble-action-btn bubble-aside-btn' });
   const overflowItems = `${uiButton({ label: t('chat.message_select'), role: 'ghost', size: 'sm', icon: 'list', className: 'chat-bubble-menu-item bubble-select-btn', attrs: { role: 'menuitem', title: t('chat.message_select_title') } })}
-    ${includeArchive && !includeRetry ? uiButton({ label: t('cognition.capture.menu'), role: 'ghost', size: 'sm', icon: 'brain-circuit', className: 'chat-bubble-menu-item bubble-cognition-btn', attrs: { role: 'menuitem', title: t('cognition.capture.menu_title') } }) : ''}
     ${includeArchive ? uiButton({ label: t('chat.archive_btn'), role: 'ghost', size: 'sm', icon: 'book-open', className: 'chat-bubble-menu-item bubble-archive-btn', attrs: { role: 'menuitem', title: t('chat.archive_btn_title') } }) : ''}`;
   actions.innerHTML = `
     <span class="chat-bubble-direct-actions">${copyButton}${quoteButton}${asideButton}</span>
@@ -12290,7 +12331,6 @@ function _attachBubbleActions(msgDiv, getContent, opts = {}) {
   const copyBtn = actions.querySelector('.bubble-copy-btn');
   const quoteBtn = actions.querySelector('.bubble-quote-btn');
   const selectBtn = actions.querySelector('.bubble-select-btn');
-  const cognitionBtn = actions.querySelector('.bubble-cognition-btn');
   const asideBtn = actions.querySelector('.bubble-aside-btn');
   if (includeRetry) _attachBubbleRetryBtn(directActions, msgDiv);
   _wireBubbleActionMenu(actions);
@@ -12368,10 +12408,6 @@ function _attachBubbleActions(msgDiv, getContent, opts = {}) {
     e.stopPropagation();
     if (selectBtn.disabled) return;
     _enterMessageSelection(msgDiv);
-  });
-  cognitionBtn?.addEventListener('click', (e) => {
-    e.stopPropagation();
-    void _openCognitionCaptureFromBubble(msgDiv, getContent, cognitionBtn);
   });
   copyBtn?.addEventListener('click', async (e) => {
     e.stopPropagation();

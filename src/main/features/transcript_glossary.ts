@@ -20,10 +20,8 @@
  * （见 transcript_auto_correct.ts）与产物/回滚（见 transcript_correction_runs.ts）。
  *
  * ── 关于"模型候选"（2026-09-20 起）────────────────────────────────────
- * 候选区（`candidates` 数组 / `adoptCandidate` 等）已**整体移除**：模型候选改为直接
- * 并入扫描候选列表，人勾选即确认；确认应用时经 `rememberConfirmedPairs` 以
- * `source: 'meeting_accept'` 记入词表（作用域收窄到当前文档）。
- * 于是词表里只剩一种东西：**人确认过的** `wrong → correct`。
+ * 模型建议只参与当前材料扫描和更正，不自动写入长期词表。
+ * 已有词表仍支持查询、作用域管理、人工编辑与替换记账。
  */
 
 import * as fs from 'node:fs';
@@ -31,6 +29,7 @@ import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 import { userTranscriptGlossaryFile } from '../paths';
 import { createLogger } from '../logger';
+import { assertNotCorrupt } from '../util/corrupt-guard';
 
 const log = createLogger('transcript_glossary');
 
@@ -321,6 +320,11 @@ export function emptyGlossary(uid: string): GlossaryFile {
   return { version: GLOSSARY_VERSION, uid, entries: [], meta: { lastReconcileAt: 0, ownerNote: '' } };
 }
 
+// 坏档三件套·词表接线说明（P-r1-88，2026-10-01 b2 曾落地后回滚）：读侧
+// 结构化错误（readTextGuarded + 抛 CorruptFileError）曾与既有契约测试
+// 「JSON 损坏 → 降级空表且不抛错」直接冲突并致门禁新增失败，读侧已按
+// 回滚令恢复降级空表行为；saveGlossary 的 assertNotCorrupt 写侧门保留
+// （词表 latch 无读侧登记入口，恒放行，行为与基线一致）。
 export function loadGlossary(userId: string): GlossaryFile {
   const file = userTranscriptGlossaryFile(userId);
   let raw: unknown;
@@ -434,6 +438,8 @@ function normalizeScope(v: unknown): GlossaryScope {
 
 export function saveGlossary(userId: string, file: GlossaryFile): void {
   const target = userTranscriptGlossaryFile(userId);
+  // 坏档三件套·写侧门：登记在案即拒绝（备份被移走不影响判定；恢复/重置后才可写）。
+  assertNotCorrupt(target);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   const payload: GlossaryFile = {
     version: GLOSSARY_VERSION,
@@ -469,64 +475,6 @@ export function listEntries(
 
 export function findEntry(userId: string, id: string): GlossaryEntry | null {
   return loadGlossary(userId).entries.find((e) => e.id === id) ?? null;
-}
-
-/**
- * 把**已确认应用**的 `wrong → correct` 对记进词表（source: meeting_accept）。
- *
- * 为什么放在这里：'meeting_accept' 这个 source 一直是"词表里预留、但全仓库没人发过"
- * 的值（见 upsertEntry 里那段注释——它曾经因此让每个新词条都变成全局规则）。
- * 现在由"扫描里勾选并应用了模型候选"来发它：人点了勾、正文里真的换了，才算确认。
- *
- * 作用域刻意收窄到**当前文档**（传 `docId` ⇒ upsertEntry 走"仅本文档"分支）：
- * 一次会议里确认的写法不等于全局规则，这正是那份事故注释要防的事。
- */
-export function rememberConfirmedPairs(
-  userId: string,
-  pairs: Array<{ wrong: string; correct: string }>,
-  context: { docId?: string } = {},
-): { created: number; updated: number; skipped: number } {
-  let created = 0;
-  let updated = 0;
-  let skipped = 0;
-  const docId = typeof context.docId === 'string' ? context.docId.trim() : '';
-  // 作用域必须**显式给**。`upsertEntry` 里 `source === 'meeting_accept'` 只会把
-  // `global` 置为 false，却不动 `docIds`/`scenarioTags`——那样得到的条目
-  // `scopeAllows` 恒为 false，等于一条**永不命中的死规则**（这也正是
-  // 'meeting_accept' 这个 source 一直没有任何调用方的真正原因）。
-  if (!docId) {
-    // 没有文档作用域时宁可如实跳过，也不要写死条目。
-    return { created: 0, updated: 0, skipped: (pairs || []).length };
-  }
-  const scope = { docIds: [docId], scenarioTags: [] as string[], global: false };
-  const seen = new Set<string>();
-  for (const pair of pairs || []) {
-    const wrong = String(pair?.wrong ?? '').trim();
-    const correct = String(pair?.correct ?? '').trim();
-    if (!wrong || !correct) {
-      skipped += 1;
-      continue;
-    }
-    const key = `${foldText(wrong).trim()}|${foldText(correct).trim()}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    try {
-      const result = upsertEntry(userId, {
-        wrong,
-        correct,
-        source: 'meeting_accept',
-        scope,
-      });
-      if (!result.entry) skipped += 1;
-      else if (result.created) created += 1;
-      else updated += 1;
-    } catch (error) {
-      // 单条不合法（超长/空）不该让整次应用失败：如实计入 skipped。
-      log.warn('remember confirmed pair failed', { error: (error as Error).message });
-      skipped += 1;
-    }
-  }
-  return { created, updated, skipped };
 }
 
 /** 作用域选择（面板「接受」动作的范围，方案 §七）。 */
@@ -643,9 +591,17 @@ export function setQueryRewrite(userId: string, enabled: boolean): boolean {
   return enabled === true;
 }
 
-/** 读取开关状态（缺省 false）。 */
+/** 读取开关状态（缺省 false）。词表坏档时按 false 降级——改写依赖词表，
+ *  词表不可用就不改写，不把坏档故障放大到检索路径。 */
 export function isQueryRewriteEnabled(userId: string): boolean {
-  return loadGlossary(userId).meta.queryRewrite === true;
+  try {
+    return loadGlossary(userId).meta.queryRewrite === true;
+  } catch (err) {
+    log.warn('glossary corrupt/unreadable; query rewrite disabled', {
+      error: (err as Error).message,
+    });
+    return false;
+  }
 }
 
 /**
@@ -912,6 +868,10 @@ export function importGlossary(
   if (!Array.isArray(list)) throw new Error('transcript glossary: payload.entries must be an array');
   const mode = opts.mode === 'replace' ? 'replace' : 'merge';
   if (mode === 'replace') {
+    // 坏档三件套收口：replace 是词表唯一「先写后读」的路径（直接落空表），
+    // 先走一次 loadGlossary 探测——坏档时它会拒（备份+登记），下面的清空
+    // 保存随之被写侧门拒绝，不会把坏档静默覆盖成空表。
+    loadGlossary(userId);
     const empty = emptyGlossary(userId);
     saveGlossary(userId, empty);
   }

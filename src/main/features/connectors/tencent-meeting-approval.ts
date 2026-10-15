@@ -24,6 +24,7 @@ function unwrap(raw: unknown): { token?: string } {
 
 export async function callApprovedTencentMeetingChange(
   userId: string, connection: Connection, name: string, input: Record<string, unknown>, signal?: AbortSignal,
+  beforeDispatch?: () => Promise<void>,
 ): Promise<unknown> {
   const { args } = normalizeAction(name, input);
   if (signal?.aborted) throw new Error('E_ACTION_APPROVAL_CANCELLED');
@@ -53,6 +54,8 @@ export async function callApprovedTencentMeetingChange(
     if (signal?.aborted) throw new Error('E_ACTION_APPROVAL_CANCELLED');
     const started = await record(approvalId, 'started');
     if (!started.handled) throw new Error('E_ACTION_APPROVAL_NOT_ACTIVE');
+    await beforeDispatch?.();
+    if (signal?.aborted) throw new Error('E_ACTION_APPROVAL_CANCELLED');
     const result = await connection.callTool('commit_meeting_change', { token: prepared.token }, { signal });
     await record(approvalId, (result as { isError?: boolean })?.isError ? 'failed' : 'succeeded');
     return result;

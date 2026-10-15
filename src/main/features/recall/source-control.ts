@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
+import { withCognitionTransition } from '../cognition_bridge';
 import * as fs from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 
 import { safeId } from '../../storage';
@@ -59,6 +61,13 @@ function controlsDirectory(userId: string): string {
 export function cognitionSourceControlId(source: Pick<CognitionSourceRef, 'kind' | 'id'>): string {
   const digest = createHash('sha256').update(cognitionSourceRefKey(source)).digest('hex').slice(0, 24);
   return `srcctl-${digest}`;
+}
+
+/** A read-boundary invalidation token, never an approval or availability grant. */
+export function cognitionSourceControlSnapshot(userId: string, source: Pick<CognitionSourceRef, 'kind' | 'id'>): string {
+  const file = recallJsonRecordPath(userId, SOURCE_CONTROL_COLLECTION, cognitionSourceControlId(source));
+  try { return createHash('sha256').update(readFileSync(file)).digest('hex'); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing'; throw error; }
 }
 
 function isSourceType(value: unknown): value is CognitionSourceType {
@@ -147,7 +156,7 @@ async function setSourceControl(
   if (lastErrorCode !== undefined && !safeId(lastErrorCode)) throw new Error('invalid cognition source error code');
   const id = cognitionSourceControlId(source);
   const now = new Date().toISOString();
-  const updated = await updateRecallJsonRecord(userId, SOURCE_CONTROL_COLLECTION, id, (current) => {
+  const updated = await withCognitionTransition(userId, () => updateRecallJsonRecord(userId, SOURCE_CONTROL_COLLECTION, id, (current) => {
     const previous = current ? asSourceControl(current) : undefined;
     return {
       schemaVersion: 1,
@@ -164,7 +173,7 @@ async function setSourceControl(
       createdAt: previous?.createdAt || now,
       updatedAt: now,
     } satisfies CognitionSourceControlRecord;
-  });
+  }));
   return asSourceControl(updated);
 }
 

@@ -33,10 +33,11 @@ When the user asks about the content of their imported materials (Library files,
 
 When `SKILL.md` lists runtime requirements, resolve before stopping. `node`/`npm`/`npx`/`python`/`uv` are built-in — use them directly; never install or upgrade these runtimes via brew/apt/curl, and if a library needs a newer runtime version than built-in, say so and stop rather than installing one. For other packages/CLIs, install once using the stated command, then continue; do not re-run a failed system-level install — report what you tried. For API keys, OAuth, paid credentials, or sudo, stop and tell the user what is needed; never invent placeholders.
 
-## Memory write language
+## Existing memory language
 
-- Before `add` / `replace`, write the memory entry in the current response/UI language. If the user said it in another language, translate or summarize it first.
+- Explain existing memory in the current response/UI language. Preserve its original meaning and distinguish quotations from your explanation.
 - Preserve proper nouns, commands, file paths, code identifiers, URLs, and exact quoted wording when exact text matters.
+- Cross-session memory access is read-only. Do not claim that a conversation reply has created or saved new cognition.
 
 ## PDF rules
 

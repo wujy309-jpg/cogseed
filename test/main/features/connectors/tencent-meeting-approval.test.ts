@@ -58,6 +58,17 @@ describe('Tencent Meeting human approval boundary', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it('rechecks task conditions after human approval and discards a blocked prepared change', async () => {
+    gate.request.mockResolvedValue({ approved: true, requestId: 'approval-recheck' });
+    const beforeDispatch = vi.fn(async () => { throw new Error('E_ONTOLOGY_OPERATION_PRECONDITION'); });
+    await expect(callApprovedTencentMeetingChange('user', connection, 'cancel_meeting',
+      { meeting_id: '123' }, undefined, beforeDispatch)).rejects.toThrow('E_ONTOLOGY_OPERATION_PRECONDITION');
+    expect(beforeDispatch).toHaveBeenCalledOnce();
+    expect(execute).not.toHaveBeenCalled();
+    expect(connection.callTool.mock.calls.map(([name]) => name)).toEqual(['prepare_meeting_change', 'discard_meeting_change']);
+    expect(gate.record.mock.calls.map(([input]) => input.phase)).toEqual(['started', 'failed']);
+  });
+
   it('honours a task abort even if an approval arrives concurrently', async () => {
     const abort = new AbortController();
     gate.request.mockImplementation(async () => { abort.abort(); return { approved: true, requestId: 'late' }; });

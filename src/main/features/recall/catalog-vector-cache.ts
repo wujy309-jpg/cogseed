@@ -11,7 +11,7 @@ import { embedForDedup } from './similarity';
 const CACHE_VERSION = 1;
 // The KB embedding model is fixed by the app. Bump this when its model or the
 // catalog profile recipe changes, so vectors from different spaces never mix.
-const MODEL_TAG = 'kb-embedding:catalog-profile-v2';
+const MODEL_TAG = 'kb-embedding:catalog-profile-v3-full-content';
 const MAX_MEMORY_USERS = 4;
 
 interface CachedVector { hash: string; vector: number[] }
@@ -29,7 +29,7 @@ function cacheFile(userId: string): string {
 }
 
 function contentHash(text: string): string {
-  return createHash('sha256').update(text.slice(0, 2_000)).digest('hex');
+  return createHash('sha256').update(text).digest('hex');
 }
 
 function validVector(value: unknown): value is number[] {

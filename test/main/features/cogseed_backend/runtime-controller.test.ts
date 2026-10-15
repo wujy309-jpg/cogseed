@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -2513,7 +2514,7 @@ describe('CogSeed Runtime controller', () => {
       import('../../../../src/main/storage'),
       import('../../../../src/main/util/project-layout'),
     ]);
-    const candidate = await candidates.saveRecallCandidate(USER, {
+    const candidate = await createNightlyCandidateFixture(USER, {
       judgment: 'Keep runtime boundaries explicit before changing them.',
       summary: 'Runtime boundary decision log',
       suggestedType: 'rule',
@@ -2575,7 +2576,7 @@ describe('CogSeed Runtime controller', () => {
 
   it('injects the live Commander-granted asset body into the runtime prompt', async () => {
     const candidates = await import('../../../../src/main/features/recall/candidate-service');
-    const candidate = await candidates.saveRecallCandidate(USER, {
+    const candidate = await createNightlyCandidateFixture(USER, {
       judgment: 'Always include the acceptance criteria in the implementation report.',
       summary: 'Implementation report acceptance criteria',
       suggestedType: 'rule',

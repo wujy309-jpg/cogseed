@@ -63,6 +63,7 @@ export interface AssetStewardToolsOpts {
   sourceMessageFromUser?: boolean;
 }
 
+
 /** 列表分页默认与上限，对齐既有目录工具量级（一页 30、最多 50）。 */
 const LIST_PAGE_DEFAULT = 30;
 const LIST_PAGE_MAX = 50;
@@ -125,10 +126,8 @@ function listLine(asset: RecallAbilityAssetRecord): string {
 /** 一条资产是否是"能交给模型看的"——与注入/派单同一道运行时准入门，
  *  同源判定，避免两处标准分叉。
  *
- *  软条件 `not_applicable_context` 不计入拦截（与既有正文读取同口径）：
- *  applicableWhen 是给模型自己判断的软提示，按用户消息做词面匹配来否掉模型的
- *  明确选择，会把这个功能废掉。硬闸照旧：状态 / 来源 / scopePolicy / 禁用场景 /
- *  敏感度 / targetAgents。
+ *  inspect 将任务相关性单独返回；此处不得删除或改写阻断理由。
+ *  硬边界与自动消费同源，查阅许可不意味着默认使用许可。
  */
 async function runtimeBlockReasons(
   opts: AssetStewardToolsOpts,
@@ -140,9 +139,9 @@ async function runtimeBlockReasons(
     ...(opts.spaceId ? { workspaceId: opts.spaceId } : {}),
     ...(opts.taskText ? { taskText: opts.taskText } : {}),
     ...(opts.taskText ? { purpose: opts.taskText } : {}),
-    silentDefaultInjection: true,
+    operation: 'inspect',
   });
-  return eligibility.reasons.filter((reason) => reason !== 'not_applicable_context');
+  return eligibility.reasons;
 }
 
 // ── 待审批提议（US-406）：管理视角的可见性 ────────────────────────────────
@@ -364,6 +363,7 @@ function createReadAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
     description: [
       '读出一条认知资产的**完整正文**：单批最多 2000 字，长正文用 chunk 逐批读完（返回里会写明第几批/共几批与下一批的 chunk）。',
       '这是管理视角的全文读取，不受"一次 6 条、每条 2000 字"的目录取用限制；适合改动前先看清内容、核对某条到底写了什么。',
+      '读取本身不算采用；若确实按它形成产出，且本轮有 report_ability_asset_usage，最终回复前调用该工具报告具体版本和产出原文片段。只写采用说明不会留下正式回执。',
       '资产**不可用时不会返回正文**，而是如实说明原因（已删除/已暂停/来源被撤权/范围不符/命中禁用场景/敏感级过高/未分级等）——这不是"找不到"，别当成资产不存在，也别试图绕过。',
       '已删除的资产在保留期内仍然存在，但正文已不可用；要恢复它用 restore_ability_asset。',
       '这条资产若挂着**待审批提议**（AI 提过改动、用户还没定），返回里会点明：那类改动**不重复提交**，先把卡片的事告诉用户。',
@@ -987,6 +987,7 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
     description: [
       '改一条认知资产的内容：标题、正文、适用范围、适用/禁用场景、主题标签。**必须**说明依据（reason）。',
       '**分级（很重要）**：只有用户在当前消息里明确给出并逐字写出要改成的正文或单组标签值，主进程才允许直接改这项；含义由你补写、值来自旧上下文或用户指令不够具体时，不得把 origin 标成 user_instruction，必须走用户审批。你自己提出的正文/适用范围/标签实质变化也必须审批。',
+      '用户要求生成或提交待确认改进候选时，现在就调用本工具，mode=propose：只创建真实待审批提议，资产原文与版本不变，不需要再次请求创建候选的许可。查询工具不能提交；只有本工具返回提议编号才能说已提交。',
       '读到的版本号（metaLine 里的「在用版」）请通过 expectedVersion 带回来：如果这条资产在你读取之后被改过（用户正在手动编辑），工具会拒绝而不是覆盖——重新读一次再决定。',
       '改动会写进台账（谁改的/时间/前后值/依据），并且随时可回滚（rollback_ability_asset）。',
       '主题标签：fields.tags 传字符串数组（整体替换；每条 trim 后非空且 ≤20 字、去重后 ≤12 条，超限拒绝不截断）；category 是旧入参，会**收编为一条标签**与 tags 合并去重（不再单独存在）。标签改动不 bump 内容版本，台账记「标签：旧 → 新」。',
@@ -999,7 +1000,7 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
           type: 'object',
           description: '要改的字段对象，至少给一个；没给的字段不动。必须传**对象**（例如 {"statement":"新正文"}），不要传 JSON 字符串。正文的键名是 statement（别名 body）。',
           properties: {
-            title: { type: 'string', description: '标题（命名规范化）：非空；含汉字时 ≤16 个字，其他语言 ≤60 字符；不得与正文开头重复（第一个字都不能与正文相同）；不以标点结尾。不合规会被拒绝。' },
+            title: { type: 'string', description: '标题（命名规范化）：非空；含汉字时 ≤16 个字，其他语言 ≤60 字符；不要整句照抄正文或截断成标题，可以保留相同的项目名、人名和术语；不以标点结尾。不合规会被拒绝。' },
             statement: { type: 'string', description: '正文（上限 4000 字）。' },
             scope: { type: 'string', description: '适用范围。' },
             applicableWhen: { type: 'array', items: { type: 'string' }, description: '适用场景（整体替换；传空数组=清空）。' },
@@ -1016,6 +1017,7 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
         },
         reason: { type: 'string', description: '改动依据：用户的原话或具体证据（必填，写进台账）。' },
         expectedVersion: { type: 'string', description: '你读到这条时的版本号；给了就要求与当前一致，不一致则拒绝（不静默覆盖）。' },
+        mode: { type: 'string', enum: ['propose', 'apply_if_authorized'], description: 'propose：仅提交待审批提议，不直接修改；apply_if_authorized（默认）：由主进程核验直写授权，否则仍走待审批。用户要求候选或暂不生效时必须用propose。' },
         origin: {
           type: 'string',
           description: '这只是你对来源的声明，不是授权凭据。主进程会核对当前用户消息；只有用户原话明确要求、且单项正文或标签改动值逐字匹配时，才允许直接改动。其他实质变化会进入用户审批。你自己提出的改动用 ai_initiated（缺省）。',
@@ -1025,6 +1027,9 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
       additionalProperties: false,
     },
     async execute(input: Record<string, unknown>): Promise<{ content: string; isError?: boolean }> {
+      if (input.mode !== undefined && input.mode !== 'propose' && input.mode !== 'apply_if_authorized') {
+        return { content: 'mode 必须是 propose 或 apply_if_authorized；没有提交或修改。', isError: true };
+      }
       const assetId = typeof input.assetId === 'string' ? input.assetId.trim() : '';
       if (!safeId(assetId)) return { content: `不是合法的资产 id：${assetId || '(空)'}`, isError: true };
       const reasonOrError = requireReason(input.reason);
@@ -1112,7 +1117,7 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
         : touched.length === 1 && touched[0] === 'tags' && Array.isArray(fields.tags)
           ? fields.tags.join('、')
           : undefined;
-      const directUserEdit = input.origin === 'user_instruction'
+      const directUserEdit = input.mode !== 'propose' && input.origin === 'user_instruction'
         && opts.sourceMessageFromUser === true
         && typeof directFieldText === 'string'
         && classifyMemoryReplaceIntent(opts.taskText, directFieldText, true) === 'direct';
@@ -1129,6 +1134,9 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
       // 发审批卡片；这里保留"绝不静默生效"这道底线——提议建不出来时也宁可拒绝。
       const substantial = touched.filter((key) => (SUBSTANTIAL_FIELDS as readonly string[]).includes(key));
       const fieldsOutsideProposal = touched.filter((key) => !(SUBSTANTIAL_FIELDS as readonly string[]).includes(key));
+      if (input.mode === 'propose' && !substantial.length) {
+        return { content: '待审批提议需要正文、适用范围或标签等实质变化；没有提交或修改。', isError: true };
+      }
       if (origin !== 'user_instruction' && substantial.length) {
         if (fieldsOutsideProposal.length) {
           return blockedWriteReceipt(
@@ -1142,6 +1150,10 @@ function createEditAbilityAssetTool(opts: AssetStewardToolsOpts): AgentTool {
         // 只把**这次真正要改的**字段带进提议：提议的 payload 就是"确认后要写什么"。
         const proposalPayload: Record<string, unknown> = {};
         for (const key of substantial) proposalPayload[key] = fields[key];
+        if (typeof input.expectedVersion === 'string' && input.expectedVersion.trim()
+          && input.expectedVersion.trim() !== abilityAssetActiveVersion(asset)) {
+          return { content: 'version conflict：资产版本已变化，请重新读取后再提交；没有创建提议或修改正文。', isError: true };
+        }
         return proposeSubstantialChange(opts, {
           asset,
           assetId,

@@ -237,64 +237,7 @@ describe('session_import › extractor', () => {
   });
 });
 
-describe('session_import › asset-router (cognitions → Recall candidate pool)', () => {
-  it('routes five-type candidates with the full field set to matching suggestedType', async () => {
-    const { routeCognitions } = await import('../../../src/main/features/session_import/asset-router');
-    const recall = await import('../../../src/main/features/recall/candidate-service');
 
-    // A conversation id must be a safeId; use one materialize would produce.
-    const cid = 'imp-claude-abc123';
-    const counts = await routeCognitions(TEST_UID, 'claude', 'sess-1', cid, [
-      { text: '偏好 TypeScript', suggestedType: 'personal' },
-      { text: '项目发布日固定在周四', suggestedType: 'fact' },
-      {
-        text: '提交前必须过 lint',
-        note: '用户强调过两次',
-        suggestedType: 'rule',
-        value: '减少 CI 失败返工',
-        risk: 'low',
-        applicableWhen: ['提交代码前'],
-        forbiddenWhen: ['紧急热修'],
-      },
-      { text: 'PR 描述用三段式', suggestedType: 'template' },
-      { text: '支付回调用重试队列', suggestedType: 'skill_method' },
-    ]);
-    expect(counts).toEqual({ personal: 1, fact: 1, rule: 1, template: 1, skill_method: 1 });
-
-    const candidates = await recall.listRecallCandidates(TEST_UID);
-    const byType = (t: string) => candidates.filter((c: any) => c.suggestedType === t);
-    expect(byType('personal')[0].judgment).toBe('偏好 TypeScript');
-    expect(byType('fact')[0].judgment).toBe('项目发布日固定在周四');
-    expect(byType('rule')[0].judgment).toBe('提交前必须过 lint');
-    expect(byType('rule')[0].summary).toBe('用户强调过两次');
-    expect(byType('rule')[0].value).toBe('减少 CI 失败返工');
-    expect(byType('rule')[0].risk).toBe('low');
-    expect(byType('rule')[0].applicableWhen).toEqual(['提交代码前']);
-    expect(byType('rule')[0].forbiddenWhen).toEqual(['紧急热修']);
-    expect(byType('template')[0].judgment).toBe('PR 描述用三段式');
-    expect(byType('skill_method')[0].judgment).toBe('支付回调用重试队列');
-    // Evidence points at the materialized conversation.
-    expect(byType('personal')[0].sourceRefs[0].id).toBe(cid);
-    expect(byType('personal')[0].sourceRefs[0].kind).toBe('conversation');
-  });
-
-  it('is idempotent — same cognition from same session dedupes via captureKey', async () => {
-    const { routeCognitions } = await import('../../../src/main/features/session_import/asset-router');
-    const recall = await import('../../../src/main/features/recall/candidate-service');
-    const cid = 'imp-claude-dedup1';
-
-    await routeCognitions(TEST_UID, 'claude', 'sess-dup', cid, [
-      { text: '偏好深色主题', suggestedType: 'personal' },
-    ]);
-    await routeCognitions(TEST_UID, 'claude', 'sess-dup', cid, [
-      { text: '偏好深色主题', suggestedType: 'personal' },
-    ]);
-
-    const personal = (await recall.listRecallCandidates(TEST_UID))
-      .filter((c: any) => c.suggestedType === 'personal' && c.judgment === '偏好深色主题');
-    expect(personal.length).toBe(1);
-  });
-});
 
 describe('session_import › skill-import (Claude skills → skill library)', () => {
   function stageClaudeSkill(dirName: string, md: string, helpers: Record<string, string> = {}) {
@@ -434,10 +377,9 @@ describe('session_import › full pipeline (importClaudeSession)', () => {
     const after = await chats.getMessages(TEST_UID, res.conversationId!);
     expect(after[0].text).toContain('CI 缓存 key');
 
-    // Cognition landed in the candidate pool as a rule.
-    const rules = (await recall.listRecallCandidates(TEST_UID))
-      .filter((c: any) => c.suggestedType === 'rule');
-    expect(rules.some((c: any) => c.judgment === 'CI 必须绿灯才能合')).toBe(true);
+    // Import context is continuable, but it does not produce any cognition candidate.
+    expect(await recall.listRecallCandidates(TEST_UID)).toEqual([]);
+    expect(await (await import('../../../src/main/features/recall/asset-service')).listAbilityAssets(TEST_UID)).toEqual([]);
 
     // Cleanup staged file.
     fs.rmSync(filePath, { force: true });
@@ -509,7 +451,10 @@ describe('session_import › prefetch (read+extract cache)', () => {
     // The click: import must reuse the cached extraction, NOT call the model again.
     const res = await mod.importClaudeSession({ userId: TEST_UID, filePath });
     expect(res.ok).toBe(true);
-    expect(res.cognitions.rule).toBe(1);
+    expect(res.cognitions).toEqual({ personal: 0, fact: 0, rule: 0, template: 0, skill_method: 0 });
+    const recall = await import('../../../src/main/features/recall/candidate-service');
+    expect(await recall.listRecallCandidates(TEST_UID)).toEqual([]);
+    expect(await (await import('../../../src/main/features/recall/asset-service')).listAbilityAssets(TEST_UID)).toEqual([]);
     expect(extractCalls).toBe(1); // still 1 — the slow half was skipped.
 
     fs.rmSync(filePath, { force: true });

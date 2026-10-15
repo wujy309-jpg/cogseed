@@ -439,8 +439,10 @@ describe('projection card surfaces a drifted confirmed version', () => {
     expect(host.innerHTML).toContain('Revoke');
     expect(host.innerHTML).not.toContain('<details class="chat-recall-projection-details"');
     expect(host.innerHTML.match(/data-recall-projection-asset=/g)).toHaveLength(8);
-    // 反馈行与投影操作同在尾部（一条「检索 → 带入 → 反馈」线）。
-    expect(host.innerHTML).toContain('data-recall-feedback');
+    // 反馈行与投影操作同在尾部（一条「带入 → 使用 → 反馈」线）。
+    // 2026-10-03 待办#2：反馈移到已引用行内。纯带入（无引用）的消息不再
+    // 出现消息级反馈按钮——旧形态点了会被后端拒绝（无 citations），是死按钮。
+    expect(host.innerHTML).not.toContain('data-recall-feedback');
   });
 
   it('旧传输 sidecar 才隐藏 fallback 正文；最终回复挂卡不隐藏正文', async () => {

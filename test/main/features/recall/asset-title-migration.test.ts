@@ -1,3 +1,4 @@
+import { seedStoredAbilityAsset } from '../../../helpers/stored-ability-asset';
 import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -16,7 +17,7 @@ describe('legacy ability-asset title migration', () => {
   it('rewrites legacy English titles and gap judgments, leaving others untouched', async () => {
     const assets = await import('../../../../src/main/features/recall/asset-service');
     // Seed: one legacy lesson title, one legacy gap title+judgment, one fine.
-    const legacyLesson = await assets.createSystemAbilityAsset('user-m', {
+    const legacyLesson = await seedStoredAbilityAsset('user-m', {
       schemaVersion: 2, ownerId: 'user-m', id: 'aa-legacy-lesson-000000000001', candidateId: 'cand-legacy-lesson-1',
       title: 'Reusable experience lesson (requirement-level)', type: 'rule', scope: 'general',
       statement: '处理“N 字资料”类请求时，在交付开头注明实际字数。', evidenceRefs: [{ kind: 'conversation', id: 'c1' }],
@@ -24,7 +25,7 @@ describe('legacy ability-asset title migration', () => {
       status: 'active', maturity: 'seed', version: '1',
       createdAt: '2026-08-15T00:00:00.000Z', updatedAt: '2026-08-15T00:00:00.000Z',
     } as never, 'test');
-    const legacyGap = await assets.createSystemAbilityAsset('user-m', {
+    const legacyGap = await seedStoredAbilityAsset('user-m', {
       schemaVersion: 2, ownerId: 'user-m', id: 'aa-legacy-gap-00000000000001', candidateId: 'cand-legacy-gap-1',
       title: 'KSTAR rule gap candidate (requirement-level)', type: 'rule', scope: 'general',
       statement: 'For similar tasks, address this rule gap: 用户纠正格式要求后应清理旧文件。', evidenceRefs: [{ kind: 'conversation', id: 'c2' }],
@@ -32,7 +33,7 @@ describe('legacy ability-asset title migration', () => {
       status: 'active', maturity: 'seed', version: '1',
       createdAt: '2026-08-15T00:00:00.000Z', updatedAt: '2026-08-15T00:00:00.000Z',
     } as never, 'test');
-    const fine = await assets.createSystemAbilityAsset('user-m', {
+    const fine = await seedStoredAbilityAsset('user-m', {
       schemaVersion: 2, ownerId: 'user-m', id: 'aa-fine-0000000000000000000001', candidateId: 'cand-fine-1',
       title: '只读审查方法', type: 'skill_method', scope: 'review',
       statement: '该审查方法可复用。', evidenceRefs: [{ kind: 'conversation', id: 'c3' }],
@@ -59,7 +60,7 @@ describe('legacy ability-asset title migration', () => {
 
   it('status 过滤（2026-09-28 红队补齐口径）：paused 被改写+bump，deleted/revoked 终态原样', async () => {
     const assets = await import('../../../../src/main/features/recall/asset-service');
-    const seed = (id: string, status: string) => assets.createSystemAbilityAsset('user-m', {
+    const seed = (id: string, status: string) => seedStoredAbilityAsset('user-m', {
       schemaVersion: 2, ownerId: 'user-m', id, candidateId: `cand-${id}`,
       title: 'Reusable experience lesson (requirement-level)', type: 'rule', scope: 'general',
       statement: '正文。', evidenceRefs: [{ kind: 'conversation', id: 'c-status' }],
@@ -90,7 +91,7 @@ describe('legacy ability-asset title migration', () => {
     const assets = await import('../../../../src/main/features/recall/asset-service');
     const { fileEditLock } = await import('../../../../src/main/util/locks');
     const { recallJsonRecordPath } = await import('../../../../src/main/features/recall/paths');
-    const seeded = await assets.createSystemAbilityAsset('user-m', {
+    const seeded = await seedStoredAbilityAsset('user-m', {
       schemaVersion: 2, ownerId: 'user-m', id: 'aa-title-race-000000000001', candidateId: 'cand-title-race-1',
       title: 'Reusable experience lesson (requirement-level)', type: 'rule', scope: 'general',
       statement: '正文。', evidenceRefs: [{ kind: 'conversation', id: 'c-race' }],

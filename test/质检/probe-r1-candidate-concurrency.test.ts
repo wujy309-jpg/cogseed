@@ -122,12 +122,13 @@ describe('probe r1 › 候选池并发双写（待议项已 skip）', () => {
   });
 
   // 保留 active（串行对照组）：不依赖漏洞，锁定串行正确路径；P-r1-1 修复后应持续绿。
-  it('对照组（串行）：逐条确认后池清空、无复活——证明上面是并发独有', async () => {
+  it('对照组：旧确认writer已退役，读取保留原池且不写记忆', async () => {
     await seedPool(['cand-e', 'cand-f']);
     const cands = await loadCands();
-    expect((await cands.confirmCandidate(UID, 'cand-e')).ok).toBe(true);
-    expect((await cands.confirmCandidate(UID, 'cand-f')).ok).toBe(true);
-    const after = await cands.listCandidates(UID);
-    expect(after.candidate_updates.length).toBe(0);
+    const before = fs.readFileSync(candidatesMd(), 'utf8');
+    expect(cands).not.toHaveProperty('confirmCandidate');
+    expect((await cands.listCandidates(UID)).candidate_updates.map(c => c.candidate_id)).toEqual(['cand-e', 'cand-f']);
+    expect(fs.readFileSync(candidatesMd(), 'utf8')).toBe(before);
+    expect(fs.existsSync(userMd())).toBe(false);
   });
 });

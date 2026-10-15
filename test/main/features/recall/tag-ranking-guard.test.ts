@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -95,9 +96,12 @@ describe('反漂移源码级断言（T026）', () => {
       candidate.indexOf('export interface RecallAbilityAssetRecord'),
       candidate.indexOf('\n}', candidate.indexOf('export interface RecallAbilityAssetRecord')),
     );
-    expect(recordIface).not.toContain('category');
-    expect(read('features/recall/asset-service.ts')).not.toContain('category');
-    expect(read('features/recall/formal-assets/types.ts')).not.toContain('category');
+    // Guard the retired tag alias as a field, not substrings in import names.
+    // contentCategory is separate browsing metadata and must not alias tags.
+    const retiredCategoryField = /(?:['"]category['"]|\bcategory\s*\??\s*:|\bfields\.category\b)/;
+    expect(recordIface).not.toMatch(retiredCategoryField);
+    expect(read('features/recall/asset-service.ts')).not.toMatch(retiredCategoryField);
+    expect(read('features/recall/formal-assets/types.ts')).not.toMatch(retiredCategoryField);
     // 收编（category → 并入 tags 后从字段名上消失）只在 asset-steward-tools 一处。
     expect(count(read('model/core-agent/asset-steward-tools.ts'), 'delete fields.category')).toBe(1);
   });
@@ -163,22 +167,28 @@ describe('反漂移源码级断言（T026）', () => {
     expect(combined).toBe(1);
   });
 
-  it('⑥ tool-catalog.ts 工具名字集合保持受控基线（2026-10-03 随本体查询 72→73）', async () => {
+  it('⑥ tool-catalog.ts 工具名字集合按已授权的本体查询能力更新', async () => {
     const { TOOL_CATALOG } = await import('../../../../src/main/model/core-agent/tool-catalog');
+    // 2026-10-12：仅移除用户授权退休的propose_ability_asset，精确集合守卫继续冻结其余工具。
     const frozen = [
       'add_custom_connector', 'archive_ability_asset', 'ask_materials', 'bash', 'briefing_get', 'briefing_schedule',
-      'call_connector_tool', 'chat_read', 'chat_search', 'create_artifact', 'create_docx', 'create_pptx', 'create_xlsx',
+      'call_connector_tool', 'chat_read', 'chat_search', 'cognition_ontology_query', 'create_artifact', 'create_docx', 'create_pptx', 'create_xlsx',
       'cross_session_memory', 'delete_ability_asset', 'delete_file', 'edit_ability_asset', 'edit_file', 'edit_office',
       'expense_case_status', 'expense_configuration_status', 'expense_precheck_case', 'feishu_dashboard', 'generate_image',
       'grep_files', 'html_to_pdf', 'interactive_cli_close', 'interactive_cli_read', 'interactive_cli_send',
       'interactive_cli_start', 'kb_list', 'kb_read', 'kb_search', 'list_ability_assets', 'list_asset_change_proposals',
-      'list_connector_tools', 'list_files', 'list_ontology_graph', 'list_task_experiences', 'manage_execution_plan', 'markdown_to_pdf',
+      'list_connector_tools', 'list_files', 'list_task_experiences', 'manage_execution_plan', 'markdown_to_pdf',
       'material_list', 'material_search', 'merge_ability_assets', 'messaging_list_targets', 'messaging_send',
-      'messaging_send_file', 'metacognition', 'ocr_file', 'office_read', 'office_render', 'ontology_query', 'p3394_peers',
-      'p3394_send', 'p3394_sessions', 'personal_ontology_fields', 'project_instructions', 'publish_outputs',
+      'messaging_send_file', 'metacognition', 'ocr_file', 'office_read', 'office_render', 'ontology_query',
+      // 2026-10-07：本体轴缺口对话回填（438 P2；见 cognition-kernel-tools.ts）。
+      'p3394_peers',
+      'p3394_send', 'p3394_sessions',
+      // 2026-10-02：个人字段取件/记住（对话内问答；见 cognition-kernel-tools.ts）。
+      'personal_fields_check',
+      'personal_ontology_fields', 'project_instructions', 'publish_outputs',
       'read_ability_asset', 'read_file', 'read_task_experience',
-      'research_rerank', 'restore_ability_asset', 'rollback_ability_asset', 'search_ability_assets', 'search_files',
-      'stat_file', 'tool_result_read_chunk', 'tool_result_search', 'touchpoint_list', 'web_fetch', 'web_search',
+      'report_ability_asset_usage', 'research_rerank', 'restore_ability_asset', 'rollback_ability_asset', 'search_ability_assets', 'search_files',
+      'stat_file', 'tool_result_read_chunk', 'tool_result_search', 'touchpoint_list', 'transcript_corrections_query', 'web_fetch', 'web_search',
       'write_file',
     ];
     expect(TOOL_CATALOG.map((entry) => entry.name).sort()).toEqual(frozen);
@@ -215,7 +225,7 @@ afterEach(() => {
 
 async function seedOne() {
   const candidates = await import('../../../../src/main/features/recall/candidate-service');
-  const promoted = await candidates.saveRecallCandidate(TEST_UID, {
+  const promoted = await createNightlyCandidateFixture(TEST_UID, {
     judgment: '排序守卫用资产：没有明确场景关联时 scene 因子缺席。',
     summary: '守卫用排序资产',
     suggestedType: 'rule',

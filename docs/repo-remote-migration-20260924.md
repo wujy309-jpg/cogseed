@@ -260,7 +260,7 @@ origin/develop 相对 public/develop 领先/落后：领先 N / 落后 M（`git 
 
 | 项 | 实测值 |
 | --- | --- |
-| 本机路径 | `/Users/sudai/Documents/CogSeed`（另有工作树 `.worktrees/perf-response-output`） |
+| 本机路径 | `<仓库目录>`（另有工作树 `.worktrees/perf-response-output`） |
 | 原远端 | `git@github.com:bonc-ai/cogseed.git`（SSH，fetch+push） |
 | 私仓可达性 | SSH ✓（22 与 443 端点均可读）；HTTPS ✗ `Empty reply from server` |
 | 实际生效的 origin | `ssh://git@ssh.github.com:443/bonc-ai/cogseed-internal.git`（public 保留为公仓只读） |

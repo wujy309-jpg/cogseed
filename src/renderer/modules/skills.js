@@ -432,24 +432,11 @@ async function _refreshPackagesCache() {
   }
 }
 
-// Dev-only: agent-private (`ownerAgent`) skills are hidden from the normal
-// list. In dev mode fetch them and merge into the cache (deduped by id+source)
-// so the panel can show a separate inspection section grouped by owning agent.
-// No-op in production — the IPC is dev-gated and returns nothing there.
-async function _mergeAgentPrivateSkills() {
-  if (typeof isDevMode !== 'function' || !false || !Array.isArray(_skillsCache)) return;
-  try {
-    const res = await window.cogseed.invoke('skills.listPrivate');
-    const priv = (res && res.ok && Array.isArray(res.skills)) ? res.skills : [];
-    if (!priv.length) return;
-    const key = (s) => `${s.id} ${s.source}`;
-    const seen = new Set(_skillsCache.map(key));
-    const merged = priv
-      .map((s) => ({ ...s, source: _skillSource(s.source) }))
-      .filter((s) => !seen.has(key(s)));
-    if (merged.length) _skillsCache = _skillsCache.concat(merged);
-  } catch { /* dev-only tab; ignore */ }
-}
+// P-r3-41（2026-10-01 拍板「删死函数+调用点」）：_mergeAgentPrivateSkills 已删。
+// 它的守卫 `typeof isDevMode !== 'function' || !false || ...` 中 `!false` 恒真，
+// 函数自初始导入即死代码；其调用的 `skills.listPrivate` 通道主进程从未注册
+// （渲染层对未注册通道的 invoke 只会静默拿空结果）。dev 检查区如需恢复，
+// 须同时修活守卫并在主进程注册 dev-gated 处理器——两向不可只做半截。
 
 async function loadSkills(forceRefresh) {
   if (_skillsLoadInFlight) {
@@ -483,7 +470,6 @@ async function loadSkills(forceRefresh) {
           if (byName) return byName;
           return String(a.id || '').localeCompare(String(b.id || ''), undefined, { numeric: true, sensitivity: 'base' });
         });
-        await _mergeAgentPrivateSkills();
         renderSkillsList(_skillsCache);
       }
     } catch (e) {
@@ -729,8 +715,10 @@ function renderSkillsGrid(skills) {
     `;
   };
   // Dev-only inspection sections — one per owning agent, reusing the same card
-  // and section markup. Empty (so absent) in production: the source IPC is
-  // dev-gated, so `groups.private` is always empty there.
+  // and section markup. Defensive-only since P-r3-41 removed the (never
+  // reachable) private-skill merge: `listSkills` excludes `ownerAgent` entries,
+  // so `groups.private` stays empty; the branch keeps a future dev-gated
+  // listing from leaking private skills into the custom group.
   let privateHtml = '';
   if (groups.private.length) {
     const baseLabel = t('skills.agent_private_group');

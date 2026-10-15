@@ -150,6 +150,8 @@ function renderFilesResult(snapshot: {
   vm.runInContext(buttonSource, context);
   const policySource = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/file-operation-policy.js'), 'utf8');
   vm.runInContext(policySource, context);
+  const stripSource = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/conversation-cognition-strip.js'), 'utf8');
+  vm.runInContext(stripSource, context);
   const source = fs.readFileSync(path.join(__dirname, '../../src/renderer/modules/conversation-info.js'), 'utf8');
   vm.runInContext(source, context);
   context.window.ConversationInfo.bind('c1');

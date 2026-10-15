@@ -1,3 +1,4 @@
+import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 /**
  * 认知资产主链 E2E：candidate → 用户确认 → 正式资产版本 → Runtime 真实消费。
  *
@@ -66,7 +67,7 @@ async function bindProjection(projectionId: string, messageId: string) {
 /** 实机分布里最常见的起点：证据较弱、等用户确认的候选。 */
 async function weakCandidateToAsset() {
   const { candidates, assets, caps } = await mods();
-  const saved = await candidates.saveRecallCandidate(USER, {
+  const saved = await createNightlyCandidateFixture(USER, {
     judgment: '架构决策要在改运行时边界之前写进决策日志',
     value: '让后续评审不必重建上下文',
     summary: '改边界前先记决策',

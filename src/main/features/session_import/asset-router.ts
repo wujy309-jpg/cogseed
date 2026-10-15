@@ -1,55 +1,16 @@
-/**
- * Asset router + import orchestrator (stage 4, and the entry that ties
- * stages 1-3 together).
- *
- * Two responsibilities:
- *
- *   1. `importClaudeSession` — the full single-session pipeline:
- *        read transcript (stage 1) → normalize → extract/compress (stage 2)
- *        → materialize into a continuable conversation (stage 3)
- *        → route extracted cognitions into Recall's candidate pool (stage 4).
- *
- *   2. `routeCognitions` — the stage-4 mapping itself. The extracted
- *      candidates carry a `suggestedType` in the five AbilityAssetType values
- *      (personal | fact | rule | template | skill_method) — the SAME extraction rule
- *      the recall capture pipeline ("沉淀活动 → 从历史会话沉淀") uses — plus
- *      the full candidate fields (value / risk / suggestedAction /
- *      applicableWhen / forbiddenWhen). Each becomes a *pending* candidate the
- *      user later confirms in the Recall review page — imported entities (the
- *      conversation) are direct, but model-inferred cognitions always go
- *      through human confirmation.
- *
- * ## Recall isolation boundary
- *
- * This module is the ONLY place the session-import feature touches Recall, and
- * it touches it through exactly one public function: `saveRecallCandidate`.
- * It never imports Recall's internal stores/services. If a teammate reshapes
- * Recall's internals, nothing here breaks; only a change to
- * `SaveRecallCandidateInput`'s shape would, and that is a single call site to
- * update.
- *
- * Idempotency: each cognition gets a deterministic `captureKey` derived from
- * (source, sourceId, type, text), so re-importing the same session does not
- * create duplicate candidates — `saveRecallCandidate` returns the existing one.
- */
+/** Import transcripts and materialize continuable conversations. Cognition
+ * candidates are formed only by the independent nightly conversation pipeline. */
 
-import { createHash } from 'node:crypto';
 import { basename } from 'node:path';
-
-import { saveRecallCandidate, type RecallCandidateAction, type RecallCandidateRisk } from '../recall/candidate-service';
-import { normalizeAssetScopeValue } from '../recall/scope-policy';
 import { readClaudeSessionTranscript } from '../local_agents/claude_sessions';
 import { listClaudeDesktopSessions } from '../local_agents/claude_desktop_sessions';
 import { parseClaudeTranscript, parseWorkbuddyTranscript, type NormalizedTranscript } from './transcript-normalize';
 import { readWorkbuddySessionTranscript } from '../local_agents/workbuddy_sessions';
-import { extractSession, type CognitionCandidate, type EmittedCognitionType, type ExtractionResult } from './extractor';
+import { extractSession, type ExtractionResult } from './extractor';
 import { materializeSession, type MaterializeResult } from './materialize';
 import { createLogger } from '../../logger';
 
 const log = createLogger('session-import:asset-router');
-
-/** Recall candidate types this feature emits (subset of AbilityAssetType). */
-type EmittedType = EmittedCognitionType;
 
 export interface RoutedCognitionCounts {
   personal: number;
@@ -319,82 +280,6 @@ export async function prefetchImportSession(input: PrefetchSessionInput): Promis
   }
 }
 
-/** Deterministic capture key so the same cognition from the same imported
- *  session dedupes on re-import. Must pass `safeId` (hex is safe). */
-function captureKeyFor(source: string, sourceId: string, type: EmittedType, text: string): string {
-  const hash = createHash('sha256').update(`${source}:${sourceId}:${type}:${text}`).digest('hex').slice(0, 32);
-  return `simport-${hash}`;
-}
-
-/** Valid suggestedAction / risk values (the union types SaveRecallCandidateInput
- *  accepts). Model output is untrusted, so out-of-range values are dropped
- *  rather than asserted through. */
-const CANDIDATE_ACTIONS = new Set<RecallCandidateAction>(['create', 'update', 'limit_scope', 'pause', 'keep_current', 'reject']);
-const CANDIDATE_RISKS = new Set<RecallCandidateRisk>(['low', 'medium', 'high']);
-
-/** Route one cognition candidate into the candidate pool, carrying the full
- *  field set the capture pipeline produces (value / risk / suggestedAction /
- *  applicableWhen / forbiddenWhen), so an imported candidate and a
- *  capture-derived candidate are indistinguishable downstream. Best-effort:
- *  one bad item never aborts the batch. */
-async function routeCandidate(
-  userId: string,
-  candidate: CognitionCandidate,
-  conversationId: string,
-  source: string,
-  sourceId: string,
-): Promise<number> {
-  const text = candidate.text.trim();
-  if (!text) return 0;
-  const action = candidate.suggestedAction?.trim() as RecallCandidateAction | undefined;
-  const risk = candidate.risk?.trim() as RecallCandidateRisk | undefined;
-  try {
-    await saveRecallCandidate(userId, {
-      judgment: text,
-      value: candidate.value?.trim() || undefined,
-      summary: candidate.note?.trim() || undefined,
-      uncertainty: candidate.uncertainty?.trim() || undefined,
-      suggestedType: candidate.suggestedType,
-      // scope 归一（A 轨道）：历史缺省 'personal' 是自由文本词形 → 'general'；
-      // 有值时尽力归一，归不了的保留原文。
-      suggestedScope: (candidate.suggestedScope?.trim())
-        ? (normalizeAssetScopeValue(candidate.suggestedScope) ?? candidate.suggestedScope.trim())
-        : 'general',
-      ...(candidate.applicableWhen ? { applicableWhen: candidate.applicableWhen } : {}),
-      ...(candidate.forbiddenWhen ? { forbiddenWhen: candidate.forbiddenWhen } : {}),
-      ...(action && CANDIDATE_ACTIONS.has(action) ? { suggestedAction: action } : {}),
-      ...(risk && CANDIDATE_RISKS.has(risk) ? { risk } : {}),
-      // Evidence points at the materialized conversation (kind:'conversation',
-      // subtype defaults to 'session'). Non-empty sourceRefs is required.
-      sourceRefs: [{ kind: 'conversation', id: conversationId, subtype: 'session' }],
-      captureKey: captureKeyFor(source, sourceId, candidate.suggestedType, text),
-    });
-    return 1;
-  } catch (err) {
-    log.warn('failed to route cognition candidate', { type: candidate.suggestedType, error: String(err) });
-    return 0;
-  }
-}
-
-/**
- * Route all extracted cognition candidates into the Recall candidate pool.
- * `conversationId` is the materialized conversation used as evidence.
- */
-export async function routeCognitions(
-  userId: string,
-  source: string,
-  sourceId: string,
-  conversationId: string,
-  candidates: CognitionCandidate[],
-): Promise<RoutedCognitionCounts> {
-  const counts: RoutedCognitionCounts = { personal: 0, fact: 0, rule: 0, template: 0, skill_method: 0 };
-  await Promise.all(candidates.map(async (candidate) => {
-    const written = await routeCandidate(userId, candidate, conversationId, source, sourceId);
-    if (written > 0) counts[candidate.suggestedType] += 1;
-  }));
-  return counts;
-}
-
 export interface ImportClaudeSessionInput {
   userId: string;
   /** jsonl path from `listClaudeSessions` (validated read-only by the reader). */
@@ -405,7 +290,7 @@ export interface ImportClaudeSessionInput {
 
 /**
  * Full pipeline for one Claude Code session:
- * read → normalize → extract → materialize → route cognitions.
+ * read → normalize → extract → materialize.
  *
  * Always returns a result (never throws for expected failures like an
  * unreadable transcript); `ok:false` + `reason` describes what degraded.
@@ -414,7 +299,7 @@ export interface ImportClaudeSessionInput {
  */
 /**
  * The WRITE half: materialize the prepared transcript into a continuable
- * conversation and route its cognitions into Recall. Shared by both the Claude
+ * conversation. Shared by both the Claude
  * and WorkBuddy import entries — the only per-source difference is upstream, in
  * how the transcript was read. Fast (no model call); the slow work already
  * happened in `prepare*`.
@@ -436,17 +321,8 @@ async function commitPreparedSession(
     extraction,
   });
 
-  // Route cognitions only when extraction produced usable structured output.
-  let cognitions = zeroCounts;
-  if (!extraction.degraded) {
-    cognitions = await routeCognitions(
-      userId,
-      source,
-      transcript.sourceId,
-      materialize.conversationId,
-      extraction.candidates,
-    );
-  }
+  // Import carries conversation context only; it cannot create cognition candidates.
+  const cognitions = zeroCounts;
 
   log.info(
     `imported ${source} session=${transcript.sourceId} cid=${materialize.conversationId} ` +
@@ -509,7 +385,7 @@ export interface ImportWorkbuddySessionInput {
 
 /**
  * Full pipeline for one WorkBuddy session:
- * read → normalize → extract → materialize → route cognitions.
+ * read → normalize → extract → materialize.
  *
  * Identical stages to `importClaudeSession`; only the read+parse front end
  * differs (WorkBuddy's top-level role/content jsonl shape). Always returns a

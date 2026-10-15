@@ -6,7 +6,7 @@ Prompt context only: keep hard constraints, short rationale, and traps already h
 
 CogSeed desktop companion agent (Electron). Main is TypeScript under `src/main`, renderer is vanilla HTML/CSS/JS under `src/renderer`.
 
-- Quick gates: `npm run typecheck` (tsc --noEmit), `npm test` (js + resources), `npm run check:line-endings` (CRLF/LF 混用；已有 12 个历史文件冻结在 `scripts/line-endings-baseline.json`，只对**新增**违规失败), `./run.sh` to start.
+- Available checks, not an automatic checklist: `npm run typecheck` (tsc --noEmit), targeted `npm run test:js -- <test paths>`, full `npm test` (js + resources). Start with `./run.sh`. Every verification run must first pass the necessity and cost assessment below. Line-ending diagnostics are available through `npm run check:line-endings`; existing violations are frozen in `scripts/line-endings-baseline.json`.
 
 ## Boundary
 
@@ -189,15 +189,18 @@ Attachments:
 
 ## Tests And Dev Workflow
 
+- 遵循上级 `AGENTS.md` 的“测试的必要性与成本”。运行任何测试或验收前，先说明具体问题、已有证据缺口、结果的实际用途、最小范围和预计成本，判断这次是否值得运行；禁止随意跑测试。
+- 定向验证优先。只有具体跨模块风险无法由定向验证覆盖时才跑全量；已有有效结果且没有新增改动、失败或明确未解决风险时，停止验证并交付。禁止反复全量回归、无诊断重跑取绿或代理重复验证。
+- 用户叫停测试后，停止现有和排队任务；不得借目标模式自动续跑测试、类型检查、模型调用或界面验收，等待用户重新明确授权。
 - Start the app with `./run.sh`.
-- Run tests with `npm test`, not `npx vitest`; the test script manages sqlite ABI swapping and rollback.
+- When testing is justified, use the repository scripts (`npm run test:js -- <test paths>` for a targeted run, `npm test` only for a justified full run), not `npx vitest`; they manage sqlite ABI swapping and rollback.
 - If sqlite ABI is broken, run `npm run rebuild:sqlite:electron`.
-- After merging develop into a feature branch, re-verify renderer↔main IPC contracts and run `npm run typecheck` — merges have silently dropped IPC channels before.
+- After merging develop into a feature branch, assess the changed renderer↔main IPC and type boundaries before selecting justified checks; merges have silently dropped IPC channels before, but a merge alone does not authorize an automatic full regression run.
 - Tests should cover business invariants, recovery paths, concurrency, cross-layer contracts, and text-processing traps.
 - Do not test typing-only wrappers, trivial getters, happy-path-only cases, or implementation internals.
 - LLM-output parsers/sanitizers need fixture sets for both accepted real shapes and rejected look-alikes.
 - Pure renderer functions may expose a guarded CommonJS bridge for tests; DOM/i18n/IPC code should not.
-- After completing changes to this worktree, restart the running app for verification instead of asking the user to do it manually: run `scripts/restart-cogseed.sh` (stops only this worktree's runtime and relaunches via `./run.sh` in the background; other variants are untouched). Confirm startup via the runtime data logs and the launcher log `/tmp/cogseed-agent-cogseed-run.log`, then run the real-environment verification.
+- When real-environment verification is justified and testing has not been stopped by the user, restart this worktree's app with `scripts/restart-cogseed.sh` instead of asking the user to do it manually (other variants are untouched). Confirm startup from the runtime and launcher logs, then perform only the assessed verification scope; completing a code change alone does not justify another acceptance run.
 
 ## Version Control
 

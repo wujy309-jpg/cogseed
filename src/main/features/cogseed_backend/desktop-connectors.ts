@@ -11,7 +11,7 @@ import type { RuntimeRunRequest } from '../cogseed_runtime/protocol';
 import type { CogSeedHostToolResult } from './office-adapter';
 
 export async function runDesktopConnectorTool(userId: string, name: string, input: Record<string, unknown>,
-  request: RuntimeRunRequest, signal?: AbortSignal | null): Promise<CogSeedHostToolResult> {
+  request: RuntimeRunRequest, signal?: AbortSignal | null, beforeDispatch?: () => Promise<void>): Promise<CogSeedHostToolResult> {
   if (request.user_id !== userId || request.tool_policy?.connectors !== 'enabled') {
     return { content: '[E_RUNTIME_CONNECTOR_DISABLED] Connectors are disabled', isError: true };
   }
@@ -41,10 +41,10 @@ export async function runDesktopConnectorTool(userId: string, name: string, inpu
   if (isDesktop(id)) {
     const connector = visible.find(v => v.instance.id === id);
     if (!connector?.tools.some(t => t.name === toolName)) return { content: '[E_RUNTIME_CONNECTOR_SCOPE] Connector tool is unavailable', isError: true };
-    const result = await callTool(userId, id, toolName, args, { signal: signal ?? undefined });
+    const result = await callTool(userId, id, toolName, args, { signal: signal ?? undefined, ...(beforeDispatch ? { beforeDispatch } : {}) });
     return { content: stringifyMcpResult(result), ...((result as { isError?: boolean })?.isError ? { isError: true } : {}) };
   }
   if (request.agent_id) return { content: '[E_RUNTIME_CONNECTOR_SCOPE] Connector tool is unavailable', isError: true };
-  const result = await cogseedConnectorManager.callTool(userId, id, toolName, args, { signal: signal ?? undefined });
+  const result = await cogseedConnectorManager.callTool(userId, id, toolName, args, { signal: signal ?? undefined, ...(beforeDispatch ? { beforeDispatch } : {}) });
   return { content: stringifyMcpResult(result), ...((result as { isError?: boolean })?.isError ? { isError: true } : {}) };
 }

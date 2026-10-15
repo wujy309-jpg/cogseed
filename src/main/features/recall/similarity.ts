@@ -1,5 +1,6 @@
 import { createLogger } from '../../logger';
-import { embedQuery } from '../kb_embed';
+import { createHash } from 'node:crypto';
+import { embedQuery, embedTexts } from '../kb_embed';
 
 /**
  * similarity.ts — shared semantic-similarity utilities for recall dedup
@@ -27,7 +28,7 @@ const EMBED_CACHE_MAX = 500;
 const embedCache = new Map<string, { vector: number[]; at: number }>();
 
 function embedCacheKey(userId: string, text: string): string {
-  return `${userId}\n${text.slice(0, 2_000)}`;
+  return `${userId}\n${createHash('sha256').update(text).digest('hex')}`;
 }
 
 function cacheGet(key: string): number[] | undefined {
@@ -66,7 +67,30 @@ export async function embedForDedup(userId: string, text: string): Promise<numbe
   const cached = cacheGet(key);
   if (cached) return cached;
   try {
-    const vector = await embedQuery(text.slice(0, 2_000));
+    // The installed BGE tokenizer truncates at 512 tokens. Reuse the KB's
+    // established 400-character, overlapping chunks instead of sending one
+    // silently truncated document. Short texts keep their original embedding.
+    // One batched request covers the whole long body, including its last clause.
+    let vector: number[];
+    if (text.length <= 400) vector = await embedQuery(text);
+    else {
+      const { chunkPlainText } = await import('../../util/file_to_chunks');
+      const chunks = chunkPlainText(text).map(chunk => chunk.content);
+      const vectors = await embedTexts(chunks);
+      const dimensions = vectors[0]?.length;
+      if (!dimensions || vectors.length !== chunks.length || vectors.some(value => value.length !== dimensions
+        || value.some(component => !Number.isFinite(component)))) throw new Error('incomplete dedup embedding');
+      const combined = new Array<number>(dimensions).fill(0);
+      for (const [index, value] of vectors.entries()) {
+        const norm = Math.sqrt(value.reduce((sum, component) => sum + component * component, 0));
+        if (!norm) throw new Error('empty dedup embedding');
+        const weight = chunks[index].length;
+        for (let i = 0; i < dimensions; i++) combined[i] += value[i] / norm * weight;
+      }
+      const norm = Math.sqrt(combined.reduce((sum, component) => sum + component * component, 0));
+      if (!norm) throw new Error('empty combined dedup embedding');
+      vector = combined.map(component => component / norm);
+    }
     cacheSet(key, vector);
     return vector;
   } catch (error) {
