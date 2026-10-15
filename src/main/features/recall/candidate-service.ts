@@ -5,7 +5,6 @@ import { evaluateNightlyAutomaticApproval, NightlyAutomaticApprovalHeldError, re
 import { requireContentCategory, readContentCategory, type CognitionContentCategory, type StoredCognitionContentCategory } from './content-category';
 import type { AutomaticCandidateReview } from './automatic-review-history';
 import { CaptureFormationSourceUnavailableError, normalizeCaptureProvenance, verifyCaptureProvenanceForWrite, verifyCaptureProvenanceForPromotion, type RecallCaptureProvenance } from './capture-provenance';
-import { unifiedCognitionRecordIds } from '../cognition_bridge';
 import * as fs from 'node:fs/promises';
 import { describeRoleTemplateFieldRef } from '../personal_ontology_contract';
 import * as path from 'node:path';
@@ -24,7 +23,7 @@ import { hasReviewableCandidateEvidence } from './candidate-evidence';
 import { bumpRecallCaptureStats } from './capture-stats';
 import { notifyCognitionWrite } from './store-events';
 import {
-  readRecallJsonRecord,
+  createRecallCollectionReader, readRecallJsonRecord,
   updateRecallJsonRecord,
   writeRecallJsonRecord,
 } from './store';
@@ -1134,7 +1133,8 @@ export async function listRecallCandidates(userId: string): Promise<RecallCandid
   await migrateCandidateContentFormat(userId);
   await retireUserDeferredCandidates(userId);
   let names: string[];
-  const unifiedIds = unifiedCognitionRecordIds(userId, 'candidates');
+  const reader = createRecallCollectionReader(userId, 'candidates');
+  const unifiedIds = reader.ids;
   try { names = unifiedIds ? unifiedIds.map(id => `${id}.json`) : await fs.readdir(candidateDirectory(userId)); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
@@ -1153,7 +1153,7 @@ export async function listRecallCandidates(userId: string): Promise<RecallCandid
   // 照旧上抛：那种情况下静默少几条，等于把磁盘问题伪装成"候选变少了"。
   const reads = await Promise.all(ids.map(async (id) => {
     try {
-      return { id, record: await readRecallJsonRecord(userId, 'candidates', id) };
+      return { id, record: await reader.read(id) };
     } catch (error) {
       if (typeof (error as NodeJS.ErrnoException).code === 'string') throw error;
       return { id, error: error as Error };

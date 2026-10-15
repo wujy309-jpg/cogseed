@@ -1,7 +1,7 @@
 import { requireContentCategory, readContentCategory, type CognitionContentCategory } from './content-category';
 import { verifyNightlyAssetCreation } from './formation-creation-gate';
 import { attachStandingPreferenceAuthority, readStandingPreferenceAuthorityBaseline, withHumanStandingPreferenceDetailsSave } from './standing-preference-authority';
-import { unifiedCognitionRecordIds, withCognitionTransition, persistCognitionSource } from '../cognition_bridge';
+import { withCognitionTransition, persistCognitionSource } from '../cognition_bridge';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -10,7 +10,7 @@ import { safeId, writeJson } from '../../storage';
 import { recallJsonlPath, recallJsonRecordPath } from './paths';
 import { normalizeCognitionSourceRefs, type CognitionSourceRef } from './source-service';
 import {
-  appendRecallJsonlRecord, listRecallJsonlRecords, readRecallJsonRecord,
+  appendRecallJsonlRecord, listRecallJsonlRecords, createRecallCollectionReader, readRecallJsonRecord,
   removeRecallJsonlStream, removeRecallJsonlRecords, updateRecallJsonRecord,
 } from './store';
 import type { RecallJsonRecord } from './types';
@@ -788,7 +788,8 @@ async function reconcilePersonalProfileProjection(
 
 export async function listAbilityAssets(userId: string): Promise<RecallAbilityAssetRecord[]> {
   let names: string[];
-  const unifiedIds = unifiedCognitionRecordIds(userId, 'ability-assets');
+  const reader = createRecallCollectionReader(userId, 'ability-assets');
+  const unifiedIds = reader.ids;
   try { names = unifiedIds ? unifiedIds.map(id => `${id}.json`) : await fs.readdir(assetsDirectory(userId)); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
@@ -806,7 +807,7 @@ export async function listAbilityAssets(userId: string): Promise<RecallAbilityAs
   // 照旧上抛：那种情况下静默少几条，等于把磁盘问题伪装成「资产变少了」。
   const reads = await Promise.all(ids.map(async (id) => {
     try {
-      return { id, record: await readRecallJsonRecord(userId, 'ability-assets', id) };
+      return { id, record: await reader.read(id) };
     } catch (error) {
       if (typeof (error as NodeJS.ErrnoException).code === 'string') throw error;
       return { id, error: error as Error };
