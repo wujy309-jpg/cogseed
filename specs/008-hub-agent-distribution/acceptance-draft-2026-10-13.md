@@ -34,8 +34,8 @@
 
 | 项 | 结果 |
 |---|---|
-| Agent 线联调 36 项（嘉宇脚本，本机独立复现，跑了两轮） | 36/36 通过 |
-| 能力侧联调 53 项 | 53/53 通过 |
+| Agent 线联调 36 项（嘉宇脚本，本机独立复现，跑了两轮） | 36/36 通过 —— **已被第六节 #35 取代**：该结果（2026-10-13）早于 Hub 2026-10-14 按裁定 `DEC-HUB-OPEN3-ALIGN-001` 清空内置能力清单，对当前两端配置不再成立 |
+| 能力侧联调 53 项 | 53/53 通过（脚本已扩到 60 项，见第六节 #36） |
 
 ## 三、自动化
 
@@ -71,6 +71,8 @@
 **待 Hub 侧处理（已核对 Hub 代码）：**
 - `GET /marketplace/contributions/mine` 仍是 Skill 一轮的 C-04 实现：条目**没有 `content_type`**，`?content_type=` 参数被**忽略**（本机实测返回 200、内容不变；此前写的“返回 400”不准确，已更正）；并且只聚合能力侧内容，已接受的 Agent 贡献显示为 `content_id: null`。后果：客户端按类型筛选时，条目缺类型会被当作 Skill。本机已做出补丁（2026-10-13，未合入 Hub）：条目带 `content_type`、聚合 Agent 内容与版本、支持 `?content_type=skill|agent`（其它值 400）。
 - `skill_list` 缺省应视为空数组（与协议"可选"一致）。
+- **存储根漂移（2026-10-15 发现）**：`scripts/local-dev.mjs` 未固定 `HUB_SKILL_STORAGE_DIR`（走默认 `<hub>/media/marketplace`），而 README 的手工启动用的是 `~/Library/Caches/cogseed-hub-joint/media`；docker postgres 跨重启保留，于是同一套 DB 换个启动方式就重现「DB 有行、盘上无字节」的半发布状态——读不出发布物的行被目录丢弃，内容在客户端"消失"。建议固定存储根，或在启动时把解析不到的引用报出来而不是静默跳过。
+- **目录 `total` 语义（2026-10-15 发现）**：`src/features/agents/marketplace.ts` 的 `listPublishedAgentCatalogRows` 返回 `total = base.length`，把被 `if (!facts) continue` 丢弃的行也算进去；对外表现为 `total=3` 而 `list=1`，客户端无法翻页拿到其余内容。要么把丢弃行排除出 `total`，要么给降级标记。
 
 **新发现（影响本期目标）：**
 - **平台预置的 58 个技能目前不在 Hub 上，引用它们的 Agent 会被 Hub 拒绝。** 要实现"创建 Agent 时引用平台自带技能"，需要运营把这 58 个按原 ID **接管导入并发布**（Hub 的导入接口支持，我已用 `meeting-actions` 验证）；还要对齐版本号（Hub 导入的是 1.0.0，客户端预置是 0.2.1-review.3，客户端同步可能把本地预置"更新"成 Hub 版）。这是 Hub 运营侧的动作，需与嘉宇/中扬确认。
@@ -106,5 +108,16 @@
 | 32 | **引用预置技能**：贡献 → Hub 接受 → 发布 → 市场安装（`UsesPresetSkill` 引用 `meeting-actions`） | 通过 | 预览显示「meeting-actions」并标"Hub 技能——只做链接"；Hub 服务端检查无阻断项、无警告；目录行 `skill_refs` 的 `resolved_version` 为 `0.2.1-review.3`（等于预置版本）；安装预览"复用"项显示**名字**；安装后本机预置技能的记录、安装时间、目录内容摘要与安装前完全一致（不下载、不升级、不替换） |
 | 33 | **引用中文名预置技能**（`CnSkillAgent` 引用「AI产品构建评测」） | 通过 | 通过真实 IPC 按中文名写入，`skill_list` 保存为 `36867a076129`（此前为空数组）；混入不存在的名字时只保留有效的；贡献预览、Hub 复检、发布（`resolved_version` 0.2.0）、安装（复用，预览显示中文名）全部通过，本机技能不变 |
 | 34 | 本机记录版本高于 Hub 时 | 符合预期（测试环境遗留） | 本机 `meeting-actions` 的安装记录为 `1.0.0`（第一天在旧库里手工用 `1.0.0` 导入留下），Hub 为 `0.2.1-review.3`：客户端不降级、保持本机。正式环境按"用各技能自己的 `_meta.json` 版本"导入则不会出现 |
+| 35 | **Agent 线联调 36 项（B-01～B-06 对外面）在当前两端配置下复跑** | 通过，36/36 | 客户端 `3f9e2c10a`（含本节"为跑通所做的对齐"）；Hub `1d7df1f` + 未提交改动；Hub 栈为 `pnpm dev` 隔离栈（3101/4180/4202 + docker postgres 55439）。覆盖：提交 201/`PENDING_REVIEW`/服务端复检无阻断 → 运营接受 → 发布（`artifact.format`、`_meta.json` 只写 version+published_at、`agent.json` 保持原文）→ 目录/详情/取字节（`application/octet-stream`、`Digest`/`ETag`、**下载字节 sha256 == 目录 `artifact.sha256`**）→ 三类引用字段 → 三条路径 `GET` 结构化拒绝 → 客户端 `agent_catalog_update.ts` 的 6 条更新判定。报告 `/tmp/agent-joint-report-8.json` |
+| 36 | **能力侧联调 60 项复跑** | 通过，60/60 | 同一环境与同一客户端提交；报告 `/tmp/joint-report-ability.json` |
+| 37 | **安全扫描维度**（此前本栈零证据） | 已真跑 | Hub 显式配 `HUB_SECURITY_CORE_PYTHON` / `HUB_SKILL_SENTRY_PYTHON` 重启后，提交记录的 `server_check.warnings` 里 `package.scan.not-evaluated` 消失，换成真实命中 `package.quality.notice:scan.network`（命中规则 `http_url`，类别 network，LOW 不阻断）——扫描器确实执行并留了结论 |
+
+**为跑通所做的对齐（2026-10-15，客户端侧）**：本轮 36 项先前连续三次红灯，逐层归因后落在三处，前两处已在客户端 `3f9e2c10a` 修掉：
+
+1. **内置能力口径分叉**（客户端）：Hub 已清空清单，空清单下任何 `builtin:` 引用都在导入期被拒（失败关闭）；而联调样例原先强开客户端总开关并固定带 `builtin:coding`，于是正例恒被 `422 PACKAGE_REJECTED`。去掉强开与固定引用后提交转 201；负例不受影响（脚本会自行注入一条清单外 builtin）。
+2. **样例名不可配置**（客户端）：联调脚本用 `COGSEED_AGENT_SAMPLE_NAME` 查目录决定「新建内容 / 发新版本」，样例却把名字写死。库里 10-13 遗留的同名内容（`9518788fbc7c`）贡献者账号已随合成账号服务（内存库）重启消失，于是新建撞 `REVIEW_NAME_CONFLICT`、发新版本被 `403 NOT_CONTRIBUTOR`——两条路都堵死。样例名改为可由该环境变量或 `--name` 覆盖后，每次联调用新名字即可绕开。
+3. **Hub 存储根漂移**（环境，Hub 侧待固化）：运行中的 Hub 用默认存储根 `cogseed-hub/media/marketplace`，而 docker postgres（跨重启保留）里 124 个存储引用有 118 个指向旧根 `~/Library/Caches/cogseed-hub-joint/media`。读不出发布物的行被目录丢弃（`src/features/agents/marketplace.ts` 的 `if (!facts) continue`），却仍计入 `total`——表现为 `total=3` 而 `list=1`，两个已发布 Agent 在客户端目录里消失，联调脚本的"同名→发新版本"路径也随之找不到目标。已把 118 个缺失制品从旧根补回（内容寻址路径，只补不覆盖，无丢失），目录恢复 `total=3/list=3`。
 
 **这一轮仍未验证**：Hub 后台创建官方 Agent 再分发；上述新提示在真实界面的显示（需要模型输出创建师容器）；模型实际运行 Agent；Windows；共用 / 正式 Hub。
+
+**边界（不要把第六节读成更多）**：本轮 #35～#37 是 **HTTP 级联调**——脚本自身声明不跑 Electron 渲染层，所以界面层证据仍以第一节的真实应用手工记录为准；契约 B-01～B-06 仍是 Draft（文件头自述"17 项【待冻结】未冻"），本轮结果不代表契约联合冻结、验收或发布。客户端侧改动见 `3f9e2c10a`；Hub 侧当时是 `1d7df1f` + 未提交改动，不指向确定提交。
