@@ -4,7 +4,7 @@ import { isContentCategory, type CognitionContentCategory } from './content-cate
 import { parseFormationProposalEnvelope } from './formation-proposal';
 import { captureValueJudgmentInput, parseCaptureValueJudgment, type CaptureValueJudgment } from './capture-value-judgment';
 import { captureSummaryDecisionDigest } from './capture-provenance';
-import { assessFormationBatch, formationDependencyGroups, FormationBatchUnavailableError, type FormationBatchCheckpoint } from './formation-batch-assessment';
+import { assessFormationBatch, analyzeFormationDependencies, FormationBatchUnavailableError, type FormationBatchCheckpoint } from './formation-batch-assessment';
 import { captureSourcePassages } from './capture-context-payload';
 import { findConversationMessageById } from './conversation-message-lookup';
 import { validateFormationComparison, type FormationComparison } from './formation-comparison';
@@ -2338,7 +2338,16 @@ export async function runRecallCapture(
     const qualitySourcesFor = (candidate: ParsedCandidate) => candidate.evidence.map(label => bySourceLabel.get(label)!)
       .map(message => message.role !== 'user' ? message : { ...message,
         text: approved.filter(ref => ref.messageId === message.id).map(ref => ref.quote).join('\n') });
+    const dependencies = analyzeFormationDependencies(drafts);
+    const itemFailures = new Map<number, string>(dependencies.invalidIndexes.map(index => [index, 'assessment_invalid']));
+    const holdFailedDependencies = () => {
+      for (const group of dependencies.groups) if (group.some(index => itemFailures.has(index))) {
+        for (const index of group) if (!itemFailures.has(index)) itemFailures.set(index, 'dependency_unavailable');
+      }
+    };
+    holdFailedDependencies();
     const ambiguity = drafts.flatMap(({ candidate, index }) => {
+      if (itemFailures.has(index)) return [];
       const evidenceMessages = candidate.evidence.map(label => bySourceLabel.get(label)!);
       if (!sourcesFor(candidate).length || isTaskLocalRuleProposal(candidate, evidenceMessages) || nonRetainableActivityContent(candidate.judgment)) return [];
       let comparisonValid = false;
@@ -2359,7 +2368,6 @@ export async function runRecallCapture(
     });
     const assessed = new Map<number, FormationBatchCheckpoint['assessments'][number]>();
     let batchUnavailableReason: string | undefined;
-    const itemFailures = new Map<number, string>();
     if (ambiguity.length) {
       try {
         const complete = comparisonCoverage.truncated || ambiguity.some(item => item.candidate.targetAssetId
@@ -2391,12 +2399,8 @@ export async function runRecallCapture(
       }
     }
     if (batchUnavailableReason) for (const item of ambiguity) itemFailures.set(item.index, batchUnavailableReason);
-    for (const group of formationDependencyGroups(drafts)) if (group.some(index => itemFailures.has(index))) {
-      for (const index of group) {
-        assessed.delete(index);
-        if (!itemFailures.has(index)) itemFailures.set(index, 'dependency_unavailable');
-      }
-    }
+    holdFailedDependencies();
+    for (const index of itemFailures.keys()) assessed.delete(index);
     // A late model result, including an unavailable verdict, cannot settle a
     // scheduled capture after admission closes or overwrite cancellation.
     if (signal?.aborted || !await canContinue()) return settleInterruptedCapture(userId, id);

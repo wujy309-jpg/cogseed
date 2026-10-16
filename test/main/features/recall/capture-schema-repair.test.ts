@@ -535,6 +535,36 @@ it('retries a source-support outage only in the next admitted night and preserve
   } finally { f.stop(); }
 });
 
+it.each(['versioned-null-action', 'legacy-nonarray-actions'])('isolates %s before rule reading and resumes without re-extraction or duplicate saves', async shape => {
+  const ontologyChanges = { reason: 'Synthetic malformed action', evidence: ['m1'], actions: shape === 'versioned-null-action' ? [null] : {} };
+  mocks.extract.mockResolvedValueOnce(shape === 'versioned-null-action'
+    ? { text: JSON.stringify({ proposalVersion: 2, proposals: [
+      { id: 'independent', target: 'cognition', cognition: valid },
+      { id: 'malformed', target: 'joint', cognition: valid, ontologyChanges },
+    ] }), meta: {} }
+    : response([valid, { ...valid, ontologyChanges }]));
+  const f = await fixture();
+  try {
+    const first = await f.capture.runRecallCapture(userId, f.id);
+    expect(first).toMatchObject({ status: 'review_ready', candidateSupportUnavailableCount: 1,
+      candidateSupportUnavailable: [{ candidateIndex: 1, stage: 'grounding', reason: 'assessment_invalid' }] });
+    expect(first.formationCheckpoint?.pendingCandidates?.map(item => item.index)).toEqual([1]);
+    const saved = await f.candidates.listRecallCandidates(userId);
+    expect(saved).toHaveLength(1);
+    const assessments = mocks.formation.mock.calls.length;
+    for (const [request] of mocks.formation.mock.calls) expect(JSON.parse(request.message).candidates.some((item: { index: number }) => item.index === 1)).toBe(false);
+    vi.setSystemTime(new Date(2026, 9, 13, 3));
+    expect(await f.capture.runNightlyCaptureSweep(userId, new Date().toISOString(), await f.settings.readRecallCaptureSettings(userId)))
+      .toMatchObject({ ran: true, retried: 1 });
+    const resumed = await f.capture.runRecallCapture(userId, f.id);
+    expect(resumed).toMatchObject({ status: 'review_ready', candidateSupportUnavailableCount: 1 });
+    expect((await f.candidates.listRecallCandidates(userId)).map(row => row.id)).toEqual([saved[0].id]);
+    expect(mocks.extract).toHaveBeenCalledTimes(1);
+    expect(mocks.formation).toHaveBeenCalledTimes(assessments);
+    expect(await f.assets.listAbilityAssets(userId)).toEqual([]);
+  } finally { f.stop(); }
+});
+
 it('keeps an already saved complete candidate when another item cannot finish its support assessment', async () => {
   semanticFixture();
   const first = { ...semanticProposal, judgment: '以后处理我的复杂技术问题时，我希望先给结论，再解释关键理由。', summary: '技术解释顺序' };

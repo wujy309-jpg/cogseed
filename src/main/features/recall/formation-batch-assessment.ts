@@ -31,7 +31,11 @@ export interface FormationBatchCheckpoint { ruleSemanticsPolicyVersion?: 3; sour
 /** Connect only actual writes/references, not shared source messages. A joint
  * proposal is already one item; cross-item writes to the same identity or a
  * reference to another item's write cannot be committed independently. */
-export function formationDependencyGroups(items: Array<{ index: number; candidate: GroundingCandidate }>): number[][] {
+export function analyzeFormationDependencies(items: Array<{ index: number; candidate: GroundingCandidate }>): {
+  groups: number[][]; invalidIndexes: number[];
+} {
+  const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+  const invalidIndexes: number[] = [];
   const referenceKeys = new Set(['moduleId', 'typeId', 'subjectId', 'definitionId', 'entityId',
     'targetModuleId', 'targetRecordId', 'recordId', 'targetId', 'supersedesId', 'subjectTypes', 'objectTypes']);
   const references = (value: unknown, output = new Set<string>(), key = ''): Set<string> => {
@@ -46,10 +50,22 @@ export function formationDependencyGroups(items: Array<{ index: number; candidat
     return output;
   };
   const footprints = items.map(item => {
-    const plan = item.candidate.ontologyChanges as { actions?: Array<{ recordId?: string; targetId?: string }>; refs?: unknown[] } | undefined;
+    const raw = item.candidate.ontologyChanges;
+    const plan = object(raw) ? raw : undefined;
+    // These are still untrusted extraction values. Canonical ontology validation
+    // remains at materialization; this boundary only makes analysis safe and
+    // keeps malformed items out of rule readers and model assessment.
+    const safeRows = (value: unknown) => value === undefined || Array.isArray(value) && value.every(row => object(row)
+      && ['recordId', 'targetId'].every(key => row[key] === undefined || typeof row[key] === 'string' && !!row[key].trim())
+      && ['record', 'patch'].every(key => row[key] === undefined || object(row[key])));
+    if (raw != null && (!plan || !safeRows(plan.actions) || !safeRows(plan.refs))) invalidIndexes.push(item.index);
+    // Preserve recognizable identities even in malformed containers, so their
+    // known dependants are held too. Never synthesize an identity for bad data.
+    const actions = Array.isArray(plan?.actions) ? plan.actions : object(plan?.actions) ? [plan.actions] : [];
     return { index: item.index, writes: new Set([
       ...(item.candidate.targetAssetId ? [`asset:${item.candidate.targetAssetId}`] : []),
-      ...(plan?.actions || []).flatMap(action => [action.recordId, action.targetId].flatMap(id => id ? [`ontology:${id}`] : [])),
+      ...actions.filter(object).flatMap(action => [action.recordId, action.targetId]
+        .flatMap(id => typeof id === 'string' && id ? [`ontology:${id}`] : [])),
     ]), reads: references([plan?.actions, plan?.refs]) };
   });
   const remaining = new Set(footprints.map(row => row.index)), groups: number[][] = [];
@@ -66,7 +82,7 @@ export function formationDependencyGroups(items: Array<{ index: number; candidat
     }
     groups.push(group);
   }
-  return groups;
+  return { groups, invalidIndexes };
 }
 export class FormationBatchUnavailableError extends Error {
   readonly code = 'formation_batch_unavailable';
@@ -85,14 +101,15 @@ export async function assessFormationBatch(userId: string, input: {
 }): Promise<FormationBatchCheckpoint> {
   if (!input.items.length) return { fingerprint: '', assessments: [] };
   const ontologyRecords = formationRuleContext(input.ontology);
-  const failures = new Map<number, 'assessment_invalid' | 'dependency_unavailable'>();
+  const { groups, invalidIndexes } = analyzeFormationDependencies(input.items);
+  const failures = new Map<number, 'assessment_invalid' | 'dependency_unavailable'>(invalidIndexes.map(index => [index, 'assessment_invalid']));
   const candidates = input.items.flatMap(item => {
+    if (failures.has(item.index)) return [];
     try { return [{ index: item.index, sources: item.sources,
       candidate: blindFormationRuleCandidate(item.candidate, ontologyRecords),
       ruleSourceRequests: formationRuleSourceRequests(item.candidate.ontologyChanges, ontologyRecords, item.candidate.judgment) }]; }
     catch { failures.set(item.index, 'assessment_invalid'); return []; }
   });
-  const groups = formationDependencyGroups(input.items);
   const holdFailedGroups = () => {
     for (const group of groups) if (group.some(index => failures.has(index)))
       for (const index of group) if (!failures.has(index)) failures.set(index, 'dependency_unavailable');
