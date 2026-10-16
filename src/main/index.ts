@@ -663,7 +663,7 @@ function registerIpc(): void {
     // dev 半更新检测：bootstrap.cjs 用 tsx 在进程启动时加载 src/main/**/*.ts，
     // 而渲染层的 .js 每次刷新窗口都会重读磁盘。若磁盘上的 main 源码比本进程启动
     // 还新，就说明"界面已是新代码、主进程还是旧代码"——此时新参数会被旧主进程
-    // 静默忽略（真机事故：kb.mindmap 的 doc 参数被忽略 → 整库脑图冒充本文档脑图）。
+    // 静默忽略，导致界面请求的范围与主进程实际处理的范围不一致。
     // 详见 util/source-stamp.ts。
     const staleMain = buildStaleMainReport({ pcRoot: paths.PC_ROOT, isPackaged: app.isPackaged });
     return {
@@ -1944,19 +1944,17 @@ if (!gotLock) {
       const { migrateLegacyUserFacingTitles } = await import('./features/recall/asset-service');
       await migrateLegacyUserFacingTitles(users.getActiveUserId());
     }, 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
-    // A 轨道（2026-09-13 scope 枚举化）：存量自由文本 scope（"用户全局画像"）
-    // 归一为受控词表——否则自动投影永远 scope_mismatch，确认资产在正式通道
-    // 失效。幂等；迁移会同步刷新仍存活 committed 投影的版本快照（2026-09-14
-    // 补——此前"跳过被引用资产"的说法与实现相反，committed 校验器的版本
-    // 强校验会让注入整体失败）。
+    // Normalize legacy free-text scopes to the controlled vocabulary so
+    // confirmed assets remain eligible for automatic projection. The migration
+    // is idempotent and refreshes live committed projections' version snapshots
+    // to preserve strict version validation.
     registerDeferred('recall:migrate-legacy-scopes', async () => {
       const { migrateLegacyFreeTextScopes } = await import('./features/recall/asset-service');
       await migrateLegacyFreeTextScopes(users.getActiveUserId());
     }, 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
-    // P-r2-3（2026-10-01 根治）启动期清扫：purge 与版本追加已纳入同一把锁，
-    // 但修锁前泄漏已发生的现场（purged 资产名下被在途 append 重建的版本流）
-    // 无产品通道可清——启动时按「墓碑/记录已除名 ⇒ 流必不存」清一遍。幂等，
-    // 正常情况下空转；逐条容错不拦启动。
+    // Recover pending cognition journals and remove legacy version streams
+    // whose asset is tombstoned or absent. Purge and append share a lock;
+    // startup recovery is idempotent and tolerates individual failures.
     registerDeferred('cognition:compatibility-recovery', async () => {
       const { recoverCognitionProjection } = await import('./features/cognition_bridge');
       const { applyCognitionDeltas } = await import('./features/cognition_kernel/store');
