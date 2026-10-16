@@ -1,5 +1,6 @@
-/** Fixed synthetic benchmark v1. Labels precede execution; never remove a
- * failure or tune labels/thresholds after seeing a model/ranking result.
+/** Fixed synthetic benchmark v1. All personal names and forms of address are fictional.
+ * Labels precede execution; never remove a failure or tune labels/thresholds
+ * after seeing a model/ranking result.
  * Assets are authored retrieval fixtures, not claimed model formations. */
 export const QUALITY_BENCHMARK_VERSION = 'cognition-quality-v1-20261015';
 export const QUALITY_TARGETS = Object.freeze({ formationRecall: 0.95, formationPrecision: 0.95, recallAt5: 0.90, unauthorizedHits: 0 });

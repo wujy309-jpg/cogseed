@@ -215,11 +215,9 @@ export function _targetsDeepSeekOfficialApi(uid: unknown, providerId: unknown): 
   }
 }
 
-/** Option C（推理强度按模型声明的档位）：解析有效模型声明的思考档位（宿主
- *  可表达的子集 off|low|high）。**解析不出就返回 undefined**——"不知道"不等于
- *  "没有档位"，调用方据此跳过校验，绝不因为一次能力查询失败或模型没有声明而
- *  拒掉一个本来能跑的回合。判定本身在 model/reasoning_effort.ts，与 auth 的
- *  列表标注共用同一份口径。 */
+/** 解析有效模型声明的思考档位（宿主可表达的子集 off|low|high）。
+ *  解析不出就返回 undefined，调用方跳过校验；能力未知不能等同于不支持。
+ *  判定与 auth 列表标注共用 model/reasoning_effort.ts 的规则。 */
 export async function _declaredReasoningLevelsFor(
   uid: string,
   modelOverride?: { provider?: string; model?: string },
@@ -1584,26 +1582,12 @@ export interface TaskTerminalEvent {
 export type TaskTerminalListener = (event: TaskTerminalEvent) => void;
 
 /**
- * Per-cid in-memory state (workers, listeners, producedPaths, …).
+ * Per-cid state is shared through a global Symbol so CJS and ESM loaders use
+ * the same queues, workers and listeners. Separate module-local Maps would
+ * make enqueue and dropConv operate on different conversation state.
  *
- * Pinned on `globalThis` under a `Symbol.for` key so that **all** module
- * instances of this file share one Map. **Why** this file gets loaded more
- * than once: in the Electron runtime everything goes through tsx/cjs and we
- * end up with a single CJS instance — fine. But under vitest, this file is
- * loaded as ESM by tests (`await import('.../bus')`) AND as CJS by
- * `chats.ts` (`require('./group_chat/bus')`, see the comment in that file).
- * Two instances means two separate `_cids` Maps; an enqueue on one side and
- * a dropConv on the other would silently target different state — the bug
- * `0268bce7` fixed at the IPC + plan-executor wiring layer, surfacing again
- * here for the test's bus state assertions.
- *
- * The `??=` keeps the FIRST instance's Map authoritative; subsequent loads
- * just rebind their module-local `_cids` to that same Map.
- *
- * **Convention for future bus.ts contributors**: any new module-level state
- * with cross-cid identity (Maps, Sets, registries that must agree across
- * loaders) MUST follow the same pattern. Plain `const x = new Map()` will
- * re-introduce the dual-instance bug class for that new state.
+ * The first instance's Map stays authoritative. New cross-conversation state
+ * that must agree across loaders must use the same shared-registry pattern.
  */
 const _BUS_CIDS_KEY = Symbol.for("cogseed.group_chat.bus._cids");
 const _cids: Map<string, CidState> = ((globalThis as any)[_BUS_CIDS_KEY] ??=
@@ -5390,8 +5374,7 @@ async function runActorTurnBody(
   coordinator: CoordinatorTurnContext,
   chatCollector: ProcessCollector,
 ): Promise<ActorTurnResult> {
-  // 目录★集合（2026-09-19 漏取审计）：commander 目录块赋值、回合收尾算差集，
-  // 跨两个分支所以放函数体顶层。
+  // 目录相关资产集合在注入时赋值、回合收尾时算差集，跨分支共享。
   let catalogRelevantIds: ReadonlySet<string> = new Set();
   const { uid, cid, actor } = w;
   const { processItems, lease: coordinatorLease } = coordinator;
@@ -5752,11 +5735,8 @@ async function runActorTurnBody(
     // 构建师不派活不写文件——零额外工具，数据全部走 Runtime injection 快照。
     const convKind = turnConversationKind || await getConversationKindSafe(uid, cid);
     turnConversationKind = convKind;
-    // Deterministic host routing: a task-shaped USER message opens the
-    // governed KStar task + auto-confirmed projection HERE, before the model
-    // turn — the Commander no longer has to emit kstar_control correctly
-    // (live runs failed that twice). Space-builder and non-task turns are
-    // untouched (zero KStar writes).
+    // 宿主在模型回合前为任务建立 KStar 状态与已确认投影，不依赖模型构造控制参数。
+    // 空间构建与非任务回合不写 KStar 状态。
     if (
       convKind !== "space_builder"
       && item.fromActorId === USER_ID
@@ -5950,12 +5930,9 @@ async function runActorTurnBody(
   // explicitly grants assets per dispatch via the tools' `ability_assets`
   // field, and only those render here. CLI agents never consume this path.
   let recallCitations: RecallPromptCitation[] = [];
-  // 画像通道注入清单（committed 投影路径才会携带）：收尾时逐条落
-  // InjectionReceipt（channel='profile_memory'）——「这轮带了哪些背景记忆」
-  // 从此可查（此前画像注入零收据，审计黑洞）。
+  // 收尾时为画像注入逐条记录 channel='profile_memory' 的 InjectionReceipt。
   let recallProfileMemory: Array<{ id: string; source: string; version: string }> = [];
-  // 呈现面合一（2026-09-30）：授权块/画像块的裸渲染（无旧长导语）——目录
-  // 建成后与目录文本合成单一 <asset-context> 块一次追加（见目录段之后）。
+  // 授权块、画像块与目录文本在目录建成后合为一个 <asset-context> 块。
   let recallAuthorizedBlock = '';
   let recallProfileBlock = '';
   let recallAnswerEvidence: OntologyAnswerEvidenceBundle | undefined;
@@ -5974,14 +5951,9 @@ async function runActorTurnBody(
   if (!cliAgent) {
     if (isCommander) {
       try {
-        // KSTAR × 能力资产复用收敛（2026-08-17 spec）：一个任务只产生一次
-        // 权威能力资产选择。requirement 的 confirmed projection 是权威选择
-        // 结果——若本回合未显式携带 committedProjectionId（宿主自动路径在
-        // 任务开启时即 confirm 投影，不经过 projection-decision 控制消息），
-        // 则从当前 requirement 的 lifecycle 兜底读取，让投影真正进入
-        // Commander prompt（此前 requirement.projectionId 从未被消费，
-        // 同一任务会跑两遍 listAbilityAssets + ranking）。无投影/无效时
-        // buildRecallTurnPromptContext 自然回退 automatic projection。
+        // 同一任务只产生一次权威能力资产选择。未显式携带 committedProjectionId 时，
+        // 从当前 requirement 的 lifecycle 读取 confirmed projection 并注入 Commander。
+        // 无投影或投影无效时，buildRecallTurnPromptContext 回退 automatic projection。
         let committedProjectionId = item.committedProjectionId;
         if (!item.internalControl) {
           try {
@@ -6011,8 +5983,7 @@ async function runActorTurnBody(
           ...(item.forecastId ? { forecastId: item.forecastId } : {}),
         });
         if (recallContext.promptBlock || recallContext.answerEvidence) {
-          // 呈现面合一（2026-09-30）：不再在此处 append——授权块/画像块攒到
-          // 目录建成后合成单一 <asset-context> 一次追加（见下方目录段之后）。
+        // 授权块与画像块暂存，等目录建成后合成单一 <asset-context>，不在此处重复追加。
           recallCitations = recallContext.citations;
           recallProfileMemory = recallContext.profileMemoryEntries ?? [];
           recallAuthorizedBlock = recallContext.authorizedAssetsBlock ?? '';
@@ -6058,9 +6029,7 @@ async function runActorTurnBody(
       } catch (error) {
         log.warn(`Recall prompt injection failed cid=${cid}: ${(error as Error).message}`);
       }
-      // 资产目录可发现性提示（2026-09-18）：注入解决"这一轮相关"，但模型不会
-      // 主动想到"还有别的资产"（真机样本 0/3 会去查目录）。一行提示 + TTL 缓存，
-      // 只讲"目录存在且便宜"，挑哪几条仍归模型。
+        // 目录提示用于发现未注入的可用资产；选择仍由模型负责，提示构建使用 TTL 缓存。
       let catalogText = '';
       try {
         const { assetCatalogForPromptWithRelevance } = await import('../recall/asset-catalog-hint');
@@ -6660,11 +6629,8 @@ async function runActorTurnBody(
           // bubble (token-by-token); other shapes feed the process
           // rail. Renderer dispatch lives in conversation.js process
           // event handler — see `data.type === 'delta'` branch.
-          // conv-core 阶段3：CLI 直连/网关共用漏斗同喂收集器——{stream:'cli'}
-          // 的 LocalEvent（tool-event 双相位）由投影器新分支转 ChatItem（含
-          // 权威 timing）；实时（ipc GroupEventChatProjector）与持久化
-          // （chatCollector）自此同源，本地 codex/opencode 过程可见与内置模型
-          // 同一套渲染语义。
+        // CLI 直连与网关事件共用收集器：LocalEvent 的 tool-event 双相位经投影器
+        // 转为带权威 timing 的 ChatItem，实时与持久化使用同一渲染语义。
           chatCollector.feed(data);
           emit(state, {
             type: "process",
@@ -6723,9 +6689,8 @@ async function runActorTurnBody(
       // P3394 外接智能体：每一轮都通过桥的出站 hub 与受管网关节点协作
       // （同一协议覆盖 Hermes/Claude Code/Codex/OpenClaw/WorkBuddy 等）。
       const isP3394Gateway = agentsFeat.isP3394GatewayAgent(cliAgent);
-      // Required-input gate（第二期收口：直连与网关两通道共用）：必填输入
-      // （如 project_dir）未满足时不派发，返回表单块由 runTerminal 提升为
-      // <agent-input-form> 询问用户。
+      // 直连与网关共用必填输入闸门；缺输入时不派发，返回表单由 runTerminal 提升为
+      // <agent-input-form>，向用户询问。
       const sharedFormBlock = await _maybeBuildCliInputForm(uid, cid, cliAgent);
       // 不把逐条提问生成的 KStar 需求 id 注入 goal，避免每次提问都新建
       // P3394 会话。同一会话与同一对端保持上下文连续；goal 参数仍供显式话题隔离使用。
@@ -6759,8 +6724,7 @@ async function runActorTurnBody(
             ...(item.execConfig?.model ? { model: item.execConfig.model } : {}),
             // goal 槽位宿主侧不注入（会话连续性优先，见上方注释）；网关
             // runP3394GatewayTurn 的 goal 参数通道保留，恢复注入时加回这里。
-            // T1 引用信封化：本轮 quote/@ 的引用快照进信封 metadata 槽位
-            //（正文文本已含 <referenced-messages> 可读版，双通道冗余供给）。
+        // 引用快照写入信封 metadata，正文仍保留 <referenced-messages> 可读版本。
             ...(item.references && item.references.length
               ? {
                   references: item.references.slice(0, 20).map((r) => ({
@@ -6773,13 +6737,8 @@ async function runActorTurnBody(
                   })),
                 }
               : {}),
-            // Prompt for the external gateway node. `sourceMessageText` is only
-            // populated for direct user messages (see enqueue); commander
-            // dispatch / handoff messages carry the full task inside the LLM
-            // payload envelope instead. G-26: keep the `<msg from=… to=…>`
-            // envelope on dispatched turns so the external agent can see who
-            // dispatched the task and who it was routed to (multi-agent
-            // routing context); direct user text stays unwrapped as before.
+        // Direct user messages use sourceMessageText. Dispatched turns retain the
+        // full <msg from=… to=…> payload so the gateway sees sender and recipients.
             prompt: [
               switchedContextDigest,
               _firstNonBlankText(
@@ -6792,8 +6751,7 @@ async function runActorTurnBody(
             onCoordinatorActivity: (event) => {
               coordinatorLease?.observe(event as never);
             },
-            // 第二期收口：网关路径同样打通 PID 通道（正整数才进内存协调器，
-            // 与直连路径同一校验）；真实网关子进程 pid 数据源后续增强。
+            // 网关与直连路径共用 PID 校验：仅正整数进入内存协调器。
             onProcessInfo: (pid) => {
               if (typeof pid === "number" && Number.isInteger(pid) && pid > 0) {
                 coordinator.setCliProcessPid(pid);
@@ -6837,9 +6795,7 @@ async function runActorTurnBody(
       // P3394 gateway turns currently report no metrics (no runner.ts done
       // event on that path) — the read degrades to undefined there.
       cliTurnMetrics = (cliOut as { metrics?: GroupMessageMetrics }).metrics;
-      // 回读确认（CodexHost 对标的 CogSeed 适配）：CLI 自报的实际模型
-      // （usage.model）与下发值不一致时以实际值落 exec_meta——杜绝
-      // "展示 ≠ 实际"的假成功，并在日志留痕（CLI 静默换模型可观测）。
+        // CLI 自报模型与下发值不一致时，以实际值写 exec_meta 并记录日志。
       if (
         cliTurnMetrics?.model && turnExecMeta?.model &&
         cliTurnMetrics.model !== turnExecMeta.model
@@ -6853,8 +6809,7 @@ async function runActorTurnBody(
         turnExecMeta = { ...turnExecMeta, model: cliTurnMetrics.model };
       }
       if (cliOut.error) {
-        // 第二期收口对齐：用户可见的失败文案统一本地化（与直连路径同文案），
-        // 原始后端错误只进日志，不透给渲染层。
+        // 网关与直连使用同一本地化失败文案；原始后端错误只进日志。
         const failedCli = cliAgent.runtime &&
           (cliAgent.runtime.kind === "cli" || cliAgent.runtime.kind === "p3394-gateway")
           ? cliAgent.runtime.cli
@@ -6912,13 +6867,9 @@ async function runActorTurnBody(
         : null;
       const { createLifecycleSink } = await import("../execution-records");
       const { getLocalExecMode } = await import("../permissions");
-      // Vision fallback seam (2026-08-27, product call): if this turn carries
-      // images and the receiving model is KNOWN vision-incapable, the
-      // registered pluggable handler returns MODEL-FACING instructions
-      // (image facts + on-disk paths + which vision tools to call — vision
-      // model reroute / vision MCP, shape deliberately open). The model then
-      // acts on its own agency. No handler or unknown capability keeps
-      // today's pass-through behavior.
+      // Vision fallback supplies model-facing image facts and tool guidance only
+      // when this turn has images and the receiving model is known to lack vision.
+      // With no handler or unknown capability, preserve pass-through behavior.
       if (turnImages.length) {
         const { applyVisionFallbackIfBlind } = await import("../vision_fallback");
         const chatAttachments = await import("../chat_attachments");
@@ -6985,22 +6936,13 @@ async function runActorTurnBody(
         = item.execConfig?.effort
           ?? turnAgentSpec?.default_thinking
           ?? thinkingLevelForRun();
-      // Option C：只有**针对这个模型做出的显式选择**（任务级覆盖 / agent 默认）
-      // 才受"模型声明的档位"约束，且要在自动兜底**之前**记下——下面给已知
-      // reasoning 模型自动补 low 是展示兜底，不是用户的档位选择，不能被同一个门拒掉。
-      // 全局偏好（设置页的"思考强度"）是**跨模型的默认**，不是对某个模型的选择：
-      // 它越档时静默降级（pi-ai 按 provider 默认处理），绝不因此把整个回合判成
-      // model_preflight——否则用户改一次全局设置就会在若干模型上"开不了工"。
+      // 只校验针对当前模型的显式档位选择，并在自动展示兜底之前记录。
+      // 全局思考偏好是跨模型默认值，越档时按 provider 默认处理，不拒绝整个回合。
       const explicitThinkingLevel = item.execConfig?.effort
         ?? turnAgentSpec?.default_thinking
         ?? "auto";
-      // 思考展示兜底（交互设计 2026-09-08：思考过程展示需求）：'auto' 时不传
-      // thinkingLevel，pi-ai 对 openai 兼容端点不会带 reasoning_effort，
-      // DeepSeek 中转端点缺该参数时思考模式默认关闭 → 全程无
-      // reasoning_content 流（真机 18:40 轮实测 thinking_level 0 次）。
-      // 用户未显式选 off 时，对已知 reasoning 模型按 'low' 发起——思考流
-      // 可达渲染层；显式 off 仍彻底关闭。模型名识别不出 reasoning 特征
-      // 时不强行注入（避免给不认识的服务盲发参数，保持方案 C 约定）。
+      // auto 不主动设置 reasoning_effort。用户未明确选 off 且模型已知支持推理时，
+      // 用 low 使思考流可达渲染层；显式 off 保持关闭，未知模型不强行注入参数。
       if (turnThinkingLevel === "auto" && _modelSupportsThinkingByDefault(item)
         && !_targetsDeepSeekOfficialApi(uid, item.execConfig?.provider)) {
         turnThinkingLevel = "low";
@@ -7015,10 +6957,8 @@ async function runActorTurnBody(
           : turnAgentSpec?.default_model
             ? { ...turnAgentSpec.default_model }
             : undefined;
-      // Option C preflight：显式档位要先对得上有效模型声明的档位。解析出声明
-      // 才传下去（client.ts 在 provider 调用前拒绝并落 model_preflight）；
-      // 解析不出 = 不校验，行为与之前完全一致。预警同样走共用判定，避免
-      // 「日志说会拒绝、client 却放行」（例如 off 是"不发参数"，永远放行）。
+      // 仅在解析出模型声明档位后校验显式选择。预警与 client.ts 使用同一判定；
+      // off 表示不发参数，保持可用。
       const supportedReasoningLevels = explicitThinkingLevel !== "auto"
         ? await _declaredReasoningLevelsFor(uid, turnModelOverride)
         : undefined;
@@ -7029,11 +6969,8 @@ async function runActorTurnBody(
           supported: supportedReasoningLevels,
         });
       }
-      // 多模态降级提示（2026-09-13）：回合带图但实际执行模型（任务级覆盖
-      // 优先于界面选择）不支持视觉时，图片内容块会被 provider 层按
-      // input modality 丢弃，模型只能靠文件路径 + OCR 读图。此前零提示，
-      // 用户看到 OCR 误以为系统坏了。只说明原因，不改变行为——不支持
-      // 视觉的模型不发图是正确语义。
+      // 带图回合的实际模型不支持视觉时，provider 不发送图像内容；保留文件路径供
+      // 模型调用 OCR，并向用户说明降级原因。
       if (turnImages.length && turnModelOverride) {
         const { recognizeModelById } = await import("../../model/model_id_recognition");
         const bareModelId = String(turnModelOverride.model).split("/").pop() || String(turnModelOverride.model);
@@ -7064,8 +7001,7 @@ async function runActorTurnBody(
         // User-selected thinking strength ('auto' = no override; let the
         // provider default / model decide).
         ...(turnThinkingLevel !== "auto" ? { thinkingLevel: turnThinkingLevel } : {}),
-        // Option C：显式档位带着模型声明的档位一起下发，client.ts 在
-        // provider 调用前用它拒绝越档（model_preflight）。
+              // 显式档位与模型声明一并下发，由 client.ts 在 provider 调用前校验。
         ...(supportedReasoningLevels ? { supportedReasoningLevels } : {}),
         ...(turnModelOverride ? { modelOverride: turnModelOverride } : {}),
         ...(actor.kind === "agent" ? { agentId: actor.id } : {}),
@@ -7228,14 +7164,9 @@ async function runActorTurnBody(
         }
         // Stream events → process channel.
         if (ev.type === "final") {
-          // 消息正文只承载「最终段」（实机反馈 2026-09-09：展开执行过程
-          // 只见工具调用，AI 的中间叙述无处可见）。中间段已在被工具/
-          // 思考截断时经 flushTextSegmentForPersist 落盘为 completed text
-          // 条目、进过程轨迹（时间序交错展示）；此前正文=全文聚合，中间
-          // 段在过程区又被收尾清理，等于彻底不可见。final 段不触发 flush，
-          // 此刻 segmentText 恰为最终段；纯文本轮（无截断）segmentText=
-          // 全文、行为不变；中间有叙述但收尾无文本的轮次回退全文（保全
-          // 旧语义）。abort salvage（下方 streamingText 兜底）仍取全文。
+          // 消息正文只承载最终段。被工具或思考截断的中间段通过
+          // flushTextSegmentForPersist 写为 completed text，按时间序进入过程轨迹。
+          // 纯文本轮仍以全文为最终段；收尾无文本时回退全文，abort salvage 也保留全文。
           if (adoptionBookkeepingTail) {
             finalText = phaseTextSegments.join('') + segmentText;
             promotedBookkeepingResult = true;
@@ -7260,7 +7191,7 @@ async function runActorTurnBody(
           // back via the dispatch tool result), so their stream is NOT surfaced
           // to the UI — otherwise each one renders as a stray "智能体" bubble with
           // a process trail. The commander's own turn is the only visible one.
-          // Named agents (kind:'agent') still stream (Option B visible bubble).
+          // Named agents (kind:'agent') still stream (visible named-agent bubble).
           if (actor.kind !== "worker") {
             emit(state, {
               type: "process",
@@ -7325,13 +7256,9 @@ async function runActorTurnBody(
               (ev as { event?: unknown }).event,
             );
             if (text) {
-              // 思考流按段续写（PR209 评审 M9）：origin:'thinking' 的
-              // progress 是 event-mapper 聚合出的思考段——续写到上一条
-              // 思考 progress（同段被多次冲刷的场景），与投影层「一次
-              // 思考一条记录」cardinality 一致；非思考 progress（retry/
-              // compaction/context_status 等）行为不变逐条 append。此前
-              // 逐条 append 时长思考（>~48KB/回合）会占满 300 上限并把
-              // 工具 chatItem 逐出。
+          // origin:'thinking' 的 progress 续写上一条思考记录，保持一次思考一条记录。
+          // retry/compaction/context_status 等其他 progress 仍逐条追加，避免长思考的
+          // 多次冲刷占满 300 条预算并挤出工具记录。
               const isThinking = (ev as { origin?: string }).origin === "thinking";
               const lastItem = processItems[processItems.length - 1];
               if (
@@ -7351,20 +7278,16 @@ async function runActorTurnBody(
                 appendProcessItem(processItems, item);
               }
             }
-            // 只在思考文本（真正的段落截断）前 flush 中间段；usage/runtime
-            // 等收尾事件跟在最终段后面，flush 会把最终段（=消息正文，
-            // 可能含 :::dashboard 等结构指令）误当中间段落落盘——重放
-            // 面板以纯文本显示源码、与正文重复（真机踩坑 2026-09-08）。
+            // 只在思考文本造成真正段落截断前 flush。usage/runtime 等收尾事件不能
+            // 把最终段再次写进过程轨迹，否则重放会与正文重复。
             if (text) flushTextSegmentForPersist();
             chatCollector.feed({ type: "progress", text: text || "" });
           } else if (ev.type === "event") {
             const event = processEventForPersistence(
               (ev as { event?: unknown }).event,
             );
-            // CLI 回合剥除 usage（交互设计 2026-09-09：外接 CLI 的 token 输入/
-            // 输出/缓存命中先不显示——CLI 自报口径不可靠，计费输出≠可见
-            // 输出、可见输出无真值，缓存命中更是无从核对）。时间线 usage
-            // 行与持久化条目一并不产；时长/首 token（本地墙钟）不受影响。
+            // CLI 自报 token/缓存口径不可核对，因此不生成 usage 行或持久化条目。
+            // 本地墙钟测得的时长与首 token 时间保持不变。
             const suppressCliUsage = !!cliAgent && event?.stream === "usage";
             if (event && event.stream !== "assistant" && !suppressCliUsage) {
               appendProcessItem(processItems, { type: "event", event });
@@ -8119,12 +8042,9 @@ async function runActorTurnBody(
 
   let persistedMsg: GroupMessage | null = null;
   if (outcome.kind === "persist") {
-    // Task 5: usage/timing metrics for this settled reply. CLI turns arrive
-    // fully assembled from _runCliAgentTurn (runner attaches startedAt /
-    // firstTokenAt to the terminal done event); internal model turns rebuild
-    // them from the agent_run_result payload — duration_ms anchors startedAt,
-    // first_token_ms anchors firstTokenAt relative to it. Fields the source
-    // didn't report are omitted, never fabricated.
+    // Settled reply metrics: CLI timing comes from the runner; model turns use
+    // agent_run_result. Anchor duration and first-token timing to completedAt,
+    // and omit fields the source did not report.
     let replyMetrics: GroupMessageMetrics | undefined;
     if (cliTurnMetrics) {
       // CLI 回合同上剥 usage：消息 metrics 只保留本地计时（时长/首
@@ -8155,8 +8075,7 @@ async function runActorTurnBody(
         usageOut.cacheReadTokens = usageIn.cacheReadTokens;
       if (typeof usageIn?.cacheWriteTokens === "number")
         usageOut.cacheWriteTokens = usageIn.cacheWriteTokens;
-      // lastCallUsage（2026-09-11）：占用口径，嵌套对象原样透传（白名单在
-      // client.ts 的 safeUsageForLog 一侧完成）。
+      // lastCallUsage 按占用口径透传，白名单在 client.ts 的 safeUsageForLog 校验。
       if (
         usageIn?.lastCallUsage && typeof usageIn.lastCallUsage === "object"
       ) {
@@ -8371,9 +8290,8 @@ async function runActorTurnBody(
         log.warn(`Recall profile-memory persistence failed cid=${cid} error=${(error as Error).message}`);
       }
     }
-    // 漏取审计（2026-09-19）：目录标了★（提示模型"这些相关"）但本回合既没
-    // 注入也没被模型取用/派发的资产——每条记一条 omitted/catalog_hint 回执，
-    // 时间线透出"相关而未被用"。判断质量可见可追责，不替模型做决定。
+        // 目录标了相关但本回合未注入、读取或派发的资产，各记 omitted/catalog_hint
+        // 回执；时间线呈现该差集，不替模型作选择。
     if (catalogRelevantIds.size > 0) {
       try {
         const usedThisTurn = new Set<string>(persistedRecallCitations.map((citation) => String((citation as { asset_id?: string }).asset_id || (citation as { assetId?: string }).assetId || '')));
@@ -8400,10 +8318,8 @@ async function runActorTurnBody(
         // 审计是增强：写不进不影响回合。
       }
     }
-    // 派发授权资产的账（usage + 注入回执）在本回合末尾统一结算（见下方
-    // dispatchedUsage 段）：匿名 worker 走 silent 分支、没有持久化消息，
-    // 此前账写在 visible 分支里 → 授予过的资产从不进使用记录/升档链
-    // （2026-09-18 修）。这里只把消息 id 留给结算用。
+      // 派发资产按回合统一结算；匿名 worker 没有持久化消息，不能依赖 visible 分支。
+      // 这里只保留实际持久化的消息 id，供收尾结算使用。
     dispatchedMessageId = persistedMsg.id;
     await registerFinalOutputResources(outcome.produced || []);
   } else if (outcome.kind === "silent" && actor.kind !== "worker") {
@@ -8425,10 +8341,8 @@ async function runActorTurnBody(
     });
   }
 
-  // 派发授权资产的结算（2026-09-18 从 visible 分支移出）：Commander 授予的
-  // 资产与宿主注入共用一个使用账本（injected=宿主带入 / dispatched=派给 Agent），
-  // 但匿名 worker 回合是 silent、没有持久化消息——账必须按回合结算，不能挂在
-  // UI 分支上，否则"授予了却从不进统计/升档链"。messageId 只有 visible 回合有。
+    // 派发与宿主注入共用使用账本，分别记 dispatched 与 injected。匿名 worker 的
+    // silent 回合也要结算；仅 visible 回合提供持久化 messageId。
   if (dispatchedUsage.length) {
     const dispatchedWrites = await Promise.allSettled(dispatchedUsage.map((grant) => recordRecallUsage(uid, {
       assetId: grant.assetId,
@@ -8499,18 +8413,9 @@ async function runActorTurnBody(
     }
   }
 
-  // 回合收尾：把本回合的 ContextReuseReceipt 从 prepared 收成终态。
-  //
-  // **为什么必须做**：注入处只 prepare，从来没有人 complete，于是所有群聊回执
-  // 永远停在 prepared——「资产被带进去了」有记录，「这次复用真的执行完了」没有。
-  // 成熟度之所以还能升，只是因为升档判定放宽到「非 rejected 即可」；那层宽容
-  // 一旦收紧，整条证明链会静默断掉。
-  //
-  // **状态取值**：注入发生在回合开始，所以只要回合跑起来了，"加载"这件事就是
-  // 真的。回合本身失败/被中断，改变的是这次运行的质量，不是"有没有加载过"——
-  // 所以取 degraded 而不是 rejected。rejected 的语义是"这次复用被拒绝/无效"，
-  // 用在这里会让终态证明把本来算数的加载证据丢掉（collectLoadedAssetsFromReceipts
-  // 按 status==='rejected' 过滤）。任务级别的成败由 terminal-proof 另行判定。
+    // 回合结束时将实际 prepare 的 ContextReuseReceipt 收为终态。
+    // 失败或中断不抹除已发生的加载，记 degraded 而非 rejected；rejected 仅表示
+    // 复用被拒绝或无效。任务级成败另由 terminal-proof 判定。
   if (turnReuseReceiptPrepared) {
     try {
       const { completeReceipt } = await import("../p3394/context-reuse-receipt");
@@ -8680,13 +8585,9 @@ async function runActorTurnBody(
           (outcome.kind === "persist" && !!outcome.failureKind)
         ? "failed"
         : "completed";
-  // conv-core 存储补差（真机踩坑 2026-09-08）：主回合路径此前从不调用
-  // chatCollector.finish——历史消息 process 只有 chatItem 条目、没有 turn
-  // 终态条目，历史重放拿不到权威终态/总耗时（面板徽章无耗时、失败回合
-  // 无 failed 依据）。runActorTurn wrapper 的 finish 只覆盖嵌套派发路径。
-  // ChatTurnTerminalStatus 与 TaskTerminalStatus 的 waiting_input 在
-  // chat_events 契约里不存在——等待输入对过程面板而言是暂停而非终态，
-  // 映射为 completed（面板收尾，等待卡片由 interaction 层另管）。
+    // 主回合和嵌套回合都要完成 chatCollector，以供历史重放读取终态与总耗时。
+    // chat_events 没有 waiting_input 终态：过程面板按 completed 收尾，等待卡由
+    // interaction 层继续管理。
   chatCollector.finish(
     terminalStatus === "cancelled" ? "cancelled"
       : terminalStatus === "failed" ? "failed"
@@ -8750,21 +8651,13 @@ export async function _buildActiveSharedTaskContextBlockForTest(
 }
 
 /**
- * 记一张 ContextReuseReceipt：这个 Agent 出生时继承的认知，本轮被真实注入了哪几条、
- * 哪几条没带上、各是什么原因。这是 `资产 → 出生继承 → 复用` 的最后一跳，也是
- * 履历页 use 段与 evidence 段唯一的数据来源。
+ * Record the cognition inherited by this Agent and actually injected this turn,
+ * plus omitted entries and their reasons, for the lineage and evidence views.
+ * Use the real `turn-<turnId>` execution identity so the receipt points to an
+ * existing execution record. A retry may find the same receipt already present.
  *
- * **execution id 用本轮真实的 `turn-<turnId>`**，与 `execution-records` 写的执行
- * 记录同名、落在同一个目录里。早先版本自造过 `exec-inherit-<hash>` 合成 id 来做
- * 幂等，真机重启后暴露出问题：回执落在一个没有 `record.json` 的目录里，执行记录
- * 扫描器每次启动都反复 warn，而且语义上回执挂在了一次并不存在的执行上——回执
- * 本该是某次真实执行的凭证。噪音该在展示层处理，不该靠编造 id。
- *
- * 同一轮重试会撞上「已存在」，那是预期结果，不是错误。
- *
- * 状态停在 `prepared`：它如实表示「这一轮把这些认知带进去了」，不表示模型真的
- * 用上了、更不表示用了有帮助。DELIVERED / LOADED / USED / PROVED_USEFUL 是四件
- * 不同的事，这里只落得起第二件。
+ * prepared proves loading, not adoption or usefulness. Turn finalization owns
+ * completion; delivery, loading, use and effectiveness remain distinct evidence.
  */
 /** @returns 是否真的落下了一张 prepared 回执——回合收尾要据此决定是否 complete。
  *  同一回合 Commander 投影可能已经建过 `turn-<turnId>`，这里拿到 'already
@@ -9039,7 +8932,7 @@ function appendLanguageDirective(prompt: string): string {
 //   `  inputs: read agent.json before dispatch`
 //   `  interactive: true`
 //
-// Why expose id and ROOT inline (changed 2026-05): the prior layout hid
+// Why expose id and ROOT inline: the prior layout hid
 // agent_id (to discourage hex-id leak in user prose) and put paths in a
 // separate `## Resource locations` section. That forced commander to run
 // `search_files` for the matching agent.json, extract id from the dir
@@ -11623,25 +11516,14 @@ function _toolError(error: string): { content: string; isError: true } {
 
 
 /**
- * Deterministic host routing (the fix for model-dependent routing): when a
- * USER message is detected as a task, the HOST opens the governed KStar task
- * and auto-confirms the projection BEFORE the Commander even starts — no
- * reliance on the model emitting kstar_control with correct args (which
- * failed live twice with empty payloads). The Commander's only remaining
- * KStar responsibility is commit_forecast (the prediction itself), enforced
- * by the guard + next_step contract.
- *
- * Zero-write guarantee preserved: greetings/status/trivia are not tasks, and
- * an already-open task is never duplicated.
+ * The host opens a detected task and confirms its projection before the model
+ * turn; routing does not rely on the Commander constructing control payloads.
+ * The forecast guard still governs privileged execution. Greetings, status and
+ * trivia write no task state, and an already-open task is not duplicated.
  */
-/** Parse the Commander's routing judgement:
- *  `<kstar-judge>{"is_task":true|false,"continuation":true|false}</kstar-judge>`.
- *  Returns null when absent/malformed. Tolerant of bare JSON output too —
- *  the historical prompt said "no markdown / plain JSON" while the parser
- *  only accepted the tagged form, so EVERY live routing judgement silently
- *  failed and no task was ever opened. Accept both shapes, plus the wrapped
- *  `{"kstar-judge":{"is_task":...,"continuation":...}}` shape some models
- *  produce when they read the tag name as a JSON key. */
+/** Parse the Commander's routing judgement in tagged or bare JSON form.
+ *  Also accept {"kstar-judge":{...}} and {"kstar_judge":{...}} wrappers.
+ *  Return null when the verdict is absent or malformed. */
 export function parseContinuationJudgement(text: string | undefined): { isTask: boolean; continuation: boolean } | null {
   const raw = String(text || '').trim();
   const tagged = raw.match(/<kstar-judge>\s*([\s\S]*?)\s*<\/kstar-judge>/);
@@ -11713,22 +11595,14 @@ type ModelRoutingJudgeOutcome =
   | { status: 'failed'; reason: 'timeout' | 'runner_error' | 'unparsable' | 'exception' };
 
 /**
- * Model-judged routing (mixed deterministic + model): for any non-trivial
- * user message, a dedicated runner (NOT the busy commander turn — a bus
- * enqueue would deadlock because the current turn holds the queue) judges
- * whether the message is a task and, when one is open, whether it continues
- * it. Returns a discriminated outcome so the caller can tell "the model said
- * no" apart from "we never got an answer".
+ * A dedicated runner judges task intent and continuation with conversation
+ * context; enqueueing this call through the busy Commander would deadlock.
+ * Distinguish an explicit non-task verdict from an unavailable verdict.
  *
- * No wall-clock ceiling here, deliberately: the two real guards on an LLM call
- * are the model-call idle watchdog (`client.ts`, 1800s with no event) and the
- * SDK timeout, and AGENTS.md forbids adding a separate total wall-clock
- * timeout. A 20s cap used to sit on this call, which was both inconsistent
- * (the main turn has none) and harmful in the direction that matters: a slow
- * provider failed the judge while the turn it was gating would have
- * succeeded, costing that message its governance. The judge passes no external
- * abort signal, so an `error.kind === 'timeout'` on its result can only be the
- * idle watchdog.
+ * The model-call idle watchdog and SDK timeout govern the call. Do not add a
+ * separate total wall-clock ceiling: a slow provider must not lose task routing
+ * while its normal model turn can still succeed. No external abort signal is
+ * passed, so a returned timeout is attributable to the idle watchdog.
  */
 async function judgeModelRouting(
   uid: string,
@@ -11740,12 +11614,8 @@ async function judgeModelRouting(
     const verdict = await _hostRoutingJudgeForTest(newMessage, openRequirement);
     return verdict ? { status: 'verdict', verdict } : { status: 'failed', reason: 'runner_error' };
   }
-  // A0 instrumentation: the judge sits on the critical path (the main turn
-  // cannot start until the verdict lands), yet it previously logged only a
-  // total. Split it so the cost model is measurable before optimising:
-  //   auth   — dynamic import + configured-model check
-  //   build  — buildRunner (module load, session, skill block, tool assembly)
-  //   run    — the provider round trip
+  // Measure auth resolution, runner construction and provider execution
+  // separately so routing critical-path cost can be attributed accurately.
   const startedAt = Date.now();
   let authMs = 0;
   let buildMs = 0;
@@ -12162,16 +12032,11 @@ const DISPATCHED_ASSET_ERRORS = Object.freeze({
 });
 
 /**
- * Validate an explicit cross-Agent asset grant before the live runtime gate.
- *
- * 2026-09-18 放宽（模型自选 / 目录化）：不再要求"必须是已确认投影的子集"——
- * 资产只要存在、可读、过运行时准入门就能授予。模型现在能看全量目录
- * （search_ability_assets 目录模式），挑选权归模型；旧的子集限制会让
- * "目录里看得见、却派不出去"。版本按读取时刻的在用版写进回执（与既有
- * dispatched 回执同一口径）。
- *
- * 保留的不变量：形状、24 条上限、可读/授权、运行时准入门，以及"错误文案
- * 稳定且绝不回显任何 id"——Commander 不能把授权失败当资产枚举 oracle 用。
+ * Validate a model-selected asset grant by shape, 24-item limit, current
+ * readability/authorization and runtime admission. The model may choose from
+ * the available catalog; a grant need not be a confirmed-projection subset.
+ * Bind the in-use version at read time. Stable errors never echo asset ids,
+ * preventing denied grants from becoming an enumeration oracle.
  */
 async function resolveDispatchedAbilityAssets(
   uid: string,
@@ -12504,13 +12369,9 @@ async function buildCommanderExtraTools(
   const { getConversationWorkspacePath } = await import("./conv_workspace");
   const coordinatorWorkingDir = await getConversationWorkspacePath(uid, cid);
   const tools: AgentTool[] = [];
-  // NOTE: kstar_control is intentionally NOT in the Commander's tool surface.
-  // The world model owns the whole governed lifecycle: host routing opens
-  // task + projection, and auto-forecast generates the prediction over the
-  // committed projection knowledge. The Commander's only duty is executing
-  // the work; asking it to emit nested JSON lifecycle payloads is what
-  // produced the repeated live failures (stringified forecast, flattened
-  // candidates, guessed runtime ids).
+  // kstar_control is not exposed to the Commander. Host routing opens tasks and
+  // projections, and auto-forecast uses committed projection knowledge. The
+  // Commander executes the work rather than constructing lifecycle payloads.
   tools.push({
     name: "auto_tasks_list",
     description: [
@@ -12759,10 +12620,8 @@ async function buildCommanderExtraTools(
 
   tools.push(buildSkillSearchTool(uid));
 
-  // 模型自选挂载（2026-09-18）：模型看过目录/取过正文后，把"这次任务要用的
-  // 资产"挂到当前任务上——创建（或复用）一条 authorization='model_selected'
-  // 的 confirmed 投影，并在会话里投一张可撤销的卡。基线（宿主自动投影）不动：
-  // 这是追加，不替换宿主自动选择的资产。
+    // 模型明确选择的资产追加到当前任务的 model_selected confirmed 投影，并向用户
+    // 提供可撤销卡片；保留宿主自动投影，不替换它。
   tools.push({
     name: "attach_assets_to_task",
     description: [
@@ -12808,12 +12667,9 @@ async function buildCommanderExtraTools(
           if (!safeId(assetId)) return _toolError("invalid ability asset id");
           const asset = await readAbilityAsset(uid, assetId).catch(() => null);
           if (!asset) return _toolError(DISPATCHED_ASSET_ERRORS.unauthorized);
-          // 与派单/读取同一道运行时准入门。软提示不做否决（2026-09-18 真机修正）：
-          // applicableWhen 是给宿主自动注入用的软闸，模型已在目录里看过它并明确
-          // 点名——用一段由模型自己写的 reason 去词面匹配软闸，只会把功能拒死
-          // （真机实测：模型挂载被 "Ability asset is not allowed for this dispatch"
-          // 挡下）。硬闸照旧：状态 / 来源撤权 / scopePolicy / 禁用场景 / 敏感度 /
-          // targetAgents。
+          // 模型明确点名后的授予不再用 applicableWhen 软提示否决；该软闸用于宿主
+          // 自动注入。状态、来源撤权、scopePolicy、禁用场景、敏感度与 targetAgents
+          // 等硬闸仍由同一运行时入口校验。
           const gate = await evaluateRecallAssetRuntimeEligibility(uid, asset, {
             ...currentRecallScope,
             purpose: reason || "model_selected",
@@ -14291,11 +14147,8 @@ export async function abort(uid: string, cid: string, options?: AbortRunOptions)
     backendCancelError = err;
     log.warn('abort CogSeed Backend tasks failed', { error: logErrorRef(err) });
   }
-  // 会话级 Stop 也必须把本会话仍在运行的 run 耐久停掉：RunRecord 是权威状态机，
-  // 只清内存里的队列/worker 而不写台账，run 会永远停在 running——收口被「本 run
-  // 还有待审批 Wake」的守卫挡住、没有汇总，那条 Wake 又因为 actor 已终态永远批
-  // 不过（真机复现：会话 aborted、run running、actor failed、hand_off Wake 卡住）。
-  // 复用 run 作用域已有的停止 + Wake 拒绝，保证两条停止路径语义一致。
+  // 会话 Stop 同时耐久停止仍在运行的 run，不能只清内存。复用 run 作用域的
+  // 停止与 Wake 拒绝，使会话级和 run 级停止保持一致。
   try {
     const { listRunIds, readRun, stopRun } = await import('./run_store');
     const runIds = await listRunIds(uid, cid);
@@ -14321,12 +14174,9 @@ export async function abort(uid: string, cid: string, options?: AbortRunOptions)
   } catch (err) {
     log.warn('session abort durable run stop failed', { error: logErrorRef(err) });
   }
-  // Belt-and-suspenders abort for model turns. In production traces we saw
-  // user stop requests reach this function while the bus worker map no longer
-  // exposed the live AbortController (`abortedWorkers=0`), even though the
-  // core-agent session kept running. The model client owns a per-session
-  // abort registry, so abort all active sessions for this conversation too:
-  // `gconv-<cid>` and every `gmember-<cid>-<agent>`.
+  // The worker map may no longer expose a live model controller. Also abort the
+  // model client's active session registry for this conversation: gconv-<cid>
+  // and every gmember-<cid>-<agent>.
   try {
     const model = await import("../../model/client");
     const abortByCid = (
@@ -14635,8 +14485,8 @@ async function _runCliAgentTurn(opts: {
   let resultText = "";
   let aborted = false;
   let backendSessionId: string | undefined;
-  // Task 5 metrics inputs: tool-call count (tool-event phase="use") and the
-  // terminal done event's timing/usage payload.
+  // Metric inputs: tool-call count from phase="use" events and timing/usage
+  // from the terminal runner event.
   let cliToolCalls = 0;
   let cliDoneMetrics: GroupMessageMetrics | undefined;
   const produced = new Set<string>();
@@ -14787,9 +14637,8 @@ async function _runCliAgentTurn(opts: {
           if ((e as any).status === "cancelled") aborted = true;
           if (typeof (e as any).sessionId === "string")
             backendSessionId = (e as any).sessionId as string;
-          // Task 5: settle reply metrics off the runner-attached
-          // startedAt/firstTokenAt plus the backend's usage totals (input /
-          // output / cacheRead / cacheCreate → GroupMessageMetrics.usage).
+        // Settle reply metrics from runner startedAt/firstTokenAt and backend
+        // input/output/cacheRead/cacheCreate usage totals.
           const doneEv = e as {
             metrics?: { startedAt?: unknown; firstTokenAt?: unknown };
             usage?: {

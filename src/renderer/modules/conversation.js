@@ -1525,7 +1525,7 @@ if (typeof window !== 'undefined') {
   }
 }
 
-// ── B+ fast import: background extraction events ──────────────────────────
+// ── Fast import: background extraction events ─────────────────────────────
 // `sessionImport.events` fires when a background extraction finishes. We
 // swap the "正在提炼" placeholder welcome panel for the real carry details
 // (and toast the user) — the user opened the conversation while extraction
@@ -1709,7 +1709,7 @@ function setExecOverride(target, patch) {
 function _executionConfigForSend(target, snapshot) {
   const snap = snapshot || _activeRecipient(target);
   const ov = _activeExecOverride(target) || {};
-  // Option C：该模型持久化的档位是比全局偏好更具体的一层。发送侧只在没有任务级
+  // 该模型持久化的档位是比全局偏好更具体的一层。发送侧只在没有任务级
   // 覆盖时用它，且**不**把全局偏好写进 execution_config（否则全局会盖过 agent
   // 默认）。外接 CLI 来源读不到（模型设置不适用于 CLI 协商的强度）。
   const persistedEffort = (typeof window !== 'undefined' && typeof window.getPersistedModelEffort === 'function')
@@ -2073,7 +2073,7 @@ function onEnterNewChatView() {
 }
 
 // ── Empty-state landing helpers ──────────────────────────────────────────
-// Surface B per PC/docs/design/PATTERNS.md. The time-of-day greeting
+// The time-of-day greeting
 // (early-morning / morning / afternoon / evening) refreshes every 60s
 // while the panel is visible so it stays current across midnight.
 
@@ -2180,7 +2180,7 @@ function _refreshEmptyStateAll() {
 
 window.addEventListener('i18n-change', _refreshEmptyStateGreeting);
 
-// ── Conversation header (Surface C top) ─────────────────────────────────
+// ── Conversation header ────────────────────────────────────────────────
 // Title + project swatch + project name + stacked agent avatars
 // + message count + 详情 toggle. Driven by the same data sources the sidebar
 // already consumes (conversations[] cache, _groupMembersCache, pendingConvs)
@@ -2673,7 +2673,7 @@ function _renderWelcomeCarryHtml(carry, resumeJson) {
   </div>`;
 }
 
-/** B+ 快速导入：后台提炼尚未完成时，欢迎回复渲染「正在提炼」占位条。
+/** 快速导入：后台提炼尚未完成时，欢迎回复渲染「正在提炼」占位条。
  *  提炼完成事件（sessionImport.events → extraction_done）携带真实
  *  welcome 数据，renderer 用 _renderWelcomeCarryHtml 原地替换。 */
 function _renderWelcomePendingHtml(resumeJson) {
@@ -5353,7 +5353,7 @@ function _mountMessageProducedFooter(msgDiv, absPaths, opts = {}) {
   });
   const node = wrap.firstElementChild;
   if (!node) return;
-  // 9.1 统一框架 · 中间区「Receipt 结果块」：产物回执统一收进「回执」块
+  // 中间区「Receipt 结果块」：产物回执统一收进「回执」块
   // （数量角标 = 产物数），默认展开——产物是结果的一部分，不折叠藏起来。
   const body = _mountCompactResultBlock(bubble, {
     label: t('chat.result_block.receipt'),
@@ -6166,7 +6166,7 @@ function startRelayActivitySubscription() {
 
 // `timeBucket` + `_BUCKET_ORDER` live in modules/conv-bucket.js (loaded
 // ahead of this file in index.html). Kept as a separate file so its pure
-// helper can be fixture-tested via the §9 CJS bridge without dragging the
+// helper can be fixture-tested via the CJS bridge without dragging the
 // whole renderer-side global graph (createLogger / IPC) into vitest.
 
 // Move a conversation to the top of the sidebar list and re-render.
@@ -7224,7 +7224,7 @@ function _conversationActionItems(cid, opts = {}) {
     label: t('chat.conv_copy_title'),
     onClick: () => _cloneConversationWithConfirm(cid),
   });
-  // 空间化重构：把已有会话绑定到空间（问题 A 补齐）。已绑 → 「移至其他空间/移出空间」。
+  // 把已有会话绑定到空间。已绑 → 「移至其他空间/移出空间」。
   items.push({
     action: 'setSpace',
     label: t(conv && conv.space_id ? 'chat.conv_move_space_title' : 'chat.conv_set_space_title'),
@@ -8854,7 +8854,7 @@ async function loadConversationHistory(cid, opts = {}) {
   // the previous cid before the new transcript starts loading.
   _wakeRequestHost(cid, { create: false });
   _cancelActiveUserMessageEdit({ focus: false });
-  // 9.1 会话区域统一框架：切换会话时复位顶部执行计划轨道（plan-rail.js）。
+  // 切换会话时复位顶部执行计划轨道（plan-rail.js）。
   // 无该会话的 plan 时轨道自隐藏；历史恢复由 _renderPersistedProcess 喂入。
   if (typeof window.planRail !== 'undefined' && typeof window.planRail.setCid === 'function') {
     window.planRail.setCid(cid);
@@ -10235,7 +10235,7 @@ function appendChatMessage(message, autoScroll = true, opts = {}) {
   const cognitionSaveReceiptsHtml = role === 'assistant'
     ? _renderCognitionSaveReceiptsHtml(message.cognition_save_receipts)
     : '';
-  // 9.1 统一框架 · 中间区「Evidence 结果块」：来源引用 +
+  // 中间区「Evidence 结果块」：来源引用 +
   // 保存回执（含教学回执）统一收进一个
   // 默认展开的「证据」块（数量角标 = 引用数 + 回执数），放在正文之前，与
   // Artifact / Receipt 同一视觉语言。
@@ -10756,7 +10756,7 @@ function _renderMarketplaceInstallCard(card, req, cid, msgId) {
  *
  * 这两个函数保持**自包含**（不借本文件里的其它函数/常量）：`kstar-review-card.test.ts`
  * 把它们从源码里切出来、单独喂进一个只有 t/escapeHtml/uiButton 的沙箱里真跑，
- * 引用外部名字会当场 ReferenceError——而那两条断言是锁定的，不许改。 */
+ * 因此不能引用沙箱未提供的外部名字，否则会抛出 ReferenceError。 */
 function _renderKstarResultReviewCard(card, review) {
   if (!card || !review) return;
   const declaredSource = String(review.expectedSource || '');
@@ -10788,7 +10788,7 @@ function _renderKstarResultReviewCard(card, review) {
   const actual = review.actualResult
     ? `<div class="chat-kstar-status"><strong>${escapeHtml(t('kstar.review.actual'))}</strong> ${escapeHtml(review.actualResult)}</div>` : '';
   // 没有预期可比时不摆"Agent 评估"（`none` 档，或声明了来源却没有正文）：
-  // 这时"系统已根据预期与实际判定差异"这句本身就是空话（契约 §一：只显示实际结果 + 处置）。
+  // 此时只显示实际结果和处置，不呈现缺少比较依据的差异判定。
   const evaluation = hasExpected
     ? `<div class="chat-kstar-status"><strong>${escapeHtml(t('kstar.review.agent_eval', 'Agent 评估'))}</strong> ${escapeHtml(t('kstar.review.agent_eval_hint', '系统已根据预期与实际自动判定差异；你只需确认事实是否准确。'))}</div>`
     : '';
@@ -11281,7 +11281,7 @@ function _cleanupSlowSwitchForCid(cid) {
 
 
 
-// 9.1 统一框架 · 中间区紧凑结果块：
+// 中间区紧凑结果块：
 // 静态版结果块 HTML（用于 appendChatMessage 的字符串组合路径），供 Evidence /
 // Receipt 等内联内容使用；动态挂载用 _mountCompactResultBlock。
 function _compactResultBlockHtml(opts = {}) {
@@ -14493,9 +14493,8 @@ function _settleDanglingActorPlaceholders(cid, opts = {}) {
   // the file was actually written. The two diverge whenever an LLM emits a
   // real `<<<skill-file>>>` block inside a markdown fence (occurs sometimes
   // mid-skill-create): bus persists the clean summary, renderer's streamBuf
-  // still carries the in-fence body. Settle's old `_streamingSetFinal`
-  // re-strip used the same code-guard, so the body kept leaking; the patch
-  // at 944c3409 didn't fix the underlying mismatch.
+  // still carries the in-fence body. Re-stripping with the same code guard
+  // preserves that divergence, so settlement must remove the orphan instead.
   //
   // Removing the orphan ends the divergence — the persisted bubble (matched
   // by `data-msg-id`) carries the canonical text + created-agent / skill
@@ -14577,9 +14576,8 @@ function _observeConversationRunFromPlanAction(cid, opts = {}) {
 
   // The observer opens a second `groupChat.events` subscription for this cid,
   // which runs alongside the primary `conversations.sendStream` and relays the
-  // same event volume. We could not tell from the logs which code path starts
-  // it in the common send flow (the 2s `_scheduleBackendRunRediscovery` debounce
-  // did not match the observed 229ms gap), so record the caller here.
+  // same event volume. Record the caller so duplicate subscriptions can be
+  // traced to the code path that opened them.
   _convLog.info('conversation run observer started', {
     cid,
     source: String(opts.source || 'unspecified'),
@@ -17610,12 +17608,10 @@ function _handleGroupBusEvent(cid, streamingMsg, evData, { archive = false } = {
       }
       if (bubble) bubble.dataset.fromActor = String(gm.from || '');
     }
-    // (Removed pre-seed-recipient-placeholder logic.) Earlier I pre-created
-    // placeholders for each `gm.to` agent on commander's dispatch message,
-    // hoping to pin bubble order to dispatch sequence. But that interleaves
+    // Create agent placeholders from `state_changed`, not the commander's
+    // dispatch message. Pre-seeding each `gm.to` agent would interleave
     // dispatch bubbles with placeholders in the DOM (`A_dispatch, A_ph,
-    // B_dispatch, B_ph, ...`) — exactly the "messy realtime order" the user
-    // complained about.
+    // B_dispatch, B_ph, ...`).
     //
     // Bus naturally serializes top-level turns (one per-conversation runtime
     // inbox; sync queue.push + wake → microtask), and `markInFlight` is
@@ -17706,7 +17702,7 @@ function _handleGroupBusEvent(cid, streamingMsg, evData, { archive = false } = {
           && window.chatStreamHasPanel(cid);
         if (!_chatPanelOwnsEvt) _renderAgentEvent(target, data.event);
         const evt = data.event || {};
-        // 9.1 会话区域统一框架：把 plan 事件实时转发给顶部执行计划轨道
+        // 把 plan 事件实时转发给顶部执行计划轨道
         // （plan-rail.js）。消息流内的 plan-announce 标签保持不变。
         if (evt.stream === 'plan' && typeof window.planRail !== 'undefined'
             && typeof window.planRail.onPlanEvent === 'function') {

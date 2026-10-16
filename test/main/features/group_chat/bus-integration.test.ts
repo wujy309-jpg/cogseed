@@ -1700,7 +1700,8 @@ describe("group_chat bus integration › teaching receipts", () => {
       const cid = newCid();
       const state = await import("../../../../src/main/features/group_chat/state");
       const bus = await import("../../../../src/main/features/group_chat/bus");
-      const answer = "**决定**\n- 周五前上线搜索筛选功能\n\n**待办**\n- 小林补测试，周四给结果。";
+      // Synthetic meeting recap: roles, decisions, and deadlines below are invented.
+      const answer = "**决定**\n- 周五前上线搜索筛选功能\n\n**待办**\n- 小甲补测试，周四给结果。";
       _setScript(state.buildGconvSessionId(cid), [
         { type: "delta", text: answer },
         { type: "event", event: { stream: "tool", data: { phase: "start", name: toolName } } },
@@ -2378,10 +2379,9 @@ describe("group_chat bus integration › abort sticky across worker post-cleanup
   });
 
   it("session-level stop durably stops running runs and rejects their Wake requests", async () => {
-    // 真机形状：会话级 Stop（无 run 作用域参数）之前只清内存队列/worker，不写
-    // 台账 → run 永远 running、汇总被「本 run 有待审批 Wake」挡住。这里钉住：
-    // 停止那一刻 actor 还在 pending 时，Stop 之后 run 必须是 stopped，且该 run 的
-    // 待审批 Wake 必须以「用户停止」这个理由被拒（不能被自动判死抢走理由）。
+    // 会话级 Stop（无 run 作用域参数）必须把 run 持久化为 stopped。
+    // 若停止时 actor 仍为 pending，该 run 的待审批 Wake 必须被拒，
+    // 且保留「用户停止」这一理由，不能被自动过期处理覆盖。
     const cid = newCid();
     const bus = await import("../../../../src/main/features/group_chat/bus");
     const store = await import("../../../../src/main/features/group_chat/run_store");
@@ -2419,9 +2419,8 @@ describe("group_chat bus integration › abort sticky across worker post-cleanup
   });
 
   it("session-level stop resolves a Wake whose actor already failed instead of leaving it pending", async () => {
-    // 真机复现的另一种形状：actor 已经 failed（终态），Wake 却还是 pending ——
-    // 用户反复点批准都只会得到「actor already terminal」。这种唤醒在停止时必须
-    // 被系统判死（expired + 真实理由），而不是继续挂在待审批里。
+    // actor 已为 failed（终态）而 Wake 仍为 pending 时，会话级 Stop
+    // 必须将该 Wake 标为 expired，并记录 actor 的终态理由。
     const cid = newCid();
     const bus = await import("../../../../src/main/features/group_chat/bus");
     const store = await import("../../../../src/main/features/group_chat/run_store");
@@ -2732,7 +2731,7 @@ describe("group_chat state logging privacy", () => {
   });
 });
 
-describe("group_chat bus integration › G8d in-process dispatch (run_worker / dispatch_to)", () => {
+describe("group_chat bus integration › in-process dispatch (run_worker / dispatch_to)", () => {
   it('does NOT expose kstar_control to the Commander (world model owns the lifecycle)', async () => {
     const cid = newCid();
     const state = await import('../../../../src/main/features/group_chat/state');
@@ -3220,7 +3219,7 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
     });
   }, BUS_TEST_TIMEOUT_MS);
 
-  it("授予不存在的资产 id 仍被拒（2026-09-18 放宽后守住可读性闸），且错误不回显 id", async () => {
+  it("授予不存在的资产 id 仍被拒，且错误不回显 id", async () => {
     const cid = newCid();
     const state = await import("../../../../src/main/features/group_chat/state");
     const bus = await import("../../../../src/main/features/group_chat/bus");
@@ -3250,7 +3249,7 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
     expect(_recordedCalls.filter((c) => c.sid === state.buildGmemberSessionId(cid, AGENT_ID))).toHaveLength(0);
   }, BUS_TEST_TIMEOUT_MS);
 
-  it("没有投影也能授予目录内资产（2026-09-18 放宽：目录化 + 模型自选）", async () => {
+  it("没有投影也能授予目录内资产", async () => {
     const cid = newCid();
     const state = await import("../../../../src/main/features/group_chat/state");
     const bus = await import("../../../../src/main/features/group_chat/bus");
@@ -5350,7 +5349,7 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
     await expectNoLifecycleSecretLeak(cid, secret);
   });
 
-  it("dispatch_to (named) runs the agent IN-PROCESS, keeps the agent's visible bubble, and the commander synthesises (Option B) — no re-wake", async () => {
+  it("dispatch_to (named) runs the agent IN-PROCESS, keeps the agent's visible bubble, and the commander synthesises — no re-wake", async () => {
     const cid = newCid();
     const state =
       await import("../../../../src/main/features/group_chat/state");
@@ -7313,7 +7312,7 @@ describe("group_chat bus integration › delegated ability asset Projection subs
   }
 
   it.each(delegatedAssetSurfaces)(
-    "%s allows an active asset outside the current confirmed Projection, and grants it precisely (2026-09-18)",
+    "%s allows an active asset outside the current confirmed Projection, and grants it precisely",
     async (surface) => {
       const cid = newCid();
       const seeded = await seedDelegatedProjection(
@@ -7334,7 +7333,7 @@ describe("group_chat bus integration › delegated ability asset Projection subs
   );
 
   it.each(delegatedAssetSurfaces)(
-    "%s still stops at the host approval gate when the current Projection is not confirmed — the asset relax does not reopen it (2026-09-18)",
+    "%s still stops at the host approval gate when the current Projection is not confirmed",
     async (surface) => {
       const cid = newCid();
       const seeded = await seedDelegatedProjection(
@@ -7356,7 +7355,7 @@ describe("group_chat bus integration › delegated ability asset Projection subs
   );
 
   it.each(delegatedAssetSurfaces)(
-    "%s allows an explicit grant when the Projection version has drifted — the receipt pins the version read at dispatch time (2026-09-18)",
+    "%s allows an explicit grant when the Projection version has drifted — the receipt pins the version read at dispatch time",
     async (surface) => {
       const cid = newCid();
       const seeded = await seedDelegatedProjection(
@@ -7383,7 +7382,7 @@ describe("group_chat bus integration › delegated ability asset Projection subs
   );
 
   it.each(delegatedAssetSurfaces)(
-    "%s allows an explicit grant when no current Requirement exists (2026-09-18)",
+    "%s allows an explicit grant when no current Requirement exists",
     async (surface) => {
       const cid = newCid();
       const asset = await createDelegatedAbilityAsset(`without-requirement-${surface}`);
@@ -9083,7 +9082,7 @@ describe("group_chat bus integration › direct agent reply routing", () => {
   }, BUS_TEST_TIMEOUT_MS);
 });
 
-describe("group_chat bus integration › Task 5 nested workflow preparation", () => {
+describe("group_chat bus integration › nested workflow preparation", () => {
   it.each([
     ["dispatch_to", { to: AGENT_NAME, message: "Write the final strategy" }],
     ["hand_off_to", { to: AGENT_NAME, message: "Write the final strategy" }],
@@ -9155,7 +9154,7 @@ describe("group_chat bus integration › Task 5 nested workflow preparation", ()
   );
 });
 
-describe("group_chat bus integration › Task 6 run attribution", () => {
+describe("group_chat bus integration › run attribution", () => {
   it("durably admits an unmentioned member before queued execution", async () => {
     const cid = newCid();
     const state = await import("../../../../src/main/features/group_chat/state");
@@ -9601,7 +9600,7 @@ async function busOrEnqueue(
   await bus.enqueue({ uid, cid, fromActorId: "user", text });
 }
 
-describe("group_chat bus integration › Task 5 anonymous context patch", () => {
+describe("group_chat bus integration › anonymous context patch", () => {
   it("applies an anonymous worker context patch without adding a roster member or exposing the patch wrapper", async () => {
     const cid = newCid();
     const state =
@@ -9657,7 +9656,7 @@ describe("group_chat bus integration › Task 5 anonymous context patch", () => 
   });
 });
 
-describe("group_chat bus integration › Task 5 anonymous resume", () => {
+describe("group_chat bus integration › anonymous resume", () => {
   it("resumes the same anonymous workflow step through the real run_worker tool path", async () => {
     const cid = newCid();
     const state =
@@ -9977,7 +9976,7 @@ describe("group_chat bus integration › wake-gated dispatch continuation", () =
   }, BUS_TEST_TIMEOUT_MS);
 });
 
-describe("group_chat bus integration › Task 5 Wake rejection", () => {
+describe("group_chat bus integration › Wake rejection", () => {
   it("rejects a real wake-gated handoff only after cancelling its exact workflow step", async () => {
     process.env.COGSEED_P3394_WAKE_GATE = "1";
     const cid = newCid();
@@ -10040,7 +10039,7 @@ describe("group_chat bus integration › Task 5 Wake rejection", () => {
   });
 });
 
-describe("group_chat bus integration › Task 5 anonymous resume capability", () => {
+describe("group_chat bus integration › anonymous resume capability", () => {
   it("rejects a cross-swapped anonymous resume token and step pair", async () => {
     const cid = newCid();
     const state =
@@ -10153,7 +10152,7 @@ describe("group_chat bus integration › Task 5 anonymous resume capability", ()
   });
 });
 
-describe("group_chat bus integration › Task 5 actor-turn settlement wrapper", () => {
+describe("group_chat bus integration › actor-turn settlement wrapper", () => {
   it("settles an unavailable nested agent exactly once", async () => {
     const cid = newCid();
     const state =
@@ -11134,7 +11133,7 @@ describe("group_chat bus integration › coordinator access admission", () => {
   }, BUS_TEST_TIMEOUT_MS);
 });
 
-describe("group_chat bus integration › Task 10 transactional handoff finalization", () => {
+describe("group_chat bus integration › transactional handoff finalization", () => {
   async function setAgentInteractive(agentId: string, interactive: boolean): Promise<void> {
     const paths = await import("../../../../src/main/paths");
     const file = path.join(paths.agentDir(TEST_UID, agentId), "agent.json");
@@ -11442,7 +11441,7 @@ describe("group_chat bus integration › Task 10 transactional handoff finalizat
   });
 });
 
-describe("group_chat bus integration › Task 10 handoff finalization races", () => {
+describe("group_chat bus integration › handoff finalization races", () => {
   async function makeInteractive(): Promise<void> {
     const paths = await import("../../../../src/main/paths");
     const file = path.join(paths.agentDir(TEST_UID, AGENT_ID), "agent.json");
@@ -11775,7 +11774,7 @@ describe("group_chat bus › desktop message broadcaster", () => {
   });
 });
 
-describe("group_chat bus integration › model-selected asset attachment (2026-09-18)", () => {
+describe("group_chat bus integration › model-selected asset attachment", () => {
   async function seedCatalogAsset(tag: string) {
     const candidates = await import("../../../../src/main/features/recall/candidate-service");
     const assetService = await import("../../../../src/main/features/recall/asset-service");

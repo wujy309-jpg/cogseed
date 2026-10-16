@@ -1196,12 +1196,10 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   const visibleToolNameSet = new Set(visibleTools.map((tool) => tool.name));
 
   // Turn-level failure breaker. core-agent counts `isError && !recoverable`
-  // results into `permanentToolErrors` (agent/runner.ts:1500-1502) and client.ts
-  // collects the count, but nothing acted on it: a deterministic dead end (no
-  // role template, invalid args, denied policy) simply returned to the model as
-  // evidence and the turn kept trying variations of it. The breaker ends the
-  // turn on repeated same-kind failures using turn-count semantics only — the
-  // idle/watchdog path stays the owner of time-based stops. See
+  // results into `permanentToolErrors` (agent/runner.ts:1500-1502), and client.ts
+  // collects the count. The breaker ends the turn on repeated same-kind
+  // deterministic failures (no role template, invalid args, denied policy)
+  // using turn-count semantics only. The idle/watchdog path owns time-based stops. See
   // tool-failure-guard.ts for the contract.
   const toolFailureGuard = createToolFailureGuard();
   // Last breaker trip of this run, surfaced through the builder's return so the
@@ -1434,7 +1432,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   // away most of its context. Populate EVERY candidate in the rotating
   // group (keyed by its modelId), not just the primary: rotating-provider can
   // fail over to a different-window model mid-run, and core-agent looks the
-  // window up by the model the stream actually reported .
+  // window up by the model the stream actually reported.
   // resolveConfiguredPiModel returns the pi-ai Model (catalog or custom-built),
   // which carries contextWindow + maxTokens.
   // Each entry must satisfy core-agent's ModelConfigSchema, which REQUIRES
@@ -1443,8 +1441,8 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   // here. These two are schema-required metadata only — core-agent reads the
   // catalog solely for contextWindow/maxOutputTokens and routes via
   // defaultProvider/defaultModel + the injected rotating provider, never via
-  // catalog[x].provider. (Omitting them is what crashed createConfig with a Zod
-  // "provider/model Required" error once a candidate carried a real window.)
+  // catalog[x].provider. Both fields must be present for createConfig's
+  // provider/model schema validation.
   const modelCatalog: Record<string, { provider: string; model: string; contextWindow?: number; maxOutputTokens?: number }> = {};
   for (const choice of group) {
     if (modelCatalog[choice.model]) continue;
@@ -1489,11 +1487,9 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     // (anthropic / openai / pi-ai) on every entry and stuffs the
     // provider instance into the `providers` cache; subsequent
     // `providers.get(id)` calls hit the cache first and never reach
-    // the registerFactory-injected rotating-provider below (this
-    // includes the single-key case — the old "group.length===1 → take
-    // the legacy path" branch missed cooldown / error classification
-    // for exactly this reason). Hand all provider creation to
-    // rotating-provider; for a single key the wrapper is just one
+    // the registerFactory-injected rotating-provider below. Hand all provider
+    // creation to rotating-provider so cooldown and error classification also
+    // apply to single-key groups; for a single key the wrapper is just one
     // closure (negligible cost) and we get a uniform error path.
   });
 
@@ -1840,8 +1836,8 @@ export function buildNativeSearchOnPayload(
     // (search-tools.ts) be the single search surface, otherwise the LLM
     // sees two competing tools and may bypass the paid one the user paid for.
     if (hasAnySearchProfile()) return params;
-    // Payload shape + size stamped into each injection so post-incident
-    // grepping can correlate fetch failures to body size / turn length.
+    // Payload shape + size stamped into each injection so diagnostic logs
+    // can correlate fetch failures to body size / turn length.
     // Cheap — one JSON.stringify of an already-serialisable object.
     const cur = params as { tools?: unknown[]; messages?: unknown[]; input?: unknown[] } & Record<string, unknown>;
     let approxBodyBytes = -1;

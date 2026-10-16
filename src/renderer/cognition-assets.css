@@ -1145,7 +1145,7 @@
   #ca-root .ca-layout-ontology .personal-onto-main-body { padding: 16px 14px 28px; }
 }
 
-/* 本体总览：领域入口与显式关系浏览（PO-PV-003 Proposed）。外层卡片复用
+/* 本体总览：领域入口与显式关系浏览。外层卡片复用
    uiResourceGrid/uiResourceCard；以下只负责本体业务内容的排列与密度。 */
 #ca-root .personal-onto-hub-nav-list { padding-bottom: 4px; border-bottom: 1px solid var(--line); }
 #ca-root .personal-onto-hub-nav-item {
@@ -2043,7 +2043,7 @@
   width: 3px; height: 12px; border-radius: var(--radius-pill);
 }
 
-/* ── 待我处理 · 一行式条目（registry CA-PV-006，Proposed）────────────────
+/* ── 待我处理 · 一行式条目────────────────
    本体候选行与「任务还缺哪些字段」行共用：只排布内容与间距，控件走共享原语。 */
 #ca-root .ca-review-row {
   display: flex; align-items: center; gap: 8px;

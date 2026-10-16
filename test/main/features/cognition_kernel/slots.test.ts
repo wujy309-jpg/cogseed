@@ -1,4 +1,5 @@
-/** Read-only task slot resolution, three-axis checked receipts, and legacy filled receipt compatibility. */
+/** Read-only task slot resolution, three-axis checked receipts, and legacy filled receipt compatibility.
+ * All identities, projects and facts below are synthetic fixtures. */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';

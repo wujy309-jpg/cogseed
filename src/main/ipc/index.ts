@@ -291,7 +291,7 @@ function boundedCustomProviderModel(value: unknown, field: string): {
   const contextWindow = boundedInteger(raw.contextWindow, `${field}.contextWindow`, 16_777_216);
   const maxTokens = boundedInteger(raw.maxTokens, `${field}.maxTokens`, 1_048_576);
   if (maxTokens > contextWindow) throw new Error(`${field}.maxTokens must not exceed contextWindow`);
-  // 新配置字段（2026-09-13 统一模型配置表单）原样透传——严格校验在
+  // 模型能力字段原样透传——严格校验在
   // custom_providers.normalizeModel（单一口径，避免两处规则漂移）。
   return {
     id,
@@ -895,7 +895,7 @@ function recallExperienceListItem(exp: recallExperiences.ExperienceRecord) {
   };
 }
 
-// 详情侧（E2）：正文给（单条 ≤4000 在写入侧已硬校验），证据只回 kind/id/title
+// 详情侧：正文给（单条 ≤4000 在写入侧已硬校验），证据只回 kind/id/title
 // 且过滤绝对路径标题（可读名解析是渲染层 resolveSourceRef 的职责）；mergedFrom
 // 只回 id/title/mergedAt——source/evidenceRefs 快照留在主进程，不随详情外溢。
 function recallExperienceDetail(exp: recallExperiences.ExperienceRecord) {
@@ -918,7 +918,7 @@ function recallExperienceDetail(exp: recallExperiences.ExperienceRecord) {
   };
 }
 
-// 旧个人本体直写通道治理收口（2026-10-06）：po.* 写通道曾留给兼容层，但唯一
+// 旧个人本体直写通道已关闭：po.* 写通道曾留给兼容层，但唯一
 // 渲染消费方（旧 personal-ontology 页）已停驻隐藏停车区，新本体工作台是唯一
 // 入口且把旧记录当只读投影＋送审候选。为防止绕过共同本体命令服务直改旧文档，
 // 与 po.candidates.confirm 同口径：结构化写通道一律拒绝并指向治理入口。
@@ -1316,7 +1316,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { conversation: conv };
   },
 
-  // ── 把已有会话绑定到空间（问题 A：只有新建时能绑，这里补「移入/移出」）──
+  // ── 把已有会话移入或移出空间 ──
   // spaceId 合法且属于该用户 → 绑定；空/缺失 → 解绑（移出空间回到普通列表）。
   'conversations.setSpace': async (args, ctx) => {
     const { cid, spaceId } = args;
@@ -1614,7 +1614,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { scenarios: contract.listRoleScenarios() };
   },
 
-  // ── 空间三 tab 数据源（空间化重构阶段 1）──────────────────────────────
+  // ── 空间三个页签的数据源 ───────────────────────────────────────────
   'spaces.conversations.list': async ({ spaceId } = {}, ctx) => {
     if (!safeId(spaceId)) throw new Error('invalid spaceId');
     return { conversations: await chats.listSpaceConversations(ctx.userId, spaceId) };
@@ -1678,7 +1678,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   },
 
   // ── 空间作用域（@ 选择器按空间能力过滤：agents ∪ skills = 模板 bundle ∪ extra）──
-  // 语义与 runner 一致（S1）：空间缺失/空配置/全失效 → scope=null（全局可见不过滤）。
+  // 语义与 runner 一致：空间缺失/空配置/全失效 → scope=null（全局可见不过滤）。
   'spaces.scope.resolve': async ({ spaceId } = {}, ctx) => {
     if (!safeId(spaceId)) throw new Error('invalid spaceId');
     if (!await spaces.spaceExists(ctx.userId, spaceId)) throw new Error('invalid spaceId');
@@ -1686,7 +1686,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { scope }; // null = 全局；否则 { skills: string[]; agents: string[] }
   },
 
-  // ── 项目 ↔ 空间绑定（工作空间一期）──────────────────────────────────────
+  // ── 项目 ↔ 空间绑定 ───────────────────────────────────────────────────
   'spaces.instructions.get': async ({ spaceId }, ctx) => {
     if (!safeId(spaceId)) throw new Error('invalid spaceId');
     const result = await spaces.readSpaceInstructions(ctx.userId, spaceId);
@@ -2215,7 +2215,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true, receipt: await p3394.readReceipt(ctx.userId, executionId) };
   },
 
-  // P3394 Bridge inbound port (Phase 3). The renderer may initiate an
+  // P3394 Bridge inbound port. The renderer may initiate an
   // operation, but the sender identity is always rewritten to the local
   // agent by P3394IpcChannel.handleInbound — a renderer can never declare an
   // Agent identity or capability.
@@ -2308,7 +2308,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   },
 
   'p3394.listWakeRequests': async ({ cid }, ctx) => {
-    // 控制中心（T3）：cid 可选——不传返回全量（跨会话待审批聚合），
+    // 控制中心：cid 可选——不传返回全量（跨会话待审批聚合），
     // 传了按会话过滤（会话内审批卡原行为）。
     if (cid !== undefined && !safeId(cid)) throw new Error('invalid cid');
     return { ok: true, requests: await p3394.listWakeRequests(ctx.userId, cid) };
@@ -2866,7 +2866,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true, ...(await rankingWeights.getRankingWeights(ctx.userId)) };
   },
 
-  // 版本组（2026-09-16）：versions.list 供资产详情版本链；versions.select 切
+  // 版本组：versions.list 供资产详情版本链；versions.select 切
   // 「在用」指针（内容同步、不 bump——与 rollback 的生成新版语义互补）。
   'recall.assets.versions.list': async ({ assetId } = {}, ctx) => {
     if (!safeId(assetId)) throw new Error('invalid recall asset id');
@@ -2883,7 +2883,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (!safeId(assetId) || typeof version !== 'string' || !/^[0-9]{1,9}$/.test(version) || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall asset version selection');
     return { ok: true, asset: await recallAssets.selectAbilityAssetVersion(ctx.userId, assetId, version, { actor: 'user', reason: note ?? `user selected v${version}` }) };
   },
-  // 版本真删（2026-09-17）：物理移除该版本记录；删除前把快照冻结进引用它的
+  // 版本真删：物理移除该版本记录；删除前把快照冻结进引用它的
   // 已确认投影（注入按副本继续）。在用版本不可删。
   'recall.assets.versions.delete': async ({ assetId, version, note } = {}, ctx) => {
     if (!safeId(assetId) || typeof version !== 'string' || !/^[0-9]{1,9}$/.test(version) || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall asset version deletion');
@@ -2891,7 +2891,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true };
   },
 
-  // 存量治理（2026-09-16）：同义资产归并为一个版本组（source 版本链并入
+  // 存量治理：同义资产归并为一个版本组（source 版本链并入
   // target，source 归档并记录去向）。
   'recall.assets.merge': async ({ sourceAssetId, targetAssetId, note } = {}, ctx) => {
     if (!safeId(sourceAssetId) || !safeId(targetAssetId) || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall asset merge');
@@ -2944,7 +2944,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
 
   // ── 经验目录：与 recall.assets.* 平级的独立段，
   // 但**零调用**任何资产写函数（隔离边界）——读写全走 experience-service。
-  // E1 · 列表（只读）：目录行不含正文/证据；status 缺省 active（归档/合并后
+  // 列表（只读）：目录行不含正文/证据；status 缺省 active（归档/合并后
   // 自然零出现），'all' 才给全量；limit 上限 200、offset 只做分页不影响 total。
   'recall.experiences.list': async ({ type, taskType, status, offset, limit } = {}, ctx) => {
     if (type !== undefined && !['lesson', 'workflow', 'gap', 'uncategorized'].includes(type)) throw new Error('invalid recall experience type');
@@ -2963,28 +2963,28 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     const page = filtered.slice(start, start + (limit ?? 50));
     return { ok: true, total: filtered.length, experiences: page.map(recallExperienceListItem) };
   },
-  // E2 · 详情（只读）：不存在 → ok:false 带 not found 语义（不返回空壳）。
+  // 详情（只读）：不存在 → ok:false 带 not found 语义（不返回空壳）。
   'recall.experiences.read': async ({ experienceId } = {}, ctx) => {
     if (typeof experienceId !== 'string' || !safeId(experienceId) || !experienceId.startsWith('exp-')) throw new Error('invalid recall experience id');
     const exp = await recallExperiences.readExperience(ctx.userId, experienceId);
     if (!exp) throw new Error('experience not found');
     return { ok: true, experience: recallExperienceDetail(exp) };
   },
-  // E3 · 开关（写）：pause/resume + 台账；终态拒绝在 feature 层（错误即语义）。
+  // 开关（写）：pause/resume + 台账；终态拒绝在 feature 层（错误即语义）。
   'recall.experiences.setStatus': async ({ experienceId, action, note } = {}, ctx) => {
     if (typeof experienceId !== 'string' || !safeId(experienceId) || !experienceId.startsWith('exp-')
       || (action !== 'pause' && action !== 'resume')
       || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall experience status action');
     return { ok: true, experience: recallExperienceListItem(await recallExperiences.setExperienceStatus(ctx.userId, experienceId, action, note)) };
   },
-  // E4 · 类型调整（写）：uncategorized 是合法目标；台账留 from/to。
+  // 类型调整（写）：uncategorized 是合法目标；台账留 from/to。
   'recall.experiences.setType': async ({ experienceId, experienceType, note } = {}, ctx) => {
     if (typeof experienceId !== 'string' || !safeId(experienceId) || !experienceId.startsWith('exp-')
       || !['lesson', 'workflow', 'gap', 'uncategorized'].includes(experienceType)
       || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall experience type');
     return { ok: true, experience: recallExperienceListItem(await recallExperiences.setExperienceType(ctx.userId, experienceId, experienceType, note)) };
   },
-  // E5 · 同类合并（写）：同类型拒绝跨并、source 置 merged 不删；回 target
+  // 同类合并（写）：同类型拒绝跨并、source 置 merged 不删；回 target
   // （含 mergedFrom——合并后来源可见）与 source 的 {id, status}。
   'recall.experiences.merge': async ({ sourceExperienceId, targetExperienceId, note } = {}, ctx) => {
     for (const id of [sourceExperienceId, targetExperienceId]) {
@@ -3001,7 +3001,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
       source: { id: merged.source.id, status: merged.source.status },
     };
   },
-  // E6 · 归档（写）：reason 必填（≤1000 字）——「清理=有口径可追溯」，不是删数据。
+  // 归档（写）：reason 必填（≤1000 字）——「清理=有口径可追溯」，不是删数据。
   'recall.experiences.archive': async ({ experienceId, reason } = {}, ctx) => {
     if (typeof experienceId !== 'string' || !safeId(experienceId) || !experienceId.startsWith('exp-')
       || typeof reason !== 'string' || !reason.trim() || reason.length > 1_000) throw new Error('invalid recall experience archive');
@@ -3011,13 +3011,13 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // ── 存量迁移：存量 KSTAR 经验类资产迁入经验目录。
   // run 必须显式传 assetIds（≤200）——禁止隐式「一键全迁」：迁移是用户数据
   // 形态变化，批量和范围都由用户在预览清单上逐条勾选后显式给出。
-  // 通道本身只做入参校验与转调（宪法 II）；顺序保证（冻结→写经验→迁出→
+  // 通道本身只做入参校验与转调；顺序保证（冻结→写经验→迁出→
   // 台账）全部在 experience-migration.ts，这里不复制任何迁移逻辑。
-  // E7 · preview（只读）：稳定跳过理由码（界面按码翻人话），不改盘。
+  // preview（只读）：稳定跳过理由码（界面按码翻人话），不改盘。
   'recall.experiences.migration.preview': async (_payload, ctx) => {
     return { ok: true, ...(await recallExperienceMigration.previewExperienceMigration(ctx.userId)) };
   },
-  // E7 · run（写）：显式 assetIds、≤200、逐条 safeId；不传/空/超限一律 invalid。
+  // run（写）：显式 assetIds、≤200、逐条 safeId；不传/空/超限一律 invalid。
   'recall.experiences.migration.run': async ({ assetIds } = {}, ctx) => {
     if (!Array.isArray(assetIds) || assetIds.length === 0
       || assetIds.length > recallExperienceMigration.EXPERIENCE_MIGRATION_MAX_ASSETS
@@ -3026,7 +3026,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     }
     return { ok: true, ...(await recallExperienceMigration.runExperienceMigration(ctx.userId, assetIds)) };
   },
-  // E8 · status（只读）：最近一次迁移的结果与失败明细；从未跑过 → migrationId:null。
+  // status（只读）：最近一次迁移的结果与失败明细；从未跑过 → migrationId:null。
   'recall.experiences.migration.status': async (_payload, ctx) => {
     return { ok: true, ...(await recallExperienceMigration.latestExperienceMigrationStatus(ctx.userId)) };
   },
@@ -3035,7 +3035,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // 通道只做入参校验与转调；准入、快照冻结、防双注入的保证全部在
   // experience-reference.ts，这里不复制任何判定。撤销复用既有
   // conversations.taskRefs.remove，不新增撤销通道。
-  // E9 · sourceTasks（只读）：episode 维度聚合（只列有经验的来源任务，非全部
+  // sourceTasks（只读）：episode 维度聚合（只列有经验的来源任务，非全部
   // 会话）；载荷不含正文；limit ≤100、缺省 50。
   'recall.experiences.sourceTasks': async ({ query, limit } = {}, ctx) => {
     if (query !== undefined && (typeof query !== 'string' || query.length > 200)) throw new Error('invalid recall experience source task query');
@@ -3047,7 +3047,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
       ...(limit !== undefined ? { limit } : {}),
     })) };
   },
-  // E9 · attachToTask（写）：准入在主进程跑；通过者写 task_references
+  // attachToTask（写）：准入在主进程跑；通过者写 task_references
   // （kind:'experience_set'，含快照）；全被拦 → ok:false + 稳定码 + 逐条规则名。
   // agentId 可选（接收方已知时一并送进准入，目标 Agent 白名单当场生效）。
   'recall.experiences.attachToTask': async ({ conversationId, episodeId, agentId } = {}, ctx) => {
@@ -3058,7 +3058,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
       ...(agentId ? { agentId } : {}),
     });
   },
-  // E10 · omissions（只读）：已挂载但最近一轮被准入拦下的经验——只回标题与
+  // omissions（只读）：已挂载但最近一轮被准入拦下的经验——只回标题与
   // 规则码（无正文）；未挂载经验集的会话返回空数组。
   'recall.experiences.omissions': async ({ cid, limit } = {}, ctx) => {
     if (typeof cid !== 'string' || !safeId(cid)) throw new Error('invalid cid');
@@ -3142,7 +3142,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true, settings: await recallInspection.setInspectionEnabled(ctx.userId, enabled) };
   },
 
-  // 资产侧 KSTAR 溯源（2026-09-17）：证据区 kse 引用的批量摘要与单条复盘
+  // 资产侧 KSTAR 溯源：证据区 kse 引用的批量摘要与单条复盘
   // 详情——此前 KSTAR 血统只在候选卡可见，确认后沉回数据层。
   'recall.kstar.episodes.summaries': async ({ ids } = {}, ctx) => {
     if (!Array.isArray(ids) || !ids.length || ids.length > 50 || ids.some((id) => typeof id !== 'string' || !safeId(id))) throw new Error('invalid kstar episode ids');
@@ -4096,7 +4096,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   'personalOntology.templates.list': async (_payload, ctx) => {
     return { templates: await personalOntologyTemplateFiles.listTemplateStatus(ctx.userId) };
   },
-  // 冲突台账（2026-09-20 本体界面）：读取自带自愈——值已被用户删除的
+  // 冲突台账：读取自带自愈——值已被用户删除的
   // 冲突行顺手清除，返回的每一条都仍然成立。
   'personalOntology.conflicts.list': async ({ groupId } = {}, ctx) => {
     const { listConflicts } = await import('../features/recall/ontology-conflicts');
@@ -4217,7 +4217,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return personalOntologyTemplateFiles.promoteEntryToRef(ctx.userId, groupId, entryText, fieldName);
   },
 
-  // ── 个人本体 v2（2026-09-29 重构）：po.* 干净通道。JSON 单文档存储上的
+  // ── 个人本体 v2：po.* 干净通道。JSON 单文档存储上的
   //  全 id 寻址业务 API（src/main/features/po/api.ts）；旧 personalOntology.*
   //  通道保留（contract / @ 引用 / 候选管道等老消费方在用）。──
   'po.snapshot': async (_payload, ctx) => poApi.getPoSnapshot(ctx.userId),
@@ -4939,7 +4939,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return _writeTextToLocal(payload, ctx);
   },
 
-  // KB library summary (知识库模块 S3)：逐文档要点 + 一句话总结 + 脑图骨架。
+  // KB library summary：逐文档要点 + 一句话总结 + 脑图骨架。
   // 懒生成 + 库指纹缓存（features/kb_summary）；失败降级为文件清单。
   // dir=个人库；spaceId=空间库（共享知识库）。
   'kb.summary': async ({ dir, spaceId }, ctx) => {
@@ -5202,7 +5202,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     }
   },
 
-  // KB 分享到飞书（方案 A/B：空间 → 飞书 wiki 公网链接）。
+  // KB 分享到飞书：空间 → 飞书 wiki 公网链接。
   // 复制链接/管理面板共用；need_reauthorize → 渲染层引导用 FEISHU_SHARE_SCOPES 重新授权。
   'kb.share.toFeishu': async ({ spaceId, access, force } = {}, ctx) => {
     if (typeof spaceId !== 'string' || !safeId(spaceId) || !await spaces.spaceExists(ctx.userId, spaceId)) {
@@ -5244,7 +5244,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     }
   },
 
-  // ── CogSeed 共享服务（方案 C）：发布到 cogseed-share 后端，权限弹窗设置真实生效 ──
+  // ── CogSeed 共享服务：发布到 cogseed-share 后端，权限弹窗设置真实生效 ──
   'kb.share.cogseed.publish': async ({ spaceId, force } = {}, ctx) => {
     if (typeof spaceId !== 'string' || !safeId(spaceId) || !await spaces.spaceExists(ctx.userId, spaceId)) {
       return { ok: false, code: 'publish_failed', error: 'invalid spaceId' };
@@ -5647,7 +5647,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // Thinking strength (reasoning effort) for chat model calls.
   'prefs.getThinkingLevel': async () => ({ level: appConfig.getThinkingLevel() }),
   'prefs.setThinkingLevel': async ({ level }) => ({ level: appConfig.setThinkingLevel(level) }),
-  // Per-model thinking strength (Option C): the explicit tier belongs to the model
+  // Per-model thinking strength: the explicit tier belongs to the model
   // it was chosen for, so switching models falls back to Auto by construction.
   'prefs.getModelThinkingLevels': async () => {
     const stored = appConfig.readPreferences().model_thinking_levels;
@@ -5987,7 +5987,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     boundedText(args?.modelId, 'modelId', 200),
     boundedCustomProviderModel(args.model, 'model'),
   ),
-  // 模型级开关（S2）：关闭 = 选择器隐藏 + 阻止新绑定 + 已绑定条目跳过兜底；
+  // 模型级开关：关闭 = 选择器隐藏 + 阻止新绑定 + 已绑定条目跳过兜底；
   // 配置与绑定都保留，随时可拨回。
   'customProviders.model.setEnabled': async (args, ctx) => {
     if (typeof args?.enabled !== 'boolean') throw new Error('enabled must be boolean');
@@ -6853,7 +6853,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // reuse, and growth state.
   ...(cognitionHandlers as Record<string, unknown>),
 
-  // 转写纠错词表与清理产物（方案 v0.2 P0）。词表是用户确认过的
+  // 转写纠错词表与清理产物。词表是用户确认过的
   // wrong→correct 纠错对；扫描只产候选，替换必须显式接受，原文永不就地改写
   // （apply 只产出清理版 + run 快照，见 features/transcript_correction_runs）。
   ...transcriptHandlers,
@@ -6959,7 +6959,7 @@ const streamHandlers: Record<string, StreamHandler> = {
     }
   },
 
-  // KB grounded Q&A (知识库模块 S2)：ask_materials 证据边界内流式回答。
+  // KB grounded Q&A：ask_materials 证据边界内流式回答。
   // 只读管线：不进主对话/群聊 bus，不写 chats；无资料时明说（no_material）。
   'kbqa.askStream': async function* ({ space_id, dir, question, k, attach_paths, history, model }, ctx, signal) {
     const q = String(question ?? '').trim();
@@ -6991,10 +6991,9 @@ const streamHandlers: Record<string, StreamHandler> = {
           message: opts.message,
           systemPrompt: opts.systemPrompt,
           sessionId: opts.sessionId,
-          // 单问无状态：kb-qa 的证据边界随目录/空间变化，持久 aside 会话会把
-          // 之前其它范围的检索内容"记忆"进来，导致回答引用越界内容（如本次
-          // 引用上轮别处检索到的 AST.pdf#chunk 61）。多轮上下文已由渲染层通过
-          // history 文本参数显式提供，不需要模型侧会话记忆。
+          // 单问无状态：持久会话可能带入先前目录或空间的检索内容，破坏当前
+          // 证据边界。多轮上下文由渲染层通过 history 文本参数显式提供，
+          // 不复用模型侧会话记忆。
           ephemeralSession: true,
           // 只回答问题：不给工具、不进技能（disableTools 才是真正强制项）。
           skillList: [],
@@ -7066,7 +7065,7 @@ const streamHandlers: Record<string, StreamHandler> = {
       yield { type: 'error', text: 'invalid execution configs' };
       return;
     }
-    // 提交幂等键（EC-07）：只做形状检查，语义在 group-chat facade。
+    // 提交幂等键：只做形状检查，语义在 group-chat facade。
     if (submit_request_id !== undefined
       && (typeof submit_request_id !== 'string' || !safeId(submit_request_id)
         || submit_request_id.length > 64)) {
@@ -7090,7 +7089,7 @@ const streamHandlers: Record<string, StreamHandler> = {
     // chat.* 结构化事件：与老 stream:'group' 并行下发，
     // 渲染层 chat-stream 组件群消费；老消费方不受影响。
     const chatProjector = new GroupEventChatProjector();
-    // 双向交互（M2）：interaction-hub 的 requested/closed 事件经活跃流
+    // 双向交互：interaction-hub 的 requested/closed 事件经活跃流
     // 注册表路由进本会话流（uid+cid 匹配），与投影事件同通道下发。
     const interactionBuf: unknown[] = [];
     const interactionStreamKey = `${ctx.userId}:${cid}`;
@@ -7625,7 +7624,7 @@ export function broadcastToRenderer(channel: string, payload: unknown): void {
   }
 }
 
-/** P3394 Bridge IPC port (Phase 3): renderer-initiated inbound port with
+/** P3394 Bridge IPC port: renderer-initiated inbound port with
  *  sender identity pinned to the local agent, and main→renderer pushes on the
  *  `p3394.bridge.push` channel. */
 export const p3394BridgeIpcPort = new P3394IpcChannel('ipc', {
@@ -7641,7 +7640,7 @@ export function register(): void {
     broadcastToRenderer('conversations:updated', info);
   });
 
-  // Cognition change rail (2026-09-27 rewrite): every cognition/recall store
+  // Cognition change rail: every cognition/recall store
   // write broadcasts a lightweight {collection, generation} notice on
   // `cognition:changed`; renderer panels subscribe and re-read only affected
   // blocks (generation is diagnostic; debounce may coalesce sequence values).

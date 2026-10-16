@@ -100,7 +100,7 @@ it.skipIf(process.env.COGSEED_RECALL_LIVE !== '1')('real-model isolated two-nigh
     expect(formed.every(row => !/十页|蓝色/.test(row.judgment))).toBe(true);
     const proposal = formed.find(row => /负责人/.test(row.judgment))!; expect(proposal).toBeDefined();
     const saved = proposal.promotedAssetId ? { asset: await assets.readAbilityAsset(uid, proposal.promotedAssetId) } : await candidates.promoteRecallCandidate(uid, proposal.id, { actor: 'user' });
-    const task = '请准备项目会议材料，讨论下周的部署安排。已知需求是分批上线，由陈工确认部署清单，下一步核对窗口。写出具体内容，不要只列空标题。';
+    const task = '请准备项目会议材料，讨论下周的部署安排。已知需求是分批上线，由示例工程师确认部署清单，下一步核对窗口。写出具体内容，不要只列空标题。';
     // Ordinary model-driven read/attachment entrypoint: no maturity fabrication.
     const tools = (await import('../../../../src/main/model/core-agent/recall-tools')).createRecallToolSuite({ userId: uid, cid, turnId: 'quality-result', taskText: task });
     const search = tools.tools.find(tool => tool.name === 'search_ability_assets')!;

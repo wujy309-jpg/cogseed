@@ -864,7 +864,7 @@ function imageMimeFromExt(ext: string): ImageMimeType {
 }
 
 /** Best-effort image extension from magic bytes. Channel image references
- * (e.g. feishu image_key, G-17 byte path) carry no extension; imported
+ * (e.g. a channel image key or a raw-byte path) carry no extension; imported
  * attachments need one for mime routing. Unknown signatures fall back to png. */
 export function imageExtForBytes(bytes: Buffer): string {
   if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'png';

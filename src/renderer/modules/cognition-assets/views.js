@@ -2113,7 +2113,7 @@
     for (const bucket of groups.values()) {
       if (bucket.length >= 2) {
         // 组名：用户历史命名的族名优先（数据保留、展示保留）；默认短名取用
-        // 得最多的那条资产标题的头段。族命名的写入按钮已删，recall.families.rename 通道的退役判定见 7.1。
+        // 得最多的那条资产标题的头段。族命名的写入按钮已删，历史命名仍保留展示。
         const namedOne = bucket.find((a) => String(a.familyName || '').trim());
         const fallback = bucket.slice().sort((a, b) => String(b.title || '').length - String(a.title || '').length)[0];
         const title = namedOne
@@ -2140,7 +2140,7 @@
     for (const [id] of CATEGORIES) counts[id] = S.assets.filter((a) => a.type === id && !['archived', 'deleted', 'purged', 'revoked'].includes(String(a.status || 'active'))).length;
     const sourceCount = S.sources.reduce((n, group) => n + (Array.isArray(group.items) ? group.items.length : 0), 0);
     const captureCount = Array.isArray(S.captures) ? S.captures.length : 0;
-    // 计数口径(计划 4.4):已验证 = 成熟度达标且 active;待确认走 stats 口径
+    // 计数口径:已验证 = 成熟度达标且 active;待确认走 stats 口径
     // (countsAsPending && !isSnoozed);叶片方向按枝派生。
     const validated = S.assets.filter((a) => String(a.status || 'active') === 'active'
       && (a.maturity === 'transfer_validated' || a.maturity === 'effectiveness_validated')).length;
