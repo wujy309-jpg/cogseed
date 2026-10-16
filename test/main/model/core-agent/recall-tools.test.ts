@@ -809,3 +809,23 @@ describe('catalog ranking parity (T018)', () => {
 });
 
 });
+
+it('reports unassessed search results, reuses that batch and preserves explicit full reads', async () => {
+  const asset = await seedAsset('Synthetic reviews retain the signed decision evidence.', { title: 'Synthetic decision method' });
+  const semantic = await import('../../../../src/main/features/recall/semantic-applicability');
+  const assess = vi.spyOn(semantic, 'assessSemanticApplicability').mockResolvedValue({ decisions: [],
+    unassessed: [{ assetId: asset.id, version: asset.version, reason: 'candidate_limit' }] });
+  try {
+    const { createRecallToolSuite } = await import('../../../../src/main/model/core-agent/recall-tools');
+    const suite = createRecallToolSuite({ userId: TEST_UID, taskText: 'Review the signed decision evidence.', turnId: 'unassessed-search' });
+    const search = suite.tools.find(tool => tool.name === 'search_ability_assets')!;
+    const first = await search.execute({ query: 'signed decision evidence' }, {} as never);
+    expect(first.content).toContain('not_evaluated: semantic_applicability_candidate_limit');
+    expect(first.content).not.toContain(asset.statement);
+    await search.execute({ query: 'signed decision evidence' }, {} as never);
+    expect(assess).toHaveBeenCalledTimes(1);
+    const explicit = await search.execute({ assetIds: [asset.id] }, {} as never);
+    expect(explicit.content).toContain(asset.statement);
+    expect(assess).toHaveBeenCalledTimes(1);
+  } finally { assess.mockRestore(); }
+});

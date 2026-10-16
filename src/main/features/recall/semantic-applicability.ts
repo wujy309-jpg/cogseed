@@ -14,6 +14,15 @@ export const decisionSchema = z.object({ assetId: z.string(), version: z.string(
   rank: z.number().int().min(0).max(100),
 }).strict();
 export type SemanticApplicabilityDecision = z.infer<typeof decisionSchema>;
+export interface SemanticApplicabilityResult {
+  decisions: SemanticApplicabilityDecision[];
+  unassessed: Array<{ assetId: string; version: string; reason: 'candidate_limit' | 'context_limit' }>;
+}
+const titleKey = (asset: RecallAbilityAssetRecord) => asset.title.normalize('NFKC').trim().toLocaleLowerCase();
+const conflicts = (left: RecallAbilityAssetRecord, right: RecallAbilityAssetRecord) => left.id !== right.id
+  && (titleKey(left) === titleKey(right) && left.statement !== right.statement
+    || left.relations?.some(row => row.assetId === right.id && row.kind === 'conflicts_with')
+    || right.relations?.some(row => row.assetId === left.id && row.kind === 'conflicts_with'));
 const version = (asset: RecallAbilityAssetRecord) => String(asset.activeVersion || asset.version);
 const uniqueLiteral = (text: string, quote: string) => !!quote.trim() && text.indexOf(quote) >= 0
   && text.indexOf(quote, text.indexOf(quote) + 1) < 0;
@@ -31,7 +40,7 @@ export function parseSemanticApplicability(raw: string, task: string, assets: Re
   }
   return result.decisions;
 }
-export function ambiguousRecallAssetIds(assets: RecallAbilityAssetRecord[], task: string): Set<string> {
+export function ambiguousRecallAssetIds(assets: RecallAbilityAssetRecord[], task: string, comparisonAssets = assets): Set<string> {
   const lower = task.toLocaleLowerCase();
   const ambiguous = new Set<string>();
   for (const asset of assets) {
@@ -39,59 +48,62 @@ export function ambiguousRecallAssetIds(assets: RecallAbilityAssetRecord[], task
     // not literally match need meaning adjudication, not a guessed exclusion.
     if ((asset.applicableWhen?.length && !asset.applicableWhen.some(value => lower.includes(value.toLocaleLowerCase())))
       || (asset.forbiddenWhen?.length && !asset.forbiddenWhen.some(value => lower.includes(value.toLocaleLowerCase())))) ambiguous.add(asset.id);
-    if (assets.some(other => other.id !== asset.id && other.statement !== asset.statement
-      && other.title.normalize('NFKC').trim().toLocaleLowerCase() === asset.title.normalize('NFKC').trim().toLocaleLowerCase())) ambiguous.add(asset.id);
-    if (asset.relations?.some(relation => relation.kind === 'conflicts_with' && assets.some(other => other.id === relation.assetId))) ambiguous.add(asset.id);
+    if (comparisonAssets.some(other => conflicts(asset, other))) ambiguous.add(asset.id);
   }
   return ambiguous;
 }
 export async function assessSemanticApplicability(userId: string, task: string, assets: RecallAbilityAssetRecord[],
-  context: AssetScopeContext, assess?: (message: string) => Promise<string>): Promise<SemanticApplicabilityDecision[]> {
+  context: AssetScopeContext, assess?: (message: string) => Promise<string>,
+  comparisonAssets: RecallAbilityAssetRecord[] = assets): Promise<SemanticApplicabilityResult> {
   const { filterRecallAssetsForAgentRead } = await import('./prompt-injection');
-  const unchanged = async () => {
-    for (const asset of assets) {
-      const current = await readAbilityAsset(userId, asset.id);
-      if (JSON.stringify(current) !== JSON.stringify(asset)
-        || !(await filterRecallAssetsForAgentRead(userId, [current], { ...context, taskText: task })).length) throw new Error('semantic selection snapshot changed');
-    }
-  };
   const candidate = (asset: RecallAbilityAssetRecord) => ({
     assetId: asset.id, version: version(asset), title: asset.title, statement: asset.statement,
     applicableWhen: asset.applicableWhen, forbiddenWhen: asset.forbiddenWhen, scope: asset.scope,
     scopePolicy: asset.scopePolicy, ontologyRefs: asset.ontologyRefs, relations: asset.relations,
   });
-  const titleKey = (asset: RecallAbilityAssetRecord) => asset.title.normalize('NFKC').trim().toLocaleLowerCase();
+  const requested = new Set(assets.map(asset => asset.id));
+  const pool = [...new Map([...comparisonAssets, ...assets].map(asset => [asset.id, asset])).values()];
+  const at = new Date().toISOString(), timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const messageFor = (batch: RecallAbilityAssetRecord[]) => JSON.stringify({ currentTask: task, hostScope: context,
-    currentTime: new Date().toISOString(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-    candidates: batch.map(candidate),
-    // Cross-batch conflicts must remain visible. These are comparison context,
-    // not extra decisions or an expanded authority grant.
-    comparisonCandidates: assets.filter(other => !batch.includes(other) && batch.some(asset => titleKey(asset) === titleKey(other)
-      || asset.relations?.some(relation => relation.assetId === other.id && relation.kind === 'conflicts_with')
-      || other.relations?.some(relation => relation.assetId === asset.id && relation.kind === 'conflicts_with'))).map(candidate),
-  });
-  const decisions: SemanticApplicabilityDecision[] = [];
-  for (let offset = 0; offset < assets.length;) {
-    let batch = assets.slice(offset, offset + 12);
-    while (batch.length > 1 && messageFor(batch).length > 96_000) batch = batch.slice(0, -1);
-    const message = messageFor(batch);
-    if (message.length > 96_000) throw new Error('complete semantic selection exceeds input budget');
-    // Embedding and earlier batches may have awaited IO. Check again before
-    // any private body crosses the model boundary, not only after its reply.
-    await unchanged();
-    const text = assess ? await assess(message) : await (async () => {
-      const settings = await readRecallCaptureSettings(userId);
-      const modelCandidates = await resolveRecallCaptureModelCandidates(userId, settings.modelCandidates);
-      await unchanged();
-      const { result } = await runRecallCaptureModel(userId, { sessionId: `one-shot-recall-applicability-${Date.now()}-${offset}`,
-        systemPrompt: prompts.load('cognition_semantic_applicability'), message, modelCandidates,
-        shouldContinue: async () => { try { await unchanged(); return true; } catch { return false; } } });
-      if (result.meta.aborted || result.meta.error) throw new Error('semantic selection unavailable');
-      return result.text;
-    })();
-    decisions.push(...parseSemanticApplicability(text, task, batch));
-    await unchanged();
-    offset += batch.length;
+    currentTime: at, timeZone, candidates: batch.filter(asset => requested.has(asset.id)).map(candidate),
+    comparisonCandidates: batch.filter(asset => !requested.has(asset.id)).map(candidate) });
+  const batch: RecallAbilityAssetRecord[] = [], visited = new Set<string>();
+  const unassessed: SemanticApplicabilityResult['unassessed'] = [];
+  // Ranking comes from the host. Pack complete connected conflict groups into
+  // one request; an overflow is an explicit unknown, never another model call.
+  for (const seed of assets) {
+    if (visited.has(seed.id)) continue;
+    const group = [seed]; visited.add(seed.id);
+    for (let i = 0; i < group.length; i++) for (const other of pool) {
+      if (!visited.has(other.id) && conflicts(group[i], other)) { visited.add(other.id); group.push(other); }
+    }
+    const next = [...batch, ...group];
+    const reason = next.length > 12 ? 'candidate_limit' : messageFor(next).length > 96_000 ? 'context_limit' : undefined;
+    if (reason) for (const asset of group.filter(asset => requested.has(asset.id)))
+      unassessed.push({ assetId: asset.id, version: version(asset), reason });
+    else batch.push(...group);
   }
-  return decisions;
+  if (!batch.length) return { decisions: [], unassessed };
+  const unchanged = async () => {
+    for (const asset of batch) {
+      const current = await readAbilityAsset(userId, asset.id);
+      if (JSON.stringify(current) !== JSON.stringify(asset)
+        || !(await filterRecallAssetsForAgentRead(userId, [current], { ...context, taskText: task })).length) throw new Error('semantic selection snapshot changed');
+    }
+  };
+  const message = messageFor(batch);
+  await unchanged();
+  const text = assess ? await assess(message) : await (async () => {
+    const settings = await readRecallCaptureSettings(userId);
+    const modelCandidates = await resolveRecallCaptureModelCandidates(userId, settings.modelCandidates);
+    await unchanged();
+    const { result } = await runRecallCaptureModel(userId, { sessionId: `one-shot-recall-applicability-${Date.now()}`,
+      systemPrompt: prompts.load('cognition_semantic_applicability'), message, modelCandidates,
+      shouldContinue: async () => { try { await unchanged(); return true; } catch { return false; } } });
+    if (result.meta.aborted || result.meta.error) throw new Error('semantic selection unavailable');
+    return result.text;
+  })();
+  const decisions = parseSemanticApplicability(text, task, batch.filter(asset => requested.has(asset.id)));
+  await unchanged();
+  return { decisions, unassessed };
 }

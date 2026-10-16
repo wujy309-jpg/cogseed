@@ -1784,3 +1784,22 @@ describe('model-selected projection accounting', () => {
     expect(revokedCard.status).toBe('revoked');
   });
 });
+
+it('records an all-unassessed semantic result without creating an empty projection or calling a model', async () => {
+  vi.stubEnv('COGSEED_RECALL_BASELINE_TOP', '1');
+  const { candidates, assets, projection } = await modules();
+  const candidate = await createNightlyCandidateFixture('user-a', { judgment: 'Review the signed evidence before deciding.',
+    summary: 'Synthetic evidence review', value: 'Reusable decision method.', suggestedType: 'cognition',
+    contentCategory: 'method', suggestedAction: 'create', suggestedScope: 'general', sourceRefs: [], applicableWhen: ['governed reviews'] });
+  const { asset } = await candidates.promoteRecallCandidate('user-a', candidate.id, { actor: 'user' });
+  await assets.setAbilityAssetMaturity('user-a', asset.id, 'transfer_validated');
+  const assessApplicability = vi.fn();
+  const result = await projection.createAutomaticContextProjection('user-a', {
+    taskRunId: 'unassessed-task', taskText: 'Review the signed evidence. ' + 'Context. '.repeat(11_000),
+  }, { embedTexts: async texts => texts.map(() => [1, 0]), assessApplicability });
+  expect(result).toBeUndefined(); expect(assessApplicability).not.toHaveBeenCalled();
+  const { listInjectionReceipts } = await import('../../../../src/main/features/recall/injection-receipt');
+  expect(await listInjectionReceipts('user-a', 'unassessed-task')).toEqual([
+    expect.objectContaining({ assetId: asset.id, assetVersion: asset.version, status: 'omitted', reason: 'prompt_budget' }),
+  ]);
+});
