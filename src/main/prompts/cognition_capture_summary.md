@@ -20,3 +20,5 @@ chunk 阶段的 evidence 每项只输出 messageId 和 quote，不输出 role、
 stage=merge 时，coveredIds 必须恰好列出全部 inputs 的 id。合并相关话题、消除重复，保留各方来源、纠正和未解决分歧。每个 topic 另须包含 inputIds（对应输入 topic 的 id 数组），全部输入 topic 必须至少映射到一个输出话题。不得丢掉不相关话题；证据只能复用输入 evidence 的 messageId/quote，不编造新证据。不把助手建议变成用户要求，不把局部样例变成普遍已验证效果。尽量缩短重述，以便分层合并，但不能删掉具体要求、条件或纠正。
 
 输入 outputBudgetChars 是本次输出 JSON 的字符预算。输出需低于此预算，优先压缩重复描述，保留具体内容、条件、纠正和未解决处。compression=true 时是单个摘要的压缩重试，coveredIds 和 inputIds 仍须完整覆盖，原有每项 evidence 都须保留（messageId、quote 以及已有角色/坐标不能改），不能借压缩删去证据。压缩只精简表达，不能把不同话题或立场混成同一个无意义结论。
+
+反馈带有 versionContext 时，同时保留被评价版本与当前版本的差异、评价对应的任务及条件。历史版本的缺陷不能直接归到当前版本；一次负反馈只能支持所见情境，不能自动推翻通用规则。明确针对助手方案的用户采用需保留双方原文及指代；普通“收到”不算采用。

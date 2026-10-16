@@ -349,7 +349,7 @@ function validateGraphFile(userId: string, value: unknown): OntologyGraphFile {
   };
 }
 
-async function readGraphFile(userId: string): Promise<OntologyGraphFile> {
+async function readGraphFile(userId: string, allowDegraded = true): Promise<OntologyGraphFile> {
   if (!safeId(userId)) throw new Error('invalid user id');
   const file = userOntologyGraphFile(userId);
   let rawText: string;
@@ -366,7 +366,8 @@ async function readGraphFile(userId: string): Promise<OntologyGraphFile> {
   try {
     return validateGraphFile(userId, parsed);
   } catch (strictError) {
-    // P-r1-82：读降级隔离。strict 校验抛错时不再让单条坏记录（如悬空
+    if (!allowDegraded) throw strictError;
+    // 读降级隔离。strict 校验抛错时不再让单条坏记录（如悬空
     // categoryId）锁死本体图全部读写通道——改为逐条剔除坏记录（连带剔除
     // 依赖它的下游记录），其余记录正常读回，剔除明细记 warn。文件级损伤
     // （schemaVersion / ownerId / 集合非数组 / 超限）仍抛错：那不是单条
@@ -381,7 +382,7 @@ async function readGraphFile(userId: string): Promise<OntologyGraphFile> {
 }
 
 /**
- * P-r1-82 的降级读：单条剔除 + 剔除明细。仅处理**记录级**损伤；文件级前提
+ * 降级读：单条剔除 + 剔除明细。仅处理**记录级**损伤；文件级前提
  * 不满足时原样抛回 strict 错误。剔除规则与 validateGraphFile 的校验一一对应
  * （重复 id/名称保首条，父分类不可达/成环的分类连同其后代一并剔除，悬空
  * categoryId 的实体剔除，端点缺失/重复的关系剔除）。
@@ -648,6 +649,11 @@ function relationDuplicate(state: OntologyGraphFile, subject: OntologyEndpoint, 
 
 export async function readOntologyGraph(userId: string): Promise<OntologyGraphSnapshot> {
   return snapshot(await readGraphFile(userId));
+}
+
+/** A complete owner inventory cannot silently omit damaged legacy rows. */
+export async function readOntologyGraphForManagement(userId: string): Promise<OntologyGraphSnapshot> {
+  return snapshot(await readGraphFile(userId, false));
 }
 
 export async function createOntologyCategory(userId: string, input: {

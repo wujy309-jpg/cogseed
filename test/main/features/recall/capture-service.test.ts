@@ -24,6 +24,10 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../../../src/main/features/auth', () => ({
+  listEntriesForUser: async () => ({ entries: [] }),
+  hasConfiguredModelForUser: () => ({ configured: mocks.configured }),
+  getConfiguredModelOAuthExpiredMessageForUser: () => mocks.oauthExpired,
+
   hasConfiguredModel: () => ({ configured: mocks.configured }),
   getConfiguredModelOAuthExpiredMessage: () => mocks.oauthExpired,
 }));
@@ -124,8 +128,7 @@ beforeEach(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cogseed-recall-capture-'));
   previousRoot = process.env.COGSEED_WORKSPACE_ROOT;
   process.env.COGSEED_WORKSPACE_ROOT = tmpDir;
-  // 2026-09-16 B3：默认档已改为 manual，本套件的 quiet-wait 用例此前吃
-  // 旧默认 smart——显式恢复该环境，避免与新默认耦合。
+  // 本套件显式选择 nightly 策略，不依赖历史默认值。
   const captureSettings = await import('../../../../src/main/features/recall/capture-settings');
   await captureSettings.updateRecallCaptureSettings('capture-user', { executionPolicy: 'nightly' });
   mocks.configured = true;
@@ -143,8 +146,7 @@ beforeEach(async () => {
     status: 'pending_review',
     ...input,
   }));
-  // 与 candidateUnavailableForWorkflow 认定的"候选不可读"消息一致（2026-09-16
-  // A2：终态固化在 run 内读候选，mock 消息不匹配会被当成真错误）。
+  // mock 消息须与 candidateUnavailableForWorkflow 的候选不可读错误一致。
   mocks.readCandidate.mockRejectedValue(new Error('recall candidate not found'));
   mocks.readHandoffReceipt.mockReset().mockResolvedValue(undefined);
   mocks.readAbilityAsset.mockReset().mockRejectedValue(new Error('recall ability asset not found'));
@@ -442,8 +444,8 @@ describe('Recall conversation capture', () => {
     });
   });
 
-  it('inlines candidate outcomes into the workflow record for detail rendering (P-r1-55)', async () => {
-    // 数据层修（P-r1-55）：渲染层候选队列（review-queue 视图）只含最近 5 条
+  it('inlines candidate outcomes into the workflow record for detail rendering', async () => {
+    // 渲染层候选队列（review-queue 视图）只含最近 5 条
     // 处理记录，旧任务详情按 candidateIds join 队列全落空 →「整理结果」误报
     // 空态。summarize 全量读池后必须把候选投影内联进 workflow 记录（与
     // confirmedAssetReceipts 同先例），列表与单条读口都要带。
@@ -532,7 +534,7 @@ describe('Recall conversation capture', () => {
     );
   });
 
-  it('snapshot freezes terminal counts: post-terminal candidate drift never flips a completed capture（2026-09-16 A2）', async () => {
+  it('snapshot freezes terminal counts: post-terminal candidate drift never flips a completed capture', async () => {
     const capture = await captureModule();
     const queued = await seedHistoricalCapture();
     const store = await import('../../../../src/main/features/recall/store');
@@ -673,6 +675,7 @@ describe('Recall conversation capture', () => {
         reviewDecisionId: 'rd_receipt0000000000000000',
       },
     };
+    mocks.readCandidate.mockResolvedValueOnce({ id: 'cand-receipt', status: 'pending_review', proposalTarget: 'cognition' });
     mocks.promoteCandidate.mockResolvedValueOnce(promoted);
 
     await expect(capture.promoteRecallCaptureCandidate('capture-user', 'cand-receipt'))
@@ -908,14 +911,9 @@ describe('Recall conversation capture', () => {
   });
 });
 
-/**
- * 「这次为什么没抽出来」必须能说清。
- *
- * 实机：32 条 capture 里 10 条 no_candidate，其中 3 条 model_no_candidate，而
- * 系统里没有任何地方记着原因——`filterReason` 过去只按 `parsed.length` 二分，
- * 于是「模型判空」和「模型给了候选但全被逐条丢弃」落同一个码。这两种的处置
- * 完全相反：前者是内容里确实没有，后者是提取侧没接住，得去修 schema 或提示词。
- */
+/** Empty extraction results retain the model's stated reason. Distinguish an
+ * explicit no-candidate verdict from a batch whose proposed candidates all
+ * failed parsing, so callers can diagnose the appropriate source or schema. */
 describe('空返回的可解释性', () => {
   const labels = new Set(['m1']);
 
@@ -955,7 +953,7 @@ describe('空返回的可解释性', () => {
 });
 
 describe('本体建议必须属于候选', () => {
-  // Exact synthetic provider shape from the third continuity run. Preserve its
+  // A retained synthetic provider shape. Preserve its
   // separate ownership/shape faults; the host must not assign this sibling to
   // its singleton candidate or silently drop it as unrelated metadata.
   const actualWrongNesting = {
@@ -979,7 +977,7 @@ describe('本体建议必须属于候选', () => {
     ], refs: [{ moduleId: 'personal', recordId: 'pref-conclusion-first-assertion' },
       { moduleId: 'personal', recordId: 'pref-conclusion-first-rule', versionPolicy: 'current', sharedBody: true }], identityEvidence: [] },
   };
-  it('对真实singleton顶层本体计划报格式错误，不替模型分配所属或假装已完整解析', async () => {
+  it('对singleton顶层本体计划报格式错误，不替模型分配所属或假装已完整解析', async () => {
     const capture = await import('../../../../src/main/features/recall/capture-service');
     expect(() => capture.parseRecallCaptureResult(JSON.stringify(actualWrongNesting), new Set(['m1'])))
       .toThrow('ontologyChanges must belong inside its candidate');
@@ -1036,7 +1034,7 @@ describe('整理记录列表：scope / 分桶 / 标题回填 / 批量', () => {
     const allPage = await capture.queryRecallCaptures('capture-user', { scope: 'all' });
     const silentRow = allPage.captures.find((row) => row.id === silentId);
     expect(silentRow).toMatchObject({
-      // 2026-09-15 口径修正：无留存内容对用户就是"已完成"（行上显示的正是
+      // 无留存内容对用户就是"已完成"（行上显示的正是
       // 「已完成」），展示桶归 done；零读取路由（性能不变式）不受影响。
       bucket: 'done',
       workflowStatus: 'completed',

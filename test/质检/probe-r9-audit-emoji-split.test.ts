@@ -1,29 +1,4 @@
-/**
- * 探针 r9（边界测试员 · 本遍循环第 4 轮，编号顺延 r6/r7/r8）→ 主题：数据完整
- * 性与极端输入（unicode：UTF-16 截断劈开代理对落盘审计流）。
- *
- * 疑点（读码推演，asset-service.ts）：
- * - 台账摘要四处裸 UTF-16 slice：summarizeAuditValue 正文类字段前缀
- *   `flat.slice(0, AUDIT_BODY_PREFIX_CHARS=60)`（:381）、非正文值
- *   clipAuditText(..., 80)（:369-372）、summarizeAuditChange 整行
- *   `joined.slice(0, AUDIT_SUMMARY_MAX_CHARS=240)`（:406-408）、appendAudit 的
- *   reason/note clipAuditText(..., 1_000)（:471-472）——均无 po 域 F-r1-2 修过的
- *   「末尾孤立高代理剔除」处理。
- * - 超长含 emoji 的正文/条件/依据被审计摘要截断时劈开代理对，孤立高代理写进
- *   ability-asset-audit JSONL 单一事实源（timeline / 详情历史直接读它上屏）。
- *   JSON.stringify 转义可 round-trip（不炸盘），但渲染层上屏为乱码方块——与
- *   F-r1-2（po 落盘侧已修）同构、与 P-r1-28（提示词渲染侧已议）同根不同面。
- *
- * 构造：正文前 59 字符为 ASCII、第 60-61 码元是一个 emoji（🙂=U+1F642 代理对）
- * → slice(0,60) 取走高代理落下低代理 → before/after 摘要含孤立代理。
- * 对照组：正文本体（不经摘要截断）round-trip 无孤立代理——证明孤立代理
- * 正是摘要截断制造，而非种子自带。
- * 风格对齐 probe-r6-deleteversion-select-race.test.ts。
- *
- * 收尾状态（2026-10-01 记账员）：对应待议 **边界测试员 r9 F1（审计摘要四处裸 UTF-16 slice 劈代理对落盘 audit 流）：本轮甄别 60 条清单未见独立编号（疑漏并入 UTF-16 族），关联 P-r1-38（主进程侧同族）/P-r4-20（渲染层面）——归属待上游对账确认**——
- * 断言漏洞现状的用例 it.skip 注明编号，拍板修复后反转/改写断言启用；
- * 对照组（干净输入/正常序时防线与链路正常）不依赖漏洞，保留 active。
- */
+/** 审计摘要的 60 码元前缀和 240 码元整行截断处的代理对完整性。 */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -89,8 +64,8 @@ async function seed(statement: string) {
   return assets;
 }
 
-describe('probe r9 › 审计摘要裸 UTF-16 截断劈开 emoji：孤立代理落盘 ability-asset-audit 流', () => {
-  it.skip('【待上游对账·关联 P-r1-38/P-r4-20】主靶：60 字前缀截断点落在代理对中间 → before/after 摘要含孤立代理', async () => {
+describe('审计摘要裸 UTF-16 截断劈开 emoji：孤立代理落盘 ability-asset-audit 流', () => {
+  it.skip('60 码元前缀截断点位于代理对中间时，前后摘要含孤立代理', async () => {
     const assets = await seed('a'.repeat(59) + '🙂' + '正文尾巴。');
     // 正文本体 round-trip 干净（对照组：孤立代理不是种子自带）
     const seeded = await assets.readAbilityAsset(UID, ASSET_ID);
@@ -116,7 +91,7 @@ describe('probe r9 › 审计摘要裸 UTF-16 截断劈开 emoji：孤立代理�
     expect(hasUnpairedSurrogate(after.statement)).toBe(false);
   });
 
-  it.skip('【待上游对账·关联 P-r1-38/P-r4-20】同族注入点：240 整行与 60 前缀同为裸 slice（纯函数单点，机制一致性佐证）', async () => {
+  it.skip('240 码元整行与 60 码元前缀截断的代理对完整性', async () => {
     const { summarizeAuditChange, summarizeAuditValue } = await import('../../src/main/features/recall/asset-service');
     // 60 前缀单点：emoji 高代理恰在索引 59（与主用例同款边界构造）。
     const value = summarizeAuditValue('statement', 'c'.repeat(59) + '🙂' + '尾');

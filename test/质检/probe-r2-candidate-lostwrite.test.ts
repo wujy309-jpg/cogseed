@@ -1,22 +1,4 @@
-/**
- * 探针 r2（边界测试员 · 并发与时序）：候选池「确认窗口」丢写。
- *
- * 推演链：confirmCandidate 在 readCandidates（:951）之后、writeCandidates
- * （:964）之前有多个 await（resolveLlmRoute / writeCandidateToDestinations
- * 内部的资产轨 fs IO）。窗口内任何同步写池操作（addCandidate / addCandidates，
- * 全同步原子）写入的新候选，会被 confirm 基于旧快照的整文件回写**覆盖掉**——
- * 新候选静默消失（比 r1 的复活更糟：数据丢失而非状态倒退）。
- * 触发场景：用户在甄别页点确认的同时，资产回流 backflowAssetToOntologyPool
- * 或 onboarding 抽取 addCandidates 写池。
- *
- * 时序确定性：confirm 同步跑到第一个 await 让出 → 主线程执行同步的
- * addCandidate → 恢复 confirm。JS 单线程下该交错确定发生。
- *
- * 2026-09-30 r2 收尾（记账员）：用例 1 对应待议 P-r2-1（与 r1 P-r1-1 同根
- * 延续；写前重读 vs fileEditLock 两修法并存待拍板）→ it.skip，断言锁定的
- * 是「现状静默丢失」。用例 2/3（对照组）保留 active：锁定无交错时的正确
- * 路径，不依赖漏洞，修复后应持续绿。见 round-2-甄别.md toPending。
- */
+/** 候选确认等待期间新增条目的并发写入保留。 */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -70,9 +52,8 @@ async function seedPool(ids: string[]): Promise<void> {
   fs.writeFileSync(candidatesMd(), cands.serializeCandidatesMarkdown(list));
 }
 
-describe('probe r2 › 候选池确认窗口丢写（待议项已 skip）', () => {
-  // 待议 P-r2-1：确认窗口丢写（合并两路发现，r1 P-r1-1 延续）。断言锁定
-  // 「回流候选被旧快照回写吞掉」现状，拍板修复后反转为「不丢失」。
+describe('候选池确认窗口丢写', () => {
+  // 在确认的 await 窗口新增候选，观察提交是否保留新增行。
   it.skip('确认的 await 窗口内 addCandidate 写入的新候选被旧快照回写吞掉（静默丢失）', async () => {
     await seedPool(['cand-a', 'cand-b']);
     const cands = await loadCands();
@@ -99,7 +80,7 @@ describe('probe r2 › 候选池确认窗口丢写（待议项已 skip）', () =
     expect(after.candidate_updates.map((c) => c.candidate_id)).toEqual(['cand-b']);
   });
 
-  // 保留 active（对照组）：无交错时不丢，修复 P-r2-1 后应持续绿。
+  // 无交错对照：确认旧入口不消费原行，也不覆盖新增行。
   it('对照组：旧确认writer已退役，不消费已有行或覆盖新增行', async () => {
     await seedPool(['cand-c']);
     const cands = await loadCands();

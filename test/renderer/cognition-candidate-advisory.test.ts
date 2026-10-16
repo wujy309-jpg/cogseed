@@ -1,22 +1,11 @@
 import { nightlyFormation } from './helpers/nightly-candidate';
-/**
- * 准入软提醒可见性（F-r3-6，2026-10-01 第 3 轮修复）。
- *
- * 主进程随 capabilities 专门下发 eligibilityAdvisories（soft_warning 的来源，
- * candidate-capabilities.ts：不阻断但应如实告知的欠缺）。修复前渲染层
- * 全域零消费：soft_warning 与 eligible 界面同形，用户点「保存」时收不到
- * 任何欠缺提醒——主进程「应如实告知 / 留给用户复核」的设计意图在 UI 蒸发。
- *
- * 这里守住四件事：
- *  1. soft_warning 且有 advisories 时，详情（编辑分支与只读分支）都渲染提醒；
- *  2. 提醒位于确认按钮上方（最后可见），不挡按钮（不阻断 ≠ 不可见）；
- *  3. eligible / ineligible / 空 advisories 不渲染提醒（不制造噪音）；
- *  4. 未知码不上屏（主进程契约：码由 UI 翻译，内部标识不直接展示）。
- */
+/** Nonblocking advisories remain visible above confirmation in editable and
+ * read-only details. Eligible, blocked, empty and unknown advisories do not
+ * manufacture messages or change the confirmation authority. */
 import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { renderCognition } from './helpers/cognition-renderer';
+import { loadCognitionAssets, renderCognition } from './helpers/cognition-renderer';
 
 const zh: Record<string, string> = JSON.parse(
   fs.readFileSync(path.join(__dirname, '../../src/renderer/locales/zh.json'), 'utf8'),
@@ -144,4 +133,29 @@ describe('候选确认前的准入软提醒（soft_warning）', () => {
     expect(html).not.toContain('made_up_future_code');
     expect(html).not.toContain(zh['cognition.candidate_advisory_prefix']);
   });
+});
+
+it('shows formation comparison reason, exact baseline and incomplete coverage in the existing review detail', () => {
+  const item = { ...candidate(ACTIONABLE), formationComparison: { relation: 'exception', reason: '保留周报默认结构，只补临时简报的例外。',
+    targetVersion: '2', targetQuote: '周报先给结论。', coverage: { truncated: true, unavailable: 0 } } };
+  const html = renderCognition({ name: 'review', candidateId: item.id }, { candidates: [item] });
+  expect(html).toContain(item.formationComparison.reason);
+  expect(html).toContain(item.formationComparison.targetQuote);
+  expect(html).toContain(zh['cognition.formation_comparison_partial']);
+  expect(html).toContain('v2');
+  expect(html.split(item.formationComparison.reason)).toHaveLength(2);
+  const loaded = loadCognitionAssets({ candidates: [item] });
+  const compact = loaded.ns.candidate.formCard(item, { compact: true });
+  expect(compact.split(item.formationComparison.reason)).toHaveLength(2);
+  expect(compact.split(item.formationComparison.targetQuote)).toHaveLength(2);
+});
+
+it('labels host-confirmed conversational creation without making it a nightly activity proposal', () => {
+  const item = { ...candidate(ACTIONABLE), captureProvenance: undefined,
+    humanInstructionProvenance: { schemaVersion: 1, pipeline: 'human_instruction' } };
+  const loaded = loadCognitionAssets({ candidates: [item] });
+  const html = loaded.ns.candidate.card(item, false);
+  expect(html).toContain(zh['cognition.source_immediate']);
+  expect(html).not.toContain(zh['cognition.source_capture']);
+  expect(loaded.ns.candidate.attentionReady(item)).toBe(false);
 });

@@ -1,23 +1,4 @@
-/**
- * 红队探针 r1：「仅自己可见」（restricted）的本体值是否进入 KB 检索索引面。
- *
- * 靶点（读码推演）：
- * - model.ts:45-46 承诺 restricted = 仅自己可见、不进任务注入与世界模型；
- * - 世界模型注入链确实过滤（projection-knowledge.ts:79 sensitivity==='restricted' continue）；
- * - 但 po/store.ts syncGroupRender（112-125 行）把组渲染成 md 副本后无条件
- *   search.upsertContext + kbIndexer.enqueue——渲染函数 poValueToFieldValue/view.ts
- *   不滤 restricted 值，原文与 @restricted 标记一起写进副本文件。
- * - kb_indexer 对 .md 按 kind='text' 向量化进 kb_files/kb_vector（material-search
- *   的 agent 检索工具从这个库取 chunk 文本喂给模型）。
- *
- * 预言：写入 restricted 值后，渲染副本文件含该值原文，且 kb/search 索引钩子
- * 被以该副本路径调用 → 「不进任务上下文」的承诺在 KB 检索通道不成立。
- *
- * 2026-09-30 r1 收尾（记账员）：对应待议 P-r1-10（high，「检索命中算不算
- * 显式授权」是产品判断；源头脱敏/索引面脱敏/消费侧剥离/精确打标四案待拍板）
- * → it.skip。断言锁定的是「现状原文进副本+索引钩子」，拍板修复后按所选
- * 方案反转。见 round-1-甄别.md toPending。
- */
+/** restricted 本体值进入渲染副本及知识索引时的授权边界。 */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
@@ -66,7 +47,7 @@ async function loadApi() {
   return import('../../src/main/features/po/api');
 }
 
-describe('probe r1: restricted 值进入渲染副本与 KB 索引钩子（待议 P-r1-10，拍板前 skip）', () => {
+describe('restricted 值进入渲染副本与 KB 索引钩子', () => {
   it.skip('restricted 值原文写入 md 副本，且 search/kb 索引钩子被调用', async () => {
     const groups = await loadGroups();
     const api = await loadApi();

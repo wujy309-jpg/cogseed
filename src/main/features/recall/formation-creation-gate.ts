@@ -8,6 +8,7 @@ import { cognitionSourceRefKey } from './source-service';
 import { resolveExecutionEvidenceRefs } from './evidence-resolution';
 import { resolveScopeForAsset } from './scope-policy';
 import type { RecallAbilityAssetRecord, RecallCandidateRecord } from './candidate-service';
+import { verifyHumanInstructionCandidate } from '../cognition/human-instruction-provenance';
 
 /** Final creation boundary: actor metadata never substitutes for the persisted
  * nightly candidate and the confirmation journal for its current content.
@@ -16,7 +17,10 @@ export async function verifyNightlyAssetCreation(userId: string, asset: RecallAb
   const raw = await readRecallJsonRecord(userId, 'candidates', asset.candidateId);
   if (!raw) throw new Error('ability asset requires its persisted nightly candidate');
   const candidate = raw as RecallCandidateRecord;
-  await verifyCaptureProvenanceForPromotion(userId, candidate);
+  if (candidate.humanInstructionProvenance) {
+    if (actor !== 'user') throw new Error('human creation cannot use an automatic actor');
+    await verifyHumanInstructionCandidate(userId, candidate);
+  } else await verifyCaptureProvenanceForPromotion(userId, candidate);
   const decision = await readReviewDecision(userId, `recall_candidate:${candidate.id}`, asset.reviewDecisionId);
   const expectedDecisionKey = `${actor === 'system' ? 'automatic-' : ''}confirm-${createHash('sha256').update(JSON.stringify({
     candidateId: candidate.id, judgment: candidate.judgment, value: candidate.value,
@@ -31,7 +35,7 @@ export async function verifyNightlyAssetCreation(userId: string, asset: RecallAb
   // The review ledger uses storage.nowIso(): local time to whole seconds.
   // Compare at that serialization precision, so a real same-second review does
   // not appear to precede the capture's ISO timestamp with milliseconds.
-  const extractionSecond = Math.floor(Date.parse(candidate.captureProvenance!.extractionCompletedAt) / 1000);
+  const extractionSecond = Math.floor(Date.parse(candidate.humanInstructionProvenance?.confirmedAt || candidate.captureProvenance!.extractionCompletedAt) / 1000);
   const decisionSecond = decision ? Math.floor(Date.parse(decision.timestamp) / 1000) : NaN;
   if (actor === 'system') await requireNightlyAutomaticApproval(userId, candidate);
   const checks = {
@@ -56,6 +60,11 @@ export async function verifyNightlyAssetCreation(userId: string, asset: RecallAb
     asset_scope: asset.scope === resolveScopeForAsset(candidate.suggestedScope),
     asset_evidence: isDeepStrictEqual(asset.evidenceRefs, expectedEvidence),
     asset_candidate_chain: isDeepStrictEqual(asset.sourceCandidateIds, [candidate.id]),
+    ...(candidate.humanInstructionProvenance ? {
+      asset_reviewed_boundaries: isDeepStrictEqual(asset.applicableWhen || [], candidate.applicableWhen || [])
+        && isDeepStrictEqual(asset.forbiddenWhen || [], candidate.forbiddenWhen || [])
+        && isDeepStrictEqual(asset.scopePolicy, candidate.scopePolicy),
+    } : {}),
   };
   const failed = Object.entries(checks).filter(([, ok]) => !ok).map(([key]) => key);
   if (failed.length) {

@@ -1,5 +1,6 @@
 /** 本体语义记录：认知主档的一个领域，三盒与图谱均由这些记录派生。 */
 import { z } from 'zod';
+import { cognitionEditDecisionSchema, type CognitionEditDecision } from '../edit-decision';
 
 export type OntologyKind = 'module' | 'definition' | 'entity' | 'assertion' | 'rule' | 'reference';
 export type OntologyStatus = 'active' | 'paused' | 'archived' | 'corrected';
@@ -65,6 +66,7 @@ export interface OntologyRevision {
 export interface OntologyReceipt {
   commandId: string; requestHash: string; revision: number; recordedAt: string;
   changedIds: string[];
+  userEditDecision?: CognitionEditDecision;
 }
 export interface OntologyDocument {
   schemaVersion: 1; ownerId: string; revision: number;
@@ -169,7 +171,8 @@ export function boundedJson(value: unknown): void {
 export function validateOntologyRecord(value: unknown): OntologyRecord {
   boundedJson(value);
   const result = recordSchema.safeParse(value);
-  if (!result.success) throw new OntologyError('invalid_input', 'invalid ontology record', { issues: result.error.issues.map(i => ({ path: i.path.join('.'), message: i.message })) });
+  if (!result.success) throw new OntologyError('invalid_input', 'invalid ontology record', { issues: result.error.issues.map(i => ({ path: i.path.join('.'), message: i.message,
+    ...(i.code === 'unrecognized_keys' ? { keys: i.keys } : {}) })) });
   return result.data as OntologyRecord;
 }
 export function emptyOntologyDocument(ownerId: string): OntologyDocument {
@@ -183,6 +186,7 @@ const documentSchema = z.object({
     before: recordSchema.optional(), after: recordSchema }).strict()).max(100000),
   receipts: z.record(id, z.object({ commandId: id, requestHash: z.string().regex(/^[a-f0-9]{64}$/),
     revision: z.number().int().positive(), recordedAt: stamp, changedIds: z.array(id).min(1).max(100),
+    userEditDecision: cognitionEditDecisionSchema.optional(),
   }).strict()),
 }).strict();
 export function validateOntologyDocument(raw: unknown): OntologyDocument {
@@ -201,14 +205,10 @@ export function validateOntologyDocument(raw: unknown): OntologyDocument {
     if (key !== receipt.commandId || receipt.revision > doc.revision)
       throw new OntologyError('store_corrupt', 'ontology receipt identity mismatch');
   }
-  // 单遍索引（性能 2026-10-11）：history 按原序遍历一次建两张表——
-  // latestByRecord（每记录最后一次出现的历史条目，等价于此前每记录
-  // [...history].reverse().find(...)）与 changedByCommand（每个
-  // commandId:revision 覆盖过的 after.id 集合，等价于此前每个 receipt×
-  // changedId 对全量 history 的 some 线性扫）。id 正则不含冒号，拼接键无
-  // 碰撞。文档上限 25000 记录/100000 历史，旧写法最坏 O(records×history +
-  // receipts×changedIds×history)，而本校验是每次本体读写（含每个命令提交
-  // 两次）的必经点，同步阻塞主进程。
+  // 按 history 原序构建每条记录的最新历史项与 commandId:revision 的变更 id 集合。
+  // id 不含冒号，组合键无碰撞。文档上限为 25000 记录和 100000 历史项；
+  // 每次读写都需校验，单遍索引避免 O(records×history + receipts×changedIds×history)
+  // 的重复历史扫描阻塞主进程。
   const latestByRecord = new Map<string, (typeof doc.history)[number]>();
   const changedByCommand = new Map<string, Set<string>>();
   for (const entry of doc.history) {

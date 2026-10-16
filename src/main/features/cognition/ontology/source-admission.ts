@@ -5,7 +5,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { readAbilityAsset } from '../../recall/asset-service';
 import { readRecallJsonRecord } from '../../recall/store';
 import { readRecallCandidate } from '../../recall/candidate-service';
-import { verifyCaptureProvenanceForCommittedCandidate } from '../../recall/capture-provenance';
+import { verifyCandidateFormationForCommittedRead } from '../human-instruction-provenance';
 import { isCognitionSourceEnabled, cognitionSourceControlSnapshot } from '../../recall/source-control';
 import type { CognitionSourceRef } from '../../recall/source-service';
 import { isAssetScopeAllowed } from '../../recall/scope-policy';
@@ -49,7 +49,7 @@ export async function assessOntologySources(userId: string, doc: OntologyDocumen
         if (row.status !== 'integrated' || row.proposalTarget !== 'ontology' || !row.ontologyHandoff) return 'disabled';
         if (!isAssetScopeAllowed(row.scopePolicy, { ...context, purpose: context.purpose || context.taskText })) return 'disabled';
         for (const ref of [...row.sourceRefs, ...row.evidenceRefs]) if (ref.taxonomyVersion === 2 && !await enabled(ref)) return 'disabled';
-        await verifyCaptureProvenanceForCommittedCandidate(userId, row);
+        await verifyCandidateFormationForCommittedRead(userId, row);
         const decision = await readReviewDecision(userId, `recall_candidate:${row.id}`, row.reviewDecisionId!);
         const receipt = doc.receipts[row.ontologyHandoff.commandId];
         if (!decision || decision.decision !== 'integrate_to_ontology'

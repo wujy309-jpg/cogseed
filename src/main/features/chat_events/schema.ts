@@ -168,6 +168,7 @@ export const chatInteractionRequestedSchema = z.object({
   timeoutMs: z.number().positive(),
   /** approval 专用：动作类别，UI 图标用。 */
   approvalCategory: z.enum(['bash', 'fileWrite', 'externalService']).optional(),
+  allowAlways: z.boolean().optional(),
   /** 路由用：ipc 层把事件送进对应会话的活跃流。 */
   cid: z.string().min(1).optional(),
 });

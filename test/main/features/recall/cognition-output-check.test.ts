@@ -9,6 +9,11 @@ const snapshot = vi.fn();
 const current = vi.fn();
 const projection = vi.fn();
 const readable = vi.fn();
+const hostTask = vi.fn();
+const hostRequirement = vi.fn();
+const submitClaim = vi.fn();
+vi.mock('../../../../src/main/features/kstar/requirement-store', () => ({ readKstarTask: (...args: unknown[]) => hostTask(...args), readKstarRequirement: (...args: unknown[]) => hostRequirement(...args) }));
+vi.mock('../../../../src/main/features/group_chat', () => ({ _readSubmitClaim: (...args: unknown[]) => submitClaim(...args) }));
 vi.mock('../../../../src/main/features/recall/capture-model-routing', () => ({ runRecallCaptureModel: (...args: unknown[]) => runModel(...args) }));
 vi.mock('../../../../src/main/features/recall/asset-service', () => ({ readAbilityAssetVersionSnapshot: (...args: unknown[]) => snapshot(...args), readAbilityAsset: (...args: unknown[]) => current(...args) }));
 vi.mock('../../../../src/main/features/recall/context-projection', () => ({ readContextProjection: (...args: unknown[]) => projection(...args) }));
@@ -22,6 +27,7 @@ const good = { assetId: 'aa-pref', version: '1', status: 'complied', outputEvide
 
 beforeEach(async () => {
   vi.resetModules(); runModel.mockReset(); snapshot.mockReset(); current.mockReset(); projection.mockReset(); readable.mockReset();
+  hostTask.mockReset(); hostRequirement.mockReset(); submitClaim.mockReset();
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'cogseed-output-check-'));
   previous = process.env.COGSEED_WORKSPACE_ROOT;
   process.env.COGSEED_WORKSPACE_ROOT = root;
@@ -51,6 +57,65 @@ async function supplied(overrides: Record<string, unknown> = {}, finalText = out
 const input = { cid: 'cid-a', taskRunId: 'turn-a', messageId: 'message-a', taskText: task };
 
 describe('model-assisted cognition compliance observations', () => {
+  it('can independently establish actual use after a literal agent quote failed without repairing that quote', async () => {
+    await supplied();
+    const { finalizeAssetUsageClaims } = await import('../../../../src/main/features/recall/asset-usage-claim');
+    const escapedClaim = { assetId: asset.assetId, assetVersion: asset.version, outputExcerpt: output.replace(/\n/g, '\\n') };
+    const attempt = { cid: input.cid, taskRunId: input.taskRunId, messageId: input.messageId, claims: [escapedClaim] };
+    expect(await finalizeAssetUsageClaims('user-a', attempt)).toEqual([expect.objectContaining({ status: 'usage_unknown', observationMethod: 'agent_reported', reportFailure: 'quote_not_found' })]);
+    const { checkPersistedCognitionOutput } = await import('../../../../src/main/features/recall/cognition-output-check');
+    expect(await checkPersistedCognitionOutput('user-a', input)).toMatchObject({ modelCompleted: true, checks: [{ status: 'complied' }] });
+    const usage = await import('../../../../src/main/features/recall/asset-usage-receipt');
+    expect(await usage.listAssetUsageReceipts('user-a')).toEqual([expect.objectContaining({ status: 'applied', observationMethod: 'model_assisted' })]);
+    await finalizeAssetUsageClaims('user-a', attempt);
+    expect(await usage.listAssetUsageReceipts('user-a')).toEqual([expect.objectContaining({ status: 'applied', observationMethod: 'model_assisted' })]);
+    expect(escapedClaim.outputExcerpt).toBe(output.replace(/\n/g, '\\n'));
+    expect(runModel).toHaveBeenCalledTimes(1);
+  });
+  async function suppliedHostTask() {
+    await supplied();
+    const { appendJsonlAtomic } = await import('../../../../src/main/storage');
+    const { conversationMessageFile } = await import('../../../../src/main/util/project-layout');
+    const file = conversationMessageFile('user-a', 'cid-a');
+    await appendJsonlAtomic(file, { id: 'source-a', from: 'user', text: task, action_request_id: 'request-a', run_id: 'run-a' });
+    await appendJsonlAtomic(file, { id: 'message-a', from: 'commander', text: output, turn_id: 'turn-a', run_id: 'run-a' });
+    projection.mockResolvedValue({ id: 'projection-a', status: 'confirmed', taskRunId: 'host-task-a', conversationId: 'cid-a',
+      purpose: 'general', assetIds: ['aa-pref'], assetVersions: { 'aa-pref': '1' } });
+    hostTask.mockResolvedValue({ id: 'host-task-a', conversationId: 'cid-a', requirementIds: ['requirement-a'] });
+    hostRequirement.mockResolvedValue({ taskId: 'host-task-a', conversationId: 'cid-a', projectionId: 'projection-a', projectionIds: ['projection-a'], userMessageIds: ['source-a'] });
+    submitClaim.mockResolvedValue({ state: 'accepted', message_id: 'source-a', run_id: 'run-a', recipient_ids: ['commander'], dispatch_turn_ids: { commander: 'turn-a' } });
+  }
+  it('checks a governed task projection only through its requirement source and accepted exact actor turn', async () => {
+    await suppliedHostTask();
+    const { checkPersistedCognitionOutput } = await import('../../../../src/main/features/recall/cognition-output-check');
+    expect(await checkPersistedCognitionOutput('user-a', input)).toMatchObject({ modelCompleted: true, checks: [{ status: 'complied' }] });
+    expect(submitClaim).toHaveBeenCalledWith('user-a', 'cid-a', 'request-a');
+    expect(runModel).toHaveBeenCalledTimes(1);
+  });
+  it.each(['missing-binding', 'old-turn', 'wrong-task'])('keeps governed adoption unknown for %s even in the same conversation', async fault => {
+    await suppliedHostTask();
+    if (fault === 'missing-binding') submitClaim.mockResolvedValue(null);
+    if (fault === 'old-turn') submitClaim.mockResolvedValue({ state: 'accepted', message_id: 'source-a', run_id: 'run-a', recipient_ids: ['commander'], dispatch_turn_ids: { commander: 'old-turn' } });
+    if (fault === 'wrong-task') hostRequirement.mockResolvedValue({ taskId: 'another-task', conversationId: 'cid-a', projectionId: 'projection-a', projectionIds: ['projection-a'], userMessageIds: ['source-a'] });
+    const { checkPersistedCognitionOutput } = await import('../../../../src/main/features/recall/cognition-output-check');
+    expect(await checkPersistedCognitionOutput('user-a', input)).toMatchObject({ modelCompleted: false, checks: [{ status: 'unknown' }] });
+    expect(runModel).not.toHaveBeenCalled();
+    expect(await (await import('../../../../src/main/features/recall/asset-usage-receipt')).listAssetUsageReceipts('user-a')).toEqual([]);
+  });
+  it('rejects reply-only compliance when a produced file is the deliverable', async () => {
+    const { setWorkspacePath } = await import('../../../../src/main/features/user_workspace');
+    setWorkspacePath('user-a', root);
+    const file = path.join(root, 'bad-report.md');
+    await fs.writeFile(file, '文件没有给出结论和原因。');
+    await supplied();
+    const { appendJsonlAtomic } = await import('../../../../src/main/storage');
+    const { conversationMessageFile } = await import('../../../../src/main/util/project-layout');
+    await appendJsonlAtomic(conversationMessageFile('user-a', 'cid-a'), { id: 'message-a', from: 'commander', text: output, turn_id: 'turn-a', produced: [file] });
+    const { checkPersistedCognitionOutput } = await import('../../../../src/main/features/recall/cognition-output-check');
+    expect(await checkPersistedCognitionOutput('user-a', input)).toMatchObject({ modelCompleted: false, checks: [{ status: 'unknown' }] });
+    const { listAssetUsageReceipts } = await import('../../../../src/main/features/recall/asset-usage-receipt');
+    expect(await listAssetUsageReceipts('user-a')).toEqual([]);
+  });
   it('checks the actual persisted file rather than the reply claiming completion, in the same model call', async () => {
     const { setWorkspacePath } = await import('../../../../src/main/features/user_workspace');
     expect(setWorkspacePath('user-a', root).ok).toBe(true);
@@ -232,10 +297,10 @@ describe('model-assisted cognition compliance observations', () => {
   });
 
   it.each(['cognition', 'fact'])('checks actually supplied %s facts against the exact stored dates, not external truth', async type => {
-    const fact = '星泽验收：2026-09-24起由秦舟签字；此前宋遥负责的历史仍成立。';
-    const factualOutput = '2026-09-25星泽验收找秦舟，2026-09-23找宋遥，以2026-09-24为生效分界；这是根据你已保存的项目认识。';
-    const factualTask = '准备星泽验收材料，2026-09-25和2026-09-23各找谁签字？';
-    snapshot.mockResolvedValue({ type, contentCategory: 'unclassified', statement: fact, applicableWhen: ['星泽验收'], forbiddenWhen: [], evidenceRefs: [] });
+    const fact = '合成项目甲验收：2026-09-24起由合成签字人甲签字；此前合成签字人乙负责的历史仍成立。';
+    const factualOutput = '2026-09-25合成项目甲验收找合成签字人甲，2026-09-23找合成签字人乙，以2026-09-24为生效分界；这是根据你已保存的项目认识。';
+    const factualTask = '准备合成项目甲验收材料，2026-09-25和2026-09-23各找谁签字？';
+    snapshot.mockResolvedValue({ type, contentCategory: 'unclassified', statement: fact, applicableWhen: ['合成项目甲验收'], forbiddenWhen: [], evidenceRefs: [] });
     await supplied({}, factualOutput);
     runModel.mockResolvedValue({ result: { text: JSON.stringify({ checks: [{ assetId: 'aa-pref', version: '1', status: 'complied', outputEvidence: { quote: factualOutput } }] }), meta: {} } });
     const { checkPersistedCognitionOutput } = await import('../../../../src/main/features/recall/cognition-output-check');
@@ -249,11 +314,11 @@ describe('model-assisted cognition compliance observations', () => {
   });
 
   it.each([
-    { status: 'not_complied', answer: '2026-09-25星泽验收仍由宋遥签字。', request: '准备2026-09-25星泽验收材料，找谁签字？' },
-    { status: 'unknown', answer: '当前无法确定签字负责人，请先核对资料。', request: '准备星泽验收材料，找谁签字？' },
-    { status: 'not_applicable', answer: '本次整理青岚项目材料，星泽项目安排不适用。', request: '只讨论青岚项目验收，不涉及星泽。' },
+    { status: 'not_complied', answer: '2026-09-25合成项目甲验收仍由合成签字人乙签字。', request: '准备2026-09-25合成项目甲验收材料，找谁签字？' },
+    { status: 'unknown', answer: '当前无法确定签字负责人，请先核对资料。', request: '准备合成项目甲验收材料，找谁签字？' },
+    { status: 'not_applicable', answer: '本次整理合成项目乙材料，合成项目甲安排不适用。', request: '只讨论合成项目乙验收，不涉及合成项目甲。' },
   ])('does not mark a factual $status finding as adoption', async ({ status, answer, request }) => {
-    snapshot.mockResolvedValue({ type: 'cognition', contentCategory: 'unclassified', statement: '星泽验收2026-09-24起秦舟负责，此前宋遥负责。', applicableWhen: [], forbiddenWhen: [] });
+    snapshot.mockResolvedValue({ type: 'cognition', contentCategory: 'unclassified', statement: '合成项目甲验收2026-09-24起合成签字人甲负责，此前合成签字人乙负责。', applicableWhen: [], forbiddenWhen: [] });
     await supplied({}, answer);
     runModel.mockResolvedValue({ result: { text: JSON.stringify({ checks: [{ assetId: 'aa-pref', version: '1', status, ...(status === 'not_complied' ? { outputEvidence: { quote: answer } } : {}), ...(status === 'not_applicable' ? { taskEvidence: { quote: request } } : {}) }] }), meta: {} } });
     const { checkPersistedCognitionOutput } = await import('../../../../src/main/features/recall/cognition-output-check');
@@ -311,7 +376,18 @@ describe('model-assisted cognition compliance observations', () => {
     readable.mockResolvedValue([]);
     const { checkPersistedCognitionOutput } = await import('../../../../src/main/features/recall/cognition-output-check');
     expect(await checkPersistedCognitionOutput('user-a', input)).toMatchObject({ modelCompleted: false, checks: [{ status: 'unknown' }] });
-    expect(readable).toHaveBeenCalledWith('user-a', [expect.objectContaining({ evidenceRefs: [{ id: 'revoked-original-source' }] })], expect.objectContaining({ purpose: 'general', taskText: task }));
+    expect(readable).toHaveBeenCalledWith('user-a', [expect.objectContaining({ evidenceRefs: [{ id: 'different-new-source' }] }),
+      expect.objectContaining({ evidenceRefs: [{ id: 'revoked-original-source' }] })], expect.objectContaining({ purpose: 'general', taskText: task }));
+    expect(runModel).not.toHaveBeenCalled();
+  });
+
+  it('does not let an enabled historical source hide a revoked current source', async () => {
+    await supplied();
+    snapshot.mockResolvedValue({ type: 'fact', statement: '原版本事实', contentCategory: 'unclassified', evidenceRefs: [{ id: 'enabled-historical' }] });
+    current.mockResolvedValue({ id: 'aa-pref', ownerId: 'user-a', status: 'active', scope: 'general', evidenceRefs: [{ id: 'revoked-current' }] });
+    readable.mockImplementation(async (_user, rows) => rows.filter((row: { evidenceRefs: Array<{ id: string }> }) => !row.evidenceRefs.some(ref => ref.id === 'revoked-current')));
+    const { checkPersistedCognitionOutput } = await import('../../../../src/main/features/recall/cognition-output-check');
+    expect(await checkPersistedCognitionOutput('user-a', input)).toMatchObject({ modelCompleted: false, checks: [{ status: 'unknown' }] });
     expect(runModel).not.toHaveBeenCalled();
   });
 

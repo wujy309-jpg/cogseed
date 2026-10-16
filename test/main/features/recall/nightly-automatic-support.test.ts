@@ -5,6 +5,8 @@ import * as path from 'node:path';
 import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import type { SaveRecallCandidateInput } from '../../../../src/main/features/recall/candidate-service';
 import { drainMainRuntimeForTest } from '../../../helpers/drain-main-runtime';
+vi.mock('../../../../src/main/features/auth', () => ({ listEntriesForUser: async () => ({ entries: [{ provider: 'configured-provider', model: 'configured-check-model' }] }) }));
+
 vi.mock('../../../../src/main/util/boot_init', () => ({ registerDeferred: () => {} }));
 vi.mock('../../../../src/main/features/recall/asset-title-suggestion', () => ({ suggestAbilityAssetTitle: async () => ({ title: '技术说明表达偏好' }) }));
 vi.mock('../../../../src/main/features/kb_embed', () => ({ closeEmbedder: vi.fn(), embedQuery: async () => { throw new Error('optional embedding unavailable'); } }));
@@ -62,7 +64,7 @@ it('accepts a faithful paraphrase and reuses only the exact persisted assessment
   const policy = await import('../../../../src/main/features/recall/nightly-automatic-approval');
   const result = await policy.tryAutomaticallyApproveRecallCandidate('alice', f.candidate.id);
   expect(result.reasons).toEqual([]);
-  expect(result).toMatchObject({ approved: true, candidate: { status: 'confirmed' }, asset: { lifecycleStatus: 'automatically_extracted_unverified', maturity: 'seed' } });
+  expect(result).toMatchObject({ approved: true, candidate: { status: 'confirmed' }, asset: { lifecycleStatus: 'automatically_extracted_unverified', maturity: 'bud' } });
   await policy.tryAutomaticallyApproveRecallCandidate('alice', f.candidate.id);
   expect(run).toHaveBeenCalledTimes(1);
   const payload = JSON.parse(run.mock.calls[0][1].message);
@@ -153,7 +155,7 @@ it('shares one independent model check for parallel evaluations of an unchanged 
 });
 
 const create = (recordId: string, record: Record<string, unknown>) => ({ intent: 'create', recordId, record, sourceLabel: 'Synthetic approved user evidence' });
-async function withJointPlan(assertionText = source, exception = '') {
+async function withJointPlan(assertionText = source, exception = '', sourceText = source) {
   const bridge = await import('../../../../src/main/features/cognition_bridge');
   const ontology = await import('../../../../src/main/features/cognition/ontology/service');
   const formation = await import('../../../../src/main/features/recall/ontology-formation');
@@ -164,25 +166,69 @@ async function withJointPlan(assertionText = source, exception = '') {
     create('self', { kind: 'entity', moduleId: 'personal', typeId: 'person-type', name: 'Synthetic user', description: '', aliases: [], identityStatus: 'confirmed' }),
     create('preference', { kind: 'definition', moduleId: 'personal', name: 'Synthetic preference', description: '', definitionKind: 'attribute', subjectTypes: ['person-type'], objectTypes: [], valueType: 'text', cardinality: 'one', cardinalityAnchor: 'subject' }),
   ] });
-  const f = await fixture(source, { suggestedType: 'cognition' });
+  const f = await fixture(sourceText, { suggestedType: 'cognition' }, sourceText);
   const plan = formation.parseOntologyFormationProposal(ontology.readOntologyDocument('alice'), f.candidate.id, { reason: 'Synthetic approved preference and guidance', evidence: ['m1'], actions: [
     create('expression', { kind: 'assertion', moduleId: 'personal', subjectId: 'self', definitionId: 'preference', object: { kind: 'literal', valueType: 'text', value: assertionText }, validity: { from: null, until: null, precision: 'day', timezone: 'Asia/Shanghai' }, certainty: 'confirmed' }),
-    create('guidance', { kind: 'rule', moduleId: 'personal', name: 'Synthetic guidance', requirement: source, strength: 'default', condition: null, effect: { kind: 'note' }, exception }),
-  ], refs: [{ moduleId: 'personal', recordId: 'guidance', versionPolicy: 'current', sharedBody: true }] }, source)!;
+    create('guidance', { kind: 'rule', moduleId: 'personal', name: 'Synthetic guidance', requirement: sourceText, strength: 'default', condition: null, effect: { kind: 'note' }, exception }),
+  ], refs: [{ moduleId: 'personal', recordId: 'guidance', versionPolicy: 'current', sharedBody: true }] }, sourceText)!;
   expect(plan.requiresTReview).toBe(false); expect(plan.blockedReasons).toEqual([]);
   f.candidate = { ...f.candidate, ontologyFormation: plan };
   await f.store.writeRecallJsonRecord('alice', 'candidates', f.candidate.id, f.candidate);
-  return { ...f, ontology };
+  const sourceRuleConclusions = [{ recordId: 'guidance', status: 'resolved',
+    expectedContract: { strength: 'default', condition: null, effect: { kind: 'note' }, exception },
+    topicEvidence: [{ label: 'm1', quote: sourceText }], fieldEvidence: { strength: [{ label: 'm1', quote: sourceText }],
+      condition: [], effect: [], exception: exception ? [{ label: 'm1', quote: sourceText }] : [] } }];
+  run.mockResolvedValue({ result: { text: JSON.stringify({ ...accepted, sourceRuleConclusions }), meta: {} } });
+  return { ...f, ontology, sourceRuleConclusions };
 }
+
+it('holds a rule-strength downgrade even when the complete cognition is exact source text and never repairs a persisted automatic proposal', async () => {
+  const mandatory = '部署评审必须写风险和回退条件；普通例会不加这两栏。';
+  const f = await withJointPlan(mandatory, '普通例会不适用', mandatory);
+  run.mockImplementation(async (_user, request) => {
+    const payload = JSON.parse(request.message);
+    expect(payload.completeConversationContext[0].text).toBe(mandatory);
+    expect(payload.candidate.ontologyFormation.actions.find(action => action.recordId === 'guidance').record.strength).toBeUndefined();
+    expect(payload.ruleSourceRequests[0].recordId).toBe('guidance');
+    expect(request.systemPrompt).toContain('Never weaken an obligation');
+    expect(request.systemPrompt).toContain('check is read-only');
+    return { result: { text: JSON.stringify({ ...accepted, evidence: [{ label: 'm1', quote: mandatory }],
+      sourceRuleConclusions: [{ ...f.sourceRuleConclusions[0], expectedContract: { ...f.sourceRuleConclusions[0].expectedContract, strength: 'required' } }] }), meta: {} } };
+  });
+  const policy = await import('../../../../src/main/features/recall/nightly-automatic-approval');
+  const result = await policy.tryAutomaticallyApproveRecallCandidate('alice', f.candidate.id);
+  expect(result).toMatchObject({ approved: false, candidate: { status: 'pending_review' }, reasons: ['candidate_semantic_support_failed'] });
+  expect(result.candidate.ontologyFormation!.actions.find(action => action.recordId === 'guidance')).toMatchObject({ record: { strength: 'default', effect: { kind: 'note' } } });
+  expect(await supportReceipts()).toEqual([]);
+  expect(f.ontology.readOntologyDocument('alice').records.guidance).toBeUndefined();
+});
+
+it.each(['missing', 'duplicate', 'difference', 'not_supported', 'old_ruleChecks'])('holds an otherwise true automatic assessment with %s source proof without rewriting the plan', async mode => {
+  const f = await withJointPlan();
+  const check = f.sourceRuleConclusions[0];
+  const sourceRuleConclusions = ['missing', 'old_ruleChecks'].includes(mode) ? undefined : mode === 'duplicate' ? [check, check]
+    : mode === 'difference' ? [{ ...check, expectedContract: { ...check.expectedContract, strength: 'required' } }]
+      : [{ recordId: check.recordId, status: 'not_supported', reason: 'Different topic has no adoption.' }];
+  run.mockResolvedValue({ result: { text: JSON.stringify({ ...accepted, ...(sourceRuleConclusions ? { sourceRuleConclusions } : {}),
+    ...(mode === 'old_ruleChecks' ? { ruleChecks: [] } : {}) }), meta: {} } });
+  const policy = await import('../../../../src/main/features/recall/nightly-automatic-approval');
+  const result = await policy.tryAutomaticallyApproveRecallCandidate('alice', f.candidate.id);
+  expect(result).toMatchObject({ approved: false, candidate: { status: 'pending_review' } });
+  expect(result.reasons).toEqual([['difference', 'not_supported'].includes(mode) ? 'candidate_semantic_support_failed' : 'candidate_semantic_support_unavailable']);
+  expect(result.candidate.ontologyFormation!.actions.find(action => action.recordId === 'guidance')).toMatchObject({ record: { strength: 'default' } });
+  expect(await supportReceipts()).toEqual([]);
+  expect(f.ontology.readOntologyDocument('alice').records.guidance).toBeUndefined();
+});
 
 it.each([['unsupported A meaning', '另一位成员长期偏好此回答结构。', ''], ['unsupported R exception', source, '紧急时一律省略必要证据和未验证标记。']])('reviews full joint plan and holds %s even when the cognition body is exact source text', async (_label, assertion, exception) => {
   const f = await withJointPlan(assertion, exception);
-  run.mockResolvedValue({ result: { text: JSON.stringify({ ...accepted, noUnsupportedClaims: false }), meta: {} } });
+  run.mockResolvedValue({ result: { text: JSON.stringify({ ...accepted, sourceRuleConclusions: f.sourceRuleConclusions, noUnsupportedClaims: false }), meta: {} } });
   const policy = await import('../../../../src/main/features/recall/nightly-automatic-approval');
   const result = await policy.tryAutomaticallyApproveRecallCandidate('alice', f.candidate.id);
   expect(result).toMatchObject({ approved: false, candidate: { status: 'pending_review' }, reasons: ['candidate_semantic_support_failed'] });
   const payload = JSON.parse(run.mock.calls[0][1].message);
-  expect(payload.candidate.ontologyFormation.actions).toEqual(f.candidate.ontologyFormation!.actions);
+  expect(payload.candidate.ontologyFormation.actions.find(action => action.recordId === 'expression')).toEqual(f.candidate.ontologyFormation!.actions.find(action => action.recordId === 'expression'));
+  expect(payload.candidate.ontologyFormation.actions.find(action => action.recordId === 'guidance').record.strength).toBeUndefined();
   expect(payload.ontology.records).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'self' }), expect.objectContaining({ id: 'preference' })]));
   expect(f.ontology.readOntologyDocument('alice').records.expression).toBeUndefined();
 });
@@ -197,6 +243,30 @@ it('automatically commits a supported joint A/R plan while reusing only one sema
   expect(run).toHaveBeenCalledTimes(1);
 });
 
+it('reuses source meaning but holds a changed full R draft instead of recycling its old approval receipt', async () => {
+  const f = await withJointPlan();
+  const policy = await import('../../../../src/main/features/recall/nightly-automatic-approval');
+  expect((await policy.evaluateNightlyAutomaticApproval('alice', f.candidate)).eligible).toBe(true);
+  const originalReceipts = await supportReceipts();
+  expect(originalReceipts).toHaveLength(1);
+  const changed = structuredClone(f.candidate);
+  const { parseOntologyFormationProposal } = await import('../../../../src/main/features/recall/ontology-formation');
+  const actions = structuredClone(changed.ontologyFormation!.actions);
+  (actions.find(action => action.recordId === 'guidance') as any).record.strength = 'required';
+  changed.ontologyFormation = parseOntologyFormationProposal(f.ontology.readOntologyDocument('alice'), changed.id,
+    { reason: changed.ontologyFormation!.reason, evidence: changed.ontologyFormation!.evidence,
+      actions, refs: changed.ontologyFormation!.refs }, changed.judgment, changed.ontologyFormation!.previewChanges[0].after.updatedAt!)!;
+  expect(changed.ontologyFormation.blockedReasons).toEqual([]);
+  await f.store.writeRecallJsonRecord('alice', 'candidates', changed.id, changed);
+  const result = await policy.evaluateNightlyAutomaticApproval('alice', changed);
+  expect(result).toMatchObject({ eligible: false, reasons: ['candidate_semantic_support_failed'] });
+  expect(run).toHaveBeenCalledTimes(1); // source conclusion, not grant, is reused
+  expect(await supportReceipts()).toEqual(originalReceipts);
+  const persisted = (await f.store.readRecallJsonRecord('alice', 'candidates', changed.id))!;
+  expect((persisted.ontologyFormation as any).actions.find(action => action.recordId === 'guidance').record.strength).toBe('required');
+  expect(f.ontology.readOntologyDocument('alice').records.guidance).toBeUndefined();
+});
+
 it('binds cached support to every joint-plan field and canonical ontology revision', async () => {
   const f = await withJointPlan();
   const policy = await import('../../../../src/main/features/recall/nightly-automatic-approval');
@@ -209,7 +279,7 @@ it('binds cached support to every joint-plan field and canonical ontology revisi
   await f.store.writeRecallJsonRecord('alice', 'candidates', f.candidate.id, f.candidate);
   await f.ontology.commitOntologyCommand('alice', { commandId: 'concurrent-ontology-edit', expectedRevision: f.ontology.readOntologyDocument('alice').revision,
     actions: [{ intent: 'update', recordId: 'personal', expectedVersion: 1, sourceLabel: 'Synthetic edit', patch: { description: 'Concurrent updated canonical meaning' } }] });
-  await expect(policy.requireNightlyAutomaticApproval('alice', f.candidate)).rejects.toMatchObject({ reasons: ['candidate_semantic_support_changed'] });
+  await expect(policy.requireNightlyAutomaticApproval('alice', f.candidate)).rejects.toMatchObject({ reasons: ['ontology_baseline_changed'] });
   expect(run).toHaveBeenCalledTimes(1);
 });
 
@@ -283,16 +353,17 @@ async function withSummaryUnresolved<T extends Awaited<ReturnType<typeof fixture
 
 it.each(['effect_unverified', 'outside_claim_scope', 'source_attribution_only'])('uses final independent %s classification for relevant summary uncertainty without altering the summary', async uncertaintyDisposition => {
   const f = await withSummaryUnresolved(await withJointPlan(), ['效果未改善（非待确认事项）']);
-  run.mockResolvedValue({ result: { text: JSON.stringify({ ...accepted, uncertaintyDisposition }), meta: {} } });
+  run.mockResolvedValue({ result: { text: JSON.stringify({ ...accepted, sourceRuleConclusions: f.sourceRuleConclusions, uncertaintyDisposition }), meta: {} } });
   const policy = await import('../../../../src/main/features/recall/nightly-automatic-approval');
   const result = await policy.tryAutomaticallyApproveRecallCandidate('alice', f.candidate.id);
   expect(result.reasons).toEqual([]); expect(result.approved).toBe(true);
-  expect(result.asset).toMatchObject({ maturity: 'seed', lifecycleStatus: 'automatically_extracted_unverified' });
+  expect(result.asset).toMatchObject({ maturity: 'bud', lifecycleStatus: 'automatically_extracted_unverified' });
   expect(run).toHaveBeenCalledTimes(1); // Commit is cached-only, never another classification.
   const payload = JSON.parse(run.mock.calls[0][1].message);
   expect(payload.relevantSummaryUnresolved).toEqual([{ topicIndex: 0, items: ['效果未改善（非待确认事项）'] }]);
   expect(payload.summary).toEqual(f.summary);
-  expect(payload.candidate.ontologyFormation).toEqual(f.candidate.ontologyFormation);
+  expect(payload.candidate.ontologyFormation.refs).toEqual(f.candidate.ontologyFormation!.refs);
+  expect(payload.candidate.ontologyFormation.actions.find(action => action.recordId === 'guidance').record.strength).toBeUndefined();
   expect(payload.completeConversationContext[0].text).toBe(source);
   const [receipt] = await supportReceipts();
   expect(receipt.summaryUncertainty).toEqual({ disposition: uncertaintyDisposition, unresolvedDigest: expect.stringMatching(/^[a-f0-9]{64}$/) });
@@ -422,7 +493,7 @@ it('retains complete content beyond the 300-character soft budget after full sem
   expect((await policy.evaluateNightlyAutomaticApproval('alice', f.candidate)).eligible).toBe(true);
   await expect(policy.requireNightlyAutomaticApproval('alice', f.candidate)).resolves.toMatchObject({ eligible: true });
   const result = await policy.tryAutomaticallyApproveRecallCandidate('alice', f.candidate.id);
-  expect(result).toMatchObject({ approved: true, asset: { statement: completeLongPreference, maturity: 'seed' } });
+  expect(result).toMatchObject({ approved: true, asset: { statement: completeLongPreference, maturity: 'bud' } });
   expect(result.asset!.statement.length).toBe(completeLongPreference.length);
   expect(run).toHaveBeenCalledTimes(1);
   const payload = JSON.parse(run.mock.calls[0][1].message);
@@ -475,7 +546,7 @@ it.each(['judgment', 'value'] as const)('preserves the existing 4000-character h
 
 it('binds an explicitly selected exact approved fragment to the final whole joint plan and cached-only automatic commit', async () => {
   const f = await withSummaryUnresolved(await withJointPlan(), ['效果尚未验证。']);
-  run.mockResolvedValue({ result: { text: JSON.stringify({ ...accepted, uncertaintyDisposition: 'effect_unverified', evidence: [{ label: 'm1', approvedQuoteIndex: 0 }] }), meta: {} } });
+  run.mockResolvedValue({ result: { text: JSON.stringify({ ...accepted, sourceRuleConclusions: f.sourceRuleConclusions, uncertaintyDisposition: 'effect_unverified', evidence: [{ label: 'm1', approvedQuoteIndex: 0 }] }), meta: {} } });
   const policy = await import('../../../../src/main/features/recall/nightly-automatic-approval');
   expect((await policy.evaluateNightlyAutomaticApproval('alice', f.candidate)).eligible).toBe(true);
   await expect(policy.requireNightlyAutomaticApproval('alice', f.candidate)).resolves.toMatchObject({ eligible: true });
@@ -484,7 +555,8 @@ it('binds an explicitly selected exact approved fragment to the final whole join
   expect(run).toHaveBeenCalledTimes(1);
   const payload = JSON.parse(run.mock.calls[0][1].message);
   expect(payload.approvedUserSources[0].approvedQuotes).toEqual([source]);
-  expect(payload.candidate.ontologyFormation).toEqual(f.candidate.ontologyFormation);
+  expect(payload.candidate.ontologyFormation.refs).toEqual(f.candidate.ontologyFormation!.refs);
+  expect(payload.candidate.ontologyFormation.actions.find(action => action.recordId === 'guidance').record.strength).toBeUndefined();
   const [receipt] = await supportReceipts();
   expect(receipt.evidence).toEqual([{ messageId: f.messageId, start: 0, end: source.length, quoteHash: expect.stringMatching(/^[a-f0-9]{64}$/) }]);
   expect(receipt.summaryUncertainty).toMatchObject({ disposition: 'effect_unverified' });

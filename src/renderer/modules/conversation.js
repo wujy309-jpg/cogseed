@@ -345,8 +345,14 @@ function _renderMessageMarkdown(text) {
     candidateRefIds.push(id);
     return `\x00CANDIDATEREF${idx}\x00`;
   });
+  const proposalRefIds = [];
+  const proposalText = candidateText.replace(/\[proposal:([A-Za-z0-9_-]{1,64})\]/g, (_marker, id) => {
+    const index = proposalRefIds.length;
+    proposalRefIds.push(id);
+    return `\uE000PROPOSALREF${index}\uE001`;
+  });
   const ontologyRefs = [];
-  const markdownInput = candidateText.replace(/\[\[ontology:([A-Za-z0-9_-]{1,160})\/([A-Za-z0-9_-]{1,160})@([1-9]\d{0,8})\]\]/g, (_marker, moduleId, recordId, version) => {
+  const markdownInput = proposalText.replace(/\[\[ontology:([A-Za-z0-9_-]{1,160})\/([A-Za-z0-9_-]{1,160})@([1-9]\d{0,8})\]\]/g, (_marker, moduleId, recordId, version) => {
     const index = ontologyRefs.length;
     ontologyRefs.push({ moduleId, recordId, version: Number(version) });
     return `\uE000ONTOLOGYREF${index}\uE001`;
@@ -355,13 +361,19 @@ function _renderMessageMarkdown(text) {
   const needsSkillRewrite = _htmlMayContainKnownSkillIdForDisplay(html, skills);
   // Mention highlighting requires DOM walking — do it on a detached
   // container, then return its innerHTML for the bubble to embed.
-  if (!html || (html.indexOf('@') < 0 && !needsSkillRewrite && !assetRefIds.length && !candidateRefIds.length && !ontologyRefs.length)) return html;
+  if (!html || (html.indexOf('@') < 0 && !needsSkillRewrite && !assetRefIds.length && !candidateRefIds.length && !proposalRefIds.length && !ontologyRefs.length)) return html;
   const tmp = document.createElement('div');
   tmp.innerHTML = html;
   if (needsSkillRewrite) _replaceKnownSkillIdsIn(tmp, skills);
   _highlightMentionsIn(tmp);
   if (assetRefIds.length) _replaceAssetCitationsIn(tmp, assetRefIds);
   if (candidateRefIds.length) _replaceCandidateCitationsIn(tmp, candidateRefIds);
+  if (proposalRefIds.length) {
+    _replaceProposalCitationsIn(tmp, proposalRefIds);
+    // The caller attaches this HTML synchronously. Read host state only after
+    // attachment; rendering a marker never creates or decides a proposal.
+    Promise.resolve().then(() => window.ChatAssetApproval?.refreshVisible());
+  }
   if (ontologyRefs.length) _replaceOntologyCitationsIn(tmp, ontologyRefs);
   return tmp.innerHTML;
 }
@@ -384,7 +396,7 @@ async function _ensureAbilityAssetTitles() {
   } finally {
     _abilityAssetTitleLoading = false;
     // 首次调用发生在渲染中（同步拿不到结果），那批引用卡当时只能显示原始 id；
-    // 缓存就绪后就地补上真实标题（2026-09-28 修，841 次真实使用的旧链首屏观感）。
+    // 缓存就绪后就地补上真实标题。
     // 前缀复用节点里已有的图钉 emoji（slice 到首个空格），不引入新的 emoji 字面量
     //（shared-ui-adoption-guard 的 emoji-as-icon 基线不许抬高）。
     if (_abilityAssetTitleCache) {
@@ -487,6 +499,34 @@ function _replaceCandidateCitationsIn(container, ids) {
 }
 
 // 本体标记仅提供精确版本阅读入口，采用与效果仍以主进程回执为准。
+function _replaceProposalCitationsIn(container, ids) {
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    const pattern = /\uE000PROPOSALREF(\d+)\uE001/g;
+    if (!pattern.test(node.nodeValue)) continue;
+    pattern.lastIndex = 0;
+    const fragment = document.createDocumentFragment();
+    let last = 0, match;
+    while ((match = pattern.exec(node.nodeValue))) {
+      if (match.index > last) fragment.appendChild(document.createTextNode(node.nodeValue.slice(last, match.index)));
+      const id = ids[Number(match[1])];
+      if (node.parentElement?.closest('pre, code') || !id) {
+        fragment.appendChild(document.createTextNode(`[proposal:${id || '?'}]`));
+      } else {
+        const template = document.createElement('template');
+        template.innerHTML = uiButton({ label: t('chat.proposal_citation_open'), role: 'ghost', size: 'sm',
+          attrs: { 'data-proposal-citation': id } });
+        fragment.appendChild(template.content.cloneNode(true));
+      }
+      last = match.index + match[0].length;
+    }
+    if (last < node.nodeValue.length) fragment.appendChild(document.createTextNode(node.nodeValue.slice(last)));
+    node.parentNode.replaceChild(fragment, node);
+  }
+}
+
 function _replaceOntologyCitationsIn(container, refs) {
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
@@ -1232,7 +1272,7 @@ function _chatRichCreateApi(textarea, editor) {
     api.renderFromTextarea();
     // 浏览器在 focus 事件**之后**才放置默认 caret（落在开头）：同步阶段的恢复会被它
     // 覆盖，若此刻就同步 textarea，还会把"假的开头"写成权威插入点——随后 api.focus()
-    // 读到 0，光标就停在最左边（真机现象：选完 agent 光标跳回开头）。
+    // 读到 0，光标就停在最左边。
     //
     // 因此分两步：先记下 focus 前的权威插入点，再把校正推迟到浏览器的默认 caret 就位
     // 之后（宏任务 + 帧各试一次，函数本身幂等：只在当前插入点无效时才恢复），最后才
@@ -1394,7 +1434,7 @@ function _initMentionMirror(textarea) {
   if (chipId && typeof bindRecipientAnchor === 'function') {
     try { bindRecipientAnchor(chipId, textarea.id); } catch (_) {}
   }
-  // 会话成员与正文标记联动（FR-002）：只有用户真实编辑草稿才可能取消成员；
+  // 会话成员与正文标记联动：只有用户真实编辑草稿才可能取消成员；
   // 发送后的自动清空走 resetDraftTracking，不算手动删除标记。
   const memberTarget = _chatRichInputTarget(textarea.id);
   if (memberTarget !== 'auto' && window.composerMembers) {
@@ -1880,7 +1920,7 @@ function _transferNewChatRecipientTo(cid) {
   }
 }
 
-/** `A +2` 摘要里的 `+N`：一位成员时不渲染（FR-003），零位时移除残留。 */
+/** `A +2` 摘要里的 `+N`：一位成员时不渲染，零位时移除残留。 */
 function _renderRecipientMoreBadge(chipHost, extra) {
   if (!chipHost) return;
   const badge = chipHost.querySelector('.chat-recipient-more');
@@ -1896,7 +1936,7 @@ function _renderRecipientMoreBadge(chipHost, extra) {
 
 /** 成员名单变化 → 回写单接收者语义，并重绘入口摘要。
  *  1 位 agent 成员＝该成员（沿用既有单接收者路由）；2 位以上＝commander 按
- *  分工编排（FR-017：选择顺序不代表执行顺序，独立工作可并行）。 */
+ *  分工编排。 */
 function _syncRecipientFromMembers(target) {
   const cm = window.composerMembers;
   if (!cm || typeof cm.getMembers !== 'function') return;
@@ -1911,9 +1951,8 @@ function _syncRecipientFromMembers(target) {
 }
 
 if (typeof window !== 'undefined') {
-  // 会话成员只在**下一次提交**生效：取消/新增成员不改变已提交运行（PRD FR-014
-  // 「提交冻结当次成员与配置，后续修改不改变已提交运行」；验收报告 MA-02）。
-  // 这里只同步底部入口的接收者显示。停止当前工作走显式停止入口（FR-020），
+  // 会话成员仅在下一次提交生效；当次成员与配置在提交时冻结。
+  // 这里只同步底部入口的接收者显示。停止当前工作走显式停止入口，
   // 不再由成员编辑联动触发——否则「编辑下一条消息」会被误当成「停止当前工作」。
   window.addEventListener('composer-members-change', (event) => {
     const detail = event && event.detail ? event.detail : {};
@@ -1931,7 +1970,7 @@ function _renderRecipientChip(target) {
     // on agent/commander renders — reset first, model branch re-sets it.
     nameEl.closest('.chat-recipient-chip')?.removeAttribute('title');
     const chipHost = nameEl.closest('.chat-recipient-chip');
-    // 会话成员名单优先：底部入口显示首位成员 + 其余人数（FR-002/FR-008）。
+    // 会话成员名单优先：底部入口显示首位成员 + 其余人数。
     // 名单为空时保留原有单接收者渲染（默认由 CogSeed 接收）。
     const memberList = (window.composerMembers && tg !== 'auto')
       ? window.composerMembers.getMembers(tg)
@@ -2022,7 +2061,7 @@ function onEnterNewChatView() {
     // a fresh visit starts from defaults (unified execution entry).
     _newChatExecOverride = null;
     // 新建任务恢复默认：CogSeed 接收 + 既有默认模型配置；旧会话的选择不受
-    // 影响（FR-016 / US3-08）。草稿仍在时保留用户已选成员与配置。
+    // 影响。草稿仍在时保留用户已选成员与配置。
     if (window.composerMembers && typeof window.composerMembers.resetTarget === 'function') {
       window.composerMembers.resetTarget('new-chat');
     }
@@ -2867,6 +2906,17 @@ document.addEventListener('click', (e) => {
   if (typeof loader === 'function') loader('recall').then(open).catch(() => {});
 });
 
+// [proposal:<id>] opens an existing governed decision; never resubmit it as an edit.
+document.addEventListener('click', (event) => {
+  const el = event.target?.closest?.('[data-proposal-citation]');
+  const id = el?.dataset.proposalCitation;
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(id || '')) return;
+  const open = () => window.openCognitionApprovalById?.(id);
+  if (typeof window.openCognitionApprovalById === 'function') { open(); return; }
+  const loader = typeof loadRendererFeature === 'function' ? loadRendererFeature : window.loadRendererFeature;
+  if (typeof loader === 'function') loader('recall').then(open).catch(error => _convLog.warn('approval navigation failed', { error }));
+});
+
 // [[ontology:module/record@version]] → 同一权威记录的只读历史版本。
 document.addEventListener('click', (event) => {
   const el = event.target?.closest?.('[data-ontology-citation]');
@@ -2926,6 +2976,7 @@ async function _startSpaceBuilderConversation() {
 }
 
 function onEnterConversationView() {
+  window.ChatAssetApproval?.refreshVisible();
   if (_messageSelectionState && _messageSelectionState.cid !== currentCid) _exitMessageSelection();
   // 空间模式会话：确保资产名映射就绪（草稿卡显示中文名，加载完自动刷新）。
   if (typeof currentCid === 'string' && currentCid && typeof conversations !== 'undefined' && Array.isArray(conversations)
@@ -3369,20 +3420,13 @@ async function _syncPendingActorsFromRuntime(cid, opts = {}) {
   // Names/avatars are local data; warm members before revealing so the
   // placeholder does not flash as an unknown agent.
   try { await _refreshGroupMembers(cid); } catch (_) { /* best effort */ }
-  // 活跃回合是**服务端/运行时事实**，不该被"本地发送流还在跑"的 pending 门否决：
-  // 唤醒派发的工人在本地 pending 窗口之外执行（真机 2026-10-14 17:02:58–17:03:15：
-  // commander 回合 17:02:59 收尾，工人在 17:02:58–17:03:15 跑），此前这里直接
-  // return false，3313 那行永不执行 —— 工人没有任何可见占位，结果消息一次性出现
-  // （"没显示工人 agent 在执行"）。这里只补建占位，其余 pending 语义保持原样，
-  // 避免把调用方对 pending 的判断一起改掉。
+  // 服务端活跃回合不受本地 pending 窗口限制；派发的 worker 可能在主回合收尾后继续执行。
+  // 这里仅增量补建占位，不改变调用方的 pending 语义。
   if (hasActiveTurnsField && activeTurns.length > 0 && cid === currentCid) {
-    // 只补建活跃回合的占位，**不在这里清理 commander 的空占位**：清理是 pending
-    // 生命周期（下面那段）的职责，脱离 pending 门去做会把 commander 上一轮的执行
-    // 过程气泡一并摘掉（真机回归 2026-10-14 17:3x：工人显示正常了，但 cogseed 之前
-    // 的执行过程消失）。这里保持纯增量。
+    // commander 占位清理由 pending 生命周期负责；此处不能连带删除已有执行过程。
     for (const turn of activeTurns) {
       const ph = _ensureActorPlaceholder(cid, turn.actor, loadingEl, turn.turn_id, turn.msg_id, turn.started_at_ms);
-      // 2026-10-14：占位随时可能被 stream-end 的悬空清理摘掉，而服务端仍说这个 actor
+      // 占位随时可能被 stream-end 的悬空清理摘掉，而服务端仍说这个 actor
       // 在跑。每次扫描（state_changed 频率 <1s）重新点亮一次运行态，于是状态会自愈，
       // 且不干预节点生命周期 —— 过程内容照旧能并进来。
       _reassertActorLive(ph);
@@ -5395,7 +5439,7 @@ function _renderCognitionSaveReceiptsHtml(receipts) {
     return value && value !== key ? value : fallback;
   };
   return `<div class="chat-cognition-save-receipts">${receipts.map((receipt) => {
-    // taught-pending-review（2026-09-28 四病整改 7.0 修7）：教学回执并入保存
+    // taught-pending-review：教学回执并入保存
     // 回执后的新态——用户教了一条记忆，信号落库时建了候选、等审核。
     const outcomeKey = receipt.target === 'ontology'
       ? receipt.outcome === 'ontology-pending' ? 'chat.cognition_save.ontology_pending' : 'chat.cognition_save.ontology_saved'
@@ -5449,8 +5493,8 @@ function _renderCognitionSaveReceiptsHtml(receipts) {
 
 
 
-// ── Recall 使用反馈 →「本轮资产检索与带入状态」合并卡（拍板项 #8）─────────
-// 2026-09-28 四病整改：带入回执与投影卡（事前面板）合并为一张状态卡；
+// ── Recall 使用反馈 →「本轮资产检索与带入状态」合并卡─────────
+// 带入回执与投影卡（事前面板）合并为一张状态卡；
 // 它证明资产被选中或进入提示词，不单独证明最终回答实际采用。卡片实现收在
 // recall-projection-card.js（同步
 // 骨架 recallMemoryCardHtml + 投影数据异步补全 mountRecallProjectionCard）；
@@ -5469,7 +5513,7 @@ function _hydrateRecallCitations(messageEl, cid, messageId) {
   // 替换 host.innerHTML），按按钮绑定会在重画后失效——事件挂在 host 上才稳。
   host.dataset.feedbackBound = '1';
   host.addEventListener('click', async (event) => {
-    // 折叠热区 = 整个头部（2026-09-29 二轮）：箭头只是指示图标，点头部任意处
+    // 折叠热区 = 整个头部：箭头只是指示图标，点头部任意处
     // 翻转。同一颗 host 上 hydrate 与 mount 两个委托都在听，翻转只在 hydrate
     // 认领（实现收在卡模块 recallCardToggleCollapsed），mount 不认头部点击——
     // 否则翻两次等于没翻。
@@ -5480,7 +5524,7 @@ function _hydrateRecallCitations(messageEl, cid, messageId) {
     const button = event.target?.closest?.('[data-recall-feedback]');
     if (!button || button.disabled) return;
     const feedback = button.dataset.recallFeedback;
-    // 逐行反馈（2026-10-03 待办#2）：按钮钉在自己行的资产上——反馈只记给用户
+    // 逐行反馈：按钮钉在自己行的资产上——反馈只记给用户
     // 点的那条资产，不再连带同消息其他引用。行取包含按钮的已引用行（按钮自身
     // 也带 data-recall-asset-id，closest 从按钮起会只命中按钮自己）。
     const assetId = String(button.dataset.recallAssetId || '');
@@ -5498,7 +5542,7 @@ function _hydrateRecallCitations(messageEl, cid, messageId) {
         assetId,
       });
       if (!result?.ok) throw new Error(result?.error || 'Recall feedback failed');
-      // 负反馈后认知资产面板的刷新不再走 window CustomEvent（2026-09-27
+      // 负反馈后认知资产面板的刷新不再走 window CustomEvent（
       // 刷新机制重写）：主进程写回执时经 recall store 广播 cognition:changed
       // （asset-usage-receipts → timeline 区块），面板订阅中枢自己重拉。
       const sent = new Set(String(host.dataset.feedbackAssets || '').split(',').filter(Boolean));
@@ -6324,7 +6368,7 @@ function _applyWaitingApprovalFromRows(rows) {
 }
 
 // 绝对同步：以 main 的索引为准，对**全部已知行**增/删标记。只增不减会让标签在
-// 用户批准/中止之后一直挂着（真机反馈）。兜底轮询 60s 一次，且只在窗口可见时。
+// 用户批准/中止之后一直挂着。兜底轮询 60s 一次，且只在窗口可见时。
 let _waitingApprovalSyncTimer = null;
 async function _syncWaitingApprovalFlags() {
   try {
@@ -6349,7 +6393,7 @@ async function _syncWaitingApprovalFlags() {
     for (const cid of [..._latestWaitingApproval.keys()]) {
       if (!known.has(cid)) { _latestWaitingApproval.delete(cid); changed.push(cid); }
     }
-    // 只增量刷新受影响的行：整树重绘会牵动分页/懒加载流程（测试与真机都验证过）。
+    // 只增量刷新受影响的行：整树重绘会牵动分页/懒加载流程。
     for (const cid of changed) {
       if (typeof _refreshConvTaskLine === 'function') _refreshConvTaskLine(cid);
     }
@@ -8036,7 +8080,7 @@ function renderConversationList() {
   const container = document.getElementById('conversation-list');
   _ensureConversationTimeTicker();
   _sortConversationCacheForSidebar();
-  // 三段结构：置顶（pinned）→ 最近（无 space_id，含纯 project_id 旧孤儿 F2-A）→ 空间（space_id）。
+  // 三段结构：置顶（pinned）→ 最近（无 space_id，含纯 project_id 旧孤立记录）→ 空间（space_id）。
   // pin 的会话只在置顶区出现（不重复进空间/最近区）。
   const all = (conversations || []).filter(Boolean);
   const pinned = all.filter((c) => c.pinned_at);
@@ -8900,7 +8944,7 @@ async function loadConversationHistory(cid, opts = {}) {
     // agent's visibility slice still carries dispatches so the agent has the
     // dispatch text in its own context.
     const renderStartedAt = performance.now();
-    // 教学回执已并入保存回执（2026-09-28 四病整改 7.0 修7）：历史消息不再
+    // 教学回执已并入保存回执：历史消息不再
     // 补拉教学信号对账撤销态——教学卡已删，新教学走 cognition_save_receipts
     // （taught-pending-review），旧消息上的 teaching_receipts 只作数据留存、
     // 不再渲染。
@@ -8947,7 +8991,7 @@ async function loadConversationHistory(cid, opts = {}) {
       // incremental insertion path below.
       const historyFragment = document.createDocumentFragment();
       // 单条消息渲染失败只丢该条并记日志——一条坏消息不能把整个会话
-      // 炸成"加载失败"（2026-09-11 codex 会话 usage 缺失事故的教训）。
+      // 炸成"加载失败"。
       let renderFailures = 0;
       history.forEach((msg) => {
         try {
@@ -9169,13 +9213,12 @@ function _messageRecordHasMountedSidecars(gm, el, opts = {}) {
   if (Array.isArray(gm.marketplace_requests) && gm.marketplace_requests.length && !el.querySelector('.chat-marketplace-request')) return false;
   if (gm.kstar_review_card && !el.querySelector('.chat-kstar-result-review')) return false;
   if (gm.asset_change_approval_card && !el.querySelector('.chat-asset-approval')) return false;
-  // 合并卡（拍板项 #8）挂载标记：投影补全后 host 带 data-projection-id。
+  // 合并卡挂载标记：投影补全后 host 带 data-projection-id。
   if (gm.recall_projection_card && !el.querySelector('.chat-recall-citations[data-projection-id]')) return false;
   // conv-core：过程显示已由 chat-stream 面板（.cs-flow）接管，老 details
   // 折叠卡（.stream-process）退役。两者任一在挂即算已挂载——只认老卡会让
   // 带过程的消息永远判"缺挂件"，触发 loadConversationHistory 全量重载循环，
-  // 历史消息的过程面板在循环中被反复清除（真机踩坑 2026-09-08：历史回复
-  // 的「已完成」徽章全部丢失，仅最新一条幸存）。
+  // 历史消息的过程面板会在重载循环中被反复清除。
   const _hasProcessSidecar = Array.isArray(gm?.process) && gm.process.length
     ? !!(el.querySelector('.stream-process') || el.querySelector('.cs-flow'))
     : true;
@@ -9910,7 +9953,7 @@ function _refreshSessionStats() {
     segs.push({ k: t('chat.stats.speedK'), v: f.ttftAvgText });
   }
   if (f.cacheHitText) segs.push({ k: t('chat.stats.cacheK'), v: f.cacheHitText });
-  // 上下文段独立加框突出（2026-09-11 需求）：总窗口 + 占用量一眼可辨。
+  // 上下文段独立加框突出：总窗口 + 占用量一眼可辨。
   if (f.ctxText) segs.push({ k: t('chat.stats.ctxK'), v: f.ctxText, hot: f.ctxHot, cls: 'ctx' });
   segs.push({
     k: t('chat.stats.tokK'),
@@ -9949,7 +9992,7 @@ function _refreshSessionStats() {
   _syncStatsWidthToComposer();
 }
 
-// 统计行与输入卡左右边缘实时对齐（2026-08-27 反馈）。卡宽随内容收缩
+// 统计行与输入卡左右边缘实时对齐。卡宽随内容收缩
 // （chip 增删、附件条出现都会变），CSS 定宽追不上；此处每次刷新直读卡宽
 // 同步一次，并挂 ResizeObserver 让后续卡片尺寸变化即时跟随（首次 observe
 // 也会回调一次）。vm 测试环境无 ResizeObserver，守卫跳过。
@@ -9969,7 +10012,7 @@ function _syncStatsWidthToComposer() {
 // 消息级用量信息条：悬停显示（与 chat-msg-actions 同节奏）。数据来自
 // gm.metrics（可选字段），无数据不渲染。数字与时间戳，无正文无凭证。
 // 挂在操作行（[data-role=msg-actions]）内右对齐——与复制/引用图标同一行
-// （2026-08-27 反馈：独立成行位置不对）。行不存在就懒创建，与
+// （反馈：独立成行位置不对）。行不存在就懒创建，与
 // _attachBubbleActions 共用同一行；flex order 保证图标永远在左。
 function _mountMsgMeta(ph, metrics) {
   // VCache 模板已标注缓存读时不再叠加命中 badge（信息重复）。
@@ -9996,9 +10039,9 @@ function _mountMsgMeta(ph, metrics) {
   parts.push({ k: t('chat.metrics.durationK'), v: window.conversationMetrics.formatDuration(line.durationMs) });
   if (line.latencyText) parts.push({ k: t('chat.metrics.ttftK'), v: `${line.latencyText}s` });
   if (line.inText) {
-    // 主读数 = 纯 fresh 输入（2026-09-08 分层定稿 + PR198 4a 合并）：
+    // 主读数 = 纯 fresh 输入：
     // 缓存读取是前缀复用非新增输入，并入会让数值虚大。有缓存读时走
-    // PR198 拆分模板 tokensVCache（fresh 输入 + 括注缓存读全量与命中率
+    //  拆分模板 tokensVCache（fresh 输入 + 括注缓存读全量与命中率
     // ——一眼可核对，数值仍以 fresh 为主）；无缓存回退 tokensV。
     const hasCacheRead = !!line.cacheReadText;
     parts.push({
@@ -10008,7 +10051,7 @@ function _mountMsgMeta(ph, metrics) {
         : t('chat.metrics.tokensV', { i: line.inFreshText || line.inText, o: line.outText }),
     });
   }
-  // 缓存命中正向标记（≥50% 才显示，2026-09-08 分层定稿）：VCache 模板
+  // 缓存命中正向标记（≥50% 才显示）：VCache 模板
   // 已带缓存读全量时 badge 只补命中率达标场景；无 VCache 时 badge 的
   // title 带缓存读全量——主界面保持小数值，审计明细收在悬停。
   if (line.cacheBadgeText && !hasCacheReadLabelled(parts)) {
@@ -10140,7 +10183,7 @@ function appendChatMessage(message, autoScroll = true, opts = {}) {
   const coalescedProjectionCard = coalescedProjectionMatch
     ? { projectionId: coalescedProjectionMatch.projectionId, authorization: 'model_selected' }
     : null;
-  // 两卡互斥抑制已删（拍板项 #8）：投影与带入回执合并进同一张状态卡
+  // 两卡互斥抑制已删：投影与带入回执合并进同一张状态卡
   // 卡，引用行不再因投影卡在场而被抑制。
   const projectionCardForBubble = _projectionReceiptForMessage(message)
     || message.recall_projection_card
@@ -10193,8 +10236,8 @@ function appendChatMessage(message, autoScroll = true, opts = {}) {
   const cognitionSaveReceiptsHtml = role === 'assistant'
     ? _renderCognitionSaveReceiptsHtml(message.cognition_save_receipts)
     : '';
-  // 9.1 统一框架 · 中间区「Evidence 结果块」（恢复自 e88275e1）：来源引用 +
-  // 保存回执（含并入的教学回执，2026-09-28 四病整改 7.0 修7）统一收进一个
+  // 9.1 统一框架 · 中间区「Evidence 结果块」：来源引用 +
+  // 保存回执（含教学回执）统一收进一个
   // 默认展开的「证据」块（数量角标 = 引用数 + 回执数），放在正文之前，与
   // Artifact / Receipt 同一视觉语言。
   const evidenceRefCount = Array.isArray(message.references) ? message.references.length : 0;
@@ -10376,11 +10419,10 @@ function appendChatMessage(message, autoScroll = true, opts = {}) {
     if (bubble) _mountAssetApprovalCard(bubble, message.asset_change_approval_card);
   }
 
-  // 资产检索与带入状态卡补全（拍板项 #8，2026-09-28）：带入回执与投影卡
+  // 资产检索与带入状态卡补全：带入回执与投影卡
   // 合并为一张——有引用数据时同步骨架已随气泡渲染（recallCitationsHtml），
   // 这里把投影数据（带入/省略/状态/撤销口）补进同一张卡；没有骨架时（仅投影
-  // 无引用）创建空 host 交给合并卡填充。其它授权维持"不挂卡"现状（2026-08-17
-  // 决策不动，onlyModelSelected 门在卡模块内判定）。
+  // 无引用）创建空 host 交给合并卡填充。其它授权维持不挂卡，onlyModelSelected 门在卡模块内判定。
   if (role === 'assistant' && projectionCardForBubble?.projectionId
       && message.recall_projection_card?.presentation !== 'sidecar'
       && typeof window.mountRecallProjectionCard === 'function') {
@@ -10708,7 +10750,7 @@ function _renderMarketplaceInstallCard(card, req, cid, msgId) {
   _hydrateMarketplaceRequestMeta(card, { ...req, kind }, cid, msgId);
 }
 
-/* ── 复盘卡（specs/015 US-704 / contracts/renderer-seams.md §一）─────────────
+/* ── 复盘卡─────────────
  * 三档措辞按主进程**始终下发**的 `expectedSource`（`user` / `inferred` / `none`）
  * 分档，不按"有没有 expectedResult"猜档：`none` 档省掉的是字段，而字段还在的档位
  * 不能被读成"用户做过预测"。把系统推断的预期说成用户自述，是这张卡最要命的失真。
@@ -10788,10 +10830,8 @@ async function _resolveKstarResultReview(card, review, action) {
   }
 }
 
-/* ── 资产审批卡片（specs/008 US-406）──────────────────────────────────────
- * 卡片本体（渲染 / 编辑 / 三态处置）在 `modules/chat-asset-approval.js`——它得能被
- * 真实调用测试，而不是只靠"源码里有这一行"的断言（真机吃过一次亏：卡片渲染抛错被
- * 吞掉，界面上只剩一块空白）。这里只留挂载点，模块缺席要吵，不要静默不挂。 */
+/* 资产审批卡片：渲染、编辑和处置由 modules/chat-asset-approval.js 提供，
+ * 这里负责挂载。模块缺失必须报告错误，不能留下无提示的空白区域。 */
 function _mountAssetApprovalCard(host, payload) {
   if (typeof ChatAssetApproval === 'undefined' || !ChatAssetApproval) {
     _convLog.warn('chat-asset-approval module missing; approval card not mounted');
@@ -10984,7 +11024,7 @@ async function _resolveWakeRequest(card, request, cid, decision) {
     });
     const data = await res.json();
     if (!data || data.ok === false) throw new Error(data?.error || 'wake decision failed');
-    // 需求口径（2026-10-14 需求方）：批准之后这张卡就可以退场——授权已经生效，
+    // 需求口径：批准之后这张卡就可以退场——授权已经生效，
     // 「点击生效了」的回执由工人气泡上的运行指示给出（过程徽章常显旋转/计时），
     // 留一张「已启动」的卡反而挡住输入区。拒绝没有别的信号能说明，保留定格回执
     // （已拒绝），否则用户点完就再无痕迹。
@@ -11242,7 +11282,7 @@ function _cleanupSlowSwitchForCid(cid) {
 
 
 
-// 9.1 统一框架 · 中间区紧凑结果块（恢复自 e88275e1）：
+// 9.1 统一框架 · 中间区紧凑结果块：
 // 静态版结果块 HTML（用于 appendChatMessage 的字符串组合路径），供 Evidence /
 // Receipt 等内联内容使用；动态挂载用 _mountCompactResultBlock。
 function _compactResultBlockHtml(opts = {}) {
@@ -11345,7 +11385,7 @@ async function _resolveMarketplaceInstallRequest(card, req, cid, msgId, decision
 function _renderPersistedProcess(msgDiv, items, { expanded = false } = {}) {
   const bubble = msgDiv.querySelector('.chat-bubble');
   if (!bubble) return;
-  // 2026-09-11 需求变更：过程轨迹不再用 details 折叠卡容器包裹，改普通
+  // 需求变更：过程轨迹不再用 details 折叠卡容器包裹，改普通
   // div 平铺纯文本行（与流式路径同形态）。expanded 参数保留签名兼容但
   // 平铺恒显，无折叠语义。
   void expanded;
@@ -12589,7 +12629,7 @@ function _trackChatSendResult(result, data = {}) {
 
 /** 「新任务」：像市面主流 AI 助手一样，直接进入一个空的会话界面。
  *  后端创建一个 normal 会话，前端立即进入该会话（无需先输入）。 */
-/** 去掉结构化点名标记与标点后是否还剩任务文字（FR-015 / EC-06；验收报告 MA-08）。
+/** 去掉结构化点名标记与标点后是否还剩任务文字。
  *
  *  仅 @ 成员、仅标点或空白都不构成任务：首页原先只看「正文非空」，于是只 @ 两个
  *  成员也会创建会话、启动模型，模型只能回一句「你只 @ 了我，但没说要做什么」。
@@ -12622,7 +12662,7 @@ async function handleNewChatSubmit() {
     await uiAlert(t('oss.task_required'));
     return;
   }
-  // 仅 @ 成员 / 仅标点 / 空白不启动（MA-08）：先在输入框旁提示补充任务，不要
+  // 仅 @ 成员 / 仅标点 / 空白不启动：先在输入框旁提示补充任务，不要
   // 创建会话并调用模型。引用与有效附件按原有规则放行。
   const intentAttachments = (typeof _chatAttachList === 'function' ? _chatAttachList(DRAFT_CID) : [])
     .filter((item) => item.status !== 'error');
@@ -12630,7 +12670,7 @@ async function handleNewChatSubmit() {
     await uiAlert(t('run_center.create_task_required'));
     return;
   }
-  // 首页提交保护（FR-016 / SC-004；验收报告 MA-04）：连按 Enter 或双击发送时，
+  // 首页提交保护：连按 Enter 或双击发送时，
   // 第二次进入必须在**首个 await 之前**被挡下——模型检查与会话创建都在 await 之后，
   // 只靠禁用按钮太晚，两次调用会各自创建一个会话、拿到不同 cid，后端幂等无法补救。
   // 失败在 finally 里恢复：改完草稿可以立即重试。
@@ -12802,8 +12842,7 @@ async function _submitNewChatIntent(input, raw, quotes) {
   // Carry the new-chat recipient pick into the new conv's per-cid state so
   // the chip keeps the chosen agent instead of snapping back to commander.
   _transferNewChatRecipientTo(convId);
-  // 多 Agent：落地页选的会话成员与按来源配置跟随这条消息进入新会话
-  // （FR-016：接受后成员与模型保留，用户无需重新选择）。
+  // 多 Agent：落地页选择的会话成员与按来源配置随首条消息进入新会话。
   if (window.composerMembers && typeof window.composerMembers.transferTarget === 'function') {
     window.composerMembers.transferTarget('new-chat', convId);
   }
@@ -12818,10 +12857,9 @@ async function _submitNewChatIntent(input, raw, quotes) {
   // execution-config override) follows the message. Recipient + override were
   // already transferred to convId above, so resolve against the new cid.
   const newChatExecConfig = _executionConfigForSend('conversation', recipientSnapshot);
-  // 幂等键同样覆盖落地页首条消息（EC-07）：失败重发复用同一 id。
+  // 幂等键同样覆盖落地页首条消息：失败重发复用同一 id。
   const newChatSubmitRequestId = _submitRequestIdFor(convId, raw);
-  // 首页路径同样携带成员/点名/按来源配置载荷（复盘 2026-09-20：
-  // 之前只有会话路径接了这个，首页手打 @ 的提交把结构化逻辑全绕过了）。
+  // 首页与会话路径使用相同的成员、点名和按来源配置载荷。
   const newChatMemberPayload = _composerMemberPayload('conversation', content);
   const newChatHasMembers = Array.isArray(newChatMemberPayload.member_agent_ids)
     && newChatMemberPayload.member_agent_ids.length > 0;
@@ -12890,11 +12928,11 @@ async function _tryTemplateHandoffReply(cid, raw) {
   }
 }
 
-// ─── 多 Agent 提交载荷（FR-016/017） ──────────────────────────────────────
+// ─── 多 Agent 提交载荷 ──────────────────────────────────────
 // 一次提交记录：正文（含点名标记）、点名身份、会话成员快照、本条分工（点名∩成员）
 // 与按来源的模型配置。成员为空时完全沿用旧单接收者载荷。
 
-// 提交幂等键（EC-07）：一次「提交意图」一个 id；未被接受时保留，重发复用同一个
+// 提交幂等键：一次「提交意图」一个 id；未被接受时保留，重发复用同一个
 // id，让主进程确认原提交而不是新建一次运行。草稿文字变了＝新的意图，换新 id。
 const _submitIntentByCid = new Map();   // cid → { id, text }
 const _pendingSubmitDraftByCid = new Map(); // cid → { id, draft }; kept until explicit acceptance
@@ -12998,7 +13036,7 @@ function _clearSubmitIntent(cid, id) {
   if (current && (!id || current.id === id)) _submitIntentByCid.delete(key);
 }
 
-/** 去掉点名标记后的「任务意图」文本：只剩成员/空白/标点＝没有明确意图（EC-06）。 */
+/** 去掉点名标记后的「任务意图」文本：只剩成员/空白/标点＝没有明确意图。 */
 function _composerIntentText(text, target = 'conversation') {
   let out = String(text || '');
   const cm = window.composerMembers;
@@ -13028,11 +13066,11 @@ function _composerMemberPayload(target, text) {
   // 没有显式成员、正文里也没有点名 → 完全走旧路径，不发成员载荷。
   if (!members.length && !mentions.length) return {};
   const out = {};
-  // 手打 @ 也算本条点名：只留痕（审计 / 顺序协作判定），不因此自动增员（FR-004）。
+  // 手打 @ 也算本条点名：只留痕（审计 / 顺序协作判定），不因此自动增员。
   if (mentions.length) out.mention_agent_ids = mentions;
   if (!members.length) return out;
   // 协调者（CogSeed）不是 agent 成员：把它塞进 member_agent_ids 会让主进程按
-  // agent 校验失败并整条拒绝提交，所以这里只发真正的执行者 id（FR-003）。
+  // agent 校验失败并整条拒绝提交，所以这里只发真正的执行者 id。
   const agentIds = cm.agentMemberIds ? cm.agentMemberIds(members) : [];
   if (agentIds.length) out.member_agent_ids = agentIds;
   const groups = cm.configGroups(target);
@@ -13041,7 +13079,7 @@ function _composerMemberPayload(target, text) {
     // 单一来源：沿用既有单套 execution_config 语义（内部共享或唯一外接）。
     out.execution_config = configs[groups[0].id];
   } else if (groups.length > 1 && configs) {
-    // 多来源：按来源下发，绝不把内部连接/模型串到外接实例（FR-007/SC-002）。
+    // 多来源：按来源下发，绝不把内部连接/模型串到外接实例。
     out.execution_configs = configs;
   }
   return out;
@@ -13055,7 +13093,7 @@ async function handleChatSubmit() {
   // A bare quote with no extra text is a legitimate "look at this" forward;
   // only reject when both the textarea AND the quote are empty.
   if (!raw && !_getQuotes(currentCid).length) return;
-  // 首页与会话用同一条意图检查（MA-08）：仅 @、仅标点或空白不启动模型。
+  // 首页与会话用同一条意图检查：仅 @、仅标点或空白不启动模型。
   const convIntentAttachments = (typeof _chatAttachList === 'function' ? _chatAttachList(currentCid) : [])
     .filter((item) => item.status !== 'error');
   if (!_getQuotes(currentCid).length && !convIntentAttachments.length && !_hasTaskIntent(raw, 'conversation')) {
@@ -13105,7 +13143,7 @@ async function handleChatSubmit() {
     return;
   }
   const attachments = attachList.filter((a) => a.status !== 'error').map((a) => a.name);
-  // EC-06：正文只剩成员标记 / 空白 / 标点时没有明确任务意图，不启动运行；
+  // ：正文只剩成员标记 / 空白 / 标点时没有明确任务意图，不启动运行；
   // 附件或引用仍在时沿用既有规则（引用本身就是「看这个」的有效意图）。
   if (!_composerIntentText(raw) && !attachments.length && !quotes.length) {
     uiToast(t('composer.members.need_task'), { variant: 'warning' });
@@ -13134,7 +13172,7 @@ async function handleChatSubmit() {
       return;
     }
     const queuedExecConfig = _executionConfigForSend('conversation', recipientSnapshot);
-    // 排队消息同样要冻结本次成员 / 点名 / 按来源配置（FR-016）：排到队列末尾才真正
+    // 排队消息同样要冻结本次成员 / 点名 / 按来源配置：排到队列末尾才真正
     // 发送，若只带 legacy 单套配置，多成员快照就会丢。
     const queuedMemberPayload = _composerMemberPayload('conversation', requestText);
     const queuedHasMemberConfig = !!(queuedMemberPayload.execution_config
@@ -13232,8 +13270,7 @@ async function handleChatSubmit() {
   };
   // 发送即清 composer 引用条（视觉反馈：引用已随消息发出）
   if (typeof window !== 'undefined' && typeof window.clearChatTaskRefChips === 'function') window.clearChatTaskRefChips();
-  // 「发送后自动清空」不是手动删除标记：重置标记基线，会话成员与模型配置保留
-  // （FR-002/FR-016）。
+  // 「发送后自动清空」不是手动删除标记：仅重置标记基线，保留会话成员与模型配置。
   if (window.composerMembers) window.composerMembers.resetDraftTracking('conversation');
   let sendResult = null;
   try {
@@ -13592,7 +13629,7 @@ function _makeConvChatController(cid, options = {}) {
         if (msgEl && Number.isFinite(options.sendWallMs)) {
           msgEl.dataset.localSendMs = String(options.sendWallMs);
         }
-        // 发送即起计（交互设计 2026-09-09）：面板与计时器在发送这一刻创建
+        // 发送即起计：面板与计时器在发送这一刻创建
         // 并开始走秒，不等模型首事件（首 token 前的数秒空窗里用户就有
         // 「已发出、正在跑」的反馈）。预热失败不阻塞发送链路。
         if (msgEl && typeof window.chatStreamPrewarm === 'function') {
@@ -14229,7 +14266,7 @@ async function _cliFallbackGuideUser() {
 async function sendInConversation(cid, content, extra, options = {}) {
   if (!cid) return { started: false, aborted: false, errored: false, result: 'failure' };
   const startedAt = performance.now();
-  // 任务耗时本地计时（交互设计 2026-09-08 需求）：用户点击发送的瞬间（渲染
+  // 任务耗时本地计时：用户点击发送的瞬间（渲染
   // 进程墙钟）——计时完全本地，不含 IPC/网络往返，不依赖模型侧任何数据
   // （模型收到消息时间/开始思考时刻/吞吐等）。挂到当前会话 pending 记录，
   // 由首个流事件转移到面板（chat-stream 的 ticker/终态都读它）。
@@ -15796,7 +15833,7 @@ function _streamingSetFinal(msg, text, { archive = false } = {}) {
   // line (e.g. the model answered in one shot with no reasoning / tool
   // calls), keep the initial display:none so we don't render an empty
   // "process info" bubble.
-  // 2026-09-11 需求变更：过程轨迹已平铺（无折叠卡），finalize 只按"有无
+  // 需求变更：过程轨迹已平铺（无折叠卡），finalize 只按"有无
   // 过程行"控制显隐——空回合（中断桩）与正常回合同形态恒显，无展开态可谈。
   const details = msg.querySelector('.stream-process');
   if (details) {
@@ -15940,7 +15977,7 @@ function _finishStreamingMsg(cid) {
   // failures are safe here: the backend task is cancelled/terminal by then,
   // so the re-check finds nothing to re-establish.
   _scheduleBackendRunRediscovery(cid);
-  // 状态自愈兜底（2026-09-14 Bug3 修复）：turn 结束信号与 UI 状态机竞态
+  // 状态自愈兜底：turn 结束信号与 UI 状态机竞态
   // 可能残留 busy 标记 → 队列永远停在"待发送"。延迟 1.2s 再跑一次保险丝
   // （_healStaleGroupBusy 自带活跃控制器守卫，幂等）。
   setTimeout(() => _healStaleGroupBusy(cid), 1200);
@@ -16762,7 +16799,7 @@ function _eventTurnId(evData) {
 // 上（而不是共用的发送占位）；后续 `chat.item` / `chat.turn.completed` 只带
 // turnId，用本表回查同一锚点。不这么做时派单链里 commander 与 worker 的活动
 // 流会同挂发送占位 → 折叠条归属错（看起来像主 Agent 在执行）、一次任务画成
-// 两条并行线（2026-10-13 需求方截图）。
+// 两条并行线。
 const _chatStreamAnchors = new Map(); // key = `${cid}::turn:${turnId}` → { el, actorId }
 
 function _chatAnchorKey(cid, turnId) {
@@ -16788,7 +16825,7 @@ function _resolveChatStreamAnchor(cid, chatEvent, fallbackEl, turnIdHint) {
   };
   // 轮询/历史回放会把原锚点（或发送占位）摘出 DOM：这时必须按 actor 重新领养/新建，
   // 否则活动流会画进脱树的节点——用户看不到过程，而 `chatStreamHasPanel` 仍为 true，
-  // 连老过程 rail 也被去重掉（真机 2026-10-14 00:30 的 30 条丢弃）。
+  // 连已有过程 rail 也会被错误去重。
   const remint = (actorId) => {
     if (!actorId) return fallbackEl;
     const ph = _ensureActorPlaceholder(cid, actorId, fallbackEl, tid, undefined, undefined, { contentBearing: true });
@@ -16812,7 +16849,7 @@ function _resolveChatStreamAnchor(cid, chatEvent, fallbackEl, turnIdHint) {
 
 /** 话权交给「某个 agent」时返回该 agent id，其余（空 / commander / user）返回 ''。
  *  交出方（commander）据此立即终态化：它的回合还挂着（R-11 等齐汇报），但此刻
- *  它没有在跑——不摘掉 spinner/计时就成了「两个执行」并行（2026-10-13 需求）。 */
+ *  它没有在跑——不摘掉 spinner/计时就成了「两个执行」并行。 */
 function _yieldedFloorActor(state) {
   const floor = String((state && state.active_recipient) || '');
   if (!floor || floor === 'commander' || floor === 'user') return '';
@@ -16933,17 +16970,10 @@ function _ensureActorPlaceholder(cid, actorId, fallbackPh, turnId, triggerMsgId,
   if (actorId === 'commander') {
     const floor = _serverFloorByCid.get(cid) || '';
     if (floor && floor !== 'commander' && floor !== 'user') {
-      // The floor moving to an agent must not make the commander's own process
-      // events vanish: dropping them left the user with an empty-looking bubble and
-      // no execution detail at all (578 'group process target missing' warnings on
-      // 2026-10-13, nearly all of them actor=commander). Attach to the existing
-      // fallback placeholder when it is live; only truly targetless events are
-      // dropped. The bubble still belongs to the commander, so its steps stay its
-      // own — no worker step is ever rendered into it.
+      // Keep commander process events on its own live fallback placeholder after
+      // the floor moves. Never render worker steps into the commander bubble.
       if (fallbackPh && fallbackPh.parentElement) return fallbackPh;
-      // 真机 2026-10-14 00:30：commander 派单后，它的 seg 气泡会被历史回放/轮询
-      // 重建摘掉（`_finalizeActorPlaceholder` 遇到同签名已渲染消息会 remove 占位），
-      // 于是 fallback 脱树 → 收尾综合的 process 事件再次被丢（30 条）。
+      // 历史回放可能重建并摘掉 seg 气泡，使 fallback 脱树；带内容的过程事件仍需活跃承载点。
       // 带内容的事件不能丢：落到下面的常规路径，按该 actor 的活占位/兜底重建一条
       // 真实气泡来承载它的过程（空事件流仍由上面的 return null 拦住，mint 不出
       // 空气泡来闪）。这是「空泡防闪」与「过程不可丢」的分界：有没有内容。
@@ -17741,7 +17771,7 @@ function _handleGroupBusEvent(cid, streamingMsg, evData, { archive = false } = {
     _serverFloorByCid.set(cid, typeof st.active_recipient === 'string' ? st.active_recipient : '');
     // 话权一旦交给某个 agent，交出方（commander）的气泡必须**立即终态化**：
     // 它的回合还挂着（R-11 等齐汇报），但此刻它没有在跑——不摘掉 spinner/计时
-    // 就变成「两个执行」并行（2026-10-13 需求方截图）。
+    // 就变成「两个执行」并行。
     const _floorNow = _yieldedFloorActor(st);
     if (_floorNow && typeof window.chatStreamYieldFloor === 'function') {
       try { window.chatStreamYieldFloor(cid, _floorNow); } catch (_) { /* 终态化失败不阻塞状态同步 */ }

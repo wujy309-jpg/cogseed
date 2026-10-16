@@ -1,3 +1,4 @@
+import { ambiguousRecallAssetIds, assessSemanticApplicability, type SemanticApplicabilityDecision } from '../../features/recall/semantic-applicability';
 /**
  * Recall ability-asset search tool injected into every main-conv runner.
  *
@@ -66,7 +67,7 @@ export interface RecallToolsOpts {
   cid?: string;
   /** 当前会话空间；作为 runtime scopePolicy.workspaceIds 上下文。 */
   spaceId?: string;
-  /** 会话的项目归属（specs/012 T018）：目录模式 scene 因子用（与提示词常驻
+  /** 会话的项目归属：目录模式 scene 因子用（与提示词常驻
    *  目录同序的前提：同一份场景输入）；缺省时该维度不参与。 */
   projectId?: string;
   /** 当前用户消息文本：适用/禁用场景匹配用。 */
@@ -215,6 +216,8 @@ async function profilePoolEntries(
 
 function createSearchAbilityAssetsTool(opts: RecallToolsOpts, evidence: RecallTurnEvidence): AgentTool {
   const userId = opts.userId;
+  let semanticCheckSpent = false;
+  const semanticChecks = new Map<string, SemanticApplicabilityDecision[]>();
 
   const catalogContext = (): CatalogContext => ({
     ...(opts.cid ? { cid: opts.cid } : {}),
@@ -268,7 +271,7 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts, evidence: RecallTu
     if (!pool.length) {
       return `当前条件下没有可用于本任务的认知资产（可能没有在用资产、筛选未命中，或当前任务不满足使用规则${filterNote ? `；过滤条件：${filterNote}` : ''}）。`;
     }
-    // 过滤（准入/筛选）先于排序、排序先于分页（T018）：过滤后的集合整段按同一
+    // 过滤（准入/筛选）先于排序、排序先于分页：过滤后的集合整段按同一
     // 推荐分排（只排不裁——顺序变化，条目一条不少），再切页。
     const ordered = await rankCatalogPool(pool);
     if (!ordered.length) {
@@ -420,7 +423,37 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts, evidence: RecallTu
       .map((asset) => ({ asset, score: matches.get(asset.id)?.score || 0 }))
       .sort((left, right) => right.score - left.score || left.asset.id.localeCompare(right.asset.id));
 
-    const top = ranked.slice(0, k);
+    let top = ranked.slice(0, k);
+    const selectionNotes: string[] = [];
+    // Query is a retrieval hint, never a replacement for the complete host
+    // request. Explicit body reads and reviewed preference entrypoints retain
+    // their contract; this gate only disambiguates automatic search ranking.
+    if (opts.taskText) {
+      const formal = top.filter(item => !item.asset.profileSource).map(item => eligibleFormalAssets.find(asset => asset.id === item.asset.id)!).filter(Boolean);
+      const ambiguousIds = ambiguousRecallAssetIds(formal, opts.taskText);
+      const ambiguous = formal.filter(asset => ambiguousIds.has(asset.id));
+      if (ambiguous.length) {
+        const key = JSON.stringify([opts.taskText, agentReadRuntimeContext(opts), ambiguous]);
+        let decisions = semanticChecks.get(key);
+        if (!decisions && !semanticCheckSpent) {
+          semanticCheckSpent = true;
+          try {
+            decisions = await assessSemanticApplicability(userId, opts.taskText, ambiguous, agentReadRuntimeContext(opts));
+            semanticChecks.set(key, decisions);
+          } catch { /* Unresolved search hits are not asserted applicable. */ }
+        }
+        const allowed = new Set((decisions || []).filter(row => row.verdict === 'applicable').map(row => row.assetId));
+        top = top.filter(item => !ambiguousIds.has(item.asset.id) || allowed.has(item.asset.id));
+        for (const asset of ambiguous) {
+          const decision = decisions?.find(row => row.assetId === asset.id);
+          selectionNotes.push(`[asset:${asset.id}@v${asset.activeVersion || asset.version}] ${decision?.verdict || 'uncertain'}: ${decision?.reason || 'Applicability unresolved; read explicitly only if you can resolve the conditions from the current task.'}`);
+        }
+        const rank = new Map((decisions || []).map(row => [row.assetId, row.rank]));
+        const slots = top.flatMap((item, index) => ambiguousIds.has(item.asset.id) ? [index] : []);
+        const ordered = slots.map(index => top[index]).sort((a, b) => (rank.get(a.asset.id) ?? 100) - (rank.get(b.asset.id) ?? 100));
+        slots.forEach((slot, index) => { top[slot] = ordered[index]; });
+      }
+    }
     const profileInPool = pool.filter((entry) => entry.profileSource).length;
     await recordCatalogObservations(userId, {
       turnId: opts.turnId, cid: opts.cid, stage: 'search_result_shown',
@@ -433,6 +466,7 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts, evidence: RecallTu
         '',
         ...top.map((item, index) => `${index + 1}. ${formatAsset(item.asset, item.score)}`),
         '',
+        ...selectionNotes,
         '搜索结果是线索；采用正式资产前用 assetIds 读取完整正文，并检查适用与禁用条件。',
         '引用格式：[asset:<id>]，例如 [asset:aa-xxx]。',
       ].join('\n'),
@@ -674,7 +708,7 @@ function createAssetUsageReportTools(opts: RecallToolsOpts): AgentTool[] {
   const tools: AgentTool[] = [];
   if (opts.onAssetUsageClaim && opts.turnId) tools.push({
     name: 'report_ability_asset_usage',
-    description: '报告本轮确实采用的一条资产及读到的版本。完成产出后、最终回复前调用，outputExcerpt 必须是即将放入最终回复的原文片段（12至500字），具体体现这条资产如何影响产出。只读取、列目录、提及名称不算采用。此工具只登记待核验报告；主进程核对当轮供应或主动读取记录（search_ability_assets 的 assetIds 正文模式）和最终消息后才留下采用回执，不代表效果已验证。不采用则不要调用。多条资产分别报告，不要把同一工具成功算给所有引用。',
+    description: '报告本轮确实采用的一条资产及读到的版本。完成产出后、最终回复前调用，outputExcerpt 必须是本轮最终消息或已发布文件中的原文片段（12至500字），具体体现这条资产如何影响产出。文件无需再贴入聊天；不能转义换行、改写引文或引用工具过程。只读取、列目录、提及名称不算采用。此工具只登记待核验报告；主进程核对当轮供应或主动读取记录（search_ability_assets 的 assetIds 正文模式）及实际持久化成果后才留下采用回执，不代表效果已验证。无法核验则只记采用未知，不改变成果正文。不采用则不要调用。多条资产分别报告，不要把同一工具成功算给所有引用。',
     inputSchema: {
       type: 'object', properties: {
         assetId: { type: 'string' }, assetVersion: { type: 'string', description: '读到的版本，例如 1 或 v1。' },

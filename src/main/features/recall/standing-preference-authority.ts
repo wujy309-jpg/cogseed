@@ -9,6 +9,7 @@ import { normalizeAbilityAssetScopePolicy, resolveScopeForAsset } from './scope-
 import { normalizeCognitionSourceRefsForWrite } from './source-service';
 import { readRecallJsonRecord } from './store';
 import { readReviewDecision } from '../cognition/review-decision';
+import { cognitionEditDecisionSchema, type CognitionEditDecision } from '../cognition/edit-decision';
 
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
@@ -31,20 +32,21 @@ function controlHash(asset: RecallAbilityAssetRecord): string {
     evidenceRefs: normalizeCognitionSourceRefsForWrite(asset.evidenceRefs), spaceId: asset.spaceId,
     sensitivity: asset.sensitivity, crossScopeConfirmedAt: asset.crossScopeConfirmedAt });
 }
-type Root = { rootCandidateId: string; rootDecisionId: string; rootVersion: string };
+type Root = { rootCandidateId: string; rootDecisionId: string; rootVersion: string; rootKind?: 'candidate' | 'edit' };
 type SupportBinding = { id: string; fingerprint: string; hash: string; candidateDigest: string; epoch: string; captureId: string; targetVersion: string };
 export interface StandingPreferenceAuthority extends Root {
-  schemaVersion: 1; ownerId: string; assetId: string; method: 'human_details_save' | 'nightly_supported_update';
+  schemaVersion: 1; ownerId: string; assetId: string; method: 'human_details_save' | 'nightly_supported_update' | 'human_instruction_edit';
   previousVersion: string; previousGuidanceHash: string; committedVersion: string; guidanceHash: string; createdAt: string;
-  candidateId?: string; decisionId?: string; support?: SupportBinding;
+  candidateId?: string; decisionId?: string; support?: SupportBinding; editDecision?: CognitionEditDecision;
 }
 type Permit = { uid: string; assetId: string; previousVersion: string; previousActiveVersion: string;
   previousGuidanceHash: string; root: Root; method: StandingPreferenceAuthority['method']; active: boolean;
-  candidateId?: string; decisionId?: string; support?: SupportBinding };
+  candidateId?: string; decisionId?: string; support?: SupportBinding; editDecision?: CognitionEditDecision;
+  standingAuthorized?: boolean };
 const permits = new AsyncLocalStorage<Permit>();
 const positive = ['supported', 'noUnsupportedClaims', 'scopePreserved', 'finalDecisionPreserved', 'priorContentPreserved'];
-function eligibleShape(asset: RecallAbilityAssetRecord): boolean {
-  return asset.type === 'cognition' && asset.contentCategory === 'preference' && asset.maturity !== 'seed'
+function eligibleShape(asset: RecallAbilityAssetRecord, reviewedEditRoot = false): boolean {
+  return asset.type === 'cognition' && asset.contentCategory === 'preference' && (asset.maturity !== 'seed' || reviewedEditRoot)
     && asset.status !== 'purged' && asset.status !== 'deleted' && asset.status !== 'revoked' && !asset.crossScopeConfirmedAt;
 }
 function view(asset: RecallAbilityAssetRecord, row: AbilityAssetVersionRecord): RecallAbilityAssetRecord {
@@ -56,14 +58,22 @@ function view(asset: RecallAbilityAssetRecord, row: AbilityAssetVersionRecord): 
   return value as RecallAbilityAssetRecord;
 }
 async function rootValid(uid: string, asset: RecallAbilityAssetRecord, root: Root, rows: AbilityAssetVersionRecord[]): Promise<boolean> {
+  if (root.rootKind === 'edit') {
+    const row = rows.find(value => value.version === root.rootVersion);
+    const decision = cognitionEditDecisionSchema.safeParse(row?.snapshot.userEditDecision);
+    return Boolean(row?.actor === 'user' && decision.success && decision.data.method === 'full_preview'
+      && decision.data.ownerId === uid && decision.data.targetId === asset.id
+      && decision.data.id === root.rootDecisionId && decision.data.committedVersion === root.rootVersion
+      && row.reason === `cognition_edit:${decision.data.id}`);
+  }
   const { readRecallCandidate, readRecallAssetHandoffReceipt } = await import('./candidate-service');
   const candidate = await readRecallCandidate(uid, root.rootCandidateId);
   const decision = await readReviewDecision(uid, `recall_candidate:${candidate.id}`, root.rootDecisionId);
   const row = rows.find(value => value.version === root.rootVersion);
   const saved = row?.snapshot;
   if (!row || !saved || row.actor !== 'user') return false;
-  const { verifyCaptureProvenanceForCommittedCandidate } = await import('./capture-provenance');
-  await verifyCaptureProvenanceForCommittedCandidate(uid, candidate);
+  const { verifyCandidateFormationForCommittedRead } = await import('../cognition/human-instruction-provenance');
+  await verifyCandidateFormationForCommittedRead(uid, candidate);
   const handoff = await readRecallAssetHandoffReceipt(uid, candidate.id, root.rootDecisionId, { recovery: 'none' });
   const parent = rows.find(value => Number(value.version) === Number(row.version) - 1);
   const { resolveExecutionEvidenceRefs } = await import('./evidence-resolution');
@@ -76,7 +86,7 @@ async function rootValid(uid: string, asset: RecallAbilityAssetRecord, root: Roo
   return Boolean(candidate.ownerId === uid && candidate.status === 'confirmed' && candidate.promotedAssetId === asset.id
     && candidate.reviewDecisionId === root.rootDecisionId && candidate.suggestedType === 'cognition' && candidate.contentCategory === 'preference'
     && (candidate.spaceId || '') === (asset.spaceId || '') && candidate.sensitivity === asset.sensitivity
-    && candidate.captureProvenance?.pipeline === 'nightly_conversation' && decision?.actor === 'user'
+    && (candidate.captureProvenance?.pipeline === 'nightly_conversation' || candidate.humanInstructionProvenance?.pipeline === 'human_instruction') && decision?.actor === 'user'
     && ['accept', 'modify'].includes(decision.decision_type) && decision.outcome === 'asset_created' && decision.asset_id === asset.id
     && decision.antecedent_ref === candidate.id && row?.reason === `review_decision:${decision.decision_id}`
     && saved?.type === 'cognition' && saved.contentCategory === 'preference' && saved.statement === candidate.judgment
@@ -86,6 +96,11 @@ async function rootValid(uid: string, asset: RecallAbilityAssetRecord, root: Roo
     && hash(terms(saved.forbiddenWhen)) === hash(terms(candidate.forbiddenWhen)));
 }
 async function findRoot(uid: string, asset: RecallAbilityAssetRecord, rows: AbilityAssetVersionRecord[]): Promise<Root | undefined> {
+  const existing = parseProof(asset.standingPreferenceAuthority, asset);
+  if (existing && await rootValid(uid, asset, existing, rows)) return {
+    rootCandidateId: existing.rootCandidateId, rootDecisionId: existing.rootDecisionId,
+    rootVersion: existing.rootVersion, ...(existing.rootKind ? { rootKind: existing.rootKind } : {}),
+  };
   const { readRecallCandidate } = await import('./candidate-service');
   for (const id of [...new Set([...(asset.sourceCandidateIds || []), asset.candidateId])].reverse()) {
     try {
@@ -102,12 +117,19 @@ function parseProof(value: unknown, asset: RecallAbilityAssetRecord): StandingPr
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const proof = value as StandingPreferenceAuthority;
   if (proof.schemaVersion !== 1 || proof.ownerId !== asset.ownerId || proof.assetId !== asset.id
-    || !['human_details_save', 'nightly_supported_update'].includes(proof.method)
+    || !['human_details_save', 'nightly_supported_update', 'human_instruction_edit'].includes(proof.method)
     || ![proof.committedVersion, proof.previousVersion, proof.rootVersion].every(version => /^\d+$/.test(String(version)))
     || Number(proof.committedVersion) !== Number(proof.previousVersion) + 1
     || ![proof.guidanceHash, proof.previousGuidanceHash].every(value => /^[a-f0-9]{64}$/.test(value || ''))
     || !Number.isFinite(Date.parse(proof.createdAt))) return undefined;
   return proof;
+}
+function unchangedVersionContract(asset: RecallAbilityAssetRecord, rows: AbilityAssetVersionRecord[], from: string, through: string, guidanceHash: string): boolean {
+  const start = rows.find(row => row.version === from);
+  if (!start || Number(through) < Number(from) || standingGuidanceHash(view(asset, start)) !== guidanceHash) return false;
+  const intervening = rows.filter(row => Number(row.version) > Number(from) && Number(row.version) <= Number(through));
+  return intervening.length === Number(through) - Number(from)
+    && intervening.every(row => standingGuidanceHash(view(asset, row)) === guidanceHash);
 }
 async function validateProof(uid: string, asset: RecallAbilityAssetRecord, proof: StandingPreferenceAuthority,
   rows: AbilityAssetVersionRecord[], depth = 0): Promise<boolean> {
@@ -120,6 +142,19 @@ async function validateProof(uid: string, asset: RecallAbilityAssetRecord, proof
   // The structured proof is itself queued in the atomic version commit by the
   // private host permit. A lagging version append need not invent actor metadata.
   if (proof.method === 'human_details_save') return true;
+  if (proof.method === 'human_instruction_edit') {
+    const decision = cognitionEditDecisionSchema.safeParse(committed.snapshot.userEditDecision);
+    if (!decision.success || hash(decision.data) !== hash(proof.editDecision)
+      || decision.data.ownerId !== uid || decision.data.targetId !== asset.id
+      || decision.data.previousVersion !== parent.version || decision.data.committedVersion !== committed.version
+      || committed.actor !== 'user' || committed.reason !== `cognition_edit:${decision.data.id}`) return false;
+    if (decision.data.method === 'full_preview') return proof.rootKind === 'edit' && proof.rootVersion === committed.version;
+    if (controlHash(view(asset, parent)) !== controlHash(view(asset, committed))) return false;
+    const parentProof = parseProof(parent.snapshot.standingPreferenceAuthority, asset);
+    if (parentProof) return unchangedVersionContract(asset, rows, parentProof.committedVersion, parent.version, parentProof.guidanceHash)
+      && validateProof(uid, asset, parentProof, rows, depth + 1);
+    return unchangedVersionContract(asset, rows, proof.rootVersion, parent.version, proof.previousGuidanceHash);
+  }
   if (!proof.candidateId || !proof.decisionId || !proof.support) return false;
   const { readRecallCandidate } = await import('./candidate-service');
   const candidate = await readRecallCandidate(uid, proof.candidateId);
@@ -142,26 +177,23 @@ async function validateProof(uid: string, asset: RecallAbilityAssetRecord, proof
   const handoff = await readRecallAssetHandoffReceipt(uid, proof.candidateId, proof.decisionId, { recovery: 'none' });
   if (handoff?.assetId !== asset.id || handoff.version !== proof.committedVersion) return false;
   const parentProof = parseProof(parent.snapshot.standingPreferenceAuthority, asset);
-  if (parentProof) return Number(parentProof.committedVersion) <= Number(parent.version)
+  if (parentProof) return unchangedVersionContract(asset, rows, parentProof.committedVersion, parent.version, parentProof.guidanceHash)
     && validateProof(uid, asset, parentProof, rows, depth + 1);
   // An ordinary title-only version can still carry the original unchanged
   // human intent; it must match that immutable human content contract.
-  const human = rows.find(row => row.version === proof.rootVersion);
-  return Boolean(human && standingGuidanceHash(view(asset, human)) === proof.previousGuidanceHash);
+  return unchangedVersionContract(asset, rows, proof.rootVersion, parent.version, proof.previousGuidanceHash);
 }
 export async function hasCommittedStandingPreferenceAuthority(uid: string, asset: RecallAbilityAssetRecord): Promise<boolean> {
   try {
     const proof = parseProof(asset.standingPreferenceAuthority, asset);
-    if (!proof || !eligibleShape(asset) || asset.ownerId !== uid || asset.status !== 'active'
+    if (!proof || !eligibleShape(asset, proof.rootKind === 'edit') || asset.ownerId !== uid || asset.status !== 'active'
       || String(asset.activeVersion || asset.version) !== asset.version || standingGuidanceHash(asset) !== proof.guidanceHash) return false;
     const { listAbilityAssetVersions } = await import('./asset-service');
     const rows = await listAbilityAssetVersions(uid, asset.id);
     if (!await validateProof(uid, asset, proof, rows)) return false;
     // Metadata-only version advances preserve authority only while every
     // intervening immutable contract is unchanged. Reverts cannot launder edits.
-    const intervening = rows.filter(row => Number(row.version) > Number(proof.committedVersion) && Number(row.version) <= Number(asset.version));
-    return Number(asset.version) >= Number(proof.committedVersion) && intervening.length === Number(asset.version) - Number(proof.committedVersion)
-      && intervening.every(row => standingGuidanceHash(view(asset, row)) === proof.guidanceHash)
+    return unchangedVersionContract(asset, rows, proof.committedVersion, asset.version, proof.guidanceHash)
       && rows.some(row => row.version === asset.version);
   } catch { return false; }
 }
@@ -201,7 +233,8 @@ async function runPermit<T>(permit: Permit | undefined, work: () => Promise<T>):
 export async function withHumanStandingPreferenceDetailsSave<T>(uid: string, asset: RecallAbilityAssetRecord, work: () => Promise<T>): Promise<T> {
   const { listAbilityAssetVersions } = await import('./asset-service');
   const rows = await listAbilityAssetVersions(uid, asset.id);
-  let root = eligibleShape(asset) && asset.ownerId === uid ? await findRoot(uid, asset, rows) : undefined;
+  const existing = parseProof(asset.standingPreferenceAuthority, asset);
+  let root = eligibleShape(asset, existing?.rootKind === 'edit') && asset.ownerId === uid ? await findRoot(uid, asset, rows) : undefined;
   if (root) {
     // The editor reviews body and natural-language conditions, not arbitrary
     // hidden ACL or source changes made since the earlier authorized revision.
@@ -218,6 +251,32 @@ export async function withHumanStandingPreferenceDetailsSave<T>(uid: string, ass
   return runPermit(root ? { uid, assetId: asset.id, root, method: 'human_details_save', active: true,
     previousVersion: asset.version, previousActiveVersion: String(asset.activeVersion || asset.version), previousGuidanceHash: standingGuidanceHash(asset) } : undefined, work);
 }
+/** The caller is the host editor after verifying a real message or resolving
+ * its complete preview interaction. This permit cannot be supplied as tool JSON. */
+export async function withHumanInstructionEdit<T>(uid: string, asset: RecallAbilityAssetRecord,
+  decision: CognitionEditDecision, work: () => Promise<T>): Promise<T> {
+  cognitionEditDecisionSchema.parse(decision);
+  if (decision.ownerId !== uid || decision.targetId !== asset.id || decision.previousVersion !== asset.version
+    || decision.previousActiveVersion !== String(asset.activeVersion || asset.version)) throw new Error('edit decision baseline changed');
+  const { listAbilityAssetVersions } = await import('./asset-service');
+  const rows = await listAbilityAssetVersions(uid, asset.id);
+  const root = decision.method === 'full_preview'
+    ? { rootKind: 'edit' as const, rootCandidateId: asset.candidateId, rootDecisionId: decision.id, rootVersion: decision.committedVersion }
+    : await findRoot(uid, asset, rows);
+  const standingAuthorized = decision.method === 'full_preview' || await hasReviewedStandingContract(uid, asset);
+  if (decision.method === 'exact_patch' && ['statement', 'applicableWhen', 'forbiddenWhen'].some(key => Object.hasOwn(decision.patch, key)) && asset.type === 'cognition' && asset.contentCategory === 'preference' && !standingAuthorized)
+    throw new Error('exact edit requires a complete reviewed contract');
+  return runPermit({ uid, assetId: asset.id, root: root || { rootCandidateId: asset.candidateId, rootDecisionId: decision.id, rootVersion: decision.committedVersion },
+    method: 'human_instruction_edit', editDecision: decision, standingAuthorized, active: true, previousVersion: asset.version,
+    previousActiveVersion: String(asset.activeVersion || asset.version), previousGuidanceHash: standingGuidanceHash(asset) }, work);
+}
+/** Pausing an asset does not erase the person's earlier complete decision;
+ * using it still requires active status in the ordinary runtime gate. */
+export async function hasReviewedStandingContract(uid: string, asset: RecallAbilityAssetRecord): Promise<boolean> {
+  const active = { ...asset, status: 'active' as const };
+  return await hasCommittedStandingPreferenceAuthority(uid, active) || await hasOriginalHumanStandingPreferenceAuthority(uid, active);
+}
+
 export async function withAutomaticStandingPreferenceUpdate<T>(uid: string, candidate: RecallCandidateRecord,
   decisionId: string, epoch: string, work: () => Promise<T>): Promise<T> {
   if (candidate.suggestedAction !== 'update' || candidate.suggestedType !== 'cognition' || candidate.contentCategory !== 'preference' || !candidate.targetAssetId) return work();
@@ -244,11 +303,30 @@ export function readStandingPreferenceAuthorityBaseline(uid: string, assetId: st
   return permit?.active && permit.uid === uid && permit.assetId === assetId
     ? { version: permit.previousVersion, activeVersion: permit.previousActiveVersion } : undefined;
 }
+export function attachHumanEditMetadata(uid: string, current: RecallAbilityAssetRecord, next: RecallAbilityAssetRecord): void {
+  const permit = permits.getStore();
+  if (permit?.active && permit.uid === uid && permit.assetId === current.id && permit.editDecision)
+    next.userEditDecision = { ...permit.editDecision, committedVersion: next.version };
+}
 export function attachStandingPreferenceAuthority(uid: string, current: RecallAbilityAssetRecord, next: RecallAbilityAssetRecord): void {
   const permit = permits.getStore();
   if (!permit?.active || permit.uid !== uid || permit.assetId !== current.id) return;
   if (standingGuidanceHash(current) !== permit.previousGuidanceHash) throw new Error('standing preference authority baseline changed');
-  if (!eligibleShape(next)) { delete next.standingPreferenceAuthority; return; }
+  if (permit.editDecision) {
+    next.userEditDecision = permit.editDecision;
+    if (permit.editDecision.method === 'full_preview' && next.type === 'cognition' && next.contentCategory === 'preference') {
+      // Reviewing the complete contract establishes intent, not proven effects.
+      // Maturity stays on the independent validation axis, including seed.
+      next.lifecycleStatus = 'user_confirmed_unverified';
+    }
+  }
+  if (!eligibleShape(next, permit.root.rootKind === 'edit')) { delete next.standingPreferenceAuthority; return; }
+  if (permit.method === 'human_instruction_edit' && !permit.standingAuthorized) {
+    // A title/tag decision may save metadata, but cannot review an intervening
+    // body merely because that body still carries an older proof object.
+    delete next.standingPreferenceAuthority;
+    return;
+  }
   if (permit.method === 'human_details_save' && (controlHash(current) !== controlHash(next)
     || (current.statement === next.statement && hash(terms(current.applicableWhen)) === hash(terms(next.applicableWhen))
       && hash(terms(current.forbiddenWhen)) === hash(terms(next.forbiddenWhen))))) return;
@@ -258,5 +336,6 @@ export function attachStandingPreferenceAuthority(uid: string, current: RecallAb
   next.standingPreferenceAuthority = { schemaVersion: 1, ownerId: uid, assetId: next.id, ...permit.root, method: permit.method,
     previousVersion: current.version, previousGuidanceHash: permit.previousGuidanceHash, committedVersion: next.version,
     guidanceHash: standingGuidanceHash(next), createdAt: next.updatedAt,
+    ...(permit.editDecision ? { editDecision: permit.editDecision } : {}),
     ...(permit.candidateId ? { candidateId: permit.candidateId, decisionId: permit.decisionId, support: permit.support } : {}) } satisfies StandingPreferenceAuthority;
 }

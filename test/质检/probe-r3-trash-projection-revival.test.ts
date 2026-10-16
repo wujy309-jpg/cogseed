@@ -1,23 +1,4 @@
-/**
- * 红队探针 r3：已删资产的投影值能否借「分组回收站恢复」复活（终态资产残留）。
- *
- * 靶点（读码推演）：
- * - removeTemplateFieldValuesForRecallAsset（personal_ontology_template_files.ts
- *   :786 起）的 editPoDoc 回调只遍历 ctx.doc.groups 活组——文件内 grep "trash"
- *   零命中，doc.trash 里的投影值不被级联清理；
- * - deleteGroup 把整组（含 assetId 投影值）搬进 trash（personal_ontology_groups.ts
- *   :179-193），restoreDeletedGroup（:769）整状态复活，**无任何投影/资产存活检查**；
- * - 复活的投影值仍带 assetId → po.values.delete 返回 asset_projection_read_only
- *   （po/api.ts:375）——用户被自己删过的资产尸体锁死。
- *
- * 预言：组删除 → 资产投影级联清（removed=0，扫不到 trash）→ 组恢复 →
- * 已删资产的投影值原样复活且只读锁死。
- *
- * 2026-09-30 r3 收尾（记账员）：用例 1 对应待议 P-r3-6（恢复侧净化 / 删除侧
- * 截断 / 级联侧扩围三向分叉，且与 r1 P-r1-14 纠缠需统一权衡）；用例 2 是
- * r1 待议 P-r1-14（普通组孤儿）的运行时实证 → 均 it.skip。断言锁定的均是
- * 待议现状，拍板后随方向反转。见 round-3-甄别.md toPending。
- */
+/** 资产清除、普通组及回收站恢复之间的投影引用一致性。 */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
@@ -69,9 +50,8 @@ function dialect(lines: string[]): string {
   return ['## 字段区', '', '### 常用工具', ...lines, '', '---', '', '## 流水区', ''].join('\n');
 }
 
-describe('probe r3: 已删资产投影借分组回收站恢复复活（待议项已 skip）', () => {
-  // 待议 P-r3-6：恢复通道复活已删资产的投影值（restoreDeletedGroup 无投影/
-  // 资产存活检查，级联只扫活组不扫 trash）。
+describe('已删资产投影借分组回收站恢复复活', () => {
+  // 清除资产后恢复分组，观察回收站中的投影值是否重新出现。
   it.skip('组删除→资产级联清（trash 不扫）→组恢复→投影值复活且只读锁死', async () => {
     const groups = await loadGroups();
     const templates = await loadTemplates();
@@ -116,9 +96,8 @@ describe('probe r3: 已删资产投影借分组回收站恢复复活（待议项
     expect(delValue.error).toBe('asset_projection_read_only');
   });
 
-  // 待议 P-r1-14（r1 遗留）：资产删除级联只清模板组，普通组 assetId 值的
-  // 运行时实证。拍板扩级联后反转，拍板维持现状则可转为「锁现状」回归启用。
-  it.skip('对照组：普通组活组的投影值同样不被级联清（P-r1-14 范围的运行时实证）', async () => {
+  // 普通活组中的投影值作为对照，区分模板组与普通组的清理范围。
+  it.skip('对照组：普通活组中的投影值不被级联清理', async () => {
     const groups = await loadGroups();
     const templates = await loadTemplates();
 
@@ -130,8 +109,7 @@ describe('probe r3: 已删资产投影借分组回收站恢复复活（待议项
 
     const purge = await templates.removeTemplateFieldValuesForRecallAsset(UID, ASSET);
     expect(purge.ok).toBe(true);
-    // 运行时证实：级联只处理 kind==='template' 的组，普通组（无论活组还是
-    // trash）一律不清——待议 P-r1-14 所述"普通组孤儿"的直接证据。
+    // 核对普通组中的投影值是否仍保留，不将模板组清理推断为全组清理。
     const after = readDoc().groups.find((g: any) => g.id === groupId);
     expect(after.values.some((v: any) => v.assetId === ASSET)).toBe(true);
     expect(purge.removed).toBe(0);

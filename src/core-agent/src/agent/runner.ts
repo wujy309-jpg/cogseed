@@ -41,16 +41,9 @@ const TOOL_HEARTBEAT_TIMEOUT_GRACE_MS = 30_000;
 export const COMPACTED_HISTORY_PLACEHOLDER_ERROR_CODE = "E_COMPACTED_HISTORY_PLACEHOLDER";
 const LEGACY_COMPACTED_TOOL_USE_INPUT_KEY = "__cogseed_compacted_tool_use";
 
-/**
- * 反思（runReflection）允许携带的工具闭合集：反思的既定产出通道只有
- * skill_manage（建/改技能）与 metacognition（更新 COMPETENCE.md /
- * LEARNING_STRATEGIES.md）——systemPrompt 里的 "Available tools" 句与此集
- * 必须同步。bash / write_file / web_fetch 等全量工具此前会被一并交给后台
- * 自动触发的反思真实执行（prompt 谎称只有两个），web_fetch 可把 prompt 里的
- * 用户原文外发，属权限敞口，故收敛为白名单。导出是为了让不变量可被测试钉住
- * （READ_ONLY_TOOL_ALLOWLIST 同款先例），不是给调用方拼装——要加工具请改
- * 这里并同步那条测试的判据。
- */
+/** Reflection may refine skills and metacognition only. Keep this allowlist
+ * aligned with the reflection prompt; shell, arbitrary writes and network tools
+ * are excluded. Extend this set and its contract test together. */
 export const REFLECTION_TOOL_ALLOWLIST: ReadonlySet<string> = new Set([
   "skill_manage",
   "metacognition",
@@ -211,7 +204,7 @@ function errorCodeForMeta(err: unknown): string | undefined {
   return undefined;
 }
 
-/** Concurrency cap for a parallel (read-only) tool batch (G4). Env-overridable;
+/** Concurrency cap for a parallel (read-only) tool batch. Env-overridable;
  *  conservative default. This is the READ-TOOL cap only — the group-chat layer
  *  applies a separate, lower cap to agent/worker dispatch tools. */
 function parallelToolCap(): number {
@@ -824,7 +817,7 @@ export class AgentRunner {
     return steered.filter((text) => text && text.trim());
   }
 
-  /** interrupt-steer (G9): drain any host-queued user messages and fold them
+  /** interrupt-steer: drain any host-queued user messages and fold them
    *  into the current active session turn. Returns how many were folded. Called
    *  at tool-loop boundaries so the next LLM round can course-correct without
    *  deferring the user input to a separate follow-up turn. */
@@ -895,7 +888,7 @@ export class AgentRunner {
     let lastUsage: import("../shared/types.js").Usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 };
     // 最后一次模型调用的 usage（覆盖式，非累加）——"当前上下文占用"的唯一
     // 正确口径。lastUsage 是整轮累加（每步重发的历史被求和一次），只适合
-    // 消耗/计费口径；窗口占用必须读这个（2026-09-11 统计口径修复）。
+    // 消耗/计费口径；窗口占用必须读这个。
     let lastCallUsage: import("../shared/types.js").Usage | undefined;
     const toolNamesSet = new Set<string>();
     const skillsLoadedSet = new Set<string>();
@@ -931,7 +924,7 @@ export class AgentRunner {
     let loopRepeat = 0;
     let loopWarnedForStreak = false;
     let pendingLoopNudge: string | null = null;
-    // Near-duplicate streak (WS-3): same call modulo volatile id/timestamp fields.
+    // Near-duplicate streak: same call modulo volatile id/timestamp fields.
     let normSig: string | null = null;
     let normRepeat = 0;
     let normWarnedForStreak = false;
@@ -959,6 +952,7 @@ export class AgentRunner {
     // consumer sees a terminal event no matter which branch wins.
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
+        params.signal?.throwIfAborted();
         const toolDefs = [...this.tools.values()].map(toToolDefinition);
 
         const prepareContextStartedAt = Date.now();
@@ -1039,7 +1033,7 @@ export class AgentRunner {
             if (responseGateRequired) withheldText += ev.text;
             else yield { type: "text_delta", text: ev.text };
           } else if (ev.type === "thinking_delta") {
-            // 思考流透传（交互设计 2026-09-08：思考过程展示链路补全）。
+            // 思考流透传。
             if (ev.delta) yield { type: "thinking_delta", delta: ev.delta };
           } else if (ev.type === "tool_use_start") {
             // This is an intermediate tool-using turn, not the terminal
@@ -1176,7 +1170,7 @@ export class AgentRunner {
         this.session.addAssistantMessage(result.content);
 
         if (toolCalls.length === 0 || result.stopReason !== "tool_use") {
-          // interrupt-steer (G9): a user message can land while the model is
+          // interrupt-steer: a user message can land while the model is
           // producing its FINAL answer (no tool calls), which the tool-loop
           // drain below never reaches. Drain here too; if anything arrived,
           // close the now-finished turn first and continue with the steer as a
@@ -1333,7 +1327,7 @@ export class AgentRunner {
               + `or stop and report what you have so far. Repeating the identical call again will end the run.`;
           }
 
-          // Near-duplicate loop_detection (WS-3): a call that repeats
+          // Near-duplicate loop_detection: a call that repeats
           // modulo volatile id/timestamp fields. The exact streak above resets on
           // any real arg change, so this is the only tier that catches a "same
           // call, fresh request-id/uuid each time" spin. Threshold is above
@@ -1441,7 +1435,7 @@ export class AgentRunner {
         };
 
         // Batch tool calls: a run of ADJACENT parallel-safe tools executes
-        // concurrently (G4); every other tool is a singleton barrier. Declared
+        // concurrently; every other tool is a singleton barrier. Declared
         // order is preserved, so results are committed in order and a write/exec
         // tool separates the reads before it from the reads after it.
         const parallelCap = parallelToolCap();
@@ -1462,7 +1456,7 @@ export class AgentRunner {
         const deferredToolImages: Array<{ toolUseId: string; images: NonNullable<ToolResult["images"]> }> = [];
         const commitToolResult = (call: ToolUseCall, toolResult: ToolResult) => {
           this.session.addToolResult(call.id, toolResult.content, undefined, toolResult.isError);
-          // Keep the producing call id with the deferred images (C1/R-09): flushing
+          // Keep the producing call id with the deferred images: flushing
           // them bare loses which tool_use they answer, and the session's image
           // externalization needs that attribution to replace exactly these images.
           if (toolResult.images?.length) deferredToolImages.push({ toolUseId: call.id, images: toolResult.images });
@@ -2576,9 +2570,8 @@ export class AgentRunner {
     const provider = resolved.provider;
     const modelId = resolved.modelId;
     // 反思只拿既定产出通道（见 REFLECTION_TOOL_ALLOWLIST 头注释）：
-    // 白名单过滤，而非「全量减 manage_execution_plan」——此前全量工具集
-    // 与 systemPrompt 谎报的 2 工具不一致，web_fetch/bash/write_file 等
-    // 会被后台自动反思免确认真实执行。
+    // Only the declared reflection outputs are executable; ordinary task tools
+    // are not inherited by a background reflection.
     const reflectionTools = new Map(
       [...this.tools.entries()].filter(([name]) => REFLECTION_TOOL_ALLOWLIST.has(name)),
     );
@@ -2779,9 +2772,14 @@ async function runToolWithWatchdog(opts: {
   const toolIdle = createToolIdleWatchdog(toolIdleTimeoutMs);
   const abortWait = waitForAbort(signal);
   let acceptingProgress = true;
+  let atomicCommitStarted = false;
   const toolCtx: ToolContext = {
     workingDir,
     signal: toolAbort.signal,
+    beginAtomicCommit: () => {
+      toolAbort.signal.throwIfAborted();
+      atomicCommitStarted = true;
+    },
     state,
     emitProgress: (progress) => {
       if (!acceptingProgress) return;
@@ -2820,7 +2818,10 @@ async function runToolWithWatchdog(opts: {
       toolIdle.promise,
     ];
     if (abortWait.promise) waits.push(abortWait.promise);
-    const raced = await Promise.race(waits);
+    let raced = await Promise.race(waits);
+    // Host code marks only the irreversible write, not tool entry or lock
+    // acquisition. Keep its real receipt while normal tools still stop promptly.
+    if ((raced === "abort" || raced === "tool_idle") && atomicCommitStarted) raced = await toolPromise;
     acceptingProgress = false;
 
     if (raced === "tool_idle") {
@@ -2837,7 +2838,7 @@ async function runToolWithWatchdog(opts: {
       return abortResult();
     }
     if (raced.ok === false) {
-      if (signal?.aborted) {
+      if (signal?.aborted && !atomicCommitStarted) {
         toolAbort.abort();
         return abortResult();
       }

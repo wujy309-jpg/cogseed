@@ -1,7 +1,7 @@
 /* ============================================================================
  * 认知资产 · 候选族零件（cognition-assets/review-candidate.js）
  *
- * 2026-09-29 自 views.js 机械拆出（零行为变更）：候选判定 / 徽章 / 列表卡 /
+ * 自 views.js 机械拆出（零行为变更）：候选判定 / 徽章 / 列表卡 /
  * 确认表单 / 依据链 / 版本冲突块 / 候选详情等候选族函数原样迁入。
  * 共享零件（按钮/章/术语表/来源解析/折叠件）经 NS.ui 取用——本文件必须
  * 晚于 views.js 加载（lazy-features.js recall 组顺序）。
@@ -20,9 +20,10 @@
     foldValue, kstarEpisodeSection, contentCategoryLabel, contentCategorySelect,
   } = NS.ui;
 
-  // 「对话中记」候选身份：captureKey `immediate-` 前缀（新）或引用 id 的
-  // `immediate-` 前缀（存量）——两个信号源同前缀。
+  // 当前主动创建由宿主给出独立来源；旧「对话中记」仍按原前缀显示。
+  // 这里只选择来源徽章，不授予确认、夜间形成或任务使用资格。
   function isImmediateCandidate(candidate) {
+    if (candidate?.humanInstructionProvenance?.pipeline === 'human_instruction') return true;
     if (candidate && typeof candidate.captureKey === 'string' && candidate.captureKey.startsWith('immediate-')) return true;
     return evidenceRefs(candidate).some((ref) => String(ref && ref.id || '').startsWith('immediate-'));
   }
@@ -87,10 +88,10 @@
       && provenance.messageIds.includes(item.messageId))
       && judgment.evidence.some(item => sourceIds.has(item.sourceId));
   }
-  /** 候选来源徽章（2026-09-16 KSTAR 融合）：三条产出线可辨——KSTAR 复盘
+  /** 候选来源徽章：三条产出线可辨——KSTAR 复盘
    *  （learningSignal/learningProvenance）、KSTAR 偏好（source=preference_scan，
    *  确定性扫描线）、会话整理（capture 线，无信号）。KSTAR 两条线的徽章
-   *  文案必须带 "KSTAR" 前缀（子安口径：用户可辨，不接受裸"任务复盘"）。 */
+   *  文案必须带 "KSTAR" 前缀，以便用户辨认。 */
   function candidateSourceBadge(candidate) {
     if (candidate.origin === 'manual') return chip(T('cognition.source_manual', '手动输入'));
     const signal = candidate.learningSignal;
@@ -107,7 +108,7 @@
     return chip(label, risk === 'high' ? 'amber' : 'line');
   }
 
-  /** KSTAR 候选的复盘依据块（2026-09-16）：预期/实际/结果四行——知道"这条
+  /** KSTAR 候选的复盘依据块：预期/实际/结果四行——知道"这条
    *  是从哪次成败学来的"，确认保存才心里有底。
    *  更新型候选不再走这里（依据链已含预期→实际段，避免同屏两份）。 */
   function reviewSignalBlock(candidate) {
@@ -127,7 +128,7 @@
     </div>`;
   }
 
-  /* ────────────── 依据链（specs/015 US-701 AC1/AC2，2026-09-25）──────────────
+  /* ────────────── 依据链──────────────
    * 更新型候选（update / limit_scope 且带目标方法）把「凭什么改这条方法」摊开：
    * 原方法与版本 / 同次任务 / 预期→实际 / 采用证据 / 为什么改 / 适用范围 / 改动点。
    * 口径：
@@ -300,7 +301,7 @@
     </div>`;
   }
 
-  /* ────────────── 确认更新撞版本冲突（specs/015 US-702 T022，2026-09-25）──────
+  /* ────────────── 确认更新撞版本冲突──────
    * 确认时主进程在资产锁内判定"候选锚定的版本 ≠ 当前在用版"：这次**没有生效**
    * （资产零改动、候选仍待处理）。这里做四件事：
    *  ① 如实说清"没生效、也没覆盖"（不静默覆盖，更不假装成功）；
@@ -372,12 +373,12 @@
     </div>`;
   }
 
-  /** 待确认口径（2026-09-16 B1 统一）：需要用户判断且未被"稍后处理"静音。
+  /** 待确认口径：需要用户判断且未被"稍后处理"静音。
    *  统计卡与全局 stats 共用这一份（单一事实源），杜绝 7/5/0 三数分叉；
-   *  deferred 行仍在列表可见（子安口径：与待确认同形态），只是不占
+   *  deferred 行仍在列表可见，与待确认同形态，只是不占
    *  "等待确认"名额并带「已稍后处理」标注。 */
   const candidateAwaiting = (candidate) => candidatePending(candidate) && !(candidate.capabilities && candidate.capabilities.isSnoozed);
-  /** 候选显示名（2026-09-16 修）：优先模型提炼的 summary 短标题——此前
+  /** 候选显示名：优先模型提炼的 summary 短标题——此前
    *  judgment 截断 60 字优先，卡片名成了"内容前缀"看不懂；无 summary 的
    *  存量候选用类别 + 判断前 12 字克制兜底，两者皆空给未命名。 */
   const candidateTitle = (candidate) => {
@@ -390,17 +391,15 @@
     return T('cognition.candidate_untitled', '未命名候选');
   };
 
-  /* ── 决策三态与按钮名（specs/015 US-702 T023，2026-09-25）──────────────
+  /* ── 决策三态与按钮名──────────────
    * 判据只有一个：**改的是已存在的那条方法**才说「确认更新」——即
    * `suggestedAction ∈ {update, limit_scope}` **且**带 `targetAssetId`。
    *  - 没有目标方法的候选（`create`，或 `update` 却缺 `targetAssetId`）一律按
    *    新建型渲染：对不存在的旧版说"更新"是假话；
    *  - `pause` 提案（主进程走 pauseAbilityAsset，没有版本比对面）也保持既有
    *    措辞：它既不是"更新成新版"，也没有可重锚的差异面；
-   *  - 「稍后处理 / 拒绝」的**更新型**文案与 008 审批卡片共用同一批词条：
-   *    产品口径是"两边三态与按钮名统一"（spec.md L40），共用键从源头杜绝
-   *    两处各写一套后漂移。
-   *  - 确认词根统一「保存」系（2026-09-28 词表统一）：新建型「保存」（原
+   *  - 更新型的「稍后处理 / 拒绝」与对话审批卡共用词条，避免按钮含义漂移。
+   *  - 确认词根统一「保存」系：新建型「保存」（原
    *    「保存并使用」，"并使用"的语义并入按钮下的一句说明）、更新型「保存更新」
    *    （原「确认更新」，与对话内审批卡同键同步改）。 */
   const candidateUpdateType = (candidate) => {
@@ -421,7 +420,7 @@
 
   function candidateCard(candidate, broken) {
     const refs = evidenceRefs(candidate);
-    // 同名兜底来源去重（2026-09-29 子安拍板的视觉整改③）：两条失效来源都
+    // 同名兜底来源去重：两条失效来源都
     // 渲染成「来源记录不可用」时并列重复——按解析后的显示名聚合计数，
     // 与详情页来源组的同名合并同一口径。仍只展示前 4 组。
     const refNameCounts = new Map();
@@ -438,7 +437,7 @@
     const refsHtml = refs.length
       ? `<div class="c4">${esc(T('cognition.candidate_source', '来源'))}：${[...refNameCounts.entries()].slice(0, 4).map(([name, count]) => esc(count > 1 ? `${name} ×${count}` : name)).join(' · ')}</div>`
       : '';
-    // 2026-09-29 子安标注整改（第三轮定稿）：「来源已删」警示**与标题同一行**——
+    // 「来源已删」警示**与标题同一行**——
     // 标题在左，警示条靠右（chevron 之前），不再独立成行压在标题上面；
     // 行内放不下时省略号截断、悬浮 title 看全文。
     const warnHtml = broken
@@ -447,11 +446,11 @@
     /* 动作区（同轮标注）：「…其他处理」折叠开关撤下——保存/稍后处理/
      * 不保存/看内容与证据（稍后处理态另有「恢复」）**全部平铺、右侧、
      * 同一行**；不再藏二级折叠。候选确认闸与通道不变，纯呈现层收敛。 */
-    /* 三件套（specs/018 T011）沿革：主按钮 primary 视觉保留；直接确认沿
+    /* 三件套沿革：主按钮 primary 视觉保留；直接确认沿
      * 既有 cand-adopt-with-form 通道：卡片不在 .ca-candidate-detail 里，
      * readCandidateForm 就近找不到表单 → 按未携带编辑确认（内容原样保存）。
      * 卡片整体不再是点击区——标题行与「看内容与证据」进详情，避免行内按钮
-     * 与卡片跳转抢点击（2026-09-26 旅程雕刻前的老问题，这次一并解掉）。 */
+     * 与卡片跳转抢点击。 */
     const caps = candidate.capabilities || {};
     const labels = candidateDecisionLabels(candidate);
     const primaryLabel = candidateUpdateType(candidate)
@@ -463,7 +462,7 @@
     const actionBtns = [
       primaryBtn,
       caps.canReject ? btn(labels.reject, 'cand-decide', { id: candidate.id, data: { action: 'reject' }, small: true, className: 'o' }) : '',
-      // 「看内容与证据」按钮已删（2026-09-29 子安指令）：整卡即详情入口
+      // 「看内容与证据」按钮已删：整卡即详情入口
       // （act 提到卡根，委托层 closest 最近匹配——点按钮命中按钮自身动作，
       // 不会误触跳转），按钮成了第四个重复入口。
     ].filter(Boolean);
@@ -481,20 +480,20 @@
 
   /* ────────────────────────── 视图：候选详情 ────────────────────────── */
 
-  /* 候选确认表单（2026-09-15 自 viewCandidate 抽出共享）：
+  /* 候选确认表单：
    *  - candidateFormBody：纯表单区（警示/判断/高级/证据+动作），
    *    供整理详情页合并进执行信息卡（外层由调用方提供 ca-candidate-detail
    *    标识——readCandidateForm 靠它就近定位）；
    *  - candidateFormCard：带卡壳与标题行的完整卡（候选详情页用）。
    *  控件 id 带候选 id 后缀：一页多卡时全局 id 不重复（读取靠 [data-f]）。 */
-  /** 候选卡的适用范围（承接表 02 / G2，2026-09-26 补落点）：新建型候选此前
+  /** 候选卡的适用范围：新建型候选此前
    *  只显正文与来源，用户看不到它将来在什么范围生效。作用域 + 适用/禁用
    *  场景三行；一个都没有时如实说「没有限定」，不编造默认。更新型候选的
    *  适用范围已由依据链（improvementChainBlock ⑥）呈现，不重复。 */
   function candidateScopeField(candidate, opts = {}) {
     const field = (label, inner) => `<label class="field"><span>${esc(label)}</span>${inner}</label>`;
     const scope = String(candidate.suggestedScope || '').trim();
-    // A7（2026-09-29）：适用范围映射走四语词条（与整理表单同源
+    // 适用范围映射走四语词条（与整理表单同源
     // cognition.capture.scope_*），不再硬编码中文——ja/pt 环境此前裸出中文。
     const scopeLabels = {
       general: T('cognition.capture.scope_general', '跨任务通用'),
@@ -556,7 +555,7 @@
     )}</div>`;
   }
 
-  /** 正文规范警示（2026-09-29 正文一等规范）：主进程读回时派生的
+  /** 正文规范警示：主进程读回时派生的
    *  statementIssues 在此显示——只提醒不拦截（把关权在人）；编辑后以
    *  表单当前值重算（前端不另立口径，仅按主进程下发的 issue 形态提示）。 */
   const STATEMENT_ISSUE_LABELS = {
@@ -572,7 +571,7 @@
     return `<div class="note ca-statement-warning">${esc(T('cognition.statement_warning_prefix', '正文建议调整（可改后保存）：'))}${esc(lines)}</div>`;
   };
 
-  /** 准入软提醒（F-r3-6，2026-10-01）：主进程随 capabilities 专门下发的
+  /** 准入软提醒（）：主进程随 capabilities 专门下发的
    *  eligibilityAdvisories——soft_warning 的来源（candidate-capabilities.ts：
    *  「不阻断但应如实告知的欠缺」）。此前渲染层零消费，soft_warning 与
    *  eligible 界面同形，确认时收不到任何欠缺提醒。口径：
@@ -580,7 +579,7 @@
    *  - 快照口径：这是最近一次读取主进程时的判定，编辑后不即时重算（前端
    *    不另立口径，与 statementWarningHtml 同一纪律），文案注明按最近一次读取；
    *  - 码表与 capture-value-screening 的 advisoryReasons 一一对应（5 码全覆盖），
-   *    fact_not_stable 与阻断面（F-r3-5）共用同一词条键；未知码不上屏
+   *    fact_not_stable 与阻断面（）共用同一词条键；未知码不上屏
    *    （主进程契约：码由 UI 翻译，内部标识不直接展示），全未知时不渲染。 */
   const CANDIDATE_ADVISORY_LABELS = {
     personal_not_stable: T('cognition.candidate_advisory_personal_not_stable', '个人条目没写明这是长期的，可能只是一次性状态，建议核对。'),
@@ -837,7 +836,7 @@
     const broken = evidenceMostlyUnavailable(candidate);
     // 能力一律按主进程下发的 capability 判定，**缺失即视为只读**——与旧模块
     // "treats a candidate without capabilities as read-only instead of guessing"
-    // 的口径一致。2026-09-20 统一：此前同一函数里并存三种读法（canEdit 用
+    // 的口径一致。统一：此前同一函数里并存三种读法（canEdit 用
     // `capabilities && …`、canPromote 用真值、canReject 用 `!== false`），
     // 于是"capabilities 缺失"时仍会渲染出「稍后处理 / 拒绝」——正是本 PR 要消灭的
     // 那类必然失败的按钮。
@@ -849,14 +848,18 @@
     const canReject = !!caps.canReject && !rechecking;
     const edit = canEdit;
     const field = (label, inner) => `<label class="field"><span>${esc(label)}</span>${inner}</label>`;
-    // 更新候选的差异确认卡（2026-09-16 版本组）：旧版全文对照 + 版本核对
+    // 更新候选的差异确认卡：旧版全文对照 + 版本核对
     // 提示——任务所用版与当前在用版不一致时，确认前先核对改进对象。
-    // 2026-09-25（specs/015 T014）：原「当前版本」差异区扩为**依据链**区块
+    // 原「当前版本」差异区扩为**依据链**区块
     // （原方法与版本 / 同次任务 / 预期→实际 / 采用证据 / 为什么改 / 适用范围 /
     // 改动点，见 improvementChainBlock）。更新型候选的预期→实际由依据链呈现，
     // 不再叠加一份「复盘依据」，避免同屏两处同内容。
+    const comparison = candidate.formationComparison;
+    const comparisonHtml = comparison ? `<p class="note"><strong>${esc(T('cognition.formation_comparison', '与已有内容比较'))}</strong>：${esc(comparison.reason)}${comparison.targetVersion ? ` · v${esc(comparison.targetVersion)}` : ''}</p>
+      ${comparison.targetQuote ? `<p class="content-text">${esc(comparison.targetQuote)}</p>` : ''}
+      ${comparison.coverage?.truncated || comparison.coverage?.unavailable ? `<p class="note">${esc(T('cognition.formation_comparison_partial', '比较覆盖尚不完整，不能据此自动新增或覆盖。'))}</p>` : ''}` : '';
     const chainHtml = improvementChainBlock(candidate);
-    // 确认时撞版本冲突的处置块（specs/015 T022）：就地说明"没生效"、按当前在用版
+    // 确认时撞版本冲突的处置块：就地说明"没生效"、按当前在用版
     // 重摆差异、给「按当前版本重新确认」。它只描述这一次确认的事实，不改变候选的
     // 待处理性质（候选仍可稍后处理/拒绝）。
     const conflictHtml = candidateVersionConflictBlock(candidate, canPromote);
@@ -868,12 +871,8 @@
       : `<span class="note">${esc(candidate.origin === 'manual'
         ? T('cognition.candidate_manual_evidence_note', '这条内容由你直接输入，可以确认保存；没有外部引用，保存不代表效果已验证。')
         : T('cognition.candidate_no_evidence', '没有可追溯的证据引用；确认前建议先补证。'))}</span>`}`;
-    // 决策动作同样按 capability 收敛（2026-09-20 修）：终态候选（confirmed /
-    // rejected / ignored）的映射是 canReject=false、isTerminal=true，
-    // 此前这两个按钮**无条件**渲染，用户点下去必然被后端状态机拒绝——旧 skills.js
-    // 模块有一条 "never renders decision actions for terminal candidates" 的用例守着，
-    // 2026-09-15 #266 重写时没带过来。口径见函数开头：缺失 capabilities 即只读。
-    // 按钮名按型分支（specs/015 T023；2026-09-28 词表统一）：更新型「保存更新」，新建型「保存」。
+    // 决策动作按 capability 收敛；终态候选和缺少 capabilities 的候选均只读。
+    // 按钮名按型分支：更新型「保存更新」，新建型「保存」。
     const decisionLabels = candidateDecisionLabels(candidate);
     const promoteLabel = ontologyOnly ? decisionLabels.promote : options.compact && candidate.suggestedAction === 'pause' ? T('cognition.activity_confirm_pause', '确认暂停') : options.compact && candidate.suggestedAction === 'limit_scope' ? T('cognition.activity_save_boundary', '保存边界') : options.compact && !['update', 'limit_scope', 'pause'].includes(String(candidate.suggestedAction || 'create')) ? T('cognition.activity_formal_save', '修改并保存') : decisionLabels.promote;
     const extraActions = (canReject && (!options.compact || attentionReady(candidate)) ? btn(T('cognition.activity_defer', '稍后处理'), 'activity-defer', { id: candidate.id, className: 'o' }) : '') + (options.compact ? btn(T('cognition.activity_next_item', '下一项'), 'activity-next', { className: 'o' }) : '');
@@ -908,6 +907,7 @@
           ${edit ? input('summary', ontologyOnly ? T('cognition.ontology_proposal_name', '变更名称') : T('cognition.capture.name', '认知名称'), candidate.summary) : read(ontologyOnly ? T('cognition.ontology_proposal_name', '变更名称') : T('cognition.capture.name', '认知名称'), candidate.summary)}
           ${edit ? input('judgment', ontologyOnly ? T('cognition.ontology_proposal_description', '完整变更说明') : T('cognition.activity_body_label', '可复用正文 *'), candidate.judgment, 5) : read(ontologyOnly ? T('cognition.ontology_proposal_description', '完整变更说明') : T('cognition.activity_body_read', '可复用正文'), candidate.judgment)}
           ${ontologyOnly ? '' : edit ? window.uiField({ id: `ca-cand-category-${candidate.id}`, label: T('cognition.content_category', '分类'), showRequirement: false, control: { kind: 'select', native: true, value: NS.ui.contentCategoryOf(candidate), options: NS.ui.CONTENT_CATEGORIES.map(([value, key, fallback]) => ({ value, label: T(key, fallback) })), attrs: { 'data-f': 'contentCategory' } } }) : read(T('cognition.content_category', '分类'), contentCategoryLabel(candidate))}
+          ${comparisonHtml}
           ${statementWarningHtml(candidate)}
         </section>
         <div class="ca-review-usage">
@@ -944,6 +944,7 @@
       ${broken ? `<div class="warn">${esc(T('cognition.candidate_evidence_all_unavailable', '这条候选的大部分来源暂时无法核对。原会话可能仍然存在；请查看可打开的来源，补充依据或选择不保存。'))}</div>` : ''}
       ${candidate.mergedIntoAssetId ? `<div class="note">${esc(T('cognition.candidate_merged_into', '这条与已有资产相似：确认后会并入那条资产（融合出新版本），不会另开一条。'))}</div>` : ''}
       ${chainHtml ? '' : reviewSignalBlock(candidate)}
+      ${comparisonHtml}
       ${chainHtml}
       ${ontologyFormationHtml(candidate, terminal)}
       ${options.compact && edit ? '' : candidateScopeField(candidate, { includeTaskConditions: !chainHtml })}
@@ -968,7 +969,7 @@
           ${kstarEpisodeSection(S.route)}
           ${(() => {
             /* 「保存」被能力门控关掉时必须说明原因——否则用户面前只有
-               稍后/拒绝两个出口，不知道为什么不能确认（2026-09-21 真机抓出）。 */
+               稍后/拒绝两个出口，不知道为什么不能确认。 */
             const capsAll = candidate.capabilities || {};
             const reasons = Array.isArray(capsAll.ineligibleReasons) ? capsAll.ineligibleReasons : [];
             if (canPromote || !reasons.length) return '';
@@ -1057,7 +1058,7 @@
         })
         : '';
     /* 标题=完整 summary（不再截 24 字）：这是这条建议的名称，
-       截断后「看起来没有标题」（2026-09-21 子安真机抓出）；CSS 限 3 行。 */
+       截断后「看起来没有标题」；CSS 限 3 行。 */
     const fullTitle = String(candidate.summary || candidate.judgment || T('cognition.candidate_untitled', '未命名候选')).trim();
     return `
     <div class="card ca-candidate-detail" data-cand-id="${esc(candidate.id)}" data-cand-type="${esc(candidate.suggestedType || '')}">

@@ -1,10 +1,115 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { runInContext } from 'node:vm';
 import { loadCognitionAssets } from './helpers/cognition-renderer';
 
 const asset = { id: 'library-a', type: 'rule', title: '验收规则', statement: '产出后检查来源。', status: 'active', version: '3', activeVersion: '2', scope: 'review', applicableWhen: ['审核时'], forbiddenWhen: ['来源失效'], evidenceRefs: [], scopePolicy: { agentIds: ['commander'], workspaceIds: ['workspace-a'], purposeTags: ['review'] } };
 const versions = { assetId: asset.id, versions: [{ version: '2', snapshot: { title: asset.title, statement: asset.statement } }, { version: '1', snapshot: { title: asset.title, statement: '旧正文' } }] };
 
 describe('我的认知：同区资产详情与编辑', () => {
+  it.each(['asset-usage-receipts', 'usage-records', 'injection-receipts'])('recent-only records refresh on %s without loading the global timeline', async collection => {
+    let revision = 0, visible = true;
+    let changed!: (notice: unknown) => void;
+    let close!: (value: unknown) => void;
+    const body = { innerHTML: '' };
+    const root = { innerHTML: '', appendChild: () => { modal.overlay.isConnected = true; } };
+    const modal: any = new Promise(resolve => { close = resolve; });
+    modal.overlay = { isConnected: false, classList: { add() {} }, addEventListener() {} };
+    modal.dialog = { querySelector: (selector: string) => selector === '.ui-modal__body' ? body : null };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === 'recall.assets.versions.list') return { ok: true, ...versions };
+      if (channel === 'recall.timeline.forAsset') return { ok: true, realUsageKinds: ['usage_recorded'], items: Array.from({ length: revision + 1 }, (_, index) => ({
+        id: `synthetic-proof-${index}`, kind: 'usage_recorded', occurredAt: '2026-01-01T00:00:00.000Z',
+        refs: { assetId: asset.id, taskRunId: `synthetic-task-${revision}` },
+      })) };
+      if (channel === 'recall.assets.adoptionReceipts') return { ok: true, receipts: [{ id: 'synthetic-receipt', assetId: asset.id, status: revision ? 'contradicted' : 'applied' }] };
+      return { ok: true, items: [] };
+    });
+    const loaded = loadCognitionAssets({ assets: [asset], blockStatus: { assets: { loaded: true }, timeline: { loaded: false } } }, { name: 'overview', assetId: asset.id }, {
+      uiModal: ({ bodyHtml }: { bodyHtml: string }) => { body.innerHTML = bodyHtml; return modal; },
+      cogseed: { invoke, onPushEvent: (_channel: string, handler: typeof changed) => { changed = handler; } },
+    });
+    loaded.context.document.getElementById = (id: string) => id === 'ca-root' ? root : null;
+    loaded.context.document.readyState = 'loading';
+    loaded.context.document.addEventListener = () => {};
+    loaded.context.requestAnimationFrame = () => {};
+    // Load the real app-owned ranking consumer without booting a synthetic DOM.
+    runInContext(readFileSync(resolve(__dirname, '../../src/renderer/modules/cognition-assets/app.js'), 'utf8'), loaded.context);
+    loaded.ns.setupChangeRail(() => visible);
+    const showing = loaded.ns.showLibraryDialog('records', asset.id);
+    await vi.waitFor(() => expect(body.innerHTML).toContain('其中模型确认采用 1 次'));
+    expect(loaded.store.libraryView.sort).toBe('recent');
+    expect(loaded.ns.rankingWhy.turnId).toBe('synthetic-task-0');
+    revision = 1;
+    changed({ collection, generation: 2, recordId: 'another-asset-final-record' });
+    await loaded.ns.flushPendingRefresh();
+    await vi.waitFor(() => {
+      expect(body.innerHTML).toContain('带入或读取 2 次');
+      expect(body.innerHTML).toContain('被否定 1 次');
+      expect(loaded.ns.rankingWhy.turnId).toBe('synthetic-task-1');
+    });
+    visible = false;
+    revision = 2;
+    const beforeHidden = invoke.mock.calls.length;
+    changed({ collection, generation: 3 });
+    await loaded.ns.flushPendingRefresh();
+    expect(invoke.mock.calls).toHaveLength(beforeHidden);
+    expect(loaded.store.assetTimeline).toBeNull();
+    expect(loaded.store.adoptionReceipts).toBeNull();
+    visible = true;
+    await loaded.ns.flushPendingRefresh();
+    await vi.waitFor(() => {
+      expect(body.innerHTML).toContain('带入或读取 3 次');
+      expect(loaded.ns.rankingWhy.turnId).toBe('synthetic-task-2');
+    });
+    expect(loaded.store.blockStatus.timeline.loaded).toBe(false);
+    expect(invoke.mock.calls.some(([channel]) => channel === 'recall.timeline.list')).toBe(false);
+    close({ value: 'close' });
+    await showing;
+  });
+
+  it('an open sources dialog re-reads pause/restore notices and catches up after a hidden interval', async () => {
+    const source = { kind: 'conversation', id: 'synthetic-conversation', title: '合成来源' };
+    const sourcedAsset = { ...asset, evidenceRefs: [source] };
+    let available = true, visible = true;
+    let changed!: (notice: unknown) => void;
+    let close!: (value: unknown) => void;
+    const body = { innerHTML: '' };
+    const modal: any = new Promise(resolve => { close = resolve; });
+    modal.overlay = { isConnected: false, classList: { add() {} }, addEventListener() {} };
+    modal.dialog = { querySelector: (selector: string) => selector === '.ui-modal__body' ? body : null };
+    const invoke = vi.fn(async (channel: string) => channel === 'recall.reviewEvidence.read'
+      ? { ok: true, items: [{ ref: source, state: available ? 'available' : 'unavailable', excerpt: available ? '合成来源正文' : undefined }] }
+      : { ok: true, assets: [sourcedAsset], candidates: [], items: [] });
+    const loaded = loadCognitionAssets({ assets: [sourcedAsset], reviewEvidence: { ['asset:' + asset.id]: { loaded: true, items: [{ ref: source, state: 'available', excerpt: '过期正文' }] } } }, {}, {
+      uiModal: ({ bodyHtml }: { bodyHtml: string }) => { body.innerHTML = bodyHtml; return modal; },
+      cogseed: { invoke, onPushEvent: (_channel: string, handler: typeof changed) => { changed = handler; } },
+    });
+    loaded.context.document.getElementById = () => ({ appendChild: () => { modal.overlay.isConnected = true; } });
+    loaded.ns.setupChangeRail(() => visible);
+    const showing = loaded.ns.showLibraryDialog('sources', asset.id);
+    await vi.waitFor(() => expect(body.innerHTML).toContain('合成来源正文'));
+    expect(body.innerHTML).not.toContain('过期正文');
+    available = false;
+    changed({ collection: 'source-controls', generation: 1, recordId: 'coalesced-source' });
+    await loaded.ns.flushPendingRefresh();
+    await vi.waitFor(() => expect(body.innerHTML).toContain('不可读取'));
+    expect(body.innerHTML).not.toContain('合成来源正文');
+    visible = false;
+    available = true;
+    const before = invoke.mock.calls.length;
+    changed({ collection: 'source-controls', generation: 2, recordId: 'another-source' });
+    expect(invoke.mock.calls).toHaveLength(before);
+    expect(loaded.store.reviewEvidence).toEqual({});
+    visible = true;
+    await loaded.ns.flushPendingRefresh();
+    await vi.waitFor(() => expect(body.innerHTML).toContain('合成来源正文'));
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'recall.reviewEvidence.read')).toHaveLength(3);
+    close({ value: 'close' });
+    await showing;
+  });
+
   it('正文与范围在前，来源版本记录下钻，真实操作保留在固定页脚', () => {
     const loaded = loadCognitionAssets({ assets: [asset], assetVersions: versions, assetScopeOptions: { status: 'ready', agents: [], spaces: [{ space_id: 'workspace-a', name: '产品工作区' }] } });
     const html = loaded.ns.renderLibraryAssetDetail(asset, {});

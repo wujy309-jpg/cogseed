@@ -24,7 +24,7 @@ export function isStandingPreferenceAsset(asset: RecallAbilityAssetRecord): bool
 }
 export async function hasUserAuthorizedStandingPreference(userId: string, asset: RecallAbilityAssetRecord): Promise<boolean> {
   if (isStandingPreferenceAsset(asset) && asset.ownerId === userId && asset.status === 'active'
-    && asset.maturity !== 'seed' && String(asset.activeVersion || asset.version) === asset.version) {
+    && String(asset.activeVersion || asset.version) === asset.version) {
     const { hasCommittedStandingPreferenceAuthority } = await import('./standing-preference-authority');
     if (await hasCommittedStandingPreferenceAuthority(userId, asset)) {
       const { isCognitionSourceEnabled } = await import('./source-control');

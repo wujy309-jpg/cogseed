@@ -58,7 +58,8 @@ describe('explicit nightly automatic confirmation', () => {
     const f = await fixture();
     const result = await f.policy.tryAutomaticallyApproveRecallCandidate('alice', f.candidate.id);
     expect(result.reasons).toEqual([]);
-    expect(result).toMatchObject({ approved: true, candidate: { status: 'confirmed', autoReview: { eligible: true } }, asset: { lifecycleStatus: 'automatically_extracted_unverified', maturity: 'seed', version: '1' } });
+    expect(result).toMatchObject({ approved: true, candidate: { status: 'confirmed', autoReview: { eligible: true } }, asset: { lifecycleStatus: 'automatically_extracted_unverified', maturity: 'bud', version: '1' } });
+    expect(result.candidate.validationCount || 0).toBe(0);
     const { readReviewDecision } = await import('../../../../src/main/features/cognition/review-decision');
     expect(await readReviewDecision('alice', `recall_candidate:${f.candidate.id}`, result.candidate.reviewDecisionId)).toMatchObject({ actor: 'system', decision: 'automatic low-risk approval' });
     expect((await f.policy.tryAutomaticallyApproveRecallCandidate('alice', f.candidate.id)).approved).toBe(false);
@@ -102,6 +103,30 @@ describe('explicit nightly automatic confirmation', () => {
     await createNightlyCandidateFixture('alice', { judgment: '后续报告应详细列出全部相关数据。', value: '便于报告核验。', summary: '报告信息完整度', suggestedType: 'personal', suggestedScope: 'general', sourceRefs: [], rawStatement: true });
     const result = await f.policy.tryAutomaticallyApproveRecallCandidate('alice', f.candidate.id);
     expect(result.reasons).toContain('semantic_conflict_check_unavailable'); expect(result.candidate.status).toBe('pending_review');
+  });
+  it('holds joint A/R changes when existing rules cannot be compared, just like independent ontology changes', async () => {
+    const bridge = await import('../../../../src/main/features/cognition_bridge');
+    await bridge.replaceCognitionSources('alice', { mode: 'unified', revision: 1,
+      records: { 'ability-assets': {}, candidates: {} }, po: { groups: [], trash: [] }, pendingProjection: false, migratedAt: new Date().toISOString() });
+    const ontology = await import('../../../../src/main/features/cognition/ontology/service');
+    const formation = await import('../../../../src/main/features/recall/ontology-formation');
+    const body = '以后回答时先给出结论，再说明关键理由和依据。';
+    const rule = { kind: 'rule', moduleId: 'personal', name: '回答偏好', requirement: body, strength: 'default',
+      condition: { kind: 'task', field: 'purpose', equals: 'answer' }, effect: { kind: 'note' }, exception: '' };
+    await ontology.commitOntologyCommand('alice', { commandId: 'seed-comparison', expectedRevision: 0, actions: [
+      { intent: 'create', recordId: 'personal', sourceLabel: 'Existing structure', record: { kind: 'module', name: '我的本体', description: '', scope: { kind: 'personal' } } },
+      { intent: 'create', recordId: 'old-answer-rule', sourceLabel: 'Existing approved preference', record: rule },
+    ] });
+    const plan = formation.parseOntologyFormationProposal(ontology.readOntologyDocument('alice'), 'proposed-joint', {
+      reason: 'A duplicate rule must be compared even when jointly proposed.', evidence: ['m1'],
+      refs: [{ moduleId: 'personal', recordId: 'new-answer-rule', versionPolicy: 'current', sharedBody: true }],
+      actions: [{ intent: 'create', recordId: 'new-answer-rule', sourceLabel: 'Approved preference', record: rule }],
+    }, body);
+    const f = await fixture({ proposalTarget: 'joint', ontologyFormation: plan });
+    const result = await f.policy.tryAutomaticallyApproveRecallCandidate('alice', f.candidate.id);
+    expect(result.approved).toBe(false);
+    expect(result.reasons).toContain('ontology_semantic_comparison_unavailable');
+    expect(ontology.readOntologyDocument('alice').records['new-answer-rule']).toBeUndefined();
   });
   it('holds revoked sources without creating an asset or marking the candidate failed', async () => {
     const f = await fixture();

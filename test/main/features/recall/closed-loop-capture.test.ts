@@ -15,6 +15,10 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../../../src/main/features/auth', () => ({
+  listEntriesForUser: async () => ({ entries: [] }),
+  hasConfiguredModelForUser: () => ({ configured: mocks.configured }),
+  getConfiguredModelOAuthExpiredMessageForUser: () => mocks.oauthExpired,
+
   hasConfiguredModel: () => ({ configured: mocks.configured }),
   getConfiguredModelOAuthExpiredMessage: () => mocks.oauthExpired,
 }));
@@ -295,7 +299,7 @@ describe('Recall nightly summary/value/extraction closed loop', () => {
       }],
     });
 
-    // 一键提取写入的资产是 seed 档（系统写入、无人确认）。按 PRD 3.6，
+    // 一键提取写入的资产是 seed 档（系统写入、无人确认）。按默认注入的成熟度要求，
     // 它还没有"被正确带入过"的证明，所以**不进静默默认注入**——用户主动带入
     // 查原文／明确选用与默认带入分开；尚未验证的系统内容不能默认进入。
     const beforeProof = await promptInjection.buildRecallTurnPromptContext(USER_ID, {

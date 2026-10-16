@@ -1,23 +1,5 @@
 import { seedStoredAbilityAsset } from '../helpers/stored-ability-asset';
-/**
- * 探针 r5（边界测试员 · 第 5 轮）→ 主题：删除生命周期「彻底清除」的可重入性。
- *
- * 疑点：purgeAbilityAsset 的执行序是 setStatus（先把主记录落成 purged 墓碑）→
- * removeRecallJsonlStream（删版本流）→ cascadePurgeAssetReferences（清引用）。
- * 后两步任一 IO 失败时主记录已是终态；重试会在入口被 assertNotPurged
- * （asset-service.ts setStatus 内）拒绝，而 store.ts 的
- * removeRecallJsonlStream / removeRecallJsonlRecords 注释明言
- * 「清除要可重入，半路失败后重试不该被绊住」——两处口径互相矛盾。
- *
- * 本探针用 chmod 只读版本流目录制造真实的级联 IO 失败（主记录目录不受影响），
- * 验证：① 首次 purge 半途而废但墓碑已落盘；② 恢复可写后重试被终态守卫拒绝；
- * ③ 版本流正文残留且保留期清扫（只扫 status==='deleted'）永远不会再碰它。
- * 风格对齐 test/质检/regression-r1-asset-lifecycle.test.ts。
- *
- * 2026-09-30 r1 收尾（记账员）：用例 1 对应待议 P-r1-1（重试豁免/级联先行/
- * 后台清扫三修法各有取舍待拍板）→ it.skip，断言锁定现状；用例 2 对照组
- * （无 IO 故障时正常清空，不依赖漏洞）保留 active，修复后应持续绿。
- */
+/** 清除级联发生 IO 失败后的可重入性；无故障路径作为对照。 */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -78,8 +60,8 @@ async function mkAsset(id: string) {
 
 const ACT = { actor: 'user' as const, reason: 'probe' };
 
-describe('probe r5 › purge 级联中途失败后的可重入性（用例 1 待议 P-r1-1）', () => {
-  it.skip('级联 IO 失败：墓碑已落盘、重试被 assertNotPurged 拒绝、版本流正文永久残留（待议 P-r1-1，拍板前 skip）', async () => {
+describe('purge 级联中途失败后的可重入性', () => {
+  it.skip('级联 IO 失败后墓碑已落盘，重试被拒且版本流正文残留', async () => {
     const assets = await loadAssets();
     await mkAsset('aa-p5a');
     // 追加第二个版本，让版本流里有正文本可被清除

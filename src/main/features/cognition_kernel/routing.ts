@@ -1,19 +1,18 @@
 /**
- * cognition_kernel/routing — 归属的**契约**（2026-10-02 改版）。
+ * cognition_kernel/routing — 归属契约。
  *
  * 本文件只有「家」的定义与「家 → 候选池」的映射，**不含任何判定规则**：
- *   · 判定主体：judge.ts（大模型按本体规则判定 + 三档门控）
+ *   · 判定主体：judge.ts（模型按本体规则判定，代码控制候选写入）
  *   · 规则数据：routing_rules.ts（用户自己的归属规则与纠正样例，可改可版本化）
  *
- * 改版理由（子安 2026-10-02 判定）：旧版把归属写死成一张 TS 类型映射表 + 兜底
- * 启发式，既违反从参考实现提炼的第一条原则「规则即数据 + 分层权威，禁止把业务
- * 规则写进代码」，也完全不读用户本体——有本体不用本体，等于白建。
+ * 归属判据由注册表与用户规则提供；类型映射只决定落池位置，不能替代
+ * 对当前内容和用户本体的判定。
  */
 
 import type { CandidatePool, ContentHome } from './types';
 import { DEFAULT_HOME_REGISTRY, type HomeRegistryEntry } from './object-model';
 
-/** 每个家固定落到哪个候选池（两池互斥）——派生自家注册表数据（S3-b 数据化）。 */
+/** 每个家固定落到哪个候选池（两池互斥）——派生自家注册表数据。 */
 export const POOL_BY_HOME: Record<ContentHome, CandidatePool> = Object.fromEntries(
   DEFAULT_HOME_REGISTRY.map((entry) => [entry.home, entry.pool]),
 ) as Record<ContentHome, CandidatePool>;

@@ -1,29 +1,4 @@
-/**
- * 红队探针 r2：v1→v2 迁移未结清窗口的「幽灵 id」与读路径写盘（迁移与
- * 读取交错的时序问题）。
- *
- * 推演链：
- * 1) loadPoDocSync（po/store.ts:64）在 JSON 不存在时每次都跑
- *    importFromV1Sync（po/migrate.ts:178）——字段/值/条目 id 全部当场
- *    genId12 重新生成（migrate.ts:55-70 toPoValue）。迁移的持久化只靠
- *    「第一次成功写」（editPoDoc firstPersist）或模板路径的 ensurePoDoc
- *    （personal_ontology_template_files.ts:1190，无全局启动钩子），纯读
- *    用户永远停在窗口里：两次读返回两套互不相通的 id，UI 拿第一次的
- *    valueId 去编辑，editPoDoc 锁内**再导入一次**（第三套 id）→ not found。
- *    这直接违背 v2「按 id 寻址」的根基（po/model.ts:29「稳定 id……新模
- *    型一律按 id」）。
- * 2) store.ts:61 注释承诺 loadPoDocSync「**本函数永不写盘**——读路径零
- *    副作用」，但 importFromV1Sync → convertHistoryDir（migrate.ts:149,
- *    153, 164）在无锁读路径里 mkdirSync + copyFileSync + writeFileSync
- *    写 po-history——且写入的是**第一次读**生成的 id 集，与后续每次导入
- *    的活文档 id 不同：同一份 v1 快照在磁盘历史与内存活文档里是两套 id，
- *    restoreGroupSnapshot 会把历史那套灌回活文档。
- *
- * 2026-09-30 r2 收尾（记账员）：对应待议 P-r2-3（幂等化导入 / 补启动钩子
- * 跑 ensurePoDoc / 读路径锁内结清，建议 B+A 组合待拍板）→ it.skip。断言
- * 锁定的是「现状幽灵 id + 读路径写盘」，拍板修复后按所选方案反转。
- * 见 round-2-甄别.md toPending。
- */
+/** 迁移未提交时的重复读取身份稳定性与读路径副作用。 */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -112,7 +87,7 @@ function snapshotValueIds(file: string): string[] {
   return parsed.group.values.map((v: any) => v.id);
 }
 
-describe('probe r2 › 迁移未结清窗口的幽灵 id 与读路径写盘（待议 P-r2-3，拍板前 skip）', () => {
+describe('迁移未结清窗口的幽灵 id 与读路径写盘', () => {
   it.skip('两次只读 load 生成两套值 id；UI 持第一次 id 编辑必 not found；po-history 冻结的又是另一套', async () => {
     seedV1();
     const store = await loadStore();

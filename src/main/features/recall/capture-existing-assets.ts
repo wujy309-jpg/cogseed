@@ -15,6 +15,8 @@ export interface CaptureExistingAssetsInput {
   /** Actual source context. Missing restricted dimensions remain fail-closed. */
   sourceScope?: AssetScopeContext & { taskText?: string; scope?: string };
   maxAssets?: number;
+  /** Requested identities are prioritized only after normal source admission. */
+  targetAssetIds?: readonly string[];
   /** Serialized assets-array character budget; a record is never sliced to fit. */
   maxChars?: number;
 }
@@ -39,15 +41,29 @@ function limit(value: number | undefined, fallback: number, maximum: number): nu
   return value;
 }
 
-export async function selectCaptureExistingAssets(userId: string, input: CaptureExistingAssetsInput = {}): Promise<CaptureExistingAssetsResult> {
-  const maxAssets = limit(input.maxAssets, 20, 100);
-  const maxChars = limit(input.maxChars, 24_000, 128_000);
-  const query = [
+function comparisonQuery(input: Pick<CaptureExistingAssetsInput, 'summary' | 'approvedEvidence'>): string {
+  return [
     ...(input.summary?.topics || []).flatMap(topic => [topic.title, topic.content, ...topic.conditions]),
     ...(input.approvedEvidence || []).map(evidence => evidence.quote),
   ].filter(Boolean).join('\n');
+}
+
+/** Comparison queries are quoted data, not the task being performed. Only an
+ * explicit source runtime context may provide taskText/purpose; a summary,
+ * evidence quote or proposed scope must never choose the read permission. */
+export function captureExistingAssetReadContext(
+  input: Pick<CaptureExistingAssetsInput, 'sourceScope'>,
+) {
+  const context = input.sourceScope;
+  return { ...context, ...(context?.taskText && !context.purpose ? { purpose: context.taskText } : {}) };
+}
+
+export async function selectCaptureExistingAssets(userId: string, input: CaptureExistingAssetsInput = {}): Promise<CaptureExistingAssetsResult> {
+  const maxAssets = limit(input.maxAssets, 20, 100);
+  const maxChars = limit(input.maxChars, 24_000, 128_000);
+  const query = comparisonQuery(input);
   const queryTerms = terms(query);
-  const context = { ...input.sourceScope, taskText: input.sourceScope?.taskText || query };
+  const context = captureExistingAssetReadContext(input);
   // Read only through the user-scoped canonical API. Do not open or copy source
   // files: evidence refs and the current access policy travel with each result.
   const scoped = (await listAbilityAssets(userId)).filter(asset => asset.ownerId === userId
@@ -111,7 +127,8 @@ export async function selectCaptureExistingAssets(userId: string, input: Capture
     }
   }
   const ranked = readable.map(item => ({ ...item, score: score(item), semanticScore: semanticScores.get(item.snapshot.id) || 0 }))
-    .sort((a, b) => Number(b.semanticScore >= SEMANTIC_RELATED_THRESHOLD) - Number(a.semanticScore >= SEMANTIC_RELATED_THRESHOLD)
+    .sort((a, b) => Number(input.targetAssetIds?.includes(b.snapshot.id) || false) - Number(input.targetAssetIds?.includes(a.snapshot.id) || false)
+      || Number(b.semanticScore >= SEMANTIC_RELATED_THRESHOLD) - Number(a.semanticScore >= SEMANTIC_RELATED_THRESHOLD)
       || (a.semanticScore >= SEMANTIC_RELATED_THRESHOLD && b.semanticScore >= SEMANTIC_RELATED_THRESHOLD ? b.semanticScore - a.semanticScore : 0)
       || b.score - a.score || recent(a.record, b.record));
   const assets: CaptureExistingAsset[] = [];

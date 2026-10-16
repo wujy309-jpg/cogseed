@@ -1,24 +1,4 @@
-/**
- * 红队探针 r2：迁移结清（firstPersist）的非事务时序——先删 v1 台账后写
- * v2 JSON，写失败时活组全体降格进回收站。
- *
- * 推演链：editPoDoc 首次落盘分支（po/store.ts:229-235）顺序是
- * backupV1Dir(uid) → writeJson(filePath, doc)，而 backupV1Dir
- * （po/migrate.ts:291）在备份后**立即 rmSync groups.md**。writeJson 一旦
- * 失败（磁盘满 / 杀毒锁 / 同步目录冲突），v1 台账已删、v2 JSON 未落：
- * 下次 loadPoDocSync → importFromV1Sync → parseGroupsMarkdown(空) →
- * 活组全部消失；.history 孤儿目录被按「v1 已删除分组」语义复活进 trash
- * （migrate.ts:258-262）——用户的活数据被降格成「已删除分组」，且下次
- * 成功写会再次 backupV1Dir（local/ 堆积重复备份）。
- *
- * writeJson 在 editPoDoc 中无 try/catch（store.ts:235 直接 await），异常
- * 直接抛给 IPC 调用方，无回滚、无提示。
- *
- * 2026-09-30 r2 收尾（记账员）：对应待议 P-r2-4（拆删台账到写后 / 调序
- * 先写后备份 / 失败回滚三案待拍板，须覆盖 editPoDoc 与 ensurePoDoc 两处）
- * → it.skip。断言锁定的是「现状失败即降格+备份堆积」，拍板修复后反转。
- * 见 round-2-甄别.md toPending。
- */
+/** 旧布局首次持久化的写入失败恢复，覆盖台账、活组、回收站及快照的一致性。 */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -114,7 +94,7 @@ async function loadStore() {
   return import('../../src/main/features/po/store');
 }
 
-describe('probe r2 › 迁移结清的非事务时序（待议 P-r2-4，拍板前 skip）', () => {
+describe('迁移结清的非事务时序', () => {
   it.skip('firstPersist 时 writeJson 失败：台账已删，活组全体降格为回收站条目', async () => {
     seedV1();
     const groups = await loadGroups();

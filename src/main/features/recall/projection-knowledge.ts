@@ -21,7 +21,7 @@ import type {
 } from './world-model-types';
 
 const MAX_ASSETS = 12;
-const MAX_STATEMENT = 2_000;
+const MAX_ASSET_CONTENT_CHARS = 14_000;
 const MAX_EVIDENCE_REFS = 20;
 const MAX_ONTOLOGY_ASSETS = 12;
 const MAX_ONTOLOGY_STATEMENT = 1_000;
@@ -38,6 +38,8 @@ export interface CommittedProjectionKnowledge {
   abilityAssetRefs: string[];
   abilityAssets: WorldModelAbilityAsset[];
   assetVersions: Record<string, string>;
+  /** Whole assets omitted from the knowledge budget; never partial bodies. */
+  omittedAssetIds?: string[];
   rules: WorldModelCausalRuleRef[];
   /** Runtime-eligible personal assets as background profile context. */
   ontologyAssets: WorldModelAbilityAsset[];
@@ -48,17 +50,15 @@ export interface CommittedProjectionKnowledge {
   ontologyRules: Awaited<ReturnType<typeof loadOntologyRules>>['rules'];
 }
 
-/** 导出作测试缝（specs/014 T019）：世界模型侧矛盾标记的直接用例入口；
+/** 导出作测试缝：世界模型侧矛盾标记的直接用例入口；
  *  生产调用方仍是 loadCommittedProjectionKnowledge 一处。 */
 export async function loadOntologyFacts(
   userId: string,
   context: { projectId?: string; workspaceId?: string; taskText?: string } = {},
 ): Promise<import('./world-model-types').WorldModelOntologyFact[]> {
   const facts: import('./world-model-types').WorldModelOntologyFact[] = [];
-  // P-r1-107 读侧按 id 去重：factKey 覆盖 (组, 字段, 归一值) 三元组，同字段
-  // 下两条空白变体值（"北京" vs " 北京 "）归一后生成**相同 id** 的事实——
-  // 此前不查重，重复计入 top-24 挤占预算，下游按 id 消费还会见到假重复。
-  // 写侧查重口径是写时归一，管不了存量盘上的空白变体，读侧兜住。
+  // factKey 由组、字段及归一值组成，读侧按 id 去重，
+  // 防止旧空白变体重复占用 top-24 预算。
   const seenFactIds = new Set<string>();
   let groups: ReturnType<typeof readGroups>;
   try {
@@ -79,7 +79,7 @@ export async function loadOntologyFacts(
         // @proj values are bound to app projects, not spaces/workspaces. If
         // the current project is unknown, omit project-bound values (fail closed).
         if (entry.project && entry.project !== context.projectId) continue;
-        // 敏感性（spec 007 T302）：restricted 值不进任务自动上下文与世界模型
+        // 敏感性：restricted 值不进任务自动上下文与世界模型
         // （用户在对话里显式 @ 该组仍会带全文——显式选择即授权）。
         if (entry.sensitivity === 'restricted') continue;
         const value = String(entry.value || '').replace(/\s+/g, ' ').trim().slice(0, MAX_ONTOLOGY_FACT_VALUE);
@@ -106,10 +106,10 @@ export async function loadOntologyFacts(
     }
     if (facts.length >= MAX_ONTOLOGY_FACT_CANDIDATES) break;
   }
-  // 矛盾标记（specs/014 US-903 / T018）：一次读只读索引（readLiveConflicts
+  // 矛盾标记：一次读只读索引（readLiveConflicts
   // 不写盘、不触发自愈），命中 (组标题, 字段) 的事实挂 disputed + 非受限对端
   // （≤2 条、每条截 MAX_ONTOLOGY_FACT_VALUE）；对端受限只置位不带文本。
-  // 无矛盾时不挂任何键（下游产物深度相等，零差异承诺 I-9）。
+  // 无矛盾时不增加标记字段，保持下游产物不变。
   let liveConflicts: Array<{ groupId: string; field: string; valueA: string; valueB: string; aRestricted: boolean; bRestricted: boolean }> = [];
   try {
     liveConflicts = await readLiveConflicts(userId);
@@ -142,9 +142,7 @@ export async function loadOntologyFacts(
     .map(({ fact }) => fact);
 }
 
-/** 画像条目标题：≤80 字原样；超长在句读边界截断加省略号，不再半句断头
- *  （T1.4：原 slice(0,80) 会把标题切成"……技术口径处理，而不是按终端用户提"
- *  这种断头话，注入块/检索结果里的人读体验都受影响）。 */
+/** 画像标题 ≤80 字时原样呈现；超长在句读边界截断并加省略号。 */
 function ontologyTitle(statement: string): string {
   if (statement.length <= 80) return statement;
   const head = statement.slice(0, 80);
@@ -184,17 +182,11 @@ function ontologyAssetFromEntry(
   };
 }
 
-/** Personal formal assets → profile entries carrying the asset's real
- *  governance fields (id/version/maturity/title/scope/evidenceRefs). Callers
- *  must pass the IDs admitted for the current task; this is a profile
- *  presentation channel and does not create projection citations. Legacy
- *  USER/MEMORY files remain a migration fallback only after a successful store
- *  read confirms that no personal asset records exist.
- *
- *  2026-09-30 修1：此前镜像把 id 换成 onto-<sha> 并硬编码 bud/v1——同一条
- *  记录两种投影互相矛盾（真身 v10 已实证 vs 镜像 v1 bud），注入块按伪造值
- *  展示治理（自检曾据此误判「画像通道绕过闸门」），回执按 onto-id 记账也
- *  永远连不回资产本体。镜像只保留展示职责，治理与审计回真身。 */
+/** Load personal assets through the same formal store and runtime gate.
+ * Mirrors preserve the asset's real id, version, maturity, title, scope and evidence.
+ * Callers supply the IDs admitted for the current task; profile presentation does
+ * not create projection citations. Legacy USER/MEMORY files are a fallback only
+ * after a successful store read confirms that no personal asset records exist. */
 export async function loadOntologyAssets(
   userId: string,
   options: { allowedPersonalAssetIds?: ReadonlySet<string> } = {},
@@ -223,7 +215,9 @@ export async function loadOntologyAssets(
         version: record.version,
         title: record.title,
         type: record.type,
-        statement: String(record.statement || '').replace(/\s+/g, ' ').trim().slice(0, MAX_ONTOLOGY_STATEMENT),
+        statement: record.statement,
+        ...(record.applicableWhen ? { applicableWhen: [...record.applicableWhen] } : {}),
+        ...(record.forbiddenWhen ? { forbiddenWhen: [...record.forbiddenWhen] } : {}),
         scope: record.scope,
         maturity: record.maturity,
         ontologyRefs: (record.ontologyRefs || []).map((ref) => ({ ...ref })),
@@ -300,12 +294,14 @@ export async function loadCommittedProjectionKnowledge(
     const asset = await readAbilityAsset(userId, assetId);
     assets.push(asset);
   }
-  const abilityAssets: WorldModelAbilityAsset[] = assets.map((asset) => ({
+  const completeAssets: WorldModelAbilityAsset[] = assets.map((asset) => ({
     id: asset.id,
     version: asset.version,
     title: asset.title,
     type: asset.type,
-    statement: asset.statement.slice(0, MAX_STATEMENT),
+    statement: asset.statement,
+    ...(asset.applicableWhen ? { applicableWhen: [...asset.applicableWhen] } : {}),
+    ...(asset.forbiddenWhen ? { forbiddenWhen: [...asset.forbiddenWhen] } : {}),
     scope: asset.scope,
     maturity: asset.maturity,
     ...(asset.learningSignal ? { learningSignal: asset.learningSignal } : {}),
@@ -313,6 +309,12 @@ export async function loadCommittedProjectionKnowledge(
     ontologyRefs: (asset.ontologyRefs || []).map((ref) => ({ ...ref })),
     evidenceRefs: asset.evidenceRefs.slice(0, MAX_EVIDENCE_REFS).map((ref) => ({ ...ref })),
   }));
+  const abilityAssets: WorldModelAbilityAsset[] = [];
+  const omittedAssetIds: string[] = [];
+  for (const asset of completeAssets) {
+    if (JSON.stringify([...abilityAssets, asset]).length > MAX_ASSET_CONTENT_CHARS) omittedAssetIds.push(asset.id);
+    else abilityAssets.push(asset);
+  }
   const rules: WorldModelCausalRuleRef[] = abilityAssets.flatMap((asset) => (
     asset.causalRule
       ? [{
@@ -337,6 +339,7 @@ export async function loadCommittedProjectionKnowledge(
     abilityAssetRefs: abilityAssets.map((asset) => asset.id),
     abilityAssets,
     assetVersions: Object.fromEntries(abilityAssets.map((asset) => [asset.id, assetVersions[asset.id]])),
+    ...(omittedAssetIds.length ? { omittedAssetIds } : {}),
     rules,
     ontologyAssets,
     ontologyFacts: [

@@ -1,21 +1,4 @@
-/**
- * 探针 r1（红队-数据与注入，新一轮 r1）：purge 墓碑可识别内容残留。
- *
- * 发现：purgeAbilityAsset 的清理清单（asset-service.ts:1351-1377）清了
- * title/statement/evidenceRefs/familyName/maturity/… 却漏了 causalRule
- * （cause/effect/mitigation 三段 human-readable 正文，world-model-types.ts:76）、
- * tags（用户手写主题标签，与被清的 familyName 同为「用户手写的分类名（元数据）」
- * ——asset-service.ts:1371-1373 清 familyName 的理由逐字适用于 tags）、
- * scope（进注入提示词的自由文本，prompt-injection.ts:428）、learningProvenance
- * （归因/动作/结果差异明细）。asAsset purged 分支（:203-205）原样透传这些字段。
- *
- * 违反 purge 自我声明「删除内容、版本和可识别副本，仅保留不可识别的审计最小项」。
- * 风格对齐 regression-r1-asset-lifecycle.test.ts（同域探针）。
- * 2026-09-30 r1 收尾（记账员）：对应待议 P-r1-4（high：墓碑四字段残留 +
- * 存量 purged 墓碑处理二选一，涉数据取舍待拍板）→ it.skip。断言锁定的
- * 是「四字段原样留在墓碑上」的现状，拍板修复后反转（含 scope 必须清 ''
- * 不能 undefined 的硬约束）。
- */
+/** 彻底清除后的墓碑语义字段残留；覆盖 causalRule、tags、scope 及来源信息。 */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -69,7 +52,7 @@ async function mkAsset(id: string) {
 
 const ACT = { actor: 'user' as const, reason: 'probe' };
 
-describe('probe r1 › purge 墓碑可识别内容残留（待议 P-r1-4，拍板前 skip）', () => {
+describe('purge 墓碑可识别内容残留', () => {
   it.skip('purge 后 causalRule/tags/scope/learningProvenance 原样留在墓碑上（对照组：title/statement/familyName 已清）', async () => {
     const assets = await loadAssets();
     await mkAsset('aa-purge-residue');

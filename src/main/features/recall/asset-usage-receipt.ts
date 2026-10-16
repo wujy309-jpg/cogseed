@@ -10,11 +10,14 @@ import {
 } from './source-service';
 import { appendRecallJsonlRecord, listRecallJsonlRecords, readRecallJsonRecord } from './store';
 import type { RecallJsonRecord } from './types';
+import type { RuntimeResultSource } from './runtime-result-content';
+import type { PersistedResultContent, PersistedResultEvidence } from './persisted-result-content';
 
 /** 主动读取（agent_read）没有投影授权，采用回执的 projectionId 用这个常量
  *  占位：读取侧据此区分「投影供应」与「模型本轮主动读正文」两条带入通道，
  *  回执幂等键也保持确定。 */
 export const AGENT_READ_PROJECTION_ID = 'agent-read';
+export const RUNTIME_PROJECTION_ID = 'runtime-task';
 
 export type AssetUsageStatus =
   | 'applied'
@@ -25,6 +28,7 @@ export type AssetUsageStatus =
 
 export type AssetUsageEvidenceKind = 'tool_call' | 'agent_action' | 'artifact' | 'final_output' | 'none';
 export type AssetUsageBoundary = 'real' | 'degraded' | 'test-double';
+export type AssetUsageReportFailure = 'quote_not_found' | 'result_unavailable' | 'result_changed';
 
 /** Optional for historical receipts. Model reports and persisted-result checks
  * have distinct authority; hashes bind both observations to the same output. */
@@ -33,6 +37,13 @@ export interface AssetUsageObservation {
   messageId?: string;
   outputHash?: string;
   outputCheckReceiptId?: string;
+  /** Host-grounded failure of a self-report, not a finding of non-use. */
+  reportFailure?: AssetUsageReportFailure;
+  resultRefs?: PersistedResultContent['refs'];
+  resultCoverage?: PersistedResultContent['coverage'];
+  outputEvidence?: PersistedResultEvidence;
+  /** Host Runtime coordinates, not a fabricated conversation message. */
+  resultSource?: RuntimeResultSource;
 }
 
 export interface AssetUsageReceipt extends RecallJsonRecord, AssetUsageObservation {
@@ -79,6 +90,7 @@ const EVIDENCE_KINDS = new Set<AssetUsageEvidenceKind>([
 ]);
 const BOUNDARIES = new Set<AssetUsageBoundary>(['real', 'degraded', 'test-double']);
 const EVIDENCE_REQUIRED = new Set<AssetUsageStatus>(['applied', 'considered_not_applicable', 'contradicted']);
+const REPORT_FAILURES = new Set<AssetUsageReportFailure>(['quote_not_found', 'result_unavailable', 'result_changed']);
 
 function compactReason(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
@@ -104,6 +116,31 @@ function assertSafeInput(userId: string, input: RecordAssetUsageReceiptInput): v
 }
 
 function assertObservation(input: RecordAssetUsageReceiptInput): void {
+  const hasResultEvidence = input.resultRefs !== undefined || input.resultCoverage !== undefined || input.outputEvidence !== undefined;
+  if (input.reportFailure !== undefined && (input.observationMethod !== 'agent_reported' || input.status !== 'usage_unknown'
+    || !REPORT_FAILURES.has(input.reportFailure))) throw new Error('invalid asset usage report failure');
+  if (hasResultEvidence) {
+    if (input.observationMethod !== 'agent_reported' || !Array.isArray(input.resultRefs) || !input.resultCoverage
+      || typeof input.resultCoverage.complete !== 'boolean' || !Number.isSafeInteger(input.resultCoverage.totalFiles)
+      || !Number.isSafeInteger(input.resultCoverage.readableFiles) || input.resultCoverage.readableFiles < 0
+      || input.resultCoverage.readableFiles > input.resultCoverage.totalFiles) throw new Error('invalid asset usage result references');
+    for (const ref of input.resultRefs) {
+      if (!ref || !['message', 'file'].includes(ref.kind) || !safeId(ref.id) || !['readable', 'unverified'].includes(ref.status)
+        || [ref.contentHash, ref.sourceHash].some(hash => hash !== undefined && !/^[a-f0-9]{64}$/.test(hash))
+        || ref.contentRange && (!Number.isSafeInteger(ref.contentRange.start) || !Number.isSafeInteger(ref.contentRange.end)
+          || ref.contentRange.start < 0 || ref.contentRange.end < ref.contentRange.start)) throw new Error('invalid asset usage result reference');
+    }
+    if (input.outputEvidence) {
+      const evidence = input.outputEvidence, ref = input.resultRefs.find(row => row.id === evidence.refId);
+      if (input.status !== 'applied' || !ref?.contentRange || ref.status !== 'readable'
+        || !Number.isSafeInteger(evidence.start) || !Number.isSafeInteger(evidence.end)
+        || evidence.start < ref.contentRange.start || evidence.end > ref.contentRange.end || evidence.end <= evidence.start)
+        throw new Error('invalid asset usage result evidence');
+    }
+  }
+  if (input.resultSource && (input.resultSource.kind !== 'runtime_terminal'
+    || ![input.resultSource.taskId, input.resultSource.runId, input.resultSource.requestId, input.resultSource.runtimeSessionId].every(safeId)
+    || input.resultSource.taskId !== input.taskRunId || input.observationMethod !== 'model_assisted')) throw new Error('invalid runtime usage result source');
   if (input.observationMethod === undefined) {
     if (input.messageId !== undefined || input.outputHash !== undefined || input.outputCheckReceiptId !== undefined) {
       throw new Error('asset usage observation method is required');
@@ -115,7 +152,8 @@ function assertObservation(input: RecordAssetUsageReceiptInput): void {
     || typeof input.outputHash !== 'string' || !/^[a-f0-9]{64}$/.test(input.outputHash)
     || input.evidenceKind !== 'final_output' || input.boundary !== 'real'
     || (input.observationMethod === 'agent_reported'
-      ? input.status !== 'applied' || input.outputCheckReceiptId !== undefined
+      ? !['applied', 'usage_unknown'].includes(input.status) || input.outputCheckReceiptId !== undefined
+        || (input.status === 'usage_unknown' ? !input.reportFailure : input.reportFailure !== undefined)
       : !['applied', 'usage_unknown'].includes(input.status)
         || typeof input.outputCheckReceiptId !== 'string' || !/^coc-[a-f0-9]{24}$/.test(input.outputCheckReceiptId))) {
     throw new Error('invalid asset usage observation');
@@ -161,10 +199,12 @@ async function verifyOutputObservation(userId: string, input: RecordAssetUsageRe
       : check.modelCompleted !== true)
     || check.taskRunId !== input.taskRunId || check.messageId !== input.messageId
     || check.outputHash !== input.outputHash || typeof check.taskHash !== 'string'
+    || JSON.stringify(check.resultSource) !== JSON.stringify(input.resultSource)
     || !/^[a-f0-9]{64}$/.test(check.taskHash)
     || check.id !== `coc-${createHash('sha256').update(JSON.stringify([
       input.taskRunId, input.messageId, input.outputHash, check.taskHash,
       ...(resultCoverage?.totalFiles ? [createHash('sha256').update(JSON.stringify([check.resultRefs, check.resultCoverage])).digest('hex')] : []),
+      ...(input.resultSource ? [input.resultSource] : []),
     ])).digest('hex').slice(0, 24)}` || matching.length !== 1
     || !validRow) {
     throw new Error('asset usage output check does not match observation');
@@ -179,7 +219,9 @@ function normalizeEvidence(input: RecordAssetUsageReceiptInput): CognitionSource
   if (input.evidenceKind === 'none' && evidenceRefs.length) {
     throw new Error('asset usage evidence kind does not match evidence');
   }
-  if (input.observationMethod && !evidenceRefs.some(ref => ref.kind === 'message' && ref.id === input.messageId)) {
+  if (input.observationMethod && !(input.resultSource
+    ? evidenceRefs.some(ref => ref.kind === 'execution' && ref.id === input.resultSource!.runId)
+    : evidenceRefs.some(ref => ref.kind === 'message' && ref.id === input.messageId))) {
     throw new Error('asset usage observation needs its final message evidence');
   }
   return evidenceRefs;
@@ -230,6 +272,8 @@ export async function recordAssetUsageReceipt(
   // 常量占位符，其余回执仍要求投影 id 逐字相等。
   const projectionIdMatchesInjection = injection.channel === 'agent_read' && injection.projectionId === undefined
     ? input.projectionId === AGENT_READ_PROJECTION_ID
+    : injection.channel === 'runtime' && injection.projectionId === undefined
+      ? input.projectionId === RUNTIME_PROJECTION_ID && !!input.resultSource
     : injection.projectionId === input.projectionId;
   if (!projectionIdMatchesInjection) throw new Error('injection receipt does not match asset usage');
   if (injection.status !== 'injected' && injection.status !== 'dispatched') {
@@ -259,6 +303,10 @@ export async function recordAssetUsageReceipt(
     ...(input.observationMethod ? {
       observationMethod: input.observationMethod, messageId: input.messageId, outputHash: input.outputHash,
       ...(input.outputCheckReceiptId ? { outputCheckReceiptId: input.outputCheckReceiptId } : {}),
+      ...(input.reportFailure ? { reportFailure: input.reportFailure } : {}),
+      ...(input.resultRefs ? { resultRefs: input.resultRefs, resultCoverage: input.resultCoverage } : {}),
+      ...(input.outputEvidence ? { outputEvidence: input.outputEvidence } : {}),
+      ...(input.resultSource ? { resultSource: input.resultSource } : {}),
     } : {}),
     ...(reasonText ? { reason: reasonText } : {}),
     createdAt: nowIso(),
@@ -271,7 +319,7 @@ export async function recordAssetUsageReceipt(
       // Only an independently persisted check may correct the model's earlier
       // self-report, and only for the same injected version and exact output.
       // Legacy receipts have no provenance and must not be guessed from prose.
-      if (existing.status === 'applied' && existing.observationMethod === 'agent_reported'
+      if (['applied', 'usage_unknown'].includes(existing.status) && existing.observationMethod === 'agent_reported'
         && ['model_assisted', 'result_coverage'].includes(String(input.observationMethod)) && input.status === 'usage_unknown'
         && existing.injectionReceiptId === input.injectionReceiptId
         && existing.messageId === input.messageId
@@ -284,14 +332,13 @@ export async function recordAssetUsageReceipt(
       if (existing.status === 'usage_unknown' && input.status === 'applied'
         && input.evidenceKind === 'final_output' && input.boundary === 'real'
         // A delayed self-report cannot erase a completed independent check.
-        && !['model_assisted', 'result_coverage'].includes(String(existing.observationMethod))) {
+        && !['model_assisted', 'result_coverage'].includes(String(existing.observationMethod))
+        && (existing.observationMethod !== 'agent_reported'
+          || existing.injectionReceiptId === input.injectionReceiptId && existing.messageId === input.messageId && existing.outputHash === input.outputHash)) {
         await appendRecallJsonlRecord(userId, 'asset-usage-receipts', 'events', record);
         return record;
       }
-      // 负反馈覆盖（2026-09-14）：KSTAR 收账先写过 applied/usage_unknown 的
-      // 同键收据，用户随后点踩的 contradicted 会被幂等去重静默吞掉——
-      // 「点踩进治理」在 KSTAR 路径失效。contradicted 是用户明确否定，
-      // 语义高于先前的自动记账，允许 append 覆盖（读取侧同 id 取末条）。
+      // 用户明确否定的 contradicted 可覆盖同键自动回执，读取同 id 的最后一条。
       if (input.status === 'contradicted' && existing.status !== 'contradicted') {
         await appendRecallJsonlRecord(userId, 'asset-usage-receipts', 'events', record);
         return record;
@@ -316,9 +363,9 @@ export async function listAssetUsageReceipts(userId: string, taskRunId?: string)
   return [...latest.values()].filter((record) => taskRunId === undefined || record.taskRunId === taskRunId);
 }
 
-/** 「实际采用」证据查询（specs/015 T003）。**只读、零写入。**
+/** 「实际采用」证据查询。**只读、零写入。**
  *
- *  采用口径（唯一权威，来自 specs/011，不得重议）：只有 usage 回执同时满足
+ *  采用判据：只有 usage 回执同时满足
  *  `status === 'applied'` **且** `boundary === 'real'` 才算「实际采用」；
  *  `injected`/`dispatched`（注入回执）只是「被带入」，**不构成采用**；
  *  `considered_not_applicable`/`available_no_opportunity`/`contradicted`/
@@ -361,13 +408,14 @@ export async function listAppliedUsageReceipts(
     }));
 }
 
-/** 采用回执的**视图投影**（2026-09-25 验收修复 US-602 AC5/AC6）：资产详情要显示
+/** 采用回执的**视图投影**：资产详情要显示
  *  「实际采用」的逐条记录——同次任务、具体版本、执行事件类型、产物位置。回执本身
  *  只按 taskRunId 过滤，这里按 assetId 取（与 `listAbilityAssetVersionsWithUsage`
  *  同一读法：全量读后过滤，量级相同）。**只透传 ref 的 kind/id/title**，不含
  *  excerpt、不含绝对路径、不含资产正文——可读名由渲染层唯一解析器负责。 */
 export interface AssetUsageReceiptView {
   observationMethod?: AssetUsageObservation['observationMethod'];
+  reportFailure?: AssetUsageReportFailure;
   id: string;
   assetVersion: string;
   taskRunId: string;
@@ -395,6 +443,7 @@ export async function listAssetUsageReceiptViews(
       taskRunId: String(receipt.taskRunId || ''),
       status: receipt.status,
       ...(receipt.observationMethod ? { observationMethod: receipt.observationMethod } : {}),
+      ...(receipt.reportFailure ? { reportFailure: receipt.reportFailure } : {}),
       evidenceKind: receipt.evidenceKind,
       evidence: (receipt.evidenceRefs || []).slice(0, 5).map((ref) => ({
         kind: String(ref.kind || ''),

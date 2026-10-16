@@ -139,15 +139,15 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: 'transcript_corrections_query', group: 'recall', summary: 'Read confirmed conversation/ontology-scene transcript corrections and canonical names before revising a transcript; exclude uncertain identities.' },
   { name: 'cognition_ontology_query', group: 'recall', summary: 'Read time-aware ontology facts and applicable rules through explicit module references, with source/version citations and private-scope filtering.' },
 
-  // 任务经验（specs/016 T024 / US-802）：与资产**完全隔离**的第二套集合（exp- 前缀）。
+  // 任务经验：与资产**完全隔离**的第二套集合（exp- 前缀）。
   // 2 读 + 0 写、无 localExec（读写都在 <uid> 数据域内，不碰 shell/文件系统），
   // 不按 agent 收窄（与 search_ability_assets 同一面）；同样**不进只读会话白名单**
   // ——读正文会写 agent_read 回执与流水，不是无副作用（runner.ts:417-434 口径）。
   { name: 'list_task_experiences', group: 'recall', summary: 'List the user\'s task experiences (lessons/workflows/gaps precipitated from finished tasks — a collection separate from ability assets) as one-line entries filtered by task type; no body text.' },
   { name: 'read_task_experience', group: 'recall', summary: 'Read one task experience body by id in ≤2000-character chunks (use `chunk` to continue); enforces the same runtime gate and reports blocked state honestly instead of pretending it is missing.' },
 
-  // 资产管家（specs/008 US-401/402）：把既有的资产读写能力暴露给模型。
-  // 归属标注——读工具属 US-401、写工具属 US-402；**没有 localExec**（读写都经
+  // 资产管家：把既有的资产读写能力暴露给模型。
+  // **没有 localExec**（读写都经
   // asset-service 的写函数与 <uid> 数据域，不碰 shell/文件系统），也不受
   // ownerAgent 限：主会话与 group_chat 各 actor 都能用（与 search_ability_assets 同）。
   // 顺序按"最常用优先"：先看全貌、再取正文，然后才是改动类动作。
@@ -155,6 +155,8 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: 'read_ability_asset', group: 'recall', summary: 'Read one ability asset by id in ≤2000-character chunks (use `chunk` to continue); reports deleted/paused/blocked state honestly instead of pretending it is missing.' },
   { name: 'report_ability_asset_usage', group: 'recall', summary: 'Report adoption of one supplied asset version with an exact final-output excerpt; the host verifies the persisted message before recording adoption, never effectiveness.' },
   { name: 'list_asset_change_proposals', group: 'recall', summary: 'List AI-proposed asset changes still awaiting the user (approval cards): proposed values, current values, reason, state — read-only, because only the user may confirm/reject.' },
+  { name: 'create_cognition', group: 'recall', summary: 'Create user-requested durable cognition, ontology records or a joint shared rule through one complete host confirmation and the governed storage pipeline; returns actual saved IDs and receipt.' },
+  { name: 'edit_cognition', group: 'recall', summary: 'Edit an existing user-named cognition or ontology record, preserving source/access boundaries, reviewed user intent and shared rule bodies in one commit; AI rewrites require one complete preview confirmation.' },
   { name: 'edit_ability_asset', group: 'recall', summary: 'Submit a pending asset improvement with mode=propose (writes a real approval proposal, keeps the current version); or edit on verified user instruction. Only a returned proposal receipt establishes submission; listing proposals is read-only.' },
   { name: 'merge_ability_assets', group: 'recall', summary: 'Merge a duplicate ability asset into a target asset: both share one version group, the source is archived with a pointer, history stays traceable.' },
   { name: 'archive_ability_asset', group: 'recall', summary: 'Archive an ability asset: removed from daily lists and recommendations, content + evidence + history kept, restorable.' },

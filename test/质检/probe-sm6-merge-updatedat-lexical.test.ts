@@ -1,24 +1,5 @@
 import { seedStoredAbilityAsset } from '../helpers/stored-ability-asset';
-/**
- * 探针（状态机审计员 · 本轮，sm6）：asAsset 对 updatedAt 只查 typeof 不查
- * Date.parse（对照 deletedAt :197-198 / lastValidatedAt :221 均有格式门），
- * 非 ISO 乱串 updatedAt 的记录是「合法」记录；mergeAbilityAssets :1680 的
- * sourceNewer 用**纯字符串比较**判新旧——乱串记录参与归并时方向判错：
- * 实际更旧的 source 被判「较新」，其旧正文铺上 target 在用版（内容回退，
- * target 用户刚改的新正文被覆盖），activeVersion 指向旧快照。
- *
- * 触发面：正常写入恒 toISOString（统一格式）；乱串只能来自迁移工具/导入/
- * 手改——asAsset 不拦、list 不跳过（非 malformed），merge 照常放行。
- *
- * 手法：建两资产 → 直改 source.updatedAt='zzz'（模拟坏档/导入遗留）→
- * merge(source→target) → 断言 target 在用正文被 source 旧文覆盖（方向判错）。
- * 对照组：两资产均正常 ISO 时间戳、source 确实更旧 → merge 后 target 正文
- * 不变（!sourceNewer 分支），证明方向机制本身正确、坑只在字符串比较。
- *
- * 收尾状态（2026-10-01 记账员）：对应待议 **P-r4-36（merge 改 Date.parse 数值比较+不可解析走保守分支 / asAsset 补格式门 / 组合三案待拍板）**——
- * 断言漏洞现状的用例 it.skip 注明编号，拍板修复后反转/改写断言启用；
- * 对照组（干净输入/正常序时防线与链路正常）不依赖漏洞，保留 active。
- */
+/** 非法 updatedAt 对归并新旧内容选择的影响。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -64,8 +45,8 @@ async function mkAsset(id: string, statement: string) {
 
 const ACT = { actor: 'user' as const, reason: 'probe' };
 
-describe('probe sm6 › merge sourceNewer 字符串比较对乱串 updatedAt 方向判错', () => {
-  it.skip('【待议 P-r4-36】主用例：source.updatedAt 为乱串（asAsset 放行）时，更旧的 source 内容铺上 target 在用版', async () => {
+describe('merge sourceNewer 字符串比较对乱串 updatedAt 方向判错', () => {
+  it.skip('源 updatedAt 非法时，归并将旧源内容覆盖目标在用版', async () => {
     const assets = await import('../../src/main/features/recall/asset-service');
     const { writeRecallJsonRecord, readRecallJsonRecord } = await import('../../src/main/features/recall/store');
     await mkAsset('aa-ux-src1', 'source 的旧正文。');

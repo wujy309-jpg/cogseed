@@ -1,20 +1,4 @@
-/**
- * 探针 r1（边界测试员）：个人本体候选池的并发双写 / 删除后复活。
- *
- * 推演链：confirmCandidate / rejectCandidate 对 candidates.md 是
- * 「读全文 → 改内存 → 整文件回写」（personal_ontology_candidates.ts:951/963/981），
- * 全程没有文件锁（writeCandidates 用 writeTextAtomicSync 直写）。
- * 两个并发确认各拿到同一份快照，各自删掉自己那条后回写——后写者把
- * 先写者已删除的另一条候选**复活**回池。已确认内容却已进 USER.md，
- * 复活的候选可被再次确认 → 重复写入记忆。
- *
- * 风格对齐 test/main/features/po/po-store.test.ts。
- *
- * 2026-09-30 r1 收尾（记账员）：用例 1/2 对应待议 P-r1-1（fileEditLock 包
- * 读写段 vs CAS 重读，锁范围取舍待拍板）→ it.skip；断言锁定的是「现状复活
- * 发生」，修复后反转为「池清空无复活」。用例 3（串行对照组）保留 active：
- * 锁定串行正确路径，不依赖漏洞，修复 P-r1-1 后应持续绿。见 round-1-甄别.md。
- */
+/** 候选确认、驳回与并发回写的状态隔离；串行对照保留旧确认入口退役后的只读行为。 */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -73,8 +57,8 @@ async function seedPool(ids: string[]): Promise<void> {
   fs.writeFileSync(candidatesMd(), cands.serializeCandidatesMarkdown(list));
 }
 
-describe('probe r1 › 候选池并发双写（待议项已 skip）', () => {
-  // 待议 P-r1-1：候选池并发双写复活已处理候选（读全文→改→整文件回写无锁）。
+describe('候选池并发双写', () => {
+  // 观察并发读改写是否把已处理候选重新写回池。
   it.skip('并发确认两条候选：池中复活一条（已写记忆的候选回到待确认）', async () => {
     await seedPool(['cand-a', 'cand-b']);
     const cands = await loadCands();
@@ -103,7 +87,7 @@ describe('probe r1 › 候选池并发双写（待议项已 skip）', () => {
     expect((await cands.listCandidates(UID)).candidate_updates.length).toBe(0);
   });
 
-  // 待议 P-r1-1（同上）：驳回可被并发确认的回写复活。
+  // 观察确认回写是否覆盖同时完成的驳回。
   it.skip('并发确认 + 驳回：驳回可被并发确认的回写复活（用户以为已丢弃又出现）', async () => {
     await seedPool(['cand-c', 'cand-d']);
     const cands = await loadCands();
@@ -121,7 +105,7 @@ describe('probe r1 › 候选池并发双写（待议项已 skip）', () => {
     expect(after.candidate_updates[0].candidate_id).toBe('cand-d');
   });
 
-  // 保留 active（串行对照组）：不依赖漏洞，锁定串行正确路径；P-r1-1 修复后应持续绿。
+  // 串行对照保留旧入口退役后的读取与持久化边界。
   it('对照组：旧确认writer已退役，读取保留原池且不写记忆', async () => {
     await seedPool(['cand-e', 'cand-f']);
     const cands = await loadCands();

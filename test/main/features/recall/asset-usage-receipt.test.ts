@@ -99,7 +99,7 @@ describe('asset usage receipts', () => {
     expect(fs.readFileSync(jsonl, 'utf8').trim().split('\n')).toHaveLength(2);
   });
 
-  it('negative feedback overrides an earlier applied receipt; reads return the latest per id (2026-09-14)', async () => {
+  it('negative feedback overrides an earlier applied receipt; reads return the latest per id ', async () => {
     // KSTAR 收账先写 applied，用户随后点踩写 contradicted——此前被同键幂等
     // 去重静默吞掉（「点踩进治理」失效）；现在 contradicted 可覆盖，读取侧
     // 同 id 取末条，消费方不双计。
@@ -235,7 +235,7 @@ describe('asset usage receipts', () => {
     })).rejects.toThrow('invalid injection receipt reference');
   });
 
-  it('画像通道正式资产镜像计入使用统计，onto-* 文件遗留仅留回执（修2）', async () => {
+  it('画像通道正式资产镜像计入使用统计，onto-* 文件遗留仅留回执', async () => {
     const injections = await import('../../../../src/main/features/recall/injection-receipt');
     const { listRecallUsage } = await import('../../../../src/main/features/recall/usage-service');
     await injections.recordProfileMemoryInjection('user-a', [
@@ -289,6 +289,19 @@ async function outputObservation() {
 }
 
 describe('persisted-result observation precedence', () => {
+  it('replaces a failed agent report with a completed independent unknown and rejects delayed reports', async () => {
+    const { usage, store, proof, report, checked } = await outputObservation();
+    const failedReport = { ...report, status: 'usage_unknown' as const, reportFailure: 'quote_not_found' as const };
+    await usage.recordAssetUsageReceipt('user-a', failedReport);
+    await store.writeRecallJsonRecord('user-a', 'output-checks', proof.id, { ...proof,
+      checks: [{ assetId: 'asset-a', version: '1', status: 'unknown' }] });
+    const independent = await usage.recordAssetUsageReceipt('user-a', checked);
+    expect(independent).toMatchObject({ status: 'usage_unknown', observationMethod: 'model_assisted', outputCheckReceiptId: proof.id });
+    expect(independent.reportFailure).toBeUndefined();
+    expect(await usage.recordAssetUsageReceipt('user-a', failedReport)).toEqual(independent);
+    expect(await usage.recordAssetUsageReceipt('user-a', report)).toEqual(independent);
+    expect(await usage.listAppliedUsageReceipts('user-a', { taskRunIds: ['run-a'] })).toEqual([]);
+  });
   it.each([
     { status: 'unknown' },
     { status: 'not_applicable', taskEvidence: { start: 0, end: 8 } },

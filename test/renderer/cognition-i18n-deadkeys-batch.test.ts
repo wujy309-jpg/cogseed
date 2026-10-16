@@ -1,15 +1,8 @@
-/** 死键批次门禁（P-r3-36 · 预审决策卡 2026-10-01 纠缠组 8 · wo-b4）。
- *
- * 认知资产域死键批次「四语全删 + 门禁」的防回流闸。批次构成与逐键裁决依据
- * 见 reports/认知资产质检循环-20260930/死键动态拼接核查-b4.md（前置②核查
- * 报告：三层审计 + 动态拼接逐点溯源，含工具模板盲区修正）：
- * - renderer 删 127 键（层1+2 零引用 60 + 层3豁免裁决仍死 67）；
- * - main 删 9 键（4 直删 + 5 迁移后删）；
- * - main→renderer 豁免迁移 5 键（cognition.audit_approval_*，供批 12 P-r3-44
- *   审批审计标签复用——先删后用=空，故先迁移；接线前它们在 renderer 暂无
- *   消费点，属**登记在案的豁免**，不是死键回流）；
- * - 层3动态拼接救活 33 键（变量取值空间实证可达），必须四语在位——尤其
- *   p3394.wake.status.* 曾被审计工具的模板尾点盲区误判死键，这里反向钉住。
+/** 认知资产多语言键的回归约束：
+ * - 已删除的 renderer/main 键不得恢复；
+ * - 迁移到 renderer 的审批审计标签必须在四种语言中存在；
+ * - 动态拼接使用的键必须保留，不能仅凭没有完整字面量引用就判为死键。
+ *   p3394.wake.status.* 等前缀尤其需要完整覆盖。
  */
 import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
@@ -92,10 +85,7 @@ const RENDERER_DEAD_KEYS = [
     'personalOntology.asset_projection_read_only',
 ];
 
-/** main 侧删除面：4 直删 + 5 迁移后删（迁移目标=renderer 四语，见 MIGRATED_KEYS）。
- *  + P-r3-32（wo-b9）追加 recall.asset_approval.field_sensitivity：审批卡
- *  sensitivity 标签随敏感级机制下线成死键，四语收口（渲染层 FIELD_LABELS 的
- *  title 死行同批删——白名单 SUBSTANTIAL_FIELDS 无 title/sensitivity）。 */
+/** main 侧已删除键，含迁移到 renderer 的审批审计标签和已移除的敏感级标签。 */
 const MAIN_DEAD_KEYS = [
     'cognition.audit_approval_confirmed', 'cognition.audit_approval_deferred',
     'cognition.audit_approval_edited', 'cognition.audit_approval_proposed',
@@ -105,15 +95,14 @@ const MAIN_DEAD_KEYS = [
     'recall.asset_approval.field_sensitivity',
 ];
 
-/** main→renderer 豁免迁移键（批 12 P-r3-44 消费；接线后本断言可交由
- * cognition-i18n-coverage 的 referencedKeys 扫描接管）。 */
+/** main→renderer 迁移键：审批审计标签由 renderer 持有。 */
 const MIGRATED_KEYS = [
     'cognition.audit_approval_confirmed', 'cognition.audit_approval_deferred',
     'cognition.audit_approval_edited', 'cognition.audit_approval_proposed',
     'cognition.audit_approval_rejected',
 ];
 
-/** 层3动态拼接救活键（取值空间实证见核查报告第二节）；四语在位防误删。 */
+/** 动态拼接使用的键：四语在位防止字面量扫描误删。 */
 const DYN_ALIVE_KEYS = [
     'cognition.capture.risk_high', 'cognition.capture.risk_low',
     'cognition.capture.risk_medium', 'kb.transcriptCorrect.denied_reason_context_allowed',
@@ -134,7 +123,7 @@ const DYN_ALIVE_KEYS = [
     'p3394.wake.status.executed', 'p3394.wake.status.expired', 'p3394.wake.status.rejected',
 ];
 
-describe('死键批次门禁（P-r3-36）', () => {
+describe('认知资产多语言死键与动态键约束', () => {
   it('renderer 已删死键不得回潮（四语）', () => {
     const revived = RENDERER_DEAD_KEYS.flatMap((key) => LOCALES
       .filter((locale) => key in rendererTables[locale])
@@ -149,14 +138,14 @@ describe('死键批次门禁（P-r3-36）', () => {
     expect(revived).toEqual([]);
   });
 
-  it('豁免迁移的 audit_approval 5 键必须已在 renderer 四语（供 P-r3-44 复用）', () => {
+  it('迁移的 audit_approval 5 键必须已在 renderer 四语', () => {
     const missing = MIGRATED_KEYS.flatMap((key) => LOCALES
       .filter((locale) => !(key in rendererTables[locale]))
       .map((locale) => `${locale}:${key}`));
     expect(missing).toEqual([]);
   });
 
-  it('动态拼接救活的 33 键必须四语在位（曾被工具盲区误判，防反向误删）', () => {
+  it('动态拼接使用的 33 键必须四语在位', () => {
     const missing = DYN_ALIVE_KEYS.flatMap((key) => LOCALES
       .filter((locale) => !(key in rendererTables[locale]))
       .map((locale) => `${locale}:${key}`));

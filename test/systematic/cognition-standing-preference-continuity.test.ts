@@ -25,6 +25,13 @@ beforeEach(async () => {
     const approved = payload.approvedUserSources[0];
     return { result: { text: JSON.stringify({ supported: true, noUnsupportedClaims: true, scopePreserved: true,
       finalDecisionPreserved: true, priorContentPreserved: true,
+      ...(Array.isArray(payload.ruleSourceRequests) ? { sourceRuleConclusions: payload.ruleSourceRequests.map((request: { recordId: string }) => ({
+        recordId: request.recordId, status: 'resolved',
+        // Deterministic fixture meaning: this source expresses an adaptable
+        // answer-order preference, not metadata copied from the blind draft.
+        expectedContract: { strength: 'default', condition: null, effect: { kind: 'note' }, exception: '' },
+        topicEvidence: [{ label: approved.label, quote: approved.approvedQuotes[0] }],
+        fieldEvidence: { strength: [{ label: approved.label, quote: approved.approvedQuotes[0] }], condition: [], effect: [], exception: [] } })) } : {}),
       evidence: [{ label: approved.label, quote: approved.approvedQuotes[0] }] }), meta: {} } };
   });
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'cogseed-standing-continuity-'));
@@ -316,13 +323,13 @@ describe('standing preference authorization follows an actual approved update', 
     expect(model).toHaveBeenCalledTimes(1);
   });
 
-  it('does not give automatically created seed cognition the human standing grant', async () => {
+  it('does not give automatically created bud cognition the human standing grant', async () => {
     const settings = await import('../../src/main/features/recall/capture-settings');
     await settings.updateRecallCaptureSettings(uid, { autoApproval: true });
     const candidate = await nightly(original);
     const { tryAutomaticallyApproveRecallCandidate } = await import('../../src/main/features/recall/nightly-automatic-approval');
     const result = await tryAutomaticallyApproveRecallCandidate(uid, candidate.id);
-    expect(result).toMatchObject({ approved: true, asset: { maturity: 'seed', lifecycleStatus: 'automatically_extracted_unverified' } });
+    expect(result).toMatchObject({ approved: true, asset: { maturity: 'bud', lifecycleStatus: 'automatically_extracted_unverified' } });
     expect((await ordinary('automatic-new')).citations).toEqual([]);
     const { updateAbilityAsset } = await import('../../src/main/features/recall/asset-service');
     await updateAbilityAsset(uid, result.asset!.id, { title: '本人表达偏好', actor: 'user', reason: '仅整理标题' });

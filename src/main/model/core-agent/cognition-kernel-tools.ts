@@ -20,6 +20,7 @@ const PACK_IDS = Object.keys(TASK_FIELD_PACKS);
 
 export interface CognitionKernelToolsOpts {
   userId: string;
+  sourceMessageId?: string; sourceMessageFromUser?: boolean; taskText?: string;
   turnId?: string;
   /** 真实任务运行 ID（群聊 run）；缺省回退 turnId 记账。 */
   taskRunId?: string;
@@ -102,6 +103,7 @@ export function createCognitionKernelTools(opts: CognitionKernelToolsOpts): Agen
   return [
     createFieldsCheckTool(opts),
     ...(opts.allowTranscriptRead === false ? [] : createTranscriptMemoryTools(opts)),
-    ...createOntologyTools({ userId: opts.userId, turnId: opts.turnId, context: opts.context }),
+    ...createOntologyTools({ userId: opts.userId, turnId: opts.turnId, cid: opts.cid, context: opts.context,
+      sourceMessageId: opts.sourceMessageId, sourceMessageFromUser: opts.sourceMessageFromUser, taskText: opts.taskText }),
   ];
 }

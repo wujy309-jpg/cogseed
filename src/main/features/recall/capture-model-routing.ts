@@ -4,6 +4,7 @@ import { createLogger } from '../../logger';
 import { getThinkingLevel } from '../config';
 import type { RecallCaptureModelCandidate } from './capture-settings';
 import { withCaptureModelBudget, type CaptureModelBudgetContext } from './capture-model-budget';
+import * as os from 'node:os';
 
 const log = createLogger('recall.capture-model-routing');
 type ModelResult = Awaited<ReturnType<Awaited<ReturnType<typeof buildRunner>>['runner']['run']>>;
@@ -33,8 +34,37 @@ export async function runRecallCaptureModel(userId: string, options: {
   signal?: AbortSignal;
   shouldContinue?: () => Promise<boolean>;
   responseFormat?: 'json_object';
+  maxOutputTokens?: number;
   budget?: CaptureModelBudgetContext;
+  /** Explicit capture-stage opt-in. Generic empty-route callers retain their
+   * original API/environment contract; configured API outages never use CLI. */
+  cliContext?: { conversationId: string; agentId?: string; agentName?: string };
 }): Promise<{ result: ModelResult; chosen?: RecallCaptureModelCandidate }> {
+  if (options.cliContext && !options.modelCandidates.length
+    && !(await import('../auth')).hasConfiguredModelForUser(userId).configured && !process.env.ANTHROPIC_API_KEY) {
+    if (options.signal?.aborted || options.shouldContinue && !await options.shouldContinue())
+      throw Object.assign(new Error('Capture model run interrupted'), { code: 'ABORT_ERR' });
+    const { detectAll } = await import('../local_agents/registry');
+    const { run: runCliAgent } = await import('../local_agents/runner');
+    const available = (await detectAll()).filter(entry => entry?.available);
+    const chosen = available.find(entry => entry.type === 'claude') || available[0];
+    if (!chosen) throw Object.assign(new Error('capture model configuration is required'), { code: 'capture_model_not_configured' });
+    const prompt = `${options.systemPrompt}\n\n${options.message}`;
+    const dispatch = async () => {
+      if (options.signal?.aborted || options.shouldContinue && !await options.shouldContinue())
+        throw Object.assign(new Error('Capture model run interrupted'), { code: 'ABORT_ERR' });
+      return runCliAgent({ uid: userId, cid: options.cliContext!.conversationId,
+        agentId: options.cliContext!.agentId || 'recall-capture-analysis', agentName: options.cliContext!.agentName || 'Capture Analysis',
+        cli: chosen.type, prompt, cwd: os.tmpdir(), signal: options.signal, skipDispatchCheck: true, onEvent: () => {} });
+    };
+    const outcome = options.budget
+      ? await withCaptureModelBudget(userId, options.budget, prompt.length, dispatch) : await dispatch();
+    if (options.signal?.aborted || outcome.status === 'cancelled')
+      throw Object.assign(new Error('Capture model run interrupted'), { code: 'ABORT_ERR' });
+    if (outcome.status !== 'completed' || !outcome.output?.trim())
+      throw Object.assign(new Error('capture CLI model did not complete'), { code: 'capture_model_unavailable' });
+    return { result: { text: outcome.output.trim(), meta: {} } as ModelResult };
+  }
   const routes: Array<RecallCaptureModelCandidate | undefined> = options.modelCandidates.length
     ? [...options.modelCandidates] : [undefined];
   let lastError: unknown;
@@ -51,6 +81,7 @@ export async function runRecallCaptureModel(userId: string, options: {
         const { runner } = await buildRunner({ sessionId: options.sessionId, userId,
           systemPrompt: options.systemPrompt, disableTools: true, ephemeralSession: true, skillList: [],
           ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
+          ...(options.maxOutputTokens === undefined ? {} : { maxOutputTokens: options.maxOutputTokens }),
           ...(route ? { modelCandidates: [route] } : {}),
           onCandidateChosen: info => { chosen = { provider: info.providerId, model: info.modelId }; },
         });

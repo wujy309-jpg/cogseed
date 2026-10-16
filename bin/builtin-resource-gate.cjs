@@ -16,8 +16,7 @@ const BUILTIN_EXTRA_RESOURCE_FILTERS = Object.freeze([
   '!**/*.pyc',
 ]);
 const SAFE_SKILL_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-// Marketplace skill display names may be Chinese (product decision 2026-08-10:
-// shared skill assets ship with Chinese display names). Directory ids stay
+// Marketplace skill display names may be Chinese. Directory ids stay
 // 12-hex; only the frontmatter `name` is relaxed.
 const SKILL_DISPLAY_NAME_RE = /^[\p{L}\p{N}][\p{L}\p{N}._-]*$/u;
 const MARKETPLACE_ID = /^[0-9a-f]{12}$/;
@@ -67,6 +66,7 @@ const REQUIRED_BUILTIN_INVENTORY = Object.freeze({
     'c045605cb916',
   ]),
   marketplace_skills: Object.freeze([
+    'c09e11d17a01',
     '02d958231673',
     '058e3bb57bf5',
     '06d69ee5f1bc',

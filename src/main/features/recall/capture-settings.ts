@@ -195,8 +195,12 @@ export async function updateRecallCaptureSettings(
     userId,
     SETTINGS_COLLECTION,
     SETTINGS_ID,
-    (current) => {
+    async (current) => {
       const base = current ? asSettings(current) : defaultSettings(userId);
+      if (modelCandidates !== undefined) {
+        const { assertRecallCaptureModelAdditions } = await import('./capture-model-selection');
+        await assertRecallCaptureModelAdditions(userId, base.modelCandidates, modelCandidates);
+      }
       const autoApproval = input.autoApproval ?? base.autoApproval;
       const newGrant = autoApproval && (!base.autoApproval || input.enabled === false || (input.enabled === true && !base.enabled));
       const next: RecallCaptureSettingsRecord = {

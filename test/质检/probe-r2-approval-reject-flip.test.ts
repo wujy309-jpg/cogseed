@@ -1,31 +1,8 @@
 import { createNightlyCandidateFixture } from '../helpers/nightly-formation-fixture';
-/**
- * 探针（本轮红队-数据与注入，主题：并发与时序）：decideAssetChangeProposal 的
- * 终态预检在锁外——reject 与 confirm 交错时，已拒绝的 AI 提议内容仍被写进资产，
- * 且提议状态被覆盖成 confirmed（拒绝被静默翻转）。
- *
- * 读码链路（asset-approval-service.ts）：
- *  - :300-303 预检 readAssetChangeProposal 是**无锁直读**（readRecallJsonRecord
- *    不走 fileEditLock），confirmed/rejected 的拦截只在这一次；
- *  - confirm 路径 :338 updateAbilityAsset 的乐观锁（expectedVersion）只保证
- *    **资产**没被并发改过——reject 只改提议状态（asset-approvals 集合，另一把
- *    文件锁），不碰资产版本，expectedVersion 依然匹配；
- *  - :339 patchProposal 的 updater :212-215 `{ ...raw, ...patch }` **无终态
- *    复核**——rejected 会被 confirmed 直接覆盖；
- *  - 注释 :289-292 自己只承诺「版本重检与写入在同一把锁内」，提议状态的重检
- *    不在任一锁内（跨两个集合两把锁，检查游离在外）。
- *
- * 危害：用户点了「拒绝」的 AI 提议（chat 审批卡通道）内容仍被应用到资产并
- * bump 版本；台账里 approval_rejected 与 approval_confirmed 双条并存（矛盾账），
- * 提议终态显示 confirmed——拒绝动作在用户眼皮底下被吞。
- *
- * 手法：照 asset-service.test.ts「锁内终态复核（r2）」确定性时序先例——持**资产**
- * 文件锁让 confirm 的 updateAbilityAsset 排队，持锁期间让 reject 先落盘。
- *
- * 收尾状态（2026-10-01 记账员）：对应待议 **P-r2-2（拍板：锁内 CAS+补偿回滚）**——
- * 主用例已随修复启用（断言反转：confirm 失败回执 + 补偿回滚 + 终态保持 rejected）；
- * 对照组（无竞态/串行序时链路正常）不依赖漏洞，保留 active。
- */
+/** Concurrent approval/rejection must preserve the winning terminal decision.
+ * Hold the asset write lock so a queued confirmation overlaps a rejection.
+ * The confirmation must return a conflict and compensate any applied content,
+ * preserving version history, the rejected proposal and an accurate audit. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -106,7 +83,7 @@ describe('探针 r2 › 审批提议终态预检在锁外：reject 被 confirm �
     expect((await assets.readAbilityAsset(UID, asset.id)).version).toBe('1');
   });
 
-  it('【P-r2-2 已修】confirm 预检后排队期间 reject 落盘 → confirm 失败回执、被拒内容按提议前取值回滚、终态保持 rejected', async () => {
+  it('confirm 预检后排队期间 reject 落盘 → confirm 失败回执、被拒内容按提议前取值回滚、终态保持 rejected', async () => {
     const { assets, approval } = await modules();
     const asset = await seedAsset();
     const proposalId = (await proposeChange(asset.id, '被拒绝的提议内容。')).proposal.id;

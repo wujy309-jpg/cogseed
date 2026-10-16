@@ -883,7 +883,7 @@ function _isRecipientOrigin(value: unknown): value is 'user_selection' | 'cli_fa
   return value === 'user_selection' || value === 'cli_fallback' || value === 'active_floor';
 }
 
-// ── 经验目录通道的载荷投影（specs/016 契约 E1~E6）──────────────────────────
+// ── 经验目录通道的载荷投影──────────────────────────
 // 列表行是目录行：**不含 body、不含 evidenceRefs 明细**（受限正文边界）；
 // 排序不在这里做——listExperiences 已按 updatedAt 倒序给出。
 function recallExperienceListItem(exp: recallExperiences.ExperienceRecord) {
@@ -1095,7 +1095,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { counts: await chats.countAutoTaskConversations(ctx.userId, ids) };
   },
 
-  // 批量取会话标题（2026-09-25 验收修复 US-603）：证据来源解析要把 cid 翻成
+  // 批量取会话标题：证据来源解析要把 cid 翻成
   // 可读标题。只返回 title——不带正文、不带项目/成员信息；查无的 cid 不返回
   // 条目（渲染层据此显示「来源记录不可用」，而不是裸 id）。
   'conversations.titles': async ({ cids } = {}, ctx) => {
@@ -2250,7 +2250,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true, accepted: true, channel_id: p3394BridgeIpcPort.channel_id };
   },
 
-  // ── Workbench: complex-delivery Workspace (US-20) ─────────────────────
+  // ── Workbench: complex-delivery Workspace ─────────────────────
   // The gate decides whether the renderer may paint the Workspace body at
   // all ("未达Gate不得展示空Workspace"). The skill tree is resolved here from
   // the installed skill roots rather than accepted from the renderer, so a
@@ -2361,7 +2361,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
 
   // 候选出 IPC 一律带 capability：渲染层不再自己解释 raw status。能力是 DTO
   // 投影，不写回存储（落盘记录仍是纯候选记录）。
-  // 2026-09-29 第 3 批·读写面收敛：`view:'review-queue'`（认知面板专用）——
+  // 候选读模型：`view:'review-queue'`（认知面板专用）——
   // 服务端裁成待处理队列（可操作候选全量 + 已稍后处理全量 + 终态/处理记录
   // 限量），并对记录做视图白名单投影（16 个零消费字段不出 IPC；capabilities
   // 整体保留——会话抽屉等不传 view 的调用方仍是全量全形状）。粗滤口径只须
@@ -2544,9 +2544,11 @@ const invokeHandlers: Record<string, InvokeHandler> = {
       auth.getConfigForUser(ctx.userId),
       recallCaptures.readRecallCaptureModelRuntime(ctx.userId),
     ]);
+    const { readRecallCaptureModelSelection } = await import('../features/recall/capture-model-selection');
     return {
       ok: true,
       settings,
+      modelSelection: await readRecallCaptureModelSelection(ctx.userId, settings.modelCandidates),
       capabilities: { autoApproval: true },
       model: {
         ...model,
@@ -2556,7 +2558,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     };
   },
 
-  // 夜间筛选统计（U01/N-07）：聚合计数与原因码，不含任何原文。
+  // 夜间筛选统计：聚合计数与原因码，不含任何原文。
   'recall.captures.stats': async (_input, ctx) => {
     const [totals, sweep, budget] = await Promise.all([
       readRecallCaptureStats(ctx.userId),
@@ -2676,8 +2678,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (!safeId(candidateId)) throw new Error('invalid recall candidate id');
     if (riskAcknowledged !== undefined && typeof riskAcknowledged !== 'boolean') throw new Error('invalid risk acknowledgment');
     if (forceCreateSimilar !== undefined && typeof forceCreateSimilar !== 'boolean') throw new Error('invalid force-create flag');
-    // 版本冲突后的显式重锚（specs/015 US-702，`contracts/ipc.md` §二
-    // 「实现期补充」）：形状与 `recall.candidates.save` 的 targetVersionUsed
+    // 版本冲突后的显式重锚：形状与 `recall.candidates.save` 的 targetVersionUsed
     // 同一口径（/^[0-9]{1,9}$/）。这里只校验形状与长度——"这个版本是不是当前
     // 在用版"由主进程在 updateAbilityAsset **锁内**判，IPC 层不重判版本。
     if (confirmBaselineVersion !== undefined
@@ -2696,7 +2697,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
         throw new Error('invalid personal profile target');
       }
     }
-    // 版本重检不一致（specs/015 D6~D9，`contracts/ipc.md` §二）：候选确认时
+    // 版本重检不一致：候选确认时
     // 资产已被改动 → 返回结构化冲突，**候选不落终态、资产零改动**（比对发生在
     // `updateAbilityAsset` 锁内，这里只转形状，不做任何版本判定）。
     // 用户看过"对当前版差异"后带 `confirmBaselineVersion` 再确认 = 显式重锚：
@@ -2722,7 +2723,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
       if (!versionConflict) throw error;
       return {
         ok: false,
-        // 与 specs/008 的审批卡同一状态名（待处理），不是候选内部状态名。
+        // 与审批卡同一状态名（待处理），不是候选内部状态名。
         state: 'pending',
         versionConflict,
         message: `这条资产在你确认之前被改过（候选基于 v${versionConflict.baselineVersion}，现在是用 v${versionConflict.currentVersion}），所以这次没有生效。请按最新在用版重新看一眼差异再确认。`,
@@ -2773,7 +2774,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (reviewedDetails === true && (typeof statement !== 'string' || !Array.isArray(applicableWhen) || !Array.isArray(forbiddenWhen) || expectedVersion === undefined || expectedActiveVersion === undefined)) {
       throw new Error('reviewed recall asset details require complete content, conditions and both expected versions');
     }
-    // 标签（specs/012 T009，contracts/ipc.md §四）：只做形状闸（数组 + 每条
+    // 标签：只做形状闸（数组 + 每条
     // 字符串 + ≤12 条），逐条 trim/长度/去重由 ability-tag-service 的规范化
     // 唯一处判定；不传 = 不改标签（省略不是清空）。
     if (tags !== undefined && (!Array.isArray(tags) || tags.some((entry) => typeof entry !== 'string') || tags.length > abilityTags.ABILITY_ASSET_TAGS_MAX)) throw new Error('invalid recall asset tags');
@@ -2799,7 +2800,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   'recall.assets.restore': async ({ assetId, note } = {}, ctx) => { if (!safeId(assetId) || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall asset restore'); return { ok: true, asset: await recallAssets.restoreAbilityAsset(ctx.userId, assetId, { actor: 'user', reason: note ?? 'user restore' }) }; },
   'recall.assets.rollback': async ({ assetId, version, note } = {}, ctx) => { if (!safeId(assetId) || typeof version !== 'string' || !/^[0-9]{1,9}$/.test(version) || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall asset rollback'); return { ok: true, asset: await recallAssets.rollbackAbilityAsset(ctx.userId, assetId, version, { actor: 'user', reason: note ?? `user rollback to v${version}` }) }; },
 
-  // ── 标签系统（specs/012 US-201，T009）────────────────────────────────────
+  // ── 标签系统────────────────────────────────────
   // IPC 只校验形状并转调 ability-tag-service（唯一业务判定处）；返回体只含
   // 标签名/id/计数/时间与逐项报告（标题），不含资产正文。批量上限在服务层
   // 收口（≤200/次），这里先挡形状。
@@ -2849,7 +2850,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     }
     return { ok: true, report: await abilityTags.batchAssetTags(ctx.userId, assetIds, op) };
   },
-  // 「为什么排前」只读口（specs/012 T019，contracts/ipc.md §3.3）：读注入回执
+  // 「为什么排前」只读口：读注入回执
   // 的 ranking 字段；旧回执没有该字段 → explainable:false（如实说，不编造）。
   'recall.catalog.ranking': async ({ taskRunId, assetId, limit } = {}, ctx) => {
     if (!safeId(taskRunId)) throw new Error('invalid catalog ranking task run id');
@@ -2877,7 +2878,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     };
   },
 
-  // 排序权重（specs/012 T020）：读侧带 source/invalidReason/defaults（盘上非法时
+  // 排序权重：读侧带 source/invalidReason/defaults（盘上非法时
   // 如实告知"你的配置没生效"），写侧校验全部在服务层（非法抛错、原值保持）。
   'recall.catalog.weights.get': async (_payload, ctx) => {
     return { ok: true, ...(await rankingWeights.getRankingWeights(ctx.userId)) };
@@ -2920,7 +2921,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true, asset: await recallAssets.mergeAbilityAssets(ctx.userId, sourceAssetId, targetAssetId, { actor: 'user', reason: note ?? 'user merge' }) };
   },
 
-  // 「已删除」列表（specs/008 US-306 交付项，验收归 specs/010）。保留期剩余天数
+  // 「已删除」列表。保留期剩余天数
   // 与"能不能恢复/能不能立即彻底删除"三个判断全在 feature 层现算，IPC 只分页。
   'recall.assets.deleted.list': async ({ offset, limit } = {}, ctx) => {
     if (offset !== undefined && (!Number.isInteger(offset) || offset < 0)) throw new Error('invalid recall deleted offset');
@@ -2941,7 +2942,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true, asset: await recallAssets.purgeAbilityAsset(ctx.userId, assetId, { actor: 'user', reason: 'user purged from the deleted list' }) };
   },
 
-  // 审批提议（specs/008 US-406）：读状态 + 三态处置。
+  // 审批提议：读状态 + 三态处置。
   // 读状态是必须的——卡片消息在历史里是静态载荷，不查一次的话重载后
   // 已处置的卡片会又变回"待处理"，让用户以为自己没点过。
   'recall.assets.approval.read': async ({ proposalId } = {}, ctx) => {
@@ -2954,7 +2955,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (!safeId(proposalId)) throw new Error('invalid asset change proposal id');
     if (!['confirm', 'defer', 'reject'].includes(String(decision))) throw new Error('invalid asset approval decision');
     if (payload !== undefined && (!payload || typeof payload !== 'object' || Array.isArray(payload))) throw new Error('invalid asset approval payload');
-    // P-r3-33 隐式契约显式化：ok 由 decideAssetChangeProposal 的返回自带
+    // ok 由 decideAssetChangeProposal 的返回自带
     // （versionConflict/已处置时为 false），此前写死 { ok:true, ...spread } 纯靠
     // spread 顺序把 false 覆盖回来——服务层改形状即把失败伪装成成功且零护栏。
     // 现在直接透传 AssetApprovalDecisionResult，回执键集由
@@ -2964,7 +2965,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     });
   },
 
-  // ── 经验目录（specs/016 契约 E1~E6）：与 recall.assets.* 平级的独立段，
+  // ── 经验目录：与 recall.assets.* 平级的独立段，
   // 但**零调用**任何资产写函数（隔离边界）——读写全走 experience-service。
   // E1 · 列表（只读）：目录行不含正文/证据；status 缺省 active（归档/合并后
   // 自然零出现），'all' 才给全量；limit 上限 200、offset 只做分页不影响 total。
@@ -3030,7 +3031,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true, experience: recallExperienceListItem(await recallExperiences.archiveExperience(ctx.userId, experienceId, reason)) };
   },
 
-  // ── 存量迁移（specs/016 契约 E7/E8）：存量 KSTAR 经验类资产迁入经验目录。
+  // ── 存量迁移：存量 KSTAR 经验类资产迁入经验目录。
   // run 必须显式传 assetIds（≤200）——禁止隐式「一键全迁」：迁移是用户数据
   // 形态变化，批量和范围都由用户在预览清单上逐条勾选后显式给出。
   // 通道本身只做入参校验与转调（宪法 II）；顺序保证（冻结→写经验→迁出→
@@ -3053,7 +3054,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true, ...(await recallExperienceMigration.latestExperienceMigrationStatus(ctx.userId)) };
   },
 
-  // ── 经验集引用（specs/016 契约 E9~E10 / US-802 AC2）：@ 历史任务带入其经验集。
+  // ── 经验集引用：@ 历史任务带入其经验集。
   // 通道只做入参校验与转调；准入、快照冻结、防双注入的保证全部在
   // experience-reference.ts，这里不复制任何判定。撤销复用既有
   // conversations.taskRefs.remove，不新增撤销通道。
@@ -3090,11 +3091,11 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true, omissions: await recallExperienceReference.listExperienceOmissions(ctx.userId, cid, limit ?? recallExperienceReference.EXPERIENCE_OMISSIONS_LIMIT_DEFAULT) };
   },
 
-  // 大扫除与整理报告（specs/008 US-403）。run 是用户发起的批量整理；
+  // 大扫除与整理报告。run 是用户发起的批量整理；
   // report/list 是读口——报告要能被逐项核对，所以读口与实体同批落地。
   'recall.cleanup.run': async ({ trigger, scope, round } = {}, ctx) => {
     if (trigger !== undefined && trigger !== 'user' && trigger !== 'inspection') throw new Error('invalid cleanup trigger');
-    // 三轮合一（2026-09-29 拍板）：round 省略＝完整整理（规则轮→标题重起→
+    // 完整整理：round 省略＝完整整理（规则轮→标题重起→
     // 正文改写，round:'full' 一份合并报告；分轮照常落盘，列表按 supersededBy
     // 隐藏）。显式 round 仍可单跑专项轮；'candidate_statement_regen'＝候选池
     // 正文改写轮（存量统一处理批，内部链路，渲染层不触达）。
@@ -3137,19 +3138,15 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true, report };
   },
 
-  // 后台巡检（specs/008 US-405）：只报不改。run 是手动触发（用户自己要的，
+  // 后台巡检：只报不改。run 是手动触发（用户自己要的，
   // 与开关无关）；settings 承载开关，关掉之后只是不再自动运行。
   'recall.inspection.run': async (_args, ctx) => ({
     ok: true,
     run: await recallInspection.runAssetInspection(ctx.userId, { trigger: 'manual' }),
   }),
 
-  // 集成维护入口（2026-09-29 子安拍板「合并成一个集成功能」）：一次跑全套
-  // = 检查资产库（只报告）+ 完整清理（规范标题/合并重复/补标签/重写啰嗦正文，
-  // 含候选池正文——full 轮 2026-09-29 补齐）。两个动作各自落自己的报告
-  // （inspection runs / cleanup-reports），前端一个按钮触发、分别展示结果；
-  // 夜间线维持「整理对话+检查+机械规则轮」，LLM 改写只在用户手动触发时跑
-  // （「睡着时改资产」未拍板）。
+  // 用户手动触发检查与完整整理，分别返回 inspection runs 和 cleanup-reports。
+  // 夜间仅执行对话整理、检查与机械规则；LLM 正文改写保留在手动入口。
   'recall.maintenance.run': async (_args, ctx) => {
     const inspection = await recallInspection.runAssetInspection(ctx.userId, { trigger: 'manual' });
     const cleanup = await recallCleanup.runAssetFullCleanup(ctx.userId, { trigger: 'user' });
@@ -3270,17 +3267,17 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   'recall.projections.retryForecast': async ({ projectionId, cid } = {}, ctx) => { if (!safeId(projectionId) || !safeId(cid)) throw new Error('invalid projection retry'); return { ok: true, ...(await kstarProjectionDecision.retryProjectionInCommander(ctx.userId, { projectionId, cid })) }; },
   'recall.projections.revise': async ({ projectionId, purpose, addAssetIds, removeAssetIds, decisionNote } = {}, ctx) => { if (!safeId(projectionId) || (purpose !== undefined && typeof purpose !== 'string') || (addAssetIds !== undefined && (!Array.isArray(addAssetIds) || addAssetIds.length > 100 || addAssetIds.some((id) => !safeId(id)))) || (removeAssetIds !== undefined && (!Array.isArray(removeAssetIds) || removeAssetIds.length > 100 || removeAssetIds.some((id) => !safeId(id)))) || (decisionNote !== undefined && typeof decisionNote !== 'string')) throw new Error('invalid projection revision'); return { ok: true, projection: await recallProjection.reviseContextProjection(ctx.userId, projectionId, { ...(purpose !== undefined ? { purpose } : {}), ...(addAssetIds !== undefined ? { addAssetIds } : {}), ...(removeAssetIds !== undefined ? { removeAssetIds } : {}), ...(decisionNote !== undefined ? { decisionNote } : {}) }) }; },
   'recall.projections.revoke': async ({ projectionId } = {}, ctx) => { if (!safeId(projectionId)) throw new Error('invalid projection id'); return { ok: true, projection: await recallProjection.revokeModelSelectedProjection(ctx.userId, projectionId) }; },
-  // 用户 @ 钉住的资产走独立撤销口（US-601 AC3：引用回执可撤销）。与模型自选线
+  // 用户 @ 钉住的资产走独立撤销口。与模型自选线
   // 分开是为了两条授权语义各自可审计，且既有"用户确认的语义投影不可一键撤销"
   // 的边界不被放宽。
   'recall.projections.revokePinned': async ({ projectionId } = {}, ctx) => { if (!safeId(projectionId)) throw new Error('invalid projection id'); return { ok: true, projection: await recallProjection.revokeUserPinnedProjection(ctx.userId, projectionId) }; },
-  // 用户 @ 钉住的资产（2026-09-25 US-601）：composer 引用条据此显示「名称 · vN」
+  // 用户 @ 钉住的资产：composer 引用条据此显示「名称 · vN」
   // 并支持撤销。只返回 projectionId/assetId/title/version，不含正文。
   'recall.projections.pinnedAssets': async ({ cid } = {}, ctx) => {
     if (!safeId(cid)) throw new Error('invalid conversation id');
     return { ok: true, items: await recallProjection.listUserPinnedAssets(ctx.userId, cid) };
   },
-  // 用户引用被拦的留痕（2026-09-25 US-604 AC4/AC7）：发送前重检不再静默——回执卡
+  // 用户引用被拦的留痕：发送前重检不再静默——回执卡
   // 据此说明"最近一轮为什么没带上、是哪条规则"。只返回标题 + 规则标识，不含正文。
   'recall.injections.omissions': async ({ cid, limit } = {}, ctx) => {
     if (!safeId(cid)) throw new Error('invalid conversation id');
@@ -3414,7 +3411,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     });
     return {
       ok: true,
-      // assetVersions = 本次挂载冻结的在用版（US-601 AC2/AC3：引用 chip 与回执
+      // assetVersions = 本次挂载冻结的在用版（引用 chip 与回执
       // 要显示"名称 · vN"，且界面所见即注入所用）。
       projection: {
         id: projection.id,
@@ -3493,7 +3490,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return {
       ok: true,
       items: await formalAssets.listFormalAssetTimeline(ctx.userId, assetId),
-      // 单一白名单随载荷下发（2026-09-25 US-602 FR-004/FR-011）：列表与详情共用
+      // 单一白名单随载荷下发：列表与详情共用
       // 同一份定义，下游也引用它——不在渲染层再写一份（那正是缺陷本体）。
       realUsageKinds: [...REAL_USAGE_KINDS],
     };
@@ -3510,7 +3507,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     };
   },
 
-  // 采用回执明细（2026-09-25 US-602 AC5/AC6）：「实际采用」的唯一权威来源。
+  // 采用回执明细：「实际采用」的唯一权威来源。
   // 只返回版本 / 同次任务 / 证据类型 / 证据 ref（kind·id·title）——不含正文，
   // 可读名由渲染层唯一解析器负责。
   'recall.assets.adoptionReceipts': async ({ assetId, limit } = {}, ctx) => {
@@ -3536,27 +3533,9 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     };
   },
 
-  // 2026-09-29 第 5 批·退役：cognition.dashboard.read / cognition.candidates.list /
-  // cognition.candidates.decide 三条通道移除——渲染层零调用（09-27 审计与 09-29
-  // 探索双证），且 decide 的 accept 分支即时晋升、绕过「待我处理」确认闸，
-  // 与 recall.candidates.importPersonalOntology（转待确认）语义相反（B4）。
-  // 服务函数处置（2026-10-01 死代码真删批更新）：skill-summary 与 assets-adapter
-  // 对 listCognitionCandidates 的两处内部消费已随 P-r1-1（归因死过滤恒空）与
-  // P-r3-1（每列表关联读删）删除，服务现为运行时零消费、仅测试直测（读取映射
-  // 与排序有 cognition.test.ts 钉着），按「有测试依赖保留并登记」留下；
-  // dashboard/decideCognitionCandidate 的服务文件已随通道退役删除（2026-10-01 F-r1-2 兑现）。
-
-  // 2026-10-01 组12·退役：cognition.receipts.list / cognition.receipts.read /
-  // cognition.reviewDecisions.list / cognition.skills.audit 四条通道移除——
-  // 渲染层零调用（回执 UI 实际读口是别的通道；已处理历史 UI 用另一数据源），
-  // 通道级测试零（2026-09-30 认知资产质检循环 P-r3-3/P-r3-4，预审决策卡拍板）。
-  // 服务函数处置：listCognitionReuseReceipts（skill-summary/assets-adapter 在用）与
-  // listRecentReviewDecisions（meeting_metrics 汇总在用）保留；唯一消费者就是
-  // 通道的 readCognitionReuseReceipt 与 getSkillVersionMigrationAudit 随通道一并
-  // 删除（真删原则，P-r1-20 的 legacy 双重计数根源随退消解）。
-
+  // Cognition asset APIs below expose the canonical formal-asset types.
   'cognition.assets.list': async ({ type, limit } = {}, ctx) => {
-    // N-6: 类型枚举必须与 `CognitionAssetType`（= 四类正式资产）一致。
+    // 类型枚举必须与 `CognitionAssetType`（= 四类正式资产）一致。
     // 此前这里收的是上一代分类 skill/knowledge/ontology/evaluation，与适配器
     // 过滤用的 personal/rule/template/skill_method **完全不相交**——传合法类型
     // 抛错、传能通过校验的类型恒返回空列表。渲染层当时不传该参数，所以一直潜伏。
@@ -3580,12 +3559,12 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     // 让「items + total」在认知资产各读口上是同一个契约，渲染层不必按页
     // 记住哪个口有 total、哪个没有。
     const items = await cognition.listCognitionInbox(ctx.userId);
-    // 治理分组（specs/010 T012）：加法返回。旧渲染层/读失败侧拿不到 groups
+    // 治理分组：加法返回。旧渲染层/读失败侧拿不到 groups
     // 时按 items 平铺——降级路径在渲染层有测试钉着。
     return { ok: true, items, total: items.length, groups: cognition.groupCognitionInbox(items) };
   },
 
-  // 待办处置通道（specs/008 T007；specs/010 入参加法扩展）：入参 id 就是
+  // 待办处置通道：入参 id 就是
   // `cognition.inbox.list` 返回的 items[].id。分发与"哪些类没有一键动作"的判断在
   // features/cognition/inbox-adapter，这里只校验形状。没有动作可做的类别回
   // ok:false + code，**不计为成功**。
@@ -3593,7 +3572,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (typeof id !== 'string' || !id) throw new Error('invalid cognition inbox item id');
     if (typeof action !== 'string' || !action) throw new Error('invalid cognition inbox action');
     if (note !== undefined && (typeof note !== 'string' || note.length > 1_000)) throw new Error('invalid cognition inbox note');
-    // specs/010 的新参数全部可选：不传时既有行为逐字不变。
+    // 新增参数全部可选：不传时既有行为逐字不变。
     const asConditionList = (value: unknown, label: string): string[] | undefined => {
       if (value === undefined) return undefined;
       if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) throw new Error(`invalid ${label}`);
@@ -3611,12 +3590,6 @@ const invokeHandlers: Record<string, InvokeHandler> = {
       ...(targetAssetId !== undefined ? { targetAssetId } : {}),
     });
   },
-
-  // 2026-10-01 P-r1-23·退役：cognition.assets.diff 通道移除——渲染层零调用
-  // （「版本与治理」页的版本比对走 cognition.skills.diff，有通道级测试），
-  // 且服务读口 listCognitionAssetDiffs 吞一切读错误伪装成「没有变更」。
-  // 服务文件 version-diff-adapter.ts 随通道一并删除（真删原则）；
-  // recall 侧 buildAssetVersionDiffs 实现与其测试不受影响。
 
   'cognition.skills.summary': async ({ skillId } = {}, ctx) => {
     if (!safeId(skillId)) throw new Error('invalid skill id');
@@ -4142,17 +4115,8 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { entries: await contract.listOntologyEntries(ctx.userId) };
   },
 
-  // （P-r1-64，2026-10-01 拍板按前遍结论退役）旧 personalOntology.* 死通道
-  // 九条已删（渲染层零调用，契约审计 r1 矩阵 32 注册/20 活/12 死在册）：
-  // templates.fieldTargets / profile.syncRecall / candidates.confirm /
-  // candidates.reject / groups.fields.list / groups.history.list /
-  // groups.history.restore / groups.deleted.list / groups.fields.remove。
-  // 服务函数全部保留（各有活消费者：fieldTargets→core-agent 工具、
-  // syncRecall→candidate/asset 服务、confirm/reject→po.* 通道与个人上下文、
-  // fields.list→ontology-conflicts、history.restore→po.history.restore、
-  // deleted.list→po.snapshot、fields.remove/fields.list→回归测试钉住）。
-  // verify/cycleRuleKind/sensitivity 三条死通道按 P-r1-28 拍板保留待补
-  // 资产投影守卫，不在本批删除面内。
+  // Personal ontology services retain their feature-level callers; IPC exposes
+  // only the active routes below.
 
   // ── Personal Ontology Role Templates (角色模板) ──
   'personalOntology.templates.list': async (_payload, ctx) => {
@@ -4168,7 +4132,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // ── 旧个人本体候选只作为过渡队列展示；接受必须先转入 Recall 共同审核，不能直写 USER.md / MEMORY.md。 ──
   'personalOntology.candidates.list': async ({ view } = {}, ctx) => {
     const data = await personalOntologyCandidates.listCandidates(ctx.userId);
-    // corrupt（P-r2-7 读侧结构化错误）：池文件坏档时如实带回，渲染层据此
+    // corrupt（读侧结构化错误）：池文件坏档时如实带回，渲染层据此
     // 出「从备份恢复/重置」入口；写侧此时已被 corrupt-guard 拒绝。
     // 契约漂移修复（2026-10-02 S2 取证）：本通道历史上返回 `candidates`，
     // 而 rendered 侧 personal-ontology.js 读的是 `candidate_updates`——两边不一致
@@ -4179,11 +4143,6 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   },
   // 旧版 personalOntology.candidates.confirm/reject 批量入口已退役；过渡候选
   // 通过 transferToRecall 进入 Recall 共同审核，之后由统一资产/本体流程处理。
-
-  // （2026-10-01 b2 回滚）cognition.corrupt.list/restore/reset 三通道曾随
-  // P-r1-88 坏档三件套落地，未登记进 014 anti-drift 白名单
-  //（test/main/features/recall/ontology-step2-guard.test.ts）致门禁新增
-  // 失败，已按回滚令移除；重新落地时须先登记该白名单。
 
   'personalOntology.templates.install': async ({ templateId, restoreData }, ctx) => {
     if (!templateId || typeof templateId !== 'string') throw new Error('missing templateId');
@@ -4202,14 +4161,14 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   },
 
   // ── Personal Ontology Group Fields (挖空表单字段，兼容复合 id) ──
-  // （P-r1-64 退役）groups.fields.list 与 groups.fields.remove 两条老通道
+  // groups.fields.list 与 groups.fields.remove 两条老通道
   // 已删——渲染层零调用；fields.list 的服务面 listFieldsByRef 仍被
   // ontology-conflicts 与候选确认消费。
   'personalOntology.groups.fields.append': async ({ groupId, fieldName, value, source, asOf, clearAsOf }, ctx) => {
     if (!groupId || typeof groupId !== 'string') throw new Error('missing groupId');
     if (!fieldName || typeof fieldName !== 'string') throw new Error('missing fieldName');
     if (typeof value !== 'string') throw new Error('missing value');
-    // 时间锚三态（specs/014 T007）：只做类型校验，语义校验在 features 的
+    // 时间锚三态：只做类型校验，语义校验在 features 的
     // resolveAsOfControl 唯一处（错误码原样回渲染层）。
     if (asOf !== undefined && typeof asOf !== 'string') throw new Error('invalid asOf');
     if (clearAsOf !== undefined && typeof clearAsOf !== 'boolean') throw new Error('invalid clearAsOf');
@@ -4231,7 +4190,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
       asOf === undefined && clearAsOf === undefined ? undefined : { asOf, clearAsOf },
     );
   },
-  // 断言核实档（2026-09-20；spec 007 升两档）：标记/取消一条值的核实状态。
+  // 断言核实档：标记/取消一条值的核实状态。
   // verified: false 取消 / true 有来源支持 / 'independent' 独立核实过。
   'personalOntology.groups.fields.verify': async ({ groupId, fieldName, value, verified }, ctx) => {
     if (!groupId || typeof groupId !== 'string') throw new Error('missing groupId');
@@ -4242,26 +4201,23 @@ const invokeHandlers: Record<string, InvokeHandler> = {
       ctx.userId, groupId, fieldName, value, level,
     );
   },
-  // 规则分类循环（spec 007 T301）：无 → operation → preference → constraint → 无。
+  // 规则分类循环：无 → operation → preference → constraint → 无。
   'personalOntology.groups.fields.cycleRuleKind': async ({ groupId, fieldName, value }, ctx) => {
     if (!groupId || typeof groupId !== 'string') throw new Error('missing groupId');
     if (!fieldName || typeof fieldName !== 'string') throw new Error('missing fieldName');
     if (typeof value !== 'string') throw new Error('invalid value');
     return personalOntologyGroups.cycleFieldValueRuleKind(ctx.userId, groupId, fieldName, value);
   },
-  // 已删除分组列表（spec 009 D5b / T026）：无参，只校验转调 features
-  // （Constitution II）；恢复复用上面的 history.restore。
-  // 2026-10-02 收尾恢复：P-r1-64 判「渲染零调用」漏了协议层活测试
-  // （personal-ontology-deleted-groups.test.ts 三用例按通道名劫持——正是
-  // P-r1-94 指出的 grep 失明盲区），按 v2 判据「有测试依赖→保留」恢复注册；
-  // 原码自标「待总控确认第 7 条·选项②」，退役须先销该测试。
+  // 已删除分组列表：无参，只校验转调 features
+  // 恢复复用上面的 history.restore。
+  // Keep the deleted-group query available to protocol callers.
   'personalOntology.groups.deleted.list': async (_payload, ctx) => {
     return { ok: true, deleted: personalOntologyGroups.listDeletedGroups(ctx.userId) };
   },
-  // （P-r1-64 退役）组变更历史两条老通道已删（history.list /
+  // 组变更历史两条老通道已删（history.list /
   // history.restore）——渲染层 v2 面走 po.history.list /
   // po.history.restore（deleted 随 po.snapshot 下发）。
-  // 敏感性（spec 007 T302）：restricted 不进任务自动注入与世界模型。
+  // 敏感性：restricted 不进任务自动注入与世界模型。
   'personalOntology.groups.fields.sensitivity': async ({ groupId, fieldName, value, restricted }, ctx) => {
     if (!groupId || typeof groupId !== 'string') throw new Error('missing groupId');
     if (!fieldName || typeof fieldName !== 'string') throw new Error('missing fieldName');
@@ -4764,9 +4720,9 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // boot wiring + features/marketplace_reconcile.ts::subscribeReconcileStatus.
   'marketplace.reconcileStatus': async () => marketplaceReconcile.getReconcileStatus(),
 
-  // specs/010 FR-034 `[FROZEN]`：「用户打开目录页时」也是一个检查触发时机。
+  // 用户打开目录页时触发更新检查。
   // 只转达时机，不带任何参数——频率闸门（6 小时）仍在 `checkServerUpdatesForInstalls` 里，
-  // 本通道不能用来绕过它。不回检查结果：检查不打断用户（T107：只加必需通道）。
+  // 本通道不能用来绕过它。不回检查结果：检查不打断用户。
   'marketplace.requestCheck': async () => marketplaceReconcile.requestInstallReconcile('catalog-opened'),
 
   // Persistent listing-grid cache so cold starts don't show a blank panel. Renderer hydrates
@@ -5298,11 +5254,6 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     if (typeof spaceId !== 'string' || !safeId(spaceId)) return { state: null };
     return { state: await shareFeishu.getFeishuShare(ctx.userId, spaceId) };
   },
-  // 2026-10-01 组12·退役：kb 域 6 条渲染零调用死通道移除（2026-09-30 认知资产
-  // 质检循环 P-r1-92，预审决策卡拍板）——kb.share.needsUpdate / kb.share.appConfig.get /
-  // kb.share.appConfig.clear / kb.share.cogseed.update / kb.share.cogseed.list /
-  // kb.share.cogseed.config.get。服务函数保留（shareNeedsUpdate、
-  // listCogseedShares 等有测试/服务内部消费）。
   // 分享应用配置（独立于消息机器人）：appId/appSecret 存本机，供分享 OAuth 使用。
   'kb.share.appConfig.set': async ({ appId, appSecret } = {}, ctx) => {
     const aid = typeof appId === 'string' ? appId.trim() : '';
@@ -7811,7 +7762,7 @@ export function register(): void {
       if (Array.isArray(promotionReasons) && promotionReasons.every((reason) => typeof reason === 'string')) {
         out.promotionReasons = promotionReasons as string[];
       }
-      // 资产准入的具体规则标识（2026-09-25 验收修复 US-604 AC1）：code 只够分类，
+      // 资产准入的具体规则标识：code 只够分类，
       // 界面要能说出"到底哪条规则拦的"。只透传标识串，不透传原因码原文与正文。
       const blockRule = (err as { blockRule?: unknown }).blockRule;
       if (typeof blockRule === 'string' && blockRule) out.blockRule = blockRule;

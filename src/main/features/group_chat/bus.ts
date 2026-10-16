@@ -3814,6 +3814,16 @@ async function _enqueueBody(
     senderId: fromActorId,
     agentIds: to.filter((id) => !RESERVED_IDS.has(id)),
   });
+  // Only the official host-settled reply may bind a completed execution. The
+  // helper rechecks actor/turn identity; no paths are accepted from model text.
+  if (params.turn_end && params.turn_id && fromActorId !== USER_ID) {
+    try {
+      const { bindExecutionResultMessage } = await import('../recall/execution-result-content');
+      await bindExecutionResultMessage(uid, `turn-${params.turn_id}`, cid, msg);
+    } catch (error) {
+      log.warn('execution result message binding unavailable', { error: logErrorRef(error) });
+    }
+  }
   if (state.taskRun) {
     if (fromActorId === USER_ID && !state.taskRun.anchorMessageId) {
       state.taskRun.anchorMessageId = msg.id;
@@ -6045,17 +6055,10 @@ async function runActorTurnBody(
             ? { ...recallContext.answerEvidence, ...(validationTaskText ? { taskText: validationTaskText } : {}) }
             : undefined;
         }
-        // PRD 3.6 Transfer Verified 闭环：投影资产真实注入时在同一处落
-        // ContextReuseReceipt（key=turn-<turnId>），并登记到本次运行的
-        // reuseTurnIds——终态事件据此把迁移证明关联到真实加载凭证，资产
-        // 才升 transfer_validated（下次同类任务可自动注入）。缺失这一环，
-        // terminal-proof 永远找不到 receipt → 成熟度永不升档（已观测
-        // 'transfer proof completed without a reuse receipt'）。
-        // 回执 = 「本回合真的注入了这几条」这个事实，注入发生了就该落盘；
-        // reuseTurnIds = 本次运行的簿记，只有确实开着 taskRun 时才登记。
-        // 两者此前共用一道 `state.taskRun` 门，导致实机上自动投影注入 26 次、
-        // 回执只落 4 张：终态永远找不到凭证，连 M-6 恢复也只能扫到不存在的
-        // 回执。出生继承那条路径（本函数下方）早就是这个形状，这里对齐它。
+        // Record the exact injected assets at this site. A terminal transfer proof
+        // must refer to the same ContextReuseReceipt (key=turn-<turnId>).
+        // Receipt persistence follows actual injection; reuseTurnIds bookkeeping
+        // additionally requires an active taskRun.
         if (recallCitations.length) {
           const receiptRefs = recallCitations.map((c) => c.assetId);
           try {
@@ -6090,13 +6093,13 @@ async function runActorTurnBody(
       let catalogText = '';
       try {
         const { assetCatalogForPromptWithRelevance } = await import('../recall/asset-catalog-hint');
-        // 目录带当轮相关度（★标记+排序，2026-09-22 砍注入后的算法落点）：
+        // 目录带当轮相关度（★标记+排序）：
         // 复用上面 recallContext 同源的当轮任务文本。
-        // 场景因子（specs/012 T017）：会话的项目/空间归属（回合顶部解析、会话级
+        // 场景因子：会话的项目/空间归属（回合顶部解析、会话级
         // 冻结）传进目录排序——命中 spaceId===turnSpaceId 或
         // scopePolicy.{projectIds,workspaceIds} 的资产给正分；两者都缺省时该因子
         // 整体缺席（≠0 分），排序行为接近现状。
-        // 修3（2026-09-30）：注入块已带入的资产（committed/模型自选/画像镜像）
+        // 注入块已带入的资产（committed/模型自选/画像镜像）
         // 在目录行尾标注 [attached]——目录保持可用全集语义但不再对已注入内容
         // 装作未知，模型不必重复翻找已到手的东西。
         const attachedAssetIds = new Set<string>([
@@ -6117,9 +6120,9 @@ async function runActorTurnBody(
         // 目录块拿不到不影响回合。
       }
 
-      // 呈现面合一（2026-09-30）：授权资产/画像/目录合成单一 <asset-context>
+      // 授权资产/画像/目录合成单一 <asset-context>
       // 块一次追加——选择分层与通道记账原样不动；目录建失败时授权/画像子区
-      // 照常合成。经验目录块按 specs/016 保持并列，不并入本块。
+      // 照常合成。经验目录块保持并列，不并入本块。
       try {
         const { composeAssetContextBlock } = await import('../recall/prompt-injection');
         const assetContext = composeAssetContextBlock({
@@ -6137,15 +6140,13 @@ async function runActorTurnBody(
         if (catalogText) systemPrompt = `${systemPrompt}\n\n${catalogText}`;
       }
 
-      // 任务经验目录（specs/016 T025 / US-802）：与上面的资产目录**并列**追加、
-      // 不合并成一段——两套集合与过滤口径互不污染（合并正是"经验稀释资产"的
-      // 老毛病，spec 背景点名要修的）。清单只给单行条目，正文模型用
-      // read_task_experience 自取（拍板 C-7：能看见、不硬注入）；拿不到同样
-      // 不影响回合。
+      // 任务经验与资产目录并列追加，集合和过滤语义独立。
+      // 清单只给单行条目，正文由模型通过 read_task_experience 读取；
+      // 清单读取失败不阻断回合。
       try {
         const { experienceCatalogForPrompt } = await import('../recall/experience-catalog-hint');
         // 挂载集（@ 带入的经验集引用）作为第 5 参传入：清单据此对「已挂载但
-        // 本轮被拦」的经验各写一条 omitted 回执（E10 的数据源），不传则该路
+        // 本轮被拦」的经验各写一条 omitted 回执，不传则该路
         // 径静默缺失——读取失败不阻塞回合，与清单本身同一条降级线。
         let experienceMounted: { taskRunId?: string; experienceIds: string[] } | undefined;
         try {
@@ -6258,8 +6259,7 @@ async function runActorTurnBody(
         // null = 这个 Agent 生成时还没有继承机制，和「继承了空」不是一回事，
         // 但对提示词而言都是没有可注入的内容。
         if (selection) {
-          // N-3：出生时冻结的术语表随继承一起注入。它此前采集了却没有任何
-          // 路径送进提示词，「出生就该知道 KSTAR 在这里指什么」实际没发生。
+          // 出生时冻结的术语表与认知一起注入，确保继承上下文中的术语含义完整。
           const rendered = buildInheritedCognitionPrompt(selection.selected, selection.glossary);
           if (rendered.promptBlock) {
             systemPrompt = `${systemPrompt}\n\n${rendered.promptBlock}`;
@@ -6376,8 +6376,7 @@ async function runActorTurnBody(
   // one as a sandboxed `<iframe>` (`chat-app://`); `agent_id` = this actor,
   // the routing target for a user→artifact interaction result.
   const turnArtifacts: Array<{ id: string; title: string }> = [];
-  // Teaching receipts were merged into cognition save receipts (2026-09-28
-  // 四病整改 7.0 修7): the runner emits candidate+taught-pending-review through
+  // The runner emits candidate+taught-pending-review through
   // onCognitionSaveReceipt, so this turn keeps no separate teaching collector.
   const turnCognitionSaveReceipts: NonNullable<GroupMessage["cognition_save_receipts"]> = [];
   const turnAssetUsageClaims: import('../recall/asset-usage-claim').AssetUsageClaim[] = [];
@@ -6404,9 +6403,29 @@ async function runActorTurnBody(
   // 一条 completed text 条目落盘——历史重放按段渲染中间正文；最终段
   // （=消息正文）不落盘，渲染层凭 status 区分防重复。
   let segmentText = "";
+  // Only assistant text since the last business-tool/visible-dispatch boundary
+  // can become the delivered answer. A terminal adoption report is bookkeeping,
+  // even when the provider thinks again or writes a nonempty closing afterward.
+  // Keep the exact local text spans, never the whole-turn streaming accumulator.
+  let phaseTextSegments: string[] = [];
+  let phaseTextItemIds = new Set<string>();
+  let adoptionBookkeepingTail = false;
+  let promotedBookkeepingResult = false;
+  const promotedResultTextItemIds = new Set<string>();
+  const resetResultPhase = (): void => {
+    phaseTextSegments = [];
+    phaseTextItemIds = new Set<string>();
+    adoptionBookkeepingTail = false;
+  };
   const flushTextSegmentForPersist = (): void => {
     if (!segmentText) return;
+    const before = chatCollector.entries.length;
     chatCollector.feed({ type: "text-segment", text: segmentText });
+    phaseTextSegments.push(segmentText);
+    for (const entry of chatCollector.entries.slice(before)) {
+      if (entry.type === 'chatItem' && entry.item.type === 'chat.item' && entry.item.kind === 'text')
+        phaseTextItemIds.add(entry.item.itemId);
+    }
     segmentText = "";
   };
   let errText: string | null = null;
@@ -6484,6 +6503,10 @@ async function runActorTurnBody(
       ...(segProcessItems.length ? { process: segProcessItems } : {}),
       ...(segProduced.length ? { produced: segProduced } : {}),
     });
+    // This assistant text now belongs to a separate, actually persisted bubble.
+    // A later adoption report must not revive it in the terminal answer.
+    segmentText = "";
+    resetResultPhase();
     segState.processStart = processEnd;
     await registerFinalOutputResources(segProduced);
   };
@@ -6981,6 +7004,7 @@ async function runActorTurnBody(
         }
       }
       const executionLifecycle = createLifecycleSink(uid, {
+        ...(actor.kind === 'worker' ? { bindResultOutput: true } : { bindResultMessage: true }),
         executionId: `turn-${item.turnId}`,
         kind: "core-agent",
         sessionId,
@@ -7250,8 +7274,14 @@ async function runActorTurnBody(
           // 此刻 segmentText 恰为最终段；纯文本轮（无截断）segmentText=
           // 全文、行为不变；中间有叙述但收尾无文本的轮次回退全文（保全
           // 旧语义）。abort salvage（下方 streamingText 兜底）仍取全文。
-          const finalSeg = segmentText;
-          finalText = finalSeg.trim() ? finalSeg : (ev.text || "");
+          if (adoptionBookkeepingTail) {
+            finalText = phaseTextSegments.join('') + segmentText;
+            promotedBookkeepingResult = true;
+            for (const id of phaseTextItemIds) promotedResultTextItemIds.add(id);
+          } else {
+            const finalSeg = segmentText;
+            finalText = finalSeg.trim() ? finalSeg : (ev.text || "");
+          }
         } else if (ev.type === "delta") {
           // Pulled out of the generic branch below so we can mirror the text
           // into `streamingText` for abort-time salvage. The activity++ +
@@ -7381,7 +7411,21 @@ async function runActorTurnBody(
             // 工具事件（stream==='tool'）截断正文段落——它前面的文本是
             // 中间段，flush；usage/runtime 等非工具事件不 flush（防最终段
             // 被误落盘）。
-            if (event && event.stream === "tool") flushTextSegmentForPersist();
+            // Adoption reporting is bookkeeping for the answer already streamed,
+            // not a new task-output segment. A model may finish that call with
+            // only an actor-result control marker; flushing here would leave the
+            // actual answer only in the process rail and persist an empty reply.
+            // Keep every other tool boundary (reads, writes, approvals, dispatch)
+            // unchanged. The report's excerpt never supplies or repairs text.
+            const toolName = event?.data && typeof event.data === "object"
+              ? (event.data as { name?: unknown }).name : undefined;
+            if (event && event.stream === "tool") {
+              if (toolName === "report_ability_asset_usage") adoptionBookkeepingTail = true;
+              else {
+                flushTextSegmentForPersist();
+                resetResultPhase();
+              }
+            }
             if (event && !suppressCliUsage) chatCollector.feed({ type: "event", event });
           }
           // See the delta branch: anonymous workers don't surface to the UI.
@@ -7412,7 +7456,7 @@ async function runActorTurnBody(
       // `streamingText` holds whatever the renderer was already rendering.
       // Push it into finalText so plan_executor's abort branches can preserve
       // it instead of throwing away visible work as a bare "(stopped)" stub.
-      if (!finalText && streamingText) {
+      if (!finalText && streamingText && (!promotedBookkeepingResult || aborted)) {
         finalText = streamingText;
       }
       // NOTE: `w.running` is owned by `runWorkerLoop` — it stays `true`
@@ -8026,7 +8070,7 @@ async function runActorTurnBody(
   // (text streamed since the last flush) — else reload duplicates earlier
   // segments. If that tail is empty and nothing else needs surfacing, go silent
   // so no empty commander bubble is persisted.
-  if (segState.flushedAny && outcome.kind === "persist") {
+  if (segState.flushedAny && outcome.kind === "persist" && !promotedBookkeepingResult) {
     const tail = streamingText.slice(segState.segStart);
     const hasSide = !!(
       outcome.form ||
@@ -8112,15 +8156,7 @@ async function runActorTurnBody(
   }
 
   let persistedMsg: GroupMessage | null = null;
-  let finalOutputForUsage = '';
   if (outcome.kind === "persist") {
-    finalOutputForUsage = outcome.text;
-    if (!outcome.failureKind && !errText && !aborted && turnAssetUsageClaims.length) {
-      const { countClaimsMissingFromFinalOutput } = await import('../recall/asset-usage-claim');
-      if (countClaimsMissingFromFinalOutput(turnAssetUsageClaims, finalOutputForUsage) > 0) {
-        outcome.text = [outcome.text, t('recall.usage_claim_output_missing_notice')].filter(Boolean).join('\n\n');
-      }
-    }
     // Task 5: usage/timing metrics for this settled reply. CLI turns arrive
     // fully assembled from _runCliAgentTurn (runner attaches startedAt /
     // firstTokenAt to the terminal done event); internal model turns rebuild
@@ -8272,7 +8308,8 @@ async function runActorTurnBody(
         ? { projection_receipt: w.projectionReceipt }
         : {}),
       ...((tailProcessItems.length || chatCollector.entries.length)
-        ? { process: mergeProcessTrail(tailProcessItems, chatCollector.entries) }
+        ? { process: mergeProcessTrail(tailProcessItems, chatCollector.entries.filter(entry => !(entry.type === 'chatItem'
+          && entry.item.type === 'chat.item' && promotedResultTextItemIds.has(entry.item.itemId)))) }
         : {}),
       // Unified execution entry: persist what actually ran on this turn.
       ...(turnExecMeta ? { exec_meta: turnExecMeta } : {}),
@@ -8315,7 +8352,7 @@ async function runActorTurnBody(
         log.warn(`Recall usage persistence partially failed cid=${cid} failed=${failedUsageWrites.length}`);
       }
       const { recordInjectionReceipt } = await import('../recall/injection-receipt');
-      // 「为什么排前」拆解随回执留痕（specs/012 T019）：拆解只出自当轮目录
+      // 「为什么排前」拆解随回执留痕：拆解只出自当轮目录
       // 构建的那一次 rankAssets（asset-catalog-hint 按 userId+cid 记住的
       // ranked 视图，见上方 catalog 调用同键）——这里查表透传，不在写侧
       // 重算（排序唯一处）。资产不在当轮 ranked 视图里时不带 ranking，
@@ -8343,8 +8380,7 @@ async function runActorTurnBody(
       try {
         const { finalizeAssetUsageClaims } = await import('../recall/asset-usage-claim');
         await finalizeAssetUsageClaims(uid, {
-          taskRunId: item.turnId, messageId: persistedMsg.id,
-          finalText: finalOutputForUsage, claims: turnAssetUsageClaims,
+          cid, taskRunId: item.turnId, messageId: persistedMsg.id, claims: turnAssetUsageClaims,
         });
       } catch {
         log.warn('asset-specific adoption persistence failed; final message preserved');
@@ -8360,13 +8396,13 @@ async function runActorTurnBody(
         log.warn('ontology usage persistence failed; final message preserved');
       }
     }
-    // 画像通道落账（2026-09-13 通道显式化 / 2026-09-30 修2）：回执逐条留
+    // 画像通道落账：回执逐条留
     // 痕；正式资产镜像（非 onto-*）同口径计入 usage——「画像不是资产」的
     // 旧口径只适用于已废弃的文件回退形态，统一入口见
     // injection-receipt.ts::recordProfileMemoryInjection。
     if (recallProfileMemory.length) {
       const { recordProfileMemoryInjection } = await import('../recall/injection-receipt');
-      // P-r1-91 bus 侧容错：画像通道落账失败不阻断回合收尾——一条坏记录/瞬时
+      // 画像通道落账失败不阻断回合收尾——一条坏记录/瞬时
       // IO 错上抛会把整批画像收据+usage 记账一起丢掉、已持久化的回合被误标
       // failed、后面的漏取审计也被跳过。与上方 usage/回执的 allSettled、下方
       // 漏取审计的 try/catch 同口径：warn 留痕后继续。
@@ -8466,10 +8502,26 @@ async function runActorTurnBody(
   if (persistedMsg && outcome.kind === 'persist' && !outcome.failureKind && !errText && !aborted) {
     try {
       const { checkPersistedCognitionOutput } = await import('../recall/cognition-output-check');
+      const currentTaskText = String(item.sourceMessageText || item.llmPayload || '');
+      // A newly opened requirement usually repeats this exact user message.
+      // Keep one original copy so literal task evidence remains unambiguous;
+      // a genuinely different goal and follow-up must both remain available.
+      const outputCheckTaskText = recallTaskGoal.trim() === currentTaskText.trim()
+        ? currentTaskText
+        : [recallTaskGoal, currentTaskText].filter(Boolean).join('\n');
       await checkPersistedCognitionOutput(uid, { cid, taskRunId: item.turnId, messageId: persistedMsg.id,
-        taskText: [recallTaskGoal, String(item.sourceMessageText || item.llmPayload || '')].filter(Boolean).join('\n') });
+        taskText: outputCheckTaskText });
     } catch {
       log.warn('cognition result check unavailable; successful reply preserved');
+    }
+  }
+
+  if (actor.kind === 'worker' && !errText && !aborted && workingText.trim()) {
+    try {
+      const { bindExecutionResultOutput } = await import('../recall/execution-result-content');
+      await bindExecutionResultOutput(uid, `turn-${item.turnId}`, cid, actor.id, workingText, produced);
+    } catch (error) {
+      log.warn('anonymous execution result binding unavailable', { error: logErrorRef(error) });
     }
   }
 
@@ -12765,7 +12817,7 @@ async function buildCommanderExtraTools(
   // 模型自选挂载（2026-09-18）：模型看过目录/取过正文后，把"这次任务要用的
   // 资产"挂到当前任务上——创建（或复用）一条 authorization='model_selected'
   // 的 confirmed 投影，并在会话里投一张可撤销的卡。基线（宿主自动投影）不动：
-  // 这是"追加"，不是替换（子安拍板：原算法保留 + 模型自选，两者结合）。
+  // 这是追加，不替换宿主自动选择的资产。
   tools.push({
     name: "attach_assets_to_task",
     description: [

@@ -4,7 +4,7 @@
  */
 import * as fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { readOntologyGraph } from '../../ontology_graph';
+import { readOntologyGraph, readOntologyGraphForManagement } from '../../ontology_graph';
 import { userOntologyGraphFile } from '../../../paths';
 import { loadPoDocSync, poDocPath } from '../../po/store';
 import { emptyPoDocument, normalizePoDocument, type PoDocument } from '../../po/model';
@@ -125,7 +125,7 @@ function readExistingPo(userId: string): PoDocument {
   return doc;
 }
 
-function personalOntologyProjection(doc: OntologyDocument, userId: string): void {
+function personalOntologyProjection(doc: OntologyDocument, userId: string, fullText?: Map<string, string>): void {
   const po = readExistingPo(userId);
   for (const group of po.groups) {
     if (group.kind !== 'user' || !group.fields.length && !group.values.some(value => !value.assetId) && !group.entries.length) continue;
@@ -169,7 +169,9 @@ function personalOntologyProjection(doc: OntologyDocument, userId: string): void
           ? `${entry.text.slice(0, 3_800)}\n\n[原始条目较长；当前只展示前3800字，旧来源未修改。]`
           : entry.text;
         const sourceRecordId = legacyId('po-entry-source', `${group.id}:${entry.id}`);
-        addUnique(doc.records, { ...legacyBase(legacyId('po-entry', `${group.id}:${entry.id}`), 'entity', '旧个人本体自由文本条目', sourceRecordId,
+        const recordId = legacyId('po-entry', `${group.id}:${entry.id}`);
+        fullText?.set(recordId, entry.text);
+        addUnique(doc.records, { ...legacyBase(recordId, 'entity', '旧个人本体自由文本条目', sourceRecordId,
           [{ kind: 'legacy', id: group.id }]), moduleId, typeId: entryTypeId,
           name: firstLine || `旧记录条目 ${index + 1}`, description, aliases: [], identityStatus: 'confirmed',
           // PoEntry has no task-visibility field. Keep it owner-only until the user deliberately restructures it.
@@ -181,10 +183,22 @@ function personalOntologyProjection(doc: OntologyDocument, userId: string): void
 }
 
 export async function readOntologyWithLegacyView(canonical: OntologyDocument, userId: string): Promise<OntologyDocument> {
+  return (await readOntologyManagementView(canonical, userId, false)).ontology;
+}
+
+/** Same read-only projection plus lossless owner-management content. A legacy
+ * entry's 3,800-char display description is not its complete original text.
+ * The sidecar never changes the schema-bounded projection or the old source. */
+export async function readOntologyManagementView(canonical: OntologyDocument, userId: string, strictSources = true): Promise<{
+  ontology: OntologyDocument; legacyFullText: Map<string, string>;
+}> {
   const view: OntologyDocument = { ...canonical, records: { ...canonical.records } };
+  const legacyFullText = new Map<string, string>();
   const graphPath = userOntologyGraphFile(userId);
   if (corruptRecordFor(graphPath)) throw new OntologyError('store_corrupt', 'legacy ontology graph is marked corrupt');
-  graphProjection(view, await readOntologyGraph(userId));
-  personalOntologyProjection(view, userId);
-  return view;
+  const graph = await (strictSources ? readOntologyGraphForManagement(userId) : readOntologyGraph(userId));
+  if (corruptRecordFor(graphPath)) throw new OntologyError('store_corrupt', 'legacy ontology graph could not be read');
+  graphProjection(view, graph);
+  personalOntologyProjection(view, userId, legacyFullText);
+  return { ontology: view, legacyFullText };
 }

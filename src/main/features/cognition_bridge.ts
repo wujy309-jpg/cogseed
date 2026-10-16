@@ -14,7 +14,7 @@ import { safeId, writeJson } from '../storage';
 import { fileEditLock } from '../util/locks';
 import { corruptRecordFor } from '../util/corrupt-guard';
 import { createLogger } from '../logger';
-import { cognitionStorePath, loadCognitionStoreSync, editCognitionCompatibility } from './cognition_kernel/store';
+import { cognitionStorePath, loadCognitionStoreSync, editCognitionCompatibility, assertCognitionCommitActive, beginCognitionCommit } from './cognition_kernel/store';
 import type { CognitionCompatibilityState, CognitionObject, CognitionStoreDocument } from './cognition_kernel/object-model';
 import type { PoDocument } from './po/model';
 import { synchronizeOntologyRuleBodies } from './cognition/ontology/shared-body';
@@ -37,9 +37,11 @@ export async function withCognitionSourceDependency<T>(uid: string, collection: 
 }
 export function withCognitionTransition<T>(uid: string, work: () => Promise<T>): Promise<T> {
   if (!safeId(uid)) throw new Error('invalid uid');
+  assertCognitionCommitActive(uid);
   const held = transitionContext.getStore();
   if (held?.uid === uid && held.active) return work();
   return fileEditLock(path.join(userCognitionDir(uid), 'cognition-transition')).runExclusive(async () => {
+    assertCognitionCommitActive(uid);
     const context = { uid, active: true };
     try { return await transitionContext.run(context, work); } finally { context.active = false; }
   });
@@ -193,9 +195,10 @@ export async function persistCognitionSource(uid: string, collection: string, id
     && [record, c?.records['ability-assets']?.[id]].some(source => Array.isArray(source?.ontologyRefs)
       && source.ontologyRefs.some(ref => ref && typeof ref === 'object' && (ref as Record<string, unknown>).sharedBody === true)))
     throw new Error('shared ontology bodies require unified storage');
-  if (!c) { await legacyWrite(); return; }
+  if (!c) { beginCognitionCommit(uid); await legacyWrite(); return; }
   const commit = () => commitSourceChange(uid, next => { Object.defineProperty(next.records[collection] ??= {}, id, { value: record, writable: true, enumerable: true, configurable: true }); }, { records: { [collection]: [id] } }, record);
   if (c.mode === 'mirror') {
+    beginCognitionCommit(uid);
     await legacyWrite();
     try { await commit(); } catch { log.warn('cognition mirror needs reconciliation', { collection, id }); }
   } else {
@@ -205,9 +208,10 @@ export async function persistCognitionSource(uid: string, collection: string, id
 }
 export async function persistPoSource(uid: string, doc: PoDocument, legacyWrite: () => Promise<void>): Promise<void> {
   const c = cognitionCompatibility(uid);
-  if (!c) { await legacyWrite(); return; }
+  if (!c) { beginCognitionCommit(uid); await legacyWrite(); return; }
   const commit = () => commitSourceChange(uid, next => { next.po = doc as unknown as Record<string, unknown>; }, { records: {}, po: true });
   if (c.mode === 'mirror') {
+    beginCognitionCommit(uid);
     await legacyWrite();
     try { await commit(); } catch { log.warn('ontology mirror needs reconciliation'); }
   } else { await commit(); await recoverCognitionProjectionLocked(uid); }
@@ -287,9 +291,10 @@ export function readUnifiedOntologyCandidates(uid: string): Record<string, unkno
 export async function persistOntologyCandidates(uid: string, candidates: Record<string, unknown>[], legacyWrite: () => Promise<void>): Promise<void> {
   await withCognitionTransition(uid, async () => {
     const c = cognitionCompatibility(uid);
-    if (!c) { await legacyWrite(); return; }
+    if (!c) { beginCognitionCommit(uid); await legacyWrite(); return; }
     const commit = () => commitSourceChange(uid, next => { next.ontologyCandidates = candidates; }, { records: {}, ontologyCandidates: true });
     if (c.mode === 'mirror') {
+      beginCognitionCommit(uid);
       await legacyWrite();
       try { await commit(); } catch { log.warn('ontology candidate mirror needs reconciliation'); }
     } else { await commit(); await recoverCognitionProjectionLocked(uid); }

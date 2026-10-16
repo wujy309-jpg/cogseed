@@ -64,9 +64,9 @@ export async function evaluateNightlyAutomaticApproval(userId: string, candidate
   if (!validation.ok || validation.advisories.some(reason => reason !== 'statement_over_soft_budget')) reasons.push('formal_asset_requirements_incomplete');
   // Perform policy checks before optional semantic infrastructure; blocked work
   // must not call models merely to discover another reason to hold it.
-  if (!reasons.length && candidate.proposalTarget === 'ontology') {
-    const { independentOntologyComparisonReasons } = await import('./ontology-automatic-comparison');
-    reasons.push(...await independentOntologyComparisonReasons(userId, candidate));
+  if (!reasons.length && candidate.ontologyFormation) {
+    const { ontologyFormationComparisonReasons } = await import('./ontology-automatic-comparison');
+    reasons.push(...await ontologyFormationComparisonReasons(userId, candidate));
   }
   if (!reasons.length && candidate.proposalTarget !== 'ontology') {
     const { readAbilityAsset, listAbilityAssets } = await import('./asset-service');

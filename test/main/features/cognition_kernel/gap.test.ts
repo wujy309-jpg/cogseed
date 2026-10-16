@@ -42,7 +42,7 @@ function writePoDoc(): void {
             { id: 'f2', name: '银行卡号', origin: 'user', createdAt: '2026-09-01T00:00:00Z' },
           ],
           values: [
-            { id: 'v1', fieldId: 'f1', text: '牛保康', source: 'manual', createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' },
+            { id: 'v1', fieldId: 'f1', text: '示例用户甲', source: 'manual', createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' },
           ],
           entries: [],
         },

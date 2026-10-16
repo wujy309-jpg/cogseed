@@ -1,5 +1,6 @@
 /** 按任务时间、对象和显式模块引用读取本体；查询不会保存任务临时安排。 */
 import type { AgentTool } from '#core-agent';
+import type { CognitionEditHost } from '../../features/cognition/edit-service';
 import { OntologyError, validateOntologyId } from '../../features/cognition/ontology/model';
 import { readOntologyView } from '../../features/cognition/ontology/service';
 import { assessOntologySources, ontologyWithAdmittedSources } from '../../features/cognition/ontology/source-admission';
@@ -8,6 +9,10 @@ import { resolveOntologyRecordForModule } from '../../features/cognition/ontolog
 import { recordOntologyQueryReadReceipt, type OntologyQueryReadRef } from '../../features/cognition/ontology/query-receipt';
 import type { ResolvePersonalFieldsRequest } from '../../features/cognition_kernel/types';
 import { createLogger } from '../../logger';
+import { t } from '../../i18n';
+import { assertCognitionManagementReadTarget, MANAGEMENT_PAGE_TOKENS, managementContentChunk, managementReadVersion } from '../../features/cognition/management-read';
+import { readOntologyInventory, readOntologyManagementRecord } from '../../features/cognition/ontology/inventory';
+import { esticogseedToolResultTokens } from '../../util/tool-result-cap';
 import { logErrorRef, maskId } from '../../util/log-redact';
 
 const log = createLogger('ontology-query');
@@ -21,7 +26,7 @@ function queryReadRef(row: Record<string, unknown>, kind: OntologyQueryReadRef['
   return { moduleId: module.id, recordId: source.recordId, recordVersion, kind, sourceKind: sourceKind as OntologyQueryReadRef['sourceKind'] };
 }
 
-export interface OntologyToolsOptions {
+export interface OntologyToolsOptions extends Partial<CognitionEditHost> {
   userId: string;
   turnId?: string;
   context?: ResolvePersonalFieldsRequest['context'];
@@ -45,10 +50,16 @@ export function createOntologyTools(options: OntologyToolsOptions): AgentTool[] 
       + '有项目/工作区时给出 moduleId，或先用用户说过的名称填 query。'
       + '只读；临时任务安排不会保存。每条结果带来源和版本，unknown 表示开始时间或规则条件未确认。'
       + 'rule 的 matched 只表示条件匹配，不表示规则已经检查、采用或执行；default、required、suggestion 要按原等级说明。若 truncated 计数非零，结果不完整，不能据此断言所有要求均已覆盖。'
-      + '仅自己可见的内容和其他项目/工作区的内容不会返回。',
+      + 'task模式不返回仅自己可见的内容和其他项目/工作区内容；本人明确要求全部内容盘点时使用inventory，按管理读取资格返回全文或来源占位，不授任务使用权。',
     inputSchema: {
       type: 'object',
       properties: {
+        mode: { type: 'string', enum: ['task', 'manage', 'inventory'], description: 'inventory：仅本人当前明确要求全部本体内容盘点时，分页返回完整管理记录，包括owner_only/暂停/归档/已纠正与旧只读投影，不授任务使用权。默认25条，最多50，按输出预算减条但不截断。来源不可读给占位。manage：点名或同一全量指令下按ID读完整管理合同；超大条目用contentCursor。缺省task仍按主题与任务权限查询；sourceCoverage.complete不是全库覆盖。' },
+        limit: { type: 'integer', minimum: 1, maximum: 50, description: 'inventory本页最大条数，默认25。' },
+        cursor: { type: 'string', description: 'inventory上页nextCursor；仅分页一致性，不是授权。' },
+        expectedRevision: { type: 'integer', minimum: 0, description: '延续盘点或读取时要求的主档revision；变化拒绝，不能拼接新旧版本。' },
+        contentCursor: { anyOf: [{ type: 'integer', const: 0 }, { type: 'string' }], description: '超大完整JSON分块：0开始，再用nextContentCursor。manage每批核本人意图/来源/版本；task保留原query/moduleId/at/purpose/taskKind/entityId并每批重新执行原任务范围与来源准入，不获得manage权限。全部拼接才是全文。' },
+        recordId: { type: 'string', description: '管理读取的已有本体记录 ID。' },
         query: { type: 'string', maxLength: 200, description: '要查询的人物、项目、关系或主题；例如 CogSeed、负责人、周报接收人。' },
         moduleId: { type: 'string', maxLength: 160, description: '可选。此前查询结果中的本体 ID。' },
         at: { type: 'string', maxLength: 10, description: '可选。查询哪一天的现实事实，格式 YYYY-MM-DD；缺省为今天。' },
@@ -56,11 +67,30 @@ export function createOntologyTools(options: OntologyToolsOptions): AgentTool[] 
         taskKind: { type: 'string', maxLength: 200, description: '可选。任务类型，用于判断规则条件。' },
         entityId: { type: 'string', maxLength: 160, description: '可选。此任务涉及的对象 ID。' },
       },
-      required: ['query'],
+      required: [],
       additionalProperties: false,
     },
     async execute(input: ToolInput) {
       try {
+        if (input.mode !== undefined && !['task', 'manage', 'inventory'].includes(String(input.mode))) throw new OntologyError('invalid_input', '无效读取模式');
+        if (input.mode === 'inventory') {
+          if (Object.keys(input).some(k => !['mode', 'limit', 'cursor', 'expectedRevision'].includes(k))) throw new OntologyError('invalid_input', t('cognition.read.inventory_no_filter'));
+          return { content: JSON.stringify(await readOntologyInventory(options.userId, { ...options, userId: options.userId }, input)) };
+        }
+        if (input.mode === 'manage') {
+          const doc = await readOntologyView(options.userId);
+          const host = { ...options, userId: options.userId };
+          const matches = input.recordId ? [doc.records[validateOntologyId(input.recordId)]].filter(Boolean)
+            : Object.values(doc.records).filter(row => ('name' in row && row.name === input.query) || row.id === input.query);
+          if (!matches.length) throw new OntologyError('not_found', '请用已有记录 ID 或用户点名的准确名称读取');
+          if (matches.length !== 1) return { content: JSON.stringify({ status: 'ambiguous', matches: matches.map(row => ({ id: row.id, kind: row.kind, name: 'name' in row ? row.name : '', status: row.status })) }) };
+          const record = matches[0];
+          await assertCognitionManagementReadTarget(options.userId, host, 'ontology', record, doc);
+          const result = await readOntologyManagementRecord(options.userId, record.id, input.contentCursor, input.expectedRevision);
+          if (input.contentCursor === undefined && esticogseedToolResultTokens(JSON.stringify(result.content)) > MANAGEMENT_PAGE_TOKENS)
+            return { content: JSON.stringify({ mode: 'manage', id: record.id, contentState: 'requires_chunk_read', managementRead: { mode: 'manage', recordId: record.id, contentCursor: 0, expectedRevision: result.doc.revision }, useBoundary: t('cognition.read.use_boundary') }) };
+          return { content: JSON.stringify(result.content) };
+        }
         const query = String(input.query ?? '').trim();
         if (!query || query.length > 200) throw new OntologyError('invalid_input', '请输入不超过200字的查询主题');
         for (const field of ['purpose', 'taskKind'] as const) if (typeof input[field] === 'string' && input[field]!.length > 200) throw new OntologyError('invalid_input', `${field} is too long`);
@@ -158,14 +188,27 @@ export function createOntologyTools(options: OntologyToolsOptions): AgentTool[] 
             log.warn('ontology query read receipt failed', { userId: maskId(options.userId), turnId: maskId(options.turnId), error: logErrorRef(error as Error) });
           }
         }
-        return { content: JSON.stringify({ query, at, modules: targetModules.slice(0, 50).map(m => ({ id: m.id, name: m.name, scope: m.scope })),
+        const payload = { query, at, modules: targetModules.slice(0, 50).map(m => ({ id: m.id, name: m.name, scope: m.scope })),
           revision: doc.revision, records: Object.values(doc.records).filter(record => targetModules.some(module => (record.kind === 'module' ? record.id : record.moduleId) === module.id) && record.access === 'task' && record.status === 'active' && (record.kind !== 'assertion' || [...visibleFacts, ...visibleUncertainFacts].some(fact => (fact.source as { recordId?: string }).recordId === record.id))).slice(0, 100),
           facts: visibleFacts, uncertainFacts: visibleUncertainFacts, rules: visibleRules, conflicts, conflictsComplete: rules.length <= ruleLimit && targetModules.length <= 50,
           readReceipt: { status: readReceiptStatus, ...(readReceiptId ? { id: readReceiptId } : {}) },
           usageReceiptPolicy: 'If a fact or rule materially informs the final answer, copy its citation marker exactly into that answer. The host records use only when the same-turn query returned that exact version and the marker appears in the persisted reply. This does not prove external action execution or effectiveness.',
-          truncated: { facts: Math.max(0, facts.length - factLimit), uncertainFacts: Math.max(0, uncertain.length - factLimit), rules: Math.max(0, rules.length - ruleLimit), modules: Math.max(0, targetModules.length - 50) },
+          truncated: { facts: Math.max(0, facts.length - factLimit), uncertainFacts: Math.max(0, uncertain.length - factLimit), rules: Math.max(0, rules.length - ruleLimit), modules: Math.max(0, targetModules.length - 50),
+            records: Math.max(0, Object.values(doc.records).filter(record => targetModules.some(module => (record.kind === 'module' ? record.id : record.moduleId) === module.id) && record.access === 'task' && record.status === 'active' && (record.kind !== 'assertion' || [...visibleFacts, ...visibleUncertainFacts].some(fact => (fact.source as { recordId?: string }).recordId === record.id))).length - 100) },
+          queryScope: 'task_topic_search_not_owner_inventory',
           sourceCoverage: { complete: ![...sourceStatuses.values()].includes('unavailable') },
-          useBoundary: 'The read receipt means this tool produced a result containing the cited record versions; it does not prove adoption or execution. A rule match does not mean rule execution. If any truncated count is nonzero or sourceCoverage.complete is false, this result is incomplete and cannot certify that all requirements were checked.' }, null, 2) };
+          useBoundary: 'The read receipt means this tool produced a result containing the cited record versions; it does not prove adoption or execution. A rule match does not mean rule execution. If any truncated count is nonzero or sourceCoverage.complete is false, this result is incomplete and cannot certify that all requirements were checked.' };
+        if (input.contentCursor !== undefined) {
+          // Keep the original task path and re-run all admission checks above
+          // on EVERY chunk. A receipt is operational read bookkeeping, not
+          // stable semantic content or authority to read a stored result ref.
+          const { readReceipt, ...semantic } = payload;
+          const taskKey = 'task-' + managementReadVersion({ query, at, moduleId: input.moduleId, purpose: input.purpose,
+            taskKind: input.taskKind, entityId: input.entityId, context: options.context });
+          const part = managementContentChunk(options.userId, 'ontology', taskKey, { mode: 'task', ...semantic }, input.contentCursor);
+          return { content: JSON.stringify({ ...part, readReceipt }) };
+        }
+        return { content: JSON.stringify(payload, null, 2) };
       } catch (error) {
         return { content: `cognition_ontology_query: ${error instanceof Error ? error.message : '本体查询失败'}`, isError: true };
       }

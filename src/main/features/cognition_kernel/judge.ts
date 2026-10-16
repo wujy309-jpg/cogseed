@@ -1,19 +1,11 @@
 /**
- * cognition_kernel/judge — 归属判定引擎（S3-d v3：可核验门控 + 进池）。
+ * cognition_kernel/judge — 认知归属判定与候选入池。
  *
- * v3 相对 v2（2026-10-02 自查后重做）的三处根治：
- *   ① 自报置信度门控废弃——LLM 自报 confidence 普遍偏自信，拿它当闸门等于
- *      没有闸门。新门控只认**可核验信号**：确定性短路（用户显式声明/字段有
- *      明确落点）直接出结果不调模型；模型判定一律进池 pending 等用户点头，
- *      置信度只用于排序展示。
- *   ② 多候选 + 空（判定层如实报告，存储层永远单家）：模型输出 candidates
- *      数组（≤3 条，含置信度），允许空数组=不属于任何家；主候选建 Delta 进
- *      池，次候选记为 alternatives 供确认界面「选主家」。
- *   ③ 纠正样例按相关性检索（词面重合打分取 top），不再按最近 12 条——老
- *      样例不再被新样例挤出。
- *
- * 分工不变：判断归模型、闸门归代码、规则即数据；判定永不直写档案。
- * 留痕 routing-decisions.jsonl 照旧（可审计、可回放、可做评测集）。
+ * 可信生产者给出的显式归属或字段落点可确定性短路，不调用模型。
+ * 模型判定始终进入 pending 候选池等待用户确认，置信度只用于排序展示。
+ * 最多保留三个归属候选，允许空结果；主候选建 Delta，次候选供确认时选择。
+ * 纠正样例按词面相关性检索，判定结果写入 routing-decisions.jsonl 供审计。
+ * 模型负责语义判断，代码负责写入门控；判定不直接写用户档案。
  */
 
 import * as fs from 'node:fs';
@@ -224,9 +216,13 @@ export function buildJudgePrompt(input: {
 
 /** 解析模型回复：宽松取第一个 JSON 对象；candidates 严格收口（≤3、合法家、按置信度降序）。 */
 /**
- * 从模型回复中提取判词 JSON 对象。三层容错（2026-10-07 采纳 Mem0 固定版
- * abb81c8 的解析容错评估结论，Apache-2.0，自研适配）：剥 <think>/代码围栏 →
- * 花括号深度扫描（字符串与转义感知，逐起点尝试）→ 优先取含判词键的对象。
+ * 从模型回复中提取判词 JSON 对象。此提取部分适配自 Mem0 的
+ * removeCodeBlocks / extractJson，按 Apache-2.0 保留上游许可与署名：
+ * Copyright [2023] [Taranjeet Singh]
+ * https://github.com/mem0ai/mem0/blob/abb81c88e1f738a8117d8293530fbc31a5ef8fd9/mem0-ts/src/oss/src/prompts/index.ts#L744-L904
+ * 许可全文：LICENSES/Apache-2.0.txt；来源说明：THIRD_PARTY_NOTICES.md。
+ * 本地修改：仅接收对象，最多收集 8 个，优先取含判词键的对象，失败返回 null。
+ * 三层容错：剥 <think>/代码围栏 → 字符串与转义感知的花括号深度扫描 → 判词键优先。
  * 全部失败返回 null——判词解析失败按 unclassified 处理，不猜。
  */
 function extractJudgeObject(text: string): Record<string, unknown> | null {

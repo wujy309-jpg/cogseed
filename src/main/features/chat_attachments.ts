@@ -54,6 +54,7 @@ import {
 import { createLogger } from '../logger';
 import { t } from '../i18n';
 import { toCompressedGrayJpeg } from '../util/image-transform';
+import { MAX_BYTES_DOCX, MAX_BYTES_OFFICE, MAX_BYTES_PDF } from '../util/document-size-limits';
 import {
   invalidateFileCache,
   purgeFileCacheByCid,
@@ -87,10 +88,7 @@ export const ALLOWED_EXTENSIONS: ReadonlySet<string> = new Set([
 ]);
 
 const MAX_BYTES_TEXT  = 5   * 1024 * 1024;
-const MAX_BYTES_DOCX  = 20  * 1024 * 1024;
-const MAX_BYTES_OFFICE = 50 * 1024 * 1024;
 const MAX_BYTES_IMAGE = 20  * 1024 * 1024;
-const MAX_BYTES_PDF   = 100 * 1024 * 1024;
 const MAX_BYTES_VIDEO = 200 * 1024 * 1024;
 const MAX_BYTES_AUDIO = 50  * 1024 * 1024;
 

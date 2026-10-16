@@ -14,11 +14,12 @@ export interface CaptureValueJudgment {
 /** Keep independent passages separate. Joining them would manufacture source
  * text that a model can quote literally but the original message never said. */
 export function captureValueJudgmentInput(summary: CaptureContextSummary,
-  messages: readonly { id: string; role: string; text: string; discovery?: boolean; ts?: string }[]) {
+  messages: readonly { id: string; role: string; text: string; discovery?: boolean; ts?: string; observations?: readonly unknown[] }[]) {
   const evidence = summary.topics.flatMap(topic => topic.evidence);
   return { summary: summary.topics, messages: messages.filter(message => evidence.some(ref => ref.messageId === message.id))
     .map(message => ({ id: message.id, role: message.role, discovery: message.discovery !== false,
       ...(message.ts ? { ts: message.ts } : {}),
+      ...(message.observations?.length ? { observations: message.observations } : {}),
       excerpts: [...new Set(evidence.filter(ref => ref.messageId === message.id).map(ref => ref.quote))].filter(quote => message.text.includes(quote)),
     })) };
 }

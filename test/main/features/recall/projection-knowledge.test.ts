@@ -46,6 +46,31 @@ async function createAsset(input: { judgment: string; summary: string; causal?: 
 }
 
 describe('committed projection knowledge', () => {
+  it('keeps full method bodies and all conditions, and omits whole over-budget assets from every knowledge reference', async () => {
+    const now = new Date().toISOString();
+    const ids: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      const asset = await seedStoredAbilityAsset('user-a', { schemaVersion: 1, ownerId: 'user-a', id: `aa-complete-${i}`,
+        candidateId: `cand-complete-${i}`, title: `完整方法 ${i}`, type: 'cognition', statement: '方法步骤。'.repeat(680) + `尾部限制${i}`,
+        applicableWhen: Array.from({ length: 12 }, (_, n) => `适用条件${n + 1}`), forbiddenWhen: ['不可宣称外部事实已核实'],
+        evidenceRefs: [{ kind: 'execution', id: `exec-complete-${i}` }], scope: 'general', status: 'active', maturity: 'bud',
+        version: '1', lifecycleStatus: 'user_confirmed_unverified', reviewDecisionId: 'legacy-untracked', createdAt: now, updatedAt: now });
+      ids.push(asset.id);
+    }
+    const projections = await import('../../../../src/main/features/recall/context-projection');
+    const knowledge = await import('../../../../src/main/features/recall/projection-knowledge');
+    const preview = await projections.previewContextProjection('user-a', { taskRunId: 'task-complete', purpose: 'review', explicitAssetIds: ids });
+    await projections.confirmContextProjection('user-a', preview.id);
+    const loaded = await knowledge.loadCommittedProjectionKnowledge('user-a', preview.id);
+    expect(loaded.omittedAssetIds!.length).toBeGreaterThan(0);
+    expect(loaded.abilityAssetRefs).toEqual(loaded.abilityAssets.map(asset => asset.id));
+    expect(Object.keys(loaded.assetVersions)).toEqual(loaded.abilityAssetRefs);
+    for (const asset of loaded.abilityAssets) {
+      expect(asset.statement).toContain(`尾部限制${ids.indexOf(asset.id)}`);
+      expect(asset.applicableWhen).toHaveLength(12);
+      expect(asset.applicableWhen![11]).toBe('适用条件12');
+    }
+  });
   it('loads only the exact assets frozen by the confirmed projection', async () => {
     const selected = await createAsset({ judgment: 'Validate OAuth callback state before exchange.', summary: 'OAuth rule', causal: true });
     const unprojected = await createAsset({ judgment: 'When deploying the billing service, run the migration check first, then deploy, then verify the health endpoint.', summary: 'Billing deploy', causal: false });
@@ -110,7 +135,7 @@ describe('committed projection knowledge', () => {
     const entries = await loadOntologyAssets('user-a');
 
     // 镜像必须如实：治理字段取源资产真值。伪造（onto-<sha>/v1/bud）会让注入
-    // 块显示与真实记录矛盾的成熟度——自检曾据此误判「画像通道绕过闸门」。
+    // 块显示与真实记录矛盾的成熟度。
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
       id: created.id,
@@ -122,7 +147,7 @@ describe('committed projection knowledge', () => {
     expect(entries[0]!.id).not.toMatch(/^onto-/);
   });
 
-  it('cuts ontology titles at sentence boundaries instead of mid-word (T1.4)', async () => {
+  it('cuts ontology titles at sentence boundaries instead of mid-word', async () => {
     const paths = await import('../../../../src/main/paths');
     const profileFile = paths.userProfileFile('user-a');
     fs.mkdirSync(path.dirname(profileFile), { recursive: true });

@@ -15,7 +15,7 @@ const fixtures = vi.hoisted(() => ({
           { id: 'f2', name: '银行卡号', origin: 'user', createdAt: '2026-09-01T00:00:00Z' },
         ],
         values: [
-          { id: 'v1', fieldId: 'f1', text: '牛保康', source: 'manual', createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' },
+          { id: 'v1', fieldId: 'f1', text: '示例用户甲', source: 'manual', createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' },
           { id: 'v2', fieldId: 'f2', text: '陈旧的投影副本', source: 'candidate', createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z', assetId: 'a1' },
         ],
         entries: [],
@@ -25,7 +25,7 @@ const fixtures = vi.hoisted(() => ({
   },
   assets: [
     { id: 'a1', type: 'personal', title: '银行卡', statement: '6217-live', version: '3', status: 'active', updatedAt: '2026-09-20T00:00:00Z', ontologyRefs: [] },
-    { id: 'a2', type: 'personal', title: '审批人', statement: '王工', version: '1', status: 'paused', updatedAt: '2026-09-10T00:00:00Z', ontologyRefs: [{ groupId: 'g1', field: '审批人' }] },
+    { id: 'a2', type: 'personal', title: '审批人', statement: '示例审批人', version: '1', status: 'paused', updatedAt: '2026-09-10T00:00:00Z', ontologyRefs: [{ groupId: 'g1', field: '审批人' }] },
     { id: 'r1', type: 'rule', title: '不该被当作个人字段', statement: '规则', version: '1', status: 'active', updatedAt: '2026-09-10T00:00:00Z', ontologyRefs: [{ groupId: 'g1', field: '审批人' }] },
   ],
 }));
@@ -55,7 +55,7 @@ describe('cognition_kernel/resolve — 装配层（对真实数据形状）', ()
     });
 
     expect(r.bound.map((f) => [f.fieldName, f.value, f.source])).toEqual([
-      ['姓名', '牛保康', 'ontology_value'],
+      ['姓名', '示例用户甲', 'ontology_value'],
       ['银行卡号', '6217-live', 'personal_asset'],
     ]);
     expect(r.missing.map((f) => [f.fieldName, f.reason])).toEqual([

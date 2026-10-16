@@ -10,6 +10,7 @@ import { readContextProjection } from './context-projection';
 import { recommendAbilityAssetAction } from './asset-service';
 import { createLogger } from '../../logger';
 import { updateRecallJsonRecord } from './store';
+import { findConversationMessage } from './conversation-message-lookup';
 
 const log = createLogger('recall.effectiveness-feedback');
 
@@ -51,10 +52,13 @@ async function queueEffectFeedbackForNight(userId: string, transferProofId: stri
   if (!transfer) return false;
   const projection = await readContextProjection(userId, transfer.projectionId);
   if (!projection.conversationId) return false;
-  const { getMessagesPage } = await import('../chats');
-  const messages = (await getMessagesPage(userId, projection.conversationId, 1_000)).history;
-  const message = [...messages].reverse().find(row => row.from !== 'user' && !row.deleted_at
-    && (row.turn_id === projection.taskRunId || row.turn_id === transfer.executionId));
+  const { read } = await import('../execution-records');
+  const execution = transfer.receiptExecutionId ? await read(userId, transfer.receiptExecutionId).catch(() => undefined) : undefined;
+  if (execution?.resultMessage === 'pending' || execution?.resultOutput) return false;
+  const boundMessage = execution?.resultMessage;
+  const message = await findConversationMessage(userId, projection.conversationId, row => row.from !== 'user'
+    && (boundMessage ? row.id === boundMessage.id
+      : row.turn_id === projection.taskRunId || row.turn_id === transfer.executionId));
   if (!message) return false; // Never attach a task's feedback to an unrelated answer.
   const { queueNightlyFeedback } = await import('./nightly-feedback');
   for (const asset of transfer.assetVersions) await queueNightlyFeedback(userId, { conversationId: projection.conversationId,
@@ -77,8 +81,14 @@ async function enqueueProofFeedback(userId: string, proof: EffectivenessProofRec
 
 /** Recovery is part of the existing nightly sweep, never a daytime producer. */
 export async function recoverNightlyEffectivenessFeedback(userId: string): Promise<void> {
-  const pending = (await listEffectivenessProofs(userId)).filter(proof => proof.nightlyFeedback?.status === 'pending').slice(0, 20);
-  for (const proof of pending) await enqueueProofFeedback(userId, proof);
+  const pending = (await listEffectivenessProofs(userId)).filter(proof => proof.nightlyFeedback?.status === 'pending');
+  let queued = 0;
+  // Missing old results stay retryable, but do not consume another proof's
+  // admission quota. No model calls are made by this recovery pass.
+  for (const proof of pending) {
+    await enqueueProofFeedback(userId, proof);
+    if (proof.nightlyFeedback?.status === 'queued' && ++queued >= 20) break;
+  }
 }
 
 function evaluateFeedbackProof(

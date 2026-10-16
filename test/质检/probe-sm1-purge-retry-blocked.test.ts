@@ -1,23 +1,4 @@
-/**
- * 探针（状态机审计员 · 新循环第 1 轮）：purge 半途中断后重试被自己的墓碑挡住。
- *
- * 链路（读码 asset-service.ts:1345-1389 + store.ts:122-138）：
- * purgeAbilityAsset = setStatus('purged')（先落墓碑）→ removeRecallJsonlStream
- * （删版本流）→ cascadePurgeAssetReferences（清三个用量流 + 投影冻结副本）。
- * 三段之间都是独立 await，任一段 IO 故障/进程中断都会留下「墓碑已落、级联未清」
- * 的状态。而 setStatus 的 updater 首行 assertNotPurged(:1038) 对已 purged 记录
- * 直接 throw——重试 purge 在第一步就被挡，级联段永远执行不到。
- * store.ts:160 注释明说 removeRecallJsonlStream「清除要可重入，半路失败后重试
- * 不该被绊住」，但 purgeAbilityAsset 整体不可重入，设计意图与实现矛盾。
- *
- * 等价构造：第一次 purge 正常完成（= setStatus 已落墓碑的等价终态），再在投影
- * 目录放置含正文的冻结副本（= 级联未清的残留），断言第二次 purge 被拒、残留
- * 无法经任何产品通道清除（cascadePurgeAssetReferences 无独立入口，全仓仅
- * purgeAbilityAsset 一个调用方）。
- * 2026-09-30 r1 收尾（记账员）：对应待议 P-r1-1（与 probe-r5-purge-
- * nonretryable-cascade 用例 1 同题异构：r5 用 chmod 制造真实 IO 故障，本探针
- * 用等价构造测投影冻结副本残留通道）→ it.skip，断言锁定现状，拍板后反转。
- */
+/** 墓碑已提交但冻结副本未清理时的重试恢复边界。 */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -67,7 +48,7 @@ async function mkAsset(id: string) {
 
 const ACT = { actor: 'user' as const, reason: 'probe' };
 
-describe('probe-sm1 › purge 生命周期断链（待议 P-r1-1，拍板前 skip）', () => {
+describe('purge 生命周期断链', () => {
   it.skip('墓碑已落、级联残留未清时：重试 purge 被 assertNotPurged 挡住，投影冻结副本无通道可清', async () => {
     const assets = await loadAssets();
     await mkAsset('aa-sm1');

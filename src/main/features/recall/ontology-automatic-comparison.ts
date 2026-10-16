@@ -4,16 +4,38 @@ import { readOntologyDocument } from '../cognition/ontology/service';
 import type { OntologyRecord } from '../cognition/ontology/model';
 import type { RecallCandidateRecord } from './candidate-service';
 import { assessOntologySources } from '../cognition/ontology/source-admission';
+import { readRecallJsonRecord } from './store';
 
 export async function independentOntologyComparisonReasons(userId: string, candidate: RecallCandidateRecord): Promise<string[]> {
+  return ontologyFormationComparisonReasons(userId, candidate);
+}
+
+/** Joint formations have the same identity/conflict contract. A shared rule
+ * body is allowed only with its own cognition, never a reason to skip checks. */
+export async function ontologyFormationComparisonReasons(userId: string, candidate: RecallCandidateRecord): Promise<string[]> {
   const plan = candidate.ontologyFormation;
-  if (!plan?.actions.length || plan.refs.some(ref => ref.sharedBody)) return ['ontology_independent_plan_incomplete'];
+  if (!plan || candidate.proposalTarget === 'ontology' && (!plan.actions.length || plan.refs.some(ref => ref.sharedBody)))
+    return ['ontology_independent_plan_incomplete'];
   const doc = readOntologyDocument(userId);
   if (doc.revision !== plan.baselineRevision) return ['ontology_baseline_changed'];
-  const policy = candidate.scopePolicy;
-  const statuses = await assessOntologySources(userId, doc, { taskText: candidate.judgment, purpose: candidate.suggestedScope,
-    ...(policy?.projectIds?.length === 1 ? { projectId: policy.projectIds[0] } : {}),
-    ...(policy?.workspaceIds?.length === 1 ? { workspaceId: policy.workspaceIds[0] } : {}) });
+  // This operation compares stored source records; it does not apply the
+  // candidate as task guidance. Both candidate and summary bodies may quote
+  // forbidden contexts. Neither is an actual taskText or a read-purpose grant.
+  // Use current, canonical source metadata rather than model-proposed policy.
+  let sourceScope: { projectId?: string; workspaceId?: string; conversationKind?: string };
+  try {
+    const capture = candidate.captureProvenance
+      ? await readRecallJsonRecord(userId, 'captures', candidate.captureProvenance.captureId) : undefined;
+    if (!capture || typeof capture.conversationId !== 'string') return ['ontology_source_comparison_unavailable'];
+    const { getConversation } = await import('../chats');
+    const conversation = await getConversation(userId, capture.conversationId);
+    if (!conversation) return ['ontology_source_comparison_unavailable'];
+    sourceScope = { projectId: conversation.project_id || undefined, workspaceId: conversation.space_id || undefined,
+      conversationKind: conversation.kind || undefined };
+    const frozen = (capture.formationCheckpoint as { sourceScope?: unknown } | undefined)?.sourceScope;
+    if (frozen && JSON.stringify(frozen) !== JSON.stringify(sourceScope)) return ['ontology_source_comparison_unavailable'];
+  } catch { return ['ontology_source_comparison_unavailable']; }
+  const statuses = await assessOntologySources(userId, doc, sourceScope);
   const { listRecallCandidates } = await import('./candidate-service');
   const peers = (await listRecallCandidates(userId)).filter(other => other.id !== candidate.id
     && !['confirmed', 'integrated', 'rejected', 'ignored', 'expired', 'superseded'].includes(other.status));
@@ -24,7 +46,8 @@ export async function independentOntologyComparisonReasons(userId: string, candi
   for (const action of plan.actions) {
     const current = action.intent === 'create' ? undefined : doc.records[action.recordId];
     if (current && statuses.get(current.id) !== 'allowed') reasons.push('ontology_target_source_unavailable');
-    if (current?.kind === 'rule' && current.source.refs?.some(ref => ref.kind === 'asset')) reasons.push('ontology_bound_cognition_requires_joint_change');
+    if (current?.kind === 'rule' && current.source.refs?.some(ref => ref.kind === 'asset'
+      && (candidate.proposalTarget === 'ontology' || ref.id !== candidate.targetAssetId))) reasons.push('ontology_bound_cognition_requires_joint_change');
     const proposed = plan.previewChanges.find(row => row.after.id === action.recordId)?.after;
     if (action.intent !== 'create' || !proposed) continue;
     const related = Object.values(doc.records).filter(record => record.status === 'active' && record.kind === proposed.kind

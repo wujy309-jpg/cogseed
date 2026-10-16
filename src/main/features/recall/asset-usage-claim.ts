@@ -3,6 +3,7 @@ import { safeId } from '../../storage';
 import { createLogger } from '../../logger';
 import { listInjectionReceipts, type InjectionReceipt } from './injection-receipt';
 import { AGENT_READ_PROJECTION_ID, recordAssetUsageReceipt, type AssetUsageReceipt } from './asset-usage-receipt';
+import { locatePersistedResultExcerpt, readPersistedConversationResult, type PersistedResultContent } from './persisted-result-content';
 const log = createLogger('asset-usage-claim');
 
 /** A model report is a pending claim, not a persisted adoption or effect proof. */
@@ -65,19 +66,31 @@ export async function prepareAssetUsageClaim(userId: string, taskRunId: string, 
   return claim;
 }
 
-/** Called only after the host persists a successful final message and binds its
- * injection receipts. Evidence stores the message reference, never its excerpt. */
+/** Called after successful message persistence and injection binding. Production
+ * callers supply cid to re-read actual deliverables. The legacy text-only path
+ * retains its contract and never authorizes reading caller-named files. */
 export async function finalizeAssetUsageClaims(userId: string, input: {
-  taskRunId: string; messageId: string; finalText: string; claims: AssetUsageClaim[];
+  cid?: string; taskRunId: string; messageId: string; finalText?: string; claims: AssetUsageClaim[];
 }): Promise<AssetUsageReceipt[]> {
   if (!safeId(input.taskRunId) || !safeId(input.messageId)) throw new Error('invalid asset usage final message');
+  const persisted = input.cid ? await readPersistedConversationResult(userId, { ...input, cid: input.cid }) : undefined;
+  if (input.cid && !persisted) return [];
+  const legacyText = typeof input.finalText === 'string' ? input.finalText : '';
+  const result: PersistedResultContent = persisted?.content || { text: legacyText,
+    refs: [{ kind: 'message', id: input.messageId, contentHash: createHash('sha256').update(legacyText).digest('hex'),
+      contentRange: { start: 0, end: legacyText.length }, status: 'readable' }], coverage: { complete: true, totalFiles: 0, readableFiles: 0 } };
   const injections = await listInjectionReceipts(userId, input.taskRunId);
+  // All claims in one final message observe the same deliverable snapshot.
+  // Recheck it once before writes, rather than re-extracting every file per asset.
+  const current = input.cid ? await readPersistedConversationResult(userId, { ...input, cid: input.cid }) : undefined;
+  if (input.cid && !current) return [];
+  const changed = !!persisted && current?.fingerprint !== persisted.fingerprint;
+  const observed = changed ? current!.content : result;
   const recorded: AssetUsageReceipt[] = [];
   const seen = new Set<string>();
   for (const raw of input.claims) {
     let claim: AssetUsageClaim;
     try { claim = parseClaim(raw as unknown as Record<string, unknown>); } catch { continue; }
-    if (!input.finalText.includes(claim.outputExcerpt)) continue;
     // 同一资产同轮可能既被投影供应又被主动读取：消息绑定的投影回执优先，
     // agent_read 快照只在投影证据缺席时兜底，两种来源不会重复记账。
     const injection = injections.find((receipt) => receipt.assetId === claim.assetId
@@ -92,14 +105,23 @@ export async function finalizeAssetUsageClaims(userId: string, input: {
     if (seen.has(key)) continue;
     seen.add(key);
     try {
+      const evidence = locatePersistedResultExcerpt(result, claim.outputExcerpt);
+      const reportFailure = changed ? 'result_changed' as const : !result.coverage.complete ? 'result_unavailable' as const
+        : !evidence ? 'quote_not_found' as const : undefined;
+      // A changed result cannot reuse the old quote. Unknown is bound to the
+      // newly observed result, while its exact source hashes remain inspectable.
       recorded.push(await recordAssetUsageReceipt(userId, {
       taskRunId: input.taskRunId, projectionId,
       assetId: injection.assetId, assetVersion: injection.assetVersion, injectionReceiptId: injection.id,
-      status: 'applied', evidenceKind: 'final_output', boundary: 'real',
+      status: reportFailure ? 'usage_unknown' : 'applied', evidenceKind: 'final_output', boundary: 'real',
       observationMethod: 'agent_reported', messageId: input.messageId,
-      outputHash: createHash('sha256').update(input.finalText).digest('hex'),
+      outputHash: createHash('sha256').update(observed.text).digest('hex'),
+      ...(reportFailure ? { reportFailure } : {}),
+      ...(input.cid ? { resultRefs: observed.refs, resultCoverage: observed.coverage,
+        ...(!reportFailure && evidence ? { outputEvidence: evidence } : {}) } : {}),
       evidenceRefs: [{ kind: 'message', id: input.messageId, title: 'Asset-specific final output' }],
-      reason: viaAgentRead
+      reason: reportFailure
+        ? 'The model reported adoption, but its literal output evidence could not be established in the complete, unchanged persisted deliverables. Adoption remains unknown; this is not rejection or effectiveness verification.' : viaAgentRead
         ? 'Model-reported adoption tied to a host-recorded agent_read snapshot of this asset version and the persisted final output; not effectiveness verification.'
         : 'Model-reported adoption tied to this asset version and persisted final output; not effectiveness verification.',
       }));

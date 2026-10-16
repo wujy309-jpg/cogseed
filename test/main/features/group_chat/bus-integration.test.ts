@@ -238,6 +238,10 @@ vi.mock("../../../../src/main/model/client", () => ({
         await opts.onCognitionSaveReceipt?.(ev.receipt);
         continue;
       }
+      if (ev?.type === "__emit_asset_usage_claim__") {
+        await opts.onAssetUsageClaim?.(ev.claim);
+        continue;
+      }
       if (ev?.type === "__capture_tool_definitions__") {
         _recordedToolDefinitions.push(
           ...(opts.extraTools || []).map((tool: any) => ({
@@ -1692,11 +1696,99 @@ describe("group_chat bus integration › structured user recipient", () => {
 });
 
 describe("group_chat bus integration › teaching receipts", () => {
+  it.each(["report_ability_asset_usage", "read_file"])(
+    "keeps only adoption bookkeeping transparent to the final answer boundary: %s",
+    async (toolName) => {
+      const cid = newCid();
+      const state = await import("../../../../src/main/features/group_chat/state");
+      const bus = await import("../../../../src/main/features/group_chat/bus");
+      const answer = "**决定**\n- 周五前上线搜索筛选功能\n\n**待办**\n- 小林补测试，周四给结果。";
+      _setScript(state.buildGconvSessionId(cid), [
+        { type: "delta", text: answer },
+        { type: "event", event: { stream: "tool", data: { phase: "start", name: toolName } } },
+        { type: "__emit_asset_usage_claim__", claim: {
+          assetId: "asset-a", assetVersion: "1", outputExcerpt: answer.replace(/\n/g, "\\n"),
+        } },
+        { type: "event", event: { stream: "tool", data: { phase: "end", name: toolName } } },
+        { type: "delta", text: '<commander-result status="success" />' },
+        { type: "final", text: '<commander-result status="success" />' },
+      ]);
+      await bus.enqueue({ uid: TEST_UID, cid, fromActorId: "user", text: "整理本次会议复盘。" });
+      await waitForQuiescent(TEST_UID, cid);
+      const reply = (await readConversationMessages(cid)).find(message => message.from === "commander" && message.turn_end);
+      expect(reply?.text.includes(answer)).toBe(toolName === "report_ability_asset_usage");
+      expect(reply?.text).not.toContain("采用登记未生成回执");
+      expect(reply?.text).not.toContain("commander-result");
+      const { listAssetUsageReceipts } = await import("../../../../src/main/features/recall/asset-usage-receipt");
+      expect(await listAssetUsageReceipts(TEST_UID)).toEqual([]);
+    },
+  );
+
+  it('keeps the current business answer through report, thinking and a nonempty closing without duplicating process text', async () => {
+    const cid = newCid();
+    const state = await import('../../../../src/main/features/group_chat/state');
+    const bus = await import('../../../../src/main/features/group_chat/bus');
+    const answer = '完整咨询正文：先确认需求，再按预算和风险比较两个可执行方案。\n';
+    const detail = '推荐保留现有入口，只替换已证实失效的部分。\n';
+    const closing = '下一步先采用第一个方案。';
+    _setScript(state.buildGconvSessionId(cid), [
+      { type: 'delta', text: '准备读取背景，这句不是最终成果。' },
+      { type: 'event', event: { stream: 'tool', data: { phase: 'start', name: 'read_file' } } },
+      { type: 'event', event: { stream: 'tool', data: { phase: 'end', name: 'read_file' } } },
+      { type: 'delta', text: answer },
+      { type: 'progress', origin: 'thinking', text: '内部思考不属于任务正文。' },
+      { type: 'event', event: { stream: 'tool', data: { phase: 'start', name: 'report_ability_asset_usage' } } },
+      { type: '__emit_asset_usage_claim__', claim: { assetId: 'asset-a', assetVersion: '1', outputExcerpt: answer.replace(/\n/g, '\\n') } },
+      { type: 'progress', origin: 'thinking', text: '继续考虑如何收尾。' },
+      { type: 'delta', text: detail },
+      { type: 'event', event: { stream: 'tool', data: { phase: 'end', name: 'report_ability_asset_usage' } } },
+      { type: 'event', event: { stream: 'tool', data: { phase: 'start', name: 'report_ability_asset_usage' } } },
+      { type: 'progress', origin: 'thinking', text: '第二条采用仅属记账。' },
+      { type: 'event', event: { stream: 'tool', data: { phase: 'end', name: 'report_ability_asset_usage' } } },
+      { type: 'delta', text: closing }, { type: 'final', text: closing },
+    ]);
+    await bus.enqueue({ uid: TEST_UID, cid, fromActorId: 'user', text: '请提供完整咨询方案。' });
+    await waitForQuiescent(TEST_UID, cid);
+    const reply = (await readConversationMessages(cid)).find(message => message.from === 'commander' && message.turn_end);
+    expect(reply?.text).toBe(answer + detail + closing);
+    expect(JSON.stringify(reply?.process)).not.toContain(answer.trim());
+    expect(JSON.stringify(reply?.process)).not.toContain(detail.trim());
+    expect(JSON.stringify(reply?.process)).toContain('内部思考不属于任务正文');
+    expect(reply?.text).not.toContain('采用登记未生成回执');
+  });
+
+  it('does not revive an earlier business answer when a non-bookkeeping tool interrupts the reporting tail', async () => {
+    const cid = newCid();
+    const state = await import('../../../../src/main/features/group_chat/state');
+    const bus = await import('../../../../src/main/features/group_chat/bus');
+    const obsolete = '上一阶段只用于准备的文本，不是这次最终结果。';
+    const answer = '重新读取后得到的完整业务结论。\n';
+    const closing = '按这个结论执行。';
+    _setScript(state.buildGconvSessionId(cid), [
+      { type: 'delta', text: obsolete },
+      { type: 'event', event: { stream: 'tool', data: { phase: 'end', name: 'report_ability_asset_usage' } } },
+      { type: 'progress', origin: 'thinking', text: '需要重新检查文件。' },
+      { type: 'event', event: { stream: 'tool', data: { phase: 'start', name: 'read_file' } } },
+      { type: 'event', event: { stream: 'tool', data: { phase: 'end', name: 'read_file' } } },
+      { type: 'delta', text: answer },
+      { type: 'event', event: { stream: 'tool', data: { phase: 'end', name: 'report_ability_asset_usage' } } },
+      { type: 'progress', origin: 'thinking', text: '完成本阶段记账。' },
+      { type: 'delta', text: closing }, { type: 'final', text: closing },
+    ]);
+    await bus.enqueue({ uid: TEST_UID, cid, fromActorId: 'user', text: '重新检查后给结论。' });
+    await waitForQuiescent(TEST_UID, cid);
+    const reply = (await readConversationMessages(cid)).find(message => message.from === 'commander' && message.turn_end);
+    expect(reply?.text).toBe(answer + closing);
+    expect(reply?.text).not.toContain(obsolete);
+    expect(JSON.stringify(reply?.process)).toContain(obsolete);
+    expect(JSON.stringify(reply?.process)).not.toContain(answer.trim());
+  });
+
   it("persists a deduplicated taught receipt on the visible commander reply (并入保存回执链)", async () => {
     const cid = newCid();
     const state = await import("../../../../src/main/features/group_chat/state");
     const bus = await import("../../../../src/main/features/group_chat/bus");
-    // 教学回执并入保存回执（2026-09-28 四病整改 7.0 修7 / F39）：runner 不再有
+    // 教学与保存共用回执：runner 不再有
     // onTeachingReceipt，教学信号以 candidate+taught-pending-review 走同一条
     // 保存回执收集口径（渲染层不再有独立教学卡）。
     const receipt = {
@@ -4235,7 +4327,7 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
 
   it("returns to Commander when retry preparation fails before its run write", async () => {
     const cid = newCid();
-    const secret = "SECRET_RETRY_PREPARE_PREWRITE";
+    const secret = "synthetic-secret SECRET_RETRY_PREPARE_PREWRITE";
     const state = await import("../../../../src/main/features/group_chat/state");
     const bus = await import("../../../../src/main/features/group_chat/bus");
     const collaboration =
@@ -4553,7 +4645,7 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
     "reconciles a durable running $s attempt when begin audit append throws",
     async (pathKind) => {
       const cid = newCid();
-      const secret = "SECRET_BEGIN_AUDIT_FAILURE";
+      const secret = "synthetic-secret SECRET_BEGIN_AUDIT_FAILURE";
       const state = await import("../../../../src/main/features/group_chat/state");
       const bus = await import("../../../../src/main/features/group_chat/bus");
       const collaboration =
@@ -4631,7 +4723,7 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
 
   it("does not invent an attempt when begin fails before durability", async () => {
     const cid = newCid();
-    const secret = "SECRET_BEGIN_BEFORE_DURABILITY";
+    const secret = "synthetic-secret SECRET_BEGIN_BEFORE_DURABILITY";
     const state = await import("../../../../src/main/features/group_chat/state");
     const bus = await import("../../../../src/main/features/group_chat/bus");
     const collaboration =
@@ -4824,7 +4916,8 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
   it("redacts raw abort-settlement errors after durable begin", async () => {
     const cid = newCid();
     const secret =
-      "SECRET_POST_BEGIN_SETTLEMENT /Users/private/abort-token.json token=raw";
+      // Invented home path and token-shaped text exercise error redaction.
+      "SECRET_POST_BEGIN_SETTLEMENT /Users/test/abort-token.json token=raw";
     const state = await import("../../../../src/main/features/group_chat/state");
     const bus = await import("../../../../src/main/features/group_chat/bus");
     const collaboration =
@@ -4869,7 +4962,7 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
     ]);
     expect(logs).not.toContain(secret);
     expect(logs).not.toContain("SECRET_POST_BEGIN_SETTLEMENT");
-    expect(logs).not.toContain("/Users/private/abort-token.json");
+    expect(logs).not.toContain("/Users/test/abort-token.json");
     expect(logs).not.toContain("token=raw");
     const warnings = loggerMocks.warn.mock.calls.filter(
       ([message]) => message === "nested abort settlement failed",
@@ -4889,7 +4982,7 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
   it("redacts raw abort-settlement errors after retry preparation", async () => {
     const cid = newCid();
     const secret =
-      "SECRET_POST_PREPARATION_SETTLEMENT /Users/private/retry-token.json token=raw";
+      "SECRET_POST_PREPARATION_SETTLEMENT /Users/test/retry-token.json token=raw";
     const state = await import("../../../../src/main/features/group_chat/state");
     const bus = await import("../../../../src/main/features/group_chat/bus");
     const collaboration =
@@ -4934,7 +5027,7 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
     ]);
     expect(logs).not.toContain(secret);
     expect(logs).not.toContain("SECRET_POST_PREPARATION_SETTLEMENT");
-    expect(logs).not.toContain("/Users/private/retry-token.json");
+    expect(logs).not.toContain("/Users/test/retry-token.json");
     expect(logs).not.toContain("token=raw");
     const warnings = loggerMocks.warn.mock.calls.filter(
       ([message]) => message === "nested abort settlement failed",
@@ -4954,7 +5047,7 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
   it("sanitizes named-member storage failure and stops before model dispatch", async () => {
     const cid = newCid();
     const secret =
-      "SECRET_MEMBER_STORAGE /Users/private/member-token.json token=raw";
+      "SECRET_MEMBER_STORAGE /Users/test/member-token.json token=raw";
     const state = await import("../../../../src/main/features/group_chat/state");
     const bus = await import("../../../../src/main/features/group_chat/bus");
     const collaboration =
@@ -5029,7 +5122,7 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
     "settles a $s attempt when runNestedDispatch throws after begin",
     async (pathKind) => {
       const cid = newCid();
-      const secret = "SECRET_EXECUTE_THROW";
+      const secret = "synthetic-secret SECRET_EXECUTE_THROW";
       const state = await import("../../../../src/main/features/group_chat/state");
       const bus = await import("../../../../src/main/features/group_chat/bus");
       const collaboration =
@@ -5226,7 +5319,7 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
   it("sanitizes an unclassified nested exception and does not recover it", async () => {
     const cid = newCid();
     const secret =
-      "SECRET_NESTED_THROW /Users/private/token.txt api_token=raw-secret";
+      "SECRET_NESTED_THROW /Users/test/token.txt api_token=raw-secret";
     const state = await import("../../../../src/main/features/group_chat/state");
     const bus = await import("../../../../src/main/features/group_chat/bus");
     const collaboration =
@@ -5732,6 +5825,34 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
     expect(agentMsg, "agent bubble should persist").toBeTruthy();
     expect(lines.indexOf(segs[0])).toBeLessThan(lines.indexOf(agentMsg));
     expect(lines.indexOf(agentMsg)).toBeLessThan(lines.indexOf(segs[1]));
+  }, BUS_TEST_TIMEOUT_MS);
+
+  it('keeps only the post-dispatch business answer when adoption bookkeeping thinks and closes afterward', async () => {
+    const cid = newCid();
+    const state = await import('../../../../src/main/features/group_chat/state');
+    const bus = await import('../../../../src/main/features/group_chat/bus');
+    const pre = '先让写作助手形成草稿，这句话已经单独交付。';
+    const answer = '根据草稿得到的完整最终建议。\n';
+    const closing = '建议先落实第一项。';
+    _setScript(state.buildGconvSessionId(cid), [
+      { type: 'delta', text: pre },
+      { type: '__call_tool__', name: 'dispatch_to', input: { to: AGENT_NAME, message: 'draft it' } },
+      { type: 'delta', text: answer },
+      { type: 'event', event: { stream: 'tool', data: { phase: 'end', name: 'report_ability_asset_usage' } } },
+      { type: 'progress', origin: 'thinking', text: '仅做采用记账收尾。' },
+      { type: 'delta', text: closing }, { type: 'final', text: closing },
+    ]);
+    _setScript(state.buildGmemberSessionId(cid, AGENT_ID), [{ type: 'final', text: '助手的草稿正文。' }]);
+    bus.subscribe(TEST_UID, cid, () => {});
+    await bus.enqueue({ uid: TEST_UID, cid, fromActorId: 'user', text: '请写草稿并给最终建议。' });
+    await waitForQuiescent(TEST_UID, cid);
+    const messages = await readConversationMessages(cid);
+    const replies = messages.filter(message => message.from === 'commander');
+    expect(replies).toHaveLength(2);
+    expect(replies[0].text).toContain(pre);
+    expect(replies[1].text).toBe(answer + closing);
+    expect(replies[1].text).not.toContain(pre);
+    expect(JSON.stringify(replies[1].process)).not.toContain(answer.trim());
   }, BUS_TEST_TIMEOUT_MS);
 
   // The inverse: an anonymous worker is the commander's invisible hands, so the
@@ -10205,7 +10326,7 @@ describe("group_chat bus integration › Task 5 actor-turn settlement wrapper", 
   it("redacts nested settlement and final-settlement failures", async () => {
     const cid = newCid();
     const settlementSecret =
-      "SECRET_SETTLEMENT /Users/private/workflow-token.json token=raw";
+      "SECRET_SETTLEMENT /Users/test/workflow-token.json token=raw";
     const state = await import("../../../../src/main/features/group_chat/state");
     const bus = await import("../../../../src/main/features/group_chat/bus");
     const collaboration =
@@ -11284,7 +11405,7 @@ describe("group_chat bus integration › Task 10 transactional handoff finalizat
 
   it("rolls back a failed post-reply state commit and logs restoration failures without private data", async () => {
     const cid = newCid();
-    const secret = "SECRET task /private/path RecoveryGuide raw error";
+    const secret = "synthetic-secret SECRET task /private/path RecoveryGuide raw error";
     const state = await import("../../../../src/main/features/group_chat/state");
     const bus = await import("../../../../src/main/features/group_chat/bus");
     await setAgentInteractive(AGENT_ID, true);
@@ -11535,7 +11656,7 @@ describe("group_chat bus integration › Task 10 handoff finalization races", ()
 
   it("rolls back an atomic commit and fails workflow when resume enqueue fails", async () => {
     const cid = newCid();
-    const secret = "RAW_ENQUEUE_FAILURE /private/path token=secret";
+    const secret = "synthetic-secret RAW_ENQUEUE_FAILURE /private/path token=secret";
     const state = await import("../../../../src/main/features/group_chat/state");
     const bus = await import("../../../../src/main/features/group_chat/bus");
     let terminalCalls = 0;
@@ -11577,7 +11698,7 @@ describe("group_chat bus integration › Task 10 handoff finalization races", ()
 
   it("settles workflow failure even when CAS rollback cleanup fails", async () => {
     const cid = newCid();
-    const secret = "RAW_ROLLBACK_FAILURE /private/path token=secret";
+    const secret = "synthetic-secret RAW_ROLLBACK_FAILURE /private/path token=secret";
     const state = await import("../../../../src/main/features/group_chat/state");
     const bus = await import("../../../../src/main/features/group_chat/bus");
     (bus as any)._setHandoffStateHooksForTest?.({
@@ -11810,7 +11931,7 @@ describe("group_chat bus integration › model-selected asset attachment (2026-0
   }, 20_000);
 });
 
-describe("group_chat bus integration › experience catalog hint (specs/016 T025)", () => {
+describe("group_chat bus integration › experience catalog hint ", () => {
   it("并列注入资产与经验两段目录，且互不污染：资产块零经验条目、经验块零资产条目、正文不硬注入", async () => {
     const cid = newCid();
     const state = await import("../../../../src/main/features/group_chat/state");
@@ -11869,7 +11990,7 @@ describe("group_chat bus integration › experience catalog hint (specs/016 T025
     const expBlock = prompt.slice(expIdx);
     expect(assetBlock).not.toContain("[exp:");
     expect(expBlock).not.toContain("[asset:");
-    // 模型能看见经验清单（单行条目），但正文仍需自取（拍板 C-7）。
+    // 模型能看见经验清单（单行条目），但正文仍需自取。
     expect(expBlock).toContain("[exp:exp-bus-catalog1]");
     expect(expBlock).toContain("read_task_experience");
     expect(prompt).not.toContain("报告类经验正文：经验正文只应经");

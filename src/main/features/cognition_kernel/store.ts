@@ -1,5 +1,5 @@
 /**
- * cognition_kernel/store — 统一认知库存储内核（S3）。
+ * cognition_kernel/store — 统一认知库存储内核。
  *
  * 单一事实源：`<uid>/cloud/cognition/cognition-store.json`（object-model.ts 的
  * CognitionStoreDocument）。一切写入皆 Delta：唯一写入口 applyCognitionDeltas
@@ -7,17 +7,19 @@
  *
  * 工程骨架吸收 po v2（文件锁/坏档三件套/原子写/schemaVersion）与 recall
  * （每对象 append-only 版本流 jsonl）。落盘形态=单 JSON 主档+版本流+台账，
- * 不做事件溯源——云同步单元保持单文件（B 路线总览 v0.2 §2.2）。
+ * 不做事件溯源，云同步单元保持单文件。
  *
  * 本模块是可剥离内核：只依赖 node fs 与仓内基础层（storage/paths/locks/
  * corrupt-guard/logger），不 import electron/ipc/renderer/索引器——索引与
- * 通知钩子在消费面重接（S4）时以注入方式挂回。
+ * 通知钩子由消费面以注入方式挂回。
  */
 
 import * as fs from 'node:fs';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import { applyOntologyCommand, type OntologyCommandOutcome, type OntologyCommandSourceOverride } from '../cognition/ontology/commands';
 import { emptyOntologyDocument, OntologyError } from '../cognition/ontology/model';
+import type { CognitionEditDecision } from '../cognition/edit-decision';
 import * as path from 'node:path';
 import { fileEditLock } from '../../util/locks';
 import { corruptRecordFor, readTextGuarded, reportCorruptFile } from '../../util/corrupt-guard';
@@ -42,6 +44,32 @@ import {
 } from './object-model';
 
 const log = createLogger('cognition-store');
+
+type CommitLifetime = { uid: string; signal?: AbortSignal; active: boolean; started: boolean; onCommitStarted?: () => void };
+const commitLifetimes = new AsyncLocalStorage<CommitLifetime>();
+/** Host-only lifetime for one save and its receipt/recovery chain. Waiting for
+ * a write lock remains cancellable; once the first durable write starts, the
+ * operation completes normally instead of abandoning a partially saved result. */
+export async function withCognitionCommitLifetime<T>(uid: string, signal: AbortSignal | undefined,
+  work: () => Promise<T>, onCommitStarted?: () => void): Promise<T> {
+  if (!signal && !onCommitStarted) return work();
+  signal?.throwIfAborted();
+  const lifetime: CommitLifetime = { uid, signal, active: true, started: false, onCommitStarted };
+  try { return await commitLifetimes.run(lifetime, work); } finally { lifetime.active = false; }
+}
+export function assertCognitionCommitActive(uid: string): void {
+  const lifetime = commitLifetimes.getStore();
+  if (lifetime?.active && lifetime.uid === uid && !lifetime.started) lifetime.signal?.throwIfAborted();
+}
+/** Call synchronously after the last write lock, immediately before I/O. */
+export function beginCognitionCommit(uid: string): void {
+  assertCognitionCommitActive(uid);
+  const lifetime = commitLifetimes.getStore();
+  if (lifetime?.active && lifetime.uid === uid && !lifetime.started) {
+    lifetime.onCommitStarted?.();
+    lifetime.started = true;
+  }
+}
 
 /** 坏档三件套的业务域名（恢复通道按 domain 寻址，与 po / ontology-candidates 并列）。 */
 export const COGNITION_STORE_CORRUPT_DOMAIN = 'cognition-store';
@@ -118,7 +146,7 @@ function deltaFingerprint(delta: CognitionDelta): string {
 function rememberAppliedDelta(doc: CognitionStoreDocument, delta: CognitionDelta): void {
   // 幂等口径=按 deltaId 精确重放去重（双提交/崩溃重试）；槽位键（idempotencyKey）
   // 是候选池「同槽只留最新提议」的语义，不用于存储侧——同一对象的后续变更
-  // 是新 Delta，必须放行（2026-10-02 修正：首版误用槽位键导致 set→set 升版被吞）。
+  // 是新 Delta，必须放行，不能按槽位键吞掉后续版本。
   doc.deltaReceipts ??= {};
   doc.deltaReceipts[delta.deltaId] = deltaFingerprint(delta);
   doc.appliedDeltas[delta.deltaId] = true;
@@ -287,7 +315,7 @@ function summary(text: string): string {
  * 全批原子语义：任何一个 Delta 非法/失败都不落盘（要么全生效，要么全不动）。
  */
 type CognitionDocumentBatch = { kind: 'document'; edit: (doc: CognitionStoreDocument) => void | false };
-export type OntologyDeltaBatch = { kind: 'ontology'; command: unknown; sourceOverride?: OntologyCommandSourceOverride };
+export type OntologyDeltaBatch = { kind: 'ontology'; command: unknown; sourceOverride?: OntologyCommandSourceOverride; userEditDecision?: CognitionEditDecision };
 
 /** Retry projections under the same store lock. The durable main-file journal is authoritative until drained. */
 function drainJournal(uid: string, doc: CognitionStoreDocument): boolean {
@@ -321,6 +349,7 @@ export async function applyCognitionDeltas(uid: string, deltas: readonly Cogniti
   if (!safeId(uid)) return { ok: false, error: 'invalid uid', results: [], appliedCount: 0 };
   const filePath = cognitionStorePath(uid);
   return fileEditLock(filePath).runExclusive(async () => {
+    assertCognitionCommitActive(uid);
     const doc = loadCognitionStoreSync(uid);
     if (corruptRecordFor(filePath)) return { ok: false, error: 'cognition store corrupt; write refused', results: [], appliedCount: 0 };
     const draft: CognitionStoreDocument = JSON.parse(JSON.stringify(doc));
@@ -349,6 +378,10 @@ export async function applyCognitionDeltas(uid: string, deltas: readonly Cogniti
       if (current.ownerId !== uid) throw new OntologyError('store_corrupt', 'ontology owner mismatch');
       const outcome = applyOntologyCommand(current, batch.command, new Date().toISOString(), batch.sourceOverride);
       if (!outcome.duplicate) {
+        if (batch.userEditDecision) {
+          outcome.receipt.userEditDecision = batch.userEditDecision;
+          outcome.document.receipts[outcome.receipt.commandId] = outcome.receipt;
+        }
         if (Buffer.byteLength(JSON.stringify(outcome.document), 'utf8') > 16 * 1024 * 1024) throw new OntologyError('capacity_exceeded', 'ontology document exceeds size limit');
         draft.ontology = outcome.document;
         appliedCount = 1;
@@ -377,6 +410,7 @@ export async function applyCognitionDeltas(uid: string, deltas: readonly Cogniti
     if (!appliedCount && !draft.pendingJournal.length) return { ok: true, results, appliedCount, ontology };
     if (appliedCount) draft.updatedAt = nowIso();
     if (Buffer.byteLength(JSON.stringify(draft), 'utf8') > 64 * 1024 * 1024) return { ok: false, error: 'cognition store capacity exceeded', results, appliedCount: 0 };
+    beginCognitionCommit(uid);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     writeStoreFileSync(filePath, draft);
     const pendingHistory = drainJournal(uid, draft);
@@ -406,7 +440,7 @@ export interface ReplaceHomesOutcome {
 }
 
 /**
- * 家注册表写口（S4 消费面接 IPC/UI 用）：锁内 校验（id 唯一/合法、内置六家
+ * 家注册表写口：锁内 校验（id 唯一/合法、内置六家
  * 不可删、存储映射合法）→ 替换 homes → 原子写 + 台账。内置家的判据文案允许
  * 被覆盖（用户可改措辞），id 与存储映射以出厂为准不可漂移。
  */

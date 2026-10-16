@@ -1,5 +1,8 @@
+import { t } from '../../i18n';
 /** Compare readable persisted results against the same explicit criterion.
  * This is an observed contribution assessment, never a causal-effect claim. */
+import { readExecutionResultContent } from './execution-result-content';
+import type { PersistedResultContent } from './persisted-result-content';
 import { createHash } from 'node:crypto';
 import { safeId } from '../../storage';
 import { prompts } from '../../prompts/loader';
@@ -17,11 +20,12 @@ import type { CognitionSourceRef } from './source-service';
 const log = createLogger('recall.effectiveness-comparison');
 type Outcome = 'better' | 'no_improvement' | 'worse' | 'rework' | 'insufficient_evidence';
 interface Asset { assetId: string; version: string; statement: string; applicableWhen?: string[]; forbiddenWhen?: string[] }
+interface EvidenceUnit { id: string; text: string }
 export interface EffectivenessComparison {
   method: 'model_assisted_result_comparison'; outcome: Outcome; reason: string;
   baselineExecutionId: string; resultExecutionId: string; fingerprint: string;
   causalEffectEstablished: false;
-  evidence: Array<{ assetId: string; version: string; assetQuote: string; baselineQuote: string; resultQuote: string }>;
+  evidence: Array<{ assetId: string; version: string; assetQuote: string; baselineQuote: string; resultQuote: string; baselineRef?: PersistedResultContent['refs'][number]; resultRef?: PersistedResultContent['refs'][number] }>;
 }
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -30,8 +34,36 @@ function literal(value: unknown, source: string): value is string {
     && source.indexOf(value) >= 0 && source.indexOf(value, source.indexOf(value) + 1) < 0;
 }
 
+/** Host-authored locations avoid asking a model to re-encode Markdown or
+ * newlines. Full bodies remain supplied; units are selectable evidence, not a
+ * summary. Only unique literal text inside readable deliverable ranges is offered. */
+function evidenceUnits(text: string, prefix: string, content?: PersistedResultContent): EvidenceUnit[] {
+  const units: EvidenceUnit[] = [];
+  let offset = 0, sequence = 0;
+  for (const line of text.split('\n')) {
+    for (let start = 0; start < line.length; start += 1000) {
+      const quote = line.slice(start, start + 1000), absolute = offset + start;
+      const readable = !content?.refs.length || content.refs.some(ref => ref.status === 'readable' && ref.contentRange
+        && ref.contentRange.start <= absolute && ref.contentRange.end >= absolute + quote.length
+        && (!content.coverage.totalFiles || ref.kind === 'file'));
+      if (readable && literal(quote, text)) units.push({ id: `${prefix}:${++sequence}`, text: quote });
+    }
+    offset += line.length + 1;
+  }
+  return units;
+}
+
+function resolveQuote(item: Record<string, unknown>, key: 'asset' | 'baseline' | 'result', units: EvidenceUnit[]): unknown {
+  const quote = item[`${key}Quote`], id = item[`${key}EvidenceId`];
+  if (id === undefined) return quote; // Existing stored/model response contract.
+  if (typeof id !== 'string') throw new Error('invalid effectiveness evidence location');
+  const unit = units.find(unit => unit.id === id);
+  if (!unit || (quote !== undefined && quote !== unit.text)) throw new Error('unresolved effectiveness evidence location');
+  return unit.text;
+}
+
 /** Quotes and the complete identity matrix are host-checked, including negatives. */
-export function parseEffectivenessComparison(raw: string, assets: Asset[], baseline: string, result: string) {
+export function parseEffectivenessComparison(raw: string, assets: Asset[], baseline: string, result: string, contents?: { baseline: PersistedResultContent; result: PersistedResultContent }) {
   if (typeof raw !== 'string' || raw.length > 24_000) throw new Error('invalid effectiveness comparison');
   const row: unknown = JSON.parse(raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, ''));
   if (!object(row) || Object.keys(row).some(key => !['outcome', 'reason', 'evidence'].includes(key))
@@ -41,14 +73,30 @@ export function parseEffectivenessComparison(raw: string, assets: Asset[], basel
   const seen = new Set<string>();
   const evidence: EffectivenessComparison['evidence'] = [];
   for (const item of row.evidence) {
-    if (!object(item) || Object.keys(item).some(key => !['assetId', 'version', 'assetQuote', 'baselineQuote', 'resultQuote'].includes(key)))
+    if (!object(item) || Object.keys(item).some(key => !['assetId', 'version', 'assetQuote', 'baselineQuote', 'resultQuote',
+      'assetEvidenceId', 'baselineEvidenceId', 'resultEvidenceId'].includes(key)))
       throw new Error('invalid effectiveness evidence');
     const asset = assets.find(asset => asset.assetId === item.assetId && asset.version === item.version);
-    if (!asset || seen.has(asset.assetId) || !literal(item.assetQuote, asset.statement)
-      || !literal(item.baselineQuote, baseline) || !literal(item.resultQuote, result)) throw new Error('unresolved effectiveness evidence');
+    if (!asset || seen.has(asset.assetId)) throw new Error('unresolved effectiveness evidence');
+    const assetQuote = resolveQuote(item, 'asset', evidenceUnits(asset.statement, `a${assets.indexOf(asset) + 1}`));
+    const baselineQuote = resolveQuote(item, 'baseline', evidenceUnits(baseline, 'b', contents?.baseline));
+    const resultQuote = resolveQuote(item, 'result', evidenceUnits(result, 'r', contents?.result));
+    if (!literal(assetQuote, asset.statement) || !literal(baselineQuote, baseline) || !literal(resultQuote, result))
+      throw new Error('unresolved effectiveness evidence');
+    const locate = (quote: string, content: PersistedResultContent) => {
+      const start = content.text.indexOf(quote), end = start + quote.length;
+      const ref = content.refs.find(ref => ref.status === 'readable' && ref.contentRange
+        && ref.contentRange.start <= start && ref.contentRange.end >= end
+        && (!content.coverage.totalFiles || ref.kind === 'file'));
+      if (content.refs.length && !ref) throw new Error('comparison quote is not actual result evidence');
+      return ref ? { ...ref, contentRange: { start, end } } : undefined;
+    };
+    const baselineRef = contents ? locate(baselineQuote, contents.baseline) : undefined;
+    const resultRef = contents ? locate(resultQuote, contents.result) : undefined;
     seen.add(asset.assetId);
-    evidence.push({ assetId: asset.assetId, version: asset.version, assetQuote: item.assetQuote,
-      baselineQuote: item.baselineQuote, resultQuote: item.resultQuote });
+    evidence.push({ assetId: asset.assetId, version: asset.version, assetQuote,
+      baselineQuote, resultQuote,
+      ...(baselineRef ? { baselineRef } : {}), ...(resultRef ? { resultRef } : {}) });
   }
   // A bundle cannot credit unassessed items. Insufficient evidence stays useful
   // feedback, without a fabricated per-asset success or maturity promotion.
@@ -92,26 +140,49 @@ export async function compareEffectivenessResults(userId: string, transfer: Tran
           applicableWhen: saved.applicableWhen, forbiddenWhen: saved.forbiddenWhen });
         revisions.push([head.id, head.updatedAt, head.scopePolicy, head.status, content.evidenceRefs]);
       }
-      const [baselineOutput, resultOutput] = await Promise.all([
-        executions.readResult(userId, baseline.executionId, baseline.resultRef!),
-        executions.readResult(userId, current.executionId, current.resultRef!),
+      const [baselineContent, resultContent] = await Promise.all([
+        readExecutionResultContent(userId, baseline), readExecutionResultContent(userId, current),
       ]);
+      // Reading may finish a host binding interrupted after result persistence.
+      // Fingerprint that recovered record before spending a comparison call.
+      const [boundCurrent, boundBaseline] = await Promise.all([
+        executions.read(userId, current.executionId), executions.read(userId, baseline.executionId),
+      ]);
+      if (boundCurrent.status !== current.status || boundBaseline.status !== baseline.status
+        || boundCurrent.resultRef !== current.resultRef || boundBaseline.resultRef !== baseline.resultRef) throw new Error('persisted execution changed');
+      const baselineOutput = baselineContent.text, resultOutput = resultContent.text;
       if (!baselineOutput.trim() || !resultOutput.trim()) throw new Error('comparison result unavailable');
       const payload = { criterion: transfer.expectedResultSnapshot, reportedObservation: observation, assets,
-        baselineOutput, resultOutput };
-      const message = JSON.stringify(payload);
+        baselineOutput, resultOutput, baselineRefs: baselineContent.refs, resultRefs: resultContent.refs };
+      let message = JSON.stringify(payload);
       if (message.length > 96_000) throw new Error('complete comparison exceeds model input budget');
-      return { message, assets, baselineOutput, resultOutput,
-        fingerprint: hash(JSON.stringify([payload, revisions, current, baseline, receipt, baselineReceipt, evidenceRefs])) };
+      const locatedPayload = { ...payload,
+        assets: assets.map((asset, index) => ({ ...asset, evidenceUnits: evidenceUnits(asset.statement, `a${index + 1}`) })),
+        baselineEvidenceUnits: evidenceUnits(baselineOutput, 'b', baselineContent),
+        resultEvidenceUnits: evidenceUnits(resultOutput, 'r', resultContent) };
+      // Optional locations must not make a formerly supported complete body
+      // exceed its budget. Larger comparisons retain the exact-quote protocol.
+      const locatedMessage = JSON.stringify(locatedPayload);
+      if (locatedMessage.length <= 96_000) message = locatedMessage;
+      return { message, assets, baselineOutput, resultOutput, contents: { baseline: baselineContent, result: resultContent },
+        fingerprint: hash(JSON.stringify([payload, revisions, boundCurrent, boundBaseline, receipt, baselineReceipt, evidenceRefs])) };
     };
     const before = await readSnapshot();
     const { result } = await runRecallCaptureModel(userId, { sessionId: `one-shot-effect-comparison-${before.fingerprint.slice(0, 24)}`,
       systemPrompt: prompts.load('cognition_effectiveness_comparison'), message: before.message, modelCandidates: [] });
     if (result.meta.aborted || result.meta.error) return undefined;
-    const assessed = parseEffectivenessComparison(result.text, before.assets, before.baselineOutput, before.resultOutput);
+    const assessed = parseEffectivenessComparison(result.text, before.assets, before.baselineOutput, before.resultOutput, before.contents);
     const after = await readSnapshot();
     if (after.fingerprint !== before.fingerprint) return undefined;
     return { method: 'model_assisted_result_comparison', ...assessed, baselineExecutionId,
       resultExecutionId: transfer.receiptExecutionId, fingerprint: before.fingerprint, causalEffectEstablished: false };
-  } catch { log.warn('effectiveness comparison unavailable', { transferProofId: transfer.id }); return undefined; }
+  } catch (error) {
+    log.warn('effectiveness comparison unavailable', { transferProofId: transfer.id });
+    if (error instanceof Error && /(?:persisted execution|execution reply|execution record not found|execution output)/.test(error.message)) return {
+      method: 'model_assisted_result_comparison', outcome: 'insufficient_evidence',
+      reason: t('cognition.effect_result_unavailable'), evidence: [], baselineExecutionId,
+      resultExecutionId: transfer.receiptExecutionId!, fingerprint: '', causalEffectEstablished: false,
+    };
+    return undefined;
+  }
 }

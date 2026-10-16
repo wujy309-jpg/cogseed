@@ -1,10 +1,12 @@
+import { formationComparisonSchema, type FormationComparison } from './formation-comparison';
 import { isDeepStrictEqual } from 'node:util';
 import { bindOntologyFormationPlan, normalizeOntologyFormationPlan, withOntologyFormationPromotion, withOntologyOnlyFormation, type OntologyFormationPlan } from './ontology-formation';
 import { withRecallAutoApprovalLock } from './capture-settings';
 import { evaluateNightlyAutomaticApproval, NightlyAutomaticApprovalHeldError, requireNightlyAutomaticApproval } from './nightly-automatic-approval';
 import { requireContentCategory, readContentCategory, type CognitionContentCategory, type StoredCognitionContentCategory } from './content-category';
 import type { AutomaticCandidateReview } from './automatic-review-history';
-import { CaptureFormationSourceUnavailableError, normalizeCaptureProvenance, verifyCaptureProvenanceForWrite, verifyCaptureProvenanceForPromotion, type RecallCaptureProvenance } from './capture-provenance';
+import { CaptureFormationSourceUnavailableError, normalizeCaptureProvenance, verifyCaptureProvenanceForWrite, type RecallCaptureProvenance } from './capture-provenance';
+import { normalizeHumanInstructionProvenance, verifyHumanInstructionCandidate, verifyCandidateFormationForPromotion, type HumanInstructionProvenance } from '../cognition/human-instruction-provenance';
 import * as fs from 'node:fs/promises';
 import { describeRoleTemplateFieldRef } from '../personal_ontology_contract';
 import * as path from 'node:path';
@@ -131,13 +133,14 @@ export interface RecallCandidateRecord extends RecallJsonRecord {
   learningProvenance?: KstarLearningProvenance;
   captureKey?: string;
   captureProvenance?: RecallCaptureProvenance;
-  /** 统一来源标记（2026-09-19 候选归一化）：读取时由 learningProvenance/
+  humanInstructionProvenance?: HumanInstructionProvenance;
+  /** 统一来源标记：读取时由 learningProvenance/
    *  captureKey 前缀/教学信号引用惰性推导，不再靠调用方拿前缀猜——
    *  'kstar'（KStar 沉淀）/ 'teaching'（用户教学）/ 'capture'（复盘·整理·
-   *  capture 等系统提取的统称）；'manual'（「记一条」手动新建，2026-09-28：
+   *  capture 等系统提取的统称）；'manual'（「记一条」手动新建：
    *  保存时显式落盘，读回校验与晋升豁免都靠它识别，不由前缀推导）。 */
-  origin?: 'kstar' | 'teaching' | 'capture' | 'manual';
-  /** 正文规范警示（读时派生、不落盘，2026-09-29）：确认页展示，不拦截写入。 */
+  origin?: 'kstar' | 'teaching' | 'capture' | 'manual' | 'human_instruction';
+  /** 正文规范警示（读时派生、不落盘）：确认页展示，不拦截写入。 */
   statementIssues?: Array<'empty' | 'too_long' | 'session_debris' | 'local_path'>;
   promotedAssetId?: string;
   /** The candidate was user-reviewed and materialized as canonical ontology records. */
@@ -157,9 +160,10 @@ export interface RecallCandidateRecord extends RecallJsonRecord {
   expiresAt: string;
   taskRunId?: string;
   targetAssetId?: string;
-  /** 版本组契约（2026-09-16）：任务实际使用的目标资产版本（KSTAR 改进
+  /** 版本组契约：任务实际使用的目标资产版本（KSTAR 改进
    *  提案锚定用）；确认时与资产当前在用版核对，避免改错对象。 */
   targetVersionUsed?: string;
+  formationComparison?: FormationComparison;
   /** Automatic semantic deduplication provenance. These links are audit hints,
    *  not lifecycle states: the candidate still ends in a normal state. */
   mergedInto?: string;
@@ -195,12 +199,13 @@ export interface RecallAbilityAssetRecord extends RecallJsonRecord {
   reviewDecisionId: string;
   /** Host-issued continuation proof; no candidate/model/IPC input accepts it. */
   standingPreferenceAuthority?: import('./standing-preference-authority').StandingPreferenceAuthority;
+  userEditDecision?: import('../cognition/edit-decision').CognitionEditDecision;
   type: AbilityAssetType;
   contentCategory?: StoredCognitionContentCategory;
   title: string;
   statement: string;
   evidenceRefs: CognitionSourceRef[];
-  /** 手动新建资产的空证据豁免标记（「记一条」晋升时从候选透传，2026-09-28）。 */
+  /** 手动新建资产的空证据豁免标记（「记一条」晋升时从候选透传）。 */
   origin?: 'manual';
   learningSignal?: KstarLearningSignal;
   learningProvenance?: KstarLearningProvenance;
@@ -208,10 +213,10 @@ export interface RecallAbilityAssetRecord extends RecallJsonRecord {
   causalRule?: CausalRule;
   ontologyRefs?: AbilityAssetOntologyRef[];
   relations?: AbilityAssetRelation[];
-  /** 大类名（2026-09-22 族可命名）：挂族时继承族内已有名，用户可改
+  /** 大类名：挂族时继承族内已有名，用户可改
    *  （recall.families.rename 批量写族内全部成员）；元数据，不 bump 内容版本。 */
   familyName?: string;
-  /** 主题标签（specs/012 US-201，data-model.md §3）：标签名数组，指向标签库
+  /** 主题标签：标签名数组，指向标签库
    *  `ability-tags` 条目的 `name`（按名引用，不是 id）。
    *  规则（写入侧收口于 ability-tag-service 的规范化唯一处，读侧不再校验）：
    *  - 缺失 与 [] 都表示「未分类」（与 familyName/scopePolicy 的三态纪律故意不同）；
@@ -226,10 +231,7 @@ export interface RecallAbilityAssetRecord extends RecallJsonRecord {
   forbiddenWhen?: string[];
   /** 缺失=没分过级，不等于 L0。 */
   sensitivity?: AbilityAssetSensitivity;
-  /** 用户显式确认过「这条可以跨作用域使用」的时间。
-   *
-   *  规范 10.2 里跨作用域是 confirm 档——既然规范要求「确认」，系统就得有地方
-   *  记下确认发生过，否则那一档永远停在等待里。缺失=没确认过，不是拒绝过。 */
+  /** 用户显式确认允许跨作用域使用的时间；缺失表示未确认，不表示拒绝。 */
   crossScopeConfirmedAt?: string;
   scope: string;
   scopePolicy?: RecallAbilityAssetScopePolicy;
@@ -250,11 +252,11 @@ export interface RecallAbilityAssetRecord extends RecallJsonRecord {
   deletedAt?: string;
   purgedAt?: string;
   version: string;
-  /** 在用版本指针（2026-09-16 版本组）：缺省=跟随最新（version）；
+  /** 在用版本指针：缺省=跟随最新（version）；
    *  selectAbilityAssetVersion 切换后指向所选历史版本；后续内容更新
    *  bump 时重置为最新版。注入默认取该版本的内容快照。 */
   activeVersion?: string;
-  /** 归并去向（2026-09-16 存量治理）：本条已并入某条目后记录其 id；
+  /** 归并去向：本条已并入某条目后记录其 id；
    *  本条随之归档，历史引用不回写。 */
   mergedIntoAssetId?: string;
   /** 空间归属：资产由某空间的候选确认而来（随 recall 全局存储，不随空间删）。 */
@@ -289,20 +291,22 @@ export interface SaveRecallCandidateInput {
   expiresAt?: string;
   taskRunId?: string;
   targetAssetId?: string;
-  /** 版本组契约（2026-09-16）：任务实际使用的目标资产版本（KSTAR 改进
+  /** 版本组契约：任务实际使用的目标资产版本（KSTAR 改进
    *  提案锚定用）；确认时与资产当前在用版核对，避免改错对象。 */
   targetVersionUsed?: string;
+  formationComparison?: FormationComparison;
   learningSignal?: KstarLearningSignal;
   learningProvenance?: KstarLearningProvenance;
   captureKey?: string;
   captureProvenance?: RecallCaptureProvenance;
-  /** 「记一条」手动新建标记（2026-09-28 拍板项豁免）：手动候选没有对话
+  humanInstructionProvenance?: HumanInstructionProvenance;
+  /** 「记一条」手动新建标记：手动候选没有对话
    *  来源，sourceRefs 只能为空——证据闸防的是自动提炼线编造来源，对用户
    *  亲自输入不适用；manual=true 时跳过"空证据落 weak_observation"判定、
    *  直接 pending_review，读回与晋升的同款放行靠落盘的 origin='manual'
    *  识别。自动线（capture/teaching/KStar）行为零变化。 */
   manual?: boolean;
-  /** 忠实搬运豁免（2026-09-29 入池正文闸门）：文本是用户亲写或历史原文
+  /** 忠实搬运豁免：文本是用户亲写或历史原文
    *  （对话中当场记 / 旧记忆迁移 / 旧本体导入），跳过机器改写——调用方
    *  显式声明；机器生成线不声明，默认过闸。manual（记一条）天然豁免。 */
   rawStatement?: boolean;
@@ -310,9 +314,8 @@ export interface SaveRecallCandidateInput {
   spaceId?: string;
   /** 需原样保留到正式资产的读取范围限制。 */
   scopePolicy?: RecallAbilityAssetScopePolicy;
-  /** 规则类候选的适用/禁止范围。PRD 3.1 把它们列为 RuleAsset 的最低准入门槛，
-   *  所以必须在候选阶段就带着走——否则自动线永远拿不出边界，规则也就永远
-   *  晋升不了。缺失 = 没提出过，**不是**「无限制」。 */
+  /** 规则候选的适用/禁止范围须从候选阶段保留到晋升校验。
+   * 缺失表示没有提出边界，不表示无限制。 */
   applicableWhen?: string[];
   forbiddenWhen?: string[];
   /** Internal extraction gate: preserve evidence without creating user review work. */
@@ -336,12 +339,12 @@ export interface RecallCandidatePromotionResult {
   receipt: RecallAssetHandoffReceipt;
   /** Projection is best-effort and only present for Personal assets. */
   profileProjection?: PersonalProfileSyncResult;
-  /** 版本重检口径（specs/015 D6/D7）：本次确认**没能**核对"改进对象版本"
+  /** 版本重检口径：本次确认**没能**核对"改进对象版本"
    *  ——存量候选没有 `targetVersionUsed` 可核对。缺省不出现（=核对过，或
    *  本来就是新建型，没有可核对的版本）。渲染层据此如实提示"无法核对改进
    *  对象"，而不是假装核对过。 */
   versionCheckSkipped?: true;
-  /** 显式重锚的留痕（`contracts/ipc.md` §二「实现期补充」）：本次确认把比对
+  /** 显式重锚的留痕：本次确认把比对
    *  基线从候选原锚（= 这个字段的值，即原 `targetVersionUsed`）换到了用户看
    *  过差异后的当前在用版。只在**确实换了**（原锚存在且与传入的
    *  `confirmBaselineVersion` 不同）且这次确认**已生效**时出现——冲突路径
@@ -376,7 +379,7 @@ async function confirmRecallOntologyCandidateWithGrant(userId: string, candidate
     if (preliminary.proposalTarget !== 'ontology') throw new Error('candidate is not an ontology-only proposal');
     if (preliminary.status === 'integrated' && preliminary.ontologyHandoff) return { candidate: preliminary, ontologyHandoff: preliminary.ontologyHandoff };
     if (isTerminalCandidate(preliminary.status)) throw new RecallCandidateStateError(RECALL_CANDIDATE_TERMINAL_ERROR_CODE, 'candidate is terminal', preliminary.status);
-    await verifyCaptureProvenanceForPromotion(userId, preliminary);
+    await verifyCandidateFormationForPromotion(userId, preliminary);
     if (!preliminary.value.trim() || !preliminary.suggestedScope.trim() || !preliminary.summary.trim())
       throw new Error('ontology proposal explanation, future use and scope are required');
     if (!preliminary.ontologyFormation) throw new Error('ontology plan is missing');
@@ -384,7 +387,7 @@ async function confirmRecallOntologyCandidateWithGrant(userId: string, candidate
       if (!raw) throw new Error('candidate is unavailable');
       const candidate = asCandidate(raw);
       if (!isDeepStrictEqual(candidate, preliminary)) throw new Error('candidate changed; review the current proposal');
-      await verifyCaptureProvenanceForPromotion(userId, candidate);
+      await verifyCandidateFormationForPromotion(userId, candidate);
       if (Date.parse(candidate.expiresAt) <= Date.now()) throw new Error('candidate expired');
       if (candidate.uncertainty?.trim()) throw recallCandidateError('ontology_meaning_unresolved', 'ontology proposal has unresolved meaning');
       if (candidate.risk === 'high' && !options.riskAcknowledged) throw new Error('high-risk ontology changes require individual acknowledgment');
@@ -409,9 +412,9 @@ async function confirmRecallOntologyCandidateWithGrant(userId: string, candidate
   });
 }
 
-/** 版本重检不一致的结构化冲突（specs/015 D6~D9）。
+/** 版本重检不一致的结构化冲突。
  *
- *  字段名与 specs/008 的 `asset-approval-service.ts` 的 `versionConflict`
+ *  字段名与 `asset-approval-service.ts` 的 `versionConflict`
  *  逐字一致（`baselineVersion` / `currentVersion`），只多一个本链路的
  *  `targetVersionUsed`（= 候选锚定的版本，渲染层要能说清"拿哪一版比"）。
  *
@@ -430,7 +433,7 @@ export interface RecallCandidateVersionConflict {
 export const RECALL_CANDIDATE_VERSION_CONFLICT_CODE = 'recall_candidate_version_conflict';
 
 /** 版本重检冲突（抛出型）：候选**不落终态**、资产零改动，由 IPC 层转成
- *  `contracts/ipc.md` §二 的返回体。 */
+ *  结构化冲突返回体。 */
 export class RecallCandidateVersionConflictError extends Error {
   readonly code = RECALL_CANDIDATE_VERSION_CONFLICT_CODE;
   readonly versionConflict: RecallCandidateVersionConflict;
@@ -456,8 +459,7 @@ export function recallCandidateVersionConflictOf(error: unknown): RecallCandidat
   };
 }
 
-/** 版本重检的传参口径（specs/015 D6/D7；显式重锚见 `contracts/ipc.md` §二
- *  「实现期补充」）：
+/** 版本重检与显式重锚的传参约束：
  *  - 只有**更新型**候选（`update` / `limit_scope`）有"改进对象版本"可核对；
  *  - 默认比 `targetVersionUsed`（候选生成时的锚，是可核对面本身，不被改写）；
  *  - 传了 `confirmBaselineVersion`（用户看过"对当前版差异"后确认）时以它为准：
@@ -488,7 +490,7 @@ function candidateVersionRecheckPlan(
 
 /** 把 `updateAbilityAsset` 抛出的版本冲突转成结构化冲突；其它错误返回 undefined。
  *  冲突文案由 `asset-service` 单点产生，这里只读同一个事实（解析方式与
- *  specs/008 的 `asset-approval-service.ts` 同款），不另算一遍。
+ *  `asset-approval-service.ts` 相同），不另算一遍。
  *
  *  `expectedVersion` = 本次实际送去比对的版本（没有比对面就不可能产生结构化
  *  冲突）；`baselineVersion` = 报告给渲染层的"候选基于的版本"（= 候选原锚）。
@@ -508,7 +510,7 @@ function abilityAssetVersionConflict(
   return { baselineVersion: baseline, currentVersion, targetVersionUsed: baseline };
 }
 
-/** 重锚留痕（`contracts/ipc.md` §二「实现期补充」）：显式把候选的比对基线换到
+/** 重锚留痕：显式把候选的比对基线换到
  *  当前在用版时，候选审查决定账本必须留下原锚——重锚可以生效，但不许静默改
  *  基线，用户和审计都要能看出"这条资产从哪一版开始被改"。
  *
@@ -547,7 +549,7 @@ export type RecallPromotionProvenance = 'capture' | 'kstar';
 export interface PromoteRecallCandidateOptions extends AbilityAssetSemantics {
   /** 评审决定的 actor：只有人与自动线两种。资产管家的 AI 工具**不能**晋升候选
    *  ——记忆的出生必须来自人确认或自动抽取线，所以这里不接受 'ai'
-   *  （与 ReviewDecisionActor 同域，specs/008 未开这个口子）。 */
+   *  （与 ReviewDecisionActor 使用同一角色域）。 */
   actor?: ReviewDecisionActor;
   /** 仅在 actor === 'system' 时有意义；缺省按会话自动抽取线处理。 */
   provenance?: RecallPromotionProvenance;
@@ -557,15 +559,14 @@ export interface PromoteRecallCandidateOptions extends AbilityAssetSemantics {
   decisionId?: string;
   decisionReason?: string;
   riskAcknowledged?: boolean;
-  /** 版本组防分裂（2026-09-16）：用户在相似资产提示后明确选择"仍保存为新
+  /** 版本组防分裂：用户在相似资产提示后明确选择"仍保存为新
    *  条目"时置 true，跳过相似闸门。 */
   forceCreateSimilar?: boolean;
   /** R-Box causal rule; only activated when explicitly supplied by the user. */
   causalRule?: CausalRule;
   /** Optional explicit personal-template destination selected during review. */
   profileTarget?: PersonalProfileTarget;
-  /** 版本冲突后的**显式重锚**（specs/015 US-702，`contracts/ipc.md` §二
-   *  「实现期补充」）：调用方声明"我已看过候选判断**对版本 X 的差异**，按它
+  /** 版本冲突后的**显式重锚**：调用方声明"我已看过候选判断**对版本 X 的差异**，按它
    *  重新确认"。与 `targetVersionUsed`（候选生成时冻下的锚，只读）不同，这个
    *  值来自用户看过差异之后，代表他这次认可哪一版。
    *
@@ -693,16 +694,10 @@ function fallbackCandidateTitle(judgment: string): string {
   return makeDisplayTitle(judgment, /\p{Script=Han}/u.test(judgment) ? 16 : 60);
 }
 
-/**
- * 晋升线标题兜底（设计《认知资产-四病整改设计-20260928》3.2 六路径配套）：
- * 保留「summary 优先」的原有逻辑；summary 缺失（旧记录/直写数据）或对**将落盘
- * 的最终正文**不合规（首字与正文重复/超长/标点结尾——fallbackCandidateTitle
- * ＝正文首句截断，天然命中前缀重复）时，晋升链调 `suggestAbilityAssetTitle`
- * 让模型起一个过 3.1 判定的合规标题。老的 `judgment.slice(0, 120)` 机器截断
- * 兜底已删——机器编标题正是四病整改要堵的写入形态。模型不可用或多次输出
- * 不合规按设计口径**明示失败**（不静默降级），失败原样上抛，晋升不落半成品。
- * 动态 import 避免 candidate-service ↔ 模型链的静态环。
- */
+/** 晋升优先使用合规 summary；缺失或不符合最终正文的标题规则时，
+ * 调用 suggestAbilityAssetTitle 生成并校验标题。模型不可用或输出仍不合规
+ * 则明确失败，不截取正文替代标题，也不落盘半成品。
+ * 动态 import 避免候选服务与模型链形成静态循环依赖。 */
 async function resolvePromotionAssetTitle(
   userId: string,
   input: { preferredTitle: string; statement: string; type: AbilityAssetType; reviewedTitle?: boolean },
@@ -939,6 +934,8 @@ function asCandidate(value: RecallJsonRecord): RecallCandidateRecord {
   const scopePolicy = normalizeAbilityAssetScopePolicy(value.scopePolicy);
   const ontologyHandoff = normalizeOntologyHandoff(value.ontologyHandoff);
   const captureProvenance = normalizeCaptureProvenance(value.captureProvenance);
+  const humanInstructionProvenance = normalizeHumanInstructionProvenance(value.humanInstructionProvenance);
+  if (captureProvenance && humanInstructionProvenance) throw new Error('ambiguous candidate formation origin');
   if ((status === 'integrated') !== (ontologyHandoff?.status === 'integrated')
     || (ontologyHandoff?.status === 'in_progress' && isTerminalCandidate(status))) {
     throw new Error('malformed recall candidate ontology handoff state');
@@ -986,12 +983,10 @@ function asCandidate(value: RecallJsonRecord): RecallCandidateRecord {
     ...(scopePolicy ? { scopePolicy } : {}),
     ...(ontologyHandoff ? { ontologyHandoff } : {}),
     ...(captureProvenance ? { captureProvenance } : {}),
+    ...(humanInstructionProvenance ? { humanInstructionProvenance } : {}),
     ...(origin ? { origin } : {}),
-    // 正文规范警示（2026-09-29）：读时派生、不落盘——只给人看与治理轮圈选，
-    // 不拦截写入（正文是知识本体，把关权在人，设计定稿）。无条件权威覆盖：
-    // 盘上若残留旧写路径落下的陈旧 statementIssues，fresh 为空时会经上方
-    // 展开外泄（用户改正文后警示不消失），显式置 undefined 使读侧始终等于
-    // 即时派生值。
+    // 读时重新派生正文警示，不落盘、不拦截写入。
+    // 显式覆盖旧 statementIssues，保证正文更改后陈旧警示能够清除。
     ...(recallStatementIssues({ statement: value.judgment, type: value.suggestedType }).length
       ? { statementIssues: recallStatementIssues({ statement: value.judgment, type: value.suggestedType }) }
       : { statementIssues: undefined }),
@@ -1004,7 +999,8 @@ function asCandidate(value: RecallJsonRecord): RecallCandidateRecord {
 function deriveCandidateOrigin(
   value: RecallJsonRecord,
   hasLearningProvenance: boolean,
-): 'kstar' | 'teaching' | 'capture' | 'manual' | undefined {
+): 'kstar' | 'teaching' | 'capture' | 'manual' | 'human_instruction' | undefined {
+  if (value.humanInstructionProvenance) return 'human_instruction';
   // 手动标记优先于一切前缀推导：「记一条」候选落盘即带 origin='manual'，
   // 读回时保住它（否则会被兜底推成 'capture'），豁免链全靠这个识别。
   if ((value as { origin?: unknown }).origin === 'manual') return 'manual';
@@ -1125,7 +1121,7 @@ export async function alignUpdateCandidateType(
   }
 }
 
-function candidateIdForCaptureKey(captureKey: string): string {
+export function candidateIdForCaptureKey(captureKey: string): string {
   return `cand-${createHash('sha256').update(captureKey).digest('hex').slice(0, 24)}`;
 }
 
@@ -1175,7 +1171,7 @@ export async function listRecallCandidates(userId: string): Promise<RecallCandid
   return candidates.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
-/** 一次性退役迁移（2026-10-02）：用户侧「稍后处理」删除后，把**用户点出来**
+/** 一次性退役迁移：用户侧「稍后处理」删除后，把**用户点出来**
  * deferred 候选（无语义复核标记）迁回 pending_review——不留一批永远隐身的
  * 存量；语义复核保留的（failureCode=semantic_review_flagged）是系统专用态，
  * 原样保留在候选列表等用户确认/拒绝。marker 模式与内容迁移同款，可安全重跑。 */
@@ -1278,10 +1274,10 @@ export async function saveRecallCandidate(userId: string, input: SaveRecallCandi
   if (input.manual === true || input.learningSignal !== undefined || input.learningProvenance !== undefined) {
     throw new Error('retired candidate producer cannot create a nightly suggestion');
   }
-  await verifyCaptureProvenanceForWrite(userId, input.captureProvenance, normalizeCognitionSourceRefsForWrite(input.sourceRefs));
-  // 入池正文闸门（2026-09-29 根治冗长正文）：机器生成线的不合规正文先经
-  // suggestAbilityAssetStatement 改写（见 candidate-statement-gate.ts 头注）。
-  // 必须在文件锁外——改写是 LLM 调用，锁内跑模型会阻塞整池写入。
+  if (input.humanInstructionProvenance) await verifyHumanInstructionCandidate(userId, input, { newWrite: true });
+  else await verifyCaptureProvenanceForWrite(userId, input.captureProvenance, normalizeCognitionSourceRefsForWrite(input.sourceRefs));
+  // 机器生成的正文先经 candidate-statement-gate 规范化。
+  // 模型调用必须在文件锁外，避免阻塞候选池写入。
   const gatedJudgment = await gateCandidateStatement(userId, {
     judgment: input.judgment,
     suggestedType: requireAssetType(input.suggestedType),
@@ -1301,8 +1297,7 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
   if (input.proposalTarget === 'ontology' && (!input.ontologyFormation || (!input.ontologyFormation.actions.length && !input.ontologyFormation.blockedReasons.length) || input.targetAssetId
     || input.targetVersionUsed || input.ontologyFormation.refs.some(ref => ref.sharedBody))) throw new Error('invalid ontology-only suggestion');
   const judgment = boundedText(input.judgment, 'judgment', 4_000, true, true)!;
-  // value 上限与 judgment 对齐（2026-09-19）：value 缺省兜底改为 judgment 全文，
-  // 1000 上限会把长 judgment 挡在门外（forecast-commit 实测抓出）。
+  // value 缺省取 judgment 全文，因此两者使用相同的长度上限。
   const value = boundedText(input.value, 'value', 4_000, false, true);
   const evidenceSummary = boundedText(input.evidenceSummary, 'evidence summary', 4_000);
   const summary = boundedText(input.summary, 'summary', 1_000) || fallbackCandidateTitle(judgment);
@@ -1313,7 +1308,9 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
   const evidenceRefs = normalizeCognitionSourceRefsForWrite(input.evidenceRefs || input.sourceRefs);
   const contentCategory = input.contentCategory === undefined ? undefined : requireContentCategory(input.contentCategory);
   const suggestedType = requireAssetType(input.suggestedType);
-  const captureProvenance = await verifyCaptureProvenanceForWrite(userId, input.captureProvenance, sourceRefs);
+  const humanInstructionProvenance = input.humanInstructionProvenance
+    ? await verifyHumanInstructionCandidate(userId, input, { newWrite: true }) : undefined;
+  const captureProvenance = humanInstructionProvenance ? undefined : await verifyCaptureProvenanceForWrite(userId, input.captureProvenance, sourceRefs);
   const hasExplicitValue = Object.prototype.hasOwnProperty.call(input, 'value');
   const hasExplicitAction = Object.prototype.hasOwnProperty.call(input, 'suggestedAction');
   const suggestedAction = requireCandidateAction(input.suggestedAction);
@@ -1331,20 +1328,21 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
     learningSignal ? JSON.stringify(learningSignal) : undefined,
     learningProvenance ? JSON.stringify(learningProvenance) : undefined,
     captureProvenance ? JSON.stringify(captureProvenance) : undefined,
+    input.formationComparison ? JSON.stringify(input.formationComparison) : undefined,
   ]);
   const captureKey = input.captureKey === undefined
     ? undefined
     : boundedText(input.captureKey, 'capture key', 160, true);
-  const persistedOrigin = 'capture' as const; // Every new suggestion has verified nightly extraction evidence.
+  const persistedOrigin = humanInstructionProvenance ? 'human_instruction' as const : 'capture' as const;
   if (captureKey && !safeId(captureKey)) throw new Error('invalid capture key');
+  if (humanInstructionProvenance && (!captureKey || candidateIdForCaptureKey(captureKey) !== humanInstructionProvenance.candidateId)) throw new Error('human creation candidate identity mismatch');
   if (captureKey) {
     const captured = (await listRecallCandidates(userId)).find((candidate) => candidate.captureKey === captureKey);
     if (captured) return captured;
   }
   const now = new Date().toISOString();
-  // value 缺省兜底用 judgment（正文）而不是 summary（标题）：标题残片拼进
-  // 资产正文是实测过的污染（"可复用经验：数据的文档…"），而 value=judgment
-  // 会被 promote 的防重检查挡掉，不进 statement——调用方从此不必被迫双存。
+  // value 缺省取正文 judgment，不把标题 summary 拼入资产正文。
+  // promote 会去掉与 judgment 重复的 value，调用方无需存两份正文。
   const resolvedValue = hasExplicitValue ? (value || '') : judgment;
   const expiresAt = requireIsoTimestamp(input.expiresAt, 'candidate expiry', new Date(Date.parse(now) + DEFAULT_CANDIDATE_TTL_MS).toISOString());
   const taskRunId = input.taskRunId === undefined ? undefined : boundedText(input.taskRunId, 'task run id', 160, true);
@@ -1352,9 +1350,8 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
   const targetAssetId = input.targetAssetId === undefined ? undefined : boundedText(input.targetAssetId, 'target asset id', 160, true);
   if (targetAssetId && !safeId(targetAssetId)) throw new Error('invalid target asset id');
   const targetVersionUsed = input.targetVersionUsed === undefined ? undefined : boundedText(input.targetVersionUsed, 'target version used', 16, true);
-  // 规则候选的适用/禁止范围：抽取阶段就带着走，否则自动线永远给不出边界，
-  // 而 PRD 3.1 把边界列为 RuleAsset 的最低准入门槛，规则就再也晋升不了。
-  // 走和资产同一套归一化，并过一遍敏感内容闸（这是自由文本）。
+  const formationComparison = input.formationComparison ? { ...formationComparisonSchema.parse(Object.fromEntries(Object.entries(input.formationComparison).filter(([key]) => key !== 'coverage'))), coverage: input.formationComparison.coverage } : undefined;
+  // 提取阶段保留规则候选的适用/禁止范围，使用与资产相同的规范化和敏感内容校验。
   const candidateBoundaries = readAbilityAssetSemantics({
     ...(input.applicableWhen ? { applicableWhen: input.applicableWhen } : {}),
     ...(input.forbiddenWhen ? { forbiddenWhen: input.forbiddenWhen } : {}),
@@ -1376,6 +1373,7 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
     && Boolean(suggestedScope) && (hasExplicitAction || !hasExplicitValue)
     && (!candidateActionNeedsTarget(suggestedAction) || Boolean(targetAssetId));
   const existing = (await listRecallCandidates(userId)).find((candidate) => {
+    if (humanInstructionProvenance) return false; // Only its exact captureKey may resume a reviewed human creation.
     // Retired manual/teaching waits must not absorb a freshly completed nightly suggestion.
     if (captureProvenance && !isTerminalCandidate(candidate.status)
       && (candidate.origin !== 'capture' || candidate.captureProvenance?.captureId !== captureProvenance.captureId)) return false;
@@ -1458,7 +1456,8 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
     ...(learningProvenance ? { learningProvenance } : {}),
     ...(captureKey ? { captureKey } : {}),
     ...(captureProvenance ? { captureProvenance } : {}),
-    // 写入侧显式落 origin（2026-09-19 归一化第二步）：新记录落盘即带统一
+    ...(humanInstructionProvenance ? { humanInstructionProvenance } : {}),
+    // 写入侧显式落 origin：新记录落盘即带统一
     // 来源标记，读时推导只服务旧记录；与推导规则同源（provenance > 前缀 >
     // 教学引用 > capture），两处规则由 deriveCandidateOrigin 单点维护。
     ...(persistedOrigin ? { origin: persistedOrigin } : {}),
@@ -1467,6 +1466,7 @@ async function saveRecallCandidateUnlocked(userId: string, input: SaveRecallCand
     ...(taskRunId ? { taskRunId } : {}),
     ...(targetAssetId ? { targetAssetId } : {}),
     ...(targetVersionUsed ? { targetVersionUsed } : {}),
+    ...(formationComparison ? { formationComparison } : {}),
     expiresAt,
     createdAt: now,
     updatedAt: now,
@@ -1568,8 +1568,7 @@ async function assertCandidateHasNoAppliedHandoff(userId: string, candidate: Rec
 
 export async function updateRecallCandidate(userId: string, candidateId: string, input: SaveRecallCandidateInput): Promise<RecallCandidateRecord> {
   const judgment = boundedText(input.judgment, 'judgment', 4_000, true, true)!;
-  // value 上限与 judgment 对齐（2026-09-19）：value 缺省兜底改为 judgment 全文，
-  // 1000 上限会把长 judgment 挡在门外（forecast-commit 实测抓出）。
+  // value 缺省取 judgment 全文，因此两者使用相同的长度上限。
   const value = boundedText(input.value, 'value', 4_000, false, true);
   const summary = boundedText(input.summary, 'summary', 1_000) || fallbackCandidateTitle(judgment);
   const uncertainty = boundedText(input.uncertainty, 'uncertainty', 1_000);
@@ -1692,6 +1691,12 @@ export async function updateRecallCandidate(userId: string, candidateId: string,
     return {
       ...current,
       ...(ontologyFormation ? { ontologyFormation } : {}),
+      ...(current.judgment !== judgment || current.suggestedScope !== suggestedScope || current.targetAssetId !== targetAssetId
+        || current.suggestedAction !== suggestedAction || !isDeepStrictEqual(current.scopePolicy, scopePolicy)
+        || !isDeepStrictEqual(current.evidenceRefs, evidenceRefs) || !isDeepStrictEqual(current.sourceRefs, sourceRefs)
+        || input.applicableWhen !== undefined && !isDeepStrictEqual(current.applicableWhen, candidateBoundaries.applicableWhen)
+        || input.forbiddenWhen !== undefined && !isDeepStrictEqual(current.forbiddenWhen, candidateBoundaries.forbiddenWhen)
+        ? { formationComparison: undefined } : {}),
       contentFormatVersion: 1,
       judgment,
       value: resolvedValue,
@@ -1888,7 +1893,7 @@ async function decideWithoutAsset(
   actor: ReviewDecisionActor = 'user',
 ): Promise<RecallCandidateRecord> {
   const decisionNote = boundedText(note, 'decision note', 1_000);
-  // 账本是否已落（P-r2-6）：writeReviewDecision 在 updater 内执行，主档写失败
+  // 账本是否已落：writeReviewDecision 在 updater 内执行，主档写失败
   // 时据它区分「账本已落、候选仍 pending」的半提交（需补偿）与 updater 早退
   // （账本未落，无需补偿）。
   let ledgerWritten = false;
@@ -1928,7 +1933,7 @@ async function decideWithoutAsset(
       };
     });
   } catch (error) {
-    // 半提交补偿（P-r2-6）：账本已落、主档写失败时，候选不能留在 pending——
+    // 半提交补偿：账本已落、主档写失败时，候选不能留在 pending——
     // 「已处理历史」里有这条决定而待办里它还躺着，两边口径矛盾。补偿把候选
     // 标 failed（可重试口径：重新决定会走新的幂等键再记账），补偿本身失败只
     // warn（原错误优先上抛，不吞不换）。账本未落（updater 早退/复核拒绝）时
@@ -2047,7 +2052,7 @@ export async function batchPromoteRecallCandidates(
     try {
       const candidate = await readRecallCandidate(userId, candidateId);
       // 用户批量晋升的准入 = 用户侧 capability，不是 pending_review 单点。
-      // 只认 pending_review 会让实机上占多数的 weak_observation 全部落空。
+      // 仅按 pending_review 判断会漏掉具有晋升能力的 weak_observation。
       if (!getRecallCandidateCapabilities(candidate).canPromote) {
         failed.push({ candidateId, error: RECALL_CANDIDATE_NOT_PROMOTABLE_ERROR_CODE });
         continue;
@@ -2163,8 +2168,7 @@ function asStoredHandoffReceipt(
     || typeof value.createdAt !== 'string'
   ) throw new Error('malformed recall asset handoff receipt');
   const sourceRefs = normalizeCognitionSourceRefs(value.sourceRefs);
-  // 空 sourceRefs 的回执只可能来自手动候选（「记一条」豁免，2026-09-28）：
-  // 该豁免之前空证据根本晋升不到这一步，不存在历史脏数据需要拦截。
+  // 手动候选允许没有对话来源，交接回执也保留空 sourceRefs。
   return {
     ...value,
     candidateId,
@@ -2372,12 +2376,16 @@ async function promoteRecallCandidateWithGrant(
     return recovered;
   }
   const preflight = await readRecallCandidate(userId, candidateId);
+  if (preflight.humanInstructionProvenance && (options.actor !== 'user' || options.forceCreateSimilar || options.confirmBaselineVersion
+    || options.decisionType || options.ontologyRefs || options.scopePolicy || options.causalRule || options.profileTarget
+    || Object.keys(optionSemantics).length || Object.keys(relationContract).length))
+    throw new Error('human creation confirmation cannot override its reviewed contract');
   if (preflight.proposalTarget === 'ontology') throw new Error('ontology-only proposal must be confirmed into ontology');
   if (isTerminalCandidate(preflight.status) && preflight.status !== 'confirmed') {
     throw new RecallCandidateStateError(RECALL_CANDIDATE_TERMINAL_ERROR_CODE, 'recall candidate is terminal', preflight.status);
   }
   try {
-    await verifyCaptureProvenanceForPromotion(userId, preflight);
+    await verifyCandidateFormationForPromotion(userId, preflight);
   } catch (error) {
     if (error instanceof CaptureFormationSourceUnavailableError) {
       await updateRecallJsonRecord(userId, 'candidates', candidateId, async current => {
@@ -2386,7 +2394,7 @@ async function promoteRecallCandidateWithGrant(
         if (isTerminalCandidate(latest.status) || latest.ontologyHandoff?.status === 'in_progress') return latest;
         // Recheck the current refs while locked: an edit may have removed the
         // revoked supplementary source since preflight read it.
-        try { await verifyCaptureProvenanceForPromotion(userId, latest); return latest; }
+        try { await verifyCandidateFormationForPromotion(userId, latest); return latest; }
         catch (latestError) { if (!(latestError instanceof CaptureFormationSourceUnavailableError)) return latest; }
         const now = new Date().toISOString();
         return { ...latest, status: 'failed', failureCode: 'source_unavailable',
@@ -2401,7 +2409,7 @@ async function promoteRecallCandidateWithGrant(
       || Object.keys(optionSemantics).length || Object.keys(relationContract).length) throw new PromotionPausedError('automatic_confirmation_cannot_override_candidate');
     await requireNightlyAutomaticApproval(userId, preflight);
   }
-  // 版本组防分裂闸门（2026-09-16）：用户确认 create 候选时若与现有资产语义
+  // 版本组防分裂闸门：用户确认 create 候选时若与现有资产语义
   // 高度相似，先问一句（专用错误码）——前端提示"新条目还是改为更新"，确认
   // 新条目后带 forceCreateSimilar 重试。带 update 目标/自动线不经过这里；
   // embedding 不可用（degraded）时放行（不能因查重基础设施缺席卡用户）。
@@ -2470,23 +2478,12 @@ async function promoteRecallCandidateWithGrant(
     ? preflight.scopePolicy
     : normalizeAbilityAssetScopePolicy(options.scopePolicy);
 
-  // 统一晋升闸门（PRD 3.1 四类最低准入门槛）。晋升入口不止一个——会话线、
-  // KStar 线、用户确认、失败重试都能走到这里，所以校验必须钉在这一处，
-  // 而不是只在抽取管线里做一次。
-  //
-  // P-r1-78 池级互斥（原则 5 锁内复核，照 :1316 saveRecallCandidate 的
-  // candidate-locks/save 池锁先例）：冲突扫描与晋升提交必须在同一把**池级**锁内
-  // 原子完成。各候选只持自己的记录锁——扫描若在锁外，两条同文本不同类型的
-  // failed 候选并发重试（failed 在排除表里，互相看不见对方）可以双双穿过
-  // 冲突门再各自落 confirmed。锁内用新鲜读复核，保证扫的就是将要提交的状态。
+  // 所有晋升入口共用此门控。冲突扫描与晋升提交必须在同一候选池锁内完成，
+  // 并以锁内新鲜读取复核，避免不同候选并发穿过相同内容的冲突门。
   const promotePoolLock = fileEditLock(recallJsonRecordPath(userId, 'candidate-locks', 'promote'));
 
-  // P-r2-17 标题 LLM 外移锁外：晋升 updater 此前全程持记录锁调
-  // resolvePromotionAssetTitle（summary 不合规时走 LLM 起标题，秒级）。标题的
-  // 输入在锁外就齐了（preflight 正文 / 目标资产正文），先在**所有锁之外**把
-  // 标题与它所依据的正文一并算好；锁内只在「正文与预计算依据一致」时直接
-  // 沿用预计算标题（与原实现同样信任起标题链自身的合规约束），锁外锁内之间
-  // 正文被并发改过的罕见竞态下才退回锁内重算——「标题必合规」的口径不变。
+  // 标题和其最终正文依据先在所有锁外预计算，避免通常路径持锁调用模型。
+  // 锁内正文未变则复用标题；发生并发正文变化时才按新正文重新生成。
   const preflightTarget = preflight.targetAssetId && candidateActionNeedsTarget(preflight.suggestedAction)
     ? await readAbilityAsset(userId, preflight.targetAssetId)
     : undefined;
@@ -2500,7 +2497,7 @@ async function promoteRecallCandidateWithGrant(
       preferredTitle: preflight.summary || '',
       statement: plannedCreateStatement,
       type: preflight.suggestedType,
-        reviewedTitle: options.actor !== 'system' && (preflight.origin === 'manual' || Boolean(preflight.userModifiedAt)),
+        reviewedTitle: options.actor !== 'system' && (preflight.origin === 'manual' || preflight.origin === 'human_instruction' || Boolean(preflight.userModifiedAt)),
     })
     : undefined;
   let plannedUpdate: { statement: string; title: string } | undefined;
@@ -2512,16 +2509,16 @@ async function promoteRecallCandidateWithGrant(
         preferredTitle: preflight.summary || '',
         statement: plannedUpdateStatement,
         type: preflight.suggestedType,
-        reviewedTitle: options.actor !== 'system' && (preflight.origin === 'manual' || Boolean(preflight.userModifiedAt)),
+        reviewedTitle: options.actor !== 'system' && (preflight.origin === 'manual' || preflight.origin === 'human_instruction' || Boolean(preflight.userModifiedAt)),
       }),
     };
   }
 
   let decision: ReviewDecision | undefined;
   let receipt: RecallAssetHandoffReceipt | undefined;
-  // 本次确认有没有核对到"改进对象版本"（specs/015 T021）：随结果回给渲染层。
+  // 本次确认有没有核对到"改进对象版本"：随结果回给渲染层。
   let versionCheckSkipped = false;
-  // 显式重锚的原锚（specs/015 US-702 再确认路径）：只有真的换了基线才回传。
+  // 显式重锚的原锚：只有真的换了基线才回传。
   let rebasedFrom: string | undefined;
   let updated: RecallJsonRecord;
   try {
@@ -2576,7 +2573,7 @@ async function promoteRecallCandidateWithGrant(
     if (!current) throw new Error('recall candidate not found');
     const candidate = asCandidate(current);
     if (candidate.status === 'confirmed') throw new Error('confirmed candidate has no recoverable committed asset');
-    await verifyCaptureProvenanceForPromotion(userId, candidate);
+    await verifyCandidateFormationForPromotion(userId, candidate);
     const automaticReview = options.actor === 'system' ? await requireNightlyAutomaticApproval(userId, candidate) : undefined;
     assertCandidateNotInOntologyHandoff(candidate);
     if (isTerminalCandidate(candidate.status)) {
@@ -2620,7 +2617,7 @@ async function promoteRecallCandidateWithGrant(
       mergeSourceRefs(candidate.sourceRefs, candidate.evidenceRefs),
     );
     // 手动候选（「记一条」）没有对话证据：空 evidenceRefs 是它的常态而非
-    // 失败——确认动作本身就是用户输入，无需来源可用性背书（2026-09-28）。
+    // 失败——确认动作本身就是用户输入，无需来源可用性背书。
     if ((unavailableSources.length || !candidate.evidenceRefs.length) && candidate.origin !== 'manual') {
       return {
         ...candidate,
@@ -2699,15 +2696,11 @@ async function promoteRecallCandidateWithGrant(
     if (candidate.suggestedAction === 'create') {
       const sourceSessionIds = sourceSessionIdsFrom(candidate.sourceRefs);
       const assetId = createdAssetId(candidate.id, decision.decision_id);
-      // 正文先行定稿：标题兜底的合规判定与 LLM 起标题都要拿**将落盘的最终
-      // 正文**比对（与收口闸门同一份口径），不能拿候选 judgment 单独判。
-      // 新建路（2026-09-29 正文一等规范）：正文＝judgment 单一来源，value 不再
-      // 硬拼——「知识」与「为什么有用」是异质内容，拼接正是旧正文多行混排的
-      // 形态病根；value 仍是候选层评审辅助字段（确认页展示），不进资产正文。
-      // 更新/融合路（else 分支）维持旧拼装：value 参与融合是 KStar admission
-      // 链核对基线的既有语义，本轮规范只收新建路，不动它。
+      // 标题校验和生成均以将落盘的最终正文为准。
+      // 新建只用 judgment 作为正文；value 是候选评审辅助信息，不拼入新资产。
+      // 更新/融合仍使用 value 参与 KStar admission 的基线核对。
       const createStatement = candidate.judgment.slice(0, 4_000);
-      // P-r2-17：标题已在锁外按 preflight 正文预计算。正文没被并发改过（与
+      // 标题已在锁外按 preflight 正文预计算。正文没被并发改过（与
       // 预计算依据一致）就直接沿用；变了才退回锁内按原口径重算（罕见竞态）。
       const promotionTitle = plannedCreateTitle !== undefined && createStatement === plannedCreateStatement
         ? plannedCreateTitle
@@ -2734,7 +2727,7 @@ async function promoteRecallCandidateWithGrant(
         statement: createStatement,
         evidenceRefs: candidate.evidenceRefs,
         // 手动候选（「记一条」）没有对话证据：资产侧空证据的合法性靠这个
-        // origin 标记识别（asAsset 读回与展示徽章都用它，2026-09-28 拍板项）。
+        // origin 标记识别（asAsset 读回与展示徽章都用它）。
         ...(candidate.origin === 'manual' ? { origin: 'manual' as const } : {}),
         ...(candidate.learningSignal ? { learningSignal: candidate.learningSignal } : {}),
         ...(candidate.learningProvenance ? { learningProvenance: candidate.learningProvenance } : {}),
@@ -2747,17 +2740,15 @@ async function promoteRecallCandidateWithGrant(
         ...(candidate.spaceId ? { spaceId: candidate.spaceId } : {}),
         status: 'active',
         lifecycleStatus: handoffLifecycleStatus,
-        // 2026-10-15 拍板（待拍板①·方案A）：系统线也直接建 bud。seed→usePolicy
-        // never→不注入→无验证回执 的环没有系统侧出口（自动线资产永久死锁）；未验
-        // 证语义由 lifecycleStatus=automatically_extracted_unverified 承担，个人
-        // 事实特权口仍被 lifecycleStatus 闸住（prompt-injection/standing-preference）。
+        // 自动来源同样从 bud 开始；未验证来源由 lifecycleStatus 表达，
+        // 个人事实的特殊准入仍受来源状态约束。
         maturity: 'bud',
         version: '1',
         ...(sourceSessionIds.length ? { sourceSessionIds } : {}),
         createdAt: now,
         updatedAt: now,
       }, { actor: handoffActor, reason: handoffReason });
-      // 入库自动挂族（2026-09-19 列表 #2）：新资产与既有资产静态同键或语义
+      // 入库自动挂族：新资产与既有资产静态同键或语义
       // ≥ 0.60 → 写 same_family 关系。挂族是增强不是闸门，失败在函数内静默。
       try {
         const { listAbilityAssets } = await import('./asset-service');
@@ -2811,7 +2802,7 @@ async function promoteRecallCandidateWithGrant(
             ...relationContract,
             ...semantics,
             ...(scopePolicy ? { scopePolicy } : {}),
-            // 版本重检（specs/015 D6/D7）：要核的版本（候选原锚，或用户显式
+            // 版本重检：要核的版本（候选原锚，或用户显式
             // 重锚后的当前在用版）交给资产服务，在它的锁内与当前在用版比对
             // ——不在本文件写第二处比对。
             ...(versionPlan.expectedVersion ? { expectedVersion: versionPlan.expectedVersion } : {}),
@@ -2863,7 +2854,7 @@ async function promoteRecallCandidateWithGrant(
       decision.decision_id,
       { assetId: stored.id },
     );
-    // 重锚留痕（`contracts/ipc.md` §二）：确认**已生效**之后才补记原锚，未生效
+    // 重锚留痕：确认**已生效**之后才补记原锚，未生效
     // 的尝试不写（那是"没发生的事"）。承接在上面那条终态记录之后追加，账本仍是
     // 只增不改；同一 decision_id 以最后一条为准，所以读口看到的是带原锚的终态。
     if (rebasedFrom) {
@@ -2889,10 +2880,8 @@ async function promoteRecallCandidateWithGrant(
     })());
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    // 版本重检不一致（specs/015 D6/D9）：候选**不落终态**——用户没做错什么，
-    // 只是资产在他看候选的时候被改过；资产零改动（比对在 updateAbilityAsset
-    // 锁内，不通过就没写）。台账只记一次"未生效的确认尝试"，与 specs/008 的
-    // approval_confirmed「未生效」行同口径；不写 failed，也不改资产。
+    // 版本冲突不使候选落终态，也不修改资产；版本比对由资产服务在锁内执行。
+    // 台账仅记录未生效的确认尝试，不将并发冲突记成候选失败。
     const versionConflict = recallCandidateVersionConflictOf(error);
     const reviewHeld = ['nightly_automatic_approval_held', 'baseline_changed', 'formation_blocked', 't_review_required', 'shared_body_mismatch', 'shared_body_owner_conflict', 'invalid_reference'].includes(String((error as { code?: string }).code || ''));
     if (decision) {

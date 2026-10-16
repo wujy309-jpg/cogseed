@@ -142,7 +142,7 @@ async function verifyCurrentCaptureSourceDigest(userId: string, proof: RecallCap
       role: isRecallAssistantMessage(message) ? 'assistant' : 'user', text: message.text,
       discovery: proof.messageIds.includes(message.id),
       ...((capture.feedbackObservations as Array<{ messageId: string }> | undefined)?.some(item => item.messageId === message.id)
-        ? { observations: (capture.feedbackObservations as Array<{ messageId: string }>).filter(item => item.messageId === message.id) } : {}) })));
+        ? { observations: ((capture.feedbackVersionContexts || capture.feedbackObservations) as Array<{ messageId: string }>).filter(item => item.messageId === message.id) } : {}) })));
     if (digest !== summary.sourceDigest) throw new CaptureFormationSourceUnavailableError();
   } catch { throw new CaptureFormationSourceUnavailableError(); }
 }

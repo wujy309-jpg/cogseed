@@ -1,15 +1,17 @@
+import { resolveRecallCaptureModelCandidates } from './capture-model-selection';
 /** Check the persisted result against the exact guidance supplied this turn.
  * Model-assisted compliance is an observation, never an effectiveness proof.
  * Receipts retain hashes/coordinates/references, not copied private text. */
 import { createHash } from 'node:crypto';
-import { readPersistedResultContent, type PersistedResultContent } from './persisted-result-content';
+import { readPersistedConversationResult, type PersistedResultContent } from './persisted-result-content';
 import { readJsonl, safeId } from '../../storage';
 import { conversationMessageReadFile } from '../../util/project-layout';
 import { createLogger } from '../../logger';
 import { prompts } from '../../prompts/loader';
 import { readAbilityAsset, readAbilityAssetVersionSnapshot } from './asset-service';
 import { listInjectionReceipts, type InjectionReceipt } from './injection-receipt';
-import { AGENT_READ_PROJECTION_ID, recordAssetUsageReceipt } from './asset-usage-receipt';
+import { AGENT_READ_PROJECTION_ID, RUNTIME_PROJECTION_ID, recordAssetUsageReceipt } from './asset-usage-receipt';
+import { readRuntimeResultContent, type RuntimeResultSource } from './runtime-result-content';
 import { readRecallCaptureSettings } from './capture-settings';
 import { runRecallCaptureModel } from './capture-model-routing';
 import { readRecallJsonRecord, updateRecallJsonRecord } from './store';
@@ -26,6 +28,7 @@ export interface CognitionOutputCheck {
 export interface CognitionOutputCheckReceipt extends RecallJsonRecord {
   id: string; taskRunId: string; messageId: string; outputHash: string; taskHash: string;
   resultRefs?: PersistedResultContent['refs']; resultCoverage?: PersistedResultContent['coverage'];
+  resultSource?: RuntimeResultSource;
   method: 'model_assisted'; checks: CognitionOutputCheck[];
   modelCompleted: boolean; createdAt: string;
 }
@@ -86,26 +89,65 @@ export function parseCognitionOutputChecks(raw: string, assets: OutputCheckAsset
   return assets.map(asset => checks.get(asset.assetId)!);
 }
 
-function eligibleInjection(injection: InjectionReceipt, messageId: string): boolean {
+function eligibleInjection(injection: InjectionReceipt, messageId: string, runtime = false): boolean {
+  if (runtime) return injection.boundary === 'real' && injection.status === 'injected'
+    && injection.channel === 'runtime' && injection.messageId === messageId;
   return injection.boundary === 'real' && injection.status === 'injected'
     && (!injection.channel || ['projection', 'agent_read'].includes(injection.channel))
     && (injection.messageId === messageId || injection.channel === 'agent_read')
     && !!(injection.projectionId || injection.channel === 'agent_read');
 }
 
+/** A governed projection belongs to a KStar task, while the injection belongs
+ * to one actor turn. Bridge them only through the persisted requirement source
+ * and accepted submit claim, never by conversation identity alone. */
+async function projectionHasHostTurnBinding(userId: string,
+  projection: import('./context-projection').ContextProjectionRecord,
+  input: { cid: string; taskRunId: string; messageId: string }) {
+  const { readKstarTask, readKstarRequirement } = await import('../kstar/requirement-store');
+  const task = await readKstarTask(userId, projection.taskRunId);
+  if (!task || task.conversationId !== input.cid) return false;
+  const messages = await readJsonl<{ id: string; from: string; turn_id?: string; run_id?: string;
+    action_request_id?: string; deleted_at?: string }>(conversationMessageReadFile(userId, input.cid), 100_000);
+  const latest = new Map(messages.map(message => [message.id, message]));
+  const reply = latest.get(input.messageId);
+  if (!reply || reply.from === 'user' || reply.deleted_at || reply.turn_id !== input.taskRunId
+    || typeof reply.run_id !== 'string' || !safeId(reply.run_id)) return false;
+  for (const requirementId of task.requirementIds) {
+    const requirement = await readKstarRequirement(userId, requirementId);
+    if (!requirement || requirement.taskId !== task.id || requirement.conversationId !== input.cid
+      || !(requirement.projectionId === projection.id || requirement.projectionIds.includes(projection.id))) continue;
+    for (const sourceId of requirement.userMessageIds) {
+      const source = latest.get(sourceId);
+      if (!source || source.from !== 'user' || source.deleted_at || source.run_id !== reply.run_id
+        || typeof source.action_request_id !== 'string' || !safeId(source.action_request_id)) continue;
+      const { _readSubmitClaim } = await import('../group_chat');
+      const claim = await _readSubmitClaim(userId, input.cid, source.action_request_id);
+      if (claim?.state === 'accepted' && claim.message_id === source.id && claim.run_id === reply.run_id
+        && claim.recipient_ids.includes(reply.from) && claim.dispatch_turn_ids[reply.from] === input.taskRunId) return true;
+    }
+  }
+  return false;
+}
+
 /** Re-read current access plus the exact supplied snapshot. A receipt is an
  * audit trail, never a continuing source grant or a license to use today's body. */
-async function readableCheckAsset(userId: string, injection: InjectionReceipt, input: { cid: string; taskRunId: string; taskText: string }) {
-  const context: import('./prompt-injection').RecallAgentReadContext = { taskText: input.taskText };
-  if (injection.channel !== 'agent_read') {
+async function readableCheckAsset(userId: string, injection: InjectionReceipt, input: { cid: string; taskRunId: string; messageId: string; taskText: string;
+  runtime?: Awaited<ReturnType<typeof readRuntimeResultContent>> }) {
+  const context: import('./prompt-injection').RecallAgentReadContext = { ...input.runtime?.scope, taskText: input.taskText };
+  if (input.runtime && !injection.projectionId) {
+    if (!input.runtime.abilityAssetIds.includes(injection.assetId)) return undefined;
+  } else if (injection.channel !== 'agent_read') {
     const { readContextProjection } = await import('./context-projection');
     const projection = await readContextProjection(userId, injection.projectionId!);
-    if (projection.status !== 'confirmed' || projection.taskRunId !== input.taskRunId
+    if (projection.status !== 'confirmed'
       || (projection.conversationId && projection.conversationId !== input.cid)
       || !projection.assetIds.includes(injection.assetId)
       || projection.assetVersions?.[injection.assetId] !== injection.assetVersion
       || (projection.expiresAt && Date.parse(projection.expiresAt) <= Date.now())) return undefined;
-    Object.assign(context, { projectId: projection.projectId, workspaceId: projection.workspaceId,
+    if (!input.runtime && projection.taskRunId !== input.taskRunId
+      && !await projectionHasHostTurnBinding(userId, projection, input)) return undefined;
+    if (!input.runtime) Object.assign(context, { projectId: projection.projectId, workspaceId: projection.workspaceId,
       agentId: projection.agentId, roleId: projection.roleId, conversationKind: projection.conversationKind,
       fileKinds: projection.fileKinds, purpose: projection.purpose });
   }
@@ -118,7 +160,9 @@ async function readableCheckAsset(userId: string, injection: InjectionReceipt, i
   const merged = { ...current, ...snapshot, id: current.id, ownerId: current.ownerId,
     status: current.status, scope: current.scope, scopePolicy: current.scopePolicy,
     evidenceRefs: snapshot.evidenceRefs || current.evidenceRefs };
-  if (!(await filterRecallAssetsForAgentRead(userId, [merged], context)).length) return undefined;
+  // The historical source is checked separately from the current head: a
+  // snapshot's enabled sources cannot hide a newly revoked live source.
+  if ((await filterRecallAssetsForAgentRead(userId, [current, merged], context)).length !== 2) return undefined;
   const supported = snapshot.type === 'cognition' || snapshot.type === 'fact'
     || ['preference', 'template', 'method', 'rule', 'lesson'].includes(String(snapshot.contentCategory));
   if (!supported || !snapshot.statement.trim()) return undefined;
@@ -131,20 +175,33 @@ async function readableCheckAsset(userId: string, injection: InjectionReceipt, i
 
 export async function checkPersistedCognitionOutput(userId: string, input: {
   cid: string; taskRunId: string; messageId: string; taskText: string; signal?: AbortSignal;
+  /** Internal host entry only; reads persisted Runtime facts, never caller text. */
+  runtimeTaskId?: string;
 }): Promise<CognitionOutputCheckReceipt | undefined> {
   if (![userId, input.cid, input.taskRunId, input.messageId].every(safeId) || typeof input.taskText !== 'string') throw new Error('invalid cognition output check reference');
   input = { ...input };
   if (input.signal?.aborted) return undefined;
-  const injections = (await listInjectionReceipts(userId, input.taskRunId)).filter(i => eligibleInjection(i, input.messageId));
+  const eligible = (row: InjectionReceipt) => eligibleInjection(row, input.messageId, !!input.runtimeTaskId);
+  const injections = (await listInjectionReceipts(userId, input.taskRunId)).filter(eligible);
   if (!injections.length) return undefined;
-  const messages = await readJsonl<{ id: string; from: string; text?: string; produced?: string[]; turn_id?: string; deleted_at?: string; failure_kind?: string }>(conversationMessageReadFile(userId, input.cid), 100_000);
-  const message = [...messages].reverse().find(m => m.id === input.messageId);
-  if (!message || message.from === 'user' || message.deleted_at || message.failure_kind || message.turn_id !== input.taskRunId) return undefined;
-  const resultContent = await readPersistedResultContent(userId, input.cid, message);
+  const readResult = async () => {
+    if (input.runtimeTaskId) {
+      const runtime = await readRuntimeResultContent(userId, input.runtimeTaskId);
+      if (runtime.cid !== input.cid || runtime.taskRunId !== input.taskRunId || runtime.anchorId !== input.messageId || runtime.taskText !== input.taskText) return undefined;
+      return { content: runtime.content, fingerprint: runtime.fingerprint, runtime };
+    }
+    const result = await readPersistedConversationResult(userId, input);
+    return result ? { ...result, runtime: undefined } : undefined;
+  };
+  const initialResult = await readResult();
+  if (!initialResult) return undefined;
+  const resultContent = initialResult.content;
+  const checkInput = { ...input, runtime: initialResult.runtime };
   const output = resultContent.text;
   const resultFingerprint = hash(JSON.stringify([resultContent.refs, resultContent.coverage]));
   if (!output.trim()) return undefined;
-  const id = `coc-${hash(JSON.stringify([input.taskRunId, input.messageId, hash(output), hash(input.taskText), ...(resultContent.coverage.totalFiles ? [resultFingerprint] : [])])).slice(0, 24)}`;
+  const id = `coc-${hash(JSON.stringify([input.taskRunId, input.messageId, hash(output), hash(input.taskText), ...(resultContent.coverage.totalFiles ? [resultFingerprint] : []),
+    ...(initialResult.runtime ? [initialResult.runtime.source] : [])])).slice(0, 24)}`;
   const existing = await readRecallJsonRecord(userId, 'output-checks', id);
   const selected = new Map<string, { injection: InjectionReceipt; asset: OutputCheckAsset; fingerprint: string }>();
   const supplied = new Map<string, InjectionReceipt>();
@@ -157,7 +214,7 @@ export async function checkPersistedCognitionOutput(userId: string, input: {
   for (const injection of injections) {
     if (selected.has(injection.assetId) || ambiguous.has(injection.assetId) || selected.size >= 12) continue;
     try {
-      const readable = await readableCheckAsset(userId, injection, input);
+      const readable = await readableCheckAsset(userId, injection, checkInput);
       if (readable) selected.set(injection.assetId, { injection, ...readable });
     } catch { /* A missing exact snapshot cannot be replaced with today's content. */ }
   }
@@ -171,23 +228,21 @@ export async function checkPersistedCognitionOutput(userId: string, input: {
   const initialInjections = injectionFingerprint(injections);
   const immutableContextAvailable = async () => {
     if (input.signal?.aborted) return false;
-    if (injectionFingerprint((await listInjectionReceipts(userId, input.taskRunId)).filter(row => eligibleInjection(row, input.messageId))) !== initialInjections) return false;
+    if (injectionFingerprint((await listInjectionReceipts(userId, input.taskRunId)).filter(eligible)) !== initialInjections) return false;
     for (const item of selected.values()) {
-      try { if ((await readableCheckAsset(userId, item.injection, input))?.fingerprint !== item.fingerprint) return false; }
+      try { if ((await readableCheckAsset(userId, item.injection, checkInput))?.fingerprint !== item.fingerprint) return false; }
       catch { return false; }
     }
-    const rows = await readJsonl<typeof message>(conversationMessageReadFile(userId, input.cid), 100_000);
-    const current = [...rows].reverse().find(row => row?.id === input.messageId);
-    return !input.signal?.aborted && !!current && !current.deleted_at && !current.failure_kind
-      && current.from === message.from && current.turn_id === input.taskRunId && String(current.text || '') === String(message.text || '')
-      && hash(JSON.stringify(((await readPersistedResultContent(userId, input.cid, current)).refs))) === hash(JSON.stringify(resultContent.refs));
+    try { return !input.signal?.aborted && (await readResult())?.fingerprint === initialResult.fingerprint; }
+    catch { return false; }
   };
   if (resultContent.coverage.complete && assets.length && (!existing || existing.modelCompleted !== true) && payload.length <= 96_000) {
     try {
       const settings = await readRecallCaptureSettings(userId);
-      const prompt = prompts.load('cognition_output_check') + '\nWhen resultRefs includes files, output contains their actual persisted text as well as the reply. Assess all applicable deliverables, including conditions and exceptions. Do not infer file compliance from the reply claiming completion. Wrapper labels are not result evidence. resultRefs.contentRange identifies actual source text; use evidence wholly within one such range.';
+      const prompt = prompts.load('cognition_output_check') + '\nWhen resultRefs includes files, output contains their actual persisted text as well as the reply. Assess all applicable deliverables, including conditions and exceptions. Do not infer file compliance from the reply claiming completion. Wrapper labels are not result evidence. resultRefs.contentRange identifies actual source text; use evidence wholly within one such range. Extraction marked text_only can establish textual consistency only: layout, images, embedded objects and spreadsheet recalculation remain unknown. Return unknown when the guidance depends on those unobserved aspects.'
+        + (initialResult.runtime ? '\nThis is an isolated Runtime terminal text observation with no trusted produced-file manifest. Assess guidance applied to this actual reply only. File contents, file completion, external actions and effectiveness remain unknown even if the reply claims they succeeded. Return unknown for guidance requiring those unobserved results.' : '');
       const { result, chosen } = await runRecallCaptureModel(userId, { sessionId: `one-shot-${id}`,
-        systemPrompt: prompt, message: payload, modelCandidates: settings.modelCandidates, responseFormat: 'json_object',
+        systemPrompt: prompt, message: payload, modelCandidates: await resolveRecallCaptureModelCandidates(userId, settings.modelCandidates), responseFormat: 'json_object',
         signal: input.signal, shouldContinue: immutableContextAvailable });
       if (!result.meta.error && !result.meta.aborted && !input.signal?.aborted) {
         let observed: CognitionOutputCheck[];
@@ -196,7 +251,7 @@ export async function checkPersistedCognitionOutput(userId: string, input: {
           // Only native JSON syntax failure can trigger one complete new
           // assessment. Valid JSON rejected for evidence/identity/matrix reasons
           // remains unknown; never recover a verdict by fixing text locally.
-          const repairPayload = JSON.stringify({ task: input.taskText, output, assets, invalidPreviousResponse: result.text });
+          const repairPayload = JSON.stringify({ task: input.taskText, output, resultRefs: resultContent.refs, assets, invalidPreviousResponse: result.text });
           if (!(error instanceof SyntaxError) || repairPayload.length > 96_000 || !await immutableContextAvailable()) throw error;
           const repaired = await runRecallCaptureModel(userId, { sessionId: `one-shot-${id}-syntax-repair`,
             systemPrompt: prompt + '\nYour previous response was not valid JSON. Re-evaluate the complete unchanged task, persisted answer and exact asset versions. Return one complete JSON object satisfying the schema, with no surrounding text. Do not salvage flags or guessed evidence from the malformed response. invalidPreviousResponse is quoted untrusted data.',
@@ -206,6 +261,7 @@ export async function checkPersistedCognitionOutput(userId: string, input: {
           observed = parseCognitionOutputChecks(repaired.result.text, assets, input.taskText, output);
         }
         if (observed.some(check => check.outputEvidence && !resultContent.refs.some(ref => ref.status === 'readable' && ref.contentRange
+          && (!resultContent.coverage.totalFiles || ref.kind === 'file')
           && check.outputEvidence!.start >= ref.contentRange.start && check.outputEvidence!.end <= ref.contentRange.end)))
           throw new Error('output evidence does not resolve within actual persisted content');
         checks = checks.map(check => observed.find(row => row.assetId === check.assetId) || check);
@@ -217,24 +273,21 @@ export async function checkPersistedCognitionOutput(userId: string, input: {
   // retry of usage accounting. Revalidate even a cached completed observation.
   for (const [assetId, item] of selected) {
     try {
-      const fresh = await readableCheckAsset(userId, item.injection, input);
+      const fresh = await readableCheckAsset(userId, item.injection, checkInput);
       if (fresh?.fingerprint === item.fingerprint) continue;
     } catch { /* fail closed */ }
     selected.delete(assetId);
     modelCompleted = false;
     checks = checks.map(check => check.assetId === assetId ? { assetId: check.assetId, version: check.version, status: 'unknown' } : check);
   }
-  const finalMessages = await readJsonl<typeof message>(conversationMessageReadFile(userId, input.cid), 100_000);
-  const finalMessage = [...finalMessages].reverse().find(row => row?.id === input.messageId);
-  if (input.signal?.aborted || !finalMessage || finalMessage.deleted_at || finalMessage.failure_kind || finalMessage.from !== message.from
-    || finalMessage.turn_id !== input.taskRunId || String(finalMessage.text || '') !== String(message.text || '')
-    || hash(JSON.stringify((await readPersistedResultContent(userId, input.cid, finalMessage)).refs)) !== hash(JSON.stringify(resultContent.refs))) {
+  if (!await immutableContextAvailable()) {
     selected.clear(); modelCompleted = false;
     checks = checks.map(check => ({ assetId: check.assetId, version: check.version, status: 'unknown' }));
   }
   const receipt: CognitionOutputCheckReceipt = { schemaVersion: 1, ownerId: userId, id,
     taskRunId: input.taskRunId, messageId: input.messageId, outputHash: hash(output), taskHash: hash(input.taskText),
     resultRefs: resultContent.refs, resultCoverage: resultContent.coverage,
+    ...(initialResult.runtime ? { resultSource: initialResult.runtime.source } : {}),
     method: 'model_assisted', checks, modelCompleted, createdAt: new Date().toISOString() };
   // Provider failures remain retryable. A completed observation is immutable,
   // including a model's completed "unknown" judgment; concurrent successful
@@ -254,7 +307,7 @@ export async function checkPersistedCognitionOutput(userId: string, input: {
     if (!injection) continue;
     try {
       await recordAssetUsageReceipt(userId, { taskRunId: input.taskRunId,
-        projectionId: injection.projectionId || AGENT_READ_PROJECTION_ID,
+        projectionId: injection.projectionId || (initialResult.runtime ? RUNTIME_PROJECTION_ID : AGENT_READ_PROJECTION_ID),
         assetId: check.assetId, assetVersion: check.version, injectionReceiptId: injection.id,
         // Failure to follow guidance is an execution observation, not user
         // rejection of the guidance or evidence that its content is wrong.
@@ -264,8 +317,10 @@ export async function checkPersistedCognitionOutput(userId: string, input: {
         status: check.status === 'complied' ? 'applied' : 'usage_unknown', evidenceKind: 'final_output', boundary: 'real',
         observationMethod: saved.resultCoverage?.complete === false ? 'result_coverage' : 'model_assisted', messageId: saved.messageId, outputHash: saved.outputHash,
         outputCheckReceiptId: saved.id,
-        evidenceRefs: [{ kind: 'message', id: input.messageId }],
-        reason: saved.resultCoverage?.complete === false ? 'Final deliverables could not be read completely in the current scope and budget. Actual use remains unknown; this is neither a contradiction nor an effectiveness proof.' : check.status === 'complied'
+        ...(initialResult.runtime ? { resultSource: initialResult.runtime.source } : {}),
+        evidenceRefs: initialResult.runtime ? [{ kind: 'execution', id: initialResult.runtime.source.runId }] : [{ kind: 'message', id: input.messageId }],
+        reason: initialResult.runtime ? 'Model-assisted observation of the persisted isolated Runtime reply only. File contents, external actions and effectiveness remain unverified.'
+          : saved.resultCoverage?.complete === false ? 'Final deliverables could not be read completely in the current scope and budget. Actual use remains unknown; this is neither a contradiction nor an effectiveness proof.' : check.status === 'complied'
           ? 'Model-assisted check found actual use consistent with the exact supplied cognition in the persisted result; consistency with stored understanding, not external fact verification and not an effectiveness proof.'
           : check.status === 'not_complied'
             ? 'Model-assisted check found the persisted result inconsistent with the exact supplied cognition; this is not external fact verification or rejection of the cognition. Review the source and result before revising it.'
@@ -275,4 +330,12 @@ export async function checkPersistedCognitionOutput(userId: string, input: {
     } catch { log.warn('cognition output usage observation unavailable'); }
   }
   return effective;
+}
+
+export async function checkPersistedRuntimeCognitionOutput(userId: string, taskId: string, signal?: AbortSignal) {
+  if (!(await listInjectionReceipts(userId, taskId)).some(row => row.channel === 'runtime'
+    && row.status === 'injected' && row.boundary === 'real')) return undefined;
+  const result = await readRuntimeResultContent(userId, taskId);
+  return checkPersistedCognitionOutput(userId, { cid: result.cid, taskRunId: taskId, messageId: result.anchorId,
+    taskText: result.taskText, runtimeTaskId: taskId, signal });
 }

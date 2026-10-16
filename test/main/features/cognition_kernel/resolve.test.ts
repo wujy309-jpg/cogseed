@@ -5,7 +5,7 @@ import type { PersonalSourceSnapshot } from '../../../../src/main/features/cogni
 
 const snapshot: PersonalSourceSnapshot = {
   values: [
-    { id: 'v1', groupId: 'g1', fieldId: 'f1', fieldName: '姓名', text: '牛保康', source: 'manual', updatedAt: '2026-09-01T00:00:00Z' },
+    { id: 'v1', groupId: 'g1', fieldId: 'f1', fieldName: '姓名', text: '示例用户甲', source: 'manual', updatedAt: '2026-09-01T00:00:00Z' },
     { id: 'v2', groupId: 'g1', fieldId: 'f2', fieldName: '银行卡号', text: '陈旧的投影副本', source: 'candidate', updatedAt: '2026-09-01T00:00:00Z', assetId: 'a1' },
     { id: 'v3', groupId: 'g1', fieldId: 'f3', fieldName: '身份证号', text: '110101', source: 'manual', updatedAt: '2026-09-01T00:00:00Z', restricted: true },
     { id: 'v4', groupId: 'g1', fieldId: 'f4', fieldName: '部门', text: '旧部门', source: 'manual', updatedAt: '2026-08-01T00:00:00Z' },
@@ -14,8 +14,8 @@ const snapshot: PersonalSourceSnapshot = {
   ],
   assets: [
     { id: 'a1', title: '银行卡', statement: '6217-live', version: '3', status: 'active', updatedAt: '2026-09-20T00:00:00Z', ontologyRefs: [], eligible: true },
-    { id: 'a2', title: '审批人', statement: '王工', version: '1', status: 'paused', updatedAt: '2026-09-10T00:00:00Z', ontologyRefs: [{ groupId: 'g1', field: '审批人' }], eligible: false },
-    { id: 'a3', title: '英文名', statement: 'Anson', version: '2', status: 'active', updatedAt: '2026-09-11T00:00:00Z', ontologyRefs: [{ groupId: 'g1', field: '英文名' }], eligible: true },
+    { id: 'a2', title: '审批人', statement: '示例审批人', version: '1', status: 'paused', updatedAt: '2026-09-10T00:00:00Z', ontologyRefs: [{ groupId: 'g1', field: '审批人' }], eligible: false },
+    { id: 'a3', title: '英文名', statement: 'ExampleUserA', version: '2', status: 'active', updatedAt: '2026-09-11T00:00:00Z', ontologyRefs: [{ groupId: 'g1', field: '英文名' }], eligible: true },
   ],
 };
 
@@ -27,7 +27,7 @@ describe('cognition_kernel/resolve — 统一读接口（纯函数核心）', ()
   it('本体手编值 → 直接取到，带来源 id', () => {
     const r = one('姓名');
     expect(r.bound).toHaveLength(1);
-    expect(r.bound[0]).toMatchObject({ value: '牛保康', source: 'ontology_value', sourceId: 'v1' });
+    expect(r.bound[0]).toMatchObject({ value: '示例用户甲', source: 'ontology_value', sourceId: 'v1' });
     expect(r.missing).toHaveLength(0);
   });
 
@@ -60,7 +60,7 @@ describe('cognition_kernel/resolve — 统一读接口（纯函数核心）', ()
 
   it('本体没有、资产显式声明了落点 → 取资产', () => {
     const r = one('英文名');
-    expect(r.bound[0]).toMatchObject({ value: 'Anson', source: 'personal_asset', sourceId: 'a3', version: '2' });
+    expect(r.bound[0]).toMatchObject({ value: 'ExampleUserA', source: 'personal_asset', sourceId: 'a3', version: '2' });
   });
 
   it('档案里根本没有 → no_value（对应"该提问并回填"）', () => {
