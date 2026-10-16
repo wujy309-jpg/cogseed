@@ -465,7 +465,7 @@ async function _resolveWorkspaceScope(
 
 // Resolve the cid-scoped attachment dir from a renderer payload, when present.
 // The file-tools' allowed-paths scope is "active workspace ∪ this cid's
-// attachment dir" (CLAUDE.md §5); reveal + preview must honour the same
+// attachment dir"; reveal + preview must honour the same
 // union so a user can preview an attachment they uploaded, not just files
 // the LLM wrote into the workspace.
 function _attachmentScopeForPayload(userId: string, payload: any): string | null {
@@ -716,22 +716,11 @@ export const _libraryWriteTextForTest = _writeTextToLibrary;
 export const _libraryImportProducedForTest = _importProducedToLibrary;
 
 /**
- * 把一段文本导出到**用户本机文件夹**（「另存到本地文件夹…」）。
- *
- * 为什么「另存到知识库」不够：库里的文件是从用户磁盘**复制**进来的，产物写回库内目录后，
- * 用户去自己放原稿的文件夹里翻不到（2026-09-23 真机反馈："在文件夹中显示能看到清理版，
- * 本地原文件夹却没有"）。两个落点服务两件事：库内那份喂检索/问答，本机那份给用户自己用。
- *
- * 两条路径（都看 `features/local_file_links` 里那份机器私有的对应关系台账）：
- *   - 有线索（导入来源 = 原文所在文件夹 / 用户上次亲手选过的落点）且目录还在 →
- *     直接写回那个文件夹：用户点这个按钮的意思就是"存回我这儿"，再来一个对话框只是多一次点击；
- *   - 无线索（新建/同步/剪藏来的文档）或目录已失效（换机器、删掉文件夹）→ 弹系统保存框
- *     （默认落在下载目录），让用户自己挑位置——总比只回一句"失败"强。
- *   用户挑完把选择记进台账：同一份文档下次不用再导航一遍。
- *
- * 注意与 `_writeTextToLibrary` 的分工：这里的 payload 里带的是**导出用**的字段
- * （`fileName` 纯文件名 + `sourcePath` 库内相对路径，仅用来反查本机落点），
- * 没有 `targetPath` 那种"库内目标路径"语义。
+ * 把文本导出到用户本机文件夹；知识库副本由 `_writeTextToLibrary` 管理。
+ * `features/local_file_links` 记录导入来源和用户选择过的本机落点：目录仍有效时
+ * 直接导出；无映射或目录失效时打开系统保存框，默认下载目录，并记住成功的选择。
+ * payload 的 `fileName` 是纯文件名，`sourcePath` 是用来反查本机落点的库内相对路径；
+ * 不使用库内目标路径 `targetPath`。
  */
 async function _writeTextToLocal(payload: any, ctx: IpcContext): Promise<any> {
   const content = typeof payload?.content === 'string' ? payload.content : '';
@@ -939,11 +928,8 @@ function legacyPoWriteClosed(): Promise<never> {
 }
 
 const invokeHandlers: Record<string, InvokeHandler> = {
-  // Creator（Agent 创建师）通道：rebase 时丢了这一行 spread，导致
-  // creator.agent.run / creator.draft.verify / creator.preset.activate 三个通道
-  // 变成 unknown channel（test 直接构造 handlers，所以单测看不出来）。
   ...creatorHandlers,
-  // conv-core M2：双向交互（审批/提问）的渲染层回复入口。晚到/未知 id
+  // 双向交互（审批/提问）的渲染层回复入口。晚到/未知 id
   // 由 hub 幂等吞掉（返回 handled:false，不抛错）。
   'chat.interaction.reply': async (payload, _ctx) => {
     const raw = (payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>;
@@ -1191,8 +1177,8 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     };
   },
 
-  // 确认卡片专用通道（2026-09-14 Bug3）：幂等 + 直达总线，绕过渲染层发送队列；
-  // action: 'confirm' | 'cancel'（评审补强：取消同通道、同步落盘 cancelled）。
+  // 确认卡片专用通道：幂等并直达总线，绕过渲染层发送队列；
+  // action: 'confirm' | 'cancel'，取消也在本通道同步落盘 cancelled。
   'groupChat.sendConfirm': async ({ cid, artifactId, op, payload, action }, ctx) => {
     return confirmCards.sendConfirmAndMark({
       userId: ctx.userId,
@@ -1927,12 +1913,6 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true, name };
   },
 
-  // ── Project bindings (the strict scope of agents/skills visible inside
-  // a project conversation; see CLAUDE.md §6 outer-intersection rule) ──
-  // `bindings.list` returns the bound ids JOINED with name/description so
-  // the renderer can paint the detail page in one round-trip. Unknown ids
-  // (referent deleted) are pruned here so stale bindings never become user
-  // cleanup work.
   'autoTasks.list': async ({ projectId } = {}, ctx) => {
     const opts: { projectId?: string | null } = {};
     if (projectId === null) opts.projectId = null;
@@ -2529,9 +2509,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true, context: await recallCaptures.readRecallCaptureContext(ctx.userId, captureId) };
   },
 
-  // 存量记忆迁移：dryRun 只读盘点；真实迁移必须带用户逐条确认的内容 hash
-  // 与预览时源文件指纹。没有显式选择不执行；启动阶段不再自动迁移。
-  // 族改名（2026-09-22 快赢·族可命名）：锚资产起按 same_family 连通分量批量写。
+  // 族改名：从锚资产起按 same_family 连通分量批量写。
   'recall.families.rename': async ({ anchorAssetId, name } = {}, ctx) => {
     if (typeof anchorAssetId !== 'string' || !anchorAssetId.trim()) throw new Error('invalid family anchor asset id');
     const { renameAssetFamily } = await import('../features/recall/family');
@@ -2792,7 +2770,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   'recall.assets.revoke': async ({ assetId, note } = {}, ctx) => { if (!safeId(assetId) || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall asset revoke'); return { ok: true, asset: await recallAssets.revokeAbilityAsset(ctx.userId, assetId, { actor: 'user', reason: note ?? 'user revoke' }) }; },
   'recall.assets.recommend': async ({ assetId, action, reason } = {}, ctx) => { if (!safeId(assetId) || (action !== 'pause' && action !== 'rework')) throw new Error('invalid recall asset recommendation'); return { ok: true, asset: await recallAssets.recommendAbilityAssetAction(ctx.userId, assetId, { actor: 'system', action, reason: boundedText(reason, 'recall asset recommendation reason', 1_000) }) }; },
   'recall.assets.versions': async ({ assetId } = {}, ctx) => { if (!safeId(assetId)) throw new Error('invalid recall asset id'); return { ok: true, versions: await recallAssets.listAbilityAssetVersions(ctx.userId, assetId), audit: await recallAssets.listAbilityAssetAudit(ctx.userId, assetId) }; },
-  // 规范 22.1 的其余治理动作。彻底清除不可逆，恢复受保留期约束，两者的判断都在
+  // 彻底清除不可逆，恢复受保留期约束，两者的判断都在
   // feature 层——这里只做参数校验。
   'recall.assets.archive': async ({ assetId, note } = {}, ctx) => { if (!safeId(assetId) || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall asset archive'); return { ok: true, asset: await recallAssets.archiveAbilityAsset(ctx.userId, assetId, { actor: 'user', reason: note ?? 'user archive' }) }; },
   'recall.assets.delete': async ({ assetId, note } = {}, ctx) => { if (!safeId(assetId) || (note !== undefined && (typeof note !== 'string' || !note.trim() || note.length > 1_000))) throw new Error('invalid recall asset delete'); return { ok: true, asset: await recallAssets.deleteAbilityAsset(ctx.userId, assetId, { actor: 'user', reason: note ?? 'user delete' }) }; },
@@ -2892,8 +2870,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // 「在用」指针（内容同步、不 bump——与 rollback 的生成新版语义互补）。
   'recall.assets.versions.list': async ({ assetId } = {}, ctx) => {
     if (!safeId(assetId)) throw new Error('invalid recall asset id');
-    // 一并带上 audit：资产详情的「生命周期记录」读的就是它（2026-09-25 真机发现
-    // 这个口只回了 versions+usage，渲染层拿不到台账，整块审计区是死的）。
+    // audit 提供资产详情的生命周期记录。
     // chain 里的 frozen（按版本的冻结引用计数）同时透传：它是「已有更新的版本」
     // 标记的唯一判据（`...chain` 展开，勿在此重命名）。
     const [chain, audit] = await Promise.all([
@@ -3430,8 +3407,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
 
   'recall.proofs.effectiveness.feedback': async ({ transferProofId, feedback, note, evidenceRefs, baselineExecutionId } = {}, ctx) => { if (!safeId(transferProofId) || !['positive', 'neutral', 'negative', 'invalid', 'rework'].includes(feedback) || (note !== undefined && typeof note !== 'string') || (evidenceRefs !== undefined && !Array.isArray(evidenceRefs)) || (baselineExecutionId !== undefined && !safeId(baselineExecutionId))) throw new Error('invalid effectiveness feedback'); return { ok: true, proof: await effectivenessFeedback.recordEffectivenessFeedback(ctx.userId, { transferProofId, feedback, ...(note !== undefined ? { note } : {}), ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(baselineExecutionId !== undefined ? { baselineExecutionId } : {}) }) }; },
   'recall.proofs.effectiveness.feedbackForTask': async ({ taskRunId, feedback, note, evidenceRefs, baselineExecutionId } = {}, ctx) => { if (!safeId(taskRunId) || !['positive', 'neutral', 'negative', 'invalid', 'rework'].includes(feedback) || (note !== undefined && typeof note !== 'string') || (evidenceRefs !== undefined && !Array.isArray(evidenceRefs)) || (baselineExecutionId !== undefined && !safeId(baselineExecutionId))) throw new Error('invalid effectiveness feedback'); return { ok: true, ...(await effectivenessFeedback.recordTaskEffectivenessFeedback(ctx.userId, { taskRunId, feedback, ...(note !== undefined ? { note } : {}), ...(evidenceRefs !== undefined ? { evidenceRefs } : {}), ...(baselineExecutionId !== undefined ? { baselineExecutionId } : {}) })) }; },
-  // 跨作用域使用的确认与撤回。规范 10.2 要求「确认」，这里是确认真正发生的地方
-  // ——没有它，confirm 档只会永远停在等待里。撤回后立刻回到需要确认的状态。
+  // 跨作用域使用的确认与撤回；撤回后立刻回到需要确认的状态。
   'recall.assets.crossScope': async ({ assetId, confirmed, reason } = {}, ctx) => {
     if (!safeId(assetId) || typeof confirmed !== 'boolean') throw new Error('invalid cross-scope confirmation');
     return {
@@ -3461,9 +3437,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   'recall.tree.rebuild': async (_args, ctx) => ({ ok: true, tree: await recallTree.rebuildCognitionTree(ctx.userId) }),
   'recall.usage.list': async ({ assetId } = {}, ctx) => { if (assetId !== undefined && !safeId(assetId)) throw new Error('invalid recall asset id'); return { ok: true, usage: await recallUsage.listRecallUsage(ctx.userId, assetId) }; },
 
-  // 「非资产分流」的读通道。接续快照是**非资产**对象（v0.2 §7.3）：任务状态被
-  // 带到新会话，但不进四类资产、不长认知树叶片。此前只有按会话单读的
-  // `readContinuationSnapshot`，没有面向界面的列表口，那一页只能摆空壳。
+  // 接续快照把任务状态带到新会话，但不作为资产或认知树叶片。
   //
   // `total` 与 `items.length` 分开返回：limit 截断的是显示条数，不是事实条数。
   'recall.continuation.list': async ({ limit } = {}, ctx) => {
@@ -4134,10 +4108,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     const data = await personalOntologyCandidates.listCandidates(ctx.userId);
     // corrupt（读侧结构化错误）：池文件坏档时如实带回，渲染层据此
     // 出「从备份恢复/重置」入口；写侧此时已被 corrupt-guard 拒绝。
-    // 契约漂移修复（2026-10-02 S2 取证）：本通道历史上返回 `candidates`，
-    // 而 rendered 侧 personal-ontology.js 读的是 `candidate_updates`——两边不一致
-    // 导致本体候选横幅在生产上恒报「加载失败」（死功能）。此处**同时**返回两个
-    // 键：老消费方读 candidates 不受影响，横幅恢复可用。
+    // 同时保留 candidates 与 candidate_updates，兼容两种消费方的字段名。
     const list = view === 'activity-queue' ? projectLegacyActivityCandidates(data.candidate_updates || []) : data.candidate_updates || [];
     return { ok: true, candidates: list, candidate_updates: list, ...(data.corrupt ? { corrupt: data.corrupt } : {}) };
   },
@@ -4370,7 +4341,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { receipts: skillTrust.listReceiptsForDisplay(ctx.userId) };
   },
 
-  /** W5/W6: run the generation admission gate on one custom skill and return
+  /** Run the generation admission gate on one custom skill and return
    *  a renderer-safe verdict for the unified import-check popup. Source-
    *  preserving: no shape escalation, no refusal receipt — the caller decides
    *  what to do with the verdict (the import paths already rolled back or
@@ -6313,7 +6284,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return actionApproval.respondActionApproval(request_id, decision);
   },
 
-  // ── User-granted folder access (plan §B2) ──────────────────────────────
+  // ── User-granted folder access ─────────────────────────────────────────
   // Extra directories the file/bash tools may touch beyond workspace +
   // attachments. Grant goes through a native folder picker; the feature
   // enforces the deny-list (credential/system dirs) + realpath.
@@ -6339,7 +6310,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     return { ok: true as const, removed: granted.revokeRoot(ctx.userId, payload.path) };
   },
 
-  // ── External packages management (plan §A; UI is read + manage only) ────
+  // ── External packages management (UI is read + manage only) ────────────
   // Install stays on the commander/CLI path (it needs the clone + dependency
   // consent flow). The registry's single-writer is bin/cogseed-pkg.cjs.
   'packages.list': async (_payload: unknown, ctx: { userId: string }) => {
@@ -6368,7 +6339,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     try { (await import('../model/core-agent/skill-registry')).invalidateSkills(); } catch { /* runner not loaded */ }
     return result;
   },
-  // ── Plugin-provided UI (plan §B) ────────────────────────────────────────
+  // ── Plugin-provided UI ─────────────────────────────────────────────────
   // The iframe-hosted plugin page talks to the renderer via postMessage; the
   // renderer forwards through these handlers. Only allowlisted methods exist
   // (see features/plugin_ui.ts); api keys are injected main-side and never
@@ -6896,7 +6867,7 @@ const invokeHandlers: Record<string, InvokeHandler> = {
 // The runtime ensures a terminal `{ type: 'done' }` is always sent, even on
 // unexpected throws.
 
-// conv-core M2：活跃会话流注册表。interaction-hub 的广播按 `${uid}:${cid}`
+// 活跃会话流注册表。interaction-hub 的广播按 `${uid}:${cid}`
 // 找到当前活跃的 sendStream，把交互事件塞进它的队列（同会话并发流以后到
 // 者为准——会话串行，正常只有一条活跃流）。
 const _activeChatInteractionStreams = new Map<string, (event: unknown) => void>();
@@ -7081,7 +7052,7 @@ const streamHandlers: Record<string, StreamHandler> = {
         return;
       }
     }
-    // 多 Agent（PRD FR-016）：只有形状在这里检查；「已启用 + 可派发」的逐个核验
+    // 多 Agent：只有形状在这里检查；「已启用 + 可派发」的逐个核验
     // 在 group-chat facade 内完成（任一失效即整条拒绝，不静默降级）。
     const memberIds = _safeAgentIdList(member_agent_ids);
     const mentionIds = _safeAgentIdList(mention_agent_ids);
@@ -7116,7 +7087,7 @@ const streamHandlers: Record<string, StreamHandler> = {
     // state, since on-disk state.json briefly shows 'idle' in the gap
     // between an actor finishing and the next one's wake.
     const buf: GroupEvent[] = [];
-    // chat.* 结构化事件（conv-core 事件契约）：与老 stream:'group' 并行下发，
+    // chat.* 结构化事件：与老 stream:'group' 并行下发，
     // 渲染层 chat-stream 组件群消费；老消费方不受影响。
     const chatProjector = new GroupEventChatProjector();
     // 双向交互（M2）：interaction-hub 的 requested/closed 事件经活跃流
@@ -7246,9 +7217,7 @@ const streamHandlers: Record<string, StreamHandler> = {
           if (groupChat.busIsQuiescent(ctx.userId, cid)) break drainLoop;
         }
         if (cancelled) break;
-        // 自唤醒泊车（2026-09-14 Bug3 修复）：原裸 await 在总线无新事件时
-        // 永不返回，流不关闭 → 渲染层 busy 标记永不清、发送队列卡死。
-        // 2s 定时兜底唤醒，让循环重新检查 quiescence/cancelled。
+        // 无事件时每 2s 唤醒，让循环重新检查 quiescence/cancelled 并关闭已结束的流。
         await new Promise<void>((resolve) => {
           let done = false;
           wake = () => { if (done) return; done = true; resolve(); };
@@ -7367,9 +7336,7 @@ const streamHandlers: Record<string, StreamHandler> = {
             }
           }
           if (cancelled) break;
-          // 自唤醒泊车（2026-09-14 Bug3 修复）：原裸 await 在总线无新事件时
-        // 永不返回，流不关闭 → 渲染层 busy 标记永不清、发送队列卡死。
-        // 2s 定时兜底唤醒，让循环重新检查 quiescence/cancelled。
+          // 无事件时每 2s 唤醒，让循环重新检查 quiescence/cancelled 并关闭已结束的流。
         await new Promise<void>((resolve) => {
           let done = false;
           wake = () => { if (done) return; done = true; resolve(); };
@@ -7410,9 +7377,7 @@ const streamHandlers: Record<string, StreamHandler> = {
           yield { type: 'event', event: ev };
         }
         if (cancelled) break;
-        // 自唤醒泊车（2026-09-14 Bug3 修复）：原裸 await 在总线无新事件时
-        // 永不返回，流不关闭 → 渲染层 busy 标记永不清、发送队列卡死。
-        // 2s 定时兜底唤醒，让循环重新检查 quiescence/cancelled。
+        // 无事件时每 2s 唤醒，让循环重新检查取消状态。
         await new Promise<void>((resolve) => {
           let done = false;
           wake = () => { if (done) return; done = true; resolve(); };
@@ -7447,9 +7412,7 @@ const streamHandlers: Record<string, StreamHandler> = {
           yield { type: 'event', event: ev };
         }
         if (cancelled) break;
-        // 自唤醒泊车（2026-09-14 Bug3 修复）：原裸 await 在总线无新事件时
-        // 永不返回，流不关闭 → 渲染层 busy 标记永不清、发送队列卡死。
-        // 2s 定时兜底唤醒，让循环重新检查 quiescence/cancelled。
+        // 无事件时每 2s 唤醒，让循环重新检查取消状态。
         await new Promise<void>((resolve) => {
           let done = false;
           wake = () => { if (done) return; done = true; resolve(); };
@@ -7475,7 +7438,7 @@ const streamHandlers: Record<string, StreamHandler> = {
     }
     const modelText = typeof model_text === 'string' ? model_text.trim() : '';
     const atts = Array.isArray(attachments) ? attachments.filter((n: any) => typeof n === 'string' && n) : [];
-    // conv-core M3.4：skills 聊天流并行下发 chat.* 结构化事件（与主会话
+    // skills 聊天流并行下发 chat.* 结构化事件（与主会话
     // 同契约），渲染层 chat-stream 面板统一消费。
     const projector = createChatEventProjectorState({ turnId: `skill-${id}-${Date.now()}`, cid: id, actorId: id });
     for await (const ev of skills.streamSendToSkillChat(ctx.userId, id, text, {
@@ -7502,7 +7465,7 @@ const streamHandlers: Record<string, StreamHandler> = {
     }
     const modelText = typeof model_text === 'string' ? model_text.trim() : '';
     const atts = Array.isArray(attachments) ? attachments.filter((n: any) => typeof n === 'string' && n) : [];
-    // conv-core M3.4：agents 聊天流同上。
+    // agents 聊天流同上。
     const projector = createChatEventProjectorState({ turnId: `agent-${id}-${Date.now()}`, cid: id, actorId: id });
     for await (const ev of agents.streamSendToAgentEditChat(ctx.userId, id, text, {
       abortSignal: signal,

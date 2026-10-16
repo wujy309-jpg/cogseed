@@ -1,8 +1,6 @@
 // ─── 通用双向交互枢纽 ────────────────────────────────────────────────────
 //
-// 把 bridge-permissions / launch-confirm 两处各自为政的「请求-等待-超时
-// 拒绝」审批骨架泛化为统一 InteractionHub：审批（approval）与提问
-// （question）都走这里。交互生命周期：
+// 审批（approval）与提问（question）共用请求、等待和关闭流程。交互生命周期：
 //   - 超时按 deny/放弃处理，绝不悬停；
 //   - 晚到回复幂等吞掉（交互已关闭后再回复无害）；
 //   - Turn 取消时连带关闭其未决交互（reason=turnCancelled）；

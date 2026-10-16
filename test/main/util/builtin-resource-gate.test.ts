@@ -84,8 +84,6 @@ describe('builtin-resource-gate', () => {
     expect(manifest.inventory.marketplace_agents)
       .toContainEqual(expect.objectContaining({
         id: '78900d8758bc',
-        // DeepResearcher 1.0.35（8c96c727）把 icon 从 search 换成 bolt、
-        // updated_at 推进到 08-17——断言跟随真实内容，不写死过期元数据。
         icon: 'bolt',
         color: 'sky',
         updated_at: '2026-08-17T00:00:00',

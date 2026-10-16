@@ -79,8 +79,8 @@ const p3394GatewayCalls = vi.hoisted(() => [] as Array<any>);
 vi.mock("../../../../src/main/features/p3394_bridge/p3394-gateway-turn", () => ({
   runP3394GatewayTurn: vi.fn(async (input: any) => {
     p3394GatewayCalls.push(input);
-    // 第二期收口：原直连用例的 CLI 事件流改由网关 turn 桥接 —— 复用
-    // localRunnerScripts 脚本队列，按直连总线的转换规则发 onProcess /
+    // CLI 事件流通过网关 turn 桥接，复用 localRunnerScripts 脚本队列，
+    // 按总线的转换规则发 onProcess /
     // onCoordinatorActivity / onProcessInfo；`__return__` 控制终态。
     if (localRunnerScripts.length > 0) {
       const events = localRunnerScripts.shift()!;
@@ -109,7 +109,7 @@ vi.mock("../../../../src/main/features/p3394_bridge/p3394-gateway-turn", () => (
       const text = terminal?.output || "gateway turn done";
       const failed = terminal?.status && terminal.status !== "completed" && terminal.status !== "cancelled";
       if (failed) {
-        // MA-01：turn 层把网关错误信转成失败时带回 failureKind/failureCode/
+        // turn 层把网关错误信转成失败时带回 failureKind/failureCode/
         // infrastructureFailure；注入形状与真实返回值一致，跨层契约才可验证。
         return {
           text: "",
@@ -175,7 +175,7 @@ const abortRaceProbe = vi.hoisted(() => ({
 }));
 // Records every model turn the bus drives, so tests can assert WHAT a given
 // session actually received as its turn input (`opts.message`) — e.g. that a
-// G8b handback turn carried the worker's full reply, not a summary.
+// handback turn carried the worker's full reply, not a summary.
 const _recordedCalls = vi.hoisted(
   () =>
     [] as Array<{
@@ -186,7 +186,7 @@ const _recordedCalls = vi.hoisted(
     }>,
 );
 // Records the result each tool's execute() returned — lets a test assert that a
-// G8d in-process dispatch tool (run_worker) handed its sub-run's full reply back
+// in-process dispatch tool (run_worker) handed its sub-run's full reply back
 // synchronously as the tool result, not via an async re-wake.
 const _recordedToolResults = vi.hoisted(
   () =>
@@ -393,9 +393,7 @@ async function createDelegatedAbilityAsset(
   });
   const asset = (await candidates.promoteRecallCandidate(TEST_UID, promoted.id, {
     actor: "user",
-    // forceCreateSimilar（2026-09-17 修）：本分支新增的防分裂闸门会拦下
-    // 同模板造数（语义相似≈0.9+）。这里就是"用户已确认要新条目"的造数
-    // 语义，走闸门的正当逃生口，而不是给闸门开洞。
+    // 同模板夹具的语义相似度会触发防分裂闸门；这里显式模拟用户已确认新建。
     forceCreateSimilar: true,
     ...(scopePolicy ? { scopePolicy } : {}),
   })).asset;
@@ -886,7 +884,7 @@ describe("group_chat visibility › recipient-specific external projection", () 
     await waitForQuiescent(TEST_UID, cid);
   });
 
-  // MA-01 跨层契约（验收报告 P1）：上游 turn 层把网关错误信转成失败后，下游必须
+  // 上游 turn 层把网关错误信转成失败后，下游必须
   // 「失败不计贡献、汇总记 missing、整体不完成」——不能出现 run=completed、
   // actor done、missing=[] 与界面「全部完成」并存的假成功。
   it("does not count a gateway runtime error as a contribution in the run ledger", async () => {
@@ -1686,8 +1684,8 @@ describe("group_chat bus integration › structured user recipient", () => {
     const codexCall = p3394GatewayCalls.find((call) => call.agent?.agent_id === codexId);
     expect(codexCall).toBeDefined();
     // The switched-context digest is host-side augmentation of the full main
-    // transcript; it must not cross the external boundary (round-3 privacy
-    // review), so the previous external Agent's result stays host-only.
+    // transcript; it must not cross the external boundary, so the previous
+    // external Agent's result stays host-only.
     expect(codexCall.prompt).not.toContain("<group-context-summary>");
     expect(codexCall.prompt).not.toContain("WorkBuddy product analysis");
     // The task itself still reaches the next external Agent.
@@ -2056,7 +2054,7 @@ describe("group_chat bus integration › abort sticky across worker post-cleanup
       text: `@${AGENT_NAME} long task`,
     });
 
-    // G8d: top-level turns run through one per-conversation runtime (not a
+    // Top-level turns run through one per-conversation runtime (not a
     // per-actor worker keyed by agent id). Find the running runtime bound to
     // this agent's turn.
     const runningFor = (id: string) => {
@@ -2536,10 +2534,6 @@ describe("group_chat bus integration › abort sticky across worker post-cleanup
   });
 });
 
-// SKIP 这块的第二条:`fromActorId: 'commander'` 写 @<id> 在文本里——
-// 现在 commander 文本 @ 不解析,@<id>→@<name> 的 rewrite 链也跟着断
-// (rewrite 依赖 router 把 agent 加进 idToName)。dispatch_to 工具用名字调
-// 而非 id,这条已是 dead semantic;留着第一条(@<name> 不变)。
 describe("group_chat bus integration › @<id> rewrite is no-op when text already uses @<name>", () => {
   it("text \"@Writer ...\" stays \"@Writer ...\" after enqueue (rewrite only fires when text uses raw id)", async () => {
     const cid = newCid();
@@ -2766,7 +2760,7 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
     }
   });
 
-  // G8d step 3: dispatch tools run their target's turn in-process and hand the
+  // Dispatch tools run their target's turn in-process and hand the
   // result back as the tool result — no staging, no turn-end flush, no re-wake.
   // The commander reads the result and synthesises within the SAME turn. The
   // mock's `__call_tool__` drives the real tool execute() so the nested run
@@ -2894,9 +2888,9 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
       "WORKER-INTERNAL-OUTPUT-7c1d: scanned 42 files, here is the full structured summary the commander needs.";
 
     // Commander's SINGLE turn: call run_worker with NO `to` (anonymous worker),
-    // then synthesise for the user in the SAME turn. G8d removed the re-wake —
-    // the worker's result returns as the tool result, in-process, so the
-    // commander reads it and continues without a second scheduled turn.
+    // then synthesise for the user in the SAME turn. The worker's result
+    // returns as the tool result, in-process, so the commander reads it and
+    // continues without a second scheduled turn.
     _setScript(state.buildGconvSessionId(cid), [
       {
         type: "__call_tool__",
@@ -2952,7 +2946,7 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
     expect(toolResult!.content).toContain(
       `workflow_step_id="${successOutcome.workflowStepId}"`,
     );
-    // G4 wiring (step 3b-tail): run_worker is parallel-safe so independent
+    // run_worker is parallel-safe so independent
     // fan-out in one turn runs concurrently (bounded by dispatchSlots).
     expect(
       toolResult!.executionMode,
@@ -3166,7 +3160,7 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
       sourceRefs: [{ kind: "execution", id: "exec-gate" }],
     });
     const asset = (await candidates.promoteRecallCandidate(TEST_UID, candidate.id, { actor: "user" })).asset;
-    // 自动投影按 PRD 3.6 只接纳 Transfer Verified 及以上。本用例考的是
+    // 自动投影只接纳 Transfer Verified 及以上。本用例考的是
     // "资产只经 Commander 分发、不由宿主注入 Agent"的契约，不是成熟度闸门，
     // 所以先把资产抬到够格的档位。
     await (await import("../../../../src/main/features/recall/asset-service")).setAbilityAssetMaturity(TEST_UID, asset.id, "transfer_validated");
@@ -3463,14 +3457,7 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
   });
 
 
-  // 第二期通道收口（2026-08-24）：直连 `cli` 通道不再是默认执行路径，
-  // 本用例钉住的 PID 探活 / CLI 会话持久化语义是直连专属；网关模式下
-  // 会话连续性由 P3394 session 承担。网关侧 PID 数据源与探活语义列入
-  // 后续增强（见 docs/design 设计文档第 5 节），补齐后恢复本用例。
-  //
-  // 2026-09-20：本用例是 develop 上**唯一保留**的硬跳过，已登记在
-  // test/skip-allowlist.json（含理由与恢复条件），nightly 的 skip 检查会盯着它；
-  // 同日复核确认它恢复后确实会红（同类另外 3 条恢复后均直接通过）。
+  // 该直连 PID 探活契约在网关模式下暂不启用；恢复条件见 skip-allowlist。
   it.skip("CLI process-info accepts only a positive integer number as the in-memory PID", async () => {
     const cid = newCid();
     const state = await import("../../../../src/main/features/group_chat/state");
@@ -4173,20 +4160,6 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
     expect(retryCall?.message).toContain('<task-retry mode="resume">');
     expect(retryCall?.message).toContain("Verify its current state before deciding whether to run it again");
   });
-
-
-  // G-18/G-19（2026-08-25）：直连执行路径已删除，直连专属的 resume/
-  // 会话持久化语义钉子随之移除——网关模式下会话连续性由 P3394 session
-  // 与网关侧 cli-session（G-27 resume）承担；PID 数据源已由网关
-  // hello/manifest 自报（extensions.pid / manifest.pid）。
-
-
-
-  // G-18/G-19（2026-08-25）：直连会话写入顺序钉子随直连路径移除（网关
-  // 模式会话连续性由 P3394 session 承担，见上方总注释）。
-
-
-  // G-18/G-19（2026-08-25）：直连会话持久化失败钉子随直连路径移除（见上）。
 
   it("uses the highest-scoring idle member, then one anonymous worker, and returns coordinator_exhausted", async () => {
     const cid = newCid();
@@ -5440,7 +5413,7 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
       members.actors.some((a) => a.id === AGENT_ID && a.kind === "agent"),
     ).toBe(true);
 
-    // 4) Option B — BOTH bubbles persist: the agent's own reply AND the
+    // 4) Both bubbles persist: the agent's own reply AND the
     //    commander's synthesis.
     const lines = fs
       .readFileSync(
@@ -5691,7 +5664,7 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
     ).toBe(true);
   }, BUS_TEST_TIMEOUT_MS);
 
-  // Entry 2 (G8d §1 / step 5): the user can talk to an agent directly — a user
+  // The user can talk to an agent directly — a user
   // message addressed to an agent runs that agent's top-level turn and the agent
   // delivers to the user, without the commander in the loop. This is runtime
   // routing (router default: user→commander, but an explicit @agent → that
@@ -5985,7 +5958,7 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
       "tutor should post a visible reply to the user",
     ).toBe(true);
 
-    // Gap-B "thinking placeholder" signal: the hand-off runs the tutor's turn
+    // The hand-off runs the tutor's turn
     // in-process (bypassing runTurn's start-of-turn state_changed), so without
     // surfacing it the renderer had nothing to paint between the commander's
     // narration and the tutor's first token. The nested dispatch must emit a
@@ -6097,11 +6070,8 @@ describe("group_chat bus integration › G8d in-process dispatch (run_worker / d
       event: { stream, data: { phase } },
     });
 
-    // Mirrors d33b828f234c from the reported run: research triggered context
-    // compaction, the commander narrated a visible pre-dispatch segment, three
-    // execution-plan calls failed, and hand_off_to delivered the final answer.
-    // The old whole-turn process array was attached again to an empty tail;
-    // the generic compaction-visibility rule forced that tail to persist.
+    // Context compaction and failed planning calls must stay with the visible
+    // pre-dispatch segment, without reviving an empty tail after hand_off_to.
     _setScript(state.buildGconvSessionId(cid), [
       contextProgress(
         "context",
@@ -7333,7 +7303,7 @@ describe("group_chat bus integration › delegated ability asset Projection subs
     },
   );
 
-  /** 2026-09-18 放宽：授予不再要求"投影子集"——目录里（存在、可读、过闸）
+  /** 授予不要求"投影子集"——目录里（存在、可读、过闸）
    *  的资产都能派。保住的不变量是"授予精确"：被派发者只看到被授予的那几条，
    *  看不到投影里的其他资产与投影 id。 */
   function delegatedTargetPrompt(run: { targetSessionId?: string }): string | undefined {
@@ -7374,8 +7344,7 @@ describe("group_chat bus integration › delegated ability asset Projection subs
       );
       const run = await runDelegatedSurface(cid, surface, [seeded.asset.id]);
 
-      // 资产授予的放宽只针对"成员资格"，宿主审批门（KStar 投影未确认 →
-      // 暂停特权派单）原样保留：这是产品决定，不由本次放宽放开。
+      // 目录资产可授予不等于宿主审批已通过：KStar 投影未确认时仍暂停特权派单。
       expect(run.result?.isError).toBe(true);
       const payload = JSON.parse(run.result!.content) as { error_code?: string; error?: string };
       expect(payload.error_code).toBe("kstar_projection_not_confirmed");

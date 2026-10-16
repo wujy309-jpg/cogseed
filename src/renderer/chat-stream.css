@@ -4,9 +4,7 @@
    色板跟随全局浅色基调，暗色用 prefers-color-scheme 兜底。 */
 
 .cs-flow {
-  /* 消息容器是 flex column + align-items:flex-start（收缩适应内容）：
-     不显式占满宽度的话，流宽会被超长的 nowrap 行撑到容器之外
-     。width:100% 让行内省略在消息宽度内生效。 */
+  /* 消息容器按内容收缩；显式占满宽度，使超长 nowrap 行在消息宽度内截断。 */
   width: 100%;
   margin: 2px 0 6px;
   display: flex;
@@ -189,8 +187,7 @@
 
 /* ── 思考行： brain 图标 + 思考 + 时长 + 常显单行预览；点开看全文 ── */
 .cs-row-think .cs-think-dur { color: var(--color-stream-dim); }
-/* 思考全文（点击行展开，方案 C）：纯文本块——无边框、无底色、
-   无圆角，不算卡片。缩进对齐时间线正文。 */
+/* 思考全文点击展开，使用无边框、无底色的纯文本块，缩进对齐时间线正文。 */
 .cs-think-full {
   display: none;
   margin: 2px 0 2px 22px;
@@ -205,10 +202,8 @@
 .cs-row.cs-open .cs-think-live { display: none; }
 
 /* ── 时间线正文段（边说边执行的文字，交回前的时间线内呈现） ── */
-/* 实时 markdown 渲染后段内是块级 <p>/<ul>（各带自身 margin）——
-   pre-wrap 会保留源文本换行叠加段落间距，出现「一行内容隔几行空白」
-   。markdown 段内禁 pre-wrap、去
-   行高叠加，段落间距完全交给 markdown-body。 */
+/* Markdown 的块级 <p>/<ul> 自带 margin；不要再用 pre-wrap 叠加源换行，
+   段落间距统一由 markdown-body 控制。 */
 .cs-text { padding: 4px 6px; font-size: var(--font-size-3); color: var(--text, var(--color-stream-ink)); }
 .cs-text:not(:has(.markdown-body)) {
   /* 未渲染 markdown 的兜底形态（渲染器不可用退回纯文本时）保留原排版。 */
@@ -297,10 +292,7 @@
   .cs-btn { background: var(--color-stream-dark-hover); }
 }
 
-/* 需求：执行中的状态文案挂到**头像下方**，不再与名字并排。
-   DOM 上它紧跟 `.avatar-circle` 之后；这里让它另起一行（整行占满，即落在
-   头像+名字那一行之下），字号走既有 token，颜色用 currentColor 不硬编码。 */
-/* 折叠入口整条落到头像/名字那一行之下（不再并排）。 */
+/* 执行状态与折叠入口另起一行，位于头像和名字下方。 */
 .chat-msg-header .cs-badge {
   flex-basis: 100%;
   order: 9;

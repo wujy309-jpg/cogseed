@@ -2,15 +2,15 @@ import { ambiguousRecallAssetIds, assessSemanticApplicability, type SemanticAppl
 /**
  * Recall ability-asset search tool injected into every main-conv runner.
  *
- *   - `search_ability_assets` — 三种用法（2026-09-18 目录化）：
+ *   - `search_ability_assets` — 三种用法：
  *     ① 不带 query、不带 assetIds → **目录模式**：返回全量在用资产目录
  *        （一行一条：id/标题/类型/范围/成熟度/版本/使用次数/适用与禁用场景），
  *        模型自己看着目录判断要用哪几条 —— "目录在手，按需取用"；
- *     ② 带 assetIds → **正文模式**：按目录里的 id 取正文（≤6 条/次，截 2000 字）；
+ *     ② 带 assetIds → **正文模式**：按目录里的 id 取完整正文（≤6 条/次）；
  *     ③ 带 query → **混合检索**。搜索结果只记展示；按 ID 读完整正文
  *     才写 `agent_read` 注入回执与使用流水。
  *
- * 产品设计（2026-08-17）：引用（自动注入 / 预载投影）只显示本空间产生的
+ * 引用（自动注入 / 预载投影）只显示本空间产生的
  * 资产；全局资产池（所有空间产生的 + 全局资产）的使用交给 LLM 的主动检索
  * ——即本工具。只读，无需 localExec 权限（与 kb 工具一致）。
  */
@@ -179,8 +179,7 @@ function formatReadEntry(asset: RecallAbilityAssetRecord, version: string, paylo
   ].filter(Boolean).join('\n');
 }
 
-/** 画像记忆 → 检索池条目（不参与 status/spaceId 过滤——没有这些治理态）。
- *  2026-09-22 起画像来源为资产库（loadOntologyAssets 已 async）。 */
+/** 画像记忆 → 检索池条目；记忆本身不带 status/spaceId 治理态。 */
 async function profilePoolEntries(
   userId: string,
   context: RecallAgentReadContext,
@@ -208,7 +207,7 @@ async function profilePoolEntries(
 }
 
 /**
- * agent_read 留痕（2026-09-18）：模型自己取用的资产也写注入回执 + 使用流水。
+ * agent_read 留痕：模型自己取用的资产也写注入回执 + 使用流水。
  *   - 回执幂等（同回合同资产同版本只一条），所以重复取用不会刷次数；
  *   - 使用流水按"该回合首次取用"记一次，避免同回合反复读把统计刷高；
  *   - 记账失败只告警，绝不影响工具结果（模型拿得到内容优先）。
@@ -333,11 +332,9 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts, evidence: RecallTu
         blocks.push(`- [asset:${id}] 当前不可使用（准入检查暂不可用）`);
         continue;
       }
-      // 读取路径不拿"适用场景不符"当拒绝理由（2026-09-18 真机修正）：
-      // applicableWhen 是软提示，模型在目录里看过它、已自行判断适用性——按
-      // 用户消息做词面匹配来否掉模型的明确选择，会把这个功能废掉（真机实测：
-      // 模型按目录取正文被拦）。硬闸照旧：状态 / 来源可用 / scopePolicy /
-      // 禁用场景 / 敏感度 / Agent 与项目/空间白名单。
+      // applicableWhen 是目录中的适用性提示，不以词面匹配拒绝模型的明确读取。
+      // 硬边界仍包括状态 / 来源可用 / scopePolicy / 禁用场景 / 敏感度 /
+      // Agent 与项目/空间白名单。
       const reasons = recallAssetAgentReadBlockReasons(eligibility);
       if (reasons.length) {
         blocks.push(`- [asset:${id}] 当前不可使用（${blockReasonText(reasons)}）`);

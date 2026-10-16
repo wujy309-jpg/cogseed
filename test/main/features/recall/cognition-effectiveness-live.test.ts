@@ -1,5 +1,6 @@
-/** Reuse actual persisted GLM outputs; only their evidence protocol is new.
- * Invalid previous model quotes remain recorded and are never repaired. */
+/** Opt-in comparison of the isolated outputs created by cognition-quality-live.
+ * COGSEED_RECALL_LIVE_BUDGET_ROOT must point to that scenario's fixture root,
+ * including its persisted executions, transfer proof and original output cache. */
 import { expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';

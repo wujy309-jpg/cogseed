@@ -59,10 +59,8 @@ export interface RecallAssetTimelineItem {
    * 效果评价的**结论**（better / no_improvement / worse / rework /
    * insufficient_evidence / invalid）。
    *
-   * 必须和 `status` 分开带：效果证明记录里 `status` 只回答"这次评价本身可不可
-   * 归因"（valid / invalid），结论在 `outcome` 上。此前只带 status，渲染层拿
-   * 'valid' 去匹配结论词表永远落空，于是退回英文原文，页面上显示成
-   * "Effectiveness recorded / User feedback: rework"。
+   * 与 `status` 分开传递：`status` 表示评价是否可归因（valid / invalid），
+   * `outcome` 表示评价结论，渲染层分别匹配各自的词表。
    */
   outcome?: string;
   comparison?: { reason: string; baselineQuote?: string; resultQuote?: string };

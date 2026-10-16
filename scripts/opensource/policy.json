@@ -3856,7 +3856,6 @@
     "test/main/features/recall/cognition-quality-benchmark-score.ts",
     "test/main/features/recall/cognition-quality-benchmark.test.ts",
     "test/main/features/recall/cognition-quality-live.test.ts",
-    "test/main/features/recall/cognition-rule-blind-live.test.ts",
     "test/main/features/recall/cognition-selection.test.ts",
     "test/main/features/recall/confirmed-candidate-asset-revision.test.ts",
     "test/main/features/recall/context-projection-confirm-wake.test.ts",

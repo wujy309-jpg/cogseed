@@ -4,8 +4,7 @@
  * One bus instance per process. Per-cid state holds:
  *   - queues       : per-actor FIFO of inbound messages
  *   - workers      : holds one entry — the conversation's top-level turn
- *                    runtime (single FIFO inbox). G8d collapsed the old
- *                    per-actor worker map to this one runtime.
+ *                    runtime (single FIFO inbox).
  *   - listeners    : IPC stream subscribers for that conversation
  *
  * The runtime is lazy: `enqueue` calls `ensureRuntime(cid)` which spins the
@@ -172,11 +171,8 @@ function thinkingLevelForRun(): "off" | "low" | "high" | "auto" {
 /** 思考展示兜底辅助：本轮模型是否被识别为 reasoning 模型（deepseek/o系/
  * gemini-pro/grok 等全系）。按模型名前缀宽松判定——与
  * model_id_recognition.ts 的规则同源精简。
- * PR209 评审 M8：无显式模型名（execConfig.model 为空）返回 **false**
- * ——此前恒 true 会把 low 盲发给未显式指定模型的回合（实际走默认模型，
- * 可能非推理端点），与「识别不出不盲发」的注释矛盾。默认链路的思考
- * 兜底交给 pi-ai 模型目录的 defaultReasoning（已策展，更准确）。 */
-// 导出供回归测试（空模型名 → false 的收紧是 M8 的核心行为）。
+ * 无显式模型名（execConfig.model 为空）时返回 false，不向未知端点强加 low；
+ * 默认链路使用 pi-ai 模型目录的 defaultReasoning。 */
 export function _modelSupportsThinkingByDefault(item: QueueItem): boolean {
   const modelId = String(item.execConfig?.model || "").trim().toLowerCase();
   if (!modelId) return false;
@@ -794,26 +790,20 @@ type ProcessEvent = { stream: string; data?: unknown };
 type ProcessItem =
   | { type: "progress"; text: string; event?: ProcessEvent }
   | { type: "event"; event: ProcessEvent }
-  // PR209 评审 M9：思考 progress 的运行时标记（内存态专用，落盘 JSON.stringify
+  // 思考 progress 的运行时标记（内存态专用，落盘 JSON.stringify
   // 会带上但读取方忽略未知字段，无契约影响）。
   | { type: "progress"; text: string; event?: ProcessEvent; _thinking?: boolean };
 
 /**
- * conv-core 存储补差合并：老格式 processItems + chat_events 新条目合成单条
- * 过程轨迹，总量守住 MAX_PROCESS_ITEMS_PER_TURN（消息过程上限是既有不变量，
- * 见 bus-integration 饱和测试）。
+ * 将兼容格式 processItems 与 chat_events 条目合成单条过程轨迹，
+ * 总量不超过 MAX_PROCESS_ITEMS_PER_TURN。
  *
- * 顺序契约（2026-09-11 真机二次事故）：条目顺序即时间线，合并结果的相对顺序
- * 必须与到达序一致——渲染层一见 chatItem 就整体走事件重放（不再看老格式），
- * 顺序错了历史里就成了「中途思考全堆到末尾」。取舍只决定丢谁，绝不改变保留
- * 项的前后关系（19:38 消息：收集器 33 段思考本已与工具交错，落盘变成末尾
- * 14 段——正是超额路径按"非 reasoning 在前"重排 + 截断所致）。
+ * 渲染层遇到 chatItem 会整体按事件重放，因此合并结果必须保持到达序。
+ * 预算取舍只决定保留哪些条目，不能改变它们的相对顺序。
  *
  * 超额预算分配：
  *   1. 老格式思考 progress（_thinking 内存态标记）与 chat_events reasoning 是
- *      同一次思考的重复存储——超额时先从后往前丢这些重复项换预算。真机
- *      19:38：155+164 超 19 条，丢 19 条重复思考后 136+164=300 恰好落回预算
- *      内，零丢失且时间线完整（对齐"丢谁不丢序"）。
+ *      同一次思考的重复存储，超额时先从后往前丢这些重复项。
  *   2. 仍超额才按优先级选保留集合：turn 终态（收束态总耗时的唯一来源）>
  *      非 reasoning（工具/正文/usage）> reasoning；选中后仍按原序输出。
  * 老格式已打满上限、且没有重复思考可丢时新条目全弃——历史重建回退老路径，
@@ -1352,7 +1342,7 @@ export interface ActiveTurn {
 // ── Per-cid state ────────────────────────────────────────────────────────
 
 interface QueueItem {
-  /** Target actor of this turn — who runs it. G8d: top-level turns funnel
+  /** Target actor of this turn — who runs it. Top-level turns funnel
    * through one per-conversation runtime (not a per-actor worker map), so the
    * target rides on the item and the runtime sets its `actor` per turn before
    * `runTurn`. */
@@ -1399,10 +1389,10 @@ interface QueueItem {
    * post-turn enqueue is suppressed — otherwise every silent observation
    * would emit a "(no reply)" placeholder bubble and pollute the chat. */
   tap?: boolean;
-  /** G8d: this turn is an in-process nested sub-run (a dispatch tool running a
+  /** This turn is an in-process nested sub-run (a dispatch tool running a
    * worker/agent turn inside its caller's turn). Threaded into
    * `streamChatWithModel` so the run skips the global concurrency slot the
-   * parent already holds (charter §6). Top-level turns leave it unset. */
+   * parent already holds. Top-level turns leave it unset. */
   nested?: boolean;
   /** Whether files from this turn are themselves being delivered to the user.
    * Process dispatches still return paths to the commander and retain files in
@@ -1422,7 +1412,7 @@ interface QueueItem {
    *  triggering user message. Consumed by runActorTurnBody to override the
    *  model / thinking strength for THIS turn only. */
   execConfig?: TurnExecutionConfig;
-  /** 本条回合所属的协作运行 id（设计 §4.1）：终态回复落盘时带上，便于按 run 汇总。 */
+  /** 本条回合所属的协作运行 id：终态回复落盘时带上，便于按 run 汇总。 */
   runId?: string;
   /** A coordinated nested attempt keeps run accounting pending until the
    * retry/fallback policy selects the actor's terminal outcome. */
@@ -2469,19 +2459,9 @@ export interface ProjectedUserTaskMessageInput {
 }
 
 /**
- * R-11: ask the commander for exactly one reporting round once every actor of this
- * run has reached a terminal. Shared by the normal actor-result path, the
- * worker-failure path, and the projected/backend (wake-dispatched) member path —
- * a failed worker must produce a *degradation* report ("X failed: reason") instead
- * of dying silently, which is exactly what happened on 2026-10-13: a network
- * failure ("fetch failed") left report_enqueued unset and the commander never said
- * anything.
- *
- * 2026-10-14 16:24 (cid 38591293f03a): a wake-dispatched worker delivered at
- * 16:24:31 through the projection path, which never called this at all — no
- * `actor report decision` line was ever logged, so the commander's last word stayed
- * "等你批准" after the worker had already finished and the run summary said
- * completed. The projected member terminal therefore owes the same check.
+ * Ask the commander for exactly one reporting round once every actor of this run
+ * has reached a terminal state. Normal results, worker failures and projected
+ * backend results share this check, so failed workers are reported as well.
  */
 async function enqueueActorReportIfOwed(
   uid: string,
@@ -2647,7 +2627,7 @@ export async function appendProjectedAgentMessage(input: ProjectedAgentMessageIn
     _recordTaskRunOutcome(state, input.terminalStatus ?? (input.failureKind ? 'failed' : 'completed'));
     await recordProjectedMemberRunTerminal(input, null);
     await _syncStateStatus(state);
-    // R-11：工人（含唤醒派发）交付后把 commander 叫回来汇报一轮。必须放在
+    // 工人（含唤醒派发）交付后把 commander 叫回来汇报一轮。必须放在
     // _syncStateStatus 之后——收尾要求 isQuiescent，先入队会让运行一直不 finalize。
     await enqueueActorReportIfOwed(
       input.uid,
@@ -2746,8 +2726,7 @@ export async function appendProjectedAgentMessage(input: ProjectedAgentMessageIn
   await recordProjectedMemberRunTerminal(input, msg);
   if (state.taskRun) state.taskRun.lastMessageId = msg.id;
   await _syncStateStatus(state);
-  // R-11：同上——收尾之后再叫 commander 汇报（真机 2026-10-14 16:24：这条投影
-  // 路径此前从不触发汇报，工人的结果交付了，commander 的上一句还停在"等你批准"）。
+  // 先完成终态同步，再叫 commander 汇报，避免排队中的汇报阻止运行完成。
   await enqueueActorReportIfOwed(
     input.uid,
     input.cid,
@@ -2853,17 +2832,17 @@ export interface EnqueueParams {
     agentId: string;
     origin: 'user_selection' | 'cli_fallback' | 'active_floor' | 'failed_turn_retry' | 'message_edit';
   };
-  /** 多 Agent 提交快照（PRD FR-016）：会话成员、本条点名与按来源的模型配置，
+  /** 多 Agent 提交快照：会话成员、本条点名与按来源的模型配置，
    *  由 group facade 校验后落在用户消息上，供历史回读与运行审计。 */
   member_snapshot?: GroupMessage['member_snapshot'];
-  /** 本条所属的协作运行 id（设计 §4.1）：由 group facade 在提交被接受时创建，
+  /** 本条所属的协作运行 id：由 group facade 在提交被接受时创建，
    *  随每个收件人的队列项与消息落盘，把多次回合归到一次提交。 */
   runId?: string;
   /** Durable host-owned accounting block; rendered as a summary, never model-authored. */
   run_summary?: GroupMessage['run_summary'];
   /** 多 Agent 按来源执行配置：key = 'internal'（CogSeed + Task Agent 共享）或
    *  外接实例 agent_id。派发时按 recipient 的来源取用，替代单一 executionConfig
-   *  广播——否则内部模型会串到外接实例（FR-007/SC-002）。 */
+   *  广播，防止内部模型配置被用于外接实例。 */
   memberConfigs?: Record<string, TurnExecutionConfig>;
   /** 本次派发里哪些 recipient 是「外接实例」。外接只认自己那份配置；名单里没配就
    *  跟随该 Agent 自身默认——绝不能回落成内部共享配置（否则内部 API 连接会串到
@@ -2957,7 +2936,7 @@ export interface EnqueueParams {
  *   - If sender was an agent, also marks them as in_flight=false (their
  *     turn just ended) — though that's also done by the worker loop.
  */
-/** 按来源执行配置的内部共享键：CogSeed 与全部 Task Agent 共用一套（FR-007）。
+/** 按来源执行配置的内部共享键：CogSeed 与全部 Task Agent 共用一套。
  *  外接实例用自己的 agent_id 作为键，因此「未被显式列为外接」的收件人一律用
  *  internal —— 这样 commander、内进程 Agent、以及不在成员名单里的收件人
  *  都拿到内部共享配置，外接实例拿到各自那份，绝不互相串用。 */
@@ -3342,8 +3321,7 @@ async function _enqueueBody(
   to = Array.from(new Set(to));
 
   // 空间作用域 at dispatch time: 会话挂空间 → 丢弃未绑定空间的 recipient
-  // （CLAUDE.md §6 — "recipient 不可用则转交 commander"）。reserved ids
-  // （user/commander）恒放行。过滤后空 `to` 落入下方 sender-default 规则。
+  // reserved ids（user/commander）恒放行。过滤后空 `to` 落入下方 sender-default 规则。
   // 廉价：一次 space.json 读 + 空间派生集解析，resolveSpaceScope 已 memoise
   // 文件存在性。会话无 space_id（orphan）→ 跳过（不受限）。
   try {
@@ -3624,7 +3602,7 @@ async function _enqueueBody(
   const useSelections = _normalizeUseSelections(params.use_selections);
   const dispatchMembers = await readMembers(uid, cid);
   const recipientEpochs: Record<string, number> = {};
-  // 本次用户提交对应的协作运行：顺序强约束校验据此把步骤对回提交（设计 §4.4）。
+  // 本次用户提交对应的协作运行：顺序强约束校验据此把步骤对回提交。
   if (params.runId && fromActorId === USER_ID) {
     state.memberRunId = params.runId;
     state.memberRunIds.add(params.runId);
@@ -4084,14 +4062,9 @@ async function _enqueueBody(
   // echo and the downstream dispatch, which is exactly how form submissions
   // ended up as fake loading bubbles until history polling caught up.
   if (fromActorId === USER_ID) {
-    // Phase-0 chokepoint (was lost from commit 76358a8e per
-    // `docs/plans/expert-signals-phase0-wiring-gaps.md`): cancels pending
-    // silence check + extracts text-class signals (accept / correction /
-    // reject / edit) against the cached last agent message. Fire-and-
-    // forget; the correctionDetected return value is unused here — the
-    // live consumer is the `correction` signal extracted inside
-    // onUserMessage itself (the runner-side RunMetrics counter it once
-    // fed was removed with the reflection-trigger subsystem).
+    // Cancel the pending silence check and extract accept/correction/reject/edit
+    // signals against the cached last agent message. Signal emission is owned
+    // by onUserMessage; this caller does not consume its return value.
     onUserMessage({
       uid,
       cid,
@@ -4798,8 +4771,7 @@ function _stripLeadingRecipientMention(
 
 // ── Worker loop ──────────────────────────────────────────────────────────
 
-/** Map key for the conversation's single top-level-turn runtime. G8d collapsed
- * the old per-actor worker map to ONE runtime per conversation: every top-level
+/** Map key for the conversation's single top-level-turn runtime. Every top-level
  * turn (user→commander, user→agent) runs through one FIFO inbox, serially —
  * dispatch fan-out now happens in-process inside a turn (`runNestedDispatch`),
  * not via concurrent peer workers. The map stays a Map (so quiescence / abort /
@@ -5012,7 +4984,7 @@ async function runWorkerLoop(state: CidState, w: WorkerState): Promise<void> {
   }
 }
 
-/** interrupt-steer (G9): pull pending USER messages aimed at the running actor
+/** interrupt-steer: pull pending USER messages aimed at the running actor
  *  off the FIFO so the runner can fold them into the current run (as user turns)
  *  instead of running them as a separate follow-up turn. Only plain text-only
  *  user messages are folded — items WITH attachments stay queued so their
@@ -5060,7 +5032,7 @@ async function runTurn(
 
   // Loop bookkeeping (running flag, in-flight marker, turn-start log) is the
   // scheduler's; the reusable turn body lives in `runActorTurn`. The top-level
-  // loop reads only its privacy-safe terminal classification; G8d's nested
+  // loop reads only its privacy-safe terminal classification; the nested
   // dispatch path additionally reads back text/produced for its caller.
   w.running = true;
   w.abortSource = null;
@@ -5082,7 +5054,7 @@ async function runTurn(
 
 /** Result of one actor turn. `early` = a pre-stream guard already handled the
  *  turn (emitted its own bubble + cleared in-flight) and the caller must do
- *  nothing more. `completed` carries the turn's synthesized output: G8d's
+ *  nothing more. `completed` carries the turn's synthesized output: the
  *  dispatch tool runs an actor turn as a nested sub-run and reads `text` /
  *  `produced` to hand back to its caller; the top-level loop uses only its
  *  terminal status. */
@@ -5156,7 +5128,7 @@ async function recordMemberRunTurnResult(
       artifacts,
     });
   }
-    // R-11 (decision 2026-10-13): the commander waits for the actors it
+    // The commander waits for the actors it
     // dispatched and then reports. Shared with the worker-failure path so a failed
     // worker produces a degradation report instead of dying silently.
     await enqueueActorReportIfOwed(state.uid, state.cid, item.runId, actor.id, actor.name || "");
@@ -5170,8 +5142,8 @@ type CoordinatorTurnContext = {
 };
 
 // One actor turn: per-role prompt/tools, model (or CLI agent) stream,
-// structured-output parsing, visible-bubble persistence, and (still, until
-// G8d step 3) handback / dispatch flush / ephemeral cleanup. See charter §5.
+// structured-output parsing, visible-bubble persistence, handback, dispatch
+// flush and ephemeral cleanup.
 async function runActorTurn(
   state: CidState,
   w: WorkerState,
@@ -5458,8 +5430,7 @@ async function runActorTurnBody(
 
   // 空间作用域（删项目层后：会话直接挂空间，严格作用域 = 空间派生集 agents）。
   // `null` = orphan 会话（无 space_id）或空间缺失 → 回退全局可见。每 turn 解析一次，
-  // 与 workspace resolver 并列，注入 commander prompt。见 CLAUDE.md §6（外层交集，
-  // 4 个 enable-filter 站点之前，勿加第 5 个）。
+  // 与 workspace resolver 并列，注入 commander prompt，并与启用状态过滤取交集。
   let turnSpaceScope: import("../spaces").SpaceScope | null = null;
   if (turnSpaceId) {
     try {
@@ -5792,7 +5763,7 @@ async function runActorTurnBody(
       && !item.internalControl
       && process.env.COGSEED_KSTAR_HOST_ROUTING !== '0'
     ) {
-      // 用户新消息到达：清除该会话的 pending 自动闭环（设计 §5）。
+      // 用户新消息到达：清除该会话的 pending 自动闭环。
       // 之后 hostRouteTaskTurn 的 judge 判定 continuation 决定任务去留。
       const { cancelAutoClose } = await import('../kstar/task-closure');
       await cancelAutoClose(uid, cid);
@@ -5864,9 +5835,9 @@ async function runActorTurnBody(
       );
     }
     // skillList stays undefined for commander — every skill is globally
-    // visible (skills are NOT project-scoped this round; see CLAUDE.md §6).
+    // visible; this skill list is not project-scoped.
   } else if (actor.kind === "worker") {
-    // G8b ephemeral worker — no agent.json. Synthesize a minimal worker config
+    // Ephemeral worker — no agent.json. Synthesize a minimal worker config
     // and reuse the agent-in-group prompt (duck-typed). The default tool set
     // (files / shell / kb / …) comes from the runner like any LLM turn; no
     // extraTools, no skills, no inputs/forms (headless — see WORKER_WORKFLOW).
@@ -6206,7 +6177,7 @@ async function runActorTurnBody(
             assetId: asset.id,
             assetVersion: asset.version,
           }));
-          // 派发授权资产同样落 receipt + 登记 reuseTurnIds（PRD 3.6 闭环）：
+          // 派发授权资产同样落 receipt + 登记 reuseTurnIds：
           // worker 真实加载了 Commander 授权的资产，终态时应能据此升档。
           // 与投影注入同一口径：回执按「确实派发了资产」落，reuseTurnIds 才看
           // 有没有 taskRun——否则无任务运行时派发的资产不留任何加载凭证。
@@ -6245,7 +6216,7 @@ async function runActorTurnBody(
     // 出生继承的认知。和上面的 Recall 投影是两条来源：投影是这次会话里确认过的
     // 上下文，继承是这个 Agent 出生时就带着的。两者都只走宿主拼的 system prompt，
     // CLI Agent 不消费这条路径，所以也不能拿到（否则它事后会声称用过）。
-    // actor.id 就是 agent id（上面 getAgent(actor.id) 用的同一个）。G8b 临时 worker
+    // actor.id 就是 agent id（上面 getAgent(actor.id) 用的同一个）。临时 worker
     // 没有 agent.json，读出来是 null，走同一条降级路径。
     if (agentsFeat.isValidAgentId(actor.id)) {
       try {
@@ -6301,8 +6272,7 @@ async function runActorTurnBody(
   // skill_invoked at each successful `read_file` of a SKILL.md. Drained
   // at turn-end below using the persisted agent msg id as `turn_id`, so
   // downstream signals JOIN cleanly with text/tool_failure/retry on the
-  // same turn. Silent turns (no persisted message) drop the buffer — see
-  // expert-signals-skill-attribution plan §3.4 + `turn_hooks.ts`.
+  // same turn. Silent turns (no persisted message) drop the buffer.
   const skillBuffer = createSkillTurnBuffer();
   // Per-turn list — feeds the deliverable footer in the assistant bubble. The
   // conversation-scoped `state.producedPaths` is what uniquify consults
@@ -6757,15 +6727,8 @@ async function runActorTurnBody(
       // （如 project_dir）未满足时不派发，返回表单块由 runTerminal 提升为
       // <agent-input-form> 询问用户。
       const sharedFormBlock = await _maybeBuildCliInputForm(uid, cid, cliAgent);
-      // G-28 话题隔离（2026-09-11 停用自动注入）：此前把"当前开放的 KStar
-      // 需求 id"作为 goal 传入信封，sessionForGoal 按 (会话,对端,goal) 分
-      // P3394 会话。但 KStar 的需求粒度是"每条实质提问一个新需求"——同一
-      // 会话连问两个问题 goal 就变，G-28 退化为"每问必开新会话"，外部智能
-      // 体对几分钟前的上下文全部失忆（实测同会话三连问产生三个 P3394 会
-      // 话、三个 codex 原生 thread）。会话连续性（同会话+同对端=同一会话）
-      // 是外部协作的主目标，优先于话题隔离；sessionForGoal 的 goal 通道与
-      // runP3394GatewayTurn 的 goal 参数保留——将来 KStar 需求粒度变粗
-      // （真正的长话题）或出现显式"新话题"用户动作时，可恢复注入。
+      // 不把逐条提问生成的 KStar 需求 id 注入 goal，避免每次提问都新建
+      // P3394 会话。同一会话与同一对端保持上下文连续；goal 参数仍供显式话题隔离使用。
       const cliOut = sharedFormBlock
         ? { text: sharedFormBlock, produced: [] as string[] }
         : isP3394Gateway
@@ -6838,13 +6801,12 @@ async function runActorTurnBody(
             },
             onProcess: forwardProcess,
           })
-        // G-19（兼容期结束）：legacy `cli` runtime 读回即迁移为 p3394-gateway
-        // （G-05 迁移器），直连执行分支已删除——此处不再有非网关路径。
+        // legacy `cli` runtime 读回即迁移为 p3394-gateway，此处不再支持直连执行。
         : await (async (): Promise<{ text: string; produced: string[]; error?: string; failureKind?: string; failureCode?: string; infrastructureFailure?: boolean; aborted?: boolean }> => {
             return {
               text: "",
               produced: [],
-              error: "p3394_gateway_unreachable: legacy direct-CLI path removed (G-19)",
+              error: "p3394_gateway_unreachable: legacy direct-CLI path removed",
               failureKind: "runtime",
               failureCode: "p3394_gateway_unreachable",
               infrastructureFailure: true,
@@ -7203,7 +7165,7 @@ async function runActorTurnBody(
           }
           : {}),
         ...(item.nested ? { nested: true } : {}),
-        // interrupt-steer (G9): on the top-level turn, fold user messages the
+        // interrupt-steer: on the top-level turn, fold user messages the
         // user sends mid-run into THIS run. Nested sub-runs (dispatched
         // workers) get no steer — the user can't address a worker, and their
         // synthetic queue is empty anyway.
@@ -7775,7 +7737,7 @@ async function runActorTurnBody(
               // Space-scoped conv: auto-add the new agent to the space's
               // extra_agents so it's actually reachable from this conversation
               // (commander picker filters by the space scope; LLM dispatch is
-              // gated by the same space scope per CLAUDE.md §6).
+              // gated by the same space scope).
               // Without this hop the user creates an agent and immediately
               // can't @-mention it from the same conv — observed bug shape
               // when the space predates the new agent.
@@ -8129,7 +8091,7 @@ async function runActorTurnBody(
     outcome = { kind: "persist", text: "" };
   }
 
-  // G8b ephemeral worker: produces NO user-visible bubble. Its entire output
+  // Ephemeral worker: produces NO user-visible bubble. Its entire output
   // is handed back to the commander below (read from `workingText`), so force
   // silent here to skip the user-facing persist. The worker is internal — the
   // user sees the commander's synthesis, not the raw worker turn.
@@ -8232,18 +8194,12 @@ async function runActorTurnBody(
       ...(citation.matchScore !== undefined ? { match_score: citation.matchScore } : {}),
       match_method: citation.matchMethod,
     }));
-      // R-11 gate (decision 2026-10-13): never present this as the end of the
-      // turn while the actors this run dispatched are still running. The commander
-      // waits for them and reports once they finish — recordMemberRunTurnResult
-      // then wakes it for exactly one reporting round, and that turn ends
-      // normally. Without this gate the user reads a finished answer while workers
-      // still spin, which is the 2026-10-12 shape (commander concluded 17:13,
-      // literature-review worker still running).
+      // While dispatched actors are pending, this is an interim answer.
+      // recordMemberRunTurnResult wakes the commander for one reporting round
+      // after all actors finish; that round can close the turn.
       let awaitingDispatchedActors: string[] = [];
-      // The commander's own turn is not always tagged with the run: on
-      // 2026-10-13 the run belonged to the dispatch (mentions: 0), so requiring
-      // `item.runId` here skipped the gate exactly when it was needed. Fall back
-      // to the run this conversation is currently tracking.
+      // A dispatch may own the run even when the commander's item has no runId.
+      // Fall back to the run this conversation is currently tracking.
       const gateRunId = item.runId || state.memberRunId;
       if (gateRunId && actor.kind === 'commander') {
         try {
@@ -8320,7 +8276,7 @@ async function runActorTurnBody(
       // consumes the streaming placeholder + finalizes in place. Without
       // this flag, mid-turn tool-emitted messages (plan_executor's
       // dispatch) would also wrongly consume the placeholder.
-      // R-11: with actors still pending this is an interim answer, not the
+      // With actors still pending this is an interim answer, not the
       // end of the turn; the reporting round after the last worker closes it.
       turn_end: awaitingDispatchedActors.length === 0,
       ...(item.runId ? { runId: item.runId } : {}),
@@ -8573,9 +8529,8 @@ async function runActorTurnBody(
   }
 
   // Expert-signals: drain skill_advertised / skill_invoked using the
-  // persisted msg id as turn_id (per turn_id convention — see
-  // PC/CLAUDE.md §4 constraint 9 + expert-signals plan §3.4). Silent
-  // turns drop the buffer; CLI agents bypass SkillLoader so the buffer
+  // persisted msg id as turn_id. Silent turns drop the buffer;
+  // CLI agents bypass SkillLoader so the buffer
   // is empty for them and the drain is a no-op.
   if (persistedMsg) {
     skillBuffer.drainAndEmit({
@@ -8587,11 +8542,9 @@ async function runActorTurnBody(
       errText: errText || undefined,
       aborted,
     });
-    // Phase-0 chokepoint (was lost from commit 76358a8e per
-    // `docs/plans/expert-signals-phase0-wiring-gaps.md`): caches agent msg
-    // for the next user-reply text-signal JOIN, emits tool_failure when
-    // errText is set, schedules silence check (cancelled by onUserMessage
-    // when the user replies). Sync + self-guarded against errors.
+    // Cache the agent message for the next user-reply text-signal JOIN,
+    // emit tool_failure when errText is set, and schedule a silence check
+    // cancelled by onUserMessage when the user replies. Sync and self-guarded.
     onAgentTurnEnd({
       uid,
       cid,
@@ -8708,10 +8661,7 @@ async function runActorTurnBody(
 
   // 状态由**记录**决定，不由模型的话决定：模型可以自称 waiting_input，但若这条
   // 等待所依据的唤醒请求已经有结论（approved/executed/rejected/expired），那这个
-  // "等用户"就是陈旧的。真机 2026-10-14 16:24（cid 38591293f03a）：唤醒 16:24:21
-  // 批准 + 工人 16:24:31 交付，commander 回合 16:24:36 才落盘并自称 waiting_input
-  // → 任务被打成 waiting_user 永久留在待办，R-11 汇报回合也不再触发（同一次运行
-  // 的 run_summary 写的是 completed）。只复核**模型自称**的等待；真表单
+  // "等用户"就是陈旧的。只复核模型自称的等待；真实表单
   // （form / planInteraction === "open"）是货真价实的等人输入，不在复核范围。
   const declaredWaitIsStale =
     !aborted &&
@@ -9727,7 +9677,7 @@ async function startPreparedNestedDispatchForTool(
   prepared: PreparedNestedDispatchStep,
   runId?: string,
 ): Promise<{ content: string } | null> {
-  // 顺序强约束（设计 §4.4）：本条提交要求按点名顺序协作时，启动依赖步骤之前
+  // 顺序强约束：本条提交要求按点名顺序协作时，启动依赖步骤之前
   // 校验依赖图；不满足就**不启动**，把原因交回协调者纠正，而不是静默并行执行。
   const sequentialBlock = await _guardSequentialPlanBeforeStart(
     state,
@@ -9768,7 +9718,7 @@ async function _guardSequentialPlanBeforeStart(
       agent_id: step.actor_id || '',
       depends_on: step.depends_on || [],
     }));
-    // 逐步启动校验（2026-09-20 复盘 21:34 误拦后）：只看"这一步该不该放行"，
+    // 逐步启动校验：只看"这一步该不该放行"，
     // 不再用完整计划链去卡第一步。
     const verdict = prepared.step.group_chat_run_id !== runId
       ? {
@@ -9936,7 +9886,7 @@ async function gateNestedAgentWake(
   if (actor.kind !== "agent" || allowLegacyGroupChatFormalAgentExecutorForTest())
     return null;
 
-  // Membership rule (requirement owner, 2026-10-13): an agent that has ALREADY
+  // Membership rule: an agent that has ALREADY
   // joined this conversation is woken directly — a repeat @ of a known member is
   // unambiguous. The FIRST time an agent enters the conversation, approval is
   // required as before. Membership is therefore the criterion, not the run: the
@@ -9944,10 +9894,7 @@ async function gateNestedAgentWake(
   // the member table is written when the user approves the first wake. Failing to
   // read members falls through to the gate, i.e. fails closed.
   try {
-    // The run record already knows who this run is about (`member_agent_ids`),
-    // and the 21:49 run logged `members: 1` — so consult it first: the member
-    // *file* read below needs the conversation's project hint, and passing null
-    // silently missed the member on 2026-10-13 (wake prompt still appeared).
+    // Check the run's member_agent_ids before reading conversation membership.
     if (runId) {
       const { readRun } = await import("./run_store");
       const run = await readRun(state.uid, state.cid, runId);
@@ -9961,9 +9908,7 @@ async function gateNestedAgentWake(
         return null;
       }
     }
-    // Membership must be read with the conversation's project hint: passing null
-    // looked at the wrong layout on 2026-10-13 and missed an agent that had
-    // already joined, so the wake prompt appeared again.
+    // Membership must use the conversation's project hint to resolve its layout.
     const chatsFeature = await import("../chats");
     const conversation = await chatsFeature.getConversation(state.uid, state.cid).catch(() => null);
     const members = await readMembers(state.uid, state.cid, conversation?.project_id ?? null);
@@ -10074,7 +10019,7 @@ export function _redactDispatchToolResult(inner: unknown): void {
 
 /** Wrap a sub-actor's reply + produced files as the `<worker-result>` block the
  * commander reads back. Single source for both the async handback wake and the
- * G8d in-process nested dispatch, so the format the commander parses never
+ * in-process nested dispatch, so the format the commander parses never
  * drifts between the two. */
 export type NestedDispatchOutcome =
   | {
@@ -10402,14 +10347,14 @@ function extractBlockedFormFromWorkerResult(
   return { form_id: formId, agent_id: agentId };
 }
 
-/** G8d step 3: run a dispatched sub-actor's turn IN-PROCESS, synchronously,
+/** Run a dispatched sub-actor's turn IN-PROCESS, synchronously,
  * inside the caller's (commander's) turn, and return its result as a
  * `<worker-result>` block — the dispatch tool returns this as its tool result,
  * so the commander's stream resumes with the sub-run's full reply in context.
  * This is the single-layer replacement for the old stage → turn-end flush →
  * async worker → `wakeWithWorkerResult` re-wake: the handback IS the tool
  * result. The sub-run is `nested` (skips the global concurrency slot the caller
- * already holds — charter §6) and chains its abort to the caller's tool signal
+ * already holds) and chains its abort to the caller's tool signal
  * so a group abort cascades into it. NOT registered in `state.workers`: it is a
  * transient sub-turn, not a scheduled roster worker. */
 async function runNestedDispatch(
@@ -10566,9 +10511,9 @@ async function runNestedDispatch(
     ...(runId ? { deferRunTerminal: true } : {}),
   };
   // Bound concurrent nested dispatches: when the commander fans out several
-  // run_worker/dispatch_to calls in one turn (G4 runs them concurrently),
+  // run_worker/dispatch_to calls concurrently in one turn,
   // dispatchSlots caps how many actually run at once — the bound that replaces
-  // the global slot these nested runs skip (charter §6/§9). Acquired only here
+  // the global slot these nested runs skip. Acquired only here
   // (the commander dispatches; workers/agents have no dispatch tools), so it is
   // never re-entrant → no deadlock.
   const [, releaseDispatch] = await dispatchSlots.acquire();
@@ -13842,7 +13787,7 @@ async function buildCommanderExtraTools(
         if (!legacy && inputWantsWrite) {
           return _toolError("Anonymous run_worker is read-only. Formal Agent work must use dispatch_to.");
         }
-        // Anonymous ephemeral worker — the commander's private isolated helper. G8d step 3:
+        // Anonymous ephemeral worker — the commander's private isolated helper:
         // run it in-process, synchronously, and hand its FULL result straight
         // back as this tool's result (single-layer dispatch — no staging, no
         // turn-end flush, no re-wake; the handback IS the tool result).

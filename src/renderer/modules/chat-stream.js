@@ -603,7 +603,7 @@ function _csApplyFlowOwner(flow, opts) {
 }
 
 /** 交出话权：commander 把 floor 交给某个 agent 后，它的
- *  回合还没结束（R-11 等齐汇报），但此刻它没有在跑——必须立刻终态化，否则
+ *  回合还没结束（等待汇报），但此刻它没有在跑——必须立刻终态化，否则
  *  主 Agent 与 worker 同时显示运行态，看起来像两个执行。
  *  只冻结「运行中且不是新 floor」的流：新 floor 的 actor 自己不动。
  *  「运行指示 = 当前持有 floor」——话权回到该 actor 时由
@@ -905,7 +905,7 @@ function _csAppendReasoning(body, text) {
     row = document.createElement('div');
     row.className = 'cs-row cs-row-think';
     row.dataset.csT0 = String(Date.now());
-    // 点击行展开/收起全文（方案 C：纯文本块，无卡片样式）。
+    // 点击行展开/收起全文（纯文本块，无卡片样式）。
     row.addEventListener('click', () => row.classList.toggle('cs-open'));
     body.appendChild(row);
   }
@@ -931,7 +931,7 @@ function _csCloseThinkRow(body, silent, endAtMs) {
   _csRenderThinkRow(last);
 }
 
-// ── 交互卡（M2：审批/提问——需要按钮/输入，保留轻边框卡） ──────────────────
+// ── 交互卡（审批/提问需要按钮或输入，保留轻边框卡） ──────────────────
 
 function _csReplyInteraction(interactionId, payload) {
   const invoke = window.cogseed && typeof window.cogseed.invoke === 'function'
@@ -1036,8 +1036,7 @@ function _csRenderInteractionCard(body, ev) {
 /** 回合收尾：时间线「开放段」（最终正文）交回 conversation 原管道
  *  （markdown/结构块保留），流内文字段只移除开放段——已关闭段
  *  （cs-closed=被工具/思考截断的中间叙述）保留在时间线里按原时序
- *  展示（实机反馈 展开执行过程只见工具调用，AI 的中间
- *  叙述无处可见）。流宿主=消息元素。 */
+ *  展示。流宿主为消息元素。 */
 function _csFinalizePanelText(flow) {
   // 开放段（无 cs-closed 标记）= 回合收尾时仍未被截断的最后一段 =
   // 最终正文；已关闭段是中间叙述，留在过程时间线。
@@ -1269,7 +1268,7 @@ window.chatStreamHandleEvent = function chatStreamHandleEvent(cid, anchor, chatE
   }
 };
 
-// ── bash 审批桥接（M2.1：敏感操作审批进入消息流上下文） ────────────────────
+// ── bash 审批桥接（敏感操作审批进入消息流上下文） ────────────────────
 //
 // bash:permission 弹窗（bash_permission.js）照常工作；本桥接把同一请求
 // 镜像成当前会话活动流里的审批卡——用户在消息流上下文里看到"哪一步

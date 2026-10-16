@@ -1,8 +1,7 @@
 /* ============================================================================
  * 认知资产 · 候选族零件（cognition-assets/review-candidate.js）
  *
- * 自 views.js 机械拆出（零行为变更）：候选判定 / 徽章 / 列表卡 /
- * 确认表单 / 依据链 / 版本冲突块 / 候选详情等候选族函数原样迁入。
+ * 提供候选判定、徽章、列表卡、确认表单、依据链、版本冲突与详情。
  * 共享零件（按钮/章/术语表/来源解析/折叠件）经 NS.ui 取用——本文件必须
  * 晚于 views.js 加载（lazy-features.js recall 组顺序）。
  * ========================================================================== */
@@ -443,14 +442,7 @@
     const warnHtml = broken
       ? `<span class="warn ca-card-warn-inline" title="${esc(T('cognition.candidate_evidence_all_unavailable', '这条候选的大部分来源暂时无法核对。原会话可能仍然存在；请查看可打开的来源，补充依据或选择不保存。'))}">${esc(T('cognition.candidate_evidence_all_unavailable', '这条候选的大部分来源暂时无法核对。原会话可能仍然存在；请查看可打开的来源，补充依据或选择不保存。'))}</span>`
       : '';
-    /* 动作区（同轮标注）：「…其他处理」折叠开关撤下——保存/稍后处理/
-     * 不保存/看内容与证据（稍后处理态另有「恢复」）**全部平铺、右侧、
-     * 同一行**；不再藏二级折叠。候选确认闸与通道不变，纯呈现层收敛。 */
-    /* 三件套沿革：主按钮 primary 视觉保留；直接确认沿
-     * 既有 cand-adopt-with-form 通道：卡片不在 .ca-candidate-detail 里，
-     * readCandidateForm 就近找不到表单 → 按未携带编辑确认（内容原样保存）。
-     * 卡片整体不再是点击区——标题行与「看内容与证据」进详情，避免行内按钮
-     * 与卡片跳转抢点击。 */
+    /* 直接保存沿用 cand-adopt-with-form；列表卡没有编辑表单时按未携带编辑处理。 */
     const caps = candidate.capabilities || {};
     const labels = candidateDecisionLabels(candidate);
     const primaryLabel = candidateUpdateType(candidate)
@@ -462,9 +454,7 @@
     const actionBtns = [
       primaryBtn,
       caps.canReject ? btn(labels.reject, 'cand-decide', { id: candidate.id, data: { action: 'reject' }, small: true, className: 'o' }) : '',
-      // 「看内容与证据」按钮已删：整卡即详情入口
-      // （act 提到卡根，委托层 closest 最近匹配——点按钮命中按钮自身动作，
-      // 不会误触跳转），按钮成了第四个重复入口。
+      // 整卡打开详情；委托层的 closest 让行内按钮优先命中自身动作。
     ].filter(Boolean);
     const actionsHtml = actionBtns.length
       ? `<div class="c5 ca-card-actions ca-card-actions-flat">${actionBtns.join('')}</div>`
@@ -571,16 +561,9 @@
     return `<div class="note ca-statement-warning">${esc(T('cognition.statement_warning_prefix', '正文建议调整（可改后保存）：'))}${esc(lines)}</div>`;
   };
 
-  /** 准入软提醒（）：主进程随 capabilities 专门下发的
-   *  eligibilityAdvisories——soft_warning 的来源（candidate-capabilities.ts：
-   *  「不阻断但应如实告知的欠缺」）。此前渲染层零消费，soft_warning 与
-   *  eligible 界面同形，确认时收不到任何欠缺提醒。口径：
-   *  - 只提醒不拦截（把关权在人）：「保存」按钮照常渲染；
-   *  - 快照口径：这是最近一次读取主进程时的判定，编辑后不即时重算（前端
-   *    不另立口径，与 statementWarningHtml 同一纪律），文案注明按最近一次读取；
-   *  - 码表与 capture-value-screening 的 advisoryReasons 一一对应（5 码全覆盖），
-   *    fact_not_stable 与阻断面（）共用同一词条键；未知码不上屏
-   *    （主进程契约：码由 UI 翻译，内部标识不直接展示），全未知时不渲染。 */
+  /** 准入软提醒由主进程 capabilities.eligibilityAdvisories 下发，只提醒、不拦截保存。
+   *  判定是最近一次读取的快照，编辑后不在前端重算；未知码不展示，避免暴露内部标识。
+   *  fact_not_stable 与阻断原因共用词条。 */
   const CANDIDATE_ADVISORY_LABELS = {
     personal_not_stable: T('cognition.candidate_advisory_personal_not_stable', '个人条目没写明这是长期的，可能只是一次性状态，建议核对。'),
     fact_not_stable: T('cognition.candidate_block_fact_not_stable', 'fact 只收长期稳定的事实（项目、环境、领域、工具链）；带「今天/本次/当前」这类时间限定、又没写明长期有效的叙述只是任务状态，不算可复用事实。请核对长期有效性并改写内容。'),
@@ -834,12 +817,7 @@
     const ontologyOnly = candidate.proposalTarget === 'ontology';
     const refs = evidenceRefs(candidate);
     const broken = evidenceMostlyUnavailable(candidate);
-    // 能力一律按主进程下发的 capability 判定，**缺失即视为只读**——与旧模块
-    // "treats a candidate without capabilities as read-only instead of guessing"
-    // 的口径一致。统一：此前同一函数里并存三种读法（canEdit 用
-    // `capabilities && …`、canPromote 用真值、canReject 用 `!== false`），
-    // 于是"capabilities 缺失"时仍会渲染出「稍后处理 / 拒绝」——正是本 PR 要消灭的
-    // 那类必然失败的按钮。
+    // 能力只认主进程下发的 capability；缺失时视为只读，不推断可编辑或可处置。
     const terminal = !!candidate.capabilities?.isTerminal || ['confirmed', 'integrated', 'rejected', 'ignored', 'expired', 'superseded'].includes(String(candidate.status || ''));
     const caps = terminal ? Object.assign({}, candidate.capabilities, { canEdit: false, canPromote: false, canReject: false, canContinueOntology: false }) : candidate.capabilities || {};
     const rechecking = S.formationRechecks?.[candidate.id]?.running === true;

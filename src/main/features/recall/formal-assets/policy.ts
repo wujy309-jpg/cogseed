@@ -34,8 +34,8 @@ export function resolveAssetLifecycle(
   return asset.lifecycleStatus || 'automatically_extracted_unverified';
 }
 
-/** 验证轴：被验证到哪一步。这里只做读取与归一，**推进**由证明链驱动
- *  （PR-E：Receipt + TransferProof），任何调用方都不得自行升档。 */
+/** 验证轴：被验证到哪一步。这里只做读取与归一，推进由 Receipt + TransferProof
+ *  证明链驱动，任何调用方都不得自行升档。 */
 export function resolveAssetMaturity(
   asset: Pick<AssetPolicyInput, 'maturity'>,
 ): FormalAssetMaturity {

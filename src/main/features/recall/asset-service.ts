@@ -609,9 +609,8 @@ export async function recordAbilityAssetAudit(
  * 回滚/选用旧版时必须**显式清掉**的可选内容字段。
  *
  * `...content` 展开只能带上快照里**存在**的键：快照里缺席的可选字段会静默保留
- * 当前值——"改回去"于是只改了一半（回滚到没有 scopePolicy / 条件 / 定级的那一版，
- * 这些字段会原样留下）。这与 `updateAbilityAsset` 的条件清空是同一族缺陷，
- * 那处已修，这里（rollback 与 select 两条兄弟路径）一并清。
+ * 当前值。rollback 与 select 必须删除目标快照中缺席的 scopePolicy / 条件 / 定级，
+ * 才能完整恢复该版内容。
  *
  * 治理状态与成熟度**不在其列**：按设计不随内容回滚（暂停过的不该因回滚变回在用）。
  */
@@ -1216,15 +1215,13 @@ export async function migrateLegacyUserFacingTitles(userId: string): Promise<num
     const nextStatement = gap ? `遇到同类情况时，应注意修正：${gap[1].trim()}` : undefined;
     if (!nextTitle && !nextStatement) continue;
     try {
-      // 版本递增 + 内容快照 + 审计，与 updateAbilityAsset 同一机制。
-      // （不能直接调 updateAbilityAsset：system actor 要求自动评审交接
-      //  reviewDecisionId，而迁移是维护性更新非评审产物。）旧实现直接
-      //  改写 title/statement 不 bump 版本，导致冻结快照与实时内容分叉
-      //  （确认投影永远注入旧英文标题）。
+      // 迁移仍需递增版本、保存内容快照并记审计，以保持冻结投影与实时内容一致。
+      // 不直接调用 updateAbilityAsset：它要求 system actor 提供自动评审交接
+      // reviewDecisionId，而迁移属于维护性更新。
       await updateRecallJsonRecord(userId, 'ability-assets', asset.id, (raw) => {
         if (!raw) throw new Error('recall ability asset not found');
         const current = asAsset(raw);
-        // 锁内终态复核（r2 补齐）：外层快照过滤只对快照时刻有效，遍历期间
+        // 锁内终态复核：外层快照过滤只对快照时刻有效，遍历期间
         // 资产可能已被删除/撤回——闭包抛错发生在 writeJson 之前，整个
         // runExclusive reject 不落盘，外层 catch 记 warn 跳过该资产继续。
         assertMutableAbilityAsset(current);
@@ -1270,7 +1267,7 @@ export async function migrateLegacyFreeTextScopes(userId: string): Promise<numbe
       await updateRecallJsonRecord(userId, 'ability-assets', asset.id, (raw) => {
         if (!raw) throw new Error('recall ability asset not found');
         const current = asAsset(raw);
-        // 同上（r2 补齐）：锁内终态复核，墓碑/撤回资产不进改写。
+        // 锁内终态复核，墓碑/撤回资产不进改写。
         assertMutableAbilityAsset(current);
         current.scope = normalized;
         current.version = nextVersion(current.version);
@@ -1905,13 +1902,9 @@ async function mergeAbilityAssetsInTransition(
     };
     return resetChangedGuidanceOutcomes(current, merged);
   }));
-  // 归并最终写盘会经 store 层 withPendingAssetVersion 为 activeCursor 再记一条
-  // pending 版本快照（快照=合并后主记录），而该号版本行已在上面直接入流（快照
-  // =source 侧）——两条必不相等，启动期 recoverAbilityAssetVersionJournals 重放
-  // 时撞 'immutable version snapshot conflict'，warn 后永久滞留、每次启动重复
-  // 告警。镜像 appendAbilityAssetVersionLine 的清账段：落盘后在同一资产记录锁
-  // 内清掉该号 pending 行（读侧 listAbilityAssetVersions 本就偏好流内行，对外
-  // 行为不变）。
+  // activeCursor 的 source 快照已写入版本流；store 层还会为合并后主记录生成
+  // 同版本号的 pending 快照。落盘后在同一资产记录锁内清掉该 pending 行，
+  // 避免恢复时把不同内容重放到同一个不可变版本。
   await withCognitionTransition(userId, () => fileEditLock(recallJsonRecordPath(userId, 'ability-assets', targetAssetId)).runExclusive(async () => {
     const raw = await readRecallJsonRecord(userId, 'ability-assets', targetAssetId);
     if (!raw) return;

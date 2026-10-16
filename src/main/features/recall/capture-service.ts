@@ -759,7 +759,7 @@ export function parseRecallCaptureResult(raw: string, validLabels: Set<string>):
   };
 }
 
-/** 只要候选数组的旧口径。保留是因为它是纯函数、被多处单测直接断言。 */
+/** 兼容只读取候选数组的调用方。 */
 export function parseRecallCaptureOutput(raw: string, validLabels: Set<string>): ParsedCandidate[] {
   return parseRecallCaptureResult(raw, validLabels).candidates;
 }
@@ -1341,7 +1341,7 @@ export interface RecallCaptureContextParticipant {
 
 export interface RecallCaptureContextMessage {
   id: string;
-  /** m1..mN，与当年喂给模型的标签一致（证据映射的可读锚点）。 */
+  /** m1..mN，与实际提交给模型的标签一致，用于映射证据。 */
   label: string;
   ts: string;
   role: 'user' | 'assistant';

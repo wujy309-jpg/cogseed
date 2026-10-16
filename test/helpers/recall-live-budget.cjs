@@ -15,8 +15,8 @@ function installRecallLiveBudget(root, fetchImpl = globalThis.fetch, limits = {}
   const codingPlan = limits.billingMode === 'coding-plan';
   if (limits.billingMode !== undefined && !['pay-as-you-go', 'coding-plan'].includes(limits.billingMode))
     throw new Error('unknown live billing mode');
-  // Existing scenarios retain the original CNY20 contract. CNY22 is the
-  // explicit one-call extension authorized on 2026-10-15, never an auto top-up.
+  // Only the declared CNY20 or CNY22 cumulative ceiling is accepted;
+  // an existing ledger must match it and is never topped up automatically.
   const limitCny = limits.limitCny ?? 20;
   if (![20, 22].includes(limitCny)) throw new Error('unreviewed live cumulative cash ceiling');
   const maxRequests = limits.maxRequests;

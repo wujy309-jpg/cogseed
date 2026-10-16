@@ -1844,8 +1844,7 @@ function setChatRecipient(target, next, _opts = {}) {
   const r = _normRecipient(next);
   if (!r) return;
   // 任务级执行配置跟随「当前选中的接收者」：换执行者（含切回指挥官）即清空
-  // 旧的临时覆盖，否则「给上一个目标调的模型/强度」会被新目标继承——验收中
-  // 「选中 ClaudeCode 却显示 deepseek」就是这条泄漏。三个 target 统一处理，
+  // 旧的临时覆盖，避免上一个目标的模型/强度被新目标继承。三个 target 统一处理，
   // auto（楼层驱动）切换不动用户的手动配置。
   if (_opts.auto !== true) {
     const prev = _activeRecipient(target);
@@ -2105,7 +2104,7 @@ const _SCENARIO_CONFIGS = {
     agentId: 'a316881746f9',
     agentNames: ['ProductDeveloper'],
   },
-  // T4 目标模式：不绑智能体（_scenarioApplyAgent 落 commander 收件人）。
+  // 目标模式不绑定智能体（_scenarioApplyAgent 落 commander 收件人）。
   // 模板激活"目标→拆解→审核→派发"链：KStar 自动追踪 goalText、
   // commander 出子任务计划（manage_execution_plan → plan rail 展示）、
   // 每次派发的智能体唤醒经用户审批（wake gate）。
@@ -2114,7 +2113,7 @@ const _SCENARIO_CONFIGS = {
   },
 };
 // English fallback templates — used when the i18n table doesn't yet carry
-// the scenario template key (Step 9 backfills the full set). Each template
+// the scenario template key. Each template
 // has at least one `[...]` placeholder that scenario-click jumps the caret to.
 const _SCENARIO_TEMPLATES_FALLBACK_EN = {
   data: 'Deep research [topic]: gather recent sources, compare evidence, cite links, and produce a structured report.',
@@ -2156,7 +2155,7 @@ function _refreshEmptyStateGreeting() {
   const vars = { name: name || (t('common.user_fallback') !== 'common.user_fallback' ? t('common.user_fallback') : 'there') };
   const raw = t(key, vars);
   // i18n miss: render a stable English fallback so the prefix doesn't show
-  // the raw key. Step 9 adds the keys and this branch becomes dead code.
+  // the raw key.
   if (raw && raw !== key) { el.textContent = raw; return; }
   const fallbacks = {
     'new_chat.greeting_early':      `Up early, ${vars.name}`,
@@ -8528,7 +8527,7 @@ async function _loadOlderConversationHistory(cid, before) {
       // older page lands immediately after it and before the already-mounted
       // transcript, preserving chronological order across repeated loads.
       container.insertBefore(fragment, row.nextSibling);
-      // 更早历史也是离屏 fragment 装载，插入后补刷会话统计行（Task 8）。
+      // 更早历史也是离屏 fragment 装载，插入后补刷会话统计行。
       _refreshSessionStats();
       _removeSupersededInterruptionBubbles(container);
       _setLoadEarlierHistory(container, cid, nextCursor);
@@ -9020,7 +9019,7 @@ async function loadConversationHistory(cid, opts = {}) {
     }
     // 历史重载汇合点（空/非空分支都经过）：fragment 离屏装载期间
     // appendChatMessage 里的刷新查不到已挂载消息，插入完成后统一刷一次
-    // 会话统计行（Task 8）。统计/协作卡属聚合侧功能：失败降级隐藏，不拖垮历史加载。
+    // 会话统计行。统计/协作卡属聚合侧功能：失败降级隐藏，不拖垮历史加载。
     try {
       _refreshSessionStats();
       _mountCollaborationStatusCard(container, convMeta.collaboration || null);
@@ -9190,8 +9189,8 @@ async function loadConversationHistory(cid, opts = {}) {
     if (!preserveScroll) {
       container.innerHTML = `<div class="empty">${escapeHtml(t('chat.load_failed', { msg: e.message || '' }))}</div>`;
     }
-    // 加载失败时消息区只剩占位——统计行随之隐藏，避免残留上个会话的数据
-    // （Task 8）。preserveScroll 的部分重载保留现有消息，刷新结果不变。
+    // 加载失败只剩占位时隐藏统计行，避免残留上个会话的数据。
+    // preserveScroll 部分重载保留现有消息，刷新结果不变。
     _refreshSessionStats();
     if (window.ConversationInfo) window.ConversationInfo.refreshFiles(cid);
   }
@@ -9843,7 +9842,7 @@ if (typeof document !== 'undefined') {
   });
 }
 
-// ─── 会话统计行（输入框下方，Task 8）────────────────────────────────────
+// ─── 会话统计行（输入框下方）────────────────────────────────────
 // 折叠当前会话所有带 metrics 的 assistant 消息：轮数/步数、LLM 总耗时、
 // 首 token 平均与速率、缓存命中、上下文占用、token 合计与费用。常驻显示
 // （不受消息级 .chat-msg-meta 的 hover 显隐影响）；无带 metrics 的消息整行
@@ -9921,7 +9920,7 @@ function _dominantCliTypeForStats() {
 
 // 渲染 #chat-session-stats：段顺序固定 counts → llm → speed → cache →
 // ctx → tokens → cost；ctx 超阈值（≥80%）整段标 .seg-hot 警示色。i18n 走
-// 经典 script 全局 t()（渲染层的 i18n 助手不在 window 上，见 Task 7 教训）。
+// 经典 script 全局 t()（渲染层的 i18n 助手不在 window 上）。
 function _refreshSessionStats() {
   const box = document.getElementById('chat-session-stats');
   if (!box || !window.conversationMetrics) return;
@@ -10011,8 +10010,8 @@ function _syncStatsWidthToComposer() {
 
 // 消息级用量信息条：悬停显示（与 chat-msg-actions 同节奏）。数据来自
 // gm.metrics（可选字段），无数据不渲染。数字与时间戳，无正文无凭证。
-// 挂在操作行（[data-role=msg-actions]）内右对齐——与复制/引用图标同一行
-// （反馈：独立成行位置不对）。行不存在就懒创建，与
+// 挂在操作行（[data-role=msg-actions]）内右对齐，与复制/引用图标同一行。
+// 行不存在就懒创建，与
 // _attachBubbleActions 共用同一行；flex order 保证图标永远在左。
 function _mountMsgMeta(ph, metrics) {
   // VCache 模板已标注缓存读时不再叠加命中 badge（信息重复）。
@@ -10078,7 +10077,7 @@ function _mountMsgMeta(ph, metrics) {
   });
   if (line.titleLines.length) meta.title = line.titleLines.join('\n');
   // 消息级 meta 更新后同步刷会话统计行（覆盖流式 finalize 路径——它不走
-  // appendChatMessage 尾部；Task 8）。
+  // appendChatMessage 尾部）。
   _refreshSessionStats();
 }
 
@@ -10358,12 +10357,12 @@ function appendChatMessage(message, autoScroll = true, opts = {}) {
   else _insertByTimestamp(container, msgDiv);
   if (role === 'user') _moveUserBeforeOrphanLivePlaceholder(container, msgDiv);
   // Token 用量信息条（悬停显示）：历史 gm.metrics 经 _groupMsgToLegacy 透传，
-  // 无 metrics 不产生节点；`msgDiv._msgMetrics` 供会话级统计行（Task 8）读取。
+  // 无 metrics 不产生节点；`msgDiv._msgMetrics` 供会话级统计行读取。
   msgDiv._msgMetrics = message.metrics || null;
   msgDiv._msgExecMeta = message.exec_meta || null;
   _mountMsgMeta(msgDiv, message.metrics);
   // 挂载完成后直刷会话统计行（历史重载也覆盖；无 metrics 的消息也走到
-  // 这里，保证清空会话/切换会话时统计行随最新 DOM 状态更新。Task 8）。
+  // 这里，保证清空会话/切换会话时统计行随最新 DOM 状态更新）。
   _refreshSessionStats();
   if (!isHtmlSnippet && typeof typesetMath === 'function') {
     const md = msgDiv.querySelector('.markdown-body');
@@ -11398,7 +11397,7 @@ function _renderPersistedProcess(msgDiv, items, { expanded = false } = {}) {
     const itemEvent = item && item.type === 'event'
       ? item.event
       : (item && item.type === 'progress' ? item.event : null);
-    // 9.1 会话区域统一框架：历史消息中的 plan 事件喂给顶部执行计划轨道
+    // 历史消息中的 plan 事件喂给顶部执行计划轨道
     // （plan-rail.js，按当前会话幂等合并，重放不重复）。
     if (itemEvent && itemEvent.stream === 'plan' && typeof window.planRail !== 'undefined'
         && typeof window.planRail.restorePlanEvent === 'function') {
@@ -13143,7 +13142,7 @@ async function handleChatSubmit() {
     return;
   }
   const attachments = attachList.filter((a) => a.status !== 'error').map((a) => a.name);
-  // ：正文只剩成员标记 / 空白 / 标点时没有明确任务意图，不启动运行；
+  // 正文只剩成员标记 / 空白 / 标点时没有明确任务意图，不启动运行；
   // 附件或引用仍在时沿用既有规则（引用本身就是「看这个」的有效意图）。
   if (!_composerIntentText(raw) && !attachments.length && !quotes.length) {
     uiToast(t('composer.members.need_task'), { variant: 'warning' });
@@ -16691,8 +16690,8 @@ function createChatController(config) {
       inputEl.dataset.ctrlBound = '1';
       inputEl.addEventListener('keydown', (e) => {
         // Plain Enter sends; Shift/Cmd/Ctrl+Enter inserts a newline. Skip IME
-        // (CLAUDE.md §8 — keyCode 229 catches older Electron / Safari builds
-        // where `isComposing` is occasionally inaccurate).
+        // composition; keyCode 229 covers older Electron / Safari builds
+        // where `isComposing` is occasionally inaccurate.
         if (e.isComposing || e.keyCode === 229) return;
         if (_handleModifiedComposerEnter(e)) return;
         if (_isPlainComposerEnter(e)) {
@@ -16848,7 +16847,7 @@ function _resolveChatStreamAnchor(cid, chatEvent, fallbackEl, turnIdHint) {
 }
 
 /** 话权交给「某个 agent」时返回该 agent id，其余（空 / commander / user）返回 ''。
- *  交出方（commander）据此立即终态化：它的回合还挂着（R-11 等齐汇报），但此刻
+ *  交出方（commander）据此立即终态化：它的回合还挂着（等待汇报），但此刻
  *  它没有在跑——不摘掉 spinner/计时就成了「两个执行」并行。 */
 function _yieldedFloorActor(state) {
   const floor = String((state && state.active_recipient) || '');
@@ -17310,8 +17309,8 @@ function _finalizeActorPlaceholder(ph, gm, cid, archive) {
     ph.appendChild(actionsRow);
   }
 
-  // Token 用量信息条（悬停显示）：落盘 gm 带 metrics（Task 4/5）才渲染；
-  // `ph._msgMetrics` 同步给会话级统计行（Task 8）读取。
+  // Token 用量信息条（悬停显示）：落盘 gm 带 metrics 才渲染；
+  // `ph._msgMetrics` 同步给会话级统计行读取。
   ph._msgMetrics = gm.metrics || null;
   ph._msgExecMeta = gm.exec_meta || null;
   _mountMsgMeta(ph, gm.metrics);
@@ -17770,7 +17769,7 @@ function _handleGroupBusEvent(cid, streamingMsg, evData, { archive = false } = {
     // handed-off agent's reply.
     _serverFloorByCid.set(cid, typeof st.active_recipient === 'string' ? st.active_recipient : '');
     // 话权一旦交给某个 agent，交出方（commander）的气泡必须**立即终态化**：
-    // 它的回合还挂着（R-11 等齐汇报），但此刻它没有在跑——不摘掉 spinner/计时
+    // 它的回合还挂着（等待汇报），但此刻它没有在跑——不摘掉 spinner/计时
     // 就变成「两个执行」并行。
     const _floorNow = _yieldedFloorActor(st);
     if (_floorNow && typeof window.chatStreamYieldFloor === 'function') {
@@ -18186,10 +18185,6 @@ function _streamingAppendFinalDelta(msg, piece) {
 // the live-generating row; tool/function/message items — redundant with
 // their dedicated streams).
 //
-// Icon palette (Unicode Geometric Shapes per CLAUDE.md §8). Each glyph has
-// exactly one semantic role — stick to this table when adding new streams:
-//
-//   ▶   reasoning start      ●   reasoning done
 // Process-pane text is plain content; _eventProcessKind maps events to SVG
 // icons and semantic CSS classes.
 function _formatEventLine(evt) {
@@ -18507,8 +18502,6 @@ function _renderAgentEvent(msg, evt) {
   //                  → outputPath / output
   //   stream='tool' + data.phase='end'                         (in-process tools)
   //                  → result_path / output
-  // Same UI affordance for both — the "symmetry is the entire point"
-  // call-out in cli-richer-output plan.
   const cliResult = stream === 'cli'
       && String(data?.type || '').toLowerCase() === 'tool-event'
       && data?.phase === 'result';
@@ -18812,7 +18805,7 @@ function abortConvStream(cid) {
 // arg is ignored (kept for call-site compatibility) — state is computed from
 // pendingConvs / messageQueues directly so callers don't have to stay in sync.
 function _updateConvSidebarBadge(cid, _unused) {
-  // 侧栏行不显示「进行中/排队」徽标（用户设计确认：行内无装饰状态）。
+  // 侧栏行不显示「进行中/排队」徽标。
   // 仅保留全局运行计数（顶部新聊天按钮 chip）与会话头状态更新。
   _refreshCommanderRunningChip();
   if (cid === currentCid) {
@@ -18849,7 +18842,7 @@ function _refreshCommanderRunningChip() {
   chip.hidden = false;
   const label = t('sidebar.commander_running', { n: count });
   // t() returns the raw key on miss — when the i18n table doesn't carry this
-  // string yet (locales added in Step 9), fall back to a neutral English form.
+  // string, fall back to a neutral English form.
   chip.textContent = (label && label !== 'sidebar.commander_running') ? label : `${count} running`;
 }
 

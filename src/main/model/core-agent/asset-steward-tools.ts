@@ -51,7 +51,7 @@ export interface AssetStewardToolsOpts {
   userId: string;
   agentId?: string;
   projectId?: string;
-  /** 当前回合 id：Phase 5 的危险操作确认与台账定位用。 */
+  /** 当前回合 id：危险操作确认与台账定位用。 */
   turnId?: string;
   /** Conversation id：危险操作的单次确认要送回这条会话。 */
   cid?: string;
@@ -114,7 +114,7 @@ function metaLine(asset: RecallAbilityAssetRecord): string {
     ...(asset.spaceId ? [`空间=${asset.spaceId}`] : []),
     // 标签 = 主题分类；缺失不显示（缺省就是「未分类」，不伪造空值）。
     ...(asset.tags && asset.tags.length ? [`标签=${asset.tags.join('/')}`] : []),
-    // 族名是用户手写的**同源血缘**分组名，不是主题标签（标签字段尚未落地）：
+    // 族名是用户手写的同源分组名，不是主题标签：
     // 显示它才能让归并判断有依据，但必须标清是什么，免得和"标签"混为一谈。
     ...(asset.familyName ? [`族名(同源血缘)=${asset.familyName}`] : []),
   ].join(' | ');
@@ -783,7 +783,7 @@ async function runDangerGuard(
 // ── 写工具 ──────────────────────────────────────────────────────
 //
 // 全部落到既有 `asset-service.ts` 写函数，不新建第二套写通道；`actor` 一律 `'ai'`，
-// 依据写进台账的 `reason`（FR-004）。**被拦截的操作不得计为成功**：失败回执带
+// 依据写进台账的 `reason`。**被拦截的操作不得计为成功**：失败回执带
 // `isError`、写明拦截规则与归因分类。
 
 /** 归因分类 → 人话（回执给模型看，模型再向用户解释）。 */
@@ -940,10 +940,8 @@ async function dispatchApprovalCard(
 }
 
 /**
- * 模型常把嵌套对象/数组当 **JSON 字符串**传。真机实测（2026-09-25，deepseek）：
- * 模型把 `fields` 发成 `"{\"body\":\"…\"}"`，连续 6 次编辑全部落在"fields 至少要给
- * 一个要改的字段"上，旗舰编辑路径整轮不可用。字符串能解析成对象/数组就解析，
- * 否则原样返回交给下游校验（不静默当成空）。
+ * 接受模型用 JSON 字符串编码的对象/数组；解析失败时原样交给下游校验，
+ * 不静默转换为空值。
  */
 function parseStructuredInput(value: unknown): unknown {
   if (typeof value !== 'string') return value;

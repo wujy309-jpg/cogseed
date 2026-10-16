@@ -1,5 +1,5 @@
 {
-  "fixtureOrigin": "Actual one-shot configured-model rule audit, 2026-10-15, over the fixed synthetic cognition-quality-v1-20261015 corpus. Original invalid response retained verbatim; no rule check or repair invented.",
+  "fixtureOrigin": "Recorded configured-model response for the fixed synthetic cognition-quality-v1-20261015 corpus (2026-10-15). Kept as an invalid-response regression fixture.",
   "input": {
     "ruleSemanticsPolicyVersion": 1,
     "candidates": [

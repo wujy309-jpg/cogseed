@@ -62,15 +62,15 @@ describe('purge 墓碑可识别内容残留', () => {
     const rawPath = assetFile('aa-purge-residue');
     const raw = JSON.parse(fs.readFileSync(rawPath, 'utf8'));
     raw.causalRule = {
-      cause: '在客户演示环境执行部署脚本',
-      effect: '演示数据被覆盖，客户当场看到内部测试记录',
-      mitigation: '演示环境一律先打快照再执行任何写操作',
+      cause: '在合成测试工作区执行覆盖写入脚本',
+      effect: '临时测试数据被覆盖，基线比较无法复用',
+      mitigation: '对合成测试工作区执行写操作前先打快照',
       severity: 'high',
       deltaR: -0.5,
     };
-    raw.tags = ['客户演示', '部署纪律'];
-    raw.scope = '适用于所有对外演示环境';
-    raw.familyName = '部署族';
+    raw.tags = ['合成写入', '快照纪律'];
+    raw.scope = '仅限合成测试工作区';
+    raw.familyName = '合成快照族';
     raw.learningProvenance = {
       projectionId: 'proj-1', episodeId: 'ep-1', ruleRefs: [],
       attribution: 'execution_gap',
@@ -92,20 +92,20 @@ describe('purge 墓碑可识别内容残留', () => {
     // 发现主体：四类内容原样留在墓碑上
     const residue = purged as unknown as Record<string, unknown>;
     expect(residue.causalRule).toEqual(raw.causalRule);
-    expect(residue.tags).toEqual(['客户演示', '部署纪律']);
-    expect(residue.scope).toBe('适用于所有对外演示环境');
+    expect(residue.tags).toEqual(['合成写入', '快照纪律']);
+    expect(residue.scope).toBe('仅限合成测试工作区');
     expect(residue.learningProvenance).toBeDefined();
 
     // 盘上同样残留（不是只在返回值里）
     const onDisk = JSON.parse(fs.readFileSync(rawPath, 'utf8'));
     expect(onDisk.causalRule).toEqual(raw.causalRule);
-    expect(onDisk.tags).toEqual(['客户演示', '部署纪律']);
-    expect(onDisk.scope).toBe('适用于所有对外演示环境');
+    expect(onDisk.tags).toEqual(['合成写入', '快照纪律']);
+    expect(onDisk.scope).toBe('仅限合成测试工作区');
 
     // 墓碑读回口径：asAsset purged 分支原样透传（历史回执读墓碑能看到这些内容）
     const tomb = await assets.readAbilityAsset(UID, 'aa-purge-residue');
     const tombResidue = tomb as unknown as Record<string, unknown>;
     expect(tombResidue.causalRule).toEqual(raw.causalRule);
-    expect(tombResidue.tags).toEqual(['客户演示', '部署纪律']);
+    expect(tombResidue.tags).toEqual(['合成写入', '快照纪律']);
   });
 });

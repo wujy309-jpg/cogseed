@@ -108,9 +108,7 @@ function enumerateAllInjectedTools(): AgentTool[] {
   }));
   tools.push(...createFileTools({ userId: 'testuid', cid: 'testcid' }));
   tools.push(...createKbTools({ userId: 'testuid' }));
-  // recall 组的三个工厂都要枚举到，否则这一组工具整体漏在反漂移之外
-  // （2026-09-25 补：此前 createRecallTools / createAssetStewardTools /
-  //  createPersonalOntologyTools 都没被调用，catalog 少一行也不会变红）。
+  // recall 组的三个工厂都要枚举到，否则目录缺项也无法被反漂移断言发现。
   const previousSemantica = process.env.COGSEED_SEMANTICA_ENABLED;
   process.env.COGSEED_SEMANTICA_ENABLED = '1';
   try {
@@ -212,8 +210,7 @@ function toolByName(name: string): AgentTool {
 describe('tool-catalog', () => {
   it('TOOL_CATALOG covers every tool name injected by runner (anti-drift)', () => {
     const injected = enumerateAllInjectedToolNames();
-    // 枚举本身也要覆盖到 recall 组：工厂没被调用时这一组会整体隐身，
-    // 反漂移就成了一句空话（2026-09-25 补的洞）。
+    // 枚举本身也要覆盖到 recall 组，避免遗漏整个工厂后反漂移断言失效。
     for (const name of [
       'search_ability_assets', 'ontology_query', 'personal_ontology_fields',
       'list_ability_assets', 'read_ability_asset',

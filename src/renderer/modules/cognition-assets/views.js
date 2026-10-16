@@ -20,9 +20,7 @@
    * danger 保留危险色，className:'o' 用于白底低强调动作。 */
   const btn = (label, act, options) => {
     const opts = options || {};
-    /* chip / rnm 是完整自管皮肤（白底选中态 / 无框文字钮），不吃默认浅绿
-       实底——否则 .btn.g 双类特异性压过 .chip，所有筛选 chip 都像选中态
-       。 */
+    /* chip / rnm 自带皮肤，不叠加默认浅绿底，避免 .btn.g 的特异性覆盖选中态。 */
     const ownSkin = /(^|\s)(chip|rnm|backlink)(\s|$)/.test(opts.className || '');
     const variant = opts.danger ? 'd' : opts.primary ? '' : ownSkin ? '' : 'g';
     const classes = ['btn', variant, opts.small ? 'sm' : '', opts.className || ''].filter(Boolean).join(' ');
@@ -906,7 +904,7 @@
       return `<div class="sect-block"><div class="sub">${esc(T('cognition.asset_no_proofs_section', '还没有被真实使用过。资产在任务中被真正使用、并留下可核对的记录后，会出现在这里。'))}</div></div>`;
     }
     const names = conversationNames();
-    // 现存版本集合（bug3）：只认版本链里实际存在的版本——asset.version 是
+    // 现存版本集合：只认版本链里实际存在的版本——asset.version 是
     // 只增游标（真删不回退，防引用错位），不能当"现存"用；链未加载时不
     // 标注（拿不准宁可显示普通后缀，不误标"已删除"）。
     const knownVersions = new Set();
@@ -2210,11 +2208,10 @@
   /* ────────────────────────── 视图：经验目录─────────────────────────
    * 经验与资产完全隔离：本区只消费 recall.experiences.* 通道的数据
    * （store.experiences / store.experienceDetail），资产列表零混入；反过来
-   * 资产页也不读这里的数据。结构全部复用既有形态（card/row/meta-row/chips/
-   * details 折叠），不新增 page-local 结构（structural registry 免登记）。 */
+   * 资产页也不读这里的数据。列表和详情复用既有行、元信息、chip 与折叠区。 */
 
   /** 来源任务 chip（唯一出口）：回看复用既有 open-kstar-episode 深链，不新建
-   *  跳转机制。goal 用 E1/E2 载荷里主进程截好的任务目标，展示侧再压 24 字
+   *  跳转机制。goal 用载荷里主进程截好的任务目标，展示侧再压 24 字
    *  ——chip 是短标签不是正文区；episodeId 缺席时如实标「来源记录不可用」。 */
   function experienceSourceChip(exp) {
     const episodeId = String((exp.sourceTask && exp.sourceTask.episodeId) || (exp.source && exp.source.episodeId) || '');
@@ -2278,7 +2275,7 @@
     }[String(action || '')] || T('cognition.experience_history_unknown', '管理操作');
   }
 
-  /** 详情视图（E2 载荷）：正文 + 预期/实际 + 适用/禁用范围 + 证据引用 +
+  /** 详情视图：正文 + 预期/实际 + 适用/禁用范围 + 证据引用 +
    *  合并来源 + 台账 + 四个管理动作。 */
   function viewExperienceDetail(route) {
     const id = String(route.experienceId || '');
@@ -2313,8 +2310,7 @@
     const switchable = status === 'active' || status === 'paused';
     /* 经验独立于正式资产，但详情也采用单列阅读顺序：正文和适用范围在前，
      * 元信息、管理、并入来源与证据随后各占一行。 */
-    /* ②内容 · 预期/实际（来自复盘 review，可缺）：归宿②（五区对照表）——
-     * 与正文同属内容区，长值走既有折叠，不新造控件。 */
+    /* 复盘中的预期与实际可缺省；与正文同属内容区，长值沿用折叠呈现。 */
     const expectedActualHtml = (() => {
       const expected = foldValue(exp.expected, 120);
       const actual = foldValue(exp.actual, 120);
@@ -2359,7 +2355,7 @@
           ${expectedActualHtml}
         </div>
         ${(() => {
-          // 适用/禁用范围：缺失 = 没记录过（不是"无限制"，data-model §1）——
+          // 适用/禁用范围：缺失 = 没记录过（不是"无限制"）——
           // 显式标注未记录，避免被读成"哪里都能用"。
           const listHtml = (rows) => rows.map((row) => esc(String(row))).join('、');
           return `<div class="card"><div class="sect-block">
@@ -2634,7 +2630,7 @@
     const state = S.improvementOutcomes;
     const items = (state && Array.isArray(state.items)) ? state.items : [];
     const title = T('cognition.improvement_section', '改进分析');
-    // 收敛语义（data-model §2 的「实现期最简」）：同一 episode 已经产出候选时，
+    // 同一 episode 已经产出候选时，
     // 不再摆该 episode 的「无需更新」——"无需更新"与"这里有更新提议"同屏自相矛盾。
     // 只隐藏这一种组合，其余结论照旧（隐藏依据是已加载的候选，不猜）。
     const candidateEpisodes = new Set(S.candidates
@@ -2705,14 +2701,7 @@
 
   /* ────────────────────────── 视图：整理（任务流 + 策略） ────────────────────────── */
 
-  /* ────────────────────────── 沉淀设置页 ──────────────────────────
-   * 入口=整理页右上齿轮。核心是「夜间自动沉淀」条状卡：右侧开关、中间可选
-   * 开始时间；开启时联动「先问我」——产出的候选进「待我处理」等批准/调整
-   *（而非自动采纳）。原抽屉的整理功能开关与候选确认方式也收在 this 页。 */
-
-  /** 推荐排序权重卡已彻底移除：排序已换目录算法
-   *  v2 引擎，设置页不再展示旧四因子权重表单。读写通道与已存权重数据
-   *  后端原样保留；详情页「排序依据」只读解释保留（提示语不再指向设置页）。 */
+  /* ────────────────────────── 沉淀设置页 ────────────────────────── */
 
   /** 标题重起轮判定：重起轮的整理报告或以
    *  独立 trigger 值标记本轮、或由 kind='title_regen' 的报告项可辨——两种载体
@@ -2841,11 +2830,7 @@
     const KIND_LABELS = {
       title_normalized: T('cognition.cleanup_kind_title_normalized', '标题规范化'),
       merged_duplicate: T('cognition.cleanup_kind_merged_duplicate', '重复归并'),
-      // 补标签：词条四语早已备好却一直没接上，完整整理轮
-      // 必产此 kind——欠账补上。
       tag_added: T('cognition.cleanup_kind_tag_added', '补标签'),
-      // 标题重起轮（3.3 专项轮）的新 kind：词条四语由重起轮配套落，这里先按
-      // 既有 cleanup_kind_* 命名引用——勿重蹈 tag_added 缺席、显示兜底的欠账。
       title_regen: T('cognition.cleanup_kind_title_regen', '标题重起'),
       statement_regen: T('cognition.cleanup_kind_statement_regen', '正文改写'),
     };

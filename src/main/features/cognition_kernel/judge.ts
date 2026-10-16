@@ -118,7 +118,7 @@ export async function buildOntologyContext(uid: string): Promise<string> {
   }
 }
 
-// ── 纠正样例相关性检索（自查⑤：替代"最近 12 条"）──────────────────────
+// ── 纠正样例相关性检索 ─────────────────────────────────────────────────
 
 /** 分词：CJK 拆 2-gram，其余按非字母数字切词——零依赖的词面相关性。 */
 function tokenize(text: string): Set<string> {

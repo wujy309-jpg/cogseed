@@ -52,7 +52,7 @@
       "scenario": "A real native model interpreted an ordinary user rewrite request as preview-only because the wording was AI-authored.",
       "observed": { "model": "zai/glm-5.2", "date": "2026-10-15", "mode": "propose", "status": "pending_confirmation", "host_interactions": 0, "writes": 0 },
       "expected": { "mode": "apply_if_authorized", "host_interaction": "one_complete_preview", "saved_only_after_human_allow": true },
-      "evidence_source": "observed_native_tool_call_before_mode_guidance_fix"
+      "evidence_source": "recorded_native_tool_call"
     },
     {
       "case_id": "mixed_body_representations",
@@ -60,7 +60,7 @@
       "scenario": "A real native model supplied the unchanged old statement in fields together with a replacement patch; after the host rejected it, the model removed the redundant field.",
       "observed": { "model": "zai/glm-5.2", "date": "2026-10-15", "host_rejected_mixed_arguments": true, "writes": 0, "model_produced_corrected_arguments": true, "corrected_call_was_executed": false },
       "expected": { "body_representation": "whole_new_statement_or_replaceText_not_both", "argument_error_may_be_corrected_after_zero_write": true, "human_rejection_must_not_be_retried": true },
-      "evidence_source": "observed_native_tool_call_before_harness_recovery_fix"
+      "evidence_source": "recorded_native_tool_call"
     },
     {
       "case_id": "fact_correction",

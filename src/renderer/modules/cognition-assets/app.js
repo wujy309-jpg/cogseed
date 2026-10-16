@@ -38,8 +38,6 @@
     'experience-status-toggle', 'experience-set-type', 'experience-merge', 'experience-archive', 'experience-migration-run',
 
     // 「记一条」保存：走 recall.candidates.save 产生候选。
-
-    // ranking-weights-save 已随权重卡彻底移除删除。
   ]);
 
   /* ────────────────────────── 事件委托 ────────────────────────── */
@@ -362,7 +360,7 @@
           case 'experience-archive': await A.experienceArchive(id); break;
           case 'experience-migration-preview': await A.experienceMigrationPreview(); break;
           case 'experience-migration-run': {
-            // run 必须显式带 assetIds（E7 契约，禁止隐式批量）：单条走
+            // run 必须显式带 assetIds，禁止隐式批量：单条走
             // data-asset、批量走 data-assets（逗号分隔，来自可见的预览清单）。
             const ids = String(el.dataset.assets || el.dataset.asset || '')
               .split(',').map((value) => value.trim()).filter(Boolean);
@@ -607,10 +605,8 @@
           : first('button, [role="button"]');
       if (next && typeof next.focus === 'function') next.focus({ preventScroll: true });
     });
-    // tab 自适应：3 个中文 tab 在窄窗口仍可能折行。检测用 Range 取
-    // 主标题的**文本行**数（flex 子元素被 blockify，元素级 getClientRects
-    // 恒为 1，测不出折行；Range 量的是文本自身），>1 即切紧凑模式
-    // （CSS 隐藏副标题腾出宽度）。
+    // 窄窗口按标题文本的行数切换紧凑 padding。使用 Range 测量文字，
+    // 避免 flex 子元素的 getClientRects 只能反映块级边界。
     const fitTabs = () => {
       const tabs = document.querySelector('#ca-root .ca-tabs');
       if (!tabs) return;

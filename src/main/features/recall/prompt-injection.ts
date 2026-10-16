@@ -527,8 +527,7 @@ async function buildPromptContextForProjections(
           continue;
         }
         if (!liveAsset) {
-          // 无冻结副本（或版本对不上）的 live 缺失：维持既有行为——抛错进
-          // 外层 catch 记 warn 后缺席。这条路径的行为**完全不变**。
+          // 无可用冻结副本且 live 缺失时，交给外层 catch 记录告警并省略该资产。
           throw liveError ?? new Error('recall ability asset not found');
         }
         let snapshot: Awaited<ReturnType<typeof readAbilityAssetVersionSnapshot>> | null = null;
@@ -547,7 +546,7 @@ async function buildPromptContextForProjections(
             snapshot = await readAbilityAssetVersionSnapshot(userId, assetId, confirmedVersion);
             if (!snapshot) {
               if (liveAsset.version !== confirmedVersion) {
-                // 可恢复降级必须可见（AGENTS.md）：冻结副本缺失且线上版本
+                // 可恢复降级必须可见：冻结副本缺失且线上版本
                 // 已变，这条已确认资产本次不能带入，须保留可定位的遗漏原因。
                 log.warn('confirmed projection asset version snapshot missing', {
                   projectionId: projection.id,
@@ -891,13 +890,8 @@ export async function listConfirmedProjectionIdsForConversation(userId: string, 
 }
 
 /**
- * 与 `buildConfirmedProjectionPromptBlock` 同一次装配，但**同时**交出 citations。
- *
- * 存在理由：回执必须记「这次真的注入了哪几条」，而这个事实只有装配过程知道。
- * 调用方自己再去读一遍投影拼资产清单，就成了第二份算法——bus.ts:4131 的原话
- * 「回执要在注入的同一处落，用同一份事实——分开算两次早晚会对不上」。
- * CogSeed Runtime 那条注入路径据此落回执（此前它注入了资产却不留任何加载凭证，
- * 终态证明永远绑不到 receipt，资产成熟度永不升档）。
+ * 与 `buildConfirmedProjectionPromptBlock` 同一次装配，同时返回 citations。
+ * Runtime 使用这份实际注入清单写回执，避免重新读取投影后生成不同的资产清单。
  */
 export async function buildConfirmedProjectionPromptContext(
   userId: string,
@@ -986,11 +980,8 @@ export async function buildRecallTurnPromptContext(
     } catch { log.warn('standing preference projection unavailable; continuing without it'); }
     const committed = await buildPromptContextForCommittedProjection(userId, input);
     if (!projections.length) return committed;
-    // 同一资产已在 committed 块注入的不重复注入。去重按 assetId（此前键含
-    // projectionId，committed 投影与会话投影 id 必不相同，过滤从未生效——同一
-    // 资产 statement 双份注入、usage 流水双计）。排除下沉到装配层执行：
-    // promptBlock 与 citations 同源去重，不会出现 citations 减了、正文还是
-    // 两份的劈叉。committed 是宿主基线，重叠时以 committed 冻结内容为准。
+    // 按 assetId 在装配层同步去重正文与 citations；不能按不同投影的 id 去重。
+    // 重叠资产以宿主 committed 基线的冻结内容为准。
     const committedAssets = new Set(committed.citations.map((item) => item.assetId));
     const committedFormalLength = Math.max(0, committed.promptBlock.length
       - (committed.profileMemoryBlock ? committed.profileMemoryBlock.length + (committed.authorizedAssetsBlock ? 2 : 0) : 0));

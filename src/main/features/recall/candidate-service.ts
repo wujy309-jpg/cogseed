@@ -583,7 +583,7 @@ const log = createLogger('recall.candidates');
 
 /** 判重用的可比文本：与 capture-service 的同名归一化保持一致（大小写、
  *  空白、标点都不参与比较）。冲突表、inbox 待办分组、inbox 选边共用这一个
- *  口径——各处自算一份会让「列表说有冲突、选边说没有」互相打脸。 */
+ *  口径，保持列表、待办与冲突处置的判定一致。 */
 export function comparableJudgmentText(value: string): string {
   return String(value || '').normalize('NFKC').replace(/[\p{P}\p{S}\s]/gu, '').toLocaleLowerCase();
 }
@@ -742,11 +742,8 @@ function requireAssetLifecycleStatus(value: unknown): RecallAbilityAssetLifecycl
 function normalizeCandidateStatus(value: unknown): RecallCandidateStatus {
   if (value === 'pending') return 'pending_review';
   if (value === 'promoted') return 'confirmed';
-  // 历史兼容：早期实现给语义重复候选写过未声明的 `superseded`。现在
-  // 历史语义合并使用 mergedInto + decideWithoutAsset('ignored')，
-  // 全仓已无写入方，所以这里只做旧数据迁移——迁成 ignored 后它本来就是终态，
-  // isTerminalCandidate 无需改动。落到下面的白名单里再放行一次 superseded
-  // 是不可达分支，删掉，免得读回行为看起来有两套。
+  // 历史语义重复候选的 superseded 读作 ignored；当前合并使用
+  // mergedInto + decideWithoutAsset('ignored')，不再写入 superseded。
   if (value === 'superseded') return 'ignored';
   if (value === 'observed' || value === 'weak_observation' || value === 'pending_review'
     || value === 'deferred' || value === 'confirmed' || value === 'integrated' || value === 'rejected'
@@ -1665,16 +1662,7 @@ export async function updateRecallCandidate(userId: string, candidateId: string,
     }
     assertCandidateNotInOntologyHandoff(current);
     await assertCandidateHasNoAppliedHandoff(userId, current);
-    // 字段齐全 **且** 内容过得了正式资产准入门槛，才允许迁到 pending_review。
-    //
-    // 少了后半句就是"洗白"：抽取期因为分类不合格被 forceWeakObservation 压成
-    // weak_observation 的候选，用户随手改一个 summary 就会变成 pending_review，
-    // 状态标签从「证据较弱」跳成「待确认」，看起来像修好了——而晋升闸门会用
-    // 同一套判据再拒一次。`forceWeakObservation` 只作用于 saveRecallCandidate，
-    // 编辑路径此前没有对应项。
-    //
-    // 反过来也成立：用户真把内容改成一条合格的长期偏好，这里就会放它进
-    // pending_review，确认按钮自己回来。
+    // 字段齐全且编辑后的内容通过正式资产准入门槛，才允许迁到 pending_review。
     const reviewReady = Boolean(resolvedValue) && hasReviewableCandidateEvidence({ origin: current.origin, sourceRefs, evidenceRefs })
       && Boolean(suggestedScope) && (!candidateActionNeedsTarget(suggestedAction) || Boolean(targetAssetId))
       && promotionEligible;

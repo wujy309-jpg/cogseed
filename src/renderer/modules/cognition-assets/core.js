@@ -1,17 +1,9 @@
 /* ============================================================================
  * 认知资产 · 核心层（cognition-assets/core.js）
  *
- * 从零重写的认知资产前端。与旧实现（skills.js 里 4600 行 + skills-bindings
- * 分散绑定 + 175 行面板标记）的三点结构差异：
- *
- *  1. 单一命名空间 `window.CogAssets`：api / store / router / ui / actions
- *     各司其职，视图只依赖这一份契约；
- *  2. 状态驱动渲染：所有数据进 store，动作完成后 `reload()` 重取 + `render()` 
- *     重画，不存在"哪个 DOM 谁负责"的隐性分工；
- *  3. 事件全在一个委托层（app.js）：所有交互走 `data-go` / `data-act`，
- *     不再有散落各处的 addEventListener。
- *
- * 后端契约（IPC）不变：本文件是唯一调用窗口。
+ * `window.CogAssets` 提供 api / store / router / ui / actions。
+ * 数据进入 store 后驱动视图重画；app.js 统一委托 data-go / data-act 交互。
+ * 本文件集中管理 IPC、路由与动作，视图只消费状态。
  * ========================================================================== */
 (function () {
   'use strict';
@@ -116,7 +108,7 @@
   /* ────── 拦截原因可读化──────
    * 主进程的准入判定给两样东西：code（分类）与 blockRule（具体规则标识）。
    * 此前渲染层把 Error.message 原文甩给用户——英文 + 内部 id，等于"被拦了但
-   * 不知道被什么拦"（验收问题⑤）。现在一律按 blockRule 翻四语规则名，code 只
+   * 不知道被什么拦"。按 blockRule 翻四语规则名，code 只
    * 作兜底；任何分支都不上屏原文，未知规则走兜底文案（如实说"当前不可引用"，
    * 不替主进程编一条规则）。 */
   function blockReasonText(error) {
@@ -188,7 +180,7 @@
     const entry = EXPERIENCE_VERIFICATION_TEXTS[String(value || '')];
     return entry ? T(entry[0], entry[1]) : T('cognition.experience_verification_unknown', '验证状态未知');
   }
-  /** 迁移跳过/失败理由码 → 人话（E7/E8 稳定码逐条；未知码中性兜底，
+  /** 迁移跳过/失败理由码 → 人话（已知码逐条映射；未知码中性兜底，
    *  不上屏主进程 message 原文）。 */
   const EXPERIENCE_MIGRATION_REASON_TEXTS = {
     no_kstar_provenance: ['cognition.experience_migration_skip_no_kstar_provenance', '无 KSTAR 沉淀标记（不是任务复盘沉淀的）'],
@@ -225,7 +217,7 @@
     statusLabel: experienceStatusLabel,
   };
 
-  /** 经验管理动作的失败文案（E3~E6 的错误是英文 message、无 code）：按已知
+  /** 经验管理动作的失败文案（错误是英文 message、无 code）：按已知
    *  message 片段翻四语，认不出原样透出（与候选码表同一条纪律——宁可露出
    *  英文也不吞失败）。跨类型合并给专门文案。 */
   function experienceActionErrorText(error) {
@@ -311,7 +303,7 @@
     captureModelError: '',
     captureStats: null,
     captureStatsError: '',
-    /** 资产详情按需拉的版本链（版本组 ）：{assetId, versions}。 */
+    /** 资产详情按需拉的版本链：{assetId, versions}。 */
     assetVersions: null,
     /** 单资产完整事实链：全局最近记录有数量上限，不能用来判断旧版本挂载是否仍有效。 */
     assetTimeline: null,
@@ -353,15 +345,15 @@
      *  null = 还没拉过。只有真的存在失败类结论时才拉（整集合读取，不给无失败的用户白付）。 */
     kstarFailures: null,
     /** 经验目录：{items, loading, failed, stale}，
-     *  null = 还没拉过。items 是 E1 列表行（目录行，天然不含 body）；拉全量
+     *  null = 还没拉过。items 是列表行（目录行，天然不含 body）；拉全量
      *  （status:'all'）再由视图过滤——列表只摆 active/paused，归档/并入的终态
      *  条目留在 store 里供详情深链与合并目标比对用。 */
     experiences: null,
-    /** 经验详情（E2 按需拉）：{experienceId, experience, loading, failed}。 */
+    /** 经验详情（按需拉取）：{experienceId, experience, loading, failed}。 */
     experienceDetail: null,
-    /** 存量迁移（E7/E8）：{preview, previewLoading, previewFailed, lastRun}。
+    /** 存量迁移：{preview, previewLoading, previewFailed, lastRun}。
      *  preview 是只读扫描结果；lastRun 是最近一次 run/status 的回执（可核对
-     *  「已迁/未迁/原因」，不满足于一枚 toast）。 */
+     *  「已迁/未迁/原因」）。 */
     experienceMigration: null,
     /** 旧 USER.md / MEMORY.md 归属核对：只读预览 + 用户选中的内容哈希；
      *  真正迁入必须从「待我处理」逐项勾选并确认。 */
@@ -402,7 +394,7 @@
       .flatMap((group) => (Array.isArray(group.items) ? group.items : []))
       // 用户主动暂停的来源（reason=source_paused）不算"需要处理"——用户
       // 自己停的，再提示他去处理自相矛盾；连接器断开等真故障的 paused
-      // 仍计入（修：实机出现 [paused] source_paused 假警报）。
+      // 仍计入。
       // 执行失败轮次同样不算：与 views.sourceItemNeedsAttention
       // 同口径，agent 执行失败不是用户可修复的来源故障。
       .filter((item) => String(item.kind || '') !== 'execution_evaluation'
@@ -904,7 +896,7 @@
     NS.notify();
   };
 
-  /** 资产详情按需拉版本链（版本组 ）。按资产缓存；读失败保留显式
+  /** 资产详情按需拉版本链。按资产缓存；读失败保留显式
    *  failed 标记 + 重试入口（与 loadAssetTimeline 一致）——
    *  版本链区是版本组 UI 的主入口，失败时整体消失等于把「没读到」伪装成
    *  「没有版本」，且失败态被缓存后无恢复路径。`force`：
@@ -1042,7 +1034,7 @@
     const missing = wanted.filter((id) => !Object.prototype.hasOwnProperty.call(have, id) && !settled.includes(id));
     if (!missing.length) return;
     let changed = false;
-    // IPC 单次上限 50（contracts/ipc.md C7）：分批取满，不做隐式截断——截断会
+    // IPC 单次上限 50：分批取满，不做隐式截断——截断会
     // 让"没问到"与"查无此会话"混为一谈，界面就会误报来源失效。
     for (let start = 0; start < missing.length; start += 50) {
       const batch = missing.slice(start, start + 50);
@@ -1180,7 +1172,7 @@
    *  「经验」页签才拉；失败记 failed（读不到 ≠ 没有，空态与失败分开呈现）。
    *  所有通道只读，动作（暂停/类型/合并/归档/迁移）在 actions 层。 */
 
-  /** 经验列表（E1）：status:'all' 一次拉全（≤200，E1 上限），视图侧过滤
+  /** 经验列表：status:'all' 一次拉全（上限 200 条），视图侧过滤
    *  active/paused——避免为两个非终态各发一次请求；stale 由 snapshot 打、
    *  动作后 force 重拉。 */
   NS.loadExperiences = async function loadExperiences(force) {
@@ -1196,13 +1188,13 @@
       failed = true;
     }
     store.experiences = { items, loading: false, failed, stale: false };
-    // 失败不 notify（同 loadTags 注释）——app.js 钩子在
+    // 失败不 notify——app.js 钩子在
     // overview/experiences 路由每帧补拉，失败态再 notify 即成自激死循环；
     // 自愈自重试保留，成功照常 notify。
     if (!failed) NS.notify();
   };
 
-  /** 经验详情（E2）：按条缓存；不存在（已归档仍可读，物理删除后查无）如实
+  /** 经验详情：按条缓存；不存在（已归档仍可读，物理删除后查无）如实
    *  记 failed——详情页给「读不到」文案，不冒充空条目。 */
   NS.loadExperienceDetail = async function loadExperienceDetail(experienceId, force) {
     const id = String(experienceId || '');
@@ -1221,15 +1213,14 @@
     }
     if (!store.experienceDetail || String(store.experienceDetail.experienceId) !== id) return;
     store.experienceDetail = { experienceId: id, experience, loading: false, failed };
-    // 失败不 notify（同 loadTags 注释）——app.js 钩子
+    // 失败不 notify——app.js 钩子
     // 在详情路由每帧补拉，失败态再 notify 即成自激死循环。自愈自重试保留
     // （失败态保留按需重读，避免 notify 触发自激循环），成功照常 notify。
     if (!failed) NS.notify();
   };
 
-  /** 迁移预览（E7 只读）：扫描结果进 store，界面据此逐条核对后显式发起。 */
+  /** 迁移预览（只读）：扫描结果进 store，界面据此逐条核对后显式发起。 */
   NS.loadExperienceMigrationPreview = async function loadExperienceMigrationPreview(force) {
-    // 进入/落地
     // 不再整体替换——run 的 running、status 读取的 statusLoading 等瞬态照原样
     // 保留，只动 preview 一族字段，免得扫描在途的提示被另一路读取抹掉。
     const state = store.experienceMigration;
@@ -1250,7 +1241,7 @@
     NS.notify();
   };
 
-  /** 迁移状态（E8 只读）：最近一次 run 的回执；从未跑过时 migrationId 为
+  /** 迁移状态（只读）：最近一次 run 的回执；从未跑过时 migrationId 为
    *  null——界面如实说「还没执行过」，不把空态误报成失败。 */
   NS.loadExperienceMigrationStatus = async function loadExperienceMigrationStatus() {
     // 读取时不能整体替换 store.experienceMigration
@@ -1313,7 +1304,7 @@
       failed = true;
     }
     store.improvementOutcomes = { items, loading: false, failed, stale: false };
-    // 失败不 notify（同 loadTags 注释）——本页签的 onChange
+    // 失败不 notify——本页签的 onChange
     // 钩子看到 failed 就补拉，失败态再 notify 即成自激死循环；自愈自重试
     // 保留，成功照常 notify。
     if (!failed) NS.notify();
@@ -1390,7 +1381,7 @@
       for (const key of ['tagFilter', 'tagMode', 'tagUntagged', 'tagSelect', 'tagOverlay']) delete target[key];
       if (target.category === 'kstar') target = Object.assign({}, target, { category: '' });
       // 先把 next 归一到同一形状再比（部分键字面量 vs 全键展开的序列化恒不等，
-      // 连点同一 tab 会堆积重复栈项——终审修）。
+      // 避免连点同一 tab 堆积重复栈项）。
       const linkedCandidate = target.candidateId && store.candidates.find(candidate => String(candidate.id) === String(target.candidateId));
       if (target.name === 'activity' && linkedCandidate && ['confirmed', 'integrated', 'rejected', 'ignored', 'expired', 'superseded'].includes(String(linkedCandidate.status))) {
         target = Object.assign({}, target, { activityView: 'done', activityDone: '1' });
@@ -1950,9 +1941,6 @@
       } finally { delete busy[proofId]; }
     },
     async assetAction(assetId, action) {
-      // 'revoke'（撤回使用）已随界面按钮删除。保留物一条不删：audit_revoked 台账标签、block_reason_
-      // revoked 词条、各处 status==='revoked' 过滤逻辑——历史撤回记录仍要
-      // 如实展示；recall.assets.revoke 通道本体由 7.1 退役批判定。
       const channels = {
         pause: 'recall.assets.pause', resume: 'recall.assets.resume',
         archive: 'recall.assets.archive', restore: 'recall.assets.restore',
@@ -1977,7 +1965,7 @@
       if (action === 'delete' || action === 'purge') router.go({ name: 'overview' });
       await NS.reload();
     },
-    /** 选用历史版本为在用版（版本组 ）：切指针不产生新版本号。 */
+    /** 选用历史版本为在用版：切指针不产生新版本号。 */
     async selectAssetVersion(assetId, version) {
       requireLibraryAsset(assetId);
       await api.call('recall.assets.versions.select', { assetId, version });
@@ -2073,9 +2061,6 @@
       store.cleanupReports = { loading: false, stale: true, reports: (store.cleanupReports && store.cleanupReports.reports) || [] };
       await NS.reload();
     },
-    /** 台账行内「一步回滚」已随渲染入口删除：与版本区「切回此版」重叠。recall.assets.rollback 通道
-     *  保留——大扫除逐项回滚（rollbackCleanupItem）仍共用它，且大扫除属
-     *  红线不动。 */
     /** 真删单个版本：物理移除该版本记录；引用它的已确认注入
      *  在服务端冻结内容副本后继续可用。危险操作，双按钮确认。 */
     async deleteAssetVersion(assetId, version) {
@@ -2104,11 +2089,6 @@
       }
       router.go({ name: 'overview', assetId, assetVersionId: '', assetVersionDiff: '', assetEdit: '1' }, { replace: true });
     },
-    /** 族命名三入口（enterFamilyRename/renameFamily/exitFamilyRename）已随
-     *  界面按钮删除。已有族名（familyName）
-     *  的分组展示保留；recall.families.rename 通道本体退役判定在 7.1 批。 */
-    // confirmAssetOrigin（转正）已随出身收敛退役：模型记的=已
-    // 确定，出身升格动作失去意义；views 侧按钮已删。
     /** 手动编辑资产：改动自己写的话不该以"系统先
      *  产候选"为前提。与现值逐字段比对，无实际修改不提交——后端没有内容
      *  等价检查，相同内容也会 bump 出空版本。 */
@@ -2346,7 +2326,7 @@
       await NS.loadExperienceDetail(targetExperienceId, true);
     },
     async experienceArchive(experienceId) {
-      // 归档原因必填（E6 契约）：先收原因——这一步本身就是一次显式确认；
+      // 归档原因必填：先收原因——这一步本身就是一次显式确认；
       // 再走危险确认，与资产删除的二次确认口径一致。
       const reason = await promptUser(T('cognition.experience_archive_reason_prompt', '填写这条经验过期或失效的清理原因（必填，会记录进台账）'));
       if (reason == null) return; // 取消 = 不动
@@ -2488,7 +2468,7 @@
     if (!candidateId) return false;
     showRecallPanel();
     router.go({ name: 'activity', candidateId: String(candidateId) });
-    // 同上：对话里刚保存的候选不在陈旧 store 里，必须重取后才找得到（B11/D1）。
+    // 同上：对话里刚保存的候选不在陈旧 store 里，必须重取后才找得到。
     void NS.reload();
     return true;
   };

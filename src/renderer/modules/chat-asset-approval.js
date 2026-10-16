@@ -1,6 +1,5 @@
 // 对话内资产审批卡片：AI 提出的实质变化由用户决定保存、稍后处理或拒绝。
 // 提议不是锁；尚未决定时，资产仍按当前状态使用。
-// 独立导出渲染、编辑采集和处置入口，让测试实际调用共享组件并核对完整回传载荷。
 (function initChatAssetApproval(root) {
   'use strict';
 
@@ -70,8 +69,7 @@
     return String(text || '').split(/[\n、；;]+/).map((part) => part.trim()).filter(Boolean);
   }
 
-  /** 可编辑字段：字符串与字符串数组。（`sensitivity` 枚举字段已随敏感级机制
-   *  整体删除，——自由文本改枚举本就没有意义。） */
+  /** 可编辑字段只接受字符串与字符串数组。 */
   function editableKeysOf(payload) {
     return Object.keys(payload || {}).filter((key) => {
       const value = payload[key];
@@ -147,8 +145,7 @@
     return `<div class="chat-asset-approval-row" data-asset-approval-row="${escapeText(key)}"><div class="chat-asset-approval-row-head"><span class="chat-asset-approval-label">${escapeText(fieldLabel(key))}</span>${editTag}</div>${prevBlock}${control}</div>`;
   }
 
-  /** 卡片 HTML。纯字符串构造，所以能被测试逐段断言；共享组件用错（比如 uiTextarea
-   *  少给 id）会在这里当场抛错，而不是变成界面上的一块空白。 */
+  /** 使用共享组件构造卡片 HTML。 */
   function cardHtml(payload, view) {
     const source = payload || {};
     const state = String((view && view.state) || 'pending');
@@ -262,13 +259,8 @@
     bindClampToggles(card);
   }
 
-  /** 弹提示。uiAlert 是全局函数（有的文件从 window 取、有的靠全局作用域），两条都认；
-   *  两条都没有时**留痕**——一句要用户知道的失败提示不能就这么没了。
-   *  弹框机制自身出错（uiAlert 同步 throw 或返回
-   *  rejected promise）不再升级为 unhandled rejection——「报告失败的机制」
-   *  自己炸掉会把处置流程二次打断（resolve 的 catch 里再弹一次提示，连环
-   *  抛错直接冒到 void 调用点）。失败只留痕（对齐本函数「留痕不吞错」
-   *  既有先例），弹不出就弹不出，不让它变成新的故障源。 */
+  /** 兼容全局和 window 上的 uiAlert。提示不可用或执行失败时记录警告，
+   *  不让提示本身的异常再次打断处置流程。 */
   function alertUser(message) {
     const body = String(message == null ? '' : message);
     let fn = null;
@@ -334,17 +326,8 @@
             { a: String(result.versionConflict.baselineVersion || ''), b: String(result.versionConflict.currentVersion || '') }));
           return;
         }
-        // 主进程对「没能处置」的回执分四形：
-        // 已处置过 / 并发补偿回滚 / 版本冲突（前一分支）/ 资产不可达作废——
-        // 除版本冲突外都形如 {ok:false, state:<终态>, message:<如实说明>}。此前
-        // 这类回执落进下面的通用 throw 分支，三重缺陷：message 字段被丢（读的
-        // 是不存在的 result.error）、错误文案双层叠加（throw 已带「处置失败：」
-        // 前缀、catch 再包一层成「处置失败：处置失败：」）、卡片停在 pending
-        // 且按钮重新可点（同一条已处置提议可反复再点、反复报同一错）。
-        // 现按 versionConflict 分支同构处理：终态如实落卡（按钮随终态收掉），
-        // 提示只说一次——回执自带的 message 如实透传（并发回滚/资产撤回的
-        // 说明各有安全语义，不能一刀切成「已处置」），缺 message 时用
-        // already_decided 词条兜底。
+        // 已处置、并发回滚或资产不可达也可能返回 {ok:false, state, message}。
+        // 按真实终态关闭卡片，保留回执说明，避免把已结束的提议恢复为可操作。
         if (result && result.state && String(result.state) !== 'pending') {
           card.dataset.busy = '';
           card.classList.remove('is-busy');

@@ -2298,9 +2298,8 @@ describe('CogSeed Runtime controller', () => {
     const controller = createCogSeedRuntimeController({ runtime: runtimeFrom([]) });
 
     const cancelling = controller.cancelCogSeedTask(USER, seeded.taskId);
-    // 让取消先真正拿到任务文件锁并完成，再启动恢复：此前用两个固定 20ms 去赌
-    // 调度顺序，满载并发下恢复会抢先（全量套件里 recoveredCount 变成 1）。
-    // 断言不变——恢复不得复活一个已取消的任务。
+    // 先等取消拿到任务文件锁并完成，再启动恢复，避免用固定延迟猜调度顺序。
+    // 恢复不得复活一个已取消的任务。
     releaseTaskFile();
     await expect(cancelling).resolves.toMatchObject({ status: 'cancelled' });
 
