@@ -16,7 +16,7 @@ export function createCrossSessionMemoryTool(handler: MemoryToolHandler, opts: C
   const tiers: MemoryTier[] = opts.includeProjectTier ? ['agent', 'space', 'shared', 'user'] : ['agent', 'shared', 'user'];
   return {
     name: 'cross_session_memory',
-    description: `Read the existing cross-session memory inventory. This tool is read-only.\nTargets: agent (default, caller's own notes), shared (existing shared facts), user (existing profile/preferences)${opts.includeProjectTier ? ', space (this conversation\'s existing space memory)' : ''}.\nSome relevant memory may already be present in context. Do not list merely to reload it. Use list when the user requests an inventory or exact existing text. Preserve proper nouns, commands, file paths, URLs, and quoted wording in the current response language.\nAction: list.`,
+    description: `Read-only existing cross-session memory. Targets: agent (default, caller's notes), shared (shared facts), user (profile/preferences)${opts.includeProjectTier ? ', space (this conversation\'s space memory)' : ''}. Use list for user-requested inventories or exact existing text; do not reload memory already in context. Reply in the current response language; preserve proper nouns, commands, file paths, URLs and quoted wording.`,
     inputSchema: { type: 'object', properties: {
       action: { type: 'string', enum: ['list'], description: 'Read the existing inventory.' },
       target: { type: 'string', enum: tiers, description: 'Caller-scoped existing memory; defaults to agent.' },
