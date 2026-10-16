@@ -1641,7 +1641,7 @@ describe('用户 @ 钉住投影的撤销', () => {
     const { projection, pinned } = await pinAsset('user-attach-pin-a');
     expect(pinned.status).toBe('confirmed');
 
-    // 引用回执必须可撤销（US-601 AC3）：否则"我挂上去的就下不来"。
+    // 用户钉住的引用回执必须支持撤销。
     const first = await projection.revokeUserPinnedProjection('user-a', pinned.id);
     expect(first.status).toBe('revoked');
     // 幂等：重复撤销返回同一终态，不报错、不产生第二份状态。

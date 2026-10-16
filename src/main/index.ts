@@ -72,10 +72,9 @@ if (IS_PACKAGED_STT_SMOKE) {
   app.commandLine.appendSwitch('use-file-for-fake-audio-capture', PACKAGED_STT_SMOKE_WAV);
 }
 const MARKETPLACE_DEFAULTS_REFRESH_INTERVAL_MS = 12 * 60 * 60 * 1000;
-// ── Hub 内容检查节奏（specs/010 FR-034 `[FROZEN]`；PRD doc-v0.5 §7.3 第 212 行）──
-// 契约原文：「启动后 60 秒、在线期间每 6 小时、用户打开目录页时……失败 30 分钟后重试一次，
-// 再失败等下一周期。检查不打断用户，不弹阻断式窗口。」
-// ⚠️ 基线实测为 12 小时且无周期定时器、无失败重试——**未满足该冻结要求**，此处改为契约值。
+// Check Hub content 60 seconds after startup, every 6 hours while online,
+// and when opening the catalog. Retry a failed check once after 30 minutes,
+// then wait for the next cycle. Checks must not interrupt the user.
 const MARKETPLACE_SERVER_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 /** 启动后首次检查的延迟。 */
 const MARKETPLACE_STARTUP_CHECK_DELAY_MS = 60 * 1000;
@@ -84,7 +83,7 @@ const MARKETPLACE_CHECK_RETRY_DELAY_MS = 30 * 60 * 1000;
 /**
  * 版本副本回收的启动期延迟。
  *
- * 刻意排在检查之后：`specs/010` FR-052 要求**不在检查周期或使用高峰内触发**，
+ * 刻意排在检查之后，避免与检查或使用高峰重叠；
  * 回收是纯磁盘清理，没有任何时效性。
  */
 const MARKETPLACE_VERSION_GC_DELAY_MS = 5 * 60 * 1000;
@@ -2005,13 +2004,13 @@ if (!gotLock) {
       const uid = users.getActiveUserId();
       if (uid) await recoverRecallCaptures(uid);
     }, 'parallel', BOOT_HEAVY_DISK_DELAY_MS, { resourceClass: 'disk', preferIdle: true });
-    // 夜间增量清扫（U01）：低频自续期；窗口内/错过补跑都由内部判定，
+    // 夜间增量清扫：低频自续期；窗口内/错过补跑都由内部判定，
     // 应用未运行不假装完成，恢复可运行后续办。
     registerDeferred('recall:nightly-sweep', () => {
       const uid = users.getActiveUserId();
       if (uid) startNightlyCaptureSweepLoop(uid);
     }, 'parallel', BOOT_HEAVY_DISK_DELAY_MS, { resourceClass: 'disk', preferIdle: true });
-    // 本体整体暂停退役迁移（U03/U07）：幂等 no-op 安全，逐版本入历史可恢复。
+    // 本体整体暂停退役迁移：幂等 no-op 安全，逐版本入历史可恢复。
     registerDeferred('recall:ontology-pause-retirement', async () => {
       const uid = users.getActiveUserId();
       if (!uid) return;
@@ -2024,7 +2023,7 @@ if (!gotLock) {
       const { recoverValidationApplications } = await import('./features/recall/validation-service');
       await recoverValidationApplications(uid);
     }, 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
-    // 保留期到期清理（specs/008 T005）：启动后跑一轮，此后低频自续期。
+    // 保留期到期清理：启动后跑一轮，此后低频自续期。
     // 「到期自动彻底删除」的级联清理链见 features/recall/asset-retention-service。
     registerDeferred('recall:retention-sweep', async () => {
       const uid = users.getActiveUserId();
@@ -2032,7 +2031,7 @@ if (!gotLock) {
       const { startAbilityAssetRetentionLoop } = await import('./features/recall/asset-retention-service');
       startAbilityAssetRetentionLoop(uid);
     }, 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
-    // 后台巡检（specs/008 US-405）：低频自续期，**只报不改**；开关关掉后不再自动跑。
+    // 后台巡检：低频自续期，**只报不改**；开关关掉后不再自动跑。
     registerDeferred('recall:asset-inspection', async () => {
       const uid = users.getActiveUserId();
       if (!uid) return;

@@ -735,7 +735,7 @@ describe('catalog relevance mark', () => {
   });
 });
 
-// 推荐排序接线（specs/012 T018）：工具目录模式与提示词常驻目录共调
+// 推荐排序接线：工具目录模式与提示词常驻目录共调
 // asset-ranking.rankAssets 的同一推荐分——同一次会话里两处看到同一顺序；
 // 语义检索（runSearch）保持纯余弦，不受行为信号（采用回执）影响。
 describe('catalog ranking parity', () => {
