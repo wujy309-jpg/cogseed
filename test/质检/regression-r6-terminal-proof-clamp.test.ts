@@ -1,34 +1,5 @@
-/**
- * 回归 r6（收尾改名自 probe-r6-terminal-proof-clamp.test.ts · 2026-10-01 记账员）：
- * 对应 F-r1-24 已修——生产函数 recall-terminal-proof.ts:34 已改走
- * listAllConfirmedProjections，生产级回归在正式目录
- * test/main/features/group_chat/recall-terminal-proof.test.ts（F-r1-24 新增用例）。
- * 本文件锁定 API 层契约：listContextProjections 默认 clamp 20 与全量出口
- * listAllContextProjections 的对照——「必须一个不漏的消费方不得用默认 clamp」
- * 这一教训的机械钉子，不依赖修复代码、修复后仍绿，收尾收编为回归。
- *
- * 原探针 r6（边界测试员 · 本遍循环第 2 轮，编号顺延 r5）→ 主题：分页极限 × 生命周期终点。
- *
- * 疑点（读码推演，group_chat/recall-terminal-proof.ts:34）：turnProjectionIds 用
- * `listContextProjections(userId)`（**不传 limit**）反查「本轮真的注入过」的投影做
- * 终局证明锚点。而 listContextProjections（context-projection.ts:1476-1490）默认
- * `Number(query.limit) || 20` 再 clamp 到 [1,100]，按 createdAt 降序（:1469）取
- * 前 20 条——投影总量超 20 后，目标 turn 的投影只要不是最新 20 条之一就**静默
- * 进不了候选池**，reuse_turn_ids 反查扑空 → 注入过资产的那一轮进不了证明链。
- * 这正是该函数头注释（T2.3 · 2026-09-13）描述过的病（「注入了资产也永远进不了
- * 证明链」）换了触发条件回归：那次是自动投影从不发卡，这次是 clamp 截断。
- *
- * 同文件已有两处同款教训的修复先例：deleteAbilityAssetVersion 全量枚举
- * （asset-service.ts:1601-1603 注释「listContextProjections 默认 clamp 到 20 条，
- * 投影存量超过后老投影漏冻结——删了版本副本就丢」）与 refreshCommitted 投影
- * 版本刷新（context-projection.ts:1277 注释「不走 listContextProjections——它内部
- * clamp」）；listAllContextProjections / listAllConfirmedProjections 即为「要一个不
- * 漏」的消费方准备的出口，此处漏用。
- *
- * 本探针直接构造 25 条 confirmed 投影（目标 turn 的投影第 21 新），用与
- * recall-terminal-proof.ts:34 完全相同的调用形态（只传 userId）复现输入池截断。
- * 风格对齐 probe-r5-purge-earlyreturn-guard-bypass.test.ts。
- */
+/** 分页读口默认最多返回 20 条；需要完整证明链的消费方使用全量出口。
+ * 构造 25 条已确认投影，把目标置于分页之外，对比两种读口的覆盖差异。 */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -84,7 +55,7 @@ async function writeProjection(
   });
 }
 
-describe('回归 r6 › listContextProjections 默认 clamp 20 契约与全量出口对照（F-r1-24 教训钉）', () => {
+describe('listContextProjections 默认 clamp 20 契约与全量出口对照', () => {
   it('25 条投影（目标第 21 新）：与 recall-terminal-proof.ts:34 同参调用查不到目标，全量枚举查得到', async () => {
     const { writeRecallJsonRecord } = await import('../../src/main/features/recall/store');
     const projection = await loadProjection();

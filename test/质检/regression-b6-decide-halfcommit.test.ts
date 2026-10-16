@@ -1,20 +1,6 @@
 import { createNightlyCandidateFixture } from '../helpers/nightly-formation-fixture';
-/**
- * 回归（批次 b6 · P-r2-6）：decideWithoutAsset 跨文件半提交的补偿回填。
- *
- * 现场链路（candidate-service.ts decideWithoutAsset）：
- *  - updater 锁内先 writeReviewDecision（认知账本，独立文件）再把候选主档
- *    置 rejected/deferred/ignored——两段跨文件写，主档段失败时账本已有决定
- *    而候选仍 pending（「已处理历史」与待办矛盾，待议清单 P-r2-6）；
- *  - 修复（拍板「写侧补偿回填 failure_code」）：主档写失败且账本已落时，
- *    补偿把候选标 failed(decision_write_failed)（可重试：重新决定走新幂等键），
- *    补偿失败只 warn，原错误优先上抛；账本未落（updater 早退/复核拒绝）不补偿。
- *
- * 手法：mock recall/store 的 updateRecallJsonRecord——对 candidates 集合的
- * 第一次更新（即决定写本身）执行真实 updater（让锁内的账本写真实落盘）后抛
- * 模拟写失败；后续调用放行真实实现。补偿写因此真实落盘，可断言终态。
- * 对照组证明非半提交路径（证据不足拒绝）不被误补偿。
- */
+/** 决定账本已写而候选主档失败时，补偿标记可重试的 decision_write_failed。
+ * 账本未写不补偿，补偿失败不遮蔽原错误，终态候选不被覆写为 failed。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -80,7 +66,7 @@ async function pendingCandidate() {
   });
 }
 
-describe('regression b6 › decideWithoutAsset 半提交补偿（P-r2-6）', () => {
+describe('decideWithoutAsset 半提交补偿', () => {
   it('主档写失败且账本已落 → 补偿回填 failed(decision_write_failed)，原错误上抛', async () => {
     const candidates = await modules();
     const candidate = await pendingCandidate();

@@ -3,15 +3,9 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
- * 模型主快照读失败伪装（P-r3-25，预审决策卡组 7）：settings 区块此前走
- * api.soft 兜底 {}，captureModel=null 被资产设置页当成「还没配置模型」，
- * 配上「去应用设置」的错误指引——读不到 ≠ 未配置。修法（loader 改
- * api.call + 分区级错误标记，对齐 candidatesError/inboxError 的 A5 先例）：
- * 失败记 store.captureModelError、视图按读取失败如实呈现；settings 半边
- * 经复核实测不触发（兜底 {} truthy、整理页 warn 不出现），故失败时
- * store 形状与旧行为保持一致（captureSettings={}、errors 照记）。
- *
- * 装配与 cognition-inbox-error-state.test.ts 同构。
+ * 模型主快照读取失败必须显示分区错误，不能冒充尚未配置模型。
+ * captureModelError 保留失败信息；captureSettings 的空对象兜底保持不变。
+ * IPC 与模型配置全部由内存桩提供。
  */
 
 const rootDir = resolve(__dirname, '../..');
@@ -35,7 +29,7 @@ const NS = (() => {
   };
 })();
 
-describe('组7：模型主快照读失败的分区错误标记（P-r3-25）', () => {
+describe('模型主快照读失败的分区错误标记', () => {
   it('settings.get 失败：captureModelError 落标记；captureSettings/captureModel 形状与旧行为一致、errors 照记', async () => {
     invokeImpl = async (channel) => (channel === 'recall.captures.settings.get'
       ? { ok: false, error: 'settings unreadable', code: 'E_IO' }

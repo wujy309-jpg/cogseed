@@ -1,16 +1,16 @@
 /**
- * cognition_kernel/bound_receipt — 绑定回执（438 P0，2026-10-07；P1 扩三轴＋filled）。
+ * cognition_kernel/bound_receipt — 任务槽位绑定回执。
  *
  * 六级证据刻度（retrieved→eligible→bound→projected→consumed→effective）中
  * bound 档的落盘载体：一次真实体检后，把"这次任务绑到了哪些槽位（指针+版本）、
- * 还缺哪些（原因）"记成一条 JSONL。P1 起覆盖三轴：
+ * 还缺哪些（原因）"记成一条 JSONL。覆盖三轴：
  *   personal ＝ 个人字段（PoValue/资产指针）；ontology ＝ 本体记录
  *   （moduleId/recordId@version）；asset ＝ 方法资产（assetId@version）。
  *
- * 纪律（沿用 query-receipt 家规）：
+ * 记录约束：
  *   - 只存指针与版本，绝不存字段值或正文（value/statement 不进回执）；
  *   - 无真实回合（turnId/taskRunId）不记录；
- *   - 写时严格校验、读时宽松跳过坏档（P0 的 axis=personal 历史记录继续可读）；
+ *   - 写时严格校验、读时宽松跳过坏档（axis=personal 历史记录继续可读）；
  *   - 回执失败只 warn，不阻断工具结果（接线处保证）。
  *
  * 历史 filled 回执继续可读；对话缺口回答不再生产回填事件。
@@ -52,9 +52,9 @@ export interface MissingSlotRef {
 
 export interface CognitionBoundReceipt extends RecallJsonRecord {
   schemaVersion: 1;
-  /** P0 以对话回合 ID 充当运行标识；有真实 taskRunId 时优先记它。 */
+  /** 兼容以对话回合 ID 充当运行标识的记录；有真实 taskRunId 时优先记它。 */
   taskRunId: string;
-  /** 对话回合 ID（P0 记录缺此字段，读侧不强制）。 */
+  /** 对话回合 ID（旧记录缺此字段，读侧不强制）。 */
   turnId?: string;
   packId: string;
   status: 'checked' | 'filled';

@@ -1,9 +1,8 @@
 /**
  * 经验域共享分类词表（认知层）：任务类型轴 + 经验类型轴。
  *
- * 2026-10-07 从 kstar/extraction-service 下沉（S1 审计登记的 recall→kstar
- * 反向依赖待办）：KSTAR 可关闭要求依赖方向只能是 KSTAR→认知，recall 与
- * core-agent 复用这两个纯函数时不得再从 kstar 取——kstar 侧改为从这里引用。
+ * KSTAR 可关闭，依赖方向只能是 KSTAR→认知。KSTAR、recall 与 core-agent
+ * 复用这里的纯函数，不由认知层反向引用 KSTAR。
  */
 
 /** 任务文本 → 短 ASCII 任务类型标签（闭集：report/code/review/product/general）。 */
@@ -21,7 +20,7 @@ export function scopeForTask(task: string): string {
   return 'general';
 }
 
-/** 沉淀分支标签 → 经验目录类型轴（specs/016 T005）。
+/** 沉淀分支标签 → 经验目录类型轴。
  *  与 `userFacingSummary`（task-level-precipitation.ts）的既有三分支同源：
  *  lesson=可复用经验 / workflow=已验证的工作流程 / gap=待修正经验；
  *  判不出（含 null/undefined/未来新增的 kind）→ uncategorized，不抛错、

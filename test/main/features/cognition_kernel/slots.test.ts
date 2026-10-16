@@ -97,7 +97,7 @@ describe('resolveAssetSlots（方法资产轴只读解析）', () => {
   });
 });
 
-describe('checkTaskFields 三轴体检与回执（P1）', () => {
+describe('checkTaskFields 三轴体检与回执', () => {
   it('三轴合并：本体轴缺口进 gaps，资产缺失不进 gaps；回执覆盖三轴；filled 事件闭环可读', async () => {
     await seedOntology();
     const { writeRecallJsonRecord } = await import('../../../../src/main/features/recall/store');

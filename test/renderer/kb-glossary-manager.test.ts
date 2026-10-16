@@ -1,5 +1,5 @@
 /**
- * kb-glossary-manager — 词表管理页（方案 §七）
+ * kb-glossary-manager — 词表管理页
  *
  * 覆盖：
  *   1. 纯函数不变量：搜索/筛选/排序、导入预览（尤其是 replace 的破坏性提示）；
@@ -170,11 +170,11 @@ describe('源码契约', () => {
       'transcript.glossary.seedInitial', 'transcript.queryRewrite.set',
       'transcript.glossary.exportPack', 'transcript.glossary.reviewPack', 'transcript.glossary.importPack',
       'transcript.metrics.summary',
-      // specs/013 T057 / D16：指标区第二分区「会议引用」读会议指标——**只读**通道，
+      // 指标区第二分区「会议引用」读会议指标——**只读**通道，
       // 与既有 transcript.metrics.summary 两数据源两读口（互不混流），不是写入。
       'meeting.metrics.summary',
       'library.writeText',
-      // 坏档三件套·恢复入口（P-r1-88，决策卡 B 段已批「从备份恢复/重置」一键）：
+      // 坏档恢复入口：
       // 词表文件损坏时主进程已 copy 备份并拒绝写，面板凭这三个通道提供出路。
       'cognition.corrupt.list',
       'cognition.corrupt.restore',
@@ -369,7 +369,7 @@ describe('语言切换（i18n-change）', () => {
   });
 });
 
-// ── T057 / US-506：指标区新增「会议引用」分区（口径与数字一起呈现）──────────
+// ── 指标区新增「会议引用」分区（口径与数字一起呈现）──────────
 
 /** meeting.metrics.summary 的 MeetingMetricsSummary 形态（五口径 + notMeasurable）。 */
 const MEETING_SUMMARY = {
@@ -386,7 +386,7 @@ const MEETING_SUMMARY = {
   notMeasurable: ['无对照环境，不宣称因果', '仅有本机数据，不做跨账号推断', '手动改回发生在产品之外', '第四条如实列出'],
 };
 
-describe('会议引用指标行（T057 纯函数）', () => {
+describe('会议引用指标行（纯函数）', () => {
   it('三口径 + 实体级两项都带分子/分母与样本数（不只裸数），口径说明随行给出', () => {
     const text = manager.meetingMetricsLines(MEETING_SUMMARY).join('\n');
     // 数值 + 分母 + 样本数同现
@@ -440,7 +440,7 @@ describe('会议引用指标行（T057 纯函数）', () => {
   });
 });
 
-describe('会议引用指标分区渲染（T057，vm 级）', () => {
+describe('会议引用指标分区渲染（vm 级）', () => {
   /**
    * 仿 loadGlossaryManagerForI18n，mock invoke 按 channel 分发：
    * transcript 指标缺 summary（既有区因此不渲染——它一行没改），

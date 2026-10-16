@@ -1,9 +1,5 @@
-/**
- * 绑定回执（438 P0）测试：
- *   ① 回执单元：写/读往返、无回合不记、非法入参拒绝、只存指针不存值、坏档跳过；
- *   ② 工具接线：personal_fields_check 真实执行后回执落盘（kernel 体检 mock、
- *      回执走真实实现）、无 turnId 不落盘、体检抛错回工具错误且不落盘。
- */
+/** 绑定回执：写读往返、无回合不记录、非法输入拒绝、只存指针不存值、
+ * 坏档跳过；personal_fields_check 使用实际回执实现，体检失败不落回执。 */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
@@ -52,7 +48,7 @@ function fixtureCheck(): import('../../../../src/main/features/cognition_kernel'
     packTitle: '报销',
     resolution: {
       bound: [{
-        fieldName: '姓名', value: '张三', source: 'ontology_value', sourceId: 'pv-1',
+        fieldName: '姓名', value: '示例用户甲', source: 'ontology_value', sourceId: 'pv-1',
         version: 'v3', revision: 'r9', updatedAt: '2026-10-07T00:00:00.000Z',
       }],
       missing: [

@@ -1,5 +1,5 @@
 /**
- * cognition_kernel — 认知内核契约层（S2，2026-10-02）。
+ * cognition_kernel — 认知内核契约层。
  *
  * 核心任务读取契约：
  *   resolvePersonalFields  取件窗口：任务要的个人字段只走这一个口
@@ -34,7 +34,7 @@ export type {
 export { PERSONAL_FIELD_POLICY_VERSION } from './types';
 
 // 归属：契约（家的定义与落池）+ 判定引擎（模型按本体判定 + 三档门控）+ 规则数据。
-// 2026-10-02 改版：删掉写死的判定表——判断归模型，闸门归代码。
+// 判断归模型，闸门归代码，不以静态类型表替代内容判定。
 export { CONTENT_ROUTE_TABLE, HOME_DEFINITIONS, POOL_BY_HOME, UNCLASSIFIED } from './routing';
 export type { HomeDefinition } from './routing';
 export {
@@ -84,7 +84,7 @@ export type {
 export { INBOX_LIMIT, buildMergedInbox, readMergedInbox } from './inbox';
 export type { InboxItem, MergedInbox } from './inbox';
 
-// S3：统一认知库（对象模型 + 存储内核 + Delta 落地器 + 家注册表）。
+// 统一认知库：对象模型、存储内核、Delta 落地器与家注册表。
 export {
   APPLIED_DELTA_INDEX_MAX,
   BUILTIN_HOME_IDS,
@@ -120,7 +120,7 @@ export {
 } from './store';
 export type { ApplyDeltasOutcome, CognitionVersionLine, DeltaApplyResult, ReplaceHomesOutcome } from './store';
 
-// S3-c：统一候选池（池条目 = proposed Delta；同槽只留最新）。
+// 统一候选池：池条目为 proposed Delta，同槽只留最新。
 export {
   POOL_CORRUPT_DOMAIN,
   POOL_MAX_ITEMS,
@@ -149,4 +149,3 @@ export type {
   UnroutedOutcome,
 } from './pool';
 
-// S3-d：判定→池 总装线（一条内容进门的唯一入口）。

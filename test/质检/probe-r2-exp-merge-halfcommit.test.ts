@@ -1,32 +1,6 @@
-/**
- * 探针（本轮红队-越权与状态 · 并发与时序）：mergeExperiences 两段写非原子——
- * target 段落盘后 source 段在锁内终态复核处抛错，留下「半合并」持久不一致
- * （F-r1-25 修复引入的可观测后果：修复前 source 段无复核不抛错）。
- *
- * 读码链路（experience-service.ts）：
- *  - merge 执行序：① target updater（:578-604，锁=target 记录文件锁）落盘
- *    mergedFrom+台账 → ② source updater（:606-628，锁=source 记录文件锁）——
- *    两段是**两个不同文件锁上的独立写**，中间无任何事务；
- *  - F-r1-25 给 ② 补了锁内 assertMutableExperience（:610）：窗口期内 source
- *    被归档（另一用户路径 archiveExperience）时 ② 抛错——但 ① 已经落盘。
- *  - 终态：target.mergedFrom 含 source 条目 + merged_from 台账在，而 source 仍
- *    archived、无 mergedIntoExperienceId——家谱单向断裂；且 source 已终态，
- *    重试 merge 被 terminal 拒绝，**无产品通道自愈**（对照：source 未终态时重试
- *    可靠 target 段 seen-Set 幂等 + source 段补写自愈）。
- *
- * 危害口径：违反「每个动作台账一条、可追溯」的完整语义（target 侧记了一次从未
- * 完成的合并）；与资产域 merge 三段非原子（前遍 P-r1-18 族）同族，但经验域的
- * ② 抛错路径是 F-r1-25 修复后**新可观测**——修复让 source 不再被强改终态（正确），
- * 代价是半合并态浮出水面。
- *
- * 手法：持 source 记录锁把 ② 卡在队列上（① 无竞争正常先行落盘），持锁期间
- * 直改盘置 archived（照 regression-r1-exp-merge-terminal-leak 被认可的先例，
- * 模拟窗口期内并发归档已落盘），放锁后 ② 复核即抛。
- *
- * 收尾状态（2026-10-01 记账员）：对应待议 **P-r2-38（拍板：interrupted 标志+幂等重试；并档占位 P-r2-46 同题）**——
- * 主用例已随修复启用（断言改写：半完成痕迹如实带 interrupted、entry 不重复）；
- * 对照组（无竞态/串行序时链路正常）不依赖漏洞，保留 active。
- */
+/** 经验两段合并在 target 已写、source 遇终态失败时保留中断痕迹。
+ * target 的 entry 和台账标记 interrupted，不声称已经完成；确定性交错
+ * 下 source 保持归档终态，重复尝试不增加影子条目。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -95,7 +69,7 @@ function readRawDisk(recallJsonRecordPath: (uid: string, c: string, id: string) 
   return JSON.parse(fs.readFileSync(recallJsonRecordPath(UID, 'experiences', id), 'utf8')) as Record<string, unknown>;
 }
 
-describe('探针 r2 › 经验 merge 两段非原子：source 段窗口失败留半合并', () => {
+describe('经验 merge 两段非原子：source 段窗口失败留半合并', () => {
   it('对照组：无并发时两段都成功（target 吸收 + source 置 merged 各就各位）', async () => {
     const { svc, recallJsonRecordPath } = await setup();
     await svc.createExperience(UID, mkExperience('exp-src-hc', '对照组源'));
@@ -106,7 +80,7 @@ describe('探针 r2 › 经验 merge 两段非原子：source 段窗口失败留
     expect((tgt.mergedFrom as Array<{ id: string }>).some((e) => e.id === 'exp-src-hc')).toBe(true);
   });
 
-  it('【P-r2-38/P-r2-46 已修】target 段落盘后 source 在窗口期被归档 → merge rejects，半完成痕迹如实带 interrupted（不声称完成）', async () => {
+  it('target 段落盘后 source 在窗口期被归档 → merge rejects，半完成痕迹如实带 interrupted（不声称完成）', async () => {
     const { svc, recallJsonRecordPath, fileEditLock } = await setup();
     await svc.createExperience(UID, mkExperience('exp-src-hh', '并发源'));
     await svc.createExperience(UID, mkExperience('exp-tgt-hh', '并发靶'));
@@ -135,7 +109,7 @@ describe('探针 r2 › 经验 merge 两段非原子：source 段窗口失败留
 
     release();
     await holder;
-    // ② 的锁内终态复核抛错（F-r1-25 修复本身正确：不再强改 archived→merged）。
+    // source 段的锁内终态复核抛错，不强改 archived→merged。
     await expect(mergeP).rejects.toThrow(/terminal/);
 
     // 修复后：target 侧的痕迹**如实**——entry 与台账行都在，但带 interrupted=true，

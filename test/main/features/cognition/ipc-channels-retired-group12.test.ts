@@ -2,28 +2,9 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-/**
- * 组12 渲染零调用通道退役门禁（2026-10-01 认知资产质检循环 P-r1-92 /
- * P-r3-3 / P-r3-4，预审决策卡-20261001 拍板）。
- *
- * 退役清单（渲染层/preload 零调用、通道级测试零，删前已 grep 双证）：
- *  - kb 域 6 条（P-r1-92）：kb.share.needsUpdate / kb.share.appConfig.get /
- *    kb.share.appConfig.clear / kb.share.cogseed.update / kb.share.cogseed.list /
- *    kb.share.cogseed.config.get
- *  - 认知域 4 条（P-r3-3/P-r3-4）：cognition.receipts.list /
- *    cognition.receipts.read / cognition.reviewDecisions.list / cognition.skills.audit
- *
- * 唯一消费者就是死通道的服务函数随通道一并删除（真删原则）：
- *  - getSkillVersionMigrationAudit（P-r3-3）——其 legacy 计数对 v2/legacy 两目录
- *    都调 v2 读口 listSkillVersions，双目录共存时双重计数、真 legacy 零读取
- *    （P-r1-20 的根源函数，随退消解）；
- *  - readCognitionReuseReceipt（P-r3-4）。
- *
- * 本门禁钉住三件事：① 通道名不得原样复活（ipc/index.ts 源码级）；
- * ② 根源函数不得从 cognition 聚合出口复活（运行时导出面）；
- * ③ 基线 fixture（ipc-channel-baseline-014.txt）不得再把已退役通道列回去
- *   （014 反漂移守卫做集合比较，fixture 列了不存在的通道同样会红）。
- */
+/** 已退役 IPC 通道不得重新注册或出现在基线 fixture 中。
+ * 仅服务于退役通道的函数不再从 cognition 聚合出口导出；仍有消费者的
+ * 读取函数保留。源码注册表、运行时导出与 fixture 三面保持一致。 */
 
 vi.mock('../../../../src/main/logger', () => ({
   createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
@@ -48,7 +29,7 @@ const fixtureSource = readFileSync(
   'utf8',
 );
 
-describe('组12 渲染零调用通道退役（P-r1-92/P-r3-3/P-r3-4）', () => {
+describe('渲染零调用通道退役', () => {
   beforeEach(() => { vi.resetModules(); });
   afterEach(() => { vi.resetModules(); });
 
@@ -64,7 +45,7 @@ describe('组12 渲染零调用通道退役（P-r1-92/P-r3-3/P-r3-4）', () => {
     expect(relisted, 'fixture 与通道现状漂移（014 集合比较会红）').toEqual([]);
   });
 
-  it('唯一消费者为死通道的服务函数不得从 cognition 聚合出口复活（P-r1-20 根源函数随退消解）', async () => {
+  it('唯一消费者为死通道的服务函数不得从 cognition 聚合出口复活', async () => {
     const cognition = await import('../../../../src/main/features/cognition');
     const aggregate = cognition as unknown as Record<string, unknown>;
     expect(aggregate.getSkillVersionMigrationAudit, 'getSkillVersionMigrationAudit 已随 cognition.skills.audit 通道退役').toBeUndefined();

@@ -1,21 +1,7 @@
 import { seedStoredAbilityAsset } from '../helpers/stored-ability-asset';
-/**
- * 回归 r7（P-r2-3 根治落地，配套 probe-r7-purge-append-interleave 的产品链路
- * 主用例）：purge 与版本流追加纳入同一把锁后，三道防线各自的确定性验证。
- *
- * 覆盖（探针主用例已锁「追加侧锁内复核拒绝复活」，本文件补齐其余两道）：
- * 1. 启动期清扫：修锁前已泄漏的流（purged 墓碑名下被重建 / 记录已除名的
- *    E7 足迹）由 sweepPurgedAbilityAssetVersionStreams 治愈；活资产的流不动。
- * 2. purge 侧双向复核：rm 之后复读发现残留（旁路写漏网）→ 再清一次，终态
- *    流上无正文。
- * 3. merge 的版本流搬运收口：归并入口校验之后、首条快照落流之前 target 被
- *    purge → 后续追加被锁内复核拒绝，target 的流不复活，merge 以终态错失败。
- *
- * 注入口选择：appendVersion/appendAbilityAssetVersionLine 的临界段持有资产
- * 主记录锁，任何在其内部再跑 purge 的注入都会按设计互斥死等——所以时序钩子
- * 只放在**无锁窗口**（purge 的 rm 返回沿、merge 的入口读返回沿），与真实交错
- * 序一致。风格对齐 regression-r5-purge-backflow-revival.test.ts。
- */
+/** 版本流终态保护：启动清扫移除 purged 或无主记录的残留流，活资产不动；
+ * purge 删除后复核并再清旁路残留，merge 在目标被清除后拒绝追加快照。
+ * 时序钩子只位于无锁边界，避免重入同锁造成死等。 */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -117,7 +103,7 @@ async function rebuildLeakedStream(id: string) {
   } as never);
 }
 
-describe('regression r7 › P-r2-3 purge×版本流三道防线', () => {
+describe('purge×版本流三道防线', () => {
   it('启动清扫：purged 墓碑与记录已除名（E7 足迹）的泄漏流被清，活资产的流保留', async () => {
     const assets = await import('../../src/main/features/recall/asset-service');
 

@@ -40,7 +40,7 @@ async function loadApi() {
 const LONE_SURROGATE = /(?:[\uD800-\uDBFF](?![\uDC00-\uDFFF]))|((?:[^\uD800-\uDBFF])|^)[\uDC00-\uDFFF]/;
 
 describe('修复复查：sanitizePoText 代理对', () => {
-  it('截断不再劈开代理对：末尾无孤立高代理（r1 F5 修复生效）', async () => {
+  it('截断不再劈开代理对：末尾无孤立高代理', async () => {
     const { sanitizePoText } = await import('../../src/main/features/po/model');
     const out = sanitizePoText('x'.repeat(1997) + '😀'.repeat(10));
     expect(out.length).toBeLessThanOrEqual(2000);
@@ -86,7 +86,7 @@ describe('修复复查：sanitizePoText 代理对', () => {
 });
 
 describe('修复复查：导入通道 meta 校验', () => {
-  it('非法 asOf/ruleKind/verified 剥离，合法三件全保留（r1 修复生效）', async () => {
+  it('非法 asOf/ruleKind/verified 剥离，合法三件全保留', async () => {
     const api = await loadApi();
     const applied = await api.poImportApply(UID, [{
       title: '注入组',

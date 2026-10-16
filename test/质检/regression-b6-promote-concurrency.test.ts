@@ -1,24 +1,6 @@
 import { createNightlyCandidateFixture } from '../helpers/nightly-formation-fixture';
-/**
- * 回归（批次 b6 · P-r1-78 + P-r2-17）：promoteRecallCandidate 的并发收口。
- *
- * P-r1-78 冲突扫描池级原子化：冲突扫描（同文本不同类型互斥）此前在任何锁外，
- * 两条同文本不同类型的 failed 候选（failed 在扫描排除表里，互相看不见对方）
- * 并发重试可双双穿过冲突门再各自 confirmed。修复=扫描（锁内新鲜读）与晋升
- * 提交纳入 candidate-locks/promote 池级互斥锁（照 save 的池锁先例）。
- *
- * P-r2-17 标题 LLM 外移锁外：晋升 updater 此前全程持候选记录锁，summary
- * 不合规时在锁内调 suggestAbilityAssetTitle（LLM，秒级）。修复=标题在所有
- * 锁之外预计算，锁内仅当正文与预计算依据一致时沿用。
- *
- * 手法：
- *  - P-r1-78：预持两条候选的记录锁 → 同时启动两次 promote（双方都完成锁外
- *    预读、卡在提交前）→ 放锁。旧代码双方扫描都发生在对方提交前 → 双双
- *    confirmed；新代码池锁串行化，后进者锁内新鲜读看到先到者已 confirmed
- *    → 冲突拒绝。断言恰好一成一败，败者带冲突理由且不被覆写。
- *  - P-r2-17：起标题 mock 被调用时探测候选记录锁是否空闲（50ms 竞速）。
- *    旧代码 LLM 在记录锁内调用 → 探测超时；新代码锁外 → 探测成功。
- */
+/** 冲突扫描与晋升在同一池级锁内用新鲜记录判断，同文不同类型候选
+ * 并发重试只能成功一条。标题模型调用在所有锁外预计算，锁内只复核依据。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
@@ -101,8 +83,8 @@ async function seedCandidate(type: 'rule' | 'fact') {
   });
 }
 
-describe('regression b6 › promote 并发收口（P-r1-78 / P-r2-17）', () => {
-  it('P-r1-78：同文本不同类型的 failed 候选并发重试，池级锁保证恰好一条穿过冲突门', async () => {
+describe('promote 并发收口', () => {
+  it('同文本不同类型的 failed 候选并发重试，池级锁保证恰好一条穿过冲突门', async () => {
     const { candidates, store, paths, locks } = await modules();
     const ruleCandidate = await seedCandidate('rule');
     const factCandidate = await seedCandidate('fact');
@@ -153,7 +135,7 @@ describe('regression b6 › promote 并发收口（P-r1-78 / P-r2-17）', () => 
     expect(winner.value.asset.type).toBe(winner.value.candidate.suggestedType);
   });
 
-  it('P-r2-17：起标题（LLM）在候选记录锁之外调用', async () => {
+  it('起标题（LLM）在候选记录锁之外调用', async () => {
     const { candidates, paths } = await modules();
     // 无 summary → 兜底正文首句对正文不合规 → 必走起标题链。
     const saved = await createNightlyCandidateFixture('user-a', {

@@ -21,13 +21,13 @@ describe('认知与本体共同确认的真实详情', () => {
     for (const privateId of [before.id, plan.commandId, module.id]) expect(html).not.toContain(privateId);
   });
   it('具体情况展示对象名称与有效期间，原值引用采用变更前的名称', () => {
-    const subject = { id: 'person-private-id', kind: 'entity', name: '张三' };
+    const subject = { id: 'person-private-id', kind: 'entity', name: '示例人员甲' };
     const relation = { id: 'relation-private-id', kind: 'definition', name: '负责' };
     const project = { id: 'project-private-id', kind: 'entity', name: '项目甲' };
     const fact = { id: 'fact-private-id', kind: 'assertion', version: 1, status: 'active', access: 'owner_only', certainty: 'inferred', subjectId: subject.id, definitionId: relation.id, object: { kind: 'entity', id: project.id }, validity: { from: '2026-09-01', until: '2026-10-14', timezone: 'Asia/Shanghai' }, source: { label: '负责人讨论' } };
-    const factPlan = { ...plan, previewChanges: [{ intent: 'change', recordId: fact.id, box: 'A', before: fact, after: { ...fact, version: 2, object: { kind: 'literal', value: '李四接手' }, validity: { ...fact.validity, from: '2026-10-14', until: null } } }] };
+    const factPlan = { ...plan, previewChanges: [{ intent: 'change', recordId: fact.id, box: 'A', before: fact, after: { ...fact, version: 2, object: { kind: 'literal', value: '示例人员乙接手' }, validity: { ...fact.validity, from: '2026-10-14', until: null } } }] };
     const html = loadCognitionAssets({ candidates: [candidate({ ontologyFormation: factPlan })], ontologySnapshot: { records: { [subject.id]: subject, [relation.id]: relation, [project.id]: project } } }, { name: 'activity' }).render();
-    for (const text of ['A · 具体情况与依据', '张三', '负责', '项目甲', '李四接手', '2026-09-01', '未设结束日期', '仅本人查看', '推测']) expect(html).toContain(text);
+    for (const text of ['A · 具体情况与依据', '示例人员甲', '负责', '项目甲', '示例人员乙接手', '2026-09-01', '未设结束日期', '仅本人查看', '推测']) expect(html).toContain(text);
     for (const privateId of [subject.id, relation.id, project.id, fact.id]) expect(html).not.toContain(privateId);
   });
   it('T变化可以人工确认；计划阻断时正式保存禁用并显示原因，不能凭旧能力绕过', () => {
@@ -183,7 +183,7 @@ describe('认知与本体共同确认的真实详情', () => {
 
 describe('独立本体建议的同一审阅页面', () => {
   it('展示本体变更说明与正式保存出口，不要求认知分类或伪造认知资产', () => {
-    const item = candidate({ proposalTarget: 'ontology', judgment: '项目负责人从下个月改为李四。' });
+    const item = candidate({ proposalTarget: 'ontology', judgment: '项目负责人从下个月改为示例人员乙。' });
     const html = loadCognitionAssets({ candidates: [item], ontologySnapshot: snapshot }, { name: 'activity' }).render();
     for (const text of ['变更名称', '完整变更说明', '保存本体变化', '不会另存为认知资产', '本体变更建议']) expect(html).toContain(text);
     expect(html).not.toContain('data-f="contentCategory"');

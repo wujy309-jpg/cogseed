@@ -4,24 +4,21 @@
  * 职责：给定"文本 + 词表"，产出①候选（含拒绝原因）②按确认结果替换后的文本
  * 与③偏移映射。所有副作用（落盘、快照、IPC）都在其它模块。
  *
- * 硬护栏（对应方案 v0.2 §五 P0-2，逐条都有真实事故依据）：
+ * 扫描与替换约束：
  *   1. 子串边界：`coxy` 不得命中 `coxyx`（span 前后字符约束）；
- *   2. 词边界：`boundary: 'word'` 的词条，左右邻字符是字母/数字/CJK 即拒
- *      （真实事故：`Cloud→Claude` 命中 `iCloud` 内部，写出 `iClaude`）；
- *   3. 语境黑名单：命中窗口内出现 `contextDeny` 任一词即拒
- *      （真实范式：`傅平 ~~~ 扶贫|精准|脱贫`，防"扶贫办工作人员"→"傅平办工作人员"）；
- *   4. 作用域：`scope.global=false` 的词条只在其 docId/场景内生效
- *      （真实事故：一次会议学到的 7 个姓氏变体被当全局规则，改了无关稿件的"某老师"）；
+ *   2. 词边界：`boundary: 'word'` 的词条，左右邻字符是字母/数字/CJK 即拒；
+ *   3. 语境黑名单：命中窗口内出现 `contextDeny` 任一词即拒；
+ *   4. 作用域：`scope.global=false` 的词条只在其 docId/场景内生效，
+ *      不能将特定文档中的名称变体自动升格为全局规则；
  *   5. 保护区域：fenced code / 行内 code / URL 内不做替换；
  *   6. 重叠消解：长词优先、`freq` 次优先，同 span 只保留一个候选；
  *   7. 口癖规则包：`kind=filler` 的词条按 `transcript_filler_rules` 的边界策略删除
  *      （白名单词只在句首/独立出现；`就是/然后/对` 只在重复或纯应答），
  *      绝不"见词就删"；
- *   8. 语境白名单：命中窗口内出现 `contextAllow` 任一词则**整条候选静默丢弃**
- *      （方案 §七「加白」：误杀一次就加白，别再反复提示）；
+ *   8. 语境白名单：命中窗口内出现 `contextAllow` 任一词则**整条候选静默丢弃**，
+ *      避免在用户已认可的语境中反复提示；
  *   9. **只做替换/删除，不生成句子**：输出必须能由"原文 + 编辑集"逐字重建
- *      （`verifyEditsRebuild`），从结构上排除模型补写
- *      （真实事故：清理产物里出现原文没有的 11 秒发言）。
+ *      （`verifyEditsRebuild`），从结构上排除模型补写。
  *
  * 偏移映射：删除会缩短文本、替换会改变长度，任何 span/时间锚点都会错位，
  * 因此 `applyCorrections` 必须同时返回 `offsetMap`（keep/replace/delete 段），
@@ -41,15 +38,14 @@ import {
   fillerRuleFor,
   type FillerRule,
 } from './transcript_filler_rules';
-// 【specs/013 T018】引例判据**唯一来源**是 transcript_rewrite.QUOTE_MARKERS（T005 导出）。
-// 这里只引用、绝不复制第二份词表（T059 反漂移断言①）。运行时只在函数体内使用，
+// 引例判据的唯一来源是 transcript_rewrite.QUOTE_MARKERS。
+// 这里只引用，不复制第二份词表。运行时只在函数体内使用，
 // 与 rewrite→recall→auto_correct 的既有 import 方向不构成顶层求值环。
 import { QUOTE_MARKERS } from './transcript_rewrite';
 
-/** 清理版字符保留率低于此值即判"疑似过度改写"（方案 v0.2 §8.2）。 */
+/** 清理版字符保留率低于此值即判"疑似过度改写"。 */
 export const OVER_REWRITE_THRESHOLD = 0.55;
-/** 语境黑名单检查窗口（两侧各取多少字符）。方案里的例子用"周围 5 个语义词"，
- *  这里按字符近似（中文 1 字≈1 义素），取 20 字。 */
+/** 语境黑名单检查窗口：命中位置两侧各取 20 个字符。 */
 export const DEFAULT_CONTEXT_WINDOW = 20;
 
 export type DeniedReason =
@@ -59,12 +55,12 @@ export type DeniedReason =
   | 'word_boundary'
   | 'overlapping_span'
   | 'protected_region'
-  // 【specs/013 T006，加法】引例语境：命中 span 的窗口内出现 QUOTE_MARKERS 任一
-  // （"在讲拼写/识别这件事本身"）→ 宁可漏改不破坏语义（FR-011）。
+  // 引例语境：命中 span 的窗口内出现 QUOTE_MARKERS 任一
+  // （"在讲拼写/识别这件事本身"）→ 宁可漏改不破坏语义。
   | 'quoted_example';
 
 /**
- * 【specs/013 T006，加法】纠错候选的**依据**（FR-001"凭什么这么改"）。
+ * 纠错候选的**依据**（"凭什么这么改"）。
  * 一条候选可并列多条（词表命中 + 本体规范名 + 会议引用资产）。
  */
 export type CorrectionBasisRef =
@@ -86,12 +82,12 @@ export interface ScanOptions extends ScanTarget {
   contextWindow?: number;
   maxCandidates?: number;
   /**
-   * 【specs/013 T006，加法】说话人名单（FR-012 情景层）。由主进程用
-   * `parseTranscriptBlocks` 现算（不由渲染层传，避免已发生的时钟格式漂移事故）。
+   * 说话人名单（情景层）。由主进程用
+   * `parseTranscriptBlocks` 现算，不使用渲染层提供的解析结果。
    * **只用于依据展示与降级标注，不参与 `scopeAllows`**（作用域语义不动）。
    */
   speakers?: string[];
-  /** 【specs/013 T006，加法】话题/主题（可空）。仅用于依据展示；不参与 `scopeAllows`。 */
+  /** 话题/主题（可空）。仅用于依据展示；不参与 `scopeAllows`。 */
   topic?: string;
 }
 
@@ -111,39 +107,39 @@ export interface CorrectionCandidate {
   contextAllow: string[];
   /**
    * 结构性编辑（同人段落合并删块头 / 插时间区间）——不是"清理掉的口癖"。
-   * 标记后不会被计进 `deletedFillers`（否则 365 个块头会污染口癖计数）。
+   * 标记后不会被计进 `deletedFillers`，避免块头数量污染口癖计数。
    */
   structure?: boolean;
   /**
    * 来自**模型读正文**的建议（`entryRef` 形如 `model_<i>`），不是词表命中。
    * 面板据此标出来源、且**永不预勾**——模型判断要逐条人工确认；
-   * 确认应用时按 `meeting_accept` 记进词表（见 ipc/transcript.ts 的 apply）。
+   * 确认应用只更正当前材料，不自动形成长期词表规则。
    */
   fromModel?: boolean;
   /**
-   * 【specs/013 T006/T007，加法】本候选的**依据**（引用哪条词条/规范名/资产）。
+   * 本候选的**依据**（引用哪条词条/规范名/资产）。
    * 字面候选的构造点必填（`refs[0] = { source:'glossary', entryId, kind, freq }`）；
-   * 缺 `refs` 的候选经 `withBasisRefsGuard` 不出行（SC-001 依据完整率，宁少不多）。
+   * 缺 `refs` 的候选经 `withBasisRefsGuard` 不出行（依据完整率，宁少不多）。
    * 可选类型 = 存量调用方（apply 的合成候选等）零破坏。
    */
   refs?: CorrectionBasisRef[];
   /**
-   * 【specs/013 T006，加法】来源通道：exact（字面）/ recall（多路召回）/ model（模型复核）。
+   * 来源通道：exact（字面）/ recall（多路召回）/ model（模型复核）。
    * 缺省视为 exact（存量调用方与既有断言不受影响）。
    */
   channel?: 'exact' | 'recall' | 'model';
   /**
-   * 【specs/013 T006，加法】处置分级：
+   * 处置分级：
    *   suggest        —— 可提为建议（仍须用户确认，永不自动替换）
    *   review         —— 必须逐条人工判断（面板永不预勾）
-   *   quoted_example —— 引例，不建议替换（只读提示，不进可勾选清单，FR-011）
+   *   quoted_example —— 引例，不建议替换（只读提示，不进可勾选清单）
    * 缺省视为 suggest（存量行为不变）。
    */
   disposition?: 'suggest' | 'review' | 'quoted_example';
   /**
-   * 【specs/013 T019，加法】`disposition:'quoted_example'` 的只读提示行里，
+   * `disposition:'quoted_example'` 的只读提示行里，
    * 命中的引例标记词（QUOTE_MARKERS 之一，如「一会儿叫」）——供文案
-   * 解释"为什么降级"（FR-011 可解释）。其余候选不携带。
+   * 解释"为什么降级"。其余候选不携带。
    */
   quotedBy?: string;
 }
@@ -162,8 +158,8 @@ export interface ScanResult {
   candidates: CorrectionCandidate[];
   denied: DeniedMatch[];
   /**
-   * `truncated` = 候选超过上限被截断（口癖规则包会让候选数量级上升：
-   * 09-05 验收稿就有一千多条）。**截断必须可见**，否则用户以为"就这么多"。
+   * `truncated` = 候选达到上限；口癖规则包可能产生大量候选。
+   * 截断必须可见，避免用户将展示上限误认为候选总数。
    */
   stats: { entriesScanned: number; candidates: number; denied: number; truncated: boolean };
 }
@@ -254,7 +250,7 @@ interface RawMatch {
 }
 
 /**
- * 【specs/013 T006】依据完整率守卫（SC-001）：缺 `refs` 的候选**不出行**（宁少不多）。
+ * 依据完整率守卫：缺 `refs` 的候选**不出行**（宁少不多）。
  * `scanText` 自身构造点必填 refs（此守卫对它恒为直通）；导出供后续通道
  * （召回/模型候选并入同一清单）复用同一道闸，不在渲染层重算。
  */
@@ -263,11 +259,11 @@ export function withBasisRefsGuard(candidates: CorrectionCandidate[]): Correctio
 }
 
 /**
- * 【specs/013 T018/T022】引例闸的**唯一判定**（引用唯一 QUOTE_MARKERS，不复制词表）：
+ * 引例闸的**唯一判定**（引用唯一 QUOTE_MARKERS，不复制词表）：
  * 命中 span 的前后 `window`（缺省 DEFAULT_CONTEXT_WINDOW=20）窗口内出现任一
  * 引例标记词（"在讲拼写/识别这件事本身"）→ 该 span 是**引例位**。
  *
- * `scanText` 用它拒绝引例位（记 `denied:quoted_example`，FR-011 宁可漏改）；
+ * `scanText` 用它拒绝引例位（记 `denied:quoted_example`，宁可漏改）；
  * apply 侧（ipc/transcript.ts 的 `excludeQuoted`，缺省 true）用同一判定挡住
  * 落在引例位的模型建议——两侧必须同判据，否则会出现"这里提示是引例、
  * 那里又照样替换"的自相矛盾（与 `isProtected` 导出复用同一理由）。
@@ -281,10 +277,10 @@ export function isQuotedExampleSpan(
 }
 
 /**
- * 【specs/013 T019】引例降级的**可解释只读提示行**（FR-011）：把 `scanText`
+ * 引例降级的**可解释只读提示行**：把 `scanText`
  * 记下的 `denied:quoted_example` 转成 `candidates` 里 `disposition:'quoted_example'`
  * 的只读条目——不进可勾选清单、不参与替换，只说明"这里是引例，为什么不建议改"
- * （`quotedBy` = 命中的标记词）。词条已不可考时不造依据、不出行（SC-001 宁少不多）。
+ * （`quotedBy` = 命中的标记词）。词条已不可考时不造依据、不出行（宁少不多）。
  */
 export function quotedExampleRows(
   text: string,
@@ -320,7 +316,7 @@ export function quotedExampleRows(
   return rows;
 }
 
-/** 【specs/013 T016】召回并入扫描清单的合并结果（统计如实透出，T017）。 */
+/** 召回并入扫描清单的合并结果（统计如实透出）。 */
 export interface MergedChannelResult {
   candidates: CorrectionCandidate[];
   /** 同 span 双命中 → 并入既有行 `refs`（并列依据）、未出行的召回条数。 */
@@ -330,7 +326,7 @@ export interface MergedChannelResult {
 }
 
 /**
- * 【specs/013 T016】合并去重（D5）：召回条目与字面命中**追加进同一清单**前，
+ * 合并去重：召回条目与字面命中**追加进同一清单**前，
  * 在 features 层消解——
  *   - 同 span 已在字面命中 → 召回条目**不出行**，只把它的词条依据并入该行
  *     `refs`（并列依据；同一词条不重复追加，幂等）；
@@ -384,7 +380,7 @@ export function mergeRecallCandidates(
 }
 
 /**
- * 【specs/013 T008】本体规范名进纠错依据（FR-001）：候选建议写法（`correct`，
+ * 本体规范名进纠错依据：候选建议写法（`correct`，
  * 折叠比较——大小写/全角不敏感，与词表命中同一套折叠）命中规范名 → 给该候选
  * **追加** `{ source:'ontology', name, groupId?, fieldId? }` 并列依据。
  * 只读纯函数：未命中的候选**原样返回**（对象不复制、refs 不动）；命中则产出
@@ -441,7 +437,7 @@ export function scanText(text: string, entries: GlossaryEntry[], options: ScanOp
     }
 
     // 口癖/填充词（kind=filler + action=delete）走规则包：白名单词只在句首或
-    // 独立出现时删，语义连词只在重复或纯应答时删（方案 §五 P1-1）。
+    // 独立出现时删，语义连词只在重复或纯应答时删。
     // 关键：**绝不"见词就删"**——`这个方案`、`然后我们` 都要原样留着。
     if (entry.action === 'delete' && entry.kind === 'filler') {
       const rule: FillerRule = fillerRuleFor(entry.wrong) ?? {
@@ -454,7 +450,7 @@ export function scanText(text: string, entries: GlossaryEntry[], options: ScanOp
           denied.push({ entryRef: entry.id, wrong: entry.wrong, correct: entry.correct, reason: 'protected_region', span: match.span });
           continue;
         }
-        // 【specs/013 T018】引例闸：删除同样不得碰引例（"我把口癖念成嗯"是例子，
+        // 引例闸：删除同样不得碰引例（"我把口癖念成嗯"是例子，
         // 删掉就破坏了说话人在讲的例子本身）。判据与替换路径同一处（isQuotedExampleSpan）。
         const quotedMarker = findDeniedContext(foldedText, match.span, QUOTE_MARKERS, window);
         if (quotedMarker) {
@@ -480,10 +476,10 @@ export function scanText(text: string, entries: GlossaryEntry[], options: ScanOp
         denied.push({ entryRef: entry.id, wrong: entry.wrong, correct: entry.correct, reason: 'protected_region', span });
         continue;
       }
-      // 【specs/013 T018】引例闸（FR-011，唯一"修已知事故"的改动，优先于边界与语境）：
+      // 引例判定优先于边界与语境：
       // 命中窗口内出现 QUOTE_MARKERS 任一 → 该处是引例（"在讲拼写/识别这件事本身"），
-      // 不进 candidates、改记 denied:quoted_example（T019 再转只读提示行）。真实事故：
-      // 「一会儿叫 coxy」被改成「一会儿叫 Cogseed」，语义完全破坏——宁可漏改。
+      // 不进 candidates，改记 denied:quoted_example，再转只读提示行。
+      // 错写形态本身也是引例内容，替换会改变原意。
       // 放在 boundaryOk 之前：引例位要给的是"可解释的引例降级"，而不是一条普通
       // word_boundary 拒绝；同一句的非引例错形不受影响（各 span 各自取窗口）。
       const quotedMarker = findDeniedContext(foldedText, span, QUOTE_MARKERS, window);
@@ -547,7 +543,7 @@ export function scanText(text: string, entries: GlossaryEntry[], options: ScanOp
   // 上限从 500 提到 2000：装上口癖规则包后，一份 1 小时的稿子轻松过千条候选，
   // 原上限会把排在后面的口癖整类截掉（表现为"啊/呃/嗯 只清掉一半"）。
   const limit = options.maxCandidates ?? 2000;
-  // 【specs/013 T007】字面候选构造点必填依据：refs[0] = 词表来源（命中词条身份）。
+  // 字面候选构造点必填依据：refs[0] = 词表来源（命中词条身份）。
   // channel/disposition 不填（缺省 exact/suggest，存量行为与既有断言不变）。
   const candidates: CorrectionCandidate[] = withBasisRefsGuard(accepted.slice(0, limit).map((m) => ({
     entryRef: m.entry.id,

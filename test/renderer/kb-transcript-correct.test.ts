@@ -1,3 +1,4 @@
+// 身份、发言与文件名均为合成测试样例；时间仅用于解析和顺序断言。
 /**
  * kb-transcript-correct — 知识库查看器里的"转写纠错"面板
  *
@@ -146,8 +147,8 @@ describe('apply 摘要', () => {
 describe('清理版保存路径与命名', () => {
   const SUF = '清理版';
 
-  it('放在原文同一个目录，后缀短且一眼可认（真实反馈：时间戳名不好找）', () => {
-    expect(panel.cleanedFileName('1/9.15站会文字转写.txt', SUF)).toBe('1/9.15站会文字转写-清理版.txt');
+  it('放在原文同一个目录，后缀短且一眼可认（后缀保持可辨识）', () => {
+    expect(panel.cleanedFileName('1/示例站会文字转写.txt', SUF)).toBe('1/示例站会文字转写-清理版.txt');
   });
 
   it('原文在库根时保持根目录', () => {
@@ -177,7 +178,7 @@ describe('清理版保存路径与命名', () => {
   });
 });
 
-describe('另存后的库列表刷新与"已有文件"告知（真机反馈：另存了却找不到）', () => {
+describe('另存后的库列表刷新与"已有文件"告知', () => {
   const source = readSrc('renderer/modules/kb-transcript-correct.js');
 
   it('去重命中时把已有文件的确切路径带出来（只说"在某个目录下"用户照样找不到）', () => {
@@ -186,10 +187,10 @@ describe('另存后的库列表刷新与"已有文件"告知（真机反馈：�
       code: 'duplicate_content',
       error: '相同内容已存在',
       existingDir: '文字转写',
-      existingPath: '文字转写/文字转写_ECS9点30早会_36696491729-清理版.txt',
+      existingPath: '文字转写/文字转写_示例讨论_00000000000-清理版.txt',
     });
     expect(verdict.kind).toBe('duplicate');
-    expect(verdict.existingPath).toBe('文字转写/文字转写_ECS9点30早会_36696491729-清理版.txt');
+    expect(verdict.existingPath).toBe('文字转写/文字转写_示例讨论_00000000000-清理版.txt');
     expect(verdict.existingDir).toBe('文字转写');
   });
 
@@ -340,7 +341,7 @@ describe('对照视图分段（offsetMap 就是权威事实）', () => {
   });
 });
 
-describe('滚动与可调宽（2026-09-15 使用侧反馈修复）', () => {
+describe('滚动与可调宽', () => {
   const style = readSrc('renderer/style.css');
   const viewer = readSrc('renderer/modules/anchored-source-view.js');
 
@@ -530,7 +531,7 @@ describe('源码契约', () => {
 });
 
 
-describe('视觉规范契约（来自使用侧反馈）', () => {
+describe('视觉规范契约', () => {
   const css = fs.readFileSync(path.join(root, 'src/renderer/style.css'), 'utf8');
 
   it('条目不用卡片外框：只有底部分隔线 + 零圆角 + 透明底', () => {
@@ -600,7 +601,7 @@ describe('查看器集成契约', () => {
     expect(panelSrc).not.toContain("invoke('transcript.correct.flagCandidates'");
     expect(panelSrc).toMatch(/invoke\('transcript\.correct\.scan'[\s\S]{0,400}?includeReview: state\.scanWithReview === true/);
     // destroy() 必须仍然注销点击监听（场景输入监听一并删除后不要漏掉它）；
-    // P-r2-36 在其前先置 disposed 标志（词表回调守卫），故不锚定首行。
+    // 在其前先置 disposed 标志（词表回调守卫），故不锚定首行。
     expect(panelSrc).toMatch(/destroy\(\) \{[\s\S]{0,200}?container\.removeEventListener\('click', onClick\);/);
   });
 
@@ -628,7 +629,7 @@ describe('查看器集成契约', () => {
   it('弹窗结果只能 await 弹窗本身（uiModal 没有 .result；await undefined 会立即通过）', () => {
     // 真因：`await modal.result` === `await undefined` ⇒ 弹窗还开着就被当成"用户已关闭"，
     // 于是「对照」里的回滚、「清理附记」里的另存、「拟主题标题」里的采用全都不执行
-    // ——真机表现统一为"按钮点了没反应"。
+    // ——弹窗动作因此无法执行。
     expect(panelSrc).not.toMatch(/modal\.result/);
     expect(panelSrc).toMatch(/await modal;/);
     // 把契约钉在 uiModal 上：它返回 Promise 本体（带 close/overlay/dialog），没有 result 字段
@@ -638,7 +639,7 @@ describe('查看器集成契约', () => {
 
   it('弹窗内的动作必须自带点击委托（弹窗挂 body，面板容器的委托收不到）', () => {
     // 「拟主题标题」的采用按钮渲染在 uiModal 里（document.body 下，见 ui-modal.js），
-    // 只挂容器委托 = 点「采用」没反应（真机反馈）
+    // 只挂容器委托 = 点「采用」没反应
     expect(panelSrc).toMatch(/dialog\.addEventListener\('click', onClick\)/);
     expect(panelSrc).toMatch(/dialog\.removeEventListener\('click', onClick\)/);
     // 采用态反馈不得用 textContent 覆盖共享按钮内部结构（会冲掉 label span、
@@ -649,7 +650,7 @@ describe('查看器集成契约', () => {
 
   it('入口只在"阅读全文 + 已解析文本 + 是文字转写"时出现', () => {
     expect(viewer).toMatch(/function canCorrect\(\)[\s\S]{0,400}activeView !== 'document'[\s\S]{0,200}activeResult\?\.resolved/);
-    // 真机反馈：纠错入口不该出现在所有文本上——非转写文档不提供（判定行为见
+    // 纠错入口不该出现在所有文本上——非转写文档不提供（判定行为见
     // anchored-source-view.test.ts「纠错入口只服务文字转写」一组断言）
     expect(viewer).toMatch(/function canCorrect\(\)[\s\S]{0,1200}isTranscriptDocument\(/);
   });
@@ -678,7 +679,7 @@ describe('模型建议并入候选列表', () => {
 
   it('只有勾选的模型建议才随 apply 提交（没勾的不进正文、不进词表）', () => {
     const rows = [
-      { entryRef: 'model_0', wrong: '付平', correct: '傅平', context: '姓氏同音', fromModel: true, spans: [{ start: 5, end: 7 }] },
+      { entryRef: 'model_0', wrong: '例加', correct: '例甲', context: '姓氏同音', fromModel: true, spans: [{ start: 5, end: 7 }] },
       { entryRef: 'model_1', wrong: 'coxyx', correct: 'Cogseed', fromModel: true, spans: [{ start: 20, end: 25 }] },
     ];
     expect(panel.checkedModelCandidates(rows, ['model_1'])).toEqual([
@@ -716,21 +717,12 @@ describe('模型建议并入候选列表', () => {
 });
 
 /**
- * 真机事故（2026-09-22）：面板**整条工具栏消失**——「同时让模型读一遍」和「词表」
- * 都不见了，用户以为功能被删了。
- *
- * 根因不是没渲染，而是**渲染时抛错被静默吞掉**：
- *   - `renderHead()` 里 `root.uiCheckbox({ id, checked, disabled, attrs })` **没给可达标签**；
- *     共享 `uiCheckbox` 缺可达标签时直接抛 `TypeError`（ui-form.js）；
- *   - 工具栏是**一整条字符串拼接**后再赋给 `innerHTML`，表达式抛错 ⇒ 赋值不执行 ⇒
- *     拼在它前面的「扫描」、以及后面的「新增词条」「词表」**一起消失**；
- *   - `render()` 逐步 try/catch（历史事故：某步抛错不该卡死扫描流程），
- *     于是这条错误只进了 `log.warn`，界面上没有任何痕迹。
- *
- * 这条测试用**真原语**（真 uiButton / 真 uiCheckbox）挂面板：只要再有原语的硬性
- * 要求没给到，拼接即抛错、工具栏恒为空，断言必失败。
+ * 工具栏必须满足共享原语的可达标签等要求。
+ * 字符串拼接中的任一原语抛错都可能阻止整条工具栏赋值；分步渲染虽会捕获异常，
+ * 也不能代替控件契约。这里使用真实 uiButton/uiCheckbox 和最小 DOM 挂载面板，
+ * 确认工具栏完整可见，并校验所有原语实参。
  */
-describe('面板工具栏必须由真原语渲染出来（真机：整条消失）', () => {
+describe('面板工具栏必须由真原语完整渲染', () => {
   const fakeElement = (): any => {
     const el: any = {
       textContent: '', innerHTML: '', outerHTML: '', hidden: false, value: '', checked: false,
@@ -779,9 +771,9 @@ describe('面板工具栏必须由真原语渲染出来（真机：整条消失�
     context.t = () => '';
     vm.runInContext(panelSrc, context, { filename: 'kb-transcript-correct.js' });
     const instance = context.KbTranscriptCorrect.mount(container, {
-      text: '甲 2026-09-05 19:31:32\n付平来了。\n乙 2026-09-05 19:31:34\n海云哥你到了吗？',
+      text: '甲 2026-09-05 19:31:32\n例加来了。\n乙 2026-09-05 19:31:34\n示例乙你到了吗？',
       docId: 'doc-1',
-      displayPath: '1/9.15站会.txt',
+      displayPath: '1/示例站会.txt',
     });
     return { instance, nodes };
   }
@@ -896,7 +888,7 @@ function loadTranscriptPanelForI18n() {
   vm.createContext(context);
   vm.runInContext(source, context, { filename: 'kb-transcript-correct.js' });
   const instance = windowMock.KbTranscriptCorrect.mount(container, {
-    text: '甲说：付平来了。', docId: 'doc-1', displayPath: '1/9.15站会.txt',
+    text: '甲说：例加来了。', docId: 'doc-1', displayPath: '1/示例站会.txt',
   });
   const fire = () => (handlers['i18n-change'] || []).forEach((h) => h());
   return { instance, nodes, fire, strings, listenerCount: () => (handlers['i18n-change'] || []).length };
@@ -922,10 +914,10 @@ describe('语言切换（i18n-change）', () => {
 });
 
 /**
- * specs/013 会议引用层（US-501 渲染段）：召回通道展示（T024）、引例提示行与
- * 降级说明（T025）、依据上屏（T026）、回执区（T030）、空间库如实提示（T023）。
+ * 会议引用层：召回通道展示、引例提示行与
+ * 降级说明、依据上屏、回执区、空间库如实提示。
  */
-describe('会议引用层：召回候选与预勾规则（T024）', () => {
+describe('会议引用层：召回候选与预勾规则', () => {
   const mk = (over: Record<string, unknown> = {}) => ({
     entryRef: 'g_1', wrong: 'coxy', correct: 'Cogseed', action: 'replace', riskLevel: 'low',
     confidence: 1, context: '', span: { start: 0, end: 4 }, ...over,
@@ -1009,7 +1001,7 @@ describe('会议引用层：召回候选与预勾规则（T024）', () => {
   });
 });
 
-describe('会议引用层：依据文案与降级文案（T025/T026 纯函数）', () => {
+describe('会议引用层：依据文案与降级文案', () => {
   it('三类依据各一条展示路径：词条（wrong→correct + freq）/ 本体规范名 / 资产（标题 + 冻结版 + id）', () => {
     const row = { wrong: 'coxy', correct: 'Cogseed', action: 'replace' };
     expect(panel.basisRefText({ source: 'glossary', entryId: 'g_1', kind: 'product', freq: 3 }, row))
@@ -1045,7 +1037,7 @@ describe('会议引用层：依据文案与降级文案（T025/T026 纯函数）
 });
 
 /**
- * 「另存到本地文件夹…」（2026-09-23 真机反馈：清理版没落到用户自己的文件夹里）。
+ * 「另存到本地文件夹…」。
  *
  * 与「另存到知识库」是两个落点：库内那份喂检索/问答，本机那份给用户自己用。
  * 这里用真原语 + 假 DOM 挂一次面板，走完整条点击链路（点击分派 → IPC → 状态渲染），
@@ -1083,9 +1075,9 @@ function loadPanelForLocalExport(invoke: (channel: string, payload: any) => Prom
   context.t = () => '';
   vm.runInContext(panelSrc, context, { filename: 'kb-transcript-correct.js' });
   const instance = context.KbTranscriptCorrect.mount(container, {
-    text: '甲 2026-09-05 19:31:32\n付平来了。',
-    docId: '1/9.15站会.txt',
-    displayPath: '1/9.15站会.txt',
+    text: '甲 2026-09-05 19:31:32\n例加来了。',
+    docId: '1/示例站会.txt',
+    displayPath: '1/示例站会.txt',
   });
   const clickAction = (action: string) => {
     listeners.click?.({
@@ -1099,7 +1091,7 @@ function loadPanelForLocalExport(invoke: (channel: string, payload: any) => Prom
   return { instance, nodes, clickAction };
 }
 
-describe('另存到本地文件夹（真机：本地原文件夹里没有清理版）', () => {
+describe('另存到本地文件夹', () => {
   const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
   it('生成清理版后出现「另存到本地文件夹…」按钮，且 title 说明落点与知识库那份不同', async () => {
@@ -1128,7 +1120,7 @@ describe('另存到本地文件夹（真机：本地原文件夹里没有清理�
     const calls: Array<{ channel: string; payload: any }> = [];
     const { instance, clickAction } = loadPanelForLocalExport(async (channel, payload) => {
       calls.push({ channel, payload });
-      return { ok: true, scope: 'origin', path: '/Users/example/会议/9.15站会-清理版.txt' };
+      return { ok: true, scope: 'origin', path: '/Users/example/会议/示例站会-清理版.txt' };
     });
     const state = instance.getState();
     state.cleanedText = '清理后的正文';
@@ -1140,19 +1132,19 @@ describe('另存到本地文件夹（真机：本地原文件夹里没有清理�
     expect(calls[0]?.channel).toBe('library.writeTextToLocal');
     expect(calls[0]?.payload).toEqual({
       content: '清理后的正文',
-      sourcePath: '1/9.15站会.txt',
-      fileName: '9.15站会-清理版.txt',
+      sourcePath: '1/示例站会.txt',
+      fileName: '示例站会-清理版.txt',
     });
     // 落点台账：本地那份不在库里，只能靠 deliveries 反查
     const annotate = calls.find((c) => c.channel === 'transcript.run.annotate');
     expect(annotate?.payload.kind).toBe('local_copy');
-    expect(annotate?.payload.path).toContain('9.15站会-清理版.txt');
+    expect(annotate?.payload.path).toContain('示例站会-清理版.txt');
     instance.destroy();
   });
 
   it('落点如实报回（状态行 + 摘要行都给出绝对路径）', async () => {
     const { instance, nodes, clickAction } = loadPanelForLocalExport(async () => ({
-      ok: true, scope: 'origin', path: '/Users/example/会议/9.15站会-清理版.txt',
+      ok: true, scope: 'origin', path: '/Users/example/会议/示例站会-清理版.txt',
     }));
     const state = instance.getState();
     state.cleanedText = '清理后的正文';
@@ -1163,7 +1155,7 @@ describe('另存到本地文件夹（真机：本地原文件夹里没有清理�
     clickAction('save-local');
     await flush();
 
-    expect(nodes.get('[data-atc-summary]').textContent).toContain('/Users/example/会议/9.15站会-清理版.txt');
+    expect(nodes.get('[data-atc-summary]').textContent).toContain('/Users/example/会议/示例站会-清理版.txt');
     instance.destroy();
   });
 
@@ -1207,7 +1199,7 @@ describe('另存到本地文件夹（真机：本地原文件夹里没有清理�
 
 describe('本地导出文件名（纯文件名，不带库内目录）', () => {
   it('只出 basename：本地目录由主进程决定，拼库内相对目录是错的', () => {
-    expect(panel.cleanedFileBaseName('1/9.15站会.txt', '清理版')).toBe('9.15站会-清理版.txt');
+    expect(panel.cleanedFileBaseName('1/示例站会.txt', '清理版')).toBe('示例站会-清理版.txt');
     expect(panel.cleanedFileBaseName('', '清理版')).toBe('transcript-清理版.txt');
   });
 
@@ -1219,11 +1211,11 @@ describe('本地导出文件名（纯文件名，不带库内目录）', () => {
 });
 
 /**
- * 页面级用例（specs/013 T025/T026/T030 验收）：用可记录子节点的最小 DOM 假体
+ * 页面级用例：用可记录子节点的最小 DOM 假体
  * 真挂一次面板、真跑一次 scan/apply（mock IPC），断言引例行无勾选框、依据
  * 三类渲染、回执区渲染与空态恰一处、降级说明恰一处。
  */
-describe('会议引用层：面板页面级（T025/T026/T030）', () => {
+describe('会议引用层：面板页面级', () => {
   function recElement(): any {
     const el: any = {
       _text: '', children: [], innerHTML: '', hidden: false, value: '', checked: false,
@@ -1281,7 +1273,7 @@ describe('会议引用层：面板页面级（T025/T026/T030）', () => {
         channel: 'recall', refs: [{ source: 'glossary', entryId: 'g_recall', kind: 'term', freq: 1 }],
       },
       {
-        entryRef: 'g_review', wrong: '付平', correct: '傅平', action: 'replace', riskLevel: 'low',
+        entryRef: 'g_review', wrong: '例加', correct: '例甲', action: 'replace', riskLevel: 'low',
         confidence: 0.7, context: '', span: { start: 12, end: 14 }, ignoredCount: 0, contextAllow: [],
         channel: 'recall', disposition: 'review', refs: [{ source: 'glossary', entryId: 'g_review', kind: 'people', freq: 1 }],
       },
@@ -1296,7 +1288,7 @@ describe('会议引用层：面板页面级（T025/T026/T030）', () => {
         channel: 'exact', disposition: 'quoted_example', quotedBy: '一会儿叫',
         refs: [{ source: 'glossary', entryId: 'g_quoted', kind: 'product', freq: 1 }],
       },
-      // 无 refs 且非模型：不出行（T026）
+      // 无 refs 且非模型：不出行
       { entryRef: 'g_dirty', wrong: 'x', correct: 'y', action: 'replace', riskLevel: 'low' },
     ],
     denied: [
@@ -1354,9 +1346,9 @@ describe('会议引用层：面板页面级（T025/T026/T030）', () => {
     vm.createContext(context);
     vm.runInContext(panelSrc, context, { filename: 'kb-transcript-correct.js' });
     const instance = context.KbTranscriptCorrect.mount(container, {
-      text: '甲 2026-09-05 19:31:32\n一会儿叫 coxy。\n乙 2026-09-05 19:31:34\n付平来了。',
+      text: '甲 2026-09-05 19:31:32\n一会儿叫 coxy。\n乙 2026-09-05 19:31:34\n例加来了。',
       docId: 'doc-1',
-      displayPath: '1/9.15站会.txt',
+      displayPath: '1/示例站会.txt',
       degradedNotes: ['space_doc'],
     });
     const fire = (matches: Record<string, ReturnType<typeof attrEl>>) => {
@@ -1369,7 +1361,7 @@ describe('会议引用层：面板页面级（T025/T026/T030）', () => {
     return { instance, nodes, fire, flush, calls, rowElements };
   }
 
-  it('扫描后：召回行带四语徽标、无依据脏行不出行、引例行只读（T024/T025/T026）', async () => {
+  it('扫描后：召回行带四语徽标、无依据脏行不出行、引例行只读', async () => {
     const env = mountMeetingPanel();
     env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
     await env.flush();
@@ -1403,7 +1395,7 @@ describe('会议引用层：面板页面级（T025/T026/T030）', () => {
     env.instance.destroy();
   });
 
-  it('降级说明恰一处：空间库（挂载方）+ 无说话人（scan）合并去重呈现（T025）', async () => {
+  it('降级说明恰一处：空间库（挂载方）+ 无说话人（scan）合并去重呈现', async () => {
     const env = mountMeetingPanel();
     // 扫描前：挂载方带来的空间库提示已可见
     const degraded = env.nodes.get('[data-atc-degraded]');
@@ -1419,7 +1411,7 @@ describe('会议引用层：面板页面级（T025/T026/T030）', () => {
     env.instance.destroy();
   });
 
-  it('依据展开区：三类依据各自渲染，含 id/版本、不含资产正文（T026）', async () => {
+  it('依据展开区：三类依据各自渲染，含 id/版本、不含资产正文', async () => {
     const env = mountMeetingPanel();
     env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
     await env.flush();
@@ -1438,7 +1430,7 @@ describe('会议引用层：面板页面级（T025/T026/T030）', () => {
     env.instance.destroy();
   });
 
-  it('回执区：空态恰一处；拒绝后 apply 落回执、行含会议/条目/依据/id 且不含正文（T030）', async () => {
+  it('回执区：空态恰一处；拒绝后 apply 落回执、行含会议/条目/依据/id 且不含正文', async () => {
     const env = mountMeetingPanel();
     const receiptsBody = env.nodes.get('[data-atc-receipts-body]');
     // 空态恰一处
@@ -1466,16 +1458,16 @@ describe('会议引用层：面板页面级（T025/T026/T030）', () => {
     expect((markupOf(receiptsBody).match(/暂无回执/g) || []).length).toBe(0);
     const text = markupOf(receiptsBody);
     expect(text).toContain('已拒绝');
-    expect(text).toContain('9.15站会.txt');
-    expect(text).toContain('付平 → 傅平');
-    expect(text).toContain('词条「付平 → 傅平」· 累计纠正 1 次');
+    expect(text).toContain('示例站会.txt');
+    expect(text).toContain('例加 → 例甲');
+    expect(text).toContain('词条「例加 → 例甲」· 累计纠正 1 次');
     expect(text).toContain('dec_7');
     expect(text).not.toContain('清理版正文不应出现在回执区');
     env.instance.destroy();
   });
 });
 
-describe('扫描失败后的状态清理（F-r1-20：失败分支不得残留旧接受集合/旧清理版）', () => {
+describe('扫描失败后的状态清理', () => {
   // 极简 DOM（同「面板页面级」块）：够 render 走完、够点委托按钮即可。
   function recElement(): any {
     const el: any = {
@@ -1611,13 +1603,13 @@ describe('扫描失败后的状态清理（F-r1-20：失败分支不得残留旧
     env.instance.destroy();
   });
 
-  it('拒绝过词条后扫描失败，仍可为写回执生成清理版（T030 放行 rejected-only），且成功后不残留「扫描失败」', async () => {
+  it('拒绝过词条后扫描失败，仍可为写回执生成清理版，且成功后不残留「扫描失败」', async () => {
     const behavior = { fail: false };
     const env = mountPanel(behavior);
     env.fire({ '[data-atc-action]': attrEl({ 'data-atc-action': 'scan' }) });
     await env.flush();
     await env.flush();
-    // 拒绝 g_rej：rejected 是跨轮回执账本（T030 有意设计），扫描失败也不清它
+    // 拒绝 g_rej：rejected 是跨轮回执账本，扫描失败也不清它
     env.fire({ '[data-atc-rowmenu]': attrEl({ 'data-atc-rowmenu': 'g_rej' }) });
     env.fire({ '[data-atc-reject]': attrEl({ 'data-atc-reject': 'g_rej' }) });
 
@@ -1640,7 +1632,7 @@ describe('扫描失败后的状态清理（F-r1-20：失败分支不得残留旧
   });
 });
 
-describe('被护栏拦截清单的截断披露（F-r4-5：只渲染前 50 条时不装作"就这么多"）', () => {
+describe('被护栏拦截清单的截断披露', () => {
   function recElement(): any {
     const el: any = {
       _text: '', children: [], innerHTML: '', hidden: false, value: '', checked: false,
@@ -1768,7 +1760,7 @@ describe('被护栏拦截清单的截断披露（F-r4-5：只渲染前 50 条时
   });
 });
 
-describe('会议引用层：空间库文档如实提示（T023，查看器侧）', () => {
+describe('会议引用层：空间库文档如实提示', () => {
   const viewer = readSrc('renderer/modules/anchored-source-view.js');
 
   it('resolveCorrectionText 在 truncated+spaceId 时返回带降级原因的结果（不再静默 inline）', () => {
@@ -1800,7 +1792,7 @@ describe('会议引用层：空间库文档如实提示（T023，查看器侧）
   });
 });
 
-describe('会议引用层：渲染契约补充（specs/013）', () => {
+describe('会议引用层：渲染契约补充', () => {
   it('引例行由独立的只读渲染函数产出（不进 splitByRisk 的候选分组）', () => {
     expect(panelSrc).toContain('function quotedRowElement(row)');
     expect(panelSrc).toMatch(/splitByRisk\(state\.rows\.filter\(\(row\) => row\.disposition !== 'quoted_example'\)\)/);
@@ -1820,7 +1812,7 @@ describe('会议引用层：渲染契约补充（specs/013）', () => {
   });
 });
 
-// ── specs/013 T047：「提出为候选」面板入口（页面级）─────────────────────────
+// ── ：「提出为候选」面板入口（页面级）─────────────────────────
 
 describe('纠错面板独立认知形成入口退休', () => {
   it('不再提供词条提出为认知建议，正常转写纠错与保存保留', () => {
@@ -1916,7 +1908,7 @@ describe('展开「更多」不再错位（行必须允许换行 + 表单按钮�
 });
 
 /**
- * "填了写法、点了确定，列表还是旧的"（2026-09-23 真机追问）。
+ * 改写法后必须更新当前行，同时保留已勾选集合与清理版。
  *
  * 两个成因都必须留痕：
  *   1. `runScan()` 第一行 `if (state.busy) return`，而写操作都在 busy 区间里干活——
@@ -1948,7 +1940,7 @@ describe('改写法后列表必须跟着变', () => {
 });
 
 /**
- * KB 面板 busy 纪律（待议 P-r1-68/P-r2-31/P-r2-33/P-r2-36，预审决策卡组 10）。
+ * KB 面板异步操作互斥、响应顺序和销毁后的回调约束。
  *
  * 行为级回归：真原语 + 假 DOM 挂面板，用可编排的 invoke 驱动真实点击链路，
  * 钉住四件事：
@@ -1986,9 +1978,9 @@ function loadPanelForBusy(invoke: (channel: string, payload: any) => Promise<any
   context.t = () => '';
   vm.runInContext(panelSrc, context, { filename: 'kb-transcript-correct.js' });
   const instance = context.KbTranscriptCorrect.mount(container, {
-    text: '甲 2026-09-05 19:31:32\n付平来了。',
-    docId: '1/9.15站会.txt',
-    displayPath: '1/9.15站会.txt',
+    text: '甲 2026-09-05 19:31:32\n例加来了。',
+    docId: '1/示例站会.txt',
+    displayPath: '1/示例站会.txt',
   });
   const clickAction = (action: string) => {
     listeners.click?.({
@@ -2011,7 +2003,7 @@ function loadPanelForBusy(invoke: (channel: string, payload: any) => Promise<any
   return { instance, nodes, context, clickAction, clickAttr };
 }
 
-describe('busy 纪律（P-r1-68/P-r2-31/P-r2-33/P-r2-36）', () => {
+describe('busy 纪律', () => {
   const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
   const APPLY_RESULT = {
     result: { text: '清理后的正文' },
@@ -2038,14 +2030,14 @@ describe('busy 纪律（P-r1-68/P-r2-31/P-r2-33/P-r2-36）', () => {
     instance.destroy();
   });
 
-  it('apply 进行中打开「对照」不再提前解锁：diff 只清自己的 diffBusy（P-r1-68/P-r2-33）', async () => {
+  it('apply 进行中打开「对照」不再提前解锁：diff 只清自己的 diffBusy', async () => {
     const calls: string[] = [];
     let resolveApply!: (value: unknown) => void;
     const { instance, clickAction } = loadPanelForBusy(async (channel) => {
       calls.push(channel);
       if (channel === 'transcript.correct.apply') return new Promise((done) => { resolveApply = done; });
       if (channel === 'transcript.run.get') {
-        return { before: '甲说：付平来了。', after: '甲说：付平来。', offsetMap: [], run: {} };
+        return { before: '甲说：例加来了。', after: '甲说：例加来。', offsetMap: [], run: {} };
       }
       return {};
     });
@@ -2073,7 +2065,7 @@ describe('busy 纪律（P-r1-68/P-r2-31/P-r2-33/P-r2-36）', () => {
     instance.destroy();
   });
 
-  it('「对照」弹窗自身防重入：diffBusy 在途时二次点击不发第二个 run.get（P-r1-68/P-r2-33）', async () => {
+  it('「对照」弹窗自身防重入：diffBusy 在途时二次点击不发第二个 run.get', async () => {
     const calls: string[] = [];
     let resolveGet!: (value: unknown) => void;
     const { instance, clickAction } = loadPanelForBusy(async (channel) => {
@@ -2098,7 +2090,7 @@ describe('busy 纪律（P-r1-68/P-r2-31/P-r2-33/P-r2-36）', () => {
     instance.destroy();
   });
 
-  it('apply 在途时点「扫描」被 busy 守卫拦下（P-r2-31 迟到覆写的主通路）', async () => {
+  it('apply 在途时点「扫描」被 busy 守卫拦下', async () => {
     const calls: string[] = [];
     let resolveApply!: (value: unknown) => void;
     const { instance, clickAction } = loadPanelForBusy(async (channel) => {
@@ -2123,7 +2115,7 @@ describe('busy 纪律（P-r1-68/P-r2-31/P-r2-33/P-r2-36）', () => {
     instance.destroy();
   });
 
-  it('「加入词表」在途持锁防重入：busy=true、二连点不重发 upsert（P-r2-31）', async () => {
+  it('「加入词表」在途持锁防重入：busy=true、二连点不重发 upsert', async () => {
     const upsertCalls: any[] = [];
     const scanCalls: any[] = [];
     let resolveUpsert!: (value: unknown) => void;
@@ -2155,7 +2147,7 @@ describe('busy 纪律（P-r1-68/P-r2-31/P-r2-33/P-r2-36）', () => {
     instance.destroy();
   });
 
-  it('「忽略」词表行在途持全局 busy（P-r2-31）', async () => {
+  it('「忽略」词表行在途持全局 busy', async () => {
     let resolveIgnore!: (value: unknown) => void;
     const { instance, clickAttr } = loadPanelForBusy(async (channel) => {
       if (channel === 'transcript.glossary.setIgnored') return new Promise((done) => { resolveIgnore = done; });
@@ -2174,7 +2166,7 @@ describe('busy 纪律（P-r1-68/P-r2-31/P-r2-33/P-r2-36）', () => {
     instance.destroy();
   });
 
-  it('扫描在途期间有 apply 落地：迟到 scan 整段丢弃，不覆写清理版（P-r2-31 写前比对）', async () => {
+  it('扫描在途期间有 apply 落地：迟到 scan 整段丢弃，不覆写清理版', async () => {
     let resolveScan!: (value: unknown) => void;
     const { instance, clickAction } = loadPanelForBusy(async (channel) => {
       if (channel === 'transcript.correct.scan') return new Promise((done) => { resolveScan = done; });
@@ -2214,7 +2206,7 @@ describe('busy 纪律（P-r1-68/P-r2-31/P-r2-33/P-r2-36）', () => {
     instance.destroy();
   });
 
-  it('面板销毁后词表管理器 onChanged 不再对孤儿面板发起重扫（P-r2-36）', async () => {
+  it('面板销毁后词表管理器 onChanged 不再对孤儿面板发起重扫', async () => {
     const scanCalls: string[] = [];
     const { instance, context, clickAction } = loadPanelForBusy(async (channel) => {
       if (channel === 'transcript.correct.scan') { scanCalls.push(channel); return { candidates: [] }; }
@@ -2237,13 +2229,13 @@ describe('busy 纪律（P-r1-68/P-r2-31/P-r2-33/P-r2-36）', () => {
     expect(scanCalls).toHaveLength(1); // 面板已销毁：不再重扫（IPC 不再照发）
   });
 
-  // P-r2-32（2026-10-01 拍板：按钮补看 busy）：采纳建议/补错形的收尾会嵌套调
+  // 采纳建议/补错形的收尾会嵌套调
   // runSyncOntology（先重跑同步让建议列表消失）。若动作在途时用户还能点出
   // 第二个在途 syncBusy，嵌套调用会被 runSyncOntology 的防重入守卫静默吞掉
   // ——采纳成功但建议列表不刷新。入口互斥后，嵌套调用永远落在 syncBusy=false。
   // 注：同步按钮/补错形按钮的 DOM 均由面板内部 createElement 拼装（fake DOM
   // 的 appendChild 不挂树，行为级够不着），按本文件既有源码级先例钉住双看口径。
-  it('源码级：同步按钮与「加入词表」按钮双看 busy||syncBusy（P-r2-32）', () => {
+  it('源码级：同步按钮与「加入词表」按钮双看 busy||syncBusy', () => {
     expect(panelSrc).toContain(`disabled: state.busy || state.syncBusy,
         attrs: { 'data-atc-action': 'sync-ontology' }`);
     expect(panelSrc).toContain(`disabled: state.busy || state.syncBusy,
@@ -2251,7 +2243,7 @@ describe('busy 纪律（P-r1-68/P-r2-31/P-r2-33/P-r2-36）', () => {
   });
 });
 
-describe('mount 幂等（P-r2-34：双击重入不再叠加监听与实例）', () => {
+describe('mount 幂等', () => {
   /** 装载面板并记录容器/root 两级监听的挂摘，供「只剩一份活监听」断言。 */
   function mountTrackablePanel() {
     const addCalls: Array<[string, unknown]> = [];
@@ -2291,11 +2283,11 @@ describe('mount 幂等（P-r2-34：双击重入不再叠加监听与实例）', 
     // 复刻挂载方双击重入（anchored-source-view 的 toggleCorrection 在 await
     // 取全文窗口内被点两次）：同一容器背靠背 mount 两次。
     const first = context.KbTranscriptCorrect.mount(container, {
-      text: '甲 2026-09-05 19:31:32\n付平来了。', docId: 'd1', displayPath: 'd1.txt',
+      text: '甲 2026-09-05 19:31:32\n例加来了。', docId: 'd1', displayPath: 'd1.txt',
     });
     expect(addCalls.filter(([tag]) => tag === 'container:click')).toHaveLength(1);
     const second = context.KbTranscriptCorrect.mount(container, {
-      text: '乙 2026-09-05 19:31:34\n海云哥你到了吗？', docId: 'd1', displayPath: 'd1.txt',
+      text: '乙 2026-09-05 19:31:34\n示例乙你到了吗？', docId: 'd1', displayPath: 'd1.txt',
     });
     expect(second).not.toBe(first);
     // 第一份实例（含其点击委托与 root 级 i18n 监听）已被幂等销毁摘除，

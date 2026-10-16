@@ -1,30 +1,7 @@
 import { seedStoredAbilityAsset } from '../helpers/stored-ability-asset';
-/**
- * 探针 r6（边界测试员 · 本遍循环第 2 轮，编号顺延 r5）→ 主题：版本组终态一致性。
- *
- * 疑点（读码推演，asset-service.ts:1584-1623）：deleteAbilityAssetVersion 的
- * 「在用版本不可删」检查（:1593-1597）读的是**锁外**的资产快照；检查通过后
- * 到物理删除（:1619 removeRecallJsonlRecords，持 jsonl 流文件锁）之间隔着
- * 全量投影枚举 + 逐投影 updateRecallJsonRecord（各持投影记录锁）的大窗口。
- * 并发的 selectAbilityAssetVersion 改 activeVersion 走的是**资产记录文件锁**
- * ——两把锁互不互斥。交错序：delete 检查时 active=v3（要删的 v2 非在用，放行）
- * → select 把 activeVersion 落成 v2 → delete 物理删掉 v2 → 终态：资产声称
- * 在用 v2，版本流里却没有 v2，违反 :1577 注释「在用版本不可删（删除即资产
- * 内容变空）」的自留承诺，readAbilityAssetVersionSnapshot 从此拿 null。
- *
- * 时序注入手法：vi.mock 掉 context-projection.listAllConfirmedProjections——
- * 该调用点（:1604）位于 active 检查（:1597）之后、removeRecallJsonlRecords
- * （:1619）之前，在 mock 里同步执行一次 selectAbilityAssetVersion 即可 100%
- * 确定性地复现并发交错，不依赖真实赛跑的时序运气。
- *
- * 对照组（用例 1，无竞态）：select 先完整落盘，再 delete 同一版本 → 守卫正确
- * 拒绝。证明守卫本身有效、主用例的红正是窗口竞态所致。风格对齐
- * probe-r5-purge-earlyreturn-guard-bypass.test.ts。
- *
- * 收尾状态（2026-10-01 记账员）：对应待议 **P-r1-86（delete 检查+删除同锁且 select 锁内重校 vs 专用 per-asset 操作锁，实现切分待拍板）**——
- * 断言漏洞现状的用例 it.skip 注明编号，拍板修复后反转/改写断言启用；
- * 对照组（无竞态/无坏档时守卫与正常路径有效）不依赖漏洞，保留 active。
- */
+/** 删除历史版本与切换在用版使用同一资产锁并在锁内重查版本流。
+ * 在投影冻结窗口排队一次 select：删除先完成后，select 应拒绝已删除
+ * 的版本，在用版本指针不能指向不存在的快照。 */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -100,7 +77,7 @@ async function seedThreeVersions() {
   return assets;
 }
 
-describe('probe r6 › deleteAbilityAssetVersion 的「在用版本不可删」检查在锁外（竞态）', () => {
+describe('删除历史版本与在用版切换的并发一致性', () => {
   it('对照组：select 先落盘，delete 同版本被守卫拒绝（无竞态时守卫有效）', async () => {
     const assets = await seedThreeVersions();
     const selected = await assets.selectAbilityAssetVersion(UID, ASSET_ID, '2', { actor: 'user', reason: '切 v2 为在用' });
@@ -112,7 +89,7 @@ describe('probe r6 › deleteAbilityAssetVersion 的「在用版本不可删」�
     expect(versions.map((v) => v.version)).toContain('2');
   });
 
-  it('【已修 P-r1-86】竞态主用例：delete 检查+删除同锁后，窗口内的 select 被锁内重校拒绝，在用版本不蒸发', async () => {
+  it('竞态主用例：delete 检查+删除同锁后，窗口内的 select 被锁内重校拒绝，在用版本不蒸发', async () => {
     const assets = await seedThreeVersions();
     // 并发对手方：在 delete 的锁定窗口内（投影冻结段）发起 select——修复后
     // delete 全程持资产记录锁，select 的记录写在同一把锁上排队，delete 先

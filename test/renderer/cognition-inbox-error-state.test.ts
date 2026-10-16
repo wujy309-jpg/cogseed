@@ -1,17 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 /**
- * 形成建议读取的失败态（F-r3-1，2026-09-30 认知资产质检 R3）：
- *
- * BLOCK_FETCHERS.candidates 此前走 api.soft 兜底 {}——recall.candidates.list 失败时
- * store.inbox=[]、inboxGroups=null，与「真的没有待办」「加载中」三态同形，
- * 待我处理页把主数据源读失败呈现成「没有需要你确认的事项…系统继续在后台
- * 沉淀」。修法对齐同页 candidates 的 A5 先例（candidatesError）：改 api.call
- * +try/catch，失败显式记 store.inboxError（视图层分区级失败态+重试），成功
- * 清掉标记。与 candidatesError 不同点：治理待办是分区数据源，失败不挡整页。
- *
- * 装配与 cognition-kstar-summaries.test.ts 同构：core.js 是 IIFE，require
- * 一次即挂 window.CogAssets，唯一 IPC 出口是 window.cogseed.invoke。
+ * 形成建议读取失败必须区别于空列表和加载中。
+ * BLOCK_FETCHERS.candidates 使用错误标记表示失败，成功后清除；失败仅影响
+ * 当前分区，不阻断同页其他区块。core.js 通过 mock window.cogseed.invoke
+ * 装配，测试不读取真实候选。
  */
 
 const globalScope = globalThis as unknown as Record<string, unknown>;
@@ -39,7 +32,7 @@ const NS = (() => {
   };
 })();
 
-describe('形成建议读取的失败态（BLOCK_FETCHERS.candidates，F-r3-1）', () => {
+describe('形成建议读取的失败态（BLOCK_FETCHERS.candidates）', () => {
   it('recall.candidates.list 失败：置空清单与分组、显式记 inboxError（不再 soft 降级空数组）', async () => {
     invokeImpl = async (channel) => (channel === 'recall.candidates.list'
       ? { ok: false, error: 'inbox list unavailable', code: 'E_IO' }
@@ -48,7 +41,7 @@ describe('形成建议读取的失败态（BLOCK_FETCHERS.candidates，F-r3-1）
     expect(NS.store.candidates).toEqual([]);
     expect(NS.store.inboxGroups).toBeUndefined();
     expect(String(NS.store.candidatesError)).toContain('inbox list unavailable');
-    // 同页对照：其他区块不受这次失败影响（A5 分区级语义）。
+    // 同页对照：其他区块不受这次失败影响。
     expect(NS.store.assetsError).toBe('');
   });
 

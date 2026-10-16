@@ -12,13 +12,8 @@ import {
   serializeMemoryRecords,
 } from '../../../src/main/features/memory-records';
 
-// F-r1-13 回归：detachMemorySource 剥来源必须 kind+sourceId 双重匹配，与
-// findSourcedMemoryRecord / ensureSourcedMemoryRecordWithKind /
-// removeRoleTemplateMemoryEntries 三入口同口径。2026-09-22 前角色模板记忆与
-// 认知资产投影同住 USER/MEMORY.md（memory.ts 迁移期至今双源读取存量），
-// 若只按 sourceId 剥，卸载认知投影会误剥撞名 role_template 来源，剥空且
-// 非 independent 的模板记忆整条被静默删除。写入 API 全局按 sourceId 查重
-// 产不出混存形态，故撞名用例用 serializeMemoryRecords 直接构造存量文件。
+// 来源剥离须同时匹配 kind 与 sourceId，不能误删同名的角色模板来源。
+// 用序列化器构造双源旧记录，验证剥离一个来源后其他来源和正文仍保留。
 
 let tmpDir: string;
 

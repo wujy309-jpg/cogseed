@@ -1,4 +1,4 @@
-/* v17 的选中文字修改界面。建议在前端模拟，采用后由现有文档编辑器保存。 */
+/* 选中文字修改界面。建议在前端模拟，采用后由现有文档编辑器保存。 */
 (function initOntologySelection(root) {
   'use strict';
   const parseRequest = (request, base) => {

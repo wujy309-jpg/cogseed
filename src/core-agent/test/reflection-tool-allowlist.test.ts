@@ -1,9 +1,7 @@
 /**
- * P-r1-19 钉住测试：反思工具最小允许集不变量。
- * 背景：runReflection 此前把全量工具集（含免确认可真实执行的
- * web_fetch / bash / write_file）交给后台自动反思，而 systemPrompt
- * 谎称只有 2 个工具。2026-10-01 收敛为 REFLECTION_TOOL_ALLOWLIST 白名单。
- * 判据与集合必须同步修改（READ_ONLY_TOOL_ALLOWLIST 同款先例）。
+ * 反思工具最小允许集不变量。
+ * 后台反思只可使用 metacognition 与 skill_manage，不能获得文件、网络或 shell
+ * 工具。实际过滤集合必须与 systemPrompt 声明一致。
  */
 import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
@@ -15,7 +13,7 @@ const runnerSrc = fs.readFileSync(
   'utf8',
 );
 
-describe('反思工具最小允许集（P-r1-19）', () => {
+describe('反思工具最小允许集', () => {
   it('允许集恰含反思的两个既定产出通道，不多不少', () => {
     expect([...REFLECTION_TOOL_ALLOWLIST].sort()).toEqual(['metacognition', 'skill_manage']);
   });

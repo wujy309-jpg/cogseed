@@ -1,16 +1,5 @@
-/**
- * KSTAR 可关闭／认知资产独立（FR-001/CA-FR-007、AC-011/CA-AC-005）的结构钉子：
- *
- *   ① 认知资产权威层（features/cognition/**、features/cognition_kernel/**）不得
- *      import features/kstar/**——依赖方向只能是 KSTAR→认知（子线程/适配器），
- *      反向一出现，"关闭 KSTAR 后认知资产仍能保存/整理/查询/被任务引用"就破功。
- *   ② recall 也不得 import features/kstar/**。2026-10-07 收敛轮曾冻结过
- *      experience-catalog/experience-migration 的 3 个符号引用，同日已随
- *      scopeForTask/experienceTypeOf 下沉 recall/experience-taxonomy 清零——
- *      自此零容忍，恢复任何 recall→kstar 依赖即红。
- *
- * 源码级扫描（同 improvement-admission-guard 口径）：import 声明与动态 import 都算。
- */
+/** KSTAR 可关闭，认知资产权威层与 recall 不得反向导入 KSTAR。
+ * 静态和动态 import 都受约束，分类纯函数由认知层提供给 KSTAR 消费。 */
 import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -44,7 +33,7 @@ function kstarImports(code: string): string[] {
   return hits;
 }
 
-describe('KSTAR 可关闭：认知资产层依赖方向钉子（AC-011）', () => {
+describe('KSTAR 可关闭：认知资产层依赖方向钉子', () => {
   it('cognition/cognition_kernel/recall 不得 import features/kstar（KSTAR 只能是消费者）', () => {
     const offenders: string[] = [];
     for (const dir of COGNITION_DIRS) {

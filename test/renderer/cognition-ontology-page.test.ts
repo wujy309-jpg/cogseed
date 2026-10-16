@@ -18,7 +18,7 @@ function pageHarness(extraRecords: Record<string, any> = {}, customSearchResults
   let candidate = candidateFixture ? structuredClone(candidateFixture) : null;
   let modalClick: Function | null = null;
   let nextFormValues: Record<string, string> = {};
-  const importFile = { name: 'project-notes.md', text: '项目负责人由张浩变更为林青。' };
+  const importFile = { name: 'project-notes.md', text: '项目负责人由示例负责人甲变更为示例负责人乙。' };
   const module = { id: 'project-module', kind: 'module', version: 1, status: 'active', access: 'task', createdAt: null, updatedAt: null,
     source: { kind: 'user', label: '用户确认' }, name: 'CogSeed项目', description: '项目事实', scope: { kind: 'project', id: 'p-1' } };
   const doc = { schemaVersion: 1, ownerId: 'test-user', revision: 0, records: { [module.id]: module, ...extraRecords }, history: [], receipts: {} };
@@ -84,7 +84,7 @@ function pageHarness(extraRecords: Record<string, any> = {}, customSearchResults
           totalNodes: payload.moduleId ? 240 : 1, totalEdges: payload.moduleId ? 600 : 0, truncated: Boolean(payload.moduleId),
           ...(focusId ? { focusId, focusNodeId: focusId } : {}) } };
       }
-      if (channel === 'cognition.ontology.search') return { ok: true, results: customSearchResults || [{ id: 'focus-person', kind: 'entity', name: '林青', moduleId: 'project-module' }] };
+      if (channel === 'cognition.ontology.search') return { ok: true, results: customSearchResults || [{ id: 'focus-person', kind: 'entity', name: '示例负责人乙', moduleId: 'project-module' }] };
       if (channel === 'cognition.ontology.module.lifecycle') return { ok: true, receipt: { changedIds: [payload.moduleId] } };
       if (channel === 'cognition.ontology.command.preview') return { ok: true, changes: [] };
       if (channel === 'cognition.ontology.history.get') return { ok: true, history: [] };
@@ -381,7 +381,7 @@ describe('本体工作台页面层级与接线', () => {
       source: { kind: 'legacy', label: '旧图谱', recordId: 'graph-module' }, name: '旧项目本体', description: '', scope: { kind: 'project', id: 'project-1' } };
     const type = { id: 'legacy-person-type', kind: 'definition', moduleId: legacyModule.id, name: '人物', description: '', definitionKind: 'type', subjectTypes: [], objectTypes: [], valueType: 'entity', cardinality: 'many', cardinalityAnchor: 'subject',
       version: 1, status: 'active', access: 'task', source: { kind: 'legacy', label: '旧分类', recordId: 'person-type' }, createdAt: null, updatedAt: null };
-    const entity = { id: 'legacy-person', kind: 'entity', moduleId: legacyModule.id, typeId: type.id, name: '林青', description: '负责产品交付', aliases: ['小林'], identityStatus: 'confirmed',
+    const entity = { id: 'legacy-person', kind: 'entity', moduleId: legacyModule.id, typeId: type.id, name: '示例负责人乙', description: '负责产品交付', aliases: ['示例乙'], identityStatus: 'confirmed',
       version: 1, status: 'active', access: 'task', source: { kind: 'legacy', label: '旧人物', recordId: 'person-17', refs: [] }, createdAt: null, updatedAt: null };
     const definition = { id: 'legacy-role', kind: 'definition', moduleId: legacyModule.id, name: '角色', description: '', definitionKind: 'attribute', subjectTypes: [type.id], objectTypes: [], valueType: 'text', cardinality: 'one', cardinalityAnchor: 'subject',
       version: 1, status: 'active', access: 'task', source: { kind: 'legacy', label: '旧字段', recordId: 'role-field' }, createdAt: null, updatedAt: null };
@@ -395,7 +395,7 @@ describe('本体工作台页面层级与接线', () => {
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(f.container.innerHTML).toContain('旧来源内容以只读方式展示');
     click(f.container, 'document-disclosure', entity.id);
-    expect(f.container.innerHTML).toContain('林青');
+    expect(f.container.innerHTML).toContain('示例负责人乙');
     expect(f.container.innerHTML).not.toContain('data-ontology-action="legacy-candidate"');
     expect(f.container.innerHTML).toContain('仅自己查看，不提供给任务');
     // Stale renderer events must not call a retired IPC or report success.
@@ -429,7 +429,7 @@ describe('本体工作台页面层级与接线', () => {
     expect(f.container.innerHTML).not.toContain('data-ontology-tabs="module"');
   });
   it('搜索对象直接定位到同一本体文档中的记录', async () => {
-    const entity = { id: 'focus-person', kind: 'entity', moduleId: 'project-module', typeId: 'person-type', name: '林青', description: '交付负责人', aliases: [], identityStatus: 'confirmed',
+    const entity = { id: 'focus-person', kind: 'entity', moduleId: 'project-module', typeId: 'person-type', name: '示例负责人乙', description: '交付负责人', aliases: [], identityStatus: 'confirmed',
       version: 1, status: 'active', access: 'task', source: { kind: 'user', label: '用户确认' }, createdAt: null, updatedAt: null };
     const type = { id: 'person-type', kind: 'definition', moduleId: 'project-module', name: '人物', description: '', definitionKind: 'type', subjectTypes: [], objectTypes: [], valueType: 'entity', cardinality: 'many', cardinalityAnchor: 'subject',
       version: 1, status: 'active', access: 'task', source: { kind: 'user', label: '用户确认' }, createdAt: null, updatedAt: null };
@@ -491,7 +491,7 @@ describe('i18n-change 在快照未落地时只重绘加载骨架（语言切换�
   });
 });
 
-describe('本体导出（FR-015/AC-013）页面接线', () => {
+describe('本体导出页面接线', () => {
   it('导出收进模块更多菜单，成功后 toast 带路径', async () => {
     const f = pageHarness();
     await f.context.window.mountCognitionOntology(f.container);

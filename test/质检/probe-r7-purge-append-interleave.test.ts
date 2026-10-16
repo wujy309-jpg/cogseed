@@ -1,36 +1,7 @@
 import { seedStoredAbilityAsset } from '../helpers/stored-ability-asset';
-/**
- * 探针 r7（边界测试员 · 本遍循环第 2 轮，编号顺延 r6）→ 主题：并发与时序（迁移与写入交错 / 删除后复活）。
- *
- * 疑点（读码推演 + probe-sm2 的等价构造升级为真实链路复现）：
- * - removeRecallJsonlStream（recall/store.ts）purge 整条版本流时裸 fs.rm：
- *   不取 appendJsonlAtomic 的行锁（storage.ts _getLineLock），也不失效行数缓存。
- * - rollbackAbilityAsset / updateAbilityAsset / mergeAbilityAssets 的版本流 append
- *   都发生在 updateRecallJsonRecord（资产记录锁）**释放之后**——「主记录已写、
- *   append 在路上」的在途写真实存在。
- * - 交错序：rollback 的锁内 updater 完成（bump v3）→ purge 的 setStatus 拿锁落
- *   purged 墓碑 → removeRecallJsonlStream rm 掉流 → rollback 的 appendVersion 此刻
- *   才落地 → appendFile **重建流文件**并写入 v3 快照行 → purged 资产的版本流带
- *   正文复活，purged 终态拒绝一切写、无任何产品通道再清它（「内容与记录一并
- *   清除、不可恢复」破防）。
- *
- * 与 probe-sm2-purge-stream-lockless-rm 的差异：sm2 是「purge 完成后手动直调
- * appendJsonlAtomic 模拟在途写」的等价构造；本探针用 vi.mock 注入时序，让
- * rollback 与 purge 两条**产品代码路径**自行完成全部锁/校验/级联——排除「真实
- * 链路另有守卫挡住」的质疑。
- *
- * 对照组（用例 1，正常序）：先 rollback 完整落盘再 purge → 流被清空、无复活，
- * 证明复活正是「append 晚于 rm」的窗口所致。风格对齐 probe-r6-*。
- *
- * 收尾状态（2026-10-01，P-r2-3 拍板根治后改写启用）：修复把版本流追加收进
- * 资产主记录锁（appendAbilityAssetVersionLine：锁内重读记录、assertMutable-
- * AbilityAsset 复核后才落流），rm 走同把行锁（storage.removeJsonlStream）。
- * 主用例的注入口随之从 appendRecallJsonlRecord（修复后该点已在记录锁内，
- * 在锁内再跑 purge 会按设计互斥死等）改到 updateRecallJsonRecord 的**返回沿**：
- * 真实 update 落盘并释放锁之后、appendVersion 启动之前，正是修复前复活的
- * 那个窗口——修复后窗口内完整落地的 purge 必须让随后的追加被锁内复核拒绝，
- * 流不得重建。断言按修复后口径改写（拒绝 + 流不复活），不再 it.skip。
- */
+/** rollback 主记录写完而版本尚未追加时，交错执行完整 purge。
+ * 后续追加须在资产记录锁内重新读取终态并拒绝 purged；删除与追加
+ * 共享版本流行锁，不能在墓碑名下重建含正文的版本流。 */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -112,7 +83,7 @@ async function seedAtV2() {
   return assets;
 }
 
-describe('probe r7 › rollback 在途 append 与 purge 删流的交错：purged 版本流复活', () => {
+describe('rollback 与 purge 交错时的版本流终态保护', () => {
   it('对照组：先 rollback 完整落盘再 purge → 流被清空、无复活（正常序干净）', async () => {
     const assets = await seedAtV2();
     const rolled = await assets.rollbackAbilityAsset(UID, ASSET_ID, '1', ACT);
@@ -126,7 +97,7 @@ describe('probe r7 › rollback 在途 append 与 purge 删流的交错：purged
     expect(await assets.listAbilityAssetVersions(UID, ASSET_ID)).toEqual([]);
   });
 
-  it('【P-r2-3 已根治】交错主用例：purge 在主记录落盘后、版本追加前完整落地 → 追加被锁内复核拒绝、流不复活', async () => {
+  it('交错主用例：purge 在主记录落盘后、版本追加前完整落地 → 追加被锁内复核拒绝、流不复活', async () => {
     const assets = await seedAtV2();
     // 钩子在 seed 完成后才武装：只命中 rollback 自己的主记录段（一次性），
     // purge 内部的 setStatus 写不会被二次注入。

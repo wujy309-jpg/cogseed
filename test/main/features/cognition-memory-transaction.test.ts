@@ -1,14 +1,5 @@
-/**
- * cognition-memory 事务原语回归（P-r1-40 / P-r1-41 / P-r2-11 契约面）。
- *
- * - P-r1-40：同键嵌套事务 fail-fast（async-mutex 不可重入，嵌套=永久挂起；
- *   修复前无任何防线，只能靠死锁发现）。独立并发（非嵌套）不得误伤。
- * - P-r1-41：userId 入口校验——非法 id 在建锁前抛错，不再向 locks Map
- *   （只增不减）插入高熵垃圾键。
- * - P-r2-11：事务通道的排队契约——整文件回滚与后续事务化写入串行，
- *   回滚不得覆盖已排队的事务化写（探针 probe-storage-memory-rollback-overwrite
- *   的场景搬入正轨测试树；修复前 session 导入器等裸 addEntry 会被抹掉）。
- */
+/** 认知记忆事务边界：同键嵌套 fail-fast，独立并发正常排队；非法用户 ID
+ * 在建锁前拒绝。整文件回滚与后续事务写串行，不能覆盖已排队的写入。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
@@ -36,7 +27,7 @@ afterEach(() => {
   vi.resetModules();
 });
 
-describe('cognition-memory transaction › P-r1-40 重入 fail-fast', () => {
+describe('cognition-memory transaction › 重入 fail-fast', () => {
   it('同一用户的嵌套事务立即抛错而不是永久挂起', async () => {
     const { withCognitionMemoryTransaction } = await import('../../../src/main/features/cognition-memory-transaction');
     let innerError: Error | undefined;
@@ -79,7 +70,7 @@ describe('cognition-memory transaction › P-r1-40 重入 fail-fast', () => {
   });
 });
 
-describe('cognition-memory transaction › P-r1-41 入口校验', () => {
+describe('cognition-memory transaction › 入口校验', () => {
   it.each(['bad/id', 'space id', '', 'x'.repeat(81)])('非法 userId %j 在建锁前抛错', async (badId) => {
     const { withCognitionMemoryTransaction } = await import('../../../src/main/features/cognition-memory-transaction');
     let ran = false;
@@ -100,7 +91,7 @@ describe('cognition-memory transaction › P-r1-41 入口校验', () => {
   });
 });
 
-describe('cognition-memory transaction › P-r2-11 回滚不得覆盖已排队的事务化写', () => {
+describe('cognition-memory transaction › 回滚不得覆盖已排队的事务化写', () => {
   it('cognition 坏档触发整文件回滚时，排队中的事务化 MEMORY.md 写入应保留', async () => {
     const memoryFile = path.join(tmpDir, UID, 'cloud', 'memory', 'MEMORY.md');
     const cognitionFile = path.join(tmpDir, UID, 'cloud', 'cognition', 'assets.json');

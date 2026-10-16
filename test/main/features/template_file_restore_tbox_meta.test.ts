@@ -3,20 +3,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-/**
- * P-r1-32 回归：catalog 元数据回填双入口。
- *
- * 模板方言文本不携带 T-box 元数据（origin/isRelation/description）。修复前
- * 两个「文本 → JSON」入口都整体替换 fields：
- *  ① 归档恢复 templateGroupFromArchiveText（卸载→重装恢复原数据）；
- *  ② raw editor 保存 writeTemplateFileContent。
- * 裸重建（groupContentFromTemplateText）把全部字段造成 origin='user'——
- * T-box 身份丢失、origin==='schema' 只读守卫（poRenameField 等）失效。
- *
- * 修复：backfillCatalogFieldMeta 按 分节+字段名 命中 catalog 声明回填
- * schema 身份（isRelation/description 一并回填）；命不中的保持 user。
- * 本文件用带 isRelation/description 声明的 mock catalog 验证两个入口。
- */
+/** 模板归档恢复与原文编辑回存按分节和字段名补齐 catalog 元数据。
+ * schema 身份、关系标记和说明保留；catalog 外自建字段仍是 user，字段值不丢失。 */
 
 let CATALOG: any[] = [];
 
@@ -88,7 +76,7 @@ async function installWithMajorValue() {
   return { m, groupId: group.id };
 }
 
-describe('P-r1-32 catalog 元数据回填 › 归档恢复入口', () => {
+describe('catalog 元数据回填 › 归档恢复入口', () => {
   it('卸载→重装恢复：T-box 字段 origin/isRelation/description 按 catalog 回填', async () => {
     const { m, groupId } = await installWithMajorValue();
     const { loadPoDocSync } = await import('../../../src/main/features/po/store');
@@ -123,7 +111,7 @@ describe('P-r1-32 catalog 元数据回填 › 归档恢复入口', () => {
   });
 });
 
-describe('P-r1-32 catalog 元数据回填 › raw editor 保存入口', () => {
+describe('catalog 元数据回填 › raw editor 保存入口', () => {
   it('原样回存方言文本：schema 身份与 isRelation/description 不丢', async () => {
     const { m, groupId } = await installWithMajorValue();
     // 用户先经升格建一个自建字段（catalog 外），验证回存后仍保持 user。

@@ -31,7 +31,7 @@ describe('cognition_kernel/delta — 任何改动都是一个变更集', () => {
       op: 'add',
       target: { home: 'personal_fact', groupId: 'g1', fieldName: '审批人' },
       origin: 'gap',
-      after: '王工',
+      after: '示例审批人',
       now: '2026-10-02T00:00:00.000Z',
     });
     expect(user.status).toBe('applied');

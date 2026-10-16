@@ -1,38 +1,7 @@
 import { createNightlyCandidateFixture } from '../helpers/nightly-formation-fixture';
-/**
- * 探针（状态机审计员 · 本轮，sm4）：inbox 冲突选边 claim 的 sibling 拒绝失败
- * 被降级吞掉（inbox-adapter.ts rejectRecallCandidate(...).catch(log.warn)），
- * 回执却按 others.length 断言「另一条已出局」——F-r1-3④「回执最小诚实化」
- * 只修了 others 为空的半边。
- *
- * 读码链：
- *  - inbox-adapter.ts:188-194（现行 :190-193）：others 逐条 rejectRecallCandidate
- *    失败仅 log.warn 降级，无失败计数、不影响后续 settledPart/ok 回执；
- *  - decideWithoutAsset（candidate-service.ts:1792-1795）：observed/
- *    weak_observation 且 !canReject 时 **throw** 'candidate evidence is
- *    insufficient for review'——canReject=false 的判据是空证据
- *    （candidate-capabilities.ts:261-274 hasReviewableEvidence 空数组即 false）；
- *  - recallCandidateConflictingTypes（:505-527）不过滤证据状态：空证据 weak
- *    候选照常进冲突表（asCandidate 不变量明说这种候选只能待在 observed/
- *    weak_observation，是真实存量形态）；
- *  - 结果：promote 成功路径直接 return {ok:true,status:'claimed'}——sibling
- *    未被拒但回执成功零提示；promote 失败路径 settledPart 因 others.length>0
- *    仍说「另一条已出局」（凭空断言）。
- *
- * 手法：A（rule、有证据、pending_review）+ B（weak_observation、template、
- * 空证据，直接 writeRecallJsonRecord 落盘模拟抽取期空证据存量）同文本 →
- * claim A → 断言回执 ok 且 B 仍是 weak_observation（未被拒）。
- *
- * 收尾状态（2026-10-01 记账员）：对应待议 **P-r2-1（如实计数+三分支回执 / fail-fast 上抛 / 前置能力预检三案待拍板）**——
- * 断言漏洞现状的主用例 it.skip 注明编号，拍板修复后反转/改写断言启用；
- * 对照组（无竞态/串行序时链路正常）不依赖漏洞，保留 active。
- *
- * 反转启用（2026-10-01 执行工单批 3 · P-r2-1 拍板「如实计数回执」）：主用例
- * 改写为断言修复后行为——sibling 拒不掉时回执不再凭空断言「另一条已出局」，
- * 而是如实报「拒掉 0 条、没拒掉 1 条」并附服务层失败原因；冲突未收口、
- * 保留侧保持 pending_review 的事实照旧（弱证据 sibling 的可拒性属能力闸
- * 设计，不在本条范围）。
- */
+/** 冲突选边时 sibling 因证据不足而拒绝失败，晋升不能绕过冲突闸门。
+ * 回执如实给出成功与失败计数及服务层原因，不声称其他候选已退出；
+ * 待审候选与弱证据候选的真实状态都保持可核对。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
@@ -99,7 +68,7 @@ async function seedPair() {
   return { a, bId };
 }
 
-describe('probe sm4 › inbox claim sibling 拒绝降级吞错', () => {
+describe('冲突选边的失败计数与真实回执', () => {
   it('对照组：sibling 证据齐全（可拒）时，claim 后 sibling 确实出局', async () => {
     const svc = await candidates();
     const { a, bId } = await seedPair();
@@ -118,7 +87,7 @@ describe('probe sm4 › inbox claim sibling 拒绝降级吞错', () => {
     expect(b.status).toBe('rejected');
   });
 
-  it('【P-r2-1 已修】主用例：sibling 空证据（canReject=false，reject 抛错）时，claim 被晋升闸门拦下，回执如实计数、不再谎称 sibling 已出局', async () => {
+  it('主用例：sibling 空证据（canReject=false，reject 抛错）时，claim 被晋升闸门拦下，回执如实计数、不再谎称 sibling 已出局', async () => {
     const svc = await candidates();
     const { a, bId } = await seedPair();
     const inbox = await import('../../src/main/features/cognition/inbox-adapter');

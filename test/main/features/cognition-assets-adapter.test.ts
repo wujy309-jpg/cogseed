@@ -1,14 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// P-r3-1/P-r1-2/P-r1-18（2026-10-01 死代码真删批）改写：
-// 原 F-r1-23 回归测的是 enrichAssetCounts 的降级日志（候选池/回执读失败时
-// 留 warn 痕）——该函数已随三个零消费计数字段（candidateCount/reuseCount/
-// lastReusedAt）整体删除，降级面不复存在。本测试改钉新行为：
-// ① 资产列表不再做候选池/回执的每列表关联读（P-r3-1：删的是计算本身，
-//   而非修正计算）；
-// ② skill 资产不再触发 skill 草稿读盘（原每个 skill 3-7 次读盘、含懒迁移
-//   写副作用，服务对象 generatedSkillId/recallSkillDraft* 均零渲染消费）；
-// ③ 输出形状不再含已删字段（lifecycleStatus 透传/恒空三字段/计数三件套）。
+// 资产列表不派生已退役的候选与复用计数，也不读取或迁移 skill 草稿。
+// 返回值保留渲染消费的字段，不恢复已删除的空字段与计数字段。
 
 const { listCognitionCandidates, listCognitionReuseReceipts, readInstalledSkillForAsset, readRecallSkillDraft } = vi.hoisted(() => ({
   listCognitionCandidates: vi.fn(),
@@ -62,7 +55,7 @@ beforeEach(() => {
   readRecallSkillDraft.mockClear();
 });
 
-describe('cognition assets-adapter 死代码真删后的形状（P-r3-1）', () => {
+describe('cognition assets-adapter 死代码真删后的形状', () => {
   it('列表不再做候选池/回执关联读，也不触发 skill 草稿读盘', async () => {
     const { listCognitionAssets } = await import('../../../src/main/features/cognition/assets-adapter');
 

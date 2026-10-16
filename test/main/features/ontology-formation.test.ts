@@ -224,7 +224,7 @@ describe('认知与本体同组形成', () => {
     expect(plan.requiresTReview).toBe(true);
     await expect(formation.withOntologyFormationPromotion(uid, plan, 'system', () => store.writeRecallJsonRecord(uid, 'ability-assets', 'asset-one', asset()))).rejects.toMatchObject({ code: 't_review_required' });
     expect(formation.parseOntologyFormationProposal(service.readOntologyDocument(uid), candidateId, proposal('另一份正文'), judgment)?.blockedReasons).toContain('shared_body_mismatch');
-    const uncertain = { ...raw, actions: [...raw.actions, create('person', { kind: 'entity', moduleId: 'personal', typeId: 'person-type', name: '张浩', description: '', aliases: [], identityStatus: 'confirmed' })] };
+    const uncertain = { ...raw, actions: [...raw.actions, create('person', { kind: 'entity', moduleId: 'personal', typeId: 'person-type', name: '示例同名成员', description: '', aliases: [], identityStatus: 'confirmed' })] };
     expect(formation.parseOntologyFormationProposal(service.readOntologyDocument(uid), candidateId, uncertain, judgment)?.blockedReasons).toContain('identity_evidence_required:person');
     expect(service.readOntologyDocument(uid).revision).toBe(1);
   });
@@ -271,11 +271,11 @@ describe('认知与本体同组形成', () => {
     const { formation, service } = await setup();
     await service.commitOntologyCommand(uid, { commandId: 'type-seed', expectedRevision: 1, actions: [
       create('known-type', { kind: 'definition', moduleId: 'personal', name: '人物', description: '', definitionKind: 'type', subjectTypes: [], objectTypes: [], valueType: 'entity', cardinality: 'many', cardinalityAnchor: 'subject' }),
-      create('existing-person', { kind: 'entity', moduleId: 'personal', typeId: 'known-type', name: '张浩', description: '研发成员', aliases: [], identityStatus: 'confirmed' }),
+      create('existing-person', { kind: 'entity', moduleId: 'personal', typeId: 'known-type', name: '示例同名成员', description: '研发成员', aliases: [], identityStatus: 'confirmed' }),
     ] });
     const raw = { reason: '用户提供另一位同名人员的独立岗位和编号', evidence: ['m1'], identityEvidence: [{ recordId: 'another-person', reason: '另一位同名人员属于客户部门，独立成员编号不同', evidence: ['m1'] }],
       actions: [create('proposed-type', { kind: 'definition', moduleId: 'personal', name: '人物', description: '', definitionKind: 'type', subjectTypes: [], objectTypes: [], valueType: 'entity', cardinality: 'many', cardinalityAnchor: 'subject' }),
-        create('another-person', { kind: 'entity', moduleId: 'personal', typeId: 'proposed-type', name: '张浩', description: '客户成员', aliases: [], identityStatus: 'confirmed' })],
+        create('another-person', { kind: 'entity', moduleId: 'personal', typeId: 'proposed-type', name: '示例同名成员', description: '客户成员', aliases: [], identityStatus: 'confirmed' })],
       refs: [{ moduleId: 'personal', recordId: 'proposed-type', versionPolicy: 'current' }],
     };
     const plan = formation.parseOntologyFormationProposal(service.readOntologyDocument(uid), candidateId, raw)!;

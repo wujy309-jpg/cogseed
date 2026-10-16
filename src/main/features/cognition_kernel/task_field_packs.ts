@@ -1,9 +1,9 @@
 /**
- * cognition_kernel/task_field_packs — 任务槽位需求包（S2；438 P1 扩三轴，2026-10-07）。
+ * cognition_kernel/task_field_packs — 任务槽位需求包。
  *
- * 419/438 的"任务侧声明所需槽位"：一个任务包声明它开工前需要哪些认知内容，
+ * 一个任务包声明它开工前需要哪些认知内容，
  * 由取件窗口（resolve.ts / slots.ts）算出"已有/缺"。三轴：
- *   personal（个人字段）  关于我的短句事实（字段名与参考实现对齐）；
+ *   personal（个人字段）  关于我的短句事实；
  *   ontology（本体）      本体事实（对象 × 关系）与适用规则——按名字模式声明，
  *                         主体在调用时从任务上下文绑定（如"项目甲"）；
  *   asset（方法资产）     方法／规则／模板能力资产——按资产类型＋标题声明。
@@ -50,7 +50,7 @@ export interface AssetSlotRef {
   required?: boolean;
 }
 
-/** 报销（参考实现 expense-assistant / Jev 插件的 required_fields 归并去重）。 */
+/** 报销任务的个人信息需求；领域参考为 BONC expense-assistant 的用户资料、账户与开票模型。 */
 const EXPENSE_FIELDS: readonly PersonalFieldRef[] = [
   { fieldName: '姓名' },
   { fieldName: '工号' },
@@ -74,7 +74,7 @@ const EXPENSE_FIELDS: readonly PersonalFieldRef[] = [
   { fieldName: '报销备注偏好' },
 ];
 
-/** 招投标（参考实现 bid-assistant 的个人 A-box 节点）。 */
+/** 招投标任务的个人信息需求；领域参考为 BONC bid-assistant 的人员、资格、业绩与项目角色模型。 */
 const BID_FIELDS: readonly PersonalFieldRef[] = [
   { fieldName: '姓名' },
   { fieldName: '身份证号' },
@@ -91,7 +91,7 @@ const BID_FIELDS: readonly PersonalFieldRef[] = [
 ];
 
 /**
- * 周报（PRD §3 贯穿验收的现实例子）：三轴齐用。
+ * 周报任务同时使用三轴槽位。
  * 本体轴绑定"项目的固定接收人"事实与周报规则；资产轴找周报模板。
  */
 const WEEKLY_REPORT_SLOTS = {

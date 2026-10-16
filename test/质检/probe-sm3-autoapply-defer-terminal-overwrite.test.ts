@@ -55,7 +55,7 @@ async function pendingCandidate() {
   });
 }
 
-describe('probe sm3 › 自动整理与用户终态一致性', () => {
+describe('自动整理与用户终态一致性', () => {
   it('用户先拒绝后，自动入口保持终态且不调用模型', async () => {
     const candidates = await modules();
     const candidate = await pendingCandidate();

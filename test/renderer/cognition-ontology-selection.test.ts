@@ -7,7 +7,7 @@ const window: Record<string, any> = {};
 runInNewContext(readFileSync(resolve('src/renderer/modules/cognition-ontology-selection.js'), 'utf8'), { window });
 const parse = window.CogOntologySelection.parseRequest;
 
-describe('v17 本地文字修改建议', () => {
+describe('本地文字修改建议', () => {
   it('只在所选片段内执行明确替换、追加或删除', () => {
     expect(parse('把「旧」改为「新」', '这是旧说明')).toEqual({ replacement: '这是新说明' });
     expect(parse('改为「新的说明」', '旧说明')).toEqual({ replacement: '新的说明' });

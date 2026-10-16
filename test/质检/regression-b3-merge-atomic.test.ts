@@ -1,19 +1,7 @@
 import { createNightlyCandidateFixture } from '../helpers/nightly-formation-fixture';
-/**
- * 回归（wo-b3 · 组2 merge 非原子族，拍板执行 2026-10-01）：
- *  - P-r2-12 审批 confirm 半提交：资产已改而提议卡 pending → 重试按资产版本流
- *    对账补 confirmed，不再永远撞版本冲突死循环；
- *  - P-r1-74 资产被撤/删后提议永远 pending → confirm 撞终态即作废（superseded）；
- *  - P-r2-38 经验合并幂等重试：中断残留（target entry 带 interrupted、source
- *    仍 active）重试可收口完成，不叠重复条目；
- *  - P-r2-38 入口对账：source 已 merged 指向本 target 且残留 interrupted →
- *    重试收口自愈返回成功，不死在「already been merged」；
- *  - P-r2-42 mergedFrom 台账查重：target 已有**完整**合并 entry 时再合并 →
- *    锁内查重抛错，不叠第二条影子条目。
- *
- * 场景手法：半提交/中断残留用直改盘构造（照 probe-r2-exp-merge-halfcommit
- * 的先例——模拟「进程在两段写之间断掉」的持久化状态，功能代码无此通道）。
- */
+/** 审批与经验合并的半提交恢复：根据版本流补齐审批终态，拒绝已撤回
+ * 资产的提议；经验合并中断可幂等续接，已完成 entry 不重复追加。
+ * 持久化中间态由夹具构造，不提供绕开产品确认的写入口。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -64,10 +52,10 @@ async function seedAsset(uid: string) {
   return (await candidates.promoteRecallCandidate(uid, candidate.id, { actor: 'user' })).asset;
 }
 
-describe('审批域（P-r2-12 / P-r1-74）', () => {
+describe('审批域', () => {
   const UID = 'reg-b3-approval';
 
-  it('P-r2-12：confirm 半提交（资产已改、提议卡 pending）→ 重试按版本流对账补 confirmed，不再死循环', async () => {
+  it('confirm 半提交（资产已改、提议卡 pending）→ 重试按版本流对账补 confirmed，不再死循环', async () => {
     const { assets, approval } = await approvalModules();
     const asset = await seedAsset(UID);
     const { recallJsonRecordPath } = await import('../../src/main/features/recall/paths');
@@ -99,7 +87,7 @@ describe('审批域（P-r2-12 / P-r1-74）', () => {
     expect((await approval.readAssetChangeProposal(UID, proposal.id))!.state).toBe('confirmed');
   });
 
-  it('P-r2-12 对账不误伤同 id 重提：上一轮确认的旧行 ≤ 本次 baseline，不算半提交残留', async () => {
+  it('对账不误伤同 id 重提：上一轮确认的旧行 ≤ 本次 baseline，不算半提交残留', async () => {
     const { assets, approval } = await approvalModules();
     const asset = await seedAsset(UID);
     const { recallJsonRecordPath } = await import('../../src/main/features/recall/paths');
@@ -131,7 +119,7 @@ describe('审批域（P-r2-12 / P-r1-74）', () => {
     expect((await assets.readAbilityAsset(UID, asset.id)).statement).toBe('第一轮提议正文。');
   });
 
-  it('P-r1-74 后半边：资产被撤回后 confirm 撞终态 → 提议作废（superseded），不再永远 pending', async () => {
+  it('后半边：资产被撤回后 confirm 撞终态 → 提议作废（superseded），不再永远 pending', async () => {
     const { assets, approval } = await approvalModules();
     const asset = await seedAsset(UID);
     const { recallJsonRecordPath } = await import('../../src/main/features/recall/paths');
@@ -157,7 +145,7 @@ describe('审批域（P-r2-12 / P-r1-74）', () => {
   });
 });
 
-describe('经验合并域（P-r2-38 / P-r2-42）', () => {
+describe('经验合并域', () => {
   const UID = 'reg-b3-exp';
 
   function mkExperience(id: string, title: string) {
@@ -210,7 +198,7 @@ describe('经验合并域（P-r2-38 / P-r2-42）', () => {
     });
   }
 
-  it('P-r2-38 幂等重试：中断残留（source 仍 active）重试可收口——entry 不重复、interrupted 清除、source 置 merged', async () => {
+  it('幂等重试：中断残留（source 仍 active）重试可收口——entry 不重复、interrupted 清除、source 置 merged', async () => {
     const { svc, recallJsonRecordPath } = await setup();
     await svc.createExperience(UID, mkExperience('exp-reg-src', '中断源'));
     await svc.createExperience(UID, mkExperience('exp-reg-tgt', '中断靶'));
@@ -230,7 +218,7 @@ describe('经验合并域（P-r2-38 / P-r2-42）', () => {
     expect(rows[0].interrupted).toBeUndefined();
   });
 
-  it('P-r2-38 入口对账：source 已 merged 指向本 target 且残留 interrupted → 重试自愈收口，不死在 already-merged', async () => {
+  it('入口对账：source 已 merged 指向本 target 且残留 interrupted → 重试自愈收口，不死在 already-merged', async () => {
     const { svc, recallJsonRecordPath } = await setup();
     await svc.createExperience(UID, mkExperience('exp-reg2-src', '崩溃源'));
     await svc.createExperience(UID, mkExperience('exp-reg2-tgt', '崩溃靶'));
@@ -253,7 +241,7 @@ describe('经验合并域（P-r2-38 / P-r2-42）', () => {
     expect(entries[0].interrupted).toBeUndefined();
   });
 
-  it('P-r2-42 台账查重：target 已有完整（无 interrupted）的同源 entry → 再合并抛错，不叠第二条', async () => {
+  it('台账查重：target 已有完整（无 interrupted）的同源 entry → 再合并抛错，不叠第二条', async () => {
     const { svc, recallJsonRecordPath } = await setup();
     await svc.createExperience(UID, mkExperience('exp-reg3-src', '完整源'));
     await svc.createExperience(UID, mkExperience('exp-reg3-tgt', '完整靶'));

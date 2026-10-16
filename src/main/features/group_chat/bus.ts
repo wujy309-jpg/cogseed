@@ -1322,7 +1322,7 @@ export type GroupEvent =
       turn_id?: string;
       source_msg_id?: string;
       reason?: "terminal_handoff";
-      /** 渠道任务接续（G0）失败回执：仅当回合因意外错误终止时由 worker
+      /** 渠道任务接续失败回执：仅当回合因意外错误终止时由 worker
        *  catch 分支携带（截断后的错误摘要）。正常 silent 与用户取消不带，
        *  渠道 runtime 依此区分"要不要给用户一条失败提示"。 */
       error?: string;
@@ -4911,7 +4911,7 @@ async function runWorkerLoop(state: CidState, w: WorkerState): Promise<void> {
       // turn_silent here so the placeholder always resolves; it's safe if a
       // terminal was already emitted (the renderer clears idempotently), and the
       // post-finally `_syncStateStatus` below reconciles conversation status.
-      // 渠道任务接续（G0）：意外失败带上截断的错误摘要，渠道 runtime 依此
+      // 渠道任务接续：意外失败带上截断的错误摘要，渠道 runtime 依此
       // 给用户投递失败回执；用户主动中止（abort 信号已触发）不算失败，
       // 不带 error，渠道侧保持静默。
       const userAborted = w.abortController?.signal.aborted === true;
@@ -13062,7 +13062,7 @@ async function buildCommanderExtraTools(
 
   tools.push({
     name: "dispatch_to",
-    // Parallel-safe: independent dispatches in one turn run concurrently (G4),
+    // Parallel-safe: independent dispatches in one turn run concurrently,
     // bounded by dispatchSlots. Nested runs skip the global slot + use distinct
     // sessions; member-seed + jsonl-append are lock-serialized.
     executionMode: "parallel",
@@ -13680,7 +13680,7 @@ async function buildCommanderExtraTools(
 
   tools.push({
     name: "run_worker",
-    // Parallel-safe: independent sub-tasks in one turn run concurrently (G4),
+    // Parallel-safe: independent sub-tasks in one turn run concurrently,
     // bounded by dispatchSlots. See dispatch_to above.
     executionMode: "parallel",
     description: [

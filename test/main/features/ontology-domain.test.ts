@@ -20,8 +20,8 @@ function seedCommand(): OntologyCommand {
     create('person-type', type('people', '人物')),
     create('project-type', type('projects', '项目')),
     create('ref-people', { kind: 'reference', moduleId: 'projects', targetModuleId: 'people', versionPolicy: 'current' }),
-    create('zhang-a', { kind: 'entity', moduleId: 'people', typeId: 'person-type', name: '张浩', description: '研发组', aliases: [], identityStatus: 'confirmed' }),
-    create('zhang-b', { kind: 'entity', moduleId: 'people', typeId: 'person-type', name: '张浩', description: '客户组', aliases: [], identityStatus: 'confirmed' }),
+    create('zhang-a', { kind: 'entity', moduleId: 'people', typeId: 'person-type', name: '示例同名成员', description: '研发组', aliases: [], identityStatus: 'confirmed' }),
+    create('zhang-b', { kind: 'entity', moduleId: 'people', typeId: 'person-type', name: '示例同名成员', description: '客户组', aliases: [], identityStatus: 'confirmed' }),
     create('project', { kind: 'entity', moduleId: 'projects', typeId: 'project-type', name: 'CogSeed', description: '', aliases: [], identityStatus: 'confirmed' }),
     create('owner-def', { kind: 'definition', moduleId: 'projects', name: '负责人', description: '', definitionKind: 'relation', subjectTypes: ['project-type'], objectTypes: ['person-type'], valueType: 'entity', cardinality: 'one', cardinalityAnchor: 'subject' }),
     create('recipient-def', { kind: 'definition', moduleId: 'projects', name: '周报接收人', description: '', definitionKind: 'relation', subjectTypes: ['project-type'], objectTypes: ['person-type'], valueType: 'entity', cardinality: 'many', cardinalityAnchor: 'subject' }),
@@ -158,11 +158,11 @@ describe('本体领域的真实行为', () => {
       create('pinned-person', { kind: 'reference', moduleId: 'pinned-module', targetModuleId: 'people', targetRecordId: 'zhang-a', targetVersion: 1, versionPolicy: 'pinned' }),
     ] }, t2).document;
     const updated = applyOntologyCommand(pinned, { commandId: 'rename-person', expectedRevision: 2, actions: [{ intent: 'update', recordId: 'zhang-a', expectedVersion: 1,
-      patch: { name: '张浩（新姓名）' }, sourceLabel: '用户确认' }] }, t2).document;
+      patch: { name: '示例同名成员（新姓名）' }, sourceLabel: '用户确认' }] }, t2).document;
     expect(resolveOntologyRecordForModule(updated, 'pinned-module', 'zhang-a')?.kind === 'entity'
-      ? (resolveOntologyRecordForModule(updated, 'pinned-module', 'zhang-a') as Extract<OntologyRecord, { kind: 'entity' }>).name : '').toBe('张浩');
+      ? (resolveOntologyRecordForModule(updated, 'pinned-module', 'zhang-a') as Extract<OntologyRecord, { kind: 'entity' }>).name : '').toBe('示例同名成员');
     expect(resolveOntologyRecordForModule(updated, 'projects', 'zhang-a')?.kind === 'entity'
-      ? (resolveOntologyRecordForModule(updated, 'projects', 'zhang-a') as Extract<OntologyRecord, { kind: 'entity' }>).name : '').toBe('张浩（新姓名）');
+      ? (resolveOntologyRecordForModule(updated, 'projects', 'zhang-a') as Extract<OntologyRecord, { kind: 'entity' }>).name : '').toBe('示例同名成员（新姓名）');
   });
   it('纠错保留原记录，但不再把错误事实作为有效答案', () => {
     const result = applyOntologyCommand(seed(), mutation('correct'), t2);
@@ -249,7 +249,7 @@ describe('旧内容只读兼容', () => {
   it('把旧图谱和个人字段显示为带来源的三盒投影，不迁移、改写或泄漏仅自己可见的值', async () => {
     const graph = await import('../../../src/main/features/ontology_graph');
     const category = await graph.createOntologyCategory(uid, { domain: 'resources', name: '团队成员', description: '旧分类', fields: [{ name: '角色', kind: 'text' }] });
-    const person = await graph.createOntologyEntity(uid, { categoryId: category.id, name: '林青', description: '', properties: {}, sourceRefs: [] });
+    const person = await graph.createOntologyEntity(uid, { categoryId: category.id, name: '示例成员乙', description: '', properties: {}, sourceRefs: [] });
     const relation = await graph.createOntologyRelation(uid, { subject: { kind: 'self' }, predicate: '认识', object: { kind: 'entity', id: person.id }, note: '', sourceRefs: [] });
     const graphPath = path.join(root, uid, 'cloud', 'cognition', 'ontology-graph.json');
     const graphBytes = fs.readFileSync(graphPath, 'utf8');
@@ -272,7 +272,7 @@ describe('旧内容只读兼容', () => {
     const view = await readOntologyWithLegacyView(emptyOntologyDocument(uid), uid);
     const legacyEntity = Object.values(view.records).find(r => r.kind === 'entity' && r.source.recordId === person.id);
     expect(legacyEntity).toBeDefined();
-    expect(legacyEntity).toMatchObject({ name: '林青', source: { kind: 'legacy' }, createdAt: null, updatedAt: null });
+    expect(legacyEntity).toMatchObject({ name: '示例成员乙', source: { kind: 'legacy' }, createdAt: null, updatedAt: null });
     expect(Object.values(view.records).some(r => r.kind === 'assertion' && r.source.recordId === relation.id)).toBe(true);
     const noteModule = Object.values(view.records).find(r => r.kind === 'module' && r.source.recordId === 'notes-only-group');
     const noteEntry = Object.values(view.records).find(r => r.kind === 'entity' && r.source.label === '旧个人本体自由文本条目');

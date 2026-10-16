@@ -198,7 +198,7 @@ export function wrapToolWithCap(tool: AgentTool, opts: WrapOpts): AgentTool {
     description: tool.description,
     inputSchema: tool.inputSchema,
     // Preserve the concurrency flag — without this the wrapper silently makes
-    // EVERY capped tool sequential (the runner's G4 partitioner keys on
+    // EVERY capped tool sequential (the runner's partitioner keys on
     // `executionMode === 'parallel'`), defeating parallel reads/search AND
     // concurrent dispatch (run_worker / dispatch_to). This now also matters for
     // read_file / kb_read: they used to be returned unwrapped (Infinity) and

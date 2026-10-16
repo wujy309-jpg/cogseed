@@ -4,13 +4,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-/**
- * P-r3-39 回归：decide 通道的「当前版本号」此前只靠正则从
- * updateAbilityAsset 的英文错误文案提取（`/current v(\d+)/`）——措辞一变
- * 就静默提取失败，渲染层拿到「v3 → v」的残缺提示。修复：提取失败时重读
- * 资产真实版本兜底。本文件 mock 掉 updateAbilityAsset 抛一个「措辞漂移后」
- * 的冲突错误（不含 `current vN` 形态），验证兜底重读给出真实版本号。
- */
+/** 版本冲突错误不含 current vN 时，重读资产给出真实版本号，不能把
+ * 英文报错措辞当作唯一契约；提议的终态作废行为保持不变。 */
 vi.mock('../../../../src/main/features/recall/asset-service', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../../src/main/features/recall/asset-service')>();
   return {
@@ -36,7 +31,7 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-describe('P-r3-39 版本提取失败兜底重读', () => {
+describe('版本提取失败兜底重读', () => {
   it('正则失配（措辞漂移）时 currentVersion 来自资产记录的真实版本，不是空串', async () => {
     const candidates = await import('../../../../src/main/features/recall/candidate-service');
     const approval = await import('../../../../src/main/features/recall/asset-approval-service');

@@ -12,13 +12,12 @@ export async function recordAssetAgentReads(
   const turnId = String(opts.turnId || '');
   if (!entries.length) return;
   if (!turnId) {
-    // 没有回合 id 就记不了账（taskRunId 必填）：如实告警而不是静默丢弃——
-    // 静默丢弃正是"模型自取等于升档黑洞"的成因（2026-09-18 诊断补）。
+    // taskRunId 必填；没有回合 id 时如实告警，不能静默丢弃读取记录。
     log.warn('agent_read not recorded: tool built without a turn id', { userId: maskId(opts.userId) });
     return;
   }
   try {
-    // 「为什么排前」拆解随回执留痕（specs/012 T019，与 bus.ts 写侧同款）：
+    // 「为什么排前」拆解随回执留痕，与派发侧使用同一份当轮排序视图：
     // 只查 asset-catalog-hint 当轮 ranked 视图（userId+cid 同键），不在记账
     // 路径重算（排序唯一处）；没建过目录 / 会话对不上 → 空 Map，不带
     // ranking（读取侧 explainable:false，如实说「没有记录」）。

@@ -1,12 +1,10 @@
 /**
  * transcript_glossary — 转写纠错词表（本体驱动的转写词汇纠错表 · P0）
  *
- * 规划依据（本仓库外的方案文档，2026-09-14 v0.2）：
+ * 数据约束：
  *   - 词条是 `wrong → correct` 的**用户确认过的**纠错对；LLM/本体只能产生"候选"，
  *     不得静默写回词表，更不得改写本体别名（Candidate ≠ Confirmed）。
- *   - 词条带**作用域**：一次会议里学到的变体不得自动升格为全局规则
- *     （真实事故：7 个姓氏变体被当全局规则加载数月，把无关稿件的"某老师"
- *     替换成他人姓名）。
+ *   - 词条带作用域：特定文档中确认的名称变体不得自动升格为全局规则。
  *   - 高危短词（`for` / `model` / `contact` / `redmi` 这类合法英文词）默认
  *     逐条人工确认，不允许"全部个人库"范围。
  *
@@ -19,7 +17,7 @@
  * 本模块只做"词表数据 + 归一化 + 风险分级 + 迁移"，不含扫描/替换
  * （见 transcript_auto_correct.ts）与产物/回滚（见 transcript_correction_runs.ts）。
  *
- * ── 关于"模型候选"（2026-09-20 起）────────────────────────────────────
+ * ── 关于"模型候选"──────────────────────────────────────────────────
  * 模型建议只参与当前材料扫描和更正，不自动写入长期词表。
  * 已有词表仍支持查询、作用域管理、人工编辑与替换记账。
  */
@@ -69,10 +67,10 @@ export interface GlossaryEntry {
   kind: GlossaryKind;
   riskLevel: RiskLevel;
   boundary: BoundaryMode;
-  /** 语境黑名单：命中窗口内出现任一词则拒绝替换（防 `傅平/扶贫办` 类误替换）。 */
+  /** 语境黑名单：命中窗口内出现任一词则拒绝替换，避免同音异义误替换。 */
   contextDeny: string[];
   /**
-   * 语境白名单（方案 §七「加白」）：窗口内出现任一词则**整条候选不产出**，
+   * 语境白名单（加白）：窗口内出现任一词则**整条候选不产出**，
    * 连待确认都不出现——用于"这个词在这个语境里是对的，别再提示我"。
    * 与 `contextDeny` 的区别：deny 只否决替换（仍上报为 denied），allow 直接静默。
    */
@@ -91,7 +89,7 @@ export interface GlossaryEntry {
   updatedAt: number;
   lastVerifiedAt: number;
   /**
-   * 忽略留痕（方案 §七「忽略（可逆，降权）」）：被忽略的次数与最近一次时间。
+   * 忽略留痕（可逆忽略与降权）：被忽略的次数与最近一次时间。
    * 忽略**不删词条**、不改台账，只用于降权排序与面板折叠；恢复时次数清零。
    */
   ignoredCount?: number;
@@ -105,7 +103,7 @@ export interface GlossaryFile {
   meta: {
     lastReconcileAt: number;
     ownerNote: string;
-    /** 检索前 query 同义改写开关（方案 §五 P2-3，默认关：用户要能预期检索行为）。 */
+    /** 检索前 query 同义改写开关（默认关闭）。 */
     queryRewrite?: boolean;
   };
 }
@@ -124,7 +122,7 @@ export interface UpsertEntryInput {
   scope?: unknown;
   /**
    * 创建上下文：未显式给 `scope` 时用它决定默认作用域（本文档 / 本场景）。
-   * 不给就会被兜底成全局规则——那正是作用域机制要防的事故，所以调用方应当传。
+   * 不给就会被兜底成全局规则，因此调用方应当传入可用的创建上下文。
    */
   docId?: unknown;
   scenarioTags?: unknown;
@@ -183,9 +181,7 @@ export function isSingleSurnameHonorific(text: string): boolean {
 // ── 风险分级 ────────────────────────────────────────────────────────────
 
 /**
- * 已知高危 token：合法英文词/介词/框架词，全局替换会写坏用户所有文档。
- * 来源：真实清理产物里出现过 `for→Foo`、`model→Moodle`、`contact→Context`、
- * `redmi→README` 这几条。
+ * 已知高危 token：合法英文词/介词/框架词，需要逐条确认，避免全局误替换。
  */
 const HIGH_RISK_TOKENS = new Set([
   'for', 'model', 'contact', 'redmi', 'readme', 'cloud', 'moodle', 'context',
@@ -238,7 +234,7 @@ interface V1Entry {
   ownerScope?: unknown; ontologyRef?: unknown; createdAt?: unknown; updatedAt?: unknown;
 }
 
-/** v1（2026-09-07 方案首版模型）→ v2：补 action / riskLevel / boundary /
+/** v1→ v2：补 action / riskLevel / boundary /
  *  contextDeny / scope / replacedIn / createdBy / lastVerifiedAt / uid。 */
 export function migrateGlossaryV1ToV2(raw: { entries?: unknown; meta?: unknown }, uid: string): GlossaryFile {
   const list = Array.isArray(raw?.entries) ? raw.entries : [];
@@ -320,11 +316,8 @@ export function emptyGlossary(uid: string): GlossaryFile {
   return { version: GLOSSARY_VERSION, uid, entries: [], meta: { lastReconcileAt: 0, ownerNote: '' } };
 }
 
-// 坏档三件套·词表接线说明（P-r1-88，2026-10-01 b2 曾落地后回滚）：读侧
-// 结构化错误（readTextGuarded + 抛 CorruptFileError）曾与既有契约测试
-// 「JSON 损坏 → 降级空表且不抛错」直接冲突并致门禁新增失败，读侧已按
-// 回滚令恢复降级空表行为；saveGlossary 的 assertNotCorrupt 写侧门保留
-// （词表 latch 无读侧登记入口，恒放行，行为与基线一致）。
+// 读取失败维持空表降级契约；该读取路径不登记坏档锁存状态。
+// 写入仍经过 assertNotCorrupt，其他入口已登记的损坏状态会阻止覆盖。
 export function loadGlossary(userId: string): GlossaryFile {
   const file = userTranscriptGlossaryFile(userId);
   let raw: unknown;
@@ -477,13 +470,13 @@ export function findEntry(userId: string, id: string): GlossaryEntry | null {
   return loadGlossary(userId).entries.find((e) => e.id === id) ?? null;
 }
 
-/** 作用域选择（面板「接受」动作的范围，方案 §七）。 */
+/** 作用域选择（面板「接受」动作的范围）。 */
 export type ScopeChoice = 'keep' | 'doc' | 'task' | 'global';
 
 export interface SetScopeResult {
   updated: number;
   /**
-   * 被拒的条目：**高危词条不允许"全部个人库"范围**（方案 §2.2 红线）。
+   * 被拒的条目：**高危词条不允许"全部个人库"范围**。
    * 拒绝时保持原作用域不变，并如实回报，绝不静默降级。
    */
   refused: Array<{ id: string; wrong: string; reason: 'high_risk_cannot_global' }>;
@@ -531,7 +524,7 @@ export function setScope(
 }
 
 /**
- * 忽略 / 恢复（方案 §七「忽略（可逆，降权）」）。
+ * 忽略 / 恢复（可逆忽略与降权）。
  * 忽略不删词条、不动台账：只累计次数与时间（面板据此折叠到末尾、默认不勾选）。
  */
 export function setIgnored(userId: string, ids: string[], ignored: boolean): number {
@@ -581,7 +574,7 @@ export function addContextAllow(userId: string, ids: string[], term: string): nu
 }
 
 /**
- * 检索前 query 同义改写开关（方案 §五 P2-3）。
+ * 检索前 query 同义改写开关。
  * 默认关：改检索词会改变用户看到的结果，必须由用户显式打开。
  */
 export function setQueryRewrite(userId: string, enabled: boolean): boolean {
@@ -605,7 +598,7 @@ export function isQueryRewriteEnabled(userId: string): boolean {
 }
 
 /**
- * 词表 owner 备注（方案 §2.1-11 / §七「每行显示 owner、最后维护时间、来源」的词表级部分）。
+ * 词表级维护者备注，供管理界面展示。
  * 只写 `meta.ownerNote`，不动词条。
  */
 export function setOwnerNote(userId: string, note: string): string {
@@ -667,8 +660,7 @@ export function retargetEntry(userId: string, id: string, correctInput: unknown)
   entry.correct = correct;
   /**
    * 删除型条目（口癖规则：`action: 'delete'`，correct 恒为空）被填上写法时，**必须同时把
-   * action 翻成 replace**：否则扫描/替换只看 action，`correct` 存了也永远不用——真机上就是
-   * "填了新写法、点了确定、列表里还是（删除）"，看着像没生效（2026-09-23 反馈）。
+   * action 翻成 replace**：否则扫描/替换只看 action，保存的 `correct` 不会被应用。
    * 语义变化因此是明确的：这条从"见到就删"变成"见到就替换成这个词"。
    * `kind` 保持不变（`product`/`term`/`filler` 只影响词表分组与查询改写范围，
    * 一旦用户给了写法，扫描侧就不再走 filler 规则分支——见 transcript_auto_correct 的分支条件）。
@@ -722,11 +714,7 @@ export function upsertEntry(userId: string, input: UpsertEntryInput): UpsertResu
     } else {
       // 未显式给作用域时的兜底：有文档 → 仅本文档；有场景标签 → 仅本场景；
       // 两者都没有才退到全局。
-      //
-      // 此前这里判断 `source !== 'meeting_accept'`，但全仓库没有任何调用方发送过该
-      // source（面板发 'manual'、本体桥接发 'ontology_seed'）⇒ 判断恒真 ⇒ 每个新词条
-      // 都成了全局规则，等于把 transcript_auto_correct 记录的事故重新引入
-      // （一次会议学到的 7 个姓氏变体被当全局规则，改了无关稿件的"某老师"）。
+      // 作用域取决于创建上下文，不由 source 标签推断；不同入口共享同一约束。
       const contextDocId = typeof input.docId === 'string' && input.docId.trim() ? input.docId.trim() : '';
       const contextTags = Array.isArray(input.scenarioTags)
         ? input.scenarioTags.filter((x): x is string => typeof x === 'string' && !!x.trim()).slice(0, 50)

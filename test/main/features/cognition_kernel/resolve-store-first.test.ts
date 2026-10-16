@@ -1,6 +1,4 @@
-/**
- * 统一读适配的「库优先遮蔽」测试（S4-a）：同槽旧值让位、库空=旧行为逐位一致。
- */
+/** 统一读适配的库优先遮蔽：同槽旧值让位，空库保留原读取行为。 */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
@@ -61,7 +59,7 @@ function snapshotMod() {
   return import('../../../../src/main/features/cognition_kernel/resolve');
 }
 
-describe('resolve 统一读：库优先遮蔽（S4-a）', () => {
+describe('resolve 统一读：库优先遮蔽', () => {
   it('库空（未迁移）→ 旧账行为不变', async () => {
     const { loadPersonalSourceSnapshot } = await snapshotMod();
     const snap = await loadPersonalSourceSnapshot('u1');
@@ -104,7 +102,7 @@ describe('resolve 统一读：库优先遮蔽（S4-a）', () => {
   });
 
   it('paused/archived 断言占槽不供值（旧值不复活），restricted 随 active 值透传', async () => {
-    // 待办#4 + CodeRabbit 校正：统一库状态过滤。paused/archived 收回这条值，
+    // 统一库状态过滤：paused/archived 收回这条值，
     // 但槽位已归统一库——迁移前的旧值不能趁机复活；只有 deleted 释放槽位。
     fixtures.state.storeObjects = {
       'co-paused': {
