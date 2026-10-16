@@ -3244,7 +3244,27 @@ function _bufferBackgroundGroupEvent(cid, evData) {
     }
   }
 
-  buf.push(_cloneGroupEventForBuffer(evData));
+  const buffered = _cloneGroupEventForBuffer(evData);
+  const terminalActor = _groupTerminalActor(evData);
+  if (terminalActor) {
+    // End ownership now, not when the user returns. The buffered event owns
+    // this detached tree until history or replay claims it, even for segments
+    // that reuse a turn id. A replay must never consume the next live segment.
+    const ph = _consumeGroupTerminalPlaceholder(cid, evData);
+    _bufferedTerminalPlaceholders.set(buffered, ph);
+    if (ph) {
+      // Legacy process events are buffered rather than painted in the
+      // background. Bind only this segment's preceding events to its node;
+      // replay must not annex a newer same-actor turn to render old progress.
+      for (let i = buf.length - 1; i >= 0; i--) {
+        const previous = buf[i];
+        if (_eventTurnId(previous) !== _eventTurnId(evData)) continue;
+        if (_groupTerminalActor(previous) === terminalActor) break;
+        if (previous.type === 'process' && previous.actor === terminalActor) _bufferedTerminalPlaceholders.set(previous, ph);
+      }
+    }
+  }
+  buf.push(buffered);
   while (buf.length > BACKGROUND_GROUP_EVENT_BUFFER_LIMIT) buf.shift();
 }
 
@@ -8994,6 +9014,14 @@ async function loadConversationHistory(cid, opts = {}) {
       let renderFailures = 0;
       history.forEach((msg) => {
         try {
+          const gm = visibleGroupHistory.find(row => row.id === msg._msg_id);
+          const settled = gm && _takeBufferedTerminalForHistory(cid, gm);
+          if (settled) {
+            historyFragment.appendChild(settled);
+            if (Number.isSafeInteger(msg._history_index)) settled.dataset.msgIndex = String(msg._history_index);
+            _finalizeActorPlaceholder(settled, gm, cid, true);
+            return;
+          }
           appendChatMessage(msg, false, {
             cid,
             // Only stamp authoritative source indexes returned by an anchored
@@ -16777,6 +16805,9 @@ function _handleStreamEvent(cid, msg, ev, { archive = false, actorIdentity = fal
 // globally. Falling back to actor id is legacy-only for older events/history
 // reconciliation paths that cannot know the original turn id.
 const _groupPlaceholders = new Map(); // key = `${cid}:turn:${turnId}` or `${cid}:actor:${actorId}` → element
+// Buffered terminal/process events retain their own node for replay. null means
+// history claimed a terminal node; replay must not fall back to a new turn.
+const _bufferedTerminalPlaceholders = new WeakMap();
 
 function _normaliseTurnId(turnId) { return turnId == null ? '' : String(turnId); }
 function _phKey(cid, actorId, turnId) {
@@ -17011,6 +17042,10 @@ function _ensureActorPlaceholder(cid, actorId, fallbackPh, turnId, triggerMsgId,
       _streamingEnsureActivityTimer(live);
     }
     _groupPlaceholders.delete(liveK);
+    if (tid && live.dataset.turnId && tid !== live.dataset.turnId) {
+      if (!live._groupTurnAliases) live._groupTurnAliases = new Set();
+      live._groupTurnAliases.add(live.dataset.turnId);
+    }
     if (tid) live.dataset.turnId = tid;
     _stampPlaceholderTriggerMsg(live, sourceMsgId);
     _seedPlaceholderActivityStart(live, startedAtMs);
@@ -17110,6 +17145,66 @@ function _consumeActorPlaceholder(cid, actorId, turnId, opts = {}) {
   return ph || null;
 }
 
+function _groupTerminalActor(event) {
+  if (event.type === 'turn_silent') return String(event.actor || '');
+  const gm = event.type === 'message' && event.msg;
+  if (!gm || gm.from === 'user' || gm.dispatch) return '';
+  return event.turn_end || gm.from === 'commander' && gm.seg !== undefined
+    || _groupMessageSystemKind(gm) === 'kstar_review' ? String(gm.from || '') : '';
+}
+
+function _consumeGroupTerminalPlaceholder(cid, event) {
+  if (_bufferedTerminalPlaceholders.has(event)) {
+    const ph = _bufferedTerminalPlaceholders.get(event);
+    _bufferedTerminalPlaceholders.set(event, null);
+    return ph;
+  }
+  const actor = _groupTerminalActor(event);
+  if (!actor) return null;
+  const tid = _eventTurnId(event) || _normaliseTurnId(event.msg?.turn_id || event.msg?.turnId);
+  let ph = _groupPlaceholders.get(_phKey(cid, actor, tid));
+  // A wake/task id may have been rebound to its exec id. Only an alias recorded
+  // during adoption proves that relationship; actor identity alone does not.
+  if (!ph && tid) {
+    const legacy = _groupPlaceholders.get(_phKey(cid, actor));
+    if (legacy && !legacy.dataset.turnId) ph = legacy;
+    for (const [key, candidate] of _groupPlaceholders) {
+      if (ph) break;
+      if (key.startsWith(`${cid}:`) && candidate?.dataset.fromActor === actor
+          && candidate.dataset.finalized !== '1' && candidate._groupTurnAliases?.has(tid)) { ph = candidate; break; }
+    }
+  }
+  if (!ph || ph.dataset.fromActor !== actor || ph.dataset.finalized === '1'
+      || !tid && ph.dataset.turnId) return null;
+  const consumed = _consumeActorPlaceholder(cid, actor, ph.dataset.turnId, { allowActorFallback: false });
+  if (consumed) _streamingFinishActivity(consumed, _activityTerminalText(consumed, 'completed'), 'completed');
+  return consumed;
+}
+
+function _takeBufferedTerminalForHistory(cid, gm) {
+  if (!gm.id) return undefined;
+  for (const event of _backgroundGroupEventBuffers.get(cid) || []) {
+    if (event.type !== 'message' || event.msg?.id !== gm.id || event.msg?.from !== gm.from) continue;
+    if (_bufferedTerminalPlaceholders.has(event)) {
+      const ph = _bufferedTerminalPlaceholders.get(event);
+      _bufferedTerminalPlaceholders.set(event, null);
+      return ph;
+    }
+  }
+  return undefined;
+}
+
+function _attachSettledGroupPlaceholder(cid, ph) {
+  if (!ph || cid !== currentCid) return;
+  if (!ph.parentElement || ph.parentElement.nodeType === 11) {
+    const container = document.getElementById('chat-history');
+    if (container) {
+      container.querySelector('.empty')?.remove();
+      _insertByTimestamp(container, ph);
+    }
+  }
+}
+
 // Polling/history reconciliation has no terminal bus-event envelope to prove
 // which live placeholder a persisted row belongs to. Only claim the exact
 // actor execution recorded on the message itself. General actor-only fallback
@@ -17118,6 +17213,11 @@ function _consumeActorPlaceholder(cid, actorId, turnId, opts = {}) {
 // boot-recovery interruption claiming an actor-only placeholder that itself has
 // no turn id; it cannot collide with a process-driven, turn-keyed live bubble.
 function _consumePlaceholderForHistoryRecord(cid, gm) {
+  const settled = _takeBufferedTerminalForHistory(cid, gm);
+  if (settled !== undefined) {
+    _attachSettledGroupPlaceholder(cid, settled);
+    return settled;
+  }
   const actorId = String(gm?.from || gm?._from || '');
   const turnId = _normaliseTurnId(gm?.turn_id || gm?.turnId || gm?._turn_id);
   if (!actorId) return null;
@@ -17518,7 +17618,8 @@ function _handleGroupBusEvent(cid, streamingMsg, evData, { archive = false } = {
     // rendered as bubbles. Consume the actor placeholder so the turn still
     // settles cleanly, then skip the visible message entirely.
     if (_groupMessageSystemKind(gm) === 'kstar_review') {
-      const ph = _consumeActorPlaceholder(cid, gm.from, _eventTurnId(evData));
+      const ph = _consumeGroupTerminalPlaceholder(cid, evData);
+      _attachSettledGroupPlaceholder(cid, ph);
       if (ph && ph.parentElement) {
         _finalizeActorPlaceholder(ph, gm, cid, archive);
       }
@@ -17561,7 +17662,8 @@ function _handleGroupBusEvent(cid, streamingMsg, evData, { archive = false } = {
       // it stays readable after the reply settles. If we don't have a
       // placeholder (history-replay race, or message arrived before any
       // state_changed), fall back to a fresh appendChatMessage.
-      const ph = _consumeActorPlaceholder(cid, gm.from, _eventTurnId(evData));
+      const ph = _consumeGroupTerminalPlaceholder(cid, evData);
+      _attachSettledGroupPlaceholder(cid, ph);
       if (ph && ph.parentElement) {
         _finalizeActorPlaceholder(ph, gm, cid, archive);
       } else {
@@ -17640,8 +17742,10 @@ function _handleGroupBusEvent(cid, streamingMsg, evData, { archive = false } = {
       startPolling(cid);
       if (cid === currentCid) _updateConvSendUI(cid);
     }
-    const target = _ensureActorPlaceholder(cid, actor, streamingMsg, turnId, undefined, undefined,
+    const bufferedTarget = _bufferedTerminalPlaceholders.get(evData);
+    const target = bufferedTarget || _ensureActorPlaceholder(cid, actor, streamingMsg, turnId, undefined, undefined,
       { contentBearing: true });
+    if (bufferedTarget) _attachSettledGroupPlaceholder(cid, bufferedTarget);
     if (!target) {
       _convLog.warn('group process target missing', {
         cid,
@@ -17863,10 +17967,14 @@ function _handleGroupBusEvent(cid, streamingMsg, evData, { archive = false } = {
     //       useful to preserve; an empty zombie bubble is just noise.
     const actorId = String(evData.actor || '');
     if (actorId) {
-      const ph = _consumeActorPlaceholder(cid, actorId, _eventTurnId(evData));
+      const ph = _consumeGroupTerminalPlaceholder(cid, evData);
+      _attachSettledGroupPlaceholder(cid, ph);
       if (ph) {
         const processBody = ph.querySelector('[data-role="process"]');
-        const procLines = processBody ? Array.from(processBody.children) : [];
+        const procLines = [
+          ...(processBody ? Array.from(processBody.children) : []),
+          ...Array.from(ph.querySelectorAll?.('.cs-flow-body > *') || []),
+        ];
         const hasProcess = procLines.length > 0;
         // A silent turn that ONLY routed (a delegation call, plus the reads the
         // commander did to decide the routing) carries nothing worth showing:
