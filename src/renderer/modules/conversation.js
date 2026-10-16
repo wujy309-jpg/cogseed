@@ -16541,12 +16541,9 @@ function createChatController(config) {
             // its buffer — drop them so the bubble stays frozen at the "stopped" state
             // instead of accumulating more deltas / a final reply behind it.
             if (pending?.aborted) continue;
-            // Switched away mid-stream: the placeholder bubble was detached by
-            // the new view's history reset, so rendering deltas into it is wasted
-            // work on an orphan node (markdown / typeset / strip). The turn keeps
-            // running server-side and switch-back rebuilds from disk, so we just
-            // skip the render while off-view — do NOT abort (that would stop the
-            // agent's turn). Scene hooks still run so edit-scene state is intact.
+            // Scene controllers may change their active id. Main-chat controllers
+            // instead own a fixed cid: their handlers must retain background
+            // content without inserting it into another task's shared history.
             if (id === config.getCurrentId()) {
               _handleStreamEvent(id, msgEl, ev, { archive: features.archive, actorIdentity: !!features.actorIdentity });
             }
@@ -16815,7 +16812,10 @@ function _resolveChatStreamAnchor(cid, chatEvent, fallbackEl, turnIdHint) {
   if (!cid || !chatEvent || typeof chatEvent !== 'object') return fallbackEl;
   const tid = _normaliseTurnId(turnIdHint || chatEvent.turnId);
   const key = _chatAnchorKey(cid, tid);
-  const live = (el) => !!(el && el.parentElement);
+  // A background task owns its detached message tree. Keep streaming into it;
+  // only a detached anchor in the visible task needs history reconciliation.
+  const background = typeof currentCid !== 'undefined' && cid !== currentCid;
+  const live = (el) => !!(el && (el.parentElement || background));
   const bind = (anchor, actorId) => {
     if (key) _chatStreamAnchors.set(key, { el: anchor, actorId });
     return anchor;
@@ -16945,8 +16945,9 @@ function _ensureActorPlaceholder(cid, actorId, fallbackPh, turnId, triggerMsgId,
   const sourceMsgId = _normaliseTurnId(triggerMsgId);
   const k = _phKey(cid, actorId, tid);
   const allowFallback = !!actorId && actorId !== 'commander';
+  const background = typeof currentCid !== 'undefined' && cid !== currentCid;
   let ph = _groupPlaceholders.get(k);
-  if (ph && ph.parentElement) {
+  if (ph && (ph.parentElement || background)) {
     _stampPlaceholderTriggerMsg(ph, sourceMsgId);
     _seedPlaceholderActivityStart(ph, startedAtMs);
     return ph;
@@ -16990,13 +16991,10 @@ function _ensureActorPlaceholder(cid, actorId, fallbackPh, turnId, triggerMsgId,
   // 按 dataset.fromActor 判定占位归属。
   for (const [liveK, live] of Array.from(_groupPlaceholders.entries())) {
     if (!liveK.startsWith(`${cid}:`)) continue;
-    // Never revive another conversation's placeholder into the currently
-    // displayed history — the node must wait until its own conversation is
-    // opened again (the history reload of that conversation re-attaches it).
-    if (typeof currentCid !== 'undefined' && cid !== currentCid) continue;
     if (!live || live.dataset.finalized === '1') continue;
     if (live.dataset.fromActor !== actorId) continue;
-    if (!live.parentElement) {
+    // Reuse detached background nodes, but attach them only to their own view.
+    if (!live.parentElement && !background) {
       // 视图切走时脱独的占位（map 里还在、DOM 里没了）：复活并挂回容器，
       // 而不是跳过它去新建——sendStream/observer 的事件 closure 仍指向
       // 该节点，复活它才能保住「一个 actor 一条气泡」。否则切回后
@@ -17044,7 +17042,7 @@ function _ensureActorPlaceholder(cid, actorId, fallbackPh, turnId, triggerMsgId,
   // turn-2 deltas. The `finalized` flag is stamped by
   // `_consumeActorPlaceholder` when a turn ends; once set, the bubble is
   // a finished history record and must not be reused as a streaming target.
-  if (fallbackPh && fallbackPh.parentElement
+  if (fallbackPh && (fallbackPh.parentElement || background)
       && fallbackPh.dataset.finalized !== '1'
       && (!fallbackPh.dataset.fromActor || fallbackPh.dataset.fromActor === actorId)
       && (!fallbackPh.dataset.turnId || !tid || fallbackPh.dataset.turnId === tid)) {
@@ -17055,7 +17053,11 @@ function _ensureActorPlaceholder(cid, actorId, fallbackPh, turnId, triggerMsgId,
     _groupPlaceholders.set(k, fallbackPh);
     return fallbackPh;
   }
-  const container = document.getElementById('chat-history');
+  // A worker may start after navigation, before it has any placeholder. Build
+  // its own detached tree rather than borrowing the currently visible history.
+  const container = background
+    ? document.createDocumentFragment()
+    : document.getElementById('chat-history');
   if (!container) return null;
   ph = _createStreamingAssistantMessage(container, { hiddenUntilActor: true, triggerMsgId: sourceMsgId });
   if (tid) ph.dataset.turnId = tid;
