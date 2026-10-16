@@ -106,6 +106,9 @@ Top 10 (AST01–AST10)** 映射；SARIF 2.1.0 导出；有理由与到期日的�
 
 校准结果：43 个官方 Skill 全部 `ALLOW`（误报 0），恶意样本仍 `DO_NOT_INSTALL`，
 且 8 个「把恶意代码藏进 test/vendor/注释/文档以求降权放行」的对抗用例全部未逃脱。
+**但这不等于没有绕过通道**：更宽的对抗门禁见 `tests/conformance/adversarial/`
+（图像承载指令、嵌套归档、反例标记洗 severity、`X = """…"""` 之后的代码被判成
+注释、变量中介 + 自研解码器），其中 6 条当前仍在逃脱。
 
 ## 架构
 
@@ -153,6 +156,14 @@ if report["deployment_recommendation"] == "DO_NOT_INSTALL":
 
 ## 全生命周期信任网关（新增于 2.0.0，原 07_agent_runtime 设计）
 
+**两层取更严**：`evaluate_skill` 计算隔离层与本地层的结论并采用更严的那个
+（隔离层已判拒装时直接返回），把两层的结论、隔离状态与各自 `scanner_version`
+放进 `tier_evidence`。
+理由是可测量的：镜像内的引擎可能落后于当前引擎（实测镜像停在 1.0.0，对
+`os.system('rm -rf /')` 只给 CAUTION，而当前引擎给 DO_NOT_INSTALL）。
+「沙箱优先」在那种情况下等于让更旧的引擎覆盖更新的引擎——装了 Docker 的机器
+门禁反而更弱。隔离层可以加强结论，不能削弱结论。
+
 ```python
 from runtime_trust.skill_guard import install_gate, load_gate
 
@@ -179,7 +190,9 @@ if not gate["allow_load"]:
 
 ## 环境与降级策略
 
-- 仅需 `python3`，不硬依赖 pyyaml / Docker。
+- 仅需 `python3`，不硬依赖 pyyaml / Docker。环境没有 pyyaml 时使用 skill 自带的
+  `vendor/yaml` 副本，规则集强度不随运行环境变化；两者都不可用时
+  `ruleset_resolved=False` 并回退内置规则（规则数由 181 条降到 64 条，报告里写明）。
 - 装了 `gitleaks` → 增强密钥扫描；否则用内置正则兜底。
 - 装了 `osv-scanner` → 依赖漏洞(CVE) 扫描；否则跳过并标注。
 - 装了 `strings` → 增强二进制字符串抽取；否则用纯 Python 兜底。
@@ -190,7 +203,13 @@ if not gate["allow_load"]:
 
 ```bash
 # 回归向量：锁定已知样本的分数/分级/部署建议，防止重构悄悄改变行为
-python3 tests/conformance/v1.0.0/run_conformance.py
+python3 tests/conformance/v1.1.0/run_conformance.py
+
+# 对抗门禁：已证实的绕过通道 + 必须守住的对照，随 npm test 一起跑。
+# 基线当前记录 6 条攻击向量仍在逃脱（图像与归档两条载体通道完全不可见，
+# 其中图像那条在三个来源上都可装）；修好之后用 --update-baseline 收紧缺口。
+python3 tests/conformance/adversarial/run_adversarial.py
+python3 -m pytest tests/conformance/adversarial -q
 
 # 单元测试（145 个用例，覆盖 scoring/path_security/context 及信任链）
 python3 -m pytest tests/unit/ runtime_trust/tests/
