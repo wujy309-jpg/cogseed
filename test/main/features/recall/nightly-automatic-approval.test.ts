@@ -5,17 +5,25 @@ import * as path from 'node:path';
 import { createNightlyCandidateFixture } from '../../../helpers/nightly-formation-fixture';
 import { drainMainRuntimeForTest } from '../../../helpers/drain-main-runtime';
 import type { SaveRecallCandidateInput } from '../../../../src/main/features/recall/candidate-service';
-vi.mock('../../../../src/main/features/recall/capture-model-routing', () => ({ runRecallCaptureModel: async (_userId: string, input: { message: string }) => {
+const run = vi.hoisted(() => vi.fn());
+vi.mock('../../../../src/main/features/recall/capture-model-routing', () => ({ runRecallCaptureModel: run }));
+function supportedBody(input: { message: string }) {
   const payload = JSON.parse(input.message);
   const source = payload.approvedUserSources[0];
-  return { result: { text: JSON.stringify({ supported: true, noUnsupportedClaims: true, scopePreserved: true,
-    finalDecisionPreserved: true, priorContentPreserved: true, evidence: [{ label: source.label, quote: source.approvedQuotes[0] }] }), meta: {} } };
-} }));
+  return { supported: true, noUnsupportedClaims: true, scopePreserved: true,
+    finalDecisionPreserved: true, priorContentPreserved: true, evidence: [{ label: source.label, quote: source.approvedQuotes[0] }] };
+}
 vi.mock('../../../../src/main/util/boot_init', () => ({ registerDeferred: () => {} }));
 vi.mock('../../../../src/main/features/recall/asset-title-suggestion', () => ({ suggestAbilityAssetTitle: async () => ({ title: '回答结构偏好' }) }));
 vi.mock('../../../../src/main/features/kb_embed', () => ({ closeEmbedder: vi.fn(), embedQuery: async () => { throw new Error('optional embedding unavailable'); } }));
 let root: string, previous: string | undefined;
-beforeEach(() => { vi.resetModules(); root = fs.mkdtempSync(path.join(os.tmpdir(), 'nightly-auto-policy-')); previous = process.env.COGSEED_WORKSPACE_ROOT; process.env.COGSEED_WORKSPACE_ROOT = root; });
+beforeEach(() => {
+  vi.resetModules();
+  run.mockReset().mockImplementation(async (_userId: string, input: { message: string }) => ({
+    result: { text: JSON.stringify(supportedBody(input)), meta: {} },
+  }));
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'nightly-auto-policy-')); previous = process.env.COGSEED_WORKSPACE_ROOT; process.env.COGSEED_WORKSPACE_ROOT = root;
+});
 afterEach(async () => { await drainMainRuntimeForTest('alice'); if (previous === undefined) delete process.env.COGSEED_WORKSPACE_ROOT; else process.env.COGSEED_WORKSPACE_ROOT = previous; fs.rmSync(root, { recursive: true, force: true }); });
 async function fixture(input: Partial<SaveRecallCandidateInput> = {}, enabled = true) {
   const settings = await import('../../../../src/main/features/recall/capture-settings');
@@ -154,6 +162,16 @@ describe('explicit nightly automatic confirmation', () => {
     expect(held.candidate.status).toBe('pending_review');
   });
   it.each([false, true])('restores the prior version after an automatic update as one reviewed inverse (joint: %s)', async joint => {
+    if (joint) run.mockImplementation(async (_userId: string, input: { message: string }) => {
+      const payload = JSON.parse(input.message);
+      expect(payload.ruleSourceRequests).toEqual([expect.objectContaining({ recordId: 'answer-rule' })]);
+      const checks = supportedBody(input);
+      // Independent fixture conclusion, not a copy of proposed rule metadata.
+      const sourceRuleConclusions = [{ recordId: 'answer-rule', status: 'resolved',
+        expectedContract: { strength: 'default', condition: { kind: 'task', field: 'purpose', equals: 'answer' }, effect: { kind: 'note' }, exception: '' },
+        topicEvidence: checks.evidence, fieldEvidence: { strength: checks.evidence, condition: checks.evidence, effect: [], exception: [] } }];
+      return { result: { text: JSON.stringify({ ...checks, sourceRuleConclusions }), meta: {} } };
+    });
     const bridge = await import('../../../../src/main/features/cognition_bridge');
     await bridge.replaceCognitionSources('alice', { mode: 'unified', revision: 1,
       records: { 'ability-assets': {}, candidates: {} }, po: { groups: [], trash: [] }, pendingProjection: false, migratedAt: new Date().toISOString() });
@@ -186,6 +204,7 @@ describe('explicit nightly automatic confirmation', () => {
     expect(await assets.readAbilityAsset('alice', first.asset!.id)).toMatchObject({ version: '3', statement: first.asset!.statement });
     if (joint) expect(ontology.readOntologyDocument('alice').records['answer-rule']).toMatchObject({ status: 'active', requirement: first.asset!.statement });
     expect(await assets.listAbilityAssetVersions('alice', first.asset!.id)).toHaveLength(3);
+    expect(run).toHaveBeenCalledTimes(2);
   });
   it('keeps a concurrent version conflict reviewable and gives a user rebase its own human audit', async () => {
     const f = await fixture();
