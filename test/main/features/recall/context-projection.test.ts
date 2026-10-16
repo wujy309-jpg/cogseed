@@ -237,7 +237,7 @@ describe('RecallView and ContextProjection', () => {
     expect(preview.omittedRefs).toEqual(expect.arrayContaining([expect.objectContaining({ assetId: other.asset.id, reason: 'asset_paused' })]));
   });
 
-  it('gives unconfirmed previews a default 7-day expiry and leaves confirmed projections without one（2026-10-15 滞留修复）', async () => {
+  it('gives unconfirmed previews a default 7-day expiry and leaves confirmed projections without one', async () => {
     const { projection } = await modules();
     const preview = await projection.previewContextProjection('user-a', { taskRunId: 'task-preview-default-expiry', purpose: 'review' });
     expect(preview.status).toBe('preview');
@@ -305,7 +305,7 @@ describe('RecallView and ContextProjection', () => {
     expect(preview.assetIds).not.toContain(scopeMismatch.asset.id);
   });
 
-  it('automatic full-text injection stays OFF by default (2026-09-22 反转)', async () => {
+  it('automatic full-text injection stays OFF by default', async () => {
     const { createAutomaticContextProjection } = await import('../../../../src/main/features/recall/context-projection');
     const users = await import('../../../../src/main/features/users');
     users.activateUser('user-baseline-off');
@@ -322,8 +322,8 @@ describe('RecallView and ContextProjection', () => {
   });
 
   it('creates one confirmed automatic projection from only high-relevance active assets', async () => {
-    // 2026-09-22 起正文自动注入默认关闭；这两条锁定选择机制本身的测试显式
-    // 打开旧行为（COGSEED_RECALL_BASELINE_TOP>0），机制代码保留作回滚通道。
+    // Explicitly enable baseline injection to exercise selection independently
+    // of the default-off configuration.
     vi.stubEnv('COGSEED_RECALL_BASELINE_TOP', '8');
     const oauth = await createAutomaticAssetWith({
       judgment: 'Review OAuth callback and token exchange security.',
@@ -1561,7 +1561,7 @@ describe('committed projection knowledge boundary', () => {
   });
 });
 
-describe('模型自选投影的撤销（2026-09-18）', () => {
+describe('模型自选投影的撤销', () => {
   it('撤销幂等；不存在/非模型自选各给明确拒绝', async () => {
     const projection = await import('../../../../src/main/features/recall/context-projection');
     const created = await projection.previewContextProjection('user-a', {
@@ -1591,7 +1591,7 @@ describe('模型自选投影的撤销（2026-09-18）', () => {
       .rejects.toThrow('not model-selected');
   });
 
-describe('撤销在时间线里可见（2026-09-18）', () => {
+describe('撤销在时间线里可见', () => {
   it('已撤销的模型自选投影产生"已撤销"事件，未撤销的仍是"已带入"', async () => {
     const projection = await import('../../../../src/main/features/recall/context-projection');
     const timeline = await import('../../../../src/main/features/recall/timeline-service');
@@ -1622,7 +1622,7 @@ describe('撤销在时间线里可见（2026-09-18）', () => {
   });
 });
 
-describe('用户 @ 钉住投影的撤销（2026-09-25 验收修复 US-601 AC3 / US-602 AC3）', () => {
+describe('用户 @ 钉住投影的撤销', () => {
   async function pinAsset(purposeTaskRun: string) {
     const { projection } = await modules();
     const promoted = await createAsset();
@@ -1641,7 +1641,7 @@ describe('用户 @ 钉住投影的撤销（2026-09-25 验收修复 US-601 AC3 / 
     const { projection, pinned } = await pinAsset('user-attach-pin-a');
     expect(pinned.status).toBe('confirmed');
 
-    // 引用回执必须可撤销（US-601 AC3）：否则"我挂上去的就下不来"。
+    // 用户钉住的引用回执必须支持撤销。
     const first = await projection.revokeUserPinnedProjection('user-a', pinned.id);
     expect(first.status).toBe('revoked');
     // 幂等：重复撤销返回同一终态，不报错、不产生第二份状态。
@@ -1685,7 +1685,7 @@ describe('用户 @ 钉住投影的撤销（2026-09-25 验收修复 US-601 AC3 / 
   });
 });
 
-describe('注入体量对比（2026-09-18，可用高效）：模型自选的增量必须远小于整块上限', () => {  it('带一条会话投影时的提示词块，比不带多出的是"这几条资产的正文"，且整块仍 ≤ 14000', async () => {
+describe('注入体量对比：模型自选的增量必须远小于整块上限', () => {  it('带一条会话投影时的提示词块，比不带多出的是"这几条资产的正文"，且整块仍 ≤ 14000', async () => {
     const promptInjection = await import('../../../../src/main/features/recall/prompt-injection');
     const projection = await import('../../../../src/main/features/recall/context-projection');
     const candidates = await import('../../../../src/main/features/recall/candidate-service');
@@ -1783,4 +1783,23 @@ describe('model-selected projection accounting', () => {
     const revokedCard = await buildProjectionCard('user-a', repeated.id);
     expect(revokedCard.status).toBe('revoked');
   });
+});
+
+it('records an all-unassessed semantic result without creating an empty projection or calling a model', async () => {
+  vi.stubEnv('COGSEED_RECALL_BASELINE_TOP', '1');
+  const { candidates, assets, projection } = await modules();
+  const candidate = await createNightlyCandidateFixture('user-a', { judgment: 'Review the signed evidence before deciding.',
+    summary: 'Synthetic evidence review', value: 'Reusable decision method.', suggestedType: 'cognition',
+    contentCategory: 'method', suggestedAction: 'create', suggestedScope: 'general', sourceRefs: [], applicableWhen: ['governed reviews'] });
+  const { asset } = await candidates.promoteRecallCandidate('user-a', candidate.id, { actor: 'user' });
+  await assets.setAbilityAssetMaturity('user-a', asset.id, 'transfer_validated');
+  const assessApplicability = vi.fn();
+  const result = await projection.createAutomaticContextProjection('user-a', {
+    taskRunId: 'unassessed-task', taskText: 'Review the signed evidence. ' + 'Context. '.repeat(11_000),
+  }, { embedTexts: async texts => texts.map(() => [1, 0]), assessApplicability });
+  expect(result).toBeUndefined(); expect(assessApplicability).not.toHaveBeenCalled();
+  const { listInjectionReceipts } = await import('../../../../src/main/features/recall/injection-receipt');
+  expect(await listInjectionReceipts('user-a', 'unassessed-task')).toEqual([
+    expect.objectContaining({ assetId: asset.id, assetVersion: asset.version, status: 'omitted', reason: 'prompt_budget' }),
+  ]);
 });

@@ -21,7 +21,10 @@
   let mdSourceMode = false;
   // 转写纠错面板（宿主 A）：只在"阅读全文"且拿到文本时可用；原文只读。
   let activeCorrection = null;
+  let activeMeetingRefs = null;
   let correctionOpen = false;
+  let correctionPending = false;
+  let correctionSequence = 0;
 
   function formatFallback(text, vars) {
     return String(text || '').replace(/\{([a-zA-Z0-9_]+)\}/g, (_match, key) => String(vars?.[key] ?? ''));
@@ -82,9 +85,10 @@
       modal.close(null, 'close');
     });
     modal.then(() => {
-      // 关闭查看器时销毁纠错面板（其内部状态随 run 走，不跨文档复用）。
+      // A delayed close from an older modal must not dispose the current reader.
+      if (activeModal !== modal) return;
       destroyCorrection();
-      if (activeModal === modal) activeModal = null;
+      activeModal = null;
     });
     activeModal = modal;
     applyReaderScale(readReaderScale());
@@ -145,11 +149,11 @@
     }
     if (canCorrect()) {
       buttons.push(root.uiButton({
-        label: correctionOpen
+        label: correctionOpen || correctionPending
           ? t('kb.transcriptCorrect.close_panel', '收起纠错')
           : t('kb.transcriptCorrect.title', '转写纠错'),
         icon: 'clipboard-list',
-        role: correctionOpen ? 'primary' : 'secondary',
+        role: correctionOpen || correctionPending ? 'primary' : 'secondary',
         size: 'sm',
         attrs: { 'data-anchor-view-correct-toggle': 'true' },
       }));
@@ -682,10 +686,12 @@
   }
 
   function destroyCorrection() {
+    correctionSequence++;
+    correctionPending = false;
     try { activeCorrection?.destroy?.(); } catch (_) { /* 关闭失败不阻塞 */ }
-    // 会议引用伴生面板（specs/013）：与纠错面板同生命周期，一并销毁。
-    try { root.KbMeetingRefs?.destroy?.(); } catch (_) { /* 同上 */ }
+    try { activeMeetingRefs?.destroy?.(); } catch (_) { /* 同上 */ }
     activeCorrection = null;
+    activeMeetingRefs = null;
     correctionOpen = false;
     const panel = element('[data-anchor-view-correct]');
     if (panel) {
@@ -701,7 +707,7 @@
    * 打开纠错面板。文档被截断时（viewer 为省内存只给引用附近片段）先取全文：
    * 个人库走 contexts.read 全量读回；空间库文件 v1 范围外——**不再静默降级**，
    * 返回带降级原因的结果（`degradedReason: 'space_doc'`），由调用方出四语提示
-   * 「暂不支持空间库文档纠错，已按可读片段扫描」（specs/013 T023）。
+   * 「暂不支持空间库文档纠错，已按可读片段扫描」。
    */
   async function resolveCorrectionText() {
     const inline = String(activeResult?.text || '');
@@ -727,8 +733,9 @@
   }
 
   async function toggleCorrection() {
-    if (correctionOpen) {
+    if (correctionOpen || correctionPending) {
       destroyCorrection();
+      setStatus('', '');
       renderActions();
       return;
     }
@@ -736,48 +743,60 @@
     if (!panel || !canCorrect()) return;
     panel.hidden = false;
     panel.textContent = '';
+    const sequence = ++correctionSequence;
+    const anchor = activeAnchor;
+    const result = activeResult;
+    correctionPending = true;
+    renderActions();
     setStatus(t('kb.viewer.loading_document', '正在读取原文…'), 'loading');
     let resolved = null;
     try {
       resolved = await resolveCorrectionText();
     } catch (_) {
-      resolved = { text: String(activeResult?.text || ''), degradedReason: '' };
+      resolved = { text: String(result?.text || ''), degradedReason: '' };
     }
     const text = String(resolved?.text || '');
-    if (!modalIsOpen()) return;
+    if (sequence !== correctionSequence || !modalIsOpen()) return;
+    correctionPending = false;
     setStatus('', '');
-    // 空间库截断的如实提示（specs/013 T023）：四语文案 + 把降级原因带给面板，
+    // 空间库截断时显示本地化提示，并把降级原因带给面板，
     // 面板顶部会在自己的降级说明区再呈现一次（恰一处，见 kb-transcript-correct）。
     const degradedNotes = resolved?.degradedReason === 'space_doc' ? ['space_doc'] : [];
     if (degradedNotes.length) {
       setStatus(t('kb.meetingRef.space_doc_notice', '暂不支持空间库文档纠错，已按可读片段扫描'), 'warning');
     }
     try {
-      activeCorrection = root.KbTranscriptCorrect.mount(panel, {
+      // Each module owns its complete root, including destructive rendering.
+      // Recreate both roots on every opening; neither may use the shared aside.
+      const correctionHost = document.createElement('div');
+      const refsHost = document.createElement('div');
+      panel.appendChild(correctionHost);
+      panel.appendChild(refsHost);
+      const context = {
+        docId: String(anchor?.path || result?.displayPath || 'transcript'),
+        displayPath: String(result?.displayPath || anchor?.path || ''),
+      };
+      activeCorrection = root.KbTranscriptCorrect.mount(correctionHost, {
+        ...context,
         text,
-        docId: String(activeAnchor?.path || activeResult?.displayPath || 'transcript'),
-        displayPath: String(activeResult?.displayPath || activeAnchor?.path || ''),
         ...(degradedNotes.length ? { degradedNotes } : {}),
       });
       correctionOpen = true;
-      // 会议引用伴生面板（specs/013）：同一文档上下文，挂在纠错面板同容器内；
-      // 模块缺失（旧构建）时静默跳过，不阻塞纠错主功能。
       try {
-        root.KbMeetingRefs?.mount?.(panel, {
-          docId: String(activeAnchor?.path || activeResult?.displayPath || 'transcript'),
-          displayPath: String(activeResult?.displayPath || activeAnchor?.path || ''),
-        });
-      } catch (_) { /* 伴生面板失败不影响纠错 */ }
+        activeMeetingRefs = root.KbMeetingRefs?.mount?.(refsHost, context) || null;
+      } catch (error) {
+        refsHost.textContent = '';
+        log?.warn('meeting refs panel mount failed', { error: error?.message || String(error) });
+      }
       element('.anchored-source-viewer')?.classList.add('is-correct-open');
-    const splitter = element('[data-anchor-view-split]');
-    if (splitter) splitter.hidden = false;
-    bindSplitter();
-    const saved = readSplitWidth();
-    if (saved > 0) applySplitWidth(saved, { persist: false });
+      const splitter = element('[data-anchor-view-split]');
+      if (splitter) splitter.hidden = false;
+      bindSplitter();
+      const saved = readSplitWidth();
+      if (saved > 0) applySplitWidth(saved, { persist: false });
     } catch (error) {
       log?.warn('correction panel mount failed', { error: error?.message || String(error) });
-      correctionOpen = false;
-      panel.hidden = true;
+      destroyCorrection();
       if (typeof root.uiToast === 'function') {
         root.uiToast(t('kb.transcriptCorrect.unavailable', '转写纠错面板暂时不可用'), { variant: 'warning' });
       }
@@ -799,9 +818,8 @@
    * 不改任何文本、不做任何替换。
    *
    * 时间**必须允许 1~3 段**（`02:45` / `1:00:35` / `01:00:35`）：腾讯会议同一份
-   * 导出里，整点前给的是相对时钟 `王伟 02:45`，整点后才变成 `李强 01:00:35`。
-   * 只认三段会把整点前的块头全部漏掉（真机事故 2026-09-18：一份 77 分钟的稿子，
-   * 首个被识别的块头落在 `01:00:35`，前面 77% 的内容从不进 DOM，看着像被删了）。
+   * 导出里，整点前给的是相对时钟 `Speaker A 02:45`，整点后才变成 `Speaker B 01:00:35`。
+   * 只认三段会漏掉整点前的块头；所有格式未识别的原文也必须保留。
    */
   function splitDialogueBlocks(text) {
     const raw = String(text || '');

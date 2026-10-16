@@ -1018,11 +1018,15 @@ async function applySemanticSelection(
   if (applicabilityContext) {
     const shortlist = mergedAssetMatches.filter(match => acceptedIds.has(match.assetId))
       .map(match => assets.find(asset => asset.id === match.assetId)!);
-    const ambiguousIds = ambiguousRecallAssetIds(shortlist, queryText);
+    const ambiguousIds = ambiguousRecallAssetIds(shortlist, queryText, assets);
     const ambiguous = shortlist.filter(asset => ambiguousIds.has(asset.id));
     if (ambiguous.length) {
       try {
-        const decisions = await assessSemanticApplicability(userId, queryText, ambiguous, applicabilityContext, options.assessApplicability);
+        const { decisions, unassessed } = await assessSemanticApplicability(userId, queryText, ambiguous, applicabilityContext, options.assessApplicability, assets);
+        for (const item of unassessed) {
+          acceptedIds.delete(item.assetId);
+          omittedRefs.push({ assetId: item.assetId, reason: 'prompt_budget', detail: `semantic_applicability_${item.reason}` });
+        }
         for (const decision of decisions) {
           const match = mergedAssetMatches.find(match => match.assetId === decision.assetId)!;
           match.semanticAssessment = decision;
@@ -1416,6 +1420,20 @@ export async function createAutomaticContextProjection(
   const selectedAssets = combined.slice(0, 12);
   const overflow = combined.slice(12);
   for (const asset of overflow) omittedRefs.push({ assetId: asset.id, reason: 'prompt_budget' });
+  // An all-unassessed result has no projection to carry omittedRefs. Keep the
+  // existing omission receipt so budget overflow is still observable without
+  // creating an empty confirmed projection or changing the return contract.
+  const semanticOmissions = omittedRefs.filter(ref => ref.reason === 'prompt_budget'
+    && ref.detail?.startsWith('semantic_applicability_'));
+  if (semanticOmissions.length) {
+    const { recordInjectionReceipt } = await import('./injection-receipt');
+    for (const ref of semanticOmissions) {
+      const asset = eligibleAssets.find(asset => asset.id === ref.assetId)!;
+      await recordInjectionReceipt(userId, { taskRunId, ...(selectedAssets.length ? { projectionId: id } : {}),
+        assetId: asset.id, assetVersion: String(asset.activeVersion || asset.version),
+        status: 'omitted', boundary: 'real', channel: 'projection', reason: 'prompt_budget' });
+    }
+  }
   if (!selectedAssets.length) return undefined;
 
   const now = projectionNowIso();

@@ -14,6 +14,7 @@ import { assertCognitionManagementReadTarget, MANAGEMENT_PAGE_TOKENS, management
 import { readOntologyInventory, readOntologyManagementRecord } from '../../features/cognition/ontology/inventory';
 import { esticogseedToolResultTokens } from '../../util/tool-result-cap';
 import { logErrorRef, maskId } from '../../util/log-redact';
+import { cognitionQueryFailure, queryModuleId } from './cognition-query-error';
 
 const log = createLogger('ontology-query');
 function queryReadRef(row: Record<string, unknown>, kind: OntologyQueryReadRef['kind']): OntologyQueryReadRef | undefined {
@@ -47,10 +48,10 @@ export function createOntologyTools(options: OntologyToolsOptions): AgentTool[] 
     executionMode: 'parallel',
     description:
       '查询用户的本体认知：按人物、项目或关系查当前与历史事实，并查看适用于本任务的规则。'
-      + '有项目/工作区时给出 moduleId，或先用用户说过的名称填 query。'
+      + 'moduleId只能填查询结果中的正式ID；只有名称时先填query，不猜ID。'
       + '只读；临时任务安排不会保存。每条结果带来源和版本，unknown 表示开始时间或规则条件未确认。'
       + 'rule 的 matched 只表示条件匹配，不表示规则已经检查、采用或执行；default、required、suggestion 要按原等级说明。若 truncated 计数非零，结果不完整，不能据此断言所有要求均已覆盖。'
-      + 'task模式不返回仅自己可见的内容和其他项目/工作区内容；本人明确要求全部内容盘点时使用inventory，按管理读取资格返回全文或来源占位，不授任务使用权。',
+      + 'task模式不返回仅自己可见的内容和其他项目/工作区内容；本人明确要求全部内容盘点时使用inventory，按管理读取资格返回全文或来源占位，不授任务使用权。失败按错误指引处理，不等于不存在，不能据此转去创建。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -61,7 +62,7 @@ export function createOntologyTools(options: OntologyToolsOptions): AgentTool[] 
         contentCursor: { anyOf: [{ type: 'integer', const: 0 }, { type: 'string' }], description: '超大完整JSON分块：0开始，再用nextContentCursor。manage每批核本人意图/来源/版本；task保留原query/moduleId/at/purpose/taskKind/entityId并每批重新执行原任务范围与来源准入，不获得manage权限。全部拼接才是全文。' },
         recordId: { type: 'string', description: '管理读取的已有本体记录 ID。' },
         query: { type: 'string', maxLength: 200, description: '要查询的人物、项目、关系或主题；例如 CogSeed、负责人、周报接收人。' },
-        moduleId: { type: 'string', maxLength: 160, description: '可选。此前查询结果中的本体 ID。' },
+        moduleId: { type: 'string', maxLength: 160, description: '可选。此前查询结果中的正式本体 ID，不是显示名称；只有名称时先填 query。' },
         at: { type: 'string', maxLength: 10, description: '可选。查询哪一天的现实事实，格式 YYYY-MM-DD；缺省为今天。' },
         purpose: { type: 'string', maxLength: 200, description: '可选。任务目的的简短标记，用于判断规则条件。' },
         taskKind: { type: 'string', maxLength: 200, description: '可选。任务类型，用于判断规则条件。' },
@@ -72,7 +73,7 @@ export function createOntologyTools(options: OntologyToolsOptions): AgentTool[] 
     },
     async execute(input: ToolInput) {
       try {
-        if (input.mode !== undefined && !['task', 'manage', 'inventory'].includes(String(input.mode))) throw new OntologyError('invalid_input', '无效读取模式');
+        if (input.mode !== undefined && (typeof input.mode !== 'string' || !['task', 'manage', 'inventory'].includes(input.mode))) throw new OntologyError('invalid_input', '无效读取模式');
         if (input.mode === 'inventory') {
           if (Object.keys(input).some(k => !['mode', 'limit', 'cursor', 'expectedRevision'].includes(k))) throw new OntologyError('invalid_input', t('cognition.read.inventory_no_filter'));
           return { content: JSON.stringify(await readOntologyInventory(options.userId, { ...options, userId: options.userId }, input)) };
@@ -91,8 +92,9 @@ export function createOntologyTools(options: OntologyToolsOptions): AgentTool[] 
             return { content: JSON.stringify({ mode: 'manage', id: record.id, contentState: 'requires_chunk_read', managementRead: { mode: 'manage', recordId: record.id, contentCursor: 0, expectedRevision: result.doc.revision }, useBoundary: t('cognition.read.use_boundary') }) };
           return { content: JSON.stringify(result.content) };
         }
-        const query = String(input.query ?? '').trim();
+        const query = typeof input.query === 'string' ? input.query.trim() : '';
         if (!query || query.length > 200) throw new OntologyError('invalid_input', '请输入不超过200字的查询主题');
+        const moduleId = queryModuleId(input.moduleId);
         for (const field of ['purpose', 'taskKind'] as const) if (typeof input[field] === 'string' && input[field]!.length > 200) throw new OntologyError('invalid_input', `${field} is too long`);
         const at = typeof input.at === 'string' && input.at ? input.at : todayLocal();
         let doc = await readOntologyView(options.userId);
@@ -102,8 +104,8 @@ export function createOntologyTools(options: OntologyToolsOptions): AgentTool[] 
         const modules = Object.values(doc.records).filter((r): r is Extract<typeof r, { kind: 'module' }> => r.kind === 'module'
           && r.status === 'active' && ontologyModuleVisibleToTask(r, options.context));
         let targetModules = modules;
-        if (typeof input.moduleId === 'string' && input.moduleId) {
-          const moduleId = validateOntologyId(input.moduleId), selected = doc.records[moduleId];
+        if (moduleId) {
+          const selected = doc.records[moduleId];
           if (!selected || selected.kind !== 'module' || !ontologyModuleVisibleToTask(selected, options.context))
             throw new OntologyError('not_authorized', '所选本体不存在或不属于当前任务范围');
           targetModules = [selected];
@@ -210,7 +212,7 @@ export function createOntologyTools(options: OntologyToolsOptions): AgentTool[] 
         }
         return { content: JSON.stringify(payload, null, 2) };
       } catch (error) {
-        return { content: `cognition_ontology_query: ${error instanceof Error ? error.message : '本体查询失败'}`, isError: true };
+        return cognitionQueryFailure('cognition_ontology_query', error, options.userId);
       }
     },
   };

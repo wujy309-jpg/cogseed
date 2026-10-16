@@ -734,6 +734,7 @@ function _csDiffStats(diff) {
 
 function _csRenderToolRow(row, payload, status) {
   const p = payload || {};
+  if (p.toolName) row.dataset.eventName = String(p.toolName);
   // 事件按相位增量到达：start 带参数、progress 带 message、end 带输出/错误
   // （end 不带 arguments！）。dataset 累积已见字段——后到相位重绘时不得把
   // start 的目标抹掉，否则行会退化成光秃秃的动词。

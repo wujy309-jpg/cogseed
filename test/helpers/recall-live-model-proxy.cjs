@@ -37,6 +37,9 @@ delete process.env.CORE_AGENT_AUTH_DIR;
 req('tsx/cjs');
 req('tsx/esm/api').register();
 (async () => {
+  // The child does not run desktop bootstrap. Honor its explicit launch
+  // proxy through the same initializer while retaining the billing fetch gate.
+  await req(path.join(root, 'src/main/util/proxy-dispatcher.ts')).installEnvProxyDispatcher();
   const uid = process.env.COGSEED_RECALL_LIVE_AUTH_UID;
   const { readRecallCaptureSettings } = req(path.join(root, 'src/main/features/recall/capture-settings.ts'));
   const { resolveRecallCaptureModelCandidates } = req(path.join(root, 'src/main/features/recall/capture-model-selection.ts'));
@@ -107,7 +110,10 @@ req('tsx/esm/api').register();
       systemPrompt: input.systemPrompt, message: input.message, maxOutputTokens, modelCandidates,
       ...(input.responseFormat ? { responseFormat: input.responseFormat } : {}) });
   }
-  if (response.result.meta.error || response.result.meta.aborted) throw new Error('live model did not complete');
+  if (response.result.meta.error || response.result.meta.aborted) {
+    const detail = req(path.join(root, 'src/main/logger.ts')).redact(response.result.meta.error || 'aborted');
+    throw new Error(`live model did not complete: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`);
+  }
   process.stdout.write('\n@@RECALL_LIVE@@' + JSON.stringify({ text: response.result.text,
     meta: { usage: response.result.meta.usage }, chosen: response.chosen, toolCalls, modelHttpRequests }) + '\n');
   process.exit(0);

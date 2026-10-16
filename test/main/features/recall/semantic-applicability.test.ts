@@ -13,7 +13,7 @@ describe('host-qualified semantic applicability', () => {
     read.mockResolvedValue(assets[0]); filter.mockImplementation(async (_uid, rows) => rows);
     expect([...ambiguousRecallAssetIds(assets, task)]).toEqual(['asset-a']);
     const assess = vi.fn(async (message: string) => { expect(JSON.parse(message).currentTask).toBe(task); return JSON.stringify({ decisions: [decision] }); });
-    expect(await assessSemanticApplicability('user-a', task, assets, { projectId: 'project-a' }, assess)).toEqual([decision]);
+    expect(await assessSemanticApplicability('user-a', task, assets, { projectId: 'project-a' }, assess)).toEqual({ decisions: [decision], unassessed: [] });
     expect(assess).toHaveBeenCalledTimes(1);
     expect(filter.mock.calls[0][2].projectId).toBe('project-a');
   });
@@ -38,7 +38,7 @@ describe('host-qualified semantic applicability', () => {
       filter.mockResolvedValue([]); return JSON.stringify({ decisions: [decision] });
     })).rejects.toThrow('snapshot');
   });
-  it('assesses candidates beyond twelve with cross-batch conflict context and no unassessed tail', async () => {
+  it('uses one batch beyond twelve and never splits a conflict group or hides the unassessed tail', async () => {
     const many = Array.from({ length: 25 }, (_, i) => ({ ...assets[0], id: `asset-${i}`, title: `Title ${i}`, statement: `Guidance ${i}.` })) as RecallAbilityAssetRecord[];
     many[0].relations = [{ assetId: many[24].id, kind: 'conflicts_with' }];
     read.mockImplementation(async (_uid, id) => many.find(row => row.id === id));
@@ -47,13 +47,41 @@ describe('host-qualified semantic applicability', () => {
       const payload = JSON.parse(message);
       expect(payload.currentTask).toBe(task);
       if (payload.candidates.some((row: { assetId: string }) => row.assetId === 'asset-0'))
-        expect(payload.comparisonCandidates).toContainEqual(expect.objectContaining({ assetId: 'asset-24' }));
+        expect(payload.candidates).toContainEqual(expect.objectContaining({ assetId: 'asset-24' }));
       return JSON.stringify({ decisions: payload.candidates.map((row: { assetId: string; statement: string }) => ({ ...decision, assetId: row.assetId,
         assetQuote: row.statement, verdict: row.assetId === 'asset-24' ? 'not_applicable' : 'applicable' })) });
     });
     const result = await assessSemanticApplicability('user-a', task, many, {}, assess);
-    expect(assess).toHaveBeenCalledTimes(3);
-    expect(result).toHaveLength(25);
-    expect(result[24]).toMatchObject({ assetId: 'asset-24', verdict: 'not_applicable' });
+    expect(assess).toHaveBeenCalledTimes(1);
+    expect(result.decisions).toHaveLength(12);
+    expect(result.decisions.find(row => row.assetId === 'asset-24')).toMatchObject({ verdict: 'not_applicable' });
+    expect(result.unassessed).toHaveLength(13);
+    expect(new Set([...result.decisions, ...result.unassessed].map(row => row.assetId)).size).toBe(25);
+    expect(result.unassessed.every(row => row.reason === 'candidate_limit')).toBe(true);
   });
+  it('does not call a model for an indivisible oversized conflict group or oversized task', async () => {
+    const many = Array.from({ length: 13 }, (_, i) => ({ ...assets[0], id: `asset-${i}`, statement: `Different guidance ${i}.` }));
+    const assess = vi.fn();
+    const result = await assessSemanticApplicability('user-a', task, many, {}, assess);
+    expect(result.decisions).toEqual([]); expect(result.unassessed).toHaveLength(13);
+    expect(assess).not.toHaveBeenCalled();
+    expect(await assessSemanticApplicability('user-a', 'x'.repeat(96_001), assets, {}, assess))
+      .toEqual({ decisions: [], unassessed: [{ assetId: assets[0].id, version: '2', reason: 'context_limit' }] });
+    expect(assess).not.toHaveBeenCalled();
+  });
+  it('includes an admitted conflict outside the requested top results without promoting it', async () => {
+    const other = { ...assets[0], id: 'asset-b', title: 'A different title', statement: 'Conflicting guidance.',
+      relations: [{ assetId: 'asset-a', kind: 'conflicts_with' as const }] };
+    read.mockImplementation(async (_uid, id) => id === 'asset-a' ? assets[0] : other);
+    filter.mockImplementation(async (_uid, rows) => rows);
+    expect([...ambiguousRecallAssetIds(assets, 'weekly project report', [...assets, other])]).toEqual(['asset-a']);
+    const assess = vi.fn(async (message: string) => {
+      expect(JSON.parse(message).comparisonCandidates).toEqual([expect.objectContaining({ assetId: 'asset-b' })]);
+      return JSON.stringify({ decisions: [decision] });
+    });
+    expect(await assessSemanticApplicability('user-a', task, assets, {}, assess, [...assets, other]))
+      .toEqual({ decisions: [decision], unassessed: [] });
+    expect(assess).toHaveBeenCalledTimes(1);
+  });
+
 });

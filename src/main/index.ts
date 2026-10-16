@@ -72,10 +72,9 @@ if (IS_PACKAGED_STT_SMOKE) {
   app.commandLine.appendSwitch('use-file-for-fake-audio-capture', PACKAGED_STT_SMOKE_WAV);
 }
 const MARKETPLACE_DEFAULTS_REFRESH_INTERVAL_MS = 12 * 60 * 60 * 1000;
-// ── Hub 内容检查节奏（specs/010 FR-034 `[FROZEN]`；PRD doc-v0.5 §7.3 第 212 行）──
-// 契约原文：「启动后 60 秒、在线期间每 6 小时、用户打开目录页时……失败 30 分钟后重试一次，
-// 再失败等下一周期。检查不打断用户，不弹阻断式窗口。」
-// ⚠️ 基线实测为 12 小时且无周期定时器、无失败重试——**未满足该冻结要求**，此处改为契约值。
+// Check Hub content 60 seconds after startup, every 6 hours while online,
+// and when opening the catalog. Retry a failed check once after 30 minutes,
+// then wait for the next cycle. Checks must not interrupt the user.
 const MARKETPLACE_SERVER_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 /** 启动后首次检查的延迟。 */
 const MARKETPLACE_STARTUP_CHECK_DELAY_MS = 60 * 1000;
@@ -84,7 +83,7 @@ const MARKETPLACE_CHECK_RETRY_DELAY_MS = 30 * 60 * 1000;
 /**
  * 版本副本回收的启动期延迟。
  *
- * 刻意排在检查之后：`specs/010` FR-052 要求**不在检查周期或使用高峰内触发**，
+ * 刻意排在检查之后，避免与检查或使用高峰重叠；
  * 回收是纯磁盘清理，没有任何时效性。
  */
 const MARKETPLACE_VERSION_GC_DELAY_MS = 5 * 60 * 1000;
@@ -200,6 +199,11 @@ installSdkTimeoutPatch();
 import { installSseHeaderTimeoutPatch } from './model/core-agent/sse-header-timeout-patch';
 installSseHeaderTimeoutPatch();
 
+// Install the stable fetch router before diagnostics/provider imports capture
+// fetch. Electron's system-proxy route becomes available after app-ready.
+import { installEnvProxyDispatcher, installSystemProxyDispatcher } from './util/proxy-dispatcher';
+void installEnvProxyDispatcher();
+
 // Provider-fetch diagnostics: dump the real undici cause chain for model
 // endpoint failures.
 import { installFetchDiag } from './model/core-agent/fetch-diag';
@@ -238,8 +242,8 @@ import * as taskNotifications from './features/task_notifications';
 import { shouldHideOnClose, startBackgroundRun, type BackgroundRun, type TrayMenuItemSpec } from './features/background_run';
 import * as cogseedBackend from './features/cogseed_backend';
 import { recoverRecallCaptures, startNightlyCaptureSweepLoop, startRecallCaptureOrchestrator } from './features/recall/capture-service';
-// 2026-10-08 U09：KSTAR 收口编排动态导入——KSTAR 缺失不影响主进程启动
-// 与认知流程。
+// Load KSTAR closure orchestration dynamically so its absence does not block
+// main-process startup or cognition workflows.
 type KstarClosureStoppers = Array<() => void>;
 let kstarClosureStoppers: KstarClosureStoppers = [];
 async function startKstarClosureOrchestrators(): Promise<KstarClosureStoppers> {
@@ -658,7 +662,7 @@ function registerIpc(): void {
     // dev 半更新检测：bootstrap.cjs 用 tsx 在进程启动时加载 src/main/**/*.ts，
     // 而渲染层的 .js 每次刷新窗口都会重读磁盘。若磁盘上的 main 源码比本进程启动
     // 还新，就说明"界面已是新代码、主进程还是旧代码"——此时新参数会被旧主进程
-    // 静默忽略（真机事故：kb.mindmap 的 doc 参数被忽略 → 整库脑图冒充本文档脑图）。
+    // 静默忽略，导致界面请求的范围与主进程实际处理的范围不一致。
     // 详见 util/source-stamp.ts。
     const staleMain = buildStaleMainReport({ pcRoot: paths.PC_ROOT, isPackaged: app.isPackaged });
     return {
@@ -1614,6 +1618,7 @@ if (!gotLock) {
     showMainWindow();
   });
   void app.whenReady().then(async () => {
+    await installSystemProxyDispatcher();
     await runBootSelfCheck();
 
     // 版本迁移：检测版本变化，自动清理旧数据
@@ -1930,27 +1935,22 @@ if (!gotLock) {
       void uid;
     });
 
-    // recall:correct-seed-maturity 已随出身收敛退役（2026-09-20）：一次性
-    // 历史归档修正早已空转，出身单值化后判据不复存在（见 asset-service 注释）。
-    // 2026-08-15 UI 优化：旧 KStar 线资产带英文技术标题（'Reusable experience
-    // lesson (requirement-level)' 等），迁移为中文可读。幂等，修完空转。
+    // Idempotently replace legacy KStar technical titles with readable titles.
     registerDeferred('recall:migrate-legacy-titles', async () => {
       const { migrateLegacyUserFacingTitles } = await import('./features/recall/asset-service');
       await migrateLegacyUserFacingTitles(users.getActiveUserId());
     }, 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
-    // A 轨道（2026-09-13 scope 枚举化）：存量自由文本 scope（"用户全局画像"）
-    // 归一为受控词表——否则自动投影永远 scope_mismatch，确认资产在正式通道
-    // 失效。幂等；迁移会同步刷新仍存活 committed 投影的版本快照（2026-09-14
-    // 补——此前"跳过被引用资产"的说法与实现相反，committed 校验器的版本
-    // 强校验会让注入整体失败）。
+    // Normalize legacy free-text scopes to the controlled vocabulary so
+    // confirmed assets remain eligible for automatic projection. The migration
+    // is idempotent and refreshes live committed projections' version snapshots
+    // to preserve strict version validation.
     registerDeferred('recall:migrate-legacy-scopes', async () => {
       const { migrateLegacyFreeTextScopes } = await import('./features/recall/asset-service');
       await migrateLegacyFreeTextScopes(users.getActiveUserId());
     }, 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
-    // P-r2-3（2026-10-01 根治）启动期清扫：purge 与版本追加已纳入同一把锁，
-    // 但修锁前泄漏已发生的现场（purged 资产名下被在途 append 重建的版本流）
-    // 无产品通道可清——启动时按「墓碑/记录已除名 ⇒ 流必不存」清一遍。幂等，
-    // 正常情况下空转；逐条容错不拦启动。
+    // Recover pending cognition journals and remove legacy version streams
+    // whose asset is tombstoned or absent. Purge and append share a lock;
+    // startup recovery is idempotent and tolerates individual failures.
     registerDeferred('cognition:compatibility-recovery', async () => {
       const { recoverCognitionProjection } = await import('./features/cognition_bridge');
       const { applyCognitionDeltas } = await import('./features/cognition_kernel/store');
@@ -2004,13 +2004,13 @@ if (!gotLock) {
       const uid = users.getActiveUserId();
       if (uid) await recoverRecallCaptures(uid);
     }, 'parallel', BOOT_HEAVY_DISK_DELAY_MS, { resourceClass: 'disk', preferIdle: true });
-    // 夜间增量清扫（U01）：低频自续期；窗口内/错过补跑都由内部判定，
+    // 夜间增量清扫：低频自续期；窗口内/错过补跑都由内部判定，
     // 应用未运行不假装完成，恢复可运行后续办。
     registerDeferred('recall:nightly-sweep', () => {
       const uid = users.getActiveUserId();
       if (uid) startNightlyCaptureSweepLoop(uid);
     }, 'parallel', BOOT_HEAVY_DISK_DELAY_MS, { resourceClass: 'disk', preferIdle: true });
-    // 本体整体暂停退役迁移（U03/U07）：幂等 no-op 安全，逐版本入历史可恢复。
+    // 本体整体暂停退役迁移：幂等 no-op 安全，逐版本入历史可恢复。
     registerDeferred('recall:ontology-pause-retirement', async () => {
       const uid = users.getActiveUserId();
       if (!uid) return;
@@ -2023,7 +2023,7 @@ if (!gotLock) {
       const { recoverValidationApplications } = await import('./features/recall/validation-service');
       await recoverValidationApplications(uid);
     }, 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
-    // 保留期到期清理（specs/008 T005）：启动后跑一轮，此后低频自续期。
+    // 保留期到期清理：启动后跑一轮，此后低频自续期。
     // 「到期自动彻底删除」的级联清理链见 features/recall/asset-retention-service。
     registerDeferred('recall:retention-sweep', async () => {
       const uid = users.getActiveUserId();
@@ -2031,7 +2031,7 @@ if (!gotLock) {
       const { startAbilityAssetRetentionLoop } = await import('./features/recall/asset-retention-service');
       startAbilityAssetRetentionLoop(uid);
     }, 'serial', BOOT_HEAVY_DISK_DELAY_MS, idleDisk);
-    // 后台巡检（specs/008 US-405）：低频自续期，**只报不改**；开关关掉后不再自动跑。
+    // 后台巡检：低频自续期，**只报不改**；开关关掉后不再自动跑。
     registerDeferred('recall:asset-inspection', async () => {
       const uid = users.getActiveUserId();
       if (!uid) return;

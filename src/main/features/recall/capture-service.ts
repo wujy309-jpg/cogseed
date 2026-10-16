@@ -4,7 +4,7 @@ import { isContentCategory, type CognitionContentCategory } from './content-cate
 import { parseFormationProposalEnvelope } from './formation-proposal';
 import { captureValueJudgmentInput, parseCaptureValueJudgment, type CaptureValueJudgment } from './capture-value-judgment';
 import { captureSummaryDecisionDigest } from './capture-provenance';
-import { assessFormationBatch, FormationBatchUnavailableError, type FormationBatchCheckpoint } from './formation-batch-assessment';
+import { assessFormationBatch, analyzeFormationDependencies, FormationBatchUnavailableError, type FormationBatchCheckpoint } from './formation-batch-assessment';
 import { captureSourcePassages } from './capture-context-payload';
 import { findConversationMessageById } from './conversation-message-lookup';
 import { validateFormationComparison, type FormationComparison } from './formation-comparison';
@@ -212,6 +212,8 @@ export interface RecallCaptureFormationCheckpoint {
   groups: Array<{ index: number; input: SaveRecallCandidateInput; savedCandidateId?: string; omitted?: boolean;
     ruleSourceAssessment?: { policyVersion: 3; sourceFingerprint: string; batchFingerprint: string; finalInputFingerprint: string;
       conclusions: SourceRuleConclusion[]; resultingContracts: FormationRuleRevision[] } }>;
+  /** Frozen, safe parsed groups still needing support; absent on legacy complete checkpoints. */
+  pendingCandidates?: Array<{ index: number; candidate: ParsedCandidate }>;
   parsedCount: number; emittedCount: number; noCandidateReason?: string; modelUsage?: RecallCaptureModelUsage;
 }
 
@@ -1734,6 +1736,12 @@ async function screenQueuedRecallCapture(
   return { capture: screened, promptMessages };
 }
 
+function captureNeedsSupportRetry(capture: RecallCaptureRecord): boolean {
+  return ['failed', 'configuration_required'].includes(capture.status)
+    || ['review_ready', 'completed', 'no_candidate'].includes(capture.status)
+      && !!capture.formationCheckpoint?.pendingCandidates?.length;
+}
+
 function isSettledAutomaticCandidate(candidate: Pick<RecallCandidateRecord, 'status'>): boolean {
   return ['confirmed', 'integrated', 'rejected', 'ignored', 'expired'].includes(candidate.status);
 }
@@ -1775,7 +1783,7 @@ function hasPreparedRuleSourceAssessment(userId: string, capture: RecallCaptureR
 }
 
 async function persistPreparedCapture(userId: string, capture: RecallCaptureRecord,
-  checkpoint: RecallCaptureFormationCheckpoint, canContinue: () => Promise<boolean>, signal?: AbortSignal): Promise<RecallCaptureRecord> {
+  checkpoint: RecallCaptureFormationCheckpoint, canContinue: () => Promise<boolean>, signal?: AbortSignal, settle = true): Promise<RecallCaptureRecord> {
   const id = capture.id;
   const candidates: RecallCandidateRecord[] = [];
   for (const group of checkpoint.groups) {
@@ -1798,8 +1806,9 @@ async function persistPreparedCapture(userId: string, capture: RecallCaptureReco
         // Preserve the frozen group.input and saved groups. Only the submitted
         // unsaved copy gets an explicit human-visible hold; no model call or
         // semantic repair is allowed during legacy checkpoint recovery.
-        const marker = '旧形成提案尚未完成来源优先的规则合同核查，请核对强度、条件、例外及效果后确认。';
-        const uncertainty = input.uncertainty ? `${marker}\n${input.uncertainty}` : marker;
+        const marker = '形成提案尚未完成来源优先的规则合同核查，请核对强度、条件、例外及效果后确认。';
+        const uncertainty = input.ontologyFormation?.blockedReasons.includes('rule_source_assessment_required') && input.uncertainty
+          ? input.uncertainty : input.uncertainty ? `${marker}\n${input.uncertainty}` : marker;
         input = { ...input, uncertainty: uncertainty.length <= 1000 ? uncertainty : input.uncertainty,
           ontologyFormation: { ...input.ontologyFormation!, blockedReasons: [...new Set([
             ...input.ontologyFormation!.blockedReasons, 'rule_source_assessment_required'])] } };
@@ -1856,6 +1865,8 @@ async function persistPreparedCapture(userId: string, capture: RecallCaptureReco
         updatedAt: new Date().toISOString(),
       });
   if (capture.status !== 'extracting' || signal?.aborted) return settleInterruptedCapture(userId, id);
+
+  if (!settle) return capture;
 
   const finishedAt = new Date().toISOString();
   const modelUsage = checkpoint.modelUsage;
@@ -2097,7 +2108,12 @@ export async function runRecallCapture(
       if (capture.formationCheckpoint.version !== 1 || !Array.isArray(capture.formationCheckpoint.groups)
         || JSON.stringify(capture.formationCheckpoint.sourceScope) !== JSON.stringify(sourceScope))
         throw new CaptureFailure('formation_checkpoint_stale', 'prepared source scope changed');
-      return await persistPreparedCapture(userId, capture, capture.formationCheckpoint, canContinue, signal);
+      if (!capture.formationCheckpoint.pendingCandidates?.length)
+        return await persistPreparedCapture(userId, capture, capture.formationCheckpoint, canContinue, signal);
+      // Finish immutable prepared writes before replacing the batch proof for
+      // remaining groups. This also recovers a crash between submission and its receipt.
+      capture = await persistPreparedCapture(userId, capture, capture.formationCheckpoint, canContinue, signal, false);
+      if (capture.status !== 'extracting') return capture;
     }
 
     // Keep later corrections and prior context. Value evidence controls what
@@ -2237,50 +2253,79 @@ export async function runRecallCapture(
       }
       return { text: result.text.trim(), usage: normalizeModelUsage({ ...result.meta.usage, ...chosen }) };
     };
-    const initialExtraction = await requestExtraction();
-    if (signal?.aborted || !await canContinue()) return settleInterruptedCapture(userId, id);
-    extractionText = initialExtraction.text; extractionModelUsage = initialExtraction.usage;
+    const previousPreparation = capture.formationCheckpoint;
     let parseResult: RecallCaptureParseResult | undefined;
-    let initialParseError: unknown;
-    try {
-      parseResult = parseRecallCaptureResult(
-        extractionText,
-        new Set(promptMessages.map((message) => message.label)),
-      );
-    } catch (error) {
-      // Keep model output out of logs: it may contain user-authored content.
-      log.warn('recall capture parse failed', {
-        capture_id: id,
-        conversation_id: capture.conversationId,
-        error: error instanceof CaptureFailure ? error.message : String((error as Error)?.message || error),
-      });
-      initialParseError = error;
-    }
-    // One bounded format repair, using the same full source and baselines.
-    // Valid proposals are never discarded/re-generated to improve the verdict.
-    // Missing fields cannot be invented by a deterministic default.
-    if (!parseResult || (parseResult.emittedCount > 0 && parseResult.candidates.length === 0)) {
+    let drafts: NonNullable<RecallCaptureFormationCheckpoint['pendingCandidates']>;
+    if (previousPreparation?.pendingCandidates?.length) {
+      drafts = structuredClone(previousPreparation.pendingCandidates);
+      parseResult = { candidates: drafts.map(item => item.candidate), emittedCount: previousPreparation.emittedCount,
+        ...(previousPreparation.noCandidateReason ? { noCandidateReason: previousPreparation.noCandidateReason } : {}) };
+      extractionModelUsage = previousPreparation.modelUsage;
+    } else {
+      const initialExtraction = await requestExtraction();
       if (signal?.aborted || !await canContinue()) return settleInterruptedCapture(userId, id);
-      capture = await updateCapture(userId, id, current => current.status !== 'extracting' ? current : {
-        ...current, extractionRepairAttempted: true, updatedAt: new Date().toISOString(),
-      });
-      if (capture.status !== 'extracting') return capture;
-      const repaired = await requestExtraction(true);
-      if (signal?.aborted || !await canContinue()) return settleInterruptedCapture(userId, id);
-      extractionText = repaired.text;
-      if (repaired.usage) {
-        const earlier = extractionModelUsage;
-        extractionModelUsage = { ...repaired.usage,
-          ...Object.fromEntries(['inputTokens', 'outputTokens', 'totalTokens'].flatMap(key => {
-            const sum = Number(earlier?.[key] || 0) + Number(repaired.usage?.[key] || 0);
-            return sum > 0 ? [[key, sum]] : [];
-          })),
-        };
+      extractionText = initialExtraction.text; extractionModelUsage = initialExtraction.usage;
+      let initialParseError: unknown;
+      try {
+        parseResult = parseRecallCaptureResult(
+          extractionText,
+          new Set(promptMessages.map((message) => message.label)),
+        );
+      } catch (error) {
+        // Keep model output out of logs: it may contain user-authored content.
+        log.warn('recall capture parse failed', {
+          capture_id: id,
+          conversation_id: capture.conversationId,
+          error: error instanceof CaptureFailure ? error.message : String((error as Error)?.message || error),
+        });
+        initialParseError = error;
       }
-      parseResult = parseRecallCaptureResult(extractionText, new Set(promptMessages.map(message => message.label)));
+      // One bounded format repair, using the same full source and baselines.
+      // Valid proposals are never discarded/re-generated to improve the verdict.
+      // Missing fields cannot be invented by a deterministic default.
+      if (!parseResult || (parseResult.emittedCount > 0 && parseResult.candidates.length === 0)) {
+        if (signal?.aborted || !await canContinue()) return settleInterruptedCapture(userId, id);
+        capture = await updateCapture(userId, id, current => current.status !== 'extracting' ? current : {
+          ...current, extractionRepairAttempted: true, updatedAt: new Date().toISOString(),
+        });
+        if (capture.status !== 'extracting') return capture;
+        const repaired = await requestExtraction(true);
+        if (signal?.aborted || !await canContinue()) return settleInterruptedCapture(userId, id);
+        extractionText = repaired.text;
+        if (repaired.usage) {
+          const earlier = extractionModelUsage;
+          extractionModelUsage = { ...repaired.usage,
+            ...Object.fromEntries(['inputTokens', 'outputTokens', 'totalTokens'].flatMap(key => {
+              const sum = Number(earlier?.[key] || 0) + Number(repaired.usage?.[key] || 0);
+              return sum > 0 ? [[key, sum]] : [];
+            })),
+          };
+        }
+        parseResult = parseRecallCaptureResult(extractionText, new Set(promptMessages.map(message => message.label)));
+      }
+      if (!parseResult) throw initialParseError;
+      drafts = parseResult!.candidates.flatMap((candidate, index) => {
+        try { assertNotForbiddenToPersist([JSON.stringify(candidate)]); return [{ index, candidate }]; }
+        catch (error) {
+          if (String((error as Error).message).includes('forbidden to persist')) return [];
+          throw error;
+        }
+      });
     }
-    if (!parseResult) throw initialParseError;
-    const parsed = parseResult.candidates;
+    const extractionCompletedAt = capture.extractionCompletedAt || new Date().toISOString();
+    // Freeze parsed proposals before the support call. A later window resumes
+    // these exact identities rather than paying for another extraction.
+    const pendingPreparation: RecallCaptureFormationCheckpoint = previousPreparation || {
+      version: 1, sourceDigest, summaryDigest: judgmentSummaryDigest, judgedAt: capture.valueJudgment!.judgedAt,
+      completedAt: extractionCompletedAt, sourceScope, groups: [], parsedCount: parseResult!.candidates.length,
+      emittedCount: parseResult!.emittedCount, ...(parseResult!.noCandidateReason ? { noCandidateReason: parseResult!.noCandidateReason } : {}),
+      ...(extractionModelUsage ? { modelUsage: extractionModelUsage } : {}),
+      pendingCandidates: structuredClone(drafts),
+    };
+    capture = await updateCapture(userId, id, current => current.status !== 'extracting' ? current : {
+      ...current, extractionCompletedAt, formationCheckpoint: pendingPreparation, updatedAt: extractionCompletedAt,
+    });
+    if (capture.status !== 'extracting') return capture;
     // Local grounding is only a fast path. All actual ambiguities share one
     // source-complete assessment; never fan out model calls per candidate.
     const bySourceLabel = new Map(promptMessages.map(message => [message.label, message]));
@@ -2293,7 +2338,16 @@ export async function runRecallCapture(
     const qualitySourcesFor = (candidate: ParsedCandidate) => candidate.evidence.map(label => bySourceLabel.get(label)!)
       .map(message => message.role !== 'user' ? message : { ...message,
         text: approved.filter(ref => ref.messageId === message.id).map(ref => ref.quote).join('\n') });
-    const ambiguity = parsed.flatMap((candidate, index) => {
+    const dependencies = analyzeFormationDependencies(drafts);
+    const itemFailures = new Map<number, string>(dependencies.invalidIndexes.map(index => [index, 'assessment_invalid']));
+    const holdFailedDependencies = () => {
+      for (const group of dependencies.groups) if (group.some(index => itemFailures.has(index))) {
+        for (const index of group) if (!itemFailures.has(index)) itemFailures.set(index, 'dependency_unavailable');
+      }
+    };
+    holdFailedDependencies();
+    const ambiguity = drafts.flatMap(({ candidate, index }) => {
+      if (itemFailures.has(index)) return [];
       const evidenceMessages = candidate.evidence.map(label => bySourceLabel.get(label)!);
       if (!sourcesFor(candidate).length || isTaskLocalRuleProposal(candidate, evidenceMessages) || nonRetainableActivityContent(candidate.judgment)) return [];
       let comparisonValid = false;
@@ -2336,6 +2390,7 @@ export async function runRecallCapture(
           modelCandidates, budget: { jobId: capture.id, stage: 'grounding' }, signal,
           shouldContinue: () => canContinue(), checkpoint: capture.formationBatchAssessment });
         for (const row of batch.assessments) assessed.set(row.index, row);
+        for (const failure of batch.itemFailures || []) itemFailures.set(failure.index, failure.reason);
         capture = await updateCapture(userId, id, current => current.status !== 'extracting' ? current : {
           ...current, formationBatchAssessment: batch, updatedAt: new Date().toISOString() });
       } catch (error) {
@@ -2343,6 +2398,9 @@ export async function runRecallCapture(
         batchUnavailableReason = error instanceof FormationBatchUnavailableError ? error.reason : 'assessment_invalid';
       }
     }
+    if (batchUnavailableReason) for (const item of ambiguity) itemFailures.set(item.index, batchUnavailableReason);
+    holdFailedDependencies();
+    for (const index of itemFailures.keys()) assessed.delete(index);
     // A late model result, including an unavailable verdict, cannot settle a
     // scheduled capture after admission closes or overwrite cancellation.
     if (signal?.aborted || !await canContinue()) return settleInterruptedCapture(userId, id);
@@ -2350,7 +2408,6 @@ export async function runRecallCapture(
     if (capture.status !== 'extracting') return capture;
     // Replaying candidate persistence must retain the proof already attached to
     // a saved group. A rebuilt summary/value decision clears this checkpoint.
-    const extractionCompletedAt = capture.extractionCompletedAt || new Date().toISOString();
     const extractionIdentity = createHash('sha256').update(JSON.stringify({ sourceDigest,
       summaryDigest: judgmentSummaryDigest, judgedAt: capture.valueJudgment!.judgedAt })).digest('hex').slice(0, 20);
     capture = await updateCapture(userId, id, current => current.status !== 'extracting' ? current : {
@@ -2360,9 +2417,9 @@ export async function runRecallCapture(
     if (capture.status !== 'extracting') return capture;
     // 自动来源只能形成候选；旧 autoWrite/auto 配置不构成逐条确认授权。
     const byLabel = new Map(promptMessages.map((message) => [message.label, message]));
-    const prepared: RecallCaptureFormationCheckpoint['groups'] = [];
+    const prepared: RecallCaptureFormationCheckpoint['groups'] = [...pendingPreparation.groups];
     const supportUnavailable: NonNullable<RecallCaptureRecord['candidateSupportUnavailable']> = [];
-    const uncertaintyAssessments: NonNullable<RecallCaptureRecord['uncertaintyAssessments']> = [];
+    const uncertaintyAssessments: NonNullable<RecallCaptureRecord['uncertaintyAssessments']> = (capture.uncertaintyAssessments || []).filter(row => !drafts.some(item => item.index === row.candidateIndex));
     const recordSupportUnavailable = async (candidateIndex: number, candidate: ParsedCandidate,
       stage: 'grounding' | 'uncertainty', reason: string) => {
       supportUnavailable.push({ candidateIndex, stage, reason,
@@ -2372,7 +2429,8 @@ export async function runRecallCapture(
         updatedAt: new Date().toISOString(),
       });
     };
-    for (const [index, candidate] of parsed.entries()) {
+    for (const { index, candidate } of drafts) {
+      const itemUnavailableReason = itemFailures.get(index);
       const evidenceMessages = candidate.evidence.map((label) => byLabel.get(label)!);
       if (capture.executionPolicy !== 'manual' && (isTaskLocalRuleProposal(candidate, evidenceMessages) || nonRetainableActivityContent(candidate.judgment))) {
         log.info('recall capture omitted task-local rule', { captureId: capture.id, candidateIndex: index });
@@ -2389,16 +2447,23 @@ export async function runRecallCapture(
         return { ...message, text: quotes.join('\n') };
       });
       const assessment = assessed.get(index);
-      const needsAssessment = ambiguity.some(item => item.index === index);
+      const needsAssessment = ambiguity.some(item => item.index === index) || !!itemUnavailableReason;
+      const supported = Boolean(assessment && Object.entries(assessment.checks).filter(([key]) => key !== 'evidence').every(([, value]) => value === true));
+      // A source-supported body with unresolved R metadata is a human review,
+      // not a technical retry or a silent rejection. Unsupported bodies still
+      // fail the existing grounding gate; this never certifies the R contract.
+      const ruleSemanticsHeld = !supported && !!assessment?.sourceRuleConclusions?.length
+        && !!assessment.sourceChecks && Object.entries(assessment.sourceChecks)
+          .filter(([key]) => key !== 'evidence').every(([, value]) => value === true);
       let uncertaintyAssessment: CaptureUncertaintyAssessment | undefined;
       if (candidate.uncertainty && needsAssessment) {
         const target = extractionAssets.find(asset => asset.id === candidate.targetAssetId);
-        const unavailableReason: CaptureUncertaintyAssessment['reason'] = batchUnavailableReason === 'context_too_large'
-          ? 'uncertainty_context_too_large' : batchUnavailableReason === 'source_unavailable'
-            ? 'uncertainty_context_unavailable' : batchUnavailableReason === 'assessment_invalid'
+        const unavailableReason: CaptureUncertaintyAssessment['reason'] = itemUnavailableReason === 'context_too_large'
+          ? 'uncertainty_context_too_large' : itemUnavailableReason === 'source_unavailable'
+            ? 'uncertainty_context_unavailable' : ['assessment_invalid', 'dependency_unavailable'].includes(itemUnavailableReason || '')
               ? 'uncertainty_assessment_invalid' : 'uncertainty_model_unavailable';
         uncertaintyAssessment = observeCaptureBatchUncertainty({ candidate, sources: sourcesFor(candidate), contextMessages: promptMessages,
-          summary: capture.contextSummary?.topics, ...(target ? { existingTarget: target } : {}) }, assessment, unavailableReason);
+          summary: capture.contextSummary?.topics, ...(target ? { existingTarget: target } : {}) }, ruleSemanticsHeld ? { ...assessment!, checks: assessment!.sourceChecks! } : assessment, unavailableReason);
         uncertaintyAssessments.push({ ...uncertaintyAssessment, candidateIndex: index });
         capture = await updateCapture(userId, id, current => current.status !== 'extracting' ? current : {
           ...current, uncertaintyAssessments: [...uncertaintyAssessments], updatedAt: new Date().toISOString(),
@@ -2409,11 +2474,10 @@ export async function runRecallCapture(
           continue;
         }
         if (!uncertaintyAssessment.nonBlocking) continue;
-      } else if (batchUnavailableReason && needsAssessment) {
-        await recordSupportUnavailable(index, candidate, 'grounding', batchUnavailableReason);
+      } else if (itemUnavailableReason) {
+        await recordSupportUnavailable(index, candidate, 'grounding', itemUnavailableReason);
         continue;
       }
-      const supported = Boolean(assessment && Object.entries(assessment.checks).filter(([key]) => key !== 'evidence').every(([, value]) => value === true));
       if (assessment?.comparison) candidate.comparison = assessment.comparison;
       if (supported && assessment?.revision) {
         candidate.judgment = assessment.revision.judgment;
@@ -2425,6 +2489,10 @@ export async function runRecallCapture(
       const deltaSupported = Boolean(assessment && assessment.checks.supported && assessment.checks.noUnsupportedClaims
         && assessment.checks.scopePreserved && assessment.checks.finalDecisionPreserved);
       if (uncertaintyAssessment?.nonBlocking) delete candidate.uncertainty;
+      if (ruleSemanticsHeld) {
+        const reasons = assessment!.sourceRuleConclusions!.flatMap(row => row.status !== 'resolved' ? [row.reason] : []);
+        candidate.uncertainty = `规则强度、条件、例外或引用尚未得到来源支持，请人工核对后保存。${reasons.join('；')}`.slice(0, 1000);
+      }
       const comparisonHeld = assessment && !assessment.checks.priorContentPreserved
         || candidate.comparison?.relation === 'ambiguous'
         || candidate.comparison && !['new', 'duplicate'].includes(candidate.comparison.relation)
@@ -2446,7 +2514,7 @@ export async function runRecallCapture(
         });
       }
       // Automatic output rejected by evidence/value gates must not accumulate as weak observations.
-      const grounded = assessment ? supported || deltaSupported : !comparisonHeld && isRecallCaptureCandidateGrounded(candidate, qualityEvidence);
+      const grounded = assessment ? supported || deltaSupported || ruleSemanticsHeld : !comparisonHeld && isRecallCaptureCandidateGrounded(candidate, qualityEvidence);
       if (!quality.reviewable || !classification.ok || !grounded) {
         log.info('capture candidate filtered before persistence', { captureId: capture.id,
           classification: classification.blockingReasons, quality: quality.reasons,
@@ -2483,6 +2551,7 @@ export async function runRecallCapture(
         throw new CaptureFailure('candidate_save_failed', 'ontology proposal could not be prepared');
       }
       if (ontologyFormation) {
+        if (ruleSemanticsHeld) ontologyFormation.blockedReasons.push('rule_source_assessment_required');
         const approvedLabels = new Set(evidenceMessages.filter(message => message.role === 'user'
           && judgedEvidence.some(evidence => evidence.messageId === message.id && message.text.includes(evidence.quote))).map(message => message.label));
         if (!ontologyFormation.evidence.length || ontologyFormation.evidence.some(label => !approvedLabels.has(label))) {
@@ -2560,25 +2629,18 @@ export async function runRecallCapture(
       }
     }
 
-    // Each group is complete (including any joint ontology change). A failed
-    // support service for another independent group must not discard it. With
-    // no complete group, keep preparation retryable rather than freezing empty.
-    if (supportUnavailable.length && !prepared.length) {
-      // An otherwise parseable batch may still lack a usable uncertainty audit
-      // (for example `none` or non-unique evidence). Do not replay that verdict
-      // forever when this source is admitted for a later support retry.
-      capture = await updateCapture(userId, id, current => current.status !== 'extracting' ? current : {
-        ...current, formationBatchAssessment: undefined, updatedAt: new Date().toISOString(),
-      });
-      throw new CaptureFailure('candidate_support_unavailable', 'formation support needs a later retry');
-    }
-    const checkpoint: RecallCaptureFormationCheckpoint = { version: 1, sourceDigest,
-      summaryDigest: judgmentSummaryDigest, judgedAt: capture.valueJudgment!.judgedAt, completedAt: extractionCompletedAt,
-      sourceScope, groups: prepared, parsedCount: parsed.length, emittedCount: parseResult.emittedCount,
-      ...(parseResult.noCandidateReason ? { noCandidateReason: parseResult.noCandidateReason } : {}),
-      ...(extractionModelUsage ? { modelUsage: extractionModelUsage } : {}) };
+    const pendingIndexes = new Set(supportUnavailable.map(row => row.candidateIndex));
+    const checkpoint: RecallCaptureFormationCheckpoint = { ...pendingPreparation, groups: prepared,
+      pendingCandidates: pendingPreparation.pendingCandidates?.filter(item => pendingIndexes.has(item.index)) || [],
+    };
     capture = await updateCapture(userId, id, current => current.status !== 'extracting' ? current : {
-      ...current, formationCheckpoint: checkpoint, updatedAt: new Date().toISOString(),
+      ...current, formationCheckpoint: checkpoint,
+      candidateSupportUnavailable: supportUnavailable.length ? supportUnavailable : undefined, candidateSupportUnavailableCount: supportUnavailable.length || undefined,
+      // A completed row with an unusable uncertainty observation must not be
+      // replayed indefinitely when its group is retried in a later window.
+      formationBatchAssessment: current.formationBatchAssessment?.assessments.some(row => !pendingIndexes.has(row.index)) ? { ...current.formationBatchAssessment,
+        assessments: current.formationBatchAssessment.assessments.filter(row => !pendingIndexes.has(row.index)) } : undefined,
+      updatedAt: new Date().toISOString(),
     });
     if (capture.status !== 'extracting') return capture;
     return await persistPreparedCapture(userId, capture, checkpoint, canContinue, signal);
@@ -3109,12 +3171,12 @@ export async function runNightlyCaptureSweep(
     // Retry diagnostics only for this day; no automatic historical catch-up.
     for (const capture of captures.filter(item => item.reviewDay && item.executionPolicy === 'nightly')) {
       if (!await canContinue()) break;
-      if (!['failed', 'configuration_required'].includes(capture.status) || capture.attempt >= NIGHTLY_AUTO_RETRY_ATTEMPT_LIMIT) continue;
+      if (!captureNeedsSupportRetry(capture) || capture.attempt >= NIGHTLY_AUTO_RETRY_ATTEMPT_LIMIT) continue;
       // Retry a persisted range on a subsequent night; never spend all attempts
       // during the same unavailable/configuration-failed window.
       if ((capture.lastAttemptReviewDay || capture.reviewDay!) >= day.key) continue;
-      const retried = await updateCapture(userId, capture.id, current => !['failed', 'configuration_required'].includes(current.status)
-        ? current : { ...current, status: 'queued', visibility: 'internal', stage: undefined, attempt: current.attempt + 1, lastAttemptReviewDay: day.key,
+      const retried = await updateCapture(userId, capture.id, current => !captureNeedsSupportRetry(current)
+        ? current : { ...current, status: 'queued', visibility: current.candidateIds.length ? 'visible' : 'internal', reviewSnapshot: undefined, stage: undefined, attempt: current.attempt + 1, lastAttemptReviewDay: day.key,
           errorCode: undefined, startedAt: undefined, finishedAt: undefined, updatedAt: startedAt });
       await scheduleKnownRecallCapture(userId, retried);
       counters.retried += 1;

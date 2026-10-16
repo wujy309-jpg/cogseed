@@ -1,4 +1,4 @@
-import { ambiguousRecallAssetIds, assessSemanticApplicability, type SemanticApplicabilityDecision } from '../../features/recall/semantic-applicability';
+import { ambiguousRecallAssetIds, assessSemanticApplicability, type SemanticApplicabilityResult } from '../../features/recall/semantic-applicability';
 /**
  * Recall ability-asset search tool injected into every main-conv runner.
  *
@@ -216,7 +216,7 @@ async function profilePoolEntries(
 function createSearchAbilityAssetsTool(opts: RecallToolsOpts, evidence: RecallTurnEvidence): AgentTool {
   const userId = opts.userId;
   let semanticCheckSpent = false;
-  const semanticChecks = new Map<string, SemanticApplicabilityDecision[]>();
+  const semanticChecks = new Map<string, SemanticApplicabilityResult>();
 
   const catalogContext = (): CatalogContext => ({
     ...(opts.cid ? { cid: opts.cid } : {}),
@@ -427,22 +427,25 @@ function createSearchAbilityAssetsTool(opts: RecallToolsOpts, evidence: RecallTu
     // their contract; this gate only disambiguates automatic search ranking.
     if (opts.taskText) {
       const formal = top.filter(item => !item.asset.profileSource).map(item => eligibleFormalAssets.find(asset => asset.id === item.asset.id)!).filter(Boolean);
-      const ambiguousIds = ambiguousRecallAssetIds(formal, opts.taskText);
+      const ambiguousIds = ambiguousRecallAssetIds(formal, opts.taskText, eligibleFormalAssets);
       const ambiguous = formal.filter(asset => ambiguousIds.has(asset.id));
       if (ambiguous.length) {
-        const key = JSON.stringify([opts.taskText, agentReadRuntimeContext(opts), ambiguous]);
-        let decisions = semanticChecks.get(key);
-        if (!decisions && !semanticCheckSpent) {
+        const key = JSON.stringify([opts.taskText, agentReadRuntimeContext(opts), ambiguous, eligibleFormalAssets]);
+        let assessment = semanticChecks.get(key);
+        if (!assessment && !semanticCheckSpent) {
           semanticCheckSpent = true;
           try {
-            decisions = await assessSemanticApplicability(userId, opts.taskText, ambiguous, agentReadRuntimeContext(opts));
-            semanticChecks.set(key, decisions);
+            assessment = await assessSemanticApplicability(userId, opts.taskText, ambiguous, agentReadRuntimeContext(opts), undefined, eligibleFormalAssets);
+            semanticChecks.set(key, assessment);
           } catch { /* Unresolved search hits are not asserted applicable. */ }
         }
+        const decisions = assessment?.decisions;
         const allowed = new Set((decisions || []).filter(row => row.verdict === 'applicable').map(row => row.assetId));
         top = top.filter(item => !ambiguousIds.has(item.asset.id) || allowed.has(item.asset.id));
         for (const asset of ambiguous) {
           const decision = decisions?.find(row => row.assetId === asset.id);
+          const unassessed = assessment?.unassessed.find(row => row.assetId === asset.id);
+          if (unassessed) { selectionNotes.push(`[asset:${asset.id}@v${unassessed.version}] not_evaluated: semantic_applicability_${unassessed.reason}`); continue; }
           selectionNotes.push(`[asset:${asset.id}@v${asset.activeVersion || asset.version}] ${decision?.verdict || 'uncertain'}: ${decision?.reason || 'Applicability unresolved; read explicitly only if you can resolve the conditions from the current task.'}`);
         }
         const rank = new Map((decisions || []).map(row => [row.assetId, row.rank]));

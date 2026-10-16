@@ -22,12 +22,12 @@ vi.mock('../../../../src/main/model/core-agent/runner', () => ({ buildRunner: as
     // Never reaches auth, the live proxy, a domain store or model billing.
     if (model.fixedResponse) return model.fixedResponse;
     if (process.env.COGSEED_QUALITY_BENCHMARK_LIVE !== '1') throw new Error('benchmark prohibits unapproved model calls');
-    if (!process.env.COGSEED_RECALL_LIVE_BUDGET_ROOT) throw new Error('benchmark requires the existing shared CNY20 ledger root');
+    if (!process.env.COGSEED_RECALL_LIVE_BUDGET_ROOT) throw new Error('benchmark requires an explicit live billing context');
     const dir = path.join(process.env.COGSEED_WORKSPACE_ROOT!, 'benchmark-model-transcripts');
     await fs.mkdir(dir, { recursive: true });
     const request = { systemPrompt: options.systemPrompt, message: input.message,
       ...(process.env.COGSEED_QUALITY_BENCHMARK_RULE_AUDIT === '1'
-        ? { maxOutputTokens: process.env.COGSEED_QUALITY_BENCHMARK_RULE_PROTOCOL_V2 === '1' ? 8192 : 4096 } : {}) };
+        && process.env.COGSEED_RECALL_LIVE_BILLING_MODE !== 'coding-plan' ? { maxOutputTokens: 8192 } : {}) };
     for (const name of await fs.readdir(dir)) {
       const prior = JSON.parse(await fs.readFile(path.join(dir, name), 'utf8'));
       if (prior.response && prior.request.systemPrompt === request.systemPrompt && prior.request.message === request.message) return prior.response;
@@ -57,6 +57,9 @@ vi.mock('../../../../src/main/model/core-agent/runner', () => ({ buildRunner: as
       child.once('close', () => input.signal?.removeEventListener('abort', abort));
       if (input.signal?.aborted) abort();
       child.stdin.end(JSON.stringify(request));
+    }).catch(async error => {
+      await fs.writeFile(file, JSON.stringify({ request, failure: { message: String(error.message) } }));
+      throw error;
     });
     await fs.writeFile(file, JSON.stringify({ request, response }));
     return response;
@@ -105,10 +108,17 @@ it('holds all nine real prose-only rule repairs when replayed without complete f
     return contracts.map(contract => contract.recordId);
   });
   expect(new Set(blocked).size).toBe(9);
-  await expect(assessFormationBatch(uid, { sessionId: 'memory-formation-retained-negative-replay', items: payload.candidates,
+  const result = await assessFormationBatch(uid, { sessionId: 'memory-formation-retained-negative-replay', items: payload.candidates,
     contextMessages: payload.completeConversationContext, summary: payload.summary,
     existing: { assets: payload.existingAssets, coverage: payload.comparisonCoverage }, ontology: payload.ontology, feedback: payload.feedback,
-    modelCandidates: [{ provider: 'retained-fixture', model: 'no-network' }] })).rejects.toMatchObject({ reason: 'assessment_invalid' });
+    modelCandidates: [{ provider: 'retained-fixture', model: 'no-network' }] });
+  // The original nine unsafe R rows remain blocked. Partial isolation keeps
+  // the three independent non-rule facts rather than rejecting them as well.
+  const ruleIndexes = payload.candidates.filter(item => formationRuleContracts(item.candidate.ontologyChanges, payload.ontology.records).length)
+    .map(item => item.index);
+  expect(result.assessments.map(row => row.index).sort()).toEqual(payload.candidates.map(item => item.index)
+    .filter(index => !ruleIndexes.includes(index)).sort());
+  expect(result.itemFailures?.map(row => row.index).sort()).toEqual(ruleIndexes.sort());
   expect(model.calls).toBe(0);
   expect(model.attempts).toEqual(['memory-formation-retained-negative-replay']);
 });
@@ -177,8 +187,7 @@ it.skipIf(process.env.COGSEED_QUALITY_BENCHMARK_RULE_AUDIT !== '1')('audits all 
   const { readOntologyDocument } = await import('../../../../src/main/features/cognition/ontology/service');
   const { parseOntologyFormationProposal, validateOntologyFormationScope } = await import('../../../../src/main/features/recall/ontology-formation');
   const canonical = structuredClone(readOntologyDocument(uid));
-  const protocolV2 = process.env.COGSEED_QUALITY_BENCHMARK_RULE_PROTOCOL_V2 === '1';
-  const result = await assessFormationBatch(uid, { sessionId: protocolV2 ? 'memory-formation-original-rule-audit-v2' : 'memory-formation-original-rule-audit', items,
+  const result = await assessFormationBatch(uid, { sessionId: 'memory-formation-original-rule-source-audit-v3', items,
     contextMessages: prior.completeConversationContext, summary: prior.summary, existing: { assets: prior.existingAssets, coverage: prior.comparisonCoverage },
     ontology: prior.ontology, feedback: prior.feedback, modelCandidates: [{ provider: 'live', model: 'configured' }] });
   const audited = result.assessments.map(assessment => {
@@ -207,17 +216,27 @@ it.skipIf(process.env.COGSEED_QUALITY_BENCHMARK_RULE_AUDIT !== '1')('audits all 
   });
   const report = { version: QUALITY_BENCHMARK_VERSION, mode: 'one_new_rule_semantics_batch_over_original_candidates',
     originalCaptureId: original.captureId, originalCandidates: formed.length, originalRuleCount: audited.reduce((sum, row) => sum + row.originalRules.length, 0),
-    newProxyCalls: model.calls, domainWrites: 0, bodyResampling: false,
+    newProxyCalls: model.calls, domainWrites: 0, bodyResampling: false, itemFailures: result.itemFailures || [],
     originalCompleteContractReview: { numerator: 4, denominator: 12, value: 4 / 12,
       method: 'independent attributed-source review, not the model self-verdict or body-only scorer',
       faithfulUnits: ['f01', 'f09', 'f10', 'f11'], downgradedObligationUnits: ['f02', 'f03', 'f04', 'f05', 'f06', 'f07', 'f08', 'f12'],
       note: 'f01 default retains a defeasible expression preference; a source-supported required interpretation must be reviewed separately, not mechanically rejected. Original results are not overwritten by a hypothetical corrected preview.' }, audited };
-  await writeReport(protocolV2 ? 'quality-original-rule-audit-v2.json' : 'quality-original-rule-audit.json', report);
+  await writeReport('quality-original-rule-source-audit-v3.json', report);
   expect(formed).toHaveLength(12);
   expect(model.calls).toBeLessThanOrEqual(1);
-  for (const unit of ['f02', 'f03', 'f04', 'f05', 'f06', 'f07', 'f08', 'f12']) {
-    const row = audited.find(item => item.units?.includes(unit))!;
-    expect(!row.assessment.checks.finalDecisionPreserved || row.assessment.ruleRevisions?.some(revision => revision.strength === 'required')).toBe(true);
+  expect(result.itemFailures || []).toEqual([]);
+  expect(audited).toHaveLength(12);
+  expect(report.originalRuleCount).toBe(9);
+  for (const row of audited) {
+    expect(Object.entries(row.assessment.checks).filter(([key]) => key !== 'evidence').every(([, value]) => value === true)).toBe(true);
+    for (const change of row.metadataChanges) {
+      expect(change.after.condition).toBeNull(); // corpus has no exact machine predicate
+      expect(change.after.effect).toEqual({ kind: 'note' }); // no exact heading/action binding
+      if (row.units.includes('f01')) expect(['default', 'required']).toContain(change.after.strength);
+      else expect(change.after.strength).toBe('required');
+      if (row.units.includes('f03')) expect(change.after.exception).toMatch(/闲聊/);
+      if (row.units.includes('f12')) expect(change.after.exception).toMatch(/普通(例会|会议)/);
+    }
   }
 }, 180_000);
 

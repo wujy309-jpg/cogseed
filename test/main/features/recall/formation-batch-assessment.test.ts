@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { assessFormationBatch } from '../../../../src/main/features/recall/formation-batch-assessment';
+import { assessFormationBatch, analyzeFormationDependencies } from '../../../../src/main/features/recall/formation-batch-assessment';
 import { validateFormationComparison } from '../../../../src/main/features/recall/formation-comparison';
 import { reviseFormationRuleSemantics, formationRuleContracts, validateFormationRuleChecks } from '../../../../src/main/features/recall/ontology-rule-semantics';
 const { run } = vi.hoisted(() => ({ run: vi.fn() }));
@@ -138,4 +138,72 @@ it.each(['unresolved', 'not_supported'])('holds an overall true verdict when sou
   const result = await assessFormationBatch('user-a', { ...input(), items: [{ ...item(0), candidate: { ...item(0).candidate, ontologyChanges: raw } }] });
   expect(result.assessments[0].checks).toMatchObject({ supported: false, finalDecisionPreserved: false });
   expect(result.assessments[0].ruleRevisions).toBeUndefined();
+});
+
+it('isolates a malformed row and retries only that row against the same complete source', async () => {
+  const bad = { ...rows()[1], checks: { ...checks, evidence: [{ label: 'm1', quote: 'invented source' }] } };
+  run.mockResolvedValueOnce({ result: { text: JSON.stringify({ assessments: [rows()[0], bad] }), meta: {} } });
+  const partial = await assessFormationBatch('user-a', input());
+  expect(partial.assessments.map(row => row.index)).toEqual([0]);
+  expect(partial.itemFailures).toEqual([{ index: 1, reason: 'assessment_invalid' }]);
+  run.mockResolvedValueOnce({ result: { text: JSON.stringify({ assessments: [rows()[1]] }), meta: {} } });
+  const complete = await assessFormationBatch('user-a', { ...input(), checkpoint: partial });
+  expect(complete.assessments.map(row => row.index)).toEqual([0, 1]);
+  expect(complete.itemFailures).toBeUndefined();
+  expect(JSON.parse(run.mock.calls[1][1].message).candidates.map(row => row.index)).toEqual([1]);
+  expect(JSON.parse(run.mock.calls[1][1].message).completeConversationContext).toEqual(input().contextMessages);
+  expect(run).toHaveBeenCalledTimes(2);
+});
+
+it.each([
+  { refs: [{ recordId: 'object-a', versionPolicy: 'current' }] },
+  { actions: [{ intent: 'create', recordId: 'dependent-entity', record: { kind: 'entity', moduleId: 'object-a' } }] },
+  { actions: [{ intent: 'update', recordId: 'dependent-assertion', patch: { object: { kind: 'entity', id: 'object-a' } } }] },
+])('holds all writes and references in a failed dependency group while keeping an independent group (%j)', async dependency => {
+  const items = [item(0), item(1), item(2)];
+  Object.assign(items[0].candidate, { ontologyChanges: { actions: [{ intent: 'update', recordId: 'object-a', patch: { name: 'New name' } }] } });
+  Object.assign(items[1].candidate, { ontologyChanges: dependency });
+  run.mockResolvedValueOnce({ result: { text: JSON.stringify({ assessments: [
+    { ...rows()[0], checks: { ...checks, evidence: [{ label: 'm1', quote: 'invented' }] } },
+    rows()[1], { ...rows()[0], index: 2 },
+  ] }), meta: {} } });
+  const result = await assessFormationBatch('user-a', { ...input(), items });
+  expect(result.assessments.map(row => row.index)).toEqual([2]);
+  expect(result.itemFailures).toEqual([{ index: 0, reason: 'assessment_invalid' }, { index: 1, reason: 'dependency_unavailable' }]);
+  expect(run).toHaveBeenCalledTimes(1);
+});
+
+it('isolates malformed proposed rule metadata before requesting independent items', async () => {
+  const args = input();
+  Object.assign(args.items[0].candidate, { ontologyChanges: { actions: [{ intent: 'create', recordId: 'malformed-rule',
+    record: { kind: 'rule', strength: 'default', condition: 'not a canonical condition', effect: { kind: 'note' }, exception: '' } }] } });
+  run.mockResolvedValueOnce({ result: { text: JSON.stringify({ assessments: [rows()[1]] }), meta: {} } });
+  const result = await assessFormationBatch('user-a', args);
+  expect(result.assessments.map(row => row.index)).toEqual([1]);
+  expect(result.itemFailures).toEqual([{ index: 0, reason: 'assessment_invalid' }]);
+  expect(JSON.parse(run.mock.calls[0][1].message).candidates.map(row => row.index)).toEqual([1]);
+});
+
+it.each([{ actions: [null] }, { actions: {} }, { actions: ['invalid'] }, { refs: [null] },
+  { actions: [{ record: null }] }, { actions: [{ patch: 'invalid' }] }])('isolates malformed raw ontology shapes without assessing them (%j)', async ontologyChanges => {
+  const args = input();
+  Object.assign(args.items[0].candidate, { ontologyChanges });
+  run.mockResolvedValueOnce({ result: { text: JSON.stringify({ assessments: [rows()[1]] }), meta: {} } });
+  const result = await assessFormationBatch('user-a', args);
+  expect(result.assessments.map(row => row.index)).toEqual([1]);
+  expect(result.itemFailures).toEqual([{ index: 0, reason: 'assessment_invalid' }]);
+  expect(JSON.parse(run.mock.calls[0][1].message).candidates.map(row => row.index)).toEqual([1]);
+});
+
+it('holds known dependants of malformed actions while preserving independent and reference-only groups', async () => {
+  const items = [item(0), item(1), item(2)];
+  Object.assign(items[0].candidate, { ontologyChanges: { actions: [null, { recordId: 'synthetic-object' }] } });
+  Object.assign(items[1].candidate, { ontologyChanges: { refs: [{ recordId: 'synthetic-object' }] } });
+  Object.assign(items[2].candidate, { ontologyChanges: { refs: [{ recordId: 'independent-object' }] } });
+  expect(analyzeFormationDependencies(items)).toEqual({ groups: [[0, 1], [2]], invalidIndexes: [0] });
+  run.mockResolvedValueOnce({ result: { text: JSON.stringify({ assessments: [{ ...rows()[0], index: 2 }] }), meta: {} } });
+  const result = await assessFormationBatch('user-a', { ...input(), items });
+  expect(result.assessments.map(row => row.index)).toEqual([2]);
+  expect(result.itemFailures).toEqual([{ index: 0, reason: 'assessment_invalid' }, { index: 1, reason: 'dependency_unavailable' }]);
+  expect(JSON.parse(run.mock.calls[0][1].message).candidates.map(row => row.index)).toEqual([2]);
 });

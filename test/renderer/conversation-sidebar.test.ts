@@ -883,6 +883,165 @@ describe('conversation background stream buffering', () => {
   });
 });
 
+describe('conversation structured stream across task switches', () => {
+  function setup() {
+    const context = loadConversationRenderer();
+    type Bubble = { dataset: Record<string, string>; parentElement: any; text: string };
+    const created: Bubble[] = [];
+    const history = {
+      children: [] as Bubble[],
+      querySelector: () => null,
+      appendChild(node: Bubble) {
+        if (!this.children.includes(node)) this.children.push(node);
+        node.parentElement = this;
+      },
+    };
+    const makeBubble = (): Bubble => ({ dataset: {}, parentElement: null, text: '' });
+    context.document.getElementById = (id: string) => id === 'chat-history' ? history : null;
+    context.document.createDocumentFragment = () => ({
+      querySelector: () => null,
+      appendChild(node: Bubble) { node.parentElement = null; },
+    });
+    context._appendBeforeSpacer = (host: any, node: Bubble) => host.appendChild(node);
+    context._insertByTimestamp = (host: any, node: Bubble) => host.appendChild(node);
+    context._createStreamingAssistantMessage = (host: any) => {
+      const node = makeBubble();
+      created.push(node);
+      host.appendChild(node);
+      return node;
+    };
+    context._setPlaceholderActor = (node: Bubble, actorId: string) => { node.dataset.fromActor = actorId; };
+    context._stampPlaceholderTriggerMsg = () => {};
+    context._seedPlaceholderActivityStart = () => {};
+    context._streamingEnsureActivityTimer = () => {};
+    context._streamingFinishActivity = (node: Bubble) => { node.dataset.activityDone = '1'; };
+    context._activityTerminalText = () => 'Completed';
+    context._bumpConvToTop = () => {};
+    context._scheduleConversationInfoFileRefresh = () => {};
+    context._knownGroupActorLabel = (_cid: string, actor: string) => actor;
+    context.window.chatStreamHandleEvent = (_cid: string, anchor: Bubble, event: any) => {
+      anchor.text += event.payload?.delta || '';
+    };
+    const initial = makeBubble();
+    history.appendChild(initial);
+    context.currentCid = 'task-a';
+    context.pendingConvs.set('task-a', { loadingEl: initial });
+    const send = (event: any) => context._handleStreamEvent('task-a', initial, {
+      type: 'event', event: { stream: 'chat', data: event },
+    }, { actorIdentity: true });
+    const switchTo = (cid: string) => {
+      for (const node of history.children) node.parentElement = null;
+      history.children = [];
+      context.currentCid = cid;
+    };
+    return { context, history, initial, created, send, switchTo };
+  }
+
+  it('keeps background text on the original bubble and restores exactly one bubble', () => {
+    const r = setup();
+    r.send({ type: 'chat.turn.started', actorId: 'commander', turnId: 'turn-a' });
+    r.send({ type: 'chat.item', turnId: 'turn-a', payload: { delta: 'before ' } });
+    r.switchTo('task-b');
+    r.send({ type: 'chat.item', turnId: 'turn-a', payload: { delta: 'background ' } });
+    expect(r.history.children).toEqual([]);
+    expect(r.created).toHaveLength(0);
+
+    r.switchTo('task-a');
+    // Same recovery order as loadConversationHistory: restore the controller
+    // node, then reconcile the authoritative active turn.
+    r.history.appendChild(r.context.pendingConvs.get('task-a').loadingEl);
+    const recovered = r.context._ensureActorPlaceholder('task-a', 'commander', r.initial, 'turn-a');
+    r.send({ type: 'chat.item', turnId: 'turn-a', payload: { delta: 'after' } });
+    expect(recovered).toBe(r.initial);
+    expect(r.history.children).toEqual([r.initial]);
+    expect(r.initial.text).toBe('before background after');
+  });
+
+  it('adopts the detached send placeholder when the first event arrives after switching away', () => {
+    const r = setup();
+    r.switchTo('task-b');
+    r.send({ type: 'chat.turn.started', actorId: 'commander', turnId: 'turn-a' });
+    r.send({ type: 'chat.item', turnId: 'turn-a', payload: { delta: 'background' } });
+    expect(r.history.children).toEqual([]);
+    expect(r.created).toHaveLength(0);
+    expect(r.initial.text).toBe('background');
+    expect(r.initial.dataset.fromActor).toBe('commander');
+    r.switchTo('task-a');
+    expect(r.context._ensureActorPlaceholder('task-a', 'commander', r.initial, 'turn-a')).toBe(r.initial);
+    expect(r.history.children).toEqual([r.initial]);
+  });
+
+  it('keeps a newly started background worker separate without inserting it into the visible task', () => {
+    const r = setup();
+    r.send({ type: 'chat.turn.started', actorId: 'commander', turnId: 'turn-a' });
+    r.switchTo('task-b');
+    r.send({ type: 'chat.turn.started', actorId: 'agent-1', turnId: 'turn-worker' });
+    r.send({ type: 'chat.item', turnId: 'turn-worker', payload: { delta: 'worker output' } });
+    expect(r.history.children).toEqual([]);
+    expect(r.created).toHaveLength(1);
+    const worker = r.created[0];
+    expect(worker.dataset.fromActor).toBe('agent-1');
+    expect(worker.text).toBe('worker output');
+    expect(r.initial.text).toBe('');
+    r.switchTo('task-a');
+    expect(r.context._ensureActorPlaceholder('task-a', 'agent-1', r.initial, 'turn-worker')).toBe(worker);
+    expect(r.history.children).toEqual([worker]);
+  });
+
+  it.each(['message', 'turn_silent', 'segment'])('settles a background %s before the same actor starts again', kind => {
+    const r = setup();
+    r.send({ type: 'chat.turn.started', actorId: 'commander', turnId: 'turn-a' });
+    r.send({ type: 'chat.item', turnId: 'turn-a', payload: { delta: 'First reply' } });
+    r.switchTo('task-b');
+    const gm = { id: 'synthetic-first', from: 'commander', turn_id: 'turn-a', text: 'First reply', ...(kind === 'segment' ? { seg: 0 } : {}) };
+    const terminal = kind === 'turn_silent' ? { type: kind, actor: 'commander', turn_id: 'turn-a' }
+      : { type: 'message', turn_id: 'turn-a', turn_end: kind === 'message', msg: gm };
+    r.context._handleGroupBusEvent('task-a', r.initial, terminal);
+    expect(r.initial.dataset.finalized).toBe('1');
+    expect(r.initial.dataset.activityDone).toBe('1');
+    // A segment can continue under the same execution id, whereas a new turn
+    // has a different id. Neither may reclaim the event-owned terminal node.
+    const nextId = kind === 'segment' ? 'turn-a' : 'turn-b';
+    r.send({ type: 'chat.turn.started', actorId: 'commander', turnId: nextId });
+    r.send({ type: 'chat.item', turnId: nextId, payload: { delta: 'Second reply' } });
+    r.context._handleGroupBusEvent('task-a', r.initial, terminal);
+    expect(r.created).toHaveLength(1);
+    expect(r.initial.text).toBe('First reply');
+    expect(r.created[0].text).toBe('Second reply');
+    expect(r.created[0].dataset.finalized).toBeUndefined();
+    expect(r.history.children).toEqual([]);
+    r.switchTo('task-a');
+    if (kind !== 'turn_silent') {
+      expect(r.context._consumePlaceholderForHistoryRecord('task-a', gm)).toBe(r.initial);
+      expect(r.history.children).toEqual([r.initial]);
+      expect(r.context._consumePlaceholderForHistoryRecord('task-a', gm)).toBeNull();
+    }
+    expect(r.context._ensureActorPlaceholder('task-a', 'commander', r.initial, nextId)).toBe(r.created[0]);
+    expect(r.created[0].dataset.finalized).toBeUndefined();
+  });
+
+  it('ignores an old terminal identity but preserves live task-to-exec adoption and mid-turn messages', () => {
+    const r = setup();
+    r.send({ type: 'chat.turn.started', actorId: 'commander', turnId: 'task-turn' });
+    r.switchTo('task-b');
+    r.send({ type: 'chat.turn.started', actorId: 'commander', turnId: 'exec-turn' });
+    expect(r.created).toHaveLength(0);
+    r.context._handleGroupBusEvent('task-a', r.initial, { type: 'turn_silent', actor: 'commander', turn_id: 'old-unrelated' });
+    r.context._handleGroupBusEvent('task-a', r.initial, { type: 'message', msg: { id: 'mid-turn', from: 'commander', text: 'Progress' } });
+    expect(r.initial.dataset.finalized).toBeUndefined();
+    r.context._handleGroupBusEvent('task-a', r.initial, { type: 'turn_silent', actor: 'commander', turn_id: 'task-turn' });
+    expect(r.initial.dataset.finalized).toBe('1');
+  });
+
+  it('lets a terminal id claim only an unbound legacy placeholder', () => {
+    const r = setup();
+    r.context._ensureActorPlaceholder('task-a', 'commander', r.initial);
+    r.switchTo('task-b');
+    r.context._handleGroupBusEvent('task-a', r.initial, { type: 'turn_silent', actor: 'commander', turn_id: 'resolved-turn' });
+    expect(r.initial.dataset.finalized).toBe('1');
+  });
+});
+
 describe('conversation sticky scroll', () => {
   function fakeScrollEl() {
     const listeners: Record<string, Function[]> = {};
